@@ -331,6 +331,198 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications(is_read);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
 
+-- ==================== V2 版本新增表 ====================
+
+-- 项目版本历史表
+CREATE TABLE IF NOT EXISTS project_versions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    version_number INTEGER NOT NULL,
+    snapshot JSONB NOT NULL,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- AI 生成记录表
+CREATE TABLE IF NOT EXISTS ai_generations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    task_type VARCHAR(64) NOT NULL,
+    prompt TEXT,
+    result JSONB,
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- ==================== V2: 发布管理 ====================
+
+-- 发布任务表
+CREATE TABLE IF NOT EXISTS publish_tasks (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    output_id UUID,
+    platform VARCHAR(50) NOT NULL CHECK (platform IN ('wechat_channels', 'douyin', 'kuaishou')),
+    account_name VARCHAR(100),
+    status VARCHAR(50) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'uploading', 'processing', 'pending_confirm', 'published', 'failed')),
+    celery_task_id VARCHAR(100),
+    title VARCHAR(500),
+    description TEXT,
+    tags JSONB DEFAULT '[]',
+    cover_file_key VARCHAR(500),
+    mini_program_link VARCHAR(500),
+    link_attached BOOLEAN NOT NULL DEFAULT FALSE,
+    published_url VARCHAR(500),
+    published_id VARCHAR(200),
+    published_at TIMESTAMP WITH TIME ZONE,
+    error_message TEXT,
+    require_manual_confirm BOOLEAN NOT NULL DEFAULT TRUE,
+    screenshot_key VARCHAR(500),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- 发布配置表
+CREATE TABLE IF NOT EXISTS publish_profiles (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    platform VARCHAR(50) NOT NULL CHECK (platform IN ('wechat_channels', 'douyin', 'kuaishou')),
+    account_name VARCHAR(100) NOT NULL,
+    chrome_debug_port INTEGER NOT NULL DEFAULT 9222,
+    cookie_file VARCHAR(500),
+    title_template VARCHAR(500) DEFAULT '{clip_title}',
+    description_template TEXT DEFAULT '',
+    default_tags JSONB DEFAULT '[]',
+    mini_program_link VARCHAR(500),
+    publish_mode VARCHAR(50) NOT NULL DEFAULT 'immediate' CHECK (publish_mode IN ('immediate', 'scheduled')),
+    require_manual_confirm BOOLEAN NOT NULL DEFAULT TRUE,
+    min_interval_seconds INTEGER NOT NULL DEFAULT 300,
+    max_daily_publish INTEGER NOT NULL DEFAULT 20,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- ==================== V2: IAA 数据看板 ====================
+
+-- 视频数据指标表
+CREATE TABLE IF NOT EXISTS video_metrics (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    publish_task_id UUID REFERENCES publish_tasks(id) ON DELETE SET NULL,
+    video_id VARCHAR(200),
+    title VARCHAR(500),
+    publish_date DATE,
+    account_id UUID,
+    play_count INTEGER NOT NULL DEFAULT 0,
+    finish_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    like_count INTEGER NOT NULL DEFAULT 0,
+    comment_count INTEGER NOT NULL DEFAULT 0,
+    share_count INTEGER NOT NULL DEFAULT 0,
+    favorite_count INTEGER NOT NULL DEFAULT 0,
+    social_recommend_ratio DOUBLE PRECISION NOT NULL DEFAULT 0,
+    social_recommend_play INTEGER NOT NULL DEFAULT 0,
+    friend_recommend_play INTEGER NOT NULL DEFAULT 0,
+    jump_click_count INTEGER NOT NULL DEFAULT 0,
+    jump_click_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    attributed_uv INTEGER NOT NULL DEFAULT 0,
+    attributed_revenue DOUBLE PRECISION NOT NULL DEFAULT 0,
+    content_type VARCHAR(50),
+    drama_id UUID,
+    traffic_method VARCHAR(50),
+    publish_time_slot VARCHAR(10),
+    play_level VARCHAR(10),
+    production_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- 小程序数据指标表
+CREATE TABLE IF NOT EXISTS mini_program_metrics (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    date DATE NOT NULL,
+    account_id UUID,
+    uv INTEGER NOT NULL DEFAULT 0,
+    new_user_count INTEGER NOT NULL DEFAULT 0,
+    drama_play_count INTEGER NOT NULL DEFAULT 0,
+    avg_play_duration DOUBLE PRECISION NOT NULL DEFAULT 0,
+    drama_finish_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- 广告数据指标表
+CREATE TABLE IF NOT EXISTS ad_metrics (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    date DATE NOT NULL,
+    account_id UUID,
+    impression_count INTEGER NOT NULL DEFAULT 0,
+    click_count INTEGER NOT NULL DEFAULT 0,
+    ctr DOUBLE PRECISION NOT NULL DEFAULT 0,
+    ecpm DOUBLE PRECISION NOT NULL DEFAULT 0,
+    revenue DOUBLE PRECISION NOT NULL DEFAULT 0,
+    reward_video_impression INTEGER NOT NULL DEFAULT 0,
+    reward_video_revenue DOUBLE PRECISION NOT NULL DEFAULT 0,
+    interstitial_impression INTEGER NOT NULL DEFAULT 0,
+    interstitial_revenue DOUBLE PRECISION NOT NULL DEFAULT 0,
+    recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- 短剧维度数据表
+CREATE TABLE IF NOT EXISTS drama_metrics (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    date DATE NOT NULL,
+    drama_id UUID,
+    account_id UUID,
+    uv INTEGER NOT NULL DEFAULT 0,
+    play_count INTEGER NOT NULL DEFAULT 0,
+    finish_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    ad_impression INTEGER NOT NULL DEFAULT 0,
+    ad_revenue DOUBLE PRECISION NOT NULL DEFAULT 0,
+    recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- 漏斗快照表
+CREATE TABLE IF NOT EXISTS funnel_snapshots (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    date DATE NOT NULL,
+    account_id UUID,
+    total_play INTEGER NOT NULL DEFAULT 0,
+    jump_click INTEGER NOT NULL DEFAULT 0,
+    jump_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    mini_program_uv INTEGER NOT NULL DEFAULT 0,
+    drama_play_uv INTEGER NOT NULL DEFAULT 0,
+    play_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    ad_exposure_uv INTEGER NOT NULL DEFAULT 0,
+    exposure_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    revenue DOUBLE PRECISION NOT NULL DEFAULT 0,
+    revenue_per_1000_play DOUBLE PRECISION NOT NULL DEFAULT 0,
+    recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- 生态数据表
+CREATE TABLE IF NOT EXISTS ecosystem_metrics (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    date DATE NOT NULL,
+    account_id UUID,
+    article_count INTEGER NOT NULL DEFAULT 0,
+    article_read_count INTEGER NOT NULL DEFAULT 0,
+    mini_program_uv_from_article INTEGER NOT NULL DEFAULT 0,
+    wecom_new_friends INTEGER NOT NULL DEFAULT 0,
+    wecom_total_friends INTEGER NOT NULL DEFAULT 0,
+    wecom_source VARCHAR(50),
+    recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- ==================== V2: 索引 ====================
+
+CREATE INDEX IF NOT EXISTS idx_publish_tasks_platform ON publish_tasks(platform);
+CREATE INDEX IF NOT EXISTS idx_publish_tasks_status ON publish_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_publish_tasks_output_id ON publish_tasks(output_id);
+CREATE INDEX IF NOT EXISTS idx_video_metrics_date ON video_metrics(publish_date);
+CREATE INDEX IF NOT EXISTS idx_video_metrics_account ON video_metrics(account_id);
+CREATE INDEX IF NOT EXISTS idx_video_metrics_drama ON video_metrics(drama_id);
+CREATE INDEX IF NOT EXISTS idx_mini_metrics_date ON mini_program_metrics(date);
+CREATE INDEX IF NOT EXISTS idx_mini_metrics_account ON mini_program_metrics(account_id);
+CREATE INDEX IF NOT EXISTS idx_ad_metrics_date ON ad_metrics(date);
+CREATE INDEX IF NOT EXISTS idx_ad_metrics_account ON ad_metrics(account_id);
+CREATE INDEX IF NOT EXISTS idx_drama_metrics_date ON drama_metrics(date);
+CREATE INDEX IF NOT EXISTS idx_funnel_date ON funnel_snapshots(date);
+CREATE INDEX IF NOT EXISTS idx_ecosystem_date ON ecosystem_metrics(date);
+
 -- ==================== 初始数据 ====================
 
 -- 插入默认系统配置

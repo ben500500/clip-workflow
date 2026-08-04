@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     APP_PORT: int = 8080
     DEBUG: bool = False
 
+    # RPA / Publish
+    CHROME_DEBUG_PORT: int = 9222
+    RPA_REQUIRE_MANUAL_CONFIRM: bool = True
+    MINIO_BUCKET_SCREENSHOTS: str = "publish-screenshots"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

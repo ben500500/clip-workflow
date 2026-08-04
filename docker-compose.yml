@@ -15,6 +15,7 @@ volumes:
   redis_data:
   minio_data:
   media_data:
+  chrome_profiles:
 
 services:
   # ==================== Database ====================
@@ -100,6 +101,7 @@ services:
         sleep 5
         mc alias set clip-minio http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
         mc mb clip-minio/${MINIO_BUCKET:-clipworkflow} --ignore-existing
+        mc mb clip-minio/publish-screenshots --ignore-existing
         mc policy set public clip-minio/${MINIO_BUCKET:-clipworkflow}
         echo 'MinIO bucket initialized successfully.'
       "
@@ -196,10 +198,13 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
       MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+      CHROME_DEBUG_PORT: 9222
+      RPA_REQUIRE_MANUAL_CONFIRM: "true"
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8001}:8000"
     volumes:
       - media_data:/app/media
+      - chrome_profiles:/data/chrome-profiles
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 15s
@@ -254,6 +259,40 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
       MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
     command: ["celery", "-A", "app.tasks.celery_app", "beat", "--loglevel=info"]
+    logging: *default-logging
+
+  # ==================== RPA Worker (Playwright) ====================
+  rpa_worker:
+    build:
+      context: ./rpa
+      dockerfile: Dockerfile
+    image: clip-rpa:latest
+    container_name: clip-rpa-worker
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:-clipworkflow_secret}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/2
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+      CHROME_DEBUG_PORT: 9222
+      DISPLAY: :99
+    volumes:
+      - chrome_profiles:/data/chrome-profiles
+      - media_data:/app/media
+    ports:
+      - "127.0.0.1:${RPA_DEBUG_PORT:-9222}:9222"
     logging: *default-logging
 
   # ==================== Frontend ====================

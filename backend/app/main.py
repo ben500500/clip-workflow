@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import init_db, close_db
-from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api
+from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -96,6 +96,8 @@ app.include_router(slice.router, prefix="/api", tags=["Slice"])
 app.include_router(preview.router, prefix="/api", tags=["Preview"])
 app.include_router(publications.router, prefix="/api", tags=["Publications"])
 app.include_router(config_api.router, prefix="/api", tags=["Config"])
+app.include_router(publish.router, prefix="/api", tags=["Publish"])
+app.include_router(dashboard.router, prefix="/api", tags=["Dashboard"])
 
 
 @app.get("/api/health")

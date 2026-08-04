@@ -10,6 +10,10 @@ import ClipReviewPage from './pages/ClipReview';
 import IntervalDetectionPage from './pages/IntervalDetection';
 import SliceTasksPage from './pages/SliceTasks';
 import OutputPreviewPage from './pages/OutputPreview';
+import PublishManagement from './pages/PublishManagement';
+import DashboardOverview from './pages/DashboardOverview';
+import ContentAnalysis from './pages/ContentAnalysis';
+import DataImport from './pages/DataImport';
 import Settings from './pages/Settings';
 
 const App: React.FC = () => {
@@ -26,6 +30,10 @@ const App: React.FC = () => {
           <Route path="episodes/:episodeId/intervals" element={<IntervalDetectionPage />} />
           <Route path="episodes/:episodeId/slice" element={<SliceTasksPage />} />
           <Route path="episodes/:episodeId/preview" element={<OutputPreviewPage />} />
+          <Route path="publish" element={<PublishManagement />} />
+          <Route path="analytics/overview" element={<DashboardOverview />} />
+          <Route path="analytics/content" element={<ContentAnalysis />} />
+          <Route path="analytics/import" element={<DataImport />} />
           <Route path="settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>

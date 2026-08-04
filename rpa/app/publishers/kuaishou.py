@@ -1,0 +1,99 @@
+import asyncio
+import logging
+from playwright.async_api import async_playwright, Page
+
+logger = logging.getLogger(__name__)
+
+class KuaishouPublisher:
+    """快手自动发布（Playwright RPA）"""
+    
+    def __init__(self, chrome_port: int = 9222):
+        self.chrome_port = chrome_port
+        self.creator_url = "https://cp.kuaishou.com/article/publish/video"
+    
+    async def publish(
+        self,
+        video_path: str,
+        title: str,
+        description: str,
+        tags: list[str],
+        cover_path: str = None,
+        require_confirm: bool = True
+    ) -> dict:
+        """发布视频到快手"""
+        async with async_playwright() as p:
+            browser = await p.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{self.chrome_port}"
+            )
+            context = browser.contexts[0]
+            page = await context.new_page()
+            
+            try:
+                await page.goto(self.creator_url)
+                await page.wait_for_load_state("networkidle")
+                
+                if await self._need_login(page):
+                    return {"success": False, "status": "need_login", "error": "需要扫码登录快手"}
+                
+                upload_input = await page.wait_for_selector('input[type="file"]', timeout=5000)
+                await upload_input.set_input_files(video_path)
+                
+                await self._wait_for_upload(page)
+                
+                # Fill description
+                desc_input = await page.query_selector('[placeholder*="描述"]')
+                if desc_input:
+                    full_text = f"{title} {description}"
+                    for tag in tags:
+                        full_text += f" #{tag}"
+                    await desc_input.fill(full_text)
+                
+                if cover_path:
+                    await self._set_cover(page, cover_path)
+                
+                if require_confirm:
+                    screenshot = await page.screenshot()
+                    return {
+                        "success": False,
+                        "status": "pending_confirm",
+                        "screenshot": screenshot,
+                        "message": "请确认后点击发布"
+                    }
+                else:
+                    publish_btn = await page.query_selector('button:has-text("发布")')
+                    if publish_btn:
+                        await publish_btn.click()
+                        await asyncio.sleep(3)
+                        return {"success": True, "video_url": page.url, "status": "published"}
+                    return {"success": False, "error": "未找到发布按钮"}
+                    
+            except Exception as e:
+                logger.error(f"Kuaishou publish error: {e}")
+                return {"success": False, "status": "error", "error": str(e)}
+            finally:
+                await page.close()
+    
+    async def _need_login(self, page: Page) -> bool:
+        login_btn = await page.query_selector('[class*="login"]')
+        return login_btn is not None
+    
+    async def _wait_for_upload(self, page: Page, timeout: int = 300):
+        try:
+            await page.wait_for_selector(
+                '[class*="upload-progress"]',
+                state="hidden",
+                timeout=timeout * 1000
+            )
+        except Exception:
+            logger.warning("Upload progress not found, continuing...")
+    
+    async def _set_cover(self, page: Page, cover_path: str):
+        try:
+            cover_btn = await page.query_selector('[class*="cover"]')
+            if cover_btn:
+                await cover_btn.click()
+                cover_input = await page.wait_for_selector('input[type="file"]')
+                if cover_input:
+                    await cover_input.set_input_files(cover_path)
+        except Exception as e:
+            logger.warning(f"Failed to set cover: {e}")

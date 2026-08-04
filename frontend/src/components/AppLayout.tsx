@@ -8,6 +8,9 @@ import {
   MenuUnfoldOutlined,
   UserOutlined,
   GithubOutlined,
+  SendOutlined,
+  BarChartOutlined,
+  LineChartOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 
@@ -25,6 +28,26 @@ const menuItems = [
     label: '项目管理',
   },
   {
+    key: '/publish',
+    icon: <SendOutlined />,
+    label: '发布管理',
+  },
+  {
+    key: '/analytics',
+    icon: <BarChartOutlined />,
+    label: '数据看板',
+  },
+  {
+    key: 'analytics-sub',
+    icon: <LineChartOutlined />,
+    label: '数据分析',
+    children: [
+      { key: '/analytics/overview', label: '总览' },
+      { key: '/analytics/content', label: '内容分析' },
+      { key: '/analytics/import', label: '数据录入' },
+    ],
+  },
+  {
     key: '/settings',
     icon: <SettingOutlined />,
     label: '系统设置',
@@ -33,11 +56,20 @@ const menuItems = [
 
 const AppLayout: React.FC = () => {
   const [collapsed, setCollapsed] = React.useState(false);
+  const [openKeys, setOpenKeys] = React.useState<string[]>([]);
   const navigate = useNavigate();
   const location = useLocation();
   const { token } = theme.useToken();
 
-  const selectedKey = '/' + location.pathname.split('/').filter(Boolean)[0] || '/dashboard';
+  const pathSegments = location.pathname.split('/').filter(Boolean);
+  const selectedKey = '/' + pathSegments.join('/') || '/dashboard';
+
+  // 自动展开包含当前路由的子菜单
+  React.useEffect(() => {
+    if (location.pathname.startsWith('/analytics')) {
+      setOpenKeys((prev) => (prev.includes('analytics-sub') ? prev : [...prev, 'analytics-sub']));
+    }
+  }, [location.pathname]);
 
   const handleMenuClick = ({ key }: { key: string }) => {
     navigate(key);
@@ -100,6 +132,8 @@ const AppLayout: React.FC = () => {
         <Menu
           mode="inline"
           selectedKeys={[selectedKey]}
+          openKeys={collapsed ? [] : openKeys}
+          onOpenChange={setOpenKeys}
           items={menuItems}
           onClick={handleMenuClick}
           style={{ borderRight: 'none', marginTop: 4 }}
