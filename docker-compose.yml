@@ -1,0 +1,296 @@
+version: "3.8"
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+networks:
+  clip-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  media_data:
+
+services:
+  # ==================== Database ====================
+  postgres:
+    image: postgres:15-alpine
+    container_name: clip-postgres
+    restart: unless-stopped
+    networks:
+      - clip-network
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-clipworkflow}
+      POSTGRES_USER: ${POSTGRES_USER:-clipworkflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clipworkflow_secret}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-clipworkflow} -d ${POSTGRES_DB:-clipworkflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  # ==================== Redis ====================
+  redis:
+    image: redis:7-alpine
+    container_name: clip-redis
+    restart: unless-stopped
+    networks:
+      - clip-network
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-clipworkflow_redis}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-clipworkflow_redis}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *default-logging
+
+  # ==================== MinIO ====================
+  minio:
+    image: minio/minio:latest
+    container_name: clip-minio
+    restart: unless-stopped
+    networks:
+      - clip-network
+    volumes:
+      - minio_data:/data
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  minio_init:
+    image: minio/mc:latest
+    container_name: clip-minio-init
+    restart: "no"
+    networks:
+      - clip-network
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: |
+      /bin/sh -c "
+        echo 'Waiting for MinIO...'
+        sleep 5
+        mc alias set clip-minio http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+        mc mb clip-minio/${MINIO_BUCKET:-clipworkflow} --ignore-existing
+        mc policy set public clip-minio/${MINIO_BUCKET:-clipworkflow}
+        echo 'MinIO bucket initialized successfully.'
+      "
+    logging: *default-logging
+
+  # ==================== AutoClip Service ====================
+  autoclip:
+    build:
+      context: ./autoclip
+      dockerfile: Dockerfile
+    image: clip-autoclip:latest
+    container_name: clip-autoclip
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:-clipworkflow_secret}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/2
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+      MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+      SERVICE_MODE: api
+    ports:
+      - "${AUTOCLIP_PORT:-8000}:8000"
+    volumes:
+      - media_data:/app/media
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  autoclip_worker:
+    image: clip-autoclip:latest
+    container_name: clip-autoclip-worker
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      autoclip:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:-clipworkflow_secret}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/2
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+      MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+      SERVICE_MODE: worker
+    volumes:
+      - media_data:/app/media
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+    logging: *default-logging
+
+  # ==================== Backend Services ====================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: clip-backend:latest
+    container_name: clip-backend
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:-clipworkflow_secret}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/2
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+      MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8001}:8000"
+    volumes:
+      - media_data:/app/media
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  worker:
+    image: clip-backend:latest
+    container_name: clip-worker
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      backend:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:-clipworkflow_secret}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/2
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+      MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+    volumes:
+      - media_data:/app/media
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+    logging: *default-logging
+
+  beat:
+    image: clip-backend:latest
+    container_name: clip-beat
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      backend:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:-clipworkflow_secret}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/2
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+      MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+    command: ["celery", "-A", "app.tasks.celery_app", "beat", "--loglevel=info"]
+    logging: *default-logging
+
+  # ==================== Frontend ====================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: clip-frontend:latest
+    container_name: clip-frontend
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:80"
+    logging: *default-logging
+
+  # ==================== Nginx ====================
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: clip-nginx
+    restart: unless-stopped
+    networks:
+      - clip-network
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+      - autoclip
+      - minio
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
