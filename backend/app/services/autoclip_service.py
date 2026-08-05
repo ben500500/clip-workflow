@@ -139,3 +139,18 @@ async def check_autoclip_health() -> bool:
             except Exception:
                 continue
     return False
+
+
+async def delete_autoclip_project(autoclip_project_id: str) -> bool:
+    """Delete a project on the AutoClip service (used for rollback)."""
+    url = f"{settings.AUTOCLIP_URL}/projects/{autoclip_project_id}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.delete(url)
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPStatusError as e:
+            logger.error(f"AutoClip delete project failed: {e.response.status_code} {e.response.text}")
+        except httpx.RequestError as e:
+            logger.error(f"AutoClip delete request error: {e}")
+    return False

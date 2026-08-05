@@ -67,7 +67,11 @@ async def detect_intervals(
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             try:
-                proc.kill()
+                proc.terminate()  # SIGTERM
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.kill()  # SIGKILL as fallback
             except ProcessLookupError:
                 pass
             raise RuntimeError(f"Interval detection timed out after {timeout}s")

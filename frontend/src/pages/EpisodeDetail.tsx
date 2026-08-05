@@ -29,6 +29,8 @@ const EpisodeDetail: React.FC = () => {
   const [sliceRunning, setSliceRunning] = useState(false);
   
   const autoclipTimerRef = useRef<number | null>(null);
+  const detectTimerRef = useRef<number | null>(null);
+  const sliceTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -36,6 +38,12 @@ const EpisodeDetail: React.FC = () => {
       mountedRef.current = false;
       if (autoclipTimerRef.current) {
         window.clearInterval(autoclipTimerRef.current);
+      }
+      if (detectTimerRef.current) {
+        window.clearTimeout(detectTimerRef.current);
+      }
+      if (sliceTimerRef.current) {
+        window.clearTimeout(sliceTimerRef.current);
       }
     };
   }, []);
@@ -137,7 +145,8 @@ const EpisodeDetail: React.FC = () => {
     try {
       const res = await intervalApi.detect(episodeId, detectMode, {});
       message.success(res.message);
-      setTimeout(() => {
+      detectTimerRef.current = window.setTimeout(() => {
+        detectTimerRef.current = null;
         if (mountedRef.current) {
           fetchEpisode();
           setDetectRunning(false);
@@ -154,7 +163,8 @@ const EpisodeDetail: React.FC = () => {
     try {
       const res = await sliceApi.run(episodeId, sliceMode, {});
       message.success(res.message);
-      setTimeout(() => {
+      sliceTimerRef.current = window.setTimeout(() => {
+        sliceTimerRef.current = null;
         if (mountedRef.current) {
           fetchEpisode();
           setSliceRunning(false);

@@ -5,9 +5,12 @@ Handles importing video metrics, mini program metrics, and ad metrics
 from Excel files using pandas. Validates required columns before import.
 """
 
+import asyncio
+import io
 import logging
 import uuid
 from datetime import date, datetime
+from functools import partial
 from typing import Optional
 
 import pandas as pd
@@ -164,8 +167,11 @@ async def import_video_metrics(
         dict with import results: success, imported_count, errors
     """
     try:
-        # Read Excel file
-        df = pd.read_excel(file.file, engine="openpyxl")
+        # Read Excel file (run blocking pd.read_excel in executor)
+        loop = asyncio.get_event_loop()
+        df = await loop.run_in_executor(
+            None, partial(pd.read_excel, file.file, engine="openpyxl")
+        )
         df = _normalize_columns(df)
 
         # Validate required columns
@@ -255,7 +261,10 @@ async def import_mini_program_metrics(
         dict with import results: success, imported_count, errors
     """
     try:
-        df = pd.read_excel(file.file, engine="openpyxl")
+        loop = asyncio.get_event_loop()
+        df = await loop.run_in_executor(
+            None, partial(pd.read_excel, file.file, engine="openpyxl")
+        )
         df = _normalize_columns(df)
 
         errors = _validate_columns(df, MINI_PROGRAM_REQUIRED_COLUMNS, "mini_program_metrics")
@@ -321,7 +330,10 @@ async def import_ad_metrics(
         dict with import results: success, imported_count, errors
     """
     try:
-        df = pd.read_excel(file.file, engine="openpyxl")
+        loop = asyncio.get_event_loop()
+        df = await loop.run_in_executor(
+            None, partial(pd.read_excel, file.file, engine="openpyxl")
+        )
         df = _normalize_columns(df)
 
         errors = _validate_columns(df, AD_METRICS_REQUIRED_COLUMNS, "ad_metrics")
@@ -374,16 +386,8 @@ async def import_ad_metrics(
         return {"success": False, "imported_count": 0, "errors": [str(e)]}
 
 
-def generate_import_template(import_type: str) -> bytes:
-    """
-    Generate an Excel template for data import.
-
-    Args:
-        import_type: One of 'video', 'mini_program', 'ad'
-
-    Returns:
-        bytes: Excel file content
-    """
+def _generate_template_sync(import_type: str) -> bytes:
+    """Synchronous helper to generate an Excel template."""
     templates = {
         "video": {
             "columns": VIDEO_METRICS_REQUIRED_COLUMNS + VIDEO_METRICS_OPTIONAL_COLUMNS,
@@ -429,8 +433,22 @@ def generate_import_template(import_type: str) -> bytes:
 
     df = pd.DataFrame([template["sample"]], columns=template["columns"])
 
-    import io
     output = io.BytesIO()
     df.to_excel(output, index=False, engine="openpyxl")
     output.seek(0)
     return output.getvalue()
+
+
+async def generate_import_template(import_type: str) -> bytes:
+    """
+    Generate an Excel template for data import (async, non-blocking).
+
+    Args:
+        import_type: One of 'video', 'mini_program', 'ad'
+
+    Returns:
+        bytes: Excel file content
+    """
+    loop = asyncio.get_event_loop()
+    output = await loop.run_in_executor(None, _generate_template_sync, import_type)
+    return output

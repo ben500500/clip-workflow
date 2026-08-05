@@ -1,6 +1,8 @@
+import asyncio
 import io
 import logging
 import os
+from functools import partial
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -47,16 +49,23 @@ async def upload_file(
     """Upload bytes to MinIO asynchronously (wraps synchronous MinIO client)."""
     try:
         client = get_minio_client()
-        # Ensure bucket exists
-        if not client.bucket_exists(bucket):
-            client.make_bucket(bucket)
+        loop = asyncio.get_event_loop()
 
-        client.put_object(
-            bucket,
-            object_key,
-            io.BytesIO(data),
-            length=len(data),
-            content_type=content_type,
+        # Ensure bucket exists
+        exists = await loop.run_in_executor(None, client.bucket_exists, bucket)
+        if not exists:
+            await loop.run_in_executor(None, client.make_bucket, bucket)
+
+        await loop.run_in_executor(
+            None,
+            partial(
+                client.put_object,
+                bucket,
+                object_key,
+                io.BytesIO(data),
+                length=len(data),
+                content_type=content_type,
+            ),
         )
         logger.info(f"Uploaded {object_key} to bucket {bucket}")
         return True
@@ -74,20 +83,39 @@ async def upload_file_from_path(
     """Upload a local file to MinIO."""
     try:
         client = get_minio_client()
-        if not client.bucket_exists(bucket):
-            client.make_bucket(bucket)
+        loop = asyncio.get_event_loop()
 
-        result = client.fput_object(
-            bucket,
-            object_key,
-            file_path,
-            content_type=content_type,
+        exists = await loop.run_in_executor(None, client.bucket_exists, bucket)
+        if not exists:
+            await loop.run_in_executor(None, client.make_bucket, bucket)
+
+        await loop.run_in_executor(
+            None,
+            partial(
+                client.fput_object,
+                bucket,
+                object_key,
+                file_path,
+                content_type=content_type,
+            ),
         )
-        logger.info(f"Uploaded {file_path} -> {bucket}/{object_key} (etag={result.etag})")
+        logger.info(f"Uploaded {file_path} -> {bucket}/{object_key}")
         return True
     except S3Error as e:
         logger.error(f"MinIO file upload failed: {e}")
         return False
+
+
+def _download_sync(bucket: str, object_key: str) -> bytes:
+    """Synchronous helper: download object and return bytes."""
+    client = get_minio_client()
+    response = client.get_object(bucket, object_key)
+    try:
+        data = response.read()
+    finally:
+        response.close()
+        response.release_conn()
+    return data
 
 
 async def download_file(
@@ -96,11 +124,8 @@ async def download_file(
 ) -> Optional[bytes]:
     """Download a file from MinIO as bytes."""
     try:
-        client = get_minio_client()
-        response = client.get_object(bucket, object_key)
-        data = response.read()
-        response.close()
-        response.release_conn()
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, partial(_download_sync, bucket, object_key))
         return data
     except S3Error as e:
         logger.error(f"MinIO download failed: {e}")
@@ -115,10 +140,15 @@ async def get_presigned_url(
     """Generate a presigned GET URL for temporary access."""
     try:
         client = get_minio_client()
-        url = client.presigned_get_object(
-            bucket,
-            object_key,
-            expires=expires_seconds,
+        loop = asyncio.get_event_loop()
+        url = await loop.run_in_executor(
+            None,
+            partial(
+                client.presigned_get_object,
+                bucket,
+                object_key,
+                expires=expires_seconds,
+            ),
         )
         return url
     except S3Error as e:
@@ -130,7 +160,8 @@ async def delete_file(bucket: str, object_key: str) -> bool:
     """Delete a file from MinIO."""
     try:
         client = get_minio_client()
-        client.remove_object(bucket, object_key)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, client.remove_object, bucket, object_key)
         logger.info(f"Deleted {bucket}/{object_key}")
         return True
     except S3Error as e:
@@ -138,19 +169,26 @@ async def delete_file(bucket: str, object_key: str) -> bool:
         return False
 
 
+def _list_objects_sync(bucket: str, prefix: str) -> list[dict]:
+    """Synchronous helper: list objects and collect results."""
+    client = get_minio_client()
+    objects = client.list_objects(bucket, prefix=prefix, recursive=True)
+    result = []
+    for obj in objects:
+        result.append({
+            "key": obj.object_name,
+            "size": obj.size,
+            "etag": obj.etag,
+            "last_modified": obj.last_modified.isoformat() if obj.last_modified else None,
+        })
+    return result
+
+
 async def list_files(bucket: str, prefix: str = "") -> list[dict]:
     """List files in a MinIO bucket under a given prefix."""
     try:
-        client = get_minio_client()
-        objects = client.list_objects(bucket, prefix=prefix, recursive=True)
-        result = []
-        for obj in objects:
-            result.append({
-                "key": obj.object_name,
-                "size": obj.size,
-                "etag": obj.etag,
-                "last_modified": obj.last_modified.isoformat() if obj.last_modified else None,
-            })
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, partial(_list_objects_sync, bucket, prefix))
         return result
     except S3Error as e:
         logger.error(f"MinIO list failed: {e}")
@@ -161,7 +199,8 @@ async def get_file_info(bucket: str, object_key: str) -> Optional[dict]:
     """Get metadata for a file in MinIO."""
     try:
         client = get_minio_client()
-        info = client.stat_object(bucket, object_key)
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, client.stat_object, bucket, object_key)
         return {
             "key": object_key,
             "size": info.size,
@@ -177,13 +216,16 @@ async def ensure_bucket(bucket: str) -> bool:
     """Ensure a bucket exists, creating it if necessary."""
     try:
         client = get_minio_client()
-        if not client.bucket_exists(bucket):
-            client.make_bucket(bucket)
+        loop = asyncio.get_event_loop()
+        exists = await loop.run_in_executor(None, client.bucket_exists, bucket)
+        if not exists:
+            await loop.run_in_executor(None, client.make_bucket, bucket)
             logger.info(f"Created bucket: {bucket}")
         return True
     except S3Error as e:
         logger.error(f"Failed to ensure bucket {bucket}: {e}")
         return False
+
 
 async def download_to_file(
     bucket: str,
@@ -193,8 +235,16 @@ async def download_to_file(
     """Download an object from MinIO to a local file."""
     try:
         client = get_minio_client()
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        client.fget_object(bucket, object_key, local_path)
+        loop = asyncio.get_event_loop()
+
+        dir_name = os.path.dirname(local_path)
+        if dir_name:
+            await loop.run_in_executor(None, os.makedirs, dir_name, True)
+
+        await loop.run_in_executor(
+            None,
+            partial(client.fget_object, bucket, object_key, local_path),
+        )
         return True
     except S3Error as e:
         logger.error(f"MinIO download to file failed: {e}")

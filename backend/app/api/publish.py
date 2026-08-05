@@ -177,12 +177,12 @@ async def create_publish_task(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Slice output not found")
 
-    # Enforce publish profile limits (daily cap + min interval)
+    # Enforce publishes profile limits (daily cap + min interval)
     profile_result = await db.execute(
         select(PublishProfile).where(
             PublishProfile.platform == data.platform,
             PublishProfile.account_name == data.account_name,
-        )
+        ).with_for_update()  # row-level lock to prevent race conditions
     )
     profile = profile_result.scalar_one_or_none()
     if profile:

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col, Statistic,
   message, Upload, Breadcrumb, Descriptions, Progress, Modal,
@@ -25,6 +25,18 @@ const ProjectDetail: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
 
+  const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      if (abortRef.current) {
+        abortRef.current.abort();
+      }
+    };
+  }, []);
+
   const fetchData = async (silent = false) => {
     if (!silent) setLoading(true);
     setError(null);
@@ -47,16 +59,33 @@ const ProjectDetail: React.FC = () => {
   }, [projectId]);
 
   const handleUpload = async (file: File) => {
+    // 取消之前的上传
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    abortRef.current = new AbortController();
+    
     setUploading(true);
     setUploadProgress(0);
     try {
-      await uploadApi.uploadFile(projectId, file, (p) => setUploadProgress(p));
-      message.success(`${file.name} 上传成功`);
-      fetchData(true);
+      await uploadApi.uploadFile(projectId, file, (p) => {
+        if (mountedRef.current) setUploadProgress(p);
+      }, abortRef.current.signal);
+      if (mountedRef.current) {
+        message.success(`${file.name} 上传成功`);
+        fetchData(true);
+      }
     } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : '上传失败');
+      if (err instanceof Error && err.name === 'CanceledError') {
+        message.info('上传已取消');
+      } else if (mountedRef.current) {
+        message.error(err instanceof Error ? err.message : '上传失败');
+      }
     } finally {
-      setUploading(false);
+      if (mountedRef.current) {
+        setUploading(false);
+      }
+      abortRef.current = null;
     }
   };
 

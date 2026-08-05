@@ -163,19 +163,54 @@ health_check() {
     log_step "执行健康检查..."
     local max_retries=30
     local retry_interval=5
-
-    # 等待服务启动
+    
+    # 等待 Nginx 就绪
     for i in $(seq 1 "$max_retries"); do
         if $COMPOSE_CMD ps --status=running 2>/dev/null | grep -q "nginx"; then
             log_info "Nginx 服务已就绪。"
             break
         fi
         if [ "$i" -eq "$max_retries" ]; then
-            log_warn "Nginx 服务未在预期时间内就绪，请检查日志。"
+            log_warn "Nginx 服务未在预期时间内就绪。"
         fi
         sleep "$retry_interval"
     done
-
+    
+    # 检查各服务 API 可用性
+    local nginx_port
+    nginx_port=$(grep -E "^NGINX_PORT=" .env 2>/dev/null | cut -d= -f2 || echo "80")
+    
+    # 检查 Backend API
+    for i in $(seq 1 12); do
+        if curl -sf http://localhost:${nginx_port}/api/health > /dev/null 2>&1; then
+            log_info "Backend API 已就绪。"
+            break
+        fi
+        [ "$i" -eq 12 ] && log_warn "Backend API 未在预期时间内就绪。"
+        sleep 5
+    done
+    
+    # 检查 PostgreSQL
+    if $COMPOSE_CMD exec -T postgres pg_isready -U ${POSTGRES_USER:-clipworkflow} > /dev/null 2>&1; then
+        log_info "PostgreSQL 已就绪。"
+    else
+        log_warn "PostgreSQL 未就绪，请检查日志。"
+    fi
+    
+    # 检查 Redis
+    if $COMPOSE_CMD exec -T redis redis-cli -a "${REDIS_PASSWORD:-}" ping > /dev/null 2>&1; then
+        log_info "Redis 已就绪。"
+    else
+        log_warn "Redis 未就绪，请检查日志。"
+    fi
+    
+    # 检查 MinIO
+    if curl -sf http://localhost:${MINIO_PORT:-9000}/minio/health/live > /dev/null 2>&1; then
+        log_info "MinIO 已就绪。"
+    else
+        log_warn "MinIO 未就绪，请检查日志。"
+    fi
+    
     # 显示服务状态
     echo ""
     echo -e "${BLUE}==================== 服务状态 ====================${NC}"

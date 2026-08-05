@@ -535,7 +535,7 @@ async def download_import_template(
 ):
     """Download Excel import template for metrics data."""
     try:
-        content = data_import_service.generate_import_template(type)
+        content = await data_import_service.generate_import_template(type)
         filename = f"{type}_metrics_template.xlsx"
         return StreamingResponse(
             io.BytesIO(content),

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import requests
 from datetime import datetime
 from app.celery_app import celery_app
 from app.publishers import VideoChannelPublisher, DouyinPublisher, KuaishouPublisher
@@ -14,6 +15,14 @@ def run_async(coro):
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+
+def _check_chrome(port=9222):
+    """检查 Chrome 浏览器是否可用"""
+    try:
+        r = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=5)
+        return r.status_code == 200
+    except Exception:
+        return False
 
 @celery_app.task(bind=True, name="publish_wechat_channels", max_retries=2)
 def publish_wechat_channels(self, task_id: str, video_path: str, title: str, 
@@ -40,7 +49,11 @@ def publish_wechat_channels(self, task_id: str, video_path: str, title: str,
         return result
     except Exception as exc:
         logger.error(f"Publish failed for task {task_id}: {exc}")
-        raise self.retry(exc=exc, countdown=60)
+        retry_num = getattr(self.request, 'retries', 0)
+        countdown = min(60 * (2 ** retry_num), 600)  # 60s, 120s, 240s, max 600s
+        if not _check_chrome(port):
+            raise Exception("Chrome 浏览器不可用，请检查 RPA 容器状态")
+        raise self.retry(exc=exc, countdown=countdown)
 
 @celery_app.task(bind=True, name="publish_douyin", max_retries=2)
 def publish_douyin(self, task_id: str, video_path: str, title: str,
@@ -65,7 +78,11 @@ def publish_douyin(self, task_id: str, video_path: str, title: str,
         return result
     except Exception as exc:
         logger.error(f"Douyin publish failed for task {task_id}: {exc}")
-        raise self.retry(exc=exc, countdown=60)
+        retry_num = getattr(self.request, 'retries', 0)
+        countdown = min(60 * (2 ** retry_num), 600)  # 60s, 120s, 240s, max 600s
+        if not _check_chrome(port):
+            raise Exception("Chrome 浏览器不可用，请检查 RPA 容器状态")
+        raise self.retry(exc=exc, countdown=countdown)
 
 @celery_app.task(bind=True, name="publish_kuaishou", max_retries=2)
 def publish_kuaishou(self, task_id: str, video_path: str, title: str,
@@ -90,7 +107,11 @@ def publish_kuaishou(self, task_id: str, video_path: str, title: str,
         return result
     except Exception as exc:
         logger.error(f"Kuaishou publish failed for task {task_id}: {exc}")
-        raise self.retry(exc=exc, countdown=60)
+        retry_num = getattr(self.request, 'retries', 0)
+        countdown = min(60 * (2 ** retry_num), 600)  # 60s, 120s, 240s, max 600s
+        if not _check_chrome(port):
+            raise Exception("Chrome 浏览器不可用，请检查 RPA 容器状态")
+        raise self.retry(exc=exc, countdown=countdown)
 
 @celery_app.task(name="check_cookie_status")
 def check_cookie_status():

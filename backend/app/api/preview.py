@@ -1,6 +1,7 @@
 import io
 import logging
 import os
+import tempfile
 import uuid
 import zipfile
 from typing import List, Optional
@@ -10,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from app.database import get_db
 from app.models.models import SliceOutput, SliceTask
@@ -159,7 +161,15 @@ async def download_output(
     return RedirectResponse(url=url)
 
 
-@router.post("/outputs/batch-download", response_model=BatchDownloadResponse)
+async def _cleanup_tmp(path: str):
+    """Remove a temporary file after the response is sent."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+@router.post("/outputs/batch-download")
 async def batch_download(
     data: BatchDownloadRequest,
     db: AsyncSession = Depends(get_db),
@@ -190,26 +200,35 @@ async def batch_download(
     if not outputs:
         raise HTTPException(status_code=404, detail="No valid outputs found")
 
-    # Create ZIP in memory
-    zip_buffer = io.BytesIO()
-    total_size = 0
+    # Use disk-based temp file to avoid memory blow-up with large files
+    tmp_path = tempfile.mktemp(suffix=".zip", prefix="batch_")
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for output in outputs:
+                file_data = await download_file("sliced", output.file_key)
+                if file_data:
+                    file_name = output.file_name or f"output_{output.id}.mp4"
+                    zf.writestr(file_name, file_data)
 
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for output in outputs:
-            data = await download_file("sliced", output.file_key)
-            if data:
-                file_name = output.file_name or f"output_{output.id}.mp4"
-                zf.writestr(file_name, data)
-                total_size += len(data)
+        def iter_file():
+            with open(tmp_path, "rb") as f:
+                while chunk := f.read(65536):
+                    yield chunk
 
-    zip_buffer.seek(0)
-
-    # Return as streaming response
-    return StreamingResponse(
-        zip_buffer,
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="batch_download_{uuid.uuid4().hex[:8]}.zip"',
-            "Content-Length": str(zip_buffer.getbuffer().nbytes),
-        },
-    )
+        file_size = os.path.getsize(tmp_path)
+        return StreamingResponse(
+            iter_file(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="batch_download_{uuid.uuid4().hex[:8]}.zip"',
+                "Content-Length": str(file_size),
+            },
+            background=BackgroundTask(_cleanup_tmp, tmp_path),
+        )
+    except Exception:
+        # If ZIP creation fails, clean up the temp file immediately
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise

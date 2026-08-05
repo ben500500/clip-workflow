@@ -50,7 +50,11 @@ async def _run_cmd(
         )
     except asyncio.TimeoutError:
         try:
-            proc.kill()
+            proc.terminate()  # SIGTERM
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()  # SIGKILL as fallback
         except ProcessLookupError:
             pass
         raise TimeoutError(f"Engine timed out after {timeout}s: {' '.join(cmd)}")

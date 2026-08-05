@@ -99,7 +99,6 @@ services:
     entrypoint: |
       /bin/sh -c "
         echo 'Waiting for MinIO...'
-        sleep 5
         mc alias set clip-minio http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
         mc mb clip-minio/${MINIO_BUCKET:-clipworkflow} --ignore-existing
         mc mb clip-minio/publish-screenshots --ignore-existing
@@ -280,6 +279,12 @@ services:
       - media_data:/app/media
     ports:
       - "127.0.0.1:${RPA_DEBUG_PORT:-9222}:9222"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9222/json/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     logging: *default-logging
 
   # ==================== Frontend ====================
@@ -293,7 +298,8 @@ services:
     networks:
       - clip-network
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:80"
     logging: *default-logging
@@ -310,10 +316,14 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
-      - frontend
-      - backend
-      - autoclip
-      - minio
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_healthy
+      autoclip:
+        condition: service_started
+      minio:
+        condition: service_started
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 30s

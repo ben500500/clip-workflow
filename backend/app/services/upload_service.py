@@ -5,12 +5,39 @@ import os
 import uuid
 from typing import Optional
 
+import redis
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# In-memory store for upload sessions (in production, use Redis)
-_upload_sessions: dict[str, dict] = {}
+# Redis-based store for upload sessions (replaces in-memory dict)
+_redis_client = None
+
+SESSION_TTL = 86400  # 24 hours
+
+
+def _get_redis() -> redis.Redis:
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+    return _redis_client
+
+
+def _deserialize_session(raw: dict) -> dict:
+    """Convert a Redis hash (all strings) back to the session dict format."""
+    return {
+        "id": raw["id"],
+        "file_name": raw["file_name"],
+        "file_size": int(raw["file_size"]),
+        "chunk_size": int(raw["chunk_size"]),
+        "offset": int(raw["offset"]),
+        "metadata": json.loads(raw.get("metadata", "{}")),
+        "temp_dir": raw["temp_dir"],
+        "completed": raw["completed"] == "true",
+        "file_hash": hashlib.md5(),
+        "_hash_digest": raw.get("hash_digest", ""),
+    }
 
 
 def create_upload_session(
@@ -20,6 +47,7 @@ def create_upload_session(
     metadata: Optional[dict] = None,
 ) -> dict:
     """Create a new upload session (tus-like protocol)."""
+    r = _get_redis()
     upload_id = str(uuid.uuid4())
     temp_dir = os.path.join(settings.UPLOAD_TEMP_DIR, upload_id)
     os.makedirs(temp_dir, exist_ok=True)
@@ -27,22 +55,43 @@ def create_upload_session(
     session = {
         "id": upload_id,
         "file_name": file_name,
-        "file_size": file_size,
-        "chunk_size": chunk_size,
-        "offset": 0,
-        "metadata": metadata or {},
+        "file_size": str(file_size),
+        "chunk_size": str(chunk_size),
+        "offset": "0",
+        "metadata": json.dumps(metadata or {}),
         "temp_dir": temp_dir,
-        "completed": False,
-        "file_hash": hashlib.md5(),
+        "completed": "false",
+        "hash_digest": "",
     }
-    _upload_sessions[upload_id] = session
+    r.hset(f"upload:{upload_id}", mapping=session)
+    r.expire(f"upload:{upload_id}", SESSION_TTL)
+
     logger.info(f"Created upload session: {upload_id} for {file_name} ({file_size} bytes)")
-    return session
+    return _deserialize_session(session)
 
 
 def get_upload_session(upload_id: str) -> Optional[dict]:
     """Get an upload session by ID."""
-    return _upload_sessions.get(upload_id)
+    r = _get_redis()
+    raw = r.hgetall(f"upload:{upload_id}")
+    if not raw:
+        return None
+    return _deserialize_session(raw)
+
+
+def _rebuild_hash(digest: str) -> hashlib.md5:
+    """Rebuild an md5 object from a stored hex digest.
+
+    Since md5 does not allow restoring internal state from a hex digest,
+    we store the digest and use it to verify/continue incrementally by
+    tracking the digest separately. For simplicity we return a fresh md5
+    object and store the prior digest alongside it.
+    """
+    h = hashlib.md5()
+    # We cannot restore md5 state from a hex digest, so callers must
+    # recompute from scratch if needed. We store the last known digest
+    # and use it for final verification.
+    return h
 
 
 def write_chunk(upload_id: str, data: bytes, offset: int) -> Optional[int]:
@@ -50,10 +99,13 @@ def write_chunk(upload_id: str, data: bytes, offset: int) -> Optional[int]:
 
     Returns the new offset, or None if the session is invalid.
     """
-    session = _upload_sessions.get(upload_id)
-    if not session:
+    r = _get_redis()
+    raw = r.hgetall(f"upload:{upload_id}")
+    if not raw:
         logger.error(f"Upload session not found: {upload_id}")
         return None
+
+    session = _deserialize_session(raw)
 
     if session["completed"]:
         logger.warning(f"Upload session {upload_id} already completed")
@@ -70,16 +122,34 @@ def write_chunk(upload_id: str, data: bytes, offset: int) -> Optional[int]:
     with open(chunk_path, "wb") as f:
         f.write(data)
 
-    # Update hash and offset
-    session["file_hash"].update(data)
-    session["offset"] += len(data)
+    # Update hash: rebuild from stored digest by re-hashing all chunks
+    # Since md5 state cannot be restored from hex digest, we recompute
+    # the hash from all chunk files on disk.
+    file_hash = hashlib.md5()
+    chunk_files = sorted(
+        [f for f in os.listdir(session["temp_dir"]) if f.startswith("chunk_")],
+        key=lambda x: int(x.split("_")[-1]),
+    )
+    for cf in chunk_files:
+        with open(os.path.join(session["temp_dir"], cf), "rb") as f:
+            file_hash.update(f.read())
+    hash_digest = file_hash.hexdigest()
+
+    new_offset = session["offset"] + len(data)
 
     # Check if upload is complete
-    if session["offset"] >= session["file_size"]:
-        session["completed"] = True
+    completed = "false"
+    if new_offset >= session["file_size"]:
+        completed = "true"
         logger.info(f"Upload session {upload_id} completed")
 
-    return session["offset"]
+    r.hset(f"upload:{upload_id}", mapping={
+        "offset": str(new_offset),
+        "completed": completed,
+        "hash_digest": hash_digest,
+    })
+
+    return new_offset
 
 
 def finalize_upload(upload_id: str, output_path: str) -> Optional[str]:
@@ -87,9 +157,12 @@ def finalize_upload(upload_id: str, output_path: str) -> Optional[str]:
 
     Returns the output path, or None on failure.
     """
-    session = _upload_sessions.get(upload_id)
-    if not session:
+    r = _get_redis()
+    raw = r.hgetall(f"upload:{upload_id}")
+    if not raw:
         return None
+
+    session = _deserialize_session(raw)
 
     if not session["completed"]:
         logger.warning(f"Upload session {upload_id} is not yet complete")
@@ -120,9 +193,12 @@ def finalize_upload(upload_id: str, output_path: str) -> Optional[str]:
 
 def get_upload_progress(upload_id: str) -> Optional[dict]:
     """Get the current progress of an upload session."""
-    session = _upload_sessions.get(upload_id)
-    if not session:
+    r = _get_redis()
+    raw = r.hgetall(f"upload:{upload_id}")
+    if not raw:
         return None
+
+    session = _deserialize_session(raw)
     return {
         "id": session["id"],
         "file_name": session["file_name"],
@@ -137,20 +213,28 @@ def get_upload_progress(upload_id: str) -> Optional[dict]:
 
 def delete_upload_session(upload_id: str) -> bool:
     """Delete an upload session and its temporary files."""
-    session = _upload_sessions.pop(upload_id, None)
-    if not session:
+    r = _get_redis()
+    raw = r.hgetall(f"upload:{upload_id}")
+    if not raw:
         return False
-    temp_dir = session["temp_dir"]
-    if os.path.isdir(temp_dir):
+
+    temp_dir = raw.get("temp_dir", "")
+    if temp_dir and os.path.isdir(temp_dir):
         for f in os.listdir(temp_dir):
             os.unlink(os.path.join(temp_dir, f))
-        os.rmdir(temp_dir)
+        try:
+            os.rmdir(temp_dir)
+        except OSError:
+            pass
+
+    r.delete(f"upload:{upload_id}")
     return True
 
 
 def get_temp_file_path(upload_id: str) -> str:
     """Get the temporary file path for an upload session."""
     return os.path.join(settings.UPLOAD_TEMP_DIR, upload_id, "uploaded_file")
+
 
 def validate_file_name(file_name: str) -> str:
     """Sanitize an uploaded file name and validate its extension."""

@@ -15,6 +15,7 @@ from app.services.autoclip_service import (
     get_pipeline_progress,
     get_clips,
     check_autoclip_health,
+    delete_autoclip_project,
 )
 from app.celery.tasks import autoclip_task as celery_autoclip_task
 
@@ -128,36 +129,47 @@ async def run_autoclip(
         raise HTTPException(status_code=500, detail="Failed to create AutoClip project")
 
     # Save or update AutoClip project association
-    existing = await db.execute(
-        select(AutoClipProject).where(AutoClipProject.episode_id == eid)
-    )
-    autoclip_project = existing.scalar_one_or_none()
-    if autoclip_project:
-        autoclip_project.autoclip_project_id = autoclip_project_id
-        autoclip_project.config = config
-        autoclip_project.pipeline_status = "pending"
-    else:
-        autoclip_project = AutoClipProject(
-            episode_id=eid,
-            autoclip_project_id=autoclip_project_id,
-            config=config,
-            pipeline_status="pending",
+    try:
+        existing = await db.execute(
+            select(AutoClipProject).where(AutoClipProject.episode_id == eid)
         )
-        db.add(autoclip_project)
-    await db.flush()
+        autoclip_project = existing.scalar_one_or_none()
+        if autoclip_project:
+            autoclip_project.autoclip_project_id = autoclip_project_id
+            autoclip_project.config = config
+            autoclip_project.pipeline_status = "pending"
+        else:
+            autoclip_project = AutoClipProject(
+                episode_id=eid,
+                autoclip_project_id=autoclip_project_id,
+                config=config,
+                pipeline_status="pending",
+            )
+            db.add(autoclip_project)
+        await db.flush()
+    except Exception:
+        # Rollback: clean up remote project if local DB save fails
+        await delete_autoclip_project(autoclip_project_id)
+        raise
 
     # Determine video path
     source_file_key = episode.source_file_key
     video_path = data.video_path or f"/data/videos/{source_file_key}"
 
     # Dispatch Celery task
-    task = celery_autoclip_task.delay(
-        episode_id=str(eid),
-        autoclip_project_id=autoclip_project_id,
-        video_path=video_path,
-        config=config,
-        source_file_key=source_file_key,
-    )
+    try:
+        task = celery_autoclip_task.delay(
+            episode_id=str(eid),
+            autoclip_project_id=autoclip_project_id,
+            video_path=video_path,
+            config=config,
+            source_file_key=source_file_key,
+        )
+    except Exception:
+        # Celery dispatch failed: mark DB status as failed
+        autoclip_project.pipeline_status = "failed"
+        await db.flush()
+        raise
 
     # Update celery task ID
     autoclip_project.celery_task_id = task.id
@@ -275,20 +287,30 @@ async def regenerate_autoclip(
     data: AutoClipRunRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Regenerate AutoClip clips with updated parameters."""
-    # Delete existing clips for this episode
+    """Regenerate AutoClip clips with updated parameters.
+
+    Creates the new AutoClip project first; only after it is successfully
+    created are the old clips deleted, so a failure does not lose existing data.
+    """
     try:
         eid = uuid.UUID(episode_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid episode ID format")
 
+    # First, run autoclip to create new project and dispatch task
+    response = await run_autoclip(episode_id, data, db)
+
+    # Only after successful creation, delete old clips
     result = await db.execute(
         select(ClipCandidate).where(ClipCandidate.episode_id == eid)
     )
     existing_clips = result.scalars().all()
     for clip in existing_clips:
-        await db.delete(clip)
+        # Keep clips that belong to the new run (just created by _save_autoclip_results
+        # would not have happened yet since the Celery task is async). Delete all
+        # pending clips from previous runs.
+        if clip.status == "pending":
+            await db.delete(clip)
     await db.flush()
 
-    # Re-run autoclip
-    return await run_autoclip(episode_id, data, db)
+    return response

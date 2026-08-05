@@ -29,6 +29,11 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    task_time_limit=7200,          # 2 hours hard limit
+    task_soft_time_limit=6600,     # 1h50m soft limit (graceful shutdown)
+    result_expires=86400,          # results expire after 24h
+    broker_connection_retry_on_startup=True,
+    broker_heartbeat=30,
     task_queues={
         "video_processing": {"exchange": "video_processing"},
         "publish": {"exchange": "publish"},
@@ -95,10 +100,12 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
 
     self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting AutoClip pipeline"})
 
+    downloaded_video_path = None
     try:
         video_path = run_async(_ensure_source_video(video_path, source_file_key))
         if not video_path:
             raise FileNotFoundError(f"Source video not found: {video_path}")
+        downloaded_video_path = video_path
 
         # Upload the source video to the AutoClip service before running.
         uploaded = run_async(
@@ -161,6 +168,13 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
             meta={"progress": 0, "message": str(e)},
         )
         raise
+    finally:
+        # Clean up downloaded source video
+        if downloaded_video_path and os.path.isfile(downloaded_video_path):
+            try:
+                os.unlink(downloaded_video_path)
+            except OSError:
+                pass
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
@@ -170,10 +184,12 @@ def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict,
 
     self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting interval detection"})
 
+    downloaded_video_path = None
     try:
         video_path = run_async(_ensure_source_video(video_path, source_file_key))
         if not video_path:
             raise FileNotFoundError(f"Source video not found: {video_path}")
+        downloaded_video_path = video_path
 
         self.update_state(
             state="PROGRESS",
@@ -198,6 +214,13 @@ def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict,
             meta={"progress": 0, "message": str(e)},
         )
         raise
+    finally:
+        # Clean up downloaded source video
+        if downloaded_video_path and os.path.isfile(downloaded_video_path):
+            try:
+                os.unlink(downloaded_video_path)
+            except OSError:
+                pass
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
@@ -219,10 +242,15 @@ def slice_task(
 
     self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting slice task"})
 
+    downloaded_source_path = None
+    output_dir = None
+    cutlist_path = None
+    intervals_path = None
     try:
         source_path = run_async(_ensure_source_video(source_path, source_file_key))
         if not source_path:
             raise FileNotFoundError(f"Source video not found: {source_path}")
+        downloaded_source_path = source_path
 
         cutlist_path = write_temp_file(cutlist, suffix=".txt")
         intervals_path = write_temp_file(intervals, suffix=".txt")
@@ -287,12 +315,6 @@ def slice_task(
             },
         )
 
-        for p in (cutlist_path, intervals_path):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
-
         return {
             "episode_id": episode_id,
             "output_count": len(output_files),
@@ -307,6 +329,27 @@ def slice_task(
             meta={"progress": 0, "message": str(e)},
         )
         raise
+    finally:
+        # Clean up temp files
+        for p in (cutlist_path, intervals_path):
+            if p:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        # Clean up output directory
+        if output_dir and os.path.isdir(output_dir):
+            import shutil
+            try:
+                shutil.rmtree(output_dir)
+            except OSError:
+                pass
+        # Clean up downloaded source video
+        if downloaded_source_path and os.path.isfile(downloaded_source_path):
+            try:
+                os.unlink(downloaded_source_path)
+            except OSError:
+                pass
 
 
 def _parse_engine_manifest(stdout: str, output_dir: str) -> list[dict]:
@@ -547,6 +590,7 @@ def task_publish_video(self, publish_task_id: str):
 
     self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting publish task"})
 
+    downloaded_video_path = None
     try:
         publish_task_data = run_async(_get_publish_task(publish_task_id))
         if not publish_task_data:
@@ -567,6 +611,7 @@ def task_publish_video(self, publish_task_id: str):
         video_path = run_async(_download_video_for_publish(publish_task_data["output_id"]))
         if not video_path:
             raise Exception("Failed to download video for publishing")
+        downloaded_video_path = video_path
 
         result = run_async(publisher.publish(
             video_path=video_path,
@@ -624,6 +669,13 @@ def task_publish_video(self, publish_task_id: str):
             meta={"progress": 0, "message": str(e)},
         )
         raise
+    finally:
+        # Clean up downloaded video file
+        if downloaded_video_path and os.path.isfile(downloaded_video_path):
+            try:
+                os.unlink(downloaded_video_path)
+            except OSError:
+                pass
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)

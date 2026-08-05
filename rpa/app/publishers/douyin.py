@@ -25,11 +25,14 @@ class DouyinPublisher:
             browser = await p.chromium.connect_over_cdp(
                 f"http://127.0.0.1:{self.chrome_port}"
             )
-            context = browser.contexts[0]
+            contexts = browser.contexts
+            if not contexts:
+                return {"success": False, "status": "error", "error": "浏览器没有打开的上下文，请检查 Chrome 是否正常"}
+            context = contexts[0]
             page = await context.new_page()
             
             try:
-                await page.goto(self.creator_url)
+                await page.goto(self.creator_url, timeout=30000)
                 await page.wait_for_load_state("networkidle")
                 
                 # Check login
@@ -41,7 +44,9 @@ class DouyinPublisher:
                 await upload_input.set_input_files(video_path)
                 
                 # Wait for upload
-                await self._wait_for_upload(page)
+                upload_ok = await self._wait_for_upload(page)
+                if not upload_ok:
+                    logger.warning("Video upload may not have completed, proceeding anyway...")
                 
                 # Fill title/description
                 desc_input = await page.query_selector('[class*="desc"] [contenteditable="true"]')
@@ -75,21 +80,53 @@ class DouyinPublisher:
                 logger.error(f"Douyin publish error: {e}")
                 return {"success": False, "status": "error", "error": str(e)}
             finally:
-                await page.close()
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+    
+    async def check_login_status(self) -> dict:
+        """检查登录态是否有效"""
+        async with async_playwright() as p:
+            browser = await p.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{self.chrome_port}"
+            )
+            contexts = browser.contexts
+            if not contexts:
+                return {"status": "error", "error": "浏览器没有打开的上下文，请检查 Chrome 是否正常"}
+            context = contexts[0]
+            page = await context.new_page()
+            try:
+                await page.goto(self.creator_url, timeout=30000)
+                await page.wait_for_load_state("networkidle")
+                need_login = await self._need_login(page)
+                return {
+                    "status": "expired" if need_login else "valid",
+                    "platform": "douyin"
+                }
+            except Exception as e:
+                return {"status": "error", "error": str(e)}
+            finally:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
     
     async def _need_login(self, page: Page) -> bool:
         login_btn = await page.query_selector('[class*="login"]')
         return login_btn is not None
     
-    async def _wait_for_upload(self, page: Page, timeout: int = 300):
+    async def _wait_for_upload(self, page: Page, timeout: int = 300) -> bool:
         try:
             await page.wait_for_selector(
                 '[class*="upload-progress"]',
                 state="hidden",
                 timeout=timeout * 1000
             )
+            return True
         except Exception:
-            logger.warning("Upload progress not found, continuing...")
+            logger.warning("Upload progress indicator not found or timed out")
+            return False
     
     async def _set_cover(self, page: Page, cover_path: str):
         try:

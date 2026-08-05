@@ -2,13 +2,14 @@ import client from './client';
 import type { Episode } from '../types';
 
 export const uploadApi = {
-  uploadFile: (projectId: string, file: File, onProgress?: (percent: number) => void) => {
+  uploadFile: (projectId: string, file: File, onProgress?: (percent: number) => void, signal?: AbortSignal) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('project_id', projectId);
     return client.post('/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 3600000,
+      signal,
       onUploadProgress: (progressEvent) => {
         if (onProgress && progressEvent.total) {
           const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
