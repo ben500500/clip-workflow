@@ -229,6 +229,12 @@ async def health():
     return {"status": "ok"}
 
 
+# 兼容别名：后端可能通过 /api/v1 前缀调用 health
+@app.get("/api/v1/health")
+async def health_v1():
+    return {"status": "ok"}
+
+
 class ProjectCreate(BaseModel):
     name: str
     config: dict = {}

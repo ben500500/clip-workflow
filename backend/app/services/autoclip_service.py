@@ -120,11 +120,22 @@ async def get_clips(
 
 
 async def check_autoclip_health() -> bool:
-    """Check if the AutoClip service is reachable."""
-    url = f"{settings.AUTOCLIP_URL}/health"
+    """Check if the AutoClip service is reachable.
+
+    注意：AutoClip 的 /health 端点在根路径，但 AUTOCLIP_URL 默认带 /api/v1 前缀。
+    这里同时探测两种路径，避免因前缀不匹配误判服务不可达。
+    """
+    base = settings.AUTOCLIP_URL.rstrip("/")
+    candidates = [
+        f"{base}/health",
+        f"{base.replace('/api/v1', '')}/health",
+    ]
     async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.get(url)
-            return resp.status_code == 200
-        except Exception:
-            return False
+        for url in candidates:
+            try:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    return True
+            except Exception:
+                continue
+    return False
