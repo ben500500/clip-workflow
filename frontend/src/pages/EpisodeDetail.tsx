@@ -59,6 +59,48 @@ const EpisodeDetail: React.FC = () => {
     if (episodeId) fetchEpisode();
   }, [episodeId]);
 
+  // 页面加载 / 返回时，检查是否有正在运行的选点任务，自动恢复轮询
+  const resumeAutoclipPolling = async () => {
+    try {
+      const p = await autoclipApi.progress(episodeId);
+      if (p && (p.status === 'pending' || p.status === 'processing' || p.status === 'running')) {
+        setAutoclipRunning(true);
+        setAutoclipProgress(p);
+        autoclipTimerRef.current = window.setInterval(async () => {
+          try {
+            const prog = await autoclipApi.progress(episodeId);
+            if (!mountedRef.current) {
+              if (autoclipTimerRef.current) window.clearInterval(autoclipTimerRef.current);
+              return;
+            }
+            setAutoclipProgress(prog);
+            if (prog.status === 'completed' || prog.status === 'failed') {
+              if (autoclipTimerRef.current) window.clearInterval(autoclipTimerRef.current);
+              autoclipTimerRef.current = null;
+              setAutoclipRunning(false);
+              fetchEpisode();
+            }
+          } catch {
+            if (autoclipTimerRef.current) window.clearInterval(autoclipTimerRef.current);
+            autoclipTimerRef.current = null;
+            if (mountedRef.current) setAutoclipRunning(false);
+          }
+        }, 3000);
+      } else if (p && (p.status === 'completed' || p.status === 'failed')) {
+        // 任务已结束，显示最终状态
+        setAutoclipProgress(p);
+      }
+    } catch {
+      // 没有运行中的任务，忽略
+    }
+  };
+
+  useEffect(() => {
+    if (episodeId && episode) {
+      resumeAutoclipPolling();
+    }
+  }, [episodeId, episode?.id]);
+
   const runAutoClip = async () => {
     setAutoclipRunning(true);
     try {
