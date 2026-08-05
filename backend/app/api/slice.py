@@ -130,6 +130,11 @@ async def run_slice(
         )
     )
     accepted_clips = clips_result.scalars().all()
+    if not accepted_clips:
+        raise HTTPException(
+            status_code=400,
+            detail="没有已通过的候选片段，无法生成切片。请先在片段审核中通过至少一个片段，或重新触发选点。",
+        )
     cutlist = generate_cutlist(accepted_clips)
 
     # Generate intervals from enabled intervals
@@ -177,7 +182,7 @@ async def run_slice(
     return SliceRunResponse(
         task_id=str(slice_task.id),
         celery_task_id=task.id,
-        message=f"Slice task dispatched (mode: {data.mode})",
+        message=f"切片任务已启动（模式: {data.mode}），正在处理中…",
     )
 
 
@@ -340,7 +345,7 @@ async def retry_slice_task(
     return SliceRunResponse(
         task_id=str(new_task.id),
         celery_task_id=celery.id,
-        message="Slice task re-dispatched",
+        message="切片任务已重新调度",
     )
 
 
@@ -382,4 +387,4 @@ async def cancel_slice_task(
     task.status = "cancelled"
     await db.flush()
 
-    return {"message": "Task cancelled", "task_id": task_id}
+    return {"message": "任务已取消", "task_id": task_id}

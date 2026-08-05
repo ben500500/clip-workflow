@@ -312,3 +312,145 @@ export interface DramaMetric {
   ad_revenue: number;
   recorded_at: string | null;
 }
+
+export interface EcosystemMetric {
+  id: string;
+  date: string | null;
+  account_id: string | null;
+  article_count: number;
+  article_read_count: number;
+  mini_program_uv_from_article: number;
+  wecom_new_friends: number;
+  wecom_total_friends: number;
+  wecom_source: string | null;
+  recorded_at: string | null;
+}
+
+export interface ImportTemplate {
+  id: string;
+  name: string;
+  platform: string;
+  mapping: Record<string, string>;
+  unit_conversions: Record<string, unknown> | null;
+  created_at: string | null;
+}
+
+export interface ImportHistoryRecord {
+  id: string;
+  file_name: string;
+  platform: string;
+  import_mode: string;
+  target_table: string;
+  imported_count: number;
+  updated_count: number;
+  error_count: number;
+  errors: string[];
+  created_at: string | null;
+}
+
+export interface PlatformDetectResult {
+  detected: boolean;
+  headers: string[];
+  platform: {
+    platform_id: string;
+    name: string;
+    required_headers: string[];
+    optional_headers: string[];
+    transforms: Record<string, string | [string, string]>;
+    target_table: string;
+  } | null;
+  preview: Record<string, unknown>[];
+  suggested_mapping: Record<string, string>;
+  target_table: string | null;
+}
+
+export interface FilePreviewResult {
+  headers: string[];
+  preview: Record<string, unknown>[];
+  total_rows: number;
+}
+
+export interface CrossAnalysisData {
+  by_content_type: Array<{
+    content_type: string;
+    video_count: number;
+    avg_play: number;
+    avg_finish_rate: number;
+    avg_jump_rate: number;
+    total_revenue: number;
+  }>;
+}
+
+export interface FunnelCompareData {
+  this_week: {
+    avg_jump_rate: number;
+    avg_play_rate: number;
+    avg_exposure_rate: number;
+    total_revenue: number;
+  };
+  last_week: {
+    avg_jump_rate: number;
+    avg_play_rate: number;
+    avg_exposure_rate: number;
+    total_revenue: number;
+  };
+  changes: {
+    jump_rate_change: number;
+    play_rate_change: number;
+    exposure_rate_change: number;
+    revenue_change: number;
+  };
+}
+
+export interface DramaDetail {
+  summary: {
+    drama_id: string;
+    total_uv: number;
+    total_play: number;
+    avg_finish_rate: number;
+    total_ad_impression: number;
+    total_ad_revenue: number;
+  };
+  trend: Array<{
+    date: string;
+    uv: number;
+    play_count: number;
+    finish_rate: number;
+    ad_impression: number;
+    ad_revenue: number;
+  }>;
+}
+
+// ========== 认证与权限 ==========
+
+export type Role = 'admin' | 'operator' | 'publisher' | 'material';
+
+export interface User {
+  id: string;
+  username: string;
+  display_name?: string | null;
+  role: Role;
+  role_display?: string;
+  menus?: string[];
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  user: User;
+}
+
+export interface RoleOption {
+  value: Role;
+  label: string;
+}
+
+export const ROLE_OPTIONS: RoleOption[] = [
+  { value: 'admin', label: '管理员' },
+  { value: 'operator', label: '运营专员' },
+  { value: 'publisher', label: '发布专员' },
+  { value: 'material', label: '素材专员' },
+];

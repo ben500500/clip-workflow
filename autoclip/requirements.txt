@@ -47,3 +47,5 @@ prometheus-client>=0.19.0,<1.0.0
 # pytest>=8.0.0
 # pytest-asyncio>=0.23.0
 # httpx>=0.26.0  # 用于测试客户端
+# 本地 Whisper 语音识别（AUTOCLIP_ASR_METHOD=whisper 时使用）
+faster-whisper>=1.0.0

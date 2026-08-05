@@ -1,6 +1,9 @@
 """
-语音识别工具 - 精简版，仅保留阿里云百炼 DashScope qwen3-asr-flash
-其余 Whisper/OpenAI/Azure/Google 等分支已移除。
+语音识别工具。
+
+支持两种方式（通过 SpeechRecognitionConfig.method 或环境变量选择）：
+  - aliyun_speech: 阿里云百炼 DashScope qwen3-asr-flash（默认）
+  - whisper: 本地 faster-whisper（CPU 推理，无需 API Key，可离线）
 """
 import logging
 import subprocess
@@ -26,6 +29,7 @@ SEGMENT_SECONDS = int(os.getenv("AUTOCLIP_ASR_SEGMENT_SECONDS", "270"))
 class SpeechRecognitionMethod(str, Enum):
     """语音识别方法枚举"""
     ALIYUN_SPEECH = "aliyun_speech"
+    WHISPER = "whisper"
 
 
 class LanguageCode(str, Enum):
@@ -71,8 +75,18 @@ class SpeechRecognizer:
     def __init__(self, config: Optional[SpeechRecognitionConfig] = None):
         self.config = config or SpeechRecognitionConfig()
         self.available_methods = {
-            SpeechRecognitionMethod.ALIYUN_SPEECH: self._check_aliyun_speech_availability()
+            SpeechRecognitionMethod.ALIYUN_SPEECH: self._check_aliyun_speech_availability(),
+            SpeechRecognitionMethod.WHISPER: self._check_whisper_availability(),
         }
+
+    def _check_whisper_availability(self) -> bool:
+        """检查本地 faster-whisper 是否可用（无需 API Key）。"""
+        try:
+            import faster_whisper  # noqa: F401
+            return True
+        except ImportError:
+            logger.warning("faster-whisper 未安装，whisper 方式不可用")
+            return False
 
     def _check_aliyun_speech_availability(self) -> bool:
         """检查阿里云语音识别是否可用"""
@@ -147,10 +161,11 @@ class SpeechRecognizer:
         if output_path is None:
             output_path = video_path.parent / f"{video_path.stem}.{config.output_format}"
 
-        if config.method != SpeechRecognitionMethod.ALIYUN_SPEECH:
-            raise SpeechRecognitionError(f"不支持的语音识别方法: {config.method}")
-
-        return self._generate_subtitle_aliyun_speech(video_path, output_path, config)
+        if config.method == SpeechRecognitionMethod.ALIYUN_SPEECH:
+            return self._generate_subtitle_aliyun_speech(video_path, output_path, config)
+        if config.method == SpeechRecognitionMethod.WHISPER:
+            return self._generate_subtitle_whisper(video_path, output_path, config)
+        raise SpeechRecognitionError(f"不支持的语音识别方法: {config.method}")
 
     @staticmethod
     def _format_srt_timestamp(seconds: float) -> str:
@@ -254,6 +269,51 @@ class SpeechRecognizer:
                             else response.text)
             raise SpeechRecognitionError(
                 f"阿里云语音识别API调用失败: {response.status_code} - {error_detail}")
+
+    def _generate_subtitle_whisper(self, video_path: Path, output_path: Path,
+                                   config: SpeechRecognitionConfig) -> Path:
+        """使用本地 faster-whisper 生成字幕（CPU 推理，无需 API Key）。
+
+        模型通过环境变量 WHISPER_MODEL 选择（默认 small），例如 small / medium / large-v3。
+        可通过 HF_ENDPOINT=https://hf-mirror.com 走国内镜像下载模型。
+        """
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as e:
+            raise SpeechRecognitionError(
+                "faster-whisper 未安装，无法使用 whisper 方式。"
+                "请先 pip install faster-whisper") from e
+
+        model_name = os.getenv("WHISPER_MODEL", "small").strip()
+        compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+        device = os.getenv("WHISPER_DEVICE", "cpu")
+
+        logger.info("加载 faster-whisper 模型: %s (device=%s, compute=%s)", model_name, device, compute_type)
+        model = WhisperModel(model_name, device=device, compute_type=compute_type)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audio_path = self._extract_audio_from_video(video_path, Path(tmp))
+            language = config.language.value if config.language != LanguageCode.AUTO else None
+            logger.info("开始 whisper 转写: %s (language=%s)", audio_path, language or "auto")
+            segments, info = model.transcribe(
+                str(audio_path),
+                language=language,
+                vad_filter=True,
+                beam_size=5,
+            )
+            seg_list = [
+                {"start": float(s.start), "end": float(s.end), "text": s.text.strip()}
+                for s in segments
+                if s.text and s.text.strip()
+            ]
+            logger.info("whisper 转写完成: %d 段（detected language=%s）", len(seg_list), info.language or "?")
+
+        srt_content = self._segments_to_srt(seg_list)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(srt_content, encoding="utf-8")
+        if not seg_list:
+            logger.warning("whisper 未识别到语音内容（可能为静音视频）")
+        return output_path
 
     def _generate_subtitle_aliyun_speech(self, video_path: Path, output_path: Path,
                                          config: SpeechRecognitionConfig) -> Path:

@@ -4,10 +4,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import select
 
 from app.config import settings, cors_origins
-from app.database import init_db, close_db
-from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard
+from app.database import init_db, close_db, async_session_factory
+from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth
+from app.auth import get_password_hash
+from app.models.models import User, UserRole
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,12 +48,47 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+# ──────────────────────────────────────────────
+# 种子用户配置
+# ──────────────────────────────────────────────
+
+SEED_USERS: list[dict] = [
+    {"username": "admin",     "password": "admin123",     "display_name": "管理员",     "role": UserRole.admin.value},
+    {"username": "operator",  "password": "operator123",  "display_name": "运营专员",   "role": UserRole.operator.value},
+    {"username": "publisher", "password": "publisher123", "display_name": "发布专员",   "role": UserRole.publisher.value},
+    {"username": "material",  "password": "material123",  "display_name": "素材专员",   "role": UserRole.material.value},
+]
+
+
+async def _create_seed_users():
+    """在数据库初始化时创建默认种子用户（如果尚不存在）."""
+    async with async_session_factory() as session:
+        for seed in SEED_USERS:
+            result = await session.execute(
+                select(User).where(User.username == seed["username"])
+            )
+            if result.scalar_one_or_none() is not None:
+                continue  # 已存在，跳过
+            user = User(
+                username=seed["username"],
+                password_hash=get_password_hash(seed["password"]),
+                display_name=seed["display_name"],
+                role=seed["role"],
+                is_active=True,
+            )
+            session.add(user)
+            logger.info("Created seed user: %s (%s)", seed["username"], seed["role"])
+        await session.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle: startup and shutdown."""
     logger.info("Starting up...")
     await init_db()
     logger.info("Database initialized.")
+    await _create_seed_users()
+    logger.info("Seed users initialized.")
     yield
     logger.info("Shutting down...")
     await close_db()
@@ -97,6 +135,7 @@ async def websocket_progress(websocket: WebSocket, task_id: str):
 
 
 # Mount all API routers
+app.include_router(auth.router)  # 自带 /api/auth 前缀
 app.include_router(projects.router, prefix="/api", tags=["Projects"])
 app.include_router(upload.router, prefix="/api", tags=["Upload"])
 app.include_router(autoclip.router, prefix="/api", tags=["AutoClip"])

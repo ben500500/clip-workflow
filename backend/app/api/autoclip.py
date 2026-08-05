@@ -178,7 +178,7 @@ async def run_autoclip(
     return AutoClipRunResponse(
         celery_task_id=task.id,
         autoclip_project_id=autoclip_project_id,
-        message="AutoClip pipeline task dispatched",
+        message="AI 智能选点任务已启动，正在分析中…",
     )
 
 
@@ -218,10 +218,17 @@ async def get_autoclip_progress(
         "completed": "completed",
         "failed": "failed",
     }
+    message_map = {
+        "pending": "选点任务排队中，等待处理…",
+        "running": "选点任务运行中，正在分析视频…",
+        "completed": "选点任务已完成",
+        "failed": "选点任务执行失败",
+    }
+    status = autoclip_project.pipeline_status or "pending"
     return AutoClipProgressResponse(
-        status=status_map.get(autoclip_project.pipeline_status or "pending", "unknown"),
+        status=status_map.get(status, "unknown"),
         progress=0,
-        message=autoclip_project.pipeline_status or "pending",
+        message=message_map.get(status, status),
     )
 
 

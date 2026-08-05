@@ -23,7 +23,7 @@ from app.models.models import (
     EcosystemMetric,
     SystemConfig,
 )
-from app.services import dashboard_service, data_import_service
+from app.services import dashboard_service, data_import_service, smart_import_service
 
 router = APIRouter()
 
@@ -594,3 +594,226 @@ async def update_dashboard_config(
     await db.refresh(config)
 
     return {"config": config.value}
+
+
+# ---- Smart import endpoints ----
+
+@router.post("/dashboard/import/upload")
+async def smart_import_upload(
+    file: UploadFile = File(...),
+    account_id: Optional[str] = Query(None),
+):
+    """Smart import: upload file and auto-detect platform format."""
+    aid = _parse_account_id(account_id)
+    file_bytes = await file.read()
+    result = await smart_import_service.detect_platform(file_bytes)
+    return result
+
+
+@router.post("/dashboard/import/preview")
+async def import_preview(
+    file: UploadFile = File(...),
+):
+    """Preview file content (headers + first 5 rows) for manual mapping."""
+    file_bytes = await file.read()
+    return await smart_import_service.preview_file(file_bytes)
+
+
+@router.post("/dashboard/import/confirm")
+async def import_confirm(
+    file: UploadFile = File(...),
+    mapping: str = Query(..., description="JSON string of field mapping"),
+    target_table: str = Query(...),
+    account_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirm import with user-specified field mapping."""
+    import json
+    try:
+        mapping_dict = json.loads(mapping)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid mapping JSON")
+
+    aid = _parse_account_id(account_id)
+    file_bytes = await file.read()
+    return await smart_import_service.confirm_import(file_bytes, mapping_dict, target_table, aid, db)
+
+
+@router.get("/dashboard/import/templates")
+async def list_import_templates(
+    db: AsyncSession = Depends(get_db),
+):
+    """Get saved import templates."""
+    return await smart_import_service.get_import_templates(db)
+
+
+@router.post("/dashboard/import/templates/custom")
+async def save_custom_import_template(
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Save a custom import template."""
+    name = data.get("name", "")
+    platform = data.get("platform", "custom")
+    mapping = data.get("mapping", {})
+    unit_conversions = data.get("unit_conversions")
+    return await smart_import_service.save_custom_template(name, platform, mapping, unit_conversions, db)
+
+
+@router.get("/dashboard/import/history")
+async def list_import_history(
+    db: AsyncSession = Depends(get_db),
+):
+    """Get import history records."""
+    return await smart_import_service.get_import_history(db)
+
+
+# ---- Ecosystem endpoints ----
+
+@router.get("/dashboard/ecosystem")
+async def get_ecosystem(
+    account_id: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get ecosystem metrics (公众号/企微)."""
+    aid = _parse_account_id(account_id)
+    sd = _parse_date(start_date)
+    ed = _parse_date(end_date)
+    return await smart_import_service.get_ecosystem_metrics(db, aid, sd, ed)
+
+
+# ---- Cross analysis ----
+
+@router.get("/dashboard/videos/cross-analysis")
+async def get_cross_analysis(
+    account_id: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cross analysis: compare metrics across dimensions."""
+    aid = _parse_account_id(account_id)
+    return await smart_import_service.get_cross_analysis(db, aid, page, page_size)
+
+
+# ---- Drama detail ----
+
+@router.get("/dashboard/dramas/{drama_id}")
+async def get_drama_detail(
+    drama_id: str,
+    account_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get drama detail by drama_id."""
+    filters = [DramaMetric.drama_id == drama_id]
+    aid = _parse_account_id(account_id)
+    if aid:
+        filters.append(DramaMetric.account_id == aid)
+
+    # Get summary
+    result = await db.execute(
+        select(
+            func.sum(DramaMetric.uv).label("total_uv"),
+            func.sum(DramaMetric.play_count).label("total_play"),
+            func.avg(DramaMetric.finish_rate).label("avg_finish_rate"),
+            func.sum(DramaMetric.ad_impression).label("total_ad_impression"),
+            func.sum(DramaMetric.ad_revenue).label("total_ad_revenue"),
+        ).where(and_(*filters))
+    )
+    row = result.one()
+    summary = {
+        "drama_id": drama_id,
+        "total_uv": int(row[0] or 0),
+        "total_play": int(row[1] or 0),
+        "avg_finish_rate": round(float(row[2] or 0), 4),
+        "total_ad_impression": int(row[3] or 0),
+        "total_ad_revenue": round(float(row[4] or 0), 2),
+    }
+
+    # Get daily trend
+    trend_query = select(DramaMetric).where(and_(*filters)).order_by(DramaMetric.date)
+    trend_result = await db.execute(trend_query)
+    trend = [
+        {
+            "date": m.date.isoformat() if m.date else None,
+            "uv": m.uv or 0,
+            "play_count": m.play_count or 0,
+            "finish_rate": m.finish_rate or 0,
+            "ad_impression": m.ad_impression or 0,
+            "ad_revenue": m.ad_revenue or 0,
+        }
+        for m in trend_result.scalars().all()
+    ]
+
+    return {"summary": summary, "trend": trend}
+
+
+# ---- Funnel compare ----
+
+@router.get("/dashboard/funnel/compare")
+async def get_funnel_compare(
+    account_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get funnel comparison: this week vs last week."""
+    aid = _parse_account_id(account_id)
+    today = date.today()
+    # Current week: Monday to today
+    monday = today - __import__("datetime").timedelta(days=today.weekday())
+    # Last week
+    last_monday = monday - __import__("datetime").timedelta(days=7)
+    last_sunday = monday - __import__("datetime").timedelta(days=1)
+
+    def build_filter(start, end):
+        f = [FunnelSnapshot.date >= start, FunnelSnapshot.date <= end]
+        if aid:
+            f.append(FunnelSnapshot.account_id == aid)
+        return f
+
+    this_week = await db.execute(
+        select(
+            func.avg(FunnelSnapshot.jump_rate).label("avg_jump_rate"),
+            func.avg(FunnelSnapshot.play_rate).label("avg_play_rate"),
+            func.avg(FunnelSnapshot.exposure_rate).label("avg_exposure_rate"),
+            func.sum(FunnelSnapshot.revenue).label("total_revenue"),
+        ).where(and_(*build_filter(monday, today)))
+    )
+    last_week = await db.execute(
+        select(
+            func.avg(FunnelSnapshot.jump_rate).label("avg_jump_rate"),
+            func.avg(FunnelSnapshot.play_rate).label("avg_play_rate"),
+            func.avg(FunnelSnapshot.exposure_rate).label("avg_exposure_rate"),
+            func.sum(FunnelSnapshot.revenue).label("total_revenue"),
+        ).where(and_(*build_filter(last_monday, last_sunday)))
+    )
+
+    tw = this_week.one()
+    lw = last_week.one()
+
+    def calc_change(current, previous):
+        if previous and previous > 0:
+            return round((current - previous) / previous * 100, 1)
+        return 0
+
+    return {
+        "this_week": {
+            "avg_jump_rate": round(float(tw[0] or 0), 2),
+            "avg_play_rate": round(float(tw[1] or 0), 2),
+            "avg_exposure_rate": round(float(tw[2] or 0), 2),
+            "total_revenue": round(float(tw[3] or 0), 2),
+        },
+        "last_week": {
+            "avg_jump_rate": round(float(lw[0] or 0), 2),
+            "avg_play_rate": round(float(lw[1] or 0), 2),
+            "avg_exposure_rate": round(float(lw[2] or 0), 2),
+            "total_revenue": round(float(lw[3] or 0), 2),
+        },
+        "changes": {
+            "jump_rate_change": calc_change(float(tw[0] or 0), float(lw[0] or 0)),
+            "play_rate_change": calc_change(float(tw[1] or 0), float(lw[1] or 0)),
+            "exposure_rate_change": calc_change(float(tw[2] or 0), float(lw[2] or 0)),
+            "revenue_change": calc_change(float(tw[3] or 0), float(lw[3] or 0)),
+        },
+    }

@@ -1,7 +1,7 @@
 """
 AutoClip Service - AI 选点服务
 真实调用阿里云百炼 DashScope（通义千问）：
-  ASR (qwen3-asr-flash) -> 大纲 -> 时间线 -> 评分 -> 标题
+  ASR (aliyun_speech 或 whisper) -> 大纲 -> 时间线 -> 评分 -> 标题
 保留对外 API 契约不变：
   POST /api/v1/projects
   POST /api/v1/upload?project_id=X
@@ -151,12 +151,19 @@ def _to_contract_clips(raw_clips: list) -> list:
 # ----------------------- 真实流水线（后台执行） -----------------------
 
 def _run_asr(video_path: str, srt_path: Path, api_key: str) -> None:
-    """调用 qwen3-asr-flash 生成 SRT。"""
+    """按环境变量 AUTOCLIP_ASR_METHOD 选择 ASR 方式生成 SRT。
+
+    支持 aliyun_speech（默认，需 DASHSCOPE_API_KEY）与 whisper（本地 faster-whisper）。
+    whisper 无需 API Key；模型用 WHISPER_MODEL 选择（默认 small）。
+    """
+    method_name = os.getenv("AUTOCLIP_ASR_METHOD", "aliyun_speech").strip().lower()
+    method = SpeechRecognitionMethod(method_name)
     config = SpeechRecognitionConfig(
-        method=SpeechRecognitionMethod.ALIYUN_SPEECH,
+        method=method,
         output_format="srt",
     )
-    config.aliyun_access_key = api_key
+    if method == SpeechRecognitionMethod.ALIYUN_SPEECH:
+        config.aliyun_access_key = api_key
     recognizer = SpeechRecognizer(config)
     recognizer.generate_subtitle(Path(video_path), srt_path, config)
 
@@ -180,7 +187,9 @@ async def _run_pipeline(project_id: str, steps: list[int]) -> None:
         srt_path = meta_dir / "subtitle.srt"
 
         # Step 0: ASR 语音识别
-        _update_progress(proj, "running", 5, "开始 ASR 语音识别（qwen3-asr-flash）")
+        asr_method = os.getenv("AUTOCLIP_ASR_METHOD", "aliyun_speech").strip().lower()
+        asr_label = {"whisper": "本地 whisper", "aliyun_speech": "阿里云 qwen3-asr-flash"}.get(asr_method, asr_method)
+        _update_progress(proj, "running", 5, f"开始 ASR 语音识别（{asr_label}）")
         await asyncio.to_thread(_run_asr, video_path, srt_path, api_key)
         if srt_path.stat().st_size == 0:
             logger.warning(f"[project={project_id}] ASR 未识别到语音内容（视频可能无声音/静音）")

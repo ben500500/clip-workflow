@@ -1,14 +1,30 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, Spin, Alert, message, Select, Progress, Popconfirm,
+  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip,
 } from 'antd';
-import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { sliceApi } from '../api/slice';
 import type { SliceOutput, SliceTask } from '../types';
 import { formatDateTime, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
+
+// 切片模式说明
+const SLICE_MODE_HELP: Record<string, { label: string; desc: string }> = {
+  fast: {
+    label: '快速模式',
+    desc: '直接按选点结果切割，不做去重处理。速度最快，适合初次出片测试。',
+  },
+  dedupe: {
+    label: '去重模式',
+    desc: '切割时进行画面相似度检测，去除重复片段。适合批量发布到多个平台，减少限流风险。',
+  },
+  scrub: {
+    label: '挖洞模式',
+    desc: '在去重基础上随机挖洞（替换为纯色帧），使每个输出片段指纹更独特。适合高频发布场景，降低平台查重处罚。',
+  },
+};
 
 const SliceTasks: React.FC = () => {
   const { episodeId } = useParams<{ episodeId: string }>();
@@ -62,7 +78,22 @@ const SliceTasks: React.FC = () => {
   };
 
   const columns = [
-    { title: '模式', dataIndex: 'mode', key: 'mode', width: 100 },
+    {
+      title: '模式',
+      dataIndex: 'mode',
+      key: 'mode',
+      width: 120,
+      render: (m: string) => {
+        const help = SLICE_MODE_HELP[m];
+        return help ? (
+          <Tooltip title={help.desc}>
+            <Tag>{help.label}</Tag>
+          </Tooltip>
+        ) : (
+          <Tag>{m || '-'}</Tag>
+        );
+      },
+    },
     {
       title: '状态',
       dataIndex: 'status',
@@ -153,6 +184,10 @@ const SliceTasks: React.FC = () => {
               { value: 'scrub', label: '挖洞模式' },
             ]}
           />
+          <Tooltip title={SLICE_MODE_HELP[mode]?.desc}>
+            <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+          </Tooltip>
+          <Text type="secondary" style={{ fontSize: 12 }}>{SLICE_MODE_HELP[mode]?.desc}</Text>
           <Button type="primary" icon={<PlayCircleOutlined />} loading={running} onClick={runSlice}>新建切片任务</Button>
           <Button icon={<ReloadOutlined />} onClick={() => fetchTasks()}>刷新</Button>
         </Space>

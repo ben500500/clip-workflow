@@ -1,3 +1,4 @@
+import enum
 import uuid
 from datetime import datetime
 from sqlalchemy import (
@@ -18,6 +19,39 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.database import Base
+
+
+class UserRole(str, enum.Enum):
+    """用户角色枚举."""
+    admin = "admin"
+    operator = "operator"
+    publisher = "publisher"
+    material = "material"
+
+
+ROLE_DISPLAY_NAMES: dict[UserRole, str] = {
+    UserRole.admin: "管理员",
+    UserRole.operator: "运营专员",
+    UserRole.publisher: "发布专员",
+    UserRole.material: "素材专员",
+}
+
+
+class User(Base):
+    """系统用户."""
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    username = Column(String(100), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    display_name = Column(String(100), nullable=True)
+    role = Column(String(20), default=UserRole.operator.value, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<User(id={self.id}, username={self.username}, role={self.role})>"
 
 
 class Project(Base):
@@ -403,3 +437,37 @@ class EcosystemMetric(Base):
 
     def __repr__(self) -> str:
         return f"<EcosystemMetric(id={self.id}, date={self.date})>"
+
+
+class ImportTemplate(Base):
+    __tablename__ = "import_templates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(200), nullable=True)
+    platform = Column(String(100), nullable=True)
+    mapping = Column(JSON, nullable=True)
+    unit_conversions = Column(JSON, nullable=True)
+    created_by = Column(UUID(as_uuid=True), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<ImportTemplate(id={self.id}, name={self.name})>"
+
+
+class ImportHistory(Base):
+    __tablename__ = "import_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    file_name = Column(String(500), nullable=True)
+    platform = Column(String(100), nullable=True)
+    import_mode = Column(String(50), nullable=True)
+    target_table = Column(String(100), nullable=True)
+    imported_count = Column(Integer, default=0)
+    updated_count = Column(Integer, default=0)
+    error_count = Column(Integer, default=0)
+    errors = Column(JSON, nullable=True)
+    operator = Column(UUID(as_uuid=True), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<ImportHistory(id={self.id}, file_name={self.file_name})>"

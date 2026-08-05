@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Layout, Menu, Avatar, Dropdown, theme, Modal } from 'antd';
-import { ExclamationCircleOutlined } from '@ant-design/icons';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Layout, Menu, Avatar, Dropdown, theme, Modal, Tag } from 'antd';
 import {
   DashboardOutlined,
   ProjectOutlined,
@@ -15,10 +14,12 @@ import {
   VideoCameraOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import type { MenuProps } from 'antd';
 
 const { Header, Sider, Content } = Layout;
 
-const menuItems = [
+const allMenuItems = [
   {
     key: '/dashboard',
     icon: <DashboardOutlined />,
@@ -41,8 +42,22 @@ const menuItems = [
     children: [
       { key: '/analytics/overview', label: '总览' },
       { key: '/analytics/content', label: '内容分析' },
+      { key: '/analytics/monetization', label: '短剧变现' },
+      { key: '/analytics/funnel', label: '转化漏斗' },
+      { key: '/analytics/ecosystem', label: '生态联动' },
       { key: '/analytics/import', label: '数据录入' },
+      { key: '/analytics/settings', label: '看板设置' },
     ],
+  },
+  {
+    key: '/profile',
+    icon: <UserOutlined />,
+    label: '个人中心',
+  },
+  {
+    key: '/user-management',
+    icon: <UserSwitchOutlined />,
+    label: '用户管理',
   },
   {
     key: '/settings',
@@ -51,12 +66,40 @@ const menuItems = [
   },
 ];
 
+// 角色显示名称映射
+const ROLE_LABELS: Record<string, string> = {
+  admin: '管理员',
+  operator: '运营人员',
+  publisher: '发布人员',
+  material: '素材人员',
+};
+
 const AppLayout: React.FC = () => {
-  const [collapsed, setCollapsed] = React.useState(false);
-  const [openKeys, setOpenKeys] = React.useState<string[]>([]);
+  const [collapsed, setCollapsed] = useState(false);
+  const [openKeys, setOpenKeys] = useState<string[]>([]);
   const navigate = useNavigate();
   const location = useLocation();
   const { token } = theme.useToken();
+  const { user, logout, hasPermission } = useAuth();
+
+  // 根据用户角色动态过滤菜单项
+  const filteredMenuItems = useMemo(() => {
+    return allMenuItems
+      .map((item) => {
+        // 如果用户没有访问该菜单的权限，则移除
+        if (!hasPermission(item.key)) return null;
+
+        // 处理子菜单
+        if (item.children) {
+          const filteredChildren = item.children.filter((child) => hasPermission(child.key));
+          if (filteredChildren.length === 0) return null;
+          return { ...item, children: filteredChildren };
+        }
+
+        return item;
+      })
+      .filter(Boolean) as MenuProps['items'];
+  }, [hasPermission]);
 
   // 计算当前选中的菜单项，支持嵌套路由祖先匹配
   const getSelectedKey = (pathname: string): string => {
@@ -74,43 +117,57 @@ const AppLayout: React.FC = () => {
     }
   }, [location.pathname]);
 
+  // 当前菜单可见时自动展开子菜单
+  useEffect(() => {
+    if (filteredMenuItems) {
+      const hasAnalytics = filteredMenuItems.some(
+        (item) => item && 'key' in item && item.key === 'analytics-sub'
+      );
+      if (!hasAnalytics) {
+        setOpenKeys((prev) => prev.filter((k) => k !== 'analytics-sub'));
+      }
+    }
+  }, [filteredMenuItems]);
+
   const handleMenuClick = ({ key }: { key: string }) => {
     navigate(key);
   };
 
-  const userMenuItems = [
-    { key: 'profile', label: '个人中心', icon: <UserSwitchOutlined /> },
-    { key: 'logout', label: '退出登录', icon: <LogoutOutlined />, danger: true },
-  ];
-
-  const handleUserMenuClick = ({ key }: { key: string }) => {
+  const handleUserMenuClick: MenuProps['onClick'] = ({ key }) => {
     if (key === 'profile') {
-      Modal.info({
-        title: '个人中心',
-        icon: <ExclamationCircleOutlined />,
-        content: (
-          <div>
-            <p>管理员账户</p>
-            <p>暂未开放个人设置功能</p>
-          </div>
-        ),
-        okText: '确定',
-      });
+      navigate('/profile');
     } else if (key === 'logout') {
       Modal.confirm({
         title: '确认退出',
-        icon: <ExclamationCircleOutlined />,
+        icon: <LogoutOutlined />,
         content: '确定要退出登录吗？',
         okText: '退出',
         cancelText: '取消',
         onOk() {
-          // TODO: 清除登录状态后跳转
-          navigate('/dashboard');
-          window.location.reload();
+          logout();
+          navigate('/login');
         },
       });
     }
   };
+
+  const userMenuItems: MenuProps['items'] = [
+    {
+      key: 'profile',
+      label: '个人中心',
+      icon: <UserSwitchOutlined />,
+    },
+    { type: 'divider' },
+    {
+      key: 'logout',
+      label: '退出登录',
+      icon: <LogoutOutlined />,
+      danger: true,
+    },
+  ];
+
+  const displayName = user?.username || '用户';
+  const displayRole = user?.role ? ROLE_LABELS[user.role] || user.role : '';
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -160,7 +217,7 @@ const AppLayout: React.FC = () => {
           selectedKeys={[selectedKey]}
           openKeys={collapsed ? [] : openKeys}
           onOpenChange={setOpenKeys}
-          items={menuItems}
+          items={filteredMenuItems}
           onClick={handleMenuClick}
           style={{ borderRight: 'none', marginTop: 4 }}
         />
@@ -189,7 +246,10 @@ const AppLayout: React.FC = () => {
           <Dropdown menu={{ items: userMenuItems, onClick: handleUserMenuClick }}>
             <div style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
               <Avatar size="small" icon={<UserOutlined />} />
-              <span style={{ color: token.colorTextSecondary }}>管理员</span>
+              <span style={{ color: token.colorTextSecondary }}>
+                {displayName}
+                {displayRole ? ` (${displayRole})` : ''}
+              </span>
             </div>
           </Dropdown>
         </Header>
