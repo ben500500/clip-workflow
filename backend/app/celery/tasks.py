@@ -113,10 +113,12 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
 
         # Poll for progress
         max_polls = 120  # 10 minutes at 5-second intervals
+        consecutive_failures = 0
         completed = False
         for i in range(max_polls):
             progress = run_async(get_pipeline_progress(autoclip_project_id))
             if progress:
+                consecutive_failures = 0
                 pct = progress.get("progress", 0)
                 msg = progress.get("message", "Processing...")
                 self.update_state(
@@ -127,6 +129,13 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
                     completed = True
                     break
             else:
+                # AutoClip 服务重启会丢失内存态项目，连续失败则提前失败，
+                # 避免占用单 worker 空转 10 分钟。
+                consecutive_failures += 1
+                if consecutive_failures >= 6:
+                    raise RuntimeError(
+                        "AutoClip 项目状态连续查询失败（服务可能已重启导致项目丢失），请重新触发选点"
+                    )
                 pct = min(int((i / max_polls) * 100), 99)
                 self.update_state(
                     state="PROGRESS",
