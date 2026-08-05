@@ -130,6 +130,11 @@ async def run_slice(
         )
     )
     accepted_clips = clips_result.scalars().all()
+    if not accepted_clips:
+        raise HTTPException(
+            status_code=400,
+            detail="没有已通过的候选片段，无法生成切片。请先在片段审核中通过至少一个片段，或重新触发选点。",
+        )
     cutlist = generate_cutlist(accepted_clips)
 
     # Generate intervals from enabled intervals
