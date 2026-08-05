@@ -300,7 +300,7 @@ services:
 
   # ==================== Nginx ====================
   nginx:
-    image: nginx:1.25-alpine
+    image: nginx:1.28-alpine
     container_name: clip-nginx
     restart: unless-stopped
     networks:
