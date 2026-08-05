@@ -8,6 +8,13 @@ export const intervalApi = {
       message: string;
     }>,
 
+  progress: (episodeId: string) =>
+    client.get(`/episodes/${episodeId}/intervals/progress`) as Promise<{
+      status: string;
+      progress: number;
+      message: string;
+    }>,
+
   list: (episodeId: string) =>
     client.get(`/episodes/${episodeId}/intervals`) as Promise<DetectedInterval[]>,
 

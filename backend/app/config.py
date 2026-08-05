@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # 视频处理引擎根目录
     ENGINES_DIR: str = "engines"
 
+    # JWT
+    JWT_SECRET: str = "your-secret-key-change-in-production"
+    JWT_EXPIRE_MINUTES: int = 1440  # 24 小时
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

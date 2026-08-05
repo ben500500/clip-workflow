@@ -182,7 +182,7 @@ async def run_slice(
     return SliceRunResponse(
         task_id=str(slice_task.id),
         celery_task_id=task.id,
-        message=f"Slice task dispatched (mode: {data.mode})",
+        message=f"切片任务已启动（模式: {data.mode}），正在处理中…",
     )
 
 
@@ -345,7 +345,7 @@ async def retry_slice_task(
     return SliceRunResponse(
         task_id=str(new_task.id),
         celery_task_id=celery.id,
-        message="Slice task re-dispatched",
+        message="切片任务已重新调度",
     )
 
 
@@ -387,4 +387,4 @@ async def cancel_slice_task(
     task.status = "cancelled"
     await db.flush()
 
-    return {"message": "Task cancelled", "task_id": task_id}
+    return {"message": "任务已取消", "task_id": task_id}

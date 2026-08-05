@@ -1,35 +1,27 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Button, Space, Typography, message, Modal, Form, Input, Tag, Select, InputNumber,
+  Card, Table, Button, Space, Typography, message, Modal, Form, Input, Tag, Select, InputNumber, Tooltip,
 } from 'antd';
-import { PlusOutlined, DeleteOutlined, EditOutlined, SaveOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import { configApi } from '../api/config';
 import type { PlatformProfile, SystemConfig } from '../types';
 import { formatDateTime } from '../utils/format';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 const Settings: React.FC = () => {
   const [configs, setConfigs] = useState<SystemConfig[]>([]);
   const [profiles, setProfiles] = useState<PlatformProfile[]>([]);
   const [profileModal, setProfileModal] = useState(false);
+  const [configModal, setConfigModal] = useState(false);
   const [editing, setEditing] = useState<PlatformProfile | null>(null);
-  const [form] = Form.useForm();
-
-  // 受控编辑值：key -> 当前编辑文本
-  const [editValues, setEditValues] = useState<Record<string, string>>({});
+  const [editingConfig, setEditingConfig] = useState<SystemConfig | null>(null);
+  const [configForm] = Form.useForm();
+  const [profileForm] = Form.useForm();
 
   const fetchAll = () => {
     configApi.getAll().then((list) => {
       setConfigs(list);
-      // 初始化编辑值
-      const initial: Record<string, string> = {};
-      list.forEach((c) => {
-        initial[c.key] = typeof c.value === 'object' && c.value !== null
-          ? JSON.stringify(c.value, null, 2)
-          : String(c.value ?? '');
-      });
-      setEditValues(initial);
     }).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformProfiles().then(setProfiles).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
   };
@@ -42,15 +34,46 @@ const Settings: React.FC = () => {
     try {
       await configApi.update(key, value);
       message.success('配置已保存');
+      setConfigModal(false);
+      setEditingConfig(null);
       fetchAll();
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '保存失败');
     }
   };
 
+  const handleConfigEdit = (config: SystemConfig) => {
+    setEditingConfig(config);
+    const val = typeof config.value === 'object' && config.value !== null
+      ? JSON.stringify(config.value, null, 2)
+      : String(config.value ?? '');
+    configForm.setFieldsValue({ value: val });
+    setConfigModal(true);
+  };
+
+  const handleConfigSave = async () => {
+    try {
+      const values = await configForm.validateFields();
+      if (!editingConfig) return;
+      const raw = values.value;
+      try {
+        if (typeof editingConfig.value === 'object' && editingConfig.value !== null) {
+          const parsed = JSON.parse(raw);
+          await saveConfig(editingConfig.key, parsed);
+        } else {
+          await saveConfig(editingConfig.key, raw);
+        }
+      } catch {
+        message.error('JSON 格式错误，请检查输入内容');
+      }
+    } catch {
+      // 表单验证未通过，忽略
+    }
+  };
+
   const saveProfile = async () => {
     try {
-      const values = await form.validateFields();
+      const values = await profileForm.validateFields();
       const payload = {
         ...values,
         dedupe_config: values.dedupe_config ? JSON.parse(values.dedupe_config) : null,
@@ -74,58 +97,54 @@ const Settings: React.FC = () => {
     }
   };
 
-  const renderValue = (key: string, value: unknown) => {
-    if (typeof value === 'object' && value !== null) {
-      const text = editValues[key] ?? JSON.stringify(value, null, 2);
-      return (
-        <Space>
-          <Input.TextArea
-            value={text}
-            style={{ fontFamily: 'monospace', fontSize: 12 }}
-            autoSize={{ minRows: 1, maxRows: 6 }}
-            onChange={(e) => setEditValues((prev) => ({ ...prev, [key]: e.target.value }))}
-            onBlur={(e) => {
-              try {
-                const parsed = JSON.parse(e.target.value);
-                saveConfig(key, parsed);
-              } catch {
-                message.error('JSON 格式错误，未保存');
-              }
-            }}
-          />
-          <Button
-            size="small"
-            icon={<SaveOutlined />}
-            onClick={() => {
-              try {
-                const parsed = JSON.parse(editValues[key] ?? '');
-                saveConfig(key, parsed);
-              } catch {
-                message.error('JSON 格式错误，未保存');
-              }
-            }}
-          >保存</Button>
-        </Space>
-      );
-    }
+  const renderConfigValue = (config: SystemConfig) => {
+    const displayText = typeof config.value === 'object' && config.value !== null
+      ? JSON.stringify(config.value, null, 2)
+      : String(config.value ?? '');
+
+    const isLongText = displayText.length > 80;
+    const display = isLongText ? displayText.substring(0, 80) + '…' : displayText;
+
     return (
-      <Input
-        value={editValues[key] ?? String(value ?? '')}
-        style={{ width: 300 }}
-        onChange={(e) => setEditValues((prev) => ({ ...prev, [key]: e.target.value }))}
-        onPressEnter={(e) => saveConfig(key, (e.target as HTMLInputElement).value)}
-      />
+      <Space>
+        <Tooltip title={isLongText ? displayText : undefined}>
+          <Text
+            style={{
+              fontFamily: 'monospace',
+              fontSize: 12,
+              maxWidth: 400,
+              display: 'inline-block',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+            }}
+          >
+            {display}
+          </Text>
+        </Tooltip>
+        <Button size="small" icon={<EditOutlined />} onClick={() => handleConfigEdit(config)}>编辑</Button>
+      </Space>
     );
   };
 
   const configColumns = [
-    { title: '配置项', dataIndex: 'key', key: 'key', width: 260, render: (k: string) => <Tag>{k}</Tag> },
-    { title: '值', key: 'value', render: (_: unknown, c: SystemConfig) => renderValue(c.key, c.value) },
-    { title: '更新时间', dataIndex: 'updated_at', key: 'updated_at', width: 170, render: (d: string) => formatDateTime(d) },
+    { title: '配置项', dataIndex: 'key', key: 'key', width: 240, render: (k: string) => <Tag>{k}</Tag> },
+    {
+      title: '值',
+      key: 'value',
+      width: 550,
+      render: (_: unknown, c: SystemConfig) => renderConfigValue(c),
+    },
+    {
+      title: '更新时间',
+      dataIndex: 'updated_at',
+      key: 'updated_at',
+      width: 170,
+      render: (d: string) => formatDateTime(d),
+    },
   ];
 
   const profileColumns = [
-    { title: '名称', dataIndex: 'name', key: 'name' },
+    { title: '名称', dataIndex: 'name', key: 'name', width: 160 },
     { title: '平台', dataIndex: 'platform', key: 'platform', width: 120, render: (p: string) => <Tag>{p}</Tag> },
     { title: '目标分辨率', dataIndex: 'target_resolution', key: 'target_resolution', width: 120, render: (v: string) => v || '-' },
     { title: '目标码率', dataIndex: 'target_bitrate', key: 'target_bitrate', width: 120, render: (v: string) => v || '-' },
@@ -138,7 +157,7 @@ const Settings: React.FC = () => {
         <Space size="small">
           <Button size="small" icon={<EditOutlined />} onClick={() => {
             setEditing(p);
-            form.setFieldsValue({
+            profileForm.setFieldsValue({
               name: p.name,
               platform: p.platform,
               target_resolution: p.target_resolution,
@@ -163,16 +182,81 @@ const Settings: React.FC = () => {
   ];
 
   return (
-    <div>
+    <div style={{ maxWidth: 1200, overflow: 'hidden' }}>
       <Title level={4} style={{ marginBottom: 16 }}>系统设置</Title>
       <Card size="small" title="全局配置" style={{ marginBottom: 16 }}>
-        <Table rowKey="key" columns={configColumns} dataSource={configs} pagination={false} size="small" />
+        <Table
+          rowKey="key"
+          columns={configColumns}
+          dataSource={configs}
+          pagination={false}
+          size="small"
+          scroll={{ x: 960 }}
+        />
       </Card>
-      <Card size="small" title="平台去重配置" extra={<Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => { setEditing(null); form.resetFields(); setProfileModal(true); }}>新增配置</Button>}>
-        <Table rowKey="id" columns={profileColumns} dataSource={profiles} pagination={false} size="small" />
+      <Card
+        size="small"
+        title="平台去重配置"
+        extra={
+          <Button size="small" type="primary" icon={<PlusOutlined />} onClick={() => {
+            setEditing(null);
+            profileForm.resetFields();
+            setProfileModal(true);
+          }}>新增配置</Button>
+        }
+      >
+        <Table
+          rowKey="id"
+          columns={profileColumns}
+          dataSource={profiles}
+          pagination={false}
+          size="small"
+          scroll={{ x: 800 }}
+        />
       </Card>
-      <Modal title={editing ? '编辑平台配置' : '新增平台配置'} open={profileModal} onOk={saveProfile} onCancel={() => setProfileModal(false)} destroyOnClose>
-        <Form form={form} layout="vertical">
+
+      {/* 编辑全局配置弹窗 */}
+      <Modal
+        title={editingConfig ? `编辑配置: ${editingConfig.key}` : '编辑配置'}
+        open={configModal}
+        onOk={handleConfigSave}
+        onCancel={() => {
+          setConfigModal(false);
+          setEditingConfig(null);
+        }}
+        destroyOnClose
+        width={600}
+      >
+        <Form form={configForm} layout="vertical">
+          <Form.Item
+            name="value"
+            label="配置值"
+            rules={[{ required: true, message: '请输入配置值' }]}
+          >
+            <Input.TextArea
+              rows={8}
+              style={{ fontFamily: 'monospace', fontSize: 13 }}
+              placeholder="请输入配置值…"
+            />
+          </Form.Item>
+          {editingConfig && typeof editingConfig.value === 'object' && editingConfig.value !== null && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              提示：该配置项为 JSON 格式，请确保输入合法的 JSON 字符串
+            </Text>
+          )}
+        </Form>
+      </Modal>
+
+      {/* 编辑平台配置弹窗 */}
+      <Modal
+        title={editing ? '编辑平台配置' : '新增平台配置'}
+        open={profileModal}
+        onOk={saveProfile}
+        onCancel={() => setProfileModal(false)}
+        destroyOnClose
+        width={560}
+      >
+        <Form form={profileForm} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="platform" label="平台" rules={[{ required: true }]}>
             <Select options={[{ value: 'wechat_channel', label: '视频号' }, { value: 'douyin', label: '抖音' }, { value: 'kuaishou', label: '快手' }]} />

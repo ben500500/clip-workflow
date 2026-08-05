@@ -420,3 +420,37 @@ export interface DramaDetail {
     ad_revenue: number;
   }>;
 }
+
+// ========== 认证与权限 ==========
+
+export type Role = 'admin' | 'operator' | 'publisher' | 'material';
+
+export interface User {
+  id: string;
+  username: string;
+  display_name?: string | null;
+  role: Role;
+  role_display?: string;
+  menus?: string[];
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  user: User;
+}
+
+export interface RoleOption {
+  value: Role;
+  label: string;
+}
+
+export const ROLE_OPTIONS: RoleOption[] = [
+  { value: 'admin', label: '管理员' },
+  { value: 'operator', label: '运营专员' },
+  { value: 'publisher', label: '发布专员' },
+  { value: 'material', label: '素材专员' },
+];

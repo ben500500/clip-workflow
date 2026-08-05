@@ -109,7 +109,7 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
         get_clips,
     )
 
-    self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting AutoClip pipeline"})
+    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动 AutoClip 选点任务…"})
 
     downloaded_video_path = None
     try:
@@ -193,7 +193,7 @@ def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict,
     """Execute interval detection as a Celery task."""
     from app.services.interval_service import detect_intervals
 
-    self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting interval detection"})
+    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动区间检测任务…"})
 
     downloaded_video_path = None
     try:
@@ -251,7 +251,7 @@ def slice_task(
     from app.services.minio_service import upload_file_from_path
     from app.utils.helpers import write_temp_file, ensure_dir
 
-    self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting slice task"})
+    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动切片任务…"})
 
     downloaded_source_path = None
     output_dir = None
@@ -606,7 +606,7 @@ def task_publish_video(self, publish_task_id: str):
     from app.services.publish_service import get_publisher
     from app.services.minio_service import upload_file_from_path
 
-    self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting publish task"})
+    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动发布任务…"})
 
     downloaded_video_path = None
     try:
@@ -701,7 +701,7 @@ def confirm_publish_worker(self, publish_task_id: str):
     """Confirm a pending publish by clicking publish in the already-prepared Chrome tab."""
     from app.services.publish_service import get_publisher
 
-    self.update_state(state="STARTED", meta={"progress": 50, "message": "Confirming publish"})
+    self.update_state(state="STARTED", meta={"progress": 50, "message": "正在确认发布操作…"})
     try:
         publish_task_data = run_async(_get_publish_task(publish_task_id))
         if not publish_task_data:
@@ -740,7 +740,7 @@ def task_collect_metrics(self, account_id: Optional[str] = None, target_date: Op
     """Periodic task for collecting and aggregating metrics data."""
     from datetime import date as date_type
 
-    self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting metrics collection"})
+    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动数据采集任务…"})
 
     try:
         if target_date:

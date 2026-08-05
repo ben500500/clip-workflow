@@ -26,6 +26,12 @@ class DetectResponse(BaseModel):
     message: str
 
 
+class DetectProgressResponse(BaseModel):
+    status: str
+    progress: float
+    message: str
+
+
 class IntervalCreate(BaseModel):
     episode_id: str
     interval_type: str
@@ -121,7 +127,57 @@ async def detect_intervals(
 
     return DetectResponse(
         celery_task_id=task.id,
-        message=f"Interval detection task dispatched (mode: {data.mode})",
+        message=f"区间检测任务已启动（模式: {data.mode}），正在处理中…",
+    )
+
+
+@router.get("/episodes/{episode_id}/intervals/progress", response_model=DetectProgressResponse)
+async def get_detect_progress(
+    episode_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the interval detection progress for an episode."""
+    try:
+        eid = uuid.UUID(episode_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    # Check if there are any running detect tasks for this episode
+    from app.models.models import SliceTask
+    result = await db.execute(
+        select(SliceTask)
+        .where(SliceTask.episode_id == eid)
+        .where(SliceTask.mode.like("detect_%"))
+        .order_by(SliceTask.created_at.desc())
+        .limit(1)
+    )
+    task = result.scalar_one_or_none()
+
+    if task:
+        status_map = {
+            "pending": "running",
+            "running": "running",
+            "completed": "completed",
+            "failed": "failed",
+        }
+        message_map = {
+            "pending": "检测任务排队中，等待处理…",
+            "running": "检测任务运行中，正在分析视频…",
+            "completed": "检测任务已完成",
+            "failed": "检测任务执行失败",
+        }
+        ts = task.status or "pending"
+        return DetectProgressResponse(
+            status=status_map.get(ts, "unknown"),
+            progress=task.progress or 0,
+            message=message_map.get(ts, ts),
+        )
+
+    # No running task found
+    return DetectProgressResponse(
+        status="unknown",
+        progress=0,
+        message="暂无运行中的检测任务",
     )
 
 
