@@ -1,14 +1,12 @@
 import client from './client';
-import type { ApiResponse, Episode } from '../types';
+import type { Episode } from '../types';
 
 export const uploadApi = {
-  /** 上传视频文件 */
-  uploadFile(projectId: number, file: File, onProgress?: (percent: number) => void) {
+  uploadFile: (projectId: string, file: File, onProgress?: (percent: number) => void) => {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('project_id', String(projectId));
-
-    return client.post<ApiResponse<Episode>>('/upload', formData, {
+    formData.append('project_id', projectId);
+    return client.post('/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 3600000,
       onUploadProgress: (progressEvent) => {
@@ -17,11 +15,24 @@ export const uploadApi = {
           onProgress(percent);
         }
       },
-    });
+    }) as Promise<Episode>;
   },
 
-  /** 获取上传记录 */
-  getUploads(episodeId: number) {
-    return client.get<ApiResponse<Episode>>(`/upload/${episodeId}`);
-  },
+  resume: (data: { file_name: string; file_size: number; chunk_size?: number; metadata?: Record<string, unknown> }) =>
+    client.post('/upload/resume', data) as Promise<{
+      id: string;
+      file_name: string;
+      file_size: number;
+      chunk_size: number;
+      offset: number;
+      metadata: Record<string, unknown>;
+    }>,
+
+  uploadChunk: (uploadId: string, blob: Blob, offset: number) =>
+    client.patch(`/upload/${uploadId}`, blob, {
+      headers: { 'Content-Type': 'application/octet-stream', 'Upload-Offset': String(offset) },
+    }) as Promise<{ id: string; offset: number; completed: boolean; progress_pct: number }>,
+
+  complete: (data: { upload_id: string; project_id: string; title?: string; episode_no?: number }) =>
+    client.post('/upload/complete', data) as Promise<Episode>,
 };

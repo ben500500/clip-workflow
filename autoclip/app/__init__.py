@@ -1,0 +1,1 @@
+"""AutoClip service package."""

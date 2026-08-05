@@ -187,7 +187,6 @@ class Publication(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     output = relationship("SliceOutput", back_populates="publications")
-    publish_task = relationship("PublishTask", back_populates="publication", uselist=False)
 
     def __repr__(self) -> str:
         return f"<Publication(id={self.id}, platform={self.platform})>"
@@ -245,7 +244,6 @@ class PublishTask(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     output = relationship("SliceOutput", back_populates="publish_tasks")
-    publication = relationship("Publication", back_populates="publish_task", uselist=False)
     video_metrics = relationship("VideoMetric", back_populates="publish_task", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:

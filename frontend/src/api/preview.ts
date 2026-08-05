@@ -1,41 +1,34 @@
 import client from './client';
-import type { ApiResponse, SliceOutput, Publication } from '../types';
+import type { Publication, SliceOutput } from '../types';
 
 export const previewApi = {
-  /** 获取成品列表 */
-  getOutputs(episodeId: number) {
-    return client.get<ApiResponse<SliceOutput[]>>('/preview/outputs', {
-      params: { episode_id: episodeId },
-    });
-  },
+  getFrames: (outputId: string) =>
+    client.get(`/outputs/${outputId}/preview/frames`) as Promise<{
+      output_id: string;
+      frames: { key: string; url: string | null; size?: number; note?: string }[];
+      count: number;
+    }>,
 
-  /** 获取成品详情 */
-  getOutputDetail(outputId: number) {
-    return client.get<ApiResponse<SliceOutput>>(`/preview/outputs/${outputId}`);
-  },
+  getVideoUrl: (outputId: string) =>
+    client.get(`/outputs/${outputId}/preview/video`) as Promise<{
+      url: string;
+      file_name: string | null;
+      duration: number | null;
+      file_size: number | null;
+      expires_in_seconds: number;
+    }>,
 
-  /** 获取下载链接 */
-  getDownloadUrl(outputId: number) {
-    return client.get<ApiResponse<{ url: string; filename: string }>>(`/preview/download/${outputId}`);
-  },
+  download: (outputId: string) =>
+    client.get(`/outputs/${outputId}/download`) as Promise<unknown>,
 
-  /** 获取发布状态列表 */
-  getPublications(outputId: number) {
-    return client.get<ApiResponse<Publication[]>>('/preview/publications', {
-      params: { output_id: outputId },
-    });
-  },
+  getPublications: (outputId: string) =>
+    client.get(`/outputs/${outputId}/publications`) as Promise<Publication[]>,
 
-  /** 发布到平台 */
-  publish(outputId: number, platform: string) {
-    return client.post<ApiResponse<{ publication_id: number }>>('/preview/publish', {
-      output_id: outputId,
-      platform,
-    });
-  },
+  createPublication: (outputId: string, data: Partial<Publication>) =>
+    client.post(`/outputs/${outputId}/publications`, data) as Promise<Publication>,
 
-  /** 获取预览流地址 */
-  getStreamUrl(outputId: number) {
-    return client.get<ApiResponse<{ url: string }>>(`/preview/stream/${outputId}`);
-  },
+  updatePublication: (id: string, data: Partial<Publication>) =>
+    client.put(`/publications/${id}`, data) as Promise<Publication>,
 };
+
+export type { SliceOutput };

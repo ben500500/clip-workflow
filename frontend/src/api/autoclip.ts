@@ -1,39 +1,31 @@
 import client from './client';
-import type { ApiResponse, AutoClipConfig, ClipCandidate } from '../types';
+import type { AutoClipConfig, ClipCandidate } from '../types';
 
 export const autoclipApi = {
-  /** 触发 AutoClip 检测 */
-  detect(episodeId: number, config?: Partial<AutoClipConfig>) {
-    return client.post<ApiResponse<{ task_id: number }>>(`/autoclip/detect`, {
-      episode_id: episodeId,
-      config,
-    });
-  },
+  run: (episodeId: string, config?: AutoClipConfig) =>
+    client.post(`/episodes/${episodeId}/autoclip/run`, { config }) as Promise<{
+      celery_task_id: string;
+      autoclip_project_id?: string;
+      message: string;
+    }>,
 
-  /** 获取选点候选项列表 */
-  getCandidates(episodeId: number) {
-    return client.get<ApiResponse<ClipCandidate[]>>(`/autoclip/candidates`, {
-      params: { episode_id: episodeId },
-    });
-  },
-
-  /** 更新选点状态 */
-  updateCandidate(id: number, data: Partial<ClipCandidate>) {
-    return client.put<ApiResponse<ClipCandidate>>(`/autoclip/candidates/${id}`, data);
-  },
-
-  /** 批量更新选点状态 */
-  batchUpdateCandidates(data: { ids: number[]; status: string; adjusted_start?: number; adjusted_end?: number }) {
-    return client.post<ApiResponse<null>>(`/autoclip/candidates/batch`, data);
-  },
-
-  /** 获取 AutoClip 检测任务状态 */
-  getTaskStatus(taskId: number) {
-    return client.get<ApiResponse<{
-      task_id: number;
+  progress: (episodeId: string) =>
+    client.get(`/episodes/${episodeId}/autoclip/progress`) as Promise<{
       status: string;
       progress: number;
-      candidates_count: number;
-    }>>(`/autoclip/tasks/${taskId}`);
-  },
+      message: string;
+    }>,
+
+  getCandidates: (episodeId: string, minScore?: number) =>
+    client.get(`/episodes/${episodeId}/autoclip/clips`, { params: { min_score: minScore } }) as Promise<ClipCandidate[]>,
+
+  updateCandidate: (id: string, data: Partial<ClipCandidate>) =>
+    client.put(`/clips/${id}`, data) as Promise<ClipCandidate>,
+
+  regenerate: (episodeId: string, config?: AutoClipConfig) =>
+    client.post(`/episodes/${episodeId}/autoclip/regenerate`, { config }) as Promise<{
+      celery_task_id: string;
+      autoclip_project_id?: string;
+      message: string;
+    }>,
 };

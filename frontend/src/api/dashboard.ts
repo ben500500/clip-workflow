@@ -1,75 +1,85 @@
 import client from './client';
+import type {
+  AdMetric,
+  ApiList,
+  DashboardOverview,
+  DramaMetric,
+  FunnelData,
+  MiniProgramMetric,
+  TrendPoint,
+  VideoMetric,
+} from '../types';
 
 export const dashboardApi = {
   getOverview: (params?: { date?: string; account_id?: string }) =>
-    client.get('/dashboard/overview', { params }),
-  
+    client.get('/dashboard/overview', { params }) as Promise<DashboardOverview>,
+
   getTrend: (params?: { start_date?: string; end_date?: string; account_id?: string }) =>
-    client.get('/dashboard/overview/trend', { params }),
-  
+    client.get('/dashboard/overview/trend', { params }) as Promise<TrendPoint[]>,
+
   getFunnel: (params?: { date?: string; account_id?: string }) =>
-    client.get('/dashboard/overview/funnel', { params }),
-  
-  getTopVideos: (params?: { date?: string; account_id?: string; limit?: number }) =>
-    client.get('/dashboard/overview/top-videos', { params }),
-  
-  getVideos: (params?: { page?: number; page_size?: number; account_id?: string; content_type?: string; drama_id?: string }) =>
-    client.get('/dashboard/videos', { params }),
-  
-  getVideoDetail: (id: string) =>
-    client.get(`/dashboard/videos/${id}`),
-  
-  updateVideoTags: (id: string, data: any) =>
-    client.put(`/dashboard/videos/${id}/tags`, data),
-  
+    client.get('/dashboard/overview/funnel', { params }) as Promise<FunnelData>,
+
+  getTopVideos: (params?: { limit?: number; account_id?: string }) =>
+    client.get('/dashboard/overview/top-videos', { params }) as Promise<VideoMetric[]>,
+
+  getVideos: (params?: {
+    page?: number;
+    page_size?: number;
+    sort_by?: string;
+    content_type?: string;
+    play_level?: string;
+    account_id?: string;
+  }) => client.get('/dashboard/videos', { params }) as Promise<ApiList<VideoMetric>>,
+
   getVideoRanking: (params?: { sort_by?: string; limit?: number; account_id?: string }) =>
-    client.get('/dashboard/videos/ranking', { params }),
-  
+    client.get('/dashboard/videos/ranking', { params }) as Promise<VideoMetric[]>,
+
   getMiniProgramMetrics: (params?: { start_date?: string; end_date?: string; account_id?: string }) =>
-    client.get('/dashboard/mini-program', { params }),
-  
+    client.get('/dashboard/mini-program', { params }) as Promise<MiniProgramMetric[]>,
+
   getAdMetrics: (params?: { start_date?: string; end_date?: string; account_id?: string }) =>
-    client.get('/dashboard/ads', { params }),
-  
+    client.get('/dashboard/ads', { params }) as Promise<AdMetric[]>,
+
   getDramaMetrics: (params?: { account_id?: string }) =>
-    client.get('/dashboard/dramas', { params }),
-  
+    client.get('/dashboard/dramas', { params }) as Promise<DramaMetric[]>,
+
   getFunnelTrend: (params?: { start_date?: string; end_date?: string; account_id?: string }) =>
-    client.get('/dashboard/funnel/trend', { params }),
-  
-  importVideoMetrics: (file: File, accountId: string) => {
+    client.get('/dashboard/funnel/trend', { params }) as Promise<FunnelData[]>,
+
+  importVideoMetrics: (file: File, accountId?: string) => {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('account_id', accountId);
+    if (accountId) formData.append('account_id', accountId);
     return client.post('/dashboard/metrics/video', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-    });
+    }) as Promise<{ success: boolean; imported_count: number; errors: string[] }>;
   },
-  
-  importMiniProgramMetrics: (file: File, accountId: string) => {
+
+  importMiniProgramMetrics: (file: File, accountId?: string) => {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('account_id', accountId);
+    if (accountId) formData.append('account_id', accountId);
     return client.post('/dashboard/metrics/mini-program', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-    });
+    }) as Promise<{ success: boolean; imported_count: number; errors: string[] }>;
   },
-  
-  importAdMetrics: (file: File, accountId: string) => {
+
+  importAdMetrics: (file: File, accountId?: string) => {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('account_id', accountId);
+    if (accountId) formData.append('account_id', accountId);
     return client.post('/dashboard/metrics/ads', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-    });
+    }) as Promise<{ success: boolean; imported_count: number; errors: string[] }>;
   },
-  
-  downloadTemplate: () =>
-    client.get('/dashboard/metrics/template', { responseType: 'blob' }),
-  
+
+  downloadTemplate: (type: string) =>
+    client.get('/dashboard/metrics/template', { params: { type }, responseType: 'blob' }) as Promise<Blob>,
+
   getConfig: () =>
-    client.get('/dashboard/config'),
-  
-  updateConfig: (data: any) =>
-    client.put('/dashboard/config', data),
+    client.get('/dashboard/config') as Promise<{ config: Record<string, unknown> }>,
+
+  updateConfig: (data: Record<string, unknown>) =>
+    client.put('/dashboard/config', data) as Promise<{ config: Record<string, unknown> }>,
 };

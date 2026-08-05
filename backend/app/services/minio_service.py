@@ -1,5 +1,6 @@
 import io
 import logging
+import os
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -10,9 +11,15 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+_client: Optional[Minio] = None
+
 
 def get_minio_client() -> Minio:
-    """Create and return a MinIO client instance."""
+    """Return a cached MinIO client instance (created once, reused thereafter)."""
+    global _client
+    if _client is not None:
+        return _client
+
     endpoint = settings.MINIO_ENDPOINT
     secure = settings.MINIO_USE_SSL
 
@@ -22,13 +29,13 @@ def get_minio_client() -> Minio:
         secure = parsed.scheme == "https"
         endpoint = parsed.netloc
 
-    client = Minio(
+    _client = Minio(
         endpoint,
         access_key=settings.MINIO_ACCESS_KEY,
         secret_key=settings.MINIO_SECRET_KEY,
         secure=secure,
     )
-    return client
+    return _client
 
 
 async def upload_file(
@@ -176,4 +183,19 @@ async def ensure_bucket(bucket: str) -> bool:
         return True
     except S3Error as e:
         logger.error(f"Failed to ensure bucket {bucket}: {e}")
+        return False
+
+async def download_to_file(
+    bucket: str,
+    object_key: str,
+    local_path: str,
+) -> bool:
+    """Download an object from MinIO to a local file."""
+    try:
+        client = get_minio_client()
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        client.fget_object(bucket, object_key, local_path)
+        return True
+    except S3Error as e:
+        logger.error(f"MinIO download to file failed: {e}")
         return False

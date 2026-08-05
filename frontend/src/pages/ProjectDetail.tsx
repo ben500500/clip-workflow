@@ -1,50 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card,
-  Table,
-  Button,
-  Tag,
-  Space,
-  Typography,
-  Spin,
-  Alert,
-  Row,
-  Col,
-  Statistic,
-  message,
-  Upload,
-  Breadcrumb,
-  Descriptions,
-  Progress,
-  Empty,
-  Tooltip,
+  Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col, Statistic,
+  message, Upload, Breadcrumb, Descriptions, Progress, Modal,
 } from 'antd';
-import {
-  UploadOutlined,
-  ArrowLeftOutlined,
-  VideoCameraOutlined,
-  ScissorOutlined,
-  PlayCircleOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
-  ClockCircleOutlined,
-  DeleteOutlined,
-  InboxOutlined,
-} from '@ant-design/icons';
+import { UploadOutlined, ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { projectApi } from '../api/projects';
 import { uploadApi } from '../api/upload';
-import type { Project, Episode } from '../types';
-import {
-  formatDateTime,
-  formatDuration,
-  formatFileSize,
-  formatRelativeTime,
-  getStatusColor,
-  getStatusLabel,
-} from '../utils/format';
-import UploadProgress from '../components/UploadProgress';
-import type { UploadFile } from 'antd';
+import type { Episode, Project } from '../types';
+import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
 const { Title, Text } = Typography;
 const { Dragger } = Upload;
@@ -52,99 +16,64 @@ const { Dragger } = Upload;
 const ProjectDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const projectId = Number(id);
+  const projectId = id || '';
 
   const [project, setProject] = useState<Project | null>(null);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Upload state
-  const [uploadVisible, setUploadVisible] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle');
-  const [currentFile, setCurrentFile] = useState<File | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | undefined>();
-  const [uploadedFiles, setUploadedFiles] = useState<UploadFile[]>([]);
 
-  useEffect(() => {
-    fetchProjectDetail();
-  }, [projectId]);
-
-  const fetchProjectDetail = async () => {
-    setLoading(true);
+  const fetchData = async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
-      const [projectRes, episodesRes] = await Promise.all([
+      const [p, ep] = await Promise.all([
         projectApi.getById(projectId),
-        // TODO: add episode list API
-        Promise.resolve({ data: [] as Episode[] }),
+        projectApi.getEpisodes(projectId),
       ]);
-      setProject(projectRes.data);
-      setEpisodes(episodesRes.data);
+      setProject(p);
+      setEpisodes(ep.items);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '获取项目详情失败');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
-  const handleUpload = async (file: File) => {
-    setCurrentFile(file);
-    setUploadVisible(true);
-    setUploadStatus('uploading');
-    setUploadProgress(0);
-    setUploading(true);
+  useEffect(() => {
+    if (projectId) fetchData();
+  }, [projectId]);
 
+  const handleUpload = async (file: File) => {
+    setUploading(true);
+    setUploadProgress(0);
     try {
-      await uploadApi.uploadFile(projectId, file, (percent) => {
-        setUploadProgress(percent);
-      });
-      setUploadStatus('success');
-      setUploadedFiles((prev) => [...prev, { uid: String(Date.now()), name: file.name, status: 'done' } as UploadFile]);
+      await uploadApi.uploadFile(projectId, file, (p) => setUploadProgress(p));
       message.success(`${file.name} 上传成功`);
-      fetchProjectDetail();
+      fetchData(true);
     } catch (err: unknown) {
-      setUploadStatus('error');
-      setErrorMessage(err instanceof Error ? err.message : '上传失败');
+      message.error(err instanceof Error ? err.message : '上传失败');
     } finally {
       setUploading(false);
     }
   };
 
-  const handleCancelUpload = () => {
-    setUploadVisible(false);
-    setUploadStatus('idle');
-    setUploadProgress(0);
-    setCurrentFile(null);
-  };
-
-  const handleCloseUpload = () => {
-    setUploadVisible(false);
-    setUploadStatus('idle');
-    setUploadProgress(0);
-    setCurrentFile(null);
-  };
-
   if (loading) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 400 }}>
-        <Spin size="large" tip="加载中..." />
-      </div>
-    );
+    return <Spin size="large" style={{ display: 'block', margin: '120px auto' }} />;
   }
-
   if (error || !project) {
     return <Alert type="error" message="加载失败" description={error} showIcon />;
   }
 
   const episodeColumns = [
     {
-      title: 'ID',
-      dataIndex: 'id',
-      key: 'id',
-      width: 60,
+      title: '集数',
+      dataIndex: 'episode_no',
+      key: 'episode_no',
+      width: 80,
+      render: (v: number | null) => (v ?? '-'),
     },
     {
       title: '标题',
@@ -153,7 +82,7 @@ const ProjectDetail: React.FC = () => {
       render: (title: string, record: Episode) => (
         <Link to={`/episodes/${record.id}`}>
           <VideoCameraOutlined style={{ marginRight: 6 }} />
-          {title}
+          {title || '(未命名)'}
         </Link>
       ),
     },
@@ -162,204 +91,102 @@ const ProjectDetail: React.FC = () => {
       dataIndex: 'duration',
       key: 'duration',
       width: 100,
-      render: (duration: number) => formatDuration(duration),
+      render: (d: number) => formatDuration(d),
     },
     {
       title: '文件大小',
       dataIndex: 'file_size',
       key: 'file_size',
-      width: 100,
-      render: (size: number) => formatFileSize(size),
+      width: 110,
+      render: (s: number) => formatFileSize(s),
     },
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 120,
-      render: (status: string) => (
-        <Tag color={getStatusColor(status)}>{getStatusLabel(status)}</Tag>
-      ),
-    },
-    {
-      title: '选点数',
-      dataIndex: 'clip_count',
-      key: 'clip_count',
-      width: 80,
-    },
-    {
-      title: '区间数',
-      dataIndex: 'interval_count',
-      key: 'interval_count',
-      width: 80,
-    },
-    {
-      title: '切片数',
-      dataIndex: 'slice_count',
-      key: 'slice_count',
-      width: 80,
+      width: 130,
+      render: (s: string) => <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>,
     },
     {
       title: '上传时间',
       dataIndex: 'created_at',
       key: 'created_at',
       width: 170,
-      render: (date: string) => formatDateTime(date),
+      render: (d: string) => formatDateTime(d),
     },
     {
       title: '操作',
       key: 'action',
-      width: 120,
+      width: 160,
       render: (_: unknown, record: Episode) => (
-        <Button
-          type="link"
-          size="small"
-          icon={<PlayCircleOutlined />}
-          onClick={() => navigate(`/episodes/${record.id}`)}
-        >
-          处理
-        </Button>
+        <Space size="small">
+          <Button type="link" size="small" onClick={() => navigate(`/episodes/${record.id}`)}>处理</Button>
+          <Button
+            type="link"
+            size="small"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={async () => {
+              try {
+                await projectApi.deleteEpisode(record.id);
+                message.success('剧集已删除');
+                fetchData(true);
+              } catch (err: unknown) {
+                message.error(err instanceof Error ? err.message : '删除失败');
+              }
+            }}
+          >
+            删除
+          </Button>
+        </Space>
       ),
     },
   ];
 
   return (
     <div>
-      <Breadcrumb
-        items={[
-          { title: <Link to="/projects">项目管理</Link> },
-          { title: project.name },
-        ]}
-        style={{ marginBottom: 16 }}
-      />
-
+      <Breadcrumb style={{ marginBottom: 16 }} items={[{ title: <a onClick={() => navigate('/projects')}>项目管理</a> }, { title: project.name }]} />
       <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
         <Col>
           <Space>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/projects')}>
-              返回
-            </Button>
-            <Title level={4} style={{ margin: 0 }}>
-              {project.name}
-            </Title>
+            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/projects')}>返回</Button>
+            <Title level={4} style={{ margin: 0 }}>{project.name}</Title>
+            <Tag color={getStatusColor(project.status)}>{getStatusLabel(project.status)}</Tag>
           </Space>
         </Col>
-        <Col>
-          <Button
-            type="primary"
-            icon={<UploadOutlined />}
-            onClick={() => setUploadVisible(true)}
-          >
-            上传视频
-          </Button>
-        </Col>
       </Row>
-
-      {/* 项目信息 */}
       <Card size="small" style={{ marginBottom: 16 }}>
-        <Descriptions size="small" column={{ xs: 1, sm: 2, md: 4 }}>
-          <Descriptions.Item label="项目ID">{project.id}</Descriptions.Item>
-          <Descriptions.Item label="目标平台">
-            <Tag>{project.platform}</Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label="状态">
-            <Tag color={getStatusColor(project.status)}>
-              {getStatusLabel(project.status)}
-            </Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label="创建时间">
-            {formatDateTime(project.created_at)}
-          </Descriptions.Item>
-          <Descriptions.Item label="描述" span={4}>
-            {project.description || '暂无描述'}
-          </Descriptions.Item>
+        <Descriptions size="small" column={4}>
+          <Descriptions.Item label="描述">{project.description || '-'}</Descriptions.Item>
+          <Descriptions.Item label="剧集数">{project.episode_count}</Descriptions.Item>
+          <Descriptions.Item label="创建时间">{formatDateTime(project.created_at)}</Descriptions.Item>
+          <Descriptions.Item label="更新时间">{formatDateTime(project.updated_at)}</Descriptions.Item>
         </Descriptions>
       </Card>
-
-      {/* 统计 */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={12} sm={6}>
-          <Card size="small">
-            <Statistic title="总剧集数" value={project.total_episodes} suffix="集" />
+        <Col xs={24} lg={10}>
+          <Card size="small" title="上传正片">
+            <Dragger
+              accept=".mp4,.avi,.mov,.mkv,.webm"
+              showUploadList={false}
+              beforeUpload={(file) => {
+                handleUpload(file as File);
+                return false;
+              }}
+              disabled={uploading}
+            >
+              <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+              <p className="ant-upload-text">点击或拖拽视频到此处上传</p>
+              {uploading && <Progress percent={uploadProgress} size="small" />}
+            </Dragger>
           </Card>
         </Col>
-        <Col xs={12} sm={6}>
-          <Card size="small">
-            <Statistic
-              title="已处理"
-              value={project.processed_episodes}
-              suffix={`/ ${project.total_episodes}`}
-              valueStyle={{ color: '#52c41a' }}
-            />
+        <Col xs={24} lg={14}>
+          <Card size="small" title="剧集列表" extra={<Button size="small" icon={<UploadOutlined />} onClick={() => navigate('/settings')}>去系统设置</Button>}>
+            <Table rowKey="id" columns={episodeColumns} dataSource={episodes} pagination={false} size="small" />
           </Card>
         </Col>
       </Row>
-
-      {/* 剧集列表 */}
-      <Card
-        title="剧集列表"
-        size="small"
-        extra={
-          <Text type="secondary">共 {episodes.length} 集</Text>
-        }
-      >
-        {episodes.length > 0 ? (
-          <Table
-            rowKey="id"
-            columns={episodeColumns}
-            dataSource={episodes}
-            size="middle"
-            pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 集` }}
-            scroll={{ x: 1000 }}
-          />
-        ) : (
-          <Empty
-            description="暂无剧集"
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-          >
-            <Button
-              type="primary"
-              icon={<UploadOutlined />}
-              onClick={() => setUploadVisible(true)}
-            >
-              上传视频文件
-            </Button>
-          </Empty>
-        )}
-      </Card>
-
-      {/* 上传区域 */}
-      {!episodes.length && (
-        <Card size="small" style={{ marginTop: 16 }}>
-          <Dragger
-            showUploadList={false}
-            beforeUpload={(file) => {
-              handleUpload(file);
-              return false;
-            }}
-            accept="video/*"
-          >
-            <p className="ant-upload-drag-icon">
-              <InboxOutlined />
-            </p>
-            <p className="ant-upload-text">点击或拖拽视频文件到此区域上传</p>
-            <p className="ant-upload-hint">
-              支持 MP4, AVI, MOV, MKV 等常见视频格式
-            </p>
-          </Dragger>
-        </Card>
-      )}
-
-      <UploadProgress
-        visible={uploadVisible}
-        uploading={uploading}
-        uploadProgress={uploadProgress}
-        currentFile={currentFile}
-        uploadStatus={uploadStatus}
-        errorMessage={errorMessage}
-        uploadedFiles={uploadedFiles}
-        onCancel={handleCancelUpload}
-        onClose={handleCloseUpload}
-      />
     </div>
   );
 };

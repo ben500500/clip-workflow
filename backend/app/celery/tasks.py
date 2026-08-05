@@ -3,11 +3,12 @@ import json
 import logging
 import os
 import tempfile
+import uuid
 from datetime import datetime
 from typing import Optional
 
 from celery import Celery
-from sqlalchemy.ext.asyncio import AsyncSession
+from celery.schedules import crontab
 
 from app.config import settings
 from app.database import async_session_factory
@@ -39,7 +40,14 @@ celery_app.conf.update(
         "app.celery.tasks.detect_task": {"queue": "video_processing"},
         "app.celery.tasks.slice_task": {"queue": "video_processing"},
         "app.celery.tasks.task_publish_video": {"queue": "publish"},
+        "app.celery.tasks.confirm_publish_worker": {"queue": "publish"},
         "app.celery.tasks.task_collect_metrics": {"queue": "metrics"},
+    },
+    beat_schedule={
+        "collect-metrics-daily": {
+            "task": "app.celery.tasks.task_collect_metrics",
+            "schedule": crontab(hour=0, minute=30),
+        },
     },
 )
 
@@ -55,14 +63,31 @@ def run_async(coro):
         loop.close()
 
 
+async def _ensure_source_video(source_path: Optional[str], source_file_key: Optional[str]) -> Optional[str]:
+    """Return a local path for the source video, downloading from MinIO if needed."""
+    if source_path and os.path.isfile(source_path):
+        return source_path
+    if not source_file_key:
+        return source_path
+    from app.services.minio_service import download_to_file
+
+    local_path = f"/tmp/source_videos/{uuid.uuid4().hex}_{os.path.basename(source_file_key)}"
+    ok = await download_to_file(settings.MINIO_BUCKET_RAW, source_file_key, local_path)
+    if ok:
+        return local_path
+    return None
+
+
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
-def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: str, config: dict):
+def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: str, config: dict, source_file_key: Optional[str] = None):
     """Execute the AutoClip pipeline as a Celery task.
 
-    This task communicates with the AutoClip service and updates
-    the database with progress and results.
+    Downloads the source video (if needed), uploads it to the AutoClip service,
+    triggers the remote pipeline, polls progress, then persists the returned
+    clip candidates into the database.
     """
     from app.services.autoclip_service import (
+        upload_video,
         trigger_pipeline,
         get_pipeline_progress,
         get_clips,
@@ -71,13 +96,24 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
     self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting AutoClip pipeline"})
 
     try:
-        # Trigger the pipeline
+        video_path = run_async(_ensure_source_video(video_path, source_file_key))
+        if not video_path:
+            raise FileNotFoundError(f"Source video not found: {video_path}")
+
+        # Upload the source video to the AutoClip service before running.
+        uploaded = run_async(
+            upload_video(autoclip_project_id, video_path, os.path.basename(video_path))
+        )
+        if not uploaded:
+            raise RuntimeError("Failed to upload video to AutoClip service")
+
         success = run_async(trigger_pipeline(autoclip_project_id))
         if not success:
-            raise Exception("Failed to trigger AutoClip pipeline")
+            raise RuntimeError("Failed to trigger AutoClip pipeline")
 
         # Poll for progress
         max_polls = 120  # 10 minutes at 5-second intervals
+        completed = False
         for i in range(max_polls):
             progress = run_async(get_pipeline_progress(autoclip_project_id))
             if progress:
@@ -88,20 +124,20 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
                     meta={"progress": pct, "message": msg},
                 )
                 if progress.get("status") == "completed":
+                    completed = True
                     break
             else:
-                # Estimate progress
                 pct = min(int((i / max_polls) * 100), 99)
                 self.update_state(
                     state="PROGRESS",
                     meta={"progress": pct, "message": f"Pipeline step {i + 1}/{max_polls}"},
                 )
-
             import time
             time.sleep(5)
 
-        # Fetch results
         clips = run_async(get_clips(autoclip_project_id))
+        run_async(_save_autoclip_results(episode_id, autoclip_project_id, clips, completed))
+
         self.update_state(
             state="SUCCESS",
             meta={"progress": 100, "message": "AutoClip pipeline completed", "clips": clips},
@@ -110,6 +146,7 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
 
     except Exception as e:
         logger.error(f"AutoClip task failed: {e}")
+        run_async(_mark_autoclip_failed(episode_id, str(e)))
         self.update_state(
             state="FAILURE",
             meta={"progress": 0, "message": str(e)},
@@ -118,13 +155,17 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
-def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict):
+def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict, source_file_key: Optional[str] = None):
     """Execute interval detection as a Celery task."""
     from app.services.interval_service import detect_intervals
 
     self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting interval detection"})
 
     try:
+        video_path = run_async(_ensure_source_video(video_path, source_file_key))
+        if not video_path:
+            raise FileNotFoundError(f"Source video not found: {video_path}")
+
         self.update_state(
             state="PROGRESS",
             meta={"progress": 50, "message": f"Running {mode} detection..."},
@@ -132,8 +173,8 @@ def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict)
 
         intervals = run_async(detect_intervals(video_path, mode, config))
 
-        # Save intervals to database
         run_async(_save_detected_intervals(episode_id, intervals, mode, config))
+        run_async(_update_episode_status(episode_id, "intervals_detected"))
 
         self.update_state(
             state="SUCCESS",
@@ -150,7 +191,7 @@ def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict)
         raise
 
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
 def slice_task(
     self,
     episode_id: str,
@@ -160,53 +201,73 @@ def slice_task(
     mode: str,
     dedupe_config: Optional[dict] = None,
     task_id: Optional[str] = None,
+    source_file_key: Optional[str] = None,
 ):
-    """Execute video slicing as a Celery task."""
+    """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows."""
     from app.services.slice_service import run_slice_scrub, run_slice_fast
+    from app.services.minio_service import upload_file_from_path
     from app.utils.helpers import write_temp_file, ensure_dir
 
     self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting slice task"})
 
     try:
-        # Write cutlist and intervals to temp files
+        source_path = run_async(_ensure_source_video(source_path, source_file_key))
+        if not source_path:
+            raise FileNotFoundError(f"Source video not found: {source_path}")
+
         cutlist_path = write_temp_file(cutlist, suffix=".txt")
         intervals_path = write_temp_file(intervals, suffix=".txt")
-
-        # Create output directory
         output_dir = ensure_dir(f"/tmp/slice_outputs/{episode_id}/{self.request.id}")
 
-        # Run the appropriate slice script
-        for progress_pct in range(0, 100, 10):
+        def progress_cb(pct: int, message: str = ""):
             self.update_state(
                 state="PROGRESS",
-                meta={"progress": progress_pct, "message": f"Slicing... {progress_pct}%"},
+                meta={"progress": pct, "message": message},
             )
-            import time
-            time.sleep(1)  # Simulate progress (in production, parse ffmpeg output)
+            run_async(_update_slice_task_progress(task_id, pct))
 
         if mode == "scrub":
             returncode, stdout, stderr = run_async(
-                run_slice_scrub(source_path, cutlist_path, intervals_path, output_dir)
+                run_slice_scrub(
+                    source_path,
+                    cutlist_path,
+                    intervals_path,
+                    output_dir,
+                    progress_cb=progress_cb,
+                )
             )
         else:
             returncode, stdout, stderr = run_async(
-                run_slice_fast(source_path, cutlist_path, output_dir, mode)
+                run_slice_fast(
+                    source_path,
+                    cutlist_path,
+                    output_dir,
+                    mode,
+                    progress_cb=progress_cb,
+                )
             )
 
         if returncode != 0:
-            raise Exception(f"Slice script failed: {stderr}")
+            raise RuntimeError(stderr or "Slice script failed")
 
-        # List output files
+        manifest = _parse_engine_manifest(stdout, output_dir)
         output_files = []
-        if os.path.isdir(output_dir):
-            for f in os.listdir(output_dir):
-                file_path = os.path.join(output_dir, f)
-                if os.path.isfile(file_path):
-                    output_files.append({
-                        "file_name": f,
-                        "file_path": file_path,
-                        "file_size": os.path.getsize(file_path),
-                    })
+        for entry in manifest:
+            file_path = entry["path"]
+            if not os.path.isfile(file_path):
+                continue
+            file_key = f"slices/{episode_id}/{self.request.id}/{entry['name']}"
+            ok = run_async(upload_file_from_path("sliced", file_key, file_path))
+            if not ok:
+                raise RuntimeError(f"Failed to upload slice output to MinIO: {entry['name']}")
+            output_files.append({
+                "file_key": file_key,
+                "file_name": entry["name"],
+                "file_size": os.path.getsize(file_path),
+                "duration": entry.get("duration"),
+            })
+
+        run_async(_save_slice_outputs(task_id, episode_id, output_files, mode))
 
         self.update_state(
             state="SUCCESS",
@@ -217,12 +278,11 @@ def slice_task(
             },
         )
 
-        # Clean up temp files
-        try:
-            os.unlink(cutlist_path)
-            os.unlink(intervals_path)
-        except OSError:
-            pass
+        for p in (cutlist_path, intervals_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
         return {
             "episode_id": episode_id,
@@ -232,6 +292,7 @@ def slice_task(
 
     except Exception as e:
         logger.error(f"Slice task failed: {e}")
+        run_async(_fail_slice_task(task_id, str(e)))
         self.update_state(
             state="FAILURE",
             meta={"progress": 0, "message": str(e)},
@@ -239,53 +300,253 @@ def slice_task(
         raise
 
 
+def _parse_engine_manifest(stdout: str, output_dir: str) -> list[dict]:
+    """Parse OUTPUT:<name>:<duration> lines emitted by engine scripts."""
+    entries = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("OUTPUT:"):
+            continue
+        parts = line.split(":", 3)
+        if len(parts) < 3:
+            continue
+        name = parts[1]
+        duration = float(parts[2]) if parts[2] else 0.0
+        entries.append({
+            "name": name,
+            "duration": duration,
+            "path": os.path.join(output_dir, name),
+        })
+    return entries
+
+
+async def _save_autoclip_results(
+    episode_id: str,
+    autoclip_project_id: str,
+    clips: list[dict],
+    completed: bool,
+):
+    """Replace clip candidates for an episode with AutoClip results."""
+    from sqlalchemy import select, delete
+    from app.models.models import ClipCandidate, AutoClipProject, Episode
+
+    async with async_session_factory() as session:
+        eid = uuid.UUID(episode_id)
+
+        await session.execute(
+            delete(ClipCandidate).where(ClipCandidate.episode_id == eid)
+        )
+        for i, clip in enumerate(clips):
+            start = clip.get("start_time")
+            end = clip.get("end_time")
+            if start is None or end is None:
+                continue
+            candidate = ClipCandidate(
+                episode_id=eid,
+                clip_index=clip.get("clip_index", i + 1),
+                start_time=start,
+                end_time=end,
+                duration=clip.get("duration", max(0.0, float(end) - float(start))),
+                title=clip.get("title"),
+                content=clip.get("content"),
+                outline=clip.get("outline"),
+                score=clip.get("score"),
+                recommend_reason=clip.get("recommend_reason"),
+                status="pending",
+            )
+            session.add(candidate)
+
+        proj_result = await session.execute(
+            select(AutoClipProject).where(AutoClipProject.episode_id == eid)
+        )
+        proj = proj_result.scalar_one_or_none()
+        if proj:
+            proj.pipeline_status = "completed" if completed else "failed"
+            proj.autoclip_project_id = autoclip_project_id
+
+        episode_result = await session.execute(
+            select(Episode).where(Episode.id == eid)
+        )
+        episode = episode_result.scalar_one_or_none()
+        if episode:
+            episode.status = "clips_detected"
+
+        await session.commit()
+
+
+async def _mark_autoclip_failed(episode_id: str, error: str):
+    from sqlalchemy import select
+    from app.models.models import AutoClipProject
+
+    async with async_session_factory() as session:
+        try:
+            eid = uuid.UUID(episode_id)
+        except ValueError:
+            return
+        result = await session.execute(
+            select(AutoClipProject).where(AutoClipProject.episode_id == eid)
+        )
+        proj = result.scalar_one_or_none()
+        if proj:
+            proj.pipeline_status = "failed"
+            await session.commit()
+
+
 async def _save_detected_intervals(
     episode_id: str, intervals: list[dict], mode: str, config: dict
 ):
     """Save detected intervals to the database."""
-    from app.database import async_session_factory
+    from sqlalchemy import delete
     from app.models.models import DetectedInterval
 
     async with async_session_factory() as session:
+        eid = uuid.UUID(episode_id)
+        # 同一 episode 同类型检测只保留最新一轮结果
+        await session.execute(
+            delete(DetectedInterval).where(
+                DetectedInterval.episode_id == eid,
+                DetectedInterval.source == "auto",
+            )
+        )
         for interval_data in intervals:
             interval = DetectedInterval(
-                episode_id=episode_id,
+                episode_id=eid,
                 interval_type=interval_data.get("interval_type", mode),
                 start_time=interval_data.get("start_time"),
                 end_time=interval_data.get("end_time"),
                 confidence=interval_data.get("confidence"),
                 label=interval_data.get("label"),
                 enabled=interval_data.get("enabled", True),
-                source=interval_data.get("source", "auto"),
+                source="auto",
                 detection_config=config,
             )
             session.add(interval)
         await session.commit()
 
 
+async def _update_episode_status(episode_id: str, status: str):
+    from sqlalchemy import select
+    from app.models.models import Episode
+
+    async with async_session_factory() as session:
+        try:
+            eid = uuid.UUID(episode_id)
+        except ValueError:
+            return
+        result = await session.execute(select(Episode).where(Episode.id == eid))
+        episode = result.scalar_one_or_none()
+        if episode:
+            episode.status = status
+            await session.commit()
+
+
+async def _update_slice_task_progress(task_id: Optional[str], progress: float):
+    if not task_id:
+        return
+    from sqlalchemy import select
+    from app.models.models import SliceTask
+
+    async with async_session_factory() as session:
+        try:
+            tid = uuid.UUID(task_id)
+        except ValueError:
+            return
+        result = await session.execute(select(SliceTask).where(SliceTask.id == tid))
+        task = result.scalar_one_or_none()
+        if task:
+            task.progress = progress
+            task.status = "running"
+            await session.commit()
+
+
+async def _save_slice_outputs(
+    task_id: Optional[str],
+    episode_id: str,
+    output_files: list[dict],
+    mode: str,
+):
+    from sqlalchemy import select
+    from app.models.models import SliceTask, SliceOutput, ClipCandidate
+
+    async with async_session_factory() as session:
+        tid = uuid.UUID(task_id) if task_id else None
+
+        # Map outputs to accepted clip candidates by order.
+        clips = []
+        if tid is not None:
+            clip_result = await session.execute(
+                select(ClipCandidate)
+                .where(
+                    ClipCandidate.episode_id == uuid.UUID(episode_id),
+                    ClipCandidate.status == "accepted",
+                )
+                .order_by(ClipCandidate.clip_index.asc())
+            )
+            clips = clip_result.scalars().all()
+
+        for i, out in enumerate(output_files):
+            clip_id = clips[i].id if i < len(clips) else None
+            session.add(SliceOutput(
+                task_id=tid,
+                clip_id=clip_id,
+                file_key=out["file_key"],
+                file_name=out["file_name"],
+                file_size=out["file_size"],
+                duration=out.get("duration"),
+            ))
+
+        if tid is not None:
+            task_result = await session.execute(
+                select(SliceTask).where(SliceTask.id == tid)
+            )
+            task = task_result.scalar_one_or_none()
+            if task:
+                task.status = "completed"
+                task.progress = 100.0
+                task.output_count = len(output_files)
+                task.completed_at = datetime.utcnow()
+                task.error_message = None
+
+        await session.commit()
+
+
+async def _fail_slice_task(task_id: Optional[str], error: str):
+    if not task_id:
+        return
+    from sqlalchemy import select
+    from app.models.models import SliceTask
+
+    async with async_session_factory() as session:
+        try:
+            tid = uuid.UUID(task_id)
+        except ValueError:
+            return
+        result = await session.execute(select(SliceTask).where(SliceTask.id == tid))
+        task = result.scalar_one_or_none()
+        if task:
+            task.status = "failed"
+            task.error_message = error[:2000]
+            task.completed_at = datetime.utcnow()
+            await session.commit()
+
+
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
 def task_publish_video(self, publish_task_id: str):
-    """
-    Execute video publishing as an async Celery task.
-
-    Uses Playwright-based RPA to upload video to the target platform.
-    Supports screenshot-based manual confirmation workflow.
-    """
+    """Execute video publishing via Playwright-based RPA."""
     from app.services.publish_service import get_publisher
+    from app.services.minio_service import upload_file_from_path
 
     self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting publish task"})
 
     try:
-        # Fetch publish task from database
         publish_task_data = run_async(_get_publish_task(publish_task_id))
         if not publish_task_data:
             raise Exception(f"Publish task {publish_task_id} not found")
 
-        # Get the appropriate publisher
         platform = publish_task_data["platform"]
         publisher = get_publisher(
             platform,
-            chrome_debug_port=publish_task_data.get("chrome_debug_port", 9222),
+            chrome_debug_port=publish_task_data.get("chrome_debug_port", settings.CHROME_DEBUG_PORT),
             require_manual_confirm=publish_task_data.get("require_manual_confirm", True),
         )
 
@@ -294,12 +555,10 @@ def task_publish_video(self, publish_task_id: str):
             meta={"progress": 20, "message": f"Publishing to {platform}..."},
         )
 
-        # Download video from MinIO
         video_path = run_async(_download_video_for_publish(publish_task_data["output_id"]))
         if not video_path:
             raise Exception("Failed to download video for publishing")
 
-        # Execute publish
         result = run_async(publisher.publish(
             video_path=video_path,
             title=publish_task_data.get("title", ""),
@@ -309,36 +568,48 @@ def task_publish_video(self, publish_task_id: str):
             mini_program_link=publish_task_data.get("mini_program_link"),
         ))
 
-        # Update task status in database
-        run_async(_update_publish_task_status(
-            publish_task_id,
-            status="pending_confirm" if result.get("status") == "pending_confirm" else "published",
-            published_url=result.get("published_url"),
-            published_id=result.get("published_id"),
-            screenshot_key=result.get("screenshot_path"),
-            error_message=result.get("error"),
-        ))
-
-        if result.get("success"):
+        if result.get("status") == "pending_confirm" and result.get("success"):
+            screenshot_key = None
+            screenshot_path = result.get("screenshot_path")
+            if screenshot_path and os.path.isfile(screenshot_path):
+                screenshot_key = (
+                    f"screenshots/{publish_task_id}/{os.path.basename(screenshot_path)}"
+                )
+                run_async(upload_file_from_path(
+                    settings.MINIO_BUCKET_SCREENSHOTS,
+                    screenshot_key,
+                    screenshot_path,
+                ))
+            run_async(_update_publish_task_status(
+                publish_task_id,
+                status="pending_confirm",
+                screenshot_key=screenshot_key,
+            ))
             self.update_state(
                 state="SUCCESS",
-                meta={
-                    "progress": 100,
-                    "message": "Publish completed",
-                    "result": result,
-                },
+                meta={"progress": 100, "message": "Waiting for manual confirmation", "result": result},
             )
             return result
-        else:
-            raise Exception(result.get("error", "Unknown publish error"))
+
+        if result.get("success"):
+            run_async(_update_publish_task_status(
+                publish_task_id,
+                status="published",
+                published_url=result.get("published_url"),
+                published_id=result.get("published_id"),
+                published_at=datetime.utcnow(),
+            ))
+            self.update_state(
+                state="SUCCESS",
+                meta={"progress": 100, "message": "Publish completed", "result": result},
+            )
+            return result
+
+        raise Exception(result.get("error", "Unknown publish error"))
 
     except Exception as e:
         logger.error(f"Publish task failed: {e}")
-        run_async(_update_publish_task_status(
-            publish_task_id,
-            status="failed",
-            error_message=str(e),
-        ))
+        run_async(_update_publish_task_status(publish_task_id, status="failed", error_message=str(e)))
         self.update_state(
             state="FAILURE",
             meta={"progress": 0, "message": str(e)},
@@ -346,19 +617,49 @@ def task_publish_video(self, publish_task_id: str):
         raise
 
 
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
+def confirm_publish_worker(self, publish_task_id: str):
+    """Confirm a pending publish by clicking publish in the already-prepared Chrome tab."""
+    from app.services.publish_service import get_publisher
+
+    self.update_state(state="STARTED", meta={"progress": 50, "message": "Confirming publish"})
+    try:
+        publish_task_data = run_async(_get_publish_task(publish_task_id))
+        if not publish_task_data:
+            raise Exception(f"Publish task {publish_task_id} not found")
+
+        publisher = get_publisher(
+            publish_task_data["platform"],
+            chrome_debug_port=publish_task_data.get("chrome_debug_port", settings.CHROME_DEBUG_PORT),
+            require_manual_confirm=True,
+        )
+        result = run_async(publisher.confirm_publish())
+        if not result.get("success"):
+            raise Exception(result.get("error", "Confirm publish failed"))
+
+        run_async(_update_publish_task_status(
+            publish_task_id,
+            status="published",
+            published_url=result.get("published_url"),
+            published_id=result.get("published_id"),
+            published_at=datetime.utcnow(),
+        ))
+        self.update_state(
+            state="SUCCESS",
+            meta={"progress": 100, "message": "Publish confirmed", "result": result},
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Confirm publish failed: {e}")
+        run_async(_update_publish_task_status(publish_task_id, status="failed", error_message=str(e)))
+        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+        raise
+
+
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=300)
 def task_collect_metrics(self, account_id: Optional[str] = None, target_date: Optional[str] = None):
-    """
-    Periodic task for collecting and aggregating metrics data.
-
-    Computes funnel snapshots, aggregates daily metrics, and updates
-    the dashboard data.
-    """
+    """Periodic task for collecting and aggregating metrics data."""
     from datetime import date as date_type
-    from app.models.models import (
-        VideoMetric, MiniProgramMetric, AdMetric, FunnelSnapshot,
-    )
-    from sqlalchemy import func, and_
 
     self.update_state(state="STARTED", meta={"progress": 0, "message": "Starting metrics collection"})
 
@@ -369,30 +670,20 @@ def task_collect_metrics(self, account_id: Optional[str] = None, target_date: Op
             collect_date = date_type.today()
 
         account_uuid = uuid.UUID(account_id) if account_id else None
-
-        # Compute funnel snapshot
         funnel_data = run_async(_compute_funnel_snapshot(collect_date, account_uuid))
 
         self.update_state(
             state="SUCCESS",
-            meta={
-                "progress": 100,
-                "message": "Metrics collection completed",
-                "funnel_data": funnel_data,
-            },
+            meta={"progress": 100, "message": "Metrics collection completed", "funnel_data": funnel_data},
         )
         return {
             "date": collect_date.isoformat(),
             "account_id": account_id,
             "funnel_data": funnel_data,
         }
-
     except Exception as e:
         logger.error(f"Metrics collection failed: {e}")
-        self.update_state(
-            state="FAILURE",
-            meta={"progress": 0, "message": str(e)},
-        )
+        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
 
 
@@ -410,7 +701,6 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
         if not task:
             return None
 
-        # Try to get profile settings
         profile_result = await session.execute(
             select(PublishProfile).where(
                 PublishProfile.platform == task.platform,
@@ -439,8 +729,9 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
 
 
 async def _download_video_for_publish(output_id: str) -> Optional[str]:
-    """Download video file from MinIO for publishing."""
+    """Download the sliced video from MinIO to a local temp file for publishing."""
     from app.models.models import SliceOutput
+    from app.services.minio_service import download_file
     from sqlalchemy import select
 
     async with async_session_factory() as session:
@@ -452,11 +743,15 @@ async def _download_video_for_publish(output_id: str) -> Optional[str]:
         if not output or not output.file_key:
             return None
 
-        # In production, download from MinIO
-        # For now, return a placeholder path
-        temp_path = f"/tmp/publish_videos/{output.file_key}"
-        os.makedirs(os.path.dirname(temp_path), exist_ok=True)
-        return temp_path
+    data = await download_file(settings.MINIO_BUCKET_SLICED, output.file_key)
+    if data is None:
+        return None
+
+    os.makedirs("/tmp/publish_videos", exist_ok=True)
+    temp_path = f"/tmp/publish_videos/{output.id}.mp4"
+    with open(temp_path, "wb") as f:
+        f.write(data)
+    return temp_path
 
 
 async def _update_publish_task_status(
@@ -467,6 +762,7 @@ async def _update_publish_task_status(
     screenshot_key: str = None,
     error_message: str = None,
     celery_task_id: str = None,
+    published_at: datetime = None,
 ):
     """Update publish task status in the database."""
     from app.models.models import PublishTask
@@ -493,6 +789,8 @@ async def _update_publish_task_status(
             task.error_message = error_message
         if celery_task_id:
             task.celery_task_id = celery_task_id
+        if published_at:
+            task.published_at = published_at
         task.updated_at = datetime.utcnow()
 
         await session.commit()
@@ -501,12 +799,11 @@ async def _update_publish_task_status(
 async def _compute_funnel_snapshot(collect_date, account_uuid) -> dict:
     """Compute and save a funnel snapshot for the given date."""
     from app.models.models import (
-        VideoMetric, MiniProgramMetric, AdMetric, FunnelSnapshot,
+        VideoMetric, MiniProgramMetric, AdMetric, DramaMetric, FunnelSnapshot,
     )
-    from sqlalchemy import func, and_, select
+    from sqlalchemy import func, and_
 
     async with async_session_factory() as session:
-        # Aggregate video metrics
         video_filters = [VideoMetric.publish_date == collect_date]
         if account_uuid:
             video_filters.append(VideoMetric.account_id == account_uuid)
@@ -521,7 +818,6 @@ async def _compute_funnel_snapshot(collect_date, account_uuid) -> dict:
         total_play = int(vrow[0] or 0)
         jump_click = int(vrow[1] or 0)
 
-        # Aggregate mini program metrics
         mp_filters = [MiniProgramMetric.date == collect_date]
         if account_uuid:
             mp_filters.append(MiniProgramMetric.account_id == account_uuid)
@@ -531,7 +827,6 @@ async def _compute_funnel_snapshot(collect_date, account_uuid) -> dict:
         )
         mini_program_uv = int(mp_result.scalar() or 0)
 
-        # Aggregate ad metrics
         ad_filters = [AdMetric.date == collect_date]
         if account_uuid:
             ad_filters.append(AdMetric.account_id == account_uuid)
@@ -546,12 +841,19 @@ async def _compute_funnel_snapshot(collect_date, account_uuid) -> dict:
         ad_impression = int(arow[0] or 0)
         revenue = float(arow[1] or 0)
 
-        # Compute rates
+        drama_filters = [DramaMetric.date == collect_date]
+        if account_uuid:
+            drama_filters.append(DramaMetric.account_id == account_uuid)
+        drama_result = await session.execute(
+            select(func.coalesce(func.sum(DramaMetric.uv), 0)).where(and_(*drama_filters))
+        )
+        drama_play_uv = int(drama_result.scalar() or 0)
+
         jump_rate = (jump_click / total_play * 100) if total_play > 0 else 0
+        play_rate = (drama_play_uv / mini_program_uv * 100) if mini_program_uv > 0 else 0
         exposure_rate = (ad_impression / mini_program_uv * 100) if mini_program_uv > 0 else 0
         revenue_per_1000 = (revenue / total_play * 1000) if total_play > 0 else 0
 
-        # Save snapshot
         snapshot = FunnelSnapshot(
             date=collect_date,
             account_id=account_uuid,
@@ -559,8 +861,8 @@ async def _compute_funnel_snapshot(collect_date, account_uuid) -> dict:
             jump_click=jump_click,
             jump_rate=round(jump_rate, 2),
             mini_program_uv=mini_program_uv,
-            drama_play_uv=0,
-            play_rate=0,
+            drama_play_uv=drama_play_uv,
+            play_rate=round(play_rate, 2),
             ad_exposure_uv=ad_impression,
             exposure_rate=round(exposure_rate, 2),
             revenue=round(revenue, 2),
@@ -574,6 +876,8 @@ async def _compute_funnel_snapshot(collect_date, account_uuid) -> dict:
             "jump_click": jump_click,
             "jump_rate": round(jump_rate, 2),
             "mini_program_uv": mini_program_uv,
+            "drama_play_uv": drama_play_uv,
+            "play_rate": round(play_rate, 2),
             "ad_impression": ad_impression,
             "exposure_rate": round(exposure_rate, 2),
             "revenue": round(revenue, 2),

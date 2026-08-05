@@ -1,198 +1,158 @@
-import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import React, { useEffect, useState, useRef } from 'react';
 import {
-  Card,
-  Typography,
-  Spin,
-  Alert,
-  Button,
-  Space,
-  Row,
-  Col,
-  Tag,
-  Breadcrumb,
-  message,
-  Descriptions,
-  Empty,
+  Card, Table, Tag, Button, Space, Typography, Spin, Alert, message, Popconfirm, InputNumber, Select,
 } from 'antd';
-import {
-  ArrowLeftOutlined,
-  ThunderboltOutlined,
-  ReloadOutlined,
-} from '@ant-design/icons';
+import { ArrowLeftOutlined, CheckOutlined, CloseOutlined, ReloadOutlined } from '@ant-design/icons';
+import { useParams, useNavigate } from 'react-router-dom';
 import { autoclipApi } from '../api/autoclip';
-import ClipReviewComponent from '../components/ClipReview';
-import type { Episode, ClipCandidate } from '../types';
-import { formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
+import type { ClipCandidate } from '../types';
+import { formatDuration, formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
 
-const { Title, Text } = Typography;
+const { Title } = Typography;
 
-const ClipReviewPage: React.FC = () => {
+const ClipReview: React.FC = () => {
   const { episodeId } = useParams<{ episodeId: string }>();
   const navigate = useNavigate();
-  const eid = Number(episodeId);
-
-  const [episode, setEpisode] = useState<Episode | null>(null);
-  const [candidates, setCandidates] = useState<ClipCandidate[]>([]);
+  const [clips, setClips] = useState<ClipCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [detecting, setDetecting] = useState(false);
 
-  useEffect(() => {
-    fetchData();
-  }, [eid]);
-
-  const fetchData = async () => {
+  const fetchClips = async () => {
     setLoading(true);
-    setError(null);
     try {
-      // Mock episode data
-      setEpisode({
-        id: eid,
-        project_id: 1,
-        title: `剧集 #${eid}`,
-        file_path: '',
-        file_size: 0,
-        duration: 0,
-        status: 'uploaded',
-        clip_count: 0,
-        interval_count: 0,
-        slice_count: 0,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      } as Episode);
-      const res = await autoclipApi.getCandidates(eid);
-      setCandidates(res.data);
+      const list = await autoclipApi.getCandidates(episodeId || '');
+      setClips(list);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '获取数据失败');
+      setError(err instanceof Error ? err.message : '获取选点失败');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDetect = async () => {
-    setDetecting(true);
-    try {
-      await autoclipApi.detect(eid);
-      message.success('AutoClip 检测已启动');
-      setTimeout(() => fetchData(), 2000);
-    } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : '启动检测失败');
-    } finally {
-      setDetecting(false);
-    }
-  };
+  useEffect(() => {
+    fetchClips();
+  }, [episodeId]);
 
-  const handleUpdate = async (id: number, data: Partial<ClipCandidate>) => {
+  const updateStatus = async (clip: ClipCandidate, status: string) => {
     try {
-      await autoclipApi.updateCandidate(id, data);
-      message.success('更新成功');
-      fetchData();
+      await autoclipApi.updateCandidate(clip.id, { status });
+      message.success('已更新');
+      fetchClips();
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '更新失败');
     }
   };
 
-  const handleBatchUpdate = async (data: { ids: number[]; status: string; adjusted_start?: number; adjusted_end?: number }) => {
+  const adjust = async (clip: ClipCandidate, field: 'adjusted_start' | 'adjusted_end', value: number | null) => {
     try {
-      await autoclipApi.batchUpdateCandidates(data);
-      message.success('批量操作成功');
-      fetchData();
+      await autoclipApi.updateCandidate(clip.id, { status: 'adjusted', [field]: value });
+      fetchClips();
     } catch (err: unknown) {
-      throw err;
+      message.error(err instanceof Error ? err.message : '调整失败');
     }
   };
 
+  // 防抖：停止输入 500ms 后再提交
+  const adjustTimers = useRef<Map<string, number>>(new Map());
+  const adjustDebounced = (clip: ClipCandidate, field: 'adjusted_start' | 'adjusted_end', value: number | null) => {
+    const key = `${clip.id}-${field}`;
+    const prev = adjustTimers.current.get(key);
+    if (prev) window.clearTimeout(prev);
+    const timer = window.setTimeout(() => {
+      adjustTimers.current.delete(key);
+      adjust(clip, field, value);
+    }, 500);
+    adjustTimers.current.set(key, timer);
+  };
+
+  useEffect(() => {
+    const timers = adjustTimers.current;
+    return () => {
+      timers.forEach((t) => window.clearTimeout(t));
+      timers.clear();
+    };
+  }, []);
+
   if (loading) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 400 }}>
-        <Spin size="large" tip="加载中..." />
-      </div>
-    );
+    return <Spin size="large" style={{ display: 'block', margin: '120px auto' }} />;
   }
 
-  if (error) {
-    return <Alert type="error" message="加载失败" description={error} showIcon />;
-  }
+  const columns = [
+    { title: '序号', dataIndex: 'clip_index', key: 'clip_index', width: 70 },
+    { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true },
+    {
+      title: '时间区间',
+      key: 'range',
+      width: 220,
+      render: (_: unknown, c: ClipCandidate) => (
+        <Space size={4}>
+          <InputNumber
+            size="small"
+            value={c.adjusted_start ?? c.start_time ?? 0}
+            onChange={(v) => adjustDebounced(c, 'adjusted_start', v)}
+            style={{ width: 90 }}
+          />
+          <span>-</span>
+          <InputNumber
+            size="small"
+            value={c.adjusted_end ?? c.end_time ?? 0}
+            onChange={(v) => adjustDebounced(c, 'adjusted_end', v)}
+            style={{ width: 90 }}
+          />
+        </Space>
+      ),
+    },
+    { title: '时长', key: 'duration', width: 90, render: (_: unknown, c: ClipCandidate) => formatDuration(c.duration) },
+    { title: '评分', dataIndex: 'score', key: 'score', width: 90 },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 110,
+      render: (s: string) => <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>,
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 180,
+      render: (_: unknown, c: ClipCandidate) => (
+        <Space size="small">
+          <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => updateStatus(c, 'accepted')}>通过</Button>
+          <Popconfirm title="确定拒绝该片段？" onConfirm={() => updateStatus(c, 'rejected')}>
+            <Button size="small" danger icon={<CloseOutlined />}>拒绝</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
 
   return (
     <div>
-      <Breadcrumb
-        items={[
-          { title: <Link to="/projects">项目管理</Link> },
-          { title: <Link to={`/episodes/${eid}`}>剧集详情</Link> },
-          { title: '选点审核' },
-        ]}
-        style={{ marginBottom: 16 }}
-      />
-
-      <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
-        <Col>
-          <Space>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(`/episodes/${eid}`)}>
-              返回
-            </Button>
-            <Title level={4} style={{ margin: 0 }}>
-              选点审核 - {episode?.title}
-            </Title>
-          </Space>
-        </Col>
-        <Col>
-          <Space>
-            <Button icon={<ReloadOutlined />} onClick={fetchData}>
-              刷新
-            </Button>
-            <Button
-              type="primary"
-              icon={<ThunderboltOutlined />}
-              loading={detecting}
-              onClick={handleDetect}
-            >
-              {detecting ? '检测中...' : '重新检测'}
-            </Button>
-          </Space>
-        </Col>
-      </Row>
-
-      {episode && (
-        <Card size="small" style={{ marginBottom: 16 }}>
-          <Descriptions size="small" column={3}>
-            <Descriptions.Item label="剧集">{episode.title}</Descriptions.Item>
-            <Descriptions.Item label="状态">
-              <Tag color={getStatusColor(episode.status)}>
-                {getStatusLabel(episode.status)}
-              </Tag>
-            </Descriptions.Item>
-            <Descriptions.Item label="选点数">
-              {candidates.length} 个
-            </Descriptions.Item>
-          </Descriptions>
-        </Card>
-      )}
-
-      {candidates.length > 0 ? (
-        <ClipReviewComponent
-          candidates={candidates}
-          loading={loading}
-          onUpdate={handleUpdate}
-          onBatchUpdate={handleBatchUpdate}
-        />
+      <Space style={{ marginBottom: 16 }}>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(`/episodes/${episodeId}`)}>返回</Button>
+        <Title level={4} style={{ margin: 0 }}>片段审核</Title>
+        <Button icon={<ReloadOutlined />} onClick={fetchClips}>刷新</Button>
+      </Space>
+      {error ? (
+        <Alert type="warning" message="暂无选点结果" description={error} showIcon />
       ) : (
-        <Card>
-          <Empty description="暂无选点数据">
-            <Button
-              type="primary"
-              icon={<ThunderboltOutlined />}
-              loading={detecting}
-              onClick={handleDetect}
-            >
-              开始 AutoClip 检测
-            </Button>
-          </Empty>
+        <Card size="small">
+          <Table rowKey="id" columns={columns} dataSource={clips} pagination={false} size="small"
+            expandable={{
+              expandedRowRender: (c: ClipCandidate) => (
+                <div>
+                  <p><b>推荐理由：</b>{c.recommend_reason || '-'}</p>
+                  <p><b>内容：</b>{c.content || '-'}</p>
+                  <p><b>大纲：</b>{c.outline || '-'}</p>
+                  <p><b>创建时间：</b>{formatDateTime(c.created_at)}</p>
+                </div>
+              ),
+            }}
+          />
         </Card>
       )}
     </div>
   );
 };
 
-export default ClipReviewPage;
+export default ClipReview;

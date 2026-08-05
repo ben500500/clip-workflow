@@ -199,7 +199,7 @@ print_access_urls() {
     echo -e "  访问地址:"
     echo -e "  ${CYAN}  前端应用:${NC}      http://localhost:${nginx_port}"
     echo -e "  ${CYAN}  API 接口:${NC}       http://localhost:${nginx_port}/api/"
-    echo -e "  ${CYAN}  API 文档:${NC}       http://localhost:${nginx_port}/api/docs"
+    echo -e "  ${CYAN}  API 文档:${NC}       http://localhost:${nginx_port}/docs"
     echo -e "  ${CYAN}  MinIO 控制台:${NC}   http://localhost:${MINIO_CONSOLE_PORT:-9001}"
     echo -e "  ${CYAN}  MinIO API:${NC}      http://localhost:${MINIO_PORT:-9000}"
     echo ""

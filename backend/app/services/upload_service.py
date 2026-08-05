@@ -151,3 +151,14 @@ def delete_upload_session(upload_id: str) -> bool:
 def get_temp_file_path(upload_id: str) -> str:
     """Get the temporary file path for an upload session."""
     return os.path.join(settings.UPLOAD_TEMP_DIR, upload_id, "uploaded_file")
+
+def validate_file_name(file_name: str) -> str:
+    """Sanitize an uploaded file name and validate its extension."""
+    base = os.path.basename(file_name or "").strip()
+    if not base:
+        raise ValueError("empty file name")
+    allowed = {e.strip().lower() for e in settings.ALLOWED_VIDEO_EXTENSIONS.split(",")}
+    ext = os.path.splitext(base)[1].lower()
+    if ext not in allowed:
+        raise ValueError(f"unsupported file type: {ext}")
+    return base

@@ -98,14 +98,23 @@ async def get_overview(
     )
     ecpm = float(ecpm_result.scalar() or 0)
 
-    # Revenue per UV
-    revenue_per_uv = (today_revenue / total_uv) if total_uv > 0 else 0
+    # Today's UV (same-day denominator for revenue_per_uv)
+    today_uv_filter = [MiniProgramMetric.date == target_date]
+    if account_id:
+        today_uv_filter.append(MiniProgramMetric.account_id == account_id)
+    today_uv_result = await db.execute(
+        select(func.coalesce(func.sum(MiniProgramMetric.uv), 0)).where(and_(*today_uv_filter))
+    )
+    today_uv = int(today_uv_result.scalar() or 0)
+
+    revenue_per_uv = (today_revenue / today_uv) if today_uv > 0 else 0
 
     return {
         "today_revenue": round(today_revenue, 2),
         "week_revenue": round(week_revenue, 2),
         "total_play": total_play,
         "total_uv": total_uv,
+        "today_uv": today_uv,
         "ecpm": round(ecpm, 2),
         "revenue_per_uv": round(revenue_per_uv, 4),
         "date": target_date.isoformat(),
@@ -242,7 +251,16 @@ async def get_funnel(
     ad_impression = int(row[0] or 0)
     revenue = float(row[1] or 0)
 
+    drama_filter = [DramaMetric.date == target_date]
+    if account_id:
+        drama_filter.append(DramaMetric.account_id == account_id)
+    drama_result = await db.execute(
+        select(func.coalesce(func.sum(DramaMetric.uv), 0)).where(and_(*drama_filter))
+    )
+    drama_play_uv = int(drama_result.scalar() or 0)
+
     jump_rate = (jump_click / total_play * 100) if total_play > 0 else 0
+    play_rate = (drama_play_uv / mini_program_uv * 100) if mini_program_uv > 0 else 0
     exposure_rate = (ad_impression / mini_program_uv * 100) if mini_program_uv > 0 else 0
     revenue_per_1000 = (revenue / total_play * 1000) if total_play > 0 else 0
 
@@ -252,8 +270,8 @@ async def get_funnel(
         "jump_click": jump_click,
         "jump_rate": round(jump_rate, 2),
         "mini_program_uv": mini_program_uv,
-        "drama_play_uv": 0,
-        "play_rate": 0,
+        "drama_play_uv": drama_play_uv,
+        "play_rate": round(play_rate, 2),
         "ad_exposure_uv": ad_impression,
         "exposure_rate": round(exposure_rate, 2),
         "revenue": round(revenue, 2),

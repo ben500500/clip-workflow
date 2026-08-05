@@ -16,6 +16,7 @@ redis>=5.0.0,<6.0.0
 
 # ==================== HTTP 客户端 ====================
 httpx>=0.26.0,<1.0.0
+requests>=2.31.0,<3.0.0  # DashScope compatible-mode / ASR 调用
 
 # ==================== 数据库 ====================
 sqlalchemy[asyncio]>=2.0.25,<3.0.0
@@ -27,6 +28,7 @@ dashscope>=1.18.0,<2.0.0
 
 # ==================== 工具库 ====================
 python-multipart>=0.0.6
+pysrt>=1.1.1  # SRT 字幕解析（text_processor）
 python-jose[cryptography]>=3.3.0,<4.0.0
 passlib[bcrypt]>=1.7.4,<2.0.0
 python-dotenv>=1.0.0,<2.0.0

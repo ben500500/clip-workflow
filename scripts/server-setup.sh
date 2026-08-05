@@ -218,7 +218,7 @@ log_step "构建 Docker 镜像（这可能需要几分钟）..."
 
 if $SKIP_RPA; then
     # 不构建 RPA 镜像
-    $COMPOSE_CMD build --parallel postgres redis minio minio_init autoclip autoclip_worker backend worker beat frontend nginx
+    $COMPOSE_CMD build --parallel postgres redis minio minio_init autoclip backend worker beat frontend nginx
 else
     $COMPOSE_CMD build --parallel
 fi
@@ -229,7 +229,7 @@ echo ""
 log_step "启动服务..."
 
 if $SKIP_RPA; then
-    $COMPOSE_CMD up -d postgres redis minio minio_init autoclip autoclip_worker backend worker beat frontend nginx
+    $COMPOSE_CMD up -d postgres redis minio minio_init autoclip backend worker beat frontend nginx
 else
     $COMPOSE_CMD up -d
 fi

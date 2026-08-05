@@ -1,5 +1,6 @@
-import React from 'react';
-import { Layout, Menu, Avatar, Dropdown, theme } from 'antd';
+import React, { useState, useEffect } from 'react';
+import { Layout, Menu, Avatar, Dropdown, theme, Modal } from 'antd';
+import { ExclamationCircleOutlined } from '@ant-design/icons';
 import {
   DashboardOutlined,
   ProjectOutlined,
@@ -7,10 +8,11 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   UserOutlined,
-  GithubOutlined,
   SendOutlined,
   BarChartOutlined,
-  LineChartOutlined,
+  LogoutOutlined,
+  UserSwitchOutlined,
+  VideoCameraOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 
@@ -33,14 +35,9 @@ const menuItems = [
     label: '发布管理',
   },
   {
-    key: '/analytics',
+    key: 'analytics-sub',
     icon: <BarChartOutlined />,
     label: '数据看板',
-  },
-  {
-    key: 'analytics-sub',
-    icon: <LineChartOutlined />,
-    label: '数据分析',
     children: [
       { key: '/analytics/overview', label: '总览' },
       { key: '/analytics/content', label: '内容分析' },
@@ -61,11 +58,17 @@ const AppLayout: React.FC = () => {
   const location = useLocation();
   const { token } = theme.useToken();
 
-  const pathSegments = location.pathname.split('/').filter(Boolean);
-  const selectedKey = '/' + pathSegments.join('/') || '/dashboard';
+  // 计算当前选中的菜单项，支持嵌套路由祖先匹配
+  const getSelectedKey = (pathname: string): string => {
+    if (pathname.startsWith('/analytics/')) return pathname;
+    if (pathname.startsWith('/projects/')) return '/projects';
+    if (pathname.startsWith('/episodes/')) return '/projects';
+    return pathname;
+  };
+  const selectedKey = getSelectedKey(location.pathname) || '/dashboard';
 
   // 自动展开包含当前路由的子菜单
-  React.useEffect(() => {
+  useEffect(() => {
     if (location.pathname.startsWith('/analytics')) {
       setOpenKeys((prev) => (prev.includes('analytics-sub') ? prev : [...prev, 'analytics-sub']));
     }
@@ -76,13 +79,36 @@ const AppLayout: React.FC = () => {
   };
 
   const userMenuItems = [
-    { key: 'profile', label: '个人中心' },
-    { key: 'logout', label: '退出登录' },
+    { key: 'profile', label: '个人中心', icon: <UserSwitchOutlined /> },
+    { key: 'logout', label: '退出登录', icon: <LogoutOutlined />, danger: true },
   ];
 
   const handleUserMenuClick = ({ key }: { key: string }) => {
-    if (key === 'logout') {
-      console.log('logout');
+    if (key === 'profile') {
+      Modal.info({
+        title: '个人中心',
+        icon: <ExclamationCircleOutlined />,
+        content: (
+          <div>
+            <p>管理员账户</p>
+            <p>暂未开放个人设置功能</p>
+          </div>
+        ),
+        okText: '确定',
+      });
+    } else if (key === 'logout') {
+      Modal.confirm({
+        title: '确认退出',
+        icon: <ExclamationCircleOutlined />,
+        content: '确定要退出登录吗？',
+        okText: '退出',
+        cancelText: '取消',
+        onOk() {
+          // TODO: 清除登录状态后跳转
+          navigate('/dashboard');
+          window.location.reload();
+        },
+      });
     }
   };
 
@@ -115,7 +141,7 @@ const AppLayout: React.FC = () => {
           }}
           onClick={() => navigate('/dashboard')}
         >
-          <GithubOutlined style={{ fontSize: 28, color: token.colorPrimary }} />
+          <VideoCameraOutlined style={{ fontSize: 28, color: token.colorPrimary }} />
           {!collapsed && (
             <span
               style={{

@@ -1,49 +1,38 @@
 import client from './client';
-import type { ApiResponse, PaginatedResponse, Project, ProjectFormValues } from '../types';
+import type { ApiList, Episode, Project, ProjectFormValues, ProjectStats } from '../types';
 
 export interface ProjectListParams {
   page?: number;
   page_size?: number;
   search?: string;
   status?: string;
-  platform?: string;
 }
 
 export const projectApi = {
-  /** 获取项目列表 */
-  getList(params?: ProjectListParams) {
-    return client.get<ApiResponse<PaginatedResponse<Project>>>('/projects', { params });
-  },
+  getList: (params?: ProjectListParams) =>
+    client.get('/projects', { params }) as Promise<ApiList<Project>>,
 
-  /** 获取单个项目 */
-  getById(id: number) {
-    return client.get<ApiResponse<Project>>(`/projects/${id}`);
-  },
+  getById: (id: string) =>
+    client.get(`/projects/${id}`) as Promise<Project>,
 
-  /** 创建项目 */
-  create(data: ProjectFormValues) {
-    return client.post<ApiResponse<Project>>('/projects', data);
-  },
+  create: (data: ProjectFormValues) =>
+    client.post('/projects', data) as Promise<Project>,
 
-  /** 更新项目 */
-  update(id: number, data: Partial<ProjectFormValues>) {
-    return client.put<ApiResponse<Project>>(`/projects/${id}`, data);
-  },
+  update: (id: string, data: Partial<ProjectFormValues>) =>
+    client.put(`/projects/${id}`, data) as Promise<Project>,
 
-  /** 删除项目 */
-  delete(id: number) {
-    return client.delete<ApiResponse<null>>(`/projects/${id}`);
-  },
+  remove: (id: string) =>
+    client.delete(`/projects/${id}`) as Promise<void>,
 
-  /** 获取项目统计 */
-  getStats() {
-    return client.get<ApiResponse<{
-      total_projects: number;
-      active_projects: number;
-      total_episodes: number;
-      processed_episodes: number;
-      total_slices: number;
-      recent_projects: Project[];
-    }>>('/projects/stats');
-  },
+  getStats: () =>
+    client.get('/projects/stats') as Promise<ProjectStats>,
+
+  getEpisodes: (projectId: string) =>
+    client.get(`/projects/${projectId}/episodes`) as Promise<{ items: Episode[]; total: number }>,
+
+  getEpisode: (episodeId: string) =>
+    client.get(`/episodes/${episodeId}`) as Promise<Episode>,
+
+  deleteEpisode: (episodeId: string) =>
+    client.delete(`/episodes/${episodeId}`) as Promise<void>,
 };

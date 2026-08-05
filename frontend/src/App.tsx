@@ -15,6 +15,7 @@ import DashboardOverview from './pages/DashboardOverview';
 import ContentAnalysis from './pages/ContentAnalysis';
 import DataImport from './pages/DataImport';
 import Settings from './pages/Settings';
+import NotFound from './pages/NotFound';
 
 const App: React.FC = () => {
   return (
@@ -35,7 +36,7 @@ const App: React.FC = () => {
           <Route path="analytics/content" element={<ContentAnalysis />} />
           <Route path="analytics/import" element={<DataImport />} />
           <Route path="settings" element={<Settings />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>
     </AntApp>

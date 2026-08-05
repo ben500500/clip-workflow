@@ -1,3 +1,4 @@
+import os
 import uuid
 from typing import List, Optional
 
@@ -101,6 +102,11 @@ async def run_autoclip(
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
 
+    if data.video_path and not os.path.isfile(data.video_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"video_path 指向的文件不存在: {data.video_path}",
+        )
     if not episode.source_file_key and not data.video_path:
         raise HTTPException(
             status_code=400,
@@ -141,7 +147,8 @@ async def run_autoclip(
     await db.flush()
 
     # Determine video path
-    video_path = data.video_path or f"/data/videos/{episode.source_file_key}"
+    source_file_key = episode.source_file_key
+    video_path = data.video_path or f"/data/videos/{source_file_key}"
 
     # Dispatch Celery task
     task = celery_autoclip_task.delay(
@@ -149,6 +156,7 @@ async def run_autoclip(
         autoclip_project_id=autoclip_project_id,
         video_path=video_path,
         config=config,
+        source_file_key=source_file_key,
     )
 
     # Update celery task ID

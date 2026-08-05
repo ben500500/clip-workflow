@@ -1,309 +1,242 @@
-// ========== 项目相关 ==========
+// ========== 通用 ==========
 
-export interface Project {
-  id: number;
-  name: string;
-  description: string;
-  platform: string;
-  platform_profile_id?: number;
-  status: 'active' | 'archived' | 'completed';
-  total_episodes: number;
-  processed_episodes: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface Episode {
-  id: number;
-  project_id: number;
-  title: string;
-  file_path: string;
-  file_size: number;
-  duration: number;
-  status: 'uploaded' | 'clips_detected' | 'intervals_detected' | 'slicing' | 'completed' | 'failed';
-  clip_count: number;
-  interval_count: number;
-  slice_count: number;
-  created_at: string;
-  updated_at: string;
-}
-
-// ========== AutoClip 选点相关 ==========
-
-export interface AutoClipConfig {
-  min_clip_duration: number;
-  max_clip_duration: number;
-  min_confidence: number;
-  max_clips: number;
-  overlap_ratio: number;
-  detect_types: string[];
-  custom_prompt?: string;
-}
-
-export interface ClipCandidate {
-  id: number;
-  episode_id: number;
-  start_time: number;
-  end_time: number;
-  confidence: number;
-  clip_type: string;
-  label: string;
-  description: string;
-  status: 'pending' | 'approved' | 'rejected' | 'adjusted';
-  adjusted_start?: number;
-  adjusted_end?: number;
-  created_at: string;
-  updated_at: string;
-}
-
-// ========== 区间检测相关 ==========
-
-export interface IntervalDetectionConfig {
-  min_interval_duration: number;
-  max_interval_duration: number;
-  merge_threshold: number;
-  min_silence_duration: number;
-  voice_activity_threshold: number;
-  detect_modes: string[];
-}
-
-export interface DetectedInterval {
-  id: number;
-  episode_id: number;
-  start_time: number;
-  end_time: number;
-  duration: number;
-  interval_type: string;
-  confidence: number;
-  label: string;
-  status: 'pending' | 'approved' | 'rejected' | 'adjusted';
-  adjusted_start?: number;
-  adjusted_end?: number;
-  created_at: string;
-  updated_at: string;
-}
-
-// ========== 去重与切片相关 ==========
-
-export interface DedupeConfig {
-  enabled: boolean;
-  similarity_threshold: number;
-  method: 'hash' | 'perceptual' | 'content';
-  max_duplicate_ratio: number;
-}
-
-export interface SliceTask {
-  id: number;
-  episode_id: number;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  progress: number;
-  total_clips: number;
-  completed_clips: number;
-  failed_clips: number;
-  config: Record<string, unknown>;
-  started_at?: string;
-  completed_at?: string;
-  error_message?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface SliceOutput {
-  id: number;
-  slice_task_id: number;
-  clip_candidate_id?: number;
-  detected_interval_id?: number;
-  file_path: string;
-  file_size: number;
-  duration: number;
-  start_time: number;
-  end_time: number;
-  label: string;
-  status: 'completed' | 'failed';
-  error_message?: string;
-  created_at: string;
-}
-
-// ========== 发布相关 ==========
-
-export interface Publication {
-  id: number;
-  slice_output_id: number;
-  platform: string;
-  status: 'pending' | 'published' | 'failed';
-  published_url?: string;
-  published_at?: string;
-  error_message?: string;
-  created_at: string;
-}
-
-// ========== 系统配置相关 ==========
-
-export interface SystemConfig {
-  auto_clip: AutoClipConfig;
-  interval_detection: IntervalDetectionConfig;
-  dedupe: DedupeConfig;
-  output_dir: string;
-  concurrency: number;
-  retention_days: number;
-}
-
-export interface PlatformProfile {
-  id: number;
-  platform: string;
-  name: string;
-  config: Record<string, unknown>;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-// ========== API 通用响应 ==========
-
-export interface ApiResponse<T> {
-  code: number;
-  message: string;
-  data: T;
-}
-
-export interface PaginatedResponse<T> {
+export interface ApiList<T> {
   items: T[];
   total: number;
   page: number;
   page_size: number;
 }
 
-export interface TaskProgressEvent {
-  task_id: number;
-  episode_id: number;
-  status: string;
-  progress: number;
-  current_step: string;
-  message: string;
-  timestamp: string;
+export interface ApiError {
+  detail?: string;
 }
 
-// ========== 表单类型 ==========
+// ========== 项目与剧集 ==========
+
+export type ProjectStatus = 'draft' | 'processing' | 'completed' | 'archived';
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string | null;
+  status: string;
+  config: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+  episode_count: number;
+}
 
 export interface ProjectFormValues {
   name: string;
-  description: string;
-  platform: string;
-  platform_profile_id?: number;
+  description?: string;
+  status?: string;
+  config?: Record<string, unknown>;
 }
 
-export interface AutoClipFormValues {
-  min_clip_duration: number;
-  max_clip_duration: number;
-  min_confidence: number;
-  max_clips: number;
-  overlap_ratio: number;
-  detect_types: string[];
-  custom_prompt?: string;
+export interface ProjectStats {
+  total_projects: number;
+  active_projects: number;
+  total_episodes: number;
+  processed_episodes: number;
+  total_slices: number;
+  recent_projects: Project[];
 }
 
-export interface IntervalDetectionFormValues {
-  min_interval_duration: number;
-  max_interval_duration: number;
-  merge_threshold: number;
-  min_silence_duration: number;
-  voice_activity_threshold: number;
-  detect_modes: string[];
+export interface Episode {
+  id: string;
+  project_id: string;
+  title: string | null;
+  episode_no: number | null;
+  source_file_key: string | null;
+  duration: number | null;
+  resolution: string | null;
+  file_size: number | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
 }
 
-export interface DedupeFormValues {
+// ========== AutoClip 选点 ==========
+
+export interface ClipCandidate {
+  id: string;
+  episode_id: string;
+  clip_index: number | null;
+  start_time: number | null;
+  end_time: number | null;
+  duration: number | null;
+  title: string | null;
+  content: string | null;
+  outline: string | null;
+  score: number | null;
+  recommend_reason: string | null;
+  status: string;
+  adjusted_start: number | null;
+  adjusted_end: number | null;
+  created_at: string;
+}
+
+export interface AutoClipConfig {
+  [key: string]: unknown;
+}
+
+// ========== 区间检测 ==========
+
+export interface DetectedInterval {
+  id: string;
+  episode_id: string;
+  interval_type: string | null;
+  start_time: number | null;
+  end_time: number | null;
+  confidence: number | null;
+  label: string | null;
   enabled: boolean;
-  similarity_threshold: number;
-  method: 'hash' | 'perceptual' | 'content';
-  max_duplicate_ratio: number;
+  source: string | null;
+  detection_config: Record<string, unknown> | null;
+  created_at: string;
 }
 
-// ========== 发布管理 v2 ==========
+// ========== 切片 ==========
 
-export type PublishPlatform = 'wechat_channels' | 'douyin' | 'kuaishou';
-export type PublishStatus = 'pending' | 'uploading' | 'processing' | 'pending_confirm' | 'published' | 'failed';
+export interface SliceTask {
+  id: string;
+  episode_id: string;
+  celery_task_id: string | null;
+  mode: string | null;
+  status: string | null;
+  progress: number;
+  output_count: number;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export interface SliceOutput {
+  id: string;
+  task_id: string;
+  clip_id: string | null;
+  file_key: string | null;
+  file_name: string | null;
+  duration: number | null;
+  file_size: number | null;
+  resolution: string | null;
+  created_at: string;
+  presigned_url: string | null;
+}
+
+export interface DedupeConfig {
+  [key: string]: unknown;
+}
+
+// ========== 发布 ==========
 
 export interface PublishTask {
   id: string;
   output_id: string;
-  platform: PublishPlatform;
-  account_name: string;
-  status: PublishStatus;
-  celery_task_id?: string;
-  title: string;
-  description: string;
-  tags: string[];
-  cover_file_key?: string;
-  mini_program_link?: string;
+  platform: string | null;
+  account_name: string | null;
+  status: string | null;
+  celery_task_id: string | null;
+  title: string | null;
+  description: string | null;
+  tags: string[] | null;
+  cover_file_key: string | null;
+  mini_program_link: string | null;
   link_attached: boolean;
-  published_url?: string;
-  published_id?: string;
-  published_at?: string;
-  error_message?: string;
+  published_url: string | null;
+  published_id: string | null;
+  published_at: string | null;
+  error_message: string | null;
   require_manual_confirm: boolean;
-  screenshot_key?: string;
+  screenshot_key: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface PublishProfile {
   id: string;
-  platform: PublishPlatform;
-  account_name: string;
+  platform: string | null;
+  account_name: string | null;
   chrome_debug_port: number;
-  cookie_file?: string;
-  title_template: string;
-  description_template: string;
-  default_tags: string[];
-  mini_program_link?: string;
-  publish_mode: 'immediate' | 'scheduled';
+  cookie_file: string | null;
+  title_template: string | null;
+  description_template: string | null;
+  default_tags: string[] | null;
+  mini_program_link: string | null;
+  publish_mode: string;
   require_manual_confirm: boolean;
   min_interval_seconds: number;
   max_daily_publish: number;
   created_at: string;
 }
 
-export interface PublishTaskFormValues {
+export interface Publication {
+  id: string;
   output_id: string;
-  platform: PublishPlatform;
-  profile_id: string;
-  title: string;
-  description: string;
-  tags: string[];
-  cover_mode: 'auto' | 'manual';
-  publish_mode: 'immediate' | 'scheduled';
-  scheduled_time?: string;
+  platform: string | null;
+  publish_url: string | null;
+  publish_time: string | null;
+  status: string | null;
+  reject_reason: string | null;
+  operator: string | null;
+  created_at: string;
 }
 
-// ========== IAA 数据看板 v2 ==========
+// ========== 系统配置 ==========
+
+export interface PlatformProfile {
+  id: string;
+  name: string;
+  platform: string | null;
+  dedupe_config: Record<string, unknown> | null;
+  target_resolution: string | null;
+  target_bitrate: string | null;
+  max_duration: number | null;
+  created_at: string;
+}
+
+export interface SystemConfig {
+  key: string;
+  value: unknown;
+  updated_at: string;
+}
+
+// ========== 数据看板 ==========
 
 export interface DashboardOverview {
   today_revenue: number;
   week_revenue: number;
   total_play: number;
   total_uv: number;
+  today_uv: number;
   ecpm: number;
   revenue_per_uv: number;
-  today_revenue_change?: number;
-  week_revenue_change?: number;
-  total_play_change?: number;
+  date: string;
 }
 
-export interface DashboardTrend {
-  dates: string[];
-  revenue: number[];
-  play_count: number[];
-  uv: number[];
-  ecpm: number[];
+export interface TrendPoint {
+  date: string;
+  play_count: number;
+  like_count: number;
+  comment_count: number;
+  share_count: number;
+  jump_click_count: number;
+  attributed_revenue: number;
+  revenue: number;
+  impression_count: number;
+  ecpm: number;
 }
 
 export interface FunnelData {
-  play: number;
-  jump: number;
+  date: string;
+  total_play: number;
+  jump_click: number;
   jump_rate: number;
-  mini_uv: number;
+  mini_program_uv: number;
+  drama_play_uv: number;
   play_rate: number;
-  ad_impression: number;
+  ad_exposure_uv: number;
   exposure_rate: number;
   revenue: number;
   revenue_per_1000_play: number;
@@ -311,11 +244,11 @@ export interface FunnelData {
 
 export interface VideoMetric {
   id: string;
-  publish_task_id?: string;
-  video_id?: string;
-  title: string;
-  publish_date: string;
-  account_id: string;
+  publish_task_id: string | null;
+  video_id: string | null;
+  title: string | null;
+  publish_date: string | null;
+  account_id: string | null;
   play_count: number;
   finish_rate: number;
   like_count: number;
@@ -323,33 +256,38 @@ export interface VideoMetric {
   share_count: number;
   favorite_count: number;
   social_recommend_ratio: number;
+  social_recommend_play: number;
+  friend_recommend_play: number;
   jump_click_count: number;
   jump_click_rate: number;
   attributed_uv: number;
   attributed_revenue: number;
-  content_type?: string;
-  drama_id?: string;
-  traffic_method?: string;
-  publish_time_slot?: string;
-  play_level?: string;
+  content_type: string | null;
+  drama_id: string | null;
+  traffic_method: string | null;
+  publish_time_slot: string | null;
+  play_level: string | null;
   production_cost: number;
+  recorded_at: string;
+  updated_at: string;
 }
 
 export interface MiniProgramMetric {
   id: string;
-  date: string;
-  account_id: string;
+  date: string | null;
+  account_id: string | null;
   uv: number;
   new_user_count: number;
   drama_play_count: number;
   avg_play_duration: number;
   drama_finish_rate: number;
+  recorded_at: string | null;
 }
 
 export interface AdMetric {
   id: string;
-  date: string;
-  account_id: string;
+  date: string | null;
+  account_id: string | null;
   impression_count: number;
   click_count: number;
   ctr: number;
@@ -359,41 +297,18 @@ export interface AdMetric {
   reward_video_revenue: number;
   interstitial_impression: number;
   interstitial_revenue: number;
+  recorded_at: string | null;
 }
 
 export interface DramaMetric {
   id: string;
-  date: string;
-  drama_id: string;
-  account_id: string;
+  date: string | null;
+  drama_id: string | null;
+  account_id: string | null;
   uv: number;
   play_count: number;
   finish_rate: number;
   ad_impression: number;
   ad_revenue: number;
-}
-
-export interface DashboardConfig {
-  accounts: Array<{
-    id: string;
-    name: string;
-    platform: string;
-    mini_program_id: string;
-  }>;
-  dramas: Array<{
-    id: string;
-    name: string;
-    episode_count: number;
-    mini_program_drama_id: string;
-  }>;
-  attribution: {
-    method: 'channel_param' | 'indirect';
-    time_window_days: number;
-    default_uv_revenue: number;
-  };
-  alerts: {
-    revenue_drop_percent: number;
-    ecpm_min_value: number;
-    jump_rate_min_percent: number;
-  };
+  recorded_at: string | null;
 }

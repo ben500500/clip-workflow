@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, and_, desc
+from sqlalchemy import select, and_, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -177,6 +177,51 @@ async def create_publish_task(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Slice output not found")
 
+    # Enforce publish profile limits (daily cap + min interval)
+    profile_result = await db.execute(
+        select(PublishProfile).where(
+            PublishProfile.platform == data.platform,
+            PublishProfile.account_name == data.account_name,
+        )
+    )
+    profile = profile_result.scalar_one_or_none()
+    if profile:
+        today = datetime.utcnow().date()
+        today_start = datetime(today.year, today.month, today.day)
+        daily_count = (
+            await db.execute(
+                select(func.count(PublishTask.id)).where(
+                    PublishTask.platform == data.platform,
+                    PublishTask.account_name == data.account_name,
+                    PublishTask.created_at >= today_start,
+                )
+            )
+        ).scalar() or 0
+        if profile.max_daily_publish and daily_count >= profile.max_daily_publish:
+            raise HTTPException(
+                status_code=429,
+                detail=f"已达今日发布上限（{profile.max_daily_publish} 条），请明天再试",
+            )
+        if profile.min_interval_seconds:
+            last_task = (
+                await db.execute(
+                    select(PublishTask)
+                    .where(
+                        PublishTask.platform == data.platform,
+                        PublishTask.account_name == data.account_name,
+                    )
+                    .order_by(PublishTask.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if last_task and last_task.created_at:
+                elapsed = (datetime.utcnow() - last_task.created_at).total_seconds()
+                if elapsed < profile.min_interval_seconds:
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"发布间隔过短，请 {int(profile.min_interval_seconds - elapsed)} 秒后再试",
+                    )
+
     task = PublishTask(
         output_id=output_uuid,
         platform=data.platform,
@@ -274,9 +319,9 @@ async def confirm_publish_task(
             detail=f"Task status is '{task.status}', expected 'pending_confirm'",
         )
 
-    # Trigger the actual publish via Celery task
-    from app.celery.tasks import task_publish_video
-    celery_result = task_publish_video.delay(str(task.id))
+    # Trigger the confirmation (clicks publish in the prepared tab) via Celery
+    from app.celery.tasks import confirm_publish_worker
+    celery_result = confirm_publish_worker.delay(str(task.id))
     task.celery_task_id = celery_result.id
     task.status = "publishing"
 

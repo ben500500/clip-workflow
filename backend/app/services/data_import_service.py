@@ -95,6 +95,58 @@ def _safe_float(value, default=0.0) -> float:
         return default
 
 
+async def _upsert_video_metric(
+    db: AsyncSession,
+    video_id: str,
+    publish_date,
+    account_id: Optional[uuid.UUID],
+    values: dict,
+):
+    """Update an existing video metric row or insert a new one."""
+    from sqlalchemy import select
+
+    filters = [
+        VideoMetric.video_id == video_id,
+        VideoMetric.publish_date == publish_date,
+    ]
+    if account_id:
+        filters.append(VideoMetric.account_id == account_id)
+    result = await db.execute(select(VideoMetric).where(*filters))
+    metric = result.scalar_one_or_none()
+    if metric:
+        for key, value in values.items():
+            setattr(metric, key, value)
+        return metric
+    metric = VideoMetric(video_id=video_id, publish_date=publish_date, account_id=account_id, **values)
+    db.add(metric)
+    return metric
+
+
+async def _upsert_metric(
+    db: AsyncSession,
+    model,
+    date_field: str,
+    record_date,
+    account_id: Optional[uuid.UUID],
+    values: dict,
+):
+    """Generic upsert keyed by (date, account_id) for daily metric tables."""
+    from sqlalchemy import select
+
+    filters = [getattr(model, date_field) == record_date]
+    if account_id:
+        filters.append(model.account_id == account_id)
+    result = await db.execute(select(model).where(*filters))
+    metric = result.scalar_one_or_none()
+    if metric:
+        for key, value in values.items():
+            setattr(metric, key, value)
+        return metric
+    metric = model(**values, **{date_field: record_date, "account_id": account_id})
+    db.add(metric)
+    return metric
+
+
 async def import_video_metrics(
     file,
     account_id: Optional[uuid.UUID],
@@ -139,32 +191,35 @@ async def import_video_metrics(
                     except ValueError:
                         pass
 
-                metric = VideoMetric(
-                    video_id=str(row.get("video_id", "")),
-                    title=str(row.get("title", ""))[:500],
-                    publish_date=publish_date,
-                    account_id=account_id,
-                    play_count=_safe_int(row.get("play_count")),
-                    finish_rate=_safe_float(row.get("finish_rate")),
-                    like_count=_safe_int(row.get("like_count")),
-                    comment_count=_safe_int(row.get("comment_count")),
-                    share_count=_safe_int(row.get("share_count")),
-                    favorite_count=_safe_int(row.get("favorite_count")),
-                    social_recommend_ratio=_safe_float(row.get("social_recommend_ratio")),
-                    social_recommend_play=_safe_int(row.get("social_recommend_play")),
-                    friend_recommend_play=_safe_int(row.get("friend_recommend_play")),
-                    jump_click_count=_safe_int(row.get("jump_click_count")),
-                    jump_click_rate=_safe_float(row.get("jump_click_rate")),
-                    attributed_uv=_safe_int(row.get("attributed_uv")),
-                    attributed_revenue=_safe_float(row.get("attributed_revenue")),
-                    content_type=str(row.get("content_type", ""))[:50] if pd.notna(row.get("content_type")) else None,
-                    drama_id=drama_id,
-                    traffic_method=str(row.get("traffic_method", ""))[:50] if pd.notna(row.get("traffic_method")) else None,
-                    publish_time_slot=str(row.get("publish_time_slot", ""))[:10] if pd.notna(row.get("publish_time_slot")) else None,
-                    play_level=str(row.get("play_level", ""))[:10] if pd.notna(row.get("play_level")) else None,
-                    production_cost=_safe_float(row.get("production_cost")),
+                values = {
+                    "title": str(row.get("title", ""))[:500],
+                    "play_count": _safe_int(row.get("play_count")),
+                    "finish_rate": _safe_float(row.get("finish_rate")),
+                    "like_count": _safe_int(row.get("like_count")),
+                    "comment_count": _safe_int(row.get("comment_count")),
+                    "share_count": _safe_int(row.get("share_count")),
+                    "favorite_count": _safe_int(row.get("favorite_count")),
+                    "social_recommend_ratio": _safe_float(row.get("social_recommend_ratio")),
+                    "social_recommend_play": _safe_int(row.get("social_recommend_play")),
+                    "friend_recommend_play": _safe_int(row.get("friend_recommend_play")),
+                    "jump_click_count": _safe_int(row.get("jump_click_count")),
+                    "jump_click_rate": _safe_float(row.get("jump_click_rate")),
+                    "attributed_uv": _safe_int(row.get("attributed_uv")),
+                    "attributed_revenue": _safe_float(row.get("attributed_revenue")),
+                    "content_type": str(row.get("content_type", ""))[:50] if pd.notna(row.get("content_type")) else None,
+                    "drama_id": drama_id,
+                    "traffic_method": str(row.get("traffic_method", ""))[:50] if pd.notna(row.get("traffic_method")) else None,
+                    "publish_time_slot": str(row.get("publish_time_slot", ""))[:10] if pd.notna(row.get("publish_time_slot")) else None,
+                    "play_level": str(row.get("play_level", ""))[:10] if pd.notna(row.get("play_level")) else None,
+                    "production_cost": _safe_float(row.get("production_cost")),
+                }
+                await _upsert_video_metric(
+                    db,
+                    str(row.get("video_id", "")),
+                    publish_date,
+                    account_id,
+                    values,
                 )
-                db.add(metric)
                 imported_count += 1
 
             except Exception as e:
@@ -217,16 +272,20 @@ async def import_mini_program_metrics(
                     import_errors.append(f"行 {idx + 2}: 无效的 date")
                     continue
 
-                metric = MiniProgramMetric(
-                    date=record_date,
-                    account_id=account_id,
-                    uv=_safe_int(row.get("uv")),
-                    new_user_count=_safe_int(row.get("new_user_count")),
-                    drama_play_count=_safe_int(row.get("drama_play_count")),
-                    avg_play_duration=_safe_float(row.get("avg_play_duration")),
-                    drama_finish_rate=_safe_float(row.get("drama_finish_rate")),
+                await _upsert_metric(
+                    db,
+                    MiniProgramMetric,
+                    "date",
+                    record_date,
+                    account_id,
+                    {
+                        "uv": _safe_int(row.get("uv")),
+                        "new_user_count": _safe_int(row.get("new_user_count")),
+                        "drama_play_count": _safe_int(row.get("drama_play_count")),
+                        "avg_play_duration": _safe_float(row.get("avg_play_duration")),
+                        "drama_finish_rate": _safe_float(row.get("drama_finish_rate")),
+                    },
                 )
-                db.add(metric)
                 imported_count += 1
 
             except Exception as e:
@@ -279,20 +338,24 @@ async def import_ad_metrics(
                     import_errors.append(f"行 {idx + 2}: 无效的 date")
                     continue
 
-                metric = AdMetric(
-                    date=record_date,
-                    account_id=account_id,
-                    impression_count=_safe_int(row.get("impression_count")),
-                    click_count=_safe_int(row.get("click_count")),
-                    ctr=_safe_float(row.get("ctr")),
-                    ecpm=_safe_float(row.get("ecpm")),
-                    revenue=_safe_float(row.get("revenue")),
-                    reward_video_impression=_safe_int(row.get("reward_video_impression")),
-                    reward_video_revenue=_safe_float(row.get("reward_video_revenue")),
-                    interstitial_impression=_safe_int(row.get("interstitial_impression")),
-                    interstitial_revenue=_safe_float(row.get("interstitial_revenue")),
+                await _upsert_metric(
+                    db,
+                    AdMetric,
+                    "date",
+                    record_date,
+                    account_id,
+                    {
+                        "impression_count": _safe_int(row.get("impression_count")),
+                        "click_count": _safe_int(row.get("click_count")),
+                        "ctr": _safe_float(row.get("ctr")),
+                        "ecpm": _safe_float(row.get("ecpm")),
+                        "revenue": _safe_float(row.get("revenue")),
+                        "reward_video_impression": _safe_int(row.get("reward_video_impression")),
+                        "reward_video_revenue": _safe_float(row.get("reward_video_revenue")),
+                        "interstitial_impression": _safe_int(row.get("interstitial_impression")),
+                        "interstitial_revenue": _safe_float(row.get("interstitial_revenue")),
+                    },
                 )
-                db.add(metric)
                 imported_count += 1
 
             except Exception as e:

@@ -1,39 +1,31 @@
 import client from './client';
-import type { ApiResponse, IntervalDetectionConfig, DetectedInterval } from '../types';
+import type { DetectedInterval } from '../types';
 
 export const intervalApi = {
-  /** 触发区间检测 */
-  detect(episodeId: number, config?: Partial<IntervalDetectionConfig>) {
-    return client.post<ApiResponse<{ task_id: number }>>(`/intervals/detect`, {
-      episode_id: episodeId,
-      config,
-    });
-  },
+  detect: (episodeId: string, mode: string, config?: Record<string, unknown>) =>
+    client.post(`/episodes/${episodeId}/intervals/detect`, { mode, config }) as Promise<{
+      celery_task_id: string;
+      message: string;
+    }>,
 
-  /** 获取检测到的区间列表 */
-  getIntervals(episodeId: number) {
-    return client.get<ApiResponse<DetectedInterval[]>>(`/intervals`, {
-      params: { episode_id: episodeId },
-    });
-  },
+  list: (episodeId: string) =>
+    client.get(`/episodes/${episodeId}/intervals`) as Promise<DetectedInterval[]>,
 
-  /** 更新区间状态 */
-  updateInterval(id: number, data: Partial<DetectedInterval>) {
-    return client.put<ApiResponse<DetectedInterval>>(`/intervals/${id}`, data);
-  },
+  create: (data: {
+    episode_id: string;
+    interval_type: string;
+    start_time: number;
+    end_time: number;
+    confidence?: number;
+    label?: string;
+    enabled?: boolean;
+    source?: string;
+  }) => client.post('/intervals', data) as Promise<DetectedInterval>,
 
-  /** 批量更新区间状态 */
-  batchUpdateIntervals(data: { ids: number[]; status: string; adjusted_start?: number; adjusted_end?: number }) {
-    return client.post<ApiResponse<null>>(`/intervals/batch`, data);
-  },
+  update: (id: string, data: Partial<DetectedInterval>) =>
+    client.put(`/intervals/${id}`, data) as Promise<DetectedInterval>,
 
-  /** 获取区间检测任务状态 */
-  getTaskStatus(taskId: number) {
-    return client.get<ApiResponse<{
-      task_id: number;
-      status: string;
-      progress: number;
-      intervals_count: number;
-    }>>(`/intervals/tasks/${taskId}`);
-  },
+  remove: (id: string) => client.delete(`/intervals/${id}`) as Promise<void>,
+
+  toggle: (id: string) => client.put(`/intervals/${id}/toggle`) as Promise<DetectedInterval>,
 };

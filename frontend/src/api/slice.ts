@@ -1,46 +1,34 @@
 import client from './client';
-import type { ApiResponse, SliceTask, SliceOutput, DedupeConfig } from '../types';
-
-export interface SliceRequest {
-  episode_id: number;
-  candidate_ids?: number[];
-  interval_ids?: number[];
-  dedupe_config?: DedupeConfig;
-  output_dir?: string;
-}
+import type { ApiList, DedupeConfig, SliceOutput, SliceTask } from '../types';
 
 export const sliceApi = {
-  /** 启动切片任务 */
-  start(data: SliceRequest) {
-    return client.post<ApiResponse<{ task_id: number }>>('/slice/start', data);
-  },
+  run: (
+    episodeId: string,
+    mode: string,
+    data?: { dedupe_config?: DedupeConfig; video_path?: string }
+  ) =>
+    client.post(`/episodes/${episodeId}/slice/run`, { mode, ...data }) as Promise<{
+      task_id: string;
+      celery_task_id: string;
+      message: string;
+    }>,
 
-  /** 获取切片任务列表 */
-  getTasks(episodeId: number) {
-    return client.get<ApiResponse<SliceTask[]>>('/slice/tasks', {
-      params: { episode_id: episodeId },
-    });
-  },
+  listTasks: (episodeId: string) =>
+    client.get(`/episodes/${episodeId}/slice/tasks`) as Promise<SliceTask[]>,
 
-  /** 获取切片任务详情 */
-  getTaskDetail(taskId: number) {
-    return client.get<ApiResponse<SliceTask>>(`/slice/tasks/${taskId}`);
-  },
+  getTask: (taskId: string) =>
+    client.get(`/slice-tasks/${taskId}`) as Promise<SliceTask>,
 
-  /** 获取切片输出列表 */
-  getOutputs(taskId: number) {
-    return client.get<ApiResponse<SliceOutput[]>>(`/slice/outputs`, {
-      params: { task_id: taskId },
-    });
-  },
+  getOutputs: (taskId: string) =>
+    client.get(`/slice-tasks/${taskId}/outputs`) as Promise<SliceOutput[]>,
 
-  /** 取消切片任务 */
-  cancelTask(taskId: number) {
-    return client.post<ApiResponse<null>>(`/slice/tasks/${taskId}/cancel`);
-  },
+  cancel: (taskId: string) =>
+    client.post(`/slice-tasks/${taskId}/cancel`) as Promise<{ message: string }>,
 
-  /** 重试失败的切片 */
-  retryFailed(taskId: number) {
-    return client.post<ApiResponse<null>>(`/slice/tasks/${taskId}/retry`);
-  },
+  retry: (taskId: string) =>
+    client.post(`/slice-tasks/${taskId}/retry`) as Promise<{
+      task_id: string;
+      celery_task_id: string;
+      message: string;
+    }>,
 };

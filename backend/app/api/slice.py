@@ -1,3 +1,4 @@
+import os
 import uuid
 from datetime import datetime
 from typing import List, Optional
@@ -108,14 +109,18 @@ async def run_slice(
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
 
-    video_path = data.video_path or (
-        f"/data/videos/{episode.source_file_key}" if episode.source_file_key else None
-    )
-    if not video_path:
+    if data.video_path and not os.path.isfile(data.video_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"video_path 指向的文件不存在: {data.video_path}",
+        )
+    source_file_key = episode.source_file_key
+    if not data.video_path and not source_file_key:
         raise HTTPException(
             status_code=400,
             detail="Episode has no source file. Upload a video first or provide video_path.",
         )
+    video_path = data.video_path or f"/data/videos/{source_file_key}"
 
     # Generate cutlist from accepted clips
     clips_result = await db.execute(
@@ -160,6 +165,7 @@ async def run_slice(
         mode=data.mode,
         dedupe_config=data.dedupe_config,
         task_id=str(slice_task.id),
+        source_file_key=source_file_key,
     )
 
     # Update slice task with celery task ID
@@ -270,6 +276,72 @@ async def get_slice_outputs(
         result_list.append(_serialize_output(output, url))
 
     return result_list
+
+
+@router.post("/slice-tasks/{task_id}/retry", response_model=SliceRunResponse)
+async def retry_slice_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Retry a failed or cancelled slice task by re-dispatching it."""
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid task ID format")
+
+    result = await db.execute(select(SliceTask).where(SliceTask.id == tid))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Slice task not found")
+
+    if task.status not in ("failed", "cancelled", "completed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot retry task with status '{task.status}'",
+        )
+
+    episode = await db.execute(select(Episode).where(Episode.id == task.episode_id))
+    ep = episode.scalar_one_or_none()
+    if not ep:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    source_file_key = ep.source_file_key
+    if not source_file_key:
+        raise HTTPException(status_code=400, detail="Episode has no source file")
+
+    new_task = SliceTask(
+        episode_id=task.episode_id,
+        mode=task.mode,
+        cutlist=task.cutlist,
+        intervals=task.intervals,
+        dedupe_config=task.dedupe_config,
+        status="pending",
+        progress=0.0,
+    )
+    db.add(new_task)
+    await db.flush()
+    await db.refresh(new_task)
+
+    celery = celery_slice_task.delay(
+        episode_id=str(task.episode_id),
+        source_path=f"/data/videos/{source_file_key}",
+        cutlist=task.cutlist or "",
+        intervals=task.intervals or "",
+        mode=task.mode or "fast",
+        dedupe_config=task.dedupe_config,
+        task_id=str(new_task.id),
+        source_file_key=source_file_key,
+    )
+    new_task.celery_task_id = celery.id
+    new_task.status = "running"
+    new_task.started_at = datetime.utcnow()
+    await db.flush()
+
+    return SliceRunResponse(
+        task_id=str(new_task.id),
+        celery_task_id=celery.id,
+        message="Slice task re-dispatched",
+    )
 
 
 @router.post("/slice-tasks/{task_id}/cancel", response_model=dict)

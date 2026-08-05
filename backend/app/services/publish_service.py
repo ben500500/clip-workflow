@@ -65,8 +65,9 @@ class VideoChannelPublisher:
             async with async_playwright() as p:
                 # Connect to existing Chrome or launch new browser
                 if self.chrome_debug_port:
+                    from app.config import settings as s
                     self.browser = await p.chromium.connect_over_cdp(
-                        f"http://localhost:{self.chrome_debug_port}"
+                        f"http://{s.CHROME_DEBUG_HOST}:{self.chrome_debug_port}"
                     )
                     context = self.browser.contexts[0] if self.browser.contexts else await self.browser.new_context()
                 else:
@@ -213,7 +214,20 @@ class VideoChannelPublisher:
 
     async def _set_cover(self, cover_file_key: str):
         """Set the video cover image."""
-        # Find cover upload section and upload the cover file
+        # Cover key is a MinIO object key; download it locally first.
+        local_cover = cover_file_key
+        if cover_file_key and not os.path.isfile(cover_file_key):
+            from app.services.minio_service import download_to_file
+
+            local_cover = os.path.join(
+                tempfile.gettempdir(),
+                f"cover_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.jpg",
+            )
+            ok = await download_to_file("raw-footage", cover_file_key, local_cover)
+            if not ok:
+                logger.warning("Failed to download cover image from MinIO: %s", cover_file_key)
+                return
+
         cover_btn = await self.page.query_selector(
             "[class*='cover'] [class*='upload'], [class*='cover'] button"
         )
@@ -221,7 +235,7 @@ class VideoChannelPublisher:
             async with self.page.expect_file_chooser() as fc_info:
                 await cover_btn.click()
             file_chooser = await fc_info.value
-            await file_chooser.set_files(cover_file_key)
+            await file_chooser.set_files(local_cover)
             await asyncio.sleep(2)
 
     async def _attach_mini_program(self, link: str):
@@ -281,8 +295,9 @@ class VideoChannelPublisher:
 
             async with async_playwright() as p:
                 if self.chrome_debug_port:
+                    from app.config import settings as s
                     self.browser = await p.chromium.connect_over_cdp(
-                        f"http://localhost:{self.chrome_debug_port}"
+                        f"http://{s.CHROME_DEBUG_HOST}:{self.chrome_debug_port}"
                     )
                     context = self.browser.contexts[0] if self.browser.contexts else await self.browser.new_context()
                 else:

@@ -1,3 +1,4 @@
+import os
 import uuid
 from typing import List, Optional
 
@@ -96,14 +97,18 @@ async def detect_intervals(
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
 
-    video_path = data.video_path or (
-        f"/data/videos/{episode.source_file_key}" if episode.source_file_key else None
-    )
-    if not video_path:
+    if data.video_path and not os.path.isfile(data.video_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"video_path 指向的文件不存在: {data.video_path}",
+        )
+    source_file_key = episode.source_file_key
+    if not data.video_path and not source_file_key:
         raise HTTPException(
             status_code=400,
             detail="Episode has no source file. Upload a video first or provide video_path.",
         )
+    video_path = data.video_path or f"/data/videos/{source_file_key}"
 
     # Dispatch Celery task
     task = celery_detect_task.delay(
@@ -111,6 +116,7 @@ async def detect_intervals(
         video_path=video_path,
         mode=data.mode,
         config=data.config or {},
+        source_file_key=source_file_key,
     )
 
     return DetectResponse(

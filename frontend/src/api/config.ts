@@ -1,34 +1,20 @@
 import client from './client';
-import type { ApiResponse, SystemConfig, PlatformProfile } from '../types';
+import type { PlatformProfile, SystemConfig } from '../types';
 
 export const configApi = {
-  /** 获取系统配置 */
-  getSystemConfig() {
-    return client.get<ApiResponse<SystemConfig>>('/config/system');
-  },
+  getAll: () => client.get('/config') as Promise<SystemConfig[]>,
 
-  /** 更新系统配置 */
-  updateSystemConfig(data: Partial<SystemConfig>) {
-    return client.put<ApiResponse<SystemConfig>>('/config/system', data);
-  },
+  update: (key: string, value: unknown) =>
+    client.put('/config', { key, value }) as Promise<SystemConfig>,
 
-  /** 获取平台配置列表 */
-  getPlatformProfiles() {
-    return client.get<ApiResponse<PlatformProfile[]>>('/config/platforms');
-  },
+  getPlatformProfiles: () => client.get('/config/platform-profiles') as Promise<PlatformProfile[]>,
 
-  /** 创建平台配置 */
-  createPlatformProfile(data: Partial<PlatformProfile>) {
-    return client.post<ApiResponse<PlatformProfile>>('/config/platforms', data);
-  },
+  createPlatformProfile: (data: Partial<PlatformProfile>) =>
+    client.post('/config/platform-profiles', data) as Promise<PlatformProfile>,
 
-  /** 更新平台配置 */
-  updatePlatformProfile(id: number, data: Partial<PlatformProfile>) {
-    return client.put<ApiResponse<PlatformProfile>>(`/config/platforms/${id}`, data);
-  },
+  updatePlatformProfile: (id: string, data: Partial<PlatformProfile>) =>
+    client.put(`/config/platform-profiles/${id}`, data) as Promise<PlatformProfile>,
 
-  /** 删除平台配置 */
-  deletePlatformProfile(id: number) {
-    return client.delete<ApiResponse<null>>(`/config/platforms/${id}`);
-  },
+  deletePlatformProfile: (id: string) =>
+    client.delete(`/config/platform-profiles/${id}`) as Promise<void>,
 };

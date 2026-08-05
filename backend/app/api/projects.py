@@ -4,7 +4,8 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -74,6 +75,11 @@ class EpisodeListResponse(BaseModel):
 # ---------- Helper ----------
 
 def _serialize_project(project: Project) -> dict:
+    # 异步会话下访问未预加载的关系会抛 MissingGreenlet，这里做防御处理
+    try:
+        episode_count = len(project.episodes)
+    except Exception:
+        episode_count = 0
     return {
         "id": str(project.id),
         "name": project.name,
@@ -82,7 +88,7 @@ def _serialize_project(project: Project) -> dict:
         "config": project.config or {},
         "created_at": project.created_at.isoformat() if project.created_at else "",
         "updated_at": project.updated_at.isoformat() if project.updated_at else "",
-        "episode_count": len(project.episodes) if project.episodes else 0,
+        "episode_count": episode_count,
     }
 
 
@@ -119,18 +125,75 @@ async def create_project(data: ProjectCreate, db: AsyncSession = Depends(get_db)
     return _serialize_project(project)
 
 
-@router.get("/projects", response_model=List[ProjectResponse])
+@router.get("/projects")
 async def list_projects(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    search: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all projects."""
-    result = await db.execute(
-        select(Project).offset(skip).limit(limit).order_by(Project.created_at.desc())
-    )
-    projects = result.scalars().all()
-    return [_serialize_project(p) for p in projects]
+    """List projects with search, status filter and pagination."""
+    filters = []
+    if search:
+        filters.append(Project.name.ilike(f"%{search}%"))
+    if status:
+        filters.append(Project.status == status)
+
+    count_query = select(func.count(Project.id))
+    if filters:
+        count_query = count_query.where(*filters)
+    total = (await db.execute(count_query)).scalar() or 0
+
+    query = select(Project).options(selectinload(Project.episodes))
+    if filters:
+        query = query.where(*filters)
+    query = query.order_by(Project.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    projects = (await db.execute(query)).scalars().all()
+
+    return {
+        "items": [_serialize_project(p) for p in projects],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@router.get("/projects/stats")
+async def project_stats(db: AsyncSession = Depends(get_db)):
+    """Return dashboard statistics for projects/episodes/slices."""
+    from app.models.models import Episode, SliceTask
+
+    total_projects = (await db.execute(select(func.count(Project.id)))).scalar() or 0
+    active_projects = (
+        await db.execute(
+            select(func.count(Project.id)).where(Project.status.in_(["processing", "completed"]))
+        )
+    ).scalar() or 0
+    total_episodes = (await db.execute(select(func.count(Episode.id)))).scalar() or 0
+    processed_episodes = (
+        await db.execute(
+            select(func.count(Episode.id)).where(
+                Episode.status.in_(["clips_detected", "intervals_detected", "slicing", "completed"])
+            )
+        )
+    ).scalar() or 0
+    total_slices = (await db.execute(select(func.count(SliceTask.id)))).scalar() or 0
+
+    recent = (
+        await db.execute(
+            select(Project).options(selectinload(Project.episodes)).order_by(Project.updated_at.desc()).limit(5)
+        )
+    ).scalars().all()
+
+    return {
+        "total_projects": total_projects,
+        "active_projects": active_projects,
+        "total_episodes": total_episodes,
+        "processed_episodes": processed_episodes,
+        "total_slices": total_slices,
+        "recent_projects": [_serialize_project(p) for p in recent],
+    }
 
 
 @router.get("/projects/{project_id}", response_model=ProjectResponse)
@@ -141,7 +204,9 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid project ID format")
 
-    result = await db.execute(select(Project).where(Project.id == uid))
+    result = await db.execute(
+        select(Project).options(selectinload(Project.episodes)).where(Project.id == uid)
+    )
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")

@@ -1,261 +1,172 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
-  Card,
-  Typography,
-  Spin,
-  Alert,
-  Button,
-  Space,
-  Row,
-  Col,
-  Tag,
-  Table,
-  Breadcrumb,
-  message,
-  Descriptions,
-  Empty,
+  Card, Table, Tag, Button, Space, Typography, Spin, Alert, message, Select, Progress, Popconfirm,
 } from 'antd';
-import {
-  ArrowLeftOutlined,
-  ScissorOutlined,
-  ReloadOutlined,
-  PlayCircleOutlined,
-  PauseCircleOutlined,
-} from '@ant-design/icons';
+import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons';
+import { useParams, useNavigate } from 'react-router-dom';
 import { sliceApi } from '../api/slice';
-import TaskProgressComponent from '../components/TaskProgress';
-import type { SliceTask } from '../types';
-import {
-  formatDateTime,
-  formatRelativeTime,
-  getStatusColor,
-  getStatusLabel,
-} from '../utils/format';
+import type { SliceOutput, SliceTask } from '../types';
+import { formatDateTime, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
-const { Title, Text } = Typography;
+const { Title } = Typography;
 
-const SliceTasksPage: React.FC = () => {
+const SliceTasks: React.FC = () => {
   const { episodeId } = useParams<{ episodeId: string }>();
   const navigate = useNavigate();
-  const eid = Number(episodeId);
-
   const [tasks, setTasks] = useState<SliceTask[]>([]);
+  const [outputs, setOutputs] = useState<SliceOutput[]>([]);
+  const [currentTask, setCurrentTask] = useState<string | null>(null);
+  const [mode, setMode] = useState('fast');
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedTask, setSelectedTask] = useState<SliceTask | null>(null);
+  const [running, setRunning] = useState(false);
+
+  const fetchTasks = React.useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    try {
+      const list = await sliceApi.listTasks(episodeId || '');
+      setTasks(list);
+    } catch (err: unknown) {
+      if (!silent) message.error(err instanceof Error ? err.message : '获取任务失败');
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [episodeId]);
 
   useEffect(() => {
     fetchTasks();
-  }, [eid]);
+    const timer = window.setInterval(() => fetchTasks(true), 5000);
+    return () => window.clearInterval(timer);
+  }, [fetchTasks]);
 
-  const fetchTasks = async () => {
-    setLoading(true);
-    setError(null);
+  const runSlice = async () => {
+    setRunning(true);
     try {
-      const res = await sliceApi.getTasks(eid);
-      setTasks(res.data);
+      const res = await sliceApi.run(episodeId || '', mode, {});
+      message.success(res.message);
+      fetchTasks();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '获取任务列表失败');
+      message.error(err instanceof Error ? err.message : '启动切片失败');
     } finally {
-      setLoading(false);
+      setRunning(false);
     }
   };
 
-  const handleCancel = async (taskId: number) => {
+  const showOutputs = async (taskId: string) => {
+    setCurrentTask(taskId);
     try {
-      await sliceApi.cancelTask(taskId);
-      message.success('任务已取消');
-      fetchTasks();
+      const list = await sliceApi.getOutputs(taskId);
+      setOutputs(list);
     } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : '取消任务失败');
-    }
-  };
-
-  const handleRetry = async (taskId: number) => {
-    try {
-      await sliceApi.retryFailed(taskId);
-      message.success('已重试失败项');
-      fetchTasks();
-    } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : '重试失败');
+      message.error(err instanceof Error ? err.message : '获取输出失败');
     }
   };
 
   const columns = [
-    {
-      title: '任务ID',
-      dataIndex: 'id',
-      key: 'id',
-      width: 80,
-    },
+    { title: '模式', dataIndex: 'mode', key: 'mode', width: 100 },
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 100,
-      render: (status: string) => (
-        <Tag color={getStatusColor(status)}>{getStatusLabel(status)}</Tag>
+      width: 120,
+      render: (s: string, t: SliceTask) => (
+        <Space direction="vertical" size={0}>
+          <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>
+          {t.status === 'running' && <Progress percent={t.progress} size="small" style={{ width: 100 }} />}
+        </Space>
       ),
     },
-    {
-      title: '进度',
-      dataIndex: 'progress',
-      key: 'progress',
-      width: 150,
-      render: (progress: number, record: SliceTask) => (
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>{progress}%</span>
-            <span>
-              {record.completed_clips}/{record.total_clips}
-            </span>
-          </div>
-        </div>
-      ),
-    },
-    {
-      title: '总剪辑数',
-      dataIndex: 'total_clips',
-      key: 'total_clips',
-      width: 100,
-    },
-    {
-      title: '已完成',
-      dataIndex: 'completed_clips',
-      key: 'completed_clips',
-      width: 80,
-      render: (val: number) => <span style={{ color: '#52c41a' }}>{val}</span>,
-    },
-    {
-      title: '失败',
-      dataIndex: 'failed_clips',
-      key: 'failed_clips',
-      width: 80,
-      render: (val: number) => (
-        <span style={{ color: val > 0 ? '#ff4d4f' : undefined }}>{val}</span>
-      ),
-    },
-    {
-      title: '创建时间',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      width: 160,
-      render: (date: string) => formatDateTime(date),
-    },
+    { title: '输出数', dataIndex: 'output_count', key: 'output_count', width: 90 },
+    { title: '错误信息', dataIndex: 'error_message', key: 'error_message', ellipsis: true, render: (e: string) => e || '-' },
+    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170, render: (d: string) => formatDateTime(d) },
     {
       title: '操作',
       key: 'action',
-      width: 200,
-      render: (_: unknown, record: SliceTask) => (
+      width: 240,
+      render: (_: unknown, t: SliceTask) => (
         <Space size="small">
-          <Button
-            type="link"
-            size="small"
-            icon={<PlayCircleOutlined />}
-            onClick={() => setSelectedTask(record)}
-          >
-            详情
-          </Button>
-          {record.status === 'running' && (
-            <Button
-              type="link"
-              size="small"
-              danger
-              icon={<PauseCircleOutlined />}
-              onClick={() => handleCancel(record.id)}
-            >
-              取消
-            </Button>
-          )}
-          {record.status === 'failed' && (
-            <Button
-              type="link"
-              size="small"
-              onClick={() => handleRetry(record.id)}
-            >
-              重试
-            </Button>
+          <Button size="small" onClick={() => showOutputs(t.id)}>查看输出</Button>
+          {t.status === 'running' || t.status === 'pending' ? (
+            <Popconfirm title="确定取消该任务？" onConfirm={async () => {
+              try {
+                await sliceApi.cancel(t.id);
+                message.success('已取消');
+                fetchTasks();
+              } catch (err: unknown) {
+                message.error(err instanceof Error ? err.message : '取消失败');
+              }
+            }}>
+              <Button size="small" danger icon={<StopOutlined />}>取消</Button>
+            </Popconfirm>
+          ) : (
+            <Popconfirm title="确定重试该任务？" onConfirm={async () => {
+              try {
+                await sliceApi.retry(t.id);
+                message.success('已重新调度');
+                fetchTasks();
+              } catch (err: unknown) {
+                message.error(err instanceof Error ? err.message : '重试失败');
+              }
+            }}>
+              <Button size="small" icon={<ReloadOutlined />}>重试</Button>
+            </Popconfirm>
           )}
         </Space>
       ),
     },
   ];
 
-  if (loading) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 400 }}>
-        <Spin size="large" tip="加载中..." />
-      </div>
-    );
-  }
-
-  if (error) {
-    return <Alert type="error" message="加载失败" description={error} showIcon />;
-  }
+  const outputColumns = [
+    { title: '文件名', dataIndex: 'file_name', key: 'file_name' },
+    { title: '大小', dataIndex: 'file_size', key: 'file_size', width: 110, render: (s: number) => formatFileSize(s) },
+    { title: '时长', dataIndex: 'duration', key: 'duration', width: 90 },
+    {
+      title: '操作',
+      key: 'action',
+      width: 200,
+      render: (_: unknown, o: SliceOutput) => (
+        <Space size="small">
+          <Button size="small" onClick={() => {
+            if (!o.presigned_url) {
+              message.warning('暂无预览地址');
+              return;
+            }
+            window.open(o.presigned_url, '_blank');
+          }}>预览</Button>
+          <Button size="small" onClick={() => window.open(`/api/outputs/${o.id}/download`, '_blank')}>下载</Button>
+        </Space>
+      ),
+    },
+  ];
 
   return (
     <div>
-      <Breadcrumb
-        items={[
-          { title: <Link to="/projects">项目管理</Link> },
-          { title: <Link to={`/episodes/${eid}`}>剧集详情</Link> },
-          { title: '切片任务' },
-        ]}
-        style={{ marginBottom: 16 }}
-      />
-
-      <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
-        <Col>
-          <Space>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(`/episodes/${eid}`)}>
-              返回
-            </Button>
-            <Title level={4} style={{ margin: 0 }}>
-              切片任务 - 剧集 #{eid}
-            </Title>
-          </Space>
-        </Col>
-        <Col>
-          <Button icon={<ReloadOutlined />} onClick={fetchTasks}>
-            刷新
-          </Button>
-        </Col>
-      </Row>
-
-      {/* 选中任务的详情 */}
-      {selectedTask && (
-        <TaskProgressComponent
-          task={selectedTask}
-          visible
-          onCancel={() => {
-            handleCancel(selectedTask.id);
-            setSelectedTask(null);
-          }}
-          onRetry={() => {
-            handleRetry(selectedTask.id);
-            setSelectedTask(null);
-          }}
-        />
-      )}
-
-      {/* 任务列表 */}
-      <Card size="small" title="任务列表">
-        {tasks.length > 0 ? (
-          <Table
-            rowKey="id"
-            columns={columns}
-            dataSource={tasks}
-            size="middle"
-            pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 个任务` }}
-            scroll={{ x: 900 }}
+      <Space style={{ marginBottom: 16 }}>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(`/episodes/${episodeId}`)}>返回</Button>
+        <Title level={4} style={{ margin: 0 }}>切片任务</Title>
+      </Space>
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Space>
+          <Select value={mode} onChange={setMode} style={{ width: 140 }}
+            options={[
+              { value: 'fast', label: '快速模式' },
+              { value: 'dedupe', label: '去重模式' },
+              { value: 'scrub', label: '挖洞模式' },
+            ]}
           />
-        ) : (
-          <Empty description="暂无切片任务" />
-        )}
+          <Button type="primary" icon={<PlayCircleOutlined />} loading={running} onClick={runSlice}>新建切片任务</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => fetchTasks()}>刷新</Button>
+        </Space>
       </Card>
+      <Card size="small" title="任务列表" style={{ marginBottom: 16 }}>
+        <Table rowKey="id" columns={columns} dataSource={tasks} loading={loading} pagination={false} size="small" />
+      </Card>
+      {currentTask && (
+        <Card size="small" title={`输出文件（任务 ${currentTask}）`}>
+          <Table rowKey="id" columns={outputColumns} dataSource={outputs} pagination={false} size="small" />
+        </Card>
+      )}
     </div>
   );
 };
 
-export default SliceTasksPage;
+export default SliceTasks;
