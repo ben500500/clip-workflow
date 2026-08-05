@@ -151,12 +151,19 @@ def _to_contract_clips(raw_clips: list) -> list:
 # ----------------------- 真实流水线（后台执行） -----------------------
 
 def _run_asr(video_path: str, srt_path: Path, api_key: str) -> None:
-    """调用 qwen3-asr-flash 生成 SRT。"""
+    """按环境变量 AUTOCLIP_ASR_METHOD 选择 ASR 方式生成 SRT。
+
+    支持 aliyun_speech（默认，需 DASHSCOPE_API_KEY）与 whisper（本地 faster-whisper）。
+    whisper 无需 API Key；模型用 WHISPER_MODEL 选择（默认 small）。
+    """
+    method_name = os.getenv("AUTOCLIP_ASR_METHOD", "aliyun_speech").strip().lower()
+    method = SpeechRecognitionMethod(method_name)
     config = SpeechRecognitionConfig(
-        method=SpeechRecognitionMethod.ALIYUN_SPEECH,
+        method=method,
         output_format="srt",
     )
-    config.aliyun_access_key = api_key
+    if method == SpeechRecognitionMethod.ALIYUN_SPEECH:
+        config.aliyun_access_key = api_key
     recognizer = SpeechRecognizer(config)
     recognizer.generate_subtitle(Path(video_path), srt_path, config)
 
