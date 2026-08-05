@@ -13,7 +13,11 @@ import OutputPreviewPage from './pages/OutputPreview';
 import PublishManagement from './pages/PublishManagement';
 import DashboardOverview from './pages/DashboardOverview';
 import ContentAnalysis from './pages/ContentAnalysis';
+import DramaMonetization from './pages/DramaMonetization';
+import FunnelAnalysis from './pages/FunnelAnalysis';
+import Ecosystem from './pages/Ecosystem';
 import DataImport from './pages/DataImport';
+import DashboardSettings from './pages/DashboardSettings';
 import Settings from './pages/Settings';
 import NotFound from './pages/NotFound';
 
@@ -34,7 +38,11 @@ const App: React.FC = () => {
           <Route path="publish" element={<PublishManagement />} />
           <Route path="analytics/overview" element={<DashboardOverview />} />
           <Route path="analytics/content" element={<ContentAnalysis />} />
+          <Route path="analytics/monetization" element={<DramaMonetization />} />
+          <Route path="analytics/funnel" element={<FunnelAnalysis />} />
+          <Route path="analytics/ecosystem" element={<Ecosystem />} />
           <Route path="analytics/import" element={<DataImport />} />
+          <Route path="analytics/settings" element={<DashboardSettings />} />
           <Route path="settings" element={<Settings />} />
           <Route path="*" element={<NotFound />} />
         </Route>

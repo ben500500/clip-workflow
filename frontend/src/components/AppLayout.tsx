@@ -41,7 +41,11 @@ const menuItems = [
     children: [
       { key: '/analytics/overview', label: '总览' },
       { key: '/analytics/content', label: '内容分析' },
+      { key: '/analytics/monetization', label: '短剧变现' },
+      { key: '/analytics/funnel', label: '转化漏斗' },
+      { key: '/analytics/ecosystem', label: '生态联动' },
       { key: '/analytics/import', label: '数据录入' },
+      { key: '/analytics/settings', label: '看板设置' },
     ],
   },
   {

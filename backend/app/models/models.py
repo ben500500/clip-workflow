@@ -403,3 +403,37 @@ class EcosystemMetric(Base):
 
     def __repr__(self) -> str:
         return f"<EcosystemMetric(id={self.id}, date={self.date})>"
+
+
+class ImportTemplate(Base):
+    __tablename__ = "import_templates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(200), nullable=True)
+    platform = Column(String(100), nullable=True)
+    mapping = Column(JSON, nullable=True)
+    unit_conversions = Column(JSON, nullable=True)
+    created_by = Column(UUID(as_uuid=True), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<ImportTemplate(id={self.id}, name={self.name})>"
+
+
+class ImportHistory(Base):
+    __tablename__ = "import_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    file_name = Column(String(500), nullable=True)
+    platform = Column(String(100), nullable=True)
+    import_mode = Column(String(50), nullable=True)
+    target_table = Column(String(100), nullable=True)
+    imported_count = Column(Integer, default=0)
+    updated_count = Column(Integer, default=0)
+    error_count = Column(Integer, default=0)
+    errors = Column(JSON, nullable=True)
+    operator = Column(UUID(as_uuid=True), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<ImportHistory(id={self.id}, file_name={self.file_name})>"
