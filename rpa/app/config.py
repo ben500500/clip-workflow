@@ -1,7 +1,8 @@
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = "postgresql+asyncpg://clip_user:clip_secret_2026@postgres:5432/clip_workflow"
+    # 必填：必须通过 .env / 环境变量注入，缺失时启动即报错
+    DATABASE_URL: str
     REDIS_URL: str = "redis://redis:6379/0"
     CELERY_BROKER_URL: str = "redis://redis:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://redis:6379/0"
@@ -9,7 +10,8 @@ class Settings(BaseSettings):
     RPA_REQUIRE_MANUAL_CONFIRM: bool = True
     MINIO_ENDPOINT: str = "minio:9000"
     MINIO_ACCESS_KEY: str = "minio_admin"
-    MINIO_SECRET_KEY: str = "minio_secret_2026"
+    # 必填：必须通过 .env / 环境变量注入
+    MINIO_SECRET_KEY: str
     
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

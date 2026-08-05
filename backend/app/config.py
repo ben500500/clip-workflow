@@ -8,7 +8,9 @@ def _parse_origins(raw: str) -> list[str]:
 
 class Settings(BaseSettings):
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://clip_user:clip_secret_2026@localhost:5432/clip_workflow"
+    # 必填：必须通过 .env / 环境变量注入，缺失时启动即报错
+    # 示例：postgresql+asyncpg://user:password@host:5432/dbname
+    DATABASE_URL: str
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -16,7 +18,8 @@ class Settings(BaseSettings):
     # MinIO
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minio_admin"
-    MINIO_SECRET_KEY: str = "minio_secret_2026"
+    # 必填：必须通过 .env / 环境变量注入
+    MINIO_SECRET_KEY: str
     MINIO_BUCKET_RAW: str = "raw-footage"
     MINIO_BUCKET_SLICED: str = "sliced"
     MINIO_BUCKET_PREVIEWS: str = "previews"

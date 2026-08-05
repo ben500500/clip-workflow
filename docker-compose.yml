@@ -31,7 +31,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-clipworkflow}
       POSTGRES_USER: ${POSTGRES_USER:-clipworkflow}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clipworkflow_secret}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-15432}:5432"
     healthcheck:
@@ -53,9 +53,9 @@ services:
       - redis_data:/data
     ports:
       - "127.0.0.1:${REDIS_PORT:-16379}:6379"
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-clipworkflow_redis}
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-clipworkflow_redis}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -76,7 +76,7 @@ services:
       - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
     command: server /data --console-address ":9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
@@ -100,7 +100,7 @@ services:
       /bin/sh -c "
         echo 'Waiting for MinIO...'
         sleep 5
-        mc alias set clip-minio http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+        mc alias set clip-minio http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
         mc mb clip-minio/${MINIO_BUCKET:-clipworkflow} --ignore-existing
         mc mb clip-minio/publish-screenshots --ignore-existing
         echo 'MinIO bucket initialized successfully.'
@@ -157,13 +157,13 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:-clipworkflow_secret}@postgres:5432/${POSTGRES_DB:-clipworkflow}
-      REDIS_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/2
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/2
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
       CHROME_DEBUG_PORT: 9222
       CHROME_DEBUG_HOST: rpa_worker
@@ -195,13 +195,13 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:-clipworkflow_secret}@postgres:5432/${POSTGRES_DB:-clipworkflow}
-      REDIS_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/2
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/2
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
       CHROME_DEBUG_PORT: 9222
       CHROME_DEBUG_HOST: rpa_worker
@@ -211,7 +211,7 @@ services:
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
     # celery worker 无 HTTP 端口，用 python redis ping 作为健康检查（覆盖镜像默认的 curl 检查）
     healthcheck:
-      test: ["CMD", "python", "-c", "import redis,sys; sys.exit(0 if redis.Redis(host='redis',port=6379,password='${REDIS_PASSWORD:-clipworkflow_redis}').ping() else 1)"]
+      test: ["CMD", "python", "-c", "import redis,sys; sys.exit(0 if redis.Redis(host='redis',port=6379,password='${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}').ping() else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -230,18 +230,18 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:-clipworkflow_secret}@postgres:5432/${POSTGRES_DB:-clipworkflow}
-      REDIS_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/2
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/2
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
     command: ["celery", "-A", "app.celery.tasks.celery_app", "beat", "--loglevel=info"]
     # celery beat 无 HTTP 端口，用 python redis ping 作为健康检查（覆盖镜像默认的 curl 检查）
     healthcheck:
-      test: ["CMD", "python", "-c", "import redis,sys; sys.exit(0 if redis.Redis(host='redis',port=6379,password='${REDIS_PASSWORD:-clipworkflow_redis}').ping() else 1)"]
+      test: ["CMD", "python", "-c", "import redis,sys; sys.exit(0 if redis.Redis(host='redis',port=6379,password='${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}').ping() else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -266,13 +266,13 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:-clipworkflow_secret}@postgres:5432/${POSTGRES_DB:-clipworkflow}
-      REDIS_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-clipworkflow_redis}@redis:6379/2
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/2
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin_secret}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
       CHROME_DEBUG_PORT: 9222
       DISPLAY: :99
     volumes:
