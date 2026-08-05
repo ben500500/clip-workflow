@@ -239,7 +239,9 @@ async def download_to_file(
 
         dir_name = os.path.dirname(local_path)
         if dir_name:
-            await loop.run_in_executor(None, os.makedirs, dir_name, True)
+            # 第二个位置参数是 mode，不能传 True（会被当作 0o111）。
+            # 使用显式关键字避免创建出仅可执行的目录。
+            await loop.run_in_executor(None, os.makedirs, dir_name, 0o755, True)
 
         await loop.run_in_executor(
             None,
