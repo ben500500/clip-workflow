@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,6 +16,7 @@ func main() {
 	// 命令行参数
 	configPath := flag.String("config", "worker.json", "配置文件路径")
 	noTUI := flag.Bool("no-tui", false, "禁用TUI界面（后台模式）")
+	trayMode := flag.Bool("tray", false, "启用系统托盘/菜单栏模式（Windows/macOS 有效）")
 	flag.Parse()
 
 	// 加载配置
@@ -22,6 +24,11 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "加载配置失败: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Windows 默认进入托盘模式（任务栏图标 + 节点启停），除非显式指定 --no-tui
+	if runtime.GOOS == "windows" && !*trayMode && !*noTUI {
+		*trayMode = true
 	}
 
 	// 创建临时目录
@@ -50,7 +57,10 @@ func main() {
 		cancel()
 	}()
 
-	if *noTUI {
+	if *trayMode {
+		// 托盘模式（Windows/macOS 任务栏/菜单栏状态图标 + 启停）
+		runTray(ctx, config, worker)
+	} else if *noTUI {
 		// 后台模式：纯日志输出
 		runDaemon(ctx, config, worker)
 	} else {

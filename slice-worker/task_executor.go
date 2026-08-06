@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // TaskExecutor 任务执行器
@@ -74,11 +73,11 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		args = append(args, "--intervals", intervalsPath)
 	}
 
-	// Alpine 镜像提供 python3 可执行文件
-	cmd := exec.CommandContext(ctx, "python3", args...)
+	// Alpine 镜像提供 python3 可执行文件；Windows 上为 python
+	cmd := exec.CommandContext(ctx, pythonBinary(), args...)
 
 	// 设置进程组，便于超时/取消时强杀整棵进程树（含 ffmpeg 子进程）
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	SetProcessGroup(cmd)
 
 	// 获取 stdout/stderr 管道用于解析进度
 	stdout, err := cmd.StdoutPipe()
@@ -121,7 +120,7 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 	// 等待完成（context 超时/取消时 exec.CommandContext 会自动杀掉主进程，
 	// 这里再兜底强杀整个进程组）
 	if err := cmd.Wait(); err != nil {
-		KillProcessGroup(cmd)
+		KillProcessTree(cmd)
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("任务超时或已取消: %w", ctx.Err())
 		}
@@ -195,15 +194,4 @@ func (te *TaskExecutor) collectOutputs(outputDir string, manifest map[string]flo
 	return outputs
 }
 
-// KillProcessGroup 强制终止进程组
-func KillProcessGroup(cmd *exec.Cmd) error {
-	if cmd.Process == nil {
-		return nil
-	}
-	// 终止整个进程组（Setpgid 已启用）
-	pgid, err := syscall.Getpgid(cmd.Process.Pid)
-	if err == nil {
-		return syscall.Kill(-pgid, syscall.SIGKILL)
-	}
-	return cmd.Process.Kill()
-}
+// KillProcessTree 强制终止进程树（平台相关，见 exec_unix.go / exec_windows.go）
