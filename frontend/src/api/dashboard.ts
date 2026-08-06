@@ -43,6 +43,9 @@ export const dashboardApi = {
   getVideoRanking: (params?: { sort_by?: string; limit?: number; account_id?: string }) =>
     client.get('/dashboard/videos/ranking', { params }) as Promise<VideoMetric[]>,
 
+  updateVideoTags: (videoId: string, tags: string[]) =>
+    client.put(`/dashboard/videos/${videoId}/tags`, { tags }) as Promise<VideoMetric>,
+
   getCrossAnalysis: (params?: { account_id?: string }) =>
     client.get('/dashboard/videos/cross-analysis', { params }) as Promise<CrossAnalysisData>,
 

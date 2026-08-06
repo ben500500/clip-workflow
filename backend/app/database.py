@@ -61,6 +61,7 @@ async def _apply_compat_migrations():
 
     - slice_tasks.node_id: 记录实际执行任务的 Worker 节点
     - worker_nodes.enabled: 节点启停标记
+    - video_metrics.tags: 视频标签（二期）
     """
     migrations = [
         ("slice_tasks", "node_id", "VARCHAR(100)"),
@@ -70,12 +71,14 @@ async def _apply_compat_migrations():
         ("system_config", "description", "VARCHAR(500)"),
         ("platform_profiles", "description", "VARCHAR(500)"),
         ("autoclip_projects", "error_message", "TEXT"),
+        # 二期：视频标签系统（JSON 数组）
+        ("video_metrics", "tags", "JSON"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
             try:
                 exists = await conn.run_sync(
-                    lambda sync_conn: sqlalchemy.inspect(sync_conn).has_column(table, column)
+                    lambda sync_conn, _t=table, _c=column: sqlalchemy.inspect(sync_conn).has_column(_t, _c)
                 )
             except Exception:
                 exists = False

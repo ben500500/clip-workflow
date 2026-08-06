@@ -88,6 +88,11 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		}
 	}
 
+	// 三期 GPU 加速编码：后端下发的 encoder（如 h264_nvenc/hevc_videotoolbox）
+	if task.Encoder != "" {
+		args = append(args, "--encoder", task.Encoder)
+	}
+
 	// Alpine 镜像提供 python3 可执行文件；Windows 上为 python
 	cmd := exec.CommandContext(ctx, pythonBinary(), args...)
 

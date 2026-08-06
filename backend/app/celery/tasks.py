@@ -55,6 +55,16 @@ celery_app.conf.update(
             "task": "app.celery.tasks.task_collect_metrics",
             "schedule": crontab(hour=0, minute=30),
         },
+        # 三期监控告警：周期检查告警规则并推送钉钉
+        "alert-check-periodic": {
+            "task": "app.celery.tasks.run_alert_check_task",
+            "schedule": settings.ALERT_CHECK_INTERVAL_SECONDS,
+        },
+        # 三期性能优化：每日归档过期看板数据 + 清理临时文件
+        "maintenance-daily": {
+            "task": "app.celery.tasks.maintenance_daily_task",
+            "schedule": crontab(hour=3, minute=0),
+        },
     },
 )
 
@@ -337,8 +347,13 @@ def slice_task(
     task_id: Optional[str] = None,
     source_file_key: Optional[str] = None,
     watermark_config: Optional[dict] = None,
+    encoder: Optional[str] = None,
 ):
-    """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows."""
+    """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
+
+    encoder: 三期 GPU 加速编码，可选 h264_nvenc/hevc_nvenc/\
+        h264_videotoolbox/hevc_videotoolbox/libx264；不传则引擎自动探测。
+    """
     from app.services.slice_service import run_slice_scrub, run_slice_fast
     from app.services.minio_service import upload_file_from_path
     from app.utils.helpers import write_temp_file, ensure_dir
@@ -379,6 +394,7 @@ def slice_task(
                     output_dir,
                     progress_cb=progress_cb,
                     watermark_config=watermark_config,
+                    encoder=encoder,
                 )
             )
         else:
@@ -390,6 +406,7 @@ def slice_task(
                     mode,
                     progress_cb=progress_cb,
                     watermark_config=watermark_config,
+                    encoder=encoder,
                 )
             )
 
@@ -778,6 +795,7 @@ def task_publish_video(self, publish_task_id: str):
         publisher = get_publisher(
             platform,
             chrome_debug_port=publish_task_data.get("chrome_debug_port", settings.CHROME_DEBUG_PORT),
+            cookie_file=publish_task_data.get("cookie_file"),
             require_manual_confirm=publish_task_data.get("require_manual_confirm", True),
         )
 
@@ -963,6 +981,13 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
 
         if profile:
             data["chrome_debug_port"] = profile.chrome_debug_port
+            # RPA Cookie 解密（AES-256/Fernet 加密存储，仅在 Worker 内部使用）
+            if profile.cookie_file:
+                try:
+                    from app.auth import decrypt_cookie
+                    data["cookie_file"] = decrypt_cookie(profile.cookie_file)
+                except Exception:
+                    logger.warning("Failed to decrypt cookie for profile %s", profile.account_name)
 
         return data
 
@@ -1122,3 +1147,40 @@ async def _compute_funnel_snapshot(collect_date, account_uuid) -> dict:
             "revenue": round(revenue, 2),
             "revenue_per_1000_play": round(revenue_per_1000, 2),
         }
+
+
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=120)
+def run_alert_check_task(self):
+    """三期监控告警：周期检查告警规则并推送钉钉 Webhook."""
+    from app.services.monitor_service import run_alert_checks
+
+    try:
+        result = run_async(run_alert_checks())
+        logger.info("Alert check completed: %s", result)
+        return result
+    except Exception as e:
+        logger.error(f"Alert check failed: {e}")
+        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+        raise
+
+
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=300)
+def maintenance_daily_task(self):
+    """三期性能优化：每日归档过期看板数据 + 清理临时文件 + 设置 MinIO 生命周期."""
+    from app.services.maintenance_service import (
+        archive_old_metrics,
+        cleanup_temp_files,
+        apply_minio_lifecycle,
+    )
+
+    results = {}
+    try:
+        results["archive"] = run_async(archive_old_metrics())
+        results["cleanup"] = run_async(cleanup_temp_files())
+        results["minio_lifecycle"] = run_async(apply_minio_lifecycle())
+        logger.info("Maintenance daily task completed: %s", results)
+        return results
+    except Exception as e:
+        logger.error(f"Maintenance daily task failed: {e}")
+        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+        raise

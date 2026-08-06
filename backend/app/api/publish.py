@@ -146,7 +146,8 @@ def _serialize_publish_profile(profile: PublishProfile) -> dict:
         "platform": profile.platform,
         "account_name": profile.account_name,
         "chrome_debug_port": profile.chrome_debug_port or 9222,
-        "cookie_file": profile.cookie_file,
+        # Cookie 脱敏显示（RPA Cookie 安全存储）
+        "cookie_file": "****" if profile.cookie_file else None,
         "title_template": profile.title_template,
         "description_template": profile.description_template,
         "default_tags": profile.default_tags,
@@ -354,11 +355,20 @@ async def create_publish_profile(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new publish profile."""
+    # 加密存储 RPA Cookie（AES-256/Fernet，三期安全）
+    cookie_value = data.cookie_file
+    if cookie_value and cookie_value != "****":
+        from app.auth import encrypt_cookie
+        try:
+            cookie_value = encrypt_cookie(cookie_value)
+        except Exception:
+            cookie_value = data.cookie_file
+
     profile = PublishProfile(
         platform=data.platform,
         account_name=data.account_name,
         chrome_debug_port=data.chrome_debug_port,
-        cookie_file=data.cookie_file,
+        cookie_file=cookie_value,
         title_template=data.title_template,
         description_template=data.description_template,
         default_tags=data.default_tags,
@@ -393,6 +403,15 @@ async def update_publish_profile(
 
     update_fields = data.model_dump(exclude_unset=True)
     for field, value in update_fields.items():
+        # Cookie 字段特殊处理：加密存储 + 跳过“****”占位（未修改）
+        if field == "cookie_file":
+            if value and value != "****":
+                from app.auth import encrypt_cookie
+                try:
+                    profile.cookie_file = encrypt_cookie(value)
+                except Exception:
+                    profile.cookie_file = value
+            continue
         setattr(profile, field, value)
 
     await db.flush()

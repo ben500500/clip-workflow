@@ -71,7 +71,22 @@ class Settings(BaseSettings):
 
     # JWT
     JWT_SECRET: str = "your-secret-key-change-in-production"
-    JWT_EXPIRE_MINUTES: int = 1440  # 24 小时
+    JWT_EXPIRE_MINUTES: int = 30  # access_token 有效期（分钟）
+    # refresh_token 有效期（天），双 Token 机制
+    JWT_REFRESH_EXPIRE_DAYS: int = 7
+    # RPA Cookie 加密密钥（AES-256/Fernet），未配置时回退 JWT_SECRET
+    COOKIE_ENCRYPT_KEY: str = ""
+
+    # 监控告警（三期）
+    # 钉钉机器人 Webhook 地址，用于推送告警消息
+    DINGTALK_WEBHOOK: str = ""
+    # 告警轮询间隔（秒），Celery beat 周期
+    ALERT_CHECK_INTERVAL_SECONDS: int = 300
+
+    # 数据归档（三期性能优化）：video_metrics 超过该天数（默认 90 天）自动归档
+    METRICS_ARCHIVE_DAYS: int = 90
+    # MinIO 生命周期：未访问超过该天数（默认 90 天）的对象转低频存储
+    MINIO_LIFECYCLE_DAYS: int = 90
 
     model_config = {
         "env_file": ".env",

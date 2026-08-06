@@ -16,6 +16,7 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   PoweroffOutlined,
+  ClearOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -46,6 +47,16 @@ const allMenuItems = [
     key: '/workers',
     icon: <ApiOutlined />,
     label: 'Worker 节点',
+  },
+  {
+    key: '/monitor',
+    icon: <WarningOutlined />,
+    label: '监控告警',
+  },
+  {
+    key: '/maintenance',
+    icon: <ClearOutlined />,
+    label: '运维优化',
   },
   {
     key: 'analytics-sub',
