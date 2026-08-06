@@ -67,6 +67,7 @@ async def _apply_compat_migrations():
         ("worker_nodes", "enabled", "BOOLEAN DEFAULT TRUE"),
         ("system_config", "description", "VARCHAR(500)"),
         ("platform_profiles", "description", "VARCHAR(500)"),
+        ("autoclip_projects", "error_message", "TEXT"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

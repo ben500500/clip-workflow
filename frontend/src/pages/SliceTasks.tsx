@@ -5,6 +5,7 @@ import {
 import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, DesktopOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { sliceApi } from '../api/slice';
+import ErrorHint from '../components/ErrorHint';
 import type { SliceOutput, SliceTask } from '../types';
 import { formatDateTime, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
@@ -164,7 +165,7 @@ const SliceTasks: React.FC = () => {
         </Space>
       ) : <Text type="secondary" style={{ fontSize: 12 }}>Celery/未知</Text>,
     },
-    { title: '错误信息', dataIndex: 'error_message', key: 'error_message', ellipsis: true, render: (e: string) => e ? <Tooltip title={e}><Text type="danger" style={{ fontSize: 12 }} ellipsis>{e}</Text></Tooltip> : '-' },
+    { title: '错误信息', dataIndex: 'error_message', key: 'error_message', ellipsis: true, render: (e: string) => e ? <ErrorHint error={e} /> : '-' },
     { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 160, render: (d: string) => <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text> },
     {
       title: '操作',
