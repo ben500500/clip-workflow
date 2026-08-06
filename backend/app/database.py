@@ -73,6 +73,9 @@ async def _apply_compat_migrations():
         ("autoclip_projects", "error_message", "TEXT"),
         # 二期：视频标签系统（JSON 数组）
         ("video_metrics", "tags", "JSON"),
+        # 二期：JWT 双 Token（会话表新增 refresh_token_hash / access_token_jti）
+        ("user_sessions", "refresh_token_hash", "VARCHAR(255)"),
+        ("user_sessions", "access_token_jti", "VARCHAR(64)"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
