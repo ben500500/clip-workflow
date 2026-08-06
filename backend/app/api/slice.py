@@ -35,6 +35,8 @@ from app.services.minio_service import (
     get_presigned_url,
     get_presigned_upload_url,
     ensure_bucket,
+    list_files,
+    delete_file,
 )
 from app.services.redis_stream import (
     publish_slice_task,
@@ -78,6 +80,8 @@ class SliceTaskResponse(BaseModel):
     progress: float
     output_count: int
     error_message: Optional[str] = None
+    # 实际执行该任务的 Worker 节点 ID
+    node_id: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     created_at: str
@@ -127,6 +131,7 @@ def _serialize_task(task: SliceTask) -> dict:
         "progress": task.progress or 0.0,
         "output_count": task.output_count or 0,
         "error_message": task.error_message,
+        "node_id": task.node_id,
         "started_at": task.started_at.isoformat() if task.started_at else None,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         "created_at": task.created_at.isoformat() if task.created_at else "",
@@ -167,6 +172,46 @@ def _resolve_engine(request_engine: Optional[str]) -> str:
 def _output_prefix(slice_task: SliceTask) -> str:
     """输出文件在 MinIO 中的 key 前缀。"""
     return f"slices/{str(slice_task.episode_id)}/{str(slice_task.id)}/"
+
+
+async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
+    """根据该剧集下所有切片任务的实际状态刷新剧集状态。
+
+    规则：
+    - 若存在 running/pending 任务 → 保持/置为 slicing
+    - 否则若存在已完成任务且无失败 → completed
+    - 否则若全部为失败/取消 → 保持 slicing（保留失败标识，由前端提示）
+    """
+    try:
+        eid = uuid.UUID(str(episode_id))
+    except ValueError:
+        return
+
+    ep_res = await db.execute(select(Episode).where(Episode.id == eid))
+    episode = ep_res.scalar_one_or_none()
+    if not episode:
+        return
+
+    tasks_res = await db.execute(
+        select(SliceTask).where(
+            SliceTask.episode_id == eid,
+            ~SliceTask.mode.like("detect_%"),
+        )
+    )
+    all_tasks = tasks_res.scalars().all()
+    if not all_tasks:
+        return
+
+    has_running = any(t.status in ("running", "pending") for t in all_tasks)
+    has_completed = any(t.status == "completed" for t in all_tasks)
+    has_failed = any(t.status == "failed" for t in all_tasks)
+
+    if has_running:
+        if episode.status != "completed":
+            episode.status = "slicing"
+    elif has_completed and not has_failed:
+        episode.status = "completed"
+    # 有失败任务时保持 slicing（让用户在界面看到失败并处理/重试）
 
 
 async def _publish_to_worker(
@@ -592,6 +637,10 @@ async def slice_task_callback(
     now = datetime.utcnow()
 
     if data.status == "completed":
+        # 记录执行该任务的节点（用于切片任务列表展示"由哪个节点完成"）
+        if data.node_id:
+            task.node_id = data.node_id
+
         # 按接受的候选片段顺序映射 clip_id（文件名 clip_XX.mp4 对应片段顺序）
         clip_result = await db.execute(
             select(ClipCandidate)
@@ -643,6 +692,9 @@ async def slice_task_callback(
         task.error_message = None
         logger.info("Slice task %s completed with %d outputs", task_id, task.output_count)
 
+        # 推进剧集状态：所有切片任务完成后置为 completed（而非仅依赖最近一条）
+        await _refresh_episode_status(db, task.episode_id)
+
     elif data.status == "progress":
         # 进度更新（真实 ffmpeg 进度）
         if data.progress is not None:
@@ -650,9 +702,14 @@ async def slice_task_callback(
 
     else:  # failed
         task.status = "failed"
+        if data.node_id:
+            task.node_id = data.node_id
         task.error_message = (data.error or "Worker 报告错误")[:2000]
         task.completed_at = now
         logger.warning("Slice task %s failed: %s", task_id, task.error_message)
+
+        # 任务失败也刷新剧集状态（保证不是"最近一条未完成就永远切片中"）
+        await _refresh_episode_status(db, task.episode_id)
 
     await db.flush()
     return {"ok": True}
@@ -816,3 +873,53 @@ async def cancel_slice_task(
     await mark_task_cancelled(task_id)
 
     return {"message": "任务已取消（Worker 端将收到取消信号并终止 ffmpeg）", "task_id": task_id}
+
+
+@router.delete("/slice-tasks/{task_id}", status_code=200)
+async def delete_slice_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """删除切片任务，同时删除其输出文件（MinIO 临时资源）。
+
+    - 若任务正在运行/排队，先取消（写入 Redis 取消标记，Worker 端会强杀 ffmpeg）
+    - 删除该任务在 MinIO sliced 桶中的全部输出对象
+    - 级联删除数据库中的 SliceOutput / Publication 等关联记录
+    """
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid task ID format")
+
+    result = await db.execute(select(SliceTask).where(SliceTask.id == tid))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Slice task not found")
+
+    # 正在运行/排队中的任务先取消，避免 Worker 还在写入
+    if task.status in ("pending", "running"):
+        task.status = "cancelled"
+        await mark_task_cancelled(task_id)
+        await db.flush()
+
+    # 删除该任务在 MinIO 中的输出文件（slices/{episode}/{task}/ 前缀）
+    prefix = _output_prefix(task)
+    try:
+        objs = await list_files(settings.MINIO_BUCKET_SLICED, prefix=prefix)
+        for obj in objs:
+            await delete_file(settings.MINIO_BUCKET_SLICED, obj["key"])
+        if objs:
+            logger.info("Deleted %d output files for slice task %s from MinIO", len(objs), task_id)
+    except Exception as e:
+        logger.warning("Failed to delete MinIO outputs for task %s: %s", task_id, e)
+
+    # 删除数据库记录（级联删除 SliceOutput / Publication / PublishTask）
+    episode_id_for_refresh = task.episode_id
+    await db.delete(task)
+    await db.flush()
+
+    # 删除后刷新剧集状态（避免删除了任务仍停留在 slicing）
+    await _refresh_episode_status(db, episode_id_for_refresh)
+    await db.flush()
+
+    return {"message": "任务已删除，相关输出文件已清理", "task_id": task_id}

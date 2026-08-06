@@ -253,6 +253,18 @@ func (r *RedisClient) GetTaskHash(taskID string) (map[string]string, error) {
 	return r.client.HGetAll(r.ctx, fmt.Sprintf("slice:task:%s", taskID)).Result()
 }
 
+// IsNodeEnabled 检查节点是否被管理员停用（停用后不再领取新任务）
+func (r *RedisClient) IsNodeEnabled(nodeID string) (bool, error) {
+	val, err := r.client.Get(r.ctx, fmt.Sprintf("slice:node-enabled:%s", nodeID)).Result()
+	if err == redis.Nil {
+		return true, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	return val != "0" && val != "false", nil
+}
+
 // StreamMessage Stream消息
 type StreamMessage struct {
 	ID      string

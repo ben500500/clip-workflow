@@ -16,7 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user, require_roles
 from app.database import get_db
 from app.models.models import User, UserRole, WorkerNode
-from app.services.redis_stream import get_worker_nodes_from_redis
+from app.services.redis_stream import (
+    get_worker_nodes_from_redis,
+    set_node_enabled,
+    is_node_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +37,8 @@ class WorkerNodeResponse(BaseModel):
     ffmpeg_version: Optional[str] = None
     tags: list = []
     max_concurrent: int = 2
+    # 节点是否启用（管理员可启停；停用后 Worker 不再领取新任务）
+    enabled: bool = True
     status: str = "offline"
     current_tasks: int = 0
     total_tasks_completed: int = 0
@@ -40,6 +46,8 @@ class WorkerNodeResponse(BaseModel):
     last_heartbeat: Optional[str] = None
     started_at: Optional[str] = None
     created_at: str = ""
+    # 该节点正在运行的任务平均进度（"工作时进度显示"）
+    running_progress: float = 0.0
 
     model_config = {"from_attributes": True}
 
@@ -68,6 +76,7 @@ def _serialize_node(node: WorkerNode) -> dict:
         "ffmpeg_version": node.ffmpeg_version,
         "tags": node.tags or [],
         "max_concurrent": node.max_concurrent or 2,
+        "enabled": node.enabled if node.enabled is not None else True,
         "status": node.status or "offline",
         "current_tasks": node.current_tasks or 0,
         "total_tasks_completed": node.total_tasks_completed or 0,
@@ -75,6 +84,7 @@ def _serialize_node(node: WorkerNode) -> dict:
         "last_heartbeat": node.last_heartbeat.isoformat() if node.last_heartbeat else None,
         "started_at": node.started_at.isoformat() if node.started_at else None,
         "created_at": node.created_at.isoformat() if node.created_at else "",
+        "running_progress": getattr(node, "running_progress", 0.0) or 0.0,
     }
 
 
@@ -152,6 +162,9 @@ async def list_workers(
                 node.total_tasks_completed = rd.get("total_tasks_completed", node.total_tasks_completed or 0)
                 node.total_tasks_failed = rd.get("total_tasks_failed", node.total_tasks_failed or 0)
                 node.status = rd.get("status", node.status or "offline")
+                # 节点启停状态：优先取 Redis 控制 key（管理员在界面上可启停）
+                if "enabled" in rd:
+                    node.enabled = bool(rd["enabled"])
                 # 同步心跳时间
                 last_hb = rd.get("last_heartbeat", "")
                 if last_hb:
@@ -170,7 +183,37 @@ async def list_workers(
         if node.node_id not in redis_map:
             node.status = "offline"
 
-    return [_serialize_node(n) for n in nodes]
+    # 数据库中无记录但 Redis 在线的节点（心跳在 sync 间隔内新注册）也返回
+    for rd in redis_nodes:
+        if rd["node_id"] not in {n.node_id for n in nodes}:
+            nodes.append(WorkerNode(
+                node_id=rd["node_id"],
+                hostname=rd.get("hostname"),
+                ip=rd.get("ip"),
+                os=rd.get("os"),
+                arch=rd.get("arch"),
+                ffmpeg_version=rd.get("ffmpeg_version"),
+                tags=rd.get("tags", []),
+                max_concurrent=rd.get("max_concurrent", 2),
+                enabled=bool(rd.get("enabled", True)),
+                status=rd.get("status", "online"),
+                current_tasks=rd.get("current_tasks", 0),
+                total_tasks_completed=rd.get("total_tasks_completed", 0),
+                total_tasks_failed=rd.get("total_tasks_failed", 0),
+                last_heartbeat=None,
+                started_at=None,
+                created_at=datetime.utcnow(),
+            ))
+
+    # 序列化时合并 Redis 中的实时进度（running_progress 非 DB 列，从 redis_map 取）
+    result = []
+    for n in nodes:
+        d = _serialize_node(n)
+        rd = redis_map.get(n.node_id)
+        if rd:
+            d["running_progress"] = rd.get("running_progress", 0.0) or 0.0
+        result.append(d)
+    return result
 
 
 @router.get("/workers/{node_id}", response_model=WorkerNodeResponse)
@@ -187,6 +230,46 @@ async def get_worker(
     if not node:
         raise HTTPException(status_code=404, detail="Worker node not found")
     return _serialize_node(node)
+
+
+@router.post("/workers/{node_id}/enable")
+async def enable_worker_node(
+    node_id: str,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+    db: AsyncSession = Depends(get_db),
+):
+    """启用节点：允许该节点继续领取切片任务。"""
+    # 更新数据库标记（若已存在记录）
+    result = await db.execute(
+        select(WorkerNode).where(WorkerNode.node_id == node_id)
+    )
+    node = result.scalar_one_or_none()
+    if node:
+        node.enabled = True
+        await db.flush()
+    # 写入 Redis 控制 key，Worker 端每次取任务前读取
+    await set_node_enabled(node_id, True)
+    return {"ok": True, "node_id": node_id, "enabled": True, "message": f"节点 {node_id} 已启用"}
+
+
+@router.post("/workers/{node_id}/disable")
+async def disable_worker_node(
+    node_id: str,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+    db: AsyncSession = Depends(get_db),
+):
+    """停用节点：节点不再领取新的切片任务（正在执行的任务不受影响）。"""
+    # 更新数据库标记（若已存在记录）
+    result = await db.execute(
+        select(WorkerNode).where(WorkerNode.node_id == node_id)
+    )
+    node = result.scalar_one_or_none()
+    if node:
+        node.enabled = False
+        await db.flush()
+    # 写入 Redis 控制 key，Worker 端每次取任务前读取
+    await set_node_enabled(node_id, False)
+    return {"ok": True, "node_id": node_id, "enabled": False, "message": f"节点 {node_id} 已停用（正在执行的任务不受影响）"}
 
 
 @router.post("/workers/sync-redis")
@@ -216,6 +299,9 @@ async def sync_workers_from_redis(
                 node.total_tasks_completed = rd.get("total_tasks_completed", node.total_tasks_completed or 0)
                 node.total_tasks_failed = rd.get("total_tasks_failed", node.total_tasks_failed or 0)
                 node.status = rd.get("status", "online")
+                # 节点启停状态（管理员在界面上可启停）
+                if "enabled" in rd:
+                    node.enabled = bool(rd["enabled"])
                 # 心跳时间优先使用 Redis 上报的时间戳
                 last_hb = rd.get("last_heartbeat", "")
                 if last_hb:
@@ -239,6 +325,7 @@ async def sync_workers_from_redis(
                     total_tasks_completed=rd.get("total_tasks_completed", 0),
                     total_tasks_failed=rd.get("total_tasks_failed", 0),
                     status=rd.get("status", "online"),
+                    enabled=bool(rd.get("enabled", True)),
                     last_heartbeat=now,
                     started_at=now,
                 )

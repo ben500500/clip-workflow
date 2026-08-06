@@ -25,6 +25,9 @@ export const sliceApi = {
   cancel: (taskId: string) =>
     client.post(`/slice-tasks/${taskId}/cancel`) as Promise<{ message: string }>,
 
+  delete: (taskId: string) =>
+    client.delete(`/slice-tasks/${taskId}`) as Promise<{ message: string; task_id: string }>,
+
   retry: (taskId: string) =>
     client.post(`/slice-tasks/${taskId}/retry`) as Promise<{
       task_id: string;
@@ -36,4 +39,10 @@ export const sliceApi = {
 
   syncWorkers: () =>
     client.post(`/workers/sync-redis`) as Promise<{ synced: number; message: string }>,
+
+  enableWorker: (nodeId: string) =>
+    client.post(`/workers/${nodeId}/enable`) as Promise<{ message: string; enabled: boolean }>,
+
+  disableWorker: (nodeId: string) =>
+    client.post(`/workers/${nodeId}/disable`) as Promise<{ message: string; enabled: boolean }>,
 };
