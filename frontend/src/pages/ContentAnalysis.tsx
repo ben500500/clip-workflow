@@ -6,7 +6,7 @@ import { dashboardApi } from '../api/dashboard';
 import type { VideoMetric } from '../types';
 import { formatDate, formatPercent } from '../utils/format';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 const ContentAnalysis: React.FC = () => {
   const [loading, setLoading] = useState(true);

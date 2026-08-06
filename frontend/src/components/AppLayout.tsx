@@ -17,6 +17,7 @@ import {
   CloseCircleOutlined,
   PoweroffOutlined,
   ClearOutlined,
+  WarningOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
