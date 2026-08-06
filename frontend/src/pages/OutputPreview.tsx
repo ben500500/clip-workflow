@@ -11,6 +11,16 @@ import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStat
 
 const { Title, Text } = Typography;
 
+// 切片模式中文展示
+const SLICE_MODE_LABELS: Record<string, string> = {
+  fast: '快速模式',
+  dedupe: '去重模式',
+  scrub: '挖洞模式',
+};
+
+// 成品预览只展示真实切片任务，过滤掉区间检测复用的 detect_* 内部进度记录
+const isRealSliceTask = (t: SliceTask) => !(t.mode && t.mode.startsWith('detect_'));
+
 const OutputPreview: React.FC = () => {
   const { episodeId } = useParams<{ episodeId: string }>();
   const navigate = useNavigate();
@@ -160,7 +170,12 @@ const OutputPreview: React.FC = () => {
             placeholder="选择任务查看输出"
             value={selectedTask ?? undefined}
             onChange={loadTask}
-            options={tasks.map((t) => ({ value: t.id, label: `${t.mode} / ${getStatusLabel(t.status || '')} / ${formatDateTime(t.created_at)}` }))}
+            options={tasks
+              .filter(isRealSliceTask)
+              .map((t) => ({
+                value: t.id,
+                label: `${SLICE_MODE_LABELS[t.mode || ''] || t.mode || '未知模式'} / ${getStatusLabel(t.status || '')} / ${formatDateTime(t.created_at)}`,
+              }))}
           />
           {selectedTask && outputs.length > 0 && (
             <Popconfirm

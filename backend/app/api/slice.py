@@ -18,7 +18,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -173,6 +173,18 @@ def _resolve_engine(request_engine: Optional[str]) -> str:
     return engine
 
 
+def _not_detect_task():
+    """SQLAlchemy 条件：排除 detect_* 内部进度跟踪记录，同时允许 mode 为 NULL 的真实切片任务。
+
+    注意：不能用 `~SliceTask.mode.like("detect_%")`，因为 mode 为 NULL 的历史任务
+    在 SQL 三值逻辑下会被一并过滤掉，导致成品预览里没有任务可选。
+    """
+    return or_(
+        SliceTask.mode.is_(None),
+        ~SliceTask.mode.like("detect_%"),
+    )
+
+
 async def _get_max_concurrent_tasks(db: AsyncSession) -> int:
     """读取系统配置中的全局最大并发切片任务数（多人同时切片的全局闸门）。
 
@@ -202,7 +214,7 @@ async def _acquire_concurrency_slot(db: AsyncSession) -> None:
         await db.execute(
             select(func.count(SliceTask.id)).where(
                 SliceTask.status.in_(["running", "pending"]),
-                ~SliceTask.mode.like("detect_%"),
+                _not_detect_task(),
             )
         )
     ).scalar() or 0
@@ -245,7 +257,7 @@ async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
     tasks_res = await db.execute(
         select(SliceTask).where(
             SliceTask.episode_id == eid,
-            ~SliceTask.mode.like("detect_%"),
+            _not_detect_task(),
         )
     )
     all_tasks = tasks_res.scalars().all()
@@ -540,11 +552,11 @@ async def list_slice_tasks(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid episode ID format")
 
-    # 排除 detect_* 内部进度跟踪记录（区间检测复用了 slice_tasks 表）
+    # 排除 detect_* 内部进度跟踪记录（区间检测复用了 slice_tasks 表）。
     result = await db.execute(
         select(SliceTask)
         .where(SliceTask.episode_id == eid)
-        .where(~SliceTask.mode.like("detect_%"))
+        .where(_not_detect_task())
         .order_by(SliceTask.created_at.desc())
     )
     tasks = result.scalars().all()

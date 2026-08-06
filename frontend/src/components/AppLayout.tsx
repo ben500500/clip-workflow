@@ -91,6 +91,7 @@ const WorkerStatusIcon: React.FC = () => {
   const [workers, setWorkers] = useState<WorkerNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
+  const { token } = theme.useToken();
 
   const fetchWorkers = useCallback(async () => {
     setLoading(true);
@@ -103,6 +104,14 @@ const WorkerStatusIcon: React.FC = () => {
       setLoading(false);
     }
   }, []);
+
+  // 挂载后立即拉取一次节点状态，无需点击才显示；
+  // 并定时轮询保持图标角标/颜色实时更新
+  useEffect(() => {
+    fetchWorkers();
+    const timer = window.setInterval(fetchWorkers, 15000);
+    return () => window.clearInterval(timer);
+  }, [fetchWorkers]);
 
   const toggleWorker = async (node: WorkerNode, enabled: boolean) => {
     setToggling(node.node_id);
@@ -122,7 +131,7 @@ const WorkerStatusIcon: React.FC = () => {
     }
   };
 
-  // 打开下拉时刷新节点状态
+  // 打开下拉时刷新一次节点状态
   const onOpenChange = (open: boolean) => {
     if (open) fetchWorkers();
   };
@@ -214,7 +223,20 @@ const WorkerStatusIcon: React.FC = () => {
 
   return (
     <Dropdown
-      dropdownRender={() => content}
+      dropdownRender={() => (
+        // 白色底色容器：避免弹开后面没有背景看不清内容
+        <div
+          style={{
+            background: token.colorBgElevated,
+            borderRadius: 8,
+            boxShadow: token.boxShadowSecondary,
+            border: `1px solid ${token.colorBorderSecondary}`,
+            overflow: 'hidden',
+          }}
+        >
+          {content}
+        </div>
+      )}
       trigger={['click']}
       placement="bottomRight"
       onOpenChange={onOpenChange}
