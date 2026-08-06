@@ -315,6 +315,7 @@ services:
       TASK_TIMEOUT: "7200"
       MAX_RETRIES: "2"
       RETRY_DELAY: "30"
+      NODE_TTL: "0"
       BACKEND_URL: ${WORKER_CALLBACK_BASE_URL:-http://backend:8080}
     volumes:
       - ./engines:/app/engines:ro
