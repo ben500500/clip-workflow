@@ -1,5 +1,6 @@
 import os
 import uuid
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -8,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.models import Episode, DetectedInterval
+from app.models.models import Episode, DetectedInterval, SliceTask
 from app.services.interval_service import detect_intervals as run_detect
 from app.celery.tasks import detect_task as celery_detect_task
 
@@ -116,14 +117,43 @@ async def detect_intervals(
         )
     video_path = data.video_path or f"/data/videos/{source_file_key}"
 
-    # Dispatch Celery task
-    task = celery_detect_task.delay(
-        episode_id=str(eid),
-        video_path=video_path,
-        mode=data.mode,
-        config=data.config or {},
-        source_file_key=source_file_key,
+    # 先落库一条检测任务记录（mode 前缀 detect_），
+    # 使 /intervals/progress 能立即查到进度，避免前端进度条一闪而过
+    detect_record = SliceTask(
+        episode_id=eid,
+        mode=f"detect_{data.mode}",
+        status="pending",
+        progress=10.0,
     )
+    db.add(detect_record)
+    # 立即提交，确保 worker 侧查询能立刻看到该记录（否则进度查询会一直 unknown）
+    await db.commit()
+
+    # Dispatch Celery task
+    try:
+        task = celery_detect_task.delay(
+            episode_id=str(eid),
+            video_path=video_path,
+            mode=data.mode,
+            config=data.config or {},
+            source_file_key=source_file_key,
+            task_id=str(detect_record.id),
+        )
+    except Exception:
+        # 调度失败：将记录标记为 failed，避免前端进度条悬挂在 0%
+        detect_record.status = "failed"
+        detect_record.error_message = "检测任务调度失败"
+        detect_record.completed_at = datetime.utcnow()
+        await db.commit()
+        raise
+
+    # 刷新后再更新，避免 worker 已把记录推进到 completed/failed 时被覆盖
+    await db.refresh(detect_record)
+    detect_record.celery_task_id = task.id
+    if detect_record.status in (None, "pending"):
+        detect_record.status = "running"
+        detect_record.started_at = datetime.utcnow()
+    await db.commit()
 
     return DetectResponse(
         celery_task_id=task.id,

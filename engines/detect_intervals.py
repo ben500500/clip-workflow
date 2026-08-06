@@ -74,13 +74,17 @@ def parse_freezedetect(stderr):
     intervals = []
     start = None
     for line in stderr.splitlines():
-        sm = re.search(r"lavfi\.freezedetect_start=(\S+)", line)
-        em = re.search(r"lavfi\.freezedetect_end=(\S+)", line)
+        # ffmpeg 实际输出：lavfi.freezedetect.freeze_start / freeze_duration / freeze_end
+        sm = re.search(r"lavfi\.freezedetect\.freeze_start:\s*(\S+)", line)
+        em = re.search(r"lavfi\.freezedetect\.freeze_end:\s*(\S+)", line)
         if sm:
             start = float(sm.group(1))
         if em and start is not None:
             intervals.append((start, float(em.group(1))))
             start = None
+    # 静止画面持续到片尾时没有 freeze_end，保留一个仅含 start 的开放区间
+    if start is not None:
+        intervals.append((start,))
     return intervals
 
 
@@ -118,6 +122,10 @@ def main():
         stderr = run_ffmpeg_detect(args.input, "freezedetect=n=-50dB:d=2")
         frozen = parse_freezedetect(stderr)
         min_dur = float(cfg.get("min_static_duration", 9))
+        # 如果静止画面持续到片尾（无 freeze_end），以视频时长作为结束点，
+        # 否则片尾静止永远不会被检出
+        if frozen and len(frozen[-1]) == 1:
+            frozen[-1] = (frozen[-1][0], duration if duration > 0 else frozen[-1][0] + min_dur)
         for start, end in frozen:
             if end - start >= min_dur:
                 intervals.append({
