@@ -39,10 +39,13 @@ type TrayUI struct {
 	Running   int
 	Completed int
 	Failed    int
+	// 当前 CPU 资源分配比例（%），默认 50
+	CPUPercent int
 
 	// 回调（由 tray_common 注入）
-	OnToggle func(enabled bool)
-	OnQuit   func()
+	OnToggle     func(enabled bool)
+	OnCPUChange  func(delta int) // 在托盘菜单中调整 CPU 分配（+/-）
+	OnQuit       func()
 
 	// 内部：菜单状态刷新（由平台实现调用）
 	updateMenu func()
@@ -51,9 +54,10 @@ type TrayUI struct {
 // NewTrayUI 创建托盘 UI 状态对象（平台无关部分）。
 func NewTrayUI(nodeID string) *TrayUI {
 	return &TrayUI{
-		NodeID:  nodeID,
-		Online:  false,
-		Enabled: true,
+		NodeID:     nodeID,
+		Online:     false,
+		Enabled:    true,
+		CPUPercent: 50,
 	}
 }
 
@@ -72,4 +76,18 @@ func (u *TrayUI) SetStatus(online, enabled bool, running, completed, failed int)
 	if changed && u.updateMenu != nil {
 		u.updateMenu()
 	}
+}
+
+// SetCPUPercent 更新 CPU 分配比例并刷新菜单。
+func (u *TrayUI) SetCPUPercent(pct int) {
+	if pct < 1 {
+		pct = 1
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	if u.CPUPercent != pct && u.updateMenu != nil {
+		u.updateMenu()
+	}
+	u.CPUPercent = pct
 }

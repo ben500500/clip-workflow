@@ -24,6 +24,8 @@ import {
   CloudServerOutlined,
   ApiOutlined,
   PoweroffOutlined,
+  PlusOutlined,
+  MinusOutlined,
 } from '@ant-design/icons';
 import { sliceApi } from '../api/slice';
 import type { WorkerNode } from '../types';
@@ -77,6 +79,26 @@ const WorkersPage: React.FC = () => {
       fetchWorkers();
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '操作失败');
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  // 调整节点 CPU 分配比例
+  const adjustCpuPercent = async (node: WorkerNode, delta: number) => {
+    const current = Math.max(1, Math.min(100, node.cpu_percent ?? 50));
+    const next = Math.max(1, Math.min(100, current + delta));
+    if (next === current) {
+      message.warning('CPU 分配已达上限/下限（1~100%）');
+      return;
+    }
+    setTogglingId(node.node_id);
+    try {
+      const res = await sliceApi.setWorkerCpuPercent(node.node_id, next);
+      message.success(res.message);
+      fetchWorkers();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '调整 CPU 分配失败');
     } finally {
       setTogglingId(null);
     }
@@ -180,6 +202,32 @@ const WorkersPage: React.FC = () => {
         <Text style={{ fontSize: 12 }}>
           {record.current_tasks || 0} / {record.max_concurrent || 2}
         </Text>
+      ),
+    },
+    {
+      title: 'CPU 分配',
+      key: 'cpu_percent',
+      width: 150,
+      render: (_: unknown, record: WorkerNode) => (
+        <Space size={2}>
+          <Button
+            type="text"
+            size="small"
+            icon={<MinusOutlined />}
+            disabled={togglingId === record.node_id || (record.cpu_percent ?? 50) <= 1}
+            onClick={() => adjustCpuPercent(record, -10)}
+          />
+          <Tooltip title="该节点切片时使用的 CPU 资源分配比例（可通过此处实时调整，下次任务生效）">
+            <Text style={{ fontSize: 12 }}>{record.cpu_percent ?? 50}%</Text>
+          </Tooltip>
+          <Button
+            type="text"
+            size="small"
+            icon={<PlusOutlined />}
+            disabled={togglingId === record.node_id || (record.cpu_percent ?? 50) >= 100}
+            onClick={() => adjustCpuPercent(record, 10)}
+          />
+        </Space>
       ),
     },
     {

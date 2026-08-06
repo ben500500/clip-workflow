@@ -65,6 +65,7 @@ async def _apply_compat_migrations():
     migrations = [
         ("slice_tasks", "node_id", "VARCHAR(100)"),
         ("worker_nodes", "enabled", "BOOLEAN DEFAULT TRUE"),
+        ("worker_nodes", "cpu_percent", "INTEGER DEFAULT 50"),
         ("system_config", "description", "VARCHAR(500)"),
         ("platform_profiles", "description", "VARCHAR(500)"),
         ("autoclip_projects", "error_message", "TEXT"),

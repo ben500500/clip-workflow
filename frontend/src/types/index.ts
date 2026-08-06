@@ -134,6 +134,8 @@ export interface WorkerNode {
   created_at: string;
   // 该节点正在运行的任务平均进度（工作时进度显示）
   running_progress?: number;
+  // 该节点 CPU 资源分配比例（%，默认 50）
+  cpu_percent?: number;
 }
 
 export interface SliceOutput {

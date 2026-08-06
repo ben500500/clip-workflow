@@ -106,6 +106,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		StartedAt:           time.Now().Unix(),
 		TotalTasksCompleted: 0,
 		TotalTasksFailed:    0,
+		CPUPercent:          w.config.CPUPercent,
 	}
 
 	if err := w.redis.RegisterNode(nodeInfo, w.config.HeartbeatTTL()); err != nil {
@@ -255,6 +256,13 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	}()
 
 	w.log("info", "开始任务: %s (模式: %s)", task.TaskID, task.Mode)
+
+	// 动态应用 CPU 分配比例：优先取 Redis 控制 key（管理员在界面上可实时调整），
+	// 未设置时使用 worker.json 中的配置（默认 50）
+	if pct, err := w.redis.GetNodeCPUPercent(w.config.NodeID, w.config.CPUPercent); err == nil {
+		w.config.CPUPercent = pct
+	}
+
 	if w.onTaskStart != nil {
 		w.onTaskStart(task)
 	}

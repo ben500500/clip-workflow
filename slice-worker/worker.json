@@ -11,5 +11,6 @@
   "max_retries": ${MAX_RETRIES},
   "retry_delay": ${RETRY_DELAY},
   "node_ttl": ${NODE_TTL},
-  "backend_url": "${BACKEND_URL}"
+  "backend_url": "${BACKEND_URL}",
+  "cpu_percent": ${CPU_PERCENT}
 }

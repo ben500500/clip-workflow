@@ -31,6 +31,7 @@ SERVER_IP="${SERVER_IP:-192.168.1.163}"
 SERVER_SSH_USER="${SERVER_SSH_USER:-cc12703}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-2}"
+CPU_PERCENT="${CPU_PERCENT:-50}"
 MODE="docker"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -45,9 +46,10 @@ while [[ $# -gt 0 ]]; do
         --server-ip) SERVER_IP="$2"; shift 2 ;;
         --server-ssh-user) SERVER_SSH_USER="$2"; shift 2 ;;
         --max-concurrent) MAX_CONCURRENT="$2"; shift 2 ;;
+        --cpu-percent) CPU_PERCENT="$2"; shift 2 ;;
         --bare) MODE="bare"; shift ;;
         -h|--help)
-            echo "用法: $0 [--node-id NAME] [--server-ip IP] [--server-ssh-user U] [--max-concurrent N] [--bare]"
+            echo "用法: $0 [--node-id NAME] [--server-ip IP] [--server-ssh-user U] [--max-concurrent N] [--cpu-percent N] [--bare]"
             echo "节点 ID 默认自动生成: slice-worker-<本机名缩写>"
             exit 0 ;;
         *) echo "未知参数: $1"; exit 1 ;;
@@ -127,12 +129,13 @@ if [[ "$MODE" == "docker" ]]; then
         die "镜像构建失败, 请检查 Docker 网络(需可访问 goproxy.cn)或基础镜像"
 
     docker rm -f "$NODE_ID" >/dev/null 2>&1 || true
-    log "启动节点 $NODE_ID (服务器 $SERVER_IP, 并发 $MAX_CONCURRENT)..."
+    log "启动节点 $NODE_ID (服务器 $SERVER_IP, 并发 $MAX_CONCURRENT, CPU $CPU_PERCENT%)"
     docker run -d --name "$NODE_ID" --restart unless-stopped \
         -e NODE_ID="$NODE_ID" \
         -e REDIS_URL="redis://:${REDIS_PASSWORD}@${SERVER_IP}:${REDIS_PORT}/0" \
         -e BACKEND_URL="http://${SERVER_IP}" \
         -e MAX_CONCURRENT="$MAX_CONCURRENT" \
+        -e CPU_PERCENT="$CPU_PERCENT" \
         -e HEARTBEAT_INTERVAL="10" \
         -e LOG_LEVEL="info" \
         -e TASK_TIMEOUT="7200" \
@@ -176,7 +179,8 @@ cat > "$SCRIPT_DIR/worker.json" <<EOF
   "max_retries": 2,
   "retry_delay": 30,
   "node_ttl": 0,
-  "backend_url": "http://${SERVER_IP}"
+  "backend_url": "http://${SERVER_IP}",
+  "cpu_percent": ${CPU_PERCENT}
 }
 EOF
 

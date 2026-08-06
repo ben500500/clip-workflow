@@ -46,9 +46,10 @@ docker logs -f slice-worker-<本机名>   # 看日志，出现"节点注册成�
 | `--server-ip` | 服务器 IP | 192.168.1.163 |
 | `--server-ssh-user` | 服务器 SSH 用户（自动读密码用） | cc12703 |
 | `--max-concurrent` | 节点并发切片数 | 2 |
+| `--cpu-percent` | 节点 CPU 资源分配比例（%%），限制 ffmpeg 编码线程数 | 50 |
 | `--bare` | 裸机模式（需要本机 Go） | docker 模式 |
 
-环境变量：`REDIS_PASSWORD`（设置了就用它，否则 SSH 自动获取或交互输入）、`REDIS_PORT`（默认 6379）、`SERVER_IP`。
+环境变量：`REDIS_PASSWORD`（设置了就用它，否则 SSH 自动获取或交互输入）、`REDIS_PORT`（默认 6379）、`SERVER_IP`、`CPU_PERCENT`（默认 50）。
 
 ## 特性说明（v2）
 

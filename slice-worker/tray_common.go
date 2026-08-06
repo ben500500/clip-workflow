@@ -59,6 +59,7 @@ func runTray(ctx context.Context, config *Config, worker *Worker) {
 
 	// 托盘 UI（平台无关）
 	ui := NewTrayUI(config.NodeID)
+	ui.CPUPercent = config.CPUPercent
 
 	// 控制器由平台初始化
 	controller := NewTrayController()
@@ -84,6 +85,21 @@ func runTray(ctx context.Context, config *Config, worker *Worker) {
 					int(atomic.LoadInt32(&worker.totalFailed)))
 			}
 		}
+	}
+	// 托盘菜单中调整 CPU 分配（+/-），写入 Redis 控制 key，Worker 下次取任务前生效
+	ui.OnCPUChange = func(delta int) {
+		current, err := worker.redis.GetNodeCPUPercent(config.NodeID, config.CPUPercent)
+		if err != nil {
+			current = config.CPUPercent
+		}
+		next := ClampCPUPercent(current + delta)
+		if err := worker.redis.SetNodeCPUPercent(config.NodeID, next); err != nil {
+			log.Printf("[tray] 调整 CPU 分配失败: %v", err)
+			return
+		}
+		config.CPUPercent = next
+		ui.SetCPUPercent(next)
+		log.Printf("[tray] CPU 分配已调整为 %d%%", next)
 	}
 	ui.OnQuit = func() {
 		// 退出前注销节点

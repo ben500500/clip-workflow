@@ -18,6 +18,7 @@ set "REDIS_PASSWORD="
 set "NODE_ID="
 set "REDIS_PORT=6379"
 set "MAX_CONCURRENT=2"
+set "CPU_PERCENT=50"
 
 :parse_args
 if "%~1"=="" goto args_done
@@ -26,6 +27,7 @@ if /i "%~1"=="--redis-password" ( set "REDIS_PASSWORD=%~2" & shift & shift & got
 if /i "%~1"=="--node-id"        ( set "NODE_ID=%~2" & shift & shift & goto parse_args )
 if /i "%~1"=="--redis-port"     ( set "REDIS_PORT=%~2" & shift & shift & goto parse_args )
 if /i "%~1"=="--max-concurrent" ( set "MAX_CONCURRENT=%~2" & shift & shift & goto parse_args )
+if /i "%~1"=="--cpu-percent"     ( set "CPU_PERCENT=%~2" & shift & shift & goto parse_args )
 if /i "%~1"=="--help"           goto usage
 echo [ERROR] 未知参数: %~1
 goto usage
@@ -35,7 +37,7 @@ REM ==================== 帮助 ====================
 :usage
 echo.
 echo 用法: deploy_windows.bat [--server-ip IP] [--redis-password PASS] [--node-id NAME]
-echo       [--redis-port PORT] [--max-concurrent N]
+echo       [--redis-port PORT] [--max-concurrent N] [--cpu-percent N]
 echo.
 echo 交互模式直接运行: deploy_windows.bat
 echo 部署后 Worker 会以"任务栏托盘"方式运行（图标在右下角系统托盘），
@@ -146,7 +148,8 @@ echo   "task_timeout": 7200,
 echo   "max_retries": 2,
 echo   "retry_delay": 30,
 echo   "node_ttl": 0,
-echo   "backend_url": "http://%SERVER_IP%"
+echo   "backend_url": "http://%SERVER_IP%",
+echo   "cpu_percent": %CPU_PERCENT%
 echo }
 ) > "%SCRIPT_DIR%worker.json"
 echo [INFO] 配置已生成: %SCRIPT_DIR%worker.json
@@ -157,6 +160,7 @@ echo [INFO] === 启动 Worker（任务栏托盘模式）===
 echo  节点ID:   %NODE_ID%
 echo  服务器:   %SERVER_IP%:%REDIS_PORT%
 echo  并发数:   %MAX_CONCURRENT%
+echo  CPU分配:  %CPU_PERCENT%%
 echo.
 echo  启动后请留意系统托盘（右下角）出现 "Slice Worker" 图标:
 echo    - 左键/右键点开可查看节点状态、启用/停用节点、退出

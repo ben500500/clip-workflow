@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -63,6 +65,7 @@ func (r *RedisClient) RegisterNode(info *NodeInfo, heartbeatTTL time.Duration) e
 		"started_at":            info.StartedAt,
 		"total_tasks_completed": info.TotalTasksCompleted,
 		"total_tasks_failed":    info.TotalTasksFailed,
+		"cpu_percent":           info.CPUPercent,
 	}
 	if len(info.Tags) > 0 {
 		tagsJSON, err := json.Marshal(info.Tags)
@@ -265,6 +268,29 @@ func (r *RedisClient) IsNodeEnabled(nodeID string) (bool, error) {
 	return val != "0" && val != "false", nil
 }
 
+// GetNodeCPUPercent 读取节点 CPU 分配比例控制 key（1~100）。
+// 若未设置则返回 fallback（默认取 worker.json 中的 cpu_percent，默认 50）。
+func (r *RedisClient) GetNodeCPUPercent(nodeID string, fallback int) (int, error) {
+	val, err := r.client.Get(r.ctx, fmt.Sprintf("slice:node-cpu-percent:%s", nodeID)).Result()
+	if err == redis.Nil {
+		return fallback, nil
+	}
+	if err != nil {
+		return fallback, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(val))
+	if err != nil {
+		return fallback, nil
+	}
+	if n < 1 {
+		n = 1
+	}
+	if n > 100 {
+		n = 100
+	}
+	return n, nil
+}
+
 // SetNodeEnabled 设置节点启用/停用状态（与后端 /workers/{id}/enable|disable 共用 Redis key）
 func (r *RedisClient) SetNodeEnabled(nodeID string, enabled bool) error {
 	val := "1"
@@ -272,6 +298,18 @@ func (r *RedisClient) SetNodeEnabled(nodeID string, enabled bool) error {
 		val = "0"
 	}
 	return r.client.Set(r.ctx, fmt.Sprintf("slice:node-enabled:%s", nodeID), val, 0).Err()
+}
+
+// SetNodeCPUPercent 设置节点 CPU 资源分配比例（1~100）。
+// 与后端 /workers/{id}/cpu-percent 共用 Redis key，Worker 下次领取任务前生效。
+func (r *RedisClient) SetNodeCPUPercent(nodeID string, percent int) error {
+	if percent < 1 {
+		percent = 1
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	return r.client.Set(r.ctx, fmt.Sprintf("slice:node-cpu-percent:%s", nodeID), strconv.Itoa(percent), 0).Err()
 }
 
 // StreamMessage Stream消息
@@ -298,6 +336,7 @@ type NodeInfo struct {
 	StartedAt           int64    `json:"started_at"`
 	TotalTasksCompleted int      `json:"total_tasks_completed"`
 	TotalTasksFailed    int      `json:"total_tasks_failed"`
+	CPUPercent          int      `json:"cpu_percent"`
 }
 
 // SliceTask 切片任务

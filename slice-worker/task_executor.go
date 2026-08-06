@@ -72,6 +72,12 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		}
 		args = append(args, "--intervals", intervalsPath)
 	}
+	// CPU 资源分配：限制 ffmpeg 线程数/占用率，默认 50%
+	cpuPercent := te.config.CPUPercent
+	if cpuPercent < 1 || cpuPercent > 100 {
+		cpuPercent = 50
+	}
+	args = append(args, "--cpu-percent", fmt.Sprintf("%d", cpuPercent))
 
 	// Alpine 镜像提供 python3 可执行文件；Windows 上为 python
 	cmd := exec.CommandContext(ctx, pythonBinary(), args...)

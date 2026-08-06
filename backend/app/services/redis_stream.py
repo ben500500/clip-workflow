@@ -31,6 +31,10 @@ NODE_KEY_PREFIX = "slice:nodes:"
 # 节点启停控制 key：值为 0/1（1 表示允许领取任务），Worker 端每次取任务前读取
 NODE_ENABLED_PREFIX = "slice:node-enabled:"
 
+# 节点 CPU 分配比例控制 key：值为 1~100 的百分比，Worker 端每次取任务前读取
+# （与 worker.json 中 cpu_percent 一致，优先取该 key 实现运行时动态调整）
+NODE_CPU_PERCENT_PREFIX = "slice:node-cpu-percent:"
+
 
 def _get_stream(priority: str = "normal") -> str:
     """根据优先级返回对应的 Stream 名称。"""
@@ -203,6 +207,47 @@ async def is_node_enabled(node_id: str) -> bool:
             await redis.close()
 
 
+async def set_node_cpu_percent(node_id: str, percent: int) -> None:
+    """设置节点 CPU 资源分配比例（1~100）。
+
+    写入 Redis 控制 key（TTL 7 天），Worker 端每次领取任务前读取并应用，
+    实现无需重启的运行时动态调整。
+    """
+    percent = max(1, min(100, int(percent)))
+    redis = None
+    try:
+        redis = await get_redis()
+        await redis.set(
+            f"{NODE_CPU_PERCENT_PREFIX}{node_id}",
+            str(percent),
+            ex=7 * 24 * 3600,
+        )
+    except Exception as e:
+        logger.error(f"Failed to set node cpu percent for {node_id}: {e}")
+    finally:
+        if redis:
+            await redis.close()
+
+
+async def get_node_cpu_percent(node_id: str, default: int = 50) -> int:
+    """查询节点 CPU 资源分配比例（默认 50）。"""
+    redis = None
+    try:
+        redis = await get_redis()
+        val = await redis.get(f"{NODE_CPU_PERCENT_PREFIX}{node_id}")
+        if val is None:
+            return default
+        try:
+            return max(1, min(100, int(val)))
+        except (TypeError, ValueError):
+            return default
+    except Exception:
+        return default
+    finally:
+        if redis:
+            await redis.close()
+
+
 async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[dict]:
     """从 Redis 获取所有 Worker 节点信息（含在线与离线判定）。
 
@@ -275,6 +320,19 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
             except Exception:
                 pass
 
+            # 节点 CPU 资源分配比例：优先取控制 key（运行时动态调整），否则取配置默认
+            cpu_percent = 50
+            try:
+                cpu_val = await redis.get(f"{NODE_CPU_PERCENT_PREFIX}{node_id}")
+                if cpu_val is not None:
+                    cpu_percent = max(1, min(100, int(cpu_val)))
+                else:
+                    node_cpu = node_data.get("cpu_percent", "")
+                    if node_cpu:
+                        cpu_percent = max(1, min(100, int(node_cpu)))
+            except Exception:
+                pass
+
             # 该节点正在运行的任务与平均进度
             running = node_running.get(node_id, [])
             running_progress = 0.0
@@ -299,6 +357,8 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
                 "last_heartbeat": node_data.get("last_heartbeat", ""),
                 "started_at": node_data.get("started_at", ""),
                 "enabled": enabled,
+                # 该节点 CPU 资源分配比例（%）
+                "cpu_percent": cpu_percent,
                 # 该节点正在运行的任务列表与平均进度（"工作时进度显示"）
                 "running_tasks": running,
                 "running_progress": running_progress,
