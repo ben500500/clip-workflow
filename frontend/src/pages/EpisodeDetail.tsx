@@ -169,7 +169,10 @@ const EpisodeDetail: React.FC = () => {
               if (detectTimerRef.current) window.clearInterval(detectTimerRef.current);
               return;
             }
-            setDetectProgress(prog);
+            // unknown 表示暂无运行中的检测任务，忽略避免进度条回退/闪烁
+            if (prog.status !== 'unknown') {
+              setDetectProgress(prog);
+            }
             if (prog.status === 'completed' || prog.status === 'failed') {
               if (detectTimerRef.current) window.clearInterval(detectTimerRef.current);
               detectTimerRef.current = null;
@@ -258,7 +261,10 @@ const EpisodeDetail: React.FC = () => {
             return;
           }
           if (p) {
-            setDetectProgress(p);
+            // unknown 表示暂无运行中的检测任务，忽略避免进度条回退/闪烁
+            if (p.status !== 'unknown') {
+              setDetectProgress(p);
+            }
             if (p.status === 'completed' || p.status === 'failed') {
               if (detectTimerRef.current) window.clearInterval(detectTimerRef.current);
               detectTimerRef.current = null;
