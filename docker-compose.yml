@@ -146,46 +146,6 @@ services:
       start_period: 15s
     logging: *default-logging
 
-  # ==================== AutoClip 独立实例 ====================
-  # 独立部署的选点服务：单独端口直连调用，支持 max_clips（切片数量）
-  # 与 start_time/end_time（选点时间范围）自定义参数
-  autoclip-standalone:
-    build:
-      context: ./autoclip
-      dockerfile: Dockerfile
-    image: clip-autoclip:latest
-    container_name: clip-autoclip-standalone
-    restart: unless-stopped
-    networks:
-      - clip-network
-    depends_on:
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
-      API_MODEL_NAME: ${API_MODEL_NAME:-qwen-plus}
-      DASHSCOPE_MODE: ${DASHSCOPE_MODE:-compatible}
-      SERVICE_MODE: api
-      # 本地 whisper 模型路径（避免每次容器重建从 HuggingFace 下载，国内网络不稳定）
-      WHISPER_MODEL: /app/whisper-model
-      AUTOCLIP_ASR_METHOD: ${AUTOCLIP_ASR_METHOD:-whisper}
-    ports:
-      - "${AUTOCLIP_STANDALONE_PORT:-8002}:8000"
-    volumes:
-      - media_data:/app/media
-      # 独立实例使用独立的元数据/项目数据目录（内存态 + 磁盘元数据）
-      - ./hf-cache:/app/.cache
-      - ./whisper-model:/app/whisper-model:ro
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-    logging: *default-logging
-
   # ==================== Backend Services ====================
   backend:
     build:
