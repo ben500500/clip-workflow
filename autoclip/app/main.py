@@ -16,6 +16,7 @@ import os
 import subprocess
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -150,6 +151,60 @@ def _to_contract_clips(raw_clips: list) -> list:
 
 # ----------------------- 真实流水线（后台执行） -----------------------
 
+def _parse_srt_ts(ts: str) -> float:
+    """解析 SRT 时间戳 '00:01:25,000' -> 秒数 85.0"""
+    ts = ts.strip().replace(",", ".")
+    parts = ts.split(":")
+    return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+
+
+def _filter_srt_by_time(srt_path: Path, out_path: Path,
+                        start_time: Optional[float] = None,
+                        end_time: Optional[float] = None) -> Path:
+    """按时间范围过滤 SRT 字幕（窗口化），返回新的 SRT 路径。
+
+    - start_time / end_time 单位秒；None 表示不限制该侧。
+    - 保留与窗口有交集的字幕块，重写序号。
+    """
+    if start_time is None and end_time is None:
+        return srt_path
+    if not srt_path.exists() or srt_path.stat().st_size == 0:
+        return srt_path
+
+    lines = srt_path.read_text(encoding="utf-8").splitlines()
+    kept = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().isdigit() and i + 1 < len(lines) and "-->" in lines[i + 1]:
+            t_line = lines[i + 1]
+            try:
+                s_sec = _parse_srt_ts(t_line.split("-->")[0])
+                e_sec = _parse_srt_ts(t_line.split("-->")[1])
+            except Exception:
+                i += 1
+                continue
+            in_range = True
+            if start_time is not None and e_sec < start_time:
+                in_range = False
+            if end_time is not None and s_sec > end_time:
+                in_range = False
+            if in_range:
+                j = i + 2
+                texts = []
+                while j < len(lines) and lines[j].strip() != "":
+                    texts.append(lines[j])
+                    j += 1
+                kept.append((t_line, texts))
+                i = j
+                continue
+        i += 1
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        for n, (t_line, texts) in enumerate(kept, 1):
+            f.write(f"{n}\n{t_line}\n" + "\n".join(texts) + "\n\n")
+    return out_path
+
+
 def _run_asr(video_path: str, srt_path: Path, api_key: str) -> None:
     """按环境变量 AUTOCLIP_ASR_METHOD 选择 ASR 方式生成 SRT。
 
@@ -168,7 +223,10 @@ def _run_asr(video_path: str, srt_path: Path, api_key: str) -> None:
     recognizer.generate_subtitle(Path(video_path), srt_path, config)
 
 
-async def _run_pipeline(project_id: str, steps: list[int]) -> None:
+async def _run_pipeline(project_id: str, steps: list[int],
+                        max_clips: Optional[int] = None,
+                        start_time: Optional[float] = None,
+                        end_time: Optional[float] = None) -> None:
     proj = projects.get(project_id)
     if not proj:
         return
@@ -195,9 +253,17 @@ async def _run_pipeline(project_id: str, steps: list[int]) -> None:
             logger.warning(f"[project={project_id}] ASR 未识别到语音内容（视频可能无声音/静音）")
         _update_progress(proj, "running", 20, "ASR 语音识别完成，开始大纲提取")
 
+        # 时间范围窗口化：过滤 SRT 字幕，只保留 [start_time, end_time] 内的内容
+        pipeline_srt = srt_path
+        if start_time is not None or end_time is not None:
+            windowed = meta_dir / "subtitle_windowed.srt"
+            pipeline_srt = _filter_srt_by_time(srt_path, windowed, start_time, end_time)
+            window_desc = f"[{start_time if start_time is not None else 0}s ~ {end_time if end_time is not None else '结尾'}s]"
+            _update_progress(proj, "running", 20, f"按时间范围 {window_desc} 窗口化字幕")
+
         # Step 1: 大纲提取
         outlines = await asyncio.to_thread(
-            run_step1_outline, srt_path, meta_dir, None, PROMPT_FILES)
+            run_step1_outline, pipeline_srt, meta_dir, None, PROMPT_FILES)
         _update_progress(proj, "running", 40,
                          f"大纲提取完成（{len(outlines)} 个话题），定位时间线")
 
@@ -212,6 +278,13 @@ async def _run_pipeline(project_id: str, steps: list[int]) -> None:
             run_step3_scoring, meta_dir / "step2_timeline.json", meta_dir, None, PROMPT_FILES)
         _update_progress(proj, "running", 80,
                          f"评分完成（{len(scored)} 个高分片段），生成标题")
+
+        # 切片数量控制：按 final_score 降序取 top-N，并重写 step3 结果供 step4 使用
+        if max_clips and max_clips > 0 and len(scored) > max_clips:
+            scored = sorted(scored, key=lambda c: c.get("final_score", 0), reverse=True)[:max_clips]
+            with open(meta_dir / "step3_high_score_clips.json", "w", encoding="utf-8") as f:
+                json.dump(scored, f, ensure_ascii=False, indent=2)
+            _update_progress(proj, "running", 85, f"按分数取前 {max_clips} 个片段")
 
         # Step 4: 标题生成
         titled = await asyncio.to_thread(
@@ -287,6 +360,11 @@ async def upload(project_id: str, file: UploadFile = File(...)):
 class PipelineRun(BaseModel):
     project_id: str
     steps: list[int] = [1, 2, 3, 4, 5, 6]
+    # 切片数量控制：按评分降序取前 N 个高光片段
+    max_clips: Optional[int] = None
+    # 选点时间范围（秒）：仅在该窗口内选点
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
 
 
 @app.post("/api/v1/pipeline/run")
@@ -300,7 +378,12 @@ async def pipeline_run(data: PipelineRun):
     proj["progress"] = 0
     proj["message"] = "流水线启动"
     proj["clips"] = []
-    asyncio.create_task(_run_pipeline(data.project_id, data.steps))
+    asyncio.create_task(_run_pipeline(
+        data.project_id, data.steps,
+        max_clips=data.max_clips,
+        start_time=data.start_time,
+        end_time=data.end_time,
+    ))
     return {"ok": True, "project_id": data.project_id}
 
 
