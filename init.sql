@@ -13,19 +13,14 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ==================== 用户与认证 ====================
 
--- 用户表
+-- 用户表（结构与 backend ORM User 模型保持一致）
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    username VARCHAR(64) NOT NULL UNIQUE,
-    email VARCHAR(255) NOT NULL UNIQUE,
-    hashed_password VARCHAR(255) NOT NULL,
-    display_name VARCHAR(128),
-    avatar_url VARCHAR(512),
-    bio TEXT,
-    role VARCHAR(32) NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin', 'superadmin')),
+    username VARCHAR(100) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    display_name VARCHAR(100),
+    role VARCHAR(20) NOT NULL DEFAULT 'operator' CHECK (role IN ('admin', 'operator', 'publisher', 'material')),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    is_verified BOOLEAN NOT NULL DEFAULT FALSE,
-    last_login_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
