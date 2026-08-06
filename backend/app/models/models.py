@@ -104,6 +104,7 @@ class AutoClipProject(Base):
     autoclip_project_id = Column(String(100), unique=True, nullable=True)
     config = Column(JSON, nullable=True)
     pipeline_status = Column(String(50), nullable=True)
+    error_message = Column(Text, nullable=True)
     celery_task_id = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

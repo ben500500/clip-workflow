@@ -13,6 +13,7 @@ export const intervalApi = {
       status: string;
       progress: number;
       message: string;
+      error_message?: string | null;
       interval_count?: number | null;
       interval_type?: string | null;
     }>,

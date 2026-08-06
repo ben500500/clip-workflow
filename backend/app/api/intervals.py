@@ -31,6 +31,7 @@ class DetectProgressResponse(BaseModel):
     status: str
     progress: float
     message: str
+    error_message: Optional[str] = None
     interval_count: Optional[int] = None
     interval_type: Optional[str] = None
 
@@ -141,10 +142,10 @@ async def detect_intervals(
             source_file_key=source_file_key,
             task_id=str(detect_record.id),
         )
-    except Exception:
+    except Exception as e:
         # 调度失败：将记录标记为 failed，避免前端进度条悬挂在 0%
         detect_record.status = "failed"
-        detect_record.error_message = "检测任务调度失败"
+        detect_record.error_message = f"检测任务调度失败: {e}"
         detect_record.completed_at = datetime.utcnow()
         await db.commit()
         raise
@@ -203,6 +204,7 @@ async def get_detect_progress(
             status=status_map.get(ts, "unknown"),
             progress=task.progress or 0,
             message=message_map.get(ts, ts),
+            error_message=task.error_message,
         )
         # 任务模式名形如 detect_credits，去掉前缀返回给前端用于展示
         if task.mode and task.mode.startswith("detect_"):

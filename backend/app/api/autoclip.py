@@ -37,6 +37,7 @@ class AutoClipProgressResponse(BaseModel):
     status: str
     progress: float
     message: str
+    error_message: Optional[str] = None
 
 
 class ClipUpdateRequest(BaseModel):
@@ -165,9 +166,10 @@ async def run_autoclip(
             config=config,
             source_file_key=source_file_key,
         )
-    except Exception:
+    except Exception as e:
         # Celery dispatch failed: mark DB status as failed
         autoclip_project.pipeline_status = "failed"
+        autoclip_project.error_message = f"选点任务调度失败: {e}"
         await db.flush()
         raise
 
@@ -209,6 +211,7 @@ async def get_autoclip_progress(
                 status=progress.get("status", "unknown"),
                 progress=progress.get("progress", 0),
                 message=progress.get("message", ""),
+                error_message=autoclip_project.error_message,
             )
 
     # Fall back to local database status
@@ -230,6 +233,7 @@ async def get_autoclip_progress(
         status=status_map.get(status, "unknown"),
         progress=progress_value,
         message=message_map.get(status, status),
+        error_message=autoclip_project.error_message,
     )
 
 

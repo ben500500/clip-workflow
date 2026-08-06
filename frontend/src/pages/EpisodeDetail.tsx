@@ -12,6 +12,7 @@ import { projectApi } from '../api/projects';
 import { autoclipApi } from '../api/autoclip';
 import { intervalApi } from '../api/intervals';
 import { sliceApi } from '../api/slice';
+import ErrorHint from '../components/ErrorHint';
 import type { Episode } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
@@ -59,13 +60,13 @@ const EpisodeDetail: React.FC = () => {
   const [maxClips, setMaxClips] = useState(10);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
   const [maxClipDuration, setMaxClipDuration] = useState<number | null>(null);
-  const [autoclipProgress, setAutoclipProgress] = useState<{ status: string; progress: number; message: string } | null>(null);
+  const [autoclipProgress, setAutoclipProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
   const [autoclipRunning, setAutoclipRunning] = useState(false);
   const [detectRunning, setDetectRunning] = useState(false);
-  const [detectProgress, setDetectProgress] = useState<{ status: string; progress: number; message: string; interval_count?: number | null; interval_type?: string | null } | null>(null);
+  const [detectProgress, setDetectProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null; interval_count?: number | null; interval_type?: string | null } | null>(null);
   const [detectResultCount, setDetectResultCount] = useState<number | null>(null);
   const [sliceRunning, setSliceRunning] = useState(false);
-  const [sliceProgress, setSliceProgress] = useState<{ status: string; progress: number; message: string } | null>(null);
+  const [sliceProgress, setSliceProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
 
   const autoclipTimerRef = useRef<number | null>(null);
   const detectTimerRef = useRef<number | null>(null);
@@ -496,7 +497,7 @@ const EpisodeDetail: React.FC = () => {
 
   // ─── 各动作进度条（放在对应动作卡片的最底部） ────────────────────
   const renderProgress = (
-    p: { status: string; progress: number; message: string } | null
+    p: { status: string; progress: number; message: string; error_message?: string | null } | null
   ) => {
     if (!p) return null;
     return (
@@ -507,7 +508,10 @@ const EpisodeDetail: React.FC = () => {
           strokeColor={p.status === 'completed' ? '#52c41a' : undefined}
           size="small"
         />
-        <Text type="secondary" style={{ fontSize: 12 }}>{p.message}</Text>
+        <Space size={4} align="center">
+          <Text type="secondary" style={{ fontSize: 12 }}>{p.message}</Text>
+          {p.status === 'failed' && p.error_message && <ErrorHint error={p.error_message} />}
+        </Space>
       </div>
     );
   };
