@@ -224,7 +224,12 @@ const SliceTasks: React.FC = () => {
       render: (_: unknown, o: SliceOutput) => (
         <Space size="small">
           <Button size="small" onClick={() => {
-            window.open(`/api/outputs/${o.id}/preview/video`, '_blank');
+            // presigned_url 已由后端用外部 MinIO endpoint 生成，可直接播放
+            if (!o.presigned_url) {
+              message.warning('暂无预览地址');
+              return;
+            }
+            window.open(o.presigned_url, '_blank');
           }}>预览</Button>
           <Button size="small" onClick={() => window.open(`/api/outputs/${o.id}/download`, '_blank')}>下载</Button>
         </Space>
