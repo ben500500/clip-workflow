@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -31,6 +31,8 @@ class DetectProgressResponse(BaseModel):
     status: str
     progress: float
     message: str
+    interval_count: Optional[int] = None
+    interval_type: Optional[str] = None
 
 
 class IntervalCreate(BaseModel):
@@ -197,11 +199,46 @@ async def get_detect_progress(
             "failed": "检测任务执行失败",
         }
         ts = task.status or "pending"
-        return DetectProgressResponse(
+        resp = DetectProgressResponse(
             status=status_map.get(ts, "unknown"),
             progress=task.progress or 0,
             message=message_map.get(ts, ts),
         )
+        # 任务模式名形如 detect_credits，去掉前缀返回给前端用于展示
+        if task.mode and task.mode.startswith("detect_"):
+            resp.interval_type = task.mode[len("detect_"):]
+
+        # 已完成：统计该剧集已保存的自动检测结果条数，让前端展示真实结果而非空状态
+        if ts == "completed":
+            count_conditions = [
+                DetectedInterval.episode_id == eid,
+                DetectedInterval.source == "auto",
+            ]
+            if resp.interval_type:
+                count_conditions.append(
+                    DetectedInterval.interval_type == resp.interval_type
+                )
+            count_result = await db.execute(
+                select(func.count())
+                .select_from(DetectedInterval)
+                .where(*count_conditions)
+            )
+            resp.interval_count = count_result.scalar() or 0
+            type_label = {
+                "credits": "片尾字幕",
+                "static": "静止画面",
+                "watermark": "水印",
+            }.get(resp.interval_type or "", resp.interval_type or "")
+            if resp.interval_count == 0:
+                resp.message = (
+                    f"{type_label}检测完成，但未发现符合规则的区间"
+                    if resp.interval_type
+                    else "检测完成，但未发现符合规则的区间"
+                )
+            else:
+                resp.message = f"{type_label}检测完成，共检测到 {resp.interval_count} 个区间，可在「区间检测」工作台查看/调整"
+
+        return resp
 
     # No running task found
     return DetectProgressResponse(

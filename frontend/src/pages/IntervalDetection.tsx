@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, Spin, Alert, message, InputNumber, Select, Modal, Form, Input, Popconfirm,
+  Card, Table, Tag, Button, Space, Typography, Spin, Alert, message, InputNumber, Select, Modal, Form, Input, Popconfirm, Progress,
 } from 'antd';
 import { ArrowLeftOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -8,7 +8,7 @@ import { intervalApi } from '../api/intervals';
 import type { DetectedInterval } from '../types';
 import { formatDuration, getStatusColor, getStatusLabel } from '../utils/format';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 const IntervalDetection: React.FC = () => {
   const { episodeId } = useParams<{ episodeId: string }>();
@@ -17,6 +17,7 @@ const IntervalDetection: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [form] = Form.useForm();
+  const [detectStatus, setDetectStatus] = useState<{ status: string; progress: number; message: string; interval_count?: number | null } | null>(null);
 
   const fetchIntervals = async () => {
     setLoading(true);
@@ -33,6 +34,30 @@ const IntervalDetection: React.FC = () => {
   useEffect(() => {
     fetchIntervals();
   }, [episodeId]);
+
+  // 轮询检测进度：检测进行中时展示进度，完成后自动刷新结果列表
+  useEffect(() => {
+    const timer = window.setInterval(async () => {
+      try {
+        const p = await intervalApi.progress(episodeId || '');
+        if (p && p.status !== 'unknown') {
+          setDetectStatus(p);
+        } else {
+          setDetectStatus(null);
+        }
+      } catch {
+        // 忽略
+      }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [episodeId]);
+
+  // 检测完成后自动刷新列表
+  useEffect(() => {
+    if (detectStatus && detectStatus.status === 'completed') {
+      fetchIntervals();
+    }
+  }, [detectStatus?.status]);
 
   const toggle = async (id: string) => {
     try {
@@ -108,8 +133,27 @@ const IntervalDetection: React.FC = () => {
         <Button icon={<ReloadOutlined />} onClick={fetchIntervals}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>手动添加</Button>
       </Space>
+      {detectStatus && detectStatus.status !== 'unknown' && (
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>{detectStatus.message}</Text>
+            <Progress
+              percent={detectStatus.progress}
+              status={detectStatus.status === 'failed' ? 'exception' : detectStatus.status === 'completed' ? 'success' : 'active'}
+              size="small"
+            />
+            {detectStatus.status === 'completed' && (
+              <Text style={{ fontSize: 12, color: detectStatus.interval_count ? '#52c41a' : '#999' }}>
+                {detectStatus.interval_count
+                  ? `共检测到 ${detectStatus.interval_count} 个区间，已自动保存`
+                  : '本次检测未发现符合条件的区间'}
+              </Text>
+            )}
+          </Space>
+        </Card>
+      )}
       <Card size="small">
-        <Table rowKey="id" columns={columns} dataSource={intervals} loading={loading} pagination={false} size="small" />
+        <Table rowKey="id" columns={columns} dataSource={intervals} loading={loading} pagination={false} size="small" locale={{ emptyText: '暂无检测结果。点击「开始检测」或「手动添加」创建区间；如选择「水印」模式，需手动添加（该模式无自动检测器）。' }} />
       </Card>
       <Modal title="手动添加区间" open={modalOpen} onOk={createManual} onCancel={() => setModalOpen(false)} destroyOnClose>
         <Form form={form} layout="vertical">

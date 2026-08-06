@@ -13,6 +13,8 @@ export const intervalApi = {
       status: string;
       progress: number;
       message: string;
+      interval_count?: number | null;
+      interval_type?: string | null;
     }>,
 
   list: (episodeId: string) =>
