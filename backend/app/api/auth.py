@@ -1,14 +1,26 @@
-"""认证与用户管理路由."""
+"""认证与用户管理路由.
+
+二期安全认证体系：
+- 登录返回 access_token + refresh_token（refresh_token 通过 HttpOnly Cookie 下发）
+- POST /auth/refresh 使用 refresh_token 无感刷新 access_token
+- POST /auth/logout 吊销会话（refresh_token 黑名单）
+- RBAC 三级权限：admin / operator / publisher / material
+- 审计日志：登录/登出/角色变更等关键操作落库
+"""
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import uuid
+from datetime import datetime as _dt
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import (
     create_access_token,
+    create_user_session,
+    decode_token,
     get_current_user,
     get_password_hash,
     get_role_menus,
@@ -16,9 +28,12 @@ from app.auth import (
     verify_password,
 )
 from app.database import get_db
-from app.models.models import ROLE_DISPLAY_NAMES, User, UserRole
+from app.models.models import ROLE_DISPLAY_NAMES, AuditLog, User, UserSession, UserRole
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
+
+# refresh_token 的 HttpOnly Cookie 名称
+REFRESH_COOKIE_NAME = "refresh_token"
 
 # ──────────────────────────────────────────────
 # Pydantic 请求/响应模型
@@ -32,8 +47,19 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     access_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
     user: "UserResponse"
+
+
+class RefreshResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class LogoutResponse(BaseModel):
+    ok: bool = True
+    message: str = "已退出登录"
 
 
 class UserResponse(BaseModel):
@@ -60,6 +86,13 @@ class RegisterRequest(BaseModel):
 class UpdateRoleRequest(BaseModel):
     role: str
 
+
+class UpdateProfileRequest(BaseModel):
+    display_name: str | None = None
+    old_password: str | None = None
+    new_password: str | None = None
+
+
 # ──────────────────────────────────────────────
 # 辅助函数
 # ──────────────────────────────────────────────
@@ -79,6 +112,68 @@ def _user_to_response(user: User) -> UserResponse:
         updated_at=user.updated_at.isoformat() if user.updated_at else None,
     )
 
+
+def _set_refresh_cookie(response: Response, token: str | None):
+    """将 refresh_token 写入 HttpOnly Cookie（支持清除）."""
+    if token:
+        response.set_cookie(
+            key=REFRESH_COOKIE_NAME,
+            value=token,
+            max_age=7 * 24 * 3600,  # 7 天
+            httponly=True,
+            secure=False,  # 生产环境建议通过 Nginx 启用 HTTPS 后改为 True
+            samesite="lax",
+            path="/api/auth",
+        )
+    else:
+        response.delete_cookie(REFRESH_COOKIE_NAME, path="/api/auth")
+
+
+async def _write_audit(
+    db: AsyncSession,
+    action: str,
+    operator: User | None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    before: dict | None = None,
+    after: dict | None = None,
+    request: Request | None = None,
+):
+    """写入审计日志."""
+    try:
+        log = AuditLog(
+            operator_id=operator.id if operator else None,
+            operator_name=operator.username if operator else None,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            before=before,
+            after=after,
+            ip_address=request.client.host if request and request.client else None,
+        )
+        db.add(log)
+        await db.flush()
+    except Exception:
+        # 审计日志失败不应影响主流程
+        pass
+
+
+async def _revoke_session_by_refresh_token(db: AsyncSession, refresh_token: str):
+    """根据 refresh_token 吊销对应会话."""
+    from app.auth import _hash_token
+
+    token_hash = _hash_token(refresh_token)
+    result = await db.execute(
+        select(UserSession).where(UserSession.refresh_token_hash == token_hash)
+    )
+    session = result.scalar_one_or_none()
+    if session and not session.is_revoked:
+        session.is_revoked = True
+        session.revoked_at = _dt.utcnow()
+        await db.flush()
+    return session
+
+
 # ──────────────────────────────────────────────
 # 路由
 # ──────────────────────────────────────────────
@@ -87,15 +182,18 @@ def _user_to_response(user: User) -> UserResponse:
 @router.post("/login", response_model=LoginResponse)
 async def login(
     req: LoginRequest,
+    response: Response,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """用户名密码登录，返回 JWT token 和用户信息."""
+    """用户名密码登录，返回 access_token 并下发 refresh_token Cookie."""
     result = await db.execute(
         select(User).where(User.username == req.username)
     )
     user = result.scalar_one_or_none()
 
     if user is None or not verify_password(req.password, user.password_hash):
+        await _write_audit(db, "auth.login.failed", None, "user", req.username, request=request)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误",
@@ -106,11 +204,107 @@ async def login(
             detail="该用户已被禁用",
         )
 
-    token = create_access_token({"sub": str(user.id)})
+    # 双 Token：access_token 短期，refresh_token 长期落库
+    jti = str(uuid.uuid4())
+    access_token = create_access_token({"sub": str(user.id)}, jti=jti)
+    session = await create_user_session(db, user, request, access_jti=jti)
+    refresh_token = getattr(session, "_plain_refresh_token", None)
+
+    _set_refresh_cookie(response, refresh_token)
+    await _write_audit(db, "auth.login", user, "user", str(user.id), request=request)
+
     return LoginResponse(
-        access_token=token,
+        access_token=access_token,
+        refresh_token=refresh_token,
         user=_user_to_response(user),
     )
+
+
+@router.post("/refresh", response_model=RefreshResponse)
+async def refresh_token(
+    request: Request,
+    response: Response,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """使用 refresh_token 无感刷新 access_token.
+
+    refresh_token 从 HttpOnly Cookie 读取（或从 JSON body 兜底），
+    校验通过后吊销旧 refresh_token 并签发新的 refresh_token（轮换）。
+    """
+
+    # 优先从 Cookie 读取
+    refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
+    if not refresh_token:
+        try:
+            body = await request.json()
+            refresh_token = body.get("refresh_token")
+        except Exception:
+            refresh_token = None
+
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="缺少 refresh_token",
+        )
+
+    # 校验 refresh_token 有效性
+    payload = decode_token(refresh_token, expected_type="refresh")
+    user_id = payload.get("sub")
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="无效的 refresh_token")
+
+    from app.auth import _hash_token
+    token_hash = _hash_token(refresh_token)
+    result = await db.execute(
+        select(UserSession).where(UserSession.refresh_token_hash == token_hash)
+    )
+    session = result.scalar_one_or_none()
+    if session is None or session.is_revoked:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="refresh_token 已失效，请重新登录",
+        )
+    if session.expires_at and session.expires_at < _dt.utcnow():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录已过期，请重新登录",
+        )
+
+    user_result = await db.execute(select(User).where(User.id == session.user_id))
+    user = user_result.scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户不存在或已禁用",
+        )
+
+    # 轮换：吊销旧会话，创建新会话
+    session.is_revoked = True
+    session.revoked_at = _dt.utcnow()
+
+    new_jti = str(uuid.uuid4())
+    new_access = create_access_token({"sub": str(user.id)}, jti=new_jti)
+    new_session = await create_user_session(db, user, request, access_jti=new_jti)
+    new_refresh = getattr(new_session, "_plain_refresh_token", None)
+    _set_refresh_cookie(response, new_refresh)
+
+    return RefreshResponse(access_token=new_access)
+
+
+@router.post("/logout", response_model=LogoutResponse)
+async def logout(
+    request: Request,
+    response: Response,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    """退出登录：吊销 refresh_token 会话（Token 黑名单）."""
+    refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
+    if refresh_token:
+        await _revoke_session_by_refresh_token(db, refresh_token)
+    _set_refresh_cookie(response, None)
+    await _write_audit(db, "auth.logout", current_user, "user", str(current_user.id), request=request)
+    return LogoutResponse()
 
 
 @router.get("/me", response_model=UserResponse)
@@ -156,6 +350,10 @@ async def register(
     )
     db.add(user)
     await db.flush()
+    await _write_audit(
+        db, "user.create", current_user, "user", str(user.id),
+        after={"username": user.username, "role": user.role},
+    )
     await db.refresh(user)
     return _user_to_response(user)
 
@@ -199,7 +397,67 @@ async def update_user_role(
             detail="用户不存在",
         )
 
+    before = {"role": user.role}
     user.role = req.role
     await db.flush()
+    await _write_audit(
+        db, "user.role.update", current_user, "user", str(user.id),
+        before=before, after={"role": user.role},
+    )
     await db.refresh(user)
     return _user_to_response(user)
+
+
+@router.put("/users/{user_id}/toggle", response_model=UserResponse)
+async def toggle_user_active(
+    user_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+):
+    """启用/停用用户（仅管理员可调用）."""
+    from uuid import UUID
+    try:
+        uid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效的用户 ID")
+
+    if current_user.id == uid:
+        raise HTTPException(status_code=400, detail="不能停用当前登录用户")
+
+    result = await db.execute(select(User).where(User.id == uid))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    before = {"is_active": user.is_active}
+    user.is_active = not user.is_active
+    await db.flush()
+    await _write_audit(
+        db, "user.active.toggle", current_user, "user", str(user.id),
+        before=before, after={"is_active": user.is_active},
+    )
+    await db.refresh(user)
+    return _user_to_response(user)
+
+
+@router.put("/profile", response_model=UserResponse)
+async def update_profile(
+    req: UpdateProfileRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    """修改个人资料（昵称 / 密码）."""
+    if req.display_name is not None:
+        current_user.display_name = req.display_name
+
+    if req.old_password and req.new_password:
+        if not verify_password(req.old_password, current_user.password_hash):
+            raise HTTPException(status_code=400, detail="原密码错误")
+        if len(req.new_password) < 6:
+            raise HTTPException(status_code=400, detail="新密码长度不能少于 6 位")
+        current_user.password_hash = get_password_hash(req.new_password)
+
+    await db.flush()
+    await _write_audit(db, "user.profile.update", current_user, "user", str(current_user.id))
+    await db.refresh(current_user)
+    return _user_to_response(current_user)

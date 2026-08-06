@@ -95,6 +95,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const logout = useCallback(() => {
+    // 调用后端吊销 refresh_token 会话（Token 黑名单）
+    authApi.logout().catch(() => undefined);
     localStorage.removeItem('auth_token');
     setToken(null);
     setUser(null);

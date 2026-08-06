@@ -291,6 +291,7 @@ export interface VideoMetric {
   attributed_uv: number;
   attributed_revenue: number;
   content_type: string | null;
+  tags?: string[];
   drama_id: string | null;
   traffic_method: string | null;
   publish_time_slot: string | null;
@@ -482,3 +483,33 @@ export const ROLE_OPTIONS: RoleOption[] = [
   { value: 'publisher', label: '发布专员' },
   { value: 'material', label: '素材专员' },
 ];
+
+// ========== 监控告警（三期） ==========
+
+export interface AlertRule {
+  id: string;
+  name: string;
+  metric: string;
+  operator: string;
+  threshold: number;
+  level: string;
+  enabled: boolean;
+  description: string | null;
+  webhook_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertEvent {
+  id: string;
+  rule_id: string | null;
+  rule_name: string | null;
+  metric: string | null;
+  level: string;
+  message: string | null;
+  current_value: number | null;
+  threshold: number | null;
+  notified: boolean;
+  notify_error: string | null;
+  created_at: string;
+}

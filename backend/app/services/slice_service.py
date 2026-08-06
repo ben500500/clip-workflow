@@ -85,11 +85,15 @@ async def run_slice(
     progress_cb: ProgressCallback = None,
     timeout: float = 2 * 3600,
     watermark_config: Optional[dict] = None,
+    encoder: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run the ffmpeg slice engine.
 
     Returns (return_code, stdout, stderr). Stdout contains OUTPUT:<name>:<duration>
     manifest lines and PROGRESS:<pct> lines.
+
+    encoder: 三期 GPU 加速编码。可选 h264_nvenc/hevc_nvenc/\
+        h264_videotoolbox/hevc_videotoolbox/libx264；不传则引擎自动探测。
     """
     engine_path = engine_path or _engine_path("slice.py")
     _require_engine(engine_path)
@@ -99,6 +103,8 @@ async def run_slice(
         cmd.extend(["--intervals", intervals_path])
     if watermark_config:
         cmd.extend(["--watermark", json.dumps(watermark_config)])
+    if encoder:
+        cmd.extend(["--encoder", encoder])
     logger.info("Running slice: %s", " ".join(cmd))
 
     return await _run_cmd(cmd, timeout, progress_cb)
@@ -112,6 +118,7 @@ async def run_slice_scrub(
     engine_path: Optional[str] = None,
     progress_cb: ProgressCallback = None,
     watermark_config: Optional[dict] = None,
+    encoder: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run scrub-mode slicing (cutlist minus removed intervals)."""
     return await run_slice(
@@ -123,6 +130,7 @@ async def run_slice_scrub(
         engine_path=engine_path,
         progress_cb=progress_cb,
         watermark_config=watermark_config,
+        encoder=encoder,
     )
 
 
@@ -134,6 +142,7 @@ async def run_slice_fast(
     engine_path: Optional[str] = None,
     progress_cb: ProgressCallback = None,
     watermark_config: Optional[dict] = None,
+    encoder: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run fast/dedupe mode slicing."""
     if mode not in ("fast", "dedupe"):
@@ -147,6 +156,7 @@ async def run_slice_fast(
         engine_path=engine_path,
         progress_cb=progress_cb,
         watermark_config=watermark_config,
+        encoder=encoder,
     )
 
 

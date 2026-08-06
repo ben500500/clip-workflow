@@ -134,7 +134,7 @@ clip-workflow/
 │       ├── main.py           # FastAPI 入口
 │       ├── config.py         # 配置管理（Pydantic Settings）
 │       ├── database.py       # 异步数据库引擎
-│       ├── api/              # API 路由层（11 个模块）
+│       ├── api/              # API 路由层（14 个模块）
 │       │   ├── projects.py   # 项目 CRUD
 │       │   ├── upload.py     # 文件上传（tus 分片）
 │       │   ├── autoclip.py   # AI 选点
@@ -145,10 +145,14 @@ clip-workflow/
 │       │   ├── publish.py    # 发布管理（v2）
 │       │   ├── dashboard.py  # 数据看板（v2）
 │       │   ├── import_.py    # 智能数据导入（v3）
-│       │   └── config.py     # 系统配置
+│       │   ├── config.py     # 系统配置
+│       │   ├── auth.py       # 认证/用户/会话（v3）
+│       │   ├── workers.py    # Worker 节点管理（v3）
+│       │   ├── monitor.py    # 监控告警（v3 三期）
+│       │   └── maintenance.py# 运维优化：归档/清理/生命周期（三期）
 │       ├── models/
-│       │   └── models.py     # 22 个 ORM 模型
-│       ├── services/         # 业务逻辑层（9 个服务）
+│       │   └── models.py     # 27 个 ORM 模型
+│       ├── services/         # 业务逻辑层（13 个服务）
 │       │   ├── upload_service.py
 │       │   ├── autoclip_service.py
 │       │   ├── interval_service.py
@@ -157,7 +161,11 @@ clip-workflow/
 │       │   ├── publish_service.py    # RPA 发布（v2）
 │       │   ├── dashboard_service.py  # 看板聚合（v2）
 │       │   ├── data_import_service.py # 智能导入（v3）
-│       │   └── auth_service.py       # 认证授权（v3）
+│       │   ├── smart_import_service.py # 智能导入增强（v3）
+│       │   ├── redis_stream.py # Redis Stream 分发（v3）
+│       │   ├── auth_service.py       # 认证授权（v3）
+│       │   ├── monitor_service.py    # 监控告警（三期）
+│       │   └── maintenance_service.py# 运维优化（三期）
 │       ├── celery/
 │       │   └── tasks.py      # 5 个异步任务
 │       └── utils/
@@ -213,14 +221,14 @@ clip-workflow/
 
 ## 五、数据库设计
 
-### 5.1 表清单（32 张表）
+### 5.1 表清单（32+ 张表）
 
 #### 用户与认证
 
 | 表名 | 说明 |
 |------|------|
-| `users` | 用户账号（角色：user/admin/superadmin） |
-| `user_sessions` | 登录会话（JWT refresh token） |
+| `users` | 用户账号（角色：admin/operator/publisher/material） |
+| `user_sessions` | 登录会话（JWT refresh token + 黑名单） |
 | `user_oauth_accounts` | OAuth 第三方账号绑定 |
 
 #### 项目与工作流
@@ -279,7 +287,7 @@ clip-workflow/
 
 | 模型类 | 表名 | 说明 |
 |--------|------|------|
-| `SliceWorkerNode` | `slice_worker_nodes` | Worker 节点注册（能力标签、心跳、状态） |
+| `WorkerNode` | `worker_nodes` | Worker 节点注册（能力标签、心跳、状态、启停/CPU） |
 
 #### V3 智能导入
 
@@ -288,11 +296,25 @@ clip-workflow/
 | `ImportTemplate` | `import_templates` | 导入模板（标准模板 + 自定义映射模板） |
 | `ImportHistory` | `import_histories` | 导入历史记录（来源、状态、行数、操作人） |
 
+#### V3 安全认证
+
+| 模型类 | 表名 | 说明 |
+|--------|------|------|
+| `User` | `users` | 用户（角色 admin/operator/publisher/material） |
+| `UserSession` | `user_sessions` | 登录会话（refresh_token 哈希、黑名单） |
+
 #### V3 审计日志
 
 | 模型类 | 表名 | 说明 |
 |--------|------|------|
 | `AuditLog` | `audit_logs` | 审计日志（操作人、操作时间、操作类型、目标对象、变更前后值） |
+
+#### 三期监控告警
+
+| 模型类 | 表名 | 说明 |
+|--------|------|------|
+| `AlertRule` | `alert_rules` | 告警规则（指标、比较符、阈值、级别、启停） |
+| `AlertEvent` | `alert_events` | 告警事件（触发时间、级别、内容、通知状态） |
 
 ### 5.2 ER 关系
 
@@ -396,6 +418,40 @@ audit:
 | `POST` | `/api/workers/{node_id}/cpu-percent` | 调整节点 CPU 分配比例 |
 | `POST` | `/api/workers/sync-redis` | 从 Redis 同步节点状态 |
 
+### 6.5.1 认证与用户 API（v3）
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/auth/login` | 登录（返回 access_token + refresh_token Cookie） |
+| `POST` | `/api/auth/refresh` | 无感刷新 access_token（双 Token） |
+| `POST` | `/api/auth/logout` | 登出（吊销会话 Token 黑名单） |
+| `GET` | `/api/auth/me` | 当前用户信息 |
+| `POST` | `/api/auth/register` | 注册用户（管理员） |
+| `GET` | `/api/auth/users` | 用户列表（管理员） |
+| `PUT` | `/api/auth/users/{id}/role` | 修改用户角色 |
+| `PUT` | `/api/auth/users/{id}/toggle` | 启用/停用用户 |
+| `PUT` | `/api/auth/profile` | 修改个人资料/密码 |
+
+### 6.5.2 监控告警 API（三期）
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/monitor/health` | 健康检查（数据库/Redis/MinIO/磁盘） |
+| `GET` | `/api/monitor/metrics` | 采集各监控指标当前值 |
+| `GET` | `/api/monitor/alerts/rules` | 告警规则列表 |
+| `GET` | `/api/monitor/alerts/rules/meta` | 告警指标说明 |
+| `POST` | `/api/monitor/alerts/rules` | 创建告警规则 |
+| `PUT` | `/api/monitor/alerts/rules/{id}` | 更新告警规则 |
+| `DELETE` | `/api/monitor/alerts/rules/{id}` | 删除告警规则 |
+| `GET` | `/api/monitor/alerts/events` | 告警事件列表 |
+| `POST` | `/api/monitor/alerts/check` | 手动触发一轮告警检查 |
+
+### 6.5.3 运维优化 API（三期）
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/maintenance/status` | 运维配置状态 |
+| `POST` | `/api/maintenance/archive` | 数据归档（>90 天看板数据） |
+| `POST` | `/api/maintenance/cleanup-temp` | 清理临时文件 |
+| `POST` | `/api/maintenance/minio-lifecycle` | 设置 MinIO 生命周期策略 |
+
 ### 6.6 发布管理 API（v2）
 
 
@@ -467,6 +523,8 @@ audit:
 | `/analytics/content` | 内容分析 | 视频数据表、排行、多维筛选 |
 | `/analytics/import` | 数据录入 | 智能导入（自动识别/手动映射/模板） |
 | `/slice-worker` | 切片监控 | Worker 节点状态、任务队列、实时日志（v3） |
+| `/monitor` | 监控告警 | 健康检查、告警规则、告警事件（三期） |
+| `/maintenance` | 运维优化 | 数据归档、临时文件清理、MinIO 生命周期（三期） |
 | `/settings` | 系统设置 | 全局参数配置 |
 
 ### 7.2 导航菜单
@@ -480,6 +538,8 @@ audit:
   ├── 内容分析
   └── 数据录入
 切片监控
+监控告警
+运维优化
 系统设置
 ```
 
@@ -749,7 +809,7 @@ Worker 节点提供基于 **bubbletea** 框架的终端 UI，方便运维人员�
 
 ## 十、Docker 服务编排
 
-### 10.1 服务列表（13 个）
+### 10.1 服务列表（14 个）
 
 | 服务 | 镜像 | 端口 | 说明 |
 |------|------|------|------|
@@ -759,9 +819,10 @@ Worker 节点提供基于 **bubbletea** 框架的终端 UI，方便运维人员�
 | `minio_init` | minio/mc:latest | — | Bucket 初始化（一次性） |
 | `autoclip` | 构建自 ./autoclip | 8000 | AI 选点 API |
 | `autoclip_worker` | 同 autoclip | — | AI 选点 Worker |
+| `alembic-migrate` | 构建自 ./backend | — | 数据库迁移（Alembic，一次性） |
 | `backend` | 构建自 ./backend | 8000 | 主 API 服务 |
 | `worker` | 同 backend | — | 视频处理 Worker |
-| `beat` | 同 backend | — | Celery 定时调度 |
+| `beat` | 同 backend | — | Celery 定时调度（含告警/维护任务） |
 | `rpa_worker` | 构建自 ./rpa | 9222 | RPA 发布 Worker（可选） |
 | `frontend` | 构建自 ./frontend | 80 | 前端静态文件 |
 | `nginx` | nginx:1.25-alpine | 80 | 反向代理入口 |
@@ -999,13 +1060,15 @@ video_metrics.vid            → 渠道参数中的视频标识
 
 ---
 
-## 十三、监控与运维
+## 十三、监控与运维（三期）
 
 ### 13.1 健康检查
 
 | 检查项 | 方式 | 说明 |
 |--------|------|------|
-| 后端服务 | `GET /health` | 返回 200 OK，包含数据库/Redis/MinIO 连接状态 |
+| 后端服务 | `GET /api/health` | 返回 200 OK（轻量，供 Docker healthcheck） |
+| 增强健康检查 | `GET /api/health/detailed` | 数据库/Redis/MinIO/磁盘 连接状态（三期） |
+| 监控面板 | `/api/monitor/health` | 前端监控告警页健康检查卡片 |
 | Docker 容器 | `docker healthcheck` | 每个服务配置健康检查指令 |
 | Worker 节点 | Redis 心跳 | 30 秒心跳，60 秒未响应标记离线 |
 | RPA Cookie | 定时检测 | `check_cookie_status` 任务定期检查登录态 |
@@ -1017,32 +1080,38 @@ video_metrics.vid            → 渠道参数中的视频标识
 | Celery Flower | 5555 | 实时查看任务队列、执行状态、失败重试 |
 | Worker TUI | 终端 | 分布式切片 Worker 的 bubbletea 界面 |
 | Docker logs | — | `docker compose logs -f` 实时查看 |
+| 监控告警页 | 前端 | 健康检查卡片 + 告警规则/事件管理（三期） |
 
-### 13.3 告警规则
+### 13.3 告警规则（三期）
 
-| 告警项 | 阈值 | 级别 | 说明 |
-|--------|------|------|------|
-| Worker 离线 | >60 秒无心跳 | 严重 | 分布式切片 Worker 失联 |
-| 任务失败 | 同一任务失败 >3 次 | 严重 | 需要人工介入 |
-| 磁盘使用 | >80% | 警告 | 清理临时文件或扩容 |
-| Cookie 即将过期 | 有效期 <24 小时 | 警告 | 提醒运营重新扫码 |
-| Redis 内存 | >80% 最大内存 | 警告 | 清理过期 key 或扩容 |
-| 队列积压 | 待处理任务 >100 | 警告 | 增加 Worker 节点 |
+| 告警项 | 指标 | 默认阈值 | 级别 | 说明 |
+|--------|------|--------|------|------|
+| Worker 离线 | worker_offline | >60 秒无心跳 | 严重 | 分布式切片 Worker 失联 |
+| 任务失败 | task_failed | 同一任务失败 >3 次 | 严重 | 需要人工介入 |
+| 磁盘使用 | disk_usage | >80% | 警告 | 清理临时文件或扩容 |
+| Cookie 即将过期 | cookie_expiring | 有效期 <24 小时 | 警告 | 提醒运营重新扫码 |
+| Redis 内存 | redis_memory | >80% 最大内存 | 警告 | 清理过期 key 或扩容 |
+| 队列积压 | queue_backlog | 待处理任务 >100 | 警告 | 增加 Worker 节点 |
+| eCPM 偏低 | ecpm_low | <10 元 | 警告 | 检查广告填充率 |
+
+规则存储于 `alert_rules` 表，事件落库 `alert_events`，支持在监控页配置启停/阈值/Webhook。
 
 ### 13.4 告警通道
 
-- **钉钉机器人 Webhook**：所有告警推送到运维群
+- **钉钉机器人 Webhook**：所有告警推送到运维群（规则级 Webhook 优先，其次全局 `DINGTALK_WEBHOOK`）
 - 消息格式：`[级别] 告警项 - 详情 - 时间`
 - 示例：`[严重] Worker mac-studio-01 离线超过 60 秒 - 2026-08-06 10:32:15`
+- Celery beat 周期执行 `run_alert_check_task`（默认每 300 秒）
 
-### 13.5 性能优化
+### 13.5 性能优化（三期）
 
 | 优化项 | 配置 | 说明 |
 |--------|------|------|
 | 上传并发限制 | 最多 5 个同时上传 | 防止带宽打满 |
 | 数据库分区 | `video_metrics` 按日期分区 | 提升查询性能 |
-| 数据归档 | >90 天的看板数据定期归档 | 保持主表轻量 |
-| MinIO 生命周期 | 90 天未访问 → 低频存储 | 降低存储成本 |
+| 数据归档 | >90 天的看板数据定期归档 | 保持主表轻量（`METRICS_ARCHIVE_DAYS`） |
+| 临时文件清理 | >24h 的本地临时文件清理 | 释放磁盘空间 |
+| MinIO 生命周期 | 90 天未访问 → 低频存储 | 降低存储成本（`MINIO_LIFECYCLE_DAYS`） |
 | Redis TTL | 任务消息 TTL 24 小时 | 防止队列堆积 |
 | 数据库迁移 | Alembic 管理 schema 版本 | 安全迭代数据库结构 |
 
@@ -1140,28 +1209,28 @@ open http://localhost:5555
 - 帧图预览 + 视频预览
 - 数据看板 MVP（总览 + 内容分析 + 数据录入）
 
-### 二期（+4 周）
+### 二期（+4 周）— 已完成
 
-- Playwright RPA Worker
-- 视频号自动发布 + 截图确认
-- 小程序挂载引导
-- 短剧变现页（小程序/广告指标 + 分剧排行）
-- 转化漏斗完整版
-- 视频标签系统 + 多维交叉分析
-- 异常预警
-- **分布式切片执行**（Go Worker + Redis Stream + TUI 监控）
-- **智能数据导入**（平台指纹匹配 + 手动映射 + 标准模板）
-- **安全认证体系**（JWT 双 Token + RBAC 三级权限 + Cookie 加密）
-- **数据库迁移**（Alembic 集成）
+- Playwright RPA Worker ✅
+- 视频号自动发布 + 截图确认 ✅
+- 小程序挂载引导 ✅
+- 短剧变现页（小程序/广告指标 + 分剧排行）✅
+- 转化漏斗完整版 ✅
+- 视频标签系统 + 多维交叉分析 ✅
+- 异常预警 ✅
+- **分布式切片执行**（Go Worker + Redis Stream + TUI 监控）✅
+- **智能数据导入**（平台指纹匹配 + 手动映射 + 标准模板）✅
+- **安全认证体系**（JWT 双 Token + RBAC 三级权限 + Cookie 加密）✅
+- **数据库迁移**（Alembic 集成）✅
 
-### 三期（按需）
+### 三期（按需）— 部分完成
 
-- **监控告警系统**（健康检查 + 告警规则 + 钉钉 Webhook）
-- 生态联动页（公众号/企微）
-- 小程序 API 自动拉取
-- GPU 加速编码
-- 多平台发布 API 对接
-- 性能优化（数据库分区 + 数据归档 + 存储生命周期）
+- **监控告警系统**（健康检查 + 告警规则 + 钉钉 Webhook）✅
+- 生态联动页（公众号/企微）✅
+- 小程序 API 自动拉取（待对接微信开放 API）
+- **GPU 加速编码**（nvenc / VideoToolbox 自动探测 + 手动指定）✅
+- 多平台发布 API 对接（Playwright RPA 已支持三平台）
+- **性能优化**（数据归档 + 临时文件清理 + MinIO 存储生命周期）✅
 
 ---
 
@@ -1249,6 +1318,7 @@ WATERMARK=off
 
 | 日期 | 变更 |
 |------|------|
+| 2026-08-06 | 三期实现：监控告警系统（健康检查+告警规则+钉钉Webhook）、运维优化（数据归档+临时清理+MinIO生命周期）、GPU加速编码（nvenc/VideoToolbox）、JWT双Token+Cookie AES加密、Alembic迁移、视频多标签系统 |
 | 2026-08-06 | 一键切片移到剧集详情工作台入口；Worker 心跳双写后端 DB；成品预览点击整行展开视频；切片执行支持自定义文字动态水印 |
 | 2026-08-06 | 分布式切片方案（Go Worker + Redis Stream + 远程节点/托盘/CPU 分配） |
 | 2026-08-06 | Worker 节点管理页、Header 节点状态图标、启停/CPU 调整 |

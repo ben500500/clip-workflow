@@ -8,10 +8,11 @@ from sqlalchemy import select
 
 from app.config import settings, cors_origins
 from app.database import init_db, close_db, async_session_factory
-from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers
+from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers, monitor, maintenance
 from app.auth import get_password_hash
 from app.models.models import User, UserRole, PlatformProfile
 from app.api.config import DEFAULT_PLATFORM_PROFILES
+from app.services.monitor_service import ensure_default_alert_rules
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -105,6 +106,11 @@ async def _create_seed_platform_profiles():
         await session.commit()
 
 
+async def _create_seed_alert_rules():
+    """在数据库初始化时预置默认告警规则（幂等）."""
+    await ensure_default_alert_rules()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle: startup and shutdown."""
@@ -115,6 +121,8 @@ async def lifespan(app: FastAPI):
     logger.info("Seed users initialized.")
     await _create_seed_platform_profiles()
     logger.info("Seed platform profiles initialized.")
+    await _create_seed_alert_rules()
+    logger.info("Seed alert rules initialized.")
     yield
     logger.info("Shutting down...")
     await close_db()
@@ -173,8 +181,18 @@ app.include_router(config_api.router, prefix="/api", tags=["Config"])
 app.include_router(publish.router, prefix="/api", tags=["Publish"])
 app.include_router(dashboard.router, prefix="/api", tags=["Dashboard"])
 app.include_router(workers.router, prefix="/api", tags=["Workers"])
+app.include_router(monitor.router, prefix="/api", tags=["Monitor"])
+app.include_router(maintenance.router, prefix="/api", tags=["Maintenance"])
 
 
 @app.get("/api/health")
 async def health_check():
+    """基础健康检查（轻量，供 Docker healthcheck 使用）."""
     return {"status": "ok", "service": "clip-workflow-backend"}
+
+
+@app.get("/api/health/detailed")
+async def health_check_detailed():
+    """增强版健康检查（数据库/Redis/MinIO/磁盘，三期监控告警）."""
+    from app.services.monitor_service import check_health
+    return await check_health()
