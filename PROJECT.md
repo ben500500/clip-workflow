@@ -1330,6 +1330,7 @@ WATERMARK=off
 | 2026-08-06 | 数据看板 v3（智能导入/自定义模板/生态联动/漏斗对比） |
 | 2026-08-06 | 权限体系 + 用户管理 + 个人中心 |
 | 2026-08-06 | AutoClip 支持 max_clips / start_time / end_time、本地 whisper ASR |
+| 2026-08-06 | AutoClip ASR 字幕缓存复用：按视频内容哈希+ASR方式缓存 SRT，再次启动 AI 选点直接复用，避免重复转写（可 `AUTOCLIP_ASR_CACHE=false` 关闭） |
 
 ---
 
