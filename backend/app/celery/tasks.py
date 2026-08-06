@@ -683,6 +683,25 @@ async def _save_slice_outputs(
             )
             clips = clip_result.scalars().all()
 
+        # 幂等：任务已落库过输出则直接跳过，避免 Celery 重试导致重复输出
+        if tid is not None:
+            existing_result = await session.execute(
+                select(SliceOutput).where(SliceOutput.task_id == tid)
+            )
+            if existing_result.scalars().first() is not None:
+                task_result = await session.execute(
+                    select(SliceTask).where(SliceTask.id == tid)
+                )
+                task = task_result.scalar_one_or_none()
+                if task and task.status != "completed":
+                    task.status = "completed"
+                    task.progress = 100.0
+                    task.output_count = len(output_files)
+                    task.completed_at = datetime.utcnow()
+                    task.error_message = None
+                    await session.commit()
+                return
+
         for i, out in enumerate(output_files):
             clip_id = clips[i].id if i < len(clips) else None
             session.add(SliceOutput(
