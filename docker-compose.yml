@@ -103,6 +103,7 @@ services:
         mc alias set clip-minio http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
         mc mb clip-minio/${MINIO_BUCKET:-clipworkflow} --ignore-existing
         mc mb clip-minio/publish-screenshots --ignore-existing
+        mc mb clip-minio/sliced --ignore-existing
         echo 'MinIO bucket initialized successfully.'
       "
     logging: *default-logging
@@ -312,6 +313,9 @@ services:
       HEARTBEAT_INTERVAL: "10"
       LOG_LEVEL: info
       TASK_TIMEOUT: "7200"
+      MAX_RETRIES: "2"
+      RETRY_DELAY: "30"
+      BACKEND_URL: ${WORKER_CALLBACK_BASE_URL:-http://backend:8080}
     volumes:
       - ./engines:/app/engines:ro
       - slice_worker_temp:/tmp/slice-worker

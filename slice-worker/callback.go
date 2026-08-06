@@ -5,22 +5,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"time"
 )
 
 // TaskCallback 任务回调数据
 type TaskCallback struct {
-	TaskID      string             `json:"task_id"`
-	Status      string             `json:"status"`
-	NodeID      string             `json:"node_id"`
-	Outputs     []OutputFileInfo   `json:"outputs"`
-	OutputCount int                `json:"output_count"`
-	Error       string             `json:"error"`
-	Progress    float64            `json:"progress,omitempty"`
-	Phase       string             `json:"phase,omitempty"`
-	CompletedAt string             `json:"completed_at,omitempty"`
+	TaskID      string           `json:"task_id"`
+	Status      string           `json:"status"`
+	NodeID      string           `json:"node_id"`
+	Outputs     []OutputFileInfo `json:"outputs"`
+	OutputCount int              `json:"output_count"`
+	Error       string           `json:"error"`
+	Progress    float64          `json:"progress,omitempty"`
+	Phase       string           `json:"phase,omitempty"`
+	CompletedAt string           `json:"completed_at,omitempty"`
 }
 
 // OutputFileInfo 输出文件信息
@@ -35,6 +33,7 @@ type OutputFileInfo struct {
 type CallbackService struct {
 	client *http.Client
 	nodeID string
+	token  string
 }
 
 // NewCallbackService 创建回调服务
@@ -45,6 +44,11 @@ func NewCallbackService(nodeID string) *CallbackService {
 		},
 		nodeID: nodeID,
 	}
+}
+
+// SetToken 设置回调认证 Token（由任务 payload 中的 callback_token 注入）
+func (cs *CallbackService) SetToken(token string) {
+	cs.token = token
 }
 
 // SendCallback 发送任务完成回调
@@ -66,6 +70,9 @@ func (cs *CallbackService) SendCallback(callbackURL string, data *TaskCallback) 
 		return fmt.Errorf("创建回调请求失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if cs.token != "" {
+		req.Header.Set("X-Worker-Token", cs.token)
+	}
 
 	resp, err := cs.client.Do(req)
 	if err != nil {
@@ -78,57 +85,4 @@ func (cs *CallbackService) SendCallback(callbackURL string, data *TaskCallback) 
 	}
 
 	return nil
-}
-
-// SendProgressCallback 发送进度回调
-func (cs *CallbackService) SendProgressCallback(callbackURL string, taskID string, progress float64, phase string) error {
-	if callbackURL == "" {
-		return nil
-	}
-
-	data := TaskCallback{
-		TaskID:   taskID,
-		Status:   "progress",
-		NodeID:   cs.nodeID,
-		Progress: progress,
-		Phase:    phase,
-	}
-
-	body, err := json.Marshal(data)
-	if err != nil {
-		return fmt.Errorf("序列化进度数据失败: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", callbackURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("创建进度回调请求失败: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := cs.client.Do(req)
-	if err != nil {
-		// 进度回调失败不中断任务，只记录日志
-		return err
-	}
-	defer resp.Body.Close()
-
-	return nil
-}
-
-// BuildOutputFileInfo 从输出文件路径构建输出文件信息
-func BuildOutputFileInfo(outputPath string, outputPrefix string) OutputFileInfo {
-	info := OutputFileInfo{
-		FileName: filepath.Base(outputPath),
-		FileSize: 0,
-	}
-
-	// 获取文件大小
-	if stat, err := os.Stat(outputPath); err == nil {
-		info.FileSize = stat.Size()
-	}
-
-	// 构建 file_key（相对于 MinIO bucket 的路径）
-	info.FileKey = outputPrefix + info.FileName
-
-	return info
 }

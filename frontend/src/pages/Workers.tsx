@@ -19,7 +19,7 @@ import {
   CloseCircleOutlined,
   MinusCircleOutlined,
   DesktopOutlined,
-  CpuOutlined,
+  CloudServerOutlined,
   ApiOutlined,
 } from '@ant-design/icons';
 import { sliceApi } from '../api/slice';
@@ -110,7 +110,7 @@ const WorkersPage: React.FC = () => {
       width: 140,
       render: (_: unknown, record: WorkerNode) => (
         <Space size={4}>
-          <CpuOutlined />
+          <CloudServerOutlined />
           <Text>{record.os || '?'}/{record.arch || '?'}</Text>
         </Space>
       ),

@@ -408,7 +408,7 @@ const ClipReview: React.FC = () => {
             }}
             expandable={{
               expandedRowKeys,
-              onExpandedRowKeysChange: (keys) => setExpandedRowKeys(keys),
+              onExpandedRowsChange: (keys: readonly React.Key[]) => setExpandedRowKeys(keys as React.Key[]),
               expandedRowRender: (c: ClipCandidate) => {
                 // 计算片段时长用于显示
                 const clipDuration = c.duration || 0;

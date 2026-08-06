@@ -33,6 +33,7 @@ const SliceTasks: React.FC = () => {
   const [outputs, setOutputs] = useState<SliceOutput[]>([]);
   const [currentTask, setCurrentTask] = useState<string | null>(null);
   const [mode, setMode] = useState('fast');
+  const [engine, setEngine] = useState('worker');
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
 
@@ -57,7 +58,7 @@ const SliceTasks: React.FC = () => {
   const runSlice = async () => {
     setRunning(true);
     try {
-      const res = await sliceApi.run(episodeId || '', mode, {});
+      const res = await sliceApi.run(episodeId || '', mode, { engine });
       message.success(res.message);
       fetchTasks();
     } catch (err: unknown) {
@@ -247,7 +248,7 @@ const SliceTasks: React.FC = () => {
 
       {/* ── 新建任务 ── */}
       <Card size="small" style={{ marginBottom: 16 }}>
-        <Space>
+        <Space wrap>
           <Select value={mode} onChange={setMode} style={{ width: 140 }}
             options={[
               { value: 'fast', label: '快速模式' },
@@ -259,6 +260,15 @@ const SliceTasks: React.FC = () => {
             <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
           </Tooltip>
           <Text type="secondary" style={{ fontSize: 12 }}>{SLICE_MODE_HELP[mode]?.desc}</Text>
+          <Select value={engine} onChange={setEngine} style={{ width: 130 }}
+            options={[
+              { value: 'worker', label: 'Worker 节点' },
+              { value: 'celery', label: 'Celery 队列' },
+            ]}
+          />
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {engine === 'worker' ? '分布式 Worker 节点执行' : 'Celery 队列（回退）'}
+          </Text>
           <Button type="primary" icon={<PlayCircleOutlined />} loading={running} onClick={runSlice}>新建切片任务</Button>
           <Button icon={<ReloadOutlined />} onClick={() => fetchTasks()}>刷新</Button>
         </Space>

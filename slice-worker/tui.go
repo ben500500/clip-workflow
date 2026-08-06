@@ -13,13 +13,13 @@ import (
 
 var (
 	// 颜色
-	colorPrimary   = lipgloss.Color("#7C3AED") // 紫色
-	colorSuccess   = lipgloss.Color("#10B981") // 绿色
-	colorWarning   = lipgloss.Color("#F59E0B") // 黄色
-	colorError     = lipgloss.Color("#EF4444") // 红色
-	colorInfo      = lipgloss.Color("#3B82F6") // 蓝色
-	colorMuted     = lipgloss.Color("#6B7280") // 灰色
-	colorBorder    = lipgloss.Color("#374151") // 边框
+	colorPrimary = lipgloss.Color("#7C3AED") // 紫色
+	colorSuccess = lipgloss.Color("#10B981") // 绿色
+	colorWarning = lipgloss.Color("#F59E0B") // 黄色
+	colorError   = lipgloss.Color("#EF4444") // 红色
+	colorInfo    = lipgloss.Color("#3B82F6") // 蓝色
+	colorMuted   = lipgloss.Color("#6B7280") // 灰色
+	colorBorder  = lipgloss.Color("#374151") // 边框
 
 	// 样式
 	titleStyle = lipgloss.NewStyle().
@@ -43,28 +43,28 @@ var (
 			Bold(true)
 
 	taskCompleteStyle = lipgloss.NewStyle().
-			Foreground(colorSuccess)
+				Foreground(colorSuccess)
 
 	taskErrorStyle = lipgloss.NewStyle().
 			Foreground(colorError)
 
 	progressBarStyle = lipgloss.NewStyle().
-			Foreground(colorPrimary)
+				Foreground(colorPrimary)
 
 	logTimeStyle = lipgloss.NewStyle().
-		Foreground(colorMuted)
+			Foreground(colorMuted)
 
 	logInfoStyle = lipgloss.NewStyle().
-		Foreground(colorInfo)
+			Foreground(colorInfo)
 
 	logSuccessStyle = lipgloss.NewStyle().
 			Foreground(colorSuccess)
 
 	logWarnStyle = lipgloss.NewStyle().
-		Foreground(colorWarning)
+			Foreground(colorWarning)
 
 	logErrorStyle = lipgloss.NewStyle().
-		Foreground(colorError)
+			Foreground(colorError)
 )
 
 // ========== 数据模型 ==========
@@ -74,7 +74,7 @@ type TaskStatus struct {
 	TaskID    string
 	EpisodeID string
 	Mode      string
-	Phase     string    // download/ffmpeg/upload
+	Phase     string // download/ffmpeg/upload
 	Percent   float64
 	Speed     string
 	Detail    string
@@ -92,10 +92,10 @@ type LogEntry struct {
 
 // TUIModel TUI数据模型
 type TUIModel struct {
-	config     *Config
-	worker     *Worker
-	width      int
-	height     int
+	config *Config
+	worker *Worker
+	width  int
+	height int
 
 	// 状态
 	nodeStatus string
@@ -131,9 +131,9 @@ func NewTUIModel(config *Config, worker *Worker) *TUIModel {
 
 // Init 初始化
 func (m TUIModel) Init() tea.Cmd {
+	// 窗口尺寸由 bubbletea 框架在启动时自动通过 WindowSizeMsg 下发，无需主动获取
 	return tea.Batch(
 		m.tickCmd(),
-		m.resizeCmd(),
 	)
 }
 
@@ -524,6 +524,4 @@ func (m TUIModel) tickCmd() tea.Cmd {
 	})
 }
 
-func (m TUIModel) resizeCmd() tea.Cmd {
-	return tea.WindowSize()
-}
+// resizeCmd 已废弃：bubbletea 框架会自动发送 WindowSizeMsg

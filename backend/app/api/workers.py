@@ -134,7 +134,7 @@ async def list_workers(
     )
     nodes = result.scalars().all()
 
-    # 尝试从 Redis 获取在线节点信息补充
+    # 尝试从 Redis 获取节点信息补充（含在线/离线判定）
     try:
         redis_nodes = await get_worker_nodes_from_redis()
         redis_map = {n["node_id"]: n for n in redis_nodes}
@@ -142,9 +142,33 @@ async def list_workers(
             if node.node_id in redis_map:
                 rd = redis_map[node.node_id]
                 node.current_tasks = rd.get("current_tasks", node.current_tasks)
-                node.status = "online"
-    except Exception:
-        pass
+                node.hostname = rd.get("hostname") or node.hostname
+                node.ip = rd.get("ip") or node.ip
+                node.os = rd.get("os") or node.os
+                node.arch = rd.get("arch") or node.arch
+                node.ffmpeg_version = rd.get("ffmpeg_version") or node.ffmpeg_version
+                node.tags = rd.get("tags", node.tags or [])
+                node.max_concurrent = rd.get("max_concurrent", node.max_concurrent or 2)
+                node.total_tasks_completed = rd.get("total_tasks_completed", node.total_tasks_completed or 0)
+                node.total_tasks_failed = rd.get("total_tasks_failed", node.total_tasks_failed or 0)
+                node.status = rd.get("status", node.status or "offline")
+                # 同步心跳时间
+                last_hb = rd.get("last_heartbeat", "")
+                if last_hb:
+                    try:
+                        from datetime import datetime as _dt, timezone as _tz
+                        node.last_heartbeat = _dt.fromtimestamp(int(last_hb), tz=_tz.utc)
+                    except (ValueError, OSError, TypeError):
+                        pass
+    except Exception as e:
+        logger.warning("Failed to sync workers from Redis: %s", e)
+        redis_nodes = []
+        redis_map = {}
+
+    # 数据库中不存在于 Redis 的节点（心跳 Hash 已过期）标记为离线
+    for node in nodes:
+        if node.node_id not in redis_map:
+            node.status = "offline"
 
     return [_serialize_node(n) for n in nodes]
 
@@ -181,9 +205,26 @@ async def sync_workers_from_redis(
             )
             node = result.scalar_one_or_none()
             if node:
+                node.hostname = rd.get("hostname") or node.hostname
+                node.ip = rd.get("ip") or node.ip
+                node.os = rd.get("os") or node.os
+                node.arch = rd.get("arch") or node.arch
+                node.ffmpeg_version = rd.get("ffmpeg_version") or node.ffmpeg_version
+                node.tags = rd.get("tags", node.tags or [])
+                node.max_concurrent = rd.get("max_concurrent", node.max_concurrent or 2)
                 node.current_tasks = rd.get("current_tasks", node.current_tasks)
-                node.status = "online"
-                node.last_heartbeat = now
+                node.total_tasks_completed = rd.get("total_tasks_completed", node.total_tasks_completed or 0)
+                node.total_tasks_failed = rd.get("total_tasks_failed", node.total_tasks_failed or 0)
+                node.status = rd.get("status", "online")
+                # 心跳时间优先使用 Redis 上报的时间戳
+                last_hb = rd.get("last_heartbeat", "")
+                if last_hb:
+                    try:
+                        node.last_heartbeat = datetime.utcfromtimestamp(int(last_hb))
+                    except (ValueError, OSError, TypeError):
+                        node.last_heartbeat = now
+                else:
+                    node.last_heartbeat = now
             else:
                 node = WorkerNode(
                     node_id=rd["node_id"],
@@ -195,12 +236,23 @@ async def sync_workers_from_redis(
                     tags=rd.get("tags", []),
                     max_concurrent=rd.get("max_concurrent", 2),
                     current_tasks=rd.get("current_tasks", 0),
-                    status="online",
+                    total_tasks_completed=rd.get("total_tasks_completed", 0),
+                    total_tasks_failed=rd.get("total_tasks_failed", 0),
+                    status=rd.get("status", "online"),
                     last_heartbeat=now,
                     started_at=now,
                 )
                 db.add(node)
             synced += 1
+
+        # 数据库中存在但不在 Redis 中的节点（心跳 Hash 已过期）标记为离线
+        all_db_nodes = await db.execute(select(WorkerNode))
+        db_nodes = all_db_nodes.scalars().all()
+        redis_node_ids = {rd["node_id"] for rd in redis_nodes}
+        for node in db_nodes:
+            if node.node_id not in redis_node_ids:
+                node.status = "offline"
+
         await db.flush()
         return {"synced": synced, "message": f"已同步 {synced} 个 Worker 节点"}
     except Exception as e:

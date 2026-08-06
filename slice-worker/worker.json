@@ -7,5 +7,9 @@
   "temp_dir": "/tmp/slice-worker",
   "log_level": "${LOG_LEVEL:-info}",
   "heartbeat_interval": ${HEARTBEAT_INTERVAL:-10},
-  "task_timeout": ${TASK_TIMEOUT:-7200}
+  "task_timeout": ${TASK_TIMEOUT:-7200},
+  "max_retries": ${MAX_RETRIES:-2},
+  "retry_delay": ${RETRY_DELAY:-30},
+  "node_ttl": ${NODE_TTL:-0},
+  "backend_url": "${BACKEND_URL:-http://backend:8080}"
 }

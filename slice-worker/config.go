@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // Config Worker配置
@@ -19,6 +20,14 @@ type Config struct {
 	LogLevel          string   `json:"log_level"`
 	HeartbeatInterval int      `json:"heartbeat_interval"` // 秒
 	TaskTimeout       int      `json:"task_timeout"`       // 秒
+	// 任务失败重试次数（0 表示不重试）
+	MaxRetries int `json:"max_retries"`
+	// 任务失败重试延迟（秒）
+	RetryDelay int `json:"retry_delay"`
+	// 节点心跳 Hash 的 TTL（秒），默认 3 * HeartbeatInterval
+	NodeTTL int `json:"node_ttl"`
+	// 后端 API 地址（用于获取输出上传 URL 等，默认 http://backend:8080）
+	BackendURL string `json:"backend_url"`
 }
 
 // DefaultConfig 默认配置
@@ -34,6 +43,10 @@ func DefaultConfig() *Config {
 		LogLevel:          "info",
 		HeartbeatInterval: 10,
 		TaskTimeout:       7200,
+		MaxRetries:        2,
+		RetryDelay:        30,
+		NodeTTL:           0,
+		BackendURL:        "http://backend:8080",
 	}
 }
 
@@ -51,6 +64,14 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// HeartbeatTTL 返回节点 Hash 的 TTL（默认 3 倍心跳间隔）
+func (c *Config) HeartbeatTTL() time.Duration {
+	if c.NodeTTL > 0 {
+		return time.Duration(c.NodeTTL) * time.Second
+	}
+	return time.Duration(3*c.HeartbeatInterval) * time.Second
 }
 
 // GetOS 获取操作系统
