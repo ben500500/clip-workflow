@@ -83,7 +83,7 @@ const OutputPreview: React.FC = () => {
     }
   };
 
-  // ─── 多选批量下载 ─────────────────────────────
+  // ─── 多选批量下载（顺序逐个下载，不打 ZIP） ─────────────
   const downloadSelected = async () => {
     if (selectedRowKeys.length === 0) {
       message.warning('请先勾选要下载的切片');
@@ -91,18 +91,28 @@ const OutputPreview: React.FC = () => {
     }
     setBatchDownloading(true);
     try {
-      const blob = await previewApi.batchDownload(selectedRowKeys as string[]);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `切片批量下载_${selectedRowKeys.length}个_${new Date().toISOString().slice(0, 10)}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
+      const res = await previewApi.batchDownload(selectedRowKeys as string[]);
+      const files = res.files ?? [];
+      if (files.length === 0) {
+        message.warning('没有可下载的文件');
+        return;
+      }
+      // 顺序逐个触发下载，间隔触发避免浏览器拦截多个自动下载
+      let done = 0;
+      for (const f of files) {
+        const a = document.createElement('a');
+        a.href = f.url;
+        a.download = f.file_name || `output_${f.output_id}.mp4`;
+        document.body.appendChild(a);
+        a.click();
         document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }, 1000);
-      message.success(`已开始下载 ${selectedRowKeys.length} 个切片（ZIP 打包）`);
+        done += 1;
+        // 最后一个不用等，其余间隔 800ms 依次触发
+        if (done < files.length) {
+          await new Promise((r) => setTimeout(r, 800));
+        }
+      }
+      message.success(`已开始按顺序下载 ${files.length} 个切片`);
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '批量下载失败');
     } finally {
@@ -155,7 +165,7 @@ const OutputPreview: React.FC = () => {
           {selectedTask && outputs.length > 0 && (
             <Popconfirm
               title={`确定下载选中的 ${selectedRowKeys.length} 个切片？`}
-              description="将打包为一个 ZIP 文件下载"
+              description="将按顺序逐个下载，不打包"
               onConfirm={downloadSelected}
               okText="下载"
               cancelText="取消"
