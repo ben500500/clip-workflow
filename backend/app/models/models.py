@@ -471,3 +471,29 @@ class ImportHistory(Base):
 
     def __repr__(self) -> str:
         return f"<ImportHistory(id={self.id}, file_name={self.file_name})>"
+
+
+class WorkerNode(Base):
+    """Worker 节点注册信息."""
+    __tablename__ = "worker_nodes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    node_id = Column(String(100), unique=True, nullable=False, index=True)
+    hostname = Column(String(255), nullable=True)
+    ip = Column(String(50), nullable=True)
+    os = Column(String(50), nullable=True)
+    arch = Column(String(50), nullable=True)
+    ffmpeg_version = Column(String(100), nullable=True)
+    tags = Column(JSON, default=list)
+    max_concurrent = Column(Integer, default=2)
+    status = Column(String(50), default="online")
+    current_tasks = Column(Integer, default=0)
+    total_tasks_completed = Column(Integer, default=0)
+    total_tasks_failed = Column(Integer, default=0)
+    last_heartbeat = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<WorkerNode(id={self.node_id}, status={self.status})>"

@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.config import settings, cors_origins
 from app.database import init_db, close_db, async_session_factory
-from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth
+from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers
 from app.auth import get_password_hash
 from app.models.models import User, UserRole
 
@@ -146,6 +146,7 @@ app.include_router(publications.router, prefix="/api", tags=["Publications"])
 app.include_router(config_api.router, prefix="/api", tags=["Config"])
 app.include_router(publish.router, prefix="/api", tags=["Publish"])
 app.include_router(dashboard.router, prefix="/api", tags=["Dashboard"])
+app.include_router(workers.router, prefix="/api", tags=["Workers"])
 
 
 @app.get("/api/health")

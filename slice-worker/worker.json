@@ -1,0 +1,11 @@
+{
+  "node_id": "${NODE_ID:-slice-worker-1}",
+  "redis_url": "${REDIS_URL:-redis://localhost:6379/0}",
+  "tags": ["cpu"],
+  "max_concurrent": ${MAX_CONCURRENT:-2},
+  "engines_path": "/app/engines",
+  "temp_dir": "/tmp/slice-worker",
+  "log_level": "${LOG_LEVEL:-info}",
+  "heartbeat_interval": ${HEARTBEAT_INTERVAL:-10},
+  "task_timeout": ${TASK_TIMEOUT:-7200}
+}

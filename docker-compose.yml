@@ -16,6 +16,7 @@ volumes:
   minio_data:
   media_data:
   chrome_profiles:
+  slice_worker_temp:
 
 services:
   # ==================== Database ====================
@@ -285,6 +286,35 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    logging: *default-logging
+
+  # ==================== Slice Worker (Go) ====================
+  slice-worker:
+    build:
+      context: ./slice-worker
+      dockerfile: Dockerfile
+    image: clip-slice-worker:latest
+    container_name: clip-slice-worker
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      NODE_ID: slice-worker-1
+      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+      MAX_CONCURRENT: "2"
+      HEARTBEAT_INTERVAL: "10"
+      LOG_LEVEL: info
+      TASK_TIMEOUT: "7200"
+    volumes:
+      - ./engines:/app/engines:ro
+      - slice_worker_temp:/tmp/slice-worker
     logging: *default-logging
 
   # ==================== Frontend ====================

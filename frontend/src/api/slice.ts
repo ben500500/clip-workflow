@@ -9,7 +9,6 @@ export const sliceApi = {
   ) =>
     client.post(`/episodes/${episodeId}/slice/run`, { mode, ...data }) as Promise<{
       task_id: string;
-      celery_task_id: string;
       message: string;
     }>,
 
@@ -28,7 +27,12 @@ export const sliceApi = {
   retry: (taskId: string) =>
     client.post(`/slice-tasks/${taskId}/retry`) as Promise<{
       task_id: string;
-      celery_task_id: string;
       message: string;
     }>,
+
+  listWorkers: () =>
+    client.get(`/workers`) as Promise<any[]>,
+
+  syncWorkers: () =>
+    client.post(`/workers/sync-redis`) as Promise<{ synced: number; message: string }>,
 };

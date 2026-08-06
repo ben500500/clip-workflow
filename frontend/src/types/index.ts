@@ -101,7 +101,6 @@ export interface DetectedInterval {
 export interface SliceTask {
   id: string;
   episode_id: string;
-  celery_task_id: string | null;
   mode: string | null;
   status: string | null;
   progress: number;
@@ -109,6 +108,25 @@ export interface SliceTask {
   error_message: string | null;
   started_at: string | null;
   completed_at: string | null;
+  created_at: string;
+}
+
+export interface WorkerNode {
+  id: string;
+  node_id: string;
+  hostname: string | null;
+  ip: string | null;
+  os: string | null;
+  arch: string | null;
+  ffmpeg_version: string | null;
+  tags: string[];
+  max_concurrent: number;
+  status: string;
+  current_tasks: number;
+  total_tasks_completed: number;
+  total_tasks_failed: number;
+  last_heartbeat: string | null;
+  started_at: string | null;
   created_at: string;
 }
 
