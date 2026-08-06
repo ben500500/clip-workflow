@@ -71,6 +71,135 @@ CONFIG_DESCRIPTIONS: Dict[str, str] = {
 }
 
 
+DEFAULT_CONFIGS: List[dict] = [
+    {
+        "key": "default_autoclip_config",
+        "value": {
+            "llm_provider": "dashscope",
+            "llm_model": "qwen-plus",
+            "min_score_threshold": 60,
+            "max_clips": 30,
+            "min_duration": 30,
+            "max_duration": 180,
+        },
+        "description": "AI 智能选点默认参数：min_score_threshold 为入选最低评分(0-100)；max_clips 为最多生成的候选片段数；min_duration/max_duration 为候选片段的最短/最长时长(秒)，超出范围的高光片段会被裁剪或过滤。",
+    },
+    {
+        "key": "default_dedupe_config",
+        "value": {
+            "mode": "fast",
+            "flip_mirror": False,
+            "speed_change": True,
+            "speed_factor": 1.04,
+            "saturation": True,
+            "saturation_value": 0.95,
+            "brightness": True,
+            "brightness_value": 0.01,
+            "sharpen": True,
+            "sharpen_amount": 0.8,
+        },
+        "description": "默认去重参数：mode 为去重模式(fast/dedupe/scrub)；flip_mirror 水平镜像翻转；speed_change 微调播放速度；saturation_value/brightness_value 为饱和度/亮度微调系数；sharpen_amount 锐化强度。用于切片时降低平台查重风险。",
+    },
+    {
+        "key": "default_interval_config",
+        "value": {
+            "mode": "credits",
+            "scan_window": 6.0,
+            "frame_interval": 0.5,
+            "static_threshold": 5,
+            "gold_ratio_threshold": 0.03,
+            "min_static_duration": 9,
+        },
+        "description": "区间检测默认参数：mode 为检测模式(credits 片尾字幕/static 静止画面/watermark 水印)；scan_window 扫描窗口(秒)；frame_interval 抽帧间隔(秒)；static_threshold 静止画面判定阈值；gold_ratio_threshold 黄金比例阈值；min_static_duration 静止画面最短持续时间(秒)。",
+    },
+    {
+        "key": "storage_retention_days",
+        "value": 30,
+        "description": "素材与成品文件保留天数，超过该时限的临时文件会被自动清理。",
+    },
+    {
+        "key": "auto_cleanup_enabled",
+        "value": False,
+        "description": "是否启用自动清理任务（true/false）。开启后系统会定时清理过期临时资源文件。",
+    },
+    {
+        "key": "max_concurrent_tasks",
+        "value": 4,
+        "description": "全局最大并发切片任务数，用于限制多人同时切片时同时执行的切片任务数量（不含区间检测），避免任务无限堆积抢占资源。当前达到上限时新的切片/重试请求会被拒绝，可在多人协作繁忙时适当调大。",
+    },
+    {
+        "key": "task_timeout_hours",
+        "value": 2,
+        "description": "任务超时时间（小时），超过该时长的任务将被判定为超时并自动终止。",
+    },
+]
+
+
+# 平台去重默认配置：首次部署/空库时预置几套常用配置，方便开箱即用
+DEFAULT_PLATFORM_PROFILES: List[dict] = [
+    {
+        "name": "视频号-轻度去重",
+        "platform": "wechat_channel",
+        "description": "视频号默认去重配置：轻微变速+饱和度微调，兼顾成片质量与查重，适合常规内容分发。",
+        "dedupe_config": {
+            "mode": "fast",
+            "flip_mirror": False,
+            "speed_change": True,
+            "speed_factor": 1.03,
+            "saturation": True,
+            "saturation_value": 0.96,
+            "brightness": True,
+            "brightness_value": 0.01,
+            "sharpen": True,
+            "sharpen_amount": 0.6,
+        },
+        "target_resolution": "1920x1080",
+        "target_bitrate": "4000k",
+        "max_duration": 180,
+    },
+    {
+        "name": "抖音-标准去重",
+        "platform": "douyin",
+        "description": "抖音标准去重配置：镜像翻转+变速+饱和/亮度/锐化综合处理，降低平台查重风险。",
+        "dedupe_config": {
+            "mode": "dedupe",
+            "flip_mirror": True,
+            "speed_change": True,
+            "speed_factor": 1.05,
+            "saturation": True,
+            "saturation_value": 0.93,
+            "brightness": True,
+            "brightness_value": 0.02,
+            "sharpen": True,
+            "sharpen_amount": 1.0,
+        },
+        "target_resolution": "1920x1080",
+        "target_bitrate": "5000k",
+        "max_duration": 150,
+    },
+    {
+        "name": "快手-深度去重",
+        "platform": "kuaishou",
+        "description": "快手深度去重配置：镜像+较大幅度变速/色调调整，用于高查重风险的二创内容。",
+        "dedupe_config": {
+            "mode": "dedupe",
+            "flip_mirror": True,
+            "speed_change": True,
+            "speed_factor": 1.08,
+            "saturation": True,
+            "saturation_value": 0.9,
+            "brightness": True,
+            "brightness_value": 0.03,
+            "sharpen": True,
+            "sharpen_amount": 1.2,
+        },
+        "target_resolution": "1920x1080",
+        "target_bitrate": "4500k",
+        "max_duration": 150,
+    },
+]
+
+
 def _serialize_config(cfg: SystemConfig) -> dict:
     return {
         "key": cfg.key,
@@ -96,86 +225,35 @@ def _serialize_profile(profile: PlatformProfile) -> dict:
 
 @router.get("/config", response_model=List[ConfigResponse])
 async def get_all_config(db: AsyncSession = Depends(get_db)):
-    """Get all system configuration key-value pairs."""
+    """Get all system configuration key-value pairs.
+
+    默认配置与数据库中已保存的配置合并返回：
+    - 数据库中的配置（用户已修改/新增）优先返回其值；
+    - 数据库中不存在的默认配置项仍会展示，避免“修改一项后其它配置项消失”。
+    """
     result = await db.execute(
-        select(SystemConfig).order_by(SystemConfig.key)
+        select(SystemConfig)
     )
     configs = result.scalars().all()
+    saved = {c.key: c for c in configs}
 
-    # If no configs exist, return defaults
-    if not configs:
-        defaults = [
-            ConfigResponse(
-                key="default_autoclip_config",
-                value={
-                    "llm_provider": "dashscope",
-                    "llm_model": "qwen-plus",
-                    "min_score_threshold": 60,
-                    "max_clips": 30,
-                    "min_duration": 30,
-                    "max_duration": 180,
-                },
-                description="AI 智能选点默认参数：min_score_threshold 为入选最低评分(0-100)；max_clips 为最多生成的候选片段数；min_duration/max_duration 为候选片段的最短/最长时长(秒)，超出范围的高光片段会被裁剪或过滤。",
+    merged: List[ConfigResponse] = []
+    for default in DEFAULT_CONFIGS:
+        saved_cfg = saved.pop(default["key"], None)
+        if saved_cfg is not None:
+            merged.append(_serialize_config(saved_cfg))
+        else:
+            merged.append(ConfigResponse(
+                key=default["key"],
+                value=default["value"],
+                description=default["description"],
                 updated_at="",
-            ),
-            ConfigResponse(
-                key="default_dedupe_config",
-                value={
-                    "mode": "fast",
-                    "flip_mirror": False,
-                    "speed_change": True,
-                    "speed_factor": 1.04,
-                    "saturation": True,
-                    "saturation_value": 0.95,
-                    "brightness": True,
-                    "brightness_value": 0.01,
-                    "sharpen": True,
-                    "sharpen_amount": 0.8,
-                },
-                description="默认去重参数：mode 为去重模式(fast/dedupe/scrub)；flip_mirror 水平镜像翻转；speed_change 微调播放速度；saturation_value/brightness_value 为饱和度/亮度微调系数；sharpen_amount 锐化强度。用于切片时降低平台查重风险。",
-                updated_at="",
-            ),
-            ConfigResponse(
-                key="default_interval_config",
-                value={
-                    "mode": "credits",
-                    "scan_window": 6.0,
-                    "frame_interval": 0.5,
-                    "static_threshold": 5,
-                    "gold_ratio_threshold": 0.03,
-                    "min_static_duration": 9,
-                },
-                description="区间检测默认参数：mode 为检测模式(credits 片尾字幕/static 静止画面/watermark 水印)；scan_window 扫描窗口(秒)；frame_interval 抽帧间隔(秒)；static_threshold 静止画面判定阈值；gold_ratio_threshold 黄金比例阈值；min_static_duration 静止画面最短持续时间(秒)。",
-                updated_at="",
-            ),
-            ConfigResponse(
-                key="storage_retention_days",
-                value=30,
-                description="素材与成品文件保留天数，超过该时限的临时文件会被自动清理。",
-                updated_at="",
-            ),
-            ConfigResponse(
-                key="auto_cleanup_enabled",
-                value=False,
-                description="是否启用自动清理任务（true/false）。开启后系统会定时清理过期临时资源文件。",
-                updated_at="",
-            ),
-            ConfigResponse(
-                key="max_concurrent_tasks",
-                value=4,
-                description="全局最大并发切片任务数，用于限制多人同时切片时同时执行的切片任务数量（不含区间检测），避免任务无限堆积抢占资源。当前达到上限时新的切片/重试请求会被拒绝，可在多人协作繁忙时适当调大。",
-                updated_at="",
-            ),
-            ConfigResponse(
-                key="task_timeout_hours",
-                value=2,
-                description="任务超时时间（小时），超过该时长的任务将被判定为超时并自动终止。",
-                updated_at="",
-            ),
-        ]
-        return defaults
+            ))
+    # 数据库中用户新增的自定义配置项也一并返回
+    for key in sorted(saved.keys()):
+        merged.append(_serialize_config(saved[key]))
 
-    return [_serialize_config(c) for c in configs]
+    return merged
 
 
 @router.put("/config", response_model=ConfigResponse)

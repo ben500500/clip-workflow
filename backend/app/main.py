@@ -10,7 +10,8 @@ from app.config import settings, cors_origins
 from app.database import init_db, close_db, async_session_factory
 from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers
 from app.auth import get_password_hash
-from app.models.models import User, UserRole
+from app.models.models import User, UserRole, PlatformProfile
+from app.api.config import DEFAULT_PLATFORM_PROFILES
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -81,6 +82,29 @@ async def _create_seed_users():
         await session.commit()
 
 
+async def _create_seed_platform_profiles():
+    """在数据库初始化时预置平台去重默认配置（视频号/抖音/快手，如果尚不存在）."""
+    async with async_session_factory() as session:
+        for seed in DEFAULT_PLATFORM_PROFILES:
+            result = await session.execute(
+                select(PlatformProfile).where(PlatformProfile.name == seed["name"])
+            )
+            if result.scalar_one_or_none() is not None:
+                continue  # 已存在，跳过
+            profile = PlatformProfile(
+                name=seed["name"],
+                platform=seed["platform"],
+                description=seed.get("description"),
+                dedupe_config=seed.get("dedupe_config"),
+                target_resolution=seed.get("target_resolution"),
+                target_bitrate=seed.get("target_bitrate"),
+                max_duration=seed.get("max_duration"),
+            )
+            session.add(profile)
+            logger.info("Created seed platform profile: %s (%s)", seed["name"], seed["platform"])
+        await session.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle: startup and shutdown."""
@@ -89,6 +113,8 @@ async def lifespan(app: FastAPI):
     logger.info("Database initialized.")
     await _create_seed_users()
     logger.info("Seed users initialized.")
+    await _create_seed_platform_profiles()
+    logger.info("Seed platform profiles initialized.")
     yield
     logger.info("Shutting down...")
     await close_db()
