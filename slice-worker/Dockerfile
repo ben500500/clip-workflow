@@ -1,6 +1,9 @@
 # ========== 构建阶段 ==========
 FROM golang:1.22-alpine AS builder
 
+# 国内网络环境无法访问 proxy.golang.org，使用国内镜像代理
+ENV GOPROXY=https://goproxy.cn,direct
+
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
