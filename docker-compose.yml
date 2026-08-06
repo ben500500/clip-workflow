@@ -128,10 +128,16 @@ services:
       API_MODEL_NAME: ${API_MODEL_NAME:-qwen-plus}
       DASHSCOPE_MODE: ${DASHSCOPE_MODE:-compatible}
       SERVICE_MODE: api
+      # 本地 whisper 模型路径（避免每次容器重建从 HuggingFace 下载，国内网络不稳定）
+      WHISPER_MODEL: /app/whisper-model
     ports:
       - "127.0.0.1:${AUTOCLIP_PORT:-8000}:8000"
     volumes:
       - media_data:/app/media
+      # faster-whisper 模型缓存持久化（HF_HOME=/app/.cache，避免容器重建后重新下载）
+      - ./hf-cache:/app/.cache
+      # 本地平铺模型目录（直接加载，不依赖 HuggingFace 下载）
+      - ./whisper-model:/app/whisper-model:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
