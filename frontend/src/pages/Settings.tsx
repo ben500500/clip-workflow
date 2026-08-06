@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Button, Space, Typography, message, Modal, Form, Input, Tag, Select, InputNumber, Tooltip,
+  Card, Table, Button, Space, Typography, message, Modal, Form, Input, Tag, Select, InputNumber, Tooltip, Alert,
 } from 'antd';
 import { PlusOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import { configApi } from '../api/config';
@@ -127,27 +127,39 @@ const Settings: React.FC = () => {
   };
 
   const configColumns = [
-    { title: '配置项', dataIndex: 'key', key: 'key', width: 240, render: (k: string) => <Tag>{k}</Tag> },
+    { title: '配置项', dataIndex: 'key', key: 'key', width: 200, render: (k: string) => <Tag>{k}</Tag> },
+    {
+      title: '说明',
+      dataIndex: 'description',
+      key: 'description',
+      width: 360,
+      render: (d: string) => d ? (
+        <Text type="secondary" style={{ fontSize: 12, display: 'inline-block', whiteSpace: 'pre-wrap' }}>{d}</Text>
+      ) : (
+        <Text type="secondary" style={{ fontSize: 12 }}>—</Text>
+      ),
+    },
     {
       title: '值',
       key: 'value',
-      width: 550,
+      width: 340,
       render: (_: unknown, c: SystemConfig) => renderConfigValue(c),
     },
     {
       title: '更新时间',
       dataIndex: 'updated_at',
       key: 'updated_at',
-      width: 170,
+      width: 150,
       render: (d: string) => formatDateTime(d),
     },
   ];
 
   const profileColumns = [
-    { title: '名称', dataIndex: 'name', key: 'name', width: 160 },
-    { title: '平台', dataIndex: 'platform', key: 'platform', width: 120, render: (p: string) => <Tag>{p}</Tag> },
-    { title: '目标分辨率', dataIndex: 'target_resolution', key: 'target_resolution', width: 120, render: (v: string) => v || '-' },
-    { title: '目标码率', dataIndex: 'target_bitrate', key: 'target_bitrate', width: 120, render: (v: string) => v || '-' },
+    { title: '名称', dataIndex: 'name', key: 'name', width: 150 },
+    { title: '平台', dataIndex: 'platform', key: 'platform', width: 100, render: (p: string) => <Tag>{p}</Tag> },
+    { title: '说明', dataIndex: 'description', key: 'description', width: 260, render: (d: string) => d ? <Text type="secondary" style={{ fontSize: 12 }}>{d}</Text> : <Text type="secondary" style={{ fontSize: 12 }}>—</Text> },
+    { title: '目标分辨率', dataIndex: 'target_resolution', key: 'target_resolution', width: 110, render: (v: string) => v || '-' },
+    { title: '目标码率', dataIndex: 'target_bitrate', key: 'target_bitrate', width: 110, render: (v: string) => v || '-' },
     { title: '最大时长', dataIndex: 'max_duration', key: 'max_duration', width: 100, render: (v: number) => v ?? '-' },
     {
       title: '操作',
@@ -160,6 +172,7 @@ const Settings: React.FC = () => {
             profileForm.setFieldsValue({
               name: p.name,
               platform: p.platform,
+              description: p.description ?? '',
               target_resolution: p.target_resolution,
               target_bitrate: p.target_bitrate,
               max_duration: p.max_duration,
@@ -191,7 +204,7 @@ const Settings: React.FC = () => {
           dataSource={configs}
           pagination={false}
           size="small"
-          scroll={{ x: 960 }}
+          scroll={{ x: 1080 }}
         />
       </Card>
       <Card
@@ -211,7 +224,7 @@ const Settings: React.FC = () => {
           dataSource={profiles}
           pagination={false}
           size="small"
-          scroll={{ x: 800 }}
+          scroll={{ x: 1020 }}
         />
       </Card>
 
@@ -228,6 +241,9 @@ const Settings: React.FC = () => {
         width={600}
       >
         <Form form={configForm} layout="vertical">
+          {editingConfig?.description && (
+            <Alert type="info" showIcon style={{ marginBottom: 12 }} message={editingConfig.description} />
+          )}
           <Form.Item
             name="value"
             label="配置值"
@@ -261,10 +277,13 @@ const Settings: React.FC = () => {
           <Form.Item name="platform" label="平台" rules={[{ required: true }]}>
             <Select options={[{ value: 'wechat_channel', label: '视频号' }, { value: 'douyin', label: '抖音' }, { value: 'kuaishou', label: '快手' }]} />
           </Form.Item>
+          <Form.Item name="description" label="说明"><Input.TextArea rows={3} placeholder="填写该配置的用途说明（可选）" /></Form.Item>
           <Form.Item name="target_resolution" label="目标分辨率"><Input placeholder="1920x1080" /></Form.Item>
           <Form.Item name="target_bitrate" label="目标码率"><Input placeholder="4000k" /></Form.Item>
           <Form.Item name="max_duration" label="最大时长（秒）"><InputNumber min={0} style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="dedupe_config" label="去重配置 JSON"><Input.TextArea rows={6} style={{ fontFamily: 'monospace' }} placeholder='{"speed_change": true, "speed_factor": 1.04}' /></Form.Item>
+          <Form.Item name="dedupe_config" label="去重配置 JSON"
+            extra={<Text type="secondary" style={{ fontSize: 12 }}>可选字段：mode（fast/dedupe/scrub）、flip_mirror（水平镜像）、speed_change（变速）、speed_factor（变速系数）、saturation（饱和度）、saturation_value、brightness（亮度）、brightness_value、sharpen（锐化）、sharpen_amount。这些参数在切片去重时生效，用于降低平台查重风险。</Text>}
+          ><Input.TextArea rows={6} style={{ fontFamily: 'monospace' }} placeholder='{"speed_change": true, "speed_factor": 1.04}' /></Form.Item>
         </Form>
       </Modal>
     </div>

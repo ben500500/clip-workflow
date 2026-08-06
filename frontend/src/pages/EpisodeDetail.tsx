@@ -57,6 +57,8 @@ const EpisodeDetail: React.FC = () => {
   const [detectMode, setDetectMode] = useState('credits');
   const [sliceMode, setSliceMode] = useState('fast');
   const [maxClips, setMaxClips] = useState(10);
+  const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
+  const [maxClipDuration, setMaxClipDuration] = useState<number | null>(null);
   const [autoclipProgress, setAutoclipProgress] = useState<{ status: string; progress: number; message: string } | null>(null);
   const [autoclipRunning, setAutoclipRunning] = useState(false);
   const [detectRunning, setDetectRunning] = useState(false);
@@ -275,7 +277,11 @@ const EpisodeDetail: React.FC = () => {
     setAutoclipRunning(true);
     setAutoclipProgress({ status: 'pending', progress: 0, message: '正在启动选点任务…' });
     try {
-      const res = await autoclipApi.run(episodeId, { max_clips: maxClips });
+      const res = await autoclipApi.run(episodeId, {
+        max_clips: maxClips,
+        min_duration: minClipDuration ?? undefined,
+        max_duration: maxClipDuration ?? undefined,
+      });
       message.success(res.message);
       autoclipTimerRef.current = window.setInterval(async () => {
         try {
@@ -520,12 +526,44 @@ const EpisodeDetail: React.FC = () => {
                 <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>选点个数:</Text>
                 <InputNumber
                   size="small"
-                  min={3}
-                  max={50}
+                  min={1}
+                  max={100}
                   value={maxClips}
                   onChange={(v) => setMaxClips(v ?? 10)}
                   style={{ width: 70 }}
                 />
+              </Space>
+            </Tooltip>
+          </Space>
+          <Space wrap>
+            <Tooltip title="设置候选片段的最短时长（秒），留空则使用系统默认（30 秒）">
+              <Space size={4}>
+                <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>最短时长:</Text>
+                <InputNumber
+                  size="small"
+                  min={1}
+                  max={86400}
+                  placeholder="秒"
+                  value={minClipDuration}
+                  onChange={(v) => setMinClipDuration(v ?? null)}
+                  style={{ width: 80 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
+              </Space>
+            </Tooltip>
+            <Tooltip title="设置候选片段的最长时长（秒），留空则使用系统默认（180 秒）">
+              <Space size={4}>
+                <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>最长时长:</Text>
+                <InputNumber
+                  size="small"
+                  min={1}
+                  max={86400}
+                  placeholder="秒"
+                  value={maxClipDuration}
+                  onChange={(v) => setMaxClipDuration(v ?? null)}
+                  style={{ width: 80 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
               </Space>
             </Tooltip>
           </Space>

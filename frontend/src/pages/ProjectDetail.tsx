@@ -192,30 +192,26 @@ const ProjectDetail: React.FC = () => {
           <Descriptions.Item label="更新时间">{formatDateTime(project.updated_at)}</Descriptions.Item>
         </Descriptions>
       </Card>
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={24} lg={10}>
-          <Card size="small" title="上传正片">
-            <Dragger
-              accept=".mp4,.avi,.mov,.mkv,.webm"
-              showUploadList={false}
-              beforeUpload={(file) => {
-                handleUpload(file as File);
-                return false;
-              }}
-              disabled={uploading}
-            >
-              <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-              <p className="ant-upload-text">点击或拖拽视频到此处上传</p>
-              {uploading && <Progress percent={uploadProgress} size="small" />}
-            </Dragger>
-          </Card>
-        </Col>
-        <Col xs={24} lg={14}>
-          <Card size="small" title="剧集列表" extra={<Button size="small" icon={<UploadOutlined />} onClick={() => navigate('/settings')}>去系统设置</Button>}>
-            <Table rowKey="id" columns={episodeColumns} dataSource={episodes} pagination={false} size="small" />
-          </Card>
-        </Col>
-      </Row>
+      {/* 上传正片：置于上方，占满整行 */}
+      <Card size="small" title="上传正片" style={{ marginBottom: 16 }}>
+        <Dragger
+          accept=".mp4,.avi,.mov,.mkv,.webm"
+          showUploadList={false}
+          beforeUpload={(file) => {
+            handleUpload(file as File);
+            return false;
+          }}
+          disabled={uploading}
+        >
+          <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+          <p className="ant-upload-text">点击或拖拽视频到此处上传</p>
+          {uploading && <Progress percent={uploadProgress} size="small" />}
+        </Dragger>
+      </Card>
+      {/* 剧集列表：位于上传正片下方 */}
+      <Card size="small" title="剧集列表" extra={<Button size="small" icon={<UploadOutlined />} onClick={() => navigate('/settings')}>去系统设置</Button>}>
+        <Table rowKey="id" columns={episodeColumns} dataSource={episodes} pagination={false} size="small" />
+      </Card>
     </div>
   );
 };

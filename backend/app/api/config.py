@@ -21,12 +21,14 @@ class ConfigUpdateRequest(BaseModel):
 class ConfigResponse(BaseModel):
     key: str
     value: Any
+    description: Optional[str] = None
     updated_at: str
 
 
 class ProfileCreate(BaseModel):
     name: str
     platform: str
+    description: Optional[str] = None
     dedupe_config: Optional[dict] = None
     target_resolution: Optional[str] = None
     target_bitrate: Optional[str] = None
@@ -36,6 +38,7 @@ class ProfileCreate(BaseModel):
 class ProfileUpdate(BaseModel):
     name: Optional[str] = None
     platform: Optional[str] = None
+    description: Optional[str] = None
     dedupe_config: Optional[dict] = None
     target_resolution: Optional[str] = None
     target_bitrate: Optional[str] = None
@@ -46,6 +49,7 @@ class ProfileResponse(BaseModel):
     id: str
     name: str
     platform: Optional[str] = None
+    description: Optional[str] = None
     dedupe_config: Optional[dict] = None
     target_resolution: Optional[str] = None
     target_bitrate: Optional[str] = None
@@ -55,10 +59,23 @@ class ProfileResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+CONFIG_DESCRIPTIONS: Dict[str, str] = {
+    "default_autoclip_config": "AI 智能选点默认参数：min_score_threshold 为入选最低评分(0-100)；max_clips 为最多生成的候选片段数；min_duration/max_duration 为候选片段的最短/最长时长(秒)，超出范围的高光片段会被裁剪或过滤。",
+    "default_dedupe_config": "默认去重参数：mode 为去重模式(fast/dedupe/scrub)；flip_mirror 水平镜像翻转；speed_change 微调播放速度；saturation_value/brightness_value 为饱和度/亮度微调系数；sharpen_amount 锐化强度。用于切片时降低平台查重风险。",
+    "default_interval_config": "区间检测默认参数：mode 为检测模式(credits 片尾字幕/static 静止画面/watermark 水印)；scan_window 扫描窗口(秒)；frame_interval 抽帧间隔(秒)；static_threshold 静止画面判定阈值；gold_ratio_threshold 黄金比例阈值；min_static_duration 静止画面最短持续时间(秒)。",
+    "storage_retention_days": "素材与成品文件保留天数，超过该时限的临时文件会被自动清理。",
+    "auto_cleanup_enabled": "是否启用自动清理任务（true/false）。开启后系统会定时清理过期临时资源文件。",
+    "max_concurrent_tasks": "全局最大并发任务数，用于限制同时执行的切片/检测等重任务数量，避免资源抢占。",
+    "task_timeout_hours": "任务超时时间（小时），超过该时长的任务将被判定为超时并自动终止。",
+    "dashboard_config": "数据看板配置（JSON）：用于配置看板展示的指标与筛选条件。",
+}
+
+
 def _serialize_config(cfg: SystemConfig) -> dict:
     return {
         "key": cfg.key,
         "value": cfg.value,
+        "description": cfg.description or CONFIG_DESCRIPTIONS.get(cfg.key),
         "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else "",
     }
 
@@ -68,6 +85,7 @@ def _serialize_profile(profile: PlatformProfile) -> dict:
         "id": str(profile.id),
         "name": profile.name,
         "platform": profile.platform,
+        "description": profile.description,
         "dedupe_config": profile.dedupe_config,
         "target_resolution": profile.target_resolution,
         "target_bitrate": profile.target_bitrate,
@@ -86,44 +104,76 @@ async def get_all_config(db: AsyncSession = Depends(get_db)):
 
     # If no configs exist, return defaults
     if not configs:
-        defaults = {
-            "default_autoclip_config": {
-                "llm_provider": "dashscope",
-                "llm_model": "qwen-plus",
-                "min_score_threshold": 60,
-                "max_clips": 30,
-                "min_duration": 30,
-                "max_duration": 180,
-            },
-            "default_dedupe_config": {
-                "mode": "fast",
-                "flip_mirror": False,
-                "speed_change": True,
-                "speed_factor": 1.04,
-                "saturation": True,
-                "saturation_value": 0.95,
-                "brightness": True,
-                "brightness_value": 0.01,
-                "sharpen": True,
-                "sharpen_amount": 0.8,
-            },
-            "default_interval_config": {
-                "mode": "credits",
-                "scan_window": 6.0,
-                "frame_interval": 0.5,
-                "static_threshold": 5,
-                "gold_ratio_threshold": 0.03,
-                "min_static_duration": 9,
-            },
-            "storage_retention_days": 30,
-            "auto_cleanup_enabled": False,
-            "max_concurrent_tasks": 4,
-            "task_timeout_hours": 2,
-        }
-        return [
-            ConfigResponse(key=k, value=v, updated_at="")
-            for k, v in defaults.items()
+        defaults = [
+            ConfigResponse(
+                key="default_autoclip_config",
+                value={
+                    "llm_provider": "dashscope",
+                    "llm_model": "qwen-plus",
+                    "min_score_threshold": 60,
+                    "max_clips": 30,
+                    "min_duration": 30,
+                    "max_duration": 180,
+                },
+                description="AI 智能选点默认参数：min_score_threshold 为入选最低评分(0-100)；max_clips 为最多生成的候选片段数；min_duration/max_duration 为候选片段的最短/最长时长(秒)，超出范围的高光片段会被裁剪或过滤。",
+                updated_at="",
+            ),
+            ConfigResponse(
+                key="default_dedupe_config",
+                value={
+                    "mode": "fast",
+                    "flip_mirror": False,
+                    "speed_change": True,
+                    "speed_factor": 1.04,
+                    "saturation": True,
+                    "saturation_value": 0.95,
+                    "brightness": True,
+                    "brightness_value": 0.01,
+                    "sharpen": True,
+                    "sharpen_amount": 0.8,
+                },
+                description="默认去重参数：mode 为去重模式(fast/dedupe/scrub)；flip_mirror 水平镜像翻转；speed_change 微调播放速度；saturation_value/brightness_value 为饱和度/亮度微调系数；sharpen_amount 锐化强度。用于切片时降低平台查重风险。",
+                updated_at="",
+            ),
+            ConfigResponse(
+                key="default_interval_config",
+                value={
+                    "mode": "credits",
+                    "scan_window": 6.0,
+                    "frame_interval": 0.5,
+                    "static_threshold": 5,
+                    "gold_ratio_threshold": 0.03,
+                    "min_static_duration": 9,
+                },
+                description="区间检测默认参数：mode 为检测模式(credits 片尾字幕/static 静止画面/watermark 水印)；scan_window 扫描窗口(秒)；frame_interval 抽帧间隔(秒)；static_threshold 静止画面判定阈值；gold_ratio_threshold 黄金比例阈值；min_static_duration 静止画面最短持续时间(秒)。",
+                updated_at="",
+            ),
+            ConfigResponse(
+                key="storage_retention_days",
+                value=30,
+                description="素材与成品文件保留天数，超过该时限的临时文件会被自动清理。",
+                updated_at="",
+            ),
+            ConfigResponse(
+                key="auto_cleanup_enabled",
+                value=False,
+                description="是否启用自动清理任务（true/false）。开启后系统会定时清理过期临时资源文件。",
+                updated_at="",
+            ),
+            ConfigResponse(
+                key="max_concurrent_tasks",
+                value=4,
+                description="全局最大并发任务数，用于限制同时执行的切片/检测等重任务数量，避免资源抢占。",
+                updated_at="",
+            ),
+            ConfigResponse(
+                key="task_timeout_hours",
+                value=2,
+                description="任务超时时间（小时），超过该时长的任务将被判定为超时并自动终止。",
+                updated_at="",
+            ),
         ]
+        return defaults
 
     return [_serialize_config(c) for c in configs]
 
@@ -142,8 +192,14 @@ async def update_config(
     if config:
         config.value = data.value
         config.updated_at = datetime.utcnow()
+        if not config.description:
+            config.description = CONFIG_DESCRIPTIONS.get(data.key)
     else:
-        config = SystemConfig(key=data.key, value=data.value)
+        config = SystemConfig(
+            key=data.key,
+            value=data.value,
+            description=CONFIG_DESCRIPTIONS.get(data.key),
+        )
         db.add(config)
 
     await db.flush()
@@ -180,6 +236,7 @@ async def create_platform_profile(
     profile = PlatformProfile(
         name=data.name,
         platform=data.platform,
+        description=data.description,
         dedupe_config=data.dedupe_config,
         target_resolution=data.target_resolution,
         target_bitrate=data.target_bitrate,
@@ -226,6 +283,8 @@ async def update_platform_profile(
         profile.name = data.name
     if data.platform is not None:
         profile.platform = data.platform
+    if data.description is not None:
+        profile.description = data.description
     if data.dedupe_config is not None:
         profile.dedupe_config = data.dedupe_config
     if data.target_resolution is not None:
