@@ -6,6 +6,8 @@
 
 # ==================== Python ====================
 __pycache__/
+venv/
+.venv/
 *.py[cod]
 *.pyo
 *.pyd
@@ -106,4 +108,4 @@ temp/
 *.orig
 *.pid
 *.seed
-*.pid.lock
+*.pid.lockautoclip/media/
