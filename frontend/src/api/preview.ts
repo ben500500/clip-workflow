@@ -21,6 +21,13 @@ export const previewApi = {
   download: (outputId: string) =>
     client.get(`/outputs/${outputId}/download`) as Promise<unknown>,
 
+  batchDownload: (outputIds: string[]) =>
+    client.post(
+      '/outputs/batch-download',
+      { output_ids: outputIds },
+      { responseType: 'blob', timeout: 600000 }
+    ) as Promise<Blob>,
+
   getPublications: (outputId: string) =>
     client.get(`/outputs/${outputId}/publications`) as Promise<Publication[]>,
 

@@ -65,7 +65,7 @@ CONFIG_DESCRIPTIONS: Dict[str, str] = {
     "default_interval_config": "区间检测默认参数：mode 为检测模式(credits 片尾字幕/static 静止画面/watermark 水印)；scan_window 扫描窗口(秒)；frame_interval 抽帧间隔(秒)；static_threshold 静止画面判定阈值；gold_ratio_threshold 黄金比例阈值；min_static_duration 静止画面最短持续时间(秒)。",
     "storage_retention_days": "素材与成品文件保留天数，超过该时限的临时文件会被自动清理。",
     "auto_cleanup_enabled": "是否启用自动清理任务（true/false）。开启后系统会定时清理过期临时资源文件。",
-    "max_concurrent_tasks": "全局最大并发任务数，用于限制同时执行的切片/检测等重任务数量，避免资源抢占。",
+    "max_concurrent_tasks": "全局最大并发切片任务数，用于限制多人同时切片时同时执行的切片任务数量（不含区间检测），避免任务无限堆积抢占资源。当前达到上限时新的切片/重试请求会被拒绝，可在多人协作繁忙时适当调大。",
     "task_timeout_hours": "任务超时时间（小时），超过该时长的任务将被判定为超时并自动终止。",
     "dashboard_config": "数据看板配置（JSON）：用于配置看板展示的指标与筛选条件。",
 }
@@ -163,7 +163,7 @@ async def get_all_config(db: AsyncSession = Depends(get_db)):
             ConfigResponse(
                 key="max_concurrent_tasks",
                 value=4,
-                description="全局最大并发任务数，用于限制同时执行的切片/检测等重任务数量，避免资源抢占。",
+                description="全局最大并发切片任务数，用于限制多人同时切片时同时执行的切片任务数量（不含区间检测），避免任务无限堆积抢占资源。当前达到上限时新的切片/重试请求会被拒绝，可在多人协作繁忙时适当调大。",
                 updated_at="",
             ),
             ConfigResponse(

@@ -18,7 +18,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -29,6 +29,7 @@ from app.models.models import (
     SliceOutput,
     ClipCandidate,
     DetectedInterval,
+    SystemConfig,
 )
 from app.utils.helpers import generate_cutlist, generate_intervals_file
 from app.services.minio_service import (
@@ -167,6 +168,52 @@ def _resolve_engine(request_engine: Optional[str]) -> str:
             detail=f"engine 参数不合法，仅支持 {'/'.join(ALLOWED_ENGINES)}",
         )
     return engine
+
+
+async def _get_max_concurrent_tasks(db: AsyncSession) -> int:
+    """读取系统配置中的全局最大并发切片任务数（多人同时切片的全局闸门）。
+
+    默认 4；配置不存在或非法时使用默认值。
+    """
+    try:
+        result = await db.execute(
+            select(SystemConfig).where(SystemConfig.key == "max_concurrent_tasks")
+        )
+        cfg = result.scalar_one_or_none()
+        if cfg and cfg.value is not None:
+            val = int(cfg.value)
+            if val > 0:
+                return val
+    except (TypeError, ValueError):
+        pass
+    return 4
+
+
+async def _acquire_concurrency_slot(db: AsyncSession) -> None:
+    """全局并发闸门：超过 max_concurrent_tasks 个运行中/排队中的切片任务时拒绝新任务。
+
+    适用于多用户/多剧集同时发起切片，保证重任务不会无限堆积抢占资源。
+    """
+    max_concurrent = await _get_max_concurrent_tasks(db)
+    running_count = (
+        await db.execute(
+            select(func.count(SliceTask.id)).where(
+                SliceTask.status.in_(["running", "pending"]),
+                ~SliceTask.mode.like("detect_%"),
+            )
+        )
+    ).scalar() or 0
+    # 注意：调用时新任务尚未写入 DB，因此 running_count 为当前在飞任务数；
+    # 允许在 running_count < max 时放行新任务，等于最多同时处理 max 个。
+    if running_count >= max_concurrent:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"当前已有 {running_count} 个切片任务在运行/排队，"
+                f"已达到全局并发上限 {max_concurrent}。"
+                "请稍后再试，或到「系统设置」调大 max_concurrent_tasks。"
+            ),
+        )
 
 
 def _output_prefix(slice_task: SliceTask) -> str:
@@ -377,6 +424,11 @@ async def run_slice(
     )
     enabled_intervals = intervals_result.scalars().all()
     intervals_content = generate_intervals_file(enabled_intervals)
+
+    # 多人同时切片的全局并发闸门：超过 max_concurrent_tasks 上限直接拒绝。
+    # 在创建任务记录前检查，running_count 为当前在飞任务数（不含本任务），
+    # 保证“同时处理的切片任务数不超过 max_concurrent_tasks”。
+    await _acquire_concurrency_slot(db)
 
     # Create slice task record
     slice_task = SliceTask(
@@ -637,6 +689,14 @@ async def slice_task_callback(
     now = datetime.utcnow()
 
     if data.status == "completed":
+        # ── 幂等保护 ──
+        # 任务可能因 PEL 重新认领 / 回调重发被重复上报 completed。
+        # 若任务已处于终态且输出已落库，直接返回，避免切片输出重复添加。
+        if task.status == "completed":
+            return {"ok": True, "duplicate": True}
+        if task.status in ("failed", "cancelled") and task.output_count and task.output_count > 0:
+            return {"ok": True, "duplicate": True}
+
         # 记录执行该任务的节点（用于切片任务列表展示"由哪个节点完成"）
         if data.node_id:
             task.node_id = data.node_id
@@ -656,6 +716,7 @@ async def slice_task_callback(
         clip_index = 0
         for out in data.outputs:
             fname = out.get("file_name", "")
+            file_key = out.get("file_key", "")
             clip_id = None
             matched = False
             # 尝试从文件名 clip_{index}.mp4 解析
@@ -674,10 +735,21 @@ async def slice_task_callback(
                     clip_id = accepted_clips[clip_index].id
                 clip_index += 1
 
+            # 同一 file_key 已存在则跳过，避免重复回调/重跑时输出记录叠加
+            if file_key:
+                existing_out = await db.execute(
+                    select(SliceOutput).where(
+                        SliceOutput.task_id == tid,
+                        SliceOutput.file_key == file_key,
+                    )
+                )
+                if existing_out.scalar_one_or_none():
+                    continue
+
             db_output = SliceOutput(
                 task_id=tid,
                 clip_id=clip_id,
-                file_key=out.get("file_key", ""),
+                file_key=file_key,
                 file_name=fname,
                 duration=out.get("duration"),
                 file_size=out.get("file_size"),
@@ -787,6 +859,10 @@ async def retry_slice_task(
         status="pending",
         progress=0.0,
     )
+
+    # 全局并发闸门：重试同样受 max_concurrent_tasks 限制，避免堆积
+    await _acquire_concurrency_slot(db)
+
     db.add(new_task)
     await db.flush()
     await db.refresh(new_task)
