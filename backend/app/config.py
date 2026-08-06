@@ -69,7 +69,13 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "your-secret-key-change-in-production"
     JWT_EXPIRE_MINUTES: int = 1440  # 24 小时
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        # .env 中包含 Docker Compose 使用的扩展变量（如 POSTGRES_HOST、MINIO_PORT 等），
+        # 后端 Settings 未定义这些字段，忽略而非报错，避免启动失败。
+        "extra": "ignore",
+    }
 
 
 settings = Settings()

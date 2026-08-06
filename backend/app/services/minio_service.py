@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 from minio import Minio
 from minio.error import S3Error
 
+from datetime import timedelta
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -147,7 +149,7 @@ async def get_presigned_url(
                 client.presigned_get_object,
                 bucket,
                 object_key,
-                expires=expires_seconds,
+                expires=timedelta(seconds=expires_seconds),
             ),
         )
         return url
@@ -171,7 +173,7 @@ async def get_presigned_upload_url(
                 client.presigned_put_object,
                 bucket,
                 object_key,
-                expires=expires_seconds,
+                expires=timedelta(seconds=expires_seconds),
             ),
         )
         return url
