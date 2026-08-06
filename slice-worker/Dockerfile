@@ -13,6 +13,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o slice-worker .
 # ========== 运行阶段 ==========
 FROM alpine:3.19
 
+# 使用国内镜像源：font-noto-cjk 包约 75MB，从官方 dl-cdn.alpinelinux.org 下载易超时卡死
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
+
 RUN apk add --no-cache \
     ffmpeg \
     python3 \
