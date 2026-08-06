@@ -13,6 +13,7 @@ from celery.schedules import crontab
 
 from app.config import settings
 from app.database import async_session_factory
+from app.models.models import SliceTask
 
 # Celery application
 celery_app = Celery(
@@ -189,11 +190,22 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
-def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict, source_file_key: Optional[str] = None):
+def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict, source_file_key: Optional[str] = None, task_id: Optional[str] = None):
     """Execute interval detection as a Celery task."""
     from app.services.interval_service import detect_intervals
 
     self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动区间检测任务…"})
+
+    # 检测任务记录到 slice_tasks 表（mode 前缀 detect_），供 /intervals/progress 接口查询进度。
+    # 优先使用 API 层预创建的记录，避免提交后轮询窗口内查不到进度。
+    detect_task_id: Optional[str] = task_id
+    if not detect_task_id:
+        try:
+            detect_task_id = run_async(
+                _create_detect_task(episode_id, mode, config, self.request.id)
+            )
+        except Exception as e:
+            logger.warning(f"Failed to persist detect task record: {e}")
 
     downloaded_video_path = None
     try:
@@ -204,13 +216,22 @@ def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict,
 
         self.update_state(
             state="PROGRESS",
-            meta={"progress": 50, "message": f"Running {mode} detection..."},
+            meta={"progress": 20, "message": f"正在分析视频（{mode} 模式）…"},
         )
+        if detect_task_id:
+            run_async(_update_detect_task_progress(detect_task_id, 20, "running"))
 
-        intervals = run_async(detect_intervals(video_path, mode, config))
+        async def _run():
+            return await detect_intervals(video_path, mode, config)
+
+        intervals = run_async(_run())
 
         run_async(_save_detected_intervals(episode_id, intervals, mode, config))
         run_async(_update_episode_status(episode_id, "intervals_detected"))
+
+        # 数据落库后再标记完成，避免前端提前看到 completed 但结果尚未保存
+        if detect_task_id:
+            run_async(_update_detect_task_progress(detect_task_id, 100, "completed"))
 
         self.update_state(
             state="SUCCESS",
@@ -224,6 +245,11 @@ def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict,
             state="FAILURE",
             meta={"progress": 0, "message": str(e)},
         )
+        if detect_task_id:
+            try:
+                run_async(_fail_detect_task(detect_task_id, str(e)))
+            except Exception:
+                pass
         raise
     finally:
         # Clean up downloaded source video
@@ -232,6 +258,66 @@ def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict,
                 os.unlink(downloaded_video_path)
             except OSError:
                 pass
+
+
+async def _create_detect_task(episode_id: str, mode: str, config: dict, celery_task_id: Optional[str]) -> Optional[str]:
+    """Persist a detect task record so /intervals/progress can track it."""
+    from sqlalchemy import select
+    from app.models.models import Episode
+
+    async with async_session_factory() as session:
+        try:
+            eid = uuid.UUID(episode_id)
+        except ValueError:
+            return None
+        episode_result = await session.execute(select(Episode).where(Episode.id == eid))
+        if not episode_result.scalar_one_or_none():
+            return None
+        record = SliceTask(
+            episode_id=eid,
+            celery_task_id=celery_task_id,
+            mode=f"detect_{mode}",
+            status="pending",
+            progress=0.0,
+        )
+        session.add(record)
+        await session.commit()
+        return str(record.id)
+
+
+async def _update_detect_task_progress(detect_task_id: str, progress: float, status: str):
+    """Update the progress/status of a detect task record."""
+    from sqlalchemy import select
+
+    async with async_session_factory() as session:
+        try:
+            tid = uuid.UUID(detect_task_id)
+        except ValueError:
+            return
+        result = await session.execute(select(SliceTask).where(SliceTask.id == tid))
+        record = result.scalar_one_or_none()
+        if record:
+            record.progress = progress
+            record.status = status
+            await session.commit()
+
+
+async def _fail_detect_task(detect_task_id: str, error: str):
+    """Mark a detect task record as failed."""
+    from sqlalchemy import select
+
+    async with async_session_factory() as session:
+        try:
+            tid = uuid.UUID(detect_task_id)
+        except ValueError:
+            return
+        result = await session.execute(select(SliceTask).where(SliceTask.id == tid))
+        record = result.scalar_one_or_none()
+        if record:
+            record.status = "failed"
+            record.error_message = error[:2000]
+            record.completed_at = datetime.utcnow()
+            await session.commit()
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
@@ -536,7 +622,7 @@ async def _save_slice_outputs(
     mode: str,
 ):
     from sqlalchemy import select
-    from app.models.models import SliceTask, SliceOutput, ClipCandidate
+    from app.models.models import SliceTask, SliceOutput, ClipCandidate, Episode
 
     async with async_session_factory() as session:
         tid = uuid.UUID(task_id) if task_id else None
@@ -576,6 +662,14 @@ async def _save_slice_outputs(
                 task.output_count = len(output_files)
                 task.completed_at = datetime.utcnow()
                 task.error_message = None
+
+            # 切片输出落库后把剧集状态推进到 completed，让工作流步骤条走到“成品预览”
+            episode_result = await session.execute(
+                select(Episode).where(Episode.id == uuid.UUID(episode_id))
+            )
+            episode = episode_result.scalar_one_or_none()
+            if episode and episode.status != "completed":
+                episode.status = "completed"
 
         await session.commit()
 

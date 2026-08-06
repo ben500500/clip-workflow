@@ -161,6 +161,11 @@ async def run_slice(
     await db.flush()
     await db.refresh(slice_task)
 
+    # 切片启动时推进剧集状态，使工作流步骤条正确展示到“切片执行”
+    if episode.status not in ("slicing", "completed"):
+        episode.status = "slicing"
+    await db.flush()
+
     # Dispatch Celery task
     task = celery_slice_task.delay(
         episode_id=str(eid),
@@ -197,9 +202,11 @@ async def list_slice_tasks(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid episode ID format")
 
+    # 排除 detect_* 内部进度跟踪记录（区间检测复用了 slice_tasks 表）
     result = await db.execute(
         select(SliceTask)
         .where(SliceTask.episode_id == eid)
+        .where(~SliceTask.mode.like("detect_%"))
         .order_by(SliceTask.created_at.desc())
     )
     tasks = result.scalars().all()
@@ -340,6 +347,8 @@ async def retry_slice_task(
     new_task.celery_task_id = celery.id
     new_task.status = "running"
     new_task.started_at = datetime.utcnow()
+    if ep.status not in ("slicing", "completed"):
+        ep.status = "slicing"
     await db.flush()
 
     return SliceRunResponse(
