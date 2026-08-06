@@ -5,7 +5,7 @@ import {
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
-  CheckCircleOutlined, ClockCircleOutlined, InfoCircleOutlined,
+  CheckCircleOutlined, ClockCircleOutlined, InfoCircleOutlined, PlayCircleOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projectApi } from '../api/projects';
@@ -60,12 +60,14 @@ const EpisodeDetail: React.FC = () => {
   const [autoclipProgress, setAutoclipProgress] = useState<{ status: string; progress: number; message: string } | null>(null);
   const [autoclipRunning, setAutoclipRunning] = useState(false);
   const [detectRunning, setDetectRunning] = useState(false);
-  const [detectProgress, setDetectProgress] = useState<{ status: string; progress: number; message: string } | null>(null);
+  const [detectProgress, setDetectProgress] = useState<{ status: string; progress: number; message: string; interval_count?: number | null; interval_type?: string | null } | null>(null);
+  const [detectResultCount, setDetectResultCount] = useState<number | null>(null);
   const [sliceRunning, setSliceRunning] = useState(false);
+  const [sliceProgress, setSliceProgress] = useState<{ status: string; progress: number; message: string } | null>(null);
 
   const autoclipTimerRef = useRef<number | null>(null);
   const detectTimerRef = useRef<number | null>(null);
-  const sliceTimerRef = useRef<number | null>(null);
+  const slicePollTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -77,8 +79,8 @@ const EpisodeDetail: React.FC = () => {
       if (detectTimerRef.current) {
         window.clearTimeout(detectTimerRef.current);
       }
-      if (sliceTimerRef.current) {
-        window.clearTimeout(sliceTimerRef.current);
+      if (slicePollTimerRef.current) {
+        window.clearInterval(slicePollTimerRef.current);
       }
     };
   }, []);
@@ -178,7 +180,8 @@ const EpisodeDetail: React.FC = () => {
               detectTimerRef.current = null;
               setDetectRunning(false);
               if (prog.status === 'completed') {
-                message.success('区间检测已完成！检测结果已自动保存');
+                setDetectResultCount(prog.interval_count ?? null);
+                message.success(prog.interval_count ? `区间检测完成！共检测到 ${prog.interval_count} 个区间` : '区间检测完成！检测结果已自动保存');
               } else {
                 message.error('区间检测失败');
               }
@@ -198,10 +201,72 @@ const EpisodeDetail: React.FC = () => {
     }
   };
 
+  // ─── 切片任务进度轮询（从 slice_tasks 表读取最近一次切片任务） ──────────
+  const resumeSlicePolling = async () => {
+    try {
+      const tasks = await sliceApi.listTasks(episodeId);
+      const latest = tasks[0];
+      if (!latest) return;
+      if (latest.status === 'running' || latest.status === 'pending') {
+        setSliceRunning(true);
+        setSliceProgress({
+          status: latest.status === 'pending' ? 'running' : 'running',
+          progress: latest.progress || 0,
+          message: latest.status === 'pending' ? '切片任务排队中，等待处理…' : `切片任务运行中（${latest.mode}）…`,
+        });
+        if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
+        slicePollTimerRef.current = window.setInterval(async () => {
+          try {
+            const t = await sliceApi.getTask(latest.id);
+            if (!mountedRef.current) {
+              if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
+              return;
+            }
+            setSliceProgress({
+              status: t.status === 'running' || t.status === 'pending' ? 'running' : t.status || 'unknown',
+              progress: t.progress || 0,
+              message: t.status === 'running' || t.status === 'pending'
+                ? `切片任务运行中（${t.mode || latest.mode}）…`
+                : t.status === 'completed'
+                  ? '切片任务已完成'
+                  : t.status === 'failed'
+                    ? `切片失败：${t.error_message || ''}`
+                    : t.status || '',
+            });
+            if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
+              if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
+              slicePollTimerRef.current = null;
+              setSliceRunning(false);
+              if (t.status === 'completed') {
+                message.success('切片已完成！可前往「成品预览」查看结果');
+              } else if (t.status === 'failed') {
+                message.error(`切片失败：${t.error_message || '未知错误'}`);
+              }
+              fetchEpisode();
+            }
+          } catch {
+            if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
+            slicePollTimerRef.current = null;
+            if (mountedRef.current) setSliceRunning(false);
+          }
+        }, 3000);
+      } else if (latest.status === 'completed' || latest.status === 'failed') {
+        setSliceProgress({
+          status: latest.status,
+          progress: latest.progress || (latest.status === 'completed' ? 100 : 0),
+          message: latest.status === 'completed' ? '切片任务已完成' : `切片失败：${latest.error_message || ''}`,
+        });
+      }
+    } catch {
+      // 没有任务或查询失败，忽略
+    }
+  };
+
   useEffect(() => {
     if (episodeId && episode) {
       resumeAutoclipPolling();
       resumeDetectPolling();
+      resumeSlicePolling();
     }
   }, [episodeId, episode?.id]);
 
@@ -250,8 +315,15 @@ const EpisodeDetail: React.FC = () => {
     setDetectProgress({ status: 'running', progress: 10, message: '正在启动区间检测任务，请稍候…' });
     try {
       const res = await intervalApi.detect(episodeId, detectMode, {});
+      const modeLabel = detectMode === 'credits' ? '片尾字幕' : detectMode === 'static' ? '静止画面' : '水印';
       // 更新为更详细的反馈信息，提示用户正在处理中
-      setDetectProgress({ status: 'running', progress: 20, message: `检测任务已提交（${detectMode === 'credits' ? '片尾字幕' : detectMode === 'static' ? '静止画面' : '水印'}模式），正在分析视频内容…` });
+      setDetectProgress({
+        status: 'running',
+        progress: 20,
+        message: detectMode === 'watermark'
+          ? `已提交${modeLabel}检测任务（该模式无自动检测器，完成后可手动添加区间）`
+          : `检测任务已提交（${modeLabel}模式），正在分析视频内容…`,
+      });
       message.success('检测任务已成功提交，正在后台分析中');
       detectTimerRef.current = window.setInterval(async () => {
         try {
@@ -270,7 +342,8 @@ const EpisodeDetail: React.FC = () => {
               detectTimerRef.current = null;
               setDetectRunning(false);
               if (p.status === 'completed') {
-                message.success('区间检测已完成！检测结果已自动保存');
+                setDetectResultCount(p.interval_count ?? null);
+                message.success(p.interval_count ? `区间检测完成！共检测到 ${p.interval_count} 个区间` : '区间检测完成！检测结果已自动保存');
               } else {
                 message.error('区间检测失败');
               }
@@ -293,19 +366,54 @@ const EpisodeDetail: React.FC = () => {
   // ─── 启动切片 ───────────────────────────────────────
   const runSlice = async () => {
     setSliceRunning(true);
+    setSliceProgress({ status: 'running', progress: 5, message: '正在提交切片任务…' });
     try {
       const res = await sliceApi.run(episodeId, sliceMode, {});
       message.success(res.message);
-      sliceTimerRef.current = window.setTimeout(() => {
-        sliceTimerRef.current = null;
-        if (mountedRef.current) {
-          fetchEpisode();
-          setSliceRunning(false);
+      // 启动后轮询任务进度
+      if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
+      slicePollTimerRef.current = window.setInterval(async () => {
+        try {
+          const tasks = await sliceApi.listTasks(episodeId);
+          const latest = tasks[0];
+          if (!latest) return;
+          const t = await sliceApi.getTask(latest.id);
+          if (!mountedRef.current) {
+            if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
+            return;
+          }
+          setSliceProgress({
+            status: t.status === 'running' || t.status === 'pending' ? 'running' : t.status || 'unknown',
+            progress: t.progress || 0,
+            message: t.status === 'running' || t.status === 'pending'
+              ? `切片任务运行中（${t.mode || sliceMode}）…`
+              : t.status === 'completed'
+                ? '切片任务已完成'
+                : t.status === 'failed'
+                  ? `切片失败：${t.error_message || ''}`
+                  : t.status || '',
+          });
+          if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
+            if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
+            slicePollTimerRef.current = null;
+            setSliceRunning(false);
+            if (t.status === 'completed') {
+              message.success('切片已完成！可前往「成品预览」查看结果');
+            } else if (t.status === 'failed') {
+              message.error(`切片失败：${t.error_message || '未知错误'}`);
+            }
+            fetchEpisode();
+          }
+        } catch {
+          if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
+          slicePollTimerRef.current = null;
+          if (mountedRef.current) setSliceRunning(false);
         }
-      }, 2000);
+      }, 3000);
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '启动切片失败');
       setSliceRunning(false);
+      setSliceProgress(null);
     }
   };
 
@@ -380,6 +488,24 @@ const EpisodeDetail: React.FC = () => {
     return null;
   };
 
+  // ─── 各动作进度条（放在对应动作卡片的最底部） ────────────────────
+  const renderProgress = (
+    p: { status: string; progress: number; message: string } | null
+  ) => {
+    if (!p) return null;
+    return (
+      <div style={{ marginTop: 8, borderTop: '1px dashed #f0f0f0', paddingTop: 8 }}>
+        <Progress
+          percent={p.progress}
+          status={p.status === 'failed' ? 'exception' : p.status === 'completed' ? 'success' : 'active'}
+          strokeColor={p.status === 'completed' ? '#52c41a' : undefined}
+          size="small"
+        />
+        <Text type="secondary" style={{ fontSize: 12 }}>{p.message}</Text>
+      </div>
+    );
+  };
+
   const actions: { title: string; node: React.ReactNode }[] = [
     {
       title: 'AI 智能选点',
@@ -406,6 +532,8 @@ const EpisodeDetail: React.FC = () => {
           <Text type="secondary" style={{ fontSize: 12 }}>
             自动分析视频内容，推荐精彩片段作为切片候选
           </Text>
+          {/* 进度条：选点动作 tab 最底部 */}
+          {renderProgress(autoclipProgress)}
         </Space>
       ),
     },
@@ -426,6 +554,27 @@ const EpisodeDetail: React.FC = () => {
           <Text type="secondary" style={{ fontSize: 12 }}>
             检测视频中的特定区间（片尾字幕/静止画面/水印），检测结果将用于切片时自动裁剪
           </Text>
+          {/* 检测结果：完成后直接展示条数，避免“只有标识没有结果” */}
+          {detectResultCount !== null && (
+            <Alert
+              type={detectResultCount > 0 ? 'success' : 'info'}
+              showIcon
+              style={{ width: '100%' }}
+              message={detectResultCount > 0
+                ? `已检测到 ${detectResultCount} 个区间`
+                : '本次检测未发现符合条件的区间'}
+              description={
+                <Space>
+                  <Text style={{ fontSize: 12 }}>
+                    {detectResultCount > 0 ? '可在「区间检测」工作台查看详情并启用/停用' : '可尝试切换其他模式或手动添加区间'}
+                  </Text>
+                  <Button size="small" type="link" onClick={() => navigate(`/episodes/${episodeId}/intervals`)}>前往查看</Button>
+                </Space>
+              }
+            />
+          )}
+          {/* 进度条：区间检测动作 tab 最底部 */}
+          {renderProgress(detectProgress)}
         </Space>
       ),
     },
@@ -458,6 +607,8 @@ const EpisodeDetail: React.FC = () => {
               </Text>
             </Space>
           </Card>
+          {/* 进度条：切片动作 tab 最底部 */}
+          {renderProgress(sliceProgress)}
         </Space>
       ),
     },
@@ -477,6 +628,17 @@ const EpisodeDetail: React.FC = () => {
         <Title level={4} style={{ margin: 0 }}>{episode.title || '(未命名剧集)'}</Title>
         <Tag color={getStatusColor(episode.status)}>{getStatusLabel(episode.status)}</Tag>
       </Space>
+
+      {/* 工作台入口：上移到页面顶部，便于快速进入各操作工作台 */}
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Space wrap>
+          <Text strong>工作台入口:</Text>
+          <Button type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => navigate(`/episodes/${episodeId}/clips`)}>片段审核</Button>
+          <Button ghost icon={<RadarChartOutlined />} onClick={() => navigate(`/episodes/${episodeId}/intervals`)}>区间检测</Button>
+          <Button ghost icon={<ScissorOutlined />} onClick={() => navigate(`/episodes/${episodeId}/slice`)}>切片任务</Button>
+          <Button ghost icon={<PlayCircleOutlined />} onClick={() => navigate(`/episodes/${episodeId}/preview`)}>成品预览</Button>
+        </Space>
+      </Card>
 
       {/* 工作流步骤条 */}
       <Card size="small" style={{ marginBottom: 16 }}>
@@ -507,43 +669,10 @@ const EpisodeDetail: React.FC = () => {
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         {actions.map((a) => (
           <Col xs={24} md={8} key={a.title}>
-            <Card size="small" title={a.title}>{a.node}</Card>
+            <Card size="small" title={a.title} style={{ height: '100%' }}>{a.node}</Card>
           </Col>
         ))}
       </Row>
-
-      {/* 选点进度 */}
-      {autoclipProgress && (
-        <Card size="small" style={{ marginBottom: 16 }} title="选点进度">
-          <Progress
-            percent={autoclipProgress.progress}
-            status={autoclipProgress.status === 'failed' ? 'exception' : autoclipProgress.status === 'completed' ? 'success' : 'active'}
-            strokeColor={autoclipProgress.status === 'completed' ? '#52c41a' : undefined}
-          />
-          <Text type="secondary">{autoclipProgress.message}</Text>
-        </Card>
-      )}
-
-      {/* 区间检测进度 */}
-      {detectProgress && (
-        <Card size="small" style={{ marginBottom: 16 }} title="区间检测进度">
-          <Progress
-            percent={detectProgress.progress}
-            status={detectProgress.status === 'failed' ? 'exception' : detectProgress.status === 'completed' ? 'success' : 'active'}
-            strokeColor={detectProgress.status === 'completed' ? '#52c41a' : undefined}
-          />
-          <Text type="secondary">{detectProgress.message}</Text>
-        </Card>
-      )}
-
-      <Card size="small" title="工作台入口">
-        <Space wrap>
-          <Button onClick={() => navigate(`/episodes/${episodeId}/clips`)}>片段审核</Button>
-          <Button onClick={() => navigate(`/episodes/${episodeId}/intervals`)}>区间检测</Button>
-          <Button onClick={() => navigate(`/episodes/${episodeId}/slice`)}>切片任务</Button>
-          <Button onClick={() => navigate(`/episodes/${episodeId}/preview`)}>成品预览</Button>
-        </Space>
-      </Card>
     </div>
   );
 };

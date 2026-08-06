@@ -551,26 +551,63 @@ async def _mark_autoclip_failed(episode_id: str, error: str):
 async def _save_detected_intervals(
     episode_id: str, intervals: list[dict], mode: str, config: dict
 ):
-    """Save detected intervals to the database."""
+    """Save detected intervals to the database.
+
+    只替换与本次检测同类型（interval_type）的旧结果，避免“水印”等无自动检测器
+    的模式返回空列表时，把已保存的片尾字幕/静止画面结果一并清空。
+    """
     from sqlalchemy import delete
     from app.models.models import DetectedInterval
 
     async with async_session_factory() as session:
         eid = uuid.UUID(episode_id)
-        # 同一 episode 同类型检测只保留最新一轮结果
-        await session.execute(
-            delete(DetectedInterval).where(
-                DetectedInterval.episode_id == eid,
-                DetectedInterval.source == "auto",
+        # 收集本次结果中出现的区间类型；若结果为空则不做删除（不覆盖其它类型）
+        types_in_result = list({
+            (interval_data.get("interval_type") or mode)
+            for interval_data in intervals
+            if interval_data.get("interval_type") or mode
+        })
+        if types_in_result:
+            await session.execute(
+                delete(DetectedInterval).where(
+                    DetectedInterval.episode_id == eid,
+                    DetectedInterval.source == "auto",
+                    DetectedInterval.interval_type.in_(types_in_result),
+                )
             )
-        )
         for interval_data in intervals:
+            # 确保整型时间也写入（表字段为 Float，int 直接赋值在部分驱动下会丢精度/报错）
+            try:
+                start_time = (
+                    float(interval_data.get("start_time"))
+                    if interval_data.get("start_time") is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                start_time = None
+            try:
+                end_time = (
+                    float(interval_data.get("end_time"))
+                    if interval_data.get("end_time") is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                end_time = None
+            try:
+                confidence = (
+                    float(interval_data.get("confidence"))
+                    if interval_data.get("confidence") is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                confidence = None
+
             interval = DetectedInterval(
                 episode_id=eid,
-                interval_type=interval_data.get("interval_type", mode),
-                start_time=interval_data.get("start_time"),
-                end_time=interval_data.get("end_time"),
-                confidence=interval_data.get("confidence"),
+                interval_type=interval_data.get("interval_type") or mode,
+                start_time=start_time,
+                end_time=end_time,
+                confidence=confidence,
                 label=interval_data.get("label"),
                 enabled=interval_data.get("enabled", True),
                 source="auto",

@@ -8,6 +8,7 @@ from sqlalchemy import select, delete, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.models.models import Project, Episode
 from app.services.minio_service import get_presigned_url
@@ -352,7 +353,9 @@ async def get_episode_video_url(episode_id: str, db: AsyncSession = Depends(get_
     if not episode.source_file_key:
         raise HTTPException(status_code=404, detail="Episode has no source video file")
 
-    url = await get_presigned_url("videos", episode.source_file_key, expires_seconds=3600)
+    # 视频实际上传/存储于 raw-footage 桶（upload.py 使用 settings.MINIO_BUCKET_RAW），
+    # 这里若用不存在的 "videos" 桶，presigned URL 生成会失败，导致片段审核页预览不可用。
+    url = await get_presigned_url(settings.MINIO_BUCKET_RAW, episode.source_file_key, expires_seconds=3600)
     if not url:
         raise HTTPException(status_code=500, detail="Failed to generate presigned URL")
     return {"url": url, "duration": episode.duration, "title": episode.title}
