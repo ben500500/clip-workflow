@@ -65,6 +65,9 @@ class SliceRunRequest(BaseModel):
     dedupe_config: Optional[dict] = None
     video_path: Optional[str] = None
     engine: Optional[str] = None  # "celery" | "worker"，默认取配置 SLICE_ENGINE
+    # 免审核一键切片：为 True 时自动把所有候选片段（含 pending）纳入切片，
+    # 不再要求存在 status=accepted 的片段
+    auto_accept_all: bool = False
 
 
 class SliceRunResponse(BaseModel):
@@ -408,6 +411,27 @@ async def run_slice(
         )
     )
     accepted_clips = clips_result.scalars().all()
+
+    if data.auto_accept_all:
+        # 免审核一键切片：不要求审核通过，直接把所有候选片段纳入切片
+        all_clips_result = await db.execute(
+            select(ClipCandidate)
+            .where(ClipCandidate.episode_id == eid)
+            .order_by(ClipCandidate.clip_index.asc().nullslast())
+        )
+        all_clips = all_clips_result.scalars().all()
+        if not all_clips:
+            raise HTTPException(
+                status_code=400,
+                detail="当前没有候选片段，无法一键切片。请先运行 AI 智能选点。",
+            )
+        # 自动通过所有待审核片段，方便后续在切片任务/成品预览中看到关联关系
+        for clip in all_clips:
+            if clip.status == "pending":
+                clip.status = "accepted"
+        await db.flush()
+        accepted_clips = all_clips
+
     if not accepted_clips:
         raise HTTPException(
             status_code=400,

@@ -265,6 +265,15 @@ func (r *RedisClient) IsNodeEnabled(nodeID string) (bool, error) {
 	return val != "0" && val != "false", nil
 }
 
+// SetNodeEnabled 设置节点启用/停用状态（与后端 /workers/{id}/enable|disable 共用 Redis key）
+func (r *RedisClient) SetNodeEnabled(nodeID string, enabled bool) error {
+	val := "1"
+	if !enabled {
+		val = "0"
+	}
+	return r.client.Set(r.ctx, fmt.Sprintf("slice:node-enabled:%s", nodeID), val, 0).Err()
+}
+
 // StreamMessage Stream消息
 type StreamMessage struct {
 	ID      string
