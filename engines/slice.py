@@ -138,14 +138,55 @@ def run_ffmpeg(args, timeout=3600, threads=1):
     return proc
 
 
-def slice_segment(src, start, end, out, vf=None, af=None, threads=1):
+def detect_best_encoder(preferred: str | None = None) -> str:
+    """探测可用的最佳编码器。
+
+    三期 GPU 加速编码：优先使用硬件编码器（nvenc/hevc_videotoolbox），
+    不可用则回退到软件 libx264。
+    """
+    if preferred:
+        try:
+            probe = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-encoders"],
+                capture_output=True, text=True, timeout=15,
+            )
+            encoders = probe.stdout or ""
+            if preferred in encoders:
+                return preferred
+        except Exception:
+            pass
+    try:
+        probe = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=15,
+        )
+        encoders = probe.stdout or ""
+        for enc in ("hevc_videotoolbox", "h264_videotoolbox", "h264_nvenc", "hevc_nvenc", "libx264"):
+            if enc in encoders:
+                return enc
+    except Exception:
+        pass
+    return "libx264"
+
+
+def build_encoder_args(encoder: str, threads: int) -> list[str]:
+    """根据编码器构造 ffmpeg 编码参数."""
+    if encoder in ("h264_nvenc", "hevc_nvenc"):
+        return ["-c:v", encoder, "-preset", "p5", "-cq", "23"]
+    if encoder in ("h264_videotoolbox", "hevc_videotoolbox"):
+        return ["-c:v", encoder, "-q:v", "65"]
+    # 软件编码回退
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", str(threads)]
+
+
+def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="libx264"):
     cmd = [
         "ffmpeg", "-y",
         "-threads", str(threads),
         "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", src,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
     ]
+    cmd += build_encoder_args(encoder, threads)
+    cmd += ["-c:a", "aac", "-b:a", "128k"]
     if vf:
         cmd += ["-vf", vf]
     if af:
@@ -154,7 +195,7 @@ def slice_segment(src, start, end, out, vf=None, af=None, threads=1):
     run_ffmpeg(cmd, timeout=3600, threads=threads)
 
 
-def concat_segments(parts, out, threads=1):
+def concat_segments(parts, out, threads=1, encoder="libx264"):
     if len(parts) == 1:
         # 单段时无需重新编码（水印已在 slice_segment 阶段叠加）
         shutil.move(parts[0], out)
@@ -171,10 +212,9 @@ def concat_segments(parts, out, threads=1):
     cmd += [
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
-        out,
     ]
+    cmd += build_encoder_args(encoder, threads)
+    cmd += ["-c:a", "aac", "-b:a", "128k", out]
     run_ffmpeg(cmd, threads=threads)
 
 
@@ -248,10 +288,18 @@ def main():
         default=None,
         help="动态文字水印配置 JSON（{\"text\":..., \"font_size\":..., \"opacity\":..., \"position\":...}）",
     )
+    parser.add_argument(
+        "--encoder",
+        default=None,
+        help="视频编码器（h264_nvenc/hevc_nvenc/h264_videotoolbox/hevc_videotoolbox/libx264），不填自动探测",
+    )
     args = parser.parse_args()
 
     threads = cpu_threads_for_percent(args.cpu_percent)
     print(f"CPU 分配: {args.cpu_percent}%% -> ffmpeg 线程数 {threads} (核数 {os.cpu_count() or '?'})", file=sys.stderr)
+
+    encoder = detect_best_encoder(args.encoder)
+    print(f"编码器: {encoder}", file=sys.stderr)
 
     if not os.path.isfile(args.source):
         print(f"Source video not found: {args.source}", file=sys.stderr)
@@ -305,9 +353,9 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             for i, (start, end, _) in enumerate(group):
                 part = os.path.join(tmp, f"part_{i}.mp4")
-                slice_segment(args.source, start, end, part, vf=vf, af=af, threads=threads)
+                slice_segment(args.source, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder)
                 parts.append(part)
-            concat_segments(parts, out_path, threads=threads)
+            concat_segments(parts, out_path, threads=threads, encoder=encoder)
         duration = ffprobe_duration(out_path)
         outputs.append((name, duration))
         processed += 1

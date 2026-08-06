@@ -352,6 +352,8 @@ type SliceTask struct {
 	DedupeConfig   map[string]float64 `json:"dedupe_config"`
 	// 自定义文字水印配置（可选，后端透传，引擎叠加动态文字水印）
 	Watermark      map[string]interface{} `json:"watermark"`
+	// 三期 GPU 加速编码（可选，后端透传，引擎 --encoder 参数）
+	Encoder        string                 `json:"encoder"`
 	Output         TaskOutput             `json:"output"`
 	TimeoutSec     int                    `json:"timeout_seconds"`
 	SourceDuration float64                `json:"source_duration"`

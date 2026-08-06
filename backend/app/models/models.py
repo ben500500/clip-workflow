@@ -50,8 +50,35 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
+    sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
+
     def __repr__(self) -> str:
         return f"<User(id={self.id}, username={self.username}, role={self.role})>"
+
+
+class UserSession(Base):
+    """用户登录会话（JWT refresh token 管理）.
+
+    二期安全认证体系：双 Token 机制。access_token 短期（30 分钟），
+    refresh_token 长期（7 天）并落库，支持主动登出/失效（token 黑名单）。
+    """
+    __tablename__ = "user_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    refresh_token_hash = Column(String(255), nullable=False, unique=True)
+    access_token_jti = Column(String(64), nullable=True)
+    user_agent = Column(String(512), nullable=True)
+    ip_address = Column(String(45), nullable=True)
+    expires_at = Column(DateTime, nullable=False)
+    is_revoked = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="sessions")
+
+    def __repr__(self) -> str:
+        return f"<UserSession(id={self.id}, user_id={self.user_id}, revoked={self.is_revoked})>"
 
 
 class Project(Base):
@@ -336,6 +363,8 @@ class VideoMetric(Base):
     attributed_uv = Column(Integer, default=0)
     attributed_revenue = Column(Float, default=0)
     content_type = Column(String(50), nullable=True)
+    # 视频标签系统（二期）：多标签 JSON 数组，如 ["爆款", "虐恋", "高完播"]
+    tags = Column(JSON, nullable=True)
     drama_id = Column(UUID(as_uuid=True), nullable=True)
     traffic_method = Column(String(50), nullable=True)
     publish_time_slot = Column(String(10), nullable=True)
@@ -478,6 +507,76 @@ class ImportHistory(Base):
 
     def __repr__(self) -> str:
         return f"<ImportHistory(id={self.id}, file_name={self.file_name})>"
+
+
+class AuditLog(Base):
+    """审计日志（V3）：操作人、操作时间、操作类型、目标对象、变更前后值。
+
+    用于安全合规与运维追溯，仅 superadmin/admin 可查看。
+    """
+    __tablename__ = "audit_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    operator_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    operator_name = Column(String(100), nullable=True)
+    action = Column(String(100), nullable=False, index=True)   # 操作类型，如 project.create / user.role.update
+    target_type = Column(String(100), nullable=True)
+    target_id = Column(String(100), nullable=True)
+    before = Column(JSON, nullable=True)
+    after = Column(JSON, nullable=True)
+    ip_address = Column(String(45), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def __repr__(self) -> str:
+        return f"<AuditLog(id={self.id}, action={self.action}, operator={self.operator_name})>"
+
+
+class AlertRule(Base):
+    """告警规则（三期监控告警系统）。
+
+    定义指标、比较符、阈值、级别与启用状态。
+    """
+    __tablename__ = "alert_rules"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(200), nullable=False)
+    # 监控指标：worker_offline / task_failed / disk_usage / redis_memory / queue_backlog / cookie_expiring / ecpm_low
+    metric = Column(String(100), nullable=False, index=True)
+    operator = Column(String(10), default=">", nullable=False)   # > / < / >= / <= / ==
+    threshold = Column(Float, nullable=False, default=0)
+    level = Column(String(20), default="warning", nullable=False)  # warning / critical
+    enabled = Column(Boolean, default=True)
+    description = Column(String(500), nullable=True)
+    # 覆盖系统默认钉钉 Webhook；为空则使用系统全局 DINGTALK_WEBHOOK
+    webhook_url = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<AlertRule(id={self.id}, metric={self.metric}, threshold={self.threshold})>"
+
+
+class AlertEvent(Base):
+    """告警事件（三期监控告警系统）。
+
+    记录每次告警触发的时间、级别、内容与通知状态。
+    """
+    __tablename__ = "alert_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    rule_id = Column(UUID(as_uuid=True), ForeignKey("alert_rules.id", ondelete="SET NULL"), nullable=True, index=True)
+    rule_name = Column(String(200), nullable=True)
+    metric = Column(String(100), nullable=True)
+    level = Column(String(20), default="warning")
+    message = Column(Text, nullable=True)
+    current_value = Column(Float, nullable=True)
+    threshold = Column(Float, nullable=True)
+    notified = Column(Boolean, default=False)
+    notify_error = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def __repr__(self) -> str:
+        return f"<AlertEvent(id={self.id}, rule={self.rule_name}, level={self.level})>"
 
 
 class WorkerNode(Base):

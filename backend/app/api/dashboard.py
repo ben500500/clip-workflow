@@ -100,6 +100,7 @@ def _serialize_video_metric(m: VideoMetric) -> dict:
         "attributed_uv": m.attributed_uv or 0,
         "attributed_revenue": m.attributed_revenue or 0,
         "content_type": m.content_type,
+        "tags": m.tags or [],
         "drama_id": str(m.drama_id) if m.drama_id else None,
         "traffic_method": m.traffic_method,
         "publish_time_slot": m.publish_time_slot,
@@ -274,7 +275,10 @@ async def update_video_tags(
     data: VideoTagsUpdate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update video tags (stored in content_type or a JSON field)."""
+    """Update video tags (stored as JSON array in video_metrics.tags).
+
+    视频标签系统（二期）：支持多标签，与 content_type 保持兼容（同时回写第一个标签）。
+    """
     try:
         vid = uuid.UUID(video_id)
     except ValueError:
@@ -285,10 +289,18 @@ async def update_video_tags(
     if not video:
         raise HTTPException(status_code=404, detail="Video metric not found")
 
-    # Store tags as content_type for now (or extend model with tags field)
-    # For simplicity, we update the content_type field with the first tag
-    if data.tags:
-        video.content_type = str(data.tags[0])[:50]
+    # 规范化标签：去空、去重、截断长度
+    tags = [str(t).strip()[:50] for t in (data.tags or []) if str(t).strip()]
+    seen = set()
+    unique_tags = []
+    for t in tags:
+        if t not in seen:
+            seen.add(t)
+            unique_tags.append(t)
+
+    video.tags = unique_tags
+    if unique_tags:
+        video.content_type = unique_tags[0][:50]
 
     await db.flush()
     await db.refresh(video)

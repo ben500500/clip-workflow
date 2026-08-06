@@ -79,6 +79,10 @@ class SliceRunRequest(BaseModel):
     watermark_opacity: float = 0.5
     # 水印位置（bottom 底部 / top 顶部，默认 bottom）
     watermark_position: str = "bottom"
+    # ── 三期 GPU 加速编码 ──
+    # 视频编码器：h264_nvenc / hevc_nvenc / h264_videotoolbox / hevc_videotoolbox / libx264
+    # 不传时引擎自动探测（有 GPU 硬件编码器则优先使用，否则回退 libx264）
+    encoder: Optional[str] = None
 
 
 class SliceRunResponse(BaseModel):
@@ -328,6 +332,7 @@ async def _publish_to_worker(
     source_file_key: Optional[str],
     dedupe_config: Optional[dict],
     watermark_config: Optional[dict] = None,
+    encoder: Optional[str] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -363,6 +368,8 @@ async def _publish_to_worker(
         "dedupe_config": dedupe_config or {},
         # 自定义文字水印配置（可选，Go Worker 透传给引擎）
         "watermark": watermark_config,
+        # 三期 GPU 加速编码（可选，Go Worker 透传给引擎 --encoder）
+        "encoder": encoder,
         "output": {
             "upload_url": f"{callback_base}/api/slice-tasks/{slice_task.id}/upload-url",
             "callback_url": callback_url,
@@ -399,6 +406,7 @@ async def _dispatch_celery(
     dedupe_config: Optional[dict],
     video_path: Optional[str],
     watermark_config: Optional[dict] = None,
+    encoder: Optional[str] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -421,6 +429,7 @@ async def _dispatch_celery(
         task_id=str(slice_task.id),
         source_file_key=source_file_key,
         watermark_config=watermark_config,
+        encoder=encoder,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -544,6 +553,7 @@ async def run_slice(
             source_file_key,
             data.dedupe_config,
             watermark_config,
+            data.encoder,
         )
 
         if not published:
@@ -566,6 +576,7 @@ async def run_slice(
                 data.dedupe_config,
                 data.video_path,
                 watermark_config,
+                data.encoder,
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
