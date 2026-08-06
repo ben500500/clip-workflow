@@ -362,7 +362,7 @@ workers:
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/episodes/{id}/slice/run` | 执行切片（auto_accept_all 免审核一键切片） |
+| `POST` | `/api/episodes/{id}/slice/run` | 执行切片（auto_accept_all 免审核一键切片；watermark_enabled/watermark_text 等参数支持动态文字水印） |
 | `GET` | `/api/episodes/{id}/slice/tasks` | 切片任务列表（排除 detect_* 记录） |
 | `GET` | `/api/slice-tasks/{id}` | 任务详情 |
 | `GET` | `/api/slice-tasks/{id}/outputs` | 任务输出 |
@@ -468,10 +468,10 @@ workers:
 | `/projects` | 项目列表 | 项目 CRUD |
 | `/projects/:id` | 项目详情 | 剧集列表、上传与剧集列表上下排布 |
 | `/episodes/:id` | 剧集详情 | 素材信息、选点/区间检测/切片操作入口（含错误提示） |
-| `/episodes/:id/clips` | 片段审核 | AI 选点结果审核、视频预览、一键通过/拒绝、一键切片 |
+| `/episodes/:id/clips` | 片段审核 | AI 选点结果审核、视频预览、一键通过/拒绝 |
 | `/episodes/:id/intervals` | 区间检测 | 挖洞区间审核（启用/停用/删除/手动添加） |
-| `/episodes/:id/slice` | 切片任务 | 切片执行与进度（显示执行节点） |
-| `/episodes/:id/preview` | 输出预览 | 帧图/视频预览、多选批量下载、任务下拉 |
+| `/episodes/:id/slice` | 切片任务 | 切片执行与进度（显示执行节点、自定义文字水印开关） |
+| `/episodes/:id/preview` | 输出预览 | 视频预览（点击行区域直接展开）、多选批量下载、任务下拉 |
 | `/publish` | 发布管理 | 发布任务列表、配置管理 |
 | `/workers` | Worker 节点 | 节点状态/启停/CPU 分配/运行进度 |
 | `/analytics/overview` | 数据总览 | 收益卡片、趋势图、漏斗、TOP5 |
@@ -853,6 +853,7 @@ WATERMARK=off
 
 | 日期 | 变更 |
 |------|------|
+| 2026-08-06 | 一键切片移到剧集详情工作台入口；Worker 心跳双写后端 DB；成品预览点击整行展开视频；切片执行支持自定义文字动态水印 |
 | 2026-08-06 | 分布式切片方案（Go Worker + Redis Stream + 远程节点/托盘/CPU 分配） |
 | 2026-08-06 | Worker 节点管理页、Header 节点状态图标、启停/CPU 调整 |
 | 2026-08-06 | 免审核一键切片、成片预览多选批量下载、切片并发闸门 |

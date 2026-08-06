@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 from typing import Callable, Optional
@@ -83,6 +84,7 @@ async def run_slice(
     engine_path: Optional[str] = None,
     progress_cb: ProgressCallback = None,
     timeout: float = 2 * 3600,
+    watermark_config: Optional[dict] = None,
 ) -> tuple[int, str, str]:
     """Run the ffmpeg slice engine.
 
@@ -95,6 +97,8 @@ async def run_slice(
     cmd = ["python", engine_path, source_path, cutlist_path, output_dir, "--mode", mode]
     if intervals_path:
         cmd.extend(["--intervals", intervals_path])
+    if watermark_config:
+        cmd.extend(["--watermark", json.dumps(watermark_config)])
     logger.info("Running slice: %s", " ".join(cmd))
 
     return await _run_cmd(cmd, timeout, progress_cb)
@@ -107,6 +111,7 @@ async def run_slice_scrub(
     output_dir: str,
     engine_path: Optional[str] = None,
     progress_cb: ProgressCallback = None,
+    watermark_config: Optional[dict] = None,
 ) -> tuple[int, str, str]:
     """Run scrub-mode slicing (cutlist minus removed intervals)."""
     return await run_slice(
@@ -117,6 +122,7 @@ async def run_slice_scrub(
         intervals_path=intervals_path,
         engine_path=engine_path,
         progress_cb=progress_cb,
+        watermark_config=watermark_config,
     )
 
 
@@ -127,6 +133,7 @@ async def run_slice_fast(
     mode: str = "fast",
     engine_path: Optional[str] = None,
     progress_cb: ProgressCallback = None,
+    watermark_config: Optional[dict] = None,
 ) -> tuple[int, str, str]:
     """Run fast/dedupe mode slicing."""
     if mode not in ("fast", "dedupe"):
@@ -139,6 +146,7 @@ async def run_slice_fast(
         intervals_path=None,
         engine_path=engine_path,
         progress_cb=progress_cb,
+        watermark_config=watermark_config,
     )
 
 

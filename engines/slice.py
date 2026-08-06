@@ -2,7 +2,7 @@
 """ffmpeg-based slice engine for Clip Workflow.
 
 Usage:
-  slice.py <source> <cutlist> <output_dir> --mode fast|dedupe|scrub [--intervals FILE]
+  slice.py <source> <cutlist> <output_dir> --mode fast|dedupe|scrub [--intervals FILE] [--watermark JSON]
 
 Cutlist format (per line):  start end name   (HH:MM:SS.mmm times)
 Interval format (per line): start end
@@ -10,6 +10,7 @@ Interval format (per line): start end
 Prints OUTPUT:<name>:<duration> and PROGRESS:<pct> lines to stdout.
 """
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -155,6 +156,7 @@ def slice_segment(src, start, end, out, vf=None, af=None, threads=1):
 
 def concat_segments(parts, out, threads=1):
     if len(parts) == 1:
+        # 单段时无需重新编码（水印已在 slice_segment 阶段叠加）
         shutil.move(parts[0], out)
         return
     filter_complex = "".join(
@@ -183,6 +185,51 @@ def safe_name(name: str) -> str:
     return name
 
 
+def build_watermark_filter(wm: dict) -> str:
+    """构造 ffmpeg 动态文字水印 filter（drawtext）。
+
+    动态效果：
+      - 水平缓慢移动（mod(2*t, w+tw)-tw）：文字从左侧缓缓滑向右侧，周期滚动
+      - 透明度呼吸（alpha='0.4+0.3*sin(2*PI*t)'）：明暗变化，增强“动态”观感
+      - 位置默认底部，可切换顶部
+    """
+    text = wm.get("text") or "Clip Workflow"
+    font_size = int(wm.get("font_size") or 28)
+    opacity = float(wm.get("opacity") or 0.5)
+    position = (wm.get("position") or "bottom").lower()
+    if position not in ("top", "bottom"):
+        position = "bottom"
+
+    opacity = max(0.05, min(1.0, opacity))
+    font_size = max(12, min(120, font_size))
+
+    # 字体：优先中文字体（若容器内安装了），否则用 DejaVuSans（容器内通常自带）
+    font_candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    fontfile = next((f for f in font_candidates if os.path.isfile(f)), "")
+    font_opt = f":fontfile={fontfile}" if fontfile else ""
+
+    if position == "top":
+        y_expr = "40"
+    else:
+        y_expr = "h-th-40"
+
+    # 转义 filter 特殊字符：后端已转义过冒号/逗号，这里再处理反斜杠与分号
+    text = text.replace("\\", "\\\\").replace(";", "\\;")
+    alpha = "'0.4+0.3*sin(2*PI*t)'"
+    return (
+        f"drawtext={font_opt}:text='{text}':fontcolor=white@{opacity:.2f}"
+        f":fontsize={font_size}:x='mod(2*t\\,w+tw)-tw':y={y_expr}"
+        f":alpha={alpha}"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("source")
@@ -195,6 +242,11 @@ def main():
         type=int,
         default=DEFAULT_CPU_PERCENT,
         help=f"CPU 资源分配比例 (%%，默认 {DEFAULT_CPU_PERCENT})，限制 ffmpeg 编码线程数",
+    )
+    parser.add_argument(
+        "--watermark",
+        default=None,
+        help="动态文字水印配置 JSON（{\"text\":..., \"font_size\":..., \"opacity\":..., \"position\":...}）",
     )
     args = parser.parse_args()
 
@@ -224,6 +276,18 @@ def main():
     if args.mode == "dedupe":
         vf = "setpts=PTS/1.04,eq=saturation=0.95:brightness=0.01,unsharp=5:5:0.8:5:5:0.0"
         af = "atempo=1.04"
+
+    # 动态文字水印：开启后在去重/普通滤镜基础上叠加 drawtext
+    watermark = None
+    if args.watermark:
+        try:
+            watermark = json.loads(args.watermark)
+        except (ValueError, TypeError):
+            watermark = None
+    if watermark:
+        wm_filter = build_watermark_filter(watermark)
+        vf = f"{vf},{wm_filter}" if vf else wm_filter
+        print(f"动态文字水印已开启: {watermark.get('text', '')}", file=sys.stderr)
 
     # Group segments by original cut index for scrub mode.
     groups = {}

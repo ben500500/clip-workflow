@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -78,6 +79,14 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		cpuPercent = 50
 	}
 	args = append(args, "--cpu-percent", fmt.Sprintf("%d", cpuPercent))
+
+	// 自定义文字水印：后端下发的 watermark 配置（JSON 透传给引擎）
+	if task.Watermark != nil && len(task.Watermark) > 0 {
+		wmBytes, err := json.Marshal(task.Watermark)
+		if err == nil {
+			args = append(args, "--watermark", string(wmBytes))
+		}
+	}
 
 	// Alpine 镜像提供 python3 可执行文件；Windows 上为 python
 	cmd := exec.CommandContext(ctx, pythonBinary(), args...)

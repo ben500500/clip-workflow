@@ -5,13 +5,12 @@ import {
 } from 'antd';
 import {
   ArrowLeftOutlined, CheckOutlined, CloseOutlined, ReloadOutlined,
-  PlayCircleOutlined, PauseCircleOutlined, ThunderboltOutlined, ScissorOutlined,
+  PlayCircleOutlined, PauseCircleOutlined, ThunderboltOutlined,
   CheckCircleOutlined, ExclamationCircleOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { autoclipApi } from '../api/autoclip';
 import { projectApi } from '../api/projects';
-import { sliceApi } from '../api/slice';
 import type { ClipCandidate } from '../types';
 import { formatDuration, formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
 
@@ -171,26 +170,6 @@ const ClipReview: React.FC = () => {
       message.error(err instanceof Error ? err.message : '批量操作失败');
     } finally {
       setBatchLoading(false);
-    }
-  };
-
-  // ─── 一键切片（免审核直接出片） ──────────────────────
-  const [oneClickSlicing, setOneClickSlicing] = useState(false);
-  const oneClickSlice = async () => {
-    setOneClickSlicing(true);
-    try {
-      // auto_accept_all=true：后端自动把所有候选片段（含 pending）纳入切片，
-      // 无需逐个审核/预览，直接产出成品视频
-      const res = await sliceApi.run(episodeId || '', 'fast', { auto_accept_all: true });
-      message.success(res.message || '切片任务已启动，可直接前往「成品预览」查看结果');
-      // 刷新片段状态（后端已自动把 pending 置为 accepted）
-      fetchClips();
-      // 引导用户去成品预览
-      message.info('切片完成后请到「成品预览」查看并下载结果');
-    } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : '一键切片失败');
-    } finally {
-      setOneClickSlicing(false);
     }
   };
 
@@ -375,23 +354,6 @@ const ClipReview: React.FC = () => {
                 disabled={pendingCount === 0}
               >
                 一键全部拒绝
-              </Button>
-            </Popconfirm>
-            <Popconfirm
-              title="一键切片"
-              description="免审核直接出片：自动把所有候选片段（含待审核）直接切割成成品视频，无需逐个审核/预览。"
-              onConfirm={oneClickSlice}
-              okText="开始切片"
-              cancelText="取消"
-            >
-              <Button
-                type="primary"
-                danger
-                icon={<ScissorOutlined />}
-                loading={oneClickSlicing}
-                disabled={clips.length === 0}
-              >
-                一键切片
               </Button>
             </Popconfirm>
           </Space>

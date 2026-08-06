@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Select, Modal, Form, Input, DatePicker, Popconfirm, Alert,
+  Card, Table, Tag, Button, Space, Typography, message, Select, Modal, Form, Input, DatePicker, Popconfirm, Alert, Spin,
 } from 'antd';
 import { ArrowLeftOutlined, PlayCircleOutlined, DownloadOutlined, LinkOutlined, CloudDownloadOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -43,6 +43,10 @@ const OutputPreview: React.FC = () => {
   const outputLoadSeqRef = useRef(0);
   const mountedRef = useRef(true);
 
+  // 点击行区域展开预览：展开后自动加载该输出的视频预览
+  const [expandedRowKeys, setExpandedRowKeys] = useState<React.Key[]>([]);
+  const [expandedVideoUrls, setExpandedVideoUrls] = useState<Record<string, string>>({});
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -70,6 +74,8 @@ const OutputPreview: React.FC = () => {
     setVideoUrl(null);
     setPublications([]);
     setSelectedRowKeys([]);
+    setExpandedRowKeys([]);
+    setExpandedVideoUrls({});
     try {
       const list = await sliceApi.getOutputs(taskId);
       if (mountedRef.current && seq === outputLoadSeqRef.current) {
@@ -81,17 +87,30 @@ const OutputPreview: React.FC = () => {
     }
   };
 
-  const selectOutput = async (output: SliceOutput) => {
+  // ─── 点击行区域展开预览 ─────────────────────────────
+  // 点击行的任意位置都展开/收起该行的视频预览，无需点击"预览"按钮
+  const toggleRowExpand = useCallback(async (output: SliceOutput) => {
+    const isExpanded = expandedRowKeys.includes(output.id);
+    if (isExpanded) {
+      setExpandedRowKeys(expandedRowKeys.filter((k) => k !== output.id));
+      return;
+    }
+    // 展开并自动加载视频预览地址
+    setExpandedRowKeys([...expandedRowKeys, output.id]);
+    // 当前输出也同步到预览/发布记录区
     setCurrentOutput(output.id);
     try {
       const video = await previewApi.getVideoUrl(output.id);
-      setVideoUrl(video.url);
+      if (mountedRef.current) {
+        setExpandedVideoUrls((prev) => ({ ...prev, [output.id]: video.url }));
+        setVideoUrl(video.url);
+      }
       const pubs = await previewApi.getPublications(output.id);
-      setPublications(pubs);
+      if (mountedRef.current) setPublications(pubs);
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '加载预览失败');
     }
-  };
+  }, [expandedRowKeys]);
 
   // ─── 多选批量下载（顺序逐个下载，不打 ZIP） ─────────────
   const downloadSelected = async () => {
@@ -141,9 +160,9 @@ const OutputPreview: React.FC = () => {
       width: 230,
       render: (_: unknown, o: SliceOutput) => (
         <Space size="small">
-          <Button size="small" icon={<PlayCircleOutlined />} onClick={() => selectOutput(o)}>预览</Button>
-          <Button size="small" icon={<DownloadOutlined />} onClick={() => window.open(`/api/outputs/${o.id}/download`, '_blank')}>下载</Button>
-          <Button size="small" icon={<LinkOutlined />} onClick={() => { setCurrentOutput(o.id); pubForm.resetFields(); setPubModal(true); }}>登记发布</Button>
+          <Button size="small" icon={<PlayCircleOutlined />} onClick={(e) => { e.stopPropagation(); toggleRowExpand(o); }}>预览</Button>
+          <Button size="small" icon={<DownloadOutlined />} onClick={(e) => { e.stopPropagation(); window.open(`/api/outputs/${o.id}/download`, '_blank'); }}>下载</Button>
+          <Button size="small" icon={<LinkOutlined />} onClick={(e) => { e.stopPropagation(); setCurrentOutput(o.id); pubForm.resetFields(); setPubModal(true); }}>登记发布</Button>
         </Space>
       ),
     },
@@ -221,6 +240,29 @@ const OutputPreview: React.FC = () => {
                 rowSelection={{
                   selectedRowKeys,
                   onChange: (keys) => setSelectedRowKeys(keys),
+                }}
+                onRow={(record: SliceOutput) => ({
+                  onClick: () => toggleRowExpand(record),
+                  style: { cursor: 'pointer' },
+                })}
+                expandable={{
+                  expandedRowKeys,
+                  onExpandedRowsChange: (keys: readonly React.Key[]) => setExpandedRowKeys(keys as React.Key[]),
+                  expandedRowRender: (record: SliceOutput) => {
+                    const url = expandedVideoUrls[record.id];
+                    return (
+                      <div style={{ padding: '4px 0' }}>
+                        {url ? (
+                          <video src={url} controls autoPlay style={{ width: '100%', maxHeight: 380, background: '#000', borderRadius: 6 }} />
+                        ) : (
+                          <Space>
+                            <Spin size="small" />
+                            <Text type="secondary">正在加载预览…</Text>
+                          </Space>
+                        )}
+                      </div>
+                    );
+                  },
                 }}
               />
             </>

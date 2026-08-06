@@ -150,3 +150,39 @@ exit 0
 3. **日志输出**: 使用标准错误输出（stderr）记录日志，避免干扰标准输出
 4. **超时处理**: 引擎脚本应设置合理的超时机制，避免长时间无响应
 5. **兼容性**: 确保脚本在 Docker 容器环境（Alpine Linux）中正常运行
+## 切片引擎 (`slice.py`)
+
+Clip Workflow 的切片引擎（ffmpeg 封装），支持快速/去重/挖洞三种模式，以及动态文字水印。
+
+**用法**:
+
+```bash
+python slice.py <source> <cutlist> <output_dir> --mode fast|dedupe|scrub [--intervals FILE] [--cpu-percent N] [--watermark JSON]
+```
+
+**参数**:
+
+| 参数 | 类型 | 说明 | 默认值 |
+|------|------|------|--------|
+| `--mode` | string | 切片模式：fast（快速）/ dedupe（去重）/ scrub（挖洞） | fast |
+| `--intervals` | string | 挖洞模式使用的区间文件（每行 `start end`） | - |
+| `--cpu-percent` | int | CPU 资源分配比例（1~100），限制 ffmpeg 线程数 | 50 |
+| `--watermark` | string | 动态文字水印配置 JSON | - |
+
+**水印 JSON 结构**:
+
+```json
+{
+  "text": "自定义水印文字（支持 {title} {date} {datetime} 占位符）",
+  "font_size": 28,
+  "opacity": 0.5,
+  "position": "bottom"
+}
+```
+
+- `text`: 水印文字内容（留空默认用剧集标题 + 日期）
+- `font_size`: 字号（12~120，默认 28）
+- `opacity`: 透明度（0.05~1.0，默认 0.5）
+- `position`: 位置（`bottom` 底部 / `top` 顶部，默认 bottom）
+
+**动态效果**：文字从左侧缓缓滑向右侧（`mod(2*t, w+tw)-tw`）+ 透明度呼吸闪烁（`0.4+0.3*sin(2*PI*t)`），用于防搬运/标识来源。

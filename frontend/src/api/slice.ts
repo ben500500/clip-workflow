@@ -5,7 +5,17 @@ export const sliceApi = {
   run: (
     episodeId: string,
     mode: string,
-    data?: { dedupe_config?: DedupeConfig; video_path?: string; engine?: string; auto_accept_all?: boolean }
+    data?: {
+      dedupe_config?: DedupeConfig;
+      video_path?: string;
+      engine?: string;
+      auto_accept_all?: boolean;
+      watermark_enabled?: boolean;
+      watermark_text?: string;
+      watermark_font_size?: number;
+      watermark_opacity?: number;
+      watermark_position?: string;
+    }
   ) =>
     client.post(`/episodes/${episodeId}/slice/run`, { mode, ...data }) as Promise<{
       task_id: string;

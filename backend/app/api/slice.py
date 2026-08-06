@@ -68,6 +68,17 @@ class SliceRunRequest(BaseModel):
     # 免审核一键切片：为 True 时自动把所有候选片段（含 pending）纳入切片，
     # 不再要求存在 status=accepted 的片段
     auto_accept_all: bool = False
+    # ── 自定义文字水印 ──
+    # 水印开关：开启后会在切片成品视频上叠加动态文字水印
+    watermark_enabled: bool = False
+    # 水印文字内容（可自定义，默认使用剧集标题 + 日期）
+    watermark_text: Optional[str] = None
+    # 水印字号（px，默认 28）
+    watermark_font_size: int = 28
+    # 水印透明度（0~1，默认 0.5）
+    watermark_opacity: float = 0.5
+    # 水印位置（bottom 底部 / top 顶部，默认 bottom）
+    watermark_position: str = "bottom"
 
 
 class SliceRunResponse(BaseModel):
@@ -171,6 +182,39 @@ def _resolve_engine(request_engine: Optional[str]) -> str:
             detail=f"engine 参数不合法，仅支持 {'/'.join(ALLOWED_ENGINES)}",
         )
     return engine
+
+
+def _build_watermark_config(
+    data: SliceRunRequest,
+    episode: Episode,
+) -> Optional[dict]:
+    """构造水印配置（字典），未开启时返回 None。
+
+    文字内容支持通过 {title} / {date} / {datetime} 占位符自动填充；
+    留空时默认使用剧集标题 + 日期。
+    """
+    if not data.watermark_enabled:
+        return None
+    text = (data.watermark_text or "").strip()
+    now = datetime.now()
+    if not text:
+        text = "{title} {date}"
+    text = (
+        text
+        .replace("{title}", (episode.title or "").strip() or "Clip")
+        .replace("{date}", now.strftime("%Y-%m-%d"))
+        .replace("{datetime}", now.strftime("%Y-%m-%d %H:%M"))
+    )
+    if not text.strip():
+        text = "Clip Workflow"
+    # 转义 ffmpeg drawtext 特殊字符（冒号/逗号等）
+    text = text.replace(":", "\\:").replace(",", "\\,").replace("'", "\\\\'")
+    return {
+        "text": text,
+        "font_size": max(12, min(120, int(data.watermark_font_size or 28))),
+        "opacity": max(0.05, min(1.0, float(data.watermark_opacity or 0.5))),
+        "position": "top" if data.watermark_position == "top" else "bottom",
+    }
 
 
 def _not_detect_task():
@@ -283,6 +327,7 @@ async def _publish_to_worker(
     intervals_content: str,
     source_file_key: Optional[str],
     dedupe_config: Optional[dict],
+    watermark_config: Optional[dict] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -316,6 +361,8 @@ async def _publish_to_worker(
         "cutlist": cutlist,
         "intervals": intervals_content,
         "dedupe_config": dedupe_config or {},
+        # 自定义文字水印配置（可选，Go Worker 透传给引擎）
+        "watermark": watermark_config,
         "output": {
             "upload_url": f"{callback_base}/api/slice-tasks/{slice_task.id}/upload-url",
             "callback_url": callback_url,
@@ -351,6 +398,7 @@ async def _dispatch_celery(
     source_file_key: Optional[str],
     dedupe_config: Optional[dict],
     video_path: Optional[str],
+    watermark_config: Optional[dict] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -372,6 +420,7 @@ async def _dispatch_celery(
         dedupe_config=dedupe_config,
         task_id=str(slice_task.id),
         source_file_key=source_file_key,
+        watermark_config=watermark_config,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -480,6 +529,9 @@ async def run_slice(
     await db.flush()
     await db.refresh(slice_task)
 
+    # 构造水印配置（开启后随任务下发给引擎）
+    watermark_config = _build_watermark_config(data, episode)
+
     if engine == "worker":
         # 确保输出桶存在（全新部署时 sliced 桶可能未初始化）
         await ensure_bucket(settings.MINIO_BUCKET_SLICED)
@@ -491,6 +543,7 @@ async def run_slice(
             intervals_content,
             source_file_key,
             data.dedupe_config,
+            watermark_config,
         )
 
         if not published:
@@ -512,6 +565,7 @@ async def run_slice(
                 source_file_key,
                 data.dedupe_config,
                 data.video_path,
+                watermark_config,
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
@@ -892,6 +946,8 @@ async def retry_slice_task(
         cutlist=task.cutlist,
         intervals=task.intervals,
         dedupe_config=task.dedupe_config,
+        # 重试时保留原任务的水印配置
+        watermark_config=task.watermark_config,
         status="pending",
         progress=0.0,
     )
@@ -912,6 +968,7 @@ async def retry_slice_task(
             task.intervals or "",
             source_file_key,
             task.dedupe_config,
+            task.watermark_config,
         )
 
         if not published:
@@ -932,6 +989,7 @@ async def retry_slice_task(
                 source_file_key,
                 task.dedupe_config,
                 None,
+                task.watermark_config,
             )
         except Exception as e:
             new_task.status = "failed"

@@ -109,3 +109,6 @@ temp/
 *.pid
 *.seed
 *.pid.lockautoclip/media/
+
+# ==================== 编译产物 ====================
+/slice-worker/slice-worker
