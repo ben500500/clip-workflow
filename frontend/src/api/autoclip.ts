@@ -14,6 +14,7 @@ export const autoclipApi = {
       status: string;
       progress: number;
       message: string;
+      error_message?: string | null;
     }>,
 
   getCandidates: (episodeId: string, minScore?: number) =>

@@ -5,6 +5,7 @@ import {
 import { ArrowLeftOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { intervalApi } from '../api/intervals';
+import ErrorHint from '../components/ErrorHint';
 import type { DetectedInterval } from '../types';
 import { formatDuration, getStatusColor, getStatusLabel } from '../utils/format';
 
@@ -17,7 +18,7 @@ const IntervalDetection: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [form] = Form.useForm();
-  const [detectStatus, setDetectStatus] = useState<{ status: string; progress: number; message: string; interval_count?: number | null } | null>(null);
+  const [detectStatus, setDetectStatus] = useState<{ status: string; progress: number; message: string; error_message?: string | null; interval_count?: number | null } | null>(null);
 
   const fetchIntervals = async () => {
     setLoading(true);
@@ -136,7 +137,12 @@ const IntervalDetection: React.FC = () => {
       {detectStatus && detectStatus.status !== 'unknown' && (
         <Card size="small" style={{ marginBottom: 16 }}>
           <Space direction="vertical" size={4} style={{ width: '100%' }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>{detectStatus.message}</Text>
+            <Space size={4} align="center">
+              <Text type="secondary" style={{ fontSize: 12 }}>{detectStatus.message}</Text>
+              {detectStatus.status === 'failed' && detectStatus.error_message && (
+                <ErrorHint error={detectStatus.error_message} />
+              )}
+            </Space>
             <Progress
               percent={detectStatus.progress}
               status={detectStatus.status === 'failed' ? 'exception' : detectStatus.status === 'completed' ? 'success' : 'active'}

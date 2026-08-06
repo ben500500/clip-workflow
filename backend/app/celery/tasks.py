@@ -522,6 +522,7 @@ async def _save_autoclip_results(
         proj = proj_result.scalar_one_or_none()
         if proj:
             proj.pipeline_status = "completed" if completed else "failed"
+            proj.error_message = None
             proj.autoclip_project_id = autoclip_project_id
 
         episode_result = await session.execute(
@@ -549,6 +550,7 @@ async def _mark_autoclip_failed(episode_id: str, error: str):
         proj = result.scalar_one_or_none()
         if proj:
             proj.pipeline_status = "failed"
+            proj.error_message = error[:2000]
             await session.commit()
 
 
