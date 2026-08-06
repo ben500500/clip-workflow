@@ -17,6 +17,32 @@ import sys
 import tempfile
 
 
+# 默认 CPU 资源分配比例（%）：切片时限制 ffmpeg 编码线程数，避免占满整机 CPU
+DEFAULT_CPU_PERCENT = 50
+
+
+def cpu_threads_for_percent(percent: int) -> int:
+    """根据 CPU 分配比例计算 ffmpeg 使用的线程数（至少 1，最多为 CPU 核心数）。
+
+    算法：threads = max(1, round(cores * percent / 100))，
+    例如 8 核 + 50%% => 4 线程，8 核 + 100%% => 8 线程。
+    """
+    if percent <= 0:
+        percent = DEFAULT_CPU_PERCENT
+    if percent > 100:
+        percent = 100
+    try:
+        cores = os.cpu_count() or 1
+    except Exception:
+        cores = 1
+    n = int(round(cores * percent / 100.0))
+    if n < 1:
+        n = 1
+    if n > cores:
+        n = cores
+    return n
+
+
 def parse_time(s: str) -> float:
     parts = s.split(":")
     if len(parts) == 3:
@@ -101,16 +127,21 @@ def ffprobe_duration(path: str) -> float:
         return 0.0
 
 
-def run_ffmpeg(args, timeout=3600):
+def run_ffmpeg(args, timeout=3600, threads=1):
+    # 若未显式设置 -threads，则追加（避免并发切片抢占过多 CPU）
+    if "-threads" not in args:
+        args = ["-threads", str(threads)] + list(args)
     proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError("ffmpeg failed: " + proc.stderr.decode(errors="replace")[-2000:])
     return proc
 
 
-def slice_segment(src, start, end, out, vf=None, af=None):
+def slice_segment(src, start, end, out, vf=None, af=None, threads=1):
     cmd = [
-        "ffmpeg", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", src,
+        "ffmpeg", "-y",
+        "-threads", str(threads),
+        "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", src,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
         "-c:a", "aac", "-b:a", "128k",
     ]
@@ -119,10 +150,10 @@ def slice_segment(src, start, end, out, vf=None, af=None):
     if af:
         cmd += ["-af", af]
     cmd.append(out)
-    run_ffmpeg(cmd)
+    run_ffmpeg(cmd, timeout=3600, threads=threads)
 
 
-def concat_segments(parts, out):
+def concat_segments(parts, out, threads=1):
     if len(parts) == 1:
         shutil.move(parts[0], out)
         return
@@ -131,6 +162,7 @@ def concat_segments(parts, out):
     ) + f"concat=n={len(parts)}:v=1:a=1[v][a]"
     cmd = [
         "ffmpeg", "-y",
+        "-threads", str(threads),
     ]
     for part in parts:
         cmd += ["-i", part]
@@ -141,7 +173,7 @@ def concat_segments(parts, out):
         "-c:a", "aac", "-b:a", "128k",
         out,
     ]
-    run_ffmpeg(cmd)
+    run_ffmpeg(cmd, threads=threads)
 
 
 def safe_name(name: str) -> str:
@@ -158,7 +190,16 @@ def main():
     parser.add_argument("output_dir")
     parser.add_argument("--mode", default="fast", choices=["fast", "dedupe", "scrub"])
     parser.add_argument("--intervals", default=None)
+    parser.add_argument(
+        "--cpu-percent",
+        type=int,
+        default=DEFAULT_CPU_PERCENT,
+        help=f"CPU 资源分配比例 (%%，默认 {DEFAULT_CPU_PERCENT})，限制 ffmpeg 编码线程数",
+    )
     args = parser.parse_args()
+
+    threads = cpu_threads_for_percent(args.cpu_percent)
+    print(f"CPU 分配: {args.cpu_percent}%% -> ffmpeg 线程数 {threads} (核数 {os.cpu_count() or '?'})", file=sys.stderr)
 
     if not os.path.isfile(args.source):
         print(f"Source video not found: {args.source}", file=sys.stderr)
@@ -200,9 +241,9 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             for i, (start, end, _) in enumerate(group):
                 part = os.path.join(tmp, f"part_{i}.mp4")
-                slice_segment(args.source, start, end, part, vf=vf, af=af)
+                slice_segment(args.source, start, end, part, vf=vf, af=af, threads=threads)
                 parts.append(part)
-            concat_segments(parts, out_path)
+            concat_segments(parts, out_path, threads=threads)
         duration = ffprobe_duration(out_path)
         outputs.append((name, duration))
         processed += 1

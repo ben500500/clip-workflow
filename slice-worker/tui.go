@@ -262,6 +262,7 @@ func (m TUIModel) renderStatusBar() string {
 		fmt.Sprintf("节点: %s", m.config.NodeID),
 		fmt.Sprintf("标签: %s", strings.Join(m.config.Tags, ",")),
 		fmt.Sprintf("并发: %d/%d", len(m.getActiveTasks()), m.config.MaxConcurrent),
+		fmt.Sprintf("CPU: %d%%", m.config.CPUPercent),
 		fmt.Sprintf("完成: %d", m.totalCompleted),
 		fmt.Sprintf("失败: %d", m.totalFailed),
 		fmt.Sprintf("文件: %d", m.totalFiles),

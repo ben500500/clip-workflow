@@ -10,6 +10,7 @@ Slice Worker 分布式切片节点现在支持在 **Windows** 与 **macOS** 上�
 | 功能 | 说明 |
 |------|------|
 | 查看节点状态 | 显示「在线 / 离线」状态，与后端 /workers 页面一致 |
+| 调整 CPU 分配 | 菜单中可直接 +/- 调整本节点 CPU 资源分配比例（默认 50%），写入 Redis 后下次任务生效 |
 | 启用 / 停用节点 | 直接写入 Redis 控制 key，与后端页面共用同一开关；停用后不再领取新任务（正在执行的不受影响） |
 | 退出 Worker | 注销节点并退出程序 |
 
@@ -50,7 +51,7 @@ slice-worker\windows\deploy_windows.bat
 也可以带参数免交互部署：
 
 ```bat
-deploy_windows.bat --server-ip 192.168.1.163 --redis-password 你的密码 --node-id win-1
+deploy_windows.bat --server-ip 192.168.1.163 --redis-password 你的密码 --node-id win-1 --cpu-percent 50
 ```
 
 ### 3. 卸载
@@ -76,7 +77,7 @@ brew install go ffmpeg
 
 ```bash
 chmod +x slice-worker/macos/build_mac.sh
-./slice-worker/macos/build_mac.sh --run --server-ip 192.168.1.163 --redis-password 你的密码
+./slice-worker/macos/build_mac.sh --run --server-ip 192.168.1.163 --redis-password 你的密码 --cpu-percent 50
 ```
 
 脚本会在本机编译出 `slice-worker/macos/slice-worker-mac`，生成 `worker.json`，并以 `--tray` 模式启动。菜单栏会出现 Slice Worker 图标。
@@ -99,6 +100,7 @@ chmod +x slice-worker/macos/build_mac.sh
   - `tray_other.go`（Linux/服务器，无操作兜底）
 - 进程管理平台化：`exec_unix.go`（进程组 SIGKILL）/ `exec_windows.go`（taskkill /T 杀进程树）。
 - 启停节点与后端 `/workers/{id}/enable|disable` 共用同一个 Redis key `slice:node-enabled:{node_id}`，两端状态实时一致。
+- CPU 分配比例与后端 `/workers/{id}/cpu-percent` 共用 `slice:node-cpu-percent:{node_id}`，托盘调整与 Web 页面调整实时一致；切片引擎按比例限制 ffmpeg 编码线程数（`threads = round(核数 × 比例 / 100)`），避免占满整机 CPU。
 
 ## 四、目录结构
 

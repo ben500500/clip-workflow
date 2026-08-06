@@ -21,6 +21,7 @@ SERVER_IP=""
 REDIS_PASSWORD=""
 REDIS_PORT=6379
 MAX_CONCURRENT=2
+CPU_PERCENT=50
 ACTION="build"
 
 while [[ $# -gt 0 ]]; do
@@ -33,8 +34,9 @@ while [[ $# -gt 0 ]]; do
         --redis-password) REDIS_PASSWORD="$2"; shift 2 ;;
         --redis-port) REDIS_PORT="$2"; shift 2 ;;
         --max-concurrent) MAX_CONCURRENT="$2"; shift 2 ;;
+        --cpu-percent) CPU_PERCENT="$2"; shift 2 ;;
         -h|--help)
-            echo "用法: $0 [--run|--install|--uninstall] [--node-id N] [--server-ip IP] [--redis-password P] [--redis-port PORT] [--max-concurrent N]"
+            echo "用法: $0 [--run|--install|--uninstall] [--node-id N] [--server-ip IP] [--redis-password P] [--redis-port PORT] [--max-concurrent N] [--cpu-percent N]"
             exit 0 ;;
         *) echo "未知参数: $1"; exit 1 ;;
     esac
@@ -110,7 +112,8 @@ cat > "$SCRIPT_DIR/worker.json" <<EOF
   "max_retries": 2,
   "retry_delay": 30,
   "node_ttl": 0,
-  "backend_url": "http://${SERVER_IP}"
+  "backend_url": "http://${SERVER_IP}",
+  "cpu_percent": $CPU_PERCENT
 }
 EOF
 log "配置已生成: $SCRIPT_DIR/worker.json"

@@ -79,6 +79,7 @@ func runDaemon(ctx context.Context, config *Config, worker *Worker) {
 	fmt.Printf("  Redis:     %s\n", config.RedisURL)
 	fmt.Printf("  标签:      %v\n", config.Tags)
 	fmt.Printf("  最大并发:  %d\n", config.MaxConcurrent)
+	fmt.Printf("  CPU分配:  %d%%\n", config.CPUPercent)
 	fmt.Println()
 	fmt.Println("启动中...")
 

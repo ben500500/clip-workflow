@@ -20,6 +20,8 @@ from app.services.redis_stream import (
     get_worker_nodes_from_redis,
     set_node_enabled,
     is_node_enabled,
+    set_node_cpu_percent,
+    get_node_cpu_percent,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +50,8 @@ class WorkerNodeResponse(BaseModel):
     created_at: str = ""
     # 该节点正在运行的任务平均进度（"工作时进度显示"）
     running_progress: float = 0.0
+    # 该节点 CPU 资源分配比例（%，默认 50）
+    cpu_percent: int = 50
 
     model_config = {"from_attributes": True}
 
@@ -85,6 +89,7 @@ def _serialize_node(node: WorkerNode) -> dict:
         "started_at": node.started_at.isoformat() if node.started_at else None,
         "created_at": node.created_at.isoformat() if node.created_at else "",
         "running_progress": getattr(node, "running_progress", 0.0) or 0.0,
+        "cpu_percent": getattr(node, "cpu_percent", 50) or 50,
     }
 
 
@@ -162,6 +167,9 @@ async def list_workers(
                 node.total_tasks_completed = rd.get("total_tasks_completed", node.total_tasks_completed or 0)
                 node.total_tasks_failed = rd.get("total_tasks_failed", node.total_tasks_failed or 0)
                 node.status = rd.get("status", node.status or "offline")
+                # 节点 CPU 分配比例：优先取 Redis 控制 key（运行时动态调整）
+                if "cpu_percent" in rd:
+                    node.cpu_percent = max(1, min(100, int(rd["cpu_percent"] or 50)))
                 # 节点启停状态：优先取 Redis 控制 key（管理员在界面上可启停）
                 if "enabled" in rd:
                     node.enabled = bool(rd["enabled"])
@@ -196,6 +204,7 @@ async def list_workers(
                 tags=rd.get("tags", []),
                 max_concurrent=rd.get("max_concurrent", 2),
                 enabled=bool(rd.get("enabled", True)),
+                cpu_percent=max(1, min(100, int(rd.get("cpu_percent", 50) or 50))),
                 status=rd.get("status", "online"),
                 current_tasks=rd.get("current_tasks", 0),
                 total_tasks_completed=rd.get("total_tasks_completed", 0),
@@ -212,6 +221,7 @@ async def list_workers(
         rd = redis_map.get(n.node_id)
         if rd:
             d["running_progress"] = rd.get("running_progress", 0.0) or 0.0
+            d["cpu_percent"] = rd.get("cpu_percent", d.get("cpu_percent", 50)) or 50
         result.append(d)
     return result
 
@@ -272,6 +282,44 @@ async def disable_worker_node(
     return {"ok": True, "node_id": node_id, "enabled": False, "message": f"节点 {node_id} 已停用（正在执行的任务不受影响）"}
 
 
+class SetNodeCpuPercentRequest(BaseModel):
+    """调整节点 CPU 资源分配比例请求。"""
+    cpu_percent: int = 50
+
+
+@router.post("/workers/{node_id}/cpu-percent")
+async def set_worker_cpu_percent(
+    node_id: str,
+    data: SetNodeCpuPercentRequest,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+    db: AsyncSession = Depends(get_db),
+):
+    """调整节点 CPU 资源分配比例（1~100，默认 50）。
+
+    写入 Redis 控制 key 后，Worker 端在下次领取任务前会读取并应用，
+    无需重启节点即可动态生效；同时同步更新数据库记录。
+    """
+    percent = max(1, min(100, int(data.cpu_percent)))
+
+    # 更新数据库标记（若已存在记录）
+    result = await db.execute(
+        select(WorkerNode).where(WorkerNode.node_id == node_id)
+    )
+    node = result.scalar_one_or_none()
+    if node:
+        node.cpu_percent = percent
+        await db.flush()
+
+    # 写入 Redis 控制 key，Worker 端每次取任务前读取并应用
+    await set_node_cpu_percent(node_id, percent)
+    return {
+        "ok": True,
+        "node_id": node_id,
+        "cpu_percent": percent,
+        "message": f"节点 {node_id} 的 CPU 分配已调整为 {percent}%",
+    }
+
+
 @router.post("/workers/sync-redis")
 async def sync_workers_from_redis(
     current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
@@ -299,6 +347,9 @@ async def sync_workers_from_redis(
                 node.total_tasks_completed = rd.get("total_tasks_completed", node.total_tasks_completed or 0)
                 node.total_tasks_failed = rd.get("total_tasks_failed", node.total_tasks_failed or 0)
                 node.status = rd.get("status", "online")
+                # 节点 CPU 分配比例（管理员在界面上可调整）
+                if "cpu_percent" in rd:
+                    node.cpu_percent = max(1, min(100, int(rd["cpu_percent"] or 50)))
                 # 节点启停状态（管理员在界面上可启停）
                 if "enabled" in rd:
                     node.enabled = bool(rd["enabled"])
@@ -326,6 +377,7 @@ async def sync_workers_from_redis(
                     total_tasks_failed=rd.get("total_tasks_failed", 0),
                     status=rd.get("status", "online"),
                     enabled=bool(rd.get("enabled", True)),
+                    cpu_percent=max(1, min(100, int(rd.get("cpu_percent", 50) or 50))),
                     last_heartbeat=now,
                     started_at=now,
                 )

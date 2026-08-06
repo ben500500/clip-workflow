@@ -493,6 +493,8 @@ class WorkerNode(Base):
     max_concurrent = Column(Integer, default=2)
     # 节点是否启用：管理员可在界面选择是否开启节点（停用后 Worker 不再领取新任务）
     enabled = Column(Boolean, default=True)
+    # 节点 CPU 资源分配比例（%，默认 50）：切片时限制 ffmpeg 线程数
+    cpu_percent = Column(Integer, default=50)
     status = Column(String(50), default="online")
     current_tasks = Column(Integer, default=0)
     total_tasks_completed = Column(Integer, default=0)

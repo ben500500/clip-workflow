@@ -45,4 +45,10 @@ export const sliceApi = {
 
   disableWorker: (nodeId: string) =>
     client.post(`/workers/${nodeId}/disable`) as Promise<{ message: string; enabled: boolean }>,
+
+  setWorkerCpuPercent: (nodeId: string, cpuPercent: number) =>
+    client.post(`/workers/${nodeId}/cpu-percent`, { cpu_percent: cpuPercent }) as Promise<{
+      message: string;
+      cpu_percent: number;
+    }>,
 };

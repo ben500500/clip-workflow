@@ -29,6 +29,8 @@ type Config struct {
 	NodeTTL int `json:"node_ttl"`
 	// 后端 API 地址（用于获取输出上传 URL 等，默认 http://backend:8080）
 	BackendURL string `json:"backend_url"`
+	// CPU 资源分配百分比（默认 50，表示本节点切片最多使用 50% 的 CPU 资源）
+	CPUPercent int `json:"cpu_percent"`
 }
 
 // DefaultConfig 默认配置
@@ -48,6 +50,7 @@ func DefaultConfig() *Config {
 		RetryDelay:        30,
 		NodeTTL:           0,
 		BackendURL:        "http://backend:8080",
+		CPUPercent:        50,
 	}
 }
 
@@ -64,7 +67,23 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// CPU 分配比例范围约束：1 ~ 100，默认 50
+	if cfg.CPUPercent < 1 || cfg.CPUPercent > 100 {
+		cfg.CPUPercent = 50
+	}
+
 	return cfg, nil
+}
+
+// ClampCPUPercent 将 CPU 分配比例约束在 1~100 范围内（供动态调整时使用）
+func ClampCPUPercent(v int) int {
+	if v < 1 {
+		return 1
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
 }
 
 // HeartbeatTTL 返回节点 Hash 的 TTL（默认 3 倍心跳间隔）
