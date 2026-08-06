@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     # 视频处理引擎根目录
     ENGINES_DIR: str = "engines"
 
+    # 切片分发引擎：worker（Redis Stream / Go Worker）或 celery（回退）
+    SLICE_ENGINE: str = "worker"
+    # Worker 回调/上传 URL 的基础地址（远程物理机部署时配置为可访问的地址）
+    WORKER_CALLBACK_BASE_URL: str = "http://backend:8080"
+    # Worker 任务超时（秒）
+    SLICE_TASK_TIMEOUT_SECONDS: int = 7200
+
     # JWT
     JWT_SECRET: str = "your-secret-key-change-in-production"
     JWT_EXPIRE_MINUTES: int = 1440  # 24 小时

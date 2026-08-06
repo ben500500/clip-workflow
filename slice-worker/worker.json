@@ -1,0 +1,15 @@
+{
+  "node_id": "${NODE_ID:-slice-worker-1}",
+  "redis_url": "${REDIS_URL:-redis://localhost:6379/0}",
+  "tags": ["cpu"],
+  "max_concurrent": ${MAX_CONCURRENT:-2},
+  "engines_path": "/app/engines",
+  "temp_dir": "/tmp/slice-worker",
+  "log_level": "${LOG_LEVEL:-info}",
+  "heartbeat_interval": ${HEARTBEAT_INTERVAL:-10},
+  "task_timeout": ${TASK_TIMEOUT:-7200},
+  "max_retries": ${MAX_RETRIES:-2},
+  "retry_delay": ${RETRY_DELAY:-30},
+  "node_ttl": ${NODE_TTL:-0},
+  "backend_url": "${BACKEND_URL:-http://backend:8080}"
+}

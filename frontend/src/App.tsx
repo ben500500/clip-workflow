@@ -24,6 +24,7 @@ import DashboardSettings from './pages/DashboardSettings';
 import Settings from './pages/Settings';
 import Profile from './pages/Profile';
 import UserManagement from './pages/UserManagement';
+import Workers from './pages/Workers';
 import NotFound from './pages/NotFound';
 
 const App: React.FC = () => {
@@ -59,6 +60,7 @@ const App: React.FC = () => {
             <Route path="analytics/settings" element={<DashboardSettings />} />
             <Route path="profile" element={<Profile />} />
             <Route path="user-management" element={<UserManagement />} />
+            <Route path="workers" element={<Workers />} />
             <Route path="settings" element={<Settings />} />
             <Route path="*" element={<NotFound />} />
           </Route>

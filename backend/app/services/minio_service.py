@@ -156,6 +156,30 @@ async def get_presigned_url(
         return None
 
 
+async def get_presigned_upload_url(
+    bucket: str,
+    object_key: str,
+    expires_seconds: int = 7200,
+) -> Optional[str]:
+    """Generate a presigned PUT URL for Worker to upload files."""
+    try:
+        client = get_minio_client()
+        loop = asyncio.get_event_loop()
+        url = await loop.run_in_executor(
+            None,
+            partial(
+                client.presigned_put_object,
+                bucket,
+                object_key,
+                expires=expires_seconds,
+            ),
+        )
+        return url
+    except S3Error as e:
+        logger.error(f"MinIO presigned PUT URL generation failed: {e}")
+        return None
+
+
 async def delete_file(bucket: str, object_key: str) -> bool:
     """Delete a file from MinIO."""
     try:

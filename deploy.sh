@@ -141,6 +141,13 @@ build_images() {
         log_warn "frontend 目录或 Dockerfile 不存在，将跳过 frontend 镜像构建。"
     fi
 
+    # 检查 slice-worker 目录
+    if [ -d "slice-worker" ] && [ -f "slice-worker/Dockerfile" ]; then
+        log_info "Slice Worker 目录存在，将构建 slice-worker 镜像。"
+    else
+        log_warn "slice-worker 目录或 Dockerfile 不存在，将跳过 slice-worker 镜像构建。"
+    fi
+
     # 执行构建
     $COMPOSE_CMD build --parallel
 

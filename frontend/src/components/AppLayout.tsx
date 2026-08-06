@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Layout, Menu, Avatar, Dropdown, theme, Modal, Tag } from 'antd';
 import {
+  ApiOutlined,
   DashboardOutlined,
   ProjectOutlined,
   SettingOutlined,
@@ -34,6 +35,11 @@ const allMenuItems = [
     key: '/publish',
     icon: <SendOutlined />,
     label: '发布管理',
+  },
+  {
+    key: '/workers',
+    icon: <ApiOutlined />,
+    label: 'Worker 节点',
   },
   {
     key: 'analytics-sub',

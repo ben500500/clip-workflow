@@ -1,0 +1,209 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"syscall"
+)
+
+// TaskExecutor 任务执行器
+type TaskExecutor struct {
+	config         *Config
+	onTaskProgress func(taskID string, percent float64, speed string, eta string)
+}
+
+// NewTaskExecutor 创建任务执行器
+func NewTaskExecutor(config *Config) *TaskExecutor {
+	return &TaskExecutor{
+		config: config,
+	}
+}
+
+// SetProgressCallback 设置ffmpeg进度回调
+func (te *TaskExecutor) SetProgressCallback(cb func(taskID string, percent float64, speed string, eta string)) {
+	te.onTaskProgress = cb
+}
+
+// ExecuteTask 执行切片任务
+//
+// 调用 Python 引擎 engines/slice.py（与后端 Celery 路径共用同一套引擎），
+// 签名：slice.py <source> <cutlist> <output_dir> --mode fast|dedupe|scrub [--intervals FILE]
+// 引擎向 stdout 输出 PROGRESS:<pct> 与 OUTPUT:<name>:<duration> 行。
+func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, sourcePath string, outputDir string) ([]string, error) {
+	// 创建输出目录
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return nil, fmt.Errorf("创建输出目录失败: %w", err)
+	}
+
+	// 写入 cutlist 文件
+	cutlistPath := filepath.Join(outputDir, "cutlist.txt")
+	if err := os.WriteFile(cutlistPath, []byte(task.Cutlist), 0644); err != nil {
+		return nil, fmt.Errorf("写入cutlist失败: %w", err)
+	}
+
+	// 写入 intervals 文件（scrub 模式需要）
+	var intervalsPath string
+	if task.Intervals != "" {
+		intervalsPath = filepath.Join(outputDir, "intervals.txt")
+		if err := os.WriteFile(intervalsPath, []byte(task.Intervals), 0644); err != nil {
+			return nil, fmt.Errorf("写入intervals失败: %w", err)
+		}
+	}
+
+	// 构建命令：统一调用 Python 引擎 slice.py
+	enginePath := filepath.Join(te.config.EnginesPath, "slice.py")
+	args := []string{
+		enginePath,
+		sourcePath,
+		cutlistPath,
+		outputDir,
+		"--mode", task.Mode,
+	}
+	if task.Mode == "scrub" {
+		if intervalsPath == "" {
+			return nil, fmt.Errorf("scrub模式需要提供intervals")
+		}
+		args = append(args, "--intervals", intervalsPath)
+	}
+
+	// Alpine 镜像提供 python3 可执行文件
+	cmd := exec.CommandContext(ctx, "python3", args...)
+
+	// 设置进程组，便于超时/取消时强杀整棵进程树（含 ffmpeg 子进程）
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	// 获取 stdout/stderr 管道用于解析进度
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("获取stdout管道失败: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("获取stderr管道失败: %w", err)
+	}
+
+	// 启动命令
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("启动命令失败: %w", err)
+	}
+
+	// 并行读取 stdout / stderr，避免管道阻塞
+	outputs := make(chan string, 64)
+	errCh := make(chan error, 2)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			outputs <- scanner.Text()
+		}
+		if err := scanner.Err(); err != nil {
+			errCh <- err
+		}
+		close(outputs)
+	}()
+	go func() {
+		_, _ = io.Copy(io.Discard, stderr)
+	}()
+
+	// 解析引擎输出
+	manifest := make(map[string]float64) // 文件名 -> 时长
+	for line := range outputs {
+		te.parseEngineLine(task.TaskID, line, manifest)
+	}
+
+	// 等待完成（context 超时/取消时 exec.CommandContext 会自动杀掉主进程，
+	// 这里再兜底强杀整个进程组）
+	if err := cmd.Wait(); err != nil {
+		KillProcessGroup(cmd)
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("任务超时或已取消: %w", ctx.Err())
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("切片引擎执行失败，退出码: %d", exitErr.ExitCode())
+		}
+		return nil, fmt.Errorf("切片引擎执行失败: %w", err)
+	}
+
+	// 收集输出文件（以引擎 manifest 为准，同时兜底扫描目录）
+	outputs2 := te.collectOutputs(outputDir, manifest)
+	if len(outputs2) == 0 {
+		return nil, fmt.Errorf("切片引擎未生成任何输出文件")
+	}
+
+	return outputs2, nil
+}
+
+// parseEngineLine 解析引擎输出行（PROGRESS / OUTPUT）
+func (te *TaskExecutor) parseEngineLine(taskID, line string, manifest map[string]float64) {
+	line = strings.TrimSpace(line)
+	if strings.HasPrefix(line, "PROGRESS:") {
+		pctStr := strings.TrimPrefix(line, "PROGRESS:")
+		if pct, err := strconv.ParseFloat(pctStr, 64); err == nil && te.onTaskProgress != nil {
+			te.onTaskProgress(taskID, pct, "", "")
+		}
+		return
+	}
+	if strings.HasPrefix(line, "OUTPUT:") {
+		parts := strings.Split(strings.TrimPrefix(line, "OUTPUT:"), ":")
+		if len(parts) >= 1 {
+			name := parts[0]
+			var dur float64
+			if len(parts) >= 2 {
+				dur, _ = strconv.ParseFloat(parts[1], 64)
+			}
+			manifest[name] = dur
+		}
+	}
+}
+
+// collectOutputs 收集输出文件
+func (te *TaskExecutor) collectOutputs(outputDir string, manifest map[string]float64) []string {
+	var outputs []string
+
+	// 优先按 manifest 顺序收集
+	if len(manifest) > 0 {
+		for name := range manifest {
+			path := filepath.Join(outputDir, name)
+			if info, err := os.Stat(path); err == nil && !info.IsDir() {
+				outputs = append(outputs, path)
+			}
+		}
+		sort.Strings(outputs)
+		return outputs
+	}
+
+	// 兜底：遍历目录收集 mp4 文件
+	err := filepath.Walk(outputDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".mp4") {
+			outputs = append(outputs, path)
+		}
+		return nil
+	})
+	if err == nil {
+		sort.Strings(outputs)
+	}
+	return outputs
+}
+
+// KillProcessGroup 强制终止进程组
+func KillProcessGroup(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	// 终止整个进程组（Setpgid 已启用）
+	pgid, err := syscall.Getpgid(cmd.Process.Pid)
+	if err == nil {
+		return syscall.Kill(-pgid, syscall.SIGKILL)
+	}
+	return cmd.Process.Kill()
+}
