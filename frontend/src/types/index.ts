@@ -213,6 +213,7 @@ export interface PlatformProfile {
   id: string;
   name: string;
   platform: string | null;
+  description?: string | null;
   dedupe_config: Record<string, unknown> | null;
   target_resolution: string | null;
   target_bitrate: string | null;
@@ -223,6 +224,7 @@ export interface PlatformProfile {
 export interface SystemConfig {
   key: string;
   value: unknown;
+  description?: string | null;
   updated_at: string;
 }
 

@@ -202,8 +202,10 @@ async def _run_pipeline(project_id: str, steps: list[int]) -> None:
                          f"大纲提取完成（{len(outlines)} 个话题），定位时间线")
 
         # Step 2: 时间线定位
+        duration_config = proj.get("config") or {}
         timeline = await asyncio.to_thread(
-            run_step2_timeline, meta_dir / "step1_outline.json", meta_dir, None, PROMPT_FILES)
+            run_step2_timeline, meta_dir / "step1_outline.json", meta_dir, None, PROMPT_FILES,
+            duration_config=duration_config)
         _update_progress(proj, "running", 60,
                          f"时间线定位完成（{len(timeline)} 个片段），开始评分")
 
@@ -317,13 +319,18 @@ async def progress(project_id: str):
 
 
 @app.get("/api/v1/clips")
-async def clips(project_id: str, min_score: float = 0.0, max_clips: int = 30):
+async def clips(project_id: str, min_score: float = 0.0, max_clips: int = 30,
+                 min_duration: float = 0.0, max_duration: float = 0.0):
     proj = projects.get(project_id)
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
     result = list(proj.get("clips") or [])
     if min_score > 0:
         result = [c for c in result if c["score"] >= min_score]
+    if min_duration > 0:
+        result = [c for c in result if c.get("duration", 0) >= min_duration]
+    if max_duration > 0:
+        result = [c for c in result if c.get("duration", 0) <= max_duration]
     return result[:max_clips]
 
 

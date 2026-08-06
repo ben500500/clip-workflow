@@ -163,7 +163,11 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
             import time
             time.sleep(5)
 
-        clips = run_async(get_clips(autoclip_project_id))
+        clips = run_async(get_clips(
+            autoclip_project_id,
+            min_duration=float(config.get("min_duration") or 0),
+            max_duration=float(config.get("max_duration") or 0),
+        ))
         run_async(_save_autoclip_results(episode_id, autoclip_project_id, clips, completed))
 
         self.update_state(
