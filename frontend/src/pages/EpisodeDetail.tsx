@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Space, Typography, Spin, Alert, Breadcrumb, Descriptions, Tag, message, Select, Row, Col, Progress,
-  Steps,
+  Steps, InputNumber, Tooltip,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
@@ -56,6 +56,7 @@ const EpisodeDetail: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [detectMode, setDetectMode] = useState('credits');
   const [sliceMode, setSliceMode] = useState('fast');
+  const [maxClips, setMaxClips] = useState(10);
   const [autoclipProgress, setAutoclipProgress] = useState<{ status: string; progress: number; message: string } | null>(null);
   const [autoclipRunning, setAutoclipRunning] = useState(false);
   const [detectRunning, setDetectRunning] = useState(false);
@@ -206,7 +207,7 @@ const EpisodeDetail: React.FC = () => {
     setAutoclipRunning(true);
     setAutoclipProgress({ status: 'pending', progress: 0, message: '正在启动选点任务…' });
     try {
-      const res = await autoclipApi.run(episodeId, {});
+      const res = await autoclipApi.run(episodeId, { max_clips: maxClips });
       message.success(res.message);
       autoclipTimerRef.current = window.setInterval(async () => {
         try {
@@ -378,9 +379,24 @@ const EpisodeDetail: React.FC = () => {
       title: 'AI 智能选点',
       node: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          <Button type="primary" icon={<ThunderboltOutlined />} loading={autoclipRunning} onClick={runAutoClip} block>
-            启动选点
-          </Button>
+          <Space>
+            <Button type="primary" icon={<ThunderboltOutlined />} loading={autoclipRunning} onClick={runAutoClip}>
+              启动选点
+            </Button>
+            <Tooltip title="设置 AI 选点推荐的最大片段数量，数量越多等待时间越长">
+              <Space size={4}>
+                <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>选点个数:</Text>
+                <InputNumber
+                  size="small"
+                  min={3}
+                  max={50}
+                  value={maxClips}
+                  onChange={(v) => setMaxClips(v ?? 10)}
+                  style={{ width: 70 }}
+                />
+              </Space>
+            </Tooltip>
+          </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>
             自动分析视频内容，推荐精彩片段作为切片候选
           </Text>
@@ -495,7 +511,8 @@ const EpisodeDetail: React.FC = () => {
         <Card size="small" style={{ marginBottom: 16 }} title="选点进度">
           <Progress
             percent={autoclipProgress.progress}
-            status={autoclipProgress.status === 'failed' ? 'exception' : 'active'}
+            status={autoclipProgress.status === 'failed' ? 'exception' : autoclipProgress.status === 'completed' ? 'success' : 'active'}
+            strokeColor={autoclipProgress.status === 'completed' ? '#52c41a' : undefined}
           />
           <Text type="secondary">{autoclipProgress.message}</Text>
         </Card>
@@ -506,7 +523,8 @@ const EpisodeDetail: React.FC = () => {
         <Card size="small" style={{ marginBottom: 16 }} title="区间检测进度">
           <Progress
             percent={detectProgress.progress}
-            status={detectProgress.status === 'failed' ? 'exception' : 'active'}
+            status={detectProgress.status === 'failed' ? 'exception' : detectProgress.status === 'completed' ? 'success' : 'active'}
+            strokeColor={detectProgress.status === 'completed' ? '#52c41a' : undefined}
           />
           <Text type="secondary">{detectProgress.message}</Text>
         </Card>

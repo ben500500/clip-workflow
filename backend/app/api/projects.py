@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.models import Project, Episode
+from app.services.minio_service import get_presigned_url
 
 router = APIRouter()
 
@@ -334,6 +335,27 @@ async def get_episode(episode_id: str, db: AsyncSession = Depends(get_db)):
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
     return _serialize_episode(episode)
+
+
+@router.get("/episodes/{episode_id}/video-url")
+async def get_episode_video_url(episode_id: str, db: AsyncSession = Depends(get_db)):
+    """Get a presigned URL for the episode's source video for preview."""
+    try:
+        eid = uuid.UUID(episode_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    result = await db.execute(select(Episode).where(Episode.id == eid))
+    episode = result.scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    if not episode.source_file_key:
+        raise HTTPException(status_code=404, detail="Episode has no source video file")
+
+    url = await get_presigned_url("videos", episode.source_file_key, expires_seconds=3600)
+    if not url:
+        raise HTTPException(status_code=500, detail="Failed to generate presigned URL")
+    return {"url": url, "duration": episode.duration, "title": episode.title}
 
 
 @router.delete("/episodes/{episode_id}", status_code=204)
