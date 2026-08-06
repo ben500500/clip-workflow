@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip, Alert,
 } from 'antd';
-import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, DesktopOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { sliceApi } from '../api/slice';
 import type { SliceOutput, SliceTask } from '../types';
@@ -78,6 +78,20 @@ const SliceTasks: React.FC = () => {
     }
   };
 
+  const deleteTask = async (taskId: string) => {
+    try {
+      const res = await sliceApi.delete(taskId);
+      message.success(res.message);
+      if (currentTask === taskId) {
+        setCurrentTask(null);
+        setOutputs([]);
+      }
+      fetchTasks();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '删除任务失败');
+    }
+  };
+
   // ─── 总体进度计算 ──────────────────────────────────
   const runningTasks = tasks.filter((t) => t.status === 'running' || t.status === 'pending');
   const completedTasks = tasks.filter((t) => t.status === 'completed');
@@ -137,13 +151,25 @@ const SliceTasks: React.FC = () => {
         </Space>
       ),
     },
-    { title: '输出数', dataIndex: 'output_count', key: 'output_count', width: 90 },
-    { title: '错误信息', dataIndex: 'error_message', key: 'error_message', ellipsis: true, render: (e: string) => e || '-' },
-    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170, render: (d: string) => formatDateTime(d) },
+    { title: '输出数', dataIndex: 'output_count', key: 'output_count', width: 80 },
+    {
+      title: '执行节点',
+      dataIndex: 'node_id',
+      key: 'node_id',
+      width: 150,
+      render: (n: string) => n ? (
+        <Space size={4}>
+          <DesktopOutlined style={{ fontSize: 12, color: '#1677ff' }} />
+          <Text style={{ fontSize: 12 }}>{n}</Text>
+        </Space>
+      ) : <Text type="secondary" style={{ fontSize: 12 }}>Celery/未知</Text>,
+    },
+    { title: '错误信息', dataIndex: 'error_message', key: 'error_message', ellipsis: true, render: (e: string) => e ? <Tooltip title={e}><Text type="danger" style={{ fontSize: 12 }} ellipsis>{e}</Text></Tooltip> : '-' },
+    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 160, render: (d: string) => <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text> },
     {
       title: '操作',
       key: 'action',
-      width: 240,
+      width: 260,
       render: (_: unknown, t: SliceTask) => (
         <Space size="small">
           <Button size="small" onClick={() => showOutputs(t.id)}>查看输出</Button>
@@ -172,6 +198,16 @@ const SliceTasks: React.FC = () => {
               <Button size="small" icon={<ReloadOutlined />}>重试</Button>
             </Popconfirm>
           )}
+          <Popconfirm
+            title="确定删除该任务？"
+            description="将同时删除该任务的输出文件（MinIO 临时资源）"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={() => deleteTask(t.id)}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
         </Space>
       ),
     },
@@ -188,11 +224,7 @@ const SliceTasks: React.FC = () => {
       render: (_: unknown, o: SliceOutput) => (
         <Space size="small">
           <Button size="small" onClick={() => {
-            if (!o.presigned_url) {
-              message.warning('暂无预览地址');
-              return;
-            }
-            window.open(o.presigned_url, '_blank');
+            window.open(`/api/outputs/${o.id}/preview/video`, '_blank');
           }}>预览</Button>
           <Button size="small" onClick={() => window.open(`/api/outputs/${o.id}/download`, '_blank')}>下载</Button>
         </Space>

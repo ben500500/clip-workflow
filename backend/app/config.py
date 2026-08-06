@@ -17,6 +17,10 @@ class Settings(BaseSettings):
 
     # MinIO
     MINIO_ENDPOINT: str = "localhost:9000"
+    # 浏览器可直接访问的 MinIO 地址（如 localhost:9000 或通过 nginx /minio/ 代理的地址）。
+    # 容器内 MINIO_ENDPOINT=minio:9000 生成的 presigned URL 浏览器无法解析，
+    # 设置本字段后生成的 presigned URL 会用该地址替换 host，修复"视频不播放 / 下载拒绝连接"。
+    MINIO_EXTERNAL_ENDPOINT: str = ""
     MINIO_ACCESS_KEY: str = "minio_admin"
     # 必填：必须通过 .env / 环境变量注入
     MINIO_SECRET_KEY: str

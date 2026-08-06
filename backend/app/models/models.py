@@ -166,6 +166,8 @@ class SliceTask(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     episode_id = Column(UUID(as_uuid=True), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False)
     celery_task_id = Column(String(100), nullable=True)
+    # 实际执行该任务的 Worker 节点 ID（Worker 回调时写入，用于切片任务列表展示"由哪个节点完成"）
+    node_id = Column(String(100), nullable=True)
     mode = Column(String(50), nullable=True)
     cutlist = Column(Text, nullable=True)
     intervals = Column(Text, nullable=True)
@@ -486,6 +488,8 @@ class WorkerNode(Base):
     ffmpeg_version = Column(String(100), nullable=True)
     tags = Column(JSON, default=list)
     max_concurrent = Column(Integer, default=2)
+    # 节点是否启用：管理员可在界面选择是否开启节点（停用后 Worker 不再领取新任务）
+    enabled = Column(Boolean, default=True)
     status = Column(String(50), default="online")
     current_tasks = Column(Integer, default=0)
     total_tasks_completed = Column(Integer, default=0)

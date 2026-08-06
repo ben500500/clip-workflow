@@ -141,6 +141,14 @@ func (w *Worker) Run(ctx context.Context) error {
 			w.log("info", "收到退出信号")
 			return nil
 		default:
+			// 检查节点是否被管理员停用（停用后暂停领取新任务，正在执行的不受影响）
+			enabled, err := w.redis.IsNodeEnabled(w.config.NodeID)
+			if err == nil && !enabled {
+				w.log("warn", "节点已被管理员停用，暂停领取新任务")
+				time.Sleep(3 * time.Second)
+				continue
+			}
+
 			// 检查并发上限
 			if int(atomic.LoadInt32(&w.currentTasks)) >= w.config.MaxConcurrent {
 				time.Sleep(500 * time.Millisecond)

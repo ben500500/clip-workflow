@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
 	"runtime"
@@ -99,16 +100,51 @@ func GetFFmpegVersion() string {
 }
 
 // GetIP 获取本机IP
+//
+// 使用标准库 net 包遍历本机所有非回环 IPv4 地址，优先返回内网/可达地址。
+// 相比调用 hostname -I，不依赖外部命令（Docker 精简镜像或某些环境可能没有该命令），
+// 并且能正确处理多网卡、容器网络等场景，避免返回空值导致 IP 列无法显示。
 func GetIP() string {
-	cmd := exec.Command("hostname", "-I")
-	out, err := cmd.Output()
+	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		// macOS fallback
-		cmd = exec.Command("ipconfig", "getifaddr", "en0")
-		out, err = cmd.Output()
-		if err != nil {
-			return "unknown"
+		return "unknown"
+	}
+
+	// 第一遍优先返回私网 IPv4（最常见的容器/内网节点场景）
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip4 := ipNet.IP.To4()
+		if ip4 == nil {
+			continue
+		}
+		if ip4.IsLoopback() {
+			continue
+		}
+		if isPrivateIPv4(ip4) {
+			return ip4.String()
 		}
 	}
-	return strings.TrimSpace(strings.Split(string(out), " ")[0])
+
+	// 第二遍兜底返回任意非回环 IPv4
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip4 := ipNet.IP.To4()
+		if ip4 == nil || ip4.IsLoopback() {
+			continue
+		}
+		return ip4.String()
+	}
+
+	return "unknown"
+}
+
+// isPrivateIPv4 判断是否为私网 IPv4 地址（10/8、172.16/12、192.168/16、169.254/16）
+func isPrivateIPv4(ip net.IP) bool {
+	return ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }

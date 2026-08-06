@@ -106,6 +106,8 @@ export interface SliceTask {
   progress: number;
   output_count: number;
   error_message: string | null;
+  // 实际执行该任务的 Worker 节点 ID
+  node_id: string | null;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -121,6 +123,8 @@ export interface WorkerNode {
   ffmpeg_version: string | null;
   tags: string[];
   max_concurrent: number;
+  // 节点是否启用（管理员可启停）
+  enabled: boolean;
   status: string;
   current_tasks: number;
   total_tasks_completed: number;
@@ -128,6 +132,8 @@ export interface WorkerNode {
   last_heartbeat: string | null;
   started_at: string | null;
   created_at: string;
+  // 该节点正在运行的任务平均进度（工作时进度显示）
+  running_progress?: number;
 }
 
 export interface SliceOutput {

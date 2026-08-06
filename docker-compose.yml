@@ -166,6 +166,8 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+      # 浏览器可访问的 MinIO 地址（presigned URL 用该地址替换容器内 host，修复预览/下载拒绝连接）
+      MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-localhost:9000}
       CHROME_DEBUG_PORT: 9222
       CHROME_DEBUG_HOST: rpa_worker
       RPA_REQUIRE_MANUAL_CONFIRM: "true"
@@ -204,6 +206,8 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+      # 浏览器可访问的 MinIO 地址（presigned URL 用该地址替换容器内 host，修复预览/下载拒绝连接）
+      MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-localhost:9000}
       CHROME_DEBUG_PORT: 9222
       CHROME_DEBUG_HOST: rpa_worker
     volumes:

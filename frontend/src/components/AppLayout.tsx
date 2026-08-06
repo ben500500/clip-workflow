@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Layout, Menu, Avatar, Dropdown, theme, Modal, Tag } from 'antd';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { Layout, Menu, Avatar, Dropdown, theme, Modal, Tag, Badge, Spin, Switch, List, message, Button, Typography, Space } from 'antd';
 import {
   ApiOutlined,
   DashboardOutlined,
@@ -13,12 +13,18 @@ import {
   LogoutOutlined,
   UserSwitchOutlined,
   VideoCameraOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  PoweroffOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { sliceApi } from '../api/slice';
 import type { MenuProps } from 'antd';
+import type { WorkerNode } from '../types';
 
 const { Header, Sider, Content } = Layout;
+const { Text } = Typography;
 
 const allMenuItems = [
   {
@@ -78,6 +84,146 @@ const ROLE_LABELS: Record<string, string> = {
   operator: '运营人员',
   publisher: '发布人员',
   material: '素材人员',
+};
+
+// ─── Header 中的 Worker 节点状态图标组件 ───────────────────
+const WorkerStatusIcon: React.FC = () => {
+  const [workers, setWorkers] = useState<WorkerNode[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [toggling, setToggling] = useState<string | null>(null);
+
+  const fetchWorkers = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await sliceApi.listWorkers();
+      setWorkers(data);
+    } catch {
+      // 静默失败
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const toggleWorker = async (node: WorkerNode, enabled: boolean) => {
+    setToggling(node.node_id);
+    try {
+      if (enabled) {
+        const res = await sliceApi.enableWorker(node.node_id);
+        message.success(res.message);
+      } else {
+        const res = await sliceApi.disableWorker(node.node_id);
+        message.success(res.message);
+      }
+      fetchWorkers();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '操作失败');
+    } finally {
+      setToggling(null);
+    }
+  };
+
+  // 打开下拉时刷新节点状态
+  const onOpenChange = (open: boolean) => {
+    if (open) fetchWorkers();
+  };
+
+  const onlineCount = workers.filter((w) => w.status === 'online' && w.enabled !== false).length;
+  const totalCount = workers.length;
+
+  const icon =
+    totalCount === 0 ? (
+      <ApiOutlined style={{ fontSize: 18, color: '#999' }} />
+    ) : onlineCount > 0 ? (
+      <Badge count={onlineCount} size="small" offset={[-2, 2]}>
+        <ApiOutlined style={{ fontSize: 18, color: '#52c41a' }} />
+      </Badge>
+    ) : (
+      <Badge count={totalCount} size="small" offset={[-2, 2]}>
+        <ApiOutlined style={{ fontSize: 18, color: '#ff4d4f' }} />
+      </Badge>
+    );
+
+  const content = loading ? (
+    <div style={{ width: 300, padding: 16, textAlign: 'center' }}>
+      <Spin size="small" />
+    </div>
+  ) : (
+    <div style={{ width: 320, maxHeight: 420, overflow: 'auto', padding: 8 }}>
+      {workers.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '16px 0', color: '#999' }}>
+          暂无 Worker 节点
+        </div>
+      ) : (
+        <List
+          size="small"
+          dataSource={workers}
+          renderItem={(node) => {
+            const online = node.status === 'online';
+            const enabled = node.enabled !== false;
+            return (
+              <List.Item
+                style={{ padding: '8px 4px' }}
+                actions={[
+                  <Switch
+                    key="sw"
+                    size="small"
+                    checked={enabled}
+                    loading={toggling === node.node_id}
+                    onChange={(v) => toggleWorker(node, v)}
+                    checkedChildren="开"
+                    unCheckedChildren="关"
+                  />,
+                ]}
+              >
+                <List.Item.Meta
+                  title={
+                    <Space size={6}>
+                      <Text style={{ fontSize: 13 }}>{node.node_id}</Text>
+                      {!enabled ? (
+                        <Tag icon={<PoweroffOutlined />} style={{ marginInlineEnd: 0 }}>已停用</Tag>
+                      ) : online ? (
+                        <Tag color="success" icon={<CheckCircleOutlined />} style={{ marginInlineEnd: 0 }}>在线</Tag>
+                      ) : (
+                        <Tag color="error" icon={<CloseCircleOutlined />} style={{ marginInlineEnd: 0 }}>离线</Tag>
+                      )}
+                    </Space>
+                  }
+                  description={
+                    <Space size={4} style={{ fontSize: 12 }}>
+                      {node.ip && node.ip !== 'unknown' ? <Text type="secondary" style={{ fontSize: 12 }}>{node.ip}</Text> : null}
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {node.current_tasks || 0}/{node.max_concurrent || 2} 任务
+                      </Text>
+                      <Text type="success" style={{ fontSize: 12 }}>完成 {node.total_tasks_completed || 0}</Text>
+                      <Text type="danger" style={{ fontSize: 12 }}>失败 {node.total_tasks_failed || 0}</Text>
+                    </Space>
+                  }
+                />
+              </List.Item>
+            );
+          }}
+        />
+      )}
+      <div style={{ textAlign: 'center', paddingTop: 4 }}>
+        <Button type="link" size="small" onClick={() => window.location.assign('/workers')}>
+          前往节点管理 →
+        </Button>
+      </div>
+    </div>
+  );
+
+  return (
+    <Dropdown
+      dropdownRender={() => content}
+      trigger={['click']}
+      placement="bottomRight"
+      onOpenChange={onOpenChange}
+    >
+      <div style={{ cursor: 'pointer', padding: '0 8px', display: 'flex', alignItems: 'center' }} title="Worker 节点状态">
+        {icon}
+      </div>
+    </Dropdown>
+  );
 };
 
 const AppLayout: React.FC = () => {
@@ -249,15 +395,19 @@ const AppLayout: React.FC = () => {
           >
             {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
           </div>
-          <Dropdown menu={{ items: userMenuItems, onClick: handleUserMenuClick }}>
-            <div style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Avatar size="small" icon={<UserOutlined />} />
-              <span style={{ color: token.colorTextSecondary }}>
-                {displayName}
-                {displayRole ? ` (${displayRole})` : ''}
-              </span>
-            </div>
-          </Dropdown>
+          <Space>
+            {/* Worker 节点状态图标（系统菜单栏） */}
+            <WorkerStatusIcon />
+            <Dropdown menu={{ items: userMenuItems, onClick: handleUserMenuClick }}>
+              <div style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Avatar size="small" icon={<UserOutlined />} />
+                <span style={{ color: token.colorTextSecondary }}>
+                  {displayName}
+                  {displayRole ? ` (${displayRole})` : ''}
+                </span>
+              </div>
+            </Dropdown>
+          </Space>
         </Header>
         <Content
           style={{

@@ -28,6 +28,9 @@ TASK_TOKEN_PREFIX = "slice:task:token:"
 # 节点信息 Hash key 前缀（与 Go Worker 契约一致）
 NODE_KEY_PREFIX = "slice:nodes:"
 
+# 节点启停控制 key：值为 0/1（1 表示允许领取任务），Worker 端每次取任务前读取
+NODE_ENABLED_PREFIX = "slice:node-enabled:"
+
 
 def _get_stream(priority: str = "normal") -> str:
     """根据优先级返回对应的 Stream 名称。"""
@@ -163,12 +166,50 @@ async def get_task_redis_status(task_id: str) -> Optional[dict]:
             await redis.close()
 
 
+async def set_node_enabled(node_id: str, enabled: bool) -> None:
+    """设置节点是否启用（管理员在界面上启停节点）。
+
+    值为 0/1 的 Redis String，TTL 设为较长（7 天），Worker 端每次取任务前
+    读取该 key 判断是否允许领取新任务；节点保持心跳时也可随时查询。
+    """
+    redis = None
+    try:
+        redis = await get_redis()
+        await redis.set(
+            f"{NODE_ENABLED_PREFIX}{node_id}",
+            "1" if enabled else "0",
+            ex=7 * 24 * 3600,
+        )
+    except Exception as e:
+        logger.error(f"Failed to set node enabled state for {node_id}: {e}")
+    finally:
+        if redis:
+            await redis.close()
+
+
+async def is_node_enabled(node_id: str) -> bool:
+    """查询节点是否启用（默认启用）。"""
+    redis = None
+    try:
+        redis = await get_redis()
+        val = await redis.get(f"{NODE_ENABLED_PREFIX}{node_id}")
+        if val is None:
+            return True
+        return str(val) not in ("0", "false", "False")
+    except Exception:
+        return True
+    finally:
+        if redis:
+            await redis.close()
+
+
 async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[dict]:
     """从 Redis 获取所有 Worker 节点信息（含在线与离线判定）。
 
     数据契约与 Go Worker 一致：
     - 节点信息写入 Hash `slice:nodes:{node_id}`（含 tags JSON 数组、total_tasks_completed/failed）
     - 节点 Hash 带 TTL（默认 3 倍心跳间隔），TTL 过期后即视为离线
+    - 节点正在执行的任务进度从 `slice:task:{task_id}` 的 node_id/progress 字段汇总
 
     Args:
         offline_after_seconds: 超过该秒数无心跳视为离线
@@ -178,6 +219,32 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
         redis = await get_redis()
         online_nodes = await redis.smembers("slice:nodes:online")
         now = datetime.utcnow()
+
+        # 汇总每个节点正在运行的任务进度（供 Worker 节点界面展示"工作时进度"）
+        node_running: dict[str, list[dict]] = {}
+        try:
+            async for key in redis.scan_iter(match=f"{TASK_STATUS_PREFIX}*", count=200):
+                task_data = await redis.hgetall(key)
+                if not task_data:
+                    continue
+                status = task_data.get("status", "")
+                if status not in ("running", "pending"):
+                    continue
+                nid = task_data.get("node_id", "")
+                if not nid:
+                    continue
+                try:
+                    progress = float(task_data.get("progress", 0) or 0)
+                except (TypeError, ValueError):
+                    progress = 0.0
+                node_running.setdefault(nid, []).append({
+                    "task_id": key.rsplit(":", 1)[-1],
+                    "status": status,
+                    "progress": progress,
+                })
+        except Exception as e:
+            logger.warning(f"Failed to scan running tasks from Redis: {e}")
+
         nodes = []
         for node_id in online_nodes:
             node_data = await redis.hgetall(f"{NODE_KEY_PREFIX}{node_id}")
@@ -199,6 +266,23 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
             except (ValueError, TypeError):
                 tags = []
 
+            # 节点是否启用：管理员在界面上可启停，停用后 Worker 不再领取新任务
+            enabled = True
+            try:
+                enabled_val = await redis.get(f"{NODE_ENABLED_PREFIX}{node_id}")
+                if enabled_val is not None:
+                    enabled = str(enabled_val) not in ("0", "false", "False")
+            except Exception:
+                pass
+
+            # 该节点正在运行的任务与平均进度
+            running = node_running.get(node_id, [])
+            running_progress = 0.0
+            if running:
+                running_progress = round(
+                    sum(t["progress"] for t in running) / len(running), 1
+                )
+
             nodes.append({
                 "node_id": node_id,
                 "hostname": node_data.get("hostname", ""),
@@ -214,6 +298,10 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
                 "status": status,
                 "last_heartbeat": node_data.get("last_heartbeat", ""),
                 "started_at": node_data.get("started_at", ""),
+                "enabled": enabled,
+                # 该节点正在运行的任务列表与平均进度（"工作时进度显示"）
+                "running_tasks": running,
+                "running_progress": running_progress,
             })
         return nodes
     except Exception as e:

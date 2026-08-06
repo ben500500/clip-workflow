@@ -16,6 +16,18 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _client: Optional[Minio] = None
+_external_client: Optional[Minio] = None
+
+
+def _parse_endpoint(endpoint: str) -> tuple[str, bool]:
+    """解析 endpoint 为 (host:port, secure)。"""
+    secure = settings.MINIO_USE_SSL
+    ep = endpoint.strip()
+    if ep.startswith("http://") or ep.startswith("https://"):
+        parsed = urlparse(ep)
+        secure = parsed.scheme == "https"
+        ep = parsed.netloc
+    return ep, secure
 
 
 def get_minio_client() -> Minio:
@@ -24,15 +36,7 @@ def get_minio_client() -> Minio:
     if _client is not None:
         return _client
 
-    endpoint = settings.MINIO_ENDPOINT
-    secure = settings.MINIO_USE_SSL
-
-    # If endpoint has a scheme, parse it
-    if endpoint.startswith("http://") or endpoint.startswith("https://"):
-        parsed = urlparse(endpoint)
-        secure = parsed.scheme == "https"
-        endpoint = parsed.netloc
-
+    endpoint, secure = _parse_endpoint(settings.MINIO_ENDPOINT)
     _client = Minio(
         endpoint,
         access_key=settings.MINIO_ACCESS_KEY,
@@ -40,6 +44,60 @@ def get_minio_client() -> Minio:
         secure=secure,
     )
     return _client
+
+
+def get_external_minio_client() -> Optional[Minio]:
+    """返回使用浏览器可访问外部 endpoint 的 MinIO client。
+
+    容器内 MINIO_ENDPOINT=minio:9000 生成的 presigned URL 主机名为 minio，
+    浏览器无法解析，导致视频不播放、下载提示"minio 拒绝连接"。
+    设置 MINIO_EXTERNAL_ENDPOINT（如 localhost:9000）后，用外部地址重新生成
+    签名 URL，保证签名 host 与浏览器访问地址一致（直接替换 host 会使
+    SigV4 签名失效）。
+    """
+    global _external_client
+    external = (settings.MINIO_EXTERNAL_ENDPOINT or "").strip()
+    if not external:
+        return None
+    if _external_client is not None:
+        return _external_client
+
+    endpoint, secure = _parse_endpoint(external)
+    _external_client = Minio(
+        endpoint,
+        access_key=settings.MINIO_ACCESS_KEY,
+        secret_key=settings.MINIO_SECRET_KEY,
+        secure=secure,
+    )
+    return _external_client
+
+
+def _generate_presigned_url(
+    client: Minio,
+    bucket: str,
+    object_key: str,
+    expires_seconds: int,
+    method: str = "GET",
+) -> Optional[str]:
+    """用指定 client 生成 presigned URL（同步执行）。"""
+    try:
+        if method == "PUT":
+            return client.presigned_put_object(
+                bucket,
+                object_key,
+                expires=timedelta(seconds=expires_seconds),
+            )
+        return client.presigned_get_object(
+            bucket,
+            object_key,
+            expires=timedelta(seconds=expires_seconds),
+        )
+    except S3Error as e:
+        logger.error(f"MinIO presigned URL generation failed: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"MinIO presigned URL generation failed: {e}")
+        return None
 
 
 async def upload_file(
@@ -139,23 +197,17 @@ async def get_presigned_url(
     object_key: str,
     expires_seconds: int = 3600,
 ) -> Optional[str]:
-    """Generate a presigned GET URL for temporary access."""
-    try:
-        client = get_minio_client()
-        loop = asyncio.get_event_loop()
-        url = await loop.run_in_executor(
-            None,
-            partial(
-                client.presigned_get_object,
-                bucket,
-                object_key,
-                expires=timedelta(seconds=expires_seconds),
-            ),
-        )
-        return url
-    except S3Error as e:
-        logger.error(f"MinIO presigned URL generation failed: {e}")
-        return None
+    """Generate a presigned GET URL for temporary access.
+
+    若配置了 MINIO_EXTERNAL_ENDPOINT，则用外部地址重新生成签名 URL，
+    保证浏览器可访问且签名有效（直接替换 host 会使 SigV4 签名失效）。
+    """
+    client = get_external_minio_client() or get_minio_client()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        partial(_generate_presigned_url, client, bucket, object_key, expires_seconds, "GET"),
+    )
 
 
 async def get_presigned_upload_url(
@@ -163,23 +215,16 @@ async def get_presigned_upload_url(
     object_key: str,
     expires_seconds: int = 7200,
 ) -> Optional[str]:
-    """Generate a presigned PUT URL for Worker to upload files."""
-    try:
-        client = get_minio_client()
-        loop = asyncio.get_event_loop()
-        url = await loop.run_in_executor(
-            None,
-            partial(
-                client.presigned_put_object,
-                bucket,
-                object_key,
-                expires=timedelta(seconds=expires_seconds),
-            ),
-        )
-        return url
-    except S3Error as e:
-        logger.error(f"MinIO presigned PUT URL generation failed: {e}")
-        return None
+    """Generate a presigned PUT URL for Worker to upload files.
+
+    注意：上传 URL 供 Worker（容器内）使用，始终用内部 endpoint 生成。
+    """
+    client = get_minio_client()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        partial(_generate_presigned_url, client, bucket, object_key, expires_seconds, "PUT"),
+    )
 
 
 async def delete_file(bucket: str, object_key: str) -> bool:
