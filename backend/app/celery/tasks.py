@@ -165,6 +165,7 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
 
         clips = run_async(get_clips(
             autoclip_project_id,
+            min_score=float(config.get("min_score_threshold") or 60),
             min_duration=float(config.get("min_duration") or 0),
             max_duration=float(config.get("max_duration") or 0),
         ))

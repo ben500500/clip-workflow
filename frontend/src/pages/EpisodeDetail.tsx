@@ -64,6 +64,7 @@ const EpisodeDetail: React.FC = () => {
   const [watermarkOpacity, setWatermarkOpacity] = useState(0.5);
   const [watermarkPosition, setWatermarkPosition] = useState('bottom');
   const [maxClips, setMaxClips] = useState(10);
+  const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
   const [maxClipDuration, setMaxClipDuration] = useState<number | null>(null);
   const [autoclipProgress, setAutoclipProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
@@ -288,6 +289,7 @@ const EpisodeDetail: React.FC = () => {
     try {
       const res = await autoclipApi.run(episodeId, {
         max_clips: maxClips,
+        min_score_threshold: minScoreThreshold ?? undefined,
         min_duration: minClipDuration ?? undefined,
         max_duration: maxClipDuration ?? undefined,
       });
@@ -553,7 +555,7 @@ const EpisodeDetail: React.FC = () => {
       title: 'AI 智能选点',
       node: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          <Space>
+          <Space wrap>
             <Button type="primary" icon={<ThunderboltOutlined />} loading={autoclipRunning} onClick={runAutoClip}>
               启动选点
             </Button>
@@ -568,6 +570,20 @@ const EpisodeDetail: React.FC = () => {
                   onChange={(v) => setMaxClips(v ?? 10)}
                   style={{ width: 70 }}
                 />
+              </Space>
+            </Tooltip>
+            <Tooltip title="设置候选片段入选的最低评分（0-100），留空则使用系统默认（60）">
+              <Space size={4}>
+                <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>入选评分:</Text>
+                <InputNumber
+                  size="small"
+                  min={0}
+                  max={100}
+                  value={minScoreThreshold}
+                  onChange={(v) => setMinScoreThreshold(v ?? null)}
+                  style={{ width: 70 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>分</Text>
               </Space>
             </Tooltip>
           </Space>

@@ -1,10 +1,8 @@
 # 短剧切片工作流系统 — 项目文档
 
-> 版本：v2.1 | 更新日期：2026-08-06
+> 版本：v3.0 | 更新日期：2026-08-06
 >
-> 覆盖：切片工作流（含分布式切片） + 视频号自动发布 + IAA 数据看板 + Worker 节点管理
->
-> 本文档已同步截至当前 HEAD（`e98e39a`）的全部功能与结构变更。
+> 覆盖：切片工作流 + 视频号自动发布 + IAA 数据看板 + 分布式切片 + 智能数据导入
 
 ---
 
@@ -12,18 +10,20 @@
 
 短剧切片工作流系统（Clip Workflow）是一套面向短剧分发团队的端到端自动化平台。系统将传统的 Shell 脚本流水线封装为 Web 工作流，覆盖从正片上传到发布变现的全链路：
 
-1. **AI 智能选点** — 基于 AutoClip（通义千问 ASR / 本地 faster-whisper + LLM）自动识别高光片段
-2. **通用区间检测** — 检测任意需移除的内容段（片尾黑场 / 静止画面 / 水印等，不限于片尾）
+1. **AI 智能选点** — 基于 AutoClip（通义千问 ASR + LLM）自动识别高光片段
+2. **通用区间挖洞** — 检测任意需移除的内容段（不限于片尾）
 3. **多平台去重切片** — 按视频号/抖音/快手分别应用去重 Profile
-4. **分布式切片** — Go Slice Worker 节点从 Redis Stream 领取任务，支持远程节点/多节点并发/CPU 资源分配
-5. **视频号自动发布** — Playwright RPA 浏览器自动化，含小程序挂载引导
-6. **IAA 数据看板** — 打通「视频号内容 → 小程序短剧 → 广告收益」全链路漏斗
+4. **视频号自动发布** — Playwright RPA 浏览器自动化，含小程序挂载引导
+5. **IAA 数据看板** — 打通「视频号内容 → 小程序短剧 → 广告收益」全链路漏斗
+6. **分布式切片执行** — Go Worker + Redis Stream 任务分发，支持多节点水平扩展
+7. **智能数据导入** — 自动识别多平台数据格式，支持指纹匹配、手动映射、标准模板三种模式
 
 ### 核心原则
 
 - **最小侵入**：现有 Shell 脚本原样保留，后端仅做调度层
 - **配置外置**：所有参数暴露到前端界面，无需改代码
 - **数据驱动**：收益归因到单条视频，全链路漏斗可诊断
+- **弹性扩展**：切片任务分布式执行，Worker 节点按需增减
 
 ---
 
@@ -34,34 +34,27 @@
 │                         React Frontend                               │
 │  (Vite + React 18 + Ant Design 5 + ECharts + Zustand)               │
 │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐│
-│  │项目管理 │ │选点工作台│ │区间检测 │ │切片任务 │ │成品预览 │ │发布管理 ││
+│  │素材管理 │ │选点工作台│ │区间检测 │ │任务监控 │ │成品库   │ │发布管理 ││
 │  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────┘│
-│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐          │
-│  │Worker  │ │数据看板 │ │数据录入 │ │用户管理 │ │系统设置 │          │
-│  │ 节点   │ └────────┘ └────────┘ └────────┘ └────────┘          │
-│  └────────┘                                                       │
+│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐                       │
+│  │数据看板 │ │数据录入 │ │切片监控 │ │系统设置 │                       │
+│  └────────┘ └────────┘ └────────┘ └────────┘                       │
 └──────────────────────────┬───────────────────────────────────────────┘
                            │ REST API + WebSocket
 ┌──────────────────────────▼───────────────────────────────────────────┐
 │                         FastAPI Backend                               │
-│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ │
-│  │上传服务 │ │项目管理 │ │区间检测 │ │切片调度 │ │发布调度 │ │数据看板 │ │
-│  │ (tus)  │ │ CRUD   │ │进度落库 │ │双引擎   │ │ (RPA)  │ │聚合计算 │ │
-│  └───┬────┘ └────────┘ └───┬────┘ └───┬────┘ └───┬────┘ └───┬────┘ │
-│      └─────────────────────┴──────────┴──────────┴──────────┘      │
+│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐            │
+│  │上传服务 │ │项目管理 │ │切片引擎 │ │发布调度 │ │数据看板 │            │
+│  │ (tus)  │ │ CRUD   │ │ 调度器  │ │ (RPA)  │ │聚合计算 │            │
+│  └───┬────┘ └────────┘ └───┬────┘ └───┬────┘ └───┬────┘            │
+│  ┌────────┐ ┌──────────────────────────────────────────────────┐    │
+│  │认证授权│ │        智能导入服务（指纹匹配/映射/模板）          │    │
+│  │ (JWT)  │ │                                                    │    │
+│  └────────┘ └──────────────────────────────────────────────────┘    │
 │                       Celery Worker Pool                             │
 │  task_autoclip │ task_detect │ task_slice │ task_publish │ task_data │
 └──────────┬───────────────────────────────┬───────────────────────────┘
-           │                    ┌──────────▼───────────┐
-           │                    │  Redis Stream        │
-           │                    │  slice:priority/high │
-           │                    └──────────┬───────────┘
            │                               │
-           │                    ┌──────────▼───────────┐
-           │                    │  Go Slice Worker 节点 │
-           │                    │  (slice-worker-1/2/… │
-           │                    │   远程节点/托盘模式)  │
-           │                    └──────────┬───────────┘
     ┌──────▼──────┐                 ┌──────▼──────┐
     │  PostgreSQL  │                 │    MinIO     │
     │ (元数据+     │                 │ (视频+图片)  │
@@ -70,8 +63,19 @@
            │
     ┌──────▼──────┐
     │    Redis     │
-    │ (队列+缓存)  │
-    └─────────────┘
+    │ (队列+缓存+  │
+    │  Stream分发) │
+    └──────┬──────┘
+           │
+    ┌──────▼──────────────────────────────────────────────────────────┐
+    │                  分布式切片 Worker 层                              │
+    │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
+    │  │ Worker-1  │  │ Worker-2  │  │ Worker-3  │  │ Worker-N  │       │
+    │  │ (Go/Mac) │  │ (Go/Linux)│  │ (Go/GPU) │  │ (Go/...) │       │
+    │  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │
+    │         ▲              ▲              ▲              ▲           │
+    │         └──────────────┴──── Redis Stream ──────────┘           │
+    └─────────────────────────────────────────────────────────────────┘
            │
     ┌──────▼──────────────────────────────────────────────────────────┐
     │                    外部服务层                                      │
@@ -90,16 +94,15 @@
 |------|---------|
 | 前端 | React 18 + TypeScript + Vite 5 + Ant Design 5 + ECharts + Zustand |
 | 后端 | Python 3.11 + FastAPI + SQLAlchemy 2.0 (async) + Celery 5 |
-| 数据库 | PostgreSQL 15 |
-| 缓存/队列 | Redis 7 |
+| 数据库 | PostgreSQL 15 + Alembic（数据库迁移） |
+| 缓存/队列 | Redis 7（消息队列 + Stream 任务分发） |
 | 对象存储 | MinIO |
-| 反向代理 | Nginx 1.28 |
+| 反向代理 | Nginx 1.25 |
 | AI 选点 | 通义千问 ASR (qwen3-asr-flash) + LLM (qwen-plus) |
 | 自动发布 | Playwright + Chromium (CDP 协议) |
+| 分布式切片 | Go 1.22 + bubbletea（TUI 界面） |
 | 容器化 | Docker + Docker Compose |
-| 视频处理 | FFmpeg（engines/ 脚本封装，切片支持 CPU 线程限制） |
-| 分布式切片 | Go 1.21+ Slice Worker（Redis Stream 队列 + 心跳注册 + 系统托盘） |
-| AI 选点 ASR | 阿里云 qwen3-asr-flash（默认）或本地 faster-whisper（`AUTOCLIP_ASR_METHOD=whisper`） |
+| 视频处理 | FFmpeg (通过 Shell 脚本封装) |
 
 ---
 
@@ -111,57 +114,52 @@ clip-workflow/
 ├── .gitignore
 ├── LICENSE
 ├── deploy.sh                 # 本地一键部署脚本
-├── deploy_remote_worker.sh   # 远程 Slice Worker 节点一键部署脚本
-├── docker-compose.yml        # 容器编排（15 个服务）
-├── init.sql                  # 数据库初始化（扩展表，业务表由 ORM 创建）
+├── docker-compose.yml        # 容器编排（13 个服务）
+├── init.sql                  # 数据库初始化（32 张表）
 ├── nginx.conf                # Nginx 反向代理配置
+│
+├── alembic/                  # 数据库迁移（Alembic）
+│   ├── alembic.ini
+│   ├── env.py
+│   └── versions/             # 迁移脚本
 │
 ├── autoclip/                 # AutoClip AI 选点服务
 │   ├── Dockerfile
-│   ├── requirements.txt
-│   └── app/
-│       ├── main.py           # FastAPI 入口（ASR：阿里云/本地 whisper）
-│       ├── celery_app.py     # Celery 实例
-│       ├── config.py
-│       ├── pipeline/         # 流水线：ASR→大纲→时间线→评分→标题
-│       ├── prompt/           # LLM Prompt 模板
-│       └── utils/
+│   └── requirements.txt
 │
 ├── backend/                  # 后端主服务
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── app/
-│       ├── main.py           # FastAPI 入口（启动时预置默认配置/平台去重）
+│       ├── main.py           # FastAPI 入口
 │       ├── config.py         # 配置管理（Pydantic Settings）
 │       ├── database.py       # 异步数据库引擎
-│       ├── api/              # API 路由层（12 个模块）
-│       │   ├── auth.py       # 认证/用户/角色管理
-│       │   ├── projects.py   # 项目/剧集 CRUD
+│       ├── api/              # API 路由层（11 个模块）
+│       │   ├── projects.py   # 项目 CRUD
 │       │   ├── upload.py     # 文件上传（tus 分片）
 │       │   ├── autoclip.py   # AI 选点
-│       │   ├── intervals.py  # 区间检测（进度落库 slice_tasks）
-│       │   ├── slice.py      # 切片执行（双引擎分发）
-│       │   ├── preview.py    # 预览生成/批量下载
+│       │   ├── intervals.py  # 区间检测
+│       │   ├── slice.py      # 切片执行
+│       │   ├── preview.py    # 预览生成
 │       │   ├── publications.py # 发布记录
 │       │   ├── publish.py    # 发布管理（v2）
 │       │   ├── dashboard.py  # 数据看板（v2）
-│       │   ├── config.py     # 系统配置/平台去重 Profile
-│       │   └── workers.py    # Worker 节点管理（心跳/启停/CPU）
+│       │   ├── import_.py    # 智能数据导入（v3）
+│       │   └── config.py     # 系统配置
 │       ├── models/
-│       │   └── models.py     # 22 个 ORM 模型（含 WorkerNode）
-│       ├── services/         # 业务逻辑层（10 个服务）
+│       │   └── models.py     # 22 个 ORM 模型
+│       ├── services/         # 业务逻辑层（9 个服务）
 │       │   ├── upload_service.py
 │       │   ├── autoclip_service.py
 │       │   ├── interval_service.py
 │       │   ├── slice_service.py
 │       │   ├── minio_service.py
-│       │   ├── redis_stream.py      # Redis Stream 切片队列/节点控制 key
 │       │   ├── publish_service.py    # RPA 发布（v2）
 │       │   ├── dashboard_service.py  # 看板聚合（v2）
-│       │   ├── smart_import_service.py # 智能 Excel 导入（v2）
-│       │   └── data_import_service.py # Excel 导入（v2）
+│       │   ├── data_import_service.py # 智能导入（v3）
+│       │   └── auth_service.py       # 认证授权（v3）
 │       ├── celery/
-│       │   └── tasks.py      # 6 个异步任务（含确认发布）
+│       │   └── tasks.py      # 5 个异步任务
 │       └── utils/
 │           └── helpers.py
 │
@@ -171,31 +169,13 @@ clip-workflow/
 │   ├── vite.config.ts
 │   ├── index.html
 │   └── src/
-│       ├── App.tsx           # 路由定义（22 个页面）
+│       ├── App.tsx           # 路由定义（15 个页面）
 │       ├── main.tsx          # 入口
-│       ├── api/              # API 客户端（11 个模块）
-│       ├── components/       # 通用组件（3 个）
-│       ├── pages/            # 页面组件（22 个）
+│       ├── api/              # API 客户端（10 个模块）
+│       ├── components/       # 通用组件（5 个）
+│       ├── pages/            # 页面组件（14 个）
 │       ├── types/            # TypeScript 类型定义
 │       └── utils/            # 工具函数
-│
-├── slice-worker/             # 分布式切片 Worker（Go）
-│   ├── Dockerfile
-│   ├── go.mod / go.sum
-│   ├── worker.go             # 主逻辑（领取任务/心跳/回调）
-│   ├── redis_client.go       # Redis Stream 消费/节点控制 key
-│   ├── task_executor.go      # 任务执行（调 engines/slice.py）
-│   ├── file_transfer.go      # 文件下载/上传 MinIO
-│   ├── callback.go           # 后端回调
-│   ├── config.go             # 配置（node-id/cpu-percent 等）
-│   ├── tray.go / tray_common.go / tray_windows.go / tray_darwin.go / tray_other.go
-│   ├── exec_unix.go / exec_windows.go  # 平台化进程管理
-│   ├── tui.go                # 终端 UI/日志模式
-│   ├── worker.json           # 节点配置模板
-│   ├── windows/              # Windows 一键部署/卸载脚本
-│   ├── macos/                # macOS 编译/登录项脚本
-│   ├── icons/                # 托盘图标
-│   └── README-tray.md        # 托盘使用说明
 │
 ├── rpa/                      # RPA 自动发布模块（v2）
 │   ├── Dockerfile            # Playwright + Xvfb + Chromium
@@ -209,16 +189,18 @@ clip-workflow/
 │           ├── douyin.py     # 抖音 Publisher
 │           └── kuaishou.py   # 快手 Publisher
 │
-├── engines/                  # 视频处理引擎脚本
-│   ├── detect_intervals.py   # 区间检测（credits/static/watermark）
-│   ├── slice.py              # 切片引擎（支持 --cpu-percent）
-│   ├── preview.py            # 帧图/视频预览
+├── slice-worker/             # 分布式切片 Worker（v3）
+│   ├── main.go               # Go 单文件 Worker 入口
+│   ├── go.mod
+│   ├── start.sh              # 一键启动脚本
+│   └── README.md
+│
+├── engines/                  # 视频处理引擎（Shell 脚本）
 │   └── README.md
 │
 ├── docs/                     # 文档
 │   ├── README.md
-│   ├── remote-worker-部署说明.md  # 远程 Slice Worker 部署
-│   └── deployment-guide.html     # 部署操作指南
+│   └── deployment-guide.html # 部署操作指南
 │
 └── scripts/                  # 运维脚本
     ├── server-setup.sh       # 阿里云一键部署
@@ -231,54 +213,86 @@ clip-workflow/
 
 ## 五、数据库设计
 
-### 5.1 表清单
+### 5.1 表清单（32 张表）
 
-> 说明：`init.sql` 只负责预置用户/认证/协作/素材等扩展表，**业务表**（`projects` / `episodes` / `slice_tasks` / `publish_tasks` / `video_metrics` 等）由后端 SQLAlchemy `Base.metadata.create_all` 在启动时自动创建，避免两套 schema 互相冲突。
-
-#### 扩展表（init.sql 预置）
+#### 用户与认证
 
 | 表名 | 说明 |
 |------|------|
-| `users` | 用户账号（角色：admin/operator/publisher/material） |
+| `users` | 用户账号（角色：user/admin/superadmin） |
 | `user_sessions` | 登录会话（JWT refresh token） |
 | `user_oauth_accounts` | OAuth 第三方账号绑定 |
+
+#### 项目与工作流
+
+| 表名 | 说明 |
+|------|------|
+| `projects` | 项目（包含剧集的容器） |
 | `project_members` | 项目协作成员 |
 | `workflow_templates` | 工作流模板 |
+| `project_versions` | 项目版本历史（v2） |
+
+#### 素材与剪辑
+
+| 表名 | 说明 |
+|------|------|
 | `media_assets` | 素材文件（视频/音频/图片） |
 | `media_tags` / `media_asset_tags` | 素材标签 |
 | `clip_tasks` | 剪辑任务 |
 | `autoclip_configs` | AutoClip 配置 |
 | `autoclip_history` | AutoClip 执行历史 |
-| `celery_tasks` / `celery_periodic_tasks` | Celery 任务表 |
-| `notifications` | 通知 |
-| `system_configs` | 系统配置（扩展） |
 
-#### ORM 模型（SQLAlchemy，22 个）
+#### ORM 模型（SQLAlchemy）
 
 | 模型类 | 表名 | 说明 |
 |--------|------|------|
-| `User` | `users` | 用户（password_hash、角色 admin/operator/publisher/material） |
 | `Project` | `projects` | 项目 |
-| `Episode` | `episodes` | 剧集（状态机：uploaded→clips_detected→intervals_detected→slicing→completed） |
-| `AutoClipProject` | `autoclip_projects` | AutoClip 项目关联（含 error_message） |
+| `Episode` | `episodes` | 剧集 |
+| `AutoClipProject` | `autoclip_projects` | AutoClip 项目关联 |
 | `ClipCandidate` | `clip_candidates` | AI 选点候选片段 |
 | `DetectedInterval` | `detected_intervals` | 检测到的待挖洞区间 |
-| `SliceTask` | `slice_tasks` | 切片任务（含 node_id，可复用为 detect_* 区间检测进度记录） |
+| `SliceTask` | `slice_tasks` | 切片任务 |
 | `SliceOutput` | `slice_outputs` | 切片输出文件 |
 | `Publication` | `publications` | 发布记录 |
 | `PlatformProfile` | `platform_profiles` | 平台去重配置 |
 | `SystemConfig` | `system_config` | 系统配置 |
+
+#### V2 发布管理
+
+| 模型类 | 表名 | 说明 |
+|--------|------|------|
 | `PublishTask` | `publish_tasks` | 发布任务（含平台、状态、截图审核） |
 | `PublishProfile` | `publish_profiles` | 发布配置（Chrome 端口、模板、频率限制） |
+
+#### V2 IAA 数据看板
+
+| 模型类 | 表名 | 说明 |
+|--------|------|------|
 | `VideoMetric` | `video_metrics` | 视频内容数据（播放/互动/跳转/归因） |
 | `MiniProgramMetric` | `mini_program_metrics` | 小程序数据（UV/播放/完播率） |
 | `AdMetric` | `ad_metrics` | 广告数据（曝光/点击/eCPM/收益） |
 | `DramaMetric` | `drama_metrics` | 分剧维度数据 |
 | `FunnelSnapshot` | `funnel_snapshots` | 漏斗快照（每日计算） |
 | `EcosystemMetric` | `ecosystem_metrics` | 生态数据（公众号/企微） |
-| `ImportTemplate` | `import_templates` | 智能导入模板 |
-| `ImportHistory` | `import_history` | 智能导入历史 |
-| `WorkerNode` | `worker_nodes` | Worker 节点注册（node_id/hostname/ip/os/arch/max_concurrent/enabled/cpu_percent/status 等） |
+
+#### V3 分布式切片
+
+| 模型类 | 表名 | 说明 |
+|--------|------|------|
+| `SliceWorkerNode` | `slice_worker_nodes` | Worker 节点注册（能力标签、心跳、状态） |
+
+#### V3 智能导入
+
+| 模型类 | 表名 | 说明 |
+|--------|------|------|
+| `ImportTemplate` | `import_templates` | 导入模板（标准模板 + 自定义映射模板） |
+| `ImportHistory` | `import_histories` | 导入历史记录（来源、状态、行数、操作人） |
+
+#### V3 审计日志
+
+| 模型类 | 表名 | 说明 |
+|--------|------|------|
+| `AuditLog` | `audit_logs` | 审计日志（操作人、操作时间、操作类型、目标对象、变更前后值） |
 
 ### 5.2 ER 关系
 
@@ -302,47 +316,38 @@ dashboard:
     drama_metrics (独立)
     funnel_snapshots (独立)
     ecosystem_metrics (独立)
-    import_templates / import_history (独立)
 
-workers:
-    worker_nodes（独立，由 Go Worker 心跳注册，与 Redis 节点控制 key 同步）
+distributed slice:
+    slice_worker_nodes (独立，心跳注册)
+
+import:
+    import_templates (独立，标准+自定义)
+    import_histories ──N:1──> users
+
+audit:
+    audit_logs ──N:1──> users
 ```
 
 ---
 
 ## 六、API 接口
 
-### 6.1 认证与用户（`/api/auth`）
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/api/auth/login` | 登录 |
-| `GET` | `/api/auth/me` | 当前用户 |
-| `POST` | `/api/auth/register` | 注册 |
-| `GET` | `/api/auth/users` | 用户列表 |
-| `PUT` | `/api/auth/users/{id}/role` | 修改用户角色 |
-
-### 6.2 工作流 API
+### 6.1 工作流 API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET/POST` | `/api/projects` | 项目列表/创建 |
 | `GET/PUT/DELETE` | `/api/projects/{id}` | 项目详情/更新/删除 |
-| `GET` | `/api/projects/stats` | 项目统计 |
-| `POST` | `/api/projects/{id}/episodes` | 创建剧集 |
-| `GET` | `/api/projects/{id}/episodes` | 剧集列表 |
-| `GET` | `/api/episodes/{id}` | 剧集详情 |
-| `GET` | `/api/episodes/{id}/video-url` | 剧集视频地址（presigned） |
-| `DELETE` | `/api/episodes/{id}` | 删除剧集 |
-| `POST` | `/api/upload/resume` | 初始化分片上传 |
-| `PATCH` | `/api/upload/{id}` | 上传分片 |
-| `GET` | `/api/upload/{id}/progress` | 上传进度 |
+| `POST` | `/api/upload/init` | 初始化上传 |
+| `POST` | `/api/upload/chunk` | 上传分片 |
 | `POST` | `/api/upload/complete` | 完成上传 |
-| `POST` | `/api/upload` | 单文件上传 |
-| `DELETE` | `/api/upload/{id}` | 取消上传 |
+| `POST` | `/api/autoclip/start` | 启动 AI 选点 |
+| `GET` | `/api/autoclip/status/{id}` | 选点进度 |
+| `POST` | `/api/intervals/detect` | 启动区间检测 |
+| `POST` | `/api/slice/execute` | 执行切片 |
+| `GET` | `/api/preview/{id}` | 获取预览 |
 
-### 6.3 选点与区间检测 API
-
+### 6.2 选点与区间检测 API
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `POST` | `/api/episodes/{id}/autoclip/run` | 启动 AI 选点 |
@@ -358,8 +363,7 @@ workers:
 | `DELETE` | `/api/intervals/{id}` | 删除区间 |
 | `PUT` | `/api/intervals/{id}/toggle` | 启用/停用区间 |
 
-### 6.4 切片 API
-
+### 6.3 切片 API
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `POST` | `/api/episodes/{id}/slice/run` | 执行切片（auto_accept_all 免审核一键切片；watermark_enabled/watermark_text 等参数支持动态文字水印） |
@@ -373,8 +377,7 @@ workers:
 | `POST` | `/api/slice-tasks/{id}/cancel` | 取消切片 |
 | `DELETE` | `/api/slice-tasks/{id}` | 删除切片（级联删 MinIO 与 DB） |
 
-### 6.5 预览与下载 API
-
+### 6.4 预览与下载 API
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/outputs/{id}/preview/frames` | 帧图预览 |
@@ -382,8 +385,7 @@ workers:
 | `GET` | `/api/outputs/{id}/download` | 单文件下载 |
 | `POST` | `/api/outputs/batch-download` | 多选批量下载（返回 presigned 直链列表，前端逐个下载） |
 
-### 6.6 Worker 节点管理 API
-
+### 6.5 Worker 节点管理 API
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `POST` | `/api/workers/heartbeat` | 节点心跳注册 |
@@ -394,7 +396,8 @@ workers:
 | `POST` | `/api/workers/{node_id}/cpu-percent` | 调整节点 CPU 分配比例 |
 | `POST` | `/api/workers/sync-redis` | 从 Redis 同步节点状态 |
 
-### 6.7 发布管理 API（v2）
+### 6.6 发布管理 API（v2）
+
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -407,17 +410,7 @@ workers:
 | `PUT` | `/api/publish/profiles/{id}` | 更新发布配置 |
 | `DELETE` | `/api/publish/profiles/{id}` | 删除发布配置 |
 
-### 6.8 系统配置 API
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/config` | 全部配置（默认+已保存合并） |
-| `PUT` | `/api/config` | 更新配置 |
-| `GET` | `/api/config/platform-profiles` | 平台去重 Profile 列表 |
-| `POST` | `/api/config/platform-profiles` | 创建 Profile |
-| `PUT` | `/api/config/platform-profiles/{id}` | 更新 Profile |
-
-### 6.9 数据看板 API（v2）
+### 6.7 数据看板 API（v2）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -429,28 +422,25 @@ workers:
 | `GET` | `/api/dashboard/videos/{id}` | 视频详情 |
 | `PUT` | `/api/dashboard/videos/{id}/tags` | 更新视频标签 |
 | `GET` | `/api/dashboard/videos/ranking` | 视频排行 |
-| `GET` | `/api/dashboard/videos/cross-analysis` | 跨维度交叉分析 |
 | `GET` | `/api/dashboard/mini-program` | 小程序指标 |
 | `GET` | `/api/dashboard/ads` | 广告指标 |
 | `GET` | `/api/dashboard/dramas` | 分剧排行 |
-| `GET` | `/api/dashboard/dramas/{id}` | 分剧详情 |
 | `GET` | `/api/dashboard/funnel` | 漏斗数据 |
 | `GET` | `/api/dashboard/funnel/trend` | 漏斗趋势 |
-| `GET` | `/api/dashboard/funnel/compare` | 漏斗对比 |
-| `GET` | `/api/dashboard/ecosystem` | 生态数据 |
-| `POST` | `/api/dashboard/metrics/video` | Excel 导入视频数据 |
-| `POST` | `/api/dashboard/metrics/mini-program` | Excel 导入小程序数据 |
-| `POST` | `/api/dashboard/metrics/ads` | Excel 导入广告数据 |
-| `GET` | `/api/dashboard/metrics/template` | 下载导入模板 |
 | `GET/PUT` | `/api/dashboard/config` | 看板配置 |
-| `POST` | `/api/dashboard/import/upload` | 智能导入上传 |
-| `POST` | `/api/dashboard/import/preview` | 智能导入预览 |
-| `POST` | `/api/dashboard/import/confirm` | 智能导入确认 |
-| `GET` | `/api/dashboard/import/templates` | 智能导入模板列表 |
-| `POST` | `/api/dashboard/import/templates/custom` | 保存自定义导入模板 |
-| `GET` | `/api/dashboard/import/history` | 导入历史 |
 
-### 6.10 WebSocket
+### 6.8 智能数据导入 API（v3）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/dashboard/import/upload` | 智能导入（自动识别平台格式） |
+| `POST` | `/api/dashboard/import/preview` | 预览文件内容（手动映射用） |
+| `POST` | `/api/dashboard/import/confirm` | 确认导入（带映射关系） |
+| `GET` | `/api/dashboard/import/templates` | 获取标准模板列表 |
+| `POST` | `/api/dashboard/import/templates/custom` | 保存自定义模板 |
+| `GET` | `/api/dashboard/import/history` | 导入历史记录 |
+
+### 6.9 WebSocket
 
 | 路径 | 说明 |
 |------|------|
@@ -473,17 +463,11 @@ workers:
 | `/episodes/:id/slice` | 切片任务 | 切片执行与进度（显示执行节点、自定义文字水印开关） |
 | `/episodes/:id/preview` | 输出预览 | 视频预览（点击行区域直接展开）、多选批量下载、任务下拉 |
 | `/publish` | 发布管理 | 发布任务列表、配置管理 |
-| `/workers` | Worker 节点 | 节点状态/启停/CPU 分配/运行进度 |
 | `/analytics/overview` | 数据总览 | 收益卡片、趋势图、漏斗、TOP5 |
 | `/analytics/content` | 内容分析 | 视频数据表、排行、多维筛选 |
-| `/analytics/monetization` | 短剧变现 | 分剧/小程序/广告指标 |
-| `/analytics/funnel` | 转化漏斗 | 漏斗分析与对比 |
-| `/analytics/ecosystem` | 生态联动 | 公众号/企微数据 |
-| `/analytics/import` | 数据录入 | Excel 上传、智能导入、模板下载 |
-| `/analytics/settings` | 看板设置 | 看板全局配置 |
-| `/profile` | 个人中心 | 个人信息 |
-| `/user-management` | 用户管理 | 用户列表、角色管理 |
-| `/settings` | 系统设置 | 全局参数配置、平台去重 Profile、配置说明 |
+| `/analytics/import` | 数据录入 | 智能导入（自动识别/手动映射/模板） |
+| `/slice-worker` | 切片监控 | Worker 节点状态、任务队列、实时日志（v3） |
+| `/settings` | 系统设置 | 全局参数配置 |
 
 ### 7.2 导航菜单
 
@@ -491,17 +475,11 @@ workers:
 仪表盘
 项目管理
 发布管理
-Worker 节点
 数据看板
   ├── 总览
   ├── 内容分析
-  ├── 短剧变现
-  ├── 转化漏斗
-  ├── 生态联动
-  ├── 数据录入
-  └── 看板设置
-个人中心
-用户管理
+  └── 数据录入
+切片监控
 系统设置
 ```
 
@@ -516,6 +494,7 @@ Worker 节点
 | Axios | 1.6 | HTTP 客户端 |
 | Zustand | 4.5 | 状态管理 |
 | Day.js | 1.11 | 日期处理 |
+| tus-js-client | 3.x | 断点续传上传 |
 | Vite | 5.1 | 构建工具 |
 | TypeScript | 5.3 | 类型系统 |
 
@@ -523,18 +502,48 @@ Worker 节点
 
 ## 八、异步任务
 
-### 8.1 Celery 任务清单（后端 worker）
+### 8.1 Celery 任务清单
 
 | 任务名 | 队列 | 说明 |
 |--------|------|------|
 | `autoclip_task` | `video_processing` | 执行 AutoClip 流水线，轮询进度，获取片段结果 |
-| `detect_task` | `video_processing` | 通用区间检测（进度落库 slice_tasks，支持 credits/static） |
-| `slice_task` | `video_processing` | Celery 兜底切片（Worker 引擎不可用时回退） |
+| `detect_task` | `video_processing` | 通用区间检测 |
+| `slice_task` | `video_processing` | 视频切片（支持 scrub/fast 模式） |
 | `task_publish_video` | `publish` | RPA 视频发布（截图审核 → 确认 → 发布） |
-| `confirm_publish_worker` | `publish` | 确认发布任务 |
-| `task_collect_metrics` | `metrics` | 每日 00:30 定期指标采集与漏斗快照计算 |
+| `task_collect_metrics` | `metrics` | 定期指标采集与漏斗快照计算 |
 
-### 8.2 RPA 发布任务
+### 8.2 错误恢复与容错
+
+#### Celery 任务重试
+
+所有异步任务配置统一的重试策略：
+
+```python
+class BaseTaskWithRetry(celery.Task):
+    autoretry_for = (Exception, ConnectionError, TimeoutError)
+    retry_backoff = True          # 指数退避
+    retry_backoff_max = 600       # 最大间隔 10 分钟
+    retry_max_delay = 300         # 初始延迟上限 5 分钟
+    max_retries = 3               # 最多重试 3 次
+```
+
+- 视频处理任务（autoclip / detect / slice）：遇到 FFmpeg 崩溃、网络超时自动重试
+- RPA 发布任务：遇到页面加载失败、Cookie 失效自动重试
+- 数据采集任务：遇到 API 限流自动退避重试
+
+#### 中间文件清理
+
+- 任务完成（成功或失败）后自动清理临时目录
+- 清理策略：`slice_outputs` 关联的本地临时文件在任务结束后 24 小时内删除
+- MinIO 上的中间文件设置生命周期策略，7 天未访问自动清理
+
+#### 断点续传
+
+- 大文件上传采用 tus 协议，前端使用 tus-js-client，后端使用 tusd
+- 上传中断后前端自动从断点恢复，无需重新上传
+- 上传并发限制：同时最多 5 个大文件上传，超出排队等待
+
+### 8.3 RPA 发布任务
 
 | 任务名 | 平台 | 说明 |
 |--------|------|------|
@@ -543,38 +552,224 @@ Worker 节点
 | `publish_kuaishou` | 快手 | 同上 |
 | `check_cookie_status` | 全平台 | 定期检查登录态是否有效 |
 
-### 8.3 分布式切片调度（Go Slice Worker）
+#### 多账号支持
 
-- 后端 `slice.py` 按 `SLICE_ENGINE` 选择引擎：`worker`（默认，Redis Stream 分发到 Go Worker）或 `celery`（回退）。
-- Go Worker 从 Redis Stream（`slice:priority` / `slice:high`）领取任务，执行 `engines/slice.py` 后回传进度/结果到后端回调接口。
-- 节点心跳注册 `worker_nodes`，支持多节点并发、启停开关、CPU 分配（`slice:node-enabled:{id}` / `slice:node-cpu-percent:{id}`）。
-- 全局并发控制：`max_concurrent_tasks` 实际闸门，超限返回 429。
+- 每个 `PublishProfile` 对应独立的 Chrome Profile 目录
+- 不同账号的 Cookie、登录态完全隔离
+- 支持同一平台多账号并行发布
+
+#### 截图审核流程
+
+```
+发布前截图存 MinIO
+    │
+    ▼
+前端展示截图预览
+    │
+    ├── 运营确认 → 执行发布
+    ├── 运营拒绝 → 取消任务，标记 rejected
+    └── 超时 30 分钟未操作 → 自动取消，标记 timeout
+```
+
+#### 失败重试
+
+- 发布失败后最多重试 2 次，间隔 5 分钟
+- 重试仍失败则标记 `failed`，通过钉钉机器人通知运营
+- 失败原因记录到 `publish_tasks.error_message` 字段
 
 ---
 
-## 九、Docker 服务编排
+## 九、分布式切片执行
 
-### 9.1 服务列表（15 个）
+### 9.1 方案概述
+
+采用 **Go 单文件 Worker + Redis Stream 任务分发 + MinIO Presigned URL 直传** 的架构，实现切片任务的分布式执行。Worker 节点可以是 Mac（Apple Silicon 硬件加速）、Linux 服务器或 GPU 机器，通过 Redis Stream 接收任务，处理完成后直接将结果上传到 MinIO。
+
+### 9.2 架构图
+
+```
+┌─────────────────────┐
+│   FastAPI 主服务器    │
+│  (任务拆分 + 入队)   │
+└──────────┬──────────┘
+           │ XADD
+           ▼
+┌─────────────────────┐
+│    Redis Stream      │
+│  slice:tasks:high   │  ← 高优先级队列
+│  slice:tasks:normal │  ← 普通优先级队列
+│  slice:tasks:low    │  ← 低优先级队列
+└──────────┬──────────┘
+           │ XREADGROUP
+     ┌─────┼─────┬──────────┐
+     ▼     ▼     ▼          ▼
+┌──────┐┌──────┐┌──────┐┌──────┐
+│W-1   ││W-2   ││W-3   ││W-N   │
+│Mac   ││Linux ││GPU   ││...   │
+│(arm) ││(cpu) ││(nvenc││      │
+└──┬───┘└──┬───┘└──┬───┘└──┬───┘
+   │       │       │       │
+   │  Presigned URL 上传    │
+   ▼       ▼       ▼       ▼
+┌─────────────────────────────────┐
+│            MinIO                 │
+│   (切片成品直传，无需经过主服务器)  │
+└─────────────────────────────────┘
+```
+
+### 9.3 Redis 数据结构
+
+| Key | 类型 | 说明 |
+|-----|------|------|
+| `slice:tasks:high` | Stream | 高优先级任务队列（加急项目） |
+| `slice:tasks:normal` | Stream | 普通优先级任务队列 |
+| `slice:tasks:low` | Stream | 低优先级任务队列（批量任务） |
+| `slice:nodes` | Hash | Worker 节点注册信息（node_id → JSON） |
+| `slice:nodes:online` | Set | 当前在线 Worker 节点 ID 集合 |
+
+### 9.4 任务消息格式
+
+```json
+{
+  "task_id": "uuid-v4",
+  "episode_id": 42,
+  "mode": "fast|dedupe|scrub",
+  "source_url": "https://minio/.../episode_42.mp4",
+  "cutlist": [
+    {"start": 10.5, "end": 45.2},
+    {"start": 60.0, "end": 120.8}
+  ],
+  "intervals": [
+    {"start": 45.2, "end": 60.0, "type": "black_screen"}
+  ],
+  "dedupe_config": {
+    "speed_factor": 1.04,
+    "saturation": 0.95,
+    "brightness": 0.01,
+    "sharpen_amount": 0.8
+  },
+  "output_upload_urls": {
+    "video": "https://minio/.../presigned-put-video",
+    "frames": "https://minio/.../presigned-put-frames"
+  },
+  "priority": "normal",
+  "created_at": "2026-08-06T10:00:00Z",
+  "timeout_seconds": 7200
+}
+```
+
+### 9.5 Worker 节点能力标签
+
+| 标签 | 说明 | 适用场景 |
+|------|------|---------|
+| `cpu` | 通用 CPU 处理 | 普通切片、帧图生成 |
+| `gpu` | GPU 加速 | 大规模批量切片 |
+| `nvenc` | NVIDIA NVENC 硬件编码 | 高速 H.264/H.265 编码 |
+| `apple-silicon` | Apple Silicon VideoToolbox | Mac 节点硬件加速 |
+
+Worker 启动时上报自身能力标签，主服务器根据任务需求匹配合适节点。例如需要 NVENC 编码的任务只分配给带 `nvenc` 标签的 Worker。
+
+### 9.6 容错机制
+
+| 机制 | 配置 | 说明 |
+|------|------|------|
+| 心跳 | 30 秒 | Worker 每 30 秒向 Redis 发送心跳，更新 `slice:nodes` 中的 `last_heartbeat` |
+| 超时重分配 | 2 小时 | 任务超过 2 小时未完成，主服务器通过 XCLAIM 将任务重新分配给其他 Worker |
+| Dead-letter 队列 | 自动 | 重试 3 次仍失败的任务进入 `slice:tasks:dead` 队列，等待人工处理 |
+| 节点离线检测 | 60 秒 | 超过 60 秒未收到心跳，标记节点离线，其正在处理的任务自动重分配 |
+
+### 9.7 一键启动脚本
+
+Worker 节点通过 `start.sh` 一键启动，自动完成环境初始化：
+
+```bash
+#!/bin/bash
+# slice-worker/start.sh
+
+# 1. 自动下载 Go Worker 二进制（按平台/架构）
+ARCH=$(uname -m)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+curl -sL "https://releases.internal/slice-worker/${OS}-${ARCH}" -o slice-worker
+chmod +x slice-worker
+
+# 2. 下载视频处理引擎脚本
+curl -sL "https://releases.internal/engines/latest.tar.gz" | tar xz
+
+# 3. 自动生成配置（从环境变量读取 Redis/MinIO 连接信息）
+cat > worker.json <<CONF
+{
+  "redis_url": "${REDIS_URL}",
+  "redis_stream_prefix": "slice:tasks",
+  "minio_endpoint": "${MINIO_ENDPOINT}",
+  "minio_access_key": "${MINIO_ACCESS_KEY}",
+  "minio_secret_key": "${MINIO_SECRET_KEY}",
+  "node_id": "$(hostname)-$(date +%s)",
+  "capabilities": ["${WORKER_CAPABILITY:-cpu}"],
+  "concurrency": ${WORKER_CONCURRENCY:-2}
+}
+CONF
+
+# 4. 启动 Worker
+./slice-worker --config worker.json
+```
+
+### 9.8 TUI 界面预览
+
+Worker 节点提供基于 **bubbletea** 框架的终端 UI，方便运维人员在服务器上实时查看状态：
+
+```
+┌─ Slice Worker ──────────────────────────────────────┐
+│  Node: mac-studio-01  |  Capabilities: apple-silicon │
+│  Status: ● Online     |  Uptime: 2h 34m             │
+├──────────────────────────────────────────────────────┤
+│  Tasks                                                │
+│  ┌──────────────────────────────────────────────────┐│
+│  │ #1042  ep42-scrub  ████████████░░░░  75%  03:21 ││
+│  │ #1041  ep38-fast   ████████████████  100% ✓     ││
+│  │ #1040  ep37-dedupe ░░░░░░░░░░░░░░░░  0%  Queued││
+│  └──────────────────────────────────────────────────┘│
+├──────────────────────────────────────────────────────┤
+│  Logs                                                │
+│  [10:32:15] #1042 FFmpeg: encoding segment 3/4       │
+│  [10:32:12] #1041 Upload complete → minio/outputs/   │
+│  [10:31:58] #1042 Heartbeat sent                     │
+└──────────────────────────────────────────────────────┘
+```
+
+### 9.9 部署方式
+
+| 方式 | 命令 | 说明 |
+|------|------|------|
+| 前台启动 | `bash start.sh` | 显示 TUI 界面，适合调试 |
+| 后台模式 | `bash start.sh --daemon` | 后台运行，日志写入文件 |
+| systemd | `systemctl start slice-worker` | Linux 服务管理 |
+| launchd | `launchctl load slice-worker.plist` | macOS 服务管理 |
+
+---
+
+## 十、Docker 服务编排
+
+### 10.1 服务列表（13 个）
 
 | 服务 | 镜像 | 端口 | 说明 |
 |------|------|------|------|
-| `postgres` | postgres:15-alpine | 15432(映射) | 数据库（内部 5432） |
-| `redis` | redis:7-alpine | 16379(映射) | 缓存 + 消息队列（内部 6379） |
+| `postgres` | postgres:15-alpine | 5432 | 数据库 |
+| `redis` | redis:7-alpine | 6379 | 缓存 + 消息队列 + Stream 分发 |
 | `minio` | minio/minio:latest | 9000/9001 | 对象存储 |
 | `minio_init` | minio/mc:latest | — | Bucket 初始化（一次性） |
 | `autoclip` | 构建自 ./autoclip | 8000 | AI 选点 API |
-| `backend` | 构建自 ./backend | 8001(映射) | 主 API 服务（内部 8080） |
-| `worker` | 同 backend | — | Celery 视频处理 Worker |
+| `autoclip_worker` | 同 autoclip | — | AI 选点 Worker |
+| `backend` | 构建自 ./backend | 8000 | 主 API 服务 |
+| `worker` | 同 backend | — | 视频处理 Worker |
 | `beat` | 同 backend | — | Celery 定时调度 |
 | `rpa_worker` | 构建自 ./rpa | 9222 | RPA 发布 Worker（可选） |
-| `slice-worker` | 构建自 ./slice-worker | — | Go 分布式切片节点 1 |
-| `slice-worker-2` | 同 slice-worker | — | Go 分布式切片节点 2（同机扩容） |
-| `frontend` | 构建自 ./frontend | 3000(映射) | 前端静态文件（内部 80） |
-| `nginx` | nginx:1.28-alpine | 80 | 反向代理入口 |
+| `frontend` | 构建自 ./frontend | 80 | 前端静态文件 |
+| `nginx` | nginx:1.25-alpine | 80 | 反向代理入口 |
+| `flower` | 同 backend | 5555 | Celery 任务监控（可选） |
 
-> 注：`autoclip_worker` 独立实例已移除（由 autoclip 服务内嵌 worker 模式替代）。
+> 注：分布式切片 Worker 不在 Docker Compose 中编排，通过 `start.sh` 在目标机器上独立部署（支持 Mac/Linux）。
 
-### 9.2 数据卷
+### 10.2 数据卷
 
 | 卷名 | 用途 |
 |------|------|
@@ -583,28 +778,23 @@ Worker 节点
 | `minio_data` | 对象存储数据 |
 | `media_data` | 媒体文件缓存 |
 | `chrome_profiles` | Chrome 浏览器 Profile（RPA 用） |
-| `slice_worker_temp` | 切片 Worker 临时目录 |
-| `./hf-cache` | faster-whisper 模型缓存（持久化） |
-| `./whisper-model` | 本地平铺模型目录（只读挂载） |
 
-### 9.3 Nginx 路由规则
+### 10.3 Nginx 路由规则
 
 | 路径 | 代理目标 | 说明 |
 |------|---------|------|
-| `/` | `frontend:80` | 前端静态文件（静态资源 30 天缓存） |
-| `/api/` | `backend:8080` | 后端 API |
+| `/` | `frontend:80` | 前端静态文件（30 天缓存） |
+| `/api/` | `backend:8000` | 后端 API |
 | `/autoclip/` | `autoclip:8000` | AutoClip API（rewrite 去前缀） |
-| `/ws/` | `backend:8080` | WebSocket（长连接 86400s） |
+| `/ws/` | `backend:8000` | WebSocket（长连接 86400s） |
 | `/minio/` | `minio:9000` | MinIO 代理（500M 上传限制） |
 | `/health` | 200 OK | 健康检查 |
 
-> Nginx 使用 Docker DNS 动态解析 upstream（`resolve`），容器重建后无需重启 nginx。
-
 ---
 
-## 十、IAA 数据看板
+## 十一、IAA 数据看板
 
-### 10.1 业务链路
+### 11.1 业务链路
 
 ```
 视频号短视频发布
@@ -622,7 +812,7 @@ Worker 节点
 IAA 分成收益（eCPM × 曝光 / 1000）
 ```
 
-### 10.2 指标体系（五层）
+### 11.2 指标体系（五层）
 
 | 层级 | 关注问题 | 核心指标 |
 |------|---------|---------|
@@ -632,18 +822,235 @@ IAA 分成收益（eCPM × 曝光 / 1000）
 | L4 漏斗 | 转化断在哪？ | 播放→跳转→开播→广告曝光→收益 各环节转化率 |
 | L5 生态 | 公众号/企微反哺？ | 公众号导流UV、企微新增好友 |
 
-### 10.3 数据归因
+### 11.3 数据归因
 
-| 方案 | 适用场景 | 精度 |
+#### 渠道参数归因（精确）
+
+发布时系统自动生成带渠道参数的跳转链接，完整链路如下：
+
+```
+发布视频时生成跳转链接
+   │ 链接格式：https://xxx.com/drama?id=123&vid={视频ID}&from=video
+   ▼
+小程序解析参数
+   │ 用户点击链接 → 小程序获取 vid 参数 → 调用统计接口回传
+   ▼
+后端按 vid 聚合 UV
+   │ 统计接口收到回传 → 按 vid 维度累计 UV/PV
+   ▼
+计算单视频收益
+   │ 精确归因：直接统计该视频引流带来的广告收益
+   ▼
+写入 video_metrics 表
+```
+
+**数据关联链路**：
+
+```
+video_metrics.publish_task_id → publish_tasks.id
+publish_tasks.published_url  → 提取平台视频 ID
+video_metrics.vid            → 渠道参数中的视频标识
+```
+
+#### 间接归因（近似）
+
+当无法获取精确渠道参数时，采用间接归因：
+
+```
+单视频收益 = 该视频引流UV × (当日总收益 ÷ 当日总UV)
+```
+
+- 适用场景：评论区引导、主页入口等无法携带 vid 参数的场景
+- 精度说明：假设所有 UV 的平均收益贡献相同，为近似值
+
+#### 归因配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| 归因时间窗口 | 7 天 | 视频发布后 7 天内的引流数据计入归因 |
+| 窗口可配置范围 | 1-30 天 | 在系统设置中调整 |
+
+### 11.4 智能数据导入
+
+#### 三种导入模式
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    智能数据导入流程                            │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  模式一：自动识别（推荐）                                      │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ 上传文件 → 平台指纹匹配 → 自动解析 → 确认导入           │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+│  模式二：手动映射                                             │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ 上传文件 → 预览内容 → 拖拽列对应关系 → 确认导入          │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+│  模式三：标准模板（兜底）                                      │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ 下载标准模板 → 按模板填写数据 → 上传 → 直接导入          │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 平台指纹库
+
+系统内置各平台导出文件的格式指纹，上传文件后自动匹配：
+
+| 平台 | 指纹特征 | 典型字段 |
+|------|---------|---------|
+| 视频号创作者中心 | 特定列名组合 + CSV 编码 | "播放量"、"点赞数"、"分享数"、"评论数" |
+| 小程序数据分析 | 固定表头 + 日期格式 | "页面路径"、"访问UV"、"播放次数"、"完播率" |
+| 广告/流量主后台 | 金额单位为"分" + 特定列名 | "广告位"、"曝光量"、"点击量"、"结算金额(分)" |
+| 抖音 | 创作者服务平台导出格式 | "播放"、"点赞"、"评论"、"转发" |
+| 快手 | 创作者中心导出格式 | "播放量"、"点赞"、"评论"、"分享" |
+
+#### 单位自动转换
+
+| 场景 | 转换规则 | 说明 |
 |------|---------|------|
-| 渠道参数归因 | 小程序接入来源参数 `?from=video&vid=视频ID` | 精确 |
-| 间接归因 | 无渠道参数时：单视频收益 = 该视频UV × 当日单UV收益 | 近似 |
+| 广告后台金额 | "分" → "元"（÷100） | 自动检测列名含"分"或值为整数 >10000 |
+| 播放量 | "万" → 数字（×10000） | 自动检测含"万"/"w"的值 |
+| 百分比 | "32.5%" → 0.325 | 自动去除百分号并转换 |
+
+#### 数据更新策略
+
+- 重复导入检测：按「日期 + 平台 + 数据维度」判断是否已存在
+- 覆盖模式：新数据覆盖旧数据，保留导入记录
+- 跳过模式：已存在的数据不覆盖，仅导入新数据
+- 导入前提示：检测到重复数据时弹窗让用户选择覆盖或跳过
+
+#### 数据来源说明
+
+| 数据类型 | 来源 | 方式 | 说明 |
+|---------|------|------|------|
+| 视频号内容数据 | 创作者中心 CSV 导出 | 手动 | 播放/互动/跳转等 |
+| 小程序数据 | 小程序后台 CSV 导出 | 手动 | UV/播放/完播率 |
+| 广告数据 | 流量主后台 CSV 导出 | 手动 | 曝光/点击/eCPM/收益 |
+| 发布数据 | 系统自动记录 | 自动 | RPA 发布时自动写入 |
+| *未来：小程序数据分析* | *小程序 API 自动拉取* | *自动（V3）* | *待对接微信开放 API* |
 
 ---
 
-## 十一、部署指南
+## 十二、安全设计
 
-### 11.1 环境要求
+### 12.1 API 认证
+
+采用 JWT 双 Token 机制：
+
+| Token | 有效期 | 存储位置 | 用途 |
+|-------|--------|---------|------|
+| `access_token` | 30 分钟 | 前端内存（Zustand） | API 请求鉴权 |
+| `refresh_token` | 7 天 | HttpOnly Cookie | 无感刷新 access_token |
+
+- access_token 过期后前端自动使用 refresh_token 获取新 token
+- refresh_token 过期后需重新登录
+- 支持 Token 黑名单（用户主动登出时使 refresh_token 失效）
+
+### 12.2 权限模型（RBAC）
+
+| 角色 | 权限范围 |
+|------|---------|
+| `superadmin` | 全部功能 + 系统配置 + 用户管理 + 审计日志查看 |
+| `admin` | 项目管理 + 发布管理 + 数据看板 + 去重参数配置 + 数据导入 |
+| `user` | 查看分配给自己的项目 + 录入数据 + 执行分配的任务 |
+
+**权限矩阵**：
+
+| 功能模块 | superadmin | admin | user |
+|---------|-----------|-------|------|
+| 系统配置 | 读写 | 只读 | 无 |
+| 用户管理 | 增删改查 | 只读 | 无 |
+| 项目管理 | 全部项目 | 全部项目 | 仅分配给自己的 |
+| 发布管理 | 全部 | 全部 | 仅分配给自己的 |
+| 数据看板 | 全部 | 全部 | 仅录入 |
+| 去重参数配置 | 读写 | 读写 | 无 |
+| 数据导入 | 读写 | 读写 | 只读 |
+| 审计日志 | 查看 | 无 | 无 |
+| 切片 Worker 管理 | 读写 | 只读 | 无 |
+
+### 12.3 MinIO Presigned URL
+
+- 有效期：30 分钟，过期自动刷新
+- 上传 URL：前端请求后端获取临时上传 URL，直接上传到 MinIO（不经过后端）
+- 下载 URL：成品预览/下载通过 Presigned URL 直接访问 MinIO
+- 安全限制：URL 绑定具体文件路径，不可遍历其他文件
+
+### 12.4 RPA Cookie 加密
+
+- 存储方式：AES-256 加密后存入数据库
+- 加密密钥：从 `.env` 文件读取，不硬编码
+- 访问控制：仅 RPA Worker 服务可解密 Cookie
+- 传输安全：Cookie 在 API 响应中脱敏显示（`****`）
+
+### 12.5 敏感信息管理
+
+| 措施 | 说明 |
+|------|------|
+| `.env` 文件权限 | 设置为 600（仅 owner 可读写） |
+| Docker secrets | 生产环境使用 Docker secrets 管理密码 |
+| 数据库密码 | 不在代码中出现，仅通过环境变量注入 |
+| API Key | 通义千问 API Key 等通过 `.env` 管理 |
+| 日志脱敏 | 敏感字段（密码、Cookie、Token）在日志中自动脱敏 |
+
+---
+
+## 十三、监控与运维
+
+### 13.1 健康检查
+
+| 检查项 | 方式 | 说明 |
+|--------|------|------|
+| 后端服务 | `GET /health` | 返回 200 OK，包含数据库/Redis/MinIO 连接状态 |
+| Docker 容器 | `docker healthcheck` | 每个服务配置健康检查指令 |
+| Worker 节点 | Redis 心跳 | 30 秒心跳，60 秒未响应标记离线 |
+| RPA Cookie | 定时检测 | `check_cookie_status` 任务定期检查登录态 |
+
+### 13.2 任务监控
+
+| 工具 | 端口 | 说明 |
+|------|------|------|
+| Celery Flower | 5555 | 实时查看任务队列、执行状态、失败重试 |
+| Worker TUI | 终端 | 分布式切片 Worker 的 bubbletea 界面 |
+| Docker logs | — | `docker compose logs -f` 实时查看 |
+
+### 13.3 告警规则
+
+| 告警项 | 阈值 | 级别 | 说明 |
+|--------|------|------|------|
+| Worker 离线 | >60 秒无心跳 | 严重 | 分布式切片 Worker 失联 |
+| 任务失败 | 同一任务失败 >3 次 | 严重 | 需要人工介入 |
+| 磁盘使用 | >80% | 警告 | 清理临时文件或扩容 |
+| Cookie 即将过期 | 有效期 <24 小时 | 警告 | 提醒运营重新扫码 |
+| Redis 内存 | >80% 最大内存 | 警告 | 清理过期 key 或扩容 |
+| 队列积压 | 待处理任务 >100 | 警告 | 增加 Worker 节点 |
+
+### 13.4 告警通道
+
+- **钉钉机器人 Webhook**：所有告警推送到运维群
+- 消息格式：`[级别] 告警项 - 详情 - 时间`
+- 示例：`[严重] Worker mac-studio-01 离线超过 60 秒 - 2026-08-06 10:32:15`
+
+### 13.5 性能优化
+
+| 优化项 | 配置 | 说明 |
+|--------|------|------|
+| 上传并发限制 | 最多 5 个同时上传 | 防止带宽打满 |
+| 数据库分区 | `video_metrics` 按日期分区 | 提升查询性能 |
+| 数据归档 | >90 天的看板数据定期归档 | 保持主表轻量 |
+| MinIO 生命周期 | 90 天未访问 → 低频存储 | 降低存储成本 |
+| Redis TTL | 任务消息 TTL 24 小时 | 防止队列堆积 |
+| 数据库迁移 | Alembic 管理 schema 版本 | 安全迭代数据库结构 |
+
+---
+
+## 十四、部署指南
+
+### 14.1 环境要求
 
 | 配置项 | 最低要求 | 推荐配置 |
 |--------|---------|---------|
@@ -653,7 +1060,7 @@ IAA 分成收益（eCPM × 曝光 / 1000）
 | Docker | 20.10+ | 最新稳定版 |
 | Docker Compose | 2.0+ | 最新稳定版 |
 
-### 11.2 本地部署
+### 14.2 本地部署
 
 ```bash
 # 克隆代码
@@ -664,7 +1071,7 @@ cd clip-workflow
 bash deploy.sh
 ```
 
-### 11.3 阿里云部署
+### 14.3 阿里云部署
 
 ```bash
 # SSH 登录服务器后执行
@@ -675,20 +1082,21 @@ bash scripts/server-setup.sh --skip-rpa
 
 安全组需放行端口：80（Web）、9001（MinIO 控制台）。
 
-### 11.4 环境变量
+### 14.4 环境变量
 
 首次部署时从 `.env.example` 自动生成 `.env`，包含以下关键配置：
 
 | 配置段 | 关键变量 |
 |--------|---------|
-| 数据库 | `POSTGRES_PASSWORD`、`DATABASE_URL` |
-| Redis | `REDIS_PASSWORD`、`REDIS_URL`、`CELERY_BROKER_URL` |
-| MinIO | `MINIO_ROOT_PASSWORD`、`MINIO_EXTERNAL_ENDPOINT`（浏览器可访问地址，修复预览/下载） |
-| AutoClip | `DASHSCOPE_API_KEY`（通义千问 API Key）、`AUTOCLIP_ASR_METHOD`（aliyun_speech/whisper）、`WHISPER_MODEL` |
-| 分布式切片 | `SLICE_ENGINE`（worker/celery）、`WORKER_CALLBACK_BASE_URL`、`CPU_PERCENT`（默认 50） |
+| 数据库 | `POSTGRES_PASSWORD` |
+| Redis | `REDIS_PASSWORD` |
+| MinIO | `MINIO_ROOT_PASSWORD` |
+| AutoClip | `DASHSCOPE_API_KEY`（通义千问 API Key） |
 | RPA | `CHROME_DEBUG_PORT`、`RPA_REQUIRE_MANUAL_CONFIRM` |
+| 安全 | `JWT_SECRET_KEY`、`COOKIE_ENCRYPT_KEY` |
+| 切片 Worker | `SLICE_WORKER_REDIS_URL`、`SLICE_WORKER_CAPABILITY` |
 
-### 11.5 常用运维命令
+### 14.5 常用运维命令
 
 ```bash
 # 查看服务状态
@@ -709,33 +1117,21 @@ git pull && docker compose up -d --build
 # 仅启动 RPA（如需视频号发布）
 docker compose up -d rpa_worker
 
-# 查看切片节点日志
-docker compose logs -f slice-worker slice-worker-2
+# 数据库迁移
+alembic upgrade head
+
+# 查看 Celery 任务监控
+open http://localhost:5555
 ```
-
-### 11.6 分布式切片节点部署
-
-**同机扩容**（docker-compose 已内置 `slice-worker` + `slice-worker-2`）：
-
-```bash
-docker compose up -d slice-worker slice-worker-2
-```
-
-**远程物理机/Windows/macOS 节点**：
-
-- Linux 远程节点：`bash deploy_remote_worker.sh`（详见 `docs/remote-worker-部署说明.md`）
-- Windows：拷贝 `slice-worker/` 目录，双击 `windows/deploy_windows.bat`（自动编译 + 托盘模式 + 开机自启）
-- macOS：`./slice-worker/macos/build_mac.sh --run`（菜单栏图标）
-
-前置条件：服务器需开放 Redis(6379)/后端回调(80)/MinIO(9000) 端口，且 `.env` 中 `MINIO_EXTERNAL_ENDPOINT` 指向服务器 IP。
 
 ---
 
-## 十二、开发分期
+## 十五、开发分期
 
-### 一期 MVP — 已完成
+### 一期 MVP（5 周）— 已完成
 
 - 项目脚手架（FastAPI + React + Docker Compose）
+- 数据库初始化（28 张表）
 - 分片上传 + MinIO 存储
 - 素材管理 CRUD
 - AutoClip 集成（API 调用 + 配置项暴露）
@@ -744,45 +1140,44 @@ docker compose up -d slice-worker slice-worker-2
 - 帧图预览 + 视频预览
 - 数据看板 MVP（总览 + 内容分析 + 数据录入）
 
-### 二期 — 已完成
+### 二期（+4 周）
 
-- Playwright RPA Worker（视频号/抖音/快手）
+- Playwright RPA Worker
 - 视频号自动发布 + 截图确认
+- 小程序挂载引导
 - 短剧变现页（小程序/广告指标 + 分剧排行）
-- 转化漏斗完整版（含对比）
-- 数据看板 v3（智能导入 + 自定义模板 + 生态联动）
+- 转化漏斗完整版
 - 视频标签系统 + 多维交叉分析
-- 权限体系（admin/operator/publisher/material 角色）
-- 用户管理 / 个人中心
-- **分布式切片（Go Slice Worker + Redis Stream + 远程节点 + 托盘）**
-- **Worker 节点管理页 + CPU 资源分配 + 免审核一键切片**
-- **区间检测进度落库修复 + 静止画面检测修复**
-- **系统设置配置合并修复 + 平台去重默认配置**
-- **错误提示（感叹号 + Tooltip 完整错误）**
-- **成片预览多选批量下载 + 切片并发控制**
+- 异常预警
+- **分布式切片执行**（Go Worker + Redis Stream + TUI 监控）
+- **智能数据导入**（平台指纹匹配 + 手动映射 + 标准模板）
+- **安全认证体系**（JWT 双 Token + RBAC 三级权限 + Cookie 加密）
+- **数据库迁移**（Alembic 集成）
 
 ### 三期（按需）
 
+- **监控告警系统**（健康检查 + 告警规则 + 钉钉 Webhook）
+- 生态联动页（公众号/企微）
 - 小程序 API 自动拉取
 - GPU 加速编码
 - 多平台发布 API 对接
-- 目标管理
+- 性能优化（数据库分区 + 数据归档 + 存储生命周期）
 
 ---
 
-## 十三、风险与注意事项
+## 十六、风险与注意事项
 
 ### 技术风险
 
 | 风险 | 影响 | 缓解措施 |
 |------|------|---------|
-| AutoClip API 不稳定 | 选点失败 | 本地 whisper ASR 兜底 + 手动选点 fallback |
-| FFmpeg 任务 OOM | 服务崩溃 | Worker concurrency=1 + CPU 线程限制 |
+| AutoClip API 不稳定 | 选点失败 | 支持手动选点 fallback |
+| FFmpeg 任务 OOM | 服务崩溃 | Worker concurrency=1 |
 | Playwright 页面改版 | 自动发布失效 | 监控 + 告警 + 快速修复 |
 | Cookie 过期 | 发布中断 | 定期检测 + 提示扫码 |
 | 大文件上传中断 | 体验差 | tus 断点续传 |
-| Redis/MinIO 端口对外 | 安全风险 | 确认部署环境网络可信，按内网使用 |
-| 切片任务无限堆积 | 资源抢占 | 全局并发闸门（max_concurrent_tasks，超限 429） |
+| 分布式 Worker 失联 | 任务积压 | 心跳检测 + XCLAIM 重分配 + dead-letter 队列 |
+| Redis Stream 积压 | 内存溢出 | 任务消息 TTL 24h + 队列积压告警 |
 
 ### 业务风险
 
@@ -791,20 +1186,23 @@ docker compose up -d slice-worker slice-worker-2
 | 视频号检测 RPA 行为 | 账号受限 | 随机延迟 + 人工确认 + 限量（默认 20 条/天） |
 | 去重参数被识别 | 切片被限流 | 多平台 Profile 调优 |
 | 收益归因不准 | 决策偏差 | 渠道参数归因 + 间接归因双轨 |
-| 数据录入滞后 | 看板不准 | 提醒机制 + 未来 API 自动化 |
+| 数据录入滞后 | 看板不准 | 智能导入降低门槛 + 未来 API 自动化 |
 
 ---
 
-## 十四、附录
+## 十七、附录
 
-### A. 引擎脚本清单
+### A. 现有脚本清单
 
 | 文件 | 用途 | 部署位置 |
 |------|------|---------|
-| `detect_intervals.py` | 区间检测（credits 黑场 / static 静止画面 / watermark 降级） | `engines/` |
-| `slice.py` | 切片引擎（fast/dedupe/scrub + `--cpu-percent` 线程限制） | `engines/` |
-| `preview.py` | 帧图/视频预览 | `engines/` |
-| `README.md` | 引擎脚本规范说明 | `engines/` |
+| `slice.sh` | 普通切片（fast/dedupe） | `engines/` |
+| `slice_scrub.sh` | 挖洞模式切片 | `engines/` |
+| `detect_intervals.py` | 通用区间检测（黑场/静止画面/水印/自定义） | `engines/` |
+| `preview.sh` | 帧图预览 | `engines/` |
+| `batch_all.sh` | 批量处理 | `engines/` |
+| `dedupe.conf` | 去重参数模板 | `engines/` |
+| `autoclip2cutlist.py` | AutoClip 结果转 cutlist | `engines/` |
 
 ### B. AutoClip 配置参数
 
@@ -812,17 +1210,15 @@ docker compose up -d slice-worker slice-worker-2
 AUTOCLIP_CONFIG = {
     "llm_provider": "dashscope",
     "llm_model": "qwen-plus",
-    "asr_model": "qwen3-asr-flash",       # 或本地 faster-whisper（AUTOCLIP_ASR_METHOD=whisper）
+    "asr_model": "qwen3-asr-flash",
     "asr_segment_seconds": 270,
     "min_score_threshold": 60,
-    "max_clips": 30,                      # 可选：自定义切片数量
+    "max_clips": 30,
     "min_duration": 30,
     "max_duration": 180,
     "chunk_size_minutes": 30,
     "timeline_temperature": 0.3,
     "scoring_temperature": 0.1,
-    "start_time": None,                   # 可选：选点时间范围（秒）
-    "end_time": None,
 }
 ```
 
@@ -867,6 +1263,6 @@ WATERMARK=off
 
 ---
 
-> 仓库地址：https://cnb.cool/ben500500/clip-workflow
+> GitHub 仓库：https://github.com/ben500500/clip-workflow
 >
 > 本文档随项目迭代持续更新。
