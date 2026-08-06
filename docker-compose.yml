@@ -172,7 +172,7 @@ services:
       WHISPER_MODEL: /app/whisper-model
       AUTOCLIP_ASR_METHOD: ${AUTOCLIP_ASR_METHOD:-whisper}
     ports:
-      - "127.0.0.1:${AUTOCLIP_STANDALONE_PORT:-8002}:8000"
+      - "${AUTOCLIP_STANDALONE_PORT:-8002}:8000"
     volumes:
       - media_data:/app/media
       # 独立实例使用独立的元数据/项目数据目录（内存态 + 磁盘元数据）
