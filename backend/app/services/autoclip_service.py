@@ -94,18 +94,25 @@ async def get_clips(
     autoclip_project_id: str,
     min_score: float = 60.0,
     max_clips: int = 30,
+    min_duration: float = 0.0,
+    max_duration: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Get clip candidates from AutoClip."""
     url = f"{settings.AUTOCLIP_URL}/clips"
+    params = {
+        "project_id": autoclip_project_id,
+        "min_score": min_score,
+        "max_clips": max_clips,
+    }
+    if min_duration and min_duration > 0:
+        params["min_duration"] = min_duration
+    if max_duration and max_duration > 0:
+        params["max_duration"] = max_duration
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.get(
                 url,
-                params={
-                    "project_id": autoclip_project_id,
-                    "min_score": min_score,
-                    "max_clips": max_clips,
-                },
+                params=params,
             )
             resp.raise_for_status()
             data = resp.json()

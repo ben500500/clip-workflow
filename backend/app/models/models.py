@@ -233,6 +233,7 @@ class SystemConfig(Base):
 
     key = Column(String(100), primary_key=True)
     value = Column(JSON, nullable=True)
+    description = Column(String(500), nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     def __repr__(self) -> str:
@@ -245,6 +246,7 @@ class PlatformProfile(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(100), unique=True, nullable=False)
     platform = Column(String(50), nullable=True)
+    description = Column(String(500), nullable=True)
     dedupe_config = Column(JSON, nullable=True)
     target_resolution = Column(String(50), nullable=True)
     target_bitrate = Column(String(50), nullable=True)

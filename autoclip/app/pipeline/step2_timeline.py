@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class TimelineExtractor:
     """从大纲和SRT字幕中提取精确时间线"""
     
-    def __init__(self, metadata_dir: Path = None, prompt_files: Dict = None):
+    def __init__(self, metadata_dir: Path = None, prompt_files: Dict = None, duration_config: Optional[Dict] = None):
         self.llm_client = LLMClient()
         self.text_processor = TextProcessor()
         
@@ -31,11 +31,83 @@ class TimelineExtractor:
         prompt_files_to_use = prompt_files if prompt_files is not None else PROMPT_FILES
         with open(prompt_files_to_use['timeline'], 'r', encoding='utf-8') as f:
             self.timeline_prompt = f.read()
+
+        # 自定义时长范围（秒），由前端传入，注入提示词指导生成
+        self.duration_config = duration_config or {}
+        self._apply_duration_config()
             
         # SRT块的目录
         self.srt_chunks_dir = self.metadata_dir / "step1_srt_chunks"
         self.timeline_chunks_dir = self.metadata_dir / "step2_timeline_chunks"
         self.llm_raw_output_dir = self.metadata_dir / "step2_llm_raw_output"
+
+    def _apply_duration_config(self):
+        """把自定义时长范围注入时间线提示词，覆盖默认时长规则。"""
+        min_dur = float(self.duration_config.get("min_duration") or 0)
+        max_dur = float(self.duration_config.get("max_duration") or 0)
+        if min_dur <= 0 and max_dur <= 0:
+            return
+
+        # 构造自定义时长规则文本
+        rules_lines = []
+        if min_dur > 0:
+            rules_lines.append(f"- **硬性最小时长**：每个话题片段必须至少 {min_dur:.0f} 秒，低于此时长的片段必须与相邻话题合并或扩展")
+        if max_dur > 0:
+            rules_lines.append(f"- **最大时长**：单个话题不应超过 {max_dur:.0f} 秒，过长的需要适当拆分成多个子话题")
+        custom_rules = "\n".join(rules_lines)
+
+        # 1) 替换默认“时长控制原则”小节（仅该 ### 小节）
+        section_start = self.timeline_prompt.find("### 时长控制原则（严格执行）：")
+        if section_start != -1:
+            # 找到下一个标题（## 或 ###）作为小节结束边界
+            tail = self.timeline_prompt[section_start + 1:]
+            next_heading = re.search(r"\n#{2,3} ", tail)
+            if next_heading:
+                section_end = section_start + 1 + next_heading.start()
+            else:
+                section_end = len(self.timeline_prompt)
+            replacement = (
+                "### 时长控制原则（用户自定义，严格执行）：\n"
+                + custom_rules
+                + "\n-   **合并策略**：如果相邻的两个话题时长都不足最小时长，且语义相关，必须合并为一个片段\n"
+                + "-   **质量优先**：宁可片段稍长但内容完整，也不要为了追求数量而产生内容不完整的短片段\n"
+            )
+            self.timeline_prompt = self.timeline_prompt[:section_start] + replacement + self.timeline_prompt[section_end:]
+
+        # 2) 替换默认“时长验证与合并流程”小节（包含 90 秒等默认规则）
+        verify_start = self.timeline_prompt.find("## 时长验证与合并流程")
+        if verify_start != -1:
+            tail = self.timeline_prompt[verify_start + 1:]
+            next_heading = re.search(r"\n## ", tail)
+            if next_heading:
+                verify_end = verify_start + 1 + next_heading.start()
+            else:
+                verify_end = len(self.timeline_prompt)
+            self.timeline_prompt = self.timeline_prompt[:verify_start] + self.timeline_prompt[verify_end:]
+
+        # 3) 替换默认硬编码的最小时长校验（>=90 秒等，可能散落在其它小节）
+        default_checks = [
+            "**最终验证**：输出前必须验证每个话题的时长（end_time - start_time）≥ 90秒",
+            "**重要提醒：绝对不允许输出任何少于90秒的话题片段！**",
+            "如果任何话题时长少于90秒，标记为需要合并",
+            "合并后总时长不超过8分钟",
+            "确保所有输出的话题片段都满足最小时长要求",
+            "**禁止输出**：任何时长少于90秒的话题片段，必须通过合并或扩展解决",
+        ]
+        for old in default_checks:
+            self.timeline_prompt = self.timeline_prompt.replace(old, "")
+
+        # 4) 追加一条自定义校验说明，确保 LLM 输出前按用户时长校验
+        extra = (
+            "\n\n## 用户自定义时长校验（必须执行）\n"
+            "在确定每个话题的时间区间后，必须执行以下验证：\n"
+        )
+        if min_dur > 0:
+            extra += f"- 时长计算：end_time - start_time 必须 >= {min_dur:.0f} 秒；不满足时需与相邻话题合并或扩展\n"
+        if max_dur > 0:
+            extra += f"- 时长检查：end_time - start_time 不得超过 {max_dur:.0f} 秒；过长时需适当拆分\n"
+        extra += "\n最终输出前，必须确保所有话题片段时长都满足上述用户自定义范围。"
+        self.timeline_prompt = self.timeline_prompt + extra
 
     def extract_timeline(self, outlines: List[Dict]) -> List[Dict]:
         """
@@ -338,14 +410,14 @@ class TimelineExtractor:
         with open(input_path, 'r', encoding='utf-8') as f:
             return json.load(f)
 
-def run_step2_timeline(outline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None) -> List[Dict]:
+def run_step2_timeline(outline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None, duration_config: Optional[Dict] = None) -> List[Dict]:
     """
     运行Step 2: 时间点提取
     """
     if metadata_dir is None:
         metadata_dir = METADATA_DIR
         
-    extractor = TimelineExtractor(metadata_dir, prompt_files)
+    extractor = TimelineExtractor(metadata_dir, prompt_files, duration_config=duration_config)
     
     # 加载大纲
     with open(outline_path, 'r', encoding='utf-8') as f:
