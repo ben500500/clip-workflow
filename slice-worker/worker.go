@@ -486,6 +486,13 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 			completed := int(atomic.LoadInt32(&w.totalCompleted))
 			failed := int(atomic.LoadInt32(&w.totalFailed))
 			w.redis.Heartbeat(w.config.NodeID, current, completed, failed, w.config.HeartbeatTTL())
+
+			// 同时向后端 DB 同步节点数据（双写，保证 Worker 节点界面/数据库有数据）
+			if err := w.sendBackendHeartbeat(); err != nil {
+				w.log("warn", "后端心跳同步失败: %v", err)
+			} else {
+				w.log("debug", "后端心跳同步成功")
+			}
 		}
 	}
 }

@@ -173,6 +173,8 @@ class SliceTask(Base):
     cutlist = Column(Text, nullable=True)
     intervals = Column(Text, nullable=True)
     dedupe_config = Column(JSON, nullable=True)
+    # 自定义文字水印配置（开启时透传给引擎，重试时保留）
+    watermark_config = Column(JSON, nullable=True)
     status = Column(String(50), nullable=True)
     progress = Column(Float, default=0.0)
     output_count = Column(Integer, default=0)

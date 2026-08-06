@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip, Alert,
+  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip, Alert, Switch, InputNumber, Input,
 } from 'antd';
 import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, DesktopOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -35,6 +35,12 @@ const SliceTasks: React.FC = () => {
   const [currentTask, setCurrentTask] = useState<string | null>(null);
   const [mode, setMode] = useState('fast');
   const [engine, setEngine] = useState('worker');
+  // 自定义文字水印开关与参数
+  const [watermarkEnabled, setWatermarkEnabled] = useState(false);
+  const [watermarkText, setWatermarkText] = useState('');
+  const [watermarkFontSize, setWatermarkFontSize] = useState(28);
+  const [watermarkOpacity, setWatermarkOpacity] = useState(0.5);
+  const [watermarkPosition, setWatermarkPosition] = useState('bottom');
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
 
@@ -59,7 +65,14 @@ const SliceTasks: React.FC = () => {
   const runSlice = async () => {
     setRunning(true);
     try {
-      const res = await sliceApi.run(episodeId || '', mode, { engine });
+      const res = await sliceApi.run(episodeId || '', mode, {
+        engine,
+        watermark_enabled: watermarkEnabled,
+        watermark_text: watermarkEnabled ? watermarkText : undefined,
+        watermark_font_size: watermarkEnabled ? watermarkFontSize : undefined,
+        watermark_opacity: watermarkEnabled ? watermarkOpacity : undefined,
+        watermark_position: watermarkEnabled ? watermarkPosition : undefined,
+      });
       message.success(res.message);
       fetchTasks();
     } catch (err: unknown) {
@@ -307,6 +320,58 @@ const SliceTasks: React.FC = () => {
           <Text type="secondary" style={{ fontSize: 12 }}>
             {engine === 'worker' ? '分布式 Worker 节点执行' : 'Celery 队列（回退）'}
           </Text>
+          {/* 自定义文字水印开关 */}
+          <Switch
+            size="small"
+            checked={watermarkEnabled}
+            onChange={setWatermarkEnabled}
+            checkedChildren="水印开"
+            unCheckedChildren="水印"
+          />
+          {watermarkEnabled && (
+            <>
+              <Input
+                size="small"
+                style={{ width: 160 }}
+                placeholder="水印文字（留空=标题+日期）"
+                value={watermarkText}
+                onChange={(e) => setWatermarkText(e.target.value)}
+              />
+              <Tooltip title="水印字号">
+                <InputNumber
+                  size="small"
+                  min={12}
+                  max={120}
+                  value={watermarkFontSize}
+                  onChange={(v) => setWatermarkFontSize(v ?? 28)}
+                  style={{ width: 70 }}
+                  addonBefore="字号"
+                />
+              </Tooltip>
+              <Tooltip title="水印透明度">
+                <InputNumber
+                  size="small"
+                  min={5}
+                  max={100}
+                  value={Math.round(watermarkOpacity * 100)}
+                  onChange={(v) => setWatermarkOpacity((v ?? 50) / 100)}
+                  style={{ width: 90 }}
+                  addonBefore="透明"
+                  addonAfter="%"
+                />
+              </Tooltip>
+              <Select
+                size="small"
+                style={{ width: 80 }}
+                value={watermarkPosition}
+                onChange={setWatermarkPosition}
+                options={[
+                  { value: 'bottom', label: '底部' },
+                  { value: 'top', label: '顶部' },
+                ]}
+              />
+            </>
+          )}
           <Button type="primary" icon={<PlayCircleOutlined />} loading={running} onClick={runSlice}>新建切片任务</Button>
           <Button icon={<ReloadOutlined />} onClick={() => fetchTasks()}>刷新</Button>
         </Space>

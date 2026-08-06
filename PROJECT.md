@@ -347,7 +347,57 @@ audit:
 | `POST` | `/api/slice/execute` | 执行切片 |
 | `GET` | `/api/preview/{id}` | 获取预览 |
 
-### 6.2 发布管理 API（v2）
+### 6.2 选点与区间检测 API
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/episodes/{id}/autoclip/run` | 启动 AI 选点 |
+| `GET` | `/api/episodes/{id}/autoclip/progress` | 选点进度（含 error_message） |
+| `GET` | `/api/episodes/{id}/autoclip/clips` | 候选片段列表 |
+| `PUT` | `/api/clips/{clip_id}` | 审核/调整片段（通过/拒绝/改时间） |
+| `POST` | `/api/episodes/{id}/autoclip/regenerate` | 重新选点 |
+| `POST` | `/api/episodes/{id}/intervals/detect` | 启动区间检测 |
+| `GET` | `/api/episodes/{id}/intervals/progress` | 检测进度（含 error_message） |
+| `GET` | `/api/episodes/{id}/intervals` | 区间列表 |
+| `POST` | `/api/intervals` | 手动添加区间 |
+| `PUT` | `/api/intervals/{id}` | 更新区间 |
+| `DELETE` | `/api/intervals/{id}` | 删除区间 |
+| `PUT` | `/api/intervals/{id}/toggle` | 启用/停用区间 |
+
+### 6.3 切片 API
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/episodes/{id}/slice/run` | 执行切片（auto_accept_all 免审核一键切片；watermark_enabled/watermark_text 等参数支持动态文字水印） |
+| `GET` | `/api/episodes/{id}/slice/tasks` | 切片任务列表（排除 detect_* 记录） |
+| `GET` | `/api/slice-tasks/{id}` | 任务详情 |
+| `GET` | `/api/slice-tasks/{id}/outputs` | 任务输出 |
+| `GET` | `/api/slice-tasks/{id}/upload-url` | Worker 上传预签名 URL |
+| `POST` | `/api/slice-tasks/{id}/callback` | Worker 回调（完成/失败） |
+| `POST` | `/api/slice-tasks/{id}/progress` | Worker 进度上报 |
+| `POST` | `/api/slice-tasks/{id}/retry` | 重试切片 |
+| `POST` | `/api/slice-tasks/{id}/cancel` | 取消切片 |
+| `DELETE` | `/api/slice-tasks/{id}` | 删除切片（级联删 MinIO 与 DB） |
+
+### 6.4 预览与下载 API
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/outputs/{id}/preview/frames` | 帧图预览 |
+| `GET` | `/api/outputs/{id}/preview/video` | 视频预览 |
+| `GET` | `/api/outputs/{id}/download` | 单文件下载 |
+| `POST` | `/api/outputs/batch-download` | 多选批量下载（返回 presigned 直链列表，前端逐个下载） |
+
+### 6.5 Worker 节点管理 API
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/workers/heartbeat` | 节点心跳注册 |
+| `GET` | `/api/workers` | 节点列表 |
+| `GET` | `/api/workers/{node_id}` | 节点详情 |
+| `POST` | `/api/workers/{node_id}/enable` | 启用节点 |
+| `POST` | `/api/workers/{node_id}/disable` | 停用节点（不再领取新任务） |
+| `POST` | `/api/workers/{node_id}/cpu-percent` | 调整节点 CPU 分配比例 |
+| `POST` | `/api/workers/sync-redis` | 从 Redis 同步节点状态 |
+
+### 6.6 发布管理 API（v2）
+
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -360,7 +410,7 @@ audit:
 | `PUT` | `/api/publish/profiles/{id}` | 更新发布配置 |
 | `DELETE` | `/api/publish/profiles/{id}` | 删除发布配置 |
 
-### 6.3 数据看板 API（v2）
+### 6.7 数据看板 API（v2）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -379,7 +429,7 @@ audit:
 | `GET` | `/api/dashboard/funnel/trend` | 漏斗趋势 |
 | `GET/PUT` | `/api/dashboard/config` | 看板配置 |
 
-### 6.4 智能数据导入 API（v3）
+### 6.8 智能数据导入 API（v3）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -390,7 +440,7 @@ audit:
 | `POST` | `/api/dashboard/import/templates/custom` | 保存自定义模板 |
 | `GET` | `/api/dashboard/import/history` | 导入历史记录 |
 
-### 6.5 WebSocket
+### 6.9 WebSocket
 
 | 路径 | 说明 |
 |------|------|
@@ -406,12 +456,12 @@ audit:
 |------|------|------|
 | `/dashboard` | 仪表盘 | 项目概览、最近任务 |
 | `/projects` | 项目列表 | 项目 CRUD |
-| `/projects/:id` | 项目详情 | 剧集列表、项目设置 |
-| `/episodes/:id` | 剧集详情 | 素材信息、操作入口 |
-| `/episodes/:id/clips` | 片段审核 | AI 选点结果审核 |
-| `/episodes/:id/intervals` | 区间检测 | 挖洞区间审核 |
-| `/episodes/:id/slice` | 切片任务 | 切片执行与进度 |
-| `/episodes/:id/preview` | 输出预览 | 帧图/视频预览、下载 |
+| `/projects/:id` | 项目详情 | 剧集列表、上传与剧集列表上下排布 |
+| `/episodes/:id` | 剧集详情 | 素材信息、选点/区间检测/切片操作入口（含错误提示） |
+| `/episodes/:id/clips` | 片段审核 | AI 选点结果审核、视频预览、一键通过/拒绝 |
+| `/episodes/:id/intervals` | 区间检测 | 挖洞区间审核（启用/停用/删除/手动添加） |
+| `/episodes/:id/slice` | 切片任务 | 切片执行与进度（显示执行节点、自定义文字水印开关） |
+| `/episodes/:id/preview` | 输出预览 | 视频预览（点击行区域直接展开）、多选批量下载、任务下拉 |
 | `/publish` | 发布管理 | 发布任务列表、配置管理 |
 | `/analytics/overview` | 数据总览 | 收益卡片、趋势图、漏斗、TOP5 |
 | `/analytics/content` | 内容分析 | 视频数据表、排行、多维筛选 |
@@ -1194,6 +1244,22 @@ WATERMARK=off
 |------|--------|------|
 | [social-auto-upload](https://github.com/loongtrip/social-auto-upload) | Playwright + Vue | 多平台发布 |
 | [kay-video-upload](https://github.com/changyikang/kay-video-upload) | Playwright | 定时发布、封面设置 |
+
+### E. 近期变更日志（v2.0 → v2.1）
+
+| 日期 | 变更 |
+|------|------|
+| 2026-08-06 | 一键切片移到剧集详情工作台入口；Worker 心跳双写后端 DB；成品预览点击整行展开视频；切片执行支持自定义文字动态水印 |
+| 2026-08-06 | 分布式切片方案（Go Worker + Redis Stream + 远程节点/托盘/CPU 分配） |
+| 2026-08-06 | Worker 节点管理页、Header 节点状态图标、启停/CPU 调整 |
+| 2026-08-06 | 免审核一键切片、成片预览多选批量下载、切片并发闸门 |
+| 2026-08-06 | 区间检测进度落库修复（进度条消失）、静止画面检测正则修复 |
+| 2026-08-06 | 成品预览任务下拉修复（NULL mode 过滤）、节点状态图标轮询、弹窗底色 |
+| 2026-08-06 | 系统设置配置合并修复 + 平台去重默认配置预置 |
+| 2026-08-06 | 错误提示组件（感叹号 + Tooltip 完整错误） |
+| 2026-08-06 | 数据看板 v3（智能导入/自定义模板/生态联动/漏斗对比） |
+| 2026-08-06 | 权限体系 + 用户管理 + 个人中心 |
+| 2026-08-06 | AutoClip 支持 max_clips / start_time / end_time、本地 whisper ASR |
 
 ---
 

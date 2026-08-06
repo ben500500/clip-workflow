@@ -67,6 +67,9 @@ class WorkerHeartbeatRequest(BaseModel):
     max_concurrent: int = 2
     current_tasks: int = 0
     status: str = "online"
+    # 累计完成/失败任务数（心跳同步到 DB，保证 Worker 节点界面有数据）
+    total_tasks_completed: int = 0
+    total_tasks_failed: int = 0
 
 
 def _serialize_node(node: WorkerNode) -> dict:
@@ -116,6 +119,9 @@ async def worker_heartbeat(
         node.current_tasks = data.current_tasks
         node.status = data.status
         node.last_heartbeat = now
+        # 累计完成/失败数同步（Worker 心跳携带）
+        node.total_tasks_completed = data.total_tasks_completed or 0
+        node.total_tasks_failed = data.total_tasks_failed or 0
     else:
         node = WorkerNode(
             node_id=data.node_id,
@@ -128,6 +134,8 @@ async def worker_heartbeat(
             max_concurrent=data.max_concurrent,
             current_tasks=data.current_tasks,
             status=data.status,
+            total_tasks_completed=data.total_tasks_completed or 0,
+            total_tasks_failed=data.total_tasks_failed or 0,
             last_heartbeat=now,
             started_at=now,
         )

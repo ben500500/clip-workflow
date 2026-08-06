@@ -350,12 +350,14 @@ type SliceTask struct {
 	Cutlist        string             `json:"cutlist"`
 	Intervals      string             `json:"intervals"`
 	DedupeConfig   map[string]float64 `json:"dedupe_config"`
-	Output         TaskOutput         `json:"output"`
-	TimeoutSec     int                `json:"timeout_seconds"`
-	SourceDuration float64            `json:"source_duration"`
-	RetryCount     int                `json:"retry_count"`
-	RetryAt        int64              `json:"retry_at,omitempty"`
-	CreatedAt      string             `json:"created_at"`
+	// 自定义文字水印配置（可选，后端透传，引擎叠加动态文字水印）
+	Watermark      map[string]interface{} `json:"watermark"`
+	Output         TaskOutput             `json:"output"`
+	TimeoutSec     int                    `json:"timeout_seconds"`
+	SourceDuration float64                `json:"source_duration"`
+	RetryCount     int                    `json:"retry_count"`
+	RetryAt        int64                  `json:"retry_at,omitempty"`
+	CreatedAt      string                 `json:"created_at"`
 }
 
 // TaskSource 任务素材来源

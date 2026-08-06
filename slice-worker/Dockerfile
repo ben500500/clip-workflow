@@ -19,7 +19,9 @@ RUN apk add --no-cache \
     bash \
     ca-certificates \
     tzdata \
-    gettext
+    gettext \
+    font-noto-cjk \
+    fontconfig
 
 WORKDIR /app
 COPY --from=builder /build/slice-worker .

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Space, Typography, Spin, Alert, Breadcrumb, Descriptions, Tag, message, Select, Row, Col, Progress,
-  Steps, InputNumber, Tooltip,
+  Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
@@ -57,6 +57,12 @@ const EpisodeDetail: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [detectMode, setDetectMode] = useState('credits');
   const [sliceMode, setSliceMode] = useState('fast');
+  // ── 切片自定义文字水印开关与参数 ──
+  const [watermarkEnabled, setWatermarkEnabled] = useState(false);
+  const [watermarkText, setWatermarkText] = useState('');
+  const [watermarkFontSize, setWatermarkFontSize] = useState(28);
+  const [watermarkOpacity, setWatermarkOpacity] = useState(0.5);
+  const [watermarkPosition, setWatermarkPosition] = useState('bottom');
   const [maxClips, setMaxClips] = useState(10);
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
@@ -68,6 +74,8 @@ const EpisodeDetail: React.FC = () => {
   const [detectResultCount, setDetectResultCount] = useState<number | null>(null);
   const [sliceRunning, setSliceRunning] = useState(false);
   const [sliceProgress, setSliceProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
+  // 一键切片（免审核直接出片，位于工作台入口）
+  const [oneClickSlicing, setOneClickSlicing] = useState(false);
 
   const autoclipTimerRef = useRef<number | null>(null);
   const detectTimerRef = useRef<number | null>(null);
@@ -372,12 +380,36 @@ const EpisodeDetail: React.FC = () => {
     }
   };
 
+  // ─── 一键切片（免审核直接出片） ──────────────────────
+  const oneClickSlice = async () => {
+    setOneClickSlicing(true);
+    try {
+      // auto_accept_all=true：后端自动把所有候选片段（含 pending）纳入切片，
+      // 无需逐个审核/预览，直接产出成品视频
+      const res = await sliceApi.run(episodeId, 'fast', { auto_accept_all: true });
+      message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
+      message.info('切片完成后请到「成品预览」查看并下载结果');
+      fetchEpisode();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '一键切片失败');
+    } finally {
+      setOneClickSlicing(false);
+    }
+  };
+
   // ─── 启动切片 ───────────────────────────────────────
   const runSlice = async () => {
     setSliceRunning(true);
     setSliceProgress({ status: 'running', progress: 5, message: '正在提交切片任务…' });
     try {
-      const res = await sliceApi.run(episodeId, sliceMode, {});
+      const res = await sliceApi.run(episodeId, sliceMode, {
+        // 自定义文字水印：开启后后端下发给引擎，在成品视频上叠加动态文字水印
+        watermark_enabled: watermarkEnabled,
+        watermark_text: watermarkEnabled ? watermarkText : undefined,
+        watermark_font_size: watermarkEnabled ? watermarkFontSize : undefined,
+        watermark_opacity: watermarkEnabled ? watermarkOpacity : undefined,
+        watermark_position: watermarkEnabled ? watermarkPosition : undefined,
+      });
       message.success(res.message);
       // 启动后轮询任务进度
       if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
@@ -665,6 +697,65 @@ const EpisodeDetail: React.FC = () => {
               </Text>
             </Space>
           </Card>
+
+          {/* ── 自定义文字水印开关 ── */}
+          <Card size="small" style={{ width: '100%' }}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space>
+                <Switch checked={watermarkEnabled} onChange={setWatermarkEnabled} size="small" />
+                <Text strong style={{ fontSize: 13 }}>动态文字水印</Text>
+                <Tooltip title="开启后会在切片成品视频上叠加动态文字水印（文字缓慢移动 + 透明度呼吸），可用于防搬运/标识来源。">
+                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                </Tooltip>
+              </Space>
+              {watermarkEnabled && (
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Space style={{ width: '100%' }} wrap>
+                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>水印文字:</Text>
+                    <Input
+                      size="small"
+                      style={{ width: 220 }}
+                      placeholder="留空默认：剧集标题 + 日期（支持 {title} {date} {datetime}）"
+                      value={watermarkText}
+                      onChange={(e) => setWatermarkText(e.target.value)}
+                    />
+                  </Space>
+                  <Space style={{ width: '100%' }} wrap>
+                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>字号:</Text>
+                    <InputNumber
+                      size="small"
+                      min={12}
+                      max={120}
+                      value={watermarkFontSize}
+                      onChange={(v) => setWatermarkFontSize(v ?? 28)}
+                      style={{ width: 80 }}
+                    />
+                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>透明度:</Text>
+                    <Slider
+                      style={{ width: 120, margin: '0 8px' }}
+                      min={5}
+                      max={100}
+                      value={Math.round(watermarkOpacity * 100)}
+                      onChange={(v) => setWatermarkOpacity(v / 100)}
+                    />
+                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{Math.round(watermarkOpacity * 100)}%</Text>
+                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>位置:</Text>
+                    <Select
+                      size="small"
+                      style={{ width: 90 }}
+                      value={watermarkPosition}
+                      onChange={setWatermarkPosition}
+                      options={[
+                        { value: 'bottom', label: '底部' },
+                        { value: 'top', label: '顶部' },
+                      ]}
+                    />
+                  </Space>
+                </Space>
+              )}
+            </Space>
+          </Card>
+
           {/* 进度条：切片动作 tab 最底部 */}
           {renderProgress(sliceProgress)}
         </Space>
@@ -695,6 +786,25 @@ const EpisodeDetail: React.FC = () => {
           <Button ghost icon={<RadarChartOutlined />} onClick={() => navigate(`/episodes/${episodeId}/intervals`)}>区间检测</Button>
           <Button ghost icon={<ScissorOutlined />} onClick={() => navigate(`/episodes/${episodeId}/slice`)}>切片任务</Button>
           <Button ghost icon={<PlayCircleOutlined />} onClick={() => navigate(`/episodes/${episodeId}/preview`)}>成品预览</Button>
+          {/* 一键切片：免审核直接出片，放在工作台入口处，方便快速出片 */}
+          <Popconfirm
+            title="一键切片"
+            description="免审核直接出片：自动把所有候选片段（含待审核）直接切割成成品视频，无需逐个审核/预览。"
+            onConfirm={oneClickSlice}
+            okText="开始切片"
+            cancelText="取消"
+            disabled={oneClickSlicing}
+          >
+            <Button
+              type="primary"
+              danger
+              icon={<ScissorOutlined />}
+              loading={oneClickSlicing}
+              disabled={oneClickSlicing}
+            >
+              一键切片
+            </Button>
+          </Popconfirm>
         </Space>
       </Card>
 

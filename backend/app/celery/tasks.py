@@ -336,6 +336,7 @@ def slice_task(
     dedupe_config: Optional[dict] = None,
     task_id: Optional[str] = None,
     source_file_key: Optional[str] = None,
+    watermark_config: Optional[dict] = None,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows."""
     from app.services.slice_service import run_slice_scrub, run_slice_fast
@@ -377,6 +378,7 @@ def slice_task(
                     intervals_path,
                     output_dir,
                     progress_cb=progress_cb,
+                    watermark_config=watermark_config,
                 )
             )
         else:
@@ -387,6 +389,7 @@ def slice_task(
                     output_dir,
                     mode,
                     progress_cb=progress_cb,
+                    watermark_config=watermark_config,
                 )
             )
 
