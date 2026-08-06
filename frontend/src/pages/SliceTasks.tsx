@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip,
+  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip, Alert,
 } from 'antd';
-import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { sliceApi } from '../api/slice';
 import type { SliceOutput, SliceTask } from '../types';
@@ -77,6 +77,29 @@ const SliceTasks: React.FC = () => {
     }
   };
 
+  // ─── 总体进度计算 ──────────────────────────────────
+  const runningTasks = tasks.filter((t) => t.status === 'running' || t.status === 'pending');
+  const completedTasks = tasks.filter((t) => t.status === 'completed');
+  const failedTasks = tasks.filter((t) => t.status === 'failed');
+  const cancelledTasks = tasks.filter((t) => t.status === 'cancelled');
+
+  // 当前正在运行的任务的平均进度
+  const averageProgress = runningTasks.length > 0
+    ? Math.round(runningTasks.reduce((sum, t) => sum + (t.progress || 0), 0) / runningTasks.length)
+    : 0;
+
+  // 总任务进度（所有非取消任务的进度加权平均）
+  const activeTasks = tasks.filter((t) => t.status !== 'cancelled');
+  const totalProgress = activeTasks.length > 0
+    ? Math.round(activeTasks.reduce((sum, t) => {
+        if (t.status === 'completed') return sum + 100;
+        if (t.status === 'failed') return sum + 100; // 失败的也算完成
+        return sum + (t.progress || 0);
+      }, 0) / activeTasks.length)
+    : 0;
+
+  const hasRunningTask = runningTasks.length > 0;
+
   const columns = [
     {
       title: '模式',
@@ -98,11 +121,18 @@ const SliceTasks: React.FC = () => {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 120,
+      width: 160,
       render: (s: string, t: SliceTask) => (
-        <Space direction="vertical" size={0}>
+        <Space direction="vertical" size={2} style={{ width: '100%' }}>
           <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>
-          {t.status === 'running' && <Progress percent={t.progress} size="small" style={{ width: 100 }} />}
+          {(t.status === 'running' || t.status === 'pending') && (
+            <Progress
+              percent={t.progress || 0}
+              size="small"
+              style={{ width: 120 }}
+              status={t.status === 'pending' ? 'active' : 'active'}
+            />
+          )}
         </Space>
       ),
     },
@@ -175,6 +205,47 @@ const SliceTasks: React.FC = () => {
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(`/episodes/${episodeId}`)}>返回</Button>
         <Title level={4} style={{ margin: 0 }}>切片任务</Title>
       </Space>
+
+      {/* ── 总体进度 ── */}
+      {tasks.length > 0 && (
+        <Card size="small" style={{ marginBottom: 16 }}>
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Space wrap>
+              <Text strong>总体进度</Text>
+              <Tag color="blue">总计: {tasks.length}</Tag>
+              <Tag color="processing">运行中: {runningTasks.length}</Tag>
+              <Tag color="green">已完成: {completedTasks.length}</Tag>
+              <Tag color="red">失败: {failedTasks.length}</Tag>
+              {cancelledTasks.length > 0 && <Tag>已取消: {cancelledTasks.length}</Tag>}
+            </Space>
+            <Progress
+              percent={totalProgress}
+              status={failedTasks.length > 0 && runningTasks.length === 0 ? 'exception' : hasRunningTask ? 'active' : 'success'}
+              strokeColor={totalProgress === 100 && failedTasks.length === 0 ? '#52c41a' : undefined}
+              format={(p) => `${p}%`}
+            />
+            {hasRunningTask && (
+              <Space>
+                <Text type="secondary">
+                  当前 {runningTasks.length} 个任务运行中
+                  {runningTasks.length > 0 && `，平均进度 ${averageProgress}%`}
+                </Text>
+              </Space>
+            )}
+            {!hasRunningTask && completedTasks.length === tasks.length && tasks.length > 0 && (
+              <Alert
+                type="success"
+                showIcon
+                icon={<CheckCircleOutlined />}
+                message="所有切片任务已完成"
+                style={{ marginBottom: 0 }}
+              />
+            )}
+          </Space>
+        </Card>
+      )}
+
+      {/* ── 新建任务 ── */}
       <Card size="small" style={{ marginBottom: 16 }}>
         <Space>
           <Select value={mode} onChange={setMode} style={{ width: 140 }}
@@ -192,9 +263,12 @@ const SliceTasks: React.FC = () => {
           <Button icon={<ReloadOutlined />} onClick={() => fetchTasks()}>刷新</Button>
         </Space>
       </Card>
+
+      {/* ── 任务列表 ── */}
       <Card size="small" title="任务列表" style={{ marginBottom: 16 }}>
         <Table rowKey="id" columns={columns} dataSource={tasks} loading={loading} pagination={false} size="small" />
       </Card>
+
       {currentTask && (
         <Card size="small" title={`输出文件（任务 ${currentTask}）`}>
           <Table rowKey="id" columns={outputColumns} dataSource={outputs} pagination={false} size="small" />

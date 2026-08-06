@@ -35,4 +35,11 @@ export const projectApi = {
 
   deleteEpisode: (episodeId: string) =>
     client.delete(`/episodes/${episodeId}`) as Promise<void>,
+
+  getVideoUrl: (episodeId: string) =>
+    client.get(`/episodes/${episodeId}/video-url`) as Promise<{
+      url: string;
+      duration: number | null;
+      title: string | null;
+    }>,
 };

@@ -225,9 +225,10 @@ async def get_autoclip_progress(
         "failed": "选点任务执行失败",
     }
     status = autoclip_project.pipeline_status or "pending"
+    progress_value = 100.0 if status == "completed" else 0.0
     return AutoClipProgressResponse(
         status=status_map.get(status, "unknown"),
-        progress=0,
+        progress=progress_value,
         message=message_map.get(status, status),
     )
 
