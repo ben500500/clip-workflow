@@ -113,6 +113,7 @@ async def _apply_compat_migrations():
         ("slice_tasks", "source_bucket", "VARCHAR(50)"),
         ("slice_tasks", "source_file_key", "VARCHAR(500)"),
         ("slice_tasks", "watermark_config", "JSON"),
+        ("slice_tasks", "vert2horiz_config", "JSON"),
         ("worker_nodes", "enabled", "BOOLEAN DEFAULT TRUE"),
         ("worker_nodes", "cpu_percent", "INTEGER DEFAULT 50"),
         ("system_config", "description", "VARCHAR(500)"),
