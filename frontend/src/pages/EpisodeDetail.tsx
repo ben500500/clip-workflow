@@ -70,6 +70,13 @@ const EpisodeDetail: React.FC = () => {
   const [watermarkFontSize, setWatermarkFontSize] = useState(28);
   const [watermarkOpacity, setWatermarkOpacity] = useState(0.5);
   const [watermarkPosition, setWatermarkPosition] = useState('bottom');
+  // ── 竖屏转横屏智能裁切开关与参数 ──
+  const [vert2horizEnabled, setVert2horizEnabled] = useState(false);
+  const [vert2horizMode, setVert2horizMode] = useState<'fixed' | 'dynamic'>('fixed');
+  const [vert2horizRatio, setVert2horizRatio] = useState(0.5625);
+  const [vert2horizOutputSize, setVert2horizOutputSize] = useState('1920x1080');
+  const [vert2horizDetectInterval, setVert2horizDetectInterval] = useState(2);
+  const [vert2horizSmoothWindow, setVert2horizSmoothWindow] = useState(15);
   const [maxClips, setMaxClips] = useState(10);
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
@@ -494,7 +501,16 @@ const EpisodeDetail: React.FC = () => {
     try {
       // auto_accept_all=true：后端自动把所有候选片段（含 pending）纳入切片，
       // 无需逐个审核/预览，直接产出成品视频
-      const res = await sliceApi.run(episodeId, 'fast', { auto_accept_all: true });
+      const res = await sliceApi.run(episodeId, 'fast', {
+        auto_accept_all: true,
+        // 竖屏转横屏：一键切片同样透传配置
+        vert2horiz_enabled: vert2horizEnabled,
+        vert2horiz_mode: vert2horizEnabled ? vert2horizMode : undefined,
+        vert2horiz_ratio: vert2horizEnabled ? vert2horizRatio : undefined,
+        vert2horiz_output_size: vert2horizEnabled ? vert2horizOutputSize : undefined,
+        vert2horiz_detect_interval: vert2horizEnabled ? vert2horizDetectInterval : undefined,
+        vert2horiz_smooth_window: vert2horizEnabled ? vert2horizSmoothWindow : undefined,
+      });
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
       message.info('切片完成后请到「成品预览」查看并下载结果');
       fetchEpisode();
@@ -520,6 +536,13 @@ const EpisodeDetail: React.FC = () => {
         watermark_font_size: watermarkEnabled ? watermarkFontSize : undefined,
         watermark_opacity: watermarkEnabled ? watermarkOpacity : undefined,
         watermark_position: watermarkEnabled ? watermarkPosition : undefined,
+        // 竖屏转横屏：开启后切片前自动把竖屏素材转成横屏
+        vert2horiz_enabled: vert2horizEnabled,
+        vert2horiz_mode: vert2horizEnabled ? vert2horizMode : undefined,
+        vert2horiz_ratio: vert2horizEnabled ? vert2horizRatio : undefined,
+        vert2horiz_output_size: vert2horizEnabled ? vert2horizOutputSize : undefined,
+        vert2horiz_detect_interval: vert2horizEnabled ? vert2horizDetectInterval : undefined,
+        vert2horiz_smooth_window: vert2horizEnabled ? vert2horizSmoothWindow : undefined,
       });
       message.success(res.message);
       fetchHistories();
@@ -929,6 +952,77 @@ const EpisodeDetail: React.FC = () => {
                       ]}
                     />
                   </Space>
+                </Space>
+              )}
+            </Space>
+          </Card>
+
+          {/* ── 竖屏转横屏智能裁切开关 ── */}
+          <Card size="small" style={{ width: '100%' }}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space>
+                <Switch checked={vert2horizEnabled} onChange={setVert2horizEnabled} size="small" />
+                <Text strong style={{ fontSize: 13 }}>竖屏转横屏</Text>
+                <Tooltip title="开启后若素材为竖屏（9:16），切片前自动转为横屏（16:9）：固定裁切快速稳定，动态跟踪会逐帧检测人脸确保人物不出画。适用于发布到视频号横屏模式 / B站等横屏平台。">
+                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                </Tooltip>
+              </Space>
+              {vert2horizEnabled && (
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Space style={{ width: '100%' }} wrap>
+                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>裁切模式:</Text>
+                    <Select
+                      size="small"
+                      style={{ width: 130 }}
+                      value={vert2horizMode}
+                      onChange={setVert2horizMode}
+                      options={[
+                        { value: 'fixed', label: '固定裁切（快）' },
+                        { value: 'dynamic', label: '动态跟踪（准）' },
+                      ]}
+                    />
+                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>输出分辨率:</Text>
+                    <Input
+                      size="small"
+                      style={{ width: 120 }}
+                      value={vert2horizOutputSize}
+                      onChange={(e) => setVert2horizOutputSize(e.target.value)}
+                      placeholder="1920x1080"
+                    />
+                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>裁切比例:</Text>
+                    <InputNumber
+                      size="small"
+                      min={0.1}
+                      max={1}
+                      step={0.05}
+                      value={vert2horizRatio}
+                      onChange={(v) => setVert2horizRatio(v ?? 0.5625)}
+                      style={{ width: 90 }}
+                    />
+                  </Space>
+                  {vert2horizMode === 'dynamic' && (
+                    <Space style={{ width: '100%' }} wrap>
+                      <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>检测间隔(帧):</Text>
+                      <InputNumber
+                        size="small"
+                        min={1}
+                        max={30}
+                        value={vert2horizDetectInterval}
+                        onChange={(v) => setVert2horizDetectInterval(v ?? 2)}
+                        style={{ width: 80 }}
+                      />
+                      <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>平滑窗口(帧):</Text>
+                      <InputNumber
+                        size="small"
+                        min={1}
+                        max={60}
+                        value={vert2horizSmoothWindow}
+                        onChange={(v) => setVert2horizSmoothWindow(v ?? 15)}
+                        style={{ width: 80 }}
+                      />
+                      <Text type="secondary" style={{ fontSize: 12 }}>动态模式较慢（约 3-5 分钟/10 分钟视频），固定模式仅需一遍 ffmpeg（约 30 秒）</Text>
+                    </Space>
+                  )}
                 </Space>
               )}
             </Space>

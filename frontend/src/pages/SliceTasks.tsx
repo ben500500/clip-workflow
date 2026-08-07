@@ -41,6 +41,13 @@ const SliceTasks: React.FC = () => {
   const [watermarkFontSize, setWatermarkFontSize] = useState(28);
   const [watermarkOpacity, setWatermarkOpacity] = useState(0.5);
   const [watermarkPosition, setWatermarkPosition] = useState('bottom');
+  // ── 竖屏转横屏智能裁切开关与参数 ──
+  const [vert2horizEnabled, setVert2horizEnabled] = useState(false);
+  const [vert2horizMode, setVert2horizMode] = useState<'fixed' | 'dynamic'>('fixed');
+  const [vert2horizRatio, setVert2horizRatio] = useState(0.5625);
+  const [vert2horizOutputSize, setVert2horizOutputSize] = useState('1920x1080');
+  const [vert2horizDetectInterval, setVert2horizDetectInterval] = useState(2);
+  const [vert2horizSmoothWindow, setVert2horizSmoothWindow] = useState(15);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
 
@@ -72,6 +79,13 @@ const SliceTasks: React.FC = () => {
         watermark_font_size: watermarkEnabled ? watermarkFontSize : undefined,
         watermark_opacity: watermarkEnabled ? watermarkOpacity : undefined,
         watermark_position: watermarkEnabled ? watermarkPosition : undefined,
+        // 竖屏转横屏：开启后切片前自动把竖屏素材转成横屏
+        vert2horiz_enabled: vert2horizEnabled,
+        vert2horiz_mode: vert2horizEnabled ? vert2horizMode : undefined,
+        vert2horiz_ratio: vert2horizEnabled ? vert2horizRatio : undefined,
+        vert2horiz_output_size: vert2horizEnabled ? vert2horizOutputSize : undefined,
+        vert2horiz_detect_interval: vert2horizEnabled ? vert2horizDetectInterval : undefined,
+        vert2horiz_smooth_window: vert2horizEnabled ? vert2horizSmoothWindow : undefined,
       });
       message.success(res.message);
       fetchTasks();
@@ -370,6 +384,73 @@ const SliceTasks: React.FC = () => {
                   { value: 'top', label: '顶部' },
                 ]}
               />
+            </>
+          )}
+          {/* 竖屏转横屏智能裁切开关 */}
+          <Switch
+            size="small"
+            checked={vert2horizEnabled}
+            onChange={setVert2horizEnabled}
+            checkedChildren="转横屏开"
+            unCheckedChildren="转横屏"
+          />
+          {vert2horizEnabled && (
+            <>
+              <Select
+                size="small"
+                style={{ width: 120 }}
+                value={vert2horizMode}
+                onChange={setVert2horizMode}
+                options={[
+                  { value: 'fixed', label: '固定裁切' },
+                  { value: 'dynamic', label: '动态跟踪' },
+                ]}
+              />
+              <Input
+                size="small"
+                style={{ width: 100 }}
+                value={vert2horizOutputSize}
+                onChange={(e) => setVert2horizOutputSize(e.target.value)}
+                placeholder="1920x1080"
+              />
+              <Tooltip title="裁切高度比例（默认 9/16）">
+                <InputNumber
+                  size="small"
+                  min={0.1}
+                  max={1}
+                  step={0.05}
+                  value={vert2horizRatio}
+                  onChange={(v) => setVert2horizRatio(v ?? 0.5625)}
+                  style={{ width: 80 }}
+                  addonBefore="比例"
+                />
+              </Tooltip>
+              {vert2horizMode === 'dynamic' && (
+                <>
+                  <Tooltip title="人脸检测间隔帧数">
+                    <InputNumber
+                      size="small"
+                      min={1}
+                      max={30}
+                      value={vert2horizDetectInterval}
+                      onChange={(v) => setVert2horizDetectInterval(v ?? 2)}
+                      style={{ width: 80 }}
+                      addonBefore="间隔"
+                    />
+                  </Tooltip>
+                  <Tooltip title="平滑窗口大小（帧）">
+                    <InputNumber
+                      size="small"
+                      min={1}
+                      max={60}
+                      value={vert2horizSmoothWindow}
+                      onChange={(v) => setVert2horizSmoothWindow(v ?? 15)}
+                      style={{ width: 80 }}
+                      addonBefore="平滑"
+                    />
+                  </Tooltip>
+                </>
+              )}
             </>
           )}
           <Button type="primary" icon={<PlayCircleOutlined />} loading={running} onClick={runSlice}>新建切片任务</Button>

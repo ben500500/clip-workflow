@@ -347,6 +347,7 @@ async def _publish_to_worker(
     dedupe_config: Optional[dict],
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
+    vert2horiz_config: Optional[dict] = None,
     source_bucket: str = "",
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
@@ -426,6 +427,7 @@ async def _dispatch_celery(
     video_path: Optional[str],
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
+    vert2horiz_config: Optional[dict] = None,
     source_bucket: str = "",
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
@@ -603,6 +605,11 @@ async def run_slice(
 
     # 构造水印配置（开启后随任务下发给引擎）
     watermark_config = _build_watermark_config(data, episode)
+    # 构造竖屏转横屏预处理配置（开启后随任务下发给引擎）
+    vert2horiz_config = _build_vert2horiz_config(data)
+    # 持久化竖屏转横屏配置，重试时保留
+    slice_task.vert2horiz_config = vert2horiz_config
+    slice_task.watermark_config = watermark_config
 
     if engine == "worker":
         # 确保输出桶存在（全新部署时 sliced 桶可能未初始化）
@@ -617,6 +624,7 @@ async def run_slice(
             data.dedupe_config,
             watermark_config,
             data.encoder,
+            vert2horiz_config,
             source_bucket,
         )
 
@@ -641,6 +649,7 @@ async def run_slice(
                 data.video_path,
                 watermark_config,
                 data.encoder,
+                vert2horiz_config,
                 source_bucket,
             )
         except Exception as e:
@@ -1049,6 +1058,7 @@ async def retry_slice_task(
             task.dedupe_config,
             task.watermark_config,
             None,
+            task.vert2horiz_config,
             source_bucket,
         )
 
@@ -1072,6 +1082,7 @@ async def retry_slice_task(
                 None,
                 task.watermark_config,
                 None,
+                task.vert2horiz_config,
                 source_bucket,
             )
         except Exception as e:

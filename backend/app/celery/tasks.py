@@ -359,12 +359,14 @@ def slice_task(
     source_bucket: Optional[str] = None,
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
+    vert2horiz_config: Optional[dict] = None,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
     encoder: 三期 GPU 加速编码，可选 h264_nvenc/hevc_nvenc/\
         h264_videotoolbox/hevc_videotoolbox/libx264；不传则引擎自动探测。
     source_bucket: 源视频所在桶；普通切片为 raw-footage，成品重新剪辑为 sliced。
+    vert2horiz_config: 竖屏转横屏预处理配置（切片前把竖屏素材转成横屏）。
     """
     from app.services.slice_service import run_slice_scrub, run_slice_fast
     from app.services.minio_service import upload_file_from_path
@@ -407,6 +409,7 @@ def slice_task(
                     progress_cb=progress_cb,
                     watermark_config=watermark_config,
                     encoder=encoder,
+                    vert2horiz_config=vert2horiz_config,
                 )
             )
         else:
@@ -419,6 +422,7 @@ def slice_task(
                     progress_cb=progress_cb,
                     watermark_config=watermark_config,
                     encoder=encoder,
+                    vert2horiz_config=vert2horiz_config,
                 )
             )
 

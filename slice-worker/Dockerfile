@@ -19,12 +19,16 @@ RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
 RUN apk add --no-cache \
     ffmpeg \
     python3 \
+    py3-pip \
     bash \
     ca-certificates \
     tzdata \
     gettext \
     font-noto-cjk \
     fontconfig
+
+# 竖屏转横屏智能裁切：引擎 vert2horiz_crop.py 依赖 OpenCV（人脸检测/动态跟踪）
+RUN pip3 install --no-cache-dir --break-system-packages opencv-python-headless>=4.8.0
 
 WORKDIR /app
 COPY --from=builder /build/slice-worker .
