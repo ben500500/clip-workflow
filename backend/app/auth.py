@@ -73,9 +73,16 @@ def create_refresh_token(data: dict) -> tuple[str, str, datetime]:
 
     Returns:
         (refresh_token, refresh_token_hash, expires_at)
+
+    注意：refresh_token 必须携带随机 jti，否则同一用户同一秒内并发登录
+    会生成完全相同的 JWT（payload 仅 sub/type/iat/exp，iat 秒级精度），
+    SHA-256 哈希相同，撞 user_sessions.refresh_token_hash 唯一约束
+    导致 500（UNIQUE constraint failed）。
     """
     to_encode = data.copy()
     to_encode["type"] = "refresh"
+    # 随机 jti：保证并发登录/刷新产生的 token 唯一（会话可追溯）
+    to_encode["jti"] = str(uuid.uuid4())
     expires_at = datetime.utcnow() + timedelta(days=settings.JWT_REFRESH_EXPIRE_DAYS)
     token = _create_jwt(to_encode, timedelta(days=settings.JWT_REFRESH_EXPIRE_DAYS))
     return token, _hash_token(token), expires_at
