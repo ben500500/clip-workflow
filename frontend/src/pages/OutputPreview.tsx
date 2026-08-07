@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Select, Modal, Form, Input, DatePicker, Popconfirm, Alert, Spin,
+  Card, Table, Tag, Button, Space, Typography, message, Select, Modal, Form, Input, DatePicker, Popconfirm, Alert, Spin, InputNumber,
 } from 'antd';
-import { ArrowLeftOutlined, PlayCircleOutlined, DownloadOutlined, LinkOutlined, CloudDownloadOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PlayCircleOutlined, DownloadOutlined, LinkOutlined, CloudDownloadOutlined, EditOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { sliceApi } from '../api/slice';
 import { previewApi } from '../api/preview';
@@ -32,6 +32,12 @@ const OutputPreview: React.FC = () => {
   const [pubModal, setPubModal] = useState(false);
   const [pubForm] = Form.useForm();
   const [currentOutput, setCurrentOutput] = useState<string | null>(null);
+
+  // ── 成品重新剪辑 ──
+  const [recutModal, setRecutModal] = useState(false);
+  const [recutForm] = Form.useForm();
+  const [recutTarget, setRecutTarget] = useState<SliceOutput | null>(null);
+  const [recutting, setRecutting] = useState(false);
 
   // 多选批量下载
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
@@ -149,6 +155,47 @@ const OutputPreview: React.FC = () => {
     }
   };
 
+  // ─── 成品重新剪辑：再次裁剪当前成品，生成一个新片段 ─────────────
+  const openRecutModal = (o: SliceOutput) => {
+    setRecutTarget(o);
+    recutForm.resetFields();
+    // 默认整段保留（0 ~ 成品时长），便于用户只填需要裁剪的头尾
+    recutForm.setFieldsValue({
+      cut_start: 0,
+      cut_end: o.duration ?? 0,
+    });
+    setRecutModal(true);
+  };
+
+  const submitRecut = async () => {
+    if (!recutTarget) return;
+    try {
+      const values = await recutForm.validateFields();
+      const start = Number(values.cut_start ?? 0);
+      const end = Number(values.cut_end ?? recutTarget.duration ?? 0);
+      if (!(start >= 0) || !(end > start)) {
+        message.warning('剪辑区间不合法：需要 0 <= 开始时间 < 结束时间');
+        return;
+      }
+      setRecutting(true);
+      const res = await sliceApi.run(episodeId || '', 'fast', {
+        output_id: recutTarget.id,
+        cut_start: start,
+        cut_end: end,
+        engine: 'worker',
+      });
+      message.success('重新剪辑任务已启动，完成后会在下方任务列表中生成新成品');
+      setRecutModal(false);
+      // 刷新任务列表，让新任务出现在顶部，可直接进入查看进度
+      const list = await sliceApi.listTasks(episodeId || '');
+      setTasks(list);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '启动重新剪辑失败');
+    } finally {
+      setRecutting(false);
+    }
+  };
+
   const outputColumns = [
     { title: '文件名', dataIndex: 'file_name', key: 'file_name', ellipsis: true },
     { title: '大小', dataIndex: 'file_size', key: 'file_size', width: 110, render: (s: number) => formatFileSize(s) },
@@ -163,6 +210,7 @@ const OutputPreview: React.FC = () => {
           <Button size="small" icon={<PlayCircleOutlined />} onClick={(e) => { e.stopPropagation(); toggleRowExpand(o); }}>预览</Button>
           <Button size="small" icon={<DownloadOutlined />} onClick={(e) => { e.stopPropagation(); window.open(`/api/outputs/${o.id}/download`, '_blank'); }}>下载</Button>
           <Button size="small" icon={<LinkOutlined />} onClick={(e) => { e.stopPropagation(); setCurrentOutput(o.id); pubForm.resetFields(); setPubModal(true); }}>登记发布</Button>
+          <Button size="small" type="primary" ghost icon={<EditOutlined />} onClick={(e) => { e.stopPropagation(); openRecutModal(o); }}>编辑</Button>
         </Space>
       ),
     },
@@ -281,6 +329,43 @@ const OutputPreview: React.FC = () => {
           <Table rowKey="id" columns={pubColumns} dataSource={publications} pagination={false} size="small" />
         </Card>
       )}
+      {/* ── 成品重新剪辑弹窗 ── */}
+      <Modal
+        title={`重新剪辑${recutTarget ? `：${recutTarget.file_name}` : ''}`}
+        open={recutModal}
+        onOk={submitRecut}
+        onCancel={() => setRecutModal(false)}
+        okText="开始剪辑"
+        cancelText="取消"
+        confirmLoading={recutting}
+        destroyOnClose
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="以当前成品视频为源，裁剪出新的时间区间，生成一个新片段（会重新编码输出）。"
+        />
+        <Form form={recutForm} layout="vertical">
+          <Form.Item
+            name="cut_start"
+            label="开始时间（秒）"
+            rules={[{ required: true, message: '请输入开始时间' }]}
+          >
+            <InputNumber min={0} precision={3} style={{ width: '100%' }} placeholder="0" />
+          </Form.Item>
+          <Form.Item
+            name="cut_end"
+            label="结束时间（秒）"
+            rules={[{ required: true, message: '请输入结束时间' }]}
+          >
+            <InputNumber min={0} precision={3} style={{ width: '100%' }} placeholder={`${recutTarget?.duration ?? 0}`} />
+          </Form.Item>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            当前成品时长：{formatDuration(recutTarget?.duration ?? 0)}。区间为相对成品起点的秒数。
+          </Text>
+        </Form>
+      </Modal>
       <Modal
         title="登记发布记录"
         open={pubModal}
