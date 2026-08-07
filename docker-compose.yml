@@ -435,6 +435,8 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    environment:
+      <<: *common-env
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:80"
     logging: *default-logging
@@ -448,6 +450,8 @@ services:
       - clip-network
     ports:
       - "${NGINX_PORT:-80}:80"
+    environment:
+      <<: *common-env
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
