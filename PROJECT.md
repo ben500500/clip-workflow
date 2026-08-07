@@ -1268,6 +1268,7 @@ open http://localhost:5555
 | `slice.sh` | 普通切片（fast/dedupe） | `engines/` |
 | `slice_scrub.sh` | 挖洞模式切片 | `engines/` |
 | `detect_intervals.py` | 通用区间检测（黑场/静止画面/水印/自定义） | `engines/` |
+| `vert2horiz_crop.py` | 竖屏转横屏（固定裁切/动态人脸跟踪） | `engines/` |
 | `preview.sh` | 帧图预览 | `engines/` |
 | `batch_all.sh` | 批量处理 | `engines/` |
 | `dedupe.conf` | 去重参数模板 | `engines/` |
