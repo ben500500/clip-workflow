@@ -10,9 +10,11 @@ AutoClip Service - AI 选点服务
   GET  /api/v1/clips?project_id=X&min_score=60&max_clips=30
 """
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -210,6 +212,10 @@ def _run_asr(video_path: str, srt_path: Path, api_key: str) -> None:
 
     支持 aliyun_speech（默认，需 DASHSCOPE_API_KEY）与 whisper（本地 faster-whisper）。
     whisper 无需 API Key；模型用 WHISPER_MODEL 选择（默认 small）。
+
+    转写结果按「视频内容哈希 + ASR 方式」缓存到 MEDIA_DIR/data/asr_cache，
+    同一视频再次启动 AI 选点时可直接复用，避免重复转写（尤其 whisper 本地推理耗时）。
+    可用环境变量 AUTOCLIP_ASR_CACHE=false 关闭缓存。
     """
     method_name = os.getenv("AUTOCLIP_ASR_METHOD", "aliyun_speech").strip().lower()
     method = SpeechRecognitionMethod(method_name)
@@ -219,8 +225,76 @@ def _run_asr(video_path: str, srt_path: Path, api_key: str) -> None:
     )
     if method == SpeechRecognitionMethod.ALIYUN_SPEECH:
         config.aliyun_access_key = api_key
+
+    video = Path(video_path)
+    if not video.exists():
+        raise SpeechRecognitionError(f"视频文件不存在: {video_path}")
+
+    cache_key = _asr_cache_key(video, method_name)
+    cached = _asr_cache_get(cache_key)
+    if cached is not None:
+        logger.info("命中 ASR 字幕缓存，直接复用: %s", cached)
+        srt_path.parent.mkdir(parents=True, exist_ok=True)
+        srt_path.write_text(cached, encoding="utf-8")
+        return
+
     recognizer = SpeechRecognizer(config)
-    recognizer.generate_subtitle(Path(video_path), srt_path, config)
+    recognizer.generate_subtitle(video, srt_path, config)
+
+    if srt_path.exists() and srt_path.stat().st_size > 0:
+        _asr_cache_put(cache_key, srt_path.read_text(encoding="utf-8"))
+        logger.info("ASR 字幕已写入缓存: %s", cache_key)
+
+
+def _asr_cache_enabled() -> bool:
+    """ASR 字幕缓存开关，默认开启。"""
+    return os.getenv("AUTOCLIP_ASR_CACHE", "true").strip().lower() not in ("0", "false", "no")
+
+
+def _asr_cache_dir() -> Path:
+    """ASR 字幕缓存目录（持久化 volume，容器重建不丢失）。"""
+    cache_dir = Path(os.getenv("ASR_CACHE_DIR", "/app/media/data/asr_cache"))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _asr_cache_key(video: Path, method_name: str) -> str:
+    """根据视频内容生成缓存键：文件名(前40) + 内容哈希(前12) + ASR方式。"""
+    digest = hashlib.sha256()
+    try:
+        with open(video, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as e:
+        raise SpeechRecognitionError(f"读取视频内容失败（无法计算缓存键）: {e}") from e
+    stem = re.sub(r"[^\w.-]+", "_", video.stem)[:40] or "video"
+    return f"{stem}-{digest.hexdigest()[:12]}-{method_name}.srt"
+
+
+def _asr_cache_get(cache_key: str) -> Optional[str]:
+    """读取 ASR 字幕缓存；未开启或不存在时返回 None。"""
+    if not _asr_cache_enabled():
+        return None
+    cache_path = _asr_cache_dir() / cache_key
+    try:
+        if cache_path.exists() and cache_path.stat().st_size > 0:
+            return cache_path.read_text(encoding="utf-8")
+    except OSError as e:
+        logger.warning("读取 ASR 字幕缓存失败: %s: %s", cache_path, e)
+    return None
+
+
+def _asr_cache_put(cache_key: str, content: str) -> None:
+    """写入 ASR 字幕缓存（原子写，失败不影响主流程）。"""
+    if not _asr_cache_enabled():
+        return
+    cache_path = _asr_cache_dir() / cache_key
+    try:
+        tmp = cache_path.with_suffix(".srt.tmp")
+        tmp.write_text(content, encoding="utf-8")
+        tmp.replace(cache_path)
+    except OSError as e:
+        logger.warning("写入 ASR 字幕缓存失败: %s: %s", cache_path, e)
 
 
 async def _run_pipeline(project_id: str, steps: list[int],
