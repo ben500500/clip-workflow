@@ -76,6 +76,8 @@ const EpisodeDetail: React.FC = () => {
   const [sliceProgress, setSliceProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
   // 一键切片（免审核直接出片，位于工作台入口）
   const [oneClickSlicing, setOneClickSlicing] = useState(false);
+  // 一键切片进度（与普通切片共用轮询逻辑）
+  const [oneClickProgress, setOneClickProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
 
   const autoclipTimerRef = useRef<number | null>(null);
   const detectTimerRef = useRef<number | null>(null);
@@ -380,9 +382,57 @@ const EpisodeDetail: React.FC = () => {
     }
   };
 
+  // ─── 轮询最新切片任务进度（一键切片 / 普通切片共用） ──────────
+  const pollLatestSliceProgress = (
+    mode: string,
+    setRunning: (v: boolean) => void,
+    setProgress: (p: { status: string; progress: number; message: string; error_message?: string | null } | null) => void,
+  ) => {
+    if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
+    slicePollTimerRef.current = window.setInterval(async () => {
+      try {
+        const tasks = await sliceApi.listTasks(episodeId);
+        const latest = tasks[0];
+        if (!latest) return;
+        const t = await sliceApi.getTask(latest.id);
+        if (!mountedRef.current) {
+          if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
+          return;
+        }
+        setProgress({
+          status: t.status === 'running' || t.status === 'pending' ? 'running' : t.status || 'unknown',
+          progress: t.progress || 0,
+          message: t.status === 'running' || t.status === 'pending'
+            ? `切片任务运行中（${t.mode || mode}）…`
+            : t.status === 'completed'
+              ? '切片任务已完成'
+              : t.status === 'failed'
+                ? `切片失败：${t.error_message || ''}`
+                : t.status || '',
+        });
+        if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
+          if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
+          slicePollTimerRef.current = null;
+          setRunning(false);
+          if (t.status === 'completed') {
+            message.success('切片已完成！可前往「成品预览」查看结果');
+          } else if (t.status === 'failed') {
+            message.error(`切片失败：${t.error_message || '未知错误'}`);
+          }
+          fetchEpisode();
+        }
+      } catch {
+        if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
+        slicePollTimerRef.current = null;
+        if (mountedRef.current) setRunning(false);
+      }
+    }, 3000);
+  };
+
   // ─── 一键切片（免审核直接出片） ──────────────────────
   const oneClickSlice = async () => {
     setOneClickSlicing(true);
+    setOneClickProgress({ status: 'running', progress: 5, message: '正在提交一键切片任务…' });
     try {
       // auto_accept_all=true：后端自动把所有候选片段（含 pending）纳入切片，
       // 无需逐个审核/预览，直接产出成品视频
@@ -390,10 +440,12 @@ const EpisodeDetail: React.FC = () => {
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
       message.info('切片完成后请到「成品预览」查看并下载结果');
       fetchEpisode();
+      // 与普通切片一致：轮询任务进度，实时展示进度条
+      pollLatestSliceProgress('fast', setOneClickSlicing, setOneClickProgress);
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '一键切片失败');
-    } finally {
       setOneClickSlicing(false);
+      setOneClickProgress(null);
     }
   };
 
@@ -412,45 +464,7 @@ const EpisodeDetail: React.FC = () => {
       });
       message.success(res.message);
       // 启动后轮询任务进度
-      if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
-      slicePollTimerRef.current = window.setInterval(async () => {
-        try {
-          const tasks = await sliceApi.listTasks(episodeId);
-          const latest = tasks[0];
-          if (!latest) return;
-          const t = await sliceApi.getTask(latest.id);
-          if (!mountedRef.current) {
-            if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
-            return;
-          }
-          setSliceProgress({
-            status: t.status === 'running' || t.status === 'pending' ? 'running' : t.status || 'unknown',
-            progress: t.progress || 0,
-            message: t.status === 'running' || t.status === 'pending'
-              ? `切片任务运行中（${t.mode || sliceMode}）…`
-              : t.status === 'completed'
-                ? '切片任务已完成'
-                : t.status === 'failed'
-                  ? `切片失败：${t.error_message || ''}`
-                  : t.status || '',
-          });
-          if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
-            if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
-            slicePollTimerRef.current = null;
-            setSliceRunning(false);
-            if (t.status === 'completed') {
-              message.success('切片已完成！可前往「成品预览」查看结果');
-            } else if (t.status === 'failed') {
-              message.error(`切片失败：${t.error_message || '未知错误'}`);
-            }
-            fetchEpisode();
-          }
-        } catch {
-          if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
-          slicePollTimerRef.current = null;
-          if (mountedRef.current) setSliceRunning(false);
-        }
-      }, 3000);
+      pollLatestSliceProgress(sliceMode, setSliceRunning, setSliceProgress);
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '启动切片失败');
       setSliceRunning(false);
@@ -806,6 +820,8 @@ const EpisodeDetail: React.FC = () => {
             </Button>
           </Popconfirm>
         </Space>
+        {/* 一键切片实时进度条：任务进行中时展示在按钮下方 */}
+        {renderProgress(oneClickProgress)}
       </Card>
 
       {/* 工作流步骤条 */}
