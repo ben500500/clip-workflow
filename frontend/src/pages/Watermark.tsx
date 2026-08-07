@@ -44,11 +44,11 @@ const Watermark: React.FC = () => {
   const [engine, setEngine] = useState<'remove_ai' | 'seedance'>('remove_ai');
   // RAiW 选项
   const [mark, setMark] = useState('auto');
-  const [backend, setBackend] = useState('cv2');
+  const [backend, setBackend] = useState('auto');
   const [temporal, setTemporal] = useState(true);
   // Seedance 选项
   const [region, setRegion] = useState('');
-  const [useLama, setUseLama] = useState(false);
+  const [seedanceBackend, setSeedanceBackend] = useState('auto');
 
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -169,9 +169,10 @@ const Watermark: React.FC = () => {
         params.mark = mark;
         params.backend = backend;
         params.temporal_consistency = temporal;
+        if (region.trim()) params.region = region.trim();
       } else {
         params.region = region.trim() || undefined;
-        params.use_lama = useLama;
+        params.backend = seedanceBackend;
       }
       const res = await watermarkApi.run(params);
       message.success(res.message);
@@ -550,30 +551,49 @@ const Watermark: React.FC = () => {
               <Select
                 value={backend}
                 onChange={setBackend}
-                style={{ width: 120 }}
+                style={{ width: 200 }}
                 options={[
-                  { value: 'cv2', label: 'OpenCV（默认）' },
-                  { value: 'auto', label: '自动' },
-                  { value: 'lama', label: 'LaMa（GPU）' },
-                  { value: 'migan', label: 'MI-GAN' },
+                  { value: 'auto', label: '自动（推荐，LaMa→MI-GAN→cv2）' },
+                  { value: 'lama', label: 'LaMa-ONNX（最佳，CPU）' },
+                  { value: 'migan', label: 'MI-GAN-ONNX（轻量，CPU）' },
+                  { value: 'cv2', label: 'OpenCV（最差，不推荐）' },
                 ]}
               />
               <Checkbox checked={temporal} onChange={(e) => setTemporal(e.target.checked)}>
                 时间一致性（减少闪烁）
               </Checkbox>
+              <br />
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                手动区域擦除（可选，x,y,w,h）：非厂商 logo / 自动检测无效时指定，如 10,5,120,60
+              </Text>
+              <Input
+                placeholder="如 10,5,120,60；留空则自动扫描厂商水印"
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+                style={{ width: 260 }}
+              />
             </Space>
           ) : (
             <Space wrap>
-              <Text>手动水印区域（可选，x,y,w,h）：</Text>
+              <Text>手动水印区域（可选，x,y,w,h；留空自动检测）：</Text>
               <Input
-                placeholder="如 10,5,120,60；留空自动检测"
+                placeholder="如 10,5,120,60"
                 value={region}
                 onChange={(e) => setRegion(e.target.value)}
                 style={{ width: 220 }}
               />
-              <Checkbox checked={useLama} onChange={(e) => setUseLama(e.target.checked)}>
-                LaMa AI 修补（需 GPU + torch/iopaint）
-              </Checkbox>
+              <Text>修补算法（CPU）：</Text>
+              <Select
+                value={seedanceBackend}
+                onChange={setSeedanceBackend}
+                style={{ width: 240 }}
+                options={[
+                  { value: 'auto', label: '自动（推荐，LaMa→MI-GAN→cv2）' },
+                  { value: 'lama', label: 'LaMa-ONNX（最佳，CPU）' },
+                  { value: 'migan', label: 'MI-GAN-ONNX（轻量，CPU）' },
+                  { value: 'cv2', label: 'OpenCV TELEA' },
+                ]}
+              />
             </Space>
           )}
 

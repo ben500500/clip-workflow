@@ -118,9 +118,19 @@ async def run_remove_ai_watermarks(
     - mark: auto/sora/veo/seedance/dola/hailuo/kling
     - backend: auto/cv2/migan/lama
     - temporal_consistency: True/False
+    - region: x,y,w,h（手动区域擦除，通用兜底：可处理非 6 家厂商的任意
+      logo/文字水印。RAiW 的 `erase` 命令仅支持单张图片，故这里委托给
+      seedance 视频级引擎（其修补层复用 RAiW 的 LaMa/MI-GAN CPU 模型，
+      与 `--backend` 语义一致））
     """
     options = options or {}
     cli = settings.WATERMARK_RAIW_CLI or "remove-ai-watermarks"
+    if options.get("region"):
+        # 通用区域擦除：用户显式指定水印位置，跳过厂商自动检测。
+        # 复用 seedance 视频级区域擦除脚本（底层补丁为 RAiW LaMa/MI-GAN）。
+        return await run_seedance_watermark_remover(
+            source_path, output_path, options, progress_cb, timeout
+        )
     cmd = [
         cli,
         "video",
@@ -131,7 +141,7 @@ async def run_remove_ai_watermarks(
         "--mark",
         str(options.get("mark") or "auto"),
         "--backend",
-        str(options.get("backend") or "cv2"),
+        str(options.get("backend") or "auto"),
     ]
     if options.get("temporal_consistency") is False:
         cmd.append("--no-temporal-consistency")
@@ -150,7 +160,8 @@ async def run_seedance_watermark_remover(
 
     options 支持：
     - region: "x,y,w,h"（手动指定水印区域，跳过自动检测）
-    - use_lama: True/False（LaMa AI 修补，需 GPU/torch/iopaint）
+    - backend: auto/lama/migan/cv2（CPU 修补；auto 默认，优先 RAiW LaMa/MI-GAN）
+    - use_lama: True 兼容旧前端（等价 backend=lama）
     """
     options = options or {}
     script = _script_path(settings.WATERMARK_SEEDANCE_SCRIPT)
@@ -159,8 +170,12 @@ async def run_seedance_watermark_remover(
     cmd = ["python", script, source_path, "-o", output_path]
     if options.get("region"):
         cmd.extend(["-r", str(options["region"])])
+    backend = options.get("backend") or "auto"
+    if backend not in ("auto", "lama", "migan", "cv2"):
+        backend = "auto"
     if options.get("use_lama"):
-        cmd.append("--lama")
+        backend = "lama"
+    cmd.extend(["--backend", backend])
     logger.info("Running seedance watermark remover: %s", " ".join(cmd))
     return await _run_cmd(cmd, progress_cb, timeout)
 

@@ -49,11 +49,11 @@ class WatermarkRunRequest(BaseModel):
     engine: str = "remove_ai"
     # RAiW 选项
     mark: Optional[str] = "auto"        # auto/sora/veo/seedance/dola/hailuo/kling
-    backend: Optional[str] = "cv2"      # auto/cv2/migan/lama
+    backend: Optional[str] = "auto"     # auto/cv2/migan/lama（auto 优先 LaMa/MI-GAN CPU 模型）
     temporal_consistency: bool = True
+    region: Optional[str] = None        # x,y,w,h 手动指定水印区域（RAiW 区域擦除 / Seedance 手动区域）
     # Seedance 选项
-    region: Optional[str] = None        # x,y,w,h 手动指定水印区域
-    use_lama: bool = False
+    use_lama: bool = False              # 兼容旧前端，等价 backend=lama
     name: Optional[str] = None
     # 待处理视频的 source_file_key 列表（由 /watermark/upload 返回）
     files: List[str] = []
@@ -209,7 +209,7 @@ async def run_watermark_task(
     {
       "engine": "remove_ai",
       "mark": "auto",
-      "backend": "cv2",
+      "backend": "auto",
       "temporal_consistency": true,
       "use_lama": false,
       "name": "批量去水印",
@@ -235,12 +235,17 @@ async def run_watermark_task(
     if engine == "remove_ai":
         options = {
             "mark": data.mark or "auto",
-            "backend": data.backend or "cv2",
+            "backend": data.backend or "auto",
             "temporal_consistency": bool(data.temporal_consistency),
         }
+        if data.region:
+            # 手动指定区域时走通用区域擦除（委托 seedance 视频级引擎，
+            # 其修补层复用 RAiW 的 LaMa/MI-GAN CPU 模型），兜底处理非厂商水印
+            options["region"] = data.region
     elif engine == "seedance":
         options = {
             "region": data.region,
+            "backend": data.backend or "auto",
             "use_lama": bool(data.use_lama),
         }
 

@@ -25,4 +25,6 @@ cryptography>=41.0.0
 # 竖屏转横屏智能裁切（OpenCV 人脸检测 / 动态跟踪）
 opencv-python-headless>=4.8.0
 # 去水印（v4）：remove-ai-watermarks 两套引擎共用视频可见水印清除能力
-remove-ai-watermarks[visible,video]>=0.26.0
+# lama/migan extra 提供 onnxruntime CPU 高质量修补（LaMa-ONNX ~200MB / MI-GAN-ONNX ~28MB），
+# 无需 GPU 即可显著优于 cv2 经典修补；backend=auto 时按 LaMa > MI-GAN > cv2 自动择优
+remove-ai-watermarks[visible,video,lama,migan]>=0.26.0
