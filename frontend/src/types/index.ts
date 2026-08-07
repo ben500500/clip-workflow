@@ -76,6 +76,34 @@ export interface ClipCandidate {
   created_at: string;
 }
 
+export interface AutoClipRunRecord {
+  id: string;
+  episode_id: string;
+  autoclip_project_id: string | null;
+  celery_task_id: string | null;
+  status: string;
+  progress: number;
+  message: string | null;
+  error_message: string | null;
+  config: Record<string, unknown> | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export interface IntervalHistoryItem {
+  id: string;
+  episode_id: string;
+  mode: string | null;
+  status: string | null;
+  progress: number;
+  error_message: string | null;
+  interval_count: number | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
 export interface AutoClipConfig {
   [key: string]: unknown;
 }

@@ -1,5 +1,5 @@
 import client from './client';
-import type { DetectedInterval } from '../types';
+import type { DetectedInterval, IntervalHistoryItem } from '../types';
 
 export const intervalApi = {
   detect: (episodeId: string, mode: string, config?: Record<string, unknown>) =>
@@ -7,6 +7,9 @@ export const intervalApi = {
       celery_task_id: string;
       message: string;
     }>,
+
+  history: (episodeId: string) =>
+    client.get(`/episodes/${episodeId}/intervals/history`) as Promise<IntervalHistoryItem[]>,
 
   progress: (episodeId: string) =>
     client.get(`/episodes/${episodeId}/intervals/progress`) as Promise<{

@@ -118,6 +118,7 @@ class Episode(Base):
     detected_intervals = relationship("DetectedInterval", back_populates="episode", cascade="all, delete-orphan")
     slice_tasks = relationship("SliceTask", back_populates="episode", cascade="all, delete-orphan")
     autoclip_project = relationship("AutoClipProject", back_populates="episode", uselist=False, cascade="all, delete-orphan")
+    autoclip_runs = relationship("AutoClipRun", back_populates="episode", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<Episode(id={self.id}, title={self.title})>"
@@ -139,6 +140,32 @@ class AutoClipProject(Base):
 
     def __repr__(self) -> str:
         return f"<AutoClipProject(id={self.id}, autoclip_project_id={self.autoclip_project_id})>"
+
+
+class AutoClipRun(Base):
+    """AI 智能选点执行历史（多次运行均可保留）。
+
+    每次「启动选点 / 重新选点」都会落库一条记录，供工作台历史展示。
+    """
+    __tablename__ = "autoclip_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    episode_id = Column(UUID(as_uuid=True), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False, index=True)
+    autoclip_project_id = Column(String(100), nullable=True)
+    celery_task_id = Column(String(100), nullable=True)
+    status = Column(String(50), default="pending")  # pending/running/completed/failed
+    progress = Column(Float, default=0.0)
+    message = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    config = Column(JSON, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    episode = relationship("Episode", back_populates="autoclip_runs")
+
+    def __repr__(self) -> str:
+        return f"<AutoClipRun(id={self.id}, status={self.status})>"
 
 
 class ClipCandidate(Base):

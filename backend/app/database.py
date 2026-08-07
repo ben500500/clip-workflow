@@ -54,6 +54,51 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
     # 对已存在的老表补充新增列（create_all 不会为已存在的表加列）
     await _apply_compat_migrations()
+    await _ensure_autoclip_runs_table()
+
+
+async def _ensure_autoclip_runs_table():
+    """确保 autoclip_runs 表存在（旧库升级时 create_all 不会新建该表，需要显式建）。"""
+    from sqlalchemy import inspect as sa_inspect
+
+    try:
+        async with engine.begin() as conn:
+            exists = await conn.run_sync(
+                lambda sync_conn: sa_inspect(sync_conn).has_table("autoclip_runs")
+            )
+        if exists:
+            return
+        # 表不存在时手动创建（与 ORM 模型字段一致）
+        async with engine.begin() as conn:
+            await conn.execute(
+                sqlalchemy.text("""
+                    CREATE TABLE IF NOT EXISTS autoclip_runs (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        episode_id UUID NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+                        autoclip_project_id VARCHAR(100),
+                        celery_task_id VARCHAR(100),
+                        status VARCHAR(50) DEFAULT 'pending',
+                        progress DOUBLE PRECISION DEFAULT 0,
+                        message TEXT,
+                        error_message TEXT,
+                        config JSON,
+                        started_at TIMESTAMP,
+                        completed_at TIMESTAMP,
+                        created_at TIMESTAMP NOT NULL DEFAULT now()
+                    )
+                """)
+            )
+            try:
+                await conn.execute(
+                    sqlalchemy.text(
+                        "CREATE INDEX IF NOT EXISTS ix_autoclip_runs_episode_id ON autoclip_runs(episode_id)"
+                    )
+                )
+            except Exception:
+                pass
+            logger.info("Created autoclip_runs table")
+    except Exception as e:
+        logger.warning("Failed to ensure autoclip_runs table: %s", e)
 
 
 async def _apply_compat_migrations():

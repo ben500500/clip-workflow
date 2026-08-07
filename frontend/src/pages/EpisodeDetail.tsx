@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Space, Typography, Spin, Alert, Breadcrumb, Descriptions, Tag, message, Select, Row, Col, Progress,
-  Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input,
+  Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input, Table,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
@@ -13,7 +13,7 @@ import { autoclipApi } from '../api/autoclip';
 import { intervalApi } from '../api/intervals';
 import { sliceApi } from '../api/slice';
 import ErrorHint from '../components/ErrorHint';
-import type { Episode } from '../types';
+import type { AutoClipRunRecord, Episode, IntervalHistoryItem, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
 const { Title, Text, Paragraph } = Typography;
@@ -37,15 +37,22 @@ const SLICE_MODE_HELP: Record<string, { label: string; desc: string; detail: str
   },
 };
 
-// ─── 工作流步骤定义 ───────────────────────────────────
+// ─── 工作流步骤定义（可点击跳转对应界面） ─────────────
 const WORKFLOW_STEPS = [
-  { key: 'upload', title: '上传视频', description: '上传原始视频素材' },
-  { key: 'autoclip', title: 'AI 智能选点', description: '自动分析并推荐精彩片段' },
-  { key: 'review', title: '片段审核', description: '审核并调整选点结果' },
-  { key: 'intervals', title: '区间检测', description: '检测片尾/静止/水印区域' },
-  { key: 'slice', title: '切片执行', description: '按配置切割输出成品' },
-  { key: 'preview', title: '成品预览', description: '预览并下载切片结果' },
+  { key: 'upload', title: '上传视频', description: '上传原始视频素材', path: '' },
+  { key: 'autoclip', title: 'AI 智能选点', description: '自动分析并推荐精彩片段', path: '' },
+  { key: 'review', title: '片段审核', description: '审核并调整选点结果', path: '/clips' },
+  { key: 'intervals', title: '区间检测', description: '检测片尾/静止/水印区域', path: '/intervals' },
+  { key: 'slice', title: '切片执行', description: '按配置切割输出成品', path: '/slice' },
+  { key: 'preview', title: '成品预览', description: '预览并下载切片结果', path: '/preview' },
 ];
+
+// ─── 区间检测模式中文展示 ─────────────────────────────
+const DETECT_MODE_LABELS: Record<string, string> = {
+  credits: '片尾字幕',
+  static: '静止画面',
+  watermark: '水印',
+};
 
 const EpisodeDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -114,11 +121,53 @@ const EpisodeDetail: React.FC = () => {
       });
   };
 
+  // ── 选点/区间检测/切片执行历史（多次执行保留展示） ──
+  const [autoclipHistory, setAutoclipHistory] = useState<AutoClipRunRecord[]>([]);
+  const [intervalHistory, setIntervalHistory] = useState<IntervalHistoryItem[]>([]);
+  const [sliceHistory, setSliceHistory] = useState<SliceTask[]>([]);
+
+  const fetchHistories = async () => {
+    if (!episodeId) return;
+    try {
+      const [ac, iv, st] = await Promise.all([
+        autoclipApi.history(episodeId).catch(() => [] as AutoClipRunRecord[]),
+        intervalApi.history(episodeId).catch(() => [] as IntervalHistoryItem[]),
+        sliceApi.listTasks(episodeId).catch(() => [] as SliceTask[]),
+      ]);
+      if (mountedRef.current) {
+        setAutoclipHistory(ac);
+        setIntervalHistory(iv);
+        // 切片历史过滤掉 detect_* 内部进度记录
+        setSliceHistory(st.filter((t) => !(t.mode && t.mode.startsWith('detect_'))));
+      }
+    } catch {
+      // 历史加载失败不阻塞主流程
+    }
+  };
+
   useEffect(() => {
     if (episodeId) fetchEpisode();
+    fetchHistories();
   }, [episodeId]);
 
-  // 计算当前工作流进度
+  // 选点/检测/切片动作触发后刷新历史
+  useEffect(() => {
+    if (episodeId && (autoclipProgress?.status === 'completed' || autoclipProgress?.status === 'failed')) {
+      fetchHistories();
+    }
+  }, [autoclipProgress?.status]);
+
+  useEffect(() => {
+    if (episodeId && (detectProgress?.status === 'completed' || detectProgress?.status === 'failed')) {
+      fetchHistories();
+    }
+  }, [detectProgress?.status]);
+
+  useEffect(() => {
+    if (episodeId && (sliceProgress?.status === 'completed' || sliceProgress?.status === 'failed' || sliceProgress?.status === 'cancelled')) {
+      fetchHistories();
+    }
+  }, [sliceProgress?.status]);
   const getCurrentStep = (): number => {
     if (!episode) return 0;
     const status = episode.status;
@@ -128,6 +177,7 @@ const EpisodeDetail: React.FC = () => {
     if (status === 'intervals_detected') return 3;
     if (status === 'slicing') return 4;
     if (status === 'completed') return 5;
+    if (status === 'failed') return 4; // 失败视为停在切片执行步骤
     return 1;
   };
 
@@ -156,6 +206,7 @@ const EpisodeDetail: React.FC = () => {
                 message.error('选点分析失败');
               }
               fetchEpisode();
+              fetchHistories();
             }
           } catch {
             if (autoclipTimerRef.current) window.clearInterval(autoclipTimerRef.current);
@@ -200,6 +251,7 @@ const EpisodeDetail: React.FC = () => {
                 message.error('区间检测失败');
               }
               fetchEpisode();
+              fetchHistories();
             }
           } catch {
             if (detectTimerRef.current) window.clearInterval(detectTimerRef.current);
@@ -257,6 +309,7 @@ const EpisodeDetail: React.FC = () => {
                 message.error(`切片失败：${t.error_message || '未知错误'}`);
               }
               fetchEpisode();
+              fetchHistories();
             }
           } catch {
             if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
@@ -296,6 +349,7 @@ const EpisodeDetail: React.FC = () => {
         max_duration: maxClipDuration ?? undefined,
       });
       message.success(res.message);
+      fetchHistories();
       autoclipTimerRef.current = window.setInterval(async () => {
         try {
           const p = await autoclipApi.progress(episodeId);
@@ -314,6 +368,7 @@ const EpisodeDetail: React.FC = () => {
               message.error('选点分析失败');
             }
             fetchEpisode();
+            fetchHistories();
           }
         } catch {
           if (autoclipTimerRef.current) window.clearInterval(autoclipTimerRef.current);
@@ -344,6 +399,7 @@ const EpisodeDetail: React.FC = () => {
           : `检测任务已提交（${modeLabel}模式），正在分析视频内容…`,
       });
       message.success('检测任务已成功提交，正在后台分析中');
+      fetchHistories();
       detectTimerRef.current = window.setInterval(async () => {
         try {
           const p = await intervalApi.progress(episodeId);
@@ -367,6 +423,7 @@ const EpisodeDetail: React.FC = () => {
                 message.error('区间检测失败');
               }
               fetchEpisode();
+              fetchHistories();
             }
           }
         } catch {
@@ -420,6 +477,7 @@ const EpisodeDetail: React.FC = () => {
             message.error(`切片失败：${t.error_message || '未知错误'}`);
           }
           fetchEpisode();
+          fetchHistories();
         }
       } catch {
         if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
@@ -440,6 +498,7 @@ const EpisodeDetail: React.FC = () => {
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
       message.info('切片完成后请到「成品预览」查看并下载结果');
       fetchEpisode();
+      fetchHistories();
       // 与普通切片一致：轮询任务进度，实时展示进度条
       pollLatestSliceProgress('fast', setOneClickSlicing, setOneClickProgress);
     } catch (err: unknown) {
@@ -463,6 +522,7 @@ const EpisodeDetail: React.FC = () => {
         watermark_position: watermarkEnabled ? watermarkPosition : undefined,
       });
       message.success(res.message);
+      fetchHistories();
       // 启动后轮询任务进度
       pollLatestSliceProgress(sliceMode, setSliceRunning, setSliceProgress);
     } catch (err: unknown) {
@@ -564,6 +624,16 @@ const EpisodeDetail: React.FC = () => {
     );
   };
 
+  // ─── 各动作执行历史（放在对应动作卡片最底部，多次执行均保留展示） ──
+  const renderHistoryTitle = (label: string, count: number) => (
+    <div style={{ marginTop: 12, borderTop: '1px dashed #f0f0f0', paddingTop: 8 }}>
+      <Space size={8}>
+        <Text strong style={{ fontSize: 12, color: '#8c8c8c' }}>{label}</Text>
+        {count > 0 && <Tag style={{ fontSize: 11, marginRight: 0 }}>{count} 次</Tag>}
+      </Space>
+    </div>
+  );
+
   const actions: { title: string; node: React.ReactNode }[] = [
     {
       title: 'AI 智能选点',
@@ -638,6 +708,46 @@ const EpisodeDetail: React.FC = () => {
           </Text>
           {/* 进度条：选点动作 tab 最底部 */}
           {renderProgress(autoclipProgress)}
+          {/* 选点执行历史 */}
+          {renderHistoryTitle('选点执行历史', autoclipHistory.length)}
+          {autoclipHistory.length === 0 ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>暂无执行记录</Text>
+          ) : (
+            <Table
+              rowKey="id"
+              size="small"
+              pagination={false}
+              dataSource={autoclipHistory.slice(0, 8)}
+              columns={[
+                {
+                  title: '状态',
+                  dataIndex: 'status',
+                  key: 'status',
+                  width: 74,
+                  render: (s: string) => <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>,
+                },
+                {
+                  title: '结果',
+                  dataIndex: 'message',
+                  key: 'message',
+                  ellipsis: true,
+                  render: (m: string | null, r: AutoClipRunRecord) =>
+                    r.status === 'failed' && r.error_message ? (
+                      <ErrorHint error={r.error_message} />
+                    ) : m || '-',
+                },
+                {
+                  title: '时间',
+                  dataIndex: 'created_at',
+                  key: 'created_at',
+                  width: 130,
+                  render: (d: string) => (
+                    <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text>
+                  ),
+                },
+              ]}
+            />
+          )}
         </Space>
       ),
     },
@@ -679,6 +789,60 @@ const EpisodeDetail: React.FC = () => {
           )}
           {/* 进度条：区间检测动作 tab 最底部 */}
           {renderProgress(detectProgress)}
+          {/* 区间检测执行历史 */}
+          {renderHistoryTitle('区间检测执行历史', intervalHistory.length)}
+          {intervalHistory.length === 0 ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>暂无执行记录</Text>
+          ) : (
+            <Table
+              rowKey="id"
+              size="small"
+              pagination={false}
+              dataSource={intervalHistory.slice(0, 8)}
+              columns={[
+                {
+                  title: '模式',
+                  dataIndex: 'mode',
+                  key: 'mode',
+                  width: 74,
+                  render: (m: string | null) => (
+                    <Tag>{DETECT_MODE_LABELS[m || ''] || m || '-'}</Tag>
+                  ),
+                },
+                {
+                  title: '状态',
+                  dataIndex: 'status',
+                  key: 'status',
+                  width: 74,
+                  render: (s: string) => <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>,
+                },
+                {
+                  title: '结果',
+                  key: 'result',
+                  ellipsis: true,
+                  render: (_: unknown, r: IntervalHistoryItem) =>
+                    r.status === 'failed' && r.error_message ? (
+                      <ErrorHint error={r.error_message} />
+                    ) : r.status === 'completed' ? (
+                      <Text style={{ fontSize: 12 }}>
+                        {r.interval_count ? `检测到 ${r.interval_count} 个区间` : '未发现符合条件的区间'}
+                      </Text>
+                    ) : (
+                      <Text style={{ fontSize: 12 }}>{(r.progress || 0).toFixed(0)}%</Text>
+                    ),
+                },
+                {
+                  title: '时间',
+                  dataIndex: 'created_at',
+                  key: 'created_at',
+                  width: 130,
+                  render: (d: string) => (
+                    <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text>
+                  ),
+                },
+              ]}
+            />
+          )}
         </Space>
       ),
     },
@@ -772,6 +936,60 @@ const EpisodeDetail: React.FC = () => {
 
           {/* 进度条：切片动作 tab 最底部 */}
           {renderProgress(sliceProgress)}
+          {/* 切片执行历史 */}
+          {renderHistoryTitle('切片执行历史', sliceHistory.length)}
+          {sliceHistory.length === 0 ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>暂无执行记录</Text>
+          ) : (
+            <Table
+              rowKey="id"
+              size="small"
+              pagination={false}
+              dataSource={sliceHistory.slice(0, 8)}
+              columns={[
+                {
+                  title: '模式',
+                  dataIndex: 'mode',
+                  key: 'mode',
+                  width: 74,
+                  render: (m: string | null) => (
+                    <Tag>{SLICE_MODE_HELP[m || '']?.label || m || '-'}</Tag>
+                  ),
+                },
+                {
+                  title: '状态',
+                  dataIndex: 'status',
+                  key: 'status',
+                  width: 74,
+                  render: (s: string) => <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>,
+                },
+                {
+                  title: '结果',
+                  key: 'result',
+                  ellipsis: true,
+                  render: (_: unknown, t: SliceTask) =>
+                    t.status === 'failed' && t.error_message ? (
+                      <ErrorHint error={t.error_message} />
+                    ) : t.status === 'completed' ? (
+                      <Text style={{ fontSize: 12 }}>产出 {t.output_count} 个成品</Text>
+                    ) : t.status === 'cancelled' ? (
+                      <Text type="secondary" style={{ fontSize: 12 }}>已取消</Text>
+                    ) : (
+                      <Text style={{ fontSize: 12 }}>{(t.progress || 0).toFixed(0)}%</Text>
+                    ),
+                },
+                {
+                  title: '时间',
+                  dataIndex: 'created_at',
+                  key: 'created_at',
+                  width: 130,
+                  render: (d: string) => (
+                    <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text>
+                  ),
+                },
+              ]}
+            />
+          )}
         </Space>
       ),
     },
@@ -824,17 +1042,37 @@ const EpisodeDetail: React.FC = () => {
         {renderProgress(oneClickProgress)}
       </Card>
 
-      {/* 工作流步骤条 */}
+      {/* 工作流步骤条：每个步骤可点击跳转到对应界面 */}
       <Card size="small" style={{ marginBottom: 16 }}>
         <Steps
           current={currentStep}
           size="small"
-          items={WORKFLOW_STEPS.map((step, idx) => ({
-            title: step.title,
-            description: step.description,
-            status: idx < currentStep ? 'finish' : idx === currentStep ? 'process' : 'wait',
-            icon: idx < currentStep ? <CheckCircleOutlined /> : <ClockCircleOutlined />,
-          }))}
+          items={WORKFLOW_STEPS.map((step, idx) => {
+            const clickable = !!step.path;
+            const isFinish = idx < currentStep;
+            const isProcess = idx === currentStep;
+            return {
+              title: clickable ? (
+                <a
+                  onClick={() => navigate(`/episodes/${episodeId}${step.path}`)}
+                  style={{
+                    cursor: 'pointer',
+                    color: isFinish || isProcess ? '#1677ff' : undefined,
+                    fontWeight: isProcess ? 600 : undefined,
+                  }}
+                >
+                  {step.title}
+                </a>
+              ) : step.title,
+              description: step.description,
+              status: isFinish ? 'finish' : isProcess ? 'process' : 'wait',
+              icon: isFinish ? <CheckCircleOutlined /> : isProcess ? (
+                <a onClick={() => clickable && navigate(`/episodes/${episodeId}${step.path}`)} style={{ display: 'inline-flex' }}>
+                  <ClockCircleOutlined />
+                </a>
+              ) : <ClockCircleOutlined />,
+            };
+          })}
         />
       </Card>
 

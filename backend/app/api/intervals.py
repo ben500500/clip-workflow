@@ -73,6 +73,21 @@ class IntervalResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class IntervalHistoryItem(BaseModel):
+    id: str
+    episode_id: str
+    mode: Optional[str] = None
+    status: Optional[str] = None
+    progress: float
+    error_message: Optional[str] = None
+    interval_count: Optional[int] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    created_at: str
+
+    model_config = {"from_attributes": True}
+
+
 def _serialize_interval(interval: DetectedInterval) -> dict:
     return {
         "id": str(interval.id),
@@ -268,6 +283,63 @@ async def list_intervals(
     )
     intervals = result.scalars().all()
     return [_serialize_interval(i) for i in intervals]
+
+
+@router.get("/episodes/{episode_id}/intervals/history", response_model=List[IntervalHistoryItem])
+async def get_interval_history(
+    episode_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """查询该剧集所有区间检测执行历史（按创建时间倒序）。
+
+    区间检测复用了 slice_tasks 表（mode 前缀 detect_），这里直接读取该表。
+    """
+    try:
+        eid = uuid.UUID(episode_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    result = await db.execute(
+        select(SliceTask)
+        .where(SliceTask.episode_id == eid)
+        .where(SliceTask.mode.like("detect_%"))
+        .order_by(SliceTask.created_at.desc())
+        .limit(50)
+    )
+    tasks = result.scalars().all()
+    items = []
+    for t in tasks:
+        mode = t.mode[len("detect_"):] if t.mode and t.mode.startswith("detect_") else t.mode
+        # 统计该次检测（同模式）自动保存的区间条数
+        interval_count = None
+        if t.status == "completed":
+            count_conditions = [
+                DetectedInterval.episode_id == eid,
+                DetectedInterval.source == "auto",
+            ]
+            if mode:
+                count_conditions.append(DetectedInterval.interval_type == mode)
+            cnt = (
+                await db.execute(
+                    select(func.count())
+                    .select_from(DetectedInterval)
+                    .where(*count_conditions)
+                )
+            ).scalar() or 0
+            interval_count = cnt
+        items.append({
+            "id": str(t.id),
+            "episode_id": str(t.episode_id),
+            "mode": mode,
+            "status": t.status or "pending",
+            "progress": t.progress or 0.0,
+            "error_message": t.error_message,
+            "interval_count": interval_count,
+            "started_at": t.started_at.isoformat() if t.started_at else None,
+            "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+            "created_at": t.created_at.isoformat() if t.created_at else "",
+        })
+    return items
 
 
 @router.post("/intervals", response_model=IntervalResponse, status_code=201)

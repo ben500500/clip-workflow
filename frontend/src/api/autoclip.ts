@@ -1,5 +1,5 @@
 import client from './client';
-import type { AutoClipConfig, ClipCandidate } from '../types';
+import type { AutoClipConfig, AutoClipRunRecord, ClipCandidate } from '../types';
 
 export const autoclipApi = {
   run: (episodeId: string, config?: AutoClipConfig) =>
@@ -8,6 +8,9 @@ export const autoclipApi = {
       autoclip_project_id?: string;
       message: string;
     }>,
+
+  history: (episodeId: string) =>
+    client.get(`/episodes/${episodeId}/autoclip/history`) as Promise<AutoClipRunRecord[]>,
 
   progress: (episodeId: string) =>
     client.get(`/episodes/${episodeId}/autoclip/progress`) as Promise<{

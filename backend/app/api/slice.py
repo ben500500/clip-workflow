@@ -297,7 +297,9 @@ async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
     规则：
     - 若存在 running/pending 任务 → 保持/置为 slicing
     - 否则若存在已完成任务且无失败 → completed
-    - 否则若全部为失败/取消 → 保持 slicing（保留失败标识，由前端提示）
+    - 否则若全部为失败/取消 → failed（有失败任务时保持 slicing 会导致用户永远看不到
+      "已切完还是切片中"的问题，因此这里统一推进到 failed，由前端引导重试）
+    - 若没有任何任务 → 不改变（避免误覆盖新上传/选点状态）
     """
     try:
         eid = uuid.UUID(str(episode_id))
@@ -321,14 +323,19 @@ async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
 
     has_running = any(t.status in ("running", "pending") for t in all_tasks)
     has_completed = any(t.status == "completed" for t in all_tasks)
-    has_failed = any(t.status == "failed" for t in all_tasks)
+    has_failed = any(t.status in ("failed", "cancelled") for t in all_tasks)
 
     if has_running:
         if episode.status != "completed":
             episode.status = "slicing"
     elif has_completed and not has_failed:
         episode.status = "completed"
-    # 有失败任务时保持 slicing（让用户在界面看到失败并处理/重试）
+    elif has_completed and has_failed:
+        # 部分成功、部分失败：保留 completed 更符合用户预期（有成品可看）
+        episode.status = "completed"
+    else:
+        # 全部失败/取消：置为 failed，避免长期停留在 slicing
+        episode.status = "failed"
 
 
 async def _publish_to_worker(
