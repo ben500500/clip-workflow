@@ -27,6 +27,7 @@ import UserManagement from './pages/UserManagement';
 import Workers from './pages/Workers';
 import Monitor from './pages/Monitor';
 import Maintenance from './pages/Maintenance';
+import Watermark from './pages/Watermark';
 import NotFound from './pages/NotFound';
 
 const App: React.FC = () => {
@@ -65,6 +66,7 @@ const App: React.FC = () => {
             <Route path="workers" element={<Workers />} />
             <Route path="monitor" element={<Monitor />} />
             <Route path="maintenance" element={<Maintenance />} />
+            <Route path="watermark" element={<Watermark />} />
             <Route path="settings" element={<Settings />} />
             <Route path="*" element={<NotFound />} />
           </Route>

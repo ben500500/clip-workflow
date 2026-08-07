@@ -28,6 +28,8 @@ from app.models.models import (
     AuditLog,
     AlertRule,
     AlertEvent,
+    WatermarkTask,
+    WatermarkVideo,
 )
 
 __all__ = [
@@ -60,4 +62,6 @@ __all__ = [
     "AuditLog",
     "AlertRule",
     "AlertEvent",
+    "WatermarkTask",
+    "WatermarkVideo",
 ]

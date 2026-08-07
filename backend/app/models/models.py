@@ -640,3 +640,62 @@ class WorkerNode(Base):
 
     def __repr__(self) -> str:
         return f"<WorkerNode(id={self.node_id}, status={self.status})>"
+
+
+class WatermarkTask(Base):
+    """去水印任务（一次批量提交 = 一个任务，内含多条视频）。
+
+    用户上传若干视频并选择去水印引擎（remove_ai_watermarks / seedance）后
+    提交，任务异步执行并保存历史，支持进度展示、下载与删除。
+    """
+    __tablename__ = "watermark_tasks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 去水印引擎：remove_ai / seedance
+    engine = Column(String(50), nullable=False)
+    # 引擎选项（JSON）：mark / backend / region / use_lama 等
+    options = Column(JSON, default=dict)
+    name = Column(String(255), nullable=True)
+    status = Column(String(50), default="pending")  # pending/running/completed/failed/cancelled
+    progress = Column(Float, default=0.0)
+    total_count = Column(Integer, default=0)
+    completed_count = Column(Integer, default=0)
+    failed_count = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    celery_task_id = Column(String(100), nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    videos = relationship("WatermarkVideo", back_populates="task", cascade="all, delete-orphan", order_by="WatermarkVideo.created_at")
+
+    def __repr__(self) -> str:
+        return f"<WatermarkTask(id={self.id}, engine={self.engine}, status={self.status})>"
+
+
+class WatermarkVideo(Base):
+    """去水印任务下的单条视频。"""
+    __tablename__ = "watermark_videos"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("watermark_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_name = Column(String(500), nullable=False)
+    # MinIO 对象 key（raw-footage 桶，源视频）
+    source_file_key = Column(String(500), nullable=False)
+    source_bucket = Column(String(50), default="raw-footage")
+    file_size = Column(BigInteger, nullable=True)
+    # 输出文件对象 key（watermark-output 桶）
+    output_file_key = Column(String(500), nullable=True)
+    output_bucket = Column(String(50), nullable=True)
+    output_file_size = Column(BigInteger, nullable=True)
+    status = Column(String(50), default="pending")  # pending/running/completed/failed/cancelled
+    progress = Column(Float, default=0.0)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    task = relationship("WatermarkTask", back_populates="videos")
+
+    def __repr__(self) -> str:
+        return f"<WatermarkVideo(id={self.id}, file_name={self.file_name}, status={self.status})>"

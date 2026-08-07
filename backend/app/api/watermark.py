@@ -1,0 +1,549 @@
+"""去水印功能 API（v4）。
+
+提供：
+- 两套去水印引擎选择（remove-ai-watermarks / seedance 2.0 watermark remover）
+- 批量上传 + 批量启动去水印任务（异步执行）
+- 任务历史保存、进度展示、下载链接
+- 任务/单条视频删除（含 MinIO 资源文件），多选批量操作
+"""
+
+import logging
+import os
+import uuid
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.database import get_db
+from app.models.models import WatermarkTask, WatermarkVideo
+from app.services.minio_service import (
+    get_presigned_url,
+    delete_file,
+    upload_file_from_path,
+)
+from app.services.upload_service import validate_file_name
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+# 允许的去水印引擎
+ALLOWED_ENGINES = ("remove_ai", "seedance")
+
+ENGINE_DISPLAY = {
+    "remove_ai": "Remove AI Watermarks（RAiW）",
+    "seedance": "Seedance 2.0 Watermark Remover",
+}
+
+
+# ──────────────────────────────────────────────
+# Pydantic 模型
+# ──────────────────────────────────────────────
+
+
+class WatermarkRunRequest(BaseModel):
+    engine: str = "remove_ai"
+    # RAiW 选项
+    mark: Optional[str] = "auto"        # auto/sora/veo/seedance/dola/hailuo/kling
+    backend: Optional[str] = "cv2"      # auto/cv2/migan/lama
+    temporal_consistency: bool = True
+    # Seedance 选项
+    region: Optional[str] = None        # x,y,w,h 手动指定水印区域
+    use_lama: bool = False
+    name: Optional[str] = None
+    # 待处理视频的 source_file_key 列表（由 /watermark/upload 返回）
+    files: List[str] = []
+
+
+class WatermarkVideoItem(BaseModel):
+    id: str
+    file_name: str
+    file_size: Optional[int] = None
+    status: str
+    progress: float
+    error_message: Optional[str] = None
+    output_url: Optional[str] = None
+    source_url: Optional[str] = None
+    output_file_size: Optional[int] = None
+    created_at: str
+    completed_at: Optional[str] = None
+
+
+class WatermarkTaskItem(BaseModel):
+    id: str
+    engine: str
+    engine_display: str
+    name: Optional[str] = None
+    options: dict
+    status: str
+    progress: float
+    total_count: int
+    completed_count: int
+    failed_count: int
+    error_message: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    created_at: str
+
+
+class WatermarkTaskDetail(WatermarkTaskItem):
+    videos: List[WatermarkVideoItem] = []
+
+
+class WatermarkDeleteRequest(BaseModel):
+    task_ids: List[str] = []
+
+
+# ──────────────────────────────────────────────
+# 序列化
+# ──────────────────────────────────────────────
+
+
+def _serialize_video(video: WatermarkVideo, output_url: Optional[str] = None, source_url: Optional[str] = None) -> dict:
+    return {
+        "id": str(video.id),
+        "file_name": video.file_name,
+        "file_size": video.file_size,
+        "status": video.status,
+        "progress": video.progress or 0.0,
+        "error_message": video.error_message,
+        "output_url": output_url,
+        "source_url": source_url,
+        "output_file_size": video.output_file_size,
+        "created_at": video.created_at.isoformat() if video.created_at else "",
+        "completed_at": video.completed_at.isoformat() if video.completed_at else None,
+    }
+
+
+def _serialize_task(task: WatermarkTask) -> dict:
+    return {
+        "id": str(task.id),
+        "engine": task.engine,
+        "engine_display": ENGINE_DISPLAY.get(task.engine, task.engine),
+        "name": task.name,
+        "options": task.options or {},
+        "status": task.status,
+        "progress": task.progress or 0.0,
+        "total_count": task.total_count or 0,
+        "completed_count": task.completed_count or 0,
+        "failed_count": task.failed_count or 0,
+        "error_message": task.error_message,
+        "started_at": task.started_at.isoformat() if task.started_at else None,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "created_at": task.created_at.isoformat() if task.created_at else "",
+    }
+
+
+# ──────────────────────────────────────────────
+# API
+# ──────────────────────────────────────────────
+
+
+@router.post("/watermark/upload")
+async def upload_watermark_video(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """上传单条待去水印视频，存入 MinIO（watermark-raw 桶）。
+
+    返回 source_file_key，随后随任务一起提交处理。支持批量：前端可多次调用。
+    """
+    file_name = file.filename or ""
+    try:
+        safe_name = validate_file_name(file_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    upload_id = str(uuid.uuid4())
+    local_path = f"/tmp/watermark_upload/{upload_id}_{safe_name}"
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+    size = 0
+    with open(local_path, "wb") as out:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > settings.UPLOAD_MAX_SIZE:
+                out.close()
+                os.unlink(local_path)
+                raise HTTPException(status_code=413, detail="文件超过大小上限")
+            out.write(chunk)
+
+    if size == 0:
+        os.unlink(local_path)
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    file_key = f"watermark-raw/{upload_id}_{safe_name}"
+    ok = await upload_file_from_path(
+        settings.MINIO_BUCKET_WATERMARK_RAW,
+        file_key,
+        local_path,
+        content_type=file.content_type or "video/mp4",
+    )
+    os.unlink(local_path)
+    if not ok:
+        raise HTTPException(status_code=500, detail="文件上传存储失败")
+
+    return {
+        "file_name": safe_name,
+        "source_file_key": file_key,
+        "file_size": size,
+        "upload_id": upload_id,
+    }
+
+
+@router.post("/watermark/run", response_model=dict)
+async def run_watermark_task(
+    data: WatermarkRunRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """创建去水印任务并异步执行。
+
+    请求体示例：
+    {
+      "engine": "remove_ai",
+      "mark": "auto",
+      "backend": "cv2",
+      "temporal_consistency": true,
+      "use_lama": false,
+      "name": "批量去水印",
+      "files": ["watermark-raw/xxx_1.mp4", "watermark-raw/xxx_2.mp4"]
+    }
+    """
+    engine = data.engine
+    if engine not in ALLOWED_ENGINES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"engine 不合法，仅支持 {'/'.join(ALLOWED_ENGINES)}",
+        )
+
+    file_keys = data.files or []
+    if not file_keys:
+        raise HTTPException(status_code=400, detail="至少需要一个待处理视频（files）")
+
+    if len(file_keys) > 200:
+        raise HTTPException(status_code=400, detail="单批最多 200 条视频")
+
+    # 构造引擎选项
+    options: dict = {}
+    if engine == "remove_ai":
+        options = {
+            "mark": data.mark or "auto",
+            "backend": data.backend or "cv2",
+            "temporal_consistency": bool(data.temporal_consistency),
+        }
+    elif engine == "seedance":
+        options = {
+            "region": data.region,
+            "use_lama": bool(data.use_lama),
+        }
+
+    # 创建任务记录
+    task = WatermarkTask(
+        engine=engine,
+        options=options,
+        name=data.name or f"{ENGINE_DISPLAY.get(engine, engine)} 批量去水印",
+        status="pending",
+        progress=0.0,
+        total_count=len(file_keys),
+    )
+    db.add(task)
+    await db.flush()
+
+    # 创建子视频记录（file_key 与文件名解耦：从 key 提取原文件名）
+    for fk in file_keys:
+        base = os.path.basename(fk)
+        # 去除 upload_id_ 前缀，还原原始文件名
+        display_name = base
+        if "_" in base:
+            parts = base.split("_", 1)
+            if len(parts) == 2 and len(parts[0]) == 36:
+                display_name = parts[1]
+        video = WatermarkVideo(
+            task_id=task.id,
+            file_name=display_name,
+            source_file_key=fk,
+            source_bucket=settings.MINIO_BUCKET_WATERMARK_RAW,
+            file_size=0,
+            status="pending",
+            progress=0.0,
+        )
+        db.add(video)
+
+    await db.commit()
+    await db.refresh(task)
+
+    # 异步派发
+    from app.celery.tasks import watermark_task as celery_watermark_task
+    celery_result = celery_watermark_task.delay(
+        task_id=str(task.id),
+        engine=engine,
+        options=options,
+    )
+    task.celery_task_id = celery_result.id
+    await db.commit()
+
+    return {
+        "task_id": str(task.id),
+        "engine": engine,
+        "message": f"去水印任务已创建（{len(file_keys)} 条视频），正在异步处理",
+    }
+
+
+@router.get("/watermark/tasks", response_model=List[WatermarkTaskItem])
+async def list_watermark_tasks(
+    db: AsyncSession = Depends(get_db),
+):
+    """任务历史列表（按创建时间倒序）。"""
+    result = await db.execute(
+        select(WatermarkTask).order_by(WatermarkTask.created_at.desc()).limit(200)
+    )
+    tasks = result.scalars().all()
+    return [_serialize_task(t) for t in tasks]
+
+
+@router.get("/watermark/tasks/{task_id}", response_model=WatermarkTaskDetail)
+async def get_watermark_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """任务详情：包含任务下的多条视频及其输出/源视频直链。"""
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid task ID")
+
+    result = await db.execute(select(WatermarkTask).where(WatermarkTask.id == tid))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    videos_res = await db.execute(
+        select(WatermarkVideo).where(WatermarkVideo.task_id == tid).order_by(WatermarkVideo.created_at.asc())
+    )
+    videos = videos_res.scalars().all()
+
+    video_items = []
+    for v in videos:
+        output_url = None
+        source_url = None
+        if v.output_file_key:
+            output_url = await get_presigned_url(
+                v.output_bucket or settings.MINIO_BUCKET_WATERMARK,
+                v.output_file_key,
+                expires_seconds=3600,
+            )
+        if v.source_file_key:
+            source_url = await get_presigned_url(
+                v.source_bucket or settings.MINIO_BUCKET_WATERMARK_RAW,
+                v.source_file_key,
+                expires_seconds=3600,
+            )
+        video_items.append(_serialize_video(v, output_url, source_url))
+
+    data = _serialize_task(task)
+    data["videos"] = video_items
+    return data
+
+
+@router.delete("/watermark/tasks/{task_id}", response_model=dict)
+async def delete_watermark_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """删除单个任务（含其全部视频的源文件与输出文件）。"""
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid task ID")
+
+    result = await db.execute(select(WatermarkTask).where(WatermarkTask.id == tid))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    videos_res = await db.execute(
+        select(WatermarkVideo).where(WatermarkVideo.task_id == tid)
+    )
+    videos = videos_res.scalars().all()
+
+    # 任务正在运行中：先标记取消，让 Celery 任务在下一条视频处理前感知并中断
+    if task.status in ("pending", "running"):
+        task.status = "cancelled"
+        await db.flush()
+
+    # 删除 MinIO 源/输出文件
+    for v in videos:
+        try:
+            if v.source_file_key:
+                await delete_file(v.source_bucket or settings.MINIO_BUCKET_WATERMARK_RAW, v.source_file_key)
+        except Exception as e:
+            logger.warning("Delete source %s failed: %s", v.source_file_key, e)
+        try:
+            if v.output_file_key:
+                await delete_file(v.output_bucket or settings.MINIO_BUCKET_WATERMARK, v.output_file_key)
+        except Exception as e:
+            logger.warning("Delete output %s failed: %s", v.output_file_key, e)
+
+    await db.delete(task)
+    await db.commit()
+    return {"message": "任务及其资源文件已删除", "task_id": task_id}
+
+
+@router.post("/watermark/tasks/batch-delete", response_model=dict)
+async def batch_delete_watermark_tasks(
+    data: WatermarkDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """批量删除任务（多选）。"""
+    ids = data.task_ids or []
+    if not ids:
+        raise HTTPException(status_code=400, detail="未选择任何任务")
+    if len(ids) > 100:
+        raise HTTPException(status_code=400, detail="单次最多批量删除 100 个任务")
+
+    deleted = 0
+    for tid_str in ids:
+        try:
+            tid = uuid.UUID(tid_str)
+        except ValueError:
+            continue
+        result = await db.execute(select(WatermarkTask).where(WatermarkTask.id == tid))
+        task = result.scalar_one_or_none()
+        if not task:
+            continue
+
+        # 运行中任务先标记取消，避免 Worker 继续处理已删除任务的资源
+        if task.status in ("pending", "running"):
+            task.status = "cancelled"
+            await db.flush()
+
+        videos_res = await db.execute(
+            select(WatermarkVideo).where(WatermarkVideo.task_id == tid)
+        )
+        videos = videos_res.scalars().all()
+        for v in videos:
+            try:
+                if v.source_file_key:
+                    await delete_file(v.source_bucket or settings.MINIO_BUCKET_WATERMARK_RAW, v.source_file_key)
+            except Exception as e:
+                logger.warning("Delete source %s failed: %s", v.source_file_key, e)
+            try:
+                if v.output_file_key:
+                    await delete_file(v.output_bucket or settings.MINIO_BUCKET_WATERMARK, v.output_file_key)
+            except Exception as e:
+                logger.warning("Delete output %s failed: %s", v.output_file_key, e)
+
+        await db.delete(task)
+        deleted += 1
+
+    await db.commit()
+    return {"message": f"已删除 {deleted} 个任务及其资源文件", "deleted": deleted}
+
+
+@router.delete("/watermark/videos/{video_id}", response_model=dict)
+async def delete_watermark_video(
+    video_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """删除任务下的单条视频（含源文件与输出文件）。"""
+    try:
+        vid = uuid.UUID(video_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid video ID")
+
+    result = await db.execute(select(WatermarkVideo).where(WatermarkVideo.id == vid))
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="视频不存在")
+
+    try:
+        if video.source_file_key:
+            await delete_file(video.source_bucket or settings.MINIO_BUCKET_WATERMARK_RAW, video.source_file_key)
+    except Exception as e:
+        logger.warning("Delete source %s failed: %s", video.source_file_key, e)
+    try:
+        if video.output_file_key:
+            await delete_file(video.output_bucket or settings.MINIO_BUCKET_WATERMARK, video.output_file_key)
+    except Exception as e:
+        logger.warning("Delete output %s failed: %s", video.output_file_key, e)
+
+    await db.delete(video)
+    await db.commit()
+    return {"message": "视频及其资源文件已删除", "video_id": video_id}
+
+
+@router.get("/watermark/videos/{video_id}/download")
+async def download_watermark_video(
+    video_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """单条处理后视频下载（重定向到 presigned URL）。"""
+    try:
+        vid = uuid.UUID(video_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid video ID")
+
+    result = await db.execute(select(WatermarkVideo).where(WatermarkVideo.id == vid))
+    video = result.scalar_one_or_none()
+    if not video:
+        raise HTTPException(status_code=404, detail="视频不存在")
+
+    if not video.output_file_key:
+        raise HTTPException(status_code=400, detail="该视频尚未处理完成，无输出文件")
+
+    url = await get_presigned_url(
+        video.output_bucket or settings.MINIO_BUCKET_WATERMARK,
+        video.output_file_key,
+        expires_seconds=7200,
+    )
+    if not url:
+        raise HTTPException(status_code=500, detail="生成下载链接失败")
+
+    return {"url": url, "file_name": video.file_name}
+
+
+@router.post("/watermark/videos/batch-download", response_model=dict)
+async def batch_download_watermark_videos(
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """批量下载：返回多条视频的 presigned 直链，前端逐个触发下载。"""
+    ids = data.get("video_ids") or []
+    if not ids:
+        raise HTTPException(status_code=400, detail="未选择任何视频")
+    if len(ids) > 100:
+        raise HTTPException(status_code=400, detail="单次最多批量下载 100 条视频")
+
+    files = []
+    for vid_str in ids:
+        try:
+            vid = uuid.UUID(vid_str)
+        except ValueError:
+            continue
+        result = await db.execute(select(WatermarkVideo).where(WatermarkVideo.id == vid))
+        video = result.scalar_one_or_none()
+        if not video or not video.output_file_key:
+            continue
+        url = await get_presigned_url(
+            video.output_bucket or settings.MINIO_BUCKET_WATERMARK,
+            video.output_file_key,
+            expires_seconds=7200,
+        )
+        if url:
+            files.append({
+                "video_id": str(video.id),
+                "file_name": video.file_name,
+                "url": url,
+            })
+
+    if not files:
+        raise HTTPException(status_code=404, detail="没有可下载的处理结果")
+
+    return {"files": files}

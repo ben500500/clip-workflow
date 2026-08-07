@@ -24,3 +24,5 @@ alembic>=1.13.0
 cryptography>=41.0.0
 # 竖屏转横屏智能裁切（OpenCV 人脸检测 / 动态跟踪）
 opencv-python-headless>=4.8.0
+# 去水印（v4）：remove-ai-watermarks 两套引擎共用视频可见水印清除能力
+remove-ai-watermarks[visible,video]>=0.26.0

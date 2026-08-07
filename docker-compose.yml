@@ -104,6 +104,8 @@ services:
         mc mb clip-minio/${MINIO_BUCKET:-clipworkflow} --ignore-existing
         mc mb clip-minio/publish-screenshots --ignore-existing
         mc mb clip-minio/sliced --ignore-existing
+        mc mb clip-minio/watermark-raw --ignore-existing
+        mc mb clip-minio/watermark-output --ignore-existing
         echo 'MinIO bucket initialized successfully.'
       "
     logging: *default-logging
