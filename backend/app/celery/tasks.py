@@ -49,6 +49,7 @@ celery_app.conf.update(
         "app.celery.tasks.task_publish_video": {"queue": "publish"},
         "app.celery.tasks.confirm_publish_worker": {"queue": "publish"},
         "app.celery.tasks.task_collect_metrics": {"queue": "metrics"},
+        "app.celery.tasks.watermark_task": {"queue": "video_processing"},
     },
     beat_schedule={
         "collect-metrics-daily": {
@@ -1263,3 +1264,308 @@ def maintenance_daily_task(self):
         logger.error(f"Maintenance daily task failed: {e}")
         self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
+
+
+# ══════════════════════════════════════════════════════════════
+# 去水印任务（v4）
+# ══════════════════════════════════════════════════════════════
+
+async def _update_watermark_video(
+    video_id: str,
+    *,
+    status: Optional[str] = None,
+    progress: Optional[float] = None,
+    output_file_key: Optional[str] = None,
+    output_bucket: Optional[str] = None,
+    output_file_size: Optional[int] = None,
+    error_message: Optional[str] = None,
+    started_at: Optional[datetime] = None,
+    completed_at: Optional[datetime] = None,
+) -> None:
+    """更新单条去水印视频的状态（供 Celery 任务在同步上下文中调用）。"""
+    from app.models.models import WatermarkVideo
+
+    async with async_session_factory() as session:
+        try:
+            vid = uuid.UUID(str(video_id))
+        except ValueError:
+            return
+        result = await session.execute(
+            select(WatermarkVideo).where(WatermarkVideo.id == vid)
+        )
+        video = result.scalar_one_or_none()
+        if not video:
+            return
+        if status is not None:
+            video.status = status
+        if progress is not None:
+            video.progress = progress
+        if output_file_key is not None:
+            video.output_file_key = output_file_key
+        if output_bucket is not None:
+            video.output_bucket = output_bucket
+        if output_file_size is not None:
+            video.output_file_size = output_file_size
+        if error_message is not None:
+            video.error_message = error_message
+        if started_at is not None:
+            video.started_at = started_at
+        if completed_at is not None:
+            video.completed_at = completed_at
+        await session.commit()
+
+
+async def _recalc_watermark_task(task_id: str) -> None:
+    """根据子视频状态汇总刷新任务级进度/状态。"""
+    from app.models.models import WatermarkTask, WatermarkVideo
+
+    async with async_session_factory() as session:
+        try:
+            tid = uuid.UUID(str(task_id))
+        except ValueError:
+            return
+        result = await session.execute(select(WatermarkTask).where(WatermarkTask.id == tid))
+        task = result.scalar_one_or_none()
+        if not task:
+            return
+        videos_result = await session.execute(
+            select(WatermarkVideo).where(WatermarkVideo.task_id == tid)
+        )
+        videos = videos_result.scalars().all()
+        if not videos:
+            return
+
+        total = len(videos)
+        completed = sum(1 for v in videos if v.status == "completed")
+        failed = sum(1 for v in videos if v.status == "failed")
+        cancelled = sum(1 for v in videos if v.status == "cancelled")
+        running = sum(1 for v in videos if v.status in ("pending", "running"))
+
+        # 平均进度：完成 100、失败/取消 100、运行中取各自 progress
+        avg = 0.0
+        if total:
+            for v in videos:
+                if v.status == "completed":
+                    avg += 100.0
+                elif v.status in ("failed", "cancelled"):
+                    avg += 100.0
+                else:
+                    avg += v.progress or 0.0
+            avg = round(avg / total, 1)
+
+        task.progress = avg
+        task.total_count = total
+        task.completed_count = completed
+        task.failed_count = failed
+        if running == 0:
+            if cancelled == total:
+                task.status = "cancelled"
+                task.completed_at = task.completed_at or datetime.utcnow()
+            elif failed == total or (failed > 0 and completed == 0):
+                task.status = "failed"
+                task.completed_at = task.completed_at or datetime.utcnow()
+            else:
+                task.status = "completed"
+                task.completed_at = task.completed_at or datetime.utcnow()
+        else:
+            task.status = "running"
+        await session.commit()
+
+
+@celery_app.task(bind=True, max_retries=0)
+def watermark_task(
+    self,
+    task_id: str,
+    engine: str,
+    options: Optional[dict] = None,
+):
+    """批量去水印异步任务：逐条下载源视频 → 调用引擎 → 上传结果 → 汇总进度。"""
+    from app.engines.watermark_runner import run_watermark_engine, temp_video_path
+    from app.models.models import WatermarkTask, WatermarkVideo
+    from app.services.minio_service import (
+        download_to_file,
+        upload_file_from_path,
+    )
+
+    options = options or {}
+    logger.info("Watermark task %s started (engine=%s)", task_id, engine)
+
+    try:
+        # 读取任务及其视频列表
+        tid = uuid.UUID(str(task_id))
+    except ValueError:
+        logger.error("Invalid watermark task id: %s", task_id)
+        return
+
+    async def _load_videos():
+        async with async_session_factory() as session:
+            task_res = await session.execute(select(WatermarkTask).where(WatermarkTask.id == tid))
+            task = task_res.scalar_one_or_none()
+            if not task:
+                return None, []
+            videos_res = await session.execute(
+                select(WatermarkVideo).where(WatermarkVideo.task_id == tid)
+            )
+            return task, videos_res.scalars().all()
+
+    task, videos = run_async(_load_videos())
+    if not task:
+        logger.error("Watermark task %s not found", task_id)
+        return
+
+    if task.status == "cancelled":
+        logger.info("Watermark task %s is cancelled, skip", task_id)
+        return
+
+    async def _mark_task_running():
+        async with async_session_factory() as session:
+            task_res = await session.execute(select(WatermarkTask).where(WatermarkTask.id == tid))
+            t = task_res.scalar_one_or_none()
+            if t:
+                t.status = "running"
+                t.started_at = t.started_at or datetime.utcnow()
+                t.error_message = None
+                await session.commit()
+
+    run_async(_mark_task_running())
+
+    tmp_dir = "/tmp/watermark"
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    total = len(videos)
+    for idx, video in enumerate(videos, start=1):
+        vid = str(video.id)
+        src_local = None
+        out_local = None
+        try:
+            # 任务已取消/已删除 → 中断
+            cur_task, _ = run_async(_load_videos())
+            if not cur_task or cur_task.status == "cancelled":
+                logger.info("Watermark task %s cancelled/deleted during processing", task_id)
+                break
+
+            run_async(_update_watermark_video(
+                vid,
+                status="running",
+                progress=5.0,
+                started_at=datetime.utcnow(),
+                error_message=None,
+            ))
+
+            src_local = temp_video_path("src")
+            out_local = temp_video_path("out")
+
+            # RAiW 要求输入文件带正确扩展名，且输出容器必须与源一致；
+            # Seedance 引擎也依赖扩展名。从原始文件名提取扩展名并保持。
+            src_ext = os.path.splitext(video.file_name or video.source_file_key)[1].lower()
+            if not src_ext:
+                src_ext = os.path.splitext(video.source_file_key)[1].lower()
+            if not src_ext:
+                src_ext = ".mp4"
+            src_local = f"{src_local}{src_ext}"
+            out_local = f"{out_local}{src_ext}"
+
+            # 下载源视频
+            ok = run_async(download_to_file(video.source_bucket or "watermark-raw", video.source_file_key, src_local))
+            if not ok or not os.path.isfile(src_local):
+                raise RuntimeError(f"下载源视频失败: {video.source_file_key}")
+
+            # 引擎进度回调：同步上下文内更新数据库。
+            # 注意：回调在 run_async 的事件循环内被同步调用，不能再用
+            # run_async（会嵌套事件循环报错）。改为在已运行 loop 上调度协程。
+            # 为避免高频写库（如逐帧修补），按进度变化节流：仅当进度提升≥5%或
+            # 达到 100% 时落库。
+            _last_written_progress = {"pct": 0}
+
+            def _cb(pct: int, message: str = ""):
+                self.update_state(
+                    state="PROGRESS",
+                    meta={"progress": pct, "message": f"{video.file_name} {message}"},
+                )
+                if pct - _last_written_progress["pct"] < 5 and pct < 100:
+                    return
+                _last_written_progress["pct"] = pct
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(_update_watermark_video(vid, progress=pct))
+                    else:
+                        run_async(_update_watermark_video(vid, progress=pct))
+                except RuntimeError:
+                    pass
+
+            returncode, stdout, stderr = run_async(
+                run_watermark_engine(
+                    engine,
+                    src_local,
+                    out_local,
+                    options,
+                    progress_cb=_cb,
+                )
+            )
+
+            if returncode != 0:
+                detail = (stderr or stdout or "").strip()[-500:]
+                raise RuntimeError(detail or f"去水印引擎执行失败 (exit={returncode})")
+
+            if not os.path.isfile(out_local):
+                raise RuntimeError("去水印引擎未生成输出文件")
+
+            # 上传输出到 MinIO
+            out_key = f"watermark/{task_id}/{vid}/{video.file_name}"
+            uploaded = run_async(upload_file_from_path(
+                settings.MINIO_BUCKET_WATERMARK,
+                out_key,
+                out_local,
+                content_type="video/mp4",
+            ))
+            if not uploaded:
+                raise RuntimeError("上传处理结果到 MinIO 失败")
+
+            out_size = os.path.getsize(out_local)
+            run_async(_update_watermark_video(
+                vid,
+                status="completed",
+                progress=100.0,
+                output_file_key=out_key,
+                output_bucket=settings.MINIO_BUCKET_WATERMARK,
+                output_file_size=out_size,
+                completed_at=datetime.utcnow(),
+            ))
+
+        except Exception as e:
+            logger.error("Watermark video %s failed: %s", vid, e)
+            run_async(_update_watermark_video(
+                vid,
+                status="failed",
+                error_message=str(e)[:1000],
+                completed_at=datetime.utcnow(),
+            ))
+        finally:
+            for p in (src_local, out_local):
+                try:
+                    if p and os.path.isfile(p):
+                        os.unlink(p)
+                except OSError:
+                    pass
+
+        # 每处理完一条刷新一次任务汇总
+        run_async(_recalc_watermark_task(task_id))
+
+    # 全部完成后，若仍有 pending（被取消跳过）则标记取消
+    cur_task, cur_videos = run_async(_load_videos())
+    pending = [v for v in cur_videos if v.status == "pending"]
+    if pending and cur_task and cur_task.status == "cancelled":
+        for v in pending:
+            run_async(_update_watermark_video(
+                str(v.id), status="cancelled", completed_at=datetime.utcnow()
+            ))
+        run_async(_recalc_watermark_task(task_id))
+
+    run_async(_recalc_watermark_task(task_id))
+
+    self.update_state(
+        state="SUCCESS",
+        meta={"progress": 100, "message": f"Watermark task {task_id} finished"},
+    )
+    logger.info("Watermark task %s finished", task_id)

@@ -40,6 +40,11 @@ const allMenuItems = [
     label: '项目管理',
   },
   {
+    key: '/watermark',
+    icon: <ClearOutlined />,
+    label: '去水印',
+  },
+  {
     key: '/publish',
     icon: <SendOutlined />,
     label: '发布管理',

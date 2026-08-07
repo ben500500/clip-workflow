@@ -62,6 +62,18 @@ class Settings(BaseSettings):
     # 视频处理引擎根目录
     ENGINES_DIR: str = "engines"
 
+    # ── 去水印功能（v4） ──
+    # 去水印输出存储桶（处理后视频）
+    MINIO_BUCKET_WATERMARK: str = "watermark-output"
+    # 去水印源视频存储桶（复用 raw-footage 之外的独立桶）
+    MINIO_BUCKET_WATERMARK_RAW: str = "watermark-raw"
+    # remove-ai-watermarks CLI 可执行文件（pip 安装后为 remove-ai-watermarks）
+    WATERMARK_RAIW_CLI: str = "remove-ai-watermarks"
+    # Seedance 去水印脚本文件名（位于 ENGINES_DIR 下；容器内 /app/engines/seedance_watermark_remover.py）
+    WATERMARK_SEEDANCE_SCRIPT: str = "seedance_watermark_remover.py"
+    # 单个去水印视频最大时长（秒），超长会显著耗时
+    WATERMARK_MAX_DURATION: int = 3600
+
     # 切片分发引擎：worker（Redis Stream / Go Worker）或 celery（回退）
     SLICE_ENGINE: str = "worker"
     # Worker 回调/上传 URL 的基础地址（远程物理机部署时配置为可访问的地址）
