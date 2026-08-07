@@ -1283,6 +1283,7 @@ async def _update_watermark_video(
     completed_at: Optional[datetime] = None,
 ) -> None:
     """更新单条去水印视频的状态（供 Celery 任务在同步上下文中调用）。"""
+    from sqlalchemy import select
     from app.models.models import WatermarkVideo
 
     async with async_session_factory() as session:
@@ -1317,6 +1318,7 @@ async def _update_watermark_video(
 
 async def _recalc_watermark_task(task_id: str) -> None:
     """根据子视频状态汇总刷新任务级进度/状态。"""
+    from sqlalchemy import select
     from app.models.models import WatermarkTask, WatermarkVideo
 
     async with async_session_factory() as session:
