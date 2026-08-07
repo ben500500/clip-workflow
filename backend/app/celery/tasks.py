@@ -1398,6 +1398,7 @@ def watermark_task(
         return
 
     async def _load_videos():
+        from sqlalchemy import select
         async with async_session_factory() as session:
             task_res = await session.execute(select(WatermarkTask).where(WatermarkTask.id == tid))
             task = task_res.scalar_one_or_none()
@@ -1418,6 +1419,7 @@ def watermark_task(
         return
 
     async def _mark_task_running():
+        from sqlalchemy import select
         async with async_session_factory() as session:
             task_res = await session.execute(select(WatermarkTask).where(WatermarkTask.id == tid))
             t = task_res.scalar_one_or_none()
