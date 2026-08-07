@@ -90,6 +90,19 @@ class SliceRunRequest(BaseModel):
     # 剪辑区间（相对成品起点，秒）。默认整段（0 ~ 成品时长）
     cut_start: Optional[float] = None
     cut_end: Optional[float] = None
+    # ── 竖屏转横屏智能裁切（切片前预处理）──
+    # 开启后切片前自动检测素材方向，竖屏素材先转成横屏再切片
+    vert2horiz_enabled: bool = False
+    # 裁切模式：fixed 固定裁切（快速）/ dynamic 动态人脸跟踪（精准）
+    vert2horiz_mode: Optional[str] = None
+    # 裁切比例（宽/高，默认 9/16 = 0.5625）
+    vert2horiz_ratio: Optional[float] = None
+    # 输出分辨率（默认 1920x1080）
+    vert2horiz_output_size: Optional[str] = None
+    # 动态模式：人脸检测间隔（帧，默认 2）
+    vert2horiz_detect_interval: Optional[int] = None
+    # 动态模式：平滑窗口（帧，默认 15）
+    vert2horiz_smooth_window: Optional[int] = None
 
 
 class SliceRunResponse(BaseModel):
@@ -226,6 +239,35 @@ def _build_watermark_config(
         "opacity": max(0.05, min(1.0, float(data.watermark_opacity or 0.5))),
         "position": "top" if data.watermark_position == "top" else "bottom",
     }
+
+
+def _build_vert2horiz_config(data: SliceRunRequest) -> Optional[dict]:
+    """构造竖屏转横屏预处理配置（字典），未启用时返回 None。
+
+    前端以 vert2horiz_* 平铺参数传入，这里转换为引擎 --vert2horiz
+    期望的嵌套 JSON 结构（含 enabled 开关，引擎 parse_vert2horiz_config
+    依赖该字段判断是否启用）。
+    """
+    if not data.vert2horiz_enabled:
+        return None
+    mode = (data.vert2horiz_mode or "fixed").lower()
+    if mode not in ("fixed", "dynamic"):
+        mode = "fixed"
+    cfg = {
+        "enabled": True,
+        "mode": mode,
+    }
+    if data.vert2horiz_ratio is not None:
+        ratio = float(data.vert2horiz_ratio)
+        if 0 < ratio < 1:
+            cfg["ratio"] = ratio
+    if data.vert2horiz_output_size:
+        cfg["output_size"] = data.vert2horiz_output_size.strip()
+    if data.vert2horiz_detect_interval is not None:
+        cfg["detect_interval"] = max(1, int(data.vert2horiz_detect_interval))
+    if data.vert2horiz_smooth_window is not None:
+        cfg["smooth_window"] = max(1, int(data.vert2horiz_smooth_window))
+    return cfg
 
 
 def _not_detect_task():
@@ -390,6 +432,8 @@ async def _publish_to_worker(
         "watermark": watermark_config,
         # 三期 GPU 加速编码（可选，Go Worker 透传给引擎 --encoder）
         "encoder": encoder,
+        # 竖屏转横屏预处理配置（可选，Go Worker 透传给引擎 --vert2horiz）
+        "vert2horiz": vert2horiz_config,
         "output": {
             "upload_url": f"{callback_base}/api/slice-tasks/{slice_task.id}/upload-url",
             "callback_url": callback_url,
@@ -453,6 +497,7 @@ async def _dispatch_celery(
         source_bucket=source_bucket or None,
         watermark_config=watermark_config,
         encoder=encoder,
+        vert2horiz_config=vert2horiz_config,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
