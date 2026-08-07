@@ -19,7 +19,7 @@ RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
 RUN apk add --no-cache \
     ffmpeg \
     python3 \
-    py3-pip \
+    py3-opencv \
     bash \
     ca-certificates \
     tzdata \
@@ -28,7 +28,7 @@ RUN apk add --no-cache \
     fontconfig
 
 # 竖屏转横屏智能裁切：引擎 vert2horiz_crop.py 依赖 OpenCV（人脸检测/动态跟踪）
-RUN pip3 install --no-cache-dir --break-system-packages opencv-python-headless>=4.8.0
+# 使用 Alpine 包管理器安装 py3-opencv，避免 pip 编译需要 gcc
 
 WORKDIR /app
 COPY --from=builder /build/slice-worker .
