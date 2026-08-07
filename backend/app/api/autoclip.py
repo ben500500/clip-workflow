@@ -1,5 +1,6 @@
 import os
 import uuid
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,7 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.models import Episode, AutoClipProject, ClipCandidate
+from app.models.models import Episode, AutoClipProject, ClipCandidate, AutoClipRun
 from app.services.autoclip_service import (
     create_autoclip_project,
     upload_video,
@@ -38,6 +39,23 @@ class AutoClipProgressResponse(BaseModel):
     progress: float
     message: str
     error_message: Optional[str] = None
+
+
+class AutoClipRunResponseItem(BaseModel):
+    id: str
+    episode_id: str
+    autoclip_project_id: Optional[str] = None
+    celery_task_id: Optional[str] = None
+    status: str
+    progress: float
+    message: Optional[str] = None
+    error_message: Optional[str] = None
+    config: Optional[dict] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    created_at: str
+
+    model_config = {"from_attributes": True}
 
 
 class ClipUpdateRequest(BaseModel):
@@ -83,6 +101,23 @@ def _serialize_clip(clip: ClipCandidate) -> dict:
         "adjusted_start": clip.adjusted_start,
         "adjusted_end": clip.adjusted_end,
         "created_at": clip.created_at.isoformat() if clip.created_at else "",
+    }
+
+
+def _serialize_autoclip_run(run: AutoClipRun) -> dict:
+    return {
+        "id": str(run.id),
+        "episode_id": str(run.episode_id),
+        "autoclip_project_id": run.autoclip_project_id,
+        "celery_task_id": run.celery_task_id,
+        "status": run.status or "pending",
+        "progress": run.progress or 0.0,
+        "message": run.message,
+        "error_message": run.error_message,
+        "config": run.config or {},
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "created_at": run.created_at.isoformat() if run.created_at else "",
     }
 
 
@@ -153,6 +188,20 @@ async def run_autoclip(
         await delete_autoclip_project(autoclip_project_id)
         raise
 
+    # 每次选点都落库一条执行历史记录（供工作台历史展示）
+    autoclip_run = AutoClipRun(
+        episode_id=eid,
+        autoclip_project_id=autoclip_project_id,
+        status="pending",
+        progress=0.0,
+        message="选点任务排队中，等待处理…",
+        config=config,
+    )
+    db.add(autoclip_run)
+    # 先提交历史记录，避免 Celery 任务抢先查询时找不到记录而重复建一条
+    await db.commit()
+    await db.refresh(autoclip_run)
+
     # Determine video path
     source_file_key = episode.source_file_key
     video_path = data.video_path or f"/data/videos/{source_file_key}"
@@ -170,11 +219,16 @@ async def run_autoclip(
         # Celery dispatch failed: mark DB status as failed
         autoclip_project.pipeline_status = "failed"
         autoclip_project.error_message = f"选点任务调度失败: {e}"
-        await db.flush()
+        autoclip_run.status = "failed"
+        autoclip_run.error_message = f"选点任务调度失败: {e}"
+        autoclip_run.completed_at = datetime.utcnow()
+        # 历史记录已提前提交，这里单独提交失败状态
+        await db.commit()
         raise
 
     # Update celery task ID
     autoclip_project.celery_task_id = task.id
+    autoclip_run.celery_task_id = task.id
     await db.flush()
 
     return AutoClipRunResponse(
@@ -182,6 +236,27 @@ async def run_autoclip(
         autoclip_project_id=autoclip_project_id,
         message="AI 智能选点任务已启动，正在分析中…",
     )
+
+
+@router.get("/episodes/{episode_id}/autoclip/history", response_model=List[AutoClipRunResponseItem])
+async def get_autoclip_history(
+    episode_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """查询该剧集所有 AI 选点执行历史（按创建时间倒序）。"""
+    try:
+        eid = uuid.UUID(episode_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    result = await db.execute(
+        select(AutoClipRun)
+        .where(AutoClipRun.episode_id == eid)
+        .order_by(AutoClipRun.created_at.desc())
+        .limit(50)
+    )
+    runs = result.scalars().all()
+    return [_serialize_autoclip_run(r) for r in runs]
 
 
 @router.get("/episodes/{episode_id}/autoclip/progress", response_model=AutoClipProgressResponse)

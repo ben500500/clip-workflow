@@ -325,7 +325,11 @@ async def list_episodes(
 
 @router.get("/episodes/{episode_id}", response_model=EpisodeResponse)
 async def get_episode(episode_id: str, db: AsyncSession = Depends(get_db)):
-    """Get an episode by ID."""
+    """Get an episode by ID.
+
+    自愈：当剧集状态停留在 slicing 时，根据实际切片任务状态刷新（
+    避免 Worker 回调丢失/异常导致"已切完还显示切片中"）。
+    """
     try:
         eid = uuid.UUID(episode_id)
     except ValueError:
@@ -335,6 +339,33 @@ async def get_episode(episode_id: str, db: AsyncSession = Depends(get_db)):
     episode = result.scalar_one_or_none()
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
+
+    # 自愈：只有 slicing 状态才做任务状态核对，避免每次查询都额外开销
+    if episode.status == "slicing":
+        from app.models.models import SliceTask
+        from sqlalchemy import or_
+
+        tasks_res = await db.execute(
+            select(SliceTask).where(
+                SliceTask.episode_id == eid,
+                or_(
+                    SliceTask.mode.is_(None),
+                    ~SliceTask.mode.like("detect_%"),
+                ),
+            )
+        )
+        all_tasks = tasks_res.scalars().all()
+        if all_tasks:
+            has_running = any(t.status in ("running", "pending") for t in all_tasks)
+            has_completed = any(t.status == "completed" for t in all_tasks)
+            has_failed = any(t.status in ("failed", "cancelled") for t in all_tasks)
+            if not has_running:
+                if has_completed:
+                    episode.status = "completed"
+                else:
+                    episode.status = "failed"
+                await db.flush()
+
     return _serialize_episode(episode)
 
 

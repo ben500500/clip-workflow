@@ -122,6 +122,7 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
     )
 
     self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动 AutoClip 选点任务…"})
+    run_async(_update_autoclip_run(episode_id, autoclip_project_id, "running", 5, "选点任务运行中，正在分析视频…"))
 
     downloaded_video_path = None
     try:
@@ -155,6 +156,7 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
                     state="PROGRESS",
                     meta={"progress": pct, "message": msg},
                 )
+                run_async(_update_autoclip_run(episode_id, autoclip_project_id, "running", pct, msg))
                 if progress.get("status") == "completed":
                     completed = True
                     break
@@ -181,6 +183,12 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
             max_duration=float(config.get("max_duration") or 0),
         ))
         run_async(_save_autoclip_results(episode_id, autoclip_project_id, clips, completed))
+        run_async(_update_autoclip_run(
+            episode_id, autoclip_project_id,
+            "completed" if completed else "failed",
+            100.0 if completed else 0.0,
+            f"选点完成，共生成 {len(clips)} 个候选片段" if completed else "选点未完成，请检查 AutoClip 服务",
+        ))
 
         self.update_state(
             state="SUCCESS",
@@ -191,6 +199,7 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
     except Exception as e:
         logger.error(f"AutoClip task failed: {e}")
         run_async(_mark_autoclip_failed(episode_id, str(e)))
+        run_async(_update_autoclip_run(episode_id, autoclip_project_id, "failed", 0.0, str(e)))
         self.update_state(
             state="FAILURE",
             meta={"progress": 0, "message": str(e)},
@@ -576,6 +585,69 @@ async def _mark_autoclip_failed(episode_id: str, error: str):
             proj.pipeline_status = "failed"
             proj.error_message = error[:2000]
             await session.commit()
+
+
+async def _update_autoclip_run(
+    episode_id: str,
+    autoclip_project_id: Optional[str],
+    status: str,
+    progress: float,
+    message: Optional[str] = None,
+):
+    """更新最近一条 AI 选点执行历史的状态/进度（供工作台历史展示）。"""
+    from sqlalchemy import select
+    from app.models.models import AutoClipRun
+
+    async with async_session_factory() as session:
+        try:
+            eid = uuid.UUID(episode_id)
+        except ValueError:
+            return
+        try:
+            if autoclip_project_id:
+                # 优先按项目 ID 精确匹配本次运行记录
+                result = await session.execute(
+                    select(AutoClipRun)
+                    .where(
+                        AutoClipRun.episode_id == eid,
+                        AutoClipRun.autoclip_project_id == autoclip_project_id,
+                    )
+                    .order_by(AutoClipRun.created_at.desc())
+                    .limit(1)
+                )
+                run = result.scalar_one_or_none()
+            else:
+                run = None
+            if run is None:
+                result = await session.execute(
+                    select(AutoClipRun)
+                    .where(AutoClipRun.episode_id == eid)
+                    .order_by(AutoClipRun.created_at.desc())
+                    .limit(1)
+                )
+                run = result.scalar_one_or_none()
+        except Exception:
+            run = None
+        if run is None:
+            # 兼容旧数据：没有历史记录时尝试补建一条
+            run = AutoClipRun(
+                episode_id=eid,
+                autoclip_project_id=autoclip_project_id,
+                status=status,
+                progress=progress,
+                message=message,
+            )
+            session.add(run)
+        else:
+            run.status = status
+            run.progress = progress
+            if message:
+                run.message = message[:500]
+            if status == "running" and run.started_at is None:
+                run.started_at = datetime.utcnow()
+            if status in ("completed", "failed"):
+                run.completed_at = datetime.utcnow()
+        await session.commit()
 
 
 async def _save_detected_intervals(
