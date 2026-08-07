@@ -184,6 +184,7 @@ const Projects: React.FC = () => {
           columns={columns}
           dataSource={projects}
           loading={loading}
+          scroll={{ x: 1000 }}
           pagination={{
             current: page,
             pageSize,

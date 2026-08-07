@@ -130,10 +130,10 @@ const PublishManagement: React.FC = () => {
         <Button type="primary" icon={<PlusOutlined />} onClick={() => { taskForm.resetFields(); setTaskModal(true); }}>新建发布任务</Button>
       </Space>
       <Card size="small" title="发布任务" style={{ marginBottom: 16 }}>
-        <Table rowKey="id" columns={taskColumns} dataSource={tasks} loading={taskLoading} pagination={false} size="small" />
+        <Table rowKey="id" columns={taskColumns} dataSource={tasks} loading={taskLoading} pagination={false} size="small" scroll={{ x: 900 }} />
       </Card>
       <Card size="small" title="发布配置" extra={<Button size="small" icon={<PlusOutlined />} onClick={() => { setEditingProfile(null); profileForm.resetFields(); setProfileModal(true); }}>新增配置</Button>}>
-        <Table rowKey="id" columns={profileColumns} dataSource={profiles} loading={profileLoading} pagination={false} size="small" />
+        <Table rowKey="id" columns={profileColumns} dataSource={profiles} loading={profileLoading} pagination={false} size="small" scroll={{ x: 720 }} />
       </Card>
 
       <Modal title="新建发布任务" open={taskModal} onOk={createTask} onCancel={() => setTaskModal(false)} destroyOnClose>

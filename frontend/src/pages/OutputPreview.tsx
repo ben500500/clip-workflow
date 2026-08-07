@@ -204,9 +204,10 @@ const OutputPreview: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 230,
+      width: 250,
+      fixed: 'right' as const,
       render: (_: unknown, o: SliceOutput) => (
-        <Space size="small">
+        <Space size="small" wrap>
           <Button size="small" icon={<PlayCircleOutlined />} onClick={(e) => { e.stopPropagation(); toggleRowExpand(o); }}>预览</Button>
           <Button size="small" icon={<DownloadOutlined />} onClick={(e) => { e.stopPropagation(); window.open(`/api/outputs/${o.id}/download`, '_blank'); }}>下载</Button>
           <Button size="small" icon={<LinkOutlined />} onClick={(e) => { e.stopPropagation(); setCurrentOutput(o.id); pubForm.resetFields(); setPubModal(true); }}>登记发布</Button>
@@ -285,6 +286,7 @@ const OutputPreview: React.FC = () => {
                 dataSource={outputs}
                 pagination={false}
                 size="small"
+                scroll={{ x: 900 }}
                 rowSelection={{
                   selectedRowKeys,
                   onChange: (keys) => setSelectedRowKeys(keys),
@@ -326,7 +328,7 @@ const OutputPreview: React.FC = () => {
       )}
       {currentOutput && (
         <Card size="small" title="发布记录">
-          <Table rowKey="id" columns={pubColumns} dataSource={publications} pagination={false} size="small" />
+          <Table rowKey="id" columns={pubColumns} dataSource={publications} pagination={false} size="small" scroll={{ x: 560 }} />
         </Card>
       )}
       {/* ── 成品重新剪辑弹窗 ── */}

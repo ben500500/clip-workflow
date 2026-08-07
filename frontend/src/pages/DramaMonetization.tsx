@@ -118,7 +118,7 @@ const DramaMonetization: React.FC = () => {
             label: '广告数据',
             children: (
               <Card size="small">
-                <Table rowKey="id" size="small" columns={adColumns} dataSource={ads} pagination={{ pageSize: 15 }} />
+                <Table rowKey="id" size="small" columns={adColumns} dataSource={ads} pagination={{ pageSize: 15 }} scroll={{ x: 860 }} />
               </Card>
             ),
           },
@@ -127,7 +127,7 @@ const DramaMonetization: React.FC = () => {
             label: '小程序数据',
             children: (
               <Card size="small">
-                <Table rowKey="id" size="small" columns={mpColumns} dataSource={miniProgram} pagination={{ pageSize: 15 }} />
+                <Table rowKey="id" size="small" columns={mpColumns} dataSource={miniProgram} pagination={{ pageSize: 15 }} scroll={{ x: 640 }} />
               </Card>
             ),
           },
@@ -136,7 +136,7 @@ const DramaMonetization: React.FC = () => {
             label: '分剧排行',
             children: (
               <Card size="small">
-                <Table rowKey="id" size="small" columns={dramaColumns} dataSource={dramas} pagination={{ pageSize: 15 }} />
+                <Table rowKey="id" size="small" columns={dramaColumns} dataSource={dramas} pagination={{ pageSize: 15 }} scroll={{ x: 720 }} />
               </Card>
             ),
           },

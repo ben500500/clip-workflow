@@ -159,7 +159,7 @@ const IntervalDetection: React.FC = () => {
         </Card>
       )}
       <Card size="small">
-        <Table rowKey="id" columns={columns} dataSource={intervals} loading={loading} pagination={false} size="small" locale={{ emptyText: '暂无检测结果。点击「开始检测」或「手动添加」创建区间；如选择「水印」模式，需手动添加（该模式无自动检测器）。' }} />
+        <Table rowKey="id" columns={columns} dataSource={intervals} loading={loading} pagination={false} size="small" scroll={{ x: 900 }} locale={{ emptyText: '暂无检测结果。点击「开始检测」或「手动添加」创建区间；如选择「水印」模式，需手动添加（该模式无自动检测器）。' }} />
       </Card>
       <Modal title="手动添加区间" open={modalOpen} onOk={createManual} onCancel={() => setModalOpen(false)} destroyOnClose>
         <Form form={form} layout="vertical">

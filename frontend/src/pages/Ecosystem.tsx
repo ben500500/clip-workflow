@@ -84,7 +84,7 @@ const Ecosystem: React.FC = () => {
         {data.length === 0 ? (
           <Typography.Text type="secondary">暂无数据，请先导入生态数据</Typography.Text>
         ) : (
-          <Table rowKey="id" size="small" columns={columns} dataSource={data} pagination={{ pageSize: 15 }} />
+          <Table rowKey="id" size="small" columns={columns} dataSource={data} pagination={{ pageSize: 15 }} scroll={{ x: 760 }} />
         )}
       </Card>
     </div>

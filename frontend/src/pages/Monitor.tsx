@@ -193,6 +193,7 @@ const Monitor: React.FC = () => {
               loading={loading}
               dataSource={rules}
               pagination={false}
+              scroll={{ x: 720 }}
               columns={[
                 { title: '规则名', dataIndex: 'name', key: 'name', ellipsis: true },
                 {
@@ -235,6 +236,7 @@ const Monitor: React.FC = () => {
               loading={loading}
               dataSource={Object.entries(metrics).map(([metric, value]) => ({ metric, value }))}
               pagination={false}
+              scroll={{ x: 260 }}
               columns={[
                 {
                   title: '指标', dataIndex: 'metric', key: 'metric',
@@ -255,6 +257,7 @@ const Monitor: React.FC = () => {
           loading={loading}
           dataSource={events}
           pagination={{ pageSize: 10, showSizeChanger: false }}
+          scroll={{ x: 700 }}
           columns={[
             {
               title: '级别', dataIndex: 'level', key: 'level', width: 80,

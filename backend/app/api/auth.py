@@ -278,16 +278,28 @@ async def refresh_token(
             detail="用户不存在或已禁用",
         )
 
-    # 轮换：吊销旧会话，创建新会话
-    session.is_revoked = True
-    session.revoked_at = _dt.utcnow()
+    # 会话复用（不吊销旧会话、不轮换 refresh_token）：
+    # 无感刷新本质是“用同一个长期 refresh_token 换取新的 access_token”。
+    # 若每次刷新都吊销旧会话并轮换 refresh_token，会带来两个“被踢”问题：
+    #   1) 并发刷新竞态：两个请求同时携带同一 refresh_token，前一个吊销会话后，
+    #      后一个必然 401 → 前端清 token 跳登录页；
+    #   2) 多标签页/后台轮询（切片、去水印、Worker 状态等每 3~15s 拉一次）：
+    #      任一标签页刷新成功后，其余标签页持有的旧 refresh_token 立即失效 → 被踢。
+    # 因此这里保持会话不变，仅签发新的 access_token；会话到期由 expires_at 统一处理。
+    # （需要主动登出时仍可通过 /auth/logout 吊销会话，安全语义不受影响。）
+    #
+    # 会话的 access_token_jti 全程固定（首次登录时生成）：刷新时复用同一 jti，
+    # 保证该会话签发过的所有 access_token 都能通过 get_current_user 的会话级校验，
+    # 已下发的旧 access_token 也不会被后续刷新“作废”（仍有效至 30 分钟过期）。
+    session_jti = session.access_token_jti or str(uuid.uuid4())
+    if not session.access_token_jti:
+        session.access_token_jti = session_jti  # 兼容旧数据：补记会话 jti
+        await db.flush()
 
-    new_jti = str(uuid.uuid4())
-    new_access = create_access_token({"sub": str(user.id)}, jti=new_jti)
-    new_session = await create_user_session(db, user, request, access_jti=new_jti)
-    new_refresh = getattr(new_session, "_plain_refresh_token", None)
-    _set_refresh_cookie(response, new_refresh)
+    new_access = create_access_token({"sub": str(user.id)}, jti=session_jti)
 
+    # 刷新后保持 refresh Cookie 不变（无需重新下发）；
+    # 不重新下发即可避免 set-cookie 覆盖，多标签页共用同一会话互不影响。
     return RefreshResponse(access_token=new_access)
 
 

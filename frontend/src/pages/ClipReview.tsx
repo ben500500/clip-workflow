@@ -399,6 +399,7 @@ const ClipReview: React.FC = () => {
             dataSource={clips}
             pagination={false}
             size="small"
+            scroll={{ x: 950 }}
             rowSelection={{
               selectedRowKeys,
               onChange: (keys) => setSelectedRowKeys(keys),

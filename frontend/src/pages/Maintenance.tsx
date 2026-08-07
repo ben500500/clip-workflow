@@ -138,6 +138,7 @@ const Maintenance: React.FC = () => {
                       size="small"
                       pagination={false}
                       dataSource={archiveDeletedRows}
+                      scroll={{ x: 260 }}
                       columns={[
                         { title: '表', dataIndex: 'table' },
                         { title: '删除行数', dataIndex: 'count' },

@@ -460,12 +460,12 @@ const SliceTasks: React.FC = () => {
 
       {/* ── 任务列表 ── */}
       <Card size="small" title="任务列表" style={{ marginBottom: 16 }}>
-        <Table rowKey="id" columns={columns} dataSource={tasks} loading={loading} pagination={false} size="small" />
+        <Table rowKey="id" columns={columns} dataSource={tasks} loading={loading} pagination={false} size="small" scroll={{ x: 1100 }} />
       </Card>
 
       {currentTask && (
         <Card size="small" title={`输出文件（任务 ${currentTask}）`}>
-          <Table rowKey="id" columns={outputColumns} dataSource={outputs} pagination={false} size="small" />
+          <Table rowKey="id" columns={outputColumns} dataSource={outputs} pagination={false} size="small" scroll={{ x: 560 }} />
         </Card>
       )}
     </div>

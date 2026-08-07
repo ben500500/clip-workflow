@@ -391,6 +391,7 @@ const Watermark: React.FC = () => {
           rowKey="id"
           pagination={false}
           dataSource={videos}
+          scroll={{ x: 980 }}
           columns={[
             {
               title: '文件名',
@@ -633,6 +634,7 @@ const Watermark: React.FC = () => {
                 style={{ marginTop: 12 }}
                 pagination={false}
                 dataSource={pendingFiles}
+                scroll={{ x: 520 }}
                 columns={[
                   {
                     title: '文件名',
@@ -715,6 +717,7 @@ const Watermark: React.FC = () => {
           dataSource={tasks}
           columns={taskColumns}
           pagination={{ pageSize: 10, showSizeChanger: false }}
+          scroll={{ x: 1080 }}
           rowSelection={{
             selectedRowKeys: selectedTaskIds,
             onChange: (keys) => setSelectedTaskIds(keys as string[]),

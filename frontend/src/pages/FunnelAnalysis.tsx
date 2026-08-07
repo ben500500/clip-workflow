@@ -172,6 +172,7 @@ const FunnelAnalysis: React.FC = () => {
           columns={trendColumns}
           dataSource={funnelTrend}
           pagination={{ pageSize: 15 }}
+          scroll={{ x: 1080 }}
         />
       </Card>
     </div>
