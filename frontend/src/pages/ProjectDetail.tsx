@@ -210,7 +210,7 @@ const ProjectDetail: React.FC = () => {
       </Card>
       {/* 剧集列表：位于上传正片下方 */}
       <Card size="small" title="剧集列表" extra={<Button size="small" icon={<UploadOutlined />} onClick={() => navigate('/settings')}>去系统设置</Button>}>
-        <Table rowKey="id" columns={episodeColumns} dataSource={episodes} pagination={false} size="small" />
+        <Table rowKey="id" columns={episodeColumns} dataSource={episodes} pagination={false} size="small" scroll={{ x: 920 }} />
       </Card>
     </div>
   );

@@ -741,6 +741,7 @@ const EpisodeDetail: React.FC = () => {
               size="small"
               pagination={false}
               dataSource={autoclipHistory.slice(0, 8)}
+              scroll={{ x: 400 }}
               columns={[
                 {
                   title: '状态',
@@ -822,6 +823,7 @@ const EpisodeDetail: React.FC = () => {
               size="small"
               pagination={false}
               dataSource={intervalHistory.slice(0, 8)}
+              scroll={{ x: 420 }}
               columns={[
                 {
                   title: '模式',
@@ -1040,6 +1042,7 @@ const EpisodeDetail: React.FC = () => {
               size="small"
               pagination={false}
               dataSource={sliceHistory.slice(0, 8)}
+              scroll={{ x: 420 }}
               columns={[
                 {
                   title: '模式',

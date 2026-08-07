@@ -188,6 +188,7 @@ const DashboardOverview: React.FC = () => {
               size="small"
               pagination={false}
               dataSource={topVideos}
+              scroll={{ x: 680 }}
               columns={[
                 { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true, render: (t: string) => t || '-' },
                 { title: '播放', dataIndex: 'play_count', key: 'play_count', width: 90 },

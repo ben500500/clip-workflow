@@ -120,6 +120,7 @@ const UserManagement: React.FC = () => {
           loading={loading}
           pagination={false}
           size="small"
+          scroll={{ x: 720 }}
         />
       </Card>
       <Modal

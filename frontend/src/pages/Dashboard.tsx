@@ -108,7 +108,7 @@ const Dashboard: React.FC = () => {
       </Row>
       <Card title="最近项目" size="small">
         {stats?.recent_projects?.length ? (
-          <Table rowKey="id" columns={recentColumns} dataSource={stats.recent_projects} pagination={false} size="small" />
+          <Table rowKey="id" columns={recentColumns} dataSource={stats.recent_projects} pagination={false} size="small" scroll={{ x: 560 }} />
         ) : (
           <Empty description="暂无项目" />
         )}

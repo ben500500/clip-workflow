@@ -273,7 +273,7 @@ const ImportHistoryPanel: React.FC = () => {
   ];
 
   return (
-    <Table rowKey="id" size="small" columns={columns} dataSource={data} loading={loading} pagination={{ pageSize: 10 }} />
+    <Table rowKey="id" size="small" columns={columns} dataSource={data} loading={loading} pagination={{ pageSize: 10 }} scroll={{ x: 880 }} />
   );
 };
 

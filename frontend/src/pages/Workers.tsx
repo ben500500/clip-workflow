@@ -369,6 +369,7 @@ const WorkersPage: React.FC = () => {
           loading={loading}
           pagination={false}
           size="small"
+          scroll={{ x: 1600 }}
           rowClassName={() => 'worker-row-compact'}
         />
       </Card>

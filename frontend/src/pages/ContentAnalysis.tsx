@@ -100,6 +100,7 @@ const ContentAnalysis: React.FC = () => {
               size="small"
               loading={loading}
               dataSource={videos}
+              scroll={{ x: 1300 }}
               columns={[
                 { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true, render: (t: string) => t || '-' },
                 { title: '视频ID', dataIndex: 'video_id', key: 'video_id', width: 130, ellipsis: true },
