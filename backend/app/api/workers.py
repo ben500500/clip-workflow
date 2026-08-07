@@ -185,8 +185,10 @@ async def list_workers(
                 last_hb = rd.get("last_heartbeat", "")
                 if last_hb:
                     try:
-                        from datetime import datetime as _dt, timezone as _tz
-                        node.last_heartbeat = _dt.fromtimestamp(int(last_hb), tz=_tz.utc)
+                        # 统一用 naive UTC 时间，避免与 datetime.utcnow() 混用导致 asyncpg
+                        # "can't subtract offset-naive and offset-aware datetimes" 批量更新报错
+                        from datetime import datetime as _dt
+                        node.last_heartbeat = _dt.utcfromtimestamp(int(last_hb))
                     except (ValueError, OSError, TypeError):
                         pass
     except Exception as e:
