@@ -13,14 +13,22 @@ Quality improvements over the baseline:
      bottom center stripes, so off-corner and vertical-video watermarks are found.
   3. Multi-scale Canny (low/mid/high thresholds unioned) + temporal stability
      scoring, far more robust to faint / semi-transparent marks.
-  4. High-quality CPU inpainting via the remove-ai-watermarks region eraser:
+  4. SEGMENT-WISE detection — the video is split into time segments (default 4),
+     each segment detects its own watermark region(s) independently. A watermark
+     that MOVES over time (e.g. bottom-right first, top-left later) is now caught
+     in every segment instead of only at its first detected position.
+  5. Multi-region masking — all high-confidence regions in a segment are masked,
+     not just the best one, so multiple logos/text marks are handled at once.
+  6. Richer mask building — multi-scale Canny + local background difference
+     (Gaussian blur subtraction) so semi-transparent text interiors are covered.
+  7. High-quality CPU inpainting via the remove-ai-watermarks region eraser:
        backend=auto  -> LaMa-ONNX > MI-GAN-ONNX > cv2   (all CPU, no GPU needed)
      Falls back to OpenCV TELEA when the package is unavailable.
 
 Pipeline:
-  1. Sample ~60 frames and compute a median frame
-  2. Auto-detect the watermark region (or use a manual region via -r)
-  3. Build a precise text mask via multi-scale Canny on the watermark region
+  1. Sample ~60 frames evenly across the video
+  2. Split sampled frames into time segments; detect watermark region(s) per segment
+  3. Build a per-frame mask plan (with smooth transition at segment boundaries)
   4. Remove watermark with the selected backend (default: RAiW auto)
   5. Reassemble frames + original audio with ffmpeg
 
@@ -30,6 +38,7 @@ Usage:
   python watermark_remover.py input.mp4 -r 10,5,120,60    # manual region x,y,w,h
   python watermark_remover.py input.mp4 --backend lama    # force LaMa-ONNX (CPU)
   python watermark_remover.py input.mp4 --backend migan   # force MI-GAN-ONNX (CPU)
+  python watermark_remover.py input.mp4 --segments 6      # finer time segmentation
 
 Requirements:
   pip install opencv-python-headless numpy
@@ -95,7 +104,11 @@ def _multi_canny(gray):
 
 def _auto_detect(median_frame, width, height, std_map=None):
     """
-    Scan wide corner bands plus the top/bottom center stripes for the watermark.
+    Scan wide corner bands plus the top/bottom center stripes for watermarks.
+
+    Returns a list of ALL high-confidence regions (not just the best one), so a
+    video with several static logos/text marks can be handled in one pass.
+    Overlapping candidates are deduplicated (keep the highest-scoring box).
 
     Scoring: edge_density × temporal_stability
       - edge_density: fraction of (multi-scale) Canny edge pixels in the median frame
@@ -116,7 +129,7 @@ def _auto_detect(median_frame, width, height, std_map=None):
         (height - stripe_h, 0, height, width),                       # bottom center stripe
     ]
 
-    best, best_score = None, 0
+    candidates = []
     for r1, c1, r2, c2 in bands:
         roi = gray[r1:r2, c1:c2]
         edges = _multi_canny(roi)
@@ -128,38 +141,73 @@ def _auto_detect(median_frame, width, height, std_map=None):
             stability = 1.0
         score = edge_density * stability
 
-        if score > best_score and edge_density > 0.003:
+        if edge_density > 0.003:
             ys, xs = np.where(edges > 0)
             if len(xs) > 20:
-                best_score = score
                 pad = 10
                 x = max(0, c1 + int(xs.min()) - pad)
                 y = max(0, r1 + int(ys.min()) - pad)
                 w = min(width - x, int(xs.max() - xs.min()) + 1 + 2 * pad)
                 h = min(height - y, int(ys.max() - ys.min()) + 1 + 2 * pad)
-                best = (x, y, w, h)
+                candidates.append((score, (x, y, w, h)))
 
-    return best
+    # 按得分降序，去重叠（IoU > 0.3 视为同一区域，保留高分）
+    candidates.sort(key=lambda t: -t[0])
+    picked = []
+    for score, box in candidates:
+        overlap = False
+        for _, pbox in picked:
+            x1, y1, w1, h1 = box
+            x2, y2, w2, h2 = pbox
+            ix = max(0, min(x1 + w1, x2 + w2) - max(x1, x2))
+            iy = max(0, min(y1 + h1, y2 + h2) - max(y1, y2))
+            inter = ix * iy
+            union = w1 * h1 + w2 * h2 - inter
+            if union > 0 and inter / union > 0.3:
+                overlap = True
+                break
+        if not overlap:
+            picked.append((score, box))
+
+    # 只保留置信度足够高的候选（得分前 3 名即可，避免误检引入过多修补区）
+    picked = picked[:3]
+    return [box for _, box in picked]
 
 
 def _build_mask(median_frame_bgr, region_xywh, frame_shape):
     """
-    Build a sparse text mask using multi-scale Canny on the median frame.
-    Falls back to full-rect if Canny finds nothing (very faint watermark).
+    Build a sparse text mask using multi-scale Canny + local background difference
+    on the median frame.
+
+    - Canny traces sharp letter strokes
+    - local background difference (Gaussian blur subtraction) catches the interior
+      of semi-transparent text that Canny alone misses
+    Falls back to full-rect if nothing is found (very faint watermark).
     """
     x, y, w, h = region_xywh
     H, W = frame_shape[:2]
     roi_gray = cv2.cvtColor(median_frame_bgr[y:y + h, x:x + w], cv2.COLOR_BGR2GRAY)
+
+    # Canny 边缘：捕捉文字笔画锐利边缘
     edges = _multi_canny(roi_gray)
+
+    # 局部背景差分：半透明水印文字与局部模糊背景差异明显，捕捉文字内部
+    blur = cv2.GaussianBlur(roi_gray, (0, 0), 5)
+    diff = cv2.absdiff(roi_gray, blur)
+    _, diff_mask = cv2.threshold(diff, 12, 255, cv2.THRESH_BINARY)
+
+    combined = cv2.bitwise_or(edges, diff_mask)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    dilated = cv2.dilate(edges, kernel, iterations=2)
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(dilated)
-    clean = np.zeros_like(dilated)
+    combined = cv2.dilate(combined, kernel, iterations=2)
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(combined)
+    clean = np.zeros_like(combined)
     for i in range(1, n):
         if stats[i, cv2.CC_STAT_AREA] >= 50:
             clean[labels == i] = 255
     if clean.sum() == 0:
         clean = np.full((h, w), 255, dtype=np.uint8)
+
     mask = np.zeros((H, W), dtype=np.uint8)
     mask[y:y + h, x:x + w] = clean
     return mask
@@ -195,7 +243,8 @@ def _make_inpaint(backend: str):
     return _inpaint
 
 
-def remove_watermark(input_path, output_path, manual_region=None, backend="auto"):
+def remove_watermark(input_path, output_path, manual_region=None, backend="auto",
+                     segments=4):
     cap = cv2.VideoCapture(input_path)
     total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps    = cap.get(cv2.CAP_PROP_FPS)
@@ -203,16 +252,18 @@ def remove_watermark(input_path, output_path, manual_region=None, backend="auto"
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"Video: {width}x{height} @ {fps:.2f} fps | {total} frames")
 
-    # ── sample frames → median frame ─────────────────────────────────────────
+    # ── sample frames evenly across the whole video ────────────────────────────
     print("Sampling frames for watermark detection...")
     print("PROGRESS:5")
     sample_frames = []
+    sample_idx = []   # 记录采样帧的原始帧号，用于把采样帧映射回真实帧号
     step = max(1, total // 60)
     for i in range(0, total, step):
         cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         ret, f = cap.read()
         if ret:
             sample_frames.append(f)
+            sample_idx.append(i)
         if len(sample_frames) >= 60:
             break
 
@@ -222,25 +273,88 @@ def remove_watermark(input_path, output_path, manual_region=None, backend="auto"
         return False
 
     stack = np.stack(sample_frames)              # uint8, keeps memory bounded
-    median_frame = np.median(stack, axis=0).astype(np.uint8)
 
-    # ── detect / use manual region ───────────────────────────────────────────
+    # ── build per-segment mask plan ────────────────────────────────────────────
+    # 将采样帧按时序均分成 N 段，每段独立检测水印区域并建 mask。
+    # 这样“先右下、后左上”的移动水印会在不同时段分别被检测到。
+    n_seg = max(1, min(segments, len(sample_frames)))
+    # 保证每段至少 3 帧采样（median/std 需要足够样本），短视频自动降段
+    n_seg = min(n_seg, max(1, len(sample_frames) // 3))
+    seg_size = max(1, len(sample_frames) // n_seg)
+    print(f"Segment-wise detection: {n_seg} segments")
+
+    seg_plans = []   # 每段: {start_idx, end_idx, masks: [(box, mask), ...]}
     if manual_region:
         x, y, w, h = manual_region
         print(f"Using manual region: x={x} y={y} w={w} h={h}")
+        # 手动区域应用于全片所有段
+        global_mask = _build_mask(stack.mean(axis=0).astype(np.uint8),
+                                  (x, y, w, h), (height, width))
+        for si in range(n_seg):
+            seg_plans.append({
+                "start": si * seg_size,
+                "end": min((si + 1) * seg_size, len(sample_frames)),
+                "masks": [((x, y, w, h), global_mask)],
+            })
     else:
-        std_map = np.std(stack.astype(np.float32), axis=0).mean(axis=2)
-        region = _auto_detect(median_frame, width, height, std_map)
-        if region is None:
+        any_detected = False
+        for si in range(n_seg):
+            s0 = si * seg_size
+            s1 = min((si + 1) * seg_size, len(sample_frames))
+            seg_frames = stack[s0:s1]
+            if len(seg_frames) < 3:
+                continue
+            seg_median = np.median(seg_frames, axis=0).astype(np.uint8)
+            std_map = np.std(seg_frames.astype(np.float32), axis=0).mean(axis=2)
+            boxes = _auto_detect(seg_median, width, height, std_map)
+            masks = []
+            for box in boxes:
+                m = _build_mask(seg_median, box, (height, width))
+                masks.append((box, m))
+            seg_plans.append({
+                "start": s0,
+                "end": s1,
+                "masks": masks,
+            })
+            if masks:
+                any_detected = True
+            print(f"  seg{si}: {len(masks)} region(s) "
+                  + ", ".join(f"({b[0]},{b[1]},{b[2]},{b[3]})" for b, _ in masks))
+
+        if not any_detected:
             print("Error: auto-detection failed. Try -r x,y,w,h to specify the region manually.")
             cap.release()
             return False
-        x, y, w, h = region
-        print(f"Detected watermark region: x={x} y={y} w={w} h={h}")
     print("PROGRESS:20")
 
-    mask = _build_mask(median_frame, (x, y, w, h), (height, width))
-    print(f"Mask: {int(mask.sum() // 255)} pixels")
+    # 把采样段边界映射到真实帧号，构建 [frame_start, frame_end) -> masks 计划
+    frame_plans = []   # (start_frame, end_frame, masks)
+    for sp in seg_plans:
+        if not sp["masks"]:
+            continue
+        fs = sample_idx[sp["start"]]
+        fe = sample_idx[sp["end"] - 1] + 1 if sp["end"] > sp["start"] else fs + 1
+        # 下一段的开始帧与当前段的结束帧之间由边界填充（避免空白帧）
+        frame_plans.append((fs, fe, sp["masks"]))
+    # 排序并填补段间缝隙：把上一段的 masks 延伸到下一段的起始帧之前
+    frame_plans.sort(key=lambda p: p[0])
+    filled = []
+    for i, (fs, fe, masks) in enumerate(frame_plans):
+        if i == 0:
+            filled.append((0, fe, masks))
+        else:
+            prev_fe = filled[-1][1]
+            filled.append((prev_fe, fe, masks))
+    # 最后一段延伸到末尾
+    if filled:
+        filled[-1] = (filled[-1][0], total, filled[-1][2])
+    frame_plans = filled
+
+    def _masks_for_frame(i):
+        for fs, fe, masks in frame_plans:
+            if fs <= i < fe:
+                return masks
+        return frame_plans[-1][2] if frame_plans else []
 
     inpaint = _make_inpaint(backend)
 
@@ -256,8 +370,13 @@ def remove_watermark(input_path, output_path, manual_region=None, backend="auto"
             ret, frame = cap.read()
             if not ret:
                 break
-            result = inpaint(frame, mask)
-            cv2.imwrite(os.path.join(frames_dir, f"{i:06d}.png"), result)
+            masks = _masks_for_frame(i)
+            for box, mask in masks:
+                try:
+                    frame = inpaint(frame, mask)
+                except Exception as e:
+                    print(f"  [warn] frame {i} inpaint failed ({e})", flush=True)
+            cv2.imwrite(os.path.join(frames_dir, f"{i:06d}.png"), frame)
             if (i + 1) % 30 == 0 or i == total - 1:
                 pct = 30 + int((i + 1) / total * 60)
                 print(f"  {i+1}/{total}", flush=True)
@@ -320,6 +439,13 @@ def main():
     )
     # 兼容旧调用：--lama 等价于 --backend lama
     parser.add_argument("--lama", action="store_true", help="Shorthand for --backend lama")
+    parser.add_argument(
+        "--segments",
+        type=int,
+        default=4,
+        help="Number of time segments for segment-wise watermark detection "
+             "(default 4; raise it for watermarks that move during the video)",
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
@@ -341,7 +467,8 @@ def main():
     if args.lama:
         backend = "lama"
 
-    ok = remove_watermark(args.input, output, manual_region=region, backend=backend)
+    ok = remove_watermark(args.input, output, manual_region=region, backend=backend,
+                          segments=max(1, args.segments))
     sys.exit(0 if ok else 1)
 
 

@@ -162,6 +162,7 @@ async def run_seedance_watermark_remover(
     - region: "x,y,w,h"（手动指定水印区域，跳过自动检测）
     - backend: auto/lama/migan/cv2（CPU 修补；auto 默认，优先 RAiW LaMa/MI-GAN）
     - use_lama: True 兼容旧前端（等价 backend=lama）
+    - segments: int（分段检测段数，默认 4；水印在视频中移动时调大）
     """
     options = options or {}
     script = _script_path(settings.WATERMARK_SEEDANCE_SCRIPT)
@@ -176,6 +177,13 @@ async def run_seedance_watermark_remover(
     if options.get("use_lama"):
         backend = "lama"
     cmd.extend(["--backend", backend])
+    # 分段检测段数（移动水印分段处理）
+    try:
+        seg = int(options.get("segments") or 4)
+    except (TypeError, ValueError):
+        seg = 4
+    seg = max(1, min(seg, 32))
+    cmd.extend(["--segments", str(seg)])
     logger.info("Running seedance watermark remover: %s", " ".join(cmd))
     return await _run_cmd(cmd, progress_cb, timeout)
 
