@@ -435,7 +435,10 @@ def apply_vert2horiz(source: str, cfg: dict) -> str:
     detect_interval = int(cfg.get("detect_interval") or 2)
     smooth_window = int(cfg.get("smooth_window") or 15)
 
-    out_path = source + ".vert2horiz.mp4"
+    # 输出路径加进程唯一后缀：同一任务可能被多个 Worker 并发认领执行（长任务
+    # 超过 Redis 认领超时后被重新认领），若多个引擎进程写同一固定路径会互相
+    # 覆盖导致文件损坏（moov atom missing）。各进程写各自文件，互不干扰。
+    out_path = f"{source}.vert2horiz-{os.getpid()}.mp4"
     print(f"检测到竖屏素材（{src_w}x{src_h}），执行竖屏转横屏预处理（mode={mode}）…", file=sys.stderr)
 
     if mode == "dynamic":
