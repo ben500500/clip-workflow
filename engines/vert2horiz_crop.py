@@ -285,7 +285,10 @@ def apply_dynamic_crop(video_path, output_path, crop_params, fps, output_size="1
         cmd_file = f.name
         for p in crop_params:
             timestamp = p["frame"] / fps
-            f.write(f"{timestamp} crop y {p['crop_y']}\n")
+            # ffmpeg sendcmd 要求每条命令以分号结尾，否则解析报错
+            # （“Missing terminator or extraneous data”），这里补上；
+            # 首帧时间戳为 0，天然作为裁切窗口的初始位置
+            f.write(f"{timestamp} crop y {p['crop_y']};\n")
     
     try:
         print(f"动态裁切: {len(crop_params)} 帧, scale={out_w}x{out_h}")

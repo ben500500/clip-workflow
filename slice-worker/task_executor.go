@@ -93,6 +93,14 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		args = append(args, "--encoder", task.Encoder)
 	}
 
+	// 竖屏转横屏预处理：后端下发的 vert2horiz 配置（JSON 透传给引擎 --vert2horiz）
+	if task.Vert2Horiz != nil && len(task.Vert2Horiz) > 0 {
+		v2hBytes, err := json.Marshal(task.Vert2Horiz)
+		if err == nil {
+			args = append(args, "--vert2horiz", string(v2hBytes))
+		}
+	}
+
 	// Alpine 镜像提供 python3 可执行文件；Windows 上为 python
 	cmd := exec.CommandContext(ctx, pythonBinary(), args...)
 

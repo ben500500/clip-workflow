@@ -43,6 +43,10 @@ WORKDIR /app
 # Copy application code
 COPY . .
 
+# 竖屏转横屏智能裁切：引擎 vert2horiz_crop.py 依赖 OpenCV，
+# 这里在运行镜像中安装 headless 版（不依赖系统 GUI 库）
+RUN pip install --no-cache-dir --user opencv-python-headless>=4.8.0
+
 # Create directories for uploads and cache
 RUN mkdir -p /tmp/uploads /tmp/slice_outputs /app/cache && \
     chown -R appuser:appuser /app /tmp/uploads /tmp/slice_outputs /app/cache

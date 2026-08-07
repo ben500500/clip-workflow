@@ -17,6 +17,13 @@ import subprocess
 import sys
 import tempfile
 
+# 允许导入同目录下的竖屏转横屏引擎（vert2horiz_crop.py 依赖 OpenCV）
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import vert2horiz_crop
+except ImportError:  # pragma: no cover - OpenCV 未安装时动态模式不可用
+    vert2horiz_crop = None
+
 
 # 默认 CPU 资源分配比例（%）：切片时限制 ffmpeg 编码线程数，避免占满整机 CPU
 DEFAULT_CPU_PERCENT = 50
@@ -293,6 +300,11 @@ def main():
         default=None,
         help="视频编码器（h264_nvenc/hevc_nvenc/h264_videotoolbox/hevc_videotoolbox/libx264），不填自动探测",
     )
+    parser.add_argument(
+        "--vert2horiz",
+        default=None,
+        help="竖屏转横屏预处理配置 JSON（{\"enabled\":true, \"mode\":\"fixed|dynamic\", ...}），切片前把竖屏素材转成横屏",
+    )
     args = parser.parse_args()
 
     threads = cpu_threads_for_percent(args.cpu_percent)
@@ -304,6 +316,12 @@ def main():
     if not os.path.isfile(args.source):
         print(f"Source video not found: {args.source}", file=sys.stderr)
         sys.exit(1)
+
+    # 竖屏转横屏预处理：开启时若素材为竖屏，先转成横屏再切片
+    vert2horiz_cfg = parse_vert2horiz_config(args.vert2horiz)
+    source_path = args.source
+    if vert2horiz_cfg:
+        source_path = apply_vert2horiz(source_path, vert2horiz_cfg)
 
     os.makedirs(args.output_dir, exist_ok=True)
     cuts = read_cutlist(args.cutlist)
@@ -317,6 +335,12 @@ def main():
     if not segments:
         print("PROGRESS:100")
         print("No valid cut segments found", file=sys.stderr)
+        # 清理竖屏转横屏临时文件
+        if source_path != args.source and os.path.isfile(source_path):
+            try:
+                os.unlink(source_path)
+            except OSError:
+                pass
         sys.exit(0)
 
     vf = None
@@ -342,27 +366,94 @@ def main():
     for start, end, name, idx in segments:
         groups.setdefault(idx, []).append((start, end, name))
 
-    outputs = []
-    total = len(groups)
-    processed = 0
-    for idx in sorted(groups):
-        group = groups[idx]
-        name = safe_name(group[0][2])
-        out_path = os.path.join(args.output_dir, name)
-        parts = []
-        with tempfile.TemporaryDirectory() as tmp:
-            for i, (start, end, _) in enumerate(group):
-                part = os.path.join(tmp, f"part_{i}.mp4")
-                slice_segment(args.source, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder)
-                parts.append(part)
-            concat_segments(parts, out_path, threads=threads, encoder=encoder)
-        duration = ffprobe_duration(out_path)
-        outputs.append((name, duration))
-        processed += 1
-        print(f"PROGRESS:{int(processed * 100 / total)}")
-        print(f"OUTPUT:{name}:{duration:.3f}")
+    try:
+        outputs = []
+        total = len(groups)
+        processed = 0
+        for idx in sorted(groups):
+            group = groups[idx]
+            name = safe_name(group[0][2])
+            out_path = os.path.join(args.output_dir, name)
+            parts = []
+            with tempfile.TemporaryDirectory() as tmp:
+                for i, (start, end, _) in enumerate(group):
+                    part = os.path.join(tmp, f"part_{i}.mp4")
+                    slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder)
+                    parts.append(part)
+                concat_segments(parts, out_path, threads=threads, encoder=encoder)
+            duration = ffprobe_duration(out_path)
+            outputs.append((name, duration))
+            processed += 1
+            print(f"PROGRESS:{int(processed * 100 / total)}")
+            print(f"OUTPUT:{name}:{duration:.3f}")
 
-    print("PROGRESS:100")
+        print("PROGRESS:100")
+    finally:
+        # 清理竖屏转横屏临时文件
+        if source_path != args.source and os.path.isfile(source_path):
+            try:
+                os.unlink(source_path)
+            except OSError:
+                pass
+
+
+def parse_vert2horiz_config(raw: str) -> dict | None:
+    """解析 --vert2horiz 参数（后端下发的 JSON 配置），未启用返回 None。"""
+    if not raw:
+        return None
+    try:
+        cfg = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(cfg, dict) or not cfg.get("enabled"):
+        return None
+    return cfg
+
+
+def apply_vert2horiz(source: str, cfg: dict) -> str:
+    """若素材为竖屏，先执行竖屏转横屏预处理，返回转码后的临时文件路径。
+
+    支持 fixed（固定裁切，快速）与 dynamic（动态人脸跟踪）两种模式；
+    横屏/方形素材不做处理，直接返回原路径。
+    """
+    if vert2horiz_crop is None:
+        raise RuntimeError(
+            "竖屏转横屏已开启，但未安装 OpenCV（vert2horiz_crop 依赖）。"
+            "请安装 opencv-python-headless 后重试。"
+        )
+    src_w, src_h, fps, _total = vert2horiz_crop.get_video_info(source)
+    # 仅竖屏素材需要转换（高 > 宽）
+    if src_h <= src_w:
+        print(f"素材为横屏/方形（{src_w}x{src_h}），跳过竖屏转横屏预处理", file=sys.stderr)
+        return source
+
+    mode = (cfg.get("mode") or "fixed").lower()
+    if mode not in ("fixed", "dynamic"):
+        mode = "fixed"
+    ratio = float(cfg.get("ratio") or (9 / 16))
+    output_size = cfg.get("output_size") or "1920x1080"
+    detect_interval = int(cfg.get("detect_interval") or 2)
+    smooth_window = int(cfg.get("smooth_window") or 15)
+
+    out_path = source + ".vert2horiz.mp4"
+    print(f"检测到竖屏素材（{src_w}x{src_h}），执行竖屏转横屏预处理（mode={mode}）…", file=sys.stderr)
+
+    if mode == "dynamic":
+        positions = vert2horiz_crop.analyze_faces(
+            source,
+            detect_interval=detect_interval,
+            smooth_window=smooth_window,
+        )
+        crop_params = vert2horiz_crop.generate_dynamic_crop_params(
+            positions, src_w, src_h, ratio
+        )
+        vert2horiz_crop.apply_dynamic_crop(source, out_path, crop_params, fps, output_size)
+    else:
+        crop_params = vert2horiz_crop.generate_fixed_crop_params(src_w, src_h, ratio)
+        vert2horiz_crop.apply_fixed_crop(source, out_path, crop_params, output_size)
+
+    print(f"竖屏转横屏预处理完成: {out_path}（{output_size}）", file=sys.stderr)
+    return out_path
 
 
 if __name__ == "__main__":

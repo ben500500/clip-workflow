@@ -15,6 +15,13 @@ export const sliceApi = {
       watermark_font_size?: number;
       watermark_opacity?: number;
       watermark_position?: string;
+      // 竖屏转横屏智能裁切（切片前预处理）
+      vert2horiz_enabled?: boolean;
+      vert2horiz_mode?: 'fixed' | 'dynamic';
+      vert2horiz_ratio?: number;
+      vert2horiz_output_size?: string;
+      vert2horiz_detect_interval?: number;
+      vert2horiz_smooth_window?: number;
       // 成品重新剪辑：以某个切片输出为源，重新裁剪出一个新片段
       output_id?: string;
       cut_start?: number;

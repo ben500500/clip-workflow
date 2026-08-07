@@ -86,6 +86,7 @@ async def run_slice(
     timeout: float = 2 * 3600,
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
+    vert2horiz_config: Optional[dict] = None,
 ) -> tuple[int, str, str]:
     """Run the ffmpeg slice engine.
 
@@ -94,6 +95,7 @@ async def run_slice(
 
     encoder: 三期 GPU 加速编码。可选 h264_nvenc/hevc_nvenc/\
         h264_videotoolbox/hevc_videotoolbox/libx264；不传则引擎自动探测。
+    vert2horiz_config: 竖屏转横屏预处理配置（切片前把竖屏素材转成横屏）。
     """
     engine_path = engine_path or _engine_path("slice.py")
     _require_engine(engine_path)
@@ -105,6 +107,8 @@ async def run_slice(
         cmd.extend(["--watermark", json.dumps(watermark_config)])
     if encoder:
         cmd.extend(["--encoder", encoder])
+    if vert2horiz_config:
+        cmd.extend(["--vert2horiz", json.dumps(vert2horiz_config)])
     logger.info("Running slice: %s", " ".join(cmd))
 
     return await _run_cmd(cmd, timeout, progress_cb)
@@ -119,6 +123,7 @@ async def run_slice_scrub(
     progress_cb: ProgressCallback = None,
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
+    vert2horiz_config: Optional[dict] = None,
 ) -> tuple[int, str, str]:
     """Run scrub-mode slicing (cutlist minus removed intervals)."""
     return await run_slice(
@@ -131,6 +136,7 @@ async def run_slice_scrub(
         progress_cb=progress_cb,
         watermark_config=watermark_config,
         encoder=encoder,
+        vert2horiz_config=vert2horiz_config,
     )
 
 
@@ -143,6 +149,7 @@ async def run_slice_fast(
     progress_cb: ProgressCallback = None,
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
+    vert2horiz_config: Optional[dict] = None,
 ) -> tuple[int, str, str]:
     """Run fast/dedupe mode slicing."""
     if mode not in ("fast", "dedupe"):
@@ -157,6 +164,7 @@ async def run_slice_fast(
         progress_cb=progress_cb,
         watermark_config=watermark_config,
         encoder=encoder,
+        vert2horiz_config=vert2horiz_config,
     )
 
 

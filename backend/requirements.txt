@@ -22,3 +22,5 @@ bcrypt<4.1
 alembic>=1.13.0
 # RPA Cookie AES-256 加密（Fernet）
 cryptography>=41.0.0
+# 竖屏转横屏智能裁切（OpenCV 人脸检测 / 动态跟踪）
+opencv-python-headless>=4.8.0
