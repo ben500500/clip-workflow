@@ -53,17 +53,16 @@ _LAMA = None
 
 
 def _inpaint_lama(image: np.ndarray, mask: np.ndarray, device: str) -> np.ndarray:
-    """LaMa 修复（iopaint 封装）。加载模型较慢，使用模块级缓存。"""
+    """LaMa 修复（remove-ai-watermarks 封装）。加载模型较慢，使用模块级缓存。"""
     global _LAMA  # noqa: PLW0603
     if _LAMA is None:
-        from iopaint.model_manager import ModelManager  # noqa: PLC0415
-        from iopaint.schema import InpaintRequest  # noqa: PLC0415
+        from remove_ai_watermarks.region_eraser import erase_lama, lama_available
 
-        _LAMA = (ModelManager(name="lama", device=device), InpaintRequest)
-    model, req_cls = _LAMA
-    req = req_cls(image=image, mask=mask, hd_strategy="resize")
-    result = model(req)
-    return result
+        if not lama_available():
+            raise InpaintError("LaMa 不可用（remove-ai-watermarks lama extra 未安装）")
+        _LAMA = erase_lama  # 缓存函数引用
+
+    return _LAMA(image, mask)
 
 
 def inpaint_frames(
@@ -155,14 +154,17 @@ def inpaint_frames(
 def _build_inpaint_chain(model: str, device: str) -> list[tuple[str, str]]:
     """构造修复链: [(模型名, 类型)]，类型 'cv2' 或 'lama'。
 
-    lama 不可用（未安装 torch/iopaint）时自动替换为 cv2 兜底。
+    lama 不可用（remove-ai-watermarks lama extra 未安装）时自动替换为 cv2 兜底。
     """
     chain: list[tuple[str, str]] = []
     if model == "lama":
         try:
-            import iopaint  # noqa: PLC0415, F401
+            from remove_ai_watermarks.region_eraser import lama_available
 
-            chain.append(("lama", "lama"))
+            if lama_available():
+                chain.append(("lama", "lama"))
+            else:
+                log.warning("lama 依赖未安装，直接使用 cv2 兜底")
         except ImportError:
             log.warning("lama 依赖未安装，直接使用 cv2 兜底")
         chain.append(("cv2_telea", "cv2"))
