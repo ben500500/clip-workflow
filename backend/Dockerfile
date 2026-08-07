@@ -14,7 +14,10 @@ WORKDIR /app
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install --no-cache-dir --user -r requirements.txt && \
+    # iopaint（LaMa 修补）用 --no-deps 安装，避免 Pillow==9.5.0 与 remove-ai-watermarks 冲突
+    # 其核心依赖 torch/opencv 已由 requirements.txt 安装
+    pip install --no-cache-dir --user --no-deps iopaint
 
 
 # ============================================================

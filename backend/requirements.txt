@@ -33,7 +33,7 @@ remove-ai-watermarks[visible,video,lama,migan]>=0.26.0
 ffmpeg-python>=0.2.0
 PyYAML>=6.0
 # seedance_wm LaMa 高质量修补（CPU 模式，无需 GPU）
-# torch CPU 版本：LaMa 神经网络推理；iopaint：LaMa 模型封装
+# torch CPU 版本：LaMa 神经网络推理
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
-iopaint>=1.0.0
+# iopaint 在 Dockerfile 中用 --no-deps 安装（避免 Pillow 版本冲突）
