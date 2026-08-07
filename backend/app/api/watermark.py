@@ -32,11 +32,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # 允许的去水印引擎
-ALLOWED_ENGINES = ("remove_ai", "seedance")
+ALLOWED_ENGINES = ("remove_ai", "seedance", "seedance_wm")
 
 ENGINE_DISPLAY = {
     "remove_ai": "Remove AI Watermarks（RAiW）",
     "seedance": "Seedance 2.0 Watermark Remover",
+    "seedance_wm": "Seedance 5-Stage Pipeline（seedance_wm）",
 }
 
 
@@ -55,6 +56,9 @@ class WatermarkRunRequest(BaseModel):
     # Seedance 选项
     use_lama: bool = False              # 兼容旧前端，等价 backend=lama
     segments: Optional[int] = 4         # 分段检测段数（移动水印调大）
+    detector: Optional[str] = None      # seedance_wm 主检测器（matchTemplate/yolov8_seg/paddleocr）
+    inpainter: Optional[str] = None     # seedance_wm 主修复器（lama/cv2_telea/cv2_ns）
+    keep_audio: bool = True             # seedance_wm 是否保留原音轨
     name: Optional[str] = None
     # 待处理视频的 source_file_key 列表（由 /watermark/upload 返回）
     files: List[str] = []
@@ -252,6 +256,18 @@ async def run_watermark_task(
         # 分段检测段数（移动水印时增大，默认 4）
         seg = int(data.segments or 4)
         options["segments"] = max(1, min(seg, 32))
+    elif engine == "seedance_wm":
+        options = {
+            "region": data.region,
+            "backend": data.backend or "auto",
+            "keep_audio": bool(data.keep_audio),
+        }
+        seg = int(data.segments or 4)
+        options["segments"] = max(1, min(seg, 32))
+        if data.detector:
+            options["detector"] = data.detector
+        if data.inpainter:
+            options["inpainter"] = data.inpainter
 
     # 创建任务记录
     task = WatermarkTask(

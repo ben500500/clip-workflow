@@ -1,12 +1,15 @@
 """去水印引擎执行模块。
 
-封装两套开源去水印方案的本地执行：
+封装三套开源去水印方案的本地执行：
 1. remove-ai-watermarks（RAiW）：`remove-ai-watermarks video all/visible ...` CLI
    - 支持 Sora / Veo / Seedance / Dola / Hailuo / Kling 等可见 AI 水印 + AI 元数据清除
 2. seedance 2.0 watermark remover：`engines/seedance_watermark_remover.py`
    - Seedance "AI生成" 角标自动检测 + OpenCV TELEA 修补，无需 GPU
+3. seedance_wm（5 阶段流水线）：`engines/seedance_wm_runner.py`
+   - 集成自 ben500500/remover 仓库的 seedance_wm 包：抽帧 → 检测（降级链）→ mask
+     → 修复（LaMa→cv2）+ 时序平滑 → 合成，支持分段检测与移动水印
 
-两个引擎均通过子进程执行，从 stdout 解析 `PROGRESS:<pct>` 行上报进度
+所有引擎均通过子进程执行，从 stdout 解析 `PROGRESS:<pct>` 行上报进度
 （与切片引擎约定一致），输出视频写回 MinIO 后删除本地临时文件。
 """
 
@@ -188,6 +191,50 @@ async def run_seedance_watermark_remover(
     return await _run_cmd(cmd, progress_cb, timeout)
 
 
+async def run_seedance_wm(
+    source_path: str,
+    output_path: str,
+    options: Optional[dict] = None,
+    progress_cb: ProgressCallback = None,
+    timeout: float = 2 * 3600,
+) -> tuple[int, str, str]:
+    """调用 seedance_wm（remover 仓库 5 阶段流水线）执行入口去水印。
+
+    options 支持：
+    - region: "x,y,w,h"（手动指定水印区域，跳过自动检测）
+    - backend: auto/lama/migan/cv2（CPU 修补；auto 默认，lama 缺失时自动降级 cv2）
+    - segments: int（分段检测段数，默认 4；水印移动时调大）
+    - detector: matchTemplate/yolov8_seg/paddleocr（可选，默认 matchTemplate）
+    - inpainter: lama/cv2_telea/cv2_ns（可选，覆盖 config.yaml）
+    - keep_audio: bool（默认保留原音轨）
+    """
+    options = options or {}
+    script = _script_path(settings.WATERMARK_SEEDANCE_WM_SCRIPT)
+    if not os.path.isfile(script):
+        raise FileNotFoundError(f"seedance_wm runner not found: {script}")
+    cmd = ["python", script, source_path, "-o", output_path, "--yes"]
+    if options.get("region"):
+        cmd.extend(["-r", str(options["region"])])
+    backend = options.get("backend") or "auto"
+    if backend not in ("auto", "lama", "migan", "cv2"):
+        backend = "auto"
+    cmd.extend(["--backend", backend])
+    try:
+        seg = int(options.get("segments") or 4)
+    except (TypeError, ValueError):
+        seg = 4
+    seg = max(1, min(seg, 32))
+    cmd.extend(["--segments", str(seg)])
+    if options.get("detector"):
+        cmd.extend(["--detector", str(options["detector"])])
+    if options.get("inpainter"):
+        cmd.extend(["--inpainter", str(options["inpainter"])])
+    if options.get("keep_audio") is False:
+        cmd.append("--no-audio")
+    logger.info("Running seedance_wm: %s", " ".join(cmd))
+    return await _run_cmd(cmd, progress_cb, timeout)
+
+
 async def run_watermark_engine(
     engine: str,
     source_path: str,
@@ -203,6 +250,10 @@ async def run_watermark_engine(
         )
     if engine == "seedance":
         return await run_seedance_watermark_remover(
+            source_path, output_path, options, progress_cb, timeout
+        )
+    if engine == "seedance_wm":
+        return await run_seedance_wm(
             source_path, output_path, options, progress_cb, timeout
         )
     raise ValueError(f"Unsupported watermark engine: {engine}")

@@ -43,13 +43,16 @@ export interface WatermarkUploadResult {
 }
 
 export interface WatermarkRunParams {
-  engine: 'remove_ai' | 'seedance';
+  engine: 'remove_ai' | 'seedance' | 'seedance_wm';
   mark?: string;
   backend?: string;
   temporal_consistency?: boolean;
   region?: string;
   use_lama?: boolean;
   segments?: number;
+  detector?: string;
+  inpainter?: string;
+  keep_audio?: boolean;
   name?: string;
   files: string[];
 }

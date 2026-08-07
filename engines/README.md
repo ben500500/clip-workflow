@@ -186,3 +186,37 @@ python slice.py <source> <cutlist> <output_dir> --mode fast|dedupe|scrub [--inte
 - `position`: 位置（`bottom` 底部 / `top` 顶部，默认 bottom）
 
 **动态效果**：文字从左侧缓缓滑向右侧（`mod(2*t, w+tw)-tw`）+ 透明度呼吸闪烁（`0.4+0.3*sin(2*PI*t)`），用于防搬运/标识来源。
+
+## 去水印引擎（`seedance_wm_runner.py`）
+
+集成自 [ben500500/remover](https://cnb.cool/ben500500/remover) 仓库的 5 阶段去水印流水线
+（seedance_wm 包），作为独立可执行脚本放置在 `engines/` 下。
+
+**用法**:
+
+```bash
+python engines/seedance_wm_runner.py <input.mp4> -o <output.mp4> [options]
+```
+
+**参数**:
+
+| 参数 | 类型 | 说明 | 默认值 |
+|------|------|------|--------|
+| `-o, --output` | string | 输出视频路径 | `<input>_clean.mp4` |
+| `-r, --region` | string | 手动水印区域 `x,y,w,h`（跳过自动检测） | 自动检测 |
+| `--backend` | string | 修补后端：`auto`/`lama`/`migan`/`cv2`（CPU） | auto |
+| `--segments` | int | 分段检测段数（水印移动时调大） | 4 |
+| `--detector` | string | 主检测器：`matchTemplate`/`yolov8_seg`/`paddleocr` | matchTemplate |
+| `--inpainter` | string | 主修复器：`lama`/`cv2_telea`/`cv2_ns` | 按 config.yaml |
+| `--config` | string | YAML 配置文件路径 | 内置 config.yaml |
+| `--no-audio` | - | 合成时不保留原音轨 | 保留 |
+| `--yes` | - | 跳过免责声明确认（无人值守） | 需确认 |
+
+**5 阶段流水线**: 抽帧(FFmpeg) → 检测(matchTemplate→YOLO→OCR 降级链) → mask 序列 →
+修复(LaMa→cv2)+时序平滑 → 合成(FFmpeg)。
+
+**进度上报**: 遵循引擎脚本规范，在处理过程中向 stdout 输出 `PROGRESS:<pct>` 行，
+由 `backend/app/engines/watermark_runner.py` 的 `_run_cmd` 解析后写入数据库。
+
+**依赖**: `numpy` / `opencv-python-headless` / `ffmpeg-python` / `PyYAML`
+（已在 `backend/requirements.txt` 中补齐）。

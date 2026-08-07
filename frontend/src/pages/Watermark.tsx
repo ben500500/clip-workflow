@@ -22,6 +22,10 @@ const ENGINE_HELP: Record<string, { label: string; desc: string }> = {
     label: 'Seedance 2.0 Watermark Remover',
     desc: '针对 Seedance "AI生成" 角标自动检测 + OpenCV TELEA 修补，无需 GPU，CPU 即可运行，也支持任意角落 logo/文字水印。',
   },
+  seedance_wm: {
+    label: 'Seedance 5-Stage Pipeline（seedance_wm）',
+    desc: '集成自 ben500500/remover 仓库的 5 阶段流水线：抽帧 → 检测（matchTemplate/YOLO/OCR 降级链）→ mask → 修复（LaMa→cv2）+时序平滑 → 合成。支持分段检测与移动水印。',
+  },
 };
 
 interface PendingFile {
@@ -41,15 +45,19 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const Watermark: React.FC = () => {
-  const [engine, setEngine] = useState<'remove_ai' | 'seedance'>('remove_ai');
+  const [engine, setEngine] = useState<'remove_ai' | 'seedance' | 'seedance_wm'>('remove_ai');
   // RAiW 选项
   const [mark, setMark] = useState('auto');
   const [backend, setBackend] = useState('auto');
   const [temporal, setTemporal] = useState(true);
-  // Seedance 选项
+  // Seedance / seedance_wm 选项
   const [region, setRegion] = useState('');
   const [seedanceBackend, setSeedanceBackend] = useState('auto');
   const [segments, setSegments] = useState(4);
+  // seedance_wm 专属选项
+  const [detector, setDetector] = useState('matchTemplate');
+  const [inpainter, setInpainter] = useState('auto');
+  const [keepAudio, setKeepAudio] = useState(true);
 
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -153,7 +161,7 @@ const Watermark: React.FC = () => {
     setRunning(true);
     try {
       const params: {
-        engine: 'remove_ai' | 'seedance';
+        engine: 'remove_ai' | 'seedance' | 'seedance_wm';
         files: string[];
         name?: string;
         mark?: string;
@@ -162,6 +170,9 @@ const Watermark: React.FC = () => {
         region?: string;
         use_lama?: boolean;
         segments?: number;
+        detector?: string;
+        inpainter?: string;
+        keep_audio?: boolean;
       } = {
         engine,
         files: pendingFiles.map((f) => f.sourceFileKey),
@@ -172,10 +183,17 @@ const Watermark: React.FC = () => {
         params.backend = backend;
         params.temporal_consistency = temporal;
         if (region.trim()) params.region = region.trim();
+      } else if (engine === 'seedance') {
+        params.region = region.trim() || undefined;
+        params.backend = seedanceBackend;
+        params.segments = segments;
       } else {
         params.region = region.trim() || undefined;
         params.backend = seedanceBackend;
         params.segments = segments;
+        if (detector) params.detector = detector;
+        if (inpainter && inpainter !== 'auto') params.inpainter = inpainter;
+        params.keep_audio = keepAudio;
       }
       const res = await watermarkApi.run(params);
       message.success(res.message);
@@ -285,7 +303,7 @@ const Watermark: React.FC = () => {
       key: 'engine',
       width: 200,
       render: (e: string, t: WatermarkTaskItem) => (
-        <Tag color={e === 'remove_ai' ? 'blue' : 'purple'}>{t.engine_display}</Tag>
+        <Tag color={e === 'remove_ai' ? 'blue' : e === 'seedance' ? 'purple' : 'geekblue'}>{t.engine_display}</Tag>
       ),
     },
     {
@@ -521,6 +539,7 @@ const Watermark: React.FC = () => {
               options={[
                 { value: 'remove_ai', label: ENGINE_HELP.remove_ai.label },
                 { value: 'seedance', label: ENGINE_HELP.seedance.label },
+                { value: 'seedance_wm', label: ENGINE_HELP.seedance_wm.label },
               ]}
             />
             <div style={{ marginTop: 8 }}>
@@ -534,7 +553,69 @@ const Watermark: React.FC = () => {
           </div>
 
           {/* 引擎参数 */}
-          {engine === 'remove_ai' ? (
+          {engine === 'seedance_wm' ? (
+            <Space wrap>
+              <Text>手动水印区域（可选，x,y,w,h；留空自动检测）：</Text>
+              <Input
+                placeholder="如 10,5,120,60"
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+                style={{ width: 220 }}
+              />
+              <Text>修补算法（CPU）：</Text>
+              <Select
+                value={seedanceBackend}
+                onChange={setSeedanceBackend}
+                style={{ width: 240 }}
+                options={[
+                  { value: 'auto', label: '自动（推荐，LaMa→cv2 降级）' },
+                  { value: 'lama', label: 'LaMa（最佳，需 torch/iopaint）' },
+                  { value: 'migan', label: 'MI-GAN（需 remove-ai-watermarks）' },
+                  { value: 'cv2', label: 'OpenCV TELEA（无需模型）' },
+                ]}
+              />
+              <Text>检测器：</Text>
+              <Select
+                value={detector}
+                onChange={setDetector}
+                style={{ width: 200 }}
+                options={[
+                  { value: 'matchTemplate', label: 'matchTemplate（默认）' },
+                  { value: 'yolov8_seg', label: 'YOLOv8-seg（需安装）' },
+                  { value: 'paddleocr', label: 'PaddleOCR（需安装）' },
+                ]}
+              />
+              <Text>修复器：</Text>
+              <Select
+                value={inpainter}
+                onChange={setInpainter}
+                style={{ width: 200 }}
+                options={[
+                  { value: 'auto', label: '自动（按 backend 映射）' },
+                  { value: 'lama', label: 'lama' },
+                  { value: 'cv2_telea', label: 'cv2_telea' },
+                ]}
+              />
+              <Text>分段检测：</Text>
+              <Select
+                value={segments}
+                onChange={setSegments}
+                style={{ width: 180 }}
+                options={[
+                  { value: 4, label: '4 段（默认）' },
+                  { value: 8, label: '8 段（水印会移动）' },
+                  { value: 12, label: '12 段（频繁移动）' },
+                  { value: 16, label: '16 段（高精度）' },
+                ]}
+              />
+              <Checkbox checked={keepAudio} onChange={(e) => setKeepAudio(e.target.checked)}>
+                保留原音轨
+              </Checkbox>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                （移动水印时增大分段数，可分别覆盖不同时间段的位置）
+              </Text>
+            </Space>
+          ) : engine === 'remove_ai' ? (
             <Space wrap>
               <Text>厂商水印标记：</Text>
               <Select
