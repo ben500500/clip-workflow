@@ -28,3 +28,7 @@ opencv-python-headless>=4.8.0
 # lama/migan extra 提供 onnxruntime CPU 高质量修补（LaMa-ONNX ~200MB / MI-GAN-ONNX ~28MB），
 # 无需 GPU 即可显著优于 cv2 经典修补；backend=auto 时按 LaMa > MI-GAN > cv2 自动择优
 remove-ai-watermarks[visible,video,lama,migan]>=0.26.0
+# 去水印（v5）：seedance_wm 引擎（集成自 ben500500/remover 仓库的 5 阶段流水线）依赖
+# ffmpeg-python：FFmpeg I/O 绑定（抽帧/合成）；PyYAML：YAML 配置加载
+ffmpeg-python>=0.2.0
+PyYAML>=6.0

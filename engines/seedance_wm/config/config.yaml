@@ -1,0 +1,41 @@
+# Seedance 去水印（seedance_wm 引擎）默认配置
+# 与 ben500500/remover 仓库 config/config.yaml 保持一致，适配 clip-workflow CPU 环境
+
+detector:
+  primary: matchTemplate          # matchTemplate / yolov8_seg / paddleocr
+  fallback: [yolov8_seg, paddleocr]
+  roi:
+    h_ratio: 0.12
+    w_ratio: 0.08
+  confidence_threshold: 0.6
+  max_sample_frames: 60
+
+inpainter:
+  primary: lama                   # lama / cv2_telea / cv2_ns；lama 缺失时自动降级 cv2
+  fallback: [cv2_telea, cv2_ns]
+  device: cpu                     # 容器内 CPU 环境，避免误探测 CUDA
+  fp16: false
+  batch_size: 1
+  expand_px: 5
+
+temporal:
+  enabled: true
+  window: 3
+  weights: gaussian
+
+output:
+  codec: libx264
+  crf: 18
+  pix_fmt: yuv420p
+  movflags: "+faststart"
+  keep_audio: true
+
+logging:
+  level: info
+  format: "[{ts}] [{level}] [{module}] {msg}"
+  file: ""
+
+cache:
+  dir: /tmp/watermark/seedance_wm_cache
+  auto_clean: true
+  max_size_gb: 10
