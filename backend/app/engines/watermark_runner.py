@@ -31,7 +31,13 @@ async def _run_cmd(
     progress_cb: ProgressCallback = None,
     timeout: float = 2 * 3600,
 ) -> tuple[int, str, str]:
-    """Run a subprocess, parse PROGRESS: lines, and return (returncode, stdout, stderr)."""
+    """Run a subprocess, parse PROGRESS: lines, and return (returncode, stdout, stderr).
+
+    超时实现：watchdog 协程每 5s 检查一次总耗时，超时直接 kill 子进程。
+    不能依赖 asyncio.wait_for(gather(...))——read_stream 阻塞在不可取消的
+    pipe readline 上时，gather 的取消会被卡住，TimeoutError 永不抛出，
+    子进程会无限挂起（实测 LaMa 模型下载时任务卡 8 小时不退出）。
+    """
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -39,8 +45,10 @@ async def _run_cmd(
     )
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
-    last_progress_at = asyncio.get_event_loop().time()
+    start_ts = asyncio.get_event_loop().time()
+    last_progress_at = start_ts
     last_progress_pct = 0
+    timed_out = False
 
     async def read_stream(stream, sink):
         nonlocal last_progress_at, last_progress_pct
@@ -76,25 +84,43 @@ async def _run_cmd(
                 last_progress_pct = min(last_progress_pct + 5, 90)
                 progress_cb(last_progress_pct, f"处理中 {last_progress_pct}%")
 
+    async def watchdog():
+        """总耗时超时兜底：直接 kill 子进程（不依赖 wait_for 取消语义）。"""
+        nonlocal timed_out
+        while True:
+            await asyncio.sleep(5)
+            if proc.returncode is not None:
+                return
+            if asyncio.get_event_loop().time() - start_ts > timeout:
+                timed_out = True
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                logger.error(
+                    "Watermark engine exceeded %ss timeout, killed: %s",
+                    timeout,
+                    " ".join(cmd),
+                )
+                return
+
     try:
-        await asyncio.wait_for(
-            asyncio.gather(
-                read_stream(proc.stdout, stdout_lines),
-                read_stream(proc.stderr, stderr_lines),
-                progress_pulse(),
-                proc.wait(),
-            ),
-            timeout=timeout,
+        await asyncio.gather(
+            read_stream(proc.stdout, stdout_lines),
+            read_stream(proc.stderr, stderr_lines),
+            progress_pulse(),
+            watchdog(),
+            proc.wait(),
         )
-    except asyncio.TimeoutError:
-        try:
-            proc.terminate()
+    finally:
+        # 若子进程残留（如内部 fork 的下载进程），确保清掉
+        if proc.returncode is None:
             try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
                 proc.kill()
-        except ProcessLookupError:
-            pass
+            except ProcessLookupError:
+                pass
+
+    if timed_out:
         raise TimeoutError(f"Watermark engine timed out after {timeout}s: {' '.join(cmd)}")
 
     return proc.returncode or 0, "".join(stdout_lines), "".join(stderr_lines)

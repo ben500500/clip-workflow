@@ -82,6 +82,32 @@ def _load_raiw_fill():
 _RAIW_FILL = None
 
 
+def _onnx_model_ready(repo_name: str) -> bool:
+    """检查 HuggingFace 仓库模型是否已完整下载到本地缓存。
+
+    remove-ai-watermarks 的 LaMa/MI-GAN 首次使用会从 HuggingFace 下载模型
+    （LaMa ~200MB / MI-GAN ~28MB）。服务器无法访问 huggingface.co 时，
+    每次 fill 调用都会尝试下载并超时（10s+），逐帧拖慢导致任务看似卡死。
+    因此在使用这些后端前先确认模型缓存完整（blobs 下存在非 .incomplete 文件）。
+    """
+    import os
+
+    hf_home = os.environ.get(
+        "HF_HOME", os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+    )
+    hub_name = "models--" + repo_name.replace("/", "--")
+    hub_dir = os.path.join(hf_home, "hub", hub_name, "blobs")
+    try:
+        if not os.path.isdir(hub_dir):
+            return False
+        for blob in os.listdir(hub_dir):
+            if not blob.endswith(".incomplete"):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _get_raiw_fill():
     global _RAIW_FILL
     if _RAIW_FILL is None:
@@ -232,12 +258,35 @@ def _make_inpaint(backend: str):
     """
     fill = _get_raiw_fill()
 
+    # 离线/模型未下载保护：LaMa/MI-GAN 模型文件不存在时，auto 模式直接降级
+    # cv2。否则每帧 fill 都会尝试从 HuggingFace 下载模型并超时（10s+），
+    # 逐帧拖慢导致任务看似卡死在 90%。
+    effective_backend = backend
+    if backend in ("auto", "lama", "migan"):
+        lama_ok = _onnx_model_ready("Carve/LaMa-ONNX")
+        migan_ok = _onnx_model_ready("andraniksargsyan/migan")
+        if backend == "auto":
+            if lama_ok or migan_ok:
+                effective_backend = "lama" if lama_ok else "migan"
+            else:
+                effective_backend = "cv2"
+                print(
+                    "  [info] LaMa/MI-GAN 模型未下载（离线环境），auto 降级 cv2 TELEA",
+                    flush=True,
+                )
+        elif backend == "lama" and not lama_ok:
+            effective_backend = "cv2"
+            print("  [warn] LaMa 模型未下载，降级 cv2 TELEA", flush=True)
+        elif backend == "migan" and not migan_ok:
+            effective_backend = "cv2"
+            print("  [warn] MI-GAN 模型未下载，降级 cv2 TELEA", flush=True)
+
     def _inpaint(frame_bgr, mask):
         try:
             if fill is not None:
-                return fill(frame_bgr, mask=mask, backend=backend)
+                return fill(frame_bgr, mask=mask, backend=effective_backend)
         except Exception as e:
-            print(f"  [warn] {backend} fill failed ({e}); falling back to cv2 TELEA", flush=True)
+            print(f"  [warn] {effective_backend} fill failed ({e}); falling back to cv2 TELEA", flush=True)
         return _inpaint_telea(frame_bgr, mask)
 
     return _inpaint

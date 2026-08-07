@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import cv2
@@ -23,6 +24,37 @@ from seedance_wm.log import get_logger
 log = get_logger("inpaint")
 
 INPAINTERS = ("lama", "cv2_telea", "cv2_ns", "propainter")
+
+
+def _lama_model_ready() -> bool:
+    """检查 LaMa ONNX 模型是否已完整下载到本地缓存。
+
+    erase_lama 首次调用会从 HuggingFace 下载 Carve/LaMa-ONNX（~200MB）。
+    服务器网络不可达 huggingface.co 时下载会挂起数十分钟才超时，
+    导致任务长时间卡住。因此在使用 LaMa 前先检查模型缓存是否完整
+    （要求 blobs 下有非 .incomplete 的完整文件），不存在则直接降级到
+    cv2，避免网络等待。
+    """
+    hf_home = os.environ.get(
+        "HF_HOME", os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+    )
+    hub_dir = os.path.join(hf_home, "hub")
+    try:
+        if not os.path.isdir(hub_dir):
+            return False
+        for name in os.listdir(hub_dir):
+            if "LaMa-ONNX" not in name:
+                continue
+            blobs_dir = os.path.join(hub_dir, name, "blobs")
+            if not os.path.isdir(blobs_dir):
+                continue
+            for blob in os.listdir(blobs_dir):
+                # 有完整下载的模型文件（非 .incomplete）即视为可用
+                if not blob.endswith(".incomplete"):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def resolve_device(device: str = "auto") -> str:
@@ -60,6 +92,8 @@ def _inpaint_lama(image: np.ndarray, mask: np.ndarray, device: str) -> np.ndarra
 
         if not lama_available():
             raise InpaintError("LaMa 不可用（remove-ai-watermarks lama extra 未安装）")
+        if not _lama_model_ready():
+            raise InpaintError("LaMa 模型未下载，跳过（离线环境不可用）")
         _LAMA = erase_lama  # 缓存函数引用
 
     return _LAMA(image, mask)
@@ -161,10 +195,15 @@ def _build_inpaint_chain(model: str, device: str) -> list[tuple[str, str]]:
         try:
             from remove_ai_watermarks.region_eraser import lama_available
 
-            if lama_available():
+            if lama_available() and _lama_model_ready():
                 chain.append(("lama", "lama"))
             else:
-                log.warning("lama 依赖未安装，直接使用 cv2 兜底")
+                if not _lama_model_ready():
+                    log.warning(
+                        "lama 模型未下载（离线环境），跳过 LaMa 直接使用 cv2 兜底"
+                    )
+                else:
+                    log.warning("lama 依赖未安装，直接使用 cv2 兜底")
         except ImportError:
             log.warning("lama 依赖未安装，直接使用 cv2 兜底")
         chain.append(("cv2_telea", "cv2"))
