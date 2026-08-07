@@ -206,6 +206,9 @@ services:
       CHROME_DEBUG_PORT: 9222
       CHROME_DEBUG_HOST: rpa_worker
       RPA_REQUIRE_MANUAL_CONFIRM: "true"
+      # HuggingFace 离线模式：去水印 ONNX 模型从本地预置缓存加载（hf-cache），
+      # 禁止检查远程（服务器无法访问 huggingface.co，检查会阻塞超时）
+      HF_HUB_OFFLINE: "1"
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8001}:8080"
@@ -247,6 +250,9 @@ services:
       MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-localhost:9000}
       CHROME_DEBUG_PORT: 9222
       CHROME_DEBUG_HOST: rpa_worker
+      # HuggingFace 离线模式：去水印 ONNX 模型从本地预置缓存加载（hf-cache），
+      # 禁止检查远程（服务器无法访问 huggingface.co，检查会阻塞超时）
+      HF_HUB_OFFLINE: "1"
     volumes:
       - media_data:/app/media
       - ./engines:/app/engines:ro
