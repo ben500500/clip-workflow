@@ -54,6 +54,7 @@ class WatermarkRunRequest(BaseModel):
     region: Optional[str] = None        # x,y,w,h 手动指定水印区域（RAiW 区域擦除 / Seedance 手动区域）
     # Seedance 选项
     use_lama: bool = False              # 兼容旧前端，等价 backend=lama
+    segments: Optional[int] = 4         # 分段检测段数（移动水印调大）
     name: Optional[str] = None
     # 待处理视频的 source_file_key 列表（由 /watermark/upload 返回）
     files: List[str] = []
@@ -248,6 +249,9 @@ async def run_watermark_task(
             "backend": data.backend or "auto",
             "use_lama": bool(data.use_lama),
         }
+        # 分段检测段数（移动水印时增大，默认 4）
+        seg = int(data.segments or 4)
+        options["segments"] = max(1, min(seg, 32))
 
     # 创建任务记录
     task = WatermarkTask(

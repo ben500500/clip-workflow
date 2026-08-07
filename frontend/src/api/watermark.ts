@@ -49,6 +49,7 @@ export interface WatermarkRunParams {
   temporal_consistency?: boolean;
   region?: string;
   use_lama?: boolean;
+  segments?: number;
   name?: string;
   files: string[];
 }

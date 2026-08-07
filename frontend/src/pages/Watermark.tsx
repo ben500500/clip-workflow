@@ -49,6 +49,7 @@ const Watermark: React.FC = () => {
   // Seedance 选项
   const [region, setRegion] = useState('');
   const [seedanceBackend, setSeedanceBackend] = useState('auto');
+  const [segments, setSegments] = useState(4);
 
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -160,6 +161,7 @@ const Watermark: React.FC = () => {
         temporal_consistency?: boolean;
         region?: string;
         use_lama?: boolean;
+        segments?: number;
       } = {
         engine,
         files: pendingFiles.map((f) => f.sourceFileKey),
@@ -173,6 +175,7 @@ const Watermark: React.FC = () => {
       } else {
         params.region = region.trim() || undefined;
         params.backend = seedanceBackend;
+        params.segments = segments;
       }
       const res = await watermarkApi.run(params);
       message.success(res.message);
@@ -595,6 +598,21 @@ const Watermark: React.FC = () => {
                   { value: 'cv2', label: 'OpenCV TELEA' },
                 ]}
               />
+              <Text>分段检测：</Text>
+              <Select
+                value={segments}
+                onChange={setSegments}
+                style={{ width: 180 }}
+                options={[
+                  { value: 4, label: '4 段（默认）' },
+                  { value: 8, label: '8 段（水印会移动）' },
+                  { value: 12, label: '12 段（频繁移动）' },
+                  { value: 16, label: '16 段（高精度）' },
+                ]}
+              />
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                （水印在视频中移动时，分段检测能分别覆盖不同时间段的位置）
+              </Text>
             </Space>
           )}
 
