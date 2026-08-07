@@ -31,7 +31,7 @@ from app.models.models import (
     DetectedInterval,
     SystemConfig,
 )
-from app.utils.helpers import generate_cutlist, generate_intervals_file
+from app.utils.helpers import generate_cutlist, generate_intervals_file, format_time
 from app.services.minio_service import (
     get_presigned_url,
     get_presigned_upload_url,
@@ -83,6 +83,13 @@ class SliceRunRequest(BaseModel):
     # 视频编码器：h264_nvenc / hevc_nvenc / h264_videotoolbox / hevc_videotoolbox / libx264
     # 不传时引擎自动探测（有 GPU 硬件编码器则优先使用，否则回退 libx264）
     encoder: Optional[str] = None
+    # ── 成品重新剪辑 ──
+    # 指定某个切片输出（成品视频）作为源，重新裁剪出一个新片段。
+    # 提供 output_id 时，源视频为该成品的 file_key（sliced 桶），而非剧集原始素材。
+    output_id: Optional[str] = None
+    # 剪辑区间（相对成品起点，秒）。默认整段（0 ~ 成品时长）
+    cut_start: Optional[float] = None
+    cut_end: Optional[float] = None
 
 
 class SliceRunResponse(BaseModel):
@@ -333,6 +340,7 @@ async def _publish_to_worker(
     dedupe_config: Optional[dict],
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
+    source_bucket: str = "",
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -340,10 +348,14 @@ async def _publish_to_worker(
         是否成功发布
     """
     # 生成源视频的 presigned GET URL（有效期 2 小时）
+    # 普通切片源为剧集原始素材（raw-footage 桶）；
+    # 成品重新剪辑（output_id）时源为该成品视频（sliced 桶）。
     source_url = None
     if source_file_key:
         source_url = await get_presigned_url(
-            "raw-footage", source_file_key, expires_seconds=7200
+            source_bucket or settings.MINIO_BUCKET_RAW,
+            source_file_key,
+            expires_seconds=7200,
         )
 
     # 每次任务生成独立的回调/上传鉴权 Token
@@ -407,6 +419,7 @@ async def _dispatch_celery(
     video_path: Optional[str],
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
+    source_bucket: str = "",
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -428,6 +441,7 @@ async def _dispatch_celery(
         dedupe_config=dedupe_config,
         task_id=str(slice_task.id),
         source_file_key=source_file_key,
+        source_bucket=source_bucket or None,
         watermark_config=watermark_config,
         encoder=encoder,
     )
@@ -467,57 +481,97 @@ async def run_slice(
             detail=f"video_path 指向的文件不存在: {data.video_path}",
         )
     source_file_key = episode.source_file_key
+    source_bucket = settings.MINIO_BUCKET_RAW
     if not data.video_path and not source_file_key:
         raise HTTPException(
             status_code=400,
             detail="Episode has no source file. Upload a video first or provide video_path.",
         )
 
-    # Generate cutlist from accepted clips
-    clips_result = await db.execute(
-        select(ClipCandidate).where(
-            ClipCandidate.episode_id == eid,
-            ClipCandidate.status == "accepted",
-        )
-    )
-    accepted_clips = clips_result.scalars().all()
-
-    if data.auto_accept_all:
-        # 免审核一键切片：不要求审核通过，直接把所有候选片段纳入切片
-        all_clips_result = await db.execute(
-            select(ClipCandidate)
-            .where(ClipCandidate.episode_id == eid)
-            .order_by(ClipCandidate.clip_index.asc().nullslast())
-        )
-        all_clips = all_clips_result.scalars().all()
-        if not all_clips:
+    # ── 成品重新剪辑：以某个切片输出（成品）为源，重新裁剪出一个新片段 ──
+    if data.output_id:
+        if data.video_path:
             raise HTTPException(
                 status_code=400,
-                detail="当前没有候选片段，无法一键切片。请先运行 AI 智能选点。",
+                detail="指定 output_id 重新剪辑时不能同时传 video_path",
             )
-        # 自动通过所有待审核片段，方便后续在切片任务/成品预览中看到关联关系
-        for clip in all_clips:
-            if clip.status == "pending":
-                clip.status = "accepted"
-        await db.flush()
-        accepted_clips = all_clips
+        try:
+            out_id = uuid.UUID(data.output_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="output_id 格式不合法")
 
-    if not accepted_clips:
-        raise HTTPException(
-            status_code=400,
-            detail="没有已通过的候选片段，无法生成切片。请先在片段审核中通过至少一个片段，或重新触发选点。",
-        )
-    cutlist = generate_cutlist(accepted_clips)
+        out_res = await db.execute(select(SliceOutput).where(SliceOutput.id == out_id))
+        output = out_res.scalar_one_or_none()
+        if not output:
+            raise HTTPException(status_code=404, detail="输出文件不存在")
 
-    # Generate intervals from enabled intervals
-    intervals_result = await db.execute(
-        select(DetectedInterval).where(
-            DetectedInterval.episode_id == eid,
-            DetectedInterval.enabled == True,
+        # 校验输出属于当前剧集
+        out_task_res = await db.execute(select(SliceTask).where(SliceTask.id == output.task_id))
+        out_task = out_task_res.scalar_one_or_none()
+        if not out_task or str(out_task.episode_id) != str(eid):
+            raise HTTPException(status_code=400, detail="输出文件不属于当前剧集")
+        if not output.file_key:
+            raise HTTPException(status_code=400, detail="输出文件缺少存储对象，无法重新剪辑")
+
+        src_duration = output.duration or episode.duration or 0.0
+        start = data.cut_start if data.cut_start is not None else 0.0
+        end = data.cut_end if data.cut_end is not None else src_duration
+        if start < 0 or end <= start:
+            raise HTTPException(
+                status_code=400,
+                detail="剪辑区间不合法：需要 0 <= 开始时间 < 结束时间",
+            )
+
+        source_file_key = output.file_key
+        source_bucket = settings.MINIO_BUCKET_SLICED
+        cutlist = f"{format_time(start)} {format_time(end)} clip_01"
+        intervals_content = ""
+    else:
+        # Generate cutlist from accepted clips
+        clips_result = await db.execute(
+            select(ClipCandidate).where(
+                ClipCandidate.episode_id == eid,
+                ClipCandidate.status == "accepted",
+            )
         )
-    )
-    enabled_intervals = intervals_result.scalars().all()
-    intervals_content = generate_intervals_file(enabled_intervals)
+        accepted_clips = clips_result.scalars().all()
+
+        if data.auto_accept_all:
+            # 免审核一键切片：不要求审核通过，直接把所有候选片段纳入切片
+            all_clips_result = await db.execute(
+                select(ClipCandidate)
+                .where(ClipCandidate.episode_id == eid)
+                .order_by(ClipCandidate.clip_index.asc().nullslast())
+            )
+            all_clips = all_clips_result.scalars().all()
+            if not all_clips:
+                raise HTTPException(
+                    status_code=400,
+                    detail="当前没有候选片段，无法一键切片。请先运行 AI 智能选点。",
+                )
+            # 自动通过所有待审核片段，方便后续在切片任务/成品预览中看到关联关系
+            for clip in all_clips:
+                if clip.status == "pending":
+                    clip.status = "accepted"
+            await db.flush()
+            accepted_clips = all_clips
+
+        if not accepted_clips:
+            raise HTTPException(
+                status_code=400,
+                detail="没有已通过的候选片段，无法生成切片。请先在片段审核中通过至少一个片段，或重新触发选点。",
+            )
+        cutlist = generate_cutlist(accepted_clips)
+
+        # Generate intervals from enabled intervals
+        intervals_result = await db.execute(
+            select(DetectedInterval).where(
+                DetectedInterval.episode_id == eid,
+                DetectedInterval.enabled == True,
+            )
+        )
+        enabled_intervals = intervals_result.scalars().all()
+        intervals_content = generate_intervals_file(enabled_intervals)
 
     # 多人同时切片的全局并发闸门：超过 max_concurrent_tasks 上限直接拒绝。
     # 在创建任务记录前检查，running_count 为当前在飞任务数（不含本任务），
@@ -531,6 +585,8 @@ async def run_slice(
         cutlist=cutlist,
         intervals=intervals_content,
         dedupe_config=data.dedupe_config,
+        source_bucket=source_bucket,
+        source_file_key=source_file_key,
         status="pending",
         progress=0.0,
     )
@@ -554,6 +610,7 @@ async def run_slice(
             data.dedupe_config,
             watermark_config,
             data.encoder,
+            source_bucket,
         )
 
         if not published:
@@ -577,6 +634,7 @@ async def run_slice(
                 data.video_path,
                 watermark_config,
                 data.encoder,
+                source_bucket,
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
@@ -945,7 +1003,8 @@ async def retry_slice_task(
     if not ep:
         raise HTTPException(status_code=404, detail="Episode not found")
 
-    source_file_key = ep.source_file_key
+    source_file_key = task.source_file_key or ep.source_file_key
+    source_bucket = task.source_bucket or settings.MINIO_BUCKET_RAW
     if not source_file_key:
         raise HTTPException(status_code=400, detail="Episode has no source file")
 
@@ -957,7 +1016,9 @@ async def retry_slice_task(
         cutlist=task.cutlist,
         intervals=task.intervals,
         dedupe_config=task.dedupe_config,
-        # 重试时保留原任务的水印配置
+        # 重试时保留原任务的源与水印配置
+        source_bucket=source_bucket,
+        source_file_key=source_file_key,
         watermark_config=task.watermark_config,
         status="pending",
         progress=0.0,
@@ -980,6 +1041,8 @@ async def retry_slice_task(
             source_file_key,
             task.dedupe_config,
             task.watermark_config,
+            None,
+            source_bucket,
         )
 
         if not published:
@@ -1001,6 +1064,8 @@ async def retry_slice_task(
                 task.dedupe_config,
                 None,
                 task.watermark_config,
+                None,
+                source_bucket,
             )
         except Exception as e:
             new_task.status = "failed"

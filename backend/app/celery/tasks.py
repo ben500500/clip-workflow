@@ -90,7 +90,7 @@ def run_async(coro):
     return loop.run_until_complete(coro)
 
 
-async def _ensure_source_video(source_path: Optional[str], source_file_key: Optional[str]) -> Optional[str]:
+async def _ensure_source_video(source_path: Optional[str], source_file_key: Optional[str], source_bucket: Optional[str] = None) -> Optional[str]:
     """Return a local path for the source video, downloading from MinIO if needed."""
     if source_path and os.path.isfile(source_path):
         return source_path
@@ -98,8 +98,9 @@ async def _ensure_source_video(source_path: Optional[str], source_file_key: Opti
         return source_path
     from app.services.minio_service import download_to_file
 
+    bucket = source_bucket or settings.MINIO_BUCKET_RAW
     local_path = f"/tmp/source_videos/{uuid.uuid4().hex}_{os.path.basename(source_file_key)}"
-    ok = await download_to_file(settings.MINIO_BUCKET_RAW, source_file_key, local_path)
+    ok = await download_to_file(bucket, source_file_key, local_path)
     if ok:
         return local_path
     return None
@@ -346,6 +347,7 @@ def slice_task(
     dedupe_config: Optional[dict] = None,
     task_id: Optional[str] = None,
     source_file_key: Optional[str] = None,
+    source_bucket: Optional[str] = None,
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
 ):
@@ -353,6 +355,7 @@ def slice_task(
 
     encoder: 三期 GPU 加速编码，可选 h264_nvenc/hevc_nvenc/\
         h264_videotoolbox/hevc_videotoolbox/libx264；不传则引擎自动探测。
+    source_bucket: 源视频所在桶；普通切片为 raw-footage，成品重新剪辑为 sliced。
     """
     from app.services.slice_service import run_slice_scrub, run_slice_fast
     from app.services.minio_service import upload_file_from_path
@@ -365,7 +368,7 @@ def slice_task(
     cutlist_path = None
     intervals_path = None
     try:
-        source_path = run_async(_ensure_source_video(source_path, source_file_key))
+        source_path = run_async(_ensure_source_video(source_path, source_file_key, source_bucket))
         if not source_path:
             raise FileNotFoundError(f"Source video not found: {source_path}")
         downloaded_source_path = source_path

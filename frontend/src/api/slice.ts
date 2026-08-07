@@ -15,6 +15,10 @@ export const sliceApi = {
       watermark_font_size?: number;
       watermark_opacity?: number;
       watermark_position?: string;
+      // 成品重新剪辑：以某个切片输出为源，重新裁剪出一个新片段
+      output_id?: string;
+      cut_start?: number;
+      cut_end?: number;
     }
   ) =>
     client.post(`/episodes/${episodeId}/slice/run`, { mode, ...data }) as Promise<{

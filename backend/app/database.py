@@ -65,6 +65,8 @@ async def _apply_compat_migrations():
     """
     migrations = [
         ("slice_tasks", "node_id", "VARCHAR(100)"),
+        ("slice_tasks", "source_bucket", "VARCHAR(50)"),
+        ("slice_tasks", "source_file_key", "VARCHAR(500)"),
         ("slice_tasks", "watermark_config", "JSON"),
         ("worker_nodes", "enabled", "BOOLEAN DEFAULT TRUE"),
         ("worker_nodes", "cpu_percent", "INTEGER DEFAULT 50"),

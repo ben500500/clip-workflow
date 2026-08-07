@@ -783,9 +783,9 @@ const EpisodeDetail: React.FC = () => {
         <Space wrap>
           <Text strong>工作台入口:</Text>
           <Button type="primary" ghost icon={<CheckCircleOutlined />} onClick={() => navigate(`/episodes/${episodeId}/clips`)}>片段审核</Button>
-          <Button ghost icon={<RadarChartOutlined />} onClick={() => navigate(`/episodes/${episodeId}/intervals`)}>区间检测</Button>
-          <Button ghost icon={<ScissorOutlined />} onClick={() => navigate(`/episodes/${episodeId}/slice`)}>切片任务</Button>
-          <Button ghost icon={<PlayCircleOutlined />} onClick={() => navigate(`/episodes/${episodeId}/preview`)}>成品预览</Button>
+          <Button type="primary" ghost icon={<RadarChartOutlined />} onClick={() => navigate(`/episodes/${episodeId}/intervals`)}>区间检测</Button>
+          <Button type="primary" ghost icon={<ScissorOutlined />} onClick={() => navigate(`/episodes/${episodeId}/slice`)}>切片任务</Button>
+          <Button type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => navigate(`/episodes/${episodeId}/preview`)}>成品预览</Button>
           {/* 一键切片：免审核直接出片，放在工作台入口处，方便快速出片 */}
           <Popconfirm
             title="一键切片"

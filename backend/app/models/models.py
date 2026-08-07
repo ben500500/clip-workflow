@@ -200,6 +200,10 @@ class SliceTask(Base):
     cutlist = Column(Text, nullable=True)
     intervals = Column(Text, nullable=True)
     dedupe_config = Column(JSON, nullable=True)
+    # 源视频所在桶（普通切片 raw-footage；成品重新剪辑 sliced），重试时用于还原源
+    source_bucket = Column(String(50), nullable=True)
+    # 实际使用的源视频 file_key（重试时优先于剧集素材使用）
+    source_file_key = Column(String(500), nullable=True)
     # 自定义文字水印配置（开启时透传给引擎，重试时保留）
     watermark_config = Column(JSON, nullable=True)
     status = Column(String(50), nullable=True)
