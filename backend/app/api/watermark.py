@@ -33,12 +33,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # 允许的去水印引擎
-ALLOWED_ENGINES = ("remove_ai", "seedance", "seedance_wm")
+ALLOWED_ENGINES = ("remove_ai", "seedance", "seedance_wm", "remove_mask")
 
 ENGINE_DISPLAY = {
     "remove_ai": "Remove AI Watermarks（RAiW）",
     "seedance": "Seedance 2.0 Watermark Remover",
     "seedance_wm": "Seedance 5-Stage Pipeline（seedance_wm）",
+    "remove_mask": "Remove Mask（ROI 经验库）",
 }
 
 
@@ -60,6 +61,9 @@ class WatermarkRunRequest(BaseModel):
     detector: Optional[str] = None      # seedance_wm 主检测器（matchTemplate/yolov8_seg/paddleocr）
     inpainter: Optional[str] = None     # seedance_wm 主修复器（lama/cv2_telea/cv2_ns）
     keep_audio: bool = True             # seedance_wm 是否保留原音轨
+    # remove_mask 选项
+    radius: Optional[int] = 3           # 修补半径（ROI + TELEA）
+    iterations: Optional[int] = 1       # 修补迭代次数
     name: Optional[str] = None
     # 待处理视频的 source_file_key 列表（由 /watermark/upload 返回）
     files: List[str] = []
@@ -282,6 +286,18 @@ async def run_watermark_task(
             options["detector"] = data.detector
         if data.inpainter:
             options["inpainter"] = data.inpainter
+    elif engine == "remove_mask":
+        options = {
+            "region": data.region,
+            "radius": int(data.radius or 3),
+            "iterations": int(data.iterations or 1),
+        }
+        # 原始文件名用于匹配内置 ROI 表（如 648BC321），由 celery 任务层传入
+        if data.files:
+            base = os.path.basename(data.files[0])
+            parts = base.split("_", 1)
+            source_name = parts[1] if (len(parts) == 2 and len(parts[0]) == 36) else base
+            options["source_name"] = source_name
 
     # 创建任务记录（任务名称：优先使用前端传入的 10 位时间戳，否则取当前时间戳）
     task_name = data.name or str(int(datetime.utcnow().timestamp()))[:10]
