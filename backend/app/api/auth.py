@@ -11,7 +11,7 @@
 from typing import Annotated
 
 import uuid
-from datetime import datetime as _dt
+from datetime import datetime as _dt, timezone as _tz
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -264,7 +264,10 @@ async def refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="refresh_token 已失效，请重新登录",
         )
-    if session.expires_at and session.expires_at < _dt.utcnow():
+    # expires_at 列是 TIMESTAMPTZ，asyncpg 读出为 aware UTC；
+    # 本地 _dt.utcnow() 为 naive，直接比较会抛 TypeError（offset-naive vs aware）。
+    # 统一转 aware UTC 再比较。
+    if session.expires_at and session.expires_at < _dt.utcnow().replace(tzinfo=_tz.utc):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="登录已过期，请重新登录",
