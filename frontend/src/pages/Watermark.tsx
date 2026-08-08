@@ -6,9 +6,10 @@ import {
 import {
   UploadOutlined, PlayCircleOutlined, DownloadOutlined, DeleteOutlined,
   PlusOutlined, ReloadOutlined, VideoCameraOutlined, ClearOutlined,
+  InboxOutlined,
 } from '@ant-design/icons';
 import { watermarkApi, type WatermarkTaskDetail, type WatermarkTaskItem } from '../api/watermark';
-import { formatDateTime, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
+import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
 const { Title, Text } = Typography;
 
@@ -45,7 +46,7 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const Watermark: React.FC = () => {
-  const [engine, setEngine] = useState<'remove_ai' | 'seedance' | 'seedance_wm'>('remove_ai');
+  const [engine, setEngine] = useState<'remove_ai' | 'seedance' | 'seedance_wm'>('seedance_wm');
   // RAiW 选项
   const [mark, setMark] = useState('auto');
   const [backend, setBackend] = useState('auto');
@@ -301,9 +302,10 @@ const Watermark: React.FC = () => {
       title: '引擎',
       dataIndex: 'engine',
       key: 'engine',
-      width: 200,
+      width: 150,
+      ellipsis: true,
       render: (e: string, t: WatermarkTaskItem) => (
-        <Tag color={e === 'remove_ai' ? 'blue' : e === 'seedance' ? 'purple' : 'geekblue'}>{t.engine_display}</Tag>
+        <Tag color={e === 'remove_ai' ? 'blue' : e === 'seedance' ? 'purple' : 'geekblue'} style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.engine_display}</Tag>
       ),
     },
     {
@@ -311,18 +313,28 @@ const Watermark: React.FC = () => {
       dataIndex: 'name',
       key: 'name',
       ellipsis: true,
-      render: (n: string) => n || '-',
+      render: (n: string, t: WatermarkTaskItem) => (
+        <a
+          style={{ cursor: 'pointer' }}
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleExpand(t.id);
+          }}
+        >
+          {n || '-'}
+        </a>
+      ),
     },
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 140,
+      width: 130,
       render: (s: string, t: WatermarkTaskItem) => (
         <Space direction="vertical" size={2} style={{ width: '100%' }}>
           <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>
           {(s === 'running' || s === 'pending') && (
-            <Progress percent={Math.round(t.progress)} size="small" status="active" style={{ width: 120 }} />
+            <Progress percent={Math.round(t.progress)} size="small" status="active" style={{ width: 110 }} />
           )}
         </Space>
       ),
@@ -331,13 +343,21 @@ const Watermark: React.FC = () => {
       title: '进度',
       dataIndex: 'progress',
       key: 'progress',
-      width: 130,
+      width: 80,
       render: (p: number) => `${Math.round(p)}%`,
+    },
+    {
+      title: '耗时',
+      dataIndex: 'duration_seconds',
+      key: 'duration_seconds',
+      width: 90,
+      render: (d: number | null | undefined, t: WatermarkTaskItem) =>
+        t.started_at ? formatDuration(t.duration_seconds ?? null) : '-',
     },
     {
       title: '视频',
       key: 'count',
-      width: 140,
+      width: 150,
       render: (_: unknown, t: WatermarkTaskItem) => (
         <Text style={{ fontSize: 12 }}>
           共 {t.total_count} 条 · 完成 {t.completed_count} · 失败 {t.failed_count}
@@ -348,13 +368,13 @@ const Watermark: React.FC = () => {
       title: '创建时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 160,
+      width: 150,
       render: (d: string) => <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text>,
     },
     {
       title: '操作',
       key: 'action',
-      width: 220,
+      width: 200,
       render: (_: unknown, t: WatermarkTaskItem) => (
         <Space size="small">
           <Button size="small" onClick={() => toggleExpand(t.id)}>
@@ -454,6 +474,14 @@ const Watermark: React.FC = () => {
               render: (p: number) => `${Math.round(p)}%`,
             },
             {
+              title: '耗时',
+              dataIndex: 'duration_seconds',
+              key: 'duration_seconds',
+              width: 90,
+              render: (d: number | null | undefined, v) =>
+                v.started_at ? formatDuration(v.duration_seconds ?? null) : '-',
+            },
+            {
               title: '错误',
               dataIndex: 'error_message',
               key: 'error_message',
@@ -537,9 +565,9 @@ const Watermark: React.FC = () => {
               optionType="button"
               buttonStyle="solid"
               options={[
+                { value: 'seedance_wm', label: ENGINE_HELP.seedance_wm.label },
                 { value: 'remove_ai', label: ENGINE_HELP.remove_ai.label },
                 { value: 'seedance', label: ENGINE_HELP.seedance.label },
-                { value: 'seedance_wm', label: ENGINE_HELP.seedance_wm.label },
               ]}
             />
             <div style={{ marginTop: 8 }}>
@@ -708,20 +736,60 @@ const Watermark: React.FC = () => {
             />
           </Space>
 
-          {/* 文件上传 */}
+          {/* 文件上传：可拖放式 */}
           <div>
-            <Space wrap>
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  if (e.target.files) handleSelectFiles(e.target.files);
-                  e.target.value = '';
-                }}
-              />
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'copy';
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  handleSelectFiles(e.dataTransfer.files);
+                }
+              }}
+              style={{
+                border: '1.5px dashed #d9d9d9',
+                borderRadius: 8,
+                padding: '28px 16px',
+                textAlign: 'center',
+                cursor: 'pointer',
+                background: '#fafafa',
+                transition: 'border-color 0.2s, background 0.2s',
+              }}
+              onClick={() => fileInputRef.current?.click()}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLDivElement).style.borderColor = '#1677ff';
+                (e.currentTarget as HTMLDivElement).style.background = '#e6f4ff';
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLDivElement).style.borderColor = '#d9d9d9';
+                (e.currentTarget as HTMLDivElement).style.background = '#fafafa';
+              }}
+            >
+              <p style={{ fontSize: 40, margin: 0 }}>
+                <InboxOutlined style={{ color: '#1677ff' }} />
+              </p>
+              <p style={{ margin: '4px 0', color: 'rgba(0,0,0,0.88)' }}>
+                点击或拖放视频文件到此处上传
+              </p>
+              <p style={{ margin: 0, color: 'rgba(0,0,0,0.45)', fontSize: 12 }}>
+                支持多选 / 批量拖放，格式 mp4 / avi / mov / mkv / webm
+              </p>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                if (e.target.files) handleSelectFiles(e.target.files);
+                e.target.value = '';
+              }}
+            />
+            <Space wrap style={{ marginTop: 12 }}>
               <Button
                 icon={<UploadOutlined />}
                 loading={uploading}

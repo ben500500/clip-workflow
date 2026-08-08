@@ -11,7 +11,9 @@ export interface WatermarkVideoItem {
   source_url: string | null;
   output_file_size: number | null;
   created_at: string;
+  started_at?: string | null;
   completed_at: string | null;
+  duration_seconds?: number | null;
 }
 
 export interface WatermarkTaskItem {
@@ -29,6 +31,7 @@ export interface WatermarkTaskItem {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+  duration_seconds?: number | null;
 }
 
 export interface WatermarkTaskDetail extends WatermarkTaskItem {

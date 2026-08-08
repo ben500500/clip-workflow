@@ -1455,6 +1455,8 @@ def watermark_task(
                 started_at=datetime.utcnow(),
                 error_message=None,
             ))
+            # 视频开始处理时立即刷新一次任务级汇总，让任务进度不再停留在 0%
+            run_async(_recalc_watermark_task(task_id))
 
             src_local = temp_video_path("src")
             out_local = temp_video_path("out")
@@ -1481,6 +1483,11 @@ def watermark_task(
             # 达到 100% 时落库。
             _last_written_progress = {"pct": 0}
 
+            async def _persist_progress(pct: int):
+                """视频进度落库后同步刷新任务级汇总，保证任务进度实时推进。"""
+                await _update_watermark_video(vid, progress=pct)
+                await _recalc_watermark_task(task_id)
+
             def _cb(pct: int, message: str = ""):
                 self.update_state(
                     state="PROGRESS",
@@ -1492,9 +1499,9 @@ def watermark_task(
                 try:
                     loop = asyncio.get_event_loop()
                     if loop.is_running():
-                        loop.create_task(_update_watermark_video(vid, progress=pct))
+                        loop.create_task(_persist_progress(pct))
                     else:
-                        run_async(_update_watermark_video(vid, progress=pct))
+                        run_async(_persist_progress(pct))
                 except RuntimeError:
                     pass
 

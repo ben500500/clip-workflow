@@ -10,6 +10,7 @@
 import logging
 import os
 import uuid
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -75,7 +76,9 @@ class WatermarkVideoItem(BaseModel):
     source_url: Optional[str] = None
     output_file_size: Optional[int] = None
     created_at: str
+    started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    duration_seconds: Optional[float] = None  # 处理消耗时长（秒）
 
 
 class WatermarkTaskItem(BaseModel):
@@ -93,6 +96,7 @@ class WatermarkTaskItem(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     created_at: str
+    duration_seconds: Optional[float] = None  # 处理消耗时长（秒）
 
 
 class WatermarkTaskDetail(WatermarkTaskItem):
@@ -109,6 +113,9 @@ class WatermarkDeleteRequest(BaseModel):
 
 
 def _serialize_video(video: WatermarkVideo, output_url: Optional[str] = None, source_url: Optional[str] = None) -> dict:
+    duration = None
+    if video.started_at and video.completed_at:
+        duration = round((video.completed_at - video.started_at).total_seconds(), 1)
     return {
         "id": str(video.id),
         "file_name": video.file_name,
@@ -120,11 +127,17 @@ def _serialize_video(video: WatermarkVideo, output_url: Optional[str] = None, so
         "source_url": source_url,
         "output_file_size": video.output_file_size,
         "created_at": video.created_at.isoformat() if video.created_at else "",
+        "started_at": video.started_at.isoformat() if video.started_at else None,
         "completed_at": video.completed_at.isoformat() if video.completed_at else None,
+        "duration_seconds": duration,
     }
 
 
 def _serialize_task(task: WatermarkTask) -> dict:
+    duration = None
+    if task.started_at:
+        end = task.completed_at or datetime.utcnow()
+        duration = round((end - task.started_at).total_seconds(), 1)
     return {
         "id": str(task.id),
         "engine": task.engine,
@@ -140,6 +153,7 @@ def _serialize_task(task: WatermarkTask) -> dict:
         "started_at": task.started_at.isoformat() if task.started_at else None,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         "created_at": task.created_at.isoformat() if task.created_at else "",
+        "duration_seconds": duration,
     }
 
 
