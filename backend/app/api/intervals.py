@@ -1,15 +1,17 @@
 import os
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user
 from app.database import get_db
-from app.models.models import Episode, DetectedInterval, SliceTask
+from app.models.models import Episode, DetectedInterval, SliceTask, User
+from app.services.data_scope import check_project_access_by_episode
 from app.services.interval_service import detect_intervals as run_detect
 from app.celery.tasks import detect_task as celery_detect_task
 
@@ -108,9 +110,10 @@ def _serialize_interval(interval: DetectedInterval) -> dict:
 async def detect_intervals(
     episode_id: str,
     data: DetectRequest,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Trigger interval detection for an episode."""
+    """Trigger interval detection for an episode（数据隔离）. """
     try:
         eid = uuid.UUID(episode_id)
     except ValueError:
@@ -121,6 +124,9 @@ async def detect_intervals(
     episode = result.scalar_one_or_none()
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
+
+    # 数据隔离
+    await check_project_access_by_episode(db, episode, current_user)
 
     if data.video_path and not os.path.isfile(data.video_path):
         raise HTTPException(
@@ -182,13 +188,22 @@ async def detect_intervals(
 @router.get("/episodes/{episode_id}/intervals/progress", response_model=DetectProgressResponse)
 async def get_detect_progress(
     episode_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get the interval detection progress for an episode."""
+    """Get the interval detection progress for an episode（数据隔离）. """
     try:
         eid = uuid.UUID(episode_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == eid))
+    ).scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    await check_project_access_by_episode(db, episode, current_user)
 
     # Check if there are any running detect tasks for this episode
     from app.models.models import SliceTask
@@ -268,13 +283,22 @@ async def get_detect_progress(
 @router.get("/episodes/{episode_id}/intervals", response_model=List[IntervalResponse])
 async def list_intervals(
     episode_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get all detected intervals for an episode."""
+    """Get all detected intervals for an episode（数据隔离）. """
     try:
         eid = uuid.UUID(episode_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == eid))
+    ).scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    await check_project_access_by_episode(db, episode, current_user)
 
     result = await db.execute(
         select(DetectedInterval)
@@ -288,9 +312,10 @@ async def list_intervals(
 @router.get("/episodes/{episode_id}/intervals/history", response_model=List[IntervalHistoryItem])
 async def get_interval_history(
     episode_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """查询该剧集所有区间检测执行历史（按创建时间倒序）。
+    """查询该剧集所有区间检测执行历史（按创建时间倒序，数据隔离）。
 
     区间检测复用了 slice_tasks 表（mode 前缀 detect_），这里直接读取该表。
     """
@@ -298,6 +323,14 @@ async def get_interval_history(
         eid = uuid.UUID(episode_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == eid))
+    ).scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    await check_project_access_by_episode(db, episode, current_user)
 
     result = await db.execute(
         select(SliceTask)
@@ -345,9 +378,10 @@ async def get_interval_history(
 @router.post("/intervals", response_model=IntervalResponse, status_code=201)
 async def create_interval(
     data: IntervalCreate,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually add a detected interval."""
+    """Manually add a detected interval（数据隔离）. """
     try:
         eid = uuid.UUID(data.episode_id)
     except ValueError:
@@ -355,8 +389,12 @@ async def create_interval(
 
     # Verify episode exists
     result = await db.execute(select(Episode).where(Episode.id == eid))
-    if not result.scalar_one_or_none():
+    episode = result.scalar_one_or_none()
+    if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
+
+    # 数据隔离
+    await check_project_access_by_episode(db, episode, current_user)
 
     interval = DetectedInterval(
         episode_id=eid,
@@ -378,9 +416,10 @@ async def create_interval(
 async def update_interval(
     interval_id: str,
     data: IntervalUpdate,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a detected interval."""
+    """Update a detected interval（数据隔离）. """
     try:
         iid = uuid.UUID(interval_id)
     except ValueError:
@@ -392,6 +431,13 @@ async def update_interval(
     interval = result.scalar_one_or_none()
     if not interval:
         raise HTTPException(status_code=404, detail="Interval not found")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == interval.episode_id))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
 
     if data.interval_type is not None:
         interval.interval_type = data.interval_type
@@ -414,8 +460,12 @@ async def update_interval(
 
 
 @router.delete("/intervals/{interval_id}", status_code=204)
-async def delete_interval(interval_id: str, db: AsyncSession = Depends(get_db)):
-    """Delete a detected interval."""
+async def delete_interval(
+    interval_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a detected interval（数据隔离）. """
     try:
         iid = uuid.UUID(interval_id)
     except ValueError:
@@ -427,14 +477,25 @@ async def delete_interval(interval_id: str, db: AsyncSession = Depends(get_db)):
     interval = result.scalar_one_or_none()
     if not interval:
         raise HTTPException(status_code=404, detail="Interval not found")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == interval.episode_id))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
 
     await db.delete(interval)
     await db.flush()
 
 
 @router.put("/intervals/{interval_id}/toggle", response_model=IntervalResponse)
-async def toggle_interval(interval_id: str, db: AsyncSession = Depends(get_db)):
-    """Toggle the enabled/disabled state of an interval."""
+async def toggle_interval(
+    interval_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Toggle the enabled/disabled state of an interval（数据隔离）. """
     try:
         iid = uuid.UUID(interval_id)
     except ValueError:
@@ -446,6 +507,13 @@ async def toggle_interval(interval_id: str, db: AsyncSession = Depends(get_db)):
     interval = result.scalar_one_or_none()
     if not interval:
         raise HTTPException(status_code=404, detail="Interval not found")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == interval.episode_id))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
 
     interval.enabled = not interval.enabled
     await db.flush()

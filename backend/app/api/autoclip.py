@@ -1,15 +1,17 @@
 import os
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user
 from app.database import get_db
-from app.models.models import Episode, AutoClipProject, ClipCandidate, AutoClipRun
+from app.models.models import Episode, AutoClipProject, ClipCandidate, AutoClipRun, User
+from app.services.data_scope import check_project_access_by_episode
 from app.services.autoclip_service import (
     create_autoclip_project,
     upload_video,
@@ -125,9 +127,10 @@ def _serialize_autoclip_run(run: AutoClipRun) -> dict:
 async def run_autoclip(
     episode_id: str,
     data: AutoClipRunRequest,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Trigger the AutoClip 6-step pipeline for an episode."""
+    """Trigger the AutoClip 6-step pipeline for an episode（数据隔离）. """
     try:
         eid = uuid.UUID(episode_id)
     except ValueError:
@@ -138,6 +141,9 @@ async def run_autoclip(
     episode = result.scalar_one_or_none()
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
+
+    # 数据隔离
+    await check_project_access_by_episode(db, episode, current_user)
 
     if data.video_path and not os.path.isfile(data.video_path):
         raise HTTPException(
@@ -241,13 +247,22 @@ async def run_autoclip(
 @router.get("/episodes/{episode_id}/autoclip/history", response_model=List[AutoClipRunResponseItem])
 async def get_autoclip_history(
     episode_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """查询该剧集所有 AI 选点执行历史（按创建时间倒序）。"""
+    """查询该剧集所有 AI 选点执行历史（按创建时间倒序，数据隔离）. """
     try:
         eid = uuid.UUID(episode_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == eid))
+    ).scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    await check_project_access_by_episode(db, episode, current_user)
 
     result = await db.execute(
         select(AutoClipRun)
@@ -262,13 +277,22 @@ async def get_autoclip_history(
 @router.get("/episodes/{episode_id}/autoclip/progress", response_model=AutoClipProgressResponse)
 async def get_autoclip_progress(
     episode_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get the AutoClip pipeline progress for an episode."""
+    """Get the AutoClip pipeline progress for an episode（数据隔离）. """
     try:
         eid = uuid.UUID(episode_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == eid))
+    ).scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    await check_project_access_by_episode(db, episode, current_user)
 
     # Get autoclip project
     result = await db.execute(
@@ -316,13 +340,22 @@ async def get_autoclip_progress(
 async def get_autoclip_clips(
     episode_id: str,
     min_score: float = Query(0.0, ge=0.0, le=100.0),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get the clip candidates for an episode."""
+    """Get the clip candidates for an episode（数据隔离）. """
     try:
         eid = uuid.UUID(episode_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == eid))
+    ).scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    await check_project_access_by_episode(db, episode, current_user)
 
     query = select(ClipCandidate).where(ClipCandidate.episode_id == eid)
     if min_score > 0:
@@ -338,9 +371,10 @@ async def get_autoclip_clips(
 async def update_clip(
     clip_id: str,
     data: ClipUpdateRequest,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a clip candidate's status or adjusted times."""
+    """Update a clip candidate's status or adjusted times（数据隔离）. """
     try:
         cid = uuid.UUID(clip_id)
     except ValueError:
@@ -350,6 +384,13 @@ async def update_clip(
     clip = result.scalar_one_or_none()
     if not clip:
         raise HTTPException(status_code=404, detail="Clip not found")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == clip.episode_id))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
 
     if data.status is not None:
         if data.status not in ("pending", "accepted", "rejected", "adjusted"):
@@ -372,9 +413,10 @@ async def update_clip(
 async def regenerate_autoclip(
     episode_id: str,
     data: AutoClipRunRequest,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Regenerate AutoClip clips with updated parameters.
+    """Regenerate AutoClip clips with updated parameters（数据隔离）. 
 
     Creates the new AutoClip project first; only after it is successfully
     created are the old clips deleted, so a failure does not lose existing data.
@@ -384,8 +426,16 @@ async def regenerate_autoclip(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid episode ID format")
 
+    # 数据隔离：先校验当前用户对剧集所属项目的访问权限
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == eid))
+    ).scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    await check_project_access_by_episode(db, episode, current_user)
+
     # First, run autoclip to create new project and dispatch task
-    response = await run_autoclip(episode_id, data, db)
+    response = await run_autoclip(episode_id, data, current_user, db)
 
     # Only after successful creation, delete old clips
     result = await db.execute(

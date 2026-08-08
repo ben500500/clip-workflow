@@ -21,6 +21,9 @@ export const authApi = {
   updateUserRole: (id: string, role: string) =>
     client.put(`/auth/users/${id}/role`, { role }) as Promise<User>,
 
+  updateUserDataScope: (id: string, dataScope: string) =>
+    client.put(`/auth/users/${id}/data-scope`, { data_scope: dataScope }) as Promise<User>,
+
   toggleUserActive: (id: string) =>
     client.put(`/auth/users/${id}/toggle`) as Promise<User>,
 

@@ -14,13 +14,14 @@ import os
 import secrets
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
 from app.models.models import (
@@ -30,7 +31,9 @@ from app.models.models import (
     ClipCandidate,
     DetectedInterval,
     SystemConfig,
+    User,
 )
+from app.services.data_scope import check_project_access_by_episode
 from app.utils.helpers import generate_cutlist, generate_intervals_file, format_time
 from app.services.minio_service import (
     get_presigned_url,
@@ -513,9 +516,10 @@ async def _dispatch_celery(
 async def run_slice(
     episode_id: str,
     data: SliceRunRequest,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Trigger video slicing for an episode via Worker node or Celery."""
+    """Trigger video slicing for an episode via Worker node or Celery（数据隔离）. """
     engine = _resolve_engine(data.engine)
 
     try:
@@ -528,6 +532,9 @@ async def run_slice(
     episode = result.scalar_one_or_none()
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
+
+    # 数据隔离
+    await check_project_access_by_episode(db, episode, current_user)
 
     if data.video_path and not os.path.isfile(data.video_path):
         raise HTTPException(
@@ -728,13 +735,22 @@ async def run_slice(
 @router.get("/episodes/{episode_id}/slice/tasks", response_model=List[SliceTaskResponse])
 async def list_slice_tasks(
     episode_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """List all slice tasks for an episode."""
+    """List all slice tasks for an episode（数据隔离）. """
     try:
         eid = uuid.UUID(episode_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == eid))
+    ).scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    await check_project_access_by_episode(db, episode, current_user)
 
     # 排除 detect_* 内部进度跟踪记录（区间检测复用了 slice_tasks 表）。
     result = await db.execute(
@@ -750,9 +766,10 @@ async def list_slice_tasks(
 @router.get("/slice-tasks/{task_id}", response_model=SliceTaskResponse)
 async def get_slice_task(
     task_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a slice task's details and progress.
+    """Get a slice task's details and progress（数据隔离）. 
 
     同时从 Redis 获取 Worker 上报的实时进度，同步到数据库。
     """
@@ -765,6 +782,13 @@ async def get_slice_task(
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Slice task not found")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == task.episode_id))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
 
     # 从 Redis 获取 Worker 上报的实时状态
     try:
@@ -795,9 +819,10 @@ async def get_slice_task(
 @router.get("/slice-tasks/{task_id}/outputs", response_model=List[SliceOutputResponse])
 async def get_slice_outputs(
     task_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """List all outputs for a slice task."""
+    """List all outputs for a slice task（数据隔离）. """
     try:
         tid = uuid.UUID(task_id)
     except ValueError:
@@ -805,8 +830,16 @@ async def get_slice_outputs(
 
     # Verify task exists
     result = await db.execute(select(SliceTask).where(SliceTask.id == tid))
-    if not result.scalar_one_or_none():
+    task = result.scalar_one_or_none()
+    if not task:
         raise HTTPException(status_code=404, detail="Slice task not found")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == task.episode_id))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
 
     # Get outputs
     outputs_result = await db.execute(
@@ -1040,9 +1073,10 @@ async def update_slice_progress(
 @router.post("/slice-tasks/{task_id}/retry", response_model=SliceRunResponse)
 async def retry_slice_task(
     task_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Retry a failed or cancelled slice task by re-dispatching it to Worker."""
+    """Retry a failed or cancelled slice task by re-dispatching it to Worker（数据隔离）. """
     try:
         tid = uuid.UUID(task_id)
     except ValueError:
@@ -1052,6 +1086,13 @@ async def retry_slice_task(
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Slice task not found")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == task.episode_id))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
 
     if task.status not in ("failed", "cancelled", "completed"):
         raise HTTPException(
@@ -1152,9 +1193,10 @@ async def retry_slice_task(
 @router.post("/slice-tasks/{task_id}/cancel", response_model=dict)
 async def cancel_slice_task(
     task_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Cancel a running slice task.
+    """Cancel a running slice task（数据隔离）. 
 
     Worker 模式下，取消操作会同时更新数据库状态并写入 Redis 任务 Hash，
     Worker 端通过轮询任务 Hash 感知取消并强杀 ffmpeg 进程。
@@ -1168,6 +1210,13 @@ async def cancel_slice_task(
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Slice task not found")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == task.episode_id))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
 
     if task.status not in ("pending", "running"):
         raise HTTPException(
@@ -1187,9 +1236,10 @@ async def cancel_slice_task(
 @router.delete("/slice-tasks/{task_id}", status_code=200)
 async def delete_slice_task(
     task_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """删除切片任务，同时删除其输出文件（MinIO 临时资源）。
+    """删除切片任务，同时删除其输出文件（MinIO 临时资源，数据隔离）。
 
     - 若任务正在运行/排队，先取消（写入 Redis 取消标记，Worker 端会强杀 ffmpeg）
     - 删除该任务在 MinIO sliced 桶中的全部输出对象
@@ -1204,6 +1254,13 @@ async def delete_slice_task(
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Slice task not found")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == task.episode_id))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
 
     # 正在运行/排队中的任务先取消，避免 Worker 还在写入
     if task.status in ("pending", "running"):

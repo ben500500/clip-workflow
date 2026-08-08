@@ -1,14 +1,16 @@
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user
 from app.database import get_db
-from app.models.models import SliceOutput, Publication
+from app.models.models import SliceOutput, SliceTask, Episode, Publication, User
+from app.services.data_scope import check_project_access_by_episode
 
 router = APIRouter()
 
@@ -59,12 +61,29 @@ def _serialize_publication(pub: Publication) -> dict:
     }
 
 
+async def _check_output_scope(db: AsyncSession, output: SliceOutput, current_user: User):
+    """数据隔离：根据输出文件所属切片任务 → 剧集 → 项目校验访问权限."""
+    if current_user is None:
+        raise HTTPException(status_code=404, detail="Output not found")
+    task = (
+        await db.execute(select(SliceTask).where(SliceTask.id == output.task_id))
+    ).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Output not found")
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == task.episode_id))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
+
+
 @router.get("/outputs/{output_id}/publications", response_model=List[PublicationResponse])
 async def list_publications(
     output_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get all publication records for a slice output."""
+    """Get all publication records for a slice output（数据隔离）. """
     try:
         oid = uuid.UUID(output_id)
     except ValueError:
@@ -72,8 +91,12 @@ async def list_publications(
 
     # Verify output exists
     result = await db.execute(select(SliceOutput).where(SliceOutput.id == oid))
-    if not result.scalar_one_or_none():
+    output = result.scalar_one_or_none()
+    if not output:
         raise HTTPException(status_code=404, detail="Output not found")
+
+    # 数据隔离
+    await _check_output_scope(db, output, current_user)
 
     pubs_result = await db.execute(
         select(Publication)
@@ -88,9 +111,10 @@ async def list_publications(
 async def create_publication(
     output_id: str,
     data: PublicationCreate,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Add a publication record for a slice output."""
+    """Add a publication record for a slice output（数据隔离）. """
     try:
         oid = uuid.UUID(output_id)
     except ValueError:
@@ -98,8 +122,12 @@ async def create_publication(
 
     # Verify output exists
     result = await db.execute(select(SliceOutput).where(SliceOutput.id == oid))
-    if not result.scalar_one_or_none():
+    output = result.scalar_one_or_none()
+    if not output:
         raise HTTPException(status_code=404, detail="Output not found")
+
+    # 数据隔离
+    await _check_output_scope(db, output, current_user)
 
     pub = Publication(
         output_id=oid,
@@ -128,9 +156,10 @@ async def create_publication(
 async def update_publication(
     publication_id: str,
     data: PublicationUpdate,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a publication record."""
+    """Update a publication record（数据隔离）. """
     try:
         pid = uuid.UUID(publication_id)
     except ValueError:
@@ -140,6 +169,13 @@ async def update_publication(
     pub = result.scalar_one_or_none()
     if not pub:
         raise HTTPException(status_code=404, detail="Publication not found")
+
+    # 数据隔离
+    output = (
+        await db.execute(select(SliceOutput).where(SliceOutput.id == pub.output_id))
+    ).scalar_one_or_none()
+    if output:
+        await _check_output_scope(db, output, current_user)
 
     if data.platform is not None:
         pub.platform = data.platform

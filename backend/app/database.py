@@ -55,6 +55,31 @@ async def init_db():
     # 对已存在的老表补充新增列（create_all 不会为已存在的表加列）
     await _apply_compat_migrations()
     await _ensure_autoclip_runs_table()
+    await _backfill_data_scope()
+
+
+async def _backfill_data_scope():
+    """数据隔离：为存量用户回填 data_scope（按角色默认值，幂等）。
+
+    - admin/material/publisher → all（可见全部素材）
+    - operator → own（仅自己创建的素材）
+    """
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                sqlalchemy.text("""
+                    UPDATE users
+                    SET data_scope = CASE
+                        WHEN role IN ('admin', 'material', 'publisher') THEN 'all'
+                        ELSE 'own'
+                    END
+                    WHERE data_scope IS NULL OR data_scope = ''
+                """)
+            )
+            # 项目中 created_by 为空时回填（旧库升级：按角色默认归属不可知，统一置空即可，
+            # 运营专员可见范围依赖其创建的素材；这里不猜测归属）
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to backfill data_scope: %s", e)
 
 
 async def _ensure_autoclip_runs_table():
@@ -124,6 +149,11 @@ async def _apply_compat_migrations():
         # 二期：JWT 双 Token（会话表新增 refresh_token_hash / access_token_jti）
         ("user_sessions", "refresh_token_hash", "VARCHAR(255)"),
         ("user_sessions", "access_token_jti", "VARCHAR(64)"),
+        # 二期方案：数据隔离
+        # - users.data_scope：用户数据可见范围（all=全部素材，own=仅自己创建）
+        # - projects.created_by：项目创建人（运营专员默认仅可见自己创建的素材）
+        ("users", "data_scope", "VARCHAR(20) DEFAULT 'own'"),
+        ("projects", "created_by", "UUID"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

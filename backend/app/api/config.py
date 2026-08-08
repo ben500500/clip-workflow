@@ -132,10 +132,23 @@ DEFAULT_CONFIGS: List[dict] = [
         "value": 2,
         "description": "任务超时时间（小时），超过该时长的任务将被判定为超时并自动终止。",
     },
+    {
+        "key": "dashboard_config",
+        "value": {
+            "default_account_id": None,
+            "default_date_range": 30,
+            "chart_colors": ["#1890ff", "#52c41a", "#faad14", "#f5222d"],
+            "auto_refresh_interval": 300,
+            "enable_funnel": True,
+            "enable_ecosystem": True,
+        },
+        "description": "数据看板配置（JSON）：用于配置看板展示的指标与筛选条件。",
+    },
 ]
 
 
 # 平台去重默认配置：首次部署/空库时预置几套常用配置，方便开箱即用
+# 默认分辨率统一为 720p（码率相应降低），适配各平台主流的清晰度与查重需求
 DEFAULT_PLATFORM_PROFILES: List[dict] = [
     {
         "name": "视频号-轻度去重",
@@ -153,8 +166,8 @@ DEFAULT_PLATFORM_PROFILES: List[dict] = [
             "sharpen": True,
             "sharpen_amount": 0.6,
         },
-        "target_resolution": "1920x1080",
-        "target_bitrate": "4000k",
+        "target_resolution": "1280x720",
+        "target_bitrate": "2500k",
         "max_duration": 180,
     },
     {
@@ -173,8 +186,8 @@ DEFAULT_PLATFORM_PROFILES: List[dict] = [
             "sharpen": True,
             "sharpen_amount": 1.0,
         },
-        "target_resolution": "1920x1080",
-        "target_bitrate": "5000k",
+        "target_resolution": "720x1280",
+        "target_bitrate": "2500k",
         "max_duration": 150,
     },
     {
@@ -193,11 +206,46 @@ DEFAULT_PLATFORM_PROFILES: List[dict] = [
             "sharpen": True,
             "sharpen_amount": 1.2,
         },
-        "target_resolution": "1920x1080",
-        "target_bitrate": "4500k",
+        "target_resolution": "720x1280",
+        "target_bitrate": "2200k",
         "max_duration": 150,
     },
 ]
+
+
+# 各平台常见分辨率/码率快捷选项（调研整理，供前端下拉快捷选择）
+# 码率为目标码率（kbps），分辨率横向优先（竖屏平台也列出竖屏分辨率）
+PLATFORM_PRESETS: dict[str, list[dict]] = {
+    "wechat_channel": [
+        {"label": "720p 横屏 1280x720 · 2500k", "target_resolution": "1280x720", "target_bitrate": "2500k"},
+        {"label": "720p 竖屏 720x1280 · 2500k", "target_resolution": "720x1280", "target_bitrate": "2500k"},
+        {"label": "1080p 横屏 1920x1080 · 5000k", "target_resolution": "1920x1080", "target_bitrate": "5000k"},
+        {"label": "1080p 竖屏 1080x1920 · 5000k", "target_resolution": "1080x1920", "target_bitrate": "5000k"},
+    ],
+    "douyin": [
+        {"label": "720p 竖屏 720x1280 · 2500k", "target_resolution": "720x1280", "target_bitrate": "2500k"},
+        {"label": "720p 横屏 1280x720 · 2500k", "target_resolution": "1280x720", "target_bitrate": "2500k"},
+        {"label": "1080p 竖屏 1080x1920 · 5000k", "target_resolution": "1080x1920", "target_bitrate": "5000k"},
+        {"label": "1080p 横屏 1920x1080 · 5000k", "target_resolution": "1920x1080", "target_bitrate": "5000k"},
+    ],
+    "kuaishou": [
+        {"label": "720p 竖屏 720x1280 · 2200k", "target_resolution": "720x1280", "target_bitrate": "2200k"},
+        {"label": "720p 横屏 1280x720 · 2200k", "target_resolution": "1280x720", "target_bitrate": "2200k"},
+        {"label": "1080p 竖屏 1080x1920 · 4500k", "target_resolution": "1080x1920", "target_bitrate": "4500k"},
+        {"label": "1080p 横屏 1920x1080 · 4500k", "target_resolution": "1920x1080", "target_bitrate": "4500k"},
+    ],
+}
+
+
+def _default_profile_for(profile: PlatformProfile) -> dict | None:
+    """按平台/名称匹配内置默认去重配置（用于恢复默认）。"""
+    for seed in DEFAULT_PLATFORM_PROFILES:
+        if seed["name"] == profile.name:
+            return seed
+    for seed in DEFAULT_PLATFORM_PROFILES:
+        if seed.get("platform") == profile.platform:
+            return seed
+    return None
 
 
 def _serialize_config(cfg: SystemConfig) -> dict:
@@ -283,6 +331,37 @@ async def update_config(
     await db.flush()
     await db.refresh(config)
     return _serialize_config(config)
+
+
+@router.post("/config/reset-default", response_model=ConfigResponse)
+async def reset_config_default(
+    data: ConfigUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """系统设置：将指定配置项恢复为默认值.
+
+    默认值取自 DEFAULT_CONFIGS；对 JSON 类配置（default_dedupe_config 等）同样适用。
+    恢复后删除数据库中的覆盖记录，使其重新展示默认值。
+    """
+    default = next((d for d in DEFAULT_CONFIGS if d["key"] == data.key), None)
+    if default is None:
+        raise HTTPException(status_code=404, detail=f"配置项 {data.key} 没有内置默认值")
+
+    # 删除数据库中的覆盖记录（若有），使其回落到默认值
+    result = await db.execute(
+        select(SystemConfig).where(SystemConfig.key == data.key)
+    )
+    config = result.scalar_one_or_none()
+    if config:
+        await db.delete(config)
+        await db.flush()
+
+    return ConfigResponse(
+        key=default["key"],
+        value=default["value"],
+        description=default["description"],
+        updated_at="",
+    )
 
 
 @router.get("/config/platform-profiles", response_model=List[ProfileResponse])
@@ -375,3 +454,82 @@ async def update_platform_profile(
     await db.flush()
     await db.refresh(profile)
     return _serialize_profile(profile)
+
+
+@router.post("/config/platform-profiles/{profile_id}/reset-default", response_model=ProfileResponse)
+async def reset_platform_profile_default(
+    profile_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """去重配置：将指定平台配置恢复为内置默认值（含去重 JSON、分辨率、码率、最大时长）。
+
+    注意：用户自建配置若无同名内置默认，则按其平台匹配默认配置；
+    若均未匹配则返回 404。
+    """
+    try:
+        pid = uuid.UUID(profile_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid profile ID format")
+
+    result = await db.execute(
+        select(PlatformProfile).where(PlatformProfile.id == pid)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Platform profile not found")
+
+    default = _default_profile_for(profile)
+    if default is None:
+        raise HTTPException(
+            status_code=404,
+            detail="该配置没有内置默认值，无法恢复默认（可新建配置）",
+        )
+
+    profile.dedupe_config = default.get("dedupe_config")
+    profile.target_resolution = default.get("target_resolution")
+    profile.target_bitrate = default.get("target_bitrate")
+    profile.max_duration = default.get("max_duration")
+    profile.description = default.get("description") or profile.description
+
+    await db.flush()
+    await db.refresh(profile)
+    return _serialize_profile(profile)
+
+
+@router.get("/config/platform-presets")
+async def get_platform_presets():
+    """返回各平台常见分辨率/码率快捷选项（供前端下拉选择）."""
+    return {
+        "presets": PLATFORM_PRESETS,
+        "defaults": {
+            p["platform"]: {
+                "target_resolution": p.get("target_resolution"),
+                "target_bitrate": p.get("target_bitrate"),
+            }
+            for p in DEFAULT_PLATFORM_PROFILES
+            if p.get("platform")
+        },
+    }
+
+
+@router.delete("/config/platform-profiles/{profile_id}", status_code=204)
+async def delete_platform_profile(
+    profile_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """删除平台去重配置."""
+    try:
+        pid = uuid.UUID(profile_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid profile ID format")
+
+    result = await db.execute(
+        select(PlatformProfile).where(PlatformProfile.id == pid)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Platform profile not found")
+
+    await db.delete(profile)
+    await db.flush()
+    return None

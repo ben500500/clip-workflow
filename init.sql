@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255) NOT NULL,
     display_name VARCHAR(100),
     role VARCHAR(20) NOT NULL DEFAULT 'operator' CHECK (role IN ('admin', 'operator', 'publisher', 'material')),
+    -- 数据可见范围：all=全部素材，own=仅自己创建（数据隔离，二期方案）
+    data_scope VARCHAR(20) NOT NULL DEFAULT 'own' CHECK (data_scope IN ('all', 'own')),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()

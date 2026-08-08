@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -8,9 +8,15 @@ from sqlalchemy import select, delete, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models.models import Project, Episode
+from app.models.models import (
+    Project,
+    Episode,
+    User,
+    user_can_access_all_materials,
+)
 from app.services.minio_service import get_presigned_url
 
 router = APIRouter()
@@ -37,6 +43,8 @@ class ProjectResponse(BaseModel):
     description: Optional[str] = None
     status: str
     config: Optional[dict] = {}
+    # 创建人（数据隔离）
+    created_by: Optional[str] = None
     created_at: str
     updated_at: str
     episode_count: int = 0
@@ -88,6 +96,7 @@ def _serialize_project(project: Project) -> dict:
         "description": project.description,
         "status": project.status,
         "config": project.config or {},
+        "created_by": str(project.created_by) if project.created_by else None,
         "created_at": project.created_at.isoformat() if project.created_at else "",
         "updated_at": project.updated_at.isoformat() if project.updated_at else "",
         "episode_count": episode_count,
@@ -113,13 +122,36 @@ def _serialize_episode(episode: Episode) -> dict:
 # ---------- Project Routes ----------
 
 
+def _data_scope_filter(current_user: User):
+    """数据隔离：返回用户可见项目的过滤条件。
+
+    - admin/material/publisher：默认可见全部素材
+    - operator：默认仅可见自己创建的素材；管理员可通过权限编辑授予 all
+    """
+    if user_can_access_all_materials(current_user):
+        return None
+    return Project.created_by == current_user.id
+
+
+def _check_project_access(project: Project, current_user: User) -> bool:
+    """数据隔离：判断当前用户是否可访问该项目。"""
+    if user_can_access_all_materials(current_user):
+        return True
+    return project.created_by == current_user.id
+
+
 @router.post("/projects", response_model=ProjectResponse, status_code=201)
-async def create_project(data: ProjectCreate, db: AsyncSession = Depends(get_db)):
-    """Create a new project."""
+async def create_project(
+    data: ProjectCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new project（记录创建人，用于数据隔离）."""
     project = Project(
         name=data.name,
         description=data.description,
         config=data.config or {},
+        created_by=current_user.id,
     )
     db.add(project)
     await db.flush()
@@ -133,14 +165,20 @@ async def list_projects(
     page_size: int = Query(20, ge=1, le=200),
     search: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """List projects with search, status filter and pagination."""
+    """List projects with search, status filter and pagination（数据隔离）. """
     filters = []
     if search:
         filters.append(Project.name.ilike(f"%{search}%"))
     if status:
         filters.append(Project.status == status)
+
+    # 数据隔离：运营专员默认仅可见自己创建的素材
+    scope_filter = _data_scope_filter(current_user)
+    if scope_filter is not None:
+        filters.append(scope_filter)
 
     count_query = select(func.count(Project.id))
     if filters:
@@ -162,31 +200,55 @@ async def list_projects(
 
 
 @router.get("/projects/stats")
-async def project_stats(db: AsyncSession = Depends(get_db)):
-    """Return dashboard statistics for projects/episodes/slices."""
+async def project_stats(
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return dashboard statistics for projects/episodes/slices（数据隔离）. """
     from app.models.models import Episode, SliceTask
 
-    total_projects = (await db.execute(select(func.count(Project.id)))).scalar() or 0
-    active_projects = (
-        await db.execute(
-            select(func.count(Project.id)).where(Project.status.in_(["processing", "completed"]))
-        )
-    ).scalar() or 0
-    total_episodes = (await db.execute(select(func.count(Episode.id)))).scalar() or 0
-    processed_episodes = (
-        await db.execute(
-            select(func.count(Episode.id)).where(
-                Episode.status.in_(["clips_detected", "intervals_detected", "slicing", "completed"])
+    scope_filter = _data_scope_filter(current_user)
+
+    total_projects_q = select(func.count(Project.id))
+    active_projects_q = select(func.count(Project.id)).where(Project.status.in_(["processing", "completed"]))
+    total_episodes_q = select(func.count(Episode.id))
+    processed_episodes_q = select(func.count(Episode.id)).where(
+        Episode.status.in_(["clips_detected", "intervals_detected", "slicing", "completed"])
+    )
+    total_slices_q = select(func.count(SliceTask.id))
+    recent_q = select(Project).options(selectinload(Project.episodes)).order_by(Project.updated_at.desc()).limit(5)
+
+    if scope_filter is not None:
+        total_projects_q = total_projects_q.where(scope_filter)
+        active_projects_q = active_projects_q.where(scope_filter)
+        total_episodes_q = total_episodes_q.where(
+            Episode.project_id.in_(
+                select(Project.id).where(scope_filter)
             )
         )
-    ).scalar() or 0
-    total_slices = (await db.execute(select(func.count(SliceTask.id)))).scalar() or 0
-
-    recent = (
-        await db.execute(
-            select(Project).options(selectinload(Project.episodes)).order_by(Project.updated_at.desc()).limit(5)
+        processed_episodes_q = processed_episodes_q.where(
+            Episode.project_id.in_(
+                select(Project.id).where(scope_filter)
+            )
         )
-    ).scalars().all()
+        total_slices_q = total_slices_q.where(
+            SliceTask.episode_id.in_(
+                select(Episode.id).where(
+                    Episode.project_id.in_(
+                        select(Project.id).where(scope_filter)
+                    )
+                )
+            )
+        )
+        recent_q = recent_q.where(scope_filter)
+
+    total_projects = (await db.execute(total_projects_q)).scalar() or 0
+    active_projects = (await db.execute(active_projects_q)).scalar() or 0
+    total_episodes = (await db.execute(total_episodes_q)).scalar() or 0
+    processed_episodes = (await db.execute(processed_episodes_q)).scalar() or 0
+    total_slices = (await db.execute(total_slices_q)).scalar() or 0
+
+    recent = (await db.execute(recent_q)).scalars().all()
 
     return {
         "total_projects": total_projects,
@@ -199,8 +261,12 @@ async def project_stats(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/projects/{project_id}", response_model=ProjectResponse)
-async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
-    """Get a project by ID."""
+async def get_project(
+    project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a project by ID（数据隔离）. """
     try:
         uid = uuid.UUID(project_id)
     except ValueError:
@@ -212,6 +278,11 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # 数据隔离：非全部范围用户只能访问自己创建的素材
+    if not user_can_access_all_materials(current_user) and project.created_by != current_user.id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
     return _serialize_project(project)
 
 
@@ -219,9 +290,10 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
 async def update_project(
     project_id: str,
     data: ProjectUpdate,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a project."""
+    """Update a project（数据隔离）. """
     try:
         uid = uuid.UUID(project_id)
     except ValueError:
@@ -230,6 +302,8 @@ async def update_project(
     result = await db.execute(select(Project).where(Project.id == uid))
     project = result.scalar_one_or_none()
     if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not _check_project_access(project, current_user):
         raise HTTPException(status_code=404, detail="Project not found")
 
     if data.name is not None:
@@ -248,8 +322,12 @@ async def update_project(
 
 
 @router.delete("/projects/{project_id}", status_code=204)
-async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
-    """Delete a project and all its episodes."""
+async def delete_project(
+    project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a project and all its episodes（数据隔离）. """
     try:
         uid = uuid.UUID(project_id)
     except ValueError:
@@ -258,6 +336,8 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Project).where(Project.id == uid))
     project = result.scalar_one_or_none()
     if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not _check_project_access(project, current_user):
         raise HTTPException(status_code=404, detail="Project not found")
 
     await db.delete(project)
@@ -271,9 +351,10 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
 async def create_episode(
     project_id: str,
     data: EpisodeCreate,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Add an episode to a project."""
+    """Add an episode to a project（数据隔离）. """
     try:
         pid = uuid.UUID(project_id)
     except ValueError:
@@ -283,6 +364,8 @@ async def create_episode(
     result = await db.execute(select(Project).where(Project.id == pid))
     project = result.scalar_one_or_none()
     if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not _check_project_access(project, current_user):
         raise HTTPException(status_code=404, detail="Project not found")
 
     episode = Episode(
@@ -303,13 +386,21 @@ async def create_episode(
 @router.get("/projects/{project_id}/episodes", response_model=EpisodeListResponse)
 async def list_episodes(
     project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """List all episodes for a project."""
+    """List all episodes for a project（数据隔离）. """
     try:
         pid = uuid.UUID(project_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid project ID format")
+
+    result = await db.execute(select(Project).where(Project.id == pid))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not _check_project_access(project, current_user):
+        raise HTTPException(status_code=404, detail="Project not found")
 
     result = await db.execute(
         select(Episode)
@@ -324,8 +415,12 @@ async def list_episodes(
 
 
 @router.get("/episodes/{episode_id}", response_model=EpisodeResponse)
-async def get_episode(episode_id: str, db: AsyncSession = Depends(get_db)):
-    """Get an episode by ID.
+async def get_episode(
+    episode_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get an episode by ID（数据隔离）. 
 
     自愈：当剧集状态停留在 slicing 时，根据实际切片任务状态刷新（
     避免 Worker 回调丢失/异常导致"已切完还显示切片中"）。
@@ -338,6 +433,12 @@ async def get_episode(episode_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Episode).where(Episode.id == eid))
     episode = result.scalar_one_or_none()
     if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    # 数据隔离：通过剧集所属项目判断访问权限
+    project = await db.execute(select(Project).where(Project.id == episode.project_id))
+    proj = project.scalar_one_or_none()
+    if proj and not _check_project_access(proj, current_user):
         raise HTTPException(status_code=404, detail="Episode not found")
 
     # 自愈：只有 slicing 状态才做任务状态核对，避免每次查询都额外开销
@@ -370,8 +471,12 @@ async def get_episode(episode_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/episodes/{episode_id}/video-url")
-async def get_episode_video_url(episode_id: str, db: AsyncSession = Depends(get_db)):
-    """Get a presigned URL for the episode's source video for preview."""
+async def get_episode_video_url(
+    episode_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a presigned URL for the episode's source video for preview（数据隔离）. """
     try:
         eid = uuid.UUID(episode_id)
     except ValueError:
@@ -381,6 +486,13 @@ async def get_episode_video_url(episode_id: str, db: AsyncSession = Depends(get_
     episode = result.scalar_one_or_none()
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
+
+    # 数据隔离
+    project = await db.execute(select(Project).where(Project.id == episode.project_id))
+    proj = project.scalar_one_or_none()
+    if proj and not _check_project_access(proj, current_user):
+        raise HTTPException(status_code=404, detail="Episode not found")
+
     if not episode.source_file_key:
         raise HTTPException(status_code=404, detail="Episode has no source video file")
 
@@ -393,8 +505,12 @@ async def get_episode_video_url(episode_id: str, db: AsyncSession = Depends(get_
 
 
 @router.delete("/episodes/{episode_id}", status_code=204)
-async def delete_episode(episode_id: str, db: AsyncSession = Depends(get_db)):
-    """Delete an episode."""
+async def delete_episode(
+    episode_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete an episode（数据隔离）. """
     try:
         eid = uuid.UUID(episode_id)
     except ValueError:
@@ -403,6 +519,11 @@ async def delete_episode(episode_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Episode).where(Episode.id == eid))
     episode = result.scalar_one_or_none()
     if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    project = await db.execute(select(Project).where(Project.id == episode.project_id))
+    proj = project.scalar_one_or_none()
+    if proj and not _check_project_access(proj, current_user):
         raise HTTPException(status_code=404, detail="Episode not found")
 
     await db.delete(episode)

@@ -2,16 +2,17 @@ import logging
 import os
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models.models import Project, Episode
+from app.models.models import Project, Episode, User
 from app.services.upload_service import (
     create_upload_session,
     write_chunk,
@@ -73,6 +74,17 @@ def _serialize_episode(episode: Episode) -> dict:
         "created_at": episode.created_at.isoformat() if episode.created_at else "",
         "updated_at": episode.updated_at.isoformat() if episode.updated_at else "",
     }
+
+
+async def _check_project_access(project: Project, current_user: User):
+    """数据隔离：上传素材前校验项目访问权限（运营专员仅可向自己创建的项目上传）. """
+    if current_user is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    from app.models.models import user_can_access_all_materials
+    if user_can_access_all_materials(current_user):
+        return
+    if project.created_by != current_user.id:
+        raise HTTPException(status_code=404, detail="Project not found")
 
 
 async def _store_uploaded_file(
@@ -217,9 +229,10 @@ async def get_upload_progress_endpoint(upload_id: str):
 @router.post("/upload/complete")
 async def complete_upload(
     data: UploadCompleteRequest,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Finalize a tus upload session into an Episode."""
+    """Finalize a tus upload session into an Episode（数据隔离）. """
     try:
         pid = uuid.UUID(data.project_id)
     except ValueError:
@@ -230,6 +243,14 @@ async def complete_upload(
         raise HTTPException(status_code=404, detail="Upload session not found")
     if not progress["completed"]:
         raise HTTPException(status_code=400, detail="Upload session is not complete")
+
+    # 数据隔离
+    project = (
+        await db.execute(select(Project).where(Project.id == pid))
+    ).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await _check_project_access(project, current_user)
 
     episode = await _store_uploaded_file(
         data.upload_id,
@@ -249,13 +270,22 @@ async def upload_single(
     project_id: str = Form(...),
     title: Optional[str] = Form(None),
     episode_no: Optional[int] = Form(None),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Simple single-request upload: stores the file and creates an Episode."""
+    """Simple single-request upload: stores the file and creates an Episode（数据隔离）. """
     try:
         pid = uuid.UUID(project_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid project ID format")
+
+    # 数据隔离
+    project = (
+        await db.execute(select(Project).where(Project.id == pid))
+    ).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await _check_project_access(project, current_user)
 
     try:
         safe_name = validate_file_name(file.filename or "")

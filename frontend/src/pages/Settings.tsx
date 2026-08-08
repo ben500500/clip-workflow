@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Button, Space, Typography, message, Modal, Form, Input, Tag, Select, InputNumber, Tooltip, Alert,
+  Card, Table, Button, Space, Typography, message, Modal, Form, Input, Tag, Select, InputNumber, Tooltip, Alert, Popconfirm,
 } from 'antd';
-import { PlusOutlined, DeleteOutlined, EditOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import { configApi } from '../api/config';
 import type { PlatformProfile, SystemConfig } from '../types';
 import { formatDateTime } from '../utils/format';
@@ -12,18 +12,21 @@ const { Title, Text } = Typography;
 const Settings: React.FC = () => {
   const [configs, setConfigs] = useState<SystemConfig[]>([]);
   const [profiles, setProfiles] = useState<PlatformProfile[]>([]);
+  const [presets, setPresets] = useState<Record<string, Array<{ label: string; target_resolution: string; target_bitrate: string }>>>({});
   const [profileModal, setProfileModal] = useState(false);
   const [configModal, setConfigModal] = useState(false);
   const [editing, setEditing] = useState<PlatformProfile | null>(null);
   const [editingConfig, setEditingConfig] = useState<SystemConfig | null>(null);
   const [configForm] = Form.useForm();
   const [profileForm] = Form.useForm();
+  const selectedPlatform = Form.useWatch('platform', profileForm) as string | undefined;
 
   const fetchAll = () => {
     configApi.getAll().then((list) => {
       setConfigs(list);
     }).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformProfiles().then(setProfiles).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
+    configApi.getPlatformPresets().then((r) => setPresets(r.presets || {})).catch(() => undefined);
   };
 
   useEffect(() => {
@@ -97,6 +100,36 @@ const Settings: React.FC = () => {
     }
   };
 
+  // 恢复配置默认值（全局配置）
+  const handleConfigReset = async (config: SystemConfig) => {
+    try {
+      await configApi.resetDefault(config.key);
+      message.success(`配置 ${config.key} 已恢复默认值`);
+      fetchAll();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '恢复默认失败');
+    }
+  };
+
+  // 恢复平台去重配置默认值（含去重 JSON、分辨率、码率）
+  const handleProfileReset = async (profile: PlatformProfile) => {
+    try {
+      await configApi.resetPlatformProfileDefault(profile.id);
+      message.success(`配置 ${profile.name} 已恢复默认值`);
+      fetchAll();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '恢复默认失败');
+    }
+  };
+
+  // 选择平台快捷分辨率/码率预设
+  const applyPreset = (platform: string, preset: { label: string; target_resolution: string; target_bitrate: string }) => {
+    profileForm.setFieldsValue({
+      target_resolution: preset.target_resolution,
+      target_bitrate: preset.target_bitrate,
+    });
+  };
+
   const renderConfigValue = (config: SystemConfig) => {
     const displayText = typeof config.value === 'object' && config.value !== null
       ? JSON.stringify(config.value, null, 2)
@@ -122,6 +155,9 @@ const Settings: React.FC = () => {
           </Text>
         </Tooltip>
         <Button size="small" icon={<EditOutlined />} onClick={() => handleConfigEdit(config)}>编辑</Button>
+        <Popconfirm title="确认恢复默认值？" description="该配置项将恢复为系统默认值" onConfirm={() => handleConfigReset(config)}>
+          <Button size="small" icon={<ReloadOutlined />}>恢复默认</Button>
+        </Popconfirm>
       </Space>
     );
   };
@@ -164,7 +200,7 @@ const Settings: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 150,
+      width: 240,
       render: (_: unknown, p: PlatformProfile) => (
         <Space size="small">
           <Button size="small" icon={<EditOutlined />} onClick={() => {
@@ -180,6 +216,9 @@ const Settings: React.FC = () => {
             });
             setProfileModal(true);
           }}>编辑</Button>
+          <Popconfirm title="确认恢复默认？" description="去重 JSON、分辨率、码率将恢复为内置默认值" onConfirm={() => handleProfileReset(p)}>
+            <Button size="small" icon={<ReloadOutlined />}>恢复默认</Button>
+          </Popconfirm>
           <Button size="small" danger icon={<DeleteOutlined />} onClick={async () => {
             try {
               await configApi.deletePlatformProfile(p.id);
@@ -278,12 +317,33 @@ const Settings: React.FC = () => {
             <Select options={[{ value: 'wechat_channel', label: '视频号' }, { value: 'douyin', label: '抖音' }, { value: 'kuaishou', label: '快手' }]} />
           </Form.Item>
           <Form.Item name="description" label="说明"><Input.TextArea rows={3} placeholder="填写该配置的用途说明（可选）" /></Form.Item>
-          <Form.Item name="target_resolution" label="目标分辨率"><Input placeholder="1920x1080" /></Form.Item>
-          <Form.Item name="target_bitrate" label="目标码率"><Input placeholder="4000k" /></Form.Item>
+          <Form.Item name="target_resolution" label="目标分辨率"><Input placeholder="1280x720" /></Form.Item>
+          <Form.Item name="target_bitrate" label="目标码率"><Input placeholder="2500k" /></Form.Item>
+          <Form.Item label="快捷选择（按平台常见分辨率/码率）">
+            <Space wrap>
+              {(presets[selectedPlatform || ''] || []).map((p2) => (
+                <Button key={p2.label} size="small" onClick={() => applyPreset(selectedPlatform || '', p2)}>
+                  {p2.label}
+                </Button>
+              ))}
+            </Space>
+          </Form.Item>
           <Form.Item name="max_duration" label="最大时长（秒）"><InputNumber min={0} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="dedupe_config" label="去重配置 JSON"
             extra={<Text type="secondary" style={{ fontSize: 12 }}>可选字段：mode（fast/dedupe/scrub）、flip_mirror（水平镜像）、speed_change（变速）、speed_factor（变速系数）、saturation（饱和度）、saturation_value、brightness（亮度）、brightness_value、sharpen（锐化）、sharpen_amount。这些参数在切片去重时生效，用于降低平台查重风险。</Text>}
           ><Input.TextArea rows={6} style={{ fontFamily: 'monospace' }} placeholder='{"speed_change": true, "speed_factor": 1.04}' /></Form.Item>
+          <Form.Item label=" ">
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => {
+              // 恢复默认去重 JSON 示例
+              profileForm.setFieldsValue({
+                dedupe_config: JSON.stringify({
+                  mode: 'fast', flip_mirror: false, speed_change: true, speed_factor: 1.04,
+                  saturation: true, saturation_value: 0.95, brightness: true, brightness_value: 0.01,
+                  sharpen: true, sharpen_amount: 0.8,
+                }, null, 2),
+              });
+            }}>恢复去重 JSON 默认值</Button>
+          </Form.Item>
         </Form>
       </Modal>
     </div>

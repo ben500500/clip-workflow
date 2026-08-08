@@ -242,7 +242,13 @@ const Monitor: React.FC = () => {
                   title: '指标', dataIndex: 'metric', key: 'metric',
                   render: (m: string) => METRIC_LABELS[m] || m,
                 },
-                { title: '当前值', dataIndex: 'value', key: 'value', width: 100 },
+                {
+                  title: '当前值', dataIndex: 'value', key: 'value', width: 100,
+                  render: (v: number) => {
+                    if (typeof v !== 'number' || Number.isNaN(v)) return String(v ?? '-');
+                    return Number.isInteger(v) ? String(v) : v.toFixed(1);
+                  },
+                },
               ]}
             />
           </Card>
