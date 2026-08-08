@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.config import settings, cors_origins
 from app.database import init_db, close_db, async_session_factory
-from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers, monitor, maintenance, watermark, shortdrama
+from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers, monitor, maintenance, watermark, shortdrama, publish_material
 from app.auth import get_password_hash
 from app.models.models import User, UserRole, PlatformProfile
 from app.api.config import DEFAULT_PLATFORM_PROFILES
@@ -185,6 +185,7 @@ app.include_router(monitor.router, prefix="/api", tags=["Monitor"])
 app.include_router(maintenance.router, prefix="/api", tags=["Maintenance"])
 app.include_router(watermark.router, prefix="/api", tags=["Watermark"])
 app.include_router(shortdrama.router, prefix="/api", tags=["Shortdrama"])
+app.include_router(publish_material.router, prefix="/api", tags=["PublishMaterial"])
 
 
 @app.get("/api/health")

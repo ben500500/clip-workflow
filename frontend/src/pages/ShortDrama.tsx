@@ -8,9 +8,11 @@ import {
   ThunderboltOutlined, CopyOutlined, DeleteOutlined, ReloadOutlined,
   ClearOutlined, VideoCameraOutlined, FileTextOutlined, CheckOutlined,
   UploadOutlined, PlayCircleOutlined, ImportOutlined, InboxOutlined,
+  SendOutlined,
 } from '@ant-design/icons';
 import { shortdramaApi, type ShortdramaPromptRecord } from '../api/shortdrama';
 import Watermark, { type ImportedVideo } from './Watermark';
+import PublishMaterialTab from './PublishMaterialTab';
 import { formatDateTime, formatFileSize } from '../utils/format';
 
 const { Title, Text } = Typography;
@@ -561,7 +563,7 @@ const ShortDrama: React.FC = () => {
         <Title level={4} style={{ margin: 0 }}>
           <VideoCameraOutlined /> 短片制作
         </Title>
-        <Tag color="green">v6.1 新增</Tag>
+        <Tag color="green">v7 新增</Tag>
       </Space>
 
       {/* ── 工作流 ── */}
@@ -574,6 +576,7 @@ const ShortDrama: React.FC = () => {
             { title: '生成提示词', description: '复用 AutoClip 模型' },
             { title: 'Seedance 生成', description: '10s / 15s / 自定义竖屏' },
             { title: '去水印出片', description: '历史一键导入「去水印」页签' },
+            { title: '发布素材', description: '短标题/配文/标签/神评' },
           ]}
         />
       </Card>
@@ -604,6 +607,15 @@ const ShortDrama: React.FC = () => {
                 onImportsConsumed={() => setWatermarkImports([])}
               />
             ),
+          },
+          {
+            key: 'publish',
+            label: (
+              <span>
+                <SendOutlined /> ③ 发布素材
+              </span>
+            ),
+            children: <PublishMaterialTab />,
           },
         ]}
       />

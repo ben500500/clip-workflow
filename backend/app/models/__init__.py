@@ -29,6 +29,7 @@ from app.models.models import (
     AlertRule,
     AlertEvent,
     ShortdramaPrompt,
+    PublishMaterial,
     WatermarkTask,
     WatermarkVideo,
 )
@@ -64,6 +65,7 @@ __all__ = [
     "AlertRule",
     "AlertEvent",
     "ShortdramaPrompt",
+    "PublishMaterial",
     "WatermarkTask",
     "WatermarkVideo",
 ]

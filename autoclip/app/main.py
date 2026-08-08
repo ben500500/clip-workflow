@@ -41,6 +41,7 @@ from app.pipeline.step2_timeline import run_step2_timeline  # noqa: E402
 from app.pipeline.step3_scoring import run_step3_scoring  # noqa: E402
 from app.pipeline.step4_title import run_step4_title  # noqa: E402
 from app.services.seedance_prompt_generator import generate_seedance_prompt  # noqa: E402
+from app.services.publish_material_generator import generate_publish_material  # noqa: E402
 from app.core.llm_manager import get_llm_manager  # noqa: E402
 
 logger = logging.getLogger("autoclip.main")
@@ -430,6 +431,37 @@ def _current_llm_model() -> str:
         return info.get("model") or ""
     except Exception:
         return ""
+
+
+class PublishMaterialRequest(BaseModel):
+    story: str = ""           # 短剧剧情梗概（必填）
+    params: dict = {}          # 可选：title/theme/tone/platform/extra_requirements
+    max_retries: int = 3
+
+
+@app.post("/api/v1/publish-material/generate")
+async def generate_material(data: PublishMaterialRequest):
+    """根据短剧剧情梗概生成一套可发布的短剧发布素材。
+
+    输出结构严格顺序：短标题 → 三款视频配文 → 成套话题标签 → 三条置顶互动神评。
+    复用 autoclip 中配置的大模型（DASHSCOPE_API_KEY / API_MODEL_NAME）。
+    """
+    if not data.story or not data.story.strip():
+        raise HTTPException(status_code=400, detail="请输入短剧剧情梗概")
+    try:
+        material = await asyncio.to_thread(
+            generate_publish_material,
+            data.story.strip(),
+            params=data.params or {},
+            max_retries=data.max_retries,
+        )
+    except Exception as e:
+        logger.error("Publish material generation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"发布素材生成失败: {e}")
+    return {
+        "material": material,
+        "model": _current_llm_model(),
+    }
 
 
 # 兼容别名：后端可能通过 /api/v1 前缀调用 health

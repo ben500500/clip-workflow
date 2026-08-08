@@ -316,13 +316,14 @@ clip-workflow/
 | `AlertRule` | `alert_rules` | 告警规则（指标、比较符、阈值、级别、启停） |
 | `AlertEvent` | `alert_events` | 告警事件（触发时间、级别、内容、通知状态） |
 
-#### V4/V6 短片制作（去水印 + 提示词生成）
+#### V4/V6/V7 短片制作（去水印 + 提示词生成 + 发布素材）
 
 | 模型类 | 表名 | 说明 |
 |--------|------|------|
 | `WatermarkTask` | `watermark_tasks` | 去水印任务（批量提交，多视频） |
 | `WatermarkVideo` | `watermark_videos` | 去水印任务下的单条视频 |
 | `ShortdramaPrompt` | `shortdrama_prompts` | Seedance 提示词生成历史（文案→七段模板，可关联成片视频） |
+| `PublishMaterial` | `publish_materials` | 短剧发布素材生成历史（剧情梗概→短标题/三款配文/成套标签/三条神评） |
 
 ### 5.2 ER 关系
 
@@ -517,6 +518,15 @@ audit:
 | `DELETE` | `/api/shortdrama/prompts/{id}/video` | 删除成片视频（保留提示词记录） |
 | `POST` | `/api/shortdrama/prompts/{id}/import-to-watermark` | 一键把成片视频导入去水印流程 |
 
+### 6.8.2 短剧发布素材 API（v7）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/shortdrama/publish-material/generate` | 根据剧情梗概生成短剧发布素材（短标题→三款配文→成套标签→三条神评，复用 AutoClip 模型） |
+| `GET` | `/api/shortdrama/publish-materials` | 发布素材生成历史列表 |
+| `GET` | `/api/shortdrama/publish-materials/{id}` | 单条发布素材记录详情 |
+| `DELETE` | `/api/shortdrama/publish-materials/{id}` | 删除发布素材记录 |
+
 ### 6.9 WebSocket
 
 | 路径 | 说明 |
@@ -546,7 +556,7 @@ audit:
 | `/slice-worker` | 切片监控 | Worker 节点状态、任务队列、实时日志（v3） |
 | `/monitor` | 监控告警 | 健康检查、告警规则、告警事件（三期） |
 | `/maintenance` | 运维优化 | 数据归档、临时文件清理、MinIO 生命周期（三期） |
-| `/watermark` | 短片制作 | Seedance 短剧提示词生成（复用 AutoClip 模型，七段模板，10s/15s/自定义时长，题材/基调/角色下拉预设） + 成片视频上传/一键导入去水印 + 三套开源去水印引擎切换、批量上传/下载、异步进度、任务历史（v4/v5 去水印；v6 新增提示词生成工作流；v6.1 合规代称/自定义时长/预设下拉/历史上传视频导入去水印） |
+| `/watermark` | 短片制作 | Seedance 短剧提示词生成（复用 AutoClip 模型，七段模板，10s/15s/自定义时长，题材/基调/角色下拉预设） + 成片视频上传/一键导入去水印 + 三套开源去水印引擎切换、批量上传/下载、异步进度、任务历史 + 短剧发布素材生成（短标题/三款配文/成套标签/三条神评，v4/v5 去水印；v6 提示词生成；v6.1 合规代称/自定义时长/预设下拉/历史上传视频导入去水印；v7 发布素材生成） |
 | `/settings` | 系统设置 | 全局参数配置 |
 
 ### 7.2 导航菜单
