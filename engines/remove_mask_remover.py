@@ -27,61 +27,9 @@ import subprocess
 import sys
 
 import cv2
-import numpy as np
 
-# 各视频确认的水印 ROI（基于全视频 OCR + 时序分析确认），坐标系 1280x720 (H×W)
-# 格式: (y0, y1, x0, x1)
-VIDEO_ROIS = {
-    '648BC321': {
-        'TL': (20, 100, 40, 285),
-        'BR': (1170, 1270, 500, 705),
-    },
-    'C0CC0472': {
-        'TL': (35, 90, 38, 240),
-        'BR': (1185, 1245, 550, 675),
-    },
-    '0270150E': {
-        'TL': (20, 110, 30, 245),
-        'BR': (1150, 1270, 435, 705),
-    },
-    '3906E761': {
-        'TL': (20, 95, 20, 240),
-        'BR': (1150, 1270, 500, 705),
-    },
-}
-
-# 内置 ROI 的参考坐标系（720×1280 竖屏视频）
-REF_H, REF_W = 1280, 720
-
-# 通用默认 ROI（Seedance 水印规律：左上 + 右下），未匹配到内置配置时使用
-DEFAULT_ROIS = {
-    'TL': (20, 100, 40, 285),
-    'BR': (1170, 1270, 500, 705),
-}
-
-
-def build_mask(rois, H, W):
-    """把 (y0,y1,x0,x1) 的 ROI 掩码按实际分辨率等比缩放到 H×W。"""
-    mask = np.zeros((H, W), dtype=np.uint8)
-    sh, sw = H / REF_H, W / REF_W
-    for name, (y0, y1, x0, x1) in rois.items():
-        _y0 = int(y0 * sh)
-        _y1 = max(_y0 + 1, int(y1 * sh))
-        _x0 = int(x0 * sw)
-        _x1 = max(_x0 + 1, int(x1 * sw))
-        mask[_y0:_y1, _x0:_x1] = 255
-    return mask
-
-
-def resolve_rois(source_name: str, manual_region=None):
-    """决定使用的 ROI 配置。优先级：手动区域 > 文件名匹配内置 > 通用默认。"""
-    if manual_region:
-        x, y, w, h = manual_region
-        return {'manual': (y, y + h, x, x + w)}
-    base = os.path.splitext(os.path.basename(source_name or ''))[0].upper()
-    if base in VIDEO_ROIS:
-        return VIDEO_ROIS[base]
-    return DEFAULT_ROIS
+# remove-mask 经验库（ROI 表）共享模块，与其它引擎共用同一份确认过的水印位置
+from remove_mask_rois import build_mask, resolve_rois
 
 
 def process(video_path, output_path, rois, radius=3, iterations=1):

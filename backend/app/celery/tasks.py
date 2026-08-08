@@ -1505,9 +1505,12 @@ def watermark_task(
                 except RuntimeError:
                     pass
 
-            # remove_mask 引擎按原始文件名匹配内置 ROI 表，这里用每条视频的真实文件名覆盖
+            # remove_mask 引擎按原始文件名匹配内置 ROI 表，这里用每条视频的真实文件名覆盖；
+            # remove_ai / seedance / seedance_wm 也借 remove-mask 内置 ROI 经验库：
+            # · remove_ai：RAiW 厂商检测失败时回退经验位置重试
+            # · seedance / seedance_wm：自动检测基础上合并确认过的水印位置
             engine_options = options
-            if engine == "remove_mask":
+            if engine in ("remove_mask", "remove_ai", "seedance", "seedance_wm"):
                 engine_options = dict(options)
                 engine_options["source_name"] = video.file_name or video.source_file_key
 

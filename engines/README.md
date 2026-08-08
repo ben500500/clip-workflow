@@ -252,3 +252,18 @@ OCR + 时序分析确认）；其他文件名回退左上+右下通用 ROI。
 
 **进度上报**: 向 stdout 输出 `PROGRESS:<pct>` 行，由
 `backend/app/engines/watermark_runner.py` 的 `_run_cmd` 解析后写入数据库。
+
+## remove-mask 经验库共享（`remove_mask_rois.py`）
+
+remove-mask 的「ROI 经验」被抽取为 `engines/remove_mask_rois.py` 共享模块，
+供全部去水印引擎复用：
+
+| 引擎 | 借用方式 |
+|------|---------|
+| `remove_mask` | 直接按文件名匹配内置 ROI 表（原逻辑） |
+| `seedance_wm` | 自动检测基础上**合并**经验 ROI（可一次覆盖左上+右下）；自动检测全失败时回退到经验位置 |
+| `seedance` | 分段检测基础上**合并**经验 ROI |
+| `remove_ai` | RAiW 厂商检测失败时，回退到经验位置重试（委托 seedance 区域擦除） |
+
+后端 `watermark_runner.py` 通过 `source_name` 把每条视频的原始文件名透传给
+各引擎，命中内置 ROI 经验库时自动生效，无需用户额外操作。

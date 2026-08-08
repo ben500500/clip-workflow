@@ -49,8 +49,9 @@ class Remover:
         input_file: str,
         output_file: str,
         bbox: list[int] | None = None,
+        bboxes: list[list[int]] | None = None,
     ) -> ProcessResult:
-        return process_video(input_file, output_file, self.config, bbox=bbox)
+        return process_video(input_file, output_file, self.config, bbox=bbox, bboxes=bboxes)
 
     # ---------- 批量 ----------
     def batch(

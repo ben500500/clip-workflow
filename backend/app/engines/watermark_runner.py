@@ -138,6 +138,26 @@ def _script_path(name: str) -> str:
     return os.path.abspath(path)
 
 
+def _load_roi_experience(source_name: str):
+    """加载 remove-mask 内置 ROI 经验库并匹配原始文件名。
+
+    返回命中经验库（dict，如 {'TL': (y0,y1,x0,x1), 'BR': ...}）或 None。
+    引擎目录（engines/）不在默认 sys.path 上，这里临时加入以便共享模块可导入。
+    """
+    import sys
+
+    engines_dir = os.path.abspath(settings.ENGINES_DIR)
+    if engines_dir not in sys.path:
+        sys.path.insert(0, engines_dir)
+    try:
+        from remove_mask_rois import match_rois
+
+        return match_rois(source_name)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("load remove-mask ROI experience failed: %s", e)
+        return None
+
+
 async def run_remove_ai_watermarks(
     source_path: str,
     output_path: str,
@@ -155,6 +175,8 @@ async def run_remove_ai_watermarks(
       logo/文字水印。RAiW 的 `erase` 命令仅支持单张图片，故这里委托给
       seedance 视频级引擎（其修补层复用 RAiW 的 LaMa/MI-GAN CPU 模型，
       与 `--backend` 语义一致））
+    - source_name: 原始文件名（借 remove-mask 内置 ROI 经验库。RAiW 厂商自动
+      检测失败时，回退到确认过的 ROI 经验位置重试，避免“没检出就空跑”）
     """
     options = options or {}
     cli = settings.WATERMARK_RAIW_CLI or "remove-ai-watermarks"
@@ -179,7 +201,19 @@ async def run_remove_ai_watermarks(
     if options.get("temporal_consistency") is False:
         cmd.append("--no-temporal-consistency")
     logger.info("Running remove-ai-watermarks: %s", " ".join(cmd))
-    return await _run_cmd(cmd, progress_cb, timeout)
+    returncode, stdout, stderr = await _run_cmd(cmd, progress_cb, timeout)
+    if returncode != 0 and options.get("source_name"):
+        # 借 remove-mask 经验库：RAiW 厂商检测失败时，按原始文件名匹配内置 ROI
+        # 回退重试（复用 seedance 引擎，其修补层与 RAiW 同一套 LaMa/MI-GAN）。
+        if _load_roi_experience(options["source_name"]):
+            logger.warning(
+                "remove-ai-watermarks failed (exit=%s), retrying with remove-mask ROI experience",
+                returncode,
+            )
+            return await run_seedance_watermark_remover(
+                source_path, output_path, options, progress_cb, timeout
+            )
+    return returncode, stdout, stderr
 
 
 async def run_seedance_watermark_remover(
@@ -196,6 +230,8 @@ async def run_seedance_watermark_remover(
     - backend: auto/lama/migan/cv2（CPU 修补；auto 默认，优先 RAiW LaMa/MI-GAN）
     - use_lama: True 兼容旧前端（等价 backend=lama）
     - segments: int（分段检测段数，默认 4；水印在视频中移动时调大）
+    - source_name: 原始文件名（借 remove-mask 内置 ROI 经验库，自动检测时合并
+      左上+右下等确认过的水印位置）
     """
     options = options or {}
     script = _script_path(settings.WATERMARK_SEEDANCE_SCRIPT)
@@ -204,6 +240,9 @@ async def run_seedance_watermark_remover(
     cmd = ["python", script, source_path, "-o", output_path]
     if options.get("region"):
         cmd.extend(["-r", str(options["region"])])
+    elif options.get("source_name"):
+        # 借 remove-mask 经验库：未指定手动区域时按原始文件名匹配内置 ROI
+        cmd.extend(["--roi-experience", str(options["source_name"])])
     backend = options.get("backend") or "auto"
     if backend not in ("auto", "lama", "migan", "cv2"):
         backend = "auto"
@@ -280,6 +319,8 @@ async def run_seedance_wm(
     - detector: matchTemplate/yolov8_seg/paddleocr（可选，默认 matchTemplate）
     - inpainter: lama/cv2_telea/cv2_ns（可选，覆盖 config.yaml）
     - keep_audio: bool（默认保留原音轨）
+    - source_name: 原始文件名（借 remove-mask 内置 ROI 经验库，自动检测时合并
+      左上+右下等确认过的水印位置）
     """
     options = options or {}
     script = _script_path(settings.WATERMARK_SEEDANCE_WM_SCRIPT)
@@ -288,6 +329,9 @@ async def run_seedance_wm(
     cmd = ["python", script, source_path, "-o", output_path, "--yes"]
     if options.get("region"):
         cmd.extend(["-r", str(options["region"])])
+    elif options.get("source_name"):
+        # 借 remove-mask 经验库：未指定手动区域时按原始文件名匹配内置 ROI
+        cmd.extend(["--roi-experience", str(options["source_name"])])
     backend = options.get("backend") or "auto"
     if backend not in ("auto", "lama", "migan", "cv2"):
         backend = "auto"
