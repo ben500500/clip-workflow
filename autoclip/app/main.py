@@ -397,6 +397,7 @@ class SeedancePromptRequest(BaseModel):
     text: str = ""
     duration: int = 15          # 10 / 15 秒
     params: dict = {}           # 可选：theme/tone/characters/extra_requirements
+    templates: dict = {}        # 可选：用户自定义长/短提示词模板 {"long":.., "short":..}
     max_retries: int = 3
 
 
@@ -418,6 +419,7 @@ async def generate_prompt(data: SeedancePromptRequest):
             duration=data.duration,
             params=data.params or {},
             max_retries=data.max_retries,
+            templates=data.templates or {},
         )
     except Exception as e:
         logger.error("Seedance prompt generation failed: %s", e)

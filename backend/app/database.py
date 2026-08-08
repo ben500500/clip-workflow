@@ -154,6 +154,8 @@ async def _apply_compat_migrations():
         # - projects.created_by：项目创建人（运营专员默认仅可见自己创建的素材）
         ("users", "data_scope", "VARCHAR(20) DEFAULT 'own'"),
         ("projects", "created_by", "UUID"),
+        # 短片制作：去水印任务关联来源提示词记录（提示词 → 去水印 → 发布）
+        ("watermark_videos", "prompt_record_id", "UUID"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

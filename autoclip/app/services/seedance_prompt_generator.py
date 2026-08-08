@@ -63,14 +63,31 @@ LONG_PROMPT_TEMPLATE = (
 PLACEHOLDER_VIDEO_TEXT = "[视频文案]"
 
 
-def build_short_prompt(text: str) -> str:
-    """根据用户文案生成「短提示词」（固定模板，仅替换 [视频文案]）。"""
-    return SHORT_PROMPT_TEMPLATE.replace(PLACEHOLDER_VIDEO_TEXT, text)
+def build_short_prompt(text: str, template: Optional[str] = None) -> str:
+    """根据用户文案生成「短提示词」（固定模板，仅替换 [视频文案]）。
+
+    Args:
+        text: 用户输入的短剧文案
+        template: 自定义模板（缺省用内置默认模板）；支持用户在线编辑
+    """
+    tpl = (template or SHORT_PROMPT_TEMPLATE)
+    if PLACEHOLDER_VIDEO_TEXT not in tpl:
+        # 兜底：模板不含占位符时追加，避免文案丢失
+        tpl = f"{tpl}\n[视频文案]"
+    return tpl.replace(PLACEHOLDER_VIDEO_TEXT, text)
 
 
-def build_long_prompt(text: str) -> str:
-    """根据用户文案生成「长提示词」（固定模板，仅替换 [视频文案]）。"""
-    return LONG_PROMPT_TEMPLATE.replace(PLACEHOLDER_VIDEO_TEXT, text)
+def build_long_prompt(text: str, template: Optional[str] = None) -> str:
+    """根据用户文案生成「长提示词」（固定模板，仅替换 [视频文案]）。
+
+    Args:
+        text: 用户输入的短剧文案
+        template: 自定义模板（缺省用内置默认模板）；支持用户在线编辑
+    """
+    tpl = (template or LONG_PROMPT_TEMPLATE)
+    if PLACEHOLDER_VIDEO_TEXT not in tpl:
+        tpl = f"{tpl}\n[视频文案]"
+    return tpl.replace(PLACEHOLDER_VIDEO_TEXT, text)
 
 
 def load_seedance_template() -> str:
@@ -122,10 +139,11 @@ def generate_prompt_versions(
     duration: int = 15,
     params: Optional[Dict[str, Any]] = None,
     max_retries: int = 3,
+    templates: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
     """一次生成提示词三个版本：长提示词 / 短提示词 / AI提示词。
 
-    - 长提示词、短提示词：固定模板，仅把 [视频文案] 替换为用户输入的文案，不做其它处理；
+    - 长提示词、短提示词：固定模板（支持用户在线编辑，后端下发 templates），仅把 [视频文案] 替换为用户输入的文案；
     - AI 提示词：调用配置好的大模型按 Seedance 七段结构生成（当前这套）。
 
     Args:
@@ -133,6 +151,7 @@ def generate_prompt_versions(
         duration: 10 或 15（秒）
         params: 可选附加参数（题材/基调/角色/补充要求）
         max_retries: LLM 调用重试次数
+        templates: 用户自定义长/短模板 {"long": .., "short": ..}，缺省用内置默认模板
 
     Returns:
         {"long": 长提示词, "short": 短提示词, "ai": AI提示词}
@@ -141,9 +160,13 @@ def generate_prompt_versions(
     if not text:
         raise RuntimeError("短剧文案不能为空")
 
-    # 长 / 短：固定模板直接替换占位符，无需调用大模型
-    long_prompt = build_long_prompt(text)
-    short_prompt = build_short_prompt(text)
+    templates = templates or {}
+    long_template = templates.get("long") or LONG_PROMPT_TEMPLATE
+    short_template = templates.get("short") or SHORT_PROMPT_TEMPLATE
+
+    # 长 / 短：模板直接替换占位符，无需调用大模型
+    long_prompt = build_long_prompt(text, long_template)
+    short_prompt = build_short_prompt(text, short_template)
 
     # AI：调用大模型生成（保留当前这套 Seedance 七段结构）
     template = load_seedance_template()

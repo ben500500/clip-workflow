@@ -10,6 +10,7 @@ export interface WatermarkVideoItem {
   output_url: string | null;
   source_url: string | null;
   output_file_size: number | null;
+  prompt_record_id?: string | null;
   created_at: string;
   started_at?: string | null;
   completed_at: string | null;
@@ -22,6 +23,7 @@ export interface WatermarkTaskItem {
   engine_display: string;
   name: string | null;
   options: Record<string, unknown>;
+  prompt_record_id?: string | null;
   status: string;
   progress: number;
   total_count: number;
@@ -60,6 +62,7 @@ export interface WatermarkRunParams {
   iterations?: number;
   name?: string;
   files: string[];
+  prompt_record_id?: string | null;
 }
 
 export const watermarkApi = {

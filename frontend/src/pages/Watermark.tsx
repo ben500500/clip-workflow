@@ -39,6 +39,8 @@ interface PendingFile {
   fileSize: number;
   sourceFileKey: string;
   uploadPercent: number;
+  // 来源提示词记录 id（提示词 → 去水印 → 发布 任务关联）
+  promptRecordId?: string | null;
 }
 
 // 从「短片制作」生成历史一键导入的成片视频
@@ -46,6 +48,8 @@ export interface ImportedVideo {
   sourceFileKey: string;
   fileName: string | null;
   fileSize: number | null;
+  // 来源提示词记录 id（提示词 → 去水印 → 发布 任务关联）
+  promptRecordId?: string | null;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -61,7 +65,7 @@ const genTaskName = () => String(Math.floor(Date.now() / 1000));
 const Watermark: React.FC<{
   imports?: ImportedVideo[];
   onImportsConsumed?: () => void;
-  onGoToPublish?: () => void;
+  onGoToPublish?: (promptRecordId?: string | null) => void;
 }> = ({ imports = [], onImportsConsumed, onGoToPublish }) => {
   const [engine, setEngine] = useState<'remove_ai' | 'seedance' | 'seedance_wm' | 'remove_mask'>('remove_mask');
   // RAiW 选项
@@ -111,6 +115,7 @@ const Watermark: React.FC<{
             fileSize: imp.fileSize ?? 0,
             sourceFileKey: imp.sourceFileKey,
             uploadPercent: 100,
+            promptRecordId: imp.promptRecordId || null,
           });
         }
       });
@@ -219,11 +224,15 @@ const Watermark: React.FC<{
         keep_audio?: boolean;
         radius?: number;
         iterations?: number;
+        prompt_record_id?: string | null;
       } = {
         engine,
         files: pendingFiles.map((f) => f.sourceFileKey),
         name: taskName.trim() || undefined,
       };
+      // 携带来源提示词记录 id（提示词 → 去水印 → 发布 任务关联）
+      const firstPromptId = pendingFiles.find((f) => f.promptRecordId)?.promptRecordId;
+      if (firstPromptId) params.prompt_record_id = firstPromptId;
       if (engine === 'remove_ai') {
         params.mark = mark;
         params.backend = backend;
@@ -432,7 +441,7 @@ const Watermark: React.FC<{
               type="primary"
               ghost
               icon={<SendOutlined />}
-              onClick={onGoToPublish}
+              onClick={() => onGoToPublish!(t.prompt_record_id)}
             >
               发布
             </Button>
