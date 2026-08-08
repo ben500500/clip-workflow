@@ -293,7 +293,7 @@ def _make_inpaint(backend: str):
 
 
 def remove_watermark(input_path, output_path, manual_region=None, backend="auto",
-                     segments=4):
+                     segments=4, roi_source_name=None):
     cap = cv2.VideoCapture(input_path)
     total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps    = cap.get(cv2.CAP_PROP_FPS)
@@ -333,6 +333,23 @@ def remove_watermark(input_path, output_path, manual_region=None, backend="auto"
     print(f"Segment-wise detection: {n_seg} segments")
 
     seg_plans = []   # 每段: {start_idx, end_idx, masks: [(box, mask), ...]}
+
+    # 借 remove-mask 经验库：未指定手动区域时，按原始文件名匹配内置 ROI，
+    # 作为各段的固定水印区域（自动检测到的区域仍会追加合并）。
+    exp_boxes = []
+    if not manual_region and roi_source_name:
+        try:
+            from remove_mask_rois import match_rois, rois_to_bboxes
+
+            rois = match_rois(roi_source_name)
+            if rois:
+                exp_boxes = rois_to_bboxes(rois, width, height)
+                print(f"命中 remove-mask 内置 ROI 经验库: {list(rois.keys())} → {exp_boxes}", flush=True)
+            else:
+                print(f"未命中 remove-mask 内置 ROI 经验库: {roi_source_name}", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] 加载 remove-mask 经验库失败: {e}", flush=True)
+
     if manual_region:
         x, y, w, h = manual_region
         print(f"Using manual region: x={x} y={y} w={w} h={h}")
@@ -346,7 +363,7 @@ def remove_watermark(input_path, output_path, manual_region=None, backend="auto"
                 "masks": [((x, y, w, h), global_mask)],
             })
     else:
-        any_detected = False
+        any_detected = bool(exp_boxes)
         for si in range(n_seg):
             s0 = si * seg_size
             s1 = min((si + 1) * seg_size, len(sample_frames))
@@ -357,7 +374,14 @@ def remove_watermark(input_path, output_path, manual_region=None, backend="auto"
             std_map = np.std(seg_frames.astype(np.float32), axis=0).mean(axis=2)
             boxes = _auto_detect(seg_median, width, height, std_map)
             masks = []
+            # 经验 ROI 固定修补（左上+右下等确认过的位置）
+            for box in exp_boxes:
+                m = _build_mask(seg_median, box, (height, width))
+                masks.append((box, m))
+            # 自动检测到的区域追加合并（去重由后续 IoU 逻辑兜底）
             for box in boxes:
+                if box in exp_boxes:
+                    continue
                 m = _build_mask(seg_median, box, (height, width))
                 masks.append((box, m))
             seg_plans.append({
@@ -495,6 +519,11 @@ def main():
         help="Number of time segments for segment-wise watermark detection "
              "(default 4; raise it for watermarks that move during the video)",
     )
+    parser.add_argument(
+        "--roi-experience",
+        default=None,
+        help="借 remove-mask 内置 ROI 经验库：原始文件名（自动匹配 8 位码），自动检测时合并",
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
@@ -517,7 +546,8 @@ def main():
         backend = "lama"
 
     ok = remove_watermark(args.input, output, manual_region=region, backend=backend,
-                          segments=max(1, args.segments))
+                          segments=max(1, args.segments),
+                          roi_source_name=args.roi_experience)
     sys.exit(0 if ok else 1)
 
 

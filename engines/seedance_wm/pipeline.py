@@ -124,10 +124,14 @@ def process_video(
     output_path: str,
     config: Config,
     bbox: list[int] | None = None,
+    bboxes: list[list[int]] | None = None,
     progress_callback=None,
 ) -> ProcessResult:
     """处理单个视频（完整 5 阶段流水线）。
 
+    bbox: 手动指定单个水印区域 [x,y,w,h]（最高优先级，跳过自动检测）。
+    bboxes: 手动/经验库指定多个水印区域列表（如 remove-mask 内置 ROI：左上 +
+        右下），自动检测到结果时与经验 ROI 合并后生成 mask。
     progress_callback: 可选回调 ``callable(pct: int, msg: str)``，在处理过程中
     被调用以上报进度；同时该实现会在 stdout 打印 ``PROGRESS:<pct>`` 行，供
     clip-workflow 的 watermark_runner 等外部 runner 解析（与切片引擎约定一致）。
@@ -184,19 +188,56 @@ def process_video(
             detect_result = state.data.get("detect_result") or {}
         else:
             _emit(progress_callback, 10, "水印检测中")
-            detect_result = detect_watermark(
-                frame_info["frames_dir"],
-                primary=config.detector.primary,
-                fallback=config.detector.fallback,
-                bbox=bbox,
-                config=config.detector,
-            )
+            try:
+                detect_result = detect_watermark(
+                    frame_info["frames_dir"],
+                    primary=config.detector.primary,
+                    fallback=config.detector.fallback,
+                    bbox=bbox,
+                    config=config.detector,
+                )
+            except DetectFailError:
+                # 借 remove-mask 经验库：自动检测全部失败时，若已有经验 ROI 则直接
+                # 使用经验位置继续（避免“没检出就整体失败”）；否则向上抛。
+                if bbox is None and bboxes:
+                    detect_result = {}
+                else:
+                    raise
             state.data["detect_result"] = detect_result
             state.mark_done("detect")
             state.save()
         result.method = detect_result.get("method", "")
         result.stages["detect"] = detect_result
         _emit(progress_callback, 15, "水印检测完成")
+
+        # 借 remove-mask 经验库：检测结果与经验 ROI 合并，一处视频可同时覆盖
+        # 左上 + 右下等多个水印位置。仅当未指定 bbox（手动区域最高优先级）时生效。
+        if bbox is None and bboxes:
+            merged = [
+                {
+                    "x": int(b[0]),
+                    "y": int(b[1]),
+                    "w": int(b[2]),
+                    "h": int(b[3]),
+                }
+                for b in bboxes
+            ]
+            if detect_result.get("x") is not None and detect_result.get("w"):
+                merged.append(
+                    {
+                        "x": int(detect_result["x"]),
+                        "y": int(detect_result["y"]),
+                        "w": int(detect_result["w"]),
+                        "h": int(detect_result["h"]),
+                    }
+                )
+            detect_result = {
+                "boxes": merged,
+                "method": "roi-experience" + (
+                    "+auto" if len(merged) > len(bboxes) else ""
+                ),
+            }
+            result.method = detect_result["method"]
 
         # ---------- 阶段 3：mask 序列 ----------
         mask_info: dict = {}
@@ -208,8 +249,9 @@ def process_video(
             }
         else:
             _emit(progress_callback, 18, "生成 mask 序列")
+            mask_bbox = detect_result.get("boxes") or detect_result
             mask_info = generate_mask_sequence(
-                detect_result,
+                mask_bbox,
                 frame_info["frame_count"],
                 frame_info["width"],
                 frame_info["height"],

@@ -63,7 +63,7 @@ const Watermark: React.FC<{
   onImportsConsumed?: () => void;
   onGoToPublish?: () => void;
 }> = ({ imports = [], onImportsConsumed, onGoToPublish }) => {
-  const [engine, setEngine] = useState<'remove_ai' | 'seedance' | 'seedance_wm' | 'remove_mask'>('seedance_wm');
+  const [engine, setEngine] = useState<'remove_ai' | 'seedance' | 'seedance_wm' | 'remove_mask'>('remove_mask');
   // RAiW 选项
   const [mark, setMark] = useState('auto');
   const [backend, setBackend] = useState('auto');
@@ -625,8 +625,8 @@ const Watermark: React.FC<{
               optionType="button"
               buttonStyle="solid"
               options={[
-                { value: 'seedance_wm', label: ENGINE_HELP.seedance_wm.label },
                 { value: 'remove_mask', label: ENGINE_HELP.remove_mask.label },
+                { value: 'seedance_wm', label: ENGINE_HELP.seedance_wm.label },
                 { value: 'remove_ai', label: ENGINE_HELP.remove_ai.label },
                 { value: 'seedance', label: ENGINE_HELP.seedance.label },
               ]}

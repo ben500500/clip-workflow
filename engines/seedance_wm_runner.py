@@ -8,6 +8,9 @@
 
 支持的选项：
   -r, --region  x,y,w,h   手动指定水印区域（跳过自动检测）
+  --roi-experience NAME   借 remove-mask 内置 ROI 经验库（按原始文件名匹配，如
+                          648BC321 / C0CC0472 / 0270150E / 3906E761）
+                          · 自动检测到水印时与经验 ROI 合并，可一次覆盖左上+右下
   --backend     auto/lama/migan/cv2
                           - auto / lama / migan：通过 remove-ai-watermarks 的
                             LaMa-ONNX / MI-GAN-ONNX CPU 模型进行高质量修补
@@ -53,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("input", help="输入视频路径")
     p.add_argument("-o", "--output", help="输出视频路径")
     p.add_argument("-r", "--region", help="手动水印区域 x,y,w,h（跳过自动检测）")
+    p.add_argument(
+        "--roi-experience",
+        default=None,
+        help="借 remove-mask 内置 ROI 经验库：原始文件名（自动匹配 8 位码），自动检测时合并",
+    )
     p.add_argument(
         "--backend",
         choices=["auto", "lama", "migan", "cv2"],
@@ -138,13 +146,43 @@ def main(argv=None) -> int:
             print("Error: --region 格式错误，应为 x,y,w,h（如 10,5,120,60）", file=sys.stderr)
             return 1
 
+    # 借 remove-mask 经验库：按原始文件名匹配内置 ROI，命中时在自动检测基础上
+    # 合并经验位置（手动区域最高优先级，此时不叠加经验）。
+    bboxes = None
+    if bbox is None and args.roi_experience:
+        try:
+            from remove_mask_rois import match_rois, probe_video_size, rois_to_bboxes
+
+            rois = match_rois(args.roi_experience)
+            if rois:
+                width, height = probe_video_size(args.input)
+                if width > 0 and height > 0:
+                    bboxes = [list(b) for b in rois_to_bboxes(rois, width, height)]
+                    print(
+                        f"[info] 命中 remove-mask 内置 ROI 经验库: "
+                        f"{list(rois.keys())} → {bboxes}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"[warn] 命中经验库但无法探测视频尺寸，跳过经验 ROI: {args.input}",
+                        file=sys.stderr,
+                    )
+            else:
+                print(
+                    f"[info] 未命中 remove-mask 内置 ROI 经验库: {args.roi_experience}",
+                    file=sys.stderr,
+                )
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] 加载 remove-mask 经验库失败: {e}", file=sys.stderr)
+
     # 确保 cache 目录可写
     cache_dir = getattr(config.cache, "dir", None) or "/tmp/watermark/seedance_wm_cache"
     os.makedirs(cache_dir, exist_ok=True)
 
     remover = Remover(config)
     try:
-        result = remover.process(args.input, args.output, bbox=bbox)
+        result = remover.process(args.input, args.output, bbox=bbox, bboxes=bboxes)
     except WatermarkRemoverError as e:
         print(f"[ERROR] {e.message} (exit={e.exit_code})", file=sys.stderr)
         return e.exit_code
