@@ -91,6 +91,7 @@ async def collect_metrics() -> dict[str, float]:
     metrics: dict[str, float] = {}
 
     # worker_offline：离线节点数（秒，DB 中 last_heartbeat 距今）
+    # 取最久未心跳节点的秒数并取整，保证「当前值」为整数，避免出现小数秒
     async with async_session_factory() as session:
         nodes = (await session.execute(select(WorkerNode))).scalars().all()
         now = datetime.utcnow()
@@ -99,7 +100,7 @@ async def collect_metrics() -> dict[str, float]:
             if node.last_heartbeat:
                 gap = (now - node.last_heartbeat).total_seconds()
                 offline_seconds = max(offline_seconds, gap)
-        metrics["worker_offline"] = offline_seconds
+        metrics["worker_offline"] = int(round(offline_seconds))
 
         # task_failed：失败任务数（连续失败 >3 次的任务）
         failed_tasks = (
@@ -210,6 +211,17 @@ def _evaluate(operator: str, current: float, threshold: float) -> bool:
     return False
 
 
+def _format_metric_value(value) -> str:
+    """格式化指标值：整数不带小数（worker_offline 等），小数保留两位."""
+    try:
+        f = float(value)
+        if f.is_integer():
+            return str(int(f))
+        return f"{f:.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
 async def run_alert_checks() -> dict:
     """执行一轮告警检查：采集指标 → 评估规则 → 落库事件 → 钉钉通知.
 
@@ -241,8 +253,8 @@ async def run_alert_checks() -> dict:
 
             triggered += 1
             message = (
-                f"【{rule.name}】当前值 {current:.2f}，"
-                f"阈值 {rule.operator} {rule.threshold:g}"
+                f"【{rule.name}】当前值 {_format_metric_value(current)}，"
+                f"阈值 {rule.operator} {_format_metric_value(rule.threshold)}"
             )
 
             # 落库事件

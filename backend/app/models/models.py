@@ -37,6 +37,33 @@ ROLE_DISPLAY_NAMES: dict[UserRole, str] = {
 }
 
 
+# 各角色默认数据可见范围（数据隔离，二期方案）
+# - admin/material/publisher：默认可见全部素材
+# - operator：默认仅可见自己账号创建的素材，管理员可通过「权限编辑」授予全部范围
+DEFAULT_DATA_SCOPE: dict[UserRole, str] = {
+    UserRole.admin: "all",
+    UserRole.material: "all",
+    UserRole.publisher: "all",
+    UserRole.operator: "own",
+}
+
+
+def default_data_scope_for_role(role: str) -> str:
+    """根据角色名返回默认数据范围（all=全部素材，own=仅自己创建）."""
+    try:
+        return DEFAULT_DATA_SCOPE.get(UserRole(role), "own")
+    except ValueError:
+        return "own"
+
+
+def user_can_access_all_materials(user: "User") -> bool:
+    """判断用户是否可访问全部素材（数据隔离）. """
+    if user.role in (UserRole.admin.value, UserRole.material.value, UserRole.publisher.value):
+        return True
+    # 运营专员默认仅自己素材，但可通过权限编辑授予 all
+    return getattr(user, "data_scope", "own") == "all"
+
+
 class User(Base):
     """系统用户."""
     __tablename__ = "users"
@@ -46,6 +73,9 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     display_name = Column(String(100), nullable=True)
     role = Column(String(20), default=UserRole.operator.value, nullable=False)
+    # 数据隔离：all=可见全部素材；own=仅可见自己创建的素材
+    # 默认由角色决定（admin/material/publisher=all，operator=own），管理员可通过权限编辑授予
+    data_scope = Column(String(20), default="own", nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -89,6 +119,8 @@ class Project(Base):
     description = Column(Text, nullable=True)
     status = Column(String(50), default="draft")
     config = Column(JSON, default=dict)
+    # 创建人（数据隔离：运营专员默认仅可见自己创建的素材）
+    created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

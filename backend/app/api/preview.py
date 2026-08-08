@@ -2,7 +2,7 @@ import io
 import logging
 import os
 import uuid
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -10,8 +10,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user
 from app.database import get_db
-from app.models.models import SliceOutput, SliceTask
+from app.models.models import SliceOutput, SliceTask, Episode, User
+from app.services.data_scope import check_project_access_by_episode
 from app.services.minio_service import (
     get_presigned_url,
     download_file,
@@ -38,12 +40,29 @@ class BatchDownloadResponse(BaseModel):
     files: List[BatchDownloadItem]
 
 
+async def _check_output_scope(db: AsyncSession, output: SliceOutput, current_user: User):
+    """数据隔离：根据输出文件所属切片任务 → 剧集 → 项目校验访问权限."""
+    if current_user is None:
+        raise HTTPException(status_code=404, detail="Output not found")
+    task = (
+        await db.execute(select(SliceTask).where(SliceTask.id == output.task_id))
+    ).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Output not found")
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == task.episode_id))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
+
+
 @router.get("/outputs/{output_id}/preview/frames")
 async def preview_frames(
     output_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get preview frame URLs for a slice output."""
+    """Get preview frame URLs for a slice output（数据隔离）. """
     try:
         oid = uuid.UUID(output_id)
     except ValueError:
@@ -53,6 +72,9 @@ async def preview_frames(
     output = result.scalar_one_or_none()
     if not output:
         raise HTTPException(status_code=404, detail="Output not found")
+
+    # 数据隔离
+    await _check_output_scope(db, output, current_user)
 
     if not output.file_key:
         raise HTTPException(status_code=400, detail="Output has no file key")
@@ -92,9 +114,10 @@ async def preview_frames(
 @router.get("/outputs/{output_id}/preview/video")
 async def preview_video(
     output_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a presigned video URL for preview."""
+    """Get a presigned video URL for preview（数据隔离）. """
     try:
         oid = uuid.UUID(output_id)
     except ValueError:
@@ -104,6 +127,9 @@ async def preview_video(
     output = result.scalar_one_or_none()
     if not output:
         raise HTTPException(status_code=404, detail="Output not found")
+
+    # 数据隔离
+    await _check_output_scope(db, output, current_user)
 
     if not output.file_key:
         raise HTTPException(status_code=400, detail="Output has no file key")
@@ -125,9 +151,10 @@ async def preview_video(
 @router.get("/outputs/{output_id}/download")
 async def download_output(
     output_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Download a single output file via presigned URL."""
+    """Download a single output file via presigned URL（数据隔离）. """
     try:
         oid = uuid.UUID(output_id)
     except ValueError:
@@ -137,6 +164,9 @@ async def download_output(
     output = result.scalar_one_or_none()
     if not output:
         raise HTTPException(status_code=404, detail="Output not found")
+
+    # 数据隔离
+    await _check_output_scope(db, output, current_user)
 
     if not output.file_key:
         raise HTTPException(status_code=400, detail="Output has no file key")
@@ -173,9 +203,10 @@ async def _cleanup_tmp(path: str):
 @router.post("/outputs/batch-download")
 async def batch_download(
     data: BatchDownloadRequest,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """批量下载：返回每个输出文件的直链列表，由前端按顺序逐个下载（不再打包 ZIP）。"""
+    """批量下载：返回每个输出文件的直链列表，由前端按顺序逐个下载（不再打包 ZIP，数据隔离）. """
     if not data.output_ids:
         raise HTTPException(status_code=400, detail="No output IDs provided")
 
@@ -185,7 +216,7 @@ async def batch_download(
             detail="Cannot batch download more than 100 files at once",
         )
 
-    # 逐个生成 presigned 直链，跳过无效/无文件的输出
+    # 逐个生成 presigned 直链，跳过无效/无文件的输出（含越权项）
     files: List[BatchDownloadItem] = []
     for oid_str in data.output_ids:
         try:
@@ -196,6 +227,12 @@ async def batch_download(
         result = await db.execute(select(SliceOutput).where(SliceOutput.id == oid))
         output = result.scalar_one_or_none()
         if not output or not output.file_key:
+            continue
+
+        # 数据隔离：越权项直接跳过
+        try:
+            await _check_output_scope(db, output, current_user)
+        except HTTPException:
             continue
 
         url = await get_presigned_url("sliced", output.file_key, expires_seconds=7200)

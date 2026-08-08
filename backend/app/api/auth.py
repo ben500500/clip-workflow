@@ -28,7 +28,14 @@ from app.auth import (
     verify_password,
 )
 from app.database import get_db
-from app.models.models import ROLE_DISPLAY_NAMES, AuditLog, User, UserSession, UserRole
+from app.models.models import (
+    ROLE_DISPLAY_NAMES,
+    AuditLog,
+    User,
+    UserRole,
+    UserSession,
+    default_data_scope_for_role,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
@@ -68,6 +75,8 @@ class UserResponse(BaseModel):
     display_name: str | None
     role: str
     role_display: str
+    # 数据隔离：数据可见范围（all=全部素材，own=仅自己创建）
+    data_scope: str = "own"
     is_active: bool
     menus: list[str] = []
     created_at: str | None = None
@@ -85,6 +94,10 @@ class RegisterRequest(BaseModel):
 
 class UpdateRoleRequest(BaseModel):
     role: str
+
+
+class UpdateDataScopeRequest(BaseModel):
+    data_scope: str
 
 
 class UpdateProfileRequest(BaseModel):
@@ -106,6 +119,7 @@ def _user_to_response(user: User) -> UserResponse:
         display_name=user.display_name,
         role=user.role,
         role_display=ROLE_DISPLAY_NAMES.get(UserRole(user.role), user.role),
+        data_scope=getattr(user, "data_scope", None) or default_data_scope_for_role(user.role),
         is_active=user.is_active,
         menus=get_role_menus(user.role),
         created_at=user.created_at.isoformat() if user.created_at else None,
@@ -361,6 +375,8 @@ async def register(
         password_hash=get_password_hash(req.password),
         display_name=req.display_name or req.username,
         role=req.role,
+        # 数据隔离：注册时按角色默认数据范围（admin/material/publisher=all，operator=own）
+        data_scope=default_data_scope_for_role(req.role),
         is_active=True,
     )
     db.add(user)
@@ -414,10 +430,56 @@ async def update_user_role(
 
     before = {"role": user.role}
     user.role = req.role
+    # 角色变更时同步重置为角色默认数据范围（权限编辑仍可单独授予）
+    user.data_scope = default_data_scope_for_role(req.role)
     await db.flush()
     await _write_audit(
         db, "user.role.update", current_user, "user", str(user.id),
-        before=before, after={"role": user.role},
+        before=before, after={"role": user.role, "data_scope": user.data_scope},
+    )
+    await db.refresh(user)
+    return _user_to_response(user)
+
+
+@router.put("/users/{user_id}/data-scope", response_model=UserResponse)
+async def update_user_data_scope(
+    user_id: str,
+    req: UpdateDataScopeRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+):
+    """权限编辑：授予/收回用户的数据可见范围（仅管理员可调用）。
+
+    - data_scope="all"：可见全部素材
+    - data_scope="own"：仅可见自己创建的素材
+
+    用于管理员给运营专员单独授予「全部素材」的查看权限，
+    覆盖其角色默认的 own 范围。
+    """
+    scope = req.data_scope
+    if scope not in ("all", "own"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="data_scope 仅支持 all（全部素材）或 own（仅自己创建）",
+        )
+
+    from uuid import UUID
+    try:
+        uid = UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="无效的用户 ID")
+
+    result = await db.execute(select(User).where(User.id == uid))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    before = {"data_scope": getattr(user, "data_scope", None)}
+    user.data_scope = scope
+    await db.flush()
+    await _write_audit(
+        db, "user.data_scope.update", current_user, "user", str(user.id),
+        before=before, after={"data_scope": user.data_scope},
     )
     await db.refresh(user)
     return _user_to_response(user)

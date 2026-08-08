@@ -21,6 +21,7 @@ export interface Project {
   description: string | null;
   status: string;
   config: Record<string, unknown> | null;
+  created_by?: string | null;
   created_at: string;
   updated_at: string;
   episode_count: number;
@@ -488,6 +489,7 @@ export interface User {
   display_name?: string | null;
   role: Role;
   role_display?: string;
+  data_scope?: string;
   menus?: string[];
   is_active: boolean;
   created_at?: string;
@@ -510,6 +512,11 @@ export const ROLE_OPTIONS: RoleOption[] = [
   { value: 'operator', label: '运营专员' },
   { value: 'publisher', label: '发布专员' },
   { value: 'material', label: '素材专员' },
+];
+
+export const DATA_SCOPE_OPTIONS = [
+  { value: 'all', label: '全部素材' },
+  { value: 'own', label: '仅自己创建' },
 ];
 
 // ========== 监控告警（三期） ==========
