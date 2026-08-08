@@ -126,11 +126,32 @@ const PublishMaterialTab: React.FC = () => {
   };
 
   const handleCopy = async (key: string, textToCopy: string) => {
+    // 非 HTTPS 环境（http://IP 访问）navigator.clipboard 不可用，需降级方案
     try {
-      await navigator.clipboard.writeText(textToCopy);
-      setCopiedKey(key);
-      message.success('已复制到剪贴板');
-      setTimeout(() => setCopiedKey(''), 2000);
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(textToCopy);
+        setCopiedKey(key);
+        message.success('已复制到剪贴板');
+        setTimeout(() => setCopiedKey(''), 2000);
+        return;
+      }
+      // 降级：textarea + execCommand('copy')，兼容 http://IP 部署环境
+      const textarea = document.createElement('textarea');
+      textarea.value = textToCopy;
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (ok) {
+        setCopiedKey(key);
+        message.success('已复制到剪贴板');
+        setTimeout(() => setCopiedKey(''), 2000);
+      } else {
+        message.error('复制失败，请手动选择复制');
+      }
     } catch {
       message.error('复制失败，请手动选择复制');
     }
