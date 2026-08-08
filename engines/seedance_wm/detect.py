@@ -25,6 +25,13 @@ log = get_logger("detect")
 
 DETECTORS = ("matchTemplate", "yolov8_seg", "paddleocr")
 
+# 检测器显示名（用于向用户展示已尝试的检测方法）
+DETECTOR_DISPLAY = {
+    "matchTemplate": "边缘模板检测",
+    "yolov8_seg": "YOLO 目标检测",
+    "paddleocr": "OCR 文字检测",
+}
+
 
 def _roi_image(img: np.ndarray, roi: dict) -> np.ndarray:
     h, w = img.shape[:2]
@@ -247,5 +254,8 @@ def detect_watermark(
             log.warning("detect_watermark %s failed: %s", name, e.message)
 
     raise DetectFailError(
-        "All detection methods failed (attempted: {}). 请使用 --bbox x,y,w,h 手动指定水印位置。".format(", ".join(attempted))
+        "未检测到水印（已尝试: {}）。该视频可能本身不含水印，无需处理；"
+        "如需移除特定位置的水印/角标，可在页面手动指定水印区域 (x,y,w,h)。".format(
+            "、".join(DETECTOR_DISPLAY.get(name, name) for name in attempted)
+        )
     )
