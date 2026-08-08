@@ -646,6 +646,7 @@ class ShortdramaPrompt(Base):
     """短片制作（v6）：Seedance 提示词生成记录。
 
     保存每次「文案 → Seedance 提示词」的生成历史，
+    支持关联成片视频（Seedance 生成结果），可一键导入去水印流程，
     与去水印任务共同构成「短片制作」工作流（提示词生成 → 去水印出片）。
     """
     __tablename__ = "shortdrama_prompts"
@@ -653,7 +654,7 @@ class ShortdramaPrompt(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # 用户输入的短剧文案（对白/旁白原文）
     source_text = Column(Text, nullable=False)
-    # 时长：10 / 15 秒
+    # 时长：10 / 15 秒或自定义秒数
     duration = Column(Integer, default=15, nullable=False)
     # 题材 / 基调 / 角色 / 补充要求（可选）
     theme = Column(String(200), nullable=True)
@@ -664,6 +665,14 @@ class ShortdramaPrompt(Base):
     model = Column(String(100), nullable=True)
     # 生成的 Seedance 提示词正文
     prompt_text = Column(Text, nullable=False)
+    # 关联的成片视频（Seedance 生成结果，可一键导入去水印流程）
+    video_file_name = Column(String(500), nullable=True)
+    video_file_key = Column(String(500), nullable=True)
+    video_bucket = Column(String(50), nullable=True)
+    video_file_size = Column(BigInteger, nullable=True)
+    video_status = Column(String(50), nullable=True)  # uploaded / pending / running / completed / failed
+    video_error_message = Column(Text, nullable=True)
+    video_uploaded_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     def __repr__(self) -> str:

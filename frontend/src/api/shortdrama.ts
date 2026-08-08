@@ -11,6 +11,15 @@ export interface ShortdramaPromptRecord {
   model: string | null;
   prompt_text: string;
   created_at: string;
+  // 成片视频附件（Seedance 生成结果，可一键导入去水印流程）
+  video_file_name?: string | null;
+  video_file_key?: string | null;
+  video_bucket?: string | null;
+  video_file_size?: number | null;
+  video_status?: string | null;
+  video_error_message?: string | null;
+  video_url?: string | null;
+  video_uploaded_at?: string | null;
 }
 
 export interface PromptGenerateParams {
@@ -41,4 +50,45 @@ export const shortdramaApi = {
 
   deletePrompt: (recordId: string) =>
     client.delete(`/shortdrama/prompts/${recordId}`) as Promise<{ message: string; record_id: string }>,
+
+  // ── 成片视频：上传 / 播放 / 删除 / 一键导入去水印 ──
+  uploadVideo: (recordId: string, file: File, onProgress?: (percent: number) => void) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return client.post(`/shortdrama/prompts/${recordId}/video`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 3600000,
+      onUploadProgress: (progressEvent) => {
+        if (onProgress && progressEvent.total) {
+          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          onProgress(percent);
+        }
+      },
+    }) as Promise<ShortdramaPromptRecord>;
+  },
+
+  getVideo: (recordId: string) =>
+    client.get(`/shortdrama/prompts/${recordId}/video`) as Promise<{
+      record_id: string;
+      file_name: string;
+      url: string;
+      file_size: number | null;
+      status: string | null;
+    }>,
+
+  deleteVideo: (recordId: string) =>
+    client.delete(`/shortdrama/prompts/${recordId}/video`) as Promise<{
+      message: string;
+      record_id: string;
+    }>,
+
+  importToWatermark: (recordId: string) =>
+    client.post(`/shortdrama/prompts/${recordId}/import-to-watermark`) as Promise<{
+      record_id: string;
+      file_name: string | null;
+      source_file_key: string;
+      bucket: string;
+      file_size: number | null;
+      message: string;
+    }>,
 };

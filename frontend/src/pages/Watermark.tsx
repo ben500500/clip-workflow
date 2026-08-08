@@ -37,6 +37,13 @@ interface PendingFile {
   uploadPercent: number;
 }
 
+// 从「短片制作」生成历史一键导入的成片视频
+export interface ImportedVideo {
+  sourceFileKey: string;
+  fileName: string | null;
+  fileSize: number | null;
+}
+
 const STATUS_LABELS: Record<string, string> = {
   pending: '等待处理',
   running: '处理中',
@@ -45,7 +52,10 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: '已取消',
 };
 
-const Watermark: React.FC = () => {
+const Watermark: React.FC<{
+  imports?: ImportedVideo[];
+  onImportsConsumed?: () => void;
+}> = ({ imports = [], onImportsConsumed }) => {
   const [engine, setEngine] = useState<'remove_ai' | 'seedance' | 'seedance_wm'>('seedance_wm');
   // RAiW 选项
   const [mark, setMark] = useState('auto');
@@ -76,6 +86,29 @@ const Watermark: React.FC = () => {
   const [previewVideo, setPreviewVideo] = useState<{ url: string; title: string } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ─── 接收从「短片制作」历史一键导入的成片视频 ───
+  useEffect(() => {
+    if (imports.length === 0) return;
+    setPendingFiles((prev) => {
+      const existing = new Set(prev.map((f) => f.sourceFileKey));
+      const next = [...prev];
+      imports.forEach((imp) => {
+        if (imp.sourceFileKey && !existing.has(imp.sourceFileKey)) {
+          next.push({
+            uploadId: `import-${Date.now()}-${next.length}-${Math.random().toString(36).slice(2, 8)}`,
+            fileName: imp.fileName || imp.sourceFileKey.split('/').pop() || '导入视频',
+            fileSize: imp.fileSize ?? 0,
+            sourceFileKey: imp.sourceFileKey,
+            uploadPercent: 100,
+          });
+        }
+      });
+      return next;
+    });
+    message.success(`已导入 ${imports.length} 条成片视频，可直接提交去水印`);
+    if (onImportsConsumed) onImportsConsumed();
+  }, [imports, onImportsConsumed]);
 
   // ─── 任务历史加载 ───
   const fetchTasks = useCallback(async (silent = false) => {

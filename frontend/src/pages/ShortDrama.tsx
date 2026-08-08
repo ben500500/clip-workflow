@@ -1,15 +1,17 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Card, Typography, Space, Button, Input, Radio, Tag, Table, Modal,
-  Popconfirm, message, Steps, Alert, Empty, Tabs,
+  Popconfirm, message, Steps, Alert, Empty, Tabs, Select, InputNumber,
+  AutoComplete, Upload, Tooltip,
 } from 'antd';
 import {
   ThunderboltOutlined, CopyOutlined, DeleteOutlined, ReloadOutlined,
   ClearOutlined, VideoCameraOutlined, FileTextOutlined, CheckOutlined,
+  UploadOutlined, PlayCircleOutlined, ImportOutlined, InboxOutlined,
 } from '@ant-design/icons';
 import { shortdramaApi, type ShortdramaPromptRecord } from '../api/shortdrama';
-import Watermark from './Watermark';
-import { formatDateTime } from '../utils/format';
+import Watermark, { type ImportedVideo } from './Watermark';
+import { formatDateTime, formatFileSize } from '../utils/format';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -27,10 +29,53 @@ const EXAMPLE_SCRIPTS: Record<string, string> = {
 （画外音旁白）而当年那个把我赶出公司的总监，此刻正站在我面前，脸上写满了错愕。`,
 };
 
+// ── 短剧市场调研：题材 / 基调 / 角色 预设备选（均可自由输入） ──
+// 参考当前短剧投放市场的热门分类：都市逆袭、战神赘婿、豪门霸总、甜宠、
+// 重生复仇、穿越古装、萌宝团宠、悬疑反转、家庭伦理、轻喜搞笑等。
+const THEME_OPTIONS = [
+  { value: '都市逆袭爽文' },
+  { value: '职场逆袭' },
+  { value: '战神归来' },
+  { value: '赘婿逆袭' },
+  { value: '豪门霸总' },
+  { value: '重生复仇' },
+  { value: '穿越古装' },
+  { value: '玄幻修仙' },
+  { value: '甜宠' },
+  { value: '萌宝团宠' },
+  { value: '悬疑反转' },
+  { value: '家庭伦理' },
+  { value: '轻喜搞笑' },
+  { value: '神医圣手' },
+  { value: '民国风云' },
+];
+
+const TONE_OPTIONS = [
+  { value: '先压抑后爽快' },
+  { value: '轻松幽默' },
+  { value: '紧张悬疑' },
+  { value: '甜宠温馨' },
+  { value: '热血燃爆' },
+  { value: '催泪虐心' },
+  { value: '反转不断' },
+  { value: '冷峻暗黑' },
+  { value: '明快治愈' },
+];
+
+// 角色预设：按短剧常见人设组合，供快速挑选后自行补充描述
+const CHARACTER_OPTIONS = [
+  { value: '女主：女，25岁，职业装，干练倔强；男主：男，28岁，西装，高冷腹黑；反派：女，27岁，时尚套装，心机深沉' },
+  { value: '男主：男，30岁，西装，霸道总裁；女主：女，24岁，休闲装，甜美纯真；萌宝：男，5岁，童装，古灵精怪' },
+  { value: '男主：男，35岁，军装/便装，沉稳战神；女主：女，26岁，简约着装，温婉坚韧；反派：男，40岁，名牌西装，阴险嚣张' },
+  { value: '男主：男，28岁，朴素工装，隐忍逆袭；女主：女，25岁，都市穿搭，知性温柔；岳父：男，55岁，中山装，势利刻薄' },
+  { value: '女主：女，22岁，古装，机灵聪慧；男主：男，27岁，古装，冷面深情；反派：女，25岁，华服，嫉妒狠辣' },
+];
+
 const ShortDrama: React.FC = () => {
   // ── 提示词生成表单 ──
   const [text, setText] = useState('');
   const [duration, setDuration] = useState<number>(15);
+  const [durationCustom, setDurationCustom] = useState(false);
   const [theme, setTheme] = useState('');
   const [tone, setTone] = useState('');
   const [characters, setCharacters] = useState('');
@@ -47,6 +92,10 @@ const ShortDrama: React.FC = () => {
   const [records, setRecords] = useState<ShortdramaPromptRecord[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [previewRecord, setPreviewRecord] = useState<ShortdramaPromptRecord | null>(null);
+
+  // 去水印页签：一键导入的成片视频
+  const [activeTab, setActiveTab] = useState('prompt');
+  const [watermarkImports, setWatermarkImports] = useState<ImportedVideo[]>([]);
 
   // ── 加载历史 ──
   const fetchRecords = useCallback(async (silent = false) => {
@@ -125,14 +174,69 @@ const ShortDrama: React.FC = () => {
     }
   };
 
+  // ── 成片视频：上传 / 删除 / 一键导入去水印 ──
+  const handleUploadVideo = async (record: ShortdramaPromptRecord, file: File) => {
+    try {
+      const updated = await shortdramaApi.uploadVideo(record.id, file);
+      message.success('视频上传成功，可一键导入去水印');
+      // 更新当前行数据
+      setRecords((prev) => prev.map((r) => (r.id === record.id ? { ...r, ...updated } : r)));
+      if (previewRecord && previewRecord.id === record.id) {
+        setPreviewRecord({ ...previewRecord, ...updated });
+      }
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '视频上传失败');
+    }
+  };
+
+  const handleDeleteVideo = async (record: ShortdramaPromptRecord) => {
+    try {
+      const res = await shortdramaApi.deleteVideo(record.id);
+      message.success(res.message);
+      const updated = { ...record, video_file_name: null, video_file_key: null, video_bucket: null, video_file_size: null, video_status: null, video_url: null, video_uploaded_at: null };
+      setRecords((prev) => prev.map((r) => (r.id === record.id ? updated : r)));
+      if (previewRecord && previewRecord.id === record.id) {
+        setPreviewRecord(updated);
+      }
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '视频删除失败');
+    }
+  };
+
+  const handleImportToWatermark = async (record: ShortdramaPromptRecord) => {
+    try {
+      const res = await shortdramaApi.importToWatermark(record.id);
+      setWatermarkImports([
+        {
+          sourceFileKey: res.source_file_key,
+          fileName: res.file_name,
+          fileSize: res.file_size,
+        },
+      ]);
+      setActiveTab('watermark');
+      message.success(res.message || '已导入去水印流程');
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '导入去水印失败');
+    }
+  };
+
+  // ── 时长切换 ──
+  const switchDurationMode = (custom: boolean) => {
+    setDurationCustom(custom);
+    if (custom) {
+      // 切到自定义时给一个默认值
+      setDuration((prev) => (prev === 10 || prev === 15 ? 20 : prev));
+    }
+  };
+
   // ── 历史表格列 ──
   const recordColumns = [
     {
       title: '时长',
       dataIndex: 'duration',
       key: 'duration',
-      width: 70,
-      render: (d: number) => <Tag color={d === 10 ? 'blue' : 'purple'}>{d}s</Tag>,
+      width: 80,
+      render: (d: number) => <Tag color={d === 10 ? 'blue' : d === 15 ? 'purple' : 'orange'}>{d}s</Tag>,
     },
     {
       title: '文案（摘要）',
@@ -146,7 +250,7 @@ const ShortDrama: React.FC = () => {
     {
       title: '题材 / 基调',
       key: 'theme_tone',
-      width: 160,
+      width: 150,
       render: (_: unknown, r: ShortdramaPromptRecord) => (
         <Space size={4} wrap>
           {r.theme ? <Tag>{r.theme}</Tag> : null}
@@ -156,10 +260,30 @@ const ShortDrama: React.FC = () => {
       ),
     },
     {
+      title: '成片视频',
+      key: 'video',
+      width: 220,
+      render: (_: unknown, r: ShortdramaPromptRecord) => {
+        if (r.video_status && r.video_file_name) {
+          return (
+            <Space size={4} wrap>
+              <Tag color="green" icon={<VideoCameraOutlined />}>
+                {r.video_file_name.length > 16 ? `${r.video_file_name.slice(0, 16)}…` : r.video_file_name}
+              </Tag>
+              {r.video_file_size ? (
+                <Text type="secondary" style={{ fontSize: 12 }}>{formatFileSize(r.video_file_size)}</Text>
+              ) : null}
+            </Space>
+          );
+        }
+        return <Text type="secondary" style={{ fontSize: 12 }}>未上传</Text>;
+      },
+    },
+    {
       title: '模型',
       dataIndex: 'model',
       key: 'model',
-      width: 130,
+      width: 120,
       ellipsis: true,
       render: (m: string | null) => (m ? <Text style={{ fontSize: 12 }}>{m}</Text> : '-'),
     },
@@ -167,18 +291,42 @@ const ShortDrama: React.FC = () => {
       title: '生成时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 150,
+      width: 140,
       render: (d: string) => <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text>,
     },
     {
       title: '操作',
       key: 'action',
-      width: 160,
+      width: 240,
       render: (_: unknown, r: ShortdramaPromptRecord) => (
-        <Space size="small">
+        <Space size="small" wrap>
           <Button size="small" onClick={() => setPreviewRecord(r)}>
             查看
           </Button>
+          <Upload
+            accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
+            showUploadList={false}
+            customRequest={({ file }) => {
+              handleUploadVideo(r, file as File);
+            }}
+          >
+            <Button size="small" icon={<UploadOutlined />}>
+              {r.video_status ? '更换' : '上传视频'}
+            </Button>
+          </Upload>
+          {r.video_status && r.video_file_key && (
+            <Tooltip title="把该成片视频导入到去水印流程处理">
+              <Button
+                size="small"
+                type="primary"
+                ghost
+                icon={<ImportOutlined />}
+                onClick={() => handleImportToWatermark(r)}
+              >
+                导入去水印
+              </Button>
+            </Tooltip>
+          )}
           <Popconfirm
             title="删除该条生成记录？"
             okText="删除"
@@ -201,24 +349,48 @@ const ShortDrama: React.FC = () => {
           <Alert
             type="info"
             showIcon
-            message="根据《Seedance短剧视频生成提示词模板》七段结构生成：题材基调 / 故事 / 场景人物 / 镜头执行 / 音频 / 画面风格 / 性别声明。模型借用 AutoClip 中配置的大模型。"
+            message="根据《Seedance短剧视频生成提示词模板》七段结构生成：题材基调 / 故事 / 场景人物 / 镜头执行 / 音频 / 画面风格 / 性别声明。模型借用 AutoClip 中配置的大模型。提示词中的人名、地名等一律使用代称，结尾自动附上侵权/违规改写确认句。"
           />
 
-          {/* 时长 */}
+          {/* 时长：预设 + 自定义 */}
           <Space wrap>
             <Text strong>视频时长：</Text>
             <Radio.Group
-              value={duration}
-              onChange={(e) => setDuration(e.target.value)}
+              value={durationCustom ? 'custom' : 'preset'}
+              onChange={(e) => switchDurationMode(e.target.value === 'custom')}
               optionType="button"
               buttonStyle="solid"
               options={[
-                { value: 10, label: '10 秒' },
-                { value: 15, label: '15 秒' },
+                { value: 'preset', label: '预设时长' },
+                { value: 'custom', label: '自定义' },
               ]}
             />
+            {durationCustom ? (
+              <Space>
+                <InputNumber
+                  min={3}
+                  max={300}
+                  value={duration}
+                  onChange={(v) => setDuration(Number(v) || 15)}
+                  addonAfter="秒"
+                  style={{ width: 130 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>支持 3~300 秒自定义</Text>
+              </Space>
+            ) : (
+              <Radio.Group
+                value={duration}
+                onChange={(e) => setDuration(e.target.value)}
+                optionType="button"
+                buttonStyle="solid"
+                options={[
+                  { value: 10, label: '10 秒' },
+                  { value: 15, label: '15 秒' },
+                ]}
+              />
+            )}
             <Text type="secondary" style={{ fontSize: 12 }}>
-              10s：3s 钩子 / 4s 铺垫 / 3s 反转；15s：3s 钩子 / 6s 铺垫 / 6s 反转
+              10s：3s 钩子 / 4s 铺垫 / 3s 反转；15s：3s 钩子 / 6s 铺垫 / 6s 反转；自定义按比例分配三镜头
             </Text>
           </Space>
 
@@ -227,12 +399,12 @@ const ShortDrama: React.FC = () => {
             <Space style={{ marginBottom: 6 }}>
               <Text strong>短剧文案：</Text>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                对白 / 旁白原文，生成时将逐字锁定、禁止模型扩写
+                对白 / 旁白原文，生成时将逐字锁定、禁止模型扩写；人名/地名将自动替换为代称
               </Text>
             </Space>
             <TextArea
               rows={8}
-              placeholder="在此输入短剧文案（对白用【角色】标注、旁白标注（画外音旁白）），支持 10s / 15s 剧情…"
+              placeholder="在此输入短剧文案（对白用【角色】标注、旁白标注（画外音旁白）），支持 10s / 15s / 自定义时长剧情…"
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
@@ -250,29 +422,41 @@ const ShortDrama: React.FC = () => {
             </Space>
           </div>
 
-          {/* 可选参数 */}
-          <Space wrap>
-            <Text>题材：</Text>
-            <Input
-              placeholder="如：职场逆袭爽文"
-              value={theme}
-              onChange={(e) => setTheme(e.target.value)}
-              style={{ width: 150 }}
-            />
-            <Text>基调：</Text>
-            <Input
-              placeholder="如：先压抑后爽快"
-              value={tone}
-              onChange={(e) => setTone(e.target.value)}
-              style={{ width: 150 }}
-            />
-            <Text>角色：</Text>
-            <Input
-              placeholder="如：林晚，女，28岁，职业装；总监，男，40岁，西装"
-              value={characters}
-              onChange={(e) => setCharacters(e.target.value)}
-              style={{ width: 300 }}
-            />
+          {/* 可选参数：题材 / 基调 / 角色（下拉预设 + 可自定义输入） */}
+          <Space wrap align="start">
+            <Space>
+              <Text>题材：</Text>
+              <AutoComplete
+                style={{ width: 180 }}
+                value={theme}
+                onChange={setTheme}
+                options={THEME_OPTIONS}
+                placeholder="选择或输入题材"
+                allowClear
+              />
+            </Space>
+            <Space>
+              <Text>基调：</Text>
+              <AutoComplete
+                style={{ width: 160 }}
+                value={tone}
+                onChange={setTone}
+                options={TONE_OPTIONS}
+                placeholder="选择或输入基调"
+                allowClear
+              />
+            </Space>
+            <Space>
+              <Text>角色：</Text>
+              <AutoComplete
+                style={{ width: 360 }}
+                value={characters}
+                onChange={setCharacters}
+                options={CHARACTER_OPTIONS}
+                placeholder="选择预设人设或自定义，如：女主，女，25岁，职业装…"
+                allowClear
+              />
+            </Space>
           </Space>
           <div>
             <Text>补充要求：</Text>
@@ -303,7 +487,7 @@ const ShortDrama: React.FC = () => {
           {resultPrompt && (
             <Card size="small" type="inner" title="生成结果">
               <Space style={{ marginBottom: 8 }} wrap>
-                <Tag color={duration === 10 ? 'blue' : 'purple'}>{duration}s 模板</Tag>
+                <Tag color={duration === 10 ? 'blue' : duration === 15 ? 'purple' : 'orange'}>{duration}s 模板</Tag>
                 {resultModel && <Tag color="cyan">模型：{resultModel}</Tag>}
                 {resultRecordId && <Tag color="green">已保存到历史</Tag>}
                 <Button
@@ -357,7 +541,7 @@ const ShortDrama: React.FC = () => {
           dataSource={records}
           columns={recordColumns}
           pagination={{ pageSize: 8, showSizeChanger: false }}
-          scroll={{ x: 920 }}
+          scroll={{ x: 1180 }}
           locale={{
             emptyText: (
               <Empty
@@ -377,7 +561,7 @@ const ShortDrama: React.FC = () => {
         <Title level={4} style={{ margin: 0 }}>
           <VideoCameraOutlined /> 短片制作
         </Title>
-        <Tag color="green">v6 新增</Tag>
+        <Tag color="green">v6.1 新增</Tag>
       </Space>
 
       {/* ── 工作流 ── */}
@@ -388,14 +572,15 @@ const ShortDrama: React.FC = () => {
           items={[
             { title: '输入文案', description: '对白/旁白原文' },
             { title: '生成提示词', description: '复用 AutoClip 模型' },
-            { title: 'Seedance 生成', description: '10s / 15s 竖屏' },
-            { title: '去水印出片', description: '「去水印」页签完成' },
+            { title: 'Seedance 生成', description: '10s / 15s / 自定义竖屏' },
+            { title: '去水印出片', description: '历史一键导入「去水印」页签' },
           ]}
         />
       </Card>
 
       <Tabs
-        defaultActiveKey="prompt"
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'prompt',
@@ -413,24 +598,29 @@ const ShortDrama: React.FC = () => {
                 <ClearOutlined /> ② 去水印
               </span>
             ),
-            children: <Watermark />,
+            children: (
+              <Watermark
+                imports={watermarkImports}
+                onImportsConsumed={() => setWatermarkImports([])}
+              />
+            ),
           },
         ]}
       />
 
-      {/* ── 提示词详情弹窗 ── */}
+      {/* ── 提示词详情弹窗（含成片视频上传 / 预览 / 导入去水印） ── */}
       <Modal
         title="提示词详情"
         open={!!previewRecord}
         footer={null}
-        width={820}
+        width={860}
         onCancel={() => setPreviewRecord(null)}
         destroyOnClose
       >
         {previewRecord && (
           <div>
             <Space style={{ marginBottom: 8 }} wrap>
-              <Tag color={previewRecord.duration === 10 ? 'blue' : 'purple'}>
+              <Tag color={previewRecord.duration === 10 ? 'blue' : previewRecord.duration === 15 ? 'purple' : 'orange'}>
                 {previewRecord.duration}s
               </Tag>
               {previewRecord.theme && <Tag>{previewRecord.theme}</Tag>}
@@ -440,6 +630,79 @@ const ShortDrama: React.FC = () => {
                 {formatDateTime(previewRecord.created_at)}
               </Text>
             </Space>
+
+            {/* 成片视频区 */}
+            <Card
+              size="small"
+              title="成片视频（Seedance 生成结果）"
+              style={{ marginBottom: 12 }}
+            >
+              {previewRecord.video_status && previewRecord.video_file_name ? (
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Space wrap>
+                    <Tag color="green" icon={<VideoCameraOutlined />}>{previewRecord.video_file_name}</Tag>
+                    {previewRecord.video_file_size ? (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {formatFileSize(previewRecord.video_file_size)}
+                      </Text>
+                    ) : null}
+                  </Space>
+                  {previewRecord.video_url && (
+                    <video
+                      src={previewRecord.video_url}
+                      controls
+                      style={{ width: '100%', maxHeight: 320, background: '#000', borderRadius: 8 }}
+                    />
+                  )}
+                  <Space wrap>
+                    <Upload
+                      accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
+                      showUploadList={false}
+                      customRequest={({ file }) => {
+                        handleUploadVideo(previewRecord!, file as File);
+                      }}
+                    >
+                      <Button size="small" icon={<UploadOutlined />}>更换视频</Button>
+                    </Upload>
+                    <Button
+                      size="small"
+                      type="primary"
+                      ghost
+                      icon={<ImportOutlined />}
+                      onClick={() => handleImportToWatermark(previewRecord!)}
+                    >
+                      一键导入去水印
+                    </Button>
+                    <Popconfirm
+                      title="删除该成片视频？"
+                      description="仅删除视频，保留提示词记录"
+                      okText="删除"
+                      okButtonProps={{ danger: true }}
+                      cancelText="取消"
+                      onConfirm={() => handleDeleteVideo(previewRecord!)}
+                    >
+                      <Button size="small" danger icon={<DeleteOutlined />}>删除视频</Button>
+                    </Popconfirm>
+                  </Space>
+                </Space>
+              ) : (
+                <Space direction="vertical" size={8}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    <InboxOutlined /> 尚未上传成片视频，可上传 Seedance 生成的视频后一键导入去水印流程。
+                  </Text>
+                  <Upload
+                    accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
+                    showUploadList={false}
+                    customRequest={({ file }) => {
+                      handleUploadVideo(previewRecord!, file as File);
+                    }}
+                  >
+                    <Button icon={<UploadOutlined />}>上传成片视频</Button>
+                  </Upload>
+                </Space>
+              )}
+            </Card>
+
             <Text strong>原始文案：</Text>
             <pre
               style={{
@@ -479,6 +742,15 @@ const ShortDrama: React.FC = () => {
                 onClick={() => handleCopy(previewRecord!.prompt_text)}
               >
                 复制提示词
+              </Button>
+              <Button
+                icon={<PlayCircleOutlined />}
+                onClick={() => {
+                  if (previewRecord!.video_url) window.open(previewRecord!.video_url, '_blank');
+                }}
+                disabled={!previewRecord!.video_url}
+              >
+                新窗口播放视频
               </Button>
             </Space>
           </div>
