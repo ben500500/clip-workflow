@@ -40,6 +40,8 @@ from app.pipeline.step1_outline import run_step1_outline  # noqa: E402
 from app.pipeline.step2_timeline import run_step2_timeline  # noqa: E402
 from app.pipeline.step3_scoring import run_step3_scoring  # noqa: E402
 from app.pipeline.step4_title import run_step4_title  # noqa: E402
+from app.services.seedance_prompt_generator import generate_seedance_prompt  # noqa: E402
+from app.core.llm_manager import get_llm_manager  # noqa: E402
 
 logger = logging.getLogger("autoclip.main")
 
@@ -385,6 +387,49 @@ async def _run_pipeline(project_id: str, steps: list[int],
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+class SeedancePromptRequest(BaseModel):
+    text: str = ""
+    duration: int = 15          # 10 / 15 秒
+    params: dict = {}           # 可选：theme/tone/characters/extra_requirements
+    max_retries: int = 3
+
+
+@app.post("/api/v1/prompt/generate")
+async def generate_prompt(data: SeedancePromptRequest):
+    """根据短剧文案生成 Seedance 提示词。
+
+    复用 autoclip 中配置的大模型（DASHSCOPE_API_KEY / API_MODEL_NAME），
+    依据《Seedance短剧视频生成提示词模板》七段结构组装提示词正文。
+    """
+    if not data.text or not data.text.strip():
+        raise HTTPException(status_code=400, detail="请输入短剧文案")
+    try:
+        prompt_text = await asyncio.to_thread(
+            generate_seedance_prompt,
+            data.text.strip(),
+            duration=data.duration,
+            params=data.params or {},
+            max_retries=data.max_retries,
+        )
+    except Exception as e:
+        logger.error("Seedance prompt generation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"提示词生成失败: {e}")
+    return {
+        "prompt": prompt_text,
+        "duration": data.duration,
+        "model": _current_llm_model(),
+    }
+
+
+def _current_llm_model() -> str:
+    """返回当前 autoclip LLM 配置中的模型名（尽力而为，失败返回空）。"""
+    try:
+        info = get_llm_manager().get_current_provider_info()
+        return info.get("model") or ""
+    except Exception:
+        return ""
 
 
 # 兼容别名：后端可能通过 /api/v1 前缀调用 health

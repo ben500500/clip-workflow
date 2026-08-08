@@ -316,6 +316,14 @@ clip-workflow/
 | `AlertRule` | `alert_rules` | 告警规则（指标、比较符、阈值、级别、启停） |
 | `AlertEvent` | `alert_events` | 告警事件（触发时间、级别、内容、通知状态） |
 
+#### V4/V6 短片制作（去水印 + 提示词生成）
+
+| 模型类 | 表名 | 说明 |
+|--------|------|------|
+| `WatermarkTask` | `watermark_tasks` | 去水印任务（批量提交，多视频） |
+| `WatermarkVideo` | `watermark_videos` | 去水印任务下的单条视频 |
+| `ShortdramaPrompt` | `shortdrama_prompts` | Seedance 提示词生成历史（文案→七段模板） |
+
 ### 5.2 ER 关系
 
 ```
@@ -496,6 +504,15 @@ audit:
 | `POST` | `/api/dashboard/import/templates/custom` | 保存自定义模板 |
 | `GET` | `/api/dashboard/import/history` | 导入历史记录 |
 
+### 6.8.1 短片制作 API（v6，Seedance 提示词生成）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/shortdrama/prompt/generate` | 根据文案生成 Seedance 提示词（复用 AutoClip 模型） |
+| `GET` | `/api/shortdrama/prompts` | 提示词生成历史列表 |
+| `GET` | `/api/shortdrama/prompts/{id}` | 单条提示词记录详情 |
+| `DELETE` | `/api/shortdrama/prompts/{id}` | 删除提示词记录 |
+
 ### 6.9 WebSocket
 
 | 路径 | 说明 |
@@ -525,15 +542,15 @@ audit:
 | `/slice-worker` | 切片监控 | Worker 节点状态、任务队列、实时日志（v3） |
 | `/monitor` | 监控告警 | 健康检查、告警规则、告警事件（三期） |
 | `/maintenance` | 运维优化 | 数据归档、临时文件清理、MinIO 生命周期（三期） |
-| `/watermark` | 去水印 | 三套开源去水印引擎切换、批量上传/下载、异步进度、任务历史（v4；v5 新增 seedance_wm 引擎） |
+| `/watermark` | 短片制作 | Seedance 短剧提示词生成（复用 AutoClip 模型，七段模板）+ 三套开源去水印引擎切换、批量上传/下载、异步进度、任务历史（v4/v5 去水印；v6 新增提示词生成工作流） |
 | `/settings` | 系统设置 | 全局参数配置 |
 
 ### 7.2 导航菜单
 
 ```
 仪表盘
-项目管理
-去水印
+短剧切片
+短片制作
 发布管理
 数据看板
   ├── 总览
@@ -1019,7 +1036,7 @@ video_metrics.vid            → 渠道参数中的视频标识
 | 角色 | 权限范围 |
 |------|---------|
 | `superadmin` | 全部功能 + 系统配置 + 用户管理 + 审计日志查看 |
-| `admin` | 项目管理 + 发布管理 + 数据看板 + 去重参数配置 + 数据导入 |
+| `admin` | 项目管理（短剧切片） + 发布管理 + 数据看板 + 去重参数配置 + 数据导入 + 短片制作 |
 | `user` | 查看分配给自己的项目 + 录入数据 + 执行分配的任务 |
 
 **权限矩阵**：
@@ -1028,7 +1045,7 @@ video_metrics.vid            → 渠道参数中的视频标识
 |---------|-----------|-------|------|
 | 系统配置 | 读写 | 只读 | 无 |
 | 用户管理 | 增删改查 | 只读 | 无 |
-| 项目管理 | 全部项目 | 全部项目 | 仅分配给自己的 |
+| 项目管理（短剧切片） | 全部项目 | 全部项目 | 仅分配给自己的 |
 | 发布管理 | 全部 | 全部 | 仅分配给自己的 |
 | 数据看板 | 全部 | 全部 | 仅录入 |
 | 去重参数配置 | 读写 | 读写 | 无 |

@@ -37,12 +37,12 @@ const allMenuItems = [
   {
     key: '/projects',
     icon: <ProjectOutlined />,
-    label: '项目管理',
+    label: '短剧切片',
   },
   {
     key: '/watermark',
     icon: <ClearOutlined />,
-    label: '去水印',
+    label: '短片制作',
   },
   {
     key: '/publish',

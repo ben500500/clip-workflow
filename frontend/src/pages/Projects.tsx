@@ -158,7 +158,7 @@ const Projects: React.FC = () => {
   return (
     <div>
       <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
-        <Col><Title level={4} style={{ margin: 0 }}>项目管理</Title></Col>
+        <Col><Title level={4} style={{ margin: 0 }}>短剧切片</Title></Col>
         <Col><Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>新建项目</Button></Col>
       </Row>
       <Card size="small" style={{ marginBottom: 16 }}>
