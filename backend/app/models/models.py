@@ -697,6 +697,9 @@ class ShortdramaPrompt(Base):
     model = Column(String(100), nullable=True)
     # 生成的 Seedance 提示词正文
     prompt_text = Column(Text, nullable=False)
+    # 提示词三版本：长 / 短（固定模板）+ AI（Seedance 生成）
+    prompt_long = Column(Text, nullable=True)
+    prompt_short = Column(Text, nullable=True)
     # 关联的成片视频（Seedance 生成结果，可一键导入去水印流程）
     video_file_name = Column(String(500), nullable=True)
     video_file_key = Column(String(500), nullable=True)

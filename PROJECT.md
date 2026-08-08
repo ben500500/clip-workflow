@@ -509,7 +509,7 @@ audit:
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/shortdrama/prompt/generate` | 根据文案生成 Seedance 提示词（复用 AutoClip 模型，支持 10s/15s/自定义时长） |
+| `POST` | `/api/shortdrama/prompt/generate` | 根据文案一次生成提示词三版本（长提示词/短提示词固定模板 + AI提示词，复用 AutoClip 模型，支持 10s/15s/自定义时长） |
 | `GET` | `/api/shortdrama/prompts` | 提示词生成历史列表（含成片视频签名地址） |
 | `GET` | `/api/shortdrama/prompts/{id}` | 单条提示词记录详情 |
 | `DELETE` | `/api/shortdrama/prompts/{id}` | 删除提示词记录（连同成片视频） |
@@ -556,7 +556,7 @@ audit:
 | `/slice-worker` | 切片监控 | Worker 节点状态、任务队列、实时日志（v3） |
 | `/monitor` | 监控告警 | 健康检查、告警规则、告警事件（三期） |
 | `/maintenance` | 运维优化 | 数据归档、临时文件清理、MinIO 生命周期（三期） |
-| `/watermark` | 短片制作 | Seedance 短剧提示词生成（复用 AutoClip 模型，七段模板，10s/15s/自定义时长，题材/基调/角色下拉预设） + 成片视频上传/一键导入去水印 + 四套开源去水印引擎切换（seedance_wm / remove_mask / RAiW / Seedance 2.0）、批量上传/下载、异步进度、任务历史 + 短剧发布素材生成（短标题/三款配文/成套标签/三条神评，v4/v5 去水印；v6 提示词生成；v6.1 合规代称/自定义时长/预设下拉/历史上传视频导入去水印；v7 发布素材生成；v8 remove_mask ROI 经验库引擎） |
+| `/watermark` | 短片制作 | 提示词生成三版本（长/短固定模板 + AI Seedance 七段模板，复用 AutoClip 模型，10s/15s/自定义时长，题材/基调/角色下拉预设） + 成片视频上传/一键导入去水印 + 四套开源去水印引擎切换（seedance_wm / remove_mask / RAiW / Seedance 2.0）、批量上传/下载、异步进度、任务历史 + 短剧发布素材生成（短标题/三款配文/成套标签/三条神评，v4/v5 去水印；v6 提示词生成；v6.1 合规代称/自定义时长/预设下拉/历史上传视频导入去水印；v7 发布素材生成；v8 remove_mask ROI 经验库引擎；v9 提示词三版本 tab） |
 | `/settings` | 系统设置 | 全局参数配置 |
 
 ### 7.2 导航菜单

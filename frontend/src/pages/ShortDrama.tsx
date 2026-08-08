@@ -84,11 +84,14 @@ const ShortDrama: React.FC = () => {
   const [extra, setExtra] = useState('');
   const [generating, setGenerating] = useState(false);
 
-  // 生成结果
-  const [resultPrompt, setResultPrompt] = useState('');
+  // 生成结果（三版本：长提示词 / 短提示词 / AI提示词）
+  const [resultPrompt, setResultPrompt] = useState('');       // AI 提示词（Seedance 七段）
+  const [resultLong, setResultLong] = useState('');          // 长提示词（固定模板）
+  const [resultShort, setResultShort] = useState('');        // 短提示词（固定模板）
   const [resultModel, setResultModel] = useState<string | null>(null);
   const [resultRecordId, setResultRecordId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [activePromptTab, setActivePromptTab] = useState('long');
 
   // 历史
   const [records, setRecords] = useState<ShortdramaPromptRecord[]>([]);
@@ -138,8 +141,11 @@ const ShortDrama: React.FC = () => {
         save: true,
       });
       setResultPrompt(res.prompt);
+      setResultLong(res.versions?.long || '');
+      setResultShort(res.versions?.short || '');
       setResultModel(res.model || null);
       setResultRecordId(res.record_id || null);
+      setActivePromptTab('long');
       message.success(res.message || '提示词生成成功');
       fetchRecords(true);
     } catch (err: unknown) {
@@ -184,6 +190,8 @@ const ShortDrama: React.FC = () => {
     setCharacters('');
     setExtra('');
     setResultPrompt('');
+    setResultLong('');
+    setResultShort('');
     setResultModel(null);
     setResultRecordId(null);
   };
@@ -521,41 +529,83 @@ const ShortDrama: React.FC = () => {
             </Button>
           </Space>
 
-          {/* 生成结果 */}
-          {resultPrompt && (
+          {/* 生成结果（三版本：长提示词 / 短提示词 / AI提示词） */}
+          {(resultLong || resultShort || resultPrompt) && (
             <Card size="small" type="inner" title="生成结果">
               <Space style={{ marginBottom: 8 }} wrap>
                 <Tag color={duration === 10 ? 'blue' : duration === 15 ? 'purple' : 'orange'}>{duration}s 模板</Tag>
                 {resultModel && <Tag color="cyan">模型：{resultModel}</Tag>}
                 {resultRecordId && <Tag color="green">已保存到历史</Tag>}
-                <Button
-                  size="small"
-                  type="primary"
-                  icon={copied ? <CheckOutlined /> : <CopyOutlined />}
-                  onClick={async () => {
-                    await handleCopy(resultPrompt);
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 2000);
-                  }}
-                >
-                  {copied ? '已复制' : '复制提示词'}
-                </Button>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  长 / 短提示词为固定模板（仅替换文案），AI 提示词为模型生成
+                </Text>
               </Space>
-              <pre
-                style={{
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  background: '#fafafa',
-                  border: '1px solid #f0f0f0',
-                  borderRadius: 8,
-                  padding: 12,
-                  fontSize: 13,
-                  maxHeight: 420,
-                  overflow: 'auto',
-                }}
-              >
-                {resultPrompt}
-              </pre>
+              <Tabs
+                activeKey={activePromptTab}
+                onChange={setActivePromptTab}
+                items={[
+                  {
+                    key: 'long',
+                    label: (
+                      <span>
+                        <FileTextOutlined /> 长提示词
+                        {resultLong ? <Tag style={{ marginLeft: 6 }} color="blue">模板</Tag> : null}
+                      </span>
+                    ),
+                    children: (
+                      <PromptResultBlock
+                        text={resultLong}
+                        onCopy={async () => {
+                          await handleCopy(resultLong);
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        }}
+                        copied={copied}
+                      />
+                    ),
+                  },
+                  {
+                    key: 'short',
+                    label: (
+                      <span>
+                        <FileTextOutlined /> 短提示词
+                        {resultShort ? <Tag style={{ marginLeft: 6 }} color="geekblue">模板</Tag> : null}
+                      </span>
+                    ),
+                    children: (
+                      <PromptResultBlock
+                        text={resultShort}
+                        onCopy={async () => {
+                          await handleCopy(resultShort);
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        }}
+                        copied={copied}
+                      />
+                    ),
+                  },
+                  {
+                    key: 'ai',
+                    label: (
+                      <span>
+                        <ThunderboltOutlined /> AI提示词
+                        {resultPrompt ? <Tag style={{ marginLeft: 6 }} color="purple">Seedance 七段</Tag> : null}
+                      </span>
+                    ),
+                    children: (
+                      <PromptResultBlock
+                        text={resultPrompt}
+                        onCopy={async () => {
+                          await handleCopy(resultPrompt);
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        }}
+                        copied={copied}
+                      />
+                    ),
+                  },
+                ]}
+              />
             </Card>
           )}
         </Space>
@@ -792,30 +842,46 @@ const ShortDrama: React.FC = () => {
             >
               {previewRecord.source_text}
             </pre>
-            <Text strong>生成的提示词：</Text>
-            <pre
-              style={{
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                background: '#fafafa',
-                border: '1px solid #f0f0f0',
-                borderRadius: 8,
-                padding: 10,
-                fontSize: 13,
-                maxHeight: 400,
-                overflow: 'auto',
-              }}
-            >
-              {previewRecord.prompt_text}
-            </pre>
+            <Text strong>生成的提示词（三版本）：</Text>
+            <Tabs
+              defaultActiveKey="long"
+              items={[
+                {
+                  key: 'long',
+                  label: <span><FileTextOutlined /> 长提示词</span>,
+                  children: (
+                    <PromptResultBlock
+                      text={previewRecord.prompt_long || ''}
+                      onCopy={() => handleCopy(previewRecord!.prompt_long || '')}
+                      copied={false}
+                    />
+                  ),
+                },
+                {
+                  key: 'short',
+                  label: <span><FileTextOutlined /> 短提示词</span>,
+                  children: (
+                    <PromptResultBlock
+                      text={previewRecord.prompt_short || ''}
+                      onCopy={() => handleCopy(previewRecord!.prompt_short || '')}
+                      copied={false}
+                    />
+                  ),
+                },
+                {
+                  key: 'ai',
+                  label: <span><ThunderboltOutlined /> AI提示词</span>,
+                  children: (
+                    <PromptResultBlock
+                      text={previewRecord.prompt_text}
+                      onCopy={() => handleCopy(previewRecord!.prompt_text)}
+                      copied={false}
+                    />
+                  ),
+                },
+              ]}
+            />
             <Space style={{ marginTop: 8 }}>
-              <Button
-                type="primary"
-                icon={<CopyOutlined />}
-                onClick={() => handleCopy(previewRecord!.prompt_text)}
-              >
-                复制提示词
-              </Button>
               <Button
                 icon={<PlayCircleOutlined />}
                 onClick={() => {
@@ -832,5 +898,40 @@ const ShortDrama: React.FC = () => {
     </div>
   );
 };
+
+// ── 提示词单版本展示块（带复制按钮） ──
+const PromptResultBlock: React.FC<{
+  text: string;
+  onCopy: () => void;
+  copied: boolean;
+}> = ({ text, onCopy, copied }) => (
+  <div>
+    <Space style={{ marginBottom: 8 }} wrap>
+      <Button
+        size="small"
+        type="primary"
+        icon={copied ? <CheckOutlined /> : <CopyOutlined />}
+        onClick={onCopy}
+      >
+        {copied ? '已复制' : '复制提示词'}
+      </Button>
+    </Space>
+    <pre
+      style={{
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        background: '#fafafa',
+        border: '1px solid #f0f0f0',
+        borderRadius: 8,
+        padding: 12,
+        fontSize: 13,
+        maxHeight: 420,
+        overflow: 'auto',
+      }}
+    >
+      {text || '（该版本暂未生成）'}
+    </pre>
+  </div>
+);
 
 export default ShortDrama;

@@ -10,6 +10,8 @@ export interface ShortdramaPromptRecord {
   extra_requirements: string | null;
   model: string | null;
   prompt_text: string;
+  prompt_long: string | null;
+  prompt_short: string | null;
   created_at: string;
   // 成片视频附件（Seedance 生成结果，可一键导入去水印流程）
   video_file_name?: string | null;
@@ -32,15 +34,22 @@ export interface PromptGenerateParams {
   save?: boolean;
 }
 
+export interface PromptGenerateResult {
+  prompt: string;
+  versions?: {
+    long?: string;
+    short?: string;
+    ai?: string;
+  } | null;
+  duration: number;
+  model?: string | null;
+  record_id?: string | null;
+  message: string;
+}
+
 export const shortdramaApi = {
   generate: (params: PromptGenerateParams) =>
-    client.post('/shortdrama/prompt/generate', params) as Promise<{
-      prompt: string;
-      duration: number;
-      model?: string | null;
-      record_id?: string | null;
-      message: string;
-    }>,
+    client.post('/shortdrama/prompt/generate', params) as Promise<PromptGenerateResult>,
 
   listPrompts: (limit = 50) =>
     client.get('/shortdrama/prompts', { params: { limit } }) as Promise<ShortdramaPromptRecord[]>,

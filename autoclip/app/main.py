@@ -40,7 +40,10 @@ from app.pipeline.step1_outline import run_step1_outline  # noqa: E402
 from app.pipeline.step2_timeline import run_step2_timeline  # noqa: E402
 from app.pipeline.step3_scoring import run_step3_scoring  # noqa: E402
 from app.pipeline.step4_title import run_step4_title  # noqa: E402
-from app.services.seedance_prompt_generator import generate_seedance_prompt  # noqa: E402
+from app.services.seedance_prompt_generator import (  # noqa: E402
+    generate_prompt_versions,
+    generate_seedance_prompt,
+)
 from app.services.publish_material_generator import generate_publish_material  # noqa: E402
 from app.core.llm_manager import get_llm_manager  # noqa: E402
 
@@ -399,16 +402,18 @@ class SeedancePromptRequest(BaseModel):
 
 @app.post("/api/v1/prompt/generate")
 async def generate_prompt(data: SeedancePromptRequest):
-    """根据短剧文案生成 Seedance 提示词。
+    """根据短剧文案一次生成提示词三版本：长提示词 / 短提示词 / AI提示词。
 
-    复用 autoclip 中配置的大模型（DASHSCOPE_API_KEY / API_MODEL_NAME），
-    依据《Seedance短剧视频生成提示词模板》七段结构组装提示词正文。
+    - 长 / 短：固定模板，仅把 [视频文案] 替换为用户输入的文案，不做其它处理；
+    - AI：复用 autoclip 中配置的大模型（DASHSCOPE_API_KEY / API_MODEL_NAME），
+      依据《Seedance短剧视频生成提示词模板》七段结构组装提示词正文（当前这套）。
+    返回结构：{"prompt": 兼容旧字段(AI版), "versions": {"long":.., "short":.., "ai":..}, ...}
     """
     if not data.text or not data.text.strip():
         raise HTTPException(status_code=400, detail="请输入短剧文案")
     try:
-        prompt_text = await asyncio.to_thread(
-            generate_seedance_prompt,
+        versions = await asyncio.to_thread(
+            generate_prompt_versions,
             data.text.strip(),
             duration=data.duration,
             params=data.params or {},
@@ -418,7 +423,8 @@ async def generate_prompt(data: SeedancePromptRequest):
         logger.error("Seedance prompt generation failed: %s", e)
         raise HTTPException(status_code=500, detail=f"提示词生成失败: {e}")
     return {
-        "prompt": prompt_text,
+        "prompt": versions.get("ai") or "",
+        "versions": versions,
         "duration": data.duration,
         "model": _current_llm_model(),
     }

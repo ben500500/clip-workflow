@@ -59,6 +59,7 @@ class PromptGenerateRequest(BaseModel):
 
 class PromptGenerateResponse(BaseModel):
     prompt: str
+    versions: Optional[dict] = None  # {long/short/ai}
     duration: int
     model: Optional[str] = None
     record_id: Optional[str] = None
@@ -75,6 +76,8 @@ class PromptRecordItem(BaseModel):
     extra_requirements: Optional[str] = None
     model: Optional[str] = None
     prompt_text: str
+    prompt_long: Optional[str] = None
+    prompt_short: Optional[str] = None
     created_at: str
     # 成片视频附件（Seedance 生成结果，可一键导入去水印流程）
     video_file_name: Optional[str] = None
@@ -103,6 +106,8 @@ def _serialize_record(r: ShortdramaPrompt) -> dict:
         "extra_requirements": r.extra_requirements,
         "model": r.model,
         "prompt_text": r.prompt_text,
+        "prompt_long": r.prompt_long,
+        "prompt_short": r.prompt_short,
         "created_at": r.created_at.isoformat() if r.created_at else "",
         "video_file_name": r.video_file_name,
         "video_file_key": r.video_file_key,
@@ -168,6 +173,14 @@ async def generate_shortdrama_prompt(
     if not prompt_text:
         raise HTTPException(status_code=502, detail="AutoClip 未返回提示词内容")
 
+    # 三版本提示词：长 / 短（固定模板） + AI（Seedance 生成）
+    versions = (result or {}).get("versions") or {}
+    prompt_long = (versions.get("long") or "").strip()
+    prompt_short = (versions.get("short") or "").strip()
+    # 兼容旧数据：未返回 versions 时按 prompt 回退填充 AI 版本
+    if not versions:
+        prompt_long = prompt_short = ""
+
     record_id = None
     if data.save:
         record = ShortdramaPrompt(
@@ -179,6 +192,8 @@ async def generate_shortdrama_prompt(
             extra_requirements=data.extra_requirements,
             model=model or None,
             prompt_text=prompt_text,
+            prompt_long=prompt_long or None,
+            prompt_short=prompt_short or None,
         )
         db.add(record)
         await db.flush()
@@ -187,6 +202,7 @@ async def generate_shortdrama_prompt(
 
     return PromptGenerateResponse(
         prompt=prompt_text,
+        versions=versions or None,
         duration=duration,
         model=model or None,
         record_id=record_id,
