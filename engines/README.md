@@ -245,6 +245,7 @@ python engines/remove_mask_remover.py <input.mp4> -o <output.mp4> [options]
 | `-r, --region` | string | 手动水印区域 `x,y,w,h`（覆盖文件名匹配） | 按文件名匹配 |
 | `--radius` | int | 修补半径（1~20） | 3 |
 | `--iterations` | int | 修补迭代次数（1~5） | 1 |
+| `--scope` | string | 水印 ROI 范围：`small`=收紧贴合水印文字（默认，遮盖面积小）；`large`=整角大框（覆盖更彻底） | `small` |
 | `--source-name` | string | 原始文件名（用于匹配内置 ROI 表） | 输入文件 basename |
 
 **内置 ROI 表**: `648BC321` / `C0CC0472` / `0270150E` / `3906E761`（基于全视频
@@ -256,7 +257,10 @@ OCR + 时序分析确认）；其他文件名回退左上+右下通用 ROI。
 ## remove-mask 经验库共享（`remove_mask_rois.py`）
 
 remove-mask 的「ROI 经验」被抽取为 `engines/remove_mask_rois.py` 共享模块，
-供全部去水印引擎复用：
+供全部去水印引擎复用。ROI 表同步 remove-mask 上游更新，提供 **small / large 两套范围**：
+
+- `small`（默认）：收紧 ROI，严格贴合水印文字 + 6px buffer，遮盖面积小、对画面干预少
+- `large`：旧版整角大框，覆盖更彻底，但遮盖面积明显更大
 
 | 引擎 | 借用方式 |
 |------|---------|
