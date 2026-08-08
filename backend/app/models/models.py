@@ -679,6 +679,34 @@ class ShortdramaPrompt(Base):
         return f"<ShortdramaPrompt(id={self.id}, duration={self.duration})>"
 
 
+class PublishMaterial(Base):
+    """短片制作（v7）：短剧发布素材生成记录。
+
+    保存每次「剧情梗概 → 发布素材」的生成历史：
+    短标题 / 三款视频配文 / 成套话题标签 / 三条置顶互动神评。
+    模型复用 autoclip 中配置的大模型（DASHSCOPE_API_KEY / API_MODEL_NAME）。
+    """
+    __tablename__ = "publish_materials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 用户输入的短剧剧情梗概 / 已生成的 Seedance 提示词 / 短剧标题
+    story = Column(Text, nullable=False)
+    # 可选参数：标题 / 题材 / 基调 / 平台 / 补充要求
+    title = Column(String(500), nullable=True)
+    theme = Column(String(200), nullable=True)
+    tone = Column(String(200), nullable=True)
+    platform = Column(String(200), nullable=True)
+    extra_requirements = Column(Text, nullable=True)
+    # 实际使用的模型名（取自 autoclip 配置）
+    model = Column(String(100), nullable=True)
+    # 生成的发布素材（JSON：short_title / captions / tags / comments）
+    material_json = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<PublishMaterial(id={self.id})>"
+
+
 class WatermarkTask(Base):
     """去水印任务（一次批量提交 = 一个任务，内含多条视频）。
 
