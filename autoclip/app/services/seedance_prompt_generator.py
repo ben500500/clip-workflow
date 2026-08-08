@@ -39,6 +39,8 @@ def _build_input(text: str, duration: int, params: Optional[Dict[str, Any]]) -> 
         "基调": p.get("tone") or "先压抑后爽快",
         "角色": p.get("characters") or "",
         "补充要求": p.get("extra_requirements") or "",
+        "合规要求": "全片禁止出现真实人名、地名、机构名、品牌名，一律使用代称；"
+        "用户文案中的专有名词须同步替换为代称后再锁定为对白/旁白原文。",
     }
 
 
@@ -63,9 +65,7 @@ def generate_seedance_prompt(
     if not template:
         raise RuntimeError("Seedance 提示词模板未找到，请检查 autoclip/prompt/seedance_prompt.txt")
 
-    duration = int(duration)
-    if duration not in (10, 15):
-        duration = 15
+    duration = _normalize_duration(duration)
 
     input_data = _build_input(text, duration, params)
     manager = get_llm_manager()
@@ -75,7 +75,43 @@ def generate_seedance_prompt(
 
     # 容错：优先按 JSON 包装解析（model_config 可能要求返回 JSON），
     # 解析失败则直接把整段文本当作提示词正文返回。
-    return _extract_prompt_text(raw)
+    prompt = _extract_prompt_text(raw)
+
+    # 合规收尾：确保结尾带上「侵权/违规自动改写」确认句
+    return _ensure_compliance_footer(prompt)
+
+
+def _normalize_duration(duration: int) -> int:
+    """时长归一化：支持 10s / 15s 及任意自定义秒数。
+
+    返回 3~300 秒内的整数（超出范围回退默认 15s），
+    供模板中的 {duration} 占位符与镜头分配使用。
+    """
+    try:
+        d = int(duration)
+    except (TypeError, ValueError):
+        return 15
+    if d < 3 or d > 300:
+        return 15
+    return d
+
+
+# 合规收尾确认句（固定追加在提示词末尾）
+COMPLIANCE_FOOTER = (
+    "⚠️ 合规说明：如生成的提示词中出现任何侵权或违规内容"
+    "（如真实人名、地名、机构、品牌等），请直接帮我改写为代称或合规表述，"
+    "并在改写后发我确认。"
+)
+
+
+def _ensure_compliance_footer(prompt: str) -> str:
+    """在提示词末尾追加「侵权/违规自动改写并发我确认」确认句（幂等）。"""
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return prompt
+    if COMPLIANCE_FOOTER in prompt:
+        return prompt
+    return f"{prompt}\n\n{COMPLIANCE_FOOTER}"
 
 
 def _extract_prompt_text(raw: str) -> str:

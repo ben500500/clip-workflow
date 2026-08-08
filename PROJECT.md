@@ -322,7 +322,7 @@ clip-workflow/
 |--------|------|------|
 | `WatermarkTask` | `watermark_tasks` | 去水印任务（批量提交，多视频） |
 | `WatermarkVideo` | `watermark_videos` | 去水印任务下的单条视频 |
-| `ShortdramaPrompt` | `shortdrama_prompts` | Seedance 提示词生成历史（文案→七段模板） |
+| `ShortdramaPrompt` | `shortdrama_prompts` | Seedance 提示词生成历史（文案→七段模板，可关联成片视频） |
 
 ### 5.2 ER 关系
 
@@ -508,10 +508,14 @@ audit:
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/shortdrama/prompt/generate` | 根据文案生成 Seedance 提示词（复用 AutoClip 模型） |
-| `GET` | `/api/shortdrama/prompts` | 提示词生成历史列表 |
+| `POST` | `/api/shortdrama/prompt/generate` | 根据文案生成 Seedance 提示词（复用 AutoClip 模型，支持 10s/15s/自定义时长） |
+| `GET` | `/api/shortdrama/prompts` | 提示词生成历史列表（含成片视频签名地址） |
 | `GET` | `/api/shortdrama/prompts/{id}` | 单条提示词记录详情 |
-| `DELETE` | `/api/shortdrama/prompts/{id}` | 删除提示词记录 |
+| `DELETE` | `/api/shortdrama/prompts/{id}` | 删除提示词记录（连同成片视频） |
+| `POST` | `/api/shortdrama/prompts/{id}/video` | 为生成记录上传成片视频（Seedance 结果，存入 watermark-raw 桶） |
+| `GET` | `/api/shortdrama/prompts/{id}/video` | 获取成片视频签名播放地址 |
+| `DELETE` | `/api/shortdrama/prompts/{id}/video` | 删除成片视频（保留提示词记录） |
+| `POST` | `/api/shortdrama/prompts/{id}/import-to-watermark` | 一键把成片视频导入去水印流程 |
 
 ### 6.9 WebSocket
 
@@ -542,7 +546,7 @@ audit:
 | `/slice-worker` | 切片监控 | Worker 节点状态、任务队列、实时日志（v3） |
 | `/monitor` | 监控告警 | 健康检查、告警规则、告警事件（三期） |
 | `/maintenance` | 运维优化 | 数据归档、临时文件清理、MinIO 生命周期（三期） |
-| `/watermark` | 短片制作 | Seedance 短剧提示词生成（复用 AutoClip 模型，七段模板）+ 三套开源去水印引擎切换、批量上传/下载、异步进度、任务历史（v4/v5 去水印；v6 新增提示词生成工作流） |
+| `/watermark` | 短片制作 | Seedance 短剧提示词生成（复用 AutoClip 模型，七段模板，10s/15s/自定义时长，题材/基调/角色下拉预设） + 成片视频上传/一键导入去水印 + 三套开源去水印引擎切换、批量上传/下载、异步进度、任务历史（v4/v5 去水印；v6 新增提示词生成工作流；v6.1 合规代称/自定义时长/预设下拉/历史上传视频导入去水印） |
 | `/settings` | 系统设置 | 全局参数配置 |
 
 ### 7.2 导航菜单
