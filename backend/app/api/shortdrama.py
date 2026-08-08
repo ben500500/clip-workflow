@@ -350,7 +350,13 @@ async def upload_shortdrama_video(
     record.video_uploaded_at = datetime.utcnow()
     await db.commit()
 
-    return _serialize_record(record)
+    # 返回带可播放的签名 URL，便于前端上传后立即预览
+    item = _serialize_record(record)
+    if record.video_file_key and record.video_bucket:
+        item["video_url"] = await get_presigned_url(
+            record.video_bucket, record.video_file_key, expires_seconds=3600
+        )
+    return item
 
 
 @router.get("/shortdrama/prompts/{record_id}/video", response_model=dict)

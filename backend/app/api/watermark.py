@@ -283,11 +283,12 @@ async def run_watermark_task(
         if data.inpainter:
             options["inpainter"] = data.inpainter
 
-    # 创建任务记录
+    # 创建任务记录（任务名称：优先使用前端传入的 10 位时间戳，否则取当前时间戳）
+    task_name = data.name or str(int(datetime.utcnow().timestamp()))[:10]
     task = WatermarkTask(
         engine=engine,
         options=options,
-        name=data.name or f"{ENGINE_DISPLAY.get(engine, engine)} 批量去水印",
+        name=task_name,
         status="pending",
         progress=0.0,
         total_count=len(file_keys),

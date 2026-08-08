@@ -95,6 +95,9 @@ const ShortDrama: React.FC = () => {
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [previewRecord, setPreviewRecord] = useState<ShortdramaPromptRecord | null>(null);
 
+  // 成片视频快速预览弹窗（历史表格内直接播放）
+  const [previewVideo, setPreviewVideo] = useState<{ url: string; title: string } | null>(null);
+
   // 去水印页签：一键导入的成片视频
   const [activeTab, setActiveTab] = useState('prompt');
   const [watermarkImports, setWatermarkImports] = useState<ImportedVideo[]>([]);
@@ -294,6 +297,20 @@ const ShortDrama: React.FC = () => {
               {r.video_file_size ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>{formatFileSize(r.video_file_size)}</Text>
               ) : null}
+              {r.video_url && (
+                <Button
+                  size="small"
+                  type="link"
+                  icon={<PlayCircleOutlined />}
+                  style={{ padding: 0, height: 'auto' }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPreviewVideo({ url: r.video_url!, title: r.video_file_name! });
+                  }}
+                >
+                  预览
+                </Button>
+              )}
             </Space>
           );
         }
@@ -624,6 +641,7 @@ const ShortDrama: React.FC = () => {
               <Watermark
                 imports={watermarkImports}
                 onImportsConsumed={() => setWatermarkImports([])}
+                onGoToPublish={() => setActiveTab('publish')}
               />
             ),
           },
@@ -634,10 +652,34 @@ const ShortDrama: React.FC = () => {
                 <SendOutlined /> ③ 发布素材
               </span>
             ),
-            children: <PublishMaterialTab />,
+            children: (
+              <PublishMaterialTab
+                promptRecords={records}
+                onLoadPromptRecords={() => fetchRecords(true)}
+              />
+            ),
           },
         ]}
       />
+
+      {/* ── 成片视频快速播放弹窗 ── */}
+      <Modal
+        title={previewVideo?.title || '视频预览'}
+        open={!!previewVideo}
+        footer={null}
+        width={900}
+        onCancel={() => setPreviewVideo(null)}
+        destroyOnClose
+      >
+        {previewVideo && (
+          <video
+            src={previewVideo.url}
+            controls
+            autoPlay
+            style={{ width: '100%', maxHeight: 560, background: '#000' }}
+          />
+        )}
+      </Modal>
 
       {/* ── 提示词详情弹窗（含成片视频上传 / 预览 / 导入去水印） ── */}
       <Modal

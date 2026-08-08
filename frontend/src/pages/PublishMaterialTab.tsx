@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Card, Typography, Space, Button, Input, Tag, Table, Modal,
-  Popconfirm, message, Alert, Empty, Tabs, AutoComplete, Tooltip, Divider,
+  Popconfirm, message, Alert, Empty, Tabs, AutoComplete, Tooltip, Divider, Select,
 } from 'antd';
 import {
   ThunderboltOutlined, CopyOutlined, DeleteOutlined, ReloadOutlined,
@@ -13,6 +13,7 @@ import {
   type PublishMaterial as PublishMaterialType,
   type PublishMaterialRecord,
 } from '../api/publishMaterial';
+import type { ShortdramaPromptRecord } from '../api/shortdrama';
 import { formatDateTime } from '../utils/format';
 
 const { Title, Text } = Typography;
@@ -54,7 +55,10 @@ const EXAMPLE_STORIES: Record<string, string> = {
     '女主在集团公司勤勤恳恳干了八年，因不肯替总监背锅被当场开除。被赶出公司大门的瞬间收到银行短信，中了十个亿。曾经赶走她的总监正好路过，当场傻眼。',
 };
 
-const PublishMaterialTab: React.FC = () => {
+const PublishMaterialTab: React.FC<{
+  promptRecords?: ShortdramaPromptRecord[];
+  onLoadPromptRecords?: () => void;
+}> = ({ promptRecords = [], onLoadPromptRecords }) => {
   // ── 生成表单 ──
   const [story, setStory] = useState('');
   const [title, setTitle] = useState('');
@@ -78,6 +82,9 @@ const PublishMaterialTab: React.FC = () => {
   // 配文版本切换
   const [captionVersion, setCaptionVersion] = useState<'suspense_hook' | 'concise_viral' | 'emotional'>('suspense_hook');
 
+  // 提示词历史导入（原始文案）
+  const [selectedPromptRecord, setSelectedPromptRecord] = useState<string | undefined>(undefined);
+
   // ── 加载历史 ──
   const fetchRecords = useCallback(async (silent = false) => {
     if (!silent) setLoadingRecords(true);
@@ -94,6 +101,27 @@ const PublishMaterialTab: React.FC = () => {
   useEffect(() => {
     fetchRecords();
   }, [fetchRecords]);
+
+  // 首次挂载时若父级未提供历史，自行拉取提示词历史用于导入
+  useEffect(() => {
+    if (promptRecords.length === 0 && onLoadPromptRecords) {
+      onLoadPromptRecords();
+    }
+  }, [promptRecords.length, onLoadPromptRecords]);
+
+  // 从提示词历史导入原始文案
+  const importPromptRecord = (recordId?: string) => {
+    if (!recordId) return;
+    const rec = promptRecords.find((r) => r.id === recordId);
+    if (!rec) {
+      message.warning('未找到该条提示词记录');
+      return;
+    }
+    setStory(rec.source_text || '');
+    if (rec.theme) setTheme(rec.theme);
+    if (rec.tone) setTone(rec.tone);
+    message.success('已导入该条提示词历史的原始文案');
+  };
 
   // ── 生成发布素材 ──
   const handleGenerate = async () => {
@@ -468,7 +496,7 @@ const PublishMaterialTab: React.FC = () => {
 
           {/* 剧情梗概输入 */}
           <div>
-            <Space style={{ marginBottom: 6 }}>
+            <Space style={{ marginBottom: 6 }} wrap>
               <Text strong>短剧剧情梗概：</Text>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 可粘贴剧情梗概、已生成的 Seedance 提示词或短剧标题
@@ -491,6 +519,34 @@ const PublishMaterialTab: React.FC = () => {
                   填充示例：{name}
                 </Button>
               ))}
+              <Divider type="vertical" />
+              <Select
+                allowClear
+                showSearch
+                placeholder="从提示词历史导入原始文案"
+                style={{ minWidth: 340 }}
+                value={selectedPromptRecord}
+                onChange={(v) => {
+                  setSelectedPromptRecord(v);
+                  importPromptRecord(v);
+                }}
+                optionFilterProp="label"
+                options={promptRecords.map((r) => ({
+                  value: r.id,
+                  label: `${formatDateTime(r.created_at)} · ${r.source_text.length > 40 ? `${r.source_text.slice(0, 40)}…` : r.source_text}`,
+                }))}
+              />
+              <Tooltip title="刷新提示词生成历史列表">
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  onClick={() => {
+                    if (onLoadPromptRecords) onLoadPromptRecords();
+                  }}
+                >
+                  刷新历史
+                </Button>
+              </Tooltip>
             </Space>
           </div>
 
