@@ -81,6 +81,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  // 主动续期：access_token 默认 30 分钟过期，后台页面/空闲时若一直不发起
+  // 带鉴权的请求，不会触发 401 无感刷新，导致一段时间不操作后被强制登出。
+  // 这里每 20 分钟用 refresh_token（HttpOnly Cookie）静默续签一次，
+  // 保证登录态在 refresh_token 有效期内（7 天）持续有效。
+  useEffect(() => {
+    if (!token) return;
+    const REFRESH_INTERVAL_MS = 20 * 60 * 1000; // 20 分钟 < 30 分钟 access_token 有效期
+    const refresh = async () => {
+      try {
+        const res = await authApi.refresh();
+        if (res.access_token) {
+          localStorage.setItem('auth_token', res.access_token);
+          setToken(res.access_token);
+        }
+      } catch {
+        // 静默失败：refresh_token 失效时才由后续 401 统一处理跳登录
+      }
+    };
+    const timer = window.setInterval(refresh, REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [token]);
+
   const login = useCallback(async (username: string, password: string) => {
     const result = await authApi.login(username, password);
     const accessToken = result.access_token;
