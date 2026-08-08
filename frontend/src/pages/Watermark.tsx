@@ -27,6 +27,10 @@ const ENGINE_HELP: Record<string, { label: string; desc: string }> = {
     label: 'Seedance 5-Stage Pipeline（seedance_wm）',
     desc: '集成自 ben500500/remover 仓库的 5 阶段流水线：抽帧 → 检测（matchTemplate/YOLO/OCR 降级链）→ mask → 修复（LaMa→cv2）+时序平滑 → 合成。支持分段检测与移动水印。',
   },
+  remove_mask: {
+    label: 'Remove Mask（ROI 经验库）',
+    desc: '集成自 ben500500/remove-mask 仓库的「ROI + cv2.inpaint(TELEA)」方案：直接把整个水印 ROI 矩形当掩码，快速行进法插值填充。按视频文件名匹配内置 ROI（覆盖 Seedance 左上+右下角规律），参数保真、速度最快。',
+  },
 };
 
 interface PendingFile {
@@ -59,7 +63,7 @@ const Watermark: React.FC<{
   onImportsConsumed?: () => void;
   onGoToPublish?: () => void;
 }> = ({ imports = [], onImportsConsumed, onGoToPublish }) => {
-  const [engine, setEngine] = useState<'remove_ai' | 'seedance' | 'seedance_wm'>('seedance_wm');
+  const [engine, setEngine] = useState<'remove_ai' | 'seedance' | 'seedance_wm' | 'remove_mask'>('seedance_wm');
   // RAiW 选项
   const [mark, setMark] = useState('auto');
   const [backend, setBackend] = useState('auto');
@@ -72,6 +76,9 @@ const Watermark: React.FC<{
   const [detector, setDetector] = useState('matchTemplate');
   const [inpainter, setInpainter] = useState('auto');
   const [keepAudio, setKeepAudio] = useState(true);
+  // remove_mask 专属选项
+  const [maskRadius, setMaskRadius] = useState(3);
+  const [maskIterations, setMaskIterations] = useState(1);
 
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -198,7 +205,7 @@ const Watermark: React.FC<{
     setRunning(true);
     try {
       const params: {
-        engine: 'remove_ai' | 'seedance' | 'seedance_wm';
+        engine: 'remove_ai' | 'seedance' | 'seedance_wm' | 'remove_mask';
         files: string[];
         name?: string;
         mark?: string;
@@ -210,6 +217,8 @@ const Watermark: React.FC<{
         detector?: string;
         inpainter?: string;
         keep_audio?: boolean;
+        radius?: number;
+        iterations?: number;
       } = {
         engine,
         files: pendingFiles.map((f) => f.sourceFileKey),
@@ -224,6 +233,10 @@ const Watermark: React.FC<{
         params.region = region.trim() || undefined;
         params.backend = seedanceBackend;
         params.segments = segments;
+      } else if (engine === 'remove_mask') {
+        params.region = region.trim() || undefined;
+        params.radius = maskRadius;
+        params.iterations = maskIterations;
       } else {
         params.region = region.trim() || undefined;
         params.backend = seedanceBackend;
@@ -341,7 +354,7 @@ const Watermark: React.FC<{
       width: 150,
       ellipsis: true,
       render: (e: string, t: WatermarkTaskItem) => (
-        <Tag color={e === 'remove_ai' ? 'blue' : e === 'seedance' ? 'purple' : 'geekblue'} style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.engine_display}</Tag>
+        <Tag color={e === 'remove_ai' ? 'blue' : e === 'seedance' ? 'purple' : e === 'seedance_wm' ? 'geekblue' : 'cyan'} style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.engine_display}</Tag>
       ),
     },
     {
@@ -613,6 +626,7 @@ const Watermark: React.FC<{
               buttonStyle="solid"
               options={[
                 { value: 'seedance_wm', label: ENGINE_HELP.seedance_wm.label },
+                { value: 'remove_mask', label: ENGINE_HELP.remove_mask.label },
                 { value: 'remove_ai', label: ENGINE_HELP.remove_ai.label },
                 { value: 'seedance', label: ENGINE_HELP.seedance.label },
               ]}
@@ -732,6 +746,41 @@ const Watermark: React.FC<{
                 onChange={(e) => setRegion(e.target.value)}
                 style={{ width: 260 }}
               />
+            </Space>
+          ) : engine === 'remove_mask' ? (
+            <Space wrap>
+              <Text>手动水印区域（可选，x,y,w,h；留空则按文件名匹配内置 ROI）：</Text>
+              <Input
+                placeholder="如 10,5,120,60；留空自动匹配内置 ROI"
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+                style={{ width: 240 }}
+              />
+              <Text>修补半径：</Text>
+              <Select
+                value={maskRadius}
+                onChange={setMaskRadius}
+                style={{ width: 160 }}
+                options={[
+                  { value: 3, label: '3（默认）' },
+                  { value: 5, label: '5（更大范围）' },
+                  { value: 8, label: '8（强修补）' },
+                ]}
+              />
+              <Text>迭代次数：</Text>
+              <Select
+                value={maskIterations}
+                onChange={setMaskIterations}
+                style={{ width: 160 }}
+                options={[
+                  { value: 1, label: '1 次（默认）' },
+                  { value: 2, label: '2 次' },
+                  { value: 3, label: '3 次（更彻底）' },
+                ]}
+              />
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                （内置 ROI 覆盖 648BC321 / C0CC0472 / 0270150E / 3906E761；其他文件回退左上+右下通用 ROI）
+              </Text>
             </Space>
           ) : (
             <Space wrap>

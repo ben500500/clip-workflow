@@ -220,3 +220,35 @@ python engines/seedance_wm_runner.py <input.mp4> -o <output.mp4> [options]
 
 **依赖**: `numpy` / `opencv-python-headless` / `ffmpeg-python` / `PyYAML`
 （已在 `backend/requirements.txt` 中补齐）。
+
+## 去水印引擎（`remove_mask_remover.py`）
+
+集成自 [ben500500/remove-mask](https://cnb.cool/ben500500/remove-mask) 仓库的
+「ROI + cv2.inpaint(TELEA)」方案，作为独立可执行脚本放置在 `engines/` 下。
+
+**原理**: 不区分“哪些像素是水印”，直接把整个水印 ROI 矩形当掩码，用
+cv2.INPAINT_TELEA 快速行进法从 ROI 边界向内插值填充。按视频文件名匹配内置
+ROI 表（覆盖 Seedance 左上 + 右下角规律），参数保真（保留原始分辨率/帧率，
+音频流复制零损耗）。
+
+**用法**:
+
+```bash
+python engines/remove_mask_remover.py <input.mp4> -o <output.mp4> [options]
+```
+
+**参数**:
+
+| 参数 | 类型 | 说明 | 默认值 |
+|------|------|------|--------|
+| `-o, --output` | string | 输出视频路径 | `<input>_clean.mp4` |
+| `-r, --region` | string | 手动水印区域 `x,y,w,h`（覆盖文件名匹配） | 按文件名匹配 |
+| `--radius` | int | 修补半径（1~20） | 3 |
+| `--iterations` | int | 修补迭代次数（1~5） | 1 |
+| `--source-name` | string | 原始文件名（用于匹配内置 ROI 表） | 输入文件 basename |
+
+**内置 ROI 表**: `648BC321` / `C0CC0472` / `0270150E` / `3906E761`（基于全视频
+OCR + 时序分析确认）；其他文件名回退左上+右下通用 ROI。
+
+**进度上报**: 向 stdout 输出 `PROGRESS:<pct>` 行，由
+`backend/app/engines/watermark_runner.py` 的 `_run_cmd` 解析后写入数据库。

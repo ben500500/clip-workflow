@@ -8,6 +8,10 @@
 3. seedance_wm（5 阶段流水线）：`engines/seedance_wm_runner.py`
    - 集成自 ben500500/remover 仓库的 seedance_wm 包：抽帧 → 检测（降级链）→ mask
      → 修复（LaMa→cv2）+ 时序平滑 → 合成，支持分段检测与移动水印
+4. remove_mask（ROI + cv2.inpaint TELEA）：`engines/remove_mask_remover.py`
+   - 集成自 ben500500/remove-mask 仓库的「去水印经验总结」方案：直接把整个水印
+     ROI 矩形当掩码，cv2.INPAINT_TELEA 快速行进法插值填充；按视频文件名匹配
+     内置 ROI（覆盖 TL / BR，Seedance 水印规律），支持手动区域，参数保真
 
 所有引擎均通过子进程执行，从 stdout 解析 `PROGRESS:<pct>` 行上报进度
 （与切片引擎约定一致），输出视频写回 MinIO 后删除本地临时文件。
@@ -217,6 +221,49 @@ async def run_seedance_watermark_remover(
     return await _run_cmd(cmd, progress_cb, timeout)
 
 
+async def run_remove_mask(
+    source_path: str,
+    output_path: str,
+    options: Optional[dict] = None,
+    progress_cb: ProgressCallback = None,
+    timeout: float = 2 * 3600,
+) -> tuple[int, str, str]:
+    """调用 remove_mask（ROI + cv2.inpaint TELEA）引擎去水印。
+
+    集成自 ben500500/remove-mask 仓库：直接把整个水印 ROI 矩形当掩码，
+    cv2.INPAINT_TELEA 快速行进法插值填充，覆盖 TL / BR（Seedance 水印规律）。
+
+    options 支持：
+    - source_name: 原始文件名（用于匹配内置 ROI 表，如 648BC321）
+    - region: "x,y,w,h"（手动指定水印区域，覆盖文件名匹配）
+    - radius: 修补半径（默认 3）
+    - iterations: 修补迭代次数（默认 1）
+    """
+    options = options or {}
+    script = _script_path(settings.WATERMARK_REMOVE_MASK_SCRIPT)
+    if not os.path.isfile(script):
+        raise FileNotFoundError(f"remove_mask script not found: {script}")
+    cmd = ["python", script, source_path, "-o", output_path]
+    if options.get("region"):
+        cmd.extend(["-r", str(options["region"])])
+    if options.get("source_name"):
+        cmd.extend(["--source-name", str(options["source_name"])])
+    if options.get("radius"):
+        try:
+            radius = max(1, min(int(options["radius"]), 20))
+            cmd.extend(["--radius", str(radius)])
+        except (TypeError, ValueError):
+            pass
+    if options.get("iterations"):
+        try:
+            it = max(1, min(int(options["iterations"]), 5))
+            cmd.extend(["--iterations", str(it)])
+        except (TypeError, ValueError):
+            pass
+    logger.info("Running remove_mask: %s", " ".join(cmd))
+    return await _run_cmd(cmd, progress_cb, timeout)
+
+
 async def run_seedance_wm(
     source_path: str,
     output_path: str,
@@ -280,6 +327,10 @@ async def run_watermark_engine(
         )
     if engine == "seedance_wm":
         return await run_seedance_wm(
+            source_path, output_path, options, progress_cb, timeout
+        )
+    if engine == "remove_mask":
+        return await run_remove_mask(
             source_path, output_path, options, progress_cb, timeout
         )
     raise ValueError(f"Unsupported watermark engine: {engine}")

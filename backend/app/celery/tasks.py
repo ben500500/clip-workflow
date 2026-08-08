@@ -1505,12 +1505,18 @@ def watermark_task(
                 except RuntimeError:
                     pass
 
+            # remove_mask 引擎按原始文件名匹配内置 ROI 表，这里用每条视频的真实文件名覆盖
+            engine_options = options
+            if engine == "remove_mask":
+                engine_options = dict(options)
+                engine_options["source_name"] = video.file_name or video.source_file_key
+
             returncode, stdout, stderr = run_async(
                 run_watermark_engine(
                     engine,
                     src_local,
                     out_local,
-                    options,
+                    engine_options,
                     progress_cb=_cb,
                 )
             )

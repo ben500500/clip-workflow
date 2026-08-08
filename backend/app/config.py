@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     WATERMARK_SEEDANCE_SCRIPT: str = "seedance_watermark_remover.py"
     # seedance_wm（remover 仓库 5 阶段流水线）执行入口脚本（位于 ENGINES_DIR 下）
     WATERMARK_SEEDANCE_WM_SCRIPT: str = "seedance_wm_runner.py"
+    # remove_mask（remove-mask 仓库 ROI + cv2.inpaint TELEA）执行入口脚本（位于 ENGINES_DIR 下）
+    WATERMARK_REMOVE_MASK_SCRIPT: str = "remove_mask_remover.py"
     # 单个去水印视频最大时长（秒），超长会显著耗时
     WATERMARK_MAX_DURATION: int = 3600
 
