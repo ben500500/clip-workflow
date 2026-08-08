@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Card, Typography, Space, Button, Input, Tag, Table, Modal,
   Popconfirm, message, Alert, Empty, Tabs, AutoComplete, Tooltip, Divider, Select,
@@ -58,7 +58,9 @@ const EXAMPLE_STORIES: Record<string, string> = {
 const PublishMaterialTab: React.FC<{
   promptRecords?: ShortdramaPromptRecord[];
   onLoadPromptRecords?: () => void;
-}> = ({ promptRecords = [], onLoadPromptRecords }) => {
+  initialPromptRecordId?: string | null;
+  onPromptIdConsumed?: () => void;
+}> = ({ promptRecords = [], onLoadPromptRecords, initialPromptRecordId, onPromptIdConsumed }) => {
   // ── 生成表单 ──
   const [story, setStory] = useState('');
   const [title, setTitle] = useState('');
@@ -84,6 +86,38 @@ const PublishMaterialTab: React.FC<{
 
   // 提示词历史导入（原始文案）
   const [selectedPromptRecord, setSelectedPromptRecord] = useState<string | undefined>(undefined);
+
+  // 从去水印任务跳转而来：自动代入关联提示词记录的原始文案（任务 id 关联）
+  const pendingPromptRef = useRef<string | null | undefined>(initialPromptRecordId);
+
+  // 实际执行代入（需等 promptRecords 就绪）
+  const applyPromptRecord = useCallback((recordId: string) => {
+    const rec = promptRecords.find((r) => r.id === recordId);
+    if (!rec) return false;
+    setStory(rec.source_text || '');
+    if (rec.theme) setTheme(rec.theme);
+    if (rec.tone) setTone(rec.tone);
+    setSelectedPromptRecord(rec.id);
+    message.success('已自动代入关联提示词的原始文案');
+    return true;
+  }, [promptRecords]);
+
+  useEffect(() => {
+    if (!initialPromptRecordId) return;
+    pendingPromptRef.current = initialPromptRecordId;
+    if (onPromptIdConsumed) onPromptIdConsumed();
+  }, [initialPromptRecordId, onPromptIdConsumed]);
+
+  // 当历史列表就绪后，若仍有待代入的提示词记录，自动代入
+  useEffect(() => {
+    const pending = pendingPromptRef.current;
+    if (!pending) return;
+    if (applyPromptRecord(pending)) {
+      pendingPromptRef.current = null;
+    } else if (promptRecords.length === 0 && onLoadPromptRecords) {
+      onLoadPromptRecords();
+    }
+  }, [promptRecords, applyPromptRecord, onLoadPromptRecords]);
 
   // ── 加载历史 ──
   const fetchRecords = useCallback(async (silent = false) => {
@@ -533,7 +567,7 @@ const PublishMaterialTab: React.FC<{
                 optionFilterProp="label"
                 options={promptRecords.map((r) => ({
                   value: r.id,
-                  label: `${formatDateTime(r.created_at)} · ${r.source_text.length > 40 ? `${r.source_text.slice(0, 40)}…` : r.source_text}`,
+                  label: r.source_text.length > 40 ? `${r.source_text.slice(0, 40)}…` : r.source_text,
                 }))}
               />
               <Tooltip title="刷新提示词生成历史列表">

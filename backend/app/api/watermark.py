@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
-from app.models.models import WatermarkTask, WatermarkVideo
+from app.models.models import ShortdramaPrompt, WatermarkTask, WatermarkVideo
 from app.services.minio_service import (
     get_presigned_url,
     delete_file,
@@ -68,6 +68,8 @@ class WatermarkRunRequest(BaseModel):
     name: Optional[str] = None
     # 待处理视频的 source_file_key 列表（由 /watermark/upload 返回）
     files: List[str] = []
+    # 任务来源关联（短片制作）：提示词记录 id，用于「去水印 → 发布」自动代入文案
+    prompt_record_id: Optional[str] = None
 
 
 class WatermarkVideoItem(BaseModel):
@@ -80,6 +82,7 @@ class WatermarkVideoItem(BaseModel):
     output_url: Optional[str] = None
     source_url: Optional[str] = None
     output_file_size: Optional[int] = None
+    prompt_record_id: Optional[str] = None
     created_at: str
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
@@ -92,6 +95,7 @@ class WatermarkTaskItem(BaseModel):
     engine_display: str
     name: Optional[str] = None
     options: dict
+    prompt_record_id: Optional[str] = None
     status: str
     progress: float
     total_count: int
@@ -131,6 +135,7 @@ def _serialize_video(video: WatermarkVideo, output_url: Optional[str] = None, so
         "output_url": output_url,
         "source_url": source_url,
         "output_file_size": video.output_file_size,
+        "prompt_record_id": str(video.prompt_record_id) if video.prompt_record_id else None,
         "created_at": video.created_at.isoformat() if video.created_at else "",
         "started_at": video.started_at.isoformat() if video.started_at else None,
         "completed_at": video.completed_at.isoformat() if video.completed_at else None,
@@ -143,12 +148,14 @@ def _serialize_task(task: WatermarkTask) -> dict:
     if task.started_at:
         end = task.completed_at or datetime.utcnow()
         duration = round((end - task.started_at).total_seconds(), 1)
+    opts = task.options or {}
     return {
         "id": str(task.id),
         "engine": task.engine,
         "engine_display": ENGINE_DISPLAY.get(task.engine, task.engine),
         "name": task.name,
-        "options": task.options or {},
+        "options": opts,
+        "prompt_record_id": opts.get("prompt_record_id"),
         "status": task.status,
         "progress": task.progress or 0.0,
         "total_count": task.total_count or 0,
@@ -314,6 +321,21 @@ async def run_watermark_task(
     db.add(task)
     await db.flush()
 
+    # 校验来源提示词记录（可选），用于「去水印 → 发布」自动代入文案
+    prompt_record_id = None
+    if data.prompt_record_id:
+        try:
+            rid = uuid.UUID(data.prompt_record_id)
+            pr = await db.execute(select(ShortdramaPrompt).where(ShortdramaPrompt.id == rid))
+            if pr.scalar_one_or_none():
+                prompt_record_id = rid
+        except Exception:
+            prompt_record_id = None
+
+    # 任务级来源关联：写入 options，便于「发布」时拿到提示词记录
+    if prompt_record_id:
+        options["prompt_record_id"] = str(prompt_record_id)
+
     # 创建子视频记录（file_key 与文件名解耦：从 key 提取原文件名）
     for fk in file_keys:
         base = os.path.basename(fk)
@@ -331,6 +353,7 @@ async def run_watermark_task(
             file_size=0,
             status="pending",
             progress=0.0,
+            prompt_record_id=prompt_record_id,
         )
         db.add(video)
 

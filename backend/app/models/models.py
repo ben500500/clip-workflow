@@ -784,6 +784,8 @@ class WatermarkVideo(Base):
     source_file_key = Column(String(500), nullable=False)
     source_bucket = Column(String(50), default="raw-footage")
     file_size = Column(BigInteger, nullable=True)
+    # 来源提示词记录（短片制作：提示词 → 去水印 → 发布 任务关联）
+    prompt_record_id = Column(UUID(as_uuid=True), nullable=True)
     # 输出文件对象 key（watermark-output 桶）
     output_file_key = Column(String(500), nullable=True)
     output_bucket = Column(String(50), nullable=True)

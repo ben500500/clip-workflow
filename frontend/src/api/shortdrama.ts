@@ -47,6 +47,12 @@ export interface PromptGenerateResult {
   message: string;
 }
 
+export interface PromptTemplates {
+  long: string;
+  short: string;
+  updated_at?: string;
+}
+
 export const shortdramaApi = {
   generate: (params: PromptGenerateParams) =>
     client.post('/shortdrama/prompt/generate', params) as Promise<PromptGenerateResult>,
@@ -100,4 +106,11 @@ export const shortdramaApi = {
       file_size: number | null;
       message: string;
     }>,
+
+  // ── 长 / 短提示词模板管理（可编辑并持久化） ──
+  getTemplates: () =>
+    client.get('/shortdrama/prompt/templates') as Promise<PromptTemplates>,
+
+  saveTemplates: (templates: Partial<PromptTemplates>) =>
+    client.put('/shortdrama/prompt/templates', templates) as Promise<PromptTemplates>,
 };

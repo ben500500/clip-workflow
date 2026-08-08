@@ -8,12 +8,12 @@ import {
   ThunderboltOutlined, CopyOutlined, DeleteOutlined, ReloadOutlined,
   ClearOutlined, VideoCameraOutlined, FileTextOutlined, CheckOutlined,
   UploadOutlined, PlayCircleOutlined, ImportOutlined, InboxOutlined,
-  SendOutlined,
+  SendOutlined, EditOutlined, SaveOutlined, UndoOutlined,
 } from '@ant-design/icons';
-import { shortdramaApi, type ShortdramaPromptRecord } from '../api/shortdrama';
+import { shortdramaApi, type ShortdramaPromptRecord, type PromptTemplates } from '../api/shortdrama';
 import Watermark, { type ImportedVideo } from './Watermark';
 import PublishMaterialTab from './PublishMaterialTab';
-import { formatDateTime, formatFileSize } from '../utils/format';
+import { formatFileSize } from '../utils/format';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -91,7 +91,13 @@ const ShortDrama: React.FC = () => {
   const [resultModel, setResultModel] = useState<string | null>(null);
   const [resultRecordId, setResultRecordId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [activePromptTab, setActivePromptTab] = useState('long');
+  const [activePromptTab, setActivePromptTab] = useState('ai');
+
+  // 长 / 短提示词模板（可编辑并持久化）
+  const [templates, setTemplates] = useState<PromptTemplates | null>(null);
+  const [templateModalOpen, setTemplateModalOpen] = useState(false);
+  const [templateDraft, setTemplateDraft] = useState<{ long: string; short: string }>({ long: '', short: '' });
+  const [templateSaving, setTemplateSaving] = useState(false);
 
   // 历史
   const [records, setRecords] = useState<ShortdramaPromptRecord[]>([]);
@@ -104,6 +110,8 @@ const ShortDrama: React.FC = () => {
   // 去水印页签：一键导入的成片视频
   const [activeTab, setActiveTab] = useState('prompt');
   const [watermarkImports, setWatermarkImports] = useState<ImportedVideo[]>([]);
+  // 去水印完成 → 发布：待代入的提示词记录 id（任务关联）
+  const [pendingPublishPromptId, setPendingPublishPromptId] = useState<string | null>(null);
 
   // ── 加载历史 ──
   const fetchRecords = useCallback(async (silent = false) => {
@@ -121,6 +129,18 @@ const ShortDrama: React.FC = () => {
   useEffect(() => {
     fetchRecords();
   }, [fetchRecords]);
+
+  // ── 加载长 / 短提示词模板 ──
+  useEffect(() => {
+    shortdramaApi
+      .getTemplates()
+      .then((tpl) => {
+        setTemplates(tpl);
+      })
+      .catch(() => {
+        // 模板加载失败不阻断页面（生成时后端会兜底用内置默认模板）
+      });
+  }, []);
 
   // ── 生成提示词 ──
   const handleGenerate = async () => {
@@ -145,7 +165,7 @@ const ShortDrama: React.FC = () => {
       setResultShort(res.versions?.short || '');
       setResultModel(res.model || null);
       setResultRecordId(res.record_id || null);
-      setActivePromptTab('long');
+      setActivePromptTab('ai');
       message.success(res.message || '提示词生成成功');
       fetchRecords(true);
     } catch (err: unknown) {
@@ -196,6 +216,49 @@ const ShortDrama: React.FC = () => {
     setResultRecordId(null);
   };
 
+  // ── 长 / 短提示词模板编辑 ──
+  const openTemplateEditor = () => {
+    setTemplateDraft({
+      long: templates?.long || '',
+      short: templates?.short || '',
+    });
+    setTemplateModalOpen(true);
+  };
+
+  const handleSaveTemplates = async () => {
+    if (!templateDraft.long.trim() && !templateDraft.short.trim()) {
+      message.warning('请至少填写一个模板');
+      return;
+    }
+    setTemplateSaving(true);
+    try {
+      const saved = await shortdramaApi.saveTemplates({
+        long: templateDraft.long,
+        short: templateDraft.short,
+      });
+      setTemplates(saved);
+      setTemplateModalOpen(false);
+      message.success('模板已保存，下次生成将使用新模板');
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '保存模板失败');
+    } finally {
+      setTemplateSaving(false);
+    }
+  };
+
+  const resetTemplates = async () => {
+    try {
+      const saved = await shortdramaApi.saveTemplates({
+        long: '',
+        short: '',
+      });
+      setTemplates(saved);
+      message.success('已恢复默认模板');
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '恢复默认模板失败');
+    }
+  };
+
   const deleteRecord = async (recordId: string) => {
     try {
       const res = await shortdramaApi.deletePrompt(recordId);
@@ -243,6 +306,7 @@ const ShortDrama: React.FC = () => {
           sourceFileKey: res.source_file_key,
           fileName: res.file_name,
           fileSize: res.file_size,
+          promptRecordId: record.id,
         },
       ]);
       setActiveTab('watermark');
@@ -334,13 +398,6 @@ const ShortDrama: React.FC = () => {
       render: (m: string | null) => (m ? <Text style={{ fontSize: 12 }}>{m}</Text> : '-'),
     },
     {
-      title: '生成时间',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      width: 140,
-      render: (d: string) => <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text>,
-    },
-    {
       title: '操作',
       key: 'action',
       width: 240,
@@ -390,7 +447,21 @@ const ShortDrama: React.FC = () => {
   const promptTabContent = (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       {/* ── 1. 提示词生成 ── */}
-      <Card size="small" title="① 生成 Seedance 提示词">
+      <Card
+        size="small"
+        title="① 生成 Seedance 提示词"
+        extra={
+          <Space>
+            <Button
+              size="small"
+              icon={<EditOutlined />}
+              onClick={openTemplateEditor}
+            >
+              编辑长/短提示词模板
+            </Button>
+          </Space>
+        }
+      >
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Alert
             type="info"
@@ -545,6 +616,26 @@ const ShortDrama: React.FC = () => {
                 onChange={setActivePromptTab}
                 items={[
                   {
+                    key: 'ai',
+                    label: (
+                      <span>
+                        <ThunderboltOutlined /> AI提示词
+                        {resultPrompt ? <Tag style={{ marginLeft: 6 }} color="purple">Seedance 七段</Tag> : null}
+                      </span>
+                    ),
+                    children: (
+                      <PromptResultBlock
+                        text={resultPrompt}
+                        onCopy={async () => {
+                          await handleCopy(resultPrompt);
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        }}
+                        copied={copied}
+                      />
+                    ),
+                  },
+                  {
                     key: 'long',
                     label: (
                       <span>
@@ -577,26 +668,6 @@ const ShortDrama: React.FC = () => {
                         text={resultShort}
                         onCopy={async () => {
                           await handleCopy(resultShort);
-                          setCopied(true);
-                          setTimeout(() => setCopied(false), 2000);
-                        }}
-                        copied={copied}
-                      />
-                    ),
-                  },
-                  {
-                    key: 'ai',
-                    label: (
-                      <span>
-                        <ThunderboltOutlined /> AI提示词
-                        {resultPrompt ? <Tag style={{ marginLeft: 6 }} color="purple">Seedance 七段</Tag> : null}
-                      </span>
-                    ),
-                    children: (
-                      <PromptResultBlock
-                        text={resultPrompt}
-                        onCopy={async () => {
-                          await handleCopy(resultPrompt);
                           setCopied(true);
                           setTimeout(() => setCopied(false), 2000);
                         }}
@@ -669,7 +740,19 @@ const ShortDrama: React.FC = () => {
 
       <Tabs
         activeKey={activeTab}
-        onChange={setActiveTab}
+        destroyOnHidden
+        onChange={(key) => {
+          // 切换页签时重置页面状态：不保留上次生成后展开/已选的状态
+          setActiveTab(key);
+          if (key !== 'prompt') {
+            setResultPrompt('');
+            setResultLong('');
+            setResultShort('');
+            setResultModel(null);
+            setResultRecordId(null);
+            setActivePromptTab('ai');
+          }
+        }}
         items={[
           {
             key: 'prompt',
@@ -691,7 +774,10 @@ const ShortDrama: React.FC = () => {
               <Watermark
                 imports={watermarkImports}
                 onImportsConsumed={() => setWatermarkImports([])}
-                onGoToPublish={() => setActiveTab('publish')}
+                onGoToPublish={(promptRecordId) => {
+                  setPendingPublishPromptId(promptRecordId || null);
+                  setActiveTab('publish');
+                }}
               />
             ),
           },
@@ -706,6 +792,8 @@ const ShortDrama: React.FC = () => {
               <PublishMaterialTab
                 promptRecords={records}
                 onLoadPromptRecords={() => fetchRecords(true)}
+                initialPromptRecordId={pendingPublishPromptId}
+                onPromptIdConsumed={() => setPendingPublishPromptId(null)}
               />
             ),
           },
@@ -749,9 +837,6 @@ const ShortDrama: React.FC = () => {
               {previewRecord.theme && <Tag>{previewRecord.theme}</Tag>}
               {previewRecord.tone && <Tag color="orange">{previewRecord.tone}</Tag>}
               {previewRecord.model && <Tag color="cyan">{previewRecord.model}</Tag>}
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {formatDateTime(previewRecord.created_at)}
-              </Text>
             </Space>
 
             {/* 成片视频区 */}
@@ -844,8 +929,19 @@ const ShortDrama: React.FC = () => {
             </pre>
             <Text strong>生成的提示词（三版本）：</Text>
             <Tabs
-              defaultActiveKey="long"
+              defaultActiveKey="ai"
               items={[
+                {
+                  key: 'ai',
+                  label: <span><ThunderboltOutlined /> AI提示词</span>,
+                  children: (
+                    <PromptResultBlock
+                      text={previewRecord.prompt_text}
+                      onCopy={() => handleCopy(previewRecord!.prompt_text)}
+                      copied={false}
+                    />
+                  ),
+                },
                 {
                   key: 'long',
                   label: <span><FileTextOutlined /> 长提示词</span>,
@@ -864,17 +960,6 @@ const ShortDrama: React.FC = () => {
                     <PromptResultBlock
                       text={previewRecord.prompt_short || ''}
                       onCopy={() => handleCopy(previewRecord!.prompt_short || '')}
-                      copied={false}
-                    />
-                  ),
-                },
-                {
-                  key: 'ai',
-                  label: <span><ThunderboltOutlined /> AI提示词</span>,
-                  children: (
-                    <PromptResultBlock
-                      text={previewRecord.prompt_text}
-                      onCopy={() => handleCopy(previewRecord!.prompt_text)}
                       copied={false}
                     />
                   ),
