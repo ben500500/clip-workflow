@@ -6,7 +6,7 @@ import {
 import {
   UploadOutlined, PlayCircleOutlined, DownloadOutlined, DeleteOutlined,
   PlusOutlined, ReloadOutlined, VideoCameraOutlined, ClearOutlined,
-  InboxOutlined,
+  InboxOutlined, SendOutlined,
 } from '@ant-design/icons';
 import { watermarkApi, type WatermarkTaskDetail, type WatermarkTaskItem } from '../api/watermark';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
@@ -52,10 +52,13 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: '已取消',
 };
 
+const genTaskName = () => String(Math.floor(Date.now() / 1000));
+
 const Watermark: React.FC<{
   imports?: ImportedVideo[];
   onImportsConsumed?: () => void;
-}> = ({ imports = [], onImportsConsumed }) => {
+  onGoToPublish?: () => void;
+}> = ({ imports = [], onImportsConsumed, onGoToPublish }) => {
   const [engine, setEngine] = useState<'remove_ai' | 'seedance' | 'seedance_wm'>('seedance_wm');
   // RAiW 选项
   const [mark, setMark] = useState('auto');
@@ -72,7 +75,7 @@ const Watermark: React.FC<{
 
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [taskName, setTaskName] = useState('');
+  const [taskName, setTaskName] = useState(genTaskName);
   const [running, setRunning] = useState(false);
 
   const [tasks, setTasks] = useState<WatermarkTaskItem[]>([]);
@@ -232,7 +235,7 @@ const Watermark: React.FC<{
       const res = await watermarkApi.run(params);
       message.success(res.message);
       setPendingFiles([]);
-      setTaskName('');
+      setTaskName(genTaskName());
       fetchTasks();
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '提交任务失败');
@@ -407,9 +410,20 @@ const Watermark: React.FC<{
     {
       title: '操作',
       key: 'action',
-      width: 200,
+      width: 240,
       render: (_: unknown, t: WatermarkTaskItem) => (
         <Space size="small">
+          {t.status === 'completed' && onGoToPublish && (
+            <Button
+              size="small"
+              type="primary"
+              ghost
+              icon={<SendOutlined />}
+              onClick={onGoToPublish}
+            >
+              发布
+            </Button>
+          )}
           <Button size="small" onClick={() => toggleExpand(t.id)}>
             {expandedTaskId === t.id ? '收起' : '展开'}
           </Button>
@@ -758,11 +772,11 @@ const Watermark: React.FC<{
             </Space>
           )}
 
-          {/* 任务名称 */}
+          {/* 任务名称：默认取当前 10 位时间戳，可修改 */}
           <Space>
             <Text>任务名称：</Text>
             <Input
-              placeholder="可选，默认按引擎自动命名"
+              placeholder="默认取当前 10 位时间戳，可修改"
               value={taskName}
               onChange={(e) => setTaskName(e.target.value)}
               style={{ width: 260 }}
