@@ -642,6 +642,34 @@ class WorkerNode(Base):
         return f"<WorkerNode(id={self.node_id}, status={self.status})>"
 
 
+class ShortdramaPrompt(Base):
+    """短片制作（v6）：Seedance 提示词生成记录。
+
+    保存每次「文案 → Seedance 提示词」的生成历史，
+    与去水印任务共同构成「短片制作」工作流（提示词生成 → 去水印出片）。
+    """
+    __tablename__ = "shortdrama_prompts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 用户输入的短剧文案（对白/旁白原文）
+    source_text = Column(Text, nullable=False)
+    # 时长：10 / 15 秒
+    duration = Column(Integer, default=15, nullable=False)
+    # 题材 / 基调 / 角色 / 补充要求（可选）
+    theme = Column(String(200), nullable=True)
+    tone = Column(String(200), nullable=True)
+    characters = Column(Text, nullable=True)
+    extra_requirements = Column(Text, nullable=True)
+    # 实际使用的模型名（取自 autoclip 配置）
+    model = Column(String(100), nullable=True)
+    # 生成的 Seedance 提示词正文
+    prompt_text = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<ShortdramaPrompt(id={self.id}, duration={self.duration})>"
+
+
 class WatermarkTask(Base):
     """去水印任务（一次批量提交 = 一个任务，内含多条视频）。
 

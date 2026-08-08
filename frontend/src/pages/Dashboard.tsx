@@ -100,7 +100,7 @@ const Dashboard: React.FC = () => {
         <Col xs={24} lg={12}>
           <Card title="快捷操作" size="small">
             <Space direction="vertical" style={{ width: '100%' }}>
-              <a onClick={() => navigate('/projects')}>项目管理 →</a>
+              <a onClick={() => navigate('/projects')}>短剧切片 →</a>
               <a onClick={() => navigate('/publish')}>发布管理 →</a>
             </Space>
           </Card>

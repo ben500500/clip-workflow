@@ -1096,7 +1096,7 @@ const EpisodeDetail: React.FC = () => {
     <div>
       <Breadcrumb style={{ marginBottom: 16 }}
         items={[
-          { title: <a onClick={() => navigate('/projects')}>项目管理</a> },
+          { title: <a onClick={() => navigate('/projects')}>短剧切片</a> },
           { title: <a onClick={() => navigate(`/projects/${episode.project_id}`)}>项目详情</a> },
           { title: episode.title || episode.id },
         ]}
