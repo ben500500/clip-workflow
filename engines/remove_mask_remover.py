@@ -14,6 +14,7 @@ CLI:
 
 选项:
   -r, --region  x,y,w,h    手动指定水印区域（覆盖文件名匹配；x=列 y=行 w=宽 h=高）
+  --scope      small|large 水印 ROI 范围（默认 small：收紧贴合水印文字；large：整角大框）
   --radius      N          修补半径（默认 3）
   --iterations  N          修补迭代次数（默认 1）
   --source-name NAME       原始文件名（用于匹配内置 ROI；默认取输入文件 basename）
@@ -150,6 +151,10 @@ def main(argv=None):
     parser.add_argument("--radius", type=int, default=3, help="修补半径（默认 3）")
     parser.add_argument("--iterations", type=int, default=1, help="修补迭代次数（默认 1）")
     parser.add_argument(
+        "--scope", default="small", choices=["small", "large"],
+        help="水印 ROI 范围：small=收紧贴合水印文字（默认），large=整角大框覆盖更彻底",
+    )
+    parser.add_argument(
         "--source-name", default=None,
         help="原始文件名（用于匹配内置 ROI；默认取输入文件 basename）",
     )
@@ -176,7 +181,7 @@ def main(argv=None):
     iterations = max(1, min(args.iterations or 1, 5))
 
     source_name = args.source_name or args.input
-    rois = resolve_rois(source_name, manual_region)
+    rois = resolve_rois(source_name, manual_region, scope=args.scope)
 
     try:
         process(args.input, args.output, rois, radius=radius, iterations=iterations)

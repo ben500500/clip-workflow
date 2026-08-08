@@ -83,6 +83,7 @@ const Watermark: React.FC<{
   // remove_mask 专属选项
   const [maskRadius, setMaskRadius] = useState(3);
   const [maskIterations, setMaskIterations] = useState(1);
+  const [maskScope, setMaskScope] = useState<'small' | 'large'>('small');
 
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -225,6 +226,7 @@ const Watermark: React.FC<{
         radius?: number;
         iterations?: number;
         prompt_record_id?: string | null;
+        scope?: 'small' | 'large';
       } = {
         engine,
         files: pendingFiles.map((f) => f.sourceFileKey),
@@ -246,6 +248,7 @@ const Watermark: React.FC<{
         params.region = region.trim() || undefined;
         params.radius = maskRadius;
         params.iterations = maskIterations;
+        params.scope = maskScope;
       } else {
         params.region = region.trim() || undefined;
         params.backend = seedanceBackend;
@@ -787,8 +790,18 @@ const Watermark: React.FC<{
                   { value: 3, label: '3 次（更彻底）' },
                 ]}
               />
+              <Text>ROI 范围：</Text>
+              <Select
+                value={maskScope}
+                onChange={setMaskScope}
+                style={{ width: 220 }}
+                options={[
+                  { value: 'small', label: '小范围（默认，贴合水印文字）' },
+                  { value: 'large', label: '大范围（整角大框，覆盖更彻底）' },
+                ]}
+              />
               <Text type="secondary" style={{ fontSize: 12 }}>
-                （内置 ROI 覆盖 648BC321 / C0CC0472 / 0270150E / 3906E761；其他文件回退左上+右下通用 ROI）
+                （内置 ROI 覆盖 648BC321 / C0CC0472 / 0270150E / 3906E761；其他文件回退左上+右下通用 ROI；ROI 范围默认 small：收紧贴合水印文字、减少对画面的干预，若水印残留可切 large 整角覆盖）
               </Text>
             </Space>
           ) : (

@@ -60,6 +60,7 @@ export interface WatermarkRunParams {
   keep_audio?: boolean;
   radius?: number;
   iterations?: number;
+  scope?: 'small' | 'large';
   name?: string;
   files: string[];
   prompt_record_id?: string | null;
