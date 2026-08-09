@@ -70,6 +70,7 @@ const allMenuItems = [
     label: '数据看板',
     children: [
       { key: '/analytics/overview', label: '总览' },
+      { key: '/analytics/shortdrama', label: '短片分析' },
       { key: '/analytics/content', label: '内容分析' },
       { key: '/analytics/monetization', label: '短剧变现' },
       { key: '/analytics/funnel', label: '转化漏斗' },

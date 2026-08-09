@@ -1,5 +1,5 @@
 import client from './client';
-import type { PublishProfile, PublishTask } from '../types';
+import type { PublishProfile, PublishTask, VideoAccount, MiniProgram } from '../types';
 
 export interface PublishTaskCreate {
   output_id: string;
@@ -12,6 +12,31 @@ export interface PublishTaskCreate {
   mini_program_link?: string;
   link_attached?: boolean;
   require_manual_confirm?: boolean;
+  video_account_id?: string;
+  mini_program_id?: string;
+  prompt_record_id?: string;
+  material_id?: string;
+}
+
+export interface VideoAccountInput {
+  account_name: string;
+  platform: string;
+  group_name?: string;
+  wxid?: string;
+  account_uid?: string;
+  profile_id?: string;
+  mini_program_enabled?: boolean;
+  remark?: string;
+  enabled?: boolean;
+}
+
+export interface MiniProgramInput {
+  name: string;
+  appid?: string;
+  path?: string;
+  full_link: string;
+  remark?: string;
+  enabled?: boolean;
 }
 
 export const publishApi = {
@@ -48,4 +73,35 @@ export const publishApi = {
     client.put(`/publish/profiles/${id}`, data) as Promise<PublishProfile>,
 
   deleteProfile: (id: string) => client.delete(`/publish/profiles/${id}`) as Promise<void>,
+
+  // ── 账号矩阵（视频号/抖音/快手） ──
+  getVideoAccounts: (params?: { platform?: string; group_name?: string }) =>
+    client.get('/publish/video-accounts', { params }) as Promise<VideoAccount[]>,
+
+  createVideoAccount: (data: VideoAccountInput) =>
+    client.post('/publish/video-accounts', data) as Promise<VideoAccount>,
+
+  createVideoAccountsBatch: (accounts: VideoAccountInput[], skipDuplicates = true) =>
+    client.post('/publish/video-accounts/batch', { accounts, skip_duplicates: skipDuplicates }) as Promise<{
+      imported: number;
+      skipped: number;
+      errors: { account_name: string; error: string }[];
+    }>,
+
+  updateVideoAccount: (id: string, data: Partial<VideoAccountInput>) =>
+    client.put(`/publish/video-accounts/${id}`, data) as Promise<VideoAccount>,
+
+  deleteVideoAccount: (id: string) => client.delete(`/publish/video-accounts/${id}`) as Promise<void>,
+
+  // ── 小程序链接库 ──
+  getMiniPrograms: (params?: { enabled_only?: boolean }) =>
+    client.get('/publish/mini-programs', { params }) as Promise<MiniProgram[]>,
+
+  createMiniProgram: (data: MiniProgramInput) =>
+    client.post('/publish/mini-programs', data) as Promise<MiniProgram>,
+
+  updateMiniProgram: (id: string, data: Partial<MiniProgramInput>) =>
+    client.put(`/publish/mini-programs/${id}`, data) as Promise<MiniProgram>,
+
+  deleteMiniProgram: (id: string) => client.delete(`/publish/mini-programs/${id}`) as Promise<void>,
 };

@@ -45,6 +45,8 @@ class PublishMaterialGenerateRequest(BaseModel):
     tone: Optional[str] = None
     platform: Optional[str] = None
     extra_requirements: Optional[str] = None
+    # 来源提示词记录 id（短片分析链路：发布素材 → 提示词）
+    prompt_record_id: Optional[str] = None
     # 是否保存到生成历史（默认保存）
     save: bool = True
 
@@ -91,6 +93,7 @@ def _serialize_record(r: PublishMaterial) -> dict:
         "extra_requirements": r.extra_requirements,
         "model": r.model,
         "material": material or {},
+        "prompt_record_id": str(r.prompt_record_id) if r.prompt_record_id else None,
         "created_at": r.created_at.isoformat() if r.created_at else "",
     }
 
@@ -156,6 +159,13 @@ async def generate_publish_material(
 
     record_id = None
     if data.save:
+        # 校验来源提示词记录 id（可选），用于短片分析链路
+        prompt_uuid = None
+        if data.prompt_record_id:
+            try:
+                prompt_uuid = uuid.UUID(data.prompt_record_id)
+            except ValueError:
+                prompt_uuid = None
         record = PublishMaterial(
             story=data.story.strip(),
             title=data.title,
@@ -165,6 +175,7 @@ async def generate_publish_material(
             extra_requirements=data.extra_requirements,
             model=model or None,
             material_json=material,
+            prompt_record_id=prompt_uuid,
         )
         db.add(record)
         await db.flush()

@@ -22,6 +22,7 @@ export interface PublishMaterialRecord {
   extra_requirements: string | null;
   model: string | null;
   material: PublishMaterial;
+  prompt_record_id: string | null;
   created_at: string;
 }
 
@@ -32,6 +33,7 @@ export interface PublishMaterialGenerateParams {
   tone?: string;
   platform?: string;
   extra_requirements?: string;
+  prompt_record_id?: string;
   save?: boolean;
 }
 

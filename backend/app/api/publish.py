@@ -13,12 +13,90 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.config import settings
-from app.models.models import PublishTask, PublishProfile, SliceOutput
+from app.models.models import PublishTask, PublishProfile, SliceOutput, VideoAccount, MiniProgram
 
 router = APIRouter()
 
 
 # ---- Pydantic schemas ----
+
+class VideoAccountCreate(BaseModel):
+    account_name: str
+    platform: str
+    group_name: Optional[str] = None
+    wxid: Optional[str] = None
+    account_uid: Optional[str] = None
+    profile_id: Optional[str] = None
+    mini_program_enabled: bool = False
+    remark: Optional[str] = None
+    enabled: bool = True
+
+
+class VideoAccountUpdate(BaseModel):
+    account_name: Optional[str] = None
+    platform: Optional[str] = None
+    group_name: Optional[str] = None
+    wxid: Optional[str] = None
+    account_uid: Optional[str] = None
+    profile_id: Optional[str] = None
+    mini_program_enabled: Optional[bool] = None
+    remark: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class VideoAccountResponse(BaseModel):
+    id: str
+    account_name: str
+    platform: str
+    group_name: Optional[str] = None
+    wxid: Optional[str] = None
+    account_uid: Optional[str] = None
+    profile_id: Optional[str] = None
+    mini_program_enabled: bool = False
+    remark: Optional[str] = None
+    enabled: bool = True
+    created_at: str
+    updated_at: str
+
+    model_config = {"from_attributes": True}
+
+
+class MiniProgramCreate(BaseModel):
+    name: str
+    appid: Optional[str] = None
+    path: Optional[str] = None
+    full_link: str
+    remark: Optional[str] = None
+    enabled: bool = True
+
+
+class MiniProgramUpdate(BaseModel):
+    name: Optional[str] = None
+    appid: Optional[str] = None
+    path: Optional[str] = None
+    full_link: Optional[str] = None
+    remark: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class MiniProgramResponse(BaseModel):
+    id: str
+    name: str
+    appid: Optional[str] = None
+    path: Optional[str] = None
+    full_link: str
+    remark: Optional[str] = None
+    enabled: bool = True
+    created_at: str
+
+    model_config = {"from_attributes": True}
+
+
+class VideoAccountBatchImport(BaseModel):
+    """账号批量导入：每行一个账号（账号名/平台/分组/视频号ID/备注）。"""
+    accounts: List[VideoAccountCreate]
+    skip_duplicates: bool = True
+
 
 class PublishTaskCreate(BaseModel):
     output_id: str
@@ -31,6 +109,11 @@ class PublishTaskCreate(BaseModel):
     mini_program_link: Optional[str] = None
     link_attached: bool = False
     require_manual_confirm: bool = True
+    # 一期：账号矩阵 / 小程序库 / 短片来源关联
+    video_account_id: Optional[str] = None
+    mini_program_id: Optional[str] = None
+    prompt_record_id: Optional[str] = None
+    material_id: Optional[str] = None
 
 
 class PublishTaskResponse(BaseModel):
@@ -52,6 +135,10 @@ class PublishTaskResponse(BaseModel):
     error_message: Optional[str] = None
     require_manual_confirm: bool = True
     screenshot_key: Optional[str] = None
+    video_account_id: Optional[str] = None
+    mini_program_id: Optional[str] = None
+    prompt_record_id: Optional[str] = None
+    material_id: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -141,6 +228,10 @@ def _serialize_publish_task(task: PublishTask) -> dict:
         "error_message": task.error_message,
         "require_manual_confirm": task.require_manual_confirm if task.require_manual_confirm is not None else True,
         "screenshot_key": task.screenshot_key,
+        "video_account_id": str(task.video_account_id) if task.video_account_id else None,
+        "mini_program_id": str(task.mini_program_id) if task.mini_program_id else None,
+        "prompt_record_id": str(task.prompt_record_id) if task.prompt_record_id else None,
+        "material_id": str(task.material_id) if task.material_id else None,
         "created_at": task.created_at.isoformat() if task.created_at else "",
         "updated_at": task.updated_at.isoformat() if task.updated_at else "",
     }
@@ -249,7 +340,12 @@ async def create_publish_tasks_batch(
 
 
 async def _check_publish_limits(db: AsyncSession, data: PublishTaskCreate):
-    """校验发布配置的每日上限与最小发布间隔（带行锁防并发）。"""
+    """校验发布配置的每日上限与最小发布间隔（带行锁防并发）。
+
+    优先按 (platform, account_name) 匹配发布配置；若任务携带 video_account_id，
+    则回退到账号绑定的 profile_id 解析配置，保证账号矩阵同样受上限/间隔约束。
+    """
+    profile = None
     profile_result = await db.execute(
         select(PublishProfile).where(
             PublishProfile.platform == data.platform,
@@ -257,6 +353,23 @@ async def _check_publish_limits(db: AsyncSession, data: PublishTaskCreate):
         ).with_for_update()
     )
     profile = profile_result.scalar_one_or_none()
+
+    if not profile and data.video_account_id:
+        try:
+            acc_uuid = uuid.UUID(data.video_account_id)
+        except ValueError:
+            acc_uuid = None
+        if acc_uuid:
+            acc_result = await db.execute(
+                select(VideoAccount).where(VideoAccount.id == acc_uuid)
+            )
+            acc = acc_result.scalar_one_or_none()
+            if acc and acc.profile_id:
+                prof_result = await db.execute(
+                    select(PublishProfile).where(PublishProfile.id == acc.profile_id).with_for_update()
+                )
+                profile = prof_result.scalar_one_or_none()
+
     if not profile:
         return
     today = datetime.utcnow().date()
@@ -299,17 +412,44 @@ async def _check_publish_limits(db: AsyncSession, data: PublishTaskCreate):
 async def _create_publish_task_internal(db: AsyncSession, data: PublishTaskCreate) -> PublishTask:
     """创建单条发布任务并落库（不提交事务，由调用方统一提交）。"""
     output_uuid = uuid.UUID(data.output_id)
+
+    def _to_uuid_or_none(v: Optional[str]) -> Optional[uuid.UUID]:
+        """把外部传入的 ID 字符串安全转为 UUID；非法值返回 None（不阻断任务创建）。"""
+        if not v:
+            return None
+        try:
+            return uuid.UUID(v)
+        except ValueError:
+            return None
+
+    # 若指定了 video_account_id，自动代入账号的发布配置（chrome 端口/Cookie/默认标题/描述/标签）
+    account_name = data.account_name
+    mini_program_link = data.mini_program_link
+    video_account_uuid = _to_uuid_or_none(data.video_account_id)
+    if video_account_uuid:
+        try:
+            acc_result = await db.execute(select(VideoAccount).where(VideoAccount.id == video_account_uuid))
+            acc = acc_result.scalar_one_or_none()
+            if acc:
+                account_name = account_name or acc.account_name
+        except Exception:
+            pass
+
     task = PublishTask(
         output_id=output_uuid,
         platform=data.platform,
-        account_name=data.account_name,
+        account_name=account_name,
         title=data.title,
         description=data.description,
         tags=data.tags,
         cover_file_key=data.cover_file_key,
-        mini_program_link=data.mini_program_link,
+        mini_program_link=mini_program_link,
         link_attached=data.link_attached,
         require_manual_confirm=data.require_manual_confirm,
+        video_account_id=video_account_uuid,
+        mini_program_id=_to_uuid_or_none(data.mini_program_id),
+        prompt_record_id=_to_uuid_or_none(data.prompt_record_id),
+        material_id=_to_uuid_or_none(data.material_id),
         status="pending",
     )
     db.add(task)
@@ -540,5 +680,258 @@ async def delete_publish_profile(
         raise HTTPException(status_code=404, detail="Publish profile not found")
 
     await db.delete(profile)
+    await db.flush()
+    return None
+
+
+# ---- 视频号/抖音账号库（矩阵管理） endpoints ----
+
+
+def _serialize_video_account(acc: VideoAccount) -> dict:
+    return {
+        "id": str(acc.id),
+        "account_name": acc.account_name,
+        "platform": acc.platform,
+        "group_name": acc.group_name,
+        "wxid": acc.wxid,
+        "account_uid": acc.account_uid,
+        "profile_id": str(acc.profile_id) if acc.profile_id else None,
+        "mini_program_enabled": acc.mini_program_enabled or False,
+        "remark": acc.remark,
+        "enabled": acc.enabled if acc.enabled is not None else True,
+        "created_at": acc.created_at.isoformat() if acc.created_at else "",
+        "updated_at": acc.updated_at.isoformat() if acc.updated_at else "",
+    }
+
+
+def _serialize_mini_program(mp: MiniProgram) -> dict:
+    return {
+        "id": str(mp.id),
+        "name": mp.name,
+        "appid": mp.appid,
+        "path": mp.path,
+        "full_link": mp.full_link,
+        "remark": mp.remark,
+        "enabled": mp.enabled if mp.enabled is not None else True,
+        "created_at": mp.created_at.isoformat() if mp.created_at else "",
+    }
+
+
+@router.get("/publish/video-accounts", response_model=List[VideoAccountResponse])
+async def list_video_accounts(
+    platform: Optional[str] = Query(None),
+    group_name: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """账号库列表（可按平台/分组过滤，默认只返回启用账号）。"""
+    filters = []
+    if platform:
+        filters.append(VideoAccount.platform == platform)
+    if group_name:
+        filters.append(VideoAccount.group_name == group_name)
+    query = select(VideoAccount)
+    if filters:
+        query = query.where(and_(*filters))
+    query = query.order_by(VideoAccount.platform, VideoAccount.group_name, VideoAccount.account_name)
+    result = await db.execute(query)
+    accounts = result.scalars().all()
+    return [_serialize_video_account(a) for a in accounts]
+
+
+@router.post("/publish/video-accounts", response_model=VideoAccountResponse, status_code=201)
+async def create_video_account(
+    data: VideoAccountCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """新增账号（手动新增 / 初始化导入的单条）。"""
+    acc = VideoAccount(
+        account_name=data.account_name,
+        platform=data.platform,
+        group_name=data.group_name,
+        wxid=data.wxid,
+        account_uid=data.account_uid,
+        profile_id=uuid.UUID(data.profile_id) if data.profile_id else None,
+        mini_program_enabled=data.mini_program_enabled,
+        remark=data.remark,
+        enabled=data.enabled,
+    )
+    db.add(acc)
+    await db.flush()
+    await db.refresh(acc)
+    return _serialize_video_account(acc)
+
+
+@router.post("/publish/video-accounts/batch", response_model=dict, status_code=201)
+async def batch_import_video_accounts(
+    data: VideoAccountBatchImport,
+    db: AsyncSession = Depends(get_db),
+):
+    """账号批量导入（Excel/CSV 解析后的结构化数组落库）。
+
+    skip_duplicates=True 时按 (platform, account_name) 去重，重复项跳过并计数。
+    """
+    imported = 0
+    skipped = 0
+    errors = []
+    for item in data.accounts:
+        try:
+            if data.skip_duplicates:
+                dup = await db.execute(
+                    select(VideoAccount).where(
+                        VideoAccount.platform == item.platform,
+                        VideoAccount.account_name == item.account_name,
+                    )
+                )
+                if dup.scalar_one_or_none():
+                    skipped += 1
+                    continue
+            acc = VideoAccount(
+                account_name=item.account_name,
+                platform=item.platform,
+                group_name=item.group_name,
+                wxid=item.wxid,
+                account_uid=item.account_uid,
+                profile_id=uuid.UUID(item.profile_id) if item.profile_id else None,
+                mini_program_enabled=item.mini_program_enabled,
+                remark=item.remark,
+                enabled=item.enabled,
+            )
+            db.add(acc)
+            imported += 1
+        except Exception as e:
+            errors.append({"account_name": item.account_name, "error": str(e)})
+    await db.flush()
+    return {"imported": imported, "skipped": skipped, "errors": errors}
+
+
+@router.put("/publish/video-accounts/{account_id}", response_model=VideoAccountResponse)
+async def update_video_account(
+    account_id: str,
+    data: VideoAccountUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """更新账号信息。"""
+    try:
+        aid = uuid.UUID(account_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid account ID format")
+
+    result = await db.execute(select(VideoAccount).where(VideoAccount.id == aid))
+    acc = result.scalar_one_or_none()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Video account not found")
+
+    for field, value in data.model_dump(exclude_unset=True).items():
+        if field == "profile_id":
+            acc.profile_id = uuid.UUID(value) if value else None
+            continue
+        setattr(acc, field, value)
+
+    await db.flush()
+    await db.refresh(acc)
+    return _serialize_video_account(acc)
+
+
+@router.delete("/publish/video-accounts/{account_id}", status_code=204)
+async def delete_video_account(
+    account_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """删除账号。"""
+    try:
+        aid = uuid.UUID(account_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid account ID format")
+
+    result = await db.execute(select(VideoAccount).where(VideoAccount.id == aid))
+    acc = result.scalar_one_or_none()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Video account not found")
+
+    await db.delete(acc)
+    await db.flush()
+    return None
+
+
+# ---- 小程序链接库 endpoints ----
+
+
+@router.get("/publish/mini-programs", response_model=List[MiniProgramResponse])
+async def list_mini_programs(
+    enabled_only: bool = Query(True),
+    db: AsyncSession = Depends(get_db),
+):
+    """小程序链接库列表。"""
+    query = select(MiniProgram)
+    if enabled_only:
+        query = query.where(MiniProgram.enabled == True)  # noqa: E712
+    query = query.order_by(MiniProgram.name)
+    result = await db.execute(query)
+    programs = result.scalars().all()
+    return [_serialize_mini_program(mp) for mp in programs]
+
+
+@router.post("/publish/mini-programs", response_model=MiniProgramResponse, status_code=201)
+async def create_mini_program(
+    data: MiniProgramCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """新增小程序链接。"""
+    mp = MiniProgram(
+        name=data.name,
+        appid=data.appid,
+        path=data.path,
+        full_link=data.full_link,
+        remark=data.remark,
+        enabled=data.enabled,
+    )
+    db.add(mp)
+    await db.flush()
+    await db.refresh(mp)
+    return _serialize_mini_program(mp)
+
+
+@router.put("/publish/mini-programs/{mp_id}", response_model=MiniProgramResponse)
+async def update_mini_program(
+    mp_id: str,
+    data: MiniProgramUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """更新小程序链接。"""
+    try:
+        mid = uuid.UUID(mp_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid mini program ID format")
+
+    result = await db.execute(select(MiniProgram).where(MiniProgram.id == mid))
+    mp = result.scalar_one_or_none()
+    if not mp:
+        raise HTTPException(status_code=404, detail="Mini program not found")
+
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(mp, field, value)
+
+    await db.flush()
+    await db.refresh(mp)
+    return _serialize_mini_program(mp)
+
+
+@router.delete("/publish/mini-programs/{mp_id}", status_code=204)
+async def delete_mini_program(
+    mp_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """删除小程序链接。"""
+    try:
+        mid = uuid.UUID(mp_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid mini program ID format")
+
+    result = await db.execute(select(MiniProgram).where(MiniProgram.id == mid))
+    mp = result.scalar_one_or_none()
+    if not mp:
+        raise HTTPException(status_code=404, detail="Mini program not found")
+
+    await db.delete(mp)
     await db.flush()
     return None

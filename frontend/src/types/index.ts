@@ -176,6 +176,7 @@ export interface SliceOutput {
   duration: number | null;
   file_size: number | null;
   resolution: string | null;
+  prompt_record_id: string | null;
   created_at: string;
   presigned_url: string | null;
 }
@@ -205,6 +206,10 @@ export interface PublishTask {
   error_message: string | null;
   require_manual_confirm: boolean;
   screenshot_key: string | null;
+  video_account_id: string | null;
+  mini_program_id: string | null;
+  prompt_record_id: string | null;
+  material_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -236,6 +241,83 @@ export interface Publication {
   reject_reason: string | null;
   operator: string | null;
   created_at: string;
+}
+
+// ========== 账号矩阵 / 小程序库（一期） ==========
+
+export interface VideoAccount {
+  id: string;
+  account_name: string;
+  platform: string;
+  group_name: string | null;
+  wxid: string | null;
+  account_uid: string | null;
+  profile_id: string | null;
+  mini_program_enabled: boolean;
+  remark: string | null;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MiniProgram {
+  id: string;
+  name: string;
+  appid: string | null;
+  path: string | null;
+  full_link: string;
+  remark: string | null;
+  enabled: boolean;
+  created_at: string;
+}
+
+// ========== 短片分析（P3） ==========
+
+export interface ShortDramaGeneration {
+  prompt_record_id: string | null;
+  material_id: string | null;
+  source_text: string | null;
+  duration: number | null;
+  theme: string | null;
+  tone: string | null;
+  short_title: string | null;
+  material_tags: string[];
+}
+
+export interface ShortDramaAnalysisRow {
+  video_metric_id: string;
+  publish_task_id: string | null;
+  platform: string | null;
+  account_name: string | null;
+  video_id: string | null;
+  title: string | null;
+  publish_date: string | null;
+  play_count: number;
+  finish_rate: number;
+  like_count: number;
+  comment_count: number;
+  share_count: number;
+  favorite_count: number;
+  jump_click_count: number;
+  jump_click_rate: number;
+  attributed_uv: number;
+  attributed_revenue: number;
+  tags: string[];
+  generation: ShortDramaGeneration | null;
+}
+
+export interface ShortDramaSummary {
+  platform: string | null;
+  published_count: number;
+  total_play: number;
+  avg_finish_rate: number;
+  total_jump_click: number;
+  attributed_revenue: number;
+}
+
+export interface ShortDramaTopic {
+  tag: string;
+  count: number;
 }
 
 // ========== 系统配置 ==========

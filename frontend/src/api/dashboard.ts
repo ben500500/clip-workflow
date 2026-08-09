@@ -14,6 +14,9 @@ import type {
   ImportTemplate,
   MiniProgramMetric,
   PlatformDetectResult,
+  ShortDramaAnalysisRow,
+  ShortDramaSummary,
+  ShortDramaTopic,
   TrendPoint,
   VideoMetric,
 } from '../types';
@@ -146,4 +149,19 @@ export const dashboardApi = {
 
   updateConfig: (data: Record<string, unknown>) =>
     client.put('/dashboard/config', data) as Promise<{ config: Record<string, unknown> }>,
+
+  // ── 短片分析（P3） ──
+  getShortDramaAnalysis: (params?: {
+    platform?: string;
+    start_date?: string;
+    end_date?: string;
+    page?: number;
+    page_size?: number;
+  }) => client.get('/dashboard/shortdrama/analysis', { params }) as Promise<ApiList<ShortDramaAnalysisRow>>,
+
+  getShortDramaSummary: (params?: { platform?: string; start_date?: string; end_date?: string }) =>
+    client.get('/dashboard/shortdrama/summary', { params }) as Promise<ShortDramaSummary>,
+
+  getShortDramaTopics: (params?: { platform?: string; start_date?: string; end_date?: string; limit?: number }) =>
+    client.get('/dashboard/shortdrama/topics', { params }) as Promise<ShortDramaTopic[]>,
 };

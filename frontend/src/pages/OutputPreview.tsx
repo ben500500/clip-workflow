@@ -8,10 +8,17 @@ import { sliceApi } from '../api/slice';
 import { previewApi } from '../api/preview';
 import { publishApi } from '../api/publish';
 import { publishMaterialApi, type PublishMaterialRecord } from '../api/publishMaterial';
-import type { Publication, SliceOutput, SliceTask } from '../types';
+import type { Publication, SliceOutput, SliceTask, VideoAccount, MiniProgram } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
 const { Title, Text } = Typography;
+
+// 平台中文名（账号库下拉展示）
+const PLATFORM_LABELS: Record<string, string> = {
+  wechat_channel: '视频号',
+  douyin: '抖音',
+  kuaishou: '快手',
+};
 
 // 切片模式中文展示
 const SLICE_MODE_LABELS: Record<string, string> = {
@@ -41,6 +48,9 @@ const OutputPreview: React.FC = () => {
   const [publishTarget, setPublishTarget] = useState<SliceOutput | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [materialRecords, setMaterialRecords] = useState<PublishMaterialRecord[]>([]);
+  // 账号矩阵 / 小程序库（一期）
+  const [videoAccounts, setVideoAccounts] = useState<VideoAccount[]>([]);
+  const [miniPrograms, setMiniPrograms] = useState<MiniProgram[]>([]);
 
   // ── 成品重新剪辑 ──
   const [recutModal, setRecutModal] = useState(false);
@@ -180,6 +190,19 @@ const OutputPreview: React.FC = () => {
     } catch {
       setMaterialRecords([]);
     }
+    // 加载账号矩阵 + 小程序链接库（发布弹窗下拉）
+    try {
+      const accounts = await publishApi.getVideoAccounts();
+      setVideoAccounts(accounts);
+    } catch {
+      setVideoAccounts([]);
+    }
+    try {
+      const programs = await publishApi.getMiniPrograms({ enabled_only: true });
+      setMiniPrograms(programs);
+    } catch {
+      setMiniPrograms([]);
+    }
   };
 
   const submitPublish = async () => {
@@ -206,16 +229,29 @@ const OutputPreview: React.FC = () => {
           tags = tags.length > 0 ? tags : allTags;
         }
       }
+      // 若选取了账号库账号，自动代入账号名称
+      const selectedAccount = videoAccounts.find((a) => a.id === values.video_account_id);
+      const accountName = selectedAccount ? selectedAccount.account_name : (values.account_name || undefined);
+      // 若选取了小程序库链接，自动代入完整链接
+      const selectedMiniProgram = miniPrograms.find((m) => m.id === values.mini_program_id);
+      const miniProgramLink = selectedMiniProgram ? selectedMiniProgram.full_link : (values.mini_program_link || undefined);
       setPublishing(true);
+      // 发布任务关联：material 记录可带出素材的 prompt_record_id
+      const selectedMaterial = materialRecords.find((r) => r.id === values.material_id);
+      const promptRecordId = selectedMaterial?.prompt_record_id || publishTarget.prompt_record_id || undefined;
       const tasks = platforms.map((platform: string) => ({
         output_id: publishTarget.id,
         platform,
-        account_name: values.account_name || undefined,
+        account_name: accountName,
+        video_account_id: values.video_account_id || undefined,
+        mini_program_id: selectedMiniProgram ? selectedMiniProgram.id : undefined,
         title: title || undefined,
         description: description || undefined,
         tags: tags.length > 0 ? tags : undefined,
-        mini_program_link: values.mini_program_link || undefined,
+        mini_program_link: miniProgramLink,
         require_manual_confirm: values.require_manual_confirm !== false,
+        prompt_record_id: promptRecordId,
+        material_id: values.material_id || undefined,
       }));
       const created = await publishApi.createTasks(tasks);
       message.success(`已创建 ${created.length} 个发布任务，正在发布`);
@@ -500,7 +536,19 @@ const OutputPreview: React.FC = () => {
               }))}
             />
           </Form.Item>
-          <Form.Item name="account_name" label="发布账号（选填，留空则使用平台默认配置）">
+          <Form.Item name="video_account_id" label="发布账号（从账号库选择）">
+            <Select
+              allowClear
+              showSearch
+              placeholder="选择账号库账号（留空则手填或使用默认配置）"
+              optionFilterProp="label"
+              options={videoAccounts.map((a) => ({
+                value: a.id,
+                label: `${a.account_name}${a.group_name ? `（${a.group_name}）` : ''} - ${PLATFORM_LABELS[a.platform] || a.platform}`,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item name="account_name" label="或手填账号（选填）">
             <Input placeholder="如：主号 / 副号" />
           </Form.Item>
           <Form.Item name="title" label="标题">
@@ -512,7 +560,19 @@ const OutputPreview: React.FC = () => {
           <Form.Item name="tags" label="话题标签">
             <Select mode="tags" placeholder="回车添加标签" />
           </Form.Item>
-          <Form.Item name="mini_program_link" label="小程序链接（选填）">
+          <Form.Item name="mini_program_id" label="小程序链接（从链接库选择，仅视频号）">
+            <Select
+              allowClear
+              showSearch
+              placeholder="选择小程序链接"
+              optionFilterProp="label"
+              options={miniPrograms.map((m) => ({
+                value: m.id,
+                label: `${m.name}${m.full_link ? `（${m.full_link.slice(0, 40)}）` : ''}`,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item name="mini_program_link" label="或手填小程序链接（选填）">
             <Input placeholder="视频号可挂载小程序链接" />
           </Form.Item>
           <Form.Item name="require_manual_confirm" label="截图确认后发布" initialValue={true}>

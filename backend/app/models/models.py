@@ -357,6 +357,59 @@ class PlatformProfile(Base):
         return f"<PlatformProfile(id={self.id}, name={self.name})>"
 
 
+class VideoAccount(Base):
+    """视频号/抖音/快手账号库（矩阵管理，一期）。
+
+    管理各平台矩阵账号，关联发布配置（chrome 端口 + Cookie 绑定登录态），
+    支持分组、备注、启用/停用、小程序挂载资质标记，供发布弹窗下拉选择。
+    """
+    __tablename__ = "video_accounts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 账号名称（如「主号-剧集A」），用户可读
+    account_name = Column(String(100), nullable=False, index=True)
+    # 平台：wechat_channel / douyin / kuaishou（矩阵跨平台复用）
+    platform = Column(String(50), nullable=False, index=True)
+    # 分组（剧集A/B、情感、爽文…），便于批量选号
+    group_name = Column(String(100), nullable=True)
+    # 平台侧账号唯一标识（视频号 ID / 抖音号等）
+    wxid = Column(String(200), nullable=True)
+    account_uid = Column(String(200), nullable=True)
+    # 关联发布配置（chrome 端口 + Cookie 绑定登录态）
+    profile_id = Column(UUID(as_uuid=True), nullable=True)
+    # 视频号小程序挂载资质（平台强引导功能，有资质限制）
+    mini_program_enabled = Column(Boolean, default=False)
+    remark = Column(String(500), nullable=True)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<VideoAccount(id={self.id}, name={self.account_name}, platform={self.platform})>"
+
+
+class MiniProgram(Base):
+    """小程序链接库（一期）。
+
+    视频号发布时可挂载的小程序链接，通常带渠道归因参数（jump_click 归因对齐），
+    发布时下拉选择而非手填，保证参数规范统一。
+    """
+    __tablename__ = "mini_programs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(200), nullable=False)
+    appid = Column(String(200), nullable=True)
+    path = Column(String(500), nullable=True)
+    # 完整链接（带渠道归因参数的落地链接模板）
+    full_link = Column(String(1000), nullable=False)
+    remark = Column(String(500), nullable=True)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<MiniProgram(id={self.id}, name={self.name})>"
+
+
 class PublishTask(Base):
     __tablename__ = "publish_tasks"
 
@@ -378,6 +431,12 @@ class PublishTask(Base):
     error_message = Column(Text, nullable=True)
     require_manual_confirm = Column(Boolean, default=True)
     screenshot_key = Column(String(500), nullable=True)
+    # ── 一期：账号矩阵 / 小程序库 / 短片来源关联（冗余快照 + 外键并行，兼容历史数据） ──
+    video_account_id = Column(UUID(as_uuid=True), nullable=True)
+    mini_program_id = Column(UUID(as_uuid=True), nullable=True)
+    # 短片来源：提示词记录（带去文案/时长/题材/基调）+ 发布素材记录（带去话题标签）
+    prompt_record_id = Column(UUID(as_uuid=True), nullable=True)
+    material_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -419,6 +478,8 @@ class VideoMetric(Base):
     title = Column(String(500), nullable=True)
     publish_date = Column(Date, nullable=True)
     account_id = Column(UUID(as_uuid=True), nullable=True)
+    # 平台显式标记：wechat_channel / douyin / kuaishou（短片分析按平台分 Tab）
+    platform = Column(String(50), nullable=True)
     play_count = Column(Integer, default=0)
     finish_rate = Column(Float, default=0)
     like_count = Column(Integer, default=0)
@@ -759,6 +820,8 @@ class PublishMaterial(Base):
     model = Column(String(100), nullable=True)
     # 生成的发布素材（JSON：short_title / captions / tags / comments）
     material_json = Column(JSON, nullable=False)
+    # 来源提示词记录（短片分析：发布素材 → 提示词 → 发布任务 链路关联）
+    prompt_record_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     def __repr__(self) -> str:

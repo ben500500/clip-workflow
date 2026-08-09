@@ -21,6 +21,7 @@ import FunnelAnalysis from './pages/FunnelAnalysis';
 import Ecosystem from './pages/Ecosystem';
 import DataImport from './pages/DataImport';
 import DashboardSettings from './pages/DashboardSettings';
+import ShortDramaAnalysis from './pages/ShortDramaAnalysis';
 import Settings from './pages/Settings';
 import Profile from './pages/Profile';
 import UserManagement from './pages/UserManagement';
@@ -55,6 +56,7 @@ const App: React.FC = () => {
             <Route path="episodes/:episodeId/preview" element={<OutputPreviewPage />} />
             <Route path="publish" element={<PublishManagement />} />
             <Route path="analytics/overview" element={<DashboardOverview />} />
+            <Route path="analytics/shortdrama" element={<ShortDramaAnalysis />} />
             <Route path="analytics/content" element={<ContentAnalysis />} />
             <Route path="analytics/monetization" element={<DramaMonetization />} />
             <Route path="analytics/funnel" element={<FunnelAnalysis />} />

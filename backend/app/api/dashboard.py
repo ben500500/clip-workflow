@@ -10,7 +10,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select, and_, desc, func
+from sqlalchemy import select, and_, or_, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -829,3 +829,260 @@ async def get_funnel_compare(
             "revenue_change": calc_change(float(tw[3] or 0), float(lw[3] or 0)),
         },
     }
+
+
+# ============================================================================
+# 短片分析（P3）：分视频号/抖音综合展现
+# 链路：短片生成(shortdrama_prompts) → 发布(publish_tasks) → 平台数据(video_metrics)
+# ============================================================================
+
+
+def _serialize_shortdrama_analysis_row(v: VideoMetric, ctx: dict) -> dict:
+    """把平台数据行与短片生成侧信息拼装成综合展示行。
+
+    ctx 预加载：publish_tasks（by id）、shortdrama_prompts（by id）、publish_materials（by id）。
+    """
+    pt = ctx.get("tasks", {}).get(str(v.publish_task_id)) if v.publish_task_id else None
+    prompt = None
+    material = None
+    if pt:
+        prompt = ctx.get("prompts", {}).get(str(pt.prompt_record_id)) if pt.prompt_record_id else None
+        material = ctx.get("materials", {}).get(str(pt.material_id)) if pt.material_id else None
+    # 若发布任务未直接关联提示词记录，尝试通过发布素材回退（素材 → 提示词）
+    if not prompt and material and material.prompt_record_id:
+        prompt = ctx.get("prompts", {}).get(str(material.prompt_record_id))
+
+    # 平台/账号：优先取发布任务冗余快照，再退化为 video_metrics 自身字段
+    platform = (pt.platform if pt else None) or v.platform
+    account_name = (pt.account_name if pt else None) or None
+
+    # 生成侧信息
+    prompt_record_id = str(pt.prompt_record_id) if pt and pt.prompt_record_id else None
+    if not prompt_record_id and prompt:
+        prompt_record_id = str(prompt.id)
+    generation = {
+        "prompt_record_id": prompt_record_id,
+        "material_id": str(pt.material_id) if pt and pt.material_id else None,
+        "source_text": prompt.source_text[:120] if prompt else None,
+        "duration": prompt.duration if prompt else None,
+        "theme": prompt.theme if prompt else None,
+        "tone": prompt.tone if prompt else None,
+        "short_title": material.material_json.get("short_title") if material and material.material_json else None,
+        "material_tags": (material.material_json.get("tags") or {}).get("all", [])
+        if material and material.material_json else [],
+    }
+
+    return {
+        "video_metric_id": str(v.id),
+        "publish_task_id": str(v.publish_task_id) if v.publish_task_id else None,
+        "platform": platform,
+        "account_name": account_name,
+        "video_id": v.video_id,
+        "title": v.title,
+        "publish_date": v.publish_date.isoformat() if v.publish_date else None,
+        "play_count": v.play_count or 0,
+        "finish_rate": v.finish_rate or 0,
+        "like_count": v.like_count or 0,
+        "comment_count": v.comment_count or 0,
+        "share_count": v.share_count or 0,
+        "favorite_count": v.favorite_count or 0,
+        "jump_click_count": v.jump_click_count or 0,
+        "jump_click_rate": v.jump_click_rate or 0,
+        "attributed_uv": v.attributed_uv or 0,
+        "attributed_revenue": v.attributed_revenue or 0,
+        "tags": v.tags or [],
+        "generation": generation,
+    }
+
+
+@router.get("/dashboard/shortdrama/analysis")
+async def get_shortdrama_analysis(
+    platform: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """短片分析综合列表：平台数据 JOIN 发布任务 JOIN 短片生成元数据。
+
+    - platform 过滤（wechat_channel / douyin / kuaishou，缺省为全部）
+    - 未关联到短片来源的历史视频 generation 显示 null（前端显示「-」）
+    """
+    from app.models.models import PublishTask, ShortdramaPrompt, PublishMaterial
+
+    filters = []
+    sd = _parse_date(start_date)
+    ed = _parse_date(end_date)
+    if sd:
+        filters.append(VideoMetric.publish_date >= sd)
+    if ed:
+        filters.append(VideoMetric.publish_date <= ed)
+
+    # 平台过滤：video_metrics.platform 或 关联 publish_tasks.platform 任一命中
+    if platform:
+        task_ids = (
+            await db.execute(
+                select(PublishTask.id).where(PublishTask.platform == platform)
+            )
+        ).scalars().all()
+        filters.append(
+            or_(
+                VideoMetric.platform == platform,
+                VideoMetric.publish_task_id.in_(task_ids) if task_ids else False,
+            )
+        )
+
+    count_query = select(func.count(VideoMetric.id))
+    if filters:
+        count_query = count_query.where(and_(*filters))
+    total = (await db.execute(count_query)).scalar() or 0
+
+    query = select(VideoMetric)
+    if filters:
+        query = query.where(and_(*filters))
+    query = query.order_by(desc(VideoMetric.publish_date), desc(VideoMetric.recorded_at))
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    videos = (await db.execute(query)).scalars().all()
+
+    # 预加载关联数据，避免 N+1
+    task_ids = [v.publish_task_id for v in videos if v.publish_task_id]
+    tasks_map = {}
+    prompts_map = {}
+    materials_map = {}
+    if task_ids:
+        tasks = (await db.execute(select(PublishTask).where(PublishTask.id.in_(task_ids)))).scalars().all()
+        tasks_map = {str(t.id): t for t in tasks}
+        prompt_ids = [t.prompt_record_id for t in tasks if t.prompt_record_id]
+        material_ids = [t.material_id for t in tasks if t.material_id]
+        if material_ids:
+            materials = (await db.execute(select(PublishMaterial).where(PublishMaterial.id.in_(material_ids)))).scalars().all()
+            materials_map = {str(m.id): m for m in materials}
+            # 素材回退关联的提示词记录也一并预加载
+            prompt_ids = prompt_ids + [m.prompt_record_id for m in materials if m.prompt_record_id]
+        if prompt_ids:
+            prompts = (await db.execute(select(ShortdramaPrompt).where(ShortdramaPrompt.id.in_(prompt_ids)))).scalars().all()
+            prompts_map = {str(p.id): p for p in prompts}
+
+    ctx = {"tasks": tasks_map, "prompts": prompts_map, "materials": materials_map}
+    items = [_serialize_shortdrama_analysis_row(v, ctx) for v in videos]
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@router.get("/dashboard/shortdrama/summary")
+async def get_shortdrama_summary(
+    platform: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """短片分析 KPI：发布条数 / 总播放 / 平均完播率 / 总跳转 / 归因收益。"""
+    from app.models.models import PublishTask
+
+    filters = []
+    sd = _parse_date(start_date)
+    ed = _parse_date(end_date)
+    if sd:
+        filters.append(VideoMetric.publish_date >= sd)
+    if ed:
+        filters.append(VideoMetric.publish_date <= ed)
+    if platform:
+        task_ids = (
+            await db.execute(
+                select(PublishTask.id).where(PublishTask.platform == platform)
+            )
+        ).scalars().all()
+        filters.append(
+            or_(
+                VideoMetric.platform == platform,
+                VideoMetric.publish_task_id.in_(task_ids) if task_ids else False,
+            )
+        )
+
+    agg = await db.execute(
+        select(
+            func.count(VideoMetric.id),
+            func.coalesce(func.sum(VideoMetric.play_count), 0),
+            func.coalesce(func.avg(VideoMetric.finish_rate), 0),
+            func.coalesce(func.sum(VideoMetric.jump_click_count), 0),
+            func.coalesce(func.sum(VideoMetric.attributed_revenue), 0),
+        ).where(and_(*filters)) if filters
+        else select(
+            func.count(VideoMetric.id),
+            func.coalesce(func.sum(VideoMetric.play_count), 0),
+            func.coalesce(func.avg(VideoMetric.finish_rate), 0),
+            func.coalesce(func.sum(VideoMetric.jump_click_count), 0),
+            func.coalesce(func.sum(VideoMetric.attributed_revenue), 0),
+        )
+    )
+    row = agg.one()
+    return {
+        "platform": platform,
+        "published_count": int(row[0] or 0),
+        "total_play": int(row[1] or 0),
+        "avg_finish_rate": round(float(row[2] or 0), 2),
+        "total_jump_click": int(row[3] or 0),
+        "attributed_revenue": round(float(row[4] or 0), 2),
+    }
+
+
+@router.get("/dashboard/shortdrama/topics")
+async def get_shortdrama_topics(
+    platform: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    limit: int = Query(10, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+):
+    """短片分析话题标签 TOP 排行（取发布素材话题标签聚合）。"""
+    from app.models.models import PublishTask, PublishMaterial
+
+    filters = []
+    sd = _parse_date(start_date)
+    ed = _parse_date(end_date)
+    if sd:
+        filters.append(VideoMetric.publish_date >= sd)
+    if ed:
+        filters.append(VideoMetric.publish_date <= ed)
+    if platform:
+        task_ids = (
+            await db.execute(
+                select(PublishTask.id).where(PublishTask.platform == platform)
+            )
+        ).scalars().all()
+        filters.append(
+            or_(
+                VideoMetric.platform == platform,
+                VideoMetric.publish_task_id.in_(task_ids) if task_ids else False,
+            )
+        )
+
+    # 话题排行：限制取最近的数据窗口（limit * 20 条采样），避免全量加载
+    base_query = select(VideoMetric)
+    if filters:
+        base_query = base_query.where(and_(*filters))
+    base_query = base_query.order_by(
+        desc(VideoMetric.publish_date), desc(VideoMetric.recorded_at)
+    ).limit(limit * 20)
+    videos = (await db.execute(base_query)).scalars().all()
+    task_ids = [v.publish_task_id for v in videos if v.publish_task_id]
+    if not task_ids:
+        return []
+
+    tasks = (await db.execute(select(PublishTask).where(PublishTask.id.in_(task_ids)))).scalars().all()
+    material_ids = [t.material_id for t in tasks if t.material_id]
+    if not material_ids:
+        return []
+    materials = (await db.execute(select(PublishMaterial).where(PublishMaterial.id.in_(material_ids)))).scalars().all()
+
+    counter = {}
+    for m in materials:
+        if not m.material_json:
+            continue
+        tags = (m.material_json.get("tags") or {}).get("all", [])
+        for tag in tags:
+            tag = str(tag).strip()
+            if tag:
+                counter[tag] = counter.get(tag, 0) + 1
+    ranked = sorted(counter.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    return [{"tag": tag, "count": count} for tag, count in ranked]
