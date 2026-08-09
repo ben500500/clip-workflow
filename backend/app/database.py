@@ -156,6 +156,19 @@ async def _apply_compat_migrations():
         ("projects", "created_by", "UUID"),
         # 短片制作：去水印任务关联来源提示词记录（提示词 → 去水印 → 发布）
         ("watermark_videos", "prompt_record_id", "UUID"),
+        # 短片制作：一键豆包生成
+        # - users.doubao_account_type：用户默认豆包账户类型（free=免费 / pro=包月会员）
+        # - shortdrama_prompts.doubao_*：豆包生成任务状态 / 登录二维码 / 改写闭环等
+        ("users", "doubao_account_type", "VARCHAR(20) DEFAULT 'free'"),
+        ("shortdrama_prompts", "doubao_status", "VARCHAR(50)"),
+        ("shortdrama_prompts", "doubao_account_type", "VARCHAR(20)"),
+        ("shortdrama_prompts", "doubao_qrcode", "TEXT"),
+        ("shortdrama_prompts", "doubao_task_id", "VARCHAR(100)"),
+        ("shortdrama_prompts", "doubao_message", "TEXT"),
+        ("shortdrama_prompts", "doubao_error_message", "TEXT"),
+        ("shortdrama_prompts", "doubao_approved_prompt", "TEXT"),
+        ("shortdrama_prompts", "doubao_rewrite_history", "JSON"),
+        ("shortdrama_prompts", "doubao_confirm_token", "VARCHAR(64)"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

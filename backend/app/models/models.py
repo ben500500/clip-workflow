@@ -76,6 +76,9 @@ class User(Base):
     # 数据隔离：all=可见全部素材；own=仅可见自己创建的素材
     # 默认由角色决定（admin/material/publisher=all，operator=own），管理员可通过权限编辑授予
     data_scope = Column(String(20), default="own", nullable=False)
+    # 豆包账户类型（短片制作「一键豆包生成」）：free=免费（时长上限 10s）；pro=包月会员（时长上限 30s）
+    # 用户手动选择后即作为当前登录用户的默认值
+    doubao_account_type = Column(String(20), default="free", nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -708,6 +711,24 @@ class ShortdramaPrompt(Base):
     video_status = Column(String(50), nullable=True)  # uploaded / pending / running / completed / failed
     video_error_message = Column(Text, nullable=True)
     video_uploaded_at = Column(DateTime, nullable=True)
+    # ── 一键豆包生成（RPA）任务字段 ──
+    # 任务状态机：none / need_login(等待扫码) / running(生成中) / awaiting_rewrite(等待确认改写稿)
+    #            / completed(已完成) / failed(失败) / cancelled(已取消)
+    doubao_status = Column(String(50), nullable=True)
+    # 生成时使用的豆包账户类型（free=免费 / pro=包月会员），决定时长上限
+    doubao_account_type = Column(String(20), nullable=True)
+    # 登录二维码 SVG（need_login 状态时推给前端展示，扫码后自动继续）
+    doubao_qrcode = Column(Text, nullable=True)
+    doubao_task_id = Column(String(100), nullable=True)
+    # 进度/消息（running 时由 Celery 任务实时更新）
+    doubao_message = Column(Text, nullable=True)
+    doubao_error_message = Column(Text, nullable=True)
+    # 最终通过豆包审核并实际用于生成的提示词（改写确认闭环落库留档）
+    doubao_approved_prompt = Column(Text, nullable=True)
+    # 每轮改写历史（JSON：[{round, original, rewritten, reason, created_at}]）
+    doubao_rewrite_history = Column(JSON, nullable=True)
+    # 改写确认回调用的一次性凭证（避免跨用户误确认）
+    doubao_confirm_token = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     def __repr__(self) -> str:
