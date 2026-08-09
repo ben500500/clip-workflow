@@ -84,9 +84,25 @@ export interface PromptTemplates {
   updated_at?: string;
 }
 
+export interface ScriptOptimizeParams {
+  text: string;
+  theme?: string;
+  tone?: string;
+  extra_requirements?: string;
+}
+
+export interface ScriptOptimizeResult {
+  optimized_text: string;
+  model?: string | null;
+  message: string;
+}
+
 export const shortdramaApi = {
   generate: (params: PromptGenerateParams) =>
     client.post('/shortdrama/prompt/generate', params) as Promise<PromptGenerateResult>,
+
+  optimizeScript: (params: ScriptOptimizeParams) =>
+    client.post('/shortdrama/prompt/optimize', params) as Promise<ScriptOptimizeResult>,
 
   listPrompts: (limit = 50) =>
     client.get('/shortdrama/prompts', { params: { limit } }) as Promise<ShortdramaPromptRecord[]>,

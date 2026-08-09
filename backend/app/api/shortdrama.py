@@ -139,6 +139,21 @@ class PromptTemplatesResponse(BaseModel):
     updated_at: str = ""
 
 
+class ScriptOptimizeRequest(BaseModel):
+    # 待优化的短剧文案（必填）
+    text: str = ""
+    # 可选参数：题材 / 基调 / 补充要求
+    theme: Optional[str] = None
+    tone: Optional[str] = None
+    extra_requirements: Optional[str] = None
+
+
+class ScriptOptimizeResponse(BaseModel):
+    optimized_text: str
+    model: Optional[str] = None
+    message: str
+
+
 class PromptGenerateResponse(BaseModel):
     prompt: str
     versions: Optional[dict] = None  # {long/short/ai}
@@ -329,6 +344,56 @@ def _normalize_duration(duration) -> int:
     if d < 3 or d > 300:
         return 15
     return d
+
+
+@router.post("/shortdrama/prompt/optimize", response_model=ScriptOptimizeResponse)
+async def optimize_shortdrama_script(
+    data: ScriptOptimizeRequest,
+):
+    """短剧文案 AI 优化：调用 autoclip 配置的大模型改写文案。
+
+    模型借用 autoclip 中配置的大模型（DASHSCOPE_API_KEY / API_MODEL_NAME），
+    通过 autoclip 的 POST /api/v1/script/optimize 端点执行。
+    """
+    if not data.text or not data.text.strip():
+        raise HTTPException(status_code=400, detail="请输入短剧文案")
+
+    url = f"{settings.AUTOCLIP_URL}/script/optimize"
+    payload = {
+        "text": data.text.strip(),
+        "params": {
+            "theme": data.theme,
+            "tone": data.tone,
+            "extra_requirements": data.extra_requirements,
+        },
+        "max_retries": 3,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            result = resp.json()
+    except httpx.HTTPStatusError as e:
+        logger.error("autoclip script optimize failed: %s %s", e.response.status_code, e.response.text)
+        raise HTTPException(
+            status_code=502,
+            detail=f"文案优化服务调用失败（AutoClip 返回 {e.response.status_code}）：{e.response.text[:300]}",
+        )
+    except httpx.RequestError as e:
+        logger.error("autoclip script optimize request error: %s", e)
+        raise HTTPException(status_code=502, detail=f"无法连接 AutoClip 服务：{e}")
+
+    optimized_text = ((result or {}).get("optimized_text") or "").strip()
+    if not optimized_text:
+        raise HTTPException(status_code=502, detail="AutoClip 未返回优化后的文案")
+
+    model = (result or {}).get("model") or ""
+    return ScriptOptimizeResponse(
+        optimized_text=optimized_text,
+        model=model or None,
+        message="文案优化成功",
+    )
 
 
 @router.get("/shortdrama/prompts", response_model=List[PromptRecordItem])

@@ -43,13 +43,13 @@ _TASK_SEQ_DATE_KEY = "watermark:task:seq:date"
 
 
 async def gen_task_name() -> str:
-    """生成任务名称：完整日期（YYYYMMDDHHmmss）+ 4 位自增序列。
+    """生成任务名称：日期（YYYYMMDD）+ 4 位自增序列。
 
     优先使用 Redis 做跨进程全局自增（日期切换自动归 1），
     Redis 不可用时回退到进程内自增，保证不抛错。
     """
     now = datetime.now()
-    date_part = now.strftime("%Y%m%d%H%M%S")
+    date_part = now.strftime("%Y%m%d")
     try:
         client = await get_redis()
         today = now.strftime("%Y%m%d")
