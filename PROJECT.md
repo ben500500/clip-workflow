@@ -185,17 +185,11 @@ clip-workflow/
 │       ├── types/            # TypeScript 类型定义
 │       └── utils/            # 工具函数
 │
-├── rpa/                      # RPA 自动发布模块（v2）
+├── rpa/                      # RPA 浏览器宿主（v2，收敛后）
 │   ├── Dockerfile            # Playwright + Xvfb + Chromium
 │   ├── requirements.txt
-│   └── app/
-│       ├── celery_app.py     # Celery 实例（publish 队列）
-│       ├── config.py
-│       ├── tasks.py          # 4 个发布任务
-│       └── publishers/
-│           ├── wechat.py     # 视频号 Publisher
-│           ├── douyin.py     # 抖音 Publisher
-│           └── kuaishou.py   # 快手 Publisher
+│   └── supervisord.conf      # 仅管理 Xvfb + Chromium（CDP 9222）
+│                              # 发布逻辑收敛到 backend/app/services/publish_service.py
 │
 ├── slice-worker/             # 分布式切片 Worker（v3）
 │   ├── main.go               # Go 单文件 Worker 入口
@@ -466,9 +460,11 @@ audit:
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/publish/tasks` | 创建发布任务 |
+| `POST` | `/api/publish/tasks` | 创建发布任务（创建后自动触发 RPA 发布） |
+| `POST` | `/api/publish/tasks/batch` | 批量创建发布任务（一键多平台发布，创建后自动触发） |
 | `GET` | `/api/publish/tasks` | 发布任务列表（支持 platform/status/date 过滤） |
 | `GET` | `/api/publish/tasks/{id}` | 任务详情 |
+| `GET` | `/api/publish/tasks/{id}/screenshot` | 获取发布确认截图签名 URL |
 | `POST` | `/api/publish/tasks/{id}/confirm` | 截图审核后确认发布 |
 | `GET` | `/api/publish/profiles` | 发布配置列表 |
 | `POST` | `/api/publish/profiles` | 创建发布配置 |

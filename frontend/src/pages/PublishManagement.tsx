@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, Popconfirm, InputNumber,
+  Card, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, Popconfirm, InputNumber, Alert,
 } from 'antd';
-import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined } from '@ant-design/icons';
+import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined } from '@ant-design/icons';
 import { publishApi } from '../api/publish';
 import type { PublishProfile, PublishTask } from '../types';
 import { formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
@@ -19,6 +19,9 @@ const PublishManagement: React.FC = () => {
   const [profileLoading, setProfileLoading] = useState(false);
   const [taskForm] = Form.useForm();
   const [profileForm] = Form.useForm();
+  const [screenshotModal, setScreenshotModal] = useState(false);
+  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
+  const [screenshotLoading, setScreenshotLoading] = useState(false);
 
   const fetchAll = () => {
     setTaskLoading(true);
@@ -38,6 +41,21 @@ const PublishManagement: React.FC = () => {
       setTimeout(fetchAll, 3000);
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '确认失败');
+    }
+  };
+
+  const viewScreenshot = async (id: string) => {
+    setScreenshotModal(true);
+    setScreenshotLoading(true);
+    setScreenshotUrl(null);
+    try {
+      const res = await publishApi.getTaskScreenshot(id);
+      setScreenshotUrl(res.screenshot_url);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '加载截图失败');
+      setScreenshotModal(false);
+    } finally {
+      setScreenshotLoading(false);
     }
   };
 
@@ -88,10 +106,15 @@ const PublishManagement: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 140,
+      width: 200,
       render: (_: unknown, t: PublishTask) =>
         t.status === 'pending_confirm' ? (
-          <Button type="primary" size="small" icon={<CheckCircleOutlined />} onClick={() => confirmTask(t.id)}>确认发布</Button>
+          <Space size="small" wrap>
+            <Button size="small" type="primary" icon={<CheckCircleOutlined />} onClick={() => confirmTask(t.id)}>确认发布</Button>
+            {t.screenshot_key && (
+              <Button size="small" icon={<EyeOutlined />} onClick={() => viewScreenshot(t.id)}>查看截图</Button>
+            )}
+          </Space>
         ) : (
           <span>{t.published_url ? <a href={t.published_url} target="_blank" rel="noreferrer">已发布</a> : '-'}</span>
         ),
@@ -137,6 +160,7 @@ const PublishManagement: React.FC = () => {
       </Card>
 
       <Modal title="新建发布任务" open={taskModal} onOk={createTask} onCancel={() => setTaskModal(false)} destroyOnClose>
+        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="创建后立即触发 RPA 自动发布；若开启了截图确认，需在任务列表「确认发布」。「发布管理」页支持多平台批量发布（在成品预览点「一键发布」）。" />
         <Form form={taskForm} layout="vertical">
           <Form.Item name="output_id" label="切片输出 ID" rules={[{ required: true, message: '请输入切片输出 ID' }]}>
             <Input placeholder="在成品预览页复制输出 ID" />
@@ -165,6 +189,23 @@ const PublishManagement: React.FC = () => {
             <Select options={[{ value: true, label: '是' }, { value: false, label: '否' }]} />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="发布确认截图"
+        open={screenshotModal}
+        footer={null}
+        width={720}
+        onCancel={() => setScreenshotModal(false)}
+        destroyOnClose
+      >
+        {screenshotLoading ? (
+          <div style={{ textAlign: 'center', padding: 40 }}>加载中…</div>
+        ) : screenshotUrl ? (
+          <img src={screenshotUrl} alt="发布确认截图" style={{ width: '100%', borderRadius: 6 }} />
+        ) : (
+          <Typography.Text type="secondary">暂无截图</Typography.Text>
+        )}
       </Modal>
     </div>
   );

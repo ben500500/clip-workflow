@@ -22,12 +22,21 @@ export const publishApi = {
 
   createTask: (data: PublishTaskCreate) => client.post('/publish/tasks', data) as Promise<PublishTask>,
 
+  createTasks: (tasks: PublishTaskCreate[]) =>
+    client.post('/publish/tasks/batch', { tasks }) as Promise<PublishTask[]>,
+
   confirmTask: (id: string) =>
     client.post(`/publish/tasks/${id}/confirm`) as Promise<{
       id: string;
       status: string;
       published_url: string | null;
       published_id: string | null;
+    }>,
+
+  getTaskScreenshot: (id: string) =>
+    client.get(`/publish/tasks/${id}/screenshot`) as Promise<{
+      task_id: string;
+      screenshot_url: string | null;
     }>,
 
   getProfiles: () => client.get('/publish/profiles') as Promise<PublishProfile[]>,

@@ -3,16 +3,85 @@ Publish service - RPA-based video publishing to short video platforms.
 
 Uses Playwright to automate video uploads to platforms like WeChat Video Channel,
 Douyin, and Kuaishou. Supports screenshot-based manual confirmation workflow.
+
+设计说明（一键发布收敛）：
+- 唯一的 Publisher 实现收敛到本模块，由 backend Celery worker 通过 CDP 连接
+  rpa_worker 容器内常驻的 Chromium 执行（CHROME_DEBUG_HOST:CHROME_DEBUG_PORT）。
+- 人工确认流程：publish() 填写表单后返回 pending_confirm，并把已填好表单的
+  Playwright page 缓存到进程内 _PENDING_TABS；confirm_publish() 复用同一 tab
+  点击「发布」，避免重新打开页面导致表单丢失。
+- 若确认时缓存失效（worker 重启/超时），退化为重新打开创作中心并尽力点击发布。
 """
 
 import asyncio
 import logging
 import os
 import tempfile
+import threading
 from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# 进程内待确认发布 tab 缓存：publish_task_id -> {"browser": Browser, "page": Page}
+# backend worker 采用 --concurrency=1 串行处理 publish 队列任务，publish 与后续
+# confirm 在同一 worker 进程内执行，模块级缓存跨任务存活可用。
+_PENDING_TABS: dict = {}
+_PENDING_TABS_LOCK = threading.Lock()
+
+# 进程级共享 Playwright 实例：backend worker 常驻，所有 CDP 连接复用同一个
+# driver，避免缓存 tab 的 browser 代理因 driver 被 GC 而失效。
+_shared_playwright = None
+_shared_playwright_lock = threading.Lock()
+
+
+async def _get_playwright():
+    """获取进程级共享 Playwright 实例（懒启动，worker 进程内复用）。"""
+    global _shared_playwright
+    if _shared_playwright is None:
+        # Celery worker 默认单进程；用锁保证多线程/多 worker 场景下只初始化一次
+        with _shared_playwright_lock:
+            if _shared_playwright is None:
+                from playwright.async_api import async_playwright
+                _shared_playwright = await async_playwright().start()
+    return _shared_playwright
+
+
+def _cache_pending_tab(task_id: str, browser, page) -> None:
+    """缓存已填好表单的待确认页面。"""
+    with _PENDING_TABS_LOCK:
+        # 同任务重复发布时先释放旧 tab
+        old = _PENDING_TABS.pop(task_id, None)
+        if old:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(old["browser"].close())
+                else:
+                    loop.run_until_complete(old["browser"].close())
+            except Exception:
+                pass
+        _PENDING_TABS[task_id] = {"browser": browser, "page": page}
+
+
+def _pop_pending_tab(task_id: str):
+    """取出并移除待确认页面缓存。"""
+    with _PENDING_TABS_LOCK:
+        return _PENDING_TABS.pop(task_id, None)
+
+
+def release_pending_tab(task_id: str) -> None:
+    """释放待确认 tab（取消/失败时调用）。"""
+    entry = _pop_pending_tab(task_id)
+    if entry:
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(entry["browser"].close())
+            else:
+                loop.run_until_complete(entry["browser"].close())
+        except Exception:
+            pass
 
 
 class VideoChannelPublisher:
@@ -43,6 +112,25 @@ class VideoChannelPublisher:
         self.require_manual_confirm = require_manual_confirm
         self.browser = None
         self.page = None
+        self._playwright = None
+
+    async def _connect(self) -> None:
+        """连接常驻 Chromium（CDP）或启动独立浏览器。"""
+        self._playwright = await _get_playwright()
+        if self.chrome_debug_port:
+            from app.config import settings as s
+            self.browser = await self._playwright.chromium.connect_over_cdp(
+                f"http://{s.CHROME_DEBUG_HOST}:{self.chrome_debug_port}"
+            )
+            context = (
+                self.browser.contexts[0]
+                if self.browser.contexts
+                else await self.browser.new_context()
+            )
+        else:
+            self.browser = await self._playwright.chromium.launch(headless=True)
+            context = await self.browser.new_context()
+        self.page = await context.new_page()
 
     async def publish(
         self,
@@ -52,103 +140,111 @@ class VideoChannelPublisher:
         tags: Optional[list] = None,
         cover_file_key: Optional[str] = None,
         mini_program_link: Optional[str] = None,
+        task_id: Optional[str] = None,
     ) -> dict:
         """
         Execute the full publishing workflow.
 
         Returns:
-            dict with keys: success, published_url, published_id, screenshot_path, error
+            dict with keys: success, status, published_url, published_id,
+                            screenshot_path, error
         """
         try:
-            from playwright.async_api import async_playwright
+            await self._connect()
 
-            async with async_playwright() as p:
-                # Connect to existing Chrome or launch new browser
-                if self.chrome_debug_port:
-                    from app.config import settings as s
-                    self.browser = await p.chromium.connect_over_cdp(
-                        f"http://{s.CHROME_DEBUG_HOST}:{self.chrome_debug_port}"
-                    )
-                    context = self.browser.contexts[0] if self.browser.contexts else await self.browser.new_context()
+            # Check login state
+            if await self._need_login():
+                await self._close_connection()
+                return {
+                    "success": False,
+                    "status": "need_login",
+                    "error": "Not logged in. Please login first via Chrome debug port.",
+                    "screenshot_path": None,
+                }
+
+            # Navigate to creator page
+            await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
+            await asyncio.sleep(2)
+
+            # Upload video
+            await self._upload_video(video_path)
+
+            # Set title and description
+            await self._set_title(title)
+            if description:
+                await self._set_description(description)
+
+            # Set tags
+            if tags:
+                await self._set_tags(tags)
+
+            # Set cover image if provided
+            if cover_file_key:
+                await self._set_cover(cover_file_key)
+
+            # Attach mini program link if provided
+            if mini_program_link:
+                await self._attach_mini_program(mini_program_link)
+
+            # Take screenshot for review
+            screenshot_path = await self._take_screenshot()
+
+            if self.require_manual_confirm:
+                # 保留已填好表单的 tab，供 confirm 复用点击发布
+                if task_id:
+                    _cache_pending_tab(task_id, self.browser, self.page)
+                    # 连接对象交由缓存管理，不在此关闭
+                    self.browser = None
+                    self.page = None
                 else:
-                    self.browser = await p.chromium.launch(headless=True)
-                    context = await self.browser.new_context()
-
-                self.page = await context.new_page()
-
-                # Check login state
-                if await self._need_login():
-                    return {
-                        "success": False,
-                        "error": "Not logged in. Please login first via Chrome debug port.",
-                        "screenshot_path": None,
-                    }
-
-                # Navigate to creator page
-                await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
-                await asyncio.sleep(2)
-
-                # Upload video
-                await self._upload_video(video_path)
-
-                # Set title and description
-                await self._set_title(title)
-                if description:
-                    await self._set_description(description)
-
-                # Set tags
-                if tags:
-                    await self._set_tags(tags)
-
-                # Set cover image if provided
-                if cover_file_key:
-                    await self._set_cover(cover_file_key)
-
-                # Attach mini program link if provided
-                if mini_program_link:
-                    await self._attach_mini_program(mini_program_link)
-
-                # Take screenshot for review
-                screenshot_path = await self._take_screenshot()
-
-                if self.require_manual_confirm:
-                    # Return screenshot path and wait for manual confirmation
-                    return {
-                        "success": True,
-                        "status": "pending_confirm",
-                        "screenshot_path": screenshot_path,
-                        "published_url": None,
-                        "published_id": None,
-                        "error": None,
-                    }
-                else:
-                    # Auto-publish
-                    await self._click_publish()
-                    published_url, published_id = await self._wait_for_publish()
-                    return {
-                        "success": True,
-                        "status": "published",
-                        "screenshot_path": screenshot_path,
-                        "published_url": published_url,
-                        "published_id": published_id,
-                        "error": None,
-                    }
+                    await self._close_connection()
+                return {
+                    "success": True,
+                    "status": "pending_confirm",
+                    "screenshot_path": screenshot_path,
+                    "published_url": None,
+                    "published_id": None,
+                    "error": None,
+                }
+            else:
+                # Auto-publish
+                await self._click_publish()
+                published_url, published_id = await self._wait_for_publish()
+                await self._close_connection()
+                return {
+                    "success": True,
+                    "status": "published",
+                    "screenshot_path": screenshot_path,
+                    "published_url": published_url,
+                    "published_id": published_id,
+                    "error": None,
+                }
 
         except Exception as e:
             logger.error(f"Publishing failed: {e}", exc_info=True)
+            await self._close_connection()
             return {
                 "success": False,
+                "status": "error",
                 "error": str(e),
                 "screenshot_path": None,
                 "published_url": None,
                 "published_id": None,
             }
-        finally:
-            if self.browser:
-                try:
-                    await self.browser.close()
-                except Exception:
-                    pass
+
+    async def _close_connection(self) -> None:
+        """关闭当前 publisher 持有的连接（pending tab 由缓存管理，不在此关闭）。
+
+        共享 Playwright 实例不在此 stop（进程级常驻），只关闭浏览器连接。
+        """
+        if self.browser:
+            try:
+                await self.browser.close()
+            except Exception:
+                pass
+            self.browser = None
+        self._playwright = None
+        self.page = None
 
     async def _need_login(self) -> bool:
         """Check if the current session requires login."""
@@ -156,7 +252,9 @@ class VideoChannelPublisher:
             await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
             await asyncio.sleep(2)
             # Check for login indicators (e.g., QR code or login button)
-            login_selector = await self.page.query_selector(".login-guide, .qrcode-login, [class*='login']")
+            login_selector = await self.page.query_selector(
+                ".login-guide, .qrcode-login, [class*='login']"
+            )
             return login_selector is not None
         except Exception:
             return True
@@ -246,11 +344,15 @@ class VideoChannelPublisher:
         if link_btn:
             await link_btn.click()
             await asyncio.sleep(1)
-            link_input = await self.page.query_selector("input[placeholder*='链接'], input[placeholder*='link']")
+            link_input = await self.page.query_selector(
+                "input[placeholder*='链接'], input[placeholder*='link']"
+            )
             if link_input:
                 await link_input.fill(link)
                 await asyncio.sleep(1)
-                confirm_btn = await self.page.query_selector("button:has-text('确定'), button:has-text('确认')")
+                confirm_btn = await self.page.query_selector(
+                    "button:has-text('确定'), button:has-text('确认')"
+                )
                 if confirm_btn:
                     await confirm_btn.click()
 
@@ -288,44 +390,67 @@ class VideoChannelPublisher:
         except Exception:
             return self.page.url, None
 
-    async def confirm_publish(self) -> dict:
-        """Confirm a pending publish action (called after manual screenshot review)."""
-        try:
-            from playwright.async_api import async_playwright
+    async def confirm_publish(self, task_id: Optional[str] = None) -> dict:
+        """Confirm a pending publish by clicking publish on the prepared tab.
 
-            async with async_playwright() as p:
-                if self.chrome_debug_port:
-                    from app.config import settings as s
-                    self.browser = await p.chromium.connect_over_cdp(
-                        f"http://{s.CHROME_DEBUG_HOST}:{self.chrome_debug_port}"
-                    )
-                    context = self.browser.contexts[0] if self.browser.contexts else await self.browser.new_context()
-                else:
-                    self.browser = await p.chromium.launch(headless=True)
-                    context = await self.browser.new_context()
-
-                self.page = await context.new_page()
-                await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
+        优先复用 publish() 阶段缓存且已填好表单的 tab；若缓存失效（worker
+        重启/超时/页面关闭），退化为重新打开创作中心尽力点击发布。
+        """
+        # 1. 复用缓存的待确认 tab
+        entry = _pop_pending_tab(task_id) if task_id else None
+        if entry:
+            try:
+                self.browser = entry["browser"]
+                self.page = entry["page"]
+                await self.page.bring_to_front()
                 await self._click_publish()
                 published_url, published_id = await self._wait_for_publish()
+                await self._close_connection()
                 return {
                     "success": True,
                     "published_url": published_url,
                     "published_id": published_id,
                 }
+            except Exception as e:
+                logger.error(f"Confirm publish via cached tab failed: {e}", exc_info=True)
+                await self._close_connection()
+                # 继续尝试 fallback
+
+        # 2. fallback：重新连接并打开创作中心
+        try:
+            await self._connect()
+            await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
+            await self._click_publish()
+            published_url, published_id = await self._wait_for_publish()
+            await self._close_connection()
+            return {
+                "success": True,
+                "published_url": published_url,
+                "published_id": published_id,
+            }
         except Exception as e:
             logger.error(f"Confirm publish failed: {e}", exc_info=True)
+            await self._close_connection()
             return {"success": False, "error": str(e)}
-        finally:
-            if self.browser:
-                try:
-                    await self.browser.close()
-                except Exception:
-                    pass
+
+    async def check_login_status(self) -> dict:
+        """检查当前登录态是否有效。"""
+        try:
+            await self._connect()
+            need_login = await self._need_login()
+            await self._close_connection()
+            return {
+                "status": "expired" if need_login else "valid",
+                "platform": self.PLATFORM,
+            }
+        except Exception as e:
+            logger.error(f"Check login status failed: {e}", exc_info=True)
+            await self._close_connection()
+            return {"status": "error", "platform": self.PLATFORM, "error": str(e)}
 
 
 class DouyinPublisher(VideoChannelPublisher):
-    """Publisher for Douyin (抖音) platform - stub implementation."""
+    """Publisher for Douyin (抖音) platform."""
 
     PLATFORM = "douyin"
     CREATOR_URL = "https://creator.douyin.com/creator-micro/content/upload"
@@ -335,14 +460,18 @@ class DouyinPublisher(VideoChannelPublisher):
         try:
             await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
             await asyncio.sleep(2)
-            login_selector = await self.page.query_selector(".login-container, [class*='login']")
+            login_selector = await self.page.query_selector(
+                ".login-container, [class*='login']"
+            )
             return login_selector is not None
         except Exception:
             return True
 
     async def _set_tags(self, tags: list):
         """Set Douyin-specific tags (话题)."""
-        tag_input = await self.page.query_selector("[class*='tag'] input, [placeholder*='话题']")
+        tag_input = await self.page.query_selector(
+            "[class*='tag'] input, [placeholder*='话题']"
+        )
         if tag_input:
             for tag in tags:
                 await tag_input.fill(f"#{tag}")
@@ -352,7 +481,7 @@ class DouyinPublisher(VideoChannelPublisher):
 
 
 class KuaishouPublisher(VideoChannelPublisher):
-    """Publisher for Kuaishou (快手) platform - stub implementation."""
+    """Publisher for Kuaishou (快手) platform."""
 
     PLATFORM = "kuaishou"
     CREATOR_URL = "https://cp.kuaishou.com/article/publish/video"
@@ -362,7 +491,9 @@ class KuaishouPublisher(VideoChannelPublisher):
         try:
             await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
             await asyncio.sleep(2)
-            login_selector = await self.page.query_selector("[class*='login'], .qr-login")
+            login_selector = await self.page.query_selector(
+                "[class*='login'], .qr-login"
+            )
             return login_selector is not None
         except Exception:
             return True
@@ -377,5 +508,7 @@ def get_publisher(platform: str, **kwargs) -> VideoChannelPublisher:
     }
     publisher_class = publishers.get(platform)
     if not publisher_class:
-        raise ValueError(f"Unsupported platform: {platform}. Supported: {list(publishers.keys())}")
+        raise ValueError(
+            f"Unsupported platform: {platform}. Supported: {list(publishers.keys())}"
+        )
     return publisher_class(**kwargs)

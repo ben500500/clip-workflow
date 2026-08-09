@@ -2,10 +2,12 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   Card, Table, Tag, Button, Space, Typography, message, Select, Modal, Form, Input, DatePicker, Popconfirm, Alert, Spin, InputNumber,
 } from 'antd';
-import { ArrowLeftOutlined, PlayCircleOutlined, DownloadOutlined, LinkOutlined, CloudDownloadOutlined, EditOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PlayCircleOutlined, DownloadOutlined, LinkOutlined, CloudDownloadOutlined, EditOutlined, SendOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { sliceApi } from '../api/slice';
 import { previewApi } from '../api/preview';
+import { publishApi } from '../api/publish';
+import { publishMaterialApi, type PublishMaterialRecord } from '../api/publishMaterial';
 import type { Publication, SliceOutput, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
@@ -32,6 +34,13 @@ const OutputPreview: React.FC = () => {
   const [pubModal, setPubModal] = useState(false);
   const [pubForm] = Form.useForm();
   const [currentOutput, setCurrentOutput] = useState<string | null>(null);
+
+  // ── 一键发布（对标「一键豆包生成」体验） ──
+  const [publishModal, setPublishModal] = useState(false);
+  const [publishForm] = Form.useForm();
+  const [publishTarget, setPublishTarget] = useState<SliceOutput | null>(null);
+  const [publishing, setPublishing] = useState(false);
+  const [materialRecords, setMaterialRecords] = useState<PublishMaterialRecord[]>([]);
 
   // ── 成品重新剪辑 ──
   const [recutModal, setRecutModal] = useState(false);
@@ -155,7 +164,82 @@ const OutputPreview: React.FC = () => {
     }
   };
 
-  // ─── 成品重新剪辑：再次裁剪当前成品，生成一个新片段 ─────────────
+  // ─── 一键发布：选平台 + 选发布素材（自动代入标题/描述/标签） ─────
+  const openPublishModal = async (o: SliceOutput) => {
+    setPublishTarget(o);
+    publishForm.resetFields();
+    publishForm.setFieldsValue({
+      platforms: ['wechat_channel', 'douyin'],
+      require_manual_confirm: true,
+    });
+    setPublishModal(true);
+    // 加载发布素材历史供选取
+    try {
+      const records = await publishMaterialApi.listMaterials(30);
+      setMaterialRecords(records);
+    } catch {
+      setMaterialRecords([]);
+    }
+  };
+
+  const submitPublish = async () => {
+    if (!publishTarget) return;
+    try {
+      const values = await publishForm.validateFields();
+      const platforms: string[] = values.platforms || [];
+      if (platforms.length === 0) {
+        message.warning('请至少选择一个发布平台');
+        return;
+      }
+      // 若选取了发布素材记录，自动代入短标题/配文/标签
+      let title = values.title || '';
+      let description = values.description || '';
+      let tags: string[] = values.tags || [];
+      if (values.material_id) {
+        const rec = materialRecords.find((r) => r.id === values.material_id);
+        if (rec?.material) {
+          const m = rec.material;
+          title = title || m.short_title || '';
+          const caption = m.captions?.suspense_hook || '';
+          description = description || caption;
+          const allTags = Object.values(m.tags || {}).flat();
+          tags = tags.length > 0 ? tags : allTags;
+        }
+      }
+      setPublishing(true);
+      const tasks = platforms.map((platform: string) => ({
+        output_id: publishTarget.id,
+        platform,
+        account_name: values.account_name || undefined,
+        title: title || undefined,
+        description: description || undefined,
+        tags: tags.length > 0 ? tags : undefined,
+        mini_program_link: values.mini_program_link || undefined,
+        require_manual_confirm: values.require_manual_confirm !== false,
+      }));
+      const created = await publishApi.createTasks(tasks);
+      message.success(`已创建 ${created.length} 个发布任务，正在发布`);
+      setPublishModal(false);
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      message.error(err instanceof Error ? err.message : '发布任务创建失败');
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  // 选择发布素材后自动填入标题/描述/标签
+  const onMaterialChange = (materialId: string | undefined) => {
+    const rec = materialRecords.find((r) => r.id === materialId);
+    if (!rec?.material) return;
+    const m = rec.material;
+    publishForm.setFieldsValue({
+      title: m.short_title || '',
+      description: m.captions?.suspense_hook || '',
+      tags: Object.values(m.tags || {}).flat(),
+    });
+  };
+
   const openRecutModal = (o: SliceOutput) => {
     setRecutTarget(o);
     recutForm.resetFields();
@@ -204,12 +288,13 @@ const OutputPreview: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 250,
+      width: 330,
       fixed: 'right' as const,
       render: (_: unknown, o: SliceOutput) => (
         <Space size="small" wrap>
           <Button size="small" icon={<PlayCircleOutlined />} onClick={(e) => { e.stopPropagation(); toggleRowExpand(o); }}>预览</Button>
           <Button size="small" icon={<DownloadOutlined />} onClick={(e) => { e.stopPropagation(); window.open(`/api/outputs/${o.id}/download`, '_blank'); }}>下载</Button>
+          <Button size="small" type="primary" icon={<SendOutlined />} onClick={(e) => { e.stopPropagation(); openPublishModal(o); }}>一键发布</Button>
           <Button size="small" icon={<LinkOutlined />} onClick={(e) => { e.stopPropagation(); setCurrentOutput(o.id); pubForm.resetFields(); setPubModal(true); }}>登记发布</Button>
           <Button size="small" type="primary" ghost icon={<EditOutlined />} onClick={(e) => { e.stopPropagation(); openRecutModal(o); }}>编辑</Button>
         </Space>
@@ -366,6 +451,73 @@ const OutputPreview: React.FC = () => {
           <Text type="secondary" style={{ fontSize: 12 }}>
             当前成品时长：{formatDuration(recutTarget?.duration ?? 0)}。区间为相对成品起点的秒数。
           </Text>
+        </Form>
+      </Modal>
+      {/* ── 一键发布弹窗（对标「一键豆包生成」体验） ── */}
+      <Modal
+        title={`一键发布${publishTarget ? `：${publishTarget.file_name}` : ''}`}
+        open={publishModal}
+        onOk={submitPublish}
+        onCancel={() => setPublishModal(false)}
+        okText="创建发布任务"
+        cancelText="取消"
+        confirmLoading={publishing}
+        width={640}
+        destroyOnClose
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="选择发布平台（可多选批量发布），可选取已生成的发布素材自动代入标题/配文/标签，提交后自动触发 RPA 发布。"
+        />
+        <Form form={publishForm} layout="vertical">
+          <Form.Item
+            name="platforms"
+            label="发布平台（可多选）"
+            rules={[{ required: true, message: '请至少选择一个平台' }]}
+          >
+            <Select
+              mode="multiple"
+              placeholder="选择发布平台，可多选批量发布"
+              options={[
+                { value: 'wechat_channel', label: '视频号' },
+                { value: 'douyin', label: '抖音' },
+                { value: 'kuaishou', label: '快手' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="material_id" label="发布素材（选填，自动代入标题/配文/标签）">
+            <Select
+              allowClear
+              showSearch
+              placeholder="选取已生成的发布素材"
+              optionFilterProp="label"
+              onChange={onMaterialChange}
+              options={materialRecords.map((r) => ({
+                value: r.id,
+                label: `${r.material?.short_title || r.story?.slice(0, 20) || r.id}（${formatDateTime(r.created_at)}）`,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item name="account_name" label="发布账号（选填，留空则使用平台默认配置）">
+            <Input placeholder="如：主号 / 副号" />
+          </Form.Item>
+          <Form.Item name="title" label="标题">
+            <Input placeholder="标题（短标题，8-18 字）" />
+          </Form.Item>
+          <Form.Item name="description" label="描述/配文">
+            <Input.TextArea rows={3} placeholder="描述或配文，可含话题标签" />
+          </Form.Item>
+          <Form.Item name="tags" label="话题标签">
+            <Select mode="tags" placeholder="回车添加标签" />
+          </Form.Item>
+          <Form.Item name="mini_program_link" label="小程序链接（选填）">
+            <Input placeholder="视频号可挂载小程序链接" />
+          </Form.Item>
+          <Form.Item name="require_manual_confirm" label="截图确认后发布" initialValue={true}>
+            <Select options={[{ value: true, label: '是（推荐，RPA 填好表单后截图人工确认再发布）' }, { value: false, label: '否（直接自动发布）' }]} />
+          </Form.Item>
         </Form>
       </Modal>
       <Modal
