@@ -37,6 +37,13 @@ DEFAULT_ACCOUNT_LIMITS = {
     "pro": 30,
 }
 
+# 登录拦截弹窗文本标记（semi-modal 居中弹窗内容）
+LOGIN_MODAL_MARKERS = ["登录以解锁", "扫码登录", "请使用豆包 App", "手机扫码", "登录后"]
+
+
+class NeedLoginError(RuntimeError):
+    """豆包页面弹出登录拦截弹窗，需要用户扫码登录。"""
+
 
 def get_account_limits(custom: Optional[dict] = None) -> dict:
     """返回账户类型时长上限（合并自定义配置覆盖）。"""
@@ -110,6 +117,34 @@ class DoubaoGenerator:
         except Exception:
             return None
 
+    async def _detect_login_modal(self) -> bool:
+        """检测登录拦截弹窗（semi-modal 居中弹窗 + 登录文本）。"""
+        try:
+            modal = await self.page.query_selector(".semi-modal-wrap, .semi-modal")
+            if modal:
+                text = await modal.inner_text(timeout=3000)
+                if any(m in text for m in LOGIN_MODAL_MARKERS):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    async def _dismiss_modal(self) -> bool:
+        """尝试关闭非登录的 semi-modal 弹窗（引导/公告等），返回是否关闭成功。"""
+        try:
+            close_btn = await self.page.query_selector(
+                ".semi-modal-close, .semi-modal-wrap .semi-icon-close, [class*='modal'] [class*='close']"
+            )
+            if close_btn:
+                await close_btn.click(timeout=2000)
+                await self._sleep(0.5, 0.8)
+                return True
+            await self.page.keyboard.press("Escape")
+            await self._sleep(0.5, 0.8)
+            return True
+        except Exception:
+            return False
+
     async def _login_status(self) -> str:
         """返回登录态：'valid'（已登录）/ 'need_login'（需要扫码）/ 'unknown'。"""
         try:
@@ -118,11 +153,15 @@ class DoubaoGenerator:
             # 尝试进入视频生成技能，触发「登录以解锁」拦截弹窗（未登录时）
             try:
                 await self.page.get_by_text(VIDEO_GEN_ENTRY, exact=False).first.click(timeout=5000)
-                await self._sleep(0.8, 1.5)
+                # 弹窗为异步出现，需多等几秒再检测
+                await self._sleep(3.0, 4.0)
             except Exception:
                 pass
-            if await self.page.query_selector(
-                "text=登录以解锁更多功能, [class*='login-guide'], [class*='qrcode'], [class*='login-modal']"
+            if (
+                await self.page.query_selector(
+                    "text=登录以解锁更多功能, [class*='login-guide'], [class*='qrcode'], [class*='login-modal']"
+                )
+                or await self._detect_login_modal()
             ):
                 return "need_login"
             has_input = await self.page.query_selector(
@@ -236,6 +275,13 @@ class DoubaoGenerator:
             result["rewrites"] = rewrites
             return result
 
+        except NeedLoginError:
+            # 流程中途弹出登录拦截弹窗：返回 need_login，前端展示扫码引导
+            return {
+                "success": False,
+                "status": "need_login",
+                "message": "需要扫码登录豆包，请重新发起生成",
+            }
         except Exception as e:
             logger.exception("Doubao generate failed")
             return {
@@ -262,9 +308,13 @@ class DoubaoGenerator:
 
         try:
             await self.page.get_by_text(VIDEO_GEN_ENTRY, exact=False).first.click(timeout=8000)
-            await self._sleep(1.0, 2.0)
+            # 登录拦截弹窗异步出现，多等几秒再检测
+            await self._sleep(3.0, 4.0)
         except Exception:
             await progress_cb("未找到视频生成入口，尝试直接对话…", 25)
+        # 未登录时「视频生成」会弹登录拦截弹窗 → 抛出 NeedLoginError 走扫码流程
+        if await self._detect_login_modal():
+            raise NeedLoginError("需要扫码登录豆包")
 
         await progress_cb("已进入视频生成，正在配置参数…", 30)
         await self._set_duration(duration)
@@ -394,7 +444,18 @@ class DoubaoGenerator:
         if not textarea:
             return False
 
-        await textarea.click()
+        # 点击输入框：被弹窗遮挡时先检测登录弹窗（抛 NeedLoginError），
+        # 其它弹窗尝试关闭后重试，仍失败则退回键盘操作
+        try:
+            await textarea.click(timeout=5000)
+        except Exception:
+            if await self._detect_login_modal():
+                raise NeedLoginError("需要扫码登录豆包")
+            await self._dismiss_modal()
+            try:
+                await textarea.click(timeout=5000)
+            except Exception:
+                pass
         await self._sleep(0.3, 0.6)
         await textarea.fill(prompt)
         await self._sleep(0.3, 0.6)

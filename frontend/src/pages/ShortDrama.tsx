@@ -192,6 +192,18 @@ const ShortDrama: React.FC = () => {
     try {
       const list = await shortdramaApi.listPrompts(50);
       setRecords(list);
+      // 恢复进行中任务的轮询（刷新页面后 doubaoActiveIds 丢失，
+      // 否则进度/状态/二维码不再更新，看起来"没反应"）
+      const activeIds = list
+        .filter((r) => ['pending', 'running', 'need_login', 'awaiting_rewrite'].includes(r.doubao_status || 'none'))
+        .map((r) => r.id);
+      if (activeIds.length > 0) {
+        setDoubaoActiveIds((prev) => {
+          const next = new Set(prev);
+          activeIds.forEach((id) => next.add(id));
+          return next;
+        });
+      }
     } catch (err: unknown) {
       if (!silent) message.error(err instanceof Error ? err.message : '获取生成历史失败');
     } finally {
