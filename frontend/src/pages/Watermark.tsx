@@ -351,6 +351,25 @@ const Watermark: React.FC<{
     }
   };
 
+  // ─── 去水印完成 → 发布：定位关联的提示词记录 id ───
+  // 优先使用任务级 prompt_record_id；缺失时（历史任务/缓存数据）
+  // 回退读取任务详情里子视频的来源提示词记录，保证链路一致
+  const handleGoToPublish = async (task: WatermarkTaskItem) => {
+    if (!onGoToPublish) return;
+    let promptRecordId = task.prompt_record_id || null;
+    if (!promptRecordId) {
+      try {
+        const detail = await watermarkApi.getTask(task.id);
+        const fromVideo =
+          (detail.videos || []).find((v) => v.prompt_record_id)?.prompt_record_id || null;
+        promptRecordId = fromVideo;
+      } catch {
+        /* 详情读取失败时保持 null，发布页不会代入文案 */
+      }
+    }
+    onGoToPublish(promptRecordId);
+  };
+
   // ─── 重试：把失败/取消任务的源视频重新导入待处理列表 ───
   const retryTask = async (task: WatermarkTaskItem) => {
     try {
@@ -542,7 +561,7 @@ const Watermark: React.FC<{
               type="primary"
               ghost
               icon={<SendOutlined />}
-              onClick={() => onGoToPublish!(t.prompt_record_id)}
+              onClick={() => handleGoToPublish(t)}
             >
               发布
             </Button>
