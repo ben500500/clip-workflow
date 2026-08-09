@@ -61,6 +61,7 @@ export interface WatermarkRunParams {
   radius?: number;
   iterations?: number;
   scope?: 'small' | 'large';
+  mode?: 'inpaint' | 'crop';
   name?: string;
   files: string[];
   prompt_record_id?: string | null;

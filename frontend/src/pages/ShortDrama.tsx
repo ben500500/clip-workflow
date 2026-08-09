@@ -757,7 +757,7 @@ const ShortDrama: React.FC = () => {
           {
             key: 'prompt',
             label: (
-              <span>
+              <span style={{ fontSize: 18, fontWeight: 600 }}>
                 <ThunderboltOutlined /> ① 提示词生成
               </span>
             ),
@@ -766,7 +766,7 @@ const ShortDrama: React.FC = () => {
           {
             key: 'watermark',
             label: (
-              <span>
+              <span style={{ fontSize: 18, fontWeight: 600 }}>
                 <ClearOutlined /> ② 去水印
               </span>
             ),
@@ -784,7 +784,7 @@ const ShortDrama: React.FC = () => {
           {
             key: 'publish',
             label: (
-              <span>
+              <span style={{ fontSize: 18, fontWeight: 600 }}>
                 <SendOutlined /> ③ 发布素材
               </span>
             ),
