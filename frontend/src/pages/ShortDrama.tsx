@@ -17,6 +17,7 @@ import { formatFileSize } from '../utils/format';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
+const { Dragger } = Upload;
 
 // 示例文案（可一键填充，便于快速体验）
 const EXAMPLE_SCRIPTS: Record<string, string> = {
@@ -91,7 +92,7 @@ const ShortDrama: React.FC = () => {
   const [resultModel, setResultModel] = useState<string | null>(null);
   const [resultRecordId, setResultRecordId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [activePromptTab, setActivePromptTab] = useState('ai');
+  const [activePromptTab, setActivePromptTab] = useState('long');
 
   // 长 / 短提示词模板（可编辑并持久化）
   const [templates, setTemplates] = useState<PromptTemplates | null>(null);
@@ -165,7 +166,7 @@ const ShortDrama: React.FC = () => {
       setResultShort(res.versions?.short || '');
       setResultModel(res.model || null);
       setResultRecordId(res.record_id || null);
-      setActivePromptTab('ai');
+      setActivePromptTab('long');
       message.success(res.message || '提示词生成成功');
       fetchRecords(true);
     } catch (err: unknown) {
@@ -390,14 +391,6 @@ const ShortDrama: React.FC = () => {
       },
     },
     {
-      title: '模型',
-      dataIndex: 'model',
-      key: 'model',
-      width: 120,
-      ellipsis: true,
-      render: (m: string | null) => (m ? <Text style={{ fontSize: 12 }}>{m}</Text> : '-'),
-    },
-    {
       title: '操作',
       key: 'action',
       width: 240,
@@ -616,26 +609,6 @@ const ShortDrama: React.FC = () => {
                 onChange={setActivePromptTab}
                 items={[
                   {
-                    key: 'ai',
-                    label: (
-                      <span>
-                        <ThunderboltOutlined /> AI提示词
-                        {resultPrompt ? <Tag style={{ marginLeft: 6 }} color="purple">Seedance 七段</Tag> : null}
-                      </span>
-                    ),
-                    children: (
-                      <PromptResultBlock
-                        text={resultPrompt}
-                        onCopy={async () => {
-                          await handleCopy(resultPrompt);
-                          setCopied(true);
-                          setTimeout(() => setCopied(false), 2000);
-                        }}
-                        copied={copied}
-                      />
-                    ),
-                  },
-                  {
                     key: 'long',
                     label: (
                       <span>
@@ -668,6 +641,26 @@ const ShortDrama: React.FC = () => {
                         text={resultShort}
                         onCopy={async () => {
                           await handleCopy(resultShort);
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        }}
+                        copied={copied}
+                      />
+                    ),
+                  },
+                  {
+                    key: 'ai',
+                    label: (
+                      <span>
+                        <ThunderboltOutlined /> AI提示词
+                        {resultPrompt ? <Tag style={{ marginLeft: 6 }} color="purple">Seedance 七段</Tag> : null}
+                      </span>
+                    ),
+                    children: (
+                      <PromptResultBlock
+                        text={resultPrompt}
+                        onCopy={async () => {
+                          await handleCopy(resultPrompt);
                           setCopied(true);
                           setTimeout(() => setCopied(false), 2000);
                         }}
@@ -750,7 +743,7 @@ const ShortDrama: React.FC = () => {
             setResultShort('');
             setResultModel(null);
             setResultRecordId(null);
-            setActivePromptTab('ai');
+            setActivePromptTab('long');
           }
         }}
         items={[
@@ -836,7 +829,6 @@ const ShortDrama: React.FC = () => {
               </Tag>
               {previewRecord.theme && <Tag>{previewRecord.theme}</Tag>}
               {previewRecord.tone && <Tag color="orange">{previewRecord.tone}</Tag>}
-              {previewRecord.model && <Tag color="cyan">{previewRecord.model}</Tag>}
             </Space>
 
             {/* 成片视频区 */}
@@ -847,6 +839,18 @@ const ShortDrama: React.FC = () => {
             >
               {previewRecord.video_status && previewRecord.video_file_name ? (
                 <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Dragger
+                    accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
+                    showUploadList={false}
+                    beforeUpload={(file) => {
+                      handleUploadVideo(previewRecord!, file as File);
+                      return false;
+                    }}
+                  >
+                    <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+                    <p className="ant-upload-text">点击或拖拽视频到此处更换</p>
+                    <p className="ant-upload-hint">支持 .mp4 / .avi / .mov / .mkv / .webm，替换当前成片视频</p>
+                  </Dragger>
                   <Space wrap>
                     <Tag color="green" icon={<VideoCameraOutlined />}>{previewRecord.video_file_name}</Tag>
                     {previewRecord.video_file_size ? (
@@ -863,15 +867,6 @@ const ShortDrama: React.FC = () => {
                     />
                   )}
                   <Space wrap>
-                    <Upload
-                      accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
-                      showUploadList={false}
-                      customRequest={({ file }) => {
-                        handleUploadVideo(previewRecord!, file as File);
-                      }}
-                    >
-                      <Button size="small" icon={<UploadOutlined />}>更换视频</Button>
-                    </Upload>
                     <Button
                       size="small"
                       type="primary"
@@ -894,19 +889,22 @@ const ShortDrama: React.FC = () => {
                   </Space>
                 </Space>
               ) : (
-                <Space direction="vertical" size={8}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    <InboxOutlined /> 尚未上传成片视频，可上传 Seedance 生成的视频后一键导入去水印流程。
-                  </Text>
-                  <Upload
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Dragger
                     accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
                     showUploadList={false}
-                    customRequest={({ file }) => {
+                    beforeUpload={(file) => {
                       handleUploadVideo(previewRecord!, file as File);
+                      return false;
                     }}
                   >
-                    <Button icon={<UploadOutlined />}>上传成片视频</Button>
-                  </Upload>
+                    <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+                    <p className="ant-upload-text">点击或拖拽视频到此处上传</p>
+                    <p className="ant-upload-hint">上传 Seedance 生成的成片视频，可一键导入去水印流程</p>
+                  </Dragger>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    <InboxOutlined /> 尚未上传成片视频，可拖拽 / 点击上传 Seedance 生成的视频后一键导入去水印流程。
+                  </Text>
                 </Space>
               )}
             </Card>
@@ -929,19 +927,8 @@ const ShortDrama: React.FC = () => {
             </pre>
             <Text strong>生成的提示词（三版本）：</Text>
             <Tabs
-              defaultActiveKey="ai"
+              defaultActiveKey="long"
               items={[
-                {
-                  key: 'ai',
-                  label: <span><ThunderboltOutlined /> AI提示词</span>,
-                  children: (
-                    <PromptResultBlock
-                      text={previewRecord.prompt_text}
-                      onCopy={() => handleCopy(previewRecord!.prompt_text)}
-                      copied={false}
-                    />
-                  ),
-                },
                 {
                   key: 'long',
                   label: <span><FileTextOutlined /> 长提示词</span>,
@@ -964,6 +951,22 @@ const ShortDrama: React.FC = () => {
                     />
                   ),
                 },
+                {
+                  key: 'ai',
+                  label: (
+                    <span>
+                      <ThunderboltOutlined /> AI提示词
+                      {previewRecord.model ? <span style={{ color: 'rgba(0,0,0,0.45)', fontSize: 12 }}>（{previewRecord.model}）</span> : null}
+                    </span>
+                  ),
+                  children: (
+                    <PromptResultBlock
+                      text={previewRecord.prompt_text}
+                      onCopy={() => handleCopy(previewRecord!.prompt_text)}
+                      copied={false}
+                    />
+                  ),
+                },
               ]}
             />
             <Space style={{ marginTop: 8 }}>
@@ -979,6 +982,57 @@ const ShortDrama: React.FC = () => {
             </Space>
           </div>
         )}
+      </Modal>
+
+      {/* ── 长 / 短提示词模板编辑弹窗 ── */}
+      <Modal
+        title="编辑长/短提示词模板"
+        open={templateModalOpen}
+        onCancel={() => setTemplateModalOpen(false)}
+        footer={
+          <Space>
+            <Button
+              icon={<UndoOutlined />}
+              onClick={resetTemplates}
+              disabled={templateSaving}
+            >
+              恢复默认
+            </Button>
+            <Button
+              type="primary"
+              icon={<SaveOutlined />}
+              loading={templateSaving}
+              onClick={handleSaveTemplates}
+            >
+              保存模板
+            </Button>
+          </Space>
+        }
+        width={900}
+        destroyOnClose
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="模板内需保留 [视频文案] 占位符，生成时会替换为用户输入的文案；留空则恢复内置默认模板。"
+        />
+        <Text strong>长提示词模板：</Text>
+        <TextArea
+          rows={9}
+          style={{ marginTop: 6, marginBottom: 16, fontFamily: 'monospace', fontSize: 13 }}
+          value={templateDraft.long}
+          onChange={(e) => setTemplateDraft((d) => ({ ...d, long: e.target.value }))}
+          placeholder="输入长提示词模板…"
+        />
+        <Text strong>短提示词模板：</Text>
+        <TextArea
+          rows={9}
+          style={{ marginTop: 6, fontFamily: 'monospace', fontSize: 13 }}
+          value={templateDraft.short}
+          onChange={(e) => setTemplateDraft((d) => ({ ...d, short: e.target.value }))}
+          placeholder="输入短提示词模板…"
+        />
       </Modal>
     </div>
   );
