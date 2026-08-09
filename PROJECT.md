@@ -316,7 +316,7 @@ clip-workflow/
 |--------|------|------|
 | `WatermarkTask` | `watermark_tasks` | 去水印任务（批量提交，多视频，任务级关联来源提示词记录） |
 | `WatermarkVideo` | `watermark_videos` | 去水印任务下的单条视频（含 prompt_record_id 来源关联） |
-| `ShortdramaPrompt` | `shortdrama_prompts` | Seedance 提示词生成历史（文案→七段模板，可关联成片视频） |
+| `ShortdramaPrompt` | `shortdrama_prompts` | Seedance 提示词生成历史（文案→七段模板，可关联成片视频；含豆包 RPA 与 Seedance 官方 API 两套出片任务字段，互不干扰） |
 | `PublishMaterial` | `publish_materials` | 短剧发布素材生成历史（剧情梗概→短标题/三款配文/成套标签/三条神评） |
 
 ### 5.2 ER 关系
@@ -518,8 +518,30 @@ audit:
 | `GET` | `/api/shortdrama/prompts/{id}/video` | 获取成片视频签名播放地址 |
 | `DELETE` | `/api/shortdrama/prompts/{id}/video` | 删除成片视频（保留提示词记录） |
 | `POST` | `/api/shortdrama/prompts/{id}/import-to-watermark` | 一键把成片视频导入去水印流程 |
+| `POST` | `/api/shortdrama/prompts/{id}/doubao/generate` | 一键豆包生成（RPA 浏览器出片，自动扫码/改写确认闭环，成片回填历史） |
+| `GET` | `/api/shortdrama/prompts/{id}/doubao/status` | 查询豆包生成任务状态（二维码/改写稿/进度） |
+| `POST` | `/api/shortdrama/prompts/{id}/doubao/cancel` | 取消豆包生成任务 |
+| `POST` | `/api/shortdrama/prompts/{id}/doubao/confirm-rewrite` | 豆包改写确认（approved/rejected/cancelled） |
+| `GET` | `/api/shortdrama/doubao/account-type` | 获取用户默认豆包账户类型与时长上限 |
+| `PUT` | `/api/shortdrama/doubao/account-type` | 保存用户默认豆包账户类型 |
+| `GET` | `/api/shortdrama/doubao/config` | 读取豆包账户时长上限配置 |
 
-### 6.8.2 短剧发布素材 API（v7）
+### 6.8.2 Seedance 官方 API 直连出片（火山方舟，与豆包 RPA 并行独立）
+
+> **开关控制（默认关闭）**：总开关在 `system_config.shortdrama_seedance_config.enabled`（默认 `false`）或环境变量 `SEEDANCE_ENABLED=false`。
+> 未开启时：前端不展示「Seedance 生成」按钮，后端相关接口一律返回 403。
+> 开启后：走火山方舟官方 API HTTP 直连出片（无浏览器 / 无扫码），成片统一回填 `video_*` 字段，
+> 并以 `gen_channel=seedance_api` 标记来源，与 `doubao_rpa` / `manual` 通道互不混淆。
+> Seedance 1.0 仅支持 5s/10s，>10s 按 `long_duration_policy`（truncate 截成10s / block 拒绝）处理。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/shortdrama/seedance/config` | 读取 Seedance 直连配置（只读，不返回 api_key；含开关/模型/分辨率/超长策略/是否已配 Key） |
+| `POST` | `/api/shortdrama/prompts/{id}/seedance/generate` | 启动 Seedance 官方 API 直连生成（未开启返回 403） |
+| `GET` | `/api/shortdrama/prompts/{id}/seedance/status` | 查询 Seedance 直连任务状态 |
+| `POST` | `/api/shortdrama/prompts/{id}/seedance/cancel` | 取消 Seedance 直连任务（尽力取消方舟侧） |
+
+### 6.8.3 短剧发布素材 API（v7）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|

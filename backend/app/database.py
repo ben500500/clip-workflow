@@ -169,6 +169,15 @@ async def _apply_compat_migrations():
         ("shortdrama_prompts", "doubao_approved_prompt", "TEXT"),
         ("shortdrama_prompts", "doubao_rewrite_history", "JSON"),
         ("shortdrama_prompts", "doubao_confirm_token", "VARCHAR(64)"),
+        # 短片制作：Seedance 官方 API 直连出片（与豆包 RPA 并行、独立通道）
+        # - seedance_*：官方 API 任务状态 / 方舟 task_id / 进度消息 / 失败原因 / 分辨率
+        # - gen_channel：成片来源通道（doubao_rpa / seedance_api），便于追溯
+        ("shortdrama_prompts", "seedance_status", "VARCHAR(50)"),
+        ("shortdrama_prompts", "seedance_task_id", "VARCHAR(100)"),
+        ("shortdrama_prompts", "seedance_message", "TEXT"),
+        ("shortdrama_prompts", "seedance_error_message", "TEXT"),
+        ("shortdrama_prompts", "seedance_resolution", "VARCHAR(20)"),
+        ("shortdrama_prompts", "gen_channel", "VARCHAR(20)"),
         # 短片制作：提示词生成默认时长（用户选择时长后即作为当前登录用户的默认值）
         ("users", "prompt_default_duration", "INTEGER"),
         # 一期：视频号账号矩阵 + 短片分析

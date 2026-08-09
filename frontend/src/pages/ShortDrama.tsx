@@ -88,6 +88,23 @@ const DOUBAO_STATUS_META: Record<string, { label: string; color: string; icon: R
   cancelled: { label: '已取消', color: 'default', icon: <StopOutlined /> },
 };
 
+// Seedance 官方 API 直连任务状态展示映射（与豆包 RPA 完全独立的第二通道）
+const SEEDANCE_STATUS_META: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
+  none: { label: '未生成', color: 'default', icon: <ThunderboltOutlined /> },
+  pending: { label: '排队中', color: 'blue', icon: <ClockCircleOutlined /> },
+  running: { label: '生成中', color: 'processing', icon: <SyncOutlined spin /> },
+  completed: { label: '已完成', color: 'green', icon: <CheckCircleOutlined /> },
+  failed: { label: '失败', color: 'red', icon: <CloseCircleOutlined /> },
+  cancelled: { label: '已取消', color: 'default', icon: <StopOutlined /> },
+};
+
+// 成片来源通道展示
+const GEN_CHANNEL_LABELS: Record<string, string> = {
+  doubao_rpa: '豆包 RPA',
+  seedance_api: '官方 API',
+  manual: '手动上传',
+};
+
 const ShortDrama: React.FC = () => {
   // ── 提示词生成表单 ──
   const [text, setText] = useState('');
@@ -150,6 +167,25 @@ const ShortDrama: React.FC = () => {
   // 发起豆包生成中（按钮 loading）
   const [doubaoGeneratingId, setDoubaoGeneratingId] = useState<string | null>(null);
 
+  // ── Seedance 官方 API 直连出片（与豆包 RPA 并行、独立通道；开关默认关闭） ──
+  // 直连配置（含 enabled 开关，仅当 enabled 且已配 Key 时展示该通道）
+  const [seedanceConfig, setSeedanceConfig] = useState<{
+    enabled: boolean;
+    model: string;
+    resolution: string;
+    watermark: boolean;
+    long_duration_policy: string;
+    supported_durations: number[];
+    timeout: number;
+    daily_quota: number;
+    has_api_key: boolean;
+    missing?: string;
+  } | null>(null);
+  // 正在进行 Seedance 直连任务 / 需要轮询状态的记录 id 集合
+  const [seedanceActiveIds, setSeedanceActiveIds] = useState<Set<string>>(new Set());
+  // 发起 Seedance 生成中（按钮 loading）
+  const [seedanceGeneratingId, setSeedanceGeneratingId] = useState<string | null>(null);
+
   // ── 加载历史 ──
   const fetchRecords = useCallback(async (silent = false) => {
     if (!silent) setLoadingRecords(true);
@@ -191,6 +227,43 @@ const ShortDrama: React.FC = () => {
         // 读取失败不阻断，使用默认 free
       });
   }, []);
+
+  // ── 加载 Seedance 官方 API 直连配置（开关默认关闭，关闭时前端不展示该通道） ──
+  useEffect(() => {
+    shortdramaApi
+      .getSeedanceConfig()
+      .then((cfg) => setSeedanceConfig(cfg))
+      .catch(() => {
+        // 读取失败不阻断，视为未开启
+        setSeedanceConfig({ enabled: false, model: '', resolution: '1080p', watermark: true, long_duration_policy: 'truncate', supported_durations: [5, 10], timeout: 600, daily_quota: 0, has_api_key: false });
+      });
+  }, []);
+
+  // ── Seedance 直连任务轮询（5s）：更新状态（与豆包 RPA 轮询完全独立） ──
+  useEffect(() => {
+    if (seedanceActiveIds.size === 0) return;
+    const timer = window.setInterval(async () => {
+      const ids = Array.from(seedanceActiveIds);
+      for (const rid of ids) {
+        try {
+          const cur = await shortdramaApi.seedanceStatus(rid);
+          // 更新历史列表中的记录
+          setRecords((prev) => prev.map((r) => (r.id === rid ? { ...r, ...cur } : r)));
+          const status = cur.seedance_status || 'none';
+          if (['completed', 'failed', 'cancelled'].includes(status)) {
+            setSeedanceActiveIds((prev) => {
+              const next = new Set(prev);
+              next.delete(rid);
+              return next;
+            });
+          }
+        } catch {
+          // 单条轮询失败忽略，下轮重试
+        }
+      }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [seedanceActiveIds]);
 
   // ── 加载当前用户默认时长（用户选择时长后即作为默认值） ──
   useEffect(() => {
@@ -553,6 +626,64 @@ const ShortDrama: React.FC = () => {
     return ['pending', 'running', 'need_login', 'awaiting_rewrite'].includes(s);
   };
 
+  // ── Seedance 官方 API 直连出片相关操作（与豆包 RPA 完全独立） ──
+
+  // 判断记录是否有进行中的 Seedance 直连任务
+  const isSeedanceActive = (record: ShortdramaPromptRecord): boolean => {
+    const s = record.seedance_status || 'none';
+    return ['pending', 'running'].includes(s);
+  };
+
+  // 发起 Seedance 官方 API 直连生成
+  const handleSeedanceGenerate = async (record: ShortdramaPromptRecord) => {
+    if (!seedanceConfig?.enabled) {
+      message.warning('Seedance 官方 API 直连未启用，请先在系统设置或 .env 中开启开关');
+      return;
+    }
+    if (!seedanceConfig?.has_api_key) {
+      message.warning(seedanceConfig?.missing || '未配置 SEEDANCE_API_KEY（火山方舟 API Key）');
+      return;
+    }
+    // Seedance 1.0 仅支持 5s/10s；超长按配置策略截断或拒绝（后端兜底校验）
+    if (record.duration > 10 && seedanceConfig?.long_duration_policy === 'truncate') {
+      message.warning(`提示词时长为 ${record.duration}s，Seedance 官方 API 当前仅支持 10s，将按 10s 生成（超长策略：截断）`);
+    }
+    setSeedanceGeneratingId(record.id);
+    try {
+      const res = await shortdramaApi.seedanceGenerate(record.id, {
+        duration: record.duration || 10,
+        resolution: seedanceConfig?.resolution || undefined,
+      });
+      message.success(res.message || 'Seedance 直连生成任务已启动');
+      setSeedanceActiveIds((prev) => {
+        const next = new Set(prev);
+        next.add(record.id);
+        return next;
+      });
+      setRecords((prev) => prev.map((r) => (r.id === record.id ? { ...r, seedance_status: 'pending' } : r)));
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : 'Seedance 直连生成启动失败');
+    } finally {
+      setSeedanceGeneratingId(null);
+    }
+  };
+
+  // 取消 Seedance 直连生成任务
+  const handleSeedanceCancel = async (record: ShortdramaPromptRecord) => {
+    try {
+      const res = await shortdramaApi.seedanceCancel(record.id);
+      message.success(res.message);
+      setRecords((prev) => prev.map((r) => (r.id === record.id ? { ...r, seedance_status: 'cancelled', seedance_message: '任务已取消' } : r)));
+      setSeedanceActiveIds((prev) => {
+        const next = new Set(prev);
+        next.delete(record.id);
+        return next;
+      });
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '取消失败');
+    }
+  };
+
   // ── 时长切换 ──
   const switchDurationMode = (custom: boolean) => {
     setDurationCustom(custom);
@@ -628,6 +759,11 @@ const ShortDrama: React.FC = () => {
               <Tag color="green" icon={<VideoCameraOutlined />}>
                 {r.video_file_name.length > 16 ? `${r.video_file_name.slice(0, 16)}…` : r.video_file_name}
               </Tag>
+              {r.gen_channel ? (
+                <Tag color={r.gen_channel === 'seedance_api' ? 'cyan' : r.gen_channel === 'doubao_rpa' ? 'geekblue' : 'default'} style={{ fontSize: 11 }}>
+                  {GEN_CHANNEL_LABELS[r.gen_channel] || r.gen_channel}
+                </Tag>
+              ) : null}
               {r.video_file_size ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>{formatFileSize(r.video_file_size)}</Text>
               ) : null}
@@ -690,12 +826,48 @@ const ShortDrama: React.FC = () => {
       },
     },
     {
+      title: 'Seedance 任务',
+      key: 'seedance',
+      width: 170,
+      render: (_: unknown, r: ShortdramaPromptRecord) => {
+        const s = r.seedance_status || 'none';
+        const meta = SEEDANCE_STATUS_META[s] || SEEDANCE_STATUS_META.none;
+        const active = isSeedanceActive(r);
+        return (
+          <Space size={4} wrap>
+            <Tag color={meta.color} icon={meta.icon}>{meta.label}</Tag>
+            {r.seedance_resolution ? (
+              <Tag color="cyan" style={{ fontSize: 11 }}>{r.seedance_resolution}</Tag>
+            ) : null}
+            {r.seedance_message && active ? (
+              <Text type="secondary" style={{ fontSize: 11 }} ellipsis={{ tooltip: r.seedance_message }}>
+                {r.seedance_message}
+              </Text>
+            ) : null}
+            {r.seedance_status === 'completed' ? (
+              <Button
+                size="small"
+                type="link"
+                style={{ padding: 0, height: 'auto' }}
+                onClick={() => setPreviewRecord(r)}
+              >
+                查看成片
+              </Button>
+            ) : null}
+          </Space>
+        );
+      },
+    },
+    {
       title: '操作',
       key: 'action',
-      width: 300,
+      width: 400,
       fixed: 'right' as const,
       render: (_: unknown, r: ShortdramaPromptRecord) => {
         const active = isDoubaoActive(r);
+        const seedanceActive = isSeedanceActive(r);
+        const seedanceEnabled = !!seedanceConfig?.enabled && !!seedanceConfig?.has_api_key;
+
         return (
         <Space size="small" wrap>
           <Button size="small" onClick={() => setPreviewRecord(r)}>
@@ -708,12 +880,38 @@ const ShortDrama: React.FC = () => {
               ghost
               icon={<RobotOutlined />}
               loading={doubaoGeneratingId === r.id}
-              disabled={active || !!doubaoGeneratingId}
+              disabled={active || seedanceActive || !!doubaoGeneratingId}
               onClick={() => handleDoubaoGenerate(r)}
             >
               一键豆包生成
             </Button>
           </Tooltip>
+          {seedanceEnabled && (
+            <Tooltip title={seedanceConfig?.missing || "HTTP 直连火山方舟官方 API 出片，无浏览器/扫码"}>
+              <Button
+                size="small"
+                type="primary"
+                ghost
+                icon={<ThunderboltOutlined />}
+                loading={seedanceGeneratingId === r.id}
+                disabled={seedanceActive || active || !!seedanceGeneratingId}
+                onClick={() => handleSeedanceGenerate(r)}
+              >
+                Seedance 生成
+              </Button>
+            </Tooltip>
+          )}
+          {seedanceActive && (
+            <Popconfirm
+              title="取消该 Seedance 直连生成任务？"
+              okText="取消任务"
+              okButtonProps={{ danger: true }}
+              cancelText="返回"
+              onConfirm={() => handleSeedanceCancel(r)}
+            >
+              <Button size="small" danger icon={<StopOutlined />}>取消</Button>
+            </Popconfirm>
+          )}
           {active && (
             <Popconfirm
               title="取消该豆包生成任务？"
@@ -1047,6 +1245,16 @@ const ShortDrama: React.FC = () => {
                 </Text>
               </Tooltip>
             </Space>
+            {seedanceConfig?.enabled ? (
+              <Tag color="cyan" icon={<ThunderboltOutlined />}>
+                Seedance 官方 API 直连已开启
+                {!seedanceConfig.has_api_key ? '（未配 Key）' : ''}
+              </Tag>
+            ) : (
+              <Tooltip title="在系统设置或 .env 中配置 SEEDANCE_ENABLED=true 与 API Key 后开启；与豆包 RPA 并行独立">
+                <Tag color="default" icon={<ThunderboltOutlined />}>Seedance 官方 API 直连未开启</Tag>
+              </Tooltip>
+            )}
             <Button size="small" icon={<ReloadOutlined />} onClick={() => fetchRecords()}>
               刷新
             </Button>
@@ -1059,7 +1267,7 @@ const ShortDrama: React.FC = () => {
           dataSource={records}
           columns={recordColumns}
           pagination={{ pageSize: 8, showSizeChanger: false }}
-          scroll={{ x: 1500 }}
+          scroll={{ x: 1800 }}
           locale={{
             emptyText: (
               <Empty
@@ -1090,7 +1298,7 @@ const ShortDrama: React.FC = () => {
           items={[
             { title: '输入文案', description: '对白/旁白原文' },
             { title: '生成提示词', description: '复用 AutoClip 模型' },
-            { title: 'Seedance 生成', description: '10s / 15s / 20s / 25s / 30s / 自定义竖屏' },
+            { title: 'Seedance 生成', description: '豆包 RPA / 官方 API 直连（开关控制，默认官方 API 关闭）' },
             { title: '去水印出片', description: '历史一键导入「去水印」页签' },
             { title: '发布素材', description: '短标题/配文/标签/神评' },
           ]}

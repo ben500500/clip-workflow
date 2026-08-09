@@ -78,6 +78,28 @@ class Settings(BaseSettings):
     # 单个去水印视频最大时长（秒），超长会显著耗时
     WATERMARK_MAX_DURATION: int = 3600
 
+    # ── Seedance 官方 API 直连出片（与豆包 RPA 并行、独立通道） ──
+    # 总开关（默认关闭）。开启后短片制作「提示词生成历史」出现「Seedance 生成」按钮，
+    # 走火山方舟官方 API 直连出片（无需浏览器 RPA / 扫码）。
+    # 也可在 system_config 的 shortdrama_seedance_config.enabled 覆盖。
+    SEEDANCE_ENABLED: bool = False
+    # 火山方舟 API Key（https://console.volcengine.com/ark）
+    SEEDANCE_API_KEY: str = ""
+    # 模型名或推理接入点 ID（ep-xxx）。Seedance 1.0 仅支持 5s/10s
+    SEEDANCE_MODEL: str = "seedance-1-0-pro-250528"
+    # API Base（默认即可）
+    SEEDANCE_API_BASE: str = "https://ark.cn-beijing.volces.com/api/v3"
+    # 出片分辨率：480p / 720p / 1080p
+    SEEDANCE_RESOLUTION: str = "1080p"
+    # 是否加水印（建议 true，避免被平台判搬运）
+    SEEDANCE_WATERMARK: bool = True
+    # 生成超时（秒）
+    SEEDANCE_TIMEOUT: int = 600
+    # 时长超 10s 的处理策略：truncate(截成10s) / block(拒绝并提示)
+    SEEDANCE_LONG_DURATION_POLICY: str = "truncate"
+    # 每日配额（0=不限）
+    SEEDANCE_DAILY_QUOTA: int = 0
+
     # 切片分发引擎：worker（Redis Stream / Go Worker）或 celery（回退）
     SLICE_ENGINE: str = "worker"
     # Worker 回调/上传 URL 的基础地址（远程物理机部署时配置为可访问的地址）

@@ -31,6 +31,14 @@ export interface ShortdramaPromptRecord {
   doubao_approved_prompt?: string | null;
   doubao_rewrite_history?: DoubaoRewriteItem[] | null;
   doubao_rewrite_count?: number | null;
+  // Seedance 官方 API 直连任务状态（与豆包 RPA 完全独立的第二通道）
+  seedance_status?: string | null;
+  seedance_task_id?: string | null;
+  seedance_message?: string | null;
+  seedance_error_message?: string | null;
+  seedance_resolution?: string | null;
+  // 成片来源通道：doubao_rpa / seedance_api / manual
+  gen_channel?: string | null;
 }
 
 export interface DoubaoRewriteItem {
@@ -50,6 +58,12 @@ export interface DoubaoGenerateParams {
 export interface DoubaoGenerateResult {
   record_id: string;
   doubao_status: string;
+  message: string;
+}
+
+export interface SeedanceGenerateResult {
+  record_id: string;
+  seedance_status: string;
   message: string;
 }
 
@@ -199,4 +213,28 @@ export const shortdramaApi = {
       account_type: 'free' | 'pro';
       message: string;
     }>,
+
+  // ── Seedance 官方 API 直连出片（与豆包 RPA 并行、独立通道；开关默认关闭） ──
+  getSeedanceConfig: () =>
+    client.get('/shortdrama/seedance/config') as Promise<{
+      enabled: boolean;
+      model: string;
+      resolution: string;
+      watermark: boolean;
+      long_duration_policy: string;
+      supported_durations: number[];
+      timeout: number;
+      daily_quota: number;
+      has_api_key: boolean;
+      missing?: string;
+    }>,
+
+  seedanceGenerate: (recordId: string, params: { duration?: number | null; resolution?: string | null }) =>
+    client.post(`/shortdrama/prompts/${recordId}/seedance/generate`, params) as Promise<SeedanceGenerateResult>,
+
+  seedanceCancel: (recordId: string) =>
+    client.post(`/shortdrama/prompts/${recordId}/seedance/cancel`) as Promise<SeedanceGenerateResult>,
+
+  seedanceStatus: (recordId: string) =>
+    client.get(`/shortdrama/prompts/${recordId}/seedance/status`) as Promise<ShortdramaPromptRecord>,
 };

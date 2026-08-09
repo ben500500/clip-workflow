@@ -1,10 +1,17 @@
 # Seedance 模型直连生成 · 提前部署方案
 
-> 文档版本：v1.0 ｜ 提出人：Benny ｜ 状态：待评审
+> 文档版本：v1.1 ｜ 提出人：Benny ｜ 状态：**已落地（PR #39）**
 >
 > 背景：目前「短片制作」的成片生成依赖 **豆包网页端 RPA**（Playwright 打开豆包 → 贴提示词 → 等生成 → 下载成片）。
-> 后期计划接入 **Seedance 官方 API 直连**，彻底摆脱浏览器 RPA 的不稳定与风控。
-> 本方案评估「把 Seedance API 直连能力**提前部署**」的可行性，给出落地设计，供评审后实施。
+> 已按本方案**提前落地 Seedance 官方 API 直连通道**，与豆包 RPA 并行、开关控制（默认关闭）。
+>
+> **落地说明**：
+> - 新增 `backend/app/services/ark_client.py`（火山方舟 HTTP 客户端，与豆包 RPA 逻辑完全隔离）；
+> - 新增 Celery 任务 `seedance_generate_task`（queue=publish，普通 worker 即可消费，不依赖 rpa_worker）；
+> - 新增 4 个后端 API：`GET /shortdrama/seedance/config`、`POST/POST/GET /shortdrama/prompts/{id}/seedance/generate|cancel|status`；
+> - 总开关默认**关闭**：`system_config.shortdrama_seedance_config.enabled=false` / 环境变量 `SEEDANCE_ENABLED=false`，未开启时接口返回 403、前端不展示按钮；
+> - 前端「提示词生成历史」新增 **Seedance 任务** 状态列与「Seedance 生成」按钮，成片来源以 `gen_channel`（doubao_rpa / seedance_api / manual）追溯；
+> - 数据库：Alembic 迁移 `0014_seedance_generate` + 老库兼容迁移兜底。
 
 ---
 

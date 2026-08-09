@@ -792,6 +792,19 @@ class ShortdramaPrompt(Base):
     doubao_rewrite_history = Column(JSON, nullable=True)
     # 改写确认回调用的一次性凭证（避免跨用户误确认）
     doubao_confirm_token = Column(String(64), nullable=True)
+    # ── Seedance 官方 API 直连出片（火山方舟）任务字段 ──
+    # 与豆包 RPA 字段完全独立、互不干扰；成片仍写回 video_* 字段，下游零感知。
+    # 任务状态机：none / pending / running / completed / failed / cancelled
+    seedance_status = Column(String(50), nullable=True)
+    # 火山方舟任务 id（cgt-xxx）
+    seedance_task_id = Column(String(100), nullable=True)
+    # 实时进度/消息
+    seedance_message = Column(Text, nullable=True)
+    seedance_error_message = Column(Text, nullable=True)
+    # 本次生成分辨率
+    seedance_resolution = Column(String(20), nullable=True)
+    # 成片来源通道：doubao_rpa / seedance_api（便于追溯）
+    gen_channel = Column(String(20), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     def __repr__(self) -> str:

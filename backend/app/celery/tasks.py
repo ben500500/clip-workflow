@@ -54,6 +54,9 @@ celery_app.conf.update(
         "app.celery.tasks.watermark_task": {"queue": "video_processing"},
         "app.celery.tasks.check_cookie_status": {"queue": "publish"},
         "app.celery.tasks.doubao_generate_task": {"queue": "publish"},
+        # Seedance 官方 API 直连出片（HTTP 直连，无浏览器；复用 publish 队列即可，
+        # 不依赖 rpa_worker，普通 worker 即可消费）
+        "app.celery.tasks.seedance_generate_task": {"queue": "publish"},
     },
     beat_schedule={
         "collect-metrics-daily": {
@@ -1804,6 +1807,8 @@ async def _sync_doubao_video(
             record.video_status = "completed"
             record.video_error_message = None
             record.video_uploaded_at = datetime.utcnow()
+            # 成片来源通道：豆包 RPA（与 Seedance 官方 API 直连 / 手动上传区分）
+            record.gen_channel = "doubao_rpa"
             await session.commit()
             return {"ok": True, "file_name": safe_name, "file_size": os.path.getsize(tmp_path)}
     except Exception as e:
@@ -2015,6 +2020,359 @@ def doubao_generate_task(
             prompt_id,
             status="failed",
             message=f"豆包生成任务异常: {e}",
+            error_message=str(e),
+        ))
+        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+        return {"success": False, "status": "failed", "message": str(e)}
+
+
+# ══════════════════════════════════════════════════════════════════
+# Seedance 官方 API 直连出片（火山方舟）—— 与豆包 RPA 完全独立的第二通道
+# ══════════════════════════════════════════════════════════════════
+
+async def _update_seedance_prompt(
+    prompt_id: str,
+    *,
+    status: Optional[str] = None,
+    message: Optional[str] = None,
+    error_message: Optional[str] = None,
+    task_id: Optional[str] = None,
+    resolution: Optional[str] = None,
+    gen_channel: Optional[str] = None,
+) -> bool:
+    """更新提示词记录的 Seedance 直连任务字段（供 Celery 任务在同步上下文调用）。"""
+    from app.models.models import ShortdramaPrompt
+
+    async with async_session_factory() as session:
+        try:
+            pid = uuid.UUID(str(prompt_id))
+        except ValueError:
+            return False
+        result = await session.execute(
+            select(ShortdramaPrompt).where(ShortdramaPrompt.id == pid)
+        )
+        record = result.scalar_one_or_none()
+        if not record:
+            return False
+        if status is not None:
+            record.seedance_status = status
+        if message is not None:
+            record.seedance_message = message
+        if error_message is not None:
+            record.seedance_error_message = error_message
+        if task_id is not None:
+            record.seedance_task_id = task_id
+        if resolution is not None:
+            record.seedance_resolution = resolution
+        if gen_channel is not None:
+            record.gen_channel = gen_channel
+        await session.commit()
+        return True
+
+
+async def _load_seedance_db_config() -> dict:
+    """读取 Seedance 直连配置（system_config.shortdrama_seedance_config），无则返回空。"""
+    from app.models.models import SystemConfig
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(SystemConfig).where(SystemConfig.key == "shortdrama_seedance_config")
+        )
+        cfg = result.scalar_one_or_none()
+        return (cfg.value or {}) if cfg and isinstance(cfg.value, dict) else {}
+
+
+async def _check_seedance_cancelled(prompt_id: str) -> bool:
+    """检查 Seedance 直连任务是否已取消（用户取消时置 seedance_status=cancelled）。"""
+    record = await _load_shortdrama_prompt(prompt_id)
+    if record is None:
+        return True
+    return record.seedance_status == "cancelled"
+
+
+async def _sync_generated_video(
+    prompt_id: str,
+    *,
+    download_url: str,
+    file_name: str,
+    channel: str = "seedance_api",
+) -> dict:
+    """下载成片视频并上传 MinIO，回填提示词记录（豆包 RPA / Seedance API 共用）。
+
+    Returns: {'ok': bool, 'file_name': str, 'file_size': int, 'error': str}
+    """
+    from app.models.models import ShortdramaPrompt
+    from app.services.minio_service import upload_file_from_path
+
+    tmp_path = f"/tmp/generated_videos/{uuid.uuid4().hex}.mp4"
+    os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+            resp = await client.get(download_url)
+            resp.raise_for_status()
+            with open(tmp_path, "wb") as f:
+                f.write(resp.content)
+
+        if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
+            return {"ok": False, "error": "下载成片失败（空文件）"}
+
+        async with async_session_factory() as session:
+            try:
+                pid = uuid.UUID(str(prompt_id))
+            except ValueError:
+                return {"ok": False, "error": "提示词记录不存在"}
+            result = await session.execute(
+                select(ShortdramaPrompt).where(ShortdramaPrompt.id == pid)
+            )
+            record = result.scalar_one_or_none()
+            if not record:
+                return {"ok": False, "error": "提示词记录不存在"}
+
+            safe_name = file_name or f"{channel}_{_now_str()}.mp4"
+            file_key = f"shortdrama/{str(record.id)}/{channel}_{_now_str()}_{safe_name}"
+            uploaded = await upload_file_from_path(
+                settings.MINIO_BUCKET_WATERMARK_RAW,
+                file_key,
+                tmp_path,
+                content_type="video/mp4",
+            )
+            if not uploaded:
+                return {"ok": False, "error": f"上传成片到 MinIO 失败（{channel}）"}
+
+            # 清理旧成片
+            if record.video_file_key and record.video_bucket:
+                try:
+                    from app.services.minio_service import delete_file
+                    await delete_file(record.video_bucket, record.video_file_key)
+                except Exception:
+                    pass
+
+            record.video_file_name = safe_name
+            record.video_file_key = file_key
+            record.video_bucket = settings.MINIO_BUCKET_WATERMARK_RAW
+            record.video_file_size = os.path.getsize(tmp_path)
+            record.video_status = "completed"
+            record.video_error_message = None
+            record.video_uploaded_at = datetime.utcnow()
+            record.gen_channel = channel
+            await session.commit()
+            return {"ok": True, "file_name": safe_name, "file_size": os.path.getsize(tmp_path)}
+    except Exception as e:
+        logger.error("sync generated video failed (%s): %s", channel, e)
+        return {"ok": False, "error": str(e)}
+    finally:
+        try:
+            if os.path.isfile(tmp_path):
+                os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+@celery_app.task(bind=True, max_retries=0)
+def seedance_generate_task(
+    self,
+    prompt_id: str,
+    *,
+    duration: Optional[int] = None,
+    resolution: Optional[str] = None,
+):
+    """Seedance 官方 API 直连出片：HTTP 调用火山方舟（无浏览器 / 无扫码）。
+
+    状态机（shortdrama_prompts.seedance_status）：
+      pending → running → completed / failed / cancelled
+
+    与豆包 RPA（doubao_generate_task）完全独立：
+    - 状态字段 seedance_* 与 doubao_* 互不读写；
+    - 成片统一写回 video_* 字段（下游去水印/发布零感知），
+      并以 gen_channel=seedance_api 标记来源通道。
+    """
+    self.update_state(state="STARTED", meta={"progress": 5, "message": "Seedance 直连任务启动…"})
+
+    try:
+        record = run_async(_load_shortdrama_prompt(prompt_id))
+        if not record:
+            logger.error("Seedance prompt record %s not found", prompt_id)
+            return {"success": False, "status": "failed", "message": "提示词记录不存在"}
+
+        # 任务已取消则不执行
+        if record.seedance_status == "cancelled":
+            logger.info("Seedance task %s already cancelled, skip", prompt_id)
+            return {"success": False, "status": "cancelled", "message": "任务已取消"}
+
+        # 读取 Seedance 直连配置（环境变量 + system_config 合并），校验开关与 Key
+        from app.services.ark_client import (
+            load_seedance_config,
+            SeedanceClient,
+            resolve_duration_policy,
+            poll_task,
+        )
+
+        db_config = run_async(_load_seedance_db_config())
+        cfg = load_seedance_config(db_config=db_config)
+        if not cfg.enabled:
+            run_async(_update_seedance_prompt(
+                prompt_id,
+                status="failed",
+                message="Seedance 官方 API 直连未启用（开关默认关闭），请先开启",
+                error_message="SEEDANCE_ENABLED=false",
+            ))
+            return {"success": False, "status": "failed", "message": "Seedance 官方 API 直连未启用"}
+
+        missing = cfg.validate()
+        if missing:
+            run_async(_update_seedance_prompt(
+                prompt_id,
+                status="failed",
+                message=missing,
+                error_message=missing,
+            ))
+            return {"success": False, "status": "failed", "message": missing}
+
+        run_async(_update_seedance_prompt(
+            prompt_id,
+            status="running",
+            message="Seedance 直连任务启动，正在创建火山方舟任务…",
+            error_message=None,
+        ))
+
+        async def _progress_cb(msg: str, p: float):
+            self.update_state(state="PROGRESS", meta={"progress": p, "message": msg})
+            await _update_seedance_prompt(
+                prompt_id,
+                status="running",
+                message=msg,
+            )
+
+        # 时长策略：>10s 按 truncate 截断 / block 拒绝
+        want_duration = int(duration or record.duration or 10)
+        actual_duration, tip = run_async(resolve_duration_policy(cfg, want_duration))
+        if actual_duration == 0:
+            run_async(_update_seedance_prompt(
+                prompt_id,
+                status="failed",
+                message=tip,
+                error_message=tip,
+            ))
+            return {"success": False, "status": "failed", "message": tip}
+        if tip:
+            run_async(_update_seedance_prompt(
+                prompt_id,
+                status="running",
+                message=tip,
+            ))
+
+        client = SeedanceClient(cfg)
+        # 创建方舟任务前再确认一次未被取消（缩小竞态窗口，避免已取消任务仍发起方舟调用）
+        if run_async(_check_seedance_cancelled(prompt_id)):
+            run_async(_update_seedance_prompt(
+                prompt_id,
+                status="cancelled",
+                message="任务已取消",
+                error_message="用户取消",
+            ))
+            return {"success": False, "status": "cancelled", "message": "任务已取消"}
+
+        run_async(_update_seedance_prompt(
+            prompt_id,
+            status="running",
+            message=f"正在创建火山方舟任务（{actual_duration}s / {cfg.resolution}）…",
+        ))
+        created = run_async(client.create_task(
+            record.prompt_text,
+            duration=actual_duration,
+            resolution=resolution or cfg.resolution,
+        ))
+        task_id = created["task_id"]
+        run_async(_update_seedance_prompt(
+            prompt_id,
+            status="running",
+            message=f"火山方舟任务已创建（{task_id}），等待生成…",
+            task_id=task_id,
+            resolution=cfg.resolution,
+        ))
+
+        # 轮询任务直到完成 / 失败 / 取消 / 超时
+        outcome = run_async(poll_task(
+            client,
+            task_id,
+            progress_cb=_progress_cb,
+            cancel_check=lambda: _check_seedance_cancelled(prompt_id),
+        ))
+
+        if outcome["status"] == "cancelled":
+            # 尝试取消方舟侧任务
+            run_async(client.cancel_task(task_id))
+            run_async(_update_seedance_prompt(
+                prompt_id,
+                status="cancelled",
+                message="任务已取消",
+                error_message="用户取消",
+            ))
+            return {"success": False, "status": "cancelled", "message": "任务已取消"}
+
+        if outcome["status"] != "completed":
+            run_async(_update_seedance_prompt(
+                prompt_id,
+                status="failed",
+                message=outcome["message"],
+                error_message=outcome["message"],
+            ))
+            return {"success": False, "status": "failed", "message": outcome["message"]}
+
+        # 生成成功：下载成片并上传 MinIO 回填
+        run_async(_update_seedance_prompt(
+            prompt_id,
+            status="running",
+            message="视频生成完成，正在下载并上传成片…",
+        ))
+        download_url = outcome.get("video_url") or ""
+        if not download_url:
+            run_async(_update_seedance_prompt(
+                prompt_id,
+                status="failed",
+                message="Seedance 返回成功但未获取到视频地址",
+                error_message="Seedance 返回成功但未获取到视频地址",
+            ))
+            return {"success": False, "status": "failed", "message": "未获取到视频地址"}
+
+        sync = run_async(_sync_generated_video(
+            prompt_id,
+            download_url=download_url,
+            file_name=f"seedance_{_now_str()}.mp4",
+            channel="seedance_api",
+        ))
+        if not sync.get("ok"):
+            run_async(_update_seedance_prompt(
+                prompt_id,
+                status="failed",
+                message=sync.get("error", "成片同步失败"),
+                error_message=sync.get("error", "成片同步失败"),
+            ))
+            return {"success": False, "status": "failed", "message": sync.get("error", "成片同步失败")}
+
+        run_async(_update_seedance_prompt(
+            prompt_id,
+            status="completed",
+            message="Seedance 成片已生成并保存到历史",
+        ))
+        self.update_state(state="SUCCESS", meta={"progress": 100, "message": "Seedance 成片已生成"})
+        return {
+            "success": True,
+            "status": "completed",
+            "message": "Seedance 成片已生成并保存到历史",
+            "file_name": sync.get("file_name"),
+            "file_size": sync.get("file_size"),
+            "task_id": task_id,
+        }
+
+    except Exception as e:
+        logger.exception("Seedance generate task failed: %s", e)
+        run_async(_update_seedance_prompt(
+            prompt_id,
+            status="failed",
+            message=f"Seedance 直连生成任务异常: {e}",
             error_message=str(e),
         ))
         self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
