@@ -27,6 +27,7 @@ from app.services.minio_service import (
     upload_file_from_path,
 )
 from app.services.upload_service import validate_file_name
+from app.services.redis_stream import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,43 @@ router = APIRouter()
 
 # 允许的去水印引擎
 ALLOWED_ENGINES = ("remove_ai", "seedance", "seedance_wm", "remove_mask")
+
+# 任务名称自增序列的 Redis 键（跨实例全局自增，防并发重复）
+_TASK_SEQ_REDIS_KEY = "watermark:task:seq"
+# 当前日期对应的 Redis 键（日期变更自动从 1 重新计数）
+_TASK_SEQ_DATE_KEY = "watermark:task:seq:date"
+
+
+async def gen_task_name() -> str:
+    """生成任务名称：完整日期（YYYYMMDDHHmmss）+ 4 位自增序列。
+
+    优先使用 Redis 做跨进程全局自增（日期切换自动归 1），
+    Redis 不可用时回退到进程内自增，保证不抛错。
+    """
+    now = datetime.now()
+    date_part = now.strftime("%Y%m%d%H%M%S")
+    try:
+        client = await get_redis()
+        today = now.strftime("%Y%m%d")
+        current_date = await client.get(_TASK_SEQ_DATE_KEY)
+        if current_date is None or current_date.decode() != today:
+            # 新的一天：重置序列
+            await client.set(_TASK_SEQ_DATE_KEY, today)
+            await client.set(_TASK_SEQ_REDIS_KEY, 0)
+        seq = await client.incr(_TASK_SEQ_REDIS_KEY)
+    except Exception:
+        seq = _fallback_seq()
+    return f"{date_part}-{seq % 10000:04d}"
+
+
+_fallback_counter = 0
+
+
+def _fallback_seq() -> int:
+    global _fallback_counter
+    _fallback_counter = (_fallback_counter % 9999) + 1
+    return _fallback_counter
+
 
 ENGINE_DISPLAY = {
     "remove_ai": "Remove AI Watermarks（RAiW）",
@@ -130,6 +168,7 @@ def _serialize_video(video: WatermarkVideo, output_url: Optional[str] = None, so
         "id": str(video.id),
         "file_name": video.file_name,
         "file_size": video.file_size,
+        "source_file_key": video.source_file_key,
         "status": video.status,
         "progress": video.progress or 0.0,
         "error_message": video.error_message,
@@ -310,8 +349,8 @@ async def run_watermark_task(
             source_name = parts[1] if (len(parts) == 2 and len(parts[0]) == 36) else base
             options["source_name"] = source_name
 
-    # 创建任务记录（任务名称：优先使用前端传入的 10 位时间戳，否则取当前时间戳）
-    task_name = data.name or str(int(datetime.utcnow().timestamp()))[:10]
+    # 创建任务记录（任务名称：优先使用前端传入的完整日期+自增序列，否则后端自动生成）
+    task_name = data.name or await gen_task_name()
     task = WatermarkTask(
         engine=engine,
         options=options,
@@ -462,9 +501,10 @@ async def delete_watermark_task(
         await db.flush()
 
     # 删除 MinIO 源/输出文件
+    # 来源提示词任务的源视频归属提示词记录，删除任务时保留（便于再次导入去水印）
     for v in videos:
         try:
-            if v.source_file_key:
+            if v.source_file_key and not v.prompt_record_id:
                 await delete_file(v.source_bucket or settings.MINIO_BUCKET_WATERMARK_RAW, v.source_file_key)
         except Exception as e:
             logger.warning("Delete source %s failed: %s", v.source_file_key, e)
@@ -512,8 +552,9 @@ async def batch_delete_watermark_tasks(
         )
         videos = videos_res.scalars().all()
         for v in videos:
+            # 来源提示词任务的源视频归属提示词记录，批量删除时同样保留
             try:
-                if v.source_file_key:
+                if v.source_file_key and not v.prompt_record_id:
                     await delete_file(v.source_bucket or settings.MINIO_BUCKET_WATERMARK_RAW, v.source_file_key)
             except Exception as e:
                 logger.warning("Delete source %s failed: %s", v.source_file_key, e)
@@ -546,8 +587,9 @@ async def delete_watermark_video(
     if not video:
         raise HTTPException(status_code=404, detail="视频不存在")
 
+    # 来源提示词任务的源视频归属提示词记录，删除任务视频时保留源文件（便于再次导入去水印）
     try:
-        if video.source_file_key:
+        if video.source_file_key and not video.prompt_record_id:
             await delete_file(video.source_bucket or settings.MINIO_BUCKET_WATERMARK_RAW, video.source_file_key)
     except Exception as e:
         logger.warning("Delete source %s failed: %s", video.source_file_key, e)

@@ -510,12 +510,17 @@ async def import_shortdrama_video_to_watermark(
     record = await _get_record_or_404(record_id, db)
     if not record.video_file_key or not record.video_bucket:
         raise HTTPException(status_code=404, detail="该记录尚未上传成片视频，无法导入")
+    # 附带签名播放地址，便于去水印页待处理列表展示缩略图 / 悬停预览
+    preview_url = await get_presigned_url(
+        record.video_bucket, record.video_file_key, expires_seconds=3600
+    )
     return {
         "record_id": record_id,
         "file_name": record.video_file_name,
         "source_file_key": record.video_file_key,
         "bucket": record.video_bucket,
         "file_size": record.video_file_size,
+        "url": preview_url,
         "message": "已导入去水印流程，可直接提交处理",
     }
 

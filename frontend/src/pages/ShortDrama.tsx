@@ -299,7 +299,7 @@ const ShortDrama: React.FC = () => {
     }
   };
 
-  const handleImportToWatermark = async (record: ShortdramaPromptRecord) => {
+  const handleImportToWatermark = async (record: ShortdramaPromptRecord, closeAfter = false) => {
     try {
       const res = await shortdramaApi.importToWatermark(record.id);
       setWatermarkImports([
@@ -307,9 +307,11 @@ const ShortDrama: React.FC = () => {
           sourceFileKey: res.source_file_key,
           fileName: res.file_name,
           fileSize: res.file_size,
+          url: res.url || null,
           promptRecordId: record.id,
         },
       ]);
+      if (closeAfter) setPreviewRecord(null);
       setActiveTab('watermark');
       message.success(res.message || '已导入去水印流程');
     } catch (err: unknown) {
@@ -839,18 +841,6 @@ const ShortDrama: React.FC = () => {
             >
               {previewRecord.video_status && previewRecord.video_file_name ? (
                 <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                  <Dragger
-                    accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
-                    showUploadList={false}
-                    beforeUpload={(file) => {
-                      handleUploadVideo(previewRecord!, file as File);
-                      return false;
-                    }}
-                  >
-                    <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-                    <p className="ant-upload-text">点击或拖拽视频到此处更换</p>
-                    <p className="ant-upload-hint">支持 .mp4 / .avi / .mov / .mkv / .webm，替换当前成片视频</p>
-                  </Dragger>
                   <Space wrap>
                     <Tag color="green" icon={<VideoCameraOutlined />}>{previewRecord.video_file_name}</Tag>
                     {previewRecord.video_file_size ? (
@@ -872,9 +862,16 @@ const ShortDrama: React.FC = () => {
                       type="primary"
                       ghost
                       icon={<ImportOutlined />}
-                      onClick={() => handleImportToWatermark(previewRecord!)}
+                      onClick={() => handleImportToWatermark(previewRecord!, true)}
                     >
                       一键导入去水印
+                    </Button>
+                    <Button
+                      size="small"
+                      icon={<UploadOutlined />}
+                      onClick={() => setPreviewRecord((r) => (r ? { ...r, video_status: 'replace' } : r))}
+                    >
+                      更换视频
                     </Button>
                     <Popconfirm
                       title="删除该成片视频？"
@@ -887,6 +884,20 @@ const ShortDrama: React.FC = () => {
                       <Button size="small" danger icon={<DeleteOutlined />}>删除视频</Button>
                     </Popconfirm>
                   </Space>
+                  {previewRecord.video_status === 'replace' && (
+                    <Dragger
+                      accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
+                      showUploadList={false}
+                      beforeUpload={(file) => {
+                        handleUploadVideo(previewRecord!, file as File);
+                        return false;
+                      }}
+                    >
+                      <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+                      <p className="ant-upload-text">点击或拖拽视频到此处更换</p>
+                      <p className="ant-upload-hint">支持 .mp4 / .avi / .mov / .mkv / .webm，替换当前成片视频</p>
+                    </Dragger>
+                  )}
                 </Space>
               ) : (
                 <Space direction="vertical" size={8} style={{ width: '100%' }}>
