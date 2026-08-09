@@ -104,6 +104,7 @@ export const shortdramaApi = {
       source_file_key: string;
       bucket: string;
       file_size: number | null;
+      url?: string | null;
       message: string;
     }>,
 

@@ -168,6 +168,7 @@ def _serialize_video(video: WatermarkVideo, output_url: Optional[str] = None, so
         "id": str(video.id),
         "file_name": video.file_name,
         "file_size": video.file_size,
+        "source_file_key": video.source_file_key,
         "status": video.status,
         "progress": video.progress or 0.0,
         "error_message": video.error_message,
@@ -500,9 +501,10 @@ async def delete_watermark_task(
         await db.flush()
 
     # 删除 MinIO 源/输出文件
+    # 来源提示词任务的源视频归属提示词记录，删除任务时保留（便于再次导入去水印）
     for v in videos:
         try:
-            if v.source_file_key:
+            if v.source_file_key and not v.prompt_record_id:
                 await delete_file(v.source_bucket or settings.MINIO_BUCKET_WATERMARK_RAW, v.source_file_key)
         except Exception as e:
             logger.warning("Delete source %s failed: %s", v.source_file_key, e)
@@ -550,8 +552,9 @@ async def batch_delete_watermark_tasks(
         )
         videos = videos_res.scalars().all()
         for v in videos:
+            # 来源提示词任务的源视频归属提示词记录，批量删除时同样保留
             try:
-                if v.source_file_key:
+                if v.source_file_key and not v.prompt_record_id:
                     await delete_file(v.source_bucket or settings.MINIO_BUCKET_WATERMARK_RAW, v.source_file_key)
             except Exception as e:
                 logger.warning("Delete source %s failed: %s", v.source_file_key, e)
@@ -584,8 +587,9 @@ async def delete_watermark_video(
     if not video:
         raise HTTPException(status_code=404, detail="视频不存在")
 
+    # 来源提示词任务的源视频归属提示词记录，删除任务视频时保留源文件（便于再次导入去水印）
     try:
-        if video.source_file_key:
+        if video.source_file_key and not video.prompt_record_id:
             await delete_file(video.source_bucket or settings.MINIO_BUCKET_WATERMARK_RAW, video.source_file_key)
     except Exception as e:
         logger.warning("Delete source %s failed: %s", video.source_file_key, e)
