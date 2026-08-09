@@ -11,6 +11,8 @@ from typing import Optional
 from celery import Celery
 from celery.schedules import crontab
 
+from sqlalchemy import select
+
 from app.config import settings
 from app.database import async_session_factory
 from app.models.models import SliceTask
@@ -51,6 +53,7 @@ celery_app.conf.update(
         "app.celery.tasks.task_collect_metrics": {"queue": "metrics"},
         "app.celery.tasks.watermark_task": {"queue": "video_processing"},
         "app.celery.tasks.check_cookie_status": {"queue": "publish"},
+        "app.celery.tasks.doubao_generate_task": {"queue": "publish"},
     },
     beat_schedule={
         "collect-metrics-daily": {
@@ -1655,3 +1658,348 @@ def watermark_task(
         meta={"progress": 100, "message": f"Watermark task {task_id} finished"},
     )
     logger.info("Watermark task %s finished", task_id)
+
+
+# ──────────────────────────────────────────────
+# 短片制作：一键豆包生成任务
+# ──────────────────────────────────────────────
+
+
+async def _load_shortdrama_prompt(prompt_id: str):
+    """读取提示词记录（含豆包任务字段）。"""
+    from app.models.models import ShortdramaPrompt
+
+    async with async_session_factory() as session:
+        try:
+            pid = uuid.UUID(str(prompt_id))
+        except ValueError:
+            return None
+        result = await session.execute(
+            select(ShortdramaPrompt).where(ShortdramaPrompt.id == pid)
+        )
+        return result.scalar_one_or_none()
+
+
+async def _update_doubao_prompt(
+    prompt_id: str,
+    *,
+    status: Optional[str] = None,
+    message: Optional[str] = None,
+    error_message: Optional[str] = None,
+    qrcode: Optional[str] = None,
+    task_id: Optional[str] = None,
+    approved_prompt: Optional[str] = None,
+    rewrite_history: Optional[list] = None,
+    confirm_token: Optional[str] = None,
+) -> bool:
+    """更新提示词记录的豆包任务字段（供 Celery 任务在同步上下文调用）。"""
+    from app.models.models import ShortdramaPrompt
+
+    async with async_session_factory() as session:
+        try:
+            pid = uuid.UUID(str(prompt_id))
+        except ValueError:
+            return False
+        result = await session.execute(
+            select(ShortdramaPrompt).where(ShortdramaPrompt.id == pid)
+        )
+        record = result.scalar_one_or_none()
+        if not record:
+            return False
+        if status is not None:
+            record.doubao_status = status
+        if message is not None:
+            record.doubao_message = message
+        if error_message is not None:
+            record.doubao_error_message = error_message
+        if qrcode is not None:
+            record.doubao_qrcode = qrcode
+        if task_id is not None:
+            record.doubao_task_id = task_id
+        if approved_prompt is not None:
+            record.doubao_approved_prompt = approved_prompt
+        if rewrite_history is not None:
+            record.doubao_rewrite_history = rewrite_history
+        if confirm_token is not None:
+            record.doubao_confirm_token = confirm_token
+        await session.commit()
+        return True
+
+
+async def _sync_doubao_video(
+    prompt_id: str,
+    *,
+    download_url: str,
+    file_name: str,
+) -> dict:
+    """从豆包下载成片视频并上传 MinIO，回填提示词记录（返回 {'ok': bool, 'error': str}）。"""
+    from app.models.models import ShortdramaPrompt
+    from app.services.minio_service import upload_file_from_path
+
+    tmp_path = f"/tmp/doubao_videos/{uuid.uuid4().hex}.mp4"
+    os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+            resp = await client.get(download_url)
+            resp.raise_for_status()
+            with open(tmp_path, "wb") as f:
+                f.write(resp.content)
+
+        if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
+            return {"ok": False, "error": "下载豆包成片失败（空文件）"}
+
+        async with async_session_factory() as session:
+            try:
+                pid = uuid.UUID(str(prompt_id))
+            except ValueError:
+                return {"ok": False, "error": "提示词记录不存在"}
+            result = await session.execute(
+                select(ShortdramaPrompt).where(ShortdramaPrompt.id == pid)
+            )
+            record = result.scalar_one_or_none()
+            if not record:
+                return {"ok": False, "error": "提示词记录不存在"}
+
+            safe_name = file_name or f"doubao_{_now_str()}.mp4"
+            file_key = f"shortdrama/{str(record.id)}/doubao_{_now_str()}_{safe_name}"
+            uploaded = await upload_file_from_path(
+                settings.MINIO_BUCKET_WATERMARK_RAW,
+                file_key,
+                tmp_path,
+                content_type="video/mp4",
+            )
+            if not uploaded:
+                return {"ok": False, "error": "上传豆包成片到 MinIO 失败"}
+
+            # 清理旧成片
+            if record.video_file_key and record.video_bucket:
+                try:
+                    from app.services.minio_service import delete_file
+                    await delete_file(record.video_bucket, record.video_file_key)
+                except Exception:
+                    pass
+
+            record.video_file_name = safe_name
+            record.video_file_key = file_key
+            record.video_bucket = settings.MINIO_BUCKET_WATERMARK_RAW
+            record.video_file_size = os.path.getsize(tmp_path)
+            record.video_status = "completed"
+            record.video_error_message = None
+            record.video_uploaded_at = datetime.utcnow()
+            await session.commit()
+            return {"ok": True, "file_name": safe_name, "file_size": os.path.getsize(tmp_path)}
+    except Exception as e:
+        logger.error("sync doubao video failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    finally:
+        try:
+            if os.path.isfile(tmp_path):
+                os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def _now_str() -> str:
+    return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+
+async def _load_doubao_config() -> dict:
+    """读取豆包配置（system_config.shortdrama_doubao_config），无则返回空。"""
+    from app.models.models import SystemConfig
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(SystemConfig).where(SystemConfig.key == "shortdrama_doubao_config")
+        )
+        cfg = result.scalar_one_or_none()
+        return (cfg.value or {}) if cfg and isinstance(cfg.value, dict) else {}
+
+
+async def _check_doubao_cancelled(prompt_id: str) -> bool:
+    """检查豆包任务是否已取消（用户取消时置 doubao_status=cancelled）。"""
+    record = await _load_shortdrama_prompt(prompt_id)
+    if record is None:
+        return True
+    return record.doubao_status == "cancelled"
+
+
+@celery_app.task(bind=True, max_retries=0)
+def doubao_generate_task(
+    self,
+    prompt_id: str,
+    *,
+    account_type: str = "free",
+    duration: Optional[int] = None,
+):
+    """一键豆包生成：RPA 自动打开豆包 → 检测登录（弹二维码）→ 设置参数 →
+    贴提示词发送 → 等待生成 → 被拒改写确认 → 下载成片上传 MinIO 回填记录。
+
+    状态机（shortdrama_prompts.doubao_status）：
+      pending → running → need_login(可选) → awaiting_rewrite(可选)
+              → completed / failed / cancelled
+    """
+    self.update_state(state="STARTED", meta={"progress": 5, "message": "豆包生成任务启动…"})
+
+    try:
+        record = run_async(_load_shortdrama_prompt(prompt_id))
+        if not record:
+            logger.error("Doubao prompt record %s not found", prompt_id)
+            return {"success": False, "status": "failed", "message": "提示词记录不存在"}
+
+        # 任务已取消则不执行
+        if record.doubao_status == "cancelled":
+            logger.info("Doubao task %s already cancelled, skip", prompt_id)
+            return {"success": False, "status": "cancelled", "message": "任务已取消"}
+
+        # 读取豆包配置（账户时长上限等）
+        config = run_async(_load_doubao_config())
+        from app.services.doubao_service import get_account_limits
+
+        limits = get_account_limits(config)
+
+        run_async(_update_doubao_prompt(
+            prompt_id,
+            status="running",
+            message="豆包生成任务启动，正在连接浏览器…",
+            error_message=None,
+        ))
+
+        async def _progress_cb(msg: str, p: float):
+            self.update_state(state="PROGRESS", meta={"progress": p, "message": msg})
+
+        # 二维码回调：写入数据库供前端轮询展示
+        async def _qrcode_cb(qr_data_url: str):
+            await _update_doubao_prompt(
+                prompt_id,
+                status="need_login",
+                message="请使用豆包 App 扫码登录",
+                qrcode=qr_data_url,
+            )
+
+        # 改写确认回调：写入 awaiting_rewrite 状态并挂起等待用户确认
+        async def _rewrite_cb(payload: dict) -> str:
+            import secrets
+
+            token = secrets.token_hex(16)
+            # 重新加载最新改写历史（多次改写时每次都要基于最新值追加）
+            latest = await _load_shortdrama_prompt(prompt_id)
+            history = (latest.doubao_rewrite_history or []) if latest else []
+            history = history + [{
+                "round": payload.get("round"),
+                "attempt": payload.get("attempt"),
+                "original": payload.get("original"),
+                "rewritten": payload.get("rewritten"),
+                "reason": payload.get("reason"),
+                "created_at": datetime.utcnow().isoformat(),
+            }]
+            await _update_doubao_prompt(
+                prompt_id,
+                status="awaiting_rewrite",
+                message="豆包已返回改写稿，等待用户确认",
+                rewrite_history=history,
+                confirm_token=token,
+            )
+            # 挂起等待用户在前端确认（轮询数据库状态），最长等待 10 分钟
+            deadline = time.time() + 600
+            while time.time() < deadline:
+                await asyncio.sleep(3)
+                cur = await _load_shortdrama_prompt(prompt_id)
+                if cur is None:
+                    return "cancelled"
+                if cur.doubao_confirm_token != token:
+                    # token 被使用（用户已确认）→ 判断决策结果
+                    if cur.doubao_status == "running":
+                        return "approved"
+                    if cur.doubao_status == "cancelled":
+                        return "cancelled"
+                    # 用户点了「再让豆包改写」：状态保持 awaiting_rewrite，返回 rejected
+                    return "rejected"
+            return "rejected"
+
+        from app.services.doubao_service import DoubaoGenerator
+
+        gen = DoubaoGenerator(
+            chrome_port=settings.CHROME_DEBUG_PORT,
+            chrome_host=settings.CHROME_DEBUG_HOST,
+        )
+        result = run_async(gen.generate(
+            prompt=record.prompt_text,
+            account_type=account_type,
+            duration=duration or record.duration,
+            limits=limits,
+            progress_cb=_progress_cb,
+            qrcode_cb=_qrcode_cb,
+            on_rewrite_available=_rewrite_cb,
+            cancel_check=lambda: _check_doubao_cancelled(prompt_id),
+        ))
+
+        if not result.get("success"):
+            status = result.get("status", "failed")
+            run_async(_update_doubao_prompt(
+                prompt_id,
+                status=status,
+                message=result.get("message", "豆包生成失败"),
+                error_message=result.get("message", "豆包生成失败"),
+            ))
+            self.update_state(state="FAILURE", meta={"progress": 0, "message": result.get("message", "失败")})
+            return result
+
+        # 生成成功：下载成片并上传 MinIO
+        run_async(_update_doubao_prompt(
+            prompt_id,
+            status="running",
+            message="视频生成完成，正在下载并上传成片…",
+        ))
+        download_url = result.get("download_url") or ""
+        if not download_url:
+            run_async(_update_doubao_prompt(
+                prompt_id,
+                status="failed",
+                message="豆包返回成功但未获取到下载地址",
+                error_message="豆包返回成功但未获取到下载地址",
+            ))
+            return {"success": False, "status": "failed", "message": "未获取到下载地址"}
+
+        sync = run_async(_sync_doubao_video(
+            prompt_id,
+            download_url=download_url,
+            file_name=f"doubao_{_now_str()}.mp4",
+        ))
+        if not sync.get("ok"):
+            run_async(_update_doubao_prompt(
+                prompt_id,
+                status="failed",
+                message=sync.get("error", "成片同步失败"),
+                error_message=sync.get("error", "成片同步失败"),
+            ))
+            return {"success": False, "status": "failed", "message": sync.get("error", "成片同步失败")}
+
+        # 回填最终通过豆包审核的提示词
+        run_async(_update_doubao_prompt(
+            prompt_id,
+            status="completed",
+            message="豆包成片已生成并保存到历史",
+            approved_prompt=result.get("approved_prompt"),
+            confirm_token=None,
+        ))
+        self.update_state(state="SUCCESS", meta={"progress": 100, "message": "豆包成片已生成"})
+        return {
+            "success": True,
+            "status": "completed",
+            "message": "豆包成片已生成并保存到历史",
+            "file_name": sync.get("file_name"),
+            "file_size": sync.get("file_size"),
+        }
+
+    except Exception as e:
+        logger.exception("Doubao generate task failed: %s", e)
+        run_async(_update_doubao_prompt(
+            prompt_id,
+            status="failed",
+            message=f"豆包生成任务异常: {e}",
+            error_message=str(e),
+        ))
+        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+        return {"success": False, "status": "failed", "message": str(e)}

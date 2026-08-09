@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Card, Typography, Space, Button, Select, Table, Progress, Tag, Modal,
-  Popconfirm, Checkbox, Tooltip, message, Input, Alert, Radio, Spin, Empty,
+  Popconfirm, Checkbox, Tooltip, message, Input, Radio, Spin, Empty,
 } from 'antd';
 import {
   UploadOutlined, PlayCircleOutlined, DownloadOutlined, DeleteOutlined,
   PlusOutlined, ReloadOutlined, VideoCameraOutlined, ClearOutlined,
-  InboxOutlined, SendOutlined,
+  InboxOutlined, SendOutlined, ExclamationCircleOutlined,
 } from '@ant-design/icons';
 import { watermarkApi, type WatermarkTaskDetail, type WatermarkTaskItem } from '../api/watermark';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
@@ -41,6 +41,8 @@ interface PendingFile {
   uploadPercent: number;
   // 来源提示词记录 id（提示词 → 去水印 → 发布 任务关联）
   promptRecordId?: string | null;
+  // 签名播放地址（本地上传时为预览直链，导入时为后端返回的 presigned URL）
+  url?: string | null;
 }
 
 // 从「短片制作」生成历史一键导入的成片视频
@@ -50,6 +52,8 @@ export interface ImportedVideo {
   fileSize: number | null;
   // 来源提示词记录 id（提示词 → 去水印 → 发布 任务关联）
   promptRecordId?: string | null;
+  // 签名播放地址（用于待处理列表缩略图 / 悬停预览）
+  url?: string | null;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -60,7 +64,37 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: '已取消',
 };
 
-const genTaskName = () => String(Math.floor(Date.now() / 1000));
+// 任务名称：完整日期（YYYYMMDDHHmmss）+ 4 位自增序列
+// 序列按天自增（跨页面刷新通过 localStorage 续接，避免同秒重复），后端无 name 时用 Redis 兜底生成
+const pad4 = (n: number) => String(n).padStart(4, '0');
+const SEQ_STORAGE_KEY = 'watermark_task_seq';
+const dateStamp = () => {
+  const d = new Date();
+  const p = (v: number) => String(v).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+};
+const genTaskName = () => {
+  const d = new Date();
+  const p = (v: number) => String(v).padStart(2, '0');
+  const day = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+  let seq = 0;
+  try {
+    const saved = localStorage.getItem(SEQ_STORAGE_KEY);
+    if (saved) {
+      const [s, savedDay] = saved.split('|');
+      if (savedDay === day) seq = parseInt(s, 10) || 0;
+    }
+  } catch {
+    /* 忽略 localStorage 异常 */
+  }
+  seq = (seq % 9999) + 1;
+  try {
+    localStorage.setItem(SEQ_STORAGE_KEY, `${seq}|${day}`);
+  } catch {
+    /* 忽略 localStorage 异常 */
+  }
+  return `${dateStamp()}-${pad4(seq)}`;
+};
 
 const Watermark: React.FC<{
   imports?: ImportedVideo[];
@@ -118,6 +152,7 @@ const Watermark: React.FC<{
             sourceFileKey: imp.sourceFileKey,
             uploadPercent: 100,
             promptRecordId: imp.promptRecordId || null,
+            url: imp.url || null,
           });
         }
       });
@@ -169,6 +204,13 @@ const Watermark: React.FC<{
     setUploading(true);
     let completed = 0;
     arr.forEach((file) => {
+      // 生成本地预览地址（缩略图 / 悬停预览），上传失败时回收
+      let objectUrl: string | null = null;
+      try {
+        objectUrl = URL.createObjectURL(file);
+      } catch {
+        objectUrl = null;
+      }
       watermarkApi
         .upload(file, (pct) => {
           // 上传进度：用临时占位更新（简化处理，批量上传时按整体提示）
@@ -182,10 +224,12 @@ const Watermark: React.FC<{
               fileSize: res.file_size,
               sourceFileKey: res.source_file_key,
               uploadPercent: 100,
+              url: objectUrl,
             },
           ]);
         })
         .catch((err: unknown) => {
+          if (objectUrl) URL.revokeObjectURL(objectUrl);
           message.error(`上传 ${file.name} 失败：${err instanceof Error ? err.message : '未知错误'}`);
         })
         .finally(() => {
@@ -198,10 +242,21 @@ const Watermark: React.FC<{
   };
 
   const removePendingFile = (uploadId: string) => {
-    setPendingFiles((prev) => prev.filter((f) => f.uploadId !== uploadId));
+    setPendingFiles((prev) => {
+      const target = prev.find((f) => f.uploadId === uploadId);
+      if (target?.url && target.url.startsWith('blob:')) URL.revokeObjectURL(target.url);
+      return prev.filter((f) => f.uploadId !== uploadId);
+    });
   };
 
-  const clearPending = () => setPendingFiles([]);
+  const clearPending = () => {
+    setPendingFiles((prev) => {
+      prev.forEach((f) => {
+        if (f.url && f.url.startsWith('blob:')) URL.revokeObjectURL(f.url);
+      });
+      return [];
+    });
+  };
 
   // ─── 提交任务 ───
   const submitTask = async () => {
@@ -262,7 +317,13 @@ const Watermark: React.FC<{
       }
       const res = await watermarkApi.run(params);
       message.success(res.message);
-      setPendingFiles([]);
+      // 提交后回收本地 blob 预览地址
+      setPendingFiles((prev) => {
+        prev.forEach((f) => {
+          if (f.url && f.url.startsWith('blob:')) URL.revokeObjectURL(f.url);
+        });
+        return [];
+      });
       setTaskName(genTaskName());
       fetchTasks();
     } catch (err: unknown) {
@@ -287,6 +348,59 @@ const Watermark: React.FC<{
       message.error(err instanceof Error ? err.message : '加载任务详情失败');
     } finally {
       setLoadingDetail(null);
+    }
+  };
+
+  // ─── 去水印完成 → 发布：定位关联的提示词记录 id ───
+  // 优先使用任务级 prompt_record_id；缺失时（历史任务/缓存数据）
+  // 回退读取任务详情里子视频的来源提示词记录，保证链路一致
+  const handleGoToPublish = async (task: WatermarkTaskItem) => {
+    if (!onGoToPublish) return;
+    let promptRecordId = task.prompt_record_id || null;
+    if (!promptRecordId) {
+      try {
+        const detail = await watermarkApi.getTask(task.id);
+        const fromVideo =
+          (detail.videos || []).find((v) => v.prompt_record_id)?.prompt_record_id || null;
+        promptRecordId = fromVideo;
+      } catch {
+        /* 详情读取失败时保持 null，发布页不会代入文案 */
+      }
+    }
+    onGoToPublish(promptRecordId);
+  };
+
+  // ─── 重试：把失败/取消任务的源视频重新导入待处理列表 ───
+  const retryTask = async (task: WatermarkTaskItem) => {
+    try {
+      const detail = await watermarkApi.getTask(task.id);
+      const videos = detail.videos || [];
+      const retriable = videos.filter((v) => v.status === 'failed' || v.status === 'cancelled');
+      if (retriable.length === 0) {
+        message.warning('该任务没有可重试的失败/取消视频');
+        return;
+      }
+      setPendingFiles((prev) => {
+        const existing = new Set(prev.map((f) => f.sourceFileKey));
+        const next = [...prev];
+        retriable.forEach((v) => {
+          if (v.source_file_key && !existing.has(v.source_file_key)) {
+            next.push({
+              uploadId: `retry-${Date.now()}-${next.length}-${Math.random().toString(36).slice(2, 8)}`,
+              fileName: v.file_name,
+              fileSize: v.file_size ?? 0,
+              sourceFileKey: v.source_file_key,
+              uploadPercent: 100,
+              promptRecordId: v.prompt_record_id || task.prompt_record_id || null,
+              url: v.source_url || null,
+            });
+          }
+        });
+        return next;
+      });
+      message.success(`已将 ${retriable.length} 条源视频重新导入待处理列表，可直接提交去水印`);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '重试失败，无法读取任务源视频');
     }
   };
 
@@ -447,10 +561,17 @@ const Watermark: React.FC<{
               type="primary"
               ghost
               icon={<SendOutlined />}
-              onClick={() => onGoToPublish!(t.prompt_record_id)}
+              onClick={() => handleGoToPublish(t)}
             >
               发布
             </Button>
+          )}
+          {(t.failed_count > 0 || t.status === 'failed' || t.status === 'cancelled') && (
+            <Tooltip title="把该任务的失败/取消源视频重新导入待处理列表，可调整参数后再次提交">
+              <Button size="small" icon={<ReloadOutlined />} onClick={() => retryTask(t)}>
+                重试
+              </Button>
+            </Tooltip>
           )}
           <Button size="small" onClick={() => toggleExpand(t.id)}>
             {expandedTaskId === t.id ? '收起' : '展开'}
@@ -640,20 +761,22 @@ const Watermark: React.FC<{
               optionType="button"
               buttonStyle="solid"
               options={[
-                { value: 'remove_mask', label: ENGINE_HELP.remove_mask.label },
-                { value: 'seedance_wm', label: ENGINE_HELP.seedance_wm.label },
-                { value: 'remove_ai', label: ENGINE_HELP.remove_ai.label },
-                { value: 'seedance', label: ENGINE_HELP.seedance.label },
-              ]}
+                { value: 'remove_mask', label: ENGINE_HELP.remove_mask.label, desc: ENGINE_HELP.remove_mask.desc },
+                { value: 'seedance_wm', label: ENGINE_HELP.seedance_wm.label, desc: ENGINE_HELP.seedance_wm.desc },
+                { value: 'remove_ai', label: ENGINE_HELP.remove_ai.label, desc: ENGINE_HELP.remove_ai.desc },
+                { value: 'seedance', label: ENGINE_HELP.seedance.label, desc: ENGINE_HELP.seedance.desc },
+              ].map((o) => ({
+                value: o.value,
+                label: (
+                  <Space size={4}>
+                    {o.label}
+                    <Tooltip title={o.desc}>
+                      <ExclamationCircleOutlined style={{ color: '#faad14', cursor: 'help' }} />
+                    </Tooltip>
+                  </Space>
+                ),
+              }))}
             />
-            <div style={{ marginTop: 8 }}>
-              <Alert
-                type="info"
-                showIcon
-                message={ENGINE_HELP[engine]?.desc}
-                style={{ maxWidth: 900 }}
-              />
-            </div>
           </div>
 
           {/* 引擎参数 */}
@@ -856,144 +979,183 @@ const Watermark: React.FC<{
             </Space>
           )}
 
-          {/* 任务名称：默认取当前 10 位时间戳，可修改 */}
+          {/* 任务名称：默认取完整日期 + 4 位自增序列，可修改 */}
           <Space>
             <Text>任务名称：</Text>
             <Input
-              placeholder="默认取当前 10 位时间戳，可修改"
+              placeholder="默认取完整日期 + 4 位自增序列，可修改"
               value={taskName}
               onChange={(e) => setTaskName(e.target.value)}
               style={{ width: 260 }}
             />
           </Space>
 
-          {/* 文件上传：可拖放式 */}
-          <div>
-            <div
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = 'copy';
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                  handleSelectFiles(e.dataTransfer.files);
-                }
-              }}
-              style={{
-                border: '1.5px dashed #d9d9d9',
-                borderRadius: 8,
-                padding: '28px 16px',
-                textAlign: 'center',
-                cursor: 'pointer',
-                background: '#fafafa',
-                transition: 'border-color 0.2s, background 0.2s',
-              }}
-              onClick={() => fileInputRef.current?.click()}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLDivElement).style.borderColor = '#1677ff';
-                (e.currentTarget as HTMLDivElement).style.background = '#e6f4ff';
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLDivElement).style.borderColor = '#d9d9d9';
-                (e.currentTarget as HTMLDivElement).style.background = '#fafafa';
-              }}
-            >
-              <p style={{ fontSize: 40, margin: 0 }}>
-                <InboxOutlined style={{ color: '#1677ff' }} />
-              </p>
-              <p style={{ margin: '4px 0', color: 'rgba(0,0,0,0.88)' }}>
-                点击或拖放视频文件到此处上传
-              </p>
-              <p style={{ margin: 0, color: 'rgba(0,0,0,0.45)', fontSize: 12 }}>
-                支持多选 / 批量拖放，格式 mp4 / avi / mov / mkv / webm
-              </p>
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                if (e.target.files) handleSelectFiles(e.target.files);
-                e.target.value = '';
-              }}
-            />
-            <Space wrap style={{ marginTop: 12 }}>
-              <Button
-                icon={<UploadOutlined />}
-                loading={uploading}
+          {/* 文件上传：左侧缩小拖放控件 + 右侧待处理视频缩略图（悬停预览） */}
+          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            {/* 左侧：缩小版拖放控件 */}
+            <div style={{ width: 240, flexShrink: 0 }}>
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'copy';
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    handleSelectFiles(e.dataTransfer.files);
+                  }
+                }}
+                style={{
+                  border: '1.5px dashed #d9d9d9',
+                  borderRadius: 8,
+                  padding: '18px 12px',
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  background: '#fafafa',
+                  transition: 'border-color 0.2s, background 0.2s',
+                }}
                 onClick={() => fileInputRef.current?.click()}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.borderColor = '#1677ff';
+                  (e.currentTarget as HTMLDivElement).style.background = '#e6f4ff';
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.borderColor = '#d9d9d9';
+                  (e.currentTarget as HTMLDivElement).style.background = '#fafafa';
+                }}
               >
-                选择视频（可多选，批量上传）
-              </Button>
-              {pendingFiles.length > 0 && (
-                <>
-                  <Button icon={<ClearOutlined />} onClick={clearPending}>
-                    清空待处理 ({pendingFiles.length})
+                <p style={{ fontSize: 26, margin: 0 }}>
+                  <InboxOutlined style={{ color: '#1677ff' }} />
+                </p>
+                <p style={{ margin: '4px 0', color: 'rgba(0,0,0,0.88)', fontSize: 13 }}>
+                  拖放 / 点击上传视频
+                </p>
+                <p style={{ margin: 0, color: 'rgba(0,0,0,0.45)', fontSize: 12 }}>
+                  mp4 / avi / mov / mkv / webm
+                </p>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  if (e.target.files) handleSelectFiles(e.target.files);
+                  e.target.value = '';
+                }}
+              />
+              <Space wrap style={{ marginTop: 10 }}>
+                <Button
+                  size="small"
+                  icon={<UploadOutlined />}
+                  loading={uploading}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  选择视频
+                </Button>
+                {pendingFiles.length > 0 && (
+                  <Button size="small" icon={<ClearOutlined />} onClick={clearPending}>
+                    清空 ({pendingFiles.length})
                   </Button>
+                )}
+              </Space>
+            </div>
+
+            {/* 右侧：待处理视频缩略图列表（鼠标移上去可预览） */}
+            <div style={{ flex: 1, minWidth: 320 }}>
+              <Space style={{ marginBottom: 8, width: '100%', justifyContent: 'space-between' }} wrap>
+                <Text strong style={{ fontSize: 13 }}>
+                  待处理视频（{pendingFiles.length}）
+                  <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>鼠标移到缩略图上可播放预览</Text>
+                </Text>
+                {pendingFiles.length > 0 && (
                   <Button
                     type="primary"
+                    size="small"
                     icon={<PlusOutlined />}
                     loading={running}
                     onClick={submitTask}
                   >
                     提交去水印任务
                   </Button>
-                </>
+                )}
+              </Space>
+              {pendingFiles.length === 0 ? (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description="暂无待处理视频，从左侧上传或从「提示词生成」历史导入"
+                  style={{ margin: '8px 0' }}
+                />
+              ) : (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                  {pendingFiles.map((f) => (
+                    <div
+                      key={f.uploadId}
+                      style={{
+                        width: 168,
+                        border: '1px solid #f0f0f0',
+                        borderRadius: 8,
+                        overflow: 'hidden',
+                        background: '#fff',
+                        position: 'relative',
+                      }}
+                    >
+                      <div
+                        style={{
+                          height: 96,
+                          background: '#000',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          overflow: 'hidden',
+                        }}
+                        onMouseEnter={(e) => {
+                          const v = (e.currentTarget as HTMLDivElement).querySelector('video');
+                          if (v) {
+                            v.muted = true;
+                            v.play().catch(() => {});
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          const v = (e.currentTarget as HTMLDivElement).querySelector('video');
+                          if (v) v.pause();
+                        }}
+                      >
+                        {f.url ? (
+                          <video
+                            src={f.url}
+                            preload="metadata"
+                            muted
+                            playsInline
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          />
+                        ) : (
+                          <VideoCameraOutlined style={{ color: '#fff', fontSize: 30 }} />
+                        )}
+                      </div>
+                      <div style={{ padding: '6px 8px' }}>
+                        <Tooltip title={f.fileName}>
+                          <Text style={{ fontSize: 12, display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {f.fileName}
+                          </Text>
+                        </Tooltip>
+                        <Space style={{ width: '100%', marginTop: 4, justifyContent: 'space-between' }}>
+                          <Text type="secondary" style={{ fontSize: 12 }}>{formatFileSize(f.fileSize)}</Text>
+                          <Button
+                            size="small"
+                            type="text"
+                            danger
+                            icon={<DeleteOutlined />}
+                            onClick={() => removePendingFile(f.uploadId)}
+                          />
+                        </Space>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
-            </Space>
-
-            {pendingFiles.length > 0 && (
-              <Table
-                size="small"
-                rowKey="uploadId"
-                style={{ marginTop: 12 }}
-                pagination={false}
-                dataSource={pendingFiles}
-                scroll={{ x: 520 }}
-                columns={[
-                  {
-                    title: '文件名',
-                    dataIndex: 'fileName',
-                    key: 'fileName',
-                    render: (n: string) => <Text style={{ fontSize: 13 }}>{n}</Text>,
-                  },
-                  {
-                    title: '大小',
-                    dataIndex: 'fileSize',
-                    key: 'fileSize',
-                    width: 120,
-                    render: (s: number) => formatFileSize(s),
-                  },
-                  {
-                    title: '上传状态',
-                    dataIndex: 'uploadPercent',
-                    key: 'uploadPercent',
-                    width: 160,
-                    render: (p: number) => (
-                      <Tag color={p >= 100 ? 'green' : 'processing'}>
-                        {p >= 100 ? '已上传' : '上传中'}
-                      </Tag>
-                    ),
-                  },
-                  {
-                    title: '操作',
-                    key: 'action',
-                    width: 80,
-                    render: (_: unknown, f: PendingFile) => (
-                      <Button
-                        size="small"
-                        danger
-                        icon={<DeleteOutlined />}
-                        onClick={() => removePendingFile(f.uploadId)}
-                      />
-                    ),
-                  },
-                ]}
-              />
-            )}
+            </div>
           </div>
         </Space>
       </Card>

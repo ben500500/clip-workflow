@@ -4,6 +4,7 @@ export interface WatermarkVideoItem {
   id: string;
   file_name: string;
   file_size: number | null;
+  source_file_key?: string | null;
   status: string;
   progress: number;
   error_message: string | null;
