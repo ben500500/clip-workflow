@@ -231,6 +231,11 @@ cv2.INPAINT_TELEA 快速行进法从 ROI 边界向内插值填充。按视频文
 ROI 表（覆盖 Seedance 左上 + 右下角规律），参数保真（保留原始分辨率/帧率，
 音频流复制零损耗）。
 
+**两种去水印模式（`--mode` 切换，同步 remove-mask 上游更新）**:
+- `inpaint`（默认）：ROI + 插值修复，保留原始构图，水印区域被插值填充
+- `crop`：裁切去水印，裁掉包含水印的上下水平带，剩余画面等比放大回原分辨率、
+  左右居中裁回原宽。画面无修复痕迹，但构图有裁剪/放大（适合画面上下无重要内容）
+
 **用法**:
 
 ```bash
@@ -243,9 +248,10 @@ python engines/remove_mask_remover.py <input.mp4> -o <output.mp4> [options]
 |------|------|------|--------|
 | `-o, --output` | string | 输出视频路径 | `<input>_clean.mp4` |
 | `-r, --region` | string | 手动水印区域 `x,y,w,h`（覆盖文件名匹配） | 按文件名匹配 |
-| `--radius` | int | 修补半径（1~20） | 3 |
-| `--iterations` | int | 修补迭代次数（1~5） | 1 |
+| `--radius` | int | 修补半径（1~20，仅 inpaint 模式） | 3 |
+| `--iterations` | int | 修补迭代次数（1~5，仅 inpaint 模式） | 1 |
 | `--scope` | string | 水印 ROI 范围：`small`=收紧贴合水印文字（默认，遮盖面积小）；`large`=整角大框（覆盖更彻底） | `small` |
+| `--mode` | string | 去水印模式：`inpaint`=插值修复保留原构图（默认）；`crop`=裁切去水印（等比缩放切掉水印） | `inpaint` |
 | `--source-name` | string | 原始文件名（用于匹配内置 ROI 表） | 输入文件 basename |
 
 **内置 ROI 表**: `648BC321` / `C0CC0472` / `0270150E` / `3906E761`（基于全视频

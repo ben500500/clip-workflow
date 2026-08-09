@@ -65,6 +65,7 @@ class WatermarkRunRequest(BaseModel):
     radius: Optional[int] = 3           # 修补半径（ROI + TELEA）
     iterations: Optional[int] = 1       # 修补迭代次数
     scope: Optional[str] = "small"      # remove_mask 水印 ROI 范围：small/large
+    mode: Optional[str] = "inpaint"     # remove_mask 去水印模式：inpaint（插值修复）/crop（裁切）
     name: Optional[str] = None
     # 待处理视频的 source_file_key 列表（由 /watermark/upload 返回）
     files: List[str] = []
@@ -300,6 +301,7 @@ async def run_watermark_task(
             "radius": int(data.radius or 3),
             "iterations": int(data.iterations or 1),
             "scope": data.scope if data.scope in ("small", "large") else "small",
+            "mode": data.mode if data.mode in ("inpaint", "crop") else "inpaint",
         }
         # 原始文件名用于匹配内置 ROI 表（如 648BC321），由 celery 任务层传入
         if data.files:

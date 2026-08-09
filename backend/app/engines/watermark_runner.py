@@ -276,8 +276,9 @@ async def run_remove_mask(
     - source_name: 原始文件名（用于匹配内置 ROI 表，如 648BC321）
     - region: "x,y,w,h"（手动指定水印区域，覆盖文件名匹配）
     - scope: "small"|"large"（水印 ROI 范围，默认 small：收紧贴合水印文字；large：整角大框）
-    - radius: 修补半径（默认 3）
-    - iterations: 修补迭代次数（默认 1）
+    - mode: "inpaint"|"crop"（去水印模式，默认 inpaint：ROI+插值修复；crop：裁切去水印）
+    - radius: 修补半径（默认 3，仅 inpaint 模式）
+    - iterations: 修补迭代次数（默认 1，仅 inpaint 模式）
     """
     options = options or {}
     script = _script_path(settings.WATERMARK_REMOVE_MASK_SCRIPT)
@@ -292,6 +293,10 @@ async def run_remove_mask(
     if scope not in ("small", "large"):
         scope = "small"
     cmd.extend(["--scope", scope])
+    mode = options.get("mode") or "inpaint"
+    if mode not in ("inpaint", "crop"):
+        mode = "inpaint"
+    cmd.extend(["--mode", mode])
     if options.get("radius"):
         try:
             radius = max(1, min(int(options["radius"]), 20))

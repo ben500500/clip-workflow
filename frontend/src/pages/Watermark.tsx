@@ -29,7 +29,7 @@ const ENGINE_HELP: Record<string, { label: string; desc: string }> = {
   },
   remove_mask: {
     label: 'Remove Mask（ROI 经验库）',
-    desc: '集成自 ben500500/remove-mask 仓库的「ROI + cv2.inpaint(TELEA)」方案：直接把整个水印 ROI 矩形当掩码，快速行进法插值填充。按视频文件名匹配内置 ROI（覆盖 Seedance 左上+右下角规律），参数保真、速度最快。',
+    desc: '集成自 ben500500/remove-mask 仓库的「ROI + cv2.inpaint(TELEA)」方案：直接把整个水印 ROI 矩形当掩码，快速行进法插值填充。按视频文件名匹配内置 ROI（覆盖 Seedance 左上+右下角规律），参数保真、速度最快。支持 inpaint（插值修复）/ crop（裁切去水印）两种模式。',
   },
 };
 
@@ -84,6 +84,7 @@ const Watermark: React.FC<{
   const [maskRadius, setMaskRadius] = useState(3);
   const [maskIterations, setMaskIterations] = useState(1);
   const [maskScope, setMaskScope] = useState<'small' | 'large'>('small');
+  const [maskMode, setMaskMode] = useState<'inpaint' | 'crop'>('inpaint');
 
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -227,6 +228,7 @@ const Watermark: React.FC<{
         iterations?: number;
         prompt_record_id?: string | null;
         scope?: 'small' | 'large';
+        mode?: 'inpaint' | 'crop';
       } = {
         engine,
         files: pendingFiles.map((f) => f.sourceFileKey),
@@ -249,6 +251,7 @@ const Watermark: React.FC<{
         params.radius = maskRadius;
         params.iterations = maskIterations;
         params.scope = maskScope;
+        params.mode = maskMode;
       } else {
         params.region = region.trim() || undefined;
         params.backend = seedanceBackend;
@@ -800,8 +803,18 @@ const Watermark: React.FC<{
                   { value: 'large', label: '大范围（整角大框，覆盖更彻底）' },
                 ]}
               />
+              <Text>去水印模式：</Text>
+              <Select
+                value={maskMode}
+                onChange={setMaskMode}
+                style={{ width: 240 }}
+                options={[
+                  { value: 'inpaint', label: '插值修复（默认，保留原构图）' },
+                  { value: 'crop', label: '裁切去水印（等比缩放切掉水印）' },
+                ]}
+              />
               <Text type="secondary" style={{ fontSize: 12 }}>
-                （内置 ROI 覆盖 648BC321 / C0CC0472 / 0270150E / 3906E761；其他文件回退左上+右下通用 ROI；ROI 范围默认 small：收紧贴合水印文字、减少对画面的干预，若水印残留可切 large 整角覆盖）
+                （内置 ROI 覆盖 648BC321 / C0CC0472 / 0270150E / 3906E761；其他文件回退左上+右下通用 ROI；ROI 范围默认 small：收紧贴合水印文字、减少对画面的干预，若水印残留可切 large 整角覆盖。裁切模式：裁掉上下水印带后等比放大回原分辨率，无修复痕迹但构图有裁剪/放大）
               </Text>
             </Space>
           ) : (
