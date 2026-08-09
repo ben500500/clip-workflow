@@ -10,9 +10,10 @@
 
 import logging
 import os
+import secrets
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -20,9 +21,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models.models import ShortdramaPrompt, SystemConfig
+from app.models.models import ShortdramaPrompt, SystemConfig, User
 from app.services.minio_service import (
     get_presigned_url,
     delete_file,
@@ -163,6 +165,15 @@ class PromptRecordItem(BaseModel):
     video_error_message: Optional[str] = None
     video_url: Optional[str] = None
     video_uploaded_at: Optional[str] = None
+    # 一键豆包生成任务状态
+    doubao_status: Optional[str] = None
+    doubao_account_type: Optional[str] = None
+    doubao_qrcode: Optional[str] = None
+    doubao_message: Optional[str] = None
+    doubao_error_message: Optional[str] = None
+    doubao_approved_prompt: Optional[str] = None
+    doubao_rewrite_history: Optional[list] = None
+    doubao_rewrite_count: Optional[int] = None
 
 
 # ──────────────────────────────────────────────
@@ -192,6 +203,14 @@ def _serialize_record(r: ShortdramaPrompt) -> dict:
         "video_error_message": r.video_error_message,
         "video_url": None,
         "video_uploaded_at": r.video_uploaded_at.isoformat() if r.video_uploaded_at else None,
+        "doubao_status": r.doubao_status,
+        "doubao_account_type": r.doubao_account_type,
+        "doubao_qrcode": r.doubao_qrcode,
+        "doubao_message": r.doubao_message,
+        "doubao_error_message": r.doubao_error_message,
+        "doubao_approved_prompt": r.doubao_approved_prompt,
+        "doubao_rewrite_history": r.doubao_rewrite_history or [],
+        "doubao_rewrite_count": len(r.doubao_rewrite_history or []),
     }
 
 
@@ -572,3 +591,234 @@ async def update_shortdrama_prompt_templates(
 
     updated_at = datetime.utcnow().isoformat()
     return PromptTemplatesResponse(long=templates["long"], short=templates["short"], updated_at=updated_at)
+
+
+# ──────────────────────────────────────────────
+# 一键豆包生成（RPA 自动出片）
+# ──────────────────────────────────────────────
+
+DOUBAO_STATUS_LABELS = {
+    "none": "未生成",
+    "pending": "排队中",
+    "need_login": "等待扫码",
+    "running": "生成中",
+    "awaiting_rewrite": "待确认改写",
+    "completed": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+}
+
+
+class DoubaoGenerateRequest(BaseModel):
+    # 账户类型：free=免费（时长上限 10s）；pro=包月会员（时长上限 30s）
+    account_type: str = "free"
+    # 生成时长（秒）；超过账户类型上限自动校正
+    duration: Optional[int] = None
+
+
+class DoubaoGenerateResponse(BaseModel):
+    record_id: str
+    doubao_status: str
+    message: str
+
+
+class DoubaoRewriteConfirmRequest(BaseModel):
+    # approved=确认使用改写稿并重试；rejected=再让豆包改一版；cancelled=放弃
+    decision: str = "approved"
+
+
+@router.post("/shortdrama/prompts/{record_id}/doubao/generate", response_model=DoubaoGenerateResponse)
+async def start_doubao_generate(
+    record_id: str,
+    data: DoubaoGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """一键豆包生成：为提示词记录启动 RPA 豆包出片任务。
+
+    - account_type 选择后即作为当前登录用户的默认值（users.doubao_account_type）
+    - 已存在运行中的豆包任务时返回 409
+    """
+    if data.account_type not in ("free", "pro"):
+        raise HTTPException(status_code=400, detail="账户类型仅支持 free（免费）或 pro（包月会员）")
+
+    record = await _get_record_or_404(record_id, db)
+    if record.doubao_status in ("pending", "running", "need_login", "awaiting_rewrite"):
+        raise HTTPException(status_code=409, detail="该记录已有豆包任务在进行中，请先等待完成或取消")
+
+    # 账户类型选择后作为当前登录用户的默认值
+    if current_user and current_user.doubao_account_type != data.account_type:
+        current_user.doubao_account_type = data.account_type
+
+    record.doubao_status = "pending"
+    record.doubao_account_type = data.account_type
+    record.doubao_message = "任务已创建，等待执行…"
+    record.doubao_error_message = None
+    record.doubao_qrcode = None
+    record.doubao_confirm_token = None
+    await db.flush()
+
+    # 异步派发到 publish 队列（rpa_worker 上的 Celery worker 消费，连接 Chromium）
+    from app.celery.tasks import doubao_generate_task
+    celery_result = doubao_generate_task.delay(
+        str(record.id),
+        account_type=data.account_type,
+        duration=data.duration,
+    )
+    record.doubao_task_id = celery_result.id
+    await db.commit()
+
+    return DoubaoGenerateResponse(
+        record_id=str(record.id),
+        doubao_status="pending",
+        message="豆包生成任务已创建，正在后台执行",
+    )
+
+
+@router.post("/shortdrama/prompts/{record_id}/doubao/confirm-rewrite", response_model=DoubaoGenerateResponse)
+async def confirm_doubao_rewrite(
+    record_id: str,
+    data: DoubaoRewriteConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """改写确认回调：用户在「等待改写确认」弹窗中做出决策。
+
+    - approved：确认使用豆包改写稿，任务继续（用改写稿重新发送）
+    - rejected：让豆包再改一版
+    - cancelled：放弃本次生成
+    需要一次性 confirm_token 防跨用户误操作。
+    """
+    if data.decision not in ("approved", "rejected", "cancelled"):
+        raise HTTPException(status_code=400, detail="decision 仅支持 approved / rejected / cancelled")
+
+    record = await _get_record_or_404(record_id, db)
+    if record.doubao_status != "awaiting_rewrite":
+        raise HTTPException(status_code=400, detail="当前记录不处于等待改写确认状态")
+
+    if not record.doubao_confirm_token:
+        raise HTTPException(status_code=400, detail="改写确认凭证已失效，请重新发起生成")
+
+    token = record.doubao_confirm_token
+    # 清除一次性凭证（Celery 任务看到 token 被清除即继续）
+    record.doubao_confirm_token = None
+
+    if data.decision == "cancelled":
+        record.doubao_status = "cancelled"
+        record.doubao_message = "用户已放弃本次豆包生成"
+        record.doubao_error_message = "用户已放弃"
+        await db.commit()
+        return DoubaoGenerateResponse(record_id=record_id, doubao_status="cancelled", message="已放弃本次豆包生成")
+
+    if data.decision == "rejected":
+        # 让豆包再改一版：保持 awaiting_rewrite 状态（仅清除凭证），
+        # Celery 轮询到 token 清除 + 非 running 状态即识别为 rejected 并继续改写
+        record.doubao_message = "用户要求豆包继续改写，请稍候…"
+        await db.commit()
+        return DoubaoGenerateResponse(record_id=record_id, doubao_status="awaiting_rewrite", message="已通知豆包继续改写")
+
+    # approved：确认使用改写稿，回到 running（Celery 轮询到 token 清除 + running 即继续）
+    record.doubao_status = "running"
+    record.doubao_message = "已确认改写稿，继续生成视频…"
+    # 把最后一条改写稿作为 approved_prompt 落库留档
+    if record.doubao_rewrite_history:
+        record.doubao_approved_prompt = record.doubao_rewrite_history[-1].get("rewritten")
+    await db.commit()
+    return DoubaoGenerateResponse(record_id=record_id, doubao_status="running", message="已确认改写稿，继续生成")
+
+
+@router.post("/shortdrama/prompts/{record_id}/doubao/cancel", response_model=DoubaoGenerateResponse)
+async def cancel_doubao_generate(
+    record_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """取消豆包生成任务（含等待扫码 / 生成中 / 等待改写确认）。"""
+    record = await _get_record_or_404(record_id, db)
+    if record.doubao_status in ("completed", "failed", "cancelled", "none", None):
+        raise HTTPException(status_code=400, detail="当前无进行中的豆包任务可取消")
+
+    record.doubao_status = "cancelled"
+    record.doubao_message = "任务已取消"
+    record.doubao_error_message = "用户取消"
+    record.doubao_confirm_token = None
+    await db.commit()
+
+    # 尝试取消 Celery 任务（尽力而为）
+    if record.doubao_task_id:
+        try:
+            from app.celery.tasks import celery_app as celery
+            celery.control.revoke(record.doubao_task_id, terminate=False)
+        except Exception:
+            pass
+
+    return DoubaoGenerateResponse(record_id=record_id, doubao_status="cancelled", message="豆包生成任务已取消")
+
+
+@router.get("/shortdrama/prompts/{record_id}/doubao/status", response_model=PromptRecordItem)
+async def get_doubao_status(
+    record_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """查询豆包生成任务状态（前端轮询用，返回完整记录含二维码/改写稿）。"""
+    record = await _get_record_or_404(record_id, db)
+    item = _serialize_record(record)
+    if record.video_file_key and record.video_bucket:
+        item["video_url"] = await get_presigned_url(
+            record.video_bucket, record.video_file_key, expires_seconds=3600
+        )
+    return item
+
+
+@router.get("/shortdrama/doubao/account-type", response_model=dict)
+async def get_doubao_account_type(
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """获取当前登录用户的默认豆包账户类型（用户选择后即作为默认值）。"""
+    account_type = current_user.doubao_account_type if current_user else "free"
+    limits = await _load_doubao_limits(db)
+    return {
+        "account_type": account_type if account_type in ("free", "pro") else "free",
+        "limits": limits,
+    }
+
+
+@router.put("/shortdrama/doubao/account-type", response_model=dict)
+async def update_doubao_account_type(
+    data: DoubaoGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """保存当前登录用户的默认豆包账户类型。"""
+    if data.account_type not in ("free", "pro"):
+        raise HTTPException(status_code=400, detail="账户类型仅支持 free 或 pro")
+    if current_user:
+        current_user.doubao_account_type = data.account_type
+        await db.commit()
+    return {
+        "account_type": data.account_type,
+        "message": "已保存为当前用户的默认账户类型",
+    }
+
+
+@router.get("/shortdrama/doubao/config", response_model=dict)
+async def get_doubao_config(
+    db: AsyncSession = Depends(get_db),
+):
+    """读取豆包配置（账户时长上限等，可在系统设置中修改）。"""
+    limits = await _load_doubao_limits(db)
+    return {"config": limits}
+
+
+async def _load_doubao_limits(db: AsyncSession) -> dict:
+    """读取豆包账户时长上限配置（默认 free=10s / pro=30s），支持 system_config 覆盖。"""
+    result = await db.execute(
+        select(SystemConfig).where(SystemConfig.key == "shortdrama_doubao_config")
+    )
+    cfg = result.scalar_one_or_none()
+    custom = (cfg.value or {}) if cfg and isinstance(cfg.value, dict) else {}
+    return {
+        "free_max_seconds": int(custom.get("free_max_seconds", 10)),
+        "pro_max_seconds": int(custom.get("pro_max_seconds", 30)),
+    }

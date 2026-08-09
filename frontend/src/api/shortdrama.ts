@@ -22,6 +22,35 @@ export interface ShortdramaPromptRecord {
   video_error_message?: string | null;
   video_url?: string | null;
   video_uploaded_at?: string | null;
+  // 一键豆包生成任务状态
+  doubao_status?: string | null;
+  doubao_account_type?: string | null;
+  doubao_qrcode?: string | null;
+  doubao_message?: string | null;
+  doubao_error_message?: string | null;
+  doubao_approved_prompt?: string | null;
+  doubao_rewrite_history?: DoubaoRewriteItem[] | null;
+  doubao_rewrite_count?: number | null;
+}
+
+export interface DoubaoRewriteItem {
+  round?: number;
+  attempt?: number;
+  original?: string;
+  rewritten?: string;
+  reason?: string;
+  created_at?: string;
+}
+
+export interface DoubaoGenerateParams {
+  account_type: 'free' | 'pro';
+  duration?: number | null;
+}
+
+export interface DoubaoGenerateResult {
+  record_id: string;
+  doubao_status: string;
+  message: string;
 }
 
 export interface PromptGenerateParams {
@@ -113,4 +142,29 @@ export const shortdramaApi = {
 
   saveTemplates: (templates: Partial<PromptTemplates>) =>
     client.put('/shortdrama/prompt/templates', templates) as Promise<PromptTemplates>,
+
+  // ── 一键豆包生成（RPA 自动出片） ──
+  doubaoGenerate: (recordId: string, params: DoubaoGenerateParams) =>
+    client.post(`/shortdrama/prompts/${recordId}/doubao/generate`, params) as Promise<DoubaoGenerateResult>,
+
+  doubaoConfirmRewrite: (recordId: string, decision: 'approved' | 'rejected' | 'cancelled') =>
+    client.post(`/shortdrama/prompts/${recordId}/doubao/confirm-rewrite`, { decision }) as Promise<DoubaoGenerateResult>,
+
+  doubaoCancel: (recordId: string) =>
+    client.post(`/shortdrama/prompts/${recordId}/doubao/cancel`) as Promise<DoubaoGenerateResult>,
+
+  doubaoStatus: (recordId: string) =>
+    client.get(`/shortdrama/prompts/${recordId}/doubao/status`) as Promise<ShortdramaPromptRecord>,
+
+  getDoubaoAccountType: () =>
+    client.get('/shortdrama/doubao/account-type') as Promise<{
+      account_type: 'free' | 'pro';
+      limits: { free_max_seconds: number; pro_max_seconds: number };
+    }>,
+
+  setDoubaoAccountType: (accountType: 'free' | 'pro') =>
+    client.put('/shortdrama/doubao/account-type', { account_type: accountType }) as Promise<{
+      account_type: 'free' | 'pro';
+      message: string;
+    }>,
 };

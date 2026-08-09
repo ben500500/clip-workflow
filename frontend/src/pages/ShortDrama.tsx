@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Card, Typography, Space, Button, Input, Radio, Tag, Table, Modal,
   Popconfirm, message, Steps, Alert, Empty, Tabs, Select, InputNumber,
@@ -9,8 +9,10 @@ import {
   ClearOutlined, VideoCameraOutlined, FileTextOutlined, CheckOutlined,
   UploadOutlined, PlayCircleOutlined, ImportOutlined, InboxOutlined,
   SendOutlined, EditOutlined, SaveOutlined, UndoOutlined,
+  RobotOutlined, QrcodeOutlined, StopOutlined, SyncOutlined,
+  CloseCircleOutlined, CheckCircleOutlined, ClockCircleOutlined,
 } from '@ant-design/icons';
-import { shortdramaApi, type ShortdramaPromptRecord, type PromptTemplates } from '../api/shortdrama';
+import { shortdramaApi, type ShortdramaPromptRecord, type PromptTemplates, type DoubaoRewriteItem } from '../api/shortdrama';
 import Watermark, { type ImportedVideo } from './Watermark';
 import PublishMaterialTab from './PublishMaterialTab';
 import { formatFileSize } from '../utils/format';
@@ -74,6 +76,18 @@ const CHARACTER_OPTIONS = [
   { value: '女主：女，22岁，古装，机灵聪慧；男主：男，27岁，古装，冷面深情；反派：女，25岁，华服，嫉妒狠辣' },
 ];
 
+// 豆包任务状态展示映射
+const DOUBAO_STATUS_META: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
+  none: { label: '未生成', color: 'default', icon: <RobotOutlined /> },
+  pending: { label: '排队中', color: 'blue', icon: <ClockCircleOutlined /> },
+  need_login: { label: '等待扫码', color: 'gold', icon: <QrcodeOutlined /> },
+  running: { label: '生成中', color: 'processing', icon: <SyncOutlined spin /> },
+  awaiting_rewrite: { label: '待确认改写', color: 'volcano', icon: <ClockCircleOutlined /> },
+  completed: { label: '已完成', color: 'green', icon: <CheckCircleOutlined /> },
+  failed: { label: '失败', color: 'red', icon: <CloseCircleOutlined /> },
+  cancelled: { label: '已取消', color: 'default', icon: <StopOutlined /> },
+};
+
 const ShortDrama: React.FC = () => {
   // ── 提示词生成表单 ──
   const [text, setText] = useState('');
@@ -114,6 +128,25 @@ const ShortDrama: React.FC = () => {
   // 去水印完成 → 发布：待代入的提示词记录 id（任务关联）
   const [pendingPublishPromptId, setPendingPublishPromptId] = useState<string | null>(null);
 
+  // ── 一键豆包生成 ──
+  // 当前登录用户默认豆包账户类型（选择后即作为默认值）
+  const [doubaoAccountType, setDoubaoAccountType] = useState<'free' | 'pro'>('free');
+  const [doubaoLimits, setDoubaoLimits] = useState<{ free_max_seconds: number; pro_max_seconds: number }>({
+    free_max_seconds: 10,
+    pro_max_seconds: 30,
+  });
+  // 正在进行豆包生成任务 / 需要轮询状态的记录 id 集合
+  const [doubaoActiveIds, setDoubaoActiveIds] = useState<Set<string>>(new Set());
+  // 二维码弹窗：等待扫码的记录
+  const [qrRecord, setQrRecord] = useState<ShortdramaPromptRecord | null>(null);
+  // 改写确认弹窗
+  const [rewriteRecord, setRewriteRecord] = useState<ShortdramaPromptRecord | null>(null);
+  const [rewriteBusy, setRewriteBusy] = useState(false);
+  // 已确认/已忽略的改写稿标识（round-attempt-created_at），避免点「再让豆包改写」后立刻重新弹窗
+  const acknowledgedRewriteRef = useRef<string>('');
+  // 发起豆包生成中（按钮 loading）
+  const [doubaoGeneratingId, setDoubaoGeneratingId] = useState<string | null>(null);
+
   // ── 加载历史 ──
   const fetchRecords = useCallback(async (silent = false) => {
     if (!silent) setLoadingRecords(true);
@@ -142,6 +175,60 @@ const ShortDrama: React.FC = () => {
         // 模板加载失败不阻断页面（生成时后端会兜底用内置默认模板）
       });
   }, []);
+
+  // ── 加载当前用户默认豆包账户类型 ──
+  useEffect(() => {
+    shortdramaApi
+      .getDoubaoAccountType()
+      .then((data) => {
+        setDoubaoAccountType(data.account_type);
+        setDoubaoLimits(data.limits || { free_max_seconds: 10, pro_max_seconds: 30 });
+      })
+      .catch(() => {
+        // 读取失败不阻断，使用默认 free
+      });
+  }, []);
+
+  // ── 豆包进行中任务轮询（5s）：更新状态 / 二维码 / 改写确认弹窗 ──
+  useEffect(() => {
+    if (doubaoActiveIds.size === 0) return;
+    const timer = window.setInterval(async () => {
+      const ids = Array.from(doubaoActiveIds);
+      for (const rid of ids) {
+        try {
+          const cur = await shortdramaApi.doubaoStatus(rid);
+          // 更新历史列表中的记录
+          setRecords((prev) => prev.map((r) => (r.id === rid ? { ...r, ...cur } : r)));
+          const status = cur.doubao_status || 'none';
+          if (status === 'need_login' && cur.doubao_qrcode) {
+            setQrRecord((prev) => (prev?.id === rid ? prev : cur));
+          } else if (qrRecord?.id === rid && status !== 'need_login') {
+            setQrRecord(null);
+          }
+          if (status === 'awaiting_rewrite') {
+            // 仅当出现新的改写稿（与已确认标识不同）时才弹出确认框
+            const last = cur.doubao_rewrite_history?.[cur.doubao_rewrite_history.length - 1];
+            const mark = last ? `${last.round}-${last.attempt ?? 1}-${last.created_at ?? ''}` : rid;
+            if (mark !== acknowledgedRewriteRef.current) {
+              setRewriteRecord((prev) => (prev?.id === rid ? prev : cur));
+            }
+          } else if (rewriteRecord?.id === rid && status !== 'awaiting_rewrite') {
+            setRewriteRecord(null);
+          }
+          if (['completed', 'failed', 'cancelled'].includes(status)) {
+            setDoubaoActiveIds((prev) => {
+              const next = new Set(prev);
+              next.delete(rid);
+              return next;
+            });
+          }
+        } catch {
+          // 单条轮询失败忽略，下轮重试
+        }
+      }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [doubaoActiveIds, qrRecord, rewriteRecord]);
 
   // ── 生成提示词 ──
   const handleGenerate = async () => {
@@ -317,6 +404,108 @@ const ShortDrama: React.FC = () => {
     }
   };
 
+  // ── 一键豆包生成相关操作 ──
+
+  // 切换豆包账户类型（保存为当前用户默认值）
+  const handleDoubaoAccountTypeChange = async (type: 'free' | 'pro') => {
+    setDoubaoAccountType(type);
+    try {
+      await shortdramaApi.setDoubaoAccountType(type);
+      message.success(type === 'free' ? '已切换为免费账户（10s 上限）' : '已切换为包月会员（30s 上限）');
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '保存账户类型失败');
+    }
+  };
+
+  // 发起一键豆包生成
+  const handleDoubaoGenerate = async (record: ShortdramaPromptRecord) => {
+    const limit = doubaoAccountType === 'pro' ? doubaoLimits.pro_max_seconds : doubaoLimits.free_max_seconds;
+    // 提示词时长超过当前账户上限时，提示并按上限生成
+    if (record.duration > limit) {
+      message.warning(`当前账户（${doubaoAccountType === 'pro' ? '包月会员' : '免费'}）仅支持生成 ${limit}s，将按 ${limit}s 生成`);
+    }
+    setDoubaoGeneratingId(record.id);
+    try {
+      const res = await shortdramaApi.doubaoGenerate(record.id, {
+        account_type: doubaoAccountType,
+        duration: Math.min(record.duration || limit, limit),
+      });
+      message.success(res.message || '豆包生成任务已启动');
+      // 加入轮询
+      setDoubaoActiveIds((prev) => {
+        const next = new Set(prev);
+        next.add(record.id);
+        return next;
+      });
+      setRecords((prev) => prev.map((r) => (r.id === record.id ? { ...r, doubao_status: 'pending' } : r)));
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '豆包生成启动失败');
+    } finally {
+      setDoubaoGeneratingId(null);
+    }
+  };
+
+  // 取消豆包生成任务
+  const handleDoubaoCancel = async (record: ShortdramaPromptRecord) => {
+    try {
+      const res = await shortdramaApi.doubaoCancel(record.id);
+      message.success(res.message);
+      setRecords((prev) => prev.map((r) => (r.id === record.id ? { ...r, doubao_status: 'cancelled', doubao_message: '任务已取消' } : r)));
+      setDoubaoActiveIds((prev) => {
+        const next = new Set(prev);
+        next.delete(record.id);
+        return next;
+      });
+      setQrRecord(null);
+      setRewriteRecord(null);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '取消失败');
+    }
+  };
+
+  // 改写确认：approved / rejected / cancelled
+  const handleRewriteDecision = async (decision: 'approved' | 'rejected' | 'cancelled') => {
+    if (!rewriteRecord) return;
+    setRewriteBusy(true);
+    // 记录当前改写稿标识，避免轮询立即重新弹出
+    const last = rewriteRecord.doubao_rewrite_history?.[rewriteRecord.doubao_rewrite_history.length - 1];
+    if (last) {
+      acknowledgedRewriteRef.current = `${last.round}-${last.attempt ?? 1}-${last.created_at ?? ''}`;
+    }
+    try {
+      const res = await shortdramaApi.doubaoConfirmRewrite(rewriteRecord.id, decision);
+      if (decision === 'cancelled') {
+        message.info('已放弃本次豆包生成');
+        setDoubaoActiveIds((prev) => {
+          const next = new Set(prev);
+          next.delete(rewriteRecord.id);
+          return next;
+        });
+        setRewriteRecord(null);
+      } else {
+        message.success(decision === 'approved' ? '已确认改写稿，继续生成视频' : '已让豆包继续改写');
+        setRewriteRecord(null);
+        // 继续轮询直到完成
+        setDoubaoActiveIds((prev) => {
+          const next = new Set(prev);
+          next.add(rewriteRecord.id);
+          return next;
+        });
+      }
+      fetchRecords(true);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '操作失败');
+    } finally {
+      setRewriteBusy(false);
+    }
+  };
+
+  // 判断记录是否有进行中的豆包任务
+  const isDoubaoActive = (record: ShortdramaPromptRecord): boolean => {
+    const s = record.doubao_status || 'none';
+    return ['pending', 'running', 'need_login', 'awaiting_rewrite'].includes(s);
+  };
+
   // ── 时长切换 ──
   const switchDurationMode = (custom: boolean) => {
     setDurationCustom(custom);
@@ -391,14 +580,78 @@ const ShortDrama: React.FC = () => {
       },
     },
     {
+      title: '豆包任务',
+      key: 'doubao',
+      width: 170,
+      render: (_: unknown, r: ShortdramaPromptRecord) => {
+        const s = r.doubao_status || 'none';
+        const meta = DOUBAO_STATUS_META[s] || DOUBAO_STATUS_META.none;
+        const active = isDoubaoActive(r);
+        return (
+          <Space size={4} wrap>
+            <Tag color={meta.color} icon={meta.icon}>{meta.label}</Tag>
+            {r.doubao_account_type ? (
+              <Tag color={r.doubao_account_type === 'pro' ? 'purple' : 'default'} style={{ fontSize: 11 }}>
+                {r.doubao_account_type === 'pro' ? '包月' : '免费'}
+              </Tag>
+            ) : null}
+            {r.doubao_message && active ? (
+              <Text type="secondary" style={{ fontSize: 11 }} ellipsis={{ tooltip: r.doubao_message }}>
+                {r.doubao_message}
+              </Text>
+            ) : null}
+            {r.doubao_rewrite_count ? (
+              <Tag color="volcano" style={{ fontSize: 11 }}>改写{r.doubao_rewrite_count}次</Tag>
+            ) : null}
+            {r.doubao_status === 'completed' ? (
+              <Button
+                size="small"
+                type="link"
+                style={{ padding: 0, height: 'auto' }}
+                onClick={() => setPreviewRecord(r)}
+              >
+                查看成片
+              </Button>
+            ) : null}
+          </Space>
+        );
+      },
+    },
+    {
       title: '操作',
       key: 'action',
-      width: 240,
-      render: (_: unknown, r: ShortdramaPromptRecord) => (
+      width: 300,
+      render: (_: unknown, r: ShortdramaPromptRecord) => {
+        const active = isDoubaoActive(r);
+        return (
         <Space size="small" wrap>
           <Button size="small" onClick={() => setPreviewRecord(r)}>
             查看
           </Button>
+          <Tooltip title="自动打开豆包网页端生成视频，成片自动回填到历史">
+            <Button
+              size="small"
+              type="primary"
+              ghost
+              icon={<RobotOutlined />}
+              loading={doubaoGeneratingId === r.id}
+              disabled={active || !!doubaoGeneratingId}
+              onClick={() => handleDoubaoGenerate(r)}
+            >
+              一键豆包生成
+            </Button>
+          </Tooltip>
+          {active && (
+            <Popconfirm
+              title="取消该豆包生成任务？"
+              okText="取消任务"
+              okButtonProps={{ danger: true }}
+              cancelText="返回"
+              onConfirm={() => handleDoubaoCancel(r)}
+            >
+              <Button size="small" danger icon={<StopOutlined />}>取消</Button>
+            </Popconfirm>
+          )}
           <Upload
             accept=".mp4,.avi,.mov,.mkv,.webm,video/*"
             showUploadList={false}
@@ -433,7 +686,8 @@ const ShortDrama: React.FC = () => {
             <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
         </Space>
-      ),
+        );
+      },
     },
   ];
 
@@ -680,7 +934,26 @@ const ShortDrama: React.FC = () => {
         size="small"
         title="提示词生成历史"
         extra={
-          <Space>
+          <Space wrap>
+            <Space size={4}>
+              <Text strong style={{ fontSize: 12 }}>豆包账户：</Text>
+              <Radio.Group
+                size="small"
+                value={doubaoAccountType}
+                onChange={(e) => handleDoubaoAccountTypeChange(e.target.value as 'free' | 'pro')}
+                optionType="button"
+                buttonStyle="solid"
+                options={[
+                  { value: 'free', label: '免费（≤10s）' },
+                  { value: 'pro', label: '包月会员（≤30s）' },
+                ]}
+              />
+              <Tooltip title="账户类型选择后即作为当前登录用户的默认值；豆包单次生成时长受账户限制，超出自动按上限生成">
+                <Text type="secondary" style={{ fontSize: 11 }}>
+                  <QrcodeOutlined /> 上限：免费 {doubaoLimits.free_max_seconds}s / 包月 {doubaoLimits.pro_max_seconds}s
+                </Text>
+              </Tooltip>
+            </Space>
             <Button size="small" icon={<ReloadOutlined />} onClick={() => fetchRecords()}>
               刷新
             </Button>
@@ -693,7 +966,7 @@ const ShortDrama: React.FC = () => {
           dataSource={records}
           columns={recordColumns}
           pagination={{ pageSize: 8, showSizeChanger: false }}
-          scroll={{ x: 1180 }}
+          scroll={{ x: 1500 }}
           locale={{
             emptyText: (
               <Empty
@@ -1033,6 +1306,136 @@ const ShortDrama: React.FC = () => {
           onChange={(e) => setTemplateDraft((d) => ({ ...d, short: e.target.value }))}
           placeholder="输入短提示词模板…"
         />
+      </Modal>
+
+      {/* ── 豆包登录二维码弹窗 ── */}
+      <Modal
+        title={
+          <Space>
+            <QrcodeOutlined /> 豆包扫码登录
+          </Space>
+        }
+        open={!!qrRecord && !!qrRecord.doubao_qrcode}
+        footer={
+          <Space>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              登录后 Cookie 将持久化，下次免扫码
+            </Text>
+            <Button
+              size="small"
+              danger
+              icon={<StopOutlined />}
+              onClick={() => qrRecord && handleDoubaoCancel(qrRecord)}
+            >
+              取消任务
+            </Button>
+          </Space>
+        }
+        width={420}
+        onCancel={() => setQrRecord(null)}
+        destroyOnClose
+      >
+        {qrRecord?.doubao_qrcode && (
+          <Space direction="vertical" style={{ width: '100%', alignItems: 'center' }} size={12}>
+            <Alert
+              type="info"
+              showIcon
+              message="请使用豆包 App「扫一扫」登录，登录后自动继续生成视频"
+            />
+            <img
+              src={qrRecord.doubao_qrcode}
+              alt="豆包登录二维码"
+              style={{ width: 280, height: 280, objectFit: 'contain', border: '1px solid #f0f0f0', borderRadius: 8 }}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              二维码实时刷新，请尽快扫码；登录成功后将自动继续
+            </Text>
+          </Space>
+        )}
+      </Modal>
+
+      {/* ── 豆包改写确认弹窗 ── */}
+      <Modal
+        title={
+          <Space>
+            <RobotOutlined /> 豆包提示词改写确认
+          </Space>
+        }
+        open={!!rewriteRecord}
+        footer={
+          <Space wrap>
+            <Button
+              icon={<SyncOutlined />}
+              loading={rewriteBusy}
+              onClick={() => handleRewriteDecision('rejected')}
+            >
+              再让豆包改写
+            </Button>
+            <Button
+              danger
+              icon={<StopOutlined />}
+              loading={rewriteBusy}
+              onClick={() => handleRewriteDecision('cancelled')}
+            >
+              放弃生成
+            </Button>
+            <Button
+              type="primary"
+              icon={<CheckOutlined />}
+              loading={rewriteBusy}
+              onClick={() => handleRewriteDecision('approved')}
+            >
+              确认使用并继续生成
+            </Button>
+          </Space>
+        }
+        width={860}
+        onCancel={() => setRewriteRecord(null)}
+        destroyOnClose
+      >
+        {rewriteRecord && (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Alert
+              type="warning"
+              showIcon
+              message="豆包拒绝了原提示词，已让豆包改写。请确认改写稿是否符合预期，确认后将用改写稿重新生成视频；最终通过的提示词会自动保存到历史。"
+            />
+            {rewriteRecord.doubao_error_message && !rewriteRecord.doubao_rewrite_count ? (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                拒绝原因：{rewriteRecord.doubao_error_message}
+              </Text>
+            ) : null}
+            {rewriteRecord.doubao_rewrite_history && rewriteRecord.doubao_rewrite_history.length > 0 && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div>
+                  <Text strong style={{ fontSize: 13 }}>原提示词（被拒）</Text>
+                  <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: '#fff1f0', border: '1px solid #ffccc7', borderRadius: 8, padding: 10, fontSize: 12, maxHeight: 260, overflow: 'auto' }}>
+                    {rewriteRecord.doubao_rewrite_history[rewriteRecord.doubao_rewrite_history.length - 1].original}
+                  </pre>
+                </div>
+                <div>
+                  <Text strong style={{ fontSize: 13 }}>豆包改写稿</Text>
+                  <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 8, padding: 10, fontSize: 12, maxHeight: 260, overflow: 'auto' }}>
+                    {rewriteRecord.doubao_rewrite_history[rewriteRecord.doubao_rewrite_history.length - 1].rewritten}
+                  </pre>
+                </div>
+              </div>
+            )}
+            {rewriteRecord.doubao_rewrite_history && rewriteRecord.doubao_rewrite_history.length > 0 && (
+              <div>
+                <Text strong style={{ fontSize: 13 }}>改写轮次</Text>
+                <div style={{ marginTop: 4 }}>
+                  {rewriteRecord.doubao_rewrite_history.map((item: DoubaoRewriteItem, idx: number) => (
+                    <Tag key={idx} color="volcano">
+                      第{item.round ?? idx + 1}轮{item.attempt ? `-${item.attempt}` : ''}
+                      {item.reason ? `（${item.reason.slice(0, 24)}${item.reason.length > 24 ? '…' : ''}）` : ''}
+                    </Tag>
+                  ))}
+                </div>
+              </div>
+            )}
+          </Space>
+        )}
       </Modal>
     </div>
   );
