@@ -1057,7 +1057,14 @@ async def get_shortdrama_topics(
             )
         )
 
-    videos = (await db.execute(select(VideoMetric).where(and_(*filters)) if filters else select(VideoMetric))).scalars().all()
+    # 话题排行：限制取最近的数据窗口（limit * 20 条采样），避免全量加载
+    base_query = select(VideoMetric)
+    if filters:
+        base_query = base_query.where(and_(*filters))
+    base_query = base_query.order_by(
+        desc(VideoMetric.publish_date), desc(VideoMetric.recorded_at)
+    ).limit(limit * 20)
+    videos = (await db.execute(base_query)).scalars().all()
     task_ids = [v.publish_task_id for v in videos if v.publish_task_id]
     if not task_ids:
         return []

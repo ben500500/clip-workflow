@@ -340,7 +340,12 @@ async def create_publish_tasks_batch(
 
 
 async def _check_publish_limits(db: AsyncSession, data: PublishTaskCreate):
-    """校验发布配置的每日上限与最小发布间隔（带行锁防并发）。"""
+    """校验发布配置的每日上限与最小发布间隔（带行锁防并发）。
+
+    优先按 (platform, account_name) 匹配发布配置；若任务携带 video_account_id，
+    则回退到账号绑定的 profile_id 解析配置，保证账号矩阵同样受上限/间隔约束。
+    """
+    profile = None
     profile_result = await db.execute(
         select(PublishProfile).where(
             PublishProfile.platform == data.platform,
@@ -348,6 +353,23 @@ async def _check_publish_limits(db: AsyncSession, data: PublishTaskCreate):
         ).with_for_update()
     )
     profile = profile_result.scalar_one_or_none()
+
+    if not profile and data.video_account_id:
+        try:
+            acc_uuid = uuid.UUID(data.video_account_id)
+        except ValueError:
+            acc_uuid = None
+        if acc_uuid:
+            acc_result = await db.execute(
+                select(VideoAccount).where(VideoAccount.id == acc_uuid)
+            )
+            acc = acc_result.scalar_one_or_none()
+            if acc and acc.profile_id:
+                prof_result = await db.execute(
+                    select(PublishProfile).where(PublishProfile.id == acc.profile_id).with_for_update()
+                )
+                profile = prof_result.scalar_one_or_none()
+
     if not profile:
         return
     today = datetime.utcnow().date()
@@ -391,19 +413,26 @@ async def _create_publish_task_internal(db: AsyncSession, data: PublishTaskCreat
     """创建单条发布任务并落库（不提交事务，由调用方统一提交）。"""
     output_uuid = uuid.UUID(data.output_id)
 
+    def _to_uuid_or_none(v: Optional[str]) -> Optional[uuid.UUID]:
+        """把外部传入的 ID 字符串安全转为 UUID；非法值返回 None（不阻断任务创建）。"""
+        if not v:
+            return None
+        try:
+            return uuid.UUID(v)
+        except ValueError:
+            return None
+
     # 若指定了 video_account_id，自动代入账号的发布配置（chrome 端口/Cookie/默认标题/描述/标签）
     account_name = data.account_name
     mini_program_link = data.mini_program_link
-    if data.video_account_id:
+    video_account_uuid = _to_uuid_or_none(data.video_account_id)
+    if video_account_uuid:
         try:
-            acc_uuid = uuid.UUID(data.video_account_id)
-            acc_result = await db.execute(select(VideoAccount).where(VideoAccount.id == acc_uuid))
+            acc_result = await db.execute(select(VideoAccount).where(VideoAccount.id == video_account_uuid))
             acc = acc_result.scalar_one_or_none()
             if acc:
                 account_name = account_name or acc.account_name
-                if not data.mini_program_id and acc.mini_program_enabled:
-                    pass  # 小程序链接由调用方显式传入，这里不猜测
-        except ValueError:
+        except Exception:
             pass
 
     task = PublishTask(
@@ -417,10 +446,10 @@ async def _create_publish_task_internal(db: AsyncSession, data: PublishTaskCreat
         mini_program_link=mini_program_link,
         link_attached=data.link_attached,
         require_manual_confirm=data.require_manual_confirm,
-        video_account_id=uuid.UUID(data.video_account_id) if data.video_account_id else None,
-        mini_program_id=uuid.UUID(data.mini_program_id) if data.mini_program_id else None,
-        prompt_record_id=uuid.UUID(data.prompt_record_id) if data.prompt_record_id else None,
-        material_id=uuid.UUID(data.material_id) if data.material_id else None,
+        video_account_id=video_account_uuid,
+        mini_program_id=_to_uuid_or_none(data.mini_program_id),
+        prompt_record_id=_to_uuid_or_none(data.prompt_record_id),
+        material_id=_to_uuid_or_none(data.material_id),
         status="pending",
     )
     db.add(task)
