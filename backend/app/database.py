@@ -165,6 +165,7 @@ async def _apply_compat_migrations():
         ("shortdrama_prompts", "doubao_qrcode", "TEXT"),
         ("shortdrama_prompts", "doubao_task_id", "VARCHAR(100)"),
         ("shortdrama_prompts", "doubao_message", "TEXT"),
+        ("shortdrama_prompts", "doubao_progress", "INTEGER DEFAULT 0"),
         ("shortdrama_prompts", "doubao_error_message", "TEXT"),
         ("shortdrama_prompts", "doubao_approved_prompt", "TEXT"),
         ("shortdrama_prompts", "doubao_rewrite_history", "JSON"),

@@ -519,7 +519,7 @@ audit:
 | `DELETE` | `/api/shortdrama/prompts/{id}/video` | 删除成片视频（保留提示词记录） |
 | `POST` | `/api/shortdrama/prompts/{id}/import-to-watermark` | 一键把成片视频导入去水印流程 |
 | `POST` | `/api/shortdrama/prompts/{id}/doubao/generate` | 一键豆包生成（RPA 浏览器出片，自动扫码/改写确认闭环，成片回填历史） |
-| `GET` | `/api/shortdrama/prompts/{id}/doubao/status` | 查询豆包生成任务状态（二维码/改写稿/进度） |
+| `GET` | `/api/shortdrama/prompts/{id}/doubao/status` | 查询豆包生成任务状态（二维码/改写稿/实时进度 doubao_progress 0~100） |
 | `POST` | `/api/shortdrama/prompts/{id}/doubao/cancel` | 取消豆包生成任务 |
 | `POST` | `/api/shortdrama/prompts/{id}/doubao/confirm-rewrite` | 豆包改写确认（approved/rejected/cancelled） |
 | `GET` | `/api/shortdrama/doubao/account-type` | 获取用户默认豆包账户类型与时长上限 |

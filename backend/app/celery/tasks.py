@@ -1710,6 +1710,7 @@ async def _update_doubao_prompt(
     approved_prompt: Optional[str] = None,
     rewrite_history: Optional[list] = None,
     confirm_token: Optional[str] = None,
+    progress: Optional[int] = None,
 ) -> bool:
     """更新提示词记录的豆包任务字段（供 Celery 任务在同步上下文调用）。"""
     from app.models.models import ShortdramaPrompt
@@ -1741,6 +1742,8 @@ async def _update_doubao_prompt(
             record.doubao_rewrite_history = rewrite_history
         if confirm_token is not None:
             record.doubao_confirm_token = confirm_token
+        if progress is not None:
+            record.doubao_progress = int(progress)
         await session.commit()
         return True
 
@@ -1885,10 +1888,16 @@ def doubao_generate_task(
             status="running",
             message="豆包生成任务启动，正在连接浏览器…",
             error_message=None,
+            progress=5,
         ))
 
         async def _progress_cb(msg: str, p: float):
             self.update_state(state="PROGRESS", meta={"progress": p, "message": msg})
+            await _update_doubao_prompt(
+                prompt_id,
+                message=msg,
+                progress=p,
+            )
 
         # 二维码回调：写入数据库供前端轮询展示
         async def _qrcode_cb(qr_data_url: str):
@@ -1972,6 +1981,7 @@ def doubao_generate_task(
             prompt_id,
             status="running",
             message="视频生成完成，正在下载并上传成片…",
+            progress=95,
         ))
         download_url = result.get("download_url") or ""
         if not download_url:
@@ -2004,6 +2014,7 @@ def doubao_generate_task(
             message="豆包成片已生成并保存到历史",
             approved_prompt=result.get("approved_prompt"),
             confirm_token=None,
+            progress=100,
         ))
         self.update_state(state="SUCCESS", meta={"progress": 100, "message": "豆包成片已生成"})
         return {

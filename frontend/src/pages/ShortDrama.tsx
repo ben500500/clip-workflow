@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Card, Typography, Space, Button, Input, Radio, Tag, Table, Modal,
   Popconfirm, message, Steps, Alert, Empty, Tabs, Select, InputNumber,
-  AutoComplete, Upload, Tooltip,
+  AutoComplete, Upload, Tooltip, Progress,
 } from 'antd';
 import {
   ThunderboltOutlined, CopyOutlined, DeleteOutlined, ReloadOutlined,
@@ -790,11 +790,17 @@ const ShortDrama: React.FC = () => {
     {
       title: '豆包任务',
       key: 'doubao',
-      width: 170,
+      width: 210,
       render: (_: unknown, r: ShortdramaPromptRecord) => {
         const s = r.doubao_status || 'none';
         const meta = DOUBAO_STATUS_META[s] || DOUBAO_STATUS_META.none;
         const active = isDoubaoActive(r);
+        // 进度：completed=100 / 失败与取消=0 / 其它取实时 doubao_progress（无则按状态给个保底值）
+        const progress = r.doubao_status === 'completed'
+          ? 100
+          : r.doubao_status === 'failed' || r.doubao_status === 'cancelled'
+            ? 0
+            : r.doubao_progress ?? (active ? 5 : 0);
         return (
           <Space size={4} wrap>
             <Tag color={meta.color} icon={meta.icon}>{meta.label}</Tag>
@@ -803,8 +809,20 @@ const ShortDrama: React.FC = () => {
                 {r.doubao_account_type === 'pro' ? '包月' : '免费'}
               </Tag>
             ) : null}
-            {r.doubao_message && active ? (
-              <Text type="secondary" style={{ fontSize: 11 }} ellipsis={{ tooltip: r.doubao_message }}>
+            {active && (
+              <Progress
+                percent={Math.min(100, Math.max(0, Math.round(progress)))}
+                size="small"
+                status={progress >= 100 ? 'success' : 'active'}
+                style={{ width: 130, marginBottom: 0 }}
+              />
+            )}
+            {r.doubao_message ? (
+              <Text
+                type={r.doubao_status === 'failed' || r.doubao_status === 'cancelled' ? 'danger' : 'secondary'}
+                style={{ fontSize: 11 }}
+                ellipsis={{ tooltip: r.doubao_message }}
+              >
                 {r.doubao_message}
               </Text>
             ) : null}
