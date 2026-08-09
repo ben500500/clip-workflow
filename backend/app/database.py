@@ -169,6 +169,8 @@ async def _apply_compat_migrations():
         ("shortdrama_prompts", "doubao_approved_prompt", "TEXT"),
         ("shortdrama_prompts", "doubao_rewrite_history", "JSON"),
         ("shortdrama_prompts", "doubao_confirm_token", "VARCHAR(64)"),
+        # 短片制作：提示词生成默认时长（用户选择时长后即作为当前登录用户的默认值）
+        ("users", "prompt_default_duration", "INTEGER"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

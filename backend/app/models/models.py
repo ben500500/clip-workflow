@@ -79,6 +79,8 @@ class User(Base):
     # 豆包账户类型（短片制作「一键豆包生成」）：free=免费（时长上限 10s）；pro=包月会员（时长上限 30s）
     # 用户手动选择后即作为当前登录用户的默认值
     doubao_account_type = Column(String(20), default="free", nullable=False)
+    # 提示词生成默认时长（秒）：用户选择时长后即作为当前登录用户的默认值（10/15/20/25/30 或自定义）
+    prompt_default_duration = Column(Integer, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

@@ -46,13 +46,16 @@ PROMPT_TEMPLATES_CONFIG_KEY = "shortdrama_prompt_templates"
 # 内置默认模板（与 autoclip seedance_prompt_generator 保持一致）
 DEFAULT_LONG_PROMPT_TEMPLATE = (
     "类型：按需匹配当前文案题材（家庭反转/悬疑猎奇/豪门恩怨/乡土故事/亲情冲突/搞笑反转）\n"
-    "硬性视频参数：严格锁定视频时长【可填10秒 /15秒】，9:16高清竖屏；全程运镜平稳无抖动，"
+    "硬性视频参数：严格锁定视频时长【可填10秒 /15秒 /20秒 /25秒 /30秒】，9:16高清竖屏；全程运镜平稳无抖动，"
     "禁止频繁切镜，单镜头最低停留1.5s，反转、人物情绪特写镜头固定停留2s以上，结尾高光片段"
     "开启慢放，绝不压缩结尾情绪、不堆砌多段剧情。\n\n"
     "时间轴固定节奏（强制执行）\n"
     "方案1‑10秒版：0‑3s强冲突黄金钩子抓人；3‑7s铺垫主线剧情；7‑10s只展示结局反转+人物情绪反应，"
     "不再新增故事情节\n"
-    "方案2‑15秒版：0‑3s高能钩子；3‑9s完整铺垫故事经过；9‑15s慢节奏呈现反转爆发、夸张神态肢体\n\n"
+    "方案2‑15秒版：0‑3s高能钩子；3‑9s完整铺垫故事经过；9‑15s慢节奏呈现反转爆发、夸张神态肢体\n"
+    "方案3‑20秒版：0‑4s高能钩子；4‑13s完整铺垫故事经过；13‑20s慢节奏呈现反转爆发、夸张神态肢体\n"
+    "方案4‑25秒版：0‑5s高能钩子；5‑16s完整铺垫故事经过；16‑25s慢节奏呈现反转爆发、夸张神态肢体\n"
+    "方案5‑30秒版：0‑6s高能钩子；6‑19s完整铺垫故事经过；19‑30s慢节奏呈现反转爆发、夸张神态肢体\n\n"
     "剧情创作要求：根据给到的短剧文案自主完善真实合理场景、简短人物对白、适配情绪的夸张肢体动作、"
     "面部神情；只推进主线，不加多余配角、无关支线、复杂冗余桥段，贴合抖音热门短剧叙事风格。\n\n"
     "配音音频规范：配音语速舒缓、吐字清晰，人声情绪跟随剧情起伏；口型、画面、旁白音频严格同步，"
@@ -117,8 +120,10 @@ async def _save_prompt_templates(db: AsyncSession, templates: dict) -> None:
 class PromptGenerateRequest(BaseModel):
     # 用户输入的短剧文案（对白/旁白原文），必填
     text: str = ""
-    # 时长：10 / 15 秒或自定义秒数（3~300）
+    # 时长：10 / 15 / 20 / 25 / 30 秒或自定义秒数（3~300）
     duration: int = 15
+    # 是否把本次所选时长保存为当前登录用户的默认值（前端选择时长后即作为默认值）
+    save_duration_as_default: bool = False
     # 可选参数：题材 / 基调 / 角色 / 补充要求
     theme: Optional[str] = None
     tone: Optional[str] = None
@@ -223,6 +228,7 @@ def _serialize_record(r: ShortdramaPrompt) -> dict:
 async def generate_shortdrama_prompt(
     data: PromptGenerateRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
     """根据用户输入的文案生成 Seedance 提示词。
 
@@ -231,6 +237,10 @@ async def generate_shortdrama_prompt(
     """
     if not data.text or not data.text.strip():
         raise HTTPException(status_code=400, detail="请输入短剧文案")
+
+    # 时长选择后即作为当前登录用户的默认值
+    if current_user and data.save_duration_as_default:
+        current_user.prompt_default_duration = _normalize_duration(data.duration)
 
     duration = _normalize_duration(data.duration)
 
@@ -296,6 +306,9 @@ async def generate_shortdrama_prompt(
         await db.flush()
         record_id = str(record.id)
         await db.commit()
+    elif current_user and data.save_duration_as_default:
+        # 不落库历史时仍需保存用户默认时长
+        await db.commit()
 
     return PromptGenerateResponse(
         prompt=prompt_text,
@@ -308,7 +321,7 @@ async def generate_shortdrama_prompt(
 
 
 def _normalize_duration(duration) -> int:
-    """时长归一化：支持 10 / 15 秒及任意自定义秒数（3~300）。"""
+    """时长归一化：支持 10 / 15 / 20 / 25 / 30 秒及任意自定义秒数（3~300）。"""
     try:
         d = int(duration)
     except (TypeError, ValueError):
@@ -773,6 +786,49 @@ async def get_doubao_status(
             record.video_bucket, record.video_file_key, expires_seconds=3600
         )
     return item
+
+
+# ──────────────────────────────────────────────
+# 提示词生成默认时长（当前登录用户）
+# ──────────────────────────────────────────────
+
+
+@router.get("/shortdrama/prompt/default-duration", response_model=dict)
+async def get_prompt_default_duration(
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """获取当前登录用户的提示词生成默认时长（用户选择时长后即作为默认值）。
+
+    未设置过时返回默认 15s。
+    """
+    duration = getattr(current_user, "prompt_default_duration", None) if current_user else None
+    try:
+        d = int(duration)
+    except (TypeError, ValueError):
+        d = 15
+    if d < 3 or d > 300:
+        d = 15
+    return {"duration": d, "message": "获取默认时长成功"}
+
+
+class PromptDefaultDurationRequest(BaseModel):
+    # 提示词生成默认时长（秒）：10/15/20/25/30 或自定义（3~300）
+    duration: int = 15
+
+
+@router.put("/shortdrama/prompt/default-duration", response_model=dict)
+async def update_prompt_default_duration(
+    data: PromptDefaultDurationRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """保存当前登录用户的提示词生成默认时长。"""
+    d = _normalize_duration(data.duration)
+    if current_user:
+        current_user.prompt_default_duration = d
+        await db.commit()
+    return {"duration": d, "message": "已保存为当前用户的默认时长"}
 
 
 @router.get("/shortdrama/doubao/account-type", response_model=dict)
