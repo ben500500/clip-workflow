@@ -171,6 +171,16 @@ async def _apply_compat_migrations():
         ("shortdrama_prompts", "doubao_confirm_token", "VARCHAR(64)"),
         # 短片制作：提示词生成默认时长（用户选择时长后即作为当前登录用户的默认值）
         ("users", "prompt_default_duration", "INTEGER"),
+        # 一期：视频号账号矩阵 + 短片分析
+        # - publish_tasks：账号矩阵 / 小程序库 / 短片来源关联
+        # - video_metrics.platform：平台显式标记（视频号/抖音/快手）
+        # - publish_materials.prompt_record_id：发布素材来源提示词记录
+        ("publish_tasks", "video_account_id", "UUID"),
+        ("publish_tasks", "mini_program_id", "UUID"),
+        ("publish_tasks", "prompt_record_id", "UUID"),
+        ("publish_tasks", "material_id", "UUID"),
+        ("video_metrics", "platform", "VARCHAR(50)"),
+        ("publish_materials", "prompt_record_id", "UUID"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
