@@ -54,7 +54,7 @@ echo "[start_chromium] 使用浏览器: $CHROME_BIN" >&2
 mkdir -p /data/chrome-profiles
 
 exec "$CHROME_BIN" \
-  --remote-debugging-port=9222 \
+  --remote-debugging-port=9223 \
   --no-sandbox \
   --disable-dev-shm-usage \
   --disable-gpu \

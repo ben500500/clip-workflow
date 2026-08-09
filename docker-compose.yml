@@ -363,7 +363,10 @@ services:
       - chrome_profiles:/data/chrome-profiles
       - media_data:/app/media
     ports:
-      - "127.0.0.1:${RPA_DEBUG_PORT:-9222}:9222"
+      # 绑定 0.0.0.0（勿加 127.0.0.1 前缀）：backend/worker 需通过 docker 网络
+      # 访问 rpa_worker:9222 做 CDP 调试（豆包生成/一键发布链路），
+      # 仅绑宿主机 loopback 会导致容器间 ECONNREFUSED
+      - "${RPA_DEBUG_PORT:-9222}:9222"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:9222/json/version"]
       interval: 30s
