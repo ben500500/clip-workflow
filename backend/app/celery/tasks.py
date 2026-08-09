@@ -50,6 +50,7 @@ celery_app.conf.update(
         "app.celery.tasks.confirm_publish_worker": {"queue": "publish"},
         "app.celery.tasks.task_collect_metrics": {"queue": "metrics"},
         "app.celery.tasks.watermark_task": {"queue": "video_processing"},
+        "app.celery.tasks.check_cookie_status": {"queue": "publish"},
     },
     beat_schedule={
         "collect-metrics-daily": {
@@ -65,6 +66,12 @@ celery_app.conf.update(
         "maintenance-daily": {
             "task": "app.celery.tasks.maintenance_daily_task",
             "schedule": crontab(hour=3, minute=0),
+        },
+        # 发布登录态巡检：定期检查视频号/抖音/快手登录态是否失效，
+        # 失效时记录到日志并保留任务记录，供运维/发布专员发现后重新扫码
+        "publish-cookie-check": {
+            "task": "app.celery.tasks.check_cookie_status",
+            "schedule": settings.COOKIE_CHECK_INTERVAL_SECONDS,
         },
     },
 )
@@ -896,6 +903,7 @@ def task_publish_video(self, publish_task_id: str):
             tags=publish_task_data.get("tags"),
             cover_file_key=publish_task_data.get("cover_file_key"),
             mini_program_link=publish_task_data.get("mini_program_link"),
+            task_id=publish_task_id,
         ))
 
         if result.get("status") == "pending_confirm" and result.get("success"):
@@ -939,6 +947,9 @@ def task_publish_video(self, publish_task_id: str):
 
     except Exception as e:
         logger.error(f"Publish task failed: {e}")
+        # 失败时释放可能残留的待确认 tab，避免浏览器连接泄漏
+        from app.services.publish_service import release_pending_tab
+        release_pending_tab(publish_task_id)
         run_async(_update_publish_task_status(publish_task_id, status="failed", error_message=str(e)))
         self.update_state(
             state="FAILURE",
@@ -970,7 +981,7 @@ def confirm_publish_worker(self, publish_task_id: str):
             chrome_debug_port=publish_task_data.get("chrome_debug_port", settings.CHROME_DEBUG_PORT),
             require_manual_confirm=True,
         )
-        result = run_async(publisher.confirm_publish())
+        result = run_async(publisher.confirm_publish(task_id=publish_task_id))
         if not result.get("success"):
             raise Exception(result.get("error", "Confirm publish failed"))
 
@@ -988,7 +999,62 @@ def confirm_publish_worker(self, publish_task_id: str):
         return result
     except Exception as e:
         logger.error(f"Confirm publish failed: {e}")
+        from app.services.publish_service import release_pending_tab
+        release_pending_tab(publish_task_id)
         run_async(_update_publish_task_status(publish_task_id, status="failed", error_message=str(e)))
+        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+        raise
+
+
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=300)
+def check_cookie_status(self):
+    """定时巡检各发布平台登录态是否失效（视频号/抖音/快手）。
+
+    通过 CDP 连接 rpa_worker 的常驻 Chromium，依次打开各平台创作中心
+    检查登录标识。结果写入日志；若配置了钉钉 Webhook，会追加一条告警通知。
+    """
+    from app.services.publish_service import get_publisher
+
+    platforms = ["wechat_channel", "douyin", "kuaishou"]
+    results = {}
+    try:
+        for platform in platforms:
+            try:
+                publisher = get_publisher(platform)
+                result = run_async(publisher.check_login_status())
+                results[platform] = result
+            except Exception as e:
+                logger.error(f"Cookie status check failed for {platform}: {e}")
+                results[platform] = {"status": "error", "platform": platform, "error": str(e)}
+
+        expired = [
+            p for p, r in results.items()
+            if r.get("status") == "expired"
+        ]
+        if expired:
+            logger.warning("发布平台登录态已失效: %s", ", ".join(expired))
+        else:
+            logger.info("Cookie status check completed: %s", results)
+
+        # 登录态失效时推送钉钉告警（若已配置）
+        if expired and settings.DINGTALK_WEBHOOK:
+            try:
+                from app.services.monitor_service import send_dingtalk_alert
+                run_async(send_dingtalk_alert(
+                    settings.DINGTALK_WEBHOOK,
+                    "error",
+                    f"发布平台登录态失效，需要重新扫码登录: {', '.join(expired)}",
+                ))
+            except Exception as e:
+                logger.error(f"Failed to send dingtalk alert for cookie status: {e}")
+
+        self.update_state(
+            state="SUCCESS",
+            meta={"progress": 100, "message": "Cookie status check completed", "results": results},
+        )
+        return results
+    except Exception as e:
+        logger.error(f"Cookie status check failed: {e}")
         self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
 

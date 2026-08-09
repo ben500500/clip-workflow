@@ -93,6 +93,9 @@ class Settings(BaseSettings):
     # RPA Cookie 加密密钥（AES-256/Fernet），未配置时回退 JWT_SECRET
     COOKIE_ENCRYPT_KEY: str = ""
 
+    # 发布平台登录态巡检间隔（秒），Celery beat 周期（默认每 6 小时）
+    COOKIE_CHECK_INTERVAL_SECONDS: int = 21600
+
     # 监控告警（三期）
     # 钉钉机器人 Webhook 地址，用于推送告警消息
     DINGTALK_WEBHOOK: str = ""
