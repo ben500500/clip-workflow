@@ -29,7 +29,7 @@ const ENGINE_HELP: Record<string, { label: string; desc: string }> = {
   },
   remove_mask: {
     label: 'Remove Mask（ROI 经验库）',
-    desc: '集成自 ben500500/remove-mask 仓库（同步 v7 更新）：处理前自动分析任意视频水印带（逐帧半透明白色检测 + y/x 聚类），命中预置 ROI（含新增爷孙重逢）时用人工精调框，其他视频自动检测、检测不到回退全角大框。ROI + cv2.inpaint(TELEA) 插值填充，支持 inpaint（插值修复）/ crop（裁切去水印）两种模式。',
+    desc: '集成自 ben500500/remove-mask 仓库（同步 v10 更新）：处理前自动分析任意视频水印带（逐帧半透明白色检测 + 四角 TL/TR/BL/BR 分别检测 + 时间一致性过滤/文字带高度守卫，剔除白发/人脸等移动亮色主体误判），命中预置 ROI（含爷孙重逢，实测右上 TR + 右下 BR，不误伤老人头部）时用人工精调框，其他视频自动检测、检测不到回退全角大框。ROI + cv2.inpaint(TELEA) 插值填充，支持 inpaint（插值修复）/ crop（裁切去水印）两种模式。',
   },
 };
 
