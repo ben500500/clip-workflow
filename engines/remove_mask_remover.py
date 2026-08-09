@@ -9,6 +9,13 @@ Remove Mask 去水印引擎 —— 基于 ben500500/remove-mask 的「ROI + cv2.
 4. 覆盖 TL / BR（Seedance 水印规律固定出现在左上 + 右下角）
 5. 参数保真：保留原始分辨率/帧率/编码，音频流复制零损耗
 
+v7 核心升级（同步 ben500500/remove-mask 上游更新）：
+**处理前自动分析任意视频**，不再局限于固定视频：
+  ① 抽帧分析 → ② 自动检测水印带（半透明白色像素 + y/x 聚类）
+  → ③ 生成最佳处理方案（检测不到时回退全角大框） → ④ 执行处理
+  保留预置 ROI（已知 5 视频，含新增“爷孙重逢”）与 --scope/--mode 兼容；
+  新增 --analyze-only（只分析）与 --auto（强制自动检测，跳过预置 ROI）。
+
 两种去水印模式（--mode 切换，同步 ben500500/remove-mask 上游更新）：
 - inpaint（默认）：ROI + cv2.inpaint(TELEA) 插值修复，保留原始构图，水印区域被插值填充
 - crop：裁切去水印，把包含水印的上下两条水平带裁掉，保留中间无字区域后等比放大回
@@ -25,6 +32,8 @@ CLI:
   --radius      N          修补半径（默认 3，仅 inpaint 模式生效）
   --iterations  N          修补迭代次数（默认 1，仅 inpaint 模式生效）
   --source-name NAME       原始文件名（用于匹配内置 ROI；默认取输入文件 basename）
+  --analyze-only           只做自动水印分析，输出检测报告后退出（不执行处理）
+  --auto                   强制走自动检测（跳过预置 ROI），适合自定义新视频
 
 进度约定：向 stdout 输出 PROGRESS:<pct>（与 clip-workflow watermark_runner 一致）。
 """
@@ -35,9 +44,319 @@ import subprocess
 import sys
 
 import cv2
+import numpy as np
 
 # remove-mask 经验库（ROI 表）共享模块，与其它引擎共用同一份确认过的水印位置
-from remove_mask_rois import build_mask, resolve_rois
+from remove_mask_rois import build_mask, match_rois, resolve_rois
+
+
+# ============================================================
+# 自动水印分析模块（同步 remove-mask 上游 v7）
+# ============================================================
+
+def _load_sampled_frames(video_path, step=2, max_frames=200):
+    """均匀抽帧，用于快速分析（不读全片）。"""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None, 0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frames = []
+    n = min(total, max_frames * step)
+    for i in range(0, n, step):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        ret, f = cap.read()
+        if ret:
+            frames.append(f)
+    cap.release()
+    return np.stack(frames) if frames else None, total
+
+
+def _semi_white_mask(frame):
+    """半透明白色水印像素：min 通道中高 + 低饱和 + 局部比背景亮。"""
+    f = frame.astype(np.float32)
+    b, g, r = f[..., 0], f[..., 1], f[..., 2]
+    ming = np.minimum(np.minimum(r, g), b)
+    sat = np.maximum(np.maximum(r, g), b) - ming
+    gg = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    bg = cv2.medianBlur(gg.astype(np.uint8), 15).astype(np.float32)
+    diff = gg - bg
+    sw = ((ming > 90) & (sat < 40) & (diff > 6)).astype(np.uint8)
+    sw = cv2.morphologyEx(sw, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    sw = cv2.dilate(sw, np.ones((3, 3), np.uint8), iterations=1)
+    return sw
+
+
+def _detect_text_bands(video_path, step=2, max_frames=200):
+    """逐帧检测贴边水平文字带，返回 (top_boxes, bottom_boxes, N, H, W)。"""
+    frames, total = _load_sampled_frames(video_path, step, max_frames)
+    if frames is None:
+        return None
+    N = frames.shape[0]
+    H, W = frames.shape[1], frames.shape[2]
+    boxes_top, boxes_bottom = [], []
+    for i in range(N):
+        sw = _semi_white_mask(frames[i])
+        for boxes, (z0, z1) in ((boxes_top, (0, int(H * 0.22))),
+                                (boxes_bottom, (int(H * 0.78), H))):
+            rsum = sw[z0:z1].sum(axis=1)
+            thr = max(4, rsum.max() * 0.25)
+            m = rsum >= thr
+            runs = []
+            j = 0
+            while j < len(m):
+                if m[j]:
+                    k = j
+                    while k < len(m) and m[k]:
+                        k += 1
+                    runs.append((j + z0, k - 1 + z0))
+                    j = k
+                else:
+                    j += 1
+            for (ry0, ry1) in runs:
+                if (ry1 - ry0) < 8 or (ry1 - ry0) > 140:
+                    continue
+                sub = sw[ry0:ry1 + 1, :]
+                csum = sub.sum(axis=0)
+                thr_c = max(3, csum.max() * 0.25)
+                m2 = csum >= thr_c
+                runs2 = []
+                j = 0
+                while j < len(m2):
+                    if m2[j]:
+                        k = j
+                        while k < len(m2) and m2[k]:
+                            k += 1
+                        runs2.append((j, k - 1))
+                        j = k
+                    else:
+                        j += 1
+                for (cx0, cx1) in runs2:
+                    if (cx1 - cx0) < 30 or (cx1 - cx0) > W * 0.6:
+                        continue
+                    boxes.append((ry0, ry1, cx0, cx1))
+    return boxes_top, boxes_bottom, N, H, W
+
+
+def _cluster_boxes(boxes, N, H, W, bin_h=12):
+    """对候选框聚类：y 直方图峰值分带 + 带内 x 聚类。"""
+    if len(boxes) < max(4, N * 0.03):
+        return []
+    boxes = np.array(boxes, dtype=np.float32)
+    cy = (boxes[:, 0] + boxes[:, 1]) / 2
+    cx = (boxes[:, 2] + boxes[:, 3]) / 2
+
+    # 1) y 直方图峰值聚类（bin=12px）
+    hist_y, edges = np.histogram(cy, bins=H // bin_h, range=[0, H])
+    hist_y = cv2.GaussianBlur(
+        hist_y.astype(np.float32).reshape(-1, 1), (5, 1), 0).ravel()
+
+    out = []
+    for _ in range(4):
+        pk = np.argmax(hist_y)
+        if hist_y[pk] < max(3, N * 0.03):
+            break
+        yc = (edges[pk] + edges[pk + 1]) / 2
+        in_band = np.abs(cy - yc) < bin_h * 2.5
+        sel = boxes[in_band]
+        if len(sel) < max(3, N * 0.03):
+            hist_y[max(0, pk - 2):pk + 3] = 0
+            continue
+        y0 = int(np.percentile(sel[:, 0], 5))
+        y1 = int(np.percentile(sel[:, 1], 95))
+        if (y1 - y0) < 10 or (y1 - y0) > 170:
+            hist_y[max(0, pk - 2):pk + 3] = 0
+            continue
+
+        # 2) 带内按 x 中心聚类（gap=25px）
+        bcx = cx[in_band]
+        bx = boxes[in_band]
+        x_order = np.argsort(bcx)
+        x_bands = []
+        cur = []
+        for idx in x_order:
+            if not cur:
+                cur = [idx]
+            else:
+                if bcx[idx] - bcx[cur[-1]] <= 25:
+                    cur.append(idx)
+                else:
+                    x_bands.append(cur)
+                    cur = [idx]
+        if cur:
+            x_bands.append(cur)
+        for xb in x_bands:
+            if len(xb) < max(3, N * 0.02):
+                continue
+            bx2 = bx[xb]
+            x0 = int(np.percentile(bx2[:, 2], 5))
+            x1 = int(np.percentile(bx2[:, 3], 95))
+            if (x1 - x0) < 30:
+                continue
+            orig_idx = np.where(in_band)[0]
+            score = len(set(orig_idx[i] for i in xb)) / N
+            out.append((y0, y1, x0, x1, score))
+        hist_y[max(0, pk - 2):pk + 3] = 0
+    return out
+
+
+def _merge_bands(bands):
+    """把同一 top/bottom 带内的多个候选框合并成完整覆盖框。"""
+    if not bands:
+        return []
+    bands = sorted(bands, key=lambda b: (b[0] + b[1]) / 2)
+    groups = []
+    for b in bands:
+        placed = False
+        for g in groups:
+            gy0 = min(x[0] for x in g)
+            gy1 = max(x[1] for x in g)
+            if b[0] <= gy1 and b[1] >= gy0:
+                g.append(b)
+                placed = True
+                break
+        if not placed:
+            groups.append([b])
+    merged = []
+    for g in groups:
+        y0 = min(x[0] for x in g)
+        y1 = max(x[1] for x in g)
+        x0 = min(x[2] for x in g)
+        x1 = max(x[3] for x in g)
+        score = max(x[4] for x in g)
+        merged.append((y0, y1, x0, x1, score))
+    return merged
+
+
+def analyze_video(video_path):
+    """自动分析任意视频，检测水印带。
+
+    返回 dict：
+      {
+        'found': True/False,
+        'top':  [(y0,y1,x0,x1,score), ...] 或 [],
+        'bottom': [(y0,y1,x0,x1,score), ...] 或 [],
+        'H': 高, 'W': 宽, 'N': 采样帧数,
+        'fallback': 是否回退全角大框,
+        'report': 人类可读分析报告(str)
+      }
+    """
+    det = _detect_text_bands(video_path)
+    if det is None:
+        return {'found': False, 'top': [], 'bottom': [], 'H': 0, 'W': 0,
+                'N': 0, 'fallback': True, 'report': '无法读取视频'}
+    boxes_top, boxes_bottom, N, H, W = det
+
+    top = _cluster_boxes(boxes_top, N, H, W)
+    bottom = _cluster_boxes(boxes_bottom, N, H, W)
+    # 过滤：丢弃低置信度候选（score = 覆盖帧比例，需 ≥ 15%）
+    MIN_SCORE = 0.15
+    top = [b for b in top if b[4] >= MIN_SCORE]
+    bottom = [b for b in bottom if b[4] >= MIN_SCORE]
+    # 过滤掉非贴边（中心不靠近上下边缘）
+    top = [b for b in top if (b[0] + b[1]) / 2 <= H * 0.24]
+    bottom = [b for b in bottom if (b[0] + b[1]) / 2 >= H * 0.76]
+
+    top = _merge_bands(top)
+    bottom = _merge_bands(bottom)
+
+    # 同一侧多个候选时，优先保留置信度最高的 1-2 个；
+    # bottom 偏向最贴底（y 大），top 偏向最贴顶（y 小）
+    if top:
+        top = sorted(top, key=lambda b: (-b[4], b[0]))
+        top = top[:2]
+        top = sorted(top, key=lambda b: b[0])
+    if bottom:
+        bottom = sorted(bottom, key=lambda b: (-b[4], -b[1]))
+        bottom = bottom[:2]
+        bottom = sorted(bottom, key=lambda b: -b[1])
+
+    lines = []
+    lines.append(f'  视频规格: {W}×{H}, 采样 {N} 帧')
+    if top:
+        lines.append(f'  检测到【顶部】水印带 {len(top)} 处:')
+        for (y0, y1, x0, x1, s) in top:
+            lines.append(f'    · y={y0}-{y1}  x={x0}-{x1}  置信度={s:.0%}')
+    else:
+        lines.append('  未检测到顶部水印带')
+    if bottom:
+        lines.append(f'  检测到【底部】水印带 {len(bottom)} 处:')
+        for (y0, y1, x0, x1, s) in bottom:
+            lines.append(f'    · y={y0}-{y1}  x={x0}-{x1}  置信度={s:.0%}')
+    else:
+        lines.append('  未检测到底部水印带')
+
+    fallback = (not top) and (not bottom)
+    if fallback:
+        lines.append('  ⚠️ 未能自动定位水印，回退"全角大框"策略（覆盖上/下边缘各 13% 区域）')
+
+    return {
+        'found': not fallback,
+        'top': top,
+        'bottom': bottom,
+        'H': H, 'W': W, 'N': N,
+        'fallback': fallback,
+        'report': '\n'.join(lines),
+    }
+
+
+def analysis_to_rois(analysis, margin=6):
+    """把分析结果转成 inpaint 用的 ROI dict。
+
+    顶部带 → TL（左上），底部带 → BR（右下）。
+    同一侧若有多个候选，优先选置信度最高的带（最可能是真实水印），
+    避免把场景字幕误并入导致遮盖面积过大。
+    未检测到则回退全角大框。
+    """
+    H, W = analysis['H'], analysis['W']
+    if H <= 0 or W <= 0:
+        return None
+    rois = {}
+    buf = margin
+
+    def pick(bands, prefer_bottom=False, must_be_edge=False):
+        """选最可能的带。must_be_edge 时优先选贴边最紧的带，否则返回 None（触发全角回退）。"""
+        if not bands:
+            return None
+        if must_be_edge:
+            if prefer_bottom:
+                edge_bands = [b for b in bands if b[1] >= H * 0.90]
+            else:
+                edge_bands = [b for b in bands if b[0] <= H * 0.12]
+            if not edge_bands:
+                return None
+            if prefer_bottom:
+                def score(b):
+                    edge = (b[1] - H * 0.90) / (H * 0.10)
+                    return b[4] * 1.0 + max(0, edge) * 0.15
+            else:
+                def score(b):
+                    edge = (H * 0.12 - b[0]) / (H * 0.12)
+                    return b[4] * 1.0 + max(0, edge) * 0.15
+            edge_bands.sort(key=score, reverse=True)
+            return edge_bands[0]
+        bands = sorted(bands, key=lambda b: (-b[4], (b[0] if not prefer_bottom else -b[1])))
+        return bands[0]
+
+    tl = pick(analysis['top'], must_be_edge=True)
+    if tl:
+        y0, y1, x0, x1, _ = tl
+        rois['TL'] = (max(0, y0 - buf), min(H - 1, y1 + buf),
+                      max(0, x0 - buf), min(W - 1, x1 + buf))
+    else:
+        # 回退：顶部 20% 全宽（保守覆盖，确保暗水印不遗漏）
+        rois['TL'] = (0, int(H * 0.20) + buf, 0, W)
+
+    br = pick(analysis['bottom'], prefer_bottom=True, must_be_edge=True)
+    if br:
+        y0, y1, x0, x1, _ = br
+        rois['BR'] = (max(0, y0 - buf), min(H - 1, y1 + buf),
+                      max(0, x0 - buf), min(W - 1, x1 + buf))
+    else:
+        rois['BR'] = (int(H * 0.87) - buf, H, 0, W)
+
+    return rois
 
 
 def process_crop(video_path, output_path, rois):
@@ -286,6 +605,14 @@ def main(argv=None):
         "--source-name", default=None,
         help="原始文件名（用于匹配内置 ROI；默认取输入文件 basename）",
     )
+    parser.add_argument(
+        "--analyze-only", action="store_true",
+        help="只做自动水印分析，输出检测报告后退出（不执行处理）",
+    )
+    parser.add_argument(
+        "--auto", action="store_true",
+        help="强制走自动检测（跳过预置 ROI），适合自定义新视频",
+    )
     args = parser.parse_args(argv)
 
     if not os.path.exists(args.input):
@@ -309,8 +636,56 @@ def main(argv=None):
     iterations = max(1, min(args.iterations or 1, 5))
 
     source_name = args.source_name or args.input
-    rois = resolve_rois(source_name, manual_region, scope=args.scope)
 
+    # ---- ① 自动水印分析（同步 remove-mask 上游 v7：任意视频先分析再处理）----
+    print('=' * 60, flush=True)
+    print('① 自动水印分析', flush=True)
+    print('=' * 60, flush=True)
+    analysis = analyze_video(args.input)
+    print(analysis['report'], flush=True)
+    print(flush=True)
+
+    # 已知视频且未强制 auto：优先用人工精调预置 ROI
+    use_preset = None
+    if not args.auto and not manual_region:
+        use_preset = match_rois(source_name, scope=args.scope)
+        if use_preset is not None:
+            print(f'  命中预置 ROI 配置，使用人工精调框（--scope {args.scope}）', flush=True)
+
+    if args.analyze_only:
+        print('--analyze-only：仅分析，不执行处理。', flush=True)
+        return 0
+
+    # ---- ② 生成最佳处理方案 ----
+    print('=' * 60, flush=True)
+    print('② 最佳处理方案', flush=True)
+    print('=' * 60, flush=True)
+    if manual_region:
+        rois = resolve_rois(source_name, manual_region, scope=args.scope)
+        print(f'  方案: 手动指定区域 + {args.mode} 模式', flush=True)
+    elif use_preset is not None:
+        rois = use_preset
+        print(f'  方案: 使用预置 ROI（{args.scope}）+ {args.mode} 模式', flush=True)
+    else:
+        rois = analysis_to_rois(analysis)
+        if rois is None:
+            print("Error: 无法读取视频，自动分析与回退均不可用", file=sys.stderr)
+            return 10
+        if analysis['found']:
+            if args.mode == 'crop':
+                print(f'  方案: 自动检测 ROI + {args.mode} 模式（等比缩放裁掉水印，画面无修复痕迹）', flush=True)
+            else:
+                print(f'  方案: 自动检测 ROI + {args.mode} 模式（inpaint 修复，保留原构图）', flush=True)
+        else:
+            print(f'  方案: 全角大框回退 + {args.mode} 模式（未检出水印，保守覆盖上下边缘）', flush=True)
+    for c, r in rois.items():
+        print(f'    {c}: y={r[0]}-{r[1]} x={r[2]}-{r[3]}', flush=True)
+    print(flush=True)
+
+    # ---- ③ 执行处理 ----
+    print('=' * 60, flush=True)
+    print('③ 执行处理', flush=True)
+    print('=' * 60, flush=True)
     try:
         if args.mode == "crop":
             process_crop(args.input, args.output, rois)

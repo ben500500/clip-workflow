@@ -226,6 +226,14 @@ python engines/seedance_wm_runner.py <input.mp4> -o <output.mp4> [options]
 集成自 [ben500500/remove-mask](https://cnb.cool/ben500500/remove-mask) 仓库的
 「ROI + cv2.inpaint(TELEA)」方案，作为独立可执行脚本放置在 `engines/` 下。
 
+**v7 核心升级（同步 remove-mask 上游更新）**：处理前**自动分析任意视频**，不再局限于
+固定视频。每次处理都会先做水印检测分析，再给出最佳方案执行：
+
+1. 均匀抽帧，逐帧提取"半透明白色"水印像素（min 通道高 + 低饱和 + 局部亮度增强）
+2. 检测贴边水平文字带，对候选框做 **y 直方图峰值聚类 + 带内 x 聚类**
+3. 多候选合并成完整覆盖框，检测不到时回退"全角大框"（顶部/底部各 20%/13%）
+4. 输出【分析报告】：检测到的水印位置 + 置信度 + 推荐方案
+
 **原理**: 不区分“哪些像素是水印”，直接把整个水印 ROI 矩形当掩码，用
 cv2.INPAINT_TELEA 快速行进法从 ROI 边界向内插值填充。按视频文件名匹配内置
 ROI 表（覆盖 Seedance 左上 + 右下角规律），参数保真（保留原始分辨率/帧率，
@@ -240,6 +248,10 @@ ROI 表（覆盖 Seedance 左上 + 右下角规律），参数保真（保留原
 
 ```bash
 python engines/remove_mask_remover.py <input.mp4> -o <output.mp4> [options]
+# 只做自动水印分析，输出检测报告（不处理）
+python engines/remove_mask_remover.py <input.mp4> -o <output.mp4> --analyze-only
+# 强制走自动检测（跳过预置 ROI），适合自定义新视频
+python engines/remove_mask_remover.py <input.mp4> -o <output.mp4> --auto
 ```
 
 **参数**:
@@ -253,9 +265,12 @@ python engines/remove_mask_remover.py <input.mp4> -o <output.mp4> [options]
 | `--scope` | string | 水印 ROI 范围：`small`=收紧贴合水印文字（默认，遮盖面积小）；`large`=整角大框（覆盖更彻底） | `small` |
 | `--mode` | string | 去水印模式：`inpaint`=插值修复保留原构图（默认）；`crop`=裁切去水印（等比缩放切掉水印） | `inpaint` |
 | `--source-name` | string | 原始文件名（用于匹配内置 ROI 表） | 输入文件 basename |
+| `--analyze-only` | flag | 只分析不处理，输出水印检测报告 | 关闭 |
+| `--auto` | flag | 强制走自动检测（跳过预置 ROI） | 关闭 |
 
-**内置 ROI 表**: `648BC321` / `C0CC0472` / `0270150E` / `3906E761`（基于全视频
-OCR + 时序分析确认）；其他文件名回退左上+右下通用 ROI。
+**内置 ROI 表**: `648BC321` / `C0CC0472` / `0270150E` / `3906E761` / `爷孙重逢`
+（基于全视频 OCR + 时序分析确认）；命中预置 ROI 时优先使用人工精调框，
+**其他任意视频自动走检测分析**（检测不到回退全角大框）。
 
 **进度上报**: 向 stdout 输出 `PROGRESS:<pct>` 行，由
 `backend/app/engines/watermark_runner.py` 的 `_run_cmd` 解析后写入数据库。
