@@ -45,6 +45,7 @@ from app.services.seedance_prompt_generator import (  # noqa: E402
     generate_seedance_prompt,
 )
 from app.services.publish_material_generator import generate_publish_material  # noqa: E402
+from app.services.script_optimizer import optimize_script_text  # noqa: E402
 from app.core.llm_manager import get_llm_manager  # noqa: E402
 
 logger = logging.getLogger("autoclip.main")
@@ -445,6 +446,38 @@ class PublishMaterialRequest(BaseModel):
     story: str = ""           # 短剧剧情梗概（必填）
     params: dict = {}          # 可选：title/theme/tone/platform/extra_requirements
     max_retries: int = 3
+
+
+class ScriptOptimizeRequest(BaseModel):
+    text: str = ""            # 待优化的短剧文案（必填）
+    params: dict = {}          # 可选：theme/tone/extra_requirements
+    max_retries: int = 3
+
+
+@app.post("/api/v1/script/optimize")
+async def optimize_script(data: ScriptOptimizeRequest):
+    """短剧文案 AI 优化：调用 autoclip 配置的大模型改写文案。
+
+    - 保留主线与核心反转，增强冲突 / 悬念 / 情绪张力
+    - 保持对白 / 旁白标注格式，人名地名用代称
+    - 直接返回优化后的文案正文
+    """
+    if not data.text or not data.text.strip():
+        raise HTTPException(status_code=400, detail="请输入短剧文案")
+    try:
+        optimized = await asyncio.to_thread(
+            optimize_script_text,
+            data.text.strip(),
+            params=data.params or {},
+            max_retries=data.max_retries,
+        )
+    except Exception as e:
+        logger.error("Script optimize failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"文案优化失败: {e}")
+    return {
+        "optimized_text": optimized,
+        "model": _current_llm_model(),
+    }
 
 
 @app.post("/api/v1/publish-material/generate")

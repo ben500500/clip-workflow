@@ -99,6 +99,8 @@ const ShortDrama: React.FC = () => {
   const [characters, setCharacters] = useState('');
   const [extra, setExtra] = useState('');
   const [generating, setGenerating] = useState(false);
+  // 短剧文案 AI 优化
+  const [optimizing, setOptimizing] = useState(false);
 
   // 生成结果（三版本：长提示词 / 短提示词 / AI提示词）
   const [resultPrompt, setResultPrompt] = useState('');       // AI 提示词（Seedance 七段）
@@ -280,6 +282,29 @@ const ShortDrama: React.FC = () => {
       message.error(err instanceof Error ? err.message : '生成失败');
     } finally {
       setGenerating(false);
+    }
+  };
+
+  // 短剧文案 AI 优化：调用模型改写文案后回填输入框
+  const handleOptimize = async () => {
+    if (!text.trim()) {
+      message.warning('请先输入短剧文案');
+      return;
+    }
+    setOptimizing(true);
+    try {
+      const res = await shortdramaApi.optimizeScript({
+        text: text.trim(),
+        theme: theme.trim() || undefined,
+        tone: tone.trim() || undefined,
+        extra_requirements: extra.trim() || undefined,
+      });
+      setText(res.optimized_text);
+      message.success(res.message || '文案优化完成，已回填到输入框');
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '文案优化失败');
+    } finally {
+      setOptimizing(false);
     }
   };
 
@@ -668,6 +693,7 @@ const ShortDrama: React.FC = () => {
       title: '操作',
       key: 'action',
       width: 300,
+      fixed: 'right' as const,
       render: (_: unknown, r: ShortdramaPromptRecord) => {
         const active = isDoubaoActive(r);
         return (
@@ -814,11 +840,24 @@ const ShortDrama: React.FC = () => {
 
           {/* 文案输入 */}
           <div>
-            <Space style={{ marginBottom: 6 }}>
+            <Space style={{ marginBottom: 6 }} wrap>
               <Text strong>短剧文案：</Text>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 对白 / 旁白原文，生成时将逐字锁定、禁止模型扩写；人名/地名将自动替换为代称
               </Text>
+              <Tooltip title="调用模型对文案进行优化改写：增强冲突/悬念/情绪张力，保留主线与核心反转，保持对白旁白标注格式，优化后自动回填到输入框">
+                <Button
+                  size="small"
+                  type="primary"
+                  ghost
+                  icon={<RobotOutlined />}
+                  loading={optimizing}
+                  disabled={generating}
+                  onClick={handleOptimize}
+                >
+                  AI 优化
+                </Button>
+              </Tooltip>
             </Space>
             <TextArea
               rows={8}
