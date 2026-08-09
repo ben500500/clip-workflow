@@ -183,19 +183,22 @@ def _serialize_video(video: WatermarkVideo, output_url: Optional[str] = None, so
     }
 
 
-def _serialize_task(task: WatermarkTask) -> dict:
+def _serialize_task(task: WatermarkTask, fallback_prompt_record_id: Optional[str] = None) -> dict:
     duration = None
     if task.started_at:
         end = task.completed_at or datetime.utcnow()
         duration = round((end - task.started_at).total_seconds(), 1)
     opts = task.options or {}
+    # 任务级来源关联优先；历史任务（修复前创建）options 未持久化该字段时，
+    # 回退到子视频的来源提示词记录 id，保证「去水印 → 发布」链路始终可用
+    prompt_record_id = opts.get("prompt_record_id") or fallback_prompt_record_id
     return {
         "id": str(task.id),
         "engine": task.engine,
         "engine_display": ENGINE_DISPLAY.get(task.engine, task.engine),
         "name": task.name,
         "options": opts,
-        "prompt_record_id": opts.get("prompt_record_id"),
+        "prompt_record_id": prompt_record_id,
         "status": task.status,
         "progress": task.progress or 0.0,
         "total_count": task.total_count or 0,
@@ -349,6 +352,22 @@ async def run_watermark_task(
             source_name = parts[1] if (len(parts) == 2 and len(parts[0]) == 36) else base
             options["source_name"] = source_name
 
+    # 校验来源提示词记录（可选），用于「去水印 → 发布」自动代入文案
+    prompt_record_id = None
+    if data.prompt_record_id:
+        try:
+            rid = uuid.UUID(data.prompt_record_id)
+            pr = await db.execute(select(ShortdramaPrompt).where(ShortdramaPrompt.id == rid))
+            if pr.scalar_one_or_none():
+                prompt_record_id = rid
+        except Exception:
+            prompt_record_id = None
+
+    # 任务级来源关联：写入 options（必须在任务创建/flush 之前写入，
+    # 因为 options 是普通 JSON 列，flush 后再原地修改 dict 不会被 SQLAlchemy 追踪持久化）
+    if prompt_record_id:
+        options["prompt_record_id"] = str(prompt_record_id)
+
     # 创建任务记录（任务名称：优先使用前端传入的完整日期+自增序列，否则后端自动生成）
     task_name = data.name or await gen_task_name()
     task = WatermarkTask(
@@ -361,21 +380,6 @@ async def run_watermark_task(
     )
     db.add(task)
     await db.flush()
-
-    # 校验来源提示词记录（可选），用于「去水印 → 发布」自动代入文案
-    prompt_record_id = None
-    if data.prompt_record_id:
-        try:
-            rid = uuid.UUID(data.prompt_record_id)
-            pr = await db.execute(select(ShortdramaPrompt).where(ShortdramaPrompt.id == rid))
-            if pr.scalar_one_or_none():
-                prompt_record_id = rid
-        except Exception:
-            prompt_record_id = None
-
-    # 任务级来源关联：写入 options，便于「发布」时拿到提示词记录
-    if prompt_record_id:
-        options["prompt_record_id"] = str(prompt_record_id)
 
     # 创建子视频记录（file_key 与文件名解耦：从 key 提取原文件名）
     for fk in file_keys:
@@ -427,7 +431,27 @@ async def list_watermark_tasks(
         select(WatermarkTask).order_by(WatermarkTask.created_at.desc()).limit(200)
     )
     tasks = result.scalars().all()
-    return [_serialize_task(t) for t in tasks]
+    items = []
+    # 历史任务（修复前）任务级 options 未持久化 prompt_record_id，
+    # 从子视频的来源提示词记录回退（批量查询一次完成，避免 N+1），
+    # 保证「去水印 → 发布」链路一致
+    task_ids = [t.id for t in tasks]
+    fallback_map: dict = {}
+    if task_ids:
+        vres = await db.execute(
+            select(WatermarkVideo.task_id, WatermarkVideo.prompt_record_id)
+            .where(
+                WatermarkVideo.task_id.in_(task_ids),
+                WatermarkVideo.prompt_record_id.isnot(None),
+            )
+            .distinct()
+        )
+        for tid, prid in vres.all():
+            if tid not in fallback_map:
+                fallback_map[tid] = str(prid)
+    for t in tasks:
+        items.append(_serialize_task(t, fallback_map.get(t.id)))
+    return items
 
 
 @router.get("/watermark/tasks/{task_id}", response_model=WatermarkTaskDetail)
@@ -471,6 +495,13 @@ async def get_watermark_task(
 
     data = _serialize_task(task)
     data["videos"] = video_items
+    # 历史任务（修复前）任务级 options 未持久化 prompt_record_id，
+    # 从子视频来源回退，保证「去水印 → 发布」任务级关联始终可用
+    if not data.get("prompt_record_id"):
+        for v in videos:
+            if v.prompt_record_id:
+                data["prompt_record_id"] = str(v.prompt_record_id)
+                break
     return data
 
 
