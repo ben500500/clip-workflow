@@ -173,6 +173,7 @@ const PublishMaterialTab: React.FC<{
         tone: tone.trim() || undefined,
         platform: platform.trim() || undefined,
         extra_requirements: extra.trim() || undefined,
+        prompt_record_id: selectedPromptRecord || undefined,
         save: true,
       });
       setResult(res.material);

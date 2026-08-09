@@ -1095,7 +1095,7 @@ def task_collect_metrics(self, account_id: Optional[str] = None, target_date: Op
 
 async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
     """Fetch publish task data from the database."""
-    from app.models.models import PublishTask, PublishProfile
+    from app.models.models import PublishTask, PublishProfile, VideoAccount
     from sqlalchemy import select
 
     async with async_session_factory() as session:
@@ -1107,6 +1107,8 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
         if not task:
             return None
 
+        profile = None
+        # 优先按 (platform, account_name) 匹配发布配置（兼容既有逻辑）
         profile_result = await session.execute(
             select(PublishProfile).where(
                 PublishProfile.platform == task.platform,
@@ -1114,6 +1116,18 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
             )
         )
         profile = profile_result.scalar_one_or_none()
+
+        # 若任务关联了账号库（video_account_id），优先取账号绑定的发布配置
+        if not profile and task.video_account_id:
+            acc_result = await session.execute(
+                select(VideoAccount).where(VideoAccount.id == task.video_account_id)
+            )
+            acc = acc_result.scalar_one_or_none()
+            if acc and acc.profile_id:
+                prof_result = await session.execute(
+                    select(PublishProfile).where(PublishProfile.id == acc.profile_id)
+                )
+                profile = prof_result.scalar_one_or_none()
 
         data = {
             "id": str(task.id),
@@ -1126,6 +1140,8 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
             "cover_file_key": task.cover_file_key,
             "mini_program_link": task.mini_program_link,
             "require_manual_confirm": task.require_manual_confirm,
+            "video_account_id": str(task.video_account_id) if task.video_account_id else None,
+            "mini_program_id": str(task.mini_program_id) if task.mini_program_id else None,
         }
 
         if profile:
