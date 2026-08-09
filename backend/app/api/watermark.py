@@ -27,6 +27,7 @@ from app.services.minio_service import (
     upload_file_from_path,
 )
 from app.services.upload_service import validate_file_name
+from app.services.redis_stream import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,43 @@ router = APIRouter()
 
 # 允许的去水印引擎
 ALLOWED_ENGINES = ("remove_ai", "seedance", "seedance_wm", "remove_mask")
+
+# 任务名称自增序列的 Redis 键（跨实例全局自增，防并发重复）
+_TASK_SEQ_REDIS_KEY = "watermark:task:seq"
+# 当前日期对应的 Redis 键（日期变更自动从 1 重新计数）
+_TASK_SEQ_DATE_KEY = "watermark:task:seq:date"
+
+
+async def gen_task_name() -> str:
+    """生成任务名称：完整日期（YYYYMMDDHHmmss）+ 4 位自增序列。
+
+    优先使用 Redis 做跨进程全局自增（日期切换自动归 1），
+    Redis 不可用时回退到进程内自增，保证不抛错。
+    """
+    now = datetime.now()
+    date_part = now.strftime("%Y%m%d%H%M%S")
+    try:
+        client = await get_redis()
+        today = now.strftime("%Y%m%d")
+        current_date = await client.get(_TASK_SEQ_DATE_KEY)
+        if current_date is None or current_date.decode() != today:
+            # 新的一天：重置序列
+            await client.set(_TASK_SEQ_DATE_KEY, today)
+            await client.set(_TASK_SEQ_REDIS_KEY, 0)
+        seq = await client.incr(_TASK_SEQ_REDIS_KEY)
+    except Exception:
+        seq = _fallback_seq()
+    return f"{date_part}-{seq % 10000:04d}"
+
+
+_fallback_counter = 0
+
+
+def _fallback_seq() -> int:
+    global _fallback_counter
+    _fallback_counter = (_fallback_counter % 9999) + 1
+    return _fallback_counter
+
 
 ENGINE_DISPLAY = {
     "remove_ai": "Remove AI Watermarks（RAiW）",
@@ -310,8 +348,8 @@ async def run_watermark_task(
             source_name = parts[1] if (len(parts) == 2 and len(parts[0]) == 36) else base
             options["source_name"] = source_name
 
-    # 创建任务记录（任务名称：优先使用前端传入的 10 位时间戳，否则取当前时间戳）
-    task_name = data.name or str(int(datetime.utcnow().timestamp()))[:10]
+    # 创建任务记录（任务名称：优先使用前端传入的完整日期+自增序列，否则后端自动生成）
+    task_name = data.name or await gen_task_name()
     task = WatermarkTask(
         engine=engine,
         options=options,

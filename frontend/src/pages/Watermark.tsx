@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Card, Typography, Space, Button, Select, Table, Progress, Tag, Modal,
-  Popconfirm, Checkbox, Tooltip, message, Input, Alert, Radio, Spin, Empty,
+  Popconfirm, Checkbox, Tooltip, message, Input, Radio, Spin, Empty,
 } from 'antd';
 import {
   UploadOutlined, PlayCircleOutlined, DownloadOutlined, DeleteOutlined,
   PlusOutlined, ReloadOutlined, VideoCameraOutlined, ClearOutlined,
-  InboxOutlined, SendOutlined,
+  InboxOutlined, SendOutlined, ExclamationCircleOutlined,
 } from '@ant-design/icons';
 import { watermarkApi, type WatermarkTaskDetail, type WatermarkTaskItem } from '../api/watermark';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
@@ -60,7 +60,37 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: '已取消',
 };
 
-const genTaskName = () => String(Math.floor(Date.now() / 1000));
+// 任务名称：完整日期（YYYYMMDDHHmmss）+ 4 位自增序列
+// 序列按天自增（跨页面刷新通过 localStorage 续接，避免同秒重复），后端无 name 时用 Redis 兜底生成
+const pad4 = (n: number) => String(n).padStart(4, '0');
+const SEQ_STORAGE_KEY = 'watermark_task_seq';
+const dateStamp = () => {
+  const d = new Date();
+  const p = (v: number) => String(v).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+};
+const genTaskName = () => {
+  const d = new Date();
+  const p = (v: number) => String(v).padStart(2, '0');
+  const day = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+  let seq = 0;
+  try {
+    const saved = localStorage.getItem(SEQ_STORAGE_KEY);
+    if (saved) {
+      const [s, savedDay] = saved.split('|');
+      if (savedDay === day) seq = parseInt(s, 10) || 0;
+    }
+  } catch {
+    /* 忽略 localStorage 异常 */
+  }
+  seq = (seq % 9999) + 1;
+  try {
+    localStorage.setItem(SEQ_STORAGE_KEY, `${seq}|${day}`);
+  } catch {
+    /* 忽略 localStorage 异常 */
+  }
+  return `${dateStamp()}-${pad4(seq)}`;
+};
 
 const Watermark: React.FC<{
   imports?: ImportedVideo[];
@@ -640,20 +670,22 @@ const Watermark: React.FC<{
               optionType="button"
               buttonStyle="solid"
               options={[
-                { value: 'remove_mask', label: ENGINE_HELP.remove_mask.label },
-                { value: 'seedance_wm', label: ENGINE_HELP.seedance_wm.label },
-                { value: 'remove_ai', label: ENGINE_HELP.remove_ai.label },
-                { value: 'seedance', label: ENGINE_HELP.seedance.label },
-              ]}
+                { value: 'remove_mask', label: ENGINE_HELP.remove_mask.label, desc: ENGINE_HELP.remove_mask.desc },
+                { value: 'seedance_wm', label: ENGINE_HELP.seedance_wm.label, desc: ENGINE_HELP.seedance_wm.desc },
+                { value: 'remove_ai', label: ENGINE_HELP.remove_ai.label, desc: ENGINE_HELP.remove_ai.desc },
+                { value: 'seedance', label: ENGINE_HELP.seedance.label, desc: ENGINE_HELP.seedance.desc },
+              ].map((o) => ({
+                value: o.value,
+                label: (
+                  <Space size={4}>
+                    {o.label}
+                    <Tooltip title={o.desc}>
+                      <ExclamationCircleOutlined style={{ color: '#faad14', cursor: 'help' }} />
+                    </Tooltip>
+                  </Space>
+                ),
+              }))}
             />
-            <div style={{ marginTop: 8 }}>
-              <Alert
-                type="info"
-                showIcon
-                message={ENGINE_HELP[engine]?.desc}
-                style={{ maxWidth: 900 }}
-              />
-            </div>
           </div>
 
           {/* 引擎参数 */}
@@ -856,11 +888,11 @@ const Watermark: React.FC<{
             </Space>
           )}
 
-          {/* 任务名称：默认取当前 10 位时间戳，可修改 */}
+          {/* 任务名称：默认取完整日期 + 4 位自增序列，可修改 */}
           <Space>
             <Text>任务名称：</Text>
             <Input
-              placeholder="默认取当前 10 位时间戳，可修改"
+              placeholder="默认取完整日期 + 4 位自增序列，可修改"
               value={taskName}
               onChange={(e) => setTaskName(e.target.value)}
               style={{ width: 260 }}
