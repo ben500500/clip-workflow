@@ -785,6 +785,8 @@ class ShortdramaPrompt(Base):
     doubao_task_id = Column(String(100), nullable=True)
     # 进度/消息（running 时由 Celery 任务实时更新）
     doubao_message = Column(Text, nullable=True)
+    # 进度百分比 0~100（由 Celery 任务通过 progress_cb 实时更新，前端展示进度条）
+    doubao_progress = Column(Integer, nullable=True, default=0)
     doubao_error_message = Column(Text, nullable=True)
     # 最终通过豆包审核并实际用于生成的提示词（改写确认闭环落库留档）
     doubao_approved_prompt = Column(Text, nullable=True)

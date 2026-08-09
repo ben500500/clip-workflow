@@ -191,6 +191,7 @@ class PromptRecordItem(BaseModel):
     doubao_qrcode: Optional[str] = None
     doubao_message: Optional[str] = None
     doubao_error_message: Optional[str] = None
+    doubao_progress: Optional[int] = None
     doubao_approved_prompt: Optional[str] = None
     doubao_rewrite_history: Optional[list] = None
     doubao_rewrite_count: Optional[int] = None
@@ -236,6 +237,7 @@ def _serialize_record(r: ShortdramaPrompt) -> dict:
         "doubao_qrcode": r.doubao_qrcode,
         "doubao_message": r.doubao_message,
         "doubao_error_message": r.doubao_error_message,
+        "doubao_progress": r.doubao_progress,
         "doubao_approved_prompt": r.doubao_approved_prompt,
         "doubao_rewrite_history": r.doubao_rewrite_history or [],
         "doubao_rewrite_count": len(r.doubao_rewrite_history or []),
@@ -751,6 +753,7 @@ async def start_doubao_generate(
     record.doubao_status = "pending"
     record.doubao_account_type = data.account_type
     record.doubao_message = "任务已创建，等待执行…"
+    record.doubao_progress = 0
     record.doubao_error_message = None
     record.doubao_qrcode = None
     record.doubao_confirm_token = None
