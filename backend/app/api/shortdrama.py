@@ -194,6 +194,14 @@ class PromptRecordItem(BaseModel):
     doubao_approved_prompt: Optional[str] = None
     doubao_rewrite_history: Optional[list] = None
     doubao_rewrite_count: Optional[int] = None
+    # Seedance 官方 API 直连任务状态（与豆包 RPA 完全独立的第二通道）
+    seedance_status: Optional[str] = None
+    seedance_task_id: Optional[str] = None
+    seedance_message: Optional[str] = None
+    seedance_error_message: Optional[str] = None
+    seedance_resolution: Optional[str] = None
+    # 成片来源通道：doubao_rpa / seedance_api / manual（便于追溯）
+    gen_channel: Optional[str] = None
 
 
 # ──────────────────────────────────────────────
@@ -231,6 +239,12 @@ def _serialize_record(r: ShortdramaPrompt) -> dict:
         "doubao_approved_prompt": r.doubao_approved_prompt,
         "doubao_rewrite_history": r.doubao_rewrite_history or [],
         "doubao_rewrite_count": len(r.doubao_rewrite_history or []),
+        "seedance_status": r.seedance_status,
+        "seedance_task_id": r.seedance_task_id,
+        "seedance_message": r.seedance_message,
+        "seedance_error_message": r.seedance_error_message,
+        "seedance_resolution": r.seedance_resolution,
+        "gen_channel": r.gen_channel,
     }
 
 
@@ -539,6 +553,7 @@ async def upload_shortdrama_video(
     record.video_status = "uploaded"
     record.video_error_message = None
     record.video_uploaded_at = datetime.utcnow()
+    record.gen_channel = "manual"
     await db.commit()
 
     # 返回带可播放的签名 URL，便于前端上传后立即预览
@@ -948,3 +963,172 @@ async def _load_doubao_limits(db: AsyncSession) -> dict:
         "free_max_seconds": int(custom.get("free_max_seconds", 10)),
         "pro_max_seconds": int(custom.get("pro_max_seconds", 30)),
     }
+
+
+# ──────────────────────────────────────────────
+# Seedance 官方 API 直连出片（火山方舟）—— 与豆包 RPA 完全独立的第二通道
+# ──────────────────────────────────────────────
+
+SEEDANCE_STATUS_LABELS = {
+    "none": "未生成",
+    "pending": "排队中",
+    "running": "生成中",
+    "completed": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+}
+
+# Seedance 直连配置的 system_config key（可在系统设置中修改 JSON）
+SEEDANCE_CONFIG_KEY = "shortdrama_seedance_config"
+
+
+class SeedanceGenerateRequest(BaseModel):
+    # 生成时长（秒）；Seedance 1.0 仅支持 5s/10s，>10s 按配置策略截断或拒绝
+    duration: Optional[int] = None
+    # 分辨率：480p / 720p / 1080p（默认取配置）
+    resolution: Optional[str] = None
+
+
+class SeedanceGenerateResponse(BaseModel):
+    record_id: str
+    seedance_status: str
+    message: str
+
+
+async def _load_seedance_config(db: AsyncSession):
+    """读取 Seedance 直连配置（环境变量 + system_config 合并）。"""
+    from app.services.ark_client import load_seedance_config
+
+    result = await db.execute(
+        select(SystemConfig).where(SystemConfig.key == SEEDANCE_CONFIG_KEY)
+    )
+    cfg = result.scalar_one_or_none()
+    db_config = (cfg.value or {}) if cfg and isinstance(cfg.value, dict) else {}
+    return load_seedance_config(db_config=db_config)
+
+
+async def _require_seedance_enabled(db: AsyncSession):
+    """开关校验：Seedance 直连未启用时统一抛 403（默认关闭）。"""
+    cfg = await _load_seedance_config(db)
+    if not cfg.enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Seedance 官方 API 直连未启用（开关默认关闭）。请在系统设置或 .env 中配置并开启。",
+        )
+    return cfg
+
+
+@router.get("/shortdrama/seedance/config", response_model=dict)
+async def get_seedance_config(
+    db: AsyncSession = Depends(get_db),
+):
+    """读取 Seedance 直连配置（只读，绝不返回 api_key）。
+
+    前端据此展示「是否已开启 / 是否已配 Key / 支持的时长 / 超长策略」。
+    """
+    cfg = await _load_seedance_config(db)
+    public = cfg.to_public_dict()
+    # 未配置 Key 时补充友好提示
+    if not public["has_api_key"]:
+        public["missing"] = "未配置 SEEDANCE_API_KEY（火山方舟 API Key）"
+    return public
+
+
+@router.post("/shortdrama/prompts/{record_id}/seedance/generate", response_model=SeedanceGenerateResponse)
+async def start_seedance_generate(
+    record_id: str,
+    data: SeedanceGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Seedance 官方 API 直连出片：为提示词记录启动方舟直连任务。
+
+    - 开关未开启（默认）时返回 403，前端不展示该按钮
+    - 与豆包 RPA 并行独立：seedance_* 字段与 doubao_* 字段互不干扰
+    - 已存在运行中的 Seedance 任务时返回 409
+    """
+    await _require_seedance_enabled(db)
+
+    record = await _get_record_or_404(record_id, db)
+    if record.seedance_status in ("pending", "running"):
+        raise HTTPException(status_code=409, detail="该记录已有 Seedance 直连任务在进行中，请先等待完成或取消")
+
+    # 校验时长：Seedance 1.0 仅支持 5s/10s；>10s 由任务内按策略截断/拒绝
+    want_duration = _normalize_duration(data.duration) if data.duration is not None else (record.duration or 10)
+
+    record.seedance_status = "pending"
+    record.seedance_task_id = None
+    record.seedance_message = "任务已创建，等待执行…"
+    record.seedance_error_message = None
+    record.seedance_resolution = data.resolution or None
+    await db.flush()
+
+    # 异步派发到 publish 队列（普通 worker 即可消费，不依赖 rpa_worker）
+    from app.celery.tasks import seedance_generate_task
+    celery_result = seedance_generate_task.delay(
+        str(record.id),
+        duration=want_duration,
+        resolution=data.resolution,
+    )
+    record.seedance_task_id = celery_result.id
+    await db.commit()
+
+    return SeedanceGenerateResponse(
+        record_id=str(record.id),
+        seedance_status="pending",
+        message="Seedance 直连生成任务已创建，正在后台执行",
+    )
+
+
+@router.post("/shortdrama/prompts/{record_id}/seedance/cancel", response_model=SeedanceGenerateResponse)
+async def cancel_seedance_generate(
+    record_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """取消 Seedance 直连生成任务（尽力取消方舟侧任务 + 置 cancelled）。"""
+    await _require_seedance_enabled(db)
+
+    record = await _get_record_or_404(record_id, db)
+    if record.seedance_status not in ("pending", "running"):
+        raise HTTPException(status_code=400, detail="当前无进行中的 Seedance 直连任务可取消")
+
+    # 尝试取消方舟侧任务（尽力而为）
+    if record.seedance_task_id and record.seedance_status == "running":
+        try:
+            from app.services.ark_client import SeedanceClient, load_seedance_config
+
+            cfg = await _load_seedance_config(db)
+            if cfg.enabled and cfg.api_key:
+                client = SeedanceClient(cfg)
+                await client.cancel_task(record.seedance_task_id)
+        except Exception as e:
+            logger.warning("取消方舟侧任务失败（忽略）: %s", e)
+
+    record.seedance_status = "cancelled"
+    record.seedance_message = "任务已取消"
+    record.seedance_error_message = "用户取消"
+    await db.commit()
+
+    # 尝试取消 Celery 任务（尽力而为）
+    if record.seedance_task_id:
+        try:
+            from app.celery.tasks import celery_app as celery
+            celery.control.revoke(record.seedance_task_id, terminate=False)
+        except Exception:
+            pass
+
+    return SeedanceGenerateResponse(record_id=record_id, seedance_status="cancelled", message="Seedance 直连任务已取消")
+
+
+@router.get("/shortdrama/prompts/{record_id}/seedance/status", response_model=PromptRecordItem)
+async def get_seedance_status(
+    record_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """查询 Seedance 直连任务状态（前端轮询用，返回完整记录）。"""
+    record = await _get_record_or_404(record_id, db)
+    item = _serialize_record(record)
+    if record.video_file_key and record.video_bucket:
+        item["video_url"] = await get_presigned_url(
+            record.video_bucket, record.video_file_key, expires_seconds=3600
+        )
+    return item

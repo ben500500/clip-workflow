@@ -217,6 +217,16 @@ services:
       CHROME_DEBUG_PORT: 9222
       CHROME_DEBUG_HOST: rpa_worker
       RPA_REQUIRE_MANUAL_CONFIRM: "true"
+      # Seedance 官方 API 直连出片（默认关闭，需在 .env 配置 SEEDANCE_ENABLED=true 与 API Key）
+      SEEDANCE_ENABLED: ${SEEDANCE_ENABLED:-false}
+      SEEDANCE_API_KEY: ${SEEDANCE_API_KEY:-}
+      SEEDANCE_MODEL: ${SEEDANCE_MODEL:-seedance-1-0-pro-250528}
+      SEEDANCE_API_BASE: ${SEEDANCE_API_BASE:-https://ark.cn-beijing.volces.com/api/v3}
+      SEEDANCE_RESOLUTION: ${SEEDANCE_RESOLUTION:-1080p}
+      SEEDANCE_WATERMARK: ${SEEDANCE_WATERMARK:-true}
+      SEEDANCE_TIMEOUT: ${SEEDANCE_TIMEOUT:-600}
+      SEEDANCE_LONG_DURATION_POLICY: ${SEEDANCE_LONG_DURATION_POLICY:-truncate}
+      SEEDANCE_DAILY_QUOTA: ${SEEDANCE_DAILY_QUOTA:-0}
       # HuggingFace 离线模式：去水印 ONNX 模型从本地预置缓存加载（hf-cache），
       # 禁止检查远程（服务器无法访问 huggingface.co，检查会阻塞超时）
       HF_HUB_OFFLINE: "1"
@@ -262,6 +272,16 @@ services:
       MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-localhost:9000}
       CHROME_DEBUG_PORT: 9222
       CHROME_DEBUG_HOST: rpa_worker
+      # Seedance 官方 API 直连出片（默认关闭；worker 需同步注入配置，供 Celery 任务消费）
+      SEEDANCE_ENABLED: ${SEEDANCE_ENABLED:-false}
+      SEEDANCE_API_KEY: ${SEEDANCE_API_KEY:-}
+      SEEDANCE_MODEL: ${SEEDANCE_MODEL:-seedance-1-0-pro-250528}
+      SEEDANCE_API_BASE: ${SEEDANCE_API_BASE:-https://ark.cn-beijing.volces.com/api/v3}
+      SEEDANCE_RESOLUTION: ${SEEDANCE_RESOLUTION:-1080p}
+      SEEDANCE_WATERMARK: ${SEEDANCE_WATERMARK:-true}
+      SEEDANCE_TIMEOUT: ${SEEDANCE_TIMEOUT:-600}
+      SEEDANCE_LONG_DURATION_POLICY: ${SEEDANCE_LONG_DURATION_POLICY:-truncate}
+      SEEDANCE_DAILY_QUOTA: ${SEEDANCE_DAILY_QUOTA:-0}
       # HuggingFace 离线模式：去水印 ONNX 模型从本地预置缓存加载（hf-cache），
       # 禁止检查远程（服务器无法访问 huggingface.co，检查会阻塞超时）
       HF_HUB_OFFLINE: "1"
