@@ -395,7 +395,7 @@ async def health():
 
 class SeedancePromptRequest(BaseModel):
     text: str = ""
-    duration: int = 15          # 10 / 15 秒
+    duration: int = 15          # 10 / 15 / 20 / 25 / 30 秒
     params: dict = {}           # 可选：theme/tone/characters/extra_requirements
     templates: dict = {}        # 可选：用户自定义长/短提示词模板 {"long":.., "short":..}
     max_retries: int = 3

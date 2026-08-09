@@ -91,6 +91,7 @@ const DOUBAO_STATUS_META: Record<string, { label: string; color: string; icon: R
 const ShortDrama: React.FC = () => {
   // ── 提示词生成表单 ──
   const [text, setText] = useState('');
+  // 视频时长预设：10 / 15 / 20 / 25 / 30 秒或自定义（3~300）
   const [duration, setDuration] = useState<number>(15);
   const [durationCustom, setDurationCustom] = useState(false);
   const [theme, setTheme] = useState('');
@@ -189,6 +190,23 @@ const ShortDrama: React.FC = () => {
       });
   }, []);
 
+  // ── 加载当前用户默认时长（用户选择时长后即作为默认值） ──
+  useEffect(() => {
+    shortdramaApi
+      .getDefaultDuration()
+      .then((data) => {
+        const d = Number(data?.duration);
+        if (Number.isFinite(d) && d >= 3 && d <= 300) {
+          setDuration(d);
+          // 非预设（10/15/20/25/30）时视为自定义时长
+          setDurationCustom(![10, 15, 20, 25, 30].includes(d));
+        }
+      })
+      .catch(() => {
+        // 读取失败不阻断，使用默认 15s
+      });
+  }, []);
+
   // ── 豆包进行中任务轮询（5s）：更新状态 / 二维码 / 改写确认弹窗 ──
   useEffect(() => {
     if (doubaoActiveIds.size === 0) return;
@@ -247,6 +265,8 @@ const ShortDrama: React.FC = () => {
         characters: characters.trim() || undefined,
         extra_requirements: extra.trim() || undefined,
         save: true,
+        // 时长选择后即作为当前登录用户的默认值
+        save_duration_as_default: true,
       });
       setResultPrompt(res.prompt);
       setResultLong(res.versions?.long || '');
@@ -512,9 +532,34 @@ const ShortDrama: React.FC = () => {
   const switchDurationMode = (custom: boolean) => {
     setDurationCustom(custom);
     if (custom) {
-      // 切到自定义时给一个默认值
-      setDuration((prev) => (prev === 10 || prev === 15 ? 20 : prev));
+      // 切到自定义时给一个默认值（并保存为当前用户默认值）
+      setDuration((prev) => {
+        const next = prev === 10 || prev === 15 || prev === 20 || prev === 25 || prev === 30 ? 20 : prev;
+        saveDefaultDuration(next);
+        return next;
+      });
+    } else {
+      // 切回预设：保留当前所选预设值
+      setDuration((prev) => (prev === 10 || prev === 15 || prev === 20 || prev === 25 || prev === 30 ? prev : 15));
     }
+  };
+
+  // 选择时长后即作为当前登录用户的默认值（预设与自定义统一走这里）
+  const saveDefaultDuration = (d: number) => {
+    const normalized = Number.isFinite(Number(d)) ? Number(d) : 15;
+    shortdramaApi
+      .setDefaultDuration(normalized)
+      .then(() => {
+        // 保存成功（静默，不打扰用户操作）
+      })
+      .catch(() => {
+        // 保存失败不阻断，下次生成仍会再次尝试
+      });
+  };
+
+  const handleDurationSelect = (d: number) => {
+    setDuration(d);
+    saveDefaultDuration(d);
   };
 
   // ── 历史表格列 ──
@@ -738,6 +783,7 @@ const ShortDrama: React.FC = () => {
                   max={300}
                   value={duration}
                   onChange={(v) => setDuration(Number(v) || 15)}
+                  onBlur={() => saveDefaultDuration(duration)}
                   addonAfter="秒"
                   style={{ width: 130 }}
                 />
@@ -746,17 +792,23 @@ const ShortDrama: React.FC = () => {
             ) : (
               <Radio.Group
                 value={duration}
-                onChange={(e) => setDuration(e.target.value)}
+                onChange={(e) => handleDurationSelect(e.target.value as number)}
                 optionType="button"
                 buttonStyle="solid"
                 options={[
                   { value: 10, label: '10 秒' },
                   { value: 15, label: '15 秒' },
+                  { value: 20, label: '20 秒' },
+                  { value: 25, label: '25 秒' },
+                  { value: 30, label: '30 秒' },
                 ]}
               />
             )}
             <Text type="secondary" style={{ fontSize: 12 }}>
-              10s：3s 钩子 / 4s 铺垫 / 3s 反转；15s：3s 钩子 / 6s 铺垫 / 6s 反转；自定义按比例分配三镜头
+              10s：3s 钩子 / 4s 铺垫 / 3s 反转；15s：3s 钩子 / 6s 铺垫 / 6s 反转；20s：4s 钩子 / 9s 铺垫 / 7s 反转；25s：5s 钩子 / 11s 铺垫 / 9s 反转；30s：6s 钩子 / 13s 铺垫 / 11s 反转；自定义按比例分配三镜头
+            </Text>
+            <Text type="secondary" style={{ fontSize: 12, color: '#52c41a' }}>
+              <CheckOutlined /> 所选时长将自动保存为当前登录用户的默认值
             </Text>
           </Space>
 
@@ -770,7 +822,7 @@ const ShortDrama: React.FC = () => {
             </Space>
             <TextArea
               rows={8}
-              placeholder="在此输入短剧文案（对白用【角色】标注、旁白标注（画外音旁白）），支持 10s / 15s / 自定义时长剧情…"
+              placeholder="在此输入短剧文案（对白用【角色】标注、旁白标注（画外音旁白）），支持 10s / 15s / 20s / 25s / 30s / 自定义时长剧情…"
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
@@ -999,7 +1051,7 @@ const ShortDrama: React.FC = () => {
           items={[
             { title: '输入文案', description: '对白/旁白原文' },
             { title: '生成提示词', description: '复用 AutoClip 模型' },
-            { title: 'Seedance 生成', description: '10s / 15s / 自定义竖屏' },
+            { title: 'Seedance 生成', description: '10s / 15s / 20s / 25s / 30s / 自定义竖屏' },
             { title: '去水印出片', description: '历史一键导入「去水印」页签' },
             { title: '发布素材', description: '短标题/配文/标签/神评' },
           ]}

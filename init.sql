@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS users (
     role VARCHAR(20) NOT NULL DEFAULT 'operator' CHECK (role IN ('admin', 'operator', 'publisher', 'material')),
     -- 数据可见范围：all=全部素材，own=仅自己创建（数据隔离，二期方案）
     data_scope VARCHAR(20) NOT NULL DEFAULT 'own' CHECK (data_scope IN ('all', 'own')),
+    -- 提示词生成默认时长（秒）：用户选择时长后即作为当前登录用户的默认值（10/15/20/25/30 或自定义）
+    prompt_default_duration INTEGER,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()

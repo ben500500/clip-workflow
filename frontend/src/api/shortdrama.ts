@@ -61,6 +61,8 @@ export interface PromptGenerateParams {
   characters?: string;
   extra_requirements?: string;
   save?: boolean;
+  // 是否把本次所选时长保存为当前登录用户的默认值（前端选择时长后即作为默认值）
+  save_duration_as_default?: boolean;
 }
 
 export interface PromptGenerateResult {
@@ -134,6 +136,19 @@ export const shortdramaApi = {
       bucket: string;
       file_size: number | null;
       url?: string | null;
+      message: string;
+    }>,
+
+  // ── 提示词生成默认时长（当前登录用户） ──
+  getDefaultDuration: () =>
+    client.get('/shortdrama/prompt/default-duration') as Promise<{
+      duration: number;
+      message: string;
+    }>,
+
+  setDefaultDuration: (duration: number) =>
+    client.put('/shortdrama/prompt/default-duration', { duration }) as Promise<{
+      duration: number;
       message: string;
     }>,
 
