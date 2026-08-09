@@ -41,6 +41,10 @@ VIDEO_ROIS_SMALL = {
         'TL': (36, 85, 49, 224),
         'BR': (1197, 1245, 506, 678),
     },
+    '爷孙重逢': {
+        'TL': (21, 145, 136, 270),
+        'BR': (1216, 1280, 608, 720),
+    },
 }
 
 # ── large（旧版）：整角大框，覆盖更彻底，但遮盖面积明显更大 ──
@@ -60,6 +64,10 @@ VIDEO_ROIS_LARGE = {
     '3906E761': {
         'TL': (20, 95, 20, 240),
         'BR': (1150, 1270, 500, 705),
+    },
+    '爷孙重逢': {
+        'TL': (15, 150, 110, 285),
+        'BR': (1205, 1280, 590, 720),
     },
 }
 
@@ -90,7 +98,9 @@ def match_rois(source_name: str, scope: str = 'small') -> Optional[dict]:
     """按原始文件名匹配内置 ROI 经验库（scope: small/large，默认 small）。
 
     先精确匹配全名，再从文件名中提取 8 位大写码（如 ``648BC321_xxx.mp4``、
-    ``xxx-648BC321.mp4``）匹配。未命中返回 None（由调用方决定是否回退通用默认）。
+    ``xxx-648BC321.mp4``）匹配；中文/短名支持剥离 ``-720p``/``_1080p`` 等
+    常见清晰度/批次后缀后再匹配（同步 remove-mask 上游 split('-')[0] 行为，
+    如 ``爷孙重逢-720p.mp4`` → ``爷孙重逢``）。未命中返回 None。
     """
     table = VIDEO_ROIS_BY_SCOPE.get(scope, VIDEO_ROIS_SMALL)
     norm = _norm_source_name(source_name)
@@ -99,6 +109,10 @@ def match_rois(source_name: str, scope: str = 'small') -> Optional[dict]:
     for code in re.findall(r'[0-9A-Z]{8}', norm):
         if code in table:
             return table[code]
+    # 中文/短名：剥离 -/_ 后缀后再试（如 爷孙重逢-720p → 爷孙重逢）
+    head = re.split(r'[-_]+', norm, maxsplit=1)[0]
+    if head and head != norm and head in table:
+        return table[head]
     return None
 
 
