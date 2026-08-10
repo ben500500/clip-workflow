@@ -2060,7 +2060,7 @@ def doubao_generate_task(
             message=f"豆包生成任务异常: {e}",
             error_message=str(e),
         ))
-        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+        # 与失败分支同理：不 update_state(FAILURE)+return dict，避免 Celery 后端解析异常
         return {"success": False, "status": "failed", "message": str(e)}
 
 
