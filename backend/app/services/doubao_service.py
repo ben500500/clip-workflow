@@ -266,6 +266,7 @@ class DoubaoGenerator:
         qrcode_cb=None,
         screenshot_cb=None,
         on_rewrite_available=None,
+        on_login_success=None,
         cancel_check=None,
     ) -> dict:
         """执行豆包视频生成主流程。
@@ -277,8 +278,11 @@ class DoubaoGenerator:
             limits: 账户时长上限映射（默认 free=10 / pro=30）
             progress_cb: async def cb(message: str, progress: float)
             qrcode_cb: async def cb(qr_data_url: str)（需要登录时推送二维码）
+            screenshot_cb: async def cb(shot_data_url: str)
             on_rewrite_available: async def cb(payload: dict) -> str
                 返回 'approved'（使用改写稿）或 'rejected'（让豆包再改一版）
+            on_login_success: async def cb()（扫码登录成功、即将进入生成时回调，
+                调用方应把任务状态从 need_login 拉回 running 并清空二维码）
             cancel_check: callable -> bool（返回 True 表示任务已取消，中止）
 
         Returns:
@@ -334,6 +338,13 @@ class DoubaoGenerator:
                     # 轻量检查登录态：不重新加载页面（避免把二维码弹窗关掉），
                     # 右上角「登录」按钮消失即视为扫码成功
                     if not await self._has_login_button():
+                        # 通知调用方扫码成功：把任务状态从 need_login 拉回 running 并清空二维码，
+                        # 否则前端以 status != need_login 作为弹窗关闭条件，二维码弹窗永不消失
+                        if on_login_success:
+                            try:
+                                await on_login_success()
+                            except Exception:
+                                logger.exception("on_login_success callback failed")
                         break
                 else:
                     return {

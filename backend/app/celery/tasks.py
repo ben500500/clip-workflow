@@ -1911,6 +1911,16 @@ def doubao_generate_task(
                 qrcode=qr_data_url,
             )
 
+        # 扫码成功回调：把状态从 need_login 拉回 running 并清空二维码，
+        # 否则前端以 status != need_login 作为弹窗关闭条件，弹窗永不消失
+        async def _on_login_success():
+            await _update_doubao_prompt(
+                prompt_id,
+                status="running",
+                message="扫码登录成功，正在进入视频生成…",
+                qrcode="",
+            )
+
         # 截图回调：写入数据库供前端展示豆包对话窗口制作过程
         async def _screenshot_cb(shot_data_url: str):
             await _update_doubao_prompt(
@@ -1975,6 +1985,7 @@ def doubao_generate_task(
             qrcode_cb=_qrcode_cb,
             screenshot_cb=_screenshot_cb,
             on_rewrite_available=_rewrite_cb,
+            on_login_success=_on_login_success,
             cancel_check=lambda: _check_doubao_cancelled(prompt_id),
         ))
 
