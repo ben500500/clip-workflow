@@ -110,7 +110,9 @@ services:
     volumes:
       - redis_data:/data
     ports:
-      - "127.0.0.1:${REDIS_PORT:-16379}:6379"
+      # 保留 0.0.0.0：远程 slice-worker 节点（本机 Mac）跨机直连 192.168.1.163:6379，
+      # 改 loopback 会令远程节点失联（Redis 已有强 requirepass）
+      - "${REDIS_PORT:-16379}:6379"
     environment:
       <<: *common-env
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}
@@ -132,7 +134,9 @@ services:
     volumes:
       - minio_data:/data
     ports:
-      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      # 保留 0.0.0.0：浏览器 presigned URL（MINIO_EXTERNAL_ENDPOINT=192.168.1.163:9000）
+      # 与远程节点直连需要；MinIO 已有强 ROOT 密码
+      - "${MINIO_PORT:-9000}:9000"
       # 删除 9001 控制台对外映射（仅容器内部 minio_init 需要，外部无需访问）
     environment:
       <<: *common-env
@@ -376,6 +380,9 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
       CHROME_DEBUG_PORT: 9222
       DISPLAY: :99
+      # cdp_proxy 绑定 0.0.0.0（容器网络内可达）：backend/worker 经 clip-network
+      # 访问 rpa_worker:9222；已删除 ports 映射，宿主机/公网不可达，无暴露风险
+      CDP_PROXY_BIND: "0.0.0.0"
     volumes:
       - chrome_profiles:/data/chrome-profiles
       - media_data:/app/media
