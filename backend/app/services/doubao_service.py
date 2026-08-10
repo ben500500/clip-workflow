@@ -535,29 +535,37 @@ class DoubaoGenerator:
     async def _send_prompt(self, prompt: str) -> bool:
         """定位输入框并发送提示词。
 
-        豆包进入「视频生成」模式后，页面会残留一个隐藏的 textarea（height=0）
-        同时真正可输入的是 contenteditable 元素。若优先选到隐藏 textarea，
-        fill 会一直等待元素可见而超时。因此候选元素按可见性过滤后再选。
+        豆包页面为 React 动态渲染，点击「视频生成」后输入框需数百毫秒到数秒
+        才挂载完成。因此先等待候选输入框出现（最多约 15s），再按可见性过滤：
+        视频生成模式下页面会残留隐藏 textarea（height=0），真正可输入的是
+        可见的 contenteditable（ProseMirror/tiptap）。若一次查询失败就返回，
+        会误报「未找到输入框」。
         """
         textarea = None
-        candidates: list = []
-        for sel in ("textarea", "[contenteditable='true']", "[class*='chat-input'] textarea"):
-            try:
-                candidates.extend(await self.page.query_selector_all(sel))
-            except Exception:
-                pass
-        # 优先可见的候选（视频生成模式下隐藏 textarea 会被跳过）
-        for el in candidates:
-            try:
-                if await el.is_visible():
-                    textarea = el
-                    break
-            except Exception:
-                continue
-        # 都不可见时退而求其次用第一个
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            candidates: list = []
+            for sel in ("textarea", "[contenteditable='true']", "[class*='chat-input'] textarea"):
+                try:
+                    candidates.extend(await self.page.query_selector_all(sel))
+                except Exception:
+                    pass
+            # 优先可见的候选（视频生成模式下隐藏 textarea 会被跳过）
+            for el in candidates:
+                try:
+                    if await el.is_visible():
+                        textarea = el
+                        break
+                except Exception:
+                    continue
+            if textarea:
+                break
+            await self._sleep(0.8, 1.2)
+        # 都不可见/未出现时退而求其次用第一个
         if not textarea and candidates:
             textarea = candidates[0]
         if not textarea:
+            logger.warning("_send_prompt: no visible input found (page=%s)", self.page.url)
             return False
 
         # 点击输入框：被弹窗遮挡时先检测登录弹窗（抛 NeedLoginError），
