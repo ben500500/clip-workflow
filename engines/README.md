@@ -224,7 +224,7 @@ python engines/seedance_wm_runner.py <input.mp4> -o <output.mp4> [options]
 ## 去水印引擎（`remove_mask_remover.py`）
 
 集成自 [ben500500/remove-mask](https://cnb.cool/ben500500/remove-mask) 仓库的
-「ROI + cv2.inpaint(TELEA)」方案，作为独立可执行脚本放置在 `engines/` 下。
+「ROI + cv2.inpaint(NS/TELEA)」方案，作为独立可执行脚本放置在 `engines/` 下。
 
 **v7 核心升级（同步 remove-mask 上游更新）**：处理前**自动分析任意视频**，不再局限于
 固定视频。每次处理都会先做水印检测分析，再给出最佳方案执行：
@@ -234,22 +234,39 @@ python engines/seedance_wm_runner.py <input.mp4> -o <output.mp4> [options]
 3. 多候选合并成完整覆盖框，检测不到时回退"全角大框"（顶部/底部各 20%/13%）
 4. 输出【分析报告】：检测到的水印位置 + 置信度 + 推荐方案
 
-**v8/v9/v10 后续同步（remove-mask 上游）**：
+**v8~v11 后续同步（remove-mask 上游）**：
 - v8：同一侧支持多个水印带（TL/TL2/TL3、BR/BR2…），水印分段出现不漏盖；置信度按真实覆盖帧比例计算
 - v9：新增**时间一致性过滤**（剔除白发/人脸等移动亮色主体误判）+ **文字带高度守卫**（≤110px）
 - v10：自动检测改为**四角分别检测**，可检出右上/右下等非贴边水印；收紧半透明白字判定；
   **文件名匹配支持中文/UUID**（如 `爷孙重逢.mp4` 能正确命中预置 ROI）；爷孙重逢 ROI 修正为
   **右上 TR + 右下 BR**（实测位置，不再误伤老人头部/白发）
+- v11：自动检测改用**四角时间一致性热力图 + 边缘先验**（解决 v10 逐帧聚类对弱/淡色水印漏检，
+  如爷孙重逢右上 TR）；爷孙重逢预置 ROI 补上**左上角 TL** 水印覆盖（修复 TL 漏除）
 
 **原理**: 不区分“哪些像素是水印”，直接把整个水印 ROI 矩形当掩码，用
-cv2.INPAINT_TELEA 快速行进法从 ROI 边界向内插值填充。按视频文件名匹配内置
-ROI 表（覆盖 Seedance 左上 + 右下角规律），参数保真（保留原始分辨率/帧率，
+cv2.inpaint（NS 纳维-斯托克斯 / TELEA 快速行进法）从 ROI 边界向内插值填充。按视频文件名匹配内置
+ROI 表（覆盖 Seedance 左上/右上/右下角规律），参数保真（保留原始分辨率/帧率，
 音频流复制零损耗）。
 
 **两种去水印模式（`--mode` 切换，同步 remove-mask 上游更新）**:
 - `inpaint`（默认）：ROI + 插值修复，保留原始构图，水印区域被插值填充
 - `crop`：裁切去水印，裁掉包含水印的上下水平带，剩余画面等比放大回原分辨率、
   左右居中裁回原宽。画面无修复痕迹，但构图有裁剪/放大（适合画面上下无重要内容）
+
+**预设方案（`--preset`，依据《引擎排名结论.md》按排名排序）**:
+| 排名 | 预设 | 算法 | ROI | 半径 | 去除率 |
+|---|---|---|---|---|---|
+| ① | `ns_small_r5`（最优） | NS | small | 5 | 87.1% |
+| ② | `teela_small_r5` | TELEA | small | 5 | 86.4% |
+| ③ | `ns_small_r3` | NS | small | 3 | 86.0% |
+| ④ | `ns_large_r3` | NS | large | 3 | 85.6% |
+| ⑤ | `teela_small_r3` | TELEA | small | 3 | 84.2% |
+| ⑥ | `teela_large_r3` | TELEA | large | 3 | 83.3% |
+| ⑦ | `auto` | 自动检测 ROI（兜底新视频） | - | 5 | 75.4~78.8% |
+| ⑧⑨ | `crop_small`/`crop_large` | 裁切去水印（不推荐，画面损失大） | - | - | 52~56% |
+
+> 依据《引擎排名结论.md》：**NS + small 预置 + radius=5（ns_small_r5）为最优**，水印去除率 87.1%、
+> 画面几乎无损；radius=5 全面优于 radius=3；修复 TL 后预置精调 ROI 全面反超自动检测。
 
 **用法**:
 
@@ -259,6 +276,8 @@ python engines/remove_mask_remover.py <input.mp4> -o <output.mp4> [options]
 python engines/remove_mask_remover.py <input.mp4> -o <output.mp4> --analyze-only
 # 强制走自动检测（跳过预置 ROI），适合自定义新视频
 python engines/remove_mask_remover.py <input.mp4> -o <output.mp4> --auto
+# 指定预设方案（按排名最优为默认）
+python engines/remove_mask_remover.py <input.mp4> -o <output.mp4> --preset ns_small_r5
 ```
 
 **参数**:
@@ -267,7 +286,9 @@ python engines/remove_mask_remover.py <input.mp4> -o <output.mp4> --auto
 |------|------|------|--------|
 | `-o, --output` | string | 输出视频路径 | `<input>_clean.mp4` |
 | `-r, --region` | string | 手动水印区域 `x,y,w,h`（覆盖文件名匹配） | 按文件名匹配 |
-| `--radius` | int | 修补半径（1~20，仅 inpaint 模式） | 3 |
+| `--preset` | string | 预设方案（按《引擎排名结论》排序，见上表） | 空（按单项默认，等价 ns_small_r5） |
+| `--algo` | string | 插值算法：`ns`（推荐）/ `telea` | `ns` |
+| `--radius` | int | 修补半径（1~20，仅 inpaint 模式） | 5 |
 | `--iterations` | int | 修补迭代次数（1~5，仅 inpaint 模式） | 1 |
 | `--scope` | string | 水印 ROI 范围：`small`=收紧贴合水印文字（默认，遮盖面积小）；`large`=整角大框（覆盖更彻底） | `small` |
 | `--mode` | string | 去水印模式：`inpaint`=插值修复保留原构图（默认）；`crop`=裁切去水印（等比缩放切掉水印） | `inpaint` |

@@ -63,6 +63,8 @@ export interface WatermarkRunParams {
   iterations?: number;
   scope?: 'small' | 'large';
   mode?: 'inpaint' | 'crop';
+  algo?: 'ns' | 'telea';
+  preset?: string;
   name?: string;
   files: string[];
   prompt_record_id?: string | null;

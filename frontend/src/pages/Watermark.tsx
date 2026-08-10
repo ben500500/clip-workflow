@@ -29,7 +29,7 @@ const ENGINE_HELP: Record<string, { label: string; desc: string }> = {
   },
   remove_mask: {
     label: 'Remove Mask（ROI 经验库）',
-    desc: '集成自 ben500500/remove-mask 仓库（同步 v10 更新）：处理前自动分析任意视频水印带（逐帧半透明白色检测 + 四角 TL/TR/BL/BR 分别检测 + 时间一致性过滤/文字带高度守卫，剔除白发/人脸等移动亮色主体误判），命中预置 ROI（含爷孙重逢，实测右上 TR + 右下 BR，不误伤老人头部）时用人工精调框，其他视频自动检测、检测不到回退全角大框。ROI + cv2.inpaint(TELEA) 插值填充，支持 inpaint（插值修复）/ crop（裁切去水印）两种模式。',
+    desc: '集成自 ben500500/remove-mask 仓库（同步 v11 更新）：处理前自动分析任意视频水印带（四角时间一致性热力图 + 边缘先验检测，修复右上 TR 等弱/淡色水印漏检），命中预置 ROI（含爷孙重逢，实测左上 TL + 右上 TR + 右下 BR，修复 TL 漏覆盖）时用人工精调框，其他视频自动检测、检测不到回退全角大框。ROI + cv2.inpaint（NS/TELEA）插值填充，支持 inpaint（插值修复）/ crop（裁切去水印）两种模式。提供按《引擎排名结论.md》排序的预设方案（ns_small_r5 最优）。',
   },
 };
 
@@ -110,10 +110,12 @@ const Watermark: React.FC<{
   const [inpainter, setInpainter] = useState('auto');
   const [keepAudio, setKeepAudio] = useState(true);
   // remove_mask 专属选项
-  const [maskRadius, setMaskRadius] = useState(3);
+  const [maskRadius, setMaskRadius] = useState(5);
   const [maskIterations, setMaskIterations] = useState(1);
   const [maskScope, setMaskScope] = useState<'small' | 'large'>('small');
   const [maskMode, setMaskMode] = useState<'inpaint' | 'crop'>('inpaint');
+  const [maskAlgo, setMaskAlgo] = useState<'ns' | 'telea'>('ns');
+  const [maskPreset, setMaskPreset] = useState<string>('');
 
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -279,6 +281,8 @@ const Watermark: React.FC<{
         prompt_record_id?: string | null;
         scope?: 'small' | 'large';
         mode?: 'inpaint' | 'crop';
+        algo?: 'ns' | 'telea';
+        preset?: string;
       } = {
         engine,
         files: pendingFiles.map((f) => f.sourceFileKey),
@@ -302,6 +306,8 @@ const Watermark: React.FC<{
         params.iterations = maskIterations;
         params.scope = maskScope;
         params.mode = maskMode;
+        params.algo = maskAlgo;
+        if (maskPreset) params.preset = maskPreset;
       } else {
         params.region = region.trim() || undefined;
         params.backend = seedanceBackend;
@@ -882,6 +888,51 @@ const Watermark: React.FC<{
             </Space>
           ) : engine === 'remove_mask' ? (
             <Space wrap>
+              <Text>预设方案（按《引擎排名结论》排序）：</Text>
+              <Select
+                value={maskPreset || undefined}
+                onChange={(v) => {
+                  setMaskPreset(v || '');
+                  // 预设覆盖单项参数
+                  if (v) {
+                    const m: Record<string, string> = {
+                      ns_small_r5: 'ns', teela_small_r5: 'telea',
+                      ns_small_r3: 'ns', teela_small_r3: 'telea',
+                      ns_large_r3: 'ns', teela_large_r3: 'telea',
+                    };
+                    if (m[v]) setMaskAlgo(m[v] as 'ns' | 'telea');
+                    if (v === 'crop_small' || v === 'crop_large') setMaskMode('crop');
+                    if (v.includes('large')) setMaskScope('large');
+                    else if (v !== 'auto') setMaskScope('small');
+                    if (v.includes('r5')) setMaskRadius(5);
+                    else if (v.includes('r3')) setMaskRadius(3);
+                  }
+                }}
+                allowClear
+                placeholder="默认：ns_small_r5（最优）"
+                style={{ width: 260 }}
+                options={[
+                  { value: 'ns_small_r5', label: '① NS + small + r5（最优，87.1%）' },
+                  { value: 'teela_small_r5', label: '② TELEA + small + r5（86.4%）' },
+                  { value: 'ns_small_r3', label: '③ NS + small + r3（86.0%）' },
+                  { value: 'ns_large_r3', label: '④ NS + large + r3（85.6%）' },
+                  { value: 'teela_small_r3', label: '⑤ TELEA + small + r3（84.2%）' },
+                  { value: 'teela_large_r3', label: '⑥ TELEA + large + r3（83.3%）' },
+                  { value: 'auto', label: '⑦ 自动检测 ROI（兜底新视频）' },
+                  { value: 'crop_small', label: '⑧ 裁切去水印 small（不推荐，损失大）' },
+                  { value: 'crop_large', label: '⑨ 裁切去水印 large（不推荐）' },
+                ]}
+              />
+              <Text>插值算法：</Text>
+              <Select
+                value={maskAlgo}
+                onChange={setMaskAlgo}
+                style={{ width: 200 }}
+                options={[
+                  { value: 'ns', label: 'NS（默认推荐，87.1%）' },
+                  { value: 'telea', label: 'TELEA（86.4%）' },
+                ]}
+              />
               <Text>手动水印区域（可选，x,y,w,h；留空则按文件名匹配内置 ROI）：</Text>
               <Input
                 placeholder="如 10,5,120,60；留空自动匹配内置 ROI"
@@ -893,10 +944,10 @@ const Watermark: React.FC<{
               <Select
                 value={maskRadius}
                 onChange={setMaskRadius}
-                style={{ width: 160 }}
+                style={{ width: 200 }}
                 options={[
-                  { value: 3, label: '3（默认）' },
-                  { value: 5, label: '5（更大范围）' },
+                  { value: 3, label: '3' },
+                  { value: 5, label: '5（推荐，排名最优）' },
                   { value: 8, label: '8（强修补）' },
                 ]}
               />

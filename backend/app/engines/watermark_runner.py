@@ -275,9 +275,12 @@ async def run_remove_mask(
     options 支持：
     - source_name: 原始文件名（用于匹配内置 ROI 表，如 648BC321）
     - region: "x,y,w,h"（手动指定水印区域，覆盖文件名匹配）
+    - preset: 预设方案（ns_small_r5 最优 / teela_small_r5 / ... / auto / crop_small），
+      指定后覆盖 scope/mode/radius/algo（按《引擎排名结论.md》排名排序）
+    - algo: "ns"|"telea"（插值算法，默认 ns，依据《引擎排名结论》推荐）
     - scope: "small"|"large"（水印 ROI 范围，默认 small：收紧贴合水印文字；large：整角大框）
     - mode: "inpaint"|"crop"（去水印模式，默认 inpaint：ROI+插值修复；crop：裁切去水印）
-    - radius: 修补半径（默认 3，仅 inpaint 模式）
+    - radius: 修补半径（默认 5，依据《引擎排名结论》radius=5 最优）
     - iterations: 修补迭代次数（默认 1，仅 inpaint 模式）
     """
     options = options or {}
@@ -289,20 +292,29 @@ async def run_remove_mask(
         cmd.extend(["-r", str(options["region"])])
     if options.get("source_name"):
         cmd.extend(["--source-name", str(options["source_name"])])
-    scope = options.get("scope") or "small"
-    if scope not in ("small", "large"):
-        scope = "small"
-    cmd.extend(["--scope", scope])
-    mode = options.get("mode") or "inpaint"
-    if mode not in ("inpaint", "crop"):
-        mode = "inpaint"
-    cmd.extend(["--mode", mode])
-    if options.get("radius"):
-        try:
-            radius = max(1, min(int(options["radius"]), 20))
-            cmd.extend(["--radius", str(radius)])
-        except (TypeError, ValueError):
-            pass
+    # 预设方案（按《引擎排名结论.md》排名）：覆盖 scope/mode/radius/algo
+    preset = options.get("preset")
+    if preset:
+        cmd.extend(["--preset", str(preset)])
+    else:
+        algo = options.get("algo") or "ns"
+        if algo not in ("ns", "telea"):
+            algo = "ns"
+        cmd.extend(["--algo", algo])
+        scope = options.get("scope") or "small"
+        if scope not in ("small", "large"):
+            scope = "small"
+        cmd.extend(["--scope", scope])
+        mode = options.get("mode") or "inpaint"
+        if mode not in ("inpaint", "crop"):
+            mode = "inpaint"
+        cmd.extend(["--mode", mode])
+        if options.get("radius"):
+            try:
+                radius = max(1, min(int(options["radius"]), 20))
+                cmd.extend(["--radius", str(radius)])
+            except (TypeError, ValueError):
+                pass
     if options.get("iterations"):
         try:
             it = max(1, min(int(options["iterations"]), 5))

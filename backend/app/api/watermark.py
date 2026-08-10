@@ -100,10 +100,12 @@ class WatermarkRunRequest(BaseModel):
     inpainter: Optional[str] = None     # seedance_wm 主修复器（lama/cv2_telea/cv2_ns）
     keep_audio: bool = True             # seedance_wm 是否保留原音轨
     # remove_mask 选项
-    radius: Optional[int] = 3           # 修补半径（ROI + TELEA）
+    radius: Optional[int] = 5           # 修补半径（ROI + NS/TELEA，默认 5，依据《引擎排名结论》radius=5 最优）
     iterations: Optional[int] = 1       # 修补迭代次数
     scope: Optional[str] = "small"      # remove_mask 水印 ROI 范围：small/large
     mode: Optional[str] = "inpaint"     # remove_mask 去水印模式：inpaint（插值修复）/crop（裁切）
+    algo: Optional[str] = "ns"          # remove_mask 插值算法：ns（默认推荐）/telea
+    preset: Optional[str] = None        # remove_mask 预设方案（按《引擎排名结论.md》排名），覆盖 scope/mode/radius/algo
     name: Optional[str] = None
     # 待处理视频的 source_file_key 列表（由 /watermark/upload 返回）
     files: List[str] = []
@@ -340,11 +342,14 @@ async def run_watermark_task(
     elif engine == "remove_mask":
         options = {
             "region": data.region,
-            "radius": int(data.radius or 3),
+            "radius": int(data.radius or 5),
             "iterations": int(data.iterations or 1),
             "scope": data.scope if data.scope in ("small", "large") else "small",
             "mode": data.mode if data.mode in ("inpaint", "crop") else "inpaint",
+            "algo": data.algo if data.algo in ("ns", "telea") else "ns",
         }
+        if data.preset:
+            options["preset"] = data.preset
         # 原始文件名用于匹配内置 ROI 表（如 648BC321），由 celery 任务层传入
         if data.files:
             base = os.path.basename(data.files[0])
