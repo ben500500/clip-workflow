@@ -560,7 +560,16 @@ class DoubaoGenerator:
             except Exception:
                 pass
         await self._sleep(0.3, 0.6)
-        await textarea.fill(prompt)
+        # fill 可能因残留弹窗遮挡/页面未渲染完失败：先关非登录弹窗再重试，
+        # 仍失败且检测到登录弹窗则抛 NeedLoginError 走扫码流程
+        try:
+            await textarea.fill(prompt, timeout=10000)
+        except Exception:
+            if await self._detect_login_modal():
+                raise NeedLoginError("需要扫码登录豆包")
+            await self._dismiss_modal()
+            await self._sleep(0.5, 0.8)
+            await textarea.fill(prompt, timeout=15000)
         await self._sleep(0.3, 0.6)
         try:
             send_btn = await self.page.query_selector(
