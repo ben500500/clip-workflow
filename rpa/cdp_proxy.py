@@ -15,7 +15,10 @@
 import asyncio
 import re
 
-LISTEN_HOST, LISTEN_PORT = "0.0.0.0", 9222
+import os
+
+LISTEN_HOST = os.getenv("CDP_PROXY_BIND", "127.0.0.1")  # 默认仅绑 loopback，避免公网零凭据暴露
+LISTEN_PORT = 9222
 TARGET_HOST, TARGET_PORT = "127.0.0.1", 9223
 BUF = 65536
 LOCALHOST_RE = re.compile(rb"localhost(?=[:/]|$)")

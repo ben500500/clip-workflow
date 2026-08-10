@@ -1931,8 +1931,10 @@ def doubao_generate_task(
                 rewrite_history=history,
                 confirm_token=token,
             )
-            # 挂起等待用户在前端确认（轮询数据库状态），最长等待 10 分钟
-            deadline = time.time() + 600
+            # 挂起等待用户在前端确认（轮询数据库状态）。
+            # 注：为释放唯一 worker 槽位，等待上限由配置控制（默认 30s，原 600s 会长期占住槽位）。
+            # 若超时未确认，返回 rejected 由前端重新发起改写流程即可。
+            deadline = time.time() + settings.DOUBAO_REWRITE_WAIT_SECONDS
             while time.time() < deadline:
                 await asyncio.sleep(3)
                 cur = await _load_shortdrama_prompt(prompt_id)

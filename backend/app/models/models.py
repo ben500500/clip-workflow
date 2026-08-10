@@ -139,7 +139,7 @@ class Episode(Base):
     __tablename__ = "episodes"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), nullable=True)
     episode_no = Column(Integer, nullable=True)
     source_file_key = Column(String(500), nullable=True)
@@ -209,7 +209,7 @@ class ClipCandidate(Base):
     __tablename__ = "clip_candidates"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    episode_id = Column(UUID(as_uuid=True), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False)
+    episode_id = Column(UUID(as_uuid=True), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False, index=True)
     clip_index = Column(Integer, nullable=True)
     start_time = Column(Float, nullable=True)
     end_time = Column(Float, nullable=True)
@@ -235,7 +235,7 @@ class DetectedInterval(Base):
     __tablename__ = "detected_intervals"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    episode_id = Column(UUID(as_uuid=True), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False)
+    episode_id = Column(UUID(as_uuid=True), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False, index=True)
     interval_type = Column(String(50), nullable=True)
     start_time = Column(Float, nullable=True)
     end_time = Column(Float, nullable=True)
@@ -256,7 +256,7 @@ class SliceTask(Base):
     __tablename__ = "slice_tasks"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    episode_id = Column(UUID(as_uuid=True), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False)
+    episode_id = Column(UUID(as_uuid=True), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False, index=True)
     celery_task_id = Column(String(100), nullable=True)
     # 实际执行该任务的 Worker 节点 ID（Worker 回调时写入，用于切片任务列表展示"由哪个节点完成"）
     node_id = Column(String(100), nullable=True)
@@ -291,8 +291,8 @@ class SliceOutput(Base):
     __tablename__ = "slice_outputs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    task_id = Column(UUID(as_uuid=True), ForeignKey("slice_tasks.id", ondelete="CASCADE"), nullable=False)
-    clip_id = Column(UUID(as_uuid=True), ForeignKey("clip_candidates.id"), nullable=True)
+    task_id = Column(UUID(as_uuid=True), ForeignKey("slice_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    clip_id = Column(UUID(as_uuid=True), ForeignKey("clip_candidates.id"), nullable=True, index=True)
     file_key = Column(String(500), nullable=True)
     file_name = Column(String(255), nullable=True)
     duration = Column(Float, nullable=True)
@@ -313,7 +313,7 @@ class Publication(Base):
     __tablename__ = "publications"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    output_id = Column(UUID(as_uuid=True), ForeignKey("slice_outputs.id", ondelete="CASCADE"), nullable=False)
+    output_id = Column(UUID(as_uuid=True), ForeignKey("slice_outputs.id", ondelete="CASCADE"), nullable=False, index=True)
     platform = Column(String(50), nullable=True)
     publish_url = Column(String(500), nullable=True)
     publish_time = Column(DateTime, nullable=True)
@@ -414,7 +414,7 @@ class PublishTask(Base):
     __tablename__ = "publish_tasks"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    output_id = Column(UUID(as_uuid=True), ForeignKey("slice_outputs.id", ondelete="CASCADE"), nullable=False)
+    output_id = Column(UUID(as_uuid=True), ForeignKey("slice_outputs.id", ondelete="CASCADE"), nullable=False, index=True)
     platform = Column(String(50), nullable=True)
     account_name = Column(String(100), nullable=True)
     status = Column(String(50), nullable=True)
@@ -473,7 +473,7 @@ class VideoMetric(Base):
     __tablename__ = "video_metrics"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    publish_task_id = Column(UUID(as_uuid=True), ForeignKey("publish_tasks.id", ondelete="SET NULL"), nullable=True)
+    publish_task_id = Column(UUID(as_uuid=True), ForeignKey("publish_tasks.id", ondelete="SET NULL"), nullable=True, index=True)
     video_id = Column(String(200), nullable=True)
     title = Column(String(500), nullable=True)
     publish_date = Column(Date, nullable=True)

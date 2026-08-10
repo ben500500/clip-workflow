@@ -10,6 +10,58 @@ x-logging: &default-logging
 x-common-env: &common-env
   TZ: Asia/Shanghai
 
+# 三个 Celery worker（video/publish/fast）共享的配置锚点：复用 clip-backend:latest 与相同环境/卷
+x-celery-worker: &celery-worker-base
+  image: clip-backend:latest
+  restart: unless-stopped
+  networks:
+    - clip-network
+  depends_on:
+    backend:
+      condition: service_healthy
+  env_file:
+    - .env
+  environment:
+    <<: *common-env
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+    REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+    CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/1
+    CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/2
+    MINIO_ENDPOINT: minio:9000
+    MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+    MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
+    MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+    # 浏览器可访问的 MinIO 地址（presigned URL 用该地址替换容器内 host，修复预览/下载拒绝连接）
+    MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-localhost:9000}
+    CHROME_DEBUG_PORT: 9222
+    CHROME_DEBUG_HOST: rpa_worker
+    # Seedance 官方 API 直连出片（默认关闭；worker 需同步注入配置，供 Celery 任务消费）
+    SEEDANCE_ENABLED: ${SEEDANCE_ENABLED:-false}
+    SEEDANCE_API_KEY: ${SEEDANCE_API_KEY:-}
+    SEEDANCE_MODEL: ${SEEDANCE_MODEL:-seedance-1-0-pro-250528}
+    SEEDANCE_API_BASE: ${SEEDANCE_API_BASE:-https://ark.cn-beijing.volces.com/api/v3}
+    SEEDANCE_RESOLUTION: ${SEEDANCE_RESOLUTION:-1080p}
+    SEEDANCE_WATERMARK: ${SEEDANCE_WATERMARK:-true}
+    SEEDANCE_TIMEOUT: ${SEEDANCE_TIMEOUT:-600}
+    SEEDANCE_LONG_DURATION_POLICY: ${SEEDANCE_LONG_DURATION_POLICY:-truncate}
+    SEEDANCE_DAILY_QUOTA: ${SEEDANCE_DAILY_QUOTA:-0}
+    # HuggingFace 离线模式：去水印 ONNX 模型从本地预置缓存加载（hf-cache），
+    # 禁止检查远程（服务器无法访问 huggingface.co，检查会阻塞超时）
+    HF_HUB_OFFLINE: "1"
+  volumes:
+    - media_data:/app/media
+    - ./engines:/app/engines:ro
+    # HuggingFace 模型缓存持久化（LaMa/MI-GAN 去水印 ONNX 模型，离线环境预置）
+    - ./hf-cache:/app/.cache
+  # celery worker 无 HTTP 端口，用 python redis ping 作为健康检查（覆盖镜像默认的 curl 检查）
+  healthcheck:
+    test: ["CMD", "python", "-c", "import redis,sys; sys.exit(0 if redis.Redis(host='redis',port=6379,password='${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}').ping() else 1)"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 20s
+  logging: *default-logging
+
 networks:
   clip-network:
     driver: bridge
@@ -58,7 +110,7 @@ services:
     volumes:
       - redis_data:/data
     ports:
-      - "${REDIS_PORT:-16379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-16379}:6379"
     environment:
       <<: *common-env
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}
@@ -80,11 +132,11 @@ services:
     volumes:
       - minio_data:/data
     ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      # 删除 9001 控制台对外映射（仅容器内部 minio_init 需要，外部无需访问）
     environment:
       <<: *common-env
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?请在 .env 设置 MINIO_ROOT_USER，禁止使用默认 minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
     command: server /data --console-address ":9001"
     healthcheck:
@@ -247,58 +299,23 @@ services:
       start_period: 30s
     logging: *default-logging
 
-  worker:
-    image: clip-backend:latest
-    container_name: clip-worker
-    restart: unless-stopped
-    networks:
-      - clip-network
-    depends_on:
-      backend:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      <<: *common-env
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
-      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/1
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/2
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
-      MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
-      # 浏览器可访问的 MinIO 地址（presigned URL 用该地址替换容器内 host，修复预览/下载拒绝连接）
-      MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-localhost:9000}
-      CHROME_DEBUG_PORT: 9222
-      CHROME_DEBUG_HOST: rpa_worker
-      # Seedance 官方 API 直连出片（默认关闭；worker 需同步注入配置，供 Celery 任务消费）
-      SEEDANCE_ENABLED: ${SEEDANCE_ENABLED:-false}
-      SEEDANCE_API_KEY: ${SEEDANCE_API_KEY:-}
-      SEEDANCE_MODEL: ${SEEDANCE_MODEL:-seedance-1-0-pro-250528}
-      SEEDANCE_API_BASE: ${SEEDANCE_API_BASE:-https://ark.cn-beijing.volces.com/api/v3}
-      SEEDANCE_RESOLUTION: ${SEEDANCE_RESOLUTION:-1080p}
-      SEEDANCE_WATERMARK: ${SEEDANCE_WATERMARK:-true}
-      SEEDANCE_TIMEOUT: ${SEEDANCE_TIMEOUT:-600}
-      SEEDANCE_LONG_DURATION_POLICY: ${SEEDANCE_LONG_DURATION_POLICY:-truncate}
-      SEEDANCE_DAILY_QUOTA: ${SEEDANCE_DAILY_QUOTA:-0}
-      # HuggingFace 离线模式：去水印 ONNX 模型从本地预置缓存加载（hf-cache），
-      # 禁止检查远程（服务器无法访问 huggingface.co，检查会阻塞超时）
-      HF_HUB_OFFLINE: "1"
-    volumes:
-      - media_data:/app/media
-      - ./engines:/app/engines:ro
-      # HuggingFace 模型缓存持久化（LaMa/MI-GAN 去水印 ONNX 模型，离线环境预置）
-      - ./hf-cache:/app/.cache
-    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
-    # celery worker 无 HTTP 端口，用 python redis ping 作为健康检查（覆盖镜像默认的 curl 检查）
-    healthcheck:
-      test: ["CMD", "python", "-c", "import redis,sys; sys.exit(0 if redis.Redis(host='redis',port=6379,password='${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}').ping() else 1)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-    logging: *default-logging
+  worker-video:
+    <<: *celery-worker-base
+    container_name: clip-worker-video
+    # 视频处理（切片/去水印/检测）—— 独占 video_processing 队列，ffmpeg 已占满 CPU，并发 1 正确
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "video_processing", "--loglevel=info", "--concurrency=1"]
+
+  worker-publish:
+    <<: *celery-worker-base
+    container_name: clip-worker-publish
+    # 发布/豆包生成（浏览器 CDP）—— 独占 publish 队列，并发 1
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "publish", "--loglevel=info", "--concurrency=1"]
+
+  worker-fast:
+    <<: *celery-worker-base
+    container_name: clip-worker-fast
+    # 指标/默认任务（轻量）—— 高并发 4，不再被视频任务饿死
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "metrics,default", "--loglevel=info", "--concurrency=4"]
 
   beat:
     image: clip-backend:latest
@@ -362,11 +379,8 @@ services:
     volumes:
       - chrome_profiles:/data/chrome-profiles
       - media_data:/app/media
-    ports:
-      # 绑定 0.0.0.0（勿加 127.0.0.1 前缀）：backend/worker 需通过 docker 网络
-      # 访问 rpa_worker:9222 做 CDP 调试（豆包生成/一键发布链路），
-      # 仅绑宿主机 loopback 会导致容器间 ECONNREFUSED
-      - "${RPA_DEBUG_PORT:-9222}:9222"
+    # 不再对外暴露 9222 调试端口：backend/worker 经 clip-network 访问 rpa_worker:9222
+    # （见 CHROME_DEBUG_HOST=rpa_worker），无需发布到宿主机，避免零凭据接管浏览器。
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:9222/json/version"]
       interval: 30s

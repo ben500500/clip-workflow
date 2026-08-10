@@ -228,7 +228,11 @@ def temporal_smooth(
     window: int = 3,
     weights: str = "gaussian",
 ) -> dict:
-    """帧间加权平均，in-place 覆盖 clean_*.png。"""
+    """帧间加权平均，in-place 覆盖 clean_*.png。
+
+    采用滑动窗口流式处理：内存中仅保留 window 帧，避免把整段视频全帧一次性载入
+    （原实现全量载入 15s@30fps 1080p 约 2.8GB，易 OOM）。
+    """
     files = sorted(Path(frames_dir).glob("clean_*.png"))
     if not files:
         log.warning("temporal_smooth: 无 clean 帧，跳过")
@@ -239,10 +243,6 @@ def temporal_smooth(
         window = 3
     if window % 2 == 0:
         window += 1
-
-    raw_imgs = [cv2.imread(str(f), cv2.IMREAD_COLOR) for f in files]
-    imgs: list[np.ndarray] = [img for img in raw_imgs if img is not None]
-    n = len(imgs)
 
     if weights == "uniform":
         w = np.ones(window, dtype=np.float32) / window
@@ -255,16 +255,41 @@ def temporal_smooth(
         w /= w.sum()
 
     half = window // 2
-    smoothed: list[np.ndarray] = []
+    n = len(files)
+
+    # 滑动窗口缓存：仅保留当前与未来可能被引用的帧（最多 window 帧），避免全量载入内存
+    cache: dict[int, np.ndarray | None] = {}
+    processed = 0
+
+    def _read_frame(i: int):
+        if i < 0 or i >= n:
+            return None
+        if i not in cache:
+            cache[i] = cv2.imread(str(files[i]), cv2.IMREAD_COLOR)
+        return cache[i]
+
     for i in range(n):
-        acc = np.zeros_like(imgs[i], dtype=np.float32)
+        center = _read_frame(i)
+        if center is None:
+            center = _read_frame(i - 1)
+        if center is None:
+            continue
+        acc = np.zeros(center.shape, dtype=np.float32)
+        got = False
         for j, wj in zip(range(-half, half + 1), w, strict=False):
             idx = max(0, min(n - 1, i + j))
-            acc += imgs[idx].astype(np.float32) * wj
-        smoothed.append(acc.astype(np.uint8))
+            img = _read_frame(idx)
+            if img is None:
+                continue
+            acc += img.astype(np.float32) * wj
+            got = True
+        if not got:
+            continue
+        cv2.imwrite(str(files[i]), acc.astype(np.uint8))
+        processed += 1
+        # 清理已不再可能被引用的旧帧（窗口 [i-half, i+half]，前半已滑过）
+        for k in [k for k in cache if k < i - half]:
+            cache.pop(k, None)
 
-    for f, img in zip(files, smoothed, strict=False):
-        cv2.imwrite(str(f), img)
-
-    log.info("temporal_smooth Done: %d frames, window=%d weights=%s", n, window, weights)
+    log.info("temporal_smooth Done: %d frames, window=%d weights=%s", processed, window, weights)
     return {"frames_dir": str(frames_dir)}

@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# 供 Go slice-worker 心跳上报的开放 router（main.py 单独挂载，不套用户 JWT 依赖）
+internal_router = APIRouter()
+
 
 class WorkerNodeResponse(BaseModel):
     id: str
@@ -96,7 +99,7 @@ def _serialize_node(node: WorkerNode) -> dict:
     }
 
 
-@router.post("/workers/heartbeat")
+@internal_router.post("/workers/heartbeat")
 async def worker_heartbeat(
     data: WorkerHeartbeatRequest,
     db: AsyncSession = Depends(get_db),
