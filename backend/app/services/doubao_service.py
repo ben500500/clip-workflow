@@ -107,8 +107,12 @@ class DoubaoGenerator:
         except Exception:
             return None
 
-    async def _extract_qrcode(self) -> Optional[str]:
-        """提取登录二维码：优先截取内嵌 SVG 节点，返回 PNG data URL。"""
+    async def _extract_qrcode(self, full_page_fallback: bool = True) -> Optional[str]:
+        """提取登录二维码：优先截取内嵌 SVG 节点，返回 PNG data URL。
+
+        full_page_fallback=False 时找不到独立 SVG 节点则返回 None（避免把
+        整页截图误当二维码推给用户），由调用方决定何时兜底。
+        """
         try:
             svg = await self.page.query_selector("svg.qr-code, svg[class*='qrcode'], svg[class*='qr-code']")
             if not svg:
@@ -120,9 +124,11 @@ class DoubaoGenerator:
                         break
             if svg:
                 shot = await svg.screenshot()
-            else:
+            elif full_page_fallback:
                 # 二维码不是独立 SVG 节点时，直接整页截图（用户可自行放大定位二维码）
                 shot = await self.page.screenshot(type="png")
+            else:
+                return None
             if not shot:
                 return None
             return "data:image/png;base64," + base64.b64encode(shot).decode()
@@ -143,7 +149,7 @@ class DoubaoGenerator:
             )
             if not btn:
                 return False
-            text = (await btn.inner_text(timeout=3000)).strip()
+            text = (await btn.inner_text()).strip()
             if text != "登录":
                 return False
             await btn.click(timeout=5000)
@@ -156,7 +162,7 @@ class DoubaoGenerator:
         try:
             modal = await self.page.query_selector(".semi-modal-wrap, .semi-modal")
             if modal:
-                text = await modal.inner_text(timeout=3000)
+                text = await modal.inner_text()
                 if any(m in text for m in LOGIN_MODAL_MARKERS):
                     return True
             return False
@@ -192,7 +198,7 @@ class DoubaoGenerator:
             )
             if not btn:
                 return False
-            text = (await btn.inner_text(timeout=3000)).strip()
+            text = (await btn.inner_text()).strip()
             return text == "登录"
         except Exception:
             return False
@@ -311,14 +317,23 @@ class DoubaoGenerator:
                     # 首次触发登录二维码弹窗（点击右上角「登录」按钮）
                     if not qr_pushed:
                         await self._click_login_button()
-                    qr = await self._extract_qrcode()
+                    # 二维码异步渲染，先重试抓取独立 SVG，失败才兜底整页截图
+                    qr = None
+                    for _ in range(5):
+                        qr = await self._extract_qrcode(full_page_fallback=False)
+                        if qr:
+                            break
+                        await self._sleep(0.8, 1.2)
+                    if not qr:
+                        qr = await self._extract_qrcode()
                     if qr and not qr_pushed:
                         if qrcode_cb:
                             await qrcode_cb(qr)
                         qr_pushed = True
                     await self._sleep(1.0, 1.5)
-                    cur = await self._login_status()
-                    if cur == "valid":
+                    # 轻量检查登录态：不重新加载页面（避免把二维码弹窗关掉），
+                    # 右上角「登录」按钮消失即视为扫码成功
+                    if not await self._has_login_button():
                         break
                 else:
                     return {
