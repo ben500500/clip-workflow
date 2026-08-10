@@ -584,18 +584,33 @@ class DoubaoGenerator:
         return None
 
     async def _extract_last_assistant_text(self) -> Optional[str]:
-        """提取页面上最后一条助手消息文本。"""
+        """提取页面上最后一条助手消息文本。
+
+        豆包页面为动态 React 且经常改版，类名不固定，这里用多选择器兜底
+        （assistant / bot-message / message-content / message-item / chat-message
+        / ai-message / turn-content / answer 等），去重后取最后一条。
+        """
         try:
-            msgs = await self.page.query_selector_all(
-                "[class*='assistant'], [class*='bot-message'], [class*='message-content']"
-            )
-            if not msgs:
-                return None
-            texts = []
-            for m in msgs[-5:]:
-                t = (await m.inner_text()).strip()
-                if t:
-                    texts.append(t)
+            selectors = [
+                "[class*='assistant']", "[class*='bot-message']", "[class*='message-content']",
+                "[class*='message-item']", "[class*='chat-message']", "[class*='ai-message']",
+                "[class*='turn-content']", "[class*='answer']", "[class*='response-text']",
+            ]
+            texts: list[str] = []
+            seen: set[str] = set()
+            for sel in selectors:
+                try:
+                    els = await self.page.query_selector_all(sel)
+                except Exception:
+                    continue
+                for el in els:
+                    try:
+                        t = (await el.inner_text()).strip()
+                    except Exception:
+                        continue
+                    if len(t) > 5 and t not in seen:
+                        seen.add(t)
+                        texts.append(t)
             return texts[-1] if texts else None
         except Exception:
             return None
