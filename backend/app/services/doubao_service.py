@@ -129,8 +129,30 @@ class DoubaoGenerator:
         except Exception:
             return None
 
+    async def _click_login_button(self) -> bool:
+        """点击右上角「登录」按钮触发二维码弹窗（未登录时）。
+
+        若页面已有二维码弹窗则跳过，避免重复弹出。
+        """
+        try:
+            if await self.page.query_selector(".semi-modal-wrap, [class*='qrcode'], [class*='login-modal']"):
+                return True  # 弹窗已在，无需再点
+            btn = await self.page.query_selector(
+                "button:has-text('登录'), [class*='header'] button:has-text('登录'), "
+                "[class*='nav'] button:has-text('登录')"
+            )
+            if not btn:
+                return False
+            text = (await btn.inner_text(timeout=3000)).strip()
+            if text != "登录":
+                return False
+            await btn.click(timeout=5000)
+            await self._sleep(1.0, 1.5)
+            return True
+        except Exception:
+            return False
+
     async def _detect_login_modal(self) -> bool:
-        """检测登录拦截弹窗（semi-modal 居中弹窗 + 登录文本）。"""
         try:
             modal = await self.page.query_selector(".semi-modal-wrap, .semi-modal")
             if modal:
@@ -157,11 +179,39 @@ class DoubaoGenerator:
         except Exception:
             return False
 
+    async def _has_login_button(self) -> bool:
+        """检测页面右上角「登录」按钮（未登录的强信号）。
+
+        豆包未登录时顶部导航必有「登录」按钮（正文/欢迎页也可能出现“登录”二字，
+        因此只匹配按钮元素且文本恰为“登录”，避免误判）。
+        """
+        try:
+            btn = await self.page.query_selector(
+                "button:has-text('登录'), [class*='header'] button:has-text('登录'), "
+                "[class*='nav'] button:has-text('登录'), [class*='topbar'] button"
+            )
+            if not btn:
+                return False
+            text = (await btn.inner_text(timeout=3000)).strip()
+            return text == "登录"
+        except Exception:
+            return False
+
     async def _login_status(self) -> str:
-        """返回登录态：'valid'（已登录）/ 'need_login'（需要扫码）/ 'unknown'。"""
+        """返回登录态：'valid'（已登录）/ 'need_login'（需要扫码）/ 'unknown'。
+
+        判定优先级：
+        1. 右上角「登录」按钮存在 → 未登录（强信号，未登录时欢迎页也有 textarea，
+           仅靠输入框会误判 valid）
+        2. 登录拦截弹窗（点击视频生成后触发）→ 未登录
+        3. 否则检测输入框 → valid
+        """
         try:
             await self.page.goto(DOUBAO_CHAT_URL, wait_until="domcontentloaded", timeout=45000)
             await self._sleep(1.0, 2.0)
+            # 强信号：右上角登录按钮
+            if await self._has_login_button():
+                return "need_login"
             # 尝试进入视频生成技能，触发「登录以解锁」拦截弹窗（未登录时）
             try:
                 await self.page.get_by_text(VIDEO_GEN_ENTRY, exact=False).first.click(timeout=5000)
@@ -258,6 +308,9 @@ class DoubaoGenerator:
                             "status": "cancelled",
                             "message": "任务已取消",
                         }
+                    # 首次触发登录二维码弹窗（点击右上角「登录」按钮）
+                    if not qr_pushed:
+                        await self._click_login_button()
                     qr = await self._extract_qrcode()
                     if qr and not qr_pushed:
                         if qrcode_cb:
