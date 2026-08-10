@@ -758,7 +758,7 @@ const ShortDrama: React.FC = () => {
     {
       title: '成片视频',
       key: 'video',
-      width: 220,
+      width: 160,
       render: (_: unknown, r: ShortdramaPromptRecord) => {
         if (r.video_status && r.video_file_name) {
           return (
@@ -909,7 +909,7 @@ const ShortDrama: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 400,
+      width: 300,
       fixed: 'right' as const,
       render: (_: unknown, r: ShortdramaPromptRecord) => {
         const active = isDoubaoActive(r);
