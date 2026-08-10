@@ -1997,7 +1997,10 @@ def doubao_generate_task(
                 message=result.get("message", "豆包生成失败"),
                 error_message=result.get("message", "豆包生成失败"),
             ))
-            self.update_state(state="FAILURE", meta={"progress": 0, "message": result.get("message", "失败")})
+            # 注意：不能在此 update_state(state="FAILURE") 后再 return dict——
+            # Celery 后端 mark_as_done 时会读旧 FAILURE meta 并把 result 当异常解析，
+            # 抛 ValueError('Exception information must include the exception type')。
+            # 前端状态展示依赖 DB 轮询（doubao_status），无需手动标记 celery FAILURE。
             return result
 
         # 生成成功：下载成片并上传 MinIO

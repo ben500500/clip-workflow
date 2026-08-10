@@ -533,17 +533,30 @@ class DoubaoGenerator:
             logger.warning("set duration failed (ignore): %s", e)
 
     async def _send_prompt(self, prompt: str) -> bool:
-        """定位输入框并发送提示词。"""
+        """定位输入框并发送提示词。
+
+        豆包进入「视频生成」模式后，页面会残留一个隐藏的 textarea（height=0）
+        同时真正可输入的是 contenteditable 元素。若优先选到隐藏 textarea，
+        fill 会一直等待元素可见而超时。因此候选元素按可见性过滤后再选。
+        """
         textarea = None
-        try:
-            textarea = await self.page.query_selector("textarea")
-        except Exception:
-            pass
-        if not textarea:
+        candidates: list = []
+        for sel in ("textarea", "[contenteditable='true']", "[class*='chat-input'] textarea"):
             try:
-                textarea = await self.page.query_selector("[contenteditable='true']")
+                candidates.extend(await self.page.query_selector_all(sel))
             except Exception:
                 pass
+        # 优先可见的候选（视频生成模式下隐藏 textarea 会被跳过）
+        for el in candidates:
+            try:
+                if await el.is_visible():
+                    textarea = el
+                    break
+            except Exception:
+                continue
+        # 都不可见时退而求其次用第一个
+        if not textarea and candidates:
+            textarea = candidates[0]
         if not textarea:
             return False
 
@@ -561,7 +574,9 @@ class DoubaoGenerator:
                 pass
         await self._sleep(0.3, 0.6)
         # fill 可能因残留弹窗遮挡/页面未渲染完失败：先关非登录弹窗再重试，
-        # 仍失败且检测到登录弹窗则抛 NeedLoginError 走扫码流程
+        # 仍失败且检测到登录弹窗则抛 NeedLoginError 走扫码流程。
+        # 视频生成模式输入框是 ProseMirror/tiptap 富文本，fill 偶发不可靠，
+        # 最终兜底改用 click + 全选 + 键盘输入。
         try:
             await textarea.fill(prompt, timeout=10000)
         except Exception:
@@ -569,7 +584,15 @@ class DoubaoGenerator:
                 raise NeedLoginError("需要扫码登录豆包")
             await self._dismiss_modal()
             await self._sleep(0.5, 0.8)
-            await textarea.fill(prompt, timeout=15000)
+            try:
+                await textarea.fill(prompt, timeout=15000)
+            except Exception:
+                try:
+                    await textarea.click(timeout=5000)
+                    await self.page.keyboard.press("Meta+A")
+                    await self.page.keyboard.type(prompt, delay=15)
+                except Exception:
+                    return False
         await self._sleep(0.3, 0.6)
         try:
             send_btn = await self.page.query_selector(
