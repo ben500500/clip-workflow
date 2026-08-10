@@ -5,7 +5,9 @@ import type { TableProps, ColumnsType, ColumnType } from 'antd/es/table';
 // 列宽拖动调整上下文：子表头单元通过它回调更新列宽
 const ResizeContext = React.createContext<(key: string, width: number) => void>(() => {});
 
-// 可拖拽表头单元：在单元格右侧渲染 6px 拖拽手柄
+// 可拖拽表头单元：在 th 内渲染 flex 内容 + 右侧 8px 拖拽手柄
+// 注意：必须返回 <th> 元素（antd 的 components.header.cell 语义），
+// 返回 <div> 会破坏表格列结构，导致列宽坍缩、标题文字竖排。
 function ResizableHeaderCell(props: Record<string, unknown>) {
   const { children, column, ...rest } = props as {
     children: React.ReactNode;
@@ -55,27 +57,38 @@ function ResizableHeaderCell(props: Record<string, unknown>) {
     };
   }, [dragging, key, onResize]);
 
+  // rest 含 antd 注入的 th 属性（className / colSpan / rowSpan / align 等），
+  // 原样传给 th；内部用 flex div 承载标题与手柄。
+  const thStyle = { ...((rest.style as object | undefined) ?? {}), padding: 0 } as React.CSSProperties;
   return (
-    <div
-      {...rest}
-      style={{ position: 'relative', display: 'flex', alignItems: 'center', width: '100%' }}
-    >
-      <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
+    <th {...rest} style={thStyle}>
       <div
-        onMouseDown={handleMouseDown}
         style={{
-          position: 'absolute',
-          right: -1,
-          top: 0,
-          bottom: 0,
-          width: 8,
-          cursor: 'col-resize',
-          zIndex: 10,
-          background: dragging ? 'rgba(24, 144, 255, 0.25)' : 'transparent',
+          display: 'flex',
+          alignItems: 'center',
+          position: 'relative',
+          width: '100%',
+          padding: '8px 16px',
+          boxSizing: 'border-box',
         }}
-        title="拖动调整列宽"
-      />
-    </div>
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
+        <div
+          onMouseDown={handleMouseDown}
+          style={{
+            position: 'absolute',
+            right: -1,
+            top: 0,
+            bottom: 0,
+            width: 8,
+            cursor: 'col-resize',
+            zIndex: 10,
+            background: dragging ? 'rgba(24, 144, 255, 0.25)' : 'transparent',
+          }}
+          title="拖动调整列宽"
+        />
+      </div>
+    </th>
   );
 }
 
