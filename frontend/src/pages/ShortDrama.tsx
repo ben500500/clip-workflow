@@ -10,10 +10,11 @@ import {
   UploadOutlined, PlayCircleOutlined, ImportOutlined, InboxOutlined,
   SendOutlined, EditOutlined, SaveOutlined, UndoOutlined,
   RobotOutlined, QrcodeOutlined, StopOutlined, SyncOutlined,
-  CloseCircleOutlined, CheckCircleOutlined, ClockCircleOutlined,
+  CloseCircleOutlined, CheckCircleOutlined, ClockCircleOutlined, EyeOutlined,
 } from '@ant-design/icons';
 import { shortdramaApi, type ShortdramaPromptRecord, type PromptTemplates, type DoubaoRewriteItem } from '../api/shortdrama';
 import Watermark, { type ImportedVideo } from './Watermark';
+import ResizableTable from '../components/ResizableTable';
 import PublishMaterialTab from './PublishMaterialTab';
 import { formatFileSize } from '../utils/format';
 
@@ -141,6 +142,9 @@ const ShortDrama: React.FC = () => {
 
   // 成片视频快速预览弹窗（历史表格内直接播放）
   const [previewVideo, setPreviewVideo] = useState<{ url: string; title: string } | null>(null);
+
+  // 豆包对话窗口查看弹窗（展示制作过程截图）
+  const [doubaoShotRecord, setDoubaoShotRecord] = useState<ShortdramaPromptRecord | null>(null);
 
   // 去水印页签：一键导入的成片视频
   const [activeTab, setActiveTab] = useState('prompt');
@@ -743,21 +747,12 @@ const ShortDrama: React.FC = () => {
       title: '文案（摘要）',
       dataIndex: 'source_text',
       key: 'source_text',
+      width: 140,
       ellipsis: true,
       render: (s: string) => (
-        <Text style={{ fontSize: 13 }}>{s.length > 80 ? `${s.slice(0, 80)}…` : s}</Text>
-      ),
-    },
-    {
-      title: '题材 / 基调',
-      key: 'theme_tone',
-      width: 150,
-      render: (_: unknown, r: ShortdramaPromptRecord) => (
-        <Space size={4} wrap>
-          {r.theme ? <Tag>{r.theme}</Tag> : null}
-          {r.tone ? <Tag color="orange">{r.tone}</Tag> : null}
-          {!r.theme && !r.tone ? <Text type="secondary" style={{ fontSize: 12 }}>-</Text> : null}
-        </Space>
+        <Tooltip title={s} placement="topLeft">
+          <Text style={{ fontSize: 13 }} ellipsis={{ tooltip: null }}>{s || '-'}</Text>
+        </Tooltip>
       ),
     },
     {
@@ -841,6 +836,17 @@ const ShortDrama: React.FC = () => {
             {r.doubao_rewrite_count ? (
               <Tag color="volcano" style={{ fontSize: 11 }}>改写{r.doubao_rewrite_count}次</Tag>
             ) : null}
+            {r.doubao_screenshot && active ? (
+              <Button
+                size="small"
+                type="link"
+                icon={<EyeOutlined />}
+                style={{ padding: 0, height: 'auto' }}
+                onClick={() => setDoubaoShotRecord(r)}
+              >
+                查看对话
+              </Button>
+            ) : null}
             {r.doubao_status === 'completed' ? (
               <Button
                 size="small"
@@ -887,6 +893,18 @@ const ShortDrama: React.FC = () => {
           </Space>
         );
       },
+    },
+    {
+      title: '题材 / 基调',
+      key: 'theme_tone',
+      width: 150,
+      render: (_: unknown, r: ShortdramaPromptRecord) => (
+        <Space size={4} wrap>
+          {r.theme ? <Tag>{r.theme}</Tag> : null}
+          {r.tone ? <Tag color="orange">{r.tone}</Tag> : null}
+          {!r.theme && !r.tone ? <Text type="secondary" style={{ fontSize: 12 }}>-</Text> : null}
+        </Space>
+      ),
     },
     {
       title: '操作',
@@ -1291,7 +1309,7 @@ const ShortDrama: React.FC = () => {
           </Space>
         }
       >
-        <Table
+        <ResizableTable
           rowKey="id"
           loading={loadingRecords}
           dataSource={records}
@@ -1692,6 +1710,38 @@ const ShortDrama: React.FC = () => {
             </Text>
           </Space>
         )}
+      </Modal>
+
+      {/* ── 豆包对话窗口查看弹窗 ── */}
+      <Modal
+        title={
+          <Space>
+            <EyeOutlined /> 豆包对话窗口
+          </Space>
+        }
+        open={!!doubaoShotRecord}
+        footer={null}
+        width={560}
+        onCancel={() => setDoubaoShotRecord(null)}
+        destroyOnClose
+      >
+        {(() => {
+          // 实时取最新记录，弹窗内截图随轮询刷新
+          const live = records.find((r) => r.id === doubaoShotRecord?.id) || doubaoShotRecord;
+          const shot = live?.doubao_screenshot;
+          return shot ? (
+            <Space direction="vertical" style={{ width: '100%', alignItems: 'center' }} size={12}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                豆包正在制作视频，截图实时更新；关闭弹窗不影响任务继续
+              </Text>
+              <img
+                src={shot}
+                alt="豆包对话窗口"
+                style={{ width: '100%', border: '1px solid #f0f0f0', borderRadius: 8 }}
+              />
+            </Space>
+          ) : null;
+        })()}
       </Modal>
 
       {/* ── 豆包改写确认弹窗 ── */}

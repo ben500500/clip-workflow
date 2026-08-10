@@ -782,6 +782,8 @@ class ShortdramaPrompt(Base):
     doubao_account_type = Column(String(20), nullable=True)
     # 登录二维码 SVG（need_login 状态时推给前端展示，扫码后自动继续）
     doubao_qrcode = Column(Text, nullable=True)
+    # 当前豆包对话窗口截图（running 时由 Celery 任务周期截图，前端可查看制作过程）
+    doubao_screenshot = Column(Text, nullable=True)
     doubao_task_id = Column(String(100), nullable=True)
     # 进度/消息（running 时由 Celery 任务实时更新）
     doubao_message = Column(Text, nullable=True)

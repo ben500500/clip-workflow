@@ -26,6 +26,7 @@ export interface ShortdramaPromptRecord {
   doubao_status?: string | null;
   doubao_account_type?: string | null;
   doubao_qrcode?: string | null;
+  doubao_screenshot?: string | null;
   doubao_message?: string | null;
   doubao_progress?: number | null;
   doubao_error_message?: string | null;

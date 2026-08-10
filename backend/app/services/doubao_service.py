@@ -99,6 +99,14 @@ class DoubaoGenerator:
         """随机延迟（降低风控）。"""
         await asyncio.sleep(lo + (hi - lo) * (time.time() % 1))
 
+    async def _take_screenshot(self) -> Optional[str]:
+        """截取当前豆包页面（对话窗口）为 PNG data URL，供前端展示制作过程。"""
+        try:
+            shot = await self.page.screenshot(type="png", full_page=False)
+            return "data:image/png;base64," + base64.b64encode(shot).decode()
+        except Exception:
+            return None
+
     async def _extract_qrcode(self) -> Optional[str]:
         """提取登录二维码：优先截取内嵌 SVG 节点，返回 PNG data URL。"""
         try:
@@ -110,9 +118,13 @@ class DoubaoGenerator:
                     if bbox and bbox["width"] >= 120 and bbox["height"] >= 120:
                         svg = s
                         break
-            if not svg:
+            if svg:
+                shot = await svg.screenshot()
+            else:
+                # 二维码不是独立 SVG 节点时，直接整页截图（用户可自行放大定位二维码）
+                shot = await self.page.screenshot(type="png")
+            if not shot:
                 return None
-            shot = await svg.screenshot()
             return "data:image/png;base64," + base64.b64encode(shot).decode()
         except Exception:
             return None
@@ -196,6 +208,7 @@ class DoubaoGenerator:
         limits: Optional[dict] = None,
         progress_cb=None,
         qrcode_cb=None,
+        screenshot_cb=None,
         on_rewrite_available=None,
         cancel_check=None,
     ) -> dict:
@@ -267,6 +280,7 @@ class DoubaoGenerator:
                 duration=duration,
                 account_type=account_type,
                 progress_cb=progress_cb,
+                screenshot_cb=screenshot_cb,
                 on_rewrite_available=on_rewrite_available,
                 rewrites=rewrites,
                 cancel_check=cancel_check,
@@ -276,7 +290,16 @@ class DoubaoGenerator:
             return result
 
         except NeedLoginError:
-            # 流程中途弹出登录拦截弹窗：返回 need_login，前端展示扫码引导
+            # 流程中途弹出登录拦截弹窗：推送二维码，前端展示扫码引导（不再无提示地进入后续流程）
+            if qrcode_cb:
+                try:
+                    qr = await self._extract_qrcode()
+                    if qr:
+                        await qrcode_cb(qr)
+                    else:
+                        await progress_cb("需要扫码登录豆包，但未能自动截取二维码，请直接打开豆包页面扫码", 12)
+                except Exception:
+                    pass
             return {
                 "success": False,
                 "status": "need_login",
@@ -298,8 +321,9 @@ class DoubaoGenerator:
         duration: int,
         account_type: str,
         progress_cb,
-        on_rewrite_available,
         rewrites: list,
+        screenshot_cb=None,
+        on_rewrite_available=None,
         cancel_check=None,
     ) -> dict:
         """进入视频生成技能并发送提示词，处理改写闭环直到成功或失败。"""
@@ -334,7 +358,7 @@ class DoubaoGenerator:
                 }
 
             await progress_cb("已发送，等待豆包生成视频…", 50)
-            outcome = await self._wait_for_generation_outcome(progress_cb, cancel_check)
+            outcome = await self._wait_for_generation_outcome(progress_cb, cancel_check, screenshot_cb)
 
             if outcome.get("status") == "completed":
                 return {
@@ -474,10 +498,11 @@ class DoubaoGenerator:
         await self.page.keyboard.press("Enter")
         return True
 
-    async def _wait_for_generation_outcome(self, progress_cb, cancel_check=None) -> dict:
+    async def _wait_for_generation_outcome(self, progress_cb, cancel_check=None, screenshot_cb=None) -> dict:
         """等待豆包生成结果，识别成功 / 被拒 / 超时。"""
         deadline = time.time() + 180  # 3 分钟
         last_progress = 50
+        shot_count = 0
         while time.time() < deadline:
             if await self._is_cancelled(cancel_check):
                 return {"status": "cancelled", "message": "任务已取消"}
@@ -509,6 +534,16 @@ class DoubaoGenerator:
 
             last_progress = min(last_progress + 2, 85)
             await progress_cb("豆包正在生成视频，请稍候…", last_progress)
+            # 周期截取对话窗口，供前端实时展示制作过程（约每 10s 一张）
+            if screenshot_cb:
+                shot_count += 1
+                if shot_count % 3 == 0:
+                    try:
+                        shot = await self._take_screenshot()
+                        if shot:
+                            await screenshot_cb(shot)
+                    except Exception:
+                        pass
 
         return {"status": "error", "message": "等待豆包生成超时（3 分钟）"}
 

@@ -15,6 +15,7 @@ import {
 } from '../api/publishMaterial';
 import type { ShortdramaPromptRecord } from '../api/shortdrama';
 import { formatDateTime } from '../utils/format';
+import ResizableTable from '../components/ResizableTable';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -456,21 +457,12 @@ const PublishMaterialTab: React.FC<{
       title: '剧情梗概（摘要）',
       dataIndex: 'story',
       key: 'story',
+      width: 140,
       ellipsis: true,
       render: (s: string) => (
-        <Text style={{ fontSize: 13 }}>{s.length > 60 ? `${s.slice(0, 60)}…` : s}</Text>
-      ),
-    },
-    {
-      title: '题材 / 基调',
-      key: 'theme_tone',
-      width: 150,
-      render: (_: unknown, r: PublishMaterialRecord) => (
-        <Space size={4} wrap>
-          {r.theme ? <Tag>{r.theme}</Tag> : null}
-          {r.tone ? <Tag color="orange">{r.tone}</Tag> : null}
-          {!r.theme && !r.tone ? <Text type="secondary" style={{ fontSize: 12 }}>-</Text> : null}
-        </Space>
+        <Tooltip title={s} placement="topLeft">
+          <Text style={{ fontSize: 13 }} ellipsis={{ tooltip: null }}>{s || '-'}</Text>
+        </Tooltip>
       ),
     },
     {
@@ -494,6 +486,18 @@ const PublishMaterialTab: React.FC<{
       key: 'created_at',
       width: 140,
       render: (d: string) => <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text>,
+    },
+    {
+      title: '题材 / 基调',
+      key: 'theme_tone',
+      width: 150,
+      render: (_: unknown, r: PublishMaterialRecord) => (
+        <Space size={4} wrap>
+          {r.theme ? <Tag>{r.theme}</Tag> : null}
+          {r.tone ? <Tag color="orange">{r.tone}</Tag> : null}
+          {!r.theme && !r.tone ? <Text type="secondary" style={{ fontSize: 12 }}>-</Text> : null}
+        </Space>
+      ),
     },
     {
       title: '操作',
@@ -669,7 +673,7 @@ const PublishMaterialTab: React.FC<{
           </Space>
         }
       >
-        <Table
+        <ResizableTable
           rowKey="id"
           loading={loadingRecords}
           dataSource={records}
