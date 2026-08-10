@@ -235,6 +235,7 @@ def _serialize_record(r: ShortdramaPrompt) -> dict:
         "doubao_status": r.doubao_status,
         "doubao_account_type": r.doubao_account_type,
         "doubao_qrcode": r.doubao_qrcode,
+        "doubao_screenshot": r.doubao_screenshot,
         "doubao_message": r.doubao_message,
         "doubao_error_message": r.doubao_error_message,
         "doubao_progress": r.doubao_progress,

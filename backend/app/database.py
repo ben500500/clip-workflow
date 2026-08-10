@@ -163,6 +163,7 @@ async def _apply_compat_migrations():
         ("shortdrama_prompts", "doubao_status", "VARCHAR(50)"),
         ("shortdrama_prompts", "doubao_account_type", "VARCHAR(20)"),
         ("shortdrama_prompts", "doubao_qrcode", "TEXT"),
+        ("shortdrama_prompts", "doubao_screenshot", "TEXT"),
         ("shortdrama_prompts", "doubao_task_id", "VARCHAR(100)"),
         ("shortdrama_prompts", "doubao_message", "TEXT"),
         ("shortdrama_prompts", "doubao_progress", "INTEGER DEFAULT 0"),

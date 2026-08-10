@@ -1706,6 +1706,7 @@ async def _update_doubao_prompt(
     message: Optional[str] = None,
     error_message: Optional[str] = None,
     qrcode: Optional[str] = None,
+    screenshot: Optional[str] = None,
     task_id: Optional[str] = None,
     approved_prompt: Optional[str] = None,
     rewrite_history: Optional[list] = None,
@@ -1734,6 +1735,8 @@ async def _update_doubao_prompt(
             record.doubao_error_message = error_message
         if qrcode is not None:
             record.doubao_qrcode = qrcode
+        if screenshot is not None:
+            record.doubao_screenshot = screenshot
         if task_id is not None:
             record.doubao_task_id = task_id
         if approved_prompt is not None:
@@ -1908,6 +1911,13 @@ def doubao_generate_task(
                 qrcode=qr_data_url,
             )
 
+        # 截图回调：写入数据库供前端展示豆包对话窗口制作过程
+        async def _screenshot_cb(shot_data_url: str):
+            await _update_doubao_prompt(
+                prompt_id,
+                screenshot=shot_data_url,
+            )
+
         # 改写确认回调：写入 awaiting_rewrite 状态并挂起等待用户确认
         async def _rewrite_cb(payload: dict) -> str:
             import secrets
@@ -1963,6 +1973,7 @@ def doubao_generate_task(
             limits=limits,
             progress_cb=_progress_cb,
             qrcode_cb=_qrcode_cb,
+            screenshot_cb=_screenshot_cb,
             on_rewrite_available=_rewrite_cb,
             cancel_check=lambda: _check_doubao_cancelled(prompt_id),
         ))
