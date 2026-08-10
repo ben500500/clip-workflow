@@ -186,26 +186,36 @@ def build_encoder_args(encoder: str, threads: int) -> list[str]:
     return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", str(threads)]
 
 
-def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="libx264"):
+def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="libx264", copy_if_possible=True):
+    # fast 模式且无滤镜时走流拷贝（-c copy），只切不重编码，速度 10×+；
+    # 需要滤镜（去重/水印/竖转横）或显式关闭时回退到重编码分支。
+    copy_mode = bool(copy_if_possible and not vf and not af)
     cmd = [
         "ffmpeg", "-y",
         "-threads", str(threads),
         "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", src,
     ]
-    cmd += build_encoder_args(encoder, threads)
-    cmd += ["-c:a", "aac", "-b:a", "128k"]
-    if vf:
-        cmd += ["-vf", vf]
-    if af:
-        cmd += ["-af", af]
+    if copy_mode:
+        cmd += ["-c", "copy", "-movflags", "+faststart"]
+    else:
+        cmd += build_encoder_args(encoder, threads)
+        cmd += ["-c:a", "aac", "-b:a", "128k"]
+        if vf:
+            cmd += ["-vf", vf]
+        if af:
+            cmd += ["-af", af]
     cmd.append(out)
     run_ffmpeg(cmd, timeout=3600, threads=threads)
 
 
-def concat_segments(parts, out, threads=1, encoder="libx264"):
+def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True):
     if len(parts) == 1:
         # 单段时无需重新编码（水印已在 slice_segment 阶段叠加）
         shutil.move(parts[0], out)
+        return
+    # 多段：若各段均为 copy 产出（同编码/分辨率/时基），用 concat demuxer 免重编码拼接
+    if copy_if_possible and all(_is_copy_segment(p) for p in parts):
+        _concat_demuxer(parts, out)
         return
     filter_complex = "".join(
         f"[{i}:v][{i}:a]" for i in range(len(parts))
@@ -223,6 +233,32 @@ def concat_segments(parts, out, threads=1, encoder="libx264"):
     cmd += build_encoder_args(encoder, threads)
     cmd += ["-c:a", "aac", "-b:a", "128k", out]
     run_ffmpeg(cmd, threads=threads)
+
+
+def _is_copy_segment(path: str) -> bool:
+    """粗略判断片段是否为流拷贝产出（封装格式 mp4 即可；copy 片段编码/时基一致）。"""
+    try:
+        return os.path.getsize(path) > 0 and path.lower().endswith(".mp4")
+    except OSError:
+        return False
+
+
+def _concat_demuxer(parts, out):
+    """用 ffmpeg concat demuxer + -c copy 免重编码拼接多段。"""
+    list_file = out + ".concat.txt"
+    with open(list_file, "w") as f:
+        for p in parts:
+            # ffmpeg concat demuxer：单引号内用 '\'' 转义内嵌单引号，路径含引号也能安全解析
+            escaped = p.replace("'", "'\\''")
+            f.write(f"file '{escaped}'\n")
+    try:
+        cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_file, "-c", "copy", "-movflags", "+faststart", out]
+        run_ffmpeg(cmd, timeout=3600)
+    finally:
+        try:
+            os.unlink(list_file)
+        except OSError:
+            pass
 
 
 def safe_name(name: str) -> str:

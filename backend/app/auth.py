@@ -304,7 +304,7 @@ def _fernet_key_from_secret(secret: str) -> bytes:
 def encrypt_cookie(plain_text: str) -> str:
     """使用 AES-256（Fernet 包装）加密 Cookie.
 
-    密钥来自 settings.COOKIE_ENCRYPT_KEY，未配置时回退 JWT_SECRET。
+    密钥来自 settings.COOKIE_ENCRYPT_KEY（config.py 启动时已固化独立密钥，不再回退 JWT_SECRET）。
     """
     if not plain_text:
         return ""

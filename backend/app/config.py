@@ -1,4 +1,15 @@
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
+import os
+import secrets
+import stat
+from pathlib import Path
+
+
+DEFAULT_JWT_PLACEHOLDERS = {
+    "your-secret-key-change-in-production",
+    "change-this-to-a-random-jwt-secret",
+}
 
 
 def _parse_origins(raw: str) -> list[str]:
@@ -21,7 +32,7 @@ class Settings(BaseSettings):
     # 容器内 MINIO_ENDPOINT=minio:9000 生成的 presigned URL 浏览器无法解析，
     # 设置本字段后生成的 presigned URL 会用该地址替换 host，修复"视频不播放 / 下载拒绝连接"。
     MINIO_EXTERNAL_ENDPOINT: str = ""
-    MINIO_ACCESS_KEY: str = "minio_admin"
+    MINIO_ACCESS_KEY: str                       # 原 "minio_admin" 默认值删除，改为必填（配合 docker-compose 必填校验）
     # 必填：必须通过 .env / 环境变量注入
     MINIO_SECRET_KEY: str
     MINIO_BUCKET_RAW: str = "raw-footage"
@@ -108,15 +119,17 @@ class Settings(BaseSettings):
     SLICE_TASK_TIMEOUT_SECONDS: int = 7200
 
     # JWT
-    JWT_SECRET: str = "your-secret-key-change-in-production"
+    JWT_SECRET: str  # 必填无默认；启动时 field_validator 拒绝占位符/默认值
     JWT_EXPIRE_MINUTES: int = 30  # access_token 有效期（分钟）
     # refresh_token 有效期（天），双 Token 机制
     JWT_REFRESH_EXPIRE_DAYS: int = 7
-    # RPA Cookie 加密密钥（AES-256/Fernet），未配置时回退 JWT_SECRET
+    # RPA Cookie 加密密钥（AES-256/Fernet），与 JWT_SECRET 必须不同；留空由 _ensure_cookie_key 生成并落盘
     COOKIE_ENCRYPT_KEY: str = ""
 
     # 发布平台登录态巡检间隔（秒），Celery beat 周期（默认每 6 小时）
     COOKIE_CHECK_INTERVAL_SECONDS: int = 21600
+    # 豆包改写确认等待上限（秒）：改写稿等待用户确认的最长阻塞时长，避免长期占住 worker 槽位
+    DOUBAO_REWRITE_WAIT_SECONDS: int = 30
 
     # 监控告警（三期）
     # 钉钉机器人 Webhook 地址，用于推送告警消息
@@ -137,7 +150,47 @@ class Settings(BaseSettings):
         "extra": "ignore",
     }
 
+    @field_validator("JWT_SECRET")
+    @classmethod
+    def _no_default_secret(cls, v: str) -> str:
+        if not v or v.strip() in DEFAULT_JWT_PLACEHOLDERS:
+            raise ValueError(
+                "生产环境必须在 .env 设置 JWT_SECRET（随机强密钥），禁止使用默认/占位值"
+            )
+        return v
+
+    @field_validator("COOKIE_ENCRYPT_KEY")
+    @classmethod
+    def _cookie_key_differs(cls, v: str, info) -> str:
+        # 若配置了 COOKIE_ENCRYPT_KEY，则不能与 JWT_SECRET 相同
+        jwt_secret = info.data.get("JWT_SECRET")
+        if v and jwt_secret and v == jwt_secret:
+            raise ValueError("COOKIE_ENCRYPT_KEY 不得与 JWT_SECRET 相同")
+        return v
+
+
+def _ensure_cookie_key() -> str:
+    """COOKIE_ENCRYPT_KEY 未配置时生成独立随机密钥并持久化落盘，避免回退到 JWT_SECRET。"""
+    if settings.COOKIE_ENCRYPT_KEY:
+        return settings.COOKIE_ENCRYPT_KEY
+    p = Path(os.getenv("DATA_DIR", "/app/data")) / "cookie_key"
+    try:
+        if p.exists():
+            return p.read_text().strip()
+        k = secrets.token_urlsafe(32)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(k)
+        os.chmod(p, stat.S_IRUSR | stat.S_IWUSR)
+        return k
+    except OSError:
+        # 落盘失败时退化为随机密钥（进程内），避免回退到 JWT_SECRET
+        return secrets.token_urlsafe(32)
+
 
 settings = Settings()
+
+# 固化独立 Cookie 密钥（启动时计算一次）
+COOKIE_ENCRYPT_KEY = _ensure_cookie_key()
+settings.COOKIE_ENCRYPT_KEY = COOKIE_ENCRYPT_KEY
 
 cors_origins = _parse_origins(settings.CORS_ORIGINS)

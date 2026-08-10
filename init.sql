@@ -269,8 +269,7 @@ CREATE TABLE IF NOT EXISTS system_configs (
 
 -- ==================== 索引 ====================
 
--- users 索引
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+-- users 索引（注意：users 表无 email 字段，已删除原本会导致全文件索引创建中止的错误语句）
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);

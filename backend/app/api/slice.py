@@ -54,6 +54,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# 供 Go slice-worker 回调使用的开放 router（走 X-Worker-Token 鉴权，而非用户 JWT），
+# 在 main.py 中单独挂载、不套用户鉴权依赖。
+worker_router = APIRouter()
+
 # 允许的引擎类型
 ALLOWED_ENGINES = ("celery", "worker")
 
@@ -873,7 +877,7 @@ async def _verify_worker_token(
     return secrets.compare_digest(expected, x_worker_token)
 
 
-@router.get("/slice-tasks/{task_id}/upload-url")
+@worker_router.get("/slice-tasks/{task_id}/upload-url")
 async def get_slice_upload_url(
     task_id: str,
     file_name: str,
@@ -914,7 +918,7 @@ async def get_slice_upload_url(
     return {"upload_url": upload_url, "file_key": file_key}
 
 
-@router.post("/slice-tasks/{task_id}/callback")
+@worker_router.post("/slice-tasks/{task_id}/callback")
 async def slice_task_callback(
     task_id: str,
     data: SliceTaskCallback,
@@ -1040,7 +1044,7 @@ async def slice_task_callback(
     return {"ok": True}
 
 
-@router.post("/slice-tasks/{task_id}/progress")
+@worker_router.post("/slice-tasks/{task_id}/progress")
 async def update_slice_progress(
     task_id: str,
     data: dict,

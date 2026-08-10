@@ -1,15 +1,16 @@
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from app.config import settings, cors_origins
 from app.database import init_db, close_db, async_session_factory
 from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers, monitor, maintenance, watermark, shortdrama, publish_material
-from app.auth import get_password_hash
+from app.auth import get_password_hash, get_current_user
 from app.models.models import User, UserRole, PlatformProfile
 from app.api.config import DEFAULT_PLATFORM_PROFILES
 from app.services.monitor_service import ensure_default_alert_rules
@@ -54,32 +55,49 @@ manager = ConnectionManager()
 # 种子用户配置
 # ──────────────────────────────────────────────
 
-SEED_USERS: list[dict] = [
-    {"username": "admin",     "password": "admin123",     "display_name": "管理员",     "role": UserRole.admin.value},
-    {"username": "operator",  "password": "operator123",  "display_name": "运营专员",   "role": UserRole.operator.value},
-    {"username": "publisher", "password": "publisher123", "display_name": "发布专员",   "role": UserRole.publisher.value},
-    {"username": "material",  "password": "material123",  "display_name": "素材专员",   "role": UserRole.material.value},
-]
+SEED_USERS: list[dict] = []
 
 
 async def _create_seed_users():
-    """在数据库初始化时创建默认种子用户（如果尚不存在）."""
+    """在 DEBUG 环境下创建种子用户；生产环境不自动建弱口令账号。
+
+    种子账号来自环境变量 SEED_USERS_JSON（形如
+    [{"username":"admin","password":"<强口令>","role":"admin"}]），无默认弱口令。
+    """
+    if not settings.DEBUG:
+        # 生产不自动建弱口令账号，请通过注册/邀请流程开通
+        logger.info("非 DEBUG 环境，跳过种子用户创建（请通过注册/邀请流程开通）")
+        return
+    raw = os.getenv("SEED_USERS_JSON")
+    if not raw:
+        logger.warning("DEBUG 环境未提供 SEED_USERS_JSON，跳过种子用户创建")
+        return
+    try:
+        seeds = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("SEED_USERS_JSON 解析失败，跳过种子用户创建: %s", exc)
+        return
     async with async_session_factory() as session:
-        for seed in SEED_USERS:
+        for seed in seeds:
+            username = seed.get("username")
+            password = seed.get("password")
+            if not username or not password:
+                logger.warning("种子用户缺少 username/password，跳过: %s", seed)
+                continue
             result = await session.execute(
-                select(User).where(User.username == seed["username"])
+                select(User).where(User.username == username)
             )
             if result.scalar_one_or_none() is not None:
                 continue  # 已存在，跳过
             user = User(
-                username=seed["username"],
-                password_hash=get_password_hash(seed["password"]),
-                display_name=seed["display_name"],
-                role=seed["role"],
+                username=username,
+                password_hash=get_password_hash(password),
+                display_name=seed.get("display_name") or username,
+                role=seed.get("role", UserRole.operator.value),
                 is_active=True,
             )
             session.add(user)
-            logger.info("Created seed user: %s (%s)", seed["username"], seed["role"])
+            logger.info("Created seed user: %s (%s)", username, user.role)
         await session.commit()
 
 
@@ -169,23 +187,22 @@ async def websocket_progress(websocket: WebSocket, task_id: str):
 
 
 # Mount all API routers
-app.include_router(auth.router)  # 自带 /api/auth 前缀
-app.include_router(projects.router, prefix="/api", tags=["Projects"])
-app.include_router(upload.router, prefix="/api", tags=["Upload"])
-app.include_router(autoclip.router, prefix="/api", tags=["AutoClip"])
-app.include_router(intervals.router, prefix="/api", tags=["Intervals"])
-app.include_router(slice.router, prefix="/api", tags=["Slice"])
-app.include_router(preview.router, prefix="/api", tags=["Preview"])
-app.include_router(publications.router, prefix="/api", tags=["Publications"])
-app.include_router(config_api.router, prefix="/api", tags=["Config"])
-app.include_router(publish.router, prefix="/api", tags=["Publish"])
-app.include_router(dashboard.router, prefix="/api", tags=["Dashboard"])
-app.include_router(workers.router, prefix="/api", tags=["Workers"])
-app.include_router(monitor.router, prefix="/api", tags=["Monitor"])
-app.include_router(maintenance.router, prefix="/api", tags=["Maintenance"])
-app.include_router(watermark.router, prefix="/api", tags=["Watermark"])
-app.include_router(shortdrama.router, prefix="/api", tags=["Shortdrama"])
-app.include_router(publish_material.router, prefix="/api", tags=["PublishMaterial"])
+# 业务路由统一加用户鉴权依赖；auth(login/refresh) 与 Worker/心跳回调（走各自 Token）不在此列
+_protected_routers = [
+    projects, upload, autoclip, intervals, slice, preview, publications,
+    config_api, publish, dashboard, workers, monitor, maintenance,
+    watermark, shortdrama, publish_material,
+]
+for _r in _protected_routers:
+    app.include_router(_r.router, prefix="/api", dependencies=[Depends(get_current_user)])
+
+# auth 自带 /api/auth 前缀，保持开放（login/refresh）
+app.include_router(auth.router)
+
+# 供 Go slice-worker 回调的开放路由（X-Worker-Token 鉴权）
+app.include_router(slice.worker_router, prefix="/api")
+# 供 Go slice-worker 心跳上报的开放路由
+app.include_router(workers.internal_router, prefix="/api")
 
 
 @app.get("/api/health")

@@ -33,7 +33,7 @@ else
 fi
 
 # 可用的服务列表
-SERVICES=("postgres" "redis" "minio" "minio_init" "autoclip" "autoclip_worker" "backend" "worker" "beat" "frontend" "nginx")
+SERVICES=("postgres" "redis" "minio" "minio_init" "autoclip" "autoclip_worker" "backend" "worker-video" "worker-publish" "worker-fast" "beat" "frontend" "nginx")
 
 show_usage() {
     echo "用法: bash scripts/logs.sh [service_name] [options]"
@@ -52,7 +52,7 @@ show_usage() {
     echo "  bash scripts/logs.sh              # 所有服务日志"
     echo "  bash scripts/logs.sh backend      # backend 日志"
     echo "  bash scripts/logs.sh nginx -f     # 实时跟踪 nginx 日志"
-    echo "  bash scripts/logs.sh worker -n 50 # 显示 worker 最后 50 行"
+    echo "  bash scripts/logs.sh worker-video -n 50 # 显示视频 worker 最后 50 行"
 }
 
 # 如果没有参数，显示所有日志
