@@ -291,6 +291,20 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	}
 	w.emitProgress(task.TaskID, "download", 100, "素材下载完成")
 
+	// 1.5 下载图片角标（如有），写入本地 path 供引擎叠加
+	for i := range task.Badges {
+		b := &task.Badges[i]
+		if b.URL == "" {
+			continue
+		}
+		badgePath := filepath.Join(taskDir, fmt.Sprintf("badge_%d.png", i))
+		if err := w.transfer.DownloadFile(taskCtx, b.URL, badgePath, task.TaskID); err != nil {
+			w.handleTaskError(taskCtx, task, msg, fmt.Errorf("下载角标图片失败(%d): %w", i, err))
+			return
+		}
+		b.Path = badgePath
+	}
+
 	// 2. 执行切片（引擎内部会解析 PROGRESS 并回调真实进度）
 	w.emitProgress(task.TaskID, "ffmpeg", 0, "开始切片")
 	outputDir := filepath.Join(taskDir, "output")

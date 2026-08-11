@@ -1,6 +1,19 @@
 import client from './client';
 import type { ApiList, DedupeConfig, SliceOutput, SliceTask } from '../types';
 
+export interface BadgeItem {
+  file_key: string;
+  position: string;
+  width?: number;
+}
+
+export interface BadgeUploadResult {
+  file_name: string;
+  file_key: string;
+  file_size: number;
+  upload_id: string;
+}
+
 export const sliceApi = {
   run: (
     episodeId: string,
@@ -15,6 +28,8 @@ export const sliceApi = {
       watermark_font_size?: number;
       watermark_opacity?: number;
       watermark_position?: string;
+      // 图片角标：每个含 file_key（上传的角标图片 MinIO key）、position（位置）、width（可选）
+      badges?: BadgeItem[];
       // 竖屏转横屏智能裁切（切片前预处理）
       vert2horiz_enabled?: boolean;
       vert2horiz_mode?: 'fixed' | 'dynamic';
@@ -33,6 +48,22 @@ export const sliceApi = {
       engine: string;
       message: string;
     }>,
+
+  // 上传角标图片
+  uploadBadge: (file: File, onProgress?: (percent: number) => void) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return client.post('/slice/badge-upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 3600000,
+      onUploadProgress: (progressEvent) => {
+        if (onProgress && progressEvent.total) {
+          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          onProgress(percent);
+        }
+      },
+    }) as Promise<BadgeUploadResult>;
+  },
 
   listTasks: (episodeId: string) =>
     client.get(`/episodes/${episodeId}/slice/tasks`) as Promise<SliceTask[]>,
