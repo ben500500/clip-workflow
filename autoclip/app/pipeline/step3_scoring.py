@@ -18,10 +18,21 @@ logger = logging.getLogger(__name__)
 class ClipScorer:
     """内容评分器"""
     
-    def __init__(self, prompt_files: Dict = None):
+    # 台词回填相关常量
+    _TRANSCRIPT_MAX_LEN = 1500      # 超过该字数触发中略截断
+    _TRANSCRIPT_HEAD_RATIO = 0.4   # 保留开头比例
+    _TRANSCRIPT_TAIL_RATIO = 0.4   # 保留结尾比例
+
+    def __init__(self, prompt_files: Dict = None, metadata_dir: Path = None):
         self.llm_client = LLMClient()
         self.text_processor = TextProcessor()
-        
+
+        # 台词回填依赖的 SRT 分块目录（Step1 产出）
+        if metadata_dir is None:
+            metadata_dir = METADATA_DIR
+        self.metadata_dir = metadata_dir
+        self.srt_chunks_dir = self.metadata_dir / "step1_srt_chunks"
+
         # 加载提示词
         prompt_files_to_use = prompt_files if prompt_files is not None else PROMPT_FILES
         with open(prompt_files_to_use['recommendation'], 'r', encoding='utf-8') as f:
@@ -82,12 +93,18 @@ class ClipScorer:
         """
         try:
             # 输入给LLM的数据不需要包含所有字段，只给必要的
+            # transcript 为该时间区间内的原始台词原文，是判分的最重要依据
             input_for_llm = [
                 {
-                    "outline": clip.get('outline'), 
+                    "outline": clip.get('outline'),
                     "content": clip.get('content'),
                     "start_time": clip.get('start_time'),
                     "end_time": clip.get('end_time'),
+                    "transcript": self._extract_transcript(
+                        clip.get('chunk_index'),
+                        clip.get('start_time'),
+                        clip.get('end_time'),
+                    ),
                 } for clip in clips
             ]
             
@@ -102,7 +119,8 @@ class ClipScorer:
             for original_clip, llm_result in zip(clips, parsed_list):
                 score = llm_result.get('final_score')
                 reason = llm_result.get('recommend_reason')
-                
+                clip_type = llm_result.get('clip_type')
+
                 if score is None or reason is None:
                     logger.warning(f"LLM返回的某个结果缺少score或reason: {llm_result}")
                     original_clip['final_score'] = 0.0
@@ -110,13 +128,21 @@ class ClipScorer:
                 else:
                     original_clip['final_score'] = round(float(score), 2)
                     original_clip['recommend_reason'] = reason
+                    # 出片形态：suspense_cut（30-60s 悬念断点片）/ full_highlight（60-90s 完整高光段）
+                    # 兼容模型不返回或返回非法值的情况，默认按时长推断
+                    if clip_type not in ("suspense_cut", "full_highlight"):
+                        clip_type = self._infer_clip_type(
+                            original_clip.get('start_time'),
+                            original_clip.get('end_time'),
+                        )
+                    original_clip['clip_type'] = clip_type
                     # 安全地获取outline标题用于日志显示
                     outline = original_clip.get('outline', {})
                     if isinstance(outline, dict):
                         title = outline.get('title', '未知标题')
                     else:
                         title = str(outline)
-                    logger.info(f"  > 评分成功: {title[:20]}... [分数: {score}]")
+                    logger.info(f"  > 评分成功: {title[:20]}... [分数: {score}, 形态: {clip_type}]")
 
             return clips
 
@@ -127,6 +153,91 @@ class ClipScorer:
                 clip['final_score'] = 0.0
                 clip['recommend_reason'] = "批量评估失败"
             return clips
+
+    def _extract_transcript(self, chunk_index, start_time, end_time) -> str:
+        """
+        从 Step1 产出的 SRT 分块中，按时间区间回填该片段的原始台词。
+
+        这是本次短剧词典整合的核心：让打分模型真正看到原始台词，
+        而非只依赖上游生成的话题摘要（outline + content）。
+
+        Args:
+            chunk_index: 片段所属的块索引（step1_srt_chunks/chunk_{i}.json）
+            start_time: 片段开始时间（HH:MM:SS,mmm）
+            end_time:   片段结束时间（HH:MM:SS,mmm）
+
+        Returns:
+            落在 [start_time, end_time] 区间内的台词拼接文本；
+            若无法定位则返回空字符串（调用方会退回依据摘要评估）。
+        """
+        if chunk_index is None or not start_time or not end_time:
+            return ""
+
+        chunk_file = self.srt_chunks_dir / f"chunk_{chunk_index}.json"
+        if not chunk_file.exists():
+            logger.warning(f"  > 找不到 SRT 分块文件 {chunk_file}，无法回填台词")
+            return ""
+
+        try:
+            with open(chunk_file, 'r', encoding='utf-8') as f:
+                srt_entries = json.load(f)
+        except Exception as e:
+            logger.error(f"  > 读取 SRT 分块 {chunk_file} 失败: {e}")
+            return ""
+
+        try:
+            start_sec = self.text_processor.time_to_seconds(start_time)
+            end_sec = self.text_processor.time_to_seconds(end_time)
+        except Exception as e:
+            logger.error(f"  > 时间格式解析失败 ({start_time}~{end_time}): {e}")
+            return ""
+
+        # 收集落在区间内的字幕条目（含跨边界重叠的整句）
+        matched = []
+        for sub in srt_entries:
+            try:
+                sub_start = self.text_processor.time_to_seconds(sub['start_time'])
+                sub_end = self.text_processor.time_to_seconds(sub['end_time'])
+            except Exception:
+                continue
+            if sub_end >= start_sec and sub_start <= end_sec:
+                matched.append(sub)
+
+        if not matched:
+            return ""
+
+        transcript = " ".join(s.get('text', '') for s in matched).strip()
+        return self._truncate_transcript(transcript)
+
+    def _truncate_transcript(self, transcript: str) -> str:
+        """
+        Token 保护：过长时截断为「头 40% + 尾 40% + 中略」。
+        开头钩子与结尾爆点最密集，中间可省。
+        """
+        if len(transcript) <= self._TRANSCRIPT_MAX_LEN:
+            return transcript
+
+        head_len = int(len(transcript) * self._TRANSCRIPT_HEAD_RATIO)
+        tail_len = int(len(transcript) * self._TRANSCRIPT_TAIL_RATIO)
+        head = transcript[:head_len]
+        tail = transcript[-tail_len:]
+        truncated = f"{head}……（中略，原始台词过长）……{tail}"
+        logger.info(
+            f"  > 台词超长已中略截断: {len(transcript)} -> {len(truncated)} 字"
+        )
+        return truncated
+
+    def _infer_clip_type(self, start_time, end_time) -> str:
+        """模型未返回 clip_type 时的兜底：按时长推断出片形态。"""
+        if not start_time or not end_time:
+            return "full_highlight"
+        try:
+            dur = (self.text_processor.time_to_seconds(end_time)
+                   - self.text_processor.time_to_seconds(start_time))
+        except Exception:
+            return "full_highlight"
+        # 60 秒以内且更接近短钩子节奏 → 悬念断点片
+        return "suspense_cut" if dur <= 60 else "full_highlight"
 
     def save_scores(self, scored_clips: List[Dict], output_path: Path):
         """保存评分结果"""
@@ -149,19 +260,19 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
     # 加载时间线数据
     with open(timeline_path, 'r', encoding='utf-8') as f:
         timeline_data = json.load(f)
-    
+
+    # 确定 metadata_dir（台词回填依赖 step1_srt_chunks）
+    if metadata_dir is None:
+        metadata_dir = METADATA_DIR
+
     # 创建评分器
-    scorer = ClipScorer(prompt_files)
+    scorer = ClipScorer(prompt_files, metadata_dir)
     
     # 评分
     scored_clips = scorer.score_clips(timeline_data)
     
     # 筛选高分切片
     high_score_clips = [clip for clip in scored_clips if clip['final_score'] >= MIN_SCORE_THRESHOLD]
-    
-    # 保存结果
-    if metadata_dir is None:
-        metadata_dir = METADATA_DIR
     
     # 保存所有评分后的片段（用于调试和分析）
     all_scored_path = metadata_dir / "step3_all_scored.json"
