@@ -25,6 +25,7 @@ RUN apk add --no-cache \
     tzdata \
     gettext \
     font-noto-cjk \
+    font-droid \
     fontconfig
 
 # 竖屏转横屏智能裁切：引擎 vert2horiz_crop.py 依赖 OpenCV（人脸检测/动态跟踪）
