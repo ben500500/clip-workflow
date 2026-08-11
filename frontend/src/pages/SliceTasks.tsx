@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip, Alert, Switch, InputNumber, Input, Upload, List, Image as AntImage, Radio, ColorPicker, Checkbox,
+  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip, Alert, Switch, InputNumber, Input, Upload, List, Image as AntImage, Radio, ColorPicker, Checkbox, Modal,
 } from 'antd';
 import { UploadOutlined, PlusOutlined, DeleteOutlined as DelIcon } from '@ant-design/icons';
-import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, DesktopOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, DesktopOutlined, SettingOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { sliceApi, type BadgeItem, type TextOverlayItem } from '../api/slice';
 import ErrorHint from '../components/ErrorHint';
@@ -76,6 +76,8 @@ const SliceTasks: React.FC = () => {
   // 自定义样式的字体色 / 边框色（默认 #EDD736 黄 / 黑边）
   const [subtitleColor, setSubtitleColor] = useState('#EDD736');
   const [subtitleBorderColor, setSubtitleBorderColor] = useState('#000000');
+  // 字幕设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
+  const [subtitleModalOpen, setSubtitleModalOpen] = useState(false);
   // ── 固定文字角标（文字版角标，无需上传图片）──
   const [textOverlays, setTextOverlays] = useState<Array<TextOverlayItem & { id: string }>>([]);
   const [loading, setLoading] = useState(true);
@@ -238,7 +240,7 @@ const SliceTasks: React.FC = () => {
     const preset: Array<TextOverlayItem & { id: string }> = [
       { id: `tov_preset_tr`, text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000', vertical: false, offset: 10 },
       { id: `tov_preset_bl`, text: '免费热门短剧', position: 'bottom-left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: false, offset: 10 },
-      { id: `tov_preset_l`, text: '热门短剧', position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true, offset: 10 },
+      { id: `tov_preset_l`, text: '本剧情纯属虚构', position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true, offset: 10 },
     ];
     setTextOverlays((prev) => {
       const exists = (position: string, text: string) =>
@@ -776,9 +778,22 @@ const SliceTasks: React.FC = () => {
             <Tooltip title="开启后对源视频做语音识别（ASR），并把识别到的台词烧录到每个切片成品上。转横屏开启时默认开启。">
               <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
             </Tooltip>
+            {subtitleEnabled && (
+              <Button size="small" icon={<SettingOutlined />} onClick={() => setSubtitleModalOpen(true)}>字幕设置</Button>
+            )}
           </Space>
-          {subtitleEnabled && (
-            <>
+
+          {/* 字幕设置弹窗（详细配置收进弹窗，节省主界面空间） */}
+          <Modal
+            title="字幕设置"
+            open={subtitleModalOpen}
+            onCancel={() => setSubtitleModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setSubtitleModalOpen(false)}>完成</Button>
+            )}
+            width={480}
+          >
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 12 }}>字幕字号</Text>
                 <InputNumber
@@ -788,9 +803,10 @@ const SliceTasks: React.FC = () => {
                   step={1}
                   value={subtitleFontSize}
                   onChange={(v) => setSubtitleFontSize(v ?? 45)}
-                  style={{ width: 80 }}
+                  style={{ width: 100 }}
                   addonAfter="px"
                 />
+                <Text type="secondary" style={{ fontSize: 12 }}>横屏建议 20-45，竖屏建议 18-30</Text>
               </Space>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 12 }}>字幕样式</Text>
@@ -821,8 +837,11 @@ const SliceTasks: React.FC = () => {
                   />
                 </Space>
               )}
-            </>
-          )}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                字幕仅在说话时显示，静音/停顿自动隐藏；默认白字黑描边，自定义样式无底色更清爽。
+              </Text>
+            </Space>
+          </Modal>
 
           <Button type="primary" icon={<PlayCircleOutlined />} loading={running} onClick={runSlice}>新建切片任务</Button>
           <Button icon={<ReloadOutlined />} onClick={() => fetchTasks()}>刷新</Button>

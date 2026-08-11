@@ -427,15 +427,38 @@ TEXT_OVERLAY_DEFAULT_BORDER_COLOR = "#000000"
 
 
 # 中文字体候选（容器内通常装有 font-noto-cjk / wqy 等）
-_TEXT_FONT_CANDIDATES = [
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+# 注意：优先单字体文件（.ttf/.otf）。Noto CJK 的 .ttc 是字体集合，drawtext 用 fontfile 引用
+# 时会默认加载集合里第一个子字体（往往是 JP 日文字形），导致简体字（如"门"）渲染成日式/异常字形。
+_TEXT_SINGLE_FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    "/usr/share/fonts/droid/DroidSansFallbackFull.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttf",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttf",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttf",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
-_TEXT_FONTFILE = next((f for f in _TEXT_FONT_CANDIDATES if os.path.isfile(f)), "")
+# 仅当没有任何单字体文件时才考虑 ttc 集合（配合 fontconfig FontName 精确匹配简体中文）
+_TEXT_TTC_CANDIDATES = [
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+]
+_TEXT_FONTFILE = next((f for f in _TEXT_SINGLE_FONT_CANDIDATES if os.path.isfile(f)), "")
+
+
+def _resolve_drawtext_font() -> str:
+    """返回 drawtext 的字体参数片段。
+
+    优先使用单字体文件（fontfile，避免 ttc 集合的日文/region 字形歧义）；
+    若无单字体只能用 ttc 集合时，退回用 font=Noto Sans CJK SC（fontconfig）
+    让 libfreetype/fontconfig 精确匹配简体中文字体，解决"门"等简体字渲染异常。
+    """
+    if _TEXT_FONTFILE:
+        return f":fontfile={_TEXT_FONTFILE}"
+    # 有 ttc 集合时用 fontconfig FontName 精确匹配简体中文（drawtext 的 font 选项走 fontconfig）
+    if any(os.path.isfile(f) for f in _TEXT_TTC_CANDIDATES):
+        return ":font=Noto Sans CJK SC"
+    return ""
 
 
 def _build_text_overlays_filter(text_overlays: list) -> str:
@@ -473,7 +496,7 @@ def _build_text_overlays_filter(text_overlays: list) -> str:
         offset = max(0, offset)
         vertical = bool(ov.get("vertical"))
 
-        font_opt = f":fontfile={_TEXT_FONTFILE}" if _TEXT_FONTFILE else ""
+        font_opt = _resolve_drawtext_font()
         # drawtext 的 fontcolor/border 用 0xRRGGBB 十六进制，最可靠。
         # 把 CSS 色值（#RRGGBB / #RGB）统一转为 0xRRGGBB。
         c_hex = _css_to_drawtext(ov.get("color") or TEXT_OVERLAY_DEFAULT_COLOR)
@@ -580,8 +603,8 @@ def build_watermark_filter(wm: dict) -> str:
 # 默认 0.30→FontSize 30，约占画面高度 7%~8%，横屏/竖屏均清晰可读。
 # 该值参考横屏切片样图（默认字幕约占画面高度 7%，底部居中）定标。
 SUBTITLE_FONT_RATIO = 0.30
-# 字幕距底边距离（相对输出高度比例，参考样图字幕位于底部偏上处）
-SUBTITLE_BOTTOM_RATIO = 0.08
+# 字幕距底边距离（相对输出高度比例，越小越贴近画面底部；用户反馈原 0.08 偏高，调低到 0.05 更贴底）
+SUBTITLE_BOTTOM_RATIO = 0.05
 
 # 字幕样式：默认（白字黑边 + 半透明黑底）与自定义（可选字体/边框色，无底色）
 SUBTITLE_STYLE_DEFAULT = "default"
@@ -691,9 +714,14 @@ def read_srt(path: str) -> list[dict]:
 
 # 语音检测参数：判断"是否有人在说话"的静音阈值与最短静音长度。
 # 小于该音量的区间视为静音（无人说话），字幕将不在静音期间显示。
-SILENCE_THRESHOLD_DB = -35.0
+# 阈值 -38dB、最短静音 0.5s（比原 -35dB/0.6s 更灵敏），能识别更多低音量停顿，
+# 避免字幕"提早出现/延后消失"。
+SILENCE_THRESHOLD_DB = -38.0
 # 最短静音时长（秒）：小于该长度的短暂停顿不切断字幕，避免台词因句中换气被频繁闪断。
-MIN_SILENCE_SECONDS = 0.6
+MIN_SILENCE_SECONDS = 0.5
+# 语音窗口边界收缩（秒）：每条字幕在语音窗口基础上前后各收一点，
+# 让字幕只贴着说话瞬间显示，不早现不晚退。
+SPEECH_EDGE_PADDING = 0.15
 
 
 def detect_speech_windows(video_path: str,
@@ -774,13 +802,16 @@ def _trim_to_speech(start: float, end: float, speech_windows: list[tuple]) -> li
     """把一段 [start, end]（源时间）裁剪为与说话区间重叠的若干子区间。
 
     speech_windows 为空表示不裁剪（整段视为说话）。
+    每条字幕在语音窗口基础上前后各收缩 SPEECH_EDGE_PADDING 秒，
+    让字幕只贴着说话瞬间显示，避免提早出现/延后消失。
     """
     if not speech_windows:
         return [(start, end)]
+    pad = SPEECH_EDGE_PADDING
     trimmed = []
     for ws, we in speech_windows:
-        s = max(start, ws)
-        e = min(end, we)
+        s = max(start, ws + pad)
+        e = min(end, we - pad)
         if e - s >= 0.05:
             trimmed.append((s, e))
     return trimmed

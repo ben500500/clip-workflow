@@ -2,12 +2,12 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Space, Typography, Spin, Alert, Breadcrumb, Descriptions, Tag, message, Select, Row, Col, Progress,
   Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input, Table, Upload, Image as AntImage, Radio, ColorPicker,
-  Checkbox,
+  Checkbox, Modal,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
   CheckCircleOutlined, ClockCircleOutlined, InfoCircleOutlined, PlayCircleOutlined,
-  UploadOutlined, DeleteOutlined as DelIcon, PlusOutlined,
+  UploadOutlined, DeleteOutlined as DelIcon, PlusOutlined, SettingOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projectApi } from '../api/projects';
@@ -106,6 +106,8 @@ const EpisodeDetail: React.FC = () => {
   // 自定义样式的字体色 / 边框色（CSS 十六进制，默认 #EDD736 黄 / 黑边）
   const [subtitleColor, setSubtitleColor] = useState('#EDD736');
   const [subtitleBorderColor, setSubtitleBorderColor] = useState('#000000');
+  // 字幕设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
+  const [subtitleModalOpen, setSubtitleModalOpen] = useState(false);
   // ── 固定文字角标（文字版角标，无需上传图片）──
   const [textOverlays, setTextOverlays] = useState<Array<TextOverlayItem & { id: string }>>([]);
   const [maxClips, setMaxClips] = useState(10);
@@ -685,11 +687,10 @@ const EpisodeDetail: React.FC = () => {
   // 用户可手动关闭/调整。
   // 预置三处固定文字（按样图规格）：右上角品牌字、左下角推广字、最左侧竖排标题
   const applyDefaultTextOverlays = () => {
-    const leftTitle = episode?.title?.trim() || '热门短剧';
     const preset: Array<TextOverlayItem & { id: string }> = [
       { id: `tov_preset_tr`, text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000', vertical: false, offset: 10 },
       { id: `tov_preset_bl`, text: '免费热门短剧', position: 'bottom-left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: false, offset: 10 },
-      { id: `tov_preset_l`, text: leftTitle, position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true, offset: 10 },
+      { id: `tov_preset_l`, text: '本剧情纯属虚构', position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true, offset: 10 },
     ];
     setTextOverlays((prev) => {
       const exists = (position: string, text: string) =>
@@ -1272,67 +1273,83 @@ const EpisodeDetail: React.FC = () => {
                 <Tooltip title="开启后对源视频做语音识别（ASR），并把识别到的台词烧录到每个切片成品上（白字黑边，底部居中）。适合把关键对白直观呈现在短剧切片上。">
                   <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
                 </Tooltip>
+                {subtitleEnabled && (
+                  <Button size="small" icon={<SettingOutlined />} onClick={() => setSubtitleModalOpen(true)}>字幕设置</Button>
+                )}
               </Space>
-              {subtitleEnabled && (
-                <>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    开启后会先对源视频做一次语音识别（长视频约需数分钟，同一视频重复切片时复用缓存），
-                    随后在每个成品视频底部烧录对应时间段的对白字幕。
-                  </Text>
-                  <Space wrap align="center" size={8}>
-                    <Text strong style={{ fontSize: 12 }}>字幕字号</Text>
-                    <InputNumber
-                      min={10}
-                      max={60}
-                      step={1}
-                      value={Math.round(subtitleFontRatio * 100)}
-                      onChange={(v) => {
-                        const fs = v ?? 20;
-                        setSubtitleFontRatio(Math.max(0.1, Math.min(0.6, fs / 100)));
-                      }}
-                      style={{ width: 80 }}
-                      addonAfter="px"
-                    />
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      （约占画面高度的 {Math.round(subtitleFontRatio * 100 / 4)}%，横屏建议 18-26，竖屏建议 14-22，越大越清晰）
-                    </Text>
-                  </Space>
-                  <Space wrap align="center" size={8}>
-                    <Text strong style={{ fontSize: 12 }}>字幕样式</Text>
-                    <Radio.Group
-                      size="small"
-                      value={subtitleStyle}
-                      onChange={(e) => setSubtitleStyle(e.target.value)}
-                    >
-                      <Radio.Button value="default">默认（白字黑边带底色）</Radio.Button>
-                      <Radio.Button value="custom">自定义（无底色）</Radio.Button>
-                    </Radio.Group>
-                  </Space>
-                  {subtitleStyle === 'custom' && (
-                    <Space wrap align="center" size={8}>
-                      <Text strong style={{ fontSize: 12 }}>字体颜色</Text>
-                      <ColorPicker
-                        value={subtitleColor}
-                        onChange={(c) => setSubtitleColor(c.toHexString())}
-                        showText
-                        size="small"
-                      />
-                      <Text strong style={{ fontSize: 12 }}>边框颜色</Text>
-                      <ColorPicker
-                        value={subtitleBorderColor}
-                        onChange={(c) => setSubtitleBorderColor(c.toHexString())}
-                        showText
-                        size="small"
-                      />
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        自定义模式下仅描边、无底色（不遮挡画面），字幕更清爽
-                      </Text>
-                    </Space>
-                  )}
-                </>
-              )}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                开启后会先对源视频做一次语音识别（长视频约需数分钟，同一视频重复切片时复用缓存），
+                随后在每个成品视频底部烧录对应时间段的对白字幕。详细配置在「字幕设置」中调整。
+              </Text>
             </Space>
           </Card>
+
+          {/* 字幕设置弹窗（详细配置收进弹窗，节省主界面空间） */}
+          <Modal
+            title="字幕设置"
+            open={subtitleModalOpen}
+            onCancel={() => setSubtitleModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setSubtitleModalOpen(false)}>完成</Button>
+            )}
+            width={500}
+          >
+            <Space direction="vertical" size={14} style={{ width: '100%' }}>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>字幕字号</Text>
+                <InputNumber
+                  min={10}
+                  max={60}
+                  step={1}
+                  value={Math.round(subtitleFontRatio * 100)}
+                  onChange={(v) => {
+                    const fs = v ?? 20;
+                    setSubtitleFontRatio(Math.max(0.1, Math.min(0.6, fs / 100)));
+                  }}
+                  style={{ width: 100 }}
+                  addonAfter="px"
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  （约占画面高度的 {Math.round(subtitleFontRatio * 100 / 4)}%，横屏建议 18-26，竖屏建议 14-22，越大越清晰）
+                </Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>字幕样式</Text>
+                <Radio.Group
+                  size="small"
+                  value={subtitleStyle}
+                  onChange={(e) => setSubtitleStyle(e.target.value)}
+                >
+                  <Radio.Button value="default">默认（白字黑边带底色）</Radio.Button>
+                  <Radio.Button value="custom">自定义（无底色）</Radio.Button>
+                </Radio.Group>
+              </Space>
+              {subtitleStyle === 'custom' && (
+                <Space wrap align="center" size={8}>
+                  <Text strong style={{ fontSize: 13 }}>字体颜色</Text>
+                  <ColorPicker
+                    value={subtitleColor}
+                    onChange={(c) => setSubtitleColor(c.toHexString())}
+                    showText
+                    size="small"
+                  />
+                  <Text strong style={{ fontSize: 13 }}>边框颜色</Text>
+                  <ColorPicker
+                    value={subtitleBorderColor}
+                    onChange={(c) => setSubtitleBorderColor(c.toHexString())}
+                    showText
+                    size="small"
+                  />
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    自定义模式下仅描边、无底色（不遮挡画面），字幕更清爽
+                  </Text>
+                </Space>
+              )}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                字幕仅在说话时显示，静音/停顿自动隐藏，避免提早出现或延后消失。
+              </Text>
+            </Space>
+          </Modal>
 
           {/* ── 固定文字角标（文字版角标，最左侧/左下角/右上角等） ── */}
           <Card size="small" style={{ width: '100%' }}>
