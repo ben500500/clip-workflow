@@ -242,6 +242,52 @@ class DoubaoGenerator:
         except Exception:
             return "unknown"
 
+    async def _extract_account(self) -> Optional[str]:
+        """提取当前已登录豆包账户名（昵称），未登录/未知时返回 None。
+
+        豆包网页端登录后顶部导航会展示头像与昵称，但 DOM 类名多为哈希值且随版本
+        变动，因此不硬编码 class，统一用文本 / 头像节点启发式定位：
+        - 优先取头像图标的 title/alt/aria-label 或相邻昵称文本
+        - 其次取顶部导航内较短的昵称文本节点（长度 2~30，排除“登录”等关键词）
+        该方法仅在确认已登录（右上角无「登录」按钮）后调用，绝不触碰登录弹窗逻辑。
+        """
+        try:
+            await self._sleep(0.6, 1.2)
+            # 1) 头像节点：title/alt/aria-label 常为昵称或“我的”，仅采纳长度合理者
+            avatar = await self.page.query_selector(
+                "[class*='avatar'] img, [class*='avatar'], [class*='header'] img"
+            )
+            for attr in ("title", "alt", "aria-label"):
+                if avatar:
+                    try:
+                        val = (await avatar.get_attribute(attr) or "").strip()
+                    except Exception:
+                        val = ""
+                    if val and 1 < len(val) <= 40 and "登录" not in val and "扫码" not in val:
+                        return val
+
+            # 2) 顶部导航 / 用户区文本节点（启发式：长度 2~30、排除功能关键词）
+            excludes = ("登录", "扫码", "下载", "会员", "开通", "帮助", "反馈", "设置", "视频生成")
+            for sel in (
+                "[class*='header'] [class*='name'], [class*='header'] [class*='nickname'],"
+                "[class*='header'] [class*='user-info'], [class*='topbar'] [class*='user']"
+            ):
+                try:
+                    el = await self.page.query_selector(sel)
+                except Exception:
+                    continue
+                if not el:
+                    continue
+                try:
+                    t = (await el.inner_text() or "").strip()
+                except Exception:
+                    t = ""
+                if t and 1 < len(t) <= 40 and not any(x in t for x in excludes):
+                    return t
+        except Exception:
+            return None
+        return None
+
     # ──────────────────────────────────────────────
     # 主流程
     # ──────────────────────────────────────────────
@@ -270,6 +316,7 @@ class DoubaoGenerator:
         screenshot_cb=None,
         on_rewrite_available=None,
         on_login_success=None,
+        on_account_cb=None,
         cancel_check=None,
     ) -> dict:
         """执行豆包视频生成主流程。
@@ -286,6 +333,8 @@ class DoubaoGenerator:
                 返回 'approved'（使用改写稿）或 'rejected'（让豆包再改一版）
             on_login_success: async def cb()（扫码登录成功、即将进入生成时回调，
                 调用方应把任务状态从 need_login 拉回 running 并清空二维码）
+            on_account_cb: async def cb(account: Optional[str])（提取到当前登录的
+                豆包账户昵称后回调，供调用方展示「当前登录豆包账户」；未识别到传 None）
             cancel_check: callable -> bool（返回 True 表示任务已取消，中止）
 
         Returns:
@@ -355,6 +404,14 @@ class DoubaoGenerator:
                         "status": "need_login",
                         "message": "等待扫码登录超时，请重新发起生成",
                     }
+
+            # 已登录（含刚扫码成功）：提取当前登录豆包账户昵称供前端展示
+            if on_account_cb:
+                try:
+                    account = await self._extract_account()
+                    await on_account_cb(account)
+                except Exception:
+                    logger.exception("on_account_cb failed")
 
             await progress_cb("登录状态正常，正在进入视频生成…", 20)
             result = await self._run_video_generation(

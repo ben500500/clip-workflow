@@ -25,6 +25,7 @@ export interface ShortdramaPromptRecord {
   // 一键豆包生成任务状态
   doubao_status?: string | null;
   doubao_account_type?: string | null;
+  doubao_account?: string | null;
   doubao_qrcode?: string | null;
   doubao_screenshot?: string | null;
   doubao_message?: string | null;

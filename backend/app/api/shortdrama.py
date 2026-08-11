@@ -188,6 +188,7 @@ class PromptRecordItem(BaseModel):
     # 一键豆包生成任务状态
     doubao_status: Optional[str] = None
     doubao_account_type: Optional[str] = None
+    doubao_account: Optional[str] = None
     doubao_qrcode: Optional[str] = None
     doubao_message: Optional[str] = None
     doubao_error_message: Optional[str] = None
@@ -234,6 +235,7 @@ def _serialize_record(r: ShortdramaPrompt) -> dict:
         "video_uploaded_at": r.video_uploaded_at.isoformat() if r.video_uploaded_at else None,
         "doubao_status": r.doubao_status,
         "doubao_account_type": r.doubao_account_type,
+        "doubao_account": r.doubao_account,
         "doubao_qrcode": r.doubao_qrcode,
         "doubao_screenshot": r.doubao_screenshot,
         "doubao_message": r.doubao_message,
