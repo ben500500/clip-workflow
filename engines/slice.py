@@ -666,6 +666,13 @@ def main():
     if vert2horiz_cfg:
         source_path = apply_vert2horiz(source_path, vert2horiz_cfg)
 
+    # 字幕字号：横屏裁切（vert2horiz）模式输出分辨率低（如 720p），
+    # 相同字号比例下字幕明显偏小，默认放大到常规值的 4 倍；
+    # 用户显式指定 --subtitle-font-ratio 时以用户值为准。
+    subtitle_font_ratio = args.subtitle_font_ratio
+    if subtitle_font_ratio is None and vert2horiz_cfg:
+        subtitle_font_ratio = SUBTITLE_FONT_RATIO * 4
+
     os.makedirs(args.output_dir, exist_ok=True)
     cuts = read_cutlist(args.cutlist)
     intervals = read_intervals(args.intervals) if args.mode == "scrub" else []
@@ -744,7 +751,7 @@ def main():
                     build_clip_subtitle(args.subtitle, seg_times, sub_srt)
                     sub_out = out_path + ".sub.mp4"
                     burn_subtitle(out_path, sub_srt, sub_out, threads=threads, encoder=encoder,
-                                  font_ratio=args.subtitle_font_ratio)
+                                  font_ratio=subtitle_font_ratio)
                     os.replace(sub_out, out_path)
             # 图片角标：切片完成后在成品上叠加角标（全程覆盖视频指定位置）
             if badges:
