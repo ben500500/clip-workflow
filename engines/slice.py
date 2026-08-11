@@ -270,23 +270,68 @@ def safe_name(name: str) -> str:
 
 # 角标位置到 overlay x/y 坐标表达式的映射
 # 位置以视频宽高为基准（W/H），角标宽高以 scale 后的 overlay 图为准（w/h）
+# {O} 为角标到视频边缘的偏移量占位符，运行时会替换为具体像素值（默认 10）
 BADGE_POSITIONS = {
     # 左上 / 中上 / 右上 / 左下 / 中下 / 右下
-    "top-left":      ("10", "10"),
-    "top-center":    ("(W-w)/2", "10"),
-    "top-right":     ("W-w-10", "10"),
-    "bottom-left":   ("10", "H-h-10"),
-    "bottom-center": ("(W-w)/2", "H-h-10"),
-    "bottom-right":  ("W-w-10", "H-h-10"),
+    "top-left":      ("{O}", "{O}"),
+    "top-center":    ("(W-w)/2", "{O}"),
+    "top-right":     ("W-w-{O}", "{O}"),
+    "bottom-left":   ("{O}", "H-h-{O}"),
+    "bottom-center": ("(W-w)/2", "H-h-{O}"),
+    "bottom-right":  ("W-w-{O}", "H-h-{O}"),
 }
 
+# 角标默认偏移量（px，未指定时使用）
+BADGE_DEFAULT_OFFSET = 10
+# 角标默认宽度（px，未指定且未设置宽度时使用；0 表示保持原图尺寸）
+BADGE_DEFAULT_WIDTH = 0
+# 角标默认透明度（0~1，未指定时使用）
+BADGE_DEFAULT_OPACITY = 1.0
 
-def build_badges_overlay_args(badges: list, threads: int, encoder: str) -> list[str]:
+
+def _badge_scale_and_opacity(badge: dict, default_width: int) -> str:
+    """构造单个角标的 scale + 透明度 filter 链。
+
+    默认尺寸：优先使用角标自身 width；否则回退到调用方传入的 default_width；
+    再否则保持原图尺寸。透明度通过 colorchannelmixer 的 aa（alpha）通道实现。
+    """
+    try:
+        width = int(badge.get("width") or 0)
+    except (TypeError, ValueError):
+        width = 0
+    if width <= 0:
+        width = int(default_width or 0)
+    scale = f"scale={width}:-1" if width > 0 else "null"
+
+    try:
+        opacity = float(badge.get("opacity") or BADGE_DEFAULT_OPACITY)
+    except (TypeError, ValueError):
+        opacity = BADGE_DEFAULT_OPACITY
+    opacity = min(1.0, max(0.0, opacity))
+
+    chain = scale
+    if opacity < 1.0:
+        # rgba 保证有 alpha 通道后再调节透明度
+        chain += f",format=rgba,colorchannelmixer=aa={opacity:.3f}"
+    else:
+        chain += ",format=rgba"
+    return chain
+
+
+def build_badges_overlay_args(
+    badges: list,
+    threads: int,
+    encoder: str,
+    default_width: int = BADGE_DEFAULT_WIDTH,
+) -> list[str]:
     """构造在成品视频上叠加多角标的 ffmpeg 命令参数（-filter_complex 多输入）。
 
     返回完整的 ffmpeg 参数（含 -y、主视频输入、各角标 -i、filter_complex、
     overlay 叠加、编码输出到 -o）。调用方只需追加输出路径。
     角标全程叠加在视频指定位置上（不随时间消失），支持多角标。
+
+    每个角标支持：position（六角位置）、width（宽度，px）、offset（到边缘偏移，px）、
+    opacity（透明度 0~1）。default_width 为所有角标的默认宽度（角标未单独设 width 时生效）。
     """
     # 校验角标图片存在
     valid = []
@@ -304,16 +349,22 @@ def build_badges_overlay_args(badges: list, threads: int, encoder: str) -> list[
         position = (badge.get("position") or "top-left").lower()
         if position not in BADGE_POSITIONS:
             position = "top-left"
-        width = int(badge.get("width") or 0)
-        scale = f"scale={width}:-1" if width > 0 else "null"
-        parts.append(f"[{i + 1}:v]{scale},format=rgba[badge{i}]")
+        chain = _badge_scale_and_opacity(badge, default_width)
+        parts.append(f"[{i + 1}:v]{chain}[badge{i}]")
 
     current = "[0:v]"
     for i in range(num):
         position = (valid[i].get("position") or "top-left").lower()
         if position not in BADGE_POSITIONS:
             position = "top-left"
-        x_expr, y_expr = BADGE_POSITIONS[position]
+        x_template, y_template = BADGE_POSITIONS[position]
+        try:
+            offset = int(valid[i].get("offset") or BADGE_DEFAULT_OFFSET)
+        except (TypeError, ValueError):
+            offset = BADGE_DEFAULT_OFFSET
+        offset = max(0, offset)
+        x_expr = x_template.replace("{O}", str(offset))
+        y_expr = y_template.replace("{O}", str(offset))
         out_label = f"[vout{i}]" if i < num - 1 else "[vout]"
         current = f"{current}[badge{i}]overlay=x={x_expr}:y={y_expr}:shortest=0{out_label}"
     parts.append(current)
@@ -334,9 +385,9 @@ def build_badges_overlay_args(badges: list, threads: int, encoder: str) -> list[
     return args
 
 
-def apply_badges(src, out, badges, threads=1, encoder="libx264"):
+def apply_badges(src, out, badges, threads=1, encoder="libx264", default_width: int = BADGE_DEFAULT_WIDTH):
     """对成品视频执行一次角标 overlay 叠加，产出新文件。"""
-    badge_args = build_badges_overlay_args(badges, threads, encoder)
+    badge_args = build_badges_overlay_args(badges, threads, encoder, default_width=default_width)
     if not badge_args:
         # 无有效角标，直接复制
         shutil.copy(src, out)
@@ -421,7 +472,13 @@ def main():
     parser.add_argument(
         "--badges",
         default=None,
-        help="图片角标配置 JSON 数组（[{\"path\":本地图片, \"position\":\"top-left\", \"width\":可选}]），多角标全程叠加在视频指定位置",
+        help="图片角标配置 JSON 数组（[{\"path\":本地图片, \"position\":\"top-left\", \"width\":可选, \"offset\":可选偏移, \"opacity\":可选透明度}]），多角标全程叠加在视频指定位置",
+    )
+    parser.add_argument(
+        "--badge-default-width",
+        type=int,
+        default=0,
+        help="角标默认宽度（px，0=保持原图尺寸）；角标未单独设置 width 时生效",
     )
     args = parser.parse_args()
 
@@ -515,7 +572,11 @@ def main():
             # 图片角标：切片完成后在成品上叠加角标（全程覆盖视频指定位置）
             if badges:
                 badge_out = out_path + ".badge.mp4"
-                apply_badges(out_path, badge_out, badges, threads=threads, encoder=encoder)
+                apply_badges(
+                    out_path, badge_out, badges,
+                    threads=threads, encoder=encoder,
+                    default_width=args.badge_default_width,
+                )
                 os.replace(badge_out, out_path)
             duration = ffprobe_duration(out_path)
             outputs.append((name, duration))

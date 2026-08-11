@@ -272,6 +272,8 @@ class SliceTask(Base):
     watermark_config = Column(JSON, nullable=True)
     # 图片角标配置（可选，切片后在成品上叠加角标；重试时保留）
     badges_config = Column(JSON, nullable=True)
+    # 角标默认尺寸（px，可选；0=保持原图尺寸，角标未单独设 width 时生效；重试时保留）
+    badge_default_width = Column(Integer, nullable=True)
     # 竖屏转横屏预处理配置（可选，切片前把竖屏素材转成横屏；重试时保留）
     vert2horiz_config = Column(JSON, nullable=True)
     status = Column(String(50), nullable=True)

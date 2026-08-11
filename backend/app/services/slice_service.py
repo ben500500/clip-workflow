@@ -88,6 +88,7 @@ async def run_slice(
     encoder: Optional[str] = None,
     vert2horiz_config: Optional[dict] = None,
     badges_config: Optional[list] = None,
+    badge_default_width: int = 0,
 ) -> tuple[int, str, str]:
     """Run the ffmpeg slice engine.
 
@@ -98,6 +99,7 @@ async def run_slice(
         h264_videotoolbox/hevc_videotoolbox/libx264；不传则引擎自动探测。
     vert2horiz_config: 竖屏转横屏预处理配置（切片前把竖屏素材转成横屏）。
     badges_config: 图片角标配置（切片后在成品上叠加角标）。
+    badge_default_width: 角标默认宽度（px，0=保持原图尺寸；角标未单独设 width 时生效）。
     """
     engine_path = engine_path or _engine_path("slice.py")
     _require_engine(engine_path)
@@ -113,6 +115,8 @@ async def run_slice(
         cmd.extend(["--vert2horiz", json.dumps(vert2horiz_config)])
     if badges_config:
         cmd.extend(["--badges", json.dumps(badges_config)])
+    if badge_default_width:
+        cmd.extend(["--badge-default-width", str(int(badge_default_width))])
     logger.info("Running slice: %s", " ".join(cmd))
 
     return await _run_cmd(cmd, timeout, progress_cb)
@@ -129,6 +133,7 @@ async def run_slice_scrub(
     encoder: Optional[str] = None,
     vert2horiz_config: Optional[dict] = None,
     badges_config: Optional[list] = None,
+    badge_default_width: int = 0,
 ) -> tuple[int, str, str]:
     """Run scrub-mode slicing (cutlist minus removed intervals)."""
     return await run_slice(
@@ -143,6 +148,7 @@ async def run_slice_scrub(
         encoder=encoder,
         vert2horiz_config=vert2horiz_config,
         badges_config=badges_config,
+        badge_default_width=badge_default_width,
     )
 
 
@@ -157,6 +163,7 @@ async def run_slice_fast(
     encoder: Optional[str] = None,
     vert2horiz_config: Optional[dict] = None,
     badges_config: Optional[list] = None,
+    badge_default_width: int = 0,
 ) -> tuple[int, str, str]:
     """Run fast/dedupe mode slicing."""
     if mode not in ("fast", "dedupe"):
@@ -173,6 +180,7 @@ async def run_slice_fast(
         encoder=encoder,
         vert2horiz_config=vert2horiz_config,
         badges_config=badges_config,
+        badge_default_width=badge_default_width,
     )
 
 

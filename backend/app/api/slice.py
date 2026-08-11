@@ -67,6 +67,22 @@ ALLOWED_ENGINES = ("celery", "worker")
 # ──────────────────────────────────────────────
 
 
+class BadgeItem(BaseModel):
+    """图片角标项：在切片成品上叠加一个角标。
+
+    - file_key：上传到 MinIO 的角标图片 key
+    - position：六角位置（top-left/top-center/top-right/bottom-left/bottom-center/bottom-right）
+    - width：角标宽度（px，可选；0/空=用默认尺寸或保持原图）
+    - offset：到视频边缘的偏移量（px，可选，默认 10）
+    - opacity：角标透明度（0~1，可选，默认 1 不透明）
+    """
+    file_key: str = ""
+    position: str = "top-left"
+    width: Optional[int] = None
+    offset: Optional[int] = None
+    opacity: Optional[float] = None
+
+
 class SliceRunRequest(BaseModel):
     mode: str = "fast"
     dedupe_config: Optional[dict] = None
@@ -99,8 +115,10 @@ class SliceRunRequest(BaseModel):
     cut_end: Optional[float] = None
     # ── 图片角标（切片后在成品上叠加角标，全程覆盖指定位置）──
     # 角标列表：每个元素含 file_key（上传的角标图片 MinIO key）、position（位置）、
-    # width（可选宽度）。支持同时添加多个角标。
+    # width（可选宽度）、offset（可选边缘偏移）、opacity（可选透明度）。支持同时添加多个角标。
     badges: Optional[List[BadgeItem]] = None
+    # 角标默认尺寸（px）：角标未单独设置 width 时的统一宽度；0=保持原图尺寸。可选。
+    badge_default_width: int = 0
     # ── 竖屏转横屏智能裁切（切片前预处理）──
     # 开启后切片前自动检测素材方向，竖屏素材先转成横屏再切片
     vert2horiz_enabled: bool = False
@@ -285,7 +303,8 @@ def _build_badges_config(data: SliceRunRequest) -> Optional[list]:
     """构造图片角标配置列表（引擎 --badges 期望的 JSON 数组）。
 
     仅保留合法角标；每个角标含 file_key（MinIO 对象 key）、position（位置）、
-    width（可选宽度）。位置限定为六角：左上/中上/右上/左下/中下/右下。
+    width（可选宽度）、offset（可选边缘偏移）、opacity（可选透明度）。
+    位置限定为六角：左上/中上/右上/左下/中下/右下。
     """
     if not data.badges:
         return None
@@ -306,6 +325,10 @@ def _build_badges_config(data: SliceRunRequest) -> Optional[list]:
         }
         if b.width is not None:
             item["width"] = max(1, int(b.width))
+        if b.offset is not None:
+            item["offset"] = max(0, int(b.offset))
+        if b.opacity is not None:
+            item["opacity"] = min(1.0, max(0.0, float(b.opacity)))
         result.append(item)
     return result if result else None
 
@@ -431,6 +454,7 @@ async def _publish_to_worker(
     encoder: Optional[str] = None,
     vert2horiz_config: Optional[dict] = None,
     badges_config: Optional[list] = None,
+    badge_default_width: int = 0,
     source_bucket: str = "",
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
@@ -464,6 +488,8 @@ async def _publish_to_worker(
                     "url": url,
                     "position": b.get("position", "top-left"),
                     "width": b.get("width"),
+                    "offset": b.get("offset"),
+                    "opacity": b.get("opacity"),
                 })
 
     # 每次任务生成独立的回调/上传鉴权 Token
@@ -494,6 +520,8 @@ async def _publish_to_worker(
         "vert2horiz": vert2horiz_config,
         # 图片角标（可选，Go Worker 下载图片后透传给引擎 --badges）
         "badges": badge_items,
+        # 角标默认尺寸（px，可选，Go Worker 透传给引擎 --badge-default-width）
+        "badge_default_width": badge_default_width or 0,
         "output": {
             "upload_url": f"{callback_base}/api/slice-tasks/{slice_task.id}/upload-url",
             "callback_url": callback_url,
@@ -533,6 +561,7 @@ async def _dispatch_celery(
     encoder: Optional[str] = None,
     vert2horiz_config: Optional[dict] = None,
     badges_config: Optional[list] = None,
+    badge_default_width: int = 0,
     source_bucket: str = "",
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
@@ -560,6 +589,7 @@ async def _dispatch_celery(
         encoder=encoder,
         vert2horiz_config=vert2horiz_config,
         badges_config=badges_config,
+        badge_default_width=badge_default_width,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -788,6 +818,7 @@ async def run_slice(
     slice_task.vert2horiz_config = vert2horiz_config
     slice_task.watermark_config = watermark_config
     slice_task.badges_config = badges_config
+    slice_task.badge_default_width = data.badge_default_width or 0
 
     if engine == "worker":
         # 确保输出桶存在（全新部署时 sliced 桶可能未初始化）
@@ -804,6 +835,7 @@ async def run_slice(
             data.encoder,
             vert2horiz_config,
             badges_config,
+            data.badge_default_width,
             source_bucket,
         )
 
@@ -830,6 +862,7 @@ async def run_slice(
                 data.encoder,
                 vert2horiz_config,
                 badges_config,
+                data.badge_default_width,
                 source_bucket,
             )
         except Exception as e:
@@ -1276,6 +1309,7 @@ async def retry_slice_task(
             None,
             task.vert2horiz_config,
             task.badges_config,
+            task.badge_default_width or 0,
             source_bucket,
         )
 
@@ -1301,6 +1335,7 @@ async def retry_slice_task(
                 None,
                 task.vert2horiz_config,
                 task.badges_config,
+                task.badge_default_width or 0,
                 source_bucket,
             )
         except Exception as e:

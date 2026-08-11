@@ -52,9 +52,11 @@ const SliceTasks: React.FC = () => {
   const [watermarkFontSize, setWatermarkFontSize] = useState(28);
   const [watermarkOpacity, setWatermarkOpacity] = useState(0.5);
   const [watermarkPosition, setWatermarkPosition] = useState('bottom');
-  // 图片角标列表：每个含 file_key（上传后 MinIO key）、position（位置）、width（可选宽度）
+  // 图片角标列表：每个含 file_key（上传后 MinIO key）、position（位置）、width（可选宽度）、offset（可选偏移）、opacity（可选透明度）
   const [badges, setBadges] = useState<Array<BadgeItem & { name: string; preview: string }>>([]);
   const [badgeUploading, setBadgeUploading] = useState(false);
+  // 角标默认尺寸（px）：角标未单独设 width 时生效；0=保持原图尺寸
+  const [badgeDefaultWidth, setBadgeDefaultWidth] = useState<number>(0);
   // ── 竖屏转横屏智能裁切开关与参数 ──
   const [vert2horizEnabled, setVert2horizEnabled] = useState(false);
   const [vert2horizMode, setVert2horizMode] = useState<'fixed' | 'dynamic'>('fixed');
@@ -93,10 +95,18 @@ const SliceTasks: React.FC = () => {
         watermark_font_size: watermarkEnabled ? watermarkFontSize : undefined,
         watermark_opacity: watermarkEnabled ? watermarkOpacity : undefined,
         watermark_position: watermarkEnabled ? watermarkPosition : undefined,
-        // 图片角标：传递每个角标的 file_key / position / width
+        // 图片角标：传递每个角标的 file_key / position / width / offset / opacity
         badges: badges.length > 0
-          ? badges.map((b) => ({ file_key: b.file_key, position: b.position, ...(b.width ? { width: b.width } : {}) }))
+          ? badges.map((b) => ({
+              file_key: b.file_key,
+              position: b.position,
+              ...(b.width ? { width: b.width } : {}),
+              ...(b.offset != null ? { offset: b.offset } : {}),
+              ...(b.opacity != null ? { opacity: b.opacity } : {}),
+            }))
           : undefined,
+        // 角标默认尺寸（px）：角标未单独设 width 时生效；0=保持原图尺寸
+        badge_default_width: badgeDefaultWidth || undefined,
         // 竖屏转横屏：开启后切片前自动把竖屏素材转成横屏
         vert2horiz_enabled: vert2horizEnabled,
         vert2horiz_mode: vert2horizEnabled ? vert2horizMode : undefined,
@@ -533,6 +543,18 @@ const SliceTasks: React.FC = () => {
           <Tooltip title="可上传多张图片作为角标，全程叠加在视频指定位置">
             <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
           </Tooltip>
+          <Tooltip title="角标默认尺寸（px），所有角标未单独设置宽度时的统一宽度；留空=保持原图尺寸">
+            <InputNumber
+              size="small"
+              min={0}
+              max={800}
+              placeholder="默认尺寸"
+              value={badgeDefaultWidth || undefined}
+              onChange={(v) => setBadgeDefaultWidth(v ?? 0)}
+              style={{ width: 100 }}
+              addonAfter="px"
+            />
+          </Tooltip>
           {badges.length > 0 && (
             <Space direction="vertical" size={4} style={{ width: '100%' }}>
               {badges.map((b, i) => (
@@ -546,7 +568,7 @@ const SliceTasks: React.FC = () => {
                     onChange={(v) => updateBadge(i, { position: v })}
                     options={BADGE_POSITIONS}
                   />
-                  <Tooltip title="角标宽度（px），留空=原图尺寸">
+                  <Tooltip title="角标宽度（px），留空=使用默认尺寸/原图尺寸">
                     <InputNumber
                       size="small"
                       min={10}
@@ -554,6 +576,29 @@ const SliceTasks: React.FC = () => {
                       placeholder="宽"
                       value={b.width}
                       onChange={(v) => updateBadge(i, { width: v ?? undefined })}
+                      style={{ width: 80 }}
+                    />
+                  </Tooltip>
+                  <Tooltip title="到视频边缘的偏移量（px），默认 10">
+                    <InputNumber
+                      size="small"
+                      min={0}
+                      max={500}
+                      placeholder="偏移"
+                      value={b.offset}
+                      onChange={(v) => updateBadge(i, { offset: v ?? undefined })}
+                      style={{ width: 80 }}
+                    />
+                  </Tooltip>
+                  <Tooltip title="角标透明度（0~1），默认 1 不透明">
+                    <InputNumber
+                      size="small"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      placeholder="透明"
+                      value={b.opacity}
+                      onChange={(v) => updateBadge(i, { opacity: v ?? undefined })}
                       style={{ width: 80 }}
                     />
                   </Tooltip>

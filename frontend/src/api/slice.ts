@@ -5,6 +5,8 @@ export interface BadgeItem {
   file_key: string;
   position: string;
   width?: number;
+  offset?: number;
+  opacity?: number;
 }
 
 export interface BadgeUploadResult {
@@ -28,8 +30,10 @@ export const sliceApi = {
       watermark_font_size?: number;
       watermark_opacity?: number;
       watermark_position?: string;
-      // 图片角标：每个含 file_key（上传的角标图片 MinIO key）、position（位置）、width（可选）
+      // 图片角标：每个含 file_key（上传的角标图片 MinIO key）、position（位置）、width（可选宽度）、offset（可选偏移）、opacity（可选透明度）
       badges?: BadgeItem[];
+      // 角标默认尺寸（px）：角标未单独设 width 时生效；0=保持原图尺寸
+      badge_default_width?: number;
       // 竖屏转横屏智能裁切（切片前预处理）
       vert2horiz_enabled?: boolean;
       vert2horiz_mode?: 'fixed' | 'dynamic';
