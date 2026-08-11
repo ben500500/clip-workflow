@@ -140,8 +140,8 @@ class SliceRunRequest(BaseModel):
     # ── ASR 字幕烧录 ──
     # 开启后对源视频做 ASR 语音识别生成字幕，并烧录到每个切片成品上
     subtitle_enabled: bool = False
-    # 字幕字号（相对输出视频高度的比例，默认 0.07；不传用引擎默认值）。
-    # 用户可调大以让字幕更清晰易读，例如 0.05~0.12。
+    # 字幕字号（相对输出视频高度的比例，默认 0.20→FontSize 20，约占画面 5%；不传用引擎默认值）。
+    # 用户可调大以让字幕更清晰易读，例如 0.10~0.30。
     subtitle_font_ratio: Optional[float] = None
 
 

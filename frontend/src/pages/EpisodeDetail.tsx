@@ -97,8 +97,8 @@ const EpisodeDetail: React.FC = () => {
   const [vert2horizMinStep, setVert2horizMinStep] = useState(5);
   // ── ASR 字幕烧录开关 ──
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
-  // 字幕字号（相对输出视频高度的比例，默认 0.07；可调大让字幕更清晰易读）
-  const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.07);
+  // 字幕字号（相对输出视频高度的比例，默认 0.20→FontSize 20，约占画面 5%，横屏/竖屏均清晰可读）
+  const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.2);
   const [maxClips, setMaxClips] = useState(10);
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
@@ -1195,21 +1195,21 @@ const EpisodeDetail: React.FC = () => {
                     随后在每个成品视频底部烧录对应时间段的对白字幕。
                   </Text>
                   <Space wrap align="center" size={8}>
-                    <Text strong style={{ fontSize: 12 }}>字幕大小</Text>
-                    <Slider
-                      min={0.04}
-                      max={0.15}
-                      step={0.005}
-                      value={subtitleFontRatio}
-                      onChange={setSubtitleFontRatio}
-                      style={{ width: 180 }}
-                      tooltip={{ formatter: (v) => `${Math.round(((v ?? 0.07) / 0.07) * 100)}%` }}
+                    <Text strong style={{ fontSize: 12 }}>字幕字号</Text>
+                    <InputNumber
+                      min={10}
+                      max={60}
+                      step={1}
+                      value={Math.round(subtitleFontRatio * 100)}
+                      onChange={(v) => {
+                        const fs = v ?? 20;
+                        setSubtitleFontRatio(Math.max(0.1, Math.min(0.6, fs / 100)));
+                      }}
+                      style={{ width: 80 }}
+                      addonAfter="px"
                     />
-                    <Text type="secondary" style={{ fontSize: 12, width: 40 }}>
-                      {Math.round((subtitleFontRatio / 0.07) * 100)}%
-                    </Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      （相对视频高度的比例，越大字幕越清晰醒目）
+                      （约占画面高度的 {Math.round(subtitleFontRatio * 100 / 4)}%，横屏建议 18-26，竖屏建议 14-22，越大越清晰）
                     </Text>
                   </Space>
                 </>
