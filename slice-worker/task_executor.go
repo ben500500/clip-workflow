@@ -150,6 +150,16 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 			if fontRatio, ok := task.Subtitle["font_ratio"].(float64); ok && fontRatio > 0 {
 				args = append(args, "--subtitle-font-ratio", strconv.FormatFloat(fontRatio, 'f', -1, 64))
 			}
+			// 字幕样式（default/custom 自定义字体色+边框色、无底色）：透传给引擎
+			if st, ok := task.Subtitle["style"].(string); ok && st != "" {
+				args = append(args, "--subtitle-style", st)
+			}
+			if fc, ok := task.Subtitle["font_color"].(string); ok && fc != "" {
+				args = append(args, "--subtitle-color", fc)
+			}
+			if bc, ok := task.Subtitle["border_color"].(string); ok && bc != "" {
+				args = append(args, "--subtitle-border-color", bc)
+			}
 		}
 	}
 

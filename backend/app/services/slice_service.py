@@ -91,6 +91,9 @@ async def run_slice(
     badge_default_width: int = 0,
     subtitle_srt_path: Optional[str] = None,
     subtitle_font_ratio: Optional[float] = None,
+    subtitle_style: Optional[str] = None,
+    subtitle_color: Optional[str] = None,
+    subtitle_border_color: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run the ffmpeg slice engine.
 
@@ -125,6 +128,12 @@ async def run_slice(
         cmd.extend(["--subtitle", subtitle_srt_path])
     if subtitle_font_ratio and subtitle_font_ratio > 0:
         cmd.extend(["--subtitle-font-ratio", str(float(subtitle_font_ratio))])
+    if subtitle_style:
+        cmd.extend(["--subtitle-style", subtitle_style])
+    if subtitle_color:
+        cmd.extend(["--subtitle-color", subtitle_color])
+    if subtitle_border_color:
+        cmd.extend(["--subtitle-border-color", subtitle_border_color])
     logger.info("Running slice: %s", " ".join(cmd))
 
     return await _run_cmd(cmd, timeout, progress_cb)
@@ -144,6 +153,9 @@ async def run_slice_scrub(
     badge_default_width: int = 0,
     subtitle_srt_path: Optional[str] = None,
     subtitle_font_ratio: Optional[float] = None,
+    subtitle_style: Optional[str] = None,
+    subtitle_color: Optional[str] = None,
+    subtitle_border_color: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run scrub-mode slicing (cutlist minus removed intervals)."""
     return await run_slice(
@@ -161,6 +173,9 @@ async def run_slice_scrub(
         badge_default_width=badge_default_width,
         subtitle_srt_path=subtitle_srt_path,
         subtitle_font_ratio=subtitle_font_ratio,
+        subtitle_style=subtitle_style,
+        subtitle_color=subtitle_color,
+        subtitle_border_color=subtitle_border_color,
     )
 
 
@@ -178,6 +193,9 @@ async def run_slice_fast(
     badge_default_width: int = 0,
     subtitle_srt_path: Optional[str] = None,
     subtitle_font_ratio: Optional[float] = None,
+    subtitle_style: Optional[str] = None,
+    subtitle_color: Optional[str] = None,
+    subtitle_border_color: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run fast/dedupe mode slicing."""
     if mode not in ("fast", "dedupe"):
@@ -197,6 +215,9 @@ async def run_slice_fast(
         badge_default_width=badge_default_width,
         subtitle_srt_path=subtitle_srt_path,
         subtitle_font_ratio=subtitle_font_ratio,
+        subtitle_style=subtitle_style,
+        subtitle_color=subtitle_color,
+        subtitle_border_color=subtitle_border_color,
     )
 
 

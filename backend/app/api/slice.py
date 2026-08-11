@@ -143,6 +143,13 @@ class SliceRunRequest(BaseModel):
     # 字幕字号（相对输出视频高度的比例，默认 0.20→FontSize 20，约占画面 5%；不传用引擎默认值）。
     # 用户可调大以让字幕更清晰易读，例如 0.10~0.30。
     subtitle_font_ratio: Optional[float] = None
+    # 字幕样式（default=白字黑边+半透明黑底；custom=自定义字体色/边框色且无底色）。
+    # 仅在 subtitle_enabled 开启且为 custom 时生效。
+    subtitle_style: Optional[str] = None
+    # 自定义字幕样式的字体颜色（CSS 十六进制 #RRGGBB）
+    subtitle_color: Optional[str] = None
+    # 自定义字幕样式的边框颜色（CSS 十六进制 #RRGGBB）
+    subtitle_border_color: Optional[str] = None
 
 
 class SliceRunResponse(BaseModel):
@@ -394,10 +401,16 @@ async def _read_existing_subtitle(episode: Episode, db: AsyncSession) -> Optiona
         return None
 
 
-def _with_subtitle_font_ratio(cfg: dict, data: SliceRunRequest) -> dict:
-    """把用户设置的字幕字号比例写入字幕配置，随任务下发给引擎。"""
+def _with_subtitle_options(cfg: dict, data: SliceRunRequest) -> dict:
+    """把用户设置的字幕样式（字号/自定义字体色/边框色）写入字幕配置，随任务下发给引擎。"""
     if data.subtitle_font_ratio is not None and data.subtitle_font_ratio > 0:
         cfg["font_ratio"] = round(float(data.subtitle_font_ratio), 4)
+    if data.subtitle_style:
+        cfg["style"] = data.subtitle_style
+    if data.subtitle_color:
+        cfg["font_color"] = data.subtitle_color
+    if data.subtitle_border_color:
+        cfg["border_color"] = data.subtitle_border_color
     return cfg
 
 
@@ -424,7 +437,7 @@ async def _generate_subtitle_config(
     if not data.output_id and episode is not None and db is not None:
         reused = await _read_existing_subtitle(episode, db)
         if reused is not None:
-            return _with_subtitle_font_ratio(reused, data)
+            return _with_subtitle_options(reused, data)
     # 2) 回退：调用 autoclip ASR 生成（复用 ASR 缓存）
     source_url = await get_presigned_url(source_bucket, source_file_key, expires_seconds=7200)
     if not source_url:
@@ -434,7 +447,7 @@ async def _generate_subtitle_config(
     if not result or not result.get("srt") or not result["srt"].strip():
         logger.warning("ASR 字幕生成结果为空（视频可能无语音或转写失败），跳过字幕烧录")
         return None
-    return _with_subtitle_font_ratio({"enabled": True, "srt": result["srt"]}, data)
+    return _with_subtitle_options({"enabled": True, "srt": result["srt"]}, data)
 
 
 def _not_detect_task():
