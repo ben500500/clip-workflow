@@ -31,6 +31,7 @@ from app.services.minio_service import (
     upload_file_from_path,
 )
 from app.services.upload_service import validate_file_name
+from app.utils.helpers import utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +225,7 @@ def _serialize_record(r: ShortdramaPrompt) -> dict:
         "prompt_text": r.prompt_text,
         "prompt_long": r.prompt_long,
         "prompt_short": r.prompt_short,
-        "created_at": r.created_at.isoformat() if r.created_at else "",
+        "created_at": utc_iso(r.created_at) if r.created_at else "",
         "video_file_name": r.video_file_name,
         "video_file_key": r.video_file_key,
         "video_bucket": r.video_bucket,
@@ -232,7 +233,7 @@ def _serialize_record(r: ShortdramaPrompt) -> dict:
         "video_status": r.video_status,
         "video_error_message": r.video_error_message,
         "video_url": None,
-        "video_uploaded_at": r.video_uploaded_at.isoformat() if r.video_uploaded_at else None,
+        "video_uploaded_at": utc_iso(r.video_uploaded_at) if r.video_uploaded_at else None,
         "doubao_status": r.doubao_status,
         "doubao_account_type": r.doubao_account_type,
         "doubao_account": r.doubao_account,
@@ -659,7 +660,7 @@ async def get_shortdrama_prompt_templates(
     )
     cfg = result.scalar_one_or_none()
     if cfg and cfg.updated_at:
-        updated_at = cfg.updated_at.isoformat()
+        updated_at = utc_iso(cfg.updated_at)
     return PromptTemplatesResponse(long=templates["long"], short=templates["short"], updated_at=updated_at)
 
 
@@ -692,7 +693,7 @@ async def update_shortdrama_prompt_templates(
     await _save_prompt_templates(db, templates)
     await db.commit()
 
-    updated_at = datetime.utcnow().isoformat()
+    updated_at = utc_iso(datetime.utcnow())
     return PromptTemplatesResponse(long=templates["long"], short=templates["short"], updated_at=updated_at)
 
 

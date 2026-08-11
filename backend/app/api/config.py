@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.models import SystemConfig, PlatformProfile
+from app.utils.helpers import utc_iso
 
 router = APIRouter()
 
@@ -267,7 +268,7 @@ def _serialize_config(cfg: SystemConfig) -> dict:
         "key": cfg.key,
         "value": cfg.value,
         "description": cfg.description or CONFIG_DESCRIPTIONS.get(cfg.key),
-        "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else "",
+        "updated_at": utc_iso(cfg.updated_at) if cfg.updated_at else "",
     }
 
 
@@ -281,7 +282,7 @@ def _serialize_profile(profile: PlatformProfile) -> dict:
         "target_resolution": profile.target_resolution,
         "target_bitrate": profile.target_bitrate,
         "max_duration": profile.max_duration,
-        "created_at": profile.created_at.isoformat() if profile.created_at else "",
+        "created_at": utc_iso(profile.created_at) if profile.created_at else "",
     }
 
 

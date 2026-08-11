@@ -28,6 +28,7 @@ from app.auth import (
     verify_password,
 )
 from app.database import get_db
+from app.utils.helpers import utc_iso
 from app.models.models import (
     ROLE_DISPLAY_NAMES,
     AuditLog,
@@ -122,8 +123,8 @@ def _user_to_response(user: User) -> UserResponse:
         data_scope=getattr(user, "data_scope", None) or default_data_scope_for_role(user.role),
         is_active=user.is_active,
         menus=get_role_menus(user.role),
-        created_at=user.created_at.isoformat() if user.created_at else None,
-        updated_at=user.updated_at.isoformat() if user.updated_at else None,
+        created_at=utc_iso(user.created_at) if user.created_at else None,
+        updated_at=utc_iso(user.updated_at) if user.updated_at else None,
     )
 
 

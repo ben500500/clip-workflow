@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_db
 from app.models.models import PublishMaterial
+from app.utils.helpers import utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ def _serialize_record(r: PublishMaterial) -> dict:
         "model": r.model,
         "material": material or {},
         "prompt_record_id": str(r.prompt_record_id) if r.prompt_record_id else None,
-        "created_at": r.created_at.isoformat() if r.created_at else "",
+        "created_at": utc_iso(r.created_at) if r.created_at else "",
     }
 
 

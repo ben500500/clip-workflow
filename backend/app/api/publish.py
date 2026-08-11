@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.config import settings
 from app.models.models import PublishTask, PublishProfile, SliceOutput, VideoAccount, MiniProgram
+from app.utils.helpers import utc_iso
 
 router = APIRouter()
 
@@ -224,7 +225,7 @@ def _serialize_publish_task(task: PublishTask) -> dict:
         "link_attached": task.link_attached or False,
         "published_url": task.published_url,
         "published_id": task.published_id,
-        "published_at": task.published_at.isoformat() if task.published_at else None,
+        "published_at": utc_iso(task.published_at) if task.published_at else None,
         "error_message": task.error_message,
         "require_manual_confirm": task.require_manual_confirm if task.require_manual_confirm is not None else True,
         "screenshot_key": task.screenshot_key,
@@ -232,8 +233,8 @@ def _serialize_publish_task(task: PublishTask) -> dict:
         "mini_program_id": str(task.mini_program_id) if task.mini_program_id else None,
         "prompt_record_id": str(task.prompt_record_id) if task.prompt_record_id else None,
         "material_id": str(task.material_id) if task.material_id else None,
-        "created_at": task.created_at.isoformat() if task.created_at else "",
-        "updated_at": task.updated_at.isoformat() if task.updated_at else "",
+        "created_at": utc_iso(task.created_at) if task.created_at else "",
+        "updated_at": utc_iso(task.updated_at) if task.updated_at else "",
     }
 
 
@@ -253,7 +254,7 @@ def _serialize_publish_profile(profile: PublishProfile) -> dict:
         "require_manual_confirm": profile.require_manual_confirm if profile.require_manual_confirm is not None else True,
         "min_interval_seconds": profile.min_interval_seconds or 300,
         "max_daily_publish": profile.max_daily_publish or 20,
-        "created_at": profile.created_at.isoformat() if profile.created_at else "",
+        "created_at": utc_iso(profile.created_at) if profile.created_at else "",
     }
 
 
@@ -699,8 +700,8 @@ def _serialize_video_account(acc: VideoAccount) -> dict:
         "mini_program_enabled": acc.mini_program_enabled or False,
         "remark": acc.remark,
         "enabled": acc.enabled if acc.enabled is not None else True,
-        "created_at": acc.created_at.isoformat() if acc.created_at else "",
-        "updated_at": acc.updated_at.isoformat() if acc.updated_at else "",
+        "created_at": utc_iso(acc.created_at) if acc.created_at else "",
+        "updated_at": utc_iso(acc.updated_at) if acc.updated_at else "",
     }
 
 
@@ -713,7 +714,7 @@ def _serialize_mini_program(mp: MiniProgram) -> dict:
         "full_link": mp.full_link,
         "remark": mp.remark,
         "enabled": mp.enabled if mp.enabled is not None else True,
-        "created_at": mp.created_at.isoformat() if mp.created_at else "",
+        "created_at": utc_iso(mp.created_at) if mp.created_at else "",
     }
 
 

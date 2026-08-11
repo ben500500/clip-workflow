@@ -24,6 +24,7 @@ from app.models.models import (
     SystemConfig,
 )
 from app.services import dashboard_service, data_import_service, smart_import_service
+from app.utils.helpers import utc_iso
 
 router = APIRouter()
 
@@ -84,7 +85,7 @@ def _serialize_video_metric(m: VideoMetric) -> dict:
         "publish_task_id": str(m.publish_task_id) if m.publish_task_id else None,
         "video_id": m.video_id,
         "title": m.title,
-        "publish_date": m.publish_date.isoformat() if m.publish_date else None,
+        "publish_date": utc_iso(m.publish_date) if m.publish_date else None,
         "account_id": str(m.account_id) if m.account_id else None,
         "play_count": m.play_count or 0,
         "finish_rate": m.finish_rate or 0,
@@ -106,8 +107,8 @@ def _serialize_video_metric(m: VideoMetric) -> dict:
         "publish_time_slot": m.publish_time_slot,
         "play_level": m.play_level,
         "production_cost": m.production_cost or 0,
-        "recorded_at": m.recorded_at.isoformat() if m.recorded_at else "",
-        "updated_at": m.updated_at.isoformat() if m.updated_at else "",
+        "recorded_at": utc_iso(m.recorded_at) if m.recorded_at else "",
+        "updated_at": utc_iso(m.updated_at) if m.updated_at else "",
     }
 
 
@@ -339,14 +340,14 @@ async def get_mini_program_metrics(
     return [
         {
             "id": str(m.id),
-            "date": m.date.isoformat() if m.date else None,
+            "date": utc_iso(m.date) if m.date else None,
             "account_id": str(m.account_id) if m.account_id else None,
             "uv": m.uv or 0,
             "new_user_count": m.new_user_count or 0,
             "drama_play_count": m.drama_play_count or 0,
             "avg_play_duration": m.avg_play_duration or 0,
             "drama_finish_rate": m.drama_finish_rate or 0,
-            "recorded_at": m.recorded_at.isoformat() if m.recorded_at else None,
+            "recorded_at": utc_iso(m.recorded_at) if m.recorded_at else None,
         }
         for m in metrics
     ]
@@ -384,7 +385,7 @@ async def get_ad_metrics(
     return [
         {
             "id": str(m.id),
-            "date": m.date.isoformat() if m.date else None,
+            "date": utc_iso(m.date) if m.date else None,
             "account_id": str(m.account_id) if m.account_id else None,
             "impression_count": m.impression_count or 0,
             "click_count": m.click_count or 0,
@@ -395,7 +396,7 @@ async def get_ad_metrics(
             "reward_video_revenue": m.reward_video_revenue or 0,
             "interstitial_impression": m.interstitial_impression or 0,
             "interstitial_revenue": m.interstitial_revenue or 0,
-            "recorded_at": m.recorded_at.isoformat() if m.recorded_at else None,
+            "recorded_at": utc_iso(m.recorded_at) if m.recorded_at else None,
         }
         for m in metrics
     ]
@@ -430,7 +431,7 @@ async def get_drama_ranking(
     return [
         {
             "id": str(m.id),
-            "date": m.date.isoformat() if m.date else None,
+            "date": utc_iso(m.date) if m.date else None,
             "drama_id": str(m.drama_id) if m.drama_id else None,
             "account_id": str(m.account_id) if m.account_id else None,
             "uv": m.uv or 0,
@@ -438,7 +439,7 @@ async def get_drama_ranking(
             "finish_rate": m.finish_rate or 0,
             "ad_impression": m.ad_impression or 0,
             "ad_revenue": m.ad_revenue or 0,
-            "recorded_at": m.recorded_at.isoformat() if m.recorded_at else None,
+            "recorded_at": utc_iso(m.recorded_at) if m.recorded_at else None,
         }
         for m in metrics
     ]
@@ -487,7 +488,7 @@ async def get_funnel_trend(
 
     return [
         {
-            "date": s.date.isoformat() if s.date else None,
+            "date": utc_iso(s.date) if s.date else None,
             "total_play": s.total_play or 0,
             "jump_click": s.jump_click or 0,
             "jump_rate": s.jump_rate or 0,
@@ -749,7 +750,7 @@ async def get_drama_detail(
     trend_result = await db.execute(trend_query)
     trend = [
         {
-            "date": m.date.isoformat() if m.date else None,
+            "date": utc_iso(m.date) if m.date else None,
             "uv": m.uv or 0,
             "play_count": m.play_count or 0,
             "finish_rate": m.finish_rate or 0,
@@ -879,7 +880,7 @@ def _serialize_shortdrama_analysis_row(v: VideoMetric, ctx: dict) -> dict:
         "account_name": account_name,
         "video_id": v.video_id,
         "title": v.title,
-        "publish_date": v.publish_date.isoformat() if v.publish_date else None,
+        "publish_date": utc_iso(v.publish_date) if v.publish_date else None,
         "play_count": v.play_count or 0,
         "finish_rate": v.finish_rate or 0,
         "like_count": v.like_count or 0,

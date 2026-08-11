@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import require_roles
 from app.database import get_db
 from app.models.models import AlertEvent, AlertRule, UserRole
+from app.utils.helpers import utc_iso
 from app.services.monitor_service import (
     METRIC_DESCRIPTIONS,
     collect_metrics,
@@ -106,8 +107,8 @@ def _serialize_rule(rule: AlertRule) -> dict:
         "enabled": rule.enabled if rule.enabled is not None else True,
         "description": rule.description,
         "webhook_url": rule.webhook_url,
-        "created_at": rule.created_at.isoformat() if rule.created_at else "",
-        "updated_at": rule.updated_at.isoformat() if rule.updated_at else "",
+        "created_at": utc_iso(rule.created_at) if rule.created_at else "",
+        "updated_at": utc_iso(rule.updated_at) if rule.updated_at else "",
     }
 
 
@@ -123,7 +124,7 @@ def _serialize_event(event: AlertEvent) -> dict:
         "threshold": event.threshold,
         "notified": event.notified if event.notified is not None else False,
         "notify_error": event.notify_error,
-        "created_at": event.created_at.isoformat() if event.created_at else "",
+        "created_at": utc_iso(event.created_at) if event.created_at else "",
     }
 
 

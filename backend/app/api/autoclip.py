@@ -21,6 +21,7 @@ from app.services.autoclip_service import (
     delete_autoclip_project,
 )
 from app.celery.tasks import autoclip_task as celery_autoclip_task
+from app.utils.helpers import utc_iso
 
 router = APIRouter()
 
@@ -102,7 +103,7 @@ def _serialize_clip(clip: ClipCandidate) -> dict:
         "status": clip.status,
         "adjusted_start": clip.adjusted_start,
         "adjusted_end": clip.adjusted_end,
-        "created_at": clip.created_at.isoformat() if clip.created_at else "",
+        "created_at": utc_iso(clip.created_at) if clip.created_at else "",
     }
 
 
@@ -117,9 +118,9 @@ def _serialize_autoclip_run(run: AutoClipRun) -> dict:
         "message": run.message,
         "error_message": run.error_message,
         "config": run.config or {},
-        "started_at": run.started_at.isoformat() if run.started_at else None,
-        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-        "created_at": run.created_at.isoformat() if run.created_at else "",
+        "started_at": utc_iso(run.started_at) if run.started_at else None,
+        "completed_at": utc_iso(run.completed_at) if run.completed_at else None,
+        "created_at": utc_iso(run.created_at) if run.created_at else "",
     }
 
 

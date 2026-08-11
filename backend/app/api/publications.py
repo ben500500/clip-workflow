@@ -11,6 +11,7 @@ from app.auth import get_current_user
 from app.database import get_db
 from app.models.models import SliceOutput, SliceTask, Episode, Publication, User
 from app.services.data_scope import check_project_access_by_episode
+from app.utils.helpers import utc_iso
 
 router = APIRouter()
 
@@ -53,11 +54,11 @@ def _serialize_publication(pub: Publication) -> dict:
         "output_id": str(pub.output_id),
         "platform": pub.platform,
         "publish_url": pub.publish_url,
-        "publish_time": pub.publish_time.isoformat() if pub.publish_time else None,
+        "publish_time": utc_iso(pub.publish_time) if pub.publish_time else None,
         "status": pub.status,
         "reject_reason": pub.reject_reason,
         "operator": pub.operator,
-        "created_at": pub.created_at.isoformat() if pub.created_at else "",
+        "created_at": utc_iso(pub.created_at) if pub.created_at else "",
     }
 
 

@@ -14,6 +14,7 @@ from app.models.models import Episode, DetectedInterval, SliceTask, User
 from app.services.data_scope import check_project_access_by_episode
 from app.services.interval_service import detect_intervals as run_detect
 from app.celery.tasks import detect_task as celery_detect_task
+from app.utils.helpers import utc_iso
 
 router = APIRouter()
 
@@ -102,7 +103,7 @@ def _serialize_interval(interval: DetectedInterval) -> dict:
         "enabled": interval.enabled if interval.enabled is not None else True,
         "source": interval.source,
         "detection_config": interval.detection_config,
-        "created_at": interval.created_at.isoformat() if interval.created_at else "",
+        "created_at": utc_iso(interval.created_at) if interval.created_at else "",
     }
 
 
@@ -368,9 +369,9 @@ async def get_interval_history(
             "progress": t.progress or 0.0,
             "error_message": t.error_message,
             "interval_count": interval_count,
-            "started_at": t.started_at.isoformat() if t.started_at else None,
-            "completed_at": t.completed_at.isoformat() if t.completed_at else None,
-            "created_at": t.created_at.isoformat() if t.created_at else "",
+            "started_at": utc_iso(t.started_at) if t.started_at else None,
+            "completed_at": utc_iso(t.completed_at) if t.completed_at else None,
+            "created_at": utc_iso(t.created_at) if t.created_at else "",
         })
     return items
 

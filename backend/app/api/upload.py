@@ -22,6 +22,7 @@ from app.services.upload_service import (
     validate_file_name,
 )
 from app.services.minio_service import upload_file_from_path
+from app.utils.helpers import utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +72,8 @@ def _serialize_episode(episode: Episode) -> dict:
         "resolution": episode.resolution,
         "file_size": episode.file_size,
         "status": episode.status,
-        "created_at": episode.created_at.isoformat() if episode.created_at else "",
-        "updated_at": episode.updated_at.isoformat() if episode.updated_at else "",
+        "created_at": utc_iso(episode.created_at) if episode.created_at else "",
+        "updated_at": utc_iso(episode.updated_at) if episode.updated_at else "",
     }
 
 

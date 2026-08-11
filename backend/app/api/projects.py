@@ -18,6 +18,7 @@ from app.models.models import (
     user_can_access_all_materials,
 )
 from app.services.minio_service import get_presigned_url
+from app.utils.helpers import utc_iso
 
 router = APIRouter()
 
@@ -97,8 +98,8 @@ def _serialize_project(project: Project) -> dict:
         "status": project.status,
         "config": project.config or {},
         "created_by": str(project.created_by) if project.created_by else None,
-        "created_at": project.created_at.isoformat() if project.created_at else "",
-        "updated_at": project.updated_at.isoformat() if project.updated_at else "",
+        "created_at": utc_iso(project.created_at) if project.created_at else "",
+        "updated_at": utc_iso(project.updated_at) if project.updated_at else "",
         "episode_count": episode_count,
     }
 
@@ -114,8 +115,8 @@ def _serialize_episode(episode: Episode) -> dict:
         "resolution": episode.resolution,
         "file_size": episode.file_size,
         "status": episode.status,
-        "created_at": episode.created_at.isoformat() if episode.created_at else "",
-        "updated_at": episode.updated_at.isoformat() if episode.updated_at else "",
+        "created_at": utc_iso(episode.created_at) if episode.created_at else "",
+        "updated_at": utc_iso(episode.updated_at) if episode.updated_at else "",
     }
 
 

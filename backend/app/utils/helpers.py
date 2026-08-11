@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import timezone
 import tempfile
 from typing import List, Optional
 
@@ -89,3 +90,16 @@ def human_readable_size(size_bytes: Optional[int]) -> str:
             return f"{size_bytes:.1f}{unit}"
         size_bytes /= 1024
     return f"{size_bytes:.1f}PB"
+
+def utc_iso(dt) -> str:
+    """naive UTC datetime → 带时区标记的 ISO 字符串。
+
+    全库时间列均为 timestamp without time zone（应用写入 utcnow()），
+    若直接 isoformat() 输出不带时区，前端 dayjs 会按浏览器本地时区解析，
+    导致时间少 8 小时。统一补上 +00:00 让前端正确换算本地时间。
+    """
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()

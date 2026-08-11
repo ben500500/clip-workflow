@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user, require_roles
 from app.database import get_db
 from app.models.models import User, UserRole, WorkerNode
+from app.utils.helpers import utc_iso
 from app.services.redis_stream import (
     get_worker_nodes_from_redis,
     set_node_enabled,
@@ -91,9 +92,9 @@ def _serialize_node(node: WorkerNode) -> dict:
         "current_tasks": node.current_tasks or 0,
         "total_tasks_completed": node.total_tasks_completed or 0,
         "total_tasks_failed": node.total_tasks_failed or 0,
-        "last_heartbeat": node.last_heartbeat.isoformat() if node.last_heartbeat else None,
-        "started_at": node.started_at.isoformat() if node.started_at else None,
-        "created_at": node.created_at.isoformat() if node.created_at else "",
+        "last_heartbeat": utc_iso(node.last_heartbeat) if node.last_heartbeat else None,
+        "started_at": utc_iso(node.started_at) if node.started_at else None,
+        "created_at": utc_iso(node.created_at) if node.created_at else "",
         "running_progress": getattr(node, "running_progress", 0.0) or 0.0,
         "cpu_percent": getattr(node, "cpu_percent", 50) or 50,
     }

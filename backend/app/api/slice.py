@@ -34,7 +34,7 @@ from app.models.models import (
     User,
 )
 from app.services.data_scope import check_project_access_by_episode
-from app.utils.helpers import generate_cutlist, generate_intervals_file, format_time
+from app.utils.helpers import utc_iso,  generate_cutlist, generate_intervals_file, format_time
 from app.services.minio_service import (
     get_presigned_url,
     get_presigned_upload_url,
@@ -178,9 +178,9 @@ def _serialize_task(task: SliceTask) -> dict:
         "output_count": task.output_count or 0,
         "error_message": task.error_message,
         "node_id": task.node_id,
-        "started_at": task.started_at.isoformat() if task.started_at else None,
-        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-        "created_at": task.created_at.isoformat() if task.created_at else "",
+        "started_at": utc_iso(task.started_at) if task.started_at else None,
+        "completed_at": utc_iso(task.completed_at) if task.completed_at else None,
+        "created_at": utc_iso(task.created_at) if task.created_at else "",
     }
 
 
@@ -194,7 +194,7 @@ def _serialize_output(output: SliceOutput, presigned_url: Optional[str] = None) 
         "duration": output.duration,
         "file_size": output.file_size,
         "resolution": output.resolution,
-        "created_at": output.created_at.isoformat() if output.created_at else "",
+        "created_at": utc_iso(output.created_at) if output.created_at else "",
         "presigned_url": presigned_url,
     }
 
@@ -448,7 +448,7 @@ async def _publish_to_worker(
             "callback_token": callback_token,
         },
         "timeout_seconds": settings.SLICE_TASK_TIMEOUT_SECONDS,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": utc_iso(datetime.utcnow()),
     }
 
     # 保存回调 Token 到 Redis（供回调/上传接口鉴权校验）

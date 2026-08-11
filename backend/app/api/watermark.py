@@ -28,6 +28,7 @@ from app.services.minio_service import (
 )
 from app.services.upload_service import validate_file_name
 from app.services.redis_stream import get_redis
+from app.utils.helpers import utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -178,9 +179,9 @@ def _serialize_video(video: WatermarkVideo, output_url: Optional[str] = None, so
         "source_url": source_url,
         "output_file_size": video.output_file_size,
         "prompt_record_id": str(video.prompt_record_id) if video.prompt_record_id else None,
-        "created_at": video.created_at.isoformat() if video.created_at else "",
-        "started_at": video.started_at.isoformat() if video.started_at else None,
-        "completed_at": video.completed_at.isoformat() if video.completed_at else None,
+        "created_at": utc_iso(video.created_at) if video.created_at else "",
+        "started_at": utc_iso(video.started_at) if video.started_at else None,
+        "completed_at": utc_iso(video.completed_at) if video.completed_at else None,
         "duration_seconds": duration,
     }
 
@@ -207,9 +208,9 @@ def _serialize_task(task: WatermarkTask, fallback_prompt_record_id: Optional[str
         "completed_count": task.completed_count or 0,
         "failed_count": task.failed_count or 0,
         "error_message": task.error_message,
-        "started_at": task.started_at.isoformat() if task.started_at else None,
-        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-        "created_at": task.created_at.isoformat() if task.created_at else "",
+        "started_at": utc_iso(task.started_at) if task.started_at else None,
+        "completed_at": utc_iso(task.completed_at) if task.completed_at else None,
+        "created_at": utc_iso(task.created_at) if task.created_at else "",
         "duration_seconds": duration,
     }
 
