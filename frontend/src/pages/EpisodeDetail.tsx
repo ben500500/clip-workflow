@@ -2,17 +2,18 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Space, Typography, Spin, Alert, Breadcrumb, Descriptions, Tag, message, Select, Row, Col, Progress,
   Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input, Table, Upload, Image as AntImage, Radio, ColorPicker,
+  Checkbox,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
   CheckCircleOutlined, ClockCircleOutlined, InfoCircleOutlined, PlayCircleOutlined,
-  UploadOutlined, DeleteOutlined as DelIcon,
+  UploadOutlined, DeleteOutlined as DelIcon, PlusOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projectApi } from '../api/projects';
 import { autoclipApi } from '../api/autoclip';
 import { intervalApi } from '../api/intervals';
-import { sliceApi, type BadgeItem } from '../api/slice';
+import { sliceApi, type BadgeItem, type TextOverlayItem } from '../api/slice';
 import ErrorHint from '../components/ErrorHint';
 import type { AutoClipRunRecord, Episode, IntervalHistoryItem, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
@@ -98,13 +99,15 @@ const EpisodeDetail: React.FC = () => {
   const [vert2horizMinStep, setVert2horizMinStep] = useState(5);
   // ── ASR 字幕烧录开关 ──
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
-  // 字幕字号（相对输出视频高度的比例，默认 0.20→FontSize 20，约占画面 5%，横屏/竖屏均清晰可读）
-  const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.2);
+  // 字幕字号（相对输出视频高度的比例，默认 0.45→FontSize 45；转横屏开启时默认套用，用户可调）
+  const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.45);
   // 字幕样式：default（白字黑边+半透明黑底）/ custom（自定义字体色+边框色，无底色）
-  const [subtitleStyle, setSubtitleStyle] = useState<'default' | 'custom'>('default');
-  // 自定义样式的字体色 / 边框色（CSS 十六进制，默认白字黑边）
-  const [subtitleColor, setSubtitleColor] = useState('#ffffff');
+  const [subtitleStyle, setSubtitleStyle] = useState<'default' | 'custom'>('custom');
+  // 自定义样式的字体色 / 边框色（CSS 十六进制，默认 #EDD736 黄 / 黑边）
+  const [subtitleColor, setSubtitleColor] = useState('#EDD736');
   const [subtitleBorderColor, setSubtitleBorderColor] = useState('#000000');
+  // ── 固定文字角标（文字版角标，无需上传图片）──
+  const [textOverlays, setTextOverlays] = useState<Array<TextOverlayItem & { id: string }>>([]);
   const [maxClips, setMaxClips] = useState(10);
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
@@ -637,6 +640,18 @@ const EpisodeDetail: React.FC = () => {
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
         subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
+        // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排
+        text_overlays: textOverlays.length > 0
+          ? textOverlays.map((t) => ({
+              text: t.text,
+              position: t.position,
+              ...(t.font_size ? { font_size: t.font_size } : {}),
+              ...(t.color ? { color: t.color } : {}),
+              ...(t.border_color ? { border_color: t.border_color } : {}),
+              ...(t.vertical != null ? { vertical: t.vertical } : {}),
+              ...(t.offset != null ? { offset: t.offset } : {}),
+            }))
+          : undefined,
       });
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
       message.info('切片完成后请到「成品预览」查看并下载结果');
@@ -648,6 +663,33 @@ const EpisodeDetail: React.FC = () => {
       message.error(err instanceof Error ? err.message : '一键切片失败');
       setOneClickSlicing(false);
       setOneClickProgress(null);
+    }
+  };
+
+  // ─── 固定文字角标（文字版角标）管理 ──────────────────
+  const addTextOverlay = () => {
+    setTextOverlays((prev) => [
+      ...prev,
+      { id: `tov_${Date.now()}_${prev.length}`, text: '', position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: false, offset: 10 },
+    ]);
+  };
+  const updateTextOverlay = (index: number, patch: Partial<TextOverlayItem>) => {
+    setTextOverlays((prev) => prev.map((t, i) => (i === index ? { ...t, ...patch } : t)));
+  };
+  const removeTextOverlay = (index: number) => {
+    setTextOverlays((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // ─── 转横屏开关联动 ASR 字幕 ──────────────────────
+  // 转横屏开启时，默认同时开启 ASR 字幕（字号 45、自定义样式字体色 #EDD736），
+  // 用户可手动关闭/调整。
+  const handleVert2horizToggle = (on: boolean) => {
+    setVert2horizEnabled(on);
+    if (on) {
+      setSubtitleEnabled(true);
+      setSubtitleFontRatio(0.45);
+      setSubtitleStyle('custom');
+      setSubtitleColor('#EDD736');
     }
   };
 
@@ -690,6 +732,18 @@ const EpisodeDetail: React.FC = () => {
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
         subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
+        // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排
+        text_overlays: textOverlays.length > 0
+          ? textOverlays.map((t) => ({
+              text: t.text,
+              position: t.position,
+              ...(t.font_size ? { font_size: t.font_size } : {}),
+              ...(t.color ? { color: t.color } : {}),
+              ...(t.border_color ? { border_color: t.border_color } : {}),
+              ...(t.vertical != null ? { vertical: t.vertical } : {}),
+              ...(t.offset != null ? { offset: t.offset } : {}),
+            }))
+          : undefined,
       });
       message.success(res.message);
       fetchHistories();
@@ -1116,7 +1170,7 @@ const EpisodeDetail: React.FC = () => {
           <Card size="small" style={{ width: '100%' }}>
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Space>
-                <Switch checked={vert2horizEnabled} onChange={setVert2horizEnabled} size="small" />
+                <Switch checked={vert2horizEnabled} onChange={handleVert2horizToggle} size="small" />
                 <Text strong style={{ fontSize: 13 }}>竖屏转横屏</Text>
                 <Tooltip title="开启后若素材为竖屏（9:16），切片前自动转为横屏（16:9）：固定裁切快速稳定，动态跟踪会逐帧检测人脸确保人物不出画。适用于发布到视频号横屏模式 / B站等横屏平台。">
                   <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
@@ -1259,6 +1313,72 @@ const EpisodeDetail: React.FC = () => {
                     </Space>
                   )}
                 </>
+              )}
+            </Space>
+          </Card>
+
+          {/* ── 固定文字角标（文字版角标，最左侧/左下角/右上角等） ── */}
+          <Card size="small" style={{ width: '100%' }}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space wrap align="center" size={8}>
+                <Button size="small" icon={<PlusOutlined />} onClick={addTextOverlay}>添加固定文字</Button>
+                <Text strong style={{ fontSize: 13 }}>固定文字</Text>
+                <Tooltip title="在视频指定位置叠加固定文字（无需上传图片）：最左侧（竖排）/左下角/右上角等，全程覆盖。文字内容、字号、颜色可自定义。">
+                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                </Tooltip>
+              </Space>
+              {textOverlays.length > 0 && (
+                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                  {textOverlays.map((t, i) => (
+                    <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <Input
+                        size="small"
+                        placeholder="文字内容"
+                        value={t.text}
+                        onChange={(e) => updateTextOverlay(i, { text: e.target.value })}
+                        style={{ width: 150 }}
+                      />
+                      <Select
+                        size="small"
+                        style={{ width: 95 }}
+                        value={t.position}
+                        onChange={(v) => updateTextOverlay(i, { position: v })}
+                        options={BADGE_POSITIONS}
+                      />
+                      <Tooltip title="是否竖排（最左侧常用，垂直居中）">
+                        <Checkbox
+                          checked={!!t.vertical}
+                          onChange={(e) => updateTextOverlay(i, { vertical: e.target.checked })}
+                        >竖排</Checkbox>
+                      </Tooltip>
+                      <InputNumber
+                        size="small"
+                        min={12}
+                        max={200}
+                        placeholder="字号"
+                        value={t.font_size}
+                        onChange={(v) => updateTextOverlay(i, { font_size: v ?? undefined })}
+                        style={{ width: 80 }}
+                        addonAfter="px"
+                      />
+                      <Text strong style={{ fontSize: 12 }}>字色</Text>
+                      <ColorPicker
+                        size="small"
+                        value={t.color || '#FFFFFF'}
+                        onChange={(c) => updateTextOverlay(i, { color: c.toHexString() })}
+                        showText
+                      />
+                      <Text strong style={{ fontSize: 12 }}>描边</Text>
+                      <ColorPicker
+                        size="small"
+                        value={t.border_color || '#000000'}
+                        onChange={(c) => updateTextOverlay(i, { border_color: c.toHexString() })}
+                        showText
+                      />
+                      <Button size="small" type="text" danger icon={<DelIcon />} onClick={() => removeTextOverlay(i)} />
+                    </div>
+                  ))}
+                </Space>
               )}
             </Space>
           </Card>
