@@ -57,6 +57,14 @@ HEAD_MARGIN_RATIO = 0.35
 FIXED_FALLBACK_TOP_RATIO = 0.12
 # 抽样检测帧数上限（固定模式用于定位人脸平均位置）。
 FIXED_SAMPLE_MAX = 24
+# 动态模式抗抖：crop_y 最小移动阈值（像素，源画面坐标）。
+# 裁切窗口内 1px 放大到输出后约为 `out_w/src_w` 倍，检测噪声（±2~3px）
+# 在放大后尤为明显。默认 5px 可显著抑制逐帧微平移，同时保留人物整体运动；
+# 可通过 --min-step / vert2horiz_min_step 配置（值越大越稳、越小越跟手）。
+MIN_STEP_DEFAULT = 5
+# 动态模式抗抖：crop_y Savitzky-Golay 平滑窗口（帧，须为奇数）。
+# 越大越平滑（更稳），但会引入滞后（更不跟手）。默认 15（30fps 约 0.5s）。
+SAVGOL_WINDOW_DEFAULT = 15
 
 
 def get_video_info(path):
@@ -400,16 +408,17 @@ def savgol_smooth(values, window=11, polyorder=2):
     return out
 
 
-def debounce_crop_y(crop_ys, min_step=3):
-    """对 crop_y 序列做最小移动死区去抖：位置变化小于 min_step 像素时保持不动。
+def debounce_crop_y(crop_ys, min_step=5):
+    """对 crop_y 序列做最小移动死区去抖（纯阈值）：变化小于 min_step 时保持不动。
 
     这是消除画面抖动最直接的一环——即便做了平滑，只要相邻帧 crop_y
     差 1~2 像素就会让整个裁切窗口逐帧平移，人眼看就是画面「呼吸式」抖动。
     施加阈值后，微小波动被吞掉，只有位置真正移动超过 min_step 才更新，
-    同时保留人物的整体运动轨迹。
+    画面在人物静止时完全稳定；人物移动时以 min_step 为步长平滑跟随（配合
+    前置 savgol 低通平滑，跟随轨迹连续无卡顿）。
 
     crop_ys: 逐帧 crop_y 列表
-    min_step: 最小移动像素阈值（像素）
+    min_step: 最小移动像素阈值（像素），越大越稳、越小越跟手
     """
     if not len(crop_ys):
         return list(crop_ys)
@@ -418,11 +427,11 @@ def debounce_crop_y(crop_ys, min_step=3):
     for v in crop_ys:
         if abs(v - last) >= min_step:
             last = v
-        out.append(last)
+        out.append(int(round(last)))
     return out
 
 
-def generate_dynamic_crop_params(faces, src_w, src_h, crop_ratio=9 / 16):
+def generate_dynamic_crop_params(faces, src_w, src_h, crop_ratio=9 / 16, min_step=MIN_STEP_DEFAULT):
     """
     生成动态裁切参数（以人脸为锚，保证面部完整，并做抗抖动处理）。
 
@@ -431,6 +440,8 @@ def generate_dynamic_crop_params(faces, src_w, src_h, crop_ratio=9 / 16):
         src_w: 源视频宽度
         src_h: 源视频高度
         crop_ratio: 裁切高度比例
+        min_step: 最小移动阈值（像素）。值越大画面越平稳（人物静止时不抖），
+                  越小越跟手（人物移动时响应更快）。为「稳/跟手」的调节旋钮。
 
     Returns:
         list: [{frame, crop_w, crop_h, crop_x, crop_y}, ...]
@@ -454,8 +465,8 @@ def generate_dynamic_crop_params(faces, src_w, src_h, crop_ratio=9 / 16):
     # 抗抖动两级处理：
     # 1) Savitzky-Golay 低通平滑（滤掉高频检测噪声，保留低频运动趋势）
     # 2) 最小移动死区去抖（微小位置变化直接吞掉，杜绝逐帧微平移）
-    crop_ys = savgol_smooth(raw_crop_ys, window=11, polyorder=2)
-    crop_ys = debounce_crop_y(crop_ys, min_step=3)
+    crop_ys = savgol_smooth(raw_crop_ys, window=SAVGOL_WINDOW_DEFAULT, polyorder=2)
+    crop_ys = debounce_crop_y(crop_ys, min_step=min_step)
 
     params = []
     for i, crop_y in enumerate(crop_ys):
@@ -499,9 +510,15 @@ def apply_fixed_crop(video_path, output_path, crop_params, output_size="1280x720
     print(f"输出: {output_path}")
 
 
-def apply_dynamic_crop(video_path, output_path, crop_params, fps, output_size="1280x720"):
+def apply_dynamic_crop(video_path, output_path, crop_params, fps, output_size="1280x720", min_step=MIN_STEP_DEFAULT):
     """
     用 ffmpeg sendcmd 应用动态裁切
+
+    Args:
+        min_step: 最小移动阈值（像素，源画面坐标），与
+                  generate_dynamic_crop_params 保持一致。只有 crop_y 变化
+                  超过该值才写入一条 sendcmd，其余帧自动保持上一位置，
+                  从而避免逐帧微平移导致的画面抖动。
     """
     if not crop_params:
         raise ValueError("裁切参数为空")
@@ -515,7 +532,6 @@ def apply_dynamic_crop(video_path, output_path, crop_params, fps, output_size="1
     # 自动保持上一写入位置。这样既大幅减少 ffmpeg 命令数，也彻底避免
     # 逐帧微平移造成的画面抖动（配合 generate_dynamic_crop_params 的
     # Savitzky-Golay 平滑 + 死区去抖，效果最佳）。
-    min_step = 3  # 与 debounce_crop_y 的最小移动阈值保持一致
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         cmd_file = f.name
         last_y = None
@@ -585,6 +601,8 @@ def main():
                         help="人脸检测间隔帧数（默认 2，减少计算量）")
     parser.add_argument("--smooth-window", type=int, default=15,
                         help="平滑窗口大小（默认 15）")
+    parser.add_argument("--min-step", type=int, default=MIN_STEP_DEFAULT,
+                        help=f"最小移动阈值 px（默认 {MIN_STEP_DEFAULT}）：越大越平稳、越小越跟手")
     parser.add_argument("--save-params", action="store_true",
                         help="保存裁切参数到 JSON 文件")
 
@@ -633,10 +651,15 @@ def main():
             detector=detector,
         )
 
-        crop_params = generate_dynamic_crop_params(faces, src_w, src_h, args.ratio)
+        crop_params = generate_dynamic_crop_params(
+            faces, src_w, src_h, args.ratio, min_step=args.min_step
+        )
         print(f"  生成 {len(crop_params)} 帧裁切参数")
 
-        apply_dynamic_crop(args.input, args.output, crop_params, fps, args.output_size)
+        apply_dynamic_crop(
+            args.input, args.output, crop_params, fps, args.output_size,
+            min_step=args.min_step,
+        )
 
         if args.save_params:
             params_file = args.output + ".crop_params.json"

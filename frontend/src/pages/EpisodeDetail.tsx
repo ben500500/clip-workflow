@@ -77,6 +77,8 @@ const EpisodeDetail: React.FC = () => {
   const [vert2horizOutputSize, setVert2horizOutputSize] = useState('1280x720');
   const [vert2horizDetectInterval, setVert2horizDetectInterval] = useState(2);
   const [vert2horizSmoothWindow, setVert2horizSmoothWindow] = useState(15);
+  // 动态模式最小移动阈值（px）：越大越稳、越小越跟手
+  const [vert2horizMinStep, setVert2horizMinStep] = useState(5);
   const [maxClips, setMaxClips] = useState(10);
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
@@ -510,6 +512,7 @@ const EpisodeDetail: React.FC = () => {
         vert2horiz_output_size: vert2horizEnabled ? vert2horizOutputSize : undefined,
         vert2horiz_detect_interval: vert2horizEnabled ? vert2horizDetectInterval : undefined,
         vert2horiz_smooth_window: vert2horizEnabled ? vert2horizSmoothWindow : undefined,
+        vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
       });
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
       message.info('切片完成后请到「成品预览」查看并下载结果');
@@ -543,6 +546,7 @@ const EpisodeDetail: React.FC = () => {
         vert2horiz_output_size: vert2horizEnabled ? vert2horizOutputSize : undefined,
         vert2horiz_detect_interval: vert2horizEnabled ? vert2horizDetectInterval : undefined,
         vert2horiz_smooth_window: vert2horizEnabled ? vert2horizSmoothWindow : undefined,
+        vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
       });
       message.success(res.message);
       fetchHistories();
@@ -1020,6 +1024,15 @@ const EpisodeDetail: React.FC = () => {
                         max={60}
                         value={vert2horizSmoothWindow}
                         onChange={(v) => setVert2horizSmoothWindow(v ?? 15)}
+                        style={{ width: 80 }}
+                      />
+                      <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>最小移动(px):</Text>
+                      <InputNumber
+                        size="small"
+                        min={0}
+                        max={30}
+                        value={vert2horizMinStep}
+                        onChange={(v) => setVert2horizMinStep(v ?? 5)}
                         style={{ width: 80 }}
                       />
                       <Text type="secondary" style={{ fontSize: 12 }}>动态模式较慢（约 3-5 分钟/10 分钟视频），固定模式仅需一遍 ffmpeg（约 30 秒）</Text>

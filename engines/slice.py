@@ -631,6 +631,8 @@ def apply_vert2horiz(source: str, cfg: dict) -> str:
     output_size = cfg.get("output_size") or "1280x720"
     detect_interval = int(cfg.get("detect_interval") or 2)
     smooth_window = int(cfg.get("smooth_window") or 15)
+    # 最小移动阈值（源画面像素）：越大越平稳、越小越跟手；默认取引擎侧默认值
+    min_step = int(cfg.get("min_step") or vert2horiz_crop.MIN_STEP_DEFAULT)
 
     # 输出路径加进程唯一后缀：同一任务可能被多个 Worker 并发认领执行（长任务
     # 超过 Redis 认领超时后被重新认领），若多个引擎进程写同一固定路径会互相
@@ -649,9 +651,11 @@ def apply_vert2horiz(source: str, cfg: dict) -> str:
             detector=detector,
         )
         crop_params = vert2horiz_crop.generate_dynamic_crop_params(
-            faces, src_w, src_h, ratio
+            faces, src_w, src_h, ratio, min_step=min_step
         )
-        vert2horiz_crop.apply_dynamic_crop(source, out_path, crop_params, fps, output_size)
+        vert2horiz_crop.apply_dynamic_crop(
+            source, out_path, crop_params, fps, output_size, min_step=min_step
+        )
     else:
         crop_params = vert2horiz_crop.generate_fixed_crop_params(
             detector, source, src_w, src_h, ratio

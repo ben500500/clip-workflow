@@ -64,6 +64,8 @@ const SliceTasks: React.FC = () => {
   const [vert2horizOutputSize, setVert2horizOutputSize] = useState('1280x720');
   const [vert2horizDetectInterval, setVert2horizDetectInterval] = useState(2);
   const [vert2horizSmoothWindow, setVert2horizSmoothWindow] = useState(15);
+  // 动态模式最小移动阈值（px）：越大越稳、越小越跟手
+  const [vert2horizMinStep, setVert2horizMinStep] = useState(5);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
 
@@ -114,6 +116,7 @@ const SliceTasks: React.FC = () => {
         vert2horiz_output_size: vert2horizEnabled ? vert2horizOutputSize : undefined,
         vert2horiz_detect_interval: vert2horizEnabled ? vert2horizDetectInterval : undefined,
         vert2horiz_smooth_window: vert2horizEnabled ? vert2horizSmoothWindow : undefined,
+        vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
       });
       message.success(res.message);
       fetchTasks();
@@ -522,6 +525,17 @@ const SliceTasks: React.FC = () => {
                       onChange={(v) => setVert2horizSmoothWindow(v ?? 15)}
                       style={{ width: 80 }}
                       addonBefore="平滑"
+                    />
+                  </Tooltip>
+                  <Tooltip title="最小移动阈值(px)：越大越稳、越小越跟手；抖动明显时调大，走动跟不丢时调小">
+                    <InputNumber
+                      size="small"
+                      min={0}
+                      max={30}
+                      value={vert2horizMinStep}
+                      onChange={(v) => setVert2horizMinStep(v ?? 5)}
+                      style={{ width: 80 }}
+                      addonBefore="阈值"
                     />
                   </Tooltip>
                 </>

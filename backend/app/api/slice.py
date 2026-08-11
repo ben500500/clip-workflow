@@ -132,6 +132,9 @@ class SliceRunRequest(BaseModel):
     vert2horiz_detect_interval: Optional[int] = None
     # 动态模式：平滑窗口（帧，默认 15）
     vert2horiz_smooth_window: Optional[int] = None
+    # 动态模式：最小移动阈值（源画面像素，默认 5）。值越大画面越平稳、
+    # 越小越跟手；画面抖动明显时可调大，人物走动跟不丢时可调小。
+    vert2horiz_min_step: Optional[int] = None
 
 
 class SliceRunResponse(BaseModel):
@@ -296,6 +299,9 @@ def _build_vert2horiz_config(data: SliceRunRequest) -> Optional[dict]:
         cfg["detect_interval"] = max(1, int(data.vert2horiz_detect_interval))
     if data.vert2horiz_smooth_window is not None:
         cfg["smooth_window"] = max(1, int(data.vert2horiz_smooth_window))
+    if data.vert2horiz_min_step is not None:
+        # 最小移动阈值：允许 0（完全跟手、不抑制微平移），但至少 >=0
+        cfg["min_step"] = max(0, int(data.vert2horiz_min_step))
     return cfg
 
 

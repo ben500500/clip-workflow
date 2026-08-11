@@ -41,6 +41,8 @@ export const sliceApi = {
       vert2horiz_output_size?: string;
       vert2horiz_detect_interval?: number;
       vert2horiz_smooth_window?: number;
+      // 动态模式最小移动阈值（px）：越大越稳、越小越跟手
+      vert2horiz_min_step?: number;
       // 成品重新剪辑：以某个切片输出为源，重新裁剪出一个新片段
       output_id?: string;
       cut_start?: number;
