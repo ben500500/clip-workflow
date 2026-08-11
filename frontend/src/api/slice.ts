@@ -45,6 +45,8 @@ export const sliceApi = {
       vert2horiz_min_step?: number;
       // ASR 字幕烧录：开启后对源视频做 ASR 识别并烧录到成品视频
       subtitle_enabled?: boolean;
+      // 字幕字号（相对输出视频高度的比例，默认 0.07；可调大让字幕更清晰易读）
+      subtitle_font_ratio?: number;
       // 成品重新剪辑：以某个切片输出为源，重新裁剪出一个新片段
       output_id?: string;
       cut_start?: number;

@@ -90,6 +90,7 @@ async def run_slice(
     badges_config: Optional[list] = None,
     badge_default_width: int = 0,
     subtitle_srt_path: Optional[str] = None,
+    subtitle_font_ratio: Optional[float] = None,
 ) -> tuple[int, str, str]:
     """Run the ffmpeg slice engine.
 
@@ -102,6 +103,7 @@ async def run_slice(
     badges_config: 图片角标配置（切片后在成品上叠加角标）。
     badge_default_width: 角标默认宽度（px，0=保持原图尺寸；角标未单独设 width 时生效）。
     subtitle_srt_path: 源视频 SRT 字幕文件路径（切片时烧录到成品，可选）。
+    subtitle_font_ratio: 字幕字号（相对输出视频高度的比例，可选；不传用引擎默认值）。
     """
     engine_path = engine_path or _engine_path("slice.py")
     _require_engine(engine_path)
@@ -121,6 +123,8 @@ async def run_slice(
         cmd.extend(["--badge-default-width", str(int(badge_default_width))])
     if subtitle_srt_path:
         cmd.extend(["--subtitle", subtitle_srt_path])
+    if subtitle_font_ratio and subtitle_font_ratio > 0:
+        cmd.extend(["--subtitle-font-ratio", str(float(subtitle_font_ratio))])
     logger.info("Running slice: %s", " ".join(cmd))
 
     return await _run_cmd(cmd, timeout, progress_cb)
@@ -139,6 +143,7 @@ async def run_slice_scrub(
     badges_config: Optional[list] = None,
     badge_default_width: int = 0,
     subtitle_srt_path: Optional[str] = None,
+    subtitle_font_ratio: Optional[float] = None,
 ) -> tuple[int, str, str]:
     """Run scrub-mode slicing (cutlist minus removed intervals)."""
     return await run_slice(
@@ -155,6 +160,7 @@ async def run_slice_scrub(
         badges_config=badges_config,
         badge_default_width=badge_default_width,
         subtitle_srt_path=subtitle_srt_path,
+        subtitle_font_ratio=subtitle_font_ratio,
     )
 
 
@@ -171,6 +177,7 @@ async def run_slice_fast(
     badges_config: Optional[list] = None,
     badge_default_width: int = 0,
     subtitle_srt_path: Optional[str] = None,
+    subtitle_font_ratio: Optional[float] = None,
 ) -> tuple[int, str, str]:
     """Run fast/dedupe mode slicing."""
     if mode not in ("fast", "dedupe"):
@@ -189,6 +196,7 @@ async def run_slice_fast(
         badges_config=badges_config,
         badge_default_width=badge_default_width,
         subtitle_srt_path=subtitle_srt_path,
+        subtitle_font_ratio=subtitle_font_ratio,
     )
 
 

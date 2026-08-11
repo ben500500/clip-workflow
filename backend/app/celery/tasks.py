@@ -437,11 +437,16 @@ def slice_task(
 
         # 字幕烧录：把 ASR 生成的 SRT 写到本地文件，供引擎 --subtitle 使用
         subtitle_srt_path = None
+        subtitle_font_ratio = None
         if subtitle_config and subtitle_config.get("enabled"):
             srt_content = subtitle_config.get("srt") or ""
             if srt_content.strip():
                 subtitle_srt_path = write_temp_file(srt_content, suffix=".srt")
                 logger.info("字幕烧录已开启，SRT 已写入本地: %s", subtitle_srt_path)
+            # 字幕字号（相对高度比例），用户可调大让字幕更清晰易读
+            fr = subtitle_config.get("font_ratio")
+            if isinstance(fr, (int, float)) and fr > 0:
+                subtitle_font_ratio = float(fr)
 
         # 引擎进度回调会在 async 循环内被同步调用，不能在这里 run_async
         # （会嵌套事件循环报错）。只收集进度，引擎结束后统一写库。
@@ -468,6 +473,7 @@ def slice_task(
                     badges_config=badge_items,
                     badge_default_width=badge_default_width,
                     subtitle_srt_path=subtitle_srt_path,
+                    subtitle_font_ratio=subtitle_font_ratio,
                 )
             )
         else:
@@ -484,6 +490,7 @@ def slice_task(
                     badges_config=badge_items,
                     badge_default_width=badge_default_width,
                     subtitle_srt_path=subtitle_srt_path,
+                    subtitle_font_ratio=subtitle_font_ratio,
                 )
             )
 

@@ -97,6 +97,8 @@ const EpisodeDetail: React.FC = () => {
   const [vert2horizMinStep, setVert2horizMinStep] = useState(5);
   // ── ASR 字幕烧录开关 ──
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
+  // 字幕字号（相对输出视频高度的比例，默认 0.07；可调大让字幕更清晰易读）
+  const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.07);
   const [maxClips, setMaxClips] = useState(10);
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
@@ -623,6 +625,8 @@ const EpisodeDetail: React.FC = () => {
         vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
         // ASR 字幕烧录：一键切片同样透传配置
         subtitle_enabled: subtitleEnabled,
+        // 字幕字号（相对高度比例）：可调大让字幕更清晰易读
+        subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
       });
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
       message.info('切片完成后请到「成品预览」查看并下载结果');
@@ -670,6 +674,8 @@ const EpisodeDetail: React.FC = () => {
         vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
         // ASR 字幕烧录：开启后对源视频做 ASR 识别并烧录到成品视频
         subtitle_enabled: subtitleEnabled,
+        // 字幕字号（相对高度比例）：可调大让字幕更清晰易读
+        subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
       });
       message.success(res.message);
       fetchHistories();
@@ -1183,10 +1189,30 @@ const EpisodeDetail: React.FC = () => {
                 </Tooltip>
               </Space>
               {subtitleEnabled && (
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  开启后会先对源视频做一次语音识别（长视频约需数分钟，同一视频重复切片时复用缓存），
-                  随后在每个成品视频底部烧录对应时间段的对白字幕。
-                </Text>
+                <>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    开启后会先对源视频做一次语音识别（长视频约需数分钟，同一视频重复切片时复用缓存），
+                    随后在每个成品视频底部烧录对应时间段的对白字幕。
+                  </Text>
+                  <Space wrap align="center" size={8}>
+                    <Text strong style={{ fontSize: 12 }}>字幕大小</Text>
+                    <Slider
+                      min={0.04}
+                      max={0.15}
+                      step={0.005}
+                      value={subtitleFontRatio}
+                      onChange={setSubtitleFontRatio}
+                      style={{ width: 180 }}
+                      tooltip={{ formatter: (v) => `${Math.round(((v ?? 0.07) / 0.07) * 100)}%` }}
+                    />
+                    <Text type="secondary" style={{ fontSize: 12, width: 40 }}>
+                      {Math.round((subtitleFontRatio / 0.07) * 100)}%
+                    </Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      （相对视频高度的比例，越大字幕越清晰醒目）
+                    </Text>
+                  </Space>
+                </>
               )}
             </Space>
           </Card>

@@ -446,7 +446,7 @@ def build_watermark_filter(wm: dict) -> str:
 # ──────────────────────────────────────────────
 
 # 字幕字号（相对输出高度比例）
-SUBTITLE_FONT_RATIO = 0.05
+SUBTITLE_FONT_RATIO = 0.07
 # 字幕距底边距离（相对输出高度比例）
 SUBTITLE_BOTTOM_RATIO = 0.06
 
@@ -551,10 +551,12 @@ def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str) -> st
 
 
 def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
-                  threads: int = 1, encoder: str = "libx264") -> None:
+                  threads: int = 1, encoder: str = "libx264",
+                  font_ratio: Optional[float] = None) -> None:
     """用 ffmpeg subtitles filter 把字幕烧录到成品视频。
 
     带字体、样式与描边，保证中文字幕清晰可读；输出为重新编码的视频。
+    font_ratio: 字幕字号（相对输出视频高度的比例，不传用默认值 SUBTITLE_FONT_RATIO）。
     注意：字幕烧录涉及逐帧重编码 + subtitles filter，与硬件编码器（nvenc/videotoolbox）
     组合在某些环境会报 "Error while opening encoder"，故这里强制使用 libx264 软件编码，
     保证烧录稳定可靠（烧录通常单次、数据量不大，速度可接受）。
@@ -566,6 +568,9 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
         shutil.copy(video_in, video_out)
         return
 
+    # 字幕字号：未指定时用默认值（加大后的清晰字号），用户可在切片配置中调节
+    font_ratio = font_ratio if font_ratio is not None else SUBTITLE_FONT_RATIO
+
     # subtitles filter 需要能定位到字幕文件；路径含特殊字符时需转义冒号/逗号/引号
     srt_esc = (subtitle_srt.replace("\\", "\\\\")
                .replace(":", "\\:").replace(",", "\\,").replace("'", "\\\\'"))
@@ -575,7 +580,7 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
     # 样式：白字 + 黑色粗描边 + 底部阴影，字号按输出高度比例。
     sub_filter = (
         f"subtitles=filename='{srt_esc}'"
-        f":force_style='FontName=Noto Sans CJK SC,FontSize={SUBTITLE_FONT_RATIO * 100:.0f}"
+        f":force_style='FontName=Noto Sans CJK SC,FontSize={font_ratio * 100:.0f}"
         f",PrimaryColour=&H00FFFFFF,OutlineColour=&H00101010,BackColour=&H80000000"
         f",BorderStyle=3,Outline=2,Shadow=0,MarginV={SUBTITLE_BOTTOM_RATIO * 1000:.0f}'"
     )
@@ -635,6 +640,12 @@ def main():
         "--subtitle",
         default=None,
         help="源视频完整 SRT 字幕文件路径（可选）。开启后按每个切片的源时间段截取对应字幕并烧录到成品视频",
+    )
+    parser.add_argument(
+        "--subtitle-font-ratio",
+        type=float,
+        default=None,
+        help="字幕字号（相对输出视频高度的比例，可选，默认 0.07）。越大字幕越清晰易读",
     )
     args = parser.parse_args()
 
@@ -731,7 +742,8 @@ def main():
                     seg_times = [(s, e) for s, e, _ in group]
                     build_clip_subtitle(args.subtitle, seg_times, sub_srt)
                     sub_out = out_path + ".sub.mp4"
-                    burn_subtitle(out_path, sub_srt, sub_out, threads=threads, encoder=encoder)
+                    burn_subtitle(out_path, sub_srt, sub_out, threads=threads, encoder=encoder,
+                                  font_ratio=args.subtitle_font_ratio)
                     os.replace(sub_out, out_path)
             # 图片角标：切片完成后在成品上叠加角标（全程覆盖视频指定位置）
             if badges:
