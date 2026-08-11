@@ -13,11 +13,10 @@
 - 自动化：WorkBuddy 定时任务 `automation-1786413346300` 每小时执行上述逻辑
 - 手动：`git push cnb main && git push origin main`
 
-## 认证（重要改动 — 2026-08-11）
-- ⚠️ **cnb / origin 的 remote URL 均不再内联 token**。认证改走 macOS 钥匙串（`osxkeychain`）。
-- cnb 凭证已存入钥匙串；remote URL 保持 `https://cnb@cnb.cool/...` 形式（不带 token）。
-- **不要再把 token 写回 remote URL**——会随 `git remote -v`、日志、配置导出包泄露。
-- 如需重配 cnb 凭证：把 token 通过 `git credential approve`（或首次推送时输入）存入钥匙串即可，URL 维持无 token 形式。
+## 认证（重要 — 2026-08-11）
+- ⚠️ **cnb remote URL 必须内联 access token**（形如 `https://cnb:<token>@cnb.cool/...`）。实测剥离 token 后 CNB 返回「仓库不存在」——**CNB 平台要求 token 在 URL**（无 GUI 终端下 `git credential approve` 静默失败，且 CNB 不接受 basic-auth 钥匙串方式）。**不要尝试把 cnb token 剥离到钥匙串或 SSH**，否则无法推送。
+- **origin（GitHub）** 走 `osxkeychain` 钥匙串，URL 不含 token，可正常推送。
+- 安全建议：cnb token 一旦暴露（如本会话曾明文出现 / 出现在日志·导出包），去 CNB 后台**轮换/吊销**；或更彻底改 SSH（需 cnb.cool 注册公钥，且须先验证可用性）。在 CNB 支持 SSH/Personal Access Token 之前，token 内联 URL 是唯一可用方案。
 
 ## 环境变量安全
 - `.env` / `.env.local` / `.env.production` / `.env.development` 已被 `.gitignore` 忽略，**切勿提交**。
