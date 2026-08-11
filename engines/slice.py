@@ -478,15 +478,27 @@ def apply_vert2horiz(source: str, cfg: dict) -> str:
     print(f"检测到竖屏素材（{src_w}x{src_h}），执行竖屏转横屏预处理（mode={mode}）…", file=sys.stderr)
 
     if mode == "dynamic":
-        positions = vert2horiz_crop.analyze_faces(
-            source,
-            detect_interval=detect_interval,
-            smooth_window=smooth_window,
-        )
-        crop_params = vert2horiz_crop.generate_dynamic_crop_params(
-            positions, src_w, src_h, ratio
-        )
-        vert2horiz_crop.apply_dynamic_crop(source, out_path, crop_params, fps, output_size)
+        try:
+            positions = vert2horiz_crop.analyze_faces(
+                source,
+                detect_interval=detect_interval,
+                smooth_window=smooth_window,
+            )
+            crop_params = vert2horiz_crop.generate_dynamic_crop_params(
+                positions, src_w, src_h, ratio
+            )
+            vert2horiz_crop.apply_dynamic_crop(source, out_path, crop_params, fps, output_size)
+        except Exception as e:
+            # 人脸检测不可用（缺 haarcascade 数据 / OpenCV 版本差异）时
+            # 降级为 fixed 中心裁切，避免整个切片任务失败
+            print(f"警告: 动态人脸裁切失败（{e}），降级为 fixed 中心裁切", file=sys.stderr)
+            if os.path.isfile(out_path):
+                try:
+                    os.unlink(out_path)
+                except OSError:
+                    pass
+            crop_params = vert2horiz_crop.generate_fixed_crop_params(src_w, src_h, ratio)
+            vert2horiz_crop.apply_fixed_crop(source, out_path, crop_params, output_size)
     else:
         crop_params = vert2horiz_crop.generate_fixed_crop_params(src_w, src_h, ratio)
         vert2horiz_crop.apply_fixed_crop(source, out_path, crop_params, output_size)

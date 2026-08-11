@@ -98,6 +98,35 @@ def smooth_positions(positions, window=15):
     return smoothed
 
 
+def _build_face_detector():
+    """构建人脸级联检测器，多路径兜底。
+
+    Alpine 的 py3-opencv 包不带 cv2.data（haarcascades 数据文件缺失），
+    直接 cv2.data.haarcascades 会抛 AttributeError。依次尝试：
+      1. cv2.data.haarcascades（标准 opencv-python 安装）
+      2. 常见系统路径（/usr/share/opencv4 等）
+    全部失败时返回 None，由调用方降级处理（跳过人脸检测）。
+    """
+    candidates = []
+    try:
+        import cv2.data  # noqa: F401  显式导入子模块，确保 cv2.data 属性可用
+        base = cv2.data.haarcascades
+        candidates.append(os.path.join(base, "haarcascade_frontalface_default.xml"))
+    except Exception:
+        pass
+    candidates += [
+        "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml",
+        "/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml",
+        "/usr/local/share/opencv4/haarcascades/haarcascade_frontalface_default.xml",
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            detector = cv2.CascadeClassifier(path)
+            if not detector.empty():
+                return detector
+    return None
+
+
 def analyze_faces(video_path, detect_interval=2, smooth_window=15):
     """
     逐帧分析人脸位置
@@ -112,9 +141,11 @@ def analyze_faces(video_path, detect_interval=2, smooth_window=15):
     """
     print("开始人脸分析...")
     
-    detector = cv2.CascadeClassifier(
-        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-    )
+    detector = _build_face_detector()
+    if detector is None:
+        # haarcascade 数据文件缺失（如 Alpine py3-opencv 无 cv2.data）：
+        # 跳过人脸检测，全部按画面中心处理（等效 fixed 中心裁切）
+        print("警告: 未找到 haarcascade 人脸检测数据，降级为画面中心裁切", file=sys.stderr)
     
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -131,7 +162,7 @@ def analyze_faces(video_path, detect_interval=2, smooth_window=15):
         
         # 每隔 N 帧检测一次
         if frame_idx % detect_interval == 0:
-            face = detect_faces(frame, detector)
+            face = detect_faces(frame, detector) if detector is not None else None
             if face:
                 positions.append(face)
             else:
