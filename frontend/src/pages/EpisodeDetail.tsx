@@ -95,6 +95,8 @@ const EpisodeDetail: React.FC = () => {
   const [badgeDefaultWidth, setBadgeDefaultWidth] = useState<number>(0);
   // 动态模式最小移动阈值（px）：越大越稳、越小越跟手
   const [vert2horizMinStep, setVert2horizMinStep] = useState(5);
+  // ── ASR 字幕烧录开关 ──
+  const [subtitleEnabled, setSubtitleEnabled] = useState(false);
   const [maxClips, setMaxClips] = useState(10);
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
@@ -572,6 +574,8 @@ const EpisodeDetail: React.FC = () => {
           : undefined,
         badge_default_width: badgeDefaultWidth || undefined,
         vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
+        // ASR 字幕烧录：一键切片同样透传配置
+        subtitle_enabled: subtitleEnabled,
       });
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
       message.info('切片完成后请到「成品预览」查看并下载结果');
@@ -617,6 +621,8 @@ const EpisodeDetail: React.FC = () => {
           : undefined,
         badge_default_width: badgeDefaultWidth || undefined,
         vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
+        // ASR 字幕烧录：开启后对源视频做 ASR 识别并烧录到成品视频
+        subtitle_enabled: subtitleEnabled,
       });
       message.success(res.message);
       fetchHistories();
@@ -1109,6 +1115,25 @@ const EpisodeDetail: React.FC = () => {
                     </Space>
                   )}
                 </Space>
+              )}
+            </Space>
+          </Card>
+
+          {/* ── ASR 字幕烧录开关 ── */}
+          <Card size="small" style={{ width: '100%' }}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space wrap>
+                <Switch checked={subtitleEnabled} onChange={setSubtitleEnabled} size="small" />
+                <Text strong style={{ fontSize: 13 }}>ASR 字幕</Text>
+                <Tooltip title="开启后对源视频做语音识别（ASR），并把识别到的台词烧录到每个切片成品上（白字黑边，底部居中）。适合把关键对白直观呈现在短剧切片上。">
+                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                </Tooltip>
+              </Space>
+              {subtitleEnabled && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  开启后会先对源视频做一次语音识别（长视频约需数分钟，同一视频重复切片时复用缓存），
+                  随后在每个成品视频底部烧录对应时间段的对白字幕。
+                </Text>
               )}
             </Space>
           </Card>

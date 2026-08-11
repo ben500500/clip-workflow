@@ -16,10 +16,12 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Optional
 
+import requests
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
@@ -440,6 +442,95 @@ def _current_llm_model() -> str:
         return info.get("model") or ""
     except Exception:
         return ""
+
+
+class SubtitleGenerateRequest(BaseModel):
+    """字幕生成请求：给定视频 URL，ASR 识别后返回 SRT 字幕内容。"""
+    video_url: str = ""
+    # 可选：仅转写 [start_time, end_time] 区间（秒，None 表示不限）
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    # 可选：直接传视频内容 base64（与 video_url 二选一）
+    video_b64: Optional[str] = None
+
+
+@app.post("/api/v1/subtitle/generate")
+async def generate_subtitle(data: SubtitleGenerateRequest):
+    """对给定视频做 ASR 语音识别，返回 SRT 字幕内容（供切片烧录字幕用）。
+
+    - 优先用 video_b64（避免跨容器下载），否则用 video_url 下载；
+    - 复用 _run_asr 的字幕缓存（按视频内容哈希 + ASR 方式），同一视频不重复转写；
+    - 返回 {srt: "...", method: "aliyun_speech|whisper", duration: 秒, cached: bool}。
+    """
+    if not data.video_b64 and not data.video_url:
+        raise HTTPException(status_code=400, detail="必须提供 video_url 或 video_b64")
+
+    api_key = os.getenv("DASHSCOPE_API_KEY", "").strip() or os.getenv("API_DASHSCOPE_API_KEY", "").strip()
+    asr_method = os.getenv("AUTOCLIP_ASR_METHOD", "aliyun_speech").strip().lower()
+    if asr_method == "aliyun_speech" and not api_key:
+        raise HTTPException(status_code=400, detail="未配置 DASHSCOPE_API_KEY，无法使用阿里云 ASR；可改用 AUTOCLIP_ASR_METHOD=whisper")
+
+    video_path: Optional[Path] = None
+    tmp_dir = Path(tempfile.mkdtemp(prefix="subtitle_"))
+    try:
+        if data.video_b64:
+            import base64
+            try:
+                video_path = tmp_dir / "input_video.mp4"
+                video_path.write_bytes(base64.b64decode(data.video_b64))
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"video_b64 解码失败: {e}")
+        else:
+            if not data.video_url.startswith(("http://", "https://")):
+                raise HTTPException(status_code=400, detail="video_url 必须是 http(s) 地址")
+            video_path = tmp_dir / "input_video.mp4"
+            try:
+                with requests.get(data.video_url, stream=True, timeout=(10, 300)) as r:
+                    if r.status_code != 200:
+                        raise HTTPException(status_code=502, detail=f"下载视频失败: HTTP {r.status_code}")
+                    with open(video_path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=1024 * 256):
+                            if chunk:
+                                f.write(chunk)
+            except requests.RequestException as e:
+                raise HTTPException(status_code=502, detail=f"下载视频失败: {e}")
+
+        if not video_path.exists() or video_path.stat().st_size == 0:
+            raise HTTPException(status_code=400, detail="视频内容为空")
+
+        duration = ffprobe_duration(str(video_path))
+
+        # 生成完整 SRT（复用 ASR 缓存）
+        srt_path = tmp_dir / "subtitle.srt"
+        try:
+            await asyncio.to_thread(_run_asr, str(video_path), srt_path, api_key)
+        except SpeechRecognitionError as e:
+            raise HTTPException(status_code=502, detail=f"语音识别失败: {e}")
+
+        srt_content = ""
+        if srt_path.exists():
+            srt_content = srt_path.read_text(encoding="utf-8")
+
+        # 时间范围窗口化（可选）
+        if (data.start_time is not None or data.end_time is not None) and srt_content.strip():
+            windowed = tmp_dir / "subtitle_windowed.srt"
+            out = _filter_srt_by_time(srt_path, windowed, data.start_time, data.end_time)
+            if out.exists():
+                srt_content = out.read_text(encoding="utf-8")
+
+        return {
+            "srt": srt_content,
+            "method": asr_method,
+            "duration": round(duration, 3),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("generate_subtitle failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"字幕生成失败: {e}")
+    finally:
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 class PublishMaterialRequest(BaseModel):

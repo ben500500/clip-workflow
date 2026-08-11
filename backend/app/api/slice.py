@@ -34,6 +34,7 @@ from app.models.models import (
     User,
 )
 from app.services.data_scope import check_project_access_by_episode
+from app.services.autoclip_service import generate_subtitle
 from app.utils.helpers import utc_iso,  generate_cutlist, generate_intervals_file, format_time
 from app.services.minio_service import (
     get_presigned_url,
@@ -135,6 +136,9 @@ class SliceRunRequest(BaseModel):
     # 动态模式：最小移动阈值（源画面像素，默认 5）。值越大画面越平稳、
     # 越小越跟手；画面抖动明显时可调大，人物走动跟不丢时可调小。
     vert2horiz_min_step: Optional[int] = None
+    # ── ASR 字幕烧录 ──
+    # 开启后对源视频做 ASR 语音识别生成字幕，并烧录到每个切片成品上
+    subtitle_enabled: bool = False
 
 
 class SliceRunResponse(BaseModel):
@@ -339,6 +343,32 @@ def _build_badges_config(data: SliceRunRequest) -> Optional[list]:
     return result if result else None
 
 
+async def _generate_subtitle_config(
+    data: SliceRunRequest,
+    source_file_key: Optional[str],
+    source_bucket: str,
+) -> Optional[dict]:
+    """构造字幕烧录配置：开启时调用 autoclip ASR 生成源视频 SRT。
+
+    返回 {"enabled": True, "srt": "..."}；未开启或生成失败返回 None。
+    复用 autoclip 的 ASR 缓存，同一视频重复切片不重复转写。
+    """
+    if not data.subtitle_enabled:
+        return None
+    if not source_file_key:
+        logger.warning("字幕已开启，但缺少源视频 file_key，跳过字幕生成")
+        return None
+    source_url = await get_presigned_url(source_bucket, source_file_key, expires_seconds=7200)
+    if not source_url:
+        logger.warning("字幕已开启，但生成源视频下载 URL 失败，跳过字幕生成")
+        return None
+    result = await generate_subtitle(source_url)
+    if not result or not result.get("srt") or not result["srt"].strip():
+        logger.warning("ASR 字幕生成结果为空（视频可能无语音或转写失败），跳过字幕烧录")
+        return None
+    return {"enabled": True, "srt": result["srt"]}
+
+
 def _not_detect_task():
     """SQLAlchemy 条件：排除 detect_* 内部进度跟踪记录，同时允许 mode 为 NULL 的真实切片任务。
 
@@ -462,6 +492,7 @@ async def _publish_to_worker(
     badges_config: Optional[list] = None,
     badge_default_width: int = 0,
     source_bucket: str = "",
+    subtitle_config: Optional[dict] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -528,6 +559,8 @@ async def _publish_to_worker(
         "badges": badge_items,
         # 角标默认尺寸（px，可选，Go Worker 透传给引擎 --badge-default-width）
         "badge_default_width": badge_default_width or 0,
+        # ASR 字幕烧录（可选，Go Worker 把 SRT 写到本地后透传给引擎 --subtitle）
+        "subtitle": subtitle_config,
         "output": {
             "upload_url": f"{callback_base}/api/slice-tasks/{slice_task.id}/upload-url",
             "callback_url": callback_url,
@@ -569,6 +602,7 @@ async def _dispatch_celery(
     badges_config: Optional[list] = None,
     badge_default_width: int = 0,
     source_bucket: str = "",
+    subtitle_config: Optional[dict] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -596,6 +630,7 @@ async def _dispatch_celery(
         vert2horiz_config=vert2horiz_config,
         badges_config=badges_config,
         badge_default_width=badge_default_width,
+        subtitle_config=subtitle_config,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -822,11 +857,14 @@ async def run_slice(
     vert2horiz_config = _build_vert2horiz_config(data)
     # 构造图片角标配置（开启后随任务下发给引擎）
     badges_config = _build_badges_config(data)
-    # 持久化竖屏转横屏/角标配置，重试时保留
+    # 构造字幕烧录配置：开启时对源视频做 ASR 生成 SRT（复用 autoclip 缓存）
+    subtitle_config = await _generate_subtitle_config(data, source_file_key, source_bucket)
+    # 持久化竖屏转横屏/角标/字幕配置，重试时保留
     slice_task.vert2horiz_config = vert2horiz_config
     slice_task.watermark_config = watermark_config
     slice_task.badges_config = badges_config
     slice_task.badge_default_width = data.badge_default_width or 0
+    slice_task.subtitle_config = subtitle_config
 
     if engine == "worker":
         # 确保输出桶存在（全新部署时 sliced 桶可能未初始化）
@@ -845,6 +883,7 @@ async def run_slice(
             badges_config,
             data.badge_default_width,
             source_bucket,
+            subtitle_config,
         )
 
         if not published:
@@ -872,6 +911,7 @@ async def run_slice(
                 badges_config,
                 data.badge_default_width,
                 source_bucket,
+                subtitle_config,
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
@@ -1293,6 +1333,7 @@ async def retry_slice_task(
         watermark_config=task.watermark_config,
         badges_config=task.badges_config,
         vert2horiz_config=task.vert2horiz_config,
+        subtitle_config=task.subtitle_config,
         status="pending",
         progress=0.0,
     )
@@ -1319,6 +1360,7 @@ async def retry_slice_task(
             task.badges_config,
             task.badge_default_width or 0,
             source_bucket,
+            task.subtitle_config,
         )
 
         if not published:
@@ -1345,6 +1387,7 @@ async def retry_slice_task(
                 task.badges_config,
                 task.badge_default_width or 0,
                 source_bucket,
+                task.subtitle_config,
             )
         except Exception as e:
             new_task.status = "failed"

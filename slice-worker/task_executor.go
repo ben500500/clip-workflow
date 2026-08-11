@@ -136,6 +136,19 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		args = append(args, "--badge-default-width", strconv.Itoa(task.BadgeDefaultWidth))
 	}
 
+	// ASR 字幕烧录：把后端下发的 SRT 内容写到本地文件，透传给引擎 --subtitle
+	if len(task.Subtitle) > 0 {
+		enabled, _ := task.Subtitle["enabled"].(bool)
+		srtContent, _ := task.Subtitle["srt"].(string)
+		if enabled && strings.TrimSpace(srtContent) != "" {
+			subtitlePath := filepath.Join(outputDir, "subtitle.srt")
+			if err := os.WriteFile(subtitlePath, []byte(srtContent), 0644); err != nil {
+				return nil, fmt.Errorf("写入字幕文件失败: %w", err)
+			}
+			args = append(args, "--subtitle", subtitlePath)
+		}
+	}
+
 	// Alpine 镜像提供 python3 可执行文件；Windows 上为 python
 	cmd := exec.CommandContext(ctx, pythonBinary(), args...)
 

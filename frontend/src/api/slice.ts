@@ -43,6 +43,8 @@ export const sliceApi = {
       vert2horiz_smooth_window?: number;
       // 动态模式最小移动阈值（px）：越大越稳、越小越跟手
       vert2horiz_min_step?: number;
+      // ASR 字幕烧录：开启后对源视频做 ASR 识别并烧录到成品视频
+      subtitle_enabled?: boolean;
       // 成品重新剪辑：以某个切片输出为源，重新裁剪出一个新片段
       output_id?: string;
       cut_start?: number;

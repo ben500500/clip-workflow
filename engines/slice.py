@@ -441,6 +441,157 @@ def build_watermark_filter(wm: dict) -> str:
     )
 
 
+# ──────────────────────────────────────────────
+# 字幕烧录（ASR 识别后叠加到成品视频）
+# ──────────────────────────────────────────────
+
+# 字幕字号（相对输出高度比例）
+SUBTITLE_FONT_RATIO = 0.05
+# 字幕距底边距离（相对输出高度比例）
+SUBTITLE_BOTTOM_RATIO = 0.06
+
+
+def _parse_srt_timestamp(ts: str) -> float:
+    """解析 SRT 时间戳 "HH:MM:SS,mmm" 为秒。"""
+    ts = ts.strip().replace(",", ".")
+    parts = ts.split(":")
+    if len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    if len(parts) == 2:
+        return int(parts[0]) * 60 + float(parts[1])
+    return float(parts[0])
+
+
+def _format_srt_timestamp(seconds: float) -> str:
+    """把秒格式化为 SRT 时间戳 "HH:MM:SS,mmm"。"""
+    seconds = max(0.0, seconds)
+    ms = int(round(seconds * 1000.0))
+    h, ms = divmod(ms, 3600000)
+    m, ms = divmod(ms, 60000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def read_srt(path: str) -> list[dict]:
+    """解析 SRT 文件为有序字幕记录列表 [{start, end, text}]。"""
+    records = []
+    if not path or not os.path.isfile(path):
+        return records
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            content = f.read()
+    except OSError:
+        return records
+    # 按空行分块
+    blocks = [b for b in content.replace("\r\n", "\n").split("\n\n") if b.strip()]
+    for block in blocks:
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        if len(lines) < 2:
+            continue
+        # 找到时间行（含 -->）
+        time_idx = None
+        for i, ln in enumerate(lines):
+            if "-->" in ln:
+                time_idx = i
+                break
+        if time_idx is None:
+            continue
+        time_line = lines[time_idx]
+        try:
+            left, right = time_line.split("-->", 1)
+        except ValueError:
+            continue
+        start = _parse_srt_timestamp(left)
+        end = _parse_srt_timestamp(right)
+        text = " ".join(lines[time_idx + 1:])
+        if end <= start:
+            end = start + 1.0
+        records.append({"start": start, "end": end, "text": text})
+    return records
+
+
+def _filter_and_align_srt(records: list[dict], seg_start: float, seg_end: float,
+                          offset: float, out: list[dict]) -> None:
+    """从源字幕中截取 [seg_start, seg_end] 区间，时间轴减去 seg_start 再叠加 offset，
+    写入 out（用于多子段拼接时的连续时间轴对齐）。"""
+    for r in records:
+        # 与片段有交集的字幕才保留；重叠部分做裁剪
+        s = max(r["start"], seg_start)
+        e = min(r["end"], seg_end)
+        if e <= s:
+            continue
+        # 对齐到片段内相对时间，再累加拼接偏移
+        out.append({
+            "start": (s - seg_start) + offset,
+            "end": (e - seg_start) + offset,
+            "text": r["text"],
+        })
+
+
+def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str) -> str:
+    """根据一个切片的源时间段列表，从源 SRT 截取并拼接出该切片对应的字幕文件。
+
+    segments: 按拼接顺序排列的源时间段 [(start, end), ...]。
+    生成的字幕时间轴从 0 开始（与成品视频一致）。返回 out_srt 路径。
+    """
+    records = read_srt(src_srt)
+    merged = []
+    offset = 0.0
+    for start, end in segments:
+        _filter_and_align_srt(records, start, end, offset, merged)
+        offset += max(0.0, end - start)
+    # 排序并重新编号
+    merged.sort(key=lambda r: r["start"])
+    lines = []
+    for i, r in enumerate(merged, start=1):
+        lines.append(f"{i}\n{_format_srt_timestamp(r['start'])} --> {_format_srt_timestamp(r['end'])}\n{r['text']}\n")
+    with open(out_srt, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return out_srt
+
+
+def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
+                  threads: int = 1, encoder: str = "libx264") -> None:
+    """用 ffmpeg subtitles filter 把字幕烧录到成品视频。
+
+    带字体、样式与描边，保证中文字幕清晰可读；输出为重新编码的视频。
+    注意：字幕烧录涉及逐帧重编码 + subtitles filter，与硬件编码器（nvenc/videotoolbox）
+    组合在某些环境会报 "Error while opening encoder"，故这里强制使用 libx264 软件编码，
+    保证烧录稳定可靠（烧录通常单次、数据量不大，速度可接受）。
+    """
+    # 字幕烧录强制用 libx264 软件编码，避免硬件编码器 + subtitles filter 兼容问题
+    encoder = "libx264"
+    if not os.path.isfile(subtitle_srt) or os.path.getsize(subtitle_srt) == 0:
+        # 无字幕内容时直接复制，避免无谓重编码
+        shutil.copy(video_in, video_out)
+        return
+
+    # subtitles filter 需要能定位到字幕文件；路径含特殊字符时需转义冒号/逗号/引号
+    srt_esc = (subtitle_srt.replace("\\", "\\\\")
+               .replace(":", "\\:").replace(",", "\\,").replace("'", "\\\\'"))
+    # 规范写法：subtitles=filename='<path>':force_style='...'
+    # 不传 fontfile（不同 ffmpeg 版本对 subtitles filter 的 fontfile 选项支持不一），
+    # 改用 libass 的 FontName + 系统 fontconfig（Worker 镜像装有 font-noto-cjk）匹配中文字体。
+    # 样式：白字 + 黑色粗描边 + 底部阴影，字号按输出高度比例。
+    sub_filter = (
+        f"subtitles=filename='{srt_esc}'"
+        f":force_style='FontName=Noto Sans CJK SC,FontSize={SUBTITLE_FONT_RATIO * 100:.0f}"
+        f",PrimaryColour=&H00FFFFFF,OutlineColour=&H00101010,BackColour=&H80000000"
+        f",BorderStyle=3,Outline=2,Shadow=0,MarginV={SUBTITLE_BOTTOM_RATIO * 1000:.0f}'"
+    )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-threads", str(threads),
+        "-i", video_in,
+        "-vf", sub_filter,
+        "-map", "0:v:0", "-map", "0:a:0?",
+    ]
+    cmd += build_encoder_args(encoder, threads)
+    cmd += ["-c:a", "aac", "-b:a", "128k", video_out]
+    run_ffmpeg(cmd, timeout=3600, threads=threads)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("source")
@@ -479,6 +630,11 @@ def main():
         type=int,
         default=0,
         help="角标默认宽度（px，0=保持原图尺寸）；角标未单独设置 width 时生效",
+    )
+    parser.add_argument(
+        "--subtitle",
+        default=None,
+        help="源视频完整 SRT 字幕文件路径（可选）。开启后按每个切片的源时间段截取对应字幕并烧录到成品视频",
     )
     args = parser.parse_args()
 
@@ -569,6 +725,14 @@ def main():
                     slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder)
                     parts.append(part)
                 concat_segments(parts, out_path, threads=threads, encoder=encoder)
+                # 字幕烧录：开启后按该切片的源时间段从源 SRT 截取并烧录到成品
+                if args.subtitle:
+                    sub_srt = os.path.join(tmp, "clip_subtitle.srt")
+                    seg_times = [(s, e) for s, e, _ in group]
+                    build_clip_subtitle(args.subtitle, seg_times, sub_srt)
+                    sub_out = out_path + ".sub.mp4"
+                    burn_subtitle(out_path, sub_srt, sub_out, threads=threads, encoder=encoder)
+                    os.replace(sub_out, out_path)
             # 图片角标：切片完成后在成品上叠加角标（全程覆盖视频指定位置）
             if badges:
                 badge_out = out_path + ".badge.mp4"
