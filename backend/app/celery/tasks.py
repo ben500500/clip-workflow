@@ -539,12 +539,22 @@ async def _save_autoclip_results(
     completed: bool,
 ):
     """Replace clip candidates for an episode with AutoClip results."""
-    from sqlalchemy import select, delete
-    from app.models.models import ClipCandidate, AutoClipProject, Episode
+    from sqlalchemy import select, delete, update
+    from app.models.models import ClipCandidate, SliceOutput, AutoClipProject, Episode
 
     async with async_session_factory() as session:
         eid = uuid.UUID(episode_id)
 
+        # 旧候选可能被 slice_outputs.clip_id 外键引用（切片输出已生成），
+        # 直接 DELETE 会触发 ForeignKeyViolation 导致选点任务失败。
+        # 先解除引用（成品切片输出保留，仅断开与旧候选的关联），再删除候选。
+        await session.execute(
+            update(SliceOutput)
+            .where(SliceOutput.clip_id.in_(
+                select(ClipCandidate.id).where(ClipCandidate.episode_id == eid)
+            ))
+            .values(clip_id=None)
+        )
         await session.execute(
             delete(ClipCandidate).where(ClipCandidate.episode_id == eid)
         )
