@@ -34,6 +34,10 @@
   - 后端 `celery/tasks.py:193` 取契约 clips 存 `ClipCandidate.score`，`autoclip.py:362` 按同一阈值过滤 —— 两条路径尺度一致
 - 时长约束由配置驱动：`step2_timeline.py` 用正则剥离 prompt 硬编码的「≥90s」，改由 `AUTOCLIP_CONFIG`（30/180）或前端 `duration_config` 注入。
 
+## 安全审查参考（docs/reviews/）
+- `docs/reviews/CODE_REVIEW_REPORT.md` + `docs/reviews/FIX_PLAN.md`：2026-08-10 多代理只读静态审查，列 **12 个高危项**（安全 6 / 性能 5 / 架构 1），均带 `file:line` 证据，尚未修复。
+- 关键高危（改动前先读这两份）：**100+ API 端点零鉴权**、**CDP 9222 公网暴露**、**一行 SQL 错误致全库 0 索引**、**单 Celery worker 串行吞 4 队列**。
+
 ## 关键文件速查
 - AutoClip 高光选择：`autoclip/app/pipeline/step2_timeline.py`（时间点）、`step3_scoring.py`（评分）
 - 契约换算与 clips 过滤：`autoclip/app/main.py`（L141 `*100` / L155 写 score / L604 过滤）
