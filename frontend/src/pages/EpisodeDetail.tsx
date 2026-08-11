@@ -683,6 +683,21 @@ const EpisodeDetail: React.FC = () => {
   // ─── 转横屏开关联动 ASR 字幕 ──────────────────────
   // 转横屏开启时，默认同时开启 ASR 字幕（字号 45、自定义样式字体色 #EDD736），
   // 用户可手动关闭/调整。
+  // 预置三处固定文字（按样图规格）：右上角品牌字、左下角推广字、最左侧竖排标题
+  const applyDefaultTextOverlays = () => {
+    const leftTitle = episode?.title?.trim() || '热门短剧';
+    const preset: Array<TextOverlayItem & { id: string }> = [
+      { id: `tov_preset_tr`, text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000', vertical: false, offset: 10 },
+      { id: `tov_preset_bl`, text: '免费热门短剧', position: 'bottom-left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: false, offset: 10 },
+      { id: `tov_preset_l`, text: leftTitle, position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true, offset: 10 },
+    ];
+    setTextOverlays((prev) => {
+      const exists = (position: string, text: string) =>
+        prev.some((t) => t.position === position && t.text === text);
+      const added = preset.filter((p) => !exists(p.position, p.text));
+      return added.length > 0 ? [...prev, ...added] : prev;
+    });
+  };
   const handleVert2horizToggle = (on: boolean) => {
     setVert2horizEnabled(on);
     if (on) {
@@ -690,6 +705,8 @@ const EpisodeDetail: React.FC = () => {
       setSubtitleFontRatio(0.45);
       setSubtitleStyle('custom');
       setSubtitleColor('#EDD736');
+      // 默认预置三处固定文字（右上角/左下角/最左侧竖排标题）
+      applyDefaultTextOverlays();
     }
   };
 
