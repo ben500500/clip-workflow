@@ -11,9 +11,10 @@ BRANCH="$(git branch --show-current)"
 echo "[sync] 仓库: $REPO_DIR  分支: $BRANCH"
 
 echo "[sync] 1/2 推送 CNB(主仓)..."
-git push cnb "$BRANCH"
+# 用 HTTP/1.1 规避 macOS git + Secure Transport 的 HTTP/2 framing layer 偶发错误
+git -c http.version=HTTP/1.1 push cnb "$BRANCH"
 
 echo "[sync] 2/2 推送 GitHub(备份仓)..."
-git push origin "$BRANCH"
+git -c http.version=HTTP/1.1 push origin "$BRANCH"
 
 echo "[sync] 完成 ✅"
