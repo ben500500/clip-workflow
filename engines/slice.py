@@ -511,35 +511,145 @@ def read_srt(path: str) -> list[dict]:
     return records
 
 
+# 语音检测参数：判断"是否有人在说话"的静音阈值与最短静音长度。
+# 小于该音量的区间视为静音（无人说话），字幕将不在静音期间显示。
+SILENCE_THRESHOLD_DB = -35.0
+# 最短静音时长（秒）：小于该长度的短暂停顿不切断字幕，避免台词因句中换气被频繁闪断。
+MIN_SILENCE_SECONDS = 0.6
+
+
+def detect_speech_windows(video_path: str,
+                         silence_threshold: float = SILENCE_THRESHOLD_DB,
+                         min_silence: float = MIN_SILENCE_SECONDS) -> list[tuple]:
+    """用 ffmpeg silencedetect 检测源视频的语音（非静音）区间。
+
+    返回有序的 (start, end) 秒级区间列表，仅覆盖有人说话的时间段；
+    失败或无法检测时返回 []（调用方回退为不限，即整段都视为说话）。
+    """
+    if not video_path or not os.path.isfile(video_path):
+        return []
+    cmd = [
+        "ffmpeg", "-i", video_path,
+        "-af", (f"silencedetect=noise={silence_threshold}dB:"
+                f"d={min_silence}"),
+        "-f", "null", "-",
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=3600)
+    except Exception:
+        return []
+    out = proc.stderr.decode(errors="replace")
+    if proc.returncode != 0:
+        return []
+
+    silence_starts: list[float] = []
+    silence_ends: list[float] = []
+    for line in out.splitlines():
+        if "silence_start:" in line:
+            try:
+                silence_starts.append(float(line.split("silence_start:")[1].strip()))
+            except ValueError:
+                pass
+        elif "silence_end:" in line:
+            try:
+                silence_ends.append(float(line.split("silence_end:")[1].strip().split()[0]))
+            except ValueError:
+                pass
+    if not silence_starts:
+        # 没有检测到静音，说明全程都在说话 → 返回 None 表示"不裁剪"
+        return []
+
+    try:
+        duration = ffprobe_duration(video_path)
+    except Exception:
+        duration = 0.0
+
+    # 把静音区间取并集（ffmpeg 可能会输出相邻/重叠的静音段）
+    silences = []
+    for s, e in zip(silence_starts, silence_ends):
+        silences.append((s, e))
+    if len(silence_starts) > len(silence_ends):
+        # 结尾静音一直持续到文件结束
+        silences.append((silence_starts[-1], duration or silence_starts[-1] + 1.0))
+    silences.sort()
+    merged_sil = []
+    for s, e in silences:
+        if merged_sil and s <= merged_sil[-1][1]:
+            merged_sil[-1] = (merged_sil[-1][0], max(merged_sil[-1][1], e))
+        else:
+            merged_sil.append([s, e])
+
+    # 非静音区间 = 相邻静音之间的空隙
+    speech = []
+    cursor = 0.0
+    for s, e in merged_sil:
+        if s > cursor + 0.05:
+            speech.append((cursor, s))
+        cursor = max(cursor, e)
+    if duration > 0 and cursor < duration - 0.05:
+        speech.append((cursor, duration))
+    return speech
+
+
+def _trim_to_speech(start: float, end: float, speech_windows: list[tuple]) -> list[tuple]:
+    """把一段 [start, end]（源时间）裁剪为与说话区间重叠的若干子区间。
+
+    speech_windows 为空表示不裁剪（整段视为说话）。
+    """
+    if not speech_windows:
+        return [(start, end)]
+    trimmed = []
+    for ws, we in speech_windows:
+        s = max(start, ws)
+        e = min(end, we)
+        if e - s >= 0.05:
+            trimmed.append((s, e))
+    return trimmed
+
+
 def _filter_and_align_srt(records: list[dict], seg_start: float, seg_end: float,
-                          offset: float, out: list[dict]) -> None:
+                          offset: float, out: list[dict],
+                          speech_windows: list[tuple] | None = None) -> None:
     """从源字幕中截取 [seg_start, seg_end] 区间，时间轴减去 seg_start 再叠加 offset，
-    写入 out（用于多子段拼接时的连续时间轴对齐）。"""
+    写入 out（用于多子段拼接时的连续时间轴对齐）。
+
+    speech_windows: 可选，源时间坐标下的说话区间；传入后字幕仅在说话期间显示，
+    跨越静音的字幕会被切分成多段，静音期间不再残留上一句字幕。
+    """
+    speech_windows = speech_windows or []
     for r in records:
         # 与片段有交集的字幕才保留；重叠部分做裁剪
         s = max(r["start"], seg_start)
         e = min(r["end"], seg_end)
         if e <= s:
             continue
-        # 对齐到片段内相对时间，再累加拼接偏移
-        out.append({
-            "start": (s - seg_start) + offset,
-            "end": (e - seg_start) + offset,
-            "text": r["text"],
-        })
+        # 按说话区间裁剪：静音期间不显示字幕，避免字幕"一直挂在屏幕上"
+        for ts, te in _trim_to_speech(s, e, speech_windows):
+            if te - ts < 0.05:
+                continue
+            out.append({
+                "start": (ts - seg_start) + offset,
+                "end": (te - seg_start) + offset,
+                "text": r["text"],
+            })
 
 
-def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str) -> str:
+def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str,
+                        speech_windows: list[tuple] | None = None) -> str:
     """根据一个切片的源时间段列表，从源 SRT 截取并拼接出该切片对应的字幕文件。
 
     segments: 按拼接顺序排列的源时间段 [(start, end), ...]。
     生成的字幕时间轴从 0 开始（与成品视频一致）。返回 out_srt 路径。
+
+    speech_windows: 可选，源时间坐标下的说话区间；传入后字幕仅在说话期间显示，
+    静音/停顿期间字幕自动隐藏（不再"一直出现"）。
     """
     records = read_srt(src_srt)
     merged = []
     offset = 0.0
     for start, end in segments:
-        _filter_and_align_srt(records, start, end, offset, merged)
+        _filter_and_align_srt(records, start, end, offset, merged, speech_windows)
         offset += max(0.0, end - start)
     # 排序并重新编号
     merged.sort(key=lambda r: r["start"])
@@ -729,6 +839,11 @@ def main():
     for start, end, name, idx in segments:
         groups.setdefault(idx, []).append((start, end, name))
 
+    # 字幕开启时，预计算源视频的语音（非静音）区间，用于"只在说话时显示字幕"。
+    # 静音/停顿期间字幕自动隐藏，避免字幕一直挂在屏幕上。
+    # detect_speech_windows 失败返回 [] 时回退为整段都显示，不影响烧录。
+    speech_windows = detect_speech_windows(source_path) if args.subtitle else []
+
     try:
         outputs = []
         total = len(groups)
@@ -748,7 +863,7 @@ def main():
                 if args.subtitle:
                     sub_srt = os.path.join(tmp, "clip_subtitle.srt")
                     seg_times = [(s, e) for s, e, _ in group]
-                    build_clip_subtitle(args.subtitle, seg_times, sub_srt)
+                    build_clip_subtitle(args.subtitle, seg_times, sub_srt, speech_windows)
                     sub_out = out_path + ".sub.mp4"
                     burn_subtitle(out_path, sub_srt, sub_out, threads=threads, encoder=encoder,
                                   font_ratio=subtitle_font_ratio)
