@@ -4,6 +4,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -1766,7 +1767,13 @@ async def _sync_doubao_video(
     try:
         import httpx
 
-        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+        # 豆包成片直链为 douyin CDN，带上 Referer/UA 提升直链可下载成功率
+        _headers = {
+            "Referer": "https://www.doubao.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True, headers=_headers) as client:
             resp = await client.get(download_url)
             resp.raise_for_status()
             with open(tmp_path, "wb") as f:
@@ -2147,7 +2154,13 @@ async def _sync_generated_video(
     try:
         import httpx
 
-        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+        # 豆包成片直链为 douyin CDN，带上 Referer/UA 提升直链可下载成功率
+        _headers = {
+            "Referer": "https://www.doubao.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True, headers=_headers) as client:
             resp = await client.get(download_url)
             resp.raise_for_status()
             with open(tmp_path, "wb") as f:

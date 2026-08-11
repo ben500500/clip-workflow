@@ -19,9 +19,12 @@
 import asyncio
 import base64
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Optional
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -451,11 +454,12 @@ class DoubaoGenerator:
                 reason = outcome.get("reason") or "提示词可能包含违规内容"
                 # 改写闭环：最多尝试 3 次改写稿，用户确认后才重新发送
                 approved_rewrite = None
+                rejected_prompt = current_prompt
                 for attempt in range(1, 4):
                     if await self._is_cancelled(cancel_check):
                         return {"success": False, "status": "cancelled", "message": "任务已取消"}
-                    await progress_cb(f"豆包拒绝了提示词，正在让豆包改写（第 {attempt} 次）…", 60)
-                    rewritten = await self._ask_rewrite(reason, attempt)
+                    await progress_cb(f"豆包拒绝了提示词，正在用本地模型改写（第 {attempt} 次）…", 60)
+                    rewritten = await self._llm_rewrite_prompt(rejected_prompt, reason)
                     if not rewritten:
                         return {
                             "success": False,
@@ -485,6 +489,7 @@ class DoubaoGenerator:
                             break
                         # rejected → 继续让豆包再改一版
                         reason = "用户对上一版改写稿不满意，请进一步修改（保留剧情结构）"
+                        rejected_prompt = rewritten
                     else:
                         approved_rewrite = rewritten
                         break
@@ -619,7 +624,8 @@ class DoubaoGenerator:
 
     async def _wait_for_generation_outcome(self, progress_cb, cancel_check=None, screenshot_cb=None) -> dict:
         """等待豆包生成结果，识别成功 / 被拒 / 超时。"""
-        deadline = time.time() + 180  # 3 分钟
+        deadline = time.time() + 900  # 15 分钟
+        self._gen_tick = 0
         last_progress = 50
         shot_count = 0
         while time.time() < deadline:
@@ -628,7 +634,7 @@ class DoubaoGenerator:
             await self._sleep(2.5, 3.5)
 
             try:
-                page_text = await self.page.inner_text("body", timeout=5000)
+                page_text = await self._get_last_message_text() or ""
             except Exception:
                 page_text = ""
             reject_markers = [
@@ -639,17 +645,19 @@ class DoubaoGenerator:
                 if m in page_text:
                     return {"status": "rejected", "reason": self._extract_reject_reason(page_text, m)}
 
-            try:
-                download_btn = await self.page.query_selector(
-                    "[class*='download'], button:has-text('下载'), text=下载视频"
-                )
-                video_el = await self.page.query_selector("video")
-            except Exception:
-                download_btn = None
-                video_el = None
-            if download_btn or video_el:
-                download_url = await self._resolve_download_url()
-                return {"status": "completed", "download_url": download_url}
+            # 完成判定：豆包出片后会在对话里回“你的视频生成好了”。视频以自定义播放器
+            # （.video-player-wrapper + 播放图标）渲染，并非 <video> 标签；真实视频文件
+            # URL 仅在点击播放后加载（douyin CDN mp4 直链）。
+            if "视频生成好了" in page_text:
+                logger.info("[DOUBAO] 检测到“视频生成好了”，开始抓取成片地址")
+                try:
+                    download_url = await self._capture_video_url()
+                except Exception:
+                    logger.exception("[DOUBAO] 抓取成片地址异常")
+                    download_url = None
+                if download_url:
+                    return {"status": "completed", "download_url": download_url}
+                logger.warning("[DOUBAO] 完成文案已出现但暂未取到成片地址，继续轮询等待播放器就绪")
 
             last_progress = min(last_progress + 2, 85)
             await progress_cb("豆包正在生成视频，请稍候…", last_progress)
@@ -664,7 +672,7 @@ class DoubaoGenerator:
                     except Exception:
                         pass
 
-        return {"status": "error", "message": "等待豆包生成超时（3 分钟）"}
+        return {"status": "error", "message": "等待豆包生成超时（15 分钟）"}
 
     def _extract_reject_reason(self, page_text: str, marker: str) -> str:
         """从页面文本中提取拒绝原因（关键词附近 60 字）。"""
@@ -675,88 +683,143 @@ class DoubaoGenerator:
         end = min(len(page_text), idx + 60)
         return page_text[start:end].replace("\n", " ").strip()
 
-    async def _ask_rewrite(self, reason: str, attempt: int = 1) -> Optional[str]:
-        """在同一个会话里追加一条消息，让豆包把提示词改成合规版本。"""
-        if attempt <= 1:
-            instruction = (
-                "请把上面那条被拒绝的提示词改写成合规版本。只修改违规/敏感内容，"
-                "保留剧情、时长、镜头结构和风格，直接输出改写后的提示词全文，不要任何解释。"
-                f"（拒绝原因参考：{reason}）"
-            )
-        else:
-            instruction = (
-                "上一版改写稿仍未通过/用户不满意，请继续修改上面那条提示词。"
-                "只修改有问题的内容，保留剧情、时长、镜头结构和风格，"
-                "直接输出改写后的提示词全文，不要任何解释。"
-                f"（参考意见：{reason}）"
-            )
-        ok = await self._send_prompt(instruction)
-        if not ok:
-            return None
-        await self._sleep(2.0, 3.0)
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            await self._sleep(2.0, 3.0)
-            rewritten = await self._extract_last_assistant_text()
-            if rewritten and len(rewritten) > 10:
-                return rewritten
-        return None
+    async def _get_last_message_text(self) -> str:
+        """读取对话列表里【最新单条】消息的文本（用于判定本次回复是拒绝还是出片）。
 
-    async def _extract_last_assistant_text(self) -> Optional[str]:
-        """提取页面上最后一条助手消息文本。
+        关键：豆包视频生成是持久会话，历史消息会一直留在页面里。
+        历史里的旧拒绝文案若混入扫描范围，会导致「已确认改写的提示词被重新判为拒绝
+        → 再次进入改写循环 → 用户未二次确认 → 最终失败」，而豆包侧其实已生成成功。
 
-        豆包页面为动态 React 且经常改版，类名不固定，这里用多选择器兜底
-        （assistant / bot-message / message-content / message-item / chat-message
-        / ai-message / turn-content / answer 等），去重后取最后一条。
+        因此必须只取对话列表【最后一条消息节点】的文本，严禁扫描整段对话。
         """
         try:
-            selectors = [
-                "[class*='assistant']", "[class*='bot-message']", "[class*='message-content']",
-                "[class*='message-item']", "[class*='chat-message']", "[class*='ai-message']",
-                "[class*='turn-content']", "[class*='answer']", "[class*='response-text']",
-            ]
-            texts: list[str] = []
-            seen: set[str] = set()
-            for sel in selectors:
+            ml = await self.page.query_selector("[class*='message-list']")
+            if not ml:
+                return ""
+            # 只取最后一条非空消息节点，彻底排除历史污染
+            nodes = await ml.query_selector_all(":scope > *")
+            for node in reversed(nodes):
                 try:
-                    els = await self.page.query_selector_all(sel)
+                    t = (await node.inner_text()).strip()
                 except Exception:
-                    continue
-                for el in els:
-                    try:
-                        t = (await el.inner_text()).strip()
-                    except Exception:
-                        continue
-                    if len(t) > 5 and t not in seen:
-                        seen.add(t)
-                        texts.append(t)
-            return texts[-1] if texts else None
+                    t = ""
+                if t:
+                    return t
+            return ""
         except Exception:
+            return ""
+
+    async def _llm_rewrite_prompt(self, original: str, reason: str) -> Optional[str]:
+        """用本地大模型（DashScope / 通义千问，OpenAI 兼容模式）把被拒提示词改写成合规版本。
+
+        不依赖豆包聊天抓取：豆包视频生成是持久会话且 DOM 类名为哈希值，抓取极不稳定；
+        改为确定性 LLM 调用，稳定可靠。改写后由调用方重新发送给豆包生成视频。
+        """
+        api_key = os.getenv("DASHSCOPE_API_KEY")
+        model = os.getenv("API_MODEL_NAME") or "qwen3.7-flash-2026-07-15"
+        if not api_key:
+            logger.warning("[LLM_REWRITE] DASHSCOPE_API_KEY 未配置，无法改写")
+            return None
+        system = (
+            "你是一名短视频生成提示词合规改写专家。用户会给你一条被短视频平台拒绝的提示词，"
+            "以及平台给出的拒绝原因。请在不改变剧情、时长、镜头结构与整体风格的前提下，"
+            "仅修改违规或敏感内容，使其符合主流短视频平台规范。"
+            "直接输出改写后的提示词全文，不要任何解释、前缀或代码块标记。"
+        )
+        user = (
+            f"【原始提示词】\n{original}\n\n"
+            f"【平台拒绝原因】\n{reason}\n\n"
+            "请直接输出改写后的提示词全文："
+        )
+        url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.7,
+            "max_tokens": 512,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+            text = data["choices"][0]["message"]["content"].strip()
+            # 去掉可能的代码块标记 / 引号包裹
+            text = text.strip("`").strip()
+            if text.startswith("```"):
+                body = text.strip("`")
+                body = body.split("\n", 1)[1] if "\n" in body else body
+                text = body.strip("`").strip()
+            if len(text) < 5:
+                logger.warning("[LLM_REWRITE] 返回过短，视为失败: %r", text)
+                return None
+            logger.info("[LLM_REWRITE] ok len=%d: %s", len(text), text[:80])
+            return text
+        except Exception as e:
+            logger.exception("[LLM_REWRITE] call failed: %s", e)
             return None
 
-    async def _resolve_download_url(self) -> Optional[str]:
-        """尝试解析视频下载地址。"""
+    async def _capture_video_url(self) -> Optional[str]:
+        """豆包出片后抓取真实成片地址。
+
+        豆包视频卡片是自定义播放器（.video-player-wrapper + 播放图标），并非 <video> 标签；
+        真实视频文件 URL 仅在点击播放后注入 <video>（douyin CDN mp4 直链）。本方法定位
+        “你的视频生成好了”消息卡片 → 点击播放图标 → 等待 <video> 出现并读取 currentSrc。
+        """
+        # 1) 点击“你的视频生成好了”所在卡片的播放图标，触发 <video> 加载
+        click_res = await self.page.evaluate(
+            """() => {
+                const ml = document.querySelector("[class*='message-list']");
+                if (!ml) return 'no_ml';
+                let card = null;
+                for (const n of Array.from(ml.children)) {
+                    if ((n.innerText || '').includes('你的视频生成好了')) { card = n; break; }
+                }
+                if (!card) return 'no_card';
+                card.scrollIntoView({block: 'center'});
+                const player = card.querySelector("[class*='video-player']")
+                              || card.querySelector("[class*='play-icon']");
+                if (!player) return 'no_player';
+                try { player.click(); } catch (e) { return 'click_err:' + e; }
+                return 'ok';
+            }"""
+        )
+        logger.info("[DOUBAO] play click -> %s", click_res)
+
+        # 2) 监听 mp4 网络响应作兜底，同时轮询 <video>.currentSrc
+        resp_url = [None]
+
+        def _on_resp(resp):
+            try:
+                ct = resp.headers.get("content-type", "")
+                u = resp.url or ""
+                if "video" in ct or ".mp4" in u:
+                    resp_url[0] = u
+            except Exception:
+                pass
+
+        self.page.on("response", _on_resp)
         try:
-            url = await self.page.evaluate(
-                """() => {
-                    const s = JSON.stringify(window);
-                    const m = s.match(/"download_url":"([^"]+)"/);
-                    return m ? m[1] : null;
-                }"""
-            )
-            if url:
-                return url
-        except Exception:
-            pass
-        try:
-            src = await self.page.evaluate(
-                """() => {
-                    const v = document.querySelector('video');
-                    return v ? (v.src || v.currentSrc || null) : null;
-                }"""
-            )
-            if src:
-                return src
-        except Exception:
-            pass
+            for _ in range(15):
+                await self._sleep(1.0, 1.5)
+                cur = await self.page.evaluate(
+                    """() => { const v = document.querySelector('video');
+                        return v ? (v.currentSrc || v.src || '') : ''; }"""
+                )
+                if cur:
+                    logger.info("[DOUBAO] 取到成片地址 len=%d", len(cur))
+                    return cur
+            if resp_url[0]:
+                logger.info("[DOUBAO] 退回网络响应地址")
+                return resp_url[0]
+        finally:
+            try:
+                self.page.remove_listener("response", _on_resp)
+            except Exception:
+                pass
+        logger.warning("[DOUBAO] 未能取到成片地址")
         return None
