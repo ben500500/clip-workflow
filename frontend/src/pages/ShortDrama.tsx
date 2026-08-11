@@ -553,6 +553,21 @@ const ShortDrama: React.FC = () => {
     }
   };
 
+  // 更换豆包账户：清除登录态，下次生成时重新扫码登录
+  const [switchingDoubaoAccount, setSwitchingDoubaoAccount] = useState(false);
+  const handleSwitchDoubaoAccount = async () => {
+    if (switchingDoubaoAccount) return;
+    setSwitchingDoubaoAccount(true);
+    try {
+      const res = await shortdramaApi.switchDoubaoAccount();
+      message.success(res.message || '已清除豆包登录态，下次生成时将重新扫码登录');
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '更换豆包账户失败');
+    } finally {
+      setSwitchingDoubaoAccount(false);
+    }
+  };
+
   // 发起一键豆包生成
   const handleDoubaoGenerate = async (record: ShortdramaPromptRecord) => {
     const limit = doubaoAccountType === 'pro' ? doubaoLimits.pro_max_seconds : doubaoLimits.free_max_seconds;
@@ -1287,6 +1302,21 @@ const ShortDrama: React.FC = () => {
                   { value: 'pro', label: '包月会员（≤30s）' },
                 ]}
               />
+              <Popconfirm
+                title="更换豆包账户？"
+                description="将清除当前豆包登录态，下次「一键豆包生成」时需重新扫码登录另一个账号"
+                okText="更换"
+                cancelText="取消"
+                onConfirm={handleSwitchDoubaoAccount}
+              >
+                <Button
+                  size="small"
+                  icon={<SyncOutlined />}
+                  loading={switchingDoubaoAccount}
+                >
+                  更换账户
+                </Button>
+              </Popconfirm>
               <Tooltip title="账户类型选择后即作为当前登录用户的默认值；豆包单次生成时长受账户限制，超出自动按上限生成">
                 <Text type="secondary" style={{ fontSize: 11 }}>
                   <QrcodeOutlined /> 上限：免费 {doubaoLimits.free_max_seconds}s / 包月 {doubaoLimits.pro_max_seconds}s

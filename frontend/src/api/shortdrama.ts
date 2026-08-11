@@ -216,6 +216,11 @@ export const shortdramaApi = {
       message: string;
     }>,
 
+  switchDoubaoAccount: () =>
+    client.post('/shortdrama/doubao/switch-account') as Promise<{
+      message: string;
+    }>,
+
   // ── Seedance 官方 API 直连出片（与豆包 RPA 并行、独立通道；开关默认关闭） ──
   getSeedanceConfig: () =>
     client.get('/shortdrama/seedance/config') as Promise<{
