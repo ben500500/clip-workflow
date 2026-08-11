@@ -170,6 +170,41 @@ const EpisodeDetail: React.FC = () => {
     }
   };
 
+  // ── 单独刷新「选点执行历史」（任务进行中用于实时同步状态/进度） ──
+  const fetchAutoclipHistory = async () => {
+    if (!episodeId) return;
+    try {
+      const ac = await autoclipApi.history(episodeId);
+      if (mountedRef.current) setAutoclipHistory(ac);
+    } catch {
+      // 忽略
+    }
+  };
+
+  // ── 单独刷新「区间检测执行历史」 ──
+  const fetchIntervalHistory = async () => {
+    if (!episodeId) return;
+    try {
+      const iv = await intervalApi.history(episodeId);
+      if (mountedRef.current) setIntervalHistory(iv);
+    } catch {
+      // 忽略
+    }
+  };
+
+  // ── 单独刷新「切片执行历史」 ──
+  const fetchSliceHistory = async () => {
+    if (!episodeId) return;
+    try {
+      const st = await sliceApi.listTasks(episodeId);
+      if (mountedRef.current) {
+        setSliceHistory(st.filter((t) => !(t.mode && t.mode.startsWith('detect_'))));
+      }
+    } catch {
+      // 忽略
+    }
+  };
+
   useEffect(() => {
     if (episodeId) fetchEpisode();
     fetchHistories();
@@ -221,6 +256,8 @@ const EpisodeDetail: React.FC = () => {
               return;
             }
             setAutoclipProgress(prog);
+            // 任务进行中实时同步「选点执行历史」的状态/进度
+            fetchAutoclipHistory();
             if (prog.status === 'completed' || prog.status === 'failed') {
               if (autoclipTimerRef.current) window.clearInterval(autoclipTimerRef.current);
               autoclipTimerRef.current = null;
@@ -264,6 +301,8 @@ const EpisodeDetail: React.FC = () => {
             // unknown 表示暂无运行中的检测任务，忽略避免进度条回退/闪烁
             if (prog.status !== 'unknown') {
               setDetectProgress(prog);
+              // 任务进行中实时同步「区间检测执行历史」的状态/进度
+              fetchIntervalHistory();
             }
             if (prog.status === 'completed' || prog.status === 'failed') {
               if (detectTimerRef.current) window.clearInterval(detectTimerRef.current);
@@ -324,6 +363,8 @@ const EpisodeDetail: React.FC = () => {
                     ? `切片失败：${t.error_message || ''}`
                     : t.status || '',
             });
+            // 任务进行中实时同步「切片执行历史」的状态/进度
+            fetchSliceHistory();
             if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
               if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
               slicePollTimerRef.current = null;
@@ -383,6 +424,8 @@ const EpisodeDetail: React.FC = () => {
             return;
           }
           setAutoclipProgress(p);
+          // 任务进行中实时同步「选点执行历史」的状态/进度，避免一直停留在排队态
+          fetchAutoclipHistory();
           if (p.status === 'completed' || p.status === 'failed') {
             if (autoclipTimerRef.current) window.clearInterval(autoclipTimerRef.current);
             autoclipTimerRef.current = null;
@@ -436,6 +479,8 @@ const EpisodeDetail: React.FC = () => {
             // unknown 表示暂无运行中的检测任务，忽略避免进度条回退/闪烁
             if (p.status !== 'unknown') {
               setDetectProgress(p);
+              // 任务进行中实时同步「区间检测执行历史」的状态/进度
+              fetchIntervalHistory();
             }
             if (p.status === 'completed' || p.status === 'failed') {
               if (detectTimerRef.current) window.clearInterval(detectTimerRef.current);
@@ -492,6 +537,8 @@ const EpisodeDetail: React.FC = () => {
                 ? `切片失败：${t.error_message || ''}`
                 : t.status || '',
         });
+        // 任务进行中实时同步「切片执行历史」的状态/进度
+        fetchSliceHistory();
         if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
           if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
           slicePollTimerRef.current = null;
@@ -832,7 +879,13 @@ const EpisodeDetail: React.FC = () => {
                   render: (m: string | null, r: AutoClipRunRecord) =>
                     r.status === 'failed' && r.error_message ? (
                       <ErrorHint error={r.error_message} />
-                    ) : m || '-',
+                    ) : r.status === 'completed' ? (
+                      <Text style={{ fontSize: 12 }}>{m || '已完成'}</Text>
+                    ) : r.status === 'running' || r.status === 'pending' ? (
+                      <Text style={{ fontSize: 12 }}>{(r.progress || 0).toFixed(0)}% {m || ''}</Text>
+                    ) : (
+                      <Text style={{ fontSize: 12 }}>{m || '-'}</Text>
+                    ),
                 },
                 {
                   title: '时间',
