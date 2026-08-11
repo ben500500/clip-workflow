@@ -241,6 +241,21 @@ const SliceTasks: React.FC = () => {
     },
   ];
 
+  // 单个下载：用隐藏 a 标签 + download 属性直接触发浏览器下载，
+  // 避免 window.open 跳转到新标签页播放视频导致后续下载被中断。
+  const downloadOne = (o: SliceOutput) => {
+    if (!o.id) {
+      message.warning('暂无下载地址');
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = `/api/outputs/${o.id}/download`;
+    a.download = o.file_name || `output_${o.id}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
   const outputColumns = [
     { title: '文件名', dataIndex: 'file_name', key: 'file_name' },
     { title: '大小', dataIndex: 'file_size', key: 'file_size', width: 110, render: (s: number) => formatFileSize(s) },
@@ -259,7 +274,7 @@ const SliceTasks: React.FC = () => {
             }
             window.open(o.presigned_url, '_blank');
           }}>预览</Button>
-          <Button size="small" onClick={() => window.open(`/api/outputs/${o.id}/download`, '_blank')}>下载</Button>
+          <Button size="small" onClick={() => downloadOne(o)}>下载</Button>
         </Space>
       ),
     },

@@ -949,6 +949,29 @@ async def update_doubao_account_type(
     }
 
 
+@router.post("/shortdrama/doubao/switch-account", response_model=dict)
+async def switch_doubao_account(
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """更换豆包账户：清除 RPA 持久化的豆包登录态，下次生成时重新扫码登录。"""
+    from app.services.doubao_service import DoubaoGenerator
+
+    gen = DoubaoGenerator(
+        chrome_port=settings.CHROME_DEBUG_PORT,
+        chrome_host=settings.CHROME_DEBUG_HOST,
+    )
+    ok = await gen.clear_login()
+    if not ok:
+        raise HTTPException(
+            status_code=502,
+            detail="清除豆包登录态失败：请确认 RPA（rpa_worker）已启动且 CDP 端口可访问",
+        )
+    return {
+        "message": "已清除豆包登录态，下次「一键豆包生成」时将弹出扫码登录，可切换到另一个豆包账号",
+    }
+
+
 @router.get("/shortdrama/doubao/config", response_model=dict)
 async def get_doubao_config(
     db: AsyncSession = Depends(get_db),

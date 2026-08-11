@@ -288,6 +288,28 @@ class DoubaoGenerator:
             return None
         return None
 
+    async def clear_login(self) -> bool:
+        """清除豆包登录态（Cookie），用于「更换豆包账户」。
+
+        连接 CDP 后清空当前浏览器上下文的 Cookie 与 localStorage，
+        使下次生成时重新弹出扫码登录二维码，从而支持切换到另一个豆包账号。
+        """
+        try:
+            await self._connect()
+            try:
+                await self.context.clear_cookies()
+                for page in self.context.pages:
+                    try:
+                        await page.evaluate("localStorage.clear()")
+                    except Exception:
+                        pass
+            finally:
+                await self._close()
+            return True
+        except Exception as exc:
+            logger.warning("[doubao] 清除登录态失败: %s", exc)
+            return False
+
     # ──────────────────────────────────────────────
     # 主流程
     # ──────────────────────────────────────────────
