@@ -3,7 +3,7 @@ import {
   Card, Table, Tag, Button, Space, Typography, message, Select, Modal, Form, Input, DatePicker, Popconfirm, Alert, Spin, InputNumber,
 } from 'antd';
 import { ArrowLeftOutlined, PlayCircleOutlined, DownloadOutlined, LinkOutlined, CloudDownloadOutlined, EditOutlined, SendOutlined } from '@ant-design/icons';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { sliceApi } from '../api/slice';
 import { previewApi } from '../api/preview';
 import { publishApi } from '../api/publish';
@@ -33,6 +33,8 @@ const isRealSliceTask = (t: SliceTask) => !(t.mode && t.mode.startsWith('detect_
 const OutputPreview: React.FC = () => {
   const { episodeId } = useParams<{ episodeId: string }>();
   const navigate = useNavigate();
+  // 支持 ?task=<taskId> 直接定位到指定切片任务（从「切片执行历史」结果跳转而来）
+  const [searchParams] = useSearchParams();
   const [tasks, setTasks] = useState<SliceTask[]>([]);
   const [outputs, setOutputs] = useState<SliceOutput[]>([]);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
@@ -87,10 +89,16 @@ const OutputPreview: React.FC = () => {
         if (mountedRef.current && seq === taskLoadSeqRef.current) {
           // 完全替换而非追加，确保重复进入页面不会让任务列表重复
           setTasks(list);
+          // 支持从「切片执行历史」结果点击跳转：?task=<taskId> 自动定位并加载该任务
+          const targetTaskId = searchParams.get('task');
+          if (targetTaskId && list.some((t) => t.id === targetTaskId)) {
+            loadTask(targetTaskId);
+          }
         }
       })
       .catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
-  }, [episodeId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [episodeId, searchParams]);
 
   const loadTask = async (taskId: string) => {
     const seq = ++outputLoadSeqRef.current;

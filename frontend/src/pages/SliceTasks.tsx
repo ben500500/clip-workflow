@@ -239,7 +239,15 @@ const SliceTasks: React.FC = () => {
         </Space>
       ),
     },
-    { title: '输出数', dataIndex: 'output_count', key: 'output_count', width: 80 },
+    { title: '输出数', dataIndex: 'output_count', key: 'output_count', width: 80, render: (c: number, t: SliceTask) =>
+      t.status === 'completed' && c > 0 ? (
+        <a style={{ fontSize: 12 }} onClick={(e) => { e.stopPropagation(); navigate(`/episodes/${episodeId}/preview?task=${t.id}`); }}>
+          {c} 个 →
+        </a>
+      ) : (
+        <Text style={{ fontSize: 12 }}>{c ?? 0}</Text>
+      ),
+    },
     {
       title: '执行节点',
       dataIndex: 'node_id',

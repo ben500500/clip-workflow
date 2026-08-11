@@ -1,17 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Space, Typography, Spin, Alert, Breadcrumb, Descriptions, Tag, message, Select, Row, Col, Progress,
-  Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input, Table,
+  Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input, Table, Upload, Image as AntImage,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
   CheckCircleOutlined, ClockCircleOutlined, InfoCircleOutlined, PlayCircleOutlined,
+  UploadOutlined, DeleteOutlined as DelIcon,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projectApi } from '../api/projects';
 import { autoclipApi } from '../api/autoclip';
 import { intervalApi } from '../api/intervals';
-import { sliceApi } from '../api/slice';
+import { sliceApi, type BadgeItem } from '../api/slice';
 import ErrorHint from '../components/ErrorHint';
 import type { AutoClipRunRecord, Episode, IntervalHistoryItem, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
@@ -54,6 +55,16 @@ const DETECT_MODE_LABELS: Record<string, string> = {
   watermark: '水印',
 };
 
+// ─── 图片角标位置选项（六角） ─────────────────────────
+const BADGE_POSITIONS = [
+  { value: 'top-left', label: '左上' },
+  { value: 'top-center', label: '中上' },
+  { value: 'top-right', label: '右上' },
+  { value: 'bottom-left', label: '左下' },
+  { value: 'bottom-center', label: '中下' },
+  { value: 'bottom-right', label: '右下' },
+];
+
 const EpisodeDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -77,6 +88,11 @@ const EpisodeDetail: React.FC = () => {
   const [vert2horizOutputSize, setVert2horizOutputSize] = useState('1280x720');
   const [vert2horizDetectInterval, setVert2horizDetectInterval] = useState(2);
   const [vert2horizSmoothWindow, setVert2horizSmoothWindow] = useState(15);
+  // ── 图片角标：多角标、六角位置、宽度/偏移/透明度，全程叠加 ──
+  const [badges, setBadges] = useState<Array<BadgeItem & { name: string; preview: string }>>([]);
+  const [badgeUploading, setBadgeUploading] = useState(false);
+  // 角标默认尺寸（px）：角标未单独设 width 时生效；0=保持原图尺寸
+  const [badgeDefaultWidth, setBadgeDefaultWidth] = useState<number>(0);
   const [maxClips, setMaxClips] = useState(10);
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
@@ -494,6 +510,38 @@ const EpisodeDetail: React.FC = () => {
     }, 3000);
   };
 
+  // ─── 图片角标管理（上传/更新/删除） ────────────────
+  const uploadBadgeFile = async (file: File) => {
+    setBadgeUploading(true);
+    try {
+      const res = await sliceApi.uploadBadge(file);
+      const preview = URL.createObjectURL(file);
+      setBadges((prev) => [
+        ...prev,
+        {
+          file_key: res.file_key,
+          position: 'top-left',
+          name: res.file_name,
+          preview,
+        },
+      ]);
+      message.success(`角标「${res.file_name}」已添加`);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '角标上传失败');
+    } finally {
+      setBadgeUploading(false);
+    }
+    return false; // 阻止 Upload 默认提交
+  };
+
+  const updateBadge = (index: number, patch: Partial<BadgeItem>) => {
+    setBadges((prev) => prev.map((b, i) => (i === index ? { ...b, ...patch } : b)));
+  };
+
+  const removeBadge = (index: number) => {
+    setBadges((prev) => prev.filter((_, i) => i !== index));
+  };
+
   // ─── 一键切片（免审核直接出片） ──────────────────────
   const oneClickSlice = async () => {
     setOneClickSlicing(true);
@@ -510,6 +558,17 @@ const EpisodeDetail: React.FC = () => {
         vert2horiz_output_size: vert2horizEnabled ? vert2horizOutputSize : undefined,
         vert2horiz_detect_interval: vert2horizEnabled ? vert2horizDetectInterval : undefined,
         vert2horiz_smooth_window: vert2horizEnabled ? vert2horizSmoothWindow : undefined,
+        // 图片角标：一键切片同样透传配置
+        badges: badges.length > 0
+          ? badges.map((b) => ({
+              file_key: b.file_key,
+              position: b.position,
+              ...(b.width ? { width: b.width } : {}),
+              ...(b.offset != null ? { offset: b.offset } : {}),
+              ...(b.opacity != null ? { opacity: b.opacity } : {}),
+            }))
+          : undefined,
+        badge_default_width: badgeDefaultWidth || undefined,
       });
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
       message.info('切片完成后请到「成品预览」查看并下载结果');
@@ -543,6 +602,17 @@ const EpisodeDetail: React.FC = () => {
         vert2horiz_output_size: vert2horizEnabled ? vert2horizOutputSize : undefined,
         vert2horiz_detect_interval: vert2horizEnabled ? vert2horizDetectInterval : undefined,
         vert2horiz_smooth_window: vert2horizEnabled ? vert2horizSmoothWindow : undefined,
+        // 图片角标：多角标、六角位置、宽度/偏移/透明度，全程叠加
+        badges: badges.length > 0
+          ? badges.map((b) => ({
+              file_key: b.file_key,
+              position: b.position,
+              ...(b.width ? { width: b.width } : {}),
+              ...(b.offset != null ? { offset: b.offset } : {}),
+              ...(b.opacity != null ? { opacity: b.opacity } : {}),
+            }))
+          : undefined,
+        badge_default_width: badgeDefaultWidth || undefined,
       });
       message.success(res.message);
       fetchHistories();
@@ -1030,6 +1100,92 @@ const EpisodeDetail: React.FC = () => {
             </Space>
           </Card>
 
+          {/* ── 图片角标配置（多角标、六角位置，全程叠加） ── */}
+          <Card size="small" style={{ width: '100%' }}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space wrap>
+                <Text strong style={{ fontSize: 13 }}>图片角标</Text>
+                <Tooltip title="可上传多张图片作为角标，全程叠加在视频指定位置；支持六角定位、宽度、偏移量、透明度。">
+                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                </Tooltip>
+                <Upload
+                  accept="image/*"
+                  showUploadList={false}
+                  beforeUpload={uploadBadgeFile}
+                  disabled={badgeUploading}
+                >
+                  <Button size="small" icon={<UploadOutlined />} loading={badgeUploading}>
+                    添加角标图片
+                  </Button>
+                </Upload>
+                <Tooltip title="角标默认尺寸（px），所有角标未单独设置宽度时的统一宽度；留空=保持原图尺寸">
+                  <InputNumber
+                    size="small"
+                    min={0}
+                    max={800}
+                    placeholder="默认尺寸"
+                    value={badgeDefaultWidth || undefined}
+                    onChange={(v) => setBadgeDefaultWidth(v ?? 0)}
+                    style={{ width: 100 }}
+                    addonAfter="px"
+                  />
+                </Tooltip>
+              </Space>
+              {badges.length > 0 && (
+                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                  {badges.map((b, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <AntImage src={b.preview} width={40} height={40} style={{ objectFit: 'contain', borderRadius: 4, border: '1px solid #eee' }} />
+                      <Text style={{ fontSize: 12 }}>{b.name}</Text>
+                      <Select
+                        size="small"
+                        style={{ width: 90 }}
+                        value={b.position}
+                        onChange={(v) => updateBadge(i, { position: v })}
+                        options={BADGE_POSITIONS}
+                      />
+                      <Tooltip title="角标宽度（px），留空=使用默认尺寸/原图尺寸">
+                        <InputNumber
+                          size="small"
+                          min={10}
+                          max={800}
+                          placeholder="宽"
+                          value={b.width}
+                          onChange={(v) => updateBadge(i, { width: v ?? undefined })}
+                          style={{ width: 80 }}
+                        />
+                      </Tooltip>
+                      <Tooltip title="到视频边缘的偏移量（px），默认 10">
+                        <InputNumber
+                          size="small"
+                          min={0}
+                          max={500}
+                          placeholder="偏移"
+                          value={b.offset}
+                          onChange={(v) => updateBadge(i, { offset: v ?? undefined })}
+                          style={{ width: 80 }}
+                        />
+                      </Tooltip>
+                      <Tooltip title="角标透明度（0~1），默认 1 不透明">
+                        <InputNumber
+                          size="small"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          placeholder="透明"
+                          value={b.opacity}
+                          onChange={(v) => updateBadge(i, { opacity: v ?? undefined })}
+                          style={{ width: 80 }}
+                        />
+                      </Tooltip>
+                      <Button size="small" type="text" danger icon={<DelIcon />} onClick={() => removeBadge(i)} />
+                    </div>
+                  ))}
+                </Space>
+              )}
+            </Space>
+          </Card>
+
           {/* 进度条：切片动作 tab 最底部 */}
           {renderProgress(sliceProgress)}
           {/* 切片执行历史 */}
@@ -1068,7 +1224,12 @@ const EpisodeDetail: React.FC = () => {
                     t.status === 'failed' && t.error_message ? (
                       <ErrorHint error={t.error_message} />
                     ) : t.status === 'completed' ? (
-                      <Text style={{ fontSize: 12 }}>产出 {t.output_count} 个成品</Text>
+                      <a
+                        style={{ fontSize: 12 }}
+                        onClick={(e) => { e.stopPropagation(); navigate(`/episodes/${episodeId}/preview?task=${t.id}`); }}
+                      >
+                        产出 {t.output_count} 个成品 →
+                      </a>
                     ) : t.status === 'cancelled' ? (
                       <Text type="secondary" style={{ fontSize: 12 }}>已取消</Text>
                     ) : (
