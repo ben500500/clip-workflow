@@ -270,6 +270,8 @@ class SliceTask(Base):
     source_file_key = Column(String(500), nullable=True)
     # 自定义文字水印配置（开启时透传给引擎，重试时保留）
     watermark_config = Column(JSON, nullable=True)
+    # 图片角标配置（可选，切片后在成品上叠加角标；重试时保留）
+    badges_config = Column(JSON, nullable=True)
     # 竖屏转横屏预处理配置（可选，切片前把竖屏素材转成横屏；重试时保留）
     vert2horiz_config = Column(JSON, nullable=True)
     status = Column(String(50), nullable=True)

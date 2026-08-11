@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip, Alert, Switch, InputNumber, Input,
+  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip, Alert, Switch, InputNumber, Input, Upload, List, Image as AntImage,
 } from 'antd';
+import { UploadOutlined, PlusOutlined, DeleteOutlined as DelIcon } from '@ant-design/icons';
 import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, DesktopOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
-import { sliceApi } from '../api/slice';
+import { sliceApi, type BadgeItem } from '../api/slice';
 import ErrorHint from '../components/ErrorHint';
 import type { SliceOutput, SliceTask } from '../types';
 import { formatDateTime, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
@@ -12,6 +13,16 @@ import { formatDateTime, formatFileSize, getStatusColor, getStatusLabel } from '
 const { Title, Text } = Typography;
 
 // 切片模式说明
+// 角标位置选项（六角）：左上/中上/右上/左下/中下/右下
+const BADGE_POSITIONS = [
+  { value: 'top-left', label: '左上' },
+  { value: 'top-center', label: '中上' },
+  { value: 'top-right', label: '右上' },
+  { value: 'bottom-left', label: '左下' },
+  { value: 'bottom-center', label: '中下' },
+  { value: 'bottom-right', label: '右下' },
+];
+
 const SLICE_MODE_HELP: Record<string, { label: string; desc: string }> = {
   fast: {
     label: '快速模式',
@@ -41,6 +52,9 @@ const SliceTasks: React.FC = () => {
   const [watermarkFontSize, setWatermarkFontSize] = useState(28);
   const [watermarkOpacity, setWatermarkOpacity] = useState(0.5);
   const [watermarkPosition, setWatermarkPosition] = useState('bottom');
+  // 图片角标列表：每个含 file_key（上传后 MinIO key）、position（位置）、width（可选宽度）
+  const [badges, setBadges] = useState<Array<BadgeItem & { name: string; preview: string }>>([]);
+  const [badgeUploading, setBadgeUploading] = useState(false);
   // ── 竖屏转横屏智能裁切开关与参数 ──
   const [vert2horizEnabled, setVert2horizEnabled] = useState(false);
   const [vert2horizMode, setVert2horizMode] = useState<'fixed' | 'dynamic'>('fixed');
@@ -79,6 +93,10 @@ const SliceTasks: React.FC = () => {
         watermark_font_size: watermarkEnabled ? watermarkFontSize : undefined,
         watermark_opacity: watermarkEnabled ? watermarkOpacity : undefined,
         watermark_position: watermarkEnabled ? watermarkPosition : undefined,
+        // 图片角标：传递每个角标的 file_key / position / width
+        badges: badges.length > 0
+          ? badges.map((b) => ({ file_key: b.file_key, position: b.position, ...(b.width ? { width: b.width } : {}) }))
+          : undefined,
         // 竖屏转横屏：开启后切片前自动把竖屏素材转成横屏
         vert2horiz_enabled: vert2horizEnabled,
         vert2horiz_mode: vert2horizEnabled ? vert2horizMode : undefined,
@@ -118,6 +136,38 @@ const SliceTasks: React.FC = () => {
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '删除任务失败');
     }
+  };
+
+  // ─── 图片角标管理 ──────────────────────────────────
+  const uploadBadgeFile = async (file: File) => {
+    setBadgeUploading(true);
+    try {
+      const res = await sliceApi.uploadBadge(file);
+      const preview = URL.createObjectURL(file);
+      setBadges((prev) => [
+        ...prev,
+        {
+          file_key: res.file_key,
+          position: 'top-left',
+          name: res.file_name,
+          preview,
+        },
+      ]);
+      message.success(`角标「${res.file_name}」已添加`);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '角标上传失败');
+    } finally {
+      setBadgeUploading(false);
+    }
+    return false; // 阻止 Upload 默认提交
+  };
+
+  const updateBadge = (index: number, patch: Partial<BadgeItem>) => {
+    setBadges((prev) => prev.map((b, i) => (i === index ? { ...b, ...patch } : b)));
+  };
+
+  const removeBadge = (index: number) => {
+    setBadges((prev) => prev.filter((_, i) => i !== index));
   };
 
   // ─── 总体进度计算 ──────────────────────────────────
@@ -468,6 +518,51 @@ const SliceTasks: React.FC = () => {
               )}
             </>
           )}
+
+          {/* ── 图片角标（多角标，全程叠加）── */}
+          <Upload
+            accept="image/*"
+            showUploadList={false}
+            beforeUpload={uploadBadgeFile}
+            disabled={badgeUploading}
+          >
+            <Button size="small" icon={<UploadOutlined />} loading={badgeUploading}>
+              添加角标图片
+            </Button>
+          </Upload>
+          <Tooltip title="可上传多张图片作为角标，全程叠加在视频指定位置">
+            <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+          </Tooltip>
+          {badges.length > 0 && (
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              {badges.map((b, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <AntImage src={b.preview} width={40} height={40} style={{ objectFit: 'contain', borderRadius: 4, border: '1px solid #eee' }} />
+                  <Text style={{ fontSize: 12 }}>{b.name}</Text>
+                  <Select
+                    size="small"
+                    style={{ width: 90 }}
+                    value={b.position}
+                    onChange={(v) => updateBadge(i, { position: v })}
+                    options={BADGE_POSITIONS}
+                  />
+                  <Tooltip title="角标宽度（px），留空=原图尺寸">
+                    <InputNumber
+                      size="small"
+                      min={10}
+                      max={800}
+                      placeholder="宽"
+                      value={b.width}
+                      onChange={(v) => updateBadge(i, { width: v ?? undefined })}
+                      style={{ width: 80 }}
+                    />
+                  </Tooltip>
+                  <Button size="small" type="text" danger icon={<DelIcon />} onClick={() => removeBadge(i)} />
+                </div>
+              ))}
+            </Space>
+          )}
+
           <Button type="primary" icon={<PlayCircleOutlined />} loading={running} onClick={runSlice}>新建切片任务</Button>
           <Button icon={<ReloadOutlined />} onClick={() => fetchTasks()}>刷新</Button>
         </Space>

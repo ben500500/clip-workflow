@@ -375,6 +375,7 @@ def slice_task(
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
     vert2horiz_config: Optional[dict] = None,
+    badges_config: Optional[list] = None,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
@@ -382,9 +383,11 @@ def slice_task(
         h264_videotoolbox/hevc_videotoolbox/libx264；不传则引擎自动探测。
     source_bucket: 源视频所在桶；普通切片为 raw-footage，成品重新剪辑为 sliced。
     vert2horiz_config: 竖屏转横屏预处理配置（切片前把竖屏素材转成横屏）。
+    badges_config: 图片角标配置（切片后在成品上叠加角标）。
     """
     from app.services.slice_service import run_slice_scrub, run_slice_fast
-    from app.services.minio_service import upload_file_from_path
+    from app.services.minio_service import upload_file_from_path, download_to_file
+    from app.config import settings
     from app.utils.helpers import write_temp_file, ensure_dir
 
     self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动切片任务…"})
@@ -402,6 +405,27 @@ def slice_task(
         cutlist_path = write_temp_file(cutlist, suffix=".txt")
         intervals_path = write_temp_file(intervals, suffix=".txt")
         output_dir = ensure_dir(f"/tmp/slice_outputs/{episode_id}/{self.request.id}")
+
+        # 图片角标：下载每个角标图片到本地，构造引擎期望的 badge 配置（含 path）
+        badge_items = None
+        if badges_config:
+            badge_items = []
+            badge_dir = ensure_dir(f"/tmp/slice_outputs/{episode_id}/{self.request.id}/badges")
+            for bi in badges_config:
+                fk = bi.get("file_key") or ""
+                if not fk:
+                    continue
+                local = os.path.join(badge_dir, os.path.basename(fk))
+                ok = run_async(
+                    download_to_file(settings.MINIO_BUCKET_RAW, fk, local)
+                )
+                if not ok or not os.path.isfile(local):
+                    logger.warning("角标图片下载失败，跳过: %s", fk)
+                    continue
+                item = {"path": local, "position": bi.get("position", "top-left")}
+                if bi.get("width"):
+                    item["width"] = int(bi["width"])
+                badge_items.append(item)
 
         # 引擎进度回调会在 async 循环内被同步调用，不能在这里 run_async
         # （会嵌套事件循环报错）。只收集进度，引擎结束后统一写库。
@@ -425,6 +449,7 @@ def slice_task(
                     watermark_config=watermark_config,
                     encoder=encoder,
                     vert2horiz_config=vert2horiz_config,
+                    badges_config=badge_items,
                 )
             )
         else:
@@ -438,6 +463,7 @@ def slice_task(
                     watermark_config=watermark_config,
                     encoder=encoder,
                     vert2horiz_config=vert2horiz_config,
+                    badges_config=badge_items,
                 )
             )
 
