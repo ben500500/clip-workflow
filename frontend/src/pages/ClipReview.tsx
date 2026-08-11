@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   Card, Table, Tag, Button, Space, Typography, Spin, Alert, message, Popconfirm, InputNumber, Progress,
-  Tooltip,
+  Tooltip, Slider,
 } from 'antd';
 import {
   ArrowLeftOutlined, CheckOutlined, CloseOutlined, ReloadOutlined,
@@ -16,14 +16,16 @@ import { formatDuration, formatDateTime, getStatusColor, getStatusLabel } from '
 
 const { Title, Text } = Typography;
 
-// ─── 视频预览组件 ─────────────────────────────────────
+// ─── 视频预览组件（支持拖动进度条调整时间范围） ─────────────
 const VideoPreview: React.FC<{
   videoUrl: string;
   clip: ClipCandidate;
-}> = ({ videoUrl, clip }) => {
+  onRangeChange?: (start: number, end: number) => void;
+}> = ({ videoUrl, clip, onRangeChange }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
 
   const startTime = clip.adjusted_start ?? clip.start_time ?? 0;
   const endTime = clip.adjusted_end ?? clip.end_time ?? 0;
@@ -54,6 +56,41 @@ const VideoPreview: React.FC<{
     setPlaying(false);
   }, []);
 
+  const onLoadedMetadata = useCallback(() => {
+    const video = videoRef.current;
+    if (video && video.duration && isFinite(video.duration)) {
+      setVideoDuration(video.duration);
+    }
+  }, []);
+
+  // 进度条拖动：实时定位预览画面
+  const handleSliderChange = useCallback(
+    (val: number | number[]) => {
+      const arr = Array.isArray(val) ? val : [val, val];
+      const video = videoRef.current;
+      if (video && arr[0] !== undefined && isFinite(arr[0])) {
+        video.currentTime = arr[0];
+        setCurrentTime(arr[0]);
+      }
+      if (onRangeChange) onRangeChange(arr[0], arr[1]);
+    },
+    [onRangeChange],
+  );
+
+  const handleSliderAfter = useCallback(() => {
+    // 拖动结束：确保预览暂停在起始位置（可选）
+    const video = videoRef.current;
+    if (video) {
+      const s = clip.adjusted_start ?? clip.start_time ?? 0;
+      video.currentTime = s;
+      setCurrentTime(s);
+      setPlaying(false);
+      video.pause();
+    }
+  }, [clip.adjusted_start, clip.start_time]);
+
+  const maxRange = videoDuration > 0 ? videoDuration : (clip.duration ?? endTime);
+
   return (
     <div style={{ position: 'relative' }}>
       <video
@@ -63,9 +100,32 @@ const VideoPreview: React.FC<{
         onTimeUpdate={onTimeUpdate}
         onPause={onPause}
         onEnded={() => setPlaying(false)}
+        onLoadedMetadata={onLoadedMetadata}
         controls={false}
         preload="auto"
       />
+
+      {/* 可拖动的时间范围滑块 */}
+      <div style={{ marginTop: 8, padding: '4px 8px', background: '#f5f5f5', borderRadius: 6 }}>
+        <Text strong style={{ fontSize: 12 }}>拖动调整时间范围：</Text>
+        <Slider
+          range
+          min={0}
+          max={Math.max(maxRange, endTime, 1)}
+          step={0.1}
+          value={[startTime, endTime]}
+          onChange={handleSliderChange}
+          onAfterChange={handleSliderAfter}
+          tooltip={{ formatter: (v) => formatDuration(v ?? 0) }}
+          disabled={videoDuration <= 0}
+        />
+        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>起始: {formatDuration(startTime)}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>结束: {formatDuration(endTime)}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>时长: {formatDuration(endTime - startTime)}</Text>
+        </Space>
+      </div>
+
       <Space style={{ marginTop: 8 }}>
         <Button
           size="small"
@@ -173,11 +233,12 @@ const ClipReview: React.FC = () => {
     }
   };
 
-  // ─── 调整时间 ───────────────────────────────────────
+  // ─── 调整时间（局部更新，不刷新整页） ───────────────────────
   const adjust = async (clip: ClipCandidate, field: 'adjusted_start' | 'adjusted_end', value: number | null) => {
     try {
-      await autoclipApi.updateCandidate(clip.id, { status: 'adjusted', [field]: value });
-      fetchClips();
+      const updated = await autoclipApi.updateCandidate(clip.id, { status: 'adjusted', [field]: value });
+      // 局部更新对应片段，避免整页刷新
+      setClips((prev) => prev.map((c) => (c.id === clip.id ? { ...c, ...updated } : c)));
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '调整失败');
     }
@@ -195,6 +256,18 @@ const ClipReview: React.FC = () => {
     adjustTimers.current.set(key, timer);
   };
 
+  // 拖动进度条调整起止时间（去抖动，局部更新）
+  const handleRangeChange = useCallback(
+    (clip: ClipCandidate, start: number, end: number) => {
+      if (start === (clip.adjusted_start ?? clip.start_time ?? 0) && end === (clip.adjusted_end ?? clip.end_time ?? 0)) {
+        return;
+      }
+      adjustDebounced(clip, 'adjusted_start', start);
+      adjustDebounced(clip, 'adjusted_end', end);
+    },
+    [],
+  );
+
   useEffect(() => {
     const timers = adjustTimers.current;
     return () => {
@@ -205,8 +278,11 @@ const ClipReview: React.FC = () => {
 
   // ─── 统计 ───────────────────────────────────────────
   const pendingCount = clips.filter((c) => c.status === 'pending').length;
+  // 有效片段：通过 + 已调整（调整时间只是优化起止，片段仍有效）
   const acceptedCount = clips.filter((c) => c.status === 'accepted').length;
+  const adjustedCount = clips.filter((c) => c.status === 'adjusted').length;
   const rejectedCount = clips.filter((c) => c.status === 'rejected').length;
+  const availableCount = acceptedCount + adjustedCount;
   const allReviewed = pendingCount === 0 && clips.length > 0;
 
   // ─── 点击标题展开行 ─────────────────────────────────
@@ -300,6 +376,7 @@ const ClipReview: React.FC = () => {
           <Text>总计: <strong>{clips.length}</strong> 个片段</Text>
           <Text><Tag color="blue">待审核: {pendingCount}</Tag></Text>
           <Text><Tag color="green">已通过: {acceptedCount}</Tag></Text>
+          <Text><Tag color="cyan">已调整: {adjustedCount}</Tag></Text>
           <Text><Tag color="red">已拒绝: {rejectedCount}</Tag></Text>
           {allReviewed && (
             <Text style={{ color: '#52c41a' }}>
@@ -360,8 +437,8 @@ const ClipReview: React.FC = () => {
         </Card>
       )}
 
-      {/* ── 审核完成后的操作提示 ── */}
-      {allReviewed && acceptedCount === 0 && (
+      {/* ── 审核完成后的操作提示（仅在真正没有可用片段时提示）── */}
+      {allReviewed && availableCount === 0 && (
         <Alert
           type="warning"
           showIcon
@@ -455,7 +532,11 @@ const ClipReview: React.FC = () => {
                     {/* 视频预览 */}
                     {videoUrl ? (
                       <Card size="small" style={{ background: '#fafafa' }} title="视频预览">
-                        <VideoPreview videoUrl={videoUrl} clip={c} />
+                        <VideoPreview
+                          videoUrl={videoUrl}
+                          clip={c}
+                          onRangeChange={(s, e) => handleRangeChange(c, s, e)}
+                        />
                       </Card>
                     ) : (
                       <Alert type="info" message="视频预览不可用，请确保视频文件已上传" showIcon style={{ marginBottom: 8 }} />
