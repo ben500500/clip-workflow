@@ -438,6 +438,9 @@ def slice_task(
         # 字幕烧录：把 ASR 生成的 SRT 写到本地文件，供引擎 --subtitle 使用
         subtitle_srt_path = None
         subtitle_font_ratio = None
+        subtitle_style = None
+        subtitle_color = None
+        subtitle_border_color = None
         if subtitle_config and subtitle_config.get("enabled"):
             srt_content = subtitle_config.get("srt") or ""
             if srt_content.strip():
@@ -447,6 +450,16 @@ def slice_task(
             fr = subtitle_config.get("font_ratio")
             if isinstance(fr, (int, float)) and fr > 0:
                 subtitle_font_ratio = float(fr)
+            # 字幕样式：default / custom（自定义字体色+边框色，无底色）
+            st = subtitle_config.get("style")
+            if st:
+                subtitle_style = str(st)
+            fc = subtitle_config.get("font_color")
+            if fc:
+                subtitle_color = str(fc)
+            bc = subtitle_config.get("border_color")
+            if bc:
+                subtitle_border_color = str(bc)
 
         # 引擎进度回调会在 async 循环内被同步调用，不能在这里 run_async
         # （会嵌套事件循环报错）。只收集进度，引擎结束后统一写库。
@@ -474,6 +487,9 @@ def slice_task(
                     badge_default_width=badge_default_width,
                     subtitle_srt_path=subtitle_srt_path,
                     subtitle_font_ratio=subtitle_font_ratio,
+                    subtitle_style=subtitle_style,
+                    subtitle_color=subtitle_color,
+                    subtitle_border_color=subtitle_border_color,
                 )
             )
         else:
@@ -491,6 +507,9 @@ def slice_task(
                     badge_default_width=badge_default_width,
                     subtitle_srt_path=subtitle_srt_path,
                     subtitle_font_ratio=subtitle_font_ratio,
+                    subtitle_style=subtitle_style,
+                    subtitle_color=subtitle_color,
+                    subtitle_border_color=subtitle_border_color,
                 )
             )
 

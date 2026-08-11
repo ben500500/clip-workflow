@@ -47,6 +47,12 @@ export const sliceApi = {
       subtitle_enabled?: boolean;
       // 字幕字号（相对输出视频高度的比例，默认 0.07；可调大让字幕更清晰易读）
       subtitle_font_ratio?: number;
+      // 字幕样式：default（白字黑边+半透明黑底）/ custom（自定义字体色+边框色，无底色）
+      subtitle_style?: 'default' | 'custom';
+      // 自定义样式的字体颜色（CSS 十六进制）
+      subtitle_color?: string;
+      // 自定义样式的边框颜色（CSS 十六进制）
+      subtitle_border_color?: string;
       // 成品重新剪辑：以某个切片输出为源，重新裁剪出一个新片段
       output_id?: string;
       cut_start?: number;

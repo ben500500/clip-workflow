@@ -452,6 +452,33 @@ SUBTITLE_FONT_RATIO = 0.20
 # 字幕距底边距离（相对输出高度比例）
 SUBTITLE_BOTTOM_RATIO = 0.06
 
+# 字幕样式：默认（白字黑边 + 半透明黑底）与自定义（可选字体/边框色，无底色）
+SUBTITLE_STYLE_DEFAULT = "default"
+SUBTITLE_STYLE_CUSTOM = "custom"
+
+
+def css_hex_to_ass(color: Optional[str]) -> str:
+    """把 CSS 十六进制颜色（#RRGGBB）转为 libass 使用的 &HBBGGRR 格式。
+
+    例如 #FFFFFF → &H00FFFFFF，#FF0000 → &H000000FF。
+    解析失败或为空时返回 None，由调用方回退到默认值。
+    """
+    if not color:
+        return ""
+    c = str(color).strip().lstrip("#")
+    if len(c) == 3:  # 简写 #RGB
+        c = "".join(ch * 2 for ch in c)
+    if len(c) != 6:
+        return ""
+    try:
+        r = int(c[0:2], 16)
+        g = int(c[2:4], 16)
+        b = int(c[4:6], 16)
+    except ValueError:
+        return ""
+    # libass 颜色为 &HAABBGGRR（高位 alpha，后续依次 BGR）
+    return f"&H00{b:02X}{g:02X}{r:02X}"
+
 
 def _parse_srt_timestamp(ts: str) -> float:
     """解析 SRT 时间戳 "HH:MM:SS,mmm" 为秒。"""
@@ -554,11 +581,17 @@ def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str) -> st
 
 def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
                   threads: int = 1, encoder: str = "libx264",
-                  font_ratio: Optional[float] = None) -> None:
+                  font_ratio: Optional[float] = None,
+                  style: Optional[str] = None,
+                  font_color: Optional[str] = None,
+                  border_color: Optional[str] = None) -> None:
     """用 ffmpeg subtitles filter 把字幕烧录到成品视频。
 
     带字体、样式与描边，保证中文字幕清晰可读；输出为重新编码的视频。
     font_ratio: 字幕字号（相对输出视频高度的比例，不传用默认值 SUBTITLE_FONT_RATIO）。
+    style: 字幕样式（SUBTITLE_STYLE_DEFAULT=白字黑边+半透明黑底 / SUBTITLE_STYLE_CUSTOM=可
+        自定义字体色与边框色，且无底色）。不传用默认样式。
+    font_color / border_color: 自定义样式的字体色/边框色（CSS 十六进制 #RRGGBB）。
     注意：字幕烧录涉及逐帧重编码 + subtitles filter，与硬件编码器（nvenc/videotoolbox）
     组合在某些环境会报 "Error while opening encoder"，故这里强制使用 libx264 软件编码，
     保证烧录稳定可靠（烧录通常单次、数据量不大，速度可接受）。
@@ -579,12 +612,26 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
     # 规范写法：subtitles=filename='<path>':force_style='...'
     # 不传 fontfile（不同 ffmpeg 版本对 subtitles filter 的 fontfile 选项支持不一），
     # 改用 libass 的 FontName + 系统 fontconfig（Worker 镜像装有 font-noto-cjk）匹配中文字体。
-    # 样式：白字 + 黑色粗描边 + 底部阴影，字号按输出高度比例。
+    # 默认样式：白字 + 黑色粗描边 + 半透明黑底（底色），字号按输出高度比例。
+    style = style or SUBTITLE_STYLE_DEFAULT
+    if style == SUBTITLE_STYLE_CUSTOM:
+        # 自定义模式：可自由选择字体色与边框色，无底色（不使用 BorderStyle=3 的实底方框），
+        # 以纯描边（BorderStyle=1）呈现，保证任何背景上字幕都清晰且不遮挡画面。
+        primary_colour = css_hex_to_ass(font_color) or "&H00FFFFFF"
+        outline_colour = css_hex_to_ass(border_color) or "&H00000000"
+        back_colour = "&H00000000"  # 透明，去掉底色
+        sub_style = (f"PrimaryColour={primary_colour},OutlineColour={outline_colour}"
+                     f",BackColour={back_colour},BorderStyle=1,Outline=2,Shadow=0")
+    else:
+        primary_colour = "&H00FFFFFF"
+        outline_colour = "&H00101010"
+        back_colour = "&H80000000"
+        sub_style = (f"PrimaryColour={primary_colour},OutlineColour={outline_colour}"
+                     f",BackColour={back_colour},BorderStyle=3,Outline=2,Shadow=0")
     sub_filter = (
         f"subtitles=filename='{srt_esc}'"
         f":force_style='FontName=Noto Sans CJK SC,FontSize={font_ratio * 100:.0f}"
-        f",PrimaryColour=&H00FFFFFF,OutlineColour=&H00101010,BackColour=&H80000000"
-        f",BorderStyle=3,Outline=2,Shadow=0,MarginV={SUBTITLE_BOTTOM_RATIO * 1000:.0f}'"
+        f",{sub_style},MarginV={SUBTITLE_BOTTOM_RATIO * 1000:.0f}'"
     )
 
     cmd = [
@@ -648,6 +695,21 @@ def main():
         type=float,
         default=None,
         help="字幕字号（相对输出视频高度的比例，可选，默认 0.20→FontSize 20，约占画面 5%）。越大字幕越清晰易读",
+    )
+    parser.add_argument(
+        "--subtitle-style",
+        default=None,
+        help="字幕样式（default=白字黑边+半透明黑底；custom=自定义字体色/边框色且无底色，可选，默认 default）",
+    )
+    parser.add_argument(
+        "--subtitle-color",
+        default=None,
+        help="自定义字幕样式下的字体颜色（CSS 十六进制 #RRGGBB，可选）",
+    )
+    parser.add_argument(
+        "--subtitle-border-color",
+        default=None,
+        help="自定义字幕样式下的边框颜色（CSS 十六进制 #RRGGBB，可选）",
     )
     args = parser.parse_args()
 
@@ -750,7 +812,10 @@ def main():
                     build_clip_subtitle(args.subtitle, seg_times, sub_srt)
                     sub_out = out_path + ".sub.mp4"
                     burn_subtitle(out_path, sub_srt, sub_out, threads=threads, encoder=encoder,
-                                  font_ratio=subtitle_font_ratio)
+                                  font_ratio=subtitle_font_ratio,
+                                  style=args.subtitle_style,
+                                  font_color=args.subtitle_color,
+                                  border_color=args.subtitle_border_color)
                     os.replace(sub_out, out_path)
             # 图片角标：切片完成后在成品上叠加角标（全程覆盖视频指定位置）
             if badges:

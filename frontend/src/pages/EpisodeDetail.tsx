@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Space, Typography, Spin, Alert, Breadcrumb, Descriptions, Tag, message, Select, Row, Col, Progress,
-  Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input, Table, Upload, Image as AntImage,
+  Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input, Table, Upload, Image as AntImage, Radio, ColorPicker,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
@@ -99,6 +99,11 @@ const EpisodeDetail: React.FC = () => {
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
   // 字幕字号（相对输出视频高度的比例，默认 0.20→FontSize 20，约占画面 5%，横屏/竖屏均清晰可读）
   const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.2);
+  // 字幕样式：default（白字黑边+半透明黑底）/ custom（自定义字体色+边框色，无底色）
+  const [subtitleStyle, setSubtitleStyle] = useState<'default' | 'custom'>('default');
+  // 自定义样式的字体色 / 边框色（CSS 十六进制，默认白字黑边）
+  const [subtitleColor, setSubtitleColor] = useState('#ffffff');
+  const [subtitleBorderColor, setSubtitleBorderColor] = useState('#000000');
   const [maxClips, setMaxClips] = useState(10);
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
@@ -627,6 +632,10 @@ const EpisodeDetail: React.FC = () => {
         subtitle_enabled: subtitleEnabled,
         // 字幕字号（相对高度比例）：可调大让字幕更清晰易读
         subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
+        // 字幕样式：custom 时可选字体色/边框色（无底色）
+        subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
+        subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
+        subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
       });
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
       message.info('切片完成后请到「成品预览」查看并下载结果');
@@ -676,6 +685,10 @@ const EpisodeDetail: React.FC = () => {
         subtitle_enabled: subtitleEnabled,
         // 字幕字号（相对高度比例）：可调大让字幕更清晰易读
         subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
+        // 字幕样式：custom 时可选字体色/边框色（无底色）
+        subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
+        subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
+        subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
       });
       message.success(res.message);
       fetchHistories();
@@ -1212,6 +1225,38 @@ const EpisodeDetail: React.FC = () => {
                       （约占画面高度的 {Math.round(subtitleFontRatio * 100 / 4)}%，横屏建议 18-26，竖屏建议 14-22，越大越清晰）
                     </Text>
                   </Space>
+                  <Space wrap align="center" size={8}>
+                    <Text strong style={{ fontSize: 12 }}>字幕样式</Text>
+                    <Radio.Group
+                      size="small"
+                      value={subtitleStyle}
+                      onChange={(e) => setSubtitleStyle(e.target.value)}
+                    >
+                      <Radio.Button value="default">默认（白字黑边带底色）</Radio.Button>
+                      <Radio.Button value="custom">自定义（无底色）</Radio.Button>
+                    </Radio.Group>
+                  </Space>
+                  {subtitleStyle === 'custom' && (
+                    <Space wrap align="center" size={8}>
+                      <Text strong style={{ fontSize: 12 }}>字体颜色</Text>
+                      <ColorPicker
+                        value={subtitleColor}
+                        onChange={(c) => setSubtitleColor(c.toHexString())}
+                        showText
+                        size="small"
+                      />
+                      <Text strong style={{ fontSize: 12 }}>边框颜色</Text>
+                      <ColorPicker
+                        value={subtitleBorderColor}
+                        onChange={(c) => setSubtitleBorderColor(c.toHexString())}
+                        showText
+                        size="small"
+                      />
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        自定义模式下仅描边、无底色（不遮挡画面），字幕更清爽
+                      </Text>
+                    </Space>
+                  )}
                 </>
               )}
             </Space>
