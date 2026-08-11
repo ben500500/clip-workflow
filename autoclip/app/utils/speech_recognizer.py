@@ -8,6 +8,7 @@
 import logging
 import subprocess
 import os
+import re
 import shutil
 import tempfile
 from typing import Optional, List, Dict, Any
@@ -190,6 +191,391 @@ class SpeechRecognizer:
         return "\n".join(lines) + "\n"
 
     @staticmethod
+    def _aggregate_word_timestamps(words: list) -> List[Dict[str, Any]]:
+        """把 whisper 的词级时间戳聚合成短句级别的字幕段。
+
+        faster-whisper 的 word_timestamps=True 返回每个词的 (start, end, word)。
+        这里按以下规则把词聚合成一条条字幕：
+          - 目标时长约 2~5 秒（MAX_SUB_DURATION=5.0，MIN_SUB_DURATION=1.2）；
+          - 遇到标点（。！？，、；：）或停顿 >0.5s 时优先断句；
+          - 每段最少 2 个词，避免字幕过于碎片。
+        """
+        MAX_DURATION = 5.0
+        MIN_DURATION = 1.2
+        PAUSE_BREAK = 0.5
+
+        # 规范化 words：词可能带前后空格/标点，记录原始文本供拼接
+        items = []
+        for w in words:
+            try:
+                start = float(getattr(w, "start", 0.0))
+                end = float(getattr(w, "end", start))
+            except (TypeError, ValueError):
+                continue
+            text = (getattr(w, "word", "") or "").strip()
+            if not text:
+                continue
+            items.append({"start": start, "end": end, "text": text})
+        if not items:
+            return []
+
+        result = []
+        cur_words = []
+        cur_start = None
+        cur_end = None
+
+        def flush():
+            nonlocal cur_words, cur_start, cur_end
+            if cur_words:
+                txt = " ".join(cur_words).strip()
+                # 中文/日文等紧凑文字去掉词间多余空格
+                txt = re.sub(r"\s+([，。！？；：、,.!?;])", r"\1", txt)
+                if cur_start is not None and cur_end is not None and txt:
+                    result.append({"start": cur_start, "end": cur_end, "text": txt})
+                cur_words = []
+                cur_start = None
+                cur_end = None
+
+        for it in items:
+            if cur_start is None:
+                cur_start = it["start"]
+                cur_words = [it["text"]]
+                cur_end = it["end"]
+                continue
+            # 停顿过长：断句
+            if it["start"] - cur_end > PAUSE_BREAK:
+                flush()
+                cur_start = it["start"]
+                cur_words = [it["text"]]
+                cur_end = it["end"]
+                continue
+            # 句末标点且已到最小时长：断句
+            last_text = cur_words[-1]
+            cur_dur = it["end"] - (cur_start or 0.0)
+            if last_text.endswith(("。", "！", "？", "，", "、", "；", ".", "!", "?")) \
+                    and cur_dur >= MIN_DURATION:
+                flush()
+                cur_start = it["start"]
+                cur_words = [it["text"]]
+                cur_end = it["end"]
+                continue
+            # 超时强制断句
+            if it["end"] - (cur_start or 0.0) > MAX_DURATION:
+                flush()
+                cur_start = it["start"]
+                cur_words = [it["text"]]
+                cur_end = it["end"]
+                continue
+            cur_words.append(it["text"])
+            cur_end = it["end"]
+        flush()
+        return result
+
+    @staticmethod
+    def _merge_short_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """合并过短的相邻字幕段，避免字幕频繁闪断。
+
+        相邻两条字幕都 <0.8s 且间隔 <0.3s 时合并为一条；
+        单条 <0.4s 时也尝试与下一条合并。
+        """
+        MIN_KEEP = 0.4
+        if not segments:
+            return segments
+        merged = []
+        for seg in segments:
+            dur = seg.get("end", 0.0) - seg.get("start", 0.0)
+            if not merged:
+                merged.append(seg)
+                continue
+            last = merged[-1]
+            last_dur = last.get("end", 0.0) - last.get("start", 0.0)
+            gap = seg.get("start", 0.0) - last.get("end", 0.0)
+            # 两条都很短、间隔又近 → 合并
+            if dur < MIN_KEEP and last_dur < 0.8 and gap < 0.3:
+                merged[-1] = {
+                    "start": last["start"],
+                    "end": seg.get("end", seg.get("start", 0.0)),
+                    "text": (last.get("text", "") + " " + seg.get("text", "")).strip(),
+                }
+            else:
+                merged.append(seg)
+        return merged
+
+    @staticmethod
+    def _detect_speech_windows(audio_path: Path,
+                              silence_threshold: float = -35.0,
+                              min_silence: float = 0.5) -> list:
+        """用 ffmpeg silencedetect 检测音频中的语音（非静音）区间。
+
+        返回有序的 (start, end) 秒级区间列表；失败或无语音时返回 []。
+        用于后续对无时间戳的 ASR（如阿里云）做字幕时间轴精修：
+        让每条字幕只在语音出现时显示。
+        """
+        try:
+            ffmpeg_bin = get_ffmpeg_path()
+            cmd = [
+                ffmpeg_bin, '-i', str(audio_path),
+                '-af', f'silencedetect=noise={silence_threshold}dB:d={min_silence}',
+                '-f', 'null', '-',
+            ]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  timeout=3600)
+            out = proc.stderr.decode(errors='replace')
+            if proc.returncode != 0:
+                logger.warning('silencedetect 失败，跳过语音窗口检测')
+                return []
+        except Exception as e:
+            logger.warning('silencedetect 失败: %s', e)
+            return []
+
+        silence_starts = []
+        silence_ends = []
+        for line in out.splitlines():
+            if 'silence_start:' in line:
+                try:
+                    silence_starts.append(float(line.split('silence_start:')[1].strip()))
+                except ValueError:
+                    pass
+            elif 'silence_end:' in line:
+                try:
+                    # silence_end 行形如: silence_end: 2.345 | silence_duration: 1.234
+                    silence_ends.append(float(line.split('silence_end:')[1].strip().split()[0]))
+                except ValueError:
+                    pass
+
+        if not silence_starts:
+            # 没有检测到静音 → 全程都在说话
+            return []
+
+        duration = SpeechRecognizer._get_media_duration(audio_path)
+
+        # 合并静音区间
+        silences = list(zip(silence_starts, silence_ends))
+        if len(silence_starts) > len(silence_ends):
+            silences.append((silence_starts[-1], duration or silence_starts[-1] + 1.0))
+        silences.sort()
+        merged_sil = []
+        for s, e in silences:
+            if merged_sil and s <= merged_sil[-1][1]:
+                merged_sil[-1] = (merged_sil[-1][0], max(merged_sil[-1][1], e))
+            else:
+                merged_sil.append([s, e])
+
+        # 非静音区间 = 相邻静音之间的空隙
+        speech = []
+        cursor = 0.0
+        for s, e in merged_sil:
+            if s > cursor + 0.05:
+                speech.append((cursor, s))
+            cursor = max(cursor, e)
+        if duration > 0 and cursor < duration - 0.05:
+            speech.append((cursor, duration))
+        return speech
+
+    @staticmethod
+    def _split_text_by_punctuation(text: str, max_chars: int = 40) -> list:
+        """把一段长文本按标点/换行切成短句，用于分配到语音区间。
+
+        优先在句末标点（。！？）断句，其次逗号/分号，再次长句硬切。
+        """
+        if not text:
+            return []
+        text = text.strip()
+        if not text:
+            return []
+
+        # 先把已有换行展开
+        text = re.sub(r'\s+', ' ', text)
+        pieces = []
+
+        # 按句末标点切
+        sentences = re.split(r'(?<=[。！？.!?])', text)
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+            # 句子里仍太长 → 按逗号/分号/顿号切
+            while len(sent) > max_chars:
+                # 找最近的逗号类标点切点
+                cut = -1
+                for punct in ['，', '；', '、', ',', ';', '：', ':']:
+                    idx = sent.rfind(punct, 0, max_chars)
+                    if idx > 0:
+                        cut = idx + 1
+                        break
+                if cut <= 0:
+                    # 没有标点，硬切到 max_chars
+                    cut = max_chars
+                pieces.append(sent[:cut].strip())
+                sent = sent[cut:].strip()
+            if sent:
+                pieces.append(sent)
+        return [p for p in pieces if p]
+
+    @classmethod
+    def _refine_srt_with_speech_windows(cls, srt_content: str,
+                                        speech_windows: list) -> str:
+        """根据语音窗口精修 SRT 字幕时间轴。
+
+        核心思路：把每条 SRT 记录的显示时间精确对齐到语音区间。
+        - 若一条字幕完全落在一个语音窗口内，保持原样（最多微调）；
+        - 若一条字幕跨越多个语音窗口/含静音段，按语音窗口裁剪其显示时间；
+        - 若一条字幕时间跨度远大于语音窗口总时长（如整段 ASR），按语音窗口
+          把文本切成多条，每条对应一个语音窗口。
+
+        speech_windows 为空时原样返回（无法精修）。
+        """
+        if not speech_windows:
+            return srt_content
+        if not srt_content or not srt_content.strip():
+            return srt_content
+
+        records = cls._parse_srt_records(srt_content)
+        if not records:
+            return srt_content
+
+        refined = []
+        for r in records:
+            text = r.get('text', '').strip()
+            if not text:
+                continue
+            s = r.get('start', 0.0)
+            e = r.get('end', s)
+
+            # 找出与这条字幕时间区间相交的语音窗口
+            overlap = []
+            for ws, we in speech_windows:
+                os_ = max(s, ws)
+                oe = min(e, we)
+                if oe - os_ >= 0.05:
+                    overlap.append((os_, oe))
+            if not overlap:
+                # 没有语音窗口 → 静音，跳过该条字幕
+                continue
+
+            # 只有一个语音窗口且基本覆盖整条字幕 → 保持一条，微调边界
+            total_overlap = sum(oe - os_ for os_, oe in overlap)
+            if len(overlap) == 1 and total_overlap >= (e - s) * 0.8:
+                refined.append({'start': overlap[0][0], 'end': overlap[0][1], 'text': text})
+                continue
+
+            # 多个语音窗口（或覆盖不足）：尝试按文本切分分配
+            # 把文本切成短句，然后均匀分配到各语音窗口
+            pieces = cls._split_text_by_punctuation(text)
+            if len(pieces) <= 1:
+                # 无法切分 → 只保留最长的语音窗口，显示该条字幕
+                best = max(overlap, key=lambda x: x[1] - x[0])
+                refined.append({'start': best[0], 'end': best[1], 'text': text})
+                continue
+
+            # 把 pieces 分配到 overlap 窗口：同一窗口内的多条 pieces 合并成一条
+            # 字幕（避免时间重叠），整条字幕在窗口时间内显示。
+            win_count = len(overlap)
+            if win_count == 0:
+                continue
+            win_durs = [max(0.0, we - ws) for ws, we in overlap]
+            total_dur = sum(win_durs) or 1.0
+            n_pieces = len(pieces)
+            # 按权重计算每个窗口应得的条数；若窗口数 > pieces 数，只保留
+            # 时长最长的 n_pieces 个窗口，每个窗口 1 条。
+            if win_count >= n_pieces:
+                sorted_idx = sorted(range(win_count), key=lambda i: win_durs[i], reverse=True)
+                keep = sorted(sorted_idx[:n_pieces])
+                alloc = [0] * win_count
+                for ki in keep:
+                    alloc[ki] = 1
+            else:
+                alloc = [max(1, int(round(d / total_dur * n_pieces))) for d in win_durs]
+                # 修正：分配总数不能超过 pieces 数
+                while sum(alloc) > n_pieces:
+                    idx = max(range(win_count), key=lambda i: alloc[i])
+                    if alloc[idx] > 1:
+                        alloc[idx] -= 1
+                    else:
+                        idx2 = max([i for i in range(win_count) if alloc[i] > 1],
+                                   key=lambda i: alloc[i], default=-1)
+                        if idx2 < 0:
+                            break
+                        alloc[idx2] -= 1
+                extra = n_pieces - sum(alloc)
+                if extra > 0:
+                    alloc[-1] += extra
+
+            # 按分配把 pieces 分到各窗口，同一窗口的 pieces 合并为一条字幕
+            piece_idx = 0
+            for wi in range(win_count):
+                count = alloc[wi]
+                if count <= 0:
+                    continue
+                ws, we = overlap[wi]
+                window_pieces = pieces[piece_idx:piece_idx + count]
+                piece_idx += count
+                if not window_pieces:
+                    continue
+                # 同一窗口的多条 pieces 合并为一条，时间覆盖整个窗口
+                merged_text = ' '.join(window_pieces).strip()
+                refined.append({'start': ws, 'end': we, 'text': merged_text})
+            # 若还有未分配的 pieces，追加到最后一个窗口（合并成一条）
+            if piece_idx < len(pieces):
+                rest = ' '.join(pieces[piece_idx:])
+                ws, we = overlap[-1]
+                refined.append({'start': ws, 'end': we, 'text': rest})
+
+        if not refined:
+            return srt_content
+
+        # 排序并重写 SRT
+        refined.sort(key=lambda x: x['start'])
+        lines = []
+        for i, r in enumerate(refined, start=1):
+            start = cls._format_srt_timestamp(r['start'])
+            end = cls._format_srt_timestamp(r['end'])
+            lines.append(f"{i}\n{start} --> {end}\n{r['text']}\n")
+        return '\n'.join(lines) + '\n'
+
+    @classmethod
+    def _parse_srt_records(cls, srt_content: str) -> list:
+        """解析 SRT 内容为有序记录 [{start, end, text}]。"""
+        records = []
+        if not srt_content:
+            return records
+        blocks = [b for b in srt_content.replace('\r\n', '\n').split('\n\n') if b.strip()]
+        for block in blocks:
+            lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+            if len(lines) < 2:
+                continue
+            time_idx = None
+            for i, ln in enumerate(lines):
+                if '-->' in ln:
+                    time_idx = i
+                    break
+            if time_idx is None:
+                continue
+            time_line = lines[time_idx]
+            try:
+                left, right = time_line.split('-->', 1)
+            except ValueError:
+                continue
+            start = cls._parse_srt_time(left.strip())
+            end = cls._parse_srt_time(right.strip())
+            text = ' '.join(lines[time_idx + 1:])
+            if end <= start:
+                end = start + 1.0
+            records.append({'start': start, 'end': end, 'text': text})
+        return records
+
+    @staticmethod
+    def _parse_srt_time(ts: str) -> float:
+        """解析 SRT 时间戳 "HH:MM:SS,mmm" 为秒。"""
+        ts = ts.strip().replace(',', '.')
+        parts = ts.split(':')
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        return float(parts[0])
+
+    @staticmethod
     def _get_media_duration(media_path: Path) -> float:
         """获取媒体文件时长（秒），失败时回退到 30.0。"""
         try:
@@ -300,15 +686,27 @@ class SpeechRecognizer:
                 language=language,
                 vad_filter=True,
                 beam_size=5,
+                word_timestamps=True,
             )
-            seg_list = [
-                {"start": float(s.start), "end": float(s.end), "text": s.text.strip()}
-                for s in segments
-                if s.text and s.text.strip()
-            ]
+            seg_list = []
+            for s in segments:
+                if not s.text or not s.text.strip():
+                    continue
+                # 优先使用词级时间戳，聚合成更细粒度的短句字幕（每条约 2~5 秒，
+                # 让字幕与语音精确对齐，避免一句长台词长时间挂在屏幕上）。
+                words = list(getattr(s, "words", None) or [])
+                if words:
+                    seg_list.extend(self._aggregate_word_timestamps(words))
+                else:
+                    seg_list.append({"start": float(s.start), "end": float(s.end), "text": s.text.strip()})
+            # 合并相邻过短的段，避免字幕闪断
+            seg_list = self._merge_short_segments(seg_list)
             logger.info("whisper 转写完成: %d 段（detected language=%s）", len(seg_list), info.language or "?")
 
-        srt_content = self._segments_to_srt(seg_list)
+            # whisper 通过 word_timestamps=True 已获得词级精确时间戳，
+            # 并聚合成短句级字幕，无需再做 VAD 二次裁剪（避免破坏精确边界）。
+            srt_content = self._segments_to_srt(seg_list)
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(srt_content, encoding="utf-8")
         if not seg_list:
@@ -341,6 +739,11 @@ class SpeechRecognizer:
                 transcript = self._aliyun_speech_transcribe_audio(audio_path, config, api_key)
                 srt_lines = self._segments_to_srt(
                     [{"start": 0.0, "end": max(duration, 1.0), "text": transcript}])
+                # VAD 时间轴精修：把整段 ASR 文本按语音窗口切分为精确字幕，
+                # 让字幕只在语音出现时显示（解决字幕提早出现/延后消失）
+                speech_windows = self._detect_speech_windows(audio_path)
+                if speech_windows:
+                    srt_lines = self._refine_srt_with_speech_windows(srt_lines, speech_windows)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(output_path, 'w', encoding='utf-8') as f:
                     f.write(srt_lines)
@@ -392,6 +795,11 @@ class SpeechRecognizer:
                         f"阿里云语音识别有 {len(seg_files) - success_count} 段转写失败，已跳过")
 
                 srt_lines = self._segments_to_srt(all_segments)
+                # VAD 时间轴精修：按语音窗口裁剪每条字幕的显示时间，
+                # 让字幕只在语音出现时显示（解决字幕提早出现/延后消失）
+                speech_windows = self._detect_speech_windows(audio_path)
+                if speech_windows:
+                    srt_lines = self._refine_srt_with_speech_windows(srt_lines, speech_windows)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(output_path, 'w', encoding='utf-8') as f:
                     f.write(srt_lines)
