@@ -104,7 +104,7 @@ class SliceRunRequest(BaseModel):
     vert2horiz_mode: Optional[str] = None
     # 裁切比例（宽/高，默认 9/16 = 0.5625）
     vert2horiz_ratio: Optional[float] = None
-    # 输出分辨率（默认 1920x1080）
+    # 输出分辨率（默认 1280x720）
     vert2horiz_output_size: Optional[str] = None
     # 动态模式：人脸检测间隔（帧，默认 2）
     vert2horiz_detect_interval: Optional[int] = None

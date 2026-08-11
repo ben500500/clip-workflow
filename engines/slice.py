@@ -467,7 +467,7 @@ def apply_vert2horiz(source: str, cfg: dict) -> str:
     if mode not in ("fixed", "dynamic"):
         mode = "fixed"
     ratio = float(cfg.get("ratio") or (9 / 16))
-    output_size = cfg.get("output_size") or "1920x1080"
+    output_size = cfg.get("output_size") or "1280x720"
     detect_interval = int(cfg.get("detect_interval") or 2)
     smooth_window = int(cfg.get("smooth_window") or 15)
 

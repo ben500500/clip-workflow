@@ -27,7 +27,7 @@ vert2horiz_crop.py — 竖屏转横屏 + 人脸跟踪裁切
   # 指定裁切高度比例（0.0-1.0，默认 0.5625 = 9/16）
   python vert2horiz_crop.py input.mp4 output.mp4 --ratio 0.6
 
-  # 指定输出分辨率（默认 1920x1080）
+  # 指定输出分辨率（默认 1280x720）
   python vert2horiz_crop.py input.mp4 output.mp4 --output-size 1280x720
 
 依赖：
@@ -400,7 +400,7 @@ def generate_dynamic_crop_params(faces, src_w, src_h, crop_ratio=9 / 16):
     return params
 
 
-def apply_fixed_crop(video_path, output_path, crop_params, output_size="1920x1080"):
+def apply_fixed_crop(video_path, output_path, crop_params, output_size="1280x720"):
     """
     用 ffmpeg 应用固定裁切
     """
@@ -428,7 +428,7 @@ def apply_fixed_crop(video_path, output_path, crop_params, output_size="1920x108
     print(f"输出: {output_path}")
 
 
-def apply_dynamic_crop(video_path, output_path, crop_params, fps, output_size="1920x1080"):
+def apply_dynamic_crop(video_path, output_path, crop_params, fps, output_size="1280x720"):
     """
     用 ffmpeg sendcmd 应用动态裁切
     """
@@ -498,8 +498,8 @@ def main():
                         help="裁切模式: fixed=固定裁切（默认）, dynamic=动态跟踪")
     parser.add_argument("--ratio", type=float, default=9 / 16,
                         help="裁切高度比例（默认 0.5625 = 9/16）")
-    parser.add_argument("--output-size", default="1920x1080",
-                        help="输出分辨率（默认 1920x1080）")
+    parser.add_argument("--output-size", default="1280x720",
+                        help="输出分辨率（默认 1280x720）")
     parser.add_argument("--detect-interval", type=int, default=2,
                         help="人脸检测间隔帧数（默认 2，减少计算量）")
     parser.add_argument("--smooth-window", type=int, default=15,

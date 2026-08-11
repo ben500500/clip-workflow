@@ -74,7 +74,7 @@ const EpisodeDetail: React.FC = () => {
   const [vert2horizEnabled, setVert2horizEnabled] = useState(false);
   const [vert2horizMode, setVert2horizMode] = useState<'fixed' | 'dynamic'>('fixed');
   const [vert2horizRatio, setVert2horizRatio] = useState(0.5625);
-  const [vert2horizOutputSize, setVert2horizOutputSize] = useState('1920x1080');
+  const [vert2horizOutputSize, setVert2horizOutputSize] = useState('1280x720');
   const [vert2horizDetectInterval, setVert2horizDetectInterval] = useState(2);
   const [vert2horizSmoothWindow, setVert2horizSmoothWindow] = useState(15);
   const [maxClips, setMaxClips] = useState(10);
@@ -989,7 +989,7 @@ const EpisodeDetail: React.FC = () => {
                       style={{ width: 120 }}
                       value={vert2horizOutputSize}
                       onChange={(e) => setVert2horizOutputSize(e.target.value)}
-                      placeholder="1920x1080"
+                      placeholder="1280x720"
                     />
                     <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>裁切比例:</Text>
                     <InputNumber
