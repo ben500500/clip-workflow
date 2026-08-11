@@ -447,7 +447,8 @@ def build_watermark_filter(wm: dict) -> str:
 # ──────────────────────────────────────────────
 
 # 字幕字号（相对输出高度比例）
-SUBTITLE_FONT_RATIO = 0.07
+# 默认 0.20→FontSize 20，约占画面高度 5%，横屏/竖屏均清晰可读（实测 FontSize 约为画面高度的 1/4）。
+SUBTITLE_FONT_RATIO = 0.20
 # 字幕距底边距离（相对输出高度比例）
 SUBTITLE_BOTTOM_RATIO = 0.06
 
@@ -646,7 +647,7 @@ def main():
         "--subtitle-font-ratio",
         type=float,
         default=None,
-        help="字幕字号（相对输出视频高度的比例，可选，默认 0.07）。越大字幕越清晰易读",
+        help="字幕字号（相对输出视频高度的比例，可选，默认 0.20→FontSize 20，约占画面 5%）。越大字幕越清晰易读",
     )
     args = parser.parse_args()
 
@@ -666,12 +667,10 @@ def main():
     if vert2horiz_cfg:
         source_path = apply_vert2horiz(source_path, vert2horiz_cfg)
 
-    # 字幕字号：横屏裁切（vert2horiz）模式输出分辨率低（如 720p），
-    # 相同字号比例下字幕明显偏小，默认放大到常规值的 4 倍；
-    # 用户显式指定 --subtitle-font-ratio 时以用户值为准。
+    # 字幕字号：字号本身按输出画面高度比例自适应（约占画面 5%），
+    # 横屏/竖屏无需区别对待；用户显式指定 --subtitle-font-ratio 时以用户值为准，
+    # 未指定时 burn_subtitle 内部统一用 SUBTITLE_FONT_RATIO。
     subtitle_font_ratio = args.subtitle_font_ratio
-    if subtitle_font_ratio is None and vert2horiz_cfg:
-        subtitle_font_ratio = SUBTITLE_FONT_RATIO * 4
 
     os.makedirs(args.output_dir, exist_ok=True)
     cuts = read_cutlist(args.cutlist)
