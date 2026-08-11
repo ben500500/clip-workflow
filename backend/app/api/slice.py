@@ -613,17 +613,19 @@ async def upload_badge_image(
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """上传角标图片（png/jpg/jpeg/webp），存入 MinIO（raw-footage 桶 badge/ 前缀）。
+    """上传角标图片（png/jpg/jpeg/webp/gif/bmp），存入 MinIO（raw-footage 桶 badge/ 前缀）。
 
     返回 file_key，前端将其纳入切片请求的 badges 列表。
     """
-    from app.services.upload_service import validate_file_name
+    # 注意：角标是图片，不能复用 validate_file_name（它按 ALLOWED_VIDEO_EXTENSIONS
+    # 视频白名单校验，png/jpg 会被拒为 unsupported file type）。这里只做安全清洗
+    # （取 basename、去路径穿越），扩展名白名单单独校验。
+    import posixpath
 
-    file_name = file.filename or ""
-    try:
-        safe_name = validate_file_name(file_name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    raw_name = file.filename or ""
+    safe_name = posixpath.basename(raw_name.replace("\\", "/")).strip()
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="empty file name")
 
     # 仅允许图片类型
     ext = os.path.splitext(safe_name)[1].lower()
