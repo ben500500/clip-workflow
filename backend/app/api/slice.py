@@ -85,6 +85,26 @@ class BadgeItem(BaseModel):
     opacity: Optional[float] = None
 
 
+class TextOverlayItem(BaseModel):
+    """固定文字角标项：在成品视频指定位置叠加一段固定文字。
+
+    - text：文字内容（必填）
+    - position：七位位置（top-left/top-center/top-right/left/bottom-left/bottom-center/bottom-right）
+    - font_size：字号（px，可选，默认 36）
+    - color：字体颜色（CSS #RRGGBB，可选，默认白）
+    - border_color：描边颜色（CSS #RRGGBB，可选，默认黑）
+    - vertical：是否竖排（最左侧常用，可选，默认 False）
+    - offset：到视频边缘的偏移量（px，可选，默认 10）
+    """
+    text: str = ""
+    position: str = "bottom-left"
+    font_size: Optional[int] = None
+    color: Optional[str] = None
+    border_color: Optional[str] = None
+    vertical: Optional[bool] = None
+    offset: Optional[int] = None
+
+
 class SliceRunRequest(BaseModel):
     mode: str = "fast"
     dedupe_config: Optional[dict] = None
@@ -150,6 +170,12 @@ class SliceRunRequest(BaseModel):
     subtitle_color: Optional[str] = None
     # 自定义字幕样式的边框颜色（CSS 十六进制 #RRGGBB）
     subtitle_border_color: Optional[str] = None
+    # ── 固定文字角标（文字版角标，无需上传图片）──
+    # 在成品视频指定位置叠加固定文字（最左侧/左下角/右上角等），全程覆盖。
+    # 每个元素：text（内容）、position（left/bottom-left/top-right 等七位）、
+    # font_size（字号px）、color（字体色#RRGGBB）、border_color（描边色）、
+    # vertical（是否竖排，最左侧常用）、offset（边缘偏移px）。
+    text_overlays: Optional[List[TextOverlayItem]] = None
 
 
 class SliceRunResponse(BaseModel):
@@ -351,6 +377,42 @@ def _build_badges_config(data: SliceRunRequest) -> Optional[list]:
             item["offset"] = max(0, int(b.offset))
         if b.opacity is not None:
             item["opacity"] = min(1.0, max(0.0, float(b.opacity)))
+        result.append(item)
+    return result if result else None
+
+
+def _build_text_overlays_config(data: SliceRunRequest) -> Optional[list]:
+    """构造固定文字角标配置列表（引擎 --text-overlays 期望的 JSON 数组）。
+
+    仅保留含文字内容的条目；位置限定为七位（最左侧/左上/中上/右上/左下/中下/右下）。
+    """
+    if not data.text_overlays:
+        return None
+    allowed = {
+        "top-left", "top-center", "top-right", "left",
+        "bottom-left", "bottom-center", "bottom-right",
+    }
+    result = []
+    for t in data.text_overlays:
+        if not t.text or not t.text.strip():
+            continue
+        position = (t.position or "bottom-left").lower()
+        if position not in allowed:
+            position = "bottom-left"
+        item = {
+            "text": t.text.strip(),
+            "position": position,
+        }
+        if t.font_size is not None:
+            item["font_size"] = max(12, min(200, int(t.font_size)))
+        if t.color:
+            item["color"] = t.color
+        if t.border_color:
+            item["border_color"] = t.border_color
+        if t.vertical is not None:
+            item["vertical"] = bool(t.vertical)
+        if t.offset is not None:
+            item["offset"] = max(0, int(t.offset))
         result.append(item)
     return result if result else None
 
@@ -575,6 +637,7 @@ async def _publish_to_worker(
     badge_default_width: int = 0,
     source_bucket: str = "",
     subtitle_config: Optional[dict] = None,
+    text_overlays_config: Optional[list] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -643,6 +706,8 @@ async def _publish_to_worker(
         "badge_default_width": badge_default_width or 0,
         # ASR 字幕烧录（可选，Go Worker 把 SRT 写到本地后透传给引擎 --subtitle）
         "subtitle": subtitle_config,
+        # 固定文字角标（可选，Go Worker 直接透传给引擎 --text-overlays）
+        "text_overlays": text_overlays_config,
         "output": {
             "upload_url": f"{callback_base}/api/slice-tasks/{slice_task.id}/upload-url",
             "callback_url": callback_url,
@@ -685,6 +750,7 @@ async def _dispatch_celery(
     badge_default_width: int = 0,
     source_bucket: str = "",
     subtitle_config: Optional[dict] = None,
+    text_overlays_config: Optional[list] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -713,6 +779,7 @@ async def _dispatch_celery(
         badges_config=badges_config,
         badge_default_width=badge_default_width,
         subtitle_config=subtitle_config,
+        text_overlays_config=text_overlays_config,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -941,12 +1008,15 @@ async def run_slice(
     badges_config = _build_badges_config(data)
     # 构造字幕烧录配置：开启时优先复用选点阶段已生成的源视频字幕，否则回退到 ASR 生成
     subtitle_config = await _generate_subtitle_config(data, source_file_key, source_bucket, episode, db)
-    # 持久化竖屏转横屏/角标/字幕配置，重试时保留
+    # 构造固定文字角标配置（文字版角标，无需上传图片）
+    text_overlays_config = _build_text_overlays_config(data)
+    # 持久化竖屏转横屏/角标/字幕/固定文字配置，重试时保留
     slice_task.vert2horiz_config = vert2horiz_config
     slice_task.watermark_config = watermark_config
     slice_task.badges_config = badges_config
     slice_task.badge_default_width = data.badge_default_width or 0
     slice_task.subtitle_config = subtitle_config
+    slice_task.text_overlays_config = text_overlays_config
 
     if engine == "worker":
         # 确保输出桶存在（全新部署时 sliced 桶可能未初始化）
@@ -966,6 +1036,7 @@ async def run_slice(
             data.badge_default_width,
             source_bucket,
             subtitle_config,
+            text_overlays_config,
         )
 
         if not published:
@@ -994,6 +1065,7 @@ async def run_slice(
                 data.badge_default_width,
                 source_bucket,
                 subtitle_config,
+                text_overlays_config,
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
@@ -1416,6 +1488,7 @@ async def retry_slice_task(
         badges_config=task.badges_config,
         vert2horiz_config=task.vert2horiz_config,
         subtitle_config=task.subtitle_config,
+        text_overlays_config=task.text_overlays_config,
         status="pending",
         progress=0.0,
     )
@@ -1443,6 +1516,7 @@ async def retry_slice_task(
             task.badge_default_width or 0,
             source_bucket,
             task.subtitle_config,
+            task.text_overlays_config,
         )
 
         if not published:
@@ -1470,6 +1544,7 @@ async def retry_slice_task(
                 task.badge_default_width or 0,
                 source_bucket,
                 task.subtitle_config,
+                task.text_overlays_config,
             )
         except Exception as e:
             new_task.status = "failed"

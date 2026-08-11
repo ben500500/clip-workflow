@@ -398,6 +398,135 @@ def apply_badges(src, out, badges, threads=1, encoder="libx264", default_width: 
     run_ffmpeg(cmd, timeout=3600, threads=threads)
 
 
+# ──────────────────────────────────────────────
+# 固定文字叠加（角标文字版：最左侧 / 左下角 / 右上角）
+# ──────────────────────────────────────────────
+
+# 固定文字位置到 drawtext x/y 坐标表达式的映射。
+# 坐标以输出视频宽高为基准（w/h 为视频宽高，tw/th 为文本块宽高）。
+# {O} 为文字到视频边缘的偏移量占位符，运行时会替换为具体像素值（默认 10）。
+# "left" 为最左侧（画面左侧垂直居中，竖排文字）。
+TEXT_OVERLAY_POSITIONS = {
+    "top-left":     ("{O}", "{O}"),
+    "top-center":   ("(w-tw)/2", "{O}"),
+    "top-right":    ("w-tw-{O}", "{O}"),
+    "left":         ("{O}", "(h-th)/2"),
+    "bottom-left":  ("{O}", "h-th-{O}"),
+    "bottom-center":("(w-tw)/2", "h-th-{O}"),
+    "bottom-right": ("w-tw-{O}", "h-th-{O}"),
+}
+
+# 固定文字默认偏移量（px）
+TEXT_OVERLAY_DEFAULT_OFFSET = 10
+# 固定文字默认字号（px）
+TEXT_OVERLAY_DEFAULT_FONT_SIZE = 36
+# 固定文字默认颜色（CSS 十六进制，白字）
+TEXT_OVERLAY_DEFAULT_COLOR = "#FFFFFF"
+# 固定文字默认描边颜色（深色描边，保证任意背景下清晰）
+TEXT_OVERLAY_DEFAULT_BORDER_COLOR = "#000000"
+
+
+# 中文字体候选（容器内通常装有 font-noto-cjk / wqy 等）
+_TEXT_FONT_CANDIDATES = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+]
+_TEXT_FONTFILE = next((f for f in _TEXT_FONT_CANDIDATES if os.path.isfile(f)), "")
+
+
+def _build_text_overlays_filter(text_overlays: list) -> str:
+    """构造固定文字的 drawtext filter 链（叠加在视频上）。
+
+    每个元素支持：
+      - text: 文字内容（必填）
+      - position: 位置（left 最左侧 / bottom-left 左下角 / top-right 右上角 等七位）
+      - font_size: 字号（px，可选，默认 36）
+      - color: 字体颜色（CSS #RRGGBB，可选，默认白）
+      - border_color: 描边颜色（CSS #RRGGBB，可选，默认黑）
+      - vertical: 是否竖排（仅 left 位置常用，可选，默认 False）
+      - offset: 到边缘偏移（px，可选，默认 10）
+    返回 drawtext filter 段（多个用逗号连接），空列表返回空串。
+    """
+    filters = []
+    for ov in text_overlays:
+        if not ov:
+            continue
+        text = ov.get("text") or ""
+        if not text:
+            continue
+        position = (ov.get("position") or "bottom-left").lower()
+        if position not in TEXT_OVERLAY_POSITIONS:
+            position = "bottom-left"
+        try:
+            font_size = int(ov.get("font_size") or TEXT_OVERLAY_DEFAULT_FONT_SIZE)
+        except (TypeError, ValueError):
+            font_size = TEXT_OVERLAY_DEFAULT_FONT_SIZE
+        font_size = max(12, min(200, font_size))
+        try:
+            offset = int(ov.get("offset") or TEXT_OVERLAY_DEFAULT_OFFSET)
+        except (TypeError, ValueError):
+            offset = TEXT_OVERLAY_DEFAULT_OFFSET
+        offset = max(0, offset)
+        vertical = bool(ov.get("vertical"))
+
+        font_opt = f":fontfile={_TEXT_FONTFILE}" if _TEXT_FONTFILE else ""
+        # drawtext 的 fontcolor/border 用 0xRRGGBB 十六进制，最可靠。
+        # 把 CSS 色值（#RRGGBB / #RGB）统一转为 0xRRGGBB。
+        c_hex = _css_to_drawtext(ov.get("color") or TEXT_OVERLAY_DEFAULT_COLOR)
+        b_hex = _css_to_drawtext(ov.get("border_color") or TEXT_OVERLAY_DEFAULT_BORDER_COLOR)
+
+        x_tpl, y_tpl = TEXT_OVERLAY_POSITIONS[position]
+        x_expr = x_tpl.replace("{O}", str(offset))
+        y_expr = y_tpl.replace("{O}", str(offset))
+
+        # 转义 drawtext 特殊字符（冒号/反斜杠/分号/单引号）
+        esc = text.replace("\\", "\\\\").replace(":", "\\:").replace(";", "\\;").replace("'", "\\\\'")
+
+        if vertical:
+            # 竖排文字：把文字逐字符叠加（drawtext 无原生竖排，用多个 drawtext 逐字下排）
+            chars = list(text)
+            sub_filters = []
+            for k, ch in enumerate(chars):
+                ch_esc = ch.replace("\\", "\\\\").replace(":", "\\:").replace(";", "\\;").replace("'", "\\\\'")
+                sub_filters.append(
+                    f"drawtext={font_opt}:text='{ch_esc}':fontcolor={c_hex}"
+                    f":bordercolor={b_hex}:borderw=2:fontsize={font_size}"
+                    f":x={x_expr}:y='{y_expr}+{k}*{font_size}'"
+                )
+            filters.append(",".join(sub_filters))
+        else:
+            filters.append(
+                f"drawtext={font_opt}:text='{esc}':fontcolor={c_hex}"
+                f":bordercolor={b_hex}:borderw=2:fontsize={font_size}"
+                f":x={x_expr}:y={y_expr}"
+            )
+    return ",".join(filters)
+
+
+def apply_text_overlays(src, out, text_overlays, threads=1, encoder="libx264"):
+    """对成品视频执行一次固定文字叠加，产出新文件。
+
+    text_overlays 为空或全无效时直接复制源文件，不做重编码。
+    """
+    valid = [o for o in (text_overlays or []) if o and (o.get("text") or "").strip()]
+    if not valid:
+        shutil.copy(src, out)
+        return
+    vf = _build_text_overlays_filter(valid)
+    cmd = [
+        "ffmpeg", "-y", "-threads", str(threads), "-i", src,
+        "-vf", vf,
+        "-map", "0:v:0", "-map", "0:a:0?",
+    ]
+    cmd += build_encoder_args(encoder, threads)
+    cmd += ["-c:a", "aac", "-b:a", "128k", out]
+    run_ffmpeg(cmd, timeout=3600, threads=threads)
+
+
 def build_watermark_filter(wm: dict) -> str:
     """构造 ffmpeg 动态文字水印 filter（drawtext）。
 
@@ -448,10 +577,11 @@ def build_watermark_filter(wm: dict) -> str:
 # ──────────────────────────────────────────────
 
 # 字幕字号（相对输出高度比例）
-# 默认 0.20→FontSize 20，约占画面高度 5%，横屏/竖屏均清晰可读（实测 FontSize 约为画面高度的 1/4）。
-SUBTITLE_FONT_RATIO = 0.20
-# 字幕距底边距离（相对输出高度比例）
-SUBTITLE_BOTTOM_RATIO = 0.06
+# 默认 0.30→FontSize 30，约占画面高度 7%~8%，横屏/竖屏均清晰可读。
+# 该值参考横屏切片样图（默认字幕约占画面高度 7%，底部居中）定标。
+SUBTITLE_FONT_RATIO = 0.30
+# 字幕距底边距离（相对输出高度比例，参考样图字幕位于底部偏上处）
+SUBTITLE_BOTTOM_RATIO = 0.08
 
 # 字幕样式：默认（白字黑边 + 半透明黑底）与自定义（可选字体/边框色，无底色）
 SUBTITLE_STYLE_DEFAULT = "default"
@@ -479,6 +609,25 @@ def css_hex_to_ass(color: Optional[str]) -> str:
         return ""
     # libass 颜色为 &HAABBGGRR（高位 alpha，后续依次 BGR）
     return f"&H00{b:02X}{g:02X}{r:02X}"
+
+
+def _css_to_drawtext(color: Optional[str]) -> str:
+    """把 CSS 十六进制颜色（#RRGGBB / #RGB）转为 drawtext 使用的 0xRRGGBB 格式。
+
+    例如 #EDD736 → 0xEDD736，#fff → 0xFFFFFF。解析失败返回白色。
+    """
+    if not color:
+        return "0xFFFFFF"
+    c = str(color).strip().lstrip("#")
+    if len(c) == 3:  # 简写 #RGB
+        c = "".join(ch * 2 for ch in c)
+    if len(c) != 6:
+        return "0xFFFFFF"
+    try:
+        int(c, 16)
+    except ValueError:
+        return "0xFFFFFF"
+    return f"0x{c.upper()}"
 
 
 def _parse_srt_timestamp(ts: str) -> float:
@@ -797,6 +946,11 @@ def main():
         help="角标默认宽度（px，0=保持原图尺寸）；角标未单独设置 width 时生效",
     )
     parser.add_argument(
+        "--text-overlays",
+        default=None,
+        help="固定文字角标配置 JSON 数组（[{\"text\":文字内容, \"position\":\"left|bottom-left|top-right\", \"font_size\":可选字号, \"color\":可选字体色, \"border_color\":可选描边色, \"vertical\":可选竖排, \"offset\":可选偏移}]），全程叠加在视频指定位置",
+    )
+    parser.add_argument(
         "--subtitle",
         default=None,
         help="源视频完整 SRT 字幕文件路径（可选）。开启后按每个切片的源时间段截取对应字幕并烧录到成品视频",
@@ -896,6 +1050,18 @@ def main():
         valid_paths = [b.get("path") for b in badges if b.get("path") and os.path.isfile(b["path"])]
         print(f"图片角标已开启: {len(valid_paths)} 个", file=sys.stderr)
 
+    # 固定文字角标：解析并准备绘制（最左侧/左下角/右上角等位置）
+    text_overlays = []
+    if args.text_overlays:
+        try:
+            raw_texts = json.loads(args.text_overlays)
+            if isinstance(raw_texts, list):
+                text_overlays = [o for o in raw_texts if isinstance(o, dict)]
+        except (ValueError, TypeError):
+            text_overlays = []
+    if text_overlays:
+        print(f"固定文字角标已开启: {len(text_overlays)} 条", file=sys.stderr)
+
     # Group segments by original cut index for scrub mode.
     groups = {}
     for start, end, name, idx in segments:
@@ -942,6 +1108,14 @@ def main():
                     default_width=args.badge_default_width,
                 )
                 os.replace(badge_out, out_path)
+            # 固定文字角标：在图片角标之后再叠加文字（文字常叠在角标之上层）
+            if text_overlays:
+                txt_out = out_path + ".textov.mp4"
+                apply_text_overlays(
+                    out_path, txt_out, text_overlays,
+                    threads=threads, encoder=encoder,
+                )
+                os.replace(txt_out, out_path)
             duration = ffprobe_duration(out_path)
             outputs.append((name, duration))
             processed += 1

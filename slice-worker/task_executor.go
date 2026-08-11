@@ -163,6 +163,15 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		}
 	}
 
+	// 固定文字角标：直接透传给引擎 --text-overlays（无需下载，纯文本）
+	if len(task.TextOverlays) > 0 {
+		textBytes, err := json.Marshal(task.TextOverlays)
+		if err != nil {
+			return nil, fmt.Errorf("序列化固定文字角标失败: %w", err)
+		}
+		args = append(args, "--text-overlays", string(textBytes))
+	}
+
 	// Alpine 镜像提供 python3 可执行文件；Windows 上为 python
 	cmd := exec.CommandContext(ctx, pythonBinary(), args...)
 
