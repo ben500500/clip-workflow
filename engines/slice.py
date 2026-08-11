@@ -477,18 +477,24 @@ def apply_vert2horiz(source: str, cfg: dict) -> str:
     out_path = f"{source}.vert2horiz-{os.getpid()}.mp4"
     print(f"检测到竖屏素材（{src_w}x{src_h}），执行竖屏转横屏预处理（mode={mode}）…", file=sys.stderr)
 
+    # 人脸检测器在 vert2horiz_crop 内部创建（动态/固定共用）
+    detector = vert2horiz_crop.FaceDetector()
+
     if mode == "dynamic":
-        positions = vert2horiz_crop.analyze_faces(
+        faces, _positions = vert2horiz_crop.analyze_faces(
             source,
             detect_interval=detect_interval,
             smooth_window=smooth_window,
+            detector=detector,
         )
         crop_params = vert2horiz_crop.generate_dynamic_crop_params(
-            positions, src_w, src_h, ratio
+            faces, src_w, src_h, ratio
         )
         vert2horiz_crop.apply_dynamic_crop(source, out_path, crop_params, fps, output_size)
     else:
-        crop_params = vert2horiz_crop.generate_fixed_crop_params(src_w, src_h, ratio)
+        crop_params = vert2horiz_crop.generate_fixed_crop_params(
+            detector, source, src_w, src_h, ratio
+        )
         vert2horiz_crop.apply_fixed_crop(source, out_path, crop_params, output_size)
 
     print(f"竖屏转横屏预处理完成: {out_path}（{output_size}）", file=sys.stderr)
