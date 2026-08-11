@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip, Alert, Switch, InputNumber, Input, Upload, List, Image as AntImage,
+  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip, Alert, Switch, InputNumber, Input, Upload, List, Image as AntImage, Radio, ColorPicker,
 } from 'antd';
 import { UploadOutlined, PlusOutlined, DeleteOutlined as DelIcon } from '@ant-design/icons';
 import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, DesktopOutlined } from '@ant-design/icons';
@@ -13,8 +13,9 @@ import { formatDateTime, formatFileSize, getStatusColor, getStatusLabel } from '
 const { Title, Text } = Typography;
 
 // 切片模式说明
-// 角标位置选项（六角）：左上/中上/右上/左下/中下/右下
+// 角标位置选项（七位）：最左侧/左上/中上/右上/左下/中下/右下
 const BADGE_POSITIONS = [
+  { value: 'left', label: '最左侧' },
   { value: 'top-left', label: '左上' },
   { value: 'top-center', label: '中上' },
   { value: 'top-right', label: '右上' },
@@ -66,6 +67,15 @@ const SliceTasks: React.FC = () => {
   const [vert2horizSmoothWindow, setVert2horizSmoothWindow] = useState(15);
   // 动态模式最小移动阈值（px）：越大越稳、越小越跟手
   const [vert2horizMinStep, setVert2horizMinStep] = useState(5);
+  // ── ASR 字幕烧录（与转横屏联动：转横屏开启时默认开启字幕）──
+  const [subtitleEnabled, setSubtitleEnabled] = useState(false);
+  // 字幕字号（px，UI 显示值；转成比例 subtitleFontRatio = 字号/100 → FontSize）
+  const [subtitleFontSize, setSubtitleFontSize] = useState(20);
+  // 字幕样式：default（白字黑边带底色）/ custom（自定义字体色+边框色，无底色）
+  const [subtitleStyle, setSubtitleStyle] = useState<'default' | 'custom'>('custom');
+  // 自定义样式的字体色 / 边框色（默认 #EDD736 黄 / 黑边）
+  const [subtitleColor, setSubtitleColor] = useState('#EDD736');
+  const [subtitleBorderColor, setSubtitleBorderColor] = useState('#000000');
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
 
@@ -117,6 +127,14 @@ const SliceTasks: React.FC = () => {
         vert2horiz_detect_interval: vert2horizEnabled ? vert2horizDetectInterval : undefined,
         vert2horiz_smooth_window: vert2horizEnabled ? vert2horizSmoothWindow : undefined,
         vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
+        // ASR 字幕烧录：开启后对源视频做 ASR 识别并烧录到成品视频
+        subtitle_enabled: subtitleEnabled,
+        // 字幕字号（px → 相对高度比例，字号/100；FontSize=字号）
+        subtitle_font_ratio: subtitleEnabled ? Math.max(0.1, Math.min(0.6, subtitleFontSize / 100)) : undefined,
+        // 字幕样式：custom 时可选字体色/边框色（无底色）
+        subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
+        subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
+        subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
       });
       message.success(res.message);
       fetchTasks();
@@ -181,6 +199,20 @@ const SliceTasks: React.FC = () => {
 
   const removeBadge = (index: number) => {
     setBadges((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // ─── 转横屏开关联动 ASR 字幕 ──────────────────────
+  // 转横屏开启时，默认同时开启 ASR 字幕（字号 45、自定义样式字体色 #EDD736），
+  // 用户可手动关闭/调整。
+  const handleVert2horizToggle = (on: boolean) => {
+    setVert2horizEnabled(on);
+    if (on) {
+      // 转横屏开启时默认开启字幕并套用默认参数
+      setSubtitleEnabled(true);
+      setSubtitleFontSize(45);
+      setSubtitleStyle('custom');
+      setSubtitleColor('#EDD736');
+    }
   };
 
   // ─── 总体进度计算 ──────────────────────────────────
@@ -476,7 +508,7 @@ const SliceTasks: React.FC = () => {
           <Switch
             size="small"
             checked={vert2horizEnabled}
-            onChange={setVert2horizEnabled}
+            onChange={handleVert2horizToggle}
             checkedChildren="转横屏开"
             unCheckedChildren="转横屏"
           />
@@ -628,6 +660,61 @@ const SliceTasks: React.FC = () => {
                 </div>
               ))}
             </Space>
+          )}
+
+          {/* ── ASR 字幕烧录（转横屏开启时默认开启）── */}
+          <Space wrap align="center" size={8}>
+            <Switch size="small" checked={subtitleEnabled} onChange={setSubtitleEnabled} />
+            <Text strong style={{ fontSize: 12 }}>ASR 字幕</Text>
+            <Tooltip title="开启后对源视频做语音识别（ASR），并把识别到的台词烧录到每个切片成品上。转横屏开启时默认开启。">
+              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+            </Tooltip>
+          </Space>
+          {subtitleEnabled && (
+            <>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 12 }}>字幕字号</Text>
+                <InputNumber
+                  size="small"
+                  min={10}
+                  max={60}
+                  step={1}
+                  value={subtitleFontSize}
+                  onChange={(v) => setSubtitleFontSize(v ?? 45)}
+                  style={{ width: 80 }}
+                  addonAfter="px"
+                />
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 12 }}>字幕样式</Text>
+                <Radio.Group
+                  size="small"
+                  value={subtitleStyle}
+                  onChange={(e) => setSubtitleStyle(e.target.value)}
+                >
+                  <Radio.Button value="default">默认（白字黑边带底色）</Radio.Button>
+                  <Radio.Button value="custom">自定义（无底色）</Radio.Button>
+                </Radio.Group>
+              </Space>
+              {subtitleStyle === 'custom' && (
+                <Space wrap align="center" size={8}>
+                  <Text strong style={{ fontSize: 12 }}>字体颜色</Text>
+                  <ColorPicker
+                    value={subtitleColor}
+                    onChange={(c) => setSubtitleColor(c.toHexString())}
+                    showText
+                    size="small"
+                  />
+                  <Text strong style={{ fontSize: 12 }}>边框颜色</Text>
+                  <ColorPicker
+                    value={subtitleBorderColor}
+                    onChange={(c) => setSubtitleBorderColor(c.toHexString())}
+                    showText
+                    size="small"
+                  />
+                </Space>
+              )}
+            </>
           )}
 
           <Button type="primary" icon={<PlayCircleOutlined />} loading={running} onClick={runSlice}>新建切片任务</Button>
