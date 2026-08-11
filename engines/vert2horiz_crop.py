@@ -361,9 +361,70 @@ def smooth_face_boxes(faces, window=15):
     return smoothed
 
 
+def savgol_smooth(values, window=11, polyorder=2):
+    """对一维序列做 Savitzky-Golay 平滑（低通滤波，抑制高频抖动）。
+
+    比简单滑动均值保形更好（能保留人物的低频运动趋势，同时滤掉
+    检测噪声导致的帧间高频抖动）。窗口须为奇数且 >= polyorder+1。
+    边界用最近有效窗口做局部拟合，保证输出长度与输入一致。
+    """
+    vals = np.asarray(values, dtype=np.float64)
+    n = len(vals)
+    if n == 0:
+        return vals.copy()
+    if n < 3:
+        return vals.copy()
+    window = int(window)
+    if window < 3 or window % 2 == 0:
+        window = 11
+    window = min(window, n if n % 2 == 1 else n - 1)
+    if window < 3:
+        return vals.copy()
+    polyorder = int(min(polyorder, window - 1))
+    polyorder = max(1, polyorder)
+
+    half = window // 2
+    out = np.empty_like(vals)
+    # 逐点局部最小二乘拟合（scipy 不可用时也能工作，纯 numpy 实现）
+    for i in range(n):
+        s = max(0, i - half)
+        e = min(n, i + half + 1)
+        idx = np.arange(s, e, dtype=np.float64)
+        if e - s < polyorder + 1:
+            out[i] = vals[i]
+            continue
+        # 局部多项式拟合（零阶即窗口均值）
+        A = np.vander(idx - i, polyorder + 1, increasing=True)
+        coef, *_ = np.linalg.lstsq(A, vals[s:e], rcond=None)
+        out[i] = coef[0]
+    return out
+
+
+def debounce_crop_y(crop_ys, min_step=3):
+    """对 crop_y 序列做最小移动死区去抖：位置变化小于 min_step 像素时保持不动。
+
+    这是消除画面抖动最直接的一环——即便做了平滑，只要相邻帧 crop_y
+    差 1~2 像素就会让整个裁切窗口逐帧平移，人眼看就是画面「呼吸式」抖动。
+    施加阈值后，微小波动被吞掉，只有位置真正移动超过 min_step 才更新，
+    同时保留人物的整体运动轨迹。
+
+    crop_ys: 逐帧 crop_y 列表
+    min_step: 最小移动像素阈值（像素）
+    """
+    if not len(crop_ys):
+        return list(crop_ys)
+    out = []
+    last = crop_ys[0]
+    for v in crop_ys:
+        if abs(v - last) >= min_step:
+            last = v
+        out.append(last)
+    return out
+
+
 def generate_dynamic_crop_params(faces, src_w, src_h, crop_ratio=9 / 16):
     """
-    生成动态裁切参数（以人脸为锚，保证面部完整）。
+    生成动态裁切参数（以人脸为锚，保证面部完整，并做抗抖动处理）。
 
     Args:
         faces: 每帧主体人脸 bbox (x,y,w,h) 或 None
@@ -381,20 +442,30 @@ def generate_dynamic_crop_params(faces, src_w, src_h, crop_ratio=9 / 16):
         crop_h = src_h
         crop_w = int(src_h / crop_ratio)
 
-    params = []
-    for i, face in enumerate(faces):
+    raw_crop_ys = []
+    for face in faces:
         if face is not None:
             crop_y = compute_crop_y_keep_face(face, src_h, crop_h)
         else:
             crop_y = int(src_h * FIXED_FALLBACK_TOP_RATIO)
         crop_y = max(0, min(src_h - crop_h, crop_y))
+        raw_crop_ys.append(int(crop_y))
 
+    # 抗抖动两级处理：
+    # 1) Savitzky-Golay 低通平滑（滤掉高频检测噪声，保留低频运动趋势）
+    # 2) 最小移动死区去抖（微小位置变化直接吞掉，杜绝逐帧微平移）
+    crop_ys = savgol_smooth(raw_crop_ys, window=11, polyorder=2)
+    crop_ys = debounce_crop_y(crop_ys, min_step=3)
+
+    params = []
+    for i, crop_y in enumerate(crop_ys):
+        crop_y = max(0, min(src_h - crop_h, int(round(crop_y))))
         params.append({
             "frame": i,
             "crop_w": crop_w,
             "crop_h": crop_h,
             "crop_x": 0,
-            "crop_y": int(crop_y),
+            "crop_y": crop_y,
         })
 
     return params
@@ -440,18 +511,28 @@ def apply_dynamic_crop(video_path, output_path, crop_params, fps, output_size="1
 
     out_w, out_h = output_size.split("x")
 
-    # 生成 sendcmd 文件
+    # 稀疏化写入 sendcmd：只在 crop_y 显著变化时才写命令，未变化/微变的帧
+    # 自动保持上一写入位置。这样既大幅减少 ffmpeg 命令数，也彻底避免
+    # 逐帧微平移造成的画面抖动（配合 generate_dynamic_crop_params 的
+    # Savitzky-Golay 平滑 + 死区去抖，效果最佳）。
+    min_step = 3  # 与 debounce_crop_y 的最小移动阈值保持一致
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         cmd_file = f.name
+        last_y = None
+        written = 0
         for p in crop_params:
-            timestamp = p["frame"] / fps
-            # ffmpeg sendcmd 要求每条命令以分号结尾，否则解析报错
-            # （“Missing terminator or extraneous data”），这里补上；
-            # 首帧时间戳为 0，天然作为裁切窗口的初始位置
-            f.write(f"{timestamp} crop y {p['crop_y']};\n")
+            y = p["crop_y"]
+            if last_y is None or abs(y - last_y) >= min_step:
+                timestamp = p["frame"] / fps
+                # ffmpeg sendcmd 要求每条命令以分号结尾，否则解析报错
+                # （“Missing terminator or extraneous data”），这里补上；
+                # 首帧时间戳为 0，天然作为裁切窗口的初始位置
+                f.write(f"{timestamp} crop y {y};\n")
+                last_y = y
+                written += 1
 
     try:
-        print(f"动态裁切: {len(crop_params)} 帧, scale={out_w}x{out_h}")
+        print(f"动态裁切: {len(crop_params)} 帧, 写入 {written} 条 sendcmd, scale={out_w}x{out_h}")
 
         cmd = [
             "ffmpeg", "-i", video_path,
