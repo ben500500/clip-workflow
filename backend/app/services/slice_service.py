@@ -94,6 +94,7 @@ async def run_slice(
     subtitle_style: Optional[str] = None,
     subtitle_color: Optional[str] = None,
     subtitle_border_color: Optional[str] = None,
+    text_overlays_config: Optional[list] = None,
 ) -> tuple[int, str, str]:
     """Run the ffmpeg slice engine.
 
@@ -134,6 +135,8 @@ async def run_slice(
         cmd.extend(["--subtitle-color", subtitle_color])
     if subtitle_border_color:
         cmd.extend(["--subtitle-border-color", subtitle_border_color])
+    if text_overlays_config:
+        cmd.extend(["--text-overlays", json.dumps(text_overlays_config)])
     logger.info("Running slice: %s", " ".join(cmd))
 
     return await _run_cmd(cmd, timeout, progress_cb)
@@ -156,6 +159,7 @@ async def run_slice_scrub(
     subtitle_style: Optional[str] = None,
     subtitle_color: Optional[str] = None,
     subtitle_border_color: Optional[str] = None,
+    text_overlays_config: Optional[list] = None,
 ) -> tuple[int, str, str]:
     """Run scrub-mode slicing (cutlist minus removed intervals)."""
     return await run_slice(
@@ -176,6 +180,7 @@ async def run_slice_scrub(
         subtitle_style=subtitle_style,
         subtitle_color=subtitle_color,
         subtitle_border_color=subtitle_border_color,
+        text_overlays_config=text_overlays_config,
     )
 
 
@@ -196,6 +201,7 @@ async def run_slice_fast(
     subtitle_style: Optional[str] = None,
     subtitle_color: Optional[str] = None,
     subtitle_border_color: Optional[str] = None,
+    text_overlays_config: Optional[list] = None,
 ) -> tuple[int, str, str]:
     """Run fast/dedupe mode slicing."""
     if mode not in ("fast", "dedupe"):
@@ -218,6 +224,7 @@ async def run_slice_fast(
         subtitle_style=subtitle_style,
         subtitle_color=subtitle_color,
         subtitle_border_color=subtitle_border_color,
+        text_overlays_config=text_overlays_config,
     )
 
 

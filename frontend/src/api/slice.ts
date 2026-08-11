@@ -16,6 +16,17 @@ export interface BadgeUploadResult {
   upload_id: string;
 }
 
+// 固定文字角标（文字版角标，无需上传图片）
+export interface TextOverlayItem {
+  text: string;
+  position: string;
+  font_size?: number;
+  color?: string;
+  border_color?: string;
+  vertical?: boolean;
+  offset?: number;
+}
+
 export const sliceApi = {
   run: (
     episodeId: string,
@@ -53,6 +64,8 @@ export const sliceApi = {
       subtitle_color?: string;
       // 自定义样式的边框颜色（CSS 十六进制）
       subtitle_border_color?: string;
+      // 固定文字角标（文字版角标）：在成品指定位置叠加固定文字
+      text_overlays?: TextOverlayItem[];
       // 成品重新剪辑：以某个切片输出为源，重新裁剪出一个新片段
       output_id?: string;
       cut_start?: number;

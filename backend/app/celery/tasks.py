@@ -490,6 +490,7 @@ def slice_task(
                     subtitle_style=subtitle_style,
                     subtitle_color=subtitle_color,
                     subtitle_border_color=subtitle_border_color,
+                    text_overlays_config=text_overlays_config,
                 )
             )
         else:
@@ -510,6 +511,7 @@ def slice_task(
                     subtitle_style=subtitle_style,
                     subtitle_color=subtitle_color,
                     subtitle_border_color=subtitle_border_color,
+                    text_overlays_config=text_overlays_config,
                 )
             )
 
