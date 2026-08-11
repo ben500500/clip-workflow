@@ -11,6 +11,7 @@ import {
   SendOutlined, EditOutlined, SaveOutlined, UndoOutlined,
   RobotOutlined, QrcodeOutlined, StopOutlined, SyncOutlined,
   CloseCircleOutlined, CheckCircleOutlined, ClockCircleOutlined, EyeOutlined,
+  UserOutlined,
 } from '@ant-design/icons';
 import { shortdramaApi, type ShortdramaPromptRecord, type PromptTemplates, type DoubaoRewriteItem } from '../api/shortdrama';
 import Watermark, { type ImportedVideo } from './Watermark';
@@ -159,6 +160,8 @@ const ShortDrama: React.FC = () => {
     free_max_seconds: 10,
     pro_max_seconds: 30,
   });
+  // 当前登录的豆包账户昵称（最近一次豆包生成时从豆包网页端提取，供头部展示）
+  const currentDoubaoAccount = records.find((r) => !!r.doubao_account)?.doubao_account ?? null;
   // 正在进行豆包生成任务 / 需要轮询状态的记录 id 集合
   const [doubaoActiveIds, setDoubaoActiveIds] = useState<Set<string>>(new Set());
   // 二维码弹窗：等待扫码的记录
@@ -831,6 +834,11 @@ const ShortDrama: React.FC = () => {
                 {r.doubao_account_type === 'pro' ? '包月' : '免费'}
               </Tag>
             ) : null}
+            {r.doubao_account ? (
+              <Tag color="geekblue" icon={<UserOutlined />} style={{ fontSize: 11 }}>
+                {r.doubao_account.length > 12 ? `${r.doubao_account.slice(0, 12)}…` : r.doubao_account}
+              </Tag>
+            ) : null}
             {active && (
               <Progress
                 percent={Math.min(100, Math.max(0, Math.round(progress)))}
@@ -1322,6 +1330,17 @@ const ShortDrama: React.FC = () => {
                   <QrcodeOutlined /> 上限：免费 {doubaoLimits.free_max_seconds}s / 包月 {doubaoLimits.pro_max_seconds}s
                 </Text>
               </Tooltip>
+              {currentDoubaoAccount ? (
+                <Tag color="geekblue" icon={<UserOutlined />}>
+                  当前登录：{currentDoubaoAccount.length > 16 ? `${currentDoubaoAccount.slice(0, 16)}…` : currentDoubaoAccount}
+                </Tag>
+              ) : (
+                <Tooltip title="发起豆包生成并登录后，自动识别并展示当前登录的豆包账户昵称">
+                  <Text type="secondary" style={{ fontSize: 11 }}>
+                    <UserOutlined /> 当前登录：未识别
+                  </Text>
+                </Tooltip>
+              )}
             </Space>
             {seedanceConfig?.enabled ? (
               <Tag color="cyan" icon={<ThunderboltOutlined />}>
