@@ -146,6 +146,10 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 				return nil, fmt.Errorf("写入字幕文件失败: %w", err)
 			}
 			args = append(args, "--subtitle", subtitlePath)
+			// 字幕字号（相对高度比例）：透传给引擎 --subtitle-font-ratio，未设置时用引擎默认值
+			if fontRatio, ok := task.Subtitle["font_ratio"].(float64); ok && fontRatio > 0 {
+				args = append(args, "--subtitle-font-ratio", strconv.FormatFloat(fontRatio, 'f', -1, 64))
+			}
 		}
 	}
 

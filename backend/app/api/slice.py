@@ -140,6 +140,9 @@ class SliceRunRequest(BaseModel):
     # ── ASR 字幕烧录 ──
     # 开启后对源视频做 ASR 语音识别生成字幕，并烧录到每个切片成品上
     subtitle_enabled: bool = False
+    # 字幕字号（相对输出视频高度的比例，默认 0.07；不传用引擎默认值）。
+    # 用户可调大以让字幕更清晰易读，例如 0.05~0.12。
+    subtitle_font_ratio: Optional[float] = None
 
 
 class SliceRunResponse(BaseModel):
@@ -391,6 +394,13 @@ async def _read_existing_subtitle(episode: Episode, db: AsyncSession) -> Optiona
         return None
 
 
+def _with_subtitle_font_ratio(cfg: dict, data: SliceRunRequest) -> dict:
+    """把用户设置的字幕字号比例写入字幕配置，随任务下发给引擎。"""
+    if data.subtitle_font_ratio is not None and data.subtitle_font_ratio > 0:
+        cfg["font_ratio"] = round(float(data.subtitle_font_ratio), 4)
+    return cfg
+
+
 async def _generate_subtitle_config(
     data: SliceRunRequest,
     source_file_key: Optional[str],
@@ -414,7 +424,7 @@ async def _generate_subtitle_config(
     if not data.output_id and episode is not None and db is not None:
         reused = await _read_existing_subtitle(episode, db)
         if reused is not None:
-            return reused
+            return _with_subtitle_font_ratio(reused, data)
     # 2) 回退：调用 autoclip ASR 生成（复用 ASR 缓存）
     source_url = await get_presigned_url(source_bucket, source_file_key, expires_seconds=7200)
     if not source_url:
@@ -424,7 +434,7 @@ async def _generate_subtitle_config(
     if not result or not result.get("srt") or not result["srt"].strip():
         logger.warning("ASR 字幕生成结果为空（视频可能无语音或转写失败），跳过字幕烧录")
         return None
-    return {"enabled": True, "srt": result["srt"]}
+    return _with_subtitle_font_ratio({"enabled": True, "srt": result["srt"]}, data)
 
 
 def _not_detect_task():
