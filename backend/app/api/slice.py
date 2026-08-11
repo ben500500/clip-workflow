@@ -32,8 +32,10 @@ from app.models.models import (
     DetectedInterval,
     SystemConfig,
     User,
+    AutoClipProject,
 )
 from app.services.data_scope import check_project_access_by_episode
+from app.services.autoclip_service import generate_subtitle
 from app.utils.helpers import utc_iso,  generate_cutlist, generate_intervals_file, format_time
 from app.services.minio_service import (
     get_presigned_url,
@@ -135,6 +137,9 @@ class SliceRunRequest(BaseModel):
     # 动态模式：最小移动阈值（源画面像素，默认 5）。值越大画面越平稳、
     # 越小越跟手；画面抖动明显时可调大，人物走动跟不丢时可调小。
     vert2horiz_min_step: Optional[int] = None
+    # ── ASR 字幕烧录 ──
+    # 开启后对源视频做 ASR 语音识别生成字幕，并烧录到每个切片成品上
+    subtitle_enabled: bool = False
 
 
 class SliceRunResponse(BaseModel):
@@ -339,6 +344,89 @@ def _build_badges_config(data: SliceRunRequest) -> Optional[list]:
     return result if result else None
 
 
+# autoclip 选点阶段生成的源视频字幕文件（whisper/aliyun ASR）所在目录
+# 与 autoclip 的 MEDIA_DIR 一致（两者都挂载 media_data volume）：
+#   autoclip/app/core/shared_config.py -> METADATA_DIR = MEDIA_DIR / "data/output/metadata"
+#   字幕文件保存为 {project_id}/subtitle.srt
+# 可通过环境变量 AUTOCLIP_METADATA_DIR 覆盖（正常情况下无需设置）。
+_AUTOCLIP_METADATA_DIR = os.getenv(
+    "AUTOCLIP_METADATA_DIR", "/app/media/data/output/metadata"
+).rstrip("/")
+
+
+async def _read_existing_subtitle(episode: Episode, db: AsyncSession) -> Optional[dict]:
+    """尝试复用选点阶段（autoclip whisper/aliyun ASR）已生成的源视频字幕。
+
+    选点流水线 Step 0 已对源视频做 ASR 并生成字幕文件
+    `{METADATA_DIR}/{autoclip_project_id}/subtitle.srt`，保存在共享的 media_data volume
+    中（backend 与 autoclip 都挂载该卷）。切片烧录字幕时若能找到这份已翻译好的字幕，
+    直接按时间轴复用即可，完全避免二次 ASR 转写（省时间、省 API 费用/算力，且与
+    选点阶段看到的台词一致）。
+
+    返回 {"enabled": True, "srt": str}；找不到或读不到返回 None（由调用方回退到 ASR）。
+    """
+    # 查询该剧集关联的 autoclip 项目 id（选点生成字幕所用的 project_id）
+    res = await db.execute(
+        select(AutoClipProject).where(AutoClipProject.episode_id == episode.id)
+    )
+    proj = res.scalar_one_or_none()
+    if not proj or not proj.autoclip_project_id:
+        logger.info("该剧集尚未做过 AI 智能选点，无可用字幕复用，回退到 ASR 生成")
+        return None
+    srt_path = os.path.join(
+        _AUTOCLIP_METADATA_DIR, str(proj.autoclip_project_id), "subtitle.srt"
+    )
+    try:
+        if not os.path.isfile(srt_path) or os.path.getsize(srt_path) == 0:
+            logger.info("选点阶段无字幕文件（%s），回退到 ASR 生成", srt_path)
+            return None
+        with open(srt_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        if not content.strip():
+            return None
+        logger.info("复用选点阶段已生成的字幕（%s），跳过二次 ASR", srt_path)
+        return {"enabled": True, "srt": content}
+    except OSError as e:
+        logger.warning("读取选点字幕失败: %s: %s", srt_path, e)
+        return None
+
+
+async def _generate_subtitle_config(
+    data: SliceRunRequest,
+    source_file_key: Optional[str],
+    source_bucket: str,
+    episode: Optional[Episode] = None,
+    db: Optional[AsyncSession] = None,
+) -> Optional[dict]:
+    """构造字幕烧录配置：开启时优先复用选点阶段已生成的源视频字幕，否则调用 autoclip ASR。
+
+    返回 {"enabled": True, "srt": "..."}；未开启或生成失败返回 None。
+    优先复用：该剧集做过 AI 智能选点（whisper/aliyun 已转写源视频）时，直接读取其
+    subtitle.srt 复用，避免重复 ASR；未做过选点时再回退到 ASR 生成（带缓存）。
+    """
+    if not data.subtitle_enabled:
+        return None
+    if not source_file_key:
+        logger.warning("字幕已开启，但缺少源视频 file_key，跳过字幕生成")
+        return None
+    # 1) 优先复用选点阶段 whisper/aliyun 已翻译好的字幕（仅常规切片；以切片成品为源的
+    #    重新剪辑（output_id）时间轴从 0 开始、与原始字幕不同，不适用，走回退）
+    if not data.output_id and episode is not None and db is not None:
+        reused = await _read_existing_subtitle(episode, db)
+        if reused is not None:
+            return reused
+    # 2) 回退：调用 autoclip ASR 生成（复用 ASR 缓存）
+    source_url = await get_presigned_url(source_bucket, source_file_key, expires_seconds=7200)
+    if not source_url:
+        logger.warning("字幕已开启，但生成源视频下载 URL 失败，跳过字幕生成")
+        return None
+    result = await generate_subtitle(source_url)
+    if not result or not result.get("srt") or not result["srt"].strip():
+        logger.warning("ASR 字幕生成结果为空（视频可能无语音或转写失败），跳过字幕烧录")
+        return None
+    return {"enabled": True, "srt": result["srt"]}
+
+
 def _not_detect_task():
     """SQLAlchemy 条件：排除 detect_* 内部进度跟踪记录，同时允许 mode 为 NULL 的真实切片任务。
 
@@ -462,6 +550,7 @@ async def _publish_to_worker(
     badges_config: Optional[list] = None,
     badge_default_width: int = 0,
     source_bucket: str = "",
+    subtitle_config: Optional[dict] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -528,6 +617,8 @@ async def _publish_to_worker(
         "badges": badge_items,
         # 角标默认尺寸（px，可选，Go Worker 透传给引擎 --badge-default-width）
         "badge_default_width": badge_default_width or 0,
+        # ASR 字幕烧录（可选，Go Worker 把 SRT 写到本地后透传给引擎 --subtitle）
+        "subtitle": subtitle_config,
         "output": {
             "upload_url": f"{callback_base}/api/slice-tasks/{slice_task.id}/upload-url",
             "callback_url": callback_url,
@@ -569,6 +660,7 @@ async def _dispatch_celery(
     badges_config: Optional[list] = None,
     badge_default_width: int = 0,
     source_bucket: str = "",
+    subtitle_config: Optional[dict] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -596,6 +688,7 @@ async def _dispatch_celery(
         vert2horiz_config=vert2horiz_config,
         badges_config=badges_config,
         badge_default_width=badge_default_width,
+        subtitle_config=subtitle_config,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -822,11 +915,14 @@ async def run_slice(
     vert2horiz_config = _build_vert2horiz_config(data)
     # 构造图片角标配置（开启后随任务下发给引擎）
     badges_config = _build_badges_config(data)
-    # 持久化竖屏转横屏/角标配置，重试时保留
+    # 构造字幕烧录配置：开启时优先复用选点阶段已生成的源视频字幕，否则回退到 ASR 生成
+    subtitle_config = await _generate_subtitle_config(data, source_file_key, source_bucket, episode, db)
+    # 持久化竖屏转横屏/角标/字幕配置，重试时保留
     slice_task.vert2horiz_config = vert2horiz_config
     slice_task.watermark_config = watermark_config
     slice_task.badges_config = badges_config
     slice_task.badge_default_width = data.badge_default_width or 0
+    slice_task.subtitle_config = subtitle_config
 
     if engine == "worker":
         # 确保输出桶存在（全新部署时 sliced 桶可能未初始化）
@@ -845,6 +941,7 @@ async def run_slice(
             badges_config,
             data.badge_default_width,
             source_bucket,
+            subtitle_config,
         )
 
         if not published:
@@ -872,6 +969,7 @@ async def run_slice(
                 badges_config,
                 data.badge_default_width,
                 source_bucket,
+                subtitle_config,
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
@@ -1293,6 +1391,7 @@ async def retry_slice_task(
         watermark_config=task.watermark_config,
         badges_config=task.badges_config,
         vert2horiz_config=task.vert2horiz_config,
+        subtitle_config=task.subtitle_config,
         status="pending",
         progress=0.0,
     )
@@ -1319,6 +1418,7 @@ async def retry_slice_task(
             task.badges_config,
             task.badge_default_width or 0,
             source_bucket,
+            task.subtitle_config,
         )
 
         if not published:
@@ -1345,6 +1445,7 @@ async def retry_slice_task(
                 task.badges_config,
                 task.badge_default_width or 0,
                 source_bucket,
+                task.subtitle_config,
             )
         except Exception as e:
             new_task.status = "failed"

@@ -161,3 +161,32 @@ async def delete_autoclip_project(autoclip_project_id: str) -> bool:
         except httpx.RequestError as e:
             logger.error(f"AutoClip delete request error: {e}")
     return False
+
+async def generate_subtitle(
+    video_url: str,
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
+    timeout: float = 1800.0,
+) -> Optional[dict]:
+    """调用 AutoClip 的 ASR 字幕生成端点，对指定视频生成 SRT 字幕。
+
+    返回 {"srt": str, "method": str, "duration": float}，失败返回 None。
+    video_url 为源视频的 presigned URL（Autoclip 侧通过 HTTP 下载转写）。
+    同一视频会命中 autoclip 的 ASR 缓存，避免重复转写。
+    """
+    url = f"{settings.AUTOCLIP_URL}/subtitle/generate"
+    payload: dict = {"video_url": video_url}
+    if start_time is not None:
+        payload["start_time"] = start_time
+    if end_time is not None:
+        payload["end_time"] = end_time
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as e:
+        logger.error(f"AutoClip subtitle generate failed: {e.response.status_code} {e.response.text}")
+    except httpx.RequestError as e:
+        logger.error(f"AutoClip subtitle request error: {e}")
+    return None

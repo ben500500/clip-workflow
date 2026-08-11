@@ -360,6 +360,8 @@ type SliceTask struct {
 	Badges            []BadgeItem `json:"badges"`
 	// 角标默认尺寸（px，可选；Worker 透传给引擎 --badge-default-width）
 	BadgeDefaultWidth int         `json:"badge_default_width"`
+	// ASR 字幕烧录配置（可选，后端透传；Worker 把 SRT 写到本地后透传给引擎 --subtitle 参数）
+	Subtitle map[string]interface{} `json:"subtitle"`
 	Output         TaskOutput             `json:"output"`
 	TimeoutSec     int                    `json:"timeout_seconds"`
 	SourceDuration float64                `json:"source_duration"`

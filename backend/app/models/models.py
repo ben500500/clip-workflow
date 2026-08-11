@@ -276,6 +276,8 @@ class SliceTask(Base):
     badge_default_width = Column(Integer, nullable=True)
     # 竖屏转横屏预处理配置（可选，切片前把竖屏素材转成横屏；重试时保留）
     vert2horiz_config = Column(JSON, nullable=True)
+    # 字幕烧录配置（可选，{"enabled": bool, "srt": str}；重试时保留，避免重复 ASR）
+    subtitle_config = Column(JSON, nullable=True)
     status = Column(String(50), nullable=True)
     progress = Column(Float, default=0.0)
     output_count = Column(Integer, default=0)

@@ -377,6 +377,7 @@ def slice_task(
     vert2horiz_config: Optional[dict] = None,
     badges_config: Optional[list] = None,
     badge_default_width: int = 0,
+    subtitle_config: Optional[dict] = None,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
@@ -386,6 +387,7 @@ def slice_task(
     vert2horiz_config: 竖屏转横屏预处理配置（切片前把竖屏素材转成横屏）。
     badges_config: 图片角标配置（切片后在成品上叠加角标）。
     badge_default_width: 角标默认宽度（px，0=保持原图尺寸；角标未单独设 width 时生效）。
+    subtitle_config: 字幕烧录配置（{"enabled": True, "srt": str}，切片时烧录到成品）。
     """
     from app.services.slice_service import run_slice_scrub, run_slice_fast
     from app.services.minio_service import upload_file_from_path, download_to_file
@@ -433,6 +435,14 @@ def slice_task(
                     item["opacity"] = float(bi["opacity"])
                 badge_items.append(item)
 
+        # 字幕烧录：把 ASR 生成的 SRT 写到本地文件，供引擎 --subtitle 使用
+        subtitle_srt_path = None
+        if subtitle_config and subtitle_config.get("enabled"):
+            srt_content = subtitle_config.get("srt") or ""
+            if srt_content.strip():
+                subtitle_srt_path = write_temp_file(srt_content, suffix=".srt")
+                logger.info("字幕烧录已开启，SRT 已写入本地: %s", subtitle_srt_path)
+
         # 引擎进度回调会在 async 循环内被同步调用，不能在这里 run_async
         # （会嵌套事件循环报错）。只收集进度，引擎结束后统一写库。
         progress_values: list[int] = []
@@ -457,6 +467,7 @@ def slice_task(
                     vert2horiz_config=vert2horiz_config,
                     badges_config=badge_items,
                     badge_default_width=badge_default_width,
+                    subtitle_srt_path=subtitle_srt_path,
                 )
             )
         else:
@@ -472,6 +483,7 @@ def slice_task(
                     vert2horiz_config=vert2horiz_config,
                     badges_config=badge_items,
                     badge_default_width=badge_default_width,
+                    subtitle_srt_path=subtitle_srt_path,
                 )
             )
 
