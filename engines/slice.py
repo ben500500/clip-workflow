@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from typing import Optional
 
 # 允许导入同目录下的竖屏转横屏引擎（vert2horiz_crop.py 依赖 OpenCV）
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
