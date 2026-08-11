@@ -357,7 +357,9 @@ type SliceTask struct {
 	// 竖屏转横屏预处理配置（可选，后端透传，引擎 --vert2horiz 参数）
 	Vert2Horiz     map[string]interface{} `json:"vert2horiz"`
 	// 图片角标（可选，后端透传；Worker 下载图片后透传给引擎 --badges 参数）
-	Badges         []BadgeItem            `json:"badges"`
+	Badges            []BadgeItem `json:"badges"`
+	// 角标默认尺寸（px，可选；Worker 透传给引擎 --badge-default-width）
+	BadgeDefaultWidth int         `json:"badge_default_width"`
 	Output         TaskOutput             `json:"output"`
 	TimeoutSec     int                    `json:"timeout_seconds"`
 	SourceDuration float64                `json:"source_duration"`
@@ -370,11 +372,15 @@ type SliceTask struct {
 // url: 角标图片 presigned GET URL（Worker 下载后写入 Path 本地路径，透传给引擎 --badges）
 // position: top-left/top-center/top-right/bottom-left/bottom-center/bottom-right
 // width: 可选角标宽度（px）
+// offset: 可选角标到视频边缘的偏移量（px）
+// opacity: 可选角标透明度（0~1）
 type BadgeItem struct {
 	URL      string `json:"url"`
 	Path     string `json:"-"`
 	Position string `json:"position"`
 	Width    int    `json:"width,omitempty"`
+	Offset   int    `json:"offset,omitempty"`
+	Opacity  *float64 `json:"opacity,omitempty"`
 }
 
 // TaskSource 任务素材来源

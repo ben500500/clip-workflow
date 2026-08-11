@@ -115,6 +115,12 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 			if b.Width > 0 {
 				item["width"] = b.Width
 			}
+			if b.Offset > 0 {
+				item["offset"] = b.Offset
+			}
+			if b.Opacity != nil {
+				item["opacity"] = *b.Opacity
+			}
 			badgeItems = append(badgeItems, item)
 		}
 		if len(badgeItems) > 0 {
@@ -123,6 +129,11 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 				args = append(args, "--badges", string(bBytes))
 			}
 		}
+	}
+
+	// 角标默认尺寸：透传给引擎 --badge-default-width（0 时不传，保持原图尺寸）
+	if task.BadgeDefaultWidth > 0 {
+		args = append(args, "--badge-default-width", strconv.Itoa(task.BadgeDefaultWidth))
 	}
 
 	// Alpine 镜像提供 python3 可执行文件；Windows 上为 python

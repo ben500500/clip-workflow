@@ -376,6 +376,7 @@ def slice_task(
     encoder: Optional[str] = None,
     vert2horiz_config: Optional[dict] = None,
     badges_config: Optional[list] = None,
+    badge_default_width: int = 0,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
@@ -384,6 +385,7 @@ def slice_task(
     source_bucket: 源视频所在桶；普通切片为 raw-footage，成品重新剪辑为 sliced。
     vert2horiz_config: 竖屏转横屏预处理配置（切片前把竖屏素材转成横屏）。
     badges_config: 图片角标配置（切片后在成品上叠加角标）。
+    badge_default_width: 角标默认宽度（px，0=保持原图尺寸；角标未单独设 width 时生效）。
     """
     from app.services.slice_service import run_slice_scrub, run_slice_fast
     from app.services.minio_service import upload_file_from_path, download_to_file
@@ -425,6 +427,10 @@ def slice_task(
                 item = {"path": local, "position": bi.get("position", "top-left")}
                 if bi.get("width"):
                     item["width"] = int(bi["width"])
+                if bi.get("offset") is not None:
+                    item["offset"] = int(bi["offset"])
+                if bi.get("opacity") is not None:
+                    item["opacity"] = float(bi["opacity"])
                 badge_items.append(item)
 
         # 引擎进度回调会在 async 循环内被同步调用，不能在这里 run_async
@@ -450,6 +456,7 @@ def slice_task(
                     encoder=encoder,
                     vert2horiz_config=vert2horiz_config,
                     badges_config=badge_items,
+                    badge_default_width=badge_default_width,
                 )
             )
         else:
@@ -464,6 +471,7 @@ def slice_task(
                     encoder=encoder,
                     vert2horiz_config=vert2horiz_config,
                     badges_config=badge_items,
+                    badge_default_width=badge_default_width,
                 )
             )
 
