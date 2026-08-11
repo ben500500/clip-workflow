@@ -4,6 +4,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -1712,6 +1713,7 @@ async def _update_doubao_prompt(
     rewrite_history: Optional[list] = None,
     confirm_token: Optional[str] = None,
     progress: Optional[int] = None,
+    account: Optional[str] = None,
 ) -> bool:
     """更新提示词记录的豆包任务字段（供 Celery 任务在同步上下文调用）。"""
     from app.models.models import ShortdramaPrompt
@@ -1747,6 +1749,8 @@ async def _update_doubao_prompt(
             record.doubao_confirm_token = confirm_token
         if progress is not None:
             record.doubao_progress = int(progress)
+        if account is not None:
+            record.doubao_account = account
         await session.commit()
         return True
 
@@ -1766,7 +1770,13 @@ async def _sync_doubao_video(
     try:
         import httpx
 
-        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+        # 豆包成片直链为 douyin CDN，带上 Referer/UA 提升直链可下载成功率
+        _headers = {
+            "Referer": "https://www.doubao.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True, headers=_headers) as client:
             resp = await client.get(download_url)
             resp.raise_for_status()
             with open(tmp_path, "wb") as f:
@@ -1928,6 +1938,15 @@ def doubao_generate_task(
                 screenshot=shot_data_url,
             )
 
+        # 账户回调：提取到当前登录的豆包账户昵称后写入数据库，供前端展示
+        async def _account_cb(account: Optional[str]):
+            if not account:
+                return
+            await _update_doubao_prompt(
+                prompt_id,
+                account=account,
+            )
+
         # 改写确认回调：写入 awaiting_rewrite 状态并挂起等待用户确认
         async def _rewrite_cb(payload: dict) -> str:
             import secrets
@@ -1986,6 +2005,7 @@ def doubao_generate_task(
             screenshot_cb=_screenshot_cb,
             on_rewrite_available=_rewrite_cb,
             on_login_success=_on_login_success,
+            on_account_cb=_account_cb,
             cancel_check=lambda: _check_doubao_cancelled(prompt_id),
         ))
 
@@ -2147,7 +2167,13 @@ async def _sync_generated_video(
     try:
         import httpx
 
-        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+        # 豆包成片直链为 douyin CDN，带上 Referer/UA 提升直链可下载成功率
+        _headers = {
+            "Referer": "https://www.doubao.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        }
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True, headers=_headers) as client:
             resp = await client.get(download_url)
             resp.raise_for_status()
             with open(tmp_path, "wb") as f:

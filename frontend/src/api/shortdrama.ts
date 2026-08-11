@@ -25,6 +25,7 @@ export interface ShortdramaPromptRecord {
   // 一键豆包生成任务状态
   doubao_status?: string | null;
   doubao_account_type?: string | null;
+  doubao_account?: string | null;
   doubao_qrcode?: string | null;
   doubao_screenshot?: string | null;
   doubao_message?: string | null;
@@ -213,6 +214,11 @@ export const shortdramaApi = {
   setDoubaoAccountType: (accountType: 'free' | 'pro') =>
     client.put('/shortdrama/doubao/account-type', { account_type: accountType }) as Promise<{
       account_type: 'free' | 'pro';
+      message: string;
+    }>,
+
+  switchDoubaoAccount: () =>
+    client.post('/shortdrama/doubao/switch-account') as Promise<{
       message: string;
     }>,
 

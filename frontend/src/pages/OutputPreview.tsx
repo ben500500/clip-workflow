@@ -174,6 +174,22 @@ const OutputPreview: React.FC = () => {
     }
   };
 
+  // ─── 单个下载：直接触发浏览器下载，不跳转到播放/下载界面 ───────────
+  const downloadOne = (o: SliceOutput) => {
+    if (!o.id) {
+      message.warning('暂无下载地址');
+      return;
+    }
+    // 使用隐藏 a 标签 + download 属性，跟随后端 302 到 presigned URL 并直接下载，
+    // 避免 window.open 跳转到新标签页播放视频导致后续下载被浏览器拦截/中断。
+    const a = document.createElement('a');
+    a.href = `/api/outputs/${o.id}/download`;
+    a.download = o.file_name || `output_${o.id}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
   // ─── 一键发布：选平台 + 选发布素材（自动代入标题/描述/标签） ─────
   const openPublishModal = async (o: SliceOutput) => {
     setPublishTarget(o);
@@ -329,7 +345,7 @@ const OutputPreview: React.FC = () => {
       render: (_: unknown, o: SliceOutput) => (
         <Space size="small" wrap>
           <Button size="small" icon={<PlayCircleOutlined />} onClick={(e) => { e.stopPropagation(); toggleRowExpand(o); }}>预览</Button>
-          <Button size="small" icon={<DownloadOutlined />} onClick={(e) => { e.stopPropagation(); window.open(`/api/outputs/${o.id}/download`, '_blank'); }}>下载</Button>
+          <Button size="small" icon={<DownloadOutlined />} onClick={(e) => { e.stopPropagation(); downloadOne(o); }}>下载</Button>
           <Button size="small" type="primary" icon={<SendOutlined />} onClick={(e) => { e.stopPropagation(); openPublishModal(o); }}>一键发布</Button>
           <Button size="small" icon={<LinkOutlined />} onClick={(e) => { e.stopPropagation(); setCurrentOutput(o.id); pubForm.resetFields(); setPubModal(true); }}>登记发布</Button>
           <Button size="small" type="primary" ghost icon={<EditOutlined />} onClick={(e) => { e.stopPropagation(); openRecutModal(o); }}>编辑</Button>
