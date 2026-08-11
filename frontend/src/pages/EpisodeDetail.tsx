@@ -55,8 +55,9 @@ const DETECT_MODE_LABELS: Record<string, string> = {
   watermark: '水印',
 };
 
-// ─── 图片角标位置选项（六角） ─────────────────────────
+// ─── 图片角标位置选项（七位，含最左侧） ─────────────
 const BADGE_POSITIONS = [
+  { value: 'left', label: '最左侧' },
   { value: 'top-left', label: '左上' },
   { value: 'top-center', label: '中上' },
   { value: 'top-right', label: '右上' },

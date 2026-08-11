@@ -273,10 +273,11 @@ def safe_name(name: str) -> str:
 # 位置以视频宽高为基准（W/H），角标宽高以 scale 后的 overlay 图为准（w/h）
 # {O} 为角标到视频边缘的偏移量占位符，运行时会替换为具体像素值（默认 10）
 BADGE_POSITIONS = {
-    # 左上 / 中上 / 右上 / 左下 / 中下 / 右下
+    # 左上 / 中上 / 右上 / 最左侧(中左) / 左下 / 中下 / 右下
     "top-left":      ("{O}", "{O}"),
     "top-center":    ("(W-w)/2", "{O}"),
     "top-right":     ("W-w-{O}", "{O}"),
+    "left":          ("{O}", "(H-h)/2"),
     "bottom-left":   ("{O}", "H-h-{O}"),
     "bottom-center": ("(W-w)/2", "H-h-{O}"),
     "bottom-right":  ("W-w-{O}", "H-h-{O}"),

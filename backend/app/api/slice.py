@@ -73,7 +73,7 @@ class BadgeItem(BaseModel):
     """图片角标项：在切片成品上叠加一个角标。
 
     - file_key：上传到 MinIO 的角标图片 key
-    - position：六角位置（top-left/top-center/top-right/bottom-left/bottom-center/bottom-right）
+    - position：七位位置（top-left/top-center/top-right/left/bottom-left/bottom-center/bottom-right）
     - width：角标宽度（px，可选；0/空=用默认尺寸或保持原图）
     - offset：到视频边缘的偏移量（px，可选，默认 10）
     - opacity：角标透明度（0~1，可选，默认 1 不透明）
@@ -325,12 +325,13 @@ def _build_badges_config(data: SliceRunRequest) -> Optional[list]:
 
     仅保留合法角标；每个角标含 file_key（MinIO 对象 key）、position（位置）、
     width（可选宽度）、offset（可选边缘偏移）、opacity（可选透明度）。
-    位置限定为六角：左上/中上/右上/左下/中下/右下。
+    位置限定为七位：左上/中上/右上/最左侧/左下/中下/右下。
     """
     if not data.badges:
         return None
+    # 位置限定：左上/中上/右上/最左侧/左下/中下/右下。
     allowed = {
-        "top-left", "top-center", "top-right",
+        "top-left", "top-center", "top-right", "left",
         "bottom-left", "bottom-center", "bottom-right",
     }
     result = []
