@@ -93,6 +93,8 @@ const EpisodeDetail: React.FC = () => {
   const [badgeUploading, setBadgeUploading] = useState(false);
   // 角标默认尺寸（px）：角标未单独设 width 时生效；0=保持原图尺寸
   const [badgeDefaultWidth, setBadgeDefaultWidth] = useState<number>(0);
+  // 动态模式最小移动阈值（px）：越大越稳、越小越跟手
+  const [vert2horizMinStep, setVert2horizMinStep] = useState(5);
   const [maxClips, setMaxClips] = useState(10);
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
@@ -569,6 +571,7 @@ const EpisodeDetail: React.FC = () => {
             }))
           : undefined,
         badge_default_width: badgeDefaultWidth || undefined,
+        vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
       });
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
       message.info('切片完成后请到「成品预览」查看并下载结果');
@@ -613,6 +616,7 @@ const EpisodeDetail: React.FC = () => {
             }))
           : undefined,
         badge_default_width: badgeDefaultWidth || undefined,
+        vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
       });
       message.success(res.message);
       fetchHistories();
@@ -1090,6 +1094,15 @@ const EpisodeDetail: React.FC = () => {
                         max={60}
                         value={vert2horizSmoothWindow}
                         onChange={(v) => setVert2horizSmoothWindow(v ?? 15)}
+                        style={{ width: 80 }}
+                      />
+                      <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>最小移动(px):</Text>
+                      <InputNumber
+                        size="small"
+                        min={0}
+                        max={30}
+                        value={vert2horizMinStep}
+                        onChange={(v) => setVert2horizMinStep(v ?? 5)}
                         style={{ width: 80 }}
                       />
                       <Text type="secondary" style={{ fontSize: 12 }}>动态模式较慢（约 3-5 分钟/10 分钟视频），固定模式仅需一遍 ffmpeg（约 30 秒）</Text>
