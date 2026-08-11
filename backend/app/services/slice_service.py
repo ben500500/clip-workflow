@@ -87,6 +87,7 @@ async def run_slice(
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
     vert2horiz_config: Optional[dict] = None,
+    badges_config: Optional[list] = None,
 ) -> tuple[int, str, str]:
     """Run the ffmpeg slice engine.
 
@@ -96,6 +97,7 @@ async def run_slice(
     encoder: 三期 GPU 加速编码。可选 h264_nvenc/hevc_nvenc/\
         h264_videotoolbox/hevc_videotoolbox/libx264；不传则引擎自动探测。
     vert2horiz_config: 竖屏转横屏预处理配置（切片前把竖屏素材转成横屏）。
+    badges_config: 图片角标配置（切片后在成品上叠加角标）。
     """
     engine_path = engine_path or _engine_path("slice.py")
     _require_engine(engine_path)
@@ -109,6 +111,8 @@ async def run_slice(
         cmd.extend(["--encoder", encoder])
     if vert2horiz_config:
         cmd.extend(["--vert2horiz", json.dumps(vert2horiz_config)])
+    if badges_config:
+        cmd.extend(["--badges", json.dumps(badges_config)])
     logger.info("Running slice: %s", " ".join(cmd))
 
     return await _run_cmd(cmd, timeout, progress_cb)
@@ -124,6 +128,7 @@ async def run_slice_scrub(
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
     vert2horiz_config: Optional[dict] = None,
+    badges_config: Optional[list] = None,
 ) -> tuple[int, str, str]:
     """Run scrub-mode slicing (cutlist minus removed intervals)."""
     return await run_slice(
@@ -137,6 +142,7 @@ async def run_slice_scrub(
         watermark_config=watermark_config,
         encoder=encoder,
         vert2horiz_config=vert2horiz_config,
+        badges_config=badges_config,
     )
 
 
@@ -150,6 +156,7 @@ async def run_slice_fast(
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
     vert2horiz_config: Optional[dict] = None,
+    badges_config: Optional[list] = None,
 ) -> tuple[int, str, str]:
     """Run fast/dedupe mode slicing."""
     if mode not in ("fast", "dedupe"):
@@ -165,6 +172,7 @@ async def run_slice_fast(
         watermark_config=watermark_config,
         encoder=encoder,
         vert2horiz_config=vert2horiz_config,
+        badges_config=badges_config,
     )
 
 

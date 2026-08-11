@@ -268,6 +268,83 @@ def safe_name(name: str) -> str:
     return name
 
 
+# 角标位置到 overlay x/y 坐标表达式的映射
+# 位置以视频宽高为基准（W/H），角标宽高以 scale 后的 overlay 图为准（w/h）
+BADGE_POSITIONS = {
+    # 左上 / 中上 / 右上 / 左下 / 中下 / 右下
+    "top-left":      ("10", "10"),
+    "top-center":    ("(W-w)/2", "10"),
+    "top-right":     ("W-w-10", "10"),
+    "bottom-left":   ("10", "H-h-10"),
+    "bottom-center": ("(W-w)/2", "H-h-10"),
+    "bottom-right":  ("W-w-10", "H-h-10"),
+}
+
+
+def build_badges_overlay_args(badges: list, threads: int, encoder: str) -> list[str]:
+    """构造在成品视频上叠加多角标的 ffmpeg 命令参数（-filter_complex 多输入）。
+
+    返回完整的 ffmpeg 参数（含 -y、主视频输入、各角标 -i、filter_complex、
+    overlay 叠加、编码输出到 -o）。调用方只需追加输出路径。
+    角标全程叠加在视频指定位置上（不随时间消失），支持多角标。
+    """
+    # 校验角标图片存在
+    valid = []
+    for badge in badges:
+        path = badge.get("path") or ""
+        if path and os.path.isfile(path):
+            valid.append(badge)
+    if not valid:
+        return []
+
+    # 构造 filter_complex
+    parts = []
+    num = len(valid)
+    for i, badge in enumerate(valid):
+        position = (badge.get("position") or "top-left").lower()
+        if position not in BADGE_POSITIONS:
+            position = "top-left"
+        width = int(badge.get("width") or 0)
+        scale = f"scale={width}:-1" if width > 0 else "null"
+        parts.append(f"[{i + 1}:v]{scale},format=rgba[badge{i}]")
+
+    current = "[0:v]"
+    for i in range(num):
+        position = (valid[i].get("position") or "top-left").lower()
+        if position not in BADGE_POSITIONS:
+            position = "top-left"
+        x_expr, y_expr = BADGE_POSITIONS[position]
+        out_label = f"[vout{i}]" if i < num - 1 else "[vout]"
+        current = f"{current}[badge{i}]overlay=x={x_expr}:y={y_expr}:shortest=0{out_label}"
+    parts.append(current)
+    filter_complex = ";".join(parts)
+
+    # 返回 ["-i", badge1, "-i", badge2, ..., "-filter_complex", fc, "-map", "[vout]", 编码参数]
+    # 调用方在开头追加 -i <主视频>
+    args = []
+    for badge in valid:
+        args += ["-i", badge["path"]]
+    args += [
+        "-filter_complex", filter_complex,
+        "-map", "[vout]",
+        "-map", "0:a?",
+        "-c:a", "aac", "-b:a", "128k",
+    ]
+    args += build_encoder_args(encoder, threads)
+    return args
+
+
+def apply_badges(src, out, badges, threads=1, encoder="libx264"):
+    """对成品视频执行一次角标 overlay 叠加，产出新文件。"""
+    badge_args = build_badges_overlay_args(badges, threads, encoder)
+    if not badge_args:
+        # 无有效角标，直接复制
+        shutil.copy(src, out)
+        return
+    cmd = ["ffmpeg", "-y", "-threads", str(threads), "-i", src] + badge_args + [out]
+    run_ffmpeg(cmd, timeout=3600, threads=threads)
+
+
 def build_watermark_filter(wm: dict) -> str:
     """构造 ffmpeg 动态文字水印 filter（drawtext）。
 
@@ -341,6 +418,11 @@ def main():
         default=None,
         help="竖屏转横屏预处理配置 JSON（{\"enabled\":true, \"mode\":\"fixed|dynamic\", ...}），切片前把竖屏素材转成横屏",
     )
+    parser.add_argument(
+        "--badges",
+        default=None,
+        help="图片角标配置 JSON 数组（[{\"path\":本地图片, \"position\":\"top-left\", \"width\":可选}]），多角标全程叠加在视频指定位置",
+    )
     args = parser.parse_args()
 
     threads = cpu_threads_for_percent(args.cpu_percent)
@@ -397,6 +479,19 @@ def main():
         vf = f"{vf},{wm_filter}" if vf else wm_filter
         print(f"动态文字水印已开启: {watermark.get('text', '')}", file=sys.stderr)
 
+    # 图片角标：解析并缓存本地图片路径（Worker/后端已下载到本地）
+    badges = []
+    if args.badges:
+        try:
+            raw_badges = json.loads(args.badges)
+            if isinstance(raw_badges, list):
+                badges = raw_badges
+        except (ValueError, TypeError):
+            badges = []
+    if badges:
+        valid_paths = [b.get("path") for b in badges if b.get("path") and os.path.isfile(b["path"])]
+        print(f"图片角标已开启: {len(valid_paths)} 个", file=sys.stderr)
+
     # Group segments by original cut index for scrub mode.
     groups = {}
     for start, end, name, idx in segments:
@@ -417,6 +512,11 @@ def main():
                     slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder)
                     parts.append(part)
                 concat_segments(parts, out_path, threads=threads, encoder=encoder)
+            # 图片角标：切片完成后在成品上叠加角标（全程覆盖视频指定位置）
+            if badges:
+                badge_out = out_path + ".badge.mp4"
+                apply_badges(out_path, badge_out, badges, threads=threads, encoder=encoder)
+                os.replace(badge_out, out_path)
             duration = ffprobe_duration(out_path)
             outputs.append((name, duration))
             processed += 1

@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -97,6 +97,10 @@ class SliceRunRequest(BaseModel):
     # 剪辑区间（相对成品起点，秒）。默认整段（0 ~ 成品时长）
     cut_start: Optional[float] = None
     cut_end: Optional[float] = None
+    # ── 图片角标（切片后在成品上叠加角标，全程覆盖指定位置）──
+    # 角标列表：每个元素含 file_key（上传的角标图片 MinIO key）、position（位置）、
+    # width（可选宽度）。支持同时添加多个角标。
+    badges: Optional[List[BadgeItem]] = None
     # ── 竖屏转横屏智能裁切（切片前预处理）──
     # 开启后切片前自动检测素材方向，竖屏素材先转成横屏再切片
     vert2horiz_enabled: bool = False
@@ -277,6 +281,35 @@ def _build_vert2horiz_config(data: SliceRunRequest) -> Optional[dict]:
     return cfg
 
 
+def _build_badges_config(data: SliceRunRequest) -> Optional[list]:
+    """构造图片角标配置列表（引擎 --badges 期望的 JSON 数组）。
+
+    仅保留合法角标；每个角标含 file_key（MinIO 对象 key）、position（位置）、
+    width（可选宽度）。位置限定为六角：左上/中上/右上/左下/中下/右下。
+    """
+    if not data.badges:
+        return None
+    allowed = {
+        "top-left", "top-center", "top-right",
+        "bottom-left", "bottom-center", "bottom-right",
+    }
+    result = []
+    for b in data.badges:
+        if not b.file_key:
+            continue
+        position = (b.position or "top-left").lower()
+        if position not in allowed:
+            position = "top-left"
+        item = {
+            "file_key": b.file_key,
+            "position": position,
+        }
+        if b.width is not None:
+            item["width"] = max(1, int(b.width))
+        result.append(item)
+    return result if result else None
+
+
 def _not_detect_task():
     """SQLAlchemy 条件：排除 detect_* 内部进度跟踪记录，同时允许 mode 为 NULL 的真实切片任务。
 
@@ -397,6 +430,7 @@ async def _publish_to_worker(
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
     vert2horiz_config: Optional[dict] = None,
+    badges_config: Optional[list] = None,
     source_bucket: str = "",
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
@@ -414,6 +448,23 @@ async def _publish_to_worker(
             source_file_key,
             expires_seconds=7200,
         )
+
+    # 角标图片：为每个角标生成 presigned GET URL，Worker 下载后供引擎叠加
+    badge_items = None
+    if badges_config:
+        badge_items = []
+        for b in badges_config:
+            url = await get_presigned_url(
+                settings.MINIO_BUCKET_RAW,
+                b["file_key"],
+                expires_seconds=7200,
+            )
+            if url:
+                badge_items.append({
+                    "url": url,
+                    "position": b.get("position", "top-left"),
+                    "width": b.get("width"),
+                })
 
     # 每次任务生成独立的回调/上传鉴权 Token
     callback_token = secrets.token_hex(16)
@@ -441,6 +492,8 @@ async def _publish_to_worker(
         "encoder": encoder,
         # 竖屏转横屏预处理配置（可选，Go Worker 透传给引擎 --vert2horiz）
         "vert2horiz": vert2horiz_config,
+        # 图片角标（可选，Go Worker 下载图片后透传给引擎 --badges）
+        "badges": badge_items,
         "output": {
             "upload_url": f"{callback_base}/api/slice-tasks/{slice_task.id}/upload-url",
             "callback_url": callback_url,
@@ -479,6 +532,7 @@ async def _dispatch_celery(
     watermark_config: Optional[dict] = None,
     encoder: Optional[str] = None,
     vert2horiz_config: Optional[dict] = None,
+    badges_config: Optional[list] = None,
     source_bucket: str = "",
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
@@ -505,6 +559,7 @@ async def _dispatch_celery(
         watermark_config=watermark_config,
         encoder=encoder,
         vert2horiz_config=vert2horiz_config,
+        badges_config=badges_config,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -514,6 +569,70 @@ async def _dispatch_celery(
 # ──────────────────────────────────────────────
 # API 端点
 # ──────────────────────────────────────────────
+
+
+@router.post("/slice/badge-upload")
+async def upload_badge_image(
+    file: UploadFile = File(...),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """上传角标图片（png/jpg/jpeg/webp），存入 MinIO（raw-footage 桶 badge/ 前缀）。
+
+    返回 file_key，前端将其纳入切片请求的 badges 列表。
+    """
+    from app.services.upload_service import validate_file_name
+
+    file_name = file.filename or ""
+    try:
+        safe_name = validate_file_name(file_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # 仅允许图片类型
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+        raise HTTPException(status_code=400, detail="角标仅支持图片文件（png/jpg/jpeg/webp/gif/bmp）")
+
+    upload_id = str(uuid.uuid4())
+    local_path = f"/tmp/badge_upload/{upload_id}_{safe_name}"
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+    size = 0
+    with open(local_path, "wb") as out:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > settings.UPLOAD_MAX_SIZE:
+                out.close()
+                os.unlink(local_path)
+                raise HTTPException(status_code=413, detail="文件超过大小上限")
+            out.write(chunk)
+
+    if size == 0:
+        os.unlink(local_path)
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    # 角标图片存入 raw-footage 桶 badge/ 前缀
+    file_key = f"badge/{upload_id}_{safe_name}"
+    ok = await upload_file_from_path(
+        settings.MINIO_BUCKET_RAW,
+        file_key,
+        local_path,
+        content_type=file.content_type or "image/png",
+    )
+    os.unlink(local_path)
+    if not ok:
+        raise HTTPException(status_code=500, detail="角标图片上传存储失败")
+
+    return {
+        "file_name": safe_name,
+        "file_key": file_key,
+        "file_size": size,
+        "upload_id": upload_id,
+    }
 
 
 @router.post("/episodes/{episode_id}/slice/run", response_model=SliceRunResponse)
@@ -663,9 +782,12 @@ async def run_slice(
     watermark_config = _build_watermark_config(data, episode)
     # 构造竖屏转横屏预处理配置（开启后随任务下发给引擎）
     vert2horiz_config = _build_vert2horiz_config(data)
-    # 持久化竖屏转横屏配置，重试时保留
+    # 构造图片角标配置（开启后随任务下发给引擎）
+    badges_config = _build_badges_config(data)
+    # 持久化竖屏转横屏/角标配置，重试时保留
     slice_task.vert2horiz_config = vert2horiz_config
     slice_task.watermark_config = watermark_config
+    slice_task.badges_config = badges_config
 
     if engine == "worker":
         # 确保输出桶存在（全新部署时 sliced 桶可能未初始化）
@@ -681,6 +803,7 @@ async def run_slice(
             watermark_config,
             data.encoder,
             vert2horiz_config,
+            badges_config,
             source_bucket,
         )
 
@@ -706,6 +829,7 @@ async def run_slice(
                 watermark_config,
                 data.encoder,
                 vert2horiz_config,
+                badges_config,
                 source_bucket,
             )
         except Exception as e:
@@ -1122,10 +1246,12 @@ async def retry_slice_task(
         cutlist=task.cutlist,
         intervals=task.intervals,
         dedupe_config=task.dedupe_config,
-        # 重试时保留原任务的源与水印配置
+        # 重试时保留原任务的源与水印/角标配置
         source_bucket=source_bucket,
         source_file_key=source_file_key,
         watermark_config=task.watermark_config,
+        badges_config=task.badges_config,
+        vert2horiz_config=task.vert2horiz_config,
         status="pending",
         progress=0.0,
     )
@@ -1149,6 +1275,7 @@ async def retry_slice_task(
             task.watermark_config,
             None,
             task.vert2horiz_config,
+            task.badges_config,
             source_bucket,
         )
 
@@ -1173,6 +1300,7 @@ async def retry_slice_task(
                 task.watermark_config,
                 None,
                 task.vert2horiz_config,
+                task.badges_config,
                 source_bucket,
             )
         except Exception as e:

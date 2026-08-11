@@ -101,6 +101,30 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		}
 	}
 
+	// 图片角标：后端下发 badges（含已下载到本地的 path），透传给引擎 --badges
+	if len(task.Badges) > 0 {
+		badgeItems := make([]map[string]interface{}, 0)
+		for _, b := range task.Badges {
+			if b.Path == "" {
+				continue
+			}
+			item := map[string]interface{}{
+				"path":     b.Path,
+				"position": b.Position,
+			}
+			if b.Width > 0 {
+				item["width"] = b.Width
+			}
+			badgeItems = append(badgeItems, item)
+		}
+		if len(badgeItems) > 0 {
+			bBytes, err := json.Marshal(badgeItems)
+			if err == nil {
+				args = append(args, "--badges", string(bBytes))
+			}
+		}
+	}
+
 	// Alpine 镜像提供 python3 可执行文件；Windows 上为 python
 	cmd := exec.CommandContext(ctx, pythonBinary(), args...)
 
