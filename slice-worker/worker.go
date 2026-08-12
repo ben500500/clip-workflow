@@ -375,6 +375,10 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	// 启动取消监听：轮询 Redis 中任务是否被后端标记为 cancelled
 	go w.watchCancellation(taskCtx, task.TaskID, cancel)
 
+	// 启动租约续期：周期性刷新任务 lease，防止运行超过 claimLoop 阈值（5 分钟）
+	// 的长任务被误判为孤儿重新执行（lease 不刷新是历史双副本/状态污染的真根源）
+	go w.leaseRenewal(taskCtx, task.TaskID)
+
 	// 创建临时目录
 	taskDir := filepath.Join(w.config.TempDir, task.TaskID)
 	os.MkdirAll(taskDir, 0755)
@@ -564,8 +568,7 @@ func (w *Worker) sendFailureCallback(task *SliceTask, errMsg string) {
 }
 
 // watchCancellation 轮询 Redis 任务状态，感知后端取消指令并触发 context 取消
-func (w *Worker) watchCancellation(ctx context.Context, taskID string, cancel context.CancelFunc) {
-	ticker := time.NewTicker(3 * time.Second)
+func (w *Worker) watchCancellation(ctx context.Context, taskID string, cancel context.CancelFunc) {	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -581,6 +584,27 @@ func (w *Worker) watchCancellation(ctx context.Context, taskID string, cancel co
 				w.log("warn", "任务 %s 收到取消信号，终止执行", taskID)
 				cancel()
 				return
+			}
+		}
+	}
+}
+
+// leaseRenewal 周期性刷新运行中任务的租约（lease）。
+//
+// 背景：claimLoop 以 5 分钟为阈值认领"无租约/租约过期"的任务。若运行中任务
+// 不刷新 lease，任何耗时超过 5 分钟的任务（如 vert2horiz 动态跟踪逐帧检测、
+// 大视频切片）都会被误判为孤儿重新执行 → 双副本 + 状态污染。
+// 此 goroutine 每 30 秒 TouchTask 刷新 lease，taskCtx 结束（完成/取消/超时）即退出。
+func (w *Worker) leaseRenewal(ctx context.Context, taskID string) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := w.redis.TouchTask(taskID); err != nil {
+				w.log("warn", "任务 %s 租约续期失败: %v", taskID, err)
 			}
 		}
 	}
