@@ -26,6 +26,7 @@ celery_app = Celery(
 )
 
 celery_app.conf.update(
+    include=["app.celery.batch_slice_task"],
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
@@ -53,6 +54,7 @@ celery_app.conf.update(
         "app.celery.tasks.confirm_publish_worker": {"queue": "publish"},
         "app.celery.tasks.task_collect_metrics": {"queue": "metrics"},
         "app.celery.tasks.watermark_task": {"queue": "video_processing"},
+        "app.celery.batch_slice_task.process_batch": {"queue": "video_processing"},
         "app.celery.tasks.check_cookie_status": {"queue": "publish"},
         "app.celery.tasks.doubao_generate_task": {"queue": "publish"},
         # Seedance 官方 API 直连出片（HTTP 直连，无浏览器；复用 publish 队列即可，

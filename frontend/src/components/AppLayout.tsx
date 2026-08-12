@@ -18,6 +18,7 @@ import {
   PoweroffOutlined,
   ClearOutlined,
   WarningOutlined,
+  PlayCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -38,6 +39,11 @@ const allMenuItems = [
     key: '/projects',
     icon: <ProjectOutlined />,
     label: '短剧切片',
+  },
+  {
+    key: '/batch-slice',
+    icon: <PlayCircleOutlined />,
+    label: '批量切片',
   },
   {
     key: '/watermark',
