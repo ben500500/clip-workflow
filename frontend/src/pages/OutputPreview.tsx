@@ -38,7 +38,6 @@ const OutputPreview: React.FC = () => {
   const [tasks, setTasks] = useState<SliceTask[]>([]);
   const [outputs, setOutputs] = useState<SliceOutput[]>([]);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [publications, setPublications] = useState<Publication[]>([]);
   const [pubModal, setPubModal] = useState(false);
   const [pubForm] = Form.useForm();
@@ -104,7 +103,6 @@ const OutputPreview: React.FC = () => {
     const seq = ++outputLoadSeqRef.current;
     setSelectedTask(taskId);
     setOutputs([]);
-    setVideoUrl(null);
     setPublications([]);
     setSelectedRowKeys([]);
     setExpandedRowKeys([]);
@@ -136,7 +134,6 @@ const OutputPreview: React.FC = () => {
       const video = await previewApi.getVideoUrl(output.id);
       if (mountedRef.current) {
         setExpandedVideoUrls((prev) => ({ ...prev, [output.id]: video.url }));
-        setVideoUrl(video.url);
       }
       const pubs = await previewApi.getPublications(output.id);
       if (mountedRef.current) setPublications(pubs);
@@ -464,11 +461,6 @@ const OutputPreview: React.FC = () => {
           ) : (
             <Text type="secondary">该任务暂无输出文件</Text>
           )}
-        </Card>
-      )}
-      {videoUrl && (
-        <Card size="small" title="视频预览" style={{ marginBottom: 16 }}>
-          <video src={videoUrl} controls style={{ width: '100%', maxHeight: 420, background: '#000' }} />
         </Card>
       )}
       {currentOutput && (

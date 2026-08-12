@@ -451,23 +451,53 @@ _FCMATCH_CMD = "fc-match"
 _SC_FONTFILE_CACHE = {"path": None}
 
 
+# 只有当 fc-match 解析到的 family 命中这些 CJK 简体中文字体时才可信。
+# 关键：fc-match 找不到目标字体时不会报错/返回空，而是回退到“最接近”的字体
+# （如 DejaVu / Droid），此时返回的 file 路径虽存在但**不是**简体中文字体——
+# 直接用它 fontfile= 会导致“门”等简体字渲染成异常/缺字字形。
+# 所以必须同时校验 family 名称，命中 CJK SC 才信任其 file 路径。
+_SC_FAMILY_HINTS = (
+    "noto sans cjk sc",
+    "noto sans cjk",          # 含 SC 子字体的大集合
+    "source han sans sc",
+    "source han serif sc",
+    "wenquanyi",               # 文泉驿（含简中）
+    "wqy",
+    "cjk",
+    # 注意：不带 Droid Sans Fallback——实测其“门”(U+95E8) 为异常/次选字形，
+    # 不可信任，避免再次把“门”渲染错。
+)
+
+
 def _fc_match_sc_font() -> str:
     """用 fontconfig 的 fc-match 动态解析 "Noto Sans CJK SC" 的真实字体路径。
 
-    自适应 Debian/Alpine 等不同发行版，返回匹配字体的绝对路径；无 fc-match 或
-    匹配失败时返回空串。通过缓存避免重复调用外部进程。
+    自适应 Debian/Alpine 等不同发行版，返回匹配字体的绝对路径；无 fc-match、
+    匹配失败、或解析到的 family **不是 CJK 简体中文字体**时返回空串。
+    通过缓存避免重复调用外部进程。
+
+    核心防护：fc-match 找不到目标字体时会回退到任意“最接近”字体（如 DejaVu），
+    其 file 路径存在但渲染不了简体中文，直接使用会导致“门”字异常。因此这里
+    额外校验 family 名称，只信任命中 CJK 简体中文字体的结果。
     """
     if _SC_FONTFILE_CACHE["path"] is not None:
         return _SC_FONTFILE_CACHE["path"]
     try:
+        # 一次拿回 file 与 family，family 用于校验是否真的是简体中文字体
         proc = subprocess.run(
-            [_FCMATCH_CMD, "-f", "%{file}\n", "Noto Sans CJK SC"],
+            [_FCMATCH_CMD, "-f", "%{file}\t%{family}\n", "Noto Sans CJK SC"],
             capture_output=True, text=True, timeout=5,
         )
-        path = (proc.stdout or "").strip().splitlines()
-        if path and os.path.isfile(path[0]):
-            _SC_FONTFILE_CACHE["path"] = path[0]
-            return path[0]
+        line = (proc.stdout or "").strip().splitlines()
+        if not line:
+            _SC_FONTFILE_CACHE["path"] = ""
+            return ""
+        parts = line[0].split("\t")
+        file_path = parts[0].strip() if parts else ""
+        family = (parts[1] if len(parts) > 1 else "").lower()
+        if file_path and os.path.isfile(file_path) and any(h in family for h in _SC_FAMILY_HINTS):
+            _SC_FONTFILE_CACHE["path"] = file_path
+            return file_path
     except (OSError, subprocess.SubprocessError):
         pass
     _SC_FONTFILE_CACHE["path"] = ""
@@ -521,6 +551,24 @@ def _extract_sc_face(ttc_path: str) -> str:
         return ""
 
 
+def _fontconfig_has_cjk_sc() -> bool:
+    """判断 fontconfig 是否真的能解析到 CJK 简体中文字体（用于 font= 兜底）。
+
+    仅检查 family 是否存在可用字体，不关心具体 file 路径；避免依赖写死的
+    ttc 路径。命中则说明 ffmpeg 的 drawtext font= 可用 fontconfig 精确匹配。
+    """
+    try:
+        proc = subprocess.run(
+            [_FCMATCH_CMD, "-f", "%{family}\n", "Noto Sans CJK SC"],
+            capture_output=True, text=True, timeout=5,
+        )
+        fam = ((proc.stdout or "").strip().splitlines() or [""])
+        fam = fam[0].lower() if fam else ""
+        return any(h in fam for h in _SC_FAMILY_HINTS)
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _resolve_drawtext_font() -> str:
     """返回 drawtext 的字体参数片段。
 
@@ -545,7 +593,7 @@ def _resolve_drawtext_font() -> str:
             return ":font=Noto Sans CJK SC"
         return f":fontfile={sc_path}"
     # ③ 兜底 A：有 Noto CJK 集合时用 fontconfig font= 精确匹配简体中文
-    if any(os.path.isfile(f) for f in _TEXT_TTC_CANDIDATES):
+    if _fontconfig_has_cjk_sc() or any(os.path.isfile(f) for f in _TEXT_TTC_CANDIDATES):
         return ":font=Noto Sans CJK SC"
     # ④ 兜底 B：单字体文件
     _text_fontfile = next((f for f in _TEXT_SINGLE_FONT_CANDIDATES if os.path.isfile(f)), "")
