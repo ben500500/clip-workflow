@@ -13,7 +13,9 @@ import {
   Tooltip,
   Switch,
   Progress,
+  Popconfirm,
 } from 'antd';
+import type { TableProps } from 'antd';
 import {
   ReloadOutlined,
   SyncOutlined,
@@ -26,6 +28,7 @@ import {
   PoweroffOutlined,
   PlusOutlined,
   MinusOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import { sliceApi } from '../api/slice';
 import type { WorkerNode } from '../types';
@@ -104,6 +107,20 @@ const WorkersPage: React.FC = () => {
     }
   };
 
+  // 删除废弃节点
+  const removeWorker = async (node: WorkerNode) => {
+    setTogglingId(node.node_id);
+    try {
+      const res = await sliceApi.deleteWorker(node.node_id);
+      message.success(res.message);
+      fetchWorkers();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '删除节点失败');
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
   useEffect(() => {
     fetchWorkers();
     const interval = setInterval(() => fetchWorkers(true), 10000);
@@ -116,7 +133,7 @@ const WorkersPage: React.FC = () => {
   const totalRunning = workers.reduce((s, w) => s + (w.current_tasks || 0), 0);
   const totalCompleted = workers.reduce((s, w) => s + (w.total_tasks_completed || 0), 0);
 
-  const columns = [
+  const columns: TableProps<WorkerNode>['columns'] = [
     {
       title: '节点 ID',
       dataIndex: 'node_id',
@@ -231,15 +248,46 @@ const WorkersPage: React.FC = () => {
       ),
     },
     {
-      title: '运行进度',
+      title: '当前处理',
       key: 'progress',
-      width: 150,
+      width: 260,
       render: (_: unknown, record: WorkerNode) => {
+        const tasks = record.running_tasks || [];
         const running = record.current_tasks || 0;
-        if (running <= 0) {
+        if (running <= 0 && tasks.length === 0) {
           return <Text type="secondary" style={{ fontSize: 12 }}>空闲</Text>;
         }
-        // 优先展示 Redis 汇总的真实任务平均进度；无实时进度时用并发占用率兜底
+        // 有具体运行任务时逐条展示「模式 + 阶段 + 进度」；否则用并发占用率兜底
+        if (tasks.length > 0) {
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {tasks.map((t) => {
+                const pct = Math.round(t.progress || 0);
+                const phaseText =
+                  t.phase === 'download' ? '下载素材' :
+                  t.phase === 'ffmpeg' ? '切片处理' :
+                  t.phase === 'upload' ? '上传结果' :
+                  (t.phase || '处理');
+                return (
+                  <div key={t.task_id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Tag color={t.mode === 'fast' ? 'blue' : t.mode === 'dedupe' ? 'purple' : t.mode === 'scrub' ? 'orange' : 'default'}
+                      style={{ fontSize: 11, marginInlineEnd: 0 }}>
+                      {t.mode || 'slice'}
+                    </Tag>
+                    <Progress
+                      percent={pct}
+                      size="small"
+                      style={{ width: 80, margin: 0, flex: '0 0 auto' }}
+                      status="active"
+                      format={(p) => `${p}%`}
+                    />
+                    <Text type="secondary" style={{ fontSize: 11, flex: '0 0 auto' }}>{phaseText}</Text>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        }
         const pct = record.running_progress && record.running_progress > 0
           ? Math.round(record.running_progress)
           : Math.min(100, Math.round((running / (record.max_concurrent || 2)) * 100));
@@ -294,6 +342,32 @@ const WorkersPage: React.FC = () => {
           checkedChildren="开"
           unCheckedChildren="关"
         />
+      ),
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 90,
+      fixed: 'right',
+      render: (_: unknown, record: WorkerNode) => (
+        <Popconfirm
+          title="删除节点"
+          description={`确认删除节点 ${record.node_id}？删除后该节点将从管理列表移除（若仍在线会重新注册）。`}
+          okText="删除"
+          cancelText="取消"
+          okButtonProps={{ danger: true }}
+          onConfirm={() => removeWorker(record)}
+        >
+          <Button
+            type="text"
+            size="small"
+            danger
+            icon={<DeleteOutlined />}
+            loading={togglingId === record.node_id}
+          >
+            删除
+          </Button>
+        </Popconfirm>
       ),
     },
   ];
