@@ -23,6 +23,7 @@ from app.services.redis_stream import (
     is_node_enabled,
     set_node_cpu_percent,
     get_node_cpu_percent,
+    delete_worker_node,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,8 @@ class WorkerNodeResponse(BaseModel):
     created_at: str = ""
     # 该节点正在运行的任务平均进度（"工作时进度显示"）
     running_progress: float = 0.0
+    # 该节点正在运行的任务列表（含 task_id/阶段/模式/进度，供界面展示"当前在处理什么"）
+    running_tasks: list = []
     # 该节点 CPU 资源分配比例（%，默认 50）
     cpu_percent: int = 50
 
@@ -96,6 +99,7 @@ def _serialize_node(node: WorkerNode) -> dict:
         "started_at": utc_iso(node.started_at) if node.started_at else None,
         "created_at": utc_iso(node.created_at) if node.created_at else "",
         "running_progress": getattr(node, "running_progress", 0.0) or 0.0,
+        "running_tasks": getattr(node, "running_tasks", []) or [],
         "cpu_percent": getattr(node, "cpu_percent", 50) or 50,
     }
 
@@ -236,6 +240,8 @@ async def list_workers(
         if rd:
             d["running_progress"] = rd.get("running_progress", 0.0) or 0.0
             d["cpu_percent"] = rd.get("cpu_percent", d.get("cpu_percent", 50)) or 50
+            # 该节点正在运行的任务详情（供界面展示"当前在处理什么"）
+            d["running_tasks"] = rd.get("running_tasks", []) or []
         result.append(d)
     return result
 
@@ -294,6 +300,38 @@ async def disable_worker_node(
     # 写入 Redis 控制 key，Worker 端每次取任务前读取
     await set_node_enabled(node_id, False)
     return {"ok": True, "node_id": node_id, "enabled": False, "message": f"节点 {node_id} 已停用（正在执行的任务不受影响）"}
+
+
+@router.delete("/workers/{node_id}")
+async def delete_worker(
+    node_id: str,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+    db: AsyncSession = Depends(get_db),
+):
+    """删除废弃的 Worker 节点（数据库记录 + Redis 痕迹一并清理）。
+
+    适用于不再使用、误注册或废弃的节点，删除后该节点将不再出现在
+    Worker 节点管理列表中；若节点仍在运行并继续心跳，会重新自动注册。
+    """
+    # 删除数据库记录
+    result = await db.execute(
+        select(WorkerNode).where(WorkerNode.node_id == node_id)
+    )
+    node = result.scalar_one_or_none()
+    if node:
+        await db.delete(node)
+        await db.flush()
+
+    # 清理 Redis 痕迹（节点 Hash/在线集合/标签/控制 key/该节点运行中的任务 Hash）
+    redis_deleted = await delete_worker_node(node_id)
+
+    return {
+        "ok": True,
+        "node_id": node_id,
+        "deleted": True,
+        "message": f"节点 {node_id} 已删除"
+        + ("（Redis 痕迹已清理）" if redis_deleted else "（Redis 清理失败，请稍后重试）"),
+    }
 
 
 class SetNodeCpuPercentRequest(BaseModel):

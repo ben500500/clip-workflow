@@ -33,11 +33,33 @@ type Config struct {
 	CPUPercent int `json:"cpu_percent"`
 }
 
+// DefaultNodeID 生成统一的默认节点 ID（命名规则：slice-worker-<本机名>）。
+//
+// 与 deploy_remote_worker.sh（slice-worker-<hostname 前 12 字符小写>）和
+// docker-compose（slice-worker-1/2）保持一致，统一带 `slice-worker-` 前缀，
+// 避免不同部署方式下节点命名规则不一致导致管理界面难以辨认。
+func DefaultNodeID() string {
+	hostname, _ := os.Hostname()
+	hostname = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return -1
+	}, hostname)
+	if len(hostname) > 12 {
+		hostname = hostname[:12]
+	}
+	hostname = strings.ToLower(hostname)
+	if hostname == "" {
+		hostname = "local"
+	}
+	return "slice-worker-" + hostname
+}
+
 // DefaultConfig 默认配置
 func DefaultConfig() *Config {
-	hostname, _ := os.Hostname()
 	return &Config{
-		NodeID:            hostname,
+		NodeID:            DefaultNodeID(),
 		RedisURL:          "redis://localhost:6379",
 		Tags:              []string{"cpu"},
 		MaxConcurrent:     2,
@@ -65,6 +87,12 @@ func LoadConfig(path string) (*Config, error) {
 
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, err
+	}
+
+	// 节点 ID 为空（环境变量 NODE_ID 未设置导致 worker.json 模板被替换为空）时，
+	// 回落为统一命名规则 slice-worker-<本机名>，避免节点以空串 ID 注册。
+	if cfg.NodeID == "" || strings.TrimSpace(cfg.NodeID) == "" {
+		cfg.NodeID = DefaultNodeID()
 	}
 
 	// CPU 分配比例范围约束：1 ~ 100，默认 50

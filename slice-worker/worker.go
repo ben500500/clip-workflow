@@ -284,10 +284,12 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	}
 
 	// 更新状态
+	// 同时写入任务模式（mode），供后端 Worker 节点界面展示"当前在处理什么"
 	w.redis.UpdateTaskStatus(task.TaskID, "running", map[string]interface{}{
 		"node_id":    w.config.NodeID,
 		"started_at": time.Now().Unix(),
 		"lease":      time.Now().Unix(),
+		"mode":       task.Mode,
 	})
 
 	// 启动取消监听：轮询 Redis 中任务是否被后端标记为 cancelled

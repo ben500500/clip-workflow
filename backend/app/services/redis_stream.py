@@ -248,6 +248,54 @@ async def get_node_cpu_percent(node_id: str, default: int = 50) -> int:
             await redis.close()
 
 
+async def delete_worker_node(node_id: str) -> bool:
+    """删除 Worker 节点（废弃节点清理）。
+
+    清理该节点在 Redis 中的全部痕迹：
+    - 节点信息 Hash `slice:nodes:{node_id}`
+    - 在线集合 `slice:nodes:online` 中的成员
+    - 该节点名下的标签集合 `slice:nodes:tag:{tag}`
+    - 节点启停控制 key、CPU 控制 key
+    - 该节点正在运行的任务状态 Hash（强制清理，避免悬挂）
+
+    返回是否成功。
+    """
+    redis = None
+    try:
+        redis = await get_redis()
+        # 读取节点 Hash 获取标签，用于清理标签集合
+        node_data = await redis.hgetall(f"{NODE_KEY_PREFIX}{node_id}")
+        try:
+            tags = json.loads(node_data.get("tags", "[]"))
+        except (ValueError, TypeError):
+            tags = []
+
+        pipe = redis.pipeline()
+        # 删除节点信息 Hash
+        pipe.delete(f"{NODE_KEY_PREFIX}{node_id}")
+        # 从在线集合移除
+        pipe.srem("slice:nodes:online", node_id)
+        # 删除标签集合中的该节点
+        for tag in tags:
+            pipe.srem(f"slice:nodes:tag:{tag}", node_id)
+        # 删除启停/CPU 控制 key
+        pipe.delete(f"{NODE_ENABLED_PREFIX}{node_id}")
+        pipe.delete(f"{NODE_CPU_PERCENT_PREFIX}{node_id}")
+        # 清理该节点正在运行的任务状态 Hash
+        async for key in redis.scan_iter(match=f"{TASK_STATUS_PREFIX}*", count=200):
+            task_data = await redis.hgetall(key)
+            if task_data.get("node_id", "") == node_id:
+                pipe.delete(key)
+        await pipe.execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete worker node {node_id} from Redis: {e}")
+        return False
+    finally:
+        if redis:
+            await redis.close()
+
+
 async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[dict]:
     """从 Redis 获取所有 Worker 节点信息（含在线与离线判定）。
 
@@ -282,10 +330,15 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
                     progress = float(task_data.get("progress", 0) or 0)
                 except (TypeError, ValueError):
                     progress = 0.0
+                # 阶段与任务模式（供 Worker 节点界面展示"当前在处理什么"）
+                phase = task_data.get("phase", "") or ""
+                mode = task_data.get("mode", "") or ""
                 node_running.setdefault(nid, []).append({
                     "task_id": key.rsplit(":", 1)[-1],
                     "status": status,
                     "progress": progress,
+                    "phase": phase,
+                    "mode": mode,
                 })
         except Exception as e:
             logger.warning(f"Failed to scan running tasks from Redis: {e}")

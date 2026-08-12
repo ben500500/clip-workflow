@@ -134,4 +134,12 @@ export const sliceApi = {
       message: string;
       cpu_percent: number;
     }>,
+
+  deleteWorker: (nodeId: string) =>
+    client.delete(`/workers/${encodeURIComponent(nodeId)}`) as Promise<{
+      ok: boolean;
+      node_id: string;
+      deleted: boolean;
+      message: string;
+    }>,
 };
