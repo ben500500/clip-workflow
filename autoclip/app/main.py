@@ -358,7 +358,9 @@ async def _run_pipeline(project_id: str, steps: list[int],
         _update_progress(proj, "running", 60,
                          f"时间线定位完成（{len(timeline)} 个片段），开始评分")
 
-        # Step 3: 评分
+        # Step 3: 评分（画面理解：把源视频路径注入环境变量，供 frame_analyzer 抽帧分析）
+        if video_path:
+            os.environ["FRAME_ANALYSIS_VIDEO_PATH"] = str(video_path)
         scored = await asyncio.to_thread(
             run_step3_scoring, meta_dir / "step2_timeline.json", meta_dir, None, PROMPT_FILES)
         _update_progress(proj, "running", 80,

@@ -3,6 +3,7 @@ Step 3: 内容评分 - 对每个话题进行质量评分，筛选出高质量内
 """
 import json
 import logging
+import os
 import re
 from typing import List, Dict, Any, Optional
 from pathlib import Path
@@ -11,7 +12,7 @@ from collections import defaultdict
 # 导入依赖
 from ..utils.llm_client import LLMClient
 from ..utils.text_processor import TextProcessor
-from ..core.shared_config import PROMPT_FILES, METADATA_DIR, MIN_SCORE_THRESHOLD
+from ..core.shared_config import PROMPT_FILES, METADATA_DIR, MIN_SCORE_THRESHOLD, FRAME_ANALYSIS_ENABLED
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,22 @@ class ClipScorer:
             metadata_dir = METADATA_DIR
         self.metadata_dir = metadata_dir
         self.srt_chunks_dir = self.metadata_dir / "step1_srt_chunks"
+
+        # 画面理解（可选）：源视频路径从环境变量注入（backend 调用时设置），
+        # 开启 FRAME_ANALYSIS_ENABLED 且视频存在时才启用
+        self.video_path = os.getenv("FRAME_ANALYSIS_VIDEO_PATH", "").strip()
+        self.frame_analysis_enabled = (
+            FRAME_ANALYSIS_ENABLED
+            and bool(self.video_path)
+            and Path(self.video_path).exists()
+        )
+        if self.frame_analysis_enabled:
+            try:
+                from ..utils.frame_analyzer import analyze_timeline_frames
+                self._analyze_timeline_frames = analyze_timeline_frames
+            except Exception as e:
+                logger.warning(f"画面分析模块加载失败，将跳过画面理解: {e}")
+                self.frame_analysis_enabled = False
 
         # 加载提示词
         prompt_files_to_use = prompt_files if prompt_files is not None else PROMPT_FILES
@@ -92,6 +109,17 @@ class ClipScorer:
         使用LLM进行批量评估，为每个clip添加 final_score 和 recommend_reason
         """
         try:
+            # 画面理解：开启时批量分析所有候选片段画面（静默失败不影响打分）
+            frame_map: Dict[str, Any] = {}
+            if self.frame_analysis_enabled:
+                try:
+                    frame_map = self._analyze_timeline_frames(clips, self.video_path)
+                    if frame_map:
+                        logger.info(f"画面分析完成，{len(frame_map)}/{len(clips)} 个片段获得画面描述")
+                except Exception as e:
+                    logger.warning(f"画面分析失败，降级为纯文本打分: {e}")
+                    frame_map = {}
+
             # 输入给LLM的数据不需要包含所有字段，只给必要的
             # transcript 为该时间区间内的原始台词原文，是判分的最重要依据
             input_for_llm = [
@@ -105,6 +133,8 @@ class ClipScorer:
                         clip.get('start_time'),
                         clip.get('end_time'),
                     ),
+                    # 画面理解：该片段的视觉描述（场景/动作/情绪/OCR/精彩度），可为空
+                    "frame_info": frame_map.get(str(clip.get('id'))) or None,
                 } for clip in clips
             ]
             

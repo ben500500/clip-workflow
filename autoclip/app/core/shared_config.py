@@ -27,6 +27,9 @@ PROMPT_FILES = {
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 MODEL_NAME = os.getenv("API_MODEL_NAME", "qwen-plus")
 
+# 画面理解（Frame Analysis）配置：本地 Ollama 视觉模型，默认关闭
+FRAME_ANALYSIS_ENABLED = os.getenv("FRAME_ANALYSIS_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+
 # 处理参数
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "5000"))
 # 注意：这里默认 0.0，评分过滤交给 clips 接口的 min_score（契约默认 60）执行，

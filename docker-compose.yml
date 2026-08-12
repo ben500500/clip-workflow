@@ -73,6 +73,7 @@ volumes:
   media_data:
   chrome_profiles:
   slice_worker_temp:
+  ollama_data:
 
 services:
   # ==================== Database ====================
@@ -187,6 +188,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      ollama:
+        condition: service_started
     env_file:
       - .env
     environment:
@@ -198,6 +201,11 @@ services:
       # 本地 whisper 模型路径（避免每次容器重建从 HuggingFace 下载，国内网络不稳定）
       # 切换模型：改这里即可（旧模型保留在 ./whisper-model，新模型在 ./whisper-model-turbo）
       WHISPER_MODEL: /app/whisper-model-turbo
+      # 画面理解（Frame Analysis）：本地 Ollama 视觉模型，容器内经 clip-network 直达
+      FRAME_ANALYSIS_ENABLED: ${FRAME_ANALYSIS_ENABLED:-false}
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-openbmb/minicpm-v4.6}
+      FRAME_ANALYSIS_PER_CLIP: ${FRAME_ANALYSIS_PER_CLIP:-2}
     ports:
       - "127.0.0.1:${AUTOCLIP_PORT:-8000}:8000"
     volumes:
@@ -512,4 +520,23 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    logging: *default-logging
+
+  # ==================== Ollama（本地视觉模型，画面理解用） ====================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: clip-ollama
+    restart: unless-stopped
+    networks:
+      - clip-network
+    volumes:
+      # 模型持久化（openbmb/minicpm-v4.6 约 1.6GB，重建容器不丢）
+      - ollama_data:/root/.ollama
+    # 仅容器网络内可达（autoclip 经 clip-network 访问 ollama:11434），不暴露宿主机端口
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     logging: *default-logging
