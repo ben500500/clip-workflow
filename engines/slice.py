@@ -512,13 +512,16 @@ def _build_text_overlays_filter(text_overlays: list) -> str:
         if vertical:
             # 竖排文字：把文字逐字符叠加（drawtext 无原生竖排，用多个 drawtext 逐字下排）
             chars = list(text)
+            n = len(chars)
             sub_filters = []
+            # 竖排整块高度 = 字符数 × 字号，需按整块高度垂直居中，
+            # 否则 (h-th)/2 只居中了第一个字符，整列文字会整体偏上、无法居中。
             for k, ch in enumerate(chars):
                 ch_esc = ch.replace("\\", "\\\\").replace(":", "\\:").replace(";", "\\;").replace("'", "\\\\'")
                 sub_filters.append(
                     f"drawtext={font_opt}:text='{ch_esc}':fontcolor={c_hex}"
                     f":bordercolor={b_hex}:borderw=2:fontsize={font_size}"
-                    f":x={x_expr}:y='{y_expr}+{k}*{font_size}'"
+                    f":x={x_expr}:y='(h-{n}*{font_size})/2+{k}*{font_size}'"
                 )
             filters.append(",".join(sub_filters))
         else:

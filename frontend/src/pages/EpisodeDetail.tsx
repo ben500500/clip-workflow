@@ -690,7 +690,7 @@ const EpisodeDetail: React.FC = () => {
     const preset: Array<TextOverlayItem & { id: string }> = [
       { id: `tov_preset_tr`, text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000', vertical: false, offset: 10 },
       { id: `tov_preset_bl`, text: '免费热门短剧', position: 'bottom-left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: false, offset: 10 },
-      { id: `tov_preset_l`, text: '本剧情纯属虚构', position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true, offset: 10 },
+      { id: `tov_preset_l`, text: '本故事纯属虚构', position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true, offset: 10 },
     ];
     setTextOverlays((prev) => {
       const exists = (position: string, text: string) =>
