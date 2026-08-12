@@ -53,17 +53,20 @@ async def upload_video(autoclip_project_id: str, video_path: str, file_name: str
 async def trigger_pipeline(
     autoclip_project_id: str,
     steps: Optional[list[int]] = None,
+    config: Optional[dict] = None,
 ) -> bool:
     """Trigger the AutoClip 6-step pipeline."""
     url = f"{settings.AUTOCLIP_URL}/pipeline/run"
     if steps is None:
         steps = [1, 2, 3, 4, 5, 6]
+    payload = {"project_id": autoclip_project_id, "steps": steps}
+    # 画面理解（MiniCPM-V）开关：透传给 AutoClip 微服务，控制 step3 是否做画面分析
+    frame_analysis = (config or {}).get("frame_analysis")
+    if frame_analysis is not None:
+        payload["frame_analysis"] = bool(frame_analysis)
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            resp = await client.post(
-                url,
-                json={"project_id": autoclip_project_id, "steps": steps},
-            )
+            resp = await client.post(url, json=payload)
             resp.raise_for_status()
             return True
         except httpx.HTTPStatusError as e:

@@ -309,7 +309,8 @@ def _asr_cache_put(cache_key: str, content: str) -> None:
 async def _run_pipeline(project_id: str, steps: list[int],
                         max_clips: Optional[int] = None,
                         start_time: Optional[float] = None,
-                        end_time: Optional[float] = None) -> None:
+                        end_time: Optional[float] = None,
+                        frame_analysis: Optional[bool] = None) -> None:
     proj = projects.get(project_id)
     if not proj:
         return
@@ -362,7 +363,8 @@ async def _run_pipeline(project_id: str, steps: list[int],
         if video_path:
             os.environ["FRAME_ANALYSIS_VIDEO_PATH"] = str(video_path)
         scored = await asyncio.to_thread(
-            run_step3_scoring, meta_dir / "step2_timeline.json", meta_dir, None, PROMPT_FILES)
+            run_step3_scoring, meta_dir / "step2_timeline.json", meta_dir, None, PROMPT_FILES,
+            frame_analysis_enabled=frame_analysis)
         _update_progress(proj, "running", 80,
                          f"评分完成（{len(scored)} 个高分片段），生成标题")
 
@@ -652,6 +654,8 @@ class PipelineRun(BaseModel):
     # 选点时间范围（秒）：仅在该窗口内选点
     start_time: Optional[float] = None
     end_time: Optional[float] = None
+    # 画面理解（MiniCPM-V）开关：None 时回退到环境变量 FRAME_ANALYSIS_ENABLED
+    frame_analysis: Optional[bool] = None
 
 
 @app.post("/api/v1/pipeline/run")
@@ -670,6 +674,7 @@ async def pipeline_run(data: PipelineRun):
         max_clips=data.max_clips,
         start_time=data.start_time,
         end_time=data.end_time,
+        frame_analysis=data.frame_analysis,
     ))
     return {"ok": True, "project_id": data.project_id}
 

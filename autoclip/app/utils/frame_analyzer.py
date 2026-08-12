@@ -234,14 +234,20 @@ def analyze_timeline_frames(
     timeline_data: List[Dict],
     video_path: str,
     project_id: Optional[str] = None,
+    enabled: Optional[bool] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     批量分析时间线中所有候选片段的画面。
 
+    Args:
+        enabled: 画面理解开关，None 时回退到环境变量 FRAME_ANALYSIS_ENABLED
+
     Returns:
         {片段 id: 画面描述} 映射；未开启/失败返回空 dict。
     """
-    if not FRAME_ANALYSIS_ENABLED:
+    if enabled is None:
+        enabled = FRAME_ANALYSIS_ENABLED
+    if not enabled:
         return {}
 
     results: Dict[str, Dict[str, Any]] = {}

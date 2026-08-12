@@ -24,7 +24,8 @@ class ClipScorer:
     _TRANSCRIPT_HEAD_RATIO = 0.4   # 保留开头比例
     _TRANSCRIPT_TAIL_RATIO = 0.4   # 保留结尾比例
 
-    def __init__(self, prompt_files: Dict = None, metadata_dir: Path = None):
+    def __init__(self, prompt_files: Dict = None, metadata_dir: Path = None,
+                 frame_analysis_enabled: Optional[bool] = None):
         self.llm_client = LLMClient()
         self.text_processor = TextProcessor()
 
@@ -35,10 +36,13 @@ class ClipScorer:
         self.srt_chunks_dir = self.metadata_dir / "step1_srt_chunks"
 
         # 画面理解（可选）：源视频路径从环境变量注入（backend 调用时设置），
-        # 开启 FRAME_ANALYSIS_ENABLED 且视频存在时才启用
+        # 开启 FRAME_ANALYSIS_ENABLED 且视频存在时才启用。
+        # 支持每次运行传入 frame_analysis_enabled 覆盖环境变量（前端「画面理解」开关）。
         self.video_path = os.getenv("FRAME_ANALYSIS_VIDEO_PATH", "").strip()
+        if frame_analysis_enabled is None:
+            frame_analysis_enabled = FRAME_ANALYSIS_ENABLED
         self.frame_analysis_enabled = (
-            FRAME_ANALYSIS_ENABLED
+            bool(frame_analysis_enabled)
             and bool(self.video_path)
             and Path(self.video_path).exists()
         )
@@ -275,7 +279,7 @@ class ClipScorer:
             json.dump(scored_clips, f, ensure_ascii=False, indent=2)
         logger.info(f"评分结果已保存到: {output_path}")
 
-def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None) -> List[Dict]:
+def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None, frame_analysis_enabled: Optional[bool] = None) -> List[Dict]:
     """
     运行Step 3: 内容评分与筛选
     
@@ -283,6 +287,7 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
         timeline_path: 时间线文件路径
         output_path: 输出文件路径
         prompt_files: 自定义提示词文件
+        frame_analysis_enabled: 画面理解（MiniCPM-V）开关，None 时回退到环境变量
         
     Returns:
         高分切片列表
@@ -295,8 +300,12 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
     if metadata_dir is None:
         metadata_dir = METADATA_DIR
 
+    # 画面理解开关：每次运行可传入覆盖环境变量（前端「画面理解」开关）
+    if frame_analysis_enabled is None:
+        frame_analysis_enabled = FRAME_ANALYSIS_ENABLED
+
     # 创建评分器
-    scorer = ClipScorer(prompt_files, metadata_dir)
+    scorer = ClipScorer(prompt_files, metadata_dir, frame_analysis_enabled=frame_analysis_enabled)
     
     # 评分
     scored_clips = scorer.score_clips(timeline_data)
