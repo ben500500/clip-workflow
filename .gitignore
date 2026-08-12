@@ -112,3 +112,10 @@ temp/
 
 # ==================== 编译产物 ====================
 /slice-worker/slice-worker
+
+# slice-worker 本地构建产物与配置（含 Redis 密码，严禁提交）
+slice-worker/macos/slice-worker-mac
+slice-worker/macos/worker.json
+slice-worker/macos/*.log
+slice-worker/macos/*.pid
+slice-worker/temp/

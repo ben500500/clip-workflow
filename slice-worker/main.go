@@ -26,6 +26,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 单实例锁：同一 node-id 只允许一个进程运行（防止托盘/后台重复启动
+	// 导致菜单栏多图标、心跳互相覆盖）。启动即获取，退出时释放。
+	releaseLock, err := acquireInstanceLock(config.NodeID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	defer releaseLock()
+
 	// Windows 默认进入托盘模式（任务栏图标 + 节点启停），除非显式指定 --no-tui
 	if runtime.GOOS == "windows" && !*trayMode && !*noTUI {
 		*trayMode = true
