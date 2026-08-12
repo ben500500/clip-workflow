@@ -110,6 +110,10 @@ const EpisodeDetail: React.FC = () => {
   const [subtitleModalOpen, setSubtitleModalOpen] = useState(false);
   // ── 固定文字角标（文字版角标，无需上传图片）──
   const [textOverlays, setTextOverlays] = useState<Array<TextOverlayItem & { id: string }>>([]);
+  // 固定文字开关：开启后显示「设置文字」按钮，弹窗内集中管理固定文字配置（与字幕设置形式一致）
+  const [textOverlayEnabled, setTextOverlayEnabled] = useState(false);
+  // 固定文字设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
+  const [textOverlayModalOpen, setTextOverlayModalOpen] = useState(false);
   const [maxClips, setMaxClips] = useState(10);
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
@@ -642,8 +646,8 @@ const EpisodeDetail: React.FC = () => {
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
         subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
-        // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排
-        text_overlays: textOverlays.length > 0
+        // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排（仅开关开启时生效）
+        text_overlays: textOverlayEnabled && textOverlays.length > 0
           ? textOverlays.map((t) => ({
               text: t.text,
               position: t.position,
@@ -706,6 +710,8 @@ const EpisodeDetail: React.FC = () => {
       setSubtitleFontRatio(0.45);
       setSubtitleStyle('custom');
       setSubtitleColor('#EDD736');
+      // 默认开启固定文字开关并预置三处固定文字（右上角/左下角/最左侧竖排标题）
+      setTextOverlayEnabled(true);
       // 默认预置三处固定文字（右上角/左下角/最左侧竖排标题）
       applyDefaultTextOverlays();
     }
@@ -750,8 +756,8 @@ const EpisodeDetail: React.FC = () => {
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
         subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
-        // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排
-        text_overlays: textOverlays.length > 0
+        // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排（仅开关开启时生效）
+        text_overlays: textOverlayEnabled && textOverlays.length > 0
           ? textOverlays.map((t) => ({
               text: t.text,
               position: t.position,
@@ -1353,18 +1359,39 @@ const EpisodeDetail: React.FC = () => {
 
           {/* ── 固定文字角标（文字版角标，最左侧/左下角/右上角等） ── */}
           <Card size="small" style={{ width: '100%' }}>
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Space wrap align="center" size={8}>
+              <Switch size="small" checked={textOverlayEnabled} onChange={setTextOverlayEnabled} />
+              <Text strong style={{ fontSize: 13 }}>固定文字</Text>
+              <Tooltip title="开启后在视频指定位置叠加固定文字（无需上传图片）：最左侧（竖排）/左下角/右上角等，全程覆盖。开启后点击右侧「设置文字」按钮配置文字内容、字号、颜色等。">
+                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+              </Tooltip>
+              {textOverlayEnabled && (
+                <Button size="small" icon={<SettingOutlined />} onClick={() => setTextOverlayModalOpen(true)}>设置文字</Button>
+              )}
+            </Space>
+          </Card>
+
+          {/* 固定文字设置弹窗（详细配置收进弹窗，节省主界面空间） */}
+          <Modal
+            title="固定文字设置"
+            open={textOverlayModalOpen}
+            onCancel={() => setTextOverlayModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setTextOverlayModalOpen(false)}>完成</Button>
+            )}
+            width={620}
+          >
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <Space wrap align="center" size={8}>
                 <Button size="small" icon={<PlusOutlined />} onClick={addTextOverlay}>添加固定文字</Button>
-                <Text strong style={{ fontSize: 13 }}>固定文字</Text>
-                <Tooltip title="在视频指定位置叠加固定文字（无需上传图片）：最左侧（竖排）/左下角/右上角等，全程覆盖。文字内容、字号、颜色可自定义。">
-                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-                </Tooltip>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  在视频指定位置叠加固定文字，全程覆盖。文字内容、字号、颜色可自定义；最左侧常用竖排。
+                </Text>
               </Space>
-              {textOverlays.length > 0 && (
+              {textOverlays.length > 0 ? (
                 <Space direction="vertical" size={4} style={{ width: '100%' }}>
                   {textOverlays.map((t, i) => (
-                    <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', border: '1px solid #f0f0f0', borderRadius: 6, padding: 8 }}>
                       <Input
                         size="small"
                         placeholder="文字内容"
@@ -1413,9 +1440,11 @@ const EpisodeDetail: React.FC = () => {
                     </div>
                   ))}
                 </Space>
+              ) : (
+                <Alert type="info" showIcon message="暂无固定文字，点击上方「添加固定文字」新增。" />
               )}
             </Space>
-          </Card>
+          </Modal>
 
           {/* ── 图片角标配置（多角标、六角位置，全程叠加） ── */}
           <Card size="small" style={{ width: '100%' }}>
