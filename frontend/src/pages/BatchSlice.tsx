@@ -5,8 +5,9 @@ import {
 } from 'antd';
 import {
   PlayCircleOutlined, UploadOutlined, ReloadOutlined, StopOutlined,
-  DownloadOutlined, InboxOutlined,
+  DownloadOutlined, InboxOutlined, EyeOutlined,
 } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import Dragger from 'antd/es/upload/Dragger';
 import { batchSliceApi, BatchSlice, BatchSliceItem, BatchSliceOutputItem } from '../api/batchSlice';
 
@@ -125,6 +126,7 @@ const STATUS_TEXT: Record<string, string> = {
 };
 
 const BatchSlicePage: React.FC = () => {
+  const navigate = useNavigate();
   const [form] = Form.useForm();
   const [sliceConfig, setSliceConfig] = useState<SliceConfigState>({ ...DEFAULT_SLICE_CONFIG, text_overlays: DEFAULT_SLICE_CONFIG.text_overlays.map((t) => ({ ...t })) });
   const [jsonText, setJsonText] = useState('');
@@ -134,11 +136,13 @@ const BatchSlicePage: React.FC = () => {
   const [batches, setBatches] = useState<BatchSlice[]>([]);
   const [batchListLoading, setBatchListLoading] = useState(false);
 
-  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
+  // 每个批次独立维护明细数据，支持在对应批次行下方内联展开（不再挤到最下方）
+  const [expandedBatchIds, setExpandedBatchIds] = useState<React.Key[]>([]);
+  const [itemsMap, setItemsMap] = useState<Record<string, BatchSliceItem[]>>({});
+  const [detailLoadingMap, setDetailLoadingMap] = useState<Record<string, boolean>>({});
+  // 选中的批次（用于顶部汇总/操作按钮）
   const [selectedBatch, setSelectedBatch] = useState<BatchSlice | null>(null);
-  const [items, setItems] = useState<BatchSliceItem[]>([]);
   const [outputs, setOutputs] = useState<BatchSliceOutputItem[]>([]);
-  const [detailLoading, setDetailLoading] = useState(false);
   const [outputModalOpen, setOutputModalOpen] = useState(false);
 
   const fetchBatches = useCallback(async () => {
@@ -158,30 +162,53 @@ const BatchSlicePage: React.FC = () => {
   }, [fetchBatches]);
 
   const loadBatchDetail = useCallback(async (batchId: string) => {
-    setDetailLoading(true);
+    // 仅加载明细（items）到该批次对应的展开区域；批次概要已在列表中
+    setDetailLoadingMap((prev) => ({ ...prev, [batchId]: true }));
     try {
       const [batch, itemList] = await Promise.all([
         batchSliceApi.getById(batchId),
         batchSliceApi.getItems(batchId),
       ]);
-      setSelectedBatchId(batchId);
       setSelectedBatch(batch);
-      setItems(itemList);
+      setItemsMap((prev) => ({ ...prev, [batchId]: itemList }));
     } catch (err) {
-      message.error(err instanceof Error ? err.message : '加载批次详情失败');
+      message.error(err instanceof Error ? err.message : '加载批次明细失败');
     } finally {
-      setDetailLoading(false);
+      setDetailLoadingMap((prev) => ({ ...prev, [batchId]: false }));
     }
   }, []);
 
-  // 轮询详情
+  // 展开某批次时加载其明细；已加载则不重复请求
+  const handleExpand = useCallback((expanded: boolean, batch: BatchSlice) => {
+    setExpandedBatchIds((prev) => {
+      const next = expanded
+        ? (prev.includes(batch.id) ? prev : [...prev, batch.id])
+        : prev.filter((k) => k !== batch.id);
+      return next;
+    });
+    if (expanded) {
+      // 顶部汇总跟随当前展开的批次
+      setSelectedBatch(batch);
+      if (!itemsMap[batch.id]) {
+        loadBatchDetail(batch.id);
+      }
+    }
+  }, [itemsMap, loadBatchDetail]);
+
+  // 轮询：仅轮询当前已展开的批次明细，保证进度实时刷新
   useEffect(() => {
-    if (!selectedBatchId) return;
+    if (expandedBatchIds.length === 0) return;
     const timer = window.setInterval(() => {
-      loadBatchDetail(selectedBatchId);
+      expandedBatchIds.forEach((id) => {
+        const key = String(id);
+        const b = batches.find((x) => x.id === key);
+        if (b && (b.status === 'running' || b.status === 'pending')) {
+          loadBatchDetail(key);
+        }
+      });
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [selectedBatchId, loadBatchDetail]);
+  }, [expandedBatchIds, batches, loadBatchDetail]);
 
   const handleFileUpload = (file: File) => {
     const reader = new FileReader();
@@ -259,6 +286,8 @@ const BatchSlicePage: React.FC = () => {
       form.resetFields();
       fetchBatches();
       if (resp.batch_id) {
+        // 新批次创建后自动展开该批次明细
+        setExpandedBatchIds((prev) => (prev.includes(resp.batch_id!) ? prev : [...prev, resp.batch_id!]));
         await loadBatchDetail(resp.batch_id);
       }
     } catch (err) {
@@ -269,7 +298,8 @@ const BatchSlicePage: React.FC = () => {
   };
 
   const handleRetry = async () => {
-    if (!selectedBatchId) return;
+    if (!selectedBatch) return;
+    const batchId = selectedBatch.id;
     Modal.confirm({
       title: '重试失败项',
       content: '确定重试该批次中失败的剧集吗？（已完成项将跳过）',
@@ -277,9 +307,9 @@ const BatchSlicePage: React.FC = () => {
       cancelText: '取消',
       onOk: async () => {
         try {
-          const resp = await batchSliceApi.retry(selectedBatchId);
+          const resp = await batchSliceApi.retry(batchId);
           message.success(resp.message);
-          loadBatchDetail(selectedBatchId);
+          loadBatchDetail(batchId);
         } catch (err) {
           message.error(err instanceof Error ? err.message : '重试失败');
         }
@@ -288,7 +318,8 @@ const BatchSlicePage: React.FC = () => {
   };
 
   const handleCancel = async () => {
-    if (!selectedBatchId) return;
+    if (!selectedBatch) return;
+    const batchId = selectedBatch.id;
     Modal.confirm({
       title: '取消批次',
       content: '确定取消该批次吗？（未完成的剧集将标记为已取消）',
@@ -296,9 +327,9 @@ const BatchSlicePage: React.FC = () => {
       cancelText: '返回',
       onOk: async () => {
         try {
-          const resp = await batchSliceApi.cancel(selectedBatchId);
+          const resp = await batchSliceApi.cancel(batchId);
           message.success(resp.message);
-          loadBatchDetail(selectedBatchId);
+          loadBatchDetail(batchId);
         } catch (err) {
           message.error(err instanceof Error ? err.message : '取消失败');
         }
@@ -307,10 +338,11 @@ const BatchSlicePage: React.FC = () => {
   };
 
   const showOutputs = async () => {
-    if (!selectedBatchId) return;
+    if (!selectedBatch) return;
+    const batchId = selectedBatch.id;
     setOutputModalOpen(true);
     try {
-      const data = await batchSliceApi.getOutputs(selectedBatchId);
+      const data = await batchSliceApi.getOutputs(batchId);
       setOutputs(data.items);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '获取输出列表失败');
@@ -404,6 +436,28 @@ const BatchSlicePage: React.FC = () => {
       ellipsis: true,
       render: (v: string | null) => (v ? <Text type="danger">{v}</Text> : '-'),
     },
+    {
+      title: '操作',
+      key: 'action',
+      width: 120,
+      render: (_: unknown, r: BatchSliceItem) => {
+        // 提供直接跳转到对应成品预览的快捷方式（优先跳具体切片任务，否则跳该剧集成品预览）
+        if (r.episode_id) {
+          const to = r.slice_task_id
+            ? `/episodes/${r.episode_id}/preview?task=${r.slice_task_id}`
+            : `/episodes/${r.episode_id}/preview`;
+          return (
+            <a
+              title="跳转成片预览"
+              onClick={(e) => { e.stopPropagation(); navigate(to); }}
+            >
+              <EyeOutlined /> 成片预览
+            </a>
+          );
+        }
+        return <Text type="secondary">-</Text>;
+      },
+    },
   ];
 
   const batchColumns = [
@@ -411,7 +465,9 @@ const BatchSlicePage: React.FC = () => {
       title: '批次',
       dataIndex: 'name',
       ellipsis: true,
-      render: (v: string | null, r: BatchSlice) => <a onClick={() => loadBatchDetail(r.id)}>{v || r.id}</a>,
+      render: (v: string | null, r: BatchSlice) => (
+        <a onClick={(e) => { e.stopPropagation(); handleExpand(!expandedBatchIds.includes(r.id), r); }}>{v || r.id}</a>
+      ),
     },
     {
       title: '状态',
@@ -714,21 +770,49 @@ const BatchSlicePage: React.FC = () => {
             dataSource={batches}
             columns={batchColumns}
             pagination={false}
+            onRow={(record: BatchSlice) => ({
+              onClick: () => handleExpand(!expandedBatchIds.includes(record.id), record),
+              style: { cursor: 'pointer' },
+            })}
+            expandable={{
+              expandedRowKeys: expandedBatchIds,
+              onExpandedRowsChange: (keys: readonly React.Key[]) => setExpandedBatchIds(keys as React.Key[]),
+              onExpand: (expanded: boolean, record: BatchSlice) => handleExpand(expanded, record),
+              expandedRowRender: (record: BatchSlice) => {
+                const detailItems = itemsMap[record.id] || [];
+                const loading = !!detailLoadingMap[record.id];
+                if (loading) {
+                  return (
+                    <div style={{ padding: '12px 0', textAlign: 'center' }}>
+                      <Spin size="small" /> <Text type="secondary">正在加载批次明细…</Text>
+                    </div>
+                  );
+                }
+                if (detailItems.length === 0) {
+                  return <Text type="secondary">该批次暂无剧集明细</Text>;
+                }
+                return (
+                  <Table
+                    rowKey="id"
+                    size="small"
+                    dataSource={detailItems}
+                    columns={itemColumns}
+                    pagination={false}
+                    onRow={(record: BatchSliceItem) => ({
+                      // 双击明细行同样可跳转成片预览（与操作列呼应）
+                      onDoubleClick: () => {
+                        if (record.episode_id) {
+                          navigate(record.slice_task_id
+                            ? `/episodes/${record.episode_id}/preview?task=${record.slice_task_id}`
+                            : `/episodes/${record.episode_id}/preview`);
+                        }
+                      },
+                    })}
+                  />
+                );
+              },
+            }}
           />
-        </Spin>
-        {selectedBatchId && (
-          <Divider orientation="left">批次明细</Divider>
-        )}
-        <Spin spinning={detailLoading}>
-          {items.length > 0 && (
-            <Table
-              rowKey="id"
-              size="small"
-              dataSource={items}
-              columns={itemColumns}
-              pagination={false}
-            />
-          )}
         </Spin>
       </Card>
 
