@@ -33,6 +33,8 @@ type Worker struct {
 	runningTasks   sync.Map // taskID -> *RunningTask
 	totalCompleted int32
 	totalFailed    int32
+	// 本节点当前引擎版本（启动时计算，推送更新后原子更新）
+	engineVersion string
 
 	// 回调
 	onTaskStart    func(task *SliceTask)
@@ -97,6 +99,14 @@ func (w *Worker) SetCallbacks(
 
 // Run 启动Worker主循环
 func (w *Worker) Run(ctx context.Context) error {
+	// 启动时计算本节点本地引擎版本（供心跳上报/推送更新判断）
+	if v, err := ComputeEngineVersion(w.config.EnginesPath); err == nil {
+		w.engineVersion = v
+	} else {
+		w.engineVersion = ""
+		w.log("warn", "计算引擎版本失败（将无法接收推送更新）: %v", err)
+	}
+
 	// 注册节点
 	nodeInfo := &NodeInfo{
 		NodeID:              w.config.NodeID,
@@ -114,6 +124,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		TotalTasksCompleted: 0,
 		TotalTasksFailed:    0,
 		CPUPercent:          w.config.CPUPercent,
+		EngineVersion:       w.engineVersion,
 	}
 
 	if err := w.redis.RegisterNode(nodeInfo, w.config.HeartbeatTTL()); err != nil {
@@ -140,6 +151,9 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// 启动心跳
 	go w.heartbeatLoop(ctx)
+
+	// 启动引擎更新检查（服务器推送引擎更新后自动拉取应用，无需重新部署）
+	go w.engineUpdateLoop(ctx)
 
 	// 启动 PEL 恢复（认领崩溃遗留的未完成消息）
 	go w.claimLoop(ctx)
@@ -568,7 +582,8 @@ func (w *Worker) sendFailureCallback(task *SliceTask, errMsg string) {
 }
 
 // watchCancellation 轮询 Redis 任务状态，感知后端取消指令并触发 context 取消
-func (w *Worker) watchCancellation(ctx context.Context, taskID string, cancel context.CancelFunc) {	ticker := time.NewTicker(3 * time.Second)
+func (w *Worker) watchCancellation(ctx context.Context, taskID string, cancel context.CancelFunc) {
+	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -623,7 +638,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 			current := int(atomic.LoadInt32(&w.currentTasks))
 			completed := int(atomic.LoadInt32(&w.totalCompleted))
 			failed := int(atomic.LoadInt32(&w.totalFailed))
-			w.redis.Heartbeat(w.config.NodeID, current, completed, failed, w.config.HeartbeatTTL())
+			w.redis.Heartbeat(w.config.NodeID, current, completed, failed, w.engineVersion, w.config.HeartbeatTTL())
 
 			// 同时向后端 DB 同步节点数据（双写，保证 Worker 节点界面/数据库有数据）
 			if err := w.sendBackendHeartbeat(); err != nil {
@@ -633,6 +648,73 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// engineUpdateLoop 引擎更新检查循环。
+//
+// 服务器端「节点功能」（engines/ 目录中的 slice.py 等脚本）被修改后，管理员在
+// 界面点击「推送更新」，后端把目标版本写入 Redis 更新指令
+// `slice:node-update:{node_id}`。此循环周期性读取该指令，若目标版本与本地
+// 引擎版本不一致，则从后端拉取引擎更新包并替换本地 engines/ 目录，随后更新
+// 本地版本、清除指令。整个过程无需重新部署/重启节点。
+func (w *Worker) engineUpdateLoop(ctx context.Context) {
+	interval := time.Duration(w.config.HeartbeatInterval) * time.Second
+	if interval < 5*time.Second {
+		interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.checkEngineUpdate()
+		}
+	}
+}
+
+// checkEngineUpdate 检查并应用一次引擎更新（若服务器下发更新指令）。
+func (w *Worker) checkEngineUpdate() {
+	// 读取更新指令
+	raw, err := w.redis.GetNodeUpdateCommand(w.config.NodeID)
+	if err != nil {
+		w.log("debug", "读取引擎更新指令失败: %v", err)
+		return
+	}
+	if raw == "" {
+		return
+	}
+	cmd, err := readUpdateCommandJSON(raw)
+	if err != nil {
+		w.log("warn", "解析引擎更新指令失败: %v", err)
+		// 指令格式异常，清除避免反复重试
+		w.redis.ClearNodeUpdateCommand(w.config.NodeID)
+		return
+	}
+
+	// 目标版本与本地一致则无需更新（正常情况下后端推送后本地应用成功即一致）
+	if cmd.TargetVersion != "" && cmd.TargetVersion == w.engineVersion {
+		// 已是最新，清除指令
+		w.redis.ClearNodeUpdateCommand(w.config.NodeID)
+		return
+	}
+
+	w.log("info", "检测到引擎更新：本地版本 %q → 目标版本 %q，开始拉取更新包", w.engineVersion, cmd.TargetVersion)
+
+	// 拉取并应用更新
+	newVersion, err := PullEngineUpdate(w.config.BackendURL, w.config.EnginesPath)
+	if err != nil {
+		w.log("error", "拉取/应用引擎更新失败: %v", err)
+		// 保留指令，下个周期重试
+		return
+	}
+
+	// 更新本地版本并清除指令
+	w.engineVersion = newVersion
+	w.redis.ClearNodeUpdateCommand(w.config.NodeID)
+	w.log("info", "引擎更新完成：新版本 %s", newVersion)
 }
 
 // emitProgress 上报进度（同时写入 Redis，供后端查询真实进度）

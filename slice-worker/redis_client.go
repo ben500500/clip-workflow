@@ -66,6 +66,7 @@ func (r *RedisClient) RegisterNode(info *NodeInfo, heartbeatTTL time.Duration) e
 		"total_tasks_completed": info.TotalTasksCompleted,
 		"total_tasks_failed":    info.TotalTasksFailed,
 		"cpu_percent":           info.CPUPercent,
+		"engine_version":        info.EngineVersion,
 	}
 	if len(info.Tags) > 0 {
 		tagsJSON, err := json.Marshal(info.Tags)
@@ -100,8 +101,8 @@ func (r *RedisClient) UnregisterNode(nodeID string, tags []string) error {
 	return err
 }
 
-// Heartbeat 心跳上报（含累计完成/失败数），并刷新节点 Hash 的 TTL
-func (r *RedisClient) Heartbeat(nodeID string, currentTasks, totalCompleted, totalFailed int, heartbeatTTL time.Duration) error {
+// Heartbeat 心跳上报（含累计完成/失败数、引擎版本），并刷新节点 Hash 的 TTL
+func (r *RedisClient) Heartbeat(nodeID string, currentTasks, totalCompleted, totalFailed int, engineVersion string, heartbeatTTL time.Duration) error {
 	pipe := r.client.Pipeline()
 	pipe.HSet(r.ctx, nodeKey(nodeID), map[string]interface{}{
 		"last_heartbeat":        time.Now().Unix(),
@@ -109,6 +110,7 @@ func (r *RedisClient) Heartbeat(nodeID string, currentTasks, totalCompleted, tot
 		"total_tasks_completed": totalCompleted,
 		"total_tasks_failed":    totalFailed,
 		"status":                "online",
+		"engine_version":        engineVersion,
 	})
 	pipe.Expire(r.ctx, nodeKey(nodeID), heartbeatTTL)
 	_, err := pipe.Exec(r.ctx)
@@ -324,6 +326,25 @@ func (r *RedisClient) SetNodeCPUPercent(nodeID string, percent int) error {
 	return r.client.Set(r.ctx, fmt.Sprintf("slice:node-cpu-percent:%s", nodeID), strconv.Itoa(percent), 0).Err()
 }
 
+// GetNodeUpdateCommand 读取节点引擎更新指令（JSON 字符串）。
+// 由后端「推送更新」接口写入 `slice:node-update:{node_id}`。
+// 返回空字符串表示无更新指令。
+func (r *RedisClient) GetNodeUpdateCommand(nodeID string) (string, error) {
+	val, err := r.client.Get(r.ctx, fmt.Sprintf("slice:node-update:%s", nodeID)).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return val, nil
+}
+
+// ClearNodeUpdateCommand 清除节点引擎更新指令（成功应用更新后调用）。
+func (r *RedisClient) ClearNodeUpdateCommand(nodeID string) error {
+	return r.client.Del(r.ctx, fmt.Sprintf("slice:node-update:%s", nodeID)).Err()
+}
+
 // StreamMessage Stream消息
 type StreamMessage struct {
 	ID      string
@@ -349,6 +370,8 @@ type NodeInfo struct {
 	TotalTasksCompleted int      `json:"total_tasks_completed"`
 	TotalTasksFailed    int      `json:"total_tasks_failed"`
 	CPUPercent          int      `json:"cpu_percent"`
+	// 本节点当前引擎版本（用于判断是否需要推送更新，与后端计算算法一致）
+	EngineVersion string `json:"engine_version"`
 }
 
 // SliceTask 切片任务
@@ -367,21 +390,21 @@ type SliceTask struct {
 	// 三期 GPU 加速编码（可选，后端透传，引擎 --encoder 参数）
 	Encoder string `json:"encoder"`
 	// 竖屏转横屏预处理配置（可选，后端透传，引擎 --vert2horiz 参数）
-	Vert2Horiz     map[string]interface{} `json:"vert2horiz"`
+	Vert2Horiz map[string]interface{} `json:"vert2horiz"`
 	// 图片角标（可选，后端透传；Worker 下载图片后透传给引擎 --badges 参数）
-	Badges            []BadgeItem `json:"badges"`
+	Badges []BadgeItem `json:"badges"`
 	// 角标默认尺寸（px，可选；Worker 透传给引擎 --badge-default-width）
-	BadgeDefaultWidth int         `json:"badge_default_width"`
+	BadgeDefaultWidth int `json:"badge_default_width"`
 	// ASR 字幕烧录配置（可选，后端透传；Worker 把 SRT 写到本地后透传给引擎 --subtitle 参数）
 	Subtitle map[string]interface{} `json:"subtitle"`
 	// 固定文字角标配置（可选，后端透传；Worker 直接透传给引擎 --text-overlays 参数）
-	TextOverlays []map[string]interface{} `json:"text_overlays"`
-	Output         TaskOutput             `json:"output"`
-	TimeoutSec     int                    `json:"timeout_seconds"`
-	SourceDuration float64                `json:"source_duration"`
-	RetryCount     int                    `json:"retry_count"`
-	RetryAt        int64                  `json:"retry_at,omitempty"`
-	CreatedAt      string                 `json:"created_at"`
+	TextOverlays   []map[string]interface{} `json:"text_overlays"`
+	Output         TaskOutput               `json:"output"`
+	TimeoutSec     int                      `json:"timeout_seconds"`
+	SourceDuration float64                  `json:"source_duration"`
+	RetryCount     int                      `json:"retry_count"`
+	RetryAt        int64                    `json:"retry_at,omitempty"`
+	CreatedAt      string                   `json:"created_at"`
 }
 
 // BadgeItem 图片角标配置
@@ -391,11 +414,11 @@ type SliceTask struct {
 // offset: 可选角标到视频边缘的偏移量（px）
 // opacity: 可选角标透明度（0~1）
 type BadgeItem struct {
-	URL      string `json:"url"`
-	Path     string `json:"-"`
-	Position string `json:"position"`
-	Width    int    `json:"width,omitempty"`
-	Offset   int    `json:"offset,omitempty"`
+	URL      string   `json:"url"`
+	Path     string   `json:"-"`
+	Position string   `json:"position"`
+	Width    int      `json:"width,omitempty"`
+	Offset   int      `json:"offset,omitempty"`
 	Opacity  *float64 `json:"opacity,omitempty"`
 }
 

@@ -35,6 +35,11 @@ NODE_ENABLED_PREFIX = "slice:node-enabled:"
 # （与 worker.json 中 cpu_percent 一致，优先取该 key 实现运行时动态调整）
 NODE_CPU_PERCENT_PREFIX = "slice:node-cpu-percent:"
 
+# 节点引擎更新指令 key：值为 JSON {target_version, requested_at}，
+# 服务器推送更新时写入，Worker 端在心跳循环中检测到目标版本与本地不一致时
+# 自动从后端拉取引擎更新包并替换本地 engines/ 目录（无需重新部署/重启）。
+NODE_UPDATE_PREFIX = "slice:node-update:"
+
 
 def _get_stream(priority: str = "normal") -> str:
     """根据优先级返回对应的 Stream 名称。"""
@@ -419,11 +424,78 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
                 # 该节点正在运行的任务列表与平均进度（"工作时进度显示"）
                 "running_tasks": running,
                 "running_progress": running_progress,
+                # 该节点当前引擎版本（心跳上报；用于判断是否需要推送更新）
+                "engine_version": node_data.get("engine_version", "") or "",
             })
         return nodes
     except Exception as e:
         logger.error(f"Failed to get worker nodes from Redis: {e}")
         return []
+    finally:
+        if redis:
+            await redis.close()
+
+
+async def set_node_update_command(node_id: str, target_version: str) -> bool:
+    """向指定节点下发引擎更新指令。
+
+    写入 Redis 指令 key `slice:node-update:{node_id}`，值为
+    `{target_version, requested_at}`。Worker 端在心跳循环中检测到目标版本
+    与本地引擎版本不一致时，会从后端拉取引擎更新包并替换本地 engines/ 目录，
+    实现无需重新部署的引擎更新推送。
+
+    Args:
+        node_id: 目标节点 ID。
+        target_version: 服务器端当前引擎版本（由 /workers/engines/status 计算）。
+
+    Returns:
+        是否写入成功。
+    """
+    redis = None
+    try:
+        redis = await get_redis()
+        payload = json.dumps({
+            "target_version": target_version,
+            "requested_at": datetime.utcnow().isoformat(),
+        })
+        await redis.set(
+            f"{NODE_UPDATE_PREFIX}{node_id}",
+            payload,
+            ex=24 * 3600,  # 指令 TTL 1 天，节点离线过久则指令过期（在线后管理员可重推）
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Failed to set node update command for {node_id}: {e}")
+        return False
+    finally:
+        if redis:
+            await redis.close()
+
+
+async def get_node_update_command(node_id: str) -> Optional[dict]:
+    """读取节点当前的引擎更新指令（供界面展示推送状态/目标版本）。"""
+    redis = None
+    try:
+        redis = await get_redis()
+        val = await redis.get(f"{NODE_UPDATE_PREFIX}{node_id}")
+        if not val:
+            return None
+        return json.loads(val)
+    except Exception:
+        return None
+    finally:
+        if redis:
+            await redis.close()
+
+
+async def clear_node_update_command(node_id: str) -> None:
+    """清除节点的引擎更新指令（Worker 成功应用更新后调用，避免重复拉取）。"""
+    redis = None
+    try:
+        redis = await get_redis()
+        await redis.delete(f"{NODE_UPDATE_PREFIX}{node_id}")
+    except Exception:
+        pass
     finally:
         if redis:
             await redis.close()

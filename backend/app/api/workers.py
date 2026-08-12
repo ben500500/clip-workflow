@@ -4,16 +4,24 @@
 以及从 Redis 同步 Worker 节点状态到数据库的机制。
 """
 
+import hashlib
+import io
+import json
 import logging
+import os
+import tarfile
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user, require_roles
+from app.config import settings
 from app.database import get_db
 from app.models.models import User, UserRole, WorkerNode
 from app.utils.helpers import utc_iso
@@ -24,6 +32,8 @@ from app.services.redis_stream import (
     set_node_cpu_percent,
     get_node_cpu_percent,
     delete_worker_node,
+    set_node_update_command,
+    get_node_update_command,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,6 +69,8 @@ class WorkerNodeResponse(BaseModel):
     running_tasks: list = []
     # 该节点 CPU 资源分配比例（%，默认 50）
     cpu_percent: int = 50
+    # 该节点当前引擎版本（心跳上报；供界面展示节点引擎是否与服务器一致）
+    engine_version: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -77,6 +89,8 @@ class WorkerHeartbeatRequest(BaseModel):
     # 累计完成/失败任务数（心跳同步到 DB，保证 Worker 节点界面有数据）
     total_tasks_completed: int = 0
     total_tasks_failed: int = 0
+    # 节点当前引擎版本（心跳上报，供界面判断是否需要推送更新）
+    engine_version: Optional[str] = None
 
 
 def _serialize_node(node: WorkerNode) -> dict:
@@ -101,6 +115,7 @@ def _serialize_node(node: WorkerNode) -> dict:
         "running_progress": getattr(node, "running_progress", 0.0) or 0.0,
         "running_tasks": getattr(node, "running_tasks", []) or [],
         "cpu_percent": getattr(node, "cpu_percent", 50) or 50,
+        "engine_version": getattr(node, "engine_version", None) or None,
     }
 
 
@@ -242,6 +257,8 @@ async def list_workers(
             d["cpu_percent"] = rd.get("cpu_percent", d.get("cpu_percent", 50)) or 50
             # 该节点正在运行的任务详情（供界面展示"当前在处理什么"）
             d["running_tasks"] = rd.get("running_tasks", []) or []
+            # 该节点当前引擎版本（心跳上报，用于判断是否需要推送更新）
+            d["engine_version"] = rd.get("engine_version") or d.get("engine_version")
         result.append(d)
     return result
 
@@ -451,3 +468,160 @@ async def sync_workers_from_redis(
             status_code=500,
             detail=f"从 Redis 同步 Worker 节点失败: {e}",
         )
+
+
+# ==================== 节点引擎更新推送 ====================
+#
+# 背景：节点（slice-worker）本地会保存一份 engines/ 引擎脚本（slice.py、
+# vert2horiz_crop.py 等）副本，docker 部署通过只读挂载，裸机部署复制到本地。
+# 当服务器上这些引擎脚本被修改（bug 修复、能力增强）后，传统方式需要重新
+# 构建镜像/重新部署节点，成本高。这里提供「推送更新」能力：管理员在界面点击
+# 「推送更新」→ 后端把服务器端最新 engines/ 目录打包并下发指令 → 节点 Worker
+# 在心跳循环中检测到目标版本与本地不一致时，自动从后端拉取更新包并替换本地
+# engines/ 目录，无需重新部署/重启节点。
+
+# 打包时需要排除的目录/文件（避免把缓存/编译产物/敏感文件下发给节点）
+_ENGINE_EXCLUDE = (
+    "__pycache__",
+    ".pyc",
+    ".pyo",
+    ".git",
+    ".DS_Store",
+    ".gitignore",
+    "README.md",
+)
+
+
+def _resolve_engines_dir() -> Path:
+    """解析服务器端引擎目录绝对路径。"""
+    p = Path(settings.ENGINES_DIR)
+    if not p.is_absolute():
+        p = Path(os.path.abspath(settings.ENGINES_DIR))
+    return p
+
+
+def _iter_engine_files(engines_dir: Path):
+    """遍历引擎目录下应下发给节点的文件（排除缓存/编译产物）。"""
+    if not engines_dir.exists():
+        return
+    for root, dirs, files in os.walk(engines_dir):
+        dirs[:] = [d for d in dirs if d not in _ENGINE_EXCLUDE]
+        for name in files:
+            if name.endswith(_ENGINE_EXCLUDE):
+                continue
+            fp = Path(root) / name
+            # 只下发普通文件（跳过软链接/特殊文件）
+            if fp.is_file():
+                yield fp
+
+
+def _compute_engine_version(engines_dir: Path) -> str:
+    """计算引擎目录版本：所有文件内容 SHA256 汇总，取前 12 位十六进制。
+
+    任一文件内容/新增/删除都会导致版本变化，用于节点判断是否需要更新。
+    """
+    h = hashlib.sha256()
+    files = sorted(_iter_engine_files(engines_dir), key=lambda p: str(p))
+    for fp in files:
+        rel = str(fp.relative_to(engines_dir))
+        h.update(rel.encode("utf-8"))
+        try:
+            with open(fp, "rb") as f:
+                h.update(f.read())
+        except OSError:
+            continue
+    return h.hexdigest()[:12]
+
+
+def _build_engine_archive(engines_dir: Path) -> bytes:
+    """把引擎目录打包为 tar.gz 字节流（供节点拉取更新）。"""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for fp in sorted(_iter_engine_files(engines_dir), key=lambda p: str(p)):
+            rel = str(fp.relative_to(engines_dir))
+            tar.add(fp, arcname=rel)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+@router.get("/workers/engines/status")
+async def get_engines_status(
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+):
+    """获取服务器端当前引擎版本与文件清单（用于判断/推送更新）。"""
+    engines_dir = _resolve_engines_dir()
+    if not engines_dir.exists():
+        raise HTTPException(status_code=404, detail=f"引擎目录不存在: {engines_dir}")
+    version = _compute_engine_version(engines_dir)
+    files = [
+        str(fp.relative_to(engines_dir))
+        for fp in sorted(_iter_engine_files(engines_dir), key=lambda p: str(p))
+    ]
+    return {
+        "engines_dir": str(engines_dir),
+        "version": version,
+        "file_count": len(files),
+        "files": files,
+    }
+
+
+@internal_router.get("/workers/engines/package")
+async def get_engines_package(
+    node_id: str = "",
+):
+    """获取服务器端引擎更新包（tar.gz），供节点 Worker 拉取后替换本地 engines/ 目录。
+
+    挂在 internal_router（无用户 JWT，与心跳接口一致）下，供 Go slice-worker 直接访问。
+    节点 Worker 在检测到更新指令后调用此接口下载更新包。
+    """
+    engines_dir = _resolve_engines_dir()
+    if not engines_dir.exists():
+        raise HTTPException(status_code=404, detail=f"引擎目录不存在: {engines_dir}")
+    version = _compute_engine_version(engines_dir)
+    archive = _build_engine_archive(engines_dir)
+    return StreamingResponse(
+        io.BytesIO(archive),
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": f'attachment; filename="engines-{version}.tar.gz"',
+            "X-Engine-Version": version,
+        },
+    )
+
+
+@router.post("/workers/{node_id}/push-update")
+async def push_worker_update(
+    node_id: str,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+):
+    """向指定节点推送引擎更新。
+
+    后端把服务器端最新引擎版本写入 Redis 更新指令，节点 Worker 在心跳循环中
+    检测到目标版本与本地引擎版本不一致时，自动从后端拉取更新包并替换本地
+    engines/ 目录，无需重新部署节点。
+    """
+    engines_dir = _resolve_engines_dir()
+    if not engines_dir.exists():
+        raise HTTPException(status_code=404, detail=f"引擎目录不存在: {engines_dir}")
+    target_version = _compute_engine_version(engines_dir)
+
+    # 校验节点是否在线（从 Redis 读取节点状态）
+    try:
+        redis_nodes = await get_worker_nodes_from_redis()
+        online_ids = {n["node_id"] for n in redis_nodes if n.get("status") == "online"}
+    except Exception:
+        online_ids = set()
+
+    offline = node_id not in online_ids
+
+    ok = await set_node_update_command(node_id, target_version)
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"写入节点 {node_id} 的更新指令失败")
+
+    return {
+        "ok": True,
+        "node_id": node_id,
+        "target_version": target_version,
+        "message": f"已向节点 {node_id} 推送更新（目标版本 {target_version}）"
+        + ("；节点当前离线，将在其重新上线后自动应用" if offline else ";节点将自动拉取并应用"),
+    }
