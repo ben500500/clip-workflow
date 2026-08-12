@@ -166,6 +166,9 @@ class SliceRunRequest(BaseModel):
     # 字幕字号（相对输出视频高度的比例，默认 0.20→FontSize 20，约占画面 5%；不传用引擎默认值）。
     # 用户可调大以让字幕更清晰易读，例如 0.10~0.30。
     subtitle_font_ratio: Optional[float] = None
+    # 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；负值/调小让字幕文字更紧凑，调大则字距变宽）。
+    # 不传用引擎默认值 SUBTITLE_SPACING。
+    subtitle_spacing: Optional[int] = None
     # 字幕样式（default=白字黑边+半透明黑底；custom=自定义字体色/边框色且无底色）。
     # 仅在 subtitle_enabled 开启且为 custom 时生效。
     subtitle_style: Optional[str] = None
@@ -471,9 +474,11 @@ async def _read_existing_subtitle(episode: Episode, db: AsyncSession) -> Optiona
 
 
 def _with_subtitle_options(cfg: dict, data: SliceRunRequest) -> dict:
-    """把用户设置的字幕样式（字号/自定义字体色/边框色）写入字幕配置，随任务下发给引擎。"""
+    """把用户设置的字幕样式（字号/字间距/自定义字体色/边框色）写入字幕配置，随任务下发给引擎。"""
     if data.subtitle_font_ratio is not None and data.subtitle_font_ratio > 0:
         cfg["font_ratio"] = round(float(data.subtitle_font_ratio), 4)
+    if data.subtitle_spacing is not None:
+        cfg["spacing"] = int(data.subtitle_spacing)
     if data.subtitle_style:
         cfg["style"] = data.subtitle_style
     if data.subtitle_color:

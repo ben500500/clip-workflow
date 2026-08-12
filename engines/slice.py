@@ -442,25 +442,111 @@ _TEXT_SINGLE_FONT_CANDIDATES = [
 _TEXT_TTC_CANDIDATES = [
     "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
 ]
-_TEXT_FONTFILE = next((f for f in _TEXT_SINGLE_FONT_CANDIDATES if os.path.isfile(f)), "")
+
+# 用 fc-match 动态解析 Noto Sans CJK SC 真实路径，避免依赖写死的发行版路径（Debian/Alpine 布局不同）。
+_FCMATCH_CMD = "fc-match"
+# 提取出的 SC 单字体缓存（避免每次调用都重复解析/提取）
+_SC_FONTFILE_CACHE = {"path": None}
+
+
+def _fc_match_sc_font() -> str:
+    """用 fontconfig 的 fc-match 动态解析 "Noto Sans CJK SC" 的真实字体路径。
+
+    自适应 Debian/Alpine 等不同发行版，返回匹配字体的绝对路径；无 fc-match 或
+    匹配失败时返回空串。通过缓存避免重复调用外部进程。
+    """
+    if _SC_FONTFILE_CACHE["path"] is not None:
+        return _SC_FONTFILE_CACHE["path"]
+    try:
+        proc = subprocess.run(
+            [_FCMATCH_CMD, "-f", "%{file}\n", "Noto Sans CJK SC"],
+            capture_output=True, text=True, timeout=5,
+        )
+        path = (proc.stdout or "").strip().splitlines()
+        if path and os.path.isfile(path[0]):
+            _SC_FONTFILE_CACHE["path"] = path[0]
+            return path[0]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    _SC_FONTFILE_CACHE["path"] = ""
+    return ""
+
+
+def _extract_sc_face(ttc_path: str) -> str:
+    """把 Noto CJK .ttc 集合里的 SC 简体中文字面提取成独立单字体 .ttf。
+
+    drawtext 用 fontfile 引用 .ttc 时会默认加载第一个子字体（往往是 JP 日文字形），
+    导致简体字"门"等渲染成日式/异常字形。方案 C：用 fontTools 把 SC face 单独提取成
+    单字体 .ttf，彻底绕开 fontconfig 的 face 选择歧义。提取产物缓存在系统临时目录，
+    一次提取后续复用。依赖 fonttools（backend/slice-worker 镜像均已安装）。
+    """
+    try:
+        from fontTools.ttLib import TTFont
+    except Exception:
+        return ""
+    cache_key = os.path.join(tempfile.gettempdir(),
+                             "NotoSansCJKsc-Regular-" + str(abs(hash(ttc_path))) + ".ttf")
+    if os.path.isfile(cache_key):
+        return cache_key
+    try:
+        # 遍历 .ttc 集合里所有 face，挑出包含 "SC"/"Simplified" 的简体中文字面
+        sc_index = None
+        num_fonts = TTFont(ttc_path, fontNumber=0, lazy=True).reader.numFonts
+        for i in range(num_fonts):
+            try:
+                f2 = TTFont(ttc_path, fontNumber=i, lazy=True)
+                nm = f2["name"]
+                combined = "".join(
+                    (nm.getDebugName(n) or "").lower()
+                    for n in (1, 4, 6) if nm.getDebugName(n)
+                )
+                if "sc" in combined or "simplified" in combined:
+                    sc_index = i
+                    break
+            except Exception:
+                continue
+        if sc_index is None:
+            return ""
+        sc_font = TTFont(ttc_path, fontNumber=sc_index, lazy=True)
+        sc_font.save(cache_key)
+        return cache_key if os.path.isfile(cache_key) else ""
+    except Exception:
+        try:
+            if os.path.isfile(cache_key):
+                os.unlink(cache_key)
+        except OSError:
+            pass
+        return ""
 
 
 def _resolve_drawtext_font() -> str:
     """返回 drawtext 的字体参数片段。
 
-    fontconfig 的 font=Noto Sans CJK SC 会精确匹配简体中文字体（含正确的"门"字形），
-    优先使用；仅当容器里没有 Noto CJK 集合时才退回单字体文件。
-    注意不能把 DroidSansFallback 这类回退字体排在前面——它的"门"等简体字形是异常/次选字形。
+    B+C 结合方案：
+      B) 优先用 fc-match 动态解析 "Noto Sans CJK SC" 真实字体路径（自适应 Debian/Alpine），
+         命中即用 fontfile= 精确加载该字体（含正确的"门"字形）。
+      C) fc-match 解析到的若是 .ttc 集合，则用 fontTools 提取 SC face 为单字体 .ttf
+         再加载，彻底绕开 ttc 默认加载日文子字体、避免"门"渲染成日式/异常字形。
+    兜底：单字体候选 / fontconfig font=Noto Sans CJK SC。
     """
-    # 有 Noto CJK 集合时，用 fontconfig 的 font=Noto Sans CJK SC 精确匹配简体中文
-    #（drawtext 的 font 选项走 fontconfig），避免 .ttc 集合默认加载日文子字体、
-    # 也避免 DroidSansFallback 这类回退字体把"门"渲染成异常字形。
+    # ① B：fc-match 动态解析 Noto Sans CJK SC 真实路径
+    sc_path = _fc_match_sc_font()
+    if sc_path and os.path.isfile(sc_path):
+        # ② C：若命中 .ttc 集合，提取 SC face 为单字体再加载（绕开 face 选择歧义）
+        if sc_path.lower().endswith(".ttc"):
+            single = _extract_sc_face(sc_path)
+            if single:
+                return f":fontfile={single}"
+        return f":fontfile={sc_path}"
+    # ③ 兜底 A：有 Noto CJK 集合时用 fontconfig font= 精确匹配简体中文
     if any(os.path.isfile(f) for f in _TEXT_TTC_CANDIDATES):
         return ":font=Noto Sans CJK SC"
-    # 无 Noto CJK 时退回单字体文件（.ttf/.otf），保证至少能渲染出中文
-    if _TEXT_FONTFILE:
-        return f":fontfile={_TEXT_FONTFILE}"
+    # ④ 兜底 B：单字体文件
+    _text_fontfile = next((f for f in _TEXT_SINGLE_FONT_CANDIDATES if os.path.isfile(f)), "")
+    if _text_fontfile:
+        return f":fontfile={_text_fontfile}"
     return ""
 
 
@@ -599,9 +685,12 @@ def build_watermark_filter(wm: dict) -> str:
 # ──────────────────────────────────────────────
 
 # 字幕字号（相对输出高度比例）
-# 默认 0.30→FontSize 30，约占画面高度 7%~8%，横屏/竖屏均清晰可读。
-# 该值参考横屏切片样图（默认字幕约占画面高度 7%，底部居中）定标。
-SUBTITLE_FONT_RATIO = 0.30
+# 默认 0.22→FontSize 22，约占画面高度 5.5%~6%，比历史默认 0.30 进一步降低，
+# 更显轻盈不遮挡画面。横屏/竖屏均清晰可读。用户可通过配置调大或调小。
+SUBTITLE_FONT_RATIO = 0.22
+# 字幕字间距（ASS Spacing，单位像素）。默认 0 更紧凑；用户反馈原字体自带字距偏宽，
+# 调小（如 -1）让字幕文字更紧凑；通过配置项开放调节。
+SUBTITLE_SPACING = 0
 # 字幕距底边距离（相对输出高度比例，越小越贴近画面底部；用户反馈原 0.08 偏高，调低到 0.05 更贴底）
 SUBTITLE_BOTTOM_RATIO = 0.05
 
@@ -872,6 +961,7 @@ def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str,
 def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
                   threads: int = 1, encoder: str = "libx264",
                   font_ratio: Optional[float] = None,
+                  spacing: Optional[int] = None,
                   style: Optional[str] = None,
                   font_color: Optional[str] = None,
                   border_color: Optional[str] = None) -> None:
@@ -879,6 +969,7 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
 
     带字体、样式与描边，保证中文字幕清晰可读；输出为重新编码的视频。
     font_ratio: 字幕字号（相对输出视频高度的比例，不传用默认值 SUBTITLE_FONT_RATIO）。
+    spacing: 字幕字间距（ASS Spacing 像素，不传用默认值 SUBTITLE_SPACING）。
     style: 字幕样式（SUBTITLE_STYLE_DEFAULT=白字黑边+半透明黑底 / SUBTITLE_STYLE_CUSTOM=可
         自定义字体色与边框色，且无底色）。不传用默认样式。
     font_color / border_color: 自定义样式的字体色/边框色（CSS 十六进制 #RRGGBB）。
@@ -895,6 +986,8 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
 
     # 字幕字号：未指定时用默认值（加大后的清晰字号），用户可在切片配置中调节
     font_ratio = font_ratio if font_ratio is not None else SUBTITLE_FONT_RATIO
+    # 字幕字间距：未指定时用默认值（默认 0 更紧凑），用户可通过切片配置调节
+    spacing = spacing if spacing is not None else SUBTITLE_SPACING
 
     # subtitles filter 需要能定位到字幕文件；路径含特殊字符时需转义冒号/逗号/引号
     srt_esc = (subtitle_srt.replace("\\", "\\\\")
@@ -921,7 +1014,8 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
     sub_filter = (
         f"subtitles=filename='{srt_esc}'"
         f":force_style='FontName=Noto Sans CJK SC,FontSize={font_ratio * 100:.0f}"
-        f",{sub_style},MarginV={SUBTITLE_BOTTOM_RATIO * 1000:.0f}'"
+        f",{sub_style},MarginV={SUBTITLE_BOTTOM_RATIO * 1000:.0f}"
+        f",Spacing={int(spacing)}'"
     )
 
     cmd = [
@@ -992,6 +1086,12 @@ def main():
         help="字幕字号（相对输出视频高度的比例，可选，默认 0.20→FontSize 20，约占画面 5%）。越大字幕越清晰易读",
     )
     parser.add_argument(
+        "--subtitle-spacing",
+        type=int,
+        default=None,
+        help="字幕字间距（ASS Spacing 像素，可选，默认 0 更紧凑）。调小/为负可让字幕文字更紧凑，调大则字距变宽",
+    )
+    parser.add_argument(
         "--subtitle-style",
         default=None,
         help="字幕样式（default=白字黑边+半透明黑底；custom=自定义字体色/边框色且无底色，可选，默认 default）",
@@ -1028,6 +1128,8 @@ def main():
     # 横屏/竖屏无需区别对待；用户显式指定 --subtitle-font-ratio 时以用户值为准，
     # 未指定时 burn_subtitle 内部统一用 SUBTITLE_FONT_RATIO。
     subtitle_font_ratio = args.subtitle_font_ratio
+    # 字幕字间距：用户显式指定 --subtitle-spacing 时以用户值为准，未指定时用默认值
+    subtitle_spacing = args.subtitle_spacing
 
     os.makedirs(args.output_dir, exist_ok=True)
     cuts = read_cutlist(args.cutlist)
@@ -1125,6 +1227,7 @@ def main():
                     sub_out = out_path + ".sub.mp4"
                     burn_subtitle(out_path, sub_srt, sub_out, threads=threads, encoder=encoder,
                                   font_ratio=subtitle_font_ratio,
+                                  spacing=subtitle_spacing,
                                   style=args.subtitle_style,
                                   font_color=args.subtitle_color,
                                   border_color=args.subtitle_border_color)

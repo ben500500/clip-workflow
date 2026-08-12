@@ -74,7 +74,9 @@ const SliceTasks: React.FC = () => {
   // ── ASR 字幕烧录（与转横屏联动：转横屏开启时默认开启字幕）──
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
   // 字幕字号（px，UI 显示值；转成比例 subtitleFontRatio = 字号/100 → FontSize）
-  const [subtitleFontSize, setSubtitleFontSize] = useState(20);
+  const [subtitleFontSize, setSubtitleFontSize] = useState(30);
+  // 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；调小/负值让字幕文字更紧凑，调大则字距变宽）
+  const [subtitleSpacing, setSubtitleSpacing] = useState(0);
   // 字幕样式：default（白字黑边带底色）/ custom（自定义字体色+边框色，无底色）
   const [subtitleStyle, setSubtitleStyle] = useState<'default' | 'custom'>('custom');
   // 自定义样式的字体色 / 边框色（默认 #EDD736 黄 / 黑边）
@@ -143,6 +145,8 @@ const SliceTasks: React.FC = () => {
         subtitle_enabled: subtitleEnabled,
         // 字幕字号（px → 相对高度比例，字号/100；FontSize=字号）
         subtitle_font_ratio: subtitleEnabled ? Math.max(0.1, Math.min(0.6, subtitleFontSize / 100)) : undefined,
+        // 字幕字间距（ASS Spacing 像素）：让字幕文字更紧凑
+        subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
         // 字幕样式：custom 时可选字体色/边框色（无底色）
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
@@ -262,7 +266,8 @@ const SliceTasks: React.FC = () => {
     if (on) {
       // 转横屏开启时默认开启字幕并套用默认参数
       setSubtitleEnabled(true);
-      setSubtitleFontSize(45);
+      setSubtitleFontSize(30);
+      setSubtitleSpacing(0);
       setSubtitleStyle('custom');
       setSubtitleColor('#EDD736');
       // 固定文字开关默认开启
@@ -825,10 +830,24 @@ const SliceTasks: React.FC = () => {
                   max={60}
                   step={1}
                   value={subtitleFontSize}
-                  onChange={(v) => setSubtitleFontSize(v ?? 45)}
+                  onChange={(v) => setSubtitleFontSize(v ?? 30)}
                   style={{ width: 100 }}
                   addonAfter="px"
                 />
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 12 }}>字幕字间距</Text>
+                <InputNumber
+                  size="small"
+                  min={-5}
+                  max={20}
+                  step={1}
+                  value={subtitleSpacing}
+                  onChange={(v) => setSubtitleSpacing(v ?? 0)}
+                  style={{ width: 100 }}
+                  addonAfter="px"
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>越小越紧凑</Text>
               </Space>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 12 }}>字幕样式</Text>
