@@ -937,9 +937,6 @@ const SliceTasks: React.FC = () => {
                   ]}
                 />
               </Space>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                水印文字会在画面中缓慢移动并带透明度呼吸效果，用于防搬运 / 标识来源。
-              </Text>
             </Space>
           </Modal>
 
