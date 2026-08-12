@@ -85,7 +85,7 @@ const EpisodeDetail: React.FC = () => {
   const [watermarkPosition, setWatermarkPosition] = useState('bottom');
   // ── 竖屏转横屏智能裁切开关与参数 ──
   const [vert2horizEnabled, setVert2horizEnabled] = useState(false);
-  const [vert2horizMode, setVert2horizMode] = useState<'fixed' | 'dynamic'>('fixed');
+  const [vert2horizMode, setVert2horizMode] = useState<'fixed' | 'dynamic'>('dynamic');
   const [vert2horizRatio, setVert2horizRatio] = useState(0.5625);
   const [vert2horizOutputSize, setVert2horizOutputSize] = useState('1280x720');
   const [vert2horizDetectInterval, setVert2horizDetectInterval] = useState(2);
