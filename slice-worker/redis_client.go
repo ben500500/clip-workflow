@@ -256,6 +256,18 @@ func (r *RedisClient) GetTaskHash(taskID string) (map[string]string, error) {
 	return r.client.HGetAll(r.ctx, fmt.Sprintf("slice:task:%s", taskID)).Result()
 }
 
+// GetTaskStatus 获取任务状态（空串表示 redis 中无此任务）
+func (r *RedisClient) GetTaskStatus(taskID string) (string, error) {
+	status, err := r.client.HGet(r.ctx, fmt.Sprintf("slice:task:%s", taskID), "status").Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return status, nil
+}
+
 // IsNodeEnabled 检查节点是否被管理员停用（停用后不再领取新任务）
 func (r *RedisClient) IsNodeEnabled(nodeID string) (bool, error) {
 	val, err := r.client.Get(r.ctx, fmt.Sprintf("slice:node-enabled:%s", nodeID)).Result()

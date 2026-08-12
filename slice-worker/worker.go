@@ -7,11 +7,18 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// 优雅退出时等待正在执行任务完成的超时（切片任务可能耗时数分钟）
+const gracefulShutdownTimeout = 15 * time.Minute
+
+// uuidDirRe 匹配任务临时目录名（UUID 格式）
+var uuidDirRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // Worker 核心工作节点
 type Worker struct {
@@ -114,6 +121,9 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 	w.log("info", "节点注册成功: %s", w.config.NodeID)
 
+	// 启动时清理孤儿临时目录（上次强杀/崩溃遗留的残留目录）
+	w.cleanupOrphanDirs()
+
 	// 确保退出时注销
 	defer func() {
 		w.redis.UnregisterNode(w.config.NodeID, w.config.Tags)
@@ -139,7 +149,10 @@ func (w *Worker) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			w.log("info", "收到退出信号")
+			w.log("info", "收到退出信号，等待正在执行的任务完成（最多 %s）", gracefulShutdownTimeout)
+			// 优雅退出：停止认领新任务，等待当前任务跑完（避免强杀导致临时目录残留）
+			w.waitRunningTasks(gracefulShutdownTimeout)
+			w.log("info", "优雅退出完成")
 			return nil
 		default:
 			// 检查节点是否被管理员停用（停用后暂停领取新任务，正在执行的不受影响）
@@ -177,6 +190,73 @@ func (w *Worker) Run(ctx context.Context) error {
 			// 启动任务
 			go w.runTask(msg)
 		}
+	}
+}
+
+// cleanupOrphanDirs 启动时清理孤儿临时目录。
+//
+// 场景：worker 被强杀（如 docker compose --force-recreate 或 OOM）时，正在处理的
+// 任务进程被 SIGKILL，runTask 的 defer 清理未执行，任务目录（含下载的源视频、
+// 中间文件）残留。重启后这些消息会被幂等检测跳过（终态直接 ACK），不再触发清理，
+// 需要在此兜底。
+//
+// 注意 TempDir 为多 worker 共享卷：只清理「非 UUID 目录」或「UUID 目录但 redis 中
+// 无对应任务 / 任务已终态」的目录；running/pending 的任务目录必须跳过（可能正被
+// 其他 worker 使用）。
+func (w *Worker) cleanupOrphanDirs() {
+	entries, err := os.ReadDir(w.config.TempDir)
+	if err != nil {
+		w.log("warn", "扫描临时目录失败: %v", err)
+		return
+	}
+	removed := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		dir := filepath.Join(w.config.TempDir, name)
+		if !uuidDirRe.MatchString(name) {
+			// 非 UUID 目录（如手工测试残留 repro-* 等）：直接清理
+			if rmErr := os.RemoveAll(dir); rmErr == nil {
+				w.log("info", "清理非任务残留目录: %s", name)
+				removed++
+			}
+			continue
+		}
+		// UUID 目录：查 redis 任务状态决定是否孤儿
+		status, err := w.redis.GetTaskStatus(name)
+		if err != nil {
+			continue // 查询失败保守跳过
+		}
+		if status == "" || status == "completed" || status == "failed" || status == "cancelled" {
+			if rmErr := os.RemoveAll(dir); rmErr == nil {
+				w.log("info", "清理孤儿任务目录: %s (status=%q)", name, status)
+				removed++
+			}
+		}
+	}
+	w.log("info", "临时目录清理完成，共清理 %d 个残留目录", removed)
+}
+
+// waitRunningTasks 等待正在执行的任务全部完成（优雅退出），带超时保护。
+func (w *Worker) waitRunningTasks(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for {
+		n := 0
+		w.runningTasks.Range(func(_, _ interface{}) bool {
+			n++
+			return true
+		})
+		if n == 0 {
+			w.log("info", "所有任务已完成，退出")
+			return
+		}
+		if time.Now().After(deadline) {
+			w.log("warn", "等待超时（仍有 %d 个任务在执行），强制退出", n)
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
@@ -406,6 +486,8 @@ func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *
 			"error":     "任务已取消",
 			"failed_at": time.Now().Unix(),
 		})
+		// cancelled 也设置 TTL，避免历史取消任务的 hash 永久残留
+		w.redis.ExpireTaskStatus(task.TaskID, 7*24*time.Hour)
 		w.redis.AckTask(msg.Stream, "workers", msg.ID)
 		atomic.AddInt32(&w.totalFailed, 1)
 		w.sendFailureCallback(task, "任务已取消")

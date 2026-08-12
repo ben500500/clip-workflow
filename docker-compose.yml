@@ -412,6 +412,9 @@ services:
     image: clip-slice-worker:latest
     container_name: clip-slice-worker
     restart: unless-stopped
+    # 优雅退出窗口：SIGTERM 后等待当前任务完成再退出（worker 会停止认领新任务），
+    # 避免强杀正在处理的任务导致临时目录残留
+    stop_grace_period: 15m
     networks:
       - clip-network
     depends_on:
@@ -447,6 +450,7 @@ services:
     image: clip-slice-worker:latest
     container_name: clip-slice-worker-2
     restart: unless-stopped
+    stop_grace_period: 15m
     networks:
       - clip-network
     depends_on:

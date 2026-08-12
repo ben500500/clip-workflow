@@ -129,10 +129,14 @@ async def mark_task_cancelled(task_id: str) -> None:
     redis = None
     try:
         redis = await get_redis()
-        await redis.hset(f"{TASK_STATUS_PREFIX}{task_id}", mapping={
+        key = f"{TASK_STATUS_PREFIX}{task_id}"
+        await redis.hset(key, mapping={
             "status": "cancelled",
             "cancelled_at": int(datetime.utcnow().timestamp()),
         })
+        # cancelled 也设置 TTL：排队中未认领就被取消的任务不会经过 Worker 终态
+        # 处理（没有 ExpireTaskStatus），需在此兜底，避免 hash 永久残留
+        await redis.expire(key, 7 * 24 * 3600)
     except Exception as e:
         logger.error(f"Failed to mark task {task_id} as cancelled: {e}")
     finally:
