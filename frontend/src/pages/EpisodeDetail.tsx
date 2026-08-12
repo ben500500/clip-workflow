@@ -1846,8 +1846,25 @@ const EpisodeDetail: React.FC = () => {
               size="small"
               pagination={false}
               dataSource={sliceHistory.slice(0, 8)}
-              scroll={{ x: 420 }}
+              scroll={{ x: 620 }}
               columns={[
+                {
+                  title: '名称',
+                  key: 'name',
+                  width: 170,
+                  render: (_: unknown, t: SliceTask) =>
+                    t.status === 'completed' ? (
+                      <a
+                        style={{ fontSize: 12 }}
+                        title="点击跳转成片预览"
+                        onClick={(e) => { e.stopPropagation(); navigate(`/episodes/${episodeId}/preview?task=${t.id}`); }}
+                      >
+                        {SLICE_MODE_HELP[t.mode || '']?.label || t.mode || '切片任务'} · {formatDateTime(t.created_at)}
+                      </a>
+                    ) : (
+                      <Text style={{ fontSize: 12 }}>{SLICE_MODE_HELP[t.mode || '']?.label || t.mode || '切片任务'} · {formatDateTime(t.created_at)}</Text>
+                    ),
+                },
                 {
                   title: '模式',
                   dataIndex: 'mode',
@@ -1961,7 +1978,7 @@ const EpisodeDetail: React.FC = () => {
           <Popconfirm
             title="一键切片"
             description="免审核直接出片：自动把所有候选片段（含待审核）直接切割成成品视频，无需逐个审核/预览。"
-            onConfirm={oneClickSlice}
+            onConfirm={() => { void oneClickSlice(); }}
             okText="开始切片"
             cancelText="取消"
             disabled={oneClickSlicing}

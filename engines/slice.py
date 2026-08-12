@@ -449,15 +449,18 @@ _TEXT_FONTFILE = next((f for f in _TEXT_SINGLE_FONT_CANDIDATES if os.path.isfile
 def _resolve_drawtext_font() -> str:
     """返回 drawtext 的字体参数片段。
 
-    优先使用单字体文件（fontfile，避免 ttc 集合的日文/region 字形歧义）；
-    若无单字体只能用 ttc 集合时，退回用 font=Noto Sans CJK SC（fontconfig）
-    让 libfreetype/fontconfig 精确匹配简体中文字体，解决"门"等简体字渲染异常。
+    fontconfig 的 font=Noto Sans CJK SC 会精确匹配简体中文字体（含正确的"门"字形），
+    优先使用；仅当容器里没有 Noto CJK 集合时才退回单字体文件。
+    注意不能把 DroidSansFallback 这类回退字体排在前面——它的"门"等简体字形是异常/次选字形。
     """
-    if _TEXT_FONTFILE:
-        return f":fontfile={_TEXT_FONTFILE}"
-    # 有 ttc 集合时用 fontconfig FontName 精确匹配简体中文（drawtext 的 font 选项走 fontconfig）
+    # 有 Noto CJK 集合时，用 fontconfig 的 font=Noto Sans CJK SC 精确匹配简体中文
+    #（drawtext 的 font 选项走 fontconfig），避免 .ttc 集合默认加载日文子字体、
+    # 也避免 DroidSansFallback 这类回退字体把"门"渲染成异常字形。
     if any(os.path.isfile(f) for f in _TEXT_TTC_CANDIDATES):
         return ":font=Noto Sans CJK SC"
+    # 无 Noto CJK 时退回单字体文件（.ttf/.otf），保证至少能渲染出中文
+    if _TEXT_FONTFILE:
+        return f":fontfile={_TEXT_FONTFILE}"
     return ""
 
 
