@@ -86,9 +86,9 @@ echo ""
 echo "════════════ 自检结果 ════════════"
 echo -e "  ${GREEN}通过 $PASS${NC} / ${RED}失败 $FAIL${NC} / 警告项见 ⚠️"
 if [ "$FAIL" = "0" ]; then
-  echo -e "  ${GREEN}🎉 部署健康，可投入使用${NC}"
+  echo -e "  ${GREEN}部署健康，可投入使用${NC}"
   exit 0
 else
-  echo -e "  ${RED}⚠️ 存在 $FAIL 项失败，按上方提示修复后重跑${NC}"
+  echo -e "  ${RED}存在 $FAIL 项失败，按上方提示修复后重跑${NC}"
   exit 1
 fi
