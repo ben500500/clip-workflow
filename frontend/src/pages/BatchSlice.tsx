@@ -13,7 +13,24 @@ import { batchSliceApi, BatchSlice, BatchSliceItem, BatchSliceOutputItem } from 
 const { Text, Title } = Typography;
 
 // ── 一键切片配置（复用剧集详情页的常用配置项，整批统一生效）──
+// AI 智能选点配置
+interface AutoClipConfig {
+  enabled: boolean;
+  max_clips: number;
+  min_score_threshold: number;
+  min_duration: number;
+  max_duration: number;
+  frame_analysis: boolean;
+}
+// 通用区间检测配置
+interface IntervalConfig {
+  enabled: boolean;
+  mode: 'credits' | 'static' | 'watermark';
+}
+
 interface SliceConfigState {
+  autoclip: AutoClipConfig;
+  interval: IntervalConfig;
   vert2horiz_enabled: boolean;
   vert2horiz_mode: 'fixed' | 'dynamic';
   vert2horiz_ratio: number;
@@ -33,6 +50,18 @@ interface SliceConfigState {
 }
 
 const DEFAULT_SLICE_CONFIG: SliceConfigState = {
+  autoclip: {
+    enabled: true,
+    max_clips: 30,
+    min_score_threshold: 60,
+    min_duration: 30,
+    max_duration: 180,
+    frame_analysis: true,
+  },
+  interval: {
+    enabled: true,
+    mode: 'credits',
+  },
   vert2horiz_enabled: true,
   vert2horiz_mode: 'dynamic',
   vert2horiz_ratio: 0.5625,
@@ -61,6 +90,7 @@ const PHASE_LABELS: Record<string, string> = {
   upload: '上传源视频',
   autoclip: 'AI 选点',
   review: '自动审核',
+  interval: '区间检测',
   slice: '一键切片',
   source_delete: '删除源视频',
 };
@@ -72,6 +102,7 @@ const STATUS_COLOR: Record<string, string> = {
   uploading: 'blue',
   autoclip: 'blue',
   reviewing: 'blue',
+  detecting: 'blue',
   slicing: 'processing',
   deleting: 'processing',
   cancelled: 'orange',
@@ -84,6 +115,7 @@ const STATUS_TEXT: Record<string, string> = {
   uploading: '上传中',
   autoclip: '选点中',
   reviewing: '审核中',
+  detecting: '检测中',
   slicing: '切片中',
   deleting: '删除中',
   cancelled: '已取消',
@@ -187,6 +219,20 @@ const BatchSlicePage: React.FC = () => {
       slice_config: {
         mode: 'fast',
         ...sliceConfig,
+        // AI 智能选点：配置并入 autoclip_config / autoclip_enabled
+        autoclip_enabled: sliceConfig.autoclip.enabled,
+        autoclip_config: {
+          max_clips: sliceConfig.autoclip.max_clips,
+          min_score_threshold: sliceConfig.autoclip.min_score_threshold,
+          min_duration: sliceConfig.autoclip.min_duration,
+          max_duration: sliceConfig.autoclip.max_duration,
+          frame_analysis: sliceConfig.autoclip.frame_analysis,
+        },
+        // 通用区间检测：配置并入 interval_config / interval_enabled
+        interval_enabled: sliceConfig.interval.enabled,
+        interval_config: {
+          mode: sliceConfig.interval.mode,
+        },
         // text_overlays 仅开启时透传
         text_overlays: sliceConfig.text_overlay_enabled ? sliceConfig.text_overlays : [],
       },
@@ -425,6 +471,78 @@ const BatchSlicePage: React.FC = () => {
 
       <Card title="② 一键切片配置选项" style={{ marginBottom: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Divider orientation="left" style={{ margin: '8px 0' }}>AI 智能选点</Divider>
+          <Space size="large" wrap>
+            <Text>启用 AI 选点：</Text>
+            <Switch
+              checked={sliceConfig.autoclip.enabled}
+              onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, enabled: v } })}
+            />
+            {sliceConfig.autoclip.enabled && (
+              <>
+                <Text>候选数</Text>
+                <InputNumber
+                  value={sliceConfig.autoclip.max_clips}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, max_clips: v ?? 30 } })}
+                  min={1}
+                  max={200}
+                />
+                <Text>最低评分</Text>
+                <InputNumber
+                  value={sliceConfig.autoclip.min_score_threshold}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, min_score_threshold: v ?? 60 } })}
+                  min={0}
+                  max={100}
+                />
+                <Text>最短时长(s)</Text>
+                <InputNumber
+                  value={sliceConfig.autoclip.min_duration}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, min_duration: v ?? 0 } })}
+                  min={0}
+                />
+                <Text>最长时长(s)</Text>
+                <InputNumber
+                  value={sliceConfig.autoclip.max_duration}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, max_duration: v ?? 0 } })}
+                  min={0}
+                />
+                <Text>画面理解</Text>
+                <Switch
+                  checked={sliceConfig.autoclip.frame_analysis}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, frame_analysis: v } })}
+                />
+              </>
+            )}
+          </Space>
+
+          <Divider orientation="left" style={{ margin: '8px 0' }}>通用区间检测</Divider>
+          <Space size="large" wrap>
+            <Text>启用区间检测：</Text>
+            <Switch
+              checked={sliceConfig.interval.enabled}
+              onChange={(v) => setSliceConfig({ ...sliceConfig, interval: { ...sliceConfig.interval, enabled: v } })}
+            />
+            {sliceConfig.interval.enabled && (
+              <>
+                <Text>检测模式</Text>
+                <Select
+                  value={sliceConfig.interval.mode}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, interval: { ...sliceConfig.interval, mode: v } })}
+                  style={{ width: 120 }}
+                  options={[
+                    { value: 'credits', label: '片尾字幕' },
+                    { value: 'static', label: '静止画面' },
+                    { value: 'watermark', label: '水印' },
+                  ]}
+                />
+                <Tooltip title="区间检测会在切片前自动检测片尾/静止/水印区间，用于辅助切片流程">
+                  <Tag color="blue">切片前自动检测</Tag>
+                </Tooltip>
+              </>
+            )}
+          </Space>
+
+          <Divider orientation="left" style={{ margin: '8px 0' }}>切片增强配置</Divider>
           <Space size="large">
             <Text>竖屏转横屏：</Text>
             <Switch

@@ -963,7 +963,8 @@ class BatchSliceItem(Base):
     episode_id = Column(UUID(as_uuid=True), nullable=True, index=True)   # 关联创建的 Episode
     slice_task_id = Column(UUID(as_uuid=True), nullable=True)            # 关联的 SliceTask
     autoclip_run_id = Column(UUID(as_uuid=True), nullable=True)          # 关联的 AutoClipRun
-    status = Column(String(50), default="pending")  # pending/uploading/autoclip/reviewing/slicing/completed/failed/cancelled/skipped
+    detect_task_id = Column(UUID(as_uuid=True), nullable=True)           # 关联的区间检测 SliceTask（mode=detect_*）
+    status = Column(String(50), default="pending")  # pending/uploading/autoclip/reviewing/detecting/slicing/completed/failed/cancelled/skipped
     phase = Column(String(50), nullable=True)       # 当前阶段：upload/autoclip/review/slice/delete/source_delete
     progress = Column(Float, default=0.0)
     output_count = Column(Integer, default=0)
