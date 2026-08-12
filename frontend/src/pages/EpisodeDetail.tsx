@@ -67,6 +67,71 @@ const BADGE_POSITIONS = [
   { value: 'bottom-right', label: '右下' },
 ];
 
+// ─── 一键切片配置预设（可自定义所有默认值并保存多套） ───
+interface SlicePreset {
+  id: string;
+  name: string;
+  // 竖屏转横屏
+  vert2horiz_enabled: boolean;
+  vert2horiz_mode: 'fixed' | 'dynamic';
+  vert2horiz_ratio: number;
+  vert2horiz_output_size: string;
+  vert2horiz_detect_interval: number;
+  vert2horiz_smooth_window: number;
+  vert2horiz_min_step: number;
+  vert2horiz_face_margin: number;
+  // ASR 字幕
+  subtitle_enabled: boolean;
+  subtitle_font_ratio: number;
+  subtitle_style: 'default' | 'custom';
+  subtitle_color: string;
+  subtitle_border_color: string;
+  // 固定文字
+  text_overlay_enabled: boolean;
+  text_overlays: TextOverlayItem[];
+  // 动态文字水印
+  watermark_enabled: boolean;
+  watermark_text: string;
+  watermark_font_size: number;
+  watermark_opacity: number;
+  watermark_position: string;
+  // 图片角标默认尺寸
+  badge_default_width: number;
+}
+
+const SLICE_PRESET_STORAGE_KEY = 'slice_presets_v1';
+
+// 默认配置（在默认项基础上：竖屏转横屏开 / ASR字幕开 / 固定文字开）
+const DEFAULT_SLICE_PRESET: SlicePreset = {
+  id: 'default',
+  name: '默认配置',
+  vert2horiz_enabled: true,
+  vert2horiz_mode: 'dynamic',
+  vert2horiz_ratio: 0.5625,
+  vert2horiz_output_size: '1280x720',
+  vert2horiz_detect_interval: 2,
+  vert2horiz_smooth_window: 15,
+  vert2horiz_min_step: 5,
+  vert2horiz_face_margin: 0.30,
+  subtitle_enabled: true,
+  subtitle_font_ratio: 0.45,
+  subtitle_style: 'custom',
+  subtitle_color: '#EDD736',
+  subtitle_border_color: '#000000',
+  text_overlay_enabled: true,
+  text_overlays: [
+    { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000', vertical: false, offset: 10 },
+    { text: '免费热门短剧', position: 'bottom-left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: false, offset: 10 },
+    { text: '本故事纯属虚构', position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true, offset: 10 },
+  ],
+  watermark_enabled: false,
+  watermark_text: '',
+  watermark_font_size: 28,
+  watermark_opacity: 0.5,
+  watermark_position: 'bottom',
+  badge_default_width: 0,
+};
+
 const EpisodeDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -120,6 +185,11 @@ const EpisodeDetail: React.FC = () => {
   const [textOverlayEnabled, setTextOverlayEnabled] = useState(false);
   // 固定文字设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
   const [textOverlayModalOpen, setTextOverlayModalOpen] = useState(false);
+  // ── 一键切片配置预设：多套可保存，自定义所有默认值 ──
+  const [presetModalOpen, setPresetModalOpen] = useState(false);
+  const [presets, setPresets] = useState<SlicePreset[]>([DEFAULT_SLICE_PRESET]);
+  const [activePresetId, setActivePresetId] = useState<string>(DEFAULT_SLICE_PRESET.id);
+  const [newPresetName, setNewPresetName] = useState('');
   const [maxClips, setMaxClips] = useState(10);
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
@@ -238,6 +308,141 @@ const EpisodeDetail: React.FC = () => {
     const end = t.completed_at || new Date().toISOString();
     const diff = Math.max(0, (new Date(end).getTime() - new Date(t.started_at).getTime()) / 1000);
     return formatDuration(diff);
+  };
+
+  // ── 一键切片配置预设：加载 / 保存 / 应用 ──
+  const loadPresets = React.useCallback((): SlicePreset => {
+    let toApply: SlicePreset | null = null;
+    try {
+      const raw = localStorage.getItem(SLICE_PRESET_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // 始终保证默认配置在列表头部
+          const list = [DEFAULT_SLICE_PRESET, ...parsed.filter((p: SlicePreset) => p.id !== DEFAULT_SLICE_PRESET.id)];
+          setPresets(list);
+          const savedActive = localStorage.getItem('slice_active_preset');
+          const activeId = savedActive && list.some((p) => p.id === savedActive) ? savedActive : DEFAULT_SLICE_PRESET.id;
+          setActivePresetId(activeId);
+          toApply = list.find((p) => p.id === activeId) || null;
+        }
+      }
+    } catch {
+      // 解析失败则保持默认
+    }
+    return toApply || DEFAULT_SLICE_PRESET;
+  }, []);
+
+  const persistPresets = (list: SlicePreset[], activeId: string) => {
+    try {
+      const withoutDefault = list.filter((p) => p.id !== DEFAULT_SLICE_PRESET.id);
+      localStorage.setItem(SLICE_PRESET_STORAGE_KEY, JSON.stringify(withoutDefault));
+      localStorage.setItem('slice_active_preset', activeId);
+    } catch {
+      // 存储失败忽略
+    }
+  };
+
+  // 收集当前页面切片状态为一套配置
+  const collectCurrentPresetConfig = (): SlicePreset => ({
+    id: '',
+    name: '',
+    vert2horiz_enabled: vert2horizEnabled,
+    vert2horiz_mode: vert2horizMode,
+    vert2horiz_ratio: vert2horizRatio,
+    vert2horiz_output_size: vert2horizOutputSize,
+    vert2horiz_detect_interval: vert2horizDetectInterval,
+    vert2horiz_smooth_window: vert2horizSmoothWindow,
+    vert2horiz_min_step: vert2horizMinStep,
+    vert2horiz_face_margin: vert2horizFaceMargin,
+    subtitle_enabled: subtitleEnabled,
+    subtitle_font_ratio: subtitleFontRatio,
+    subtitle_style: subtitleStyle,
+    subtitle_color: subtitleColor,
+    subtitle_border_color: subtitleBorderColor,
+    text_overlay_enabled: textOverlayEnabled,
+    text_overlays: textOverlays.map((t) => ({ text: t.text, position: t.position, font_size: t.font_size, color: t.color, border_color: t.border_color, vertical: t.vertical, offset: t.offset })),
+    watermark_enabled: watermarkEnabled,
+    watermark_text: watermarkText,
+    watermark_font_size: watermarkFontSize,
+    watermark_opacity: watermarkOpacity,
+    watermark_position: watermarkPosition,
+    badge_default_width: badgeDefaultWidth,
+  });
+
+  // 将一套配置应用到页面切片状态
+  const applyPreset = (p: SlicePreset) => {
+    setVert2horizEnabled(p.vert2horiz_enabled);
+    setVert2horizMode(p.vert2horiz_mode);
+    setVert2horizRatio(p.vert2horiz_ratio);
+    setVert2horizOutputSize(p.vert2horiz_output_size);
+    setVert2horizDetectInterval(p.vert2horiz_detect_interval);
+    setVert2horizSmoothWindow(p.vert2horiz_smooth_window);
+    setVert2horizMinStep(p.vert2horiz_min_step);
+    setVert2horizFaceMargin(p.vert2horiz_face_margin);
+    setSubtitleEnabled(p.subtitle_enabled);
+    setSubtitleFontRatio(p.subtitle_font_ratio);
+    setSubtitleStyle(p.subtitle_style);
+    setSubtitleColor(p.subtitle_color);
+    setSubtitleBorderColor(p.subtitle_border_color);
+    setTextOverlayEnabled(p.text_overlay_enabled);
+    setTextOverlays(p.text_overlays.map((t) => ({ ...t, id: `tov_preset_${t.position}_${t.text}` })));
+    setWatermarkEnabled(p.watermark_enabled);
+    setWatermarkText(p.watermark_text);
+    setWatermarkFontSize(p.watermark_font_size);
+    setWatermarkOpacity(p.watermark_opacity);
+    setWatermarkPosition(p.watermark_position);
+    setBadgeDefaultWidth(p.badge_default_width);
+    setActivePresetId(p.id);
+  };
+
+  useEffect(() => {
+    // 首次进入默认应用默认配置（竖屏转横屏开 / ASR字幕开 / 固定文字开），
+    // 若用户保存过预设则应用上次激活的那套
+    const toApply = loadPresets();
+    applyPreset(toApply);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadPresets]);
+
+  // 选择预设并应用
+  const handleSelectPreset = (id: string) => {
+    const preset = presets.find((p) => p.id === id);
+    if (!preset) return;
+    applyPreset(preset);
+    persistPresets(presets, id);
+    message.success(`已应用配置「${preset.name}」`);
+  };
+
+  // 保存当前配置为新预设
+  const handleSavePreset = () => {
+    const name = newPresetName.trim();
+    if (!name) {
+      message.warning('请先输入配置名称');
+      return;
+    }
+    const current = collectCurrentPresetConfig();
+    const id = `preset_${Date.now()}`;
+    const newPreset: SlicePreset = { ...current, id, name };
+    const list = [...presets.filter((p) => p.id !== DEFAULT_SLICE_PRESET.id), newPreset];
+    setPresets([DEFAULT_SLICE_PRESET, ...list]);
+    setActivePresetId(id);
+    setNewPresetName('');
+    persistPresets([DEFAULT_SLICE_PRESET, ...list], id);
+    message.success(`已保存配置「${name}」`);
+  };
+
+  // 删除自定义预设
+  const handleDeletePreset = (id: string) => {
+    if (id === DEFAULT_SLICE_PRESET.id) return;
+    const list = presets.filter((p) => p.id !== id);
+    setPresets(list);
+    if (activePresetId === id) {
+      setActivePresetId(DEFAULT_SLICE_PRESET.id);
+      persistPresets(list, DEFAULT_SLICE_PRESET.id);
+    } else {
+      persistPresets(list, activePresetId);
+    }
+    message.success('已删除配置');
   };
 
   useEffect(() => {
@@ -1171,9 +1376,6 @@ const EpisodeDetail: React.FC = () => {
                   <Button size="small" icon={<SettingOutlined />} onClick={() => setVert2horizModalOpen(true)}>配置</Button>
                 )}
               </Space>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                开启后自动把竖屏素材转为横屏。详细参数（裁切模式 / 分辨率 / 裁切比例等）在「配置」中调整。
-              </Text>
             </Space>
           </Card>
 
@@ -1539,9 +1741,6 @@ const EpisodeDetail: React.FC = () => {
                   <Button size="small" icon={<SettingOutlined />} onClick={() => setWatermarkModalOpen(true)}>配置</Button>
                 )}
               </Space>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                开启后在成品视频上叠加动态文字水印。详细参数（水印文字 / 字号 / 透明度 / 位置）在「配置」中调整。
-              </Text>
             </Space>
           </Card>
 
@@ -1597,9 +1796,6 @@ const EpisodeDetail: React.FC = () => {
                   ]}
                 />
               </Space>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                水印文字会在画面中缓慢移动并带透明度呼吸效果，用于防搬运 / 标识来源。
-              </Text>
             </Space>
           </Modal>
 
@@ -1745,10 +1941,174 @@ const EpisodeDetail: React.FC = () => {
               一键切片
             </Button>
           </Popconfirm>
+          <Button
+            icon={<SettingOutlined />}
+            disabled={oneClickSlicing}
+            onClick={() => setPresetModalOpen(true)}
+          >
+            配置
+          </Button>
         </Space>
         {/* 一键切片实时进度条：任务进行中时展示在按钮下方 */}
         {renderProgress(oneClickProgress)}
       </Card>
+
+      {/* 一键切片配置弹窗：可自定义所有默认值并保存多套配置 */}
+      <Modal
+        title="一键切片配置"
+        open={presetModalOpen}
+        onCancel={() => setPresetModalOpen(false)}
+        footer={(
+          <Button type="primary" onClick={() => setPresetModalOpen(false)}>完成</Button>
+        )}
+        width={720}
+      >
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          {/* 预设选择 / 保存区 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+            <Text strong style={{ fontSize: 13 }}>选择配置</Text>
+            <Select
+              size="small"
+              style={{ width: 180 }}
+              value={activePresetId}
+              onChange={handleSelectPreset}
+              options={presets.map((p) => ({ value: p.id, label: p.name }))}
+            />
+            {activePresetId !== DEFAULT_SLICE_PRESET.id && (
+              <Button size="small" danger icon={<DelIcon />} onClick={() => handleDeletePreset(activePresetId)}>删除</Button>
+            )}
+            <span style={{ flex: 1 }} />
+            <Input
+              size="small"
+              style={{ width: 150 }}
+              placeholder="新配置名称"
+              value={newPresetName}
+              onChange={(e) => setNewPresetName(e.target.value)}
+            />
+            <Button size="small" type="primary" onClick={handleSavePreset}>保存当前配置</Button>
+          </div>
+
+          {/* ── 竖屏转横屏 ── */}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+            <Space wrap align="center" size={8} style={{ marginBottom: 8 }}>
+              <Switch size="small" checked={vert2horizEnabled} onChange={setVert2horizEnabled} />
+              <Text strong style={{ fontSize: 13 }}>竖屏转横屏</Text>
+            </Space>
+            {vert2horizEnabled && (
+              <Space wrap align="center" size={8} style={{ marginTop: 4 }}>
+                <Text style={{ fontSize: 12 }}>模式</Text>
+                <Select size="small" style={{ width: 130 }} value={vert2horizMode} onChange={setVert2horizMode} options={[
+                  { value: 'fixed', label: '固定裁切（快）' },
+                  { value: 'dynamic', label: '动态跟踪（准）' },
+                ]} />
+                <Text style={{ fontSize: 12 }}>分辨率</Text>
+                <Input size="small" style={{ width: 90 }} value={vert2horizOutputSize} onChange={(e) => setVert2horizOutputSize(e.target.value)} />
+                <Text style={{ fontSize: 12 }}>裁切比例</Text>
+                <InputNumber size="small" min={0.1} max={1} step={0.05} value={vert2horizRatio} onChange={(v) => setVert2horizRatio(v ?? 0.5625)} style={{ width: 80 }} />
+                {vert2horizMode === 'dynamic' && (
+                  <>
+                    <Text style={{ fontSize: 12 }}>检测间隔</Text>
+                    <InputNumber size="small" min={1} max={30} value={vert2horizDetectInterval} onChange={(v) => setVert2horizDetectInterval(v ?? 2)} style={{ width: 60 }} />
+                    <Text style={{ fontSize: 12 }}>平滑窗口</Text>
+                    <InputNumber size="small" min={1} max={60} value={vert2horizSmoothWindow} onChange={(v) => setVert2horizSmoothWindow(v ?? 15)} style={{ width: 60 }} />
+                    <Text style={{ fontSize: 12 }}>最小移动</Text>
+                    <InputNumber size="small" min={0} max={30} value={vert2horizMinStep} onChange={(v) => setVert2horizMinStep(v ?? 5)} style={{ width: 60 }} />
+                    <Text style={{ fontSize: 12 }}>人脸舒适区</Text>
+                    <InputNumber size="small" min={0} max={0.8} step={0.05} value={vert2horizFaceMargin} onChange={(v) => setVert2horizFaceMargin(v ?? 0.30)} style={{ width: 60 }} />
+                  </>
+                )}
+              </Space>
+            )}
+          </div>
+
+          {/* ── ASR 字幕 ── */}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+            <Space wrap align="center" size={8} style={{ marginBottom: 8 }}>
+              <Switch size="small" checked={subtitleEnabled} onChange={setSubtitleEnabled} />
+              <Text strong style={{ fontSize: 13 }}>ASR 字幕</Text>
+            </Space>
+            {subtitleEnabled && (
+              <Space wrap align="center" size={8}>
+                <Text style={{ fontSize: 12 }}>字号</Text>
+                <InputNumber size="small" min={10} max={60} step={1} value={Math.round(subtitleFontRatio * 100)} onChange={(v) => { const fs = v ?? 45; setSubtitleFontRatio(Math.max(0.1, Math.min(0.6, fs / 100))); }} style={{ width: 80 }} />
+                <Radio.Group size="small" value={subtitleStyle} onChange={(e) => setSubtitleStyle(e.target.value)}>
+                  <Radio.Button value="default">默认</Radio.Button>
+                  <Radio.Button value="custom">自定义</Radio.Button>
+                </Radio.Group>
+                {subtitleStyle === 'custom' && (
+                  <>
+                    <Text style={{ fontSize: 12 }}>字色</Text>
+                    <ColorPicker size="small" value={subtitleColor} onChange={(c) => setSubtitleColor(c.toHexString())} showText />
+                    <Text style={{ fontSize: 12 }}>描边</Text>
+                    <ColorPicker size="small" value={subtitleBorderColor} onChange={(c) => setSubtitleBorderColor(c.toHexString())} showText />
+                  </>
+                )}
+              </Space>
+            )}
+          </div>
+
+          {/* ── 固定文字 ── */}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+            <Space wrap align="center" size={8} style={{ marginBottom: 8 }}>
+              <Switch size="small" checked={textOverlayEnabled} onChange={setTextOverlayEnabled} />
+              <Text strong style={{ fontSize: 13 }}>固定文字</Text>
+              {textOverlayEnabled && (
+                <Button size="small" icon={<PlusOutlined />} onClick={addTextOverlay}>添加</Button>
+              )}
+            </Space>
+            {textOverlayEnabled && textOverlays.length > 0 && (
+              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                {textOverlays.map((t, i) => (
+                  <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', border: '1px solid #f0f0f0', borderRadius: 4, padding: 6 }}>
+                    <Input size="small" placeholder="文字内容" value={t.text} onChange={(e) => updateTextOverlay(i, { text: e.target.value })} style={{ width: 120 }} />
+                    <Select size="small" style={{ width: 88 }} value={t.position} onChange={(v) => updateTextOverlay(i, { position: v })} options={BADGE_POSITIONS} />
+                    <Checkbox checked={!!t.vertical} onChange={(e) => updateTextOverlay(i, { vertical: e.target.checked })}>竖排</Checkbox>
+                    <InputNumber size="small" min={12} max={200} placeholder="字号" value={t.font_size} onChange={(v) => updateTextOverlay(i, { font_size: v ?? undefined })} style={{ width: 70 }} />
+                    <Text style={{ fontSize: 12 }}>字色</Text>
+                    <ColorPicker size="small" value={t.color || '#FFFFFF'} onChange={(c) => updateTextOverlay(i, { color: c.toHexString() })} showText />
+                    <Text style={{ fontSize: 12 }}>描边</Text>
+                    <ColorPicker size="small" value={t.border_color || '#000000'} onChange={(c) => updateTextOverlay(i, { border_color: c.toHexString() })} showText />
+                    <Button size="small" type="text" danger icon={<DelIcon />} onClick={() => removeTextOverlay(i)} />
+                  </div>
+                ))}
+              </Space>
+            )}
+          </div>
+
+          {/* ── 动态文字水印 ── */}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+            <Space wrap align="center" size={8} style={{ marginBottom: 8 }}>
+              <Switch size="small" checked={watermarkEnabled} onChange={setWatermarkEnabled} />
+              <Text strong style={{ fontSize: 13 }}>动态文字水印</Text>
+            </Space>
+            {watermarkEnabled && (
+              <Space wrap align="center" size={8}>
+                <Text style={{ fontSize: 12 }}>文字</Text>
+                <Input size="small" style={{ width: 200 }} placeholder="留空=标题+日期" value={watermarkText} onChange={(e) => setWatermarkText(e.target.value)} />
+                <Text style={{ fontSize: 12 }}>字号</Text>
+                <InputNumber size="small" min={12} max={120} value={watermarkFontSize} onChange={(v) => setWatermarkFontSize(v ?? 28)} style={{ width: 70 }} />
+                <Text style={{ fontSize: 12 }}>透明度</Text>
+                <Slider style={{ width: 120, margin: '0 8px' }} min={5} max={100} value={Math.round(watermarkOpacity * 100)} onChange={(v) => setWatermarkOpacity(v / 100)} />
+                <Text style={{ fontSize: 12 }}>{Math.round(watermarkOpacity * 100)}%</Text>
+                <Text style={{ fontSize: 12 }}>位置</Text>
+                <Select size="small" style={{ width: 70 }} value={watermarkPosition} onChange={setWatermarkPosition} options={[
+                  { value: 'bottom', label: '底部' },
+                  { value: 'top', label: '顶部' },
+                ]} />
+              </Space>
+            )}
+          </div>
+
+          {/* ── 图片角标默认尺寸 ── */}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+            <Space wrap align="center" size={8}>
+              <Text strong style={{ fontSize: 13 }}>图片角标默认尺寸(px)</Text>
+              <InputNumber size="small" min={0} max={800} value={badgeDefaultWidth || undefined} onChange={(v) => setBadgeDefaultWidth(v ?? 0)} style={{ width: 90 }} />
+              <Text type="secondary" style={{ fontSize: 12 }}>0=保持原图尺寸</Text>
+            </Space>
+          </div>
+        </Space>
+      </Modal>
 
       {/* 工作流步骤条：每个步骤可点击跳转到对应界面 */}
       <Card size="small" style={{ marginBottom: 16 }}>
