@@ -29,6 +29,7 @@ import {
   PlusOutlined,
   MinusOutlined,
   DeleteOutlined,
+  CloudUploadOutlined,
 } from '@ant-design/icons';
 import { sliceApi } from '../api/slice';
 import type { WorkerNode } from '../types';
@@ -40,6 +41,10 @@ const WorkersPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  // 服务器端引擎版本（用于判断节点是否需要推送更新）
+  const [serverEngineVersion, setServerEngineVersion] = useState<string>('');
+  // 正在推送更新的节点 ID
+  const [pushingId, setPushingId] = useState<string | null>(null);
 
   const fetchWorkers = async (silent = false) => {
     if (!silent) setLoading(true);
@@ -121,8 +126,34 @@ const WorkersPage: React.FC = () => {
     }
   };
 
+  // 获取服务器端引擎版本（用于判断节点是否需要推送更新）
+  const fetchEnginesStatus = async () => {
+    try {
+      const res = await sliceApi.getEnginesStatus();
+      setServerEngineVersion(res.version);
+    } catch {
+      setServerEngineVersion('');
+    }
+  };
+
+  // 向节点推送引擎更新（无需重新部署，节点自动拉取并应用）
+  const pushUpdate = async (node: WorkerNode) => {
+    setPushingId(node.node_id);
+    try {
+      const res = await sliceApi.pushWorkerUpdate(node.node_id);
+      message.success(res.message);
+      // 稍后刷新以反映节点更新后的引擎版本
+      setTimeout(() => fetchWorkers(), 8000);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '推送更新失败');
+    } finally {
+      setPushingId(null);
+    }
+  };
+
   useEffect(() => {
     fetchWorkers();
+    fetchEnginesStatus();
     const interval = setInterval(() => fetchWorkers(true), 10000);
     return () => clearInterval(interval);
   }, []);
@@ -300,6 +331,27 @@ const WorkersPage: React.FC = () => {
       },
     },
     {
+      title: '引擎版本',
+      key: 'engine_version',
+      width: 150,
+      render: (_: unknown, record: WorkerNode) => {
+        const nodeVer = record.engine_version;
+        // 未上报版本（旧版节点/离线）或服务器版本不可用时仅展示原始值
+        if (!nodeVer) {
+          return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+        }
+        const isUpToDate = !!serverEngineVersion && nodeVer === serverEngineVersion;
+        const short = nodeVer.length > 12 ? nodeVer.substring(0, 12) : nodeVer;
+        return (
+          <Tooltip title={isUpToDate ? `引擎已是最新 (${nodeVer})` : `本地引擎 ${nodeVer} ≠ 服务器 ${serverEngineVersion || '未知'}，可点击「推送更新」同步`}>
+            <Tag color={isUpToDate ? 'success' : 'warning'} style={{ fontSize: 11, cursor: 'default' }}>
+              {short}
+            </Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: '完成/失败',
       key: 'stats',
       width: 90,
@@ -347,27 +399,55 @@ const WorkersPage: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 90,
+      width: 200,
       fixed: 'right',
       render: (_: unknown, record: WorkerNode) => (
-        <Popconfirm
-          title="删除节点"
-          description={`确认删除节点 ${record.node_id}？删除后该节点将从管理列表移除（若仍在线会重新注册）。`}
-          okText="删除"
-          cancelText="取消"
-          okButtonProps={{ danger: true }}
-          onConfirm={() => removeWorker(record)}
-        >
-          <Button
-            type="text"
-            size="small"
-            danger
-            icon={<DeleteOutlined />}
-            loading={togglingId === record.node_id}
+        <Space size={4}>
+          <Tooltip
+            title={
+              serverEngineVersion && record.engine_version && record.engine_version !== serverEngineVersion
+                ? `引擎版本不一致（本地 ${record.engine_version}，服务器 ${serverEngineVersion}），点击推送更新到节点（无需重新部署）`
+                : '把服务器端最新引擎推送到该节点（无需重新部署）'
+            }
           >
-            删除
-          </Button>
-        </Popconfirm>
+            <Popconfirm
+              title="推送引擎更新"
+              description={`确认向节点 ${record.node_id} 推送最新引擎？节点将自动拉取并应用，无需重新部署。`}
+              okText="推送"
+              cancelText="取消"
+              onConfirm={() => pushUpdate(record)}
+              disabled={!record.engine_version || record.status !== 'online'}
+            >
+              <Button
+                type="link"
+                size="small"
+                icon={<CloudUploadOutlined />}
+                loading={pushingId === record.node_id}
+                disabled={!record.engine_version || record.status !== 'online'}
+              >
+                推送更新
+              </Button>
+            </Popconfirm>
+          </Tooltip>
+          <Popconfirm
+            title="删除节点"
+            description={`确认删除节点 ${record.node_id}？删除后该节点将从管理列表移除（若仍在线会重新注册）。`}
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+            onConfirm={() => removeWorker(record)}
+          >
+            <Button
+              type="text"
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              loading={togglingId === record.node_id}
+            >
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
       ),
     },
   ];

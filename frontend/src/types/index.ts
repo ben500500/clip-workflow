@@ -165,6 +165,8 @@ export interface WorkerNode {
   running_progress?: number;
   // 该节点 CPU 资源分配比例（%，默认 50）
   cpu_percent?: number;
+  // 该节点当前引擎版本（用于判断是否需要推送更新）
+  engine_version?: string | null;
   // 该节点正在运行的任务列表（含 task_id/阶段/模式/进度）
   running_tasks?: WorkerRunningTask[];
 }

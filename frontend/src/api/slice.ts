@@ -144,4 +144,22 @@ export const sliceApi = {
       deleted: boolean;
       message: string;
     }>,
+
+  // 获取服务器端当前引擎版本（用于判断节点是否需要推送更新）
+  getEnginesStatus: () =>
+    client.get(`/workers/engines/status`) as Promise<{
+      engines_dir: string;
+      version: string;
+      file_count: number;
+      files: string[];
+    }>,
+
+  // 向指定节点推送引擎更新（无需重新部署）
+  pushWorkerUpdate: (nodeId: string) =>
+    client.post(`/workers/${encodeURIComponent(nodeId)}/push-update`) as Promise<{
+      ok: boolean;
+      node_id: string;
+      target_version: string;
+      message: string;
+    }>,
 };
