@@ -229,6 +229,24 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
                 pass
 
 
+@celery_app.task(bind=True, max_retries=0)
+def batch_slice_task(self, batch_id: str):
+    """批量切片工作流（三期方案）：按列表顺序逐集完成选点→审核→切片→删源。
+
+    编排逻辑见 app.services.batch_slice_service.run_batch。
+    由于该任务会长时间阻塞并轮询 autoclip/slice 子任务，放到 default 队列执行。
+    """
+    from app.services.batch_slice_service import run_batch
+    self.update_state(state="STARTED", meta={"batch_id": batch_id})
+    try:
+        run_async(run_batch(batch_id))
+    except Exception as e:
+        logger.error("批量切片任务异常 batch=%s: %s", batch_id, e)
+        from app.services.batch_slice_service import _update_batch
+        run_async(_update_batch(batch_id, status="failed", error_message=str(e)))
+        raise
+
+
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
 def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict, source_file_key: Optional[str] = None, task_id: Optional[str] = None):
     """Execute interval detection as a Celery task."""

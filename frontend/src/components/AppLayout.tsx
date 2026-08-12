@@ -9,6 +9,7 @@ import {
   MenuUnfoldOutlined,
   UserOutlined,
   SendOutlined,
+  PlayCircleOutlined,
   BarChartOutlined,
   LogoutOutlined,
   UserSwitchOutlined,
@@ -38,6 +39,11 @@ const allMenuItems = [
     key: '/projects',
     icon: <ProjectOutlined />,
     label: '短剧切片',
+  },
+  {
+    key: '/batch-slice',
+    icon: <PlayCircleOutlined />,
+    label: '批量切片',
   },
   {
     key: '/watermark',

@@ -35,6 +35,8 @@ from app.models.models import (
     PublishMaterial,
     WatermarkTask,
     WatermarkVideo,
+    BatchSlice,
+    BatchSliceItem,
 )
 
 __all__ = [
@@ -74,4 +76,6 @@ __all__ = [
     "PublishMaterial",
     "WatermarkTask",
     "WatermarkVideo",
+    "BatchSlice",
+    "BatchSliceItem",
 ]

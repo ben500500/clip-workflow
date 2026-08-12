@@ -8,6 +8,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
   operator: [
     '/dashboard',
     '/projects',
+    '/batch-slice',
     '/watermark',
     'analytics-sub',
     '/analytics/overview',
@@ -34,6 +35,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
   material: [
     '/dashboard',
     '/projects',
+    '/batch-slice',
     '/watermark',
     '/profile',
   ],
