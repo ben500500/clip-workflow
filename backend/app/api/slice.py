@@ -157,6 +157,9 @@ class SliceRunRequest(BaseModel):
     # 动态模式：最小移动阈值（源画面像素，默认 5）。值越大画面越平稳、
     # 越小越跟手；画面抖动明显时可调大，人物走动跟不丢时可调小。
     vert2horiz_min_step: Optional[int] = None
+    # 动态模式：人脸舒适区边距比例（占人脸高度，默认 0.30）。人脸头像大部分
+    # 仍在画面内时保持窗口不动，抑制频繁移动造成的抖动；越大越稳、越小越跟手。
+    vert2horiz_face_margin: Optional[float] = None
     # ── ASR 字幕烧录 ──
     # 开启后对源视频做 ASR 语音识别生成字幕，并烧录到每个切片成品上
     subtitle_enabled: bool = False
@@ -343,6 +346,9 @@ def _build_vert2horiz_config(data: SliceRunRequest) -> Optional[dict]:
     if data.vert2horiz_min_step is not None:
         # 最小移动阈值：允许 0（完全跟手、不抑制微平移），但至少 >=0
         cfg["min_step"] = max(0, int(data.vert2horiz_min_step))
+    if data.vert2horiz_face_margin is not None:
+        # 人脸舒适区边距比例：0=关闭该层抗抖（完全跟手），否则限制在合理范围
+        cfg["face_margin"] = max(0.0, min(0.8, float(data.vert2horiz_face_margin)))
     return cfg
 
 

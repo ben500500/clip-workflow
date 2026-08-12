@@ -97,6 +97,8 @@ const EpisodeDetail: React.FC = () => {
   const [badgeDefaultWidth, setBadgeDefaultWidth] = useState<number>(0);
   // 动态模式最小移动阈值（px）：越大越稳、越小越跟手
   const [vert2horizMinStep, setVert2horizMinStep] = useState(5);
+  // 动态模式人脸舒适区边距比例（占人脸高度，默认 0.30）：人脸头像大部分仍在画面内时保持窗口不动，抑制频繁移动抖动
+  const [vert2horizFaceMargin, setVert2horizFaceMargin] = useState(0.30);
   // ── ASR 字幕烧录开关 ──
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
   // 字幕字号（相对输出视频高度的比例，默认 0.45→FontSize 45；转横屏开启时默认套用，用户可调）
@@ -638,6 +640,7 @@ const EpisodeDetail: React.FC = () => {
           : undefined,
         badge_default_width: badgeDefaultWidth || undefined,
         vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
+        vert2horiz_face_margin: vert2horizEnabled ? vert2horizFaceMargin : undefined,
         // ASR 字幕烧录：一键切片同样透传配置
         subtitle_enabled: subtitleEnabled,
         // 字幕字号（相对高度比例）：可调大让字幕更清晰易读
@@ -748,6 +751,7 @@ const EpisodeDetail: React.FC = () => {
           : undefined,
         badge_default_width: badgeDefaultWidth || undefined,
         vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
+        vert2horiz_face_margin: vert2horizEnabled ? vert2horizFaceMargin : undefined,
         // ASR 字幕烧录：开启后对源视频做 ASR 识别并烧录到成品视频
         subtitle_enabled: subtitleEnabled,
         // 字幕字号（相对高度比例）：可调大让字幕更清晰易读
@@ -1260,6 +1264,16 @@ const EpisodeDetail: React.FC = () => {
                         max={30}
                         value={vert2horizMinStep}
                         onChange={(v) => setVert2horizMinStep(v ?? 5)}
+                        style={{ width: 80 }}
+                      />
+                      <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>人脸舒适区(比例):</Text>
+                      <InputNumber
+                        size="small"
+                        min={0}
+                        max={0.8}
+                        step={0.05}
+                        value={vert2horizFaceMargin}
+                        onChange={(v) => setVert2horizFaceMargin(v ?? 0.30)}
                         style={{ width: 80 }}
                       />
                       <Text type="secondary" style={{ fontSize: 12 }}>动态模式较慢（约 3-5 分钟/10 分钟视频），固定模式仅需一遍 ffmpeg（约 30 秒）</Text>

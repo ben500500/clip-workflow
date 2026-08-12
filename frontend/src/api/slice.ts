@@ -54,6 +54,8 @@ export const sliceApi = {
       vert2horiz_smooth_window?: number;
       // 动态模式最小移动阈值（px）：越大越稳、越小越跟手
       vert2horiz_min_step?: number;
+      // 动态模式人脸舒适区边距比例（占人脸高度，默认 0.30）：人脸头像大部分仍在画面内时保持窗口不动，抑制频繁移动抖动
+      vert2horiz_face_margin?: number;
       // ASR 字幕烧录：开启后对源视频做 ASR 识别并烧录到成品视频
       subtitle_enabled?: boolean;
       // 字幕字号（相对输出视频高度的比例，默认 0.07；可调大让字幕更清晰易读）
