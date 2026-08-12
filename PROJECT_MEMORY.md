@@ -73,17 +73,17 @@
 
 | 项 | 说明 | 建议 |
 |----|------|------|
-| 文档漂移 | `docs/README.md` 严重过时（引用 `/api/v1/`、`core/`、`schemas/`、`tasks/` 等**不存在**的结构）；`PROJECT.md` 的 `/watermark` 页说明臃肿 | 精简/重写 README；拆分短片制作独立文档 |
-| 鉴权覆盖面复核 | 已加依赖，但需验证**每个**端点确实被覆盖（含 `workers.internal_router`、`slice.worker_router` 的 Token 校验强度） | 做一次端点→鉴权清单核对 |
-| 数据库索引 | 审查曾报「一行 SQL 致全库 0 索引」，`migrations/fix_missing_indexes.sql` 已存在 | 确认迁移是否已执行、索引是否落地 |
-| 单 Celery worker 串行 | 唯一 worker 吞多队列 | 评估拆分队列/并发 |
-| 版本管理 | 无 tag | 为里程碑打 tag |
+| 文档漂移 | `docs/README.md` **已重写**（2026-08-12，AUTH_AUDIT 一并补充）；`PROJECT.md` 的 `/watermark` 页说明臃肿 | 后续可拆分短片制作独立文档 |
+| 鉴权覆盖面复核 | **已完成**（2026-08-12）→ `docs/reviews/AUTH_AUDIT.md`：17 业务 router 统一鉴权，worker/auth 独立鉴权，遗留仅 heartbeat/WS 低风险项 | 无需再核，以 AUTH_AUDIT.md 为准 |
+| 数据库索引 | 审查曾报「一行 SQL 致全库 0 索引」，`init.sql` 错误已删 + `migrations/fix_missing_indexes.sql` 存量补丁 + alembic 22 个迁移 | 存量库执行补丁脚本 |
+| 单 Celery worker 串行 | **已修复**：拆分为 `worker-video`/`worker-publish`/`worker-fast`（分别消费 video_processing/publish/metrics,default） | - |
+| 版本管理 | **已补 tag**：`v3.0.0`（三期方案完成里程碑） | 后续里程碑继续递增 |
 
 ### 4.3 健康度评分（示意）
 
 - **可维护性** ★★★☆☆：分层清晰，但 `models.py`（36 模型单文件）、`slice-worker/main.go` 多文件 Go、`PROJECT.md` 巨型化是后续痛点
 - **安全性** ★★★★☆：鉴权已接线，需复核边缘端点与 CDP 暴露
-- **文档一致性** ★★☆☆☆：README 严重过时，PROJECT.md 局部臃肿
+- **文档一致性** ★★★☆☆：README 已重写对齐真实结构；PROJECT.md 局部臃肿（`/watermark` 页）待后续拆分
 - **测试覆盖** ★★☆☆☆：仅 `eval/` 有 LLM 评测，缺单元/集成测试
 
 ---

@@ -40,7 +40,8 @@
 
 ## 项目记忆
 - **`PROJECT_MEMORY.md`**：当前项目真实状态 / 健康度 / 技术债 / 维护机制，Agent 打开仓库时**优先读取**。
-- **`PROJECT.md`**：详细功能文档（大而全）。两者与 `docs/README.md` 需同步维护，注意 `docs/README.md` 已过时（引用不存在的 `/api/v1/`、`core/`、`schemas/` 结构）。
+- **`PROJECT.md`**：详细功能文档（大而全）。两者与 `docs/README.md` 需同步维护；`docs/README.md` 已于 2026-08-12 重写对齐真实结构。
+- **`docs/reviews/AUTH_AUDIT.md`**：鉴权与安全盲区复核报告（2026-08-12），含全端点鉴权清单，优先于过时的 `CODE_REVIEW_REPORT.md`。
 
 ## 关键文件速查
 - AutoClip 高光选择：`autoclip/app/pipeline/step2_timeline.py`（时间点）、`step3_scoring.py`（评分）
