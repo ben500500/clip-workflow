@@ -433,20 +433,21 @@ async def run_batch(batch_id: str):
                 failed += 1
                 continue
         else:
-            logger.info("剧集 %s 已关闭 AI 智能选点，跳过选点阶段", episode_id)
+            logger.info("剧集 %s 已关闭 AI 智能选点，跳过选点与自动审核阶段", episode_id)
 
-        # ── 自动审核全部候选 ──
-        await _set_phase(item, PHASE_REVIEW, "reviewing", 50)
-        try:
-            n = await _accept_all_candidates(episode_id)
-            if n == 0:
-                raise RuntimeError("选点未生成任何候选片段")
-        except Exception as e:
-            logger.exception("自动审核失败: %s", e)
-            await _set_phase(item, PHASE_REVIEW, "failed", 0)
-            await _update_item(item.id, error_message=f"自动审核失败: {e}")
-            failed += 1
-            continue
+        # ── 自动审核全部候选（仅当开启 AI 智能选点时执行；关闭选点则无候选可审）──
+        if autoclip_enabled:
+            await _set_phase(item, PHASE_REVIEW, "reviewing", 50)
+            try:
+                n = await _accept_all_candidates(episode_id)
+                if n == 0:
+                    raise RuntimeError("选点未生成任何候选片段")
+            except Exception as e:
+                logger.exception("自动审核失败: %s", e)
+                await _set_phase(item, PHASE_REVIEW, "failed", 0)
+                await _update_item(item.id, error_message=f"自动审核失败: {e}")
+                failed += 1
+                continue
 
         # ── 通用区间检测（可选，配置项开启才执行）──
         if interval_enabled:
