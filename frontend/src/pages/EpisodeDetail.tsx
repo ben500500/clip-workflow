@@ -15,7 +15,7 @@ import { autoclipApi } from '../api/autoclip';
 import { intervalApi } from '../api/intervals';
 import { sliceApi, type BadgeItem, type TextOverlayItem } from '../api/slice';
 import ErrorHint from '../components/ErrorHint';
-import type { AutoClipRunRecord, Episode, IntervalHistoryItem, SliceTask } from '../types';
+import type { AutoClipRunRecord, ClipCandidate, Episode, IntervalHistoryItem, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
 const { Title, Text, Paragraph } = Typography;
@@ -835,8 +835,43 @@ const EpisodeDetail: React.FC = () => {
   // ─── 一键切片（免审核直接出片） ──────────────────────
   const oneClickSlice = async () => {
     setOneClickSlicing(true);
-    setOneClickProgress({ status: 'running', progress: 5, message: '正在提交一键切片任务…' });
+    setOneClickProgress({ status: 'running', progress: 5, message: '正在检查候选片段…' });
     try {
+      // ── 无候选片段时自动补一轮 AI 智能选点（一键切片 = 选点 + 切片全自动） ──
+      let existingClips: ClipCandidate[] = [];
+      try {
+        existingClips = await autoclipApi.getCandidates(episodeId);
+      } catch {
+        existingClips = [];
+      }
+      if (existingClips.length === 0) {
+        setOneClickProgress({ status: 'running', progress: 10, message: '该剧集还没有候选片段，正在自动运行 AI 智能选点…' });
+        await autoclipApi.run(episodeId, {
+          max_clips: maxClips,
+          min_score_threshold: minScoreThreshold ?? undefined,
+          min_duration: minClipDuration ?? undefined,
+          max_duration: maxClipDuration ?? undefined,
+          frame_analysis: frameAnalysis,
+        });
+        let selected = false;
+        for (let i = 0; i < 200 && !selected; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const p = await autoclipApi.progress(episodeId);
+          if (p.status === 'completed') {
+            selected = true;
+          } else if (p.status === 'failed') {
+            throw new Error(p.error_message || 'AI 智能选点失败，请稍后重试');
+          } else {
+            setOneClickProgress({
+              status: 'running',
+              progress: 10 + Math.round((p.progress || 0) * 0.6),
+              message: `AI 智能选点中 ${Math.round(p.progress || 0)}%…`,
+            });
+          }
+        }
+        if (!selected) throw new Error('AI 智能选点超时，请稍后重试');
+        setOneClickProgress({ status: 'running', progress: 75, message: '选点完成，正在提交一键切片任务…' });
+      }
       // auto_accept_all=true：后端自动把所有候选片段（含 pending）纳入切片，
       // 无需逐个审核/预览，直接产出成品视频
       const res = await sliceApi.run(episodeId, 'fast', {
