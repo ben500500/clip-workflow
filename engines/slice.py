@@ -532,7 +532,12 @@ def _extract_sc_face(ttc_path: str) -> str:
                     (nm.getDebugName(n) or "").lower()
                     for n in (1, 4, 6) if nm.getDebugName(n)
                 )
-                if "sc" in combined or "simplified" in combined:
+                # 精确匹配 "cjk sc" / "cjksc"（PostScript 名 notosanscjksc-Regular）。
+                # 旧逻辑用 "sc" in combined 会误命中所有 face——因为 "cjk" 包含子串 "sc"
+                # （c**sc**jk），导致永远选到第一个 face[0]=JP 而非真正的 SC face。
+                if ("cjk sc" in combined or "cjksc" in combined
+                        or "simplified chinese" in combined
+                        or "simplified" in combined):
                     sc_index = i
                     break
             except Exception:
