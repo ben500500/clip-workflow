@@ -1,17 +1,28 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Card, Form, Input, Button, InputNumber, Select, Switch, Space, Divider,
-  Table, Tag, Progress, message, Alert, Typography, Modal, List, Spin, Tooltip,
+  Table, Tag, Progress, message, Alert, Typography, Modal, List, Spin, Tooltip, Slider,
 } from 'antd';
 import {
   PlayCircleOutlined, UploadOutlined, ReloadOutlined, StopOutlined,
-  DownloadOutlined, InboxOutlined, EyeOutlined,
+  DownloadOutlined, InboxOutlined, EyeOutlined, EditOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import Dragger from 'antd/es/upload/Dragger';
 import { batchSliceApi, BatchSlice, BatchSliceItem, BatchSliceOutputItem } from '../api/batchSlice';
+import { sliceApi } from '../api/slice';
+import { formatDuration } from '../utils/format';
 
 const { Text, Title } = Typography;
+
+// 输出列表中展平后的单个成品项（含所属剧集/任务信息，供预览/裁剪使用）
+interface FlattenOutput {
+  seq: number;
+  title: string | null;
+  episode_id: string | null;
+  slice_task_id: string | null;
+  file: Record<string, unknown>;
+}
 
 // ── 一键切片配置（复用剧集详情页的常用配置项，整批统一生效）──
 // AI 智能选点配置
@@ -144,6 +155,17 @@ const BatchSlicePage: React.FC = () => {
   const [selectedBatch, setSelectedBatch] = useState<BatchSlice | null>(null);
   const [outputs, setOutputs] = useState<BatchSliceOutputItem[]>([]);
   const [outputModalOpen, setOutputModalOpen] = useState(false);
+
+  // ── 输出列表：预览 ──
+  const [previewModal, setPreviewModal] = useState(false);
+  const [previewItem, setPreviewItem] = useState<{ file_name: string | null; url: string } | null>(null);
+
+  // ── 输出列表：编辑（拖动进度条选定时间范围裁剪） ──
+  const [trimModal, setTrimModal] = useState(false);
+  const [trimTarget, setTrimTarget] = useState<FlattenOutput | null>(null);
+  const [trimRange, setTrimRange] = useState<[number, number]>([0, 0]);
+  const [trimming, setTrimming] = useState(false);
+  const trimVideoRef = React.useRef<HTMLVideoElement>(null);
 
   const fetchBatches = useCallback(async () => {
     setBatchListLoading(true);
@@ -350,14 +372,22 @@ const BatchSlicePage: React.FC = () => {
   };
 
   const renderOutputModal = () => {
-    const allOutputs: { seq: number; title: string | null; file: Record<string, unknown> }[] = [];
+    const allOutputs: FlattenOutput[] = [];
     outputs.forEach((item) => {
       const out = item.output;
+      const files: Record<string, unknown>[] = [];
       if (out && 'outputs' in out && Array.isArray((out as any).outputs)) {
-        (out as any).outputs.forEach((f: Record<string, unknown>) => allOutputs.push({ seq: item.seq, title: item.title, file: f }));
+        (out as any).outputs.forEach((f: Record<string, unknown>) => files.push(f));
       } else if (out) {
-        allOutputs.push({ seq: item.seq, title: item.title, file: out });
+        files.push(out);
       }
+      files.forEach((f) => allOutputs.push({
+        seq: item.seq,
+        title: item.title,
+        episode_id: item.episode_id,
+        slice_task_id: item.slice_task_id,
+        file: f,
+      }));
     });
     return (
       <Modal
@@ -365,13 +395,21 @@ const BatchSlicePage: React.FC = () => {
         open={outputModalOpen}
         onCancel={() => setOutputModalOpen(false)}
         footer={null}
-        width={760}
+        width={820}
       >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="每个成品支持「预览」播放，以及「编辑」通过拖动进度条选定时间范围进行简单裁剪（会重新编码生成新片段）。"
+        />
         <List
           dataSource={allOutputs}
           renderItem={(item) => (
             <List.Item
               actions={[
+                <Button key="pv" size="small" icon={<PlayCircleOutlined />} onClick={() => handlePreviewOutput(item)}>预览</Button>,
+                <Button key="ed" size="small" type="primary" ghost icon={<EditOutlined />} onClick={() => openTrimModal(item)}>编辑</Button>,
                 <a key="dl" href={(item.file as any).presigned_url || '#'} target="_blank" rel="noreferrer">
                   <DownloadOutlined /> 下载
                 </a>,
@@ -390,6 +428,133 @@ const BatchSlicePage: React.FC = () => {
             </List.Item>
           )}
         />
+      </Modal>
+    );
+  };
+
+  // ── 输出预览 ──
+  const handlePreviewOutput = async (item: FlattenOutput) => {
+    const url = (item.file as any).presigned_url;
+    if (!url) {
+      message.warning('该成品暂无可用预览地址');
+      return;
+    }
+    setPreviewItem({ file_name: (item.file as any).file_name || '', url });
+    setPreviewModal(true);
+  };
+
+  // ── 打开编辑（裁剪）弹窗 ──
+  const openTrimModal = (item: FlattenOutput) => {
+    if (!item.episode_id) {
+      message.warning('该成品未关联剧集，无法裁剪');
+      return;
+    }
+    const duration = Number((item.file as any).duration || 0);
+    setTrimTarget(item);
+    setTrimRange([0, duration > 0 ? duration : 0]);
+    setTrimModal(true);
+  };
+
+  // 拖动进度条：实时定位预览画面到起始点
+  const handleTrimRangeChange = (val: [number, number]) => {
+    setTrimRange(val);
+    const video = trimVideoRef.current;
+    if (video && isFinite(val[0])) {
+      video.currentTime = val[0];
+    }
+  };
+
+  // 提交裁剪：复用剧集「成品重新剪辑」能力（以该成品为源裁剪出新片段）
+  const submitTrim = async () => {
+    if (!trimTarget) return;
+    const [start, end] = trimRange;
+    if (!(start >= 0) || !(end > start)) {
+      message.warning('剪辑区间不合法：需要 0 <= 开始时间 < 结束时间');
+      return;
+    }
+    setTrimming(true);
+    try {
+      await sliceApi.run(trimTarget.episode_id!, 'fast', {
+        output_id: (trimTarget.file as any).id,
+        cut_start: start,
+        cut_end: end,
+        engine: 'worker',
+      });
+      message.success('裁剪任务已启动，完成后会生成一个新成品，可在对应剧集成品预览中查看');
+      setTrimModal(false);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '启动裁剪失败');
+    } finally {
+      setTrimming(false);
+    }
+  };
+
+  const renderPreviewModal = () => (
+    <Modal
+      title={`预览${previewItem?.file_name ? `：${previewItem.file_name}` : ''}`}
+      open={previewModal}
+      onCancel={() => setPreviewModal(false)}
+      footer={null}
+      width={720}
+      destroyOnClose
+    >
+      {previewItem && (
+        <video src={previewItem.url} controls autoPlay style={{ width: '100%', maxHeight: 480, background: '#000', borderRadius: 6 }} />
+      )}
+    </Modal>
+  );
+
+  const renderTrimModal = () => {
+    const duration = Number((trimTarget?.file as any)?.duration || 0);
+    const max = duration > 0 ? duration : 1;
+    const [start, end] = trimRange;
+    return (
+      <Modal
+        title={`编辑（裁剪）${trimTarget ? `：${(trimTarget.file as any).file_name || ''}` : ''}`}
+        open={trimModal}
+        onOk={submitTrim}
+        onCancel={() => setTrimModal(false)}
+        okText="开始裁剪"
+        cancelText="取消"
+        confirmLoading={trimming}
+        width={720}
+        destroyOnClose
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="拖动进度条选定时间范围进行简单裁剪，预览会实时定位到起始点。裁剪完成后会重新编码生成一个新成品。"
+        />
+        <video
+          ref={trimVideoRef}
+          src={(trimTarget?.file as any)?.presigned_url}
+          style={{ width: '100%', maxHeight: 300, background: '#000', borderRadius: 6 }}
+          controls
+          preload="auto"
+        />
+        <div style={{ marginTop: 12, padding: '8px 12px', background: '#f5f5f5', borderRadius: 6 }}>
+          <Text strong style={{ fontSize: 12 }}>拖动选定时间范围：</Text>
+          <Slider
+            range
+            min={0}
+            max={Math.max(max, 1)}
+            step={0.1}
+            value={[start, end]}
+            onChange={(v) => handleTrimRangeChange(v as [number, number])}
+            tooltip={{ formatter: (v) => formatDuration(Number(v ?? 0)) }}
+            disabled={duration <= 0}
+          />
+          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>起始: {formatDuration(start)}</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>结束: {formatDuration(end)}</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>时长: {formatDuration(end - start)}</Text>
+          </Space>
+          <Space style={{ marginTop: 8 }}>
+            <Button size="small" onClick={() => trimRange[0] !== 0 && setTrimRange([0, duration])}>选全部</Button>
+            <Button size="small" onClick={() => { const v = trimVideoRef.current; if (v && isFinite(v.currentTime)) { const cur = Math.min(v.currentTime, duration); const end = trimRange[1]; setTrimRange([Math.min(cur, Math.max(end - 0.1, 0)), end]); } }}>取当前播放点为起点</Button>
+          </Space>
+        </div>
       </Modal>
     );
   };
@@ -817,6 +982,8 @@ const BatchSlicePage: React.FC = () => {
       </Card>
 
       {renderOutputModal()}
+      {renderPreviewModal()}
+      {renderTrimModal()}
     </div>
   );
 };
