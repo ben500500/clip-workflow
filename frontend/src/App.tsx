@@ -29,8 +29,8 @@ import Workers from './pages/Workers';
 import Monitor from './pages/Monitor';
 import Maintenance from './pages/Maintenance';
 import ShortDrama from './pages/ShortDrama';
-import BatchSlicePage from './pages/BatchSlice';
 import NotFound from './pages/NotFound';
+import BatchSlice from './pages/BatchSlice';
 
 const App: React.FC = () => {
   return (
@@ -70,8 +70,8 @@ const App: React.FC = () => {
             <Route path="monitor" element={<Monitor />} />
             <Route path="maintenance" element={<Maintenance />} />
             <Route path="watermark" element={<ShortDrama />} />
-            <Route path="batch-slice" element={<BatchSlicePage />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="batch-slice" element={<BatchSlice />} />
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>

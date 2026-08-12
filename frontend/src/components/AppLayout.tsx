@@ -9,6 +9,7 @@ import {
   MenuUnfoldOutlined,
   UserOutlined,
   SendOutlined,
+  PlayCircleOutlined,
   BarChartOutlined,
   LogoutOutlined,
   UserSwitchOutlined,
@@ -18,7 +19,6 @@ import {
   PoweroffOutlined,
   ClearOutlined,
   WarningOutlined,
-  PlayCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';

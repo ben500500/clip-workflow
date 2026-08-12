@@ -1,90 +1,90 @@
 import client from './client';
+import type { SliceOutput } from '../types';
 
-// 批量切片批次项
-export interface BatchSliceItem {
-  id: string;
-  batch_id: string;
-  seq?: number;
-  title?: string;
-  source_path?: string;
-  source_file_key?: string;
-  episode_id?: string;
-  status: string;
-  progress: number;
-  message?: string;
-  error_message?: string;
-  output_count: number;
-  processed_at?: string;
-  created_at: string;
-}
-
-// 批量切片批次
-export interface BatchSlice {
-  id: string;
-  name?: string;
-  drama_name?: string;
-  project_id: string;
-  status: string;
-  total: number;
-  done: number;
-  failed: number;
-  output_count: number;
-  delete_source: boolean;
-  error_message?: string;
-  started_at?: string;
-  completed_at?: string;
-  created_at: string;
-}
-
-// 单个剧集
 export interface BatchEpisodeItem {
   title?: string;
   path: string;
 }
 
-// 输出项
-export interface BatchOutputItem {
-  file_name?: string;
-  file_key?: string;
-  duration?: number;
-  file_size?: number;
-  resolution?: string;
-  presigned_url?: string;
+export interface BatchSliceRunRequest {
+  drama: string;
+  episodes: BatchEpisodeItem[];
+  slice_config?: Record<string, unknown>;
+  auto_delete_source?: boolean;
 }
 
-// 每集输出
-export interface BatchOutputEntry {
-  seq?: number;
-  title?: string;
-  episode_id?: string;
-  status: string;
-  outputs: BatchOutputItem[];
-}
-
-export interface BatchOutputs {
+export interface BatchSliceRunResponse {
   batch_id: string;
-  items: BatchOutputEntry[];
+  total: number;
+  message: string;
+}
+
+export interface BatchSliceItem {
+  id: string;
+  seq: number;
+  title: string | null;
+  source_path: string | null;
+  file_name: string | null;
+  episode_id: string | null;
+  slice_task_id: string | null;
+  status: string;
+  phase: string | null;
+  progress: number;
+  output_count: number;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface BatchSlice {
+  id: string;
+  name: string | null;
+  project_id: string | null;
+  slice_config: Record<string, unknown> | null;
+  status: string;
+  total: number;
+  done: number;
+  failed: number;
+  output_count: number;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface BatchSliceOutputItem {
+  seq: number;
+  title: string | null;
+  episode_id: string | null;
+  slice_task_id: string | null;
+  item_status: string;
+  output: Record<string, unknown> | null;
+}
+
+export interface BatchSliceOutputResponse {
+  batch_id: string;
+  items: BatchSliceOutputItem[];
 }
 
 export const batchSliceApi = {
-  // 创建批量切片批次（剧名 + 剧集列表 + 一键切片配置）
-  run: (payload: {
-    drama: string;
-    episodes: BatchEpisodeItem[];
-    slice_config?: Record<string, unknown>;
-    delete_source?: boolean;
-  }) =>
-    client.post('/batch-slice/run', payload) as Promise<BatchSlice>,
+  run: (data: BatchSliceRunRequest) =>
+    client.post('/batch-slice/run', data) as Promise<BatchSliceRunResponse>,
 
-  // 批次进度
-  get: (batchId: string) =>
+  list: (page = 1, pageSize = 20) =>
+    client.get('/batch-slice', { params: { page, page_size: pageSize } }) as Promise<BatchSlice[]>,
+
+  getById: (batchId: string) =>
     client.get(`/batch-slice/${batchId}`) as Promise<BatchSlice>,
 
-  // 批次项（每集状态）
-  items: (batchId: string) =>
+  getItems: (batchId: string) =>
     client.get(`/batch-slice/${batchId}/items`) as Promise<BatchSliceItem[]>,
 
-  // 输出列表
-  outputs: (batchId: string) =>
-    client.get(`/batch-slice/${batchId}/outputs`) as Promise<BatchOutputs>,
+  getOutputs: (batchId: string) =>
+    client.get(`/batch-slice/${batchId}/outputs`) as Promise<BatchSliceOutputResponse>,
+
+  retry: (batchId: string) =>
+    client.post(`/batch-slice/${batchId}/retry`) as Promise<BatchSliceRunResponse>,
+
+  cancel: (batchId: string) =>
+    client.post(`/batch-slice/${batchId}/cancel`) as Promise<{ batch_id: string; message: string }>,
 };

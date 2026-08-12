@@ -26,7 +26,6 @@ celery_app = Celery(
 )
 
 celery_app.conf.update(
-    include=["app.celery.batch_slice_task"],
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
@@ -54,7 +53,6 @@ celery_app.conf.update(
         "app.celery.tasks.confirm_publish_worker": {"queue": "publish"},
         "app.celery.tasks.task_collect_metrics": {"queue": "metrics"},
         "app.celery.tasks.watermark_task": {"queue": "video_processing"},
-        "app.celery.batch_slice_task.process_batch": {"queue": "video_processing"},
         "app.celery.tasks.check_cookie_status": {"queue": "publish"},
         "app.celery.tasks.doubao_generate_task": {"queue": "publish"},
         # Seedance 官方 API 直连出片（HTTP 直连，无浏览器；复用 publish 队列即可，
@@ -229,6 +227,24 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
                 os.unlink(downloaded_video_path)
             except OSError:
                 pass
+
+
+@celery_app.task(bind=True, max_retries=0)
+def batch_slice_task(self, batch_id: str):
+    """批量切片工作流（三期方案）：按列表顺序逐集完成选点→审核→切片→删源。
+
+    编排逻辑见 app.services.batch_slice_service.run_batch。
+    由于该任务会长时间阻塞并轮询 autoclip/slice 子任务，放到 default 队列执行。
+    """
+    from app.services.batch_slice_service import run_batch
+    self.update_state(state="STARTED", meta={"batch_id": batch_id})
+    try:
+        run_async(run_batch(batch_id))
+    except Exception as e:
+        logger.error("批量切片任务异常 batch=%s: %s", batch_id, e)
+        from app.services.batch_slice_service import _update_batch
+        run_async(_update_batch(batch_id, status="failed", error_message=str(e)))
+        raise
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)

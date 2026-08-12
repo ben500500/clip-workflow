@@ -1,5 +1,9 @@
+import logging
+import os
+import shutil
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,10 +19,26 @@ from app.models.models import (
     Project,
     Episode,
     User,
+    AutoClipProject,
     user_can_access_all_materials,
 )
-from app.services.minio_service import get_presigned_url
+from app.services.minio_service import get_presigned_url, delete_file, list_files
 from app.utils.helpers import utc_iso
+
+logger = logging.getLogger(__name__)
+
+
+def _remove_path(path: Path) -> None:
+    """删除文件或目录（不存在时静默忽略）。"""
+    if not path.exists():
+        return
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 router = APIRouter()
 
@@ -527,5 +547,53 @@ async def delete_episode(
     if proj and not _check_project_access(proj, current_user):
         raise HTTPException(status_code=404, detail="Episode not found")
 
+    # ── 清理文件资源（在 DB 删除前收集引用，避免级联删除后丢失） ──
+    # 1) media 本地文件：autoclip project_id = media/{uuid}.mp4 + metadata/{uuid}/ + asr_cache
+    media_uuid = None
+    ap = (
+        await db.execute(
+            select(AutoClipProject).where(AutoClipProject.episode_id == eid)
+        )
+    ).scalar_one_or_none()
+    if ap and ap.autoclip_project_id:
+        media_uuid = ap.autoclip_project_id
+
+    # 2) MinIO 源素材：episode.source_file_key（raw-footage 对象）
+    if episode.source_file_key:
+        await delete_file(settings.MINIO_BUCKET_RAW, episode.source_file_key)
+
+    # 3) MinIO 切片成品：sliced/slices/{episode_id}/ 下所有对象
+    sliced_objs = await list_files(settings.MINIO_BUCKET_SLICED, f"slices/{episode_id}/")
+    for obj in sliced_objs:
+        await delete_file(settings.MINIO_BUCKET_SLICED, obj["key"])
+
     await db.delete(episode)
     await db.flush()
+
+    # DB 删除成功后执行本地文件清理（失败不阻塞删除，只记日志）
+    if media_uuid:
+        _cleanup_episode_media_files(media_uuid)
+
+
+def _cleanup_episode_media_files(media_uuid: str) -> None:
+    """清理剧集删除后遗留的本地 media 文件与 MinIO raw-footage 残留对象。
+
+    media 卷挂载在 backend 容器 /app/media：
+      - {media_uuid}.mp4           源视频副本（autoclip 上传/下载生成）
+      - data/output/metadata/{uuid} AI 选点产物
+      - data/asr_cache/{uuid}-*    ASR 转写缓存
+      - data/output/frame_cache/*  画面理解帧缓存（按视频 hash 命名，删除该剧集全部帧缓存）
+    """
+    media_base = Path("/app/media")
+    try:
+        for p in [
+            media_base / f"{media_uuid}.mp4",
+            media_base / "data/output/metadata" / media_uuid,
+        ]:
+            _remove_path(p)
+        for p in media_base.glob(f"data/asr_cache/{media_uuid}-*"):
+            _remove_path(p)
+        for p in media_base.glob("data/output/frame_cache/*"):
+            _remove_path(p)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"清理剧集本地文件失败: {e}")

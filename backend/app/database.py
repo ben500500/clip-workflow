@@ -55,7 +55,6 @@ async def init_db():
     # 对已存在的老表补充新增列（create_all 不会为已存在的表加列）
     await _apply_compat_migrations()
     await _ensure_autoclip_runs_table()
-    await _ensure_batch_slice_tables()
     await _backfill_data_scope()
 
 
@@ -125,77 +124,6 @@ async def _ensure_autoclip_runs_table():
             logger.info("Created autoclip_runs table")
     except Exception as e:
         logger.warning("Failed to ensure autoclip_runs table: %s", e)
-
-
-async def _ensure_batch_slice_tables():
-    """确保 batch_slices / batch_slice_items 表存在（老库升级时 create_all 不会新建）。"""
-    from sqlalchemy import inspect as sa_inspect
-
-    try:
-        async with engine.begin() as conn:
-            exists = await conn.run_sync(
-                lambda sync_conn: sa_inspect(sync_conn).has_table("batch_slices")
-            )
-        if exists:
-            return
-        async with engine.begin() as conn:
-            await conn.execute(
-                sqlalchemy.text("""
-                    CREATE TABLE IF NOT EXISTS batch_slices (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        name VARCHAR(255),
-                        drama_name VARCHAR(255),
-                        project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                        slice_config JSON,
-                        status VARCHAR(50) DEFAULT 'pending',
-                        total INTEGER DEFAULT 0,
-                        done INTEGER DEFAULT 0,
-                        failed INTEGER DEFAULT 0,
-                        output_count INTEGER DEFAULT 0,
-                        delete_source BOOLEAN DEFAULT TRUE,
-                        created_by UUID,
-                        error_message TEXT,
-                        started_at TIMESTAMP,
-                        completed_at TIMESTAMP,
-                        created_at TIMESTAMP NOT NULL DEFAULT now()
-                    )
-                """)
-            )
-            await conn.execute(
-                sqlalchemy.text("""
-                    CREATE TABLE IF NOT EXISTS batch_slice_items (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        batch_id UUID NOT NULL REFERENCES batch_slices(id) ON DELETE CASCADE,
-                        seq INTEGER,
-                        title VARCHAR(255),
-                        source_path VARCHAR(1000),
-                        source_file_key VARCHAR(500),
-                        episode_id UUID REFERENCES episodes(id) ON DELETE SET NULL,
-                        autoclip_run_id UUID,
-                        slice_task_id UUID,
-                        status VARCHAR(50) DEFAULT 'pending',
-                        progress DOUBLE PRECISION DEFAULT 0,
-                        message TEXT,
-                        error_message TEXT,
-                        output_count INTEGER DEFAULT 0,
-                        processed_at TIMESTAMP,
-                        created_at TIMESTAMP NOT NULL DEFAULT now()
-                    )
-                """)
-            )
-            for idx in [
-                "ix_batch_slices_project_id ON batch_slices(project_id)",
-                "ix_batch_slices_created_by ON batch_slices(created_by)",
-                "ix_batch_slice_items_batch_id ON batch_slice_items(batch_id)",
-                "ix_batch_slice_items_episode_id ON batch_slice_items(episode_id)",
-            ]:
-                try:
-                    await conn.execute(sqlalchemy.text(f"CREATE INDEX IF NOT EXISTS {idx}"))
-                except Exception:
-                    pass
-            logger.info("Created batch_slices / batch_slice_items tables")
-    except Exception as e:
-        logger.warning("Failed to ensure batch_slice tables: %s", e)
 
 
 async def _apply_compat_migrations():

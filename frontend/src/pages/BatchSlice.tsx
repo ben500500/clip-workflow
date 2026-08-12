@@ -1,380 +1,608 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Card, Form, Input, Button, message, Table, Tag, Space, Switch,
-  Select, InputNumber, Radio, Alert, Divider, Typography, Progress, Popconfirm,
+  Card, Form, Input, Button, InputNumber, Select, Switch, Space, Divider,
+  Table, Tag, Progress, message, Alert, Typography, Modal, List, Spin, Tooltip,
 } from 'antd';
-import { PlayCircleOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons';
-import { batchSliceApi, BatchSlice, BatchSliceItem, BatchOutputs } from '../api/batchSlice';
+import {
+  PlayCircleOutlined, UploadOutlined, ReloadOutlined, StopOutlined,
+  DownloadOutlined, InboxOutlined,
+} from '@ant-design/icons';
+import Dragger from 'antd/es/upload/Dragger';
+import { batchSliceApi, BatchSlice, BatchSliceItem, BatchSliceOutputItem } from '../api/batchSlice';
 
-const { Text, Title, Paragraph } = Typography;
-const { TextArea } = Input;
+const { Text, Title } = Typography;
 
-const STATUS_MAP: Record<string, { color: string; text: string }> = {
-  pending: { color: 'default', text: '待处理' },
-  uploading: { color: 'processing', text: '上传源视频' },
-  autoclip: { color: 'processing', text: 'AI 选点' },
-  review: { color: 'processing', text: '自动审核' },
-  slicing: { color: 'processing', text: '切片中' },
-  completed: { color: 'success', text: '已完成' },
-  failed: { color: 'error', text: '失败' },
-  skipped: { color: 'warning', text: '已跳过' },
+// ── 一键切片配置（复用剧集详情页的常用配置项，整批统一生效）──
+interface SliceConfigState {
+  vert2horiz_enabled: boolean;
+  vert2horiz_mode: 'fixed' | 'dynamic';
+  vert2horiz_ratio: number;
+  vert2horiz_output_size: string;
+  subtitle_enabled: boolean;
+  subtitle_font_ratio: number;
+  subtitle_style: 'default' | 'custom';
+  subtitle_color: string;
+  subtitle_border_color: string;
+  text_overlay_enabled: boolean;
+  text_overlays: { text: string; position: string; font_size: number; color: string }[];
+  watermark_enabled: boolean;
+  watermark_text: string;
+  watermark_font_size: number;
+  watermark_opacity: number;
+  watermark_position: string;
+}
+
+const DEFAULT_SLICE_CONFIG: SliceConfigState = {
+  vert2horiz_enabled: true,
+  vert2horiz_mode: 'dynamic',
+  vert2horiz_ratio: 0.5625,
+  vert2horiz_output_size: '1280x720',
+  subtitle_enabled: true,
+  subtitle_font_ratio: 0.45,
+  subtitle_style: 'custom',
+  subtitle_color: '#EDD736',
+  subtitle_border_color: '#000000',
+  text_overlay_enabled: true,
+  text_overlays: [
+    { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736' },
+    { text: '免费热门短剧', position: 'bottom-left', font_size: 36, color: '#FFFFFF' },
+  ],
+  watermark_enabled: false,
+  watermark_text: '',
+  watermark_font_size: 28,
+  watermark_opacity: 0.5,
+  watermark_position: 'bottom',
+};
+
+const POSITIONS = ['top-left', 'top-center', 'top-right', 'left', 'bottom-left', 'bottom-center', 'bottom-right'];
+
+// 阶段中文名
+const PHASE_LABELS: Record<string, string> = {
+  upload: '上传源视频',
+  autoclip: 'AI 选点',
+  review: '自动审核',
+  slice: '一键切片',
+  source_delete: '删除源视频',
+};
+
+const STATUS_COLOR: Record<string, string> = {
+  completed: 'green',
+  failed: 'red',
+  pending: 'default',
+  uploading: 'blue',
+  autoclip: 'blue',
+  reviewing: 'blue',
+  slicing: 'processing',
+  deleting: 'processing',
+  cancelled: 'orange',
+};
+
+const STATUS_TEXT: Record<string, string> = {
+  completed: '已完成',
+  failed: '失败',
+  pending: '待处理',
+  uploading: '上传中',
+  autoclip: '选点中',
+  reviewing: '审核中',
+  slicing: '切片中',
+  deleting: '删除中',
+  cancelled: '已取消',
 };
 
 const BatchSlicePage: React.FC = () => {
   const [form] = Form.useForm();
-  const vert2horizEnabledWatch = Form.useWatch('vert2horiz_enabled', form);
-  const subtitleEnabledWatch = Form.useWatch('subtitle_enabled', form);
-  const watermarkEnabledWatch = Form.useWatch('watermark_enabled', form);
-  const [submitting, setSubmitting] = useState(false);
-  const [currentBatch, setCurrentBatch] = useState<BatchSlice | null>(null);
-  const [items, setItems] = useState<BatchSliceItem[]>([]);
-  const [outputs, setOutputs] = useState<BatchOutputs | null>(null);
-  const [loadingItems, setLoadingItems] = useState(false);
-  const [showOutputs, setShowOutputs] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [sliceConfig, setSliceConfig] = useState<SliceConfigState>({ ...DEFAULT_SLICE_CONFIG, text_overlays: DEFAULT_SLICE_CONFIG.text_overlays.map((t) => ({ ...t })) });
+  const [jsonText, setJsonText] = useState('');
+  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
 
-  // 轮询批次进度
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
+  const [batches, setBatches] = useState<BatchSlice[]>([]);
+  const [batchListLoading, setBatchListLoading] = useState(false);
+
+  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
+  const [selectedBatch, setSelectedBatch] = useState<BatchSlice | null>(null);
+  const [items, setItems] = useState<BatchSliceItem[]>([]);
+  const [outputs, setOutputs] = useState<BatchSliceOutputItem[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [outputModalOpen, setOutputModalOpen] = useState(false);
+
+  const fetchBatches = useCallback(async () => {
+    setBatchListLoading(true);
+    try {
+      const data = await batchSliceApi.list();
+      setBatches(data);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '获取批次列表失败');
+    } finally {
+      setBatchListLoading(false);
     }
   }, []);
 
-  const pollBatch = useCallback((batchId: string) => {
-    stopPolling();
-    pollRef.current = setInterval(async () => {
+  useEffect(() => {
+    fetchBatches();
+  }, [fetchBatches]);
+
+  const loadBatchDetail = useCallback(async (batchId: string) => {
+    setDetailLoading(true);
+    try {
+      const [batch, itemList] = await Promise.all([
+        batchSliceApi.getById(batchId),
+        batchSliceApi.getItems(batchId),
+      ]);
+      setSelectedBatchId(batchId);
+      setSelectedBatch(batch);
+      setItems(itemList);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '加载批次详情失败');
+    } finally {
+      setDetailLoading(false);
+    }
+  }, []);
+
+  // 轮询详情
+  useEffect(() => {
+    if (!selectedBatchId) return;
+    const timer = window.setInterval(() => {
+      loadBatchDetail(selectedBatchId);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [selectedBatchId, loadBatchDetail]);
+
+  const handleFileUpload = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || '');
+      setJsonText(text);
+      setJsonError(null);
       try {
-        const b = await batchSliceApi.get(batchId);
-        setCurrentBatch(b);
-        const its = await batchSliceApi.items(batchId);
-        setItems(its);
-        if (['completed', 'partial_failed', 'failed'].includes(b.status)) {
-          stopPolling();
-          const outs = await batchSliceApi.outputs(batchId);
-          setOutputs(outs);
-          message.info(`批次处理结束（${b.status}）`);
+        const parsed = JSON.parse(text);
+        if (!parsed.drama || !Array.isArray(parsed.episodes)) {
+          setJsonError('JSON 需包含 drama（剧名）与 episodes（剧集数组）字段');
         }
       } catch {
-        stopPolling();
+        setJsonError('JSON 解析失败，请检查格式');
       }
-    }, 4000);
-  }, [stopPolling]);
-
-  useEffect(() => {
-    return () => stopPolling();
-  }, [stopPolling]);
-
-  const loadBatch = async (batchId: string) => {
-    setLoadingItems(true);
-    try {
-      const b = await batchSliceApi.get(batchId);
-      setCurrentBatch(b);
-      const its = await batchSliceApi.items(batchId);
-      setItems(its);
-      if (['completed', 'partial_failed', 'failed'].includes(b.status)) {
-        const outs = await batchSliceApi.outputs(batchId);
-        setOutputs(outs);
-      }
-      if (!['completed', 'partial_failed', 'failed'].includes(b.status)) {
-        pollBatch(batchId);
-      }
-    } catch (err) {
-      message.error(err instanceof Error ? err.message : '加载批次失败');
-    } finally {
-      setLoadingItems(false);
-    }
+    };
+    reader.readAsText(file);
+    return false;
   };
 
-  // 解析剧集列表（支持 JSON 或每行一地址格式）
-  const parseEpisodes = (raw: string): { title?: string; path: string }[] => {
-    const trimmed = raw.trim();
-    if (!trimmed) return [];
-    // 尝试 JSON 解析
+  const buildPayload = () => {
+    let parsed: { drama?: string; episodes?: { title?: string; path: string }[] };
     try {
-      const parsed = JSON.parse(trimmed);
-      if (Array.isArray(parsed)) {
-        return parsed.map((e: unknown) => {
-          if (typeof e === 'string') return { path: e };
-          const obj = e as { title?: string; path?: string; source_path?: string };
-          return { title: obj.title, path: obj.path || obj.source_path || '' };
-        }).filter((e: { path: string }) => e.path);
-      }
-      if (parsed.episodes && Array.isArray(parsed.episodes)) {
-        return parsed.episodes.map((e: { title?: string; path?: string }) =>
-          ({ title: e.title, path: e.path || '' })
-        ).filter((e: { path: string }) => e.path);
-      }
+      parsed = JSON.parse(jsonText);
     } catch {
-      // 非 JSON：按行解析（每行一地址，支持 "标题,路径" 或纯路径）
+      throw new Error('JSON 解析失败，请检查格式');
     }
-    return raw.split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const parts = line.split(',').map((s) => s.trim());
-        if (parts.length >= 2) {
-          return { title: parts[0], path: parts.slice(1).join(',') };
-        }
-        return { path: line };
-      });
+    if (!parsed.drama || !parsed.drama.trim()) throw new Error('缺少剧名 drama');
+    if (!Array.isArray(parsed.episodes) || parsed.episodes.length === 0) {
+      throw new Error('缺少剧集列表 episodes');
+    }
+    for (const ep of parsed.episodes) {
+      if (!ep.path) throw new Error('剧集中存在缺少 path 的项');
+    }
+    return {
+      drama: parsed.drama.trim(),
+      episodes: parsed.episodes,
+      slice_config: {
+        mode: 'fast',
+        ...sliceConfig,
+        // text_overlays 仅开启时透传
+        text_overlays: sliceConfig.text_overlay_enabled ? sliceConfig.text_overlays : [],
+      },
+    };
   };
 
   const handleRun = async () => {
-    const values = await form.validateFields();
-    const drama = (values.drama || '').trim();
-    const episodes = parseEpisodes(values.episodesRaw || '');
-    if (!drama) {
-      message.error('请输入剧名');
-      return;
-    }
-    if (episodes.length === 0) {
-      message.error('请填写至少一个剧集地址');
-      return;
-    }
-    setSubmitting(true);
+    setJsonError(null);
+    let payload: ReturnType<typeof buildPayload>;
     try {
-      const sliceConfig: Record<string, unknown> = {
-        mode: values.mode || 'fast',
-      };
-      if (values.vert2horiz_enabled) {
-        sliceConfig.vert2horiz_enabled = true;
-        sliceConfig.vert2horiz_mode = values.vert2horiz_mode || 'fixed';
-        sliceConfig.vert2horiz_output_size = values.vert2horiz_output_size || '1280x720';
+      payload = buildPayload();
+    } catch (err) {
+      setJsonError(err instanceof Error ? err.message : '参数校验失败');
+      return;
+    }
+    setCreating(true);
+    try {
+      const resp = await batchSliceApi.run(payload);
+      message.success(resp.message);
+      setJsonText('');
+      form.resetFields();
+      fetchBatches();
+      if (resp.batch_id) {
+        await loadBatchDetail(resp.batch_id);
       }
-      if (values.subtitle_enabled) {
-        sliceConfig.subtitle_enabled = true;
-        sliceConfig.subtitle_font_ratio = values.subtitle_font_ratio;
-        sliceConfig.subtitle_style = values.subtitle_style || 'default';
-        if (values.subtitle_style === 'custom') {
-          sliceConfig.subtitle_color = values.subtitle_color || '#EDD736';
-          sliceConfig.subtitle_border_color = values.subtitle_border_color || '#000000';
-        }
-      }
-      if (values.watermark_enabled) {
-        sliceConfig.watermark_enabled = true;
-        sliceConfig.watermark_text = values.watermark_text;
-        sliceConfig.watermark_position = values.watermark_position || 'bottom';
-      }
-      if (values.text_overlays) {
-        const tos = values.text_overlays
-          .split('\n')
-          .map((line: string) => line.trim())
-          .filter(Boolean)
-          .map((line: string) => {
-            const parts = line.split('|').map((s) => s.trim());
-            return parts.length >= 2
-              ? { text: parts[0], position: parts[1] }
-              : { text: line, position: 'bottom-left' };
-          });
-        if (tos.length > 0) sliceConfig.text_overlays = tos;
-      }
-
-      const res = await batchSliceApi.run({
-        drama,
-        episodes,
-        slice_config: sliceConfig,
-        delete_source: values.delete_source !== false,
-      });
-      message.success(`批次已创建：${res.drama_name}（共 ${res.total} 集）`);
-      form.setFieldValue('batch_id', res.id);
-      setCurrentBatch(res);
-      setItems([]);
-      setOutputs(null);
-      setShowOutputs(false);
-      loadBatch(res.id);
     } catch (err) {
       message.error(err instanceof Error ? err.message : '创建批次失败');
     } finally {
-      setSubmitting(false);
+      setCreating(false);
     }
   };
 
-  const itemColumns = [
-    { title: '#', dataIndex: 'seq', width: 50 },
-    { title: '剧集', dataIndex: 'title', render: (t?: string, r?: BatchSliceItem) => t || `剧集_${r?.seq}` },
-    { title: '源地址', dataIndex: 'source_path', ellipsis: true },
-    {
-      title: '状态', dataIndex: 'status',
-      render: (s: string, r: BatchSliceItem) => {
-        const st = STATUS_MAP[s] || { color: 'default', text: s };
-        return (
-          <Space direction="vertical" size={2}>
-            <Tag color={st.color}>{st.text}</Tag>
-            {r.message && <Text type="secondary" style={{ fontSize: 12 }}>{r.message}</Text>}
-          </Space>
-        );
+  const handleRetry = async () => {
+    if (!selectedBatchId) return;
+    Modal.confirm({
+      title: '重试失败项',
+      content: '确定重试该批次中失败的剧集吗？（已完成项将跳过）',
+      okText: '重试',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const resp = await batchSliceApi.retry(selectedBatchId);
+          message.success(resp.message);
+          loadBatchDetail(selectedBatchId);
+        } catch (err) {
+          message.error(err instanceof Error ? err.message : '重试失败');
+        }
       },
+    });
+  };
+
+  const handleCancel = async () => {
+    if (!selectedBatchId) return;
+    Modal.confirm({
+      title: '取消批次',
+      content: '确定取消该批次吗？（未完成的剧集将标记为已取消）',
+      okText: '取消批次',
+      cancelText: '返回',
+      onOk: async () => {
+        try {
+          const resp = await batchSliceApi.cancel(selectedBatchId);
+          message.success(resp.message);
+          loadBatchDetail(selectedBatchId);
+        } catch (err) {
+          message.error(err instanceof Error ? err.message : '取消失败');
+        }
+      },
+    });
+  };
+
+  const showOutputs = async () => {
+    if (!selectedBatchId) return;
+    setOutputModalOpen(true);
+    try {
+      const data = await batchSliceApi.getOutputs(selectedBatchId);
+      setOutputs(data.items);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '获取输出列表失败');
+    }
+  };
+
+  const renderOutputModal = () => {
+    const allOutputs: { seq: number; title: string | null; file: Record<string, unknown> }[] = [];
+    outputs.forEach((item) => {
+      const out = item.output;
+      if (out && 'outputs' in out && Array.isArray((out as any).outputs)) {
+        (out as any).outputs.forEach((f: Record<string, unknown>) => allOutputs.push({ seq: item.seq, title: item.title, file: f }));
+      } else if (out) {
+        allOutputs.push({ seq: item.seq, title: item.title, file: out });
+      }
+    });
+    return (
+      <Modal
+        title={`输出列表（共 ${allOutputs.length} 个成品）`}
+        open={outputModalOpen}
+        onCancel={() => setOutputModalOpen(false)}
+        footer={null}
+        width={760}
+      >
+        <List
+          dataSource={allOutputs}
+          renderItem={(item) => (
+            <List.Item
+              actions={[
+                <a key="dl" href={(item.file as any).presigned_url || '#'} target="_blank" rel="noreferrer">
+                  <DownloadOutlined /> 下载
+                </a>,
+              ]}
+            >
+              <List.Item.Meta
+                title={`第 ${item.seq} 集 · ${(item.file as any).file_name || ''}`}
+                description={
+                  <Space size={12}>
+                    <Text type="secondary">{(item.file as any).duration ? `${(item.file as any).duration}s` : ''}</Text>
+                    <Text type="secondary">{(item.file as any).resolution || ''}</Text>
+                    <Text type="secondary">{formatSize((item.file as any).file_size)}</Text>
+                  </Space>
+                }
+              />
+            </List.Item>
+          )}
+        />
+      </Modal>
+    );
+  };
+
+  const formatSize = (size?: number | null) => {
+    if (!size) return '';
+    if (size < 1024) return `${size}B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)}KB`;
+    return `${(size / 1024 / 1024).toFixed(1)}MB`;
+  };
+
+  const itemColumns = [
+    { title: '序号', dataIndex: 'seq', width: 60 },
+    {
+      title: '剧集',
+      dataIndex: 'title',
+      ellipsis: true,
+      render: (v: string | null) => v || '-',
     },
     {
-      title: '进度', dataIndex: 'progress',
-      render: (p: number, r: BatchSliceItem) =>
-        ['completed'].includes(r.status)
-          ? <Text type="success">已完成</Text>
-          : r.status === 'failed'
-            ? <Text type="danger">{r.error_message || '失败'}</Text>
-            : <Progress percent={Math.round(p || 0)} size="small" style={{ width: 120 }} />,
+      title: '阶段',
+      dataIndex: 'phase',
+      width: 110,
+      render: (v: string | null) => (v ? (PHASE_LABELS[v] || v) : '-'),
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 90,
+      render: (v: string) => <Tag color={STATUS_COLOR[v] || 'default'}>{STATUS_TEXT[v] || v}</Tag>,
+    },
+    {
+      title: '进度',
+      dataIndex: 'progress',
+      width: 120,
+      render: (v: number, r: BatchSliceItem) => (
+        <Progress percent={Math.round(v)} size="small" status={r.status === 'failed' ? 'exception' : undefined} />
+      ),
     },
     { title: '成品数', dataIndex: 'output_count', width: 80 },
-  ];
-
-  const outputColumns = [
-    { title: '#', dataIndex: 'seq', width: 50 },
-    { title: '剧集', dataIndex: 'title', render: (t?: string, r?: { seq?: number }) => t || `剧集_${r?.seq}` },
     {
-      title: '成品', dataIndex: 'outputs',
-      render: (outs: { file_name?: string; presigned_url?: string }[]) =>
-        outs && outs.length > 0 ? (
-          <Space direction="vertical" size={2}>
-            {outs.map((o, i) => (
-              <Space key={i} size={4}>
-                <Text style={{ fontSize: 12 }}>{o.file_name || `clip_${i + 1}.mp4`}</Text>
-                {o.presigned_url && (
-                  <a href={o.presigned_url} target="_blank" rel="noreferrer" download>
-                    <DownloadOutlined /> 下载
-                  </a>
-                )}
-              </Space>
-            ))}
-          </Space>
-        ) : <Text type="secondary">无</Text>,
+      title: '错误信息',
+      dataIndex: 'error_message',
+      ellipsis: true,
+      render: (v: string | null) => (v ? <Text type="danger">{v}</Text> : '-'),
     },
-    { title: '状态', dataIndex: 'status', render: (s: string) => (
-      <Tag color={STATUS_MAP[s]?.color || 'default'}>{STATUS_MAP[s]?.text || s}</Tag>
-    ) },
   ];
 
-  const batchStatusTag = currentBatch ? (
-    <Tag color={STATUS_MAP[currentBatch.status]?.color || 'default'}>
-      {STATUS_MAP[currentBatch.status]?.text || currentBatch.status}
-    </Tag>
-  ) : null;
+  const batchColumns = [
+    {
+      title: '批次',
+      dataIndex: 'name',
+      ellipsis: true,
+      render: (v: string | null, r: BatchSlice) => <a onClick={() => loadBatchDetail(r.id)}>{v || r.id}</a>,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 100,
+      render: (v: string) => <Tag color={STATUS_COLOR[v] || 'default'}>{STATUS_TEXT[v] || v}</Tag>,
+    },
+    { title: '总数', dataIndex: 'total', width: 60 },
+    { title: '完成', dataIndex: 'done', width: 60 },
+    { title: '失败', dataIndex: 'failed', width: 60 },
+    { title: '成品数', dataIndex: 'output_count', width: 80 },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      width: 170,
+      render: (v: string) => new Date(v).toLocaleString(),
+    },
+  ];
 
   return (
-    <div style={{ padding: 24, maxWidth: 1200 }}>
-      <Title level={4}>批量切片（三期）</Title>
-      <Paragraph type="secondary">
-        按剧名创建项目，逐集顺序执行「AI 选点 → 自动审核 → 一键切片 → 删除源视频」，最终汇总输出列表。
-      </Paragraph>
+    <div style={{ padding: 16 }}>
+      <Title level={4}>批量切片工作流</Title>
+      <Alert
+        type="info"
+        showIcon
+        message="上传包含剧名与剧集地址的 JSON，系统按剧名查找/创建项目，并按列表顺序逐集完成「AI 选点 → 自动审核 → 一键切片 → 删除源视频」，最后汇总输出列表。"
+        style={{ marginBottom: 16 }}
+      />
 
-      <Card title="① 上传剧集清单" style={{ marginBottom: 16 }}>
-        <Form
-          form={form}
-          layout="vertical"
-          initialValues={{
-            drama: '',
-            episodesRaw: '',
-            mode: 'fast',
-            delete_source: true,
-          }}
-        >
-          <Form.Item name="drama" label="剧名（将按此创建/查找项目）" rules={[{ required: true, message: '请输入剧名' }]}>
-            <Input placeholder="如：赘婿之龙傲天" />
-          </Form.Item>
-          <Form.Item
-            name="episodesRaw"
-            label="剧集地址列表"
-            rules={[{ required: true, message: '请填写剧集地址' }]}
-            extra={'每行一个地址；支持「标题,路径」或纯路径；也支持 JSON：{"episodes":[{"title":"..","path":".."}]}'}
-          >
-            <TextArea
+      <Card title="① 上传列表（JSON）" style={{ marginBottom: 16 }}>
+        <Form form={form} layout="vertical">
+          <Form.Item label="JSON 内容（示例）" required>
+            <Input.TextArea
               rows={6}
-              placeholder={[
-                '第01集,/mnt/nas/shortdrama/ep01.mp4',
-                '第02集,/mnt/nas/shortdrama/ep02.mp4',
-              ].join('\n')}
+              value={jsonText}
+              onChange={(e) => {
+                setJsonText(e.target.value);
+                setJsonError(null);
+              }}
+              placeholder={'{\n  "drama": "短剧A",\n  "episodes": [\n    { "title": "第1集", "path": "/mnt/nas/shortdrama/ep01.mp4" },\n    { "title": "第2集", "path": "/mnt/nas/shortdrama/ep02.mp4" }\n  ]\n}'}
             />
+            <div style={{ marginTop: 8 }}>
+              <Dragger
+                accept=".json,.txt"
+                beforeUpload={(file) => {
+                  handleFileUpload(file as unknown as File);
+                  return false;
+                }}
+                showUploadList={false}
+                style={{ padding: 8 }}
+              >
+                <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+                <p className="ant-upload-text">点击或拖拽 JSON 文件到此处</p>
+              </Dragger>
+            </div>
+            {jsonError && <Text type="danger">{jsonError}</Text>}
           </Form.Item>
-
-          <Divider orientation="left">一键切片配置（整批统一生效）</Divider>
-          <Space size="large" wrap>
-            <Form.Item name="mode" label="切片模式">
-              <Select style={{ width: 160 }} options={[{ value: 'fast', label: '快速' }, { value: 'high', label: '高清' }]} />
-            </Form.Item>
-            <Form.Item name="delete_source" label="处理完删除源视频" valuePropName="checked">
-              <Switch checkedChildren="删除" unCheckedChildren="保留" />
-            </Form.Item>
-          </Space>
-
-          <Space size="large" wrap>
-            <Form.Item name="vert2horiz_enabled" label="竖屏转横屏" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            {vert2horizEnabledWatch === true && (
-              <Form.Item name="vert2horiz_mode" label="转横屏模式">
-                <Select style={{ width: 140 }} options={[{ value: 'fixed', label: '固定裁切' }, { value: 'dynamic', label: '动态跟踪' }]} />
-              </Form.Item>
-            )}
-            <Form.Item name="subtitle_enabled" label="ASR 字幕烧录" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            {subtitleEnabledWatch === true && (
-              <Form.Item name="subtitle_style" label="字幕样式">
-                <Select style={{ width: 140 }} options={[{ value: 'default', label: '默认' }, { value: 'custom', label: '自定义' }]} />
-              </Form.Item>
-            )}
-            <Form.Item name="watermark_enabled" label="文字水印" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            {watermarkEnabledWatch === true && (
-              <Form.Item name="watermark_position" label="水印位置">
-                <Select style={{ width: 120 }} options={[{ value: 'bottom', label: '底部' }, { value: 'top', label: '顶部' }]} />
-              </Form.Item>
-            )}
-          </Space>
-
-          <Form.Item name="text_overlays" label="固定文字角标（可选，每行「文字|位置」）" style={{ marginTop: 8 }}>
-            <TextArea
-              rows={2}
-              placeholder={'热门短剧|top-right\n免费热门短剧|bottom-left'}
-            />
-          </Form.Item>
-
-          <Button type="primary" icon={<PlayCircleOutlined />} loading={submitting} onClick={handleRun}>
-            开始批量切片
-          </Button>
         </Form>
       </Card>
 
-      {currentBatch && (
-        <Card
-          title={
-            <Space>
-              <span>批次：{currentBatch.drama_name}</span>
-              {batchStatusTag}
-              <Text type="secondary">({currentBatch.done}/{currentBatch.total})</Text>
-            </Space>
-          }
-          extra={
-            <Space>
-              <Button size="small" icon={<ReloadOutlined />} onClick={() => loadBatch(currentBatch.id)}>刷新</Button>
-              <Button size="small" type="primary" onClick={() => setShowOutputs((v) => !v)}>
-                {showOutputs ? '查看进度' : '查看输出列表'}
-              </Button>
-            </Space>
-          }
-          style={{ marginBottom: 16 }}
-        >
-          {!showOutputs ? (
+      <Card title="② 一键切片配置选项" style={{ marginBottom: 16 }}>
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Space size="large">
+            <Text>竖屏转横屏：</Text>
+            <Switch
+              checked={sliceConfig.vert2horiz_enabled}
+              onChange={(v) => setSliceConfig({ ...sliceConfig, vert2horiz_enabled: v })}
+            />
+            {sliceConfig.vert2horiz_enabled && (
+              <>
+                <Select
+                  value={sliceConfig.vert2horiz_mode}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, vert2horiz_mode: v })}
+                  style={{ width: 120 }}
+                  options={[
+                    { value: 'fixed', label: '固定裁切' },
+                    { value: 'dynamic', label: '动态人脸' },
+                  ]}
+                />
+                <Text>输出</Text>
+                <Select
+                  value={sliceConfig.vert2horiz_output_size}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, vert2horiz_output_size: v })}
+                  style={{ width: 110 }}
+                  options={['1280x720', '1920x1080'].map((s) => ({ value: s, label: s }))}
+                />
+              </>
+            )}
+          </Space>
+
+          <Space size="large">
+            <Text>ASR 字幕烧录：</Text>
+            <Switch
+              checked={sliceConfig.subtitle_enabled}
+              onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_enabled: v })}
+            />
+            {sliceConfig.subtitle_enabled && (
+              <>
+                <Text>字号</Text>
+                <InputNumber
+                  value={sliceConfig.subtitle_font_ratio}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_font_ratio: v ?? 0.45 })}
+                  step={0.05}
+                  min={0.1}
+                  max={0.6}
+                />
+                <Select
+                  value={sliceConfig.subtitle_style}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_style: v })}
+                  style={{ width: 110 }}
+                  options={[
+                    { value: 'default', label: '默认' },
+                    { value: 'custom', label: '自定义' },
+                  ]}
+                />
+                {sliceConfig.subtitle_style === 'custom' && (
+                  <>
+                    <Input
+                      value={sliceConfig.subtitle_color}
+                      onChange={(e) => setSliceConfig({ ...sliceConfig, subtitle_color: e.target.value })}
+                      style={{ width: 90 }}
+                      placeholder="字体色"
+                    />
+                    <Input
+                      value={sliceConfig.subtitle_border_color}
+                      onChange={(e) => setSliceConfig({ ...sliceConfig, subtitle_border_color: e.target.value })}
+                      style={{ width: 90 }}
+                      placeholder="边框色"
+                    />
+                  </>
+                )}
+              </>
+            )}
+          </Space>
+
+          <Space size="large">
+            <Text>固定文字角标：</Text>
+            <Switch
+              checked={sliceConfig.text_overlay_enabled}
+              onChange={(v) => setSliceConfig({ ...sliceConfig, text_overlay_enabled: v })}
+            />
+            {sliceConfig.text_overlay_enabled && (
+              <Tooltip title="使用当前默认的两条固定文字（顶部右上 + 左下角）">
+                <Tag>已启用 2 条文字</Tag>
+              </Tooltip>
+            )}
+          </Space>
+
+          <Space size="large">
+            <Text>文字水印：</Text>
+            <Switch
+              checked={sliceConfig.watermark_enabled}
+              onChange={(v) => setSliceConfig({ ...sliceConfig, watermark_enabled: v })}
+            />
+            {sliceConfig.watermark_enabled && (
+              <>
+                <Input
+                  value={sliceConfig.watermark_text}
+                  onChange={(e) => setSliceConfig({ ...sliceConfig, watermark_text: e.target.value })}
+                  placeholder="水印文字（支持 {title}/{date}）"
+                  style={{ width: 200 }}
+                />
+                <Select
+                  value={sliceConfig.watermark_position}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, watermark_position: v })}
+                  style={{ width: 90 }}
+                  options={[
+                    { value: 'bottom', label: '底部' },
+                    { value: 'top', label: '顶部' },
+                  ]}
+                />
+              </>
+            )}
+          </Space>
+        </Space>
+
+        <Divider />
+        <Space>
+          <Button
+            type="primary"
+            icon={<PlayCircleOutlined />}
+            loading={creating}
+            onClick={handleRun}
+          >
+            创建批次并开始处理
+          </Button>
+          <Button
+            icon={<UploadOutlined />}
+            onClick={() => setSliceConfig({ ...DEFAULT_SLICE_CONFIG, text_overlays: DEFAULT_SLICE_CONFIG.text_overlays.map((t) => ({ ...t })) })}
+          >
+            恢复默认配置
+          </Button>
+        </Space>
+      </Card>
+
+      <Card title="③ 执行结果" style={{ marginBottom: 16 }}>
+        <Space style={{ marginBottom: 16 }}>
+          <Button onClick={fetchBatches} icon={<ReloadOutlined />}>刷新批次列表</Button>
+          {selectedBatch && (
+            <>
+              <Tag color={STATUS_COLOR[selectedBatch.status] || 'default'}>
+                {STATUS_TEXT[selectedBatch.status] || selectedBatch.status}
+              </Tag>
+              <Text>完成 {selectedBatch.done}/{selectedBatch.total} · 失败 {selectedBatch.failed} · 成品 {selectedBatch.output_count}</Text>
+              {selectedBatch.status === 'partial_failed' && (
+                <Button onClick={handleRetry} size="small">重试失败项</Button>
+              )}
+              {['running', 'pending'].includes(selectedBatch.status) && (
+                <Button onClick={handleCancel} danger size="small" icon={<StopOutlined />}>取消批次</Button>
+              )}
+              <Button onClick={showOutputs} size="small" icon={<DownloadOutlined />}>输出列表</Button>
+            </>
+          )}
+        </Space>
+        <Spin spinning={batchListLoading}>
+          <Table
+            rowKey="id"
+            size="small"
+            dataSource={batches}
+            columns={batchColumns}
+            pagination={false}
+          />
+        </Spin>
+        {selectedBatchId && (
+          <Divider orientation="left">批次明细</Divider>
+        )}
+        <Spin spinning={detailLoading}>
+          {items.length > 0 && (
             <Table
               rowKey="id"
-              loading={loadingItems}
+              size="small"
               dataSource={items}
               columns={itemColumns}
               pagination={false}
-              size="small"
-            />
-          ) : (
-            <Table
-              rowKey={(r) => r.episode_id || r.seq?.toString() || ''}
-              dataSource={outputs?.items || []}
-              columns={outputColumns}
-              pagination={false}
-              size="small"
             />
           )}
-        </Card>
-      )}
+        </Spin>
+      </Card>
+
+      {renderOutputModal()}
     </div>
   );
 };
