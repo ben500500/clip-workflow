@@ -635,8 +635,8 @@ const BatchSlicePage: React.FC = () => {
               onChange={(v) => setSliceConfig({ ...sliceConfig, text_overlay_enabled: v })}
             />
             {sliceConfig.text_overlay_enabled && (
-              <Tooltip title="使用当前默认的两条固定文字（顶部右上 + 左下角）">
-                <Tag>已启用 2 条文字</Tag>
+              <Tooltip title={`当前默认 ${sliceConfig.text_overlays.length} 条固定文字：右上「热门短剧」+ 左下「免费热门短剧」+ 最左竖排「本故事纯属虚构」`}>
+                <Tag>已启用 {sliceConfig.text_overlays.length} 条文字</Tag>
               </Tooltip>
             )}
           </Space>
