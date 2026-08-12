@@ -183,8 +183,10 @@ func (w *Worker) Run(ctx context.Context) error {
 // claimLoop 定期从 PEL 认领超时未完成的任务（Worker 崩溃恢复）
 func (w *Worker) claimLoop(ctx context.Context) {
 	streams := []string{"slice:tasks:high", "slice:tasks:normal", "slice:tasks:low"}
-	// 认领阈值：任务进入 PEL 超过 minIdle 且无租约的视为孤儿任务
-	minIdle := time.Duration(w.config.HeartbeatInterval) * 3 * time.Second
+	// 认领阈值：任务进入 PEL 超过 minIdle 且无租约的视为孤儿任务。
+	// 调大至 5 分钟（原为 3×心跳≈30s）：切片任务通常耗时数分钟，过短阈值会把
+	// 正常处理中的任务误判为孤儿重新执行，导致与已完成任务冲突、状态污染。
+	minIdle := time.Duration(5) * time.Minute
 	ticker := time.NewTicker(minIdle)
 	defer ticker.Stop()
 
@@ -206,7 +208,9 @@ func (w *Worker) claimLoop(ctx context.Context) {
 				}
 				if hash["status"] == "running" && hash["lease"] != "" {
 					leaseTS, _ := strconvParseInt(hash["lease"])
-					if time.Now().Unix()-leaseTS < int64(w.config.HeartbeatInterval)*3 {
+					// 租约新鲜度阈值与 minIdle 一致（5 分钟）：心跳每 10s 续期，
+					// 正常任务租约恒新鲜，只有 Worker 真正宕机 5 分钟后才会被认领
+					if time.Now().Unix()-leaseTS < int64(5*60) {
 						continue // 任务仍被存活 Worker 处理
 					}
 				}
@@ -231,6 +235,18 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	// 去重：若任务已在运行中则跳过
 	if _, exists := w.runningTasks.Load(task.TaskID); exists {
 		return
+	}
+
+	// 幂等：若任务已达终态（completed/failed/cancelled），直接 ACK 跳过，
+	// 避免残留消息被重复执行导致状态被污染（已完成的成品不重复生成）。
+	if hash, err := w.redis.GetTaskHash(task.TaskID); err == nil {
+		if st := hash["status"]; st == "completed" || st == "failed" || st == "cancelled" {
+			w.log("info", "任务 %s 已处于终态(%s)，跳过重复执行并 ACK", task.TaskID, st)
+			if ackErr := w.redis.AckTask(msg.Stream, "workers", msg.ID); ackErr != nil {
+				w.log("error", "终态任务 ACK 失败: %v", ackErr)
+			}
+			return
+		}
 	}
 
 	timeout := time.Duration(task.TimeoutSec) * time.Second
