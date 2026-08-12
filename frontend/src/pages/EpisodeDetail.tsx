@@ -83,6 +83,7 @@ interface SlicePreset {
   // ASR 字幕
   subtitle_enabled: boolean;
   subtitle_font_ratio: number;
+  subtitle_spacing: number;
   subtitle_style: 'default' | 'custom';
   subtitle_color: string;
   subtitle_border_color: string;
@@ -114,7 +115,8 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   vert2horiz_min_step: 5,
   vert2horiz_face_margin: 0.30,
   subtitle_enabled: true,
-  subtitle_font_ratio: 0.45,
+  subtitle_font_ratio: 0.30,
+  subtitle_spacing: 0,
   subtitle_style: 'custom',
   subtitle_color: '#EDD736',
   subtitle_border_color: '#000000',
@@ -170,8 +172,10 @@ const EpisodeDetail: React.FC = () => {
   const [vert2horizModalOpen, setVert2horizModalOpen] = useState(false);
   // ── ASR 字幕烧录开关 ──
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
-  // 字幕字号（相对输出视频高度的比例，默认 0.45→FontSize 45；转横屏开启时默认套用，用户可调）
-  const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.45);
+  // 字幕字号（相对输出视频高度的比例，默认 0.30→FontSize 30；转横屏开启时默认套用，用户可调）
+  const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.30);
+  // 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；调小/负值让字幕文字更紧凑，调大则字距变宽）
+  const [subtitleSpacing, setSubtitleSpacing] = useState(0);
   // 字幕样式：default（白字黑边+半透明黑底）/ custom（自定义字体色+边框色，无底色）
   const [subtitleStyle, setSubtitleStyle] = useState<'default' | 'custom'>('custom');
   // 自定义样式的字体色 / 边框色（CSS 十六进制，默认 #EDD736 黄 / 黑边）
@@ -357,6 +361,7 @@ const EpisodeDetail: React.FC = () => {
     vert2horiz_face_margin: vert2horizFaceMargin,
     subtitle_enabled: subtitleEnabled,
     subtitle_font_ratio: subtitleFontRatio,
+    subtitle_spacing: subtitleSpacing,
     subtitle_style: subtitleStyle,
     subtitle_color: subtitleColor,
     subtitle_border_color: subtitleBorderColor,
@@ -382,6 +387,7 @@ const EpisodeDetail: React.FC = () => {
     setVert2horizFaceMargin(p.vert2horiz_face_margin);
     setSubtitleEnabled(p.subtitle_enabled);
     setSubtitleFontRatio(p.subtitle_font_ratio);
+    setSubtitleSpacing(p.subtitle_spacing ?? 0);
     setSubtitleStyle(p.subtitle_style);
     setSubtitleColor(p.subtitle_color);
     setSubtitleBorderColor(p.subtitle_border_color);
@@ -900,6 +906,8 @@ const EpisodeDetail: React.FC = () => {
         subtitle_enabled: subtitleEnabled,
         // 字幕字号（相对高度比例）：可调大让字幕更清晰易读
         subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
+        // 字幕字间距（ASS Spacing 像素）：让字幕文字更紧凑
+        subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
         // 字幕样式：custom 时可选字体色/边框色（无底色）
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
@@ -965,7 +973,8 @@ const EpisodeDetail: React.FC = () => {
     setVert2horizEnabled(on);
     if (on) {
       setSubtitleEnabled(true);
-      setSubtitleFontRatio(0.45);
+      setSubtitleFontRatio(0.30);
+      setSubtitleSpacing(0);
       setSubtitleStyle('custom');
       setSubtitleColor('#EDD736');
       // 默认开启固定文字开关并预置三处固定文字（右上角/左下角/最左侧竖排标题）
@@ -1549,6 +1558,19 @@ const EpisodeDetail: React.FC = () => {
                   style={{ width: 100 }}
                   addonAfter="px"
                 />
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>字幕字间距</Text>
+                <InputNumber
+                  min={-5}
+                  max={20}
+                  step={1}
+                  value={subtitleSpacing}
+                  onChange={(v) => setSubtitleSpacing(v ?? 0)}
+                  style={{ width: 100 }}
+                  addonAfter="px"
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>越小越紧凑</Text>
               </Space>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 13 }}>字幕样式</Text>

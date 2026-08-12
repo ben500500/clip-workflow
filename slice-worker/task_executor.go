@@ -150,6 +150,10 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 			if fontRatio, ok := task.Subtitle["font_ratio"].(float64); ok && fontRatio > 0 {
 				args = append(args, "--subtitle-font-ratio", strconv.FormatFloat(fontRatio, 'f', -1, 64))
 			}
+			// 字幕字间距（ASS Spacing 像素）：透传给引擎 --subtitle-spacing，未设置时用引擎默认值
+			if sp, ok := task.Subtitle["spacing"].(float64); ok {
+				args = append(args, "--subtitle-spacing", strconv.FormatFloat(sp, 'f', 0, 64))
+			}
 			// 字幕样式（default/custom 自定义字体色+边框色、无底色）：透传给引擎
 			if st, ok := task.Subtitle["style"].(string); ok && st != "" {
 				args = append(args, "--subtitle-style", st)

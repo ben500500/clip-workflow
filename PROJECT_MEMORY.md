@@ -52,6 +52,7 @@
 | V7 | **短剧发布素材** 生成 | `api/publish_material.py` |
 | V8-V14 | remove_mask ROI 经验库 / 四角检测 / 自动水印分析 / 模板可编辑 | `engines/remove_mask_{remover,rois}.py` |
 | 最新 | **批量切片工作流** + 一键切片接入 AI 选点/区间检测 + 切片配置预设 | `api/batch_slice.py`、`services/batch_slice_service.py` |
+| 本次 | **固定文字字体 B+C 方案**（fc-match 动态解析 + SC 单字体提取，根治"门"字） + **字幕间距/高度配置开放**（`subtitle_spacing` / 默认字号降为 0.22） | `engines/slice.py`、`api/slice.py`、`services/slice_service.py`、`celery/tasks.py`、`batch_slice_service.py`、`slice-worker/task_executor.go`、前端 4 文件 |
 
 > 注意：短片制作（去水印/提示词/发布素材）演进到 **V14**，`PROJECT.md` 的 `/watermark` 页说明已很臃肿，建议后续拆分独立文档。
 

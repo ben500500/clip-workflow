@@ -37,6 +37,7 @@ interface SliceConfigState {
   vert2horiz_output_size: string;
   subtitle_enabled: boolean;
   subtitle_font_ratio: number;
+  subtitle_spacing: number;
   subtitle_style: 'default' | 'custom';
   subtitle_color: string;
   subtitle_border_color: string;
@@ -67,7 +68,8 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   vert2horiz_ratio: 0.5625,
   vert2horiz_output_size: '1280x720',
   subtitle_enabled: true,
-  subtitle_font_ratio: 0.45,
+  subtitle_font_ratio: 0.30,
+  subtitle_spacing: 0,
   subtitle_style: 'custom',
   subtitle_color: '#EDD736',
   subtitle_border_color: '#000000',
@@ -582,10 +584,19 @@ const BatchSlicePage: React.FC = () => {
                 <Text>字号</Text>
                 <InputNumber
                   value={sliceConfig.subtitle_font_ratio}
-                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_font_ratio: v ?? 0.45 })}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_font_ratio: v ?? 0.30 })}
                   step={0.05}
                   min={0.1}
                   max={0.6}
+                />
+                <Text>间距</Text>
+                <InputNumber
+                  value={sliceConfig.subtitle_spacing}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_spacing: v ?? 0 })}
+                  step={1}
+                  min={-5}
+                  max={20}
+                  style={{ width: 70 }}
                 />
                 <Select
                   value={sliceConfig.subtitle_style}

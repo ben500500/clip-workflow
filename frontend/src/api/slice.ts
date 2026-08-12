@@ -60,6 +60,8 @@ export const sliceApi = {
       subtitle_enabled?: boolean;
       // 字幕字号（相对输出视频高度的比例，默认 0.07；可调大让字幕更清晰易读）
       subtitle_font_ratio?: number;
+      // 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；负值/调小让字幕文字更紧凑，调大则字距变宽）
+      subtitle_spacing?: number;
       // 字幕样式：default（白字黑边+半透明黑底）/ custom（自定义字体色+边框色，无底色）
       subtitle_style?: 'default' | 'custom';
       // 自定义样式的字体颜色（CSS 十六进制）
