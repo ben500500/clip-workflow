@@ -7,7 +7,7 @@ import {
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
   CheckCircleOutlined, ClockCircleOutlined, InfoCircleOutlined, PlayCircleOutlined,
-  UploadOutlined, DeleteOutlined as DelIcon, PlusOutlined, SettingOutlined,
+  UploadOutlined, DeleteOutlined as DelIcon, PlusOutlined, SettingOutlined, StopOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projectApi } from '../api/projects';
@@ -1590,6 +1590,31 @@ const EpisodeDetail: React.FC = () => {
                   render: (d: string) => (
                     <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text>
                   ),
+                },
+                {
+                  title: '操作',
+                  key: 'action',
+                  width: 90,
+                  render: (_: unknown, t: SliceTask) =>
+                    t.status === 'running' || t.status === 'pending' ? (
+                      <Popconfirm
+                        title="确定停止该任务？"
+                        description="将终止引擎进程并释放资源，已产出成品不会保留"
+                        onConfirm={async () => {
+                          try {
+                            await sliceApi.cancel(t.id);
+                            message.success('任务已停止');
+                            fetchSliceHistory();
+                          } catch (err: unknown) {
+                            message.error(err instanceof Error ? err.message : '停止失败');
+                          }
+                        }}
+                      >
+                        <Button size="small" danger icon={<StopOutlined />}>停止</Button>
+                      </Popconfirm>
+                    ) : (
+                      <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
+                    ),
                 },
               ]}
             />
