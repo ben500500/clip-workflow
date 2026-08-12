@@ -226,6 +226,14 @@ const EpisodeDetail: React.FC = () => {
     }
   };
 
+  // 统计任务耗时：已结束用 completed_at - started_at；运行中/待处理用 now - started_at（实时刷新）
+  const formatTaskDuration = (t: SliceTask) => {
+    if (!t.started_at) return '-';
+    const end = t.completed_at || new Date().toISOString();
+    const diff = Math.max(0, (new Date(end).getTime() - new Date(t.started_at).getTime()) / 1000);
+    return formatDuration(diff);
+  };
+
   useEffect(() => {
     if (episodeId) fetchEpisode();
     fetchHistories();
@@ -1297,10 +1305,6 @@ const EpisodeDetail: React.FC = () => {
                   <Button size="small" icon={<SettingOutlined />} onClick={() => setSubtitleModalOpen(true)}>字幕设置</Button>
                 )}
               </Space>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                开启后会先对源视频做一次语音识别（长视频约需数分钟，同一视频重复切片时复用缓存），
-                随后在每个成品视频底部烧录对应时间段的对白字幕。详细配置在「字幕设置」中调整。
-              </Text>
             </Space>
           </Card>
 
@@ -1329,9 +1333,6 @@ const EpisodeDetail: React.FC = () => {
                   style={{ width: 100 }}
                   addonAfter="px"
                 />
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  （约占画面高度的 {Math.round(subtitleFontRatio * 100 / 4)}%，横屏建议 18-26，竖屏建议 14-22，越大越清晰）
-                </Text>
               </Space>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 13 }}>字幕样式</Text>
@@ -1603,6 +1604,14 @@ const EpisodeDetail: React.FC = () => {
                   width: 130,
                   render: (d: string) => (
                     <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text>
+                  ),
+                },
+                {
+                  title: '耗时',
+                  key: 'duration',
+                  width: 80,
+                  render: (_: unknown, t: SliceTask) => (
+                    <Text style={{ fontSize: 12 }}>{formatTaskDuration(t)}</Text>
                   ),
                 },
                 {

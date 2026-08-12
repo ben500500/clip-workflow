@@ -851,7 +851,6 @@ const SliceTasks: React.FC = () => {
                   style={{ width: 100 }}
                   addonAfter="px"
                 />
-                <Text type="secondary" style={{ fontSize: 12 }}>横屏建议 20-45，竖屏建议 18-30</Text>
               </Space>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 12 }}>字幕样式</Text>
