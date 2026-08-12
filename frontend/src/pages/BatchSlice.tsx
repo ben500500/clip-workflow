@@ -42,7 +42,7 @@ interface SliceConfigState {
   subtitle_color: string;
   subtitle_border_color: string;
   text_overlay_enabled: boolean;
-  text_overlays: { text: string; position: string; font_size: number; color: string }[];
+  text_overlays: { text: string; position: string; font_size: number; color: string; border_color?: string; vertical?: boolean }[];
   watermark_enabled: boolean;
   watermark_text: string;
   watermark_font_size: number;
@@ -75,8 +75,9 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   subtitle_border_color: '#000000',
   text_overlay_enabled: true,
   text_overlays: [
-    { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736' },
-    { text: '免费热门短剧', position: 'bottom-left', font_size: 36, color: '#FFFFFF' },
+    { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000' },
+    { text: '免费热门短剧', position: 'bottom-left', font_size: 36, color: '#FFFFFF', border_color: '#000000' },
+    { text: '本故事纯属虚构', position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true },
   ],
   watermark_enabled: false,
   watermark_text: '',

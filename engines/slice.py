@@ -539,6 +539,10 @@ def _resolve_drawtext_font() -> str:
             single = _extract_sc_face(sc_path)
             if single:
                 return f":fontfile={single}"
+            # 提取失败（镜像未装 fontTools 等）：不能回退 fontfile=.ttc——
+            # drawtext 加载 .ttc 默认取第一个子字体（JP 日文字形），"门"等简体字
+            # 会渲染成日式/异常字形。改走 fontconfig font= 精确匹配 SC face。
+            return ":font=Noto Sans CJK SC"
         return f":fontfile={sc_path}"
     # ③ 兜底 A：有 Noto CJK 集合时用 fontconfig font= 精确匹配简体中文
     if any(os.path.isfile(f) for f in _TEXT_TTC_CANDIDATES):

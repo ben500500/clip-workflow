@@ -34,3 +34,4 @@ ffmpeg-python>=0.2.0
 PyYAML>=6.0
 # seedance_wm LaMa 修补使用 remove-ai-watermarks 的 erase_lama（onnxruntime，已安装）
 # 无需额外安装 torch 或 iopaint
+fonttools>=4.40.0  # 固定文字字体方案C：从 .ttc 提取 SC face 单字体（绕开 JP 字形歧义）

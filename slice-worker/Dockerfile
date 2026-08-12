@@ -26,7 +26,8 @@ RUN apk add --no-cache \
     gettext \
     font-noto-cjk \
     font-droid \
-    fontconfig
+    fontconfig \
+    py3-fonttools
 
 # 竖屏转横屏智能裁切：引擎 vert2horiz_crop.py 依赖 OpenCV（人脸检测/动态跟踪）
 # 使用 Alpine 包管理器安装 py3-opencv，避免 pip 编译需要 gcc
