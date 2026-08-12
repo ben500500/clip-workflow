@@ -30,6 +30,9 @@ vert2horiz_crop.py — 竖屏转横屏 + 人脸跟踪裁切
   # 指定输出分辨率（默认 1280x720）
   python vert2horiz_crop.py input.mp4 output.mp4 --output-size 1280x720
 
+  # 动态模式加大人脸舒适区边距（人脸大部分在画面内时更不移动，更稳）
+  python vert2horiz_crop.py input.mp4 output.mp4 --mode dynamic --face-margin 0.35
+
 依赖：
   - OpenCV: pip install opencv-python (≥4.5.1 推荐)
   - FFmpeg: 系统安装
@@ -65,6 +68,14 @@ MIN_STEP_DEFAULT = 5
 # 动态模式抗抖：crop_y Savitzky-Golay 平滑窗口（帧，须为奇数）。
 # 越大越平滑（更稳），但会引入滞后（更不跟手）。默认 15（30fps 约 0.5s）。
 SAVGOL_WINDOW_DEFAULT = 15
+# 动态模式「人脸舒适区」边距（占人脸高度的比例）。
+# 当人脸中心仍处于当前裁切窗口内、且距窗口上/下边缘的余量均不小于该边距时，
+# 认为「人脸头像大部分都出现在画面中」，此时保持裁切窗口不动——即使人脸发生了
+# 不超过安全范围的微位移也不跟随。这是对纯像素 min_step 去抖的补充：min_step 只
+# 抑制「位移像素数」小于阈值的抖动，而舒适区规则是从「人脸是否仍在画面内」的
+# 角度出发，把人脸仍在窗口内的整段移动都吞掉，从根本上避免频繁移动带来的抖动。
+# 值越大越稳（但跟手性变差），越小越跟手。可通过 --face-margin / vert2horiz_face_margin 配置。
+FACE_MARGIN_DEFAULT = 0.30
 
 
 def get_video_info(path):
@@ -431,7 +442,53 @@ def debounce_crop_y(crop_ys, min_step=5):
     return out
 
 
-def generate_dynamic_crop_params(faces, src_w, src_h, crop_ratio=9 / 16, min_step=MIN_STEP_DEFAULT):
+def keep_window_when_face_in_frame(crop_ys, faces, src_h, crop_h, face_margin=FACE_MARGIN_DEFAULT):
+    """在已平滑/去抖的 crop_y 序列上再施加「人脸在画面内则不移动」的舒适区死区。
+
+    这是针对「还是会抖」的最关键一层：即便 crop_y 的像素变化已经超过 min_step
+    （因此 debounce 不会拦下它），只要人脸头像大部分仍处于当前裁切窗口内，就
+    保持窗口不动。只有当人脸逼近窗口上/下边缘（即将出画或被裁到面部）时才跟随
+    移动。
+
+    判定依据（纯竖向，因裁切窗口宽度=源宽、只沿 y 移动）：
+      - 人脸中心距窗口顶部、底部的余量均 >= face_margin * 人脸高度
+        → 人脸在竖向足够居中，视为「大部分出现在画面中」，保持不动；
+      - 同时要求人脸框未被裁得太多（人脸顶部不低于窗口顶太多、底部不超出
+        窗口底太多），保证面部完整。
+
+    该规则在 savgol 平滑 + min_step 去抖之后施加，直接以「上一帧实际输出位置」
+    为基准，形成窗口位置的保持惯性，可最大程度减少频繁移动带来的画面抖动。
+
+    crop_ys: 逐帧 crop_y（已平滑+去抖）
+    faces: 逐帧主体人脸 bbox (x,y,w,h) 或 None
+    face_margin: 舒适区边距（占人脸高度的比例），越大越稳、越小越跟手
+    """
+    if not len(crop_ys):
+        return list(crop_ys)
+    out = []
+    cur_y = crop_ys[0]
+    for i, crop_y in enumerate(crop_ys):
+        face = faces[i] if i < len(faces) else None
+        if face is not None:
+            fx, fy, fw, fh = face
+            face_cy = fy + fh / 2.0
+            win_top = cur_y
+            win_bottom = cur_y + crop_h
+            margin = fh * face_margin
+            # 人脸大部分在窗内：中心距上下边缘余量都够，且面部未被明显裁切
+            in_vertical = (face_cy - win_top) >= margin and (win_bottom - face_cy) >= margin
+            not_cut = fy >= win_top - fh * 0.5 and (fy + fh) <= win_bottom + fh * 0.5
+            if in_vertical and not_cut:
+                # 人脸仍在舒适区内：保持窗口不动（不跟随目标 crop_y）
+                out.append(int(round(cur_y)))
+                continue
+        # 人脸逼近边界/未检测到：跟随平滑后的目标位置
+        cur_y = crop_y
+        out.append(int(round(crop_y)))
+    return out
+
+
+def generate_dynamic_crop_params(faces, src_w, src_h, crop_ratio=9 / 16, min_step=MIN_STEP_DEFAULT, face_margin=FACE_MARGIN_DEFAULT):
     """
     生成动态裁切参数（以人脸为锚，保证面部完整，并做抗抖动处理）。
 
@@ -442,6 +499,9 @@ def generate_dynamic_crop_params(faces, src_w, src_h, crop_ratio=9 / 16, min_ste
         crop_ratio: 裁切高度比例
         min_step: 最小移动阈值（像素）。值越大画面越平稳（人物静止时不抖），
                   越小越跟手（人物移动时响应更快）。为「稳/跟手」的调节旋钮。
+        face_margin: 人脸舒适区边距（占人脸高度的比例）。当人脸大部分仍在当前
+                  裁切窗口内（中心距上下边缘余量均 >= face_margin*人脸高度）时不
+                  移动窗口，只有逼近窗口边界才跟随，进一步抑制频繁移动造成的抖动。
 
     Returns:
         list: [{frame, crop_w, crop_h, crop_x, crop_y}, ...]
@@ -462,11 +522,16 @@ def generate_dynamic_crop_params(faces, src_w, src_h, crop_ratio=9 / 16, min_ste
         crop_y = max(0, min(src_h - crop_h, crop_y))
         raw_crop_ys.append(int(crop_y))
 
-    # 抗抖动两级处理：
+    # 抗抖动三级处理：
     # 1) Savitzky-Golay 低通平滑（滤掉高频检测噪声，保留低频运动趋势）
     # 2) 最小移动死区去抖（微小位置变化直接吞掉，杜绝逐帧微平移）
+    # 3) 人脸舒适区死区（人脸头像大部分仍在画面内则保持窗口不动，
+    #    从「人脸是否还在画面内」的角度避免频繁移动，抑制剩余抖动）
     crop_ys = savgol_smooth(raw_crop_ys, window=SAVGOL_WINDOW_DEFAULT, polyorder=2)
     crop_ys = debounce_crop_y(crop_ys, min_step=min_step)
+    crop_ys = keep_window_when_face_in_frame(
+        crop_ys, faces, src_h, crop_h, face_margin=face_margin
+    )
 
     params = []
     for i, crop_y in enumerate(crop_ys):
@@ -603,6 +668,8 @@ def main():
                         help="平滑窗口大小（默认 15）")
     parser.add_argument("--min-step", type=int, default=MIN_STEP_DEFAULT,
                         help=f"最小移动阈值 px（默认 {MIN_STEP_DEFAULT}）：越大越平稳、越小越跟手")
+    parser.add_argument("--face-margin", type=float, default=FACE_MARGIN_DEFAULT,
+                        help=f"人脸舒适区边距比例（默认 {FACE_MARGIN_DEFAULT}）：人脸头像大部分仍在画面内时保持窗口不动，抑制频繁移动抖动；越大越稳、越小越跟手")
     parser.add_argument("--save-params", action="store_true",
                         help="保存裁切参数到 JSON 文件")
 
@@ -652,7 +719,8 @@ def main():
         )
 
         crop_params = generate_dynamic_crop_params(
-            faces, src_w, src_h, args.ratio, min_step=args.min_step
+            faces, src_w, src_h, args.ratio, min_step=args.min_step,
+            face_margin=args.face_margin,
         )
         print(f"  生成 {len(crop_params)} 帧裁切参数")
 
