@@ -35,8 +35,13 @@
 - 时长约束由配置驱动：`step2_timeline.py` 用正则剥离 prompt 硬编码的「≥90s」，改由 `AUTOCLIP_CONFIG`（30/180）或前端 `duration_config` 注入。
 
 ## 安全审查参考（docs/reviews/）
-- `docs/reviews/CODE_REVIEW_REPORT.md` + `docs/reviews/FIX_PLAN.md`：2026-08-10 多代理只读静态审查，列 **12 个高危项**（安全 6 / 性能 5 / 架构 1），均带 `file:line` 证据，尚未修复。
-- 关键高危（改动前先读这两份）：**100+ API 端点零鉴权**、**CDP 9222 公网暴露**、**一行 SQL 错误致全库 0 索引**、**单 Celery worker 串行吞 4 队列**。
+- `docs/reviews/CODE_REVIEW_REPORT.md` + `docs/reviews/FIX_PLAN.md`：2026-08-10 多代理只读静态审查，列 **12 个高危项**（安全 6 / 性能 5 / 架构 1），均带 `file:line` 证据。
+- ⚠️ **审查基线较旧，部分项已修复**：鉴权（H2，100 端点零鉴权）已由 `main.py:197` 统一 `Depends(get_current_user)` 接线修复；P0 任务双副本由 `f051235`（leaseRenewal）修复。改动前请以 **`PROJECT_MEMORY.md §4 健康度体检`** 为准复核，勿照抄旧结论。
+
+## 项目记忆
+- **`PROJECT_MEMORY.md`**：当前项目真实状态 / 健康度 / 技术债 / 维护机制，Agent 打开仓库时**优先读取**。
+- **`PROJECT.md`**：详细功能文档（大而全）。两者与 `docs/README.md` 需同步维护；`docs/README.md` 已于 2026-08-12 重写对齐真实结构。
+- **`docs/reviews/AUTH_AUDIT.md`**：鉴权与安全盲区复核报告（2026-08-12），含全端点鉴权清单，优先于过时的 `CODE_REVIEW_REPORT.md`。
 
 ## 关键文件速查
 - AutoClip 高光选择：`autoclip/app/pipeline/step2_timeline.py`（时间点）、`step3_scoring.py`（评分）
