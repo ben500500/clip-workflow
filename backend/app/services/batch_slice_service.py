@@ -2,11 +2,15 @@
 
 一次请求 = 一份 JSON（剧名 + 剧集地址列表）+ 一套一键切片配置。
 系统按剧名查找/创建 Project，再按列表顺序逐集完成：
-    upload（上传源视频并建 Episode）→ autoclip（AI 选点）→ review（自动审核全部候选）
-    → slice（一键切片）→ delete（删除源视频，节约空间）。
+    upload（上传源视频并建 Episode）→ autoclip（AI 选点，可选）→ review（自动审核全部候选）
+    → interval（通用区间检测，可选）→ slice（一键切片）→ delete（删除源视频，节约空间）。
+
+配置项（slice_config）除原有切片配置外，现支持：
+    - autoclip_enabled / autoclip_config：AI 智能选点开关与参数（默认开启）
+    - interval_enabled / interval_config：通用区间检测开关与参数（默认开启）
 
 编排逻辑复用现有 API 端点的核心实现：
-    - run_autoclip / run_slice（backend/app/api/autoclip.py、slice.py）
+    - run_autoclip / detect_intervals / run_slice（backend/app/api/autoclip.py、intervals.py、slice.py）
     通过直接调用端点函数（传入 DB 会话与操作人）复用完整的分发/调度/配置逻辑。
 """
 
@@ -37,12 +41,14 @@ logger = logging.getLogger(__name__)
 PHASE_UPLOAD = "upload"
 PHASE_AUTOCLIP = "autoclip"
 PHASE_REVIEW = "review"
+PHASE_INTERVAL = "interval"
 PHASE_SLICE = "slice"
 PHASE_DELETE = "source_delete"
 
 # 轮询间隔（秒）与超时
 POLL_INTERVAL = 5
 AUTOCLIP_TIMEOUT = 60 * 60      # 1 小时
+DETECT_TIMEOUT = 60 * 30        # 30 分钟
 SLICE_TIMEOUT = 2 * 60 * 60     # 2 小时
 
 
@@ -195,6 +201,61 @@ async def _wait_autoclip(episode_id: str, timeout: float = AUTOCLIP_TIMEOUT):
     return False, "timeout"
 
 
+async def _trigger_detect(episode_id: str, item: BatchSliceItem, user: User, detect_config: dict) -> str:
+    """触发通用区间检测，返回 detect_task（SliceTask）id。"""
+    from app.api.intervals import detect_intervals as run_detect, DetectRequest
+
+    cfg = detect_config or {}
+    mode = cfg.get("mode") or "credits"
+    data = DetectRequest(
+        mode=mode,
+        config=cfg.get("config") or {},
+        video_path=item.source_path,
+    )
+    async with async_session_factory() as session:
+        resp = await run_detect(episode_id, data, current_user=user, db=session)
+        await session.commit()
+    # 找到最近一条 detect_* 任务记录
+    async with async_session_factory() as session:
+        eid = uuid.UUID(episode_id)
+        from app.models.models import SliceTask
+        result = await session.execute(
+            select(SliceTask)
+            .where(SliceTask.episode_id == eid)
+            .where(SliceTask.mode.like("detect_%"))
+            .order_by(SliceTask.created_at.desc())
+            .limit(1)
+        )
+        task = result.scalar_one_or_none()
+    return str(task.id) if task else ""
+
+
+async def _wait_detect(episode_id: str, timeout: float = DETECT_TIMEOUT):
+    """轮询区间检测任务（SliceTask mode=detect_*）直至终态，返回 (成功?, 最新状态)。"""
+    eid = uuid.UUID(episode_id)
+    from app.models.models import SliceTask
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(SliceTask)
+                .where(SliceTask.episode_id == eid)
+                .where(SliceTask.mode.like("detect_%"))
+                .order_by(SliceTask.created_at.desc())
+                .limit(1)
+            )
+            task = result.scalar_one_or_none()
+        if task is None:
+            time.sleep(POLL_INTERVAL)
+            continue
+        if task.status == "completed":
+            return True, task.status
+        if task.status == "failed":
+            return False, task.status
+        time.sleep(POLL_INTERVAL)
+    return False, "timeout"
+
+
 async def _accept_all_candidates(episode_id: str) -> int:
     """自动审核：将该剧集所有候选片段置为 accepted。返回数量。"""
     eid = uuid.UUID(episode_id)
@@ -325,6 +386,15 @@ async def run_batch(batch_id: str):
     await _update_batch(batch_id, status="running", started_at=datetime.utcnow())
     items = await _load_items(batch_id)
 
+    # ── 一键切片整批统一配置（含 AI 选点 / 通用区间检测 / 切片 配置）──
+    batch_cfg = batch.slice_config or {}
+    autoclip_cfg = batch_cfg.get("autoclip_config") or {}
+    # AI 选点开关（默认开启，保留历史行为）
+    autoclip_enabled = batch_cfg.get("autoclip_enabled", True)
+    # 通用区间检测配置与开关（默认开启，随一键切片一并加入）
+    interval_cfg = batch_cfg.get("interval_config") or {}
+    interval_enabled = batch_cfg.get("interval_enabled", True)
+
     done = 0
     failed = 0
     output_count = 0
@@ -348,32 +418,54 @@ async def run_batch(batch_id: str):
                 failed += 1
                 continue
 
-        # ── AI 选点 ──
-        await _set_phase(item, PHASE_AUTOCLIP, "autoclip", 20)
-        try:
-            await _trigger_autoclip(episode_id, item, operator, {})
-            ok, _status = await _wait_autoclip(episode_id)
-            if not ok:
-                raise RuntimeError(f"AI 选点未完成（{_status}）")
-        except Exception as e:
-            logger.exception("AI 选点失败: %s", e)
-            await _set_phase(item, PHASE_AUTOCLIP, "failed", 0)
-            await _update_item(item.id, error_message=f"AI 选点失败: {e}")
-            failed += 1
-            continue
+        # ── AI 智能选点（配置项一并透传；默认开启）──
+        if autoclip_enabled:
+            await _set_phase(item, PHASE_AUTOCLIP, "autoclip", 20)
+            try:
+                await _trigger_autoclip(episode_id, item, operator, autoclip_cfg)
+                ok, _status = await _wait_autoclip(episode_id)
+                if not ok:
+                    raise RuntimeError(f"AI 选点未完成（{_status}）")
+            except Exception as e:
+                logger.exception("AI 选点失败: %s", e)
+                await _set_phase(item, PHASE_AUTOCLIP, "failed", 0)
+                await _update_item(item.id, error_message=f"AI 选点失败: {e}")
+                failed += 1
+                continue
+        else:
+            logger.info("剧集 %s 已关闭 AI 智能选点，跳过选点与自动审核阶段", episode_id)
 
-        # ── 自动审核全部候选 ──
-        await _set_phase(item, PHASE_REVIEW, "reviewing", 50)
-        try:
-            n = await _accept_all_candidates(episode_id)
-            if n == 0:
-                raise RuntimeError("选点未生成任何候选片段")
-        except Exception as e:
-            logger.exception("自动审核失败: %s", e)
-            await _set_phase(item, PHASE_REVIEW, "failed", 0)
-            await _update_item(item.id, error_message=f"自动审核失败: {e}")
-            failed += 1
-            continue
+        # ── 自动审核全部候选（仅当开启 AI 智能选点时执行；关闭选点则无候选可审）──
+        if autoclip_enabled:
+            await _set_phase(item, PHASE_REVIEW, "reviewing", 50)
+            try:
+                n = await _accept_all_candidates(episode_id)
+                if n == 0:
+                    raise RuntimeError("选点未生成任何候选片段")
+            except Exception as e:
+                logger.exception("自动审核失败: %s", e)
+                await _set_phase(item, PHASE_REVIEW, "failed", 0)
+                await _update_item(item.id, error_message=f"自动审核失败: {e}")
+                failed += 1
+                continue
+
+        # ── 通用区间检测（可选，配置项开启才执行）──
+        if interval_enabled:
+            await _set_phase(item, PHASE_INTERVAL, "detecting", 55)
+            try:
+                detect_task_id = await _trigger_detect(episode_id, item, operator, interval_cfg)
+                if detect_task_id:
+                    await _update_item(item.id, detect_task_id=uuid.UUID(detect_task_id))
+                    item.detect_task_id = uuid.UUID(detect_task_id)
+                ok, _dstatus = await _wait_detect(episode_id)
+                if not ok:
+                    raise RuntimeError(f"区间检测未完成（{_dstatus}）")
+            except Exception as e:
+                logger.exception("区间检测失败: %s", e)
+                await _set_phase(item, PHASE_INTERVAL, "failed", 0)
+                await _update_item(item.id, error_message=f"区间检测失败: {e}")
+                failed += 1
+                continue
 
         # ── 一键切片 ──
         await _set_phase(item, PHASE_SLICE, "slicing", 60)

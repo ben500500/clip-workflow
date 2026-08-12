@@ -51,7 +51,9 @@ class BatchSliceRunRequest(BaseModel):
     episodes: List[BatchEpisodeItem] = Field(..., description="剧集列表，按顺序处理")
     slice_config: Optional[dict] = Field(
         default_factory=dict,
-        description="一键切片配置（复用剧集详情页的配置项，整批统一生效）",
+        description="一键切片配置（复用剧集详情页的配置项，整批统一生效）："
+                    "含切片配置、AI 智能选点配置(autoclip_config/autoclip_enabled)、"
+                    "通用区间检测配置(interval_config/interval_enabled)等",
     )
     auto_delete_source: bool = Field(True, description="是否处理完成后删除源视频（节约空间）")
 
@@ -70,6 +72,8 @@ class BatchSliceItemResponse(BaseModel):
     file_name: Optional[str] = None
     episode_id: Optional[str] = None
     slice_task_id: Optional[str] = None
+    autoclip_run_id: Optional[str] = None
+    detect_task_id: Optional[str] = None
     status: str
     phase: Optional[str] = None
     progress: float
@@ -146,6 +150,8 @@ def _serialize_item(item: BatchSliceItem) -> dict:
         "file_name": item.file_name,
         "episode_id": str(item.episode_id) if item.episode_id else None,
         "slice_task_id": str(item.slice_task_id) if item.slice_task_id else None,
+        "autoclip_run_id": str(item.autoclip_run_id) if item.autoclip_run_id else None,
+        "detect_task_id": str(item.detect_task_id) if item.detect_task_id else None,
         "status": item.status,
         "phase": item.phase,
         "progress": item.progress or 0.0,

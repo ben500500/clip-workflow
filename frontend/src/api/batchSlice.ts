@@ -27,6 +27,8 @@ export interface BatchSliceItem {
   file_name: string | null;
   episode_id: string | null;
   slice_task_id: string | null;
+  autoclip_run_id: string | null;
+  detect_task_id: string | null;
   status: string;
   phase: string | null;
   progress: number;
