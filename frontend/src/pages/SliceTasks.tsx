@@ -8,7 +8,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { sliceApi, type BadgeItem, type TextOverlayItem } from '../api/slice';
 import ErrorHint from '../components/ErrorHint';
 import type { SliceOutput, SliceTask } from '../types';
-import { formatDateTime, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
+import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
 const { Title, Text } = Typography;
 
@@ -60,7 +60,7 @@ const SliceTasks: React.FC = () => {
   const [badgeDefaultWidth, setBadgeDefaultWidth] = useState<number>(0);
   // ── 竖屏转横屏智能裁切开关与参数 ──
   const [vert2horizEnabled, setVert2horizEnabled] = useState(false);
-  const [vert2horizMode, setVert2horizMode] = useState<'fixed' | 'dynamic'>('fixed');
+  const [vert2horizMode, setVert2horizMode] = useState<'fixed' | 'dynamic'>('dynamic');
   const [vert2horizRatio, setVert2horizRatio] = useState(0.5625);
   const [vert2horizOutputSize, setVert2horizOutputSize] = useState('1280x720');
   const [vert2horizDetectInterval, setVert2horizDetectInterval] = useState(2);
@@ -80,6 +80,10 @@ const SliceTasks: React.FC = () => {
   const [subtitleModalOpen, setSubtitleModalOpen] = useState(false);
   // ── 固定文字角标（文字版角标，无需上传图片）──
   const [textOverlays, setTextOverlays] = useState<Array<TextOverlayItem & { id: string }>>([]);
+  // 固定文字开关：开启后显示「设置文字」按钮，弹窗内集中管理固定文字配置
+  const [textOverlayEnabled, setTextOverlayEnabled] = useState(false);
+  // 固定文字设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
+  const [textOverlayModalOpen, setTextOverlayModalOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
 
@@ -139,8 +143,8 @@ const SliceTasks: React.FC = () => {
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
         subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
-        // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排
-        text_overlays: textOverlays.length > 0
+        // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排（仅开关开启时生效）
+        text_overlays: textOverlayEnabled && textOverlays.length > 0
           ? textOverlays.map((t) => ({
               text: t.text,
               position: t.position,
@@ -240,7 +244,7 @@ const SliceTasks: React.FC = () => {
     const preset: Array<TextOverlayItem & { id: string }> = [
       { id: `tov_preset_tr`, text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000', vertical: false, offset: 10 },
       { id: `tov_preset_bl`, text: '免费热门短剧', position: 'bottom-left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: false, offset: 10 },
-      { id: `tov_preset_l`, text: '本剧情纯属虚构', position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true, offset: 10 },
+      { id: `tov_preset_l`, text: '本故事纯属虚构', position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true, offset: 10 },
     ];
     setTextOverlays((prev) => {
       const exists = (position: string, text: string) =>
@@ -257,6 +261,8 @@ const SliceTasks: React.FC = () => {
       setSubtitleFontSize(45);
       setSubtitleStyle('custom');
       setSubtitleColor('#EDD736');
+      // 固定文字开关默认开启
+      setTextOverlayEnabled(true);
       // 默认预置三处固定文字（右上角/左下角/最左侧竖排）
       applyDefaultTextOverlays();
     }
@@ -284,6 +290,14 @@ const SliceTasks: React.FC = () => {
     : 0;
 
   const hasRunningTask = runningTasks.length > 0;
+
+  // 统计任务耗时：已结束用 completed_at - started_at；运行中/待处理用 now - started_at（实时刷新）
+  const formatTaskDuration = (t: SliceTask) => {
+    if (!t.started_at) return '-';
+    const end = t.completed_at || new Date().toISOString();
+    const diff = Math.max(0, (new Date(end).getTime() - new Date(t.started_at).getTime()) / 1000);
+    return formatDuration(diff);
+  };
 
   const columns = [
     {
@@ -344,6 +358,12 @@ const SliceTasks: React.FC = () => {
     },
     { title: '错误信息', dataIndex: 'error_message', key: 'error_message', ellipsis: true, render: (e: string) => e ? <ErrorHint error={e} /> : '-' },
     { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 160, render: (d: string) => <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text> },
+    {
+      title: '耗时',
+      key: 'duration',
+      width: 90,
+      render: (_: unknown, t: SliceTask) => <Text style={{ fontSize: 12 }}>{formatTaskDuration(t)}</Text>,
+    },
     {
       title: '操作',
       key: 'action',
@@ -711,65 +731,90 @@ const SliceTasks: React.FC = () => {
 
           {/* ── 固定文字角标（文字版角标，最左侧/左下角/右上角等）── */}
           <Space wrap align="center" size={8}>
-            <Button size="small" icon={<PlusOutlined />} onClick={addTextOverlay}>添加固定文字</Button>
+            <Switch size="small" checked={textOverlayEnabled} onChange={setTextOverlayEnabled} />
             <Text strong style={{ fontSize: 12 }}>固定文字</Text>
-            <Tooltip title="在视频指定位置叠加固定文字（无需上传图片）：最左侧（竖排）/左下角/右上角等，全程覆盖。文字内容、字号、颜色可自定义。">
+            <Tooltip title="开启后在视频指定位置叠加固定文字（无需上传图片）：最左侧（竖排）/左下角/右上角等，全程覆盖。开启后点击右侧「设置文字」按钮配置文字内容、字号、颜色等。">
               <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
             </Tooltip>
+            {textOverlayEnabled && (
+              <Button size="small" icon={<SettingOutlined />} onClick={() => setTextOverlayModalOpen(true)}>设置文字</Button>
+            )}
           </Space>
-          {textOverlays.length > 0 && (
-            <Space direction="vertical" size={4} style={{ width: '100%' }}>
-              {textOverlays.map((t, i) => (
-                <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <Input
-                    size="small"
-                    placeholder="文字内容"
-                    value={t.text}
-                    onChange={(e) => updateTextOverlay(i, { text: e.target.value })}
-                    style={{ width: 150 }}
-                  />
-                  <Select
-                    size="small"
-                    style={{ width: 95 }}
-                    value={t.position}
-                    onChange={(v) => updateTextOverlay(i, { position: v })}
-                    options={BADGE_POSITIONS}
-                  />
-                  <Tooltip title="是否竖排（最左侧常用，垂直居中）">
-                    <Checkbox
-                      checked={!!t.vertical}
-                      onChange={(e) => updateTextOverlay(i, { vertical: e.target.checked })}
-                    >竖排</Checkbox>
-                  </Tooltip>
-                  <InputNumber
-                    size="small"
-                    min={12}
-                    max={200}
-                    placeholder="字号"
-                    value={t.font_size}
-                    onChange={(v) => updateTextOverlay(i, { font_size: v ?? undefined })}
-                    style={{ width: 80 }}
-                    addonAfter="px"
-                  />
-                  <Text strong style={{ fontSize: 12 }}>字色</Text>
-                  <ColorPicker
-                    size="small"
-                    value={t.color || '#FFFFFF'}
-                    onChange={(c) => updateTextOverlay(i, { color: c.toHexString() })}
-                    showText
-                  />
-                  <Text strong style={{ fontSize: 12 }}>描边</Text>
-                  <ColorPicker
-                    size="small"
-                    value={t.border_color || '#000000'}
-                    onChange={(c) => updateTextOverlay(i, { border_color: c.toHexString() })}
-                    showText
-                  />
-                  <Button size="small" type="text" danger icon={<DelIcon />} onClick={() => removeTextOverlay(i)} />
-                </div>
-              ))}
+
+          {/* 固定文字设置弹窗（详细配置收进弹窗，节省主界面空间） */}
+          <Modal
+            title="固定文字设置"
+            open={textOverlayModalOpen}
+            onCancel={() => setTextOverlayModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setTextOverlayModalOpen(false)}>完成</Button>
+            )}
+            width={620}
+          >
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Space wrap align="center" size={8}>
+                <Button size="small" icon={<PlusOutlined />} onClick={addTextOverlay}>添加固定文字</Button>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  在视频指定位置叠加固定文字，全程覆盖。文字内容、字号、颜色可自定义；最左侧常用竖排。
+                </Text>
+              </Space>
+              {textOverlays.length > 0 ? (
+                <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                  {textOverlays.map((t, i) => (
+                    <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', border: '1px solid #f0f0f0', borderRadius: 6, padding: 8 }}>
+                      <Input
+                        size="small"
+                        placeholder="文字内容"
+                        value={t.text}
+                        onChange={(e) => updateTextOverlay(i, { text: e.target.value })}
+                        style={{ width: 150 }}
+                      />
+                      <Select
+                        size="small"
+                        style={{ width: 95 }}
+                        value={t.position}
+                        onChange={(v) => updateTextOverlay(i, { position: v })}
+                        options={BADGE_POSITIONS}
+                      />
+                      <Tooltip title="是否竖排（最左侧常用，垂直居中）">
+                        <Checkbox
+                          checked={!!t.vertical}
+                          onChange={(e) => updateTextOverlay(i, { vertical: e.target.checked })}
+                        >竖排</Checkbox>
+                      </Tooltip>
+                      <InputNumber
+                        size="small"
+                        min={12}
+                        max={200}
+                        placeholder="字号"
+                        value={t.font_size}
+                        onChange={(v) => updateTextOverlay(i, { font_size: v ?? undefined })}
+                        style={{ width: 80 }}
+                        addonAfter="px"
+                      />
+                      <Text strong style={{ fontSize: 12 }}>字色</Text>
+                      <ColorPicker
+                        size="small"
+                        value={t.color || '#FFFFFF'}
+                        onChange={(c) => updateTextOverlay(i, { color: c.toHexString() })}
+                        showText
+                      />
+                      <Text strong style={{ fontSize: 12 }}>描边</Text>
+                      <ColorPicker
+                        size="small"
+                        value={t.border_color || '#000000'}
+                        onChange={(c) => updateTextOverlay(i, { border_color: c.toHexString() })}
+                        showText
+                      />
+                      <Button size="small" type="text" danger icon={<DelIcon />} onClick={() => removeTextOverlay(i)} />
+                    </div>
+                  ))}
+                </Space>
+              ) : (
+                <Alert type="info" showIcon message="暂无固定文字，点击上方「添加固定文字」新增。" />
+              )}
             </Space>
-          )}
+          </Modal>
 
           {/* ── ASR 字幕烧录（转横屏开启时默认开启）── */}
           <Space wrap align="center" size={8}>
@@ -779,7 +824,7 @@ const SliceTasks: React.FC = () => {
               <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
             </Tooltip>
             {subtitleEnabled && (
-              <Button size="small" icon={<SettingOutlined />} onClick={() => setSubtitleModalOpen(true)}>字幕设置</Button>
+              <Button size="small" icon={<SettingOutlined />} onClick={() => setSubtitleModalOpen(true)}>设置字幕</Button>
             )}
           </Space>
 
@@ -850,7 +895,7 @@ const SliceTasks: React.FC = () => {
 
       {/* ── 任务列表 ── */}
       <Card size="small" title="任务列表" style={{ marginBottom: 16 }}>
-        <Table rowKey="id" columns={columns} dataSource={tasks} loading={loading} pagination={false} size="small" scroll={{ x: 1100 }} />
+        <Table rowKey="id" columns={columns} dataSource={tasks} loading={loading} pagination={false} size="small" scroll={{ x: 1190 }} />
       </Card>
 
       {currentTask && (
