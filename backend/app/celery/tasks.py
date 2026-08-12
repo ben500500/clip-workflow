@@ -153,7 +153,7 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
         if not uploaded:
             raise RuntimeError("Failed to upload video to AutoClip service")
 
-        success = run_async(trigger_pipeline(autoclip_project_id))
+        success = run_async(trigger_pipeline(autoclip_project_id, config=config))
         if not success:
             raise RuntimeError("Failed to trigger AutoClip pipeline")
 

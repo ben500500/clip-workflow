@@ -124,6 +124,8 @@ const EpisodeDetail: React.FC = () => {
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
   const [maxClipDuration, setMaxClipDuration] = useState<number | null>(null);
+  // 画面理解（MiniCPM-V 本地视觉模型）：AI 选点时对候选片段抽帧分析画面，辅助打分，默认开启
+  const [frameAnalysis, setFrameAnalysis] = useState(true);
   const [autoclipProgress, setAutoclipProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
   const [autoclipRunning, setAutoclipRunning] = useState(false);
   const [detectRunning, setDetectRunning] = useState(false);
@@ -446,6 +448,7 @@ const EpisodeDetail: React.FC = () => {
         min_score_threshold: minScoreThreshold ?? undefined,
         min_duration: minClipDuration ?? undefined,
         max_duration: maxClipDuration ?? undefined,
+        frame_analysis: frameAnalysis,
       });
       message.success(res.message);
       fetchHistories();
@@ -966,6 +969,13 @@ const EpisodeDetail: React.FC = () => {
                 <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
               </Space>
             </Tooltip>
+            <Space size={4} align="center">
+              <Switch size="small" checked={frameAnalysis} onChange={setFrameAnalysis} />
+              <Text strong style={{ fontSize: 12 }}>画面理解</Text>
+              <Tooltip title="开启后，AI 选点会对候选片段进行画面理解（抽帧送本地 MiniCPM-V 视觉模型分析场景/动作/情绪/精彩度），结合台词综合打分。关闭则仅依据台词与文案判断。">
+                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+              </Tooltip>
+            </Space>
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>
             自动分析视频内容，推荐精彩片段作为切片候选
