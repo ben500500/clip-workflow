@@ -1,0 +1,101 @@
+# .cnb.yml — CNB 云原生构建配置
+#
+# 功能：打 vXX tag 后自动构建全部 5 个 Docker 镜像并推送到 CNB Docker 制品库
+# 版本号从 tag 中获取（如 v1.0.0 → 1.0.0），同时打 latest 标签
+#
+# 触发方式：
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+# 制品地址：
+#   docker.cnb.cool/ben500500/clip-workflow/<image-name>:<version>
+#
+# 拉取镜像（部署时）：
+#   docker pull docker.cnb.cool/ben500500/clip-workflow/clip-backend:1.0.0
+
+v*:
+  tag_push:
+    # ==================== clip-backend ====================
+    # 后端主服务（FastAPI + Celery），backend/worker/beat 共用此镜像
+    - name: build-backend
+      runner:
+        cpus: 4
+      services:
+        - docker
+      stages:
+        - name: build & push
+          script: |
+            VERSION="${CNB_BRANCH#v}"
+            IMAGE="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/clip-backend"
+            echo "Building $IMAGE:$VERSION (from tag $CNB_BRANCH)"
+            docker build -t "$IMAGE:$VERSION" -t "$IMAGE:latest" ./backend
+            docker push "$IMAGE:$VERSION"
+            docker push "$IMAGE:latest"
+
+    # ==================== clip-frontend ====================
+    # 前端静态资源（Vite + React → Nginx）
+    - name: build-frontend
+      runner:
+        cpus: 4
+      services:
+        - docker
+      stages:
+        - name: build & push
+          script: |
+            VERSION="${CNB_BRANCH#v}"
+            IMAGE="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/clip-frontend"
+            echo "Building $IMAGE:$VERSION (from tag $CNB_BRANCH)"
+            docker build -t "$IMAGE:$VERSION" -t "$IMAGE:latest" ./frontend
+            docker push "$IMAGE:$VERSION"
+            docker push "$IMAGE:latest"
+
+    # ==================== clip-autoclip ====================
+    # AI 智能选点服务（通义千问 ASR + LLM）
+    - name: build-autoclip
+      runner:
+        cpus: 4
+      services:
+        - docker
+      stages:
+        - name: build & push
+          script: |
+            VERSION="${CNB_BRANCH#v}"
+            IMAGE="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/clip-autoclip"
+            echo "Building $IMAGE:$VERSION (from tag $CNB_BRANCH)"
+            docker build -t "$IMAGE:$VERSION" -t "$IMAGE:latest" ./autoclip
+            docker push "$IMAGE:$VERSION"
+            docker push "$IMAGE:latest"
+
+    # ==================== clip-rpa ====================
+    # RPA 浏览器宿主（Playwright + Chromium + Xvfb）
+    - name: build-rpa
+      runner:
+        cpus: 4
+      services:
+        - docker
+      stages:
+        - name: build & push
+          script: |
+            VERSION="${CNB_BRANCH#v}"
+            IMAGE="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/clip-rpa"
+            echo "Building $IMAGE:$VERSION (from tag $CNB_BRANCH)"
+            docker build -t "$IMAGE:$VERSION" -t "$IMAGE:latest" ./rpa
+            docker push "$IMAGE:$VERSION"
+            docker push "$IMAGE:latest"
+
+    # ==================== clip-slice-worker ====================
+    # 分布式切片 Worker（Go + FFmpeg）
+    - name: build-slice-worker
+      runner:
+        cpus: 4
+      services:
+        - docker
+      stages:
+        - name: build & push
+          script: |
+            VERSION="${CNB_BRANCH#v}"
+            IMAGE="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/clip-slice-worker"
+            echo "Building $IMAGE:$VERSION (from tag $CNB_BRANCH)"
+            docker build -t "$IMAGE:$VERSION" -t "$IMAGE:latest" ./slice-worker
+            docker push "$IMAGE:$VERSION"
+            docker push "$IMAGE:latest"
