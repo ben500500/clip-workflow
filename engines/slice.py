@@ -427,15 +427,15 @@ TEXT_OVERLAY_DEFAULT_BORDER_COLOR = "#000000"
 
 
 # 中文字体候选（容器内通常装有 font-noto-cjk / wqy 等）
-# 注意：优先单字体文件（.ttf/.otf）。Noto CJK 的 .ttc 是字体集合，drawtext 用 fontfile 引用
-# 时会默认加载集合里第一个子字体（往往是 JP 日文字形），导致简体字（如"门"）渲染成日式/异常字形。
+# 注意：这里只放单字体文件（.ttf/.otf）。Noto CJK / wqy-zenhei 的 .ttc 是字体集合，drawtext
+# 用 fontfile 引用时会默认加载集合里第一个子字体（往往是 JP 日文字形），导致简体字（如"门"）
+# 渲染成日式/异常字形，因此 .ttc 一律不放进来、统一走下方 fontconfig 的 font= 精确匹配。
 _TEXT_SINGLE_FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
     "/usr/share/fonts/droid/DroidSansFallbackFull.ttf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttf",
     "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttf",
     "/usr/share/fonts/truetype/wqy/wqy-microhei.ttf",
-    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
 # 仅当没有任何单字体文件时才考虑 ttc 集合（配合 fontconfig FontName 精确匹配简体中文）
@@ -571,17 +571,10 @@ def build_watermark_filter(wm: dict) -> str:
     opacity = max(0.05, min(1.0, opacity))
     font_size = max(12, min(120, font_size))
 
-    # 字体：优先中文字体（若容器内安装了），否则用 DejaVuSans（容器内通常自带）
-    font_candidates = [
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    ]
-    fontfile = next((f for f in font_candidates if os.path.isfile(f)), "")
-    font_opt = f":fontfile={fontfile}" if fontfile else ""
+    # 字体：与固定文字共用同一套解析逻辑（优先单字体 .ttf/.otf；无单字体时用
+    # fontconfig 的 font=Noto Sans CJK SC 精确匹配简体中文，避免 .ttc 集合默认加载
+    # 第一个日文子字体，导致"门"等简体字渲染成日式/异常字形）。
+    font_opt = _resolve_drawtext_font()
 
     if position == "top":
         y_expr = "40"

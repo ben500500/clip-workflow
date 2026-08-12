@@ -53,6 +53,8 @@ const SliceTasks: React.FC = () => {
   const [watermarkFontSize, setWatermarkFontSize] = useState(28);
   const [watermarkOpacity, setWatermarkOpacity] = useState(0.5);
   const [watermarkPosition, setWatermarkPosition] = useState('bottom');
+  // 动态文字水印设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
+  const [watermarkModalOpen, setWatermarkModalOpen] = useState(false);
   // 图片角标列表：每个含 file_key（上传后 MinIO key）、position（位置）、width（可选宽度）、offset（可选偏移）、opacity（可选透明度）
   const [badges, setBadges] = useState<Array<BadgeItem & { name: string; preview: string }>>([]);
   const [badgeUploading, setBadgeUploading] = useState(false);
@@ -67,6 +69,8 @@ const SliceTasks: React.FC = () => {
   const [vert2horizSmoothWindow, setVert2horizSmoothWindow] = useState(15);
   // 动态模式最小移动阈值（px）：越大越稳、越小越跟手
   const [vert2horizMinStep, setVert2horizMinStep] = useState(5);
+  // 竖屏转横屏设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
+  const [vert2horizModalOpen, setVert2horizModalOpen] = useState(false);
   // ── ASR 字幕烧录（与转横屏联动：转横屏开启时默认开启字幕）──
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
   // 字幕字号（px，UI 显示值；转成比例 subtitleFontRatio = 字号/100 → FontSize）
@@ -519,86 +523,55 @@ const SliceTasks: React.FC = () => {
           <Text type="secondary" style={{ fontSize: 12 }}>
             {engine === 'worker' ? '分布式 Worker 节点执行' : 'Celery 队列（回退）'}
           </Text>
-          {/* 自定义文字水印开关 */}
-          <Switch
-            size="small"
-            checked={watermarkEnabled}
-            onChange={setWatermarkEnabled}
-            checkedChildren="水印开"
-            unCheckedChildren="水印"
-          />
-          {watermarkEnabled && (
-            <>
-              <Input
-                size="small"
-                style={{ width: 160 }}
-                placeholder="水印文字（留空=标题+日期）"
-                value={watermarkText}
-                onChange={(e) => setWatermarkText(e.target.value)}
-              />
-              <Tooltip title="水印字号">
-                <InputNumber
-                  size="small"
-                  min={12}
-                  max={120}
-                  value={watermarkFontSize}
-                  onChange={(v) => setWatermarkFontSize(v ?? 28)}
-                  style={{ width: 70 }}
-                  addonBefore="字号"
-                />
-              </Tooltip>
-              <Tooltip title="水印透明度">
-                <InputNumber
-                  size="small"
-                  min={5}
-                  max={100}
-                  value={Math.round(watermarkOpacity * 100)}
-                  onChange={(v) => setWatermarkOpacity((v ?? 50) / 100)}
-                  style={{ width: 90 }}
-                  addonBefore="透明"
-                  addonAfter="%"
-                />
-              </Tooltip>
-              <Select
-                size="small"
-                style={{ width: 80 }}
-                value={watermarkPosition}
-                onChange={setWatermarkPosition}
-                options={[
-                  { value: 'bottom', label: '底部' },
-                  { value: 'top', label: '顶部' },
-                ]}
-              />
-            </>
-          )}
           {/* 竖屏转横屏智能裁切开关 */}
-          <Switch
-            size="small"
-            checked={vert2horizEnabled}
-            onChange={handleVert2horizToggle}
-            checkedChildren="转横屏开"
-            unCheckedChildren="转横屏"
-          />
-          {vert2horizEnabled && (
-            <>
-              <Select
-                size="small"
-                style={{ width: 120 }}
-                value={vert2horizMode}
-                onChange={setVert2horizMode}
-                options={[
-                  { value: 'fixed', label: '固定裁切' },
-                  { value: 'dynamic', label: '动态跟踪' },
-                ]}
-              />
-              <Input
-                size="small"
-                style={{ width: 100 }}
-                value={vert2horizOutputSize}
-                onChange={(e) => setVert2horizOutputSize(e.target.value)}
-                placeholder="1280x720"
-              />
-              <Tooltip title="裁切高度比例（默认 9/16）">
+          <Space wrap align="center" size={8}>
+            <Switch
+              size="small"
+              checked={vert2horizEnabled}
+              onChange={handleVert2horizToggle}
+              checkedChildren="转横屏开"
+              unCheckedChildren="转横屏"
+            />
+            {vert2horizEnabled && (
+              <Button size="small" icon={<SettingOutlined />} onClick={() => setVert2horizModalOpen(true)}>配置</Button>
+            )}
+          </Space>
+
+          {/* 竖屏转横屏设置弹窗（详细配置收进弹窗，节省主界面空间） */}
+          <Modal
+            title="竖屏转横屏配置"
+            open={vert2horizModalOpen}
+            onCancel={() => setVert2horizModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setVert2horizModalOpen(false)}>完成</Button>
+            )}
+            width={540}
+          >
+            <Space direction="vertical" size={14} style={{ width: '100%' }}>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>裁切模式</Text>
+                <Select
+                  size="small"
+                  style={{ width: 140 }}
+                  value={vert2horizMode}
+                  onChange={setVert2horizMode}
+                  options={[
+                    { value: 'fixed', label: '固定裁切（快）' },
+                    { value: 'dynamic', label: '动态跟踪（准）' },
+                  ]}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>固定裁切一遍 ffmpeg 快速稳定；动态跟踪逐帧检测人脸确保人物不出画</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>输出分辨率</Text>
+                <Input
+                  size="small"
+                  style={{ width: 130 }}
+                  value={vert2horizOutputSize}
+                  onChange={(e) => setVert2horizOutputSize(e.target.value)}
+                  placeholder="1280x720"
+                />
+                <Text strong style={{ fontSize: 13 }}>裁切比例</Text>
                 <InputNumber
                   size="small"
                   min={0.1}
@@ -609,46 +582,51 @@ const SliceTasks: React.FC = () => {
                   style={{ width: 80 }}
                   addonBefore="比例"
                 />
-              </Tooltip>
+                <Text type="secondary" style={{ fontSize: 12 }}>横屏目标宽高比（16:9 对应约 0.5625）</Text>
+              </Space>
               {vert2horizMode === 'dynamic' && (
-                <>
-                  <Tooltip title="人脸检测间隔帧数">
-                    <InputNumber
-                      size="small"
-                      min={1}
-                      max={30}
-                      value={vert2horizDetectInterval}
-                      onChange={(v) => setVert2horizDetectInterval(v ?? 2)}
-                      style={{ width: 80 }}
-                      addonBefore="间隔"
-                    />
-                  </Tooltip>
-                  <Tooltip title="平滑窗口大小（帧）">
-                    <InputNumber
-                      size="small"
-                      min={1}
-                      max={60}
-                      value={vert2horizSmoothWindow}
-                      onChange={(v) => setVert2horizSmoothWindow(v ?? 15)}
-                      style={{ width: 80 }}
-                      addonBefore="平滑"
-                    />
-                  </Tooltip>
-                  <Tooltip title="最小移动阈值(px)：越大越稳、越小越跟手；抖动明显时调大，走动跟不丢时调小">
-                    <InputNumber
-                      size="small"
-                      min={0}
-                      max={30}
-                      value={vert2horizMinStep}
-                      onChange={(v) => setVert2horizMinStep(v ?? 5)}
-                      style={{ width: 80 }}
-                      addonBefore="阈值"
-                    />
-                  </Tooltip>
-                </>
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Space wrap align="center" size={8}>
+                    <Tooltip title="人脸检测间隔帧数">
+                      <InputNumber
+                        size="small"
+                        min={1}
+                        max={30}
+                        value={vert2horizDetectInterval}
+                        onChange={(v) => setVert2horizDetectInterval(v ?? 2)}
+                        style={{ width: 100 }}
+                        addonBefore="间隔(帧)"
+                      />
+                    </Tooltip>
+                    <Tooltip title="平滑窗口大小（帧）">
+                      <InputNumber
+                        size="small"
+                        min={1}
+                        max={60}
+                        value={vert2horizSmoothWindow}
+                        onChange={(v) => setVert2horizSmoothWindow(v ?? 15)}
+                        style={{ width: 100 }}
+                        addonBefore="平滑(帧)"
+                      />
+                    </Tooltip>
+                  </Space>
+                  <Space wrap align="center" size={8}>
+                    <Tooltip title="最小移动阈值(px)：越大越稳、越小越跟手">
+                      <InputNumber
+                        size="small"
+                        min={0}
+                        max={30}
+                        value={vert2horizMinStep}
+                        onChange={(v) => setVert2horizMinStep(v ?? 5)}
+                        style={{ width: 100 }}
+                        addonBefore="阈值(px)"
+                      />
+                    </Tooltip>
+                  </Space>
+                </Space>
               )}
-            </>
-          )}
+            </Space>
+          </Modal>
 
           {/* ── 图片角标（多角标，全程叠加）── */}
           <Upload
@@ -884,6 +862,84 @@ const SliceTasks: React.FC = () => {
               )}
               <Text type="secondary" style={{ fontSize: 12 }}>
                 字幕仅在说话时显示，静音/停顿自动隐藏；默认白字黑描边，自定义样式无底色更清爽。
+              </Text>
+            </Space>
+          </Modal>
+
+          {/* 动态文字水印开关（置于配置项最后） */}
+          <Space wrap align="center" size={8}>
+            <Switch
+              size="small"
+              checked={watermarkEnabled}
+              onChange={setWatermarkEnabled}
+              checkedChildren="水印开"
+              unCheckedChildren="水印"
+            />
+            <Text strong style={{ fontSize: 12 }}>动态文字水印</Text>
+            {watermarkEnabled && (
+              <Button size="small" icon={<SettingOutlined />} onClick={() => setWatermarkModalOpen(true)}>配置</Button>
+            )}
+          </Space>
+
+          {/* 动态文字水印设置弹窗（详细配置收进弹窗，节省主界面空间） */}
+          <Modal
+            title="动态文字水印配置"
+            open={watermarkModalOpen}
+            onCancel={() => setWatermarkModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setWatermarkModalOpen(false)}>完成</Button>
+            )}
+            width={480}
+          >
+            <Space direction="vertical" size={14} style={{ width: '100%' }}>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>水印文字</Text>
+                <Input
+                  size="small"
+                  style={{ width: 260 }}
+                  placeholder="水印文字（留空=标题+日期）"
+                  value={watermarkText}
+                  onChange={(e) => setWatermarkText(e.target.value)}
+                />
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Tooltip title="水印字号">
+                  <InputNumber
+                    size="small"
+                    min={12}
+                    max={120}
+                    value={watermarkFontSize}
+                    onChange={(v) => setWatermarkFontSize(v ?? 28)}
+                    style={{ width: 90 }}
+                    addonBefore="字号"
+                  />
+                </Tooltip>
+                <Tooltip title="水印透明度">
+                  <InputNumber
+                    size="small"
+                    min={5}
+                    max={100}
+                    value={Math.round(watermarkOpacity * 100)}
+                    onChange={(v) => setWatermarkOpacity((v ?? 50) / 100)}
+                    style={{ width: 110 }}
+                    addonBefore="透明"
+                    addonAfter="%"
+                  />
+                </Tooltip>
+                <Text strong style={{ fontSize: 13 }}>位置</Text>
+                <Select
+                  size="small"
+                  style={{ width: 80 }}
+                  value={watermarkPosition}
+                  onChange={setWatermarkPosition}
+                  options={[
+                    { value: 'bottom', label: '底部' },
+                    { value: 'top', label: '顶部' },
+                  ]}
+                />
+              </Space>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                水印文字会在画面中缓慢移动并带透明度呼吸效果，用于防搬运 / 标识来源。
               </Text>
             </Space>
           </Modal>

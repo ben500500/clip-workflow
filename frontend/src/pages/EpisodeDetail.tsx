@@ -83,6 +83,8 @@ const EpisodeDetail: React.FC = () => {
   const [watermarkFontSize, setWatermarkFontSize] = useState(28);
   const [watermarkOpacity, setWatermarkOpacity] = useState(0.5);
   const [watermarkPosition, setWatermarkPosition] = useState('bottom');
+  // 动态文字水印设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
+  const [watermarkModalOpen, setWatermarkModalOpen] = useState(false);
   // ── 竖屏转横屏智能裁切开关与参数 ──
   const [vert2horizEnabled, setVert2horizEnabled] = useState(false);
   const [vert2horizMode, setVert2horizMode] = useState<'fixed' | 'dynamic'>('dynamic');
@@ -99,6 +101,8 @@ const EpisodeDetail: React.FC = () => {
   const [vert2horizMinStep, setVert2horizMinStep] = useState(5);
   // 动态模式人脸舒适区边距比例（占人脸高度，默认 0.30）：人脸头像大部分仍在画面内时保持窗口不动，抑制频繁移动抖动
   const [vert2horizFaceMargin, setVert2horizFaceMargin] = useState(0.30);
+  // 竖屏转横屏设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
+  const [vert2horizModalOpen, setVert2horizModalOpen] = useState(false);
   // ── ASR 字幕烧录开关 ──
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
   // 字幕字号（相对输出视频高度的比例，默认 0.45→FontSize 45；转横屏开启时默认套用，用户可调）
@@ -1136,153 +1140,118 @@ const EpisodeDetail: React.FC = () => {
             </Space>
           </Card>
 
-          {/* ── 自定义文字水印开关 ── */}
-          <Card size="small" style={{ width: '100%' }}>
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              <Space>
-                <Switch checked={watermarkEnabled} onChange={setWatermarkEnabled} size="small" />
-                <Text strong style={{ fontSize: 13 }}>动态文字水印</Text>
-                <Tooltip title="开启后会在切片成品视频上叠加动态文字水印（文字缓慢移动 + 透明度呼吸），可用于防搬运/标识来源。">
-                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-                </Tooltip>
-              </Space>
-              {watermarkEnabled && (
-                <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                  <Space style={{ width: '100%' }} wrap>
-                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>水印文字:</Text>
-                    <Input
-                      size="small"
-                      style={{ width: 220 }}
-                      placeholder="留空默认：剧集标题 + 日期（支持 {title} {date} {datetime}）"
-                      value={watermarkText}
-                      onChange={(e) => setWatermarkText(e.target.value)}
-                    />
-                  </Space>
-                  <Space style={{ width: '100%' }} wrap>
-                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>字号:</Text>
-                    <InputNumber
-                      size="small"
-                      min={12}
-                      max={120}
-                      value={watermarkFontSize}
-                      onChange={(v) => setWatermarkFontSize(v ?? 28)}
-                      style={{ width: 80 }}
-                    />
-                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>透明度:</Text>
-                    <Slider
-                      style={{ width: 120, margin: '0 8px' }}
-                      min={5}
-                      max={100}
-                      value={Math.round(watermarkOpacity * 100)}
-                      onChange={(v) => setWatermarkOpacity(v / 100)}
-                    />
-                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{Math.round(watermarkOpacity * 100)}%</Text>
-                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>位置:</Text>
-                    <Select
-                      size="small"
-                      style={{ width: 90 }}
-                      value={watermarkPosition}
-                      onChange={setWatermarkPosition}
-                      options={[
-                        { value: 'bottom', label: '底部' },
-                        { value: 'top', label: '顶部' },
-                      ]}
-                    />
-                  </Space>
-                </Space>
-              )}
-            </Space>
-          </Card>
-
           {/* ── 竖屏转横屏智能裁切开关 ── */}
           <Card size="small" style={{ width: '100%' }}>
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              <Space>
+              <Space wrap>
                 <Switch checked={vert2horizEnabled} onChange={handleVert2horizToggle} size="small" />
                 <Text strong style={{ fontSize: 13 }}>竖屏转横屏</Text>
                 <Tooltip title="开启后若素材为竖屏（9:16），切片前自动转为横屏（16:9）：固定裁切快速稳定，动态跟踪会逐帧检测人脸确保人物不出画。适用于发布到视频号横屏模式 / B站等横屏平台。">
                   <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
                 </Tooltip>
+                {vert2horizEnabled && (
+                  <Button size="small" icon={<SettingOutlined />} onClick={() => setVert2horizModalOpen(true)}>配置</Button>
+                )}
               </Space>
-              {vert2horizEnabled && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                开启后自动把竖屏素材转为横屏。详细参数（裁切模式 / 分辨率 / 裁切比例等）在「配置」中调整。
+              </Text>
+            </Space>
+          </Card>
+
+          {/* 竖屏转横屏设置弹窗（详细配置收进弹窗，节省主界面空间） */}
+          <Modal
+            title="竖屏转横屏配置"
+            open={vert2horizModalOpen}
+            onCancel={() => setVert2horizModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setVert2horizModalOpen(false)}>完成</Button>
+            )}
+            width={560}
+          >
+            <Space direction="vertical" size={14} style={{ width: '100%' }}>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>裁切模式</Text>
+                <Select
+                  size="small"
+                  style={{ width: 150 }}
+                  value={vert2horizMode}
+                  onChange={setVert2horizMode}
+                  options={[
+                    { value: 'fixed', label: '固定裁切（快）' },
+                    { value: 'dynamic', label: '动态跟踪（准）' },
+                  ]}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>固定裁切一遍 ffmpeg 快速稳定；动态跟踪逐帧检测人脸确保人物不出画（较慢，约 3-5 分钟/10 分钟视频）</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>输出分辨率</Text>
+                <Input
+                  size="small"
+                  style={{ width: 140 }}
+                  value={vert2horizOutputSize}
+                  onChange={(e) => setVert2horizOutputSize(e.target.value)}
+                  placeholder="1280x720"
+                />
+                <Text strong style={{ fontSize: 13 }}>裁切比例</Text>
+                <InputNumber
+                  size="small"
+                  min={0.1}
+                  max={1}
+                  step={0.05}
+                  value={vert2horizRatio}
+                  onChange={(v) => setVert2horizRatio(v ?? 0.5625)}
+                  style={{ width: 90 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>横屏目标宽高比（16:9 对应约 0.5625）</Text>
+              </Space>
+              {vert2horizMode === 'dynamic' && (
                 <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                  <Space style={{ width: '100%' }} wrap>
-                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>裁切模式:</Text>
-                    <Select
-                      size="small"
-                      style={{ width: 130 }}
-                      value={vert2horizMode}
-                      onChange={setVert2horizMode}
-                      options={[
-                        { value: 'fixed', label: '固定裁切（快）' },
-                        { value: 'dynamic', label: '动态跟踪（准）' },
-                      ]}
-                    />
-                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>输出分辨率:</Text>
-                    <Input
-                      size="small"
-                      style={{ width: 120 }}
-                      value={vert2horizOutputSize}
-                      onChange={(e) => setVert2horizOutputSize(e.target.value)}
-                      placeholder="1280x720"
-                    />
-                    <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>裁切比例:</Text>
+                  <Space wrap align="center" size={8}>
+                    <Text strong style={{ fontSize: 13 }}>检测间隔(帧)</Text>
                     <InputNumber
                       size="small"
-                      min={0.1}
-                      max={1}
-                      step={0.05}
-                      value={vert2horizRatio}
-                      onChange={(v) => setVert2horizRatio(v ?? 0.5625)}
-                      style={{ width: 90 }}
+                      min={1}
+                      max={30}
+                      value={vert2horizDetectInterval}
+                      onChange={(v) => setVert2horizDetectInterval(v ?? 2)}
+                      style={{ width: 80 }}
+                    />
+                    <Text strong style={{ fontSize: 13 }}>平滑窗口(帧)</Text>
+                    <InputNumber
+                      size="small"
+                      min={1}
+                      max={60}
+                      value={vert2horizSmoothWindow}
+                      onChange={(v) => setVert2horizSmoothWindow(v ?? 15)}
+                      style={{ width: 80 }}
                     />
                   </Space>
-                  {vert2horizMode === 'dynamic' && (
-                    <Space style={{ width: '100%' }} wrap>
-                      <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>检测间隔(帧):</Text>
-                      <InputNumber
-                        size="small"
-                        min={1}
-                        max={30}
-                        value={vert2horizDetectInterval}
-                        onChange={(v) => setVert2horizDetectInterval(v ?? 2)}
-                        style={{ width: 80 }}
-                      />
-                      <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>平滑窗口(帧):</Text>
-                      <InputNumber
-                        size="small"
-                        min={1}
-                        max={60}
-                        value={vert2horizSmoothWindow}
-                        onChange={(v) => setVert2horizSmoothWindow(v ?? 15)}
-                        style={{ width: 80 }}
-                      />
-                      <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>最小移动(px):</Text>
-                      <InputNumber
-                        size="small"
-                        min={0}
-                        max={30}
-                        value={vert2horizMinStep}
-                        onChange={(v) => setVert2horizMinStep(v ?? 5)}
-                        style={{ width: 80 }}
-                      />
-                      <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>人脸舒适区(比例):</Text>
-                      <InputNumber
-                        size="small"
-                        min={0}
-                        max={0.8}
-                        step={0.05}
-                        value={vert2horizFaceMargin}
-                        onChange={(v) => setVert2horizFaceMargin(v ?? 0.30)}
-                        style={{ width: 80 }}
-                      />
-                      <Text type="secondary" style={{ fontSize: 12 }}>动态模式较慢（约 3-5 分钟/10 分钟视频），固定模式仅需一遍 ffmpeg（约 30 秒）</Text>
-                    </Space>
-                  )}
+                  <Space wrap align="center" size={8}>
+                    <Text strong style={{ fontSize: 13 }}>最小移动(px)</Text>
+                    <InputNumber
+                      size="small"
+                      min={0}
+                      max={30}
+                      value={vert2horizMinStep}
+                      onChange={(v) => setVert2horizMinStep(v ?? 5)}
+                      style={{ width: 80 }}
+                    />
+                    <Text strong style={{ fontSize: 13 }}>人脸舒适区(比例)</Text>
+                    <InputNumber
+                      size="small"
+                      min={0}
+                      max={0.8}
+                      step={0.05}
+                      value={vert2horizFaceMargin}
+                      onChange={(v) => setVert2horizFaceMargin(v ?? 0.30)}
+                      style={{ width: 80 }}
+                    />
+                  </Space>
                 </Space>
               )}
             </Space>
-          </Card>
+          </Modal>
 
           {/* ── ASR 字幕烧录开关 ── */}
           <Card size="small" style={{ width: '100%' }}>
@@ -1545,6 +1514,83 @@ const EpisodeDetail: React.FC = () => {
               )}
             </Space>
           </Card>
+
+          {/* ── 动态文字水印开关（置于配置项最后） ── */}
+          <Card size="small" style={{ width: '100%' }}>
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Space wrap>
+                <Switch checked={watermarkEnabled} onChange={setWatermarkEnabled} size="small" />
+                <Text strong style={{ fontSize: 13 }}>动态文字水印</Text>
+                <Tooltip title="开启后会在切片成品视频上叠加动态文字水印（文字缓慢移动 + 透明度呼吸），可用于防搬运/标识来源。">
+                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                </Tooltip>
+                {watermarkEnabled && (
+                  <Button size="small" icon={<SettingOutlined />} onClick={() => setWatermarkModalOpen(true)}>配置</Button>
+                )}
+              </Space>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                开启后在成品视频上叠加动态文字水印。详细参数（水印文字 / 字号 / 透明度 / 位置）在「配置」中调整。
+              </Text>
+            </Space>
+          </Card>
+
+          {/* 动态文字水印设置弹窗（详细配置收进弹窗，节省主界面空间） */}
+          <Modal
+            title="动态文字水印配置"
+            open={watermarkModalOpen}
+            onCancel={() => setWatermarkModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setWatermarkModalOpen(false)}>完成</Button>
+            )}
+            width={520}
+          >
+            <Space direction="vertical" size={14} style={{ width: '100%' }}>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>水印文字</Text>
+                <Input
+                  size="small"
+                  style={{ width: 280 }}
+                  placeholder="留空默认：剧集标题 + 日期（支持 {title} {date} {datetime}）"
+                  value={watermarkText}
+                  onChange={(e) => setWatermarkText(e.target.value)}
+                />
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>字号</Text>
+                <InputNumber
+                  size="small"
+                  min={12}
+                  max={120}
+                  value={watermarkFontSize}
+                  onChange={(v) => setWatermarkFontSize(v ?? 28)}
+                  style={{ width: 90 }}
+                />
+                <Text strong style={{ fontSize: 13 }}>透明度</Text>
+                <Slider
+                  style={{ width: 160, margin: '0 8px' }}
+                  min={5}
+                  max={100}
+                  value={Math.round(watermarkOpacity * 100)}
+                  onChange={(v) => setWatermarkOpacity(v / 100)}
+                />
+                <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{Math.round(watermarkOpacity * 100)}%</Text>
+                <Text strong style={{ fontSize: 13 }}>位置</Text>
+                <Select
+                  size="small"
+                  style={{ width: 90 }}
+                  value={watermarkPosition}
+                  onChange={setWatermarkPosition}
+                  options={[
+                    { value: 'bottom', label: '底部' },
+                    { value: 'top', label: '顶部' },
+                  ]}
+                />
+              </Space>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                水印文字会在画面中缓慢移动并带透明度呼吸效果，用于防搬运 / 标识来源。
+              </Text>
+            </Space>
+          </Modal>
 
           {/* 进度条：切片动作 tab 最底部 */}
           {renderProgress(sliceProgress)}
