@@ -914,3 +914,66 @@ class WatermarkVideo(Base):
 
     def __repr__(self) -> str:
         return f"<WatermarkVideo(id={self.id}, file_name={self.file_name}, status={self.status})>"
+
+
+class BatchSlice(Base):
+    """批量切片工作流（三期方案）。
+
+    一次请求 = 一份 JSON（剧名 + 剧集地址列表）+ 一套一键切片配置。
+    系统按剧名查找/创建 Project，再按列表顺序逐集完成「AI 选点 → 自动审核 → 一键切片 → 删除源视频」。
+    """
+    __tablename__ = "batch_slices"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=True)
+    # 目标项目（按剧名查找/创建），数据隔离归属以 project.created_by 为准
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
+    # 一键切片配置快照（整批统一生效）
+    slice_config = Column(JSON, default=dict)
+    status = Column(String(50), default="pending")  # pending/running/completed/partial_failed/failed/cancelled
+    total = Column(Integer, default=0)
+    done = Column(Integer, default=0)
+    failed = Column(Integer, default=0)
+    output_count = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    # 创建批次的操作人（用于数据隔离校验）
+    created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    project = relationship("Project", backref="batch_slices")
+    items = relationship("BatchSliceItem", back_populates="batch", cascade="all, delete-orphan")
+
+    def __repr__(self) -> str:
+        return f"<BatchSlice(id={self.id}, name={self.name}, status={self.status})>"
+
+
+class BatchSliceItem(Base):
+    """批量切片批次项：列表中的一集。"""
+    __tablename__ = "batch_slice_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    batch_id = Column(UUID(as_uuid=True), ForeignKey("batch_slices.id", ondelete="CASCADE"), nullable=False, index=True)
+    seq = Column(Integer, nullable=False)          # 列表顺序（1,2,3…严格按序）
+    title = Column(String(255), nullable=True)     # 剧集标题/文件名
+    source_path = Column(Text, nullable=True)      # 局域网/本地视频路径
+    file_name = Column(String(500), nullable=True)
+    file_size = Column(BigInteger, nullable=True)
+    episode_id = Column(UUID(as_uuid=True), nullable=True, index=True)   # 关联创建的 Episode
+    slice_task_id = Column(UUID(as_uuid=True), nullable=True)            # 关联的 SliceTask
+    autoclip_run_id = Column(UUID(as_uuid=True), nullable=True)          # 关联的 AutoClipRun
+    status = Column(String(50), default="pending")  # pending/uploading/autoclip/reviewing/slicing/completed/failed/cancelled/skipped
+    phase = Column(String(50), nullable=True)       # 当前阶段：upload/autoclip/review/slice/delete/source_delete
+    progress = Column(Float, default=0.0)
+    output_count = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    batch = relationship("BatchSlice", back_populates="items")
+
+    def __repr__(self) -> str:
+        return f"<BatchSliceItem(id={self.id}, seq={self.seq}, status={self.status})>"
