@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.config import settings
-from app.database import get_db
+from app.database import get_db, async_session_factory
 from app.models.models import (
     Project,
     Episode,
@@ -573,6 +573,52 @@ async def delete_episode(
     # DB 删除成功后执行本地文件清理（失败不阻塞删除，只记日志）
     if media_uuid:
         _cleanup_episode_media_files(media_uuid)
+    # 兜底：清扫 media 卷中无 autoclip_projects 引用的孤儿文件
+    # （场景：选点任务中途失败——autoclip 已下载视频副本到 media，但 DB 无
+    # autoclip_projects 记录 → 上面按 media_uuid 定位不到 → 残留）
+    await _cleanup_orphan_media_files()
+
+
+async def _cleanup_orphan_media_files() -> None:
+    """清扫 media 卷中无 autoclip_projects 引用的孤儿文件。
+
+    keep 规则：media 文件名 = autoclip_project_id，autoclip_projects 表引用的
+    即现存剧集的副本，必须保留；其余（历史已删剧集/选点失败残留）全部清理。
+    覆盖：{uuid}.mp4、data/output/metadata/{uuid}/、data/asr_cache/{uuid}-*
+    """
+    media_base = Path("/app/media")
+    try:
+        async with async_session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(AutoClipProject.autoclip_project_id).where(
+                        AutoClipProject.autoclip_project_id.is_not(None)
+                    )
+                )
+            ).scalars().all()
+        keep = set(rows)
+        removed = 0
+        for p in media_base.glob("*.mp4"):
+            if p.stem not in keep:
+                _remove_path(p)
+                removed += 1
+        metadata_dir = media_base / "data/output/metadata"
+        if metadata_dir.is_dir():
+            for d in metadata_dir.glob("*"):
+                if d.is_dir() and d.name not in keep:
+                    _remove_path(d)
+                    removed += 1
+        asr_dir = media_base / "data/asr_cache"
+        if asr_dir.is_dir():
+            for f in asr_dir.glob("*"):
+                prefix = f.name.split("-")[0]
+                if prefix and prefix not in keep:
+                    _remove_path(f)
+                    removed += 1
+        if removed:
+            logger.info(f"已清扫 media 孤儿文件 {removed} 个")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"清扫 media 孤儿文件失败: {e}")
 
 
 def _cleanup_episode_media_files(media_uuid: str) -> None:
