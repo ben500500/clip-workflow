@@ -184,10 +184,19 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		args = append(args, "--text-overlays", string(textBytes))
 	}
 
-	// 源视频字幕打码：透传给引擎 --subtitle-mask（去片源自带字幕）
+	// 源视频字幕打码：透传给引擎 --subtitle-mask（去片源自带字幕，独立开关）
 	if len(task.SubtitleMask) > 0 {
 		enabled, _ := task.SubtitleMask["enabled"].(bool)
 		if enabled {
+			// 打码时间轴 SRT：后端把 SRT 文本放进 SubtitleMask["srt"]，
+			// 这里写到本地文件并替换为路径，供引擎 --subtitle-mask 使用。
+			if srtContent, ok := task.SubtitleMask["srt"].(string); ok && strings.TrimSpace(srtContent) != "" {
+				maskSrtPath := filepath.Join(outputDir, "subtitle_mask.srt")
+				if err := os.WriteFile(maskSrtPath, []byte(srtContent), 0644); err != nil {
+					return nil, fmt.Errorf("写入源字幕打码时间轴文件失败: %w", err)
+				}
+				task.SubtitleMask["srt"] = maskSrtPath
+			}
 			maskBytes, err := json.Marshal(task.SubtitleMask)
 			if err != nil {
 				return nil, fmt.Errorf("序列化源字幕打码配置失败: %w", err)

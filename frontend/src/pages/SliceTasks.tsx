@@ -84,7 +84,7 @@ const SliceTasks: React.FC = () => {
   const [subtitleBorderColor, setSubtitleBorderColor] = useState('#000000');
   // 字幕设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
   const [subtitleModalOpen, setSubtitleModalOpen] = useState(false);
-  // ── 源视频字幕打码（去片源自带字幕）──
+  // ── 源视频字幕打码（去片源自带字幕，独立开关）──
   const [subtitleMaskEnabled, setSubtitleMaskEnabled] = useState(false);
   const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'mosaic' | 'blur' | 'fill'>('mosaic');
   // 打码区域（相对输出视频宽高比例，默认宽度 0.9 / 高度 0.12 / 距底 0.02）
@@ -160,7 +160,7 @@ const SliceTasks: React.FC = () => {
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
         subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
-        // 源视频字幕打码：开启后先打掉片源自带字幕，再烧录自己的 ASR 字幕
+        // 源视频字幕打码：独立开关，开启后仅打掉片源自带字幕（不依赖 ASR 字幕开关）
         subtitle_mask_enabled: subtitleMaskEnabled,
         subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
         subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
@@ -899,11 +899,11 @@ const SliceTasks: React.FC = () => {
             </Space>
           </Modal>
 
-          {/* ── 源视频字幕打码（去片源自带字幕）── */}
+          {/* ── 源视频字幕打码（去片源自带字幕，独立开关）── */}
           <Space wrap align="center" size={8}>
             <Switch size="small" checked={subtitleMaskEnabled} onChange={setSubtitleMaskEnabled} />
             <Text strong style={{ fontSize: 12 }}>源字幕打码</Text>
-            <Tooltip title="把片源自带的字幕打码/去字幕，然后再烧录你自己的 ASR 字幕。默认打码画面底部横带，仅在有字幕的时间段生效。">
+            <Tooltip title="把片源自带的字幕打码/去字幕（独立开关，与 ASR 字幕无关）。默认打码画面底部横带，仅在有源字幕的时间段生效。">
               <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
             </Tooltip>
             {subtitleMaskEnabled && (

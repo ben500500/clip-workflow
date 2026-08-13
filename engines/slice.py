@@ -1550,7 +1550,7 @@ def main():
     parser.add_argument(
         "--subtitle-mask",
         default=None,
-        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"srt\":源SRT路径}）。打掉片源自带字幕后，再叠加烧录自己的 ASR 字幕",
+        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"srt\":打码时间轴SRT路径}）。独立开关，仅打掉片源自带字幕",
     )
     args = parser.parse_args()
 
@@ -1659,8 +1659,8 @@ def main():
     if text_overlays:
         print(f"固定文字角标已开启: {len(text_overlays)} 条", file=sys.stderr)
 
-    # 源视频字幕打码：打掉片源自带字幕后，再烧录自己的 ASR 字幕。
-    # 时间轴复用 args.subtitle（源 SRT）；未提供 SRT 时回退为全程打码。
+    # 源视频字幕打码：打掉片源自带字幕（独立开关，不依赖 ASR 字幕烧录）。
+    # 时间轴优先用 --subtitle-mask 里携带的 srt，其次回退到 args.subtitle。
     subtitle_mask = _parse_subtitle_mask_config(args.subtitle_mask)
     if subtitle_mask:
         if not subtitle_mask.get("srt") and args.subtitle:

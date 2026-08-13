@@ -486,6 +486,16 @@ def slice_task(
             if bc:
                 subtitle_border_color = str(bc)
 
+        # 源字幕打码时间轴 SRT：后端已把 SRT 内容放进 subtitle_mask_config["srt"]，
+        # 这里写到本地文件并替换为文件路径，供引擎 --subtitle-mask 使用。
+        # 打码与字幕烧录是独立开关，即使未开启字幕烧录也照常处理。
+        if subtitle_mask_config and subtitle_mask_config.get("enabled"):
+            mask_srt_content = subtitle_mask_config.get("srt") or ""
+            if mask_srt_content.strip():
+                mask_srt_path = write_temp_file(mask_srt_content, suffix=".srt")
+                subtitle_mask_config["srt"] = mask_srt_path
+                logger.info("源字幕打码时间轴 SRT 已写入本地: %s", mask_srt_path)
+
         # 引擎进度回调会在 async 循环内被同步调用，不能在这里 run_async
         # （会嵌套事件循环报错）。只收集进度，引擎结束后统一写库。
         progress_values: list[int] = []
