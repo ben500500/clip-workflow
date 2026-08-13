@@ -440,8 +440,9 @@ async def upload_multi(
 async def _ffmpeg_concat(paths: List[str], out_path: str) -> bool:
     """用 ffmpeg concat demuxer 将多个视频顺序拼接为一个。
 
-    为避免不同编码/分辨率的素材直接 concat 出错，先统一重编码为
-    H.264 + AAC、1080p、25fps，再拼接。失败返回 False。
+    直接流拷贝（-c copy）简单拼接，不做转码重编码，速度最快。
+    要求各素材编码/分辨率/帧率/采样率一致，否则 concat 会失败并回退为
+    各视频分别作为一集（见调用处 do_merge=False 兜底）。失败返回 False。
     """
     try:
         list_path = out_path + ".txt"
@@ -450,9 +451,7 @@ async def _ffmpeg_concat(paths: List[str], out_path: str) -> bool:
                 f.write(f"file '{p}'\n")
         cmd = [
             "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
-            "-r", "25", "-c:a", "aac", "-b:a", "128k", out_path,
+            "-c", "copy", out_path,
         ]
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE

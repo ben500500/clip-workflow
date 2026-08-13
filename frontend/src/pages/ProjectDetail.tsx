@@ -29,7 +29,7 @@ const ProjectDetail: React.FC = () => {
   const [multiModalOpen, setMultiModalOpen] = useState(false);
   const [multiFiles, setMultiFiles] = useState<File[]>([]);
   const [multiProjectName, setMultiProjectName] = useState('');
-  const [multiMerge, setMultiMerge] = useState(false);
+  const [multiMerge, setMultiMerge] = useState(true);
   const [multiUploading, setMultiUploading] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -119,7 +119,7 @@ const ProjectDetail: React.FC = () => {
       setMultiModalOpen(false);
       setMultiFiles([]);
       setMultiProjectName('');
-      setMultiMerge(false);
+      setMultiMerge(true);
       // 合并上传创建的是新项目：跳转到新项目详情
       navigate(`/projects/${resp.project_id}`);
     } catch (err: unknown) {
@@ -238,7 +238,7 @@ const ProjectDetail: React.FC = () => {
           <Button
             type="primary"
             icon={<MergeCellsOutlined />}
-            onClick={() => setMultiModalOpen(true)}
+            onClick={() => { setMultiMerge(true); setMultiModalOpen(true); }}
           >
             多视频上传（可合并成项目）
           </Button>
@@ -310,7 +310,7 @@ const ProjectDetail: React.FC = () => {
             合并成一个视频（作为一个正片进入选点/切片处理）
           </Checkbox>
           {multiMerge && multiFiles.length > 1 && (
-            <Alert type="info" showIcon message="合并会先统一转码为 1080p 再拼接，耗时较长；也可不勾选，每个视频分别作为一集。" />
+            <Alert type="info" showIcon message="合并将直接无损拼接（不转码），各视频需编码/分辨率/帧率一致；若素材不一致建议取消勾选，每个视频分别作为一集。" />
           )}
           {multiUploading && <Progress percent={uploadProgress} size="small" />}
         </Space>
