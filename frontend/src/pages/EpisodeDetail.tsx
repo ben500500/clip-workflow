@@ -87,6 +87,12 @@ interface SlicePreset {
   subtitle_style: 'default' | 'custom';
   subtitle_color: string;
   subtitle_border_color: string;
+  // 源视频字幕打码
+  subtitle_mask_enabled: boolean;
+  subtitle_mask_style: 'mosaic' | 'blur' | 'fill';
+  subtitle_mask_width_ratio: number;
+  subtitle_mask_height_ratio: number;
+  subtitle_mask_bottom_ratio: number;
   // 固定文字
   text_overlay_enabled: boolean;
   text_overlays: TextOverlayItem[];
@@ -120,6 +126,11 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   subtitle_style: 'custom',
   subtitle_color: '#EDD736',
   subtitle_border_color: '#000000',
+  subtitle_mask_enabled: false,
+  subtitle_mask_style: 'mosaic',
+  subtitle_mask_width_ratio: 0.9,
+  subtitle_mask_height_ratio: 0.12,
+  subtitle_mask_bottom_ratio: 0.02,
   text_overlay_enabled: true,
   text_overlays: [
     { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000', vertical: false, offset: 10 },
@@ -185,6 +196,13 @@ const EpisodeDetail: React.FC = () => {
   const [subtitleBorderColor, setSubtitleBorderColor] = useState('#000000');
   // 字幕设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
   const [subtitleModalOpen, setSubtitleModalOpen] = useState(false);
+  // ── 源视频字幕打码 ──
+  const [subtitleMaskEnabled, setSubtitleMaskEnabled] = useState(false);
+  const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'mosaic' | 'blur' | 'fill'>('mosaic');
+  const [subtitleMaskWidthRatio, setSubtitleMaskWidthRatio] = useState(0.9);
+  const [subtitleMaskHeightRatio, setSubtitleMaskHeightRatio] = useState(0.12);
+  const [subtitleMaskBottomRatio, setSubtitleMaskBottomRatio] = useState(0.02);
+  const [subtitleMaskModalOpen, setSubtitleMaskModalOpen] = useState(false);
   // ── 固定文字角标（文字版角标，无需上传图片）──
   const [textOverlays, setTextOverlays] = useState<Array<TextOverlayItem & { id: string }>>([]);
   // 固定文字开关：开启后显示「设置文字」按钮，弹窗内集中管理固定文字配置（与字幕设置形式一致）
@@ -370,6 +388,11 @@ const EpisodeDetail: React.FC = () => {
     subtitle_style: subtitleStyle,
     subtitle_color: subtitleColor,
     subtitle_border_color: subtitleBorderColor,
+    subtitle_mask_enabled: subtitleMaskEnabled,
+    subtitle_mask_style: subtitleMaskStyle,
+    subtitle_mask_width_ratio: subtitleMaskWidthRatio,
+    subtitle_mask_height_ratio: subtitleMaskHeightRatio,
+    subtitle_mask_bottom_ratio: subtitleMaskBottomRatio,
     text_overlay_enabled: textOverlayEnabled,
     text_overlays: textOverlays.map((t) => ({ text: t.text, position: t.position, font_size: t.font_size, color: t.color, border_color: t.border_color, vertical: t.vertical, offset: t.offset })),
     watermark_enabled: watermarkEnabled,
@@ -396,6 +419,11 @@ const EpisodeDetail: React.FC = () => {
     setSubtitleStyle(p.subtitle_style);
     setSubtitleColor(p.subtitle_color);
     setSubtitleBorderColor(p.subtitle_border_color);
+    setSubtitleMaskEnabled(p.subtitle_mask_enabled ?? false);
+    setSubtitleMaskStyle(p.subtitle_mask_style ?? 'mosaic');
+    setSubtitleMaskWidthRatio(p.subtitle_mask_width_ratio ?? 0.9);
+    setSubtitleMaskHeightRatio(p.subtitle_mask_height_ratio ?? 0.12);
+    setSubtitleMaskBottomRatio(p.subtitle_mask_bottom_ratio ?? 0.02);
     setTextOverlayEnabled(p.text_overlay_enabled);
     setTextOverlays(p.text_overlays.map((t) => ({ ...t, id: `tov_preset_${t.position}_${t.text}` })));
     setWatermarkEnabled(p.watermark_enabled);
@@ -926,6 +954,12 @@ const EpisodeDetail: React.FC = () => {
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
         subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
+        // 源视频字幕打码：先把片源自带字幕打码，再烧录自己的 ASR 字幕
+        subtitle_mask_enabled: subtitleMaskEnabled,
+        subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
+        subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
+        subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
+        subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
         // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排（仅开关开启时生效）
         text_overlays: textOverlayEnabled && textOverlays.length > 0
           ? textOverlays.map((t) => ({
@@ -1048,6 +1082,12 @@ const EpisodeDetail: React.FC = () => {
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
         subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
+        // 源视频字幕打码：先把片源自带字幕打码，再烧录自己的 ASR 字幕
+        subtitle_mask_enabled: subtitleMaskEnabled,
+        subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
+        subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
+        subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
+        subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
         // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排（仅开关开启时生效）
         text_overlays: textOverlayEnabled && textOverlays.length > 0
           ? textOverlays.map((t) => ({
@@ -1646,6 +1686,88 @@ const EpisodeDetail: React.FC = () => {
             </Space>
           </Modal>
 
+          {/* ── 源视频字幕打码（去片源自带字幕） ── */}
+          <Card size="small" style={{ width: '100%' }}>
+            <Space wrap align="center" size={8}>
+              <Switch size="small" checked={subtitleMaskEnabled} onChange={setSubtitleMaskEnabled} />
+              <Text strong style={{ fontSize: 13 }}>源字幕打码</Text>
+              <Tooltip title="把片源自带的字幕打码/去字幕，然后再烧录你自己的 ASR 字幕。默认打码画面底部横带，仅在有源字幕的时间段生效。">
+                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+              </Tooltip>
+              {subtitleMaskEnabled && (
+                <Button size="small" icon={<SettingOutlined />} onClick={() => setSubtitleMaskModalOpen(true)}>打码设置</Button>
+              )}
+            </Space>
+          </Card>
+
+          {/* 源字幕打码设置弹窗 */}
+          <Modal
+            title="源字幕打码设置"
+            open={subtitleMaskModalOpen}
+            onCancel={() => setSubtitleMaskModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setSubtitleMaskModalOpen(false)}>完成</Button>
+            )}
+            width={500}
+          >
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>打码样式</Text>
+                <Radio.Group
+                  size="small"
+                  value={subtitleMaskStyle}
+                  onChange={(e) => setSubtitleMaskStyle(e.target.value)}
+                >
+                  <Radio.Button value="mosaic">马赛克</Radio.Button>
+                  <Radio.Button value="blur">模糊</Radio.Button>
+                  <Radio.Button value="fill">纯色块</Radio.Button>
+                </Radio.Group>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>区域宽度</Text>
+                <InputNumber
+                  size="small"
+                  min={0.1}
+                  max={1}
+                  step={0.05}
+                  value={subtitleMaskWidthRatio}
+                  onChange={(v) => setSubtitleMaskWidthRatio(v ?? 0.9)}
+                  style={{ width: 90 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>相对画面宽（0.9）</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>区域高度</Text>
+                <InputNumber
+                  size="small"
+                  min={0.02}
+                  max={0.5}
+                  step={0.01}
+                  value={subtitleMaskHeightRatio}
+                  onChange={(v) => setSubtitleMaskHeightRatio(v ?? 0.12)}
+                  style={{ width: 90 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>相对画面高（0.12）</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>距底边</Text>
+                <InputNumber
+                  size="small"
+                  min={0}
+                  max={0.5}
+                  step={0.01}
+                  value={subtitleMaskBottomRatio}
+                  onChange={(v) => setSubtitleMaskBottomRatio(v ?? 0.02)}
+                  style={{ width: 90 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>相对画面高（0.02）</Text>
+              </Space>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                仅在有源字幕的时间段打码，其余时间不动画面；未识别到源字幕时全程打码。
+              </Text>
+            </Space>
+          </Modal>
+
           {/* ── 固定文字角标（文字版角标，最左侧/左下角/右上角等） ── */}
           <Card size="small" style={{ width: '100%' }}>
             <Space wrap align="center" size={8}>
@@ -2154,6 +2276,30 @@ const EpisodeDetail: React.FC = () => {
                     <ColorPicker size="small" value={subtitleBorderColor} onChange={(c) => setSubtitleBorderColor(c.toHexString())} showText />
                   </>
                 )}
+              </Space>
+            )}
+          </div>
+
+          {/* ── 源视频字幕打码 ── */}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+            <Space wrap align="center" size={8} style={{ marginBottom: 8 }}>
+              <Switch size="small" checked={subtitleMaskEnabled} onChange={setSubtitleMaskEnabled} />
+              <Text strong style={{ fontSize: 13 }}>源字幕打码</Text>
+            </Space>
+            {subtitleMaskEnabled && (
+              <Space wrap align="center" size={8}>
+                <Text style={{ fontSize: 12 }}>样式</Text>
+                <Select size="small" style={{ width: 100 }} value={subtitleMaskStyle} onChange={setSubtitleMaskStyle} options={[
+                  { value: 'mosaic', label: '马赛克' },
+                  { value: 'blur', label: '模糊' },
+                  { value: 'fill', label: '纯色块' },
+                ]} />
+                <Text style={{ fontSize: 12 }}>宽</Text>
+                <InputNumber size="small" min={0.1} max={1} step={0.05} value={subtitleMaskWidthRatio} onChange={(v) => setSubtitleMaskWidthRatio(v ?? 0.9)} style={{ width: 70 }} />
+                <Text style={{ fontSize: 12 }}>高</Text>
+                <InputNumber size="small" min={0.02} max={0.5} step={0.01} value={subtitleMaskHeightRatio} onChange={(v) => setSubtitleMaskHeightRatio(v ?? 0.12)} style={{ width: 70 }} />
+                <Text style={{ fontSize: 12 }}>距底</Text>
+                <InputNumber size="small" min={0} max={0.5} step={0.01} value={subtitleMaskBottomRatio} onChange={(v) => setSubtitleMaskBottomRatio(v ?? 0.02)} style={{ width: 70 }} />
               </Space>
             )}
           </div>

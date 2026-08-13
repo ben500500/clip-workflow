@@ -10,7 +10,7 @@ from pathlib import Path
 from collections import defaultdict
 
 # 导入依赖
-from ..utils.llm_client import LLMClient
+from ..utils.llm_client import LLMClient, LLMCallError
 from ..utils.text_processor import TextProcessor
 from ..core.shared_config import PROMPT_FILES, METADATA_DIR, MIN_SCORE_THRESHOLD, FRAME_ANALYSIS_ENABLED
 
@@ -142,7 +142,13 @@ class ClipScorer:
                 } for clip in clips
             ]
             
-            response = self.llm_client.call_with_retry(self.recommendation_prompt, input_for_llm)
+            try:
+                response = self.llm_client.call_with_retry(self.recommendation_prompt, input_for_llm)
+            except Exception as e:
+                # 模型调用失败 → 显式上浮，让流水线以 failed 结束并保留真实错误，
+                # 而非把所有片段标 0 分后由 clips 接口按 60 分阈值过滤成 0 片段。
+                logger.error(f"LLM 批量评估调用失败: {e}")
+                raise LLMCallError(str(e)) from e
             parsed_list = self.llm_client.parse_json_response(response)
             
             if not isinstance(parsed_list, list) or len(parsed_list) != len(clips):
@@ -180,6 +186,8 @@ class ClipScorer:
 
             return clips
 
+        except LLMCallError:
+            raise
         except Exception as e:
             logger.error(f"LLM批量评估失败: {e}")
             # 如果批量失败，为所有clips标记为失败

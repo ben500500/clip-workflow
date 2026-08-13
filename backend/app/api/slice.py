@@ -180,6 +180,16 @@ class SliceRunRequest(BaseModel):
     subtitle_color: Optional[str] = None
     # 自定义字幕样式的边框颜色（CSS 十六进制 #RRGGBB）
     subtitle_border_color: Optional[str] = None
+    # ── 源视频字幕打码（去片源自带字幕）──
+    # 开启后先把片源自带字幕打码（固定底部横带 + SRT 时间轴驱动），再烧录自己的 ASR 字幕。
+    subtitle_mask_enabled: bool = False
+    # 打码样式：mosaic（马赛克，推荐）/ blur（模糊）/ fill（纯色块）
+    subtitle_mask_style: Optional[str] = None
+    # 打码区域（相对输出视频宽高比例，可选，默认宽度 0.9 / 高度 0.12）
+    subtitle_mask_width_ratio: Optional[float] = None
+    subtitle_mask_height_ratio: Optional[float] = None
+    # 打码区域距底边比例（可选，默认 0.02）
+    subtitle_mask_bottom_ratio: Optional[float] = None
     # ── 固定文字角标（文字版角标，无需上传图片）──
     # 在成品视频指定位置叠加固定文字（最左侧/左下角/右上角等），全程覆盖。
     # 每个元素：text（内容）、position（left/bottom-left/top-right 等七位）、
@@ -444,6 +454,28 @@ def _build_text_overlays_config(data: SliceRunRequest) -> Optional[list]:
     return result if result else None
 
 
+def _build_subtitle_mask_config(data: SliceRunRequest) -> Optional[dict]:
+    """构造源视频字幕打码配置（引擎 --subtitle-mask 期望的 JSON）。
+
+    仅当 subtitle_mask_enabled 开启时返回非空 dict；区域参数未填则用引擎默认值。
+    时间轴不在这里写死——引擎会用烧录字幕复用的源 SRT（args.subtitle）自动对齐。
+    """
+    if not data.subtitle_mask_enabled:
+        return None
+    cfg: dict = {"enabled": True}
+    style = (data.subtitle_mask_style or "mosaic").lower()
+    if style not in ("mosaic", "blur", "fill"):
+        style = "mosaic"
+    cfg["style"] = style
+    if data.subtitle_mask_width_ratio is not None:
+        cfg["width_ratio"] = max(0.1, min(1.0, float(data.subtitle_mask_width_ratio)))
+    if data.subtitle_mask_height_ratio is not None:
+        cfg["height_ratio"] = max(0.02, min(0.5, float(data.subtitle_mask_height_ratio)))
+    if data.subtitle_mask_bottom_ratio is not None:
+        cfg["bottom_ratio"] = max(0.0, min(0.5, float(data.subtitle_mask_bottom_ratio)))
+    return cfg
+
+
 # autoclip 选点阶段生成的源视频字幕文件（whisper/aliyun ASR）所在目录
 # 与 autoclip 的 MEDIA_DIR 一致（两者都挂载 media_data volume）：
 #   autoclip/app/core/shared_config.py -> METADATA_DIR = MEDIA_DIR / "data/output/metadata"
@@ -667,6 +699,7 @@ async def _publish_to_worker(
     source_bucket: str = "",
     subtitle_config: Optional[dict] = None,
     text_overlays_config: Optional[list] = None,
+    subtitle_mask_config: Optional[dict] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -737,6 +770,8 @@ async def _publish_to_worker(
         "subtitle": subtitle_config,
         # 固定文字角标（可选，Go Worker 直接透传给引擎 --text-overlays）
         "text_overlays": text_overlays_config,
+        # 源视频字幕打码（可选，Go Worker 透传给引擎 --subtitle-mask）
+        "subtitle_mask": subtitle_mask_config,
         "output": {
             "upload_url": f"{callback_base}/api/slice-tasks/{slice_task.id}/upload-url",
             "callback_url": callback_url,
@@ -780,6 +815,7 @@ async def _dispatch_celery(
     source_bucket: str = "",
     subtitle_config: Optional[dict] = None,
     text_overlays_config: Optional[list] = None,
+    subtitle_mask_config: Optional[dict] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -809,6 +845,7 @@ async def _dispatch_celery(
         badge_default_width=badge_default_width,
         subtitle_config=subtitle_config,
         text_overlays_config=text_overlays_config,
+        subtitle_mask_config=subtitle_mask_config,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -1083,12 +1120,15 @@ async def run_slice(
     subtitle_config = await _generate_subtitle_config(data, source_file_key, source_bucket, episode, db)
     # 构造固定文字角标配置（文字版角标，无需上传图片）
     text_overlays_config = _build_text_overlays_config(data)
-    # 持久化竖屏转横屏/角标/字幕/固定文字配置，重试时保留
+    # 构造源视频字幕打码配置（去片源自带字幕）
+    subtitle_mask_config = _build_subtitle_mask_config(data)
+    # 持久化竖屏转横屏/角标/字幕/打码/固定文字配置，重试时保留
     slice_task.vert2horiz_config = vert2horiz_config
     slice_task.watermark_config = watermark_config
     slice_task.badges_config = badges_config
     slice_task.badge_default_width = data.badge_default_width or 0
     slice_task.subtitle_config = subtitle_config
+    slice_task.subtitle_mask_config = subtitle_mask_config
     slice_task.text_overlays_config = text_overlays_config
 
     if engine == "worker":
@@ -1110,6 +1150,7 @@ async def run_slice(
             source_bucket,
             subtitle_config,
             text_overlays_config,
+            subtitle_mask_config,
         )
 
         if not published:
@@ -1139,6 +1180,7 @@ async def run_slice(
                 source_bucket,
                 subtitle_config,
                 text_overlays_config,
+                subtitle_mask_config,
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
@@ -1561,6 +1603,7 @@ async def retry_slice_task(
         badges_config=task.badges_config,
         vert2horiz_config=task.vert2horiz_config,
         subtitle_config=task.subtitle_config,
+        subtitle_mask_config=task.subtitle_mask_config,
         text_overlays_config=task.text_overlays_config,
         status="pending",
         progress=0.0,
@@ -1590,6 +1633,7 @@ async def retry_slice_task(
             source_bucket,
             task.subtitle_config,
             task.text_overlays_config,
+            task.subtitle_mask_config,
         )
 
         if not published:
@@ -1618,6 +1662,7 @@ async def retry_slice_task(
                 source_bucket,
                 task.subtitle_config,
                 task.text_overlays_config,
+                task.subtitle_mask_config,
             )
         except Exception as e:
             new_task.status = "failed"

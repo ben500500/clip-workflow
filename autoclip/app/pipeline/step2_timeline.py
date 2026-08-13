@@ -9,7 +9,7 @@ from pathlib import Path
 from collections import defaultdict
 
 # 导入依赖
-from ..utils.llm_client import LLMClient
+from ..utils.llm_client import LLMClient, LLMCallError
 from ..utils.text_processor import TextProcessor
 from ..core.shared_config import PROMPT_FILES, METADATA_DIR
 
@@ -199,8 +199,14 @@ class TimelineExtractor:
                     
                     for retry_count in range(max_parse_retries + 1):
                         try:
-                            raw_response = self.llm_client.call_with_retry(self.timeline_prompt, input_data)
-                            
+                            try:
+                                raw_response = self.llm_client.call_with_retry(self.timeline_prompt, input_data)
+                            except Exception as api_error:
+                                # 模型调用失败（模型名无效/密钥错误/网络）→ 显式上浮，
+                                # 让整条流水线以 failed 结束并保留真实错误，而非静默跳过导致 0 片段。
+                                logger.error(f"  > 块 {chunk_index} LLM API 调用失败: {api_error}")
+                                raise LLMCallError(str(api_error)) from api_error
+
                             if not raw_response:
                                 logger.warning(f"  > 块 {chunk_index} LLM响应为空，跳过")
                                 break
@@ -235,6 +241,8 @@ class TimelineExtractor:
                                     # 保存最后一次的原始响应以便调试
                                     self._save_debug_response(raw_response, chunk_index, "final_parse_failure")
                                     
+                        except LLMCallError:
+                            raise
                         except Exception as parse_error:
                             logger.error(f"  > 块 {chunk_index} 第 {retry_count + 1} 次尝试解析过程中发生异常: {parse_error}")
                             if retry_count == max_parse_retries:
@@ -246,6 +254,8 @@ class TimelineExtractor:
                          logger.warning(f"  > 块 {chunk_index} 最终解析失败，跳过")
                          continue
 
+            except LLMCallError:
+                raise
             except Exception as e:
                 logger.error(f"  > 处理块 {chunk_index} 时出错: {str(e)}")
                 continue

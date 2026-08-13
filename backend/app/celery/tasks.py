@@ -397,6 +397,7 @@ def slice_task(
     badge_default_width: int = 0,
     subtitle_config: Optional[dict] = None,
     text_overlays_config: Optional[list] = None,
+    subtitle_mask_config: Optional[dict] = None,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
@@ -517,6 +518,7 @@ def slice_task(
                     subtitle_border_color=subtitle_border_color,
                     text_overlays_config=text_overlays_config,
                     dedupe_config=dedupe_config,
+                    subtitle_mask_config=subtitle_mask_config,
                 )
             )
         else:
@@ -540,6 +542,7 @@ def slice_task(
                     subtitle_border_color=subtitle_border_color,
                     text_overlays_config=text_overlays_config,
                     dedupe_config=dedupe_config,
+                    subtitle_mask_config=subtitle_mask_config,
                 )
             )
 
