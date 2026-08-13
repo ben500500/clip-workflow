@@ -36,6 +36,8 @@ export const sliceApi = {
       video_path?: string;
       engine?: string;
       auto_accept_all?: boolean;
+      // 快速转换：跳过 AI 选点与区间检测，整段源视频直接应用下方配置转换输出
+      no_cut?: boolean;
       watermark_enabled?: boolean;
       watermark_text?: string;
       watermark_font_size?: number;
