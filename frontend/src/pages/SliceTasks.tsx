@@ -1042,7 +1042,7 @@ const SliceTasks: React.FC = () => {
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {subtitleMaskTemporal
                   ? '精细化：只在字幕/水印实际出现的时段打码，其余画面不动（推荐）。'
-                  : '快速：按 SRT 时间轴打码；无 SRT 时在检测区域内全程打码。'}
+                  : '快速：在检测出的字幕区域全程（至始至终）打码，速度快。'}
               </Text>
             </Space>
           </Modal>
