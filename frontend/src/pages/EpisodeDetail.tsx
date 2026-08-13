@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Space, Typography, Spin, Alert, Breadcrumb, Descriptions, Tag, message, Select, Row, Col, Progress,
   Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input, Table, Upload, Image as AntImage, Radio, ColorPicker,
-  Checkbox, Modal,
+  Checkbox, Modal, Cascader,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
@@ -38,6 +38,21 @@ const SLICE_MODE_HELP: Record<string, { label: string; desc: string; detail: str
     detail: '在去重模式的基础上，进一步对片段中随机位置进行微小的画面挖洞处理（替换为纯色帧），使每个输出片段的指纹更加独特。适合高频发布场景，有效降低平台查重处罚。',
   },
 };
+
+// ─── 切片模式级联选项（去重模式带 轻/标准/重 档位，悬停即弹出选择框）──
+const SLICE_MODE_OPTIONS = [
+  { value: 'fast', label: '快速模式' },
+  {
+    value: 'dedupe',
+    label: '去重模式',
+    children: [
+      { value: 'light', label: '轻' },
+      { value: 'standard', label: '标准' },
+      { value: 'heavy', label: '重' },
+    ],
+  },
+  { value: 'scrub', label: '挖洞模式' },
+];
 
 // ─── 工作流步骤定义（可点击跳转对应界面） ─────────────
 const WORKFLOW_STEPS = [
@@ -1223,26 +1238,28 @@ const EpisodeDetail: React.FC = () => {
             <Button type="primary" icon={<ThunderboltOutlined />} loading={autoclipRunning} onClick={runAutoClip}>
               启动选点
             </Button>
-            <Tooltip title="设置 AI 选点推荐的最大片段数量，数量越多等待时间越长">
+            <Tooltip title="设置 AI 选点推荐的最大片段数量，数量越多等待时间越长（默认 10）">
               <Space size={4}>
                 <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>选点个数:</Text>
                 <InputNumber
                   size="small"
                   min={1}
                   max={100}
+                  placeholder="10"
                   value={maxClips}
                   onChange={(v) => setMaxClips(v ?? 10)}
                   style={{ width: 70 }}
                 />
               </Space>
             </Tooltip>
-            <Tooltip title="设置候选片段入选的最低评分（0-100），留空则使用系统默认（60）">
+            <Tooltip title="设置候选片段入选的最低评分（0-100），留空则使用系统默认（60 分）">
               <Space size={4}>
                 <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>入选评分:</Text>
                 <InputNumber
                   size="small"
                   min={0}
                   max={100}
+                  placeholder="60"
                   value={minScoreThreshold}
                   onChange={(v) => setMinScoreThreshold(v ?? null)}
                   style={{ width: 70 }}
@@ -1259,7 +1276,7 @@ const EpisodeDetail: React.FC = () => {
                   size="small"
                   min={1}
                   max={86400}
-                  placeholder="秒"
+                  placeholder="30"
                   value={minClipDuration}
                   onChange={(v) => setMinClipDuration(v ?? null)}
                   style={{ width: 80 }}
@@ -1274,7 +1291,7 @@ const EpisodeDetail: React.FC = () => {
                   size="small"
                   min={1}
                   max={86400}
-                  placeholder="秒"
+                  placeholder="180"
                   value={maxClipDuration}
                   onChange={(v) => setMaxClipDuration(v ?? null)}
                   style={{ width: 80 }}
@@ -1285,7 +1302,7 @@ const EpisodeDetail: React.FC = () => {
             <Space size={4} align="center">
               <Switch size="small" checked={frameAnalysis} onChange={setFrameAnalysis} />
               <Text strong style={{ fontSize: 12 }}>画面理解</Text>
-              <Tooltip title="开启后，AI 选点会对候选片段进行画面理解（抽帧送本地 MiniCPM-V 视觉模型分析场景/动作/情绪/精彩度），结合台词综合打分。关闭则仅依据台词与文案判断。">
+              <Tooltip title="开启后，AI 选点会对候选片段进行画面理解（抽帧送本地 MiniCPM-V 视觉模型分析场景/动作/情绪/精彩度），结合台词综合打分。关闭则仅依据台词与文案判断。（默认开启）">
                 <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
               </Tooltip>
             </Space>
@@ -1446,22 +1463,22 @@ const EpisodeDetail: React.FC = () => {
       node: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
           <Space>
-            <Select value={sliceMode} onChange={setSliceMode} style={{ width: 120 }}
-              options={[
-                { value: 'fast', label: '快速模式' },
-                { value: 'dedupe', label: '去重模式' },
-                { value: 'scrub', label: '挖洞模式' },
-              ]}
+            <Cascader
+              value={sliceMode === 'dedupe' ? ['dedupe', dedupePreset || 'standard'] : [sliceMode]}
+              options={SLICE_MODE_OPTIONS}
+              onChange={(val: (string | number)[]) => {
+                const v = (val ?? []).map(String);
+                if (v[0] === 'dedupe') {
+                  setSliceMode('dedupe');
+                  setDedupePreset(v[1] || 'standard');
+                } else if (v[0]) {
+                  setSliceMode(v[0]);
+                }
+              }}
+              displayRender={(labels: string[]) => labels.join(' · ')}
+              placeholder="选择切片模式"
+              style={{ width: 180 }}
             />
-            {sliceMode === 'dedupe' && (
-              <Select value={dedupePreset} onChange={setDedupePreset} style={{ width: 110 }}
-                options={[
-                  { value: 'light', label: '轻' },
-                  { value: 'standard', label: '标准' },
-                  { value: 'heavy', label: '重' },
-                ]}
-              />
-            )}
             <Button icon={<ScissorOutlined />} loading={sliceRunning} disabled={quickConverting} onClick={() => runSlice(false)}>开始切片</Button>
             <Tooltip title="跳过 AI 选点和区间检测，直接整段视频应用下方配置（竖屏转横屏/水印/角标/字幕/固定文字等）转换输出">
               <Button icon={<ThunderboltOutlined />} loading={quickConverting} disabled={sliceRunning} onClick={() => runSlice(true)}>快速转换</Button>

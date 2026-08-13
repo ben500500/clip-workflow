@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip, Alert, Switch, InputNumber, Input, Upload, List, Image as AntImage, Radio, ColorPicker, Checkbox, Modal,
+  Card, Table, Tag, Button, Space, Typography, message, Select, Progress, Popconfirm, Tooltip, Alert, Switch, InputNumber, Input, Upload, List, Image as AntImage, Radio, ColorPicker, Checkbox, Modal, Cascader,
 } from 'antd';
 import { UploadOutlined, PlusOutlined, DeleteOutlined as DelIcon } from '@ant-design/icons';
 import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, DesktopOutlined, SettingOutlined } from '@ant-design/icons';
@@ -38,6 +38,21 @@ const SLICE_MODE_HELP: Record<string, { label: string; desc: string }> = {
     desc: '在去重基础上随机挖洞（替换为纯色帧），使每个输出片段指纹更独特。适合高频发布场景，降低平台查重处罚。',
   },
 };
+
+// ─── 切片模式级联选项（去重模式带 轻/标准/重 档位，悬停即弹出选择框）──
+const SLICE_MODE_OPTIONS = [
+  { value: 'fast', label: '快速模式' },
+  {
+    value: 'dedupe',
+    label: '去重模式',
+    children: [
+      { value: 'light', label: '轻' },
+      { value: 'standard', label: '标准' },
+      { value: 'heavy', label: '重' },
+    ],
+  },
+  { value: 'scrub', label: '挖洞模式' },
+];
 
 const SliceTasks: React.FC = () => {
   const { episodeId } = useParams<{ episodeId: string }>();
@@ -527,22 +542,22 @@ const SliceTasks: React.FC = () => {
       {/* ── 新建任务 ── */}
       <Card size="small" style={{ marginBottom: 16 }}>
         <Space wrap>
-          <Select value={mode} onChange={setMode} style={{ width: 140 }}
-            options={[
-              { value: 'fast', label: '快速模式' },
-              { value: 'dedupe', label: '去重模式' },
-              { value: 'scrub', label: '挖洞模式' },
-            ]}
+          <Cascader
+            value={mode === 'dedupe' ? ['dedupe', dedupePreset || 'standard'] : [mode]}
+            options={SLICE_MODE_OPTIONS}
+            onChange={(val: (string | number)[]) => {
+              const v = (val ?? []).map(String);
+              if (v[0] === 'dedupe') {
+                setMode('dedupe');
+                setDedupePreset(v[1] || 'standard');
+              } else if (v[0]) {
+                setMode(v[0]);
+              }
+            }}
+            displayRender={(labels: string[]) => labels.join(' · ')}
+            placeholder="选择切片模式"
+            style={{ width: 180 }}
           />
-          {mode === 'dedupe' && (
-            <Select value={dedupePreset} onChange={setDedupePreset} style={{ width: 110 }}
-              options={[
-                { value: 'light', label: '轻' },
-                { value: 'standard', label: '标准' },
-                { value: 'heavy', label: '重' },
-              ]}
-            />
-          )}
           <Tooltip title={SLICE_MODE_HELP[mode]?.desc}>
             <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
           </Tooltip>
