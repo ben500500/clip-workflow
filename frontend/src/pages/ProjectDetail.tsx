@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
   Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col, Statistic,
-  message, Upload, Breadcrumb, Descriptions, Progress, Modal, Input, Checkbox,
+  message, Upload, Breadcrumb, Descriptions, Progress, Modal, Input, Checkbox, Popconfirm,
 } from 'antd';
 import { UploadOutlined, ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, Link } from 'react-router-dom';
@@ -190,12 +190,13 @@ const ProjectDetail: React.FC = () => {
       render: (_: unknown, record: Episode) => (
         <Space size="small">
           <Button type="link" size="small" onClick={() => navigate(`/episodes/${record.id}`)}>处理</Button>
-          <Button
-            type="link"
-            size="small"
-            danger
-            icon={<DeleteOutlined />}
-            onClick={async () => {
+          <Popconfirm
+            title="确定删除该剧集？"
+            description="其下所有切片任务和产出文件将被一并清除，且无法恢复。"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={async () => {
               try {
                 await projectApi.deleteEpisode(record.id);
                 message.success('剧集已删除');
@@ -205,8 +206,15 @@ const ProjectDetail: React.FC = () => {
               }
             }}
           >
-            删除
-          </Button>
+            <Button
+              type="link"
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+            >
+              删除
+            </Button>
+          </Popconfirm>
         </Space>
       ),
     },
