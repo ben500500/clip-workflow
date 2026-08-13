@@ -70,6 +70,12 @@ export const sliceApi = {
       subtitle_color?: string;
       // 自定义样式的边框颜色（CSS 十六进制）
       subtitle_border_color?: string;
+      // 源视频字幕打码：先把片源自带字幕打码，再烧录自己的 ASR 字幕
+      subtitle_mask_enabled?: boolean;
+      subtitle_mask_style?: 'mosaic' | 'blur' | 'fill';
+      subtitle_mask_width_ratio?: number;
+      subtitle_mask_height_ratio?: number;
+      subtitle_mask_bottom_ratio?: number;
       // 固定文字角标（文字版角标）：在成品指定位置叠加固定文字
       text_overlays?: TextOverlayItem[];
       // 成品重新剪辑：以某个切片输出为源，重新裁剪出一个新片段

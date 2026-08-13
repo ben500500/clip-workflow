@@ -84,6 +84,15 @@ const SliceTasks: React.FC = () => {
   const [subtitleBorderColor, setSubtitleBorderColor] = useState('#000000');
   // 字幕设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
   const [subtitleModalOpen, setSubtitleModalOpen] = useState(false);
+  // ── 源视频字幕打码（去片源自带字幕）──
+  const [subtitleMaskEnabled, setSubtitleMaskEnabled] = useState(false);
+  const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'mosaic' | 'blur' | 'fill'>('mosaic');
+  // 打码区域（相对输出视频宽高比例，默认宽度 0.9 / 高度 0.12 / 距底 0.02）
+  const [subtitleMaskWidthRatio, setSubtitleMaskWidthRatio] = useState(0.9);
+  const [subtitleMaskHeightRatio, setSubtitleMaskHeightRatio] = useState(0.12);
+  const [subtitleMaskBottomRatio, setSubtitleMaskBottomRatio] = useState(0.02);
+  // 源字幕打码设置弹窗是否打开
+  const [subtitleMaskModalOpen, setSubtitleMaskModalOpen] = useState(false);
   // ── 固定文字角标（文字版角标，无需上传图片）──
   const [textOverlays, setTextOverlays] = useState<Array<TextOverlayItem & { id: string }>>([]);
   // 固定文字开关：开启后显示「设置文字」按钮，弹窗内集中管理固定文字配置
@@ -151,6 +160,12 @@ const SliceTasks: React.FC = () => {
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
         subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
+        // 源视频字幕打码：开启后先打掉片源自带字幕，再烧录自己的 ASR 字幕
+        subtitle_mask_enabled: subtitleMaskEnabled,
+        subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
+        subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
+        subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
+        subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
         // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排（仅开关开启时生效）
         text_overlays: textOverlayEnabled && textOverlays.length > 0
           ? textOverlays.map((t) => ({
@@ -880,6 +895,86 @@ const SliceTasks: React.FC = () => {
               )}
               <Text type="secondary" style={{ fontSize: 12 }}>
                 字幕仅在说话时显示，静音/停顿自动隐藏；默认白字黑描边，自定义样式无底色更清爽。
+              </Text>
+            </Space>
+          </Modal>
+
+          {/* ── 源视频字幕打码（去片源自带字幕）── */}
+          <Space wrap align="center" size={8}>
+            <Switch size="small" checked={subtitleMaskEnabled} onChange={setSubtitleMaskEnabled} />
+            <Text strong style={{ fontSize: 12 }}>源字幕打码</Text>
+            <Tooltip title="把片源自带的字幕打码/去字幕，然后再烧录你自己的 ASR 字幕。默认打码画面底部横带，仅在有字幕的时间段生效。">
+              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+            </Tooltip>
+            {subtitleMaskEnabled && (
+              <Button size="small" icon={<SettingOutlined />} onClick={() => setSubtitleMaskModalOpen(true)}>设置打码</Button>
+            )}
+          </Space>
+
+          {/* 源字幕打码设置弹窗 */}
+          <Modal
+            title="源字幕打码设置"
+            open={subtitleMaskModalOpen}
+            onCancel={() => setSubtitleMaskModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setSubtitleMaskModalOpen(false)}>完成</Button>
+            )}
+            width={480}
+          >
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 12 }}>打码样式</Text>
+                <Radio.Group
+                  size="small"
+                  value={subtitleMaskStyle}
+                  onChange={(e) => setSubtitleMaskStyle(e.target.value)}
+                >
+                  <Radio.Button value="mosaic">马赛克</Radio.Button>
+                  <Radio.Button value="blur">模糊</Radio.Button>
+                  <Radio.Button value="fill">纯色块</Radio.Button>
+                </Radio.Group>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 12 }}>区域宽度</Text>
+                <InputNumber
+                  size="small"
+                  min={0.1}
+                  max={1}
+                  step={0.05}
+                  value={subtitleMaskWidthRatio}
+                  onChange={(v) => setSubtitleMaskWidthRatio(v ?? 0.9)}
+                  style={{ width: 90 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>相对画面宽（0.9）</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 12 }}>区域高度</Text>
+                <InputNumber
+                  size="small"
+                  min={0.02}
+                  max={0.5}
+                  step={0.01}
+                  value={subtitleMaskHeightRatio}
+                  onChange={(v) => setSubtitleMaskHeightRatio(v ?? 0.12)}
+                  style={{ width: 90 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>相对画面高（0.12）</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 12 }}>距底边</Text>
+                <InputNumber
+                  size="small"
+                  min={0}
+                  max={0.5}
+                  step={0.01}
+                  value={subtitleMaskBottomRatio}
+                  onChange={(v) => setSubtitleMaskBottomRatio(v ?? 0.02)}
+                  style={{ width: 90 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>相对画面高（0.02）</Text>
+              </Space>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                仅在有源字幕的时间段打码，其余时间不动画面；未识别到源字幕时全程打码。
               </Text>
             </Space>
           </Modal>

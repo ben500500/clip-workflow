@@ -176,6 +176,18 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		args = append(args, "--text-overlays", string(textBytes))
 	}
 
+	// 源视频字幕打码：透传给引擎 --subtitle-mask（去片源自带字幕）
+	if len(task.SubtitleMask) > 0 {
+		enabled, _ := task.SubtitleMask["enabled"].(bool)
+		if enabled {
+			maskBytes, err := json.Marshal(task.SubtitleMask)
+			if err != nil {
+				return nil, fmt.Errorf("序列化源字幕打码配置失败: %w", err)
+			}
+			args = append(args, "--subtitle-mask", string(maskBytes))
+		}
+	}
+
 	// Alpine 镜像提供 python3 可执行文件；Windows 上为 python
 	cmd := exec.CommandContext(ctx, pythonBinary(), args...)
 
