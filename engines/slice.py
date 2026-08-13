@@ -1284,17 +1284,117 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
 
 # 默认打码区域（相对输出视频宽/高比例）。字幕通常位于画面底部一条横带，
 # 无需逐帧检测；固定区域 + SRT 时间轴驱动即可，仅在字幕出现时段生效。
+# 注意：实际字幕位置可能不在底部（如居中偏下），开启时引擎会优先用 OpenCV 自动
+# 检测字幕真实位置，检测失败才回退到下方默认比例。
 SUBTITLE_MASK_WIDTH_RATIO = 0.9
 SUBTITLE_MASK_HEIGHT_RATIO = 0.12
 SUBTITLE_MASK_BOTTOM_RATIO = 0.02
 # 默认打码样式
-SUBTITLE_MASK_STYLE_DEFAULT = "mosaic"
+SUBTITLE_MASK_STYLE_DEFAULT = "delogo"
 # 打码样式集合
-SUBTITLE_MASK_STYLES = ("mosaic", "blur", "fill")
+SUBTITLE_MASK_STYLES = ("delogo", "mosaic", "blur", "fill")
 # 马赛克缩放后的块大小（px），越大马赛克颗粒越粗
 SUBTITLE_MASK_BLOCK = 8
 # 模糊滤镜核大小（px）
 SUBTITLE_MASK_BLUR_RADIUS = 12
+# 自动检测字幕区域时最多采样的帧数（越多越稳，但越慢）
+SUBTITLE_MASK_DETECT_MAX_FRAMES = 10
+
+
+def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int, int, int]]:
+    """用 OpenCV 从源视频采样帧自动检测字幕文字区域。
+
+    返回 (x, y, w, h)，区域已按视频宽高裁剪到边界内；检测失败或 OpenCV
+    不可用时返回 None（由调用方回退到固定比例区域）。
+
+    采样时机：有 SRT 时取 SRT 出现的时刻（字幕在场），无 SRT 时均匀采样全程。
+    检测原理：字幕是一条集中的文字横带，按行统计边缘密度找到最高密度横带，
+    再在带内按列找到文字横向范围。对「底部/居中偏下/顶部」任意位置都自适应。
+    """
+    width, height = ffprobe_size(video)
+    if width <= 0 or height <= 0:
+        return None
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+
+    # 确定采样时刻
+    times = []
+    records = read_srt(srt) if srt and os.path.isfile(srt) else []
+    if records:
+        # 每条字幕取一个代表时刻（中段），最多 SUBTITLE_MASK_DETECT_MAX_FRAMES 条
+        sample = records[:SUBTITLE_MASK_DETECT_MAX_FRAMES]
+        times = [max(0.0, (float(r["start"]) + float(r["end"])) / 2.0) for r in sample]
+    else:
+        dur = ffprobe_duration(video)
+        if not dur or dur <= 0:
+            return None
+        n = min(SUBTITLE_MASK_DETECT_MAX_FRAMES, max(4, int(dur)))
+        times = [dur * (i + 0.5) / n for i in range(n)]
+
+    cap = None
+    try:
+        cap = cv2.VideoCapture(video)
+        if not cap.isOpened():
+            return None
+        row_score = np.zeros(height, dtype=np.float64)
+        frames = 0
+        for t in times:
+            cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000.0)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, 60, 160)
+            row_score += edges.sum(axis=1)
+            frames += 1
+        if frames == 0:
+            return None
+        row_score /= float(frames)
+
+        # 行分数平滑后，找一条高密度文字横带
+        k = np.ones(7, dtype=np.float64) / 7.0
+        smooth = np.convolve(row_score, k, mode="same")
+        peak = float(smooth.max())
+        if peak <= 1e-6:
+            return None
+        win = max(8, int(height * 0.08))
+        best_start, best_val = 0, -1.0
+        for y in range(0, height - win, 2):
+            v = float(smooth[y:y + win].sum())
+            if v > best_val:
+                best_val, best_start = v, y
+        thr = peak * 0.3
+        rows = [y for y in range(best_start, best_start + win) if smooth[y] > thr]
+        if not rows:
+            return None
+        y0 = max(0, min(rows) - 6)
+        y1 = min(height - 1, max(rows) + 6)
+
+        # 在横带内按列找文字横向范围
+        col_score = np.zeros(width, dtype=np.float64)
+        for t in times:
+            cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000.0)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, 60, 160)
+            col_score += edges[y0:y1 + 1, :].sum(axis=0)
+        col_peak = float(col_score.max())
+        if col_peak <= 1e-6:
+            return None
+        cols = np.where(col_score > col_peak * 0.15)[0]
+        if cols.size == 0:
+            return None
+        x0 = max(0, int(cols.min()) - 6)
+        x1 = min(width - 1, int(cols.max()) + 6)
+        return x0, y0, (x1 - x0), (y1 - y0)
+    finally:
+        if cap is not None:
+            cap.release()
 
 
 def _parse_subtitle_mask_config(raw: str | None) -> dict | None:
@@ -1372,6 +1472,15 @@ def _subtitle_mask_area(cfg: dict, width: int, height: int) -> tuple[int, int, i
         y = int(_f("y", 0))
         w = int(_f("width", _f("w", 0)))
         h = int(_f("height", _f("h", 0)))
+        # 若区域是按某个检测分辨率得到的，而当前切片分辨率不同（如去重/转场裁切），
+        # 按比例等比缩放到当前分辨率，避免打码区域错位。
+        dw = int(_f("__detect_w", 0))
+        dh = int(_f("__detect_h", 0))
+        if dw > 0 and dh > 0 and (dw != width or dh != height):
+            x = int(round(x * width / dw))
+            y = int(round(y * height / dh))
+            w = int(round(w * width / dw))
+            h = int(round(h * height / dh))
     else:
         w = int(width * _f("width_ratio", SUBTITLE_MASK_WIDTH_RATIO))
         h = int(height * _f("height_ratio", SUBTITLE_MASK_HEIGHT_RATIO))
@@ -1391,7 +1500,8 @@ def _subtitle_mask_area(cfg: dict, width: int, height: int) -> tuple[int, int, i
 def build_subtitle_mask_filter(cfg: dict, enable: str) -> str:
     """构造源字幕打码 filter_complex 片段（基于 [0:v] 输入，输出标签 [masked]）。
 
-    打码样式：mosaic（马赛克）/ blur（模糊）/ fill（纯色块）。
+    打码样式：delogo（去字幕/去水印，智能插值，默认）/ mosaic（马赛克）/
+    blur（模糊）/ fill（纯色块）。
     enable 非空时仅在字幕时段生效；为空表示全程打码。
     """
     style = (cfg.get("style") or SUBTITLE_MASK_STYLE_DEFAULT).lower()
@@ -1406,6 +1516,10 @@ def build_subtitle_mask_filter(cfg: dict, enable: str) -> str:
         return ""
     en = f":enable='{enable}'" if enable else ""
 
+    if style == "delogo":
+        # delogo 智能插值：用区域周围像素补平字幕，接近"去水印/去字幕"效果，视觉最自然。
+        # 注：部分 ffmpeg 构建（如 Alpine 5.1）的 delogo 未编译 band 选项，这里只传 x/y/w/h。
+        return f"[0:v]delogo=x={x}:y={y}:w={w}:h={h}{en}[vout]"
     if style == "mosaic":
         block = int(cfg.get("block") or SUBTITLE_MASK_BLOCK)
         block = max(2, min(64, block))
@@ -1550,7 +1664,7 @@ def main():
     parser.add_argument(
         "--subtitle-mask",
         default=None,
-        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"srt\":打码时间轴SRT路径}）。独立开关，仅打掉片源自带字幕",
+        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"srt\":打码时间轴SRT路径}）。默认 delogo（去水印），开启后自动检测字幕位置。独立开关，仅打掉片源自带字幕",
     )
     args = parser.parse_args()
 
@@ -1666,6 +1780,23 @@ def main():
         if not subtitle_mask.get("srt") and args.subtitle:
             subtitle_mask["srt"] = args.subtitle
         print(f"源字幕打码已开启: style={subtitle_mask.get('style') or SUBTITLE_MASK_STYLE_DEFAULT}", file=sys.stderr)
+        # 自动检测字幕真实位置：字幕常在居中偏下而非底部，固定底部横带会打偏。
+        # 用 OpenCV 在字幕出现的时刻采样帧，检测文字横带位置；检测成功则覆盖默认区域。
+        detect_srt = subtitle_mask.get("srt") or ""
+        detected = detect_subtitle_region(source_path, detect_srt)
+        if detected:
+            dx, dy, dw, dh = detected
+            subtitle_mask["x"] = dx
+            subtitle_mask["y"] = dy
+            subtitle_mask["width"] = dw
+            subtitle_mask["height"] = dh
+            # 记录检测时的分辨率，供 apply_subtitle_mask 按切片分辨率等比缩放
+            detect_w, detect_h = ffprobe_size(source_path)
+            subtitle_mask["__detect_w"] = detect_w
+            subtitle_mask["__detect_h"] = detect_h
+            print(f"源字幕打码自动定位: ({dx},{dy},{dw},{dh}) @ {detect_w}x{detect_h}", file=sys.stderr)
+        else:
+            print("源字幕打码自动定位失败，回退默认区域", file=sys.stderr)
 
     # Group segments by original cut index for scrub mode.
     groups = {}
