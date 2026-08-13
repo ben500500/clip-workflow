@@ -116,3 +116,4 @@ slice-worker/macos/worker.json
 slice-worker/macos/*.log
 slice-worker/macos/*.pid
 slice-worker/temp/
+.serena

@@ -1,0 +1,483 @@
+version: "3.8"
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# 统一时区：所有容器与宿主机一致（Asia/Shanghai），避免日志/任务时间戳差 8 小时
+x-common-env: &common-env
+  TZ: Asia/Shanghai
+
+# 三个 Celery worker（video/publish/fast）共享的配置锚点：复用 clip-backend:latest 与相同环境/卷
+x-celery-worker: &celery-worker-base
+  image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:1.0.1
+  restart: unless-stopped
+  networks:
+    - clip-network
+  depends_on:
+    backend:
+      condition: service_healthy
+  env_file:
+    - .env
+  environment:
+    <<: *common-env
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+    REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+    CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/1
+    CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/2
+    MINIO_ENDPOINT: minio:9000
+    MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+    MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
+    MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+    # 浏览器可访问的 MinIO 地址（presigned URL 用该地址替换容器内 host，修复预览/下载拒绝连接）
+    MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-localhost:9000}
+    CHROME_DEBUG_PORT: 9222
+    CHROME_DEBUG_HOST: rpa_worker
+    # Seedance 官方 API 直连出片（默认关闭；worker 需同步注入配置，供 Celery 任务消费）
+    SEEDANCE_ENABLED: ${SEEDANCE_ENABLED:-false}
+    SEEDANCE_API_KEY: ${SEEDANCE_API_KEY:-}
+    SEEDANCE_MODEL: ${SEEDANCE_MODEL:-seedance-1-0-pro-250528}
+    SEEDANCE_API_BASE: ${SEEDANCE_API_BASE:-https://ark.cn-beijing.volces.com/api/v3}
+    SEEDANCE_RESOLUTION: ${SEEDANCE_RESOLUTION:-1080p}
+    SEEDANCE_WATERMARK: ${SEEDANCE_WATERMARK:-true}
+    SEEDANCE_TIMEOUT: ${SEEDANCE_TIMEOUT:-600}
+    SEEDANCE_LONG_DURATION_POLICY: ${SEEDANCE_LONG_DURATION_POLICY:-truncate}
+    SEEDANCE_DAILY_QUOTA: ${SEEDANCE_DAILY_QUOTA:-0}
+    # HuggingFace 离线模式：去水印 ONNX 模型从本地预置缓存加载（hf-cache），
+    # 禁止检查远程（服务器无法访问 huggingface.co，检查会阻塞超时）
+    HF_HUB_OFFLINE: "1"
+  volumes:
+    - ./data/media:/app/media
+    - ./data/engines:/app/engines:ro
+    # HuggingFace 模型缓存持久化（LaMa/MI-GAN 去水印 ONNX 模型，离线环境预置）
+    - ./data/hf-cache:/app/.cache
+  # celery worker 无 HTTP 端口，用 python redis ping 作为健康检查（覆盖镜像默认的 curl 检查）
+  healthcheck:
+    test: ["CMD", "python", "-c", "import redis,sys; sys.exit(0 if redis.Redis(host='redis',port=6379,password='${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}').ping() else 1)"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 20s
+  logging: *default-logging
+
+networks:
+  clip-network:
+    driver: bridge
+
+
+
+services:
+  # ==================== Database ====================
+  postgres:
+    image: postgres:15-alpine
+    container_name: clip-postgres
+    restart: unless-stopped
+    networks:
+      - clip-network
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "12543:5432"
+    environment:
+      <<: *common-env
+      POSTGRES_DB: ${POSTGRES_DB:-clipworkflow}
+      POSTGRES_USER: ${POSTGRES_USER:-clipworkflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-clipworkflow} -d ${POSTGRES_DB:-clipworkflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  # ==================== Redis ====================
+  redis:
+    image: redis:7-alpine
+    container_name: clip-redis
+    restart: unless-stopped
+    networks:
+      - clip-network
+    volumes:
+      - ./data/redis:/data
+    ports:
+      # 保留 0.0.0.0：远程 slice-worker 节点（本机 Mac）跨机直连 192.168.1.163:6379，
+      # 改 loopback 会令远程节点失联（Redis 已有强 requirepass）
+      - "12637:6379"
+    environment:
+      <<: *common-env
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *default-logging
+
+  # ==================== MinIO ====================
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: clip-minio
+    restart: unless-stopped
+    networks:
+      - clip-network
+    volumes:
+      - ./data/minio:/data
+    ports:
+      # 保留 0.0.0.0：浏览器 presigned URL（MINIO_EXTERNAL_ENDPOINT=192.168.1.163:9000）
+      # 与远程节点直连需要；MinIO 已有强 ROOT 密码
+      - "12900:9000"
+      # 删除 9001 控制台对外映射（仅容器内部 minio_init 需要，外部无需访问）
+    environment:
+      <<: *common-env
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?请在 .env 设置 MINIO_ROOT_USER，禁止使用默认 minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  # 仅创建 bucket，不再将 bucket 设为 public（敏感素材不应公开可读）
+  minio_init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: clip-minio-init
+    restart: "no"
+    networks:
+      - clip-network
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: |
+      /bin/sh -c "
+        echo 'Waiting for MinIO...'
+        mc alias set clip-minio http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
+        mc mb clip-minio/${MINIO_BUCKET:-clipworkflow} --ignore-existing
+        mc mb clip-minio/publish-screenshots --ignore-existing
+        mc mb clip-minio/sliced --ignore-existing
+        mc mb clip-minio/watermark-raw --ignore-existing
+        mc mb clip-minio/watermark-output --ignore-existing
+        echo 'MinIO bucket initialized successfully.'
+      "
+    logging: *default-logging
+
+  # ==================== AutoClip Service ====================
+  autoclip:
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-autoclip:1.0.1
+    container_name: clip-autoclip
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      API_MODEL_NAME: ${API_MODEL_NAME:-qwen-plus}
+      DASHSCOPE_MODE: ${DASHSCOPE_MODE:-compatible}
+      SERVICE_MODE: api
+      # 本地 whisper 模型路径（避免每次容器重建从 HuggingFace 下载，国内网络不稳定）
+      # 切换模型：改这里即可（旧模型保留在 ./whisper-model，新模型在 ./whisper-model-turbo）
+      WHISPER_MODEL: /app/whisper-model-turbo
+      # 画面理解（Frame Analysis）：本地 Ollama 视觉模型，容器内经 clip-network 直达
+      FRAME_ANALYSIS_ENABLED: ${FRAME_ANALYSIS_ENABLED:-false}
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-openbmb/minicpm-v4.6}
+      FRAME_ANALYSIS_PER_CLIP: ${FRAME_ANALYSIS_PER_CLIP:-2}
+    volumes:
+      - ./data/media:/app/media
+      # faster-whisper 模型缓存持久化（HF_HOME=/app/.cache，避免容器重建后重新下载）
+      - ./data/hf-cache:/app/.cache
+      # 本地平铺模型目录（直接加载，不依赖 HuggingFace 下载）
+      - ./data/whisper-model:/app/whisper-model:ro
+      # turbo 模型（large-v3-turbo，更快更小，当前默认使用）
+      - ./data/whisper-model-turbo:/app/whisper-model-turbo:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging: *default-logging
+
+  # ==================== Backend Services ====================
+  alembic-migrate:
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:1.0.1
+    container_name: clip-alembic
+    restart: "no"
+    networks:
+      - clip-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+    volumes:
+      - ./data/alembic:/app/alembic:ro
+    working_dir: /app
+    command: ["sh", "-c", "alembic -c alembic/alembic.ini upgrade head || echo 'Alembic 迁移跳过（已存在表结构或首次部署由 ORM create_all 建表）'"]
+    logging: *default-logging
+
+  backend:
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:1.0.1
+    container_name: clip-backend
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      alembic-migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/2
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+      # 浏览器可访问的 MinIO 地址（presigned URL 用该地址替换容器内 host，修复预览/下载拒绝连接）
+      MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-localhost:9000}
+      CHROME_DEBUG_PORT: 9222
+      CHROME_DEBUG_HOST: rpa_worker
+      RPA_REQUIRE_MANUAL_CONFIRM: "true"
+      # Seedance 官方 API 直连出片（默认关闭，需在 .env 配置 SEEDANCE_ENABLED=true 与 API Key）
+      SEEDANCE_ENABLED: ${SEEDANCE_ENABLED:-false}
+      SEEDANCE_API_KEY: ${SEEDANCE_API_KEY:-}
+      SEEDANCE_MODEL: ${SEEDANCE_MODEL:-seedance-1-0-pro-250528}
+      SEEDANCE_API_BASE: ${SEEDANCE_API_BASE:-https://ark.cn-beijing.volces.com/api/v3}
+      SEEDANCE_RESOLUTION: ${SEEDANCE_RESOLUTION:-1080p}
+      SEEDANCE_WATERMARK: ${SEEDANCE_WATERMARK:-true}
+      SEEDANCE_TIMEOUT: ${SEEDANCE_TIMEOUT:-600}
+      SEEDANCE_LONG_DURATION_POLICY: ${SEEDANCE_LONG_DURATION_POLICY:-truncate}
+      SEEDANCE_DAILY_QUOTA: ${SEEDANCE_DAILY_QUOTA:-0}
+      # HuggingFace 离线模式：去水印 ONNX 模型从本地预置缓存加载（hf-cache），
+      # 禁止检查远程（服务器无法访问 huggingface.co，检查会阻塞超时）
+      HF_HUB_OFFLINE: "1"
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+    volumes:
+      - ./data/media:/app/media
+      - ./data/chrome-profiles:/data/chrome-profiles
+      - ./data/engines:/app/engines:ro
+      # HuggingFace 模型缓存持久化（LaMa/MI-GAN 去水印 ONNX 模型，离线环境预置）
+      - ./data/hf-cache:/app/.cache
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  worker-video:
+    <<: *celery-worker-base
+    container_name: clip-worker-video
+    # 视频处理（切片/去水印/检测）—— 独占 video_processing 队列，ffmpeg 已占满 CPU，并发 1 正确
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "video_processing", "--loglevel=info", "--concurrency=1"]
+
+  worker-publish:
+    <<: *celery-worker-base
+    container_name: clip-worker-publish
+    # 发布/豆包生成（浏览器 CDP）—— 独占 publish 队列，并发 1
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "publish", "--loglevel=info", "--concurrency=1"]
+
+  worker-fast:
+    <<: *celery-worker-base
+    container_name: clip-worker-fast
+    # 指标/默认任务（轻量）—— 高并发 4，不再被视频任务饿死
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "metrics,default", "--loglevel=info", "--concurrency=4"]
+
+  beat:
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:1.0.1
+    container_name: clip-beat
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      backend:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/2
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "beat", "--loglevel=info"]
+    # celery beat 无 HTTP 端口，用 python redis ping 作为健康检查（覆盖镜像默认的 curl 检查）
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis,sys; sys.exit(0 if redis.Redis(host='redis',port=6379,password='${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}').ping() else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+
+  # ==================== RPA Worker (Playwright) ====================
+  rpa_worker:
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-rpa:1.0.1
+    container_name: clip-rpa-worker
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/2
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
+      CHROME_DEBUG_PORT: 9222
+      DISPLAY: :99
+      # cdp_proxy 绑定 0.0.0.0（容器网络内可达）：backend/worker 经 clip-network
+      # 访问 rpa_worker:9222；已删除 ports 映射，宿主机/公网不可达，无暴露风险
+      CDP_PROXY_BIND: "0.0.0.0"
+    volumes:
+      - ./data/chrome-profiles:/data/chrome-profiles
+      - ./data/media:/app/media
+    # 不再对外暴露 9222 调试端口：backend/worker 经 clip-network 访问 rpa_worker:9222
+    # （见 CHROME_DEBUG_HOST=rpa_worker），无需发布到宿主机，避免零凭据接管浏览器。
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9222/json/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging: *default-logging
+
+  # ==================== Slice Worker (Go) ====================
+  slice-worker:
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-slice-worker:1.0.1
+    container_name: clip-slice-worker
+    restart: unless-stopped
+    # 优雅退出窗口：SIGTERM 后等待当前任务完成再退出（worker 会停止认领新任务），
+    # 避免强杀正在处理的任务导致临时目录残留
+    stop_grace_period: 15m
+    networks:
+      - clip-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      NODE_ID: slice-worker-1
+      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+      MAX_CONCURRENT: "2"
+      CPU_PERCENT: ${CPU_PERCENT:-50}
+      HEARTBEAT_INTERVAL: "10"
+      LOG_LEVEL: info
+      TASK_TIMEOUT: "7200"
+      MAX_RETRIES: "2"
+      RETRY_DELAY: "30"
+      NODE_TTL: "0"
+      BACKEND_URL: ${WORKER_CALLBACK_BASE_URL:-http://backend:8080}
+    volumes:
+      - ./data/engines:/app/engines:ro
+      - ./data/slice_worker_temp:/tmp/slice-worker
+    logging: *default-logging
+
+
+  # ==================== Frontend ====================
+  frontend:
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-frontend:1.0.1
+    container_name: clip-frontend
+    restart: unless-stopped
+    networks:
+      - clip-network
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+    logging: *default-logging
+
+  # ==================== Nginx ====================
+  nginx:
+    image: nginx:1.28-alpine
+    container_name: clip-nginx
+    restart: unless-stopped
+    networks:
+      - clip-network
+    ports:
+      - "12080:80"
+    environment:
+      <<: *common-env
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_healthy
+      autoclip:
+        condition: service_started
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+
+  # ==================== Ollama（本地视觉模型，画面理解用） ====================
+  ollama:
+    image: ollama/ollama:0.32.9
+    container_name: clip-ollama
+    restart: unless-stopped
+    networks:
+      - clip-network
+    volumes:
+      # 模型持久化（openbmb/minicpm-v4.6 约 1.6GB，重建容器不丢）
+      - ./data/ollama:/root/.ollama
+    # 仅容器网络内可达（autoclip 经 clip-network 访问 ollama:11434），不暴露宿主机端口
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
