@@ -398,7 +398,9 @@ type SliceTask struct {
 	// ASR 字幕烧录配置（可选，后端透传；Worker 把 SRT 写到本地后透传给引擎 --subtitle 参数）
 	Subtitle map[string]interface{} `json:"subtitle"`
 	// 固定文字角标配置（可选，后端透传；Worker 直接透传给引擎 --text-overlays 参数）
-	TextOverlays   []map[string]interface{} `json:"text_overlays"`
+	TextOverlays []map[string]interface{} `json:"text_overlays"`
+	// 源视频字幕打码配置（可选，后端透传；Worker 直接透传给引擎 --subtitle-mask 参数）
+	SubtitleMask map[string]interface{} `json:"subtitle_mask"`
 	Output         TaskOutput               `json:"output"`
 	TimeoutSec     int                      `json:"timeout_seconds"`
 	SourceDuration float64                  `json:"source_duration"`

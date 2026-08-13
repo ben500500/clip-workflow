@@ -53,6 +53,11 @@ interface SliceConfigState {
   subtitle_style: 'default' | 'custom';
   subtitle_color: string;
   subtitle_border_color: string;
+  subtitle_mask_enabled: boolean;
+  subtitle_mask_style: 'mosaic' | 'blur' | 'fill';
+  subtitle_mask_width_ratio: number;
+  subtitle_mask_height_ratio: number;
+  subtitle_mask_bottom_ratio: number;
   text_overlay_enabled: boolean;
   text_overlays: { text: string; position: string; font_size: number; color: string; border_color?: string; vertical?: boolean }[];
   watermark_enabled: boolean;
@@ -85,6 +90,11 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   subtitle_style: 'custom',
   subtitle_color: '#EDD736',
   subtitle_border_color: '#000000',
+  subtitle_mask_enabled: false,
+  subtitle_mask_style: 'mosaic',
+  subtitle_mask_width_ratio: 0.9,
+  subtitle_mask_height_ratio: 0.12,
+  subtitle_mask_bottom_ratio: 0.02,
   text_overlay_enabled: true,
   text_overlays: [
     { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000' },
@@ -846,6 +856,26 @@ const BatchSlicePage: React.FC = () => {
                   </>
                 )}
               </>
+            )}
+          </Space>
+
+          <Space size="large">
+            <Text>源字幕打码：</Text>
+            <Switch
+              checked={sliceConfig.subtitle_mask_enabled}
+              onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_mask_enabled: v })}
+            />
+            {sliceConfig.subtitle_mask_enabled && (
+              <Select
+                value={sliceConfig.subtitle_mask_style}
+                onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_mask_style: v })}
+                style={{ width: 110 }}
+                options={[
+                  { value: 'mosaic', label: '马赛克' },
+                  { value: 'blur', label: '模糊' },
+                  { value: 'fill', label: '纯色块' },
+                ]}
+              />
             )}
           </Space>
 

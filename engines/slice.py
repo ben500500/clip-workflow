@@ -136,6 +136,25 @@ def ffprobe_duration(path: str) -> float:
         return 0.0
 
 
+def ffprobe_size(path: str) -> tuple[int, int]:
+    """读取视频分辨率 (width, height)，失败返回 (0, 0)。"""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height",
+             "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        line = (out.stdout or "").strip().splitlines()
+        if line:
+            parts = line[0].split(",")
+            if len(parts) >= 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+                return int(parts[0].strip()), int(parts[1].strip())
+    except Exception:
+        pass
+    return 0, 0
+
+
 def run_ffmpeg(args, timeout=3600, threads=1):
     # 若未显式设置 -threads，则追加（避免并发切片抢占过多 CPU）
     if "-threads" not in args:
@@ -1087,6 +1106,193 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
     run_ffmpeg(cmd, timeout=3600, threads=threads)
 
 
+# ──────────────────────────────────────────────
+# 源视频字幕打码（去片源自带字幕）
+# ──────────────────────────────────────────────
+
+# 默认打码区域（相对输出视频宽/高比例）。字幕通常位于画面底部一条横带，
+# 无需逐帧检测；固定区域 + SRT 时间轴驱动即可，仅在字幕出现时段生效。
+SUBTITLE_MASK_WIDTH_RATIO = 0.9
+SUBTITLE_MASK_HEIGHT_RATIO = 0.12
+SUBTITLE_MASK_BOTTOM_RATIO = 0.02
+# 默认打码样式
+SUBTITLE_MASK_STYLE_DEFAULT = "mosaic"
+# 打码样式集合
+SUBTITLE_MASK_STYLES = ("mosaic", "blur", "fill")
+# 马赛克缩放后的块大小（px），越大马赛克颗粒越粗
+SUBTITLE_MASK_BLOCK = 8
+# 模糊滤镜核大小（px）
+SUBTITLE_MASK_BLUR_RADIUS = 12
+
+
+def _parse_subtitle_mask_config(raw: str | None) -> dict | None:
+    """解析 --subtitle-mask 参数（JSON），未启用返回 None。"""
+    if not raw:
+        return None
+    try:
+        cfg = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(cfg, dict) or not cfg.get("enabled"):
+        return None
+    return cfg
+
+
+def _mask_enable_expr(intervals: list[tuple]) -> str:
+    """把区间列表合并为 enable 表达式。"""
+    terms = [f"between(t,{s:.3f},{e:.3f})" for s, e in intervals]
+    return "+".join(terms)
+
+
+def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple]) -> str:
+    """根据切片源时间段，从源 SRT 生成打码区间（局部时间轴，从 0 开始）。
+
+    seg_times: 按拼接顺序排列的源时间段 [(start, end), ...]，与 build_clip_subtitle 一致。
+    生成的区间时间轴与切片成品一致（从 0 开始），可直接用于 overlay/crop 的 enable。
+    返回 "" 表示该切片内无字幕（无需打码）。
+    """
+    records = read_srt(src_srt)
+    if not records:
+        return ""
+    intervals = []
+    offset = 0.0
+    for start, end in seg_times:
+        for r in records:
+            s = max(float(r["start"]), start)
+            e = min(float(r["end"]), end)
+            if e > s:
+                intervals.append((s - start + offset, e - start + offset))
+        offset += max(0.0, end - start)
+    if not intervals:
+        return ""
+    intervals.sort()
+    merged = []
+    for s, e in intervals:
+        if merged and s <= merged[-1][1] + 0.4:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append([s, e])
+    return _mask_enable_expr(merged)
+
+
+def _subtitle_mask_area(cfg: dict, width: int, height: int) -> tuple[int, int, int, int]:
+    """根据配置计算打码区域 (x, y, w, h)，均为整数像素。
+
+    支持两种定位方式：
+      - 默认比例定位：底部横带，width_ratio / height_ratio / bottom_ratio 相对视频宽高。
+      - 绝对定位：显式提供 x / y / width / height 时直接使用（可覆盖任意位置）。
+    返回的区域会被裁剪回视频边界内。
+    """
+    if width <= 0 or height <= 0:
+        return 0, 0, 0, 0
+
+    def _f(key, default):
+        try:
+            v = cfg.get(key)
+            if v is None or v == "":
+                return default
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
+    if "x" in cfg and "y" in cfg and ("width" in cfg or "w" in cfg) and ("height" in cfg or "h" in cfg):
+        x = int(_f("x", 0))
+        y = int(_f("y", 0))
+        w = int(_f("width", _f("w", 0)))
+        h = int(_f("height", _f("h", 0)))
+    else:
+        w = int(width * _f("width_ratio", SUBTITLE_MASK_WIDTH_RATIO))
+        h = int(height * _f("height_ratio", SUBTITLE_MASK_HEIGHT_RATIO))
+        x = int((width - w) / 2)
+        y = int(height - h - height * _f("bottom_ratio", SUBTITLE_MASK_BOTTOM_RATIO))
+
+    # 边界裁剪
+    if w <= 0 or h <= 0:
+        return 0, 0, 0, 0
+    x = max(0, min(x, width - 1))
+    y = max(0, min(y, height - 1))
+    w = min(w, width - x)
+    h = min(h, height - y)
+    return x, y, w, h
+
+
+def build_subtitle_mask_filter(cfg: dict, enable: str) -> str:
+    """构造源字幕打码 filter_complex 片段（基于 [0:v] 输入，输出标签 [masked]）。
+
+    打码样式：mosaic（马赛克）/ blur（模糊）/ fill（纯色块）。
+    enable 非空时仅在字幕时段生效；为空表示全程打码。
+    """
+    style = (cfg.get("style") or SUBTITLE_MASK_STYLE_DEFAULT).lower()
+    if style not in SUBTITLE_MASK_STYLES:
+        style = SUBTITLE_MASK_STYLE_DEFAULT
+    # 区域坐标在调用方预先按实际分辨率计算好，避免 filter 里写表达式
+    x = int(cfg.get("__x", 0))
+    y = int(cfg.get("__y", 0))
+    w = int(cfg.get("__w", 0))
+    h = int(cfg.get("__h", 0))
+    if w <= 0 or h <= 0:
+        return ""
+    en = f":enable='{enable}'" if enable else ""
+
+    if style == "mosaic":
+        block = int(cfg.get("block") or SUBTITLE_MASK_BLOCK)
+        block = max(2, min(64, block))
+        bw = max(1, w // block)
+        bh = max(1, h // block)
+        return (
+            f"[0:v]split[src][sub];"
+            f"[sub]crop={w}:{h}:{x}:{y},scale={bw}:{bh},scale={w}:{h}"
+            f":flags=neighbor[masked];"
+            f"[src][masked]overlay={x}:{y}{en}[vout]"
+        )
+    if style == "blur":
+        radius = int(cfg.get("blur_radius") or SUBTITLE_MASK_BLUR_RADIUS)
+        radius = max(2, min(64, radius))
+        return (
+            f"[0:v]split[src][sub];"
+            f"[sub]crop={w}:{h}:{x}:{y},boxblur={radius}:1[masked];"
+            f"[src][masked]overlay={x}:{y}{en}[vout]"
+        )
+    # fill：纯色块直接盖住
+    color = str(cfg.get("color") or "black")
+    return f"[0:v]drawbox=x={x}:y={y}:w={w}:h={h}:color={color}:t=fill{en}[vout]"
+
+
+def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict,
+                        enable: str = "",
+                        threads: int = 1, encoder: str = "libx264") -> None:
+    """对成品视频执行一次源字幕打码（固定区域 + 时间轴驱动）。
+
+    cfg: 打码配置 dict，至少含 enabled 与 style；区域定位字段（比例或绝对坐标）。
+    enable: 打码时间轴表达式（局部时间坐标）。空字符串表示全程打码；
+        由调用方根据切片源时间段从源 SRT 计算好传入（build_subtitle_mask_enable）。
+    """
+    width, height = ffprobe_size(video_in)
+    if width <= 0 or height <= 0:
+        # 拿不到分辨率时直接复制，避免生成非法 filter
+        shutil.copy(video_in, video_out)
+        return
+    x, y, w, h = _subtitle_mask_area(cfg, width, height)
+    if w <= 0 or h <= 0:
+        shutil.copy(video_in, video_out)
+        return
+    cfg["__x"], cfg["__y"], cfg["__w"], cfg["__h"] = x, y, w, h
+
+    fc = build_subtitle_mask_filter(cfg, enable)
+    if not fc:
+        shutil.copy(video_in, video_out)
+        return
+
+    cmd = [
+        "ffmpeg", "-y", "-threads", str(threads), "-i", video_in,
+        "-filter_complex", fc,
+        "-map", "[vout]", "-map", "0:a:0?",
+    ]
+    cmd += build_encoder_args(encoder, threads)
+    cmd += ["-c:a", "aac", "-b:a", "128k", video_out]
+    run_ffmpeg(cmd, timeout=3600, threads=threads)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("source")
@@ -1162,6 +1368,11 @@ def main():
         "--subtitle-border-color",
         default=None,
         help="自定义字幕样式下的边框颜色（CSS 十六进制 #RRGGBB，可选）",
+    )
+    parser.add_argument(
+        "--subtitle-mask",
+        default=None,
+        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"srt\":源SRT路径}）。打掉片源自带字幕后，再叠加烧录自己的 ASR 字幕",
     )
     args = parser.parse_args()
 
@@ -1259,6 +1470,14 @@ def main():
     if text_overlays:
         print(f"固定文字角标已开启: {len(text_overlays)} 条", file=sys.stderr)
 
+    # 源视频字幕打码：打掉片源自带字幕后，再烧录自己的 ASR 字幕。
+    # 时间轴复用 args.subtitle（源 SRT）；未提供 SRT 时回退为全程打码。
+    subtitle_mask = _parse_subtitle_mask_config(args.subtitle_mask)
+    if subtitle_mask:
+        if not subtitle_mask.get("srt") and args.subtitle:
+            subtitle_mask["srt"] = args.subtitle
+        print(f"源字幕打码已开启: style={subtitle_mask.get('style') or SUBTITLE_MASK_STYLE_DEFAULT}", file=sys.stderr)
+
     # Group segments by original cut index for scrub mode.
     groups = {}
     for start, end, name, idx in segments:
@@ -1284,10 +1503,24 @@ def main():
                     slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder)
                     parts.append(part)
                 concat_segments(parts, out_path, threads=threads, encoder=encoder)
+                seg_times = [(s, e) for s, e, _ in group]
+                # 源字幕打码：打掉片源自带字幕（在烧录自己的新字幕之前）
+                if subtitle_mask:
+                    mask_out = out_path + ".masked.mp4"
+                    mask_enable = ""
+                    mask_srt = subtitle_mask.get("srt") or args.subtitle
+                    if mask_srt and os.path.isfile(mask_srt):
+                        mask_enable = build_subtitle_mask_enable(mask_srt, seg_times)
+                    # mask_enable 为空：该切片内无字幕（不打码）或未提供 SRT（全程打码）。
+                    # 二者需区分：有 SRT 但切片内无字幕 → 不打码；无 SRT → 全程打码。
+                    if mask_enable or not mask_srt:
+                        apply_subtitle_mask(out_path, mask_out, subtitle_mask,
+                                            enable=mask_enable,
+                                            threads=threads, encoder=encoder)
+                        os.replace(mask_out, out_path)
                 # 字幕烧录：开启后按该切片的源时间段从源 SRT 截取并烧录到成品
                 if args.subtitle:
                     sub_srt = os.path.join(tmp, "clip_subtitle.srt")
-                    seg_times = [(s, e) for s, e, _ in group]
                     build_clip_subtitle(args.subtitle, seg_times, sub_srt, speech_windows)
                     sub_out = out_path + ".sub.mp4"
                     burn_subtitle(out_path, sub_srt, sub_out, threads=threads, encoder=encoder,
