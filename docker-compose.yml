@@ -245,10 +245,8 @@ services:
       <<: *common-env
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
       REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
-    volumes:
-      - ./alembic:/app/alembic:ro
     working_dir: /app
-    command: ["sh", "-c", "alembic -c alembic/alembic.ini upgrade head || echo 'Alembic 迁移跳过（已存在表结构或首次部署由 ORM create_all 建表）'"]
+    command: ["sh", "-c", "alembic -c alembic/alembic.ini upgrade head"]
     logging: *default-logging
 
   backend:

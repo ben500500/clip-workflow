@@ -110,6 +110,9 @@ temp/
 # ==================== 编译产物 ====================
 /slice-worker/slice-worker
 
+# CI 构建时 cp 进来的 alembic 副本（来源是仓库根 alembic/，勿提交副本）
+backend/alembic/
+
 # slice-worker 本地构建产物与配置（含 Redis 密码，严禁提交）
 slice-worker/macos/slice-worker-mac
 slice-worker/macos/worker.json

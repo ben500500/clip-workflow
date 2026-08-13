@@ -28,6 +28,9 @@ v*:
             VERSION="${CNB_BRANCH#v}"
             IMAGE="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/clip-backend"
             echo "Building $IMAGE:$VERSION (from tag $CNB_BRANCH)"
+            # alembic/ 在仓库根（与 backend/ 平级），构建前拷进 backend/ 作为 Docker context 的一部分
+            # （Dockerfile 的 COPY . . 会带上 → 镜像内 /app/alembic；rm -rf 防重跑嵌套）
+            rm -rf backend/alembic && cp -r alembic backend/alembic
             docker build -t "$IMAGE:$VERSION" -t "$IMAGE:latest" ./backend
             docker push "$IMAGE:$VERSION"
             docker push "$IMAGE:latest"
