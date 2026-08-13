@@ -2,6 +2,7 @@
 
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -48,6 +49,38 @@ NODE_CMD_CHANNEL_PREFIX = "slice:node-cmd:"
 
 # 唤醒消息 type 字段固定值
 WAKE_TYPE = "wake"
+
+# 改派原子搬迁 Lua 脚本：把节点专属队列（KEYS[1]）的全部元素按序搬到临时 list（KEYS[2]）。
+# 用 LPOP(队头) → RPUSH(队尾) 保序；脚本由 Redis 单线程原子执行，不会出现「半搬」状态。
+_REQUEUE_MOVE_LUA = """
+local moved = 0
+while true do
+    local v = redis.call('LPOP', KEYS[1])
+    if not v then
+        break
+    end
+    redis.call('RPUSH', KEYS[2], v)
+    moved = moved + 1
+end
+return moved
+"""
+
+# 改派回滚 Lua 脚本：把临时 list（KEYS[1]）的全部元素倒序压回专属队列（KEYS[2]）队头。
+# 临时 list 队头是未投递的最早元素；用 RPOP(队尾)→LPUSH(队头) 倒序压回，
+# 使最早元素最终回到专属队列队头，原始顺序不变。
+_REQUEUE_ROLLBACK_LUA = """
+local n = 0
+while true do
+    local v = redis.call('RPOP', KEYS[1])
+    if not v then
+        break
+    end
+    redis.call('LPUSH', KEYS[2], v)
+    n = n + 1
+end
+redis.call('DEL', KEYS[1])
+return n
+"""
 
 
 def _get_stream(priority: str = "normal") -> str:
@@ -198,30 +231,86 @@ async def get_node_queue_pending(node_id: str) -> list[str]:
 async def requeue_node_queue(node_id: str) -> int:
     """改派：把节点专属队列积压任务全部转投公共 Stream（节点永久下线时用）。
 
-    逐个 RPOP 取出 → XADD 回公共 Stream → 完成后返回转投数量。
+    分两步保证不丢任务：
+    1. 用 Lua 脚本把队列元素一次性原子搬到临时 list（保序、Redis 单线程执行，
+       不存在「RPOP 后 XADD 失败导致任务丢失」的窗口）；
+    2. 再逐条从临时 list 取出 XADD 到公共 Stream——此步失败则把剩余未投递的
+       元素整体回滚回原专属队列（LRPUSH 倒序压回队头，保持原始顺序），
+       不会丢失任何任务。
+
+    Returns:
+        成功转投公共 Stream 的任务数量；异常时返回 0（并回滚未投递部分）。
     """
     redis = None
+    staging_key = None
+    queue_key = None
     try:
         redis = await get_redis()
         queue_key = f"{NODE_QUEUE_PREFIX}{node_id}"
-        count = 0
+        # 每次改派使用独立的临时 list，避免并发改派互相污染
+        staging_key = f"{NODE_QUEUE_PREFIX}{node_id}:staging:{uuid.uuid4().hex}"
+
+        # 1) 原子搬迁：专属队列 → 临时 list（保序）
+        total = int(await redis.eval(_REQUEUE_MOVE_LUA, 2, queue_key, staging_key) or 0)
+        if total == 0:
+            logger.info("Node queue %s is empty, nothing to requeue", node_id)
+            return 0
+
+        stream = _get_stream("normal")
+        committed = 0
+        # 2) 逐条投递公共 Stream，失败即停止并回滚剩余元素
         while True:
-            raw = await redis.rpop(queue_key)
+            raw = await redis.lpop(staging_key)
             if raw is None:
                 break
-            await redis.xadd(
-                _get_stream("normal"),
-                {"data": raw},
-                maxlen=10000,
-                approximate=True,
+            try:
+                await redis.xadd(
+                    stream,
+                    {"data": raw},
+                    maxlen=10000,
+                    approximate=True,
+                )
+                committed += 1
+            except Exception as e:
+                # 本条投递失败：把该条放回临时 list 队头，随剩余元素一起回滚
+                logger.error(
+                    "Failed to XADD requeued task to stream %s: %s", stream, e
+                )
+                await redis.lpush(staging_key, raw)
+                break
+
+        remaining = int(await redis.llen(staging_key) or 0)
+        if remaining > 0:
+            # 回滚：把临时 list 剩余元素按原始顺序压回专属队列队头
+            await redis.eval(_REQUEUE_ROLLBACK_LUA, 2, staging_key, queue_key)
+            logger.warning(
+                "Requeue node queue %s partially failed: %d/%d committed, %d rolled back",
+                node_id, committed, total, remaining,
             )
-            count += 1
-        logger.info("Requeued %d tasks from node queue %s to public stream", count, node_id)
-        return count
+            return committed
+
+        logger.info(
+            "Requeued %d tasks from node queue %s to public stream", committed, node_id
+        )
+        return committed
     except Exception as e:
         logger.error(f"Failed to requeue node queue {node_id}: {e}")
+        # 兜底：若临时 list 里仍有元素（搬迁成功但后续异常），尝试整体回滚
+        if redis is not None and staging_key:
+            try:
+                await redis.eval(_REQUEUE_ROLLBACK_LUA, 2, staging_key, queue_key)
+            except Exception as rb:
+                logger.error(
+                    "Failed to rollback staging list for node %s: %s", node_id, rb
+                )
         return 0
     finally:
+        # 清理临时 list（正常情况下应已为空），失败仅告警不影响主流程
+        if redis is not None and staging_key:
+            try:
+                await redis.delete(staging_key)
+            except Exception:
+                pass
         if redis:
             await redis.close()
 
