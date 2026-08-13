@@ -93,6 +93,14 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		args = append(args, "--encoder", task.Encoder)
 	}
 
+	// 去重档位配置：后端下发的 dedupe_config（如 {"preset":"light|standard|heavy"}）
+	// JSON 透传给引擎 --dedupe-config，引擎按档位构造老电视质感去重滤镜链。
+	if task.DedupeConfig != nil && len(task.DedupeConfig) > 0 {
+		if dcBytes, err := json.Marshal(task.DedupeConfig); err == nil {
+			args = append(args, "--dedupe-config", string(dcBytes))
+		}
+	}
+
 	// 竖屏转横屏预处理：后端下发的 vert2horiz 配置（JSON 透传给引擎 --vert2horiz）
 	if task.Vert2Horiz != nil && len(task.Vert2Horiz) > 0 {
 		v2hBytes, err := json.Marshal(task.Vert2Horiz)

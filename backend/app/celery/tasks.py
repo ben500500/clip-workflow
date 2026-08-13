@@ -517,6 +517,7 @@ def slice_task(
                     subtitle_color=subtitle_color,
                     subtitle_border_color=subtitle_border_color,
                     text_overlays_config=text_overlays_config,
+                    dedupe_config=dedupe_config,
                     subtitle_mask_config=subtitle_mask_config,
                 )
             )
@@ -540,6 +541,7 @@ def slice_task(
                     subtitle_color=subtitle_color,
                     subtitle_border_color=subtitle_border_color,
                     text_overlays_config=text_overlays_config,
+                    dedupe_config=dedupe_config,
                     subtitle_mask_config=subtitle_mask_config,
                 )
             )
