@@ -1301,6 +1301,18 @@ SUBTITLE_MASK_BLUR_RADIUS = 12
 SUBTITLE_MASK_DETECT_MAX_FRAMES = 10
 
 
+def _mask_text_clusters(mask):
+    """向量化统计每行的"文字簇"数量（横向连续非零段）。
+
+    字幕文字带区别于人物/背景的关键：一行内会分布多个相互分离的文字笔画簇
+    （每个汉字一个簇，簇间有空隙），而人物服装/大块色块往往只有少数连续簇。
+    mask: (H, W) 布尔掩码。返回长度为 H 的数组，值为每行文字簇个数。
+    """
+    import numpy as np
+    starts = np.hstack([mask[:, :1], (mask[:, 1:] & ~mask[:, :-1])])
+    return starts.sum(axis=1)
+
+
 def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int, int, int]]:
     """用 OpenCV 从源视频采样帧自动检测字幕文字区域。
 
@@ -1308,8 +1320,15 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
     不可用时返回 None（由调用方回退到固定比例区域）。
 
     采样时机：有 SRT 时取 SRT 出现的时刻（字幕在场），无 SRT 时均匀采样全程。
-    检测原理：字幕是一条集中的文字横带，按行统计边缘密度找到最高密度横带，
-    再在带内按列找到文字横向范围。对「底部/居中偏下/顶部」任意位置都自适应。
+
+    检测原理（文字簇投票，针对金色/黄色等彩色字幕更可靠）：
+      旧实现按 Canny 边缘密度找"最高密度横带"，在人物画面里容易被服装/背景的
+      密集边缘误导而打偏（尤其金色/黄色字幕在复杂画面上边缘梯度弱）。
+      本实现改用"颜色 + 文字簇"判别：
+        - 颜色通道：金色/黄色 + 白色/浅色字幕（字幕最常见的两种配色）
+        - 文字簇特征：一行内横向分布的独立文字笔画簇数量——字幕文字带总是
+          有多个文字簇（每个字一个簇），而人物/装饰大块区域簇数很少。
+        - 跨帧累积投票 + 位置偏下优先，对「底部/居中偏下/顶部」任意位置自适应。
     """
     width, height = ffprobe_size(video)
     if width <= 0 or height <= 0:
@@ -1324,14 +1343,13 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
     times = []
     records = read_srt(srt) if srt and os.path.isfile(srt) else []
     if records:
-        # 每条字幕取一个代表时刻（中段），最多 SUBTITLE_MASK_DETECT_MAX_FRAMES 条
         sample = records[:SUBTITLE_MASK_DETECT_MAX_FRAMES]
         times = [max(0.0, (float(r["start"]) + float(r["end"])) / 2.0) for r in sample]
     else:
         dur = ffprobe_duration(video)
         if not dur or dur <= 0:
             return None
-        n = min(SUBTITLE_MASK_DETECT_MAX_FRAMES, max(4, int(dur)))
+        n = min(SUBTITLE_MASK_DETECT_MAX_FRAMES, max(6, int(dur)))
         times = [dur * (i + 0.5) / n for i in range(n)]
 
     cap = None
@@ -1339,62 +1357,85 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
         cap = cv2.VideoCapture(video)
         if not cap.isOpened():
             return None
-        row_score = np.zeros(height, dtype=np.float64)
+        cluster_score = np.zeros(height, dtype=np.float64)
+        dens = np.zeros(height, dtype=np.float64)
+        color_acc = np.zeros((height, width), dtype=np.float64)
         frames = 0
         for t in times:
             cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000.0)
             ok, frame = cap.read()
             if not ok or frame is None:
                 continue
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray, 60, 160)
-            row_score += edges.sum(axis=1)
+            b = frame[:, :, 0].astype(np.int16)
+            g = frame[:, :, 1].astype(np.int16)
+            r = frame[:, :, 2].astype(np.int16)
+            # 金色/黄色字幕（R 高、G 高、B 低，R/G 接近）
+            gold = (r > 130) & (g > 110) & (b < 160) & (r - b > 50) & (g - b > 40) & (abs(r - g) < 110)
+            # 白色/浅色字幕
+            white = (r > 170) & (g > 170) & (b > 170) & (abs(r - g) < 45) & (abs(g - b) < 45) & (abs(r - b) < 45)
+            mask = gold | white
+            dens += mask.sum(axis=1)
+            cluster_score += _mask_text_clusters(mask)
+            color_acc += mask.astype(np.float64)
             frames += 1
         if frames == 0:
             return None
-        row_score /= float(frames)
+        cluster_score /= float(frames)
+        dens /= float(frames)
 
-        # 行分数平滑后，找一条高密度文字横带
+        # 无实际内容的位置不计入文字簇（避免噪声）
+        combo = cluster_score.copy()
+        combo[dens < 0.5] = 0.0
         k = np.ones(7, dtype=np.float64) / 7.0
-        smooth = np.convolve(row_score, k, mode="same")
+        smooth = np.convolve(combo, k, mode="same")
         peak = float(smooth.max())
-        if peak <= 1e-6:
+        if peak < 1.0:
             return None
-        win = max(8, int(height * 0.08))
-        best_start, best_val = 0, -1.0
-        for y in range(0, height - win, 2):
-            v = float(smooth[y:y + win].sum())
-            if v > best_val:
-                best_val, best_start = v, y
-        thr = peak * 0.3
-        rows = [y for y in range(best_start, best_start + win) if smooth[y] > thr]
-        if not rows:
-            return None
-        # 横带上下各多扩一些余量，确保覆盖字幕文字的完整高度（含描边/下延），
-        # 避免 delogo 区域偏窄导致字幕边缘残留。
-        y_pad = max(10, int(height * 0.02))
-        y0 = max(0, min(rows) - y_pad)
-        y1 = min(height - 1, max(rows) + y_pad)
 
-        # 在横带内按列找文字横向范围
-        col_score = np.zeros(width, dtype=np.float64)
-        for t in times:
-            cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000.0)
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                continue
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray, 60, 160)
-            col_score += edges[y0:y1 + 1, :].sum(axis=0)
-        col_peak = float(col_score.max())
-        if col_peak <= 1e-6:
+        # 按文字簇强度找候选横带
+        thr = peak * 0.3
+        ys = np.where(smooth > thr)[0]
+        if ys.size == 0:
             return None
-        cols = np.where(col_score > col_peak * 0.12)[0]
+        bands = []
+        s = int(ys[0]); p = int(ys[0])
+        for y in ys[1:]:
+            if int(y) - p > 5:
+                bands.append((s, p)); s = int(y)
+            p = int(y)
+        bands.append((s, p))
+
+        # 打分：文字簇峰值 × 高度紧凑度 × 位置偏下优先
+        candidates = []
+        for y0, y1 in bands:
+            h = y1 - y0 + 1
+            val = float(smooth[y0:y1 + 1].max())
+            compact = 1.0 if 15 <= h <= 130 else (0.4 if h < 15 else 0.15)
+            score = val * compact
+            if y0 > height * 0.3:
+                score *= 1.3
+            candidates.append((score, val, y0, y1, h))
+        if not candidates:
+            return None
+        candidates.sort(reverse=True)
+        _, _, y0, y1, h = candidates[0]
+
+        # 上下扩展余量（向下更多，覆盖描边/换行/下延），确保 delogo 完整补平
+        up = max(10, int(h * 0.3))
+        down = max(16, int(h * 0.5))
+        y0 = max(0, y0 - up)
+        y1 = min(height - 1, y1 + down)
+
+        # 横向范围
+        col = color_acc[y0:y1 + 1, :].sum(axis=0)
+        col_peak = float(col.max())
+        if col_peak <= 1:
+            return 0, y0, width, (y1 - y0)
+        cols = np.where(col > col_peak * 0.1)[0]
         if cols.size == 0:
-            return None
-        x_pad = max(12, int(width * 0.01))
-        x0 = max(0, int(cols.min()) - x_pad)
-        x1 = min(width - 1, int(cols.max()) + x_pad)
+            return 0, y0, width, (y1 - y0)
+        x0 = max(0, int(cols.min()) - 10)
+        x1 = min(width - 1, int(cols.max()) + 10)
         return x0, y0, (x1 - x0), (y1 - y0)
     finally:
         if cap is not None:
@@ -1522,6 +1563,97 @@ def detect_subtitle_temporal_windows(video: str, region: tuple[int, int, int, in
             cap.release()
 
 
+# 空间精细化（仅字幕显示区域）检测参数：
+# 在 temporal 已定位的每个时间窗口内，进一步找出该窗口字幕文字实际占用的
+# 横向范围，只对这些小块区域打码，而不把整条横带都盖住。
+# 单窗口内采样帧数上限（越多越稳，但越慢）。
+SUBTITLE_MASK_SPATIAL_MAX_FRAMES = 5
+# 子区域横向检测阈值（相对该窗口最大列内容得分的比例）。
+SUBTITLE_MASK_SPATIAL_CONTRAST_RATIO = 0.12
+
+
+def detect_subtitle_spatial_regions(video: str, region: tuple[int, int, int, int],
+                                    temporal_windows: list[tuple]) -> Optional[list[tuple]]:
+    """对每个时间窗口，在横带区域内进一步检测字幕文字实际占用的横向范围。
+
+    region: 整体横带区域 (x, y, w, h)（源分辨率，temporal 检测所用同一区域）。
+    temporal_windows: [(start, end), ...] 源时间窗口（秒）。
+
+    返回 [(start, end, x, w), ...]：每个窗口对应的文字子区域 (x, w) 为该窗口
+    字幕文字实际占用的横向范围（x 为绝对列坐标，w 为宽度，均源分辨率）。
+    检测失败或无内容返回 None（由调用方回退为整条横带打码）。
+    """
+    x, y, w, h = region
+    if w <= 0 or h <= 0 or not temporal_windows:
+        return None
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+    vw, vh = ffprobe_size(video)
+    if vw <= 0 or vh <= 0:
+        return None
+    x0, x1 = max(0, x), min(x + w - 1, vw - 1)
+    y0, y1 = max(0, y), min(y + h - 1, vh - 1)
+    band_w = max(1, x1 - x0 + 1)
+    cap = None
+    try:
+        cap = cv2.VideoCapture(video)
+        if not cap.isOpened():
+            return None
+        result = []
+        for (s, e) in temporal_windows:
+            mid = (s + e) / 2.0
+            dur = max(0.05, e - s)
+            n = min(SUBTITLE_MASK_SPATIAL_MAX_FRAMES, max(2, int(dur)))
+            times = [max(0.0, mid + (i - (n - 1) / 2.0) * (dur / max(1, n - 1)))
+                     for i in range(n)]
+            col_acc = np.zeros(band_w, dtype=np.float64)
+            any_color = False
+            for t in times:
+                cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    continue
+                b = frame[y0:y1 + 1, x0:x1 + 1, 0].astype(np.int16)
+                g = frame[y0:y1 + 1, x0:x1 + 1, 1].astype(np.int16)
+                r = frame[y0:y1 + 1, x0:x1 + 1, 2].astype(np.int16)
+                gold = (r > 130) & (g > 110) & (b < 160) & (r - b > 50) & \
+                       (g - b > 40) & (abs(r - g) < 110)
+                white = (r > 170) & (g > 170) & (b > 170) & (abs(r - g) < 45) & \
+                        (abs(g - b) < 45) & (abs(r - b) < 45)
+                mask = gold | white
+                if bool(mask.any()):
+                    any_color = True
+                col_acc += mask.sum(axis=0)
+            if not any_color:
+                # 该窗口未检出彩色字幕，用灰度边缘兜底定位文字横向范围。
+                for t in times:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        continue
+                    gray = cv2.cvtColor(frame[y0:y1 + 1, x0:x1 + 1],
+                                        cv2.COLOR_BGR2GRAY)
+                    edges = cv2.Canny(gray, 60, 160)
+                    col_acc += edges.sum(axis=0)
+            peak = float(col_acc.max())
+            if peak <= 1e-6:
+                continue
+            cols = np.where(col_acc > peak * SUBTITLE_MASK_SPATIAL_CONTRAST_RATIO)[0]
+            if cols.size == 0:
+                continue
+            pad = max(8, int(w * 0.02))
+            sx = max(0, x0 + int(cols.min()) - pad)
+            ex = min(vw - 1, x0 + int(cols.max()) + pad)
+            result.append((s, e, sx, ex - sx + 1))
+        return result if result else None
+    finally:
+        if cap is not None:
+            cap.release()
+
+
 def _parse_subtitle_mask_config(raw: str | None) -> dict | None:
     """解析 --subtitle-mask 参数（JSON），未启用返回 None。"""
     if not raw:
@@ -1570,6 +1702,46 @@ def _source_intervals_to_local_enable(src_intervals: list[tuple], seg_times: lis
         else:
             merged.append([s, e])
     return _mask_enable_expr(merged)
+
+
+def _spatial_windows_to_local(src_windows: list[tuple], seg_times: list[tuple],
+                              cfg: dict, width: int) -> list[tuple]:
+    """把空间精细化窗口（源时间轴 + 源分辨率子区域）转换为切片局部坐标。
+
+    src_windows: [(源_start, 源_end, 源_x, 源_w), ...]，源_x 为绝对列坐标（源分辨率）。
+    seg_times: 切片源时间段 [(start, end), ...]。
+    cfg: 打码配置（含 __detect_w/__detect_h 用于把源分辨率子区域等比缩放到切片分辨率）。
+    width: 切片分辨率宽度。
+
+    返回 [(局部_start, 局部_end, 局部_x, 局部_w), ...]，供 build_subtitle_mask_filter_multi 使用。
+    """
+    dw = int(cfg.get("__detect_w", 0))
+    out = []
+    for (s0, e0, sx, sw) in src_windows:
+        if dw > 0 and dw != width:
+            ax = int(round(sx * width / dw))
+            aw = max(1, int(round(sw * width / dw)))
+        else:
+            ax = sx
+            aw = sw
+        if ax >= width or ax + aw <= 0:
+            continue
+        offset = 0.0
+        for start, end in seg_times:
+            ls = max(s0, start)
+            le = min(e0, end)
+            if le > ls:
+                out.append((ls - start + offset, le - start + offset, ax, aw))
+            offset += max(0.0, end - start)
+    # 去重/合并相邻（同子区域）局部区间
+    out.sort()
+    result = []
+    for s, e, x, w in out:
+        if result and abs(result[-1][0] - s) < 0.01 and result[-1][2] == x and result[-1][3] == w:
+            result[-1] = (result[-1][0], max(result[-1][1], e), x, w)
+        else:
+            result.append((s, e, x, w))
+    return result
 
 
 def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple]) -> str:
@@ -1683,14 +1855,104 @@ def build_subtitle_mask_filter(cfg: dict, enable: str) -> str:
     return f"[0:v]drawbox=x={x}:y={y}:w={w}:h={h}:color={color}:t=fill{en}[vout]"
 
 
+def build_subtitle_mask_filter_multi(cfg: dict, windows: list[tuple],
+                                     y: int, h: int, width: int) -> str:
+    """构造「仅字幕显示区域」多窗口打码 filter_complex（基于 [0:v]，输出 [vout]）。
+
+    windows: [(local_s, local_e, x, w), ...]，局部时间轴（从 0 开始）与切片分辨率
+        坐标；每个窗口只在各自时间段、各自横向子区域打码，而不是整条横带都盖住。
+        x 为切片分辨率下的绝对列坐标。
+    y/h: 横带区域在切片分辨率的纵向位置与高度（各窗口纵向一致，字幕单行高度固定）。
+    width: 视频宽度（用于边界裁剪）。
+
+    各样式实现：
+      delogo 直接串联多个 delogo（各带 enable）；
+      mosaic/blur 用多路 split+crop+overlay 分支链式叠加；
+      fill 串联多个 drawbox（各带 enable）。
+    """
+    style = (cfg.get("style") or SUBTITLE_MASK_STYLE_DEFAULT).lower()
+    if style not in SUBTITLE_MASK_STYLES:
+        style = SUBTITLE_MASK_STYLE_DEFAULT
+
+    def _clip(x, w, width):
+        x = max(0, x)
+        w = max(1, min(w, width - x))
+        return x, w
+
+    items = []
+    for (s, e, x, w) in windows:
+        x, w = _clip(x, w, width)
+        if w <= 0:
+            continue
+        items.append((max(0.0, s), max(0.0, e), x, w))
+    if not items:
+        return ""
+
+    # delogo 要求区域不贴边（需留至少 1px 边界用于周围像素插值），否则会报
+    # "Logo area is outside of the frame" 导致转码失败；对 delogo 子区域做边界钳制。
+    if style == "delogo":
+        for i, (s, e, x, w) in enumerate(items):
+            if x < 1:
+                w = max(1, w - (1 - x))
+                x = 1
+            if x + w > width - 1:
+                w = max(1, (width - 1) - x)
+            items[i] = (s, e, x, w)
+        chain = []
+        for s, e, x, w in items:
+            en = f"between(t,{s:.3f},{e:.3f})"
+            chain.append(f"delogo=x={x}:y={y}:w={w}:h={h}:enable='{en}'")
+        return "[0:v]" + ",".join(chain) + "[vout]"
+    if style == "fill":
+        color = str(cfg.get("color") or "black")
+        chain = []
+        for s, e, x, w in items:
+            en = f"between(t,{s:.3f},{e:.3f})"
+            chain.append(
+                f"drawbox=x={x}:y={y}:w={w}:h={h}:color={color}:t=fill:enable='{en}'")
+        return "[0:v]" + ",".join(chain) + "[vout]"
+    # mosaic / blur：多路 split + 逐窗口 crop/scale + 链式 overlay
+    block = int(cfg.get("block") or SUBTITLE_MASK_BLOCK)
+    block = max(2, min(64, block))
+    radius = int(cfg.get("blur_radius") or SUBTITLE_MASK_BLUR_RADIUS)
+    radius = max(2, min(64, radius))
+    n = len(items)
+    split = f"[0:v]split={n + 1}[base]" + "".join(f"[w{i}]" for i in range(n)) + ";"
+    parts = []
+    for i, (s, e, x, w) in enumerate(items):
+        if style == "mosaic":
+            bw = max(1, w // block)
+            bh = max(1, h // block)
+            op = f"scale={bw}:{bh},scale={w}:{h}:flags=neighbor"
+        else:
+            op = f"boxblur={radius}:1"
+        parts.append(f"[w{i}]crop={w}:{h}:{x}:{y},{op}[m{i}];")
+    prev = "[base]"
+    for i, (s, e, x, w) in enumerate(items):
+        en = f"between(t,{s:.3f},{e:.3f})"
+        if i < n - 1:
+            parts.append(f"{prev}[m{i}]overlay={x}:{y}:enable='{en}'[v{i + 1}];")
+            prev = f"[v{i + 1}]"
+        else:
+            parts.append(f"{prev}[m{i}]overlay={x}:{y}:enable='{en}'[vout]")
+    return split + "".join(parts)
+
+
 def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict,
                         enable: str = "",
+                        spatial_windows: Optional[list[tuple]] = None,
+                        seg_times: Optional[list[tuple]] = None,
                         threads: int = 1, encoder: str = "libx264") -> None:
     """对成品视频执行一次源字幕打码（固定区域 + 时间轴驱动）。
 
     cfg: 打码配置 dict，至少含 enabled 与 style；区域定位字段（比例或绝对坐标）。
     enable: 打码时间轴表达式（局部时间坐标）。空字符串表示全程打码；
         由调用方根据切片源时间段从源 SRT 计算好传入（build_subtitle_mask_enable）。
+    spatial_windows: 空间精细化（仅字幕显示区域打码）窗口列表，元素为
+        (源_start, 源_end, 源_x, 源_w)。每个窗口只在各自时间段、各自字幕文字实际
+        占用的横向子区域打码，而不是整条横带都盖住。提供了则以它为准（忽略 enable）。
+    seg_times: 切片源时间段 [(start, end), ...]，用于把 spatial_windows 的源时间
+        轴转换为切片局部时间轴。
     """
     width, height = ffprobe_size(video_in)
     if width <= 0 or height <= 0:
@@ -1701,9 +1963,29 @@ def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict,
     if w <= 0 or h <= 0:
         shutil.copy(video_in, video_out)
         return
+    # delogo 滤镜要求区域完全在画面内且不贴边（需留至少 1px 边界用于周围像素插值）：
+    #   x>=1, y>=1, x+w<=width-1, y+h<=height-1。
+    # 否则会报 "Logo area is outside of the frame" 导致整次转码失败。
+    style = (cfg.get("style") or SUBTITLE_MASK_STYLE_DEFAULT).lower()
+    if style not in SUBTITLE_MASK_STYLES:
+        style = SUBTITLE_MASK_STYLE_DEFAULT
+    if style == "delogo":
+        if x < 1:
+            w = max(1, w - (1 - x)); x = 1
+        if y < 1:
+            h = max(1, h - (1 - y)); y = 1
+        if x + w > width - 1:
+            w = max(1, (width - 1) - x)
+        if y + h > height - 1:
+            h = max(1, (height - 1) - y)
     cfg["__x"], cfg["__y"], cfg["__w"], cfg["__h"] = x, y, w, h
 
-    fc = build_subtitle_mask_filter(cfg, enable)
+    # 空间精细化：仅对字幕文字实际占用的子区域打码。
+    if spatial_windows:
+        local = _spatial_windows_to_local(spatial_windows, seg_times or [], cfg, width)
+        fc = build_subtitle_mask_filter_multi(cfg, local, y, h, width)
+    else:
+        fc = build_subtitle_mask_filter(cfg, enable)
     if not fc:
         shutil.copy(video_in, video_out)
         return
@@ -1803,7 +2085,7 @@ def main():
     parser.add_argument(
         "--subtitle-mask",
         default=None,
-        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"srt\":打码时间轴SRT路径}）。默认 delogo（去水印），开启后自动检测字幕位置。独立开关，仅打掉片源自带字幕",
+        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"temporal\":bool, \"spatial\":bool, \"srt\":打码时间轴SRT路径}）。默认 delogo（去水印），开启后自动检测字幕位置。temporal=帧级精细化（只在出现时段打码），spatial=仅字幕显示区域打码（需 temporal 开启）。独立开关，仅打掉片源自带字幕",
     )
     args = parser.parse_args()
 
@@ -1952,6 +2234,15 @@ def main():
             if tw:
                 subtitle_mask["__temporal_windows"] = tw
                 print(f"源字幕打码帧级检测: {len(tw)} 个出现时段", file=sys.stderr)
+                # 空间精细化（仅字幕显示区域打码）：在每个出现时段内进一步检测
+                # 字幕文字实际占用的横向范围，只对这些小块区域打码（需 temporal 开启）。
+                if subtitle_mask.get("spatial"):
+                    spatial = detect_subtitle_spatial_regions(source_path, region, tw)
+                    if spatial:
+                        subtitle_mask["__spatial_windows"] = spatial
+                        print(f"源字幕打码空间精细化: {len(spatial)} 个文字子区域", file=sys.stderr)
+                    else:
+                        print("源字幕打码空间精细化未命中，回退整条横带打码", file=sys.stderr)
             else:
                 print("源字幕打码帧级检测未命中，回退 SRT 时间轴或全程打码", file=sys.stderr)
 
@@ -1990,7 +2281,16 @@ def main():
                     tw = subtitle_mask.get("__temporal_windows") or []
                     mask_srt = subtitle_mask.get("srt") or args.subtitle
                     mask_srt_exists = bool(mask_srt) and os.path.isfile(mask_srt)
-                    if tw:
+                    # 空间精细化（仅字幕显示区域打码）：在每个出现时段内只对字幕文字
+                    # 实际占用的横向子区域打码，而不把整条横带都盖住。
+                    spatial = subtitle_mask.get("__spatial_windows") or []
+                    if spatial:
+                        apply_subtitle_mask(out_path, mask_out, subtitle_mask,
+                                            spatial_windows=spatial,
+                                            seg_times=seg_times,
+                                            threads=threads, encoder=encoder)
+                        os.replace(mask_out, out_path)
+                    elif tw:
                         mask_enable = _source_intervals_to_local_enable(tw, seg_times)
                     elif mask_srt_exists:
                         mask_enable = build_subtitle_mask_enable(mask_srt, seg_times)
@@ -1998,7 +2298,7 @@ def main():
                     # 二者需区分：有可靠时间轴（SRT/temporal）但切片内无内容 → 不打码；
                     # 无时间轴且无 temporal 命中 → 全程打码（保持区域全程盖住，速度快）。
                     has_timeline = bool(tw) or mask_srt_exists
-                    if mask_enable or not has_timeline:
+                    if not spatial and (mask_enable or not has_timeline):
                         apply_subtitle_mask(out_path, mask_out, subtitle_mask,
                                             enable=mask_enable,
                                             threads=threads, encoder=encoder)

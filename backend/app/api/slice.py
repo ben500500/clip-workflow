@@ -193,6 +193,10 @@ class SliceRunRequest(BaseModel):
     # 精细化（帧级检测）开关：开启后只在字幕/水印实际出现的时段打码，
     # 画面其余时间零改动（处理较慢，但更精细）；关闭则用 SRT 时间轴或全程打码（快）。
     subtitle_mask_temporal: bool = False
+    # 仅字幕显示区域打码（空间精细化）开关：需在 subtitle_mask_temporal 开启后才能开启。
+    # 开启后，在每个字幕出现时段内只对字幕文字实际占用的那部分横向区域打码，
+    # 而不是把整条横带都盖住（更精细，处理更慢）。
+    subtitle_mask_spatial: bool = False
     # 打码区域（相对输出视频宽高比例，可选，默认宽度 0.9 / 高度 0.12）
     subtitle_mask_width_ratio: Optional[float] = None
     subtitle_mask_height_ratio: Optional[float] = None
@@ -478,6 +482,9 @@ def _build_subtitle_mask_config(data: SliceRunRequest, source_srt: Optional[str]
     cfg["style"] = style
     # 精细化（帧级检测）：只在字幕/水印实际出现的时段打码。
     cfg["temporal"] = bool(getattr(data, "subtitle_mask_temporal", False))
+    # 仅字幕显示区域打码（空间精细化）：只在字幕文字实际占用的横向子区域打码。
+    # 需 temporal 开启才生效（引擎侧仅在 temporal 模式下启用该能力）。
+    cfg["spatial"] = bool(getattr(data, "subtitle_mask_spatial", False))
     if data.subtitle_mask_width_ratio is not None:
         cfg["width_ratio"] = max(0.1, min(1.0, float(data.subtitle_mask_width_ratio)))
     if data.subtitle_mask_height_ratio is not None:
