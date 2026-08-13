@@ -287,6 +287,7 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
         "subtitle_enabled", "subtitle_font_ratio", "subtitle_spacing", "subtitle_style",
         "subtitle_color", "subtitle_border_color", "text_overlays",
         "subtitle_mask_enabled", "subtitle_mask_style", "subtitle_mask_temporal",
+        "subtitle_mask_spatial",
         "subtitle_mask_width_ratio", "subtitle_mask_height_ratio", "subtitle_mask_bottom_ratio",
         "output_id", "cut_start", "cut_end",
     }

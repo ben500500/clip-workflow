@@ -84,6 +84,9 @@ export const sliceApi = {
       subtitle_mask_style?: 'delogo' | 'mosaic' | 'blur' | 'fill';
       // 精细化（帧级检测）：只在字幕/水印实际出现的时段打码
       subtitle_mask_temporal?: boolean;
+      // 仅字幕显示区域打码（空间精细化）：需开启 temporal 后才能开启，
+      // 只对字幕文字实际占用的横向子区域打码，而不是整条横带都盖住。
+      subtitle_mask_spatial?: boolean;
       subtitle_mask_width_ratio?: number;
       subtitle_mask_height_ratio?: number;
       subtitle_mask_bottom_ratio?: number;

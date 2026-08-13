@@ -106,6 +106,7 @@ interface SlicePreset {
   subtitle_mask_enabled: boolean;
   subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'fill';
   subtitle_mask_temporal: boolean;
+  subtitle_mask_spatial: boolean;
   subtitle_mask_width_ratio: number;
   subtitle_mask_height_ratio: number;
   subtitle_mask_bottom_ratio: number;
@@ -145,6 +146,7 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   subtitle_mask_enabled: false,
   subtitle_mask_style: 'delogo',
   subtitle_mask_temporal: true,
+  subtitle_mask_spatial: false,
   subtitle_mask_width_ratio: 0.9,
   subtitle_mask_height_ratio: 0.12,
   subtitle_mask_bottom_ratio: 0.02,
@@ -222,6 +224,8 @@ const EpisodeDetail: React.FC = () => {
   const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'fill'>('delogo');
   // 精细化（帧级检测）：只在字幕/水印实际出现的时段打码
   const [subtitleMaskTemporal, setSubtitleMaskTemporal] = useState(true);
+  // 仅字幕显示区域打码（空间精细化）：需开启精细化后才能开启
+  const [subtitleMaskSpatial, setSubtitleMaskSpatial] = useState(false);
   const [subtitleMaskWidthRatio, setSubtitleMaskWidthRatio] = useState(0.9);
   const [subtitleMaskHeightRatio, setSubtitleMaskHeightRatio] = useState(0.12);
   const [subtitleMaskBottomRatio, setSubtitleMaskBottomRatio] = useState(0.02);
@@ -414,6 +418,7 @@ const EpisodeDetail: React.FC = () => {
     subtitle_mask_enabled: subtitleMaskEnabled,
     subtitle_mask_style: subtitleMaskStyle,
     subtitle_mask_temporal: subtitleMaskTemporal,
+    subtitle_mask_spatial: subtitleMaskTemporal ? subtitleMaskSpatial : false,
     subtitle_mask_width_ratio: subtitleMaskWidthRatio,
     subtitle_mask_height_ratio: subtitleMaskHeightRatio,
     subtitle_mask_bottom_ratio: subtitleMaskBottomRatio,
@@ -446,6 +451,7 @@ const EpisodeDetail: React.FC = () => {
     setSubtitleMaskEnabled(p.subtitle_mask_enabled ?? false);
     setSubtitleMaskStyle(p.subtitle_mask_style ?? 'delogo');
     setSubtitleMaskTemporal(p.subtitle_mask_temporal ?? true);
+    setSubtitleMaskSpatial(p.subtitle_mask_spatial ?? false);
     setSubtitleMaskWidthRatio(p.subtitle_mask_width_ratio ?? 0.9);
     setSubtitleMaskHeightRatio(p.subtitle_mask_height_ratio ?? 0.12);
     setSubtitleMaskBottomRatio(p.subtitle_mask_bottom_ratio ?? 0.02);
@@ -1008,6 +1014,7 @@ const EpisodeDetail: React.FC = () => {
         subtitle_mask_enabled: subtitleMaskEnabled,
         subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
         subtitle_mask_temporal: subtitleMaskEnabled ? subtitleMaskTemporal : undefined,
+        subtitle_mask_spatial: (subtitleMaskEnabled && subtitleMaskTemporal) ? subtitleMaskSpatial : undefined,
         subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
         subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
         subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
@@ -1139,6 +1146,7 @@ const EpisodeDetail: React.FC = () => {
         subtitle_mask_enabled: subtitleMaskEnabled,
         subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
         subtitle_mask_temporal: subtitleMaskEnabled ? subtitleMaskTemporal : undefined,
+        subtitle_mask_spatial: (subtitleMaskEnabled && subtitleMaskTemporal) ? subtitleMaskSpatial : undefined,
         subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
         subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
         subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
@@ -1846,6 +1854,18 @@ const EpisodeDetail: React.FC = () => {
                   <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
                 </Tooltip>
               </Space>
+              <Space wrap align="center" size={8}>
+                <Switch
+                  size="small"
+                  checked={subtitleMaskSpatial}
+                  disabled={!subtitleMaskTemporal}
+                  onChange={setSubtitleMaskSpatial}
+                />
+                <Text strong style={{ fontSize: 13, opacity: subtitleMaskTemporal ? 1 : 0.4 }}>仅字幕显示区域打码</Text>
+                <Tooltip title="需开启「精细化」后才能开启。开启后，在每个字幕出现时段内只对字幕文字实际占用的那部分横向区域打码，而不把整条横带都盖住（更精细，处理更慢）。">
+                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                </Tooltip>
+              </Space>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {subtitleMaskTemporal
                   ? '精细化：只在字幕/水印实际出现的时段打码，其余画面不动（推荐）。'
@@ -2389,6 +2409,8 @@ const EpisodeDetail: React.FC = () => {
                 <InputNumber size="small" min={0} max={0.5} step={0.01} value={subtitleMaskBottomRatio} onChange={(v) => setSubtitleMaskBottomRatio(v ?? 0.02)} style={{ width: 70 }} />
                 <Switch size="small" checked={subtitleMaskTemporal} onChange={setSubtitleMaskTemporal} />
                 <Text type="secondary" style={{ fontSize: 12 }}>{subtitleMaskTemporal ? '精细化' : '快速'}</Text>
+                <Switch size="small" checked={subtitleMaskSpatial} disabled={!subtitleMaskTemporal} onChange={setSubtitleMaskSpatial} />
+                <Text type="secondary" style={{ fontSize: 12, opacity: subtitleMaskTemporal ? 1 : 0.4 }}>仅字幕区域</Text>
               </Space>
             )}
           </div>

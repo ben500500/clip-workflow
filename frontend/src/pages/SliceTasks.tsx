@@ -107,6 +107,9 @@ const SliceTasks: React.FC = () => {
   const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'fill'>('delogo');
   // 精细化（帧级检测）：只在字幕/水印实际出现的时段打码
   const [subtitleMaskTemporal, setSubtitleMaskTemporal] = useState(true);
+  // 仅字幕显示区域打码（空间精细化）：需开启精细化后才能开启，
+  // 只对字幕文字实际占用的横向子区域打码，而不是整条横带都盖住。
+  const [subtitleMaskSpatial, setSubtitleMaskSpatial] = useState(false);
   // 打码区域（相对输出视频宽高比例，默认宽度 0.9 / 高度 0.12 / 距底 0.02）
   const [subtitleMaskWidthRatio, setSubtitleMaskWidthRatio] = useState(0.9);
   const [subtitleMaskHeightRatio, setSubtitleMaskHeightRatio] = useState(0.12);
@@ -186,6 +189,7 @@ const SliceTasks: React.FC = () => {
         subtitle_mask_enabled: subtitleMaskEnabled,
         subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
         subtitle_mask_temporal: subtitleMaskEnabled ? subtitleMaskTemporal : undefined,
+        subtitle_mask_spatial: (subtitleMaskEnabled && subtitleMaskTemporal) ? subtitleMaskSpatial : undefined,
         subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
         subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
         subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
@@ -1020,6 +1024,18 @@ const SliceTasks: React.FC = () => {
                 <Switch size="small" checked={subtitleMaskTemporal} onChange={setSubtitleMaskTemporal} />
                 <Text strong style={{ fontSize: 12 }}>精细化（只在出现时打码）</Text>
                 <Tooltip title="开启后逐帧检测字幕/水印实际出现的时段，只在出现时打码，画面其余时间零改动（处理较慢但更精细）；关闭则按 SRT 时间轴或全程打码（快）。">
+                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                </Tooltip>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Switch
+                  size="small"
+                  checked={subtitleMaskSpatial}
+                  disabled={!subtitleMaskTemporal}
+                  onChange={setSubtitleMaskSpatial}
+                />
+                <Text strong style={{ fontSize: 12, opacity: subtitleMaskTemporal ? 1 : 0.4 }}>仅字幕显示区域打码</Text>
+                <Tooltip title="需开启「精细化」后才能开启。开启后，在每个字幕出现时段内只对字幕文字实际占用的那部分横向区域打码，而不把整条横带都盖住（更精细，处理更慢）。">
                   <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
                 </Tooltip>
               </Space>
