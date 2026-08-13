@@ -441,7 +441,9 @@ async def run_batch(batch_id: str):
             try:
                 n = await _accept_all_candidates(episode_id)
                 if n == 0:
-                    raise RuntimeError("选点未生成任何候选片段")
+                    # 选点未产出候选片段：不再中断流程，继续执行一键切片，
+                    # 切片引擎会对空 cutlist 回退为「整片切片」，保证自动化一定出片。
+                    logger.warning("剧集 %s 选点未生成候选片段，将继续整片切片兜底", episode_id)
             except Exception as e:
                 logger.exception("自动审核失败: %s", e)
                 await _set_phase(item, PHASE_REVIEW, "failed", 0)

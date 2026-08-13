@@ -36,4 +36,34 @@ export const uploadApi = {
 
   complete: (data: { upload_id: string; project_id: string; title?: string; episode_no?: number }) =>
     client.post('/upload/complete', data) as Promise<Episode>,
+
+  // 多视频批量上传正片：可选择是否合并成一个视频创建项目（项目名称由用户输入）
+  uploadMulti: (params: {
+    projectName: string;
+    files: File[];
+    merge: boolean;
+    description?: string;
+    onProgress?: (percent: number) => void;
+  }) => {
+    const formData = new FormData();
+    formData.append('project_name', params.projectName);
+    formData.append('merge', params.merge ? 'true' : 'false');
+    if (params.description) formData.append('description', params.description);
+    params.files.forEach((f) => formData.append('files', f));
+    return client.post('/upload/multi', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 7200000,
+      onUploadProgress: (progressEvent) => {
+        if (params.onProgress && progressEvent.total) {
+          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          params.onProgress(percent);
+        }
+      },
+    }) as Promise<{
+      project_id: string;
+      project_name: string;
+      episodes: Episode[];
+      message: string;
+    }>;
+  },
 };

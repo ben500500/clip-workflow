@@ -880,6 +880,15 @@ const EpisodeDetail: React.FC = () => {
         }
         if (!selected) throw new Error('AI 智能选点超时，请稍后重试');
         setOneClickProgress({ status: 'running', progress: 75, message: '选点完成，正在提交一键切片任务…' });
+        // 选点完成后若仍无候选片段，后端会回退为「整片切片」，这里只做提示不中断
+        try {
+          const after = await autoclipApi.getCandidates(episodeId);
+          if (after.length === 0) {
+            setOneClickProgress({ status: 'running', progress: 75, message: '未发现候选片段，将回退为整片切片…' });
+          }
+        } catch {
+          // 忽略查询失败
+        }
       }
       // auto_accept_all=true：后端自动把所有候选片段（含 pending）纳入切片，
       // 无需逐个审核/预览，直接产出成品视频

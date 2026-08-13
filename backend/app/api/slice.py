@@ -1012,33 +1012,45 @@ async def run_slice(
             )
             all_clips = all_clips_result.scalars().all()
             if not all_clips:
-                raise HTTPException(
-                    status_code=400,
-                    detail="当前没有候选片段，无法一键切片。请先运行 AI 智能选点。",
+                # 一键切片全自动兜底：选点未产出候选片段时不再报错，
+                # 直接回退为「整片切片」，保证自动化流程一定出片。
+                logger.warning(
+                    "Episode %s 无候选片段，一键切片回退为整片切片", eid
                 )
-            # 自动通过所有待审核片段，方便后续在切片任务/成品预览中看到关联关系
-            for clip in all_clips:
-                if clip.status == "pending":
-                    clip.status = "accepted"
-            await db.flush()
-            accepted_clips = all_clips
+                fallback_whole_video = True
+            else:
+                fallback_whole_video = False
+                # 自动通过所有待审核片段，方便后续在切片任务/成品预览中看到关联关系
+                for clip in all_clips:
+                    if clip.status == "pending":
+                        clip.status = "accepted"
+                await db.flush()
+                accepted_clips = all_clips
+        else:
+            fallback_whole_video = False
 
-        if not accepted_clips:
+        if not fallback_whole_video and not accepted_clips:
             raise HTTPException(
                 status_code=400,
                 detail="没有已通过的候选片段，无法生成切片。请先在片段审核中通过至少一个片段，或重新触发选点。",
             )
-        cutlist = generate_cutlist(accepted_clips)
 
-        # Generate intervals from enabled intervals
-        intervals_result = await db.execute(
-            select(DetectedInterval).where(
-                DetectedInterval.episode_id == eid,
-                DetectedInterval.enabled == True,
+        if fallback_whole_video:
+            # 空 cutlist：切片引擎收到后自动按整片时长切片（见 engines/slice.py 兜底逻辑）
+            cutlist = ""
+            intervals_content = ""
+        else:
+            cutlist = generate_cutlist(accepted_clips)
+
+            # Generate intervals from enabled intervals
+            intervals_result = await db.execute(
+                select(DetectedInterval).where(
+                    DetectedInterval.episode_id == eid,
+                    DetectedInterval.enabled == True,
+                )
             )
-        )
-        enabled_intervals = intervals_result.scalars().all()
-        intervals_content = generate_intervals_file(enabled_intervals)
+            enabled_intervals = intervals_result.scalars().all()
+            intervals_content = generate_intervals_file(enabled_intervals)
 
     # 多人同时切片的全局并发闸门：超过 max_concurrent_tasks 上限直接拒绝。
     # 在创建任务记录前检查，running_count 为当前在飞任务数（不含本任务），
