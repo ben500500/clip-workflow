@@ -154,7 +154,11 @@ async def download_output(
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Download a single output file via presigned URL（数据隔离）. """
+    """Get a presigned download URL for a single output（数据隔离）.
+
+    返回 JSON 直链（带 Content-Disposition: attachment），由前端拿到后触发下载；
+    不直接 302 跳转，因为前端 a 标签导航无法携带 Authorization header。
+    """
     try:
         oid = uuid.UUID(output_id)
     except ValueError:
@@ -171,7 +175,14 @@ async def download_output(
     if not output.file_key:
         raise HTTPException(status_code=400, detail="Output has no file key")
 
-    url = await get_presigned_url("sliced", output.file_key, expires_seconds=7200)
+    file_name = output.file_name or f"output_{str(output.id)[:8]}.mp4"
+    url = await get_presigned_url(
+        "sliced",
+        output.file_key,
+        expires_seconds=7200,
+        as_attachment=True,
+        filename=file_name,
+    )
     if not url:
         # Fallback: try to download and stream directly
         data = await download_file("sliced", output.file_key)
@@ -182,14 +193,12 @@ async def download_output(
             io.BytesIO(data),
             media_type="video/mp4",
             headers={
-                "Content-Disposition": f'attachment; filename="{output.file_name or "output.mp4"}"',
+                "Content-Disposition": f'attachment; filename="{file_name}"',
                 "Content-Length": str(len(data)),
             },
         )
 
-    # Redirect to presigned URL
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url=url)
+    return {"url": url, "file_name": file_name}
 
 
 async def _cleanup_tmp(path: str):
@@ -235,7 +244,14 @@ async def batch_download(
         except HTTPException:
             continue
 
-        url = await get_presigned_url("sliced", output.file_key, expires_seconds=7200)
+        file_name = output.file_name or f"output_{str(output.id)[:8]}.mp4"
+        url = await get_presigned_url(
+            "sliced",
+            output.file_key,
+            expires_seconds=7200,
+            as_attachment=True,
+            filename=file_name,
+        )
         if not url:
             logger.warning("Failed to generate presigned URL for %s", output.file_key)
             continue
@@ -243,7 +259,7 @@ async def batch_download(
         files.append(
             BatchDownloadItem(
                 output_id=str(output.id),
-                file_name=output.file_name or f"output_{str(output.id)[:8]}.mp4",
+                file_name=file_name,
                 url=url,
             )
         )

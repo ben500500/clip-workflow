@@ -78,8 +78,14 @@ def _generate_presigned_url(
     object_key: str,
     expires_seconds: int,
     method: str = "GET",
+    response_headers: Optional[dict] = None,
 ) -> Optional[str]:
-    """用指定 client 生成 presigned URL（同步执行）。"""
+    """用指定 client 生成 presigned URL（同步执行）。
+
+    response_headers：附加到签名的响应头覆盖参数（如
+    {'response-content-disposition': 'attachment; filename="x.mp4"'}），
+    让跨域 a 标签点击时强制下载而非播放。
+    """
     try:
         if method == "PUT":
             return client.presigned_put_object(
@@ -91,6 +97,7 @@ def _generate_presigned_url(
             bucket,
             object_key,
             expires=timedelta(seconds=expires_seconds),
+            response_headers=response_headers,
         )
     except S3Error as e:
         logger.error(f"MinIO presigned URL generation failed: {e}")
@@ -196,17 +203,35 @@ async def get_presigned_url(
     bucket: str,
     object_key: str,
     expires_seconds: int = 3600,
+    as_attachment: bool = False,
+    filename: Optional[str] = None,
 ) -> Optional[str]:
     """Generate a presigned GET URL for temporary access.
 
     若配置了 MINIO_EXTERNAL_ENDPOINT，则用外部地址重新生成签名 URL，
     保证浏览器可访问且签名有效（直接替换 host 会使 SigV4 签名失效）。
+    as_attachment=True 时附加 response-content-disposition=attachment，
+    使浏览器跨域访问该链接时强制下载而非内联播放。
     """
+    response_headers = None
+    if as_attachment:
+        safe_name = (filename or os.path.basename(object_key) or "download.mp4").replace('"', "")
+        response_headers = {
+            "response-content-disposition": f'attachment; filename="{safe_name}"',
+        }
     client = get_external_minio_client() or get_minio_client()
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
-        partial(_generate_presigned_url, client, bucket, object_key, expires_seconds, "GET"),
+        partial(
+            _generate_presigned_url,
+            client,
+            bucket,
+            object_key,
+            expires_seconds,
+            "GET",
+            response_headers,
+        ),
     )
 
 

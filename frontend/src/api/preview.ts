@@ -19,7 +19,10 @@ export const previewApi = {
     }>,
 
   download: (outputId: string) =>
-    client.get(`/outputs/${outputId}/download`) as Promise<unknown>,
+    client.get(`/outputs/${outputId}/download`) as Promise<{
+      url: string;
+      file_name: string | null;
+    }>,
 
   batchDownload: (outputIds: string[]) =>
     client.post(

@@ -6,6 +6,7 @@ import { UploadOutlined, PlusOutlined, DeleteOutlined as DelIcon } from '@ant-de
 import { ArrowLeftOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, DesktopOutlined, SettingOutlined } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { sliceApi, type BadgeItem, type TextOverlayItem } from '../api/slice';
+import { previewApi } from '../api/preview';
 import ErrorHint from '../components/ErrorHint';
 import type { SliceOutput, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
@@ -454,19 +455,29 @@ const SliceTasks: React.FC = () => {
     },
   ];
 
-  // 单个下载：用隐藏 a 标签 + download 属性直接触发浏览器下载，
-  // 避免 window.open 跳转到新标签页播放视频导致后续下载被中断。
-  const downloadOne = (o: SliceOutput) => {
+  // 单个下载：先经 axios（自动携带 Authorization token）换取带
+  // Content-Disposition: attachment 的 presigned 直链，再触发浏览器下载。
+  // 不能直接用 <a href="/api/..."> 导航：浏览器导航不带 token 会 401。
+  const downloadOne = async (o: SliceOutput) => {
     if (!o.id) {
       message.warning('暂无下载地址');
       return;
     }
-    const a = document.createElement('a');
-    a.href = `/api/outputs/${o.id}/download`;
-    a.download = o.file_name || `output_${o.id}.mp4`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    try {
+      const res = await previewApi.download(o.id);
+      if (!res?.url) {
+        message.warning('暂无下载地址');
+        return;
+      }
+      const a = document.createElement('a');
+      a.href = res.url;
+      a.download = o.file_name || `output_${o.id}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '下载失败');
+    }
   };
 
   const outputColumns = [
