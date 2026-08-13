@@ -1192,6 +1192,14 @@ def main():
     cuts = read_cutlist(args.cutlist)
     intervals = read_intervals(args.intervals) if args.mode == "scrub" else []
 
+    # 一键切片整片兜底：候选片段为空时，后端会下发空 cutlist。
+    # 非 scrub 模式下这里回退为「整片切片」，保证自动化流程一定出片。
+    if not cuts and args.mode != "scrub":
+        dur = ffprobe_duration(args.source)
+        if dur and dur > 0:
+            cuts = [(0.0, dur, "clip_01")]
+            print("候选片段为空，一键切片回退为整片切片", file=sys.stderr)
+
     if args.mode == "scrub":
         segments = subtract_intervals(cuts, intervals)
     else:

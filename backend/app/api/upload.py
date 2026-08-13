@@ -1,8 +1,10 @@
+import asyncio
 import logging
 import os
+import shutil
 import uuid
 from datetime import datetime
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from pydantic import BaseModel
@@ -59,6 +61,13 @@ class UploadCompleteRequest(BaseModel):
     project_id: str
     title: Optional[str] = None
     episode_no: Optional[int] = None
+
+
+class MultiUploadResponse(BaseModel):
+    project_id: str
+    project_name: str
+    episodes: List[dict]
+    message: str
 
 
 def _serialize_episode(episode: Episode) -> dict:
@@ -328,6 +337,141 @@ async def upload_single(
     await db.flush()
     await db.refresh(episode)
     return _serialize_episode(episode)
+
+
+@router.post("/upload/multi", status_code=201)
+async def upload_multi(
+    files: List[UploadFile] = File(...),
+    project_name: str = Form(...),
+    merge: str = Form("false"),
+    description: Optional[str] = Form(None),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """多视频批量上传正片（数据隔离）。
+
+    - merge=false：每个视频分别创建一条 Episode（按顺序编号）；
+    - merge=true：先用 ffmpeg concat 把多个视频拼接成一个，再创建一条 Episode
+      （作为「正片」整体进入 AI 选点/切片流水线）。项目名称由用户输入。
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="至少需要上传一个视频")
+    project_name = (project_name or "").strip()
+    if not project_name:
+        raise HTTPException(status_code=400, detail="项目名称不能为空")
+
+    # 数据隔离：项目由当前用户创建，归属人即当前用户
+    project = Project(
+        name=project_name,
+        description=description or "多视频批量上传创建",
+        config={"source": "multi_upload"},
+        created_by=current_user.id if current_user else None,
+    )
+    db.add(project)
+    await db.flush()
+    await db.refresh(project)
+
+    # 校验文件扩展名并落盘到临时目录
+    tmp_dir = f"/tmp/uploads/multi_{uuid.uuid4().hex}"
+    os.makedirs(tmp_dir, exist_ok=True)
+    local_paths: List[str] = []
+    names: List[str] = []
+    try:
+        for f in files:
+            try:
+                safe_name = validate_file_name(f.filename or "")
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            p = os.path.join(tmp_dir, safe_name)
+            size = 0
+            with open(p, "wb") as out:
+                while True:
+                    chunk = await f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > settings.UPLOAD_MAX_SIZE:
+                        raise HTTPException(status_code=413, detail=f"{safe_name} 超过最大上传大小")
+                    out.write(chunk)
+            local_paths.append(p)
+            names.append(safe_name)
+
+        do_merge = str(merge).strip().lower() in ("1", "true", "yes")
+        if do_merge and len(local_paths) > 1:
+            merged_path = os.path.join(tmp_dir, f"merged_{uuid.uuid4().hex}.mp4")
+            merged = await _ffmpeg_concat(local_paths, merged_path)
+            if merged:
+                local_paths = [merged_path]
+                names = [f"{project_name}.mp4"]
+            else:
+                # 拼接失败时不阻断：回退为逐集上传
+                do_merge = False
+
+        episodes: List[dict] = []
+        for idx, (p, name) in enumerate(zip(local_paths, names), start=1):
+            file_key = f"raw-footage/{project.id}/{uuid.uuid4().hex}_{name}"
+            ok = await upload_file_from_path(settings.MINIO_BUCKET_RAW, file_key, p)
+            if not ok:
+                raise HTTPException(status_code=500, detail=f"存储 {name} 失败")
+            episode = Episode(
+                project_id=project.id,
+                title=name,
+                episode_no=idx,
+                source_file_key=file_key,
+                file_size=os.path.getsize(p),
+                status="uploaded",
+            )
+            db.add(episode)
+            await db.flush()
+            await db.refresh(episode)
+            episodes.append(_serialize_episode(episode))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    await db.flush()
+    return MultiUploadResponse(
+        project_id=str(project.id),
+        project_name=project.name,
+        episodes=episodes,
+        message=f"已创建项目「{project.name}」并上传 {len(episodes)} 个正片" + ("（已合并为一个）" if do_merge else ""),
+    )
+
+
+async def _ffmpeg_concat(paths: List[str], out_path: str) -> bool:
+    """用 ffmpeg concat demuxer 将多个视频顺序拼接为一个。
+
+    为避免不同编码/分辨率的素材直接 concat 出错，先统一重编码为
+    H.264 + AAC、1080p、25fps，再拼接。失败返回 False。
+    """
+    try:
+        list_path = out_path + ".txt"
+        with open(list_path, "w", encoding="utf-8") as f:
+            for p in paths:
+                f.write(f"file '{p}'\n")
+        cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+            "-r", "25", "-c:a", "aac", "-b:a", "128k", out_path,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0 or not os.path.isfile(out_path):
+            logger.error("ffmpeg concat 失败: %s", stderr.decode(errors="replace")[-2000:])
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"ffmpeg concat 异常: {e}")
+        return False
+    finally:
+        try:
+            list_txt = out_path + ".txt"
+            if os.path.isfile(list_txt):
+                os.unlink(list_txt)
+        except OSError:
+            pass
 
 
 @router.delete("/upload/{upload_id}", status_code=204)
