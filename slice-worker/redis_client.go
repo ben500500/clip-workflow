@@ -376,15 +376,15 @@ type NodeInfo struct {
 
 // SliceTask 切片任务
 type SliceTask struct {
-	TaskID       string             `json:"task_id"`
-	EpisodeID    string             `json:"episode_id"`
-	Priority     string             `json:"priority"`
-	Mode         string             `json:"mode"`
-	RequiredTags []string           `json:"required_tags"`
-	Source       TaskSource         `json:"source"`
-	Cutlist      string             `json:"cutlist"`
-	Intervals    string             `json:"intervals"`
-	DedupeConfig map[string]float64 `json:"dedupe_config"`
+	TaskID       string                 `json:"task_id"`
+	EpisodeID    string                 `json:"episode_id"`
+	Priority     string                 `json:"priority"`
+	Mode         string                 `json:"mode"`
+	RequiredTags []string               `json:"required_tags"`
+	Source       TaskSource             `json:"source"`
+	Cutlist      string                 `json:"cutlist"`
+	Intervals    string                 `json:"intervals"`
+	DedupeConfig map[string]interface{} `json:"dedupe_config"`
 	// 自定义文字水印配置（可选，后端透传，引擎叠加动态文字水印）
 	Watermark map[string]interface{} `json:"watermark"`
 	// 三期 GPU 加速编码（可选，后端透传，引擎 --encoder 参数）

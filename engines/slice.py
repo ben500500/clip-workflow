@@ -30,6 +30,161 @@ except ImportError:  # pragma: no cover - OpenCV 未安装时动态模式不可�
 DEFAULT_CPU_PERCENT = 50
 
 
+# ──────────────────────────────────────────────
+# 去重（老电视质感）滤镜链：轻/标准/重 三档
+# ──────────────────────────────────────────────
+# 去重不是堆得越多越好，而是"空间 + 时域 + 色彩 + 质感"四层组合，
+# 让成品与原素材在帧级特征、色彩直方图、时域指纹三个维度同时拉开距离。
+# 老电视效果本质是质感层，同时天然改变亮度（扫描线）、噪点结构（颗粒）、色调
+# （复古偏色），本身即是一种很「润」的去重手段。
+#
+# 每档参数：
+#   crop      空间层：相对裁切比例（裁掉四周后缩放回原尺寸，改像素对齐/构图）
+#   hflip     空间层：是否水平镜像（直接破坏帧哈希）
+#   speed     时域层：变速系数（改时长与帧对齐）
+#   saturation/gamma/contrast/brightness  色彩层：降饱和 + 复古调色
+#   colorbalance / colortemperature       色彩层：复古偏色（暖黄/冷调）
+#   noise     质感层：颗粒噪点强度（alls，时域+空域）
+#   scanline  质感层：扫描线（drawgrid h 间隔 / 黑条透明度）
+#   vignette  质感层：暗角角度
+#   roll_band 质感层：滚动暗带强度（0 关闭）
+#   jitter    质感层：画面微抖动（0 关闭）
+DEDUPE_PRESETS = {
+    "light": {
+        "crop": 0.02,
+        "hflip": False,
+        "speed": 1.02,
+        "saturation": 0.92,
+        "gamma": 1.02,
+        "contrast": 1.01,
+        "brightness": 0.005,
+        "colorbalance": "rs=.03:gs=.02:bs=-.03:rm=.03:gm=.02:bm=-.03",
+        "colortemperature": "temperature=6200",
+        "noise": 3,
+        "scanline": None,
+        "vignette": "PI/6",
+        "roll_band": 0,
+        "jitter": 0,
+    },
+    "standard": {
+        "crop": 0.03,
+        "hflip": True,
+        "speed": 1.03,
+        "saturation": 0.85,
+        "gamma": 1.03,
+        "contrast": 1.03,
+        "brightness": 0.01,
+        "colorbalance": "rs=.06:gs=.03:bs=-.06:rm=.06:gm=.03:bm=-.06",
+        "colortemperature": "temperature=5800",
+        "noise": 6,
+        "scanline": {"h": 3, "color": "black@0.10"},
+        "vignette": "PI/5",
+        "roll_band": 0,
+        "jitter": 0,
+    },
+    "heavy": {
+        "crop": 0.05,
+        "hflip": True,
+        "speed": 1.05,
+        "saturation": 0.78,
+        "gamma": 1.06,
+        "contrast": 1.05,
+        "brightness": 0.02,
+        "colorbalance": "rs=.10:gs=.05:bs=-.10:rm=.10:gm=.05:bm=-.10",
+        "colortemperature": "temperature=5600",
+        "noise": 10,
+        "scanline": {"h": 2, "color": "black@0.16"},
+        "vignette": "PI/4",
+        "roll_band": 12,
+        "jitter": 2,
+    },
+}
+
+
+def _even(n: int) -> int:
+    """把整数收敛为偶数（保证 yuv420p 编码时宽高为偶数）。"""
+    n = int(n)
+    if n < 2:
+        return 2
+    return n if n % 2 == 0 else n - 1
+
+
+def build_dedupe_filter(preset: str, width: int = 0, height: int = 0) -> tuple[str, str]:
+    """根据去重档位（light/standard/heavy）构造 (vf, af) 滤镜链。
+
+    四层组合：空间（缩放裁切 + 可选镜像）、时域（变速）、色彩（降饱和 + 复古偏色 + 轻微亮度）、
+    质感（噪点 / 扫描线 / 暗角 / 滚动暗带 / 画面抖动）。
+
+    width/height 用于在裁切后缩放回原始分辨率（保持输出尺寸一致）；未提供或为 0 时
+    仅做相对裁切（轻微改变分辨率，同样有效）。
+    """
+    preset = (preset or "standard").lower()
+    if preset not in DEDUPE_PRESETS:
+        preset = "standard"
+    p = DEDUPE_PRESETS[preset]
+
+    crop = float(p["crop"])
+    speed = float(p["speed"])
+
+    # 空间层：裁切（改构图/像素对齐），有原始分辨率则缩放回原尺寸
+    if width > 0 and height > 0:
+        cw = _even(width * (1.0 - crop))
+        ch = _even(height * (1.0 - crop))
+        spatial = f"crop={cw}:{ch},scale={width}:{height}"
+    else:
+        spatial = f"crop=iw*{1.0 - crop:.4f}:ih*{1.0 - crop:.4f}"
+    if p["hflip"]:
+        spatial += ",hflip"
+
+    # 时域层：变速（视频 setpts 与音频 atempo 需一一对应）
+    vf_parts = [spatial, f"setpts=PTS/{speed:.3f}"]
+    af = f"atempo={speed:.3f}"
+
+    # 色彩层：降饱和 + 复古调色 + 轻微亮度
+    vf_parts.append(
+        f"eq=saturation={p['saturation']}:gamma={p['gamma']}"
+        f":contrast={p['contrast']}:brightness={p['brightness']}"
+    )
+    vf_parts.append(f"colorbalance={p['colorbalance']}")
+    vf_parts.append(f"colortemperature={p['colortemperature']}")
+
+    # 质感层：颗粒噪点（时域+空域，老电视颗粒感）
+    vf_parts.append(f"noise=alls={p['noise']}:allf=t+u")
+
+    # 质感层：扫描线（每 N px 一条 1px 暗线）
+    if p["scanline"]:
+        h = p["scanline"]["h"]
+        color = p["scanline"]["color"]
+        vf_parts.append(f"drawgrid=w=iw:h={h}:t=1:color={color}")
+
+    # 质感层：暗角（老电视边缘压暗）
+    if p["vignette"]:
+        vf_parts.append(f"vignette=angle={p['vignette']}")
+
+    # 质感层：滚动暗带（上下缓慢滚动的亮度条带，重档开启）
+    if p["roll_band"]:
+        band = float(p["roll_band"])
+        vf_parts.append(f"geq=lum='lum(X,Y)-{band}*sin(2*PI*T*0.4+2*PI*Y/H)'")
+
+    # 质感层：画面微抖动（正弦摆动裁切后缩放回原尺寸，重档开启）
+    if p["jitter"]:
+        j = float(p["jitter"])
+        if width > 0 and height > 0:
+            cw = _even(width - 2 * j)
+            ch = _even(height - 2 * j)
+            vf_parts.append(
+                f"crop={cw}:{ch}:x='{j}+{j}*sin(2*PI*t*3)':y='{j}+{j}*cos(2*PI*t*2)'"
+                f",scale={width}:{height}"
+            )
+        else:
+            vf_parts.append(
+                f"crop=iw-{int(2*j)}:ih-{int(2*j)}"
+                f":x='{j}+{j}*sin(2*PI*t*3)':y='{j}+{j}*cos(2*PI*t*2)'"
+            )
+
+    return ",".join(vf_parts), af
+
+
 def cpu_threads_for_percent(percent: int) -> int:
     """根据 CPU 分配比例计算 ffmpeg 使用的线程数（至少 1，最多为 CPU 核心数）。
 
@@ -134,6 +289,23 @@ def ffprobe_duration(path: str) -> float:
         return float(out.stdout.strip())
     except Exception:
         return 0.0
+
+
+def ffprobe_resolution(path: str) -> tuple[int, int]:
+    """探测视频分辨率 (width, height)，失败返回 (0, 0)。"""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        parts = out.stdout.split()
+        if len(parts) >= 2:
+            return int(parts[0]), int(parts[1])
+    except Exception:
+        pass
+    return 0, 0
 
 
 def run_ffmpeg(args, timeout=3600, threads=1):
@@ -1163,6 +1335,12 @@ def main():
         default=None,
         help="自定义字幕样式下的边框颜色（CSS 十六进制 #RRGGBB，可选）",
     )
+    parser.add_argument(
+        "--dedupe-config",
+        default=None,
+        help="去重档位配置 JSON（{\"preset\":\"light|standard|heavy\"}，默认 standard）。"
+             "未传时去重模式回退到 preset=standard 的新默认效果",
+    )
     args = parser.parse_args()
 
     threads = cpu_threads_for_percent(args.cpu_percent)
@@ -1219,8 +1397,19 @@ def main():
     vf = None
     af = None
     if args.mode == "dedupe":
-        vf = "setpts=PTS/1.04,eq=saturation=0.95:brightness=0.01,unsharp=5:5:0.8:5:5:0.0"
-        af = "atempo=1.04"
+        # 去重模式：默认采用 standard 档（含老电视质感的完整四层去重），
+        # 可通过 --dedupe-config 的 preset 字段指定 light/standard/heavy。
+        preset = "standard"
+        if args.dedupe_config:
+            try:
+                dedupe_cfg = json.loads(args.dedupe_config)
+            except (ValueError, TypeError):
+                dedupe_cfg = {}
+            if isinstance(dedupe_cfg, dict) and dedupe_cfg.get("preset"):
+                preset = str(dedupe_cfg["preset"]).lower()
+        w, h = ffprobe_resolution(source_path)
+        vf, af = build_dedupe_filter(preset, width=w, height=h)
+        print(f"去重档位: {preset}", file=sys.stderr)
 
     # 动态文字水印：开启后在去重/普通滤镜基础上叠加 drawtext
     watermark = None

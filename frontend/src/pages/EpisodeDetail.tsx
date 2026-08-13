@@ -30,7 +30,7 @@ const SLICE_MODE_HELP: Record<string, { label: string; desc: string; detail: str
   dedupe: {
     label: '去重模式',
     desc: '切割时进行画面去重处理',
-    detail: '在切割的同时对每个片段进行画面相似度检测，去除重复度高的内容片段。适用于需要批量发布到多个平台的场景，减少重复内容被平台限流的风险。',
+    detail: '在切割的同时对每个片段进行画面去重处理，采用「空间变换（缩放裁切/镜像）+ 时域变换（变速）+ 色彩变换（降饱和/复古偏色）+ 质感叠加（老电视噪点/扫描线/暗角）」四层组合，拉开与原素材的帧级特征/色彩直方图/时域指纹距离。可选轻/标准/重三档，标准档为默认效果。适用于需要批量发布到多个平台的场景，降低平台查重风险。',
   },
   scrub: {
     label: '挖洞模式',
@@ -144,6 +144,8 @@ const EpisodeDetail: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [detectMode, setDetectMode] = useState('credits');
   const [sliceMode, setSliceMode] = useState('fast');
+  // 去重模式档位：轻/标准/重（老电视质感去重强度，默认标准档）
+  const [dedupePreset, setDedupePreset] = useState<string>('standard');
   // ── 切片自定义文字水印开关与参数 ──
   const [watermarkEnabled, setWatermarkEnabled] = useState(false);
   const [watermarkText, setWatermarkText] = useState('');
@@ -1008,6 +1010,8 @@ const EpisodeDetail: React.FC = () => {
       const res = await sliceApi.run(episodeId, mode, {
         // 快速转换：跳过 AI 选点与区间检测，整段源视频直接应用下方配置转换输出
         no_cut: noCut || undefined,
+        // 去重模式档位（轻/标准/重），仅去重模式生效
+        dedupe_config: mode === 'dedupe' ? { preset: dedupePreset } : undefined,
         // 自定义文字水印：开启后后端下发给引擎，在成品视频上叠加动态文字水印
         watermark_enabled: watermarkEnabled,
         watermark_text: watermarkEnabled ? watermarkText : undefined,
@@ -1409,6 +1413,15 @@ const EpisodeDetail: React.FC = () => {
                 { value: 'scrub', label: '挖洞模式' },
               ]}
             />
+            {sliceMode === 'dedupe' && (
+              <Select value={dedupePreset} onChange={setDedupePreset} style={{ width: 110 }}
+                options={[
+                  { value: 'light', label: '轻' },
+                  { value: 'standard', label: '标准' },
+                  { value: 'heavy', label: '重' },
+                ]}
+              />
+            )}
             <Button icon={<ScissorOutlined />} loading={sliceRunning} disabled={quickConverting} onClick={() => runSlice(false)}>开始切片</Button>
             <Tooltip title="跳过 AI 选点和区间检测，直接整段视频应用下方配置（竖屏转横屏/水印/角标/字幕/固定文字等）转换输出">
               <Button icon={<ThunderboltOutlined />} loading={quickConverting} disabled={sliceRunning} onClick={() => runSlice(true)}>快速转换</Button>
