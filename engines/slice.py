@@ -1428,10 +1428,20 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
             compact = 1.0 if 15 <= h <= 130 else (0.4 if h < 15 else 0.15)
             # 出现频率越接近理想值（约 0.6，间歇性对话字幕）越加分，越接近 0（无内容）
             # 或 1（恒定水印/角标）越减分，从而把"对话字幕"从"固定水印"中区分出来。
+            # 对"接近恒定（pr 很高）"做**二次方重罚**：恒定水印几乎每帧在场，其 pr≈1，
+            # 若用线性惩罚不足以抵消其更高的文字簇强度，会导致区域被误选到水印上。
             pr = float(presence[y0:y1 + 1].mean())
-            dynamism = SUBTITLE_MASK_PRESENCE_MAX - \
-                abs(pr - SUBTITLE_MASK_PRESENCE_IDEAL) * SUBTITLE_MASK_PRESENCE_SLOPE
-            dynamism = max(SUBTITLE_MASK_PRESENCE_MIN, min(SUBTITLE_MASK_PRESENCE_MAX, dynamism))
+            err = pr - SUBTITLE_MASK_PRESENCE_IDEAL
+            # pr 越接近 1（恒定水印）惩罚越剧烈，越接近理想值（间歇字幕）越加分。
+            if pr >= 0.85:
+                dynamism = SUBTITLE_MASK_PRESENCE_MIN * 0.5   # 几乎恒定的水印：强烈减分
+            elif pr <= 0.15:
+                dynamism = SUBTITLE_MASK_PRESENCE_MIN * 0.5   # 几乎不出现：无意义
+            else:
+                dynamism = SUBTITLE_MASK_PRESENCE_MAX - \
+                    err * err * SUBTITLE_MASK_PRESENCE_SLOPE * 3.0
+            dynamism = max(SUBTITLE_MASK_PRESENCE_MIN * 0.5,
+                           min(SUBTITLE_MASK_PRESENCE_MAX, dynamism))
             score = val * compact * dynamism
             if y0 > height * 0.3:
                 score *= 1.3
@@ -1466,16 +1476,81 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
 # 帧级（精细化）检测参数：判断"字幕/水印是否实际出现在区域内"的阈值与采样密度。
 # 相比固定区域全程打码，开启 temporal 后只在内容出现的时段打码，画面其余时间零改动。
 # 处理速度会变慢（需按时间采样判断内容在场与否），但更精细、画面更干净。
-# 区域内容密度阈值：区域内边缘像素占比超过该比例视为"有字幕/水印在场"。
-SUBTITLE_MASK_TEMPORAL_EDGE_RATIO = 0.05
-# 区域内文字与背景对比度的相对阈值（相对最大列得分）。
-SUBTITLE_MASK_TEMPORAL_CONTRAST_RATIO = 0.12
+# 判断"在场"改用以字幕专属的"金色/黄色 + 白色/浅色"文字像素密度为信号（与区域/空间
+# 检测一致），而非 Canny 边缘密度——因为复杂/繁忙画面在字幕横带内常年有高密度边缘，
+# 用边缘会把"无字幕时段"也误判为在场，导致精细化失效（整段都被打码）。
+# 字幕文字像素占区域比例超过该绝对下限视为"在场"（避免全黑/全白噪声帧）。
+SUBTITLE_MASK_TEMPORAL_COLOR_RATIO = 0.003
+# 捕获短句字幕的"噪声地板 → 峰值"相对下限（0~1，越小越能捕获低密度短句）。
+SUBTITLE_MASK_TEMPORAL_LOW_FRAC = 0.25
+# 阈值不低于噪声地板的该倍数，避免把背景噪声帧误判为在场。
+SUBTITLE_MASK_TEMPORAL_NOISE_MULT = 2.0
 # 帧级检测采样步长（秒）。越小定位越准，但越慢。
 SUBTITLE_MASK_TEMPORAL_STEP = 0.5
 # 相邻"在场"采样点合并成时间窗口的最小间距（秒）：小于该间距的相邻窗口合并。
-SUBTITLE_MASK_TEMPORAL_MERGE_GAP = 1.0
+SUBTITLE_MASK_TEMPORAL_MERGE_GAP = 0.6
 # 打码窗口前后各扩展的余量（秒），避免字幕开头/结尾裁切不干净。
 SUBTITLE_MASK_TEMPORAL_PAD = 0.25
+
+
+def _low_percentile(values: list[float], p: float) -> float:
+    """返回有序列表的低分位（如 25%）作为"背景噪声地板"的稳健估计。
+
+    用线性插值在相邻元素间取分位；空列表返回 0。
+    """
+    if not values:
+        return 0.0
+    srt = sorted(values)
+    n = len(srt)
+    pos = p * (n - 1)
+    lo = int(pos)
+    hi = min(n - 1, lo + 1)
+    frac = pos - lo
+    return srt[lo] + (srt[hi] - srt[lo]) * frac
+
+
+def _bimodal_threshold(values: list[float]) -> float:
+    """Otsu 式双峰阈值：把密度值分成"背景"与"字幕"两簇，返回使簇内方差最小的分割点。
+
+    若所有值几乎相等（单峰/无分割），回退到峰值的一小比例。
+    """
+    if not values:
+        return 0.0
+    lo, hi = min(values), max(values)
+    if hi - lo < 1e-6:
+        return hi
+    # 归一化到 [0,1] 并分桶统计直方图
+    nbins = min(256, max(16, len(values)))
+    hist = [0] * nbins
+    for v in values:
+        idx = int((v - lo) / (hi - lo) * (nbins - 1) + 0.5)
+        idx = max(0, min(nbins - 1, idx))
+        hist[idx] += 1
+    total = float(sum(hist))
+    if total <= 0:
+        return lo + (hi - lo) * 0.5
+    # 前缀和/加权和
+    sum_all = sum(v * hist[i] for i, v in enumerate((lo + (hi - lo) * i / (nbins - 1) for i in range(nbins))))
+    w_b = 0.0
+    s_b = 0.0
+    best_var = -1.0
+    best_t = lo
+    for i in range(nbins):
+        w_b += hist[i]
+        if w_b <= 0:
+            continue
+        w_f = total - w_b
+        if w_f <= 0:
+            continue
+        v = lo + (hi - lo) * i / (nbins - 1)
+        s_b += v * hist[i]
+        m_b = s_b / w_b
+        m_f = (sum_all - s_b) / w_f
+        var = w_b * w_f * (m_b - m_f) * (m_b - m_f)
+        if var > best_var:
+            best_var = var
+            best_t = v
+    return best_t
 
 
 def detect_subtitle_temporal_windows(video: str, region: tuple[int, int, int, int],
@@ -1483,8 +1558,8 @@ def detect_subtitle_temporal_windows(video: str, region: tuple[int, int, int, in
     """帧级检测：判断字幕/水印在区域内实际出现的时间窗口列表。
 
     在指定 region (x, y, w, h) 内，按 SUBTITLE_MASK_TEMPORAL_STEP 步长扫描整段视频，
-    对每个采样点判断区域内是否有文字/水印内容（区域内边缘像素密度超过阈值即视为在场）。
-    将连续的"在场"点合并为时间窗口，并前后各扩一点余量后返回。
+    对每个采样点判断区域内是否有文字/水印内容（区域内"金色/黄色 + 白色/浅色"字幕文字
+    像素密度超过阈值即视为在场）。将连续的"在场"点合并为时间窗口，并前后各扩一点余量后返回。
 
     返回 [(start, end), ...] 秒级时间窗口（局部时间轴，从 0 开始）；
     检测失败或无字幕/水印时返回 None（由调用方回退为全程打码）。
@@ -1522,8 +1597,9 @@ def detect_subtitle_temporal_windows(video: str, region: tuple[int, int, int, in
         cap = cv2.VideoCapture(video)
         if not cap.isOpened():
             return None
-        # 先统计区域内边缘密度的基准，用整段均值+最大值的相对关系判断"在场"。
-        # 逐点采集：记录每个采样点时刻对应的区域内边缘像素占比。
+        # 逐点采集：记录每个采样点区域内"金色/黄色 + 白色/浅色"字幕文字像素占比。
+        # 字幕文字多为金色/黄色/白字，而画面背景/人物即便很杂也很少大片纯金/纯白像素，
+        # 用该信号判断字幕是否在场远比 Canny 边缘可靠（边缘会被繁忙背景常年拉高）。
         present = []  # (t, score)
         for i in range(n):
             t = min(duration - 0.01, i * step)
@@ -1531,10 +1607,17 @@ def detect_subtitle_temporal_windows(video: str, region: tuple[int, int, int, in
             ok, frame = cap.read()
             if not ok or frame is None:
                 continue
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray, 60, 160)
-            box = edges[y0:y1 + 1, x0:x1 + 1]
-            density = float(box.sum()) / float(box_w * box_h * 255.0)
+            b = frame[y0:y1 + 1, x0:x1 + 1, 0].astype(np.int16)
+            g = frame[y0:y1 + 1, x0:x1 + 1, 1].astype(np.int16)
+            r = frame[y0:y1 + 1, x0:x1 + 1, 2].astype(np.int16)
+            # 金色/黄色字幕（R 高、G 高、B 低，R/G 接近）
+            gold = (r > 130) & (g > 110) & (b < 160) & (r - b > 50) & \
+                   (g - b > 40) & (abs(r - g) < 110)
+            # 白色/浅色字幕
+            white = (r > 170) & (g > 170) & (b > 170) & (abs(r - g) < 45) & \
+                    (abs(g - b) < 45) & (abs(r - b) < 45)
+            mask = gold | white
+            density = float(mask.sum()) / float(box_w * box_h)
             present.append((t, density))
         if not present:
             return None
@@ -1542,8 +1625,23 @@ def detect_subtitle_temporal_windows(video: str, region: tuple[int, int, int, in
         peak = max(scores)
         if peak <= 1e-6:
             return None
-        thr = max(SUBTITLE_MASK_TEMPORAL_EDGE_RATIO,
-                  peak * SUBTITLE_MASK_TEMPORAL_CONTRAST_RATIO)
+        # 在场阈值：用"双峰(背景/字幕)分割"自适应确定，鲁棒地应对不同画面。
+        # 密度值大致形成两个簇：背景帧(密度≈噪声地板，较低) 与 字幕帧(密度较高)。
+        # 用 Otsu 式穷举找到使两类簇内方差最小的分割点，比固定倍率更稳：
+        #   - 背景很杂时（噪声地板高），阈值自动抬高，避免把整段误判为在场；
+        #   - 字幕较长/密度较高时，阈值自动落到字幕/背景的分界。
+        thr = _bimodal_threshold(scores)
+        # Otsu 只看两簇，当画面同时存在"长句字幕(高密度)"与"短句字幕(较低密度)"时，
+        # 阈值会被高密度簇拉高，导致短句被漏检。额外用"背景噪声地板 + 峰值小比例"给出
+        # 一个更低的下限，取两者较小值，从而也能捕获短句字幕；再保证不低于噪声地板
+        # 的固定倍数，避免把背景噪声帧误判为在场。
+        # 噪声地板用低分位（10%分位）估计，避免被"字幕在场帧"和"短句字幕"污染。
+        noise_floor = _low_percentile(scores, 0.10)
+        low_thr = noise_floor + (peak - noise_floor) * SUBTITLE_MASK_TEMPORAL_LOW_FRAC
+        thr = min(thr, low_thr)
+        thr = max(thr, noise_floor * SUBTITLE_MASK_TEMPORAL_NOISE_MULT)
+        # 双峰分割可能偏低，额外保证不低于绝对下限（避免纯噪声帧被误判）。
+        thr = max(thr, SUBTITLE_MASK_TEMPORAL_COLOR_RATIO)
         # 连续在场点 → 时间窗口（窗口内若个别点低于阈值但间距小，予以补齐）。
         in_on = False
         cur_start = 0.0
@@ -1625,9 +1723,17 @@ def detect_subtitle_spatial_regions(video: str, region: tuple[int, int, int, int
             return None
         result = []
         for (s, e) in temporal_windows:
-            mid = (s + e) / 2.0
-            dur = max(0.05, e - s)
-            n = min(SUBTITLE_MASK_SPATIAL_MAX_FRAMES, max(2, int(dur)))
+            # 时间窗口本身已含前后 PAD 余量（余量处可能无字幕），空间检测需在窗口
+            # **内部**采样，避免采到无字幕的余量端点。收敛到窗口中心的核心区间。
+            inner_s = s + SUBTITLE_MASK_TEMPORAL_PAD
+            inner_e = e - SUBTITLE_MASK_TEMPORAL_PAD
+            if inner_e <= inner_s:
+                inner_s, inner_e = s, e
+            mid = (inner_s + inner_e) / 2.0
+            dur = max(0.05, inner_e - inner_s)
+            # 采样帧数取上限（不因 dur 取整而缩水），保证能覆盖文字横向全貌。
+            n = min(SUBTITLE_MASK_SPATIAL_MAX_FRAMES,
+                    max(2, int(round(dur / 0.5)) + 1))
             times = [max(0.0, mid + (i - (n - 1) / 2.0) * (dur / max(1, n - 1)))
                      for i in range(n)]
             col_acc = np.zeros(band_w, dtype=np.float64)
@@ -2296,15 +2402,15 @@ def main():
                 # 源字幕打码：打掉片源自带字幕（在烧录自己的新字幕之前）
                 if subtitle_mask:
                     mask_out = out_path + ".masked.mp4"
-                    mask_enable = ""
                     # 精细化（temporal）模式：优先用帧级检测到的"字幕/水印出现时段"，
                     # 把源时间轴窗口转为切片局部时间轴，只在出现时打码。
                     tw = subtitle_mask.get("__temporal_windows") or []
-                    mask_srt = subtitle_mask.get("srt") or args.subtitle
-                    mask_srt_exists = bool(mask_srt) and os.path.isfile(mask_srt)
                     # 空间精细化（仅字幕显示区域打码）：在每个出现时段内只对字幕文字
-                    # 实际占用的横向子区域打码，而不把整条横带都盖住。
+                    # 实际占用的横向子区域打码，而不把整条横带都盖住（需 temporal 开启）。
                     spatial = subtitle_mask.get("__spatial_windows") or []
+                    # 普通/快速模式（temporal 与 spatial 均关闭）：在检测出的字幕区域
+                    # 全程（至始至终）打码，不再按 SRT 时间轴驱动——否则 SRT 间隙/缺失会
+                    # 导致"有时能打有时不能打"，且不符合"区域至始至终盖住"的预期。
                     if spatial:
                         apply_subtitle_mask(out_path, mask_out, subtitle_mask,
                                             spatial_windows=spatial,
@@ -2313,15 +2419,16 @@ def main():
                         os.replace(mask_out, out_path)
                     elif tw:
                         mask_enable = _source_intervals_to_local_enable(tw, seg_times)
-                    elif mask_srt_exists:
-                        mask_enable = build_subtitle_mask_enable(mask_srt, seg_times)
-                    # mask_enable 为空：该切片内无内容（不打码）或无法得到时间轴（全程打码）。
-                    # 二者需区分：有可靠时间轴（SRT/temporal）但切片内无内容 → 不打码；
-                    # 无时间轴且无 temporal 命中 → 全程打码（保持区域全程盖住，速度快）。
-                    has_timeline = bool(tw) or mask_srt_exists
-                    if not spatial and (mask_enable or not has_timeline):
+                        # 精细化：仅在字幕出现时段打码；该切片内无字幕出现则不打码。
+                        if mask_enable:
+                            apply_subtitle_mask(out_path, mask_out, subtitle_mask,
+                                                enable=mask_enable,
+                                                threads=threads, encoder=encoder)
+                            os.replace(mask_out, out_path)
+                    else:
+                        # 普通/快速模式：检测区域内全程打码（至始至终）。
                         apply_subtitle_mask(out_path, mask_out, subtitle_mask,
-                                            enable=mask_enable,
+                                            enable="",
                                             threads=threads, encoder=encoder)
                         os.replace(mask_out, out_path)
                 # 字幕烧录：开启后按该切片的源时间段从源 SRT 截取并烧录到成品
