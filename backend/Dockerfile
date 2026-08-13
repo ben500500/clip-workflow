@@ -52,7 +52,7 @@ RUN mkdir -p /tmp/uploads /tmp/slice_outputs /app/cache && \
     chown -R appuser:appuser /app /tmp/uploads /tmp/slice_outputs /app/cache
 
 # Switch to non-root user
-USER appuser
+# USER appuser
 
 # Expose API port
 EXPOSE 8000

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # 将 backend 加入 sys.path，以便导入 app.* 模块
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 from app.config import settings  # noqa: E402
 from app.database import Base  # noqa: E402

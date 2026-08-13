@@ -12,7 +12,7 @@ x-common-env: &common-env
 
 # 三个 Celery worker（video/publish/fast）共享的配置锚点：复用 clip-backend:latest 与相同环境/卷
 x-celery-worker: &celery-worker-base
-  image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:1.0.1
+  image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:${CLIP_VERSION}
   restart: unless-stopped
   networks:
     - clip-network
@@ -170,7 +170,7 @@ services:
 
   # ==================== AutoClip Service ====================
   autoclip:
-    image: docker.cnb.cool/ben500500/clip-workflow/clip-autoclip:1.0.1
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-autoclip:${CLIP_VERSION}
     container_name: clip-autoclip
     restart: unless-stopped
     networks:
@@ -214,7 +214,7 @@ services:
 
   # ==================== Backend Services ====================
   alembic-migrate:
-    image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:1.0.1
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:${CLIP_VERSION}
     container_name: clip-alembic
     restart: "no"
     networks:
@@ -235,7 +235,7 @@ services:
     logging: *default-logging
 
   backend:
-    image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:1.0.1
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:${CLIP_VERSION}
     container_name: clip-backend
     restart: unless-stopped
     networks:
@@ -311,7 +311,7 @@ services:
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "metrics,default", "--loglevel=info", "--concurrency=4"]
 
   beat:
-    image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:1.0.1
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:${CLIP_VERSION}
     container_name: clip-beat
     restart: unless-stopped
     networks:
@@ -343,7 +343,7 @@ services:
 
   # ==================== RPA Worker (Playwright) ====================
   rpa_worker:
-    image: docker.cnb.cool/ben500500/clip-workflow/clip-rpa:1.0.1
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-rpa:${CLIP_VERSION}
     container_name: clip-rpa-worker
     restart: unless-stopped
     networks:
@@ -384,7 +384,7 @@ services:
 
   # ==================== Slice Worker (Go) ====================
   slice-worker:
-    image: docker.cnb.cool/ben500500/clip-workflow/clip-slice-worker:1.0.1
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-slice-worker:${CLIP_VERSION}
     container_name: clip-slice-worker
     restart: unless-stopped
     # 优雅退出窗口：SIGTERM 后等待当前任务完成再退出（worker 会停止认领新任务），
@@ -420,7 +420,7 @@ services:
 
   # ==================== Frontend ====================
   frontend:
-    image: docker.cnb.cool/ben500500/clip-workflow/clip-frontend:1.0.1
+    image: docker.cnb.cool/ben500500/clip-workflow/clip-frontend:${CLIP_VERSION}
     container_name: clip-frontend
     restart: unless-stopped
     networks:
