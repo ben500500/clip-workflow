@@ -18,6 +18,8 @@ INSTALL_DIR="/opt/clip-workflow"
 GIT_REPO="https://github.com/ben500500/clip-workflow.git"
 GIT_BRANCH="main"
 SKIP_RPA=true  # 默认跳过 RPA（视频号发布）
+INIT_ADMIN_USER=""  # 首个管理员用户名（可选，传给 init_admin.sh 实现部署即初始化）
+INIT_ADMIN_PASS=""  # 首个管理员密码（可选）
 
 # ==================== 参数解析 ====================
 while [[ $# -gt 0 ]]; do
@@ -27,6 +29,8 @@ while [[ $# -gt 0 ]]; do
         --branch=*) GIT_BRANCH="${1#*=}"; shift ;;
         --skip-rpa) SKIP_RPA=true; shift ;;
         --with-rpa) SKIP_RPA=false; shift ;;
+        --admin-user=*) INIT_ADMIN_USER="${1#*=}"; shift ;;
+        --admin-pass=*) INIT_ADMIN_PASS="${1#*=}"; shift ;;
         -h|--help)
             echo "用法: bash server-setup.sh [选项]"
             echo "  --dir=PATH       安装目录 (默认: /opt/clip-workflow)"
@@ -218,7 +222,7 @@ log_step "构建 Docker 镜像（这可能需要几分钟）..."
 
 if $SKIP_RPA; then
     # 不构建 RPA 镜像
-    $COMPOSE_CMD build --parallel postgres redis minio minio_init autoclip backend worker-video worker-publish worker-fast beat frontend nginx
+    $COMPOSE_CMD build --parallel postgres redis minio minio_init autoclip backend worker beat frontend nginx
 else
     $COMPOSE_CMD build --parallel
 fi
@@ -229,7 +233,7 @@ echo ""
 log_step "启动服务..."
 
 if $SKIP_RPA; then
-    $COMPOSE_CMD up -d postgres redis minio minio_init autoclip backend worker-video worker-publish worker-fast beat frontend nginx
+    $COMPOSE_CMD up -d postgres redis minio minio_init autoclip backend worker beat frontend nginx
 else
     $COMPOSE_CMD up -d
 fi
@@ -298,6 +302,23 @@ elif command -v ufw &> /dev/null; then
     log_info "ufw 已放行 HTTP/HTTPS"
 else
     log_info "未检测到本机防火墙（阿里云通过安全组控制）"
+fi
+
+echo ""
+
+# ==================== Step 9: 初始化管理员账号 ====================
+log_step "初始化管理员账号..."
+if [ -n "${INIT_ADMIN_USER:-}" ] && [ -n "${INIT_ADMIN_PASS:-}" ]; then
+    log_info "检测到 INIT_ADMIN_USER / INIT_ADMIN_PASS，自动初始化首个管理员..."
+    INIT_ADMIN_USER="$INIT_ADMIN_USER" INIT_ADMIN_PASS="$INIT_ADMIN_PASS" bash scripts/init_admin.sh
+elif [ -t 0 ]; then
+    # 交互终端：直接调用 init_admin.sh 走交互输入
+    log_info "未提供管理员凭据，进入交互初始化..."
+    bash scripts/init_admin.sh
+else
+    log_warn "未提供 INIT_ADMIN_USER/INIT_ADMIN_PASS，且非交互终端，跳过自动初始化。"
+    log_warn "部署完成后请运行以下命令初始化首个管理员账号："
+    echo -e "  ${CYAN}  bash scripts/init_admin.sh${NC}"
 fi
 
 echo ""

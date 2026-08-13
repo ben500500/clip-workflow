@@ -311,6 +311,22 @@ bash deploy.sh
 4. **远程 Worker**：如需远程 slice-worker，参考 `deploy_remote_worker.sh` 与 `docs/remote-worker-部署说明.md`。
 5. **代码同步**：CNB 主仓 + GitHub 备份仓，`scripts/sync_remotes.sh`；cnb remote URL 必须内联 access token。
 
+### 初始化首个管理员账号
+
+部署完成后必须先初始化第一个管理员账号才能登录系统：生产模式（`DEBUG=false`）启动不自动建账号，且注册接口要求调用者已是管理员，因此首个 admin 需通过「临时开启 `DEBUG` + 种子账号」通道创建。项目已内置 `scripts/init_admin.sh` 自动完成该流程（创建成功后自动还原 `DEBUG` 并清除明文密码）：
+
+```bash
+# 交互输入账号密码
+bash scripts/init_admin.sh
+
+# 或非交互（适合一键部署 / CI）
+INIT_ADMIN_USER=admin INIT_ADMIN_PASS='你的强口令' bash scripts/init_admin.sh
+```
+
+脚本会临时把 `DEBUG` 改为 `true` 并写入 `SEED_USERS_JSON` → 重启 backend 自动创建管理员 → 轮询 `/api/v1/auth/login` 验证登录成功 → 还原 `DEBUG` 并删除临时配置。成功后用该账号登录，在「用户管理」创建 operator 等其他成员。
+
+> 用 `scripts/server-setup.sh` 一键部署时，可传 `--admin-user=xxx --admin-pass=xxx`（或部署前 `export INIT_ADMIN_USER / INIT_ADMIN_PASS`）实现部署即自动初始化；否则部署完成提示会引导手动运行上述命令。
+
 ---
 
 ## 运维管理
