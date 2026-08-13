@@ -211,6 +211,10 @@ const EpisodeDetail: React.FC = () => {
   const [subtitleBorderColor, setSubtitleBorderColor] = useState('#000000');
   // 字幕设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
   const [subtitleModalOpen, setSubtitleModalOpen] = useState(false);
+  // 上传的字幕文件（MinIO key + 文件名）：提供后直接应用该字幕，跳过 ASR 识别
+  const [subtitleFileKey, setSubtitleFileKey] = useState<string | null>(null);
+  const [subtitleFileName, setSubtitleFileName] = useState<string | null>(null);
+  const [subtitleUploading, setSubtitleUploading] = useState(false);
   // ── 源视频字幕打码 ──
   const [subtitleMaskEnabled, setSubtitleMaskEnabled] = useState(false);
   const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'mosaic' | 'blur' | 'fill'>('mosaic');
@@ -886,6 +890,29 @@ const EpisodeDetail: React.FC = () => {
     setBadges((prev) => prev.filter((_, i) => i !== index));
   };
 
+  // ─── 字幕文件上传（srt/vtt） ────────────────
+  const uploadSubtitleFile = async (file: File) => {
+    setSubtitleUploading(true);
+    try {
+      const res = await sliceApi.uploadSubtitle(file);
+      setSubtitleFileKey(res.file_key);
+      setSubtitleFileName(res.file_name);
+      // 上传字幕后自动开启字幕烧录，直接应用该字幕文件
+      setSubtitleEnabled(true);
+      message.success(`字幕「${res.file_name}」已上传，将直接应用该字幕`);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '字幕上传失败');
+    } finally {
+      setSubtitleUploading(false);
+    }
+    return false; // 阻止 Upload 默认提交
+  };
+
+  const removeSubtitleFile = () => {
+    setSubtitleFileKey(null);
+    setSubtitleFileName(null);
+  };
+
   // ─── 一键切片（免审核直接出片） ──────────────────────
   const oneClickSlice = async () => {
     setOneClickSlicing(true);
@@ -969,6 +996,8 @@ const EpisodeDetail: React.FC = () => {
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
         subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
+        // 上传的字幕文件：提供后直接应用该字幕，跳过 ASR 识别
+        subtitle_file_key: subtitleFileKey || undefined,
         // 源视频字幕打码：独立开关，开启后仅打掉片源自带字幕（不依赖 ASR 字幕开关）
         subtitle_mask_enabled: subtitleMaskEnabled,
         subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
@@ -1097,6 +1126,8 @@ const EpisodeDetail: React.FC = () => {
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
         subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
+        // 上传的字幕文件：提供后直接应用该字幕，跳过 ASR 识别
+        subtitle_file_key: subtitleFileKey || undefined,
         // 源视频字幕打码：独立开关，开启后仅打掉片源自带字幕（不依赖 ASR 字幕开关）
         subtitle_mask_enabled: subtitleMaskEnabled,
         subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
@@ -1637,6 +1668,26 @@ const EpisodeDetail: React.FC = () => {
             width={500}
           >
             <Space direction="vertical" size={14} style={{ width: '100%' }}>
+              {/* 上传字幕文件：提供后直接应用，跳过 ASR 识别 */}
+              <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+                <Space wrap align="center" size={8}>
+                  <Text strong style={{ fontSize: 13 }}>上传字幕文件</Text>
+                  <Upload
+                    accept=".srt,.vtt"
+                    showUploadList={false}
+                    beforeUpload={uploadSubtitleFile}
+                    disabled={subtitleUploading}
+                  >
+                    <Button size="small" icon={<UploadOutlined />} loading={subtitleUploading}>选择字幕</Button>
+                  </Upload>
+                  {subtitleFileName && (
+                    <Tag color="blue" closable onClose={removeSubtitleFile}>{subtitleFileName}</Tag>
+                  )}
+                </Space>
+                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+                  支持 srt/vtt；上传后直接应用该字幕文件，跳过 ASR 语音识别。
+                </Text>
+              </div>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 13 }}>字幕字号</Text>
                 <InputNumber
