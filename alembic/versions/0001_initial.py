@@ -93,10 +93,10 @@ def upgrade() -> None:
     op.create_index("ix_alert_events_rule_id", "alert_events", ["rule_id"])
     op.create_index("ix_alert_events_created_at", "alert_events", ["created_at"])
 
-    # video_metrics.tags：视频标签系统（JSON 数组）
-    op.execute(
-        "ALTER TABLE video_metrics ADD COLUMN IF NOT EXISTS tags JSON"
-    )
+    # 注：video_metrics.tags 由 init_db() 的 _apply_compat_migrations() 幂等补列
+    # （带 has_column 守卫 + try/except，表缺不崩）。
+    # 迁移不重复 ALTER，否则 fresh DB 上 create_all 未跑、表不存在时
+    # ADD COLUMN IF NOT EXISTS 仍会抛 UndefinedTableError。
 
 
 def downgrade() -> None:
@@ -104,4 +104,3 @@ def downgrade() -> None:
     op.drop_table("alert_rules")
     op.drop_table("audit_logs")
     op.drop_table("user_sessions")
-    op.execute("ALTER TABLE video_metrics DROP COLUMN IF EXISTS tags")
