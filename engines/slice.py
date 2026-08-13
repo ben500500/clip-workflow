@@ -1299,6 +1299,14 @@ SUBTITLE_MASK_BLOCK = 8
 SUBTITLE_MASK_BLUR_RADIUS = 12
 # 自动检测字幕区域时最多采样的帧数（越多越稳，但越慢）
 SUBTITLE_MASK_DETECT_MAX_FRAMES = 10
+# 区域检测的"间歇性"打分参数：对话字幕是间歇出现（说话时才在屏），而固定水印/角标
+# 几乎每一帧都在。检测时用"出现频率"区分二者，优先挑间歇出现的字幕带，避免被
+# 恒定水印误导而打偏。出现频率越接近 PRESENCE_IDEAL 越加分，越接近 0（无内容）
+# 或 1（恒定水印）越减分。
+SUBTITLE_MASK_PRESENCE_IDEAL = 0.6
+SUBTITLE_MASK_PRESENCE_SLOPE = 2.5
+SUBTITLE_MASK_PRESENCE_MIN = 0.3
+SUBTITLE_MASK_PRESENCE_MAX = 2.0
 
 
 def _mask_text_clusters(mask):
@@ -1357,8 +1365,9 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
         cap = cv2.VideoCapture(video)
         if not cap.isOpened():
             return None
-        cluster_score = np.zeros(height, dtype=np.float64)
+        cluster_peak = np.zeros(height, dtype=np.float64)
         dens = np.zeros(height, dtype=np.float64)
+        presence = np.zeros(height, dtype=np.float64)
         color_acc = np.zeros((height, width), dtype=np.float64)
         frames = 0
         for t in times:
@@ -1375,16 +1384,22 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
             white = (r > 170) & (g > 170) & (b > 170) & (abs(r - g) < 45) & (abs(g - b) < 45) & (abs(r - b) < 45)
             mask = gold | white
             dens += mask.sum(axis=1)
-            cluster_score += _mask_text_clusters(mask)
+            cl = _mask_text_clusters(mask)
+            # 逐帧最大值：即使字幕只在部分采样帧出现（间歇性对话字幕），其峰值也能被捕捉
+            cluster_peak = np.maximum(cluster_peak, cl)
+            # 该行在当前帧是否有文字簇内容（用于统计"出现频率"，区分间歇字幕/恒定水印）
+            presence += (cl > 3).astype(np.float64)
             color_acc += mask.astype(np.float64)
             frames += 1
         if frames == 0:
             return None
-        cluster_score /= float(frames)
         dens /= float(frames)
+        presence /= float(frames)
 
-        # 无实际内容的位置不计入文字簇（避免噪声）
-        combo = cluster_score.copy()
+        # 无实际内容的位置不计入文字簇（避免噪声）。
+        # 用"峰值文字簇"而非均值做主信号：均值会被恒定水印/角标拉高（几乎每帧都在），
+        # 而对话字幕是间歇的；峰值能捕捉到字幕真实出现时的密度。
+        combo = cluster_peak.copy()
         combo[dens < 0.5] = 0.0
         k = np.ones(7, dtype=np.float64) / 7.0
         smooth = np.convolve(combo, k, mode="same")
@@ -1405,20 +1420,26 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
             p = int(y)
         bands.append((s, p))
 
-        # 打分：文字簇峰值 × 高度紧凑度 × 位置偏下优先
+        # 打分：文字簇峰值 × 高度紧凑度 × 间歇性（出现频率） × 位置偏下优先
         candidates = []
         for y0, y1 in bands:
             h = y1 - y0 + 1
             val = float(smooth[y0:y1 + 1].max())
             compact = 1.0 if 15 <= h <= 130 else (0.4 if h < 15 else 0.15)
-            score = val * compact
+            # 出现频率越接近理想值（约 0.6，间歇性对话字幕）越加分，越接近 0（无内容）
+            # 或 1（恒定水印/角标）越减分，从而把"对话字幕"从"固定水印"中区分出来。
+            pr = float(presence[y0:y1 + 1].mean())
+            dynamism = SUBTITLE_MASK_PRESENCE_MAX - \
+                abs(pr - SUBTITLE_MASK_PRESENCE_IDEAL) * SUBTITLE_MASK_PRESENCE_SLOPE
+            dynamism = max(SUBTITLE_MASK_PRESENCE_MIN, min(SUBTITLE_MASK_PRESENCE_MAX, dynamism))
+            score = val * compact * dynamism
             if y0 > height * 0.3:
                 score *= 1.3
-            candidates.append((score, val, y0, y1, h))
+            candidates.append((score, val, y0, y1, h, pr, dynamism))
         if not candidates:
             return None
         candidates.sort(reverse=True)
-        _, _, y0, y1, h = candidates[0]
+        _, _, y0, y1, h, _, _ = candidates[0]
 
         # 上下扩展余量（向下更多，覆盖描边/换行/下延），确保 delogo 完整补平
         up = max(10, int(h * 0.3))
