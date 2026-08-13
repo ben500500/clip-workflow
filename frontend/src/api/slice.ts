@@ -139,6 +139,17 @@ export const sliceApi = {
   listTasks: (episodeId: string) =>
     client.get(`/episodes/${episodeId}/slice/tasks`) as Promise<SliceTask[]>,
 
+  // 读取当前用户的切片个人配置（保存到个人账号，跨设备/浏览器持久化）
+  getPreferences: () =>
+    client.get(`/slice/preferences`) as Promise<{ slice_config: Record<string, unknown> | null }>,
+
+  // 保存当前用户的切片个人配置到个人账号
+  savePreferences: (sliceConfig: Record<string, unknown>) =>
+    client.put(`/slice/preferences`, { slice_config: sliceConfig }) as Promise<{
+      ok: boolean;
+      slice_config: Record<string, unknown>;
+    }>,
+
   getTask: (taskId: string) =>
     client.get(`/slice-tasks/${taskId}`) as Promise<SliceTask>,
 

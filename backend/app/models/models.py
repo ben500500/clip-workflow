@@ -980,3 +980,22 @@ class BatchSliceItem(Base):
 
     def __repr__(self) -> str:
         return f"<BatchSliceItem(id={self.id}, seq={self.seq}, status={self.status})>"
+
+
+class UserPreference(Base):
+    """用户个人偏好设置：按用户存储切片等个人配置，跨设备/浏览器持久化。
+
+    每个用户一条记录，slice_config 存整个切片配置 JSON（同前端 SlicePreset 的配置字段）。
+    """
+    __tablename__ = "user_preferences"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    slice_config = Column(JSON, nullable=True)   # 当前用户的切片配置（JSON，可整体覆盖）
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    user = relationship("User", backref="preferences")
+
+    def __repr__(self) -> str:
+        return f"<UserPreference(id={self.id}, user_id={self.user_id})>"

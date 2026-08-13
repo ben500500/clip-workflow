@@ -138,8 +138,8 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   vert2horiz_min_step: 5,
   vert2horiz_face_margin: 0.30,
   subtitle_enabled: true,
-  subtitle_font_ratio: 0.30,
-  subtitle_spacing: 0,
+  subtitle_font_ratio: 0.22,
+  subtitle_spacing: -1,
   subtitle_style: 'custom',
   subtitle_color: '#EDD736',
   subtitle_border_color: '#000000',
@@ -204,10 +204,10 @@ const EpisodeDetail: React.FC = () => {
   const [vert2horizModalOpen, setVert2horizModalOpen] = useState(false);
   // ── ASR 字幕烧录开关 ──
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
-  // 字幕字号（相对输出视频高度的比例，默认 0.30→FontSize 30；转横屏开启时默认套用，用户可调）
-  const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.30);
-  // 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；调小/负值让字幕文字更紧凑，调大则字距变宽）
-  const [subtitleSpacing, setSubtitleSpacing] = useState(0);
+  // 字幕字号（相对输出视频高度的比例，默认 0.22→FontSize 22；转横屏开启时默认套用，用户可调）
+  const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.22);
+  // 字幕字间距（ASS Spacing 像素，默认 -1 更紧凑；调小/负值让字幕文字更紧凑，调大则字距变宽）
+  const [subtitleSpacing, setSubtitleSpacing] = useState(-1);
   // 字幕样式：default（白字黑边+半透明黑底）/ custom（自定义字体色+边框色，无底色）
   const [subtitleStyle, setSubtitleStyle] = useState<'default' | 'custom'>('custom');
   // 自定义样式的字体色 / 边框色（CSS 十六进制，默认 #EDD736 黄 / 黑边）
@@ -444,7 +444,7 @@ const EpisodeDetail: React.FC = () => {
     setVert2horizFaceMargin(p.vert2horiz_face_margin);
     setSubtitleEnabled(p.subtitle_enabled);
     setSubtitleFontRatio(p.subtitle_font_ratio);
-    setSubtitleSpacing(p.subtitle_spacing ?? 0);
+    setSubtitleSpacing(p.subtitle_spacing ?? -1);
     setSubtitleStyle(p.subtitle_style);
     setSubtitleColor(p.subtitle_color);
     setSubtitleBorderColor(p.subtitle_border_color);
@@ -474,6 +474,10 @@ const EpisodeDetail: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadPresets]);
 
+  // ── 个人账号切片配置：进入页面加载 + 防抖自动保存（跨设备/浏览器持久化） ──
+  const saveUserPrefsTimer = useRef<number | null>(null);
+  const userPrefLoadedRef = useRef(false);
+
   // 选择预设并应用
   const handleSelectPreset = (id: string) => {
     const preset = presets.find((p) => p.id === id);
@@ -481,6 +485,21 @@ const EpisodeDetail: React.FC = () => {
     applyPreset(preset);
     persistPresets(presets, id);
     message.success(`已应用配置「${preset.name}」`);
+  };
+
+  // 收集需持久化到个人账号的切片配置（含切片模式/去重档位）
+  const collectPersistConfig = () => ({
+    sliceMode,
+    dedupePreset,
+    ...collectCurrentPresetConfig(),
+    badge_default_width: badgeDefaultWidth,
+  });
+
+  // 应用个人账号配置到当前页面状态
+  const applyPersistConfig = (cfg: Record<string, unknown>) => {
+    if (cfg.sliceMode) setSliceMode(String(cfg.sliceMode));
+    if (cfg.dedupePreset) setDedupePreset(String(cfg.dedupePreset));
+    applyPreset({ ...collectCurrentPresetConfig(), ...cfg, id: 'cloud', name: '个人配置' } as SlicePreset);
   };
 
   // 保存当前配置为新预设
@@ -514,6 +533,46 @@ const EpisodeDetail: React.FC = () => {
     }
     message.success('已删除配置');
   };
+
+  // 进入页面时从个人账号加载已保存配置，覆盖默认值（保证下次进入不恢复初始状态）
+  useEffect(() => {
+    let cancelled = false;
+    sliceApi.getPreferences().then((res) => {
+      if (cancelled) return;
+      userPrefLoadedRef.current = true;
+      if (res.slice_config) {
+        applyPersistConfig(res.slice_config as Record<string, unknown>);
+      }
+    }).catch(() => {
+      userPrefLoadedRef.current = true;
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 配置变化后防抖自动保存到个人账号（已从后端加载过个人配置后才写入，避免挂载初覆盖）
+  useEffect(() => {
+    if (!userPrefLoadedRef.current) return;
+    if (saveUserPrefsTimer.current) window.clearTimeout(saveUserPrefsTimer.current);
+    saveUserPrefsTimer.current = window.setTimeout(() => {
+      sliceApi.savePreferences(collectPersistConfig() as Record<string, unknown>).catch(() => {
+        // 保存失败静默，不阻塞操作
+      });
+    }, 600);
+    return () => {
+      if (saveUserPrefsTimer.current) window.clearTimeout(saveUserPrefsTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    sliceMode, dedupePreset, vert2horizEnabled, vert2horizMode, vert2horizRatio,
+    vert2horizOutputSize, vert2horizDetectInterval, vert2horizSmoothWindow,
+    vert2horizMinStep, vert2horizFaceMargin, subtitleEnabled, subtitleFontRatio,
+    subtitleSpacing, subtitleStyle, subtitleColor, subtitleBorderColor,
+    subtitleMaskEnabled, subtitleMaskStyle, subtitleMaskTemporal, subtitleMaskSpatial,
+    subtitleMaskWidthRatio, subtitleMaskHeightRatio, subtitleMaskBottomRatio,
+    textOverlayEnabled, textOverlays, watermarkEnabled, watermarkText,
+    watermarkFontSize, watermarkOpacity, watermarkPosition, badgeDefaultWidth,
+  ]);
 
   useEffect(() => {
     if (episodeId) fetchEpisode();
@@ -1079,8 +1138,8 @@ const EpisodeDetail: React.FC = () => {
     setVert2horizEnabled(on);
     if (on) {
       setSubtitleEnabled(true);
-      setSubtitleFontRatio(0.30);
-      setSubtitleSpacing(0);
+      setSubtitleFontRatio(0.22);
+      setSubtitleSpacing(-1);
       setSubtitleStyle('custom');
       setSubtitleColor('#EDD736');
       // 默认开启固定文字开关并预置三处固定文字（右上角/左下角/最左侧竖排标题）
@@ -1165,7 +1224,10 @@ const EpisodeDetail: React.FC = () => {
       });
       message.success(res.message);
       fetchHistories();
-      // 启动后轮询任务进度
+      // 任务已加入处理队列，立即恢复按钮状态，可继续添加任务（不再锁定到任务完成）
+      setRunning(false);
+      setProgress(null);
+      // 仍启动轮询，在历史列表/进度区实时同步任务状态，但按钮保持可用
       pollLatestSliceProgress(mode, setRunning, setProgress);
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : (noCut ? '启动快速转换失败' : '启动切片失败'));
@@ -1509,7 +1571,8 @@ const EpisodeDetail: React.FC = () => {
       title: '切片执行',
       node: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          <Space>
+          {/* 切片模式选择：鼠标悬停停顿显示当前模式介绍（去掉常驻说明文字） */}
+          <Tooltip title={`${SLICE_MODE_HELP[sliceMode]?.label || '切片模式'}：${SLICE_MODE_HELP[sliceMode]?.detail || ''}`}>
             <Cascader
               value={sliceMode === 'dedupe' ? ['dedupe', dedupePreset || 'standard'] : [sliceMode]}
               options={SLICE_MODE_OPTIONS}
@@ -1524,28 +1587,16 @@ const EpisodeDetail: React.FC = () => {
               }}
               displayRender={(labels: string[]) => labels.join(' · ')}
               placeholder="选择切片模式"
-              style={{ width: 180 }}
+              style={{ width: 220 }}
             />
+          </Tooltip>
+          {/* 开始切片 / 快速转换按钮（位于切片模式选择下方） */}
+          <Space wrap>
             <Button icon={<ScissorOutlined />} loading={sliceRunning} disabled={quickConverting} onClick={() => runSlice(false)}>开始切片</Button>
             <Tooltip title="跳过 AI 选点和区间检测，直接整段视频应用下方配置（竖屏转横屏/水印/角标/字幕/固定文字等）转换输出">
               <Button icon={<ThunderboltOutlined />} loading={quickConverting} disabled={sliceRunning} onClick={() => runSlice(true)}>快速转换</Button>
             </Tooltip>
           </Space>
-          {/* 切片模式详细说明 */}
-          <Card size="small" style={{ background: '#f0f5ff', border: '1px solid #d6e4ff', width: '100%' }}>
-            <Space direction="vertical" size={4} style={{ width: '100%' }}>
-              <Text strong style={{ fontSize: 13, color: '#1d39c4' }}>
-                <InfoCircleOutlined style={{ marginRight: 6 }} />
-                {SLICE_MODE_HELP[sliceMode]?.label}
-              </Text>
-              <Text style={{ fontSize: 13, color: '#1d39c4' }}>
-                {SLICE_MODE_HELP[sliceMode]?.desc}
-              </Text>
-              <Text type="secondary" style={{ fontSize: 12, lineHeight: 1.6 }}>
-                {SLICE_MODE_HELP[sliceMode]?.detail}
-              </Text>
-            </Space>
-          </Card>
 
           {/* ── 竖屏转横屏智能裁切开关 ── */}
           <Card size="small" style={{ width: '100%' }}>
@@ -1712,7 +1763,7 @@ const EpisodeDetail: React.FC = () => {
                   step={1}
                   value={Math.round(subtitleFontRatio * 100)}
                   onChange={(v) => {
-                    const fs = v ?? 20;
+                    const fs = v ?? 22;
                     setSubtitleFontRatio(Math.max(0.1, Math.min(0.6, fs / 100)));
                   }}
                   style={{ width: 100 }}
@@ -1726,7 +1777,7 @@ const EpisodeDetail: React.FC = () => {
                   max={20}
                   step={1}
                   value={subtitleSpacing}
-                  onChange={(v) => setSubtitleSpacing(v ?? 0)}
+                  onChange={(v) => setSubtitleSpacing(v ?? -1)}
                   style={{ width: 100 }}
                   addonAfter="px"
                 />
@@ -2227,7 +2278,25 @@ const EpisodeDetail: React.FC = () => {
                         <Button size="small" danger icon={<StopOutlined />}>停止</Button>
                       </Popconfirm>
                     ) : (
-                      <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
+                      <Popconfirm
+                        title="确定删除该条切片记录？"
+                        description="将删除该任务及其全部成品文件，不可恢复"
+                        okText="删除"
+                        cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                        onConfirm={async () => {
+                          try {
+                            await sliceApi.delete(t.id);
+                            message.success('切片记录已删除');
+                            fetchSliceHistory();
+                            fetchHistories();
+                          } catch (err: unknown) {
+                            message.error(err instanceof Error ? err.message : '删除失败');
+                          }
+                        }}
+                      >
+                        <Button size="small" danger type="text" icon={<DelIcon />}>删除</Button>
+                      </Popconfirm>
                     ),
                 },
               ]}
@@ -2369,7 +2438,7 @@ const EpisodeDetail: React.FC = () => {
             {subtitleEnabled && (
               <Space wrap align="center" size={8}>
                 <Text style={{ fontSize: 12 }}>字号</Text>
-                <InputNumber size="small" min={10} max={60} step={1} value={Math.round(subtitleFontRatio * 100)} onChange={(v) => { const fs = v ?? 45; setSubtitleFontRatio(Math.max(0.1, Math.min(0.6, fs / 100))); }} style={{ width: 80 }} />
+                <InputNumber size="small" min={10} max={60} step={1} value={Math.round(subtitleFontRatio * 100)} onChange={(v) => { const fs = v ?? 22; setSubtitleFontRatio(Math.max(0.1, Math.min(0.6, fs / 100))); }} style={{ width: 80 }} />
                 <Radio.Group size="small" value={subtitleStyle} onChange={(e) => setSubtitleStyle(e.target.value)}>
                   <Radio.Button value="default">默认</Radio.Button>
                   <Radio.Button value="custom">自定义</Radio.Button>
