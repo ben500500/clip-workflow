@@ -125,7 +125,8 @@ async def _publish_to_node_queue(target_node_id: str, task_data: dict) -> Option
     """把任务 RPUSH 到节点专属队列并 PUBLISH 唤醒信号。
 
     消息体与 Stream 消息同构（{"data": <SliceTask JSON>}），Worker 复用同一套解析。
-    返回 "direct" 表示已入队（无 Stream 消息 ID）。
+    返回 "direct" 表示已入队（无 Stream 消息 ID）。RPUSH 与 PUBLISH 在同一连接上
+    顺序执行，避免每个任务开两次连接；唤醒信号尽力而为（丢失不影响送达）。
     """
     redis = None
     try:
@@ -134,7 +135,12 @@ async def _publish_to_node_queue(target_node_id: str, task_data: dict) -> Option
         raw = json.dumps(task_data)
         await redis.rpush(queue_key, json.dumps({"data": raw}))
         # 唤醒信号尽力而为：丢失不影响送达（Worker BRPOP 短超时兜底）
-        await wake_node(target_node_id)
+        wake_payload = json.dumps({
+            "type": WAKE_TYPE,
+            "node_id": target_node_id,
+            "issued_at": int(datetime.utcnow().timestamp()),
+        })
+        await redis.publish(f"{NODE_CMD_CHANNEL_PREFIX}{target_node_id}", wake_payload)
         logger.info(
             "Published slice task %s to node queue %s (target_node_id=%s)",
             task_data.get("task_id", "?"),
@@ -174,8 +180,10 @@ async def get_node_queue_pending(node_id: str) -> list[str]:
         task_ids: list[str] = []
         for item in raw_list:
             try:
-                payload = json.loads(item)
-                task_ids.append(str(payload.get("task_id", "")))
+                # 队列元素为 {"data": <SliceTask JSON 字符串>}，与 Stream 消息同构
+                envelope = json.loads(item)
+                inner = json.loads(envelope.get("data", "{}"))
+                task_ids.append(str(inner.get("task_id", "")))
             except (ValueError, TypeError):
                 task_ids.append("")
         return task_ids
