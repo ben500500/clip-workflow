@@ -2327,8 +2327,13 @@ def main():
     if subtitle_mask:
         if not subtitle_mask.get("srt") and args.subtitle:
             subtitle_mask["srt"] = args.subtitle
-        print(f"源字幕打码已开启: style={subtitle_mask.get('style') or SUBTITLE_MASK_STYLE_DEFAULT}, "
-              f"temporal={bool(subtitle_mask.get('temporal'))}", file=sys.stderr)
+        style = subtitle_mask.get("style") or SUBTITLE_MASK_STYLE_DEFAULT
+        temporal = bool(subtitle_mask.get("temporal"))
+        spatial = bool(subtitle_mask.get("spatial"))
+        print(f"源字幕打码已开启: style={style}, temporal={temporal}, spatial={spatial}", file=sys.stderr)
+        if not temporal:
+            print("提示: temporal=false 会按检测到的字幕区域全程打码（字幕/水印不在的时段也会被马赛克）。"
+                  "若字幕只在几帧出现，建议开启 temporal=true 启用帧级检测。", file=sys.stderr)
         # 自动检测字幕真实位置：字幕常在居中偏下而非底部，固定底部横带会打偏。
         # 用 OpenCV 在字幕出现的时刻采样帧，检测文字横带位置；检测成功则覆盖默认区域。
         detect_srt = subtitle_mask.get("srt") or ""
@@ -2345,7 +2350,7 @@ def main():
             subtitle_mask["__detect_h"] = detect_h
             print(f"源字幕打码自动定位: ({dx},{dy},{dw},{dh}) @ {detect_w}x{detect_h}", file=sys.stderr)
         else:
-            print("源字幕打码自动定位失败，回退默认区域", file=sys.stderr)
+            print("源字幕打码自动定位失败，回退默认区域（底部横带）", file=sys.stderr)
 
         # 精细化（temporal）模式：在检测出的区域内按时间采样判断字幕/水印实际
         # 在哪些时段出现，只在出现时打码，其余画面零改动。不依赖 SRT，适用于

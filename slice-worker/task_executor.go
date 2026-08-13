@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -240,7 +239,16 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		close(outputs)
 	}()
 	go func() {
-		_, _ = io.Copy(io.Discard, stderr)
+		// 透传 Python 引擎 stderr 到 worker 日志（带 [engine] 前缀），
+		// 方便排查打码/检测等引擎内部诊断；行首 taskID 便于多任务并发时定位。
+		scanner := bufio.NewScanner(stderr)
+		taskIDShort := task.TaskID
+		if len(taskIDShort) > 8 {
+			taskIDShort = taskIDShort[:8]
+		}
+		for scanner.Scan() {
+			fmt.Printf("[engine] %s %s\n", taskIDShort, scanner.Text())
+		}
 	}()
 
 	// 解析引擎输出
