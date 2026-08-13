@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import shutil
+import tempfile
 import uuid
 from datetime import datetime
 from typing import Annotated, List, Optional
@@ -458,40 +459,72 @@ async def upload_multi(
     )
 
 
-async def _ffmpeg_concat(paths: List[str], out_path: str) -> bool:
-    """用 ffmpeg concat demuxer 将多个视频顺序拼接为一个。
-
-    直接流拷贝（-c copy）简单拼接，不做转码重编码，速度最快。
-    要求各素材编码/分辨率/帧率/采样率一致，否则 concat 会失败并回退为
-    各视频分别作为一集（见调用处 do_merge=False 兜底）。失败返回 False。
-    """
+async def _run_ffmpeg(cmd: List[str]) -> bool:
+    """运行一条 ffmpeg 命令，返回是否成功（失败记录 stderr 尾部日志）。"""
     try:
-        list_path = out_path + ".txt"
-        with open(list_path, "w", encoding="utf-8") as f:
-            for p in paths:
-                f.write(f"file '{p}'\n")
-        cmd = [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
-            "-c", "copy", out_path,
-        ]
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         _, stderr = await proc.communicate()
-        if proc.returncode != 0 or not os.path.isfile(out_path):
-            logger.error("ffmpeg concat 失败: %s", stderr.decode(errors="replace")[-2000:])
+        if proc.returncode != 0:
+            logger.error("ffmpeg 失败(%s): %s", " ".join(cmd[:6]), stderr.decode(errors="replace")[-1500:])
             return False
         return True
+    except Exception as e:
+        logger.error(f"ffmpeg 执行异常: {e}")
+        return False
+
+
+async def _ffmpeg_concat(paths: List[str], out_path: str) -> bool:
+    """用 ffmpeg 把多个视频顺序拼接为一个（优先不转码，参数不一致时回退重编码）。
+
+    关键修复：手机录制的 MP4 常带 edit list / 非零起始时间戳，各段 DTS 不连续，
+    直接 `concat -c copy` 会在接缝处产生 Non-monotonic DTS、时长被严重撑高、
+    AAC 音频解码损坏。因此先对每个输入做**无损**时间戳归一化重封装
+    （-avoid_negative_ts make_zero -fflags +genpts，不改编码只重打包），消除
+    DTS 不连续后再 concat copy；仍失败（编码/分辨率/帧率不一致）再回退重编码拼接。
+    """
+    work_dir = None
+    try:
+        work_dir = tempfile.mkdtemp(prefix="concat_")
+        # 1) 无损归一化：仅重封装，不改编码，消除各段时间戳不连续
+        norm_paths: List[str] = []
+        for i, p in enumerate(paths):
+            np = os.path.join(work_dir, f"norm_{i}.mp4")
+            ok = await _run_ffmpeg([
+                "ffmpeg", "-y", "-i", p, "-c", "copy",
+                "-avoid_negative_ts", "make_zero", "-fflags", "+genpts", np,
+            ])
+            if not ok or not os.path.isfile(np) or os.path.getsize(np) == 0:
+                return False
+            norm_paths.append(np)
+
+        # 2) 优先直接流拷贝拼接（无损、最快）
+        list_path = os.path.join(work_dir, "list.txt")
+        with open(list_path, "w", encoding="utf-8") as f:
+            for p in norm_paths:
+                f.write(f"file '{p}'\n")
+        ok = await _run_ffmpeg([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+            "-c", "copy", out_path,
+        ])
+        if ok and os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+            return True
+
+        # 3) 回退：重编码拼接（编码/分辨率/帧率不一致时，保证合并成功）
+        ok2 = await _run_ffmpeg([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+            "-r", "25", "-c:a", "aac", "-b:a", "128k", out_path,
+        ])
+        return bool(ok2 and os.path.isfile(out_path) and os.path.getsize(out_path) > 0)
     except Exception as e:
         logger.error(f"ffmpeg concat 异常: {e}")
         return False
     finally:
-        try:
-            list_txt = out_path + ".txt"
-            if os.path.isfile(list_txt):
-                os.unlink(list_txt)
-        except OSError:
-            pass
+        if work_dir:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
 
 @router.delete("/upload/{upload_id}", status_code=204)
