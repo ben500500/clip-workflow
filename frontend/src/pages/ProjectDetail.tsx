@@ -268,7 +268,7 @@ const ProjectDetail: React.FC = () => {
         open={multiModalOpen}
         onOk={submitMultiUpload}
         onCancel={() => setMultiModalOpen(false)}
-        okText="上传并创建项目"
+        okText="上传"
         cancelText="取消"
         confirmLoading={multiUploading}
         width={560}

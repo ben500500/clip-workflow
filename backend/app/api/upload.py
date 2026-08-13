@@ -8,7 +8,7 @@ from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
@@ -353,6 +353,8 @@ async def upload_multi(
     - merge=false：每个视频分别创建一条 Episode（按顺序编号）；
     - merge=true：先用 ffmpeg concat 把多个视频拼接成一个，再创建一条 Episode
       （作为「正片」整体进入 AI 选点/切片流水线）。项目名称由用户输入。
+    - 项目按「名称 + 当前用户」查找：已存在则追加剧集（保留原剧集，编号顺延），
+      不存在才新建，避免同名重复项目覆盖原剧集。
     """
     if not files:
         raise HTTPException(status_code=400, detail="至少需要上传一个视频")
@@ -360,16 +362,32 @@ async def upload_multi(
     if not project_name:
         raise HTTPException(status_code=400, detail="项目名称不能为空")
 
-    # 数据隔离：项目由当前用户创建，归属人即当前用户
-    project = Project(
-        name=project_name,
-        description=description or "多视频批量上传创建",
-        config={"source": "multi_upload"},
-        created_by=current_user.id if current_user else None,
+    # 数据隔离：按项目名查找当前用户已有项目，存在则追加剧集（保留原剧集），
+    # 不存在才新建，避免产生同名重复项目把原剧集「冲掉」。
+    stmt = select(Project).where(Project.name == project_name)
+    if current_user is not None:
+        stmt = stmt.where(Project.created_by == current_user.id)
+    stmt = stmt.order_by(Project.created_at.asc())
+    res = await db.execute(stmt)
+    project = res.scalars().first()
+
+    created_new = project is None
+    if created_new:
+        project = Project(
+            name=project_name,
+            description=description or "多视频批量上传创建",
+            config={"source": "multi_upload"},
+            created_by=current_user.id if current_user else None,
+        )
+        db.add(project)
+        await db.flush()
+        await db.refresh(project)
+
+    # 已有最大剧集号：新剧集在其后连续编号，避免与原有剧集号冲突
+    base_res = await db.execute(
+        select(func.coalesce(func.max(Episode.episode_no), 0)).where(Episode.project_id == project.id)
     )
-    db.add(project)
-    await db.flush()
-    await db.refresh(project)
+    base_episode_no = base_res.scalar_one()
 
     # 校验文件扩展名并落盘到临时目录
     tmp_dir = f"/tmp/uploads/multi_{uuid.uuid4().hex}"
@@ -416,7 +434,7 @@ async def upload_multi(
             episode = Episode(
                 project_id=project.id,
                 title=name,
-                episode_no=idx,
+                episode_no=base_episode_no + idx,
                 source_file_key=file_key,
                 file_size=os.path.getsize(p),
                 status="uploaded",
@@ -433,7 +451,10 @@ async def upload_multi(
         project_id=str(project.id),
         project_name=project.name,
         episodes=episodes,
-        message=f"已创建项目「{project.name}」并上传 {len(episodes)} 个正片" + ("（已合并为一个）" if do_merge else ""),
+        message=(
+            f"{'已追加到' if not created_new else '已创建'}项目「{project.name}」并上传 {len(episodes)} 个正片"
+            + ("（已合并为一个）" if do_merge else "")
+        ),
     )
 
 
