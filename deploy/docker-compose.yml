@@ -231,7 +231,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
       REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
     working_dir: /app
-    command: ["sh", "-c", "alembic -c alembic/alembic.ini upgrade head"]
+    # bootstrap：init_db() 建全套表（create_all 按 FK 依赖排序 + compat 幂等补列），
+    # 再 stamp head 标记迁移版本到位。不跑 upgrade head——迁移链与 ORM 模型重复，
+    # fresh DB 上 FK→业务表 / DuplicateTable 会炸。
+    command: ["sh", "-c", "python -c 'import asyncio; import app.models.models; from app.database import init_db; asyncio.run(init_db())' && alembic -c alembic/alembic.ini stamp head"]
     logging: *default-logging
 
   backend:
