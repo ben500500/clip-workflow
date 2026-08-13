@@ -31,7 +31,7 @@ const SLICE_MODE_HELP: Record<string, { label: string; desc: string }> = {
   },
   dedupe: {
     label: '去重模式',
-    desc: '切割时进行画面相似度检测，去除重复片段。适合批量发布到多个平台，减少限流风险。',
+    desc: '切割时进行画面去重处理，采用「空间变换（缩放裁切/镜像）+ 时域变换（变速）+ 色彩变换（降饱和/复古偏色）+ 质感叠加（老电视噪点/扫描线/暗角）」四层组合，可选轻/标准/重三档，标准档为默认效果。适合批量发布到多个平台，降低查重风险。',
   },
   scrub: {
     label: '挖洞模式',
@@ -47,6 +47,8 @@ const SliceTasks: React.FC = () => {
   const [currentTask, setCurrentTask] = useState<string | null>(null);
   const [mode, setMode] = useState('fast');
   const [engine, setEngine] = useState('worker');
+  // 去重模式档位：轻/标准/重（老电视质感去重强度，默认标准档）
+  const [dedupePreset, setDedupePreset] = useState<string>('standard');
   // 自定义文字水印开关与参数
   const [watermarkEnabled, setWatermarkEnabled] = useState(false);
   const [watermarkText, setWatermarkText] = useState('');
@@ -125,6 +127,8 @@ const SliceTasks: React.FC = () => {
     try {
       const res = await sliceApi.run(episodeId || '', mode, {
         engine,
+        // 去重模式档位（轻/标准/重），仅去重模式生效
+        dedupe_config: mode === 'dedupe' ? { preset: dedupePreset } : undefined,
         watermark_enabled: watermarkEnabled,
         watermark_text: watermarkEnabled ? watermarkText : undefined,
         watermark_font_size: watermarkEnabled ? watermarkFontSize : undefined,
@@ -530,6 +534,15 @@ const SliceTasks: React.FC = () => {
               { value: 'scrub', label: '挖洞模式' },
             ]}
           />
+          {mode === 'dedupe' && (
+            <Select value={dedupePreset} onChange={setDedupePreset} style={{ width: 110 }}
+              options={[
+                { value: 'light', label: '轻' },
+                { value: 'standard', label: '标准' },
+                { value: 'heavy', label: '重' },
+              ]}
+            />
+          )}
           <Tooltip title={SLICE_MODE_HELP[mode]?.desc}>
             <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
           </Tooltip>
