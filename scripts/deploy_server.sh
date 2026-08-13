@@ -161,8 +161,12 @@ fi
 
 # 5. 验证
 if [ "$DRY_RUN" = "1" ]; then
-  log "[dry-run] 跳过验证步骤"
+  log "[dry-run] 将执行 db_sync_columns 补齐数据库列 + 跳过验证步骤"
 else
+  # 4.5 部署后补齐 ORM-DB 列差异（防 cnb 加列但 alembic 迁移链跳过导致接口 500）
+  log "补齐数据库缺失列 (db_sync_columns)..."
+  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose cp scripts/db_sync_columns.py backend:/app/db_sync_columns.py && docker compose exec -T backend python /app/db_sync_columns.py" 2>&1 | grep -vE "warning|INFO:|level=" | tail -8
+
   log "等待容器就绪..."
   sleep 5
   if [ -n "$SERVICES" ]; then
