@@ -310,12 +310,21 @@ async def _run_pipeline(project_id: str, steps: list[int],
                         max_clips: Optional[int] = None,
                         start_time: Optional[float] = None,
                         end_time: Optional[float] = None,
-                        frame_analysis: Optional[bool] = None) -> None:
+                        frame_analysis: Optional[bool] = None,
+                        model_name: Optional[str] = None,
+                        llm_provider: Optional[str] = None) -> None:
     proj = projects.get(project_id)
     if not proj:
         return
 
     try:
+        # 运行时覆盖选点模型（来自系统设置 default_autoclip_config / 请求参数），不落盘
+        if model_name:
+            get_llm_manager().set_runtime_model(model_name, llm_provider)
+            logger.info(f"[project={project_id}] 本次选点使用模型覆盖: {model_name}")
+        else:
+            logger.info(f"[project={project_id}] 本次选点使用默认模型: {_current_llm_model()}")
+
         api_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
         if not api_key:
             raise RuntimeError("未配置 DASHSCOPE_API_KEY 环境变量，无法调用阿里云百炼 DashScope")
@@ -656,6 +665,10 @@ class PipelineRun(BaseModel):
     end_time: Optional[float] = None
     # 画面理解（MiniCPM-V）开关：None 时回退到环境变量 FRAME_ANALYSIS_ENABLED
     frame_analysis: Optional[bool] = None
+    # 选点模型覆盖（来自系统设置 default_autoclip_config.llm_model / 请求参数）；
+    # 指定后本次运行使用该模型，不修改磁盘上的用户配置
+    model_name: Optional[str] = None
+    llm_provider: Optional[str] = None
 
 
 @app.post("/api/v1/pipeline/run")
@@ -675,6 +688,8 @@ async def pipeline_run(data: PipelineRun):
         start_time=data.start_time,
         end_time=data.end_time,
         frame_analysis=data.frame_analysis,
+        model_name=data.model_name,
+        llm_provider=data.llm_provider,
     ))
     return {"ok": True, "project_id": data.project_id}
 

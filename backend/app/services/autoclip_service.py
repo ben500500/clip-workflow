@@ -64,6 +64,14 @@ async def trigger_pipeline(
     frame_analysis = (config or {}).get("frame_analysis")
     if frame_analysis is not None:
         payload["frame_analysis"] = bool(frame_analysis)
+    # AI 选点模型覆盖：来自系统设置 default_autoclip_config.llm_model / llm_provider，
+    # 使“系统设置里改模型名”能真正下达到选点引擎（之前是孤立配置项，无人读取）。
+    llm_model = (config or {}).get("llm_model") or (config or {}).get("model_name")
+    if llm_model:
+        payload["model_name"] = str(llm_model)
+    llm_provider = (config or {}).get("llm_provider")
+    if llm_provider:
+        payload["llm_provider"] = str(llm_provider)
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.post(url, json=payload)

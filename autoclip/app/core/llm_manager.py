@@ -200,6 +200,29 @@ class LLMManager:
             logger.error(f"测试{provider_type.value}连接失败: {e}")
             return False
 
+    def set_runtime_model(self, model_name: Optional[str] = None, provider: Optional[str] = None):
+        """运行时覆盖模型（不持久化到 settings.json），用于单次 pipeline 运行。
+
+        - 先调用 _initialize_provider() 重置回配置默认（环境变量/settings.json），
+          避免上一次运行的覆盖残留到本次；
+        - 若提供 model_name，则按该模型重建 current_provider。
+        这样系统设置/请求参数下发的模型名可临时生效，而不改写磁盘上的用户配置。
+        """
+        self._initialize_provider()
+        if not model_name:
+            return
+        try:
+            provider_type = ProviderType(provider or self.settings.get("llm_provider", "dashscope"))
+            api_key = self._get_api_key_for_provider(provider_type)
+            if api_key:
+                self.current_provider = LLMProviderFactory.create_provider(provider_type, api_key, model_name)
+                self.settings["model_name"] = model_name  # 仅内存，便于 get_current_provider_info 显示
+                logger.info(f"运行时模型覆盖为: {model_name}（provider={provider_type.value}）")
+            else:
+                logger.warning(f"无法覆盖模型 {model_name}：未找到 {provider_type.value} 的 API 密钥，沿用默认模型")
+        except Exception as e:
+            logger.error(f"运行时模型覆盖失败: {e}，沿用默认模型")
+
     def get_current_provider_info(self) -> Dict[str, Any]:
         """获取当前提供商信息"""
         if not self.current_provider:

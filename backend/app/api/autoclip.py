@@ -26,6 +26,32 @@ from app.utils.helpers import utc_iso
 router = APIRouter()
 
 
+async def _merge_default_autoclip_config(db, config: Optional[dict]) -> dict:
+    """合并系统设置 default_autoclip_config 到本次选点 config。
+
+    - 系统设置（default_autoclip_config.llm_model / llm_provider / min_score_threshold 等）
+      作为默认值打底；
+    - 请求体传入的 config 字段（前端/批量任务覆盖）优先生效。
+    这样在“系统设置”里修改模型名/评分阈值能真正作用于选点引擎。
+    """
+    base: dict = {}
+    try:
+        result = await db.execute(
+            select(SystemConfig).where(SystemConfig.key == "default_autoclip_config")
+        )
+        cfg = result.scalar_one_or_none()
+        if cfg and isinstance(cfg.value, dict):
+            base = dict(cfg.value)
+    except Exception as e:
+        logger.warning("读取系统设置 default_autoclip_config 失败，使用请求参数: %s", e)
+    if not isinstance(config, dict):
+        config = {}
+    merged = dict(base)
+    merged.update(config)
+    return merged
+
+
+
 class AutoClipRunRequest(BaseModel):
     config: Optional[dict] = None
     video_path: Optional[str] = None
@@ -163,7 +189,8 @@ async def run_autoclip(
         raise HTTPException(status_code=503, detail="AutoClip service is not reachable")
 
     # Create AutoClip project
-    config = data.config or {}
+    # 合并系统设置 default_autoclip_config（模型名/评分阈值等），使系统设置生效
+    config = await _merge_default_autoclip_config(db, data.config)
     autoclip_project_id = await create_autoclip_project(
         name=f"episode_{episode_id}",
         config=config,
