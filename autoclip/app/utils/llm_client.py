@@ -34,6 +34,15 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+class LLMCallError(RuntimeError):
+    """LLM API 调用失败（模型名无效 / 密钥错误 / 网络异常等）。
+
+    用于把选点流水线里的模型调用错误从「被静默吞掉返回空」改成「显式上浮」，
+    让 run 以 failed 状态结束并保留真实错误信息，而不是静默产出 0 片段却显示完成。
+    """
+
+
 class LLMClient:
     """LLM客户端 - 兼容性包装器"""
     

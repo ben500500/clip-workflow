@@ -21,7 +21,8 @@ ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
     APP_HOME=${APP_HOME} \
-    SERVICE_MODE=${SERVICE_MODE:-api}
+    SERVICE_MODE=${SERVICE_MODE:-api} \
+    UMASK=0000
 
 # ==================== 系统依赖 ====================
 RUN set -eux; \
@@ -64,9 +65,14 @@ RUN set -eux; \
 COPY . .
 
 # ==================== 权限设置 ====================
+# media 卷被 backend / worker 等多个容器挂载共享。autoclip 以 uid 1000 写入，
+# 若目录/文件保持默认 0755/0644，backend(appuser) 删除时会 PermissionDenied 残留孤儿。
+# 这里把 media 置为 0777，配合运行时 umask 0000，使新写入的文件世界可写，
+# 任何挂载该卷的容器都能清理自己的产物。
 RUN set -eux; \
     chown -R ${APP_USER}:${APP_GROUP} ${APP_HOME}; \
-    chmod -R 755 ${APP_HOME}
+    chmod -R 755 ${APP_HOME}; \
+    chmod -R 0777 ${APP_HOME}/media
 
 # ==================== 健康检查 ====================
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
@@ -82,5 +88,7 @@ EXPOSE 8000
 # 根据 SERVICE_MODE 环境变量决定启动方式:
 #   api    - 启动 FastAPI 服务
 #   worker - 启动 Celery Worker
-ENTRYPOINT ["python", "-m", "app.main"]
+# 启动前先 umask 0000，使运行时新建的 media 子目录/文件世界可写（避免 backend 删不动残留孤儿）；
+# 并对已有 media 目录递归修正权限（修复镜像升级前已存在的 0755 旧目录）。
+ENTRYPOINT ["sh", "-c", "umask ${UMASK:-0000}; find /app/media -type d -exec chmod 0777 {} + 2>/dev/null; exec python -m app.main \"$@\"", "autoclip-entrypoint"]
 CMD ["--mode", "api"]

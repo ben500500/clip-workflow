@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 # 导入依赖
-from ..utils.llm_client import LLMClient
+from ..utils.llm_client import LLMClient, LLMCallError
 from ..utils.text_processor import TextProcessor
 from ..core.shared_config import PROMPT_FILES, METADATA_DIR
 
@@ -83,7 +83,13 @@ class OutlineExtractor:
                 
                 # 为每个块调用LLM
                 input_data = {"text": chunk_text}
-                response = self.llm_client.call_with_retry(self.outline_prompt, input_data)
+                try:
+                    response = self.llm_client.call_with_retry(self.outline_prompt, input_data)
+                except Exception as e:
+                    # 模型调用失败（模型名无效/密钥错误/网络）→ 显式上浮，
+                    # 让整条流水线以 failed 结束并保留真实错误，而非静默产出 0 片段。
+                    logger.error(f"处理第{i+1}个文本块时 LLM 调用失败: {e}")
+                    raise LLMCallError(str(e)) from e
                 
                 if response:
                     # 解析响应并附加块索引
@@ -92,6 +98,8 @@ class OutlineExtractor:
                     all_outlines.extend(parsed_outlines)
                 else:
                     logger.warning(f"处理第{i+1}个文本块时返回空响应")
+            except LLMCallError:
+                raise
             except Exception as e:
                 logger.error(f"处理第{i+1}个文本块失败: {e}")
                 continue
