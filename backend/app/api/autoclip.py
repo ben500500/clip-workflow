@@ -23,6 +23,9 @@ from app.services.autoclip_service import (
 from app.celery.tasks import autoclip_task as celery_autoclip_task
 from app.utils.helpers import utc_iso
 
+import logging
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
