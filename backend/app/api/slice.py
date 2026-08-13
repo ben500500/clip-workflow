@@ -469,9 +469,9 @@ def _build_subtitle_mask_config(data: SliceRunRequest, source_srt: Optional[str]
     if not data.subtitle_mask_enabled:
         return None
     cfg: dict = {"enabled": True}
-    style = (data.subtitle_mask_style or "mosaic").lower()
-    if style not in ("mosaic", "blur", "fill"):
-        style = "mosaic"
+    style = (data.subtitle_mask_style or "delogo").lower()
+    if style not in ("delogo", "mosaic", "blur", "fill"):
+        style = "delogo"
     cfg["style"] = style
     if data.subtitle_mask_width_ratio is not None:
         cfg["width_ratio"] = max(0.1, min(1.0, float(data.subtitle_mask_width_ratio)))

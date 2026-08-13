@@ -104,7 +104,7 @@ const SliceTasks: React.FC = () => {
   const [subtitleModalOpen, setSubtitleModalOpen] = useState(false);
   // ── 源视频字幕打码（去片源自带字幕，独立开关）──
   const [subtitleMaskEnabled, setSubtitleMaskEnabled] = useState(false);
-  const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'mosaic' | 'blur' | 'fill'>('mosaic');
+  const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'fill'>('delogo');
   // 打码区域（相对输出视频宽高比例，默认宽度 0.9 / 高度 0.12 / 距底 0.02）
   const [subtitleMaskWidthRatio, setSubtitleMaskWidthRatio] = useState(0.9);
   const [subtitleMaskHeightRatio, setSubtitleMaskHeightRatio] = useState(0.12);
@@ -942,7 +942,7 @@ const SliceTasks: React.FC = () => {
           <Space wrap align="center" size={8}>
             <Switch size="small" checked={subtitleMaskEnabled} onChange={setSubtitleMaskEnabled} />
             <Text strong style={{ fontSize: 12 }}>源字幕打码</Text>
-            <Tooltip title="把片源自带的字幕打码/去字幕（独立开关，与 ASR 字幕无关）。默认打码画面底部横带，仅在有源字幕的时间段生效。">
+            <Tooltip title="把片源自带的字幕去字幕/打码（独立开关，与 ASR 字幕无关）。默认自动检测字幕位置，样式为去水印（智能插值），仅在有源字幕的时间段生效。">
               <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
             </Tooltip>
             {subtitleMaskEnabled && (
@@ -968,6 +968,7 @@ const SliceTasks: React.FC = () => {
                   value={subtitleMaskStyle}
                   onChange={(e) => setSubtitleMaskStyle(e.target.value)}
                 >
+                  <Radio.Button value="delogo">去水印</Radio.Button>
                   <Radio.Button value="mosaic">马赛克</Radio.Button>
                   <Radio.Button value="blur">模糊</Radio.Button>
                   <Radio.Button value="fill">纯色块</Radio.Button>
