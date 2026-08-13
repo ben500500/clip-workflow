@@ -105,6 +105,8 @@ const SliceTasks: React.FC = () => {
   // ── 源视频字幕打码（去片源自带字幕，独立开关）──
   const [subtitleMaskEnabled, setSubtitleMaskEnabled] = useState(false);
   const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'fill'>('delogo');
+  // 精细化（帧级检测）：只在字幕/水印实际出现的时段打码
+  const [subtitleMaskTemporal, setSubtitleMaskTemporal] = useState(true);
   // 打码区域（相对输出视频宽高比例，默认宽度 0.9 / 高度 0.12 / 距底 0.02）
   const [subtitleMaskWidthRatio, setSubtitleMaskWidthRatio] = useState(0.9);
   const [subtitleMaskHeightRatio, setSubtitleMaskHeightRatio] = useState(0.12);
@@ -183,6 +185,7 @@ const SliceTasks: React.FC = () => {
         // 源视频字幕打码：独立开关，开启后仅打掉片源自带字幕（不依赖 ASR 字幕开关）
         subtitle_mask_enabled: subtitleMaskEnabled,
         subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
+        subtitle_mask_temporal: subtitleMaskEnabled ? subtitleMaskTemporal : undefined,
         subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
         subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
         subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
@@ -1013,8 +1016,17 @@ const SliceTasks: React.FC = () => {
                 />
                 <Text type="secondary" style={{ fontSize: 12 }}>相对画面高（0.02）</Text>
               </Space>
+              <Space wrap align="center" size={8}>
+                <Switch size="small" checked={subtitleMaskTemporal} onChange={setSubtitleMaskTemporal} />
+                <Text strong style={{ fontSize: 12 }}>精细化（只在出现时打码）</Text>
+                <Tooltip title="开启后逐帧检测字幕/水印实际出现的时段，只在出现时打码，画面其余时间零改动（处理较慢但更精细）；关闭则按 SRT 时间轴或全程打码（快）。">
+                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                </Tooltip>
+              </Space>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                仅在有源字幕的时间段打码，其余时间不动画面；未识别到源字幕时全程打码。
+                {subtitleMaskTemporal
+                  ? '精细化：只在字幕/水印实际出现的时段打码，其余画面不动（推荐）。'
+                  : '快速：按 SRT 时间轴打码；无 SRT 时在检测区域内全程打码。'}
               </Text>
             </Space>
           </Modal>

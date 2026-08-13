@@ -55,6 +55,7 @@ interface SliceConfigState {
   subtitle_border_color: string;
   subtitle_mask_enabled: boolean;
   subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'fill';
+  subtitle_mask_temporal: boolean;
   subtitle_mask_width_ratio: number;
   subtitle_mask_height_ratio: number;
   subtitle_mask_bottom_ratio: number;
@@ -92,6 +93,7 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   subtitle_border_color: '#000000',
   subtitle_mask_enabled: false,
   subtitle_mask_style: 'delogo',
+  subtitle_mask_temporal: true,
   subtitle_mask_width_ratio: 0.9,
   subtitle_mask_height_ratio: 0.12,
   subtitle_mask_bottom_ratio: 0.02,
@@ -877,6 +879,17 @@ const BatchSlicePage: React.FC = () => {
                   { value: 'fill', label: '纯色块' },
                 ]}
               />
+            )}
+            {sliceConfig.subtitle_mask_enabled && (
+              <Switch
+                checked={sliceConfig.subtitle_mask_temporal}
+                onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_mask_temporal: v })}
+              />
+            )}
+            {sliceConfig.subtitle_mask_enabled && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {sliceConfig.subtitle_mask_temporal ? '精细化' : '快速'}
+              </Text>
             )}
           </Space>
 

@@ -82,6 +82,8 @@ export const sliceApi = {
       // 源视频字幕打码：先把片源自带字幕打码，再烧录自己的 ASR 字幕
       subtitle_mask_enabled?: boolean;
       subtitle_mask_style?: 'delogo' | 'mosaic' | 'blur' | 'fill';
+      // 精细化（帧级检测）：只在字幕/水印实际出现的时段打码
+      subtitle_mask_temporal?: boolean;
       subtitle_mask_width_ratio?: number;
       subtitle_mask_height_ratio?: number;
       subtitle_mask_bottom_ratio?: number;
