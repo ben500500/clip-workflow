@@ -43,6 +43,7 @@ from app.services.minio_service import (
     ensure_bucket,
     list_files,
     delete_file,
+    download_file,
 )
 from app.services.redis_stream import (
     publish_slice_task,
@@ -176,6 +177,9 @@ class SliceRunRequest(BaseModel):
     # 字幕样式（default=白字黑边+半透明黑底；custom=自定义字体色/边框色且无底色）。
     # 仅在 subtitle_enabled 开启且为 custom 时生效。
     subtitle_style: Optional[str] = None
+    # 上传的字幕文件（MinIO key，通过 /slice/subtitle-upload 上传）。
+    # 提供后优先直接使用该字幕文件（跳过 ASR 识别 / 选点字幕复用），烧录到成品。
+    subtitle_file_key: Optional[str] = None
     # 自定义字幕样式的字体颜色（CSS 十六进制 #RRGGBB）
     subtitle_color: Optional[str] = None
     # 自定义字幕样式的边框颜色（CSS 十六进制 #RRGGBB）
@@ -543,6 +547,99 @@ def _with_subtitle_options(cfg: dict, data: SliceRunRequest) -> dict:
     return cfg
 
 
+async def _read_uploaded_subtitle(file_key: str) -> Optional[dict]:
+    """读取用户上传的字幕文件内容（MinIO raw-footage 桶）。
+
+    上传字幕通过 /slice/subtitle-upload 接口得到 file_key，这里下载其内容作为
+    烧录时间轴，优先于 ASR 识别与选点字幕复用。返回 {"enabled": True, "srt": str}；
+    读不到返回 None。
+    """
+    if not file_key:
+        return None
+    data = await download_file(settings.MINIO_BUCKET_RAW, file_key)
+    if not data:
+        logger.warning("读取上传字幕失败: %s", file_key)
+        return None
+    try:
+        content = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        content = data.decode("utf-8", errors="replace")
+    if not content.strip():
+        logger.warning("上传字幕内容为空: %s", file_key)
+        return None
+    # VTT 兼容：去掉 WEBVTT 头与内联时间戳，转成 SRT 时间轴格式
+    ext = os.path.splitext(file_key)[1].lower()
+    if ext == ".vtt":
+        content = _vtt_to_srt(content)
+    if not content.strip():
+        logger.warning("上传字幕解析后为空: %s", file_key)
+        return None
+    logger.info("使用用户上传的字幕文件（%s），跳过 ASR 识别", file_key)
+    return {"enabled": True, "srt": content}
+
+
+def _vtt_to_srt(content: str) -> str:
+    """把 WebVTT 文本转成 SRT 文本（时间戳分隔符与序号）。
+
+    仅做最小转换：去 WEBVTT 头、时间戳 '.' -> ','、补序号。
+    无法解析的时间块跳过。
+    """
+    lines = content.replace("\r\n", "\n").split("\n")
+    out: List[str] = []
+    index = 0
+    i = 0
+    # 跳过 WEBVTT 头及 NOTE/STYLE 元数据块
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.upper().startswith("WEBVTT"):
+            i += 1
+            continue
+        if line.upper().startswith(("NOTE", "STYLE", "REGION")):
+            i += 1
+            while i < len(lines) and lines[i].strip() != "":
+                i += 1
+            i += 1
+            continue
+        break
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+        # 时间行可能带 cue settings（如 align:start）
+        if "-->" in line:
+            time_line = line
+        else:
+            # 非时间行：可能是 cue id，也可能是正文。先看下一行是否时间行
+            if i + 1 < len(lines) and "-->" in lines[i + 1]:
+                i += 1
+                time_line = lines[i].strip()
+            else:
+                i += 1
+                continue
+        start_end = time_line.split("-->", 1)
+        if len(start_end) != 2:
+            i += 1
+            continue
+        start = start_end[0].strip()
+        end = start_end[1].strip().split(" ")[0]  # 去掉 align 等 cue settings
+        # 时间戳 '.' -> ','
+        start = start.replace(".", ",")
+        end = end.replace(".", ",")
+        # 收集正文（直到空行）
+        texts: List[str] = []
+        i += 1
+        while i < len(lines) and lines[i].strip() != "":
+            texts.append(lines[i].strip())
+            i += 1
+        index += 1
+        out.append(f"{index}")
+        out.append(f"{start} --> {end}")
+        out.append("\n".join(texts))
+        out.append("")
+    return "\n".join(out).strip()
+
+
 async def _resolve_source_subtitle_srt(
     data: SliceRunRequest,
     source_file_key: Optional[str],
@@ -582,8 +679,9 @@ def _generate_subtitle_config(
     """构造字幕烧录配置（引擎 --subtitle 期望的 SRT）。
 
     返回 {"enabled": True, "srt": "..."}；未开启或 SRT 为空返回 None。
+    上传了字幕文件（subtitle_file_key）时视为已开启字幕，直接应用上传的字幕。
     """
-    if not data.subtitle_enabled:
+    if not data.subtitle_enabled and not data.subtitle_file_key:
         return None
     if not source_srt or not source_srt.strip():
         logger.warning("字幕已开启，但源字幕时间轴为空，跳过字幕烧录")
@@ -940,6 +1038,68 @@ async def upload_badge_image(
     }
 
 
+@router.post("/slice/subtitle-upload")
+async def upload_subtitle_file(
+    file: UploadFile = File(...),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """上传字幕文件（srt/vtt），存入 MinIO（raw-footage 桶 subtitle/ 前缀）。
+
+    返回 file_key，前端将其作为 subtitle_file_key 传入切片请求；
+    提供字幕文件后，后端直接使用该字幕烧录，跳过 ASR 识别。
+    """
+    import posixpath
+
+    raw_name = file.filename or ""
+    safe_name = posixpath.basename(raw_name.replace("\\", "/")).strip()
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="empty file name")
+
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext not in (".srt", ".vtt"):
+        raise HTTPException(status_code=400, detail="字幕仅支持 srt/vtt 文件")
+
+    upload_id = str(uuid.uuid4())
+    local_path = f"/tmp/subtitle_upload/{upload_id}_{safe_name}"
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+    size = 0
+    with open(local_path, "wb") as out:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > settings.UPLOAD_MAX_SIZE:
+                out.close()
+                os.unlink(local_path)
+                raise HTTPException(status_code=413, detail="文件超过大小上限")
+            out.write(chunk)
+
+    if size == 0:
+        os.unlink(local_path)
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    file_key = f"subtitle/{upload_id}_{safe_name}"
+    ok = await upload_file_from_path(
+        settings.MINIO_BUCKET_RAW,
+        file_key,
+        local_path,
+        content_type=file.content_type or "application/x-subrip",
+    )
+    os.unlink(local_path)
+    if not ok:
+        raise HTTPException(status_code=500, detail="字幕文件上传存储失败")
+
+    return {
+        "file_name": safe_name,
+        "file_key": file_key,
+        "file_size": size,
+        "upload_id": upload_id,
+    }
+
+
 @router.post("/episodes/{episode_id}/slice/run", response_model=SliceRunResponse)
 async def run_slice(
     episode_id: str,
@@ -1136,8 +1296,13 @@ async def run_slice(
     # 解析源视频字幕 SRT（时间轴），供 ASR 字幕烧录与源字幕打码共用。
     # 打码与字幕烧录是相互独立的开关：任意一个开启都解析 SRT，
     # 但只有字幕烧录开启才会真正烧录，只有打码开启才会打码。
+    # 优先使用用户上传的字幕文件（跳过 ASR 识别 / 选点字幕复用）。
     source_subtitle_srt = None
-    if (data.subtitle_enabled or data.subtitle_mask_enabled) and source_file_key:
+    if data.subtitle_file_key:
+        uploaded = await _read_uploaded_subtitle(data.subtitle_file_key)
+        if uploaded is not None and uploaded.get("srt"):
+            source_subtitle_srt = uploaded["srt"]
+    if source_subtitle_srt is None and (data.subtitle_enabled or data.subtitle_mask_enabled) and source_file_key:
         source_subtitle_srt = await _resolve_source_subtitle_srt(
             data, source_file_key, source_bucket, episode, db
         )

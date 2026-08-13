@@ -27,6 +27,13 @@ export interface TextOverlayItem {
   offset?: number;
 }
 
+export interface SubtitleUploadResult {
+  file_name: string;
+  file_key: string;
+  file_size: number;
+  upload_id: string;
+}
+
 export const sliceApi = {
   run: (
     episodeId: string,
@@ -66,6 +73,8 @@ export const sliceApi = {
       subtitle_spacing?: number;
       // 字幕样式：default（白字黑边+半透明黑底）/ custom（自定义字体色+边框色，无底色）
       subtitle_style?: 'default' | 'custom';
+      // 上传的字幕文件（MinIO key，通过 uploadSubtitle 上传）；提供后直接应用该字幕，跳过 ASR 识别
+      subtitle_file_key?: string;
       // 自定义样式的字体颜色（CSS 十六进制）
       subtitle_color?: string;
       // 自定义样式的边框颜色（CSS 十六进制）
@@ -104,6 +113,22 @@ export const sliceApi = {
         }
       },
     }) as Promise<BadgeUploadResult>;
+  },
+
+  // 上传字幕文件（srt/vtt）
+  uploadSubtitle: (file: File, onProgress?: (percent: number) => void) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return client.post('/slice/subtitle-upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 3600000,
+      onUploadProgress: (progressEvent) => {
+        if (onProgress && progressEvent.total) {
+          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          onProgress(percent);
+        }
+      },
+    }) as Promise<SubtitleUploadResult>;
   },
 
   listTasks: (episodeId: string) =>
