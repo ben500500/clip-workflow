@@ -188,8 +188,11 @@ class SliceRunRequest(BaseModel):
     # 开启后把片源自带字幕打码（固定底部横带 + SRT 时间轴驱动）。
     # 与 ASR 字幕烧录相互独立，可单独开启。
     subtitle_mask_enabled: bool = False
-    # 打码样式：mosaic（马赛克，推荐）/ blur（模糊）/ fill（纯色块）
+    # 打码样式：delogo（去水印，推荐，默认）/ mosaic（马赛克）/ blur（模糊）/ fill（纯色块）
     subtitle_mask_style: Optional[str] = None
+    # 精细化（帧级检测）开关：开启后只在字幕/水印实际出现的时段打码，
+    # 画面其余时间零改动（处理较慢，但更精细）；关闭则用 SRT 时间轴或全程打码（快）。
+    subtitle_mask_temporal: bool = False
     # 打码区域（相对输出视频宽高比例，可选，默认宽度 0.9 / 高度 0.12）
     subtitle_mask_width_ratio: Optional[float] = None
     subtitle_mask_height_ratio: Optional[float] = None
@@ -473,6 +476,8 @@ def _build_subtitle_mask_config(data: SliceRunRequest, source_srt: Optional[str]
     if style not in ("delogo", "mosaic", "blur", "fill"):
         style = "delogo"
     cfg["style"] = style
+    # 精细化（帧级检测）：只在字幕/水印实际出现的时段打码。
+    cfg["temporal"] = bool(getattr(data, "subtitle_mask_temporal", False))
     if data.subtitle_mask_width_ratio is not None:
         cfg["width_ratio"] = max(0.1, min(1.0, float(data.subtitle_mask_width_ratio)))
     if data.subtitle_mask_height_ratio is not None:

@@ -1370,8 +1370,11 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
         rows = [y for y in range(best_start, best_start + win) if smooth[y] > thr]
         if not rows:
             return None
-        y0 = max(0, min(rows) - 6)
-        y1 = min(height - 1, max(rows) + 6)
+        # 横带上下各多扩一些余量，确保覆盖字幕文字的完整高度（含描边/下延），
+        # 避免 delogo 区域偏窄导致字幕边缘残留。
+        y_pad = max(10, int(height * 0.02))
+        y0 = max(0, min(rows) - y_pad)
+        y1 = min(height - 1, max(rows) + y_pad)
 
         # 在横带内按列找文字横向范围
         col_score = np.zeros(width, dtype=np.float64)
@@ -1386,12 +1389,134 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
         col_peak = float(col_score.max())
         if col_peak <= 1e-6:
             return None
-        cols = np.where(col_score > col_peak * 0.15)[0]
+        cols = np.where(col_score > col_peak * 0.12)[0]
         if cols.size == 0:
             return None
-        x0 = max(0, int(cols.min()) - 6)
-        x1 = min(width - 1, int(cols.max()) + 6)
+        x_pad = max(12, int(width * 0.01))
+        x0 = max(0, int(cols.min()) - x_pad)
+        x1 = min(width - 1, int(cols.max()) + x_pad)
         return x0, y0, (x1 - x0), (y1 - y0)
+    finally:
+        if cap is not None:
+            cap.release()
+
+
+# 帧级（精细化）检测参数：判断"字幕/水印是否实际出现在区域内"的阈值与采样密度。
+# 相比固定区域全程打码，开启 temporal 后只在内容出现的时段打码，画面其余时间零改动。
+# 处理速度会变慢（需按时间采样判断内容在场与否），但更精细、画面更干净。
+# 区域内容密度阈值：区域内边缘像素占比超过该比例视为"有字幕/水印在场"。
+SUBTITLE_MASK_TEMPORAL_EDGE_RATIO = 0.05
+# 区域内文字与背景对比度的相对阈值（相对最大列得分）。
+SUBTITLE_MASK_TEMPORAL_CONTRAST_RATIO = 0.12
+# 帧级检测采样步长（秒）。越小定位越准，但越慢。
+SUBTITLE_MASK_TEMPORAL_STEP = 0.5
+# 相邻"在场"采样点合并成时间窗口的最小间距（秒）：小于该间距的相邻窗口合并。
+SUBTITLE_MASK_TEMPORAL_MERGE_GAP = 1.0
+# 打码窗口前后各扩展的余量（秒），避免字幕开头/结尾裁切不干净。
+SUBTITLE_MASK_TEMPORAL_PAD = 0.25
+
+
+def detect_subtitle_temporal_windows(video: str, region: tuple[int, int, int, int],
+                                     max_frames: int = 600) -> Optional[list[tuple]]:
+    """帧级检测：判断字幕/水印在区域内实际出现的时间窗口列表。
+
+    在指定 region (x, y, w, h) 内，按 SUBTITLE_MASK_TEMPORAL_STEP 步长扫描整段视频，
+    对每个采样点判断区域内是否有文字/水印内容（区域内边缘像素密度超过阈值即视为在场）。
+    将连续的"在场"点合并为时间窗口，并前后各扩一点余量后返回。
+
+    返回 [(start, end), ...] 秒级时间窗口（局部时间轴，从 0 开始）；
+    检测失败或无字幕/水印时返回 None（由调用方回退为全程打码）。
+    该方式不依赖 SRT，适用于任何片源字幕/水印的精细化打码。
+    """
+    x, y, w, h = region
+    if w <= 0 or h <= 0:
+        return None
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+
+    duration = ffprobe_duration(video)
+    if not duration or duration <= 0:
+        return None
+    vw, vh = ffprobe_size(video)
+    if vw <= 0 or vh <= 0:
+        return None
+    # 采样点数量封顶，防止超长视频采样过密导致过慢。
+    step = SUBTITLE_MASK_TEMPORAL_STEP
+    n = int(duration / step) + 1
+    if n > max_frames:
+        # 保持封顶采样数，等比例加大步长。
+        step = duration / max_frames
+        n = max_frames
+    x0, x1 = max(0, x), min(x + w - 1, vw - 1)
+    y0, y1 = max(0, y), min(y + h - 1, vh - 1)
+    box_w = max(1, x1 - x0 + 1)
+    box_h = max(1, y1 - y0 + 1)
+
+    cap = None
+    try:
+        cap = cv2.VideoCapture(video)
+        if not cap.isOpened():
+            return None
+        # 先统计区域内边缘密度的基准，用整段均值+最大值的相对关系判断"在场"。
+        # 逐点采集：记录每个采样点时刻对应的区域内边缘像素占比。
+        present = []  # (t, score)
+        for i in range(n):
+            t = min(duration - 0.01, i * step)
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, 60, 160)
+            box = edges[y0:y1 + 1, x0:x1 + 1]
+            density = float(box.sum()) / float(box_w * box_h * 255.0)
+            present.append((t, density))
+        if not present:
+            return None
+        scores = [s for _, s in present]
+        peak = max(scores)
+        if peak <= 1e-6:
+            return None
+        thr = max(SUBTITLE_MASK_TEMPORAL_EDGE_RATIO,
+                  peak * SUBTITLE_MASK_TEMPORAL_CONTRAST_RATIO)
+        # 连续在场点 → 时间窗口（窗口内若个别点低于阈值但间距小，予以补齐）。
+        in_on = False
+        cur_start = 0.0
+        last_on_t = -1e9
+        windows = []
+        for t, s in present:
+            on = s >= thr
+            if on:
+                if not in_on:
+                    cur_start = t
+                    in_on = True
+                last_on_t = t
+            else:
+                # 短暂掉线（间距小于 merge_gap）视为仍在场，保持窗口。
+                if in_on and (t - last_on_t) <= SUBTITLE_MASK_TEMPORAL_MERGE_GAP:
+                    continue
+                if in_on:
+                    windows.append((cur_start, last_on_t))
+                    in_on = False
+        if in_on:
+            windows.append((cur_start, last_on_t))
+        if not windows:
+            return None
+        # 合并间距过小的相邻窗口，并扩展余量、裁剪到时长内。
+        merged = []
+        for s, e in windows:
+            if merged and s - merged[-1][1] <= SUBTITLE_MASK_TEMPORAL_MERGE_GAP:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+            else:
+                merged.append([s, e])
+        result = []
+        for s, e in merged:
+            result.append((max(0.0, s - SUBTITLE_MASK_TEMPORAL_PAD),
+                           min(duration, e + SUBTITLE_MASK_TEMPORAL_PAD)))
+        return result
     finally:
         if cap is not None:
             cap.release()
@@ -1416,22 +1541,22 @@ def _mask_enable_expr(intervals: list[tuple]) -> str:
     return "+".join(terms)
 
 
-def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple]) -> str:
-    """根据切片源时间段，从源 SRT 生成打码区间（局部时间轴，从 0 开始）。
+def _source_intervals_to_local_enable(src_intervals: list[tuple], seg_times: list[tuple]) -> str:
+    """把源时间轴上的区间列表转换为切片局部时间轴（从 0 开始）的 enable 表达式。
 
+    src_intervals: 源时间轴上的 [(start, end), ...]，如 SRT 字幕时段或帧级检测到的
+        字幕/水印在场时段。
     seg_times: 按拼接顺序排列的源时间段 [(start, end), ...]，与 build_clip_subtitle 一致。
-    生成的区间时间轴与切片成品一致（从 0 开始），可直接用于 overlay/crop 的 enable。
-    返回 "" 表示该切片内无字幕（无需打码）。
+    返回局部 enable 表达式；该切片内无内容则返回 ""。
     """
-    records = read_srt(src_srt)
-    if not records:
+    if not src_intervals:
         return ""
     intervals = []
     offset = 0.0
     for start, end in seg_times:
-        for r in records:
-            s = max(float(r["start"]), start)
-            e = min(float(r["end"]), end)
+        for s0, e0 in src_intervals:
+            s = max(s0, start)
+            e = min(e0, end)
             if e > s:
                 intervals.append((s - start + offset, e - start + offset))
         offset += max(0.0, end - start)
@@ -1445,6 +1570,20 @@ def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple]) -> str:
         else:
             merged.append([s, e])
     return _mask_enable_expr(merged)
+
+
+def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple]) -> str:
+    """根据切片源时间段，从源 SRT 生成打码区间（局部时间轴，从 0 开始）。
+
+    seg_times: 按拼接顺序排列的源时间段 [(start, end), ...]，与 build_clip_subtitle 一致。
+    生成的区间时间轴与切片成品一致（从 0 开始），可直接用于 overlay/crop 的 enable。
+    返回 "" 表示该切片内无字幕（无需打码）。
+    """
+    records = read_srt(src_srt)
+    if not records:
+        return ""
+    return _source_intervals_to_local_enable(
+        [(float(r["start"]), float(r["end"])) for r in records], seg_times)
 
 
 def _subtitle_mask_area(cfg: dict, width: int, height: int) -> tuple[int, int, int, int]:
@@ -1779,7 +1918,8 @@ def main():
     if subtitle_mask:
         if not subtitle_mask.get("srt") and args.subtitle:
             subtitle_mask["srt"] = args.subtitle
-        print(f"源字幕打码已开启: style={subtitle_mask.get('style') or SUBTITLE_MASK_STYLE_DEFAULT}", file=sys.stderr)
+        print(f"源字幕打码已开启: style={subtitle_mask.get('style') or SUBTITLE_MASK_STYLE_DEFAULT}, "
+              f"temporal={bool(subtitle_mask.get('temporal'))}", file=sys.stderr)
         # 自动检测字幕真实位置：字幕常在居中偏下而非底部，固定底部横带会打偏。
         # 用 OpenCV 在字幕出现的时刻采样帧，检测文字横带位置；检测成功则覆盖默认区域。
         detect_srt = subtitle_mask.get("srt") or ""
@@ -1797,6 +1937,23 @@ def main():
             print(f"源字幕打码自动定位: ({dx},{dy},{dw},{dh}) @ {detect_w}x{detect_h}", file=sys.stderr)
         else:
             print("源字幕打码自动定位失败，回退默认区域", file=sys.stderr)
+
+        # 精细化（temporal）模式：在检测出的区域内按时间采样判断字幕/水印实际
+        # 在哪些时段出现，只在出现时打码，其余画面零改动。不依赖 SRT，适用于
+        # 任意片源字幕/水印；检测失败时回退到 SRT 时间轴或全程打码。
+        if subtitle_mask.get("temporal"):
+            region = (int(subtitle_mask.get("x", 0)), int(subtitle_mask.get("y", 0)),
+                      int(subtitle_mask.get("width", 0)), int(subtitle_mask.get("height", 0)))
+            # 优先用已检测到的实际区域；若区域检测失败，用默认比例区域兜底。
+            if region[2] <= 0 or region[3] <= 0:
+                w0, h0 = ffprobe_size(source_path)
+                region = _subtitle_mask_area(subtitle_mask, w0, h0)
+            tw = detect_subtitle_temporal_windows(source_path, region)
+            if tw:
+                subtitle_mask["__temporal_windows"] = tw
+                print(f"源字幕打码帧级检测: {len(tw)} 个出现时段", file=sys.stderr)
+            else:
+                print("源字幕打码帧级检测未命中，回退 SRT 时间轴或全程打码", file=sys.stderr)
 
     # Group segments by original cut index for scrub mode.
     groups = {}
@@ -1828,12 +1985,20 @@ def main():
                 if subtitle_mask:
                     mask_out = out_path + ".masked.mp4"
                     mask_enable = ""
+                    # 精细化（temporal）模式：优先用帧级检测到的"字幕/水印出现时段"，
+                    # 把源时间轴窗口转为切片局部时间轴，只在出现时打码。
+                    tw = subtitle_mask.get("__temporal_windows") or []
                     mask_srt = subtitle_mask.get("srt") or args.subtitle
-                    if mask_srt and os.path.isfile(mask_srt):
+                    mask_srt_exists = bool(mask_srt) and os.path.isfile(mask_srt)
+                    if tw:
+                        mask_enable = _source_intervals_to_local_enable(tw, seg_times)
+                    elif mask_srt_exists:
                         mask_enable = build_subtitle_mask_enable(mask_srt, seg_times)
-                    # mask_enable 为空：该切片内无字幕（不打码）或未提供 SRT（全程打码）。
-                    # 二者需区分：有 SRT 但切片内无字幕 → 不打码；无 SRT → 全程打码。
-                    if mask_enable or not mask_srt:
+                    # mask_enable 为空：该切片内无内容（不打码）或无法得到时间轴（全程打码）。
+                    # 二者需区分：有可靠时间轴（SRT/temporal）但切片内无内容 → 不打码；
+                    # 无时间轴且无 temporal 命中 → 全程打码（保持区域全程盖住，速度快）。
+                    has_timeline = bool(tw) or mask_srt_exists
+                    if mask_enable or not has_timeline:
                         apply_subtitle_mask(out_path, mask_out, subtitle_mask,
                                             enable=mask_enable,
                                             threads=threads, encoder=encoder)

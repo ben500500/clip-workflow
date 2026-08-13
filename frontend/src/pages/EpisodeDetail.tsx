@@ -105,6 +105,7 @@ interface SlicePreset {
   // 源视频字幕打码
   subtitle_mask_enabled: boolean;
   subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'fill';
+  subtitle_mask_temporal: boolean;
   subtitle_mask_width_ratio: number;
   subtitle_mask_height_ratio: number;
   subtitle_mask_bottom_ratio: number;
@@ -143,6 +144,7 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   subtitle_border_color: '#000000',
   subtitle_mask_enabled: false,
   subtitle_mask_style: 'delogo',
+  subtitle_mask_temporal: true,
   subtitle_mask_width_ratio: 0.9,
   subtitle_mask_height_ratio: 0.12,
   subtitle_mask_bottom_ratio: 0.02,
@@ -218,6 +220,8 @@ const EpisodeDetail: React.FC = () => {
   // ── 源视频字幕打码 ──
   const [subtitleMaskEnabled, setSubtitleMaskEnabled] = useState(false);
   const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'fill'>('delogo');
+  // 精细化（帧级检测）：只在字幕/水印实际出现的时段打码
+  const [subtitleMaskTemporal, setSubtitleMaskTemporal] = useState(true);
   const [subtitleMaskWidthRatio, setSubtitleMaskWidthRatio] = useState(0.9);
   const [subtitleMaskHeightRatio, setSubtitleMaskHeightRatio] = useState(0.12);
   const [subtitleMaskBottomRatio, setSubtitleMaskBottomRatio] = useState(0.02);
@@ -409,6 +413,7 @@ const EpisodeDetail: React.FC = () => {
     subtitle_border_color: subtitleBorderColor,
     subtitle_mask_enabled: subtitleMaskEnabled,
     subtitle_mask_style: subtitleMaskStyle,
+    subtitle_mask_temporal: subtitleMaskTemporal,
     subtitle_mask_width_ratio: subtitleMaskWidthRatio,
     subtitle_mask_height_ratio: subtitleMaskHeightRatio,
     subtitle_mask_bottom_ratio: subtitleMaskBottomRatio,
@@ -440,6 +445,7 @@ const EpisodeDetail: React.FC = () => {
     setSubtitleBorderColor(p.subtitle_border_color);
     setSubtitleMaskEnabled(p.subtitle_mask_enabled ?? false);
     setSubtitleMaskStyle(p.subtitle_mask_style ?? 'delogo');
+    setSubtitleMaskTemporal(p.subtitle_mask_temporal ?? true);
     setSubtitleMaskWidthRatio(p.subtitle_mask_width_ratio ?? 0.9);
     setSubtitleMaskHeightRatio(p.subtitle_mask_height_ratio ?? 0.12);
     setSubtitleMaskBottomRatio(p.subtitle_mask_bottom_ratio ?? 0.02);
@@ -1001,6 +1007,7 @@ const EpisodeDetail: React.FC = () => {
         // 源视频字幕打码：独立开关，开启后仅打掉片源自带字幕（不依赖 ASR 字幕开关）
         subtitle_mask_enabled: subtitleMaskEnabled,
         subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
+        subtitle_mask_temporal: subtitleMaskEnabled ? subtitleMaskTemporal : undefined,
         subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
         subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
         subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
@@ -1131,6 +1138,7 @@ const EpisodeDetail: React.FC = () => {
         // 源视频字幕打码：独立开关，开启后仅打掉片源自带字幕（不依赖 ASR 字幕开关）
         subtitle_mask_enabled: subtitleMaskEnabled,
         subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
+        subtitle_mask_temporal: subtitleMaskEnabled ? subtitleMaskTemporal : undefined,
         subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
         subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
         subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
@@ -1831,8 +1839,17 @@ const EpisodeDetail: React.FC = () => {
                 />
                 <Text type="secondary" style={{ fontSize: 12 }}>相对画面高（0.02）</Text>
               </Space>
+              <Space wrap align="center" size={8}>
+                <Switch size="small" checked={subtitleMaskTemporal} onChange={setSubtitleMaskTemporal} />
+                <Text strong style={{ fontSize: 13 }}>精细化（只在出现时打码）</Text>
+                <Tooltip title="开启后逐帧检测字幕/水印实际出现的时段，只在出现时打码，画面其余时间零改动（处理较慢但更精细）；关闭则按 SRT 时间轴或全程打码（快）。">
+                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                </Tooltip>
+              </Space>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                仅在有源字幕的时间段打码，其余时间不动画面；未识别到源字幕时全程打码。
+                {subtitleMaskTemporal
+                  ? '精细化：只在字幕/水印实际出现的时段打码，其余画面不动（推荐）。'
+                  : '快速：按 SRT 时间轴打码；无 SRT 时在检测区域内全程打码。'}
               </Text>
             </Space>
           </Modal>
@@ -2370,6 +2387,8 @@ const EpisodeDetail: React.FC = () => {
                 <InputNumber size="small" min={0.02} max={0.5} step={0.01} value={subtitleMaskHeightRatio} onChange={(v) => setSubtitleMaskHeightRatio(v ?? 0.12)} style={{ width: 70 }} />
                 <Text style={{ fontSize: 12 }}>距底</Text>
                 <InputNumber size="small" min={0} max={0.5} step={0.01} value={subtitleMaskBottomRatio} onChange={(v) => setSubtitleMaskBottomRatio(v ?? 0.02)} style={{ width: 70 }} />
+                <Switch size="small" checked={subtitleMaskTemporal} onChange={setSubtitleMaskTemporal} />
+                <Text type="secondary" style={{ fontSize: 12 }}>{subtitleMaskTemporal ? '精细化' : '快速'}</Text>
               </Space>
             )}
           </div>
