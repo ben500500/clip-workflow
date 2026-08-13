@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.database import get_db
-from app.models.models import Episode, AutoClipProject, ClipCandidate, AutoClipRun, User
+from app.models.models import Episode, AutoClipProject, ClipCandidate, AutoClipRun, User, SystemConfig
 from app.services.data_scope import check_project_access_by_episode
 from app.services.autoclip_service import (
     create_autoclip_project,
