@@ -34,6 +34,10 @@ from app.services.redis_stream import (
     delete_worker_node,
     set_node_update_command,
     get_node_update_command,
+    get_node_queue_len,
+    get_node_queue_pending,
+    requeue_node_queue,
+    wake_node,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,6 +73,8 @@ class WorkerNodeResponse(BaseModel):
     running_tasks: list = []
     # 该节点 CPU 资源分配比例（%，默认 50）
     cpu_percent: int = 50
+    # 节点专属队列积压数（服务器指定派发任务积压量）
+    queue_len: int = 0
     # 该节点当前引擎版本（心跳上报；供界面展示节点引擎是否与服务器一致）
     engine_version: Optional[str] = None
 
@@ -91,6 +97,8 @@ class WorkerHeartbeatRequest(BaseModel):
     total_tasks_failed: int = 0
     # 节点当前引擎版本（心跳上报，供界面判断是否需要推送更新）
     engine_version: Optional[str] = None
+    # 节点专属队列积压数（服务器指定派发任务积压量）
+    direct_queue_len: Optional[int] = None
 
 
 def _serialize_node(node: WorkerNode) -> dict:
@@ -115,6 +123,7 @@ def _serialize_node(node: WorkerNode) -> dict:
         "running_progress": getattr(node, "running_progress", 0.0) or 0.0,
         "running_tasks": getattr(node, "running_tasks", []) or [],
         "cpu_percent": getattr(node, "cpu_percent", 50) or 50,
+        "queue_len": getattr(node, "queue_len", 0) or 0,
         "engine_version": getattr(node, "engine_version", None) or None,
     }
 
@@ -255,6 +264,8 @@ async def list_workers(
         if rd:
             d["running_progress"] = rd.get("running_progress", 0.0) or 0.0
             d["cpu_percent"] = rd.get("cpu_percent", d.get("cpu_percent", 50)) or 50
+            # 节点专属队列积压数（服务器指定派发任务积压量）
+            d["queue_len"] = rd.get("queue_len", 0) or 0
             # 该节点正在运行的任务详情（供界面展示"当前在处理什么"）
             d["running_tasks"] = rd.get("running_tasks", []) or []
             # 该节点当前引擎版本（心跳上报，用于判断是否需要推送更新）
@@ -354,6 +365,49 @@ async def delete_worker(
 class SetNodeCpuPercentRequest(BaseModel):
     """调整节点 CPU 资源分配比例请求。"""
     cpu_percent: int = 50
+
+
+@router.get("/workers/{node_id}/queue")
+async def get_worker_queue(
+    node_id: str,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+):
+    """查询节点专属队列积压（服务器指定派发任务积压量）。"""
+    queue_len = await get_node_queue_len(node_id)
+    pending_task_ids = await get_node_queue_pending(node_id)
+    return {
+        "node_id": node_id,
+        "queue_len": queue_len,
+        "pending_task_ids": pending_task_ids,
+    }
+
+
+@router.post("/workers/{node_id}/requeue")
+async def requeue_worker_queue(
+    node_id: str,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+):
+    """改派：把节点专属队列积压任务全部转投公共 Stream（节点永久下线时用）。"""
+    count = await requeue_node_queue(node_id)
+    return {
+        "node_id": node_id,
+        "requeued": count,
+        "message": f"已将节点 {node_id} 专属队列的 {count} 个积压任务转投公共 Stream",
+    }
+
+
+@router.post("/workers/{node_id}/wake")
+async def wake_worker_node(
+    node_id: str,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+):
+    """手动触发一次唤醒信号（运维/调试用）。"""
+    ok = await wake_node(node_id)
+    return {
+        "ok": ok,
+        "node_id": node_id,
+        "message": f"已向节点 {node_id} 发送唤醒信号" if ok else f"唤醒节点 {node_id} 失败",
+    }
 
 
 @router.post("/workers/{node_id}/cpu-percent")

@@ -103,6 +103,8 @@ type TUIModel struct {
 	taskOrder  []string // 保持顺序
 	logs       []LogEntry
 	maxLogs    int
+	// 节点专属队列积压数（服务器指定派发任务积压量，随 Tick 刷新）
+	queueLen int64
 
 	// 统计
 	totalCompleted int
@@ -153,6 +155,7 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case TickMsg:
+		m.queueLen = m.worker.redis.GetNodeQueueLen(m.config.NodeID)
 		return m, m.tickCmd()
 
 	case TaskStartMsg:
@@ -266,6 +269,7 @@ func (m TUIModel) renderStatusBar() string {
 		fmt.Sprintf("完成: %d", m.totalCompleted),
 		fmt.Sprintf("失败: %d", m.totalFailed),
 		fmt.Sprintf("文件: %d", m.totalFiles),
+		fmt.Sprintf("专属队列: %d", m.queueLen),
 		fmt.Sprintf("状态: %s", m.nodeStatus),
 	}
 

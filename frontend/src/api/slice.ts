@@ -82,6 +82,8 @@ export const sliceApi = {
       output_id?: string;
       cut_start?: number;
       cut_end?: number;
+      // 指定目标 Worker 节点（服务器指定派发）：非空时任务直投该节点专属队列
+      target_node_id?: string;
     }
   ) =>
     client.post(`/episodes/${episodeId}/slice/run`, { mode, ...data }) as Promise<{
@@ -150,6 +152,28 @@ export const sliceApi = {
       ok: boolean;
       node_id: string;
       deleted: boolean;
+      message: string;
+    }>,
+
+  // 节点专属队列（服务器指定派发）查询/改派/唤醒
+  getWorkerQueue: (nodeId: string) =>
+    client.get(`/workers/${encodeURIComponent(nodeId)}/queue`) as Promise<{
+      node_id: string;
+      queue_len: number;
+      pending_task_ids: string[];
+    }>,
+
+  requeueWorkerQueue: (nodeId: string) =>
+    client.post(`/workers/${encodeURIComponent(nodeId)}/requeue`) as Promise<{
+      node_id: string;
+      requeued: number;
+      message: string;
+    }>,
+
+  wakeWorker: (nodeId: string) =>
+    client.post(`/workers/${encodeURIComponent(nodeId)}/wake`) as Promise<{
+      ok: boolean;
+      node_id: string;
       message: string;
     }>,
 

@@ -25,6 +25,8 @@ type WorkerHeartbeatPayload struct {
 	Status              string   `json:"status"`
 	TotalTasksCompleted int      `json:"total_tasks_completed"`
 	TotalTasksFailed    int      `json:"total_tasks_failed"`
+	// 节点专属队列当前积压数（服务器指定派发任务积压量）
+	DirectQueueLen int64 `json:"direct_queue_len"`
 }
 
 // sendBackendHeartbeat 向后端 API 上报心跳，把节点信息同步到数据库 worker_nodes 表。
@@ -51,6 +53,7 @@ func (w *Worker) sendBackendHeartbeat() error {
 		Status:              "online",
 		TotalTasksCompleted: int(atomic.LoadInt32(&w.totalCompleted)),
 		TotalTasksFailed:    int(atomic.LoadInt32(&w.totalFailed)),
+		DirectQueueLen:      w.redis.GetNodeQueueLen(w.config.NodeID),
 	}
 
 	body, err := json.Marshal(payload)

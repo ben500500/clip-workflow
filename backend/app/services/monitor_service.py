@@ -140,7 +140,7 @@ async def collect_metrics() -> dict[str, float]:
         used_memory = info.get("used_memory") or 0
         metrics["redis_memory"] = round((used_memory / max_memory) * 100, 1) if max_memory else 0.0
 
-        # 队列积压：三个优先级 Stream 的消息总数
+        # 队列积压：三个优先级 Stream 的消息总数 + 各节点专属队列积压数
         backlog = 0
         for stream in ("slice:tasks:high", "slice:tasks:normal", "slice:tasks:low"):
             try:
@@ -148,6 +148,15 @@ async def collect_metrics() -> dict[str, float]:
                 backlog += int(length)
             except Exception:
                 pass
+        # 节点专属队列（服务器指定派发任务积压，节点长期离线时可能无限增长）
+        try:
+            async for key in redis.scan_iter(match="slice:queue:*", count=200):
+                try:
+                    backlog += int(await redis.llen(key) or 0)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         metrics["queue_backlog"] = float(backlog)
     except Exception as e:
         logger.warning("Failed to collect Redis metrics: %s", e)

@@ -142,6 +142,8 @@ if [[ "$MODE" == "docker" ]]; then
         -e MAX_RETRIES="2" \
         -e RETRY_DELAY="30" \
         -e NODE_TTL="0" \
+        -e ENABLE_DIRECT_QUEUE="true" \
+        -e DIRECT_QUEUE_TIMEOUT="2" \
         -v "$SCRIPT_DIR/engines:/app/engines:ro" \
         clip-slice-worker >/dev/null
 
@@ -180,7 +182,9 @@ cat > "$SCRIPT_DIR/worker.json" <<EOF
   "retry_delay": 30,
   "node_ttl": 0,
   "backend_url": "http://${SERVER_IP}",
-  "cpu_percent": ${CPU_PERCENT}
+  "cpu_percent": ${CPU_PERCENT},
+  "enable_direct_queue": true,
+  "direct_queue_timeout": 2
 }
 EOF
 

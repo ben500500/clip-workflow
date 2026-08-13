@@ -110,6 +110,9 @@ class SliceRunRequest(BaseModel):
     dedupe_config: Optional[dict] = None
     video_path: Optional[str] = None
     engine: Optional[str] = None  # "celery" | "worker"，默认取配置 SLICE_ENGINE
+    # 指定目标 Worker 节点（服务器指定派发）：非空时任务直投该节点专属队列，
+    # 否则走公共 Stream（由任意匹配标签的节点消费，与旧行为一致）
+    target_node_id: Optional[str] = None
     # 免审核一键切片：为 True 时自动把所有候选片段（含 pending）纳入切片，
     # 不再要求存在 status=accepted 的片段
     auto_accept_all: bool = False
@@ -700,6 +703,7 @@ async def _publish_to_worker(
     subtitle_config: Optional[dict] = None,
     text_overlays_config: Optional[list] = None,
     subtitle_mask_config: Optional[dict] = None,
+    target_node_id: Optional[str] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -782,19 +786,24 @@ async def _publish_to_worker(
         "created_at": utc_iso(datetime.utcnow()),
     }
 
+    # 指定派发：透传目标节点 ID（非空时后端改投节点专属队列 + 唤醒）
+    if target_node_id:
+        task_payload["target_node_id"] = target_node_id
+
     # 保存回调 Token 到 Redis（供回调/上传接口鉴权校验）
     await store_task_callback_token(str(slice_task.id), callback_token)
 
-    # 发布到 Redis Stream
-    msg_id = await publish_slice_task(task_payload)
+    # 发布到 Redis Stream / 节点专属队列
+    msg_id = await publish_slice_task(task_payload, target_node_id=target_node_id)
     if not msg_id:
-        logger.error("Failed to publish slice task %s to Redis Stream", slice_task.id)
+        logger.error("Failed to publish slice task %s to Redis", slice_task.id)
         return False
 
     logger.info(
-        "Published slice task %s to Redis Stream (msg_id=%s)",
+        "Published slice task %s via %s (target_node_id=%s)",
         slice_task.id,
-        msg_id,
+        "direct" if target_node_id else "stream",
+        target_node_id or "",
     )
     return True
 
@@ -1151,6 +1160,7 @@ async def run_slice(
             subtitle_config,
             text_overlays_config,
             subtitle_mask_config,
+            data.target_node_id,
         )
 
         if not published:
