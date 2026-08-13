@@ -1301,6 +1301,18 @@ SUBTITLE_MASK_BLUR_RADIUS = 12
 SUBTITLE_MASK_DETECT_MAX_FRAMES = 10
 
 
+def _mask_text_clusters(mask):
+    """向量化统计每行的"文字簇"数量（横向连续非零段）。
+
+    字幕文字带区别于人物/背景的关键：一行内会分布多个相互分离的文字笔画簇
+    （每个汉字一个簇，簇间有空隙），而人物服装/大块色块往往只有少数连续簇。
+    mask: (H, W) 布尔掩码。返回长度为 H 的数组，值为每行文字簇个数。
+    """
+    import numpy as np
+    starts = np.hstack([mask[:, :1], (mask[:, 1:] & ~mask[:, :-1])])
+    return starts.sum(axis=1)
+
+
 def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int, int, int]]:
     """用 OpenCV 从源视频采样帧自动检测字幕文字区域。
 
@@ -1308,8 +1320,15 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
     不可用时返回 None（由调用方回退到固定比例区域）。
 
     采样时机：有 SRT 时取 SRT 出现的时刻（字幕在场），无 SRT 时均匀采样全程。
-    检测原理：字幕是一条集中的文字横带，按行统计边缘密度找到最高密度横带，
-    再在带内按列找到文字横向范围。对「底部/居中偏下/顶部」任意位置都自适应。
+
+    检测原理（文字簇投票，针对金色/黄色等彩色字幕更可靠）：
+      旧实现按 Canny 边缘密度找"最高密度横带"，在人物画面里容易被服装/背景的
+      密集边缘误导而打偏（尤其金色/黄色字幕在复杂画面上边缘梯度弱）。
+      本实现改用"颜色 + 文字簇"判别：
+        - 颜色通道：金色/黄色 + 白色/浅色字幕（字幕最常见的两种配色）
+        - 文字簇特征：一行内横向分布的独立文字笔画簇数量——字幕文字带总是
+          有多个文字簇（每个字一个簇），而人物/装饰大块区域簇数很少。
+        - 跨帧累积投票 + 位置偏下优先，对「底部/居中偏下/顶部」任意位置自适应。
     """
     width, height = ffprobe_size(video)
     if width <= 0 or height <= 0:
@@ -1324,14 +1343,13 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
     times = []
     records = read_srt(srt) if srt and os.path.isfile(srt) else []
     if records:
-        # 每条字幕取一个代表时刻（中段），最多 SUBTITLE_MASK_DETECT_MAX_FRAMES 条
         sample = records[:SUBTITLE_MASK_DETECT_MAX_FRAMES]
         times = [max(0.0, (float(r["start"]) + float(r["end"])) / 2.0) for r in sample]
     else:
         dur = ffprobe_duration(video)
         if not dur or dur <= 0:
             return None
-        n = min(SUBTITLE_MASK_DETECT_MAX_FRAMES, max(4, int(dur)))
+        n = min(SUBTITLE_MASK_DETECT_MAX_FRAMES, max(6, int(dur)))
         times = [dur * (i + 0.5) / n for i in range(n)]
 
     cap = None
@@ -1339,58 +1357,85 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
         cap = cv2.VideoCapture(video)
         if not cap.isOpened():
             return None
-        row_score = np.zeros(height, dtype=np.float64)
+        cluster_score = np.zeros(height, dtype=np.float64)
+        dens = np.zeros(height, dtype=np.float64)
+        color_acc = np.zeros((height, width), dtype=np.float64)
         frames = 0
         for t in times:
             cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000.0)
             ok, frame = cap.read()
             if not ok or frame is None:
                 continue
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray, 60, 160)
-            row_score += edges.sum(axis=1)
+            b = frame[:, :, 0].astype(np.int16)
+            g = frame[:, :, 1].astype(np.int16)
+            r = frame[:, :, 2].astype(np.int16)
+            # 金色/黄色字幕（R 高、G 高、B 低，R/G 接近）
+            gold = (r > 130) & (g > 110) & (b < 160) & (r - b > 50) & (g - b > 40) & (abs(r - g) < 110)
+            # 白色/浅色字幕
+            white = (r > 170) & (g > 170) & (b > 170) & (abs(r - g) < 45) & (abs(g - b) < 45) & (abs(r - b) < 45)
+            mask = gold | white
+            dens += mask.sum(axis=1)
+            cluster_score += _mask_text_clusters(mask)
+            color_acc += mask.astype(np.float64)
             frames += 1
         if frames == 0:
             return None
-        row_score /= float(frames)
+        cluster_score /= float(frames)
+        dens /= float(frames)
 
-        # 行分数平滑后，找一条高密度文字横带
+        # 无实际内容的位置不计入文字簇（避免噪声）
+        combo = cluster_score.copy()
+        combo[dens < 0.5] = 0.0
         k = np.ones(7, dtype=np.float64) / 7.0
-        smooth = np.convolve(row_score, k, mode="same")
+        smooth = np.convolve(combo, k, mode="same")
         peak = float(smooth.max())
-        if peak <= 1e-6:
+        if peak < 1.0:
             return None
-        win = max(8, int(height * 0.08))
-        best_start, best_val = 0, -1.0
-        for y in range(0, height - win, 2):
-            v = float(smooth[y:y + win].sum())
-            if v > best_val:
-                best_val, best_start = v, y
-        thr = peak * 0.3
-        rows = [y for y in range(best_start, best_start + win) if smooth[y] > thr]
-        if not rows:
-            return None
-        y0 = max(0, min(rows) - 6)
-        y1 = min(height - 1, max(rows) + 6)
 
-        # 在横带内按列找文字横向范围
-        col_score = np.zeros(width, dtype=np.float64)
-        for t in times:
-            cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000.0)
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                continue
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray, 60, 160)
-            col_score += edges[y0:y1 + 1, :].sum(axis=0)
-        col_peak = float(col_score.max())
-        if col_peak <= 1e-6:
+        # 按文字簇强度找候选横带
+        thr = peak * 0.3
+        ys = np.where(smooth > thr)[0]
+        if ys.size == 0:
             return None
-        cols = np.where(col_score > col_peak * 0.15)[0]
+        bands = []
+        s = int(ys[0]); p = int(ys[0])
+        for y in ys[1:]:
+            if int(y) - p > 5:
+                bands.append((s, p)); s = int(y)
+            p = int(y)
+        bands.append((s, p))
+
+        # 打分：文字簇峰值 × 高度紧凑度 × 位置偏下优先
+        candidates = []
+        for y0, y1 in bands:
+            h = y1 - y0 + 1
+            val = float(smooth[y0:y1 + 1].max())
+            compact = 1.0 if 15 <= h <= 130 else (0.4 if h < 15 else 0.15)
+            score = val * compact
+            if y0 > height * 0.3:
+                score *= 1.3
+            candidates.append((score, val, y0, y1, h))
+        if not candidates:
+            return None
+        candidates.sort(reverse=True)
+        _, _, y0, y1, h = candidates[0]
+
+        # 上下扩展余量（向下更多，覆盖描边/换行/下延），确保 delogo 完整补平
+        up = max(10, int(h * 0.3))
+        down = max(16, int(h * 0.5))
+        y0 = max(0, y0 - up)
+        y1 = min(height - 1, y1 + down)
+
+        # 横向范围
+        col = color_acc[y0:y1 + 1, :].sum(axis=0)
+        col_peak = float(col.max())
+        if col_peak <= 1:
+            return 0, y0, width, (y1 - y0)
+        cols = np.where(col > col_peak * 0.1)[0]
         if cols.size == 0:
-            return None
-        x0 = max(0, int(cols.min()) - 6)
-        x1 = min(width - 1, int(cols.max()) + 6)
+            return 0, y0, width, (y1 - y0)
+        x0 = max(0, int(cols.min()) - 10)
+        x1 = min(width - 1, int(cols.max()) + 10)
         return x0, y0, (x1 - x0), (y1 - y0)
     finally:
         if cap is not None:
@@ -1562,6 +1607,21 @@ def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict,
     if w <= 0 or h <= 0:
         shutil.copy(video_in, video_out)
         return
+    # delogo 滤镜要求区域完全在画面内且不贴边（需留至少 1px 边界用于周围像素插值）：
+    #   x>=1, y>=1, x+w<=width-1, y+h<=height-1。
+    # 否则会报 "Logo area is outside of the frame" 导致整次转码失败。
+    style = (cfg.get("style") or SUBTITLE_MASK_STYLE_DEFAULT).lower()
+    if style not in SUBTITLE_MASK_STYLES:
+        style = SUBTITLE_MASK_STYLE_DEFAULT
+    if style == "delogo":
+        if x < 1:
+            w = max(1, w - (1 - x)); x = 1
+        if y < 1:
+            h = max(1, h - (1 - y)); y = 1
+        if x + w > width - 1:
+            w = max(1, (width - 1) - x)
+        if y + h > height - 1:
+            h = max(1, (height - 1) - y)
     cfg["__x"], cfg["__y"], cfg["__w"], cfg["__h"] = x, y, w, h
 
     fc = build_subtitle_mask_filter(cfg, enable)
