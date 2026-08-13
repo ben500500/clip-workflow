@@ -180,8 +180,9 @@ class SliceRunRequest(BaseModel):
     subtitle_color: Optional[str] = None
     # 自定义字幕样式的边框颜色（CSS 十六进制 #RRGGBB）
     subtitle_border_color: Optional[str] = None
-    # ── 源视频字幕打码（去片源自带字幕）──
-    # 开启后先把片源自带字幕打码（固定底部横带 + SRT 时间轴驱动），再烧录自己的 ASR 字幕。
+    # ── 源视频字幕打码（去片源自带字幕，独立开关）──
+    # 开启后把片源自带字幕打码（固定底部横带 + SRT 时间轴驱动）。
+    # 与 ASR 字幕烧录相互独立，可单独开启。
     subtitle_mask_enabled: bool = False
     # 打码样式：mosaic（马赛克，推荐）/ blur（模糊）/ fill（纯色块）
     subtitle_mask_style: Optional[str] = None
@@ -454,11 +455,12 @@ def _build_text_overlays_config(data: SliceRunRequest) -> Optional[list]:
     return result if result else None
 
 
-def _build_subtitle_mask_config(data: SliceRunRequest) -> Optional[dict]:
+def _build_subtitle_mask_config(data: SliceRunRequest, source_srt: Optional[str] = None) -> Optional[dict]:
     """构造源视频字幕打码配置（引擎 --subtitle-mask 期望的 JSON）。
 
     仅当 subtitle_mask_enabled 开启时返回非空 dict；区域参数未填则用引擎默认值。
-    时间轴不在这里写死——引擎会用烧录字幕复用的源 SRT（args.subtitle）自动对齐。
+    source_srt 为打码时间轴（源视频字幕/ASR 台词）内容，与 ASR 字幕烧录开关相互独立：
+    即使未开启字幕烧录，只要开启打码也会解析源 SRT 用于对齐打码时间段。
     """
     if not data.subtitle_mask_enabled:
         return None
@@ -473,6 +475,9 @@ def _build_subtitle_mask_config(data: SliceRunRequest) -> Optional[dict]:
         cfg["height_ratio"] = max(0.02, min(0.5, float(data.subtitle_mask_height_ratio)))
     if data.subtitle_mask_bottom_ratio is not None:
         cfg["bottom_ratio"] = max(0.0, min(0.5, float(data.subtitle_mask_bottom_ratio)))
+    # 独立携带打码时间轴 SRT（与字幕烧录无关），供 Worker/Celery 写入本地文件后透传引擎
+    if source_srt and source_srt.strip():
+        cfg["srt"] = source_srt
     return cfg
 
 
@@ -538,40 +543,52 @@ def _with_subtitle_options(cfg: dict, data: SliceRunRequest) -> dict:
     return cfg
 
 
-async def _generate_subtitle_config(
+async def _resolve_source_subtitle_srt(
     data: SliceRunRequest,
     source_file_key: Optional[str],
     source_bucket: str,
     episode: Optional[Episode] = None,
     db: Optional[AsyncSession] = None,
-) -> Optional[dict]:
-    """构造字幕烧录配置：开启时优先复用选点阶段已生成的源视频字幕，否则调用 autoclip ASR。
+) -> Optional[str]:
+    """解析源视频的字幕 SRT 内容（时间轴），供 ASR 字幕烧录与源字幕打码共用。
 
-    返回 {"enabled": True, "srt": "..."}；未开启或生成失败返回 None。
-    优先复用：该剧集做过 AI 智能选点（whisper/aliyun 已转写源视频）时，直接读取其
-    subtitle.srt 复用，避免重复 ASR；未做过选点时再回退到 ASR 生成（带缓存）。
+    优先复用选点阶段已生成的源视频字幕（whisper/aliyun），否则调用 autoclip ASR 生成
+    （带缓存）。返回 SRT 文本；拿不到返回 None。
     """
-    if not data.subtitle_enabled:
-        return None
     if not source_file_key:
-        logger.warning("字幕已开启，但缺少源视频 file_key，跳过字幕生成")
         return None
     # 1) 优先复用选点阶段 whisper/aliyun 已翻译好的字幕（仅常规切片；以切片成品为源的
     #    重新剪辑（output_id）时间轴从 0 开始、与原始字幕不同，不适用，走回退）
     if not data.output_id and episode is not None and db is not None:
         reused = await _read_existing_subtitle(episode, db)
-        if reused is not None:
-            return _with_subtitle_options(reused, data)
+        if reused is not None and reused.get("srt"):
+            return reused["srt"]
     # 2) 回退：调用 autoclip ASR 生成（复用 ASR 缓存）
     source_url = await get_presigned_url(source_bucket, source_file_key, expires_seconds=7200)
     if not source_url:
-        logger.warning("字幕已开启，但生成源视频下载 URL 失败，跳过字幕生成")
+        logger.warning("生成源视频下载 URL 失败，无法解析源字幕时间轴")
         return None
     result = await generate_subtitle(source_url)
     if not result or not result.get("srt") or not result["srt"].strip():
-        logger.warning("ASR 字幕生成结果为空（视频可能无语音或转写失败），跳过字幕烧录")
+        logger.warning("ASR 字幕生成结果为空（视频可能无语音或转写失败）")
         return None
-    return _with_subtitle_options({"enabled": True, "srt": result["srt"]}, data)
+    return result["srt"]
+
+
+def _generate_subtitle_config(
+    data: SliceRunRequest,
+    source_srt: Optional[str],
+) -> Optional[dict]:
+    """构造字幕烧录配置（引擎 --subtitle 期望的 SRT）。
+
+    返回 {"enabled": True, "srt": "..."}；未开启或 SRT 为空返回 None。
+    """
+    if not data.subtitle_enabled:
+        return None
+    if not source_srt or not source_srt.strip():
+        logger.warning("字幕已开启，但源字幕时间轴为空，跳过字幕烧录")
+        return None
+    return _with_subtitle_options({"enabled": True, "srt": source_srt}, data)
 
 
 def _not_detect_task():
@@ -1116,12 +1133,20 @@ async def run_slice(
     vert2horiz_config = _build_vert2horiz_config(data)
     # 构造图片角标配置（开启后随任务下发给引擎）
     badges_config = _build_badges_config(data)
-    # 构造字幕烧录配置：开启时优先复用选点阶段已生成的源视频字幕，否则回退到 ASR 生成
-    subtitle_config = await _generate_subtitle_config(data, source_file_key, source_bucket, episode, db)
+    # 解析源视频字幕 SRT（时间轴），供 ASR 字幕烧录与源字幕打码共用。
+    # 打码与字幕烧录是相互独立的开关：任意一个开启都解析 SRT，
+    # 但只有字幕烧录开启才会真正烧录，只有打码开启才会打码。
+    source_subtitle_srt = None
+    if (data.subtitle_enabled or data.subtitle_mask_enabled) and source_file_key:
+        source_subtitle_srt = await _resolve_source_subtitle_srt(
+            data, source_file_key, source_bucket, episode, db
+        )
+    # 构造字幕烧录配置（开启时把源 SRT 随任务下发给引擎烧录）
+    subtitle_config = _generate_subtitle_config(data, source_subtitle_srt)
     # 构造固定文字角标配置（文字版角标，无需上传图片）
     text_overlays_config = _build_text_overlays_config(data)
-    # 构造源视频字幕打码配置（去片源自带字幕）
-    subtitle_mask_config = _build_subtitle_mask_config(data)
+    # 构造源视频字幕打码配置（去片源自带字幕，独立开关，携带打码时间轴 SRT）
+    subtitle_mask_config = _build_subtitle_mask_config(data, source_subtitle_srt)
     # 持久化竖屏转横屏/角标/字幕/打码/固定文字配置，重试时保留
     slice_task.vert2horiz_config = vert2horiz_config
     slice_task.watermark_config = watermark_config
