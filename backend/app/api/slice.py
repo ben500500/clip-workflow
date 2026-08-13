@@ -33,6 +33,7 @@ from app.models.models import (
     SystemConfig,
     User,
     AutoClipProject,
+    UserPreference,
 )
 from app.services.data_scope import check_project_access_by_episode
 from app.services.autoclip_service import generate_subtitle
@@ -1110,6 +1111,43 @@ async def upload_subtitle_file(
         "file_size": size,
         "upload_id": upload_id,
     }
+
+
+class UserSliceConfigRequest(BaseModel):
+    slice_config: dict = {}
+
+
+@router.get("/slice/preferences")
+async def get_slice_preferences(
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取当前用户的切片个人配置（保存到个人账号，跨设备/浏览器持久化）。"""
+    result = await db.execute(
+        select(UserPreference).where(UserPreference.user_id == current_user.id)
+    )
+    pref = result.scalar_one_or_none()
+    return {"slice_config": pref.slice_config if pref else None}
+
+
+@router.put("/slice/preferences")
+async def save_slice_preferences(
+    data: UserSliceConfigRequest,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """保存当前用户的切片个人配置到个人账号。"""
+    result = await db.execute(
+        select(UserPreference).where(UserPreference.user_id == current_user.id)
+    )
+    pref = result.scalar_one_or_none()
+    if pref:
+        pref.slice_config = data.slice_config
+    else:
+        pref = UserPreference(user_id=current_user.id, slice_config=data.slice_config)
+        db.add(pref)
+    await db.commit()
+    return {"ok": True, "slice_config": data.slice_config}
 
 
 @router.post("/episodes/{episode_id}/slice/run", response_model=SliceRunResponse)
