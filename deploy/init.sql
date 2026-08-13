@@ -29,19 +29,7 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
--- 用户会话表
-CREATE TABLE IF NOT EXISTS user_sessions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    refresh_token VARCHAR(512) NOT NULL UNIQUE,
-    access_token VARCHAR(512),
-    user_agent VARCHAR(512),
-    ip_address VARCHAR(45),
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    is_revoked BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    revoked_at TIMESTAMP WITH TIME ZONE
-);
+
 
 -- 用户 OAuth 关联表
 CREATE TABLE IF NOT EXISTS user_oauth_accounts (
