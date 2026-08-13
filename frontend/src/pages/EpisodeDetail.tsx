@@ -207,6 +207,9 @@ const EpisodeDetail: React.FC = () => {
   const [detectResultCount, setDetectResultCount] = useState<number | null>(null);
   const [sliceRunning, setSliceRunning] = useState(false);
   const [sliceProgress, setSliceProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
+  // 快速转换（跳过 AI 选点/区间检测，整片应用下方配置直接出片，位于「开始切片」旁）
+  const [quickConverting, setQuickConverting] = useState(false);
+  const [quickProgress, setQuickProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
   // 一键切片（免审核直接出片，位于工作台入口）
   const [oneClickSlicing, setOneClickSlicing] = useState(false);
   // 一键切片进度（与普通切片共用轮询逻辑）
@@ -984,12 +987,18 @@ const EpisodeDetail: React.FC = () => {
     }
   };
 
-  // ─── 启动切片 ───────────────────────────────────────
-  const runSlice = async () => {
-    setSliceRunning(true);
-    setSliceProgress({ status: 'running', progress: 5, message: '正在提交切片任务…' });
+  // ─── 启动切片 / 快速转换 ───────────────────────
+  const runSlice = async (noCut = false) => {
+    const setRunning = noCut ? setQuickConverting : setSliceRunning;
+    const setProgress = noCut ? setQuickProgress : setSliceProgress;
+    // 快速转换是整片单片段转换，不做去重/挖洞，强制使用 fast 模式
+    const mode = noCut ? 'fast' : sliceMode;
+    setRunning(true);
+    setProgress({ status: 'running', progress: 5, message: noCut ? '正在提交快速转换任务…' : '正在提交切片任务…' });
     try {
-      const res = await sliceApi.run(episodeId, sliceMode, {
+      const res = await sliceApi.run(episodeId, mode, {
+        // 快速转换：跳过 AI 选点与区间检测，整段源视频直接应用下方配置转换输出
+        no_cut: noCut || undefined,
         // 自定义文字水印：开启后后端下发给引擎，在成品视频上叠加动态文字水印
         watermark_enabled: watermarkEnabled,
         watermark_text: watermarkEnabled ? watermarkText : undefined,
@@ -1020,6 +1029,8 @@ const EpisodeDetail: React.FC = () => {
         subtitle_enabled: subtitleEnabled,
         // 字幕字号（相对高度比例）：可调大让字幕更清晰易读
         subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
+        // 字幕字间距（ASS Spacing 像素）：让字幕文字更紧凑
+        subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
         // 字幕样式：custom 时可选字体色/边框色（无底色）
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
@@ -1040,11 +1051,11 @@ const EpisodeDetail: React.FC = () => {
       message.success(res.message);
       fetchHistories();
       // 启动后轮询任务进度
-      pollLatestSliceProgress(sliceMode, setSliceRunning, setSliceProgress);
+      pollLatestSliceProgress(mode, setRunning, setProgress);
     } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : '启动切片失败');
-      setSliceRunning(false);
-      setSliceProgress(null);
+      message.error(err instanceof Error ? err.message : (noCut ? '启动快速转换失败' : '启动切片失败'));
+      setRunning(false);
+      setProgress(null);
     }
   };
 
@@ -1389,7 +1400,10 @@ const EpisodeDetail: React.FC = () => {
                 { value: 'scrub', label: '挖洞模式' },
               ]}
             />
-            <Button icon={<ScissorOutlined />} loading={sliceRunning} onClick={runSlice}>开始切片</Button>
+            <Button icon={<ScissorOutlined />} loading={sliceRunning} disabled={quickConverting} onClick={() => runSlice(false)}>开始切片</Button>
+            <Tooltip title="跳过 AI 选点和区间检测，直接整段视频应用下方配置（竖屏转横屏/水印/角标/字幕/固定文字等）转换输出">
+              <Button icon={<ThunderboltOutlined />} loading={quickConverting} disabled={sliceRunning} onClick={() => runSlice(true)}>快速转换</Button>
+            </Tooltip>
           </Space>
           {/* 切片模式详细说明 */}
           <Card size="small" style={{ background: '#f0f5ff', border: '1px solid #d6e4ff', width: '100%' }}>
@@ -1858,6 +1872,7 @@ const EpisodeDetail: React.FC = () => {
 
           {/* 进度条：切片动作 tab 最底部 */}
           {renderProgress(sliceProgress)}
+          {renderProgress(quickProgress)}
           {/* 切片执行历史 */}
           {renderHistoryTitle('切片执行历史', sliceHistory.length)}
           {sliceHistory.length === 0 ? (

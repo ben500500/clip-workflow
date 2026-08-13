@@ -113,6 +113,10 @@ class SliceRunRequest(BaseModel):
     # 免审核一键切片：为 True 时自动把所有候选片段（含 pending）纳入切片，
     # 不再要求存在 status=accepted 的片段
     auto_accept_all: bool = False
+    # 快速转换：为 True 时跳过 AI 选点与区间检测，直接把整段源视频作为单个
+    # 片段（0 ~ 源时长），应用下方切片配置（竖屏转横屏/水印/角标/字幕/固定文字等）
+    # 做一次整片转换输出，无需候选片段
+    no_cut: bool = False
     # ── 自定义文字水印 ──
     # 水印开关：开启后会在切片成品视频上叠加动态文字水印
     watermark_enabled: bool = False
@@ -274,6 +278,20 @@ def _serialize_output(output: SliceOutput, presigned_url: Optional[str] = None) 
 # ──────────────────────────────────────────────
 # 辅助函数
 # ──────────────────────────────────────────────
+
+
+def _ffprobe_duration(path: str) -> float:
+    """用 ffprobe 探测本地视频时长（秒），失败返回 0.0。"""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(out.stdout.strip())
+    except Exception:
+        return 0.0
 
 
 def _resolve_engine(request_engine: Optional[str]) -> str:
@@ -905,8 +923,40 @@ async def run_slice(
             detail="Episode has no source file. Upload a video first or provide video_path.",
         )
 
+    # ── 快速转换：跳过 AI 选点/区间检测，直接整片应用下方配置转换输出 ──
+    if data.no_cut:
+        # 无需候选片段/区间，整段源视频作为单个片段处理。
+        # 时长优先取剧集已探测的 duration；缺失时下载源视频用 ffprobe 探测，
+        # 保证「快速转换」在尚未做过选点（episode.duration 为空）时也能直接出片。
+        duration = episode.duration
+        if not duration:
+            if data.video_path and os.path.isfile(data.video_path):
+                duration = _ffprobe_duration(data.video_path)
+            elif source_file_key:
+                from app.services.minio_service import download_to_file
+                local_path = (
+                    f"/tmp/nocut_{uuid.uuid4().hex}"
+                    f"{os.path.splitext(source_file_key)[1] or '.mp4'}"
+                )
+                try:
+                    if await download_to_file(source_bucket, source_file_key, local_path):
+                        duration = _ffprobe_duration(local_path)
+                finally:
+                    if os.path.isfile(local_path):
+                        try:
+                            os.unlink(local_path)
+                        except OSError:
+                            pass
+        if not duration or float(duration) <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="该剧集未记录视频时长，且探测源视频时长失败，无法快速转换。请重新上传视频。",
+            )
+        cutlist = f"{format_time(0.0)} {format_time(float(duration))} clip_01"
+        intervals_content = ""
+
     # ── 成品重新剪辑：以某个切片输出（成品）为源，重新裁剪出一个新片段 ──
-    if data.output_id:
+    elif data.output_id:
         if data.video_path:
             raise HTTPException(
                 status_code=400,
