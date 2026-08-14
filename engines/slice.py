@@ -1296,12 +1296,16 @@ def _trim_to_speech(start: float, end: float, speech_windows: list[tuple]) -> li
 
 def _filter_and_align_srt(records: list[dict], seg_start: float, seg_end: float,
                           offset: float, out: list[dict],
-                          speech_windows: list[tuple] | None = None) -> None:
+                          speech_windows: list[tuple] | None = None,
+                          scale: float = 1.0) -> None:
     """从源字幕中截取 [seg_start, seg_end] 区间，时间轴减去 seg_start 再叠加 offset，
     写入 out（用于多子段拼接时的连续时间轴对齐）。
 
     speech_windows: 可选，源时间坐标下的说话区间；传入后字幕仅在说话期间显示，
     跨越静音的字幕会被切分成多段，静音期间不再残留上一句字幕。
+
+    scale: 输出时间轴缩放因子（>1 表示切片时对视频做了变速压缩，如去重 mode 的
+        setpts 变速；源时间 t 对应输出画面时间 t/scale）。默认 1 不缩放（普通/快速模式）。
     """
     speech_windows = speech_windows or []
     for r in records:
@@ -1315,14 +1319,15 @@ def _filter_and_align_srt(records: list[dict], seg_start: float, seg_end: float,
             if te - ts < 0.05:
                 continue
             out.append({
-                "start": (ts - seg_start) + offset,
-                "end": (te - seg_start) + offset,
+                "start": (ts - seg_start) / scale + offset,
+                "end": (te - seg_start) / scale + offset,
                 "text": r["text"],
             })
 
 
 def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str,
-                        speech_windows: list[tuple] | None = None) -> str:
+                        speech_windows: list[tuple] | None = None,
+                        scale: float = 1.0) -> str:
     """根据一个切片的源时间段列表，从源 SRT 截取并拼接出该切片对应的字幕文件。
 
     segments: 按拼接顺序排列的源时间段 [(start, end), ...]。
@@ -1330,13 +1335,16 @@ def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str,
 
     speech_windows: 可选，源时间坐标下的说话区间；传入后字幕仅在说话期间显示，
     静音/停顿期间字幕自动隐藏（不再"一直出现"）。
+
+    scale: 输出时间轴缩放因子（>1 表示切片时对视频做了变速压缩，如去重 mode 的
+        setpts 变速；源时间 t 对应输出画面时间 t/scale）。默认 1 不缩放（普通/快速模式）。
     """
     records = read_srt(src_srt)
     merged = []
     offset = 0.0
     for start, end in segments:
-        _filter_and_align_srt(records, start, end, offset, merged, speech_windows)
-        offset += max(0.0, end - start)
+        _filter_and_align_srt(records, start, end, offset, merged, speech_windows, scale)
+        offset += max(0.0, (end - start) / scale)
     # 排序并重新编号
     merged.sort(key=lambda r: r["start"])
     lines = []
@@ -2066,12 +2074,15 @@ def _mask_enable_expr(intervals: list[tuple]) -> str:
     return "+".join(terms)
 
 
-def _source_intervals_to_local_enable(src_intervals: list[tuple], seg_times: list[tuple]) -> str:
+def _source_intervals_to_local_enable(src_intervals: list[tuple], seg_times: list[tuple],
+                                      scale: float = 1.0) -> str:
     """把源时间轴上的区间列表转换为切片局部时间轴（从 0 开始）的 enable 表达式。
 
     src_intervals: 源时间轴上的 [(start, end), ...]，如 SRT 字幕时段或帧级检测到的
         字幕/水印在场时段。
     seg_times: 按拼接顺序排列的源时间段 [(start, end), ...]，与 build_clip_subtitle 一致。
+    scale: 输出时间轴缩放因子（>1 表示切片时对视频做了变速压缩，如去重 mode 的
+        setpts 变速；源时间 t 对应输出画面时间 t/scale）。默认 1 不缩放（普通/快速模式）。
     返回局部 enable 表达式；该切片内无内容则返回 ""。
     """
     if not src_intervals:
@@ -2083,8 +2094,8 @@ def _source_intervals_to_local_enable(src_intervals: list[tuple], seg_times: lis
             s = max(s0, start)
             e = min(e0, end)
             if e > s:
-                intervals.append((s - start + offset, e - start + offset))
-        offset += max(0.0, end - start)
+                intervals.append(((s - start) / scale + offset, (e - start) / scale + offset))
+        offset += max(0.0, (end - start) / scale)
     if not intervals:
         return ""
     intervals.sort()
@@ -2098,7 +2109,7 @@ def _source_intervals_to_local_enable(src_intervals: list[tuple], seg_times: lis
 
 
 def _spatial_windows_to_local(src_windows: list[tuple], seg_times: list[tuple],
-                              cfg: dict, width: int) -> list[tuple]:
+                              cfg: dict, width: int, scale: float = 1.0) -> list[tuple]:
     """把空间精细化窗口（源时间轴 + 源分辨率子区域）转换为切片局部坐标。
 
     src_windows: [(源_start, 源_end, 源_x, 源_w), ...]，源_x 为绝对列坐标（源分辨率）。
@@ -2109,6 +2120,8 @@ def _spatial_windows_to_local(src_windows: list[tuple], seg_times: list[tuple],
     返回 [(局部_start, 局部_end, 局部_x, 局部_w), ...]，供 build_subtitle_mask_filter_multi 使用。
     """
     dw = int(cfg.get("__detect_w", 0))
+    # 去重 hflip 镜像：子区域 x 需按画面宽度镜像（与整条横带打码的镜像处理一致）。
+    hflip = bool(cfg.get("__hflip"))
     out = []
     for (s0, e0, sx, sw) in src_windows:
         if dw > 0 and dw != width:
@@ -2117,6 +2130,8 @@ def _spatial_windows_to_local(src_windows: list[tuple], seg_times: list[tuple],
         else:
             ax = sx
             aw = sw
+        if hflip:
+            ax = max(0, width - ax - aw)
         if ax >= width or ax + aw <= 0:
             continue
         offset = 0.0
@@ -2124,8 +2139,8 @@ def _spatial_windows_to_local(src_windows: list[tuple], seg_times: list[tuple],
             ls = max(s0, start)
             le = min(e0, end)
             if le > ls:
-                out.append((ls - start + offset, le - start + offset, ax, aw))
-            offset += max(0.0, end - start)
+                out.append(((ls - start) / scale + offset, (le - start) / scale + offset, ax, aw))
+            offset += max(0.0, (end - start) / scale)
     # 去重/合并相邻（同子区域）局部区间
     out.sort()
     result = []
@@ -2137,7 +2152,8 @@ def _spatial_windows_to_local(src_windows: list[tuple], seg_times: list[tuple],
     return result
 
 
-def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple], offset: float = 0.0) -> str:
+def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple], offset: float = 0.0,
+                               scale: float = 1.0) -> str:
     """根据切片源时间段，从源 SRT 生成打码区间（局部时间轴，从 0 开始）。
 
     seg_times: 按拼接顺序排列的源时间段 [(start, end), ...]，与 build_clip_subtitle 一致。
@@ -2153,9 +2169,9 @@ def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple], offset: flo
         return ""
     if offset:
         return _source_intervals_to_local_enable(
-            [(float(r["start"]) + offset, float(r["end"]) + offset) for r in records], seg_times)
+            [(float(r["start"]) + offset, float(r["end"]) + offset) for r in records], seg_times, scale)
     return _source_intervals_to_local_enable(
-        [(float(r["start"]), float(r["end"])) for r in records], seg_times)
+        [(float(r["start"]), float(r["end"])) for r in records], seg_times, scale)
 
 
 def _subtitle_mask_area(cfg: dict, width: int, height: int) -> tuple[int, int, int, int]:
@@ -2379,6 +2395,11 @@ def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict,
     if w <= 0 or h <= 0:
         shutil.copy(video_in, video_out)
         return
+    # 去重模式若开启了 hflip（水平镜像），画面字幕会被镜像到另一侧，而打码区域
+    # 是基于源坐标（未镜像）检测的，这里需把区域 x 同步镜像，否则打码会打到原
+    # 字幕已不存在的另一侧（"去重后字幕打码不起作用"的根因之一）。
+    if cfg.get("__hflip"):
+        x = max(0, width - x - w)
     # delogo 滤镜要求区域完全在画面内且不贴边（需留至少 1px 边界用于周围像素插值）：
     #   x>=1, y>=1, x+w<=width-1, y+h<=height-1。
     # 否则会报 "Logo area is outside of the frame" 导致整次转码失败。
@@ -2398,7 +2419,8 @@ def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict,
 
     # 空间精细化：仅对字幕文字实际占用的子区域打码。
     if spatial_windows:
-        local = _spatial_windows_to_local(spatial_windows, seg_times or [], cfg, width)
+        scale = float(cfg.get("__scale") or 1.0)
+        local = _spatial_windows_to_local(spatial_windows, seg_times or [], cfg, width, scale)
         fc = build_subtitle_mask_filter_multi(cfg, local, y, h, width)
     else:
         fc = build_subtitle_mask_filter(cfg, enable)
@@ -2575,6 +2597,13 @@ def main():
 
     vf = None
     af = None
+    # 去重模式的时空变换（影响打码/字幕的坐标与时间轴）：
+    #   dedupe_speed  - setpts 变速因子（源时间 t 对应输出画面时间 t/speed）
+    #   dedupe_hflip  - 是否水平镜像画面（打码区域需按镜像映射，否则打码位置会错）
+    # 仅去重模式开启时非默认值，用于对字幕打码区域/时间轴做同步变换，避免"去重后
+    # 字幕打码不起作用、ASR 字幕与语音错位"的问题。
+    dedupe_speed = 1.0
+    dedupe_hflip = False
     if args.mode == "dedupe":
         # 去重模式：默认采用 standard 档（含老电视质感的完整四层去重）。
         # --dedupe-config 支持 preset（light/standard/heavy 基础档位）与
@@ -2588,9 +2617,15 @@ def main():
             if not isinstance(dedupe_cfg, dict):
                 dedupe_cfg = {}
         preset = str(dedupe_cfg.get("preset") or "standard").lower()
+        _dedupe_p = _resolve_dedupe_config(dedupe_cfg)
+        try:
+            dedupe_speed = float(_dedupe_p.get("speed") or 1.0)
+        except (TypeError, ValueError):
+            dedupe_speed = 1.0
+        dedupe_hflip = bool(_dedupe_p.get("hflip", False))
         w, h = ffprobe_resolution(source_path)
         vf, af = build_dedupe_filter(dedupe_cfg, width=w, height=h)
-        print(f"去重档位: {preset}", file=sys.stderr)
+        print(f"去重档位: {preset} (speed={dedupe_speed:.3f}, hflip={dedupe_hflip})", file=sys.stderr)
 
     # 动态文字水印：开启后在去重/普通滤镜基础上叠加 drawtext
     watermark = None
@@ -2639,6 +2674,12 @@ def main():
         temporal = bool(subtitle_mask.get("temporal"))
         spatial = bool(subtitle_mask.get("spatial"))
         print(f"源字幕打码已开启: style={style}, temporal={temporal}, spatial={spatial}", file=sys.stderr)
+        # 去重模式同步标记：apply_subtitle_mask 需按去重的镜像(hflip)与变速(speed)
+        # 对打码区域/时间轴做同步变换，否则"去重后字幕打码不起作用"（区域错位+时间错位）。
+        if dedupe_hflip:
+            subtitle_mask["__hflip"] = True
+        if dedupe_speed and dedupe_speed != 1.0:
+            subtitle_mask["__scale"] = dedupe_speed
         if not temporal:
             print("提示: temporal=false 会按检测到的字幕区域全程打码（字幕/水印不在的时段也会被马赛克）。"
                   "若字幕只在几帧出现，建议开启 temporal=true 启用帧级检测。", file=sys.stderr)
@@ -2692,6 +2733,10 @@ def main():
     if watermark_mask:
         style = watermark_mask.get("style") or SUBTITLE_MASK_STYLE_DEFAULT
         print(f"恒定水印打码已开启: style={style}", file=sys.stderr)
+        # 去重 hflip 镜像同步标记（与字幕打码一致）：打码区域基于源坐标检测，
+        # 去重镜像后需在 apply_subtitle_mask 内部做 x 镜像，否则水印打码位置会错。
+        if dedupe_hflip:
+            watermark_mask["__hflip"] = True
         # 自动检测恒定水印区域；显式提供 x/y/width/height 时跳过检测（信任手动配置）。
         if not (watermark_mask.get("x") is not None and watermark_mask.get("y") is not None
                 and (watermark_mask.get("width") or watermark_mask.get("w")) is not None
@@ -2755,7 +2800,9 @@ def main():
                                             threads=threads, encoder=encoder)
                         os.replace(mask_out, out_path)
                     elif tw:
-                        mask_enable = _source_intervals_to_local_enable(tw, seg_times)
+                        # 去重变速(speed)会压缩画面时间轴，源时间窗口需按 speed 缩放，
+                        # 否则 temporal 打码窗口与变速后的画面错位。
+                        mask_enable = _source_intervals_to_local_enable(tw, seg_times, dedupe_speed)
                         # 精细化：仅在字幕出现时段打码；该切片内无字幕出现则不打码。
                         if mask_enable:
                             apply_subtitle_mask(out_path, mask_out, subtitle_mask,
@@ -2774,7 +2821,10 @@ def main():
                 # 字幕烧录：开启后按该切片的源时间段从源 SRT 截取并烧录到成品
                 if args.subtitle:
                     sub_srt = os.path.join(tmp, "clip_subtitle.srt")
-                    build_clip_subtitle(args.subtitle, seg_times, sub_srt, speech_windows)
+                    # 去重变速(speed)会压缩视频时长，ASR 字幕时间轴需按 speed 缩放，
+                    # 否则字幕与语音/画面错位、末尾字幕超出视频时长而显示不全。
+                    build_clip_subtitle(args.subtitle, seg_times, sub_srt, speech_windows,
+                                        scale=dedupe_speed)
                     sub_out = out_path + ".sub.mp4"
                     # 源字幕对齐：开启对齐开关且有源字幕打码时，把 ASR 字幕默认位置
                     # 对齐到检测到的打码区域（与被打掉的源字幕位置重合）。
