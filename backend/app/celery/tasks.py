@@ -55,8 +55,8 @@ celery_app.conf.update(
         "app.celery.tasks.watermark_task": {"queue": "video_processing"},
         "app.celery.tasks.check_cookie_status": {"queue": "publish"},
         "app.celery.tasks.doubao_generate_task": {"queue": "publish"},
-        # Seedance 官方 API 直连出片（HTTP 直连，无浏览器；复用 publish 队列即可，
-        # 不依赖 rpa_worker，普通 worker 即可消费）
+        # Seedance 官方 API 直连出片(HTTP 直连,无浏览器;复用 publish 队列即可,
+        # 不依赖 rpa_worker,普通 worker 即可消费)
         "app.celery.tasks.seedance_generate_task": {"queue": "publish"},
     },
     beat_schedule={
@@ -64,23 +64,23 @@ celery_app.conf.update(
             "task": "app.celery.tasks.task_collect_metrics",
             "schedule": crontab(hour=0, minute=30),
         },
-        # 三期监控告警：周期检查告警规则并推送钉钉
+        # 三期监控告警:周期检查告警规则并推送钉钉
         "alert-check-periodic": {
             "task": "app.celery.tasks.run_alert_check_task",
             "schedule": settings.ALERT_CHECK_INTERVAL_SECONDS,
         },
-        # 三期性能优化：每日归档过期看板数据 + 清理临时文件
+        # 三期性能优化:每日归档过期看板数据 + 清理临时文件
         "maintenance-daily": {
             "task": "app.celery.tasks.maintenance_daily_task",
             "schedule": crontab(hour=3, minute=0),
         },
-        # 发布登录态巡检：定期检查视频号/抖音/快手登录态是否失效，
-        # 失效时记录到日志并保留任务记录，供运维/发布专员发现后重新扫码
+        # 发布登录态巡检:定期检查视频号/抖音/快手登录态是否失效,
+        # 失效时记录到日志并保留任务记录,供运维/发布专员发现后重新扫码
         "publish-cookie-check": {
             "task": "app.celery.tasks.check_cookie_status",
             "schedule": settings.COOKIE_CHECK_INTERVAL_SECONDS,
         },
-        # 多运营者（R15/R12）：周期同步启用 profile 到 Redis 路由表 + 秒级探活失效闭环
+        # 多运营者(R15/R12):周期同步启用 profile 到 Redis 路由表 + 秒级探活失效闭环
         "multi-operator-profile-sync": {
             "task": "app.celery.tasks.sync_multi_operator_profiles",
             "schedule": 60.0,
@@ -145,8 +145,8 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
         get_clips,
     )
 
-    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动 AutoClip 选点任务…"})
-    run_async(_update_autoclip_run(episode_id, autoclip_project_id, "running", 5, "选点任务运行中，正在分析视频…"))
+    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动 AutoClip 选点任务..."})
+    run_async(_update_autoclip_run(episode_id, autoclip_project_id, "running", 5, "选点任务运行中,正在分析视频..."))
 
     downloaded_video_path = None
     try:
@@ -185,12 +185,12 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
                     completed = True
                     break
             else:
-                # AutoClip 服务重启会丢失内存态项目，连续失败则提前失败，
+                # AutoClip 服务重启会丢失内存态项目,连续失败则提前失败,
                 # 避免占用单 worker 空转 10 分钟。
                 consecutive_failures += 1
                 if consecutive_failures >= 6:
                     raise RuntimeError(
-                        "AutoClip 项目状态连续查询失败（服务可能已重启导致项目丢失），请重新触发选点"
+                        "AutoClip 项目状态连续查询失败(服务可能已重启导致项目丢失),请重新触发选点"
                     )
                 pct = min(int((i / max_polls) * 100), 99)
                 self.update_state(
@@ -211,7 +211,7 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
             episode_id, autoclip_project_id,
             "completed" if completed else "failed",
             100.0 if completed else 0.0,
-            f"选点完成，共生成 {len(clips)} 个候选片段" if completed else "选点未完成，请检查 AutoClip 服务",
+            f"选点完成,共生成 {len(clips)} 个候选片段" if completed else "选点未完成,请检查 AutoClip 服务",
         ))
 
         self.update_state(
@@ -240,10 +240,10 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
 
 @celery_app.task(bind=True, max_retries=0)
 def batch_slice_task(self, batch_id: str):
-    """批量切片工作流（三期方案）：按列表顺序逐集完成选点→审核→切片→删源。
+    """批量切片工作流(三期方案):按列表顺序逐集完成选点→审核→切片→删源。
 
     编排逻辑见 app.services.batch_slice_service.run_batch。
-    由于该任务会长时间阻塞并轮询 autoclip/slice 子任务，放到 default 队列执行。
+    由于该任务会长时间阻塞并轮询 autoclip/slice 子任务,放到 default 队列执行。
     """
     from app.services.batch_slice_service import run_batch
     self.update_state(state="STARTED", meta={"batch_id": batch_id})
@@ -261,10 +261,10 @@ def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict,
     """Execute interval detection as a Celery task."""
     from app.services.interval_service import detect_intervals
 
-    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动区间检测任务…"})
+    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动区间检测任务..."})
 
-    # 检测任务记录到 slice_tasks 表（mode 前缀 detect_），供 /intervals/progress 接口查询进度。
-    # 优先使用 API 层预创建的记录，避免提交后轮询窗口内查不到进度。
+    # 检测任务记录到 slice_tasks 表(mode 前缀 detect_),供 /intervals/progress 接口查询进度。
+    # 优先使用 API 层预创建的记录,避免提交后轮询窗口内查不到进度。
     detect_task_id: Optional[str] = task_id
     if not detect_task_id:
         try:
@@ -283,7 +283,7 @@ def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict,
 
         self.update_state(
             state="PROGRESS",
-            meta={"progress": 20, "message": f"正在分析视频（{mode} 模式）…"},
+            meta={"progress": 20, "message": f"正在分析视频({mode} 模式)..."},
         )
         if detect_task_id:
             run_async(_update_detect_task_progress(detect_task_id, 20, "running"))
@@ -296,7 +296,7 @@ def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict,
         run_async(_save_detected_intervals(episode_id, intervals, mode, config))
         run_async(_update_episode_status(episode_id, "intervals_detected"))
 
-        # 数据落库后再标记完成，避免前端提前看到 completed 但结果尚未保存
+        # 数据落库后再标记完成,避免前端提前看到 completed 但结果尚未保存
         if detect_task_id:
             run_async(_update_detect_task_progress(detect_task_id, 100, "completed"))
 
@@ -412,20 +412,20 @@ def slice_task(
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
-    encoder: 三期 GPU 加速编码，可选 h264_nvenc/hevc_nvenc/\
-        h264_videotoolbox/hevc_videotoolbox/libx264；不传则引擎自动探测。
-    source_bucket: 源视频所在桶；普通切片为 raw-footage，成品重新剪辑为 sliced。
-    vert2horiz_config: 竖屏转横屏预处理配置（切片前把竖屏素材转成横屏）。
-    badges_config: 图片角标配置（切片后在成品上叠加角标）。
-    badge_default_width: 角标默认宽度（px，0=保持原图尺寸；角标未单独设 width 时生效）。
-    subtitle_config: 字幕烧录配置（{"enabled": True, "srt": str}，切片时烧录到成品）。
+    encoder: 三期 GPU 加速编码,可选 h264_nvenc/hevc_nvenc/\
+        h264_videotoolbox/hevc_videotoolbox/libx264;不传则引擎自动探测。
+    source_bucket: 源视频所在桶;普通切片为 raw-footage,成品重新剪辑为 sliced。
+    vert2horiz_config: 竖屏转横屏预处理配置(切片前把竖屏素材转成横屏)。
+    badges_config: 图片角标配置(切片后在成品上叠加角标)。
+    badge_default_width: 角标默认宽度(px,0=保持原图尺寸;角标未单独设 width 时生效)。
+    subtitle_config: 字幕烧录配置({"enabled": True, "srt": str},切片时烧录到成品)。
     """
     from app.services.slice_service import run_slice_scrub, run_slice_fast
     from app.services.minio_service import upload_file_from_path, download_to_file
     from app.config import settings
     from app.utils.helpers import write_temp_file, ensure_dir
 
-    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动切片任务…"})
+    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动切片任务..."})
 
     downloaded_source_path = None
     output_dir = None
@@ -441,7 +441,7 @@ def slice_task(
         intervals_path = write_temp_file(intervals, suffix=".txt")
         output_dir = ensure_dir(f"/tmp/slice_outputs/{episode_id}/{self.request.id}")
 
-        # 图片角标：下载每个角标图片到本地，构造引擎期望的 badge 配置（含 path）
+        # 图片角标:下载每个角标图片到本地,构造引擎期望的 badge 配置(含 path)
         badge_items = None
         if badges_config:
             badge_items = []
@@ -455,7 +455,7 @@ def slice_task(
                     download_to_file(settings.MINIO_BUCKET_RAW, fk, local)
                 )
                 if not ok or not os.path.isfile(local):
-                    logger.warning("角标图片下载失败，跳过: %s", fk)
+                    logger.warning("角标图片下载失败,跳过: %s", fk)
                     continue
                 item = {"path": local, "position": bi.get("position", "top-left")}
                 if bi.get("width"):
@@ -466,7 +466,7 @@ def slice_task(
                     item["opacity"] = float(bi["opacity"])
                 badge_items.append(item)
 
-        # 字幕烧录：把 ASR 生成的 SRT 写到本地文件，供引擎 --subtitle 使用
+        # 字幕烧录:把 ASR 生成的 SRT 写到本地文件,供引擎 --subtitle 使用
         subtitle_srt_path = None
         subtitle_font_ratio = None
         subtitle_spacing = None
@@ -477,16 +477,16 @@ def slice_task(
             srt_content = subtitle_config.get("srt") or ""
             if srt_content.strip():
                 subtitle_srt_path = write_temp_file(srt_content, suffix=".srt")
-                logger.info("字幕烧录已开启，SRT 已写入本地: %s", subtitle_srt_path)
-            # 字幕字号（相对高度比例），用户可调大让字幕更清晰易读
+                logger.info("字幕烧录已开启,SRT 已写入本地: %s", subtitle_srt_path)
+            # 字幕字号(相对高度比例),用户可调大让字幕更清晰易读
             fr = subtitle_config.get("font_ratio")
             if isinstance(fr, (int, float)) and fr > 0:
                 subtitle_font_ratio = float(fr)
-            # 字幕字间距（ASS Spacing 像素），让字幕文字更紧凑
+            # 字幕字间距(ASS Spacing 像素),让字幕文字更紧凑
             sp = subtitle_config.get("spacing")
             if isinstance(sp, (int, float)):
                 subtitle_spacing = int(sp)
-            # 字幕样式：default / custom（自定义字体色+边框色，无底色）
+            # 字幕样式:default / custom(自定义字体色+边框色,无底色)
             st = subtitle_config.get("style")
             if st:
                 subtitle_style = str(st)
@@ -497,9 +497,9 @@ def slice_task(
             if bc:
                 subtitle_border_color = str(bc)
 
-        # 源字幕打码时间轴 SRT：后端已把 SRT 内容放进 subtitle_mask_config["srt"]，
-        # 这里写到本地文件并替换为文件路径，供引擎 --subtitle-mask 使用。
-        # 打码与字幕烧录是独立开关，即使未开启字幕烧录也照常处理。
+        # 源字幕打码时间轴 SRT:后端已把 SRT 内容放进 subtitle_mask_config["srt"],
+        # 这里写到本地文件并替换为文件路径,供引擎 --subtitle-mask 使用。
+        # 打码与字幕烧录是独立开关,即使未开启字幕烧录也照常处理。
         if subtitle_mask_config and subtitle_mask_config.get("enabled"):
             mask_srt_content = subtitle_mask_config.get("srt") or ""
             if mask_srt_content.strip():
@@ -507,8 +507,8 @@ def slice_task(
                 subtitle_mask_config["srt"] = mask_srt_path
                 logger.info("源字幕打码时间轴 SRT 已写入本地: %s", mask_srt_path)
 
-        # 引擎进度回调会在 async 循环内被同步调用，不能在这里 run_async
-        # （会嵌套事件循环报错）。只收集进度，引擎结束后统一写库。
+        # 引擎进度回调会在 async 循环内被同步调用,不能在这里 run_async
+        # (会嵌套事件循环报错)。只收集进度,引擎结束后统一写库。
         progress_values: list[int] = []
 
         def progress_cb(pct: int, message: str = ""):
@@ -671,14 +671,14 @@ async def _save_autoclip_results(
 ):
     """Replace clip candidates for an episode with AutoClip results.
 
-    若配置了 min_duration / max_duration（秒），会在落库前对候选片段做
-    确定性时长范围过滤，确保保存的片段严格落在用户指定范围内（除了 AutoClip
-    LLM 提示词引导外，再加一道硬性约束）。
+    若配置了 min_duration / max_duration(秒),会在落库前对候选片段做
+    确定性时长范围过滤,确保保存的片段严格落在用户指定范围内(除了 AutoClip
+    LLM 提示词引导外,再加一道硬性约束)。
     """
     from sqlalchemy import select, delete, update
     from app.models.models import ClipCandidate, SliceOutput, AutoClipProject, Episode
 
-    # 用户自定义时长范围（秒），0 表示未设置
+    # 用户自定义时长范围(秒),0 表示未设置
     try:
         min_dur = float((config or {}).get("min_duration") or 0)
         max_dur = float((config or {}).get("max_duration") or 0)
@@ -692,7 +692,7 @@ async def _save_autoclip_results(
             return False
         return True
 
-    # 先过滤：只保留时长在 [min_dur, max_dur] 范围内的候选片段
+    # 先过滤:只保留时长在 [min_dur, max_dur] 范围内的候选片段
     if min_dur > 0 or max_dur > 0:
         filtered = []
         for clip in clips:
@@ -715,9 +715,9 @@ async def _save_autoclip_results(
     async with async_session_factory() as session:
         eid = uuid.UUID(episode_id)
 
-        # 旧候选可能被 slice_outputs.clip_id 外键引用（切片输出已生成），
+        # 旧候选可能被 slice_outputs.clip_id 外键引用(切片输出已生成),
         # 直接 DELETE 会触发 ForeignKeyViolation 导致选点任务失败。
-        # 先解除引用（成品切片输出保留，仅断开与旧候选的关联），再删除候选。
+        # 先解除引用(成品切片输出保留,仅断开与旧候选的关联),再删除候选。
         await session.execute(
             update(SliceOutput)
             .where(SliceOutput.clip_id.in_(
@@ -793,7 +793,7 @@ async def _update_autoclip_run(
     progress: float,
     message: Optional[str] = None,
 ):
-    """更新最近一条 AI 选点执行历史的状态/进度（供工作台历史展示）。"""
+    """更新最近一条 AI 选点执行历史的状态/进度(供工作台历史展示)。"""
     from sqlalchemy import select
     from app.models.models import AutoClipRun
 
@@ -828,7 +828,7 @@ async def _update_autoclip_run(
         except Exception:
             run = None
         if run is None:
-            # 兼容旧数据：没有历史记录时尝试补建一条
+            # 兼容旧数据:没有历史记录时尝试补建一条
             run = AutoClipRun(
                 episode_id=eid,
                 autoclip_project_id=autoclip_project_id,
@@ -854,15 +854,15 @@ async def _save_detected_intervals(
 ):
     """Save detected intervals to the database.
 
-    只替换与本次检测同类型（interval_type）的旧结果，避免“水印”等无自动检测器
-    的模式返回空列表时，把已保存的片尾字幕/静止画面结果一并清空。
+    只替换与本次检测同类型(interval_type)的旧结果,避免"水印"等无自动检测器
+    的模式返回空列表时,把已保存的片尾字幕/静止画面结果一并清空。
     """
     from sqlalchemy import delete
     from app.models.models import DetectedInterval
 
     async with async_session_factory() as session:
         eid = uuid.UUID(episode_id)
-        # 收集本次结果中出现的区间类型；若结果为空则不做删除（不覆盖其它类型）
+        # 收集本次结果中出现的区间类型;若结果为空则不做删除(不覆盖其它类型)
         types_in_result = list({
             (interval_data.get("interval_type") or mode)
             for interval_data in intervals
@@ -877,7 +877,7 @@ async def _save_detected_intervals(
                 )
             )
         for interval_data in intervals:
-            # 确保整型时间也写入（表字段为 Float，int 直接赋值在部分驱动下会丢精度/报错）
+            # 确保整型时间也写入(表字段为 Float,int 直接赋值在部分驱动下会丢精度/报错)
             try:
                 start_time = (
                     float(interval_data.get("start_time"))
@@ -978,7 +978,7 @@ async def _save_slice_outputs(
             )
             clips = clip_result.scalars().all()
 
-        # 幂等：任务已落库过输出则直接跳过，避免 Celery 重试导致重复输出
+        # 幂等:任务已落库过输出则直接跳过,避免 Celery 重试导致重复输出
         if tid is not None:
             existing_result = await session.execute(
                 select(SliceOutput).where(SliceOutput.task_id == tid)
@@ -1020,7 +1020,7 @@ async def _save_slice_outputs(
                 task.completed_at = datetime.utcnow()
                 task.error_message = None
 
-            # 切片输出落库后把剧集状态推进到 completed，让工作流步骤条走到“成品预览”
+            # 切片输出落库后把剧集状态推进到 completed,让工作流步骤条走到"成品预览"
             episode_result = await session.execute(
                 select(Episode).where(Episode.id == uuid.UUID(episode_id))
             )
@@ -1057,7 +1057,7 @@ def task_publish_video(self, publish_task_id: str):
     from app.services.publish_service import get_publisher
     from app.services.minio_service import upload_file_from_path
 
-    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动发布任务…"})
+    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动发布任务..."})
 
     downloaded_video_path = None
     quota_acquired = False
@@ -1066,7 +1066,7 @@ def task_publish_video(self, publish_task_id: str):
         if not publish_task_data:
             raise Exception(f"Publish task {publish_task_id} not found")
 
-        # 多运营者（R22）：配额双闸门 + inflight 信号量（Lua 原子，nil 兜底）
+        # 多运营者(R22):配额双闸门 + inflight 信号量(Lua 原子,nil 兜底)
         try:
             from app.services import multi_operator
             if run_async(multi_operator.multi_operator_enabled()):
@@ -1081,7 +1081,7 @@ def task_publish_video(self, publish_task_id: str):
                     if not quota_acquired:
                         raise Exception("Quota exceeded or concurrent slot busy (Lua dual-gate)")
         except Exception as e:
-            # 未开启或配额异常：日志但不阻断一期旧链路（除非是明确的配额拒绝）
+            # 未开启或配额异常:日志但不阻断一期旧链路(除非是明确的配额拒绝)
             if "Quota exceeded" in str(e) or "concurrent slot busy" in str(e):
                 run_async(_update_publish_task_status(
                     publish_task_id, status="failed",
@@ -1119,6 +1119,28 @@ def task_publish_video(self, publish_task_id: str):
             mini_program_link=publish_task_data.get("mini_program_link"),
             task_id=publish_task_id,
         ))
+
+        # 审计(P1 问题10):发布动作落 publish_audit,并生成 trace_id 贯穿确认→发布
+        try:
+            from app.services import audit_service
+            rid = gen_publish_trace_id(publish_task_id)
+            run_async(audit_service.log_publish_audit(
+                task_id=publish_task_id,
+                account_id=publish_task_data.get("account_id"),
+                operator_id=publish_task_data.get("operator_id"),
+                actor_id=publish_task_data.get("actor_id") or publish_task_data.get("operator_id"),
+                profile_id=publish_task_data.get("profile_id"),
+                content_hash=audit_service.content_hash(
+                    f"{publish_task_data.get('title','')}|{publish_task_data.get('cover_file_key','')}"
+                ),
+                copy_template=publish_task_data.get("title", ""),
+                port=publish_task_data.get("port"),
+                action="publish",
+                result="pending_confirm" if (result.get("status") == "pending_confirm" and result.get("success")) else ("success" if result.get("success") else "failed"),
+                request_id=rid,
+            ))
+        except Exception:
+            pass
 
         if result.get("status") == "pending_confirm" and result.get("success"):
             screenshot_key = None
@@ -1161,7 +1183,35 @@ def task_publish_video(self, publish_task_id: str):
 
     except Exception as e:
         logger.error(f"Publish task failed: {e}")
-        # 失败时释放可能残留的待确认 tab，避免浏览器连接泄漏
+        # 审计(P1 问题10):失败路径落 publish_audit + risk_event(驱动毕业统计)
+        try:
+            from app.services import audit_service
+            rid = gen_publish_trace_id(publish_task_id)
+            run_async(audit_service.log_publish_audit(
+                task_id=publish_task_id,
+                account_id=publish_task_data.get("account_id"),
+                operator_id=publish_task_data.get("operator_id"),
+                actor_id=publish_task_data.get("actor_id") or publish_task_data.get("operator_id"),
+                profile_id=publish_task_data.get("profile_id"),
+                action="fail",
+                result="failed",
+                risk_flag=True,
+                risk_note=str(e)[:500],
+                request_id=rid,
+            ))
+            # 风控/失败归入 risk_event(publish_limited),供毕业阈值统计
+            run_async(audit_service.log_risk_event(
+                account_id=publish_task_data.get("account_id"),
+                operator_id=publish_task_data.get("operator_id"),
+                actor_id=publish_task_data.get("actor_id") or publish_task_data.get("operator_id"),
+                risk_type="publish_limited",
+                level="warning",
+                message=str(e)[:1000],
+                request_id=rid,
+            ))
+        except Exception:
+            pass
+        # 失败时释放可能残留的待确认 tab,避免浏览器连接泄漏
         from app.services.publish_service import release_pending_tab
         release_pending_tab(publish_task_id)
         run_async(_update_publish_task_status(publish_task_id, status="failed", error_message=str(e)))
@@ -1177,7 +1227,7 @@ def task_publish_video(self, publish_task_id: str):
                 os.unlink(downloaded_video_path)
             except OSError:
                 pass
-        # 多运营者（R22）：释放 inflight slot（成功/失败/超时均释放，跨日不误顶）
+        # 多运营者(R22):释放 inflight slot(成功/失败/超时均释放,跨日不误顶)
         if quota_acquired:
             try:
                 from app.services import multi_operator
@@ -1193,7 +1243,7 @@ def confirm_publish_worker(self, publish_task_id: str):
     """Confirm a pending publish by clicking publish in the already-prepared Chrome tab."""
     from app.services.publish_service import get_publisher
 
-    self.update_state(state="STARTED", meta={"progress": 50, "message": "正在确认发布操作…"})
+    self.update_state(state="STARTED", meta={"progress": 50, "message": "正在确认发布操作..."})
     try:
         publish_task_data = run_async(_get_publish_task(publish_task_id))
         if not publish_task_data:
@@ -1209,6 +1259,23 @@ def confirm_publish_worker(self, publish_task_id: str):
         result = run_async(publisher.confirm_publish(task_id=publish_task_id))
         if not result.get("success"):
             raise Exception(result.get("error", "Confirm publish failed"))
+
+        # 审计（P1 问题10）：确认发布动作落 publish_audit（复用 task_id 稳定 trace_id）
+        try:
+            from app.services import audit_service
+            run_async(audit_service.log_publish_audit(
+                task_id=publish_task_id,
+                account_id=publish_task_data.get("account_id"),
+                operator_id=publish_task_data.get("operator_id"),
+                actor_id=publish_task_data.get("actor_id") or publish_task_data.get("operator_id"),
+                profile_id=publish_task_data.get("profile_id"),
+                port=publish_task_data.get("port"),
+                action="confirm",
+                result="success",
+                request_id=gen_publish_trace_id(publish_task_id),
+            ))
+        except Exception:
+            pass
 
         run_async(_update_publish_task_status(
             publish_task_id,
@@ -1233,12 +1300,13 @@ def confirm_publish_worker(self, publish_task_id: str):
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=300)
 def check_cookie_status(self):
-    """定时巡检各发布平台登录态是否失效（视频号/抖音/快手）。
+    """定时巡检各发布平台登录态是否失效(视频号/抖音/快手)。
 
-    通过 CDP 连接 rpa_worker 的常驻 Chromium，依次打开各平台创作中心
-    检查登录标识。结果写入日志；若配置了钉钉 Webhook，会追加一条告警通知。
+    通过 CDP 连接 rpa_worker 的常驻 Chromium,依次打开各平台创作中心
+    检查登录标识。结果写入日志;若配置了钉钉 Webhook,会追加一条告警通知。
     """
     from app.services.publish_service import get_publisher
+    from app.services import audit_service
 
     platforms = ["wechat_channel", "douyin", "kuaishou"]
     results = {}
@@ -1248,6 +1316,13 @@ def check_cookie_status(self):
                 publisher = get_publisher(platform)
                 result = run_async(publisher.check_login_status())
                 results[platform] = result
+                # 审计（P1 问题10）：cookie 读取（登录态巡检）落 cookie_access_log
+                run_async(audit_service.log_cookie_access(
+                    purpose="login_check",
+                    account_id=result.get("account_id") if isinstance(result, dict) else None,
+                    operator_id=result.get("operator_id") if isinstance(result, dict) else None,
+                    ip_address=result.get("source_ip") if isinstance(result, dict) else None,
+                ))
             except Exception as e:
                 logger.error(f"Cookie status check failed for {platform}: {e}")
                 results[platform] = {"status": "error", "platform": platform, "error": str(e)}
@@ -1257,18 +1332,26 @@ def check_cookie_status(self):
             if r.get("status") == "expired"
         ]
         if expired:
+            # 风控/失效：登录态失效入 risk_event（login_restricted），驱动毕业与扫码队列
+            for p in expired:
+                run_async(audit_service.log_risk_event(
+                    risk_type="login_restricted",
+                    level="warning",
+                    message=f"登录态失效: {p}",
+                    disposition="re_login",
+                ))
             logger.warning("发布平台登录态已失效: %s", ", ".join(expired))
         else:
             logger.info("Cookie status check completed: %s", results)
 
-        # 登录态失效时推送钉钉告警（若已配置）
+        # 登录态失效时推送钉钉告警(若已配置)
         if expired and settings.DINGTALK_WEBHOOK:
             try:
                 from app.services.monitor_service import send_dingtalk_alert
                 run_async(send_dingtalk_alert(
                     settings.DINGTALK_WEBHOOK,
                     "error",
-                    f"发布平台登录态失效，需要重新扫码登录: {', '.join(expired)}",
+                    f"发布平台登录态失效,需要重新扫码登录: {', '.join(expired)}",
                 ))
             except Exception as e:
                 logger.error(f"Failed to send dingtalk alert for cookie status: {e}")
@@ -1286,9 +1369,9 @@ def check_cookie_status(self):
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=60)
 def sync_multi_operator_profiles(self):
-    """多运营者（R15）：把启用的 PublishProfile 同步到 Redis 路由表 + `pub:profiles`。
+    """多运营者(R15):把启用的 PublishProfile 同步到 Redis 路由表 + `pub:profiles`。
 
-    仅当 MULTI_OPERATOR_ENABLED 开启时执行；为每个 profile 原子分配端口并写路由表，
+    仅当 MULTI_OPERATOR_ENABLED 开启时执行;为每个 profile 原子分配端口并写路由表,
     供 rpa_worker 启动/重建 Chromium 与 cdp_proxy 多实例使用。灰度关闭时零侵入跳过。
     """
     try:
@@ -1307,9 +1390,9 @@ def sync_multi_operator_profiles(self):
 
 @celery_app.task(bind=True, max_retries=0)
 def watch_multi_operator_routes(self):
-    """多运营者（R12）：watcher 秒级探活路由表，Chromium 崩溃/异常时置 expired。
+    """多运营者(R12):watcher 秒级探活路由表,Chromium 崩溃/异常时置 expired。
 
-    每 10s 探一次（beat 调度），连续 2 次失败（≈20s）置 expired，调度跳过该 operator。
+    每 10s 探一次(beat 调度),连续 2 次失败(≈20s)置 expired,调度跳过该 operator。
     """
     try:
         from app.services import multi_operator
@@ -1331,7 +1414,7 @@ def task_collect_metrics(self, account_id: Optional[str] = None, target_date: Op
     """Periodic task for collecting and aggregating metrics data."""
     from datetime import date as date_type
 
-    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动数据采集任务…"})
+    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动数据采集任务..."})
 
     try:
         if target_date:
@@ -1357,6 +1440,12 @@ def task_collect_metrics(self, account_id: Optional[str] = None, target_date: Op
         raise
 
 
+def gen_publish_trace_id(publish_task_id: str) -> str:
+    """生成基于 task_id 的稳定 trace_id,使 发布(publish)→确认(confirm) 复用同一条链路。"""
+    import hashlib
+    return f"pub-{hashlib.sha256(publish_task_id.encode()).hexdigest()[:16]}"
+
+
 async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
     """Fetch publish task data from the database."""
     from app.models.models import PublishTask, PublishProfile, VideoAccount
@@ -1372,7 +1461,7 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
             return None
 
         profile = None
-        # 优先按 (platform, account_name) 匹配发布配置（兼容既有逻辑）
+        # 优先按 (platform, account_name) 匹配发布配置(兼容既有逻辑)
         profile_result = await session.execute(
             select(PublishProfile).where(
                 PublishProfile.platform == task.platform,
@@ -1381,7 +1470,7 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
         )
         profile = profile_result.scalar_one_or_none()
 
-        # 若任务关联了账号库（video_account_id），优先取账号绑定的发布配置
+        # 若任务关联了账号库(video_account_id),优先取账号绑定的发布配置
         if not profile and task.video_account_id:
             acc_result = await session.execute(
                 select(VideoAccount).where(VideoAccount.id == task.video_account_id)
@@ -1408,9 +1497,12 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
             "mini_program_id": str(task.mini_program_id) if task.mini_program_id else None,
             "operator_id": str(task.operator_id) if task.operator_id else None,
             "account_id": str(task.video_account_id) if task.video_account_id else None,
+            "profile_id": str(profile.id) if profile else None,
+            "actor_id": str(task.created_by) if getattr(task, "created_by", None) else (str(task.operator_id) if task.operator_id else None),
+            "port": profile.chrome_debug_port if profile else None,
         }
 
-        # 多运营者（R14/R19/R22）：flag=true 时按路由表解析端口并签发 CDP token
+        # 多运营者(R14/R19/R22):flag=true 时按路由表解析端口并签发 CDP token
         try:
             from app.services import multi_operator
             if await multi_operator.multi_operator_enabled():
@@ -1418,9 +1510,10 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
                 if account_id:
                     port = await multi_operator.resolve_port(account_id)
                     if port:
-                        # 路由表端口指向 cdp_proxy 鉴权口（R19）
+                        # 路由表端口指向 cdp_proxy 鉴权口(R19)
                         data["cdp_url"] = f"http://{settings.CHROME_DEBUG_HOST}:{port}"
-                        # 签发短期 token：actor=operator_id（号主）
+                        data["port"] = port
+                        # 签发短期 token:actor=operator_id(号主)
                         token = await multi_operator.issue_cdp_token(
                             data.get("operator_id") or account_id, account_id
                         )
@@ -1430,7 +1523,7 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
 
         if profile:
             data["chrome_debug_port"] = profile.chrome_debug_port
-            # RPA Cookie 解密（AES-256/Fernet 加密存储，仅在 Worker 内部使用）
+            # RPA Cookie 解密(AES-256/Fernet 加密存储,仅在 Worker 内部使用)
             if profile.cookie_file:
                 try:
                     from app.auth import decrypt_cookie
@@ -1600,7 +1693,7 @@ async def _compute_funnel_snapshot(collect_date, account_uuid) -> dict:
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=120)
 def run_alert_check_task(self):
-    """三期监控告警：周期检查告警规则并推送钉钉 Webhook."""
+    """三期监控告警:周期检查告警规则并推送钉钉 Webhook."""
     from app.services.monitor_service import run_alert_checks
 
     try:
@@ -1615,7 +1708,7 @@ def run_alert_check_task(self):
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=300)
 def maintenance_daily_task(self):
-    """三期性能优化：每日归档过期看板数据 + 清理临时文件 + 设置 MinIO 生命周期."""
+    """三期性能优化:每日归档过期看板数据 + 清理临时文件 + 设置 MinIO 生命周期."""
     from app.services.maintenance_service import (
         archive_old_metrics,
         cleanup_temp_files,
@@ -1636,7 +1729,7 @@ def maintenance_daily_task(self):
 
 
 # ══════════════════════════════════════════════════════════════
-# 去水印任务（v4）
+# 去水印任务(v4)
 # ══════════════════════════════════════════════════════════════
 
 async def _update_watermark_video(
@@ -1651,7 +1744,7 @@ async def _update_watermark_video(
     started_at: Optional[datetime] = None,
     completed_at: Optional[datetime] = None,
 ) -> None:
-    """更新单条去水印视频的状态（供 Celery 任务在同步上下文中调用）。"""
+    """更新单条去水印视频的状态(供 Celery 任务在同步上下文中调用)。"""
     from sqlalchemy import select
     from app.models.models import WatermarkVideo
 
@@ -1712,7 +1805,7 @@ async def _recalc_watermark_task(task_id: str) -> None:
         cancelled = sum(1 for v in videos if v.status == "cancelled")
         running = sum(1 for v in videos if v.status in ("pending", "running"))
 
-        # 平均进度：完成 100、失败/取消 100、运行中取各自 progress
+        # 平均进度:完成 100、失败/取消 100、运行中取各自 progress
         avg = 0.0
         if total:
             for v in videos:
@@ -1750,7 +1843,7 @@ def watermark_task(
     engine: str,
     options: Optional[dict] = None,
 ):
-    """批量去水印异步任务：逐条下载源视频 → 调用引擎 → 上传结果 → 汇总进度。"""
+    """批量去水印异步任务:逐条下载源视频 → 调用引擎 → 上传结果 → 汇总进度。"""
     from app.engines.watermark_runner import run_watermark_engine, temp_video_path
     from app.models.models import WatermarkTask, WatermarkVideo
     from app.services.minio_service import (
@@ -1824,13 +1917,13 @@ def watermark_task(
                 started_at=datetime.utcnow(),
                 error_message=None,
             ))
-            # 视频开始处理时立即刷新一次任务级汇总，让任务进度不再停留在 0%
+            # 视频开始处理时立即刷新一次任务级汇总,让任务进度不再停留在 0%
             run_async(_recalc_watermark_task(task_id))
 
             src_local = temp_video_path("src")
             out_local = temp_video_path("out")
 
-            # RAiW 要求输入文件带正确扩展名，且输出容器必须与源一致；
+            # RAiW 要求输入文件带正确扩展名,且输出容器必须与源一致;
             # Seedance 引擎也依赖扩展名。从原始文件名提取扩展名并保持。
             src_ext = os.path.splitext(video.file_name or video.source_file_key)[1].lower()
             if not src_ext:
@@ -1845,15 +1938,15 @@ def watermark_task(
             if not ok or not os.path.isfile(src_local):
                 raise RuntimeError(f"下载源视频失败: {video.source_file_key}")
 
-            # 引擎进度回调：同步上下文内更新数据库。
-            # 注意：回调在 run_async 的事件循环内被同步调用，不能再用
-            # run_async（会嵌套事件循环报错）。改为在已运行 loop 上调度协程。
-            # 为避免高频写库（如逐帧修补），按进度变化节流：仅当进度提升≥5%或
+            # 引擎进度回调:同步上下文内更新数据库。
+            # 注意:回调在 run_async 的事件循环内被同步调用,不能再用
+            # run_async(会嵌套事件循环报错)。改为在已运行 loop 上调度协程。
+            # 为避免高频写库(如逐帧修补),按进度变化节流:仅当进度提升≥5%或
             # 达到 100% 时落库。
             _last_written_progress = {"pct": 0}
 
             async def _persist_progress(pct: int):
-                """视频进度落库后同步刷新任务级汇总，保证任务进度实时推进。"""
+                """视频进度落库后同步刷新任务级汇总,保证任务进度实时推进。"""
                 await _update_watermark_video(vid, progress=pct)
                 await _recalc_watermark_task(task_id)
 
@@ -1874,10 +1967,10 @@ def watermark_task(
                 except RuntimeError:
                     pass
 
-            # remove_mask 引擎按原始文件名匹配内置 ROI 表，这里用每条视频的真实文件名覆盖；
-            # remove_ai / seedance / seedance_wm 也借 remove-mask 内置 ROI 经验库：
-            # · remove_ai：RAiW 厂商检测失败时回退经验位置重试
-            # · seedance / seedance_wm：自动检测基础上合并确认过的水印位置
+            # remove_mask 引擎按原始文件名匹配内置 ROI 表,这里用每条视频的真实文件名覆盖;
+            # remove_ai / seedance / seedance_wm 也借 remove-mask 内置 ROI 经验库:
+            # · remove_ai:RAiW 厂商检测失败时回退经验位置重试
+            # · seedance / seedance_wm:自动检测基础上合并确认过的水印位置
             engine_options = options
             if engine in ("remove_mask", "remove_ai", "seedance", "seedance_wm"):
                 engine_options = dict(options)
@@ -1941,7 +2034,7 @@ def watermark_task(
         # 每处理完一条刷新一次任务汇总
         run_async(_recalc_watermark_task(task_id))
 
-    # 全部完成后，若仍有 pending（被取消跳过）则标记取消
+    # 全部完成后,若仍有 pending(被取消跳过)则标记取消
     cur_task, cur_videos = run_async(_load_videos())
     pending = [v for v in cur_videos if v.status == "pending"]
     if pending and cur_task and cur_task.status == "cancelled":
@@ -1961,12 +2054,12 @@ def watermark_task(
 
 
 # ──────────────────────────────────────────────
-# 短片制作：一键豆包生成任务
+# 短片制作:一键豆包生成任务
 # ──────────────────────────────────────────────
 
 
 async def _load_shortdrama_prompt(prompt_id: str):
-    """读取提示词记录（含豆包任务字段）。"""
+    """读取提示词记录(含豆包任务字段)。"""
     from app.models.models import ShortdramaPrompt
 
     async with async_session_factory() as session:
@@ -1995,7 +2088,7 @@ async def _update_doubao_prompt(
     progress: Optional[int] = None,
     account: Optional[str] = None,
 ) -> bool:
-    """更新提示词记录的豆包任务字段（供 Celery 任务在同步上下文调用）。"""
+    """更新提示词记录的豆包任务字段(供 Celery 任务在同步上下文调用)。"""
     from app.models.models import ShortdramaPrompt
 
     async with async_session_factory() as session:
@@ -2041,7 +2134,7 @@ async def _sync_doubao_video(
     download_url: str,
     file_name: str,
 ) -> dict:
-    """从豆包下载成片视频并上传 MinIO，回填提示词记录（返回 {'ok': bool, 'error': str}）。"""
+    """从豆包下载成片视频并上传 MinIO,回填提示词记录(返回 {'ok': bool, 'error': str})。"""
     from app.models.models import ShortdramaPrompt
     from app.services.minio_service import upload_file_from_path
 
@@ -2050,7 +2143,7 @@ async def _sync_doubao_video(
     try:
         import httpx
 
-        # 豆包成片直链为 douyin CDN，带上 Referer/UA 提升直链可下载成功率
+        # 豆包成片直链为 douyin CDN,带上 Referer/UA 提升直链可下载成功率
         _headers = {
             "Referer": "https://www.doubao.com/",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -2063,7 +2156,7 @@ async def _sync_doubao_video(
                 f.write(resp.content)
 
         if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
-            return {"ok": False, "error": "下载豆包成片失败（空文件）"}
+            return {"ok": False, "error": "下载豆包成片失败(空文件)"}
 
         async with async_session_factory() as session:
             try:
@@ -2103,7 +2196,7 @@ async def _sync_doubao_video(
             record.video_status = "completed"
             record.video_error_message = None
             record.video_uploaded_at = datetime.utcnow()
-            # 成片来源通道：豆包 RPA（与 Seedance 官方 API 直连 / 手动上传区分）
+            # 成片来源通道:豆包 RPA(与 Seedance 官方 API 直连 / 手动上传区分)
             record.gen_channel = "doubao_rpa"
             await session.commit()
             return {"ok": True, "file_name": safe_name, "file_size": os.path.getsize(tmp_path)}
@@ -2123,7 +2216,7 @@ def _now_str() -> str:
 
 
 async def _load_doubao_config() -> dict:
-    """读取豆包配置（system_config.shortdrama_doubao_config），无则返回空。"""
+    """读取豆包配置(system_config.shortdrama_doubao_config),无则返回空。"""
     from app.models.models import SystemConfig
 
     async with async_session_factory() as session:
@@ -2135,7 +2228,7 @@ async def _load_doubao_config() -> dict:
 
 
 async def _check_doubao_cancelled(prompt_id: str) -> bool:
-    """检查豆包任务是否已取消（用户取消时置 doubao_status=cancelled）。"""
+    """检查豆包任务是否已取消(用户取消时置 doubao_status=cancelled)。"""
     record = await _load_shortdrama_prompt(prompt_id)
     if record is None:
         return True
@@ -2150,14 +2243,14 @@ def doubao_generate_task(
     account_type: str = "free",
     duration: Optional[int] = None,
 ):
-    """一键豆包生成：RPA 自动打开豆包 → 检测登录（弹二维码）→ 设置参数 →
+    """一键豆包生成:RPA 自动打开豆包 → 检测登录(弹二维码)→ 设置参数 →
     贴提示词发送 → 等待生成 → 被拒改写确认 → 下载成片上传 MinIO 回填记录。
 
-    状态机（shortdrama_prompts.doubao_status）：
+    状态机(shortdrama_prompts.doubao_status):
       pending → running → need_login(可选) → awaiting_rewrite(可选)
               → completed / failed / cancelled
     """
-    self.update_state(state="STARTED", meta={"progress": 5, "message": "豆包生成任务启动…"})
+    self.update_state(state="STARTED", meta={"progress": 5, "message": "豆包生成任务启动..."})
 
     try:
         record = run_async(_load_shortdrama_prompt(prompt_id))
@@ -2170,7 +2263,7 @@ def doubao_generate_task(
             logger.info("Doubao task %s already cancelled, skip", prompt_id)
             return {"success": False, "status": "cancelled", "message": "任务已取消"}
 
-        # 读取豆包配置（账户时长上限等）
+        # 读取豆包配置(账户时长上限等)
         config = run_async(_load_doubao_config())
         from app.services.doubao_service import get_account_limits
 
@@ -2179,7 +2272,7 @@ def doubao_generate_task(
         run_async(_update_doubao_prompt(
             prompt_id,
             status="running",
-            message="豆包生成任务启动，正在连接浏览器…",
+            message="豆包生成任务启动,正在连接浏览器...",
             error_message=None,
             progress=5,
         ))
@@ -2192,7 +2285,7 @@ def doubao_generate_task(
                 progress=p,
             )
 
-        # 二维码回调：写入数据库供前端轮询展示
+        # 二维码回调:写入数据库供前端轮询展示
         async def _qrcode_cb(qr_data_url: str):
             await _update_doubao_prompt(
                 prompt_id,
@@ -2201,24 +2294,24 @@ def doubao_generate_task(
                 qrcode=qr_data_url,
             )
 
-        # 扫码成功回调：把状态从 need_login 拉回 running 并清空二维码，
-        # 否则前端以 status != need_login 作为弹窗关闭条件，弹窗永不消失
+        # 扫码成功回调:把状态从 need_login 拉回 running 并清空二维码,
+        # 否则前端以 status != need_login 作为弹窗关闭条件,弹窗永不消失
         async def _on_login_success():
             await _update_doubao_prompt(
                 prompt_id,
                 status="running",
-                message="扫码登录成功，正在进入视频生成…",
+                message="扫码登录成功,正在进入视频生成...",
                 qrcode="",
             )
 
-        # 截图回调：写入数据库供前端展示豆包对话窗口制作过程
+        # 截图回调:写入数据库供前端展示豆包对话窗口制作过程
         async def _screenshot_cb(shot_data_url: str):
             await _update_doubao_prompt(
                 prompt_id,
                 screenshot=shot_data_url,
             )
 
-        # 账户回调：提取到当前登录的豆包账户昵称后写入数据库，供前端展示
+        # 账户回调:提取到当前登录的豆包账户昵称后写入数据库,供前端展示
         async def _account_cb(account: Optional[str]):
             if not account:
                 return
@@ -2227,12 +2320,12 @@ def doubao_generate_task(
                 account=account,
             )
 
-        # 改写确认回调：写入 awaiting_rewrite 状态并挂起等待用户确认
+        # 改写确认回调:写入 awaiting_rewrite 状态并挂起等待用户确认
         async def _rewrite_cb(payload: dict) -> str:
             import secrets
 
             token = secrets.token_hex(16)
-            # 重新加载最新改写历史（多次改写时每次都要基于最新值追加）
+            # 重新加载最新改写历史(多次改写时每次都要基于最新值追加)
             latest = await _load_shortdrama_prompt(prompt_id)
             history = (latest.doubao_rewrite_history or []) if latest else []
             history = history + [{
@@ -2246,13 +2339,13 @@ def doubao_generate_task(
             await _update_doubao_prompt(
                 prompt_id,
                 status="awaiting_rewrite",
-                message="豆包已返回改写稿，等待用户确认",
+                message="豆包已返回改写稿,等待用户确认",
                 rewrite_history=history,
                 confirm_token=token,
             )
-            # 挂起等待用户在前端确认（轮询数据库状态）。
-            # 注：为释放唯一 worker 槽位，等待上限由配置控制（默认 30s，原 600s 会长期占住槽位）。
-            # 若超时未确认，返回 rejected 由前端重新发起改写流程即可。
+            # 挂起等待用户在前端确认(轮询数据库状态)。
+            # 注:为释放唯一 worker 槽位,等待上限由配置控制(默认 30s,原 600s 会长期占住槽位)。
+            # 若超时未确认,返回 rejected 由前端重新发起改写流程即可。
             deadline = time.time() + settings.DOUBAO_REWRITE_WAIT_SECONDS
             while time.time() < deadline:
                 await asyncio.sleep(3)
@@ -2260,12 +2353,12 @@ def doubao_generate_task(
                 if cur is None:
                     return "cancelled"
                 if cur.doubao_confirm_token != token:
-                    # token 被使用（用户已确认）→ 判断决策结果
+                    # token 被使用(用户已确认)→ 判断决策结果
                     if cur.doubao_status == "running":
                         return "approved"
                     if cur.doubao_status == "cancelled":
                         return "cancelled"
-                    # 用户点了「再让豆包改写」：状态保持 awaiting_rewrite，返回 rejected
+                    # 用户点了「再让豆包改写」:状态保持 awaiting_rewrite,返回 rejected
                     return "rejected"
             return "rejected"
 
@@ -2297,17 +2390,17 @@ def doubao_generate_task(
                 message=result.get("message", "豆包生成失败"),
                 error_message=result.get("message", "豆包生成失败"),
             ))
-            # 注意：不能在此 update_state(state="FAILURE") 后再 return dict——
-            # Celery 后端 mark_as_done 时会读旧 FAILURE meta 并把 result 当异常解析，
+            # 注意:不能在此 update_state(state="FAILURE") 后再 return dict--
+            # Celery 后端 mark_as_done 时会读旧 FAILURE meta 并把 result 当异常解析,
             # 抛 ValueError('Exception information must include the exception type')。
-            # 前端状态展示依赖 DB 轮询（doubao_status），无需手动标记 celery FAILURE。
+            # 前端状态展示依赖 DB 轮询(doubao_status),无需手动标记 celery FAILURE。
             return result
 
-        # 生成成功：下载成片并上传 MinIO
+        # 生成成功:下载成片并上传 MinIO
         run_async(_update_doubao_prompt(
             prompt_id,
             status="running",
-            message="视频生成完成，正在下载并上传成片…",
+            message="视频生成完成,正在下载并上传成片...",
             progress=95,
         ))
         download_url = result.get("download_url") or ""
@@ -2360,12 +2453,12 @@ def doubao_generate_task(
             message=f"豆包生成任务异常: {e}",
             error_message=str(e),
         ))
-        # 与失败分支同理：不 update_state(FAILURE)+return dict，避免 Celery 后端解析异常
+        # 与失败分支同理:不 update_state(FAILURE)+return dict,避免 Celery 后端解析异常
         return {"success": False, "status": "failed", "message": str(e)}
 
 
 # ══════════════════════════════════════════════════════════════════
-# Seedance 官方 API 直连出片（火山方舟）—— 与豆包 RPA 完全独立的第二通道
+# Seedance 官方 API 直连出片(火山方舟)-- 与豆包 RPA 完全独立的第二通道
 # ══════════════════════════════════════════════════════════════════
 
 async def _update_seedance_prompt(
@@ -2378,7 +2471,7 @@ async def _update_seedance_prompt(
     resolution: Optional[str] = None,
     gen_channel: Optional[str] = None,
 ) -> bool:
-    """更新提示词记录的 Seedance 直连任务字段（供 Celery 任务在同步上下文调用）。"""
+    """更新提示词记录的 Seedance 直连任务字段(供 Celery 任务在同步上下文调用)。"""
     from app.models.models import ShortdramaPrompt
 
     async with async_session_factory() as session:
@@ -2409,7 +2502,7 @@ async def _update_seedance_prompt(
 
 
 async def _load_seedance_db_config() -> dict:
-    """读取 Seedance 直连配置（system_config.shortdrama_seedance_config），无则返回空。"""
+    """读取 Seedance 直连配置(system_config.shortdrama_seedance_config),无则返回空。"""
     from app.models.models import SystemConfig
 
     async with async_session_factory() as session:
@@ -2421,7 +2514,7 @@ async def _load_seedance_db_config() -> dict:
 
 
 async def _check_seedance_cancelled(prompt_id: str) -> bool:
-    """检查 Seedance 直连任务是否已取消（用户取消时置 seedance_status=cancelled）。"""
+    """检查 Seedance 直连任务是否已取消(用户取消时置 seedance_status=cancelled)。"""
     record = await _load_shortdrama_prompt(prompt_id)
     if record is None:
         return True
@@ -2435,7 +2528,7 @@ async def _sync_generated_video(
     file_name: str,
     channel: str = "seedance_api",
 ) -> dict:
-    """下载成片视频并上传 MinIO，回填提示词记录（豆包 RPA / Seedance API 共用）。
+    """下载成片视频并上传 MinIO,回填提示词记录(豆包 RPA / Seedance API 共用)。
 
     Returns: {'ok': bool, 'file_name': str, 'file_size': int, 'error': str}
     """
@@ -2447,7 +2540,7 @@ async def _sync_generated_video(
     try:
         import httpx
 
-        # 豆包成片直链为 douyin CDN，带上 Referer/UA 提升直链可下载成功率
+        # 豆包成片直链为 douyin CDN,带上 Referer/UA 提升直链可下载成功率
         _headers = {
             "Referer": "https://www.doubao.com/",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -2460,7 +2553,7 @@ async def _sync_generated_video(
                 f.write(resp.content)
 
         if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) == 0:
-            return {"ok": False, "error": "下载成片失败（空文件）"}
+            return {"ok": False, "error": "下载成片失败(空文件)"}
 
         async with async_session_factory() as session:
             try:
@@ -2483,7 +2576,7 @@ async def _sync_generated_video(
                 content_type="video/mp4",
             )
             if not uploaded:
-                return {"ok": False, "error": f"上传成片到 MinIO 失败（{channel}）"}
+                return {"ok": False, "error": f"上传成片到 MinIO 失败({channel})"}
 
             # 清理旧成片
             if record.video_file_key and record.video_bucket:
@@ -2522,17 +2615,17 @@ def seedance_generate_task(
     duration: Optional[int] = None,
     resolution: Optional[str] = None,
 ):
-    """Seedance 官方 API 直连出片：HTTP 调用火山方舟（无浏览器 / 无扫码）。
+    """Seedance 官方 API 直连出片:HTTP 调用火山方舟(无浏览器 / 无扫码)。
 
-    状态机（shortdrama_prompts.seedance_status）：
+    状态机(shortdrama_prompts.seedance_status):
       pending → running → completed / failed / cancelled
 
-    与豆包 RPA（doubao_generate_task）完全独立：
-    - 状态字段 seedance_* 与 doubao_* 互不读写；
-    - 成片统一写回 video_* 字段（下游去水印/发布零感知），
+    与豆包 RPA(doubao_generate_task)完全独立:
+    - 状态字段 seedance_* 与 doubao_* 互不读写;
+    - 成片统一写回 video_* 字段(下游去水印/发布零感知),
       并以 gen_channel=seedance_api 标记来源通道。
     """
-    self.update_state(state="STARTED", meta={"progress": 5, "message": "Seedance 直连任务启动…"})
+    self.update_state(state="STARTED", meta={"progress": 5, "message": "Seedance 直连任务启动..."})
 
     try:
         record = run_async(_load_shortdrama_prompt(prompt_id))
@@ -2545,7 +2638,7 @@ def seedance_generate_task(
             logger.info("Seedance task %s already cancelled, skip", prompt_id)
             return {"success": False, "status": "cancelled", "message": "任务已取消"}
 
-        # 读取 Seedance 直连配置（环境变量 + system_config 合并），校验开关与 Key
+        # 读取 Seedance 直连配置(环境变量 + system_config 合并),校验开关与 Key
         from app.services.ark_client import (
             load_seedance_config,
             SeedanceClient,
@@ -2559,7 +2652,7 @@ def seedance_generate_task(
             run_async(_update_seedance_prompt(
                 prompt_id,
                 status="failed",
-                message="Seedance 官方 API 直连未启用（开关默认关闭），请先开启",
+                message="Seedance 官方 API 直连未启用(开关默认关闭),请先开启",
                 error_message="SEEDANCE_ENABLED=false",
             ))
             return {"success": False, "status": "failed", "message": "Seedance 官方 API 直连未启用"}
@@ -2577,7 +2670,7 @@ def seedance_generate_task(
         run_async(_update_seedance_prompt(
             prompt_id,
             status="running",
-            message="Seedance 直连任务启动，正在创建火山方舟任务…",
+            message="Seedance 直连任务启动,正在创建火山方舟任务...",
             error_message=None,
         ))
 
@@ -2589,7 +2682,7 @@ def seedance_generate_task(
                 message=msg,
             )
 
-        # 时长策略：>10s 按 truncate 截断 / block 拒绝
+        # 时长策略:>10s 按 truncate 截断 / block 拒绝
         want_duration = int(duration or record.duration or 10)
         actual_duration, tip = run_async(resolve_duration_policy(cfg, want_duration))
         if actual_duration == 0:
@@ -2608,7 +2701,7 @@ def seedance_generate_task(
             ))
 
         client = SeedanceClient(cfg)
-        # 创建方舟任务前再确认一次未被取消（缩小竞态窗口，避免已取消任务仍发起方舟调用）
+        # 创建方舟任务前再确认一次未被取消(缩小竞态窗口,避免已取消任务仍发起方舟调用)
         if run_async(_check_seedance_cancelled(prompt_id)):
             run_async(_update_seedance_prompt(
                 prompt_id,
@@ -2621,7 +2714,7 @@ def seedance_generate_task(
         run_async(_update_seedance_prompt(
             prompt_id,
             status="running",
-            message=f"正在创建火山方舟任务（{actual_duration}s / {cfg.resolution}）…",
+            message=f"正在创建火山方舟任务({actual_duration}s / {cfg.resolution})...",
         ))
         created = run_async(client.create_task(
             record.prompt_text,
@@ -2632,7 +2725,7 @@ def seedance_generate_task(
         run_async(_update_seedance_prompt(
             prompt_id,
             status="running",
-            message=f"火山方舟任务已创建（{task_id}），等待生成…",
+            message=f"火山方舟任务已创建({task_id}),等待生成...",
             task_id=task_id,
             resolution=cfg.resolution,
         ))
@@ -2665,11 +2758,11 @@ def seedance_generate_task(
             ))
             return {"success": False, "status": "failed", "message": outcome["message"]}
 
-        # 生成成功：下载成片并上传 MinIO 回填
+        # 生成成功:下载成片并上传 MinIO 回填
         run_async(_update_seedance_prompt(
             prompt_id,
             status="running",
-            message="视频生成完成，正在下载并上传成片…",
+            message="视频生成完成,正在下载并上传成片...",
         ))
         download_url = outcome.get("video_url") or ""
         if not download_url:

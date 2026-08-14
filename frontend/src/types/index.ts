@@ -309,6 +309,84 @@ export interface MiniProgram {
   created_at: string;
 }
 
+// ========== 多运营者：运营者端口矩阵 + 审计（P1 问题10） ==========
+
+export interface OperatorRouteRow {
+  account_id: string;
+  port: number;
+  status: string;
+  operator_id: string;
+  profile_dir: string;
+  daily_used: number;
+  op_daily_used: number;
+  last_post_at: string;
+  last_heartbeat: string;
+  ua_seed: string;
+  egress_ip: string;
+}
+
+export interface OperatorStat {
+  operator_id: string;
+  daily_used: number;
+  inflight: number;
+}
+
+export interface PublishAuditItem {
+  id: string;
+  task_id: string | null;
+  account_id: string | null;
+  operator_id: string | null;
+  actor_id: string | null;
+  profile_id: string | null;
+  content_hash: string | null;
+  cover_variant: string | null;
+  copy_template: string | null;
+  source_ip: string | null;
+  egress_ip: string | null;
+  ua_seed: string | null;
+  port: number | null;
+  action: string;
+  result: string | null;
+  risk_flag: boolean;
+  risk_note: string | null;
+  request_id: string | null;
+  created_at: string | null;
+}
+
+export interface LoginAuditItem {
+  id: string;
+  account_id: string | null;
+  operator_id: string | null;
+  actor_id: string | null;
+  qr_key: string | null;
+  ttl_seconds: number | null;
+  action: string;
+  scanner_name: string | null;
+  source_ip: string | null;
+  result: string | null;
+  request_id: string | null;
+  created_at: string | null;
+}
+
+export interface RiskEventItem {
+  id: string;
+  account_id: string | null;
+  operator_id: string | null;
+  actor_id: string | null;
+  risk_type: string;
+  level: string;
+  message: string | null;
+  disposition: string | null;
+  source_ip: string | null;
+  request_id: string | null;
+  created_at: string | null;
+}
+
+export interface AuditResult {
+  kind: string;
+  items: PublishAuditItem[] | LoginAuditItem[] | RiskEventItem[];
+}
+
 // ========== 短片分析（P3） ==========
 
 export interface ShortDramaGeneration {

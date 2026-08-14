@@ -1,5 +1,5 @@
 import client from './client';
-import type { PublishProfile, PublishTask, PublishBatch, VideoAccount, MiniProgram } from '../types';
+import type { PublishProfile, PublishTask, PublishBatch, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult } from '../types';
 
 export interface PublishTaskCreate {
   output_id: string;
@@ -127,4 +127,23 @@ export const publishApi = {
     client.put(`/publish/mini-programs/${id}`, data) as Promise<MiniProgram>,
 
   deleteMiniProgram: (id: string) => client.delete(`/publish/mini-programs/${id}`) as Promise<void>,
+
+  // ── 多运营者：端口矩阵 + 审计（P1 问题10） ──
+  getOperatorMatrix: () =>
+    client.get('/publish/multi-operator/matrix') as Promise<OperatorRouteRow[]>,
+
+  getOperatorStats: () =>
+    client.get('/publish/multi-operator/operators') as Promise<OperatorStat[]>,
+
+  getAuditLogs: (params?: { action?: string; kind?: string; request_id?: string; limit?: number }) =>
+    client.get('/publish/audit', { params }) as Promise<AuditResult>,
+
+  traceAudit: (requestId: string) =>
+    client.get(`/publish/audit/trace/${requestId}`) as Promise<{
+      request_id: string;
+      publish: PublishAuditItem[];
+      login: LoginAuditItem[];
+      cookie: Array<{ id: string; profile_id: string | null; account_id: string | null; actor_id: string | null; operator_id: string | null; purpose: string | null; ip_address: string | null; request_id: string | null; created_at: string | null }>;
+      risk: RiskEventItem[];
+    }>,
 };
