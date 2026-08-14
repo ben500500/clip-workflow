@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Card, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, InputNumber, Alert, Tabs, Tooltip, Switch,
 } from 'antd';
-import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined } from '@ant-design/icons';
+import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined, QrcodeOutlined, HeartOutlined } from '@ant-design/icons';
 import { publishApi, type VideoAccountInput, type MiniProgramInput } from '../api/publish';
 import type { PublishProfile, PublishTask, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult } from '../types';
 import { formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
@@ -54,6 +54,15 @@ const PublishManagement: React.FC = () => {
     risk: RiskEventItem[];
   } | null>(null);
 
+  // ── 登录态自服务扫码（P0 主题1 / 4.1） ──
+  const [qrAccountId, setQrAccountId] = useState('');
+  const [qrClaiming, setQrClaiming] = useState(false);
+  const [qrClaimToken, setQrClaimToken] = useState('');
+  const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [qrUrl, setQrUrl] = useState('');
+  const [qrHeartbeatStatus, setQrHeartbeatStatus] = useState<string | null>(null);
+  const [qrHeartbeating, setQrHeartbeating] = useState(false);
+
   const fetchTasks = () => {
     setTaskLoading(true);
     publishApi.getTasks().then(setTasks).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败')).finally(() => setTaskLoading(false));
@@ -81,6 +90,32 @@ const PublishManagement: React.FC = () => {
       .then(setOperatorStats)
       .catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'))
       .finally(() => setMatrixLoading(false));
+  };
+
+  // 登录态自服务扫码：申请 → 领取二维码 → 展示扫码
+  const applyQr = () => {
+    if (!qrAccountId) { message.warning('请先选择账号'); return; }
+    setQrClaiming(true);
+    publishApi.applyLoginQr(qrAccountId)
+      .then(async (res) => {
+        setQrClaimToken(res.claim_token);
+        // 领取二维码链接
+        const claim = await publishApi.claimLoginQr(res.claim_token);
+        setQrUrl(claim.qr_url);
+        setQrModalOpen(true);
+        message.success('已生成登录二维码，请在 90s 内微信扫码');
+      })
+      .catch((err: unknown) => message.error(err instanceof Error ? err.message : '申请扫码失败'))
+      .finally(() => setQrClaiming(false));
+  };
+
+  const runHeartbeat = () => {
+    if (!qrAccountId) { message.warning('请先选择账号'); return; }
+    setQrHeartbeating(true);
+    publishApi.loginHeartbeat(qrAccountId)
+      .then((res) => { setQrHeartbeatStatus(res.status); message.info(`登录态心跳: ${res.status}`); })
+      .catch((err: unknown) => message.error(err instanceof Error ? err.message : '心跳检查失败'))
+      .finally(() => setQrHeartbeating(false));
   };
 
   const fetchAudit = () => {
@@ -524,6 +559,19 @@ const PublishManagement: React.FC = () => {
       children: (
         <Card size="small" title="运营者端口矩阵（多运营者看板）" extra={<Button size="small" icon={<ReloadOutlined />} onClick={fetchMatrix}>刷新</Button>}>
           <Alert type="info" showIcon style={{ marginBottom: 12 }} message="读取 Redis 路由表实时渲染各运营者 Chrome 端口/登录态/限额消耗。启用 MULTI_OPERATOR_ENABLED 后生效；未启用时列表为空。" />
+          <Space style={{ marginBottom: 12 }} wrap>
+            <Select
+              placeholder="选择账号发起扫码/心跳"
+              style={{ width: 240 }}
+              value={qrAccountId || undefined}
+              onChange={(v) => setQrAccountId(v)}
+              options={operatorMatrix.map((r) => ({ value: r.account_id, label: `${r.account_id?.slice(0, 8)} (${r.status})` }))}
+              allowClear
+            />
+            <Button type="primary" icon={<QrcodeOutlined />} loading={qrClaiming} onClick={applyQr}>登录态扫码</Button>
+            <Button icon={<HeartOutlined />} loading={qrHeartbeating} onClick={runHeartbeat}>心跳检查</Button>
+            {qrHeartbeatStatus && <Tag color={qrHeartbeatStatus === 'valid' ? 'green' : qrHeartbeatStatus === 'need_login' ? 'orange' : 'red'}>心跳: {qrHeartbeatStatus}</Tag>}
+          </Space>
           <Table rowKey="account_id" columns={matrixColumns} dataSource={operatorMatrix} loading={matrixLoading} pagination={false} size="small" scroll={{ x: 1150 }} />
           <Typography.Text strong style={{ display: 'block', margin: '16px 0 8px' }}>运营者当日配额消耗</Typography.Text>
           <Table rowKey="operator_id" columns={operatorStatColumns} dataSource={operatorStats} loading={matrixLoading} pagination={false} size="small" scroll={{ x: 500 }} />
@@ -573,6 +621,19 @@ const PublishManagement: React.FC = () => {
       </Space>
 
       <Tabs items={tabItems} />
+
+      {/* 登录态扫码二维码弹窗（P0 主题1） */}
+      <Modal title="登录态扫码" open={qrModalOpen} footer={null} onCancel={() => setQrModalOpen(false)}>
+        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="请用对应运营者微信扫码确认登录。二维码链接 TTL 90s 单次有效，过期需重新申请。" />
+        {qrUrl && (
+          <div style={{ textAlign: 'center' }}>
+            <img src={qrUrl} alt="登录二维码" style={{ width: 260, height: 260, border: '1px solid #f0f0f0', borderRadius: 8 }} />
+            <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
+              微信扫码确认后，登录态将置为就绪
+            </Typography.Paragraph>
+          </div>
+        )}
+      </Modal>
 
       <Modal title="新建发布任务" open={taskModal} onOk={createTask} onCancel={() => setTaskModal(false)} destroyOnClose>
         <Alert type="info" showIcon style={{ marginBottom: 16 }} message="创建后立即触发 RPA 自动发布；若开启了截图确认，需在任务列表「确认发布」。多平台批量发布请到成品预览点「一键发布」。账号与小程序链接可在下方「视频号账号 / 小程序链接」Tab 中维护。" />
