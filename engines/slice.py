@@ -26,6 +26,19 @@ except ImportError:  # pragma: no cover - OpenCV 未安装时动态模式不可�
     vert2horiz_crop = None
 
 
+# 引擎使用了 PEP 604 联合类型（str | None 等），要求 Python 3.10+。
+# 版本检查必须放在任何 def 之前（注解在模块加载时求值，低版本会抛
+# "unsupported operand type(s) for |" 的 TypeError，误导排查）。
+# 快速失败 + 明确报错，避免在错误版本下运行到一半才炸。
+if sys.version_info < (3, 10):
+    sys.stderr.write(
+        f"[slice.py] 需要 Python 3.10+（当前 {sys.version_info.major}.{sys.version_info.minor}），"
+        f"引擎使用了 PEP 604 联合类型（str | None）。\n"
+        f"请用 Python 3.10+ 运行（如: SLICE_PYTHON=/usr/local/bin/python3 或调整 worker PATH）。\n"
+    )
+    sys.exit(1)
+
+
 # 默认 CPU 资源分配比例（%）：切片时限制 ffmpeg 编码线程数，避免占满整机 CPU
 DEFAULT_CPU_PERCENT = 50
 

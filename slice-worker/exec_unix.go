@@ -10,7 +10,12 @@ import (
 
 // pythonBinary 返回平台对应的 Python 可执行文件名。
 // Linux/Alpine（容器）与 macOS 提供 python3。
+// 支持 SLICE_PYTHON 环境变量覆盖（如系统默认 python3 版本 < 3.10 时，
+// 可通过 SLICE_PYTHON=/path/to/python3.11+ 指定，引擎要求 Python 3.10+）。
 func pythonBinary() string {
+	if p := os.Getenv("SLICE_PYTHON"); p != "" {
+		return p
+	}
 	return "python3"
 }
 

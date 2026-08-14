@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -100,6 +101,30 @@ func (w *Worker) SetCallbacks(
 }
 
 // Run 启动Worker主循环
+// checkEngine 启动时对引擎做 py_compile 自检，尽早暴露 Python 版本不兼容
+// （引擎要求 Python 3.10+，低版本会抛 str|None TypeError）或引擎文件损坏问题
+// ——否则要等第一条任务才会失败，且失败信息容易误导排查。
+func (w *Worker) checkEngine() {
+	enginePath := filepath.Join(w.config.EnginesPath, "slice.py")
+	if _, err := os.Stat(enginePath); err != nil {
+		w.log("warn", "引擎文件不存在 %s: %v（将无法处理任务）", enginePath, err)
+		return
+	}
+	py := pythonBinary()
+	cmd := exec.Command(py, "-m", "py_compile", enginePath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if len(msg) > 600 {
+			msg = msg[len(msg)-600:]
+		}
+		w.log("warn", "引擎自检失败（Python=%s，引擎要求 3.10+，可能无法运行）: %v\n%s",
+			py, err, msg)
+		return
+	}
+	w.log("info", "引擎自检通过: Python=%s, 引擎=%s", py, enginePath)
+}
+
 func (w *Worker) Run(ctx context.Context) error {
 	// 启动时计算本节点本地引擎版本（供心跳上报/推送更新判断）
 	if v, err := ComputeEngineVersion(w.config.EnginesPath); err == nil {
@@ -114,6 +139,10 @@ func (w *Worker) Run(ctx context.Context) error {
 	if len(w.encoderCapabilities) > 0 {
 		w.log("info", "检测到硬件编码能力: %v", w.encoderCapabilities)
 	}
+
+	// 引擎自检：尽早暴露 Python 版本不兼容/引擎文件损坏等问题，
+	// 而不是等到第一条任务才失败（引擎要求 Python 3.10+，低版本会 TypeError）。
+	w.checkEngine()
 
 	// 注册节点
 	nodeInfo := &NodeInfo{
