@@ -203,6 +203,9 @@ class SliceRunRequest(BaseModel):
     subtitle_mask_height_ratio: Optional[float] = None
     # 打码区域距底边比例（可选，默认 0.02）
     subtitle_mask_bottom_ratio: Optional[float] = None
+    # 打码时间轴整体偏移（秒，可选，默认 0）。用于校正 ASR 字幕时间与画面实际字幕的偏差：
+    # 画面字幕比 SRT 晚出现（字幕滞后）时传正值延后打码；早出现时传负值提前打码。
+    subtitle_mask_srt_offset: Optional[float] = None
     # ── 固定文字角标（文字版角标，无需上传图片）──
     # 在成品视频指定位置叠加固定文字（最左侧/左下角/右上角等），全程覆盖。
     # 每个元素：text（内容）、position（left/bottom-left/top-right 等七位）、
@@ -492,6 +495,9 @@ def _build_subtitle_mask_config(data: SliceRunRequest, source_srt: Optional[str]
         cfg["height_ratio"] = max(0.02, min(0.5, float(data.subtitle_mask_height_ratio)))
     if data.subtitle_mask_bottom_ratio is not None:
         cfg["bottom_ratio"] = max(0.0, min(0.5, float(data.subtitle_mask_bottom_ratio)))
+    # 打码时间轴整体偏移（秒）：校正 ASR 字幕时间与画面字幕偏差（正值延后、负值提前）
+    if getattr(data, "subtitle_mask_srt_offset", None) is not None:
+        cfg["srt_offset"] = float(data.subtitle_mask_srt_offset)
     # 独立携带打码时间轴 SRT（与字幕烧录无关），供 Worker/Celery 写入本地文件后透传引擎
     if source_srt and source_srt.strip():
         cfg["srt"] = source_srt

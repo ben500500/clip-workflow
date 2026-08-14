@@ -90,6 +90,8 @@ export const sliceApi = {
       subtitle_mask_width_ratio?: number;
       subtitle_mask_height_ratio?: number;
       subtitle_mask_bottom_ratio?: number;
+      // 打码时间轴整体偏移（秒）：字幕比SRT晚出现用正值延后（0.5=延后0.5秒）
+      subtitle_mask_srt_offset?: number;
       // 固定文字角标（文字版角标）：在成品指定位置叠加固定文字
       text_overlays?: TextOverlayItem[];
       // 成品重新剪辑：以某个切片输出为源，重新裁剪出一个新片段

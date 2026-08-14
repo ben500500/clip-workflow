@@ -110,6 +110,7 @@ interface SlicePreset {
   subtitle_mask_width_ratio: number;
   subtitle_mask_height_ratio: number;
   subtitle_mask_bottom_ratio: number;
+  subtitle_mask_srt_offset: number;
   // 固定文字
   text_overlay_enabled: boolean;
   text_overlays: TextOverlayItem[];
@@ -150,6 +151,7 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   subtitle_mask_width_ratio: 0.9,
   subtitle_mask_height_ratio: 0.12,
   subtitle_mask_bottom_ratio: 0.02,
+  subtitle_mask_srt_offset: 0,
   text_overlay_enabled: true,
   text_overlays: [
     { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000', vertical: false, offset: 10 },
@@ -229,6 +231,8 @@ const EpisodeDetail: React.FC = () => {
   const [subtitleMaskWidthRatio, setSubtitleMaskWidthRatio] = useState(0.9);
   const [subtitleMaskHeightRatio, setSubtitleMaskHeightRatio] = useState(0.12);
   const [subtitleMaskBottomRatio, setSubtitleMaskBottomRatio] = useState(0.02);
+  // 打码时间轴整体偏移（秒）：校正 ASR 字幕时间与画面字幕偏差（字幕滞后用正值延后）
+  const [subtitleMaskSrtOffset, setSubtitleMaskSrtOffset] = useState(0);
   const [subtitleMaskModalOpen, setSubtitleMaskModalOpen] = useState(false);
   // ── 固定文字角标（文字版角标，无需上传图片）──
   const [textOverlays, setTextOverlays] = useState<Array<TextOverlayItem & { id: string }>>([]);
@@ -422,6 +426,7 @@ const EpisodeDetail: React.FC = () => {
     subtitle_mask_width_ratio: subtitleMaskWidthRatio,
     subtitle_mask_height_ratio: subtitleMaskHeightRatio,
     subtitle_mask_bottom_ratio: subtitleMaskBottomRatio,
+    subtitle_mask_srt_offset: subtitleMaskSrtOffset,
     text_overlay_enabled: textOverlayEnabled,
     text_overlays: textOverlays.map((t) => ({ text: t.text, position: t.position, font_size: t.font_size, color: t.color, border_color: t.border_color, vertical: t.vertical, offset: t.offset })),
     watermark_enabled: watermarkEnabled,
@@ -455,6 +460,7 @@ const EpisodeDetail: React.FC = () => {
     setSubtitleMaskWidthRatio(p.subtitle_mask_width_ratio ?? 0.9);
     setSubtitleMaskHeightRatio(p.subtitle_mask_height_ratio ?? 0.12);
     setSubtitleMaskBottomRatio(p.subtitle_mask_bottom_ratio ?? 0.02);
+    setSubtitleMaskSrtOffset(p.subtitle_mask_srt_offset ?? 0);
     setTextOverlayEnabled(p.text_overlay_enabled);
     setTextOverlays(p.text_overlays.map((t) => ({ ...t, id: `tov_preset_${t.position}_${t.text}` })));
     setWatermarkEnabled(p.watermark_enabled);
@@ -569,7 +575,7 @@ const EpisodeDetail: React.FC = () => {
     vert2horizMinStep, vert2horizFaceMargin, subtitleEnabled, subtitleFontRatio,
     subtitleSpacing, subtitleStyle, subtitleColor, subtitleBorderColor,
     subtitleMaskEnabled, subtitleMaskStyle, subtitleMaskTemporal, subtitleMaskSpatial,
-    subtitleMaskWidthRatio, subtitleMaskHeightRatio, subtitleMaskBottomRatio,
+    subtitleMaskWidthRatio, subtitleMaskHeightRatio, subtitleMaskBottomRatio, subtitleMaskSrtOffset,
     textOverlayEnabled, textOverlays, watermarkEnabled, watermarkText,
     watermarkFontSize, watermarkOpacity, watermarkPosition, badgeDefaultWidth,
   ]);
@@ -1077,6 +1083,7 @@ const EpisodeDetail: React.FC = () => {
         subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
         subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
         subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
+        subtitle_mask_srt_offset: (subtitleMaskEnabled && !subtitleMaskTemporal) ? subtitleMaskSrtOffset : undefined,
         // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排（仅开关开启时生效）
         text_overlays: textOverlayEnabled && textOverlays.length > 0
           ? textOverlays.map((t) => ({
@@ -1209,6 +1216,7 @@ const EpisodeDetail: React.FC = () => {
         subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
         subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
         subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
+        subtitle_mask_srt_offset: (subtitleMaskEnabled && !subtitleMaskTemporal) ? subtitleMaskSrtOffset : undefined,
         // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排（仅开关开启时生效）
         text_overlays: textOverlayEnabled && textOverlays.length > 0
           ? textOverlays.map((t) => ({
@@ -1898,6 +1906,21 @@ const EpisodeDetail: React.FC = () => {
                 />
                 <Text type="secondary" style={{ fontSize: 12 }}>相对画面高（0.02）</Text>
               </Space>
+              {!subtitleMaskTemporal && (
+                <Space wrap align="center" size={8}>
+                  <Text strong style={{ fontSize: 13 }}>时间偏移</Text>
+                  <InputNumber
+                    size="small"
+                    min={-10}
+                    max={10}
+                    step={0.5}
+                    value={subtitleMaskSrtOffset}
+                    onChange={(v) => setSubtitleMaskSrtOffset(v ?? 0)}
+                    style={{ width: 90 }}
+                  />
+                  <Text type="secondary" style={{ fontSize: 12 }}>秒：字幕比SRT晚出现用正值延后（如 0.5）</Text>
+                </Space>
+              )}
               <Space wrap align="center" size={8}>
                 <Switch size="small" checked={subtitleMaskTemporal} onChange={setSubtitleMaskTemporal} />
                 <Text strong style={{ fontSize: 13 }}>精细化（只在出现时打码）</Text>

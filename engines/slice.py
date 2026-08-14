@@ -1871,16 +1871,23 @@ def _spatial_windows_to_local(src_windows: list[tuple], seg_times: list[tuple],
     return result
 
 
-def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple]) -> str:
+def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple], offset: float = 0.0) -> str:
     """根据切片源时间段，从源 SRT 生成打码区间（局部时间轴，从 0 开始）。
 
     seg_times: 按拼接顺序排列的源时间段 [(start, end), ...]，与 build_clip_subtitle 一致。
     生成的区间时间轴与切片成品一致（从 0 开始），可直接用于 overlay/crop 的 enable。
     返回 "" 表示该切片内无字幕（无需打码）。
+
+    offset: 字幕时间轴整体偏移（秒）。用于校正 ASR 字幕时间与画面实际字幕的偏差：
+      画面字幕比 SRT 晚出现（字幕滞后）时传正值延后打码；早出现时传负值提前打码。
+      默认 0 不偏移。
     """
     records = read_srt(src_srt)
     if not records:
         return ""
+    if offset:
+        return _source_intervals_to_local_enable(
+            [(float(r["start"]) + offset, float(r["end"]) + offset) for r in records], seg_times)
     return _source_intervals_to_local_enable(
         [(float(r["start"]), float(r["end"])) for r in records], seg_times)
 
@@ -2431,11 +2438,29 @@ def main():
                                                 threads=threads, encoder=encoder)
                             os.replace(mask_out, out_path)
                     else:
-                        # 普通/快速模式：检测区域内全程打码（至始至终）。
-                        apply_subtitle_mask(out_path, mask_out, subtitle_mask,
-                                            enable="",
-                                            threads=threads, encoder=encoder)
-                        os.replace(mask_out, out_path)
+                        # 普通/快速模式（temporal 与 spatial 均关闭）：
+                        # 若提供 SRT 时间轴（subtitle_mask.srt），按 SRT 驱动打码时段
+                        # （支持 srt_offset 秒整体偏移，校正 ASR 时间与画面字幕偏差）；
+                        # 无 SRT 时回退为检测区域内全程打码（至始至终）。
+                        mask_srt = subtitle_mask.get("srt") or ""
+                        mask_offset = float(subtitle_mask.get("srt_offset") or 0)
+                        if mask_srt.strip():
+                            mask_enable = build_subtitle_mask_enable(mask_srt, seg_times, mask_offset)
+                        else:
+                            mask_enable = ""
+                        if mask_enable:
+                            print(f"源字幕打码按 SRT 时间轴: {len(mask_enable.split(','))} 个时段 (offset={mask_offset}s)",
+                                  file=sys.stderr)
+                            apply_subtitle_mask(out_path, mask_out, subtitle_mask,
+                                                enable=mask_enable,
+                                                threads=threads, encoder=encoder)
+                            os.replace(mask_out, out_path)
+                        else:
+                            # 该切片内 SRT 无字幕记录（或未提供 SRT）→ 全程打码
+                            apply_subtitle_mask(out_path, mask_out, subtitle_mask,
+                                                enable="",
+                                                threads=threads, encoder=encoder)
+                            os.replace(mask_out, out_path)
                 # 字幕烧录：开启后按该切片的源时间段从源 SRT 截取并烧录到成品
                 if args.subtitle:
                     sub_srt = os.path.join(tmp, "clip_subtitle.srt")
