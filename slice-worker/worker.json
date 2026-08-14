@@ -1,7 +1,7 @@
 {
   "node_id": "${NODE_ID}",
   "redis_url": "${REDIS_URL}",
-  "tags": ["cpu"],
+  "tags": ["cpu", "burn-subtitle"],
   "max_concurrent": ${MAX_CONCURRENT},
   "engines_path": "/app/engines",
   "temp_dir": "/tmp/slice-worker",
@@ -12,5 +12,6 @@
   "retry_delay": ${RETRY_DELAY},
   "node_ttl": ${NODE_TTL},
   "backend_url": "${BACKEND_URL}",
-  "cpu_percent": ${CPU_PERCENT}
+  "cpu_percent": ${CPU_PERCENT},
+  "consume_streams": ["slice:tasks:high", "slice:tasks:normal", "slice:tasks:low", "slice:tasks:subtitle"]
 }

@@ -31,6 +31,11 @@ type Config struct {
 	BackendURL string `json:"backend_url"`
 	// CPU 资源分配百分比（默认 50，表示本节点切片最多使用 50% 的 CPU 资源）
 	CPUPercent int `json:"cpu_percent"`
+	// ConsumeStreams 本节点消费的 Redis Stream 列表（路由层用）。
+	// 不配置时回落为默认的 high/normal/low 三个流；
+	// 具备字幕烧录能力的节点（ffmpeg 带 libass）可额外加入 slice:tasks:subtitle，
+	// 从而专门承接字幕类任务，避免无 libass 的节点（如 Mac）领取后烧录失败。
+	ConsumeStreams []string `json:"consume_streams"`
 }
 
 // DefaultNodeID 生成统一的默认节点 ID（命名规则：slice-worker-<本机名>）。
@@ -120,6 +125,24 @@ func (c *Config) HeartbeatTTL() time.Duration {
 		return time.Duration(c.NodeTTL) * time.Second
 	}
 	return time.Duration(3*c.HeartbeatInterval) * time.Second
+}
+
+// DefaultConsumeStreams 默认消费流：所有节点都消费，保证普通任务可被任意节点承接。
+var DefaultConsumeStreams = []string{
+	"slice:tasks:high",
+	"slice:tasks:normal",
+	"slice:tasks:low",
+}
+
+// EffectiveConsumeStreams 返回本节点实际消费的流列表：
+// 配置了 consume_streams 则用之；否则回落默认三流。
+// 具备字幕烧录能力的节点在 consume_streams 中加入 slice:tasks:subtitle，
+// 即可专门承接字幕类任务，而无 libass 的节点（如 Mac）保持默认三流、永不领取字幕任务。
+func (c *Config) EffectiveConsumeStreams() []string {
+	if len(c.ConsumeStreams) > 0 {
+		return c.ConsumeStreams
+	}
+	return DefaultConsumeStreams
 }
 
 // GetOS 获取操作系统

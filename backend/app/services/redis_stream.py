@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 STREAM_HIGH = "slice:tasks:high"
 STREAM_NORMAL = "slice:tasks:normal"
 STREAM_LOW = "slice:tasks:low"
+# 字幕专用 Stream：仅「具备字幕烧录能力」的节点（163 Linux worker，ffmpeg 带 libass）
+# 消费此流；Mac worker 只读默认的 high/normal/low 三个流，永远不会领取字幕任务，
+# 从根本上避免 Mac ffmpeg 缺 libass 导致字幕烧录失败（退出码 1）。
+STREAM_SUBTITLE = "slice:tasks:subtitle"
 
 # Consumer Group 名称
 CONSUMER_GROUP = "workers"
@@ -42,11 +46,15 @@ NODE_UPDATE_PREFIX = "slice:node-update:"
 
 
 def _get_stream(priority: str = "normal") -> str:
-    """根据优先级返回对应的 Stream 名称。"""
+    """根据优先级返回对应的 Stream 名称。
+
+    priority="subtitle" 走独立的字幕专用流，仅具备字幕烧录能力的节点消费。
+    """
     return {
         "high": STREAM_HIGH,
         "normal": STREAM_NORMAL,
         "low": STREAM_LOW,
+        "subtitle": STREAM_SUBTITLE,
     }.get(priority, STREAM_NORMAL)
 
 

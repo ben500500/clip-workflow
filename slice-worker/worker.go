@@ -151,7 +151,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	}()
 
 	// 创建消费者组
-	streams := []string{"slice:tasks:high", "slice:tasks:normal", "slice:tasks:low"}
+	streams := w.config.EffectiveConsumeStreams()
 	for _, stream := range streams {
 		if err := w.redis.CreateConsumerGroup(stream, "workers"); err != nil {
 			w.log("warn", "创建消费者组失败 %s: %v", stream, err)
@@ -168,7 +168,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	go w.claimLoop(ctx)
 
 	// 主消费循环
-	w.log("info", "开始消费任务，最大并发: %d", w.config.MaxConcurrent)
+	w.log("info", "开始消费任务，最大并发: %d，消费流: %v", w.config.MaxConcurrent, streams)
 	for {
 		select {
 		case <-ctx.Done():
@@ -285,7 +285,7 @@ func (w *Worker) waitRunningTasks(timeout time.Duration) {
 
 // claimLoop 定期从 PEL 认领超时未完成的任务（Worker 崩溃恢复）
 func (w *Worker) claimLoop(ctx context.Context) {
-	streams := []string{"slice:tasks:high", "slice:tasks:normal", "slice:tasks:low"}
+	streams := w.config.EffectiveConsumeStreams()
 	// 认领阈值：任务进入 PEL 超过 minIdle 且无租约的视为孤儿任务。
 	// 调大至 5 分钟（原为 3×心跳≈30s）：切片任务通常耗时数分钟，过短阈值会把
 	// 正常处理中的任务误判为孤儿重新执行，导致与已完成任务冲突、状态污染。

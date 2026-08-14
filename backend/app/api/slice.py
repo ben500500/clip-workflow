@@ -925,6 +925,16 @@ async def _publish_to_worker(
     # 每次任务生成独立的回调/上传鉴权 Token
     callback_token = secrets.token_hex(16)
 
+    # 判断本任务是否需要字幕烧录能力（ASR 字幕烧录 或 源字幕打码）。
+    # 需要字幕能力的任务路由到独立的 slice:tasks:subtitle 流，仅 163 Linux worker
+    # （ffmpeg 带 libass）消费；Mac worker 只读 high/normal/low，永不领取，
+    # 避免其 ffmpeg 缺 libass 导致字幕烧录失败（退出码 1）。
+    def _subtitle_enabled(cfg) -> bool:
+        return bool(cfg) and bool(getattr(cfg, "get", lambda k: None)("enabled"))
+
+    needs_subtitle = _subtitle_enabled(subtitle_config) or _subtitle_enabled(subtitle_mask_config)
+    queue = "subtitle" if needs_subtitle else "normal"
+
     # 回调地址使用可配置的基础地址（支持远程 Worker 通过公网/内网访问）
     callback_base = settings.WORKER_CALLBACK_BASE_URL.rstrip("/")
     callback_url = f"{callback_base}/api/slice-tasks/{slice_task.id}/callback"
@@ -933,7 +943,7 @@ async def _publish_to_worker(
     task_payload = {
         "task_id": str(slice_task.id),
         "episode_id": str(slice_task.episode_id),
-        "priority": "normal",
+        "priority": queue,
         "mode": slice_task.mode or "fast",
         "required_tags": [],
         "source": {
@@ -975,8 +985,8 @@ async def _publish_to_worker(
     # 保存回调 Token 到 Redis（供回调/上传接口鉴权校验）
     await store_task_callback_token(str(slice_task.id), callback_token)
 
-    # 发布到 Redis Stream
-    msg_id = await publish_slice_task(task_payload)
+    # 发布到 Redis Stream（字幕任务走独立 subtitle 流，仅 163 Linux worker 消费）
+    msg_id = await publish_slice_task(task_payload, queue)
     if not msg_id:
         logger.error("Failed to publish slice task %s to Redis Stream", slice_task.id)
         return False
