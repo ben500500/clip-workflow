@@ -52,6 +52,7 @@ from app.services.redis_stream import (
     store_task_callback_token,
     get_task_callback_token,
     mark_task_cancelled,
+    get_redis,
 )
 
 logger = logging.getLogger(__name__)
@@ -1818,6 +1819,14 @@ async def slice_task_callback(
         task.completed_at = now
         task.error_message = None
         logger.info("Slice task %s completed with %d outputs", task_id, task.output_count)
+
+        # 完成时清理 Redis hash 里的 error 字段：任务成功但 error 残留会误导
+        # 查状态（"completed 但 error 还在"）。失败路径由 worker 写 error，成功路径在此清掉。
+        try:
+            _redis = await get_redis()
+            await _redis.hdel(f"slice:task:{task_id}", "error")
+        except Exception:  # noqa: BLE001 - 清理失败不影响主流程
+            logger.warning("清理任务 %s 的 Redis error 字段失败", task_id)
 
         # 推进剧集状态：所有切片任务完成后置为 completed（而非仅依赖最近一条）
         await _refresh_episode_status(db, task.episode_id)

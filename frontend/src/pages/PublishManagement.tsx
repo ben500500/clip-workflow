@@ -2,9 +2,9 @@ import React, { useEffect, useState } from 'react';
 import {
   Card, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, InputNumber, Alert, Tabs, Tooltip, Switch,
 } from 'antd';
-import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined } from '@ant-design/icons';
+import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined, QrcodeOutlined, HeartOutlined } from '@ant-design/icons';
 import { publishApi, type VideoAccountInput, type MiniProgramInput } from '../api/publish';
-import type { PublishProfile, PublishTask, VideoAccount, MiniProgram } from '../types';
+import type { PublishProfile, PublishTask, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult } from '../types';
 import { formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
 
 const { Title } = Typography;
@@ -38,6 +38,30 @@ const PublishManagement: React.FC = () => {
   const [screenshotModal, setScreenshotModal] = useState(false);
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
   const [screenshotLoading, setScreenshotLoading] = useState(false);
+  // ── 多运营者：端口矩阵 + 审计（P1 问题10） ──
+  const [operatorMatrix, setOperatorMatrix] = useState<OperatorRouteRow[]>([]);
+  const [operatorStats, setOperatorStats] = useState<OperatorStat[]>([]);
+  const [matrixLoading, setMatrixLoading] = useState(false);
+  const [auditKind, setAuditKind] = useState('publish');
+  const [auditLogs, setAuditLogs] = useState<AuditResult>({ kind: 'publish', items: [] });
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [traceModalOpen, setTraceModalOpen] = useState(false);
+  const [traceData, setTraceData] = useState<{
+    request_id: string;
+    publish: PublishAuditItem[];
+    login: LoginAuditItem[];
+    cookie: Array<{ id: string; profile_id: string | null; account_id: string | null; actor_id: string | null; operator_id: string | null; purpose: string | null; ip_address: string | null; request_id: string | null; created_at: string | null }>;
+    risk: RiskEventItem[];
+  } | null>(null);
+
+  // ── 登录态自服务扫码（P0 主题1 / 4.1） ──
+  const [qrAccountId, setQrAccountId] = useState('');
+  const [qrClaiming, setQrClaiming] = useState(false);
+  const [qrClaimToken, setQrClaimToken] = useState('');
+  const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [qrUrl, setQrUrl] = useState('');
+  const [qrHeartbeatStatus, setQrHeartbeatStatus] = useState<string | null>(null);
+  const [qrHeartbeating, setQrHeartbeating] = useState(false);
 
   const fetchTasks = () => {
     setTaskLoading(true);
@@ -59,11 +83,55 @@ const PublishManagement: React.FC = () => {
     publishApi.getMiniPrograms({ enabled_only: false }).then(setMiniPrograms).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败')).finally(() => setMiniProgramLoading(false));
   };
 
+  const fetchMatrix = () => {
+    setMatrixLoading(true);
+    publishApi.getOperatorMatrix()
+      .then((rows) => { setOperatorMatrix(rows); return publishApi.getOperatorStats(); })
+      .then(setOperatorStats)
+      .catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'))
+      .finally(() => setMatrixLoading(false));
+  };
+
+  // 登录态自服务扫码：申请 → 领取二维码 → 展示扫码
+  const applyQr = () => {
+    if (!qrAccountId) { message.warning('请先选择账号'); return; }
+    setQrClaiming(true);
+    publishApi.applyLoginQr(qrAccountId)
+      .then(async (res) => {
+        setQrClaimToken(res.claim_token);
+        // 领取二维码链接
+        const claim = await publishApi.claimLoginQr(res.claim_token);
+        setQrUrl(claim.qr_url);
+        setQrModalOpen(true);
+        message.success('已生成登录二维码，请在 90s 内微信扫码');
+      })
+      .catch((err: unknown) => message.error(err instanceof Error ? err.message : '申请扫码失败'))
+      .finally(() => setQrClaiming(false));
+  };
+
+  const runHeartbeat = () => {
+    if (!qrAccountId) { message.warning('请先选择账号'); return; }
+    setQrHeartbeating(true);
+    publishApi.loginHeartbeat(qrAccountId)
+      .then((res) => { setQrHeartbeatStatus(res.status); message.info(`登录态心跳: ${res.status}`); })
+      .catch((err: unknown) => message.error(err instanceof Error ? err.message : '心跳检查失败'))
+      .finally(() => setQrHeartbeating(false));
+  };
+
+  const fetchAudit = () => {
+    setAuditLoading(true);
+    publishApi.getAuditLogs({ kind: auditKind, limit: 100 })
+      .then((res) => { setAuditLogs({ kind: res.kind, items: res.items }); })
+      .catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'))
+      .finally(() => setAuditLoading(false));
+  };
+
   const fetchAll = () => {
     fetchTasks();
     fetchProfiles();
     fetchAccounts();
     fetchMiniPrograms();
+    fetchMatrix();
   };
 
   useEffect(() => {
@@ -366,6 +434,86 @@ const PublishManagement: React.FC = () => {
     },
   ];
 
+  // ── 多运营者：运营者端口矩阵 + 审计 列定义 ──
+  const matrixColumns = [
+    { title: '端口', dataIndex: 'port', key: 'port', width: 80, render: (p: number) => p ? `:${p}` : '-' },
+    {
+      title: '状态', dataIndex: 'status', key: 'status', width: 110,
+      render: (s: string) => {
+        const map: Record<string, { c: string; l: string }> = {
+          ready: { c: 'green', l: '就绪' },
+          logging: { c: 'orange', l: '登录中' },
+          expired: { c: 'red', l: '失效' },
+          disabled: { c: 'default', l: '停用' },
+          graduating: { c: 'blue', l: '毕业中' },
+        };
+        const m = map[s] || { c: 'default', l: s || '-' };
+        return <Tag color={m.c}>{m.l}</Tag>;
+      },
+    },
+    { title: '账号 ID', dataIndex: 'account_id', key: 'account_id', ellipsis: true, render: (a: string) => a ? a.slice(0, 8) : '-' },
+    { title: '运营者 ID', dataIndex: 'operator_id', key: 'operator_id', ellipsis: true, render: (o: string) => o ? o.slice(0, 8) : '-' },
+    { title: '当日发布', dataIndex: 'daily_used', key: 'daily_used', width: 90 },
+    { title: '运营者当日累计', dataIndex: 'op_daily_used', key: 'op_daily_used', width: 110 },
+    { title: '最后发布', dataIndex: 'last_post_at', key: 'last_post_at', width: 150, render: (t: string) => t || '-' },
+    { title: '最后心跳', dataIndex: 'last_heartbeat', key: 'last_heartbeat', width: 150, render: (t: string) => t || '-' },
+    { title: '出口 IP', dataIndex: 'egress_ip', key: 'egress_ip', width: 120, render: (v: string) => v || '-' },
+  ];
+
+  const operatorStatColumns = [
+    { title: '运营者 ID', dataIndex: 'operator_id', key: 'operator_id', ellipsis: true, render: (o: string) => o ? o.slice(0, 8) : '-' },
+    { title: '当日发布数', dataIndex: 'daily_used', key: 'daily_used', width: 120 },
+    { title: '进行中 (inflight)', dataIndex: 'inflight', key: 'inflight', width: 130 },
+  ];
+
+  const traceAction = (requestId: string | null) => {
+    if (!requestId) return;
+    publishApi.traceAudit(requestId).then(setTraceData).then(() => setTraceModalOpen(true))
+      .catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
+  };
+
+  const auditColumns = [
+    { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 150, render: (t: string | null) => t || '-' },
+    { title: '动作', dataIndex: 'action', key: 'action', width: 90, render: (a: string) => {
+      const map: Record<string, { c: string; l: string }> = {
+        publish: { c: 'blue', l: '发布' },
+        confirm: { c: 'green', l: '确认' },
+        fail: { c: 'red', l: '失败' },
+        reauth: { c: 'orange', l: '重新登录' },
+      };
+      const m = map[a] || { c: 'default', l: a || '-' };
+      return <Tag color={m.c}>{m.l}</Tag>;
+    } },
+    { title: '结果', dataIndex: 'result', key: 'result', width: 90, render: (r: string | null) => r || '-' },
+    { title: '运营者', dataIndex: 'operator_id', key: 'operator_id', ellipsis: true, render: (o: string | null) => o ? o.slice(0, 8) : '-' },
+    { title: '操作人', dataIndex: 'actor_id', key: 'actor_id', ellipsis: true, render: (o: string | null) => o ? o.slice(0, 8) : '-' },
+    { title: '端口', dataIndex: 'port', key: 'port', width: 60, render: (p: number | null) => p ? `:${p}` : '-' },
+    { title: '风控', dataIndex: 'risk_flag', key: 'risk_flag', width: 70, render: (r: boolean) => r ? <Tag color="red">风控</Tag> : '-' },
+    { title: 'trace_id', dataIndex: 'request_id', key: 'request_id', ellipsis: true, render: (rid: string | null) => rid ? <a onClick={() => traceAction(rid)}>{rid.slice(0, 16)}</a> : '-' },
+    { title: '备注', dataIndex: 'risk_note', key: 'risk_note', ellipsis: true, render: (n: string | null) => n || '-' },
+  ];
+
+  const riskColumns = [
+    { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 150, render: (t: string | null) => t || '-' },
+    { title: '风控类型', dataIndex: 'risk_type', key: 'risk_type', width: 130, render: (t: string) => <Tag color="red">{t}</Tag> },
+    { title: '级别', dataIndex: 'level', key: 'level', width: 80 },
+    { title: '运营者', dataIndex: 'operator_id', key: 'operator_id', ellipsis: true, render: (o: string | null) => o ? o.slice(0, 8) : '-' },
+    { title: '处置', dataIndex: 'disposition', key: 'disposition', width: 110, render: (d: string | null) => d || '-' },
+    { title: '信息', dataIndex: 'message', key: 'message', ellipsis: true },
+  ];
+
+  const loginColumns = [
+    { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 150, render: (t: string | null) => t || '-' },
+    { title: '动作', dataIndex: 'action', key: 'action', width: 90, render: (a: string) => {
+      const map: Record<string, string> = { claim: '领取', scanned: '扫码', expired: '过期', refreshed: '刷新' };
+      return map[a] || a || '-';
+    } },
+    { title: '运营者', dataIndex: 'operator_id', key: 'operator_id', ellipsis: true, render: (o: string | null) => o ? o.slice(0, 8) : '-' },
+    { title: '扫码人', dataIndex: 'scanner_name', key: 'scanner_name', width: 110, render: (s: string | null) => s || '-' },
+    { title: '结果', dataIndex: 'result', key: 'result', width: 90, render: (r: string | null) => r || '-' },
+    { title: 'TTL', dataIndex: 'ttl_seconds', key: 'ttl_seconds', width: 60, render: (t: number | null) => t ?? '-' },
+  ];
+
   const tabItems = [
     {
       key: 'tasks',
@@ -405,6 +553,63 @@ const PublishManagement: React.FC = () => {
         </Card>
       ),
     },
+    {
+      key: 'matrix',
+      label: '运营者端口矩阵',
+      children: (
+        <Card size="small" title="运营者端口矩阵（多运营者看板）" extra={<Button size="small" icon={<ReloadOutlined />} onClick={fetchMatrix}>刷新</Button>}>
+          <Alert type="info" showIcon style={{ marginBottom: 12 }} message="读取 Redis 路由表实时渲染各运营者 Chrome 端口/登录态/限额消耗。启用 MULTI_OPERATOR_ENABLED 后生效；未启用时列表为空。" />
+          <Space style={{ marginBottom: 12 }} wrap>
+            <Select
+              placeholder="选择账号发起扫码/心跳"
+              style={{ width: 240 }}
+              value={qrAccountId || undefined}
+              onChange={(v) => setQrAccountId(v)}
+              options={operatorMatrix.map((r) => ({ value: r.account_id, label: `${r.account_id?.slice(0, 8)} (${r.status})` }))}
+              allowClear
+            />
+            <Button type="primary" icon={<QrcodeOutlined />} loading={qrClaiming} onClick={applyQr}>登录态扫码</Button>
+            <Button icon={<HeartOutlined />} loading={qrHeartbeating} onClick={runHeartbeat}>心跳检查</Button>
+            {qrHeartbeatStatus && <Tag color={qrHeartbeatStatus === 'valid' ? 'green' : qrHeartbeatStatus === 'need_login' ? 'orange' : 'red'}>心跳: {qrHeartbeatStatus}</Tag>}
+          </Space>
+          <Table rowKey="account_id" columns={matrixColumns} dataSource={operatorMatrix} loading={matrixLoading} pagination={false} size="small" scroll={{ x: 1150 }} />
+          <Typography.Text strong style={{ display: 'block', margin: '16px 0 8px' }}>运营者当日配额消耗</Typography.Text>
+          <Table rowKey="operator_id" columns={operatorStatColumns} dataSource={operatorStats} loading={matrixLoading} pagination={false} size="small" scroll={{ x: 500 }} />
+        </Card>
+      ),
+    },
+    {
+      key: 'audit',
+      label: '审计日志',
+      children: (
+        <Card size="small" title="发布审计与可观测（仅管理员）" extra={
+          <Space>
+            <Select
+              value={auditKind}
+              style={{ width: 120 }}
+              onChange={(v: string) => { setAuditKind(v); }}
+              options={[
+                { value: 'publish', label: '发布' },
+                { value: 'login', label: '登录态' },
+                { value: 'risk', label: '风控' },
+              ]}
+            />
+            <Button size="small" icon={<ReloadOutlined />} onClick={fetchAudit}>查询</Button>
+          </Space>
+        }>
+          <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="审计日志含完整发布上下文（操作人/号主/IP/内容哈希/trace_id），仅 superadmin/admin 可查。点击 trace_id 可溯源全链路（审核→确认→发布→风控）。" />
+          {auditKind === 'publish' && (
+            <Table rowKey="id" columns={auditColumns} dataSource={auditLogs.items as PublishAuditItem[]} loading={auditLoading} pagination={false} size="small" scroll={{ x: 1300 }} />
+          )}
+          {auditKind === 'risk' && (
+            <Table rowKey="id" columns={riskColumns} dataSource={auditLogs.items as RiskEventItem[]} loading={auditLoading} pagination={false} size="small" scroll={{ x: 1100 }} />
+          )}
+          {auditKind === 'login' && (
+            <Table rowKey="id" columns={loginColumns} dataSource={auditLogs.items as LoginAuditItem[]} loading={auditLoading} pagination={false} size="small" scroll={{ x: 900 }} />
+          )}
+        </Card>
+      ),
+    },
   ];
 
   return (
@@ -416,6 +621,19 @@ const PublishManagement: React.FC = () => {
       </Space>
 
       <Tabs items={tabItems} />
+
+      {/* 登录态扫码二维码弹窗（P0 主题1） */}
+      <Modal title="登录态扫码" open={qrModalOpen} footer={null} onCancel={() => setQrModalOpen(false)}>
+        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="请用对应运营者微信扫码确认登录。二维码链接 TTL 90s 单次有效，过期需重新申请。" />
+        {qrUrl && (
+          <div style={{ textAlign: 'center' }}>
+            <img src={qrUrl} alt="登录二维码" style={{ width: 260, height: 260, border: '1px solid #f0f0f0', borderRadius: 8 }} />
+            <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
+              微信扫码确认后，登录态将置为就绪
+            </Typography.Paragraph>
+          </div>
+        )}
+      </Modal>
 
       <Modal title="新建发布任务" open={taskModal} onOk={createTask} onCancel={() => setTaskModal(false)} destroyOnClose>
         <Alert type="info" showIcon style={{ marginBottom: 16 }} message="创建后立即触发 RPA 自动发布；若开启了截图确认，需在任务列表「确认发布」。多平台批量发布请到成品预览点「一键发布」。账号与小程序链接可在下方「视频号账号 / 小程序链接」Tab 中维护。" />
@@ -526,6 +744,53 @@ const PublishManagement: React.FC = () => {
             <Switch />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={traceData ? `trace 溯源：${traceData.request_id.slice(0, 20)}` : 'trace 溯源'}
+        open={traceModalOpen}
+        footer={null}
+        width={900}
+        onCancel={() => setTraceModalOpen(false)}
+        destroyOnClose
+      >
+        {traceData && (
+          <div>
+            <Typography.Paragraph type="secondary">全链路（审核→确认→发布→风控）审计，可溯源 operator/actor/IP/hash。</Typography.Paragraph>
+            <Typography.Text strong>发布/确认</Typography.Text>
+            <Table size="small" rowKey="id" columns={auditColumns} dataSource={traceData.publish} pagination={false} scroll={{ x: 1000 }} />
+            {traceData.cookie.length > 0 && (
+              <>
+                <Typography.Text strong style={{ display: 'block', marginTop: 12 }}>Cookie 访问</Typography.Text>
+                <Table
+                  size="small"
+                  rowKey="id"
+                  pagination={false}
+                  scroll={{ x: 700 }}
+                  dataSource={traceData.cookie}
+                  columns={[
+                    { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 150, render: (t: string | null) => t || '-' },
+                    { title: '用途', dataIndex: 'purpose', key: 'purpose', width: 110 },
+                    { title: 'IP', dataIndex: 'ip_address', key: 'ip_address', width: 130, render: (v: string | null) => v || '-' },
+                    { title: '操作人', dataIndex: 'actor_id', key: 'actor_id', ellipsis: true, render: (o: string | null) => o ? o.slice(0, 8) : '-' },
+                  ]}
+                />
+              </>
+            )}
+            {traceData.login.length > 0 && (
+              <>
+                <Typography.Text strong style={{ display: 'block', marginTop: 12 }}>登录态</Typography.Text>
+                <Table size="small" rowKey="id" columns={loginColumns} dataSource={traceData.login} pagination={false} scroll={{ x: 800 }} />
+              </>
+            )}
+            {traceData.risk.length > 0 && (
+              <>
+                <Typography.Text strong style={{ display: 'block', marginTop: 12 }}>风控事件</Typography.Text>
+                <Table size="small" rowKey="id" columns={riskColumns} dataSource={traceData.risk} pagination={false} scroll={{ x: 800 }} />
+              </>
+            )}
+          </div>
+        )}
       </Modal>
 
       <Modal

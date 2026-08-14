@@ -1,5 +1,5 @@
 import client from './client';
-import type { PublishProfile, PublishTask, PublishBatch, VideoAccount, MiniProgram } from '../types';
+import type { PublishProfile, PublishTask, PublishBatch, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult } from '../types';
 
 export interface PublishTaskCreate {
   output_id: string;
@@ -127,4 +127,62 @@ export const publishApi = {
     client.put(`/publish/mini-programs/${id}`, data) as Promise<MiniProgram>,
 
   deleteMiniProgram: (id: string) => client.delete(`/publish/mini-programs/${id}`) as Promise<void>,
+
+  // ── 多运营者：端口矩阵 + 审计（P1 问题10） ──
+  getOperatorMatrix: () =>
+    client.get('/publish/multi-operator/matrix') as Promise<OperatorRouteRow[]>,
+
+  getOperatorStats: () =>
+    client.get('/publish/multi-operator/operators') as Promise<OperatorStat[]>,
+
+  getAuditLogs: (params?: { action?: string; kind?: string; request_id?: string; limit?: number }) =>
+    client.get('/publish/audit', { params }) as Promise<AuditResult>,
+
+  traceAudit: (requestId: string) =>
+    client.get(`/publish/audit/trace/${requestId}`) as Promise<{
+      request_id: string;
+      publish: PublishAuditItem[];
+      login: LoginAuditItem[];
+      cookie: Array<{ id: string; profile_id: string | null; account_id: string | null; actor_id: string | null; operator_id: string | null; purpose: string | null; ip_address: string | null; request_id: string | null; created_at: string | null }>;
+      risk: RiskEventItem[];
+    }>,
+
+  // ── 登录态自服务扫码（P0 主题1 / 4.1） ──
+  applyLoginQr: (account_id: string) =>
+    client.post('/publish/login/qr', { account_id }) as Promise<{
+      claim_token: string;
+      expires_in: number;
+      qr_key: string;
+      account_id: string;
+      operator_id: string | null;
+      message: string;
+    }>,
+
+  claimLoginQr: (token: string) =>
+    client.get(`/publish/login/qr/claim/${token}`) as Promise<{
+      qr_url: string;
+      account_id: string;
+      operator_id: string | null;
+      expires_in: number;
+    }>,
+
+  loginScanCallback: (payload: {
+    account_id: string;
+    operator_id?: string;
+    scanner_name?: string;
+    result?: string;
+    message?: string;
+  }) => client.post('/publish/login/scan/callback', payload) as Promise<{
+    account_id: string;
+    state: string;
+  }>,
+
+  getLoginStatus: (account_id: string) =>
+    client.get(`/publish/login/status/${account_id}`) as Promise<Record<string, unknown>>,
+
+  loginHeartbeat: (account_id: string) =>
+    client.post(`/publish/login/heartbeat/${account_id}`) as Promise<{
+      account_id: string;
+      status: string;
+    }>,
 };
