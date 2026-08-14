@@ -1,5 +1,5 @@
 import client from './client';
-import type { PublishProfile, PublishTask, VideoAccount, MiniProgram } from '../types';
+import type { PublishProfile, PublishTask, PublishBatch, VideoAccount, MiniProgram } from '../types';
 
 export interface PublishTaskCreate {
   output_id: string;
@@ -28,6 +28,20 @@ export interface VideoAccountInput {
   mini_program_enabled?: boolean;
   remark?: string;
   enabled?: boolean;
+  operator_id?: string;
+}
+
+export interface PublishTaskAssignInput {
+  output_id: string;
+  platform: string;
+  account_id?: string;
+  operator_ids?: string[];
+  strategy?: string;
+  title?: string;
+  description?: string;
+  tags?: string[];
+  cover_file_key?: string;
+  mini_program_link?: string;
 }
 
 export interface MiniProgramInput {
@@ -92,6 +106,15 @@ export const publishApi = {
     client.put(`/publish/video-accounts/${id}`, data) as Promise<VideoAccount>,
 
   deleteVideoAccount: (id: string) => client.delete(`/publish/video-accounts/${id}`) as Promise<void>,
+
+  // ── 多运营者发布批次（R14） ──
+  getBatches: () => client.get('/publish/batches') as Promise<PublishBatch[]>,
+
+  getBatch: (id: string) =>
+    client.get(`/publish/batches/${id}`) as Promise<PublishBatch & { tasks: PublishTask[] }>,
+
+  assignBatch: (data: PublishTaskAssignInput) =>
+    client.post('/publish/batches/assign', data) as Promise<PublishBatch & { tasks: PublishTask[] }>,
 
   // ── 小程序链接库 ──
   getMiniPrograms: (params?: { enabled_only?: boolean }) =>
