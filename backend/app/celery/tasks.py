@@ -399,6 +399,7 @@ def slice_task(
     text_overlays_config: Optional[list] = None,
     subtitle_mask_config: Optional[dict] = None,
     watermark_mask_config: Optional[dict] = None,
+    subtitle_align_mask: bool = True,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
@@ -531,6 +532,7 @@ def slice_task(
                     dedupe_config=dedupe_config,
                     subtitle_mask_config=subtitle_mask_config,
                     watermark_mask_config=watermark_mask_config,
+                    subtitle_align_mask=subtitle_align_mask,
                 )
             )
         else:
@@ -556,6 +558,7 @@ def slice_task(
                     dedupe_config=dedupe_config,
                     subtitle_mask_config=subtitle_mask_config,
                     watermark_mask_config=watermark_mask_config,
+                    subtitle_align_mask=subtitle_align_mask,
                 )
             )
 

@@ -289,6 +289,7 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
         "subtitle_mask_enabled", "subtitle_mask_style", "subtitle_mask_temporal",
         "subtitle_mask_spatial",
         "subtitle_mask_width_ratio", "subtitle_mask_height_ratio", "subtitle_mask_bottom_ratio",
+        "subtitle_mask_srt_offset", "subtitle_align_mask",
         "output_id", "cut_start", "cut_end",
     }
     payload = {k: v for k, v in cfg.items() if k in known_fields and v is not None}

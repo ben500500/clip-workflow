@@ -112,6 +112,8 @@ interface SlicePreset {
   subtitle_mask_height_ratio: number;
   subtitle_mask_bottom_ratio: number;
   subtitle_mask_srt_offset: number;
+  // 字幕对齐源字幕打码区域（默认开启）
+  subtitle_align_mask: boolean;
   // 恒定水印/角标打码
   watermark_mask_enabled: boolean;
   watermark_mask_style: 'delogo' | 'mosaic' | 'blur' | 'fill';
@@ -147,7 +149,7 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   vert2horiz_face_margin: 0.30,
   subtitle_enabled: true,
   subtitle_font_ratio: 0.22,
-  subtitle_spacing: -1,
+  subtitle_spacing: -2,
   subtitle_style: 'custom',
   subtitle_color: '#EDD736',
   subtitle_border_color: '#000000',
@@ -159,6 +161,7 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   subtitle_mask_height_ratio: 0.12,
   subtitle_mask_bottom_ratio: 0.02,
   subtitle_mask_srt_offset: 0,
+  subtitle_align_mask: true,
   text_overlay_enabled: true,
   text_overlays: [
     { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000', vertical: false, offset: 10 },
@@ -224,7 +227,7 @@ const EpisodeDetail: React.FC = () => {
   // 字幕字号（相对输出视频高度的比例，默认 0.22→FontSize 22；转横屏开启时默认套用，用户可调）
   const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.22);
   // 字幕字间距（ASS Spacing 像素，默认 -1 更紧凑；调小/负值让字幕文字更紧凑，调大则字距变宽）
-  const [subtitleSpacing, setSubtitleSpacing] = useState(-1);
+  const [subtitleSpacing, setSubtitleSpacing] = useState(-2);
   // 字幕样式：default（白字黑边+半透明黑底）/ custom（自定义字体色+边框色，无底色）
   const [subtitleStyle, setSubtitleStyle] = useState<'default' | 'custom'>('custom');
   // 自定义样式的字体色 / 边框色（CSS 十六进制，默认 #EDD736 黄 / 黑边）
@@ -248,6 +251,8 @@ const EpisodeDetail: React.FC = () => {
   const [subtitleMaskBottomRatio, setSubtitleMaskBottomRatio] = useState(0.02);
   // 打码时间轴整体偏移（秒）：校正 ASR 字幕时间与画面字幕偏差（字幕滞后用正值延后）
   const [subtitleMaskSrtOffset, setSubtitleMaskSrtOffset] = useState(0);
+  // 字幕对齐源字幕打码区域（默认开启）：开启后 ASR 字幕位置对齐到检测到的打码区域
+  const [subtitleAlignMask, setSubtitleAlignMask] = useState(true);
   const [subtitleMaskModalOpen, setSubtitleMaskModalOpen] = useState(false);
   // ── 恒定水印/角标打码（打掉片源固定水印，独立开关） ──
   const [watermarkMaskEnabled, setWatermarkMaskEnabled] = useState(false);
@@ -449,6 +454,7 @@ const EpisodeDetail: React.FC = () => {
     subtitle_mask_height_ratio: subtitleMaskHeightRatio,
     subtitle_mask_bottom_ratio: subtitleMaskBottomRatio,
     subtitle_mask_srt_offset: subtitleMaskSrtOffset,
+    subtitle_align_mask: subtitleAlignMask,
     watermark_mask_enabled: watermarkMaskEnabled,
     watermark_mask_style: watermarkMaskStyle,
     watermark_mask_width_ratio: watermarkMaskWidthRatio,
@@ -476,7 +482,7 @@ const EpisodeDetail: React.FC = () => {
     setVert2horizFaceMargin(p.vert2horiz_face_margin);
     setSubtitleEnabled(p.subtitle_enabled);
     setSubtitleFontRatio(p.subtitle_font_ratio);
-    setSubtitleSpacing(p.subtitle_spacing ?? -1);
+    setSubtitleSpacing(p.subtitle_spacing ?? -2);
     setSubtitleStyle(p.subtitle_style);
     setSubtitleColor(p.subtitle_color);
     setSubtitleBorderColor(p.subtitle_border_color);
@@ -488,6 +494,7 @@ const EpisodeDetail: React.FC = () => {
     setSubtitleMaskHeightRatio(p.subtitle_mask_height_ratio ?? 0.12);
     setSubtitleMaskBottomRatio(p.subtitle_mask_bottom_ratio ?? 0.02);
     setSubtitleMaskSrtOffset(p.subtitle_mask_srt_offset ?? 0);
+    setSubtitleAlignMask(p.subtitle_align_mask ?? true);
     setWatermarkMaskEnabled(p.watermark_mask_enabled ?? false);
     setWatermarkMaskStyle(p.watermark_mask_style ?? 'delogo');
     setWatermarkMaskWidthRatio(p.watermark_mask_width_ratio ?? 0.9);
@@ -1102,6 +1109,8 @@ const EpisodeDetail: React.FC = () => {
         subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
         // 字幕字间距（ASS Spacing 像素）：让字幕文字更紧凑
         subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
+        // 字幕对齐源字幕打码区域（默认开启）
+        subtitle_align_mask: subtitleEnabled ? subtitleAlignMask : undefined,
         // 字幕样式：custom 时可选字体色/边框色（无底色）
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
@@ -1269,6 +1278,7 @@ const EpisodeDetail: React.FC = () => {
         subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
         // 字幕字间距（ASS Spacing 像素）：让字幕文字更紧凑
         subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
+        subtitle_align_mask: subtitleEnabled ? subtitleAlignMask : undefined,
         // 字幕样式：custom 时可选字体色/边框色（无底色）
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
@@ -1876,11 +1886,18 @@ const EpisodeDetail: React.FC = () => {
                   max={20}
                   step={1}
                   value={subtitleSpacing}
-                  onChange={(v) => setSubtitleSpacing(v ?? -1)}
+                  onChange={(v) => setSubtitleSpacing(v ?? -2)}
                   style={{ width: 100 }}
                   addonAfter="px"
                 />
                 <Text type="secondary" style={{ fontSize: 12 }}>越小越紧凑</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Switch size="small" checked={subtitleAlignMask} onChange={setSubtitleAlignMask} />
+                <Text strong style={{ fontSize: 13 }}>字幕对齐源字幕打码区域</Text>
+                <Tooltip title="开启源字幕打码并检测到字幕区域时，把 ASR 字幕默认位置对齐到打码区域（与被打掉的源字幕位置重合）；关闭则用默认底边距。默认开启。">
+                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                </Tooltip>
               </Space>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 13 }}>字幕样式</Text>
