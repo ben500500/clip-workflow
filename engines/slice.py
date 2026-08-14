@@ -1638,11 +1638,24 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
             h = y1 - y0 + 1
             val = float(smooth[y0:y1 + 1].max())
             compact = 1.0 if 15 <= h <= 130 else (0.4 if h < 15 else 0.15)
+            # 恒定性硬过滤：字幕的本质是间歇性出现；presence 接近 1 的横带几乎
+            # 肯定是固定元素（水印/角标/版权声明/标题），直接排除，避免 delogo
+            # 打在"每帧都在"的固定小字上而漏掉真正间歇出现的台词字幕。
+            band_pr = float(presence[y0:y1 + 1].mean())
+            # 注意：不能用 presence 排除"恒定横带"——持续显示的字幕（如全程歌词/
+            # 旁白字幕）presence≈1.0，按恒定性过滤会误杀真字幕。字幕与版权字/水印的
+            # 区分交给"顶部/底部边缘排除 + 偏下 boost + 间歇性加分"共同完成：
+            #   - 最顶部 5%：标题/角标等固定元素，排除
+            #   - 最底部 5%：版权声明/水印等固定小字，排除
+            if y1 < height * 0.05:
+                continue
+            if y0 > height * 0.95:
+                continue
             # 出现频率越接近理想值（约 0.6，间歇性对话字幕）越加分，越接近 0（无内容）
             # 或 1（恒定水印/角标）越减分，从而把"对话字幕"从"固定水印"中区分出来。
             # 对"接近恒定（pr 很高）"做**二次方重罚**：恒定水印几乎每帧在场，其 pr≈1，
             # 若用线性惩罚不足以抵消其更高的文字簇强度，会导致区域被误选到水印上。
-            pr = float(presence[y0:y1 + 1].mean())
+            pr = band_pr
             err = pr - SUBTITLE_MASK_PRESENCE_IDEAL
             # pr 越接近 1（恒定水印）惩罚越剧烈，越接近理想值（间歇字幕）越加分。
             if pr >= 0.85:
@@ -2743,15 +2756,22 @@ def main():
         detected = detect_subtitle_region(source_path, detect_srt)
         if detected:
             dx, dy, dw, dh = detected
-            subtitle_mask["x"] = dx
-            subtitle_mask["y"] = dy
-            subtitle_mask["width"] = dw
-            subtitle_mask["height"] = dh
-            # 记录检测时的分辨率，供 apply_subtitle_mask 按切片分辨率等比缩放
             detect_w, detect_h = ffprobe_size(source_path)
-            subtitle_mask["__detect_w"] = detect_w
-            subtitle_mask["__detect_h"] = detect_h
-            print(f"源字幕打码自动定位: ({dx},{dy},{dw},{dh}) @ {detect_w}x{detect_h}", file=sys.stderr)
+            # sanity check：字幕区域必须落在画面下半部（字幕物理位置常识）。
+            # 若检测结果整体在上半部，几乎可断定是误检（上部标题/角标/水印），
+            # 丢弃并回退默认底部横带，避免 delogo 打在错误位置。
+            if dy + dh < detect_h * 0.55:
+                print(f"源字幕打码自动定位异常（区域在上半部 ({dx},{dy},{dw},{dh}) @ {detect_w}x{detect_h}），"
+                      "回退默认底部横带", file=sys.stderr)
+            else:
+                subtitle_mask["x"] = dx
+                subtitle_mask["y"] = dy
+                subtitle_mask["width"] = dw
+                subtitle_mask["height"] = dh
+                # 记录检测时的分辨率，供 apply_subtitle_mask 按切片分辨率等比缩放
+                subtitle_mask["__detect_w"] = detect_w
+                subtitle_mask["__detect_h"] = detect_h
+                print(f"源字幕打码自动定位: ({dx},{dy},{dw},{dh}) @ {detect_w}x{detect_h}", file=sys.stderr)
         else:
             print("源字幕打码自动定位失败，回退默认区域（底部横带）", file=sys.stderr)
 
