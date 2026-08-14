@@ -745,6 +745,9 @@ class WorkerNode(Base):
     current_tasks = Column(Integer, default=0)
     total_tasks_completed = Column(Integer, default=0)
     total_tasks_failed = Column(Integer, default=0)
+    # 节点硬件编码能力（JSON 数组，如 ["h264_nvenc","hevc_nvenc"]）
+    # 预留 GPU 节点自动分派接口：供未来后端按节点能力分派硬件编码任务；当前仅作上报/展示
+    encoder_capabilities = Column(JSON, default=list)
     last_heartbeat = Column(DateTime, nullable=True)
     started_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

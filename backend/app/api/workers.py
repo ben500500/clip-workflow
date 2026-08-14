@@ -71,6 +71,8 @@ class WorkerNodeResponse(BaseModel):
     cpu_percent: int = 50
     # 该节点当前引擎版本（心跳上报；供界面展示节点引擎是否与服务器一致）
     engine_version: Optional[str] = None
+    # 该节点硬件编码能力（如 h264_nvenc/hevc_nvenc 等；预留 GPU 节点自动分派接口）
+    encoder_capabilities: list = []
 
     model_config = {"from_attributes": True}
 
@@ -91,6 +93,8 @@ class WorkerHeartbeatRequest(BaseModel):
     total_tasks_failed: int = 0
     # 节点当前引擎版本（心跳上报，供界面判断是否需要推送更新）
     engine_version: Optional[str] = None
+    # 节点硬件编码能力（如 h264_nvenc/hevc_nvenc 等；预留 GPU 节点自动分派接口）
+    encoder_capabilities: list = []
 
 
 def _serialize_node(node: WorkerNode) -> dict:
@@ -116,6 +120,7 @@ def _serialize_node(node: WorkerNode) -> dict:
         "running_tasks": getattr(node, "running_tasks", []) or [],
         "cpu_percent": getattr(node, "cpu_percent", 50) or 50,
         "engine_version": getattr(node, "engine_version", None) or None,
+        "encoder_capabilities": getattr(node, "encoder_capabilities", None) or [],
     }
 
 
@@ -145,6 +150,9 @@ async def worker_heartbeat(
         # 累计完成/失败数同步（Worker 心跳携带）
         node.total_tasks_completed = data.total_tasks_completed or 0
         node.total_tasks_failed = data.total_tasks_failed or 0
+        # 硬件编码能力同步（预留 GPU 节点自动分派接口）
+        if data.encoder_capabilities:
+            node.encoder_capabilities = data.encoder_capabilities
     else:
         node = WorkerNode(
             node_id=data.node_id,
@@ -159,6 +167,7 @@ async def worker_heartbeat(
             status=data.status,
             total_tasks_completed=data.total_tasks_completed or 0,
             total_tasks_failed=data.total_tasks_failed or 0,
+            encoder_capabilities=data.encoder_capabilities,
             last_heartbeat=now,
             started_at=now,
         )
@@ -201,6 +210,9 @@ async def list_workers(
                 # 节点 CPU 分配比例：优先取 Redis 控制 key（运行时动态调整）
                 if "cpu_percent" in rd:
                     node.cpu_percent = max(1, min(100, int(rd["cpu_percent"] or 50)))
+                # 节点硬件编码能力：优先取 Redis 心跳上报（实时）
+                if rd.get("encoder_capabilities"):
+                    node.encoder_capabilities = rd.get("encoder_capabilities")
                 # 节点启停状态：优先取 Redis 控制 key（管理员在界面上可启停）
                 if "enabled" in rd:
                     node.enabled = bool(rd["enabled"])
@@ -242,6 +254,7 @@ async def list_workers(
                 current_tasks=rd.get("current_tasks", 0),
                 total_tasks_completed=rd.get("total_tasks_completed", 0),
                 total_tasks_failed=rd.get("total_tasks_failed", 0),
+                encoder_capabilities=rd.get("encoder_capabilities", []),
                 last_heartbeat=None,
                 started_at=None,
                 created_at=datetime.utcnow(),
@@ -259,6 +272,8 @@ async def list_workers(
             d["running_tasks"] = rd.get("running_tasks", []) or []
             # 该节点当前引擎版本（心跳上报，用于判断是否需要推送更新）
             d["engine_version"] = rd.get("engine_version") or d.get("engine_version")
+            # 该节点硬件编码能力（心跳上报；预留 GPU 自动分派接口）
+            d["encoder_capabilities"] = rd.get("encoder_capabilities") or d.get("encoder_capabilities") or []
         result.append(d)
     return result
 
@@ -419,6 +434,9 @@ async def sync_workers_from_redis(
                 # 节点 CPU 分配比例（管理员在界面上可调整）
                 if "cpu_percent" in rd:
                     node.cpu_percent = max(1, min(100, int(rd["cpu_percent"] or 50)))
+                # 节点硬件编码能力（预留 GPU 自动分派接口；从 Redis 心跳同步）
+                if rd.get("encoder_capabilities"):
+                    node.encoder_capabilities = rd.get("encoder_capabilities")
                 # 节点启停状态（管理员在界面上可启停）
                 if "enabled" in rd:
                     node.enabled = bool(rd["enabled"])

@@ -204,6 +204,11 @@ services:
       # 本地 whisper 模型路径（避免每次容器重建从 HuggingFace 下载，国内网络不稳定）
       # 切换模型：改这里即可（旧模型保留在 ./whisper-model，新模型在 ./whisper-model-turbo）
       WHISPER_MODEL: /app/whisper-model-turbo
+      # Whisper GPU 加速（可选）：WHISPER_DEVICE=cuda + WHISPER_COMPUTE_TYPE=float16 时
+      # faster-whisper 走 NVIDIA GPU（需镜像安装 CUDA 后端 nvidia-ctranslate2）；
+      # 默认 cpu/int8，无 GPU 环境自动回退，不影响其它服务。
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
       # 画面理解（Frame Analysis）：本地 Ollama 视觉模型，容器内经 clip-network 直达
       FRAME_ANALYSIS_ENABLED: ${FRAME_ANALYSIS_ENABLED:-false}
       OLLAMA_HOST: http://ollama:11434
@@ -533,6 +538,9 @@ services:
     logging: *default-logging
 
   # ==================== Ollama（本地视觉模型，画面理解用） ====================
+  # GPU 加速（可选）：在部署机上安装 NVIDIA 驱动 + nvidia-container-toolkit 后，
+  # 用 overlay 文件 docker-compose.gpu.yml 为 ollama / autoclip 透传 GPU。
+  # 默认纯 CPU 部署不受影响；启用方式：docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
   ollama:
     image: ollama/ollama:latest
     container_name: clip-ollama

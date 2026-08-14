@@ -228,6 +228,26 @@ const WorkersPage: React.FC = () => {
       },
     },
     {
+      title: '硬件编码',
+      key: 'encoder_capabilities',
+      width: 160,
+      render: (_: unknown, record: WorkerNode) => {
+        const caps = record.encoder_capabilities || [];
+        if (caps.length === 0) {
+          return <Text type="secondary" style={{ fontSize: 12 }}>无</Text>;
+        }
+        return (
+          <Space size={4} wrap>
+            {caps.map((cap) => (
+              <Tooltip key={cap} title={`支持 ${cap} 硬件编码（预留 GPU 节点自动分派接口）`}>
+                <Tag color="purple" style={{ fontSize: 11, marginInlineEnd: 4 }}>{cap}</Tag>
+              </Tooltip>
+            ))}
+          </Space>
+        );
+      },
+    },
+    {
       title: '标签',
       dataIndex: 'tags',
       key: 'tags',

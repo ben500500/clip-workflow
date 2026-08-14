@@ -11,6 +11,11 @@ ARG APP_USER=autoclip
 ARG APP_GROUP=autoclip
 ARG APP_HOME=/app
 ARG WORKER_CONCURRENCY=4
+# 可选：是否安装 faster-whisper 的 CUDA 后端（nvidia-ctranslate2）。
+# 默认 false（镜像更小，纯 CPU）。构建 GPU 版时传 --build-arg ENABLE_CUDA=true，
+# 并在部署机安装 NVIDIA 驱动 + nvidia-container-toolkit，配合 docker-compose
+# 的 WHISPER_DEVICE=cuda / WHISPER_COMPUTE_TYPE=float16 使用。
+ARG ENABLE_CUDA=false
 
 # ==================== 环境变量 ====================
 ENV PYTHONUNBUFFERED=1 \
@@ -58,6 +63,10 @@ WORKDIR ${APP_HOME}
 COPY requirements.txt .
 RUN set -eux; \
     pip install --no-cache-dir -r requirements.txt; \
+    # 可选 CUDA 后端：faster-whisper 的 GPU 推理依赖 ctranslate2 的 CUDA 版（nvidia-ctranslate2）
+    if [ "$ENABLE_CUDA" = "true" ]; then \
+        pip install --no-cache-dir "nvidia-ctranslate2>=4.0"; \
+    fi; \
     # 验证关键包安装成功
     python -c "import fastapi; import uvicorn; import celery; import redis; import httpx; import sqlalchemy; print('All dependencies verified')"
 

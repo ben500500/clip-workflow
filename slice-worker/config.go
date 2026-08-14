@@ -146,6 +146,45 @@ func GetFFmpegVersion() string {
 	return "unknown"
 }
 
+// hardwareEncoders 本系统支持的硬件编码器白名单（三期 GPU 加速编码候选）。
+// 顺序即优先级，与 engines/slice.py 的 detect_best_encoder() 保持一致。
+// NVENC 需 ffmpeg 显式启用 --enable-nvenc（系统 apt ffmpeg 一般不带，需 NVIDIA 版）；
+// videotoolbox 为 macOS 内置。
+var hardwareEncoders = []string{
+	"hevc_videotoolbox",
+	"h264_videotoolbox",
+	"h264_nvenc",
+	"hevc_nvenc",
+}
+
+// GetEncoderCapabilities 检测本机 ffmpeg 支持的硬件编码器列表。
+//
+// 通过 `ffmpeg -encoders` 输出逐一匹配白名单。仅用于「能力上报」，
+// 供后端在未来做 GPU 节点自动分派（预留接口）时判断某节点能否处理
+// 硬件编码任务；当前单机自动模式下仅作为节点信息展示，不影响任务下发。
+//
+// 检测失败（ffmpeg 缺失/无权限）时返回空列表，调用方照常上报空能力，
+// 后端/前端按「无硬件编码能力」处理，不阻塞节点上线。
+func GetEncoderCapabilities() []string {
+	cmd := exec.Command("ffmpeg", "-hide_banner", "-encoders")
+	out, err := cmd.Output()
+	if err != nil {
+		return []string{}
+	}
+
+	output := string(out)
+	capabilities := []string{}
+	for _, enc := range hardwareEncoders {
+		// ffmpeg -encoders 输出的编码器行格式形如：
+		//  V....D h264_nvenc            NVIDIA NVENC H.264 encoder (codec h264)
+		// 用「编码器名 + 空格/换行」做边界匹配，避免命中如 h264_nvenc_slow 之类的派生名。
+		if strings.Contains(output, enc+" ") || strings.Contains(output, enc+"\n") {
+			capabilities = append(capabilities, enc)
+		}
+	}
+	return capabilities
+}
+
 // GetIP 获取本机IP
 //
 // 使用标准库 net 包遍历本机所有非回环 IPv4 地址，优先返回内网/可达地址。

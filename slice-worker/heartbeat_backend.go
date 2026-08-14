@@ -25,6 +25,8 @@ type WorkerHeartbeatPayload struct {
 	Status              string   `json:"status"`
 	TotalTasksCompleted int      `json:"total_tasks_completed"`
 	TotalTasksFailed    int      `json:"total_tasks_failed"`
+	// 节点硬件编码能力（如 h264_nvenc/hevc_nvenc 等；预留 GPU 节点自动分派接口）
+	EncoderCapabilities []string `json:"encoder_capabilities"`
 }
 
 // sendBackendHeartbeat 向后端 API 上报心跳，把节点信息同步到数据库 worker_nodes 表。
@@ -51,6 +53,7 @@ func (w *Worker) sendBackendHeartbeat() error {
 		Status:              "online",
 		TotalTasksCompleted: int(atomic.LoadInt32(&w.totalCompleted)),
 		TotalTasksFailed:    int(atomic.LoadInt32(&w.totalFailed)),
+		EncoderCapabilities: w.encoderCapabilities,
 	}
 
 	body, err := json.Marshal(payload)

@@ -60,6 +60,17 @@ check_prerequisites() {
         exit 1
     fi
 
+    # GPU 加速 overlay：设置 GPU_ACCELERATION=1 时加载 docker-compose.gpu.yml
+    # （为 ollama/autoclip/slice-worker 透传 NVIDIA GPU，需部署机已装 nvidia-container-toolkit）
+    if [ "${GPU_ACCELERATION:-0}" = "1" ]; then
+        if [ -f "docker-compose.gpu.yml" ]; then
+            COMPOSE_CMD="$COMPOSE_CMD -f docker-compose.yml -f docker-compose.gpu.yml"
+            log_info "已启用 GPU 加速 overlay（docker-compose.gpu.yml）"
+        else
+            log_warn "GPU_ACCELERATION=1 但未找到 docker-compose.gpu.yml，忽略 GPU overlay"
+        fi
+    fi
+
     # 检查 Docker 运行状态
     if ! docker info &> /dev/null; then
         log_error "Docker 守护进程未运行。请先启动 Docker。"
