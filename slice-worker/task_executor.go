@@ -205,6 +205,11 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		}
 	}
 
+	// 字幕对齐源字幕打码区域开关（默认开启）：关闭时透传给引擎 --subtitle-align-mask 0
+	if task.SubtitleAlignMask != nil && !*task.SubtitleAlignMask {
+		args = append(args, "--subtitle-align-mask", "0")
+	}
+
 	// 恒定水印/角标打码：透传给引擎 --watermark-mask（打掉片源固定水印，独立开关）
 	if len(task.WatermarkMask) > 0 {
 		enabled, _ := task.WatermarkMask["enabled"].(bool)

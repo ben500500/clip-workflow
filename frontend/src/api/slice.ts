@@ -92,6 +92,9 @@ export const sliceApi = {
       subtitle_mask_bottom_ratio?: number;
       // 打码时间轴整体偏移（秒）：字幕比SRT晚出现用正值延后（0.5=延后0.5秒）
       subtitle_mask_srt_offset?: number;
+      // 字幕对齐源字幕打码区域（默认开启）：开启源字幕打码并检测到字幕区域时，
+      // 把 ASR 字幕默认位置对齐到打码区域（与被打掉的源字幕位置重合）
+      subtitle_align_mask?: boolean;
       // 恒定水印/角标打码：打掉片源固定水印（独立开关）
       watermark_mask_enabled?: boolean;
       watermark_mask_style?: 'delogo' | 'mosaic' | 'blur' | 'fill';

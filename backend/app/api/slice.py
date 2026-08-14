@@ -175,6 +175,9 @@ class SliceRunRequest(BaseModel):
     # 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；负值/调小让字幕文字更紧凑，调大则字距变宽）。
     # 不传用引擎默认值 SUBTITLE_SPACING。
     subtitle_spacing: Optional[int] = None
+    # 字幕对齐源字幕打码区域开关（默认 True 开启）：开启源字幕打码并检测到字幕区域时，
+    # 把 ASR 字幕默认位置对齐到打码区域（与被打掉的源字幕位置重合）；关闭则用默认底边距。
+    subtitle_align_mask: bool = True
     # 字幕样式（default=白字黑边+半透明黑底；custom=自定义字体色/边框色且无底色）。
     # 仅在 subtitle_enabled 开启且为 custom 时生效。
     subtitle_style: Optional[str] = None
@@ -882,6 +885,7 @@ async def _publish_to_worker(
     text_overlays_config: Optional[list] = None,
     subtitle_mask_config: Optional[dict] = None,
     watermark_mask_config: Optional[dict] = None,
+    subtitle_align_mask: bool = True,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -954,6 +958,8 @@ async def _publish_to_worker(
         "text_overlays": text_overlays_config,
         # 源视频字幕打码（可选，Go Worker 透传给引擎 --subtitle-mask）
         "subtitle_mask": subtitle_mask_config,
+        # 字幕对齐源字幕打码区域（默认开启，Go Worker 透传给引擎 --subtitle-align-mask）
+        "subtitle_align_mask": subtitle_align_mask,
         # 恒定水印/角标打码（可选，Go Worker 透传给引擎 --watermark-mask）
         "watermark_mask": watermark_mask_config,
         "output": {
@@ -1001,6 +1007,7 @@ async def _dispatch_celery(
     text_overlays_config: Optional[list] = None,
     subtitle_mask_config: Optional[dict] = None,
     watermark_mask_config: Optional[dict] = None,
+    subtitle_align_mask: bool = True,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -1032,6 +1039,7 @@ async def _dispatch_celery(
         text_overlays_config=text_overlays_config,
         subtitle_mask_config=subtitle_mask_config,
         watermark_mask_config=watermark_mask_config,
+        subtitle_align_mask=subtitle_align_mask,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -1388,6 +1396,7 @@ async def run_slice(
         dedupe_config=data.dedupe_config,
         source_bucket=source_bucket,
         source_file_key=source_file_key,
+        subtitle_align_mask=data.subtitle_align_mask,
         status="pending",
         progress=0.0,
     )
@@ -1453,6 +1462,7 @@ async def run_slice(
             text_overlays_config,
             subtitle_mask_config,
             watermark_mask_config,
+            data.subtitle_align_mask,
         )
 
         if not published:
@@ -1484,6 +1494,7 @@ async def run_slice(
                 text_overlays_config,
                 subtitle_mask_config,
                 watermark_mask_config,
+                data.subtitle_align_mask,
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
@@ -1906,6 +1917,7 @@ async def retry_slice_task(
         badges_config=task.badges_config,
         vert2horiz_config=task.vert2horiz_config,
         subtitle_config=task.subtitle_config,
+        subtitle_align_mask=getattr(task, "subtitle_align_mask", True),
         subtitle_mask_config=task.subtitle_mask_config,
         text_overlays_config=task.text_overlays_config,
         watermark_mask_config=task.watermark_mask_config,
@@ -1939,6 +1951,7 @@ async def retry_slice_task(
             task.text_overlays_config,
             task.subtitle_mask_config,
             task.watermark_mask_config,
+            getattr(task, "subtitle_align_mask", True),
         )
 
         if not published:
@@ -1969,6 +1982,7 @@ async def retry_slice_task(
                 task.text_overlays_config,
                 task.subtitle_mask_config,
                 task.watermark_mask_config,
+                getattr(task, "subtitle_align_mask", True),
             )
         except Exception as e:
             new_task.status = "failed"

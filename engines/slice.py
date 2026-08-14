@@ -1035,9 +1035,9 @@ def build_watermark_filter(wm: dict) -> str:
 # 默认 0.22→FontSize 22，约占画面高度 5.5%~6%，比历史默认 0.30 进一步降低，
 # 更显轻盈不遮挡画面。横屏/竖屏均清晰可读。用户可通过配置调大或调小。
 SUBTITLE_FONT_RATIO = 0.22
-# 字幕字间距（ASS Spacing，单位像素）。用户反馈原字体自带字距偏宽，默认 -1 进一步缩小让字幕文字更紧凑；
+# 字幕字间距（ASS Spacing，单位像素）。用户反馈原字体自带字距偏宽，默认 -2 进一步缩小让字幕文字更紧凑；
 # 可通过配置项调大或调小。
-SUBTITLE_SPACING = -1
+SUBTITLE_SPACING = -2
 # 字幕距底边距离（相对输出高度比例，越小越贴近画面底部；用户反馈原 0.08 偏高，调低到 0.05 更贴底）
 SUBTITLE_BOTTOM_RATIO = 0.05
 
@@ -1353,12 +1353,16 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
                   spacing: Optional[int] = None,
                   style: Optional[str] = None,
                   font_color: Optional[str] = None,
-                  border_color: Optional[str] = None) -> None:
+                  border_color: Optional[str] = None,
+                  margin_v: Optional[int] = None) -> None:
     """用 ffmpeg subtitles filter 把字幕烧录到成品视频。
 
     带字体、样式与描边，保证中文字幕清晰可读；输出为重新编码的视频。
     font_ratio: 字幕字号（相对输出视频高度的比例，不传用默认值 SUBTITLE_FONT_RATIO）。
     spacing: 字幕字间距（ASS Spacing 像素，不传用默认值 SUBTITLE_SPACING）。
+    margin_v: 字幕距底边距离（像素）。不传用默认值 SUBTITLE_BOTTOM_RATIO；
+        开启源字幕对齐时传入检测到的打码区域底边到视频底部的像素距离，
+        使 ASR 字幕位置与源字幕打码区域重合。
     style: 字幕样式（SUBTITLE_STYLE_DEFAULT=白字黑边+半透明黑底 / SUBTITLE_STYLE_CUSTOM=可
         自定义字体色与边框色，且无底色）。不传用默认样式。
     font_color / border_color: 自定义样式的字体色/边框色（CSS 十六进制 #RRGGBB）。
@@ -1377,6 +1381,11 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
     font_ratio = font_ratio if font_ratio is not None else SUBTITLE_FONT_RATIO
     # 字幕字间距：未指定时用默认值（默认 0 更紧凑），用户可通过切片配置调节
     spacing = spacing if spacing is not None else SUBTITLE_SPACING
+    # 字幕距底边距离（像素）：未指定时用默认比例 SUBTITLE_BOTTOM_RATIO（与原实现一致，
+    # 按 1000 基准换算成固定像素值）。开启源字幕对齐时由调用方传入打码区域底边到
+    # 视频底部的像素距离，使 ASR 字幕默认位置与源字幕打码区域重合。
+    if margin_v is None:
+        margin_v = int(SUBTITLE_BOTTOM_RATIO * 1000)
 
     # subtitles filter 需要能定位到字幕文件；路径含特殊字符时需转义冒号/逗号/引号
     srt_esc = (subtitle_srt.replace("\\", "\\\\")
@@ -1403,7 +1412,7 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
     sub_filter = (
         f"subtitles=filename='{srt_esc}'"
         f":force_style='FontName=Noto Sans CJK SC,FontSize={font_ratio * 100:.0f}"
-        f",{sub_style},MarginV={SUBTITLE_BOTTOM_RATIO * 1000:.0f}"
+        f",{sub_style},MarginV={int(margin_v)}"
         f",Spacing={int(spacing)}'"
     )
 
@@ -2199,6 +2208,22 @@ def _subtitle_mask_area(cfg: dict, width: int, height: int) -> tuple[int, int, i
     return x, y, w, h
 
 
+def subtitle_mask_bottom_margin(cfg: dict, width: int, height: int) -> int:
+    """计算源字幕打码区域底边到视频底部的像素距离，供 ASR 字幕对齐到打码区域使用。
+
+    开启源字幕对齐时，把 ASR 字幕的 MarginV 设为该值，使新烧录字幕默认落在
+    源字幕打码区域内、与被打掉的源字幕位置重合。若区域计算失败返回 -1（调用方
+    回退到默认底边距）。
+    """
+    if width <= 0 or height <= 0:
+        return -1
+    x, y, w, h = _subtitle_mask_area(cfg, width, height)
+    if w <= 0 or h <= 0:
+        return -1
+    # 区域底边到视频底部的像素距离 = height - (y + h)
+    return max(0, height - (y + h))
+
+
 def build_subtitle_mask_filter(cfg: dict, enable: str) -> str:
     """构造源字幕打码 filter_complex 片段（基于 [0:v] 输入，输出标签 [masked]）。
 
@@ -2453,6 +2478,13 @@ def main():
         help="字幕字间距（ASS Spacing 像素，可选，默认 0 更紧凑）。调小/为负可让字幕文字更紧凑，调大则字距变宽",
     )
     parser.add_argument(
+        "--subtitle-align-mask",
+        type=lambda v: str(v).lower() not in ("0", "false", "no", "off", ""),
+        default=True,
+        help="字幕对齐源字幕打码区域（布尔，默认开启）。开启源字幕打码并检测到字幕区域时，"
+             "把 ASR 字幕默认位置对齐到打码区域（与被打掉的源字幕位置重合）；关闭则用默认底边距。",
+    )
+    parser.add_argument(
         "--subtitle-style",
         default=None,
         help="字幕样式（default=白字黑边+半透明黑底；custom=自定义字体色/边框色且无底色，可选，默认 default）",
@@ -2510,6 +2542,8 @@ def main():
     subtitle_font_ratio = args.subtitle_font_ratio
     # 字幕字间距：用户显式指定 --subtitle-spacing 时以用户值为准，未指定时用默认值
     subtitle_spacing = args.subtitle_spacing
+    # 字幕对齐源字幕打码区域开关（默认开启）：开启后 ASR 字幕位置对齐到检测到的源字幕打码区域
+    subtitle_align_mask = bool(args.subtitle_align_mask)
 
     os.makedirs(args.output_dir, exist_ok=True)
     cuts = read_cutlist(args.cutlist)
@@ -2742,12 +2776,21 @@ def main():
                     sub_srt = os.path.join(tmp, "clip_subtitle.srt")
                     build_clip_subtitle(args.subtitle, seg_times, sub_srt, speech_windows)
                     sub_out = out_path + ".sub.mp4"
+                    # 源字幕对齐：开启对齐开关且有源字幕打码时，把 ASR 字幕默认位置
+                    # 对齐到检测到的打码区域（与被打掉的源字幕位置重合）。
+                    margin_v = None
+                    if subtitle_align_mask and subtitle_mask:
+                        cur_w, cur_h = ffprobe_size(out_path)
+                        m = subtitle_mask_bottom_margin(subtitle_mask, cur_w, cur_h)
+                        if m >= 0:
+                            margin_v = m
                     burn_subtitle(out_path, sub_srt, sub_out, threads=threads, encoder=encoder,
                                   font_ratio=subtitle_font_ratio,
                                   spacing=subtitle_spacing,
                                   style=args.subtitle_style,
                                   font_color=args.subtitle_color,
-                                  border_color=args.subtitle_border_color)
+                                  border_color=args.subtitle_border_color,
+                                  margin_v=margin_v)
                     os.replace(sub_out, out_path)
             # 恒定水印/角标打码：切片+字幕完成后，打掉片源固定水印（全程打码，
             # 水印是恒定元素无时间轴可言；区域由自动检测或手动 x/y/width/height 指定）。

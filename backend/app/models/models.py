@@ -278,6 +278,8 @@ class SliceTask(Base):
     vert2horiz_config = Column(JSON, nullable=True)
     # 字幕烧录配置（可选，{"enabled": bool, "srt": str}；重试时保留，避免重复 ASR）
     subtitle_config = Column(JSON, nullable=True)
+    # 字幕对齐源字幕打码区域开关（默认 True；重试时保留）
+    subtitle_align_mask = Column(Boolean, default=True, nullable=False)
     # 源视频字幕打码配置（可选，{"enabled": bool, "style": str, ...}；重试时保留）
     subtitle_mask_config = Column(JSON, nullable=True)
     # 恒定水印/角标打码配置（可选，打掉片源固定水印；重试时保留）
