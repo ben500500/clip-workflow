@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // TaskExecutor 任务执行器
@@ -240,6 +241,10 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 	// 并行读取 stdout / stderr，避免管道阻塞
 	outputs := make(chan string, 64)
 	errCh := make(chan error, 2)
+	// 环形缓冲：保留引擎 stderr 最近 N 行，失败时拼进错误消息方便排查根因
+	const stderrBufLines = 60
+	stderrBuf := make([]string, 0, stderrBufLines)
+	var stderrMu sync.Mutex
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
@@ -259,7 +264,16 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 			taskIDShort = taskIDShort[:8]
 		}
 		for scanner.Scan() {
-			fmt.Printf("[engine] %s %s\n", taskIDShort, scanner.Text())
+			line := scanner.Text()
+			fmt.Printf("[engine] %s %s\n", taskIDShort, line)
+			// 环形缓冲：满了丢弃最旧
+			stderrMu.Lock()
+			if len(stderrBuf) >= stderrBufLines {
+				copy(stderrBuf, stderrBuf[1:])
+				stderrBuf = stderrBuf[:stderrBufLines-1]
+			}
+			stderrBuf = append(stderrBuf, line)
+			stderrMu.Unlock()
 		}
 	}()
 
@@ -275,6 +289,19 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		KillProcessTree(cmd)
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("任务超时或已取消: %w", ctx.Err())
+		}
+		// 引擎失败：把 stderr 最近内容拼进错误消息，便于定位打码/检测/ffmpeg 失败根因
+		stderrMu.Lock()
+		engineErrTail := strings.Join(stderrBuf, "\n")
+		stderrMu.Unlock()
+		if engineErrTail != "" {
+			if len(engineErrTail) > 3000 {
+				engineErrTail = "...[截断]...\n" + engineErrTail[len(engineErrTail)-3000:]
+			}
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				return nil, fmt.Errorf("切片引擎执行失败，退出码: %d\n--- 引擎输出 ---\n%s", exitErr.ExitCode(), engineErrTail)
+			}
+			return nil, fmt.Errorf("切片引擎执行失败: %w\n--- 引擎输出 ---\n%s", err, engineErrTail)
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return nil, fmt.Errorf("切片引擎执行失败，退出码: %d", exitErr.ExitCode())
