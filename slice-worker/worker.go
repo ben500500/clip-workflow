@@ -101,9 +101,11 @@ func (w *Worker) SetCallbacks(
 }
 
 // Run 启动Worker主循环
-// checkEngine 启动时对引擎做 py_compile 自检，尽早暴露 Python 版本不兼容
+// checkEngine 启动时对引擎做自检，尽早暴露 Python 版本不兼容
 // （引擎要求 Python 3.10+，低版本会抛 str|None TypeError）或引擎文件损坏问题
 // ——否则要等第一条任务才会失败，且失败信息容易误导排查。
+// 注意：不能用 `python3 -m py_compile`——engines 目录在 163 是只读 bind mount
+// （:ro），py_compile 写 __pycache__ 缓存会失败；用 ast.parse 纯读取检查语法。
 func (w *Worker) checkEngine() {
 	enginePath := filepath.Join(w.config.EnginesPath, "slice.py")
 	if _, err := os.Stat(enginePath); err != nil {
@@ -111,7 +113,12 @@ func (w *Worker) checkEngine() {
 		return
 	}
 	py := pythonBinary()
-	cmd := exec.Command(py, "-m", "py_compile", enginePath)
+	script := "import sys,ast\n" +
+		"if sys.version_info < (3,10):\n" +
+		"  sys.stderr.write('Python %d.%d < 3.10, engine requires 3.10+\\n' % sys.version_info[:2]); sys.exit(1)\n" +
+		"ast.parse(open(sys.argv[1]).read())\n" +
+		"print('Python %d.%d OK' % sys.version_info[:2])"
+	cmd := exec.Command(py, "-c", script, enginePath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -122,7 +129,7 @@ func (w *Worker) checkEngine() {
 			py, err, msg)
 		return
 	}
-	w.log("info", "引擎自检通过: Python=%s, 引擎=%s", py, enginePath)
+	w.log("info", "引擎自检通过: %s, 引擎=%s", strings.TrimSpace(string(out)), enginePath)
 }
 
 func (w *Worker) Run(ctx context.Context) error {
