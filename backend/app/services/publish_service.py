@@ -106,18 +106,35 @@ class VideoChannelPublisher:
         chrome_debug_port: int = 9222,
         cookie_file: Optional[str] = None,
         require_manual_confirm: bool = True,
+        cdp_url: Optional[str] = None,
+        cdp_token: Optional[str] = None,
     ):
         self.chrome_debug_port = chrome_debug_port
         self.cookie_file = cookie_file
         self.require_manual_confirm = require_manual_confirm
+        # 多运营者（R19）：显式 CDP 目标地址 + 短期访问 token（经 cdp_proxy 鉴权转发）
+        self.cdp_url = cdp_url
+        self.cdp_token = cdp_token
         self.browser = None
         self.page = None
         self._playwright = None
 
     async def _connect(self) -> None:
-        """连接常驻 Chromium（CDP）或启动独立浏览器。"""
+        """连接常驻 Chromium（CDP）或启动独立浏览器。
+
+        多运营者（flag=true）时使用 cdp_url + cdp_token（注入 Authorization 头，R19）；
+        否则按 chrome_debug_port 连 rpa_worker（一期旧链路，零侵入）。
+        """
         self._playwright = await _get_playwright()
-        if self.chrome_debug_port:
+        if self.cdp_url:
+            # R19：握手前注入 Authorization: Bearer <token>，由 cdp_proxy 校验后转发
+            headers = {}
+            if self.cdp_token:
+                headers["Authorization"] = f"Bearer {self.cdp_token}"
+            self.browser = await self._playwright.chromium.connect_over_cdp(
+                self.cdp_url, headers=headers
+            )
+        elif self.chrome_debug_port:
             from app.config import settings as s
             self.browser = await self._playwright.chromium.connect_over_cdp(
                 f"http://{s.CHROME_DEBUG_HOST}:{self.chrome_debug_port}"
@@ -190,9 +207,14 @@ class VideoChannelPublisher:
             screenshot_path = await self._take_screenshot()
 
             if self.require_manual_confirm:
-                # 保留已填好表单的 tab，供 confirm 复用点击发布
+                # 保留已填好表单的 tab，供 confirm 复用点击发布（进程内缓存）
                 if task_id:
                     _cache_pending_tab(task_id, self.browser, self.page)
+                    # 多运营者（R13/R18）：同时把结构化 payload 外移到 Redis，
+                    # 供 worker 重启/多副本时 confirm 幂等重填（含 selector 版本校验）
+                    await self._save_pending_payload(
+                        task_id, title, description, tags, cover_file_key, mini_program_link
+                    )
                     # 连接对象交由缓存管理，不在此关闭
                     self.browser = None
                     self.page = None
@@ -390,11 +412,93 @@ class VideoChannelPublisher:
         except Exception:
             return self.page.url, None
 
+    async def _save_pending_payload(
+        self,
+        task_id: str,
+        title: str,
+        description: str,
+        tags: Optional[list],
+        cover_file_key: Optional[str],
+        mini_program_link: Optional[str],
+    ) -> None:
+        """把待确认发布的结构化 payload 外移到 Redis（R13/R18）。
+
+        不缓存 page 对象；存标题/描述/标签/封面key/小程序链接 + selector 版本号，
+        confirm 时据此全量幂等重填（绝不半填）。TTL 30min。
+        """
+        try:
+            from app.services import multi_operator
+            payload = {
+                "account_id": None,  # 由 celery 层回填 account_id
+                "profile_id": None,
+                "cdp_url": self.cdp_url or (
+                    f"http://{self.chrome_debug_port}" if self.chrome_debug_port else None
+                ),
+                "title": title,
+                "description": description,
+                "tags": tags or [],
+                "cover_key": cover_file_key,
+                "mini_program_link": mini_program_link,
+                # 选择器集中管理并带版本号（R18）：confirm 前校验页面结构匹配
+                "selector_version": "v1",
+            }
+            await multi_operator.save_pending(task_id, payload)
+        except Exception as e:
+            logger.warning(f"save pending payload to Redis failed: {e}")
+
+    async def _refill_pending_form(self, payload: dict, task_id: Optional[str] = None) -> bool:
+        """按 Redis payload 全量幂等重填表单（R13/R18）。
+
+        重填前先校验 selector_version 与当前页面结构是否匹配；不匹配即冻结（置
+        selector_mismatch）并触发人工介入，绝不静默乱填/半填。返回 False 表示失败。
+        """
+        try:
+            # R18：前置 selector 校验 —— 以关键表单控件哨兵存在性为判据
+            if not await self._selector_ok():
+                logger.error("selector version mismatch, freeze pending for manual intervention")
+                try:
+                    from app.services import multi_operator
+                    if task_id:
+                        await multi_operator.freeze_pending(task_id)
+                except Exception:
+                    pass
+                return False
+            # 清空再填（全量幂等），避免半填
+            if payload.get("title"):
+                await self._set_title(payload["title"])
+            if payload.get("description"):
+                await self._set_description(payload["description"])
+            if payload.get("tags"):
+                await self._set_tags(payload["tags"])
+            if payload.get("cover_key"):
+                await self._set_cover(payload["cover_key"])
+            if payload.get("mini_program_link"):
+                await self._attach_mini_program(payload["mini_program_link"])
+            return True
+        except Exception as e:
+            logger.error(f"refill pending form failed: {e}", exc_info=True)
+            return False
+
+    async def _selector_ok(self) -> bool:
+        """前置校验当前页面结构是否匹配已知 selector 版本（R18）。
+
+        以标题输入框 + 发布按钮等关键控件哨兵存在性为判据；微信改版/页面异常时返回 False。
+        """
+        try:
+            title = await self.page.query_selector("input[placeholder*='标题'], [class*='title'] input")
+            publish = await self.page.query_selector(
+                "[class*='publish'], [class*='release'], button:has-text('发表'), button:has-text('发布')"
+            )
+            return title is not None and publish is not None
+        except Exception:
+            return False
+
     async def confirm_publish(self, task_id: Optional[str] = None) -> dict:
         """Confirm a pending publish by clicking publish on the prepared tab.
 
         优先复用 publish() 阶段缓存且已填好表单的 tab；若缓存失效（worker
-        重启/超时/页面关闭），退化为重新打开创作中心尽力点击发布。
+        重启/超时/页面关闭），则从 Redis payload 幂等重填后再点击发布（R13/R18），
+        最后退化为重新打开创作中心尽力点击发布。
         """
         # 1. 复用缓存的待确认 tab
         entry = _pop_pending_tab(task_id) if task_id else None
@@ -416,7 +520,44 @@ class VideoChannelPublisher:
                 await self._close_connection()
                 # 继续尝试 fallback
 
-        # 2. fallback：重新连接并打开创作中心
+        # 2. fallback：从 Redis payload 幂等重填（R13/R18）后再点击发布
+        pending = None
+        if task_id:
+            try:
+                from app.services import multi_operator
+                pending = await multi_operator.get_pending(task_id)
+            except Exception:
+                pending = None
+        if pending:
+            try:
+                await self._connect()
+                await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
+                refilled = await self._refill_pending_form(pending, task_id=task_id)
+                if not refilled:
+                    await self._close_connection()
+                    # R18：selector 不匹配已冻结，人工介入，0 误发
+                    return {
+                        "success": False,
+                        "error": "selector_mismatch: form structure changed, pending frozen for manual intervention",
+                    }
+                await self._click_publish()
+                published_url, published_id = await self._wait_for_publish()
+                await self._close_connection()
+                try:
+                    await multi_operator.delete_pending(task_id)
+                except Exception:
+                    pass
+                return {
+                    "success": True,
+                    "published_url": published_url,
+                    "published_id": published_id,
+                }
+            except Exception as e:
+                logger.error(f"Confirm publish via redis refill failed: {e}", exc_info=True)
+                await self._close_connection()
+                return {"success": False, "error": str(e)}
+
+        # 3. 兜底：重新连接并打开创作中心尽力点击发布（一期旧行为）
         try:
             await self._connect()
             await self.page.goto(self.CREATOR_URL, wait_until="networkidle")

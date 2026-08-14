@@ -80,6 +80,15 @@ celery_app.conf.update(
             "task": "app.celery.tasks.check_cookie_status",
             "schedule": settings.COOKIE_CHECK_INTERVAL_SECONDS,
         },
+        # 多运营者（R15/R12）：周期同步启用 profile 到 Redis 路由表 + 秒级探活失效闭环
+        "multi-operator-profile-sync": {
+            "task": "app.celery.tasks.sync_multi_operator_profiles",
+            "schedule": 60.0,
+        },
+        "multi-operator-route-watch": {
+            "task": "app.celery.tasks.watch_multi_operator_routes",
+            "schedule": 10.0,
+        },
     },
 )
 
@@ -1051,10 +1060,35 @@ def task_publish_video(self, publish_task_id: str):
     self.update_state(state="STARTED", meta={"progress": 0, "message": "正在启动发布任务…"})
 
     downloaded_video_path = None
+    quota_acquired = False
     try:
         publish_task_data = run_async(_get_publish_task(publish_task_id))
         if not publish_task_data:
             raise Exception(f"Publish task {publish_task_id} not found")
+
+        # 多运营者（R22）：配额双闸门 + inflight 信号量（Lua 原子，nil 兜底）
+        try:
+            from app.services import multi_operator
+            if run_async(multi_operator.multi_operator_enabled()):
+                operator_id = publish_task_data.get("operator_id")
+                account_id = publish_task_data.get("account_id")
+                if operator_id and account_id:
+                    quota_acquired = run_async(multi_operator.acquire_quota(
+                        account_id, operator_id,
+                        acct_limit=20, op_limit=20,
+                        op_inflight_limit=1, global_inflight_limit=4,
+                    ))
+                    if not quota_acquired:
+                        raise Exception("Quota exceeded or concurrent slot busy (Lua dual-gate)")
+        except Exception as e:
+            # 未开启或配额异常：日志但不阻断一期旧链路（除非是明确的配额拒绝）
+            if "Quota exceeded" in str(e) or "concurrent slot busy" in str(e):
+                run_async(_update_publish_task_status(
+                    publish_task_id, status="failed",
+                    error_message=f"multi_operator quota: {e}",
+                ))
+                self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+                raise
 
         platform = publish_task_data["platform"]
         publisher = get_publisher(
@@ -1062,6 +1096,8 @@ def task_publish_video(self, publish_task_id: str):
             chrome_debug_port=publish_task_data.get("chrome_debug_port", settings.CHROME_DEBUG_PORT),
             cookie_file=publish_task_data.get("cookie_file"),
             require_manual_confirm=publish_task_data.get("require_manual_confirm", True),
+            cdp_url=publish_task_data.get("cdp_url"),
+            cdp_token=publish_task_data.get("cdp_token"),
         )
 
         self.update_state(
@@ -1141,6 +1177,15 @@ def task_publish_video(self, publish_task_id: str):
                 os.unlink(downloaded_video_path)
             except OSError:
                 pass
+        # 多运营者（R22）：释放 inflight slot（成功/失败/超时均释放，跨日不误顶）
+        if quota_acquired:
+            try:
+                from app.services import multi_operator
+                operator_id = publish_task_data.get("operator_id")
+                if operator_id:
+                    run_async(multi_operator.release_inflight(operator_id))
+            except Exception:
+                pass
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
@@ -1158,6 +1203,8 @@ def confirm_publish_worker(self, publish_task_id: str):
             publish_task_data["platform"],
             chrome_debug_port=publish_task_data.get("chrome_debug_port", settings.CHROME_DEBUG_PORT),
             require_manual_confirm=True,
+            cdp_url=publish_task_data.get("cdp_url"),
+            cdp_token=publish_task_data.get("cdp_token"),
         )
         result = run_async(publisher.confirm_publish(task_id=publish_task_id))
         if not result.get("success"):
@@ -1233,6 +1280,48 @@ def check_cookie_status(self):
         return results
     except Exception as e:
         logger.error(f"Cookie status check failed: {e}")
+        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+        raise
+
+
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=60)
+def sync_multi_operator_profiles(self):
+    """多运营者（R15）：把启用的 PublishProfile 同步到 Redis 路由表 + `pub:profiles`。
+
+    仅当 MULTI_OPERATOR_ENABLED 开启时执行；为每个 profile 原子分配端口并写路由表，
+    供 rpa_worker 启动/重建 Chromium 与 cdp_proxy 多实例使用。灰度关闭时零侵入跳过。
+    """
+    try:
+        from app.services import multi_operator
+        if not run_async(multi_operator.multi_operator_enabled()):
+            return {"enabled": False}
+        profiles = run_async(multi_operator.sync_profiles_from_db())
+        logger.info("synced %d multi-operator profiles to route table", len(profiles))
+        self.update_state(state="SUCCESS", meta={"progress": 100, "count": len(profiles)})
+        return {"enabled": True, "count": len(profiles), "profiles": profiles}
+    except Exception as e:
+        logger.error(f"sync_multi_operator_profiles failed: {e}")
+        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+        raise
+
+
+@celery_app.task(bind=True, max_retries=0)
+def watch_multi_operator_routes(self):
+    """多运营者（R12）：watcher 秒级探活路由表，Chromium 崩溃/异常时置 expired。
+
+    每 10s 探一次（beat 调度），连续 2 次失败（≈20s）置 expired，调度跳过该 operator。
+    """
+    try:
+        from app.services import multi_operator
+        if not run_async(multi_operator.multi_operator_enabled()):
+            return {"enabled": False}
+        summary = run_async(multi_operator.check_route_heartbeats())
+        expired = [k for k, v in summary.items() if v == "expired"]
+        if expired:
+            logger.warning("route heartbeat expired for accounts: %s", expired)
+        return {"enabled": True, "summary": summary}
+    except Exception as e:
+        logger.error(f"watch_multi_operator_routes failed: {e}")
         self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
 
@@ -1317,7 +1406,27 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
             "require_manual_confirm": task.require_manual_confirm,
             "video_account_id": str(task.video_account_id) if task.video_account_id else None,
             "mini_program_id": str(task.mini_program_id) if task.mini_program_id else None,
+            "operator_id": str(task.operator_id) if task.operator_id else None,
+            "account_id": str(task.video_account_id) if task.video_account_id else None,
         }
+
+        # 多运营者（R14/R19/R22）：flag=true 时按路由表解析端口并签发 CDP token
+        try:
+            from app.services import multi_operator
+            if await multi_operator.multi_operator_enabled():
+                account_id = data.get("account_id")
+                if account_id:
+                    port = await multi_operator.resolve_port(account_id)
+                    if port:
+                        # 路由表端口指向 cdp_proxy 鉴权口（R19）
+                        data["cdp_url"] = f"http://{settings.CHROME_DEBUG_HOST}:{port}"
+                        # 签发短期 token：actor=operator_id（号主）
+                        token = await multi_operator.issue_cdp_token(
+                            data.get("operator_id") or account_id, account_id
+                        )
+                        data["cdp_token"] = token
+        except Exception as e:
+            logger.warning(f"multi_operator route/token resolution failed: {e}")
 
         if profile:
             data["chrome_debug_port"] = profile.chrome_debug_port

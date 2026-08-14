@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 # ---- Redis key 前缀 ----
 ROUTE_PREFIX = "pub:route:"            # hash：<account_id> -> 路由详情
+PROFILES_KEY = "pub:profiles"          # json：启用 profile 列表（rpa 启动 Chromium/proxy 用）
 PORTS_KEY = "pub:ports"                # set：已分配端口池
 PENDING_PREFIX = "pub:pending:"        # string(json)：<task_id> -> 结构化 payload
 QUOTA_ACCT_PREFIX = "pub:acct_used:"   # hash：<acct_id> -> daily_used
@@ -208,6 +209,55 @@ async def set_ready(account_id) -> None:
         await r.close()
 
 
+async def check_route_heartbeats() -> dict:
+    """watcher 秒级探活（R12）：对每条 ready/logging 路由探 Chromium /json/version，
+
+    连续 2 次失败（≈20s）置 expired，调度跳过该 operator，不等 30min 登录态心跳。
+    返回 {account_id: status} 摘要。
+    """
+    import httpx
+    r = _redis()
+    summary = {}
+    try:
+        keys = [k async for k in r.scan_iter(match=f"{ROUTE_PREFIX}*")]
+        for key in keys:
+            route = await r.hgetall(key)
+            status = route.get("status", "")
+            if status not in ("ready", "logging"):
+                continue
+            account_id = key[len(ROUTE_PREFIX):]
+            port = int(route.get("port") or 0)
+            if not port:
+                continue
+            # 探 cdp_proxy 鉴权口（CHROME_DEBUG_HOST:port）的 /json/version
+            from app.config import settings as _s
+            host = _s.CHROME_DEBUG_HOST
+            ok = False
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(f"http://{host}:{port}/json/version", timeout=3)
+                    ok = resp.status_code == 200
+            except Exception:
+                ok = False
+            # 连续失败计数（存路由表 fail_streak）
+            streak = int(route.get("fail_streak") or 0)
+            if ok:
+                streak = 0
+                await r.hset(key, mapping={"fail_streak": "0", "status": "ready", "last_heartbeat": str(int(time.time()))})
+                summary[account_id] = "ready"
+            else:
+                streak += 1
+                await r.hset(key, "fail_streak", str(streak))
+                if streak >= 2:  # 连续 2 次失败（≈20s）→ expired
+                    await r.hset(key, "status", "expired")
+                    summary[account_id] = "expired"
+                else:
+                    summary[account_id] = "probing"
+    finally:
+        await r.close()
+    return summary
+
+
 def _seconds_until_midnight() -> int:
     now = datetime.utcnow()
     midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -259,6 +309,66 @@ async def get_daily_used(account_id) -> int:
         await r.close()
 
 
+async def get_profiles() -> list:
+    """读取当前启用 profile 列表（rpa_worker 启动/重建 Chromium 与 cdp_proxy 用）。"""
+    r = _redis()
+    try:
+        raw = await r.get(PROFILES_KEY)
+        return json.loads(raw) if raw else []
+    finally:
+        await r.close()
+
+
+async def sync_profiles_from_db() -> list:
+    """从 DB 读取启用的 PublishProfile，为每个 profile 分配端口并写入 Redis 路由表，
+    然后生成 `pub:profiles` 列表（R15：enabled 即注册、端口池 SADD 原子分配、重启不漂移）。
+
+    返回 profile 列表：[{profile_id, port, account_id, profile_dir, operator_id}]。
+    """
+    from sqlalchemy import select
+    from app.database import async_session_factory
+    from app.models.models import PublishProfile, VideoAccount
+
+    profiles_out = []
+    async with async_session_factory() as session:
+        result = await session.execute(select(PublishProfile))
+        profiles = result.scalars().all()
+        for prof in profiles:
+            # 找到该 profile 关联的账号（account_id）
+            account_id = None
+            acc_res = await session.execute(
+                select(VideoAccount).where(VideoAccount.profile_id == prof.id)
+            )
+            acc = acc_res.scalars().first()
+            if acc:
+                account_id = str(acc.id)
+            # 端口池分配（持久化，重启不漂移）：若路由已有端口则复用
+            route = await get_route(account_id) if account_id else None
+            port = int(route.get("port") or 0) if route else 0
+            if not port:
+                port = await alloc_port(str(prof.id)) or PORT_BASE
+            profile_dir = f"/data/chrome-profiles/{prof.id}"
+            if account_id:
+                await register_route(
+                    account_id, port, profile_dir,
+                    prof.operator_id or prof.created_by,
+                )
+            profiles_out.append({
+                "profile_id": str(prof.id),
+                "port": port,
+                "account_id": account_id or "",
+                "profile_dir": profile_dir,
+                "operator_id": str(prof.operator_id) if prof.operator_id else "",
+            })
+    if profiles_out:
+        r = _redis()
+        try:
+            await r.set(PROFILES_KEY, json.dumps(profiles_out))
+        finally:
+            await r.close()
+    return profiles_out
+
+
 # ---- 幂等 pending（主题4：_PENDING_TABS 外移 Redis，R13/R18） ----
 
 
@@ -284,6 +394,24 @@ async def delete_pending(task_id) -> None:
     r = _redis()
     try:
         await r.delete(f"{PENDING_PREFIX}{task_id}")
+    finally:
+        await r.close()
+
+
+async def freeze_pending(task_id, status: str = "selector_mismatch") -> None:
+    """冻结待确认 pending（R18）：selector 校验失败时置 selector_mismatch，触发人工介入。
+
+    冻结后调度不重试、不换 operator，避免 0 误发/半填。
+    """
+    r = _redis()
+    try:
+        key = f"{PENDING_PREFIX}{task_id}"
+        raw = await r.get(key)
+        if raw:
+            data = json.loads(raw)
+            data["selector_mismatch"] = True
+            data["freeze_at"] = str(int(time.time()))
+            await r.setex(key, 1800, json.dumps(data))
     finally:
         await r.close()
 

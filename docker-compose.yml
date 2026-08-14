@@ -407,8 +407,22 @@ services:
       - media_data:/app/media
     # 不再对外暴露 9222 调试端口：backend/worker 经 clip-network 访问 rpa_worker:9222
     # （见 CHROME_DEBUG_HOST=rpa_worker），无需发布到宿主机，避免零凭据接管浏览器。
+    # 健康检查：多实例模式下 probe profiles.json 里的任一 cdp_proxy 端口；
+    # 否则回退一期单实例端口 9222（curl 9222/json/version）。
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:9222/json/version"]
+      test: ["CMD", "python", "-c", "import json,os,urllib.request;\n\
+        try:\n\
+          d=json.load(open('/app/profiles.json'));\n\
+          ports=[p.get('port') for p in d.get('profiles',[])]\n\
+        except Exception:\n\
+          ports=[]\n\
+        ports=ports or [9222]\n\
+        ok=False\n\
+        for p in ports:\n\
+          try:\n\
+            urllib.request.urlopen(f'http://127.0.0.1:{p}/json/version', timeout=5); ok=True; break\n\
+          except Exception: continue\n\
+        import sys; sys.exit(0 if ok else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
