@@ -1011,7 +1011,13 @@ def _format_srt_timestamp(seconds: float) -> str:
 
 
 def read_srt(path: str) -> list[dict]:
-    """解析 SRT 文件为有序字幕记录列表 [{start, end, text}]。"""
+    """解析 SRT 文件为有序字幕记录列表 [{start, end, text}]。
+
+    兼容两种格式：
+      - 标准 SRT：记录块之间有空行（split("\\n\\n")）。
+      - 紧凑 SRT（无空行分隔）：按"序号行 + 时间行"模式退化解析，
+        避免仅解析出第 1 条导致打码时间轴严重缺失。
+    """
     records = []
     if not path or not os.path.isfile(path):
         return records
@@ -1020,8 +1026,44 @@ def read_srt(path: str) -> list[dict]:
             content = f.read()
     except OSError:
         return records
+    content = content.replace("\r\n", "\n")
     # 按空行分块
-    blocks = [b for b in content.replace("\r\n", "\n").split("\n\n") if b.strip()]
+    blocks = [b for b in content.split("\n\n") if b.strip()]
+    if len(blocks) <= 1 and "-->" in content and len(content.splitlines()) >= 4:
+        # 紧凑格式：整份内容可能只有一块，退化为按行切分：
+        # 每条记录 = [可选序号行] + 时间行 + 文本行...
+        compact_records = []
+        lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+        i = 0
+        while i < len(lines):
+            # 跳过纯数字序号行
+            if lines[i].isdigit():
+                i += 1
+            if i >= len(lines):
+                break
+            if "-->" not in lines[i]:
+                i += 1
+                continue
+            time_line = lines[i]
+            i += 1
+            text_parts = []
+            while i < len(lines) and not lines[i].isdigit() and "-->" not in lines[i]:
+                text_parts.append(lines[i])
+                i += 1
+            try:
+                left, right = time_line.split("-->", 1)
+                start = _parse_srt_timestamp(left)
+                end = _parse_srt_timestamp(right)
+                if end <= start:
+                    end = start + 1.0
+                compact_records.append({
+                    "start": start, "end": end,
+                    "text": " ".join(text_parts),
+                })
+            except ValueError:
+                continue
+        if compact_records:
+            return compact_records
     for block in blocks:
         lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
         if len(lines) < 2:
@@ -1551,6 +1593,122 @@ def _bimodal_threshold(values: list[float]) -> float:
             best_var = var
             best_t = v
     return best_t
+
+
+def detect_watermark_region(video: str, max_frames: int = 12) -> Optional[tuple[int, int, int, int]]:
+    """用 OpenCV 从源视频采样帧自动检测恒定水印/角标区域。
+
+    与 detect_subtitle_region 相反：字幕是间歇出现的（presence 接近 0.6），
+    而水印/角标几乎每帧都在（presence 接近 1.0）。这里以"出现频率"为主信号，
+    越接近恒定（pr→1）越加分，间歇出现的对话字幕会被排除。
+
+    返回 (x, y, w, h)；检测失败或 OpenCV 不可用时返回 None（由调用方回退到
+    固定比例区域：默认底部水印带）。
+    """
+    width, height = ffprobe_size(video)
+    if width <= 0 or height <= 0:
+        return None
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+
+    dur = ffprobe_duration(video)
+    if not dur or dur <= 0:
+        return None
+    n = min(max_frames, max(6, int(dur)))
+    times = [dur * (i + 0.5) / n for i in range(n)]
+
+    cap = None
+    try:
+        cap = cv2.VideoCapture(video)
+        if not cap.isOpened():
+            return None
+        dens = np.zeros(height, dtype=np.float64)
+        presence = np.zeros(height, dtype=np.float64)
+        color_acc = np.zeros((height, width), dtype=np.float64)
+        frames = 0
+        for t in times:
+            cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000.0)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            b = frame[:, :, 0].astype(np.int16)
+            g = frame[:, :, 1].astype(np.int16)
+            r = frame[:, :, 2].astype(np.int16)
+            # 金色/黄色 + 白色/浅色（水印/角标最常见配色，与字幕检测一致）
+            gold = (r > 130) & (g > 110) & (b < 160) & (r - b > 50) & (g - b > 40) & (abs(r - g) < 110)
+            white = (r > 170) & (g > 170) & (b > 170) & (abs(r - g) < 45) & (abs(g - b) < 45) & (abs(r - b) < 45)
+            mask = gold | white
+            dens += mask.sum(axis=1)
+            cl = _mask_text_clusters(mask)
+            presence += (cl > 3).astype(np.float64)
+            color_acc += mask.astype(np.float64)
+            frames += 1
+        if frames == 0:
+            return None
+        dens /= float(frames)
+        presence /= float(frames)
+
+        # 主信号 = 出现频率（恒定水印 pr→1 加分；间歇字幕 pr≈0.6 减分）
+        # 同时要求有实际内容（dens 均值 > 0）
+        combo = presence.copy()
+        combo[dens < 0.5] = 0.0
+        k = np.ones(7, dtype=np.float64) / 7.0
+        smooth = np.convolve(combo, k, mode="same")
+        peak = float(smooth.max())
+        if peak < 0.5:
+            return None
+
+        thr = peak * 0.7
+        ys = np.where(smooth > thr)[0]
+        if ys.size == 0:
+            return None
+        bands = []
+        s = int(ys[0]); p = int(ys[0])
+        for y in ys[1:]:
+            if int(y) - p > 5:
+                bands.append((s, p)); s = int(y)
+            p = int(y)
+        bands.append((s, p))
+
+        # 打分：出现频率（恒定优先） × 文字簇密度 × 高度紧凑度
+        candidates = []
+        for y0, y1 in bands:
+            h = y1 - y0 + 1
+            val = float(dens[y0:y1 + 1].max())
+            pr = float(presence[y0:y1 + 1].mean())
+            # 恒定出现（pr 高）加分；间歇出现（pr 低）减分
+            constancy = min(1.0, max(0.0, (pr - 0.4) / 0.6))
+            compact = 1.0 if 15 <= h <= 120 else (0.4 if h < 15 else 0.2)
+            score = val * constancy * compact
+            candidates.append((score, val, y0, y1, h, pr))
+        if not candidates:
+            return None
+        candidates.sort(reverse=True)
+        _, _, y0, y1, h, _ = candidates[0]
+
+        # 上下扩展余量
+        up = max(8, int(h * 0.25))
+        down = max(12, int(h * 0.4))
+        y0 = max(0, y0 - up)
+        y1 = min(height - 1, y1 + down)
+
+        # 横向范围
+        col = color_acc[y0:y1 + 1, :].sum(axis=0)
+        col_peak = float(col.max())
+        if col_peak <= 1:
+            return 0, y0, width, (y1 - y0)
+        cols = np.where(col > col_peak * 0.1)[0]
+        if cols.size == 0:
+            return 0, y0, width, (y1 - y0)
+        x0 = max(0, int(cols.min()) - 10)
+        x1 = min(width - 1, int(cols.max()) + 10)
+        return x0, y0, (x1 - x0), (y1 - y0)
+    finally:
+        if cap is not None:
+            cap.release()
 
 
 def detect_subtitle_temporal_windows(video: str, region: tuple[int, int, int, int],
@@ -2221,6 +2379,11 @@ def main():
         default=None,
         help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"temporal\":bool, \"spatial\":bool, \"srt\":打码时间轴SRT路径}）。默认 delogo（去水印），开启后自动检测字幕位置。temporal=帧级精细化（只在出现时段打码），spatial=仅字幕显示区域打码（需 temporal 开启）。独立开关，仅打掉片源自带字幕",
     )
+    parser.add_argument(
+        "--watermark-mask",
+        default=None,
+        help="恒定水印/角标打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"top_ratio\":..., \"x\":..., \"y\":..., \"width\":..., \"height\":...}）。开启后自动检测恒定出现的水印/角标区域（区别于间歇对话字幕），无检测结果时回退到指定比例区域（默认底部）。独立开关，仅打掉片源恒定水印",
+    )
     args = parser.parse_args()
 
     threads = cpu_threads_for_percent(args.cpu_percent)
@@ -2385,6 +2548,30 @@ def main():
             else:
                 print("源字幕打码帧级检测未命中，回退 SRT 时间轴或全程打码", file=sys.stderr)
 
+    # 恒定水印/角标打码：打掉片源固定水印（独立开关，与字幕打码互不干扰）。
+    # 检测原理与字幕相反：水印几乎每帧都在（presence≈1），对话字幕间歇出现（≈0.6）。
+    watermark_mask = _parse_subtitle_mask_config(args.watermark_mask)
+    if watermark_mask:
+        style = watermark_mask.get("style") or SUBTITLE_MASK_STYLE_DEFAULT
+        print(f"恒定水印打码已开启: style={style}", file=sys.stderr)
+        # 自动检测恒定水印区域；显式提供 x/y/width/height 时跳过检测（信任手动配置）。
+        if not (watermark_mask.get("x") is not None and watermark_mask.get("y") is not None
+                and (watermark_mask.get("width") or watermark_mask.get("w")) is not None
+                and (watermark_mask.get("height") or watermark_mask.get("h")) is not None):
+            wm_detected = detect_watermark_region(source_path)
+            if wm_detected:
+                wx, wy, ww, wh = wm_detected
+                watermark_mask["x"] = wx
+                watermark_mask["y"] = wy
+                watermark_mask["width"] = ww
+                watermark_mask["height"] = wh
+                detect_w, detect_h = ffprobe_size(source_path)
+                watermark_mask["__detect_w"] = detect_w
+                watermark_mask["__detect_h"] = detect_h
+                print(f"恒定水印打码自动定位: ({wx},{wy},{ww},{wh}) @ {detect_w}x{detect_h}", file=sys.stderr)
+            else:
+                print("恒定水印打码自动定位失败，回退默认区域（底部水印带）", file=sys.stderr)
+
     # Group segments by original cut index for scrub mode.
     groups = {}
     for start, end, name, idx in segments:
@@ -2473,6 +2660,15 @@ def main():
                                   font_color=args.subtitle_color,
                                   border_color=args.subtitle_border_color)
                     os.replace(sub_out, out_path)
+            # 恒定水印/角标打码：切片+字幕完成后，打掉片源固定水印（全程打码，
+            # 水印是恒定元素无时间轴可言；区域由自动检测或手动 x/y/width/height 指定）。
+            if watermark_mask:
+                wm_out = out_path + ".wmask.mp4"
+                apply_subtitle_mask(out_path, wm_out, watermark_mask,
+                                    enable="",
+                                    threads=threads, encoder=encoder)
+                os.replace(wm_out, out_path)
+                print(f"恒定水印打码完成: {os.path.basename(out_path)}", file=sys.stderr)
             # 图片角标：切片完成后在成品上叠加角标（全程覆盖视频指定位置）
             if badges:
                 badge_out = out_path + ".badge.mp4"

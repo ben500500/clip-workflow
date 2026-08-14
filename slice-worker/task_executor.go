@@ -204,6 +204,18 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		}
 	}
 
+	// 恒定水印/角标打码：透传给引擎 --watermark-mask（打掉片源固定水印，独立开关）
+	if len(task.WatermarkMask) > 0 {
+		enabled, _ := task.WatermarkMask["enabled"].(bool)
+		if enabled {
+			wmBytes, err := json.Marshal(task.WatermarkMask)
+			if err != nil {
+				return nil, fmt.Errorf("序列化恒定水印打码配置失败: %w", err)
+			}
+			args = append(args, "--watermark-mask", string(wmBytes))
+		}
+	}
+
 	// Alpine 镜像提供 python3 可执行文件；Windows 上为 python
 	cmd := exec.CommandContext(ctx, pythonBinary(), args...)
 

@@ -111,6 +111,12 @@ interface SlicePreset {
   subtitle_mask_height_ratio: number;
   subtitle_mask_bottom_ratio: number;
   subtitle_mask_srt_offset: number;
+  // 恒定水印/角标打码
+  watermark_mask_enabled: boolean;
+  watermark_mask_style: 'delogo' | 'mosaic' | 'blur' | 'fill';
+  watermark_mask_width_ratio: number;
+  watermark_mask_height_ratio: number;
+  watermark_mask_bottom_ratio: number;
   // 固定文字
   text_overlay_enabled: boolean;
   text_overlays: TextOverlayItem[];
@@ -163,6 +169,11 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   watermark_font_size: 28,
   watermark_opacity: 0.5,
   watermark_position: 'bottom',
+  watermark_mask_enabled: false,
+  watermark_mask_style: 'delogo',
+  watermark_mask_width_ratio: 0.9,
+  watermark_mask_height_ratio: 0.12,
+  watermark_mask_bottom_ratio: 0.02,
   badge_default_width: 0,
 };
 
@@ -234,6 +245,13 @@ const EpisodeDetail: React.FC = () => {
   // 打码时间轴整体偏移（秒）：校正 ASR 字幕时间与画面字幕偏差（字幕滞后用正值延后）
   const [subtitleMaskSrtOffset, setSubtitleMaskSrtOffset] = useState(0);
   const [subtitleMaskModalOpen, setSubtitleMaskModalOpen] = useState(false);
+  // ── 恒定水印/角标打码（打掉片源固定水印，独立开关） ──
+  const [watermarkMaskEnabled, setWatermarkMaskEnabled] = useState(false);
+  const [watermarkMaskStyle, setWatermarkMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'fill'>('delogo');
+  const [watermarkMaskWidthRatio, setWatermarkMaskWidthRatio] = useState(0.9);
+  const [watermarkMaskHeightRatio, setWatermarkMaskHeightRatio] = useState(0.12);
+  const [watermarkMaskBottomRatio, setWatermarkMaskBottomRatio] = useState(0.02);
+  const [watermarkMaskModalOpen, setWatermarkMaskModalOpen] = useState(false);
   // ── 固定文字角标（文字版角标，无需上传图片）──
   const [textOverlays, setTextOverlays] = useState<Array<TextOverlayItem & { id: string }>>([]);
   // 固定文字开关：开启后显示「设置文字」按钮，弹窗内集中管理固定文字配置（与字幕设置形式一致）
@@ -427,6 +445,11 @@ const EpisodeDetail: React.FC = () => {
     subtitle_mask_height_ratio: subtitleMaskHeightRatio,
     subtitle_mask_bottom_ratio: subtitleMaskBottomRatio,
     subtitle_mask_srt_offset: subtitleMaskSrtOffset,
+    watermark_mask_enabled: watermarkMaskEnabled,
+    watermark_mask_style: watermarkMaskStyle,
+    watermark_mask_width_ratio: watermarkMaskWidthRatio,
+    watermark_mask_height_ratio: watermarkMaskHeightRatio,
+    watermark_mask_bottom_ratio: watermarkMaskBottomRatio,
     text_overlay_enabled: textOverlayEnabled,
     text_overlays: textOverlays.map((t) => ({ text: t.text, position: t.position, font_size: t.font_size, color: t.color, border_color: t.border_color, vertical: t.vertical, offset: t.offset })),
     watermark_enabled: watermarkEnabled,
@@ -461,6 +484,11 @@ const EpisodeDetail: React.FC = () => {
     setSubtitleMaskHeightRatio(p.subtitle_mask_height_ratio ?? 0.12);
     setSubtitleMaskBottomRatio(p.subtitle_mask_bottom_ratio ?? 0.02);
     setSubtitleMaskSrtOffset(p.subtitle_mask_srt_offset ?? 0);
+    setWatermarkMaskEnabled(p.watermark_mask_enabled ?? false);
+    setWatermarkMaskStyle(p.watermark_mask_style ?? 'delogo');
+    setWatermarkMaskWidthRatio(p.watermark_mask_width_ratio ?? 0.9);
+    setWatermarkMaskHeightRatio(p.watermark_mask_height_ratio ?? 0.12);
+    setWatermarkMaskBottomRatio(p.watermark_mask_bottom_ratio ?? 0.02);
     setTextOverlayEnabled(p.text_overlay_enabled);
     setTextOverlays(p.text_overlays.map((t) => ({ ...t, id: `tov_preset_${t.position}_${t.text}` })));
     setWatermarkEnabled(p.watermark_enabled);
@@ -576,7 +604,8 @@ const EpisodeDetail: React.FC = () => {
     subtitleSpacing, subtitleStyle, subtitleColor, subtitleBorderColor,
     subtitleMaskEnabled, subtitleMaskStyle, subtitleMaskTemporal, subtitleMaskSpatial,
     subtitleMaskWidthRatio, subtitleMaskHeightRatio, subtitleMaskBottomRatio, subtitleMaskSrtOffset,
-    textOverlayEnabled, textOverlays, watermarkEnabled, watermarkText,
+    watermarkMaskEnabled, watermarkMaskStyle, watermarkMaskWidthRatio, watermarkMaskHeightRatio,
+    watermarkMaskBottomRatio, textOverlayEnabled, textOverlays, watermarkEnabled, watermarkText,
     watermarkFontSize, watermarkOpacity, watermarkPosition, badgeDefaultWidth,
   ]);
 
@@ -1176,6 +1205,12 @@ const EpisodeDetail: React.FC = () => {
         watermark_font_size: watermarkEnabled ? watermarkFontSize : undefined,
         watermark_opacity: watermarkEnabled ? watermarkOpacity : undefined,
         watermark_position: watermarkEnabled ? watermarkPosition : undefined,
+        // 恒定水印/角标打码：开启后打掉片源固定水印（独立开关，与字幕打码互不干扰）
+        watermark_mask_enabled: watermarkMaskEnabled,
+        watermark_mask_style: watermarkMaskEnabled ? watermarkMaskStyle : undefined,
+        watermark_mask_width_ratio: watermarkMaskEnabled ? watermarkMaskWidthRatio : undefined,
+        watermark_mask_height_ratio: watermarkMaskEnabled ? watermarkMaskHeightRatio : undefined,
+        watermark_mask_bottom_ratio: watermarkMaskEnabled ? watermarkMaskBottomRatio : undefined,
         // 竖屏转横屏：开启后切片前自动把竖屏素材转成横屏
         vert2horiz_enabled: vert2horizEnabled,
         vert2horiz_mode: vert2horizEnabled ? vert2horizMode : undefined,
@@ -1842,6 +1877,90 @@ const EpisodeDetail: React.FC = () => {
               )}
             </Space>
           </Card>
+
+          {/* ── 恒定水印/角标打码（打掉片源固定水印，独立开关） ── */}
+          <Card size="small" style={{ width: '100%' }}>
+            <Space wrap align="center" size={8}>
+              <Switch size="small" checked={watermarkMaskEnabled} onChange={setWatermarkMaskEnabled} />
+              <Text strong style={{ fontSize: 13 }}>恒定水印打码</Text>
+              <Tooltip title="打掉片源固定的水印/角标（如频道角标、平台水印、底部固定字条）。与源字幕打码互不干扰：字幕打码管动态对话字幕，水印打码管恒定出现的水印。默认自动检测恒定出现区域，样式为去水印（智能插值）。">
+                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+              </Tooltip>
+              {watermarkMaskEnabled && (
+                <Button size="small" icon={<SettingOutlined />} onClick={() => setWatermarkMaskModalOpen(true)}>打码设置</Button>
+              )}
+            </Space>
+          </Card>
+
+          {/* 恒定水印打码设置弹窗 */}
+          <Modal
+            title="恒定水印打码设置"
+            open={watermarkMaskModalOpen}
+            onCancel={() => setWatermarkMaskModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setWatermarkMaskModalOpen(false)}>完成</Button>
+            )}
+            width={500}
+          >
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>打码样式</Text>
+                <Radio.Group
+                  size="small"
+                  value={watermarkMaskStyle}
+                  onChange={(e) => setWatermarkMaskStyle(e.target.value)}
+                >
+                  <Radio.Button value="delogo">去水印</Radio.Button>
+                  <Radio.Button value="mosaic">马赛克</Radio.Button>
+                  <Radio.Button value="blur">模糊</Radio.Button>
+                  <Radio.Button value="fill">纯色块</Radio.Button>
+                </Radio.Group>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>区域宽度</Text>
+                <InputNumber
+                  size="small"
+                  min={0.1}
+                  max={1}
+                  step={0.05}
+                  value={watermarkMaskWidthRatio}
+                  onChange={(v) => setWatermarkMaskWidthRatio(v ?? 0.9)}
+                  style={{ width: 90 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>相对画面宽（0.9）</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>区域高度</Text>
+                <InputNumber
+                  size="small"
+                  min={0.02}
+                  max={0.5}
+                  step={0.01}
+                  value={watermarkMaskHeightRatio}
+                  onChange={(v) => setWatermarkMaskHeightRatio(v ?? 0.12)}
+                  style={{ width: 90 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>相对画面高（0.12）</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>距底边</Text>
+                <InputNumber
+                  size="small"
+                  min={0}
+                  max={0.5}
+                  step={0.01}
+                  value={watermarkMaskBottomRatio}
+                  onChange={(v) => setWatermarkMaskBottomRatio(v ?? 0.02)}
+                  style={{ width: 90 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>相对画面高（0.02），水印常在底部</Text>
+              </Space>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                自动检测失败时回退到"距底边"指定的底部水印带；若水印在顶部（台标/角标），
+                建议用手动绝对坐标（暂未开放，可后续扩展）。
+              </Text>
+            </Space>
+          </Modal>
 
           {/* 源字幕打码设置弹窗 */}
           <Modal

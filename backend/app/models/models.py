@@ -280,6 +280,8 @@ class SliceTask(Base):
     subtitle_config = Column(JSON, nullable=True)
     # 源视频字幕打码配置（可选，{"enabled": bool, "style": str, ...}；重试时保留）
     subtitle_mask_config = Column(JSON, nullable=True)
+    # 恒定水印/角标打码配置（可选，打掉片源固定水印；重试时保留）
+    watermark_mask_config = Column(JSON, nullable=True)
     # 固定文字角标配置（可选，在成品上叠加固定文字；重试时保留）
     text_overlays_config = Column(JSON, nullable=True)
     status = Column(String(50), nullable=True)

@@ -401,7 +401,9 @@ type SliceTask struct {
 	TextOverlays []map[string]interface{} `json:"text_overlays"`
 	// 源视频字幕打码配置（可选，后端透传；Worker 直接透传给引擎 --subtitle-mask 参数）
 	SubtitleMask map[string]interface{} `json:"subtitle_mask"`
-	Output         TaskOutput               `json:"output"`
+	// 恒定水印/角标打码配置（可选，后端透传；Worker 直接透传给引擎 --watermark-mask 参数）
+	WatermarkMask map[string]interface{} `json:"watermark_mask"`
+	Output         TaskOutput             `json:"output"`
 	TimeoutSec     int                      `json:"timeout_seconds"`
 	SourceDuration float64                  `json:"source_duration"`
 	RetryCount     int                      `json:"retry_count"`

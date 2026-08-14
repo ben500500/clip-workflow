@@ -206,6 +206,22 @@ class SliceRunRequest(BaseModel):
     # 打码时间轴整体偏移（秒，可选，默认 0）。用于校正 ASR 字幕时间与画面实际字幕的偏差：
     # 画面字幕比 SRT 晚出现（字幕滞后）时传正值延后打码；早出现时传负值提前打码。
     subtitle_mask_srt_offset: Optional[float] = None
+    # ── 恒定水印/角标打码（打掉片源固定水印，独立开关，与字幕打码互不干扰）──
+    watermark_mask_enabled: bool = False
+    # 水印打码样式：delogo（去水印，推荐，默认）/ mosaic（马赛克）/ blur（模糊）/ fill（纯色块）
+    watermark_mask_style: Optional[str] = None
+    # 水印打码区域（相对输出视频宽高比例，可选；自动检测失败时回退用）
+    watermark_mask_width_ratio: Optional[float] = None
+    watermark_mask_height_ratio: Optional[float] = None
+    # 水印区域距底边比例（默认 0.02）或距顶边比例（bottom_ratio 与 top_ratio 二选一，
+    # 传 top_ratio 则区域按顶部对齐，用于顶部角标/台标）
+    watermark_mask_bottom_ratio: Optional[float] = None
+    watermark_mask_top_ratio: Optional[float] = None
+    # 手动指定水印区域绝对坐标（可选，x/y/width/height 全填时跳过自动检测，直接使用）
+    watermark_mask_x: Optional[int] = None
+    watermark_mask_y: Optional[int] = None
+    watermark_mask_width: Optional[int] = None
+    watermark_mask_height: Optional[int] = None
     # ── 固定文字角标（文字版角标，无需上传图片）──
     # 在成品视频指定位置叠加固定文字（最左侧/左下角/右上角等），全程覆盖。
     # 每个元素：text（内容）、position（left/bottom-left/top-right 等七位）、
@@ -501,6 +517,37 @@ def _build_subtitle_mask_config(data: SliceRunRequest, source_srt: Optional[str]
     # 独立携带打码时间轴 SRT（与字幕烧录无关），供 Worker/Celery 写入本地文件后透传引擎
     if source_srt and source_srt.strip():
         cfg["srt"] = source_srt
+    return cfg
+
+
+def _build_watermark_mask_config(data: SliceRunRequest) -> Optional[dict]:
+    """构造恒定水印/角标打码配置（引擎 --watermark-mask 期望的 JSON）。
+
+    仅当 watermark_mask_enabled 开启时返回非空 dict。区域参数未填则引擎自动检测，
+    检测失败回退底部水印带（或 top_ratio 指定的顶部区域）。
+    """
+    if not getattr(data, "watermark_mask_enabled", False):
+        return None
+    cfg: dict = {"enabled": True}
+    style = (data.watermark_mask_style or "delogo").lower()
+    if style not in ("delogo", "mosaic", "blur", "fill"):
+        style = "delogo"
+    cfg["style"] = style
+    if data.watermark_mask_width_ratio is not None:
+        cfg["width_ratio"] = max(0.1, min(1.0, float(data.watermark_mask_width_ratio)))
+    if data.watermark_mask_height_ratio is not None:
+        cfg["height_ratio"] = max(0.02, min(0.5, float(data.watermark_mask_height_ratio)))
+    if data.watermark_mask_bottom_ratio is not None:
+        cfg["bottom_ratio"] = max(0.0, min(0.5, float(data.watermark_mask_bottom_ratio)))
+    if data.watermark_mask_top_ratio is not None:
+        cfg["top_ratio"] = max(0.0, min(0.5, float(data.watermark_mask_top_ratio)))
+    # 手动绝对坐标：x/y/width/height 全填时引擎跳过自动检测直接使用
+    if (data.watermark_mask_x is not None and data.watermark_mask_y is not None
+            and data.watermark_mask_width is not None and data.watermark_mask_height is not None):
+        cfg["x"] = int(data.watermark_mask_x)
+        cfg["y"] = int(data.watermark_mask_y)
+        cfg["width"] = int(data.watermark_mask_width)
+        cfg["height"] = int(data.watermark_mask_height)
     return cfg
 
 
@@ -834,6 +881,7 @@ async def _publish_to_worker(
     subtitle_config: Optional[dict] = None,
     text_overlays_config: Optional[list] = None,
     subtitle_mask_config: Optional[dict] = None,
+    watermark_mask_config: Optional[dict] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -906,6 +954,8 @@ async def _publish_to_worker(
         "text_overlays": text_overlays_config,
         # 源视频字幕打码（可选，Go Worker 透传给引擎 --subtitle-mask）
         "subtitle_mask": subtitle_mask_config,
+        # 恒定水印/角标打码（可选，Go Worker 透传给引擎 --watermark-mask）
+        "watermark_mask": watermark_mask_config,
         "output": {
             "upload_url": f"{callback_base}/api/slice-tasks/{slice_task.id}/upload-url",
             "callback_url": callback_url,
@@ -950,6 +1000,7 @@ async def _dispatch_celery(
     subtitle_config: Optional[dict] = None,
     text_overlays_config: Optional[list] = None,
     subtitle_mask_config: Optional[dict] = None,
+    watermark_mask_config: Optional[dict] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -980,6 +1031,7 @@ async def _dispatch_celery(
         subtitle_config=subtitle_config,
         text_overlays_config=text_overlays_config,
         subtitle_mask_config=subtitle_mask_config,
+        watermark_mask_config=watermark_mask_config,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -1368,6 +1420,8 @@ async def run_slice(
     text_overlays_config = _build_text_overlays_config(data)
     # 构造源视频字幕打码配置（去片源自带字幕，独立开关，携带打码时间轴 SRT）
     subtitle_mask_config = _build_subtitle_mask_config(data, source_subtitle_srt)
+    # 构造恒定水印/角标打码配置（打掉片源固定水印，独立开关）
+    watermark_mask_config = _build_watermark_mask_config(data)
     # 持久化竖屏转横屏/角标/字幕/打码/固定文字配置，重试时保留
     slice_task.vert2horiz_config = vert2horiz_config
     slice_task.watermark_config = watermark_config
@@ -1376,6 +1430,7 @@ async def run_slice(
     slice_task.subtitle_config = subtitle_config
     slice_task.subtitle_mask_config = subtitle_mask_config
     slice_task.text_overlays_config = text_overlays_config
+    slice_task.watermark_mask_config = watermark_mask_config
 
     if engine == "worker":
         # 确保输出桶存在（全新部署时 sliced 桶可能未初始化）
@@ -1397,6 +1452,7 @@ async def run_slice(
             subtitle_config,
             text_overlays_config,
             subtitle_mask_config,
+            watermark_mask_config,
         )
 
         if not published:
@@ -1427,6 +1483,7 @@ async def run_slice(
                 subtitle_config,
                 text_overlays_config,
                 subtitle_mask_config,
+                watermark_mask_config,
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
@@ -1851,6 +1908,7 @@ async def retry_slice_task(
         subtitle_config=task.subtitle_config,
         subtitle_mask_config=task.subtitle_mask_config,
         text_overlays_config=task.text_overlays_config,
+        watermark_mask_config=task.watermark_mask_config,
         status="pending",
         progress=0.0,
     )
@@ -1880,6 +1938,7 @@ async def retry_slice_task(
             task.subtitle_config,
             task.text_overlays_config,
             task.subtitle_mask_config,
+            task.watermark_mask_config,
         )
 
         if not published:
@@ -1909,6 +1968,7 @@ async def retry_slice_task(
                 task.subtitle_config,
                 task.text_overlays_config,
                 task.subtitle_mask_config,
+                task.watermark_mask_config,
             )
         except Exception as e:
             new_task.status = "failed"
