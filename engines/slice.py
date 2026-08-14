@@ -2626,28 +2626,13 @@ def main():
                             os.replace(mask_out, out_path)
                     else:
                         # 普通/快速模式（temporal 与 spatial 均关闭）：
-                        # 若提供 SRT 时间轴（subtitle_mask.srt），按 SRT 驱动打码时段
-                        # （支持 srt_offset 秒整体偏移，校正 ASR 时间与画面字幕偏差）；
-                        # 无 SRT 时回退为检测区域内全程打码（至始至终）。
-                        mask_srt = subtitle_mask.get("srt") or ""
-                        mask_offset = float(subtitle_mask.get("srt_offset") or 0)
-                        if mask_srt.strip():
-                            mask_enable = build_subtitle_mask_enable(mask_srt, seg_times, mask_offset)
-                        else:
-                            mask_enable = ""
-                        if mask_enable:
-                            print(f"源字幕打码按 SRT 时间轴: {len(mask_enable.split(','))} 个时段 (offset={mask_offset}s)",
-                                  file=sys.stderr)
-                            apply_subtitle_mask(out_path, mask_out, subtitle_mask,
-                                                enable=mask_enable,
-                                                threads=threads, encoder=encoder)
-                            os.replace(mask_out, out_path)
-                        else:
-                            # 该切片内 SRT 无字幕记录（或未提供 SRT）→ 全程打码
-                            apply_subtitle_mask(out_path, mask_out, subtitle_mask,
-                                                enable="",
-                                                threads=threads, encoder=encoder)
-                            os.replace(mask_out, out_path)
+                        # 在自动检测出的字幕区域全程（至始至终）打码，不再按 SRT 时间轴
+                        # 驱动——SRT 间隙/缺失会导致"有时能打有时不能打"，且不符合
+                        # "定位到字幕区域后至始至终打码"的预期。SRT 时间轴仅用于精细化模式。
+                        apply_subtitle_mask(out_path, mask_out, subtitle_mask,
+                                            enable="",
+                                            threads=threads, encoder=encoder)
+                        os.replace(mask_out, out_path)
                 # 字幕烧录：开启后按该切片的源时间段从源 SRT 截取并烧录到成品
                 if args.subtitle:
                     sub_srt = os.path.join(tmp, "clip_subtitle.srt")
