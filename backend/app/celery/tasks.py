@@ -89,6 +89,16 @@ celery_app.conf.update(
             "task": "app.celery.tasks.watch_multi_operator_routes",
             "schedule": 10.0,
         },
+        # 解耦模式（AI 选点 × 切片解耦）：切片投递守护轮询已选点池
+        "batch-slice-dispatch-periodic": {
+            "task": "app.celery.tasks.batch_slice_dispatch",
+            "schedule": settings.BATCH_DISPATCH_INTERVAL_SECONDS,
+        },
+        # 解耦模式：批次状态聚合器
+        "batch-aggregate-periodic": {
+            "task": "app.celery.tasks.batch_aggregate",
+            "schedule": settings.BATCH_AGGREGATE_INTERVAL_SECONDS,
+        },
     },
 )
 
@@ -240,7 +250,7 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
 
 @celery_app.task(bind=True, max_retries=0)
 def batch_slice_task(self, batch_id: str):
-    """批量切片工作流（三期方案）：按列表顺序逐集完成选点→审核→切片→删源。
+    """批量切片工作流入口：按 pipeline_mode 分流（serial 串行 / decoupled 解耦）。
 
     编排逻辑见 app.services.batch_slice_service.run_batch。
     由于该任务会长时间阻塞并轮询 autoclip/slice 子任务，放到 default 队列执行。
@@ -253,6 +263,46 @@ def batch_slice_task(self, batch_id: str):
         logger.error("批量切片任务异常 batch=%s: %s", batch_id, e)
         from app.services.batch_slice_service import _update_batch
         run_async(_update_batch(batch_id, status="failed", error_message=str(e)))
+        raise
+
+
+@celery_app.task(bind=True, max_retries=3, default_retry_delay=10)
+def batch_selection_consumer(self, batch_id: str, item_id: str, episode_id: str):
+    """解耦模式选点消费者：对单个剧集执行 AI 选点 + 自动审核，完成后标记为「已选点待切片」。
+
+    处理完成后写入「已选点池」（item.phase=autoclip_done），供切片投递守护消费。
+    """
+    from app.services.batch_decoupled_service import process_selection
+    try:
+        run_async(process_selection(batch_id, item_id, episode_id))
+    except Exception as e:
+        logger.error("选点消费者异常 batch=%s item=%s: %s", batch_id, item_id, e)
+        raise
+
+
+@celery_app.task(bind=True, max_retries=0)
+def batch_slice_dispatch(self):
+    """解耦模式切片投递守护：扫描已选点池（autoclip_done）并投递切片任务。
+
+    复用 run_slice → publish_slice_task 入 Redis Stream，由 Go slice-worker 消费。
+    """
+    from app.services.batch_decoupled_service import dispatch_ready_slices
+    try:
+        run_async(dispatch_ready_slices())
+    except Exception as e:
+        logger.error("切片投递守护异常: %s", e)
+        raise
+
+
+@celery_app.task(bind=True, max_retries=0)
+def batch_aggregate(self):
+    """解耦模式状态聚合器：按批次维度聚合各剧集终态，回填 BatchSlice 汇总。
+    """
+    from app.services.batch_decoupled_service import aggregate_batches
+    try:
+        run_async(aggregate_batches())
+    except Exception as e:
+        logger.error("状态聚合器异常: %s", e)
         raise
 
 
