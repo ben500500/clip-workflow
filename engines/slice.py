@@ -426,13 +426,55 @@ def ffprobe_size(path: str) -> tuple[int, int]:
     return 0, 0
 
 
+def _fallback_libx264_args(args, threads):
+    """把命令中的硬件编码器（videotoolbox/nvenc）替换为软件 libx264，保留其余参数。
+
+    返回替换后的命令列表；若命令中没有可识别的硬件编码器则返回 None。
+    """
+    try:
+        i = args.index("-c:v")
+    except ValueError:
+        return None
+    enc = args[i + 1]
+    hw = ("h264_videotoolbox", "hevc_videotoolbox", "h264_nvenc", "hevc_nvenc")
+    if enc not in hw:
+        return None
+    # 删除 -c:v <enc> 之后的硬件专属质量参数（opt+value 对），直到遇到音频/输出段
+    # 或命令结尾。硬件质量选项均带一个值，逐对跳过即可。
+    VALUE_OPTS = {"-q:v", "-preset", "-cq", "-crf", "-b:v", "-maxrate", "-bufsize"}
+    j = i + 2
+    while j < len(args):
+        tok = args[j]
+        if tok.startswith("-"):
+            if tok in VALUE_OPTS:
+                j += 2  # 跳过 opt + value
+                continue
+            break  # 遇到非质量选项（如 -c:a），停止
+        j += 1
+    new_args = list(args)
+    new_args[i + 1] = "libx264"
+    new_args = new_args[:i + 2] + args[j:]
+    return new_args
+
+
 def run_ffmpeg(args, timeout=3600, threads=1):
     # 若未显式设置 -threads，则追加（避免并发切片抢占过多 CPU）
     if "-threads" not in args:
         args = ["-threads", str(threads)] + list(args)
     proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     if proc.returncode != 0:
-        raise RuntimeError("ffmpeg failed: " + proc.stderr.decode(errors="replace")[-2000:])
+        stderr_txt = proc.stderr.decode(errors="replace")
+        # 硬件编码器（videotoolbox/nvenc）探测时可得，但运行时可能不可用
+        # （设备忙/不支持，报 -12908 等），自动回退软件 libx264 重试一次，
+        # 避免字幕打码等滤镜重编码步骤在 Mac 上静默失败（与 burn_subtitle 一致）。
+        sw_args = _fallback_libx264_args(args, threads)
+        if sw_args is not None:
+            print("[FFMPEG] 硬件编码器运行失败，回退软件 libx264 重试", file=sys.stderr)
+            proc2 = subprocess.run(sw_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+            if proc2.returncode == 0:
+                return proc2
+            stderr_txt = proc2.stderr.decode(errors="replace")
+        raise RuntimeError("ffmpeg failed: " + stderr_txt[-2000:])
     return proc
 
 
