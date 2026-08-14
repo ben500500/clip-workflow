@@ -49,6 +49,11 @@ DEFAULT_CPU_PERCENT = 50
 #   vignette  质感层：暗角角度
 #   roll_band 质感层：滚动暗带强度（0 关闭）
 #   jitter    质感层：画面微抖动（0 关闭）
+#   sharpen   质感层：锐化/降噪强度（unsharp 亮度锐化量，0 关闭）
+#   watermark 质感层：叠加半透明贴纸水印（dict 或 None；见 build_dedupe_watermark）
+#
+# 手动配置：调用方可传入 manual 覆盖字典（可单独覆盖上述任一字段，
+# 不指定时沿用 preset 预设值），实现"所有去重手段均可手动配置"。
 DEDUPE_PRESETS = {
     "light": {
         "crop": 0.02,
@@ -65,6 +70,8 @@ DEDUPE_PRESETS = {
         "vignette": "PI/6",
         "roll_band": 0,
         "jitter": 0,
+        "sharpen": 0,
+        "watermark": None,
     },
     "standard": {
         "crop": 0.03,
@@ -81,6 +88,8 @@ DEDUPE_PRESETS = {
         "vignette": "PI/5",
         "roll_band": 0,
         "jitter": 0,
+        "sharpen": 0.4,
+        "watermark": None,
     },
     "heavy": {
         "crop": 0.05,
@@ -97,6 +106,8 @@ DEDUPE_PRESETS = {
         "vignette": "PI/4",
         "roll_band": 12,
         "jitter": 2,
+        "sharpen": 0.8,
+        "watermark": None,
     },
 }
 
@@ -109,19 +120,51 @@ def _even(n: int) -> int:
     return n if n % 2 == 0 else n - 1
 
 
-def build_dedupe_filter(preset: str, width: int = 0, height: int = 0) -> tuple[str, str]:
-    """根据去重档位（light/standard/heavy）构造 (vf, af) 滤镜链。
+def _resolve_dedupe_config(cfg: dict) -> dict:
+    """解析去重配置，返回合并后的完整参数 dict。
 
+    cfg 支持：
+      - preset: "light|standard|heavy"，作为基础档位；
+      - manual: 手动覆盖字典，可覆盖四层中任一手段参数（crop/hflip/speed/
+        saturation/gamma/contrast/brightness/colorbalance/colortemperature/
+        noise/scanline/vignette/roll_band/jitter/sharpen/watermark）。
+
+    未指定 manual 时沿用 preset 预设值，实现"所有去重手段均可手动配置"。
+    兼容旧式扁平配置：manual 为空时仍优先读取 cfg 顶层同名字段作为覆盖。
+    """
+    cfg = cfg or {}
+    preset = str(cfg.get("preset") or "standard").lower()
+    if preset not in DEDUPE_PRESETS:
+        preset = "standard"
+    p = dict(DEDUPE_PRESETS[preset])  # 以预设为基础
+
+    # 手动覆盖字典优先
+    manual = cfg.get("manual")
+    if not isinstance(manual, dict):
+        manual = {}
+    # 兼容旧式扁平配置（把顶层同名字段也作为覆盖，manual 优先）
+    for key in list(p.keys()):
+        if key in cfg and key != "preset":
+            manual.setdefault(key, cfg[key])
+
+    # 应用手动覆盖
+    for key, val in manual.items():
+        if key in p:
+            p[key] = val
+    return p
+
+
+def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0) -> tuple[str, str]:
+    """根据去重配置构造 (vf, af) 滤镜链。
+
+    cfg 支持 preset（light/standard/heavy 基础档位）与 manual（每项手段手动覆盖），
     四层组合：空间（缩放裁切 + 可选镜像）、时域（变速）、色彩（降饱和 + 复古偏色 + 轻微亮度）、
-    质感（噪点 / 扫描线 / 暗角 / 滚动暗带 / 画面抖动）。
+    质感（噪点 / 扫描线 / 暗角 / 滚动暗带 / 画面抖动 / 锐化 / 贴纸水印）。
 
     width/height 用于在裁切后缩放回原始分辨率（保持输出尺寸一致）；未提供或为 0 时
     仅做相对裁切（轻微改变分辨率，同样有效）。
     """
-    preset = (preset or "standard").lower()
-    if preset not in DEDUPE_PRESETS:
-        preset = "standard"
-    p = DEDUPE_PRESETS[preset]
+    p = _resolve_dedupe_config(cfg or {})
 
     crop = float(p["crop"])
     speed = float(p["speed"])
@@ -182,7 +225,63 @@ def build_dedupe_filter(preset: str, width: int = 0, height: int = 0) -> tuple[s
                 f":x='{j}+{j}*sin(2*PI*t*3)':y='{j}+{j}*cos(2*PI*t*2)'"
             )
 
+    # 质感层：锐化/降噪（unsharp，微调画质细节差异；0 关闭）
+    sharpen = float(p.get("sharpen") or 0)
+    if sharpen > 0:
+        vf_parts.append(f"unsharp=5:5:{sharpen:.2f}:5:5:0.0")
+
+    # 质感层：贴纸水印叠加（半透明标识，去重差异化；None 关闭）
+    wm = p.get("watermark")
+    if wm:
+        wm_filter = build_dedupe_watermark(wm, width, height)
+        if wm_filter:
+            vf_parts.append(wm_filter)
+
     return ",".join(vf_parts), af
+
+
+def build_dedupe_watermark(wm: dict, width: int = 0, height: int = 0) -> str:
+    """构造去重贴纸水印 filter（drawtext，半透明静态/缓慢漂移标识）。
+
+    与动态文字水印（build_watermark_filter）区别：贴纸水印作为去重手段，
+    默认静态固定在角落（避免遮挡内容），可配置透明度/字号/位置；
+    仅叠加文字标识，无背景图（如需图片贴纸走 --badges 角标通道）。
+    """
+    if not isinstance(wm, dict):
+        return ""
+    text = wm.get("text") or "Clip"
+    font_size = int(wm.get("font_size") or 28)
+    opacity = float(wm.get("opacity") or 0.25)
+    position = (wm.get("position") or "bottom-right").lower()
+    drift = bool(wm.get("drift", False))  # 是否缓慢漂移（默认静态）
+
+    opacity = max(0.05, min(0.9, opacity))
+    font_size = max(12, min(120, font_size))
+    font_opt = _resolve_drawtext_font()
+
+    # 位置 -> x/y 坐标表达式（带 10px 外边距）
+    pos_map = {
+        "top-left": ("20", "30"),
+        "top-right": ("w-tw-20", "30"),
+        "top-center": ("(w-tw)/2", "30"),
+        "bottom-left": ("20", "h-th-40"),
+        "bottom-right": ("w-tw-20", "h-th-40"),
+        "bottom-center": ("(w-tw)/2", "h-th-40"),
+        "center": ("(w-tw)/2", "(h-th)/2"),
+    }
+    if position not in pos_map:
+        position = "bottom-right"
+    x_expr, y_expr = pos_map[position]
+
+    if drift:
+        # 缓慢漂移（8px/s），增强时序差异化
+        x_expr = f"({x_expr})+mod({10}*t\,{40})-{20}"
+
+    text_esc = text.replace("\\", "\\\\").replace(";", "\\;")
+    return (
+        f"drawtext={font_opt}:text='{text_esc}':fontcolor=white@{opacity:.2f}"
+        f":fontsize={font_size}:x='{x_expr}':y='{y_expr}'"
+    )
 
 
 def cpu_threads_for_percent(percent: int) -> int:
@@ -2371,8 +2470,11 @@ def main():
     parser.add_argument(
         "--dedupe-config",
         default=None,
-        help="去重档位配置 JSON（{\"preset\":\"light|standard|heavy\"}，默认 standard）。"
-             "未传时去重模式回退到 preset=standard 的新默认效果",
+        help="去重档位配置 JSON（{\"preset\":\"light|standard|heavy\", \"manual\":{...}}，默认 standard）。"
+             "preset 选择基础档位；manual 可逐项覆盖四层去重手段参数"
+             "（crop/hflip/speed/saturation/gamma/contrast/brightness/colorbalance/"
+             "colortemperature/noise/scanline/vignette/roll_band/jitter/sharpen/watermark），"
+             "未传 manual 时沿用 preset 预设。未传配置时回退到 preset=standard。",
     )
     parser.add_argument(
         "--subtitle-mask",
@@ -2440,18 +2542,20 @@ def main():
     vf = None
     af = None
     if args.mode == "dedupe":
-        # 去重模式：默认采用 standard 档（含老电视质感的完整四层去重），
-        # 可通过 --dedupe-config 的 preset 字段指定 light/standard/heavy。
-        preset = "standard"
+        # 去重模式：默认采用 standard 档（含老电视质感的完整四层去重）。
+        # --dedupe-config 支持 preset（light/standard/heavy 基础档位）与
+        # manual（每项手段手动覆盖），实现"所有去重手段均可手动配置"。
+        dedupe_cfg = {}
         if args.dedupe_config:
             try:
                 dedupe_cfg = json.loads(args.dedupe_config)
             except (ValueError, TypeError):
                 dedupe_cfg = {}
-            if isinstance(dedupe_cfg, dict) and dedupe_cfg.get("preset"):
-                preset = str(dedupe_cfg["preset"]).lower()
+            if not isinstance(dedupe_cfg, dict):
+                dedupe_cfg = {}
+        preset = str(dedupe_cfg.get("preset") or "standard").lower()
         w, h = ffprobe_resolution(source_path)
-        vf, af = build_dedupe_filter(preset, width=w, height=h)
+        vf, af = build_dedupe_filter(dedupe_cfg, width=w, height=h)
         print(f"去重档位: {preset}", file=sys.stderr)
 
     # 动态文字水印：开启后在去重/普通滤镜基础上叠加 drawtext

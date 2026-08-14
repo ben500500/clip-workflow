@@ -15,6 +15,7 @@ import { autoclipApi } from '../api/autoclip';
 import { intervalApi } from '../api/intervals';
 import { sliceApi, type BadgeItem, type TextOverlayItem } from '../api/slice';
 import ErrorHint from '../components/ErrorHint';
+import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/DedupeManualConfig';
 import type { AutoClipRunRecord, ClipCandidate, Episode, IntervalHistoryItem, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
@@ -30,7 +31,7 @@ const SLICE_MODE_HELP: Record<string, { label: string; desc: string; detail: str
   dedupe: {
     label: '去重模式',
     desc: '切割时进行画面去重处理',
-    detail: '在切割的同时对每个片段进行画面去重处理，采用「空间变换（缩放裁切/镜像）+ 时域变换（变速）+ 色彩变换（降饱和/复古偏色）+ 质感叠加（老电视噪点/扫描线/暗角）」四层组合，拉开与原素材的帧级特征/色彩直方图/时域指纹距离。可选轻/标准/重三档，标准档为默认效果。适用于需要批量发布到多个平台的场景，降低平台查重风险。',
+    detail: '在切割的同时对每个片段进行画面去重处理，采用「空间变换（缩放裁切/镜像）+ 时域变换（变速）+ 色彩变换（降饱和/复古偏色）+ 质感叠加（老电视噪点/扫描线/暗角）」四层组合，拉开与原素材的帧级特征/色彩直方图/时域指纹距离。可选轻/标准/重三档（标准档为默认效果），并支持「去重高级配置」逐项手动调整每个手段（裁切/镜像/变速/调色/噪点/锐化/暗角/滚动暗带/抖动/贴纸水印）。适用于需要批量发布到多个平台的场景，降低平台查重风险。',
   },
   scrub: {
     label: '挖洞模式',
@@ -190,6 +191,9 @@ const EpisodeDetail: React.FC = () => {
   // 去重模式档位：轻/标准/重（老电视质感去重强度，默认标准档）
   const [dedupePreset, setDedupePreset] = useState<string>('standard');
   // ── 切片自定义文字水印开关与参数 ──
+  // 去重模式手动配置（每项去重手段可单独覆盖预设，为空时沿用预设档位）
+  const [dedupeManual, setDedupeManual] = useState<DedupeManualConfigValue>({});
+  const [dedupeManualOpen, setDedupeManualOpen] = useState(false);
   const [watermarkEnabled, setWatermarkEnabled] = useState(false);
   const [watermarkText, setWatermarkText] = useState('');
   const [watermarkFontSize, setWatermarkFontSize] = useState(28);
@@ -1185,6 +1189,32 @@ const EpisodeDetail: React.FC = () => {
     }
   };
 
+  // 构造去重配置：preset 基础档位 + manual 手动覆盖（过滤空值；贴纸水印仅 enabled 时启用）
+  const buildDedupeConfig = (preset: string, manual: DedupeManualConfigValue) => {
+    const m: Record<string, unknown> = {};
+    if (manual.crop !== undefined) m.crop = manual.crop;
+    if (manual.hflip !== undefined) m.hflip = manual.hflip;
+    if (manual.speed !== undefined) m.speed = manual.speed;
+    if (manual.saturation !== undefined) m.saturation = manual.saturation;
+    if (manual.gamma !== undefined) m.gamma = manual.gamma;
+    if (manual.contrast !== undefined) m.contrast = manual.contrast;
+    if (manual.brightness !== undefined) m.brightness = manual.brightness;
+    if (manual.noise !== undefined) m.noise = manual.noise;
+    if (manual.sharpen !== undefined) m.sharpen = manual.sharpen;
+    if (manual.vignette) m.vignette = manual.vignette;
+    if (manual.roll_band !== undefined) m.roll_band = manual.roll_band;
+    if (manual.jitter !== undefined) m.jitter = manual.jitter;
+    if (manual.watermark?.enabled) {
+      m.watermark = {
+        text: manual.watermark.text || 'Clip',
+        opacity: manual.watermark.opacity ?? 0.25,
+        position: manual.watermark.position || 'bottom-right',
+        drift: !!manual.watermark.drift,
+      };
+    }
+    return Object.keys(m).length > 0 ? { preset, manual: m } : { preset };
+  };
+
   // ─── 启动切片 / 快速转换 ───────────────────────
   const runSlice = async (noCut = false) => {
     const setRunning = noCut ? setQuickConverting : setSliceRunning;
@@ -1197,8 +1227,10 @@ const EpisodeDetail: React.FC = () => {
       const res = await sliceApi.run(episodeId, mode, {
         // 快速转换：跳过 AI 选点与区间检测，整段源视频直接应用下方配置转换输出
         no_cut: noCut || undefined,
-        // 去重模式档位（轻/标准/重），仅去重模式生效
-        dedupe_config: mode === 'dedupe' ? { preset: dedupePreset } : undefined,
+        // 去重模式档位（轻/标准/重）+ 手动配置（每项手段可单独覆盖预设），仅去重模式生效
+        dedupe_config: mode === 'dedupe'
+          ? buildDedupeConfig(dedupePreset, dedupeManual)
+          : undefined,
         // 自定义文字水印：开启后后端下发给引擎，在成品视频上叠加动态文字水印
         watermark_enabled: watermarkEnabled,
         watermark_text: watermarkEnabled ? watermarkText : undefined,
@@ -1633,6 +1665,17 @@ const EpisodeDetail: React.FC = () => {
               style={{ width: 220 }}
             />
           </Tooltip>
+          {/* 去重高级配置：仅在去重模式显示，逐项手动覆盖各去重手段 */}
+          {sliceMode === 'dedupe' && (
+            <Space wrap>
+              <Button size="small" icon={<SettingOutlined />} onClick={() => setDedupeManualOpen(true)}>
+                去重高级配置
+              </Button>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {Object.keys(dedupeManual).length > 0 ? '已启用手动配置' : '跟随所选档位'}
+              </Text>
+            </Space>
+          )}
           {/* 开始切片 / 快速转换按钮（位于切片模式选择下方） */}
           <Space wrap>
             <Button icon={<ScissorOutlined />} loading={sliceRunning} disabled={quickConverting} onClick={() => runSlice(false)}>开始切片</Button>
@@ -1640,6 +1683,19 @@ const EpisodeDetail: React.FC = () => {
               <Button icon={<ThunderboltOutlined />} loading={quickConverting} disabled={sliceRunning} onClick={() => runSlice(true)}>快速转换</Button>
             </Tooltip>
           </Space>
+
+          {/* 去重高级配置弹窗：手动逐项配置各去重手段 */}
+          <Modal
+            title="去重高级配置"
+            open={dedupeManualOpen}
+            onCancel={() => setDedupeManualOpen(false)}
+            onOk={() => setDedupeManualOpen(false)}
+            okText="完成"
+            cancelText="取消"
+            width={520}
+          >
+            <DedupeManualConfig value={dedupeManual} onChange={setDedupeManual} />
+          </Modal>
 
           {/* ── 竖屏转横屏智能裁切开关 ── */}
           <Card size="small" style={{ width: '100%' }}>
