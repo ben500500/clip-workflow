@@ -77,6 +77,15 @@ func (r *RedisClient) RegisterNode(info *NodeInfo, heartbeatTTL time.Duration) e
 	} else {
 		fields["tags"] = "[]"
 	}
+	if len(info.EncoderCapabilities) > 0 {
+		encJSON, err := json.Marshal(info.EncoderCapabilities)
+		if err != nil {
+			return err
+		}
+		fields["encoder_capabilities"] = string(encJSON)
+	} else {
+		fields["encoder_capabilities"] = "[]"
+	}
 
 	pipe := r.client.Pipeline()
 	pipe.HSet(r.ctx, nodeKey(info.NodeID), fields)
@@ -101,17 +110,25 @@ func (r *RedisClient) UnregisterNode(nodeID string, tags []string) error {
 	return err
 }
 
-// Heartbeat 心跳上报（含累计完成/失败数、引擎版本），并刷新节点 Hash 的 TTL
-func (r *RedisClient) Heartbeat(nodeID string, currentTasks, totalCompleted, totalFailed int, engineVersion string, heartbeatTTL time.Duration) error {
-	pipe := r.client.Pipeline()
-	pipe.HSet(r.ctx, nodeKey(nodeID), map[string]interface{}{
+// Heartbeat 心跳上报（含累计完成/失败数、引擎版本、硬件编码能力），并刷新节点 Hash 的 TTL
+func (r *RedisClient) Heartbeat(nodeID string, currentTasks, totalCompleted, totalFailed int, engineVersion string, encoderCapabilities []string, heartbeatTTL time.Duration) error {
+	fields := map[string]interface{}{
 		"last_heartbeat":        time.Now().Unix(),
 		"current_tasks":         currentTasks,
 		"total_tasks_completed": totalCompleted,
 		"total_tasks_failed":    totalFailed,
 		"status":                "online",
 		"engine_version":        engineVersion,
-	})
+	}
+	// 硬件编码能力随心跳刷新（运行期间 ffmpeg 能力基本不变，但保持数据新鲜）
+	if len(encoderCapabilities) > 0 {
+		encJSON, err := json.Marshal(encoderCapabilities)
+		if err == nil {
+			fields["encoder_capabilities"] = string(encJSON)
+		}
+	}
+	pipe := r.client.Pipeline()
+	pipe.HSet(r.ctx, nodeKey(nodeID), fields)
 	pipe.Expire(r.ctx, nodeKey(nodeID), heartbeatTTL)
 	_, err := pipe.Exec(r.ctx)
 	return err
@@ -372,6 +389,10 @@ type NodeInfo struct {
 	CPUPercent          int      `json:"cpu_percent"`
 	// 本节点当前引擎版本（用于判断是否需要推送更新，与后端计算算法一致）
 	EngineVersion string `json:"engine_version"`
+	// 本节点硬件编码能力（如 h264_nvenc/hevc_nvenc/h264_videotoolbox 等）。
+	// 预留接口：供后端在未来做「GPU 节点自动分派」时判断某节点能否处理硬件编码任务；
+	// 当前单机自动模式仅作能力上报/界面展示，不影响任务下发。
+	EncoderCapabilities []string `json:"encoder_capabilities"`
 }
 
 // SliceTask 切片任务

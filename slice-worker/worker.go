@@ -35,6 +35,8 @@ type Worker struct {
 	totalFailed    int32
 	// 本节点当前引擎版本（启动时计算，推送更新后原子更新）
 	engineVersion string
+	// 本节点硬件编码能力（启动时检测一次，供心跳/注册上报；预留 GPU 自动分派接口）
+	encoderCapabilities []string
 
 	// 回调
 	onTaskStart    func(task *SliceTask)
@@ -107,6 +109,12 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.log("warn", "计算引擎版本失败（将无法接收推送更新）: %v", err)
 	}
 
+	// 检测本节点硬件编码能力（启动时一次即可，供注册/心跳上报；预留 GPU 自动分派接口）
+	w.encoderCapabilities = GetEncoderCapabilities()
+	if len(w.encoderCapabilities) > 0 {
+		w.log("info", "检测到硬件编码能力: %v", w.encoderCapabilities)
+	}
+
 	// 注册节点
 	nodeInfo := &NodeInfo{
 		NodeID:              w.config.NodeID,
@@ -125,6 +133,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		TotalTasksFailed:    0,
 		CPUPercent:          w.config.CPUPercent,
 		EngineVersion:       w.engineVersion,
+		EncoderCapabilities: w.encoderCapabilities,
 	}
 
 	if err := w.redis.RegisterNode(nodeInfo, w.config.HeartbeatTTL()); err != nil {
@@ -638,7 +647,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 			current := int(atomic.LoadInt32(&w.currentTasks))
 			completed := int(atomic.LoadInt32(&w.totalCompleted))
 			failed := int(atomic.LoadInt32(&w.totalFailed))
-			w.redis.Heartbeat(w.config.NodeID, current, completed, failed, w.engineVersion, w.config.HeartbeatTTL())
+			w.redis.Heartbeat(w.config.NodeID, current, completed, failed, w.engineVersion, w.encoderCapabilities, w.config.HeartbeatTTL())
 
 			// 同时向后端 DB 同步节点数据（双写，保证 Worker 节点界面/数据库有数据）
 			if err := w.sendBackendHeartbeat(); err != nil {

@@ -50,6 +50,21 @@ def _get_stream(priority: str = "normal") -> str:
     }.get(priority, STREAM_NORMAL)
 
 
+def _parse_str_list(raw: str) -> list:
+    """解析节点能力等 JSON 字符串字段为列表（容错）。
+
+    Go Worker 在 Redis Hash 中写入的是 JSON 数组字符串（如 `["h264_nvenc"]`），
+    读取时统一用本函数解析；解析失败回退为空列表。
+    """
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+        return val if isinstance(val, list) else []
+    except (ValueError, TypeError):
+        return []
+
+
 async def get_redis() -> aioredis.Redis:
     """创建 Redis 连接。"""
     return aioredis.from_url(
@@ -426,6 +441,8 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
                 "running_progress": running_progress,
                 # 该节点当前引擎版本（心跳上报；用于判断是否需要推送更新）
                 "engine_version": node_data.get("engine_version", "") or "",
+                # 该节点硬件编码能力（如 h264_nvenc/hevc_nvenc 等；预留 GPU 节点自动分派接口）
+                "encoder_capabilities": _parse_str_list(node_data.get("encoder_capabilities", "")),
             })
         return nodes
     except Exception as e:

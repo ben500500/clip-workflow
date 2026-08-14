@@ -36,8 +36,12 @@ mkdir -p /home/<用户名>/videos && chmod 777 /home/<用户名>/videos
 # 6. 修改 docker-compose.yml 中的硬编码路径（见下方第 2 节）
 
 # 7. 启动
+# 纯 CPU 部署：
 docker compose up -d
 docker compose ps   # 等待所有服务 healthy（首启约 1-3 分钟）
+
+# GPU 加速部署（可选，见下方「GPU 加速」小节）：
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
 # 8. 验证
 curl http://<服务器IP>/api/health        # backend
@@ -92,6 +96,58 @@ docker exec clip-redis redis-cli -a <pass> -n 1 LLEN celery    # 不应持续堆
 # 6. Ollama / 画面理解
 docker exec clip-ollama ollama list
 ```
+
+## 六.5、GPU 加速部署（可选，三期效率优化）
+
+在带 NVIDIA GPU（如 RTX 2070 8G）的部署机上开启硬件加速，为三类负载提速：
+
+| 负载 | 涉及服务 | 收益 |
+|------|---------|------|
+| 切片 NVENC 编码 | slice-worker / slice-worker-2 | 重编码/加角标/烧字幕提速 3~5× |
+| Whisper ASR | autoclip | 1 小时音频从 10+ 分钟降到 1~2 分钟 |
+| Ollama 画面理解 | ollama | MiniCPM-V 视觉描述从秒级降到毫秒级 |
+
+**前提（部署机一次性配置）：**
+
+```bash
+# 1. 安装 NVIDIA 驱动（RTX 2070 属 Turing 架构，支持 CUDA 12.x / NVENC）
+# 2. 安装 nvidia-container-toolkit 并配置 Docker runtime
+sudo apt install nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+# 3. 验证 GPU 透传
+sudo docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
+```
+
+**启用（用 GPU overlay 覆盖默认纯 CPU 配置）：**
+
+```bash
+# 构建 GPU 版 autoclip 镜像（含 faster-whisper 的 CUDA 后端）
+docker compose build autoclip \
+  && docker build --build-arg ENABLE_CUDA=true -t clip-autoclip:latest ./autoclip
+
+# .env 中开启 Whisper CUDA（RTX 2070 8G 建议 fp16）
+#   WHISPER_DEVICE=cuda
+#   WHISPER_COMPUTE_TYPE=float16
+
+# 带 GPU overlay 启动（纯 CPU 机器不要加本文件）
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+```
+
+**自检：**
+
+```bash
+# NVENC 编码器（worker 节点界面「硬件编码」列应出现 h264_nvenc 等）
+docker exec clip-slice-worker ffmpeg -hide_banner -encoders | grep -i nvenc
+# Whisper 设备（autoclip 日志应显示 device=cuda）
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml logs autoclip | grep -i "device=cuda"
+# Ollama GPU
+nvidia-smi | grep clip-ollama
+```
+
+> ⚠️ 注意：8G 显存下建议同一时刻只跑 1~2 个 GPU 任务，避免并发 OOM。
+> 「去水印（LaMa）」在本期不启用 GPU（CPU 已够用），不在 overlay 覆盖范围内。
+> 本 overlay 中的 `encoder_capabilities` 字段为「GPU 节点自动分派」预留的接口，当前单机自动模式仅作能力展示。
 
 ## 七、日常运维要点
 
