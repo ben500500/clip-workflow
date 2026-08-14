@@ -1347,6 +1347,18 @@ def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str,
         offset += max(0.0, (end - start) / scale)
     # 排序并重新编号
     merged.sort(key=lambda r: r["start"])
+    # 安全兜底：若语音窗裁剪把切片区间内全部字幕裁掉（语音检测不可靠 / 静音误判 /
+    # 或语音窗与字幕时间轴轻微错位），但源 SRT 在本切片区间确有内容，则回退为
+    # 「忽略语音窗、直接保留区间内字幕」，避免用户开启 ASR 字幕后整段无字幕
+    # （burn_subtitle 会因此跳过烧录，成品完全没字幕）。仅在正常裁剪结果为空时回退，
+    # 正常有内容时保持原行为（字幕仅在说话时显示）。
+    if not merged and records and segments:
+        merged = []
+        offset = 0.0
+        for start, end in segments:
+            _filter_and_align_srt(records, start, end, offset, merged, None, scale)
+            offset += max(0.0, (end - start) / scale)
+        merged.sort(key=lambda r: r["start"])
     lines = []
     for i, r in enumerate(merged, start=1):
         lines.append(f"{i}\n{_format_srt_timestamp(r['start'])} --> {_format_srt_timestamp(r['end'])}\n{r['text']}\n")
