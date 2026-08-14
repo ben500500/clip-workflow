@@ -330,16 +330,15 @@ const Settings: React.FC = () => {
           </Form.Item>
           <Form.Item name="max_duration" label="最大时长（秒）"><InputNumber min={0} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="dedupe_config" label="去重配置 JSON"
-            extra={<Text type="secondary" style={{ fontSize: 12 }}>可选字段：mode（fast/dedupe/scrub）、flip_mirror（水平镜像）、speed_change（变速）、speed_factor（变速系数）、saturation（饱和度）、saturation_value、brightness（亮度）、brightness_value、sharpen（锐化）、sharpen_amount。这些参数在切片去重时生效，用于降低平台查重风险。</Text>}
-          ><Input.TextArea rows={6} style={{ fontFamily: 'monospace' }} placeholder='{"speed_change": true, "speed_factor": 1.04}' /></Form.Item>
+            extra={<Text type="secondary" style={{ fontSize: 12 }}>新体系：preset（light/standard/heavy 基础档位）+ manual（逐项覆盖四层去重手段：crop/hflip/speed/saturation/gamma/contrast/brightness/noise/scanline/vignette/roll_band/jitter/sharpen/watermark）。未填 manual 时沿用 preset 预设。用于降低平台查重风险。</Text>}
+          ><Input.TextArea rows={6} style={{ fontFamily: 'monospace' }} placeholder='{"preset": "standard", "manual": {"sharpen": 0.8}}' /></Form.Item>
           <Form.Item label=" ">
             <Button size="small" icon={<ReloadOutlined />} onClick={() => {
               // 恢复默认去重 JSON 示例
               profileForm.setFieldsValue({
                 dedupe_config: JSON.stringify({
-                  mode: 'fast', flip_mirror: false, speed_change: true, speed_factor: 1.04,
-                  saturation: true, saturation_value: 0.95, brightness: true, brightness_value: 0.01,
-                  sharpen: true, sharpen_amount: 0.8,
+                  preset: 'standard',
+                  manual: { speed: 1.05, sharpen: 0.8 },
                 }, null, 2),
               });
             }}>恢复去重 JSON 默认值</Button>
