@@ -2345,7 +2345,7 @@ def main():
         "--subtitle-font-ratio",
         type=float,
         default=None,
-        help="字幕字号（相对输出视频高度的比例，可选，默认 0.20→FontSize 20，约占画面 5%）。越大字幕越清晰易读",
+        help="字幕字号（相对输出视频高度的比例，可选，默认 0.20→FontSize 20，约占画面 5pct）。越大字幕越清晰易读",
     )
     parser.add_argument(
         "--subtitle-spacing",
