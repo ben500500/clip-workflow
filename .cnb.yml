@@ -13,7 +13,7 @@
 # 拉取镜像（部署时）：
 #   docker pull docker.cnb.cool/ben500500/clip-workflow/clip-backend:1.0.0
 
-v*:
+$:
   tag_push:
     # ==================== clip-backend ====================
     # 后端主服务（FastAPI + Celery），backend/worker/beat 共用此镜像
