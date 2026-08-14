@@ -226,6 +226,8 @@ export interface PublishTask {
   mini_program_id: string | null;
   prompt_record_id: string | null;
   material_id: string | null;
+  batch_id: string | null;
+  operator_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -244,6 +246,24 @@ export interface PublishProfile {
   require_manual_confirm: boolean;
   min_interval_seconds: number;
   max_daily_publish: number;
+  created_by: string | null;
+  operator_id: string | null;
+  tier: number;
+  proxy_url: string | null;
+  fingerprint_profile: Record<string, unknown> | null;
+  egress_ip: string | null;
+  chrome_debug_host: string | null;
+  grad_status: string | null;
+  created_at: string;
+}
+
+export interface PublishBatch {
+  id: string;
+  created_by: string | null;
+  strategy: string | null;
+  account_id: string | null;
+  total_items: number;
+  status: string | null;
   created_at: string;
 }
 
@@ -272,6 +292,8 @@ export interface VideoAccount {
   mini_program_enabled: boolean;
   remark: string | null;
   enabled: boolean;
+  created_by: string | null;
+  operator_id: string | null;
   created_at: string;
   updated_at: string;
 }

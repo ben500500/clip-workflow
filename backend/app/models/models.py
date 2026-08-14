@@ -380,6 +380,9 @@ class VideoAccount(Base):
     __tablename__ = "video_accounts"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 账号归属（多运营者，R14）：created_by=操作人（仅审计），operator_id=号主（微信号主人）
+    created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
+    operator_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     # 账号名称（如「主号-剧集A」），用户可读
     account_name = Column(String(100), nullable=False, index=True)
     # 平台：wechat_channel / douyin / kuaishou（矩阵跨平台复用）
@@ -424,6 +427,28 @@ class MiniProgram(Base):
         return f"<MiniProgram(id={self.id}, name={self.name})>"
 
 
+class PublishBatch(Base):
+    """发布批次表（多运营者，R14）。
+
+    一次 API 请求 = 1 个 batch；batch 下 N 个 task。
+    均分/轮询/指定 是 batch 级分配逻辑，task 创建后 operator_id 不可变（不迁移）。
+    """
+    __tablename__ = "publish_batches"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 操作人（发起的 user，含 publisher 代发 operator 号场景，R17）
+    created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # 策略：even(均分) / round_robin(轮询) / assigned(指定)
+    strategy = Column(String(50), nullable=True)
+    account_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    total_items = Column(Integer, default=0)
+    status = Column(String(50), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<PublishBatch(id={self.id}, strategy={self.strategy})>"
+
+
 class PublishTask(Base):
     __tablename__ = "publish_tasks"
 
@@ -447,6 +472,9 @@ class PublishTask(Base):
     screenshot_key = Column(String(500), nullable=True)
     # ── 一期：账号矩阵 / 小程序库 / 短片来源关联（冗余快照 + 外键并行，兼容历史数据） ──
     video_account_id = Column(UUID(as_uuid=True), nullable=True)
+    # ── 多运营者（R14/R17）：批次外键 + 号主 operator_id（创建后不可变，不迁移） ──
+    batch_id = Column(UUID(as_uuid=True), ForeignKey("publish_batches.id", ondelete="SET NULL"), nullable=True, index=True)
+    operator_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     mini_program_id = Column(UUID(as_uuid=True), nullable=True)
     # 短片来源：提示词记录（带去文案/时长/题材/基调）+ 发布素材记录（带去话题标签）
     prompt_record_id = Column(UUID(as_uuid=True), nullable=True)
@@ -465,6 +493,16 @@ class PublishProfile(Base):
     __tablename__ = "publish_profiles"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 账号归属（多运营者）：created_by=操作人，operator_id=号主（微信号主人）
+    created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
+    operator_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # 多运营者字段（Part 3 毕业 / 路由表）：tier、proxy、fingerprint、egress_ip、grad_status
+    tier = Column(Integer, default=0)
+    proxy_url = Column(String(500), nullable=True)
+    fingerprint_profile = Column(JSON, nullable=True)
+    egress_ip = Column(String(100), nullable=True)
+    chrome_debug_host = Column(String(200), nullable=True)
+    grad_status = Column(String(50), nullable=True)
     platform = Column(String(50), nullable=True)
     account_name = Column(String(100), nullable=True)
     chrome_debug_port = Column(Integer, default=9222)

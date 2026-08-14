@@ -53,6 +53,7 @@
 | V8-V14 | remove_mask ROI 经验库 / 四角检测 / 自动水印分析 / 模板可编辑 | `engines/remove_mask_{remover,rois}.py` |
 | 最新 | **批量切片工作流** + 一键切片接入 AI 选点/区间检测 + 切片配置预设 | `api/batch_slice.py`、`services/batch_slice_service.py` |
 | 本次 | **固定文字字体 B+C 方案**（fc-match 动态解析 + SC 单字体提取，根治"门"字） + **字幕间距/高度配置开放**（`subtitle_spacing` / 默认字号降为 0.22） + **字幕对齐源字幕打码区域**（`subtitle_align_mask`，默认开启：开启源字幕打码并检测到区域时 ASR 字幕默认位置对齐打码区域） + **字幕默认间距再缩小**（`SUBTITLE_SPACING` -1→-2） | `engines/slice.py`、`api/slice.py`、`services/slice_service.py`、`celery/tasks.py`、`batch_slice_service.py`、`slice-worker/{redis_client,task_executor}.go`、前端 2 文件、`alembic/0025` |
+| 本次 | **视频号多运营者发布 Phase 0**（方案 v3.1：账号归属 + RBAC 过滤 + Batch 模型 + 路由表/Lua 配额/CDP token 后端基础） | `models/models.py`（`created_by/operator_id`/`tier` 等 + `PublishBatch`）、`api/publish.py`（RBAC 过滤 + 批次 assign 端点）、`services/multi_operator.py`（新增：路由表 + Lua 原子配额 + 端口池 + 幂等 pending + cdp token）、`alembic/0027` |
 
 > 注意：短片制作（去水印/提示词/发布素材）演进到 **V14**，`PROJECT.md` 的 `/watermark` 页说明已很臃肿，建议后续拆分独立文档。
 

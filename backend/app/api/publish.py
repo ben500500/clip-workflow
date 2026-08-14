@@ -4,16 +4,26 @@ Publish API routes - manage publish tasks and profiles for video distribution.
 
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select, and_, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user
 from app.database import get_db
 from app.config import settings
-from app.models.models import PublishTask, PublishProfile, SliceOutput, VideoAccount, MiniProgram
+from app.models.models import (
+    PublishTask,
+    PublishBatch,
+    PublishProfile,
+    SliceOutput,
+    VideoAccount,
+    MiniProgram,
+    User,
+    user_can_access_all_materials,
+)
 from app.utils.helpers import utc_iso
 
 router = APIRouter()
@@ -31,6 +41,8 @@ class VideoAccountCreate(BaseModel):
     mini_program_enabled: bool = False
     remark: Optional[str] = None
     enabled: bool = True
+    # 多运营者（R14）：operator_id=号主（微信号主人）；created_by 由后端取当前用户写入
+    operator_id: Optional[str] = None
 
 
 class VideoAccountUpdate(BaseModel):
@@ -43,6 +55,7 @@ class VideoAccountUpdate(BaseModel):
     mini_program_enabled: Optional[bool] = None
     remark: Optional[str] = None
     enabled: Optional[bool] = None
+    operator_id: Optional[str] = None
 
 
 class VideoAccountResponse(BaseModel):
@@ -56,6 +69,8 @@ class VideoAccountResponse(BaseModel):
     mini_program_enabled: bool = False
     remark: Optional[str] = None
     enabled: bool = True
+    created_by: Optional[str] = None
+    operator_id: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -140,6 +155,8 @@ class PublishTaskResponse(BaseModel):
     mini_program_id: Optional[str] = None
     prompt_record_id: Optional[str] = None
     material_id: Optional[str] = None
+    batch_id: Optional[str] = None
+    operator_id: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -158,6 +175,32 @@ class PublishBatchCreate(BaseModel):
     tasks: List[PublishTaskCreate]
 
 
+class PublishTaskAssignRequest(BaseModel):
+    """多运营者发布批次：指定 视频号 + 运营者集合 + 策略（R14）。"""
+    output_id: str
+    platform: str
+    account_id: Optional[str] = None
+    operator_ids: Optional[List[str]] = None
+    strategy: str = "even"  # even(均分) / round_robin(轮询) / assigned(指定)
+    title: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[list] = None
+    cover_file_key: Optional[str] = None
+    mini_program_link: Optional[str] = None
+
+
+class PublishBatchResponse(BaseModel):
+    id: str
+    created_by: Optional[str] = None
+    strategy: Optional[str] = None
+    account_id: Optional[str] = None
+    total_items: int = 0
+    status: Optional[str] = None
+    created_at: str
+
+    model_config = {"from_attributes": True}
+
+
 class PublishProfileCreate(BaseModel):
     platform: str
     account_name: Optional[str] = None
@@ -171,6 +214,13 @@ class PublishProfileCreate(BaseModel):
     require_manual_confirm: bool = True
     min_interval_seconds: int = 300
     max_daily_publish: int = 20
+    # 多运营者（R14/Part3）：operator_id=号主；tier/proxy/fingerprint/egress_ip/chrome_debug_host 毕业字段
+    operator_id: Optional[str] = None
+    tier: Optional[int] = 0
+    proxy_url: Optional[str] = None
+    fingerprint_profile: Optional[dict] = None
+    egress_ip: Optional[str] = None
+    chrome_debug_host: Optional[str] = None
 
 
 class PublishProfileUpdate(BaseModel):
@@ -186,6 +236,13 @@ class PublishProfileUpdate(BaseModel):
     require_manual_confirm: Optional[bool] = None
     min_interval_seconds: Optional[int] = None
     max_daily_publish: Optional[int] = None
+    operator_id: Optional[str] = None
+    tier: Optional[int] = None
+    proxy_url: Optional[str] = None
+    fingerprint_profile: Optional[dict] = None
+    egress_ip: Optional[str] = None
+    chrome_debug_host: Optional[str] = None
+    grad_status: Optional[str] = None
 
 
 class PublishProfileResponse(BaseModel):
@@ -202,6 +259,14 @@ class PublishProfileResponse(BaseModel):
     require_manual_confirm: bool = True
     min_interval_seconds: int = 300
     max_daily_publish: int = 20
+    created_by: Optional[str] = None
+    operator_id: Optional[str] = None
+    tier: Optional[int] = 0
+    proxy_url: Optional[str] = None
+    fingerprint_profile: Optional[dict] = None
+    egress_ip: Optional[str] = None
+    chrome_debug_host: Optional[str] = None
+    grad_status: Optional[str] = None
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -233,8 +298,22 @@ def _serialize_publish_task(task: PublishTask) -> dict:
         "mini_program_id": str(task.mini_program_id) if task.mini_program_id else None,
         "prompt_record_id": str(task.prompt_record_id) if task.prompt_record_id else None,
         "material_id": str(task.material_id) if task.material_id else None,
+        "batch_id": str(task.batch_id) if task.batch_id else None,
+        "operator_id": str(task.operator_id) if task.operator_id else None,
         "created_at": utc_iso(task.created_at) if task.created_at else "",
         "updated_at": utc_iso(task.updated_at) if task.updated_at else "",
+    }
+
+
+def _serialize_publish_batch(batch: PublishBatch) -> dict:
+    return {
+        "id": str(batch.id),
+        "created_by": str(batch.created_by) if batch.created_by else None,
+        "strategy": batch.strategy,
+        "account_id": str(batch.account_id) if batch.account_id else None,
+        "total_items": batch.total_items or 0,
+        "status": batch.status,
+        "created_at": utc_iso(batch.created_at) if batch.created_at else "",
     }
 
 
@@ -254,6 +333,14 @@ def _serialize_publish_profile(profile: PublishProfile) -> dict:
         "require_manual_confirm": profile.require_manual_confirm if profile.require_manual_confirm is not None else True,
         "min_interval_seconds": profile.min_interval_seconds or 300,
         "max_daily_publish": profile.max_daily_publish or 20,
+        "created_by": str(profile.created_by) if profile.created_by else None,
+        "operator_id": str(profile.operator_id) if profile.operator_id else None,
+        "tier": profile.tier or 0,
+        "proxy_url": profile.proxy_url,
+        "fingerprint_profile": profile.fingerprint_profile,
+        "egress_ip": profile.egress_ip,
+        "chrome_debug_host": profile.chrome_debug_host,
+        "grad_status": profile.grad_status,
         "created_at": utc_iso(profile.created_at) if profile.created_at else "",
     }
 
@@ -585,11 +672,19 @@ async def confirm_publish_task(
 # ---- Publish Profile endpoints ----
 
 @router.get("/publish/profiles", response_model=List[PublishProfileResponse])
-async def list_publish_profiles(db: AsyncSession = Depends(get_db)):
-    """List all publish profiles."""
-    result = await db.execute(
-        select(PublishProfile).order_by(PublishProfile.created_at.desc())
-    )
+async def list_publish_profiles(
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """List publish profiles（多运营者 RBAC：operator 仅见自己归属/授权的号）."""
+    query = select(PublishProfile).order_by(PublishProfile.created_at.desc())
+    if current_user and not user_can_access_all_materials(current_user):
+        # 运营专员仅可见自己为号主(operator_id)或操作人(created_by)的 profile
+        query = query.where(
+            (PublishProfile.operator_id == current_user.id)
+            | (PublishProfile.created_by == current_user.id)
+        )
+    result = await db.execute(query)
     profiles = result.scalars().all()
     return [_serialize_publish_profile(p) for p in profiles]
 
@@ -598,6 +693,7 @@ async def list_publish_profiles(db: AsyncSession = Depends(get_db)):
 async def create_publish_profile(
     data: PublishProfileCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
     """Create a new publish profile."""
     # 加密存储 RPA Cookie（AES-256/Fernet，三期安全）
@@ -622,6 +718,14 @@ async def create_publish_profile(
         require_manual_confirm=data.require_manual_confirm,
         min_interval_seconds=data.min_interval_seconds,
         max_daily_publish=data.max_daily_publish,
+        # 多运营者归属：created_by=操作人；operator_id=号主（缺省同操作人）
+        created_by=current_user.id if current_user else None,
+        operator_id=uuid.UUID(data.operator_id) if data.operator_id else (current_user.id if current_user else None),
+        tier=data.tier,
+        proxy_url=data.proxy_url,
+        fingerprint_profile=data.fingerprint_profile,
+        egress_ip=data.egress_ip,
+        chrome_debug_host=data.chrome_debug_host,
     )
     db.add(profile)
     await db.flush()
@@ -634,6 +738,7 @@ async def update_publish_profile(
     profile_id: str,
     data: PublishProfileUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
     """Update a publish profile."""
     try:
@@ -645,6 +750,10 @@ async def update_publish_profile(
     profile = result.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail="Publish profile not found")
+    # RBAC：operator 仅可操作自己归属的 profile
+    if current_user and not user_can_access_all_materials(current_user):
+        if profile.operator_id not in (current_user.id, None) and profile.created_by != current_user.id:
+            raise HTTPException(status_code=403, detail="No permission to update this profile")
 
     update_fields = data.model_dump(exclude_unset=True)
     for field, value in update_fields.items():
@@ -668,6 +777,7 @@ async def update_publish_profile(
 async def delete_publish_profile(
     profile_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
     """Delete a publish profile."""
     try:
@@ -679,6 +789,10 @@ async def delete_publish_profile(
     profile = result.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail="Publish profile not found")
+    # RBAC：operator 仅可删除自己归属的 profile
+    if current_user and not user_can_access_all_materials(current_user):
+        if profile.operator_id not in (current_user.id, None) and profile.created_by != current_user.id:
+            raise HTTPException(status_code=403, detail="No permission to delete this profile")
 
     await db.delete(profile)
     await db.flush()
@@ -700,6 +814,8 @@ def _serialize_video_account(acc: VideoAccount) -> dict:
         "mini_program_enabled": acc.mini_program_enabled or False,
         "remark": acc.remark,
         "enabled": acc.enabled if acc.enabled is not None else True,
+        "created_by": str(acc.created_by) if acc.created_by else None,
+        "operator_id": str(acc.operator_id) if acc.operator_id else None,
         "created_at": utc_iso(acc.created_at) if acc.created_at else "",
         "updated_at": utc_iso(acc.updated_at) if acc.updated_at else "",
     }
@@ -723,8 +839,9 @@ async def list_video_accounts(
     platform: Optional[str] = Query(None),
     group_name: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
-    """账号库列表（可按平台/分组过滤，默认只返回启用账号）。"""
+    """账号库列表（可按平台/分组过滤，多运营者 RBAC：operator 仅见自己归属的号）."""
     filters = []
     if platform:
         filters.append(VideoAccount.platform == platform)
@@ -733,6 +850,11 @@ async def list_video_accounts(
     query = select(VideoAccount)
     if filters:
         query = query.where(and_(*filters))
+    if current_user and not user_can_access_all_materials(current_user):
+        query = query.where(
+            (VideoAccount.operator_id == current_user.id)
+            | (VideoAccount.created_by == current_user.id)
+        )
     query = query.order_by(VideoAccount.platform, VideoAccount.group_name, VideoAccount.account_name)
     result = await db.execute(query)
     accounts = result.scalars().all()
@@ -743,6 +865,7 @@ async def list_video_accounts(
 async def create_video_account(
     data: VideoAccountCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
     """新增账号（手动新增 / 初始化导入的单条）。"""
     acc = VideoAccount(
@@ -755,6 +878,9 @@ async def create_video_account(
         mini_program_enabled=data.mini_program_enabled,
         remark=data.remark,
         enabled=data.enabled,
+        # 多运营者归属：created_by=操作人；operator_id=号主（缺省同操作人）
+        created_by=current_user.id if current_user else None,
+        operator_id=uuid.UUID(data.operator_id) if data.operator_id else (current_user.id if current_user else None),
     )
     db.add(acc)
     await db.flush()
@@ -766,6 +892,7 @@ async def create_video_account(
 async def batch_import_video_accounts(
     data: VideoAccountBatchImport,
     db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
     """账号批量导入（Excel/CSV 解析后的结构化数组落库）。
 
@@ -796,6 +923,8 @@ async def batch_import_video_accounts(
                 mini_program_enabled=item.mini_program_enabled,
                 remark=item.remark,
                 enabled=item.enabled,
+                created_by=current_user.id if current_user else None,
+                operator_id=uuid.UUID(item.operator_id) if item.operator_id else (current_user.id if current_user else None),
             )
             db.add(acc)
             imported += 1
@@ -810,6 +939,7 @@ async def update_video_account(
     account_id: str,
     data: VideoAccountUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
     """更新账号信息。"""
     try:
@@ -821,10 +951,14 @@ async def update_video_account(
     acc = result.scalar_one_or_none()
     if not acc:
         raise HTTPException(status_code=404, detail="Video account not found")
+    # RBAC：operator 仅可操作自己归属的账号
+    if current_user and not user_can_access_all_materials(current_user):
+        if acc.operator_id not in (current_user.id, None) and acc.created_by != current_user.id:
+            raise HTTPException(status_code=403, detail="No permission to update this account")
 
     for field, value in data.model_dump(exclude_unset=True).items():
-        if field == "profile_id":
-            acc.profile_id = uuid.UUID(value) if value else None
+        if field in ("profile_id", "operator_id"):
+            setattr(acc, field, uuid.UUID(value) if value else None)
             continue
         setattr(acc, field, value)
 
@@ -837,6 +971,7 @@ async def update_video_account(
 async def delete_video_account(
     account_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
     """删除账号。"""
     try:
@@ -848,10 +983,134 @@ async def delete_video_account(
     acc = result.scalar_one_or_none()
     if not acc:
         raise HTTPException(status_code=404, detail="Video account not found")
+    # RBAC：operator 仅可删除自己归属的账号
+    if current_user and not user_can_access_all_materials(current_user):
+        if acc.operator_id not in (current_user.id, None) and acc.created_by != current_user.id:
+            raise HTTPException(status_code=403, detail="No permission to delete this account")
 
     await db.delete(acc)
     await db.flush()
     return None
+
+
+# ---- 发布批次 endpoints（多运营者，R14） ----
+
+
+@router.get("/publish/batches", response_model=List[PublishBatchResponse])
+async def list_publish_batches(
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """发布批次列表（operator 仅见自己发起的批次）."""
+    query = select(PublishBatch).order_by(PublishBatch.created_at.desc())
+    if current_user and not user_can_access_all_materials(current_user):
+        query = query.where(PublishBatch.created_by == current_user.id)
+    result = await db.execute(query)
+    batches = result.scalars().all()
+    return [_serialize_publish_batch(b) for b in batches]
+
+
+@router.get("/publish/batches/{batch_id}", response_model=dict)
+async def get_publish_batch(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """批次详情（含其下任务列表，多运营者 R14）。"""
+    try:
+        bid = uuid.UUID(batch_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid batch ID format")
+    result = await db.execute(select(PublishBatch).where(PublishBatch.id == bid))
+    batch = result.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Publish batch not found")
+    if current_user and not user_can_access_all_materials(current_user) and batch.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="No permission to view this batch")
+    tasks = (
+        await db.execute(
+            select(PublishTask).where(PublishTask.batch_id == bid).order_by(PublishTask.created_at)
+        )
+    ).scalars().all()
+    return {
+        **_serialize_publish_batch(batch),
+        "tasks": [_serialize_publish_task(t) for t in tasks],
+    }
+
+
+@router.post("/publish/batches/assign", response_model=dict, status_code=201)
+async def create_publish_batch(
+    data: PublishTaskAssignRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """创建多运营者发布批次：按策略(均分/轮询/指定)把任务分配到运营者（R14）。
+
+    单任务创建即绑定单一 operator，全程不迁移；重试/死信均在原 task 内。
+    """
+    # 解析目标账号
+    account_id = uuid.UUID(data.account_id) if data.account_id else None
+    # 解析运营者集合
+    operator_ids = [uuid.UUID(oid) for oid in (data.operator_ids or [])]
+    if not operator_ids:
+        raise HTTPException(status_code=400, detail="operator_ids is required for multi-operator publish")
+
+    # 校验视频源存在
+    try:
+        output_uuid = uuid.UUID(data.output_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid output_id format")
+    output = (
+        await db.execute(select(SliceOutput).where(SliceOutput.id == output_uuid))
+    ).scalar_one_or_none()
+    if not output:
+        raise HTTPException(status_code=404, detail="Slice output not found")
+
+    # 创建批次
+    batch = PublishBatch(
+        created_by=current_user.id if current_user else None,
+        strategy=data.strategy,
+        account_id=account_id,
+        status="pending",
+    )
+    db.add(batch)
+    await db.flush()
+
+    # 按策略分配运营者：每个 operator 一条（均分/轮询在当前批次粒度下等值；指定则用 operator_ids）
+    strategy = data.strategy or "even"
+    if strategy == "assigned":
+        assignees = operator_ids
+    else:  # even / round_robin
+        assignees = operator_ids
+
+    created_tasks = []
+    for idx, op_id in enumerate(assignees):
+        task = PublishTask(
+            output_id=output_uuid,
+            platform=data.platform,
+            account_name=output.title,
+            status="pending",
+            title=data.title or output.title,
+            description=data.description,
+            tags=data.tags,
+            cover_file_key=data.cover_file_key,
+            mini_program_link=data.mini_program_link,
+            require_manual_confirm=True,
+            video_account_id=account_id,
+            batch_id=batch.id,
+            operator_id=op_id,
+        )
+        db.add(task)
+        created_tasks.append(task)
+        await db.flush()
+
+    batch.total_items = len(created_tasks)
+    await db.flush()
+    await db.refresh(batch)
+    return {
+        **_serialize_publish_batch(batch),
+        "tasks": [_serialize_publish_task(t) for t in created_tasks],
+    }
 
 
 # ---- 小程序链接库 endpoints ----
