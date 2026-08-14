@@ -456,3 +456,82 @@ async def verify_cdp_token(token: str, account_id) -> bool:
         return True
     finally:
         await r.close()
+
+
+# ---- 运营者端口矩阵 + 配额统计（前端看板，P1 问题10） ----
+
+
+def _fmt_ts(val) -> str:
+    """路由表存的是 unix 秒字符串，转可读 iso（空则空串）。"""
+    if not val:
+        return ""
+    try:
+        return datetime.utcfromtimestamp(int(val)).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return str(val)
+
+
+async def get_route_matrix() -> list:
+    """读取完整路由表 + 配额消耗，渲染「运营者端口矩阵」看板。
+
+    返回 [{account_id, port, status, operator_id, profile_dir, daily_used,
+           last_post_at, last_heartbeat, ua_seed, egress_ip, op_daily_used}]
+    （daily_used 为单号当日发布数；op_daily_used 为该 operator 当日累计）。
+    """
+    r = _redis()
+    matrix = []
+    try:
+        keys = [k async for k in r.scan_iter(match=f"{ROUTE_PREFIX}*", count=200)]
+        for key in keys:
+            route = await r.hgetall(key)
+            if not route:
+                continue
+            account_id = key[len(ROUTE_PREFIX):]
+            operator_id = route.get("operator_id", "")
+            # 该 operator 当日累计消耗
+            op_used = 0
+            if operator_id:
+                raw = await r.get(f"{QUOTA_OP_PREFIX}{operator_id}")
+                op_used = int(raw or 0)
+            matrix.append({
+                "account_id": account_id,
+                "port": int(route.get("port") or 0),
+                "status": route.get("status", ""),
+                "operator_id": operator_id,
+                "profile_dir": route.get("profile_dir", ""),
+                "daily_used": int(route.get("daily_used") or 0),
+                "op_daily_used": op_used,
+                "last_post_at": _fmt_ts(route.get("last_post_at")),
+                "last_heartbeat": _fmt_ts(route.get("last_heartbeat")),
+                "ua_seed": route.get("ua_seed", ""),
+                "egress_ip": route.get("egress_ip", ""),
+            })
+    finally:
+        await r.close()
+    return matrix
+
+
+async def get_operator_stats() -> list:
+    """各 operator 当日配额消耗 + inflight 快照（看板「限额消耗」）。
+
+    返回 [{operator_id, daily_used, inflight}]；operator_id 为空（未绑定号主）的不入统计。
+    """
+    r = _redis()
+    seen = {}
+    try:
+        keys = [k async for k in r.scan_iter(match=f"{ROUTE_PREFIX}*", count=200)]
+        for key in keys:
+            route = await r.hgetall(key)
+            operator_id = route.get("operator_id", "")
+            if not operator_id:
+                continue
+            op_used = int((await r.get(f"{QUOTA_OP_PREFIX}{operator_id}")) or 0)
+            inflight = int((await r.get(f"{INFLIGHT_OP_PREFIX}{operator_id}")) or 0)
+            seen[operator_id] = {
+                "operator_id": operator_id,
+                "daily_used": op_used,
+                "inflight": inflight,
+            }
+    finally:
+        await r.close()
+    return list(seen.values())
