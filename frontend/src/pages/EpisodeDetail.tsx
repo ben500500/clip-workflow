@@ -2819,8 +2819,8 @@ const EpisodeDetail: React.FC = () => {
       {workflowGuide()}
 
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        {/* 左侧：AI 智能选点在上、通用区间检测在下；右侧整列给切片执行 */}
-        <Col xs={24} md={16}>
+        {/* 左侧：AI 智能选点在上、通用区间检测在下；右侧整列给切片执行（左右均等） */}
+        <Col xs={24} md={12}>
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             {actions
               .filter((a) => a.title !== '切片执行')
@@ -2829,7 +2829,7 @@ const EpisodeDetail: React.FC = () => {
               ))}
           </Space>
         </Col>
-        <Col xs={24} md={8}>
+        <Col xs={24} md={12}>
           {actions
             .filter((a) => a.title === '切片执行')
             .map((a) => (
