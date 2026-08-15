@@ -30,7 +30,6 @@ export function buildSliceConfigTooltip(
   if (sub && Object.keys(sub).length > 0) {
     const subOn = sub.enabled !== false;
     lines.push(`ASR 字幕烧录：${subOn ? '开启' : '关闭'}`);
-    if (subOn && sub.srt) lines.push(`  字幕文件：${String(sub.srt).slice(0, 60)}`);
   }
 
   // 文字水印
