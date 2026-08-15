@@ -53,7 +53,8 @@ class BatchSliceRunRequest(BaseModel):
         default_factory=dict,
         description="一键切片配置（复用剧集详情页的配置项，整批统一生效）："
                     "含切片配置、AI 智能选点配置(autoclip_config/autoclip_enabled)、"
-                    "通用区间检测配置(interval_config/interval_enabled)等",
+                    "通用区间检测配置(interval_config/interval_enabled)、"
+                    "流水线模式 pipeline_mode(serial|decoupled，默认 serial 串行)等",
     )
     auto_delete_source: bool = Field(True, description="是否处理完成后删除源视频（节约空间）")
 

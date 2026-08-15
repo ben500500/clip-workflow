@@ -358,10 +358,28 @@ async def _delete_source(item: BatchSliceItem):
 
 
 async def run_batch(batch_id: str):
-    """按序执行整批。"""
+    """批量切片工作流入口：按 pipeline_mode 分流。
+
+    - serial（默认，历史行为）：逐集串行编排（下方原有逻辑）。
+    - decoupled（解耦模式）：AI 选点与切片解耦为两条独立流水线，
+      仅负责上传建 Episode + 投递选点队列，具体逻辑见
+      batch_decoupled_service.run_batch_decoupled。
+    """
     batch = await _get_batch(batch_id)
     if batch is None:
         logger.error("Batch %s 不存在", batch_id)
+        return
+
+    # ── 解耦模式分流：pipeline_mode = "decoupled" ──
+    pipeline_mode = (batch.slice_config or {}).get("pipeline_mode", "serial")
+    if pipeline_mode == "decoupled":
+        logger.info("Batch %s 使用解耦模式（decoupled）", batch_id)
+        from app.services.batch_decoupled_service import run_batch_decoupled
+        await run_batch_decoupled(batch_id)
+        return
+
+    # 串行模式（历史逻辑，零改动）
+    if batch.status in ("completed", "cancelled", "failed"):
         return
 
     # 找到操作人（用于 run_autoclip / run_slice 的数据隔离校验）

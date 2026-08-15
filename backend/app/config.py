@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
 
+    # 解耦模式（AI 选点 × 切片解耦）周期任务间隔（秒）
+    BATCH_DISPATCH_INTERVAL_SECONDS: int = 5   # 切片投递守护轮询已选点池间隔
+    BATCH_AGGREGATE_INTERVAL_SECONDS: int = 10 # 批次状态聚合间隔
+
     # Upload
     UPLOAD_CHUNK_SIZE: int = 5 * 1024 * 1024  # 5MB
     UPLOAD_TEMP_DIR: str = "/tmp/uploads"
