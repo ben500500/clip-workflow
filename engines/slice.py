@@ -2427,34 +2427,69 @@ def detect_subtitle_dynamic_regions(video: str, srt: str) -> Optional[list[tuple
                     mask_acc += m.astype(np.float64)
             if not any_text or mask_acc is None:
                 continue
-            # 纵向：累加掩码按行投影，取文字集中行（去掉低于峰值一定比例的散点）。
-            rows = mask_acc.sum(axis=1)
-            rpeak = float(rows.max())
+            # 纵向：用「文字簇强度」而非原始像素投影作主信号。字幕文字带每一行总有
+            # 多个横向分离的文字笔画簇（每个字一个簇），而画面中大块浅色/暖色背景
+            # （人物、家具、灯光）虽能命中颜色掩码，但一行内文字簇数量很少。若用
+            # 像素投影，整段被误判为文字的背景行都会被圈进来，导致区域高度膨胀到
+            # 占屏高 40%~55%（“打码区域太大、盖住半屏”的根因）。
+            mask_bool = (mask_acc > 0).astype(bool)
+            cl_rows = _mask_text_clusters(mask_bool).astype(np.float64)
+            rpeak = float(cl_rows.max())
             if rpeak <= 0:
                 continue
-            ys = np.where(rows > rpeak * 0.12)[0]
+            # 聚类阈值用文字簇相对峰值（30%），聚焦文字主带，排除只命中一两个簇的
+            # 稀疏误判行（背景/装饰）。同时按 6px 间隙把离散簇行聚成子带，避免跨帧
+            # 取 min/max 把字幕在不同帧的纵向浮动范围整体压成一条宽带。
+            thr = rpeak * 0.30
+            ys = np.where(cl_rows >= thr)[0]
             if ys.size == 0:
                 continue
-            yy0 = y_top + int(ys.min())
-            yy1 = y_top + int(ys.max())
-            # 横向：按行投影取文字列范围。
-            cols = mask_acc.sum(axis=0)
-            cpeak = float(cols.max())
-            if cpeak <= 0:
+            bands = []
+            bs = int(ys[0]); bp = int(ys[0])
+            for y in ys[1:]:
+                if int(y) - bp > 6:
+                    bands.append((bs, bp)); bs = int(y)
+                bp = int(y)
+            bands.append((bs, bp))
+            # 单条子带高度上限约屏高 9%，超出按文字簇剖面峰值拆分，避免半屏宽带。
+            max_band_h = max(18, int(vh * 0.09))
+            sub_regions = []
+            for (sy0, sy1) in bands:
+                sy0 = int(sy0); sy1 = int(sy1)
+                bh = sy1 - sy0 + 1
+                if bh > max_band_h:
+                    sub = _split_tall_band(sy0, sy1, cl_rows, cl_rows.shape[0], max_band_h)
+                else:
+                    sub = [(sy0, sy1)]
+                for (b0, b1) in sub:
+                    b0 = int(b0); b1 = int(b1)
+                    yy0 = y_top + b0
+                    yy1 = y_top + b1
+                    # 横向：按行投影取文字列范围。
+                    cols = mask_acc[b0:b1 + 1, :].sum(axis=0)
+                    cpeak = float(cols.max())
+                    if cpeak <= 0:
+                        continue
+                    cs = np.where(cols > cpeak * 0.12)[0]
+                    if cs.size == 0:
+                        continue
+                    # 文字外接框加小余量（覆盖描边/换行），并裁剪到画面内。
+                    pad = max(6, int((yy1 - yy0) * 0.15))
+                    y0 = max(0, yy0 - pad)
+                    y1 = min(vh - 1, yy1 + pad)
+                    x0 = max(0, int(cs.min()) - pad)
+                    x1 = min(vw - 1, int(cs.max()) + pad)
+                    hh = y1 - y0 + 1
+                    ww = x1 - x0 + 1
+                    if hh <= 0 or ww <= 0:
+                        continue
+                    sub_regions.append((s, e, x0, y0, ww, hh))
+            if not sub_regions:
                 continue
-            cs = np.where(cols > cpeak * 0.12)[0]
-            if cs.size == 0:
-                continue
-            # 文字外接框加小余量（覆盖描边/换行），并裁剪到画面内。
-            pad = max(6, int((yy1 - yy0) * 0.15))
-            y0 = max(0, yy0 - pad)
-            y1 = min(vh - 1, yy1 + pad)
-            x0 = max(0, int(cs.min()) - pad)
-            x1 = min(vw - 1, int(cs.max()) + pad)
-            hh = y1 - y0 + 1
-            ww = x1 - x0 + 1
-            if hh <= 0 or ww <= 0:
-                continue
+            # 同一窗口内若出现多个子带（旁白/对话分处不同高度），取文字区域最大的
+            # 主字幕带作为该窗口的紧凑区域，避免一个窗口塞入多个重叠大框。
+            best = max(sub_regions, key=lambda it: it[4] * it[5])
+            x0, y0, ww, hh = best[2], best[3], best[4], best[5]
             # 去重相邻窗口的同一位置区域（纵向重叠则合并时间窗，避免重复打码）。
             if result and result[-1][2] == x0 and result[-1][3] == y0 \
                     and result[-1][4] == ww and result[-1][5] == hh \
@@ -2741,13 +2776,60 @@ def subtitle_mask_bottom_margin(cfg: dict, width: int, height: int) -> int:
     开启源字幕对齐时，把 ASR 字幕的 MarginV 设为该值，使新烧录字幕默认落在
     源字幕打码区域内、与被打掉的源字幕位置重合。若区域计算失败返回 -1（调用方
     回退到默认底边距）。
+
+    对齐基准优先取**实际用于打码的字幕区域**的底边，而非固定比例区域：
+    - 有 SRT 动态窗口（__dynamic_windows）时，取覆盖时长最长的“主字幕带”底边
+      （源字幕最常出现的纵向位置），否则字幕会落到与被打掉源字幕完全不同的
+      高度（“ASR 字幕没盖住源字幕/位置错位”的根因）。
+    - 其次取多区域（__regions）中最底部字幕带的底边。
+    - 均无时回退到 _subtitle_mask_area 的固定区域。
     """
     if width <= 0 or height <= 0:
         return -1
+
+    # ① SRT 动态窗口：把源分辨率窗口换算到当前分辨率，取覆盖时长最长的主字幕带底边。
+    dyn = cfg.get("__dynamic_windows")
+    if dyn:
+        dw = int(cfg.get("__detect_w", 0))
+        dh = int(cfg.get("__detect_h", 0))
+        cand = []
+        for (s0, e0, _sx, sy, _sw, sh) in dyn:
+            if dw > 0 and dh > 0 and (dw != width or dh != height):
+                ay = int(round(sy * height / dh))
+                ah = max(1, int(round(sh * height / dh)))
+            else:
+                ay, ah = int(sy), int(sh)
+            if ay >= height or ay + ah <= 0:
+                continue
+            cand.append(((ay + ah) * (e0 - s0), ay + ah))
+        if cand:
+            # 覆盖时长最长的窗口 = 源字幕主带；取其次数加权后的平均底边更稳。
+            total = sum(c for c, _ in cand)
+            if total > 0:
+                bottom = int(round(sum(b * c for c, b in cand) / total))
+                return max(0, height - bottom)
+
+    # ② 多区域打码：取最底部区域（通常为主对话字幕带）的底边。
+    regions = cfg.get("__regions")
+    if regions:
+        dw = int(cfg.get("__detect_w", 0))
+        dh = int(cfg.get("__detect_h", 0))
+        bottoms = []
+        for (sx, sy, sw, sh) in regions:
+            if dw > 0 and dh > 0 and (dw != width or dh != height):
+                ay = int(round(sy * height / dh))
+                ah = max(1, int(round(sh * height / dh)))
+            else:
+                ay, ah = int(sy), int(sh)
+            if ay < height and ay + ah > 0:
+                bottoms.append(ay + ah)
+        if bottoms:
+            return max(0, height - max(bottoms))
+
+    # ③ 回退到固定比例/绝对区域。
     x, y, w, h = _subtitle_mask_area(cfg, width, height)
     if w <= 0 or h <= 0:
         return -1
-    # 区域底边到视频底部的像素距离 = height - (y + h)
     return max(0, height - (y + h))
 
 
@@ -3672,8 +3754,11 @@ def main():
             wm_detected = detect_watermark_region(source_path)
             if wm_detected:
                 # 支持多个固定水印（顶部 + 底部角标等），全部分别打码。
-                watermark_mask["__regions"] = _merge_regions(wm_detected)
-                wx, wy, ww, wh = wm_detected[0]
+                # 注意：检测结果先经 _merge_regions 合并重叠/相邻横带，实际打码用
+                # 的是合并后的区域（否则同一位置被拆成多个重叠带、日志与实际不一致）。
+                wm_merged = _merge_regions(wm_detected)
+                watermark_mask["__regions"] = wm_merged
+                wx, wy, ww, wh = wm_merged[0]
                 watermark_mask["x"] = wx
                 watermark_mask["y"] = wy
                 watermark_mask["width"] = ww
@@ -3681,8 +3766,8 @@ def main():
                 detect_w, detect_h = ffprobe_size(source_path)
                 watermark_mask["__detect_w"] = detect_w
                 watermark_mask["__detect_h"] = detect_h
-                print(f"恒定水印打码自动定位: {len(wm_detected)} 个水印区域 @ {detect_w}x{detect_h}"
-                      + "".join(f" ({wx},{wy},{ww},{wh})" for (wx, wy, ww, wh) in wm_detected), file=sys.stderr)
+                print(f"恒定水印打码自动定位: {len(wm_detected)} 个原始带, 合并为 {len(wm_merged)} 个水印区域 @ {detect_w}x{detect_h}"
+                      + "".join(f" ({wx},{wy},{ww},{wh})" for (wx, wy, ww, wh) in wm_merged), file=sys.stderr)
             else:
                 print("恒定水印打码自动定位失败，回退默认区域（底部水印带）", file=sys.stderr)
 
