@@ -1517,13 +1517,19 @@ SUBTITLE_MASK_BOTTOM_RATIO = 0.02
 # 默认打码样式
 SUBTITLE_MASK_STYLE_DEFAULT = "delogo"
 # 打码样式集合
-SUBTITLE_MASK_STYLES = ("delogo", "mosaic", "blur", "fill")
+SUBTITLE_MASK_STYLES = ("delogo", "mosaic", "blur", "gblur", "fill")
 # 马赛克缩放后的块大小（px），越大马赛克颗粒越粗
 SUBTITLE_MASK_BLOCK = 8
 # 模糊滤镜核大小（px）
-SUBTITLE_MASK_BLUR_RADIUS = 12
-# 自动检测字幕区域时最多采样的帧数（越多越稳，但越慢）
-SUBTITLE_MASK_DETECT_MAX_FRAMES = 10
+SUBTITLE_MASK_BLUR_RADIUS = 10  # boxblur 的 chroma_param(radius:1) 上限为 11，12 会越界导致 blur 样式转码失败
+# 高斯模糊 sigma（gblur 样式）：sigma 越大越柔和、越能盖住字幕文字。相比 boxblur
+# 均匀模糊，gblur 的高斯核更自然、视觉更柔，适合对密集多行对话字幕打码（盖死且
+# 不突兀，比马赛克/纯色块自然）。
+SUBTITLE_MASK_GBLUR_SIGMA = 10
+# 自动检测字幕区域时最多采样的帧数（越多越稳，但越慢）。
+# 短剧字幕常出现在多个纵向位置（旁白/对话/偶尔更高处），采样过少会漏掉只在
+# 部分时段出现、位置又偏的副字幕带。此处取 24，兼顾稳定性与速度。
+SUBTITLE_MASK_DETECT_MAX_FRAMES = 24
 # 区域检测的"间歇性"打分参数：对话字幕是间歇出现（说话时才在屏），而固定水印/角标
 # 几乎每一帧都在。检测时用"出现频率"区分二者，优先挑间歇出现的字幕带，避免被
 # 恒定水印误导而打偏。出现频率越接近 PRESENCE_IDEAL 越加分，越接近 0（无内容）
@@ -1532,6 +1538,10 @@ SUBTITLE_MASK_PRESENCE_IDEAL = 0.6
 SUBTITLE_MASK_PRESENCE_SLOPE = 2.5
 SUBTITLE_MASK_PRESENCE_MIN = 0.3
 SUBTITLE_MASK_PRESENCE_MAX = 2.0
+# 多横带检测：保留文字簇强度达到最强带该比例的候选横带（0~1，越小能捕获越多
+# 副字幕带，但也越容易把背景/角标误检为字幕）。此处取 0.5，覆盖"旁白+对话+
+# 高位副字幕"等多条字幕带；上方画面噪声由引擎侧"下半区 sanity 过滤"剔除。
+SUBTITLE_MASK_MULTI_RELATIVE = 0.5
 
 
 def _mask_text_clusters(mask):
@@ -1546,11 +1556,114 @@ def _mask_text_clusters(mask):
     return starts.sum(axis=1)
 
 
-def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int, int, int]]:
-    """用 OpenCV 从源视频采样帧自动检测字幕文字区域。
+def _split_tall_band(y0: int, y1: int, smooth, height: int, max_band_h: int):
+    """把过高的字幕横带拆分为多个紧凑子横带，避免"打码区域盖住半屏"。
 
-    返回 (x, y, w, h)，区域已按视频宽高裁剪到边界内；检测失败或 OpenCV
-    不可用时返回 None（由调用方回退到固定比例区域）。
+    单个字幕带高度本应在 1~3 行文字范围内（通常 < 6% 屏高）。但当对话字幕在
+    不同时间帧处于不同纵向位置时，cluster_peak 跨帧取最大值会把整段纵向浮动范围
+    压成一条很宽的横带（如 y≈1028-1300、h≈272），叠加余量与相邻旁白带合并后
+    可覆盖近半屏——这正是用户反馈的"打码区域太大"根因。
+
+    这里按 band 内 smooth（文字簇强度）剖面的局部峰值把宽带拆成多个紧凑子带：
+    相邻峰值间的低谷作为切分点。这样每个子带都紧贴一处字幕文字位置，未出现字幕
+    的纵向间隙不再被打码，区域总面积大幅下降，且不遗漏任何出现字幕的位置。
+
+    y0, y1: 待拆分的原始横带上下边界。
+    smooth: 长度为 height 的文字簇强度剖面。
+    height: 画面高度。
+    max_band_h: 子带高度上限（超过则不再细分，直接按当前范围作为一段，避免无限递归）。
+
+    返回拆分后的子带 [(y0, y1), ...]，每个子带高度 <= max_band_h（或无法再拆）。
+    """
+    if y1 - y0 + 1 <= max_band_h:
+        return [(y0, y1)]
+    band = smooth[y0:y1 + 1]
+    peak = float(band.max())
+    if peak <= 0:
+        return [(y0, y1)]
+    # 找带内所有局部峰值（比左右相邻行都强），并记录它们之间的低谷。
+    n = len(band)
+    peaks = []
+    for i in range(1, n - 1):
+        if band[i] >= band[i - 1] and band[i] >= band[i + 1] and band[i] > peak * 0.25:
+            peaks.append(i)
+    if not peaks:
+        return [(y0, y1)]
+    # 局部峰值聚类：相近的峰值（间距 < 8px）归为同一字幕行。
+    groups = []
+    cur = [peaks[0]]
+    for p in peaks[1:]:
+        if p - cur[-1] <= 8:
+            cur.append(p)
+        else:
+            groups.append(cur)
+            cur = [p]
+    groups.append(cur)
+    # 每个峰值簇对应一条字幕文字行，取其代表行（簇内最强）。
+    rep = []
+    for g in groups:
+        gi = max(g, key=lambda i: float(band[i]))
+        rep.append(gi)
+    rep.sort()
+    # 若只有一个字幕行且带过宽，说明是单条粗大文字被平滑扩散，取最强核心裁剪。
+    if len(rep) == 1:
+        mid = rep[0]
+        half = max_band_h // 2
+        a2 = max(0, mid - half)
+        b2 = min(n - 1, a2 + max_band_h - 1)
+        return [(y0 + a2, y0 + b2)]
+    # 多字幕行：每行取"实际文字纵向范围 + 小余量"的紧凑子带，而不是固定 max_band_h。
+    # 旧实现给每行一个 max_band_h（可达屏高 9%）高的子带，多行相邻时这些大子带互相
+    # 重叠、合并回一整条宽带（"打码区域盖住半屏"根因之一），且把低密度旁白字幕与
+    # 高密度对话字幕压成同一区域，导致旁白密度被稀释到阈值以下而漏打。这里改为按
+    # 局部文字簇剖面峰值的谷值截断，得到紧贴该行文字的子带。
+    max_row_h = max(18, int(height * 0.045))
+    out = []
+    for mi in rep:
+        base = float(band[mi])
+        if base <= 0:
+            continue
+        thr = base * 0.30
+        a = mi
+        while a > 0 and band[a] >= thr:
+            a -= 1
+        b = mi
+        while b < n - 1 and band[b] >= thr:
+            b += 1
+        # 保证最小高度（容纳单行文字+描边），同时限制最大高度防止无限扩散。
+        if b - a + 1 < 26:
+            half = 13
+            a = max(0, mi - half)
+            b = min(n - 1, mi + half)
+        if b - a + 1 > max_row_h:
+            half = max_row_h // 2
+            a = max(0, mi - half)
+            b = min(n - 1, mi + half)
+        out.append((y0 + a, y0 + b))
+    # 合并重叠或极接近（间距 < 10px）的子带，避免同一条字幕被切成两段。
+    out.sort()
+    merged = []
+    cur = list(out[0])
+    for (a, b) in out[1:]:
+        if a <= cur[1] + 10:
+            cur[1] = max(cur[1], b)
+        else:
+            merged.append((cur[0], cur[1]))
+            cur = [a, b]
+    merged.append((cur[0], cur[1]))
+    return merged
+
+
+def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int, int, int, int]]]:
+    """用 OpenCV 从源视频采样帧自动检测字幕文字区域（支持多横带）。
+
+    返回多个区域 [(x, y, w, h), ...]，每个区域已按视频宽高裁剪到边界内；检测失败
+    或 OpenCV 不可用时返回 None（由调用方回退到固定比例区域）。
+
+    短剧片源常见"旁白字幕 + 对话字幕 + 上/下固定水印"并存、且分别落在不同纵向
+    横带上（旁白在居中偏上、对话在居中偏下、水印贴顶/贴底）。因此这里返回**所有**
+    通过打分阈值的横带区域（按强度降序），而不是只挑最强的一条——否则漏掉其余
+    位置的对话/旁白字幕导致打码不完整。
 
     采样时机：有 SRT 时取 SRT 出现的时刻（字幕在场），无 SRT 时均匀采样全程。
 
@@ -1633,7 +1746,7 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
             return None
 
         # 按文字簇强度找候选横带
-        thr = peak * 0.3
+        thr = peak * 0.12
         ys = np.where(smooth > thr)[0]
         if ys.size == 0:
             return None
@@ -1687,25 +1800,70 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[tuple[int, int
         if not candidates:
             return None
         candidates.sort(reverse=True)
-        _, _, y0, y1, h, _, _ = candidates[0]
+        best_score = candidates[0][0]
+        best_val = candidates[0][1]
+        # 保留所有"文字簇强度达到最强带一定比例"的横带（按强度降序），覆盖
+        # "旁白 + 对话 + 更高处副字幕"等多个纵向位置的字幕带，避免只打最强一条
+        # 而漏掉其余位置的字幕。
+        # 用 val（文字簇强度）而非 score（含出现频率加权）作阈值：低频但确实存在的
+        # 副字幕带（如只在视频后半段出现的高位对话字幕）score 会因"出现频率低"被
+        # 重罚而偏低，直接用 score 阈值会漏掉它。上方画面场景噪声由引擎侧的
+        # "下半区 sanity 过滤"剔除，这里只按文字簇强度保底，兼顾不漏打与不过度误检。
+        # 单个字幕带高度上限：超过该值视为"对话字幕在不同时间纵向浮动/多条字幕带
+        # 被 cluster_peak 跨帧取最大而压成宽带"，按 smooth 剖面峰值拆分为多个紧凑
+        # 子带，避免打码区域盖住半屏（用户反馈的核心问题）。
+        max_band_h = max(18, int(height * 0.09))
+        regions = []
+        seen_bands = []
+        for score, val, y0, y1, h, pr, dynamism in candidates:
+            # 用 continue 而非 break：候选已按 score 降序，但这里按 val（文字簇强度）
+            # 筛选副字幕带；若用 break，会在第一个"score 高但 val 低"的噪声带处提前
+            # 退出，漏掉后面 val 更高但 score 低的副字幕带。
+            if val < best_val * SUBTITLE_MASK_MULTI_RELATIVE:
+                continue
+            # 过高横带：先按文字簇峰值剖面拆分出多个紧凑子带（贴合每处字幕位置），
+            # 每个子带再独立计算横向范围与余量，区域总面积大幅下降且不漏字幕。
+            if h > max_band_h:
+                sub_bands = _split_tall_band(y0, y1, smooth, height, max_band_h)
+            else:
+                sub_bands = [(y0, y1)]
+            for (sy0, sy1) in sub_bands:
+                sh = sy1 - sy0 + 1
+                # 与已选区域纵向重叠的横带合并（同一字幕带可能被切成多段）
+                overlap = False
+                for (ry0, ry1) in seen_bands:
+                    if sy0 <= ry1 and ry0 <= sy1:
+                        overlap = True
+                        break
+                if overlap:
+                    continue
 
-        # 上下扩展余量（向下更多，覆盖描边/换行/下延），确保 delogo 完整补平
-        up = max(10, int(h * 0.3))
-        down = max(16, int(h * 0.5))
-        y0 = max(0, y0 - up)
-        y1 = min(height - 1, y1 + down)
+                # 上下扩展余量（向下略多，覆盖描边/换行/下延），确保 delogo 完整补平。
+                # 子带已紧贴字幕文字，余量仅需覆盖描边/换行，不宜过大，否则区域被
+                # 撑高 1.7~2.2 倍（"打码区域太大、盖住半屏"的根因之一），故收窄到 ~30%。
+                up = min(36, max(10, int(sh * 0.25)))
+                down = min(42, max(14, int(sh * 0.3)))
+                ey0 = max(0, sy0 - up)
+                ey1 = min(height - 1, sy1 + down)
 
-        # 横向范围
-        col = color_acc[y0:y1 + 1, :].sum(axis=0)
-        col_peak = float(col.max())
-        if col_peak <= 1:
-            return 0, y0, width, (y1 - y0)
-        cols = np.where(col > col_peak * 0.1)[0]
-        if cols.size == 0:
-            return 0, y0, width, (y1 - y0)
-        x0 = max(0, int(cols.min()) - 10)
-        x1 = min(width - 1, int(cols.max()) + 10)
-        return x0, y0, (x1 - x0), (y1 - y0)
+                # 横向范围
+                col = color_acc[ey0:ey1 + 1, :].sum(axis=0)
+                col_peak = float(col.max())
+                if col_peak <= 1:
+                    rx0, rw = 0, width
+                else:
+                    cols = np.where(col > col_peak * 0.1)[0]
+                    if cols.size == 0:
+                        rx0, rw = 0, width
+                    else:
+                        cx0 = max(0, int(cols.min()) - 10)
+                        cx1 = min(width - 1, int(cols.max()) + 10)
+                        rx0, rw = cx0, (cx1 - cx0)
+                regions.append((rx0, ey0, rw, (ey1 - ey0)))
+                seen_bands.append((sy0, sy1))
+        if not regions:
+            return None
+        return regions
     finally:
         if cap is not None:
             cap.release()
@@ -1791,15 +1949,18 @@ def _bimodal_threshold(values: list[float]) -> float:
     return best_t
 
 
-def detect_watermark_region(video: str, max_frames: int = 12) -> Optional[tuple[int, int, int, int]]:
-    """用 OpenCV 从源视频采样帧自动检测恒定水印/角标区域。
+def detect_watermark_region(video: str, max_frames: int = 12) -> Optional[list[tuple[int, int, int, int]]]:
+    """用 OpenCV 从源视频采样帧自动检测恒定水印/角标区域（支持多个：顶部+底部）。
 
     与 detect_subtitle_region 相反：字幕是间歇出现的（presence 接近 0.6），
     而水印/角标几乎每帧都在（presence 接近 1.0）。这里以"出现频率"为主信号，
     越接近恒定（pr→1）越加分，间歇出现的对话字幕会被排除。
 
-    返回 (x, y, w, h)；检测失败或 OpenCV 不可用时返回 None（由调用方回退到
-    固定比例区域：默认底部水印带）。
+    片源常在**顶部和底部各有一个固定水印**，因此这里返回**所有**通过恒定阈值的
+    横带区域（按强度降序），而不是只挑最强一条——否则会漏掉另一个位置的水印。
+
+    返回多个区域 [(x, y, w, h), ...]；检测失败或 OpenCV 不可用时返回 None（由
+    调用方回退到固定比例区域：默认底部水印带）。
     """
     width, height = ffprobe_size(video)
     if width <= 0 or height <= 0:
@@ -1883,25 +2044,44 @@ def detect_watermark_region(video: str, max_frames: int = 12) -> Optional[tuple[
         if not candidates:
             return None
         candidates.sort(reverse=True)
-        _, _, y0, y1, h, _ = candidates[0]
-
-        # 上下扩展余量
-        up = max(8, int(h * 0.25))
-        down = max(12, int(h * 0.4))
-        y0 = max(0, y0 - up)
-        y1 = min(height - 1, y1 + down)
-
-        # 横向范围
-        col = color_acc[y0:y1 + 1, :].sum(axis=0)
-        col_peak = float(col.max())
-        if col_peak <= 1:
-            return 0, y0, width, (y1 - y0)
-        cols = np.where(col > col_peak * 0.1)[0]
-        if cols.size == 0:
-            return 0, y0, width, (y1 - y0)
-        x0 = max(0, int(cols.min()) - 10)
-        x1 = min(width - 1, int(cols.max()) + 10)
-        return x0, y0, (x1 - x0), (y1 - y0)
+        best_score = candidates[0][0]
+        # 收集所有通过恒定阈值的横带（顶部水印 + 底部水印等多个固定元素），
+        # 避免只打最强一条而漏掉另一个位置的水印/角标。
+        regions = []
+        seen_bands = []
+        for score, val, y0, y1, h, pr in candidates:
+            if score < best_score * SUBTITLE_MASK_MULTI_RELATIVE:
+                break
+            overlap = False
+            for (ry0, ry1) in seen_bands:
+                if y0 <= ry1 and ry0 <= y1:
+                    overlap = True
+                    break
+            if overlap:
+                continue
+            # 上下扩展余量
+            up = max(8, int(h * 0.25))
+            down = max(12, int(h * 0.4))
+            ey0 = max(0, y0 - up)
+            ey1 = min(height - 1, y1 + down)
+            # 横向范围
+            col = color_acc[ey0:ey1 + 1, :].sum(axis=0)
+            col_peak = float(col.max())
+            if col_peak <= 1:
+                rx0, rw = 0, width
+            else:
+                cols = np.where(col > col_peak * 0.1)[0]
+                if cols.size == 0:
+                    rx0, rw = 0, width
+                else:
+                    cx0 = max(0, int(cols.min()) - 10)
+                    cx1 = min(width - 1, int(cols.max()) + 10)
+                    rx0, rw = cx0, (cx1 - cx0)
+            regions.append((rx0, ey0, rw, (ey1 - ey0)))
+            seen_bands.append((y0, y1))
+        if not regions:
+            return None
+        return regions
     finally:
         if cap is not None:
             cap.release()
@@ -2135,6 +2315,131 @@ def detect_subtitle_spatial_regions(video: str, region: tuple[int, int, int, int
             cap.release()
 
 
+# SRT 时间轴驱动的动态字幕区域检测参数：
+# 每个 SRT 字幕窗口内抽帧数（越多越稳，但越慢）。SRT 时间点已经标注了
+# "字幕/对话/旁白"出现的时刻，只需在这些时刻抽帧定位字幕文字的实际紧凑位置，
+# 无需对整段视频逐帧扫描，检测成本远低于 temporal 的全程采样。
+SUBTITLE_MASK_DYNAMIC_FRAMES = 3
+# 动态抽帧时在窗口内取样的相对位置（避开首尾过渡帧）。
+SUBTITLE_MASK_DYNAMIC_FRAC = (0.35, 0.5, 0.65)
+# 动态检测的纵向搜索带：字幕/对话/旁白几乎都在画面下半区，这里限定在下半区
+# 内搜索，避免把顶部标题/角标误检为字幕，也减少无关区域的处理量。
+SUBTITLE_MASK_DYNAMIC_SEARCH_BOTTOM_RATIO = 0.45
+
+
+def detect_subtitle_dynamic_regions(video: str, srt: str) -> Optional[list[tuple]]:
+    """SRT 时间轴驱动的动态字幕区域检测（每窗口紧凑区域）。
+
+    相比"静态单区域 + 全程打码"与"全时间轴逐帧 temporal 检测"，本方案：
+      - 只在 SRT 标注的字幕/对话/旁白出现的时刻抽帧定位，避免逐帧全视频扫描
+        （高效，成本远低于 temporal 的 0.5s 步长全程采样）；
+      - 每个字幕窗口用自己在该时刻检测到的紧凑文字外接框 (x, y, w, h)，字幕在
+        不同时间位于不同纵向位置（旁白 vs 对话）时各自准确覆盖，不会把多个位置
+        合并成一条宽大横带（解决"打码区域太大、盖住半屏"）；
+      - 无字幕的时间（SRT 无记录）不打码，避免"没字幕也打码"；
+      - 用字幕专属的"金色/黄色 + 白色/浅色"文字色做掩码，对金色/黄色短剧字幕可靠。
+
+    srt: 源视频 SRT（ASR 选点阶段已产出，标注对话/旁白出现时刻）。
+    返回 [(src_s, src_e, x, y, w, h), ...]：每个 SRT 窗口对应的紧凑字幕区域
+    （源时间轴 + 源分辨率绝对坐标）；检测失败或无 SRT 返回 None。
+    """
+    records = read_srt(srt) if srt and os.path.isfile(srt) else []
+    if not records:
+        return None
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+    vw, vh = ffprobe_size(video)
+    if vw <= 0 or vh <= 0:
+        return None
+    # 纵向搜索带：画面下半区（字幕常驻区），并适当向上留余量。
+    y_top = int(vh * (1.0 - SUBTITLE_MASK_DYNAMIC_SEARCH_BOTTOM_RATIO)) - 20
+    y_top = max(0, y_top)
+
+    cap = None
+    result = []
+    try:
+        cap = cv2.VideoCapture(video)
+        if not cap.isOpened():
+            return None
+        for rec in records:
+            s = float(rec["start"])
+            e = float(rec["end"])
+            if e <= s:
+                continue
+            # 窗口内抽样时刻（相对位置，避开首尾过渡帧）。
+            times = [s + (e - s) * f for f in SUBTITLE_MASK_DYNAMIC_FRAC]
+            times = times[:SUBTITLE_MASK_DYNAMIC_FRAMES]
+            mask_acc = None
+            any_text = False
+            for t in times:
+                cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    continue
+                sub = frame[y_top:vh, :, :]
+                b = sub[:, :, 0].astype(np.int16)
+                g = sub[:, :, 1].astype(np.int16)
+                r = sub[:, :, 2].astype(np.int16)
+                # 金色/黄色字幕（R 高、G 高、B 低，R/G 接近）
+                gold = (r > 130) & (g > 110) & (b < 160) & (r - b > 50) & \
+                       (g - b > 40) & (abs(r - g) < 110)
+                # 白色/浅色字幕
+                white = (r > 170) & (g > 170) & (b > 170) & (abs(r - g) < 45) & \
+                        (abs(g - b) < 45) & (abs(r - b) < 45)
+                m = gold | white
+                if not bool(m.any()):
+                    continue
+                any_text = True
+                if mask_acc is None:
+                    mask_acc = m.astype(np.float64)
+                else:
+                    mask_acc += m.astype(np.float64)
+            if not any_text or mask_acc is None:
+                continue
+            # 纵向：累加掩码按行投影，取文字集中行（去掉低于峰值一定比例的散点）。
+            rows = mask_acc.sum(axis=1)
+            rpeak = float(rows.max())
+            if rpeak <= 0:
+                continue
+            ys = np.where(rows > rpeak * 0.12)[0]
+            if ys.size == 0:
+                continue
+            yy0 = y_top + int(ys.min())
+            yy1 = y_top + int(ys.max())
+            # 横向：按行投影取文字列范围。
+            cols = mask_acc.sum(axis=0)
+            cpeak = float(cols.max())
+            if cpeak <= 0:
+                continue
+            cs = np.where(cols > cpeak * 0.12)[0]
+            if cs.size == 0:
+                continue
+            # 文字外接框加小余量（覆盖描边/换行），并裁剪到画面内。
+            pad = max(6, int((yy1 - yy0) * 0.15))
+            y0 = max(0, yy0 - pad)
+            y1 = min(vh - 1, yy1 + pad)
+            x0 = max(0, int(cs.min()) - pad)
+            x1 = min(vw - 1, int(cs.max()) + pad)
+            hh = y1 - y0 + 1
+            ww = x1 - x0 + 1
+            if hh <= 0 or ww <= 0:
+                continue
+            # 去重相邻窗口的同一位置区域（纵向重叠则合并时间窗，避免重复打码）。
+            if result and result[-1][2] == x0 and result[-1][3] == y0 \
+                    and result[-1][4] == ww and result[-1][5] == hh \
+                    and s <= result[-1][1] + 0.5:
+                result[-1] = (result[-1][0], max(result[-1][1], e), x0, y0, ww, hh)
+            else:
+                result.append((s, e, x0, y0, ww, hh))
+        return result if result else None
+    finally:
+        if cap is not None:
+            cap.release()
+
+
 def _parse_subtitle_mask_config(raw: str | None) -> dict | None:
     """解析 --subtitle-mask 参数（JSON），未启用返回 None。"""
     if not raw:
@@ -2146,6 +2451,54 @@ def _parse_subtitle_mask_config(raw: str | None) -> dict | None:
     if not isinstance(cfg, dict) or not cfg.get("enabled"):
         return None
     return cfg
+
+
+def _source_intervals_to_local_intervals(src_intervals: list[tuple], seg_times: list[tuple],
+                                         scale: float = 1.0) -> list[tuple]:
+    """把源时间轴区间列表转换为切片局部时间轴（从 0 开始）的区间列表。
+
+    与 _source_intervals_to_local_enable 逻辑一致，但返回 [(start, end), ...] 列表
+    而非 enable 表达式，便于逐区域构建各自的时间窗口。
+    """
+    if not src_intervals:
+        return []
+    intervals = []
+    offset = 0.0
+    for start, end in seg_times:
+        for s0, e0 in src_intervals:
+            s = max(s0, start)
+            e = min(e0, end)
+            if e > s:
+                intervals.append(((s - start) / scale + offset, (e - start) / scale + offset))
+        offset += max(0.0, (end - start) / scale)
+    if not intervals:
+        return []
+    intervals.sort()
+    merged = []
+    for s, e in intervals:
+        if merged and s <= merged[-1][1] + 0.4:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append([s, e])
+    return [(s, e) for (s, e) in merged]
+
+
+def _scale_region(region: tuple, cfg: dict, width: int, height: int) -> tuple:
+    """把单个检测分辨率下的区域等比缩放到当前切片分辨率。
+
+    region: (x, y, w, h) 基于 __detect_w/__detect_h 检测分辨率。
+    cfg: 含 __detect_w/__detect_h；若未记录或与当前分辨率一致，直接返回原坐标。
+    """
+    x, y, w, h = region
+    dw = int(cfg.get("__detect_w") or 0)
+    dh = int(cfg.get("__detect_h") or 0)
+    if dw > 0 and dh > 0 and (dw != width or dh != height):
+        nx = int(round(x * width / dw))
+        ny = int(round(y * height / dh))
+        nw = int(round(w * width / dw))
+        nh = int(round(h * height / dh))
+        return (nx, ny, nw, nh)
+    return (x, y, w, h)
 
 
 def _mask_enable_expr(intervals: list[tuple]) -> str:
@@ -2229,6 +2582,56 @@ def _spatial_windows_to_local(src_windows: list[tuple], seg_times: list[tuple],
             result[-1] = (result[-1][0], max(result[-1][1], e), x, w)
         else:
             result.append((s, e, x, w))
+    return result
+
+
+def _dynamic_windows_to_local(src_windows: list[tuple], seg_times: list[tuple],
+                                   cfg: dict, width: int, height: int,
+                                   scale: float = 1.0) -> list[tuple]:
+    """把 SRT 驱动的动态字幕窗口（源时间轴 + 源分辨率紧凑区域）转换为切片局部坐标。
+
+    src_windows: [(源_s, 源_e, 源_x, 源_y, 源_w, 源_h), ...]，每个窗口有自己的
+        紧凑文字外接框（源分辨率绝对坐标）。
+    seg_times: 切片源时间段 [(start, end), ...]。
+    cfg: 打码配置（含 __detect_w/__detect_h 用于把源分辨率区域等比缩放到切片分辨率）。
+    width/height: 切片分辨率尺寸。
+    scale: 去重变速因子（>1 表示变速压缩）。
+
+    返回 [(局部_s, 局部_e, 局部_x, 局部_y, 局部_w, 局部_h), ...]。
+    """
+    dw = int(cfg.get("__detect_w", 0))
+    dh = int(cfg.get("__detect_h", 0))
+    hflip = bool(cfg.get("__hflip"))
+    out = []
+    for (s0, e0, sx, sy, sw, sh) in src_windows:
+        if dw > 0 and dh > 0 and (dw != width or dh != height):
+            ax = int(round(sx * width / dw))
+            ay = int(round(sy * height / dh))
+            aw = max(1, int(round(sw * width / dw)))
+            ah = max(1, int(round(sh * height / dh)))
+        else:
+            ax, ay, aw, ah = sx, sy, sw, sh
+        if hflip:
+            ax = max(0, width - ax - aw)
+        if ax >= width or ax + aw <= 0 or ay >= height or ay + ah <= 0:
+            continue
+        offset = 0.0
+        for start, end in seg_times:
+            ls = max(s0, start)
+            le = min(e0, end)
+            if le > ls:
+                out.append(((ls - start) / scale + offset, (le - start) / scale + offset,
+                            ax, ay, aw, ah))
+            offset += max(0.0, (end - start) / scale)
+    # 去重/合并相邻（同区域）局部区间
+    out.sort()
+    result = []
+    for s, e, x, y, w, h in out:
+        if result and abs(result[-1][0] - s) < 0.01 and result[-1][2] == x \
+                and result[-1][3] == y and result[-1][4] == w and result[-1][5] == h:
+            result[-1] = (result[-1][0], max(result[-1][1], e), x, y, w, h)
+        else:
+            result.append((s, e, x, y, w, h))
     return result
 
 
@@ -2320,6 +2723,55 @@ def subtitle_mask_bottom_margin(cfg: dict, width: int, height: int) -> int:
     return max(0, height - (y + h))
 
 
+def _merge_regions(regions: list[tuple], gap: int = 30) -> list[tuple]:
+    """把纵向重叠或相邻（间距 <= gap px）的区域合并为一个。
+
+    多横带检测对相邻很近的字幕带分别扩展上下余量后，区域可能互相重叠（如"旁白"
+    与"对话"带只隔几十像素）。重叠区域会被重复打码，虽不影响正确性但浪费且可能
+    产生叠加痕迹。这里按纵向合并重叠/相邻区域，横向取并集。
+    regions: [(x, y, w, h), ...]。返回合并后的区域列表。
+    """
+    if not regions:
+        return []
+    # 按 y 排序
+    rs = sorted([(int(r[1]), int(r[0]), int(r[2]), int(r[3])) for r in regions])  # (y, x, w, h)
+    merged = [list(rs[0])]
+    for (y, x, w, h) in rs[1:]:
+        last = merged[-1]
+        last_y, last_x, last_w, last_h = last
+        # 重叠或相邻
+        if y <= last_y + last_h + gap:
+            new_y0 = min(last_y, y)
+            new_y1 = max(last_y + last_h, y + h)
+            new_x0 = min(last_x, x)
+            new_x1 = max(last_x + last_w, x + w)
+            merged[-1] = [new_y0, new_x0, new_x1 - new_x0, new_y1 - new_y0]
+        else:
+            merged.append([y, x, w, h])
+    # 转回 (x, y, w, h)
+    return [(r[1], r[0], r[2], r[3]) for r in merged]
+
+
+def _scale_regions(regions: list[tuple], cfg: dict, width: int, height: int) -> list[tuple]:
+    """把检测分辨率下得到的多区域坐标等比缩放到当前切片分辨率。
+
+    regions: [(x, y, w, h), ...]，基于 __detect_w/__detect_h 检测分辨率。
+    若未记录检测分辨率或与当前分辨率一致，直接返回原坐标。
+    """
+    dw = int(cfg.get("__detect_w") or 0)
+    dh = int(cfg.get("__detect_h") or 0)
+    if dw > 0 and dh > 0 and (dw != width or dh != height):
+        out = []
+        for (x, y, w, h) in regions:
+            nx = int(round(x * width / dw))
+            ny = int(round(y * height / dh))
+            nw = int(round(w * width / dw))
+            nh = int(round(h * height / dh))
+            out.append((nx, ny, nw, nh))
+        return out
+    return list(regions)
+
+
 def build_subtitle_mask_filter(cfg: dict, enable: str) -> str:
     """构造源字幕打码 filter_complex 片段（基于 [0:v] 输入，输出标签 [masked]）。
 
@@ -2356,10 +2808,19 @@ def build_subtitle_mask_filter(cfg: dict, enable: str) -> str:
         )
     if style == "blur":
         radius = int(cfg.get("blur_radius") or SUBTITLE_MASK_BLUR_RADIUS)
-        radius = max(2, min(64, radius))
+        radius = max(2, min(11, radius))  # boxblur chroma_param 上限 11
         return (
             f"[0:v]split[src][sub];"
             f"[sub]crop={w}:{h}:{x}:{y},boxblur={radius}:1[masked];"
+            f"[src][masked]overlay={x}:{y}{en}[vout]"
+        )
+    if style == "gblur":
+        # 高斯模糊：比 boxblur 更柔和、视觉更自然，且能盖死密集多行字幕。
+        sigma = int(cfg.get("blur_sigma") or SUBTITLE_MASK_GBLUR_SIGMA)
+        sigma = max(2, min(32, sigma))
+        return (
+            f"[0:v]split[src][sub];"
+            f"[sub]crop={w}:{h}:{x}:{y},gblur=sigma={sigma}[masked];"
             f"[src][masked]overlay={x}:{y}{en}[vout]"
         )
     # fill：纯色块直接盖住
@@ -2427,7 +2888,7 @@ def build_subtitle_mask_filter_multi(cfg: dict, windows: list[tuple],
     block = int(cfg.get("block") or SUBTITLE_MASK_BLOCK)
     block = max(2, min(64, block))
     radius = int(cfg.get("blur_radius") or SUBTITLE_MASK_BLUR_RADIUS)
-    radius = max(2, min(64, radius))
+    radius = max(2, min(11, radius))  # boxblur chroma_param 上限 11
     n = len(items)
     split = f"[0:v]split={n + 1}[base]" + "".join(f"[w{i}]" for i in range(n)) + ";"
     parts = []
@@ -2436,6 +2897,9 @@ def build_subtitle_mask_filter_multi(cfg: dict, windows: list[tuple],
             bw = max(1, w // block)
             bh = max(1, h // block)
             op = f"scale={bw}:{bh},scale={w}:{h}:flags=neighbor"
+        elif style == "gblur":
+            sigma = max(2, min(32, int(cfg.get("blur_sigma") or SUBTITLE_MASK_GBLUR_SIGMA)))
+            op = f"gblur=sigma={sigma}"
         else:
             op = f"boxblur={radius}:1"
         parts.append(f"[w{i}]crop={w}:{h}:{x}:{y},{op}[m{i}];")
@@ -2450,9 +2914,268 @@ def build_subtitle_mask_filter_multi(cfg: dict, windows: list[tuple],
     return split + "".join(parts)
 
 
+def build_subtitle_mask_filter_multi_region(cfg: dict, regions: list[tuple],
+                                        enable: str = "",
+                                        width: int = 0, height: int = 0) -> str:
+    """构造「多区域打码」filter_complex（基于 [0:v]，输出 [vout]）。
+
+    片源常见"旁白字幕 + 对话字幕 + 顶部/底部水印"等多个文字元素分别落在不同
+    纵向横带上，此函数对每个区域各执行一次打码样式，从而把多处文字一并盖掉。
+
+    regions: [(x, y, w, h), ...]，每个区域在切片分辨率下的绝对坐标。
+    enable: 打码时间轴表达式；空字符串表示全程打码（所有区域同时生效）。
+    width/height: 视频尺寸（用于 delogo 边界钳制）。
+
+    delogo 直接串联多个 delogo；mosaic/blur 用多路 split+crop+overlay 链式叠加；
+    fill 串联多个 drawbox。
+    """
+    style = (cfg.get("style") or SUBTITLE_MASK_STYLE_DEFAULT).lower()
+    if style not in SUBTITLE_MASK_STYLES:
+        style = SUBTITLE_MASK_STYLE_DEFAULT
+    en = f":enable='{enable}'" if enable else ""
+
+    def _clip(x, y, w, h):
+        if w <= 0 or h <= 0:
+            return None
+        x = max(0, x); y = max(0, y)
+        w = min(w, width - x); h = min(h, height - y)
+        if w <= 0 or h <= 0:
+            return None
+        return x, y, w, h
+
+    items = []
+    for (x, y, w, h) in regions:
+        r = _clip(x, y, w, h)
+        if r is None:
+            continue
+        items.append(r)
+    if not items:
+        return ""
+
+    if style == "delogo":
+        # delogo 不贴边钳制
+        clipped = []
+        for (x, y, w, h) in items:
+            if x < 1:
+                w = max(1, w - (1 - x)); x = 1
+            if y < 1:
+                h = max(1, h - (1 - y)); y = 1
+            if x + w > width - 1:
+                w = max(1, (width - 1) - x)
+            if y + h > height - 1:
+                h = max(1, (height - 1) - y)
+            clipped.append((x, y, w, h))
+        chain = [f"delogo=x={x}:y={y}:w={w}:h={h}{en}" for (x, y, w, h) in clipped]
+        return "[0:v]" + ",".join(chain) + "[vout]"
+    if style == "fill":
+        color = str(cfg.get("color") or "black")
+        chain = [f"drawbox=x={x}:y={y}:w={w}:h={h}:color={color}:t=fill{en}"
+                 for (x, y, w, h) in items]
+        return "[0:v]" + ",".join(chain) + "[vout]"
+    # mosaic / blur：多路 split + 逐区域 crop/scale + 链式 overlay
+    block = int(cfg.get("block") or SUBTITLE_MASK_BLOCK)
+    block = max(2, min(64, block))
+    radius = int(cfg.get("blur_radius") or SUBTITLE_MASK_BLUR_RADIUS)
+    radius = max(2, min(11, radius))  # boxblur chroma_param 上限 11
+    n = len(items)
+    split = f"[0:v]split={n + 1}[base]" + "".join(f"[w{i}]" for i in range(n)) + ";"
+    parts = []
+    for i, (x, y, w, h) in enumerate(items):
+        if style == "mosaic":
+            bw = max(1, w // block)
+            bh = max(1, h // block)
+            op = f"scale={bw}:{bh},scale={w}:{h}:flags=neighbor"
+        elif style == "gblur":
+            sigma = max(2, min(32, int(cfg.get("blur_sigma") or SUBTITLE_MASK_GBLUR_SIGMA)))
+            op = f"gblur=sigma={sigma}"
+        else:
+            op = f"boxblur={radius}:1"
+        parts.append(f"[w{i}]crop={w}:{h}:{x}:{y},{op}[m{i}];")
+    prev = "[base]"
+    for i, (x, y, w, h) in enumerate(items):
+        if i < n - 1:
+            parts.append(f"{prev}[m{i}]overlay={x}:{y}{en}[v{i + 1}];")
+            prev = f"[v{i + 1}]"
+        else:
+            parts.append(f"{prev}[m{i}]overlay={x}:{y}{en}[vout]")
+    return split + "".join(parts)
+
+
+def build_subtitle_mask_filter_multi_region_windows(cfg: dict, region_windows: list,
+                                                  width: int = 0, height: int = 0) -> str:
+    """构造「多区域 × 各自时间窗口」打码 filter_complex（基于 [0:v]，输出 [vout]）。
+
+    片源常含"旁白 + 对话"等多个纵向字幕横带，且各带文字密度/出现时段不同。
+    此函数对每个区域 (x, y, w, h) 只在它自己的时间窗口列表内打码，各区域用各自的
+    enable 表达式，从而把不同纵向位置、不同时段、不同密度的多带字幕一并盖掉。
+
+    region_windows: [(region, [(src_s, src_e), ...]), ...]，region 为 (x,y,w,h)
+        切片分辨率绝对坐标，windows 为局部时间轴（从 0 开始）的出现时段。
+    width/height: 视频尺寸（用于 delogo 边界钳制）。
+    """
+    style = (cfg.get("style") or SUBTITLE_MASK_STYLE_DEFAULT).lower()
+    if style not in SUBTITLE_MASK_STYLES:
+        style = SUBTITLE_MASK_STYLE_DEFAULT
+
+    def _enable(windows: list) -> str:
+        if not windows:
+            return ""
+        terms = [f"between(t,{s:.3f},{e:.3f})" for (s, e) in windows]
+        return "+".join(terms)
+
+    # 收集所有 (region, enable) 项
+    items = []
+    for (x, y, w, h), windows in region_windows:
+        if w <= 0 or h <= 0:
+            continue
+        x = max(0, x); y = max(0, y)
+        w = min(w, width - x); h = min(h, height - y)
+        if w <= 0 or h <= 0:
+            continue
+        en = _enable(windows)
+        items.append((x, y, w, h, en))
+    if not items:
+        return ""
+
+    if style == "delogo":
+        clipped = []
+        for (x, y, w, h, en) in items:
+            if x < 1:
+                w = max(1, w - (1 - x)); x = 1
+            if y < 1:
+                h = max(1, h - (1 - y)); y = 1
+            if x + w > width - 1:
+                w = max(1, (width - 1) - x)
+            if y + h > height - 1:
+                h = max(1, (height - 1) - y)
+            clipped.append((x, y, w, h, en))
+        chain = []
+        for (x, y, w, h, en) in clipped:
+            suffix = f":enable='{en}'" if en else ""
+            chain.append(f"delogo=x={x}:y={y}:w={w}:h={h}{suffix}")
+        return "[0:v]" + ",".join(chain) + "[vout]"
+    if style == "fill":
+        color = str(cfg.get("color") or "black")
+        chain = []
+        for (x, y, w, h, en) in items:
+            suffix = f":enable='{en}'" if en else ""
+            chain.append(f"drawbox=x={x}:y={y}:w={w}:h={h}:color={color}:t=fill{suffix}")
+        return "[0:v]" + ",".join(chain) + "[vout]"
+    # mosaic / blur：多路 split + 逐区域 crop/scale + 链式 overlay
+    block = int(cfg.get("block") or SUBTITLE_MASK_BLOCK)
+    block = max(2, min(64, block))
+    radius = int(cfg.get("blur_radius") or SUBTITLE_MASK_BLUR_RADIUS)
+    radius = max(2, min(11, radius))
+    n = len(items)
+    split = f"[0:v]split={n + 1}[base]" + "".join(f"[w{i}]" for i in range(n)) + ";"
+    parts = []
+    for i, (x, y, w, h, en) in enumerate(items):
+        if style == "mosaic":
+            bw = max(1, w // block); bh = max(1, h // block)
+            op = f"scale={bw}:{bh},scale={w}:{h}:flags=neighbor"
+        elif style == "gblur":
+            sigma = max(2, min(32, int(cfg.get("blur_sigma") or SUBTITLE_MASK_GBLUR_SIGMA)))
+            op = f"gblur=sigma={sigma}"
+        else:
+            op = f"boxblur={radius}:1"
+        parts.append(f"[w{i}]crop={w}:{h}:{x}:{y},{op}[m{i}];")
+    prev = "[base]"
+    for i, (x, y, w, h, en) in enumerate(items):
+        en_suffix = f":enable='{en}'" if en else ""
+        if i < n - 1:
+            parts.append(f"{prev}[m{i}]overlay={x}:{y}{en_suffix}[v{i + 1}];")
+            prev = f"[v{i + 1}]"
+        else:
+            parts.append(f"{prev}[m{i}]overlay={x}:{y}{en_suffix}[vout]")
+    return split + "".join(parts)
+
+
+def build_subtitle_mask_filter_dynamic(cfg: dict, windows: list, width: int = 0,
+                                       height: int = 0) -> str:
+    """构造「SRT 驱动动态字幕区域」打码 filter_complex（基于 [0:v]，输出 [vout]）。
+
+    每个窗口有自己的时间区间与紧凑文字外接框 (x, y, w, h)，只在该窗口的时间段、
+    该窗口的位置打码。相比固定单区域或空间精细化（y 固定），它能精确覆盖字幕在
+    不同时间位于不同纵向/横向位置的情形（旁白 vs 对话），且不会把多个位置合并成
+    宽大横带（解决"打码区域太大、盖住半屏"）。
+
+    windows: [(局部_s, 局部_e, 局部_x, 局部_y, 局部_w, 局部_h), ...]，
+        局部时间轴（从 0 开始）与切片分辨率绝对坐标。
+    width/height: 视频尺寸（用于 delogo 边界钳制）。
+    """
+    style = (cfg.get("style") or SUBTITLE_MASK_STYLE_DEFAULT).lower()
+    if style not in SUBTITLE_MASK_STYLES:
+        style = SUBTITLE_MASK_STYLE_DEFAULT
+
+    items = []
+    for (s, e, x, y, w, h) in windows:
+        if w <= 0 or h <= 0 or e <= s:
+            continue
+        x = max(0, x); y = max(0, y)
+        w = min(w, width - x); h = min(h, height - y)
+        if w <= 0 or h <= 0:
+            continue
+        items.append((max(0.0, s), max(0.0, e), x, y, w, h))
+    if not items:
+        return ""
+
+    if style == "delogo":
+        clipped = []
+        for (s, e, x, y, w, h) in items:
+            if x < 1:
+                w = max(1, w - (1 - x)); x = 1
+            if y < 1:
+                h = max(1, h - (1 - y)); y = 1
+            if x + w > width - 1:
+                w = max(1, (width - 1) - x)
+            if y + h > height - 1:
+                h = max(1, (height - 1) - y)
+            clipped.append((s, e, x, y, w, h))
+        chain = []
+        for (s, e, x, y, w, h) in clipped:
+            en = f"between(t,{s:.3f},{e:.3f})"
+            chain.append(f"delogo=x={x}:y={y}:w={w}:h={h}:enable='{en}'")
+        return "[0:v]" + ",".join(chain) + "[vout]"
+    if style == "fill":
+        color = str(cfg.get("color") or "black")
+        chain = []
+        for (s, e, x, y, w, h) in items:
+            en = f"between(t,{s:.3f},{e:.3f})"
+            chain.append(f"drawbox=x={x}:y={y}:w={w}:h={h}:color={color}:t=fill:enable='{en}'")
+        return "[0:v]" + ",".join(chain) + "[vout]"
+    # mosaic / blur：多路 split + 逐窗口 crop/scale + 链式 overlay
+    block = int(cfg.get("block") or SUBTITLE_MASK_BLOCK)
+    block = max(2, min(64, block))
+    radius = int(cfg.get("blur_radius") or SUBTITLE_MASK_BLUR_RADIUS)
+    radius = max(2, min(11, radius))
+    n = len(items)
+    split = f"[0:v]split={n + 1}[base]" + "".join(f"[w{i}]" for i in range(n)) + ";"
+    parts = []
+    for i, (s, e, x, y, w, h) in enumerate(items):
+        if style == "mosaic":
+            bw = max(1, w // block); bh = max(1, h // block)
+            op = f"scale={bw}:{bh},scale={w}:{h}:flags=neighbor"
+        elif style == "gblur":
+            sigma = max(2, min(32, int(cfg.get("blur_sigma") or SUBTITLE_MASK_GBLUR_SIGMA)))
+            op = f"gblur=sigma={sigma}"
+        else:
+            op = f"boxblur={radius}:1"
+        parts.append(f"[w{i}]crop={w}:{h}:{x}:{y},{op}[m{i}];")
+    prev = "[base]"
+    for i, (s, e, x, y, w, h) in enumerate(items):
+        en = f"between(t,{s:.3f},{e:.3f})"
+        if i < n - 1:
+            parts.append(f"{prev}[m{i}]overlay={x}:{y}:enable='{en}'[v{i + 1}];")
+            prev = f"[v{i + 1}]"
+        else:
+            parts.append(f"{prev}[m{i}]overlay={x}:{y}:enable='{en}'[vout]")
+    return split + "".join(parts)
+
+
 def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict,
                         enable: str = "",
                         spatial_windows: Optional[list[tuple]] = None,
+                        dynamic_windows: Optional[list[tuple]] = None,
                         seg_times: Optional[list[tuple]] = None,
                         threads: int = 1, encoder: str = "libx264") -> None:
     """对成品视频执行一次源字幕打码（固定区域 + 时间轴驱动）。
@@ -2463,8 +3186,12 @@ def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict,
     spatial_windows: 空间精细化（仅字幕显示区域打码）窗口列表，元素为
         (源_start, 源_end, 源_x, 源_w)。每个窗口只在各自时间段、各自字幕文字实际
         占用的横向子区域打码，而不是整条横带都盖住。提供了则以它为准（忽略 enable）。
-    seg_times: 切片源时间段 [(start, end), ...]，用于把 spatial_windows 的源时间
-        轴转换为切片局部时间轴。
+    dynamic_windows: SRT 驱动的动态字幕窗口列表，元素为 (源_s, 源_e, 源_x, 源_y,
+        源_w, 源_h)。每个窗口有自己的紧凑文字外接框（含纵向），字幕在不同时间位于
+        不同位置时各自精确覆盖，且只在 SRT 标注的字幕时段打码。提供了则优先于
+        spatial_windows/多区域/全程打码（最精确）。
+    seg_times: 切片源时间段 [(start, end), ...]，用于把 spatial_windows/
+        dynamic_windows 的源时间轴转换为切片局部时间轴。
     """
     width, height = ffprobe_size(video_in)
     if width <= 0 or height <= 0:
@@ -2497,13 +3224,48 @@ def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict,
             h = max(1, (height - 1) - y)
     cfg["__x"], cfg["__y"], cfg["__w"], cfg["__h"] = x, y, w, h
 
+    # SRT 驱动的动态字幕区域：每个窗口在各自时间段、各自紧凑位置打码，最精确。
+    if dynamic_windows:
+        scale = float(cfg.get("__scale") or 1.0)
+        local = _dynamic_windows_to_local(dynamic_windows, seg_times or [], cfg,
+                                          width, height, scale)
+        fc = build_subtitle_mask_filter_dynamic(cfg, local, width, height)
     # 空间精细化：仅对字幕文字实际占用的子区域打码。
-    if spatial_windows:
+    elif spatial_windows:
         scale = float(cfg.get("__scale") or 1.0)
         local = _spatial_windows_to_local(spatial_windows, seg_times or [], cfg, width, scale)
         fc = build_subtitle_mask_filter_multi(cfg, local, y, h, width)
     else:
-        fc = build_subtitle_mask_filter(cfg, enable)
+        # 多区域 × 各自时间窗口打码：片源含"旁白+对话字幕"等多个纵向横带，各带
+        # 文字密度与出现时段不同（旁白低密度稀出、对话高密度多行）。若只用一个
+        # 区域/一个时间轴会漏打（要么旁白被对话的高密度阈值淹没、要么打码 y 只
+        # 落在单一高度而漏掉其它高度字幕）。这里对每个区域在其自己的出现时段内
+        # 于各自纵向位置打码，从而把不同高度/密度/时段的字幕一并盖掉。
+        region_windows = cfg.get("__region_windows")
+        if region_windows:
+            scale = float(cfg.get("__scale") or 1.0)
+            rw_scaled = []
+            for (rx, ry, rw, rh), windows in region_windows:
+                sx, sy, sw, sh = _scale_region((rx, ry, rw, rh), cfg, width, height)
+                if cfg.get("__hflip"):
+                    sx = max(0, width - sx - sw)
+                # 源时间窗口 → 切片局部时间轴区间（按去重变速 scale 缩放）
+                local = _source_intervals_to_local_intervals(windows, seg_times or [], scale)
+                rw_scaled.append([(sx, sy, sw, sh), local])
+            fc = build_subtitle_mask_filter_multi_region_windows(cfg, rw_scaled, width, height)
+        else:
+            # 多区域打码：片源含"旁白+对话字幕 + 上下水印"等多个文字横带时，检测出
+            # 的 __regions 列表会把所有区域一并打码（覆盖默认单区域，避免漏打其它位置）。
+            regions = cfg.get("__regions")
+            if regions:
+                # 把检测分辨率下的区域等比缩放到当前切片分辨率
+                scaled = _scale_regions(regions, cfg, width, height)
+                # 去重 hflip 镜像同步（区域 x 镜像到另一侧）
+                if cfg.get("__hflip"):
+                    scaled = [(max(0, width - rx - rw), ry, rw, rh) for (rx, ry, rw, rh) in scaled]
+                fc = build_subtitle_mask_filter_multi_region(cfg, scaled, enable, width, height)
+            else:
+                fc = build_subtitle_mask_filter(cfg, enable)
     if not fc:
         shutil.copy(video_in, video_out)
         return
@@ -2613,12 +3375,12 @@ def main():
     parser.add_argument(
         "--subtitle-mask",
         default=None,
-        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"temporal\":bool, \"spatial\":bool, \"srt\":打码时间轴SRT路径}）。默认 delogo（去水印），开启后自动检测字幕位置。temporal=帧级精细化（只在出现时段打码），spatial=仅字幕显示区域打码（需 temporal 开启）。独立开关，仅打掉片源自带字幕",
+        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|gblur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"temporal\":bool, \"spatial\":bool, \"srt\":打码时间轴SRT路径}）。默认 delogo（去水印），开启后自动检测字幕位置。temporal=帧级精细化（只在出现时段打码），spatial=仅字幕显示区域打码（需 temporal 开启）。独立开关，仅打掉片源自带字幕",
     )
     parser.add_argument(
         "--watermark-mask",
         default=None,
-        help="恒定水印/角标打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"top_ratio\":..., \"x\":..., \"y\":..., \"width\":..., \"height\":...}）。开启后自动检测恒定出现的水印/角标区域（区别于间歇对话字幕），无检测结果时回退到指定比例区域（默认底部）。独立开关，仅打掉片源恒定水印",
+        help="恒定水印/角标打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|gblur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"top_ratio\":..., \"x\":..., \"y\":..., \"width\":..., \"height\":...}）。开启后自动检测恒定出现的水印/角标区域（区别于间歇对话字幕），无检测结果时回退到指定比例区域（默认底部）。独立开关，仅打掉片源恒定水印",
     )
     args = parser.parse_args()
 
@@ -2765,26 +3527,37 @@ def main():
                   "若字幕只在几帧出现，建议开启 temporal=true 启用帧级检测。", file=sys.stderr)
         # 自动检测字幕真实位置：字幕常在居中偏下而非底部，固定底部横带会打偏。
         # 用 OpenCV 在字幕出现的时刻采样帧，检测文字横带位置；检测成功则覆盖默认区域。
+        # 支持多横带（旁白 + 对话字幕可能落在不同纵向位置），返回 list[区域]。
         detect_srt = subtitle_mask.get("srt") or ""
         detected = detect_subtitle_region(source_path, detect_srt)
+        detect_w, detect_h = ffprobe_size(source_path)
         if detected:
-            dx, dy, dw, dh = detected
-            detect_w, detect_h = ffprobe_size(source_path)
-            # sanity check：字幕区域必须落在画面下半部（字幕物理位置常识）。
-            # 若检测结果整体在上半部，几乎可断定是误检（上部标题/角标/水印），
-            # 丢弃并回退默认底部横带，避免 delogo 打在错误位置。
-            if dy + dh < detect_h * 0.55:
-                print(f"源字幕打码自动定位异常（区域在上半部 ({dx},{dy},{dw},{dh}) @ {detect_w}x{detect_h}），"
-                      "回退默认底部横带", file=sys.stderr)
-            else:
-                subtitle_mask["x"] = dx
-                subtitle_mask["y"] = dy
-                subtitle_mask["width"] = dw
-                subtitle_mask["height"] = dh
-                # 记录检测时的分辨率，供 apply_subtitle_mask 按切片分辨率等比缩放
+            # 过滤掉落在画面上半部（<55%）的误检（上部标题/角标/水印），只保留
+            # 字幕真实常驻的中下部区域。
+            regions = []
+            for (dx, dy, dw, dh) in detected:
+                if dy + dh < detect_h * 0.55:
+                    print(f"源字幕打码自动定位跳过上部误检 ({dx},{dy},{dw},{dh}) @ {detect_w}x{detect_h}",
+                          file=sys.stderr)
+                    continue
+                regions.append((dx, dy, dw, dh))
+            if regions:
+                # 保留每个独立的字幕子区域（旁白/对话分处不同纵向位置），供"多区域 ×
+                # 各自时间窗口"精细化打码逐区域处理，避免合并成大横带后只用一个 y/一个
+                # 阈值导致低密度旁白漏打、其它高度字幕漏打。
+                subtitle_mask["__regions"] = regions
+                # 合并出一个默认区域，用于无 temporal 的兜底与 x/y/width/height 定位。
+                merged_regions = _merge_regions(regions)
+                subtitle_mask["x"] = merged_regions[0][0]
+                subtitle_mask["y"] = merged_regions[0][1]
+                subtitle_mask["width"] = merged_regions[0][2]
+                subtitle_mask["height"] = merged_regions[0][3]
                 subtitle_mask["__detect_w"] = detect_w
                 subtitle_mask["__detect_h"] = detect_h
-                print(f"源字幕打码自动定位: ({dx},{dy},{dw},{dh}) @ {detect_w}x{detect_h}", file=sys.stderr)
+                print(f"源字幕打码自动定位: {len(regions)} 个字幕区域 @ {detect_w}x{detect_h}"
+                      + "".join(f" ({dx},{dy},{dw},{dh})" for (dx, dy, dw, dh) in regions), file=sys.stderr)
+            else:
+                print("源字幕打码自动定位未命中中下部字幕带，回退默认底部横带", file=sys.stderr)
         else:
             print("源字幕打码自动定位失败，回退默认区域（底部横带）", file=sys.stderr)
 
@@ -2792,27 +3565,67 @@ def main():
         # 在哪些时段出现，只在出现时打码，其余画面零改动。不依赖 SRT，适用于
         # 任意片源字幕/水印；检测失败时回退到 SRT 时间轴或全程打码。
         if subtitle_mask.get("temporal"):
-            region = (int(subtitle_mask.get("x", 0)), int(subtitle_mask.get("y", 0)),
-                      int(subtitle_mask.get("width", 0)), int(subtitle_mask.get("height", 0)))
-            # 优先用已检测到的实际区域；若区域检测失败，用默认比例区域兜底。
-            if region[2] <= 0 or region[3] <= 0:
-                w0, h0 = ffprobe_size(source_path)
-                region = _subtitle_mask_area(subtitle_mask, w0, h0)
-            tw = detect_subtitle_temporal_windows(source_path, region)
-            if tw:
-                subtitle_mask["__temporal_windows"] = tw
-                print(f"源字幕打码帧级检测: {len(tw)} 个出现时段", file=sys.stderr)
-                # 空间精细化（仅字幕显示区域打码）：在每个出现时段内进一步检测
-                # 字幕文字实际占用的横向范围，只对这些小块区域打码（需 temporal 开启）。
-                if subtitle_mask.get("spatial"):
-                    spatial = detect_subtitle_spatial_regions(source_path, region, tw)
-                    if spatial:
-                        subtitle_mask["__spatial_windows"] = spatial
-                        print(f"源字幕打码空间精细化: {len(spatial)} 个文字子区域", file=sys.stderr)
-                    else:
-                        print("源字幕打码空间精细化未命中，回退整条横带打码", file=sys.stderr)
-            else:
-                print("源字幕打码帧级检测未命中，回退 SRT 时间轴或全程打码", file=sys.stderr)
+            # —— 优先走 SRT 时间轴驱动的动态打码（用户的抽帧方案）——
+            # 我们已从 ASR 选点拿到源视频的 SRT（标注对话/旁白/字幕出现时刻）。
+            # 据此只需在这些时刻抽帧定位字幕文字的紧凑位置，而不是对整段视频逐帧
+            # (0.5s 步长) 扫描，检测成本低得多；且每个窗口用自己检测到的紧凑外接框
+            # (x,y,w,h)，字幕在不同时间位于不同纵向位置（旁白 vs 对话）时各自精确
+            # 覆盖，不会把多个位置合并成宽大横带（解决"打码区域太大"），也只在
+            # SRT 标注的字幕时段打码（解决"没字幕也打码"）。
+            dynamic_srt = subtitle_mask.get("srt") or ""
+            if dynamic_srt and os.path.isfile(dynamic_srt):
+                dyn = detect_subtitle_dynamic_regions(source_path, dynamic_srt)
+                if dyn:
+                    subtitle_mask["__dynamic_windows"] = dyn
+                    # 去重变速会把字幕时间轴压缩，这里按 __scale 缩放到成品时间轴。
+                    subtitle_mask["__temporal_windows"] = [(s, e) for (s, e, *_ ) in dyn]
+                    print(f"源字幕打码 SRT 动态检测: {len(dyn)} 个字幕窗口"
+                          + "".join(f" (t={s:.1f}-{e:.1f} @ {x},{y},{w},{h})"
+                                    for (s, e, x, y, w, h) in dyn), file=sys.stderr)
+            if not subtitle_mask.get("__dynamic_windows"):
+                # 无 SRT 或 SRT 驱动检测未命中时，回退到全时间轴逐帧检测。
+                region = (int(subtitle_mask.get("x", 0)), int(subtitle_mask.get("y", 0)),
+                          int(subtitle_mask.get("width", 0)), int(subtitle_mask.get("height", 0)))
+                # 优先用已检测到的实际区域；若区域检测失败，用默认比例区域兜底。
+                if region[2] <= 0 or region[3] <= 0:
+                    w0, h0 = ffprobe_size(source_path)
+                    region = _subtitle_mask_area(subtitle_mask, w0, h0)
+                # 多区域帧级检测：片源含旁白+对话字幕等多个纵向横带时，各带文字密度差异
+                # 可能很大（旁白单行稀、对话多行密）。若只对合并后的大区域统一取一个
+                # temporal 阈值，会被高密度对话带拉高，导致低密度旁白字幕整段漏检
+                # （"旁白字幕没有成功识别并打码"根因）。改为对每个子区域分别做 temporal
+                # 检测、各用自己的阈值，记录每个区域自己的出现时段；打码时每个区域只在
+                # 各自的时段、各自纵向位置打码，避免"用一个 y 覆盖全部导致其他高度字幕漏打"。
+                sub_regions = subtitle_mask.get("__regions")
+                region_windows = []
+                if sub_regions:
+                    for sr in sub_regions:
+                        sr_tw = detect_subtitle_temporal_windows(source_path, sr)
+                        if sr_tw:
+                            region_windows.append([sr, [(s, e) for (s, e) in sr_tw]])
+                # 无多区域或检测失败时回退到单一整体区域。
+                if not region_windows:
+                    tw = detect_subtitle_temporal_windows(source_path, region)
+                    if tw:
+                        region_windows.append([region, [(s, e) for (s, e) in tw]])
+                if region_windows:
+                    # 汇总总出现时段（用于展示与日志）
+                    all_tw = []
+                    for _, rw in region_windows:
+                        all_tw.extend(rw)
+                    all_tw.sort()
+                    merged_tw = []
+                    for (s, e) in all_tw:
+                        if merged_tw and s <= merged_tw[-1][1] + 0.6:
+                            merged_tw[-1][1] = max(merged_tw[-1][1], e)
+                        else:
+                            merged_tw.append([s, e])
+                    subtitle_mask["__temporal_windows"] = [(s, e) for (s, e) in merged_tw]
+                    subtitle_mask["__region_windows"] = region_windows
+                    print(f"源字幕打码帧级检测: {len(region_windows)} 个区域, "
+                          f"{sum(len(rw) for _, rw in region_windows)} 个出现时段", file=sys.stderr)
+                else:
+                    print("源字幕打码帧级检测未命中，回退 SRT 时间轴或全程打码", file=sys.stderr)
 
     # 恒定水印/角标打码：打掉片源固定水印（独立开关，与字幕打码互不干扰）。
     # 检测原理与字幕相反：水印几乎每帧都在（presence≈1），对话字幕间歇出现（≈0.6）。
@@ -2830,7 +3643,9 @@ def main():
                 and (watermark_mask.get("height") or watermark_mask.get("h")) is not None):
             wm_detected = detect_watermark_region(source_path)
             if wm_detected:
-                wx, wy, ww, wh = wm_detected
+                # 支持多个固定水印（顶部 + 底部角标等），全部分别打码。
+                watermark_mask["__regions"] = _merge_regions(wm_detected)
+                wx, wy, ww, wh = wm_detected[0]
                 watermark_mask["x"] = wx
                 watermark_mask["y"] = wy
                 watermark_mask["width"] = ww
@@ -2838,7 +3653,8 @@ def main():
                 detect_w, detect_h = ffprobe_size(source_path)
                 watermark_mask["__detect_w"] = detect_w
                 watermark_mask["__detect_h"] = detect_h
-                print(f"恒定水印打码自动定位: ({wx},{wy},{ww},{wh}) @ {detect_w}x{detect_h}", file=sys.stderr)
+                print(f"恒定水印打码自动定位: {len(wm_detected)} 个水印区域 @ {detect_w}x{detect_h}"
+                      + "".join(f" ({wx},{wy},{ww},{wh})" for (wx, wy, ww, wh) in wm_detected), file=sys.stderr)
             else:
                 print("恒定水印打码自动定位失败，回退默认区域（底部水印带）", file=sys.stderr)
 
@@ -2877,10 +3693,29 @@ def main():
                     # 空间精细化（仅字幕显示区域打码）：在每个出现时段内只对字幕文字
                     # 实际占用的横向子区域打码，而不把整条横带都盖住（需 temporal 开启）。
                     spatial = subtitle_mask.get("__spatial_windows") or []
+                    # 多区域 × 各自时间窗口打码：片源含"旁白+对话字幕"等多个纵向横带，
+                    # 各带密度/出现时段不同。这里让每个区域在它自己的出现时段、各自
+                    # 纵向位置打码，从而把不同高度/密度/时段的字幕一并盖掉（否则漏打
+                    # 低密度旁白字幕或只用单一 y 打码导致其它高度字幕漏打）。
+                    region_windows = subtitle_mask.get("__region_windows") or []
+                    # SRT 驱动的动态字幕区域：每个窗口在各自字幕时段、各自紧凑位置
+                    # (x,y,w,h) 打码（最精确）。优先于 region_windows/spatial/全程打码。
+                    dynamic_windows = subtitle_mask.get("__dynamic_windows") or []
                     # 普通/快速模式（temporal 与 spatial 均关闭）：在检测出的字幕区域
                     # 全程（至始至终）打码，不再按 SRT 时间轴驱动——否则 SRT 间隙/缺失会
                     # 导致"有时能打有时不能打"，且不符合"区域至始至终盖住"的预期。
-                    if spatial:
+                    if dynamic_windows:
+                        apply_subtitle_mask(out_path, mask_out, subtitle_mask,
+                                            dynamic_windows=dynamic_windows,
+                                            seg_times=seg_times,
+                                            threads=threads, encoder=encoder)
+                        os.replace(mask_out, out_path)
+                    elif region_windows:
+                        apply_subtitle_mask(out_path, mask_out, subtitle_mask,
+                                            seg_times=seg_times,
+                                            threads=threads, encoder=encoder)
+                        os.replace(mask_out, out_path)
+                    elif spatial:
                         apply_subtitle_mask(out_path, mask_out, subtitle_mask,
                                             spatial_windows=spatial,
                                             seg_times=seg_times,

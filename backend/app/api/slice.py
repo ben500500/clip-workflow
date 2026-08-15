@@ -193,7 +193,7 @@ class SliceRunRequest(BaseModel):
     # 开启后把片源自带字幕打码（固定底部横带 + SRT 时间轴驱动）。
     # 与 ASR 字幕烧录相互独立，可单独开启。
     subtitle_mask_enabled: bool = False
-    # 打码样式：delogo（去水印，推荐，默认）/ mosaic（马赛克）/ blur（模糊）/ fill（纯色块）
+    # 打码样式：delogo（去水印，推荐，默认）/ mosaic（马赛克）/ blur（模糊）/ gblur（高斯模糊）/ fill（纯色块）
     subtitle_mask_style: Optional[str] = None
     # 精细化（帧级检测）开关：开启后只在字幕/水印实际出现的时段打码，
     # 画面其余时间零改动（处理较慢，但更精细）；关闭则用 SRT 时间轴或全程打码（快）。
@@ -212,7 +212,7 @@ class SliceRunRequest(BaseModel):
     subtitle_mask_srt_offset: Optional[float] = None
     # ── 恒定水印/角标打码（打掉片源固定水印，独立开关，与字幕打码互不干扰）──
     watermark_mask_enabled: bool = False
-    # 水印打码样式：delogo（去水印，推荐，默认）/ mosaic（马赛克）/ blur（模糊）/ fill（纯色块）
+    # 水印打码样式：delogo（去水印，推荐，默认）/ mosaic（马赛克）/ blur（模糊）/ gblur（高斯模糊）/ fill（纯色块）
     watermark_mask_style: Optional[str] = None
     # 水印打码区域（相对输出视频宽高比例，可选；自动检测失败时回退用）
     watermark_mask_width_ratio: Optional[float] = None
@@ -523,7 +523,7 @@ def _build_subtitle_mask_config(data: SliceRunRequest, source_srt: Optional[str]
         return None
     cfg: dict = {"enabled": True}
     style = (data.subtitle_mask_style or "delogo").lower()
-    if style not in ("delogo", "mosaic", "blur", "fill"):
+    if style not in ("delogo", "mosaic", "blur", "gblur", "fill"):
         style = "delogo"
     cfg["style"] = style
     # 精细化（帧级检测）：只在字幕/水印实际出现的时段打码。
@@ -556,7 +556,7 @@ def _build_watermark_mask_config(data: SliceRunRequest) -> Optional[dict]:
         return None
     cfg: dict = {"enabled": True}
     style = (data.watermark_mask_style or "delogo").lower()
-    if style not in ("delogo", "mosaic", "blur", "fill"):
+    if style not in ("delogo", "mosaic", "blur", "gblur", "fill"):
         style = "delogo"
     cfg["style"] = style
     if data.watermark_mask_width_ratio is not None:

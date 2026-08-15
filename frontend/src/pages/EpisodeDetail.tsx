@@ -106,7 +106,7 @@ interface SlicePreset {
   subtitle_border_color: string;
   // 源视频字幕打码
   subtitle_mask_enabled: boolean;
-  subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'fill';
+  subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill';
   subtitle_mask_temporal: boolean;
   subtitle_mask_spatial: boolean;
   subtitle_mask_width_ratio: number;
@@ -117,7 +117,7 @@ interface SlicePreset {
   subtitle_align_mask: boolean;
   // 恒定水印/角标打码
   watermark_mask_enabled: boolean;
-  watermark_mask_style: 'delogo' | 'mosaic' | 'blur' | 'fill';
+  watermark_mask_style: 'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill';
   watermark_mask_width_ratio: number;
   watermark_mask_height_ratio: number;
   watermark_mask_bottom_ratio: number;
@@ -242,7 +242,7 @@ const EpisodeDetail: React.FC = () => {
   const [subtitleUploading, setSubtitleUploading] = useState(false);
   // ── 源视频字幕打码 ──
   const [subtitleMaskEnabled, setSubtitleMaskEnabled] = useState(false);
-  const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'fill'>('delogo');
+  const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill'>('delogo');
   // 精细化（帧级检测）：只在字幕/水印实际出现的时段打码
   const [subtitleMaskTemporal, setSubtitleMaskTemporal] = useState(true);
   // 仅字幕显示区域打码（空间精细化）：需开启精细化后才能开启
@@ -257,7 +257,7 @@ const EpisodeDetail: React.FC = () => {
   const [subtitleMaskModalOpen, setSubtitleMaskModalOpen] = useState(false);
   // ── 恒定水印/角标打码（打掉片源固定水印，独立开关） ──
   const [watermarkMaskEnabled, setWatermarkMaskEnabled] = useState(false);
-  const [watermarkMaskStyle, setWatermarkMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'fill'>('delogo');
+  const [watermarkMaskStyle, setWatermarkMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill'>('delogo');
   const [watermarkMaskWidthRatio, setWatermarkMaskWidthRatio] = useState(0.9);
   const [watermarkMaskHeightRatio, setWatermarkMaskHeightRatio] = useState(0.12);
   const [watermarkMaskBottomRatio, setWatermarkMaskBottomRatio] = useState(0.02);
@@ -1987,6 +1987,7 @@ const EpisodeDetail: React.FC = () => {
                   <Radio.Button value="delogo">去水印</Radio.Button>
                   <Radio.Button value="mosaic">马赛克</Radio.Button>
                   <Radio.Button value="blur">模糊</Radio.Button>
+                  <Radio.Button value="gblur">高斯模糊</Radio.Button>
                   <Radio.Button value="fill">纯色块</Radio.Button>
                 </Radio.Group>
               </Space>
@@ -2057,6 +2058,7 @@ const EpisodeDetail: React.FC = () => {
                   <Radio.Button value="delogo">去水印</Radio.Button>
                   <Radio.Button value="mosaic">马赛克</Radio.Button>
                   <Radio.Button value="blur">模糊</Radio.Button>
+                  <Radio.Button value="gblur">高斯模糊</Radio.Button>
                   <Radio.Button value="fill">纯色块</Radio.Button>
                 </Radio.Group>
               </Space>
@@ -2690,6 +2692,7 @@ const EpisodeDetail: React.FC = () => {
                   { value: 'delogo', label: '去水印' },
                   { value: 'mosaic', label: '马赛克' },
                   { value: 'blur', label: '模糊' },
+                  { value: 'gblur', label: '高斯模糊' },
                   { value: 'fill', label: '纯色块' },
                 ]} />
                 <Text style={{ fontSize: 12 }}>宽</Text>
