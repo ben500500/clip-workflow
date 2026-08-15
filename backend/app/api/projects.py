@@ -342,6 +342,43 @@ async def update_project(
     return _serialize_project(project)
 
 
+async def _cleanup_episode_minio(episode) -> None:
+    """清理单条剧集关联的 MinIO 对象（在 DB 删除前调用，避免级联删除后丢失引用）。
+
+    - 源素材：episode.source_file_key（raw-footage 对象）
+    - 切片成品：sliced/slices/{episode_id}/ 下所有对象
+    """
+    if episode.source_file_key:
+        await delete_file(settings.MINIO_BUCKET_RAW, episode.source_file_key)
+    try:
+        sliced_objs = await list_files(
+            settings.MINIO_BUCKET_SLICED, f"slices/{episode.id}/"
+        )
+        for obj in sliced_objs:
+            await delete_file(settings.MINIO_BUCKET_SLICED, obj["key"])
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"清理剧集 MinIO 切片失败 (episode={episode.id}): {e}")
+
+
+async def _cleanup_episode_media(db: AsyncSession, episode_id) -> None:
+    """清理单条剧集关联的本地 media 文件（幂等，失败不阻塞删除，只记日志）。"""
+    media_uuid = None
+    try:
+        ap = (
+            await db.execute(
+                select(AutoClipProject).where(AutoClipProject.episode_id == episode_id)
+            )
+        ).scalar_one_or_none()
+        if ap and ap.autoclip_project_id:
+            media_uuid = ap.autoclip_project_id
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"定位剧集 media 引用失败 (episode={episode_id}): {e}")
+    if media_uuid:
+        _cleanup_episode_media_files(media_uuid)
+    # 兜底：清扫 media 卷中无 autoclip_projects 引用的孤儿文件
+    await _cleanup_orphan_media_files()
+
+
 @router.delete("/projects/{project_id}", status_code=204)
 async def delete_project(
     project_id: str,
@@ -354,15 +391,35 @@ async def delete_project(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid project ID format")
 
-    result = await db.execute(select(Project).where(Project.id == uid))
+    result = await db.execute(
+        select(Project).options(selectinload(Project.episodes)).where(Project.id == uid)
+    )
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     if not _check_project_access(project, current_user):
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # ── 清理 MinIO / 本地 media 文件资源（在 DB 删除前收集引用，避免级联删除后丢失） ──
+    episodes = list(project.episodes or [])
+    for ep in episodes:
+        await _cleanup_episode_minio(ep)
+
     await db.delete(project)
     await db.flush()
+
+    # DB 删除成功后执行本地 media 文件清理（失败不阻塞删除，只记日志）
+    for ep in episodes:
+        await _cleanup_episode_media(db, ep.id)
+
+    # 兜底：清扫 raw-footage 桶中按项目前缀遗留的孤儿对象（上传 key 约定为
+    # raw-footage/{project_id}/...，删除项目后若有未落库残留一并清掉）
+    try:
+        orphan_objs = await list_files(settings.MINIO_BUCKET_RAW, f"{uid}/")
+        for obj in orphan_objs:
+            await delete_file(settings.MINIO_BUCKET_RAW, obj["key"])
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"清理项目 raw-footage 孤儿对象失败 (project={uid}): {e}")
 
 
 # ---------- Episode Routes ----------
@@ -548,35 +605,15 @@ async def delete_episode(
         raise HTTPException(status_code=404, detail="Episode not found")
 
     # ── 清理文件资源（在 DB 删除前收集引用，避免级联删除后丢失） ──
-    # 1) media 本地文件：autoclip project_id = media/{uuid}.mp4 + metadata/{uuid}/ + asr_cache
-    media_uuid = None
-    ap = (
-        await db.execute(
-            select(AutoClipProject).where(AutoClipProject.episode_id == eid)
-        )
-    ).scalar_one_or_none()
-    if ap and ap.autoclip_project_id:
-        media_uuid = ap.autoclip_project_id
-
-    # 2) MinIO 源素材：episode.source_file_key（raw-footage 对象）
-    if episode.source_file_key:
-        await delete_file(settings.MINIO_BUCKET_RAW, episode.source_file_key)
-
-    # 3) MinIO 切片成品：sliced/slices/{episode_id}/ 下所有对象
-    sliced_objs = await list_files(settings.MINIO_BUCKET_SLICED, f"slices/{episode_id}/")
-    for obj in sliced_objs:
-        await delete_file(settings.MINIO_BUCKET_SLICED, obj["key"])
+    await _cleanup_episode_minio(episode)
 
     await db.delete(episode)
     await db.flush()
 
     # DB 删除成功后执行本地文件清理（失败不阻塞删除，只记日志）
-    if media_uuid:
-        _cleanup_episode_media_files(media_uuid)
-    # 兜底：清扫 media 卷中无 autoclip_projects 引用的孤儿文件
     # （场景：选点任务中途失败——autoclip 已下载视频副本到 media，但 DB 无
     # autoclip_projects 记录 → 上面按 media_uuid 定位不到 → 残留）
-    await _cleanup_orphan_media_files()
+    await _cleanup_episode_media(db, eid)
 
 
 async def _cleanup_orphan_media_files() -> None:
