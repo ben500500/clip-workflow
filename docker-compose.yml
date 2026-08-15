@@ -463,7 +463,6 @@ services:
       NODE_TTL: "0"
       BACKEND_URL: ${WORKER_CALLBACK_BASE_URL:-http://backend:8080}
     volumes:
-      - ./engines:/app/engines:ro
       - slice_worker_temp:/tmp/slice-worker
     logging: *default-logging
 
@@ -499,7 +498,6 @@ services:
       NODE_TTL: "0"
       BACKEND_URL: ${WORKER_CALLBACK_BASE_URL:-http://backend:8080}
     volumes:
-      - ./engines:/app/engines:ro
       - slice_worker_temp:/tmp/slice-worker
     logging: *default-logging
 

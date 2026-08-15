@@ -416,7 +416,6 @@ services:
       NODE_TTL: "0"
       BACKEND_URL: ${WORKER_CALLBACK_BASE_URL:-http://backend:8080}
     volumes:
-      - ./data/engines:/app/engines:ro
       - ./data/slice_worker_temp:/tmp/slice-worker
     logging: *default-logging
 

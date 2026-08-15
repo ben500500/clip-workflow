@@ -125,6 +125,12 @@ if [[ "$MODE" == "docker" ]]; then
     fi
 
     log "构建 slice-worker 镜像 (本机架构 $ARCH)..."
+    # engines/ 在 slice-worker context 外，先拷进去才能打入镜像
+    rm -rf "$SCRIPT_DIR/slice-worker/engines"
+    cp -r "$SCRIPT_DIR/engines" "$SCRIPT_DIR/slice-worker/engines" || \
+        die "拷贝 engines/ 到 slice-worker 失败"
+    find "$SCRIPT_DIR/slice-worker/engines" \
+        \( -name '__pycache__' -o -name '*.pyc' -o -name '.DS_Store' -o -name 'README.md' \) -delete 2>/dev/null || true
     docker build -q -t clip-slice-worker "$SCRIPT_DIR/slice-worker" || \
         die "镜像构建失败, 请检查 Docker 网络(需可访问 goproxy.cn)或基础镜像"
 
@@ -142,7 +148,6 @@ if [[ "$MODE" == "docker" ]]; then
         -e MAX_RETRIES="2" \
         -e RETRY_DELAY="30" \
         -e NODE_TTL="0" \
-        -v "$SCRIPT_DIR/engines:/app/engines:ro" \
         clip-slice-worker >/dev/null
 
     log "节点已启动, 查看日志: docker logs -f $NODE_ID"

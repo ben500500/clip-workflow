@@ -8,7 +8,7 @@
 remote-worker/
 ├── deploy_remote_worker.sh    # 一键部署脚本 (v2)
 ├── slice-worker/              # Go Worker 源码 + Dockerfile (仓库根目录)
-├── engines/                   # 切片引擎 (仓库根目录)
+├── engines/                   # 切片引擎源码（构建时拷入 slice-worker/ 打入镜像，运行时不再 bind mount）
 ├── base-images-arm64.tar.gz   # arm64 基础镜像 (golang+alpine, 可选)
 └── base-images-amd64.tar.gz   # amd64 基础镜像 (可选)
 ```

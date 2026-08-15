@@ -159,6 +159,10 @@ build_images() {
         log_warn "slice-worker 目录或 Dockerfile 不存在，将跳过 slice-worker 镜像构建。"
     fi
 
+    # slice-worker 的 Docker context 是 ./slice-worker，engines/ 在外面，
+    # 先同步进去才能把引擎打入镜像（与 .cnb.yml 同步逻辑一致）
+    bash scripts/sync-engines-to-worker.sh
+
     # 执行构建
     $COMPOSE_CMD build --parallel
 

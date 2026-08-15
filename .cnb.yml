@@ -99,6 +99,8 @@ $:
             VERSION="${CNB_BRANCH#v}"
             IMAGE="${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}/clip-slice-worker"
             echo "Building $IMAGE:$VERSION (from tag $CNB_BRANCH)"
+            # engines/ 在 slice-worker context 之外，先拷进去才能打入镜像
+            bash scripts/sync-engines-to-worker.sh
             docker build -t "$IMAGE:$VERSION" -t "$IMAGE:latest" ./slice-worker
             docker push "$IMAGE:$VERSION"
             docker push "$IMAGE:latest"

@@ -112,6 +112,8 @@ temp/
 
 # CI 构建时 cp 进来的 alembic 副本（来源是仓库根 alembic/，勿提交副本）
 backend/alembic/
+# 打包前 cp 进来的 engines 副本（来源是仓库根 engines/，勿提交副本）
+slice-worker/engines/
 
 # slice-worker 本地构建产物与配置（含 Redis 密码，严禁提交）
 slice-worker/macos/slice-worker-mac
