@@ -45,6 +45,7 @@ from app.services.minio_service import (
     list_files,
     delete_file,
     download_file,
+    upload_file_from_path,
 )
 from app.services.redis_stream import (
     publish_slice_task,
