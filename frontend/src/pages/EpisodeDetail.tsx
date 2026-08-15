@@ -18,6 +18,7 @@ import ErrorHint from '../components/ErrorHint';
 import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/DedupeManualConfig';
 import type { AutoClipRunRecord, ClipCandidate, Episode, IntervalHistoryItem, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
+import { buildSliceConfigTooltip } from '../utils/sliceConfigTooltip';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -2422,10 +2423,16 @@ const EpisodeDetail: React.FC = () => {
                   title: '模式',
                   dataIndex: 'mode',
                   key: 'mode',
-                  width: 74,
-                  render: (m: string | null) => (
-                    <Tag>{SLICE_MODE_HELP[m || '']?.label || m || '-'}</Tag>
-                  ),
+                  width: 120,
+                  render: (m: string | null, t: SliceTask) => {
+                    const label = SLICE_MODE_HELP[m || '']?.label || m || '-';
+                    const tip = buildSliceConfigTooltip(t, label);
+                    return (
+                      <Tooltip title={tip}>
+                        <Tag>{label}</Tag>
+                      </Tooltip>
+                    );
+                  },
                 },
                 {
                   title: '状态',

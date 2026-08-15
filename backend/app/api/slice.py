@@ -253,6 +253,17 @@ class SliceTaskResponse(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     created_at: str
+    # ── 该任务实际应用的配置（用于历史列表悬停展示） ──
+    dedupe_config: Optional[dict] = None
+    watermark_config: Optional[dict] = None
+    badges_config: Optional[dict] = None
+    badge_default_width: Optional[int] = None
+    vert2horiz_config: Optional[dict] = None
+    subtitle_config: Optional[dict] = None
+    subtitle_align_mask: Optional[bool] = None
+    subtitle_mask_config: Optional[dict] = None
+    watermark_mask_config: Optional[dict] = None
+    text_overlays_config: Optional[dict] = None
 
     model_config = {"from_attributes": True}
 
@@ -303,6 +314,17 @@ def _serialize_task(task: SliceTask) -> dict:
         "started_at": utc_iso(task.started_at) if task.started_at else None,
         "completed_at": utc_iso(task.completed_at) if task.completed_at else None,
         "created_at": utc_iso(task.created_at) if task.created_at else "",
+        # 该任务实际应用的配置（用于历史列表悬停展示）
+        "dedupe_config": task.dedupe_config,
+        "watermark_config": task.watermark_config,
+        "badges_config": task.badges_config,
+        "badge_default_width": task.badge_default_width,
+        "vert2horiz_config": task.vert2horiz_config,
+        "subtitle_config": task.subtitle_config,
+        "subtitle_align_mask": task.subtitle_align_mask,
+        "subtitle_mask_config": task.subtitle_mask_config,
+        "watermark_mask_config": task.watermark_mask_config,
+        "text_overlays_config": task.text_overlays_config,
     }
 
 
