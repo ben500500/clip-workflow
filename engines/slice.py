@@ -1733,6 +1733,7 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int
         dens = np.zeros(height, dtype=np.float64)
         presence = np.zeros(height, dtype=np.float64)
         color_acc = np.zeros((height, width), dtype=np.float64)
+        color_peak = np.zeros((height, width), dtype=np.float64)
         frames = 0
         for t in times:
             cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000.0)
@@ -1754,6 +1755,7 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int
             # 该行在当前帧是否有文字簇内容（用于统计"出现频率"，区分间歇字幕/恒定水印）
             presence += (cl > 3).astype(np.float64)
             color_acc += mask.astype(np.float64)
+            color_peak = np.maximum(color_peak, mask.astype(np.float64))
             frames += 1
         if frames == 0:
             return None
@@ -1873,7 +1875,7 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int
                 ey1 = min(height - 1, sy1 + down)
 
                 # 横向范围
-                col = color_acc[ey0:ey1 + 1, :].sum(axis=0)
+                col = color_peak[ey0:ey1 + 1, :].sum(axis=0)
                 col_peak = float(col.max())
                 if col_peak <= 1:
                     rx0, rw = 0, width
