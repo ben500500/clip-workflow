@@ -257,14 +257,14 @@ class SliceTaskResponse(BaseModel):
     # ── 该任务实际应用的配置（用于历史列表悬停展示） ──
     dedupe_config: Optional[dict] = None
     watermark_config: Optional[dict] = None
-    badges_config: Optional[dict] = None
+    badges_config: Optional[list] = None
     badge_default_width: Optional[int] = None
     vert2horiz_config: Optional[dict] = None
     subtitle_config: Optional[dict] = None
     subtitle_align_mask: Optional[bool] = None
     subtitle_mask_config: Optional[dict] = None
     watermark_mask_config: Optional[dict] = None
-    text_overlays_config: Optional[dict] = None
+    text_overlays_config: Optional[list] = None
 
     model_config = {"from_attributes": True}
 
