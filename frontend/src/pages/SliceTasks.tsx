@@ -108,7 +108,7 @@ const SliceTasks: React.FC = () => {
   const [subtitleModalOpen, setSubtitleModalOpen] = useState(false);
   // ── 源视频字幕打码（去片源自带字幕，独立开关）──
   const [subtitleMaskEnabled, setSubtitleMaskEnabled] = useState(false);
-  const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'fill'>('delogo');
+  const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill'>('delogo');
   // 精细化（帧级检测）：只在字幕/水印实际出现的时段打码
   const [subtitleMaskTemporal, setSubtitleMaskTemporal] = useState(true);
   // 仅字幕显示区域打码（空间精细化）：需开启精细化后才能开启，
@@ -1032,6 +1032,7 @@ const SliceTasks: React.FC = () => {
                   <Radio.Button value="delogo">去水印</Radio.Button>
                   <Radio.Button value="mosaic">马赛克</Radio.Button>
                   <Radio.Button value="blur">模糊</Radio.Button>
+                  <Radio.Button value="gblur">高斯模糊</Radio.Button>
                   <Radio.Button value="fill">纯色块</Radio.Button>
                 </Radio.Group>
               </Space>

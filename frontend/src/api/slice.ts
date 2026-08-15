@@ -81,7 +81,7 @@ export const sliceApi = {
       subtitle_border_color?: string;
       // 源视频字幕打码：先把片源自带字幕打码，再烧录自己的 ASR 字幕
       subtitle_mask_enabled?: boolean;
-      subtitle_mask_style?: 'delogo' | 'mosaic' | 'blur' | 'fill';
+      subtitle_mask_style?: 'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill';
       // 精细化（帧级检测）：只在字幕/水印实际出现的时段打码
       subtitle_mask_temporal?: boolean;
       // 仅字幕显示区域打码（空间精细化）：需开启 temporal 后才能开启，
@@ -97,7 +97,7 @@ export const sliceApi = {
       subtitle_align_mask?: boolean;
       // 恒定水印/角标打码：打掉片源固定水印（独立开关）
       watermark_mask_enabled?: boolean;
-      watermark_mask_style?: 'delogo' | 'mosaic' | 'blur' | 'fill';
+      watermark_mask_style?: 'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill';
       watermark_mask_width_ratio?: number;
       watermark_mask_height_ratio?: number;
       watermark_mask_bottom_ratio?: number;

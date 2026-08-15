@@ -54,7 +54,7 @@ interface SliceConfigState {
   subtitle_color: string;
   subtitle_border_color: string;
   subtitle_mask_enabled: boolean;
-  subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'fill';
+  subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill';
   subtitle_mask_temporal: boolean;
   subtitle_mask_spatial: boolean;
   subtitle_mask_width_ratio: number;
@@ -878,6 +878,7 @@ const BatchSlicePage: React.FC = () => {
                   { value: 'delogo', label: '去水印' },
                   { value: 'mosaic', label: '马赛克' },
                   { value: 'blur', label: '模糊' },
+                  { value: 'gblur', label: '高斯模糊' },
                   { value: 'fill', label: '纯色块' },
                 ]}
               />

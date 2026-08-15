@@ -1517,11 +1517,15 @@ SUBTITLE_MASK_BOTTOM_RATIO = 0.02
 # 默认打码样式
 SUBTITLE_MASK_STYLE_DEFAULT = "delogo"
 # 打码样式集合
-SUBTITLE_MASK_STYLES = ("delogo", "mosaic", "blur", "fill")
+SUBTITLE_MASK_STYLES = ("delogo", "mosaic", "blur", "gblur", "fill")
 # 马赛克缩放后的块大小（px），越大马赛克颗粒越粗
 SUBTITLE_MASK_BLOCK = 8
 # 模糊滤镜核大小（px）
 SUBTITLE_MASK_BLUR_RADIUS = 10  # boxblur 的 chroma_param(radius:1) 上限为 11，12 会越界导致 blur 样式转码失败
+# 高斯模糊 sigma（gblur 样式）：sigma 越大越柔和、越能盖住字幕文字。相比 boxblur
+# 均匀模糊，gblur 的高斯核更自然、视觉更柔，适合对密集多行对话字幕打码（盖死且
+# 不突兀，比马赛克/纯色块自然）。
+SUBTITLE_MASK_GBLUR_SIGMA = 10
 # 自动检测字幕区域时最多采样的帧数（越多越稳，但越慢）。
 # 短剧字幕常出现在多个纵向位置（旁白/对话/偶尔更高处），采样过少会漏掉只在
 # 部分时段出现、位置又偏的副字幕带。此处取 24，兼顾稳定性与速度。
@@ -2810,6 +2814,15 @@ def build_subtitle_mask_filter(cfg: dict, enable: str) -> str:
             f"[sub]crop={w}:{h}:{x}:{y},boxblur={radius}:1[masked];"
             f"[src][masked]overlay={x}:{y}{en}[vout]"
         )
+    if style == "gblur":
+        # 高斯模糊：比 boxblur 更柔和、视觉更自然，且能盖死密集多行字幕。
+        sigma = int(cfg.get("blur_sigma") or SUBTITLE_MASK_GBLUR_SIGMA)
+        sigma = max(2, min(32, sigma))
+        return (
+            f"[0:v]split[src][sub];"
+            f"[sub]crop={w}:{h}:{x}:{y},gblur=sigma={sigma}[masked];"
+            f"[src][masked]overlay={x}:{y}{en}[vout]"
+        )
     # fill：纯色块直接盖住
     color = str(cfg.get("color") or "black")
     return f"[0:v]drawbox=x={x}:y={y}:w={w}:h={h}:color={color}:t=fill{en}[vout]"
@@ -2884,6 +2897,9 @@ def build_subtitle_mask_filter_multi(cfg: dict, windows: list[tuple],
             bw = max(1, w // block)
             bh = max(1, h // block)
             op = f"scale={bw}:{bh},scale={w}:{h}:flags=neighbor"
+        elif style == "gblur":
+            sigma = max(2, min(32, int(cfg.get("blur_sigma") or SUBTITLE_MASK_GBLUR_SIGMA)))
+            op = f"gblur=sigma={sigma}"
         else:
             op = f"boxblur={radius}:1"
         parts.append(f"[w{i}]crop={w}:{h}:{x}:{y},{op}[m{i}];")
@@ -2969,6 +2985,9 @@ def build_subtitle_mask_filter_multi_region(cfg: dict, regions: list[tuple],
             bw = max(1, w // block)
             bh = max(1, h // block)
             op = f"scale={bw}:{bh},scale={w}:{h}:flags=neighbor"
+        elif style == "gblur":
+            sigma = max(2, min(32, int(cfg.get("blur_sigma") or SUBTITLE_MASK_GBLUR_SIGMA)))
+            op = f"gblur=sigma={sigma}"
         else:
             op = f"boxblur={radius}:1"
         parts.append(f"[w{i}]crop={w}:{h}:{x}:{y},{op}[m{i}];")
@@ -3054,6 +3073,9 @@ def build_subtitle_mask_filter_multi_region_windows(cfg: dict, region_windows: l
         if style == "mosaic":
             bw = max(1, w // block); bh = max(1, h // block)
             op = f"scale={bw}:{bh},scale={w}:{h}:flags=neighbor"
+        elif style == "gblur":
+            sigma = max(2, min(32, int(cfg.get("blur_sigma") or SUBTITLE_MASK_GBLUR_SIGMA)))
+            op = f"gblur=sigma={sigma}"
         else:
             op = f"boxblur={radius}:1"
         parts.append(f"[w{i}]crop={w}:{h}:{x}:{y},{op}[m{i}];")
@@ -3133,6 +3155,9 @@ def build_subtitle_mask_filter_dynamic(cfg: dict, windows: list, width: int = 0,
         if style == "mosaic":
             bw = max(1, w // block); bh = max(1, h // block)
             op = f"scale={bw}:{bh},scale={w}:{h}:flags=neighbor"
+        elif style == "gblur":
+            sigma = max(2, min(32, int(cfg.get("blur_sigma") or SUBTITLE_MASK_GBLUR_SIGMA)))
+            op = f"gblur=sigma={sigma}"
         else:
             op = f"boxblur={radius}:1"
         parts.append(f"[w{i}]crop={w}:{h}:{x}:{y},{op}[m{i}];")
@@ -3350,12 +3375,12 @@ def main():
     parser.add_argument(
         "--subtitle-mask",
         default=None,
-        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"temporal\":bool, \"spatial\":bool, \"srt\":打码时间轴SRT路径}）。默认 delogo（去水印），开启后自动检测字幕位置。temporal=帧级精细化（只在出现时段打码），spatial=仅字幕显示区域打码（需 temporal 开启）。独立开关，仅打掉片源自带字幕",
+        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|gblur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"temporal\":bool, \"spatial\":bool, \"srt\":打码时间轴SRT路径}）。默认 delogo（去水印），开启后自动检测字幕位置。temporal=帧级精细化（只在出现时段打码），spatial=仅字幕显示区域打码（需 temporal 开启）。独立开关，仅打掉片源自带字幕",
     )
     parser.add_argument(
         "--watermark-mask",
         default=None,
-        help="恒定水印/角标打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"top_ratio\":..., \"x\":..., \"y\":..., \"width\":..., \"height\":...}）。开启后自动检测恒定出现的水印/角标区域（区别于间歇对话字幕），无检测结果时回退到指定比例区域（默认底部）。独立开关，仅打掉片源恒定水印",
+        help="恒定水印/角标打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|gblur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"top_ratio\":..., \"x\":..., \"y\":..., \"width\":..., \"height\":...}）。开启后自动检测恒定出现的水印/角标区域（区别于间歇对话字幕），无检测结果时回退到指定比例区域（默认底部）。独立开关，仅打掉片源恒定水印",
     )
     args = parser.parse_args()
 
