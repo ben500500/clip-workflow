@@ -11,6 +11,7 @@ import ErrorHint from '../components/ErrorHint';
 import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/DedupeManualConfig';
 import type { SliceOutput, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
+import { buildSliceConfigTooltip } from '../utils/sliceConfigTooltip';
 
 const { Title, Text } = Typography;
 
@@ -388,14 +389,14 @@ const SliceTasks: React.FC = () => {
       dataIndex: 'mode',
       key: 'mode',
       width: 120,
-      render: (m: string) => {
+      render: (m: string, t: SliceTask) => {
         const help = SLICE_MODE_HELP[m];
-        return help ? (
-          <Tooltip title={help.desc}>
-            <Tag>{help.label}</Tag>
+        const label = help?.label || m || '-';
+        const tip = help ? `${help.desc}\n\n${buildSliceConfigTooltip(t, label)}` : buildSliceConfigTooltip(t, label);
+        return (
+          <Tooltip title={tip}>
+            <Tag>{label}</Tag>
           </Tooltip>
-        ) : (
-          <Tag>{m || '-'}</Tag>
         );
       },
     },
