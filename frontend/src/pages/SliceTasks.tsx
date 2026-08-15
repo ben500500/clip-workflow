@@ -363,14 +363,10 @@ const SliceTasks: React.FC = () => {
     ? Math.round(runningTasks.reduce((sum, t) => sum + (t.progress || 0), 0) / runningTasks.length)
     : 0;
 
-  // 总任务进度（所有非取消任务的进度加权平均）
-  const activeTasks = tasks.filter((t) => t.status !== 'cancelled');
-  const totalProgress = activeTasks.length > 0
-    ? Math.round(activeTasks.reduce((sum, t) => {
-        if (t.status === 'completed') return sum + 100;
-        if (t.status === 'failed') return sum + 100; // 失败的也算完成
-        return sum + (t.progress || 0);
-      }, 0) / activeTasks.length)
+  // 总体进度只统计当前正在执行的任务：避免历史已完成/失败任务把进度条一直钉在
+  // 100% 常驻，导致后续新任务只能另起一条进度条。无执行中任务时按 0 处理（不展示常驻条）。
+  const totalProgress = runningTasks.length > 0
+    ? Math.round(runningTasks.reduce((sum, t) => sum + (t.progress || 0), 0) / runningTasks.length)
     : 0;
 
   const hasRunningTask = runningTasks.length > 0;
@@ -563,17 +559,19 @@ const SliceTasks: React.FC = () => {
               <Tag color="red">失败: {failedTasks.length}</Tag>
               {cancelledTasks.length > 0 && <Tag>已取消: {cancelledTasks.length}</Tag>}
             </Space>
-            <Progress
-              percent={totalProgress}
-              status={failedTasks.length > 0 && runningTasks.length === 0 ? 'exception' : hasRunningTask ? 'active' : 'success'}
-              strokeColor={totalProgress === 100 && failedTasks.length === 0 ? '#52c41a' : undefined}
-              format={(p) => `${p}%`}
-            />
+            {/* 仅在有任务执行中时展示进度条，避免历史任务完成后 100% 进度条一直常驻 */}
+            {hasRunningTask && (
+              <Progress
+                percent={totalProgress}
+                status="active"
+                strokeColor={totalProgress === 100 && failedTasks.length === 0 ? '#52c41a' : undefined}
+                format={(p) => `${p}%`}
+              />
+            )}
             {hasRunningTask && (
               <Space>
                 <Text type="secondary">
-                  当前 {runningTasks.length} 个任务运行中
-                  {runningTasks.length > 0 && `，平均进度 ${averageProgress}%`}
+                  当前 {runningTasks.length} 个任务运行中，平均进度 {averageProgress}%
                 </Text>
               </Space>
             )}
@@ -746,7 +744,7 @@ const SliceTasks: React.FC = () => {
             cancelText="取消"
             width={520}
           >
-            <DedupeManualConfig value={dedupeManual} onChange={setDedupeManual} />
+            <DedupeManualConfig value={dedupeManual} onChange={setDedupeManual} preset={dedupePreset} />
           </Modal>
 
           {/* ── 图片角标（多角标，全程叠加）── */}
@@ -1031,9 +1029,9 @@ const SliceTasks: React.FC = () => {
                   onChange={(e) => setSubtitleMaskStyle(e.target.value)}
                 >
                   <Radio.Button value="delogo">去水印</Radio.Button>
+                  <Radio.Button value="gblur">高斯模糊</Radio.Button>
                   <Radio.Button value="mosaic">马赛克</Radio.Button>
                   <Radio.Button value="blur">模糊</Radio.Button>
-                  <Radio.Button value="gblur">高斯模糊</Radio.Button>
                   <Radio.Button value="fill">纯色块</Radio.Button>
                 </Radio.Group>
               </Space>

@@ -33,6 +33,53 @@ export interface DedupeManualConfigValue {
   };
 }
 
+// 各档位的默认去重参数（与后端 engines/slice.py 的 DEDUPE_PRESETS 保持一致），
+// 用于在未手动覆盖时展示当前所选档位的有效值。
+const DEDUPE_PRESETS: Record<string, Partial<DedupeManualConfigValue>> = {
+  light: {
+    crop: 0.02,
+    hflip: false,
+    speed: 1.02,
+    saturation: 0.92,
+    gamma: 1.02,
+    contrast: 1.01,
+    brightness: 0.005,
+    noise: 3,
+    vignette: 'PI/6',
+    roll_band: 0,
+    jitter: 0,
+    sharpen: 0,
+  },
+  standard: {
+    crop: 0.03,
+    hflip: true,
+    speed: 1.03,
+    saturation: 0.85,
+    gamma: 1.03,
+    contrast: 1.03,
+    brightness: 0.01,
+    noise: 6,
+    vignette: 'PI/5',
+    roll_band: 0,
+    jitter: 0,
+    sharpen: 0.4,
+  },
+  heavy: {
+    crop: 0.05,
+    hflip: true,
+    speed: 1.05,
+    saturation: 0.78,
+    gamma: 1.06,
+    contrast: 1.05,
+    brightness: 0.02,
+    noise: 10,
+    vignette: 'PI/4',
+    roll_band: 12,
+    jitter: 2,
+    sharpen: 0.8,
+  },
+};
+
 const WATERMARK_POSITIONS = [
   { value: 'top-left', label: '左上' },
   { value: 'top-right', label: '右上' },
@@ -46,10 +93,14 @@ const WATERMARK_POSITIONS = [
 interface Props {
   value: DedupeManualConfigValue;
   onChange: (v: DedupeManualConfigValue) => void;
+  /** 当前所选去重档位（light/standard/heavy），用于展示未手动覆盖时的默认有效值 */
+  preset?: string;
 }
 
 /** 去重手段手动配置面板（受控组件）。 */
-const DedupeManualConfig: React.FC<Props> = ({ value, onChange }) => {
+const DedupeManualConfig: React.FC<Props> = ({ value, onChange, preset }) => {
+  // 当前档位的默认值：未手动覆盖时展示这些有效值，便于用户知道开启后的实际效果
+  const defaults = DEDUPE_PRESETS[preset || 'standard'] || DEDUPE_PRESETS.standard;
   const set = (key: keyof DedupeManualConfigValue, val: unknown) => {
     onChange({ ...value, [key]: val });
   };
@@ -76,40 +127,40 @@ const DedupeManualConfig: React.FC<Props> = ({ value, onChange }) => {
     <div style={{ maxHeight: 460, overflow: 'auto', paddingRight: 8 }}>
       <Divider orientation="left" plain style={{ marginTop: 0, fontSize: 13 }}>空间层</Divider>
       {row('裁切比例', '裁掉四周的比例（改构图/像素对齐），0~20%，越大越明显。',
-        <InputNumber min={0} max={0.2} step={0.005} value={value.crop} style={{ width: 120 }}
+        <InputNumber min={0} max={0.2} step={0.005} value={value.crop ?? defaults.crop} style={{ width: 120 }}
           onChange={(v) => set('crop', v ?? 0)} />)}
       {row('水平镜像', '水平翻转画面，直接破坏帧哈希。',
-        <Switch size="small" checked={!!value.hflip} onChange={(v) => set('hflip', v)} />)}
+        <Switch size="small" checked={value.hflip ?? defaults.hflip} onChange={(v) => set('hflip', v)} />)}
 
       <Divider orientation="left" plain style={{ marginTop: 8, fontSize: 13 }}>时域层</Divider>
       {row('变速系数', '整体提速系数（1.0~1.2），改变时长与帧对齐。',
-        <InputNumber min={1} max={1.2} step={0.01} value={value.speed} style={{ width: 120 }}
+        <InputNumber min={1} max={1.2} step={0.01} value={value.speed ?? defaults.speed} style={{ width: 120 }}
           onChange={(v) => set('speed', v ?? 1.0)} />)}
 
       <Divider orientation="left" plain style={{ marginTop: 8, fontSize: 13 }}>色彩层</Divider>
       {row('饱和度', '饱和度系数，越小越灰（去重常用降饱和）。',
-        <Slider min={0.5} max={1.5} step={0.01} value={value.saturation} style={{ width: 160 }}
+        <Slider min={0.5} max={1.5} step={0.01} value={value.saturation ?? defaults.saturation} style={{ width: 160 }}
           onChange={(v) => set('saturation', v)} />)}
       {row('伽马', '伽马值，微调亮度层次。',
-        <InputNumber min={0.8} max={1.4} step={0.01} value={value.gamma} style={{ width: 120 }}
+        <InputNumber min={0.8} max={1.4} step={0.01} value={value.gamma ?? defaults.gamma} style={{ width: 120 }}
           onChange={(v) => set('gamma', v ?? 1.0)} />)}
       {row('对比度', '对比度系数。',
-        <InputNumber min={0.8} max={1.4} step={0.01} value={value.contrast} style={{ width: 120 }}
+        <InputNumber min={0.8} max={1.4} step={0.01} value={value.contrast ?? defaults.contrast} style={{ width: 120 }}
           onChange={(v) => set('contrast', v ?? 1.0)} />)}
       {row('亮度', '亮度调整（-0.2~0.2）。',
-        <InputNumber min={-0.2} max={0.2} step={0.005} value={value.brightness} style={{ width: 120 }}
+        <InputNumber min={-0.2} max={0.2} step={0.005} value={value.brightness ?? defaults.brightness} style={{ width: 120 }}
           onChange={(v) => set('brightness', v ?? 0)} />)}
 
       <Divider orientation="left" plain style={{ marginTop: 8, fontSize: 13 }}>质感层（老电视效果）</Divider>
       {row('颗粒噪点', '胶片颗粒/老电视颗粒强度，0 关闭。',
-        <Slider min={0} max={20} step={1} value={num(value.noise)} style={{ width: 160 }}
+        <Slider min={0} max={20} step={1} value={num(value.noise ?? defaults.noise)} style={{ width: 160 }}
           onChange={(v) => set('noise', v)} />)}
       {row('锐化/降噪', 'unsharp 锐化量，微调画质细节差异，0 关闭。',
-        <Slider min={0} max={2} step={0.1} value={num(value.sharpen)} style={{ width: 160 }}
+        <Slider min={0} max={2} step={0.1} value={num(value.sharpen ?? defaults.sharpen)} style={{ width: 160 }}
           onChange={(v) => set('sharpen', v)} />)}
       {row('暗角', '边缘压暗（PI/6 轻 ~ PI/4 重），空值关闭。',
         <Select
-          value={value.vignette ?? ''}
+          value={value.vignette ?? defaults.vignette ?? ''}
           onChange={(v) => set('vignette', v)}
           style={{ width: 120 }}
           options={[
@@ -120,10 +171,10 @@ const DedupeManualConfig: React.FC<Props> = ({ value, onChange }) => {
           ]}
         />)}
       {row('滚动暗带', '上下缓慢滚动的亮度条带强度，0 关闭。',
-        <Slider min={0} max={30} step={1} value={num(value.roll_band)} style={{ width: 160 }}
+        <Slider min={0} max={30} step={1} value={num(value.roll_band ?? defaults.roll_band)} style={{ width: 160 }}
           onChange={(v) => set('roll_band', v)} />)}
       {row('画面抖动', '正弦摆动强度（px），0 关闭。',
-        <Slider min={0} max={8} step={1} value={num(value.jitter)} style={{ width: 160 }}
+        <Slider min={0} max={8} step={1} value={num(value.jitter ?? defaults.jitter)} style={{ width: 160 }}
           onChange={(v) => set('jitter', v)} />)}
 
       <Divider orientation="left" plain style={{ marginTop: 8, fontSize: 13 }}>贴纸水印叠加</Divider>

@@ -1535,7 +1535,7 @@ SUBTITLE_MASK_BLUR_RADIUS = 10  # boxblur 的 chroma_param(radius:1) 上限为 1
 # 高斯模糊 sigma（gblur 样式）：sigma 越大越柔和、越能盖住字幕文字。相比 boxblur
 # 均匀模糊，gblur 的高斯核更自然、视觉更柔，适合对密集多行对话字幕打码（盖死且
 # 不突兀，比马赛克/纯色块自然）。
-SUBTITLE_MASK_GBLUR_SIGMA = 10
+SUBTITLE_MASK_GBLUR_SIGMA = 20
 # 自动检测字幕区域时最多采样的帧数（越多越稳，但越慢）。
 # 短剧字幕常出现在多个纵向位置（旁白/对话/偶尔更高处），采样过少会漏掉只在
 # 部分时段出现、位置又偏的副字幕带。此处取 24，兼顾稳定性与速度。

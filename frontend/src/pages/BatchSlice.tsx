@@ -876,9 +876,9 @@ const BatchSlicePage: React.FC = () => {
                 style={{ width: 110 }}
                 options={[
                   { value: 'delogo', label: '去水印' },
+                  { value: 'gblur', label: '高斯模糊' },
                   { value: 'mosaic', label: '马赛克' },
                   { value: 'blur', label: '模糊' },
-                  { value: 'gblur', label: '高斯模糊' },
                   { value: 'fill', label: '纯色块' },
                 ]}
               />

@@ -1705,7 +1705,7 @@ const EpisodeDetail: React.FC = () => {
             cancelText="取消"
             width={520}
           >
-            <DedupeManualConfig value={dedupeManual} onChange={setDedupeManual} />
+            <DedupeManualConfig value={dedupeManual} onChange={setDedupeManual} preset={dedupePreset} />
           </Modal>
 
           {/* ── 竖屏转横屏智能裁切开关 ── */}
@@ -1985,9 +1985,9 @@ const EpisodeDetail: React.FC = () => {
                   onChange={(e) => setWatermarkMaskStyle(e.target.value)}
                 >
                   <Radio.Button value="delogo">去水印</Radio.Button>
+                  <Radio.Button value="gblur">高斯模糊</Radio.Button>
                   <Radio.Button value="mosaic">马赛克</Radio.Button>
                   <Radio.Button value="blur">模糊</Radio.Button>
-                  <Radio.Button value="gblur">高斯模糊</Radio.Button>
                   <Radio.Button value="fill">纯色块</Radio.Button>
                 </Radio.Group>
               </Space>
@@ -2056,9 +2056,9 @@ const EpisodeDetail: React.FC = () => {
                   onChange={(e) => setSubtitleMaskStyle(e.target.value)}
                 >
                   <Radio.Button value="delogo">去水印</Radio.Button>
+                  <Radio.Button value="gblur">高斯模糊</Radio.Button>
                   <Radio.Button value="mosaic">马赛克</Radio.Button>
                   <Radio.Button value="blur">模糊</Radio.Button>
-                  <Radio.Button value="gblur">高斯模糊</Radio.Button>
                   <Radio.Button value="fill">纯色块</Radio.Button>
                 </Radio.Group>
               </Space>
@@ -2690,9 +2690,9 @@ const EpisodeDetail: React.FC = () => {
                 <Text style={{ fontSize: 12 }}>样式</Text>
                 <Select size="small" style={{ width: 100 }} value={subtitleMaskStyle} onChange={setSubtitleMaskStyle} options={[
                   { value: 'delogo', label: '去水印' },
+                  { value: 'gblur', label: '高斯模糊' },
                   { value: 'mosaic', label: '马赛克' },
                   { value: 'blur', label: '模糊' },
-                  { value: 'gblur', label: '高斯模糊' },
                   { value: 'fill', label: '纯色块' },
                 ]} />
                 <Text style={{ fontSize: 12 }}>宽</Text>
@@ -2819,11 +2819,23 @@ const EpisodeDetail: React.FC = () => {
       {workflowGuide()}
 
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        {actions.map((a) => (
-          <Col xs={24} md={8} key={a.title}>
-            <Card size="small" title={a.title} style={{ height: '100%' }}>{a.node}</Card>
-          </Col>
-        ))}
+        {/* 左侧：AI 智能选点在上、通用区间检测在下；右侧整列给切片执行 */}
+        <Col xs={24} md={16}>
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            {actions
+              .filter((a) => a.title !== '切片执行')
+              .map((a) => (
+                <Card size="small" key={a.title} title={a.title} style={{ height: '100%' }}>{a.node}</Card>
+              ))}
+          </Space>
+        </Col>
+        <Col xs={24} md={8}>
+          {actions
+            .filter((a) => a.title === '切片执行')
+            .map((a) => (
+              <Card size="small" key={a.title} title={a.title} style={{ height: '100%' }}>{a.node}</Card>
+            ))}
+        </Col>
       </Row>
     </div>
   );
