@@ -1451,6 +1451,15 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
         # 无字幕内容时直接复制，避免无谓重编码
         shutil.copy(video_in, video_out)
         return
+    # 成品分辨率：libass 未指定 PlayResX/PlayResY 时用默认脚本分辨率，会把
+    # force_style 里的 MarginV/FontSize 放大（竖屏 1080x1920 约 6.67 倍），导致
+    # 对齐到检测打码区域时 margin_v 较大（≥300）字幕被推出屏幕外不可见
+    # （"ASR 字幕没有生效"的根因）。这里显式设为实际视频分辨率，让 MarginV 按
+    # 1:1 像素坐标生效。
+    vw, vh = ffprobe_size(video_in)
+    if vw <= 0 or vh <= 0:
+        shutil.copy(video_in, video_out)
+        return
 
     # 字幕字号：未指定时用默认值（加大后的清晰字号），用户可在切片配置中调节
     font_ratio = font_ratio if font_ratio is not None else SUBTITLE_FONT_RATIO
@@ -1486,7 +1495,8 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
                      f",BackColour={back_colour},BorderStyle=3,Outline=2,Shadow=0")
     sub_filter = (
         f"subtitles=filename='{srt_esc}'"
-        f":force_style='FontName=Noto Sans CJK SC,FontSize={font_ratio * 100:.0f}"
+        f":force_style='PlayResX={vw},PlayResY={vh}"
+        f",FontName=Noto Sans CJK SC,FontSize={font_ratio * 100:.0f}"
         f",{sub_style},MarginV={int(margin_v)}"
         f",Spacing={int(spacing)}'"
     )
@@ -1686,11 +1696,27 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int
         return None
 
     # 确定采样时刻
+    # 注意：不能用「只取前 N 条 SRT cue」——短剧字幕纵向位置会随时间变化（前期旁白在
+    # 居中偏上、后期对话在更低处）。若只采样前 24 条 cue（约前几十秒），后期下移的
+    # 字幕带不会被纳入检测，导致"后半段字幕没打码"（用户反馈的核心问题之一）。
+    # 因此有 SRT 时在**整份 SRT 的 cue 上均匀采样**（最多 MAX_FRAMES 条，跨全片），
+    # 无 SRT 时均匀采样全程，确保各时间段的字幕位置都被覆盖。
     times = []
     records = read_srt(srt) if srt and os.path.isfile(srt) else []
     if records:
-        sample = records[:SUBTITLE_MASK_DETECT_MAX_FRAMES]
-        times = [max(0.0, (float(r["start"]) + float(r["end"])) / 2.0) for r in sample]
+        n = len(records)
+        n_sample = min(SUBTITLE_MASK_DETECT_MAX_FRAMES, n)
+        # 均匀抽取覆盖全片的 cue：从第一条到最后一条线性取 n_sample 个下标
+        idxs = [int(round(i * (n - 1) / max(1, n_sample - 1))) for i in range(n_sample)]
+        # 去重保序（极端情况下几条 cue 时间相同）
+        seen = set()
+        chosen = []
+        for i in idxs:
+            if i not in seen:
+                seen.add(i)
+                chosen.append(i)
+        times = [max(0.0, (float(records[i]["start"]) + float(records[i]["end"])) / 2.0)
+                 for i in sorted(chosen)]
     else:
         dur = ffprobe_duration(video)
         if not dur or dur <= 0:
