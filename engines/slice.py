@@ -1521,7 +1521,7 @@ SUBTITLE_MASK_STYLES = ("delogo", "mosaic", "blur", "fill")
 # 马赛克缩放后的块大小（px），越大马赛克颗粒越粗
 SUBTITLE_MASK_BLOCK = 8
 # 模糊滤镜核大小（px）
-SUBTITLE_MASK_BLUR_RADIUS = 12
+SUBTITLE_MASK_BLUR_RADIUS = 10  # boxblur 的 chroma_param(radius:1) 上限为 11，12 会越界导致 blur 样式转码失败
 # 自动检测字幕区域时最多采样的帧数（越多越稳，但越慢）。
 # 短剧字幕常出现在多个纵向位置（旁白/对话/偶尔更高处），采样过少会漏掉只在
 # 部分时段出现、位置又偏的副字幕带。此处取 24，兼顾稳定性与速度。
@@ -1550,6 +1550,82 @@ def _mask_text_clusters(mask):
     import numpy as np
     starts = np.hstack([mask[:, :1], (mask[:, 1:] & ~mask[:, :-1])])
     return starts.sum(axis=1)
+
+
+def _split_tall_band(y0: int, y1: int, smooth, height: int, max_band_h: int):
+    """把过高的字幕横带拆分为多个紧凑子横带，避免"打码区域盖住半屏"。
+
+    单个字幕带高度本应在 1~3 行文字范围内（通常 < 6% 屏高）。但当对话字幕在
+    不同时间帧处于不同纵向位置时，cluster_peak 跨帧取最大值会把整段纵向浮动范围
+    压成一条很宽的横带（如 y≈1028-1300、h≈272），叠加余量与相邻旁白带合并后
+    可覆盖近半屏——这正是用户反馈的"打码区域太大"根因。
+
+    这里按 band 内 smooth（文字簇强度）剖面的局部峰值把宽带拆成多个紧凑子带：
+    相邻峰值间的低谷作为切分点。这样每个子带都紧贴一处字幕文字位置，未出现字幕
+    的纵向间隙不再被打码，区域总面积大幅下降，且不遗漏任何出现字幕的位置。
+
+    y0, y1: 待拆分的原始横带上下边界。
+    smooth: 长度为 height 的文字簇强度剖面。
+    height: 画面高度。
+    max_band_h: 子带高度上限（超过则不再细分，直接按当前范围作为一段，避免无限递归）。
+
+    返回拆分后的子带 [(y0, y1), ...]，每个子带高度 <= max_band_h（或无法再拆）。
+    """
+    if y1 - y0 + 1 <= max_band_h:
+        return [(y0, y1)]
+    band = smooth[y0:y1 + 1]
+    peak = float(band.max())
+    if peak <= 0:
+        return [(y0, y1)]
+    # 找带内所有局部峰值（比左右相邻行都强），并记录它们之间的低谷。
+    n = len(band)
+    peaks = []
+    for i in range(1, n - 1):
+        if band[i] >= band[i - 1] and band[i] >= band[i + 1] and band[i] > peak * 0.25:
+            peaks.append(i)
+    if not peaks:
+        return [(y0, y1)]
+    # 局部峰值聚类：相近的峰值（间距 < 8px）归为同一字幕行。
+    groups = []
+    cur = [peaks[0]]
+    for p in peaks[1:]:
+        if p - cur[-1] <= 8:
+            cur.append(p)
+        else:
+            groups.append(cur)
+            cur = [p]
+    groups.append(cur)
+    # 每个峰值簇对应一条字幕文字行，取其代表行（簇内最强）。
+    rep = []
+    for g in groups:
+        gi = max(g, key=lambda i: float(band[i]))
+        rep.append(gi)
+    rep.sort()
+    # 若只有一个字幕行且带过宽，说明是单条粗大文字被平滑扩散，取最强核心裁剪。
+    if len(rep) == 1:
+        mid = rep[0]
+        half = max_band_h // 2
+        a2 = max(0, mid - half)
+        b2 = min(n - 1, a2 + max_band_h - 1)
+        return [(y0 + a2, y0 + b2)]
+    # 多字幕行：每行周围取 max_band_h 高度的紧凑子带。
+    out = []
+    for mi in rep:
+        a = max(0, mi - max_band_h // 2)
+        b = min(n - 1, a + max_band_h - 1)
+        out.append((y0 + a, y0 + b))
+    # 合并重叠或极接近（间距 < 10px）的子带，避免同一条字幕被切成两段。
+    out.sort()
+    merged = []
+    cur = list(out[0])
+    for (a, b) in out[1:]:
+        if a <= cur[1] + 10:
+            cur[1] = max(cur[1], b)
+        else:
+            merged.append((cur[0], cur[1]))
+            cur = [a, b]
+    merged.append((cur[0], cur[1]))
+    return merged
 
 
 def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int, int, int, int]]]:
@@ -1707,6 +1783,10 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int
         # 副字幕带（如只在视频后半段出现的高位对话字幕）score 会因"出现频率低"被
         # 重罚而偏低，直接用 score 阈值会漏掉它。上方画面场景噪声由引擎侧的
         # "下半区 sanity 过滤"剔除，这里只按文字簇强度保底，兼顾不漏打与不过度误检。
+        # 单个字幕带高度上限：超过该值视为"对话字幕在不同时间纵向浮动/多条字幕带
+        # 被 cluster_peak 跨帧取最大而压成宽带"，按 smooth 剖面峰值拆分为多个紧凑
+        # 子带，避免打码区域盖住半屏（用户反馈的核心问题）。
+        max_band_h = max(18, int(height * 0.09))
         regions = []
         seen_bands = []
         for score, val, y0, y1, h, pr, dynamism in candidates:
@@ -1715,39 +1795,46 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int
             # 退出，漏掉后面 val 更高但 score 低的副字幕带。
             if val < best_val * SUBTITLE_MASK_MULTI_RELATIVE:
                 continue
-            # 与已选区域纵向重叠的横带合并（同一字幕带可能被切成多段）
-            overlap = False
-            for (ry0, ry1) in seen_bands:
-                if y0 <= ry1 and ry0 <= y1:
-                    overlap = True
-                    break
-            if overlap:
-                continue
-
-            # 上下扩展余量（向下更多，覆盖描边/换行/下延），确保 delogo 完整补平。
-            # 字幕文字在不同帧的纵向位置会上下浮动（同一字幕带可能跨多帧偏移），
-            # 因此余量要足够大，否则会漏掉浮出检测带的文字行。
-            # 但也要设置上限，避免检测带本身偏高时余量叠加把区域撑得过大、误伤画面。
-            up = min(90, max(24, int(h * 0.55)))
-            down = min(100, max(28, int(h * 0.65)))
-            ey0 = max(0, y0 - up)
-            ey1 = min(height - 1, y1 + down)
-
-            # 横向范围
-            col = color_acc[ey0:ey1 + 1, :].sum(axis=0)
-            col_peak = float(col.max())
-            if col_peak <= 1:
-                rx0, rw = 0, width
+            # 过高横带：先按文字簇峰值剖面拆分出多个紧凑子带（贴合每处字幕位置），
+            # 每个子带再独立计算横向范围与余量，区域总面积大幅下降且不漏字幕。
+            if h > max_band_h:
+                sub_bands = _split_tall_band(y0, y1, smooth, height, max_band_h)
             else:
-                cols = np.where(col > col_peak * 0.1)[0]
-                if cols.size == 0:
+                sub_bands = [(y0, y1)]
+            for (sy0, sy1) in sub_bands:
+                sh = sy1 - sy0 + 1
+                # 与已选区域纵向重叠的横带合并（同一字幕带可能被切成多段）
+                overlap = False
+                for (ry0, ry1) in seen_bands:
+                    if sy0 <= ry1 and ry0 <= sy1:
+                        overlap = True
+                        break
+                if overlap:
+                    continue
+
+                # 上下扩展余量（向下略多，覆盖描边/换行/下延），确保 delogo 完整补平。
+                # 子带已紧贴字幕文字，余量仅需覆盖描边/换行，不宜过大，否则区域被
+                # 撑高 1.7~2.2 倍（"打码区域太大、盖住半屏"的根因之一），故收窄到 ~30%。
+                up = min(36, max(10, int(sh * 0.25)))
+                down = min(42, max(14, int(sh * 0.3)))
+                ey0 = max(0, sy0 - up)
+                ey1 = min(height - 1, sy1 + down)
+
+                # 横向范围
+                col = color_acc[ey0:ey1 + 1, :].sum(axis=0)
+                col_peak = float(col.max())
+                if col_peak <= 1:
                     rx0, rw = 0, width
                 else:
-                    cx0 = max(0, int(cols.min()) - 10)
-                    cx1 = min(width - 1, int(cols.max()) + 10)
-                    rx0, rw = cx0, (cx1 - cx0)
-            regions.append((rx0, ey0, rw, (ey1 - ey0)))
-            seen_bands.append((y0, y1))
+                    cols = np.where(col > col_peak * 0.1)[0]
+                    if cols.size == 0:
+                        rx0, rw = 0, width
+                    else:
+                        cx0 = max(0, int(cols.min()) - 10)
+                        cx1 = min(width - 1, int(cols.max()) + 10)
+                        rx0, rw = cx0, (cx1 - cx0)
+                regions.append((rx0, ey0, rw, (ey1 - ey0)))
+                seen_bands.append((sy0, sy1))
         if not regions:
             return None
         return regions
@@ -2472,7 +2559,7 @@ def build_subtitle_mask_filter(cfg: dict, enable: str) -> str:
         )
     if style == "blur":
         radius = int(cfg.get("blur_radius") or SUBTITLE_MASK_BLUR_RADIUS)
-        radius = max(2, min(64, radius))
+        radius = max(2, min(11, radius))  # boxblur chroma_param 上限 11
         return (
             f"[0:v]split[src][sub];"
             f"[sub]crop={w}:{h}:{x}:{y},boxblur={radius}:1[masked];"
@@ -2543,7 +2630,7 @@ def build_subtitle_mask_filter_multi(cfg: dict, windows: list[tuple],
     block = int(cfg.get("block") or SUBTITLE_MASK_BLOCK)
     block = max(2, min(64, block))
     radius = int(cfg.get("blur_radius") or SUBTITLE_MASK_BLUR_RADIUS)
-    radius = max(2, min(64, radius))
+    radius = max(2, min(11, radius))  # boxblur chroma_param 上限 11
     n = len(items)
     split = f"[0:v]split={n + 1}[base]" + "".join(f"[w{i}]" for i in range(n)) + ";"
     parts = []
@@ -2628,7 +2715,7 @@ def build_subtitle_mask_filter_multi_region(cfg: dict, regions: list[tuple],
     block = int(cfg.get("block") or SUBTITLE_MASK_BLOCK)
     block = max(2, min(64, block))
     radius = int(cfg.get("blur_radius") or SUBTITLE_MASK_BLUR_RADIUS)
-    radius = max(2, min(64, radius))
+    radius = max(2, min(11, radius))  # boxblur chroma_param 上限 11
     n = len(items)
     split = f"[0:v]split={n + 1}[base]" + "".join(f"[w{i}]" for i in range(n)) + ";"
     parts = []
