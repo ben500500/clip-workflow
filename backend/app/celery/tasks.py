@@ -526,6 +526,7 @@ def slice_task(
         subtitle_style = None
         subtitle_color = None
         subtitle_border_color = None
+        subtitle_bold = None
         if subtitle_config and subtitle_config.get("enabled"):
             srt_content = subtitle_config.get("srt") or ""
             if srt_content.strip():
@@ -549,6 +550,9 @@ def slice_task(
             bc = subtitle_config.get("border_color")
             if bc:
                 subtitle_border_color = str(bc)
+            bd = subtitle_config.get("bold")
+            if bd is not None:
+                subtitle_bold = int(bd)
 
         # 源字幕打码时间轴 SRT:后端已把 SRT 内容放进 subtitle_mask_config["srt"],
         # 这里写到本地文件并替换为文件路径,供引擎 --subtitle-mask 使用。
@@ -590,6 +594,7 @@ def slice_task(
                     subtitle_style=subtitle_style,
                     subtitle_color=subtitle_color,
                     subtitle_border_color=subtitle_border_color,
+                    subtitle_bold=subtitle_bold,
                     text_overlays_config=text_overlays_config,
                     dedupe_config=dedupe_config,
                     subtitle_mask_config=subtitle_mask_config,
@@ -616,6 +621,7 @@ def slice_task(
                     subtitle_style=subtitle_style,
                     subtitle_color=subtitle_color,
                     subtitle_border_color=subtitle_border_color,
+                    subtitle_bold=subtitle_bold,
                     text_overlays_config=text_overlays_config,
                     dedupe_config=dedupe_config,
                     subtitle_mask_config=subtitle_mask_config,

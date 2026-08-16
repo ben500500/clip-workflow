@@ -177,6 +177,8 @@ class SliceRunRequest(BaseModel):
     # 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；负值/调小让字幕文字更紧凑，调大则字距变宽）。
     # 不传用引擎默认值 SUBTITLE_SPACING。
     subtitle_spacing: Optional[int] = None
+    # 字幕字体粗细（ASS Bold：0=不加粗，-1 或 1=加粗，默认 0 不加粗）。加粗让字幕文字更醒目。
+    subtitle_bold: Optional[int] = None
     # 字幕对齐源字幕打码区域开关（默认 True 开启）：开启源字幕打码并检测到字幕区域时，
     # 把 ASR 字幕默认位置对齐到打码区域（与被打掉的源字幕位置重合）；关闭则用默认底边距。
     subtitle_align_mask: bool = True
@@ -643,6 +645,8 @@ def _with_subtitle_options(cfg: dict, data: SliceRunRequest) -> dict:
         cfg["font_ratio"] = round(float(data.subtitle_font_ratio), 4)
     if data.subtitle_spacing is not None:
         cfg["spacing"] = int(data.subtitle_spacing)
+    if data.subtitle_bold is not None:
+        cfg["bold"] = int(data.subtitle_bold)
     if data.subtitle_style:
         cfg["style"] = data.subtitle_style
     if data.subtitle_color:

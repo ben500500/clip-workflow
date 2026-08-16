@@ -47,6 +47,18 @@ export interface WechatDlImportInput {
   authorize_note?: string;
 }
 
+export interface WechatDlImportToProjectInput {
+  target: 'new' | 'existing';
+  project_name?: string;
+  project_id?: string;
+}
+
+export interface WechatDlImportToProjectResult {
+  project_id: string;
+  episode_id: string;
+  target: string;
+}
+
 export const wechatDlApi = {
   // ── 单链接导入 ──
   import: (data: WechatDlImportInput) =>
@@ -75,4 +87,8 @@ export const wechatDlApi = {
       mode: string;
       message: string;
     }>,
+
+  // ── 一键导入切片项目 ──
+  importToProject: (taskId: string, data: WechatDlImportToProjectInput) =>
+    client.post(`/wechat-dl/tasks/${taskId}/import-to-project`, data) as Promise<WechatDlImportToProjectResult>,
 };

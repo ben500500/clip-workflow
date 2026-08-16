@@ -153,6 +153,71 @@ def _serialize_task(t: WechatDownloadTask) -> dict:
     }
 
 
+# 默认分辨率取值：720p / 1080p
+DOWNLOAD_RESOLUTIONS = {"720p": "1280x720", "1080p": "1920x1080"}
+
+
+async def _read_default_download_resolution(db: AsyncSession) -> str:
+    """读取全局默认下载分辨率（system_config.default_download_resolution，默认 720p）。"""
+    from app.models.models import SystemConfig
+    try:
+        result = await db.execute(
+            select(SystemConfig).where(SystemConfig.key == "default_download_resolution")
+        )
+        cfg = result.scalar_one_or_none()
+        if cfg and cfg.value in DOWNLOAD_RESOLUTIONS:
+            return cfg.value
+    except Exception:
+        pass
+    return "720p"
+
+
+async def _apply_download_resolution(db: AsyncSession, local_path: str) -> None:
+    """按全局默认分辨率对本地视频做 ffmpeg 缩放。
+
+    读取 default_download_resolution（720p/1080p，默认 720p），若源视频分辨率
+    高于目标则缩放到目标；低于目标则保持原分辨率（不放大），避免画质损失。
+    只在 ffmpeg 可用时执行；失败不影响原视频（由调用方降级为原分辨率入库）。
+    """
+    import asyncio
+    resolution = await _read_default_download_resolution(db)
+    target = DOWNLOAD_RESOLUTIONS.get(resolution)
+    if not target:
+        return
+    if not os.path.isfile(local_path) or os.path.getsize(local_path) == 0:
+        return
+    tmp_path = local_path + ".res.mp4"
+    tw, th = target.split("x")
+    # 仅当源视频任一维超过目标时缩放到目标（保持宽高比，不放大原分辨率）
+    scale = f"scale=min(iw\,{tw}):min(ih\,{th}):force_original_aspect_ratio=decrease"
+    cmd = [
+        "ffmpeg", "-y", "-i", local_path,
+        "-vf", scale,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "copy", tmp_path,
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=1800)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise ImportError_("下载视频按默认分辨率缩放超时")
+    if proc.returncode != 0:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise ImportError_("下载视频按默认分辨率缩放失败")
+    # 缩放成功：用缩放后的文件替换原文件
+    os.replace(tmp_path, local_path)
+    logger.info("已按默认分辨率 %s 缩放下载视频 -> %s", resolution, target)
+
+
 # ───────────────────────────────
 # 下载编排（供 Celery 任务调用）
 # ───────────────────────────────
@@ -183,6 +248,15 @@ async def run_download_pipeline(task_id: uuid.UUID) -> dict:
                 total = await get_downloader().download_to_file(parsed.play_url, local_path)
             except DownloadError as e:
                 raise ImportError_(f"拉流下载失败: {e}")
+
+            # 按默认分辨率统一缩放：读取全局配置 default_download_resolution
+            # （720p/1080p，默认 720p），入库前用 ffmpeg 转码到目标分辨率。
+            try:
+                await _apply_download_resolution(db, local_path)
+            except ImportError_:
+                raise
+            except Exception as e:
+                logger.warning("下载视频按默认分辨率缩放失败，按原分辨率入库: %s", e)
 
             await _set_status(db, task, ST_UPLOADING, 80, "正在入库 MinIO...")
             project_id = await _ensure_project(db, task)

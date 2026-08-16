@@ -2,15 +2,17 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   Card, Form, Input, Button, InputNumber, Select, Switch, Space, Divider,
   Table, Tag, Progress, message, Alert, Typography, Modal, List, Spin, Tooltip, Slider,
+  ColorPicker, Checkbox,
 } from 'antd';
 import {
   PlayCircleOutlined, UploadOutlined, ReloadOutlined, StopOutlined,
-  DownloadOutlined, InboxOutlined, EyeOutlined, EditOutlined,
+  DownloadOutlined, InboxOutlined, EyeOutlined, EditOutlined, PlusOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import Dragger from 'antd/es/upload/Dragger';
 import { batchSliceApi, BatchSlice, BatchSliceItem, BatchSliceOutputItem } from '../api/batchSlice';
-import { sliceApi } from '../api/slice';
+import { sliceApi, type TextOverlayItem } from '../api/slice';
 import { formatDuration } from '../utils/format';
 
 const { Text, Title } = Typography;
@@ -47,12 +49,18 @@ interface SliceConfigState {
   vert2horiz_mode: 'fixed' | 'dynamic';
   vert2horiz_ratio: number;
   vert2horiz_output_size: string;
+  vert2horiz_detect_interval: number;
+  vert2horiz_smooth_window: number;
+  vert2horiz_min_step: number;
+  vert2horiz_face_margin: number;
   subtitle_enabled: boolean;
   subtitle_font_ratio: number;
   subtitle_spacing: number;
+  subtitle_bold: number;
   subtitle_style: 'default' | 'custom';
   subtitle_color: string;
   subtitle_border_color: string;
+  subtitle_align_mask: boolean;
   subtitle_mask_enabled: boolean;
   subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill';
   subtitle_mask_temporal: boolean;
@@ -61,6 +69,8 @@ interface SliceConfigState {
   subtitle_mask_width_ratio: number;
   subtitle_mask_height_ratio: number;
   subtitle_mask_bottom_ratio: number;
+  subtitle_mask_srt_offset: number;
+  dedupe_preset: string;
   text_overlay_enabled: boolean;
   text_overlays: { text: string; position: string; font_size: number; color: string; border_color?: string; vertical?: boolean }[];
   watermark_enabled: boolean;
@@ -87,12 +97,18 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   vert2horiz_mode: 'dynamic',
   vert2horiz_ratio: 0.5625,
   vert2horiz_output_size: '1280x720',
+  vert2horiz_detect_interval: 2,
+  vert2horiz_smooth_window: 15,
+  vert2horiz_min_step: 5,
+  vert2horiz_face_margin: 0.30,
   subtitle_enabled: true,
   subtitle_font_ratio: 0.30,
   subtitle_spacing: 0,
+  subtitle_bold: 0,
   subtitle_style: 'custom',
   subtitle_color: '#EDD736',
   subtitle_border_color: '#000000',
+  subtitle_align_mask: true,
   subtitle_mask_enabled: false,
   subtitle_mask_style: 'delogo',
   subtitle_mask_temporal: true,
@@ -101,6 +117,8 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   subtitle_mask_width_ratio: 0.9,
   subtitle_mask_height_ratio: 0.12,
   subtitle_mask_bottom_ratio: 0.02,
+  subtitle_mask_srt_offset: 0,
+  dedupe_preset: 'standard',
   text_overlay_enabled: true,
   text_overlays: [
     { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000' },
@@ -181,6 +199,8 @@ const BatchSlicePage: React.FC = () => {
   const [trimTarget, setTrimTarget] = useState<FlattenOutput | null>(null);
   const [trimRange, setTrimRange] = useState<[number, number]>([0, 0]);
   const [trimming, setTrimming] = useState(false);
+  // 固定文字角标编辑器
+  const [textOverlayModalOpen, setTextOverlayModalOpen] = useState(false);
   const trimVideoRef = React.useRef<HTMLVideoElement>(null);
 
   const fetchBatches = useCallback(async () => {
@@ -303,8 +323,31 @@ const BatchSlicePage: React.FC = () => {
         },
         // text_overlays 仅开启时透传
         text_overlays: sliceConfig.text_overlay_enabled ? sliceConfig.text_overlays : [],
+        // 去重档位（轻/标准/重，仅 dedupe 模式生效）
+        dedupe_config: { preset: sliceConfig.dedupe_preset },
       },
     };
+  };
+
+  const addTextOverlay = () => {
+    setSliceConfig((prev) => ({
+      ...prev,
+      text_overlays: [...prev.text_overlays, { text: '', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000', vertical: false, offset: 10 }],
+    }));
+  };
+
+  const updateTextOverlay = (index: number, patch: Partial<TextOverlayItem>) => {
+    setSliceConfig((prev) => ({
+      ...prev,
+      text_overlays: prev.text_overlays.map((t, i) => (i === index ? { ...t, ...patch } : t)),
+    }));
+  };
+
+  const removeTextOverlay = (index: number) => {
+    setSliceConfig((prev) => ({
+      ...prev,
+      text_overlays: prev.text_overlays.filter((_, i) => i !== index),
+    }));
   };
 
   const handleRun = async () => {
@@ -809,6 +852,60 @@ const BatchSlicePage: React.FC = () => {
                 />
               </>
             )}
+            {sliceConfig.vert2horiz_enabled && (
+              <>
+                <Text>检测间隔(s)</Text>
+                <InputNumber
+                  value={sliceConfig.vert2horiz_detect_interval}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, vert2horiz_detect_interval: v ?? 2 })}
+                  min={1}
+                  max={10}
+                  style={{ width: 70 }}
+                />
+                <Text>平滑窗口</Text>
+                <InputNumber
+                  value={sliceConfig.vert2horiz_smooth_window}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, vert2horiz_smooth_window: v ?? 15 })}
+                  min={3}
+                  max={30}
+                  style={{ width: 70 }}
+                />
+                <Text>最小步长</Text>
+                <InputNumber
+                  value={sliceConfig.vert2horiz_min_step}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, vert2horiz_min_step: v ?? 5 })}
+                  min={1}
+                  max={30}
+                  style={{ width: 70 }}
+                />
+                <Text>人脸边距</Text>
+                <InputNumber
+                  value={sliceConfig.vert2horiz_face_margin}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, vert2horiz_face_margin: v ?? 0.30 })}
+                  step={0.05}
+                  min={0}
+                  max={1}
+                  style={{ width: 70 }}
+                />
+              </>
+            )}
+          </Space>
+
+          <Space size="large" align="center">
+            <Text>去重档位：</Text>
+            <Select
+              value={sliceConfig.dedupe_preset}
+              onChange={(v) => setSliceConfig({ ...sliceConfig, dedupe_preset: v })}
+              style={{ width: 110 }}
+              options={[
+                { value: 'light', label: '轻' },
+                { value: 'standard', label: '标准' },
+                { value: 'heavy', label: '重' },
+              ]}
+            />
+            <Tooltip title="去重档位（轻/标准/重），用于降低平台查重风险。仅 dedupe 切片模式生效。">
+              <Tag color="blue">去重档位</Tag>
+            </Tooltip>
           </Space>
 
           <Space size="large">
@@ -836,6 +933,17 @@ const BatchSlicePage: React.FC = () => {
                   max={20}
                   style={{ width: 70 }}
                 />
+                <Text>粗细</Text>
+                <Select
+                  value={sliceConfig.subtitle_bold}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_bold: v })}
+                  style={{ width: 90 }}
+                  options={[
+                    { value: 0, label: '常规' },
+                    { value: -1, label: '加粗' },
+                    { value: 1, label: '粗体' },
+                  ]}
+                />
                 <Select
                   value={sliceConfig.subtitle_style}
                   onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_style: v })}
@@ -861,6 +969,11 @@ const BatchSlicePage: React.FC = () => {
                     />
                   </>
                 )}
+                <Text>对齐打码区</Text>
+                <Switch
+                  checked={sliceConfig.subtitle_align_mask}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_align_mask: v })}
+                />
               </>
             )}
           </Space>
@@ -902,6 +1015,44 @@ const BatchSlicePage: React.FC = () => {
                 ]}
               />
             )}
+            {sliceConfig.subtitle_mask_enabled && (
+              <>
+                <Text>宽占比</Text>
+                <InputNumber
+                  value={sliceConfig.subtitle_mask_width_ratio}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_mask_width_ratio: v ?? 0.9 })}
+                  step={0.05}
+                  min={0.1}
+                  max={1}
+                  style={{ width: 70 }}
+                />
+                <Text>高占比</Text>
+                <InputNumber
+                  value={sliceConfig.subtitle_mask_height_ratio}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_mask_height_ratio: v ?? 0.12 })}
+                  step={0.02}
+                  min={0.02}
+                  max={0.5}
+                  style={{ width: 70 }}
+                />
+                <Text>底占比</Text>
+                <InputNumber
+                  value={sliceConfig.subtitle_mask_bottom_ratio}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_mask_bottom_ratio: v ?? 0.02 })}
+                  step={0.02}
+                  min={0}
+                  max={0.3}
+                  style={{ width: 70 }}
+                />
+                <Text>时间偏移(s)</Text>
+                <InputNumber
+                  value={sliceConfig.subtitle_mask_srt_offset}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_mask_srt_offset: v ?? 0 })}
+                  step={0.1}
+                  style={{ width: 80 }}
+                />
+              </>
+            )}
           </Space>
 
           <Space size="large">
@@ -911,9 +1062,10 @@ const BatchSlicePage: React.FC = () => {
               onChange={(v) => setSliceConfig({ ...sliceConfig, text_overlay_enabled: v })}
             />
             {sliceConfig.text_overlay_enabled && (
-              <Tooltip title={`当前默认 ${sliceConfig.text_overlays.length} 条固定文字：右上「热门短剧」+ 左下「免费热门短剧」+ 最左竖排「本故事纯属虚构」`}>
+              <>
                 <Tag>已启用 {sliceConfig.text_overlays.length} 条文字</Tag>
-              </Tooltip>
+                <Button size="small" icon={<EditOutlined />} onClick={() => setTextOverlayModalOpen(true)}>设置文字</Button>
+              </>
             )}
           </Space>
 
@@ -939,6 +1091,23 @@ const BatchSlicePage: React.FC = () => {
                     { value: 'bottom', label: '底部' },
                     { value: 'top', label: '顶部' },
                   ]}
+                />
+                <Text>字号</Text>
+                <InputNumber
+                  value={sliceConfig.watermark_font_size}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, watermark_font_size: v ?? 28 })}
+                  min={12}
+                  max={120}
+                  style={{ width: 70 }}
+                />
+                <Text>透明度</Text>
+                <InputNumber
+                  value={sliceConfig.watermark_opacity}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, watermark_opacity: v ?? 0.5 })}
+                  step={0.05}
+                  min={0.05}
+                  max={1}
+                  style={{ width: 70 }}
                 />
               </>
             )}
@@ -1039,6 +1208,77 @@ const BatchSlicePage: React.FC = () => {
       {renderOutputModal()}
       {renderPreviewModal()}
       {renderTrimModal()}
+      <Modal
+        title="固定文字设置"
+        open={textOverlayModalOpen}
+        onCancel={() => setTextOverlayModalOpen(false)}
+        footer={(<Button type="primary" onClick={() => setTextOverlayModalOpen(false)}>完成</Button>)}
+        width={620}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Space wrap align="center" size={8}>
+            <Button size="small" icon={<PlusOutlined />} onClick={addTextOverlay}>添加固定文字</Button>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              在视频指定位置叠加固定文字，全程覆盖。文字内容、位置、字号、颜色、描边、竖排均可自定义。
+            </Text>
+          </Space>
+          {sliceConfig.text_overlays.length > 0 ? (
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              {sliceConfig.text_overlays.map((t, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', border: '1px solid #f0f0f0', borderRadius: 6, padding: 8 }}>
+                  <Input
+                    size="small"
+                    placeholder="文字内容"
+                    value={t.text}
+                    onChange={(e) => updateTextOverlay(i, { text: e.target.value })}
+                    style={{ width: 150 }}
+                  />
+                  <Select
+                    size="small"
+                    style={{ width: 95 }}
+                    value={t.position}
+                    onChange={(v) => updateTextOverlay(i, { position: v })}
+                    options={POSITIONS.map((p) => ({ value: p, label: p }))}
+                  />
+                  <Tooltip title="是否竖排（最左侧常用，垂直居中）">
+                    <Checkbox
+                      checked={!!t.vertical}
+                      onChange={(e) => updateTextOverlay(i, { vertical: e.target.checked })}
+                    >竖排</Checkbox>
+                  </Tooltip>
+                  <InputNumber
+                    size="small"
+                    min={12}
+                    max={200}
+                    placeholder="字号"
+                    value={t.font_size}
+                    onChange={(v) => updateTextOverlay(i, { font_size: v ?? undefined })}
+                    style={{ width: 80 }}
+                    addonAfter="px"
+                  />
+                  <Text strong style={{ fontSize: 12 }}>字色</Text>
+                  <ColorPicker
+                    size="small"
+                    value={t.color || '#FFFFFF'}
+                    onChange={(c) => updateTextOverlay(i, { color: c.toHexString() })}
+                    showText
+                  />
+                  <Text strong style={{ fontSize: 12 }}>描边</Text>
+                  <ColorPicker
+                    size="small"
+                    value={t.border_color || '#000000'}
+                    onChange={(c) => updateTextOverlay(i, { border_color: c.toHexString() })}
+                    showText
+                  />
+                  <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => removeTextOverlay(i)} />
+                </div>
+              ))}
+            </Space>
+          ) : (
+            <Alert type="info" showIcon message="暂无固定文字，点击上方「添加固定文字」新增。" />
+          )}
+        </Space>
+      </Modal>
     </div>
   );
 };

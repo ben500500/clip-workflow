@@ -1,13 +1,18 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Card, Tabs, Form, Input, Select, Button, Table, Tag, message, Space,
-  Typography, Progress, Modal, Alert,
+  Typography, Progress, Modal, Alert, Radio,
 } from 'antd';
 import {
   ImportOutlined, DownloadOutlined,
   LinkOutlined, ReloadOutlined, ScissorOutlined,
+  EyeOutlined, ExportOutlined, PlusOutlined, FolderOpenOutlined,
+  VideoCameraOutlined,
 } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { wechatDlApi, WechatDlTask } from '../api/wechatDl';
+import { projectApi } from '../api/projects';
+import { configApi } from '../api/config';
 import { formatDateTime } from '../utils/format';
 
 const { Title, Text } = Typography;
@@ -28,6 +33,28 @@ const ImportPanel: React.FC = () => {
   const [form] = Form.useForm();
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<'single' | 'batch'>('single');
+  // 默认下载分辨率（720p/1080p，默认 720p）：入库前统一缩放
+  const [dlResolution, setDlResolution] = useState<string>('720p');
+  const [dlResolutionSaving, setDlResolutionSaving] = useState(false);
+
+  // 加载全局默认下载分辨率配置
+  useEffect(() => {
+    configApi.getAll().then((cfgs) => {
+      const cfg = cfgs.find((c) => c.key === 'default_download_resolution');
+      if (cfg && (cfg.value === '720p' || cfg.value === '1080p')) {
+        setDlResolution(String(cfg.value));
+      }
+    }).catch(() => undefined);
+  }, []);
+
+  const handleResolutionChange = (v: string) => {
+    setDlResolution(v);
+    setDlResolutionSaving(true);
+    configApi.update('default_download_resolution', v)
+      .then(() => message.success(`默认分辨率已设为 ${v}`))
+      .catch(() => { setDlResolution('720p'); message.error('保存默认分辨率失败'); })
+      .finally(() => setDlResolutionSaving(false));
+  };
 
   const handleImport = async () => {
     const values = await form.validateFields();
@@ -95,6 +122,23 @@ const ImportPanel: React.FC = () => {
         </Button>
       </Space>
 
+      <Space align="center" size={8} style={{ marginBottom: 16 }}>
+        <Text strong style={{ fontSize: 13 }}>默认分辨率</Text>
+        <Select
+          value={dlResolution}
+          onChange={handleResolutionChange}
+          loading={dlResolutionSaving}
+          style={{ width: 120 }}
+          options={[
+            { value: '720p', label: '720p' },
+            { value: '1080p', label: '1080p' },
+          ]}
+        />
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          下载入库时按所选分辨率统一缩放（默认 720p），更省存储且适配主流清晰度
+        </Text>
+      </Space>
+
       <Form
         form={form}
         layout="vertical"
@@ -136,9 +180,23 @@ const ImportPanel: React.FC = () => {
 
 // ========== 下载任务 Tab ==========
 const TaskListPanel: React.FC = () => {
+  const navigate = useNavigate();
   const [tasks, setTasks] = useState<WechatDlTask[]>([]);
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
+
+  // 查看/下载结果 modal
+  const [previewTask, setPreviewTask] = useState<WechatDlTask | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  // 一键导入切片 modal
+  const [importTask, setImportTask] = useState<WechatDlTask | null>(null);
+  const [importTarget, setImportTarget] = useState<'new' | 'existing'>('new');
+  const [importName, setImportName] = useState('');
+  const [importProjectId, setImportProjectId] = useState<string | undefined>();
+  const [projectOptions, setProjectOptions] = useState<{ value: string; label: string }[]>([]);
+  const [importBusy, setImportBusy] = useState(false);
 
   const loadTasks = useCallback(() => {
     setLoading(true);
@@ -191,6 +249,73 @@ const TaskListPanel: React.FC = () => {
     return () => { sockets.forEach((ws) => { try { ws.close(); } catch { /* ignore */ } }); };
   }, [tasks.map((t) => t.id).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const canImport = (t: WechatDlTask) => t.status === 'completed' && !!t.episode_id;
+
+  const openPreview = async (t: WechatDlTask) => {
+    setPreviewTask(t);
+    setPreviewUrl(null);
+    setPreviewLoading(true);
+    try {
+      const res = await projectApi.getVideoUrl(t.episode_id as string);
+      setPreviewUrl(res.url);
+    } catch {
+      message.error('获取预览地址失败');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const openImport = async (t: WechatDlTask) => {
+    setImportTask(t);
+    setImportTarget('new');
+    const meta = (t.video_meta || {}) as Record<string, unknown>;
+    setImportName(typeof meta.title === 'string' && meta.title ? meta.title : '');
+    setImportProjectId(undefined);
+    setImportBusy(false);
+    try {
+      const res = await projectApi.getList({ page_size: 200 });
+      setProjectOptions((res.items || []).map((p) => ({ value: p.id, label: p.name })));
+    } catch {
+      setProjectOptions([]);
+    }
+  };
+
+  const handleImportConfirm = async () => {
+    if (!importTask) return;
+    if (importTarget === 'new' && !importName.trim()) {
+      message.warning('请输入切片项目名称');
+      return;
+    }
+    if (importTarget === 'existing' && !importProjectId) {
+      message.warning('请选择目标切片项目');
+      return;
+    }
+    setImportBusy(true);
+    try {
+      const res = await wechatDlApi.importToProject(importTask.id, {
+        target: importTarget,
+        project_name: importTarget === 'new' ? importName.trim() : undefined,
+        project_id: importTarget === 'existing' ? importProjectId : undefined,
+      });
+      message.success('已导入切片项目，正在跳转…');
+      setImportTask(null);
+      navigate(`/projects/${res.project_id}`);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '导入失败');
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  const metaDuration = (t: WechatDlTask): string => {
+    const meta = (t.video_meta || {}) as Record<string, unknown>;
+    const d = typeof meta.duration === 'number' ? meta.duration : null;
+    if (d == null || !isFinite(d)) return '-';
+    const m = Math.floor(d / 60);
+    const s = Math.floor(d % 60);
+    return `${m}:${String(s).padStart(2, '0')}`;
+  };
+
   const columns = [
     { title: '来源链接', dataIndex: 'source_url', key: 'source_url', ellipsis: true, render: (v: string) => <Text style={{ fontSize: 12 }}>{v}</Text> },
     {
@@ -208,11 +333,38 @@ const TaskListPanel: React.FC = () => {
       },
     },
     {
+      title: '结果', dataIndex: 'video_meta', key: 'result', width: 200, ellipsis: true,
+      render: (_: unknown, r: WechatDlTask) => {
+        if (!canImport(r)) return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+        const meta = (r.video_meta || {}) as Record<string, unknown>;
+        const title = typeof meta.title === 'string' && meta.title ? meta.title : '已下载素材';
+        return (
+          <Space size={4}>
+            <VideoCameraOutlined style={{ color: '#7b6ed4' }} />
+            <span style={{ fontSize: 12 }}>{title}</span>
+            <Text type="secondary" style={{ fontSize: 12 }}>{metaDuration(r)}</Text>
+          </Space>
+        );
+      },
+    },
+    {
       title: '进度消息', dataIndex: 'message', key: 'message', ellipsis: true,
       render: (v: string | null, r: WechatDlTask) =>
         r.status === 'failed'
           ? <Text type="danger" style={{ fontSize: 12 }}>{r.error_message || v}</Text>
           : <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text>,
+    },
+    {
+      title: '操作', dataIndex: 'action', key: 'action', width: 190, fixed: 'right' as const,
+      render: (_: unknown, r: WechatDlTask) => {
+        if (!canImport(r)) return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+        return (
+          <Space size={4}>
+            <Button size="small" icon={<EyeOutlined />} onClick={() => openPreview(r)}>查看</Button>
+            <Button size="small" type="primary" icon={<ExportOutlined />} onClick={() => openImport(r)}>导入切片</Button>
+          </Space>
+        );
+      },
     },
     {
       title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170,
@@ -262,8 +414,101 @@ const TaskListPanel: React.FC = () => {
         columns={columns}
         dataSource={tasks}
         pagination={{ pageSize: 20 }}
-        scroll={{ x: 1000 }}
+        scroll={{ x: 1200 }}
       />
+
+      {/* 查看 / 下载结果 */}
+      <Modal
+        open={!!previewTask}
+        title="查看下载结果"
+        footer={null}
+        onCancel={() => setPreviewTask(null)}
+        width={720}
+        destroyOnClose
+      >
+        {previewTask && (
+          <div>
+            <p style={{ marginBottom: 8 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>{previewTask.source_url}</Text>
+            </p>
+            {previewLoading && <Progress percent={30} status="active" />}
+            {!previewLoading && previewUrl && (
+              <video controls src={previewUrl} style={{ width: '100%', borderRadius: 8, background: '#000' }} />
+            )}
+            {!previewLoading && !previewUrl && <Text type="danger">无法获取视频地址</Text>}
+            {previewUrl && (
+              <div style={{ marginTop: 12 }}>
+                <Button icon={<DownloadOutlined />} href={previewUrl} target="_blank" rel="noreferrer">
+                  下载视频（新标签页中保存）
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* 一键导入切片 */}
+      <Modal
+        open={!!importTask}
+        title="一键导入切片"
+        okText="确认导入"
+        cancelText="取消"
+        confirmLoading={importBusy}
+        onOk={handleImportConfirm}
+        onCancel={() => setImportTask(null)}
+        destroyOnClose
+      >
+        {importTask && (
+          <div>
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="将把该下载任务的素材归入切片项目"
+              description={`来源：${(importTask.video_meta as Record<string, unknown>)?.title || importTask.source_url}`}
+            />
+            <Radio.Group
+              value={importTarget}
+              onChange={(e) => setImportTarget(e.target.value)}
+              style={{ marginBottom: 16 }}
+            >
+              <Radio.Button value="new"><PlusOutlined /> 新建切片项目</Radio.Button>
+              <Radio.Button value="existing"><FolderOpenOutlined /> 加入已有切片项目</Radio.Button>
+            </Radio.Group>
+
+            {importTarget === 'new' ? (
+              <Form layout="vertical">
+                <Form.Item label="切片项目名称" required>
+                  <Input
+                    placeholder="请输入切片项目名称"
+                    value={importName}
+                    onChange={(e) => setImportName(e.target.value)}
+                    maxLength={255}
+                  />
+                </Form.Item>
+              </Form>
+            ) : (
+              <Form layout="vertical">
+                <Form.Item label="选择切片项目" required>
+                  <Select
+                    showSearch
+                    placeholder="搜索并选择已有切片项目"
+                    value={importProjectId}
+                    onChange={setImportProjectId}
+                    options={projectOptions}
+                    filterOption={(input, option) =>
+                      (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                    }
+                  />
+                </Form.Item>
+              </Form>
+            )}
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              导入后页面将自动跳转到对应的切片项目。
+            </Text>
+          </div>
+        )}
+      </Modal>
     </Card>
   );
 };
