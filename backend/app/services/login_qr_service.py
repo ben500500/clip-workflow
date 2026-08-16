@@ -54,8 +54,10 @@ return raw
 """
 
 
-def _redis() -> aioredis.Redis:
-    return aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+async def _redis() -> aioredis.Redis:
+    """获取共享 Redis 连接（复用 redis_stream 连接池）。"""
+    from app.services.redis_stream import get_redis
+    return await get_redis()
 
 
 async def issue_claim(account_id, operator_id, qr_key: str, ttl: int = CLAIM_TTL) -> str:
@@ -69,24 +71,18 @@ async def issue_claim(account_id, operator_id, qr_key: str, ttl: int = CLAIM_TTL
         "exp": int(time.time()) + ttl,
         "issued_at": int(time.time()),
     }
-    r = _redis()
-    try:
-        await r.setex(f"{CLAIM_PREFIX}{token}", ttl, json.dumps(payload))
-    finally:
-        await r.close()
+    r = await _redis()
+    await r.setex(f"{CLAIM_PREFIX}{token}", ttl, json.dumps(payload))
     return token
 
 
 async def verify_claim_token(token: str) -> Optional[dict]:
     """原子领取：校验 token 有效（未过期）并单次消费，返回凭据（防重放）。"""
-    r = _redis()
-    try:
-        raw = await r.eval(CLAIM_LUA, 1, f"{CLAIM_PREFIX}{token}", int(time.time()))
-        if not raw:
-            return None
-        return json.loads(raw)
-    finally:
-        await r.close()
+    r = await _redis()
+    raw = await r.eval(CLAIM_LUA, 1, f"{CLAIM_PREFIX}{token}", int(time.time()))
+    if not raw:
+        return None
+    return json.loads(raw)
 
 
 async def capture_login_qr(account_id, port: int, profile_dir: Optional[str] = None,
@@ -194,25 +190,19 @@ async def set_login_state(account_id, state: str, extra: Optional[dict] = None) 
 
     失效仅置 NEED_LOGIN（进独立扫码队列），不阻塞其他 operator（主题1 ④）。
     """
-    r = _redis()
-    try:
-        key = f"{QR_STATE_PREFIX}{account_id}"
-        mapping = {"state": state, "updated_at": str(int(time.time()))}
-        if extra:
-            mapping.update({k: str(v) for k, v in extra.items()})
-        await r.hset(key, mapping=mapping)
-        await r.expire(key, LOGIN_HEARTBEAT_TTL * 3)  # 状态保留 90min
-    finally:
-        await r.close()
+    r = await _redis()
+    key = f"{QR_STATE_PREFIX}{account_id}"
+    mapping = {"state": state, "updated_at": str(int(time.time()))}
+    if extra:
+        mapping.update({k: str(v) for k, v in extra.items()})
+    await r.hset(key, mapping=mapping)
+    await r.expire(key, LOGIN_HEARTBEAT_TTL * 3)  # 状态保留 90min
 
 
 async def get_login_state(account_id) -> Optional[dict]:
-    r = _redis()
-    try:
-        raw = await r.hgetall(f"{QR_STATE_PREFIX}{account_id}")
-        return raw or None
-    finally:
-        await r.close()
+    r = await _redis()
+    raw = await r.hgetall(f"{QR_STATE_PREFIX}{account_id}")
+    return raw or None
 
 
 async def check_login_status_via_cdp(account_id, port: int, host: Optional[str] = None) -> str:

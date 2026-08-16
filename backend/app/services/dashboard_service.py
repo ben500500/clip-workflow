@@ -5,6 +5,7 @@ Provides overview statistics, video rankings, funnel data, and trend analysis
 for the short drama operations dashboard.
 """
 
+import json
 import logging
 import uuid
 from datetime import date, datetime, timedelta
@@ -24,8 +25,127 @@ from app.models.models import (
 
 logger = logging.getLogger(__name__)
 
+# ──────────────────────────────────────────────
+# 看板聚合缓存（Redis TTL + 失败降级快照）
+#
+# 看板各聚合函数为全表扫描的 SUM/AVG 聚合，业务量翻倍时首当其冲。
+# 引入 Redis 短 TTL 缓存：命中直接返回，避免逐请求重算；
+# Redis 不可用或查询失败时降级返回上次缓存快照（若有），保证可读性。
+# ──────────────────────────────────────────────
+
+# 缓存前缀与 TTL
+DASHBOARD_CACHE_PREFIX = "dashboard:agg:"
+DASHBOARD_CACHE_TTL = 30  # 秒，业务可接受的最短新鲜度
+
+
+def _cache_key(name: str, **params) -> str:
+    """生成聚合结果缓存 key（按参数维度隔离）。"""
+    parts = [name]
+    for k, v in params.items():
+        if v is None:
+            continue
+        parts.append(f"{k}={v}")
+    return f"{DASHBOARD_CACHE_PREFIX}{':'.join(parts)}"
+
+
+async def _get_cached_agg(key: str):
+    """读取聚合缓存；无缓存/Redis 异常时返回 None。"""
+    try:
+        from app.services.redis_stream import get_redis
+        redis = await get_redis()
+        raw = await redis.get(key)
+        if raw is None:
+            return None
+        return json.loads(raw)
+    except Exception as e:  # noqa: BLE001 - 缓存失败不影响主查询
+        logger.warning("读取看板缓存失败(key=%s): %s", key, e)
+        return None
+
+
+async def _set_cached_agg(key: str, data) -> None:
+    """写入聚合缓存（带 TTL）；失败仅告警，不影响主流程。
+
+    同时写入一份"上次成功快照"（长 TTL），供 DB 故障时降级兜底。
+    """
+    try:
+        from app.services.redis_stream import get_redis
+        redis = await get_redis()
+        payload = json.dumps(data, ensure_ascii=False)
+        await redis.setex(key, DASHBOARD_CACHE_TTL, payload)
+        # 降级快照：长 TTL（1 小时），DB 故障时仍可返回上次成功数据
+        await redis.setex(f"{key}:snapshot", 3600, payload)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("写入看板缓存失败(key=%s): %s", key, e)
+
+
+async def _get_cached_agg(key: str):
+    """读取聚合缓存；无缓存/Redis 异常时返回 None。"""
+    try:
+        from app.services.redis_stream import get_redis
+        redis = await get_redis()
+        raw = await redis.get(key)
+        if raw is None:
+            return None
+        return json.loads(raw)
+    except Exception as e:  # noqa: BLE001 - 缓存失败不影响主查询
+        logger.warning("读取看板缓存失败(key=%s): %s", key, e)
+        return None
+
+
+async def _get_snapshot_agg(key: str):
+    """读取上次成功快照（DB 故障降级用）；无快照时返回 None。"""
+    try:
+        from app.services.redis_stream import get_redis
+        redis = await get_redis()
+        raw = await redis.get(f"{key}:snapshot")
+        if raw is None:
+            return None
+        return json.loads(raw)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("读取看板降级快照失败(key=%s): %s", key, e)
+        return None
+
+
+async def _with_cache(name: str, db, params: dict, compute):
+    """通用缓存包装：先读缓存，未命中则计算并回写，失败降级返回快照。
+
+    compute 为 async 计算函数（返回可 JSON 序列化结果）。
+    当 DB 计算抛错时，依次降级：短期缓存 → 上次成功快照 → 抛错（无任何可用数据）。
+    """
+    key = _cache_key(name, **params)
+    cached = await _get_cached_agg(key)
+    if cached is not None:
+        return cached
+    try:
+        result = await compute()
+        await _set_cached_agg(key, result)
+        return result
+    except Exception as e:  # noqa: BLE001
+        logger.error("看板聚合计算失败(name=%s): %s", name, e)
+        # 降级：先返回短期缓存快照，再返回上次成功快照，避免直接 500
+        if cached is not None:
+            return cached
+        snapshot = await _get_snapshot_agg(key)
+        if snapshot is not None:
+            return snapshot
+        raise
+
 
 async def get_overview(
+    db: AsyncSession,
+    account_id: Optional[uuid.UUID] = None,
+    target_date: Optional[date] = None,
+) -> dict:
+    """Overview 聚合（带 Redis TTL 缓存 + 失败降级快照）。"""
+    return await _with_cache(
+        "overview",
+        db,
+        {"account": account_id, "date": target_date},
+        lambda: _compute_overview(db, account_id, target_date),
+    )
+
+
+async def _compute_overview(
     db: AsyncSession,
     account_id: Optional[uuid.UUID] = None,
     target_date: Optional[date] = None,
@@ -181,6 +301,22 @@ async def get_funnel(
     account_id: Optional[uuid.UUID] = None,
     target_date: Optional[date] = None,
 ) -> dict:
+    """Funnel 聚合（带 Redis TTL 缓存 + 失败降级快照）。"""
+    if target_date is None:
+        target_date = date.today()
+    return await _with_cache(
+        "funnel",
+        db,
+        {"account": account_id, "date": target_date},
+        lambda: _compute_funnel(db, account_id, target_date),
+    )
+
+
+async def _compute_funnel(
+    db: AsyncSession,
+    account_id: Optional[uuid.UUID] = None,
+    target_date: Optional[date] = None,
+) -> dict:
     """
     Get funnel data: play -> jump -> mini_uv -> ad_impression -> revenue.
 
@@ -280,6 +416,25 @@ async def get_funnel(
 
 
 async def get_trend(
+    db: AsyncSession,
+    account_id: Optional[uuid.UUID] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> list:
+    """趋势聚合（带 Redis TTL 缓存 + 失败降级快照）。"""
+    if end_date is None:
+        end_date = date.today()
+    if start_date is None:
+        start_date = end_date - timedelta(days=29)  # Default 30 days
+    return await _with_cache(
+        "trend",
+        db,
+        {"account": account_id, "start": start_date, "end": end_date},
+        lambda: _compute_trend(db, account_id, start_date, end_date),
+    )
+
+
+async def _compute_trend(
     db: AsyncSession,
     account_id: Optional[uuid.UUID] = None,
     start_date: Optional[date] = None,

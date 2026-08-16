@@ -23,38 +23,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class ConnectionManager:
-    """Manage WebSocket connections for progress updates."""
-
-    def __init__(self):
-        self.active_connections: dict[str, list[WebSocket]] = {}
-
-    async def connect(self, task_id: str, websocket: WebSocket):
-        await websocket.accept()
-        if task_id not in self.active_connections:
-            self.active_connections[task_id] = []
-        self.active_connections[task_id].append(websocket)
-
-    def disconnect(self, task_id: str, websocket: WebSocket):
-        if task_id in self.active_connections:
-            self.active_connections[task_id].remove(websocket)
-            if not self.active_connections[task_id]:
-                del self.active_connections[task_id]
-
-    async def send_progress(self, task_id: str, progress: float, message: str = ""):
-        if task_id not in self.active_connections:
-            return
-        data = json.dumps({"progress": progress, "message": message})
-        for ws in self.active_connections[task_id]:
-            try:
-                await ws.send_text(data)
-            except Exception:
-                pass
-
-
-manager = ConnectionManager()
-
-
 # ──────────────────────────────────────────────
 # 种子用户配置
 # ──────────────────────────────────────────────
@@ -175,19 +143,6 @@ else:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-
-@app.websocket("/ws/progress/{task_id}")
-async def websocket_progress(websocket: WebSocket, task_id: str):
-    """WebSocket endpoint for real-time task progress updates."""
-    await manager.connect(task_id, websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        manager.disconnect(task_id, websocket)
-    except Exception:
-        manager.disconnect(task_id, websocket)
 
 
 @app.websocket("/ws/wechat-dl/{task_id}")

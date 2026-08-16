@@ -1330,7 +1330,7 @@ def _release_confirm_lock(lock_key: str, acquired: bool) -> None:
             try:
                 await _rd.delete(lock_key)
             finally:
-                await _rd.close()
+                pass  # 共享连接池，由进程生命周期统一管理，无需 close
 
         run_async(_release())
     except Exception:
@@ -1354,7 +1354,7 @@ def confirm_publish_worker(self, publish_task_id: str):
             try:
                 return await _rd.set(lock_key, "1", nx=True, ex=120)
             finally:
-                await _rd.close()
+                pass  # 共享连接池，由进程生命周期统一管理，无需 close
 
         got = run_async(_acquire_lock())
         if not got:
