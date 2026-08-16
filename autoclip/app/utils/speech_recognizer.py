@@ -758,7 +758,7 @@ class SpeechRecognizer:
             model = AutoModel(
                 model=model_id,
                 vad_model="fsmn-vad",
-                vad_kwargs={"max_single_segment_time": "30s"},
+                vad_kwargs={"max_single_segment_time": 30000},
                 punc_model="ct-punc",
                 disable_update=True,
                 device="cpu",
