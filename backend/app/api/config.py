@@ -71,6 +71,7 @@ CONFIG_DESCRIPTIONS: Dict[str, str] = {
     "dashboard_config": "数据看板配置（JSON）：用于配置看板展示的指标与筛选条件。",
     "shortdrama_seedance_config": "短片制作 Seedance 官方 API 直连配置（JSON）：enabled 为总开关（默认 false）；model 模型名；resolution 480p/720p/1080p；watermark 是否加水印；long_duration_policy 超 10s 策略（truncate/block）；timeout 超时秒；daily_quota 日配额（0=不限）。api_key 配置环境变量 SEEDANCE_API_KEY。",
     "asr_method": "语音识别(ASR)引擎：aliyun_speech=阿里云 qwen3-asr-flash(需 DASHSCOPE_API_KEY)；whisper=本地 faster-whisper(无需 Key)；funasr_local=本地 FunASR SenseVoice(需安装 FunASR 运行时，未装前选择会失败)。",
+    "publish_rate_config": "发布风控/节奏参数（JSON）：acct_limit 单账号每日发布上限；op_limit 单运营者每日发布上限；op_inflight_limit 单运营者并发在途上限；global_inflight_limit 全局并发在途上限；min_delay_ms/max_delay_ms 发布 tab 启动前随机延迟区间(毫秒)；fingerprint_variant 是否启用 UA/指纹变体。用于多运营者发布时降低风控风险，支持运行时热更。",
 }
 
 
@@ -164,6 +165,19 @@ DEFAULT_CONFIGS: List[dict] = [
         "key": "asr_method",
         "value": "whisper",
         "description": "语音识别(ASR)引擎：aliyun_speech=阿里云 qwen3-asr-flash(需 DASHSCOPE_API_KEY)；whisper=本地 faster-whisper(无需 Key)；funasr_local=本地 FunASR SenseVoice(需安装 FunASR 运行时，未装前选择会失败)。",
+    },
+    {
+        "key": "publish_rate_config",
+        "value": {
+            "acct_limit": 20,
+            "op_limit": 20,
+            "op_inflight_limit": 1,
+            "global_inflight_limit": 4,
+            "min_delay_ms": 0,
+            "max_delay_ms": 0,
+            "fingerprint_variant": False
+        },
+        "description": "发布风控/节奏参数（JSON）：acct_limit 单账号每日发布上限；op_limit 单运营者每日发布上限；op_inflight_limit 单运营者并发在途上限；global_inflight_limit 全局并发在途上限；min_delay_ms/max_delay_ms 发布 tab 启动前随机延迟区间(毫秒)；fingerprint_variant 是否启用 UA/指纹变体。用于多运营者发布时降低风控风险，支持运行时热更。",
     },
 ]
 

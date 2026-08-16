@@ -1120,6 +1120,8 @@ def task_publish_video(self, publish_task_id: str):
             raise Exception(f"Publish task {publish_task_id} not found")
 
         # 多运营者(R22):配额双闸门 + inflight 信号量(Lua 原子,nil 兜底)
+        # 方向③ 风控/节奏可配置化:配额参数与随机延迟从 SystemConfig 热更读取
+        rate_cfg = run_async(_get_publish_rate_config())
         try:
             from app.services import multi_operator
             if run_async(multi_operator.multi_operator_enabled()):
@@ -1128,11 +1130,23 @@ def task_publish_video(self, publish_task_id: str):
                 if operator_id and account_id:
                     quota_acquired = run_async(multi_operator.acquire_quota(
                         account_id, operator_id,
-                        acct_limit=20, op_limit=20,
-                        op_inflight_limit=1, global_inflight_limit=4,
+                        acct_limit=rate_cfg.get("acct_limit", 20),
+                        op_limit=rate_cfg.get("op_limit", 20),
+                        op_inflight_limit=rate_cfg.get("op_inflight_limit", 1),
+                        global_inflight_limit=rate_cfg.get("global_inflight_limit", 4),
                     ))
                     if not quota_acquired:
                         raise Exception("Quota exceeded or concurrent slot busy (Lua dual-gate)")
+                    # 方向③ 错峰随机延迟(ms)可配置,降低同刻并发风控风险
+                    min_delay = int(rate_cfg.get("min_delay_ms", 0) or 0)
+                    max_delay = int(rate_cfg.get("max_delay_ms", 0) or 0)
+                    if max_delay > 0:
+                        import random as _random
+                        delay = _random.randint(min_delay, max_delay)
+                        if delay > 0:
+                            import time as _time
+                            logger.info("publish rate: sleep %sms before tab start (operator=%s)", delay, operator_id)
+                            _time.sleep(delay / 1000.0)
         except Exception as e:
             # 未开启或配额异常:日志但不阻断一期旧链路(除非是明确的配额拒绝)
             if "Quota exceeded" in str(e) or "concurrent slot busy" in str(e):
@@ -1267,7 +1281,14 @@ def task_publish_video(self, publish_task_id: str):
         # 失败时释放可能残留的待确认 tab,避免浏览器连接泄漏
         from app.services.publish_service import release_pending_tab
         release_pending_tab(publish_task_id)
-        run_async(_update_publish_task_status(publish_task_id, status="failed", error_message=str(e)))
+        # 方向② 批量：失败写死信标记（不再静默丢失，可回溯重发）
+        run_async(_update_publish_task_status(
+            publish_task_id,
+            status="failed",
+            error_message=str(e),
+            mark_dead_letter=True,
+            dead_letter_reason=str(e),
+        ))
         self.update_state(
             state="FAILURE",
             meta={"progress": 0, "message": str(e)},
@@ -1291,16 +1312,76 @@ def task_publish_video(self, publish_task_id: str):
                 pass
 
 
+def _release_confirm_lock(lock_key: str, acquired: bool) -> None:
+    """释放 confirm 幂等锁（若已获取）。"""
+    if not acquired:
+        return
+    try:
+        from app.services.redis_stream import get_redis as _get_rd
+
+        async def _release():
+            _rd = await _get_rd()
+            try:
+                await _rd.delete(lock_key)
+            finally:
+                await _rd.close()
+
+        run_async(_release())
+    except Exception:
+        logger.warning("failed to release confirm lock %s", lock_key, exc_info=True)
+
+
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
 def confirm_publish_worker(self, publish_task_id: str):
     """Confirm a pending publish by clicking publish in the already-prepared Chrome tab."""
     from app.services.publish_service import get_publisher
 
     self.update_state(state="STARTED", meta={"progress": 50, "message": "正在确认发布操作..."})
+    # 方向④ 稳定性：confirm 幂等锁（Redis setnx, task_id 维度, 防并发重复发布）
+    lock_key = f"pub:confirm_lock:{publish_task_id}"
+    lock_acquired = False
+    try:
+        from app.services.redis_stream import get_redis as _get_rd
+
+        async def _acquire_lock():
+            _rd = await _get_rd()
+            try:
+                return await _rd.set(lock_key, "1", nx=True, ex=120)
+            finally:
+                await _rd.close()
+
+        got = run_async(_acquire_lock())
+        if not got:
+            raise Exception("Confirm already in progress (idempotent lock held)")
+        lock_acquired = True
+    except Exception as e:
+        # 锁获取失败即视为并发冲突，直接失败不重复发布
+        logger.warning("confirm idempotent lock failed: %s", e)
+        run_async(_update_publish_task_status(publish_task_id, status="failed", error_message=str(e)))
+        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+        raise
+
     try:
         publish_task_data = run_async(_get_publish_task(publish_task_id))
         if not publish_task_data:
             raise Exception(f"Publish task {publish_task_id} not found")
+
+        # 方向④ 二次鉴权：确认发布前重新校验 CDP token（多运营者开启时）
+        try:
+            from app.services import multi_operator
+            if run_async(multi_operator.multi_operator_enabled()):
+                account_id = publish_task_data.get("account_id")
+                if account_id:
+                    # 签发一次性 confirm token 并立即校验，确认该操作者对当前账号仍有发布权
+                    actor = publish_task_data.get("actor_id") or publish_task_data.get("operator_id")
+                    confirm_token = run_async(multi_operator.issue_cdp_token(actor or account_id, account_id, ttl=30))
+                    ok = run_async(multi_operator.verify_cdp_token(confirm_token, account_id))
+                    if not ok:
+                        raise Exception("二次鉴权失败: CDP token 校验未通过")
+        except Exception as e:
+            if "二次鉴权失败" in str(e):
+                raise
+            logger.warning("confirm re-auth skipped: %s", e)
 
         publisher = get_publisher(
             publish_task_data["platform"],
@@ -1341,12 +1422,21 @@ def confirm_publish_worker(self, publish_task_id: str):
             state="SUCCESS",
             meta={"progress": 100, "message": "Publish confirmed", "result": result},
         )
+        _release_confirm_lock(lock_key, lock_acquired)
         return result
     except Exception as e:
         logger.error(f"Confirm publish failed: {e}")
         from app.services.publish_service import release_pending_tab
         release_pending_tab(publish_task_id)
-        run_async(_update_publish_task_status(publish_task_id, status="failed", error_message=str(e)))
+        # 方向② 批量：confirm 失败写死信标记（可回溯重发）
+        run_async(_update_publish_task_status(
+            publish_task_id,
+            status="failed",
+            error_message=str(e),
+            mark_dead_letter=True,
+            dead_letter_reason=str(e),
+        ))
+        _release_confirm_lock(lock_key, lock_acquired)
         self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
 
@@ -1499,6 +1589,39 @@ def gen_publish_trace_id(publish_task_id: str) -> str:
     return f"pub-{hashlib.sha256(publish_task_id.encode()).hexdigest()[:16]}"
 
 
+DEFAULT_PUBLISH_RATE = {
+    "acct_limit": 20,
+    "op_limit": 20,
+    "op_inflight_limit": 1,
+    "global_inflight_limit": 4,
+    "min_delay_ms": 0,
+    "max_delay_ms": 0,
+    "fingerprint_variant": False,
+}
+
+
+async def _get_publish_rate_config() -> dict:
+    """从 SystemConfig 读取发布风控/节奏配置（方向③，可运行时热更）。
+
+    返回带默认值的合并字典；未在数据库配置时回落到默认值。
+    """
+    from app.models.models import SystemConfig
+    from sqlalchemy import select
+
+    cfg = dict(DEFAULT_PUBLISH_RATE)
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(
+                select(SystemConfig).where(SystemConfig.key == "publish_rate_config")
+            )
+            row = result.scalar_one_or_none()
+            if row and isinstance(row.value, dict):
+                cfg.update(row.value)
+    except Exception:
+        logger.warning("failed to load publish_rate_config, fallback to defaults", exc_info=True)
+    return cfg
+
+
 async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
     """Fetch publish task data from the database."""
     from app.models.models import PublishTask, PublishProfile, VideoAccount
@@ -1622,8 +1745,14 @@ async def _update_publish_task_status(
     error_message: str = None,
     celery_task_id: str = None,
     published_at: datetime = None,
+    mark_dead_letter: bool = False,
+    dead_letter_reason: str = None,
+    incr_retry: bool = False,
 ):
-    """Update publish task status in the database."""
+    """Update publish task status in the database.
+
+    方向②/④：支持死信标记（mark_dead_letter）与重试计数（incr_retry）。
+    """
     from app.models.models import PublishTask
     from sqlalchemy import select
 
@@ -1650,6 +1779,11 @@ async def _update_publish_task_status(
             task.celery_task_id = celery_task_id
         if published_at:
             task.published_at = published_at
+        if mark_dead_letter:
+            task.dead_letter = True
+            task.dead_letter_reason = dead_letter_reason or error_message
+        if incr_retry:
+            task.retry_count = (task.retry_count or 0) + 1
         task.updated_at = datetime.utcnow()
 
         await session.commit()

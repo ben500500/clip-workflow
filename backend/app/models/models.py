@@ -481,6 +481,10 @@ class PublishTask(Base):
     # 短片来源：提示词记录（带去文案/时长/题材/基调）+ 发布素材记录（带去话题标签）
     prompt_record_id = Column(UUID(as_uuid=True), nullable=True)
     material_id = Column(UUID(as_uuid=True), nullable=True)
+    # ── 方向② 批量发布体验：重试计数 + 死信标记（失败不再静默丢失，可回溯重发） ──
+    retry_count = Column(Integer, default=0, nullable=False)
+    dead_letter = Column(Boolean, default=False, nullable=False)
+    dead_letter_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
