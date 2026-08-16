@@ -371,7 +371,7 @@ const TaskListPanel: React.FC = () => {
       render: (d: string) => formatDateTime(d),
     },
     {
-      title: '操作', key: 'action', width: 100, fixed: 'right',
+      title: '操作', key: 'action', width: 100, fixed: 'right' as const,
       render: (_: unknown, r: WechatDlTask) =>
         r.status === 'completed' && r.episode_id ? (
           <Button
