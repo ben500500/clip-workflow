@@ -30,12 +30,10 @@ from wechat_download.models import (
 )
 from wechat_download.yuanbao_client import (
     ParseResult,
-    YuanbaoParseError,
-    get_yuanbao_client,
 )
-from wechat_download.preview_client import (
-    PreviewUnavailableError,
-    get_preview_client,
+from wechat_download.provider_registry import (
+    ProviderParseError,
+    build_providers,
 )
 from wechat_download.downloader import DownloadError, get_downloader
 
@@ -330,10 +328,14 @@ async def run_download_pipeline(task_id: uuid.UUID) -> dict:
 
 
 async def _parse_with_fallback(db, task: WechatDownloadTask):
-    """主链路元宝解析 → 失败降级预览层兜底（P1 增加解析结果缓存）。
+    """多 provider 兜底链解析（P1 增加解析结果缓存）。
 
     先查本任务 source_url 在 wechat_parse_records 中是否已有成功解析记录
-    （命中直接复用 play_url，避免重复调用易变/限流的元宝接口，评审 R1/R2）。
+    （命中直接复用 play_url，避免重复调用易变/限流的解析接口，评审 R1/R2）。
+
+    provider 顺序由 `WECHAT_DL_PROVIDERS`（默认 yuanbao,preview）驱动；逐个尝试，
+    每个 provider 的成败都写一条 WechatParseRecord（channel=provider 逻辑名），
+    任一个成功即返回，全部失败聚合各 provider 错误后抛 ImportError_。
     """
     # P1 解析缓存：同 URL 已有成功解析则直接复用
     cached = await _hit_parse_cache(db, task.source_url)
@@ -341,50 +343,45 @@ async def _parse_with_fallback(db, task: WechatDownloadTask):
         logger.info("parse cache hit for %s (channel=%s)", task.source_url, cached.channel)
         return cached
 
-    record = None
-    # 主链路：元宝
-    try:
-        result = await get_yuanbao_client().parse(task.source_url)
-        record = WechatParseRecord(
-            task_id=task.id, channel="yuanbao", source_url=task.source_url,
-            status="success" if result.success else "failed",
-            play_url=result.play_url, result_meta=result.meta,
-            raw=result.raw[:4000] if result.raw else None,
-            error_message=result.error,
-        )
-        db.add(record)
-        await db.flush()
-        if result.success:
-            return result
-    except YuanbaoParseError as e:
-        logger.warning("yuanbao parse failed for %s: %s", task.id, e)
-        record = WechatParseRecord(
-            task_id=task.id, channel="yuanbao", source_url=task.source_url,
-            status="failed", error_message=str(e),
-        )
-        db.add(record)
-        await db.flush()
+    errors: list[str] = []
+    providers = build_providers()
+    if not providers:
+        raise ImportError_("解析失败：未配置任何可用的解析服务（WECHAT_DL_PROVIDERS 为空）")
+    for idx, client in enumerate(providers):
+        try:
+            await _set_status(
+                db, task, ST_PARSING, min(30, 10 + idx * 5),
+                f"正在尝试解析服务: {client.channel}",
+            )
+            result = await client.parse(task.source_url, db=db)
+            rec = WechatParseRecord(
+                task_id=task.id, channel=client.channel, source_url=task.source_url,
+                status="success" if result.success else "failed",
+                play_url=result.play_url, result_meta=result.meta,
+                raw=result.raw[:4000] if result.raw else None,
+                error_message=result.error,
+            )
+            db.add(rec)
+            await db.flush()
+            if result.success:
+                logger.info("parse success via provider %s for task %s", client.channel, task.id)
+                return result
+        except ProviderParseError as e:
+            errors.append(str(e))
+            logger.warning("provider %s parse failed for %s: %s", client.channel, task.id, e)
+            rec = WechatParseRecord(
+                task_id=task.id, channel=client.channel, source_url=task.source_url,
+                status="failed", error_message=str(e),
+            )
+            db.add(rec)
+            await db.flush()
+        finally:
+            try:
+                await client.close()
+            except Exception:
+                pass
 
-    # 兜底：预览层（复用登录态）
-    try:
-        await _set_status(db, task, ST_PARSING, 20, "元宝解析不可用，尝试预览层兜底...")
-        result = await get_preview_client().parse(task.source_url, db=db)
-        rec2 = WechatParseRecord(
-            task_id=task.id, channel="preview", source_url=task.source_url,
-            status="success", play_url=result.play_url, result_meta=result.meta,
-        )
-        db.add(rec2)
-        await db.flush()
-        return result
-    except PreviewUnavailableError as e:
-        logger.warning("preview fallback failed for %s: %s", task.id, e)
-        rec2 = WechatParseRecord(
-            task_id=task.id, channel="preview", source_url=task.source_url,
-            status="failed", error_message=str(e),
-        )
-        db.add(rec2)
-        await db.flush()
-        raise ImportError_(f"解析失败（元宝 & 预览兜底均不可用）: {e}")
+    raise ImportError_(f"解析失败（全部解析服务均不可用）: {' | '.join(errors)}")
 
 
 async def _hit_parse_cache(db: AsyncSession, source_url: str) -> Optional[ParseResult]:

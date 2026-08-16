@@ -163,6 +163,10 @@ class Settings(BaseSettings):
     WECHAT_DL_DEFAULT_PROJECT: str = "视频号导入"
     # 未授权是否允许预览式解析（False=硬拦截，满足 R1 合规红线）
     WECHAT_DL_ALLOW_UNAUTH_PARSE: bool = False
+    # 视频号解析 provider 有序列表（兜底链）：英文逗号分隔，值映射到内置 adapter
+    # 或自定义 HTTP 服务商（需配套 WECHAT_DL_<NAME>_BASE/_KEY/_PATH 等 env）。
+    # 未设置时回退 "yuanbao,preview"（向后兼容）。
+    WECHAT_DL_PROVIDERS: str = "yuanbao,preview"
 
     model_config = {
         "env_file": ".env",
