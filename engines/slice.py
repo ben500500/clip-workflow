@@ -1087,16 +1087,16 @@ def build_watermark_filter(wm: dict) -> str:
 # ──────────────────────────────────────────────
 
 # 字幕字号（相对输出高度比例，横屏基准）
-# 默认 0.22→FontSize 22，约占横屏画面高度 2%，更显轻盈不遮挡画面。
+# 默认 0.06→FontSize 约 6%（横屏 1280x720→43px、1920x1080→65px）；用户实测 0.055 仍偏小，再提一档。
 # 竖屏视频因显式设置 PlayResY 抵消了 libass 默认的放大，ASR 字幕会偏小，
 # 故对竖屏按下方 PORTRAIT_SUBTITLE_HEIGHT_RATIO 补偿（见 burn_subtitle）。
 # 用户可通过配置调大或调小。
-SUBTITLE_FONT_RATIO = 0.22
-# 竖屏字幕目标字号占画面高度比例：0.035→1080x1920 时 FontSize≈67px，
-# 约为横屏观感的 3 倍、且不会因过大被推出屏幕外。仅作用于走默认字号的竖屏视频。
-PORTRAIT_SUBTITLE_HEIGHT_RATIO = 0.035
-# 字幕字间距（ASS Spacing，单位像素）。用户反馈原字体自带字距偏宽，默认 -2 进一步缩小让字幕文字更紧凑；
-# 可通过配置项调大或调小。
+SUBTITLE_FONT_RATIO = 0.06
+# 竖屏字幕目标字号占画面高度比例：0.05→1080x1920 时 FontSize≈96px、720x1280 时≈64px，
+# 竖屏手机全屏观看字幕需更醒目，约 5% 画面高度清晰可读且不挡脸。仅作用于走默认字号的竖屏视频。
+PORTRAIT_SUBTITLE_HEIGHT_RATIO = 0.05
+# 字幕字间距（ASS Spacing，单位像素）。默认 -2 为字体原生字距基础上的轻微收紧；
+# 用户实测字距偏宽，已将半角标点归一化、更负 Spacing 等间距实验复原，保留字体原生全角标点字距。
 SUBTITLE_SPACING = -2
 # 字幕距底边距离（相对输出高度比例，越小越贴近画面底部；用户反馈原 0.08 偏高，调低到 0.05 更贴底）
 SUBTITLE_BOTTOM_RATIO = 0.05
@@ -1427,6 +1427,8 @@ def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str,
     return out_srt
 
 
+
+
 def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
                   threads: int = 1, encoder: str = "libx264",
                   font_ratio: Optional[float] = None,
@@ -1471,6 +1473,8 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
     font_ratio = font_ratio if font_ratio is not None else SUBTITLE_FONT_RATIO
     if vh > vw:  # 竖屏：显式 PlayResY 抵消 libass 放大，按画面高度补偿字幕字号
         font_ratio = (vh * PORTRAIT_SUBTITLE_HEIGHT_RATIO) / 100.0
+    else:  # 横屏：同样按画面高度占比计算，保证不同分辨率下字幕视觉大小一致
+        font_ratio = (vh * SUBTITLE_FONT_RATIO) / 100.0
     # 字幕字间距：未指定时用默认值（默认 0 更紧凑），用户可通过切片配置调节
     spacing = spacing if spacing is not None else SUBTITLE_SPACING
     # 字幕距底边距离（像素）：未指定时用默认比例 SUBTITLE_BOTTOM_RATIO（与原实现一致，
