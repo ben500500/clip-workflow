@@ -146,6 +146,24 @@ class Settings(BaseSettings):
     # MinIO 生命周期：未访问超过该天数（默认 90 天）的对象转低频存储
     MINIO_LIFECYCLE_DAYS: int = 90
 
+    # ── 视频号素材导入下载（wechat_download，立项决策④：独立配置命名空间）──
+    # 元宝解析接口基础地址（非公开接口，可通过环境变量覆盖；P0 主链路）
+    WECHAT_DL_YUANBAO_API_BASE: str = "https://yuanbao.tencent.com"
+    # 元宝解析接口 Key / 鉴权 Token（如接口需独立 Key，生产必须配置）
+    WECHAT_DL_YUANBAO_KEY: str = ""
+    # 预览层兜底：视频号预览页前缀
+    WECHAT_DL_PREVIEW_BASE: str = "https://channels.weixin.qq.com"
+    # 拉流层：finder 拉流基础地址
+    WECHAT_DL_FINDER_BASE: str = "https://finder.video.qq.com"
+    # 下载超时（秒，拉流整体超时）
+    WECHAT_DL_DOWNLOAD_TIMEOUT: int = 600
+    # 拉流并发闸门 key（复用主系统 redis_stream 并发控制）
+    WECHAT_DL_QUEUE: str = "wechat_dl"
+    # 默认入库归属项目名（未指定 project_id 时，按需创建/复用）
+    WECHAT_DL_DEFAULT_PROJECT: str = "视频号导入"
+    # 未授权是否允许预览式解析（False=硬拦截，满足 R1 合规红线）
+    WECHAT_DL_ALLOW_UNAUTH_PARSE: bool = False
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
