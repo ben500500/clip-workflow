@@ -40,6 +40,8 @@ class WechatDownloader:
         """下载 play_url 到 local_path，返回字节数。
 
         若 play_url 是 m3u8 索引则解析分片并顺序拼接；否则按直链流式下载。
+        P1：支持断点续传——若 local_path 已存在（上次中断残留），直链用
+        HTTP Range 从已下载字节处继续；分片用已下载片段数续接。
         """
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
         if ".m3u8" in play_url:
@@ -47,17 +49,30 @@ class WechatDownloader:
         return await self._download_direct(play_url, local_path)
 
     async def _download_direct(self, url: str, local_path: str) -> int:
+        resume_from = 0
+        mode = "wb"
+        if os.path.exists(local_path):
+            resume_from = os.path.getsize(local_path)
+            if resume_from > 0:
+                mode = "ab"  # 已有部分内容，断点续传追加
         try:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            if resume_from > 0:
+                headers["Range"] = f"bytes={resume_from}-"
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout),
                 follow_redirects=True,
-                headers={"User-Agent": "Mozilla/5.0"},
+                headers=headers,
             ) as client:
                 async with client.stream("GET", url) as resp:
-                    if resp.status_code != 200:
+                    # 若服务端不支持 Range，忽略已存在内容，全量重下
+                    if resume_from > 0 and resp.status_code != 206:
+                        resume_from = 0
+                        mode = "wb"
+                    if resp.status_code not in (200, 206):
                         raise DownloadError(f"direct download http {resp.status_code}")
-                    total = 0
-                    with open(local_path, "wb") as f:
+                    total = resume_from
+                    with open(local_path, mode) as f:
                         async for chunk in resp.aiter_bytes(chunk_size=256 * 1024):
                             f.write(chunk)
                             total += len(chunk)

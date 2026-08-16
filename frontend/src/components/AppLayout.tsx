@@ -19,6 +19,7 @@ import {
   PoweroffOutlined,
   ClearOutlined,
   WarningOutlined,
+  CloudDownloadOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -49,6 +50,11 @@ const allMenuItems = [
     key: '/watermark',
     icon: <ClearOutlined />,
     label: '短片制作',
+  },
+  {
+    key: '/resource-download',
+    icon: <CloudDownloadOutlined />,
+    label: '资源下载',
   },
   {
     key: '/publish',

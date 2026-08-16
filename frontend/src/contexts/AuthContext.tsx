@@ -10,6 +10,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     '/projects',
     '/batch-slice',
     '/watermark',
+    '/resource-download',
     'analytics-sub',
     '/analytics/overview',
     '/analytics/shortdrama',
@@ -37,6 +38,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     '/projects',
     '/batch-slice',
     '/watermark',
+    '/resource-download',
     '/profile',
   ],
 };

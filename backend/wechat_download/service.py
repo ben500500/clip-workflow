@@ -29,6 +29,7 @@ from wechat_download.models import (
     WechatParseRecord,
 )
 from wechat_download.yuanbao_client import (
+    ParseResult,
     YuanbaoParseError,
     get_yuanbao_client,
 )
@@ -167,6 +168,69 @@ async def get_task(db: AsyncSession, task_id: uuid.UUID) -> Optional[WechatDownl
     return result.scalar_one_or_none()
 
 
+async def create_import_tasks_batch(
+    db: AsyncSession,
+    *,
+    created_by: Optional[uuid.UUID],
+    source_urls: list[str],
+    source_type: str,
+    project_id: Optional[uuid.UUID] = None,
+    auth_id: Optional[uuid.UUID] = None,
+    authorize_owner: Optional[str] = None,
+    authorize_note: Optional[str] = None,
+) -> tuple[list[WechatDownloadTask], list[str]]:
+    """批量创建下载任务（P1：批量链接）。
+
+    复用统一授权材料；逐个 URL 做授权校验（未授权整批拦截并抛 AuthRequiredError），
+    返回 (创建成功的任务列表, 失败项消息列表)。失败项（如重复/非法 URL）单独收集，
+    不阻塞整批导入。
+    """
+    if not source_urls:
+        raise AuthRequiredError("批量导入至少需要一个分享链接")
+
+    # 统一授权材料先校验一次（未授权直接整批拦截，符合 R1 硬红线）
+    auth, auth_text = await validate_authorization(
+        db,
+        source_type=source_type,
+        auth_id=auth_id,
+        authorize_owner=authorize_owner,
+        authorize_note=authorize_note,
+    )
+    if auth is not None and auth_id is None:
+        auth.created_by = created_by
+
+    tasks: list[WechatDownloadTask] = []
+    errors: list[str] = []
+    seen: set[str] = set()
+    for url in source_urls:
+        url = (url or "").strip()
+        if not url:
+            errors.append("存在空链接，已跳过")
+            continue
+        if url in seen:
+            errors.append(f"重复链接已跳过: {url[:40]}")
+            continue
+        seen.add(url)
+        task = WechatDownloadTask(
+            created_by=created_by,
+            source_url=url,
+            status=ST_PENDING,
+            progress=0.0,
+            source_type=source_type,
+            source_authorize=auth_text,
+            auth_id=auth.id if auth else None,
+            project_id=project_id,
+        )
+        db.add(task)
+        await db.flush()
+        await db.refresh(task)
+        tasks.append(task)
+
+    if not tasks:
+        raise AuthRequiredError("批量导入没有可用的有效链接")
+    return tasks, errors
+
+
 def _serialize_task(t: WechatDownloadTask) -> dict:
     return {
         "id": str(t.id),
@@ -252,7 +316,13 @@ async def run_download_pipeline(task_id: uuid.UUID) -> dict:
                 pass
             return {"ok": False, "error": str(e)}
         finally:
-            if os.path.exists(_temp_path(task.id)):
+            # 断点续传（P1）：仅成功/彻底失败后清理临时文件；
+            # 若因可重试的下载中断失败，保留残留文件供 Celery 重试续传。
+            keep_for_resume = task.status in (ST_FAILED,)
+            if keep_for_resume and _temp_path(task.id) and os.path.exists(_temp_path(task.id)):
+                # 标记为续传残留：不删除，下次任务命中 Range 续传
+                logger.info("保留临时文件供断点续传: %s", _temp_path(task.id))
+            elif os.path.exists(_temp_path(task.id)):
                 try:
                     os.remove(_temp_path(task.id))
                 except OSError:
@@ -260,7 +330,17 @@ async def run_download_pipeline(task_id: uuid.UUID) -> dict:
 
 
 async def _parse_with_fallback(db, task: WechatDownloadTask):
-    """主链路元宝解析 → 失败降级预览层兜底。"""
+    """主链路元宝解析 → 失败降级预览层兜底（P1 增加解析结果缓存）。
+
+    先查本任务 source_url 在 wechat_parse_records 中是否已有成功解析记录
+    （命中直接复用 play_url，避免重复调用易变/限流的元宝接口，评审 R1/R2）。
+    """
+    # P1 解析缓存：同 URL 已有成功解析则直接复用
+    cached = await _hit_parse_cache(db, task.source_url)
+    if cached is not None:
+        logger.info("parse cache hit for %s (channel=%s)", task.source_url, cached.channel)
+        return cached
+
     record = None
     # 主链路：元宝
     try:
@@ -305,6 +385,38 @@ async def _parse_with_fallback(db, task: WechatDownloadTask):
         await db.add(rec2)
         await db.flush()
         raise ImportError_(f"解析失败（元宝 & 预览兜底均不可用）: {e}")
+
+
+async def _hit_parse_cache(db: AsyncSession, source_url: str) -> Optional[ParseResult]:
+    """命中解析缓存：返回同 URL 最近一次成功解析结果（play_url 有效），否则 None。
+
+    仅取 status=success 且 play_url 非空的记录，按时间倒序取最新一条。
+    避免对易变/限流的元宝接口重复调用；拉流地址 TTL 短时可由下载器
+    兜底（断点续传/重试），此处缓存只优化重复 URL 场景。
+    """
+    result = await db.execute(
+        select(WechatParseRecord)
+        .where(
+            WechatParseRecord.source_url == source_url,
+            WechatParseRecord.status == "success",
+            WechatParseRecord.play_url.isnot(None),
+        )
+        .order_by(WechatParseRecord.created_at.desc())
+        .limit(1)
+    )
+    rec = result.scalar_one_or_none()
+    if rec is None or not rec.play_url:
+        return None
+    return ParseResult(
+        success=True,
+        channel="cache",
+        play_url=rec.play_url,
+        title=(rec.result_meta or {}).get("title") if rec.result_meta else None,
+        cover_url=(rec.result_meta or {}).get("cover") if rec.result_meta else None,
+        duration=(rec.result_meta or {}).get("duration") if rec.result_meta else None,
+        meta=rec.result_meta or {},
+        error=None,
+    )
 
 
 async def _set_status(db, task, status, progress, message):
