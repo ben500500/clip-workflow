@@ -41,6 +41,25 @@ const SLICE_MODE_HELP: Record<string, { label: string; desc: string; detail: str
   },
 };
 
+// ─── 源字幕打码预设（三档，收敛 temporal/spatial 两个开关，降低配置出错率）──
+const SUBTITLE_MASK_PRESETS = [
+  { value: 'auto', label: '自动', desc: 'SRT动态窗口优先，兼顾效果与速度（推荐）' },
+  { value: 'fine', label: '精细', desc: '帧级+空间子区域，最精确但更慢' },
+  { value: 'quick', label: '快速', desc: '固定区域全程打码，最快' },
+];
+const SUBTITLE_MASK_PRESET_DEFAULT = 'auto';
+
+// 根据预设对象推导当前打码预设值：显式 preset 优先；旧数据按 temporal/spatial 推导回退。
+function resolveSubtitleMaskPreset(p: any): 'auto' | 'fine' | 'quick' {
+  const v = (p && p.subtitle_mask_preset) ? String(p.subtitle_mask_preset) : '';
+  if (['auto', 'fine', 'quick'].includes(v)) return v as 'auto' | 'fine' | 'quick';
+  const t = !!(p && p.subtitle_mask_temporal);
+  const s = !!(p && p.subtitle_mask_spatial);
+  if (s) return 'fine';
+  if (!t) return 'quick';
+  return 'auto';
+}
+
 // ─── 切片模式级联选项（去重模式带 轻/标准/重 档位，悬停即弹出选择框）──
 const SLICE_MODE_OPTIONS = [
   { value: 'fast', label: '快速模式' },
@@ -109,6 +128,7 @@ interface SlicePreset {
   subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill';
   subtitle_mask_temporal: boolean;
   subtitle_mask_spatial: boolean;
+  subtitle_mask_preset?: 'auto' | 'fine' | 'quick' | string;
   subtitle_mask_width_ratio: number;
   subtitle_mask_height_ratio: number;
   subtitle_mask_bottom_ratio: number;
@@ -158,6 +178,7 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   subtitle_mask_style: 'delogo',
   subtitle_mask_temporal: true,
   subtitle_mask_spatial: false,
+  subtitle_mask_preset: 'auto',
   subtitle_mask_width_ratio: 0.9,
   subtitle_mask_height_ratio: 0.12,
   subtitle_mask_bottom_ratio: 0.02,
@@ -247,6 +268,8 @@ const EpisodeDetail: React.FC = () => {
   const [subtitleMaskTemporal, setSubtitleMaskTemporal] = useState(true);
   // 仅字幕显示区域打码（空间精细化）：需开启精细化后才能开启
   const [subtitleMaskSpatial, setSubtitleMaskSpatial] = useState(false);
+  // 打码预设（三档：自动/精细/快速），收敛上面两个开关
+  const [subtitleMaskPreset, setSubtitleMaskPreset] = useState<string>('auto');
   const [subtitleMaskWidthRatio, setSubtitleMaskWidthRatio] = useState(0.9);
   const [subtitleMaskHeightRatio, setSubtitleMaskHeightRatio] = useState(0.12);
   const [subtitleMaskBottomRatio, setSubtitleMaskBottomRatio] = useState(0.02);
@@ -451,6 +474,7 @@ const EpisodeDetail: React.FC = () => {
     subtitle_mask_style: subtitleMaskStyle,
     subtitle_mask_temporal: subtitleMaskTemporal,
     subtitle_mask_spatial: subtitleMaskTemporal ? subtitleMaskSpatial : false,
+    subtitle_mask_preset: subtitleMaskPreset,
     subtitle_mask_width_ratio: subtitleMaskWidthRatio,
     subtitle_mask_height_ratio: subtitleMaskHeightRatio,
     subtitle_mask_bottom_ratio: subtitleMaskBottomRatio,
@@ -491,6 +515,8 @@ const EpisodeDetail: React.FC = () => {
     setSubtitleMaskStyle(p.subtitle_mask_style ?? 'delogo');
     setSubtitleMaskTemporal(p.subtitle_mask_temporal ?? true);
     setSubtitleMaskSpatial(p.subtitle_mask_spatial ?? false);
+    // 预设优先；旧预设没有 preset 字段时按 temporal/spatial 推导回退（向后兼容）
+    setSubtitleMaskPreset(resolveSubtitleMaskPreset(p));
     setSubtitleMaskWidthRatio(p.subtitle_mask_width_ratio ?? 0.9);
     setSubtitleMaskHeightRatio(p.subtitle_mask_height_ratio ?? 0.12);
     setSubtitleMaskBottomRatio(p.subtitle_mask_bottom_ratio ?? 0.02);
@@ -1121,6 +1147,7 @@ const EpisodeDetail: React.FC = () => {
         // 源视频字幕打码：独立开关，开启后仅打掉片源自带字幕（不依赖 ASR 字幕开关）
         subtitle_mask_enabled: subtitleMaskEnabled,
         subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
+        subtitle_mask_preset: subtitleMaskEnabled ? subtitleMaskPreset : undefined,
         subtitle_mask_temporal: subtitleMaskEnabled ? subtitleMaskTemporal : undefined,
         subtitle_mask_spatial: (subtitleMaskEnabled && subtitleMaskTemporal) ? subtitleMaskSpatial : undefined,
         subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
@@ -1289,6 +1316,7 @@ const EpisodeDetail: React.FC = () => {
         // 源视频字幕打码：独立开关，开启后仅打掉片源自带字幕（不依赖 ASR 字幕开关）
         subtitle_mask_enabled: subtitleMaskEnabled,
         subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
+        subtitle_mask_preset: subtitleMaskEnabled ? subtitleMaskPreset : undefined,
         subtitle_mask_temporal: subtitleMaskEnabled ? subtitleMaskTemporal : undefined,
         subtitle_mask_spatial: (subtitleMaskEnabled && subtitleMaskTemporal) ? subtitleMaskSpatial : undefined,
         subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
@@ -2117,28 +2145,28 @@ const EpisodeDetail: React.FC = () => {
                 </Space>
               )}
               <Space wrap align="center" size={8}>
-                <Switch size="small" checked={subtitleMaskTemporal} onChange={setSubtitleMaskTemporal} />
-                <Text strong style={{ fontSize: 13 }}>精细化（只在出现时打码）</Text>
-                <Tooltip title="开启后逐帧检测字幕/水印实际出现的时段，只在出现时打码，画面其余时间零改动（处理较慢但更精细）；关闭则按 SRT 时间轴或全程打码（快）。">
-                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-                </Tooltip>
-              </Space>
-              <Space wrap align="center" size={8}>
-                <Switch
+                <Text strong style={{ fontSize: 13 }}>打码预设</Text>
+                <Select
                   size="small"
-                  checked={subtitleMaskSpatial}
-                  disabled={!subtitleMaskTemporal}
-                  onChange={setSubtitleMaskSpatial}
+                  style={{ width: 130 }}
+                  value={subtitleMaskPreset}
+                  onChange={(v) => {
+                    setSubtitleMaskPreset(v);
+                    // 同步维护 temporal/spatial 派生状态（向后兼容旧字段）
+                    setSubtitleMaskTemporal(v !== 'quick');
+                    setSubtitleMaskSpatial(v === 'fine');
+                  }}
+                  options={SUBTITLE_MASK_PRESETS.map((o) => ({
+                    value: o.value,
+                    label: `${o.label}（${o.desc}）`,
+                  }))}
                 />
-                <Text strong style={{ fontSize: 13, opacity: subtitleMaskTemporal ? 1 : 0.4 }}>仅字幕显示区域打码</Text>
-                <Tooltip title="需开启「精细化」后才能开启。开启后，在每个字幕出现时段内只对字幕文字实际占用的那部分横向区域打码，而不把整条横带都盖住（更精细，处理更慢）。">
+                <Tooltip title="三档预设收敛了原先「精细化/仅字幕显示区域」两个开关，降低配置出错率：自动=SRT动态窗口优先兼顾效果与速度（推荐）；精细=帧级+空间子区域最精确但更慢；快速=固定区域全程打码最快。">
                   <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
                 </Tooltip>
               </Space>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {subtitleMaskTemporal
-                  ? '精细化：只在字幕/水印实际出现的时段打码，其余画面不动（推荐）。'
-                  : '快速：在检测出的字幕区域全程（至始至终）打码，速度快。'}
+                {SUBTITLE_MASK_PRESETS.find((o) => o.value === subtitleMaskPreset)?.desc}
               </Text>
             </Space>
           </Modal>
@@ -2701,10 +2729,18 @@ const EpisodeDetail: React.FC = () => {
                 <InputNumber size="small" min={0.02} max={0.5} step={0.01} value={subtitleMaskHeightRatio} onChange={(v) => setSubtitleMaskHeightRatio(v ?? 0.12)} style={{ width: 70 }} />
                 <Text style={{ fontSize: 12 }}>距底</Text>
                 <InputNumber size="small" min={0} max={0.5} step={0.01} value={subtitleMaskBottomRatio} onChange={(v) => setSubtitleMaskBottomRatio(v ?? 0.02)} style={{ width: 70 }} />
-                <Switch size="small" checked={subtitleMaskTemporal} onChange={setSubtitleMaskTemporal} />
-                <Text type="secondary" style={{ fontSize: 12 }}>{subtitleMaskTemporal ? '精细化' : '快速'}</Text>
-                <Switch size="small" checked={subtitleMaskSpatial} disabled={!subtitleMaskTemporal} onChange={setSubtitleMaskSpatial} />
-                <Text type="secondary" style={{ fontSize: 12, opacity: subtitleMaskTemporal ? 1 : 0.4 }}>仅字幕区域</Text>
+                <Text style={{ fontSize: 12 }}>预设</Text>
+                <Select
+                  size="small"
+                  style={{ width: 110 }}
+                  value={subtitleMaskPreset}
+                  onChange={(v) => {
+                    setSubtitleMaskPreset(v);
+                    setSubtitleMaskTemporal(v !== 'quick');
+                    setSubtitleMaskSpatial(v === 'fine');
+                  }}
+                  options={SUBTITLE_MASK_PRESETS.map((o) => ({ value: o.value, label: o.label }))}
+                />
               </Space>
             )}
           </div>

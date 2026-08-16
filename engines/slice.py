@@ -3485,7 +3485,7 @@ def main():
     parser.add_argument(
         "--subtitle-mask",
         default=None,
-        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|gblur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"temporal\":bool, \"spatial\":bool, \"srt\":打码时间轴SRT路径}）。默认 delogo（去水印），开启后自动检测字幕位置。temporal=帧级精细化（只在出现时段打码），spatial=仅字幕显示区域打码（需 temporal 开启）。独立开关，仅打掉片源自带字幕",
+        help="源视频字幕打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|gblur|fill\", \"preset\":\"auto|fine|quick\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"srt\":打码时间轴SRT路径}）。默认 delogo（去水印），开启后自动检测字幕位置。preset=打码预设三档：auto=自动（SRT动态窗口优先，兼顾效果与速度，推荐默认）、fine=精细（帧级+空间子区域，最精确更慢）、quick=快速（固定区域全程打码，最快）。也可用旧字段 temporal/spatial 显式开关（向后兼容）。独立开关，仅打掉片源自带字幕",
     )
     parser.add_argument(
         "--watermark-mask",
@@ -3625,7 +3625,22 @@ def main():
         style = subtitle_mask.get("style") or SUBTITLE_MASK_STYLE_DEFAULT
         temporal = bool(subtitle_mask.get("temporal"))
         spatial = bool(subtitle_mask.get("spatial"))
-        print(f"源字幕打码已开启: style={style}, temporal={temporal}, spatial={spatial}", file=sys.stderr)
+        # 打码预设：把 temporal/spatial 两个独立开关收敛为 自动/精细/快速 三档，降低
+        # 配置出错率。未传 preset 时保持旧的 temporal/spatial 显式开关（向后兼容）。
+        preset = (subtitle_mask.get("preset") or "").strip().lower()
+        if preset in ("auto", "自动", "fine", "精细", "quick", "快速"):
+            if preset in ("fine", "精细"):
+                # 精细：帧级 + 空间子区域，最精确（更慢）。
+                temporal, spatial = True, True
+            elif preset in ("quick", "快速"):
+                # 快速：固定区域全程打码，最快（不做帧级/时间轴检测）。
+                temporal, spatial = False, False
+            else:  # auto / 自动
+                # 自动：SRT 动态窗口优先，无 SRT 时帧级检测回退；兼顾效果与速度。
+                temporal, spatial = True, False
+            print(f"源字幕打码已开启: preset={preset}, style={style}, temporal={temporal}, spatial={spatial}", file=sys.stderr)
+        else:
+            print(f"源字幕打码已开启: style={style}, temporal={temporal}, spatial={spatial}", file=sys.stderr)
         # 去重模式同步标记：apply_subtitle_mask 需按去重的镜像(hflip)与变速(speed)
         # 对打码区域/时间轴做同步变换，否则"去重后字幕打码不起作用"（区域错位+时间错位）。
         if dedupe_hflip:

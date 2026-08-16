@@ -1,9 +1,11 @@
 # .cnb.yml — CNB 云原生构建配置
 #
-# 功能：打 vXX tag 后自动构建全部 5 个 Docker 镜像并推送到 CNB Docker 制品库
+# 功能1：打 vXX tag 后自动构建全部 5 个 Docker 镜像并推送到 CNB Docker 制品库
+# 功能2：push/PR 时运行源字幕打码回归测试（自动/精细/快速三档预设 + 打码区≤9%屏高 + 文字密度≥60%）
+#
 # 版本号从 tag 中获取（如 v1.0.0 → 1.0.0），同时打 latest 标签
 #
-# 触发方式：
+# 触发方式（构建镜像）：
 #   git tag v1.0.0
 #   git push origin v1.0.0
 #
@@ -12,6 +14,28 @@
 #
 # 拉取镜像（部署时）：
 #   docker pull docker.cnb.cool/ben500500/clip-workflow/clip-backend:1.0.0
+
+# 源字幕打码回归测试：验收指标为 动态打码区≤9%屏高、源字幕文字密度下降≥60%
+# （见 PR #148 讨论结论）。测试脚本在 engines/tests/test_subtitle_mask_regression.py，
+# 依赖 ffmpeg/opencv/numpy 由 engines/tests/Dockerfile 预装，缺依赖时脚本自动跳过（不误报失败）。
+.subtitle-mask-test:
+  &subtitle-mask-test
+  name: subtitle-mask-regression
+  runner:
+    cpus: 2
+  docker:
+    build:
+      dockerfile: ./engines/tests/Dockerfile
+      by: [engines/tests/Dockerfile, engines/tests/test_subtitle_mask_regression.py, engines/slice.py]
+  stages:
+    - name: run regression test
+      script: python3 engines/tests/test_subtitle_mask_regression.py
+
+main:
+  push:
+    - *subtitle-mask-test
+  pull_request:
+    - *subtitle-mask-test
 
 $:
   tag_push:

@@ -196,6 +196,12 @@ class SliceRunRequest(BaseModel):
     subtitle_mask_enabled: bool = False
     # 打码样式：delogo（去水印，推荐，默认）/ mosaic（马赛克）/ blur（模糊）/ gblur（高斯模糊）/ fill（纯色块）
     subtitle_mask_style: Optional[str] = None
+    # 打码预设（三档，推荐用预设替代 temporal/spatial 两个独立开关，降低配置出错率）：
+    #   auto=自动（SRT 动态窗口优先，兼顾效果与速度，推荐默认）
+    #   fine=精细（帧级 + 空间子区域，最精确、更慢）
+    #   quick=快速（固定区域全程打码，最快）
+    # 传了 preset 时忽略下方 temporal/spatial 字段；未传则回退到显式 temporal/spatial（向后兼容）。
+    subtitle_mask_preset: Optional[str] = None
     # 精细化（帧级检测）开关：开启后只在字幕/水印实际出现的时段打码，
     # 画面其余时间零改动（处理较慢，但更精细）；关闭则用 SRT 时间轴或全程打码（快）。
     subtitle_mask_temporal: bool = False
@@ -527,11 +533,17 @@ def _build_subtitle_mask_config(data: SliceRunRequest, source_srt: Optional[str]
     if style not in ("delogo", "mosaic", "blur", "gblur", "fill"):
         style = "delogo"
     cfg["style"] = style
-    # 精细化（帧级检测）：只在字幕/水印实际出现的时段打码。
-    cfg["temporal"] = bool(getattr(data, "subtitle_mask_temporal", False))
-    # 仅字幕显示区域打码（空间精细化）：只在字幕文字实际占用的横向子区域打码。
-    # 需 temporal 开启才生效（引擎侧仅在 temporal 模式下启用该能力）。
-    cfg["spatial"] = bool(getattr(data, "subtitle_mask_spatial", False))
+    # 打码预设（三档）优先：auto/fine/quick 收敛 temporal/spatial 两个开关，降低配置出错率。
+    preset = (getattr(data, "subtitle_mask_preset", None) or "").strip().lower()
+    if preset in ("auto", "fine", "quick", "自动", "精细", "快速"):
+        cfg["preset"] = preset
+    else:
+        # 未传预设时回退到显式 temporal/spatial（向后兼容）。
+        # 精细化（帧级检测）：只在字幕/水印实际出现的时段打码。
+        cfg["temporal"] = bool(getattr(data, "subtitle_mask_temporal", False))
+        # 仅字幕显示区域打码（空间精细化）：只在字幕文字实际占用的横向子区域打码。
+        # 需 temporal 开启才生效（引擎侧仅在 temporal 模式下启用该能力）。
+        cfg["spatial"] = bool(getattr(data, "subtitle_mask_spatial", False))
     if data.subtitle_mask_width_ratio is not None:
         cfg["width_ratio"] = max(0.1, min(1.0, float(data.subtitle_mask_width_ratio)))
     if data.subtitle_mask_height_ratio is not None:

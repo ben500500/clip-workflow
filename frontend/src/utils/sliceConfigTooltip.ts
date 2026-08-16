@@ -61,8 +61,9 @@ export function buildSliceConfigTooltip(
   const sm = t.subtitle_mask_config;
   if (sm && Object.keys(sm).length > 0) {
     const smOn = sm.enabled !== false;
-    lines.push(`源字幕打码：${smOn ? `开启(${sm.style || 'delogo'})` : '关闭'}`);
-    if (smOn && sm.spatial) lines.push('  仅字幕区域打码');
+    const presetName = { auto: '自动', fine: '精细', quick: '快速' } as Record<string, string>;
+    const preset = sm.preset ? (presetName[sm.preset] || sm.preset) : (sm.spatial ? '精细' : (sm.temporal === false ? '快速' : '自动'));
+    lines.push(`源字幕打码：${smOn ? `开启(${sm.style || 'delogo'}·${preset})` : '关闭'}`);
   }
 
   // 恒定水印打码
