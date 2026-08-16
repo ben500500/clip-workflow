@@ -267,14 +267,14 @@ const Settings: React.FC = () => {
             options={[
               { value: 'aliyun_speech', label: '阿里云 ASR（qwen3-asr-flash，需 DASHSCOPE_API_KEY）' },
               { value: 'whisper', label: '本地 Whisper（faster-whisper，无需 API Key）' },
-              { value: 'funasr_local', label: '本地 FunASR (SenseVoice) — 需安装 FunASR 运行时' },
+              { value: 'funasr_local', label: '本地 FunASR (SenseVoice) — 已安装，CPU 推理无需 API Key' },
             ]}
           />
           {asrMethod === 'funasr_local' && (
             <Alert
-              type="warning"
+              type="success"
               showIcon
-              message="FunASR 运行时尚未安装，选择后字幕生成会失败。请在 163 安装 funasr/modelscope/torch 并预下载 SenseVoice 权重后再用。"
+              message="FunASR 运行时已安装（SenseVoice-Small + fsmn-vad + ct-punc，CPU 推理，无需 API Key）。切换后下次生成字幕即采用。"
             />
           )}
         </Space>
