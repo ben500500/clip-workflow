@@ -120,6 +120,7 @@ interface SlicePreset {
   subtitle_enabled: boolean;
   subtitle_font_ratio: number;
   subtitle_spacing: number;
+  subtitle_bold: number;
   subtitle_style: 'default' | 'custom';
   subtitle_color: string;
   subtitle_border_color: string;
@@ -171,6 +172,7 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   subtitle_enabled: true,
   subtitle_font_ratio: 0.22,
   subtitle_spacing: -2,
+  subtitle_bold: 0,
   subtitle_style: 'custom',
   subtitle_color: '#EDD736',
   subtitle_border_color: '#000000',
@@ -250,6 +252,8 @@ const EpisodeDetail: React.FC = () => {
   const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.22);
   // 字幕字间距（ASS Spacing 像素，默认 -1 更紧凑；调小/负值让字幕文字更紧凑，调大则字距变宽）
   const [subtitleSpacing, setSubtitleSpacing] = useState(-2);
+  // 字幕字体粗细（ASS Bold：0=不加粗，-1 或 1=加粗，默认 0 不加粗；加粗让字幕更醒目）
+  const [subtitleBold, setSubtitleBold] = useState(0);
   // 字幕样式：default（白字黑边+半透明黑底）/ custom（自定义字体色+边框色，无底色）
   const [subtitleStyle, setSubtitleStyle] = useState<'default' | 'custom'>('custom');
   // 自定义样式的字体色 / 边框色（CSS 十六进制，默认 #EDD736 黄 / 黑边）
@@ -467,6 +471,7 @@ const EpisodeDetail: React.FC = () => {
     subtitle_enabled: subtitleEnabled,
     subtitle_font_ratio: subtitleFontRatio,
     subtitle_spacing: subtitleSpacing,
+    subtitle_bold: subtitleBold,
     subtitle_style: subtitleStyle,
     subtitle_color: subtitleColor,
     subtitle_border_color: subtitleBorderColor,
@@ -508,6 +513,7 @@ const EpisodeDetail: React.FC = () => {
     setSubtitleEnabled(p.subtitle_enabled);
     setSubtitleFontRatio(p.subtitle_font_ratio);
     setSubtitleSpacing(p.subtitle_spacing ?? -2);
+    setSubtitleBold(p.subtitle_bold ?? 0);
     setSubtitleStyle(p.subtitle_style);
     setSubtitleColor(p.subtitle_color);
     setSubtitleBorderColor(p.subtitle_border_color);
@@ -1136,6 +1142,8 @@ const EpisodeDetail: React.FC = () => {
         subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
         // 字幕字间距（ASS Spacing 像素）：让字幕文字更紧凑
         subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
+        // 字幕字体粗细：加粗让字幕文字更醒目
+        subtitle_bold: subtitleEnabled ? subtitleBold : undefined,
         // 字幕对齐源字幕打码区域（默认开启）
         subtitle_align_mask: subtitleEnabled ? subtitleAlignMask : undefined,
         // 字幕样式：custom 时可选字体色/边框色（无底色）
@@ -1306,6 +1314,8 @@ const EpisodeDetail: React.FC = () => {
         subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
         // 字幕字间距（ASS Spacing 像素）：让字幕文字更紧凑
         subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
+        // 字幕字体粗细：加粗让字幕文字更醒目
+        subtitle_bold: subtitleEnabled ? subtitleBold : undefined,
         subtitle_align_mask: subtitleEnabled ? subtitleAlignMask : undefined,
         // 字幕样式：custom 时可选字体色/边框色（无底色）
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
@@ -1920,6 +1930,21 @@ const EpisodeDetail: React.FC = () => {
                   addonAfter="px"
                 />
                 <Text type="secondary" style={{ fontSize: 12 }}>越小越紧凑</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>字体粗细</Text>
+                <Select
+                  size="small"
+                  value={subtitleBold}
+                  onChange={(v) => setSubtitleBold(v)}
+                  style={{ width: 120 }}
+                  options={[
+                    { value: 0, label: '常规' },
+                    { value: -1, label: '加粗' },
+                    { value: 1, label: '粗体' },
+                  ]}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>加粗让字幕更醒目</Text>
               </Space>
               <Space wrap align="center" size={8}>
                 <Switch size="small" checked={subtitleAlignMask} onChange={setSubtitleAlignMask} />

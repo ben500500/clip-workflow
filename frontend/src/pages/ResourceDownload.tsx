@@ -12,6 +12,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { wechatDlApi, WechatDlTask } from '../api/wechatDl';
 import { projectApi } from '../api/projects';
+import { configApi } from '../api/config';
 import { formatDateTime } from '../utils/format';
 
 const { Title, Text } = Typography;
@@ -32,6 +33,28 @@ const ImportPanel: React.FC = () => {
   const [form] = Form.useForm();
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<'single' | 'batch'>('single');
+  // 默认下载分辨率（720p/1080p，默认 720p）：入库前统一缩放
+  const [dlResolution, setDlResolution] = useState<string>('720p');
+  const [dlResolutionSaving, setDlResolutionSaving] = useState(false);
+
+  // 加载全局默认下载分辨率配置
+  useEffect(() => {
+    configApi.getAll().then((cfgs) => {
+      const cfg = cfgs.find((c) => c.key === 'default_download_resolution');
+      if (cfg && (cfg.value === '720p' || cfg.value === '1080p')) {
+        setDlResolution(String(cfg.value));
+      }
+    }).catch(() => undefined);
+  }, []);
+
+  const handleResolutionChange = (v: string) => {
+    setDlResolution(v);
+    setDlResolutionSaving(true);
+    configApi.update('default_download_resolution', v)
+      .then(() => message.success(`默认分辨率已设为 ${v}`))
+      .catch(() => { setDlResolution('720p'); message.error('保存默认分辨率失败'); })
+      .finally(() => setDlResolutionSaving(false));
+  };
 
   const handleImport = async () => {
     const values = await form.validateFields();
@@ -97,6 +120,23 @@ const ImportPanel: React.FC = () => {
         >
           批量导入
         </Button>
+      </Space>
+
+      <Space align="center" size={8} style={{ marginBottom: 16 }}>
+        <Text strong style={{ fontSize: 13 }}>默认分辨率</Text>
+        <Select
+          value={dlResolution}
+          onChange={handleResolutionChange}
+          loading={dlResolutionSaving}
+          style={{ width: 120 }}
+          options={[
+            { value: '720p', label: '720p' },
+            { value: '1080p', label: '1080p' },
+          ]}
+        />
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          下载入库时按所选分辨率统一缩放（默认 720p），更省存储且适配主流清晰度
+        </Text>
       </Space>
 
       <Form
