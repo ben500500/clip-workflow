@@ -109,12 +109,18 @@ const SliceTasks: React.FC = () => {
   const [subtitleModalOpen, setSubtitleModalOpen] = useState(false);
   // ── 源视频字幕打码（去片源自带字幕，独立开关）──
   const [subtitleMaskEnabled, setSubtitleMaskEnabled] = useState(false);
+const SUBTITLE_MASK_PRESETS = [
+  { value: 'auto', label: '自动', desc: 'SRT动态窗口优先，兼顾效果与速度（推荐）' },
+  { value: 'fine', label: '精细', desc: '帧级+空间子区域，最精确但更慢' },
+  { value: 'quick', label: '快速', desc: '固定区域全程打码，最快' },
+];
   const [subtitleMaskStyle, setSubtitleMaskStyle] = useState<'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill'>('delogo');
   // 精细化（帧级检测）：只在字幕/水印实际出现的时段打码
   const [subtitleMaskTemporal, setSubtitleMaskTemporal] = useState(true);
   // 仅字幕显示区域打码（空间精细化）：需开启精细化后才能开启，
   // 只对字幕文字实际占用的横向子区域打码，而不是整条横带都盖住。
   const [subtitleMaskSpatial, setSubtitleMaskSpatial] = useState(false);
+  const [subtitleMaskPreset, setSubtitleMaskPreset] = useState('auto');
   // 打码区域（相对输出视频宽高比例，默认宽度 0.9 / 高度 0.12 / 距底 0.02）
   const [subtitleMaskWidthRatio, setSubtitleMaskWidthRatio] = useState(0.9);
   const [subtitleMaskHeightRatio, setSubtitleMaskHeightRatio] = useState(0.12);
@@ -221,6 +227,7 @@ const SliceTasks: React.FC = () => {
         // 源视频字幕打码：独立开关，开启后仅打掉片源自带字幕（不依赖 ASR 字幕开关）
         subtitle_mask_enabled: subtitleMaskEnabled,
         subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
+        subtitle_mask_preset: subtitleMaskEnabled ? subtitleMaskPreset : undefined,
         subtitle_mask_temporal: subtitleMaskEnabled ? subtitleMaskTemporal : undefined,
         subtitle_mask_spatial: (subtitleMaskEnabled && subtitleMaskTemporal) ? subtitleMaskSpatial : undefined,
         subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
@@ -1075,28 +1082,24 @@ const SliceTasks: React.FC = () => {
                 <Text type="secondary" style={{ fontSize: 12 }}>相对画面高（0.02）</Text>
               </Space>
               <Space wrap align="center" size={8}>
-                <Switch size="small" checked={subtitleMaskTemporal} onChange={setSubtitleMaskTemporal} />
-                <Text strong style={{ fontSize: 12 }}>精细化（只在出现时打码）</Text>
-                <Tooltip title="开启后逐帧检测字幕/水印实际出现的时段，只在出现时打码，画面其余时间零改动（处理较慢但更精细）；关闭则按 SRT 时间轴或全程打码（快）。">
-                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-                </Tooltip>
-              </Space>
-              <Space wrap align="center" size={8}>
-                <Switch
+                <Text strong style={{ fontSize: 12 }}>打码预设</Text>
+                <Select
                   size="small"
-                  checked={subtitleMaskSpatial}
-                  disabled={!subtitleMaskTemporal}
-                  onChange={setSubtitleMaskSpatial}
+                  style={{ width: 120 }}
+                  value={subtitleMaskPreset}
+                  onChange={(v) => {
+                    setSubtitleMaskPreset(v);
+                    setSubtitleMaskTemporal(v !== 'quick');
+                    setSubtitleMaskSpatial(v === 'fine');
+                  }}
+                  options={SUBTITLE_MASK_PRESETS.map((o) => ({ value: o.value, label: `${o.label}（${o.desc}）` }))}
                 />
-                <Text strong style={{ fontSize: 12, opacity: subtitleMaskTemporal ? 1 : 0.4 }}>仅字幕显示区域打码</Text>
-                <Tooltip title="需开启「精细化」后才能开启。开启后，在每个字幕出现时段内只对字幕文字实际占用的那部分横向区域打码，而不把整条横带都盖住（更精细，处理更慢）。">
+                <Tooltip title="三档预设收敛了原先「精细化/仅字幕显示区域」两个开关：自动=SRT动态窗口优先兼顾效果与速度（推荐）；精细=帧级+空间子区域最精确但更慢；快速=固定区域全程打码最快。">
                   <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
                 </Tooltip>
               </Space>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {subtitleMaskTemporal
-                  ? '精细化：只在字幕/水印实际出现的时段打码，其余画面不动（推荐）。'
-                  : '快速：在检测出的字幕区域全程（至始至终）打码，速度快。'}
+                {SUBTITLE_MASK_PRESETS.find((o) => o.value === subtitleMaskPreset)?.desc}
               </Text>
             </Space>
           </Modal>

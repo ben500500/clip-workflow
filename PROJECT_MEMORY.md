@@ -52,6 +52,7 @@
 | V7 | **短剧发布素材** 生成 | `api/publish_material.py` |
 | V8-V14 | remove_mask ROI 经验库 / 四角检测 / 自动水印分析 / 模板可编辑 | `engines/remove_mask_{remover,rois}.py` |
 | 最新 | **批量切片工作流** + 一键切片接入 AI 选点/区间检测 + 切片配置预设 | `api/batch_slice.py`、`services/batch_slice_service.py` |
+| 本次 | **源字幕打码配置简化 + 回归自动化**：subtitle-mask 把 temporal/spatial 两个独立开关收敛为 自动/精细/快速 三档预设（`preset` 字段，向后兼容旧字段）；新增源字幕打码回归测试 `engines/tests/test_subtitle_mask_regression.py`（验收指标：动态打码区≤9%屏高、源字幕文字密度下降≥60%），并接入 `.cnb.yml` push/PR 流水线（docker.build 预装 ffmpeg/opencv/numpy，缺依赖自动跳过不误报） | `engines/slice.py`（preset 解析）、`backend/app/api/slice.py`（`subtitle_mask_preset` 字段 + `_build_subtitle_mask_config`）、前端 `EpisodeDetail.tsx`/`BatchSlice.tsx`/`SliceTasks.tsx`/`api/slice.ts`/`utils/sliceConfigTooltip.ts`（三档预设下拉）、新增 `engines/tests/{test_subtitle_mask_regression.py,Dockerfile}`、`.cnb.yml` |
 | 本次 | **固定文字字体 B+C 方案**（fc-match 动态解析 + SC 单字体提取，根治"门"字） + **字幕间距/高度配置开放**（`subtitle_spacing` / 默认字号降为 0.22） + **字幕对齐源字幕打码区域**（`subtitle_align_mask`，默认开启：开启源字幕打码并检测到区域时 ASR 字幕默认位置对齐打码区域） + **字幕默认间距再缩小**（`SUBTITLE_SPACING` -1→-2） | `engines/slice.py`、`api/slice.py`、`services/slice_service.py`、`celery/tasks.py`、`batch_slice_service.py`、`slice-worker/{redis_client,task_executor}.go`、前端 2 文件、`alembic/0025` |
 | 本次 | **视频号多运营者发布 Phase 0**（方案 v3.1：账号归属 + RBAC 过滤 + Batch 模型 + 路由表/Lua 配额/CDP token 后端基础） | `models/models.py`（`created_by/operator_id`/`tier` 等 + `PublishBatch`）、`api/publish.py`（RBAC 过滤 + 批次 assign 端点）、`services/multi_operator.py`（新增：路由表 + Lua 原子配额 + 端口池 + 幂等 pending + cdp token）、`alembic/0027` |
 | 本次 | **视频号多运营者发布 Phase 1（方案 A 浏览器层）**：CDP 端口收敛 + 多 profile 端口映射 + 路由表秒级失效闭环（R12）+ 幂等重填外移 Redis（R13/R18）+ cdp_proxy token 鉴权（R19）+ 配额双闸门接线（R22） | `publish_service.py`（cdp_url/token 注入 + Redis pending 幂等重填）、`celery/tasks.py`（发布/确认接入路由表端口+配额+token；新增 sync_multi_operator_profiles / watch_multi_operator_routes beat）、`multi_operator.py`（check_route_heartbeats + sync_profiles_from_db + get_profiles + freeze_pending）、`rpa/start_chromium.sh`（按 profile 起 N 个 Chromium）、`rpa/cdp_proxy.py`（多实例 + token 鉴权中间件）、`rpa/bootstrap.py`（新增：从 Redis 落盘 profiles）、`rpa/requirements.txt`、`docker-compose.yml`（rpa healthcheck） |
@@ -88,7 +89,7 @@
 - **可维护性** ★★★☆☆：分层清晰，但 `models.py`（36 模型单文件）、`slice-worker/main.go` 多文件 Go、`PROJECT.md` 巨型化是后续痛点
 - **安全性** ★★★★☆：鉴权已接线，需复核边缘端点与 CDP 暴露
 - **文档一致性** ★★★☆☆：README 已重写对齐真实结构；PROJECT.md 局部臃肿（`/watermark` 页）待后续拆分
-- **测试覆盖** ★★☆☆☆：仅 `eval/` 有 LLM 评测，缺单元/集成测试
+- **测试覆盖** ★★☆☆☆→★★☆☆☆：新增 `engines/tests/test_subtitle_mask_regression.py` 源字幕打码回归测试（已在 CI 跑），`eval/` 有 LLM 评测；其余模块仍缺单元/集成测试
 
 ---
 

@@ -57,6 +57,7 @@ interface SliceConfigState {
   subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill';
   subtitle_mask_temporal: boolean;
   subtitle_mask_spatial: boolean;
+  subtitle_mask_preset: string;
   subtitle_mask_width_ratio: number;
   subtitle_mask_height_ratio: number;
   subtitle_mask_bottom_ratio: number;
@@ -96,6 +97,7 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   subtitle_mask_style: 'delogo',
   subtitle_mask_temporal: true,
   subtitle_mask_spatial: false,
+  subtitle_mask_preset: 'auto',
   subtitle_mask_width_ratio: 0.9,
   subtitle_mask_height_ratio: 0.12,
   subtitle_mask_bottom_ratio: 0.02,
@@ -884,27 +886,21 @@ const BatchSlicePage: React.FC = () => {
               />
             )}
             {sliceConfig.subtitle_mask_enabled && (
-              <Switch
-                checked={sliceConfig.subtitle_mask_temporal}
-                onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_mask_temporal: v })}
+              <Select
+                value={sliceConfig.subtitle_mask_preset}
+                onChange={(v) => setSliceConfig({
+                  ...sliceConfig,
+                  subtitle_mask_preset: v,
+                  subtitle_mask_temporal: v !== 'quick',
+                  subtitle_mask_spatial: v === 'fine',
+                })}
+                style={{ width: 110 }}
+                options={[
+                  { value: 'auto', label: '自动' },
+                  { value: 'fine', label: '精细' },
+                  { value: 'quick', label: '快速' },
+                ]}
               />
-            )}
-            {sliceConfig.subtitle_mask_enabled && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {sliceConfig.subtitle_mask_temporal ? '精细化' : '快速'}
-              </Text>
-            )}
-            {sliceConfig.subtitle_mask_enabled && (
-              <Switch
-                checked={sliceConfig.subtitle_mask_spatial}
-                disabled={!sliceConfig.subtitle_mask_temporal}
-                onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_mask_spatial: v })}
-              />
-            )}
-            {sliceConfig.subtitle_mask_enabled && (
-              <Text type="secondary" style={{ fontSize: 12, opacity: sliceConfig.subtitle_mask_temporal ? 1 : 0.4 }}>
-                仅字幕区域
-              </Text>
             )}
           </Space>
 
