@@ -122,3 +122,6 @@ slice-worker/macos/*.log
 slice-worker/macos/*.pid
 slice-worker/temp/
 .serena
+
+# 部署脚本生成的临时标记（每次部署由 scripts/deploy_server.sh 覆写，勿提交）
+.deploy_last_commit

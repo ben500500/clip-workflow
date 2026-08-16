@@ -1,0 +1,32 @@
+# ============================================================
+# 本地轻量部署 override（Mac + colima）
+# 用法：docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+#
+# 与生产差异：
+#   1. autoclip 去掉 ollama 依赖（本地不跑画面理解，FRAME_ANALYSIS_ENABLED=false）
+#   2. 跳过重服务：ollama(1.6G 模型)、rpa_worker(内置 Chrome 一键发布)、slice-worker-2(副本)
+#   3. ASR 走 aliyun_speech（DASHSCOPE_API_KEY 已有），不依赖本地 whisper 模型
+# ============================================================
+services:
+  # alembic 迁移：本地主 compose 缺 ./alembic 挂载（服务器有手动修改未回传 git），
+  # 这里补齐挂载 + 兜底命令，保证迁移执行成功
+  alembic-migrate:
+    volumes:
+      - ./alembic:/app/alembic:ro
+    command: ["sh", "-c", "alembic -c alembic/alembic.ini upgrade head || echo 'Alembic 迁移跳过（已存在表结构或首次部署由 ORM create_all 建表）'"]
+
+  autoclip:
+    # !override 强制替换 depends_on（compose 深合并覆盖不掉 ollama）
+    depends_on: !override
+      redis:
+        condition: service_healthy
+
+  # 本地不启动的服务（profiles 隔离，避免误起）
+  ollama:
+    profiles: ["never-in-local"]
+
+  rpa_worker:
+    profiles: ["never-in-local"]
+
+  slice-worker-2:
+    profiles: ["never-in-local"]
