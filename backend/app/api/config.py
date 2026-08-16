@@ -70,6 +70,7 @@ CONFIG_DESCRIPTIONS: Dict[str, str] = {
     "task_timeout_hours": "任务超时时间（小时），超过该时长的任务将被判定为超时并自动终止。",
     "dashboard_config": "数据看板配置（JSON）：用于配置看板展示的指标与筛选条件。",
     "shortdrama_seedance_config": "短片制作 Seedance 官方 API 直连配置（JSON）：enabled 为总开关（默认 false）；model 模型名；resolution 480p/720p/1080p；watermark 是否加水印；long_duration_policy 超 10s 策略（truncate/block）；timeout 超时秒；daily_quota 日配额（0=不限）。api_key 配置环境变量 SEEDANCE_API_KEY。",
+    "asr_method": "语音识别(ASR)引擎：aliyun_speech=阿里云 qwen3-asr-flash(需 DASHSCOPE_API_KEY)；whisper=本地 faster-whisper(无需 Key)；funasr_local=本地 FunASR SenseVoice(需安装 FunASR 运行时，未装前选择会失败)。",
 }
 
 
@@ -158,6 +159,11 @@ DEFAULT_CONFIGS: List[dict] = [
             "daily_quota": 0,
         },
         "description": "短片制作 Seedance 官方 API 直连配置（JSON）：enabled 为总开关（默认 false，关闭时前端不展示该通道、后端接口返回 403）；model 为火山方舟模型名/接入点；resolution 480p/720p/1080p；watermark 是否加水印；long_duration_policy 为超 10s 策略（truncate 截成10s / block 拒绝）；timeout 生成超时秒；daily_quota 日配额（0=不限）。api_key 请配置环境变量 SEEDANCE_API_KEY。",
+    },
+    {
+        "key": "asr_method",
+        "value": "whisper",
+        "description": "语音识别(ASR)引擎：aliyun_speech=阿里云 qwen3-asr-flash(需 DASHSCOPE_API_KEY)；whisper=本地 faster-whisper(无需 Key)；funasr_local=本地 FunASR SenseVoice(需安装 FunASR 运行时，未装前选择会失败)。",
     },
 ]
 

@@ -216,7 +216,7 @@ def _filter_srt_by_time(srt_path: Path, out_path: Path,
     return out_path
 
 
-def _run_asr(video_path: str, srt_path: Path, api_key: str) -> None:
+def _run_asr(video_path: str, srt_path: Path, api_key: str, method_name: Optional[str] = None) -> None:
     """按环境变量 AUTOCLIP_ASR_METHOD 选择 ASR 方式生成 SRT。
 
     支持 aliyun_speech（默认，需 DASHSCOPE_API_KEY）、whisper（本地 faster-whisper）与 funasr_local（本地 FunASR，需安装 funasr 运行时）。
@@ -226,7 +226,8 @@ def _run_asr(video_path: str, srt_path: Path, api_key: str) -> None:
     同一视频再次启动 AI 选点时可直接复用，避免重复转写（尤其 whisper 本地推理耗时）。
     可用环境变量 AUTOCLIP_ASR_CACHE=false 关闭缓存。
     """
-    method_name = os.getenv("AUTOCLIP_ASR_METHOD", "aliyun_speech").strip().lower()
+    if not method_name:
+        method_name = os.getenv("AUTOCLIP_ASR_METHOD", "aliyun_speech").strip().lower()
     method = SpeechRecognitionMethod(method_name)
     config = SpeechRecognitionConfig(
         method=method,
@@ -465,6 +466,8 @@ class SubtitleGenerateRequest(BaseModel):
     end_time: Optional[float] = None
     # 可选：直接传视频内容 base64（与 video_url 二选一）
     video_b64: Optional[str] = None
+    # 可选：覆盖环境变量的 ASR 引擎
+    asr_method: Optional[str] = None
 
 
 @app.post("/api/v1/subtitle/generate")
@@ -479,7 +482,7 @@ async def generate_subtitle(data: SubtitleGenerateRequest):
         raise HTTPException(status_code=400, detail="必须提供 video_url 或 video_b64")
 
     api_key = os.getenv("DASHSCOPE_API_KEY", "").strip() or os.getenv("API_DASHSCOPE_API_KEY", "").strip()
-    asr_method = os.getenv("AUTOCLIP_ASR_METHOD", "aliyun_speech").strip().lower()
+    asr_method = (data.asr_method or os.getenv("AUTOCLIP_ASR_METHOD", "aliyun_speech") or "aliyun_speech").strip().lower()
     if asr_method == "aliyun_speech" and not api_key:
         raise HTTPException(status_code=400, detail="未配置 DASHSCOPE_API_KEY，无法使用阿里云 ASR；可改用 AUTOCLIP_ASR_METHOD=whisper")
 
@@ -516,7 +519,7 @@ async def generate_subtitle(data: SubtitleGenerateRequest):
         # 生成完整 SRT（复用 ASR 缓存）
         srt_path = tmp_dir / "subtitle.srt"
         try:
-            await asyncio.to_thread(_run_asr, str(video_path), srt_path, api_key)
+            await asyncio.to_thread(_run_asr, str(video_path), srt_path, api_key, asr_method)
         except SpeechRecognitionError as e:
             raise HTTPException(status_code=502, detail=f"语音识别失败: {e}")
 

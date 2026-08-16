@@ -20,10 +20,14 @@ const Settings: React.FC = () => {
   const [configForm] = Form.useForm();
   const [profileForm] = Form.useForm();
   const selectedPlatform = Form.useWatch('platform', profileForm) as string | undefined;
+  const [asrMethod, setAsrMethod] = useState<string>('whisper');
+  const [asrSaving, setAsrSaving] = useState(false);
 
   const fetchAll = () => {
     configApi.getAll().then((list) => {
       setConfigs(list);
+      const a = list.find((c: SystemConfig) => c.key === 'asr_method');
+      if (a) setAsrMethod(String(a.value));
     }).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformProfiles().then(setProfiles).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformPresets().then((r) => setPresets(r.presets || {})).catch(() => undefined);
@@ -128,6 +132,20 @@ const Settings: React.FC = () => {
       target_resolution: preset.target_resolution,
       target_bitrate: preset.target_bitrate,
     });
+  };
+
+  // 切换 ASR 引擎（语音识别）
+  const handleAsrChange = async (value: string) => {
+    setAsrMethod(value);
+    setAsrSaving(true);
+    try {
+      await configApi.update('asr_method', value);
+      message.success('ASR 引擎已切换为：' + value);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '切换失败');
+    } finally {
+      setAsrSaving(false);
+    }
   };
 
   const renderConfigValue = (config: SystemConfig) => {
@@ -236,6 +254,31 @@ const Settings: React.FC = () => {
   return (
     <div style={{ maxWidth: 1200, overflow: 'hidden' }}>
       <Title level={4} style={{ marginBottom: 16 }}>系统设置</Title>
+      <Card title="ASR 引擎（语音识别）" style={{ marginBottom: 16 }}>
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            选择切片字幕使用的语音识别引擎。切换立即生效（下次生成字幕时采用），无需重启服务。
+          </Text>
+          <Select
+            value={asrMethod}
+            loading={asrSaving}
+            style={{ width: 360 }}
+            onChange={handleAsrChange}
+            options={[
+              { value: 'aliyun_speech', label: '阿里云 ASR（qwen3-asr-flash，需 DASHSCOPE_API_KEY）' },
+              { value: 'whisper', label: '本地 Whisper（faster-whisper，无需 API Key）' },
+              { value: 'funasr_local', label: '本地 FunASR (SenseVoice) — 需安装 FunASR 运行时' },
+            ]}
+          />
+          {asrMethod === 'funasr_local' && (
+            <Alert
+              type="warning"
+              showIcon
+              message="FunASR 运行时尚未安装，选择后字幕生成会失败。请在 163 安装 funasr/modelscope/torch 并预下载 SenseVoice 权重后再用。"
+            />
+          )}
+        </Space>
+      </Card>
       <Card size="small" title="全局配置" style={{ marginBottom: 16 }}>
         <Table
           rowKey="key"

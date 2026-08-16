@@ -770,7 +770,15 @@ async def _resolve_source_subtitle_srt(
     if not source_url:
         logger.warning("生成源视频下载 URL 失败，无法解析源字幕时间轴")
         return None
-    result = await generate_subtitle(source_url)
+    asr_method = None
+    if db is not None:
+        try:
+            cfg_row = (await db.execute(select(SystemConfig).where(SystemConfig.key == "asr_method"))).scalar_one_or_none()
+            if cfg_row is not None and cfg_row.value:
+                asr_method = str(cfg_row.value)
+        except Exception:
+            asr_method = None
+    result = await generate_subtitle(source_url, asr_method=asr_method)
     if not result or not result.get("srt") or not result["srt"].strip():
         logger.warning("ASR 字幕生成结果为空（视频可能无语音或转写失败）")
         return None
