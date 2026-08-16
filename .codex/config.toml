@@ -1,0 +1,10 @@
+# Codex project configuration for clip-workflow.
+# Registers the NanoNets/Graft code-map MCP server so Codex gets the
+# graft_* tools (graft_find_code / graft_trace_calls / graft_repo_map / ...).
+#
+# Requires the graft CLI to be installed on this machine:
+#   npm install -g @nanonets/graft
+
+[mcp_servers.graft]
+command = "graft"
+args = ["mcp"]
