@@ -163,6 +163,17 @@ const PublishManagement: React.FC = () => {
     }
   };
 
+  // 方向② 批量发布体验：死信任务手动重发
+  const requeueTask = async (id: string) => {
+    try {
+      const res = await publishApi.requeueTask(id);
+      message.success(res.message || '已重新投递发布队列');
+      setTimeout(fetchTasks, 3000);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '重发失败');
+    }
+  };
+
   const createTask = async () => {
     try {
       const values = await taskForm.validateFields();
@@ -287,6 +298,15 @@ const PublishManagement: React.FC = () => {
             <Button size="small" type="primary" icon={<CheckCircleOutlined />} onClick={() => confirmTask(t.id)}>确认发布</Button>
             {t.screenshot_key && (
               <Button size="small" icon={<EyeOutlined />} onClick={() => viewScreenshot(t.id)}>查看截图</Button>
+            )}
+          </Space>
+        ) : t.dead_letter ? (
+          <Space size="small" wrap>
+            <Button size="small" danger icon={<ReloadOutlined />} onClick={() => requeueTask(t.id)}>重发</Button>
+            {t.dead_letter_reason && (
+              <Tooltip title={t.dead_letter_reason}>
+                <Tag color="red">死信</Tag>
+              </Tooltip>
             )}
           </Space>
         ) : (

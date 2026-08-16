@@ -116,6 +116,23 @@ export const publishApi = {
   assignBatch: (data: PublishTaskAssignInput) =>
     client.post('/publish/batches/assign', data) as Promise<PublishBatch & { tasks: PublishTask[] }>,
 
+  // ── 方向② 批量发布体验：批次进度统计 + 死信重发 ──
+  getBatchStats: (id: string) =>
+    client.get(`/publish/batches/${id}/stats`) as Promise<{
+      batch_id: string;
+      total: number;
+      status: { pending: number; running: number; pending_confirm: number; published: number; failed: number };
+      dead_letter: number;
+    }>,
+
+  requeueTask: (taskId: string) =>
+    client.post(`/publish/tasks/${taskId}/requeue`) as Promise<{
+      id: string;
+      status: string;
+      celery_task_id: string;
+      message: string;
+    }>,
+
   // ── 小程序链接库 ──
   getMiniPrograms: (params?: { enabled_only?: boolean }) =>
     client.get('/publish/mini-programs', { params }) as Promise<MiniProgram[]>,

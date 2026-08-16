@@ -14,6 +14,7 @@
 
 import logging
 import uuid
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -259,4 +260,96 @@ async def import_wechat_video_batch(
         skipped=len(errors),
         skipped_reasons=errors,
         message=f"已创建 {len(task_ids)} 个下载任务并进入 wechat_dl 队列",
+    )
+
+
+# ───────────────────────────────
+# 方向① 发布→资源下载闭环：下载完成 → 一键入切片
+# ───────────────────────────────
+
+
+class ToSliceRequest(BaseModel):
+    """入切片请求：可选切片模式与去重配置。"""
+    mode: str = Field("fast", description="切片模式：fast/standard/dedupe")
+    dedupe_config: Optional[dict] = None
+
+
+class ToSliceResponse(BaseModel):
+    slice_task_id: str
+    episode_id: str
+    mode: str
+    message: str
+
+
+@router.post("/tasks/{task_id}/to-slice", response_model=ToSliceResponse, status_code=201)
+async def to_slice(
+    task_id: uuid.UUID,
+    data: ToSliceRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """将已下载完成的素材一键投入切片（方向① 闭环：下载 → 切片 → 发布）。
+
+    校验下载任务已完成（status=completed 且已入库 episode），随后创建
+    SliceTask（fast 模式）并投递到 video_processing 切片队列。切片完成后
+    即可在发布管理直接发布，实现「下载 → 自动切片 → 自动发布」闭环。
+    """
+    from app.models.models import Episode, SliceTask
+
+    task = await get_task(db, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="下载任务不存在")
+    if task.status != "completed" or not task.episode_id:
+        raise HTTPException(
+            status_code=400,
+            detail="下载任务尚未完成（无已入库素材），请等待下载完成后再入切片",
+        )
+
+    ep_result = await db.execute(
+        select(Episode).where(Episode.id == task.episode_id)
+    )
+    episode = ep_result.scalar_one_or_none()
+    if episode is None:
+        raise HTTPException(status_code=404, detail="关联的剧集素材不存在")
+
+    # 创建切片任务（fast 模式：整片直接切片，无需 AI 选点）
+    slice_task = SliceTask(
+        episode_id=episode.id,
+        mode=data.mode or "fast",
+        source_bucket=settings.MINIO_BUCKET_RAW,
+        source_file_key=episode.source_file_key,
+        dedupe_config=data.dedupe_config,
+        subtitle_align_mask=True,
+        status="pending",
+        progress=0.0,
+    )
+    db.add(slice_task)
+    await db.flush()
+    await db.refresh(slice_task)
+
+    # 投递到切片队列（复用现有 slice Celery 任务）
+    from app.celery.tasks import slice_task as celery_slice_task
+
+    celery_task = celery_slice_task.delay(
+        episode_id=str(episode.id),
+        source_path=None,
+        cutlist="",
+        intervals="",
+        mode=data.mode or "fast",
+        dedupe_config=data.dedupe_config,
+        task_id=str(slice_task.id),
+        source_file_key=episode.source_file_key,
+        source_bucket=settings.MINIO_BUCKET_RAW,
+        subtitle_align_mask=True,
+    )
+    slice_task.celery_task_id = celery_task.id if celery_task else None
+    slice_task.status = "running"
+    slice_task.started_at = datetime.utcnow()
+    episode.status = "slicing" if episode.status not in ("slicing", "completed") else episode.status
+    await db.commit()
+
+    return ToSliceResponse(
+        slice_task_id=str(slice_task.id),
+        episode_id=str(episode.id),
+        mode=data.mode or "fast",
+        message="已创建切片任务并投入 video_processing 队列，切片完成后即可在发布管理发布",
     )

@@ -5,7 +5,7 @@ import {
 } from 'antd';
 import {
   ImportOutlined, DownloadOutlined,
-  LinkOutlined, ReloadOutlined,
+  LinkOutlined, ReloadOutlined, ScissorOutlined,
   EyeOutlined, ExportOutlined, PlusOutlined, FolderOpenOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
@@ -206,6 +206,21 @@ const TaskListPanel: React.FC = () => {
       .finally(() => setLoading(false));
   }, [statusFilter]);
 
+  // 方向① 闭环：下载完成 → 一键入切片
+  const [slicingId, setSlicingId] = useState<string | null>(null);
+  const handleToSlice = async (task: WechatDlTask) => {
+    setSlicingId(task.id);
+    try {
+      const res = await wechatDlApi.toSlice(task.id, { mode: 'fast' });
+      message.success('已投入切片队列：' + res.message);
+      await loadTasks();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '入切片失败');
+    } finally {
+      setSlicingId(null);
+    }
+  };
+
   useEffect(() => { loadTasks(); }, [loadTasks]);
 
   // WebSocket 实时进度（页面订阅刷新）
@@ -354,6 +369,23 @@ const TaskListPanel: React.FC = () => {
     {
       title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170,
       render: (d: string) => formatDateTime(d),
+    },
+    {
+      title: '操作', key: 'action', width: 100, fixed: 'right',
+      render: (_: unknown, r: WechatDlTask) =>
+        r.status === 'completed' && r.episode_id ? (
+          <Button
+            size="small"
+            type="link"
+            icon={<ScissorOutlined />}
+            loading={slicingId === r.id}
+            onClick={() => handleToSlice(r)}
+          >
+            入切片
+          </Button>
+        ) : (
+          <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
+        ),
     },
   ];
 

@@ -1039,6 +1039,55 @@ async def get_publish_batch(
     }
 
 
+@router.get("/publish/batches/{batch_id}/stats", response_model=dict)
+async def get_publish_batch_stats(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """批次进度统计（方向② 批量发布体验：pending/running/succeeded/failed/dead_letter 计数）。"""
+    try:
+        bid = uuid.UUID(batch_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid batch ID format")
+    result = await db.execute(select(PublishBatch).where(PublishBatch.id == bid))
+    batch = result.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Publish batch not found")
+    if current_user and not user_can_access_all_materials(current_user) and batch.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="No permission to view this batch")
+
+    rows = (
+        await db.execute(
+            select(PublishTask.status, func.count(PublishTask.id))
+            .where(PublishTask.batch_id == bid)
+            .group_by(PublishTask.status)
+        )
+    ).all()
+    status_count = {status: cnt for status, cnt in rows}
+
+    dead_letter_count = (
+        await db.execute(
+            select(func.count(PublishTask.id))
+            .where(PublishTask.batch_id == bid, PublishTask.dead_letter == True)  # noqa: E712
+        )
+    ).scalar_one_or_none() or 0
+
+    total = sum(status_count.values())
+    return {
+        "batch_id": str(batch.id),
+        "total": total,
+        "status": {
+            "pending": status_count.get("pending", 0),
+            "running": status_count.get("running", 0),
+            "pending_confirm": status_count.get("pending_confirm", 0),
+            "published": status_count.get("published", 0),
+            "failed": status_count.get("failed", 0),
+        },
+        "dead_letter": dead_letter_count,
+    }
+
+
 @router.post("/publish/batches/assign", response_model=dict, status_code=201)
 async def create_publish_batch(
     data: PublishTaskAssignRequest,
@@ -1571,3 +1620,47 @@ async def login_heartbeat(
         )
     # status == "error"（连接失败）不误判 valid，保持现状
     return {"account_id": account_id, "status": status}
+
+
+@router.post("/publish/tasks/{task_id}/requeue", response_model=dict)
+async def requeue_publish_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """死信任务手动重发（方向② 批量发布体验：失败不再静默丢失，可回溯重发）。
+
+    仅允许对 dead_letter=True 的失败任务重发；重发前清除死信标记与错误信息，
+    置回 pending 并重新投递 publish 队列。
+    """
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid task ID format")
+
+    result = await db.execute(select(PublishTask).where(PublishTask.id == tid))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Publish task not found")
+    if not task.dead_letter:
+        raise HTTPException(status_code=400, detail="仅死信任务可重发（该任务非死信状态）")
+
+    # 重置死信标记与错误，置回 pending
+    task.dead_letter = False
+    task.dead_letter_reason = None
+    task.error_message = None
+    task.status = "pending"
+
+    from app.celery.tasks import task_publish_video
+    celery_result = task_publish_video.delay(str(task.id))
+    task.celery_task_id = celery_result.id
+
+    await db.flush()
+    await db.refresh(task)
+
+    return {
+        "id": str(task.id),
+        "status": task.status,
+        "celery_task_id": task.celery_task_id,
+        "message": "已清除死信标记并重新投递发布队列",
+    }

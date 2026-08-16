@@ -239,6 +239,9 @@ export interface PublishTask {
   material_id: string | null;
   batch_id: string | null;
   operator_id: string | null;
+  retry_count?: number;
+  dead_letter?: boolean;
+  dead_letter_reason?: string | null;
   created_at: string;
   updated_at: string;
 }

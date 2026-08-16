@@ -79,6 +79,15 @@ export const wechatDlApi = {
   getTask: (id: string) =>
     client.get(`/wechat-dl/tasks/${id}`) as Promise<WechatDlTask>,
 
+  // ── 方向① 闭环：下载完成 → 一键入切片 ──
+  toSlice: (id: string, data?: { mode?: string; dedupe_config?: Record<string, unknown> }) =>
+    client.post(`/wechat-dl/tasks/${id}/to-slice`, data || { mode: 'fast' }) as Promise<{
+      slice_task_id: string;
+      episode_id: string;
+      mode: string;
+      message: string;
+    }>,
+
   // ── 一键导入切片项目 ──
   importToProject: (taskId: string, data: WechatDlImportToProjectInput) =>
     client.post(`/wechat-dl/tasks/${taskId}/import-to-project`, data) as Promise<WechatDlImportToProjectResult>,
