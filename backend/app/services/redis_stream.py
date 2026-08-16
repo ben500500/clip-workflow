@@ -73,12 +73,31 @@ def _parse_str_list(raw: str) -> list:
         return []
 
 
+# 模块级共享 Redis 客户端（懒加载单例）。
+# from_url 底层自带连接池，复用同一实例可避免每个函数反复建池/销毁，
+# 消除高频路径（取任务状态 / 发布任务）的连接建立与释放开销。
+_redis_client: Optional[aioredis.Redis] = None
+
+
 async def get_redis() -> aioredis.Redis:
-    """创建 Redis 连接。"""
-    return aioredis.from_url(
-        settings.REDIS_URL,
-        decode_responses=True,
-    )
+    """获取共享 Redis 连接（懒加载单例，复用连接池）。
+
+    首次调用创建实例，后续复用；连接由进程生命周期统一管理，
+    各调用方无需也不应主动 close（close 会关闭共享连接池）。
+    """
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = aioredis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+        )
+    return _redis_client
+
+
+def reset_redis_client() -> None:
+    """测试/重置用：清空共享客户端引用（仅在应用关闭或测试时调用）。"""
+    global _redis_client
+    _redis_client = None
 
 
 async def publish_slice_task(task_data: dict, priority: str = "normal") -> Optional[str]:
@@ -92,7 +111,6 @@ async def publish_slice_task(task_data: dict, priority: str = "normal") -> Optio
         消息 ID（成功时）或 None（失败时）
     """
     stream = _get_stream(priority)
-    redis = None
     try:
         redis = await get_redis()
         # 确保 Consumer Group 存在
@@ -120,41 +138,29 @@ async def publish_slice_task(task_data: dict, priority: str = "normal") -> Optio
     except Exception as e:
         logger.error(f"Failed to publish slice task to Redis Stream: {e}")
         return None
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def store_task_callback_token(task_id: str, token: str, ttl_seconds: int = 86400) -> None:
     """保存任务回调/上传鉴权 Token（TTL 与任务超时一致，避免长期残留）。"""
-    redis = None
     try:
         redis = await get_redis()
         await redis.setex(f"{TASK_TOKEN_PREFIX}{task_id}", ttl_seconds, token)
     except Exception as e:
         logger.error(f"Failed to store callback token for task {task_id}: {e}")
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def get_task_callback_token(task_id: str) -> Optional[str]:
     """读取任务回调 Token。"""
-    redis = None
     try:
         redis = await get_redis()
         return await redis.get(f"{TASK_TOKEN_PREFIX}{task_id}")
     except Exception as e:
         logger.error(f"Failed to get callback token for task {task_id}: {e}")
         return None
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def mark_task_cancelled(task_id: str) -> None:
     """写入取消标记到任务 Hash，通知 Worker 端强杀任务。"""
-    redis = None
     try:
         redis = await get_redis()
         key = f"{TASK_STATUS_PREFIX}{task_id}"
@@ -167,9 +173,6 @@ async def mark_task_cancelled(task_id: str) -> None:
         await redis.expire(key, 7 * 24 * 3600)
     except Exception as e:
         logger.error(f"Failed to mark task {task_id} as cancelled: {e}")
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def get_task_redis_status(task_id: str) -> Optional[dict]:
@@ -180,7 +183,6 @@ async def get_task_redis_status(task_id: str) -> Optional[dict]:
     Returns:
         包含 status, progress, node_id, error 等字段的字典，或 None
     """
-    redis = None
     try:
         redis = await get_redis()
         data = await redis.hgetall(f"{TASK_STATUS_PREFIX}{task_id}")
@@ -197,9 +199,6 @@ async def get_task_redis_status(task_id: str) -> Optional[dict]:
     except Exception as e:
         logger.error(f"Failed to get task status from Redis: {e}")
         return None
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def set_node_enabled(node_id: str, enabled: bool) -> None:
@@ -208,7 +207,6 @@ async def set_node_enabled(node_id: str, enabled: bool) -> None:
     值为 0/1 的 Redis String，TTL 设为较长（7 天），Worker 端每次取任务前
     读取该 key 判断是否允许领取新任务；节点保持心跳时也可随时查询。
     """
-    redis = None
     try:
         redis = await get_redis()
         await redis.set(
@@ -218,14 +216,10 @@ async def set_node_enabled(node_id: str, enabled: bool) -> None:
         )
     except Exception as e:
         logger.error(f"Failed to set node enabled state for {node_id}: {e}")
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def is_node_enabled(node_id: str) -> bool:
     """查询节点是否启用（默认启用）。"""
-    redis = None
     try:
         redis = await get_redis()
         val = await redis.get(f"{NODE_ENABLED_PREFIX}{node_id}")
@@ -234,9 +228,6 @@ async def is_node_enabled(node_id: str) -> bool:
         return str(val) not in ("0", "false", "False")
     except Exception:
         return True
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def set_node_cpu_percent(node_id: str, percent: int) -> None:
@@ -246,7 +237,6 @@ async def set_node_cpu_percent(node_id: str, percent: int) -> None:
     实现无需重启的运行时动态调整。
     """
     percent = max(1, min(100, int(percent)))
-    redis = None
     try:
         redis = await get_redis()
         await redis.set(
@@ -256,14 +246,10 @@ async def set_node_cpu_percent(node_id: str, percent: int) -> None:
         )
     except Exception as e:
         logger.error(f"Failed to set node cpu percent for {node_id}: {e}")
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def get_node_cpu_percent(node_id: str, default: int = 50) -> int:
     """查询节点 CPU 资源分配比例（默认 50）。"""
-    redis = None
     try:
         redis = await get_redis()
         val = await redis.get(f"{NODE_CPU_PERCENT_PREFIX}{node_id}")
@@ -275,9 +261,6 @@ async def get_node_cpu_percent(node_id: str, default: int = 50) -> int:
             return default
     except Exception:
         return default
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def delete_worker_node(node_id: str) -> bool:
@@ -292,7 +275,6 @@ async def delete_worker_node(node_id: str) -> bool:
 
     返回是否成功。
     """
-    redis = None
     try:
         redis = await get_redis()
         # 读取节点 Hash 获取标签，用于清理标签集合
@@ -323,9 +305,6 @@ async def delete_worker_node(node_id: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to delete worker node {node_id} from Redis: {e}")
         return False
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[dict]:
@@ -339,7 +318,6 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
     Args:
         offline_after_seconds: 超过该秒数无心跳视为离线
     """
-    redis = None
     try:
         redis = await get_redis()
         online_nodes = await redis.smembers("slice:nodes:online")
@@ -456,9 +434,6 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
     except Exception as e:
         logger.error(f"Failed to get worker nodes from Redis: {e}")
         return []
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def set_node_update_command(node_id: str, target_version: str) -> bool:
@@ -476,7 +451,6 @@ async def set_node_update_command(node_id: str, target_version: str) -> bool:
     Returns:
         是否写入成功。
     """
-    redis = None
     try:
         redis = await get_redis()
         payload = json.dumps({
@@ -492,14 +466,10 @@ async def set_node_update_command(node_id: str, target_version: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to set node update command for {node_id}: {e}")
         return False
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def get_node_update_command(node_id: str) -> Optional[dict]:
     """读取节点当前的引擎更新指令（供界面展示推送状态/目标版本）。"""
-    redis = None
     try:
         redis = await get_redis()
         val = await redis.get(f"{NODE_UPDATE_PREFIX}{node_id}")
@@ -508,19 +478,12 @@ async def get_node_update_command(node_id: str) -> Optional[dict]:
         return json.loads(val)
     except Exception:
         return None
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def clear_node_update_command(node_id: str) -> None:
     """清除节点的引擎更新指令（Worker 成功应用更新后调用，避免重复拉取）。"""
-    redis = None
     try:
         redis = await get_redis()
         await redis.delete(f"{NODE_UPDATE_PREFIX}{node_id}")
     except Exception:
         pass
-    finally:
-        if redis:
-            await redis.close()

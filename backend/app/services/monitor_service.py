@@ -82,8 +82,9 @@ async def ensure_default_alert_rules() -> None:
 
 
 async def _get_redis() -> Any:
-    import redis.asyncio as aioredis
-    return aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    """获取共享 Redis 连接（复用 redis_stream 的连接池，消除重复初始化）。"""
+    from app.services.redis_stream import get_redis
+    return await get_redis()
 
 
 async def collect_metrics() -> dict[str, float]:
@@ -151,10 +152,6 @@ async def collect_metrics() -> dict[str, float]:
         metrics["queue_backlog"] = float(backlog)
     except Exception as e:
         logger.warning("Failed to collect Redis metrics: %s", e)
-    finally:
-        if redis:
-            await redis.aclose()
-
     return metrics
 
 
@@ -317,10 +314,6 @@ async def check_health() -> dict:
     except Exception as e:
         all_ok = False
         result["checks"]["redis"] = {"status": "error", "error": str(e)}
-    finally:
-        if redis:
-            await redis.aclose()
-
     # MinIO
     try:
         from app.services.minio_service import get_minio_client
