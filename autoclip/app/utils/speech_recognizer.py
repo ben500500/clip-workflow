@@ -31,6 +31,7 @@ class SpeechRecognitionMethod(str, Enum):
     """语音识别方法枚举"""
     ALIYUN_SPEECH = "aliyun_speech"
     WHISPER = "whisper"
+    FUNASR_LOCAL = "funasr_local"
 
 
 class LanguageCode(str, Enum):
@@ -64,6 +65,9 @@ class SpeechRecognitionConfig:
     custom_api_url: Optional[str] = None
     custom_api_key: Optional[str] = None
 
+    # 本地 FunASR 模型标识（如 iic/SenseVoiceSmall），None 时走默认值/环境变量
+    funasr_model: Optional[str] = None
+
 
 class SpeechRecognitionError(Exception):
     """语音识别错误"""
@@ -78,6 +82,7 @@ class SpeechRecognizer:
         self.available_methods = {
             SpeechRecognitionMethod.ALIYUN_SPEECH: self._check_aliyun_speech_availability(),
             SpeechRecognitionMethod.WHISPER: self._check_whisper_availability(),
+            SpeechRecognitionMethod.FUNASR_LOCAL: self._check_funasr_availability(),
         }
 
     def _check_whisper_availability(self) -> bool:
@@ -98,6 +103,15 @@ class SpeechRecognizer:
                           or (self.config.aliyun_access_key if hasattr(self, 'config') else None))
             return bool(access_key)
         except Exception:
+            return False
+
+    def _check_funasr_availability(self) -> bool:
+        """检查本地 FunASR 运行时是否可用（无需 API Key）。"""
+        try:
+            import funasr  # noqa: F401
+            return True
+        except Exception:
+            logger.debug("本地 FunASR 未安装（import funasr 失败）")
             return False
 
     def _extract_audio_from_video(self, video_path: Path, output_dir: Path) -> Path:
@@ -166,6 +180,8 @@ class SpeechRecognizer:
             return self._generate_subtitle_aliyun_speech(video_path, output_path, config)
         if config.method == SpeechRecognitionMethod.WHISPER:
             return self._generate_subtitle_whisper(video_path, output_path, config)
+        if config.method == SpeechRecognitionMethod.FUNASR_LOCAL:
+            return self._generate_subtitle_funasr_local(video_path, output_path, config)
         raise SpeechRecognitionError(f"不支持的语音识别方法: {config.method}")
 
     @staticmethod
@@ -707,11 +723,87 @@ class SpeechRecognizer:
             # 并聚合成短句级字幕，无需再做 VAD 二次裁剪（避免破坏精确边界）。
             srt_content = self._segments_to_srt(seg_list)
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(srt_content, encoding="utf-8")
-        if not seg_list:
-            logger.warning("whisper 未识别到语音内容（可能为静音视频）")
-        return output_path
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(srt_content, encoding="utf-8")
+            if not seg_list:
+                logger.warning("whisper 未识别到语音内容（可能为静音视频）")
+            return output_path
+
+    def _generate_subtitle_funasr_local(self, video_path: Path, output_path: Path,
+                                        config: SpeechRecognitionConfig) -> Path:
+        """使用本地 FunASR（AutoModel）生成字幕（CPU 推理，无需 API Key）。
+
+        默认模型为 iic/SenseVoiceSmall，可通过 config.funasr_model 或
+        环境变量 AUTOCLIP_ASR_FUNASR_MODEL 覆盖。
+        """
+        if not video_path.exists():
+            raise SpeechRecognitionError(f"视频文件不存在: {video_path}")
+        if video_path.stat().st_size == 0:
+            raise SpeechRecognitionError(f"视频文件为空: {video_path}")
+        if output_path.exists():
+            logger.info(f"字幕文件已存在，跳过 FunASR 处理: {output_path}")
+            return output_path
+        try:
+            from funasr import AutoModel
+        except ModuleNotFoundError as e:
+            raise SpeechRecognitionError(
+                f"FunASR 运行时缺少依赖（{e}）。请安装 funasr / modelscope / torch 后再试。"
+            )
+        try:
+            model_id = (getattr(config, "funasr_model", None)
+                        or os.getenv("AUTOCLIP_ASR_FUNASR_MODEL", "iic/SenseVoiceSmall"))
+            language = None if config.language == LanguageCode.AUTO else str(config.language).split("-")[0]
+            logger.info(f"使用 FunASR 生成字幕: model={model_id} lang={language or 'auto'}")
+            audio_path = self._extract_audio_from_video(video_path, output_path.parent)
+            model = AutoModel(
+                model=model_id,
+                vad_model="fsmn-vad",
+                vad_kwargs={"max_single_segment_time": "30s"},
+                punc_model="ct-punc",
+                disable_update=True,
+                device="cpu",
+            )
+            res = model.generate(
+                input=[str(audio_path)],
+                batch_size_s=300,
+                language=language or "auto",
+                use_itn=True,
+            )
+            if not res or not res[0]:
+                raise SpeechRecognitionError("FunASR 未识别出任何语音内容")
+            sentence_info = res[0].get("sentence_info") or {}
+            sent_texts = sentence_info.get("text") or []
+            sent_ts = sentence_info.get("timestamp") or []
+            if sent_texts and sent_ts and len(sent_texts) == len(sent_ts):
+                segments = []
+                for t, (s, e) in zip(sent_texts, sent_ts):
+                    t = self._strip_funasr_tags(t).strip()
+                    if t:
+                        segments.append({"start": float(s), "end": float(e), "text": t})
+                if not segments:
+                    raise SpeechRecognitionError("FunASR 句子切分结果为空")
+            else:
+                text = self._strip_funasr_tags(res[0].get("text", "")).strip()
+                if not text:
+                    raise SpeechRecognitionError("FunASR 识别结果为空")
+                duration = self._get_media_duration(video_path)
+                segments = [{"start": 0.0, "end": duration, "text": text}]
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(self._segments_to_srt(segments), encoding="utf-8")
+            logger.info(f"本地 FunASR 字幕生成成功: {output_path}")
+            return output_path
+        except SpeechRecognitionError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"本地 FunASR 生成字幕失败: {e}", exc_info=True)
+            raise SpeechRecognitionError(f"本地 FunASR 生成字幕失败: {e}")
+
+    @staticmethod
+    def _strip_funasr_tags(text: str) -> str:
+        """去除 FunASR（SenseVoice）输出中的语言/情感标记，如 [ZH] [NEUTRAL]。"""
+        if not text:
+            return text
+        return re.sub(r"\[[A-Za-z]+\]", "", text)
 
     def _generate_subtitle_aliyun_speech(self, video_path: Path, output_path: Path,
                                          config: SpeechRecognitionConfig) -> Path:

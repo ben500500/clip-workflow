@@ -219,7 +219,7 @@ def _filter_srt_by_time(srt_path: Path, out_path: Path,
 def _run_asr(video_path: str, srt_path: Path, api_key: str) -> None:
     """按环境变量 AUTOCLIP_ASR_METHOD 选择 ASR 方式生成 SRT。
 
-    支持 aliyun_speech（默认，需 DASHSCOPE_API_KEY）与 whisper（本地 faster-whisper）。
+    支持 aliyun_speech（默认，需 DASHSCOPE_API_KEY）、whisper（本地 faster-whisper）与 funasr_local（本地 FunASR，需安装 funasr 运行时）。
     whisper 无需 API Key；模型用 WHISPER_MODEL 选择（默认 small）。
 
     转写结果按「视频内容哈希 + ASR 方式」缓存到 MEDIA_DIR/data/asr_cache，

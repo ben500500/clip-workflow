@@ -49,3 +49,9 @@ prometheus-client>=0.19.0,<1.0.0
 # httpx>=0.26.0  # 用于测试客户端
 # 本地 Whisper 语音识别（AUTOCLIP_ASR_METHOD=whisper 时使用）
 faster-whisper>=1.0.0
+
+# ==================== 本地 FunASR（AUTOCLIP_ASR_METHOD=funasr_local 时启用） ====================
+# funasr>=1.0.0
+# modelscope>=1.11.0
+# torch>=2.1.0
+
