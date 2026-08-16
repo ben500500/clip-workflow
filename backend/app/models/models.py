@@ -143,6 +143,8 @@ class Episode(Base):
     title = Column(String(255), nullable=True)
     episode_no = Column(Integer, nullable=True)
     source_file_key = Column(String(500), nullable=True)
+    # 视频号素材导入（wechat_download）：URL 导入的最小粘合字段（来源链接，便于溯源）
+    source_url = Column(String(2000), nullable=True)
     duration = Column(Float, nullable=True)
     resolution = Column(String(50), nullable=True)
     file_size = Column(BigInteger, nullable=True)

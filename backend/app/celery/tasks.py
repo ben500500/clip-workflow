@@ -43,6 +43,7 @@ celery_app.conf.update(
         "video_processing": {"exchange": "video_processing"},
         "publish": {"exchange": "publish"},
         "metrics": {"exchange": "metrics"},
+        "wechat_dl": {"exchange": "wechat_dl"},
         "default": {"exchange": "default"},
     },
     task_routes={
@@ -58,6 +59,8 @@ celery_app.conf.update(
         # Seedance 官方 API 直连出片(HTTP 直连,无浏览器;复用 publish 队列即可,
         # 不依赖 rpa_worker,普通 worker 即可消费)
         "app.celery.tasks.seedance_generate_task": {"queue": "publish"},
+        # 视频号素材导入下载（wechat_download）：独立 wechat_dl 队列（可剥离形态 B 单独拉起）
+        "wechat_dl.download": {"queue": "wechat_dl"},
     },
     beat_schedule={
         "collect-metrics-daily": {
@@ -2864,3 +2867,12 @@ def seedance_generate_task(
         ))
         self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         return {"success": False, "status": "failed", "message": str(e)}
+
+
+# 注册视频号素材导入下载（wechat_download）任务到本 Celery app。
+# 置于文件末尾避免循环导入（wechat_download.tasks 依赖本模块的 celery_app）。
+# 仅在并入形态需要；剥离形态 B 使用 wechat_download 独立 app 时无需此导入。
+try:
+    import wechat_download.tasks  # noqa: F401  # 触发任务注册
+except Exception as _wechat_dl_import_err:  # pragma: no cover
+    logger.warning("wechat_download.tasks 注册失败（不影响主系统其他任务）: %s", _wechat_dl_import_err)

@@ -31,6 +31,7 @@ import Maintenance from './pages/Maintenance';
 import ShortDrama from './pages/ShortDrama';
 import NotFound from './pages/NotFound';
 import BatchSlice from './pages/BatchSlice';
+import ResourceDownload from './pages/ResourceDownload';
 
 const App: React.FC = () => {
   return (
@@ -72,6 +73,7 @@ const App: React.FC = () => {
             <Route path="watermark" element={<ShortDrama />} />
             <Route path="settings" element={<Settings />} />
             <Route path="batch-slice" element={<BatchSlice />} />
+            <Route path="resource-download" element={<ResourceDownload />} />
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>

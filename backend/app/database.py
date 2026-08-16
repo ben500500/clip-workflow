@@ -56,6 +56,8 @@ async def init_db():
     await _apply_compat_migrations()
     await _ensure_autoclip_runs_table()
     await _backfill_data_scope()
+    # wechat_download 独立包（并入形态）：确保其独立表存在（幂等）
+    await _ensure_wechat_download_tables()
 
 
 async def _backfill_data_scope():
@@ -192,6 +194,8 @@ async def _apply_compat_migrations():
         ("publish_tasks", "material_id", "UUID"),
         ("video_metrics", "platform", "VARCHAR(50)"),
         ("publish_materials", "prompt_record_id", "UUID"),
+        # 视频号素材导入（wechat_download）：episodes 最小粘合字段 source_url
+        ("episodes", "source_url", "VARCHAR(2000)"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
@@ -214,3 +218,17 @@ async def _apply_compat_migrations():
 async def close_db():
     """Dispose the database engine."""
     await engine.dispose()
+
+async def _ensure_wechat_download_tables():
+    """确保 wechat_download 独立包的表存在（并入形态，幂等）。
+
+    wechat_download 使用独立 Base（wechat_download.base.WechatDownloadBase），
+    不在主系统 Base.metadata 中，create_all 不会自动建表；此处显式建表，
+    兼容未跑 alembic 迁移的环境。生产建议以 alembic 迁移（0029）为准。
+    """
+    from wechat_download.base import WechatDownloadBase
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(WechatDownloadBase.metadata.create_all)
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to ensure wechat_download tables: %s", e)
