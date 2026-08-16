@@ -92,6 +92,7 @@ async def run_slice(
     subtitle_srt_path: Optional[str] = None,
     subtitle_font_ratio: Optional[float] = None,
     subtitle_spacing: Optional[int] = None,
+    subtitle_bold: Optional[int] = None,
     subtitle_style: Optional[str] = None,
     subtitle_color: Optional[str] = None,
     subtitle_border_color: Optional[str] = None,
@@ -137,6 +138,8 @@ async def run_slice(
         cmd.extend(["--subtitle-font-ratio", str(float(subtitle_font_ratio))])
     if subtitle_spacing is not None:
         cmd.extend(["--subtitle-spacing", str(int(subtitle_spacing))])
+    if subtitle_bold is not None:
+        cmd.extend(["--subtitle-bold", str(int(subtitle_bold))])
     if subtitle_style:
         cmd.extend(["--subtitle-style", subtitle_style])
     if subtitle_color:
@@ -174,6 +177,7 @@ async def run_slice_scrub(
     subtitle_srt_path: Optional[str] = None,
     subtitle_font_ratio: Optional[float] = None,
     subtitle_spacing: Optional[int] = None,
+    subtitle_bold: Optional[int] = None,
     subtitle_style: Optional[str] = None,
     subtitle_color: Optional[str] = None,
     subtitle_border_color: Optional[str] = None,
@@ -200,6 +204,7 @@ async def run_slice_scrub(
         subtitle_srt_path=subtitle_srt_path,
         subtitle_font_ratio=subtitle_font_ratio,
         subtitle_spacing=subtitle_spacing,
+        subtitle_bold=subtitle_bold,
         subtitle_style=subtitle_style,
         subtitle_color=subtitle_color,
         subtitle_border_color=subtitle_border_color,
@@ -226,6 +231,7 @@ async def run_slice_fast(
     subtitle_srt_path: Optional[str] = None,
     subtitle_font_ratio: Optional[float] = None,
     subtitle_spacing: Optional[int] = None,
+    subtitle_bold: Optional[int] = None,
     subtitle_style: Optional[str] = None,
     subtitle_color: Optional[str] = None,
     subtitle_border_color: Optional[str] = None,
@@ -254,6 +260,7 @@ async def run_slice_fast(
         subtitle_srt_path=subtitle_srt_path,
         subtitle_font_ratio=subtitle_font_ratio,
         subtitle_spacing=subtitle_spacing,
+        subtitle_bold=subtitle_bold,
         subtitle_style=subtitle_style,
         subtitle_color=subtitle_color,
         subtitle_border_color=subtitle_border_color,

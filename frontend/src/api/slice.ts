@@ -71,6 +71,8 @@ export const sliceApi = {
       subtitle_font_ratio?: number;
       // 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；负值/调小让字幕文字更紧凑，调大则字距变宽）
       subtitle_spacing?: number;
+      // 字幕字体粗细（ASS Bold：0=不加粗，-1 或 1=加粗，默认 0 不加粗）
+      subtitle_bold?: number;
       // 字幕样式：default（白字黑边+半透明黑底）/ custom（自定义字体色+边框色，无底色）
       subtitle_style?: 'default' | 'custom';
       // 上传的字幕文件（MinIO key，通过 uploadSubtitle 上传）；提供后直接应用该字幕，跳过 ASR 识别
