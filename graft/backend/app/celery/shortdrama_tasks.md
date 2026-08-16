@@ -1,0 +1,21 @@
+# backend/app/celery/shortdrama_tasks.py
+
+- _load_shortdrama_prompt · function · L32-L44 — async def _load_shortdrama_prompt(prompt_id: str)
+- _now_str · function · L47-L48 — def _now_str() -> str
+- _update_doubao_prompt · function · L55-L107 — async def _update_doubao_prompt( prompt_id: str, *, status: Optional[str] = None, message: Optional[str] = None, error_message: Optional[str] = None, qrcode: Optional[str] = None, screenshot: Optional[str] = None, task_id: Optional[str] = None, approved_prompt: Optional[str] = None, rewrite_history: Optional[list] = None, confirm_token: Optional[str] = None, progress: Optional[int] = None, account: Optional[str] = None, ) -> bool
+- _sync_doubao_video · function · L110-L191 — async def _sync_doubao_video( prompt_id: str, *, download_url: str, file_name: str, ) -> dict
+- _load_doubao_config · function · L194-L203 — async def _load_doubao_config() -> dict
+- _check_doubao_cancelled · function · L206-L211 — async def _check_doubao_cancelled(prompt_id: str) -> bool
+- doubao_generate_task · function · L215-L433 — def doubao_generate_task( self, prompt_id: str, *, account_type: str = "free", duration: Optional[int] = None, )
+- _progress_cb · function · L256-L262 — async def _progress_cb(msg: str, p: float)
+- _qrcode_cb · function · L265-L271 — async def _qrcode_cb(qr_data_url: str)
+- _on_login_success · function · L275-L281 — async def _on_login_success()
+- _screenshot_cb · function · L284-L288 — async def _screenshot_cb(shot_data_url: str)
+- _account_cb · function · L291-L297 — async def _account_cb(account: Optional[str])
+- _rewrite_cb · function · L300-L339 — async def _rewrite_cb(payload: dict) -> str
+- _update_seedance_prompt · function · L440-L477 — async def _update_seedance_prompt( prompt_id: str, *, status: Optional[str] = None, message: Optional[str] = None, error_message: Optional[str] = None, task_id: Optional[str] = None, resolution: Optional[str] = None, gen_channel: Optional[str] = None, ) -> bool
+- _load_seedance_db_config · function · L480-L489 — async def _load_seedance_db_config() -> dict
+- _check_seedance_cancelled · function · L492-L497 — async def _check_seedance_cancelled(prompt_id: str) -> bool
+- _sync_generated_video · function · L500-L583 — async def _sync_generated_video( prompt_id: str, *, download_url: str, file_name: str, channel: str = "seedance_api", ) -> dict
+- seedance_generate_task · function · L587-L792 — def seedance_generate_task( self, prompt_id: str, *, duration: Optional[int] = None, resolution: Optional[str] = None, )
+- _progress_cb · function · L653-L659 — async def _progress_cb(msg: str, p: float)
