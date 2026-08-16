@@ -1,13 +1,13 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Card, Tabs, Form, Input, Select, Button, Table, Tag, message, Space,
-  Typography, Progress, Popconfirm, Modal, Alert, Divider, Switch,
+  Typography, Progress, Modal, Alert,
 } from 'antd';
 import {
-  ImportOutlined, DownloadOutlined, SafetyCertificateOutlined,
-  LinkOutlined, PlusOutlined, ReloadOutlined,
+  ImportOutlined, DownloadOutlined,
+  LinkOutlined, ReloadOutlined,
 } from '@ant-design/icons';
-import { wechatDlApi, WechatDlTask, WechatDlAuth } from '../api/wechatDl';
+import { wechatDlApi, WechatDlTask } from '../api/wechatDl';
 import { formatDateTime } from '../utils/format';
 
 const { Title, Text } = Typography;
@@ -23,23 +23,11 @@ const STATUS_META: Record<string, { color: string; label: string }> = {
   failed: { color: 'error', label: '失败' },
 };
 
-const SOURCE_TYPE_META: Record<string, string> = {
-  authorized: '已授权素材',
-  self_owned: '自有账号',
-};
-
 // ========== 链接导入 Tab ==========
 const ImportPanel: React.FC = () => {
   const [form] = Form.useForm();
   const [busy, setBusy] = useState(false);
-  const [auths, setAuths] = useState<WechatDlAuth[]>([]);
   const [mode, setMode] = useState<'single' | 'batch'>('single');
-
-  const loadAuths = useCallback(() => {
-    wechatDlApi.getAuths().then((res) => setAuths(res.items || [])).catch(() => undefined);
-  }, []);
-
-  useEffect(() => { loadAuths(); }, [loadAuths]);
 
   const handleImport = async () => {
     const values = await form.validateFields();
@@ -48,11 +36,6 @@ const ImportPanel: React.FC = () => {
       if (mode === 'single') {
         const res = await wechatDlApi.import({
           source_url: values.source_url.trim(),
-          source_type: values.source_type || 'authorized',
-          project_id: values.project_id || undefined,
-          auth_id: values.auth_id || undefined,
-          authorize_owner: values.authorize_owner,
-          authorize_note: values.authorize_note,
         });
         message.success(`已创建下载任务（${res.message}）`);
       } else {
@@ -65,11 +48,6 @@ const ImportPanel: React.FC = () => {
         }
         const res = await wechatDlApi.importBatch({
           source_urls: urls,
-          source_type: values.source_type || 'authorized',
-          project_id: values.project_id || undefined,
-          auth_id: values.auth_id || undefined,
-          authorize_owner: values.authorize_owner,
-          authorize_note: values.authorize_note,
         });
         message.success(`批量导入完成：${res.message}`);
         if (res.skipped_reasons?.length) {
@@ -84,7 +62,6 @@ const ImportPanel: React.FC = () => {
         }
       }
       form.resetFields();
-      form.setFieldsValue({ source_type: 'authorized' });
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '导入失败');
     } finally {
@@ -98,21 +75,21 @@ const ImportPanel: React.FC = () => {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="合规红线"
-        description="导入「已授权第三方素材」必须绑定授权材料（选择已登记授权或填写授权备注），否则将被系统拦截（HTTP 403）。自有账号素材可选 self_owned 类型免授权材料。"
+        message="直接导入"
+        description="粘贴视频号分享链接即可创建下载任务，无需绑定授权材料（授权校验已移除）。"
       />
       <Space style={{ marginBottom: 16 }}>
         <Button
           type={mode === 'single' ? 'primary' : 'default'}
           icon={<LinkOutlined />}
-          onClick={() => { setMode('single'); form.resetFields(); form.setFieldsValue({ source_type: 'authorized' }); }}
+          onClick={() => { setMode('single'); form.resetFields(); }}
         >
           单链接导入
         </Button>
         <Button
           type={mode === 'batch' ? 'primary' : 'default'}
           icon={<ImportOutlined />}
-          onClick={() => { setMode('batch'); form.resetFields(); form.setFieldsValue({ source_type: 'authorized' }); }}
+          onClick={() => { setMode('batch'); form.resetFields(); }}
         >
           批量导入
         </Button>
@@ -121,7 +98,6 @@ const ImportPanel: React.FC = () => {
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ source_type: 'authorized' }}
         style={{ maxWidth: 720 }}
       >
         {mode === 'single' ? (
@@ -144,41 +120,6 @@ const ImportPanel: React.FC = () => {
             />
           </Form.Item>
         )}
-
-        <Form.Item name="source_type" label="素材类型">
-          <Select
-            options={[
-              { value: 'authorized', label: '已授权第三方素材' },
-              { value: 'self_owned', label: '自有账号素材' },
-            ]}
-          />
-        </Form.Item>
-
-        <Form.Item name="auth_id" label="绑定已登记授权（推荐）">
-          <Select
-            allowClear
-            placeholder="选择已登记授权材料"
-            options={auths.filter((a) => a.is_active).map((a) => ({
-              value: a.id,
-              label: `${a.owner || '未命名'}（${a.type || 'channel_auth'}）${a.note ? ' - ' + a.note : ''}`,
-            }))}
-          />
-        </Form.Item>
-
-        <Divider plain style={{ margin: '4px 0 16px' }}>或即时登记授权材料（文字备注通道）</Divider>
-
-        <Space style={{ display: 'flex' }} align="start">
-          <Form.Item name="authorize_owner" label="授权主体">
-            <Input placeholder="如：XX 版权方" style={{ width: 200 }} />
-          </Form.Item>
-          <Form.Item
-            name="authorize_note"
-            label="授权备注"
-            style={{ flex: 1 }}
-          >
-            <TextArea placeholder="授权材料说明，如：已获授权书 2026-08（未填写则需选择上方已登记授权）" rows={2} />
-          </Form.Item>
-        </Space>
 
         <Button
           type="primary"
@@ -209,7 +150,7 @@ const TaskListPanel: React.FC = () => {
 
   useEffect(() => { loadTasks(); }, [loadTasks]);
 
-  // WebSocket 实时进度（P0 已实现，页面订阅刷新）
+  // WebSocket 实时进度（页面订阅刷新）
   useEffect(() => {
     const sockets = new Map<string, WebSocket>();
     tasks.forEach((t) => {
@@ -250,14 +191,6 @@ const TaskListPanel: React.FC = () => {
           </Space>
         );
       },
-    },
-    {
-      title: '类型', dataIndex: 'source_type', key: 'source_type', width: 110,
-      render: (v: string) => <Tag color={v === 'self_owned' ? 'blue' : 'purple'}>{SOURCE_TYPE_META[v] || v}</Tag>,
-    },
-    {
-      title: '授权来源', dataIndex: 'source_authorize', key: 'source_authorize', width: 160, ellipsis: true,
-      render: (v: string | null) => v || '-',
     },
     {
       title: '进度消息', dataIndex: 'message', key: 'message', ellipsis: true,
@@ -303,168 +236,6 @@ const TaskListPanel: React.FC = () => {
   );
 };
 
-// ========== 授权管理 Tab ==========
-const AuthPanel: React.FC = () => {
-  const [auths, setAuths] = useState<WechatDlAuth[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editing, setEditing] = useState<WechatDlAuth | null>(null);
-  const [form] = Form.useForm();
-
-  const load = useCallback(() => {
-    setLoading(true);
-    wechatDlApi.getAuths().then((res) => setAuths(res.items || [])).catch(() => undefined).finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  const openCreate = () => {
-    setEditing(null);
-    form.resetFields();
-    form.setFieldsValue({ authorize_type: 'channel_auth', is_active: true });
-    setModalOpen(true);
-  };
-
-  const openEdit = (auth: WechatDlAuth) => {
-    setEditing(auth);
-    form.setFieldsValue({
-      authorize_owner: auth.owner || '',
-      authorize_type: auth.type || 'channel_auth',
-      authorize_scope: auth.scope || '',
-      authorize_note: auth.note || '',
-      is_active: auth.is_active,
-    });
-    setModalOpen(true);
-  };
-
-  const handleSubmit = async () => {
-    const values = await form.validateFields();
-    try {
-      if (editing) {
-        await wechatDlApi.updateAuth(editing.id, values);
-        message.success('授权材料已更新');
-      } else {
-        await wechatDlApi.createAuth(values);
-        message.success('授权材料已登记');
-      }
-      setModalOpen(false);
-      load();
-    } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : '保存失败');
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    try {
-      await wechatDlApi.deleteAuth(id);
-      message.success('已删除');
-      load();
-    } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : '删除失败');
-    }
-  };
-
-  const handleToggle = async (auth: WechatDlAuth) => {
-    try {
-      await wechatDlApi.toggleAuth(auth.id);
-      message.success(auth.is_active ? '已停用（关联链接将拦截）' : '已启用');
-      load();
-    } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : '切换失败');
-    }
-  };
-
-  const columns = [
-    { title: '授权主体', dataIndex: 'owner', key: 'owner', width: 160, render: (v: string | null) => v || '-' },
-    {
-      title: '类型', dataIndex: 'type', key: 'type', width: 120,
-      render: (v: string | null) => <Tag>{v || 'other'}</Tag>,
-    },
-    { title: '授权备注', dataIndex: 'note', key: 'note', ellipsis: true, render: (v: string | null) => v || '-' },
-    { title: '授权范围', dataIndex: 'scope', key: 'scope', width: 180, ellipsis: true, render: (v: string | null) => v || '-' },
-    {
-      title: '状态', dataIndex: 'is_active', key: 'is_active', width: 90,
-      render: (v: boolean) => (v ? <Tag color="success">有效</Tag> : <Tag color="default">失效</Tag>),
-    },
-    {
-      title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170,
-      render: (d: string | null) => formatDateTime(d),
-    },
-    {
-      title: '操作', key: 'op', width: 200,
-      render: (_: unknown, r: WechatDlAuth) => (
-        <Space>
-          <Switch size="small" checked={r.is_active} onChange={() => handleToggle(r)} checkedChildren="开" unCheckedChildren="关" />
-          <Button size="small" onClick={() => openEdit(r)}>编辑</Button>
-          <Popconfirm title="确认删除该授权材料？" onConfirm={() => handleDelete(r.id)}>
-            <Button size="small" danger>删除</Button>
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ];
-
-  return (
-    <Card
-      size="small"
-      title="授权材料管理"
-      extra={<Button type="primary" size="small" icon={<PlusOutlined />} onClick={openCreate}>登记授权</Button>}
-    >
-      <Alert
-        type="warning"
-        showIcon
-        style={{ marginBottom: 16 }}
-        message="授权文件通道暂未启用（P1 后续版本），当前仅支持文字备注通道。失效的授权材料将导致关联链接导入被拦截。"
-      />
-      <Table
-        rowKey="id"
-        size="small"
-        loading={loading}
-        columns={columns}
-        dataSource={auths}
-        pagination={{ pageSize: 10 }}
-        scroll={{ x: 1000 }}
-      />
-
-      <Modal
-        title={editing ? '编辑授权材料' : '登记授权材料'}
-        open={modalOpen}
-        onOk={handleSubmit}
-        onCancel={() => setModalOpen(false)}
-        okText={editing ? '保存' : '登记'}
-      >
-        <Form form={form} layout="vertical" initialValues={{ authorize_type: 'channel_auth', is_active: true }}>
-          <Form.Item
-            name="authorize_owner"
-            label="授权主体"
-            rules={[{ required: true, message: '请输入授权主体' }]}
-          >
-            <Input placeholder="如：XX 版权方 / XX 授权账号" />
-          </Form.Item>
-          <Form.Item name="authorize_type" label="授权类型">
-            <Select
-              options={[
-                { value: 'copyright', label: '版权授权' },
-                { value: 'channel_auth', label: '账号授权' },
-                { value: 'other', label: '其他' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="authorize_note" label="授权备注" rules={[{ required: true, message: '请输入授权材料备注' }]}>
-            <TextArea rows={2} placeholder="授权材料内容/说明，如：已获授权书 2026-08" />
-          </Form.Item>
-          <Form.Item name="authorize_scope" label="授权范围">
-            <Input placeholder="可选的授权范围描述" />
-          </Form.Item>
-          <Form.Item name="is_active" label="是否有效" valuePropName="checked">
-            <Switch checkedChildren="有效" unCheckedChildren="失效" />
-          </Form.Item>
-        </Form>
-      </Modal>
-    </Card>
-  );
-};
-
 // ========== 主页面 ==========
 const ResourceDownload: React.FC = () => {
   return (
@@ -482,11 +253,6 @@ const ResourceDownload: React.FC = () => {
             key: 'tasks',
             label: <span><DownloadOutlined /> 下载任务</span>,
             children: <TaskListPanel />,
-          },
-          {
-            key: 'auths',
-            label: <span><SafetyCertificateOutlined /> 授权管理</span>,
-            children: <AuthPanel />,
           },
         ]}
       />

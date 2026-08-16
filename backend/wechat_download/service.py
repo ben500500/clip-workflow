@@ -1,9 +1,8 @@
 """wechat_download 业务编排服务（并入形态：复用主系统登录态/入库/MinIO）。
 
 核心职责：
-1. 合规校验（R1 硬红线）：未授权链接拦截；source_type 审计字段强制落库。
-2. 任务编排：创建任务 → 元宝解析（主链路）→ 预览层兜底（降级）→ 拉流入库。
-3. 任务状态/进度管理（供 API 与 WebSocket 查询）。
+1. 任务编排：创建任务 → 多 provider 解析（兜底链）→ 拉流入库。
+2. 任务状态/进度管理（供 API 与 WebSocket 查询）。
 
 可剥离性：本服务仅依赖主系统「通用服务接口」（async_session / minio_service /
 upload_service），并通过 db 注入的 AsyncSession 读写本包独立表；剥离时替换
@@ -25,7 +24,6 @@ from app.config import settings
 
 from wechat_download.models import (
     WechatDownloadTask,
-    WechatSourceAuth,
     WechatParseRecord,
 )
 from wechat_download.yuanbao_client import (
@@ -47,76 +45,8 @@ ST_UPLOADING = "uploading"
 ST_COMPLETED = "completed"
 ST_FAILED = "failed"
 
-# 校验通过/允许导入的 source_type
-ALLOWED_SOURCE_TYPES = ("authorized", "self_owned")
-
-
-class AuthRequiredError(Exception):
-    """未授权拦截（R1 合规硬红线）。"""
-
-
 class ImportError_(Exception):
     """导入任务失败。"""
-
-
-# ───────────────────────────────
-# 授权校验
-# ───────────────────────────────
-
-async def validate_authorization(
-    db: AsyncSession,
-    *,
-    source_type: str,
-    auth_id: Optional[uuid.UUID] = None,
-    authorize_owner: Optional[str] = None,
-    authorize_note: Optional[str] = None,
-) -> tuple[Optional[WechatSourceAuth], str]:
-    """校验授权合规（R1 硬红线）。
-
-    返回 (auth_record, source_authorize_text)。
-    - source_type=authorized：必须绑定一条有效授权记录（auth_id 或即时登记 authorize_note）。
-      未提供任何授权材料 → 抛 AuthRequiredError（拦截）。
-    - source_type=self_owned：自有账号，无需外部授权，但记录备注。
-    """
-    source_type = (source_type or "authorized").strip().lower()
-    if source_type not in ALLOWED_SOURCE_TYPES:
-        raise AuthRequiredError(f"无效的 source_type: {source_type}")
-
-    if source_type == "self_owned":
-        # 自有账号：仅需备注说明，无需外部授权材料
-        return None, authorize_note or "自有视频号账号"
-
-    # authorized：必须绑定授权材料
-    auth: Optional[WechatSourceAuth] = None
-    if auth_id is not None:
-        result = await db.execute(
-            select(WechatSourceAuth).where(WechatSourceAuth.id == auth_id)
-        )
-        auth = result.scalar_one_or_none()
-
-    if auth is not None:
-        if not auth.is_active:
-            raise AuthRequiredError("该授权记录已失效，请重新登记授权材料")
-        return auth, (auth.authorize_note or auth.authorize_owner or f"授权#{auth.id}")
-
-    # 即时登记授权材料（P0 双通道之「文字备注」）
-    if not (authorize_note and authorize_note.strip()):
-        raise AuthRequiredError(
-            "未检测到授权材料：导入已授权第三方素材必须绑定授权记录（auth_id）"
-            "或提供授权文字备注（authorize_note），未授权链接将被拦截（合规红线）"
-        )
-    new_auth = WechatSourceAuth(
-        created_by=None,  # 由调用方在 create_import_task 中回填
-        authorize_owner=authorize_owner or "未命名授权方",
-        authorize_type="channel_auth",
-        authorize_scope=None,
-        authorize_note=authorize_note.strip(),
-        is_active=True,
-    )
-    db.add(new_auth)
-    await db.flush()
-    await db.refresh(new_auth)
-    return new_auth, new_auth.authorize_note or f"授权#{new_auth.id}"
 
 
 # ───────────────────────────────
@@ -128,31 +58,18 @@ async def create_import_task(
     *,
     created_by: Optional[uuid.UUID],
     source_url: str,
-    source_type: str,
+    source_type: str = "self_owned",
     project_id: Optional[uuid.UUID] = None,
-    auth_id: Optional[uuid.UUID] = None,
-    authorize_owner: Optional[str] = None,
     authorize_note: Optional[str] = None,
 ) -> WechatDownloadTask:
-    """创建下载任务（先做授权校验，未授权直接拦截）。"""
-    auth, auth_text = await validate_authorization(
-        db,
-        source_type=source_type,
-        auth_id=auth_id,
-        authorize_owner=authorize_owner,
-        authorize_note=authorize_note,
-    )
-    # 新建的授权记录回填创建人
-    if auth is not None and auth_id is None:
-        auth.created_by = created_by
+    """创建下载任务（授权校验已移除：任意视频号链接均可导入）。"""
     task = WechatDownloadTask(
         created_by=created_by,
         source_url=source_url,
         status=ST_PENDING,
         progress=0.0,
         source_type=source_type,
-        source_authorize=auth_text,
-        auth_id=auth.id if auth else None,
+        source_authorize=authorize_note or "",
         project_id=project_id,
     )
     db.add(task)
@@ -171,31 +88,18 @@ async def create_import_tasks_batch(
     *,
     created_by: Optional[uuid.UUID],
     source_urls: list[str],
-    source_type: str,
+    source_type: str = "self_owned",
     project_id: Optional[uuid.UUID] = None,
-    auth_id: Optional[uuid.UUID] = None,
-    authorize_owner: Optional[str] = None,
     authorize_note: Optional[str] = None,
 ) -> tuple[list[WechatDownloadTask], list[str]]:
     """批量创建下载任务（P1：批量链接）。
 
-    复用统一授权材料；逐个 URL 做授权校验（未授权整批拦截并抛 AuthRequiredError），
+    授权校验已移除：任意视频号链接均可批量导入。
     返回 (创建成功的任务列表, 失败项消息列表)。失败项（如重复/非法 URL）单独收集，
     不阻塞整批导入。
     """
     if not source_urls:
-        raise AuthRequiredError("批量导入至少需要一个分享链接")
-
-    # 统一授权材料先校验一次（未授权直接整批拦截，符合 R1 硬红线）
-    auth, auth_text = await validate_authorization(
-        db,
-        source_type=source_type,
-        auth_id=auth_id,
-        authorize_owner=authorize_owner,
-        authorize_note=authorize_note,
-    )
-    if auth is not None and auth_id is None:
-        auth.created_by = created_by
+        raise ImportError_("批量导入至少需要一个分享链接")
 
     tasks: list[WechatDownloadTask] = []
     errors: list[str] = []
@@ -215,8 +119,7 @@ async def create_import_tasks_batch(
             status=ST_PENDING,
             progress=0.0,
             source_type=source_type,
-            source_authorize=auth_text,
-            auth_id=auth.id if auth else None,
+            source_authorize=authorize_note or "",
             project_id=project_id,
         )
         db.add(task)
@@ -225,7 +128,7 @@ async def create_import_tasks_batch(
         tasks.append(task)
 
     if not tasks:
-        raise AuthRequiredError("批量导入没有可用的有效链接")
+        raise ImportError_("批量导入没有可用的有效链接")
     return tasks, errors
 
 
@@ -301,10 +204,6 @@ async def run_download_pipeline(task_id: uuid.UUID) -> dict:
             await db.commit()
             return {"ok": True, "task_id": str(task.id), "episode_id": str(episode_id)}
 
-        except AuthRequiredError as e:
-            await _fail(db, task, f"合规拦截: {e}")
-            await db.commit()
-            return {"ok": False, "error": str(e)}
         except Exception as e:
             logger.exception("download pipeline failed for task %s", task_id)
             await _fail(db, task, str(e))

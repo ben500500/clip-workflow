@@ -2,8 +2,8 @@
 
 对应立项设计文档 §3.1「② 独立数据表」：
 - wechat_download_tasks  下载任务表（URL 导入 → 解析 → 拉流 → 入库）
-- wechat_source_auths    授权素材表（立项决策①：允许已授权第三方素材，落库强校验）
-- wechat_parse_records   解析结果表（元宝 / 预览层解析产物，可追溯、可重试）
+- wechat_source_auths    授权素材表（历史遗留，导入流程已不再强制绑定/校验）
+- wechat_parse_records   解析结果表（各解析 provider 产物，可追溯、可重试）
 
 独立表 + 独立 Base，保证可剥离（随包走）；不改动主系统 episodes 核心结构，
 仅通过 episodes.source_url 最小粘合字段（迁移脚本另行处理）。
@@ -47,11 +47,11 @@ class WechatDownloadTask(WechatDownloadBase):
     message = Column(Text, nullable=True)
     # 解析出的视频元数据（标题/封面/播放地址等，JSON）
     video_meta = Column(JSON, nullable=True)
-    # 视频源类型：authorized(已授权) / self_owned(自有) —— 立项决策①
-    source_type = Column(String(50), nullable=False, default="authorized")
-    # 授权来源（授权素材表 id 或自有账号说明）
+    # 视频源类型标签（仅作审计字段，不再强制）：authorized / self_owned
+    source_type = Column(String(50), nullable=False, default="self_owned")
+    # 授权来源/备注文本（可选，仅作记录）
     source_authorize = Column(Text, nullable=True)
-    # 授权绑定（wechat_source_auths.id，可空）
+    # 授权绑定（wechat_source_auths.id，可空，保留兼容旧数据）
     auth_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     # 拉流成功后落库的 MinIO 文件 key（对应 episodes.source_file_key）
     file_key = Column(String(500), nullable=True)
@@ -71,11 +71,9 @@ class WechatDownloadTask(WechatDownloadBase):
 
 
 class WechatSourceAuth(WechatDownloadBase):
-    """已授权素材授权记录（立项决策①：允许导入已授权第三方素材）。
+    """授权材料记录（历史遗留表，当前导入流程已不再强制绑定/校验）。
 
-    硬红线（R1/R2）：未绑定授权材料的链接一律拦截；source_authorize 支持
-    「文件 + 备注」双通道，P0 先文字备注（authorize_note），P1 接文件
-    （authorize_file_key）。
+    保留该表仅作历史数据兼容，不再参与导入拦截逻辑。
     """
 
     __tablename__ = "wechat_source_auths"

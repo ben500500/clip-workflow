@@ -24,23 +24,6 @@ export interface WechatDlTaskList {
   total: number;
 }
 
-export interface WechatDlAuth {
-  id: string;
-  owner: string | null;
-  type: string | null;
-  note: string | null;
-  scope: string | null;
-  file_key: string | null;
-  expires_at: string | null;
-  is_active: boolean;
-  created_at: string | null;
-}
-
-export interface WechatDlAuthList {
-  items: WechatDlAuth[];
-  total: number;
-}
-
 export interface WechatDlImportResult {
   task_id: string;
   status: string;
@@ -61,8 +44,6 @@ export interface WechatDlImportInput {
   source_url: string;
   source_type?: string;
   project_id?: string;
-  auth_id?: string;
-  authorize_owner?: string;
   authorize_note?: string;
 }
 
@@ -71,13 +52,11 @@ export const wechatDlApi = {
   import: (data: WechatDlImportInput) =>
     client.post('/wechat-dl/import', data) as Promise<WechatDlImportResult>,
 
-  // ── 批量导入（P1） ──
+  // ── 批量导入 ──
   importBatch: (data: {
     source_urls: string[];
     source_type?: string;
     project_id?: string;
-    auth_id?: string;
-    authorize_owner?: string;
     authorize_note?: string;
   }) => client.post('/wechat-dl/import/batch', data) as Promise<WechatDlBatchImportResult>,
 
@@ -87,30 +66,4 @@ export const wechatDlApi = {
 
   getTask: (id: string) =>
     client.get(`/wechat-dl/tasks/${id}`) as Promise<WechatDlTask>,
-
-  // ── 授权材料管理（P1，不含文件通道） ──
-  getAuths: () => client.get('/wechat-dl/auths') as Promise<WechatDlAuthList>,
-
-  createAuth: (data: {
-    authorize_owner: string;
-    authorize_type?: string;
-    authorize_scope?: string;
-    authorize_note?: string;
-    expires_at?: string;
-    is_active?: boolean;
-  }) => client.post('/wechat-dl/auths', data) as Promise<WechatDlAuth>,
-
-  updateAuth: (id: string, data: {
-    authorize_owner?: string;
-    authorize_type?: string;
-    authorize_scope?: string;
-    authorize_note?: string;
-    expires_at?: string;
-    is_active?: boolean;
-  }) => client.put(`/wechat-dl/auths/${id}`, data) as Promise<WechatDlAuth>,
-
-  deleteAuth: (id: string) => client.delete(`/wechat-dl/auths/${id}`) as Promise<void>,
-
-  toggleAuth: (id: string) =>
-    client.post(`/wechat-dl/auths/${id}/toggle`) as Promise<{ id: string; is_active: boolean }>,
 };
