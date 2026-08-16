@@ -352,7 +352,7 @@ async def _parse_with_fallback(db, task: WechatDownloadTask):
             raw=result.raw[:4000] if result.raw else None,
             error_message=result.error,
         )
-        await db.add(record)
+        db.add(record)
         await db.flush()
         if result.success:
             return result
@@ -362,7 +362,7 @@ async def _parse_with_fallback(db, task: WechatDownloadTask):
             task_id=task.id, channel="yuanbao", source_url=task.source_url,
             status="failed", error_message=str(e),
         )
-        await db.add(record)
+        db.add(record)
         await db.flush()
 
     # 兜底：预览层（复用登录态）
@@ -373,7 +373,7 @@ async def _parse_with_fallback(db, task: WechatDownloadTask):
             task_id=task.id, channel="preview", source_url=task.source_url,
             status="success", play_url=result.play_url, result_meta=result.meta,
         )
-        await db.add(rec2)
+        db.add(rec2)
         await db.flush()
         return result
     except PreviewUnavailableError as e:
@@ -382,7 +382,7 @@ async def _parse_with_fallback(db, task: WechatDownloadTask):
             task_id=task.id, channel="preview", source_url=task.source_url,
             status="failed", error_message=str(e),
         )
-        await db.add(rec2)
+        db.add(rec2)
         await db.flush()
         raise ImportError_(f"解析失败（元宝 & 预览兜底均不可用）: {e}")
 

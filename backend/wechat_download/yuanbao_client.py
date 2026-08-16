@@ -69,6 +69,15 @@ class YuanbaoClient:
         接口路径按需在子类/配置中调整；这里使用设计文档约定的
         `.../get_parse_result` 端点，并允许环境变量注入完整路径。
         """
+        # 端点未配置兜底：base 仍是默认占位地址（yuanbao.tencent.com）且未配
+        # key 时，该接口必然 405/不可用，直接判为未配置，跳过主链路让上层
+        # 走预览层兜底，避免每次都白发一次请求并写无意义失败记录。
+        _placeholder_base = "https://yuanbao.tencent.com"
+        if (not self.base) or self.base.rstrip("/") == _placeholder_base or (not self.key):
+            raise YuanbaoParseError(
+                "元宝解析未配置有效端点（WECHAT_DL_YUANBAO_API_BASE 为默认占位地址 "
+                "或 WECHAT_DL_YUANBAO_KEY 为空），跳过主链路，等待预览层兜底"
+            )
         try:
             payload = {"url": share_url, "need_video_info": True}
             if self.key:
