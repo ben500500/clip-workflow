@@ -85,7 +85,6 @@ class PreviewClient:
         """
         cdp = await self._pick_account_cdp(db) if db is not None else None
         if not cdp:
-            from wechat_download.preview_client import PreviewUnavailableError
             raise PreviewUnavailableError(
                 "预览层兜底不可用：未启用多运营者或没有已登录的视频号账号"
             )
@@ -154,7 +153,6 @@ class PreviewClient:
         except PreviewUnavailableError:
             raise
         except Exception as e:
-            from wechat_download.preview_client import PreviewUnavailableError
             raise PreviewUnavailableError(f"preview parse failed: {e}") from e
 
     async def close(self) -> None:
