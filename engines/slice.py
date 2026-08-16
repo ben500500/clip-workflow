@@ -1086,10 +1086,15 @@ def build_watermark_filter(wm: dict) -> str:
 # 字幕烧录（ASR 识别后叠加到成品视频）
 # ──────────────────────────────────────────────
 
-# 字幕字号（相对输出高度比例）
-# 默认 0.22→FontSize 22，约占画面高度 5.5%~6%，比历史默认 0.30 进一步降低，
-# 更显轻盈不遮挡画面。横屏/竖屏均清晰可读。用户可通过配置调大或调小。
+# 字幕字号（相对输出高度比例，横屏基准）
+# 默认 0.22→FontSize 22，约占横屏画面高度 2%，更显轻盈不遮挡画面。
+# 竖屏视频因显式设置 PlayResY 抵消了 libass 默认的放大，ASR 字幕会偏小，
+# 故对竖屏按下方 PORTRAIT_SUBTITLE_HEIGHT_RATIO 补偿（见 burn_subtitle）。
+# 用户可通过配置调大或调小。
 SUBTITLE_FONT_RATIO = 0.22
+# 竖屏字幕目标字号占画面高度比例：0.035→1080x1920 时 FontSize≈67px，
+# 约为横屏观感的 3 倍、且不会因过大被推出屏幕外。仅作用于走默认字号的竖屏视频。
+PORTRAIT_SUBTITLE_HEIGHT_RATIO = 0.035
 # 字幕字间距（ASS Spacing，单位像素）。用户反馈原字体自带字距偏宽，默认 -2 进一步缩小让字幕文字更紧凑；
 # 可通过配置项调大或调小。
 SUBTITLE_SPACING = -2
@@ -1461,8 +1466,11 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
         shutil.copy(video_in, video_out)
         return
 
-    # 字幕字号：未指定时用默认值（加大后的清晰字号），用户可在切片配置中调节
+    # 字幕字号：未指定时用默认值；竖屏视频显式设 PlayResY 后字幕偏小，
+    # 按画面高度补偿到 PORTRAIT_SUBTITLE_HEIGHT_RATIO（默认与用户自定义字号均补偿）
     font_ratio = font_ratio if font_ratio is not None else SUBTITLE_FONT_RATIO
+    if vh > vw:  # 竖屏：显式 PlayResY 抵消 libass 放大，按画面高度补偿字幕字号
+        font_ratio = (vh * PORTRAIT_SUBTITLE_HEIGHT_RATIO) / 100.0
     # 字幕字间距：未指定时用默认值（默认 0 更紧凑），用户可通过切片配置调节
     spacing = spacing if spacing is not None else SUBTITLE_SPACING
     # 字幕距底边距离（像素）：未指定时用默认比例 SUBTITLE_BOTTOM_RATIO（与原实现一致，
