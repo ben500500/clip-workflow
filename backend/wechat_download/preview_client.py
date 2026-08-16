@@ -17,6 +17,7 @@
 
 import logging
 import re
+from html import unescape as _html_unescape
 from typing import Optional
 
 from app.config import settings
@@ -27,8 +28,10 @@ logger = logging.getLogger(__name__)
 
 # finder_id 常见提取正则（预览页内嵌数据）
 _FINDER_ID_RE = re.compile(r'"finder_id"\s*:\s*"?([0-9A-Za-z_-]+)"?')
-# 播放地址常见提取正则（预览页 video 播放配置）
-_PLAY_RE = re.compile(r'"(https?://finder\.video\.qq\.com[^"]+)"')
+# 预览页内所有 finder 直链（封面图与视频流同源 stodownload，均为同域名）
+_FINDER_URL_RE = re.compile(r'https?://finder\.video\.qq\.com[^\s"\\,}]+')
+# 封面图特征参数：带 picformat / wxampicformat 的是图片，必须排除，只留视频流
+_IMG_PARAM_RE = re.compile(r'(?:picformat|wxampicformat)=')
 
 
 class PreviewClient:
@@ -93,18 +96,56 @@ class PreviewClient:
             try:
                 await page.goto(share_url, wait_until="domcontentloaded", timeout=30000)
                 await page.wait_for_timeout(2500)
-                content = await page.content()
-                finder_id = _FINDER_ID_RE.search(content)
-                play = _PLAY_RE.search(content)
-                if not play:
-                    raise PreviewUnavailableError("预览页未提取到 finder 播放地址")
-                return ParseResult(
-                    success=True,
-                    channel="preview",
-                    play_url=play.group(1),
-                    title=finder_id.group(1) if finder_id else None,
-                    meta={"finder_id": finder_id.group(1) if finder_id else None},
+                # page.content() 返回 HTML，其中 & 被转义为 &amp; 等实体；
+                # 提取的 play_url 必须 html.unescape 还原真实 &，否则下载器
+                # 把字面 &amp; 发给 finder 会被拒（400）。
+                content = _html_unescape(await page.content())
+
+                # 优先：DOM 中已渲染出视频元素（少数预览页会直接给出视频流 src）。
+                # 必须排除带 picformat 的图片直链，否则会误把封面图当视频下载。
+                video_src = await page.evaluate(
+                    """() => {
+                        const v = document.querySelector('video');
+                        const s = v && (v.currentSrc || v.src);
+                        if (s && s.includes('finder.video.qq.com') &&
+                            !/(picformat|wxampicformat)=/.test(s)) {
+                            return s;
+                        }
+                        return '';
+                    }"""
                 )
+                if video_src:
+                    finder_id = _FINDER_ID_RE.search(content)
+                    return ParseResult(
+                        success=True, channel="preview", play_url=video_src,
+                        title=finder_id.group(1) if finder_id else None,
+                        meta={"finder_id": finder_id.group(1) if finder_id else None},
+                    )
+
+                # 回退：从页面内容提取 finder 直链，排除图片封面，只留视频流。
+                urls = _FINDER_URL_RE.findall(content)
+                video_urls = [u for u in urls if not _IMG_PARAM_RE.search(u)]
+                if video_urls:
+                    finder_id = _FINDER_ID_RE.search(content)
+                    return ParseResult(
+                        success=True, channel="preview", play_url=video_urls[0],
+                        title=finder_id.group(1) if finder_id else None,
+                        meta={"finder_id": finder_id.group(1) if finder_id else None},
+                    )
+
+                # 仅拿到封面图 / 什么都拿不到。
+                if urls:
+                    logger.warning(
+                        "预览页仅暴露封面图直链（无视频流）：%s —— web finder-preview "
+                        "不返回视频 object，视频只能在微信 App 内播放，无法经 web 下载",
+                        share_url,
+                    )
+                    raise PreviewUnavailableError(
+                        "预览页仅返回封面图、未返回视频流直链：web 版 finder-preview "
+                        "不暴露视频 object（h264VideoInfo/videoUrl），视频只能在微信 App 内播放。"
+                        "请改用真实解析服务（元宝 / 第三方解析 API）获取视频直链"
+                    )
+                raise PreviewUnavailableError("预览页未提取到 finder 播放地址")
             finally:
                 try:
                     await page.close()
