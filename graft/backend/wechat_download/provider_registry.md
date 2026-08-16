@@ -1,0 +1,24 @@
+# backend/wechat_download/provider_registry.py
+
+- ProviderParseError · class · L45-L46 — class ProviderParseError(Exception)
+- BaseParseClient · class · L49-L58 — class BaseParseClient
+- parse · method · L54-L55 — async def parse(self, share_url: str, db=None) -> ParseResult
+- close · method · L57-L58 — async def close(self) -> None
+- YuanbaoAdapter · class · L61-L79 — class YuanbaoAdapter(BaseParseClient)
+- __init__ · method · L66-L67 — def __init__(self) -> None
+- parse · method · L69-L73 — async def parse(self, share_url: str, db=None) -> ParseResult
+- close · method · L75-L79 — async def close(self) -> None
+- PreviewAdapter · class · L82-L100 — class PreviewAdapter(BaseParseClient)
+- __init__ · method · L87-L88 — def __init__(self) -> None
+- parse · method · L90-L94 — async def parse(self, share_url: str, db=None) -> ParseResult
+- close · method · L96-L100 — async def close(self) -> None
+- _dig · function · L103-L111 — def _dig(d: dict, path: str)
+- _is_image_url · function · L114-L116 — def _is_image_url(u: str) -> bool
+- HttpApiAdapter · class · L119-L243 — class HttpApiAdapter(BaseParseClient)
+- __init__ · method · L127-L143 — def __init__(self, name: str, base: str) -> None
+- _build_url · method · L145-L148 — def _build_url(self) -> str
+- parse · method · L150-L196 — async def parse(self, share_url: str, db=None) -> ParseResult
+- _normalize · method · L198-L237 — def _normalize(self, data: dict, raw: str = "") -> ParseResult
+- close · method · L239-L243 — async def close(self) -> None
+- build_providers · function · L246-L264 — def build_providers() -> List[BaseParseClient]
+- dispatch_parse · function · L267-L285 — async def dispatch_parse(share_url: str, db=None) -> ParseResult

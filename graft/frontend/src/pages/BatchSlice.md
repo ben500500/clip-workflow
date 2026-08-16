@@ -1,0 +1,24 @@
+# frontend/src/pages/BatchSlice.tsx
+
+- FlattenOutput · interface · L21-L27 — interface FlattenOutput
+- AutoClipConfig · interface · L31-L38 — interface AutoClipConfig
+- IntervalConfig · interface · L40-L43 — interface IntervalConfig
+- SliceConfigState · interface · L45-L81 — interface SliceConfigState
+- BatchSlicePage · function · L173-L1284 — BatchSlicePage: React.FC = ()
+- handleFileUpload · function · L271-L288 — handleFileUpload = (file: File)
+- buildPayload · function · L290-L330 — buildPayload = ()
+- addTextOverlay · function · L332-L337 — addTextOverlay = ()
+- updateTextOverlay · function · L339-L344 — updateTextOverlay = (index: number, patch: Partial<TextOverlayItem>)
+- removeTextOverlay · function · L346-L351 — removeTextOverlay = (index: number)
+- handleRun · function · L353-L379 — handleRun = async ()
+- handleRetry · function · L381-L399 — handleRetry = async ()
+- handleCancel · function · L401-L419 — handleCancel = async ()
+- showOutputs · function · L421-L431 — showOutputs = async ()
+- renderOutputModal · function · L433-L492 — renderOutputModal = ()
+- handlePreviewOutput · function · L495-L503 — handlePreviewOutput = async (item: FlattenOutput)
+- openTrimModal · function · L506-L515 — openTrimModal = (item: FlattenOutput)
+- handleTrimRangeChange · function · L518-L524 — handleTrimRangeChange = (val: [number, number])
+- submitTrim · function · L527-L549 — submitTrim = async ()
+- renderPreviewModal · function · L551-L564 — renderPreviewModal = ()
+- renderTrimModal · function · L566-L619 — renderTrimModal = ()
+- formatSize · function · L621-L626 — formatSize = (size?: number | null)

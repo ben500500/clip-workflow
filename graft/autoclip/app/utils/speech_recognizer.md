@@ -1,0 +1,30 @@
+# autoclip/app/utils/speech_recognizer.py
+
+- SpeechRecognitionMethod · class · L30-L34 — class SpeechRecognitionMethod(str, Enum)
+- LanguageCode · class · L37-L41 — class LanguageCode(str, Enum)
+- SpeechRecognitionConfig · class · L45-L69 — class SpeechRecognitionConfig
+- SpeechRecognitionError · class · L72-L74 — class SpeechRecognitionError(Exception)
+- SpeechRecognizer · class · L77-L907 — class SpeechRecognizer
+- __init__ · method · L80-L86 — def __init__(self, config: Optional[SpeechRecognitionConfig] = None)
+- _check_whisper_availability · method · L88-L95 — def _check_whisper_availability(self) -> bool
+- _check_aliyun_speech_availability · method · L97-L106 — def _check_aliyun_speech_availability(self) -> bool
+- _check_funasr_availability · method · L108-L115 — def _check_funasr_availability(self) -> bool
+- _extract_audio_from_video · method · L117-L156 — def _extract_audio_from_video(self, video_path: Path, output_dir: Path) -> Path
+- generate_subtitle · method · L158-L185 — def generate_subtitle(self, video_path: Path, output_path: Optional[Path] = None, config: Optional[SpeechRecognitionConfig] = None) -> Path
+- _format_srt_timestamp · method · L188-L195 — def _format_srt_timestamp(seconds: float) -> str
+- _segments_to_srt · method · L198-L207 — def _segments_to_srt(cls, segments: List[Dict[str, Any]]) -> str
+- _aggregate_word_timestamps · method · L210-L288 — def _aggregate_word_timestamps(words: list) -> List[Dict[str, Any]]
+- flush · function · L243-L253 — def flush()
+- _merge_short_segments · method · L291-L318 — def _merge_short_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]
+- _detect_speech_windows · method · L321-L389 — def _detect_speech_windows(audio_path: Path, silence_threshold: float = -35.0, min_silence: float = 0.5) -> list
+- _split_text_by_punctuation · method · L392-L429 — def _split_text_by_punctuation(text: str, max_chars: int = 40) -> list
+- _refine_srt_with_speech_windows · method · L432-L550 — def _refine_srt_with_speech_windows(cls, srt_content: str, speech_windows: list) -> str
+- _parse_srt_records · method · L553-L581 — def _parse_srt_records(cls, srt_content: str) -> list
+- _parse_srt_time · method · L584-L592 — def _parse_srt_time(ts: str) -> float
+- _get_media_duration · method · L595-L608 — def _get_media_duration(media_path: Path) -> float
+- _aliyun_speech_transcribe_audio · method · L610-L673 — def _aliyun_speech_transcribe_audio(self, audio_path: Path, config: SpeechRecognitionConfig, api_key: str) -> str
+- _generate_subtitle_whisper · method · L675-L730 — def _generate_subtitle_whisper(self, video_path: Path, output_path: Path, config: SpeechRecognitionConfig) -> Path
+- _generate_subtitle_funasr_local · method · L732-L799 — def _generate_subtitle_funasr_local(self, video_path: Path, output_path: Path, config: SpeechRecognitionConfig) -> Path
+- _strip_funasr_tags · method · L802-L806 — def _strip_funasr_tags(text: str) -> str
+- _generate_subtitle_aliyun_speech · method · L808-L907 — def _generate_subtitle_aliyun_speech(self, video_path: Path, output_path: Path, config: SpeechRecognitionConfig) -> Path
+- generate_subtitle_for_video · function · L910-L942 — def generate_subtitle_for_video(video_path: Path, output_path: Optional[Path] = None, method: str = "aliyun_speech", language: str = "auto", model: str = "base", enable_fallback: bool = True, api_key: Optional[str] = None) -> Path

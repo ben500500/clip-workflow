@@ -1,0 +1,27 @@
+# slice-worker/tui.go
+
+- TaskStatus · struct · L73-L84 — TaskStatus
+- LogEntry · struct · L87-L91 — LogEntry
+- TUIModel · struct · L94-L116 — TUIModel
+- NewTUIModel · function · L119-L128 — func NewTUIModel(config *Config, worker *Worker) *TUIModel
+- Init · method · L133-L138 — func (m TUIModel) Init() tea.Cmd
+- Update · method · L141-L212 — func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd)
+- View · method · L215-L243 — func (m TUIModel) View() string
+- renderHeader · method · L247-L258 — func (m TUIModel) renderHeader() string
+- renderStatusBar · method · L260-L274 — func (m TUIModel) renderStatusBar() string
+- renderTaskList · method · L276-L307 — func (m TUIModel) renderTaskList(width int) string
+- renderTaskItem · method · L309-L380 — func (m TUIModel) renderTaskItem(task *TaskStatus, width int) string
+- renderProgressBar · method · L382-L391 — func (m TUIModel) renderProgressBar(percent float64, width int) string
+- renderLogPanel · method · L393-L438 — func (m TUIModel) renderLogPanel(width int) string
+- renderFooter · method · L440-L447 — func (m TUIModel) renderFooter() string
+- addLog · method · L451-L462 — func (m *TUIModel) addLog(level, format string, args ...interface{})
+- getActiveTasks · method · L464-L472 — func (m TUIModel) getActiveTasks() []*TaskStatus
+- formatDuration · function · L474-L482 — func formatDuration(d time.Duration) string
+- TickMsg · type · L486-L486 — TickMsg time.Time
+- TaskStartMsg · struct · L488-L492 — TaskStartMsg
+- TaskProgressMsg · struct · L494-L499 — TaskProgressMsg
+- TaskCompleteMsg · struct · L501-L504 — TaskCompleteMsg
+- TaskErrorMsg · struct · L506-L509 — TaskErrorMsg
+- LogMsg · struct · L511-L514 — LogMsg
+- StatusMsg · struct · L516-L518 — StatusMsg
+- tickCmd · method · L522-L526 — func (m TUIModel) tickCmd() tea.Cmd

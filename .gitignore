@@ -125,3 +125,8 @@ slice-worker/temp/
 
 # 部署脚本生成的临时标记（每次部署由 scripts/deploy_server.sh 覆写，勿提交）
 .deploy_last_commit
+
+# graft 代码地图：提交可读的 markdown 地图（graft/**/*.md）；仅忽略可再生机器产物（本地缓存/符号图），
+# 队友 clone 后跑 `graft build` 即可重新生成 .graph/ 符号图与 .cache/ 缓存。
+graft/.cache/
+graft/.graph/

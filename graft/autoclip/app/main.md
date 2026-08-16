@@ -1,0 +1,35 @@
+# autoclip/app/main.py
+
+- ffprobe_duration · function · L64-L73 — def ffprobe_duration(path: str) -> float
+- _update_progress · function · L76-L80 — def _update_progress(proj: dict, status: str, progress: int, message: str) -> None
+- _fail · function · L83-L89 — def _fail(proj: dict, message: str) -> None
+- _srt_time_to_seconds · function · L94-L105 — def _srt_time_to_seconds(value) -> float
+- _safe_str · function · L108-L117 — def _safe_str(value, default: str = "") -> str
+- _to_contract_clips · function · L120-L160 — def _to_contract_clips(raw_clips: list) -> list
+- _parse_srt_ts · function · L165-L169 — def _parse_srt_ts(ts: str) -> float
+- _filter_srt_by_time · function · L172-L216 — def _filter_srt_by_time(srt_path: Path, out_path: Path, start_time: Optional[float] = None, end_time: Optional[float] = None) -> Path
+- _run_asr · function · L219-L256 — def _run_asr(video_path: str, srt_path: Path, api_key: str, method_name: Optional[str] = None) -> None
+- _asr_cache_enabled · function · L259-L261 — def _asr_cache_enabled() -> bool
+- _asr_cache_dir · function · L264-L268 — def _asr_cache_dir() -> Path
+- _asr_cache_key · function · L271-L281 — def _asr_cache_key(video: Path, method_name: str) -> str
+- _asr_cache_get · function · L284-L294 — def _asr_cache_get(cache_key: str) -> Optional[str]
+- _asr_cache_put · function · L297-L307 — def _asr_cache_put(cache_key: str, content: str) -> None
+- _run_pipeline · function · L310-L403 — async def _run_pipeline(project_id: str, steps: list[int], max_clips: Optional[int] = None, start_time: Optional[float] = None, end_time: Optional[float] = None, frame_analysis: Optional[bool] = None, model_name: Optional[str] = None, llm_provider: Optional[str] = None) -> None
+- health · function · L409-L410 — async def health()
+- SeedancePromptRequest · class · L413-L418 — class SeedancePromptRequest(BaseModel)
+- generate_prompt · function · L422-L449 — async def generate_prompt(data: SeedancePromptRequest)
+- _current_llm_model · function · L452-L458 — def _current_llm_model() -> str
+- SubtitleGenerateRequest · class · L461-L470 — class SubtitleGenerateRequest(BaseModel)
+- generate_subtitle · function · L474-L549 — async def generate_subtitle(data: SubtitleGenerateRequest)
+- PublishMaterialRequest · class · L552-L555 — class PublishMaterialRequest(BaseModel)
+- ScriptOptimizeRequest · class · L558-L561 — class ScriptOptimizeRequest(BaseModel)
+- optimize_script · function · L565-L587 — async def optimize_script(data: ScriptOptimizeRequest)
+- generate_material · function · L591-L612 — async def generate_material(data: PublishMaterialRequest)
+- health_v1 · function · L617-L618 — async def health_v1()
+- ProjectCreate · class · L621-L623 — class ProjectCreate(BaseModel)
+- create_project · function · L627-L640 — async def create_project(data: ProjectCreate)
+- upload · function · L644-L658 — async def upload(project_id: str, file: UploadFile = File(...))
+- PipelineRun · class · L661-L674 — class PipelineRun(BaseModel)
+- pipeline_run · function · L678-L697 — async def pipeline_run(data: PipelineRun)
+- progress · function · L701-L709 — async def progress(project_id: str)
+- clips · function · L713-L725 — async def clips(project_id: str, min_score: float = 0.0, max_clips: int = 30, min_duration: float = 0.0, max_duration: float = 0.0)

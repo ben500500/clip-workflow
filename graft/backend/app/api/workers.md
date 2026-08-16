@@ -1,0 +1,21 @@
+# backend/app/api/workers.py
+
+- WorkerNodeResponse · class · L47-L77 — class WorkerNodeResponse(BaseModel)
+- WorkerHeartbeatRequest · class · L80-L97 — class WorkerHeartbeatRequest(BaseModel)
+- _serialize_node · function · L100-L124 — def _serialize_node(node: WorkerNode) -> dict
+- worker_heartbeat · function · L128-L177 — async def worker_heartbeat( data: WorkerHeartbeatRequest, db: AsyncSession = Depends(get_db), )
+- list_workers · function · L181-L278 — async def list_workers( current_user: Annotated[User, Depends(require_roles(UserRole.admin))], db: AsyncSession = Depends(get_db), )
+- get_worker · function · L282-L294 — async def get_worker( node_id: str, current_user: Annotated[User, Depends(require_roles(UserRole.admin))], db: AsyncSession = Depends(get_db), )
+- enable_worker_node · function · L298-L314 — async def enable_worker_node( node_id: str, current_user: Annotated[User, Depends(require_roles(UserRole.admin))], db: AsyncSession = Depends(get_db), )
+- disable_worker_node · function · L318-L334 — async def disable_worker_node( node_id: str, current_user: Annotated[User, Depends(require_roles(UserRole.admin))], db: AsyncSession = Depends(get_db), )
+- delete_worker · function · L338-L366 — async def delete_worker( node_id: str, current_user: Annotated[User, Depends(require_roles(UserRole.admin))], db: AsyncSession = Depends(get_db), )
+- SetNodeCpuPercentRequest · class · L369-L371 — class SetNodeCpuPercentRequest(BaseModel)
+- set_worker_cpu_percent · function · L375-L404 — async def set_worker_cpu_percent( node_id: str, data: SetNodeCpuPercentRequest, current_user: Annotated[User, Depends(require_roles(UserRole.admin))], db: AsyncSession = Depends(get_db), )
+- sync_workers_from_redis · function · L408-L488 — async def sync_workers_from_redis( current_user: Annotated[User, Depends(require_roles(UserRole.admin))], db: AsyncSession = Depends(get_db), )
+- _resolve_engines_dir · function · L513-L518 — def _resolve_engines_dir() -> Path
+- _iter_engine_files · function · L521-L533 — def _iter_engine_files(engines_dir: Path)
+- _compute_engine_version · function · L536-L551 — def _compute_engine_version(engines_dir: Path) -> str
+- _build_engine_archive · function · L554-L562 — def _build_engine_archive(engines_dir: Path) -> bytes
+- get_engines_status · function · L566-L583 — async def get_engines_status( current_user: Annotated[User, Depends(require_roles(UserRole.admin))], )
+- get_engines_package · function · L587-L607 — async def get_engines_package( node_id: str = "", )
+- push_worker_update · function · L611-L645 — async def push_worker_update( node_id: str, current_user: Annotated[User, Depends(require_roles(UserRole.admin))], )

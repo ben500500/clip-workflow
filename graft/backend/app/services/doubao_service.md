@@ -1,0 +1,30 @@
+# backend/app/services/doubao_service.py
+
+- NeedLoginError · class · L47-L48 — class NeedLoginError(RuntimeError)
+- get_account_limits · function · L51-L59 — def get_account_limits(custom: Optional[dict] = None) -> dict
+- DoubaoGenerator · class · L62-L904 — class DoubaoGenerator
+- __init__ · method · L65-L70 — def __init__(self, chrome_port: int = 9222, chrome_host: str = "127.0.0.1")
+- _connect · method · L72-L83 — async def _connect(self)
+- _close · method · L85-L95 — async def _close(self)
+- _sleep · method · L101-L103 — async def _sleep(self, lo: float = 0.4, hi: float = 1.2)
+- _take_screenshot · method · L105-L111 — async def _take_screenshot(self) -> Optional[str]
+- _extract_qrcode · method · L113-L139 — async def _extract_qrcode(self, full_page_fallback: bool = True) -> Optional[str]
+- _click_login_button · method · L141-L162 — async def _click_login_button(self) -> bool
+- _detect_login_modal · method · L164-L173 — async def _detect_login_modal(self) -> bool
+- _dismiss_modal · method · L175-L189 — async def _dismiss_modal(self) -> bool
+- _has_login_button · method · L191-L207 — async def _has_login_button(self) -> bool
+- _login_status · method · L209-L243 — async def _login_status(self) -> str
+- _extract_account · method · L245-L289 — async def _extract_account(self) -> Optional[str]
+- clear_login · method · L291-L311 — async def clear_login(self) -> bool
+- _is_cancelled · method · L317-L327 — async def _is_cancelled(self, cancel_check) -> bool
+- generate · method · L329-L477 — async def generate( self, prompt: str, *, account_type: str = "free", duration: Optional[int] = None, limits: Optional[dict] = None, progress_cb=None, qrcode_cb=None, screenshot_cb=None, on_rewrite_available=None, on_login_success=None, on_account_cb=None, cancel_check=None, ) -> dict
+- progress_cb · function · L368-L369 — async def progress_cb(msg: str, progress: float)
+- _run_video_generation · method · L479-L597 — async def _run_video_generation( self, prompt: str, duration: int, account_type: str, progress_cb, rewrites: list, screenshot_cb=None, on_rewrite_available=None, cancel_check=None, ) -> dict
+- _set_duration · method · L603-L617 — async def _set_duration(self, duration: int)
+- _send_prompt · method · L619-L702 — async def _send_prompt(self, prompt: str) -> bool
+- _wait_for_generation_outcome · method · L704-L754 — async def _wait_for_generation_outcome(self, progress_cb, cancel_check=None, screenshot_cb=None) -> dict
+- _extract_reject_reason · method · L756-L763 — def _extract_reject_reason(self, page_text: str, marker: str) -> str
+- _get_last_message_text · method · L765-L789 — async def _get_last_message_text(self) -> str
+- _llm_rewrite_prompt · method · L791-L843 — async def _llm_rewrite_prompt(self, original: str, reason: str) -> Optional[str]
+- _capture_video_url · method · L845-L904 — async def _capture_video_url(self) -> Optional[str]
+- _on_resp · function · L875-L882 — def _on_resp(resp)

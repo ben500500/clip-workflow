@@ -1,0 +1,28 @@
+# backend/app/services/multi_operator.py
+
+- _redis · function · L91-L93 — def _redis() -> aioredis.Redis
+- multi_operator_enabled · function · L96-L103 — async def multi_operator_enabled() -> bool
+- set_flag · function · L106-L111 — async def set_flag(enabled: bool) -> None
+- resolve_port · function · L114-L134 — async def resolve_port(account_id) -> Optional[int]
+- get_route · function · L137-L143 — async def get_route(account_id) -> Optional[dict]
+- register_route · function · L146-L166 — async def register_route(account_id, port: int, profile_dir: str, operator_id, ua_seed: Optional[str] = None, proxy: Optional[str] = None, egress_ip: Optional[str] = None) -> None
+- alloc_port · function · L169-L181 — async def alloc_port(profile_id) -> Optional[int]
+- mark_heartbeat · function · L184-L192 — async def mark_heartbeat(account_id) -> None
+- mark_expired · function · L195-L201 — async def mark_expired(account_id) -> None
+- set_ready · function · L204-L209 — async def set_ready(account_id) -> None
+- check_route_heartbeats · function · L212-L258 — async def check_route_heartbeats() -> dict
+- _seconds_until_midnight · function · L261-L264 — def _seconds_until_midnight() -> int
+- acquire_quota · function · L267-L290 — async def acquire_quota(account_id, operator_id, acct_limit: int, op_limit: int, op_inflight_limit: int = 1, global_inflight_limit: int = 4, inflight_ttl: int = 1800) -> bool
+- release_inflight · function · L293-L300 — async def release_inflight(operator_id) -> None
+- get_daily_used · function · L303-L309 — async def get_daily_used(account_id) -> int
+- get_profiles · function · L312-L319 — async def get_profiles() -> list
+- sync_profiles_from_db · function · L322-L369 — async def sync_profiles_from_db() -> list
+- save_pending · function · L375-L381 — async def save_pending(task_id, payload: dict, ttl: int = 1800) -> None
+- get_pending · function · L384-L390 — async def get_pending(task_id) -> Optional[dict]
+- delete_pending · function · L393-L398 — async def delete_pending(task_id) -> None
+- freeze_pending · function · L401-L416 — async def freeze_pending(task_id, status: str = "selector_mismatch") -> None
+- issue_cdp_token · function · L422-L437 — async def issue_cdp_token(actor_id, account_id, ttl: int = 60) -> str
+- verify_cdp_token · function · L440-L458 — async def verify_cdp_token(token: str, account_id) -> bool
+- _fmt_ts · function · L464-L471 — def _fmt_ts(val) -> str
+- get_route_matrix · function · L474-L511 — async def get_route_matrix() -> list
+- get_operator_stats · function · L514-L537 — async def get_operator_stats() -> list

@@ -1,0 +1,34 @@
+# autoclip/app/core/llm_providers.py
+
+- ProviderType · class · L16-L21 — class ProviderType(Enum)
+- ModelInfo · class · L24-L31 — class ModelInfo
+- LLMResponse · class · L34-L39 — class LLMResponse
+- LLMProvider · class · L41-L91 — class LLMProvider(ABC)
+- __init__ · method · L44-L47 — def __init__(self, api_key: str, model_name: str, **kwargs)
+- call · method · L50-L62 — def call(self, prompt: str, input_data: Any = None, **kwargs) -> LLMResponse
+- test_connection · method · L65-L72 — def test_connection(self) -> bool
+- get_available_models · method · L75-L82 — def get_available_models(self) -> List[ModelInfo]
+- _build_full_input · method · L84-L91 — def _build_full_input(self, prompt: str, input_data: Any = None) -> str
+- DashScopeProvider · class · L93-L246 — class DashScopeProvider(LLMProvider)
+- __init__ · method · L96-L109 — def __init__(self, api_key: str, model_name: str = "qwen-plus", **kwargs)
+- call · method · L111-L188 — def call(self, prompt: str, input_data: Any = None, **kwargs) -> LLMResponse
+- test_connection · method · L190-L220 — def test_connection(self) -> bool
+- get_available_models · method · L222-L246 — def get_available_models(self) -> List[ModelInfo]
+- OpenAIProvider · class · L248-L331 — class OpenAIProvider(LLMProvider)
+- __init__ · method · L251-L257 — def __init__(self, api_key: str, model_name: str = "gpt-3.5-turbo", **kwargs)
+- call · method · L259-L286 — def call(self, prompt: str, input_data: Any = None, **kwargs) -> LLMResponse
+- test_connection · method · L288-L305 — def test_connection(self) -> bool
+- get_available_models · method · L307-L331 — def get_available_models(self) -> List[ModelInfo]
+- GeminiProvider · class · L333-L411 — class GeminiProvider(LLMProvider)
+- __init__ · method · L336-L344 — def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash", **kwargs)
+- call · method · L346-L372 — def call(self, prompt: str, input_data: Any = None, **kwargs) -> LLMResponse
+- test_connection · method · L374-L385 — def test_connection(self) -> bool
+- get_available_models · method · L387-L411 — def get_available_models(self) -> List[ModelInfo]
+- SiliconFlowProvider · class · L413-L507 — class SiliconFlowProvider(LLMProvider)
+- __init__ · method · L416-L418 — def __init__(self, api_key: str, model_name: str = "Qwen/Qwen2.5-7B-Instruct", **kwargs)
+- call · method · L420-L461 — def call(self, prompt: str, input_data: Any = None, **kwargs) -> LLMResponse
+- test_connection · method · L463-L474 — def test_connection(self) -> bool
+- get_available_models · method · L476-L507 — def get_available_models(self) -> List[ModelInfo]
+- LLMProviderFactory · class · L509-L540 — class LLMProviderFactory
+- create_provider · method · L520-L526 — def create_provider(cls, provider_type: ProviderType, api_key: str, model_name: str, **kwargs) -> LLMProvider
+- get_all_available_models · method · L529-L540 — def get_all_available_models(cls) -> Dict[ProviderType, List[ModelInfo]]
