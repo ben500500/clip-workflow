@@ -62,7 +62,7 @@ export function buildSliceConfigTooltip(
   if (sm && Object.keys(sm).length > 0) {
     const smOn = sm.enabled !== false;
     const presetName = { auto: '自动', fine: '精细', quick: '快速' } as Record<string, string>;
-    const preset = sm.preset ? (presetName[sm.preset] || sm.preset) : (sm.spatial ? '精细' : (sm.temporal === false ? '快速' : '自动'));
+    const preset = sm.preset ? (presetName[sm.preset as string] || sm.preset) : (sm.spatial ? '精细' : (sm.temporal === false ? '快速' : '自动'));
     lines.push(`源字幕打码：${smOn ? `开启(${sm.style || 'delogo'}·${preset})` : '关闭'}`);
   }
 
