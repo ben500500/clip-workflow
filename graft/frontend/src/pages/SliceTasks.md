@@ -1,0 +1,18 @@
+# frontend/src/pages/SliceTasks.tsx
+
+- SliceTasks · function · L60-L1199 — SliceTasks: React.FC = ()
+- buildDedupeConfig · function · L158-L181 — buildDedupeConfig = (preset: string, manual: DedupeManualConfigValue)
+- runSlice · function · L183-L256 — runSlice = async ()
+- showOutputs · function · L258-L266 — showOutputs = async (taskId: string)
+- deleteTask · function · L268-L280 — deleteTask = async (taskId: string)
+- uploadBadgeFile · function · L283-L304 — uploadBadgeFile = async (file: File)
+- updateBadge · function · L306-L308 — updateBadge = (index: number, patch: Partial<BadgeItem>)
+- removeBadge · function · L310-L312 — removeBadge = (index: number)
+- addTextOverlay · function · L315-L320 — addTextOverlay = ()
+- updateTextOverlay · function · L321-L323 — updateTextOverlay = (index: number, patch: Partial<TextOverlayItem>)
+- removeTextOverlay · function · L324-L326 — removeTextOverlay = (index: number)
+- applyDefaultTextOverlays · function · L333-L345 — applyDefaultTextOverlays = ()
+- exists · function · L340-L341 — exists = (position: string, text: string)
+- handleVert2horizToggle · function · L346-L360 — handleVert2horizToggle = (on: boolean)
+- formatTaskDuration · function · L382-L387 — formatTaskDuration = (t: SliceTask)
+- downloadOne · function · L504-L524 — downloadOne = async (o: SliceOutput)

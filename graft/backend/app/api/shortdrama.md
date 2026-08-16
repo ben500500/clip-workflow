@@ -1,0 +1,48 @@
+# backend/app/api/shortdrama.py
+
+- _load_prompt_templates · function · L83-L95 — async def _load_prompt_templates(db: AsyncSession) -> dict
+- _save_prompt_templates · function · L98-L113 — async def _save_prompt_templates(db: AsyncSession, templates: dict) -> None
+- PromptGenerateRequest · class · L121-L134 — class PromptGenerateRequest(BaseModel): # 用户输入的短剧文案（对白/旁白原文），必填
+- PromptTemplatesResponse · class · L137-L140 — class PromptTemplatesResponse(BaseModel)
+- ScriptOptimizeRequest · class · L143-L149 — class ScriptOptimizeRequest(BaseModel): # 待优化的短剧文案（必填）
+- ScriptOptimizeResponse · class · L152-L155 — class ScriptOptimizeResponse(BaseModel)
+- PromptGenerateResponse · class · L158-L164 — class PromptGenerateResponse(BaseModel)
+- PromptRecordItem · class · L167-L207 — class PromptRecordItem(BaseModel)
+- _serialize_record · function · L215-L254 — def _serialize_record(r: ShortdramaPrompt) -> dict
+- generate_shortdrama_prompt · function · L263-L355 — async def generate_shortdrama_prompt( data: PromptGenerateRequest, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- _normalize_duration · function · L358-L366 — def _normalize_duration(duration) -> int
+- optimize_shortdrama_script · function · L370-L416 — async def optimize_shortdrama_script( data: ScriptOptimizeRequest, )
+- list_shortdrama_prompts · function · L420-L441 — async def list_shortdrama_prompts( limit: int = 50, db: AsyncSession = Depends(get_db), )
+- get_shortdrama_prompt · function · L445-L456 — async def get_shortdrama_prompt( record_id: str, db: AsyncSession = Depends(get_db), )
+- delete_shortdrama_prompt · function · L460-L475 — async def delete_shortdrama_prompt( record_id: str, db: AsyncSession = Depends(get_db), )
+- _get_record_or_404 · function · L478-L489 — async def _get_record_or_404(record_id: str, db: AsyncSession) -> ShortdramaPrompt
+- upload_shortdrama_video · function · L498-L571 — async def upload_shortdrama_video( record_id: str, file: UploadFile = File(...), db: AsyncSession = Depends(get_db), )
+- get_shortdrama_video · function · L575-L592 — async def get_shortdrama_video( record_id: str, db: AsyncSession = Depends(get_db), )
+- delete_shortdrama_video · function · L596-L615 — async def delete_shortdrama_video( record_id: str, db: AsyncSession = Depends(get_db), )
+- import_shortdrama_video_to_watermark · function · L619-L643 — async def import_shortdrama_video_to_watermark( record_id: str, db: AsyncSession = Depends(get_db), )
+- get_shortdrama_prompt_templates · function · L652-L664 — async def get_shortdrama_prompt_templates( db: AsyncSession = Depends(get_db), )
+- PromptTemplatesUpdateRequest · class · L667-L669 — class PromptTemplatesUpdateRequest(BaseModel)
+- update_shortdrama_prompt_templates · function · L673-L697 — async def update_shortdrama_prompt_templates( data: PromptTemplatesUpdateRequest, db: AsyncSession = Depends(get_db), )
+- DoubaoGenerateRequest · class · L716-L720 — class DoubaoGenerateRequest(BaseModel): # 账户类型：free=免费（时长上限 10s）；pro=包月会员（时长上限 30s）
+- DoubaoGenerateResponse · class · L723-L726 — class DoubaoGenerateResponse(BaseModel)
+- DoubaoRewriteConfirmRequest · class · L729-L731 — class DoubaoRewriteConfirmRequest(BaseModel): # approved=确认使用改写稿并重试；rejected=再让豆包改一版；cancelled=放弃
+- start_doubao_generate · function · L735-L780 — async def start_doubao_generate( record_id: str, data: DoubaoGenerateRequest, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- confirm_doubao_rewrite · function · L784-L832 — async def confirm_doubao_rewrite( record_id: str, data: DoubaoRewriteConfirmRequest, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- cancel_doubao_generate · function · L836-L860 — async def cancel_doubao_generate( record_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- get_doubao_status · function · L864-L875 — async def get_doubao_status( record_id: str, db: AsyncSession = Depends(get_db), )
+- get_prompt_default_duration · function · L884-L899 — async def get_prompt_default_duration( db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- PromptDefaultDurationRequest · class · L902-L904 — class PromptDefaultDurationRequest(BaseModel): # 提示词生成默认时长（秒）：10/15/20/25/30 或自定义（3~300）
+- update_prompt_default_duration · function · L908-L918 — async def update_prompt_default_duration( data: PromptDefaultDurationRequest, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- get_doubao_account_type · function · L922-L932 — async def get_doubao_account_type( db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- update_doubao_account_type · function · L936-L950 — async def update_doubao_account_type( data: DoubaoGenerateRequest, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- switch_doubao_account · function · L954-L973 — async def switch_doubao_account( db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- get_doubao_config · function · L977-L982 — async def get_doubao_config( db: AsyncSession = Depends(get_db), )
+- _load_doubao_limits · function · L985-L995 — async def _load_doubao_limits(db: AsyncSession) -> dict
+- SeedanceGenerateRequest · class · L1015-L1019 — class SeedanceGenerateRequest(BaseModel): # 生成时长（秒）；Seedance 1.0 仅支持 5s/10s，>10s 按配置策略截断或拒绝
+- SeedanceGenerateResponse · class · L1022-L1025 — class SeedanceGenerateResponse(BaseModel)
+- _load_seedance_config · function · L1028-L1037 — async def _load_seedance_config(db: AsyncSession)
+- _require_seedance_enabled · function · L1040-L1048 — async def _require_seedance_enabled(db: AsyncSession)
+- get_seedance_config · function · L1052-L1064 — async def get_seedance_config( db: AsyncSession = Depends(get_db), )
+- start_seedance_generate · function · L1068-L1109 — async def start_seedance_generate( record_id: str, data: SeedanceGenerateRequest, db: AsyncSession = Depends(get_db), )
+- cancel_seedance_generate · function · L1113-L1149 — async def cancel_seedance_generate( record_id: str, db: AsyncSession = Depends(get_db), )
+- get_seedance_status · function · L1153-L1164 — async def get_seedance_status( record_id: str, db: AsyncSession = Depends(get_db), )

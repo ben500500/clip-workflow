@@ -1,0 +1,27 @@
+# frontend/src/pages/ShortDrama.tsx
+
+- ShortDrama · function · L110-L1881 — ShortDrama: React.FC = ()
+- handleGenerate · function · L346-L378 — handleGenerate = async ()
+- handleOptimize · function · L381-L401 — handleOptimize = async ()
+- handleCopy · function · L403-L429 — handleCopy = async (textToCopy: string)
+- clearForm · function · L431-L442 — clearForm = ()
+- openTemplateEditor · function · L445-L451 — openTemplateEditor = ()
+- handleSaveTemplates · function · L453-L472 — handleSaveTemplates = async ()
+- resetTemplates · function · L474-L485 — resetTemplates = async ()
+- deleteRecord · function · L487-L495 — deleteRecord = async (recordId: string)
+- handleUploadVideo · function · L498-L510 — handleUploadVideo = async (record: ShortdramaPromptRecord, file: File)
+- handleDeleteVideo · function · L512-L524 — handleDeleteVideo = async (record: ShortdramaPromptRecord)
+- handleImportToWatermark · function · L526-L544 — handleImportToWatermark = async (record: ShortdramaPromptRecord, closeAfter = false)
+- handleDoubaoAccountTypeChange · function · L549-L557 — handleDoubaoAccountTypeChange = async (type: 'free' | 'pro')
+- handleSwitchDoubaoAccount · function · L561-L572 — handleSwitchDoubaoAccount = async ()
+- handleDoubaoGenerate · function · L575-L600 — handleDoubaoGenerate = async (record: ShortdramaPromptRecord)
+- handleDoubaoCancel · function · L603-L618 — handleDoubaoCancel = async (record: ShortdramaPromptRecord)
+- handleRewriteDecision · function · L621-L655 — handleRewriteDecision = async (decision: 'approved' | 'rejected' | 'cancelled')
+- isDoubaoActive · function · L658-L661 — isDoubaoActive = (record: ShortdramaPromptRecord): boolean
+- isSeedanceActive · function · L666-L669 — isSeedanceActive = (record: ShortdramaPromptRecord): boolean
+- handleSeedanceGenerate · function · L672-L703 — handleSeedanceGenerate = async (record: ShortdramaPromptRecord)
+- handleSeedanceCancel · function · L706-L719 — handleSeedanceCancel = async (record: ShortdramaPromptRecord)
+- switchDurationMode · function · L722-L735 — switchDurationMode = (custom: boolean)
+- saveDefaultDuration · function · L738-L748 — saveDefaultDuration = (d: number)
+- handleDurationSelect · function · L750-L753 — handleDurationSelect = (d: number)
+- PromptResultBlock · function · L1884-L1916 — PromptResultBlock: React.FC<{ text: string; onCopy: () => void; copied: boolean; }> = ({ text, onCopy, copied })

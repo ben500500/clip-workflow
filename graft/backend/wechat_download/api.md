@@ -1,0 +1,16 @@
+# backend/wechat_download/api.py
+
+- ImportRequest · class · L44-L49 — class ImportRequest(BaseModel)
+- ImportResponse · class · L52-L57 — class ImportResponse(BaseModel)
+- import_wechat_video · function · L61-L92 — async def import_wechat_video( data: ImportRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db), )
+- list_tasks · function · L96-L110 — async def list_tasks( status: Optional[str] = Query(None, description="按状态过滤"), limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0), db: AsyncSession = Depends(get_db), )
+- task_detail · function · L114-L119 — async def task_detail(task_id: uuid.UUID, db: AsyncSession = Depends(get_db))
+- ImportToProjectRequest · class · L126-L134 — class ImportToProjectRequest(BaseModel)
+- ImportToProjectResponse · class · L137-L140 — class ImportToProjectResponse(BaseModel)
+- import_task_to_project · function · L144-L206 — async def import_task_to_project( task_id: uuid.UUID, data: ImportToProjectRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db), )
+- BatchImportRequest · class · L213-L218 — class BatchImportRequest(BaseModel)
+- BatchImportResponse · class · L221-L226 — class BatchImportResponse(BaseModel)
+- import_wechat_video_batch · function · L230-L263 — async def import_wechat_video_batch( data: BatchImportRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db), )
+- ToSliceRequest · class · L271-L274 — class ToSliceRequest(BaseModel)
+- ToSliceResponse · class · L277-L281 — class ToSliceResponse(BaseModel)
+- to_slice · function · L285-L355 — async def to_slice( task_id: uuid.UUID, data: ToSliceRequest, db: AsyncSession = Depends(get_db), )

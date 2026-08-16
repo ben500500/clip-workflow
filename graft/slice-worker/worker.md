@@ -1,0 +1,28 @@
+# slice-worker/worker.go
+
+- Worker · struct · L25-L48 — Worker
+- RunningTask · struct · L51-L57 — RunningTask
+- NewWorker · function · L60-L68 — func NewWorker(config *Config, redis *RedisClient) *Worker
+- SetCallbacks · method · L71-L101 — func (w *Worker) SetCallbacks( onStart func(task *SliceTask), onProgress func(taskID string, phase string, percent float64, detail string), onComplete func(taskID string, outputs []string), onError func(taskID string, err error), onLog func(level string, msg string), )
+- checkEngine · method · L109-L133 — func (w *Worker) checkEngine()
+- Run · method · L135-L253 — func (w *Worker) Run(ctx context.Context) error
+- cleanupOrphanDirs · method · L265-L299 — func (w *Worker) cleanupOrphanDirs()
+- waitRunningTasks · method · L302-L320 — func (w *Worker) waitRunningTasks(timeout time.Duration)
+- claimLoop · method · L323-L368 — func (w *Worker) claimLoop(ctx context.Context)
+- runTask · method · L371-L540 — func (w *Worker) runTask(msg *StreamMessage)
+- handleTaskError · method · L543-L612 — func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *StreamMessage, err error)
+- sendFailureCallback · method · L615-L627 — func (w *Worker) sendFailureCallback(task *SliceTask, errMsg string)
+- watchCancellation · method · L630-L650 — func (w *Worker) watchCancellation(ctx context.Context, taskID string, cancel context.CancelFunc)
+- leaseRenewal · method · L658-L671 — func (w *Worker) leaseRenewal(ctx context.Context, taskID string)
+- heartbeatLoop · method · L674-L696 — func (w *Worker) heartbeatLoop(ctx context.Context)
+- engineUpdateLoop · method · L705-L721 — func (w *Worker) engineUpdateLoop(ctx context.Context)
+- checkEngineUpdate · method · L724-L763 — func (w *Worker) checkEngineUpdate()
+- emitProgress · method · L766-L775 — func (w *Worker) emitProgress(taskID, phase string, percent float64, detail string)
+- matchTags · method · L778-L794 — func (w *Worker) matchTags(required []string) bool
+- log · method · L797-L804 — func (w *Worker) log(level, format string, args ...interface{})
+- GetRunningTasks · method · L807-L814 — func (w *Worker) GetRunningTasks() []*RunningTask
+- CancelTask · method · L817-L826 — func (w *Worker) CancelTask(taskID string) bool
+- GetCurrentTaskCount · method · L829-L831 — func (w *Worker) GetCurrentTaskCount() int
+- getHostname · function · L834-L840 — func getHostname() string
+- getFileSize · function · L843-L848 — func getFileSize(path string) int64
+- strconvParseInt · function · L851-L863 — func strconvParseInt(s string) (int64, error)

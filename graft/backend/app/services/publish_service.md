@@ -1,0 +1,33 @@
+# backend/app/services/publish_service.py
+
+- _get_playwright · function · L38-L47 — async def _get_playwright()
+- _cache_pending_tab · function · L50-L64 — def _cache_pending_tab(task_id: str, browser, page) -> None
+- _pop_pending_tab · function · L67-L70 — def _pop_pending_tab(task_id: str)
+- release_pending_tab · function · L73-L84 — def release_pending_tab(task_id: str) -> None
+- VideoChannelPublisher · class · L87-L590 — class VideoChannelPublisher
+- __init__ · method · L104-L120 — def __init__( self, chrome_debug_port: int = 9222, cookie_file: Optional[str] = None, require_manual_confirm: bool = True, cdp_url: Optional[str] = None, cdp_token: Optional[str] = None, )
+- _connect · method · L122-L150 — async def _connect(self) -> None
+- publish · method · L152-L255 — async def publish( self, video_path: str, title: str, description: str = "", tags: Optional[list] = None, cover_file_key: Optional[str] = None, mini_program_link: Optional[str] = None, task_id: Optional[str] = None, ) -> dict
+- _close_connection · method · L257-L269 — async def _close_connection(self) -> None
+- _need_login · method · L271-L282 — async def _need_login(self) -> bool
+- _upload_video · method · L284-L291 — async def _upload_video(self, video_path: str)
+- _wait_for_upload · method · L293-L303 — async def _wait_for_upload(self, timeout: int = 300)
+- _set_title · method · L305-L312 — async def _set_title(self, title: str)
+- _set_description · method · L314-L321 — async def _set_description(self, description: str)
+- _set_tags · method · L323-L333 — async def _set_tags(self, tags: list)
+- _set_cover · method · L335-L359 — async def _set_cover(self, cover_file_key: str)
+- _attach_mini_program · method · L361-L379 — async def _attach_mini_program(self, link: str)
+- _take_screenshot · method · L381-L388 — async def _take_screenshot(self) -> str
+- _click_publish · method · L390-L398 — async def _click_publish(self)
+- _wait_for_publish · method · L400-L413 — async def _wait_for_publish(self, timeout: int = 60) -> tuple
+- _save_pending_payload · method · L415-L447 — async def _save_pending_payload( self, task_id: str, title: str, description: str, tags: Optional[list], cover_file_key: Optional[str], mini_program_link: Optional[str], ) -> None
+- _refill_pending_form · method · L449-L480 — async def _refill_pending_form(self, payload: dict, task_id: Optional[str] = None) -> bool
+- _selector_ok · method · L482-L494 — async def _selector_ok(self) -> bool
+- confirm_publish · method · L496-L575 — async def confirm_publish(self, task_id: Optional[str] = None) -> dict
+- check_login_status · method · L577-L590 — async def check_login_status(self) -> dict
+- DouyinPublisher · class · L593-L621 — class DouyinPublisher(VideoChannelPublisher)
+- _need_login · method · L599-L609 — async def _need_login(self) -> bool
+- _set_tags · method · L611-L621 — async def _set_tags(self, tags: list)
+- KuaishouPublisher · class · L624-L640 — class KuaishouPublisher(VideoChannelPublisher)
+- _need_login · method · L630-L640 — async def _need_login(self) -> bool
+- get_publisher · function · L643-L655 — def get_publisher(platform: str, **kwargs) -> VideoChannelPublisher

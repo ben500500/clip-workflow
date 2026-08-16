@@ -1,0 +1,22 @@
+# frontend/src/pages/Watermark.tsx
+
+- PendingFile · interface · L36-L46 — interface PendingFile
+- ImportedVideo · interface · L49-L57 — interface ImportedVideo
+- pad4 · function · L69-L69 — pad4 = (n: number)
+- genTaskName · function · L71-L92 — genTaskName = ()
+- p · function · L73-L73 — p = (v: number)
+- Watermark · function · L94-L1274 — Watermark: React.FC<{ imports?: ImportedVideo[]; onImportsConsumed?: () => void; onGoToPublish?: (promptRecordId?: string | null) => void; }> = ({ imports = [], onImportsConsumed, onGoToPublish })
+- loadDetail · function · L184-L191 — loadDetail = async ()
+- handleSelectFiles · function · L198-L239 — handleSelectFiles = (files: FileList | File[])
+- removePendingFile · function · L241-L247 — removePendingFile = (uploadId: string)
+- clearPending · function · L249-L256 — clearPending = ()
+- submitTask · function · L259-L335 — submitTask = async ()
+- toggleExpand · function · L338-L353 — toggleExpand = async (taskId: string)
+- handleGoToPublish · function · L358-L372 — handleGoToPublish = async (task: WatermarkTaskItem)
+- retryTask · function · L375-L406 — retryTask = async (task: WatermarkTaskItem)
+- deleteTask · function · L409-L419 — deleteTask = async (taskId: string)
+- batchDelete · function · L421-L435 — batchDelete = async ()
+- deleteVideo · function · L437-L446 — deleteVideo = async (videoId: string, taskId: string)
+- downloadVideo · function · L449-L456 — downloadVideo = async (videoId: string)
+- downloadBatch · function · L458-L476 — downloadBatch = async (videoIds: string[], taskId: string)
+- renderVideos · function · L596-L741 — renderVideos = (taskId: string)

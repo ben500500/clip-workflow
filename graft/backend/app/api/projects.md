@@ -1,0 +1,28 @@
+# backend/app/api/projects.py
+
+- _remove_path · function · L31-L41 — def _remove_path(path: Path) -> None
+- ProjectCreate · class · L48-L51 — class ProjectCreate(BaseModel)
+- ProjectUpdate · class · L54-L58 — class ProjectUpdate(BaseModel)
+- ProjectResponse · class · L61-L73 — class ProjectResponse(BaseModel)
+- EpisodeCreate · class · L76-L82 — class EpisodeCreate(BaseModel)
+- EpisodeResponse · class · L85-L98 — class EpisodeResponse(BaseModel)
+- EpisodeListResponse · class · L101-L103 — class EpisodeListResponse(BaseModel)
+- _serialize_project · function · L108-L124 — def _serialize_project(project: Project) -> dict: # 异步会话下访问未预加载的关系会抛 MissingGreenlet，这里做防御处理
+- _serialize_episode · function · L127-L140 — def _serialize_episode(episode: Episode) -> dict
+- _data_scope_filter · function · L146-L154 — def _data_scope_filter(current_user: User)
+- _check_project_access · function · L157-L161 — def _check_project_access(project: Project, current_user: User) -> bool
+- create_project · function · L165-L180 — async def create_project( data: ProjectCreate, current_user: Annotated[User, Depends(get_current_user)], db: AsyncSession = Depends(get_db), )
+- list_projects · function · L184-L220 — async def list_projects( page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200), search: Optional[str] = Query(None), status: Optional[str] = Query(None), current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- project_stats · function · L224-L281 — async def project_stats( current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- get_project · function · L285-L307 — async def get_project( project_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- update_project · function · L311-L342 — async def update_project( project_id: str, data: ProjectUpdate, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- _cleanup_episode_minio · function · L345-L360 — async def _cleanup_episode_minio(episode) -> None
+- _cleanup_episode_media · function · L363-L379 — async def _cleanup_episode_media(db: AsyncSession, episode_id) -> None
+- delete_project · function · L383-L422 — async def delete_project( project_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- create_episode · function · L429-L461 — async def create_episode( project_id: str, data: EpisodeCreate, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- list_episodes · function · L465-L492 — async def list_episodes( project_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- get_episode · function · L496-L548 — async def get_episode( episode_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- get_episode_video_url · function · L552-L582 — async def get_episode_video_url( episode_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- delete_episode · function · L586-L616 — async def delete_episode( episode_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- _cleanup_orphan_media_files · function · L619-L658 — async def _cleanup_orphan_media_files() -> None
+- _cleanup_episode_media_files · function · L661-L682 — def _cleanup_episode_media_files(media_uuid: str) -> None
