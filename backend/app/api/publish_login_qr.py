@@ -159,12 +159,13 @@ async def claim_login_qr(
     }
 
 
-@img_router.get("/publish/login/qr/image/{qr_key}")
+@img_router.get("/publish/login/qr/image/{qr_key:path}")
 async def serve_login_qr_image(qr_key: str):
     """同源返回登录二维码 PNG（解密 MinIO 加密文件）。
 
     前端 <img src="/api/publish/login/qr/image/{qr_key}"> 同源加载，
-    避免直连内网 MinIO presigned 地址导致图裂。qr_key 为随机 UUID 路径，
+    避免直连内网 MinIO presigned 地址导致图裂。qr_key 为随机 UUID 路径
+    （实际形如 qr/{account_id}/{uuid}.png.enc，含斜杠，故用 :path 转换器），
     内容经 Fernet 加密（密钥仅后端持有），安全性与 presigned 同级。
     """
     from app.services import login_qr_service
