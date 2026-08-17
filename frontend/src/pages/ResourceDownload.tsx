@@ -1,16 +1,16 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Card, Tabs, Form, Input, Select, Button, Table, Tag, message, Space,
-  Typography, Progress, Modal, Alert, Radio,
+  Typography, Progress, Modal, Alert, Radio, Tooltip,
 } from 'antd';
 import {
   ImportOutlined, DownloadOutlined,
   LinkOutlined, ReloadOutlined, ScissorOutlined,
   EyeOutlined, ExportOutlined, PlusOutlined, FolderOpenOutlined,
-  VideoCameraOutlined,
+  VideoCameraOutlined, ApiOutlined, GlobalOutlined, SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { wechatDlApi, WechatDlTask } from '../api/wechatDl';
+import { wechatDlApi, WechatDlTask, WechatDlProviderInfo } from '../api/wechatDl';
 import { projectApi } from '../api/projects';
 import { configApi } from '../api/config';
 import { formatDateTime } from '../utils/format';
@@ -513,6 +513,117 @@ const TaskListPanel: React.FC = () => {
   );
 };
 
+// ========== 解析服务商 Tab（API 名称 / 官网 / 余量）==========
+const ProvidersPanel: React.FC = () => {
+  const [providers, setProviders] = useState<WechatDlProviderInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    wechatDlApi.getProviders()
+      .then((res) => setProviders(res.items || []))
+      .catch(() => { message.error('获取解析服务信息失败'); setProviders([]); })
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const renderBalance = (p: WechatDlProviderInfo) => {
+    if (p.balance != null) {
+      return (
+        <Space>
+          <Tag color="green" style={{ fontSize: 13 }}>
+            {p.balance.toLocaleString()} {p.balance_unit}
+          </Tag>
+          {p.balance_error && (
+            <Tooltip title={p.balance_error}>
+              <Text type="secondary" style={{ fontSize: 11 }}>查询有波动</Text>
+            </Tooltip>
+          )}
+        </Space>
+      );
+    }
+    if (p.balance_error) {
+      return <Tag color="red" style={{ fontSize: 12 }}>余量查询失败：{p.balance_error}</Tag>;
+    }
+    if (p.rechargeable) {
+      return <Text type="secondary" style={{ fontSize: 12 }}>未配置余量接口（未知）</Text>;
+    }
+    return <Text type="secondary" style={{ fontSize: 12 }}>免费 / 无需充值</Text>;
+  };
+
+  const columns = [
+    {
+      title: 'API 名称', dataIndex: 'display_name', key: 'display_name', width: 150,
+      render: (_: unknown, r: WechatDlProviderInfo) => (
+        <Space direction="vertical" size={0}>
+          <Text strong style={{ fontSize: 13 }}>{r.display_name}</Text>
+          <Text type="secondary" style={{ fontSize: 11 }}>channel: {r.channel}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: '充值 / 是否计费', dataIndex: 'rechargeable', key: 'rechargeable', width: 120,
+      render: (v: boolean) =>
+        v
+          ? <Tag color="gold">需充值计费</Tag>
+          : <Tag color="default">免费 / 官方链路</Tag>,
+    },
+    {
+      title: '官网（充值入口）', dataIndex: 'home', key: 'home',
+      render: (v: string | null, r: WechatDlProviderInfo) =>
+        v ? (
+          <a href={v} target="_blank" rel="noreferrer">
+            <GlobalOutlined /> {r.rechargeable ? '前往充值 / 开通' : '官方网站'}
+          </a>
+        ) : (
+          <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
+        ),
+    },
+    {
+      title: '当前余量', dataIndex: 'balance', key: 'balance', width: 200,
+      render: (_: unknown, r: WechatDlProviderInfo) => renderBalance(r),
+    },
+    {
+      title: '说明', dataIndex: 'desc', key: 'desc', ellipsis: true,
+      render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '-'}</Text>,
+    },
+  ];
+
+  return (
+    <Card
+      size="small"
+      title="当前使用的解析 API 服务"
+      extra={
+        <Button size="small" icon={<ReloadOutlined />} onClick={load} loading={loading}>刷新</Button>
+      }
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        icon={<ApiOutlined />}
+        message="资源下载通过下方解析服务获取视频号真实播放地址"
+        description="标为「需充值计费」的服务为第三方 API，按次数计费，请在对应官网充值续费；「免费 / 官方链路」为微信/腾讯官方能力，无需充值。余量来自服务商接口，若未配置则显示未知。"
+      />
+      <Table
+        rowKey="channel"
+        size="small"
+        loading={loading}
+        columns={columns}
+        dataSource={providers}
+        pagination={false}
+        locale={{ emptyText: '未配置解析服务（WECHAT_DL_PROVIDERS 为空）' }}
+      />
+      <div style={{ marginTop: 12 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          <SafetyCertificateOutlined /> 提示：请妥善保管各服务的 Key/Token，勿泄露；余量为实时查询结果，仅供参考，以服务商后台为准。
+        </Text>
+      </div>
+    </Card>
+  );
+};
+
 // ========== 主页面 ==========
 const ResourceDownload: React.FC = () => {
   return (
@@ -525,6 +636,11 @@ const ResourceDownload: React.FC = () => {
             key: 'import',
             label: <span><ImportOutlined /> 链接导入</span>,
             children: <ImportPanel />,
+          },
+          {
+            key: 'providers',
+            label: <span><ApiOutlined /> 解析服务</span>,
+            children: <ProvidersPanel />,
           },
           {
             key: 'tasks',

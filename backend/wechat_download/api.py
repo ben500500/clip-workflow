@@ -28,6 +28,10 @@ from app.database import get_db
 from app.models.models import User, user_can_access_all_materials
 
 from wechat_download.models import WechatDownloadTask
+from wechat_download.provider_registry import (
+    fetch_provider_balances,
+    get_provider_infos,
+)
 from wechat_download.service import (
     create_import_task,
     create_import_tasks_batch,
@@ -55,6 +59,30 @@ class ImportResponse(BaseModel):
     source_type: str
     source_authorize: str
     message: str
+
+
+@router.get("/providers")
+async def wechat_dl_providers(
+    current_user: User = Depends(get_current_user),
+):
+    """返回资源下载当前使用的解析服务（API 名称 / 官网 / 是否需充值）及其余量。
+
+    - 官网链接用于跳转充值/开通页面。
+    - 余量：对配置了 WECHAT_DL_<NAME>_QUOTA_PATH 的第三方服务商实时查询；
+      未配置或无余量接口的 provider 返回 balance=null（未知）。
+    """
+    infos = get_provider_infos()
+    balances = await fetch_provider_balances()
+    items = []
+    for info in infos:
+        bal = balances.get(info.channel)
+        d = info.to_dict()
+        if bal:
+            d["balance"] = bal.get("balance")
+            d["balance_unit"] = bal.get("unit") or d["balance_unit"]
+            d["balance_error"] = bal.get("error")
+        items.append(d)
+    return {"items": items}
 
 
 @router.post("/import", response_model=ImportResponse, status_code=201)
