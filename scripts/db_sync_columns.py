@@ -21,7 +21,8 @@ import asyncio
 import os
 import asyncpg
 
-from app.models.models import Base
+from app.database import Base
+import app.models.models  # noqa: F401  触发全部 ORM 模型注册到 Base.metadata
 from sqlalchemy.dialects import postgresql
 
 
