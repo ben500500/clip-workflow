@@ -1,24 +1,33 @@
 # backend/wechat_download/provider_registry.py
 
 - ProviderParseError · class · L45-L46 — class ProviderParseError(Exception)
-- BaseParseClient · class · L49-L58 — class BaseParseClient
-- parse · method · L54-L55 — async def parse(self, share_url: str, db=None) -> ParseResult
-- close · method · L57-L58 — async def close(self) -> None
-- YuanbaoAdapter · class · L61-L79 — class YuanbaoAdapter(BaseParseClient)
-- __init__ · method · L66-L67 — def __init__(self) -> None
-- parse · method · L69-L73 — async def parse(self, share_url: str, db=None) -> ParseResult
-- close · method · L75-L79 — async def close(self) -> None
-- PreviewAdapter · class · L82-L100 — class PreviewAdapter(BaseParseClient)
-- __init__ · method · L87-L88 — def __init__(self) -> None
-- parse · method · L90-L94 — async def parse(self, share_url: str, db=None) -> ParseResult
-- close · method · L96-L100 — async def close(self) -> None
-- _dig · function · L103-L111 — def _dig(d: dict, path: str)
-- _is_image_url · function · L114-L116 — def _is_image_url(u: str) -> bool
-- HttpApiAdapter · class · L119-L243 — class HttpApiAdapter(BaseParseClient)
-- __init__ · method · L127-L143 — def __init__(self, name: str, base: str) -> None
-- _build_url · method · L145-L148 — def _build_url(self) -> str
-- parse · method · L150-L196 — async def parse(self, share_url: str, db=None) -> ParseResult
-- _normalize · method · L198-L237 — def _normalize(self, data: dict, raw: str = "") -> ParseResult
-- close · method · L239-L243 — async def close(self) -> None
-- build_providers · function · L246-L264 — def build_providers() -> List[BaseParseClient]
-- dispatch_parse · function · L267-L285 — async def dispatch_parse(share_url: str, db=None) -> ParseResult
+- _root_home · function · L68-L75 — def _root_home(base: str) -> str
+- ProviderInfo · class · L78-L110 — class ProviderInfo
+- __init__ · method · L86-L98 — def __init__( self, channel: str, display_name: str = "", home: str = "", rechargeable: bool = True, desc: str = "", balance=None, balance_unit: str = "次", balance_error: str = "", ) -> None
+- to_dict · method · L100-L110 — def to_dict(self) -> dict
+- _fetch_http_balance · function · L113-L152 — async def _fetch_http_balance(client: httpx.AsyncClient, name: str) -> dict
+- BaseParseClient · class · L155-L168 — class BaseParseClient
+- parse · method · L160-L161 — async def parse(self, share_url: str, db=None) -> ParseResult
+- check_balance · method · L163-L165 — async def check_balance(self) -> dict
+- close · method · L167-L168 — async def close(self) -> None
+- YuanbaoAdapter · class · L171-L189 — class YuanbaoAdapter(BaseParseClient)
+- __init__ · method · L176-L177 — def __init__(self) -> None
+- parse · method · L179-L183 — async def parse(self, share_url: str, db=None) -> ParseResult
+- close · method · L185-L189 — async def close(self) -> None
+- PreviewAdapter · class · L192-L210 — class PreviewAdapter(BaseParseClient)
+- __init__ · method · L197-L198 — def __init__(self) -> None
+- parse · method · L200-L204 — async def parse(self, share_url: str, db=None) -> ParseResult
+- close · method · L206-L210 — async def close(self) -> None
+- _dig · function · L213-L221 — def _dig(d: dict, path: str)
+- _is_image_url · function · L224-L226 — def _is_image_url(u: str) -> bool
+- HttpApiAdapter · class · L229-L357 — class HttpApiAdapter(BaseParseClient)
+- __init__ · method · L237-L253 — def __init__(self, name: str, base: str) -> None
+- _build_url · method · L255-L258 — def _build_url(self) -> str
+- parse · method · L260-L306 — async def parse(self, share_url: str, db=None) -> ParseResult
+- _normalize · method · L308-L347 — def _normalize(self, data: dict, raw: str = "") -> ParseResult
+- close · method · L349-L353 — async def close(self) -> None
+- check_balance · method · L355-L357 — async def check_balance(self) -> dict
+- build_providers · function · L360-L378 — def build_providers() -> List[BaseParseClient]
+- dispatch_parse · function · L381-L399 — async def dispatch_parse(share_url: str, db=None) -> ParseResult
+- get_provider_infos · function · L402-L434 — def get_provider_infos() -> List[ProviderInfo]
+- fetch_provider_balances · function · L437-L451 — async def fetch_provider_balances() -> dict

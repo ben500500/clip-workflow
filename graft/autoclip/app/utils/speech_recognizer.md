@@ -4,7 +4,7 @@
 - LanguageCode · class · L37-L41 — class LanguageCode(str, Enum)
 - SpeechRecognitionConfig · class · L45-L69 — class SpeechRecognitionConfig
 - SpeechRecognitionError · class · L72-L74 — class SpeechRecognitionError(Exception)
-- SpeechRecognizer · class · L77-L907 — class SpeechRecognizer
+- SpeechRecognizer · class · L77-L1024 — class SpeechRecognizer
 - __init__ · method · L80-L86 — def __init__(self, config: Optional[SpeechRecognitionConfig] = None)
 - _check_whisper_availability · method · L88-L95 — def _check_whisper_availability(self) -> bool
 - _check_aliyun_speech_availability · method · L97-L106 — def _check_aliyun_speech_availability(self) -> bool
@@ -24,7 +24,9 @@
 - _get_media_duration · method · L595-L608 — def _get_media_duration(media_path: Path) -> float
 - _aliyun_speech_transcribe_audio · method · L610-L673 — def _aliyun_speech_transcribe_audio(self, audio_path: Path, config: SpeechRecognitionConfig, api_key: str) -> str
 - _generate_subtitle_whisper · method · L675-L730 — def _generate_subtitle_whisper(self, video_path: Path, output_path: Path, config: SpeechRecognitionConfig) -> Path
-- _generate_subtitle_funasr_local · method · L732-L799 — def _generate_subtitle_funasr_local(self, video_path: Path, output_path: Path, config: SpeechRecognitionConfig) -> Path
-- _strip_funasr_tags · method · L802-L806 — def _strip_funasr_tags(text: str) -> str
-- _generate_subtitle_aliyun_speech · method · L808-L907 — def _generate_subtitle_aliyun_speech(self, video_path: Path, output_path: Path, config: SpeechRecognitionConfig) -> Path
-- generate_subtitle_for_video · function · L910-L942 — def generate_subtitle_for_video(video_path: Path, output_path: Optional[Path] = None, method: str = "aliyun_speech", language: str = "auto", model: str = "base", enable_fallback: bool = True, api_key: Optional[str] = None) -> Path
+- _aggregate_funasr_char_timestamps · method · L733-L838 — def _aggregate_funasr_char_timestamps(text: str, timestamps: list) -> List[Dict[str, Any]]
+- emit · function · L783-L786 — def emit(items: List[Dict[str, Any]]) -> None
+- _generate_subtitle_funasr_local · method · L840-L916 — def _generate_subtitle_funasr_local(self, video_path: Path, output_path: Path, config: SpeechRecognitionConfig) -> Path
+- _strip_funasr_tags · method · L919-L923 — def _strip_funasr_tags(text: str) -> str
+- _generate_subtitle_aliyun_speech · method · L925-L1024 — def _generate_subtitle_aliyun_speech(self, video_path: Path, output_path: Path, config: SpeechRecognitionConfig) -> Path
+- generate_subtitle_for_video · function · L1027-L1059 — def generate_subtitle_for_video(video_path: Path, output_path: Optional[Path] = None, method: str = "aliyun_speech", language: str = "auto", model: str = "base", enable_fallback: bool = True, api_key: Optional[str] = None) -> Path

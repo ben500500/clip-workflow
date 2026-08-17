@@ -25,4 +25,5 @@
 - verify_cdp_token · function · L440-L458 — async def verify_cdp_token(token: str, account_id) -> bool
 - _fmt_ts · function · L464-L471 — def _fmt_ts(val) -> str
 - get_route_matrix · function · L474-L511 — async def get_route_matrix() -> list
-- get_operator_stats · function · L514-L537 — async def get_operator_stats() -> list
+- get_verification_status · function · L514-L582 — async def get_verification_status() -> dict
+- get_operator_stats · function · L585-L608 — async def get_operator_stats() -> list

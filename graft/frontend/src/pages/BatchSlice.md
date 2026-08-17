@@ -1,24 +1,24 @@
 # frontend/src/pages/BatchSlice.tsx
 
-- FlattenOutput · interface · L21-L27 — interface FlattenOutput
-- AutoClipConfig · interface · L31-L38 — interface AutoClipConfig
-- IntervalConfig · interface · L40-L43 — interface IntervalConfig
-- SliceConfigState · interface · L45-L81 — interface SliceConfigState
-- BatchSlicePage · function · L173-L1284 — BatchSlicePage: React.FC = ()
-- handleFileUpload · function · L271-L288 — handleFileUpload = (file: File)
-- buildPayload · function · L290-L330 — buildPayload = ()
-- addTextOverlay · function · L332-L337 — addTextOverlay = ()
-- updateTextOverlay · function · L339-L344 — updateTextOverlay = (index: number, patch: Partial<TextOverlayItem>)
-- removeTextOverlay · function · L346-L351 — removeTextOverlay = (index: number)
-- handleRun · function · L353-L379 — handleRun = async ()
-- handleRetry · function · L381-L399 — handleRetry = async ()
-- handleCancel · function · L401-L419 — handleCancel = async ()
-- showOutputs · function · L421-L431 — showOutputs = async ()
-- renderOutputModal · function · L433-L492 — renderOutputModal = ()
-- handlePreviewOutput · function · L495-L503 — handlePreviewOutput = async (item: FlattenOutput)
-- openTrimModal · function · L506-L515 — openTrimModal = (item: FlattenOutput)
-- handleTrimRangeChange · function · L518-L524 — handleTrimRangeChange = (val: [number, number])
-- submitTrim · function · L527-L549 — submitTrim = async ()
-- renderPreviewModal · function · L551-L564 — renderPreviewModal = ()
-- renderTrimModal · function · L566-L619 — renderTrimModal = ()
-- formatSize · function · L621-L626 — formatSize = (size?: number | null)
+- FlattenOutput · interface · L22-L28 — interface FlattenOutput
+- AutoClipConfig · interface · L32-L39 — interface AutoClipConfig
+- IntervalConfig · interface · L41-L44 — interface IntervalConfig
+- SliceConfigState · interface · L46-L83 — interface SliceConfigState
+- BatchSlicePage · function · L176-L1294 — BatchSlicePage: React.FC = ()
+- handleFileUpload · function · L274-L291 — handleFileUpload = (file: File)
+- buildPayload · function · L293-L333 — buildPayload = ()
+- addTextOverlay · function · L335-L340 — addTextOverlay = ()
+- updateTextOverlay · function · L342-L347 — updateTextOverlay = (index: number, patch: Partial<TextOverlayItem>)
+- removeTextOverlay · function · L349-L354 — removeTextOverlay = (index: number)
+- handleRun · function · L356-L382 — handleRun = async ()
+- handleRetry · function · L384-L402 — handleRetry = async ()
+- handleCancel · function · L404-L422 — handleCancel = async ()
+- showOutputs · function · L424-L434 — showOutputs = async ()
+- renderOutputModal · function · L436-L495 — renderOutputModal = ()
+- handlePreviewOutput · function · L498-L506 — handlePreviewOutput = async (item: FlattenOutput)
+- openTrimModal · function · L509-L518 — openTrimModal = (item: FlattenOutput)
+- handleTrimRangeChange · function · L521-L527 — handleTrimRangeChange = (val: [number, number])
+- submitTrim · function · L530-L552 — submitTrim = async ()
+- renderPreviewModal · function · L554-L567 — renderPreviewModal = ()
+- renderTrimModal · function · L569-L622 — renderTrimModal = ()
+- formatSize · function · L624-L629 — formatSize = (size?: number | null)

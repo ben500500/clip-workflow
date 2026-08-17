@@ -2,34 +2,34 @@
 
 - BadgeItem · class · L63-L76 — class BadgeItem(BaseModel)
 - TextOverlayItem · class · L79-L96 — class TextOverlayItem(BaseModel)
-- SliceRunRequest · class · L99-L230 — class SliceRunRequest(BaseModel)
-- SliceRunResponse · class · L233-L236 — class SliceRunResponse(BaseModel)
-- SliceTaskResponse · class · L239-L264 — class SliceTaskResponse(BaseModel)
-- SliceOutputResponse · class · L267-L279 — class SliceOutputResponse(BaseModel)
-- SliceTaskCallback · class · L282-L292 — class SliceTaskCallback(BaseModel)
-- UserSliceConfigRequest · class · L295-L296 — class UserSliceConfigRequest(BaseModel)
-- _serialize_task · function · L304-L328 — def _serialize_task(task: SliceTask) -> dict
-- _serialize_output · function · L331-L343 — def _serialize_output(output: SliceOutput, presigned_url: Optional[str] = None) -> dict
-- _ffprobe_duration · function · L351-L362 — def _ffprobe_duration(path: str) -> float
-- _resolve_engine · function · L365-L373 — def _resolve_engine(request_engine: Optional[str]) -> str
-- _build_watermark_config · function · L376-L406 — def _build_watermark_config( data: SliceRunRequest, episode: Episode, ) -> Optional[dict]
-- _build_vert2horiz_config · function · L409-L441 — def _build_vert2horiz_config(data: SliceRunRequest) -> Optional[dict]
-- _build_badges_config · function · L444-L476 — def _build_badges_config(data: SliceRunRequest) -> Optional[list]
-- _build_text_overlays_config · function · L479-L512 — def _build_text_overlays_config(data: SliceRunRequest) -> Optional[list]
-- _build_subtitle_mask_config · function · L515-L552 — def _build_subtitle_mask_config(data: SliceRunRequest, source_srt: Optional[str] = None) -> Optional[dict]
-- _build_watermark_mask_config · function · L555-L583 — def _build_watermark_mask_config(data: SliceRunRequest) -> Optional[dict]
-- _read_existing_subtitle · function · L596-L630 — async def _read_existing_subtitle(episode: Episode, db: AsyncSession) -> Optional[dict]
-- _with_subtitle_options · function · L633-L647 — def _with_subtitle_options(cfg: dict, data: SliceRunRequest) -> dict
-- _read_uploaded_subtitle · function · L650-L678 — async def _read_uploaded_subtitle(file_key: str) -> Optional[dict]
-- _vtt_to_srt · function · L681-L740 — def _vtt_to_srt(content: str) -> str
-- _resolve_source_subtitle_srt · function · L743-L780 — async def _resolve_source_subtitle_srt( data: SliceRunRequest, source_file_key: Optional[str], source_bucket: str, episode: Optional[Episode] = None, db: Optional[AsyncSession] = None, ) -> Optional[str]
-- _generate_subtitle_config · function · L783-L797 — def _generate_subtitle_config( data: SliceRunRequest, source_srt: Optional[str], ) -> Optional[dict]
-- _not_detect_task · function · L800-L809 — def _not_detect_task()
-- _get_max_concurrent_tasks · function · L812-L828 — async def _get_max_concurrent_tasks(db: AsyncSession) -> int
-- _acquire_concurrency_slot · function · L831-L855 — async def _acquire_concurrency_slot(db: AsyncSession) -> None
-- _output_prefix · function · L858-L860 — def _output_prefix(slice_task: SliceTask) -> str
-- _refresh_episode_status · function · L863-L907 — async def _refresh_episode_status(db: AsyncSession, episode_id) -> None
-- _publish_to_worker · function · L910-L1038 — async def _publish_to_worker( slice_task: SliceTask, episode: Episode, cutlist: str, intervals_content: str, source_file_key: Optional[str], dedupe_config: Optional[dict], watermark_config: Optional[dict] = None, encoder: Optional[str] = None, vert2horiz_config: Optional[dict] = None, badges_config: Optional[list] = None, badge_default_width: int = 0, source_bucket: str = "", subtitle_config: Optional[dict] = None, text_overlays_config: Optional[list] = None, subtitle_mask_config: Optional[dict] = None, watermark_mask_config: Optional[dict] = None, subtitle_align_mask: bool = True, ) -> bool
-- _subtitle_enabled · function · L971-L972 — def _subtitle_enabled(cfg) -> bool
-- _dispatch_celery · function · L1041-L1095 — async def _dispatch_celery( slice_task: SliceTask, episode: Episode, cutlist: str, intervals_content: str, source_file_key: Optional[str], dedupe_config: Optional[dict], video_path: Optional[str], watermark_config: Optional[dict] = None, encoder: Optional[str] = None, vert2horiz_config: Optional[dict] = None, badges_config: Optional[list] = None, badge_default_width: int = 0, source_bucket: str = "", subtitle_config: Optional[dict] = None, text_overlays_config: Optional[list] = None, subtitle_mask_config: Optional[dict] = None, watermark_mask_config: Optional[dict] = None, subtitle_align_mask: bool = True, ) -> bool
-- _verify_worker_token · function · L1098-L1108 — async def _verify_worker_token( task_id: str, x_worker_token: Optional[str], ) -> bool
+- SliceRunRequest · class · L99-L233 — class SliceRunRequest(BaseModel)
+- SliceRunResponse · class · L236-L239 — class SliceRunResponse(BaseModel)
+- SliceTaskResponse · class · L242-L267 — class SliceTaskResponse(BaseModel)
+- SliceOutputResponse · class · L270-L282 — class SliceOutputResponse(BaseModel)
+- SliceTaskCallback · class · L285-L295 — class SliceTaskCallback(BaseModel)
+- UserSliceConfigRequest · class · L298-L299 — class UserSliceConfigRequest(BaseModel)
+- _serialize_task · function · L307-L331 — def _serialize_task(task: SliceTask) -> dict
+- _serialize_output · function · L334-L346 — def _serialize_output(output: SliceOutput, presigned_url: Optional[str] = None) -> dict
+- _ffprobe_duration · function · L354-L365 — def _ffprobe_duration(path: str) -> float
+- _resolve_engine · function · L368-L376 — def _resolve_engine(request_engine: Optional[str]) -> str
+- _build_watermark_config · function · L379-L411 — def _build_watermark_config( data: SliceRunRequest, episode: Episode, ) -> Optional[dict]
+- _build_vert2horiz_config · function · L414-L446 — def _build_vert2horiz_config(data: SliceRunRequest) -> Optional[dict]
+- _build_badges_config · function · L449-L481 — def _build_badges_config(data: SliceRunRequest) -> Optional[list]
+- _build_text_overlays_config · function · L484-L517 — def _build_text_overlays_config(data: SliceRunRequest) -> Optional[list]
+- _build_subtitle_mask_config · function · L520-L557 — def _build_subtitle_mask_config(data: SliceRunRequest, source_srt: Optional[str] = None) -> Optional[dict]
+- _build_watermark_mask_config · function · L560-L588 — def _build_watermark_mask_config(data: SliceRunRequest) -> Optional[dict]
+- _read_existing_subtitle · function · L601-L635 — async def _read_existing_subtitle(episode: Episode, db: AsyncSession) -> Optional[dict]
+- _with_subtitle_options · function · L638-L652 — def _with_subtitle_options(cfg: dict, data: SliceRunRequest) -> dict
+- _read_uploaded_subtitle · function · L655-L683 — async def _read_uploaded_subtitle(file_key: str) -> Optional[dict]
+- _vtt_to_srt · function · L686-L745 — def _vtt_to_srt(content: str) -> str
+- _resolve_source_subtitle_srt · function · L748-L785 — async def _resolve_source_subtitle_srt( data: SliceRunRequest, source_file_key: Optional[str], source_bucket: str, episode: Optional[Episode] = None, db: Optional[AsyncSession] = None, ) -> Optional[str]
+- _generate_subtitle_config · function · L788-L802 — def _generate_subtitle_config( data: SliceRunRequest, source_srt: Optional[str], ) -> Optional[dict]
+- _not_detect_task · function · L805-L814 — def _not_detect_task()
+- _get_max_concurrent_tasks · function · L817-L833 — async def _get_max_concurrent_tasks(db: AsyncSession) -> int
+- _acquire_concurrency_slot · function · L836-L860 — async def _acquire_concurrency_slot(db: AsyncSession) -> None
+- _output_prefix · function · L863-L865 — def _output_prefix(slice_task: SliceTask) -> str
+- _refresh_episode_status · function · L868-L912 — async def _refresh_episode_status(db: AsyncSession, episode_id) -> None
+- _publish_to_worker · function · L915-L1043 — async def _publish_to_worker( slice_task: SliceTask, episode: Episode, cutlist: str, intervals_content: str, source_file_key: Optional[str], dedupe_config: Optional[dict], watermark_config: Optional[dict] = None, encoder: Optional[str] = None, vert2horiz_config: Optional[dict] = None, badges_config: Optional[list] = None, badge_default_width: int = 0, source_bucket: str = "", subtitle_config: Optional[dict] = None, text_overlays_config: Optional[list] = None, subtitle_mask_config: Optional[dict] = None, watermark_mask_config: Optional[dict] = None, subtitle_align_mask: bool = True, ) -> bool
+- _subtitle_enabled · function · L976-L977 — def _subtitle_enabled(cfg) -> bool
+- _dispatch_celery · function · L1046-L1100 — async def _dispatch_celery( slice_task: SliceTask, episode: Episode, cutlist: str, intervals_content: str, source_file_key: Optional[str], dedupe_config: Optional[dict], video_path: Optional[str], watermark_config: Optional[dict] = None, encoder: Optional[str] = None, vert2horiz_config: Optional[dict] = None, badges_config: Optional[list] = None, badge_default_width: int = 0, source_bucket: str = "", subtitle_config: Optional[dict] = None, text_overlays_config: Optional[list] = None, subtitle_mask_config: Optional[dict] = None, watermark_mask_config: Optional[dict] = None, subtitle_align_mask: bool = True, ) -> bool
+- _verify_worker_token · function · L1103-L1113 — async def _verify_worker_token( task_id: str, x_worker_token: Optional[str], ) -> bool

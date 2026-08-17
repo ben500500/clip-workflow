@@ -7,3 +7,4 @@
 - WechatDlImportInput · interface · L43-L48 — interface WechatDlImportInput
 - WechatDlImportToProjectInput · interface · L50-L54 — interface WechatDlImportToProjectInput
 - WechatDlImportToProjectResult · interface · L56-L60 — interface WechatDlImportToProjectResult
+- WechatDlProviderInfo · interface · L62-L71 — interface WechatDlProviderInfo

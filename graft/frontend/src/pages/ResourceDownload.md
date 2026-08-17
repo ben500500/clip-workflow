@@ -10,4 +10,6 @@
 - openImport · function · L268-L281 — openImport = async (t: WechatDlTask)
 - handleImportConfirm · function · L283-L308 — handleImportConfirm = async ()
 - metaDuration · function · L310-L317 — metaDuration = (t: WechatDlTask): string
-- ResourceDownload · function · L517-L538 — ResourceDownload: React.FC = ()
+- ProvidersPanel · function · L517-L625 — ProvidersPanel: React.FC = ()
+- renderBalance · function · L531-L553 — renderBalance = (p: WechatDlProviderInfo)
+- ResourceDownload · function · L628-L654 — ResourceDownload: React.FC = ()

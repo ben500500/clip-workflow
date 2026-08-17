@@ -1,9 +1,9 @@
 # frontend/src/components/DedupeManualConfig.tsx
 
 - DedupeManualConfigValue · interface · L10-L34 — interface DedupeManualConfigValue
-- Props · interface · L93-L98 — interface Props
-- DedupeManualConfig · function · L101-L200 — DedupeManualConfig: React.FC<Props> = ({ value, onChange, preset })
-- set · function · L104-L106 — set = (key: keyof DedupeManualConfigValue, val: unknown)
-- setWm · function · L107-L111 — setWm = (key: string, val: unknown)
-- row · function · L114-L122 — row = (label: string, tip: string, control: React.ReactNode)
-- num · function · L124-L124 — num = (v?: number)
+- Props · interface · L124-L129 — interface Props
+- DedupeManualConfig · function · L132-L231 — DedupeManualConfig: React.FC<Props> = ({ value, onChange, preset })
+- set · function · L135-L137 — set = (key: keyof DedupeManualConfigValue, val: unknown)
+- setWm · function · L138-L142 — setWm = (key: string, val: unknown)
+- row · function · L145-L153 — row = (label: string, tip: string, control: React.ReactNode)
+- num · function · L155-L155 — num = (v?: number)
