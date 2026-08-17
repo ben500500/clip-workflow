@@ -229,6 +229,8 @@ const EpisodeDetail: React.FC = () => {
   // 去重模式手动配置（每项去重手段可单独覆盖预设，为空时沿用预设档位）
   const [dedupeManual, setDedupeManual] = useState<DedupeManualConfigValue>({});
   const [dedupeManualOpen, setDedupeManualOpen] = useState(false);
+  // 多视频号素材去重：多版本生成数（null/1=不生成，零侵入；>1=切片后自动派生 N 个去重版本）
+  const [variantCount, setVariantCount] = useState<number | undefined>(undefined);
   const [watermarkEnabled, setWatermarkEnabled] = useState(false);
   const [watermarkText, setWatermarkText] = useState('');
   const [watermarkFontSize, setWatermarkFontSize] = useState(28);
@@ -1287,6 +1289,8 @@ const EpisodeDetail: React.FC = () => {
         dedupe_config: mode === 'dedupe'
           ? buildDedupeConfig(dedupePreset, dedupeManual)
           : undefined,
+        // 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本）
+        variant_count: mode === 'dedupe' && variantCount && variantCount > 1 ? variantCount : undefined,
         // 自定义文字水印：开启后后端下发给引擎，在成品视频上叠加动态文字水印
         watermark_enabled: watermarkEnabled,
         watermark_text: watermarkEnabled ? watermarkText : undefined,
@@ -1735,6 +1739,17 @@ const EpisodeDetail: React.FC = () => {
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {Object.keys(dedupeManual).length > 0 ? '已启用手动配置' : '跟随所选档位'}
               </Text>
+              {/* 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本） */}
+              <InputNumber
+                size="small"
+                min={1}
+                max={20}
+                placeholder="变体数"
+                value={variantCount}
+                onChange={(v) => setVariantCount(v ?? undefined)}
+                style={{ width: 90 }}
+              />
+              <Text type="secondary" style={{ fontSize: 12 }}>多版本数</Text>
             </Space>
           )}
           {/* 开始切片 / 快速转换按钮（位于切片模式选择下方） */}

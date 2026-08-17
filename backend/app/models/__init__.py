@@ -47,6 +47,10 @@ from app.models.channel import (
     ChannelAccount,
     ChannelOperator,
 )
+from app.models.variant import (
+    ClipVariant,
+    VideoFingerprint,
+)
 
 __all__ = [
     "Project",
@@ -94,4 +98,7 @@ __all__ = [
     "BatchSliceItem",
     "ChannelAccount",
     "ChannelOperator",
+    # 多视频号素材去重
+    "ClipVariant",
+    "VideoFingerprint",
 ]

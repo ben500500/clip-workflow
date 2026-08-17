@@ -196,6 +196,10 @@ async def _apply_compat_migrations():
         ("publish_materials", "prompt_record_id", "UUID"),
         # 视频号素材导入（wechat_download）：episodes 最小粘合字段 source_url
         ("episodes", "source_url", "VARCHAR(2000)"),
+        # 多视频号素材去重（圆桌定稿）：SliceOutput 变体组 + Publication 变体回写
+        ("slice_outputs", "variant_group_id", "UUID"),
+        ("publications", "variant_id", "UUID"),
+        ("slice_tasks", "variant_count", "INTEGER"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

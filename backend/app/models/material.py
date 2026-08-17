@@ -176,6 +176,8 @@ class SliceTask(Base):
     cutlist = Column(Text, nullable=True)
     intervals = Column(Text, nullable=True)
     dedupe_config = Column(JSON, nullable=True)
+    # 多视频号素材去重：需要生成的素材变体数（null/1=不生成，零侵入；>1=切片后自动派生 N 个去重版本）
+    variant_count = Column(Integer, nullable=True)
     # 源视频所在桶（普通切片 raw-footage；成品重新剪辑 sliced），重试时用于还原源
     source_bucket = Column(String(50), nullable=True)
     # 实际使用的源视频 file_key（重试时优先于剧集素材使用）
@@ -224,12 +226,15 @@ class SliceOutput(Base):
     duration = Column(Float, nullable=True)
     file_size = Column(BigInteger, nullable=True)
     resolution = Column(String(50), nullable=True)
+    # 多视频号素材去重：变体组（同一基准切片的 N 套去重版本聚合；未开多版本时为 None，零侵入）
+    variant_group_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     task = relationship("SliceTask", back_populates="outputs")
     clip_candidate = relationship("ClipCandidate", back_populates="slice_outputs")
     publications = relationship("Publication", back_populates="output", cascade="all, delete-orphan")
     publish_tasks = relationship("PublishTask", back_populates="output", cascade="all, delete-orphan")
+    variants = relationship("ClipVariant", back_populates="output", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<SliceOutput(id={self.id}, file_name={self.file_name})>"
@@ -246,6 +251,8 @@ class Publication(Base):
     status = Column(String(50), nullable=True)
     reject_reason = Column(Text, nullable=True)
     operator = Column(String(100), nullable=True)
+    # 多视频号素材去重：本次发布使用的素材变体（发布后回写，便于审计）
+    variant_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     output = relationship("SliceOutput", back_populates="publications")

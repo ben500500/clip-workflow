@@ -433,6 +433,7 @@ async def run_slice(
         cutlist=cutlist,
         intervals=intervals_content,
         dedupe_config=data.dedupe_config,
+        variant_count=data.variant_count,
         source_bucket=source_bucket,
         source_file_key=source_file_key,
         subtitle_align_mask=data.subtitle_align_mask,
@@ -944,6 +945,7 @@ async def retry_slice_task(
         cutlist=task.cutlist,
         intervals=task.intervals,
         dedupe_config=task.dedupe_config,
+        variant_count=getattr(task, "variant_count", None),
         # 重试时保留原任务的源与水印/角标配置
         source_bucket=source_bucket,
         source_file_key=source_file_key,
