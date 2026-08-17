@@ -11,7 +11,7 @@
 import uuid
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,11 @@ from app.models.models import PublishProfile, User
 from app.api.publish_common import _require_admin
 
 router = APIRouter()
+
+# 图片代理 router：不带全局鉴权依赖。qr_key 为随机 UUID 能力令牌，
+# 安全模型与原 MinIO presigned URL 等价（只有拿到 claim 链接的 operator 才知道路径），
+# 且前端 <img> 无法携带 JWT，必须同源免鉴权返回 PNG。
+img_router = APIRouter()
 
 
 class LoginQrApply(BaseModel):
@@ -138,21 +143,41 @@ async def claim_login_qr(
     token: str,
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
-    """领取登录二维码（operator 用单次 token，TTL 90s）。返回临时 presigned 链接。"""
+    """领取登录二维码（operator 用单次 token，TTL 90s）。返回同源图片代理链接。"""
     from app.services import login_qr_service
 
     claim = await login_qr_service.verify_claim_token(token)
     if not claim:
         raise HTTPException(status_code=410, detail="领取链接已失效/已使用（TTL 90s 单次）")
-    url = await login_qr_service.get_qr_presigned_url(claim["qr_key"], expires=60)
-    if not url:
-        raise HTTPException(status_code=502, detail="QR 文件不可用")
+    # 返回同源代理路径，避免浏览器直连内网 MinIO presigned（图裂）
+    qr_url = f"/api/publish/login/qr/image/{claim['qr_key']}"
     return {
-        "qr_url": url,
+        "qr_url": qr_url,
         "account_id": claim["account_id"],
         "operator_id": claim["operator_id"],
         "expires_in": 60,
     }
+
+
+@img_router.get("/publish/login/qr/image/{qr_key}")
+async def serve_login_qr_image(qr_key: str):
+    """同源返回登录二维码 PNG（解密 MinIO 加密文件）。
+
+    前端 <img src="/api/publish/login/qr/image/{qr_key}"> 同源加载，
+    避免直连内网 MinIO presigned 地址导致图裂。qr_key 为随机 UUID 路径，
+    内容经 Fernet 加密（密钥仅后端持有），安全性与 presigned 同级。
+    """
+    from app.services import login_qr_service
+    from app.services.minio_service import download_file
+
+    enc = await download_file(login_qr_service.QR_BUCKET, qr_key)
+    if not enc:
+        raise HTTPException(status_code=404, detail="QR not found")
+    try:
+        png = login_qr_service.decrypt_cookie_bytes(enc)
+    except Exception:
+        raise HTTPException(status_code=500, detail="QR decrypt failed")
+    return Response(content=png, media_type="image/png")
 
 
 @router.post("/publish/login/scan/callback", response_model=dict)

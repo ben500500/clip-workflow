@@ -200,6 +200,11 @@ for _r in _protected_routers:
 # auth 自带 /api/auth 前缀，保持开放（login/refresh）
 app.include_router(auth.router)
 
+# 登录二维码图片代理：同源免鉴权返回 PNG（qr_key 为随机 UUID 能力令牌，
+# 等同原 MinIO presigned 安全模型；前端 <img> 无法携带 JWT，故不走全局鉴权依赖）
+from app.api import publish_login_qr as _publish_login_qr
+app.include_router(_publish_login_qr.img_router, prefix="/api")
+
 # 供 Go slice-worker 回调的开放路由（X-Worker-Token 鉴权）
 app.include_router(slice.worker_router, prefix="/api")
 # 供 Go slice-worker 心跳上报的开放路由
