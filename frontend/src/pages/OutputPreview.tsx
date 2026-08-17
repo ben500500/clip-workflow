@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Select, Modal, Form, Input, DatePicker, Popconfirm, Alert, Spin, InputNumber,
+  Card, Table, Tag, Button, Space, Typography, message, Select, Modal, Form, Input, DatePicker, Popconfirm, Alert, Spin, InputNumber, Slider,
 } from 'antd';
-import { ArrowLeftOutlined, PlayCircleOutlined, DownloadOutlined, LinkOutlined, CloudDownloadOutlined, EditOutlined, SendOutlined, QuestionCircleOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PlayCircleOutlined, PauseCircleOutlined, DownloadOutlined, LinkOutlined, CloudDownloadOutlined, EditOutlined, SendOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { sliceApi } from '../api/slice';
 import { previewApi } from '../api/preview';
@@ -29,6 +29,117 @@ const SLICE_MODE_LABELS: Record<string, string> = {
 
 // 成品预览只展示真实切片任务，过滤掉区间检测复用的 detect_* 内部进度记录
 const isRealSliceTask = (t: SliceTask) => !(t.mode && t.mode.startsWith('detect_'));
+
+// ─── 重新剪辑视频预览（支持拖动进度条调整起止时间，对标片段审核） ─────────
+const RecutVideoPreview: React.FC<{
+  videoUrl: string;
+  duration: number;
+  onRangeChange: (start: number, end: number) => void;
+}> = ({ videoUrl, duration, onRangeChange }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [range, setRange] = useState<[number, number]>([0, duration || 0]);
+
+  // 打开弹窗/更换成品时重置为整段
+  useEffect(() => {
+    setRange([0, duration || 0]);
+  }, [duration]);
+
+  const max = videoDuration > 0 ? videoDuration : (duration || 0);
+
+  const togglePlay = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (playing) {
+      video.pause();
+    } else {
+      video.currentTime = range[0];
+      video.play().catch(() => {});
+      setPlaying(true);
+    }
+  }, [playing, range]);
+
+  const onTimeUpdate = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    setCurrentTime(video.currentTime);
+    if (video.currentTime >= range[1]) {
+      video.pause();
+      setPlaying(false);
+    }
+  }, [range]);
+
+  // 进度条拖动：实时定位预览画面并回传起止区间
+  const handleSliderChange = useCallback(
+    (val: number | number[]) => {
+      const arr = Array.isArray(val) ? val : [val, val];
+      const next: [number, number] = [arr[0] ?? 0, arr[1] ?? 0];
+      setRange(next);
+      const video = videoRef.current;
+      if (video && isFinite(next[0])) {
+        video.currentTime = next[0];
+        setCurrentTime(next[0]);
+      }
+      onRangeChange(next[0], next[1]);
+    },
+    [onRangeChange],
+  );
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <video
+        ref={videoRef}
+        src={videoUrl}
+        style={{ width: '100%', maxHeight: 260, borderRadius: 8, background: '#000' }}
+        onTimeUpdate={onTimeUpdate}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        onLoadedMetadata={(e) => {
+          const d = e.currentTarget.duration;
+          if (d && isFinite(d)) setVideoDuration(d);
+        }}
+        controls={false}
+        preload="auto"
+      />
+
+      {/* 可拖动的时间范围滑块 */}
+      <div style={{ marginTop: 8, padding: '4px 8px', background: '#f5f5f5', borderRadius: 6 }}>
+        <Text strong style={{ fontSize: 12 }}>拖动调整裁剪区间：</Text>
+        <Slider
+          range
+          min={0}
+          max={Math.max(max, 1)}
+          step={0.1}
+          value={range}
+          onChange={handleSliderChange}
+          tooltip={{ formatter: (v) => formatDuration(v ?? 0) }}
+          disabled={max <= 0}
+        />
+        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>起始: {formatDuration(range[0])}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>结束: {formatDuration(range[1])}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>时长: {formatDuration(range[1] - range[0])}</Text>
+        </Space>
+      </div>
+
+      <Space style={{ marginTop: 8 }}>
+        <Button
+          size="small"
+          type="primary"
+          icon={playing ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+          onClick={togglePlay}
+        >
+          {playing ? '暂停' : `预览区间 (${formatDuration(range[0])} - ${formatDuration(range[1])})`}
+        </Button>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          当前: {formatDuration(currentTime)} / {formatDuration(range[1])}
+        </Text>
+      </Space>
+    </div>
+  );
+};
 
 const OutputPreview: React.FC = () => {
   const { episodeId } = useParams<{ episodeId: string }>();
@@ -58,6 +169,7 @@ const OutputPreview: React.FC = () => {
   const [recutModal, setRecutModal] = useState(false);
   const [recutForm] = Form.useForm();
   const [recutTarget, setRecutTarget] = useState<SliceOutput | null>(null);
+  const [recutVideoUrl, setRecutVideoUrl] = useState('');
   const [recutting, setRecutting] = useState(false);
 
   // 多选批量下载
@@ -307,8 +419,9 @@ const OutputPreview: React.FC = () => {
     });
   };
 
-  const openRecutModal = (o: SliceOutput) => {
+  const openRecutModal = async (o: SliceOutput) => {
     setRecutTarget(o);
+    setRecutVideoUrl('');
     recutForm.resetFields();
     // 默认整段保留（0 ~ 成品时长），便于用户只填需要裁剪的头尾
     recutForm.setFieldsValue({
@@ -316,7 +429,21 @@ const OutputPreview: React.FC = () => {
       cut_end: o.duration ?? 0,
     });
     setRecutModal(true);
+    // 加载成品视频预览地址，供拖动进度条编辑区间
+    try {
+      const video = await previewApi.getVideoUrl(o.id);
+      if (mountedRef.current) {
+        setRecutVideoUrl(video.url);
+      }
+    } catch {
+      // 预览地址加载失败不阻塞编辑（仍可用手动填秒数）
+    }
   };
+
+  // 拖动进度条调整起止区间时同步到表单
+  const onRecutRangeChange = useCallback((start: number, end: number) => {
+    recutForm.setFieldsValue({ cut_start: start, cut_end: end });
+  }, [recutForm]);
 
   const submitRecut = async () => {
     if (!recutTarget) return;
@@ -488,31 +615,45 @@ const OutputPreview: React.FC = () => {
         okText="开始剪辑"
         cancelText="取消"
         confirmLoading={recutting}
+        width={680}
         destroyOnClose
       >
         <Alert
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="以当前成品视频为源，裁剪出新的时间区间，生成一个新片段（会重新编码输出）。"
+          message="以当前成品视频为源，裁剪出新的时间区间，生成一个新片段（会重新编码输出）。可拖动下方进度条选择起止时间。"
         />
-        <Form form={recutForm} layout="vertical">
-          <Form.Item
-            name="cut_start"
-            label="开始时间（秒）"
-            rules={[{ required: true, message: '请输入开始时间' }]}
-          >
-            <InputNumber min={0} precision={3} style={{ width: '100%' }} placeholder="0" />
-          </Form.Item>
-          <Form.Item
-            name="cut_end"
-            label="结束时间（秒）"
-            rules={[{ required: true, message: '请输入结束时间' }]}
-          >
-            <InputNumber min={0} precision={3} style={{ width: '100%' }} placeholder={`${recutTarget?.duration ?? 0}`} />
-          </Form.Item>
+        {recutVideoUrl ? (
+          <RecutVideoPreview
+            videoUrl={recutVideoUrl}
+            duration={recutTarget?.duration ?? 0}
+            onRangeChange={onRecutRangeChange}
+          />
+        ) : (
+          <Spin size="small" style={{ display: 'block', margin: '16px auto' }} />
+        )}
+        <Form form={recutForm} layout="vertical" style={{ marginTop: 8 }}>
+          <Space size={16} style={{ width: '100%' }} align="start">
+            <Form.Item
+              name="cut_start"
+              label="开始时间（秒）"
+              style={{ width: '50%' }}
+              rules={[{ required: true, message: '请输入开始时间' }]}
+            >
+              <InputNumber min={0} precision={3} style={{ width: '100%' }} placeholder="0" />
+            </Form.Item>
+            <Form.Item
+              name="cut_end"
+              label="结束时间（秒）"
+              style={{ width: '50%' }}
+              rules={[{ required: true, message: '请输入结束时间' }]}
+            >
+              <InputNumber min={0} precision={3} style={{ width: '100%' }} placeholder={`${recutTarget?.duration ?? 0}`} />
+            </Form.Item>
+          </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            当前成品时长：{formatDuration(recutTarget?.duration ?? 0)}。区间为相对成品起点的秒数。
+            当前成品时长：{formatDuration(recutTarget?.duration ?? 0)}。区间为相对成品起点的秒数，拖动进度条可自动同步上方数值。
           </Text>
         </Form>
       </Modal>
