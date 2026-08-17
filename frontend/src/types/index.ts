@@ -776,3 +776,52 @@ export interface AlertEvent {
   notify_error: string | null;
   created_at: string;
 }
+
+// ========== 渠道台账（视频号台账） ==========
+
+export interface ChannelOperator {
+  id: string;
+  channel_account_id: string;
+  operator_user_id: string | null;
+  operator_name: string | null;
+  operator_phone: string | null;
+  created_at: string;
+}
+
+export interface ChannelAccount {
+  id: string;
+  channel_name: string;
+  wechat_id: string | null;
+  verify_type: string | null;
+  verify_name: string | null;
+  register_date: string | null;
+  cooperation_modes: string[] | null;
+  coop_company: string | null;
+  video_account_id: string | null;
+  remark: string | null;
+  enabled: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  operators: ChannelOperator[];
+}
+
+export interface ChannelOperatorInput {
+  operator_user_id?: string | null;
+  operator_name?: string | null;
+  operator_phone?: string | null;
+}
+
+export interface ChannelAccountInput {
+  channel_name: string;
+  wechat_id?: string | null;
+  verify_type?: string | null;
+  verify_name?: string | null;
+  register_date?: string | null;
+  cooperation_modes?: string[] | null;
+  coop_company?: string | null;
+  video_account_id?: string | null;
+  remark?: string | null;
+  enabled?: boolean;
+  operators?: ChannelOperatorInput[];
+}

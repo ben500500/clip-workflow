@@ -20,6 +20,7 @@ import {
   ClearOutlined,
   WarningOutlined,
   CloudDownloadOutlined,
+  ProfileOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -60,6 +61,11 @@ const allMenuItems = [
     key: '/publish',
     icon: <SendOutlined />,
     label: '发布管理',
+  },
+  {
+    key: '/channel-accounts',
+    icon: <ProfileOutlined />,
+    label: '视频号台账',
   },
   {
     key: '/workers',
