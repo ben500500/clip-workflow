@@ -1,47 +1,72 @@
-"""视频号登记台账 API（Issue #93）。
+"""publish API 子域：视频号台账（ChannelAccount / ChannelOperator）。
 
-- /channel-accounts          台账 CRUD（列表支持筛选，可关联现有发布账号）
-- /channel-accounts/{id}/operators  运营者多对多增删
-
-登记信息与现有发布账号矩阵（video_accounts）通过 video_account_id 关联，
-打通「登记台账」与「发布/矩阵」流程。
+登记视频号工商/合作信息，与发布账号库（video_accounts）解耦，仅通过
+`video_account_id` 软关联。数据隔离：列表沿用 `user_can_access_all_materials`
+RBAC 过滤（operator 仅见自己 created_by 的台账）。
 """
 import uuid
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
-from sqlalchemy import select, and_, delete
-from sqlalchemy.orm import selectinload
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.database import get_db
-from app.models.models import ChannelAccount, ChannelOperator, User, user_can_access_all_materials
+from app.models.models import (
+    AdMetric,
+    ChannelAccount,
+    ChannelOperator,
+    User,
+    VideoMetric,
+    user_can_access_all_materials,
+)
 from app.utils.helpers import utc_iso
 
 router = APIRouter()
 
 
-# ── Pydantic Schemas ──────────────────────────────────────────
-class ChannelOperatorIn(BaseModel):
-    """运营者输入：可从系统用户选（operator_id），或手填外部姓名（operator_name）。"""
-    operator_id: Optional[str] = None
+# ---------- 合作模式枚举（IAA / IAP） ----------
+CooperationMode = Literal["IAA", "IAP"]
+
+
+# ---------- Pydantic Schemas ----------
+
+class OperatorCreate(BaseModel):
+    operator_user_id: Optional[str] = None   # 现有用户 FK（软）
+    operator_name: Optional[str] = None      # 外部手填姓名
+    operator_phone: Optional[str] = None     # 外部手填电话
+
+
+class OperatorUpdate(BaseModel):
+    operator_user_id: Optional[str] = None
     operator_name: Optional[str] = None
+    operator_phone: Optional[str] = None
+
+
+class OperatorResponse(BaseModel):
+    id: str
+    channel_account_id: str
+    operator_user_id: Optional[str] = None
+    operator_name: Optional[str] = None
+    operator_phone: Optional[str] = None
+    created_at: str
+
+    model_config = {"from_attributes": True}
 
 
 class ChannelAccountCreate(BaseModel):
     channel_name: str
     wechat_id: Optional[str] = None
-    verify_type: Optional[str] = None      # personal / enterprise
+    verify_type: Optional[str] = None        # personal / enterprise
     verify_name: Optional[str] = None
-    register_date: Optional[str] = None    # YYYY-MM-DD
-    cooperation_mode: Optional[str] = None # IAA / IAP
+    register_date: Optional[str] = None
+    cooperation_modes: Optional[List[CooperationMode]] = None   # ["IAA","IAP"]
     coop_company: Optional[str] = None
-    video_account_id: Optional[str] = None # 关联现有发布账号
+    video_account_id: Optional[str] = None   # 可空，先登记后关联
     remark: Optional[str] = None
     enabled: bool = True
-    operators: List[ChannelOperatorIn] = []
 
 
 class ChannelAccountUpdate(BaseModel):
@@ -50,19 +75,11 @@ class ChannelAccountUpdate(BaseModel):
     verify_type: Optional[str] = None
     verify_name: Optional[str] = None
     register_date: Optional[str] = None
-    cooperation_mode: Optional[str] = None
+    cooperation_modes: Optional[List[CooperationMode]] = None
     coop_company: Optional[str] = None
     video_account_id: Optional[str] = None
     remark: Optional[str] = None
     enabled: Optional[bool] = None
-    operators: Optional[List[ChannelOperatorIn]] = None
-
-
-class ChannelOperatorResponse(BaseModel):
-    id: str
-    operator_id: Optional[str] = None
-    operator_name: Optional[str] = None
-    created_at: str
 
 
 class ChannelAccountResponse(BaseModel):
@@ -72,138 +89,197 @@ class ChannelAccountResponse(BaseModel):
     verify_type: Optional[str] = None
     verify_name: Optional[str] = None
     register_date: Optional[str] = None
-    cooperation_mode: Optional[str] = None
+    cooperation_modes: Optional[List[str]] = None
     coop_company: Optional[str] = None
     video_account_id: Optional[str] = None
-    video_account_name: Optional[str] = None
     remark: Optional[str] = None
     enabled: bool = True
     created_by: Optional[str] = None
     created_at: str
     updated_at: str
-    operators: List[ChannelOperatorResponse] = []
+    operators: List[OperatorResponse] = Field(default_factory=list)
+    # 与报表域关联聚合（按 video_account_id 汇总，缺省 0）
+    report_play_count: int = 0
+    report_attributed_revenue: float = 0
+    report_ad_revenue: float = 0
+
+    model_config = {"from_attributes": True}
 
 
-# ── 序列化 ─────────────────────────────────────────────────────
+# ---------- Serializers ----------
+
 def _serialize_operator(op: ChannelOperator) -> dict:
     return {
         "id": str(op.id),
-        "operator_id": str(op.operator_id) if op.operator_id else None,
+        "channel_account_id": str(op.channel_account_id),
+        "operator_user_id": str(op.operator_user_id) if op.operator_user_id else None,
         "operator_name": op.operator_name,
+        "operator_phone": op.operator_phone,
         "created_at": utc_iso(op.created_at) if op.created_at else "",
     }
 
 
-def _parse_date(s: Optional[str]):
-    """将 'YYYY-MM-DD' 字符串转为 date 对象，容错空值。"""
-    if not s:
-        return None
-    from datetime import date
-    try:
-        return date.fromisoformat(s)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid date format: {s}")
+async def _load_report_metrics(db: AsyncSession, video_account_ids: List[uuid.UUID]) -> dict:
+    """按 video_account_id 批量聚合报表域数据，返回 {account_id: {play_count, attributed_revenue, ad_revenue}}.
 
-
-def _parse_uuid(s: Optional[str]):
-    if not s:
-        return None
-    try:
-        return uuid.UUID(s)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid UUID: {s}")
-
-
-def _serialize_channel(channel: ChannelAccount, video_account_name: Optional[str] = None) -> dict:
-    return {
-        "id": str(channel.id),
-        "channel_name": channel.channel_name,
-        "wechat_id": channel.wechat_id,
-        "verify_type": channel.verify_type,
-        "verify_name": channel.verify_name,
-        "register_date": channel.register_date.isoformat() if channel.register_date else None,
-        "cooperation_mode": channel.cooperation_mode,
-        "coop_company": channel.coop_company,
-        "video_account_id": str(channel.video_account_id) if channel.video_account_id else None,
-        "video_account_name": video_account_name,
-        "remark": channel.remark,
-        "enabled": channel.enabled if channel.enabled is not None else True,
-        "created_by": str(channel.created_by) if channel.created_by else None,
-        "created_at": utc_iso(channel.created_at) if channel.created_at else "",
-        "updated_at": utc_iso(channel.updated_at) if channel.updated_at else "",
-        "operators": [_serialize_operator(op) for op in channel.operators],
+    复用现有看板域的聚合语义：
+    - video_metrics.play_count / attributed_revenue（视频跑量 + 归因收益）
+    - ad_metrics.revenue（广告变现 IAA 收益）
+    仅对已关联发布账号（video_account_id 非空）做聚合；未关联的返回全 0。
+    """
+    result = {
+        str(aid): {"play_count": 0, "attributed_revenue": 0.0, "ad_revenue": 0.0}
+        for aid in video_account_ids
     }
+    if not video_account_ids:
+        return result
+
+    video_rows = await db.execute(
+        select(
+            VideoMetric.account_id,
+            func.coalesce(func.sum(VideoMetric.play_count), 0),
+            func.coalesce(func.sum(VideoMetric.attributed_revenue), 0),
+        )
+        .where(VideoMetric.account_id.in_(video_account_ids))
+        .group_by(VideoMetric.account_id)
+    )
+    for row in video_rows.all():
+        aid = str(row[0])
+        if aid in result:
+            result[aid]["play_count"] = int(row[1] or 0)
+            result[aid]["attributed_revenue"] = float(row[2] or 0)
+
+    ad_rows = await db.execute(
+        select(
+            AdMetric.account_id,
+            func.coalesce(func.sum(AdMetric.revenue), 0),
+        )
+        .where(AdMetric.account_id.in_(video_account_ids))
+        .group_by(AdMetric.account_id)
+    )
+    for row in ad_rows.all():
+        aid = str(row[0])
+        if aid in result:
+            result[aid]["ad_revenue"] = float(row[1] or 0)
+
+    return result
 
 
-async def _load_video_account_names(db: AsyncSession, ids: set[uuid.UUID]) -> dict:
-    """批量查询发布账号名（video_accounts），用于列表展示关联账号名。"""
-    if not ids:
-        return {}
-    from app.models.models import VideoAccount
-    rows = await db.execute(select(VideoAccount).where(VideoAccount.id.in_(ids)))
-    return {str(acc.id): acc.account_name for acc in rows.scalars().all()}
+def _serialize_channel_account(acc: ChannelAccount, report: Optional[dict] = None) -> dict:
+    data = {
+        "id": str(acc.id),
+        "channel_name": acc.channel_name,
+        "wechat_id": acc.wechat_id,
+        "verify_type": acc.verify_type,
+        "verify_name": acc.verify_name,
+        "register_date": acc.register_date.isoformat() if acc.register_date else None,
+        "cooperation_modes": acc.cooperation_modes or [],
+        "coop_company": acc.coop_company,
+        "video_account_id": str(acc.video_account_id) if acc.video_account_id else None,
+        "remark": acc.remark,
+        "enabled": acc.enabled if acc.enabled is not None else True,
+        "created_by": str(acc.created_by) if acc.created_by else None,
+        "created_at": utc_iso(acc.created_at) if acc.created_at else "",
+        "updated_at": utc_iso(acc.updated_at) if acc.updated_at else "",
+        "operators": [_serialize_operator(o) for o in (acc.operators or [])],
+        "report_play_count": 0,
+        "report_attributed_revenue": 0.0,
+        "report_ad_revenue": 0.0,
+    }
+    if report:
+        data.update(report)
+    return data
 
 
-# ── 路由 ──────────────────────────────────────────────────────
+def _parse_date(value: Optional[str]):
+    """解析注册日期，非法/空返回 None."""
+    if not value:
+        return None
+    try:
+        from datetime import date
+        return date.fromisoformat(value)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="register_date 格式应为 YYYY-MM-DD")
+
+
+def _parse_uuid(value: Optional[str], field: str):
+    if not value:
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid {field} format")
+
+
+def _validate_operator_identity(op: OperatorCreate):
+    """双轨校验：operator_user_id 与 operator_name 至少填一个."""
+    if not op.operator_user_id and not op.operator_name:
+        raise HTTPException(
+            status_code=422,
+            detail="operator_user_id 与 operator_name 至少填写一个（可从系统选或手填外部姓名）",
+        )
+
+
+# ---------- 台账 CRUD ----------
+
 @router.get("/channel-accounts", response_model=List[ChannelAccountResponse])
 async def list_channel_accounts(
-    verify_type: Optional[str] = Query(None),
-    cooperation_mode: Optional[str] = Query(None),
-    video_account_id: Optional[str] = Query(None),
+    keyword: Optional[str] = Query(None),
+    enabled: Optional[bool] = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
-    """视频号台账列表（可按实名类型/合作模式/关联账号筛选）。"""
+    """台账列表（可按名称/微信号关键字、启停状态过滤；RBAC 数据隔离）。"""
+    query = select(ChannelAccount)
     filters = []
-    if verify_type:
-        filters.append(ChannelAccount.verify_type == verify_type)
-    if cooperation_mode:
-        filters.append(ChannelAccount.cooperation_mode == cooperation_mode)
-    if video_account_id:
-        filters.append(ChannelAccount.video_account_id == uuid.UUID(video_account_id))
-
-    query = (
-        select(ChannelAccount)
-        .options(selectinload(ChannelAccount.operators))
-        .order_by(ChannelAccount.channel_name)
-    )
+    if keyword:
+        kw = f"%{keyword}%"
+        filters.append(
+            or_(ChannelAccount.channel_name.ilike(kw), ChannelAccount.wechat_id.ilike(kw))
+        )
+    if enabled is not None:
+        filters.append(ChannelAccount.enabled == enabled)
+    if current_user and not user_can_access_all_materials(current_user):
+        filters.append(ChannelAccount.created_by == current_user.id)
     if filters:
-        query = query.where(and_(*filters))
+        query = query.where(*filters)
+    query = query.order_by(ChannelAccount.created_at.desc())
     result = await db.execute(query)
-    channels = result.scalars().all()
+    accounts = result.scalars().all()
 
-    # 批量补充关联发布账号名
-    va_ids = {c.video_account_id for c in channels if c.video_account_id}
-    va_names = await _load_video_account_names(db, va_ids)
-
+    # 批量聚合报表域数据（按 video_account_id）
+    account_ids = [a.video_account_id for a in accounts if a.video_account_id]
+    report = await _load_report_metrics(db, account_ids)
     return [
-        _serialize_channel(c, va_names.get(str(c.video_account_id)) if c.video_account_id else None)
-        for c in channels
+        _serialize_channel_account(
+            a,
+            report.get(str(a.video_account_id)) if a.video_account_id else None,
+        )
+        for a in accounts
     ]
 
 
-@router.get("/channel-accounts/{channel_id}", response_model=ChannelAccountResponse)
+@router.get("/channel-accounts/{account_id}", response_model=ChannelAccountResponse)
 async def get_channel_account(
-    channel_id: str,
+    account_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
-    """单条台账详情（含运营者）。"""
-    cid = _parse_uuid(channel_id)
+    """台账详情（含运营者列表）。"""
+    aid = _parse_uuid(account_id, "account_id")
     result = await db.execute(
-        select(ChannelAccount)
-        .options(selectinload(ChannelAccount.operators))
-        .where(ChannelAccount.id == cid)
+        select(ChannelAccount).where(ChannelAccount.id == aid)
     )
-    channel = result.scalar_one_or_none()
-    if not channel:
+    acc = result.scalar_one_or_none()
+    if not acc:
         raise HTTPException(status_code=404, detail="Channel account not found")
-
-    va_name = None
-    if channel.video_account_id:
-        names = await _load_video_account_names(db, {channel.video_account_id})
-        va_name = names.get(str(channel.video_account_id))
-    return _serialize_channel(channel, va_name)
+    _check_access(acc, current_user)
+    report = None
+    if acc.video_account_id:
+        report = (await _load_report_metrics(db, [acc.video_account_id])).get(
+            str(acc.video_account_id)
+        )
+    return _serialize_channel_account(acc, report)
 
 
 @router.post("/channel-accounts", response_model=ChannelAccountResponse, status_code=201)
@@ -212,105 +288,185 @@ async def create_channel_account(
     db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
-    """新增视频号台账（可带运营者，可关联现有发布账号）。"""
-    channel = ChannelAccount(
+    """新增台账（video_account_id 可空，先登记后关联）。"""
+    acc = ChannelAccount(
         channel_name=data.channel_name,
         wechat_id=data.wechat_id,
         verify_type=data.verify_type,
         verify_name=data.verify_name,
         register_date=_parse_date(data.register_date),
-        cooperation_mode=data.cooperation_mode,
+        cooperation_modes=data.cooperation_modes,
         coop_company=data.coop_company,
-        video_account_id=_parse_uuid(data.video_account_id),
+        video_account_id=_parse_uuid(data.video_account_id, "video_account_id"),
         remark=data.remark,
         enabled=data.enabled,
         created_by=current_user.id if current_user else None,
     )
-    db.add(channel)
+    db.add(acc)
     await db.flush()
-
-    for op in data.operators:
-        db.add(ChannelOperator(
-            channel_account_id=channel.id,
-            operator_id=_parse_uuid(op.operator_id),
-            operator_name=op.operator_name or (str(op.operator_id) if op.operator_id else None),
-        ))
-    await db.flush()
-    # 重载关联运营者
-    result = await db.execute(
-        select(ChannelAccount)
-        .options(selectinload(ChannelAccount.operators))
-        .where(ChannelAccount.id == channel.id)
-    )
-    channel = result.scalar_one()
-    va_name = None
-    if channel.video_account_id:
-        names = await _load_video_account_names(db, {channel.video_account_id})
-        va_name = names.get(str(channel.video_account_id))
-    return _serialize_channel(channel, va_name)
+    await db.refresh(acc)
+    return _serialize_channel_account(acc)
 
 
-@router.put("/channel-accounts/{channel_id}", response_model=ChannelAccountResponse)
+@router.put("/channel-accounts/{account_id}", response_model=ChannelAccountResponse)
 async def update_channel_account(
-    channel_id: str,
+    account_id: str,
     data: ChannelAccountUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
-    """更新台账。operators 若传入则整体替换运营者列表。"""
-    cid = _parse_uuid(channel_id)
-    result = await db.execute(select(ChannelAccount).where(ChannelAccount.id == cid))
-    channel = result.scalar_one_or_none()
-    if not channel:
+    """更新台账（含补绑/换绑 video_account_id）。"""
+    aid = _parse_uuid(account_id, "account_id")
+    result = await db.execute(
+        select(ChannelAccount).where(ChannelAccount.id == aid)
+    )
+    acc = result.scalar_one_or_none()
+    if not acc:
         raise HTTPException(status_code=404, detail="Channel account not found")
+    _check_access(acc, current_user)
 
-    payload = data.model_dump(exclude_unset=True)
-    operators = payload.pop("operators", None)
-
-    for field, value in payload.items():
-        if field == "register_date":
-            setattr(channel, field, _parse_date(value))
-        elif field == "video_account_id":
-            setattr(channel, field, _parse_uuid(value))
-        else:
-            setattr(channel, field, value)
-
-    # 整体替换运营者
-    if operators is not None:
-        await db.execute(delete(ChannelOperator).where(ChannelOperator.channel_account_id == channel.id))
-        for op in operators:
-            db.add(ChannelOperator(
-                channel_account_id=channel.id,
-                operator_id=_parse_uuid(op.get("operator_id")),
-                operator_name=op.get("operator_name") or (op.get("operator_id") if op.get("operator_id") else None),
-            ))
+    updates = data.model_dump(exclude_unset=True)
+    if "register_date" in updates:
+        acc.register_date = _parse_date(updates.pop("register_date"))
+    if "video_account_id" in updates:
+        acc.video_account_id = _parse_uuid(updates.pop("video_account_id"), "video_account_id")
+    for field, value in updates.items():
+        setattr(acc, field, value)
 
     await db.flush()
-    result = await db.execute(
-        select(ChannelAccount)
-        .options(selectinload(ChannelAccount.operators))
-        .where(ChannelAccount.id == channel.id)
-    )
-    channel = result.scalar_one()
-    va_name = None
-    if channel.video_account_id:
-        names = await _load_video_account_names(db, {channel.video_account_id})
-        va_name = names.get(str(channel.video_account_id))
-    return _serialize_channel(channel, va_name)
+    await db.refresh(acc)
+    return _serialize_channel_account(acc)
 
 
-@router.delete("/channel-accounts/{channel_id}", status_code=204)
+@router.delete("/channel-accounts/{account_id}", status_code=204)
 async def delete_channel_account(
-    channel_id: str,
+    account_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
     """删除台账（级联删除运营者）。"""
-    cid = _parse_uuid(channel_id)
-    result = await db.execute(select(ChannelAccount).where(ChannelAccount.id == cid))
-    channel = result.scalar_one_or_none()
-    if not channel:
+    aid = _parse_uuid(account_id, "account_id")
+    result = await db.execute(
+        select(ChannelAccount).where(ChannelAccount.id == aid)
+    )
+    acc = result.scalar_one_or_none()
+    if not acc:
         raise HTTPException(status_code=404, detail="Channel account not found")
-    await db.delete(channel)
+    _check_access(acc, current_user)
+    await db.delete(acc)
     await db.flush()
     return None
+
+
+# ---------- 运营者管理 ----------
+
+@router.post("/channel-accounts/{account_id}/operators", response_model=OperatorResponse, status_code=201)
+async def add_operator(
+    account_id: str,
+    data: OperatorCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """新增运营者（从系统选 FK 或手填外部姓名，至少填一个）。"""
+    aid = _parse_uuid(account_id, "account_id")
+    acc = await _load_account(aid, db)
+    _check_access(acc, current_user)
+    _validate_operator_identity(data)
+
+    op = ChannelOperator(
+        channel_account_id=aid,
+        operator_user_id=_parse_uuid(data.operator_user_id, "operator_user_id"),
+        operator_name=data.operator_name,
+        operator_phone=data.operator_phone,
+    )
+    db.add(op)
+    await db.flush()
+    await db.refresh(op)
+    return _serialize_operator(op)
+
+
+@router.put("/channel-accounts/{account_id}/operators/{op_id}", response_model=OperatorResponse)
+async def update_operator(
+    account_id: str,
+    op_id: str,
+    data: OperatorUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """更新运营者信息。"""
+    aid = _parse_uuid(account_id, "account_id")
+    oid = _parse_uuid(op_id, "op_id")
+    acc = await _load_account(aid, db)
+    _check_access(acc, current_user)
+
+    result = await db.execute(
+        select(ChannelOperator).where(
+            ChannelOperator.id == oid,
+            ChannelOperator.channel_account_id == aid,
+        )
+    )
+    op = result.scalar_one_or_none()
+    if not op:
+        raise HTTPException(status_code=404, detail="Operator not found")
+
+    updates = data.model_dump(exclude_unset=True)
+    if "operator_user_id" in updates:
+        op.operator_user_id = _parse_uuid(updates.pop("operator_user_id"), "operator_user_id")
+    for field, value in updates.items():
+        setattr(op, field, value)
+    # 更新后仍须满足双轨约束（服务层兜底）
+    if not op.operator_user_id and not op.operator_name:
+        raise HTTPException(
+            status_code=422,
+            detail="operator_user_id 与 operator_name 至少填写一个",
+        )
+
+    await db.flush()
+    await db.refresh(op)
+    return _serialize_operator(op)
+
+
+@router.delete("/channel-accounts/{account_id}/operators/{op_id}", status_code=204)
+async def delete_operator(
+    account_id: str,
+    op_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """移除运营者。"""
+    aid = _parse_uuid(account_id, "account_id")
+    oid = _parse_uuid(op_id, "op_id")
+    acc = await _load_account(aid, db)
+    _check_access(acc, current_user)
+
+    result = await db.execute(
+        select(ChannelOperator).where(
+            ChannelOperator.id == oid,
+            ChannelOperator.channel_account_id == aid,
+        )
+    )
+    op = result.scalar_one_or_none()
+    if not op:
+        raise HTTPException(status_code=404, detail="Operator not found")
+    await db.delete(op)
+    await db.flush()
+    return None
+
+
+# ---------- Helpers ----------
+
+async def _load_account(account_id: uuid.UUID, db: AsyncSession) -> ChannelAccount:
+    result = await db.execute(
+        select(ChannelAccount).where(ChannelAccount.id == account_id)
+    )
+    acc = result.scalar_one_or_none()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Channel account not found")
+    return acc
+
+
+def _check_access(acc: ChannelAccount, current_user: Optional[User]):
+    """数据隔离校验：非全量权限用户只能操作自己创建的台账."""
+    if current_user and not user_can_access_all_materials(current_user):
+        if acc.created_by != current_user.id:
+            raise HTTPException(status_code=403, detail="无权访问该视频号台账")

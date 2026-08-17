@@ -20,6 +20,7 @@ import {
   ClearOutlined,
   WarningOutlined,
   CloudDownloadOutlined,
+  ContactsOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -57,14 +58,14 @@ const allMenuItems = [
     label: '资源下载',
   },
   {
-    key: '/channel-accounts',
-    icon: <VideoCameraOutlined />,
-    label: '视频号列表',
-  },
-  {
     key: '/publish',
     icon: <SendOutlined />,
     label: '发布管理',
+  },
+  {
+    key: '/channel-accounts',
+    icon: <ContactsOutlined />,
+    label: '视频号台账',
   },
   {
     key: '/workers',

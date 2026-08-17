@@ -1,210 +1,330 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, DatePicker, InputNumber, Tooltip, Switch, Popconfirm,
+  Card, Form, Input, Button, Select, Switch, Space, Table, Tag, Modal, message,
+  Typography, Popconfirm, Divider, Tooltip, DatePicker, List,
 } from 'antd';
-import { ReloadOutlined, PlusOutlined, EditOutlined, DeleteOutlined, TeamOutlined, LinkOutlined } from '@ant-design/icons';
+import {
+  PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined, TeamOutlined,
+  UserAddOutlined, BarChartOutlined,
+} from '@ant-design/icons';
+import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
-import { channelAccountApi } from '../api/channelAccount';
+import { useNavigate } from 'react-router-dom';
+import { channelAccountApi, ChannelAccountInput, OperatorInput } from '../api/channelAccounts';
 import { publishApi } from '../api/publish';
 import { authApi } from '../api/auth';
-import type { ChannelAccount, ChannelAccountInput, VideoAccount } from '../types';
-import { formatDateTime } from '../utils/format';
+import type { ChannelAccount, ChannelOperator, VideoAccount, User } from '../types';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
-const VERIFY_TYPE_LABELS: Record<string, string> = {
-  personal: '个人',
-  enterprise: '企业',
+// 实名类型
+const VERIFY_TYPES = [
+  { value: 'personal', label: '个人' },
+  { value: 'enterprise', label: '企业' },
+];
+
+// 合作模式（多选 Tag）
+const COOP_MODES = [
+  { value: 'IAA', label: 'IAA' },
+  { value: 'IAP', label: 'IAP' },
+];
+
+const COOP_MODE_COLOR: Record<string, string> = {
+  IAA: 'blue',
+  IAP: 'purple',
 };
 
-const COOP_MODE_LABELS: Record<string, string> = {
-  IAA: 'IAA',
-  IAP: 'IAP',
-};
-
-// 运营者：从系统用户选 或 手填外部姓名
-const OperatorSelect: React.FC<{
-  value?: { operator_id?: string | null; operator_name?: string | null }[];
-  onChange?: (v: { operator_id?: string | null; operator_name?: string | null }[]) => void;
-}> = ({ value = [], onChange }) => {
-  const [users, setUsers] = useState<{ id: string; display_name: string | null; username: string }[]>([]);
-  useEffect(() => {
-    // 从用户管理 API 拉取系统用户，用于运营者下拉
-    authApi.getUsers().then((rows: any[]) => setUsers(rows || [])).catch(() => {
-      /* 静默：无权限时退回手填 */
-    });
-  }, []);
-
-  const handleAdd = () => {
-    onChange?.([...value, {}]);
-  };
-  const handleChange = (idx: number, patch: Partial<{ operator_id: string; operator_name: string }>) => {
-    const next = value.map((op, i) => (i === idx ? { ...op, ...patch } : op));
-    onChange?.(next);
-  };
-  const handleRemove = (idx: number) => {
-    onChange?.(value.filter((_, i) => i !== idx));
-  };
-
-  return (
-    <Space direction="vertical" style={{ width: '100%' }}>
-      {value.map((op, idx) => (
-        <Space key={idx} style={{ width: '100%' }} align="baseline">
-          <Select
-            allowClear
-            placeholder="从系统用户选择（可选）"
-            style={{ width: 220 }}
-            value={op.operator_id || undefined}
-            onChange={(v) => handleChange(idx, { operator_id: v || '', operator_name: '' })}
-            options={users.map((u) => ({
-              value: u.id,
-              label: u.display_name || u.username,
-            }))}
-          />
-          <Input
-            placeholder="外部人员姓名（无系统账号时手填）"
-            style={{ width: 200 }}
-            value={op.operator_name || ''}
-            onChange={(e) => handleChange(idx, { operator_name: e.target.value })}
-          />
-          <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleRemove(idx)} />
-        </Space>
-      ))}
-      <Button type="dashed" icon={<PlusOutlined />} onClick={handleAdd} block>
-        添加运营者
-      </Button>
-    </Space>
-  );
-};
+interface OperatorForm {
+  operator_user_id?: string;
+  operator_name?: string;
+  operator_phone?: string;
+}
 
 const ChannelAccounts: React.FC = () => {
-  const [channels, setChannels] = useState<ChannelAccount[]>([]);
-  const [videoAccounts, setVideoAccounts] = useState<VideoAccount[]>([]);
+  const navigate = useNavigate();
+  const [data, setData] = useState<ChannelAccount[]>([]);
   const [loading, setLoading] = useState(false);
+  const [keyword, setKeyword] = useState('');
+  const [videoAccounts, setVideoAccounts] = useState<VideoAccount[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
+
+  // 台账表单
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<ChannelAccount | null>(null);
-  const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
-  const [verifyFilter, setVerifyFilter] = useState<string | undefined>();
-  const [coopFilter, setCoopFilter] = useState<string | undefined>();
 
-  const fetchChannels = useCallback((verify?: string, coop?: string) => {
+  // 运营者弹窗
+  const [opModalOpen, setOpModalOpen] = useState(false);
+  const [currentAccount, setCurrentAccount] = useState<ChannelAccount | null>(null);
+  const [opForm] = Form.useForm();
+  const [operatorList, setOperatorList] = useState<ChannelOperator[]>([]);
+
+  const fetchData = useCallback(async (kw?: string) => {
     setLoading(true);
-    channelAccountApi.getChannelAccounts({ verify_type: verify, cooperation_mode: coop })
-      .then(setChannels)
-      .catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'))
-      .finally(() => setLoading(false));
+    try {
+      const list = await channelAccountApi.list({ keyword: kw });
+      setData(list);
+    } catch (e) {
+      message.error((e as Error).message || '加载视频号台账失败');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const fetchVideoAccounts = useCallback(() => {
-    publishApi.getVideoAccounts({ platform: 'wechat_channel' })
-      .then(setVideoAccounts)
-      .catch(() => setVideoAccounts([]));
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  // 加载关联下拉数据（发布账号库 + 系统用户）
+  useEffect(() => {
+    publishApi.getVideoAccounts().then(setVideoAccounts).catch(() => setVideoAccounts([]));
+    authApi.getUsers().then(setUsers).catch(() => setUsers([]));
   }, []);
 
-  useEffect(() => { fetchChannels(); fetchVideoAccounts(); }, [fetchChannels, fetchVideoAccounts]);
-
+  // ── 新增/编辑 ──
   const openCreate = () => {
     setEditing(null);
     form.resetFields();
-    form.setFieldsValue({ enabled: true, operators: [] });
     setModalOpen(true);
   };
 
-  const openEdit = (row: ChannelAccount) => {
-    setEditing(row);
-    form.resetFields();
+  const openEdit = (acc: ChannelAccount) => {
+    setEditing(acc);
     form.setFieldsValue({
-      ...row,
-      register_date: row.register_date ? dayjs(row.register_date) : undefined,
-      operators: row.operators?.length ? row.operators.map((o) => ({ operator_id: o.operator_id, operator_name: o.operator_name })) : [],
+      channel_name: acc.channel_name,
+      wechat_id: acc.wechat_id || undefined,
+      verify_type: acc.verify_type || undefined,
+      verify_name: acc.verify_name || undefined,
+      register_date: acc.register_date ? dayjs(acc.register_date) : undefined,
+      cooperation_modes: acc.cooperation_modes || [],
+      coop_company: acc.coop_company || undefined,
+      video_account_id: acc.video_account_id || undefined,
+      remark: acc.remark || undefined,
+      enabled: acc.enabled,
     });
     setModalOpen(true);
   };
 
-  const handleSave = async () => {
+  const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
-      setSaving(true);
       const payload: ChannelAccountInput = {
-        channel_name: values.channel_name,
-        wechat_id: values.wechat_id,
-        verify_type: values.verify_type,
-        verify_name: values.verify_name,
-        register_date: values.register_date ? values.register_date.format('YYYY-MM-DD') : null,
-        cooperation_mode: values.cooperation_mode,
-        coop_company: values.coop_company,
-        video_account_id: values.video_account_id || null,
-        remark: values.remark,
-        enabled: values.enabled !== false,
-        operators: (values.operators || [])
-          .filter((op: any) => op.operator_id || op.operator_name)
-          .map((op: any) => ({ operator_id: op.operator_id || null, operator_name: op.operator_name || null })),
+        ...values,
+        register_date: values.register_date
+          ? values.register_date.format('YYYY-MM-DD')
+          : undefined,
       };
       if (editing) {
-        await channelAccountApi.updateChannelAccount(editing.id, payload);
-        message.success('台账已更新');
+        await channelAccountApi.update(editing.id, payload);
+        message.success('视频号台账已更新');
       } else {
-        await channelAccountApi.createChannelAccount(payload);
-        message.success('台账已创建');
+        await channelAccountApi.create(payload);
+        message.success('视频号台账已创建');
       }
       setModalOpen(false);
-      fetchChannels(verifyFilter, coopFilter);
-    } catch (err: unknown) {
-      if (err instanceof Error) message.error(err.message);
-    } finally {
-      setSaving(false);
+      fetchData(keyword);
+    } catch (e) {
+      if ((e as Error).message) message.error((e as Error).message);
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
-      await channelAccountApi.deleteChannelAccount(id);
-      message.success('台账已删除');
-      fetchChannels(verifyFilter, coopFilter);
-    } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : '删除失败');
+      await channelAccountApi.remove(id);
+      message.success('已删除');
+      fetchData(keyword);
+    } catch (e) {
+      message.error((e as Error).message || '删除失败');
     }
   };
 
-  const columns = [
-    { title: '视频号名称', dataIndex: 'channel_name', key: 'channel_name', width: 160, ellipsis: true },
-    { title: '微信号', dataIndex: 'wechat_id', key: 'wechat_id', width: 150, ellipsis: true, render: (v: string | null) => v || '-' },
+  // ── 运营者管理 ──
+  const openOperator = (acc: ChannelAccount) => {
+    setCurrentAccount(acc);
+    setOperatorList(acc.operators || []);
+    opForm.resetFields();
+    setOpModalOpen(true);
+  };
+
+  const handleAddOperator = async () => {
+    if (!currentAccount) return;
+    try {
+      const values = await opForm.validateFields();
+      const payload: OperatorInput = {
+        operator_user_id: values.operator_user_id,
+        operator_name: values.operator_name,
+        operator_phone: values.operator_phone,
+      };
+      // 双轨校验兜底
+      if (!payload.operator_user_id && !payload.operator_name) {
+        message.error('请从系统选择用户或填写外部姓名（至少填一个）');
+        return;
+      }
+      const op = await channelAccountApi.addOperator(currentAccount.id, payload);
+      setOperatorList((prev) => [...prev, op]);
+      opForm.resetFields();
+      message.success('运营者已添加');
+      // 刷新主列表以同步
+      fetchData(keyword);
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (msg) message.error(msg);
+    }
+  };
+
+  const handleRemoveOperator = async (op: ChannelOperator) => {
+    if (!currentAccount) return;
+    try {
+      await channelAccountApi.removeOperator(currentAccount.id, op.id);
+      setOperatorList((prev) => prev.filter((x) => x.id !== op.id));
+      message.success('运营者已移除');
+      fetchData(keyword);
+    } catch (e) {
+      message.error((e as Error).message || '移除失败');
+    }
+  };
+
+  // ── 表格列 ──
+  const columns: ColumnsType<ChannelAccount> = [
     {
-      title: '实名类型', dataIndex: 'verify_type', key: 'verify_type', width: 90,
-      render: (v: string | null) => v ? <Tag color={v === 'enterprise' ? 'blue' : 'green'}>{VERIFY_TYPE_LABELS[v] || v}</Tag> : '-',
+      title: '视频号名称',
+      dataIndex: 'channel_name',
+      width: 160,
+      render: (v: string) => <Text strong>{v}</Text>,
     },
-    { title: '实名人', dataIndex: 'verify_name', key: 'verify_name', width: 130, ellipsis: true, render: (v: string | null) => v || '-' },
-    { title: '注册日期', dataIndex: 'register_date', key: 'register_date', width: 110, render: (v: string | null) => v || '-' },
     {
-      title: '合作模式', dataIndex: 'cooperation_mode', key: 'cooperation_mode', width: 90,
-      render: (v: string | null) => v ? <Tag color="orange">{COOP_MODE_LABELS[v] || v}</Tag> : '-',
-    },
-    { title: '合作公司', dataIndex: 'coop_company', key: 'coop_company', width: 150, ellipsis: true, render: (v: string | null) => v || '-' },
-    {
-      title: '运营者', dataIndex: 'operators', key: 'operators', width: 160,
-      render: (ops: ChannelAccount['operators']) => ops?.length
-        ? ops.map((o, i) => <Tag key={i} icon={<TeamOutlined />} style={{ marginBottom: 2 }}>{o.operator_name || '系统用户'}</Tag>)
-        : <Text type="secondary">-</Text>,
+      title: '微信号',
+      dataIndex: 'wechat_id',
+      width: 150,
+      render: (v: string) => v || '-',
     },
     {
-      title: '关联账号', dataIndex: 'video_account_name', key: 'video_account_name', width: 150, ellipsis: true,
-      render: (v: string | null, row: ChannelAccount) => v
-        ? <Tag icon={<LinkOutlined />} color="purple">{v}</Tag>
-        : <Text type="secondary">-</Text>,
+      title: '实名类型',
+      dataIndex: 'verify_type',
+      width: 90,
+      render: (v: string) =>
+        v ? <Tag color={v === 'enterprise' ? 'orange' : 'green'}>{v === 'enterprise' ? '企业' : '个人'}</Tag> : '-',
     },
     {
-      title: '状态', dataIndex: 'enabled', key: 'enabled', width: 80,
-      render: (v: boolean) => v ? <Tag color="success">启用</Tag> : <Tag color="default">停用</Tag>,
+      title: '实名人',
+      dataIndex: 'verify_name',
+      width: 100,
+      render: (v: string) => v || '-',
     },
-    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 160, render: (v: string) => formatDateTime(v) },
     {
-      title: '操作', key: 'action', width: 120, fixed: 'right' as const,
-      render: (_: unknown, row: ChannelAccount) => (
-        <Space>
-          <Tooltip title="编辑"><Button size="small" icon={<EditOutlined />} onClick={() => openEdit(row)} /></Tooltip>
-          <Popconfirm title="确认删除该台账？" onConfirm={() => handleDelete(row.id)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
+      title: '注册日期',
+      dataIndex: 'register_date',
+      width: 110,
+      render: (v: string) => v || '-',
+    },
+    {
+      title: '合作模式',
+      dataIndex: 'cooperation_modes',
+      width: 120,
+      render: (modes: string[]) =>
+        modes && modes.length ? (
+          <Space size={4}>
+            {modes.map((m) => (
+              <Tag key={m} color={COOP_MODE_COLOR[m] || 'default'}>
+                {m}
+              </Tag>
+            ))}
+          </Space>
+        ) : (
+          '-'
+        ),
+    },
+    {
+      title: '合作公司',
+      dataIndex: 'coop_company',
+      width: 140,
+      ellipsis: true,
+      render: (v: string) => v || '-',
+    },
+    {
+      title: '运营者',
+      key: 'operators',
+      width: 120,
+      render: (_, record) => {
+        const ops = record.operators || [];
+        return ops.length ? (
+          <Tooltip
+            title={ops
+              .map((o) => o.operator_name || o.operator_user_id || '')
+              .join('、')}
+          >
+            <Tag icon={<TeamOutlined />} color="cyan">
+              {ops.length} 人
+            </Tag>
+          </Tooltip>
+        ) : (
+          '-'
+        );
+      },
+    },
+    {
+      title: '关联发布账号',
+      dataIndex: 'video_account_id',
+      width: 120,
+      render: (v: string) => {
+        if (!v) return <Text type="secondary">未关联</Text>;
+        const acc = videoAccounts.find((a) => a.id === v);
+        return acc ? <Tag color="geekblue">{acc.account_name}</Tag> : <Tag>已关联</Tag>;
+      },
+    },
+    {
+      title: '累计播放',
+      key: 'report_play_count',
+      width: 110,
+      align: 'right' as const,
+      render: (_, record) =>
+        record.report_play_count != null ? record.report_play_count.toLocaleString() : '-',
+    },
+    {
+      title: '归因收益',
+      key: 'report_attributed_revenue',
+      width: 110,
+      align: 'right' as const,
+      render: (_, record) =>
+        record.report_attributed_revenue != null
+          ? `¥${Number(record.report_attributed_revenue).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+          : '-',
+    },
+    {
+      title: '广告收益',
+      key: 'report_ad_revenue',
+      width: 110,
+      align: 'right' as const,
+      render: (_, record) =>
+        record.report_ad_revenue != null
+          ? `¥${Number(record.report_ad_revenue).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+          : '-',
+    },
+    {
+      title: '状态',
+      dataIndex: 'enabled',
+      width: 70,
+      render: (v: boolean) => (v ? <Tag color="success">启用</Tag> : <Tag>停用</Tag>),
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 260,
+      render: (_, record) => (
+        <Space split={<Divider type="vertical" />}>
+          <Button type="link" size="small" icon={<BarChartOutlined />} onClick={() => navigate('/analytics/shortdrama')}>
+            报表
+          </Button>
+          <Button type="link" size="small" icon={<TeamOutlined />} onClick={() => openOperator(record)}>
+            运营者
+          </Button>
+          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
+            编辑
+          </Button>
+          <Popconfirm title="确认删除该视频号台账？" onConfirm={() => handleDelete(record.id)}>
+            <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+              删除
+            </Button>
           </Popconfirm>
         </Space>
       ),
@@ -213,87 +333,178 @@ const ChannelAccounts: React.FC = () => {
 
   return (
     <Card
-      title={
-        <Space>
-          <Title level={4} style={{ margin: 0 }}>视频号列表</Title>
-          <Text type="secondary">登记视频号工商/合作信息，可关联发布账号</Text>
-        </Space>
-      }
+      title="视频号台账"
       extra={
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={() => fetchChannels(verifyFilter, coopFilter)}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增视频号</Button>
+          <Input
+            placeholder="搜索名称/微信号"
+            prefix={<SearchOutlined />}
+            allowClear
+            style={{ width: 220 }}
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            onPressEnter={() => fetchData(keyword)}
+          />
+          <Button onClick={() => fetchData(keyword)}>查询</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+            新增台账
+          </Button>
         </Space>
       }
     >
-      <Space style={{ marginBottom: 16 }} wrap>
-        <Select
-          allowClear placeholder="实名类型" style={{ width: 120 }}
-          value={verifyFilter} onChange={(v) => { setVerifyFilter(v); fetchChannels(v, coopFilter); }}
-          options={[{ value: 'personal', label: '个人' }, { value: 'enterprise', label: '企业' }]}
-        />
-        <Select
-          allowClear placeholder="合作模式" style={{ width: 120 }}
-          value={coopFilter} onChange={(v) => { setCoopFilter(v); fetchChannels(verifyFilter, v); }}
-          options={[{ value: 'IAA', label: 'IAA' }, { value: 'IAP', label: 'IAP' }]}
-        />
-      </Space>
-
       <Table
-        rowKey="id" loading={loading} dataSource={channels} columns={columns}
-        scroll={{ x: 1600 }} pagination={{ pageSize: 20, showSizeChanger: true }}
+        rowKey="id"
+        columns={columns}
+        dataSource={data}
+        loading={loading}
+        pagination={{ pageSize: 10, showSizeChanger: true }}
+        scroll={{ x: 1400 }}
       />
 
+      {/* 新增/编辑台账 */}
       <Modal
-        title={editing ? '编辑视频号' : '新增视频号'}
-        open={modalOpen} onOk={handleSave} onCancel={() => setModalOpen(false)}
-        confirmLoading={saving} width={720} destroyOnClose
+        title={editing ? '编辑视频号台账' : '新增视频号台账'}
+        open={modalOpen}
+        onOk={handleSubmit}
+        onCancel={() => setModalOpen(false)}
+        width={640}
+        destroyOnClose
       >
-        <Form form={form} layout="vertical">
-          <Form.Item name="channel_name" label="视频号名称" rules={[{ required: true, message: '请输入视频号名称' }]}>
+        <Form form={form} layout="vertical" initialValues={{ enabled: true }}>
+          <Form.Item
+            name="channel_name"
+            label="视频号名称"
+            rules={[{ required: true, message: '请输入视频号名称' }]}
+          >
             <Input placeholder="如：主号-剧集A" />
           </Form.Item>
-          <Form.Item name="wechat_id" label="微信号"><Input placeholder="视频号绑定的微信" /></Form.Item>
-          <Space style={{ width: '100%' }} size="large">
-            <Form.Item name="verify_type" label="实名类型" style={{ width: 200 }}>
-              <Select allowClear placeholder="选择" options={[
-                { value: 'personal', label: '个人' },
-                { value: 'enterprise', label: '企业' },
-              ]} />
+          <Form.Item name="wechat_id" label="微信号">
+            <Input placeholder="选填" />
+          </Form.Item>
+          <Space style={{ display: 'flex' }} size="large">
+            <Form.Item name="verify_type" label="实名类型">
+              <Select
+                placeholder="个人/企业"
+                options={VERIFY_TYPES}
+                style={{ width: 160 }}
+                allowClear
+              />
             </Form.Item>
-            <Form.Item name="verify_name" label="实名人" style={{ flex: 1 }}>
-              <Input placeholder="个人姓名 / 企业全称" />
+            <Form.Item name="verify_name" label="实名人">
+              <Input placeholder="选填" style={{ width: 200 }} />
             </Form.Item>
-          </Space>
-          <Space style={{ width: '100%' }} size="large">
             <Form.Item name="register_date" label="注册日期">
-              <DatePicker style={{ width: 200 }} />
-            </Form.Item>
-            <Form.Item name="cooperation_mode" label="合作模式" style={{ width: 200 }}>
-              <Select allowClear placeholder="选择" options={[
-                { value: 'IAA', label: 'IAA（广告变现）' },
-                { value: 'IAP', label: 'IAP（内购变现）' },
-              ]} />
-            </Form.Item>
-            <Form.Item name="coop_company" label="合作公司" style={{ flex: 1 }}>
-              <Input placeholder="合作公司名称" />
+              <DatePicker style={{ width: 150 }} />
             </Form.Item>
           </Space>
-          <Form.Item name="video_account_id" label="关联发布账号（可选）" extra="从发布账号矩阵中选择，打通发布流程">
+          <Form.Item name="cooperation_modes" label="合作模式（可多选，IAA/IAP 可共存）">
             <Select
-              allowClear showSearch placeholder="选择发布账号"
-              optionFilterProp="label"
-              options={videoAccounts.map((a) => ({ value: a.id, label: a.account_name }))}
+              mode="multiple"
+              placeholder="选择合作模式"
+              options={COOP_MODES}
+              style={{ width: '100%' }}
             />
           </Form.Item>
-          <Form.Item name="remark" label="备注"><Input.TextArea rows={2} /></Form.Item>
-          <Form.Item name="operators" label="运营者身份（可添加多人）">
-            <OperatorSelect />
+          <Form.Item name="coop_company" label="合作公司">
+            <Input placeholder="选填" />
           </Form.Item>
-          <Form.Item name="enabled" label="状态" valuePropName="checked">
-            <Switch checkedChildren="启用" unCheckedChildren="停用" defaultChecked />
+          <Form.Item
+            name="video_account_id"
+            label="关联发布账号（可先登记后关联）"
+            extra="从现有发布账号库选择，发布通道配置"
+          >
+            <Select
+              placeholder="选填，可稍后关联"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              options={videoAccounts.map((a) => ({
+                value: a.id,
+                label: `${a.account_name} (${a.platform})`,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item name="remark" label="备注">
+            <Input.TextArea rows={2} placeholder="选填" />
+          </Form.Item>
+          <Form.Item name="enabled" label="启用" valuePropName="checked">
+            <Switch />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* 运营者管理 */}
+      <Modal
+        title={`运营者管理 - ${currentAccount?.channel_name || ''}`}
+        open={opModalOpen}
+        onCancel={() => setOpModalOpen(false)}
+        footer={null}
+        width={520}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <Form form={opForm} layout="vertical">
+            <Space style={{ display: 'flex' }} align="start">
+              <Form.Item name="operator_user_id" label="从系统选择用户">
+                <Select
+                  placeholder="现有系统用户"
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  style={{ width: 220 }}
+                  options={users
+                    .filter((u) => u.is_active)
+                    .map((u) => ({
+                      value: u.id,
+                      label: u.display_name || u.username,
+                    }))}
+                />
+              </Form.Item>
+              <Form.Item name="operator_name" label="或手填外部姓名">
+                <Input placeholder="外部人员姓名" style={{ width: 200 }} />
+              </Form.Item>
+            </Space>
+            <Form.Item name="operator_phone" label="外部电话（选填）">
+              <Input placeholder="手填外部人员电话" style={{ width: 220 }} />
+            </Form.Item>
+            <Button type="primary" icon={<UserAddOutlined />} onClick={handleAddOperator}>
+              添加运营者
+            </Button>
+          </Form>
+        </div>
+        <Divider style={{ margin: '8px 0' }} />
+        <List
+          dataSource={operatorList}
+          locale={{ emptyText: '暂无运营者' }}
+          renderItem={(op) => (
+            <List.Item
+              actions={[
+                <Popconfirm
+                  key="del"
+                  title="移除该运营者？"
+                  onConfirm={() => handleRemoveOperator(op)}
+                >
+                  <Button type="link" danger size="small">
+                    移除
+                  </Button>
+                </Popconfirm>,
+              ]}
+            >
+              <List.Item.Meta
+                title={
+                  op.operator_name ||
+                  users.find((u) => u.id === op.operator_user_id)?.display_name ||
+                  users.find((u) => u.id === op.operator_user_id)?.username ||
+                  '未命名运营者'
+                }
+                description={
+                  op.operator_user_id
+                    ? `系统用户`
+                    : [op.operator_phone, '外部人员'].filter(Boolean).join(' · ')
+                }
+              />
+            </List.Item>
+          )}
+        />
       </Modal>
     </Card>
   );

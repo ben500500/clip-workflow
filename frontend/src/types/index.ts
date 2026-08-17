@@ -777,12 +777,14 @@ export interface AlertEvent {
   created_at: string;
 }
 
-// ========== 视频号登记台账（Issue #93） ==========
+// ========== 视频号台账（ChannelAccount / ChannelOperator） ==========
 
 export interface ChannelOperator {
   id: string;
-  operator_id: string | null;
-  operator_name: string | null;
+  channel_account_id: string;
+  operator_user_id: string | null;   // 现有用户 FK
+  operator_name: string | null;      // 外部手填姓名
+  operator_phone: string | null;     // 外部手填电话
   created_at: string;
 }
 
@@ -792,34 +794,18 @@ export interface ChannelAccount {
   wechat_id: string | null;
   verify_type: string | null;        // personal / enterprise
   verify_name: string | null;
-  register_date: string | null;
-  cooperation_mode: string | null;   // IAA / IAP
+  register_date: string | null;      // YYYY-MM-DD
+  cooperation_modes: string[] | null; // ["IAA","IAP"]
   coop_company: string | null;
-  video_account_id: string | null;
-  video_account_name: string | null;
+  video_account_id: string | null;   // 关联发布账号库，可空
   remark: string | null;
   enabled: boolean;
   created_by: string | null;
   created_at: string;
   updated_at: string;
   operators: ChannelOperator[];
-}
-
-export interface ChannelOperatorInput {
-  operator_id?: string | null;
-  operator_name?: string | null;
-}
-
-export interface ChannelAccountInput {
-  channel_name: string;
-  wechat_id?: string | null;
-  verify_type?: string | null;
-  verify_name?: string | null;
-  register_date?: string | null;
-  cooperation_mode?: string | null;
-  coop_company?: string | null;
-  video_account_id?: string | null;
-  remark?: string | null;
-  enabled?: boolean;
-  operators?: ChannelOperatorInput[];
+  // 与报表域关联聚合（按 video_account_id 汇总）
+  report_play_count?: number;
+  report_attributed_revenue?: number;
+  report_ad_revenue?: number;
 }

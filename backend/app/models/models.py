@@ -79,7 +79,7 @@ from app.models.shortdrama import (
     WatermarkTask,
     WatermarkVideo,
 )
-from app.models.channel_account import (
+from app.models.channel import (
     ChannelAccount,
     ChannelOperator,
 )
@@ -138,7 +138,7 @@ __all__ = [
     "ShortdramaPrompt",
     "WatermarkTask",
     "WatermarkVideo",
-    # 视频号登记台账
+    # 视频号台账
     "ChannelAccount",
     "ChannelOperator",
 ]

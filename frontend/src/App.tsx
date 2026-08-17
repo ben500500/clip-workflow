@@ -58,6 +58,7 @@ const App: React.FC = () => {
             <Route path="episodes/:episodeId/slice" element={<SliceTasksPage />} />
             <Route path="episodes/:episodeId/preview" element={<OutputPreviewPage />} />
             <Route path="publish" element={<PublishManagement />} />
+            <Route path="channel-accounts" element={<ChannelAccounts />} />
             <Route path="analytics/overview" element={<DashboardOverview />} />
             <Route path="analytics/shortdrama" element={<ShortDramaAnalysis />} />
             <Route path="analytics/content" element={<ContentAnalysis />} />
@@ -75,7 +76,6 @@ const App: React.FC = () => {
             <Route path="settings" element={<Settings />} />
             <Route path="batch-slice" element={<BatchSlice />} />
             <Route path="resource-download" element={<ResourceDownload />} />
-            <Route path="channel-accounts" element={<ChannelAccounts />} />
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>

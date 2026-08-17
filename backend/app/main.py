@@ -191,8 +191,8 @@ async def websocket_wechat_dl(websocket: WebSocket, task_id: str):
 _protected_routers = [
     projects, upload, autoclip, intervals, slice, preview, publications,
     config_api, publish, dashboard, workers, monitor, maintenance,
-    watermark, shortdrama, publish_material, batch_slice, channel_accounts,
-    wechat_dl_api,
+    watermark, shortdrama, publish_material, batch_slice,
+    wechat_dl_api, channel_accounts,
 ]
 for _r in _protected_routers:
     app.include_router(_r.router, prefix="/api", dependencies=[Depends(get_current_user)])
