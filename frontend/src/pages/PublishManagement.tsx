@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, InputNumber, Alert, Tabs, Tooltip, Switch,
+  Card, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, InputNumber, Alert, Tabs, Tooltip, Switch, DatePicker,
 } from 'antd';
 import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined, QrcodeOutlined, HeartOutlined } from '@ant-design/icons';
 import { publishApi, type VideoAccountInput, type MiniProgramInput } from '../api/publish';
+import { channelAccountApi, type ChannelAccountFromVideoAccountInput } from '../api/channelAccounts';
 import type { PublishProfile, PublishTask, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult, MultiOpVerification } from '../types';
 import { formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
+import dayjs from 'dayjs';
 
 const { Title } = Typography;
 
@@ -27,6 +29,11 @@ const PublishManagement: React.FC = () => {
   const [editingProfile, setEditingProfile] = useState<PublishProfile | null>(null);
   const [editingAccount, setEditingAccount] = useState<VideoAccount | null>(null);
   const [editingMiniProgram, setEditingMiniProgram] = useState<MiniProgram | null>(null);
+  // ── 从账号库一键登记台账（方向1） ──
+  const [ledgerModal, setLedgerModal] = useState(false);
+  const [ledgerAccount, setLedgerAccount] = useState<VideoAccount | null>(null);
+  const [ledgerSaving, setLedgerSaving] = useState(false);
+  const [ledgerForm] = Form.useForm();
   const [taskLoading, setTaskLoading] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
   const [accountLoading, setAccountLoading] = useState(false);
@@ -304,6 +311,41 @@ const PublishManagement: React.FC = () => {
     }
   };
 
+  // 从账号库一键登记台账（方向1）
+  const openLedger = (a: VideoAccount) => {
+    setLedgerAccount(a);
+    ledgerForm.resetFields();
+    setLedgerModal(true);
+  };
+
+  const saveLedger = async () => {
+    if (!ledgerAccount) return;
+    try {
+      const values = await ledgerForm.validateFields();
+      setLedgerSaving(true);
+      const payload: ChannelAccountFromVideoAccountInput = {
+        video_account_id: ledgerAccount.id,
+        verify_type: values.verify_type,
+        verify_name: values.verify_name,
+        register_date: values.register_date
+          ? values.register_date.format('YYYY-MM-DD')
+          : undefined,
+        cooperation_modes: values.cooperation_modes || [],
+        coop_company: values.coop_company,
+        remark: values.remark,
+        enabled: values.enabled !== false,
+      };
+      await channelAccountApi.createFromVideoAccount(payload);
+      message.success(`已为「${ledgerAccount.account_name}」登记视频号台账，号主已自动加入运营者`);
+      setLedgerModal(false);
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      message.error(err instanceof Error ? err.message : '登记失败');
+    } finally {
+      setLedgerSaving(false);
+    }
+  };
+
   const taskColumns = [
     { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true, render: (t: string) => t || '-' },
     { title: '平台', dataIndex: 'platform', key: 'platform', width: 100, render: (p: string) => p ? <Tag color={p === 'wechat_channel' ? 'green' : p === 'douyin' ? 'geekblue' : 'purple'}>{PLATFORM_LABELS[p] || p}</Tag> : '-' },
@@ -413,7 +455,7 @@ const PublishManagement: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 130,
+      width: 220,
       render: (_: unknown, a: VideoAccount) => (
         <Space size="small">
           <Button size="small" icon={<EditOutlined />} onClick={() => {
@@ -431,6 +473,7 @@ const PublishManagement: React.FC = () => {
             });
             setAccountModal(true);
           }}>编辑</Button>
+          <Button size="small" icon={<HeartOutlined />} onClick={() => openLedger(a)}>登记台账</Button>
           <Button size="small" danger icon={<DeleteOutlined />} onClick={async () => {
             try {
               await publishApi.deleteVideoAccount(a.id);
@@ -943,6 +986,70 @@ const PublishManagement: React.FC = () => {
             <Input.TextArea rows={2} />
           </Form.Item>
           <Form.Item name="enabled" label="启用" valuePropName="checked" initialValue={true}>
+            <Switch />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 从账号库一键登记台账（方向1） */}
+      <Modal
+        title={`登记视频号台账 - ${ledgerAccount?.account_name || ''}`}
+        open={ledgerModal}
+        onOk={saveLedger}
+        confirmLoading={ledgerSaving}
+        onCancel={() => setLedgerModal(false)}
+        destroyOnClose
+        width={640}
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="将从该发布账号自动带出视频号名称/微信号，并把账号号主自动加入运营者"
+        />
+        <Form form={ledgerForm} layout="vertical" initialValues={{ enabled: true }}>
+          <Form.Item label="视频号名称">
+            <Input value={ledgerAccount?.account_name || ''} disabled />
+          </Form.Item>
+          <Form.Item label="微信号">
+            <Input value={ledgerAccount?.wxid || '（未填写）'} disabled />
+          </Form.Item>
+          <Space style={{ display: 'flex' }} size="large">
+            <Form.Item name="verify_type" label="实名类型">
+              <Select
+                placeholder="个人/企业"
+                allowClear
+                style={{ width: 160 }}
+                options={[
+                  { value: 'personal', label: '个人' },
+                  { value: 'enterprise', label: '企业' },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="verify_name" label="实名人">
+              <Input placeholder="选填" style={{ width: 200 }} />
+            </Form.Item>
+            <Form.Item name="register_date" label="注册日期">
+              <DatePicker style={{ width: 150 }} />
+            </Form.Item>
+          </Space>
+          <Form.Item name="cooperation_modes" label="合作模式（可多选，IAA/IAP 可共存）">
+            <Select
+              mode="multiple"
+              placeholder="选择合作模式"
+              options={[
+                { value: 'IAA', label: 'IAA' },
+                { value: 'IAP', label: 'IAP' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="coop_company" label="合作公司">
+            <Input placeholder="选填" />
+          </Form.Item>
+          <Form.Item name="remark" label="备注">
+            <Input.TextArea rows={2} placeholder="选填" />
+          </Form.Item>
+          <Form.Item name="enabled" label="启用" valuePropName="checked">
             <Switch />
           </Form.Item>
         </Form>

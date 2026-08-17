@@ -85,6 +85,7 @@ const ChannelAccounts: React.FC = () => {
   const openCreate = () => {
     setEditing(null);
     form.resetFields();
+    form.setFieldsValue({ enabled: true });
     setModalOpen(true);
   };
 
@@ -105,9 +106,25 @@ const ChannelAccounts: React.FC = () => {
     setModalOpen(true);
   };
 
+  // 选择账号库后自动带出名称/微信号（方向1：以账号库为主数据，避免两套数据对不上）
+  const handleVideoAccountChange = (videoAccountId: string | undefined) => {
+    const va = videoAccounts.find((a) => a.id === videoAccountId);
+    if (va) {
+      form.setFieldsValue({
+        channel_name: va.account_name,
+        wechat_id: va.wxid || undefined,
+      });
+    }
+  };
+
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
+      // 方向1：video_account_id 必填
+      if (!values.video_account_id) {
+        message.error('请先从发布账号库选择关联账号');
+        return;
+      }
       const payload: ChannelAccountInput = {
         ...values,
         register_date: values.register_date
@@ -372,14 +389,27 @@ const ChannelAccounts: React.FC = () => {
       >
         <Form form={form} layout="vertical" initialValues={{ enabled: true }}>
           <Form.Item
-            name="channel_name"
-            label="视频号名称"
-            rules={[{ required: true, message: '请输入视频号名称' }]}
+            name="video_account_id"
+            label="关联发布账号（必选，以账号库为主数据）"
+            rules={[{ required: true, message: '请选择关联发布账号' }]}
+            extra="选择后自动带出视频号名称/微信号"
           >
-            <Input placeholder="如：主号-剧集A" />
+            <Select
+              placeholder="从发布账号库选择"
+              showSearch
+              optionFilterProp="label"
+              onChange={handleVideoAccountChange}
+              options={videoAccounts.map((a) => ({
+                value: a.id,
+                label: `${a.account_name} (${a.platform})`,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item name="channel_name" label="视频号名称">
+            <Input placeholder="由关联账号自动带出" disabled />
           </Form.Item>
           <Form.Item name="wechat_id" label="微信号">
-            <Input placeholder="选填" />
+            <Input placeholder="由关联账号自动带出" disabled />
           </Form.Item>
           <Space style={{ display: 'flex' }} size="large">
             <Form.Item name="verify_type" label="实名类型">
@@ -407,22 +437,6 @@ const ChannelAccounts: React.FC = () => {
           </Form.Item>
           <Form.Item name="coop_company" label="合作公司">
             <Input placeholder="选填" />
-          </Form.Item>
-          <Form.Item
-            name="video_account_id"
-            label="关联发布账号（可先登记后关联）"
-            extra="从现有发布账号库选择，发布通道配置"
-          >
-            <Select
-              placeholder="选填，可稍后关联"
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              options={videoAccounts.map((a) => ({
-                value: a.id,
-                label: `${a.account_name} (${a.platform})`,
-              }))}
-            />
           </Form.Item>
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={2} placeholder="选填" />

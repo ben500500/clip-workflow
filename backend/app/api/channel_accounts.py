@@ -19,6 +19,7 @@ from app.models.models import (
     ChannelAccount,
     ChannelOperator,
     User,
+    VideoAccount,
     VideoMetric,
     user_can_access_all_materials,
 )
@@ -57,14 +58,29 @@ class OperatorResponse(BaseModel):
 
 
 class ChannelAccountCreate(BaseModel):
-    channel_name: str
-    wechat_id: Optional[str] = None
+    channel_name: Optional[str] = None       # 缺省由账号库 account_name 自动带出
+    wechat_id: Optional[str] = None          # 缺省由账号库 wxid 自动带出
     verify_type: Optional[str] = None        # personal / enterprise
     verify_name: Optional[str] = None
     register_date: Optional[str] = None
     cooperation_modes: Optional[List[CooperationMode]] = None   # ["IAA","IAP"]
     coop_company: Optional[str] = None
-    video_account_id: Optional[str] = None   # 可空，先登记后关联
+    video_account_id: str                    # 方向1：必填，以账号库为主数据
+    remark: Optional[str] = None
+    enabled: bool = True
+
+
+class ChannelAccountFromVideoAccount(BaseModel):
+    """从账号库一键登记台账：video_account_id + 工商/合作信息.
+
+    名称/微信号由账号库自动带出；账号库号主（operator_id）自动作为首个运营者打通归属。
+    """
+    video_account_id: str
+    verify_type: Optional[str] = None        # personal / enterprise
+    verify_name: Optional[str] = None
+    register_date: Optional[str] = None
+    cooperation_modes: Optional[List[CooperationMode]] = None   # ["IAA","IAP"]
+    coop_company: Optional[str] = None
     remark: Optional[str] = None
     enabled: bool = True
 
@@ -77,7 +93,7 @@ class ChannelAccountUpdate(BaseModel):
     register_date: Optional[str] = None
     cooperation_modes: Optional[List[CooperationMode]] = None
     coop_company: Optional[str] = None
-    video_account_id: Optional[str] = None
+    video_account_id: Optional[str] = None   # 方向1：不可置空，只能换绑到其它账号库
     remark: Optional[str] = None
     enabled: Optional[bool] = None
 
@@ -288,20 +304,69 @@ async def create_channel_account(
     db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
-    """新增台账（video_account_id 可空，先登记后关联）。"""
+    """新增台账（方向1：以账号库为主数据，video_account_id 必填，名称/微信号自动带出）。"""
+    video_account = await _load_video_account(
+        _parse_uuid(data.video_account_id, "video_account_id"), db
+    )
+    await _ensure_no_existing(video_account.id, db, exclude_id=None)
+    # 名称/微信号以账号库为准自动带出（避免两套数据对不上）
+    channel_name = data.channel_name or video_account.account_name
+    wechat_id = data.wechat_id or video_account.wxid
     acc = ChannelAccount(
-        channel_name=data.channel_name,
-        wechat_id=data.wechat_id,
+        channel_name=channel_name,
+        wechat_id=wechat_id,
         verify_type=data.verify_type,
         verify_name=data.verify_name,
         register_date=_parse_date(data.register_date),
         cooperation_modes=data.cooperation_modes,
         coop_company=data.coop_company,
-        video_account_id=_parse_uuid(data.video_account_id, "video_account_id"),
+        video_account_id=video_account.id,
         remark=data.remark,
         enabled=data.enabled,
         created_by=current_user.id if current_user else None,
     )
+    db.add(acc)
+    await db.flush()
+    await db.refresh(acc)
+    return _serialize_channel_account(acc)
+
+
+@router.post(
+    "/channel-accounts/from-video-account",
+    response_model=ChannelAccountResponse,
+    status_code=201,
+)
+async def create_channel_from_video_account(
+    data: ChannelAccountFromVideoAccount,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """从账号库一键登记台账：自动带出名称/微信号，并把账号库号主作为首个运营者打通归属。"""
+    video_account = await _load_video_account(
+        _parse_uuid(data.video_account_id, "video_account_id"), db
+    )
+    await _ensure_no_existing(video_account.id, db, exclude_id=None)
+    acc = ChannelAccount(
+        channel_name=video_account.account_name,
+        wechat_id=video_account.wxid,
+        verify_type=data.verify_type,
+        verify_name=data.verify_name,
+        register_date=_parse_date(data.register_date),
+        cooperation_modes=data.cooperation_modes,
+        coop_company=data.coop_company,
+        video_account_id=video_account.id,
+        remark=data.remark,
+        enabled=data.enabled,
+        created_by=current_user.id if current_user else None,
+    )
+    # 打通归属：账号库号主（operator_id）自动作为首个运营者（仅当号主存在）
+    if video_account.operator_id:
+        acc.operators.append(
+            ChannelOperator(
+                channel=acc,
+                operator_user_id=video_account.operator_id,
+            )
+        )
     db.add(acc)
     await db.flush()
     await db.refresh(acc)
@@ -329,7 +394,18 @@ async def update_channel_account(
     if "register_date" in updates:
         acc.register_date = _parse_date(updates.pop("register_date"))
     if "video_account_id" in updates:
-        acc.video_account_id = _parse_uuid(updates.pop("video_account_id"), "video_account_id")
+        new_vaid = _parse_uuid(updates.pop("video_account_id"), "video_account_id")
+        if new_vaid is None:
+            # 方向1：不可解绑置空，只能换绑到其它账号库
+            raise HTTPException(status_code=422, detail="视频号台账必须以账号库为主数据，不能解绑发布账号")
+        video_account = await _load_video_account(new_vaid, db)
+        await _ensure_no_existing(video_account.id, db, exclude_id=acc.id)
+        acc.video_account_id = video_account.id
+        # 换绑后名称/微信号随新账号库自动带出
+        if "channel_name" not in updates:
+            acc.channel_name = video_account.account_name
+        if "wechat_id" not in updates:
+            acc.wechat_id = video_account.wxid
     for field, value in updates.items():
         setattr(acc, field, value)
 
@@ -463,6 +539,36 @@ async def _load_account(account_id: uuid.UUID, db: AsyncSession) -> ChannelAccou
     if not acc:
         raise HTTPException(status_code=404, detail="Channel account not found")
     return acc
+
+
+async def _load_video_account(video_account_id: uuid.UUID, db: AsyncSession) -> VideoAccount:
+    """加载账号库账号，不存在则 400（台账以账号库为主数据，必须存在）。"""
+    result = await db.execute(
+        select(VideoAccount).where(VideoAccount.id == video_account_id)
+    )
+    va = result.scalar_one_or_none()
+    if not va:
+        raise HTTPException(status_code=400, detail="关联的发布账号不存在，请先从账号库选择")
+    return va
+
+
+async def _ensure_no_existing(
+    video_account_id: uuid.UUID,
+    db: AsyncSession,
+    exclude_id: Optional[uuid.UUID],
+) -> None:
+    """幂等：同一发布账号最多对应一条台账（exclude_id 用于更新时排除自身）。"""
+    query = select(ChannelAccount.id).where(
+        ChannelAccount.video_account_id == video_account_id
+    )
+    if exclude_id:
+        query = query.where(ChannelAccount.id != exclude_id)
+    result = await db.execute(query)
+    if result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=409,
+            detail="该发布账号已登记过视频号台账，不能重复登记",
+        )
 
 
 def _check_access(acc: ChannelAccount, current_user: Optional[User]):
