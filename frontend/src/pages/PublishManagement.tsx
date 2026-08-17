@@ -133,6 +133,42 @@ const PublishManagement: React.FC = () => {
       .finally(() => setQrClaiming(false));
   };
 
+  // 扫码弹窗打开后自动轮询登录态：用户扫码确认后后端心跳检测返回 valid → 自动关闭弹窗
+  useEffect(() => {
+    if (!qrModalOpen || !qrAccountId) return;
+    let stopped = false;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 12; // 12 × 8s ≈ 96s，覆盖 90s TTL
+    const poll = async () => {
+      if (stopped) return;
+      attempts += 1;
+      try {
+        const res = await publishApi.loginHeartbeat(qrAccountId);
+        if (stopped) return;
+        setQrHeartbeatStatus(res.status);
+        if (res.status === 'valid') {
+          message.success('登录态已就绪');
+          setQrModalOpen(false);
+          return;
+        }
+        // need_login / error 说明尚未扫码成功或检测失败，继续轮询
+        if (attempts >= MAX_ATTEMPTS) {
+          message.warning('90s 内未检测到扫码登录，二维码已过期，请重新申请');
+          setQrModalOpen(false);
+        }
+      } catch (err: unknown) {
+        // 瞬时错误（网络抖动等）忽略，继续轮询
+        if (attempts >= MAX_ATTEMPTS) {
+          message.warning('90s 内未检测到扫码登录，请重新申请');
+          setQrModalOpen(false);
+        }
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, 8000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [qrModalOpen, qrAccountId]);
+
   const runHeartbeat = () => {
     if (!qrAccountId) { message.warning('请先选择账号'); return; }
     setQrHeartbeating(true);
@@ -973,7 +1009,7 @@ const PublishManagement: React.FC = () => {
         <Alert type="info" showIcon style={{ marginBottom: 16 }} message="请用对应运营者微信扫码确认登录。二维码链接 TTL 90s 单次有效，过期需重新申请。" />
         {qrUrl && (
           <div style={{ textAlign: 'center' }}>
-            <img src={qrUrl} alt="登录二维码" style={{ width: 260, height: 260, border: '1px solid #f0f0f0', borderRadius: 8 }} />
+            <img src={qrUrl} alt="登录二维码" style={{ width: 260, height: 260, objectFit: 'contain', background: '#fff', border: '1px solid #f0f0f0', borderRadius: 8 }} />
             <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
               微信扫码确认后，登录态将置为就绪
             </Typography.Paragraph>

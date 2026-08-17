@@ -241,6 +241,8 @@ async def login_heartbeat(
         raise HTTPException(status_code=404, detail="Account profile not found / no debug port")
 
     status = await login_qr_service.check_login_status_via_cdp(account_id, port, host)
+    cur = await login_qr_service.get_login_state(account_id)
+    cur_state = (cur or {}).get("state")
     if status == "valid":
         await login_qr_service.set_login_state(account_id, "ready")
         await audit_service.log_cookie_access(
@@ -250,13 +252,17 @@ async def login_heartbeat(
             ip_address=current_user.last_login_ip if (current_user and hasattr(current_user, "last_login_ip")) else None,
         )
     elif status == "need_login":
-        await login_qr_service.set_login_state(account_id, "need_login", {"reason": "30min 心跳：登录态失效"})
-        await audit_service.log_risk_event(
-            account_id=uuid.UUID(account_id), operator_id=operator_id,
-            actor_id=current_user.id if current_user else None,
-            risk_type="login_restricted", level="warning",
-            message="登录态心跳检查失效（30min）",
-            disposition="re_login",
-        )
+        # 仅当原本已 ready（已登录会话 30min 心跳失效）才降级 need_login + 告警；
+        # logging（等待用户扫码中）检测到登录页二维码属正常，不落库不告警，
+        # 避免前端轮询心跳时刷风险日志、覆盖等待扫码状态。
+        if cur_state == "ready":
+            await login_qr_service.set_login_state(account_id, "need_login", {"reason": "30min 心跳：登录态失效"})
+            await audit_service.log_risk_event(
+                account_id=uuid.UUID(account_id), operator_id=operator_id,
+                actor_id=current_user.id if current_user else None,
+                risk_type="login_restricted", level="warning",
+                message="登录态心跳检查失效（30min）",
+                disposition="re_login",
+            )
     # status == "error"（连接失败）不误判 valid，保持现状
     return {"account_id": account_id, "status": status}
