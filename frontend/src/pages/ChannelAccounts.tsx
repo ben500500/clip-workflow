@@ -5,10 +5,11 @@ import {
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined, TeamOutlined,
-  UserAddOutlined,
+  UserAddOutlined, BarChartOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
+import { useNavigate } from 'react-router-dom';
 import { channelAccountApi, ChannelAccountInput, OperatorInput } from '../api/channelAccounts';
 import { publishApi } from '../api/publish';
 import { authApi } from '../api/auth';
@@ -40,6 +41,7 @@ interface OperatorForm {
 }
 
 const ChannelAccounts: React.FC = () => {
+  const navigate = useNavigate();
   const [data, setData] = useState<ChannelAccount[]>([]);
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState('');
@@ -271,6 +273,34 @@ const ChannelAccounts: React.FC = () => {
       },
     },
     {
+      title: '累计播放',
+      key: 'report_play_count',
+      width: 110,
+      align: 'right' as const,
+      render: (_, record) =>
+        record.report_play_count != null ? record.report_play_count.toLocaleString() : '-',
+    },
+    {
+      title: '归因收益',
+      key: 'report_attributed_revenue',
+      width: 110,
+      align: 'right' as const,
+      render: (_, record) =>
+        record.report_attributed_revenue != null
+          ? `¥${Number(record.report_attributed_revenue).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+          : '-',
+    },
+    {
+      title: '广告收益',
+      key: 'report_ad_revenue',
+      width: 110,
+      align: 'right' as const,
+      render: (_, record) =>
+        record.report_ad_revenue != null
+          ? `¥${Number(record.report_ad_revenue).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+          : '-',
+    },
+    {
       title: '状态',
       dataIndex: 'enabled',
       width: 70,
@@ -279,9 +309,12 @@ const ChannelAccounts: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 200,
+      width: 260,
       render: (_, record) => (
         <Space split={<Divider type="vertical" />}>
+          <Button type="link" size="small" icon={<BarChartOutlined />} onClick={() => navigate('/analytics/shortdrama')}>
+            报表
+          </Button>
           <Button type="link" size="small" icon={<TeamOutlined />} onClick={() => openOperator(record)}>
             运营者
           </Button>
