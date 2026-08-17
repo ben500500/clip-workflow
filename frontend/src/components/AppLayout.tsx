@@ -65,7 +65,7 @@ const allMenuItems = [
   {
     key: '/channel-accounts',
     icon: <ContactsOutlined />,
-    label: '视频号台账',
+    label: '视频号列表',
   },
   {
     key: '/workers',

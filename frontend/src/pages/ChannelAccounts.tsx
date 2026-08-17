@@ -65,7 +65,7 @@ const ChannelAccounts: React.FC = () => {
       const list = await channelAccountApi.list({ keyword: kw });
       setData(list);
     } catch (e) {
-      message.error((e as Error).message || '加载视频号台账失败');
+      message.error((e as Error).message || '加载视频号列表失败');
     } finally {
       setLoading(false);
     }
@@ -116,10 +116,10 @@ const ChannelAccounts: React.FC = () => {
       };
       if (editing) {
         await channelAccountApi.update(editing.id, payload);
-        message.success('视频号台账已更新');
+        message.success('视频号列表已更新');
       } else {
         await channelAccountApi.create(payload);
-        message.success('视频号台账已创建');
+        message.success('视频号列表已创建');
       }
       setModalOpen(false);
       fetchData(keyword);
@@ -321,7 +321,7 @@ const ChannelAccounts: React.FC = () => {
           <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
             编辑
           </Button>
-          <Popconfirm title="确认删除该视频号台账？" onConfirm={() => handleDelete(record.id)}>
+          <Popconfirm title="确认删除该视频号列表？" onConfirm={() => handleDelete(record.id)}>
             <Button type="link" size="small" danger icon={<DeleteOutlined />}>
               删除
             </Button>
@@ -333,7 +333,7 @@ const ChannelAccounts: React.FC = () => {
 
   return (
     <Card
-      title="视频号台账"
+      title="视频号列表"
       extra={
         <Space>
           <Input
@@ -347,7 +347,7 @@ const ChannelAccounts: React.FC = () => {
           />
           <Button onClick={() => fetchData(keyword)}>查询</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            新增台账
+            新增
           </Button>
         </Space>
       }
@@ -361,9 +361,9 @@ const ChannelAccounts: React.FC = () => {
         scroll={{ x: 1400 }}
       />
 
-      {/* 新增/编辑台账 */}
+      {/* 新增/编辑 */}
       <Modal
-        title={editing ? '编辑视频号台账' : '新增视频号台账'}
+        title={editing ? '编辑视频号列表' : '新增视频号列表'}
         open={modalOpen}
         onOk={handleSubmit}
         onCancel={() => setModalOpen(false)}
