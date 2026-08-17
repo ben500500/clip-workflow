@@ -6,7 +6,7 @@
 """
 from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
@@ -163,3 +163,29 @@ async def trace_publish_audit(
         ],
         "risk": [_serialize_risk_event(x) for x in trace["risk"]],
     }
+
+
+@router.get("/publish/multi-operator/verification", response_model=dict)
+async def get_multi_operator_verification(
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """多运营者验证向导的实时状态报告（引导逐步验收）。
+
+    返回灰度开关 / 路由表 / 幂等待确认 / 配额 / 风控 / 登录态审计等检查点状态。
+    仅 admin 可查（验证向导属运维/验收视图）。
+    """
+    _require_admin(current_user)
+    from app.services import multi_operator
+    return await multi_operator.get_verification_status()
+
+
+@router.post("/publish/multi-operator/verification/flag", response_model=dict)
+async def set_multi_operator_flag(
+    enabled: bool = Body(..., embed=True, description="灰度开关 MULTI_OPERATOR_ENABLED"),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """开启 / 关闭多运营者灰度开关（Redis 热更，主题7；零侵入回滚）。仅 admin。"""
+    _require_admin(current_user)
+    from app.services import multi_operator
+    await multi_operator.set_flag(enabled)
+    return {"flag_on": enabled, "message": "灰度开关已" + ("开启" if enabled else "关闭")}

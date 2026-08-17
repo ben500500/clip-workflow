@@ -511,6 +511,77 @@ async def get_route_matrix() -> list:
     return matrix
 
 
+async def get_verification_status() -> dict:
+    """多运营者验证向导的实时状态报告（供「验证向导」Tab 引导逐步验收）。
+
+    返回各检查点状态，前端据此展示每一步是 done / pending / fail：
+    - flag_on：灰度开关 MULTI_OPERATOR_ENABLED 是否开启（主题7）；
+    - profiles_in_redis：pub:profiles 已注册 profile 数（R15 多实例启动前提）；
+    - route_count：pub:route:* 路由表条数（多实例接线是否生效）；
+    - routes：矩阵快照（复用 get_route_matrix，含 status/port/heartbeat）；
+    - ready_accounts / expired_accounts：路由表就绪 / 失效账号数（R12 秒级失效闭环）；
+    - operator_stats：各运营者配额消耗 + inflight（配额双闸门 R22）；
+    - pending_count：pub:pending:* 幂等待确认 payload 数（R13/R18）；
+    - risk_event_count / login_audit_count：风控 / 登录态审计条数（可观测 P1 问题10）；
+    - cdp_token_count：pub:cdp_token:* 短期 token 存续数（R19 二次鉴权链路）。
+    """
+    from sqlalchemy import func, select
+    from app.database import async_session_factory
+    from app.models.models import RiskEvent, LoginAudit
+
+    r = _redis()
+    flag_on = False
+    profiles_in_redis = 0
+    route_keys = []
+    pending_keys = []
+    cdp_token_keys = []
+    try:
+        flag_raw = await r.get(FLAG_KEY)
+        flag_on = flag_raw in ("1", "true", "True")
+        profiles_raw = await r.get(PROFILES_KEY)
+        if profiles_raw:
+            try:
+                profiles_in_redis = len(json.loads(profiles_raw))
+            except Exception:
+                profiles_in_redis = 0
+        route_keys = [k async for k in r.scan_iter(match=f"{ROUTE_PREFIX}*", count=200)]
+        pending_keys = [k async for k in r.scan_iter(match=f"{PENDING_PREFIX}*", count=200)]
+        cdp_token_keys = [k async for k in r.scan_iter(match="pub:cdp_token:*", count=200)]
+    finally:
+        await r.close()
+
+    matrix = await get_route_matrix()
+    ready = sum(1 for row in matrix if row["status"] == "ready")
+    expired = sum(1 for row in matrix if row["status"] == "expired")
+
+    risk_event_count = 0
+    login_audit_count = 0
+    try:
+        async with async_session_factory() as session:
+            risk_event_count = (await session.execute(
+                select(func.count(RiskEvent.id))
+            )).scalar_one()
+            login_audit_count = (await session.execute(
+                select(func.count(LoginAudit.id))
+            )).scalar_one()
+    except Exception:
+        pass
+
+    return {
+        "flag_on": flag_on,
+        "profiles_in_redis": profiles_in_redis,
+        "route_count": len(route_keys),
+        "ready_accounts": ready,
+        "expired_accounts": expired,
+        "pending_count": len(pending_keys),
+        "cdp_token_count": len(cdp_token_keys),
+        "risk_event_count": risk_event_count,
+        "login_audit_count": login_audit_count,
+        "operator_stats": await get_operator_stats(),
+        "routes": matrix,
+    }
+
+
 async def get_operator_stats() -> list:
     """各 operator 当日配额消耗 + inflight 快照（看板「限额消耗」）。
 

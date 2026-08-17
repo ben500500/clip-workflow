@@ -1,5 +1,5 @@
 import client from './client';
-import type { PublishProfile, PublishTask, PublishBatch, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult } from '../types';
+import type { PublishProfile, PublishTask, PublishBatch, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult, MultiOpVerification } from '../types';
 
 export interface PublishTaskCreate {
   output_id: string;
@@ -201,5 +201,15 @@ export const publishApi = {
     client.post(`/publish/login/heartbeat/${account_id}`) as Promise<{
       account_id: string;
       status: string;
+    }>,
+
+  // ── 多运营者验证向导（引导完成整套验证流程） ──
+  getVerificationStatus: () =>
+    client.get('/publish/multi-operator/verification') as Promise<MultiOpVerification>,
+
+  setMultiOperatorFlag: (enabled: boolean) =>
+    client.post('/publish/multi-operator/verification/flag', { enabled }) as Promise<{
+      flag_on: boolean;
+      message: string;
     }>,
 };
