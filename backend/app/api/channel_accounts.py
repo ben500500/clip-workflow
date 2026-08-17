@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.auth import get_current_user
 from app.database import get_db
@@ -207,6 +208,17 @@ def _serialize_channel_account(acc: ChannelAccount, report: Optional[dict] = Non
     return data
 
 
+async def _reload_channel_account(db: AsyncSession, acc_id: uuid.UUID) -> ChannelAccount:
+    """带 operators 关系重新查询（async 会话内 eager-load，避免序列化时触发
+    MissingGreenlet：greenlet_spawn has not been called）。"""
+    result = await db.execute(
+        select(ChannelAccount)
+        .where(ChannelAccount.id == acc_id)
+        .options(selectinload(ChannelAccount.operators))
+    )
+    return result.scalar_one()
+
+
 def _parse_date(value: Optional[str]):
     """解析注册日期，非法/空返回 None."""
     if not value:
@@ -246,7 +258,7 @@ async def list_channel_accounts(
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
     """台账列表（可按名称/微信号关键字、启停状态过滤；RBAC 数据隔离）。"""
-    query = select(ChannelAccount)
+    query = select(ChannelAccount).options(selectinload(ChannelAccount.operators))
     filters = []
     if keyword:
         kw = f"%{keyword}%"
@@ -284,7 +296,7 @@ async def get_channel_account(
     """台账详情（含运营者列表）。"""
     aid = _parse_uuid(account_id, "account_id")
     result = await db.execute(
-        select(ChannelAccount).where(ChannelAccount.id == aid)
+        select(ChannelAccount).options(selectinload(ChannelAccount.operators)).where(ChannelAccount.id == aid)
     )
     acc = result.scalar_one_or_none()
     if not acc:
@@ -327,7 +339,7 @@ async def create_channel_account(
     )
     db.add(acc)
     await db.flush()
-    await db.refresh(acc)
+    acc = await _reload_channel_account(db, acc.id)
     return _serialize_channel_account(acc)
 
 
@@ -369,7 +381,7 @@ async def create_channel_from_video_account(
         )
     db.add(acc)
     await db.flush()
-    await db.refresh(acc)
+    acc = await _reload_channel_account(db, acc.id)
     return _serialize_channel_account(acc)
 
 
@@ -383,7 +395,7 @@ async def update_channel_account(
     """更新台账（含补绑/换绑 video_account_id）。"""
     aid = _parse_uuid(account_id, "account_id")
     result = await db.execute(
-        select(ChannelAccount).where(ChannelAccount.id == aid)
+        select(ChannelAccount).options(selectinload(ChannelAccount.operators)).where(ChannelAccount.id == aid)
     )
     acc = result.scalar_one_or_none()
     if not acc:
@@ -410,7 +422,7 @@ async def update_channel_account(
         setattr(acc, field, value)
 
     await db.flush()
-    await db.refresh(acc)
+    acc = await _reload_channel_account(db, acc.id)
     return _serialize_channel_account(acc)
 
 
@@ -423,7 +435,7 @@ async def delete_channel_account(
     """删除台账（级联删除运营者）。"""
     aid = _parse_uuid(account_id, "account_id")
     result = await db.execute(
-        select(ChannelAccount).where(ChannelAccount.id == aid)
+        select(ChannelAccount).options(selectinload(ChannelAccount.operators)).where(ChannelAccount.id == aid)
     )
     acc = result.scalar_one_or_none()
     if not acc:
