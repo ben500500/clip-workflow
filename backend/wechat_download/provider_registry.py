@@ -46,6 +46,112 @@ class ProviderParseError(Exception):
     """某一家解析 provider 解析失败（触发兜底链下一家）。"""
 
 
+# 内置 provider 的展示元信息（官网 / 是否需充值）。
+# - rechargeable=False：微信/腾讯官方链路（元宝 / 预览 / 拉流），免费或走登录态，无需充值。
+# - 自定义 HTTP 服务商（HttpApiAdapter）一律视为 rechargeable=True，官网取 HOME 配置或 base 根域名。
+BUILTIN_PROVIDER_INFO: dict = {
+    "yuanbao": {
+        "display_name": "元宝解析",
+        "home": "https://yuanbao.tencent.com",
+        "rechargeable": False,
+        "desc": "腾讯元宝视频号解析（P0 主链路，非公开接口，需 WECHAT_DL_YUANBAO_KEY）",
+    },
+    "preview": {
+        "display_name": "预览层解析",
+        "home": "https://channels.weixin.qq.com",
+        "rechargeable": False,
+        "desc": "微信视频号预览页兜底解析（CDP 登录态，无需充值）",
+    },
+}
+
+
+def _root_home(base: str) -> str:
+    """从 API base 推导根域名首页，用于默认充值/官网链接。"""
+    try:
+        from urllib.parse import urlsplit
+        parts = urlsplit(base.rstrip("/"))
+        return f"{parts.scheme}://{parts.netloc}"
+    except Exception:
+        return base
+
+
+class ProviderInfo:
+    """provider 展示元信息（用于前端展示 API 名称/官网/是否充值/余量）。"""
+
+    __slots__ = (
+        "channel", "display_name", "home", "rechargeable", "desc",
+        "balance", "balance_unit", "balance_error",
+    )
+
+    def __init__(
+        self, channel: str, display_name: str = "", home: str = "",
+        rechargeable: bool = True, desc: str = "",
+        balance=None, balance_unit: str = "次", balance_error: str = "",
+    ) -> None:
+        self.channel = channel
+        self.display_name = display_name or channel
+        self.home = home
+        self.rechargeable = rechargeable
+        self.desc = desc
+        self.balance = balance
+        self.balance_unit = balance_unit
+        self.balance_error = balance_error
+
+    def to_dict(self) -> dict:
+        return {
+            "channel": self.channel,
+            "display_name": self.display_name,
+            "home": self.home or None,
+            "rechargeable": self.rechargeable,
+            "desc": self.desc,
+            "balance": self.balance,
+            "balance_unit": self.balance_unit,
+            "balance_error": self.balance_error or None,
+        }
+
+
+async def _fetch_http_balance(client: httpx.AsyncClient, name: str) -> dict:
+    """按配置查询第三方 HTTP provider 的余量（未配置则返回空，表示未知）。
+
+    配置（WECHAT_DL_<NAME>_ 前缀）：
+      QUOTA_PATH   — 余量查询接口路径（如 /api/user/balance），不配置则不查询
+      QUOTA_METHOD — GET / POST，默认 GET
+      QUOTA_FIELD  — 余量字段（点分路径），默认 balance
+      QUOTA_PARAM  — 请求参数（JSON 字符串，可选，如 '{"key":"xxx"}'）
+    """
+    p = name.upper()
+    path = (os.getenv(f"WECHAT_DL_{p}_QUOTA_PATH", "") or "").strip()
+    if not path:
+        return {}
+    method = (os.getenv(f"WECHAT_DL_{p}_QUOTA_METHOD", "GET") or "GET").strip().upper()
+    field = (os.getenv(f"WECHAT_DL_{p}_QUOTA_FIELD", "balance") or "balance").strip()
+    unit = (os.getenv(f"WECHAT_DL_{p}_QUOTA_UNIT", "次") or "次").strip()
+    extra = {}
+    raw_param = os.getenv(f"WECHAT_DL_{p}_QUOTA_PARAM", "") or ""
+    if raw_param.strip():
+        try:
+            import json as _json
+            extra = _json.loads(raw_param)
+        except Exception:
+            extra = {}
+    try:
+        if method == "POST":
+            resp = await client.request("POST", path, json=extra or None)
+        else:
+            resp = await client.request("GET", path, params=extra or None)
+        if resp.status_code != 200:
+            return {"error": f"http {resp.status_code}"}
+        data = resp.json()
+        val = _dig(data, field) if "." in field else data.get(field)
+        if isinstance(val, str) and val.strip().isdigit():
+            val = int(val)
+        if val is None:
+            return {"error": f"响应中未找到字段 {field}"}
+        return {"balance": val, "unit": unit}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
 class BaseParseClient:
     """解析 provider 抽象基类。channel 即逻辑名，也用作 WechatParseRecord.channel。"""
 
@@ -53,6 +159,10 @@ class BaseParseClient:
 
     async def parse(self, share_url: str, db=None) -> ParseResult:
         raise NotImplementedError
+
+    async def check_balance(self) -> dict:
+        """查询余量；默认无余量信息（返回空），第三方 HTTP provider 可覆盖。"""
+        return {}
 
     async def close(self) -> None:
         pass
@@ -242,6 +352,10 @@ class HttpApiAdapter(BaseParseClient):
         except Exception:
             pass
 
+    async def check_balance(self) -> dict:
+        """查询该第三方 provider 的余量；未配置 QUOTA_PATH 返回 {}（未知）。"""
+        return await _fetch_http_balance(self._client, self.name)
+
 
 def build_providers() -> List[BaseParseClient]:
     """按 WECHAT_DL_PROVIDERS 有序构建 provider 列表（默认 yuanbao,preview）。"""
@@ -283,3 +397,55 @@ async def dispatch_parse(share_url: str, db=None) -> ParseResult:
             except Exception:
                 pass
     raise ProviderParseError(" | ".join(errors) or "无可用解析服务")
+
+
+def get_provider_infos() -> List[ProviderInfo]:
+    """按 WECHAT_DL_PROVIDERS 返回每个 provider 的展示元信息（含可选的余量配置字段）。
+
+    用于前端「资源下载」页面展示 API 名称 / 官网（充值入口）/ 是否需充值 / 余量。
+    """
+    raw = os.getenv("WECHAT_DL_PROVIDERS", "yuanbao,preview") or "yuanbao,preview"
+    names = [n.strip().lower() for n in raw.split(",") if n.strip()]
+    infos: List[ProviderInfo] = []
+    for n in names:
+        if n in BUILTIN_PROVIDER_INFO:
+            meta = BUILTIN_PROVIDER_INFO[n]
+            infos.append(ProviderInfo(
+                channel=n,
+                display_name=meta["display_name"],
+                home=meta["home"],
+                rechargeable=meta["rechargeable"],
+                desc=meta["desc"],
+            ))
+        else:
+            p = n.upper()
+            base = os.getenv(f"WECHAT_DL_{p}_BASE", "") or ""
+            home = (os.getenv(f"WECHAT_DL_{p}_HOME", "") or "").strip() or (_root_home(base) if base else "")
+            key_set = bool(os.getenv(f"WECHAT_DL_{p}_KEY", ""))
+            infos.append(ProviderInfo(
+                channel=n,
+                display_name=(os.getenv(f"WECHAT_DL_{p}_DISPLAY", "") or n).strip(),
+                home=home,
+                rechargeable=True,
+                desc=(f"第三方解析服务商（HTTP API{('，已配置 Key' if key_set else '，未配置 Key')}）"
+                      + (f"；接口基址 {base}" if base else "")),
+                balance_unit=(os.getenv(f"WECHAT_DL_{p}_QUOTA_UNIT", "次") or "次").strip(),
+            ))
+    return infos
+
+
+async def fetch_provider_balances() -> dict:
+    """并发查询所有第三方 provider 的余量，返回 {channel: {balance|error}}。
+
+    仅对配置了 QUOTA_PATH 的 provider 发起查询；其余 provider 无余量信息（未知）。
+    """
+    results: dict = {}
+    for client in build_providers():
+        bal = await client.check_balance()
+        if bal:
+            results[client.channel] = bal
+        try:
+            await client.close()
+        except Exception:
+            pass
+    return results

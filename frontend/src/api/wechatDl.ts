@@ -59,6 +59,17 @@ export interface WechatDlImportToProjectResult {
   target: string;
 }
 
+export interface WechatDlProviderInfo {
+  channel: string;
+  display_name: string;
+  home: string | null;
+  rechargeable: boolean;
+  desc: string;
+  balance: number | null;
+  balance_unit: string;
+  balance_error: string | null;
+}
+
 export const wechatDlApi = {
   // ── 单链接导入 ──
   import: (data: WechatDlImportInput) =>
@@ -91,4 +102,8 @@ export const wechatDlApi = {
   // ── 一键导入切片项目 ──
   importToProject: (taskId: string, data: WechatDlImportToProjectInput) =>
     client.post(`/wechat-dl/tasks/${taskId}/import-to-project`, data) as Promise<WechatDlImportToProjectResult>,
+
+  // ── 解析服务商信息（API 名称 / 官网 / 余量）──
+  getProviders: () =>
+    client.get('/wechat-dl/providers') as Promise<{ items: WechatDlProviderInfo[] }>,
 };
