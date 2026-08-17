@@ -43,6 +43,10 @@ from app.models.models import (
     BatchSlice,
     BatchSliceItem,
 )
+from app.models.channel import (
+    ChannelAccount,
+    ChannelOperator,
+)
 
 __all__ = [
     "Project",
@@ -88,4 +92,6 @@ __all__ = [
     "WatermarkVideo",
     "BatchSlice",
     "BatchSliceItem",
+    "ChannelAccount",
+    "ChannelOperator",
 ]

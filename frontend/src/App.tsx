@@ -32,6 +32,7 @@ import ShortDrama from './pages/ShortDrama';
 import NotFound from './pages/NotFound';
 import BatchSlice from './pages/BatchSlice';
 import ResourceDownload from './pages/ResourceDownload';
+import ChannelAccounts from './pages/ChannelAccounts';
 
 const App: React.FC = () => {
   return (
@@ -57,6 +58,7 @@ const App: React.FC = () => {
             <Route path="episodes/:episodeId/slice" element={<SliceTasksPage />} />
             <Route path="episodes/:episodeId/preview" element={<OutputPreviewPage />} />
             <Route path="publish" element={<PublishManagement />} />
+            <Route path="channel-accounts" element={<ChannelAccounts />} />
             <Route path="analytics/overview" element={<DashboardOverview />} />
             <Route path="analytics/shortdrama" element={<ShortDramaAnalysis />} />
             <Route path="analytics/content" element={<ContentAnalysis />} />
