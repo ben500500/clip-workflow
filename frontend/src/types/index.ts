@@ -242,8 +242,21 @@ export interface PublishTask {
   retry_count?: number;
   dead_letter?: boolean;
   dead_letter_reason?: string | null;
+  scheduled_at?: string | null;
+  time_slot_label?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface PublishTimeSlot {
+  id: string;
+  name: string;
+  start_time: string;
+  end_time: string;
+  enabled: boolean;
+  is_preset: boolean;
+  created_by?: string | null;
+  created_at: string;
 }
 
 export interface PublishProfile {

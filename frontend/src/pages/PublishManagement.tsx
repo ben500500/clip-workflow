@@ -4,7 +4,7 @@ import {
 } from 'antd';
 import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined, QrcodeOutlined, HeartOutlined, QuestionCircleOutlined, LinkOutlined } from '@ant-design/icons';
 import { publishApi, type VideoAccountInput, type MiniProgramInput } from '../api/publish';
-import type { PublishProfile, PublishTask, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult, MultiOpVerification } from '../types';
+import type { PublishProfile, PublishTask, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult, MultiOpVerification, PublishTimeSlot } from '../types';
 import { formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
 import dayjs from 'dayjs';
 
@@ -41,6 +41,10 @@ const PublishManagement: React.FC = () => {
   const [profileForm] = Form.useForm();
   const [accountForm] = Form.useForm();
   const [miniProgramForm] = Form.useForm();
+  // ── 定时发布（R99）：时间窗口 ──
+  const [timeSlots, setTimeSlots] = useState<PublishTimeSlot[]>([]);
+  const [slotModal, setSlotModal] = useState(false);
+  const [slotForm] = Form.useForm();
   const [screenshotModal, setScreenshotModal] = useState(false);
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
   const [screenshotLoading, setScreenshotLoading] = useState(false);
@@ -96,6 +100,11 @@ const PublishManagement: React.FC = () => {
   const fetchMiniPrograms = () => {
     setMiniProgramLoading(true);
     publishApi.getMiniPrograms({ enabled_only: false }).then(setMiniPrograms).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败')).finally(() => setMiniProgramLoading(false));
+  };
+
+  // ── 定时发布（R99）：加载时间窗口 ──
+  const fetchTimeSlots = () => {
+    publishApi.getTimeSlots(false).then(setTimeSlots).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载时间窗口失败'));
   };
 
   const fetchMatrix = () => {
@@ -168,6 +177,7 @@ const PublishManagement: React.FC = () => {
     fetchProfiles();
     fetchAccounts();
     fetchMiniPrograms();
+    fetchTimeSlots();
     fetchMatrix();
     fetchVerification();
   };
@@ -212,6 +222,53 @@ const PublishManagement: React.FC = () => {
     }
   };
 
+  // 定时发布（R99）：取消预约
+  const cancelScheduled = async (id: string) => {
+    try {
+      await publishApi.rescheduleTask(id, { cancel: true });
+      message.success('已取消定时发布');
+      fetchTasks();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '取消失败');
+    }
+  };
+
+  // 定时发布（R99）：预约转立即发布
+  const publishNow = async (id: string) => {
+    try {
+      await publishApi.rescheduleTask(id, { immediate: true });
+      message.success('已转为立即发布');
+      setTimeout(fetchTasks, 3000);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '立即发布失败');
+    }
+  };
+
+  // 定时发布（R99）：新增/编辑自定义时间窗口
+  const saveTimeSlot = async () => {
+    try {
+      const values = await slotForm.validateFields();
+      await publishApi.createTimeSlot(values);
+      message.success('时间窗口已创建');
+      setSlotModal(false);
+      fetchTimeSlots();
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      message.error(err instanceof Error ? err.message : '保存失败');
+    }
+  };
+
+  // 定时发布（R99）：删除自定义时间窗口
+  const deleteTimeSlot = async (id: string) => {
+    try {
+      await publishApi.deleteTimeSlot(id);
+      message.success('时间窗口已删除');
+      fetchTimeSlots();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '删除失败');
+    }
+  };
+
   const createTask = async () => {
     try {
       const values = await taskForm.validateFields();
@@ -229,9 +286,14 @@ const PublishManagement: React.FC = () => {
         tags: values.tags,
         mini_program_link: selectedMiniProgram ? selectedMiniProgram.full_link : (values.mini_program_link || undefined),
         require_manual_confirm: true,
+        // 定时发布（R99）：发布方式选择
+        time_slot_id: values.publish_schedule === 'slot' ? values.time_slot_id : undefined,
+        scheduled_at: values.publish_schedule === 'datetime' && values.scheduled_at
+          ? (values.scheduled_at as dayjs.Dayjs).toISOString()
+          : undefined,
       };
       await publishApi.createTask(payload);
-      message.success('发布任务已创建');
+      message.success(values.publish_schedule && values.publish_schedule !== 'immediate' ? '已预约定时发布' : '发布任务已创建');
       setTaskModal(false);
       fetchTasks();
     } catch (err: unknown) {
@@ -351,6 +413,11 @@ const PublishManagement: React.FC = () => {
       render: (s: string) => <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>,
     },
     { title: '错误信息', dataIndex: 'error_message', key: 'error_message', ellipsis: true, render: (e: string) => e || '-' },
+    { title: '预约时间', dataIndex: 'scheduled_at', key: 'scheduled_at', width: 170, render: (_: unknown, t: PublishTask) => t.scheduled_at ? (
+      <Tooltip title={t.time_slot_label || '定时发布'}>
+        <span style={{ color: '#722ed1' }}>{formatDateTime(t.scheduled_at)}</span>
+      </Tooltip>
+    ) : '-' },
     { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170, render: (d: string) => formatDateTime(d) },
     {
       title: '操作',
@@ -372,6 +439,11 @@ const PublishManagement: React.FC = () => {
                 <Tag color="red">死信</Tag>
               </Tooltip>
             )}
+          </Space>
+        ) : t.status === 'scheduled' ? (
+          <Space size="small" wrap>
+            <Button size="small" onClick={() => cancelScheduled(t.id)}>取消</Button>
+            <Button size="small" type="primary" ghost onClick={() => publishNow(t.id)}>立即发布</Button>
           </Space>
         ) : (
           <span>{t.published_url ? <a href={t.published_url} target="_blank" rel="noreferrer">已发布</a> : '-'}</span>
@@ -721,6 +793,24 @@ const PublishManagement: React.FC = () => {
       ),
     },
     {
+      key: 'timeslots',
+      label: `时间窗口 (${timeSlots.length})`,
+      children: (
+        <Card size="small" title="定时发布时间窗口（预置 + 自定义）" extra={<Button size="small" icon={<PlusOutlined />} onClick={() => { slotForm.resetFields(); setSlotModal(true); }}>新增自定义窗口</Button>}>
+          <Alert type="info" showIcon style={{ marginBottom: 12 }} message="选择窗口后，系统在窗口内随机选一个「今天/明天」的具体时刻发布（错峰分散）。预置窗口为 07:00-08:00（早晨黄金档）、18:00-20:00（晚间黄金档），不可修改/删除。" />
+          <Table rowKey="id" size="small" pagination={false} scroll={{ x: 900 }} dataSource={timeSlots} columns={[
+            { title: '名称', dataIndex: 'name', key: 'name' },
+            { title: '窗口时段', key: 'range', render: (_: unknown, s: PublishTimeSlot) => `${s.start_time} - ${s.end_time}` },
+            { title: '类型', dataIndex: 'is_preset', key: 'is_preset', width: 120, render: (p: boolean) => p ? <Tag color="purple">预置</Tag> : <Tag>自定义</Tag> },
+            { title: '启用', dataIndex: 'enabled', key: 'enabled', width: 100, render: (e: boolean) => e ? <Tag color="green">启用</Tag> : <Tag>停用</Tag> },
+            { title: '操作', key: 'action', width: 120, render: (_: unknown, s: PublishTimeSlot) => s.is_preset ? <span>-</span> : (
+              <Button size="small" danger icon={<DeleteOutlined />} onClick={() => deleteTimeSlot(s.id)}>删除</Button>
+            ) },
+          ]} />
+        </Card>
+      ),
+    },
+    {
       key: 'accounts',
       label: `视频号账号 (${accounts.length})`,
       children: (
@@ -935,8 +1025,34 @@ const PublishManagement: React.FC = () => {
       </Modal>
 
       <Modal title="新建发布任务" open={taskModal} onOk={createTask} onCancel={() => setTaskModal(false)} destroyOnClose>
-        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="创建后立即触发 RPA 自动发布；若开启了截图确认，需在任务列表「确认发布」。多平台批量发布请到成品预览点「一键发布」。账号与小程序链接可在下方「视频号账号 / 小程序链接」Tab 中维护。" />
+        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="创建后立即触发 RPA 自动发布；若开启了截图确认，需在任务列表「确认发布」。多平台批量发布请到成品预览点「一键发布」。也可选择时间窗口（预置 07:00-08:00 / 18:00-20:00 或自定义）定时发布。账号与小程序链接可在下方「视频号账号 / 小程序链接」Tab 中维护。" />
         <Form form={taskForm} layout="vertical">
+          <Form.Item name="publish_schedule" label="发布方式" initialValue="immediate">
+            <Select options={[
+              { value: 'immediate', label: '立即发布' },
+              { value: 'slot', label: '定时（时间窗口）' },
+              { value: 'datetime', label: '定时（指定时间）' },
+            ]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.publish_schedule !== cur.publish_schedule}>
+            {({ getFieldValue }) => getFieldValue('publish_schedule') === 'slot' ? (
+              <Form.Item name="time_slot_id" label="选择时间窗口" rules={[{ required: true, message: '请选择时间窗口' }]}>
+                <Select
+                  placeholder="选择发布窗口（窗口内随机选点错峰发布）"
+                  options={timeSlots
+                    .filter((s) => s.enabled)
+                    .map((s) => ({
+                      value: s.id,
+                      label: `${s.is_preset ? '预置·' : '自定义·'}${s.name}（${s.start_time}-${s.end_time}）`,
+                    }))}
+                />
+              </Form.Item>
+            ) : getFieldValue('publish_schedule') === 'datetime' ? (
+              <Form.Item name="scheduled_at" label="指定发布时间" rules={[{ required: true, message: '请选择发布时间' }]}>
+                <DatePicker showTime style={{ width: '100%' }} placeholder="选择具体发布时间" />
+              </Form.Item>
+            ) : null}
+          </Form.Item>
           <Form.Item name="output_id" label="切片输出 ID" rules={[{ required: true, message: '请输入切片输出 ID' }]}>
             <Input placeholder="在成品预览页复制输出 ID" />
           </Form.Item>
@@ -972,6 +1088,20 @@ const PublishManagement: React.FC = () => {
             />
           </Form.Item>
           <Form.Item name="mini_program_link" label="小程序链接（选填）"><Input /></Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal title="新增自定义时间窗口" open={slotModal} onOk={saveTimeSlot} onCancel={() => setSlotModal(false)} destroyOnClose>
+        <Form form={slotForm} layout="vertical">
+          <Form.Item name="name" label="窗口名称" rules={[{ required: true, message: '请输入窗口名称' }]}>
+            <Input placeholder="如：午间饭点档" />
+          </Form.Item>
+          <Form.Item name="start_time" label="开始时间 (HH:MM)" rules={[{ required: true, message: '请输入开始时间' }]}>
+            <Input placeholder="如：12:00" />
+          </Form.Item>
+          <Form.Item name="end_time" label="结束时间 (HH:MM)" rules={[{ required: true, message: '请输入结束时间' }]}>
+            <Input placeholder="如：13:00" />
+          </Form.Item>
         </Form>
       </Modal>
 

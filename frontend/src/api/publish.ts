@@ -1,5 +1,5 @@
 import client from './client';
-import type { PublishProfile, PublishTask, PublishBatch, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult, MultiOpVerification } from '../types';
+import type { PublishProfile, PublishTask, PublishBatch, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult, MultiOpVerification, PublishTimeSlot } from '../types';
 
 export interface PublishTaskCreate {
   output_id: string;
@@ -16,6 +16,23 @@ export interface PublishTaskCreate {
   mini_program_id?: string;
   prompt_record_id?: string;
   material_id?: string;
+  // 定时发布（R99）：time_slot_id（时间窗口）或 scheduled_at（指定时间）二选一
+  time_slot_id?: string;
+  scheduled_at?: string;
+}
+
+export interface PublishTaskScheduleInput {
+  scheduled_at?: string;
+  time_slot_id?: string;
+  immediate?: boolean;
+  cancel?: boolean;
+}
+
+export interface PublishTimeSlotInput {
+  name: string;
+  start_time: string;
+  end_time: string;
+  enabled?: boolean;
 }
 
 export interface VideoAccountInput {
@@ -73,6 +90,21 @@ export const publishApi = {
       published_url: string | null;
       published_id: string | null;
     }>,
+
+  // ── 定时发布（R99）：时间窗口 CRUD + 预约改期/取消 ──
+  getTimeSlots: (enabledOnly = false) =>
+    client.get('/publish/time-slots', { params: { enabled_only: enabledOnly } }) as Promise<PublishTimeSlot[]>,
+
+  createTimeSlot: (data: PublishTimeSlotInput) =>
+    client.post('/publish/time-slots', data) as Promise<PublishTimeSlot>,
+
+  updateTimeSlot: (id: string, data: Partial<PublishTimeSlotInput>) =>
+    client.put(`/publish/time-slots/${id}`, data) as Promise<PublishTimeSlot>,
+
+  deleteTimeSlot: (id: string) => client.delete(`/publish/time-slots/${id}`) as Promise<void>,
+
+  rescheduleTask: (id: string, data: PublishTaskScheduleInput) =>
+    client.patch(`/publish/tasks/${id}/schedule`, data) as Promise<PublishTask>,
 
   getTaskScreenshot: (id: string) =>
     client.get(`/publish/tasks/${id}/screenshot`) as Promise<{
