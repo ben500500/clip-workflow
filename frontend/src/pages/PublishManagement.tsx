@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Card, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, InputNumber, Alert, Tabs, Tooltip, Switch, DatePicker,
 } from 'antd';
-import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined, QrcodeOutlined, HeartOutlined } from '@ant-design/icons';
+import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined, QrcodeOutlined, HeartOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { publishApi, type VideoAccountInput, type MiniProgramInput } from '../api/publish';
 import { channelAccountApi, type ChannelAccountFromVideoAccountInput } from '../api/channelAccounts';
 import type { PublishProfile, PublishTask, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult, MultiOpVerification } from '../types';
@@ -75,6 +75,9 @@ const PublishManagement: React.FC = () => {
   const [verificationLoading, setVerificationLoading] = useState(false);
   const [flagToggling, setFlagToggling] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
+
+  // ── 发布流程操作指引（面向初次使用者） ──
+  const [publishGuideOpen, setPublishGuideOpen] = useState(false);
 
   const fetchTasks = () => {
     setTaskLoading(true);
@@ -837,6 +840,7 @@ const PublishManagement: React.FC = () => {
         <Title level={4} style={{ margin: 0 }}>发布管理</Title>
         <Button icon={<ReloadOutlined />} onClick={fetchAll}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => { taskForm.resetFields(); setTaskModal(true); }}>新建发布任务</Button>
+        <Button icon={<QuestionCircleOutlined />} onClick={() => setPublishGuideOpen(true)}>发布流程指引</Button>
       </Space>
 
       <Tabs items={tabItems} />
@@ -1134,6 +1138,57 @@ const PublishManagement: React.FC = () => {
         ) : (
           <Typography.Text type="secondary">暂无截图</Typography.Text>
         )}
+      </Modal>
+
+      {/* 发布流程操作指引（面向初次使用者） */}
+      <Modal
+        title="发布流程操作指引"
+        open={publishGuideOpen}
+        footer={null}
+        width={820}
+        onCancel={() => setPublishGuideOpen(false)}
+        destroyOnClose
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="发布链路 = 成品库「一键发布」创建任务 → 本页「发布任务」确认发布 → 审计可溯源。首次使用请按下面 ①→④ 的顺序走一遍，即可完成第一条发布。"
+        />
+        <Typography.Title level={5}>① 前置准备（一次性，确保账号与登录态就绪）</Typography.Title>
+        <Typography.Paragraph>
+          <ul>
+            <li><b>发布配置</b>：切到「发布配置」Tab，新增配置（平台 + 账号 + Chrome 调试端口 + 每日上限 + 发布间隔）。每个发布账号对应独立的 Chrome 登录态。</li>
+            <li><b>视频号账号库</b>：切到「视频号账号」Tab，新增账号并绑定上一步的发布配置，这样「一键发布」时能直接下拉选择账号。</li>
+            <li><b>小程序链接库</b>：若需在视频号挂载小程序（带渠道归因参数），先在「小程序链接」Tab 维护。</li>
+            <li><b>登录态扫码</b>：切到「运营者端口矩阵」Tab，选账号 →「登录态扫码」→ 微信扫码 →「心跳检查」置为 <Tag color="green">valid</Tag>。登录态失效会导致发布失败。</li>
+          </ul>
+        </Typography.Paragraph>
+        <Typography.Title level={5}>② 在「成品预览」发起一键发布</Typography.Title>
+        <Typography.Paragraph>
+          到「成品预览」页，在成品列表中找到要发布的切片，点<b>「一键发布」</b>：
+          <ul>
+            <li>选择发布平台（可多选，如视频号+抖音批量发布）</li>
+            <li>可选取<b>发布素材</b>（短标题/配文/标签自动代入），或手动填写标题/描述/标签</li>
+            <li>选择<b>发布账号</b>（从账号库）与<b>小程序链接</b></li>
+            <li>「截图确认后发布」推荐选<b>是</b>（RPA 填好表单后截图人工确认，避免误发）</li>
+          </ul>
+          提交后自动创建发布任务并触发 RPA 发布。
+        </Typography.Paragraph>
+        <Typography.Title level={5}>③ 回到本页确认发布</Typography.Title>
+        <Typography.Paragraph>
+          在「发布任务」Tab 查看任务状态：
+          <ul>
+            <li><Tag color="orange">待确认</Tag>：点「查看截图」确认 RPA 填写的表单无误，再点<b>「确认发布」</b>即正式发出。</li>
+            <li>状态流转：<b>待发布 → 待确认 → 已发布</b>；失败会记录错误信息，死信任务可点「重发」。</li>
+            <li>未开启截图确认的任务会直接自动发布，无需人工确认。</li>
+          </ul>
+        </Typography.Paragraph>
+        <Typography.Title level={5}>④ 结果追溯</Typography.Title>
+        <Typography.Paragraph>
+          到「审计日志」Tab 查看发布/登录态/风控记录，点 trace_id 可溯源「审核→确认→发布→风控」全链路；发布后到「数据看板」查看播放/收益表现。
+        </Typography.Paragraph>
+        <Alert type="warning" showIcon message="小提示：多平台批量发布请在「成品预览」点「一键发布」一次多选；账号数量多时优先用账号库下拉，避免手填不一致。" />
       </Modal>
     </div>
   );
