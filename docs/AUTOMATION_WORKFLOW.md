@@ -1,9 +1,10 @@
 # 端到端自动化操作流程（Computer-Use Playbook）
 
-> 版本：v1.0 | 日期：2026-08-18
+> 版本：v1.1（契约对齐）| 日期：2026-08-18
 > 适用对象：Computer-Use / Agent 类插件（Claude、Codex、Browser-Use 等）
 > 目标链路：**资源导入 → AI 选点 → 区间检测 → 切片 → 视频号发布**
 > 说明：本文档是给 **Computer-Use 类插件**看的「操作手册」，所有步骤都给出可执行的 API 调用序列和浏览器操作路径。插件可以直接按步骤逐步执行。
+> ⚠️ **v1.1 契约对齐**：本文档所有接口契约已与 `main` 分支真实代码逐一核对修正（登录/刷新路径、登录态 `state` 枚举、发布确认 `pending_confirm`、tus 分片上传、账号 `enabled` 字段）；第四节问题清单已按 PR #177 标注修复状态。**测试请以本文档为准**，避免按旧契约踩 404/判错。
 
 ---
 
@@ -15,7 +16,7 @@
 |----|----|------|
 | 前端 URL | `http://<host>:5173` 或生产环境 | 具体取决于部署环境 |
 | 后端 API | `http://<host>:8000/api` | FastAPI |
-| 登录方式 | `POST /api/login` | 用户名 + 密码 → `access_token` |
+| 登录方式 | `POST /api/auth/login` | 用户名 + 密码 → `access_token`（auth 路由自带 `/api/auth` 前缀） |
 | Token 格式 | `Authorization: Bearer <access_token>` | 所有后续请求都需要 |
 
 ### 0.2 登录请求体
@@ -82,7 +83,7 @@
 
 ### ① 登录系统
 
-**请求**：`POST /api/login`
+**请求**：`POST /api/auth/login`
 
 ```json
 {
@@ -192,11 +193,13 @@
 
 **响应**：`{ "id": "upload_id", "offset": 0, ... }`
 
-**步骤 B2**：分片上传（循环）
+**步骤 B2**：分片上传（循环，tus 协议）
 
-**请求**：`PUT /api/upload/chunk?upload_id={upload_id}&offset={offset}`
+**请求**：`PATCH /api/upload/{upload_id}`
 
-body 为二进制分片数据（`multipart/form-data`，字段名 `chunk`）
+请求头：`Upload-Offset: {offset}`（当前偏移）
+
+body 为原始二进制分片数据（**不是 multipart，直接 raw bytes**）。每次返回 `{ "id": ..., "offset": <新偏移>, ... }`，以下一次返回的 offset 作为下一片的 `Upload-Offset` 续传，直到 `completed: true`。
 
 **步骤 B3**：完成上传
 
@@ -216,6 +219,8 @@ body 为二进制分片数据（`multipart/form-data`，字段名 `chunk`）
 **检查点**：
 - [ ] 返回 `episode_id`
 - [ ] 上传完成后文件已在 MinIO `raw-footage` 桶
+
+> ⚠️ **上传协议注意**：本系统分片上传走 **tus 协议**（`PATCH /api/upload/{upload_id}` + `Upload-Offset` 请求头，原始二进制 body），不是传统的 `PUT ...?offset=` 表单分片。
 
 ---
 
@@ -436,7 +441,7 @@ body 为二进制分片数据（`multipart/form-data`，字段名 `chunk`）
     "id": "account_uuid",
     "account_name": "运营者-张三",
     "platform": "wechat",
-    "status": "active",
+    "enabled": true,
     "profile_id": "profile_uuid",
     "operator_id": "operator_uuid"
   }
@@ -444,18 +449,26 @@ body 为二进制分片数据（`multipart/form-data`，字段名 `chunk`）
 ```
 
 **检查点**：
-- [ ] 至少有 1 个 `status == "active"` 的账号
+- [ ] 至少有 1 个 `enabled == true` 的账号（注意是 `enabled: bool`，不是 `status`）
 - [ ] 账号已绑定 `profile_id`（对应 Chrome 端口）
 
 **步骤 F2**：检查登录状态
 
 **请求**：`GET /api/publish/login/status/{account_id}`
 
-**响应**：`{ "logged_in": true }`
+**响应**：
+```json
+{
+  "account_id": "account_uuid",
+  "state": "ready"
+}
+```
+
+> 状态枚举：`logging`（扫码中）/ `ready`（已登录）/ `need_login`（需扫码）/ `expired`（已失效）/ `unknown`。
 
 **检查点**：
-- [ ] `logged_in == true`
-- [ ] 若未登录：`POST /api/publish/login/qr` 生成二维码 → 用户扫码登录
+- [ ] `state == "ready"` 即表示已登录
+- [ ] 若 `state` 为 `need_login`/`expired`：`POST /api/publish/login/qr` 生成二维码 → 用户扫码登录（二维码归属见「运营者端口矩阵」）
 
 **步骤 F3**：创建发布任务
 
@@ -497,7 +510,7 @@ body 为二进制分片数据（`multipart/form-data`，字段名 `chunk`）
 **检查点**：
 - [ ] `status` 从 `pending` → `running`
 - [ ] 若发布完成（自动确认），`status == "published"`，获得 `published_url`
-- [ ] 若需人工确认，`status` 变为 `awaiting_confirm`，此时需执行步骤⑤
+- [ ] 若需人工确认，`status` 变为 `pending_confirm`（注意是 `pending_confirm`，不是 `awaiting_confirm`），此时需执行步骤⑤
 
 **步骤 F5**：获取发布截图（审核用）
 
@@ -572,7 +585,7 @@ steps:
     name: "登录系统"
     action: api_call
     method: POST
-    path: /api/login
+    path: /api/auth/login
     body:
       username: "{{ENV.USERNAME}}"
       password: "{{ENV.PASSWORD}}"
@@ -678,7 +691,7 @@ steps:
     method: GET
     path: /api/publish/login/status/{get_accounts.accounts[0].id}
     expect:
-      logged_in: true
+      state: "ready"
     on_failed: qr_login
 
   - id: create_publish_task
@@ -707,11 +720,13 @@ steps:
 
 ---
 
-## 四、已识别的问题与不合理的流程（待验证）
+## 四、已识别的问题与不合理的流程
 
-> 以下问题在梳理流程时发现，需在测试阶段逐一验证和确认。
+> 以下问题在梳理流程时发现。**标注 ✅已修复 的项已在 PR #177 编码落地**，可直接在测试报告中验证；其余为既有设计/安全取舍/文档建议，无需改码。
 
-### P0-1：`/api/wechat-dl/tasks/{id}/import-to-project` 的响应缺少 HTTP 状态码
+### ✅ P0-1：`/api/wechat-dl/tasks/{id}/import-to-project` 的响应缺少 HTTP 状态码
+
+**状态**：✅ **已修复**（PR #177，补 `status_code=201`）
 
 **问题描述**：该端点成功时返回 `200`，但 `POST` 创建类操作应返回 `201`。
 
@@ -721,7 +736,9 @@ steps:
 
 ---
 
-### P0-2：`/api/wechat-dl/tasks/{id}/to-slice` 创建切片任务时 `subtitle_align_mask` 硬编码为 `true`
+### ✅ P0-2：`/api/wechat-dl/tasks/{id}/to-slice` 创建切片任务时 `subtitle_align_mask` 硬编码为 `true`
+
+**状态**：✅ **已修复**（PR #177，暴露为请求参数，默认 True）
 
 **问题描述**：`to_slice` 端点在创建 `SliceTask` 时，将 `subtitle_align_mask` 硬编码为 `true`，没有暴露为请求参数。
 
@@ -731,7 +748,9 @@ steps:
 
 ---
 
-### P1-1：选点候选为空时，AI 选点不报错但切片会静默回退为整片切片
+### ✅ P1-1：选点候选为空时，AI 选点不报错但切片会静默回退为整片切片
+
+**状态**：✅ **已修复**（PR #177，新增 `allow_fallback_whole_video`，置 false 时空候选明确 400）
 
 **问题描述**：当 `auto_accept_all=true` 但候选片段列表为空时，`run_slice` 端点会**静默回退为整片切片**，输出一整段视频，而不是报错或提示。
 
@@ -743,6 +762,8 @@ steps:
 
 ### P1-2：发布任务创建后立即轮询可能拿到过期状态
 
+**状态**：🔵 **已覆盖**（发布任务响应自带 `created_at`，自动化可直接据此判超时）
+
 **问题描述**：`POST /api/publish/tasks` 返回 `status: "pending"` 后，Celery worker 可能尚未启动，但客户端开始轮询。如果 worker 消费失败或任务被丢弃，客户端可能长时间停在 `pending`，无超时提示。
 
 **影响**：自动化流程需要额外的超时兜底，否则可能永远卡住。
@@ -753,6 +774,8 @@ steps:
 
 ### P1-3：`require_manual_confirm` 是硬编码的流程阻断点
 
+**状态**：🟡 **安全设计保留**（默认 `true` 是发布前人工确认的护栏，不宜默认放开；全自动须显式传 `false`）
+
 **问题描述**：发布任务的 `require_manual_confirm` 字段默认为 `true`（见 `PublishTaskCreate`），自动化流程必须显式传入 `false` 才能全自动。但许多前端路径默认是 `true`（人工审核），导致自动化流程容易遗漏。
 
 **影响**：自动化流程必须在创建任务时**显式指定** `require_manual_confirm: false`，否则流程会在发布确认处中断。
@@ -760,6 +783,8 @@ steps:
 ---
 
 ### P1-4：发布截图审核需要额外 API 调用
+
+**状态**：🟡 **设计取舍保留**（全自动设 `require_manual_confirm=false` 即可跳过截图审核）
 
 **问题描述**：当 `require_manual_confirm=true` 时，流程需要额外调用 `GET /api/publish/tasks/{id}/screenshot` 来获取截图，然后需要人类确认。
 
@@ -769,13 +794,17 @@ steps:
 
 ### P2-1：下载任务的 `source_type` 字段只是审计用，不影响任何业务逻辑
 
+**状态**：🔵 **既有设计**（代码注释明确"仅审计字段"，允许导入任意素材）
+
 **问题描述**：`source_type`（如 `self_owned`）在创建任务时仅作为审计字段保存，不对下载行为产生任何影响。如果目标是"只允许授权素材"，这个字段没有实现任何校验。
 
 **影响**：低（当前已明确"允许导入任意素材"），但如果未来需要加授权校验，需要补充逻辑。
 
 ---
 
-### P2-2：批量导入创建多个任务，但缺少批量任务状态汇总接口
+### ✅ P2-2：批量导入创建多个任务，但缺少批量任务状态汇总接口
+
+**状态**：✅ **已修复**（PR #177，`GET /api/wechat-dl/tasks` 新增 `ids` 参数一次拉多任务）
 
 **问题描述**：`POST /api/wechat-dl/import/batch` 返回多个 `task_ids`，但前端需要逐个轮询每个任务的状态，没有提供批量状态查询接口。
 
@@ -785,13 +814,17 @@ steps:
 
 ### P2-3：切片任务轮询接口返回的是列表而非单个任务
 
+**状态**：🔵 **已覆盖**（`GET /api/slice-tasks/{id}` 单任务查询已存在，`run_slice` 返回 `task_id` 可直接关联）
+
 **问题描述**：`GET /api/episodes/{id}/slice/tasks` 返回该剧集下所有切片任务（含历史记录）。自动化流程需要自己判断"哪个是最新任务"，容易拿错。
 
 **影响**：自动化脚本需要对响应做额外的过滤逻辑（取 `created_at` 最新的一条）。建议提供 `GET /api/slice-tasks/{id}` 单任务查询（已有，但创建接口返回的 `task_id` 需要正确关联）。
 
 ---
 
-### P2-4：没有统一的"项目级工作流状态"查询接口
+### ✅ P2-4：没有统一的"项目级工作流状态"查询接口
+
+**状态**：✅ **已修复**（PR #177，新增 `GET /api/projects/{id}/workflow-status` 聚合接口）
 
 **问题描述**：一个项目下可能有多个剧集，每集有独立的选点/检测/切片状态。当前没有项目级聚合接口，自动化流程需要逐个剧集去查状态。
 
@@ -801,7 +834,9 @@ steps:
 
 ---
 
-### P3-1：下载任务失败后缺少自动重试机制
+### ✅ P3-1：下载任务失败后缺少自动重试机制
+
+**状态**：✅ **已修复**（PR #177，新增可重试瞬态错误自动重试 + 断点续传，不可重试错误保持原行为）
 
 **问题描述**：`wechat_dl` 下载任务失败后（如 provider 限流、链接失效），任务直接标记 `failed`，没有自动重试或降级到其他 provider 的逻辑。
 
@@ -811,13 +846,17 @@ steps:
 
 ### P3-2：切片参数过多，配置复杂
 
+**状态**：📄 **文档建议**（自动化场景优先用批量切片 `POST /api/batch-slice/run`，配置集中在 `slice_config`）
+
 **问题描述**：`SliceRunRequest` 有 40+ 个可选字段（水印、角标、字幕、竖转横、去重、打码等），自动化流程要"完整配置"非常复杂。批量切片配置（`BatchSliceRunRequest.slice_config`）可以一次性配置，但单集切片仍需逐项设置。
 
 **建议**：建议在自动化场景优先使用**批量切片**（`POST /api/batch-slice/run`），将配置集中在 `slice_config` 中一次传入。
 
 ---
 
-### P3-3：多运营者发布时，`operator_id` 的分配逻辑不透明
+### ✅ P3-3：多运营者发布时，`operator_id` 的分配逻辑不透明
+
+**状态**：✅ **已修复**（PR #177，未传 `operator_id` 时自动从绑定视频号账号的号主推导落库）
 
 **问题描述**：`PublishTaskCreate` 有 `operator_id` 字段（可选），但自动化流程如果不传，系统会按什么规则自动分配运营者？是否需要先查 `multi-operator` 端点获取运营者列表？
 
@@ -932,7 +971,8 @@ steps:
 
 ### 6.1 Token 有效期
 
-- `access_token` 短期有效（默认 30 分钟），长流程需调用 `POST /api/refresh` 刷新。
+- `access_token` 短期有效（默认 30 分钟），长流程需调用 `POST /api/auth/refresh` 刷新。
+- **刷新方式**：刷新走 **HttpOnly Cookie（`refresh_token`）无感刷新**，调用 `POST /api/auth/refresh`（`Authorization: Bearer <access_token>`）即可续期；仅当 Cookie 不可用时才在 body 传 `refresh_token` 兜底。
 - **刷新时机**：建议每 20 分钟刷新一次。
 
 ### 6.2 异步任务的轮询策略
@@ -949,7 +989,7 @@ steps:
 
 ### 6.4 多运营者发布注意事项
 
-- 发布前需要确认账号已登录（`logged_in == true`）
+- 发布前需要确认账号已登录（`GET /api/publish/login/status/{account_id}` 返回 `state == "ready"`）
 - 一个账号同一时间只允许 1 个发布任务（`global_inflight_limit` 默认 4，`op_inflight_limit` 默认 1）
 - 多个运营者同时发布需要确保配额充足
 
