@@ -1959,6 +1959,23 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int
         # 单个字幕带高度上限：超过该值视为"对话字幕在不同时间纵向浮动/多条字幕带
         # 被 cluster_peak 跨帧取最大而压成宽带"，按 smooth 剖面峰值拆分为多个紧凑
         # 子带，避免打码区域盖住半屏（用户反馈的核心问题）。
+        # 主字幕带参考中心：在偏下(y0>0.3H)且出现频率达一定水平(ppr>=0.3)的候选里，
+        # 选 presence 最接近理想值(0.6, 间歇对话字幕)的横带中心。用途：仅当存在明确
+        # 的间歇性主字幕带时，才把"更靠下且全程恒定的固定文字/水印字条"从字幕候选中
+        # 剔除——既避免它被当成字幕打码(盖住固定文字)，也避免 ASR 字幕对齐到最底部
+        # 固定文字位置(用户反馈)。全程字幕(pr≈1 但与主字幕带位置一致)不会因此被排除。
+        main_cy = None
+        best_pr_err = 1e9
+        main_y0 = None
+        for (_sc, _vv, _yy0, _yy1, _hh, _ppr, _dyn) in candidates:
+            if _yy0 > height * 0.3 and _ppr >= 0.3:
+                _err = abs(_ppr - SUBTITLE_MASK_PRESENCE_IDEAL)
+                # 平局(出现频率相同)时选更靠上的候选为主字幕带：真字幕通常比
+                # 固定文字/水印更靠上，避免 main_cy 误选到更靠下的固定文字带。
+                if _err < best_pr_err or (_err == best_pr_err and (_yy0 < main_y0 if main_y0 is not None else True)):
+                    best_pr_err = _err
+                    main_cy = (_yy0 + _yy1) / 2.0
+                    main_y0 = _yy0
         max_band_h = max(18, int(height * 0.09))
         regions = []
         seen_bands = []
@@ -1968,12 +1985,37 @@ def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int
             # 退出，漏掉后面 val 更高但 score 低的副字幕带。
             if val < best_val * SUBTITLE_MASK_MULTI_RELATIVE:
                 continue
+            # 恒定且明显低于主字幕带的固定文字/水印字条：非间歇真字幕，剔除候选
+            # （不打码、不参与 ASR 对齐；若真有全程底部字幕则与 main_cy 位置一致不命中）。
+            # 阈值取 0.75：真实间歇对话字幕 pr≈0.6 远在其下不会被误杀，而全程恒定的
+            # 固定文字/水印(pr≈0.8~1.0)会被排除；阈值不能太高(如 0.85)，否则合成/实测
+            # 中偏低出现的恒定带(pr≈0.8)会漏过、仍被打码并拖累 ASR 对齐基准。
+            if main_cy is not None and pr >= 0.75:
+                cy = (y0 + y1) / 2.0
+                if cy > main_cy + max(40, int(height * 0.08)):
+                    continue
             # 过高横带：先按文字簇峰值剖面拆分出多个紧凑子带（贴合每处字幕位置），
             # 每个子带再独立计算横向范围与余量，区域总面积大幅下降且不漏字幕。
             if h > max_band_h:
                 sub_bands = _split_tall_band(y0, y1, smooth, height, max_band_h)
             else:
                 sub_bands = [(y0, y1)]
+            # 子带级恒定排除：当"字幕 + 固定文字"被 cluster_peak 跨帧取最大压成同一条
+            # 高候选带、_split_tall_band 才拆成多个子带时，上面的候选级排除够不着。
+            # 这里对拆出的子带再过滤——恒定(pr 显著更高)且明显低于最上方子带的，判为
+            # 固定文字/水印剔除（不打码、不参与 ASR 对齐）。真实间歇字幕与其浮动产生的
+            # 子带 pr 相近(相差 <0.1)，不会被误杀；单子带(常规字幕)不触发本过滤。
+            if len(sub_bands) > 1:
+                _sb = [((s0 + s1) / 2.0, float(presence[s0:s1 + 1].mean()))
+                       for (s0, s1) in sub_bands]
+                _ref_cy = min(c for c, p in _sb)
+                _ref_pr = min(p for c, p in _sb)
+                sub_bands = [
+                    (s0, s1) for (s0, s1) in sub_bands
+                    if not (float(presence[s0:s1 + 1].mean()) >= 0.75
+                            and float(presence[s0:s1 + 1].mean()) > _ref_pr + 0.1
+                            and ((s0 + s1) / 2.0) > _ref_cy + max(40, int(height * 0.08)))
+                ]
             for (sy0, sy1) in sub_bands:
                 sh = sy1 - sy0 + 1
                 # 与已选区域纵向重叠的横带合并（同一字幕带可能被切成多段）
