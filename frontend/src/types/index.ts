@@ -804,4 +804,8 @@ export interface ChannelAccount {
   created_at: string;
   updated_at: string;
   operators: ChannelOperator[];
+  // 与报表域关联聚合（按 video_account_id 汇总）
+  report_play_count?: number;
+  report_attributed_revenue?: number;
+  report_ad_revenue?: number;
 }

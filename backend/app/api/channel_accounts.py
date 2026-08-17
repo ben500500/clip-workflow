@@ -9,15 +9,17 @@ from typing import Annotated, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select, or_
+from sqlalchemy import func, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.database import get_db
 from app.models.models import (
+    AdMetric,
     ChannelAccount,
     ChannelOperator,
     User,
+    VideoMetric,
     user_can_access_all_materials,
 )
 from app.utils.helpers import utc_iso
@@ -96,6 +98,10 @@ class ChannelAccountResponse(BaseModel):
     created_at: str
     updated_at: str
     operators: List[OperatorResponse] = Field(default_factory=list)
+    # 与报表域关联聚合（按 video_account_id 汇总，缺省 0）
+    report_play_count: int = 0
+    report_attributed_revenue: float = 0
+    report_ad_revenue: float = 0
 
     model_config = {"from_attributes": True}
 
@@ -113,8 +119,54 @@ def _serialize_operator(op: ChannelOperator) -> dict:
     }
 
 
-def _serialize_channel_account(acc: ChannelAccount) -> dict:
-    return {
+async def _load_report_metrics(db: AsyncSession, video_account_ids: List[uuid.UUID]) -> dict:
+    """按 video_account_id 批量聚合报表域数据，返回 {account_id: {play_count, attributed_revenue, ad_revenue}}.
+
+    复用现有看板域的聚合语义：
+    - video_metrics.play_count / attributed_revenue（视频跑量 + 归因收益）
+    - ad_metrics.revenue（广告变现 IAA 收益）
+    仅对已关联发布账号（video_account_id 非空）做聚合；未关联的返回全 0。
+    """
+    result = {
+        str(aid): {"play_count": 0, "attributed_revenue": 0.0, "ad_revenue": 0.0}
+        for aid in video_account_ids
+    }
+    if not video_account_ids:
+        return result
+
+    video_rows = await db.execute(
+        select(
+            VideoMetric.account_id,
+            func.coalesce(func.sum(VideoMetric.play_count), 0),
+            func.coalesce(func.sum(VideoMetric.attributed_revenue), 0),
+        )
+        .where(VideoMetric.account_id.in_(video_account_ids))
+        .group_by(VideoMetric.account_id)
+    )
+    for row in video_rows.all():
+        aid = str(row[0])
+        if aid in result:
+            result[aid]["play_count"] = int(row[1] or 0)
+            result[aid]["attributed_revenue"] = float(row[2] or 0)
+
+    ad_rows = await db.execute(
+        select(
+            AdMetric.account_id,
+            func.coalesce(func.sum(AdMetric.revenue), 0),
+        )
+        .where(AdMetric.account_id.in_(video_account_ids))
+        .group_by(AdMetric.account_id)
+    )
+    for row in ad_rows.all():
+        aid = str(row[0])
+        if aid in result:
+            result[aid]["ad_revenue"] = float(row[1] or 0)
+
+    return result
+
+
+def _serialize_channel_account(acc: ChannelAccount, report: Optional[dict] = None) -> dict:
+    data = {
         "id": str(acc.id),
         "channel_name": acc.channel_name,
         "wechat_id": acc.wechat_id,
@@ -130,7 +182,13 @@ def _serialize_channel_account(acc: ChannelAccount) -> dict:
         "created_at": utc_iso(acc.created_at) if acc.created_at else "",
         "updated_at": utc_iso(acc.updated_at) if acc.updated_at else "",
         "operators": [_serialize_operator(o) for o in (acc.operators or [])],
+        "report_play_count": 0,
+        "report_attributed_revenue": 0.0,
+        "report_ad_revenue": 0.0,
     }
+    if report:
+        data.update(report)
+    return data
 
 
 def _parse_date(value: Optional[str]):
@@ -188,7 +246,17 @@ async def list_channel_accounts(
     query = query.order_by(ChannelAccount.created_at.desc())
     result = await db.execute(query)
     accounts = result.scalars().all()
-    return [_serialize_channel_account(a) for a in accounts]
+
+    # 批量聚合报表域数据（按 video_account_id）
+    account_ids = [a.video_account_id for a in accounts if a.video_account_id]
+    report = await _load_report_metrics(db, account_ids)
+    return [
+        _serialize_channel_account(
+            a,
+            report.get(str(a.video_account_id)) if a.video_account_id else None,
+        )
+        for a in accounts
+    ]
 
 
 @router.get("/channel-accounts/{account_id}", response_model=ChannelAccountResponse)
@@ -206,7 +274,12 @@ async def get_channel_account(
     if not acc:
         raise HTTPException(status_code=404, detail="Channel account not found")
     _check_access(acc, current_user)
-    return _serialize_channel_account(acc)
+    report = None
+    if acc.video_account_id:
+        report = (await _load_report_metrics(db, [acc.video_account_id])).get(
+            str(acc.video_account_id)
+        )
+    return _serialize_channel_account(acc, report)
 
 
 @router.post("/channel-accounts", response_model=ChannelAccountResponse, status_code=201)
