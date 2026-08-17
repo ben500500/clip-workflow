@@ -32,7 +32,7 @@ const SLICE_MODE_HELP: Record<string, { label: string; desc: string; detail: str
   dedupe: {
     label: '去重模式',
     desc: '切割时进行画面去重处理',
-    detail: '在切割的同时对每个片段进行画面去重处理，采用「空间变换（缩放裁切/镜像）+ 时域变换（变速）+ 色彩变换（降饱和/复古偏色）+ 质感叠加（老电视噪点/扫描线/暗角）」四层组合，拉开与原素材的帧级特征/色彩直方图/时域指纹距离。可选轻/标准/重三档（标准档为默认效果），并支持「去重高级配置」逐项手动调整每个手段（裁切/镜像/变速/调色/噪点/锐化/暗角/滚动暗带/抖动/贴纸水印）。适用于需要批量发布到多个平台的场景，降低平台查重风险。',
+    detail: '在切割的同时对每个片段进行画面去重处理，采用「空间变换（缩放裁切/镜像）+ 时域变换（变速）+ 色彩变换（降饱和/复古偏色）+ 质感叠加（老电视噪点/扫描线/暗角）」四层组合，拉开与原素材的帧级特征/色彩直方图/时域指纹距离。提供两套推荐配方（复古扫描=默认首选 / 保守裁切降饱和）及轻/标准/重三档，并支持「去重高级配置」逐项手动调整每个手段（裁切/镜像/变速/调色/噪点/锐化/暗角/滚动暗带/抖动/贴纸水印）。适用于需要批量发布到多个平台的场景，降低平台查重风险。',
   },
   scrub: {
     label: '挖洞模式',
@@ -60,13 +60,18 @@ function resolveSubtitleMaskPreset(p: any): 'auto' | 'fine' | 'quick' {
   return 'auto';
 }
 
-// ─── 切片模式级联选项（去重模式带 轻/标准/重 档位，悬停即弹出选择框）──
+// ─── 切片模式级联选项（去重模式带 轻/标准/重 档位 + 两套推荐配方，悬停即弹出选择框）──
+// 两套推荐配方（实测对原画面影响最小 + 查重风险最低）：
+//   std_retro_scan 复古扫描（首选/默认）：标准档+裁切5%+变速1.04+复古暖调+扫描线+噪点7
+//   std_crop_desat 保守裁切降饱和：标准档+裁切5%+降饱和0.88
 const SLICE_MODE_OPTIONS = [
   { value: 'fast', label: '快速模式' },
   {
     value: 'dedupe',
     label: '去重模式',
     children: [
+      { value: 'std_retro_scan', label: '复古扫描（推荐）' },
+      { value: 'std_crop_desat', label: '保守裁切降饱和' },
       { value: 'light', label: '轻' },
       { value: 'standard', label: '标准' },
       { value: 'heavy', label: '重' },
@@ -216,7 +221,7 @@ const EpisodeDetail: React.FC = () => {
   const [detectMode, setDetectMode] = useState('credits');
   const [sliceMode, setSliceMode] = useState('fast');
   // 去重模式档位：轻/标准/重（老电视质感去重强度，默认标准档）
-  const [dedupePreset, setDedupePreset] = useState<string>('standard');
+  const [dedupePreset, setDedupePreset] = useState<string>('std_retro_scan');
   // ── 切片自定义文字水印开关与参数 ──
   // 去重模式手动配置（每项去重手段可单独覆盖预设，为空时沿用预设档位）
   const [dedupeManual, setDedupeManual] = useState<DedupeManualConfigValue>({});
@@ -1698,13 +1703,13 @@ const EpisodeDetail: React.FC = () => {
           {/* 切片模式选择：鼠标悬停停顿显示当前模式介绍（去掉常驻说明文字） */}
           <Tooltip title={`${SLICE_MODE_HELP[sliceMode]?.label || '切片模式'}：${SLICE_MODE_HELP[sliceMode]?.detail || ''}`}>
             <Cascader
-              value={sliceMode === 'dedupe' ? ['dedupe', dedupePreset || 'standard'] : [sliceMode]}
+              value={sliceMode === 'dedupe' ? ['dedupe', dedupePreset || 'std_retro_scan'] : [sliceMode]}
               options={SLICE_MODE_OPTIONS}
               onChange={(val: (string | number)[]) => {
                 const v = (val ?? []).map(String);
                 if (v[0] === 'dedupe') {
                   setSliceMode('dedupe');
-                  setDedupePreset(v[1] || 'standard');
+                  setDedupePreset(v[1] || 'std_retro_scan');
                 } else if (v[0]) {
                   setSliceMode(v[0]);
                 }

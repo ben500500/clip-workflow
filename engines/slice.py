@@ -122,6 +122,47 @@ DEDUPE_PRESETS = {
         "sharpen": 0.8,
         "watermark": None,
     },
+    # 实测推荐的配方（对原画面影响最小 + 平台查重风险最低），无镜像。
+    # std_retro_scan = 首选（原 14_std_retro_scan）：标准档 + 裁切5% + 变速1.04
+    #   + 复古暖调 + 扫描线 + 噪点7，去重强度高、画面仍自然，作为去重模式默认配方。
+    "std_retro_scan": {
+        "crop": 0.05,
+        "hflip": False,
+        "speed": 1.04,
+        "saturation": 0.85,
+        "gamma": 1.03,
+        "contrast": 1.03,
+        "brightness": 0.01,
+        "colorbalance": "rs=.06:gs=.03:bs=-.06:rm=.06:gm=.03:bm=-.06",
+        "colortemperature": "temperature=5800",
+        "noise": 7,
+        "scanline": {"h": 3, "color": "black@0.10"},
+        "vignette": "PI/5",
+        "roll_band": 0,
+        "jitter": 0,
+        "sharpen": 0.4,
+        "watermark": None,
+    },
+    # std_crop_desat = 保守（原 08_std_crop5_nohflip）：标准档 + 裁切5% + 降饱和0.88，
+    #   平衡稳健、画面几乎无感，适合尽量不动画面的场景。
+    "std_crop_desat": {
+        "crop": 0.05,
+        "hflip": False,
+        "speed": 1.03,
+        "saturation": 0.88,
+        "gamma": 1.03,
+        "contrast": 1.03,
+        "brightness": 0.01,
+        "colorbalance": "rs=.06:gs=.03:bs=-.06:rm=.06:gm=.03:bm=-.06",
+        "colortemperature": "temperature=5800",
+        "noise": 6,
+        "scanline": {"h": 3, "color": "black@0.10"},
+        "vignette": "PI/5",
+        "roll_band": 0,
+        "jitter": 0,
+        "sharpen": 0.4,
+        "watermark": None,
+    },
 }
 
 
@@ -137,7 +178,8 @@ def _resolve_dedupe_config(cfg: dict) -> dict:
     """解析去重配置，返回合并后的完整参数 dict。
 
     cfg 支持：
-      - preset: "light|standard|heavy"，作为基础档位；
+      - preset: "light|standard|heavy"（基础档位）或推荐配方
+        "std_retro_scan"（首选）/ "std_crop_desat"（保守），作为基础档位；
       - manual: 手动覆盖字典，可覆盖四层中任一手段参数（crop/hflip/speed/
         saturation/gamma/contrast/brightness/colorbalance/colortemperature/
         noise/scanline/vignette/roll_band/jitter/sharpen/watermark）。
@@ -146,9 +188,9 @@ def _resolve_dedupe_config(cfg: dict) -> dict:
     兼容旧式扁平配置：manual 为空时仍优先读取 cfg 顶层同名字段作为覆盖。
     """
     cfg = cfg or {}
-    preset = str(cfg.get("preset") or "standard").lower()
+    preset = str(cfg.get("preset") or "std_retro_scan").lower()
     if preset not in DEDUPE_PRESETS:
-        preset = "standard"
+        preset = "std_retro_scan"
     p = dict(DEDUPE_PRESETS[preset])  # 以预设为基础
 
     # 手动覆盖字典优先
@@ -170,7 +212,8 @@ def _resolve_dedupe_config(cfg: dict) -> dict:
 def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0) -> tuple[str, str]:
     """根据去重配置构造 (vf, af) 滤镜链。
 
-    cfg 支持 preset（light/standard/heavy 基础档位）与 manual（每项手段手动覆盖），
+    cfg 支持 preset（light/standard/heavy 基础档位，或推荐配方 std_retro_scan/
+    std_crop_desat）与 manual（每项手段手动覆盖），
     四层组合：空间（缩放裁切 + 可选镜像）、时域（变速）、色彩（降饱和 + 复古偏色 + 轻微亮度）、
     质感（噪点 / 扫描线 / 暗角 / 滚动暗带 / 画面抖动 / 锐化 / 贴纸水印）。
 
@@ -3500,11 +3543,11 @@ def main():
     parser.add_argument(
         "--dedupe-config",
         default=None,
-        help="去重档位配置 JSON（{\"preset\":\"light|standard|heavy\", \"manual\":{...}}，默认 standard）。"
+        help="去重档位配置 JSON（{\"preset\":\"light|standard|heavy|std_retro_scan|std_crop_desat\", \"manual\":{...}}，默认 std_retro_scan）。"
              "preset 选择基础档位；manual 可逐项覆盖四层去重手段参数"
              "（crop/hflip/speed/saturation/gamma/contrast/brightness/colorbalance/"
              "colortemperature/noise/scanline/vignette/roll_band/jitter/sharpen/watermark），"
-             "未传 manual 时沿用 preset 预设。未传配置时回退到 preset=standard。",
+             "未传 manual 时沿用 preset 预设。未传配置时回退到 preset=std_retro_scan（首选配方）。",
     )
     parser.add_argument(
         "--subtitle-mask",
@@ -3594,7 +3637,7 @@ def main():
                 dedupe_cfg = {}
             if not isinstance(dedupe_cfg, dict):
                 dedupe_cfg = {}
-        preset = str(dedupe_cfg.get("preset") or "standard").lower()
+        preset = str(dedupe_cfg.get("preset") or "std_retro_scan").lower()
         _dedupe_p = _resolve_dedupe_config(dedupe_cfg)
         try:
             dedupe_speed = float(_dedupe_p.get("speed") or 1.0)

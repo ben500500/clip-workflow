@@ -78,6 +78,37 @@ const DEDUPE_PRESETS: Record<string, Partial<DedupeManualConfigValue>> = {
     jitter: 2,
     sharpen: 0.8,
   },
+  // 两套推荐配方（无镜像）：与后端 engines/slice.py 的 DEDUPE_PRESETS 保持一致。
+  // std_retro_scan 复古扫描（首选/默认）：标准档+裁切5%+变速1.04+复古暖调+扫描线+噪点7
+  std_retro_scan: {
+    crop: 0.05,
+    hflip: false,
+    speed: 1.04,
+    saturation: 0.85,
+    gamma: 1.03,
+    contrast: 1.03,
+    brightness: 0.01,
+    noise: 7,
+    vignette: 'PI/5',
+    roll_band: 0,
+    jitter: 0,
+    sharpen: 0.4,
+  },
+  // std_crop_desat 保守裁切降饱和：标准档+裁切5%+降饱和0.88
+  std_crop_desat: {
+    crop: 0.05,
+    hflip: false,
+    speed: 1.03,
+    saturation: 0.88,
+    gamma: 1.03,
+    contrast: 1.03,
+    brightness: 0.01,
+    noise: 6,
+    vignette: 'PI/5',
+    roll_band: 0,
+    jitter: 0,
+    sharpen: 0.4,
+  },
 };
 
 const WATERMARK_POSITIONS = [
