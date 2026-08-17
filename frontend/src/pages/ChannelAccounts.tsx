@@ -106,7 +106,7 @@ const ChannelAccounts: React.FC = () => {
     setModalOpen(true);
   };
 
-  // 选择账号库后自动带出名称/微信号（方向1：以账号库为主数据，避免两套数据对不上）
+  // 选择账号库后自动带出名称/视频号ID（选填：已存在账号库关联时复用，否则自动同步）
   const handleVideoAccountChange = (videoAccountId: string | undefined) => {
     const va = videoAccounts.find((a) => a.id === videoAccountId);
     if (va) {
@@ -120,9 +120,9 @@ const ChannelAccounts: React.FC = () => {
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
-      // 方向1：video_account_id 必填
-      if (!values.video_account_id) {
-        message.error('请先从发布账号库选择关联账号');
+      // 视频号列表先登记：直接填写名称/视频号ID，创建后自动同步到账号库
+      if (!values.channel_name) {
+        message.error('请填写视频号名称');
         return;
       }
       const payload: ChannelAccountInput = {
@@ -136,7 +136,7 @@ const ChannelAccounts: React.FC = () => {
         message.success('视频号列表已更新');
       } else {
         await channelAccountApi.create(payload);
-        message.success('视频号列表已创建');
+        message.success('视频号列表已创建，账号库已同步');
       }
       setModalOpen(false);
       fetchData(keyword);
@@ -210,10 +210,48 @@ const ChannelAccounts: React.FC = () => {
       render: (v: string) => <Text strong>{v}</Text>,
     },
     {
-      title: '微信号',
+      title: '视频号ID',
       dataIndex: 'wechat_id',
       width: 150,
       render: (v: string) => v || '-',
+    },
+    {
+      title: '关联发布账号',
+      dataIndex: 'video_account_id',
+      width: 120,
+      render: (v: string) => {
+        if (!v) return <Text type="secondary">未关联</Text>;
+        const acc = videoAccounts.find((a) => a.id === v);
+        return acc ? <Tag color="geekblue">{acc.account_name}</Tag> : <Tag>已关联</Tag>;
+      },
+    },
+    {
+      title: '累计播放',
+      key: 'report_play_count',
+      width: 110,
+      align: 'right' as const,
+      render: (_, record) =>
+        record.report_play_count != null ? record.report_play_count.toLocaleString() : '-',
+    },
+    {
+      title: '归因收益',
+      key: 'report_attributed_revenue',
+      width: 110,
+      align: 'right' as const,
+      render: (_, record) =>
+        record.report_attributed_revenue != null
+          ? `¥${Number(record.report_attributed_revenue).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+          : '-',
+    },
+    {
+      title: '广告收益',
+      key: 'report_ad_revenue',
+      width: 110,
+      align: 'right' as const,
+      render: (_, record) =>
+        record.report_ad_revenue != null
+          ? `¥${Number(record.report_ad_revenue).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+          : '-',
     },
     {
       title: '实名类型',
@@ -280,44 +318,6 @@ const ChannelAccounts: React.FC = () => {
       },
     },
     {
-      title: '关联发布账号',
-      dataIndex: 'video_account_id',
-      width: 120,
-      render: (v: string) => {
-        if (!v) return <Text type="secondary">未关联</Text>;
-        const acc = videoAccounts.find((a) => a.id === v);
-        return acc ? <Tag color="geekblue">{acc.account_name}</Tag> : <Tag>已关联</Tag>;
-      },
-    },
-    {
-      title: '累计播放',
-      key: 'report_play_count',
-      width: 110,
-      align: 'right' as const,
-      render: (_, record) =>
-        record.report_play_count != null ? record.report_play_count.toLocaleString() : '-',
-    },
-    {
-      title: '归因收益',
-      key: 'report_attributed_revenue',
-      width: 110,
-      align: 'right' as const,
-      render: (_, record) =>
-        record.report_attributed_revenue != null
-          ? `¥${Number(record.report_attributed_revenue).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
-          : '-',
-    },
-    {
-      title: '广告收益',
-      key: 'report_ad_revenue',
-      width: 110,
-      align: 'right' as const,
-      render: (_, record) =>
-        record.report_ad_revenue != null
-          ? `¥${Number(record.report_ad_revenue).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
-          : '-',
-    },
-    {
       title: '状态',
       dataIndex: 'enabled',
       width: 70,
@@ -354,7 +354,7 @@ const ChannelAccounts: React.FC = () => {
       extra={
         <Space>
           <Input
-            placeholder="搜索名称/微信号"
+            placeholder="搜索名称/视频号ID"
             prefix={<SearchOutlined />}
             allowClear
             style={{ width: 220 }}
@@ -388,14 +388,26 @@ const ChannelAccounts: React.FC = () => {
         destroyOnClose
       >
         <Form form={form} layout="vertical" initialValues={{ enabled: true }}>
+          <Space style={{ display: 'flex' }} align="start" size="large">
+            <Form.Item
+              name="channel_name"
+              label="视频号名称"
+              rules={[{ required: true, message: '请填写视频号名称' }]}
+            >
+              <Input placeholder="如：主号-剧集A" style={{ width: 220 }} />
+            </Form.Item>
+            <Form.Item name="wechat_id" label="视频号ID">
+              <Input placeholder="平台侧唯一标识（选填）" style={{ width: 220 }} />
+            </Form.Item>
+          </Space>
           <Form.Item
             name="video_account_id"
-            label="关联发布账号（必选，以账号库为主数据）"
-            rules={[{ required: true, message: '请选择关联发布账号' }]}
-            extra="选择后自动带出视频号名称/微信号"
+            label="关联账号库（选填，自动同步）"
+            extra="不选则创建后自动在账号库同步相同账号"
           >
             <Select
-              placeholder="从发布账号库选择"
+              placeholder="可选：绑定到已有发布账号库"
+              allowClear
               showSearch
               optionFilterProp="label"
               onChange={handleVideoAccountChange}
@@ -404,12 +416,6 @@ const ChannelAccounts: React.FC = () => {
                 label: `${a.account_name} (${a.platform})`,
               }))}
             />
-          </Form.Item>
-          <Form.Item name="channel_name" label="视频号名称">
-            <Input placeholder="由关联账号自动带出" disabled />
-          </Form.Item>
-          <Form.Item name="wechat_id" label="微信号">
-            <Input placeholder="由关联账号自动带出" disabled />
           </Form.Item>
           <Space style={{ display: 'flex' }} size="large">
             <Form.Item name="verify_type" label="实名类型">
