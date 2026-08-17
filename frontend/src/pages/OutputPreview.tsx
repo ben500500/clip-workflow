@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   Card, Table, Tag, Button, Space, Typography, message, Select, Modal, Form, Input, DatePicker, Popconfirm, Alert, Spin, InputNumber,
 } from 'antd';
-import { ArrowLeftOutlined, PlayCircleOutlined, DownloadOutlined, LinkOutlined, CloudDownloadOutlined, EditOutlined, SendOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PlayCircleOutlined, DownloadOutlined, LinkOutlined, CloudDownloadOutlined, EditOutlined, SendOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { sliceApi } from '../api/slice';
 import { previewApi } from '../api/preview';
@@ -45,6 +45,7 @@ const OutputPreview: React.FC = () => {
 
   // ── 一键发布（对标「一键豆包生成」体验） ──
   const [publishModal, setPublishModal] = useState(false);
+  const [publishGuideOpen, setPublishGuideOpen] = useState(false);
   const [publishForm] = Form.useForm();
   const [publishTarget, setPublishTarget] = useState<SliceOutput | null>(null);
   const [publishing, setPublishing] = useState(false);
@@ -380,6 +381,7 @@ const OutputPreview: React.FC = () => {
       <Space style={{ marginBottom: 16 }}>
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(`/episodes/${episodeId}`)}>返回</Button>
         <Title level={4} style={{ margin: 0 }}>成品预览</Title>
+        <Button icon={<QuestionCircleOutlined />} onClick={() => setPublishGuideOpen(true)}>发布流程指引</Button>
       </Space>
       <Card size="small" style={{ marginBottom: 16 }}>
         <Space wrap>
@@ -643,6 +645,55 @@ const OutputPreview: React.FC = () => {
           <Form.Item name="publish_time" label="发布时间"><DatePicker showTime style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="operator" label="操作人"><Input /></Form.Item>
         </Form>
+      </Modal>
+
+      {/* 发布流程操作指引（面向初次使用者） */}
+      <Modal
+        title="发布流程操作指引"
+        open={publishGuideOpen}
+        footer={null}
+        width={820}
+        onCancel={() => setPublishGuideOpen(false)}
+        destroyOnClose
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="发布链路 = 本页「一键发布」创建任务 → 「发布管理」确认发布 → 审计可溯源。首次使用请按下面 ①→④ 的顺序走一遍。"
+        />
+        <Typography.Title level={5}>① 前置准备（在「发布管理」页完成，一次性）</Typography.Title>
+        <Typography.Paragraph>
+          <ul>
+            <li><b>发布配置</b>：发布管理 →「发布配置」Tab，新增配置（平台 + 账号 + Chrome 调试端口 + 每日上限 + 发布间隔）。每个账号对应独立 Chrome 登录态。</li>
+            <li><b>视频号账号库</b>：发布管理 →「视频号账号」Tab，新增账号并绑定发布配置，这样本页「一键发布」能直接下拉选择账号。</li>
+            <li><b>小程序链接库</b>：需在视频号挂载小程序（带渠道归因参数）时，在「小程序链接」Tab 维护。</li>
+            <li><b>登录态扫码</b>：发布管理 →「运营者端口矩阵」Tab，选账号 →「登录态扫码」→ 微信扫码 →「心跳检查」置为 <Tag color="green">valid</Tag>。</li>
+          </ul>
+        </Typography.Paragraph>
+        <Typography.Title level={5}>② 在本页发起一键发布</Typography.Title>
+        <Typography.Paragraph>
+          在下方成品列表中找到要发布的切片，点<b>「一键发布」</b>：
+          <ul>
+            <li>选择发布平台（可多选，如视频号+抖音批量发布）</li>
+            <li>可选取<b>发布素材</b>（短标题/配文/标签自动代入），或手动填写标题/描述/标签</li>
+            <li>选择<b>发布账号</b>（从账号库）与<b>小程序链接</b></li>
+            <li>「截图确认后发布」推荐选<b>是</b>（RPA 填好表单后截图人工确认，避免误发）</li>
+          </ul>
+          提交后自动创建发布任务并触发 RPA 发布。
+        </Typography.Paragraph>
+        <Typography.Title level={5}>③ 到「发布管理」确认发布</Typography.Title>
+        <Typography.Paragraph>
+          在发布管理「发布任务」Tab：
+          <ul>
+            <li><Tag color="orange">待确认</Tag>：点「查看截图」确认表单无误，再点<b>「确认发布」</b>正式发出。</li>
+            <li>状态流转：<b>待发布 → 待确认 → 已发布</b>；失败记录错误信息，死信任务可点「重发」。</li>
+          </ul>
+        </Typography.Paragraph>
+        <Typography.Title level={5}>④ 结果追溯</Typography.Title>
+        <Typography.Paragraph>
+          到「发布管理」审计日志 Tab 溯源，或到「数据看板」查看播放/收益表现；也可在本页点「登记发布」手动补充发布链接记录。
+        </Typography.Paragraph>
       </Modal>
     </div>
   );
