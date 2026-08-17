@@ -26,6 +26,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
   publisher: [
     '/dashboard',
     '/publish',
+    '/channel-accounts',
     'analytics-sub',
     '/analytics/overview',
     '/analytics/shortdrama',
