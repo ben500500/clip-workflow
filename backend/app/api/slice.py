@@ -279,6 +279,9 @@ async def run_slice(
     # 数据隔离
     await check_project_access_by_episode(db, episode, current_user)
 
+    # 免审核一键切片：选点未产出候选片段时是否回退为整片切片（仅 auto_accept_all 分支会置 True）
+    fallback_whole_video = False
+
     if data.video_path and not os.path.isfile(data.video_path):
         raise HTTPException(
             status_code=400,
@@ -381,6 +384,16 @@ async def run_slice(
             )
             all_clips = all_clips_result.scalars().all()
             if not all_clips:
+                if not data.allow_fallback_whole_video:
+                    # 显式关闭整片回退：选点未产出候选片段时明确报错，
+                    # 供自动化脚本识别并单独处理，而不是静默整片切片。
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "AI 选点未产出任何候选片段，且 allow_fallback_whole_video=false "
+                            "已关闭整片回退。请先检查选点结果或重新触发选点，再发起切片。"
+                        ),
+                    )
                 # 一键切片全自动兜底：选点未产出候选片段时不再报错，
                 # 直接回退为「整片切片」，保证自动化流程一定出片。
                 logger.warning(
@@ -560,7 +573,12 @@ async def run_slice(
     return SliceRunResponse(
         task_id=str(slice_task.id),
         engine=engine,
-        message=f"切片任务已发布到 {engine} 队列（模式: {data.mode}），正在处理中…",
+        fallback_whole_video=fallback_whole_video,
+        message=(
+            "切片任务已发布到 %s 队列（模式: %s），正在处理中…"
+            % (engine, data.mode)
+        )
+        + ("（已整片回退：AI 选点未产出候选片段）" if fallback_whole_video else ""),
     )
 
 

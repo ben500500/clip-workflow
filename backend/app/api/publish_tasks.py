@@ -346,6 +346,9 @@ async def _create_publish_task_internal(
     mini_program_link = data.mini_program_link
     publish_jump = None
     video_account_uuid = _to_uuid_or_none(data.video_account_id)
+    # P3-3：operator_id 分配透明化。未显式指定时，自动从所绑定视频号账号的
+    # 号主（operator_id）推导；账号也未归属运营者时才为 None（由批量/配额层后续处理）。
+    operator_id = _to_uuid_or_none(data.operator_id)
     if video_account_uuid:
         try:
             acc_result = await db.execute(select(VideoAccount).where(VideoAccount.id == video_account_uuid))
@@ -354,6 +357,9 @@ async def _create_publish_task_internal(
                 account_name = account_name or acc.account_name
                 # 发布跳转配置（端原生/小程序）从账号带入任务快照
                 publish_jump = list(acc.publish_jump) if acc.publish_jump else None
+                # operator_id 未显式指定时，从账号号主自动推导
+                if not operator_id and getattr(acc, "operator_id", None):
+                    operator_id = acc.operator_id
         except Exception:
             pass
 
@@ -370,6 +376,7 @@ async def _create_publish_task_internal(
         require_manual_confirm=data.require_manual_confirm,
         publish_jump=publish_jump,
         video_account_id=video_account_uuid,
+        operator_id=operator_id,
         mini_program_id=_to_uuid_or_none(data.mini_program_id),
         prompt_record_id=_to_uuid_or_none(data.prompt_record_id),
         material_id=_to_uuid_or_none(data.material_id),

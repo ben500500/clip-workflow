@@ -106,6 +106,10 @@ class SliceRunRequest(BaseModel):
     # 免审核一键切片：为 True 时自动把所有候选片段（含 pending）纳入切片，
     # 不再要求存在 status=accepted 的片段
     auto_accept_all: bool = False
+    # 免审核一键切片时选点未产出候选片段的回退策略：
+    # - True（默认）：静默回退为「整片切片」，保证自动化流程一定出片（响应会带 fallback_whole_video=true 提示）；
+    # - False：不回退，直接返回 400 明确报错，供自动化脚本识别并单独处理。
+    allow_fallback_whole_video: bool = True
     # 快速转换：为 True 时跳过 AI 选点与区间检测，直接把整段源视频作为单个
     # 片段（0 ~ 源时长），应用下方切片配置（竖屏转横屏/水印/角标/字幕/固定文字等）
     # 做一次整片转换输出，无需候选片段
@@ -239,6 +243,8 @@ class SliceRunResponse(BaseModel):
     task_id: str
     engine: str
     message: str
+    # 免审核一键切片时选点未产出候选片段，是否回退为整片切片（True=已整片回退，自动化可据此识别）
+    fallback_whole_video: bool = False
 
 
 class SliceTaskResponse(BaseModel):
