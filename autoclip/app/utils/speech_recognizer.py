@@ -729,6 +729,114 @@ class SpeechRecognizer:
                 logger.warning("whisper 未识别到语音内容（可能为静音视频）")
             return output_path
 
+    @staticmethod
+    def _aggregate_funasr_char_timestamps(text: str, timestamps: list) -> List[Dict[str, Any]]:
+        """把 FunASR(Paraformer) 的逐字时间戳聚合成短句级字幕段。
+
+        ``res[0]["timestamp"]`` 是逐「非标点字符」的 ``[start_ms, end_ms]`` 列表，
+        ``res[0]["text"]`` 是经 ct-punc 加入标点的文本，二者长度不等（标点字符没有
+        对应时间戳）。这里按字符遍历：标点字符沿用上一个语音字符的时间戳；语音字符
+        依次消费 ``timestamps`` 中的下一个值，得到逐字时间轴后再聚合成短句。
+
+        聚合规则（与 Whisper 分支接近，但不加词间空格，避免中文出现空隙）：
+          - 句末标点（。！？）处断句，且标点归入上一条；
+          - 其他标点（，、；：等）内联，不断句；
+          - 相邻字符停顿 >0.4s 断句；
+          - 单条最长 ~3.5s / 最多 ~14 字，超限时优先在最近的逗号处断句；
+          - 最少 2 字，避免过于碎片。
+        """
+        MAX_DURATION = 3.5
+        PAUSE_BREAK = 0.4
+        MAX_CHARS = 14
+        SENT_PUNCT = set("。！？")
+        INLINE_PUNCT = set("，、；：,.!?;: \u3000\t\n\r")
+        PUNCT = SENT_PUNCT | INLINE_PUNCT
+
+        # 1) 构建逐字（含标点）时间轴：标点沿用上一语音字符时间
+        units: List[Dict[str, Any]] = []
+        ti = 0
+        n_ts = len(timestamps) if timestamps else 0
+        for ch in text:
+            if ch in PUNCT:
+                if units:
+                    units.append({"ch": ch, "start": units[-1]["end"], "end": units[-1]["end"]})
+                else:
+                    units.append({"ch": ch, "start": 0.0, "end": 0.0})
+                continue
+            if ti < n_ts:
+                s, e = timestamps[ti]
+                ti += 1
+                units.append({"ch": ch, "start": float(s) / 1000.0, "end": float(e) / 1000.0})
+            elif units:
+                units.append({"ch": ch, "start": units[-1]["end"], "end": units[-1]["end"]})
+            else:
+                units.append({"ch": ch, "start": 0.0, "end": 0.0})
+
+        if not units:
+            return []
+
+        # 2) 聚合成短句
+        result: List[Dict[str, Any]] = []
+        cur: List[Dict[str, Any]] = []
+        cur_start: float = 0.0
+
+        def emit(items: List[Dict[str, Any]]) -> None:
+            seg_text = "".join(u["ch"] for u in items).strip()
+            if seg_text:
+                result.append({"start": items[0]["start"], "end": items[-1]["end"], "text": seg_text})
+
+        for u in units:
+            ch = u["ch"]
+            if ch in SENT_PUNCT:
+                # 句末标点：并入当前句并立即断句（标点留在上一条）
+                if cur:
+                    cur.append(u)
+                    emit(cur)
+                    cur = []
+                    cur_start = 0.0
+                # 孤立句末标点（前无内容）直接丢弃
+                continue
+            if ch in INLINE_PUNCT:
+                if cur:
+                    cur.append(u)
+                continue
+            # 语音字符
+            if not cur:
+                cur = [u]
+                cur_start = u["start"]
+                continue
+            pause = u["start"] - cur[-1]["end"]
+            if pause > PAUSE_BREAK:
+                emit(cur)
+                cur = [u]
+                cur_start = u["start"]
+                continue
+            if len(cur) + 1 > MAX_CHARS or (u["end"] - cur_start) > MAX_DURATION:
+                # 超限：优先在最近的逗号处断句
+                cut = None
+                for i in range(len(cur) - 1, 0, -1):
+                    if cur[i]["ch"] in "，、；：":
+                        cut = i
+                        break
+                if cut is not None:
+                    emit(cur[: cut + 1])
+                    cur = cur[cut + 1:]
+                    cur_start = cur[0]["start"] if cur else u["start"]
+                else:
+                    emit(cur)
+                    cur = []
+                    cur_start = 0.0
+                if not cur:
+                    cur = [u]
+                    cur_start = u["start"]
+                else:
+                    cur.append(u)
+                continue
+            cur.append(u)
+        if cur:
+            emit(cur)
+        return result
+
     def _generate_subtitle_funasr_local(self, video_path: Path, output_path: Path,
                                         config: SpeechRecognitionConfig) -> Path:
         """使用本地 FunASR（AutoModel）生成字幕（CPU 推理，无需 API Key）。
@@ -771,23 +879,32 @@ class SpeechRecognizer:
             )
             if not res or not res[0]:
                 raise SpeechRecognitionError("FunASR 未识别出任何语音内容")
-            sentence_info = res[0].get("sentence_info") or {}
-            sent_texts = sentence_info.get("text") or []
-            sent_ts = sentence_info.get("timestamp") or []
-            if sent_texts and sent_ts and len(sent_texts) == len(sent_ts):
-                segments = []
-                for t, (s, e) in zip(sent_texts, sent_ts):
-                    t = self._strip_funasr_tags(t).strip()
-                    if t:
-                        segments.append({"start": float(s), "end": float(e), "text": t})
-                if not segments:
-                    raise SpeechRecognitionError("FunASR 句子切分结果为空")
+            text = self._strip_funasr_tags(res[0].get("text", "")).strip()
+            timestamps = res[0].get("timestamp") or []
+            # 词级/逐字时间戳：聚合成短句级字幕，时间轴与语音精确对齐
+            if text and timestamps:
+                segments = self._aggregate_funasr_char_timestamps(text, timestamps)
+                if segments:
+                    segments = self._merge_short_segments(segments)
             else:
-                text = self._strip_funasr_tags(res[0].get("text", "")).strip()
-                if not text:
-                    raise SpeechRecognitionError("FunASR 识别结果为空")
-                duration = self._get_media_duration(video_path)
-                segments = [{"start": 0.0, "end": duration, "text": text}]
+                segments = []
+            # 退化路径：模型未输出逐字时间戳（如 SenseVoice）时退回句子级；
+            # 再退化则整段给一个段
+            if not segments:
+                sentence_info = res[0].get("sentence_info") or {}
+                sent_texts = sentence_info.get("text") or []
+                sent_ts = sentence_info.get("timestamp") or []
+                if sent_texts and sent_ts and len(sent_texts) == len(sent_ts):
+                    segments = []
+                    for t, (s, e) in zip(sent_texts, sent_ts):
+                        t = self._strip_funasr_tags(t).strip()
+                        if t:
+                            segments.append({"start": float(s), "end": float(e), "text": t})
+                if not segments:
+                    if not text:
+                        raise SpeechRecognitionError("FunASR 识别结果为空")
+                    duration = self._get_media_duration(video_path)
+                    segments = [{"start": 0.0, "end": duration, "text": text}]
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(self._segments_to_srt(segments), encoding="utf-8")
             logger.info(f"本地 FunASR 字幕生成成功: {output_path}")
