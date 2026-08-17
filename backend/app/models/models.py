@@ -54,10 +54,6 @@ from app.models.publish import (
     PublishProfile,
     PublishMaterial,
 )
-from app.models.channel import (
-    ChannelAccount,
-    ChannelOperator,
-)
 from app.models.dashboard import (
     VideoMetric,
     MiniProgramMetric,
@@ -82,6 +78,10 @@ from app.models.shortdrama import (
     ShortdramaPrompt,
     WatermarkTask,
     WatermarkVideo,
+)
+from app.models.channel import (
+    ChannelAccount,
+    ChannelOperator,
 )
 
 __all__ = [
@@ -138,7 +138,7 @@ __all__ = [
     "ShortdramaPrompt",
     "WatermarkTask",
     "WatermarkVideo",
-    # 渠道台账（视频号台账）
+    # 视频号台账
     "ChannelAccount",
     "ChannelOperator",
 ]

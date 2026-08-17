@@ -20,7 +20,7 @@ import {
   ClearOutlined,
   WarningOutlined,
   CloudDownloadOutlined,
-  ProfileOutlined,
+  ContactsOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -64,7 +64,7 @@ const allMenuItems = [
   },
   {
     key: '/channel-accounts',
-    icon: <ProfileOutlined />,
+    icon: <ContactsOutlined />,
     label: '视频号台账',
   },
   {
