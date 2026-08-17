@@ -532,8 +532,11 @@ async def verify_variant_fingerprint(variant_id: str, thresholds: Optional[dict]
 async def guard_account_variant_unique(account_id, output_id=None, variant_group_id=None) -> dict:
     """发布护栏：校验「一个账号只绑定一个变体」。
 
-    在发布/绑定前调用。若该账号已被同变体组的其它变体绑定，或该账号已被绑定到
-    同一素材（同 variant_group_id 或同 base output）的不同变体，则返回冲突，拒绝发布。
+    在发布/绑定前调用。语义如下：
+    - 账号未绑定任何变体，或目标素材未开多版本（无变体组）→ 允许（发布基准）。
+    - 账号已绑定变体，且该变体属于目标素材所在变体组 → 允许（该账号发布自己的去重变体）。
+    - 账号已绑定**其它素材**（异变体组）的变体 → 拒绝（账号已专用于另一素材，
+      继续发本素材会退化为"基准裸发"，违背"绝不把同一素材原样发多号"）。
 
     返回 {allowed, reason, occupied_variant_id}。
     """
@@ -564,12 +567,19 @@ async def guard_account_variant_unique(account_id, output_id=None, variant_group
             except (ValueError, AttributeError):
                 target_group = None
 
-        # 如果目标变体组与该账号已绑定的变体同组 → 同素材发多号，拦截
+        # 账号已绑定变体：同组 → 发布自己的去重变体（允许）；异组 → 该账号专用于其它素材，拒绝
         if target_group and occupied.variant_group_id:
             if str(occupied.variant_group_id) == str(target_group):
+                # 同素材组：该账号发布自己的变体（一账号一变体），正常放行
                 return {
-                    "allowed": False,
-                    "reason": f"该账号已绑定同组变体（{occupied.variant_index} 号），不能把同一素材再发到此账号",
+                    "allowed": True,
+                    "reason": "",
                     "occupied_variant_id": str(occupied.id),
                 }
+            # 异组：账号已绑定其它素材的变体，不能再来发本素材（避免基准裸发）
+            return {
+                "allowed": False,
+                "reason": f"该账号已绑定其它素材的变体（{occupied.variant_index} 号），请先解绑或另选未绑定账号",
+                "occupied_variant_id": str(occupied.id),
+            }
     return {"allowed": True, "reason": "", "occupied_variant_id": None}
