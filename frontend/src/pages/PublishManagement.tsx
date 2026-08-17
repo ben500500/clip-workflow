@@ -4,7 +4,7 @@ import {
 } from 'antd';
 import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined, QrcodeOutlined, HeartOutlined } from '@ant-design/icons';
 import { publishApi, type VideoAccountInput, type MiniProgramInput } from '../api/publish';
-import type { PublishProfile, PublishTask, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult } from '../types';
+import type { PublishProfile, PublishTask, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult, MultiOpVerification } from '../types';
 import { formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
 
 const { Title } = Typography;
@@ -62,6 +62,12 @@ const PublishManagement: React.FC = () => {
   const [qrUrl, setQrUrl] = useState('');
   const [qrHeartbeatStatus, setQrHeartbeatStatus] = useState<string | null>(null);
   const [qrHeartbeating, setQrHeartbeating] = useState(false);
+
+  // ── 多运营者验证向导（引导完成整套验证流程） ──
+  const [verification, setVerification] = useState<MultiOpVerification | null>(null);
+  const [verificationLoading, setVerificationLoading] = useState(false);
+  const [flagToggling, setFlagToggling] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
 
   const fetchTasks = () => {
     setTaskLoading(true);
@@ -126,12 +132,35 @@ const PublishManagement: React.FC = () => {
       .finally(() => setAuditLoading(false));
   };
 
+  // ── 多运营者验证向导：拉取实时状态报告 ──
+  const fetchVerification = () => {
+    setVerificationLoading(true);
+    publishApi.getVerificationStatus()
+      .then(setVerification)
+      .catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载验证状态失败'))
+      .finally(() => setVerificationLoading(false));
+  };
+
+  // 切换灰度开关（Redis 热更，主题7）
+  const toggleFlag = (enabled: boolean) => {
+    setFlagToggling(true);
+    publishApi.setMultiOperatorFlag(enabled)
+      .then((res) => {
+        message.success(res.message);
+        fetchVerification();
+        fetchMatrix();
+      })
+      .catch((err: unknown) => message.error(err instanceof Error ? err.message : '切换灰度开关失败'))
+      .finally(() => setFlagToggling(false));
+  };
+
   const fetchAll = () => {
     fetchTasks();
     fetchProfiles();
     fetchAccounts();
     fetchMiniPrograms();
     fetchMatrix();
+    fetchVerification();
   };
 
   useEffect(() => {
@@ -534,6 +563,77 @@ const PublishManagement: React.FC = () => {
     { title: 'TTL', dataIndex: 'ttl_seconds', key: 'ttl_seconds', width: 60, render: (t: number | null) => t ?? '-' },
   ];
 
+  // ── 多运营者验证向导：根据实时状态报告构建逐步检查清单 ──
+  const buildVerifySteps = (v: MultiOpVerification) => {
+    const opCount = v.operator_stats.length;
+    return [
+      {
+        key: 'flag',
+        step: '1️⃣ 灰度开关（部署入口）',
+        status: v.flag_on ? 'done' : 'pending',
+        detail: v.flag_on ? 'MULTI_OPERATOR_ENABLED 已开启' : 'MULTI_OPERATOR_ENABLED 未开启（当前零侵入旧链路）',
+        desc: '部署期先在页面右侧把开关置为开启；关闭时走单实例旧链路，回滚零侵入。',
+      },
+      {
+        key: 'instances',
+        step: '2️⃣ 多实例接线（路由表 + 端口池）',
+        status: v.route_count > 0 ? 'done' : 'pending',
+        detail: `Redis 已注册 profile ${v.profiles_in_redis} 个 / 路由表 ${v.route_count} 条`,  
+        desc: '需让 pub:profiles 驱动 rpa_worker 起多实例（9223+ 端口池）。路由表有数据即接线生效（R15）。',
+      },
+      {
+        key: 'routes',
+        step: '3️⃣ 路由表就绪（R12 秒级失效闭环）',
+        status: v.ready_accounts > 0 ? 'done' : (v.expired_accounts > 0 ? 'fail' : 'pending'),
+        detail: `就绪 ${v.ready_accounts} / 失效 ${v.expired_accounts} 个账号`,
+        desc: 'watcher 每 10s 探 /json/version，连续 2 次失败置 expired 并跳过调度。就绪数>0 才可投发。',
+      },
+      {
+        key: 'quota',
+        step: '4️⃣ 配额双闸门（整号 + 运营者 + inflight）',
+        status: opCount > 0 ? 'done' : 'pending',
+        detail: `已注册运营者 ${opCount} 个${opCount > 0 ? `，进行中 inflight ${v.operator_stats.reduce((a, b) => a + (b.inflight || 0), 0)}` : ''}`,
+        desc: 'Lua 原子双闸门：整号上限 AND 运营者上限 + inflight 并发信号量，随任务释放（R22）。',
+      },
+      {
+        key: 'auth',
+        step: '5️⃣ 登录态（扫码自服务 + 心跳）',
+        status: v.ready_accounts > 0 ? 'done' : 'pending',
+        detail: `登录态审计 ${v.login_audit_count} 条 / 就绪账号 ${v.ready_accounts} 个`,
+        desc: '在「运营者端口矩阵」Tab 选账号→登录态扫码→心跳检查置 valid。失效账号进独立扫码队列。',
+      },
+      {
+        key: 'security',
+        step: '6️⃣ 安全链路（二次鉴权 + 幂等）',
+        status: v.cdp_token_count >= 0 && v.pending_count >= 0 ? 'done' : 'pending',
+        detail: `存续 CDP token ${v.cdp_token_count} / 幂等待确认 ${v.pending_count}`,
+        desc: 'CDP 短期 token 单次消费防重放（R19）；幂等 pending 落 Redis，confirm 全量重填（R13/R18）。',
+      },
+      {
+        key: 'obs',
+        step: '7️⃣ 可观测（审计 + 风控）',
+        status: v.risk_event_count >= 0 ? 'done' : 'pending',
+        detail: `风控事件 ${v.risk_event_count} 条`,
+        desc: '发布/登录/风控四类审计可溯源 operator/actor/IP/hash；风控事件驱动毕业阈值统计。',
+      },
+      {
+        key: 'e2e',
+        step: '8️⃣ 端到端发布（真发一条验收）',
+        status: v.route_count > 0 && v.ready_accounts > 0 ? 'done' : 'pending',
+        detail: '在「发布任务」Tab 新建任务→确认发布→审计日志核对 trace',
+        desc: '创建一个测试发布任务走全链路，确认后到「审计日志」Tab 点 trace_id 溯源，验证 operator/actor/IP/端口完整链路。',
+      },
+      {
+        key: 'chaos',
+        step: '9️⃣ 混沌演练（上线前强制 R21）',
+        status: 'pending',
+        detail: '部署机执行 scripts/chaos_drill.py --scenario all',
+        desc: '模拟 Chromium 崩溃 / Redis 重启 / worker 重启，全链路自愈 ≤X 且 0 误发 0 重复。需在部署环境手动执行。',
+      },
+    ];
+  };
+
+
   const tabItems = [
     {
       key: 'tasks',
@@ -630,6 +730,62 @@ const PublishManagement: React.FC = () => {
         </Card>
       ),
     },
+    {
+      key: 'verify',
+      label: '验证向导',
+      children: (
+        <Card size="small" title="多运营者验证向导（引导完成整套验证流程）" extra={
+          <Space>
+            <Button size="small" icon={<QrcodeOutlined />} onClick={() => setGuideOpen(true)}>查看操作指引</Button>
+            <Button size="small" icon={<ReloadOutlined />} loading={verificationLoading} onClick={fetchVerification}>刷新</Button>
+          </Space>
+        }>
+          <Alert type="info" showIcon style={{ marginBottom: 16 }} message="按顺序逐步完成以下检查点即可打通整套多运营者发布链路。每步会基于 Redis / 审计实时状态自动判定完成度；未达标项会在「操作指引」里给出部署侧命令。全部通过后即可置 MULTI_OPERATOR_ENABLED=true 投入生产。" />
+
+          <Space style={{ marginBottom: 16 }} wrap>
+            <Typography.Text strong>灰度开关：</Typography.Text>
+            {verification ? (
+              <Switch
+                checked={verification.flag_on}
+                loading={flagToggling}
+                checkedChildren="已开启"
+                unCheckedChildren="已关闭"
+                onChange={(c) => toggleFlag(c)}
+              />
+            ) : <Tag color="default">待加载</Tag>}
+            {verification && (
+              <Tag color={verification.flag_on ? 'green' : 'orange'}>
+                {verification.flag_on ? '多运营者已启用（走路由表 + 端口池）' : '灰度关闭（零侵入旧链路）'}
+              </Tag>
+            )}
+          </Space>
+
+          {verification && (
+            <Table
+              rowKey="key"
+              size="small"
+              pagination={false}
+              dataSource={buildVerifySteps(verification)}
+              columns={[
+                { title: '步骤', dataIndex: 'step', key: 'step', width: 220, render: (v: string) => <Typography.Text strong>{v}</Typography.Text> },
+                {
+                  title: '状态', dataIndex: 'status', key: 'status', width: 110,
+                  render: (s: string) => {
+                    const map: Record<string, { c: string; l: string }> = { done: { c: 'green', l: '通过' }, pending: { c: 'orange', l: '待办' }, fail: { c: 'red', l: '需处理' } };
+                    const m = map[s] || { c: 'default', l: s || '-' };
+                    return <Tag color={m.c}>{m.l}</Tag>;
+                  },
+                },
+                { title: '检查点 / 当前值', dataIndex: 'detail', key: 'detail' },
+                { title: '说明', dataIndex: 'desc', key: 'desc', render: (v: string) => <Typography.Text type="secondary">{v}</Typography.Text> },
+              ]}
+            />
+          )}
+
+          {!verification && <Alert type="warning" showIcon message="加载失败或未拉取到验证状态，请点击「刷新」重试。" />}
+        </Card>
+      ),
+    },
   ];
 
   return (
@@ -653,6 +809,49 @@ const PublishManagement: React.FC = () => {
             </Typography.Paragraph>
           </div>
         )}
+      </Modal>
+
+      {/* 多运营者验证向导：操作指引（含部署侧命令） */}
+      <Modal
+        title="多运营者验证向导 · 操作指引"
+        open={guideOpen}
+        footer={null}
+        width={760}
+        onCancel={() => setGuideOpen(false)}
+      >
+        <Alert type="warning" showIcon style={{ marginBottom: 16 }} message="以下步骤需在部署环境（192.168.1.163 / rpa_worker / backend 容器）执行；页面内能做的检查已集成到「验证向导」Tab，其余为命令类操作。" />
+        <Typography.Title level={5}>① 前置检查（部署环境）</Typography.Title>
+        <Typography.Paragraph>
+          <code>docker compose ps</code> —— 确认 17 个服务全部 up；<br />
+          <code>ss -lntp | grep -E '9222|9223'</code> —— 确认 <code>start_chromium.sh</code> 与 <code>cdp_proxy</code> 在跑。
+        </Typography.Paragraph>
+        <Typography.Title level={5}>② QR 渲染 Spike（R7，验证扫码链路可行性）</Typography.Title>
+        <Typography.Paragraph>
+          <code>python3 scripts/qr_render_spike.py --port &lt;profile端口&gt;</code><br />
+          <Typography.Text type="secondary">退出码 0 = headless Chromium 可渲染微信二维码，可走「CDP 抽 QR → 加密存 MinIO → 自服务扫码」链路；退出码 1 = 退化「本机扫码 + cookie 注入」方案（R7）。</Typography.Text>
+        </Typography.Paragraph>
+        <Typography.Title level={5}>③ 开启灰度 + 多实例接线</Typography.Title>
+        <Typography.Paragraph>
+          在本页面「验证向导」Tab 把灰度开关置为开启，然后让 <code>pub:profiles</code> 驱动 rpa_worker 起多实例（9223+ 端口池，独立 user-data-dir）。切到「运营者端口矩阵」Tab 刷新，应能看到各 operator 路由。
+        </Typography.Paragraph>
+        <Typography.Title level={5}>④ 登录态扫码 + 心跳</Typography.Title>
+        <Typography.Paragraph>
+          在「运营者端口矩阵」Tab 选账号 →「登录态扫码」→ 微信扫码 →「心跳检查」置 valid。<br />
+          若心跳返回 need_login，重新扫码；失败置失效并进独立扫码队列，不影响其他 operator。
+        </Typography.Paragraph>
+        <Typography.Title level={5}>⑤ 端到端发布验收</Typography.Title>
+        <Typography.Paragraph>
+          「发布任务」Tab 新建任务 →「确认发布」→「审计日志」Tab 点 trace_id 溯源，核对 operator/actor/IP/端口完整链路（DoD 可溯源）。
+        </Typography.Paragraph>
+        <Typography.Title level={5}>⑥ 混沌演练（上线前强制 R21）</Typography.Title>
+        <Typography.Paragraph>
+          <code>python3 scripts/chaos_drill.py --scenario all</code><br />
+          <Typography.Text type="secondary">依次注入 Chromium 崩溃 / Redis 重启 / worker 重启，验证全链路自愈 ≤X 且 0 误发 0 重复。需 docker/root 权限。</Typography.Text>
+        </Typography.Paragraph>
+        <Typography.Title level={5}>⑦ 毕业 / 上生产</Typography.Title>
+        <Typography.Paragraph>
+          全部步骤通过后，多运营者链路即打通，可投入生产。若 7 日内风控受限 ≥2 次将触发毕业（换 IP 隔离），毕业控制器自动提升隔离级。
+        </Typography.Paragraph>
       </Modal>
 
       <Modal title="新建发布任务" open={taskModal} onOk={createTask} onCancel={() => setTaskModal(false)} destroyOnClose>

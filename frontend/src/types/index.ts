@@ -401,6 +401,22 @@ export interface AuditResult {
   items: PublishAuditItem[] | LoginAuditItem[] | RiskEventItem[];
 }
 
+// ========== 多运营者验证向导（引导完成整套验证流程） ==========
+
+export interface MultiOpVerification {
+  flag_on: boolean;
+  profiles_in_redis: number;
+  route_count: number;
+  ready_accounts: number;
+  expired_accounts: number;
+  pending_count: number;
+  cdp_token_count: number;
+  risk_event_count: number;
+  login_audit_count: number;
+  operator_stats: OperatorStat[];
+  routes: OperatorRouteRow[];
+}
+
 // ========== 短片分析（P3） ==========
 
 export interface ShortDramaGeneration {
