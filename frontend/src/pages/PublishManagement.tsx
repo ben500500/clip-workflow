@@ -667,6 +667,7 @@ const PublishManagement: React.FC = () => {
         const map: Record<string, { c: string; l: string }> = {
           ready: { c: 'green', l: '就绪' },
           logging: { c: 'orange', l: '登录中' },
+          need_login: { c: 'red', l: '待扫码' },
           expired: { c: 'red', l: '失效' },
           disabled: { c: 'default', l: '停用' },
           graduating: { c: 'blue', l: '毕业中' },
@@ -682,6 +683,16 @@ const PublishManagement: React.FC = () => {
     { title: '最后发布', dataIndex: 'last_post_at', key: 'last_post_at', width: 150, render: (t: string) => t || '-' },
     { title: '最后心跳', dataIndex: 'last_heartbeat', key: 'last_heartbeat', width: 150, render: (t: string) => t || '-' },
     { title: '出口 IP', dataIndex: 'egress_ip', key: 'egress_ip', width: 120, render: (v: string) => v || '-' },
+    {
+      title: '扫码归属', dataIndex: 'operator_name', key: 'operator_name_scan', width: 160,
+      render: (_: string, r: OperatorRouteRow) => {
+        const needScan = r.status === 'need_login' || r.status === 'logging' || r.status === 'expired';
+        const opName = r.operator_name && r.operator_name !== r.operator_id ? r.operator_name : r.operator_id?.slice(0, 8);
+        return needScan
+          ? <Tag color="orange">请 {opName || '-'} 扫码</Tag>
+          : <Typography.Text type="secondary">{opName ? `由 ${opName} 管理` : '-'}</Typography.Text>;
+      },
+    },
   ];
 
   const operatorStatColumns = [
@@ -884,20 +895,48 @@ const PublishManagement: React.FC = () => {
       children: (
         <Card size="small" title="运营者端口矩阵（多运营者看板）" extra={<Button size="small" icon={<ReloadOutlined />} onClick={fetchMatrix}>刷新</Button>}>
           <Alert type="info" showIcon style={{ marginBottom: 12 }} message="读取 Redis 路由表实时渲染各运营者 Chrome 端口/登录态/限额消耗。启用 MULTI_OPERATOR_ENABLED 后生效；未启用时列表为空。" />
+          {(() => {
+            const needScan = operatorMatrix.filter((r) => r.status === 'need_login' || r.status === 'logging' || r.status === 'expired');
+            if (needScan.length === 0) {
+              return <Alert type="success" showIcon style={{ marginBottom: 12 }} message="所有运营者登录态均已就绪，无需扫码。" />;
+            }
+            return (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={(
+                  <>
+                    共 <b>{needScan.length}</b> 个账号登录态失效/待扫码，需<b>各账号对应的运营者本人微信</b>扫码恢复：
+                    {needScan.map((r) => {
+                      const opName = r.operator_name && r.operator_name !== r.operator_id ? r.operator_name : r.operator_id?.slice(0, 8);
+                      const acctName = r.account_name && r.account_name !== r.account_id ? r.account_name : r.account_id?.slice(0, 8);
+                      return <div key={r.account_id} style={{ marginTop: 4 }}>· 「{acctName}」→ 请运营者 <b>{opName}</b> 扫码（端口 :{r.port}）</div>;
+                    })}
+                  </>
+                )}
+              />
+            );
+          })()}
           <Space style={{ marginBottom: 12 }} wrap>
             <Select
               placeholder="选择账号发起扫码/心跳"
-              style={{ width: 240 }}
+              style={{ width: 320 }}
               value={qrAccountId || undefined}
               onChange={(v) => setQrAccountId(v)}
-              options={operatorMatrix.map((r) => ({ value: r.account_id, label: `${r.account_name && r.account_name !== r.account_id ? r.account_name : r.account_id?.slice(0, 8)} (${r.status})` }))}
+              showSearch
+              optionFilterProp="label"
+              options={operatorMatrix.map((r) => ({
+                value: r.account_id,
+                label: `${r.account_name && r.account_name !== r.account_id ? r.account_name : r.account_id?.slice(0, 8)} · 运营者：${r.operator_name && r.operator_name !== r.operator_id ? r.operator_name : r.operator_id?.slice(0, 8)} (${r.status})`,
+              }))}
               allowClear
             />
             <Button type="primary" icon={<QrcodeOutlined />} loading={qrClaiming} onClick={applyQr}>登录态扫码</Button>
             <Button icon={<HeartOutlined />} loading={qrHeartbeating} onClick={runHeartbeat}>心跳检查</Button>
             {qrHeartbeatStatus && <Tag color={qrHeartbeatStatus === 'valid' ? 'green' : qrHeartbeatStatus === 'need_login' ? 'orange' : 'red'}>心跳: {qrHeartbeatStatus}</Tag>}
           </Space>
-          <Table rowKey="account_id" columns={matrixColumns} dataSource={operatorMatrix} loading={matrixLoading} pagination={false} size="small" scroll={{ x: 1150 }} />
+          <Table rowKey="account_id" columns={matrixColumns} dataSource={operatorMatrix} loading={matrixLoading} pagination={false} size="small" scroll={{ x: 1350 }} />
           <Typography.Text strong style={{ display: 'block', margin: '16px 0 8px' }}>运营者当日配额消耗</Typography.Text>
           <Table rowKey="operator_id" columns={operatorStatColumns} dataSource={operatorStats} loading={matrixLoading} pagination={false} size="small" scroll={{ x: 500 }} />
         </Card>
@@ -1006,7 +1045,22 @@ const PublishManagement: React.FC = () => {
 
       {/* 登录态扫码二维码弹窗（P0 主题1） */}
       <Modal title="登录态扫码" open={qrModalOpen} footer={null} onCancel={() => setQrModalOpen(false)}>
-        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="请用对应运营者微信扫码确认登录。二维码链接 TTL 90s 单次有效，过期需重新申请。" />
+        {(() => {
+          const sel = operatorMatrix.find((r) => r.account_id === qrAccountId);
+          const opName = sel && sel.operator_name && sel.operator_name !== sel.operator_id ? sel.operator_name : sel?.operator_id?.slice(0, 8);
+          const acctName = sel && sel.account_name && sel.account_name !== sel.account_id ? sel.account_name : sel?.account_id?.slice(0, 8);
+          return (
+            <>
+              <Alert type="info" showIcon style={{ marginBottom: 12 }} message={`正在为运营者「${opName || '-'}」的账号「${acctName || '-'}」（端口 :${sel?.port || '-'}）生成登录二维码。`} />
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message={`请务必使用运营者「${opName || '-'}」本人绑定的微信扫码，不要用其他管理员/运营者的微信，否则登录态会绑定到错误的账号。二维码 TTL 90s 单次有效，过期需重新申请。`}
+              />
+            </>
+          );
+        })()}
         {qrUrl && (
           <div style={{ textAlign: 'center' }}>
             <img src={qrUrl} alt="登录二维码" style={{ width: 260, height: 260, objectFit: 'contain', background: '#fff', border: '1px solid #f0f0f0', borderRadius: 8 }} />
