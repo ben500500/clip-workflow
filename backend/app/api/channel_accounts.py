@@ -5,10 +5,10 @@
 RBAC 过滤（operator 仅见自己 created_by 的台账）。
 """
 import uuid
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,10 @@ from app.models.models import (
 from app.utils.helpers import utc_iso
 
 router = APIRouter()
+
+
+# ---------- 合作模式枚举（IAA / IAP） ----------
+CooperationMode = Literal["IAA", "IAP"]
 
 
 # ---------- Pydantic Schemas ----------
@@ -56,7 +60,7 @@ class ChannelAccountCreate(BaseModel):
     verify_type: Optional[str] = None        # personal / enterprise
     verify_name: Optional[str] = None
     register_date: Optional[str] = None
-    cooperation_modes: Optional[List[str]] = None   # ["IAA","IAP"]
+    cooperation_modes: Optional[List[CooperationMode]] = None   # ["IAA","IAP"]
     coop_company: Optional[str] = None
     video_account_id: Optional[str] = None   # 可空，先登记后关联
     remark: Optional[str] = None
@@ -69,7 +73,7 @@ class ChannelAccountUpdate(BaseModel):
     verify_type: Optional[str] = None
     verify_name: Optional[str] = None
     register_date: Optional[str] = None
-    cooperation_modes: Optional[List[str]] = None
+    cooperation_modes: Optional[List[CooperationMode]] = None
     coop_company: Optional[str] = None
     video_account_id: Optional[str] = None
     remark: Optional[str] = None
@@ -91,7 +95,7 @@ class ChannelAccountResponse(BaseModel):
     created_by: Optional[str] = None
     created_at: str
     updated_at: str
-    operators: List[OperatorResponse] = []
+    operators: List[OperatorResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
