@@ -11,6 +11,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     '/batch-slice',
     '/watermark',
     '/resource-download',
+    '/channel-accounts',
     'analytics-sub',
     '/analytics/overview',
     '/analytics/shortdrama',
@@ -25,6 +26,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
   ],
   publisher: [
     '/dashboard',
+    '/channel-accounts',
     '/publish',
     'analytics-sub',
     '/analytics/overview',
