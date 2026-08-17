@@ -108,6 +108,7 @@ const ProjectDetail: React.FC = () => {
       return;
     }
     setMultiUploading(true);
+    setUploadProgress(0);
     try {
       const resp = await uploadApi.uploadMulti({
         projectName: name,
@@ -261,7 +262,13 @@ const ProjectDetail: React.FC = () => {
           >
             <p className="ant-upload-drag-icon"><InboxOutlined /></p>
             <p className="ant-upload-text">点击或拖拽单个视频到此处上传（上传到当前项目）</p>
-            {uploading && <Progress percent={uploadProgress} size="small" />}
+            {uploading && (
+              uploadProgress < 0 ? (
+                <Space size={4}><Spin size="small" /><Text type="secondary" style={{ fontSize: 12 }}>上传中…</Text></Space>
+              ) : (
+                <Progress percent={uploadProgress} size="small" status="active" />
+              )
+            )}
           </Dragger>
         </Space>
       </Card>
@@ -320,7 +327,13 @@ const ProjectDetail: React.FC = () => {
           {multiMerge && multiFiles.length > 1 && (
             <Alert type="info" showIcon message="合并将直接无损拼接（不转码），各视频需编码/分辨率/帧率一致；若素材不一致建议取消勾选，每个视频分别作为一集。" />
           )}
-          {multiUploading && <Progress percent={uploadProgress} size="small" />}
+          {multiUploading && (
+            uploadProgress < 0 ? (
+              <Space size={4}><Spin size="small" /><Text type="secondary" style={{ fontSize: 12 }}>上传中…</Text></Space>
+            ) : (
+              <Progress percent={uploadProgress} size="small" status="active" />
+            )
+          )}
         </Space>
       </Modal>
     </div>

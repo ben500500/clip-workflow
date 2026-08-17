@@ -11,10 +11,15 @@ export const uploadApi = {
       timeout: 3600000,
       signal,
       onUploadProgress: (progressEvent) => {
-        if (onProgress && progressEvent.total) {
-          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-          onProgress(percent);
+        if (!onProgress) return;
+        // total 缺失（极少数浏览器/请求下 progressEvent.total 为 0/undefined）
+        // 时无法计算百分比，回传 -1 让前端显示「上传中…」活动态，避免进度条冻在 0%。
+        if (!progressEvent.total) {
+          onProgress(-1);
+          return;
         }
+        const percent = Math.min(99, Math.round((progressEvent.loaded * 100) / progressEvent.total));
+        onProgress(percent);
       },
     }) as Promise<Episode>;
   },
@@ -54,10 +59,13 @@ export const uploadApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 7200000,
       onUploadProgress: (progressEvent) => {
-        if (params.onProgress && progressEvent.total) {
-          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-          params.onProgress(percent);
+        if (!params.onProgress) return;
+        if (!progressEvent.total) {
+          params.onProgress(-1);
+          return;
         }
+        const percent = Math.min(99, Math.round((progressEvent.loaded * 100) / progressEvent.total));
+        params.onProgress(percent);
       },
     }) as Promise<{
       project_id: string;
