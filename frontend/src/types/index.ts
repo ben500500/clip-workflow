@@ -304,6 +304,8 @@ export interface VideoAccount {
   account_uid: string | null;
   profile_id: string | null;
   mini_program_enabled: boolean;
+  // 发布跳转配置：['native'] / ['mini_program'] / 两者都选
+  publish_jump?: string[] | null;
   remark: string | null;
   enabled: boolean;
   created_by: string | null;
@@ -327,6 +329,9 @@ export interface MiniProgram {
 
 export interface OperatorRouteRow {
   account_id: string;
+  // 可读名称（后端解析补全）
+  account_name?: string;
+  operator_name?: string;
   port: number;
   status: string;
   operator_id: string;

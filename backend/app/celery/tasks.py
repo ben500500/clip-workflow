@@ -1190,6 +1190,7 @@ def task_publish_video(self, publish_task_id: str):
             tags=publish_task_data.get("tags"),
             cover_file_key=publish_task_data.get("cover_file_key"),
             mini_program_link=publish_task_data.get("mini_program_link"),
+            publish_jump=publish_task_data.get("publish_jump"),
             task_id=publish_task_id,
         ))
 
@@ -1674,6 +1675,7 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
             "tags": task.tags,
             "cover_file_key": task.cover_file_key,
             "mini_program_link": task.mini_program_link,
+            "publish_jump": list(task.publish_jump) if task.publish_jump else None,
             "require_manual_confirm": task.require_manual_confirm,
             "video_account_id": str(task.video_account_id) if task.video_account_id else None,
             "mini_program_id": str(task.mini_program_id) if task.mini_program_id else None,

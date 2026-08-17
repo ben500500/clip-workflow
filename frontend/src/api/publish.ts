@@ -26,6 +26,8 @@ export interface VideoAccountInput {
   account_uid?: string;
   profile_id?: string;
   mini_program_enabled?: boolean;
+  // 发布跳转配置：['native'] / ['mini_program'] / 两者都选
+  publish_jump?: string[];
   remark?: string;
   enabled?: boolean;
   operator_id?: string;
@@ -106,6 +108,12 @@ export const publishApi = {
     client.put(`/publish/video-accounts/${id}`, data) as Promise<VideoAccount>,
 
   deleteVideoAccount: (id: string) => client.delete(`/publish/video-accounts/${id}`) as Promise<void>,
+
+  batchAssignProfile: (accountIds: string[], profileId?: string) =>
+    client.post('/publish/video-accounts/batch-assign-profile', {
+      account_ids: accountIds,
+      profile_id: profileId,
+    }) as Promise<{ updated: number; errors: { account_id: string; error: string }[] }>,
 
   // ── 多运营者发布批次（R14） ──
   getBatches: () => client.get('/publish/batches') as Promise<PublishBatch[]>,

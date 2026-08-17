@@ -1,15 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, InputNumber, Alert, Tabs, Tooltip, Switch, DatePicker,
+  Card, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, InputNumber, Alert, Tabs, Tooltip, Switch, DatePicker, Popconfirm,
 } from 'antd';
-import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined, QrcodeOutlined, HeartOutlined, QuestionCircleOutlined } from '@ant-design/icons';
+import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined, QrcodeOutlined, HeartOutlined, QuestionCircleOutlined, LinkOutlined } from '@ant-design/icons';
 import { publishApi, type VideoAccountInput, type MiniProgramInput } from '../api/publish';
-import { channelAccountApi, type ChannelAccountFromVideoAccountInput } from '../api/channelAccounts';
 import type { PublishProfile, PublishTask, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult, MultiOpVerification } from '../types';
 import { formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
 import dayjs from 'dayjs';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 const PLATFORM_LABELS: Record<string, string> = {
   wechat_channel: '视频号',
@@ -29,11 +28,11 @@ const PublishManagement: React.FC = () => {
   const [editingProfile, setEditingProfile] = useState<PublishProfile | null>(null);
   const [editingAccount, setEditingAccount] = useState<VideoAccount | null>(null);
   const [editingMiniProgram, setEditingMiniProgram] = useState<MiniProgram | null>(null);
-  // ── 从账号库一键登记台账（方向1） ──
-  const [ledgerModal, setLedgerModal] = useState(false);
-  const [ledgerAccount, setLedgerAccount] = useState<VideoAccount | null>(null);
-  const [ledgerSaving, setLedgerSaving] = useState(false);
-  const [ledgerForm] = Form.useForm();
+  // ── 视频号账号：批量关联发布配置 ──
+  const [selectedAccountIds, setSelectedAccountIds] = useState<React.Key[]>([]);
+  const [batchProfileModal, setBatchProfileModal] = useState(false);
+  const [batchProfileSaving, setBatchProfileSaving] = useState(false);
+  const [batchProfileForm] = Form.useForm();
   const [taskLoading, setTaskLoading] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
   const [accountLoading, setAccountLoading] = useState(false);
@@ -270,6 +269,7 @@ const PublishManagement: React.FC = () => {
         account_uid: values.account_uid,
         profile_id: values.profile_id || undefined,
         mini_program_enabled: values.mini_program_enabled || false,
+        publish_jump: values.publish_jump,
         remark: values.remark,
         enabled: values.enabled !== false,
       };
@@ -285,6 +285,31 @@ const PublishManagement: React.FC = () => {
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'errorFields' in err) return;
       message.error(err instanceof Error ? err.message : '保存失败');
+    }
+  };
+
+  // 批量关联发布配置：为选中的多个账号一次性设置 profile_id
+  const saveBatchAssignProfile = async () => {
+    if (!selectedAccountIds.length) {
+      message.warning('请先勾选要关联的账号');
+      return;
+    }
+    try {
+      const values = await batchProfileForm.validateFields();
+      setBatchProfileSaving(true);
+      const ids = selectedAccountIds.map((k) => String(k));
+      const res = await publishApi.batchAssignProfile(ids, values.profile_id || undefined);
+      const failed = (res.errors || []).length;
+      message.success(`已为 ${res.updated} 个账号关联发布配置${failed ? `，${failed} 个失败` : ''}`);
+      setBatchProfileModal(false);
+      setSelectedAccountIds([]);
+      batchProfileForm.resetFields();
+      fetchAccounts();
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'errorFields' in err) return;
+      message.error(err instanceof Error ? err.message : '批量关联失败');
+    } finally {
+      setBatchProfileSaving(false);
     }
   };
 
@@ -311,41 +336,6 @@ const PublishManagement: React.FC = () => {
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'errorFields' in err) return;
       message.error(err instanceof Error ? err.message : '保存失败');
-    }
-  };
-
-  // 从账号库一键登记台账（方向1）
-  const openLedger = (a: VideoAccount) => {
-    setLedgerAccount(a);
-    ledgerForm.resetFields();
-    setLedgerModal(true);
-  };
-
-  const saveLedger = async () => {
-    if (!ledgerAccount) return;
-    try {
-      const values = await ledgerForm.validateFields();
-      setLedgerSaving(true);
-      const payload: ChannelAccountFromVideoAccountInput = {
-        video_account_id: ledgerAccount.id,
-        verify_type: values.verify_type,
-        verify_name: values.verify_name,
-        register_date: values.register_date
-          ? values.register_date.format('YYYY-MM-DD')
-          : undefined,
-        cooperation_modes: values.cooperation_modes || [],
-        coop_company: values.coop_company,
-        remark: values.remark,
-        enabled: values.enabled !== false,
-      };
-      await channelAccountApi.createFromVideoAccount(payload);
-      message.success(`已为「${ledgerAccount.account_name}」登记视频号台账，号主已自动加入运营者`);
-      setLedgerModal(false);
-    } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'errorFields' in err) return;
-      message.error(err instanceof Error ? err.message : '登记失败');
-    } finally {
-      setLedgerSaving(false);
     }
   };
 
@@ -433,6 +423,29 @@ const PublishManagement: React.FC = () => {
     { title: '分组', dataIndex: 'group_name', key: 'group_name', width: 110, ellipsis: true, render: (g: string) => g ? <Tag>{g}</Tag> : '-' },
     { title: '视频号ID', dataIndex: 'wxid', key: 'wxid', width: 130, ellipsis: true, render: (w: string) => w || '-' },
     { title: '小程序挂载', dataIndex: 'mini_program_enabled', key: 'mini_program_enabled', width: 110, render: (v: boolean) => v ? <Tag color="green">支持</Tag> : <Tag>不支持</Tag> },
+    {
+      title: '发布关联配置',
+      key: 'profile',
+      width: 150,
+      ellipsis: true,
+      render: (_: unknown, a: VideoAccount) => {
+        const p = profiles.find((x) => x.id === a.profile_id);
+        return p ? <Tag color="geekblue">{p.account_name}（:{p.chrome_debug_port}）</Tag> : <Text type="secondary">未关联</Text>;
+      },
+    },
+    {
+      title: '发布跳转',
+      key: 'publish_jump',
+      width: 130,
+      render: (_: unknown, a: VideoAccount) => {
+        const jump = a.publish_jump || [];
+        if (!jump.length) return <Text type="secondary">默认</Text>;
+        const tags: React.ReactNode[] = [];
+        if (jump.includes('native')) tags.push(<Tag color="blue" key="native">端原生</Tag>);
+        if (jump.includes('mini_program')) tags.push(<Tag color="purple" key="mini">小程序</Tag>);
+        return <Space size={4}>{tags}</Space>;
+      },
+    },
     { title: '备注', dataIndex: 'remark', key: 'remark', width: 160, ellipsis: true, render: (r: string) => r || '-' },
     {
       title: '启用',
@@ -471,21 +484,27 @@ const PublishManagement: React.FC = () => {
               account_uid: a.account_uid,
               profile_id: a.profile_id || undefined,
               mini_program_enabled: a.mini_program_enabled,
+              publish_jump: a.publish_jump || [],
               remark: a.remark,
               enabled: a.enabled,
             });
             setAccountModal(true);
           }}>编辑</Button>
-          <Button size="small" icon={<HeartOutlined />} onClick={() => openLedger(a)}>登记台账</Button>
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={async () => {
-            try {
-              await publishApi.deleteVideoAccount(a.id);
-              message.success('已删除');
-              fetchAccounts();
-            } catch (err: unknown) {
-              message.error(err instanceof Error ? err.message : '删除失败');
-            }
-          }}>删除</Button>
+          <Popconfirm
+            title="确认删除该视频号账号？"
+            description="删除后无法恢复，相关发布关联配置将被解除。"
+            onConfirm={async () => {
+              try {
+                await publishApi.deleteVideoAccount(a.id);
+                message.success('已删除');
+                fetchAccounts();
+              } catch (err: unknown) {
+                message.error(err instanceof Error ? err.message : '删除失败');
+              }
+            }}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
         </Space>
       ),
     },
@@ -532,6 +551,8 @@ const PublishManagement: React.FC = () => {
   // ── 多运营者：运营者端口矩阵 + 审计 列定义 ──
   const matrixColumns = [
     { title: '端口', dataIndex: 'port', key: 'port', width: 80, render: (p: number) => p ? `:${p}` : '-' },
+    { title: '账号名称', dataIndex: 'account_name', key: 'account_name', width: 150, ellipsis: true, render: (n: string, r: OperatorRouteRow) => n && n !== r.account_id ? n : (r.account_id ? r.account_id.slice(0, 8) : '-') },
+    { title: '运营者名称', dataIndex: 'operator_name', key: 'operator_name', width: 120, ellipsis: true, render: (n: string, r: OperatorRouteRow) => n && n !== r.operator_id ? n : (r.operator_id ? r.operator_id.slice(0, 8) : '-') },
     {
       title: '状态', dataIndex: 'status', key: 'status', width: 110,
       render: (s: string) => {
@@ -703,9 +724,21 @@ const PublishManagement: React.FC = () => {
       key: 'accounts',
       label: `视频号账号 (${accounts.length})`,
       children: (
-        <Card size="small" title="视频号/抖音账号库（矩阵管理）" extra={<Button size="small" icon={<PlusOutlined />} onClick={() => { setEditingAccount(null); accountForm.resetFields(); setAccountModal(true); }}>新增账号</Button>}>
-          <Alert type="info" showIcon style={{ marginBottom: 12 }} message="账号库用于「一键发布」时下拉选择账号（自动绑定发布配置的 Chrome 端口与 Cookie 登录态），支持分组（如剧集A/B、情感）与小程序挂载资质标记。可在「发布配置」中先建好配置，再把账号与其关联。" />
-          <Table rowKey="id" columns={accountColumns} dataSource={accounts} loading={accountLoading} pagination={false} size="small" scroll={{ x: 1100 }} />
+        <Card size="small" title="视频号/抖音账号库（矩阵管理）" extra={<Space wrap>
+          <Button size="small" icon={<LinkOutlined />} disabled={!selectedAccountIds.length} onClick={() => { batchProfileForm.resetFields(); setBatchProfileModal(true); }}>批量关联配置{selectedAccountIds.length ? ` (${selectedAccountIds.length})` : ''}</Button>
+          <Button size="small" icon={<PlusOutlined />} onClick={() => { setEditingAccount(null); accountForm.resetFields(); setAccountModal(true); }}>新增账号</Button>
+        </Space>}>
+          <Alert type="info" showIcon style={{ marginBottom: 12 }} message="账号库用于「一键发布」时下拉选择账号（自动绑定发布配置的 Chrome 端口与 Cookie 登录态），支持分组（如剧集A/B、情感）与小程序挂载资质标记。可在「发布配置」中先建好配置，再把账号与其关联；也可勾选多个账号后点「批量关联配置」一次性设置。" />
+          <Table
+            rowKey="id"
+            columns={accountColumns}
+            dataSource={accounts}
+            loading={accountLoading}
+            pagination={false}
+            size="small"
+            scroll={{ x: 1300 }}
+            rowSelection={{ selectedRowKeys: selectedAccountIds, onChange: setSelectedAccountIds }}
+          />
         </Card>
       ),
     },
@@ -731,7 +764,7 @@ const PublishManagement: React.FC = () => {
               style={{ width: 240 }}
               value={qrAccountId || undefined}
               onChange={(v) => setQrAccountId(v)}
-              options={operatorMatrix.map((r) => ({ value: r.account_id, label: `${r.account_id?.slice(0, 8)} (${r.status})` }))}
+              options={operatorMatrix.map((r) => ({ value: r.account_id, label: `${r.account_name && r.account_name !== r.account_id ? r.account_name : r.account_id?.slice(0, 8)} (${r.status})` }))}
               allowClear
             />
             <Button type="primary" icon={<QrcodeOutlined />} loading={qrClaiming} onClick={applyQr}>登录态扫码</Button>
@@ -986,6 +1019,21 @@ const PublishManagement: React.FC = () => {
           <Form.Item name="mini_program_enabled" label="视频号小程序挂载资质" valuePropName="checked">
             <Switch />
           </Form.Item>
+          <Form.Item
+            name="publish_jump"
+            label="发布跳转配置（可多选）"
+            extra="端原生=视频号发布页链接「视频号剧集」；小程序=「小程序短剧」。发布时据此选择；不选走平台默认。"
+          >
+            <Select
+              mode="multiple"
+              placeholder="端原生 / 小程序（可多选）"
+              options={[
+                { value: 'native', label: '端原生（视频号剧集）' },
+                { value: 'mini_program', label: '小程序（小程序短剧）' },
+              ]}
+              allowClear
+            />
+          </Form.Item>
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={2} />
           </Form.Item>
@@ -995,66 +1043,28 @@ const PublishManagement: React.FC = () => {
         </Form>
       </Modal>
 
-      {/* 从账号库一键登记台账（方向1） */}
+      {/* 视频号账号：批量关联发布配置 */}
       <Modal
-        title={`登记视频号台账 - ${ledgerAccount?.account_name || ''}`}
-        open={ledgerModal}
-        onOk={saveLedger}
-        confirmLoading={ledgerSaving}
-        onCancel={() => setLedgerModal(false)}
+        title={`批量关联发布配置（已选 ${selectedAccountIds.length} 个账号）`}
+        open={batchProfileModal}
+        onOk={saveBatchAssignProfile}
+        confirmLoading={batchProfileSaving}
+        onCancel={() => setBatchProfileModal(false)}
         destroyOnClose
-        width={640}
       >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message="将从该发布账号自动带出视频号名称/微信号，并把账号号主自动加入运营者"
-        />
-        <Form form={ledgerForm} layout="vertical" initialValues={{ enabled: true }}>
-          <Form.Item label="视频号名称">
-            <Input value={ledgerAccount?.account_name || ''} disabled />
-          </Form.Item>
-          <Form.Item label="微信号">
-            <Input value={ledgerAccount?.wxid || '（未填写）'} disabled />
-          </Form.Item>
-          <Space style={{ display: 'flex' }} size="large">
-            <Form.Item name="verify_type" label="实名类型">
-              <Select
-                placeholder="个人/企业"
-                allowClear
-                style={{ width: 160 }}
-                options={[
-                  { value: 'personal', label: '个人' },
-                  { value: 'enterprise', label: '企业' },
-                ]}
-              />
-            </Form.Item>
-            <Form.Item name="verify_name" label="实名人">
-              <Input placeholder="选填" style={{ width: 200 }} />
-            </Form.Item>
-            <Form.Item name="register_date" label="注册日期">
-              <DatePicker style={{ width: 150 }} />
-            </Form.Item>
-          </Space>
-          <Form.Item name="cooperation_modes" label="合作模式（可多选，IAA/IAP 可共存）">
+        <Alert type="info" showIcon style={{ marginBottom: 16 }} message="将选中的账号一次性设置为同一个发布配置（决定 Chrome 端口与 Cookie 登录态）。" />
+        <Form form={batchProfileForm} layout="vertical">
+          <Form.Item name="profile_id" label="发布配置">
             <Select
-              mode="multiple"
-              placeholder="选择合作模式"
-              options={[
-                { value: 'IAA', label: 'IAA' },
-                { value: 'IAP', label: 'IAP' },
-              ]}
+              allowClear
+              showSearch
+              placeholder="选择发布配置（清空则取消关联）"
+              optionFilterProp="label"
+              options={profiles.map((p) => ({
+                value: p.id,
+                label: `${PLATFORM_LABELS[p.platform || ''] || p.platform} - ${p.account_name}（端口 ${p.chrome_debug_port}）`,
+              }))}
             />
-          </Form.Item>
-          <Form.Item name="coop_company" label="合作公司">
-            <Input placeholder="选填" />
-          </Form.Item>
-          <Form.Item name="remark" label="备注">
-            <Input.TextArea rows={2} placeholder="选填" />
-          </Form.Item>
-          <Form.Item name="enabled" label="启用" valuePropName="checked">
-            <Switch />
           </Form.Item>
         </Form>
       </Modal>
