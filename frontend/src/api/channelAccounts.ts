@@ -2,14 +2,15 @@ import client from './client';
 import type { ChannelAccount, ChannelOperator } from '../types';
 
 export interface ChannelAccountInput {
-  channel_name?: string;            // 缺省由账号库自动带出
-  wechat_id?: string;               // 缺省由账号库自动带出
+  channel_name?: string;            // 视频号名称（列表先登记，必填）
+  wechat_id?: string;               // 视频号ID（平台侧唯一标识）
+  platform?: string;                // 同步到账号库时的平台，缺省视频号
   verify_type?: string;          // personal / enterprise
   verify_name?: string;
   register_date?: string;        // YYYY-MM-DD
   cooperation_modes?: string[];  // IAA / IAP
   coop_company?: string;
-  video_account_id: string;      // 方向1：必填，以账号库为主数据
+  video_account_id?: string;     // 选填：已存在账号库关联时直接绑定；否则自动同步创建
   remark?: string;
   enabled?: boolean;
 }
