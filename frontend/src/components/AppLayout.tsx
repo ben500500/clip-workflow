@@ -21,6 +21,7 @@ import {
   WarningOutlined,
   CloudDownloadOutlined,
   ContactsOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -61,6 +62,11 @@ const allMenuItems = [
     key: '/publish',
     icon: <SendOutlined />,
     label: '发布管理',
+  },
+  {
+    key: '/variant-matrix',
+    icon: <ThunderboltOutlined />,
+    label: '变体矩阵',
   },
   {
     key: '/channel-accounts',

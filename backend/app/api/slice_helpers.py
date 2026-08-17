@@ -99,6 +99,8 @@ class TextOverlayItem(BaseModel):
 class SliceRunRequest(BaseModel):
     mode: str = "fast"
     dedupe_config: Optional[dict] = None
+    # 多视频号素材去重：需要生成的素材变体数（null/1=不生成，零侵入；>1=切片后自动派生 N 个去重版本）
+    variant_count: Optional[int] = None
     video_path: Optional[str] = None
     engine: Optional[str] = None  # "celery" | "worker"，默认取配置 SLICE_ENGINE
     # 免审核一键切片：为 True 时自动把所有候选片段（含 pending）纳入切片，

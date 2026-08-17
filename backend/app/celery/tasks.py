@@ -1134,11 +1134,25 @@ async def _save_slice_outputs(
                 duration=out.get("duration"),
             ))
 
+        created_outputs: list = []
+        variant_count = 1
+        base_dedupe = None
+        created_by = None
+        if tid is not None:
+            # 收集本次新建的输出 id（变体生成需要）
+            new_outs = await session.execute(
+                select(SliceOutput).where(SliceOutput.task_id == tid)
+            )
+            created_outputs = new_outs.scalars().all()
+
         if tid is not None:
             task_result = await session.execute(
                 select(SliceTask).where(SliceTask.id == tid)
             )
             task = task_result.scalar_one_or_none()
+            variant_count = int(task.variant_count or 1) if task else 1
+            base_dedupe = task.dedupe_config if task else None
+            created_by = None
             if task:
                 task.status = "completed"
                 task.progress = 100.0
@@ -1155,6 +1169,25 @@ async def _save_slice_outputs(
                 episode.status = "completed"
 
         await session.commit()
+
+    # 多视频号素材去重：切片成功后自动派生 N 套去重变体（异步，不阻塞主链路）
+    # variant_count>1 时对每个输出触发变体生成；variant_count<=1 时零侵入跳过。
+    if variant_count > 1 and created_outputs:
+        try:
+            from app.celery.variant_tasks import generate_variants_task
+            for out in created_outputs:
+                generate_variants_task.delay(
+                    str(out.id),
+                    count=variant_count,
+                    base_dedupe=base_dedupe,
+                    created_by=created_by,
+                )
+            logger.info(
+                "已投递变体生成任务: task=%s outputs=%s variant_count=%s",
+                task_id, len(created_outputs), variant_count,
+            )
+        except Exception as e:
+            logger.exception("投递变体生成任务失败 task=%s: %s", task_id, e)
 
 
 async def _fail_slice_task(task_id: Optional[str], error: str):
@@ -1191,6 +1224,26 @@ def task_publish_video(self, publish_task_id: str):
         publish_task_data = run_async(_get_publish_task(publish_task_id))
         if not publish_task_data:
             raise Exception(f"Publish task {publish_task_id} not found")
+
+        # 发布护栏（多视频号素材去重）：一个账号只允许绑定一个变体。
+        # 在真正发布前二次校验，防止同素材原样发多号被平台判定搬运。
+        try:
+            from app.services.variant_service import guard_account_variant_unique
+            _pub_account = publish_task_data.get("account_id")
+            _pub_output = publish_task_data.get("output_id")
+            if _pub_account and _pub_output:
+                guard = run_async(guard_account_variant_unique(
+                    _pub_account, output_id=_pub_output
+                ))
+                if not guard["allowed"]:
+                    raise Exception("publish blocked by one-account-one-variant guard: " + guard["reason"])
+        except Exception as e:
+            run_async(_update_publish_task_status(
+                publish_task_id, status="failed",
+                error_message="one-account-one-variant guard: " + str(e),
+            ))
+            self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+            raise
 
         # 多运营者(R22):配额双闸门 + inflight 信号量(Lua 原子,nil 兜底)
         # 方向③ 风控/节奏可配置化:配额参数与随机延迟从 SystemConfig 热更读取
@@ -2330,9 +2383,18 @@ from app.celery.shortdrama_tasks import (  # noqa: E402,F401
     seedance_generate_task,
 )
 
+# 多视频号素材去重：注册素材变体生成 / 指纹校验任务到本 Celery app。
+# variant_tasks 依赖本模块的 celery_app / run_async，置于末尾避免循环导入。
+from app.celery.variant_tasks import (  # noqa: E402,F401
+    generate_variants_task,
+    verify_variant_fingerprint_task,
+)
+
 __all__ = [
     "doubao_generate_task",
     "seedance_generate_task",
+    "generate_variants_task",
+    "verify_variant_fingerprint_task",
 ]
 
 

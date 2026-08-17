@@ -84,6 +84,10 @@ from app.models.channel import (
     ChannelAccount,
     ChannelOperator,
 )
+from app.models.variant import (
+    ClipVariant,
+    VideoFingerprint,
+)
 
 __all__ = [
     # 用户/认证
@@ -143,4 +147,7 @@ __all__ = [
     # 视频号台账
     "ChannelAccount",
     "ChannelOperator",
+    # 多视频号素材去重
+    "ClipVariant",
+    "VideoFingerprint",
 ]

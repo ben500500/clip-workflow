@@ -279,6 +279,7 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
     # 仅透传 SliceRunRequest 已知字段，避免前端预设里的额外键导致 pydantic 报错
     known_fields = {
         "mode", "dedupe_config", "engine", "auto_accept_all",
+        "variant_count",
         "watermark_enabled", "watermark_text", "watermark_font_size",
         "watermark_opacity", "watermark_position", "watermark_style", "badges", "badge_default_width",
         "vert2horiz_enabled", "vert2horiz_mode", "vert2horiz_ratio",

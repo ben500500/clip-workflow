@@ -31,6 +31,7 @@ import Maintenance from './pages/Maintenance';
 import ShortDrama from './pages/ShortDrama';
 import NotFound from './pages/NotFound';
 import BatchSlice from './pages/BatchSlice';
+import VariantMatrix from './pages/VariantMatrix';
 import ResourceDownload from './pages/ResourceDownload';
 import ChannelAccounts from './pages/ChannelAccounts';
 
@@ -58,6 +59,7 @@ const App: React.FC = () => {
             <Route path="episodes/:episodeId/slice" element={<SliceTasksPage />} />
             <Route path="episodes/:episodeId/preview" element={<OutputPreviewPage />} />
             <Route path="publish" element={<PublishManagement />} />
+            <Route path="variant-matrix" element={<VariantMatrix />} />
             <Route path="channel-accounts" element={<ChannelAccounts />} />
             <Route path="analytics/overview" element={<DashboardOverview />} />
             <Route path="analytics/shortdrama" element={<ShortDramaAnalysis />} />

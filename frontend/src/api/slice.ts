@@ -40,6 +40,8 @@ export const sliceApi = {
     mode: string,
     data?: {
       dedupe_config?: DedupeConfig;
+      // 多视频号素材去重：多版本生成数（>1 时切片后自动派生 N 个去重版本）
+      variant_count?: number;
       video_path?: string;
       engine?: string;
       auto_accept_all?: boolean;
