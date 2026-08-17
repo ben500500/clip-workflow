@@ -12,6 +12,7 @@ import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/
 import type { SliceOutput, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 import { buildSliceConfigTooltip } from '../utils/sliceConfigTooltip';
+import { WATERMARK_STYLE_OPTIONS, WATERMARK_STYLE_LABEL } from '../utils/watermarkStyles';
 
 const { Title, Text } = Typography;
 
@@ -81,6 +82,7 @@ const SliceTasks: React.FC = () => {
   const [watermarkFontSize, setWatermarkFontSize] = useState(28);
   const [watermarkOpacity, setWatermarkOpacity] = useState(0.5);
   const [watermarkPosition, setWatermarkPosition] = useState('bottom');
+  const [watermarkStyle, setWatermarkStyle] = useState('scroll');
   // 动态文字水印设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
   const [watermarkModalOpen, setWatermarkModalOpen] = useState(false);
   // 图片角标列表：每个含 file_key（上传后 MinIO key）、position（位置）、width（可选宽度）、offset（可选偏移）、opacity（可选透明度）
@@ -199,6 +201,7 @@ const SUBTITLE_MASK_PRESETS = [
         watermark_font_size: watermarkEnabled ? watermarkFontSize : undefined,
         watermark_opacity: watermarkEnabled ? watermarkOpacity : undefined,
         watermark_position: watermarkEnabled ? watermarkPosition : undefined,
+        watermark_style: watermarkEnabled ? watermarkStyle : undefined,
         // 图片角标：传递每个角标的 file_key / position / width / offset / opacity
         badges: badges.length > 0
           ? badges.map((b) => ({
@@ -1180,6 +1183,19 @@ const SUBTITLE_MASK_PRESETS = [
                     { value: 'top', label: '顶部' },
                   ]}
                 />
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>形态</Text>
+                <Select
+                  size="small"
+                  style={{ width: 150 }}
+                  value={watermarkStyle}
+                  onChange={setWatermarkStyle}
+                  options={WATERMARK_STYLE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                />
+                <Text type="secondary" style={{ fontSize: 12, maxWidth: 240 }}>
+                  {WATERMARK_STYLE_OPTIONS.find((o) => o.value === watermarkStyle)?.desc || ''}
+                </Text>
               </Space>
             </Space>
           </Modal>

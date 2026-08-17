@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { WATERMARK_STYLE_OPTIONS } from '../utils/watermarkStyles';
 import {
   Card, Form, Input, Button, InputNumber, Select, Switch, Space, Divider,
   Table, Tag, Progress, message, Alert, Typography, Modal, List, Spin, Tooltip, Slider,
@@ -78,6 +79,7 @@ interface SliceConfigState {
   watermark_font_size: number;
   watermark_opacity: number;
   watermark_position: string;
+  watermark_style: string;
 }
 
 const DEFAULT_SLICE_CONFIG: SliceConfigState = {
@@ -130,6 +132,7 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   watermark_font_size: 28,
   watermark_opacity: 0.5,
   watermark_position: 'bottom',
+  watermark_style: 'scroll',
 };
 
 const POSITIONS = ['top-left', 'top-center', 'top-right', 'left', 'bottom-left', 'bottom-center', 'bottom-right'];
@@ -1091,6 +1094,13 @@ const BatchSlicePage: React.FC = () => {
                     { value: 'bottom', label: '底部' },
                     { value: 'top', label: '顶部' },
                   ]}
+                />
+                <Text>形态</Text>
+                <Select
+                  value={sliceConfig.watermark_style}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, watermark_style: v })}
+                  style={{ width: 90 }}
+                  options={WATERMARK_STYLE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
                 />
                 <Text>字号</Text>
                 <InputNumber

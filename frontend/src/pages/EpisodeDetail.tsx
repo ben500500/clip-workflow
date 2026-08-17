@@ -19,6 +19,7 @@ import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/
 import type { AutoClipRunRecord, ClipCandidate, Episode, IntervalHistoryItem, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 import { buildSliceConfigTooltip } from '../utils/sliceConfigTooltip';
+import { WATERMARK_STYLE_OPTIONS, WATERMARK_STYLE_LABEL } from '../utils/watermarkStyles';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -156,6 +157,7 @@ interface SlicePreset {
   watermark_font_size: number;
   watermark_opacity: number;
   watermark_position: string;
+  watermark_style: string;
   // 图片角标默认尺寸
   badge_default_width: number;
 }
@@ -202,6 +204,7 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   watermark_font_size: 28,
   watermark_opacity: 0.5,
   watermark_position: 'bottom',
+  watermark_style: 'scroll',
   watermark_mask_enabled: false,
   watermark_mask_style: 'delogo',
   watermark_mask_width_ratio: 0.9,
@@ -231,6 +234,7 @@ const EpisodeDetail: React.FC = () => {
   const [watermarkFontSize, setWatermarkFontSize] = useState(28);
   const [watermarkOpacity, setWatermarkOpacity] = useState(0.5);
   const [watermarkPosition, setWatermarkPosition] = useState('bottom');
+  const [watermarkStyle, setWatermarkStyle] = useState('scroll');
   // 动态文字水印设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
   const [watermarkModalOpen, setWatermarkModalOpen] = useState(false);
   // ── 竖屏转横屏智能裁切开关与参数 ──
@@ -502,6 +506,7 @@ const EpisodeDetail: React.FC = () => {
     watermark_font_size: watermarkFontSize,
     watermark_opacity: watermarkOpacity,
     watermark_position: watermarkPosition,
+    watermark_style: watermarkStyle,
     badge_default_width: badgeDefaultWidth,
   });
 
@@ -545,6 +550,7 @@ const EpisodeDetail: React.FC = () => {
     setWatermarkFontSize(p.watermark_font_size);
     setWatermarkOpacity(p.watermark_opacity);
     setWatermarkPosition(p.watermark_position);
+    setWatermarkStyle(p.watermark_style || 'scroll');
     setBadgeDefaultWidth(p.badge_default_width);
     setActivePresetId(p.id);
   };
@@ -655,7 +661,7 @@ const EpisodeDetail: React.FC = () => {
     subtitleMaskWidthRatio, subtitleMaskHeightRatio, subtitleMaskBottomRatio, subtitleMaskSrtOffset,
     watermarkMaskEnabled, watermarkMaskStyle, watermarkMaskWidthRatio, watermarkMaskHeightRatio,
     watermarkMaskBottomRatio, textOverlayEnabled, textOverlays, watermarkEnabled, watermarkText,
-    watermarkFontSize, watermarkOpacity, watermarkPosition, badgeDefaultWidth,
+    watermarkFontSize, watermarkOpacity, watermarkPosition, watermarkStyle, badgeDefaultWidth,
   ]);
 
   useEffect(() => {
@@ -1287,6 +1293,7 @@ const EpisodeDetail: React.FC = () => {
         watermark_font_size: watermarkEnabled ? watermarkFontSize : undefined,
         watermark_opacity: watermarkEnabled ? watermarkOpacity : undefined,
         watermark_position: watermarkEnabled ? watermarkPosition : undefined,
+        watermark_style: watermarkEnabled ? watermarkStyle : undefined,
         // 恒定水印/角标打码：开启后打掉片源固定水印（独立开关，与字幕打码互不干扰）
         watermark_mask_enabled: watermarkMaskEnabled,
         watermark_mask_style: watermarkMaskEnabled ? watermarkMaskStyle : undefined,
@@ -2444,6 +2451,19 @@ const EpisodeDetail: React.FC = () => {
                   ]}
                 />
               </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>形态</Text>
+                <Select
+                  size="small"
+                  style={{ width: 160 }}
+                  value={watermarkStyle}
+                  onChange={setWatermarkStyle}
+                  options={WATERMARK_STYLE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                />
+                <Text type="secondary" style={{ fontSize: 12, maxWidth: 260 }}>
+                  {WATERMARK_STYLE_LABEL[watermarkStyle] ? (WATERMARK_STYLE_OPTIONS.find((o) => o.value === watermarkStyle)?.desc || '') : ''}
+                </Text>
+              </Space>
             </Space>
           </Modal>
 
@@ -2823,6 +2843,8 @@ const EpisodeDetail: React.FC = () => {
                   { value: 'bottom', label: '底部' },
                   { value: 'top', label: '顶部' },
                 ]} />
+                <Text style={{ fontSize: 12 }}>形态</Text>
+                <Select size="small" style={{ width: 90 }} value={watermarkStyle} onChange={setWatermarkStyle} options={WATERMARK_STYLE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))} />
               </Space>
             )}
           </div>

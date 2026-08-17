@@ -1,4 +1,5 @@
 import type { SliceTask } from '../types';
+import { WATERMARK_STYLE_LABEL } from './watermarkStyles';
 
 // ── 构建切片任务实际应用配置的悬停展示内容 ──
 // 将任务上保存的各配置字段汇总为易读的文本（用于「模式」列鼠标悬停提示）
@@ -38,6 +39,9 @@ export function buildSliceConfigTooltip(
     const wmOn = wm.enabled !== false;
     lines.push(`文字水印：${wmOn ? '开启' : '关闭'}`);
     if (wmOn && wm.text) lines.push(`  内容：${String(wm.text)}`);
+    if (wmOn && wm.style && wm.style !== 'scroll') {
+      lines.push(`  形态：${WATERMARK_STYLE_LABEL[String(wm.style)] || String(wm.style)}`);
+    }
   }
 
   // 图片角标

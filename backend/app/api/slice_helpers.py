@@ -119,6 +119,9 @@ class SliceRunRequest(BaseModel):
     watermark_opacity: float = 0.5
     # 水印位置（bottom 底部 / top 顶部，默认 bottom）
     watermark_position: str = "bottom"
+    # 水印形态/运动样式（scroll 横滚 / float 斜漂 / wave 波浪 / bounce 折返 /
+    # breath 呼吸 / blink 闪现，默认 scroll）。决定水印位置+运动轨迹+特效。
+    watermark_style: str = "scroll"
     # ── 三期 GPU 加速编码 ──
     # 视频编码器：h264_nvenc / hevc_nvenc / h264_videotoolbox / hevc_videotoolbox / libx264
     # 不传时引擎自动探测（有 GPU 硬件编码器则优先使用，否则回退 libx264）
@@ -403,6 +406,8 @@ def _build_watermark_config(
         "font_size": max(12, min(120, int(data.watermark_font_size or 28))),
         "opacity": max(0.05, min(1.0, float(data.watermark_opacity or 0.5))),
         "position": "top" if data.watermark_position == "top" else "bottom",
+        # 形态/运动样式：透传给引擎 build_watermark_filter（未指定保持默认 scroll）
+        "style": (data.watermark_style or "scroll").lower(),
     }
 
 
