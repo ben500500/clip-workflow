@@ -280,7 +280,7 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
     known_fields = {
         "mode", "dedupe_config", "engine", "auto_accept_all",
         "watermark_enabled", "watermark_text", "watermark_font_size",
-        "watermark_opacity", "watermark_position", "badges", "badge_default_width",
+        "watermark_opacity", "watermark_position", "watermark_style", "badges", "badge_default_width",
         "vert2horiz_enabled", "vert2horiz_mode", "vert2horiz_ratio",
         "vert2horiz_output_size", "vert2horiz_detect_interval",
         "vert2horiz_smooth_window", "vert2horiz_min_step", "vert2horiz_face_margin",

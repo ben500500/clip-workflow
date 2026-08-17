@@ -50,6 +50,7 @@ export const sliceApi = {
       watermark_font_size?: number;
       watermark_opacity?: number;
       watermark_position?: string;
+      watermark_style?: string;
       // 图片角标：每个含 file_key（上传的角标图片 MinIO key）、position（位置）、width（可选宽度）、offset（可选偏移）、opacity（可选透明度）
       badges?: BadgeItem[];
       // 角标默认尺寸（px）：角标未单独设 width 时生效；0=保持原图尺寸

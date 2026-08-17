@@ -1090,15 +1090,24 @@ def apply_text_overlays(src, out, text_overlays, threads=1, encoder="libx264"):
 def build_watermark_filter(wm: dict) -> str:
     """构造 ffmpeg 动态文字水印 filter（drawtext）。
 
-    动态效果：
-      - 水平缓慢移动（mod(2*t, w+tw)-tw）：文字从左侧缓缓滑向右侧，周期滚动
-      - 透明度呼吸（alpha='0.4+0.3*sin(2*PI*t)'）：明暗变化，增强“动态”观感
-      - 位置默认底部，可切换顶部
+    支持多种“形态/运动样式”（style），每种形态决定水印在画面中的
+    位置 + 运动轨迹 + 可选特效，未指定或非法时回退到默认横滚 scroll。
+
+    可用表达式变量：t（秒）、w/h（画面宽高）、tw/th（文本宽高）。
+
+    形态一览：
+      - scroll 横滚（默认）：底部/顶部水平匀速横滚 + 透明度呼吸（原效果）
+      - float  斜漂：横向滚动 + 纵向缓慢上下漂移，动态更丰富、避开主体
+      - wave   波浪：水平滚动 + 正弦上下浮动，更有节奏感
+      - bounce 折返：左右往返折返游走，适合高频发布防查重
+      - breath 呼吸：固定居中，透明度明暗脉动，低调常驻不干扰画面
+      - blink  闪现：固定位置定时闪现（每 4s 亮 0.7s），定时提醒式水印
     """
     text = wm.get("text") or "Clip Workflow"
     font_size = int(wm.get("font_size") or 28)
     opacity = float(wm.get("opacity") or 0.5)
     position = (wm.get("position") or "bottom").lower()
+    style = (wm.get("style") or "scroll").lower()
     if position not in ("top", "bottom"):
         position = "bottom"
 
@@ -1110,18 +1119,67 @@ def build_watermark_filter(wm: dict) -> str:
     # 第一个日文子字体，导致"门"等简体字渲染成日式/异常字形）。
     font_opt = _resolve_drawtext_font()
 
-    if position == "top":
-        y_expr = "40"
-    else:
-        y_expr = "h-th-40"
-
     # 转义 filter 特殊字符：后端已转义过冒号/逗号，这里再处理反斜杠与分号
     text = text.replace("\\", "\\\\").replace(";", "\\;")
-    alpha = "'0.4+0.3*sin(2*PI*t)'"
+
+    # 位置基准：横滚/斜漂/波浪/折返在顶部或底部游走；呼吸/闪现固定位置。
+    base_y = "40" if position == "top" else "h-th-40"
+
+    # 按形态生成 x/y/alpha 表达式
+    x_expr, y_expr, alpha_expr = _watermark_style_exprs(style, base_y)
+
     return (
         f"drawtext={font_opt}:text='{text}':fontcolor=white@{opacity:.2f}"
-        f":fontsize={font_size}:x='mod(2*t\\,w+tw)-tw':y={y_expr}"
-        f":alpha={alpha}"
+        f":fontsize={font_size}:x='{x_expr}':y='{y_expr}':alpha='{alpha_expr}'"
+    )
+
+
+def _watermark_style_exprs(style: str, base_y: str) -> tuple[str, str, str]:
+    """按形态生成 drawtext 的 (x, y, alpha) 表达式（内部 helper）。
+
+    style 非法时回退到 scroll。
+    """
+    s = (style or "scroll").lower()
+    if s == "float":
+        # 横向匀速横滚 + 纵向缓慢上下漂移（正弦，幅度约 40px，周期 12s）
+        return (
+            "mod(2*t\\,w+tw)-tw",
+            f"{base_y}+40*sin(PI*t/6)",
+            "0.4+0.3*sin(2*PI*t)",
+        )
+    if s == "wave":
+        # 水平滚动 + 正弦上下浮动（幅度约 30px，周期 5s）
+        return (
+            "mod(2*t\\,w+tw)-tw",
+            f"{base_y}+30*sin(2*PI*t/5)",
+            "0.4+0.3*sin(2*PI*t)",
+        )
+    if s == "bounce":
+        # 左右往返折返游走（三角波，周期 8s）
+        return (
+            "abs(mod(2*t/8\\,2)-1)*(w-tw)",
+            base_y,
+            "0.4+0.3*sin(2*PI*t)",
+        )
+    if s == "breath":
+        # 固定居中，透明度明暗脉动（呼吸感，周期 3s）
+        return (
+            "(w-tw)/2",
+            "(h-th)/2",
+            "0.35+0.35*sin(2*PI*t/3)",
+        )
+    if s == "blink":
+        # 固定位置，定时闪现：每 4s 亮 0.7s（用阶跃函数逼近“亮/暗”）
+        return (
+            "(w-tw)/2",
+            base_y,
+            "if(lt(mod(t\\,4)\\,0.7)\\,1\\,0.1)",
+        )
+    # 默认 scroll：底部/顶部水平匀速横滚 + 透明度呼吸（原效果）
+    return (
+        "mod(2*t\\,w+tw)-tw",
+        base_y,
+        "0.4+0.3*sin(2*PI*t)",
     )
 
 
