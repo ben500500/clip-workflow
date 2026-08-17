@@ -140,6 +140,11 @@ class PublishTask(Base):
     retry_count = Column(Integer, default=0, nullable=False)
     dead_letter = Column(Boolean, default=False, nullable=False)
     dead_letter_reason = Column(Text, nullable=True)
+    # ── 定时发布（R99）：scheduled_at 非空=预约到点发布；为空=立即发布（保持历史行为） ──
+    # 预约时 status=scheduled，到点由调度守护投递置为 pending 并触发 task_publish_video。
+    scheduled_at = Column(DateTime, nullable=True, index=True)
+    # 来源时间窗口快照（前端展示用）：如 07:00-08:00（预置）/ 自定义窗口名
+    time_slot_label = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -180,6 +185,31 @@ class PublishProfile(Base):
 
     def __repr__(self) -> str:
         return f"<PublishProfile(id={self.id}, platform={self.platform})>"
+
+
+class PublishTimeSlot(Base):
+    """定时发布时间窗口配置（预置 + 自定义）。
+
+    描述一天内的可发布窗口（每天循环），不含具体日期。
+    - is_preset=True 为系统预置窗口（07:00-08:00、18:00-20:00），不可删除/改时段。
+    - is_preset=False 为运营者自定义窗口，可增删改。
+    创建发布任务时选择窗口，系统在 [start_time, end_time] 内随机选一个今天/明天的
+    具体时间点作为 PublishTask.scheduled_at，实现窗口内错峰分散发布。
+    """
+    __tablename__ = "publish_time_slots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), nullable=False)
+    # 每天窗口起止时间（HH:MM，24 小时制），如 "07:00" / "08:00"
+    start_time = Column(String(5), nullable=False)
+    end_time = Column(String(5), nullable=False)
+    enabled = Column(Boolean, default=True)
+    is_preset = Column(Boolean, default=False, nullable=False)
+    created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<PublishTimeSlot(id={self.id}, name={self.name}, {self.start_time}-{self.end_time}, preset={self.is_preset})>"
 
 
 class PublishMaterial(Base):

@@ -102,6 +102,11 @@ celery_app.conf.update(
             "task": "app.celery.tasks.batch_aggregate",
             "schedule": settings.BATCH_AGGREGATE_INTERVAL_SECONDS,
         },
+        # 定时发布（R99）：每分钟扫描到期的预约发布任务并投递 publish 队列
+        "publish-schedule-dispatcher": {
+            "task": "app.celery.tasks.publish_schedule_dispatcher",
+            "schedule": 60.0,
+        },
     },
 )
 
@@ -306,6 +311,68 @@ def batch_aggregate(self):
         run_async(aggregate_batches())
     except Exception as e:
         logger.error("状态聚合器异常: %s", e)
+        raise
+
+
+@celery_app.task(bind=True, max_retries=0)
+def publish_schedule_dispatcher(self):
+    """定时发布（R99）调度守护：扫描已到期（scheduled_at <= now）的预约发布任务并投递。
+
+    每分钟由 beat 触发一次：
+    - 命中 scheduled_at <= now 且 status='scheduled' 的任务；
+    - 置为 pending 并触发 task_publish_video.delay()（与立即发布同一入口，复用完整链路）。
+    - 加行锁防并发（同一任务不会被多次投递）。
+    """
+    from datetime import datetime as _dt
+    from app.models.models import PublishTask
+
+    async def _dispatch_due():
+        from sqlalchemy import select as _sel
+        from app.api.publish_common import _serialize_publish_task  # noqa: F401  (仅为确保路由表加载)
+        async with async_session_factory() as session:
+            now = _dt.utcnow()
+            due = (
+                await session.execute(
+                    _sel(PublishTask)
+                    .where(
+                        PublishTask.scheduled_at <= now,
+                        PublishTask.status == "scheduled",
+                    )
+                    .with_for_update(skip_locked=True)
+                    .limit(100)
+                )
+            ).scalars().all()
+            dispatched = 0
+            for task in due:
+                task.status = "pending"
+                task.scheduled_at = None  # 已投递，清除预约时间避免重复命中
+                await session.flush()
+            await session.commit()
+            return [(str(t.id), str(t.output_id)) for t in due], len(due)
+
+    try:
+        due_tasks, count = run_async(_dispatch_due())
+        for tid, _ in due_tasks:
+            try:
+                from app.celery.tasks import task_publish_video
+                celery_result = task_publish_video.delay(tid)
+                # 回写 celery_task_id（不覆盖 status，worker 可能已开始更新）
+                async def _write_ckid(task_id: str, ckid: str):
+                    async with async_session_factory() as session:
+                        from app.models.models import PublishTask as _PT
+                        t = (
+                            await session.execute(_sel(_PT).where(_PT.id == task_id))
+                        ).scalar_one_or_none()
+                        if t:
+                            t.celery_task_id = ckid
+                            await session.commit()
+                run_async(_write_ckid(tid, celery_result.id))
+            except Exception as e:
+                logger.error(f"定时发布投递失败 task={tid}: {e}", exc_info=True)
+        if count:
+            logger.info("定时发布调度：本周期投递 %d 个到点任务", count)
+    except Exception as e:
+        logger.error("定时发布调度守护异常: %s", e)
         raise
 
 

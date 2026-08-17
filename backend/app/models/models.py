@@ -53,6 +53,7 @@ from app.models.publish import (
     PublishTask,
     PublishProfile,
     PublishMaterial,
+    PublishTimeSlot,
 )
 from app.models.dashboard import (
     VideoMetric,
@@ -117,6 +118,7 @@ __all__ = [
     "PublishTask",
     "PublishProfile",
     "PublishMaterial",
+    "PublishTimeSlot",
     # 看板/指标
     "VideoMetric",
     "MiniProgramMetric",

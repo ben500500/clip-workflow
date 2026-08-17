@@ -43,6 +43,11 @@ class PublishTaskCreate(BaseModel):
     mini_program_id: Optional[str] = None
     prompt_record_id: Optional[str] = None
     material_id: Optional[str] = None
+    # ── 定时发布（R99）：二选一 ──
+    # time_slot_id：选择时间窗口（预置/自定义），系统在窗口内随机选今天/明天某个时刻；
+    # scheduled_at：直接指定具体发布时间点（ISO 字符串）。两者都不传=立即发布。
+    time_slot_id: Optional[str] = None
+    scheduled_at: Optional[str] = None
 
 
 class PublishTaskResponse(BaseModel):
@@ -71,6 +76,9 @@ class PublishTaskResponse(BaseModel):
     material_id: Optional[str] = None
     batch_id: Optional[str] = None
     operator_id: Optional[str] = None
+    # ── 定时发布（R99）：快照与调度时间 ──
+    scheduled_at: Optional[str] = None
+    time_slot_label: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -89,6 +97,19 @@ class PublishBatchCreate(BaseModel):
     tasks: List[PublishTaskCreate]
 
 
+class PublishTaskScheduleUpdate(BaseModel):
+    """定时发布：改期 / 取消 / 转立即发布。
+
+    - 传 scheduled_at（或 time_slot_id）→ 重新预约（改期）。
+    - 传 immediate=true → 取消预约并立即发布（须在到点前）。
+    - 传 cancel=true → 取消预约，任务转 cancelled 状态（不再发布）。
+    """
+    scheduled_at: Optional[str] = None
+    time_slot_id: Optional[str] = None
+    immediate: bool = False
+    cancel: bool = False
+
+
 @router.post("/publish/tasks", response_model=PublishTaskResponse, status_code=201)
 async def create_publish_task(
     data: PublishTaskCreate,
@@ -105,12 +126,18 @@ async def create_publish_task(
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Slice output not found")
 
+    # 定时发布（R99）：解析时间窗口 / 指定时间 → scheduled_at 与窗口快照
+    scheduled_at, time_slot_label = await _resolve_schedule(db, data)
+
     # Enforce publish profile limits (daily cap + min interval)
     await _check_publish_limits(db, data)
 
-    task = await _create_publish_task_internal(db, data)
+    task = await _create_publish_task_internal(db, data, scheduled_at=scheduled_at, time_slot_label=time_slot_label)
     # 关键断点修复：任务落库后立即触发实际发布（Celery → backend worker → CDP 驱动 RPA 浏览器）
     await db.commit()
+    # 定时发布：到点前不投递，由调度守护到点触发（status=scheduled）
+    if task.scheduled_at:
+        return _serialize_publish_task(task)
     try:
         from app.celery.tasks import task_publish_video
         celery_result = task_publish_video.delay(str(task.id))
@@ -151,13 +178,20 @@ async def create_publish_tasks_batch(
         if not result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Slice output not found")
         await _check_publish_limits(db, item)
+        # 定时参数校验（时间窗口/指定时间）
+        await _resolve_schedule(db, item)
 
     created = []
     for item in data.tasks:
-        created.append(await _create_publish_task_internal(db, item))
+        scheduled_at, time_slot_label = await _resolve_schedule(db, item)
+        created.append(await _create_publish_task_internal(
+            db, item, scheduled_at=scheduled_at, time_slot_label=time_slot_label
+        ))
     await db.commit()
-    # 全部落库后统一触发发布调度
+    # 全部落库后统一触发发布调度（定时任务跳过，由调度守护到点触发）
     for task in created:
+        if task.scheduled_at:
+            continue
         try:
             from app.celery.tasks import task_publish_video
             celery_result = task_publish_video.delay(str(task.id))
@@ -167,6 +201,52 @@ async def create_publish_tasks_batch(
             logger.error(f"Failed to enqueue publish task {task.id}: {e}", exc_info=True)
     await db.commit()
     return [_serialize_publish_task(t) for t in created]
+
+
+async def _resolve_schedule(
+    db: AsyncSession, data: PublishTaskCreate
+) -> tuple[Optional[datetime], Optional[str]]:
+    """解析定时发布参数（R99）：time_slot_id（窗口）或 scheduled_at（指定时间）。
+
+    返回 (scheduled_at, time_slot_label)：
+    - 只传 scheduled_at → 直接作为发布时刻，label 为指定时间。
+    - 只传 time_slot_id → 解析窗口，在窗口内随机选今天/明天某时刻，label 为窗口名+时段。
+    - 都不传 → (None, None) 立即发布。
+    """
+    from app.api.publish_time_slots import resolve_scheduled_at
+    from app.models.models import PublishTimeSlot
+
+    slot = None
+    if data.time_slot_id:
+        try:
+            sid = uuid.UUID(data.time_slot_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid time_slot_id format")
+        result = await db.execute(select(PublishTimeSlot).where(PublishTimeSlot.id == sid))
+        slot = result.scalar_one_or_none()
+        if not slot:
+            raise HTTPException(status_code=404, detail="Time slot not found")
+        if slot.enabled is False:
+            raise HTTPException(status_code=400, detail=f"时间窗口「{slot.name}」已停用，请重新选择")
+
+    scheduled_at = None
+    if data.scheduled_at:
+        try:
+            scheduled_at = datetime.fromisoformat(data.scheduled_at)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid scheduled_at format，须为 ISO 时间字符串")
+        if scheduled_at <= datetime.utcnow():
+            raise HTTPException(status_code=400, detail="发布时间须晚于当前时间")
+
+    resolved = resolve_scheduled_at(slot, scheduled_at)
+
+    label = None
+    if resolved:
+        if slot:
+            label = f"{slot.name}（{slot.start_time}-{slot.end_time}）"
+        else:
+            label = f"指定时间 {resolved.strftime('%H:%M')}"
+    return resolved, label
 
 
 async def _check_publish_limits(db: AsyncSession, data: PublishTaskCreate):
@@ -239,8 +319,17 @@ async def _check_publish_limits(db: AsyncSession, data: PublishTaskCreate):
                 )
 
 
-async def _create_publish_task_internal(db: AsyncSession, data: PublishTaskCreate) -> PublishTask:
-    """创建单条发布任务并落库（不提交事务，由调用方统一提交）。"""
+async def _create_publish_task_internal(
+    db: AsyncSession,
+    data: PublishTaskCreate,
+    scheduled_at: Optional[datetime] = None,
+    time_slot_label: Optional[str] = None,
+) -> PublishTask:
+    """创建单条发布任务并落库（不提交事务，由调用方统一提交）。
+
+    定时发布（R99）：传 scheduled_at 时任务置为 scheduled 状态，不立即投递；
+    否则保持历史行为（pending，创建后由调用方触发立即发布）。
+    """
     output_uuid = uuid.UUID(data.output_id)
 
     def _to_uuid_or_none(v: Optional[str]) -> Optional[uuid.UUID]:
@@ -284,7 +373,9 @@ async def _create_publish_task_internal(db: AsyncSession, data: PublishTaskCreat
         mini_program_id=_to_uuid_or_none(data.mini_program_id),
         prompt_record_id=_to_uuid_or_none(data.prompt_record_id),
         material_id=_to_uuid_or_none(data.material_id),
-        status="pending",
+        scheduled_at=scheduled_at,
+        time_slot_label=time_slot_label,
+        status="scheduled" if scheduled_at else "pending",
     )
     db.add(task)
     await db.flush()
@@ -413,6 +504,69 @@ async def confirm_publish_task(
         "published_url": task.published_url,
         "published_id": task.published_id,
     }
+
+
+@router.patch("/publish/tasks/{task_id}/schedule", response_model=PublishTaskResponse)
+async def reschedule_publish_task(
+    task_id: str,
+    data: PublishTaskScheduleUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """定时发布管理：改期 / 取消 / 转立即发布（R99）。
+
+    仅允许操作 scheduled 状态（尚未到点投递）的任务。
+    """
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid task ID format")
+
+    result = await db.execute(select(PublishTask).where(PublishTask.id == tid))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Publish task not found")
+
+    if data.cancel:
+        # 取消预约：仅 scheduled 状态可取消（已投递的不可取消）
+        if task.status not in ("scheduled", "pending"):
+            raise HTTPException(status_code=400, detail=f"当前状态 {task.status} 不可取消")
+        task.status = "cancelled"
+        task.scheduled_at = None
+        await db.flush()
+        await db.refresh(task)
+        return _serialize_publish_task(task)
+
+    if data.immediate:
+        # 转立即发布：到点前取消预约，立即投递
+        if task.status != "scheduled":
+            raise HTTPException(status_code=400, detail=f"当前状态 {task.status} 非预约状态")
+        task.scheduled_at = None
+        task.status = "pending"
+        await db.flush()
+        from app.celery.tasks import task_publish_video
+        celery_result = task_publish_video.delay(str(task.id))
+        task.celery_task_id = celery_result.id
+        await db.commit()
+        return _serialize_publish_task(task)
+
+    if not data.scheduled_at and not data.time_slot_id:
+        raise HTTPException(status_code=400, detail="需提供 scheduled_at / time_slot_id / immediate / cancel 至少一项")
+
+    # 改期：重新解析时间
+    if task.status != "scheduled":
+        raise HTTPException(status_code=400, detail=f"当前状态 {task.status} 非预约状态，无法改期")
+    req = PublishTaskCreate(
+        output_id=str(task.output_id),
+        platform=task.platform or "",
+        time_slot_id=data.time_slot_id,
+        scheduled_at=data.scheduled_at,
+    )
+    new_scheduled_at, new_label = await _resolve_schedule(db, req)
+    task.scheduled_at = new_scheduled_at
+    task.time_slot_label = new_label
+    await db.flush()
+    await db.refresh(task)
+    return _serialize_publish_task(task)
 
 
 @router.post("/publish/tasks/{task_id}/requeue", response_model=dict)

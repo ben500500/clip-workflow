@@ -22,6 +22,7 @@ from app.api.publish_profiles import router as _profiles_router
 from app.api.publish_video_accounts import router as _video_accounts_router
 from app.api.publish_mini_programs import router as _mini_programs_router
 from app.api.publish_batches import router as _batches_router
+from app.api.publish_time_slots import router as _time_slots_router
 from app.api.publish_audit import router as _audit_router
 from app.api.publish_login_qr import router as _login_qr_router
 
@@ -31,5 +32,6 @@ router.include_router(_profiles_router)
 router.include_router(_video_accounts_router)
 router.include_router(_mini_programs_router)
 router.include_router(_batches_router)
+router.include_router(_time_slots_router)
 router.include_router(_audit_router)
 router.include_router(_login_qr_router)

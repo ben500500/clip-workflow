@@ -43,6 +43,8 @@ def _serialize_publish_task(task: PublishTask) -> dict:
         "material_id": str(task.material_id) if task.material_id else None,
         "batch_id": str(task.batch_id) if task.batch_id else None,
         "operator_id": str(task.operator_id) if task.operator_id else None,
+        "scheduled_at": utc_iso(task.scheduled_at) if task.scheduled_at else None,
+        "time_slot_label": task.time_slot_label,
         "created_at": utc_iso(task.created_at) if task.created_at else "",
         "updated_at": utc_iso(task.updated_at) if task.updated_at else "",
     }
