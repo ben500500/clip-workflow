@@ -34,7 +34,7 @@ const SLICE_MODE_HELP: Record<string, { label: string; desc: string }> = {
   },
   dedupe: {
     label: '去重模式',
-    desc: '切割时进行画面去重处理，采用「空间变换（缩放裁切/镜像）+ 时域变换（变速）+ 色彩变换（降饱和/复古偏色）+ 质感叠加（老电视噪点/扫描线/暗角/锐化/贴纸水印）」四层组合，可选轻/标准/重三档（标准档为默认效果），并支持「去重高级配置」逐项手动调整每个手段。适合批量发布到多个平台，降低查重风险。',
+    desc: '切割时进行画面去重处理，采用「空间变换（缩放裁切/镜像）+ 时域变换（变速）+ 色彩变换（降饱和/复古偏色）+ 质感叠加（老电视噪点/扫描线/暗角/锐化/贴纸水印）」四层组合。提供两套推荐配方（复古扫描=默认首选 / 保守裁切降饱和）及轻/标准/重三档，并支持「去重高级配置」逐项手动调整每个手段。适合批量发布到多个平台，降低查重风险。',
   },
   scrub: {
     label: '挖洞模式',
@@ -42,13 +42,18 @@ const SLICE_MODE_HELP: Record<string, { label: string; desc: string }> = {
   },
 };
 
-// ─── 切片模式级联选项（去重模式带 轻/标准/重 档位，悬停即弹出选择框）──
+// ─── 切片模式级联选项（去重模式带 轻/标准/重 档位 + 两套推荐配方，悬停即弹出选择框）──
+// 两套推荐配方（实测对原画面影响最小 + 查重风险最低）：
+//   std_retro_scan 复古扫描（首选/默认）：标准档+裁切5%+变速1.04+复古暖调+扫描线+噪点7
+//   std_crop_desat 保守裁切降饱和：标准档+裁切5%+降饱和0.88
 const SLICE_MODE_OPTIONS = [
   { value: 'fast', label: '快速模式' },
   {
     value: 'dedupe',
     label: '去重模式',
     children: [
+      { value: 'std_retro_scan', label: '复古扫描（推荐）' },
+      { value: 'std_crop_desat', label: '保守裁切降饱和' },
       { value: 'light', label: '轻' },
       { value: 'standard', label: '标准' },
       { value: 'heavy', label: '重' },
@@ -65,8 +70,8 @@ const SliceTasks: React.FC = () => {
   const [currentTask, setCurrentTask] = useState<string | null>(null);
   const [mode, setMode] = useState('fast');
   const [engine, setEngine] = useState('worker');
-  // 去重模式档位：轻/标准/重（老电视质感去重强度，默认标准档）
-  const [dedupePreset, setDedupePreset] = useState<string>('standard');
+  // 去重模式档位：轻/标准/重 + 两套推荐配方（复古扫描为默认首选配方）
+  const [dedupePreset, setDedupePreset] = useState<string>('std_retro_scan');
   // 去重模式手动配置（每项去重手段可单独覆盖预设，为空时沿用预设档位）
   const [dedupeManual, setDedupeManual] = useState<DedupeManualConfigValue>({});
   const [dedupeManualOpen, setDedupeManualOpen] = useState(false);
@@ -599,13 +604,13 @@ const SUBTITLE_MASK_PRESETS = [
       <Card size="small" style={{ marginBottom: 16 }}>
         <Space wrap>
           <Cascader
-            value={mode === 'dedupe' ? ['dedupe', dedupePreset || 'standard'] : [mode]}
+            value={mode === 'dedupe' ? ['dedupe', dedupePreset || 'std_retro_scan'] : [mode]}
             options={SLICE_MODE_OPTIONS}
             onChange={(val: (string | number)[]) => {
               const v = (val ?? []).map(String);
               if (v[0] === 'dedupe') {
                 setMode('dedupe');
-                setDedupePreset(v[1] || 'standard');
+                setDedupePreset(v[1] || 'std_retro_scan');
               } else if (v[0]) {
                 setMode(v[0]);
               }
