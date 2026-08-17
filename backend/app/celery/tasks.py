@@ -1225,6 +1225,26 @@ def task_publish_video(self, publish_task_id: str):
         if not publish_task_data:
             raise Exception(f"Publish task {publish_task_id} not found")
 
+        # 发布护栏（多视频号素材去重）：一个账号只允许绑定一个变体。
+        # 在真正发布前二次校验，防止同素材原样发多号被平台判定搬运。
+        try:
+            from app.services.variant_service import guard_account_variant_unique
+            _pub_account = publish_task_data.get("account_id")
+            _pub_output = publish_task_data.get("output_id")
+            if _pub_account and _pub_output:
+                guard = run_async(guard_account_variant_unique(
+                    _pub_account, output_id=_pub_output
+                ))
+                if not guard["allowed"]:
+                    raise Exception("publish blocked by one-account-one-variant guard: " + guard["reason"])
+        except Exception as e:
+            run_async(_update_publish_task_status(
+                publish_task_id, status="failed",
+                error_message="one-account-one-variant guard: " + str(e),
+            ))
+            self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+            raise
+
         # 多运营者(R22):配额双闸门 + inflight 信号量(Lua 原子,nil 兜底)
         # 方向③ 风控/节奏可配置化:配额参数与随机延迟从 SystemConfig 热更读取
         rate_cfg = run_async(_get_publish_rate_config())

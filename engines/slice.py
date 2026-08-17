@@ -85,6 +85,7 @@ DEDUPE_PRESETS = {
         "jitter": 0,
         "sharpen": 0,
         "watermark": None,
+        "audio": None,  # 音频指纹差异化（L3），None 不叠加，仅多版本变体使用
     },
     "standard": {
         "crop": 0.03,
@@ -103,6 +104,7 @@ DEDUPE_PRESETS = {
         "jitter": 0,
         "sharpen": 0.4,
         "watermark": None,
+        "audio": None,  # 音频指纹差异化（L3），None 不叠加，仅多版本变体使用
     },
     "heavy": {
         "crop": 0.05,
@@ -121,6 +123,7 @@ DEDUPE_PRESETS = {
         "jitter": 2,
         "sharpen": 0.8,
         "watermark": None,
+        "audio": None,  # 音频指纹差异化（L3），None 不叠加，仅多版本变体使用
     },
     # 实测推荐的配方（对原画面影响最小 + 平台查重风险最低），无镜像。
     # std_retro_scan = 首选（原 14_std_retro_scan）：标准档 + 裁切5% + 变速1.04
@@ -142,6 +145,7 @@ DEDUPE_PRESETS = {
         "jitter": 0,
         "sharpen": 0.4,
         "watermark": None,
+        "audio": None,  # 音频指纹差异化（L3），None 不叠加，仅多版本变体使用
     },
     # std_crop_desat = 保守（原 08_std_crop5_nohflip）：标准档 + 裁切5% + 降饱和0.88，
     #   平衡稳健、画面几乎无感，适合尽量不动画面的场景。
@@ -162,6 +166,7 @@ DEDUPE_PRESETS = {
         "jitter": 0,
         "sharpen": 0.4,
         "watermark": None,
+        "audio": None,  # 音频指纹差异化（L3），None 不叠加，仅多版本变体使用
     },
 }
 
@@ -239,6 +244,12 @@ def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0) -> tuple[str
     vf_parts = [spatial, f"setpts=PTS/{speed:.3f}"]
     af = f"atempo={speed:.3f}"
 
+    # 音频层（L3 盲区覆盖）：在 atempo 之后追加音频指纹差异化滤镜。
+    # 仅用于多视频号素材去重的变体生成；普通去重模式 manual.audio 为空则不叠加。
+    af_extra = build_dedupe_audio_filter(p.get("audio"))
+    if af_extra:
+        af = f"{af},{af_extra}"
+
     # 色彩层：降饱和 + 复古调色 + 轻微亮度
     vf_parts.append(
         f"eq=saturation={p['saturation']}:gamma={p['gamma']}"
@@ -294,6 +305,34 @@ def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0) -> tuple[str
             vf_parts.append(wm_filter)
 
     return ",".join(vf_parts), af
+
+
+def build_dedupe_audio_filter(mode) -> str:
+    """构造音频指纹差异化滤镜（L3 盲区覆盖）。
+
+    模式（mode）：
+      - None / "" / "none"：不叠加（默认，普通去重保持不变）。
+      - "volume"：轻微音量增益，改变响度分布。
+      - "eq_mild"：轻微中频 EQ（提升/压低），改变频谱指纹。
+      - "eq_strong"：更强 EQ（多频段均衡），频谱指纹差异更明显。
+      - "pitch"：轻微变速音调（asetrate+aresample），改音高/节奏指纹。
+    返回空字符串表示不叠加。
+    """
+    if not mode:
+        return ""
+    m = str(mode).lower()
+    if m in ("none", "null"):
+        return ""
+    if m == "volume":
+        return "volume=1.12"
+    if m == "eq_mild":
+        return "equalizer=f=2500:t=q:w=1.0:g=3,equalizer=f=400:t=q:w=1.0:g=-2"
+    if m == "eq_strong":
+        return ("equalizer=f=300:t=q:w=0.8:g=4,equalizer=f=1200:t=q:w=0.8:g=-3,"
+                "equalizer=f=4200:t=q:w=0.8:g=3,equalizer=f=9000:t=q:w=0.8:g=-2")
+    if m == "pitch":
+        return "asetrate=44100*0.97,aresample=44100"
+    return ""
 
 
 def build_dedupe_watermark(wm: dict, width: int = 0, height: int = 0) -> str:

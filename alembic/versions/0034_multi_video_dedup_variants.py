@@ -53,6 +53,7 @@ def upgrade() -> None:
         sa.Column("status", sa.String(length=50), nullable=True, server_default="pending"),
         sa.Column("phash_distance", sa.Float(), nullable=True),
         sa.Column("audio_distance", sa.Float(), nullable=True),
+        sa.Column("seg_distance", sa.Float(), nullable=True),
         sa.Column("collision", sa.Boolean(), nullable=True, server_default="false"),
         sa.Column("collision_reason", sa.Text(), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),

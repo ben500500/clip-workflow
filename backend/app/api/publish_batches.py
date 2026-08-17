@@ -183,6 +183,14 @@ async def create_publish_batch(
     if not output:
         raise HTTPException(status_code=404, detail="Slice output not found")
 
+    # 发布护栏（多视频号素材去重）：一个账号只允许绑定一个变体，防止同素材原样发多号。
+    # 若该账号已绑定同变体组（同素材）的其它变体，则拒绝创建发布批次。
+    if account_id:
+        from app.services.variant_service import guard_account_variant_unique
+        guard = await guard_account_variant_unique(account_id, output_id=str(output_uuid))
+        if not guard["allowed"]:
+            raise HTTPException(status_code=409, detail=guard["reason"])
+
     # 创建批次
     batch = PublishBatch(
         created_by=current_user.id if current_user else None,

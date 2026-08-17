@@ -66,6 +66,10 @@ _COLORBALANCE_POOL = [
     "rs=.02:gs=.02:bs=.02:rm=.02:gm=.02:bm=.02",
 ]
 _TEMP_POOL = ["temperature=5800", "temperature=6200", "temperature=5400", "temperature=6500"]
+# 音频指纹差异化模式（L3 盲区覆盖）：每种模式都会改变音频声纹，且人耳几乎无感。
+_AUDIO_POOL = [None, "volume", "eq_mild", "eq_strong", "pitch", "eq_mild"]
+# L4 时域结构差异：是否把整段拆成多片段并漂移/重排（改场景切分序列指纹）
+_STRUCTURAL_SEGMENT_OPTIONS = [False, True]
 
 
 def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> list[dict]:
@@ -99,8 +103,20 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
             "colorbalance": random.choice(_COLORBALANCE_POOL),
             "colortemperature": random.choice(_TEMP_POOL),
             "watermark": random.choice(_WATERMARK_POOL),
+            # 音频指纹差异化（L3 盲区覆盖）：改变音频声纹，人耳几乎无感
+            "audio": random.choice(_AUDIO_POOL),
         }
-        recipes.append({"preset": "standard", "manual": manual})
+        # 结构性差异（覆盖 L4 时域序列盲区 + L3 音频）：
+        #  - structural_diff.segment: 是否把整段拆成多片段并漂移/重排，改场景切分指纹
+        #  - structural_diff.reorder: 是否对片段顺序重排（改变时域序列）
+        recipes.append({
+            "preset": "standard",
+            "manual": manual,
+            "structural": {
+                "segment": random.choice(_STRUCTURAL_SEGMENT_OPTIONS),
+                "reorder": random.choice([False, True]),
+            },
+        })
     return recipes
 
 
@@ -200,17 +216,26 @@ async def _load_group_fingerprints(variant_group_id) -> list[dict]:
     } for r in rows]
 
 
-async def _check_against_history(full_fp: dict, exclude_variant_id=None) -> dict:
+async def _check_against_history(full_fp: dict, variant_group_id=None, exclude_variant_id=None) -> dict:
     """把新指纹与同组历史指纹比对，返回最小距离与是否撞车。
 
-    仅与已完成的变体比对（排除自身）。
+    仅与**同变体组**的已生成变体比对（排除自身），避免跨素材误报撞车。
+    variant_group_id 为空时仅与自身组比对（实为无历史，返回安全）。
     """
     async with async_session_factory() as session:
-        result = await session.execute(
+        query = (
             select(VideoFingerprint)
-            .where(VideoFingerprint.variant_id != uuid.UUID(str(exclude_variant_id)))
             .where(VideoFingerprint.algorithm.in_(["phash_v1", "audio_v1", "seq_v1"]))
         )
+        if variant_group_id:
+            query = query.where(
+                VideoFingerprint.variant_group_id == uuid.UUID(str(variant_group_id))
+            )
+        if exclude_variant_id:
+            query = query.where(
+                VideoFingerprint.variant_id != uuid.UUID(str(exclude_variant_id))
+            )
+        result = await session.execute(query)
         rows = result.scalars().all()
     if not rows:
         return {"phash_distance": 1.0, "audio_distance": 1.0, "seg_distance": 1.0,
@@ -228,19 +253,63 @@ async def _check_against_history(full_fp: dict, exclude_variant_id=None) -> dict
     return {**best, "collision": coll, "collision_reason": reason}
 
 
+def _build_variant_cutlist(dur: float, structural: dict) -> list[tuple]:
+    """生成变体切片列表（L4 时域结构差异）。
+
+    默认返回整段 [(0, dur)]。
+    当 structural.segment=True 时，把整段拆成 3~5 个片段，对边界做轻微漂移
+    （±0.5~1.5s，避开场景切换点打散时域序列），并可选重排顺序（reorder=True），
+    从而改变场景切分序列指纹（平台 L4 比对盲区）。片段均保证正时长、不越界。
+    """
+    if dur <= 0:
+        return [(0.0, 1.0)]
+    if not structural.get("segment"):
+        return [(0.0, dur)]
+    n_parts = random.randint(3, 5)
+    n_parts = max(2, min(n_parts, max(1, int(dur) // 3)))
+    if n_parts < 2 or dur < 6:
+        # 太短/太少不宜拆段，回退整段，避免产生过短片段
+        return [(0.0, dur)]
+    # 生成 n_parts+1 个切点（含 0 与 dur），每段边界轻微漂移
+    pts = [0.0]
+    step = dur / n_parts
+    for i in range(1, n_parts):
+        base = i * step
+        # 漂移 ±1.5s，但保留至少 1.5s 缓冲避免片段过短/越界
+        drift = random.uniform(-1.5, 1.5)
+        pts.append(max(pts[-1] + 1.0, min(dur - 1.0, base + drift)))
+    pts.append(dur)
+    segs = []
+    for i in range(n_parts):
+        s = pts[i]
+        e = pts[i + 1]
+        if e - s >= 0.8:
+            segs.append((s, e))
+    if len(segs) < 2:
+        return [(0.0, dur)]
+    # 可选重排：交换末尾两段或打乱相邻两段（保持整体时长近似，避免内容语义跳跃过大）
+    if structural.get("reorder") and len(segs) >= 3:
+        i = random.randint(0, len(segs) - 2)
+        segs[i], segs[i + 1] = segs[i + 1], segs[i]
+    return segs
+
+
 async def _generate_variant_file(source_path: str, recipe: dict, out_name: str) -> str:
     """对基准切片源文件应用一套去重配方，输出一个变体文件，返回本地路径。"""
     from app.services.slice_service import run_slice_fast
 
     out_dir = f"/tmp/variant_out/{uuid.uuid4()}"
     os.makedirs(out_dir, exist_ok=True)
-    # 变体生成 = 对整段源视频做 dedupe 模式切片（cutlist 整段），应用配方去重滤镜
-    # 用一个含整段的 cutlist，使引擎按 dedupe 模式跑通并输出单文件
-    cutlist_path = os.path.join(out_dir, "cutlist.txt")
     # 探测时长
     dur = _probe_duration_sec(source_path)
+    # 结构性差异（L4 时域）：把整段拆成多片段并漂移/重排，改变场景切分序列指纹。
+    # 引擎对同 name 的多段按顺序拼接为单一输出（dedupe 模式），从而改变 L4 指纹。
+    structural = (recipe or {}).get("structural") or {}
+    segments = _build_variant_cutlist(dur, structural)
+    cutlist_path = os.path.join(out_dir, "cutlist.txt")
     with open(cutlist_path, "w", encoding="utf-8") as f:
-        f.write(f"0 {dur:.2f} variant\n")
+        for (s, e) in segments:
+            f.write(f"{s:.3f} {e:.3f} variant\n")
     try:
         rc, stdout, stderr = await run_slice_fast(
             source_path, cutlist_path, out_dir, mode="dedupe",
@@ -365,14 +434,16 @@ async def generate_variants_for_output(
                     "seq_v1", full_fp["seg_hash"], full_fp["seg_vector"], dur, None,
                 )
                 # 撞车比对
-                chk = await _check_against_history(full_fp, exclude_variant_id=variant_id)
+                chk = await _check_against_history(full_fp, variant_group_id=variant_group_id, exclude_variant_id=variant_id)
                 await _update_variant(
                     variant_id,
                     file_key=file_key, file_name=f"variant_{idx}.mp4",
                     file_size=fsize, duration=dur, resolution=res,
                     dedupe_config=recipe_attempt,
+                    structural_diff=(recipe_attempt or {}).get("structural"),
                     phash_distance=chk["phash_distance"],
                     audio_distance=chk["audio_distance"],
+                    seg_distance=chk.get("seg_distance"),
                     collision=chk["collision"],
                     collision_reason=chk["collision_reason"],
                     status="completed",
@@ -456,3 +527,49 @@ async def verify_variant_fingerprint(variant_id: str, thresholds: Optional[dict]
         best["combined_distance"] = min(best["combined_distance"], d["combined_distance"])
     coll, reason = fp.is_collision(best, thresholds)
     return {"safe": not coll, "distances": best, "reason": reason or "ok"}
+
+
+async def guard_account_variant_unique(account_id, output_id=None, variant_group_id=None) -> dict:
+    """发布护栏：校验「一个账号只绑定一个变体」。
+
+    在发布/绑定前调用。若该账号已被同变体组的其它变体绑定，或该账号已被绑定到
+    同一素材（同 variant_group_id 或同 base output）的不同变体，则返回冲突，拒绝发布。
+
+    返回 {allowed, reason, occupied_variant_id}。
+    """
+    if not account_id:
+        return {"allowed": True, "reason": "", "occupied_variant_id": None}
+    try:
+        acc = uuid.UUID(str(account_id))
+    except (ValueError, AttributeError):
+        return {"allowed": True, "reason": "", "occupied_variant_id": None}
+
+    async with async_session_factory() as session:
+        # 该账号当前绑定的变体
+        occupied = (await session.execute(
+            select(ClipVariant).where(ClipVariant.account_id == acc)
+        )).scalar_one_or_none()
+        if occupied is None:
+            return {"allowed": True, "reason": "", "occupied_variant_id": None}
+
+        # 确定目标变体组：优先用传入的 group，其次由 output_id 推导
+        target_group = variant_group_id
+        if not target_group and output_id:
+            try:
+                out = (await session.execute(
+                    select(SliceOutput).where(SliceOutput.id == uuid.UUID(str(output_id)))
+                )).scalar_one_or_none()
+                if out:
+                    target_group = out.variant_group_id
+            except (ValueError, AttributeError):
+                target_group = None
+
+        # 如果目标变体组与该账号已绑定的变体同组 → 同素材发多号，拦截
+        if target_group and occupied.variant_group_id:
+            if str(occupied.variant_group_id) == str(target_group):
+                return {
+                    "allowed": False,
+                    "reason": f"该账号已绑定同组变体（{occupied.variant_index} 号），不能把同一素材再发到此账号",
+                    "occupied_variant_id": str(occupied.id),
+                }
+    return {"allowed": True, "reason": "", "occupied_variant_id": None}

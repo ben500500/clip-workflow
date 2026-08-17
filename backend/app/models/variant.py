@@ -65,6 +65,7 @@ class ClipVariant(Base):
     # 指纹碰撞结果（去重风险量化，供前端矩阵看板）
     phash_distance = Column(Float, nullable=True)     # 与同组其它变体的最小画面距离（越大越安全）
     audio_distance = Column(Float, nullable=True)     # 与同组其它变体的最小音频距离
+    seg_distance = Column(Float, nullable=True)       # 与同组其它变体的最小时域序列距离（L4）
     collision = Column(Boolean, default=False)        # 是否与同组/历史变体撞车
     collision_reason = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)

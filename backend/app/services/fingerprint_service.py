@@ -252,7 +252,13 @@ def compute_audio_fingerprint(path: str) -> dict:
 
 
 def _audio_signature(samples: np.ndarray, dur: float) -> dict:
-    """把音频样本量化为 64bit 能量签名。"""
+    """把音频样本量化为 64bit 能量签名（L3 盲区覆盖，充分熵）。
+
+    相比早期版本（仅 16 窗口 × 1 特征 = 16bit 熵，重复补齐 64），
+    这里抽取 4 个互补特征（RMS / 过零率 / 频谱质心 / 频谱平坦度）在 16 个
+    时间窗上量化，得到真实 64bit 签名，对变速/EQ/音量等音频指纹差异更敏感，
+    能更好区分 L3 音频指纹。numpy 不可用时仍回退为字节哈希。
+    """
     win = 4096
     n_windows = 16
     total = len(samples)
@@ -260,21 +266,35 @@ def _audio_signature(samples: np.ndarray, dur: float) -> dict:
         return {"algorithm": "audio_v1", "hash_value": None, "vector": None,
                 "duration": dur, "resolution": None}
     step = max(1, total // n_windows)
-    feats = []
+    windows = []
     for i in range(0, total, step)[:n_windows]:
         seg = samples[i:i + win]
-        if len(seg) == 0:
-            feats.append(0.0)
+        if len(seg) < 8:
+            windows.append([0.0, 0.0, 0.0, 0.0])
             continue
         rms = float(np.sqrt(np.mean(seg ** 2)))
         zcr = float(np.mean(np.abs(np.diff(np.sign(seg))) > 0)) if len(seg) > 1 else 0.0
-        feats.append(rms * 100.0 + zcr)
-    if not feats:
-        feats = [0.0] * n_windows
-    med = np.median(feats)
-    bits = (np.asarray(feats) >= med).astype(np.uint8).tolist()
-    bits = (bits * 4)[:64]  # 补齐到 64bit
-    bits_str = "".join(str(b) for b in bits[:64])
+        # 频谱质心：帧内相邻差分幅度的能量加权均值，粗略反映频谱重心（低频→质心小）
+        mag = np.abs(np.fft.rfft(seg))
+        freqs = np.arange(len(mag), dtype=np.float64)
+        if mag.sum() > 1e-9:
+            centroid = float((freqs * mag).sum() / mag.sum())
+        else:
+            centroid = 0.0
+        # 频谱平坦度：几何均值/算术均值，反映噪声 vs 音调性（EQ/压缩会改变）
+        if mag.size > 0 and mag.sum() > 1e-9:
+            log_mag = np.log(mag + 1e-12)
+            flatness = float(np.exp(np.mean(log_mag)) / (np.mean(mag) + 1e-12))
+        else:
+            flatness = 0.0
+        windows.append([rms, zcr, centroid, flatness])
+    if not windows:
+        windows = [[0.0, 0.0, 0.0, 0.0]] * n_windows
+    # 每特征独立阈值量化（中位数阈值），得到 16*4=64 bit
+    arr = np.asarray(windows, dtype=np.float64)  # shape (n,4)
+    med = np.median(arr, axis=0)
+    bits = ((arr >= med).astype(np.uint8)).ravel().tolist()  # 64 bits
+    bits_str = "".join(str(b) for b in bits)
     hex_str = format(int(bits_str, 2), "016x")
     return {
         "algorithm": "audio_v1",
