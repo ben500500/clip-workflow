@@ -46,7 +46,15 @@ ST_COMPLETED = "completed"
 ST_FAILED = "failed"
 
 class ImportError_(Exception):
-    """导入任务失败。"""
+    """导入任务失败（不可重试：链接失效、解析失败、入库失败等）。"""
+
+
+class RetryableImportError(ImportError_):
+    """可重试的导入失败（下载中断 / 网络抖动 / 限流等瞬态错误）。
+
+    Celery 任务捕获后调用 self.retry()（配合 max_retries 与断点续传），
+    避免一次瞬态失败就永久置 failed 导致自动化流程中断。
+    """
 
 
 # ───────────────────────────────
@@ -247,7 +255,9 @@ async def run_download_pipeline(task_id: uuid.UUID) -> dict:
             try:
                 total = await get_downloader().download_to_file(parsed.play_url, local_path)
             except DownloadError as e:
-                raise ImportError_(f"拉流下载失败: {e}")
+                # 下载中断（网络抖动/超时/限流）属瞬态错误，抛可重试异常供 Celery self.retry
+                # （重试时 downloader 命中断点续传，从已下载字节继续，不重复拉取）。
+                raise RetryableImportError(f"拉流下载失败(可重试): {e}")
 
             # 按默认分辨率统一缩放：读取全局配置 default_download_resolution
             # （720p/1080p，默认 720p），入库前用 ffmpeg 转码到目标分辨率。
@@ -278,6 +288,16 @@ async def run_download_pipeline(task_id: uuid.UUID) -> dict:
             await db.commit()
             return {"ok": True, "task_id": str(task.id), "episode_id": str(episode_id)}
 
+        except RetryableImportError as e:
+            # 可重试失败（下载中断/限流）：标记状态后把异常重新抛出，
+            # 供 Celery 任务捕获并 self.retry（配合断点续传）。
+            logger.warning("download pipeline retryable failure for task %s: %s", task_id, e)
+            await _fail(db, task, str(e))
+            try:
+                await db.commit()
+            except Exception:
+                pass
+            raise
         except Exception as e:
             logger.exception("download pipeline failed for task %s", task_id)
             await _fail(db, task, str(e))

@@ -123,14 +123,33 @@ async def import_wechat_video(
 @router.get("/tasks")
 async def list_tasks(
     status: Optional[str] = Query(None, description="按状态过滤"),
+    ids: Optional[str] = Query(None, description="逗号分隔的任务ID列表，批量查询状态（最多 100 个）"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
-    """下载任务列表（按创建时间倒序）。"""
-    stmt = select(WechatDownloadTask).order_by(
-        WechatDownloadTask.created_at.desc()
-    ).limit(limit).offset(offset)
+    """下载任务列表（按创建时间倒序）。
+
+    - 传 `ids`（逗号分隔）时返回指定任务的批量状态，供自动化流程一次拉取多个任务状态；
+    - 不传 `ids` 时返回分页列表。
+    """
+    stmt = select(WechatDownloadTask)
+    if ids:
+        id_list = [i.strip() for i in ids.split(",") if i.strip()][:100]
+        if not id_list:
+            raise HTTPException(status_code=400, detail="ids 为空")
+        uuid_list: list[uuid.UUID] = []
+        bad = []
+        for i in id_list:
+            try:
+                uuid_list.append(uuid.UUID(i))
+            except ValueError:
+                bad.append(i)
+        if bad:
+            raise HTTPException(status_code=400, detail=f"非法的任务ID: {', '.join(bad)}")
+        stmt = stmt.where(WechatDownloadTask.id.in_(uuid_list))
+    else:
+        stmt = stmt.order_by(WechatDownloadTask.created_at.desc()).limit(limit).offset(offset)
     if status:
         stmt = stmt.where(WechatDownloadTask.status == status)
     result = await db.execute(stmt)
@@ -168,7 +187,7 @@ class ImportToProjectResponse(BaseModel):
     target: str
 
 
-@router.post("/tasks/{task_id}/import-to-project", response_model=ImportToProjectResponse)
+@router.post("/tasks/{task_id}/import-to-project", response_model=ImportToProjectResponse, status_code=201)
 async def import_task_to_project(
     task_id: uuid.UUID,
     data: ImportToProjectRequest,
@@ -300,6 +319,9 @@ class ToSliceRequest(BaseModel):
     """入切片请求：可选切片模式与去重配置。"""
     mode: str = Field("fast", description="切片模式：fast/standard/dedupe")
     dedupe_config: Optional[dict] = None
+    subtitle_align_mask: bool = Field(
+        True, description="字幕对齐裁切（裁掉上下黑边）。默认 True，可设为 False 关闭。"
+    )
 
 
 class ToSliceResponse(BaseModel):
@@ -346,7 +368,7 @@ async def to_slice(
         source_bucket=settings.MINIO_BUCKET_RAW,
         source_file_key=episode.source_file_key,
         dedupe_config=data.dedupe_config,
-        subtitle_align_mask=True,
+        subtitle_align_mask=data.subtitle_align_mask,
         status="pending",
         progress=0.0,
     )
@@ -367,7 +389,7 @@ async def to_slice(
         task_id=str(slice_task.id),
         source_file_key=episode.source_file_key,
         source_bucket=settings.MINIO_BUCKET_RAW,
-        subtitle_align_mask=True,
+        subtitle_align_mask=data.subtitle_align_mask,
     )
     slice_task.celery_task_id = celery_task.id if celery_task else None
     slice_task.status = "running"
