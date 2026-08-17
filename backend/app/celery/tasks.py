@@ -1298,7 +1298,10 @@ def task_publish_video(self, publish_task_id: str):
             meta={"progress": 20, "message": f"Publishing to {platform}..."},
         )
 
-        video_path = run_async(_download_video_for_publish(publish_task_data["output_id"]))
+        video_path = run_async(_download_video_for_publish(
+            publish_task_data["output_id"],
+            publish_task_data.get("account_id") or publish_task_data.get("video_account_id"),
+        ))
         if not video_path:
             raise Exception("Failed to download video for publishing")
         downloaded_video_path = video_path
@@ -1838,12 +1841,19 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
         return data
 
 
-async def _download_video_for_publish(output_id: str) -> Optional[str]:
-    """Download the sliced video from MinIO to a local temp file for publishing."""
-    from app.models.models import SliceOutput
+async def _download_video_for_publish(output_id: str, account_id: str = None) -> Optional[str]:
+    """Download the video to a local temp file for publishing.
+
+    多视频号素材去重：若目标账号（account_id）已为该输出绑定某素材变体，
+    则下载该变体的去重文件，确保每个账号发布的是各自去重版本（避免同素材原样发多号被平台判重）；
+    否则回退到基准切片输出文件（未开多版本 / 未绑定时行为完全等同现状，零侵入）。
+    """
+    from app.models.models import SliceOutput, ClipVariant
     from app.services.minio_service import download_file
     from sqlalchemy import select
 
+    file_key = None
+    base_key = None
     async with async_session_factory() as session:
         out_uuid = uuid.UUID(output_id)
         result = await session.execute(
@@ -1852,13 +1862,47 @@ async def _download_video_for_publish(output_id: str) -> Optional[str]:
         output = result.scalar_one_or_none()
         if not output or not output.file_key:
             return None
+        file_key = output.file_key
+        base_key = output.file_key
+        target_group = getattr(output, "variant_group_id", None)
 
-    data = await download_file(settings.MINIO_BUCKET_SLICED, output.file_key)
+        # 若该账号已绑定此素材（同变体组）的变体，改用变体文件
+        if account_id:
+            try:
+                acc = uuid.UUID(account_id)
+            except (ValueError, AttributeError):
+                acc = None
+            if acc:
+                variant = (await session.execute(
+                    select(ClipVariant).where(
+                        ClipVariant.account_id == acc,
+                        ClipVariant.file_key.isnot(None),
+                    )
+                )).scalar_one_or_none()
+                # 仅当变体确属本输出所在变体组时启用（避免跨素材误用其它输出的变体）
+                if variant and variant.file_key:
+                    same_output = variant.output_id == out_uuid
+                    same_group = bool(target_group) and bool(variant.variant_group_id) \
+                        and str(variant.variant_group_id) == str(target_group)
+                    if same_output or same_group:
+                        file_key = variant.file_key
+
+    data = await download_file(settings.MINIO_BUCKET_SLICED, file_key)
+    # 变体文件缺失时回退到基准切片文件（保证发布不被阻断，同时保持非变体行为兼容）
+    if data is None and base_key and base_key != file_key:
+        file_key = base_key
+        data = await download_file(settings.MINIO_BUCKET_SLICED, base_key)
     if data is None:
         return None
+    logger.info("publish download output=%s account=%s file=%s%s",
+                output_id, account_id, file_key,
+                " (variant)" if (base_key and file_key != base_key) else "")
 
+    # 用文件 key 的稳定哈希拼唯一临时名，避免同素材多账号并发发布时互相覆盖
     os.makedirs("/tmp/publish_videos", exist_ok=True)
-    temp_path = f"/tmp/publish_videos/{output.id}.mp4"
+    import hashlib
+    _suffix = hashlib.md5(file_key.encode("utf-8")).hexdigest()[:12]
+    temp_path = f"/tmp/publish_videos/{output_id}_{_suffix}.mp4"
     with open(temp_path, "wb") as f:
         f.write(data)
     return temp_path
