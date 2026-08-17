@@ -5,7 +5,7 @@ WORKDIR /app
 
 # Copy package files and install dependencies
 COPY package.json package-lock.json ./
-RUN npm install --no-audit --no-fund
+RUN npm install --no-audit --no-fund  --registry=https://registry.npmmirror.com
 
 # Copy source code
 COPY . .

@@ -50,7 +50,6 @@ x-celery-worker: &celery-worker-base
     HF_HUB_OFFLINE: "1"
   volumes:
     - ./data/media:/app/media
-    - ./data/engines:/app/engines:ro
     # HuggingFace 模型缓存持久化（LaMa/MI-GAN 去水印 ONNX 模型，离线环境预置）
     - ./data/hf-cache:/app/.cache
   # celery worker 无 HTTP 端口，用 python redis ping 作为健康检查（覆盖镜像默认的 curl 检查）
@@ -284,7 +283,6 @@ services:
     volumes:
       - ./data/media:/app/media
       - ./data/chrome-profiles:/data/chrome-profiles
-      - ./data/engines:/app/engines:ro
       # HuggingFace 模型缓存持久化（LaMa/MI-GAN 去水印 ONNX 模型，离线环境预置）
       - ./data/hf-cache:/app/.cache
     healthcheck:
@@ -298,18 +296,24 @@ services:
   worker-video:
     <<: *celery-worker-base
     container_name: clip-worker-video
+    profiles:
+      - forbid
     # 视频处理（切片/去水印/检测）—— 独占 video_processing 队列，ffmpeg 已占满 CPU，并发 1 正确
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "video_processing", "--loglevel=info", "--concurrency=1"]
 
   worker-publish:
     <<: *celery-worker-base
     container_name: clip-worker-publish
+    profiles:
+      - forbid
     # 发布/豆包生成（浏览器 CDP）—— 独占 publish 队列，并发 1
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "publish", "--loglevel=info", "--concurrency=1"]
 
   worker-fast:
     <<: *celery-worker-base
     container_name: clip-worker-fast
+    profiles:
+      - forbid
     # 指标/默认任务（轻量）—— 高并发 4，不再被视频任务饿死
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "metrics,default", "--loglevel=info", "--concurrency=4"]
 
@@ -389,6 +393,8 @@ services:
   slice-worker:
     image: docker.cnb.cool/ben500500/clip-workflow/clip-slice-worker:${CLIP_VERSION}
     container_name: clip-slice-worker
+    profiles:
+      - forbid
     restart: unless-stopped
     # 优雅退出窗口：SIGTERM 后等待当前任务完成再退出（worker 会停止认领新任务），
     # 避免强杀正在处理的任务导致临时目录残留
