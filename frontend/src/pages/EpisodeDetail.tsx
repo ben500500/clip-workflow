@@ -588,7 +588,12 @@ const EpisodeDetail: React.FC = () => {
   const applyPersistConfig = (cfg: Record<string, unknown>) => {
     if (cfg.sliceMode) setSliceMode(String(cfg.sliceMode));
     if (cfg.dedupePreset) setDedupePreset(String(cfg.dedupePreset));
-    applyPreset({ ...collectCurrentPresetConfig(), ...cfg, id: 'cloud', name: '个人配置' } as SlicePreset);
+    // 应用云端个人配置时保留用户当前激活的预设 id（从 localStorage 读），
+    // 避免把 activePresetId 覆盖成不存在的 'cloud' 占位 id，
+    // 否则「选择配置」下拉会因为 value 无匹配选项而显示出一个名为 "cloud" 的幽灵配置。
+    const savedActive = localStorage.getItem('slice_active_preset');
+    const keepId = savedActive && presets.some((p) => p.id === savedActive) ? savedActive : DEFAULT_SLICE_PRESET.id;
+    applyPreset({ ...collectCurrentPresetConfig(), ...cfg, id: keepId, name: '个人配置' } as SlicePreset);
   };
 
   // 保存当前配置为新预设
