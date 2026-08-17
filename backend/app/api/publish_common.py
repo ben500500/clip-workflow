@@ -29,6 +29,7 @@ def _serialize_publish_task(task: PublishTask) -> dict:
         "tags": task.tags,
         "cover_file_key": task.cover_file_key,
         "mini_program_link": task.mini_program_link,
+        "publish_jump": list(task.publish_jump) if task.publish_jump else None,
         "link_attached": task.link_attached or False,
         "published_url": task.published_url,
         "published_id": task.published_id,

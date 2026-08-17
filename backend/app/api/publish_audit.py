@@ -4,6 +4,7 @@
 `/publish/multi-operator/*` 与 `/publish/audit*` 不变。
 本模块负责端口矩阵看板 / 运营者配额 / 发布·登录·风控审计查询与链路溯源。
 """
+import uuid
 from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Body, Depends, Query
@@ -86,7 +87,34 @@ async def get_multi_operator_matrix(
     （前端可提示「多运营者未启用」）。
     """
     from app.services import multi_operator
+    from sqlalchemy import select
+    from app.models.models import VideoAccount, User
+
     matrix = await multi_operator.get_route_matrix()
+    # 补全可读名称：账号名称 + 运营者名称（前端矩阵/下拉直接展示，避免只看到 ID）
+    account_ids = [m.get("account_id") for m in matrix if m.get("account_id")]
+    operator_ids = [m.get("operator_id") for m in matrix if m.get("operator_id")]
+    name_map = {}
+    if account_ids:
+        try:
+            accs = (
+                await db.execute(select(VideoAccount).where(VideoAccount.id.in_([uuid.UUID(x) for x in account_ids])))
+            ).scalars().all()
+            name_map.update({str(a.id): a.account_name for a in accs})
+        except Exception:
+            pass
+    op_name_map = {}
+    if operator_ids:
+        try:
+            users = (
+                await db.execute(select(User).where(User.id.in_([uuid.UUID(x) for x in operator_ids])))
+            ).scalars().all()
+            op_name_map.update({str(u.id): (u.display_name or u.username) for u in users})
+        except Exception:
+            pass
+    for m in matrix:
+        m["account_name"] = name_map.get(m.get("account_id")) or m.get("account_id")
+        m["operator_name"] = op_name_map.get(m.get("operator_id")) or m.get("operator_id") or "-"
     return matrix
 
 

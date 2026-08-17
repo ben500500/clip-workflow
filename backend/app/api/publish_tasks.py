@@ -57,6 +57,7 @@ class PublishTaskResponse(BaseModel):
     tags: Optional[list] = None
     cover_file_key: Optional[str] = None
     mini_program_link: Optional[str] = None
+    publish_jump: Optional[list] = None
     link_attached: bool = False
     published_url: Optional[str] = None
     published_id: Optional[str] = None
@@ -254,6 +255,7 @@ async def _create_publish_task_internal(db: AsyncSession, data: PublishTaskCreat
     # 若指定了 video_account_id，自动代入账号的发布配置（chrome 端口/Cookie/默认标题/描述/标签）
     account_name = data.account_name
     mini_program_link = data.mini_program_link
+    publish_jump = None
     video_account_uuid = _to_uuid_or_none(data.video_account_id)
     if video_account_uuid:
         try:
@@ -261,6 +263,8 @@ async def _create_publish_task_internal(db: AsyncSession, data: PublishTaskCreat
             acc = acc_result.scalar_one_or_none()
             if acc:
                 account_name = account_name or acc.account_name
+                # 发布跳转配置（端原生/小程序）从账号带入任务快照
+                publish_jump = list(acc.publish_jump) if acc.publish_jump else None
         except Exception:
             pass
 
@@ -275,6 +279,7 @@ async def _create_publish_task_internal(db: AsyncSession, data: PublishTaskCreat
         mini_program_link=mini_program_link,
         link_attached=data.link_attached,
         require_manual_confirm=data.require_manual_confirm,
+        publish_jump=publish_jump,
         video_account_id=video_account_uuid,
         mini_program_id=_to_uuid_or_none(data.mini_program_id),
         prompt_record_id=_to_uuid_or_none(data.prompt_record_id),

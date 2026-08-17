@@ -27,6 +27,7 @@ class VideoAccountCreate(BaseModel):
     account_uid: Optional[str] = None
     profile_id: Optional[str] = None
     mini_program_enabled: bool = False
+    publish_jump: Optional[List[str]] = None
     remark: Optional[str] = None
     enabled: bool = True
     # 多运营者（R14）：operator_id=号主（微信号主人）；created_by 由后端取当前用户写入
@@ -41,6 +42,7 @@ class VideoAccountUpdate(BaseModel):
     account_uid: Optional[str] = None
     profile_id: Optional[str] = None
     mini_program_enabled: Optional[bool] = None
+    publish_jump: Optional[List[str]] = None
     remark: Optional[str] = None
     enabled: Optional[bool] = None
     operator_id: Optional[str] = None
@@ -55,6 +57,7 @@ class VideoAccountResponse(BaseModel):
     account_uid: Optional[str] = None
     profile_id: Optional[str] = None
     mini_program_enabled: bool = False
+    publish_jump: Optional[List[str]] = None
     remark: Optional[str] = None
     enabled: bool = True
     created_by: Optional[str] = None
@@ -81,6 +84,7 @@ def _serialize_video_account(acc: VideoAccount) -> dict:
         "account_uid": acc.account_uid,
         "profile_id": str(acc.profile_id) if acc.profile_id else None,
         "mini_program_enabled": acc.mini_program_enabled or False,
+        "publish_jump": list(acc.publish_jump) if acc.publish_jump else None,
         "remark": acc.remark,
         "enabled": acc.enabled if acc.enabled is not None else True,
         "created_by": str(acc.created_by) if acc.created_by else None,
@@ -132,6 +136,7 @@ async def create_video_account(
         account_uid=data.account_uid,
         profile_id=uuid.UUID(data.profile_id) if data.profile_id else None,
         mini_program_enabled=data.mini_program_enabled,
+        publish_jump=data.publish_jump,
         remark=data.remark,
         enabled=data.enabled,
         # 多运营者归属：created_by=操作人；operator_id=号主（缺省同操作人）
@@ -177,6 +182,7 @@ async def batch_import_video_accounts(
                 account_uid=item.account_uid,
                 profile_id=uuid.UUID(item.profile_id) if item.profile_id else None,
                 mini_program_enabled=item.mini_program_enabled,
+                publish_jump=item.publish_jump,
                 remark=item.remark,
                 enabled=item.enabled,
                 created_by=current_user.id if current_user else None,
@@ -188,6 +194,48 @@ async def batch_import_video_accounts(
             errors.append({"account_name": item.account_name, "error": str(e)})
     await db.flush()
     return {"imported": imported, "skipped": skipped, "errors": errors}
+
+
+class VideoAccountBatchAssignProfile(BaseModel):
+    """批量关联发布配置：一次性为多个账号设置同一 profile_id。"""
+    account_ids: List[str]
+    profile_id: Optional[str] = None
+
+
+@router.post("/publish/video-accounts/batch-assign-profile", response_model=dict)
+async def batch_assign_video_account_profile(
+    data: VideoAccountBatchAssignProfile,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """批量关联发布配置（用于账号列表「批量关联配置」）。
+
+    将选中的多个账号一次性设置为指定 profile_id（传 None 表示取消关联）。
+    返回成功/失败数量，便于前端反馈。
+    """
+    updated = 0
+    errors = []
+    profile_uuid = uuid.UUID(data.profile_id) if data.profile_id else None
+    for raw_id in data.account_ids:
+        try:
+            aid = uuid.UUID(raw_id)
+        except ValueError:
+            errors.append({"account_id": raw_id, "error": "invalid id"})
+            continue
+        result = await db.execute(select(VideoAccount).where(VideoAccount.id == aid))
+        acc = result.scalar_one_or_none()
+        if not acc:
+            errors.append({"account_id": raw_id, "error": "not found"})
+            continue
+        # RBAC：operator 仅可操作自己归属的账号
+        if current_user and not user_can_access_all_materials(current_user):
+            if acc.operator_id not in (current_user.id, None) and acc.created_by != current_user.id:
+                errors.append({"account_id": raw_id, "error": "no permission"})
+                continue
+        acc.profile_id = profile_uuid
+        updated += 1
+    await db.flush()
+    return {"updated": updated, "errors": errors}
 
 
 @router.put("/publish/video-accounts/{account_id}", response_model=VideoAccountResponse)

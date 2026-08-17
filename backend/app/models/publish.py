@@ -48,6 +48,9 @@ class VideoAccount(Base):
     profile_id = Column(UUID(as_uuid=True), nullable=True)
     # 视频号小程序挂载资质（平台强引导功能，有资质限制）
     mini_program_enabled = Column(Boolean, default=False)
+    # 发布跳转配置（多选）：端原生对应「视频号剧集」、小程序对应「小程序短剧」
+    # 值为 ['native'] / ['mini_program'] / ['native','mini_program']，发布时据此选择
+    publish_jump = Column(JSON, nullable=True)
     remark = Column(String(500), nullable=True)
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -124,6 +127,8 @@ class PublishTask(Base):
     screenshot_key = Column(String(500), nullable=True)
     # ── 一期：账号矩阵 / 小程序库 / 短片来源关联（冗余快照 + 外键并行，兼容历史数据） ──
     video_account_id = Column(UUID(as_uuid=True), nullable=True)
+    # 发布跳转配置快照（从关联 VideoAccount 带入）：['native'] / ['mini_program'] / 两者
+    publish_jump = Column(JSON, nullable=True)
     # ── 多运营者（R14/R17）：批次外键 + 号主 operator_id（创建后不可变，不迁移） ──
     batch_id = Column(UUID(as_uuid=True), ForeignKey("publish_batches.id", ondelete="SET NULL"), nullable=True, index=True)
     operator_id = Column(UUID(as_uuid=True), nullable=True, index=True)

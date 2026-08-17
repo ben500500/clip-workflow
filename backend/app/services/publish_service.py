@@ -157,6 +157,7 @@ class VideoChannelPublisher:
         tags: Optional[list] = None,
         cover_file_key: Optional[str] = None,
         mini_program_link: Optional[str] = None,
+        publish_jump: Optional[list] = None,
         task_id: Optional[str] = None,
     ) -> dict:
         """
@@ -199,6 +200,10 @@ class VideoChannelPublisher:
             if cover_file_key:
                 await self._set_cover(cover_file_key)
 
+            # 发布跳转配置（端原生/小程序）→ 在视频号发布页选择对应跳转类型
+            if publish_jump:
+                await self._select_jump_type(publish_jump)
+
             # Attach mini program link if provided
             if mini_program_link:
                 await self._attach_mini_program(mini_program_link)
@@ -213,7 +218,7 @@ class VideoChannelPublisher:
                     # 多运营者（R13/R18）：同时把结构化 payload 外移到 Redis，
                     # 供 worker 重启/多副本时 confirm 幂等重填（含 selector 版本校验）
                     await self._save_pending_payload(
-                        task_id, title, description, tags, cover_file_key, mini_program_link
+                        task_id, title, description, tags, cover_file_key, mini_program_link, publish_jump
                     )
                     # 连接对象交由缓存管理，不在此关闭
                     self.browser = None
@@ -358,6 +363,32 @@ class VideoChannelPublisher:
             await file_chooser.set_files(local_cover)
             await asyncio.sleep(2)
 
+    async def _select_jump_type(self, publish_jump: list):
+        """在视频号发布页选择「跳转类型」：端原生=视频号剧集，小程序=小程序短剧。
+
+        账号的发布跳转配置（端原生/小程序，可单选或两者都选）驱动此处选择：
+        两者都选时优先选择「小程序短剧」（带渠道归因，收益链路更完整）；
+        仅选端原生时选择「视频号剧集」；均未配置则跳过（不干扰默认行为）。
+        找不到对应控件时静默跳过，避免阻断整条发布链路。
+        """
+        try:
+            has_native = "native" in (publish_jump or [])
+            has_mini = "mini_program" in (publish_jump or [])
+            if not has_native and not has_mini:
+                return
+            # 目标文案：优先「小程序短剧」（更完整归因），否则「视频号剧集」
+            target = "小程序短剧" if has_mini else "视频号剧集"
+            option = await self.page.query_selector(
+                f"text={target}"
+            )
+            if not option:
+                logger.info("jump-type option '%s' not found, skip", target)
+                return
+            await option.click()
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.warning("select jump type failed (non-blocking): %s", e)
+
     async def _attach_mini_program(self, link: str):
         """Attach a mini program link to the video."""
         link_btn = await self.page.query_selector(
@@ -420,6 +451,7 @@ class VideoChannelPublisher:
         tags: Optional[list],
         cover_file_key: Optional[str],
         mini_program_link: Optional[str],
+        publish_jump: Optional[list] = None,
     ) -> None:
         """把待确认发布的结构化 payload 外移到 Redis（R13/R18）。
 
@@ -439,6 +471,7 @@ class VideoChannelPublisher:
                 "tags": tags or [],
                 "cover_key": cover_file_key,
                 "mini_program_link": mini_program_link,
+                "publish_jump": publish_jump or [],
                 # 选择器集中管理并带版本号（R18）：confirm 前校验页面结构匹配
                 "selector_version": "v1",
             }
@@ -472,6 +505,8 @@ class VideoChannelPublisher:
                 await self._set_tags(payload["tags"])
             if payload.get("cover_key"):
                 await self._set_cover(payload["cover_key"])
+            if payload.get("publish_jump"):
+                await self._select_jump_type(payload["publish_jump"])
             if payload.get("mini_program_link"):
                 await self._attach_mini_program(payload["mini_program_link"])
             return True
