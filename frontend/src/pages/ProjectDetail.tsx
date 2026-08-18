@@ -1,17 +1,50 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
-  Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col, Statistic,
-  message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm, Input,
+  Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col,
+  message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm, Input, Tabs, Switch, Select, Divider, InputNumber,
 } from 'antd';
-import { UploadOutlined, ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined, PlayCircleOutlined, ThunderboltOutlined, PictureOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { projectApi } from '../api/projects';
+import type { ProjectOutputItem } from '../api/projects';
 import { uploadApi } from '../api/upload';
+import { sliceApi } from '../api/slice';
+import { autoclipApi } from '../api/autoclip';
 import type { Episode, EpisodeWorkflowItem, EpisodeWorkflowStage, Project, ProjectWorkflowStatus, WorkflowStageStatus } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
 const { Title, Text } = Typography;
 const { Dragger } = Upload;
+
+// 批量一键切片配置（面向已上传剧集，复用一键切片核心参数 + 视频封面）
+interface BatchSliceConfig {
+  mode: string;              // fast / dedupe
+  maxClips: number;
+  minScoreThreshold: number | null;
+  minClipDuration: number | null;
+  maxClipDuration: number | null;
+  frameAnalysis: boolean;
+  autoClipIfNeeded: boolean; // 无候选片段时自动补一轮 AI 选点
+  vert2horizEnabled: boolean;
+  subtitleEnabled: boolean;
+  // 视频封面：选择图片作为视频首帧（MinIO key）
+  coverImageKey: string | null;
+  coverImageName: string | null;
+}
+
+const DEFAULT_BATCH_CONFIG: BatchSliceConfig = {
+  mode: 'fast',
+  maxClips: 10,
+  minScoreThreshold: null,
+  minClipDuration: null,
+  maxClipDuration: null,
+  frameAnalysis: true,
+  autoClipIfNeeded: true,
+  vert2horizEnabled: false,
+  subtitleEnabled: false,
+  coverImageKey: null,
+  coverImageName: null,
+};
 
 const ProjectDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -42,6 +75,22 @@ const ProjectDetail: React.FC = () => {
   const [multiMerge, setMultiMerge] = useState(true);
   const [multiTitle, setMultiTitle] = useState('');
   const [multiUploading, setMultiUploading] = useState(false);
+
+  // ── 剧集多选 + 批量一键切片 ──
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [sliceModalOpen, setSliceModalOpen] = useState(false);
+  const [batchConfig, setBatchConfig] = useState<BatchSliceConfig>({ ...DEFAULT_BATCH_CONFIG });
+  const [batchSlicing, setBatchSlicing] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number; current: string } | null>(null);
+  const [coverUploading, setCoverUploading] = useState(false);
+
+  // ── 成品预览 Tab：项目下所有剧集的已完成切片产出 ──
+  const [activeTab, setActiveTab] = useState('episodes');
+  const [outputs, setOutputs] = useState<ProjectOutputItem[]>([]);
+  const [outputsLoading, setOutputsLoading] = useState(false);
+  const [outputsLoaded, setOutputsLoaded] = useState(false);
+  const [previewModal, setPreviewModal] = useState(false);
+  const [previewItem, setPreviewItem] = useState<ProjectOutputItem | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
@@ -157,6 +206,72 @@ const ProjectDetail: React.FC = () => {
       message.error(err instanceof Error ? err.message : '批量上传失败');
     } finally {
       setMultiUploading(false);
+    }
+  };
+
+  // ── 主上传区拖入多个视频：每个视频单独一个剧集 ──
+  const handleMultiFileUpload = async (files: File[]) => {
+    if (files.length === 0) return;
+    if (!projectId) {
+      message.warning('缺少当前项目信息，无法上传');
+      return;
+    }
+    // 单文件走原有单文件快路径；多文件则每个视频单独一个剧集
+    if (files.length === 1) {
+      await handleUpload(files[0]);
+      return;
+    }
+    // 取消进行中的单文件上传，避免并发冲突
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    setUploading(true);
+    setUploadProgress(0);
+    try {
+      const resp = await uploadApi.uploadMulti({
+        projectId,
+        files,
+        merge: false,
+        onProgress: (p) => setUploadProgress(p),
+      });
+      if (mountedRef.current) {
+        message.success(`已上传 ${resp.episodes.length} 个视频，每个单独作为一个剧集`);
+        setSelectedRowKeys([]);
+        await fetchData(true);
+      }
+    } catch (err: unknown) {
+      if (mountedRef.current) {
+        message.error(err instanceof Error ? err.message : '批量上传失败');
+      }
+    } finally {
+      if (mountedRef.current) setUploading(false);
+      abortRef.current = null;
+    }
+  };
+
+  // ── 成品预览 Tab：拉取项目下所有剧集的已完成切片产出 ──
+  const loadProjectOutputs = useCallback(async () => {
+    setOutputsLoading(true);
+    try {
+      const data = await projectApi.getOutputs(projectId);
+      if (mountedRef.current) {
+        setOutputs(data.items);
+        setOutputsLoaded(true);
+      }
+    } catch (err: unknown) {
+      if (mountedRef.current) {
+        message.error(err instanceof Error ? err.message : '获取成品列表失败');
+      }
+    } finally {
+      if (mountedRef.current) setOutputsLoading(false);
+    }
+  }, [projectId]);
+
+  // 切换到成品预览 Tab 时拉取一次（避免每次切换都请求）
+  const handleTabChange = (key: string) => {
+    setActiveTab(key);
+    if (key === 'outputs' && !outputsLoaded) {
+      loadProjectOutputs();
     }
   };
 
@@ -282,6 +397,104 @@ const ProjectDetail: React.FC = () => {
         </Space>
       </div>
     );
+  };
+
+  // ── 视频封面：选择图片上传（作为视频首帧） ──
+  const handleCoverUpload = async (file: File) => {
+    setCoverUploading(true);
+    try {
+      const res = await sliceApi.uploadBadge(file);
+      if (mountedRef.current) {
+        setBatchConfig((prev) => ({
+          ...prev,
+          coverImageKey: res.file_key,
+          coverImageName: res.file_name,
+        }));
+        message.success(`封面已上传：${res.file_name}`);
+      }
+    } catch (err: unknown) {
+      if (mountedRef.current) {
+        message.error(err instanceof Error ? err.message : '封面上传失败');
+      }
+    } finally {
+      if (mountedRef.current) setCoverUploading(false);
+    }
+    return false;
+  };
+
+  // 对单个剧集执行一次「一键切片」（无候选时自动补选点，等价于剧集详情页的一键切片）
+  const runOneClickSlice = async (episode: Episode) => {
+    const cfg = batchConfig;
+    // 无候选片段时自动补一轮 AI 选点
+    if (cfg.autoClipIfNeeded) {
+      try {
+        const candidates = await autoclipApi.getCandidates(episode.id);
+        if (candidates.length === 0) {
+          await autoclipApi.run(episode.id, {
+            max_clips: cfg.maxClips,
+            min_score_threshold: cfg.minScoreThreshold ?? undefined,
+            min_duration: cfg.minClipDuration ?? undefined,
+            max_duration: cfg.maxClipDuration ?? undefined,
+            frame_analysis: cfg.frameAnalysis,
+          });
+          let selected = false;
+          for (let i = 0; i < 200 && !selected; i++) {
+            await new Promise((r) => setTimeout(r, 3000));
+            const p = await autoclipApi.progress(episode.id);
+            if (p.status === 'completed') {
+              selected = true;
+            } else if (p.status === 'failed') {
+              throw new Error(p.error_message || `${episode.title || episode.episode_no} AI 选点失败`);
+            }
+          }
+          if (!selected) throw new Error(`${episode.title || episode.episode_no} AI 选点超时`);
+          // 等候选真正落库
+          for (let i = 0; i < 10; i++) {
+            const after = await autoclipApi.getCandidates(episode.id);
+            if (after.length > 0) break;
+            await new Promise((r) => setTimeout(r, 2000));
+          }
+        }
+      } catch (err: unknown) {
+        // 选点失败不阻断：后端会自动回退整片切片
+        if (err instanceof Error && /选点失败|选点超时/.test(err.message)) throw err;
+      }
+    }
+    await sliceApi.run(episode.id, cfg.mode, {
+      auto_accept_all: true,
+      vert2horiz_enabled: cfg.vert2horizEnabled,
+      subtitle_enabled: cfg.subtitleEnabled,
+      // 视频封面：作为视频首帧
+      cover_image_key: cfg.coverImageKey || undefined,
+    });
+  };
+
+  // 批量一键切片：对选中的剧集逐个启动一键切片
+  const runBatchSlice = async () => {
+    const selected = episodes.filter((e) => selectedRowKeys.includes(e.id));
+    if (selected.length === 0) return;
+    setBatchSlicing(true);
+    setBatchProgress({ done: 0, total: selected.length, current: '' });
+    let done = 0;
+    const failed: string[] = [];
+    for (const ep of selected) {
+      setBatchProgress({ done, total: selected.length, current: `${ep.title || ep.episode_no || ep.id}` });
+      try {
+        await runOneClickSlice(ep);
+      } catch (err: unknown) {
+        failed.push(ep.title || `第 ${ep.episode_no} 集`);
+      }
+      done += 1;
+      setBatchProgress({ done, total: selected.length, current: '' });
+    }
+    setBatchSlicing(false);
+    setBatchProgress(null);
+    if (failed.length > 0) {
+      message.warning(`部分剧集启动失败：${failed.join('、')}，请到对应剧集详情页重试`);
+    } else {
+      message.success(`已为 ${selected.length} 个剧集启动一键切片，完成后可到「成品预览」Tab 查看结果`);
+    }
+    setSliceModalOpen(false);
   };
 
   if (loading) {
@@ -573,15 +786,21 @@ const ProjectDetail: React.FC = () => {
           </Button>
           <Dragger
             accept=".mp4,.avi,.mov,.mkv,.webm"
+            multiple
             showUploadList={false}
-            beforeUpload={(file) => {
-              handleUpload(file as File);
+            beforeUpload={(file, fileList) => {
+              // antd 会为批量中的每个文件各调用一次 beforeUpload（fileList 为整批），
+              // 只在第一个文件时触发一次整批上传，避免重复发起
+              if (file === fileList[0]) {
+                void handleMultiFileUpload(fileList.map((f) => f as unknown as File));
+              }
               return false;
             }}
             disabled={uploading}
           >
             <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-            <p className="ant-upload-text">点击或拖拽单个视频到此处上传（上传到当前项目）</p>
+            <p className="ant-upload-text">点击或拖拽视频到此处上传（可一次拖入多个，每个视频单独作为一个剧集）</p>
+            <p className="ant-upload-hint">单个视频也会作为一个剧集；需要合并请在下方使用「多视频上传」</p>
             {uploading && (
               uploadProgress < 0 ? (
                 <Space size={4}><Spin size="small" /><Text type="secondary" style={{ fontSize: 12 }}>上传中…</Text></Space>
@@ -592,21 +811,152 @@ const ProjectDetail: React.FC = () => {
           </Dragger>
         </Space>
       </Card>
-      {/* 剧集列表：位于上传正片下方 */}
-      <Card size="small" title="剧集列表" extra={<Button size="small" icon={<UploadOutlined />} onClick={() => navigate('/settings')}>去系统设置</Button>}>
-        <Table
-          rowKey="id"
-          columns={episodeColumns}
-          dataSource={episodes}
-          pagination={false}
-          size="small"
-          scroll={{ x: 920 }}
-          expandable={{
-            expandedRowKeys: Array.from(previewExpanded),
-            onExpand: (expanded, record) => void togglePreview(record, expanded),
-            expandedRowRender: (record) => renderSourcePreview(record),
-            expandIconColumnIndex: -1,
-          }}
+      {/* 剧集列表 + 成品预览 Tab：位于上传正片下方 */}
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Tabs
+          activeKey={activeTab}
+          onChange={handleTabChange}
+          items={[
+            {
+              key: 'episodes',
+              label: `剧集列表（${episodes.length}）`,
+              children: (
+                <>
+                  <Space style={{ marginBottom: 12 }} wrap>
+                    <Button
+                      type="primary"
+                      icon={<ThunderboltOutlined />}
+                      disabled={selectedRowKeys.length === 0 || batchSlicing}
+                      onClick={() => setSliceModalOpen(true)}
+                    >
+                      批量一键切片{selectedRowKeys.length > 0 ? `（${selectedRowKeys.length}）` : ''}
+                    </Button>
+                    {selectedRowKeys.length > 0 && (
+                      <Button size="small" onClick={() => setSelectedRowKeys([])}>清空选择</Button>
+                    )}
+                    {batchProgress && (
+                      <Space size={6}>
+                        <Spin size="small" />
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          正在为「{batchProgress.current}」启动一键切片 {batchProgress.done}/{batchProgress.total}…
+                        </Text>
+                      </Space>
+                    )}
+                  </Space>
+                  <Table
+                    rowKey="id"
+                    columns={episodeColumns}
+                    dataSource={episodes}
+                    pagination={false}
+                    size="small"
+                    scroll={{ x: 920 }}
+                    rowSelection={{
+                      selectedRowKeys,
+                      onChange: setSelectedRowKeys,
+                      getCheckboxProps: (record: Episode) => ({ disabled: batchSlicing }),
+                    }}
+                    expandable={{
+                      expandedRowKeys: Array.from(previewExpanded),
+                      onExpand: (expanded, record) => void togglePreview(record, expanded),
+                      expandedRowRender: (record) => renderSourcePreview(record),
+                      expandIconColumnIndex: -1,
+                    }}
+                  />
+                </>
+              ),
+            },
+            {
+              key: 'outputs',
+              label: `成品预览（${outputsLoaded ? outputs.length : ''}）`,
+              children: (
+                <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                  <Alert type="info" showIcon message="项目下所有剧集的已完成切片产出，可预览/下载。" />
+                  {outputsLoading ? (
+                    <div style={{ textAlign: 'center', padding: 32 }}><Spin /></div>
+                  ) : outputs.length === 0 ? (
+                    <Text type="secondary">暂无成品。请先对剧集执行切片（可勾选多个剧集后使用「批量一键切片」），完成后即可在此预览。</Text>
+                  ) : (
+                    <Table
+                      rowKey="output_id"
+                      size="small"
+                      pagination={{ pageSize: 10, showSizeChanger: false }}
+                      dataSource={outputs}
+                      columns={[
+                        {
+                          title: '所属剧集',
+                          key: 'episode',
+                          width: 180,
+                          render: (_: unknown, r: ProjectOutputItem) => (
+                            <Link to={`/episodes/${r.episode_id}`}>
+                              {r.episode_title || (r.episode_no != null ? `第 ${r.episode_no} 集` : '(未命名剧集)')}
+                            </Link>
+                          ),
+                        },
+                        {
+                          title: '成品',
+                          dataIndex: 'file_name',
+                          key: 'file_name',
+                          ellipsis: true,
+                          render: (v: string | null) => v || '(未命名)'
+                        },
+                        {
+                          title: '模式',
+                          dataIndex: 'mode',
+                          key: 'mode',
+                          width: 90,
+                          render: (m: string | null) => (m ? <Tag>{m}</Tag> : '-'),
+                        },
+                        {
+                          title: '时长',
+                          dataIndex: 'duration',
+                          key: 'duration',
+                          width: 90,
+                          render: (d: number | null) => (d != null ? formatDuration(d) : '-'),
+                        },
+                        {
+                          title: '分辨率',
+                          dataIndex: 'resolution',
+                          key: 'resolution',
+                          width: 100,
+                          render: (v: string | null) => v || '-',
+                        },
+                        {
+                          title: '大小',
+                          dataIndex: 'file_size',
+                          key: 'file_size',
+                          width: 100,
+                          render: (s: number | null) => (s != null ? formatFileSize(s) : '-'),
+                        },
+                        {
+                          title: '生成时间',
+                          dataIndex: 'created_at',
+                          key: 'created_at',
+                          width: 150,
+                          render: (d: string) => formatDateTime(d),
+                        },
+                        {
+                          title: '操作',
+                          key: 'action',
+                          width: 150,
+                          render: (_: unknown, r: ProjectOutputItem) => (
+                            <Space size="small">
+                              <Button size="small" icon={<PlayCircleOutlined />} onClick={() => { setPreviewItem(r); setPreviewModal(true); }}>预览</Button>
+                              {r.presigned_url && (
+                                <a href={r.presigned_url} target="_blank" rel="noreferrer">下载</a>
+                              )}
+                            </Space>
+                          ),
+                        },
+                      ]}
+                    />
+                  )}
+                  {outputsLoaded && (
+                    <Button size="small" icon={<ReloadOutlined />} onClick={() => loadProjectOutputs()}>刷新成品</Button>
+                  )}
+                </Space>
+              ),
+            },
+          ]}
         />
       </Card>
 
@@ -670,6 +1020,119 @@ const ProjectDetail: React.FC = () => {
             )
           )}
         </Space>
+      </Modal>
+
+      {/* 批量一键切片配置弹窗 */}
+      <Modal
+        title={`批量一键切片（${selectedRowKeys.length} 个剧集）`}
+        open={sliceModalOpen}
+        onOk={() => void runBatchSlice()}
+        onCancel={() => { if (!batchSlicing) setSliceModalOpen(false); }}
+        okText="开始批量切片"
+        cancelText="取消"
+        confirmLoading={batchSlicing}
+        width={640}
+        destroyOnClose
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Alert type="info" showIcon message="将对选中的每个剧集执行一次「一键切片」（免审核直接出片）。没有候选片段的剧集会自动补一轮 AI 选点。" />
+
+          {/* 视频封面：选择图片作为视频首帧 */}
+          <Space direction="vertical" style={{ width: '100%' }} size={6}>
+            <Text strong>视频封面（可选）</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>选择一张图片作为视频的首帧（成品开头会先展示封面画面）。不选择则直接按源视频首帧出片。</Text>
+            <Space wrap>
+              <Upload
+                accept="image/*"
+                showUploadList={false}
+                beforeUpload={(file) => handleCoverUpload(file as File)}
+                disabled={coverUploading}
+              >
+                <Button icon={<PictureOutlined />} loading={coverUploading}>选择封面图片</Button>
+              </Upload>
+              {batchConfig.coverImageKey && (
+                <Tag closable onClose={() => setBatchConfig((prev) => ({ ...prev, coverImageKey: null, coverImageName: null }))}>
+                  封面：{batchConfig.coverImageName || '已选择'}
+                </Tag>
+              )}
+            </Space>
+          </Space>
+
+          <Divider style={{ margin: '4px 0' }} />
+
+          <Space style={{ width: '100%' }} wrap>
+            <Space>
+              <Text style={{ fontSize: 13 }}>切片模式</Text>
+              <Select
+                size="small"
+                style={{ width: 120 }}
+                value={batchConfig.mode}
+                onChange={(v) => setBatchConfig((prev) => ({ ...prev, mode: v }))}
+                options={[
+                  { value: 'fast', label: '普通切片' },
+                  { value: 'dedupe', label: '去重切片' },
+                ]}
+              />
+            </Space>
+            <Space>
+              <Text style={{ fontSize: 13 }}>AI 选点上限</Text>
+              <InputNumber
+                size="small"
+                style={{ width: 80 }}
+                min={1}
+                value={batchConfig.maxClips}
+                onChange={(v) => setBatchConfig((prev) => ({ ...prev, maxClips: v ?? 10 }))}
+              />
+            </Space>
+          </Space>
+
+          <Space style={{ width: '100%' }} wrap>
+            <Switch
+              checked={batchConfig.autoClipIfNeeded}
+              onChange={(v) => setBatchConfig((prev) => ({ ...prev, autoClipIfNeeded: v }))}
+            />
+            <Text style={{ fontSize: 13 }}>无候选片段时自动补一轮 AI 选点</Text>
+          </Space>
+          <Space style={{ width: '100%' }} wrap>
+            <Switch
+              checked={batchConfig.vert2horizEnabled}
+              onChange={(v) => setBatchConfig((prev) => ({ ...prev, vert2horizEnabled: v }))}
+            />
+            <Text style={{ fontSize: 13 }}>竖屏转横屏智能裁切</Text>
+          </Space>
+          <Space style={{ width: '100%' }} wrap>
+            <Switch
+              checked={batchConfig.subtitleEnabled}
+              onChange={(v) => setBatchConfig((prev) => ({ ...prev, subtitleEnabled: v }))}
+            />
+            <Text style={{ fontSize: 13 }}>ASR 字幕烧录</Text>
+          </Space>
+
+          {batchProgress && batchSlicing && (
+            <Progress percent={Math.round((batchProgress.done / batchProgress.total) * 100)} size="small" status="active" />
+          )}
+        </Space>
+      </Modal>
+
+      {/* 成品预览弹窗 */}
+      <Modal
+        title={previewItem ? `成品预览 · ${previewItem.file_name || ''}` : '成品预览'}
+        open={previewModal}
+        onCancel={() => setPreviewModal(false)}
+        footer={previewItem?.presigned_url ? <a href={previewItem.presigned_url} target="_blank" rel="noreferrer"><Button type="primary" icon={<DownloadOutlined />}>下载</Button></a> : null}
+        width={820}
+        destroyOnClose
+      >
+        {previewItem?.presigned_url ? (
+          <video
+            controls
+            preload="metadata"
+            src={previewItem.presigned_url}
+            style={{ width: '100%', maxHeight: 460, background: '#000', borderRadius: 6 }}
+          />
+        ) : (
+          <Text type="secondary">该成品暂无可用预览地址（链接可能已过期），请尝试重新加载列表。</Text>
+        )}
       </Modal>
     </div>
   );

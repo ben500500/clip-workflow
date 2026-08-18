@@ -531,6 +531,7 @@ def slice_task(
     subtitle_mask_config: Optional[dict] = None,
     watermark_mask_config: Optional[dict] = None,
     subtitle_align_mask: bool = True,
+    cover_image_key: Optional[str] = None,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
@@ -541,6 +542,7 @@ def slice_task(
     badges_config: 图片角标配置(切片后在成品上叠加角标)。
     badge_default_width: 角标默认宽度(px,0=保持原图尺寸;角标未单独设 width 时生效)。
     subtitle_config: 字幕烧录配置({"enabled": True, "srt": str},切片时烧录到成品)。
+    cover_image_key: 视频封面图片 MinIO key(可选,作为成品视频首帧叠加)。
     """
     from app.services.slice_service import run_slice_scrub, run_slice_fast
     from app.services.minio_service import upload_file_from_path, download_to_file
@@ -587,6 +589,21 @@ def slice_task(
                 if bi.get("opacity") is not None:
                     item["opacity"] = float(bi["opacity"])
                 badge_items.append(item)
+
+        # 视频封面:下载封面图片到本地,作为视频首帧叠加
+        cover_path = None
+        if cover_image_key:
+            cover_local = os.path.join(
+                output_dir, f"cover_{os.path.basename(cover_image_key)}"
+            )
+            ok = run_async(
+                download_to_file(settings.MINIO_BUCKET_RAW, cover_image_key, cover_local)
+            )
+            if ok and os.path.isfile(cover_local):
+                cover_path = cover_local
+                logger.info("视频封面已下载到本地: %s", cover_local)
+            else:
+                logger.warning("视频封面下载失败,忽略: %s", cover_image_key)
 
         # 字幕烧录:把 ASR 生成的 SRT 写到本地文件,供引擎 --subtitle 使用
         subtitle_srt_path = None
@@ -669,6 +686,7 @@ def slice_task(
                     subtitle_mask_config=subtitle_mask_config,
                     watermark_mask_config=watermark_mask_config,
                     subtitle_align_mask=subtitle_align_mask,
+                    cover_path=cover_path,
                 )
             )
         else:
@@ -696,6 +714,7 @@ def slice_task(
                     subtitle_mask_config=subtitle_mask_config,
                     watermark_mask_config=watermark_mask_config,
                     subtitle_align_mask=subtitle_align_mask,
+                    cover_path=cover_path,
                 )
             )
 

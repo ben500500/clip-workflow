@@ -43,7 +43,30 @@ export const projectApi = {
       title: string | null;
     }>,
 
+  getOutputs: (projectId: string) =>
+    client.get(`/projects/${projectId}/outputs`) as Promise<{
+      items: ProjectOutputItem[];
+      total: number;
+    }>,
   // P2-4 项目级工作流状态聚合（一次拿全项目所有剧集选点/检测/切片三阶段状态）
   getWorkflowStatus: (projectId: string) =>
     client.get(`/projects/${projectId}/workflow-status`) as Promise<ProjectWorkflowStatus>,
 };
+
+export interface ProjectOutputItem {
+  output_id: string;
+  task_id: string;
+  episode_id: string;
+  episode_no: number | null;
+  episode_title: string | null;
+  mode: string | null;
+  task_status: string | null;
+  clip_id: string | null;
+  file_key: string | null;
+  file_name: string | null;
+  duration: number | null;
+  file_size: number | null;
+  resolution: string | null;
+  created_at: string;
+  presigned_url: string | null;
+}

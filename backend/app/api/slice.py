@@ -514,6 +514,8 @@ async def run_slice(
     slice_task.subtitle_mask_config = subtitle_mask_config
     slice_task.text_overlays_config = text_overlays_config
     slice_task.watermark_mask_config = watermark_mask_config
+    # 视频封面：选择图片作为视频首帧（重试时保留）
+    slice_task.cover_image_key = data.cover_image_key or None
 
     if engine == "worker":
         # 确保输出桶存在（全新部署时 sliced 桶可能未初始化）
@@ -537,6 +539,7 @@ async def run_slice(
             subtitle_mask_config,
             watermark_mask_config,
             data.subtitle_align_mask,
+            data.cover_image_key,
         )
 
         if not published:
@@ -569,6 +572,7 @@ async def run_slice(
                 subtitle_mask_config,
                 watermark_mask_config,
                 data.subtitle_align_mask,
+                data.cover_image_key,
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
@@ -996,6 +1000,7 @@ async def retry_slice_task(
         subtitle_mask_config=task.subtitle_mask_config,
         text_overlays_config=task.text_overlays_config,
         watermark_mask_config=task.watermark_mask_config,
+        cover_image_key=task.cover_image_key,
         status="pending",
         progress=0.0,
     )
@@ -1027,6 +1032,7 @@ async def retry_slice_task(
             task.subtitle_mask_config,
             task.watermark_mask_config,
             getattr(task, "subtitle_align_mask", True),
+            task.cover_image_key,
         )
 
         if not published:
@@ -1058,6 +1064,7 @@ async def retry_slice_task(
                 task.subtitle_mask_config,
                 task.watermark_mask_config,
                 getattr(task, "subtitle_align_mask", True),
+                task.cover_image_key,
             )
         except Exception as e:
             new_task.status = "failed"

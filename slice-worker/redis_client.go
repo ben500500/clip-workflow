@@ -426,6 +426,8 @@ type SliceTask struct {
 	SubtitleAlignMask *bool `json:"subtitle_align_mask"`
 	// 恒定水印/角标打码配置（可选，后端透传；Worker 直接透传给引擎 --watermark-mask 参数）
 	WatermarkMask map[string]interface{} `json:"watermark_mask"`
+	// 视频封面（可选，后端透传；Worker 下载图片后透传给引擎 --cover 参数，作为视频首帧）
+	Cover CoverItem `json:"cover"`
 	Output         TaskOutput             `json:"output"`
 	TimeoutSec     int                      `json:"timeout_seconds"`
 	SourceDuration float64                  `json:"source_duration"`
@@ -447,6 +449,13 @@ type BadgeItem struct {
 	Width    int      `json:"width,omitempty"`
 	Offset   int      `json:"offset,omitempty"`
 	Opacity  *float64 `json:"opacity,omitempty"`
+}
+
+// CoverItem 视频封面配置
+// url: 封面图片 presigned GET URL（Worker 下载后写入 Path 本地路径，透传给引擎 --cover）
+type CoverItem struct {
+	URL  string `json:"url"`
+	Path string `json:"-"`
 }
 
 // TaskSource 任务素材来源

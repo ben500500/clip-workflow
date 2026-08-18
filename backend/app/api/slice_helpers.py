@@ -145,6 +145,10 @@ class SliceRunRequest(BaseModel):
     badges: Optional[List[BadgeItem]] = None
     # 角标默认尺寸（px）：角标未单独设置 width 时的统一宽度；0=保持原图尺寸。可选。
     badge_default_width: int = 0
+    # ── 视频封面（选择图片作为视频首帧）──
+    # 提供封面图片 MinIO key（通过 /slice/badge-upload 上传）后，切片引擎会在每个
+    # 成品开头叠加一张静止封面画面作为视频首帧。可选，不提供则直接按源视频首帧出片。
+    cover_image_key: Optional[str] = None
     # ── 竖屏转横屏智能裁切（切片前预处理）──
     # 开启后切片前自动检测素材方向，竖屏素材先转成横屏再切片
     vert2horiz_enabled: bool = False
@@ -938,6 +942,7 @@ async def _publish_to_worker(
     subtitle_mask_config: Optional[dict] = None,
     watermark_mask_config: Optional[dict] = None,
     subtitle_align_mask: bool = True,
+    cover_image_key: Optional[str] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -952,6 +957,15 @@ async def _publish_to_worker(
         source_url = await get_presigned_url(
             source_bucket or settings.MINIO_BUCKET_RAW,
             source_file_key,
+            expires_seconds=7200,
+        )
+
+    # 视频封面：生成 presigned GET URL，Worker 下载后作为视频首帧叠加
+    cover_url = None
+    if cover_image_key:
+        cover_url = await get_presigned_url(
+            settings.MINIO_BUCKET_RAW,
+            cover_image_key,
             expires_seconds=7200,
         )
 
@@ -1001,6 +1015,8 @@ async def _publish_to_worker(
         "source": {
             "url": source_url or "",
         },
+        # 视频封面（可选，Go Worker 下载图片后透传给引擎 --cover）
+        "cover": {"url": cover_url or ""} if cover_url else None,
         "cutlist": cutlist,
         "intervals": intervals_content,
         "dedupe_config": dedupe_config or {},
@@ -1070,6 +1086,7 @@ async def _dispatch_celery(
     subtitle_mask_config: Optional[dict] = None,
     watermark_mask_config: Optional[dict] = None,
     subtitle_align_mask: bool = True,
+    cover_image_key: Optional[str] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -1102,6 +1119,7 @@ async def _dispatch_celery(
         subtitle_mask_config=subtitle_mask_config,
         watermark_mask_config=watermark_mask_config,
         subtitle_align_mask=subtitle_align_mask,
+        cover_image_key=cover_image_key,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
