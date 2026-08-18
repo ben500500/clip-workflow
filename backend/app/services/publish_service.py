@@ -390,6 +390,11 @@ class VideoChannelPublisher:
             # 视频号发布页文件上传 input 为隐藏元素、渲染较晚（约 5-8s），
             # 且 SPA 重渲染会替换 DOM 导致元素 detached；用 locator.set_input_files，
             # 它在元素附着后自动重试（每次重新解析），规避 detached 竞态。
+            #
+            # 实测：导航后 2-3s 时 input 已可 set（不报错），但页面 change 事件尚未
+            # 绑定，文件设了也不触发上传（<video> 无 src）；约 8s 后上传区才就绪。
+            # 故 set 前固定等待 8s，确保真正触发上传（配合 _wait_for_upload 二次确认）。
+            await self.page.wait_for_timeout(8000)
             await self.page.locator("input[type='file']").first.set_input_files(
                 video_path, timeout=60000
             )
