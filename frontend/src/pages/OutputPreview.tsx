@@ -387,6 +387,17 @@ const OutputPreview: React.FC = () => {
       // 若选取了账号库账号，自动代入账号名称
       const selectedAccount = videoAccounts.find((a) => a.id === values.video_account_id);
       const accountName = selectedAccount ? selectedAccount.account_name : (values.account_name || undefined);
+      // 问题 5：素材×账号绑定引导——选了发布素材但未绑定账号，且账号库非空时提示先选账号，避免"素材生成了却没号发"
+      if (values.material_id && !accountName && videoAccounts.length > 0) {
+        Modal.confirm({
+          title: '已选发布素材，但未绑定发布账号',
+          content: '发布素材已生成，但未选择发布账号。若直接发布将使用默认配置，可能无对应登录态导致发布失败。建议从账号库选择一个发布账号（或手填账号）后再发布。',
+          okText: '返回选择账号',
+          cancelText: '仍按默认发布',
+          onOk: () => {},
+        });
+        return;
+      }
       // 若选取了小程序库链接，自动代入完整链接
       const selectedMiniProgram = miniPrograms.find((m) => m.id === values.mini_program_id);
       const miniProgramLink = selectedMiniProgram ? selectedMiniProgram.full_link : (values.mini_program_link || undefined);

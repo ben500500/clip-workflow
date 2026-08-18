@@ -176,6 +176,8 @@ class PublishProfile(Base):
     title_template = Column(String(500), nullable=True)
     description_template = Column(Text, nullable=True)
     default_tags = Column(JSON, nullable=True)
+    # 发布页「位置」配置（按账号注入，P2）：如"广东·深圳"，发布时定位到该位置；留空则不填
+    location = Column(String(200), nullable=True)
     mini_program_link = Column(String(500), nullable=True)
     publish_mode = Column(String(50), default="immediate")
     require_manual_confirm = Column(Boolean, default=True)

@@ -508,6 +508,7 @@ const PublishManagement: React.FC = () => {
               max_daily_publish: p.max_daily_publish,
               min_interval_seconds: p.min_interval_seconds,
               require_manual_confirm: p.require_manual_confirm,
+              location: p.location || undefined,
             });
             setProfileModal(true);
           }}>编辑</Button>
@@ -1206,6 +1207,9 @@ const PublishManagement: React.FC = () => {
           <Form.Item name="min_interval_seconds" label="最小发布间隔（秒）" initialValue={300}><InputNumber min={0} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="require_manual_confirm" label="需要人工确认" initialValue={true}>
             <Select options={[{ value: true, label: '是' }, { value: false, label: '否' }]} />
+          </Form.Item>
+          <Form.Item name="location" label="发布位置（选填）" tooltip="发布时在视频号发布页定位到该位置，如：广东·深圳；留空则不填">
+            <Input placeholder="如：广东·深圳" />
           </Form.Item>
         </Form>
       </Modal>

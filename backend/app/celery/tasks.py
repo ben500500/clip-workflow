@@ -1344,6 +1344,7 @@ def task_publish_video(self, publish_task_id: str):
             publish_jump=publish_task_data.get("publish_jump"),
             task_id=publish_task_id,
             publish_comments=publish_task_data.get("publish_comments"),
+            location=publish_task_data.get("location"),
         ))
 
         # 审计(P1 问题10):发布动作落 publish_audit,并生成 trace_id 贯穿确认→发布
@@ -1878,6 +1879,8 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
 
         if profile:
             data["chrome_debug_port"] = profile.chrome_debug_port
+            # 发布页「位置」配置（按账号注入，P2）：留空则不填
+            data["location"] = profile.location
             # RPA Cookie 解密(AES-256/Fernet 加密存储,仅在 Worker 内部使用)
             if profile.cookie_file:
                 try:
