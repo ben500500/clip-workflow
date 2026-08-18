@@ -37,9 +37,27 @@ export interface PublishMaterialGenerateParams {
   save?: boolean;
 }
 
+export interface PublishMaterialGenerateFromOutputParams {
+  output_id: string;
+  theme?: string;
+  tone?: string;
+  platform?: string;
+  extra_requirements?: string;
+  save?: boolean;
+}
+
 export const publishMaterialApi = {
   generate: (params: PublishMaterialGenerateParams) =>
     client.post('/shortdrama/publish-material/generate', params) as Promise<{
+      material: PublishMaterial;
+      model?: string | null;
+      record_id?: string | null;
+      message: string;
+    }>,
+
+  // 从切片成品自动生成发布素材（短视频产线「最后一公里」）
+  generateFromOutput: (params: PublishMaterialGenerateFromOutputParams) =>
+    client.post('/shortdrama/publish-material/generate-from-output', params) as Promise<{
       material: PublishMaterial;
       model?: string | null;
       record_id?: string | null;

@@ -1317,6 +1317,7 @@ def task_publish_video(self, publish_task_id: str):
             mini_program_link=publish_task_data.get("mini_program_link"),
             publish_jump=publish_task_data.get("publish_jump"),
             task_id=publish_task_id,
+            publish_comments=publish_task_data.get("publish_comments"),
         ))
 
         # 审计(P1 问题10):发布动作落 publish_audit,并生成 trace_id 贯穿确认→发布
@@ -1756,7 +1757,7 @@ async def _get_publish_rate_config() -> dict:
 
 async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
     """Fetch publish task data from the database."""
-    from app.models.models import PublishTask, PublishProfile, VideoAccount
+    from app.models.models import PublishTask, PublishProfile, VideoAccount, PublishMaterial
     from sqlalchemy import select
 
     async with async_session_factory() as session:
@@ -1810,6 +1811,21 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
             "actor_id": str(task.created_by) if getattr(task, "created_by", None) else (str(task.operator_id) if task.operator_id else None),
             "port": profile.chrome_debug_port if profile else None,
         }
+
+        # 发布后置顶神评：从发布任务关联的发布素材(PublishMaterial)读取三条互动神评，
+        # 供发布成功后探活式发表+置顶（拉高互动率；失败不阻断发布）。
+        try:
+            if task.material_id:
+                mat_res = await session.execute(
+                    select(PublishMaterial).where(PublishMaterial.id == task.material_id)
+                )
+                mat = mat_res.scalar_one_or_none()
+                if mat and mat.material_json:
+                    comments = (mat.material_json or {}).get("comments") or []
+                    if isinstance(comments, list):
+                        data["publish_comments"] = comments
+        except Exception as e:
+            logger.warning(f"load publish_comments from material failed: {e}")
 
         # 多运营者(R14/R19/R22):flag=true 时按路由表解析端口并签发 CDP token
         try:
