@@ -55,6 +55,8 @@ class Episode(Base):
     source_file_key = Column(String(500), nullable=True)
     # 视频号素材导入（wechat_download）：URL 导入的最小粘合字段（来源链接，便于溯源）
     source_url = Column(String(2000), nullable=True)
+    # 剧集维度打通切片产线：归属剧目（可空，关联 dramas 表；用于剧目下「该剧已切片/待切片」聚合）
+    drama_id = Column(UUID(as_uuid=True), ForeignKey("dramas.id", ondelete="SET NULL"), nullable=True, index=True)
     duration = Column(Float, nullable=True)
     resolution = Column(String(50), nullable=True)
     file_size = Column(BigInteger, nullable=True)
@@ -63,6 +65,7 @@ class Episode(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     project = relationship("Project", back_populates="episodes")
+    drama = relationship("Drama", back_populates="episodes")
     clip_candidates = relationship("ClipCandidate", back_populates="episode", cascade="all, delete-orphan")
     detected_intervals = relationship("DetectedInterval", back_populates="episode", cascade="all, delete-orphan")
     slice_tasks = relationship("SliceTask", back_populates="episode", cascade="all, delete-orphan")

@@ -27,6 +27,9 @@ export interface Drama {
 export interface DramaDetail extends Drama {
   stills: Array<{ id: string; file_key: string; sort_order: number; presigned_url?: string | null }>;
   account_ids: string[];
+  // 剧集维度打通切片产线：归属剧集的 id / 数量
+  episode_ids?: string[];
+  episode_count?: number;
 }
 
 export interface DramaStill {
@@ -222,4 +225,52 @@ export function linkDramaMaterial(
   accountId?: string
 ): Promise<{ id: string; drama_id: string; material_id: string }> {
   return client.post('/dramas/materials/link', { drama_id: dramaId, material_id: materialId, account_id: accountId });
+}
+
+// ========== 剧集维度打通切片产线 ==========
+
+// 单集切片产线阶段状态
+export interface DramaEpisodeStage {
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'unknown';
+  progress: number;
+  run_count?: number;
+  task_count?: number;
+  output_count?: number;
+  interval_count?: number;
+}
+
+export interface DramaSliceEpisode {
+  episode_id: string;
+  title: string | null;
+  episode_no: number | null;
+  source_file_key: string | null;
+  status: string | null;
+  stages: {
+    autoclip: DramaEpisodeStage;
+    detect: DramaEpisodeStage;
+    slice: DramaEpisodeStage;
+  };
+  sliced: boolean;
+  pending: boolean;
+}
+
+export interface DramaSliceStatus {
+  drama_id: string;
+  code: string;
+  name: string;
+  total_episodes: number;
+  sliced_count: number;
+  pending_count: number;
+  progress_percent: number;
+  episodes: DramaSliceEpisode[];
+}
+
+// 关联剧集到剧目（set 语义：传入全集即替换，空列表即清空）
+export function linkDramaEpisodes(dramaId: string, episodeIds: string[]): Promise<DramaDetail> {
+  return client.post(`/dramas/${dramaId}/episodes`, { episode_ids: episodeIds });
+}
+
+// 剧目级切片产线状态聚合（该剧已切片/待切片）
+export function getDramaSliceStatus(dramaId: string): Promise<DramaSliceStatus> {
+  return client.get(`/dramas/${dramaId}/slice-status`);
 }
