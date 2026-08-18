@@ -57,55 +57,6 @@ export interface Episode {
   updated_at: string;
 }
 
-// ========== 项目工作流状态聚合（P2-4） ==========
-
-export type WorkflowStageStatus = 'pending' | 'running' | 'completed' | 'failed' | 'unknown' | 'empty';
-
-export interface EpisodeWorkflowStage {
-  status: WorkflowStageStatus;
-  progress: number;
-  message?: string | null;
-  run_count?: number;
-  task_count?: number;
-  output_count?: number;
-  interval_count?: number;
-}
-
-export interface EpisodeWorkflowItem {
-  episode: {
-    id: string;
-    title: string | null;
-    episode_no: number | null;
-    duration: number | null;
-    status: string;
-  };
-  status: WorkflowStageStatus;
-  stages: {
-    autoclip: EpisodeWorkflowStage;
-    detect: EpisodeWorkflowStage;
-    slice: EpisodeWorkflowStage;
-  };
-}
-
-export interface ProjectWorkflowOverall {
-  status: WorkflowStageStatus;
-  progress: number;
-  total_episodes: number;
-  completed_episodes: number;
-  stages: {
-    autoclip: { completed: number; total: number };
-    detect: { completed: number; total: number };
-    slice: { completed: number; total: number };
-  };
-}
-
-export interface ProjectWorkflowStatus {
-  project_id: string;
-  project_name: string;
-  overall: ProjectWorkflowOverall;
-  episodes: EpisodeWorkflowItem[];
-}
-
 // ========== AutoClip 选点 ==========
 
 export interface ClipCandidate {
