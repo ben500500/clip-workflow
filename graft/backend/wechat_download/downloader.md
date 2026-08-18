@@ -1,4 +1,4 @@
-# backend/wechat_download/downloader.py
+# backend/wechat_download/downloader.py · [[wechat-download-pipeline]]
 
 - DownloadError · class · L26-L27 — class DownloadError(Exception)
 - WechatDownloader · class · L30-L119 — class WechatDownloader

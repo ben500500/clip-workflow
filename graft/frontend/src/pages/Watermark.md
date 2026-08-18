@@ -1,4 +1,4 @@
-# frontend/src/pages/Watermark.tsx
+# frontend/src/pages/Watermark.tsx · [[short-drama-generation-workflow]]
 
 - PendingFile · interface · L36-L46 — interface PendingFile
 - ImportedVideo · interface · L49-L57 — interface ImportedVideo

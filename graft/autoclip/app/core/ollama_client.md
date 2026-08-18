@@ -1,4 +1,4 @@
-# autoclip/app/core/ollama_client.py
+# autoclip/app/core/ollama_client.py · [[llm-manager-provider-abstraction]]
 
 - OllamaClient · class · L32-L142 — class OllamaClient
 - __init__ · method · L35-L37 — def __init__(self, host: Optional[str] = None, model: Optional[str] = None)

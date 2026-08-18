@@ -1,4 +1,4 @@
-# frontend/src/pages/DashboardSettings.tsx
+# frontend/src/pages/DashboardSettings.tsx · [[analytics-dashboard-pages]]
 
 - DashboardConfig · interface · L10-L18 — interface DashboardConfig
 - DashboardSettings · function · L20-L134 — DashboardSettings: React.FC = ()

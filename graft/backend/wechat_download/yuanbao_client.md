@@ -1,4 +1,4 @@
-# backend/wechat_download/yuanbao_client.py
+# backend/wechat_download/yuanbao_client.py · [[wechat-download-pipeline]]
 
 - ParseResult · class · L27-L38 — class ParseResult
 - YuanbaoParseError · class · L41-L42 — class YuanbaoParseError(Exception)

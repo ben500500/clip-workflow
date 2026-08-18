@@ -1,4 +1,4 @@
-# frontend/src/pages/ProjectDetail.tsx
+# frontend/src/pages/ProjectDetail.tsx · [[project-episode-management]]
 
 - ProjectDetail · function · L16-L341 — ProjectDetail: React.FC = ()
 - fetchData · function · L47-L62 — fetchData = async (silent = false)

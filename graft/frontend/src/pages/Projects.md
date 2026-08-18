@@ -1,4 +1,4 @@
-# frontend/src/pages/Projects.tsx
+# frontend/src/pages/Projects.tsx · [[project-episode-management]]
 
 - Projects · function · L14-L227 — Projects: React.FC = ()
 - handleSearch · function · L44-L48 — handleSearch = ()

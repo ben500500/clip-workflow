@@ -1,4 +1,4 @@
-# alembic/versions/0022_batch_item_detect_task.py
+# alembic/versions/0022_batch_item_detect_task.py · [[alembic-migration-chain]]
 
 - upgrade · function · L23-L26 — def upgrade() -> None
 - downgrade · function · L29-L30 — def downgrade() -> None

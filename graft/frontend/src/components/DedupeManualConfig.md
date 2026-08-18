@@ -1,4 +1,4 @@
-# frontend/src/components/DedupeManualConfig.tsx
+# frontend/src/components/DedupeManualConfig.tsx · [[frontend-shared-ui-components]]
 
 - DedupeManualConfigValue · interface · L10-L34 — interface DedupeManualConfigValue
 - Props · interface · L124-L129 — interface Props

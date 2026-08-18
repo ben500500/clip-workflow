@@ -1,4 +1,4 @@
-# frontend/src/pages/ShortDramaAnalysis.tsx
+# frontend/src/pages/ShortDramaAnalysis.tsx · [[analytics-dashboards]]
 
 - TagCell · function · L30-L49 — TagCell: React.FC<{ tags?: string[]; max?: number }> = ({ tags, max = 3 })
 - ShortDramaAnalysis · function · L51-L286 — ShortDramaAnalysis: React.FC = ()

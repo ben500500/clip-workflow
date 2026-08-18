@@ -1,4 +1,4 @@
-# backend/wechat_download/models.py
+# backend/wechat_download/models.py · [[wechat-download-pipeline]]
 
 - WechatDownloadTask · class · L32-L70 — class WechatDownloadTask(WechatDownloadBase)
 - __repr__ · method · L69-L70 — def __repr__(self) -> str

@@ -1,4 +1,4 @@
-# frontend/src/pages/Maintenance.tsx
+# frontend/src/pages/Maintenance.tsx · [[monitoring-maintenance-workers]]
 
 - Maintenance · function · L13-L199 — Maintenance: React.FC = ()
 - fetchStatus · function · L22-L34 — fetchStatus = async ()

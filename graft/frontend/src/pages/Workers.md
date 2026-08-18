@@ -1,4 +1,4 @@
-# frontend/src/pages/Workers.tsx
+# frontend/src/pages/Workers.tsx · [[monitoring-maintenance-workers]]
 
 - WorkersPage · function · L39-L555 — WorkersPage: React.FC = ()
 - fetchWorkers · function · L49-L61 — fetchWorkers = async (silent = false)

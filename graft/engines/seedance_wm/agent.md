@@ -1,8 +1,8 @@
-# engines/seedance_wm/agent.py
+# engines/seedance_wm/agent.py · [[seedance-watermark-removal-engine]]
 
-- build_agent · function · L18-L71 — def build_agent(model_id: str = "qwen2.5:7b", ollama_host: str = "http://localhost:11434")
-- extract_frames_tool · function · L32-L34 — def extract_frames_tool(video_path: str, output_dir: str) -> dict
-- detect_tool · function · L37-L39 — def detect_tool(frames_dir: str, primary: str = "matchTemplate") -> dict
-- mask_tool · function · L42-L44 — def mask_tool(bbox: dict, frame_count: int, width: int, height: int, output_dir: str) -> dict
-- inpaint_tool · function · L47-L51 — def inpaint_tool( frames_dir: str, masks_dir: str, output_dir: str, device: str = "auto" ) -> dict
-- mux_tool · function · L54-L56 — def mux_tool(frames_dir: str, audio_src: str | None, output_path: str, fps: int = 30) -> dict
+- build_agent · function · L18-L71 — Lazily constructs an Agno Agent that chains the five watermark-removal tools with fallback and validation instructions, raising a clear error if agent deps are missing.
+- extract_frames_tool · function · L32-L34 — Exposes frame extraction as an Agno tool by delegating to the core extract_frames function.
+- detect_tool · function · L37-L39 — Exposes watermark detection as an Agno tool by delegating to the core detect_watermark function.
+- mask_tool · function · L42-L44 — Exposes mask sequence generation as an Agno tool by delegating to the core generate_mask_sequence function.
+- inpaint_tool · function · L47-L51 — Exposes frame inpainting with device selection as an Agno tool by delegating to the core inpaint_frames function.
+- mux_tool · function · L54-L56 — Exposes final video muxing as an Agno tool by delegating to the core mux_video function.

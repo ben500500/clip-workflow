@@ -1,48 +1,48 @@
 # backend/app/api/shortdrama.py
 
-- _load_prompt_templates · function · L83-L95 — async def _load_prompt_templates(db: AsyncSession) -> dict
-- _save_prompt_templates · function · L98-L113 — async def _save_prompt_templates(db: AsyncSession, templates: dict) -> None
-- PromptGenerateRequest · class · L121-L134 — class PromptGenerateRequest(BaseModel): # 用户输入的短剧文案（对白/旁白原文），必填
-- PromptTemplatesResponse · class · L137-L140 — class PromptTemplatesResponse(BaseModel)
-- ScriptOptimizeRequest · class · L143-L149 — class ScriptOptimizeRequest(BaseModel): # 待优化的短剧文案（必填）
-- ScriptOptimizeResponse · class · L152-L155 — class ScriptOptimizeResponse(BaseModel)
-- PromptGenerateResponse · class · L158-L164 — class PromptGenerateResponse(BaseModel)
-- PromptRecordItem · class · L167-L207 — class PromptRecordItem(BaseModel)
-- _serialize_record · function · L215-L254 — def _serialize_record(r: ShortdramaPrompt) -> dict
-- generate_shortdrama_prompt · function · L263-L355 — async def generate_shortdrama_prompt( data: PromptGenerateRequest, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- _normalize_duration · function · L358-L366 — def _normalize_duration(duration) -> int
-- optimize_shortdrama_script · function · L370-L416 — async def optimize_shortdrama_script( data: ScriptOptimizeRequest, )
-- list_shortdrama_prompts · function · L420-L441 — async def list_shortdrama_prompts( limit: int = 50, db: AsyncSession = Depends(get_db), )
-- get_shortdrama_prompt · function · L445-L456 — async def get_shortdrama_prompt( record_id: str, db: AsyncSession = Depends(get_db), )
-- delete_shortdrama_prompt · function · L460-L475 — async def delete_shortdrama_prompt( record_id: str, db: AsyncSession = Depends(get_db), )
-- _get_record_or_404 · function · L478-L489 — async def _get_record_or_404(record_id: str, db: AsyncSession) -> ShortdramaPrompt
-- upload_shortdrama_video · function · L498-L571 — async def upload_shortdrama_video( record_id: str, file: UploadFile = File(...), db: AsyncSession = Depends(get_db), )
-- get_shortdrama_video · function · L575-L592 — async def get_shortdrama_video( record_id: str, db: AsyncSession = Depends(get_db), )
-- delete_shortdrama_video · function · L596-L615 — async def delete_shortdrama_video( record_id: str, db: AsyncSession = Depends(get_db), )
-- import_shortdrama_video_to_watermark · function · L619-L643 — async def import_shortdrama_video_to_watermark( record_id: str, db: AsyncSession = Depends(get_db), )
-- get_shortdrama_prompt_templates · function · L652-L664 — async def get_shortdrama_prompt_templates( db: AsyncSession = Depends(get_db), )
-- PromptTemplatesUpdateRequest · class · L667-L669 — class PromptTemplatesUpdateRequest(BaseModel)
-- update_shortdrama_prompt_templates · function · L673-L697 — async def update_shortdrama_prompt_templates( data: PromptTemplatesUpdateRequest, db: AsyncSession = Depends(get_db), )
-- DoubaoGenerateRequest · class · L716-L720 — class DoubaoGenerateRequest(BaseModel): # 账户类型：free=免费（时长上限 10s）；pro=包月会员（时长上限 30s）
-- DoubaoGenerateResponse · class · L723-L726 — class DoubaoGenerateResponse(BaseModel)
-- DoubaoRewriteConfirmRequest · class · L729-L731 — class DoubaoRewriteConfirmRequest(BaseModel): # approved=确认使用改写稿并重试；rejected=再让豆包改一版；cancelled=放弃
-- start_doubao_generate · function · L735-L780 — async def start_doubao_generate( record_id: str, data: DoubaoGenerateRequest, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- confirm_doubao_rewrite · function · L784-L832 — async def confirm_doubao_rewrite( record_id: str, data: DoubaoRewriteConfirmRequest, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- cancel_doubao_generate · function · L836-L860 — async def cancel_doubao_generate( record_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- get_doubao_status · function · L864-L875 — async def get_doubao_status( record_id: str, db: AsyncSession = Depends(get_db), )
-- get_prompt_default_duration · function · L884-L899 — async def get_prompt_default_duration( db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- PromptDefaultDurationRequest · class · L902-L904 — class PromptDefaultDurationRequest(BaseModel): # 提示词生成默认时长（秒）：10/15/20/25/30 或自定义（3~300）
-- update_prompt_default_duration · function · L908-L918 — async def update_prompt_default_duration( data: PromptDefaultDurationRequest, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- get_doubao_account_type · function · L922-L932 — async def get_doubao_account_type( db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- update_doubao_account_type · function · L936-L950 — async def update_doubao_account_type( data: DoubaoGenerateRequest, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- switch_doubao_account · function · L954-L973 — async def switch_doubao_account( db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- get_doubao_config · function · L977-L982 — async def get_doubao_config( db: AsyncSession = Depends(get_db), )
-- _load_doubao_limits · function · L985-L995 — async def _load_doubao_limits(db: AsyncSession) -> dict
-- SeedanceGenerateRequest · class · L1015-L1019 — class SeedanceGenerateRequest(BaseModel): # 生成时长（秒）；Seedance 1.0 仅支持 5s/10s，>10s 按配置策略截断或拒绝
-- SeedanceGenerateResponse · class · L1022-L1025 — class SeedanceGenerateResponse(BaseModel)
-- _load_seedance_config · function · L1028-L1037 — async def _load_seedance_config(db: AsyncSession)
-- _require_seedance_enabled · function · L1040-L1048 — async def _require_seedance_enabled(db: AsyncSession)
-- get_seedance_config · function · L1052-L1064 — async def get_seedance_config( db: AsyncSession = Depends(get_db), )
-- start_seedance_generate · function · L1068-L1109 — async def start_seedance_generate( record_id: str, data: SeedanceGenerateRequest, db: AsyncSession = Depends(get_db), )
-- cancel_seedance_generate · function · L1113-L1149 — async def cancel_seedance_generate( record_id: str, db: AsyncSession = Depends(get_db), )
-- get_seedance_status · function · L1153-L1164 — async def get_seedance_status( record_id: str, db: AsyncSession = Depends(get_db), )
+- _load_prompt_templates · function · L83-L95 — Loads user-customized long/short prompt templates from system_config, falling back to built-in defaults when unset.
+- _save_prompt_templates · function · L98-L113 — Persists user-edited long/short prompt templates into system_config, creating the row if absent.
+- PromptGenerateRequest · class · L121-L134 — Request schema for prompt generation carrying the script text, duration, optional theme/tone/characters, and save flags.
+- PromptTemplatesResponse · class · L137-L140 — Response schema returning the long/short prompt templates and their last update time.
+- ScriptOptimizeRequest · class · L143-L149 — Request schema for AI script optimization with text plus optional theme/tone/extra requirements.
+- ScriptOptimizeResponse · class · L152-L155 — Response schema returning the AI-optimized script text and the model used.
+- PromptGenerateResponse · class · L158-L164 — Response schema returning the generated prompt, its long/short/AI versions, duration, model, and saved record id.
+- PromptRecordItem · class · L167-L207 — Serialized representation of a prompt generation history record including video attachment and Doubao/Seedance generation task status fields.
+- _serialize_record · function · L215-L254 — Maps a ShortdramaPrompt ORM record to its API dict, computing rewrite count and leaving video_url for later presigned-fill.
+- generate_shortdrama_prompt · function · L263-L355 — Generates a Seedance prompt by forwarding the script and templates to autoclip, saving the result to history, and persisting the user's default duration.
+- _normalize_duration · function · L358-L366 — Normalizes a requested duration to an integer within 3-300 seconds, defaulting to 15 on invalid input.
+- optimize_shortdrama_script · function · L370-L416 — Rewrites the user's short-drama script via autoclip's optimize endpoint using the configured LLM.
+- list_shortdrama_prompts · function · L420-L441 — Lists prompt generation history newest-first, attaching presigned video URLs for records that have uploaded videos.
+- get_shortdrama_prompt · function · L445-L456 — Returns a single prompt generation record with its presigned video URL if a video exists.
+- delete_shortdrama_prompt · function · L460-L475 — Deletes a prompt record along with its associated finished video file from object storage.
+- _get_record_or_404 · function · L478-L489 — Resolves a record id string to a ShortdramaPrompt, raising 400 for invalid UUID and 404 when not found.
+- upload_shortdrama_video · function · L498-L571 — Uploads a finished Seedance video for a prompt record into the watermark-raw bucket, enforcing size limits and streaming to disk.
+- get_shortdrama_video · function · L575-L592 — Returns a presigned URL for a record's finished video so it can be downloaded or previewed.
+- delete_shortdrama_video · function · L596-L615 — Deletes a record's finished video file from object storage and clears its video metadata.
+- import_shortdrama_video_to_watermark · function · L619-L643 — Imports a record's finished video into the watermark-removal workflow by creating a watermark task from the stored video.
+- get_shortdrama_prompt_templates · function · L652-L664 — Returns the current long/short prompt templates and their last update time.
+- PromptTemplatesUpdateRequest · class · L667-L669 — Request schema carrying the new long/short prompt template strings.
+- update_shortdrama_prompt_templates · function · L673-L697 — Validates and persists user-edited long/short prompt templates to system_config.
+- DoubaoGenerateRequest · class · L716-L720 — Request schema for starting Doubao RPA generation, selecting free/pro account type which caps duration.
+- DoubaoGenerateResponse · class · L723-L726 — Response schema confirming a Doubao generation task has been started.
+- DoubaoRewriteConfirmRequest · class · L729-L731 — Request schema for confirming/rejecting/cancelling a Doubao rewrite attempt.
+- start_doubao_generate · function · L735-L780 — Starts a Doubao RPA video generation task for a prompt record, enforcing account-type duration limits and persisting task state.
+- confirm_doubao_rewrite · function · L784-L832 — Handles user decision on a Doubao rewrite: approves to retry with the rewritten script, rejects to request another version, or cancels the task.
+- cancel_doubao_generate · function · L836-L860 — Cancels an in-flight Doubao generation task and clears its task state.
+- get_doubao_status · function · L864-L875 — Returns the current Doubao generation task status for a prompt record.
+- get_prompt_default_duration · function · L884-L899 — Returns the current user's default prompt generation duration.
+- PromptDefaultDurationRequest · class · L902-L904 — Request schema carrying the user's default prompt duration in seconds.
+- update_prompt_default_duration · function · L908-L918 — Updates the current user's default prompt generation duration after normalizing it.
+- get_doubao_account_type · function · L922-L932 — Returns the current user's Doubao account type (free/pro).
+- update_doubao_account_type · function · L936-L950 — Updates the current user's Doubao account type, which governs generation duration limits.
+- switch_doubao_account · function · L954-L973 — Switches the current user's Doubao account to the next available account type.
+- get_doubao_config · function · L977-L982 — Returns the Doubao generation configuration including account type and limits.
+- _load_doubao_limits · function · L985-L995 — Loads Doubao generation duration limits from system_config, falling back to defaults.
+- SeedanceGenerateRequest · class · L1015-L1019 — Request schema for Seedance API generation carrying duration, which is capped at 5s/10s for Seedance 1.0.
+- SeedanceGenerateResponse · class · L1022-L1025 — Response schema confirming a Seedance API generation task has been started.
+- _load_seedance_config · function · L1028-L1037 — Loads Seedance API configuration (enabled flag, API key, model, duration policy) from system_config.
+- _require_seedance_enabled · function · L1040-L1048 — Raises 400 if the Seedance API channel is not enabled in configuration.
+- get_seedance_config · function · L1052-L1064 — Returns the Seedance API configuration including enabled state and duration policy.
+- start_seedance_generate · function · L1068-L1109 — Starts a Seedance API generation task for a prompt record, enforcing the configured duration policy and persisting task state.
+- cancel_seedance_generate · function · L1113-L1149 — Cancels an in-flight Seedance API generation task and clears its task state.
+- get_seedance_status · function · L1153-L1164 — Returns the current Seedance API generation task status for a prompt record.

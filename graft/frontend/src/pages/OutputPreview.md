@@ -1,4 +1,4 @@
-# frontend/src/pages/OutputPreview.tsx
+# frontend/src/pages/OutputPreview.tsx · [[publishing-output-hub]]
 
 - isRealSliceTask · function · L31-L31 — isRealSliceTask = (t: SliceTask)
 - RecutVideoPreview · function · L34-L142 — RecutVideoPreview: React.FC<{ videoUrl: string; duration: number; onRangeChange: (start: number, end: number) => void; }> = ({ videoUrl, duration, onRangeChange })

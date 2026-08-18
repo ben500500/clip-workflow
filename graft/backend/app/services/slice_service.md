@@ -1,4 +1,4 @@
-# backend/app/services/slice_service.py
+# backend/app/services/slice_service.py · [[slice-engine-orchestration]]
 
 - _run_cmd · function · L14-L63 — async def _run_cmd( cmd: list[str], timeout: float, progress_cb: ProgressCallback = None, ) -> tuple[int, str, str]
 - read_stream · function · L28-L41 — async def read_stream(stream, sink)

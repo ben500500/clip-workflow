@@ -1,4 +1,4 @@
-# frontend/src/pages/Settings.tsx
+# frontend/src/pages/Settings.tsx · [[auth-users-settings]] [[slice-configuration-presets]]
 
 - Settings · function · L12-L393 — Settings: React.FC = ()
 - fetchAll · function · L26-L34 — fetchAll = ()

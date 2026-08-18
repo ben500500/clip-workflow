@@ -1,30 +1,30 @@
 # backend/app/api/projects.py
 
-- _remove_path · function · L36-L46 — def _remove_path(path: Path) -> None
-- ProjectCreate · class · L53-L56 — class ProjectCreate(BaseModel)
-- ProjectUpdate · class · L59-L63 — class ProjectUpdate(BaseModel)
-- ProjectResponse · class · L66-L78 — class ProjectResponse(BaseModel)
-- EpisodeCreate · class · L81-L87 — class EpisodeCreate(BaseModel)
-- EpisodeResponse · class · L90-L103 — class EpisodeResponse(BaseModel)
-- EpisodeListResponse · class · L106-L108 — class EpisodeListResponse(BaseModel)
-- _serialize_project · function · L113-L129 — def _serialize_project(project: Project) -> dict: # 异步会话下访问未预加载的关系会抛 MissingGreenlet，这里做防御处理
-- _serialize_episode · function · L132-L145 — def _serialize_episode(episode: Episode) -> dict
-- _data_scope_filter · function · L151-L159 — def _data_scope_filter(current_user: User)
-- _check_project_access · function · L162-L166 — def _check_project_access(project: Project, current_user: User) -> bool
-- create_project · function · L170-L185 — async def create_project( data: ProjectCreate, current_user: Annotated[User, Depends(get_current_user)], db: AsyncSession = Depends(get_db), )
-- list_projects · function · L189-L225 — async def list_projects( page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200), search: Optional[str] = Query(None), status: Optional[str] = Query(None), current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- project_stats · function · L229-L286 — async def project_stats( current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- get_project · function · L290-L312 — async def get_project( project_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- update_project · function · L316-L347 — async def update_project( project_id: str, data: ProjectUpdate, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- _cleanup_episode_minio · function · L350-L365 — async def _cleanup_episode_minio(episode) -> None
-- _cleanup_episode_media · function · L368-L384 — async def _cleanup_episode_media(db: AsyncSession, episode_id) -> None
-- delete_project · function · L388-L427 — async def delete_project( project_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- create_episode · function · L434-L466 — async def create_episode( project_id: str, data: EpisodeCreate, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- list_episodes · function · L470-L497 — async def list_episodes( project_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- project_workflow_status · function · L501-L684 — async def project_workflow_status( project_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- _stage_status · function · L564-L575 — def _stage_status(status: Optional[str]) -> str
-- get_episode · function · L688-L740 — async def get_episode( episode_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- get_episode_video_url · function · L744-L774 — async def get_episode_video_url( episode_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- delete_episode · function · L778-L808 — async def delete_episode( episode_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- _cleanup_orphan_media_files · function · L811-L850 — async def _cleanup_orphan_media_files() -> None
-- _cleanup_episode_media_files · function · L853-L874 — def _cleanup_episode_media_files(media_uuid: str) -> None
+- _remove_path · function · L36-L46 — Deletes a file or directory, silently ignoring missing paths and OSErrors.
+- ProjectCreate · class · L53-L56 — Pydantic schema for creating a project with name, description, and config.
+- ProjectUpdate · class · L59-L63 — Pydantic schema for partial updates to a project's fields.
+- ProjectResponse · class · L66-L78 — Pydantic response schema for a project including creator and episode count.
+- EpisodeCreate · class · L81-L87 — Pydantic schema for creating an episode with optional media metadata.
+- EpisodeResponse · class · L90-L103 — Pydantic response schema for an episode's serialized fields.
+- EpisodeListResponse · class · L106-L108 — Pydantic wrapper for a paginated list of episodes with total count.
+- _serialize_project · function · L113-L129 — Converts a Project ORM object to a dict, defensively handling unloaded episode relations to avoid MissingGreenlet errors.
+- _serialize_episode · function · L132-L145 — Converts an Episode ORM object to a serializable dict with ISO timestamps.
+- _data_scope_filter · function · L151-L159 — Returns a SQLAlchemy filter restricting projects to those created by the current user, unless the user has full material access.
+- _check_project_access · function · L162-L166 — Determines whether a user may access a given project based on full-access role or ownership.
+- create_project · function · L170-L185 — Creates a new project, recording the current user as creator for data isolation.
+- list_projects · function · L189-L225 — Lists projects with search, status filter, pagination, and data-isolation scoping.
+- project_stats · function · L229-L286 — Computes dashboard counts for projects/episodes/slices and recent projects, applying data-isolation scope across all queries.
+- get_project · function · L290-L312 — Fetches a single project by ID, enforcing data isolation so non-full-access users only see their own projects.
+- update_project · function · L316-L347 — Partially updates a project's fields after verifying ownership, and bumps updated_at.
+- _cleanup_episode_minio · function · L350-L365 — Deletes an episode's source file and all sliced output objects from MinIO before DB deletion.
+- _cleanup_episode_media · function · L368-L384 — Locates an episode's autoclip media reference and cleans its local files, then sweeps orphan media files.
+- delete_project · function · L388-L427 — Deletes a project and all episodes, cleaning up MinIO objects and local media files, plus orphan raw-footage objects.
+- create_episode · function · L434-L466 — Adds an episode to a project after verifying project existence and user access.
+- list_episodes · function · L470-L497 — Lists a project's episodes ordered by episode number then creation time, after access check.
+- project_workflow_status · function · L501-L684 — Aggregates per-episode autoclip/detect/slice workflow status and progress for a project in one query to avoid N+1 polling.
+- _stage_status · function · L564-L575 — Maps a raw stage status string to a normalized display status.
+- get_episode · function · L688-L740 — Fetches a single episode with its project access check and serialization.
+- get_episode_video_url · function · L744-L774 — Returns a presigned URL for an episode's source video after verifying access.
+- delete_episode · function · L778-L808 — Deletes an episode after access check, cleaning up its MinIO and local media files.
+- _cleanup_orphan_media_files · function · L811-L850 — Sweeps the media volume for orphaned files not referenced by any autoclip project.
+- _cleanup_episode_media_files · function · L853-L874 — Removes local media files for a given autoclip media UUID.

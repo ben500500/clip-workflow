@@ -1,0 +1,1724 @@
+{
+  "version": 1,
+  "model": "openai:deepseek-chat",
+  "repoDigest": "2a5d6c9279d82d5fa210577f8416942a8fc8e4f03cf3a22a81a2dd3386f1e8c9",
+  "files": [
+    {
+      "path": "alembic/env.py",
+      "hash": "8ff276424dc7cbde59e953b7feaa161c8ee8c02bb60f2b19e3c3c00dd1c032eb"
+    },
+    {
+      "path": "alembic/versions/0001_initial.py",
+      "hash": "be69e75fce6dab5e1b47f9f74ccfb0114afcc016752a863706469745d933c57b"
+    },
+    {
+      "path": "alembic/versions/0002_autoclip_runs.py",
+      "hash": "6eb4a359511bcd3d243bcad65624750ae53ba0ca6a235c07157b96635428e977"
+    },
+    {
+      "path": "alembic/versions/0003_slice_task_vert2horiz.py",
+      "hash": "4b3a497a6c7d9aff443fdb468a907a75b8ecfbe0dd59bb102d78738f831fd61e"
+    },
+    {
+      "path": "alembic/versions/0004_watermark.py",
+      "hash": "79ce425f037f6a383f2cfde0df2aadac49e23eed4f9d3d537fb4eb2b3a440add"
+    },
+    {
+      "path": "alembic/versions/0005_shortdrama_prompts.py",
+      "hash": "5f16a1db84edf801637c4180f13fe8b5530f161577719ac759e3ec614447e389"
+    },
+    {
+      "path": "alembic/versions/0006_shortdrama_prompt_video.py",
+      "hash": "17748f7e5b48fb50b455f22b51675e37c175de99a53d246287e0a6c007fca5df"
+    },
+    {
+      "path": "alembic/versions/0007_publish_materials.py",
+      "hash": "8b0c4c883b371a4b217b4e285ff522b1fcb42371528e44d82544285b360cd9b9"
+    },
+    {
+      "path": "alembic/versions/0008_data_scope.py",
+      "hash": "bfcddc6b498678069fba836c4957583c733b7a583e27205df3f1ffd473b4a263"
+    },
+    {
+      "path": "alembic/versions/0009_prompt_versions.py",
+      "hash": "f0a5a83f8f0bbde56cc47f39fb440996cfbdd8dc1081e2d50bcbc9b7965afeee"
+    },
+    {
+      "path": "alembic/versions/0010_watermark_prompt_link.py",
+      "hash": "ee7258f3d6106ead06f75aea3afca6c65c5304fcbd8dbf4ab285ebf75a35deff"
+    },
+    {
+      "path": "alembic/versions/0011_doubao_generation.py",
+      "hash": "1e94b89a8179ec82a699fd0c9b3f4c65e26cc25be115a1f64a27e42312efc7fd"
+    },
+    {
+      "path": "alembic/versions/0012_prompt_default_duration.py",
+      "hash": "82bfa3ff5260af1c84a0aebb0dd883c99ba6f5df01980f5f23ecb8fa49e21520"
+    },
+    {
+      "path": "alembic/versions/0013_video_accounts_mini_programs.py",
+      "hash": "6da891ddec97bd687cf62acd08a4b42b28881bbf5f1611e49a1937f197284449"
+    },
+    {
+      "path": "alembic/versions/0014_seedance_generate.py",
+      "hash": "fd04ed3d7a4d94f398ebeb7af7669b2e31290917b03cfe7381d4ac08d3a1f8b9"
+    },
+    {
+      "path": "alembic/versions/0015_doubao_progress.py",
+      "hash": "62fda8c827b06c0061247416c72b8d3bc67273b00618725694b053f6ec1a9c38"
+    },
+    {
+      "path": "alembic/versions/0016_doubao_screenshot.py",
+      "hash": "0d8249bd7e41c9e562675c03d6b9e343d2c3c59e4ee37257ba190b5f2b7f0bd9"
+    },
+    {
+      "path": "alembic/versions/0017_doubao_account.py",
+      "hash": "0c90f8eee10cc82ee2f982efc172f3213ff931c31e49261218c43bccc5e12eba"
+    },
+    {
+      "path": "alembic/versions/0018_slice_task_badges.py",
+      "hash": "84d9470822a251db0ccb9f8f23b4400a0041bf30f59615ed057315783911a8a7"
+    },
+    {
+      "path": "alembic/versions/0019_slice_task_badge_default_width.py",
+      "hash": "8be530eebc751a1b2acfb1e222dd4484d809b9dbc1a7f65afb211bdb4de3ed8f"
+    },
+    {
+      "path": "alembic/versions/0020_slice_task_subtitle.py",
+      "hash": "f04e33aa170d930c4b23eed51ea51f68a95b87761549806de8eb9670c3e41827"
+    },
+    {
+      "path": "alembic/versions/0021_slice_task_text_overlays.py",
+      "hash": "3bf4eac203b65b6302493f5b1f983bfdcb64da19b0caf259c370e33f7382ea35"
+    },
+    {
+      "path": "alembic/versions/0022_batch_item_detect_task.py",
+      "hash": "30f878d4abd956ba68ace2ebb23cd4c075a40ca1811c591bb17579485d69842d"
+    },
+    {
+      "path": "alembic/versions/0023_slice_task_subtitle_mask.py",
+      "hash": "d6a053b6f83b40b1155aed5c1f1717948069ddd95c5ea7ef54eb01c01a7db8c3"
+    },
+    {
+      "path": "alembic/versions/0024_user_preferences.py",
+      "hash": "c925c9df64eb298a668d8b27df9a9b9e7fd1476781fbe4bd0f6dc8dcdd664a74"
+    },
+    {
+      "path": "alembic/versions/0025_slice_task_subtitle_align_mask.py",
+      "hash": "b069a96d911a1e35388336a0d92d70a4353e27383eb56fb5c7e0155ea805afd0"
+    },
+    {
+      "path": "alembic/versions/0026_worker_node_encoder_capabilities.py",
+      "hash": "568827fbaaa777cc9e131000572cb42563e1b85e6974fff9163e904a6a13c933"
+    },
+    {
+      "path": "alembic/versions/0027_multi_operator_ownership.py",
+      "hash": "7093624a4b1d59db094d790f2776aded2cdc88151c18045e883ee10002b6d014"
+    },
+    {
+      "path": "alembic/versions/0028_multi_operator_audit.py",
+      "hash": "c5f93fd8ed88acfa5b5ac3a60d042a579f963a94615b361c9b228db6eb5583fd"
+    },
+    {
+      "path": "alembic/versions/0029_wechat_download.py",
+      "hash": "92910560c9faeec28d8974f535a4ada3516bbd8c929bc79872d3b03d05bfe045"
+    },
+    {
+      "path": "alembic/versions/0030_publish_task_dead_letter.py",
+      "hash": "79fee151945967ad4fc8121f259ee84cca00ad642aba704b7d5646e1a00bed71"
+    },
+    {
+      "path": "alembic/versions/0031_channel_accounts.py",
+      "hash": "c512472f71d778a3575dfc5ce8d87953e6516717e9b0a250154204068133aafd"
+    },
+    {
+      "path": "alembic/versions/0032_channel_video_account_unique.py",
+      "hash": "82b4b46f3e8d2044863a92e207aa75d5e5a81b8c683641570d1a4eebebf5e455"
+    },
+    {
+      "path": "alembic/versions/0033_publish_time_slots_scheduled_at.py",
+      "hash": "9fa2c89ea44532d842367f2d176dd21afea85a993455f9f2a874004fd8b1a6d2"
+    },
+    {
+      "path": "alembic/versions/0034_multi_video_dedup_variants.py",
+      "hash": "eadc353ba3ee7e8ddb1c6eea61347df3893f5c7be6cd579715ecdd7350893e12"
+    },
+    {
+      "path": "autoclip/app/__init__.py",
+      "hash": "3123268fa28e5fed9cb25338d5ac2f057962b25aeaba82f3453fb5b2dd7d8369"
+    },
+    {
+      "path": "autoclip/app/celery_app.py",
+      "hash": "327c7f58746649147016e97778b9a3c9cab81dc3a61900fb64c5f73210e8dab9"
+    },
+    {
+      "path": "autoclip/app/core/__init__.py",
+      "hash": "1c8971338a18320f32a15ea791e1a45757f2545d641f90ec2df9ddf77ed54d6e"
+    },
+    {
+      "path": "autoclip/app/core/llm_manager.py",
+      "hash": "5fdc899a4e2ceef373e16eb1ca87c607710d3b9c9d453508da91c03b49e90381"
+    },
+    {
+      "path": "autoclip/app/core/llm_providers.py",
+      "hash": "49d405f096e6b17de3dac0bad43b49d9e91ba6cb8b4972fd21686d2b12f4289b"
+    },
+    {
+      "path": "autoclip/app/core/ollama_client.py",
+      "hash": "9271f9c4a550785b8ff22a5c7d47ca0e92a0b4fe4d6dfece3c5a9d6535649e55"
+    },
+    {
+      "path": "autoclip/app/core/shared_config.py",
+      "hash": "f28db33ee23172143201f295b48967858444ebd96f11aa956a6eae38f305702e"
+    },
+    {
+      "path": "autoclip/app/main.py",
+      "hash": "4b7a13caea6461ffe50ccd6b015f25216cab71411aad95eb12d3b577a8924e7b"
+    },
+    {
+      "path": "autoclip/app/pipeline/__init__.py",
+      "hash": "d57088133202645aa78fc1c127d1feee2c985ae29d5b2eeb659cdc0cdeffe137"
+    },
+    {
+      "path": "autoclip/app/pipeline/step1_outline.py",
+      "hash": "01ecd210812021bc2cfabaff194bc5b76f4373ceb8918f1ef78ba6f0e9a63757"
+    },
+    {
+      "path": "autoclip/app/pipeline/step2_timeline.py",
+      "hash": "acaf0cc9e58cb9ce27712ab2def2af955e4ca5f87d6594a31ff61df61fff51b8"
+    },
+    {
+      "path": "autoclip/app/pipeline/step3_scoring.py",
+      "hash": "e4cfd7d90fa74a6625108eb53536ef809f5db30599cb3a8d0d47949b79c3cc85"
+    },
+    {
+      "path": "autoclip/app/pipeline/step4_title.py",
+      "hash": "4feace7f56c823b0bbd3593155ec9bb061da33718e48f20431aa7a1a2744da36"
+    },
+    {
+      "path": "autoclip/app/services/__init__.py",
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "autoclip/app/services/publish_material_generator.py",
+      "hash": "5b813e54c12c0f2a5f9e3727ea3b4fe7302191fb678dc7b916fc88eea8f28620"
+    },
+    {
+      "path": "autoclip/app/services/script_optimizer.py",
+      "hash": "1d294540710689138f3a2d7eb1d8b1415793485eaad10d448266e92ab043f154"
+    },
+    {
+      "path": "autoclip/app/services/seedance_prompt_generator.py",
+      "hash": "66e3b4c78cc5d3e22fa77e143faac2cc4859d95c3952f1132c07e2ec31f71a73"
+    },
+    {
+      "path": "autoclip/app/utils/__init__.py",
+      "hash": "02fa93b82fc099e00b116a6eae27b7c8e602a9990a8a26a78a4a4e7a8db39e46"
+    },
+    {
+      "path": "autoclip/app/utils/ffmpeg_utils.py",
+      "hash": "7cdc6ebe80039338c3078e6eeb3ddacf28387a21c66afa15cea1f4b5a3d88a9f"
+    },
+    {
+      "path": "autoclip/app/utils/frame_analyzer.py",
+      "hash": "2b36f898e33e7147caf0f360649d978ead6c74193c960ffd0eea68a89a4dadcc"
+    },
+    {
+      "path": "autoclip/app/utils/llm_client.py",
+      "hash": "e1353d4dde15fd1f5c9bf968fe965c86d71b3a61d4c88724229bb1f6b46d9cf7"
+    },
+    {
+      "path": "autoclip/app/utils/speech_recognizer.py",
+      "hash": "ea106528fbbfc7efae407f14ff077052cc71edc9cc23d1ced2798d88030e0b4a"
+    },
+    {
+      "path": "autoclip/app/utils/text_processor.py",
+      "hash": "61f7ddca7e6f8541189cd0d3950e8fdde396210d9c625feccdb0f0b1016067d1"
+    },
+    {
+      "path": "backend/app/__init__.py",
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "backend/app/api/__init__.py",
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "backend/app/api/auth.py",
+      "hash": "8e744588002a7699918cb083129aeaabef990ddf49a0db695e12b9362aea4e55"
+    },
+    {
+      "path": "backend/app/api/autoclip.py",
+      "hash": "1e998bdded81d944f1c4865f9a07b082e0a4a505a47057342c04e5c06473d98b"
+    },
+    {
+      "path": "backend/app/api/batch_slice.py",
+      "hash": "078afcff0bc659b47238493410f964aa353dc52bc4cbaba929f41d051c8d808d"
+    },
+    {
+      "path": "backend/app/api/channel_accounts.py",
+      "hash": "29351d38f2bca7bd80c922a9537cf559a2ade7f33461f8b87c5e3348338a18fa"
+    },
+    {
+      "path": "backend/app/api/config.py",
+      "hash": "f15370c69aab7937d7c53cc47e9bf5407aa5780aadb52c8984e78e502ba105f1"
+    },
+    {
+      "path": "backend/app/api/dashboard.py",
+      "hash": "49d2a534cc9105116ee74539e9800cb69015546b3d091da5e31305e33abb44f4"
+    },
+    {
+      "path": "backend/app/api/intervals.py",
+      "hash": "f5b361075c469e8fbac6e798025abc692c1ace58cdecf6f63d10b9b85b17cd8c"
+    },
+    {
+      "path": "backend/app/api/maintenance.py",
+      "hash": "a8a4503cdc6272c01c6a0c1daffaed16d3488fee039b414730f3b30f1978ef1f"
+    },
+    {
+      "path": "backend/app/api/monitor.py",
+      "hash": "cdacff9500e7c719e91d9b1b44a22a368178b9a38acc2e838c4c1f1000b8d7e3"
+    },
+    {
+      "path": "backend/app/api/preview.py",
+      "hash": "9225738a98138a7b7a7e9cd99c7c25788f739998e5f3b98b5fbe00c39532f9af"
+    },
+    {
+      "path": "backend/app/api/projects.py",
+      "hash": "b8fc9e7c44c329530c015e7212b090f13a240a1b547d77a05cc12c65f349bf81"
+    },
+    {
+      "path": "backend/app/api/publications.py",
+      "hash": "de3e12a549e9f07bfb1ca1400818b310ea3f0934236bca93e4626e33d61f9de0"
+    },
+    {
+      "path": "backend/app/api/publish_audit.py",
+      "hash": "afe7bdd6273b8569de3fe1763c9a3634ef146da09a8be8f76534338ff32c0d3b"
+    },
+    {
+      "path": "backend/app/api/publish_batches.py",
+      "hash": "14e25816ec6fa324809d2a5dfc76a0aa9b70720a6669336f640e6494a767239d"
+    },
+    {
+      "path": "backend/app/api/publish_common.py",
+      "hash": "4868406e56b4d4c9be6f8eeef632e20fc13e6ad84d7db1134d835e4a824ff871"
+    },
+    {
+      "path": "backend/app/api/publish_login_qr.py",
+      "hash": "01b7744690af4c850465ff6294fc2db7448f6555426c426faa89643253952700"
+    },
+    {
+      "path": "backend/app/api/publish_material.py",
+      "hash": "2b34681ec436089ea831736bde98277d4ed83e17e4ac5b13ec4242ecaaf9bfa9"
+    },
+    {
+      "path": "backend/app/api/publish_mini_programs.py",
+      "hash": "3529eafcc41e9d200264fcb6eba457cb93b79bc3bed661510f3acf5ba46dca9b"
+    },
+    {
+      "path": "backend/app/api/publish_profiles.py",
+      "hash": "be993a3534aaff1e60ede3843f9cd59be3aa26d182b62a4e4c2bc6bb7549f7b3"
+    },
+    {
+      "path": "backend/app/api/publish_tasks.py",
+      "hash": "9549e994dee17b119402e4919d096011ceb7b8cebd4e155f9c8e548e0c7bb6fe"
+    },
+    {
+      "path": "backend/app/api/publish_time_slots.py",
+      "hash": "154052d5194f77846154ab5eeca7af7e10a6a93cfcc326f4ac18714334768f5b"
+    },
+    {
+      "path": "backend/app/api/publish_video_accounts.py",
+      "hash": "f2fea0b5088b7c9de7542ef783795e839308ca16872f81fe6b26e8999167500a"
+    },
+    {
+      "path": "backend/app/api/publish.py",
+      "hash": "b3b9db449f27d51c276f5b2add098a045e84775d2530eee89eda00988fce3e21"
+    },
+    {
+      "path": "backend/app/api/shortdrama.py",
+      "hash": "b3c29bd20822e3feaf1424bc2a2ef465b17ff351d4b33b1b3899d6b32ee9c969"
+    },
+    {
+      "path": "backend/app/api/slice_helpers.py",
+      "hash": "30207f41c54b3c497489988d2a9a6e2c599d98e443c531f52f8116d3eb69e3f3"
+    },
+    {
+      "path": "backend/app/api/slice.py",
+      "hash": "2ead616121cd79b7433bf66f7a9e6df77230d235be71d89796117fa247825845"
+    },
+    {
+      "path": "backend/app/api/upload.py",
+      "hash": "1c467277fd8173be4a1f8f7edc7eaeae1c63ef1e5e604ae54c9a4f5aa26e2b13"
+    },
+    {
+      "path": "backend/app/api/variants.py",
+      "hash": "0a7e3ea55d85cbf9fc6b82875a4eda677a41f9df4d4c65509a771d0265daed50"
+    },
+    {
+      "path": "backend/app/api/watermark.py",
+      "hash": "21a9c2d3640e16b2358ef738aa301f740a8e3fbdd0c5375c2e130808671888bc"
+    },
+    {
+      "path": "backend/app/api/workers.py",
+      "hash": "0e4103875c0c286fc84bdb116b182af5513d9127d3cb26e85f6d3fc06afe0ec6"
+    },
+    {
+      "path": "backend/app/auth.py",
+      "hash": "d86b3e272a03fe944f3549a3b4a984700c3984a0671a647cea9a01370c052bc6"
+    },
+    {
+      "path": "backend/app/celery/__init__.py",
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "backend/app/celery/shortdrama_tasks.py",
+      "hash": "1f5846bf3ec774a0f1fd76ac92e92ed890c585d1c60269be239a6187156cdb69"
+    },
+    {
+      "path": "backend/app/celery/tasks.py",
+      "hash": "6dd5004a4f46fdc623f39b58272746658a9348881ac219d675c684a91a1e95f3"
+    },
+    {
+      "path": "backend/app/celery/variant_tasks.py",
+      "hash": "aa5db741fdf9571b7d5303d6e8418342fb67c09b810daa6fcd49fe880ce4a22c"
+    },
+    {
+      "path": "backend/app/config.py",
+      "hash": "343fec5e28a2741d1083e7c06ba59eecae3aeb451d9084ee20ad7196fd5e6612"
+    },
+    {
+      "path": "backend/app/database.py",
+      "hash": "5ee4dd810b8b44b77aa72792c10d0eb7e6a3e88f3230b25b99cbc496a529fe41"
+    },
+    {
+      "path": "backend/app/engines/__init__.py",
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "backend/app/engines/watermark_runner.py",
+      "hash": "dee0abd33a18e6fe5d4dbf3bb662e223d03b6e7a22699d190c875c5a5e1db7ff"
+    },
+    {
+      "path": "backend/app/main.py",
+      "hash": "d826dd8fb74070830aafb081841a769117dda8e51270677326f45ffe11e58c4e"
+    },
+    {
+      "path": "backend/app/models/__init__.py",
+      "hash": "ef2ce93f4bc78b5c468ce61bf8b934e0d708b42a62c7c3d0cd21e8deee64556b"
+    },
+    {
+      "path": "backend/app/models/audit.py",
+      "hash": "107dcc44551ef231091f4ae86f68e75a037c0b9e6cd8932b78014ca02b707c7d"
+    },
+    {
+      "path": "backend/app/models/channel.py",
+      "hash": "7d822e6de267ee591fc80177b8324d0480dba33c8fa0a1e4b05f24e54171787b"
+    },
+    {
+      "path": "backend/app/models/dashboard.py",
+      "hash": "080c8d83b6633f3a9558716aec32758c74ca8e73ded679719bbbee6913c06140"
+    },
+    {
+      "path": "backend/app/models/material.py",
+      "hash": "4a2662f89339c46133447434f5869b82080b0f215fd9fbf24ea47f0902b14bf6"
+    },
+    {
+      "path": "backend/app/models/models.py",
+      "hash": "437161f362c80997a4b99b2ceb111edb54768c9adaf4c701ba93613ad0db3b24"
+    },
+    {
+      "path": "backend/app/models/monitor.py",
+      "hash": "2208a22aacf1195ec94bfe34d40e240fc38a7ece9887da7031027aa551a44652"
+    },
+    {
+      "path": "backend/app/models/publish.py",
+      "hash": "9dd3a9238663581b100977405527fcbf6b84a70f4829c701daa5aba32b9b44bb"
+    },
+    {
+      "path": "backend/app/models/shortdrama.py",
+      "hash": "638627f330df49bff2aa249f95703cc9af781a7c04a731762f63c4e393922488"
+    },
+    {
+      "path": "backend/app/models/user.py",
+      "hash": "6e3a1b90d901e75a6d3a2e96d5cb46aa614b1fcc81d88b9b0e411cb5b517ecc4"
+    },
+    {
+      "path": "backend/app/models/variant.py",
+      "hash": "6660ee48c8803f135783681fadbbd1efd4515a597151efe4557ed9a9c1eab97b"
+    },
+    {
+      "path": "backend/app/services/__init__.py",
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "backend/app/services/ark_client.py",
+      "hash": "fd517b36b8373e751a93e8c95d4a56a14cca1e85c4ba70341b55a5359cb78997"
+    },
+    {
+      "path": "backend/app/services/audit_service.py",
+      "hash": "b1aa579ec4bee227feeb61cdfe6ce4ffae206e6290d680b405f99311efd97274"
+    },
+    {
+      "path": "backend/app/services/autoclip_service.py",
+      "hash": "a223da0870865c9d47eb7a563a15d5fdc38ffdca7d594ccd01d625bf621255c2"
+    },
+    {
+      "path": "backend/app/services/batch_decoupled_service.py",
+      "hash": "b210cf927d87c28e1b4c31b00892e9d1286c6bc54696de1317d76bdba9f1d28f"
+    },
+    {
+      "path": "backend/app/services/batch_slice_service.py",
+      "hash": "1cf6ef9f55f8d50cfa2b7025a66dd6eb241f1ee0ffbecc7413ec4c7acf96df18"
+    },
+    {
+      "path": "backend/app/services/dashboard_service.py",
+      "hash": "ff9135570eb6a597a9f1e17ac89539f39edfb8757d6a4f06206a66cd32c8c684"
+    },
+    {
+      "path": "backend/app/services/data_import_service.py",
+      "hash": "d83e2360cb77e31c25f6f71d1917a48d6db23a2bca9b68e1c7d1ae05dce12723"
+    },
+    {
+      "path": "backend/app/services/data_scope.py",
+      "hash": "7e65efad5a2fd51f598c2157b97558c015c8247c1004329b7293d14c9fc5e1cd"
+    },
+    {
+      "path": "backend/app/services/doubao_service.py",
+      "hash": "2ccd27cc036a39262908b281436bd778609f1e8f9e9e8314b4cea945cf28b706"
+    },
+    {
+      "path": "backend/app/services/fingerprint_service.py",
+      "hash": "10b7ba56d215c07defb6b62d7ea51e855a3e22aa445145e265164887c10ca941"
+    },
+    {
+      "path": "backend/app/services/interval_service.py",
+      "hash": "5f79dc43d0184e187bc996af79f78856efba9a351230d85da1c0144a5ef9908f"
+    },
+    {
+      "path": "backend/app/services/login_qr_service.py",
+      "hash": "386d7ed87b9bf35df0214242062d2d486ecbc6bdbefc83b8b762678b4f363dd6"
+    },
+    {
+      "path": "backend/app/services/maintenance_service.py",
+      "hash": "1871ad3c858243fee2a89cb9ff92b4388c1bb2b8994401b859bc6fedc928e9d2"
+    },
+    {
+      "path": "backend/app/services/minio_service.py",
+      "hash": "7a6f0ad14ec96f190e49c71a8305719726688bb9dc03816555bc05cc41c382b1"
+    },
+    {
+      "path": "backend/app/services/monitor_service.py",
+      "hash": "5b93bf9ee7d0f68bd4f57bade88c9993c1dfc1d7feb29daa2eb7c3b9a4762194"
+    },
+    {
+      "path": "backend/app/services/multi_operator.py",
+      "hash": "811139459b1b4475190b263ebc79f1d373b59d79ea53693a499b277f8f61194e"
+    },
+    {
+      "path": "backend/app/services/publish_service.py",
+      "hash": "34f37428ee2c49936c4150bc41af8b8f72578e79691231d07efd61bef4debe91"
+    },
+    {
+      "path": "backend/app/services/redis_stream.py",
+      "hash": "10ee017b50e40dd3f273ca06681f120e726a450097e777a6e26d1862ff53925e"
+    },
+    {
+      "path": "backend/app/services/slice_service.py",
+      "hash": "6df06295f325caa64d9caa6a3cb3c5b605cc8809c820757c1496b8d6c73b7ca5"
+    },
+    {
+      "path": "backend/app/services/smart_import_service.py",
+      "hash": "514ba1a36839a7700c9cf7d1d9a74b21e45ca0542bee07284b67fd2506577527"
+    },
+    {
+      "path": "backend/app/services/upload_service.py",
+      "hash": "5b6276c62d071348518f752d19994e5715415aceae28e547d39fa9d596b1d8c4"
+    },
+    {
+      "path": "backend/app/services/variant_service.py",
+      "hash": "cfbe73212c29c4726a8a0ca2abdeabc4c6b540824969fc6c85a19429be0c5113"
+    },
+    {
+      "path": "backend/app/utils/__init__.py",
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "backend/app/utils/helpers.py",
+      "hash": "f76510424c6850e469490e35c4db355699c8a08f8917783b2ca8b891cd82206e"
+    },
+    {
+      "path": "backend/wechat_download/__init__.py",
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "backend/wechat_download/api.py",
+      "hash": "a8d23790496dd11038e5696b476b61f36be55840694bb08323498b7f4a6d2a29"
+    },
+    {
+      "path": "backend/wechat_download/base.py",
+      "hash": "ff66b408fed1bdad8a8d54e5ad09380adfe29de1bb1595d768c1cfee406b49f6"
+    },
+    {
+      "path": "backend/wechat_download/downloader.py",
+      "hash": "1edfea92c5f7158d97d20ba1ec3d0e13304307a6e94f2bc3e178413c42c8cfcd"
+    },
+    {
+      "path": "backend/wechat_download/models.py",
+      "hash": "a1d2c9c3a9600871ba856874ecd4acead7da2463d48deceb7106cab5cad4f61d"
+    },
+    {
+      "path": "backend/wechat_download/preview_client.py",
+      "hash": "38110170ae63dcc71e07560e2a61b95105da264e2cce07649c6b271d85daf657"
+    },
+    {
+      "path": "backend/wechat_download/provider_registry.py",
+      "hash": "41db648b7f7dabc1a6e1a94fd43475ffc3a8776ce0a01a9af6233b9cd0497864"
+    },
+    {
+      "path": "backend/wechat_download/service.py",
+      "hash": "db0e65aa4f5ef22fb25900e406144e383a78a06f86b76893576d8ded550bdb25"
+    },
+    {
+      "path": "backend/wechat_download/tasks.py",
+      "hash": "8d65b584fd3b57cb0aa6109d6e62a16eaa4ca6c53a69f160ad72110badb1cb39"
+    },
+    {
+      "path": "backend/wechat_download/yuanbao_client.py",
+      "hash": "a6260bdeb69aa4d8a803d71739b89f4f513f04999bdcd4774bd00a03ac074c15"
+    },
+    {
+      "path": "deploy_remote_worker.sh",
+      "hash": "dfe8a086e1054b2df6b0ffef53a0f04d7c1523cc9fafd165bd797b86598fb706"
+    },
+    {
+      "path": "deploy.sh",
+      "hash": "a0d335ee8a45a766f452621d57dec45cb605c168df49f6aef7e7014bcdf6e5ef"
+    },
+    {
+      "path": "deploy/cmd.sh",
+      "hash": "6a95daf21a9a2d141a0777786fbf3bfb83f99000523228ebe79ac44843381584"
+    },
+    {
+      "path": "deploy/init.sql",
+      "hash": "ba9afcece93aced5d97a9891524e7097f1f7bde62ff9cf29f522c891d0a05fd6"
+    },
+    {
+      "path": "engines/detect_intervals.py",
+      "hash": "7d009ae2cde6a54c1aa057f870160e4583a4f209d2807691a528a90dea2215f0"
+    },
+    {
+      "path": "engines/preview.py",
+      "hash": "421381a6d72ff611e9e181c7fbff3ab7a9adc28275c349e1e86949719f7b8e14"
+    },
+    {
+      "path": "engines/remove_mask_remover.py",
+      "hash": "05c8b1251e9fe02e4f0dfd7a7b073016d1a85e308d67cb65451df8e0bbde9533"
+    },
+    {
+      "path": "engines/remove_mask_rois.py",
+      "hash": "ad940041ad8d0a7124334facf4c8b893bdf5f4ca1adaea6bd9b844aed7a69e40"
+    },
+    {
+      "path": "engines/seedance_watermark_remover.py",
+      "hash": "2797cd45c3dc431af263421071ac52628f6a9b59229038b4e006ae253145dee6"
+    },
+    {
+      "path": "engines/seedance_wm_runner.py",
+      "hash": "9324e618953e01ed9dc3ab4d4e49722047f5aa14fa3b16cb351f290ce2571c28"
+    },
+    {
+      "path": "engines/seedance_wm/__init__.py",
+      "hash": "d7f955cbc5d135f8535dcedce738e3a9d196d74c6e7c55ea317156353ae6d547"
+    },
+    {
+      "path": "engines/seedance_wm/__main__.py",
+      "hash": "e4fbe8fa3bcad8d9626b895899c09df74e9c8fefb50510df1c1e21264e6ec95f"
+    },
+    {
+      "path": "engines/seedance_wm/agent.py",
+      "hash": "3f2eb825756b5e78c03d7b11640372c052906649053d03450e1f076dd397911f"
+    },
+    {
+      "path": "engines/seedance_wm/cli.py",
+      "hash": "e13288d60c59df0839456b4479da4d1bdfa7a8102dc1be491709b789d444cf68"
+    },
+    {
+      "path": "engines/seedance_wm/config.py",
+      "hash": "81153d831a1dc20a203f2461b928b51db973c95fa09b3fdbe57bf8f188be26fb"
+    },
+    {
+      "path": "engines/seedance_wm/detect.py",
+      "hash": "a7f98d8b259bcad3d31989956493c46c351725001f87e36b3cf5c69d86007a9a"
+    },
+    {
+      "path": "engines/seedance_wm/errors.py",
+      "hash": "b8cfbba3209bb2aa3f6107c03c6cf6081a521a9e889faf01aa070f89f7f0a1b1"
+    },
+    {
+      "path": "engines/seedance_wm/ffmpeg_io.py",
+      "hash": "b4f95fe0344e25015e1da3bff7dad668bd86a004160638b82b2ca8d56a26b9da"
+    },
+    {
+      "path": "engines/seedance_wm/inpaint.py",
+      "hash": "914c93e7f372a50daa4656a7b3a95c665d1e0f9bd0df078990ddeceae17ca649"
+    },
+    {
+      "path": "engines/seedance_wm/log.py",
+      "hash": "ee98e56bf3bc442012dfb7f6bdac73be4ddc3a7bab415b616c67c0ee89224869"
+    },
+    {
+      "path": "engines/seedance_wm/mask.py",
+      "hash": "96da5961936e4bed860239356372efc91153a364debab215aab2c88065a6cb78"
+    },
+    {
+      "path": "engines/seedance_wm/pipeline.py",
+      "hash": "166502eaf36b6f8dc06149f74761586023bc6941dc439464776e624954a105b1"
+    },
+    {
+      "path": "engines/seedance_wm/remover.py",
+      "hash": "bb067f99bae9e570af82b112d63fc7ec8c0b6c531ebff55fcf24ac015bbf54d2"
+    },
+    {
+      "path": "engines/seedance_wm/tools.py",
+      "hash": "668f43851164a116182b9ef5ccab346af1ef1d2bca3ff086717e154786f9df43"
+    },
+    {
+      "path": "engines/seedance_wm/version.py",
+      "hash": "c9cb763bcf25c4dcb4575f22c86a3c1128bba56262f2cb2aabd9334b5ae8c06b"
+    },
+    {
+      "path": "engines/slice.py",
+      "hash": "55b468c581be224e69f0ad25332a5d06b18c84547dd0f466c6f968d51957dba5"
+    },
+    {
+      "path": "engines/tests/test_subtitle_mask_regression.py",
+      "hash": "ee02ea97c2a6d408fae44863df66a8fc4356b19b710d224c90f5a935c076edc9"
+    },
+    {
+      "path": "engines/vert2horiz_crop.py",
+      "hash": "42ce32301bb5a33ea2c1bf5f45045f1385589bc8507208da1d66b278d651c231"
+    },
+    {
+      "path": "eval/grade_highlight_llm.py",
+      "hash": "215139b726eeb7e8fa1609cdd4a9d2b07f59cd06ed29eda301a45c06458224c6"
+    },
+    {
+      "path": "frontend/src/api/auth.ts",
+      "hash": "ca0de968f895916fb29ddf57cb08544d07363771a2740266bc61c939dd71996e"
+    },
+    {
+      "path": "frontend/src/api/autoclip.ts",
+      "hash": "b616fb808862c6a16d14781632bd75a57529de170c842f7c47cff8966aad552b"
+    },
+    {
+      "path": "frontend/src/api/batchSlice.ts",
+      "hash": "12795f62d80df08b2ad232f28eea023ef9b1afada51aa380fc5d332796b5b345"
+    },
+    {
+      "path": "frontend/src/api/channelAccounts.ts",
+      "hash": "b7f94536d871ab286ec453b6b89b3d198a105ebd76ad122b5fb802dbd8abffdc"
+    },
+    {
+      "path": "frontend/src/api/client.ts",
+      "hash": "7482c1731330ddc31b68a4f635e589f5177852e379bb711d4242a41d3558ffda"
+    },
+    {
+      "path": "frontend/src/api/config.ts",
+      "hash": "866c376628366f4ab25682a7f9135cdcbc3dc846a03d3bc2eabcb3b162c52e71"
+    },
+    {
+      "path": "frontend/src/api/dashboard.ts",
+      "hash": "e325735856e558dc9c1d231c293b6a585d604251045cf2bc4605835a765105d0"
+    },
+    {
+      "path": "frontend/src/api/intervals.ts",
+      "hash": "43d318e9bef45719a0fdbee4214417233c90c6e4ace5eeae31bf6af69bfacfdc"
+    },
+    {
+      "path": "frontend/src/api/monitor.ts",
+      "hash": "628815c67be7a59df6bcbdbaec1c85d80d4615b217cf1e03d290c41927cfd256"
+    },
+    {
+      "path": "frontend/src/api/preview.ts",
+      "hash": "6fd48ecc0b768458f8f6ccb22f6667fe05724209e72e2be37d0cbaf2c6654566"
+    },
+    {
+      "path": "frontend/src/api/projects.ts",
+      "hash": "4740b1ba9325f69ef61995a4cc2a84843a3d9509b1671c85bf93053f2d05b38a"
+    },
+    {
+      "path": "frontend/src/api/publish.ts",
+      "hash": "21cf83158d76f1190c5aaae178f57263d21356eca002801e2dd04c0f0fe61d21"
+    },
+    {
+      "path": "frontend/src/api/publishMaterial.ts",
+      "hash": "13c3229dda5234a8ddd02bc323564d4e838169b08be5d24a8374041f104f3b20"
+    },
+    {
+      "path": "frontend/src/api/shortdrama.ts",
+      "hash": "e1ba066c23ce7b9dd91b97bcc30db5e6bf1d273d14bf08c429e2d12ab9e57a8a"
+    },
+    {
+      "path": "frontend/src/api/slice.ts",
+      "hash": "7fa67ba6c4625a81a21ac7c7124e10fb8c86c970cf8a90d3ea6c2aae5ff92e13"
+    },
+    {
+      "path": "frontend/src/api/upload.ts",
+      "hash": "066adc8dd3151ec4961a68a06e6f34eec0722d97b85cbb438f7b325b2a7059b6"
+    },
+    {
+      "path": "frontend/src/api/variants.ts",
+      "hash": "d687ac4a047e6e71dbf6c454377bcc4e637fd5a11e2aed6218744b0dd1bccbca"
+    },
+    {
+      "path": "frontend/src/api/watermark.ts",
+      "hash": "1ddd3038fc2c84890265e6769449e7e0dcf92f2b32d75ddc8dbb4dee16780fd6"
+    },
+    {
+      "path": "frontend/src/api/wechatDl.ts",
+      "hash": "a3bce5c6f69c697e5f227c261fc7ba2f0ea7d33aab1876eedd98cb9c49348e60"
+    },
+    {
+      "path": "frontend/src/App.tsx",
+      "hash": "20419ea6411db7c4ac06c5b2b18450987c34726e6a14516b243c507886f9f31e"
+    },
+    {
+      "path": "frontend/src/components/AppLayout.tsx",
+      "hash": "e66e7fab76393d6f601cc979f6c220ae7ac69ebd7014ddbc8fbcdf0ee7cb3c6a"
+    },
+    {
+      "path": "frontend/src/components/AuthGuard.tsx",
+      "hash": "dbcca0e8d08445bf73521abdc152fd341ae51ea75d05e279953a5f4de083b697"
+    },
+    {
+      "path": "frontend/src/components/DedupeManualConfig.tsx",
+      "hash": "6bf98508e17a711ac02a5dac2e676c8f6d48ff443d35f011d6a41402e1e765a8"
+    },
+    {
+      "path": "frontend/src/components/ErrorHint.tsx",
+      "hash": "d061b34d299494646551db180aace87d89dc2970f4870fc29e67c7138e2565e5"
+    },
+    {
+      "path": "frontend/src/components/ResizableTable.tsx",
+      "hash": "140bbf4ccd04d466df86bccb4c56b129a00eb0f5e7e94edd1774749289f66f41"
+    },
+    {
+      "path": "frontend/src/contexts/AuthContext.tsx",
+      "hash": "ef3d7e17a1c5feae93d78e7de3ccef5fa58291e25140859049def799ffbb4af6"
+    },
+    {
+      "path": "frontend/src/main.tsx",
+      "hash": "91206c72a91e3c9f11d21768cd1ecaff845eb4ed163d9fc65cd497f411dff60f"
+    },
+    {
+      "path": "frontend/src/pages/BatchSlice.tsx",
+      "hash": "dc98ccea38a0d0c5800ac23b90c721efc1cb2de626a31a570532df1966d7ce28"
+    },
+    {
+      "path": "frontend/src/pages/ChannelAccounts.tsx",
+      "hash": "18c5f77524864cc6f01d508cbe11f1fc92940fe42ec9db2e11efb7188e39cec0"
+    },
+    {
+      "path": "frontend/src/pages/ClipReview.tsx",
+      "hash": "4a7b792b497352545dbb458fa7d426c3e7980ef7c657b70352fb078a262e4e71"
+    },
+    {
+      "path": "frontend/src/pages/ContentAnalysis.tsx",
+      "hash": "1de0b85ca3cbe4f4cc35bc29351449a7fec1da9c34671509c2d0be2c64689ca6"
+    },
+    {
+      "path": "frontend/src/pages/Dashboard.tsx",
+      "hash": "00e9ff53fdc99fbb14b9ed45e04d03b6a7f2a8eb50fb79999eb706b67a5719aa"
+    },
+    {
+      "path": "frontend/src/pages/DashboardOverview.tsx",
+      "hash": "af376ad99f95595d4f7ddcf63065029be22b9d838ba736ddb4ac550f12838fb2"
+    },
+    {
+      "path": "frontend/src/pages/DashboardSettings.tsx",
+      "hash": "85742b74611827641b3134a00b191b8155d48f993080842ab7e3edcdf3086f55"
+    },
+    {
+      "path": "frontend/src/pages/DataImport.tsx",
+      "hash": "e4878acff05eb6067d0cea018315968ec441b2c4947d778725e14c52c00874e5"
+    },
+    {
+      "path": "frontend/src/pages/DramaMonetization.tsx",
+      "hash": "16c2d8a56ebfd7748507bd8eb2a434103a2ba9877650bbb88f93b7bd8b4d7c5f"
+    },
+    {
+      "path": "frontend/src/pages/Ecosystem.tsx",
+      "hash": "0a4a8eef054baa8c75483c841e0da155b1b911c3c3cdd0b9c450ce46b9abdae3"
+    },
+    {
+      "path": "frontend/src/pages/EpisodeDetail.tsx",
+      "hash": "1f5a1b7cf052264085fde1ecada8ffe186504ac5f5435031bd9eedbb6353b8b8"
+    },
+    {
+      "path": "frontend/src/pages/FunnelAnalysis.tsx",
+      "hash": "10c6a4a1c034af981614b3bf7490ac5e252cb8c4054c2c8a5ab0fd746e11e1ba"
+    },
+    {
+      "path": "frontend/src/pages/IntervalDetection.tsx",
+      "hash": "79884e669eac86dd85750ef8e5c9bac5c8db09fc4aeed49ff97c9488c8219159"
+    },
+    {
+      "path": "frontend/src/pages/Login.tsx",
+      "hash": "4027b1d1d317a4a6bff87c1f8d072eedda72d55becb8de4dc6df3414db0550ba"
+    },
+    {
+      "path": "frontend/src/pages/Maintenance.tsx",
+      "hash": "afb0711b1761bbeb97ae58590a2fb408efe0469ad67fb671b1f4b74bd5456ec6"
+    },
+    {
+      "path": "frontend/src/pages/Monitor.tsx",
+      "hash": "3bb49845fa614feb89ee0cb6e8ce26cb6e2f1b6b18a4485f5c72fa36d9345f33"
+    },
+    {
+      "path": "frontend/src/pages/NotFound.tsx",
+      "hash": "3e5083d7f66166c0ee20c7e6101ef04943ce24cb1dcfa590e5618ba559ce98c9"
+    },
+    {
+      "path": "frontend/src/pages/OutputPreview.tsx",
+      "hash": "1d94981e928e40a70ad1a32d812ddcdeba4f25cf4aae18a97fbcf893864c7935"
+    },
+    {
+      "path": "frontend/src/pages/Profile.tsx",
+      "hash": "626ff9b2fcbcd835f9c0698c44459cb0288d46bf77ccb2e02a75bb298ce33828"
+    },
+    {
+      "path": "frontend/src/pages/ProjectDetail.tsx",
+      "hash": "9f46b2301f189ebf50fbf53d4e85de4acc9dc779bb39f4b1bfb5339ec6446089"
+    },
+    {
+      "path": "frontend/src/pages/Projects.tsx",
+      "hash": "63f814ad98757153a1cf1b3d19b229b8f41cd92869878726676703129244773d"
+    },
+    {
+      "path": "frontend/src/pages/PublishManagement.tsx",
+      "hash": "f6feabff263cb962500f480410449e4c20525a3874e55c4e2375f8eb6e8f38b7"
+    },
+    {
+      "path": "frontend/src/pages/PublishMaterialTab.tsx",
+      "hash": "c09b76e07e6415de73660b4cc06721106c475ac3f3007244b88ad44cd706b1e7"
+    },
+    {
+      "path": "frontend/src/pages/ResourceDownload.tsx",
+      "hash": "2ed21b7206ae05a055bddb66a2c4f5dda28b3fdfb7a3eae8acfbe3ac7f0886e1"
+    },
+    {
+      "path": "frontend/src/pages/Settings.tsx",
+      "hash": "4c3ded0e3397b0b5c499a95fa07f150239e42cae1349cf5d1c266238a5c38a0f"
+    },
+    {
+      "path": "frontend/src/pages/ShortDrama.tsx",
+      "hash": "ab59d2e4d45aacc0bfb7ac7f4909f2f6683f1b376b1004e0abbd0898ac38ae78"
+    },
+    {
+      "path": "frontend/src/pages/ShortDramaAnalysis.tsx",
+      "hash": "15c881c898656ef7cf9244fddd812b9fd2c91301b9facdd10acb545e542c4c95"
+    },
+    {
+      "path": "frontend/src/pages/SliceTasks.tsx",
+      "hash": "410d7389db1036c077d6edd69d428a2b8a88280aaefb577c00e30964069d1d92"
+    },
+    {
+      "path": "frontend/src/pages/UserManagement.tsx",
+      "hash": "0223afdd13b50636a9e2ede6acf62bbd956731b75964cdea9b935128065e0679"
+    },
+    {
+      "path": "frontend/src/pages/VariantMatrix.tsx",
+      "hash": "49538da9a658de7e58deb49660344014da420df48d27a01ada42182d8b21a2c4"
+    },
+    {
+      "path": "frontend/src/pages/Watermark.tsx",
+      "hash": "d2a6141474470acd093df4b0550711ab21ba683f4c4a805ed02418afaacb8e8e"
+    },
+    {
+      "path": "frontend/src/pages/Workers.tsx",
+      "hash": "9a2b2a8ff2885cbef5be14a95d5c9f22e757dd9770b5c7e3d588a3dc3c6b22b6"
+    },
+    {
+      "path": "frontend/src/types/index.ts",
+      "hash": "4e4e97941b1a9c684221522deca24dfa3f8f0bf6c4ee87af50a0d517bffb8496"
+    },
+    {
+      "path": "frontend/src/utils/format.ts",
+      "hash": "60045635a7ad286a573ef3329b36e1bbfea883da3830b43adea2429eb41f28c8"
+    },
+    {
+      "path": "frontend/src/utils/sliceConfigTooltip.ts",
+      "hash": "843fcf3added57163116806cef61f0dbe9076b946c30ce2a8bfe96df0107f102"
+    },
+    {
+      "path": "frontend/src/utils/watermarkStyles.ts",
+      "hash": "dd5d77449a6513e938a2133545b42048bd2a4cd994c43c10aba38ac67090b0d7"
+    },
+    {
+      "path": "frontend/vite.config.ts",
+      "hash": "3d17d684c6130bf76421b56eea915d0b1c99c599711dba2002a1c31c3377dd18"
+    },
+    {
+      "path": "init.sql",
+      "hash": "b48db092e06361365f81bf13373aa159a4ea23720f7c5fa350ddcbd90661a3c5"
+    },
+    {
+      "path": "migrations/fix_missing_indexes.sql",
+      "hash": "6f012faf18a694d4a80a1cd9c8f3d4c05902527bb58ee5d561bc2c520784dbc4"
+    },
+    {
+      "path": "rpa/bootstrap.py",
+      "hash": "fc71189ee0a8c2bc77016dc39e71ec79d7ea1176d3b58770eb645e1a0fad3937"
+    },
+    {
+      "path": "rpa/cdp_proxy.py",
+      "hash": "d2fc8389048322e3baaf04c389c06c7c7c5e9720792afa5861dbd7f6b677a5c5"
+    },
+    {
+      "path": "rpa/start_chromium.sh",
+      "hash": "9947e5aebc1d96e7355e96ca472ad11b93f98e2c5d590816eec9c5164491cae0"
+    },
+    {
+      "path": "scripts/chaos_drill.py",
+      "hash": "31d17a15c64f37d71e65a5f2dcebac86afff3baeb92d82d7f5cb1a15ddfeccd3"
+    },
+    {
+      "path": "scripts/cleanup_orphans.py",
+      "hash": "6253490f6ff0ebc20eba9e5c10fef30d6ba802d26087d8d4d1085b0f42f10856"
+    },
+    {
+      "path": "scripts/db_sync_columns.py",
+      "hash": "38f9cd038d661f97525e76e03f7364e4d7e4d6c20c60773b66b012a46f43a6a8"
+    },
+    {
+      "path": "scripts/deploy_server.sh",
+      "hash": "3b80f76642b435437346aabe0738baf8bbb3789c076d8d8cf5ce0be951d8a9d9"
+    },
+    {
+      "path": "scripts/healthcheck.sh",
+      "hash": "0abc45283bf40525c9ade41842f4e8b55a766e4dc51fe564149d937d9684df2c"
+    },
+    {
+      "path": "scripts/init_admin.sh",
+      "hash": "f832237c09e415c6dda01fb6e54d068f7c52a0680e1ed028f46a633887a2f614"
+    },
+    {
+      "path": "scripts/init.sh",
+      "hash": "ee2b68250450e9f588a8837570cb7c8fc7d18e721817531874944b49fd990b91"
+    },
+    {
+      "path": "scripts/logs.sh",
+      "hash": "d92bcf93e032d2422640ce07279b292fbfd13864447cf1ecbf8446d71f6e5920"
+    },
+    {
+      "path": "scripts/qr_render_spike.py",
+      "hash": "1ac4ad6ef2c1b75e981d23c0fd8add47d01eeae962cf58e7a9f686524f9849d0"
+    },
+    {
+      "path": "scripts/restart.sh",
+      "hash": "78e9977a5689ceb7a1feec3f8bbf0f64435883156deb8b8bfd7fbbb16df2e156"
+    },
+    {
+      "path": "scripts/server-setup.sh",
+      "hash": "ec7a55b6eba273e5862a08bdabd7453a1c2fa223885b150d603cb9dc52901ce4"
+    },
+    {
+      "path": "scripts/start.sh",
+      "hash": "01e2d2f4c7ba684f76cf41f2df6fa0297c9eb8540d1b64634614148d1f9915e0"
+    },
+    {
+      "path": "scripts/status.sh",
+      "hash": "2ad2b1e0c9a2ff6552d5e4026d5144aa93d88a705edfe43dd71e66617dd16ead"
+    },
+    {
+      "path": "scripts/stop.sh",
+      "hash": "f89859a999e45532881b19fa8e8e3440113fb45851dc85e64340fb93e5a4b3ee"
+    },
+    {
+      "path": "scripts/sync_remotes.sh",
+      "hash": "e4a2c0ea76d9148f917a9d3985165af81986cc8acb2439ada4638f818d3e8473"
+    },
+    {
+      "path": "scripts/sync-engines-to-worker.sh",
+      "hash": "95b20e3f9b46d0cc958f3a2261639bf88f0958f9b105fc4e50ab6ede6f6854d6"
+    },
+    {
+      "path": "slice-worker/callback.go",
+      "hash": "f702246fa4b2fed373c715984d507d8c8512a0d5fdfeb76bceb100275b0d6ed0"
+    },
+    {
+      "path": "slice-worker/config.go",
+      "hash": "24a5ea8c4870aec0fe34fa42e1bb697d270ef2f55ffa720e407142d2733b64fb"
+    },
+    {
+      "path": "slice-worker/engine_update_test.go",
+      "hash": "519be92d75c872b6a6506e264dc61f6803a7039ad6af102cbe3686871e723001"
+    },
+    {
+      "path": "slice-worker/engine_update.go",
+      "hash": "59175cd03940a01762ab1ebbdced7caaf95e90a65e875fb5c955f62f49bc2f55"
+    },
+    {
+      "path": "slice-worker/exec_unix.go",
+      "hash": "1eb3913aa803e243694c6d4e8e60981892695b489b63332b50f9138219859645"
+    },
+    {
+      "path": "slice-worker/exec_windows.go",
+      "hash": "883135be9e98a52b97d7c11d4f841e1e6ba806ecd7d042a04e921ceea0c6abe5"
+    },
+    {
+      "path": "slice-worker/file_transfer.go",
+      "hash": "c666b91a2d283fc09275ff077800c7333cd111243d68914deefb728baa412f6a"
+    },
+    {
+      "path": "slice-worker/heartbeat_backend.go",
+      "hash": "11236208dbff7c3708d260878cf47ebc964f6e4d5e980532f28c7ed04641e3d3"
+    },
+    {
+      "path": "slice-worker/instance_lock.go",
+      "hash": "8f36fa5f18e53fd975ba384be12c10b4977ecf34e8bcdc3de83a308fe5f3bfb5"
+    },
+    {
+      "path": "slice-worker/macos/build_mac.sh",
+      "hash": "0f5ac41c41a794f0047630176946b4fcf4a24555ab6bbf6d181b1dfcbaf84637"
+    },
+    {
+      "path": "slice-worker/macos/launchd_worker.sh",
+      "hash": "a56be874578d7ae002b2a20097b63aa6a9be69284303507161b739318f930004"
+    },
+    {
+      "path": "slice-worker/macos/manage_worker.sh",
+      "hash": "0aefdfaae7e585c1aa09da09ef9ea3d2ca695ddbb92240eb91589b254a7b4a67"
+    },
+    {
+      "path": "slice-worker/main.go",
+      "hash": "bc78d3850e3ed4f76c8a5c3d99580862374c10c6c464fd1b02e64daed1430e98"
+    },
+    {
+      "path": "slice-worker/redis_client.go",
+      "hash": "5274790f078b5b5d03de54f74ed9f11f996c585e7a6a0f2a351af337aeb0af19"
+    },
+    {
+      "path": "slice-worker/task_executor.go",
+      "hash": "28a40ff004272d1075bf68dbcec6b3242720c5923e2c2f9946aebec0cd048d90"
+    },
+    {
+      "path": "slice-worker/tray_common.go",
+      "hash": "364b126de1c8bf280cb71d734bf4fe0331cc52e1834f0d2a0bbac179d2c618e3"
+    },
+    {
+      "path": "slice-worker/tray_darwin_nocgo.go",
+      "hash": "6ee4f717f5c651df7c33cb54b5a3e6c3250aab65c9fb5aa769186619b7eb1f96"
+    },
+    {
+      "path": "slice-worker/tray_darwin.go",
+      "hash": "c4be27578e7e87d6f06247bdbc0f0835db7abbc416e9e2ca52d831fbe6e1efd3"
+    },
+    {
+      "path": "slice-worker/tray_other.go",
+      "hash": "2eb2ae7e0a13dce177b707861db082c39b6a07d592128ac0f6871274f96a7411"
+    },
+    {
+      "path": "slice-worker/tray_windows.go",
+      "hash": "e82ad00a0fb50404af0e3f3246e662c3aba17fdfb5aadd4832d35e21bc8fdcce"
+    },
+    {
+      "path": "slice-worker/tray.go",
+      "hash": "da296d0d58701255e632a94b05a5bcca4b9ca96e56203685a5f7c65c6d115fac"
+    },
+    {
+      "path": "slice-worker/tui.go",
+      "hash": "64ba4bf1d3b3186e398514fadbc47c0f6eb68593f79f1ca47d377693fbea0cf2"
+    },
+    {
+      "path": "slice-worker/ubuntu/build_package.sh",
+      "hash": "ffaa306a0945e020c9e256d8ce39e3a9fa13cdd3f231dfaee9e5c90ed6b3de3f"
+    },
+    {
+      "path": "slice-worker/ubuntu/deploy_ubuntu.sh",
+      "hash": "6f7f31649b776481e70c179395b73307c9629d46a868cee815a0dc870bbbd06f"
+    },
+    {
+      "path": "slice-worker/worker.go",
+      "hash": "35f1fd11217ca79234dd5fdac3bb7a07eb8647e13a2d6796747d9c4f9c153e3e"
+    }
+  ],
+  "nodes": [
+    {
+      "slug": "alembic-migration-chain",
+      "name": "Alembic Migration Chain",
+      "type": "system",
+      "sources": [
+        "alembic/env.py",
+        "alembic/versions/0001_initial.py",
+        "alembic/versions/0002_autoclip_runs.py",
+        "alembic/versions/0003_slice_task_vert2horiz.py",
+        "alembic/versions/0004_watermark.py",
+        "alembic/versions/0005_shortdrama_prompts.py",
+        "alembic/versions/0006_shortdrama_prompt_video.py",
+        "alembic/versions/0007_publish_materials.py",
+        "alembic/versions/0008_data_scope.py",
+        "alembic/versions/0009_prompt_versions.py",
+        "alembic/versions/0010_watermark_prompt_link.py",
+        "alembic/versions/0011_doubao_generation.py",
+        "alembic/versions/0012_prompt_default_duration.py",
+        "alembic/versions/0013_video_accounts_mini_programs.py",
+        "alembic/versions/0014_seedance_generate.py",
+        "alembic/versions/0015_doubao_progress.py",
+        "alembic/versions/0016_doubao_screenshot.py",
+        "alembic/versions/0017_doubao_account.py",
+        "alembic/versions/0018_slice_task_badges.py",
+        "alembic/versions/0019_slice_task_badge_default_width.py",
+        "alembic/versions/0020_slice_task_subtitle.py",
+        "alembic/versions/0021_slice_task_text_overlays.py",
+        "alembic/versions/0022_batch_item_detect_task.py",
+        "alembic/versions/0023_slice_task_subtitle_mask.py",
+        "alembic/versions/0024_user_preferences.py",
+        "alembic/versions/0025_slice_task_subtitle_align_mask.py",
+        "alembic/versions/0026_worker_node_encoder_capabilities.py",
+        "alembic/versions/0027_multi_operator_ownership.py",
+        "alembic/versions/0028_multi_operator_audit.py",
+        "alembic/versions/0029_wechat_download.py",
+        "alembic/versions/0030_publish_task_dead_letter.py",
+        "alembic/versions/0031_channel_accounts.py",
+        "alembic/versions/0032_channel_video_account_unique.py",
+        "alembic/versions/0033_publish_time_slots_scheduled_at.py",
+        "alembic/versions/0034_multi_video_dedup_variants.py"
+      ],
+      "sourcesDigest": "1d65f059ae56d01bd7d174b75e4291303c95583545ef4dbb43e8fc0a10946ce1"
+    },
+    {
+      "slug": "analytics-dashboard-pages",
+      "name": "Analytics Dashboard Pages",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/ContentAnalysis.tsx",
+        "frontend/src/pages/DashboardOverview.tsx",
+        "frontend/src/pages/DashboardSettings.tsx",
+        "frontend/src/pages/DataImport.tsx",
+        "frontend/src/pages/DramaMonetization.tsx",
+        "frontend/src/pages/Ecosystem.tsx"
+      ],
+      "sourcesDigest": "274358f52e134d5ff3471f22b158e333b7d15835cce5ef01a0d4728d356ad625"
+    },
+    {
+      "slug": "analytics-dashboards",
+      "name": "Analytics Dashboards",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/FunnelAnalysis.tsx",
+        "frontend/src/pages/ShortDramaAnalysis.tsx"
+      ],
+      "sourcesDigest": "b156ae6f67cf5e12b5f1a1cc3aa4e383d53a1efb4a1f65f340a96e3b2c8d1d67"
+    },
+    {
+      "slug": "auth-session-management",
+      "name": "Auth & Session Management",
+      "type": "system",
+      "sources": [
+        "frontend/src/api/auth.ts",
+        "frontend/src/components/AuthGuard.tsx",
+        "frontend/src/contexts/AuthContext.tsx"
+      ],
+      "sourcesDigest": "bedd219eebc337844cce638d990bd7ed075892a001b595e2f0715ca3ea7aab1b"
+    },
+    {
+      "slug": "auth-users-settings",
+      "name": "Auth, Users & Settings",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/Login.tsx",
+        "frontend/src/pages/Profile.tsx",
+        "frontend/src/pages/ResourceDownload.tsx",
+        "frontend/src/pages/Settings.tsx",
+        "frontend/src/pages/UserManagement.tsx"
+      ],
+      "sourcesDigest": "365dd686614de8e0a8467298d992527cc8a513824cf2c0f9829ab2c8d3fb4cc5"
+    },
+    {
+      "slug": "autoclip-auxiliary-services",
+      "name": "AutoClip Auxiliary Services",
+      "type": "system",
+      "sources": [
+        "autoclip/app/services/publish_material_generator.py",
+        "autoclip/app/services/script_optimizer.py",
+        "autoclip/app/services/seedance_prompt_generator.py"
+      ],
+      "sourcesDigest": "e17b1099a6ab7c1901832417882a8176e9f2a740ea4f7a5a518507a7d481a1c8"
+    },
+    {
+      "slug": "autoclip-fastapi-service",
+      "name": "AutoClip FastAPI Service",
+      "type": "system",
+      "sources": [
+        "autoclip/app/main.py"
+      ],
+      "sourcesDigest": "2d651fbad6c569ac3ee955e8621a44d64352cd638eeea6cd25e021ade8079a34"
+    },
+    {
+      "slug": "autoclip-pipeline-stages",
+      "name": "AutoClip Pipeline Stages",
+      "type": "system",
+      "sources": [
+        "autoclip/app/pipeline/step1_outline.py",
+        "autoclip/app/pipeline/step2_timeline.py",
+        "autoclip/app/pipeline/step3_scoring.py",
+        "autoclip/app/pipeline/step4_title.py"
+      ],
+      "sourcesDigest": "6e9fa03934abbf2fcee3e4253d2faf93ff3f451d098311c50a0e49ded0ab550f"
+    },
+    {
+      "slug": "backend-utility-layer",
+      "name": "Backend Utility Layer",
+      "type": "system",
+      "sources": [
+        "backend/app/utils/__init__.py",
+        "backend/app/utils/helpers.py"
+      ],
+      "sourcesDigest": "e7aa0c09814cd5997323c154b2335de732cedd04c2d979fc664609b0bbd3016d"
+    },
+    {
+      "slug": "celery-task-queue",
+      "name": "Celery Task Queue",
+      "type": "file",
+      "sources": [
+        "autoclip/app/celery_app.py"
+      ],
+      "sourcesDigest": "e6c6e40268f1bb76c731893de2effaa09526ba57f7b58c5c8e71dcdfcb9cd0ce"
+    },
+    {
+      "slug": "clip-workflow-pages",
+      "name": "Clip Workflow Pages",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/BatchSlice.tsx",
+        "frontend/src/pages/ChannelAccounts.tsx",
+        "frontend/src/pages/ClipReview.tsx",
+        "frontend/src/pages/Dashboard.tsx"
+      ],
+      "sourcesDigest": "219608c83c9d48440712eb3e151bd7aaa07c8920e1c11788b297bd4c187052a2"
+    },
+    {
+      "slug": "database-schema-migrations",
+      "name": "Database Schema & Migrations",
+      "type": "system",
+      "sources": [
+        "init.sql",
+        "migrations/fix_missing_indexes.sql",
+        "scripts/db_sync_columns.py"
+      ],
+      "sourcesDigest": "70384877b5cbefeb996d7f51f2adcf673999c394d0e0ae35ffeaacb8c80f8d0c"
+    },
+    {
+      "slug": "deployment-operations",
+      "name": "Deployment & Operations",
+      "type": "system",
+      "sources": [
+        "deploy_remote_worker.sh",
+        "deploy.sh",
+        "deploy/cmd.sh",
+        "deploy/init.sql"
+      ],
+      "sourcesDigest": "1d3ae6f02bf577af4d950f37d926e25caca9b11ed76d92b52129aa5b9d4bed02"
+    },
+    {
+      "slug": "deployment-ops-scripts",
+      "name": "Deployment & Ops Scripts",
+      "type": "system",
+      "sources": [
+        "scripts/deploy_server.sh",
+        "scripts/healthcheck.sh",
+        "scripts/init_admin.sh",
+        "scripts/init.sh",
+        "scripts/logs.sh",
+        "scripts/restart.sh",
+        "scripts/server-setup.sh"
+      ],
+      "sourcesDigest": "e42b5e7e3d867ab4b8a581e92cf62a149e8681fe6477114e215c1325d26b95bc"
+    },
+    {
+      "slug": "detection-mask-inpaint-pipeline",
+      "name": "Detection/Mask/Inpaint Pipeline",
+      "type": "system",
+      "sources": [
+        "engines/seedance_wm/tools.py"
+      ],
+      "sourcesDigest": "3f1830d5a81d01ee80f6e43db9ecb250578a2be7627790d55b6e0346f92dba36"
+    },
+    {
+      "slug": "episode-production-pipeline-pages",
+      "name": "Episode Production Pipeline Pages",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/EpisodeDetail.tsx",
+        "frontend/src/pages/IntervalDetection.tsx",
+        "frontend/src/pages/SliceTasks.tsx"
+      ],
+      "sourcesDigest": "a6a11e1909bce68c3f9f9534e80a0c5a1a5175cd1407783b79146304969dd4f9"
+    },
+    {
+      "slug": "face-aware-crop",
+      "name": "Face-Aware Crop",
+      "type": "file",
+      "sources": [
+        "engines/vert2horiz_crop.py"
+      ],
+      "sourcesDigest": "77a42b2dc98ce7169e841ad80d2a5d1ba529432c504ba45b3474f73de9573a30"
+    },
+    {
+      "slug": "ffmpeg-i-o-layer",
+      "name": "FFmpeg I/O Layer",
+      "type": "system",
+      "sources": [
+        "engines/seedance_wm/remover.py",
+        "engines/seedance_wm/tools.py",
+        "engines/slice.py"
+      ],
+      "sourcesDigest": "7de1b1d57bd900bc18010250cb1dd22f56cd6b2372abc7c53c00ff8c9486df78"
+    },
+    {
+      "slug": "ffmpeg-path-resolution",
+      "name": "FFmpeg Path Resolution",
+      "type": "file",
+      "sources": [
+        "autoclip/app/utils/ffmpeg_utils.py"
+      ],
+      "sourcesDigest": "74e1e90cdb269c26fd1800eeb3ed19e7e000c61180095f83fc13093ff9230abb"
+    },
+    {
+      "slug": "frontend-api-client-layer",
+      "name": "Frontend API Client Layer",
+      "type": "system",
+      "sources": [
+        "frontend/src/api/auth.ts",
+        "frontend/src/api/autoclip.ts",
+        "frontend/src/api/batchSlice.ts",
+        "frontend/src/api/channelAccounts.ts",
+        "frontend/src/api/client.ts",
+        "frontend/src/api/config.ts",
+        "frontend/src/api/dashboard.ts",
+        "frontend/src/api/intervals.ts",
+        "frontend/src/api/monitor.ts",
+        "frontend/src/api/preview.ts",
+        "frontend/src/api/projects.ts",
+        "frontend/src/api/publish.ts",
+        "frontend/src/api/publishMaterial.ts",
+        "frontend/src/api/shortdrama.ts",
+        "frontend/src/api/slice.ts",
+        "frontend/src/api/upload.ts",
+        "frontend/src/api/variants.ts",
+        "frontend/src/api/watermark.ts",
+        "frontend/src/api/wechatDl.ts"
+      ],
+      "sourcesDigest": "4618a0ff216012a1e2eedcb9432b16748a6ca56a6709ad210939dceca1e694bd"
+    },
+    {
+      "slug": "frontend-api-layer",
+      "name": "Frontend API Layer",
+      "type": "system",
+      "sources": [
+        "frontend/src/types/index.ts",
+        "frontend/src/utils/format.ts",
+        "frontend/vite.config.ts"
+      ],
+      "sourcesDigest": "c5109f951fa406e36457853857d9982d066e1a328727442082b4ba0304e53776"
+    },
+    {
+      "slug": "frontend-routing-shell",
+      "name": "Frontend Routing & Shell",
+      "type": "system",
+      "sources": [
+        "frontend/src/App.tsx",
+        "frontend/src/components/AppLayout.tsx",
+        "frontend/src/main.tsx"
+      ],
+      "sourcesDigest": "55ead5be5f710147b6a3b9cc206f32db97193ca8f7453912206c69e3133c90a8"
+    },
+    {
+      "slug": "frontend-shared-ui-components",
+      "name": "Frontend Shared UI Components",
+      "type": "system",
+      "sources": [
+        "frontend/src/components/DedupeManualConfig.tsx",
+        "frontend/src/components/ErrorHint.tsx",
+        "frontend/src/components/ResizableTable.tsx"
+      ],
+      "sourcesDigest": "3cfd2f6ed0cbc9902ea291606f0f21b4cf78632fe6c298804b32bbcf0d6aa6a4"
+    },
+    {
+      "slug": "interval-detection-engine",
+      "name": "Interval Detection Engine",
+      "type": "system",
+      "sources": [
+        "engines/detect_intervals.py"
+      ],
+      "sourcesDigest": "c52218e6c86974882808196d915d0bb4c832ef5d6001ed8ad4b048a458e6a272"
+    },
+    {
+      "slug": "llm-evaluation-harness",
+      "name": "LLM Evaluation Harness",
+      "type": "file",
+      "sources": [
+        "eval/grade_highlight_llm.py"
+      ],
+      "sourcesDigest": "3c7a99e83bbf9989a12cb3d58a6f339569b6a9813b791665fb0627dc55aa32aa"
+    },
+    {
+      "slug": "llm-manager-provider-abstraction",
+      "name": "LLM Manager & Provider Abstraction",
+      "type": "system",
+      "sources": [
+        "autoclip/app/core/llm_manager.py",
+        "autoclip/app/core/llm_providers.py",
+        "autoclip/app/core/ollama_client.py",
+        "autoclip/app/core/shared_config.py"
+      ],
+      "sourcesDigest": "61c41938962a92bb8e775d72c66758f37879ee3ab89253a44b13b1a7e7e03463"
+    },
+    {
+      "slug": "minio-storage-service",
+      "name": "MinIO Storage Service",
+      "type": "system",
+      "sources": [
+        "backend/app/services/minio_service.py"
+      ],
+      "sourcesDigest": "3180034db6bd2b274c24a5441f4c6ad5273cf4fa39a91e89c9f893e85c20e30e"
+    },
+    {
+      "slug": "monitoring-maintenance-workers",
+      "name": "Monitoring, Maintenance & Workers",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/Maintenance.tsx",
+        "frontend/src/pages/Monitor.tsx",
+        "frontend/src/pages/Workers.tsx"
+      ],
+      "sourcesDigest": "8505a40c32eb76085da3c63871c31c73821a607a2e53d5707922a709a4344394"
+    },
+    {
+      "slug": "opencv-watermark-remover",
+      "name": "OpenCV Watermark Remover",
+      "type": "system",
+      "sources": [
+        "engines/remove_mask_remover.py"
+      ],
+      "sourcesDigest": "257e2f509e192e5ad54c48f290a7f5a2ad6a4659de1d3114925b9629f9044961"
+    },
+    {
+      "slug": "preview-frame-extraction-engine",
+      "name": "Preview Frame Extraction Engine",
+      "type": "system",
+      "sources": [
+        "engines/preview.py"
+      ],
+      "sourcesDigest": "46f4d072cac42cccc118c70a335c5d2f54c4b4cc079bd96eac319508b9e89086"
+    },
+    {
+      "slug": "project-episode-management",
+      "name": "Project & Episode Management",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/ProjectDetail.tsx",
+        "frontend/src/pages/Projects.tsx"
+      ],
+      "sourcesDigest": "478a08048bcdf7c990c4bac68850c17246d7d62d76f27c23884d359560b96b7d"
+    },
+    {
+      "slug": "publishing-material-generation",
+      "name": "Publishing Material Generation",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/PublishMaterialTab.tsx"
+      ],
+      "sourcesDigest": "1b69aba59841a96f0ad31249bc484c58c0ad73f4f5385992881b4d4dbe2e8bb2"
+    },
+    {
+      "slug": "publishing-output-hub",
+      "name": "Publishing & Output Hub",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/OutputPreview.tsx",
+        "frontend/src/pages/PublishManagement.tsx"
+      ],
+      "sourcesDigest": "5ccce62ceb424e9b7c34cde9fe0ebad635ea630c4422002a277c62ad624b9f7f"
+    },
+    {
+      "slug": "redis-stream-task-coordination",
+      "name": "Redis Stream Task Coordination",
+      "type": "system",
+      "sources": [
+        "backend/app/services/redis_stream.py"
+      ],
+      "sourcesDigest": "50d7d8e12ed5a13b58278673b7051b3c405a684e87fb152110cf5e543ef7f1bc"
+    },
+    {
+      "slug": "resumable-upload-service",
+      "name": "Resumable Upload Service",
+      "type": "system",
+      "sources": [
+        "backend/app/services/upload_service.py"
+      ],
+      "sourcesDigest": "932b8379480663f335ad0dc6d607cb2bb44529d17ce5369fe1beb09d142ea577"
+    },
+    {
+      "slug": "rpa-multi-operator-infrastructure",
+      "name": "RPA Multi-Operator Infrastructure",
+      "type": "system",
+      "sources": [
+        "rpa/bootstrap.py",
+        "rpa/cdp_proxy.py",
+        "rpa/start_chromium.sh",
+        "scripts/chaos_drill.py"
+      ],
+      "sourcesDigest": "6f8d239324e60c9180cfc8c9a2a3aadcca50a0716b9e49f97e82753cc3074937"
+    },
+    {
+      "slug": "seedance-watermark-removal-engine",
+      "name": "Seedance Watermark Removal Engine",
+      "type": "system",
+      "sources": [
+        "engines/seedance_wm_runner.py",
+        "engines/seedance_wm/__init__.py",
+        "engines/seedance_wm/__main__.py",
+        "engines/seedance_wm/agent.py",
+        "engines/seedance_wm/cli.py",
+        "engines/seedance_wm/config.py",
+        "engines/seedance_wm/detect.py",
+        "engines/seedance_wm/errors.py",
+        "engines/seedance_wm/ffmpeg_io.py",
+        "engines/seedance_wm/inpaint.py",
+        "engines/seedance_wm/log.py",
+        "engines/seedance_wm/mask.py",
+        "engines/seedance_wm/pipeline.py",
+        "engines/seedance_wm/remover.py",
+        "engines/seedance_wm/tools.py",
+        "engines/seedance_wm/version.py"
+      ],
+      "sourcesDigest": "5b7b1ea9b1d4c90799e64f86136aeba02bdf70bcbd61b62b51a8ea4aa105060c"
+    },
+    {
+      "slug": "short-drama-generation-workflow",
+      "name": "Short-Drama Generation Workflow",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/ShortDrama.tsx",
+        "frontend/src/pages/Watermark.tsx"
+      ],
+      "sourcesDigest": "f1a47e9c7977ab552841ca87370e45c7984909a8714f1778a2309766ab12691a"
+    },
+    {
+      "slug": "slice-configuration-presets",
+      "name": "Slice Configuration & Presets",
+      "type": "concept",
+      "sources": [
+        "frontend/src/pages/EpisodeDetail.tsx",
+        "frontend/src/pages/Settings.tsx",
+        "frontend/src/pages/SliceTasks.tsx",
+        "frontend/src/utils/sliceConfigTooltip.ts",
+        "frontend/src/utils/watermarkStyles.ts"
+      ],
+      "sourcesDigest": "50d3324dafe6fa415396604fc2c0fb60529a19e4fd6cde1b478b8548b18c3f3b"
+    },
+    {
+      "slug": "slice-engine-orchestration",
+      "name": "Slice Engine Orchestration",
+      "type": "system",
+      "sources": [
+        "backend/app/services/slice_service.py"
+      ],
+      "sourcesDigest": "c6a664b97c4f1c102817248263c9e485cdf6020afe345845f3221b7cd435859f"
+    },
+    {
+      "slug": "slicing-engine",
+      "name": "Slicing Engine",
+      "type": "system",
+      "sources": [
+        "engines/slice.py"
+      ],
+      "sourcesDigest": "f8e930be916522ce780e8335e160702f857e2608ec8720057f4ebeb5190cc647"
+    },
+    {
+      "slug": "smart-import-service",
+      "name": "Smart Import Service",
+      "type": "system",
+      "sources": [
+        "backend/app/services/smart_import_service.py"
+      ],
+      "sourcesDigest": "6938bb78d75a0c40cf1b8f8af7a47218a53b608339f7586089d4c47ff578a7f7"
+    },
+    {
+      "slug": "storage-cleanup-orphan-reclamation",
+      "name": "Storage Cleanup & Orphan Reclamation",
+      "type": "system",
+      "sources": [
+        "scripts/cleanup_orphans.py",
+        "scripts/qr_render_spike.py"
+      ],
+      "sourcesDigest": "13083178b7e594c0a5c24c8931e56bc2ea490e974ec91686c649bd50129891ac"
+    },
+    {
+      "slug": "subtitle-mask-regression",
+      "name": "Subtitle Mask Regression",
+      "type": "file",
+      "sources": [
+        "engines/tests/test_subtitle_mask_regression.py"
+      ],
+      "sourcesDigest": "4d6bb1b72ad28df8a7d0cd7d05037b21d7c9e654ab738a4aaadbf84506856a72"
+    },
+    {
+      "slug": "variant-generation-pipeline",
+      "name": "Variant Generation Pipeline",
+      "type": "system",
+      "sources": [
+        "backend/app/services/variant_service.py"
+      ],
+      "sourcesDigest": "50bbc6ad52b1bbffdc3c03395e5b61f21ab884d07c8de286ea14c120bbe81676"
+    },
+    {
+      "slug": "variant-matrix-dedupe-verification",
+      "name": "Variant Matrix & Dedupe Verification",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/VariantMatrix.tsx"
+      ],
+      "sourcesDigest": "e9426c90a5e4f8dff2c69f5dedaf2a0b636ba4111228baeaf5bfa782b27b0de9"
+    },
+    {
+      "slug": "video-publishing-pipeline",
+      "name": "Video Publishing Pipeline",
+      "type": "system",
+      "sources": [
+        "backend/app/services/publish_service.py"
+      ],
+      "sourcesDigest": "bcfb3fa17a59ae5b4d684df8ea4aa2d54a36aa1af768c2dd2badd1c57a922d1f"
+    },
+    {
+      "slug": "watermark-removal-roi-library",
+      "name": "Watermark Removal ROI Library",
+      "type": "system",
+      "sources": [
+        "engines/remove_mask_rois.py"
+      ],
+      "sourcesDigest": "bdb4b636a97592e0a2730aa86cd9e22618034b19e02d6b98b58cae745475bba6"
+    },
+    {
+      "slug": "wechat-download-pipeline",
+      "name": "WeChat Download Pipeline",
+      "type": "system",
+      "sources": [
+        "backend/wechat_download/__init__.py",
+        "backend/wechat_download/api.py",
+        "backend/wechat_download/base.py",
+        "backend/wechat_download/downloader.py",
+        "backend/wechat_download/models.py",
+        "backend/wechat_download/preview_client.py",
+        "backend/wechat_download/provider_registry.py",
+        "backend/wechat_download/service.py",
+        "backend/wechat_download/tasks.py",
+        "backend/wechat_download/yuanbao_client.py"
+      ],
+      "sourcesDigest": "b19616321b6aafd70bb72f12d5573bccebb972a208250155fd29d7dba6cebbd4"
+    }
+  ]
+}

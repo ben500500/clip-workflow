@@ -1,29 +1,29 @@
 # backend/app/services/multi_operator.py
 
-- _redis · function · L91-L93 — def _redis() -> aioredis.Redis
-- multi_operator_enabled · function · L96-L103 — async def multi_operator_enabled() -> bool
-- set_flag · function · L106-L111 — async def set_flag(enabled: bool) -> None
-- resolve_port · function · L114-L134 — async def resolve_port(account_id) -> Optional[int]
-- get_route · function · L137-L143 — async def get_route(account_id) -> Optional[dict]
-- register_route · function · L146-L166 — async def register_route(account_id, port: int, profile_dir: str, operator_id, ua_seed: Optional[str] = None, proxy: Optional[str] = None, egress_ip: Optional[str] = None) -> None
-- alloc_port · function · L169-L181 — async def alloc_port(profile_id) -> Optional[int]
-- mark_heartbeat · function · L184-L192 — async def mark_heartbeat(account_id) -> None
-- mark_expired · function · L195-L201 — async def mark_expired(account_id) -> None
-- set_ready · function · L204-L209 — async def set_ready(account_id) -> None
-- check_route_heartbeats · function · L212-L258 — async def check_route_heartbeats() -> dict
-- _seconds_until_midnight · function · L261-L264 — def _seconds_until_midnight() -> int
-- acquire_quota · function · L267-L290 — async def acquire_quota(account_id, operator_id, acct_limit: int, op_limit: int, op_inflight_limit: int = 1, global_inflight_limit: int = 4, inflight_ttl: int = 1800) -> bool
-- release_inflight · function · L293-L300 — async def release_inflight(operator_id) -> None
-- get_daily_used · function · L303-L309 — async def get_daily_used(account_id) -> int
-- get_profiles · function · L312-L319 — async def get_profiles() -> list
-- sync_profiles_from_db · function · L322-L369 — async def sync_profiles_from_db() -> list
-- save_pending · function · L375-L381 — async def save_pending(task_id, payload: dict, ttl: int = 1800) -> None
-- get_pending · function · L384-L390 — async def get_pending(task_id) -> Optional[dict]
-- delete_pending · function · L393-L398 — async def delete_pending(task_id) -> None
-- freeze_pending · function · L401-L416 — async def freeze_pending(task_id, status: str = "selector_mismatch") -> None
-- issue_cdp_token · function · L422-L437 — async def issue_cdp_token(actor_id, account_id, ttl: int = 60) -> str
-- verify_cdp_token · function · L440-L458 — async def verify_cdp_token(token: str, account_id) -> bool
-- _fmt_ts · function · L464-L471 — def _fmt_ts(val) -> str
-- get_route_matrix · function · L474-L511 — async def get_route_matrix() -> list
-- get_verification_status · function · L514-L582 — async def get_verification_status() -> dict
-- get_operator_stats · function · L585-L608 — async def get_operator_stats() -> list
+- _redis · function · L91-L93 — Creates a Redis async connection with string decoding for JSON handling.
+- multi_operator_enabled · function · L96-L103 — Reads the hot-reloadable grayscale flag from Redis, defaulting to false so the old single-operator path stays untouched.
+- set_flag · function · L106-L111 — Writes the grayscale enable/disable flag to Redis for hot toggling.
+- resolve_port · function · L114-L134 — Resolves the publish port for an account from the Redis route table, returning None when the flag is off or the route is not ready so callers fall back to the legacy port.
+- get_route · function · L137-L143 — Fetches the full route hash for an account from Redis.
+- register_route · function · L146-L166 — Persists a profile's port, profile_dir, operator and metadata into the Redis route table with status=logging so the port survives restarts without drift.
+- alloc_port · function · L169-L181 — Atomically allocates a free port from the pool (base 9223) via Lua SADD, recording the owner profile, so concurrent instances never collide.
+- mark_heartbeat · function · L184-L192 — Updates the route's last_heartbeat timestamp after a successful watcher probe.
+- mark_expired · function · L195-L201 — Sets a route's status to expired so scheduling skips it immediately instead of waiting for the 30min heartbeat.
+- set_ready · function · L204-L209 — Marks a route as ready for scheduling.
+- check_route_heartbeats · function · L212-L258 — Watcher probes each ready/logging route's Chromium /json/version endpoint and marks it expired after 2 consecutive failures (~20s), enabling second-level failure closure.
+- _seconds_until_midnight · function · L261-L264 — Computes seconds remaining until UTC midnight for daily quota TTL expiry.
+- acquire_quota · function · L267-L290 — Atomically checks and decrements both account and operator daily quotas plus inflight concurrency semaphores via Lua, returning whether a publish slot was granted.
+- release_inflight · function · L293-L300 — Releases an operator and global inflight slot via Lua when a task ends, so concurrency slots free naturally across day boundaries.
+- get_daily_used · function · L303-L309 — Reads an account's daily publish count from Redis.
+- get_profiles · function · L312-L319 — Reads the enabled profile list from Redis for rpa_worker Chromium/proxy startup.
+- sync_profiles_from_db · function · L322-L369 — Loads enabled PublishProfiles from DB, allocates/reuses a port per profile, registers routes, and writes the pub:profiles list so ports persist across restarts.
+- save_pending · function · L375-L381 — Persists a structured publish payload (without page objects) to Redis with a 30min TTL for idempotent retry.
+- get_pending · function · L384-L390 — Reads a pending publish payload from Redis.
+- delete_pending · function · L393-L398 — Removes a pending publish payload from Redis.
+- freeze_pending · function · L401-L416 — Freezes a pending payload on selector mismatch so scheduling neither retries nor switches operators, preventing accidental sends or partial fills.
+- issue_cdp_token · function · L422-L437 — Issues a short-lived single-scope cdp_proxy access token bound to actor+account to prevent replay.
+- verify_cdp_token · function · L440-L458 — Validates a cdp_proxy token for existence, expiry, and account match, then consumes it (deletes) so it can only be used once.
+- _fmt_ts · function · L464-L471 — Converts a unix-second string from the route table into a readable ISO timestamp.
+- get_route_matrix · function · L474-L511 — Builds the operator port matrix dashboard by reading all routes and aggregating per-operator daily quota consumption.
+- get_verification_status · function · L514-L582 — Produces a real-time verification-wizard status report aggregating flag, profiles, routes, quotas, pending, risk/login audit, and cdp token counts for step-by-step acceptance.
+- get_operator_stats · function · L585-L608 — Aggregates per-operator quota consumption and inflight counts for the dashboard.

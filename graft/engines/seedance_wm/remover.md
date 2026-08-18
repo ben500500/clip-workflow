@@ -1,4 +1,4 @@
-# engines/seedance_wm/remover.py
+# engines/seedance_wm/remover.py · [[ffmpeg-i-o-layer]] [[seedance-watermark-removal-engine]]
 
 - BatchResult · class · L28-L39 — class BatchResult
 - success_count · method · L34-L35 — def success_count(self) -> int

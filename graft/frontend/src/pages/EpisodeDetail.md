@@ -1,4 +1,4 @@
-# frontend/src/pages/EpisodeDetail.tsx
+# frontend/src/pages/EpisodeDetail.tsx · [[episode-production-pipeline-pages]] [[slice-configuration-presets]]
 
 - resolveSubtitleMaskPreset · function · L54-L62 — function resolveSubtitleMaskPreset(p: any): 'auto' | 'fine' | 'quick'
 - SlicePreset · interface · L113-L163 — interface SlicePreset

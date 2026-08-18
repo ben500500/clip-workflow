@@ -1,5 +1,5 @@
 # slice-worker/exec_unix.go
 
-- pythonBinary · function · L15-L20 — func pythonBinary() string
-- SetProcessGroup · function · L23-L25 — func SetProcessGroup(cmd *exec.Cmd)
-- KillProcessTree · function · L28-L38 — func KillProcessTree(cmd *exec.Cmd) error
+- pythonBinary · function · L15-L20 — Resolves the Python executable name, honoring the SLICE_PYTHON env override to allow forcing a Python 3.10+ interpreter when the system default is too old.
+- SetProcessGroup · function · L23-L25 — Configures a child command to run in its own process group so the whole tree can be killed together.
+- KillProcessTree · function · L28-L38 — Force-kills an entire process group (including ffmpeg children) by sending SIGKILL to the negative pgid, falling back to killing just the process if group lookup fails.

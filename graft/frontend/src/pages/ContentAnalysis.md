@@ -1,4 +1,4 @@
-# frontend/src/pages/ContentAnalysis.tsx
+# frontend/src/pages/ContentAnalysis.tsx · [[analytics-dashboard-pages]]
 
 - ContentAnalysis · function · L11-L197 — ContentAnalysis: React.FC = ()
 - openTagEditor · function · L26-L30 — openTagEditor = (video: VideoMetric)

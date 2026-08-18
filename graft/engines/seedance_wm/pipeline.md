@@ -1,4 +1,4 @@
-# engines/seedance_wm/pipeline.py
+# engines/seedance_wm/pipeline.py · [[seedance-watermark-removal-engine]]
 
 - ProcessResult · class · L41-L51 — class ProcessResult
 - _State · class · L54-L85 — class _State

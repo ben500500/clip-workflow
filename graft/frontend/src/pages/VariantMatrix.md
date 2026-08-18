@@ -1,4 +1,4 @@
-# frontend/src/pages/VariantMatrix.tsx
+# frontend/src/pages/VariantMatrix.tsx · [[variant-matrix-dedupe-verification]]
 
 - VariantMatrix · function · L35-L310 — VariantMatrix: React.FC = ()
 - handleVerify · function · L76-L87 — handleVerify = async (v: VariantMatrixItem)

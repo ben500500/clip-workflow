@@ -1,4 +1,4 @@
-# autoclip/app/pipeline/step1_outline.py
+# autoclip/app/pipeline/step1_outline.py · [[autoclip-pipeline-stages]]
 
 - OutlineExtractor · class · L17-L210 — class OutlineExtractor
 - __init__ · method · L20-L42 — def __init__(self, metadata_dir: Path = None, prompt_files: Dict = None)

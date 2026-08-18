@@ -1,4 +1,4 @@
-# frontend/src/pages/ClipReview.tsx
+# frontend/src/pages/ClipReview.tsx · [[clip-workflow-pages]]
 
 - VideoPreview · function · L20-L144 — VideoPreview: React.FC<{ videoUrl: string; clip: ClipCandidate; onRangeChange?: (start: number, end: number) => void; }> = ({ videoUrl, clip, onRangeChange })
 - ClipReview · function · L147-L553 — ClipReview: React.FC = ()

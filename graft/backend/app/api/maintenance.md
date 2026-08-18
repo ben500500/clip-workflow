@@ -1,9 +1,9 @@
 # backend/app/api/maintenance.py
 
-- ArchiveRequest · class · L25-L26 — class ArchiveRequest(BaseModel)
-- CleanupRequest · class · L29-L30 — class CleanupRequest(BaseModel)
-- MaintenanceStatusResponse · class · L33-L36 — class MaintenanceStatusResponse(BaseModel)
-- run_archive · function · L40-L48 — async def run_archive( req: ArchiveRequest, current_user: Annotated[Any, Depends(require_roles(UserRole.admin))], )
-- run_cleanup · function · L52-L60 — async def run_cleanup( req: CleanupRequest, current_user: Annotated[Any, Depends(require_roles(UserRole.admin))], )
-- run_minio_lifecycle · function · L64-L71 — async def run_minio_lifecycle( current_user: Annotated[Any, Depends(require_roles(UserRole.admin))], )
-- maintenance_status · function · L75-L85 — async def maintenance_status( current_user: Annotated[Any, Depends(require_roles(UserRole.admin))], )
+- ArchiveRequest · class · L25-L26 — Request model carrying an optional archive age threshold in days.
+- CleanupRequest · class · L29-L30 — Request model specifying max age in hours for temp file cleanup, defaulting to 24.
+- MaintenanceStatusResponse · class · L33-L36 — Response model aggregating current archive, MinIO lifecycle, and temp cleanup configuration values.
+- run_archive · function · L40-L48 — Admin endpoint that triggers archiving of dashboard metrics older than the requested days, translating failures into a 500 response.
+- run_cleanup · function · L52-L60 — Admin endpoint that triggers deletion of stale local temp files older than the given hours, translating failures into a 500 response.
+- run_minio_lifecycle · function · L64-L71 — Admin endpoint that applies the MinIO lifecycle policy to transition unaccessed objects to low-frequency storage, translating failures into a 500 response.
+- maintenance_status · function · L75-L85 — Admin endpoint that reports current maintenance configuration values from settings.

@@ -1,38 +1,38 @@
-# backend/app/services/publish_service.py
+# backend/app/services/publish_service.py · [[video-publishing-pipeline]]
 
-- PublishTimeoutError · class · L27-L33 — class PublishTimeoutError(Exception)
-- _get_playwright · function · L48-L57 — async def _get_playwright()
-- _cache_pending_tab · function · L60-L74 — def _cache_pending_tab(task_id: str, browser, page) -> None
-- _pop_pending_tab · function · L77-L80 — def _pop_pending_tab(task_id: str)
-- release_pending_tab · function · L83-L94 — def release_pending_tab(task_id: str) -> None
-- VideoChannelPublisher · class · L97-L817 — class VideoChannelPublisher
-- __init__ · method · L118-L134 — def __init__( self, chrome_debug_port: int = 9222, cookie_file: Optional[str] = None, require_manual_confirm: bool = True, cdp_url: Optional[str] = None, cdp_token: Optional[str] = None, )
-- _connect · method · L136-L164 — async def _connect(self) -> None
-- publish · method · L166-L281 — async def publish( self, video_path: str, title: str, description: str = "", tags: Optional[list] = None, cover_file_key: Optional[str] = None, mini_program_link: Optional[str] = None, publish_jump: Optional[list] = None, task_id: Optional[str] = None, publish_comments: Optional[list] = None, ) -> dict
-- _post_publish_comments_from_payload · method · L283-L296 — async def _post_publish_comments_from_payload(self, task_id, published_url)
-- _post_publish_comments · method · L298-L358 — async def _post_publish_comments(self, published_url: str, comments: list)
-- _close_connection · method · L360-L372 — async def _close_connection(self) -> None
-- _need_login · method · L374-L385 — async def _need_login(self) -> bool
-- _upload_video · method · L387-L399 — async def _upload_video(self, video_path: str)
-- _wait_for_upload · method · L401-L424 — async def _wait_for_upload(self, timeout: int = 300)
-- _set_title · method · L426-L443 — async def _set_title(self, title: str)
-- _set_description · method · L445-L452 — async def _set_description(self, description: str)
-- _merge_tags_into_description · method · L454-L468 — def _merge_tags_into_description(self, description: str, tags: list) -> str
-- _set_tags · method · L470-L480 — async def _set_tags(self, tags: list)
-- _set_cover · method · L482-L506 — async def _set_cover(self, cover_file_key: str)
-- _select_jump_type · method · L508-L532 — async def _select_jump_type(self, publish_jump: list)
-- _attach_mini_program · method · L534-L552 — async def _attach_mini_program(self, link: str)
-- _take_screenshot · method · L554-L561 — async def _take_screenshot(self) -> str
-- _click_publish · method · L563-L582 — async def _click_publish(self)
-- _wait_for_publish · method · L584-L616 — async def _wait_for_publish(self, timeout: int = 60) -> tuple
-- _save_pending_payload · method · L618-L655 — async def _save_pending_payload( self, task_id: str, title: str, description: str, tags: Optional[list], cover_file_key: Optional[str], mini_program_link: Optional[str], publish_jump: Optional[list] = None, publish_comments: Optional[list] = None, ) -> None
-- _refill_pending_form · method · L657-L695 — async def _refill_pending_form(self, payload: dict, task_id: Optional[str] = None) -> bool
-- _selector_ok · method · L697-L709 — async def _selector_ok(self) -> bool
-- confirm_publish · method · L711-L802 — async def confirm_publish(self, task_id: Optional[str] = None) -> dict
-- check_login_status · method · L804-L817 — async def check_login_status(self) -> dict
-- DouyinPublisher · class · L820-L850 — class DouyinPublisher(VideoChannelPublisher)
-- _need_login · method · L828-L838 — async def _need_login(self) -> bool
-- _set_tags · method · L840-L850 — async def _set_tags(self, tags: list)
-- KuaishouPublisher · class · L853-L871 — class KuaishouPublisher(VideoChannelPublisher)
-- _need_login · method · L861-L871 — async def _need_login(self) -> bool
-- get_publisher · function · L874-L886 — def get_publisher(platform: str, **kwargs) -> VideoChannelPublisher
+- PublishTimeoutError · class · L27-L33 — Explicit exception raised when publish result confirmation times out, so callers route to failed/error branches instead of silently treating an unpublished video as published.
+- _get_playwright · function · L48-L57 — Lazily starts and returns a process-wide shared Playwright instance so all CDP connections reuse one driver and cached tabs' browser proxies stay valid.
+- _cache_pending_tab · function · L60-L74 — Stores a filled publish form's browser/page in the process-level cache keyed by task id, closing any stale tab for the same task first.
+- _pop_pending_tab · function · L77-L80 — Atomically removes and returns the cached pending-confirm tab entry for a task id.
+- release_pending_tab · function · L83-L94 — Releases a cached pending tab by closing its browser, used when a publish is cancelled or fails.
+- VideoChannelPublisher · class · L97-L822 — Playwright-based publisher for WeChat Video Channel that connects to a Chromium instance, fills the creator form (video, title, description, tags, cover, jump type, mini program), and either auto-publishes or defers to manual confirmation.
+- __init__ · method · L118-L134 — Initializes publisher configuration including CDP target URL and token for multi-operator auth, plus manual-confirm flag.
+- _connect · method · L136-L164 — Connects to a persistent Chromium via CDP (using cdp_url with Bearer token for multi-operator, or chrome_debug_port for legacy), or launches a fresh headless browser as fallback.
+- publish · method · L166-L281 — Executes the full publish workflow: checks login, navigates to creator page, uploads video, fills title/description/tags/cover/jump/mini-program, then either caches the filled tab for manual confirmation or auto-clicks publish and waits for the result.
+- _post_publish_comments_from_payload · method · L283-L296 — Reads pinned comments from the Redis pending payload for a task and triggers post-publish comment posting, failing non-blockingly.
+- _post_publish_comments · method · L298-L358 — Posts and pins interaction comments on the published video's detail page using a probe-based strategy that never blocks publish success when comment DOM elements are missing.
+- _close_connection · method · L360-L372 — Closes the publisher's browser connection without stopping the shared Playwright instance, leaving pending tabs to be managed by the cache.
+- _need_login · method · L374-L385 — Checks whether the current session requires login by detecting login indicator elements on the creator page.
+- _upload_video · method · L387-L404 — Uploads the video file via the hidden file input, waiting 8s for the SPA to bind change events before setting files to ensure upload actually triggers.
+- _wait_for_upload · method · L406-L429 — Waits for a real playable <video> element with a src to appear, confirming the upload truly completed before proceeding, and raises RuntimeError otherwise.
+- _set_title · method · L431-L448 — Fills the title input, truncating to 16 chars first because longer titles trigger page red-limit warnings and grey out the publish button.
+- _set_description · method · L450-L457 — Fills the video description textarea if a matching input element is found.
+- _merge_tags_into_description · method · L459-L473 — Appends hashtag topics to the description in `#话题#` form (since Video Channel has no separate topic box), avoiding duplicates when tags already present.
+- _set_tags · method · L475-L485 — Placeholder no-op for Video Channel since topics are embedded in the description; overridden by platforms with dedicated topic inputs.
+- _set_cover · method · L487-L511 — Sets the cover image from a file key by uploading it through the cover input element.
+- _select_jump_type · method · L513-L537 — Selects the publish jump type (native app or mini program) on the Video Channel publish page based on the provided jump config.
+- _attach_mini_program · method · L539-L557 — Attaches a mini program link to the publish form.
+- _take_screenshot · method · L559-L566 — Captures a screenshot of the filled publish form for manual review and returns its file path.
+- _click_publish · method · L568-L587 — Clicks the publish button on the form, handling the case where the button may be disabled or not yet ready.
+- _wait_for_publish · method · L589-L621 — Waits for the publish result to be confirmed by polling for the published URL/id, raising PublishTimeoutError on timeout instead of silently returning success.
+- _save_pending_payload · method · L623-L660 — Persists the structured publish payload (title, description, tags, cover, jump, comments) to Redis keyed by task id so confirm can idempotently refill the form after worker restart or across replicas.
+- _refill_pending_form · method · L662-L700 — Refills the publish form from a saved Redis payload when the cached tab is lost, so confirm can still click publish without losing form data.
+- _selector_ok · method · L702-L714 — Checks whether the current page's selectors match the expected publish form version, guarding against DOM changes during refill.
+- confirm_publish · method · L716-L807 — Confirms a pending publish by reusing the cached filled tab to click publish, or falling back to reopening the creator page and refilling from the Redis payload when the cache is stale.
+- check_login_status · method · L809-L822 — Checks and reports the current login state of the connected browser session.
+- DouyinPublisher · class · L825-L855 — Douyin-specific publisher subclass that overrides login detection and tag setting for the platform's dedicated topic input box.
+- _need_login · method · L833-L843 — Douyin-specific login check that detects Douyin's login indicators on its creator page.
+- _set_tags · method · L845-L855 — Fills Douyin's dedicated topic input box with the provided tags.
+- KuaishouPublisher · class · L858-L876 — Kuaishou-specific publisher subclass that overrides login detection for the platform's creator page.
+- _need_login · method · L866-L876 — Kuaishou-specific login check that detects Kuaishou's login indicators on its creator page.
+- get_publisher · function · L879-L891 — Factory that returns the appropriate publisher subclass for a given platform name.

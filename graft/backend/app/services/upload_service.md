@@ -1,4 +1,4 @@
-# backend/app/services/upload_service.py
+# backend/app/services/upload_service.py · [[resumable-upload-service]]
 
 - _get_redis · function · L20-L24 — def _get_redis() -> redis.Redis
 - _deserialize_session · function · L27-L40 — def _deserialize_session(raw: dict) -> dict

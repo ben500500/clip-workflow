@@ -1,4 +1,4 @@
-# frontend/src/pages/SliceTasks.tsx
+# frontend/src/pages/SliceTasks.tsx · [[episode-production-pipeline-pages]] [[slice-configuration-presets]]
 
 - SliceTasks · function · L66-L1235 — SliceTasks: React.FC = ()
 - buildDedupeConfig · function · L167-L190 — buildDedupeConfig = (preset: string, manual: DedupeManualConfigValue)

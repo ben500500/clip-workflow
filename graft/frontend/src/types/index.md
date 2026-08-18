@@ -1,62 +1,64 @@
-# frontend/src/types/index.ts
+# frontend/src/types/index.ts · [[frontend-api-layer]]
 
-- ApiList · interface · L3-L8 — interface ApiList<T>
-- ApiError · interface · L10-L12 — interface ApiError
-- ProjectStatus · type · L16-L16 — type ProjectStatus = 'draft' | 'processing' | 'completed' | 'archived';
-- Project · interface · L18-L28 — interface Project
-- ProjectFormValues · interface · L30-L35 — interface ProjectFormValues
-- ProjectStats · interface · L37-L44 — interface ProjectStats
-- Episode · interface · L46-L58 — interface Episode
-- ClipCandidate · interface · L62-L78 — interface ClipCandidate
-- AutoClipRunRecord · interface · L80-L93 — interface AutoClipRunRecord
-- IntervalHistoryItem · interface · L95-L106 — interface IntervalHistoryItem
-- AutoClipConfig · interface · L108-L110 — interface AutoClipConfig
-- DetectedInterval · interface · L114-L126 — interface DetectedInterval
-- SliceTask · interface · L130-L154 — interface SliceTask
-- WorkerNode · interface · L156-L185 — interface WorkerNode
-- WorkerRunningTask · interface · L187-L195 — interface WorkerRunningTask
-- SliceOutput · interface · L197-L209 — interface SliceOutput
-- DedupeConfig · interface · L211-L213 — interface DedupeConfig
-- PublishTask · interface · L217-L249 — interface PublishTask
-- PublishTimeSlot · interface · L251-L260 — interface PublishTimeSlot
-- PublishProfile · interface · L262-L285 — interface PublishProfile
-- PublishBatch · interface · L287-L295 — interface PublishBatch
-- Publication · interface · L297-L307 — interface Publication
-- VideoAccount · interface · L311-L328 — interface VideoAccount
-- MiniProgram · interface · L330-L339 — interface MiniProgram
-- OperatorRouteRow · interface · L343-L358 — interface OperatorRouteRow
-- OperatorStat · interface · L360-L364 — interface OperatorStat
-- PublishAuditItem · interface · L366-L386 — interface PublishAuditItem
-- LoginAuditItem · interface · L388-L401 — interface LoginAuditItem
-- RiskEventItem · interface · L403-L415 — interface RiskEventItem
-- AuditResult · interface · L417-L420 — interface AuditResult
-- MultiOpVerification · interface · L424-L436 — interface MultiOpVerification
-- ShortDramaGeneration · interface · L440-L449 — interface ShortDramaGeneration
-- ShortDramaAnalysisRow · interface · L451-L471 — interface ShortDramaAnalysisRow
-- ShortDramaSummary · interface · L473-L480 — interface ShortDramaSummary
-- ShortDramaTopic · interface · L482-L485 — interface ShortDramaTopic
-- PlatformProfile · interface · L489-L499 — interface PlatformProfile
-- SystemConfig · interface · L501-L506 — interface SystemConfig
-- DashboardOverview · interface · L510-L519 — interface DashboardOverview
-- TrendPoint · interface · L521-L532 — interface TrendPoint
-- FunnelData · interface · L534-L546 — interface FunnelData
-- VideoMetric · interface · L548-L577 — interface VideoMetric
-- MiniProgramMetric · interface · L579-L589 — interface MiniProgramMetric
-- AdMetric · interface · L591-L605 — interface AdMetric
-- DramaMetric · interface · L607-L618 — interface DramaMetric
-- EcosystemMetric · interface · L620-L631 — interface EcosystemMetric
-- ImportTemplate · interface · L633-L640 — interface ImportTemplate
-- ImportHistoryRecord · interface · L642-L653 — interface ImportHistoryRecord
-- PlatformDetectResult · interface · L655-L669 — interface PlatformDetectResult
-- FilePreviewResult · interface · L671-L675 — interface FilePreviewResult
-- CrossAnalysisData · interface · L677-L686 — interface CrossAnalysisData
-- FunnelCompareData · interface · L688-L707 — interface FunnelCompareData
-- DramaDetail · interface · L709-L726 — interface DramaDetail
-- Role · type · L730-L730 — type Role = 'admin' | 'operator' | 'publisher' | 'material';
-- User · interface · L732-L743 — interface User
-- LoginResponse · interface · L745-L749 — interface LoginResponse
-- RoleOption · interface · L751-L754 — interface RoleOption
-- AlertRule · interface · L770-L782 — interface AlertRule
-- AlertEvent · interface · L784-L796 — interface AlertEvent
-- ChannelOperator · interface · L800-L807 — interface ChannelOperator
-- ChannelAccount · interface · L809-L829 — interface ChannelAccount
+Central TypeScript type definitions file for the frontend, declaring all API response shapes, domain entities, and configuration types used across the video publishing platform.
+
+- ApiList · interface · L3-L8 — Generic paginated list envelope wrapping items with total count and page metadata for list API responses.
+- ApiError · interface · L10-L12 — Shape for API error responses carrying an optional detail message.
+- ProjectStatus · type · L16-L16 — Union type enumerating the lifecycle states a project can be in (draft, processing, completed, archived).
+- Project · interface · L18-L28 — Domain entity describing a video project with its status, config, timestamps, and episode count.
+- ProjectFormValues · interface · L30-L35 — Form input shape for creating or editing a project, with optional fields for name, description, status, and config.
+- ProjectStats · interface · L37-L44 — Aggregated dashboard statistics for projects including totals and recent project list.
+- Episode · interface · L46-L58 — Domain entity representing a single episode within a project, with source file, duration, resolution, and status.
+- ClipCandidate · interface · L62-L78 — AutoClip-selected highlight candidate with timing, score, reason, and adjustable start/end bounds.
+- AutoClipRunRecord · interface · L80-L93 — Record of a single AutoClip background run, tracking celery task status, progress, and error details.
+- IntervalHistoryItem · interface · L95-L106 — History entry for an interval-detection run, capturing mode, status, progress, and interval count.
+- AutoClipConfig · interface · L108-L110 — Opaque configuration bag for AutoClip settings keyed by arbitrary strings.
+- DetectedInterval · interface · L114-L126 — A detected time interval within an episode with type, confidence, label, and enable flag.
+- SliceTask · interface · L130-L154 — A slicing task record carrying mode, progress, output count, worker node, and the full set of applied processing configs.
+- WorkerNode · interface · L156-L185 — Worker node descriptor with health, capability, concurrency, and live running-task info for scheduling and monitoring.
+- WorkerRunningTask · interface · L187-L195 — Snapshot of a single task currently executing on a worker, including phase and slice mode.
+- SliceOutput · interface · L197-L209 — Result artifact of a slicing task, linking to a clip with file metadata and presigned URL.
+- DedupeConfig · interface · L211-L213 — Opaque configuration bag for deduplication settings.
+- PublishTask · interface · L217-L249 — A publish job to a platform account, tracking status, retries, dead-letter state, scheduling, and published result URLs.
+- PublishTimeSlot · interface · L251-L260 — A named time window during which publishing is allowed, with enable and preset flags.
+- PublishProfile · interface · L262-L285 — Publishing account profile with browser automation settings, templates, rate limits, and anti-detection fingerprint config.
+- PublishBatch · interface · L287-L295 — A batch of publish items grouped under a strategy and account for coordinated publishing.
+- Publication · interface · L297-L307 — Outcome record of a published output, capturing URL, time, status, and rejection reason.
+- VideoAccount · interface · L311-L328 — Video account entity with platform, group, publish-jump configuration, and enablement state.
+- MiniProgram · interface · L330-L339 — Mini-program entity with appid, path, and full link used as a publish jump target.
+- OperatorRouteRow · interface · L343-L358 — Per-operator port routing row showing account, operator, port, daily usage, heartbeat, and anti-detection seed.
+- OperatorStat · interface · L360-L364 — Aggregated per-operator usage counters for daily posts and in-flight tasks.
+- PublishAuditItem · interface · L366-L386 — Audit trail entry for a publish action capturing actor, IPs, content hash, risk flag, and result.
+- LoginAuditItem · interface · L388-L401 — Audit trail entry for a login/QR-scan action with scanner identity, TTL, and result.
+- RiskEventItem · interface · L403-L415 — Risk event record with risk type, severity level, message, and disposition.
+- AuditResult · interface · L417-L420 — Discriminated union container for audit items of kind publish, login, or risk.
+- MultiOpVerification · interface · L424-L436 — Aggregate snapshot of multi-operator verification state including route, profile, and audit counts.
+- ShortDramaGeneration · interface · L440-L449 — Metadata describing how a short drama was generated, including source text, theme, tone, and tags.
+- ShortDramaAnalysisRow · interface · L451-L471 — Per-video short drama performance row with engagement metrics and linked generation metadata.
+- ShortDramaSummary · interface · L473-L480 — Aggregated short drama performance totals across platform, plays, finish rate, and revenue.
+- ShortDramaTopic · interface · L482-L485 — A tag with its occurrence count for short drama topic analysis.
+- PlatformProfile · interface · L489-L499 — Platform output profile defining dedupe config, target resolution/bitrate, and max duration.
+- SystemConfig · interface · L501-L506 — Key-value system configuration entry with optional description and update time.
+- DashboardOverview · interface · L510-L519 — Top-level revenue and traffic dashboard metrics for today and the week.
+- TrendPoint · interface · L521-L532 — Daily time-series data point of engagement, revenue, and eCPM metrics.
+- FunnelData · interface · L534-L546 — Daily conversion funnel metrics from play through jump, mini-program UV, and ad revenue.
+- VideoMetric · interface · L548-L577 — Per-video performance record with play, engagement, traffic source, and revenue attribution metrics.
+- MiniProgramMetric · interface · L579-L589 — Daily mini-program traffic metrics including UV, new users, and drama play behavior.
+- AdMetric · interface · L591-L605 — Daily ad performance metrics with impressions, clicks, CTR, eCPM, and revenue split by ad format.
+- DramaMetric · interface · L607-L618 — Daily drama-level metrics for UV, plays, finish rate, and ad revenue.
+- EcosystemMetric · interface · L620-L631 — Daily ecosystem metrics for articles, mini-program UV from articles, and WeCom friend growth.
+- ImportTemplate · interface · L633-L640 — Import template defining column mapping and unit conversions for a platform's data files.
+- ImportHistoryRecord · interface · L642-L653 — Record of a past data import with file, mode, target table, and per-row error counts.
+- PlatformDetectResult · interface · L655-L669 — Result of auto-detecting a platform from uploaded headers, including matched platform, preview, and suggested mapping.
+- FilePreviewResult · interface · L671-L675 — Preview of an uploaded file's headers, sample rows, and total row count.
+- CrossAnalysisData · interface · L677-L686 — Cross-analysis of video metrics grouped by content type with averages and revenue.
+- FunnelCompareData · interface · L688-L707 — Week-over-week comparison of funnel rates and revenue with computed deltas.
+- DramaDetail · interface · L709-L726 — Detailed drama view with summary aggregates and daily trend series.
+- Role · type · L730-L730 — Union type of the four user roles: admin, operator, publisher, and material.
+- User · interface · L732-L743 — Authenticated user entity with role, data scope, menu permissions, and active state.
+- LoginResponse · interface · L745-L749 — Authentication response carrying the access token and the logged-in user.
+- RoleOption · interface · L751-L754 — Selectable role option pairing a Role value with a display label.
+- AlertRule · interface · L770-L782 — Monitoring alert rule defining a metric threshold, operator, severity level, and webhook target.
+- AlertEvent · interface · L784-L796 — Fired alert event referencing a rule with metric, level, and message.
+- ChannelOperator · interface · L800-L807 — Channel operator entity for managing operator-level channel access.
+- ChannelAccount · interface · L809-L829 — Channel account entity for managing account-level channel access.

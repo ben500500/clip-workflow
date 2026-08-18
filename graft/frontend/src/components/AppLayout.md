@@ -1,4 +1,4 @@
-# frontend/src/components/AppLayout.tsx
+# frontend/src/components/AppLayout.tsx · [[frontend-routing-shell]]
 
 - WorkerStatusIcon · function · L132-L291 — WorkerStatusIcon: React.FC = ()
 - toggleWorker · function · L158-L174 — toggleWorker = async (node: WorkerNode, enabled: boolean)

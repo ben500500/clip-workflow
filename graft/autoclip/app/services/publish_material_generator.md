@@ -1,4 +1,4 @@
-# autoclip/app/services/publish_material_generator.py
+# autoclip/app/services/publish_material_generator.py · [[autoclip-auxiliary-services]]
 
 - load_publish_material_template · function · L27-L32 — def load_publish_material_template() -> str
 - _build_input · function · L35-L46 — def _build_input(story: str, params: Optional[Dict[str, Any]]) -> Dict[str, Any]

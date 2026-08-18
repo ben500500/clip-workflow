@@ -1,4 +1,4 @@
-# backend/wechat_download/provider_registry.py
+# backend/wechat_download/provider_registry.py · [[wechat-download-pipeline]]
 
 - ProviderParseError · class · L45-L46 — class ProviderParseError(Exception)
 - _root_home · function · L68-L75 — def _root_home(base: str) -> str

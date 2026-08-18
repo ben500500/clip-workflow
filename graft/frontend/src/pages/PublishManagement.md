@@ -1,4 +1,4 @@
-# frontend/src/pages/PublishManagement.tsx
+# frontend/src/pages/PublishManagement.tsx · [[publishing-output-hub]]
 
 - PublishManagement · function · L19-L1425 — PublishManagement: React.FC = ()
 - fetchTasks · function · L85-L88 — fetchTasks = ()

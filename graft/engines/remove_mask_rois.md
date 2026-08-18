@@ -1,4 +1,4 @@
-# engines/remove_mask_rois.py
+# engines/remove_mask_rois.py · [[watermark-removal-roi-library]]
 
 - _norm_source_name · function · L108-L110 — def _norm_source_name(source_name: str) -> str
 - match_rois · function · L113-L132 — def match_rois(source_name: str, scope: str = 'small') -> Optional[dict]

@@ -1,4 +1,4 @@
-# frontend/src/contexts/AuthContext.tsx
+# frontend/src/contexts/AuthContext.tsx · [[auth-session-management]]
 
 - AuthContextType · interface · L50-L58 — interface AuthContextType
 - AuthProvider · function · L62-L162 — AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children })

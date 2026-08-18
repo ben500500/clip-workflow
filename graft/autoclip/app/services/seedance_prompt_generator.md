@@ -1,4 +1,4 @@
-# autoclip/app/services/seedance_prompt_generator.py
+# autoclip/app/services/seedance_prompt_generator.py · [[autoclip-auxiliary-services]]
 
 - build_short_prompt · function · L69-L80 — def build_short_prompt(text: str, template: Optional[str] = None) -> str
 - build_long_prompt · function · L83-L93 — def build_long_prompt(text: str, template: Optional[str] = None) -> str

@@ -1,4 +1,4 @@
-# backend/wechat_download/service.py
+# backend/wechat_download/service.py · [[wechat-download-pipeline]]
 
 - ImportError_ · class · L48-L49 — class ImportError_(Exception)
 - RetryableImportError · class · L52-L57 — class RetryableImportError(ImportError_)
