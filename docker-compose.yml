@@ -416,19 +416,9 @@ services:
     # 健康检查：多实例模式下 probe profiles.json 里的任一 cdp_proxy 端口；
     # 否则回退一期单实例端口 9222（curl 9222/json/version）。
     healthcheck:
-      test: ["CMD", "python", "-c", "import json,os,urllib.request;\n\
-        try:\n\
-          d=json.load(open('/app/profiles.json'));\n\
-          ports=[p.get('port') for p in d.get('profiles',[])]\n\
-        except Exception:\n\
-          ports=[]\n\
-        ports=ports or [9222]\n\
-        ok=False\n\
-        for p in ports:\n\
-          try:\n\
-            urllib.request.urlopen(f'http://127.0.0.1:{p}/json/version', timeout=5); ok=True; break\n\
-          except Exception: continue\n\
-        import sys; sys.exit(0 if ok else 1)"]
+      # rpa 镜像无 python（chromium 环境），healthcheck 用容器内已有的 curl
+      # 探测 cdp_proxy(9222)/chromium 端口（多账号 profile 时依次探测）。
+      test: ["CMD-SHELL", "ports=$( (grep -oE '\"port\"[: ]*[0-9]+' /app/profiles.json 2>/dev/null | grep -oE '[0-9]+') || echo 9222); ok=0; for p in $ports; do curl -sf -m 3 \"http://127.0.0.1:$p/json/version\" >/dev/null 2>&1 && ok=1 && break; done; exit $((1-ok))"]
       interval: 30s
       timeout: 10s
       retries: 3
