@@ -403,18 +403,57 @@ def vector_distance(a: Optional[str], b: Optional[str]) -> float:
     return diff / max(len(av), len(bv), 1)
 
 
+_ALGO_KEY = {
+    "phash_v1": ("phash", "phash_vector"),
+    "audio_v2": ("audio_hash", "audio_vector"),
+    "seq_v1": ("seg_hash", "seg_vector"),
+}
+
+
+def _extract_algo(fp_dict: dict, algo: str):
+    """从指纹字典中提取指定算法的 (hash, vector)。
+
+    兼容两种输入结构：
+      1. compute_full_fingerprint 的输出：{phash, phash_vector, audio_hash,
+         audio_vector, seg_hash, seg_vector, ...}（不含 algorithm 字段）；
+      2. 单算法 DB 记录：{algorithm, hash_value, vector}。
+    返回 (hash, vector)，缺失返回 (None, None)。
+    """
+    if fp_dict.get("algorithm") == algo:
+        return fp_dict.get("hash_value"), fp_dict.get("vector")
+    # 若字典带 algorithm 但不是目标算法，说明是另一路指纹，无法用于本路比较
+    if fp_dict.get("algorithm"):
+        return None, None
+    key = _ALGO_KEY.get(algo)
+    if not key:
+        return None, None
+    return fp_dict.get(key[0]), fp_dict.get(key[1])
+
+
+def _algo_distance(fa: dict, fb: dict, algo: str) -> float:
+    """比较两组指纹在指定算法上的距离（0~1）。缺失视为 1.0。"""
+    ha, va = _extract_algo(fa, algo)
+    hb, vb = _extract_algo(fb, algo)
+    if not ha or not hb:
+        return 1.0
+    # 画面类（phash）优先用向量距离（对尺寸变化更鲁棒）
+    if algo == "phash_v1" and va and vb:
+        return vector_distance(va, vb)
+    return hamming_distance_hex(ha, hb)
+
+
 def compare_fingerprints(fa: dict, fb: dict) -> dict:
     """比较两组指纹，返回多路距离 + 综合距离。
 
     返回 {phash_distance, audio_distance, seg_distance, combined_distance}，
     各距离 0~1（0=完全相同，1=完全不同）。
+
+    兼容两种输入结构：compute_full_fingerprint 的全量输出，或单算法 DB 记录
+    {algorithm, hash_value, vector}；同路指纹缺失时该路距离记为 1.0。
     """
-    phash_d = hamming_distance_hex(fa.get("hash_value"), fb.get("hash_value")) if fa.get("algorithm") == fb.get("algorithm") else 1.0
-    # 画面：优先向量距离
-    if fa.get("algorithm") == fb.get("algorithm") and fa.get("vector") and fb.get("vector"):
-        phash_d = vector_distance(fa.get("vector"), fb.get("vector"))
-    audio_d = hamming_distance_hex(fa.get("audio_hash"), fb.get("audio_hash"))
-    seg_d = hamming_distance_hex(fa.get("seg_hash"), fb.get("seg_hash"))
+    phash_d = _algo_distance(fa, fb, "phash_v1")
+    audio_d = _algo_distance(fa, fb, "audio_v2")
+    seg_d = _algo_distance(fa, fb, "seq_v1")
     combined = (_W_PHASH * phash_d) + (_W_AUDIO * audio_d) + (_W_SEG * seg_d)
     return {
         "phash_distance": round(phash_d, 4),
