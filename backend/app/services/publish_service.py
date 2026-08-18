@@ -428,20 +428,31 @@ class VideoChannelPublisher:
 
     async def _upload_video(self, video_path: str):
         """Upload the video file through the file input element."""
+        await self.page.wait_for_timeout(8000)
+        # 优先：点击上传区触发 file chooser 并对其 set_files——保证命中真正绑定
+        # 上传逻辑的 input。实测发布页存在 114 个隐藏 file input，直接 set_input_files
+        # 可能命中无效占位 input，导致"set 成功但页面无任何上传"（空表单静默通过）。
+        uploaded = False
         try:
-            # 视频号发布页文件上传 input 为隐藏元素、渲染较晚（约 5-8s），
-            # 且 SPA 重渲染会替换 DOM 导致元素 detached；用 locator.set_input_files，
-            # 它在元素附着后自动重试（每次重新解析），规避 detached 竞态。
-            #
-            # 实测：导航后 2-3s 时 input 已可 set（不报错），但页面 change 事件尚未
-            # 绑定，文件设了也不触发上传（<video> 无 src）；约 8s 后上传区才就绪。
-            # 故 set 前固定等待 8s，确保真正触发上传（配合 _wait_for_upload 二次确认）。
-            await self.page.wait_for_timeout(8000)
-            await self.page.locator("input[type='file']").first.set_input_files(
-                video_path, timeout=60000
-            )
-        except Exception:
-            raise RuntimeError("Cannot find video upload input element")
+            zone = self.page.locator(
+                "[class*='upload'], [class*='upload-area'], [class*='upload-box'], "
+                "text=上传"
+            ).first
+            async with self.page.expect_file_chooser(timeout=15000) as fc_info:
+                await zone.click(timeout=10000)
+            fc = await fc_info.value
+            await fc.set_files(video_path)
+            uploaded = True
+        except Exception as e:
+            logger.warning("file chooser upload failed, fallback to input set: %s", e)
+        if not uploaded:
+            try:
+                # 兜底：对带视频 accept 的 input 直接 set（旧路径）
+                await self.page.locator(
+                    "input[type='file'][accept*='video']"
+                ).first.set_input_files(video_path, timeout=60000)
+            except Exception:
+                raise RuntimeError("Cannot find video upload input element")
         # Wait for upload to complete
         await self._wait_for_upload()
 
@@ -459,20 +470,25 @@ class VideoChannelPublisher:
                 timeout=timeout * 1000,
             )
             await asyncio.sleep(3)  # Extra wait for processing
-            # 二次确认：video 元素已带可播放源。SPA 可能先渲染空 video 再挂 src，
-            # 单次 evaluate 可能恰好在 src 挂载前执行而误判；改用短轮询（最长 30s）
-            # 等待 src/currentSrc 真正就绪，消除竞态。
-            has_src = False
-            for _ in range(15):
-                has_src = await self.page.evaluate("""() => {
+            # 二次确认（严格判据）：video 元素 readyState>=2 且有真实时长 duration>0
+            # 才算上传成功。页面可能存在"空 video 元素 + 残留 blob src"的假阳性
+            # （set 到无效 input 时也会出现），src 非空不代表真上传。短轮询最长 60s。
+            uploaded = False
+            for _ in range(30):
+                state = await self.page.evaluate("""() => {
                     const v = document.querySelector('video');
-                    return !!(v && (v.getAttribute('src') || (v.currentSrc || '')));
+                    return v ? {
+                        rs: v.readyState || 0,
+                        dur: v.duration || 0,
+                        src: v.getAttribute('src') || v.currentSrc || '',
+                    } : { rs: 0, dur: 0, src: '' };
                 }""")
-                if has_src:
+                if (state.get("rs") or 0) >= 2 and (state.get("dur") or 0) > 0:
+                    uploaded = True
                     break
                 await asyncio.sleep(2)
-            if not has_src:
-                raise RuntimeError("video element present but has no playable src")
+            if not uploaded:
+                raise RuntimeError("video not actually playable (readyState/duration)")
         except Exception:
             logger.warning("Upload wait timed out or video not ready, failing (P1-3)")
             raise RuntimeError("video upload did not complete in time (no playable <video>)")
