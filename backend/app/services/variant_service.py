@@ -43,16 +43,14 @@ MAX_RETRY = 5
 _CROP_POOL = [0.04, 0.05, 0.06, 0.07, 0.08]
 _SPEED_POOL = [1.03, 1.04, 1.05, 1.06]
 _SATURATION_POOL = [0.78, 0.82, 0.85, 0.88, 0.92]
-_NOISE_POOL = [4, 5, 6, 7, 8]
-_SCANLINE_POOL = [
-    {"h": 3, "color": "black@0.10"},
-    {"h": 4, "color": "black@0.08"},
-    {"h": 2, "color": "black@0.14"},
-    None,
-]
-_VIGNETTE_POOL = ["PI/6", "PI/5", "PI/4", None]
-_ROLLBAND_POOL = [0, 8, 12, 16]
-_JITTER_POOL = [0, 2, 3]
+# 画质优先：明显影响画质的颗粒噪点/扫描线/暗角/滚动暗带/抖动在变体配方中
+# 统一降到最低值（噪点 ≤2、无扫描线、无暗角、无滚动暗带、无抖动），
+# 差异化改由裁切/变速/降饱和/锐化/偏色微量/水印/音频指纹承担。
+_NOISE_POOL = [0, 1, 2]
+_SCANLINE_POOL = [None]
+_VIGNETTE_POOL = [None]
+_ROLLBAND_POOL = [0]
+_JITTER_POOL = [0]
 _SHARPEN_POOL = [0.0, 0.4, 0.6, 0.8]
 _WATERMARK_POOL = [
     None,
@@ -60,12 +58,12 @@ _WATERMARK_POOL = [
     {"text": "Dedupe", "opacity": 0.15},
 ]
 _COLORBALANCE_POOL = [
-    "rs=.06:gs=.03:bs=-.06:rm=.06:gm=.03:bm=-.06",
-    "rs=.04:gs=.01:bs=-.04:rm=.04:gm=.01:bm=-.04",
-    "rs=.08:gs=.04:bs=-.08:rm=.08:gm=.04:bm=-.08",
+    "rs=0:gs=0:bs=0:rm=0:gm=0:bm=0",
+    "rs=.02:gs=.01:bs=-.02:rm=.02:gm=.01:bm=-.02",
+    "rs=0:gs=0:bs=0:rm=0:gm=0:bm=0",
     "rs=.02:gs=.02:bs=.02:rm=.02:gm=.02:bm=.02",
 ]
-_TEMP_POOL = ["temperature=5800", "temperature=6200", "temperature=5400", "temperature=6500"]
+_TEMP_POOL = ["temperature=6500", "temperature=6400", "temperature=6500", "temperature=6450"]
 # 音频指纹差异化模式（L3 盲区覆盖）：每种模式都会改变音频声纹，且人耳几乎无感。
 _AUDIO_POOL = [None, "volume", "eq_mild", "eq_strong", "pitch", "eq_mild"]
 # L4 时域结构差异：是否把整段拆成多片段并漂移/重排（改场景切分序列指纹）
@@ -84,8 +82,8 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
     recipes: list[dict] = []
     for i in range(count):
         if i == 0:
-            # 基准版：用基础配置（默认 std_retro_scan 首选配方）
-            recipes.append({"preset": str(base.get("preset") or "std_retro_scan"),
+            # 基准版：用基础配置（默认 std_crop_desat 保守裁切降饱和，画质优先）
+            recipes.append({"preset": str(base.get("preset") or "std_crop_desat"),
                             "manual": dict(base.get("manual") or {})})
             continue
         # 派生变体：随机组合结构差异，确保与基准及彼此拉开距离
