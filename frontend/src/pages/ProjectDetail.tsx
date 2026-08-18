@@ -3,11 +3,11 @@ import {
   Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col, Statistic,
   message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm, Input,
 } from 'antd';
-import { UploadOutlined, ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined } from '@ant-design/icons';
+import { UploadOutlined, ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { projectApi } from '../api/projects';
 import { uploadApi } from '../api/upload';
-import type { Episode, Project } from '../types';
+import type { Episode, EpisodeWorkflowItem, EpisodeWorkflowStage, Project, ProjectWorkflowStatus, WorkflowStageStatus } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
 const { Title, Text } = Typography;
@@ -24,6 +24,11 @@ const ProjectDetail: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+
+  // ── 项目工作流状态聚合（P2-4） ──
+  const [workflow, setWorkflow] = useState<ProjectWorkflowStatus | null>(null);
+  const [workflowLoading, setWorkflowLoading] = useState(false);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
 
   // ── 源视频预览：剧集列表中按需展开，点击「预览」后再加载在线播放链接 ──
   const [previewExpanded, setPreviewExpanded] = useState<Set<string>>(new Set());
@@ -67,8 +72,27 @@ const ProjectDetail: React.FC = () => {
     }
   };
 
+  // P2-4 拉取项目工作流状态聚合
+  const fetchWorkflow = async (silent = false) => {
+    if (!silent) setWorkflowLoading(true);
+    setWorkflowError(null);
+    try {
+      const data = await projectApi.getWorkflowStatus(projectId);
+      if (mountedRef.current) setWorkflow(data);
+    } catch (err: unknown) {
+      if (mountedRef.current) {
+        setWorkflowError(err instanceof Error ? err.message : '获取工作流状态失败');
+      }
+    } finally {
+      if (mountedRef.current) setWorkflowLoading(false);
+    }
+  };
+
   useEffect(() => {
-    if (projectId) fetchData();
+    if (projectId) {
+      fetchData();
+      fetchWorkflow();
+    }
   }, [projectId]);
 
   const handleUpload = async (file: File) => {
@@ -267,6 +291,162 @@ const ProjectDetail: React.FC = () => {
     return <Alert type="error" message="加载失败" description={error} showIcon />;
   }
 
+  // 工作流阶段标签（选点/检测/切片）
+  const workflowStageColor = (s: WorkflowStageStatus | 'empty'): string => {
+    switch (s) {
+      case 'completed': return 'green';
+      case 'running': return 'blue';
+      case 'failed': return 'red';
+      case 'pending': return 'default';
+      case 'empty': return 'default';
+      default: return 'orange';
+    }
+  };
+  const workflowStageLabel = (s: WorkflowStageStatus): string => {
+    switch (s) {
+      case 'completed': return '已完成';
+      case 'running': return '进行中';
+      case 'failed': return '失败';
+      case 'pending': return '待处理';
+      default: return '未知';
+    }
+  };
+  const workflowOverallLabel = (s: WorkflowStageStatus): string => {
+    switch (s) {
+      case 'completed': return '全部完成';
+      case 'running': return '进行中';
+      case 'failed': return '存在失败';
+      case 'pending': return '待处理';
+      case 'empty': return '暂无剧集';
+      default: return '未知';
+    }
+  };
+
+  // 工作流聚合看板渲染
+  const renderWorkflowBoard = () => {
+    if (!workflow) return null;
+    const stageNames = ['选点', '区间检测', '切片'];
+    const stageColors = ['blue', 'cyan', 'purple'];
+    return (
+      <Card
+        size="small"
+        title={
+          <Space>
+            <span>项目工作流状态</span>
+            <Tag color={workflowStageColor(workflow.overall.status)}>{workflowOverallLabel(workflow.overall.status)}</Tag>
+            {workflow.overall.progress > 0 && <Text type="secondary" style={{ fontSize: 12 }}>{workflow.overall.progress.toFixed(0)}%</Text>}
+          </Space>
+        }
+        extra={
+          <Space size="small">
+            <Progress percent={Math.round(workflow.overall.progress)} size="small" style={{ width: 140 }} />
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => void fetchWorkflow(true)}>刷新</Button>
+          </Space>
+        }
+        style={{ marginBottom: 16 }}
+      >
+        {workflowError ? (
+          <Alert type="warning" showIcon message="工作流状态加载失败" description={workflowError} action={<Button size="small" onClick={() => void fetchWorkflow(true)}>重试</Button>} />
+        ) : workflowLoading && !workflow ? (
+          <div style={{ padding: 24, textAlign: 'center' }}><Spin /></div>
+        ) : (
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            {/* 各阶段完成统计 */}
+            <Row gutter={16}>
+              {stageNames.map((name, i) => {
+                const stageKey = ['autoclip', 'detect', 'slice'][i] as keyof typeof workflow.overall.stages;
+                return (
+                  <Col span={8} key={name}>
+                    <Statistic
+                      title={`${name}（${stageColors[i]}）`}
+                      value={workflow.overall.stages[stageKey].completed}
+                      suffix={`/ ${workflow.overall.stages[stageKey].total}`}
+                      valueStyle={{ fontSize: 18 }}
+                    />
+                  </Col>
+                );
+              })}
+            </Row>
+            {/* 各剧集工作流明细表 */}
+            {workflow.episodes.length === 0 ? (
+              <Text type="secondary">暂无剧集，上传视频后即可在此查看选点/检测/切片三阶段进度。</Text>
+            ) : (
+              <Table
+                rowKey={(r) => r.episode.id}
+                size="small"
+                pagination={false}
+                dataSource={workflow.episodes}
+                scroll={{ x: 720 }}
+                columns={[
+                  {
+                    title: '剧集',
+                    dataIndex: ['episode', 'episode_no'],
+                    width: 70,
+                    render: (v: number | null) => (v ?? '-'),
+                  },
+                  {
+                    title: '标题',
+                    dataIndex: ['episode', 'title'],
+                    render: (v: string | null) => v || '(未命名)',
+                  },
+                  {
+                    title: '总状态',
+                    dataIndex: 'status',
+                    width: 90,
+                    render: (s: WorkflowStageStatus) => (
+                      <Tag color={workflowStageColor(s)}>{workflowStageLabel(s)}</Tag>
+                    ),
+                  },
+                  {
+                    title: '选点',
+                    dataIndex: ['stages', 'autoclip'],
+                    width: 90,
+                    render: (st: EpisodeWorkflowStage) => (
+                      <Space size={4}>
+                        <Tag color={workflowStageColor(st.status)}>{workflowStageLabel(st.status)}</Tag>
+                        {st.run_count ? <Text type="secondary" style={{ fontSize: 12 }}>×{st.run_count}</Text> : null}
+                      </Space>
+                    ),
+                  },
+                  {
+                    title: '区间检测',
+                    dataIndex: ['stages', 'detect'],
+                    width: 100,
+                    render: (st: EpisodeWorkflowStage) => (
+                      <Tag color={workflowStageColor(st.status)}>{workflowStageLabel(st.status)}</Tag>
+                    ),
+                  },
+                  {
+                    title: '切片',
+                    dataIndex: ['stages', 'slice'],
+                    width: 100,
+                    render: (st: EpisodeWorkflowStage) => (
+                      <Space size={4}>
+                        <Tag color={workflowStageColor(st.status)}>{workflowStageLabel(st.status)}</Tag>
+                        {st.output_count ? <Text type="secondary" style={{ fontSize: 12 }}>{st.output_count}产出</Text> : null}
+                      </Space>
+                    ),
+                  },
+                  {
+                    title: '进度',
+                    dataIndex: ['stages', 'slice', 'progress'],
+                    width: 120,
+                    render: (_v: number, record: EpisodeWorkflowItem) => {
+                      const stages = [record.stages.autoclip, record.stages.detect, record.stages.slice];
+                      const running = stages.find((s) => s.status === 'running');
+                      const progress = running ? running.progress : (record.status === 'completed' ? 100 : 0);
+                      return <Progress percent={Math.round(progress)} size="small" />;
+                    },
+                  },
+                ]}
+              />
+            )}
+          </Space>
+        )}
+      </Card>
+    );
+  };
+
   const episodeColumns = [
     {
       title: '集数',
@@ -379,6 +559,8 @@ const ProjectDetail: React.FC = () => {
           <Descriptions.Item label="更新时间">{formatDateTime(project.updated_at)}</Descriptions.Item>
         </Descriptions>
       </Card>
+      {/* 工作流状态聚合看板（P2-4） */}
+      {renderWorkflowBoard()}
       {/* 上传正片：置于上方，占满整行 */}
       <Card size="small" title="上传正片" style={{ marginBottom: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }} size="middle">

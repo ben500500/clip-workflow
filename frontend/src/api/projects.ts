@@ -1,5 +1,5 @@
 import client from './client';
-import type { ApiList, Episode, Project, ProjectFormValues, ProjectStats } from '../types';
+import type { ApiList, Episode, Project, ProjectFormValues, ProjectStats, ProjectWorkflowStatus } from '../types';
 
 export interface ProjectListParams {
   page?: number;
@@ -42,4 +42,8 @@ export const projectApi = {
       duration: number | null;
       title: string | null;
     }>,
+
+  // P2-4 项目级工作流状态聚合（一次拿全项目所有剧集选点/检测/切片三阶段状态）
+  getWorkflowStatus: (projectId: string) =>
+    client.get(`/projects/${projectId}/workflow-status`) as Promise<ProjectWorkflowStatus>,
 };
