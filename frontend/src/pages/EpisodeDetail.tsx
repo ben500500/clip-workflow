@@ -161,6 +161,9 @@ interface SlicePreset {
   watermark_style: string;
   // 图片角标默认尺寸
   badge_default_width: number;
+  // 去重模式（一键切片启用后按档位做画面去重）
+  dedupe_enabled: boolean;
+  dedupe_preset: string;
 }
 
 const SLICE_PRESET_STORAGE_KEY = 'slice_presets_v1';
@@ -212,6 +215,8 @@ const DEFAULT_SLICE_PRESET: SlicePreset = {
   watermark_mask_height_ratio: 0.12,
   watermark_mask_bottom_ratio: 0.02,
   badge_default_width: 0,
+  dedupe_enabled: false,
+  dedupe_preset: 'std_crop_desat',
 };
 
 const EpisodeDetail: React.FC = () => {
@@ -226,6 +231,8 @@ const EpisodeDetail: React.FC = () => {
   const [sliceMode, setSliceMode] = useState('fast');
   // 去重模式档位：轻/标准/重（老电视质感去重强度，默认标准档）
   const [dedupePreset, setDedupePreset] = useState<string>('std_crop_desat');
+  // 一键切片去重模式开关（配置弹窗内可设，开启后一键切片按档位做画面去重）
+  const [dedupeEnabled, setDedupeEnabled] = useState(false);
   // ── 切片自定义文字水印开关与参数 ──
   // 去重模式手动配置（每项去重手段可单独覆盖预设，为空时沿用预设档位）
   const [dedupeManual, setDedupeManual] = useState<DedupeManualConfigValue>({});
@@ -511,6 +518,8 @@ const EpisodeDetail: React.FC = () => {
     watermark_position: watermarkPosition,
     watermark_style: watermarkStyle,
     badge_default_width: badgeDefaultWidth,
+    dedupe_enabled: dedupeEnabled,
+    dedupe_preset: dedupePreset,
   });
 
   // 将一套配置应用到页面切片状态
@@ -555,6 +564,8 @@ const EpisodeDetail: React.FC = () => {
     setWatermarkPosition(p.watermark_position);
     setWatermarkStyle(p.watermark_style || 'scroll');
     setBadgeDefaultWidth(p.badge_default_width);
+    setDedupeEnabled(p.dedupe_enabled ?? false);
+    setDedupePreset(p.dedupe_preset ?? 'std_crop_desat');
     setActivePresetId(p.id);
   };
 
@@ -1133,8 +1144,12 @@ const EpisodeDetail: React.FC = () => {
       }
       // auto_accept_all=true：后端自动把所有候选片段（含 pending）纳入切片，
       // 无需逐个审核/预览，直接产出成品视频
-      const res = await sliceApi.run(episodeId, 'fast', {
+      const res = await sliceApi.run(episodeId, dedupeEnabled ? 'dedupe' : 'fast', {
         auto_accept_all: true,
+        // 去重模式：一键切片启用后按档位做画面去重（手动配置沿用主页「去重高级配置」）
+        dedupe_config: dedupeEnabled ? buildDedupeConfig(dedupePreset, dedupeManual) : undefined,
+        // 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本）
+        variant_count: dedupeEnabled && variantCount && variantCount > 1 ? variantCount : undefined,
         // 竖屏转横屏：一键切片同样透传配置
         vert2horiz_enabled: vert2horizEnabled,
         vert2horiz_mode: vert2horizEnabled ? vert2horizMode : undefined,
@@ -2717,6 +2732,36 @@ const EpisodeDetail: React.FC = () => {
               onChange={(e) => setNewPresetName(e.target.value)}
             />
             <Button size="small" type="primary" onClick={handleSavePreset}>保存当前配置</Button>
+          </div>
+
+          {/* ── 去重模式 ── */}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+            <Space wrap align="center" size={8} style={{ marginBottom: 8 }}>
+              <Switch size="small" checked={dedupeEnabled} onChange={setDedupeEnabled} />
+              <Text strong style={{ fontSize: 13 }}>去重模式</Text>
+              <Tooltip title="开启后一键切片按所选档位对成品做画面去重（空间/时域/色彩变换组合），降低多平台批量发布查重风险">
+                <InfoCircleOutlined style={{ color: '#999' }} />
+              </Tooltip>
+            </Space>
+            {dedupeEnabled && (
+              <Space wrap align="center" size={8}>
+                <Text style={{ fontSize: 12 }}>档位</Text>
+                <Select
+                  size="small"
+                  style={{ width: 200 }}
+                  value={dedupePreset || 'std_crop_desat'}
+                  onChange={setDedupePreset}
+                  options={[
+                    { value: 'std_crop_desat', label: '保守裁切降饱和（推荐）' },
+                    { value: 'std_retro_scan', label: '复古扫描' },
+                    { value: 'light', label: '轻' },
+                    { value: 'standard', label: '标准' },
+                    { value: 'heavy', label: '重' },
+                  ]}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>手动逐项配置沿用主页「去重高级配置」</Text>
+              </Space>
+            )}
           </div>
 
           {/* ── 竖屏转横屏 ── */}
