@@ -343,14 +343,23 @@ def build_dedupe_audio_filter(mode) -> str:
     if m in ("none", "null"):
         return ""
     if m == "volume":
-        return "volume=1.12"
+        # 动态压缩 + 增益：整体响度分布明显改变，人耳仍自然（L3 音量指纹差异化）
+        return "acompressor=threshold=-20dB:ratio=3:attack=20:release=250,volume=1.5"
     if m == "eq_mild":
-        return "equalizer=f=2500:t=q:w=1.0:g=3,equalizer=f=400:t=q:w=1.0:g=-2"
+        return "equalizer=f=2500:t=q:w=1.0:g=5,equalizer=f=400:t=q:w=1.0:g=-3"
     if m == "eq_strong":
-        return ("equalizer=f=300:t=q:w=0.8:g=4,equalizer=f=1200:t=q:w=0.8:g=-3,"
-                "equalizer=f=4200:t=q:w=0.8:g=3,equalizer=f=9000:t=q:w=0.8:g=-2")
+        return ("equalizer=f=300:t=q:w=0.8:g=10,equalizer=f=1200:t=q:w=0.8:g=-7,"
+                "equalizer=f=4200:t=q:w=0.8:g=7,equalizer=f=9000:t=q:w=0.8:g=-6")
+    if m == "bass_treble":
+        return "bass=g=6:f=120,treble=g=-5:f=4000"
     if m == "pitch":
-        return "asetrate=44100*0.97,aresample=44100"
+        # 明显变速音调（改音高/节奏指纹）+ 轻 EQ，确保频谱与时序指纹同时拉开；
+        # atempo 回补时长避免音画时长漂移。
+        return ("asetrate=44100*0.94,aresample=44100,atempo=1.064,"
+                "equalizer=f=300:t=q:w=0.8:g=6,equalizer=f=5000:t=q:w=0.8:g=-4")
+    if m == "chorus":
+        # 回声/合唱效果：同时改变频谱与时序指纹（L3 差异化最明显的一档）
+        return "aecho=0.8:0.9:500|1000:0.4|0.3"
     return ""
 
 

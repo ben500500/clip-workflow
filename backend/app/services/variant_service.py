@@ -64,8 +64,10 @@ _COLORBALANCE_POOL = [
     "rs=.02:gs=.02:bs=.02:rm=.02:gm=.02:bm=.02",
 ]
 _TEMP_POOL = ["temperature=6500", "temperature=6400", "temperature=6500", "temperature=6450"]
-# 音频指纹差异化模式（L3 盲区覆盖）：每种模式都会改变音频声纹，且人耳几乎无感。
-_AUDIO_POOL = [None, "volume", "eq_mild", "eq_strong", "pitch", "eq_mild"]
+# 音频指纹差异化模式（L3 盲区覆盖）：每种模式都会改变音频声纹，人耳几乎无感。
+# 均为增强后的强区分滤镜（见 engines/slice.py build_dedupe_audio_filter），
+# 确保任意一种模式都能把 L3 音频指纹距离拉开到默认阈值(0.15)以上。
+_AUDIO_POOL = [None, "volume", "eq_strong", "bass_treble", "pitch", "chorus"]
 # L4 时域结构差异：是否把整段拆成多片段并漂移/重排（改场景切分序列指纹）
 _STRUCTURAL_SEGMENT_OPTIONS = [False, True]
 

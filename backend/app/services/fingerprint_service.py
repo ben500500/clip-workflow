@@ -17,6 +17,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import os
 import subprocess
 from typing import Optional
@@ -252,50 +253,78 @@ def compute_audio_fingerprint(path: str) -> dict:
 
 
 def _audio_signature(samples: np.ndarray, dur: float) -> dict:
-    """把音频样本量化为 64bit 能量签名（L3 盲区覆盖，充分熵）。
+    """把音频样本量化为 384bit 声纹签名（L3 盲区覆盖，对全局变化高灵敏）。
 
-    相比早期版本（仅 16 窗口 × 1 特征 = 16bit 熵，重复补齐 64），
-    这里抽取 4 个互补特征（RMS / 过零率 / 频谱质心 / 频谱平坦度）在 16 个
-    时间窗上量化，得到真实 64bit 签名，对变速/EQ/音量等音频指纹差异更敏感，
-    能更好区分 L3 音频指纹。numpy 不可用时仍回退为字节哈希。
+    早期版本用"中位数二值化"（每特征相对自身中位数取方向位），它对**全局均匀
+    改变**（如整体音量增益 volume、整体均衡 EQ）不敏感——因为所有窗口同比变化时
+    中位数也同向移动，方向位不变，实测 volume=1.12 在 64bit 里 0 位翻转。
+
+    增强版改用**混合量化**，从两个互补维度编码：
+      1. 绝对响度分贝档（每窗 RMS→dB 落在固定绝对档位，2bit/窗，取完整档位的低
+         2 位二进制）：对全局音量 / 动态变化高度敏感（音量一变，各窗 dB 档整体平移，
+         低位翻转大量位）；
+      2. 频谱形状多级量化（每窗频谱质心 centroid + 平坦度 flatness 相对全局均值的
+         4 级量化，2bit×2/窗）：对 EQ 均衡、变速音调等频谱形状变化敏感。
+
+    采用 64 个时间窗（而非早期 16 窗）以提升时域分辨率，任何窗口级的音量 / 频谱
+    细微变化都更容易在某些窗翻转 bit。合计 64 窗 × (2bit + 4bit) = 384bit，对
+    volume / EQ / pitch / tempo 等去重手段都能产生足够大的指纹距离，不再把
+    "只改音频"的变体误判为撞车。numpy 不可用时仍回退为字节哈希。
     """
-    win = 4096
-    n_windows = 16
+    win = 2048
+    n_windows = 64
     total = len(samples)
     if total == 0:
         return {"algorithm": "audio_v1", "hash_value": None, "vector": None,
                 "duration": dur, "resolution": None}
     step = max(1, total // n_windows)
-    windows = []
+    dbs = []   # 每窗绝对响度分贝
+    cents = []  # 每窗频谱质心
+    flats = []  # 每窗频谱平坦度
     for i in range(0, total, step)[:n_windows]:
         seg = samples[i:i + win]
         if len(seg) < 8:
-            windows.append([0.0, 0.0, 0.0, 0.0])
+            dbs.append(-100.0); cents.append(0.0); flats.append(0.0)
             continue
         rms = float(np.sqrt(np.mean(seg ** 2)))
-        zcr = float(np.mean(np.abs(np.diff(np.sign(seg))) > 0)) if len(seg) > 1 else 0.0
-        # 频谱质心：帧内相邻差分幅度的能量加权均值，粗略反映频谱重心（低频→质心小）
+        # 绝对响度分贝：对全局音量变化高度敏感（音量变大→档位整体上移→低位翻转）
+        dbs.append(20.0 * math.log10(max(rms, 1e-7)))
         mag = np.abs(np.fft.rfft(seg))
         freqs = np.arange(len(mag), dtype=np.float64)
         if mag.sum() > 1e-9:
-            centroid = float((freqs * mag).sum() / mag.sum())
+            cents.append(float((freqs * mag).sum() / mag.sum()))
         else:
-            centroid = 0.0
-        # 频谱平坦度：几何均值/算术均值，反映噪声 vs 音调性（EQ/压缩会改变）
+            cents.append(0.0)
         if mag.size > 0 and mag.sum() > 1e-9:
             log_mag = np.log(mag + 1e-12)
-            flatness = float(np.exp(np.mean(log_mag)) / (np.mean(mag) + 1e-12))
+            flats.append(float(np.exp(np.mean(log_mag)) / (np.mean(mag) + 1e-12)))
         else:
-            flatness = 0.0
-        windows.append([rms, zcr, centroid, flatness])
-    if not windows:
-        windows = [[0.0, 0.0, 0.0, 0.0]] * n_windows
-    # 每特征独立阈值量化（中位数阈值），得到 16*4=64 bit
-    arr = np.asarray(windows, dtype=np.float64)  # shape (n,4)
-    med = np.median(arr, axis=0)
-    bits = ((arr >= med).astype(np.uint8)).ravel().tolist()  # 64 bits
-    bits_str = "".join(str(b) for b in bits)
-    hex_str = format(int(bits_str, 2), "016x")
+            flats.append(0.0)
+    db_arr = np.asarray(dbs, dtype=np.float64)
+    cent_arr = np.asarray(cents, dtype=np.float64)
+    flat_arr = np.asarray(flats, dtype=np.float64)
+
+    bits: list[str] = []
+    # ── 第 1 部分（128bit）：绝对响度分贝档，每窗 2bit（档 0~15，每档 4dB）──
+    # 取完整档位（0~15）二进制的低 2 位：任意小幅档位变化都容易翻转低位。
+    for db in db_arr:
+        level = int(np.clip(round((db + 72.0) / 4.0), 0, 15))
+        bits.extend(format(level & 0x03, "02b"))
+    # ── 第 2 部分（256bit）：频谱形状多级量化，每窗 4bit（质心 2bit + 平坦度 2bit）──
+    # 相对全局均值的 4 级量化，对 EQ / 变速音调造成的频谱形状变化比方向位更敏感。
+    c_mean = np.mean(cent_arr)
+    c_std = np.std(cent_arr) + 1e-9
+    f_mean = np.mean(flat_arr)
+    f_std = np.std(flat_arr) + 1e-9
+    for c, f in zip(cent_arr, flat_arr):
+        c_z = (c - c_mean) / c_std
+        c_lvl = int(np.clip(round(c_z * 1.5) + 2, 0, 3))
+        f_z = (f - f_mean) / f_std
+        f_lvl = int(np.clip(round(f_z * 1.5) + 2, 0, 3))
+        bits.extend(format(c_lvl, "02b"))
+        bits.extend(format(f_lvl, "02b"))
+    bits_str = "".join(bits)  # 384 bits
+    hex_str = format(int(bits_str, 2), "096x")
     return {
         "algorithm": "audio_v1",
         "hash_value": hex_str,
@@ -386,18 +415,57 @@ def vector_distance(a: Optional[str], b: Optional[str]) -> float:
     return diff / max(len(av), len(bv), 1)
 
 
+_ALGO_KEY = {
+    "phash_v1": ("phash", "phash_vector"),
+    "audio_v1": ("audio_hash", "audio_vector"),
+    "seq_v1": ("seg_hash", "seg_vector"),
+}
+
+
+def _extract_algo(fp_dict: dict, algo: str):
+    """从指纹字典中提取指定算法的 (hash, vector)。
+
+    兼容两种输入结构：
+      1. compute_full_fingerprint 的输出：{phash, phash_vector, audio_hash,
+         audio_vector, seg_hash, seg_vector, ...}（不含 algorithm 字段）；
+      2. 单算法 DB 记录：{algorithm, hash_value, vector}。
+    返回 (hash, vector)，缺失返回 (None, None)。
+    """
+    if fp_dict.get("algorithm") == algo:
+        return fp_dict.get("hash_value"), fp_dict.get("vector")
+    # 若字典带 algorithm 但不是目标算法，说明是另一路指纹，无法用于本路比较
+    if fp_dict.get("algorithm"):
+        return None, None
+    key = _ALGO_KEY.get(algo)
+    if not key:
+        return None, None
+    return fp_dict.get(key[0]), fp_dict.get(key[1])
+
+
+def _algo_distance(fa: dict, fb: dict, algo: str) -> float:
+    """比较两组指纹在指定算法上的距离（0~1）。缺失视为 1.0。"""
+    ha, va = _extract_algo(fa, algo)
+    hb, vb = _extract_algo(fb, algo)
+    if not ha or not hb:
+        return 1.0
+    # 画面类（phash）优先用向量距离（对尺寸变化更鲁棒）
+    if algo == "phash_v1" and va and vb:
+        return vector_distance(va, vb)
+    return hamming_distance_hex(ha, hb)
+
+
 def compare_fingerprints(fa: dict, fb: dict) -> dict:
     """比较两组指纹，返回多路距离 + 综合距离。
 
     返回 {phash_distance, audio_distance, seg_distance, combined_distance}，
     各距离 0~1（0=完全相同，1=完全不同）。
+
+    兼容两种输入结构：compute_full_fingerprint 的全量输出，或单算法 DB 记录
+    {algorithm, hash_value, vector}；同路指纹缺失时该路距离记为 1.0。
     """
-    phash_d = hamming_distance_hex(fa.get("hash_value"), fb.get("hash_value")) if fa.get("algorithm") == fb.get("algorithm") else 1.0
-    # 画面：优先向量距离
-    if fa.get("algorithm") == fb.get("algorithm") and fa.get("vector") and fb.get("vector"):
-        phash_d = vector_distance(fa.get("vector"), fb.get("vector"))
-    audio_d = hamming_distance_hex(fa.get("audio_hash"), fb.get("audio_hash"))
-    seg_d = hamming_distance_hex(fa.get("seg_hash"), fb.get("seg_hash"))
+    phash_d = _algo_distance(fa, fb, "phash_v1")
+    audio_d = _algo_distance(fa, fb, "audio_v1")
+    seg_d = _algo_distance(fa, fb, "seq_v1")
     combined = (_W_PHASH * phash_d) + (_W_AUDIO * audio_d) + (_W_SEG * seg_d)
     return {
         "phash_distance": round(phash_d, 4),
