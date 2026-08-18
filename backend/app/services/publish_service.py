@@ -417,11 +417,18 @@ class VideoChannelPublisher:
                 timeout=timeout * 1000,
             )
             await asyncio.sleep(3)  # Extra wait for processing
-            # 二次确认：video 元素已带可播放源（非空 src/currentSrc）
-            has_src = await self.page.evaluate("""() => {
-                const v = document.querySelector('video');
-                return !!(v && (v.getAttribute('src') || (v.currentSrc || '')));
-            }""")
+            # 二次确认：video 元素已带可播放源。SPA 可能先渲染空 video 再挂 src，
+            # 单次 evaluate 可能恰好在 src 挂载前执行而误判；改用短轮询（最长 30s）
+            # 等待 src/currentSrc 真正就绪，消除竞态。
+            has_src = False
+            for _ in range(15):
+                has_src = await self.page.evaluate("""() => {
+                    const v = document.querySelector('video');
+                    return !!(v && (v.getAttribute('src') || (v.currentSrc || '')));
+                }""")
+                if has_src:
+                    break
+                await asyncio.sleep(2)
             if not has_src:
                 raise RuntimeError("video element present but has no playable src")
         except Exception:
