@@ -161,6 +161,38 @@ bash scripts/logs.sh backend    # 特定服务
 | 9000/9001 | MinIO | 对象存储 / 控制台 |
 | 8001 | Backend | 仅内网回环 |
 
+### 批量切片解耦模式（`pipeline_mode=decoupled`）
+
+通过 `slice_config.pipeline_mode="decoupled"` 开启解耦流水线：AI 选点与切片并行推进，不再逐集串行等待。
+开启后由三个 Celery beat 任务协同驱动：
+
+| beat 任务 | 职责 | 队列 |
+|-----------|------|------|
+| `batch_slice_dispatch` | 扫描「已选点池」投递切片到 Go slice-worker | default |
+| `batch_slice_finalize` | **终态回收器**：按 `slice_task_id` 查 SliceTask 终态回填 item（成功才删源视频） | default |
+| `batch_aggregate` | 按批次聚合 done/failed/output_count，判定批次终态 | default |
+
+选点消费者 `batch_selection_consumer` 路由到独立 **`selection` 队列**（`worker-fast` 已并入消费），
+避免重计算 + 长轮询选点抢占串行批处理的 `default` 队列。
+
+> ⚠️ **P0 前提**：终态回收器（`batch_slice_finalize`）是解耦模式批次能完成的必要条件。
+> 若未启用该 beat，item 会永久卡在 `slicing`、批次永不完成、源视频不删除，请勿在缺此 beat 时开启解耦模式。
+
+#### 选点并发提升（autoclip）
+
+解耦模式提速上限受 autoclip 单进程并发约束。默认 autoclip 以单进程（`--workers 1`）运行，
+并行价值有限。要发挥并行价值，把 autoclip 提到 **2~3 个并发进程**：
+
+```bash
+# .env 中配置（重启 autoclip 生效）：
+WORKER_CONCURRENCY=2   # 或 3，需 GPU/内存足够
+```
+
+docker-compose 已把 `WORKER_CONCURRENCY` 透传给 autoclip 服务，由 uvicorn `--workers` 多进程并行选点。
+
+> 注意：多进程各自持有 LLM / Whisper 实例，需确认显存/内存足够；若开启画面理解（frame analysis）
+> 等有状态缓存，多进程下需评估进程间竞争，必要时降低并发。
+
 ---
 
 ## API 说明

@@ -44,6 +44,8 @@ celery_app.conf.update(
         "publish": {"exchange": "publish"},
         "metrics": {"exchange": "metrics"},
         "wechat_dl": {"exchange": "wechat_dl"},
+        # 解耦模式 AI 选点消费者独立队列：重计算 + 长轮询，避免与串行批处理抢占 default
+        "selection": {"exchange": "selection"},
         "default": {"exchange": "default"},
     },
     task_routes={
@@ -55,6 +57,8 @@ celery_app.conf.update(
         "app.celery.tasks.task_collect_metrics": {"queue": "metrics"},
         "app.celery.tasks.watermark_task": {"queue": "video_processing"},
         "app.celery.tasks.check_cookie_status": {"queue": "publish"},
+        # 解耦模式选点消费者：独立 selection 队列（重计算 + 长轮询，避免抢占 default）
+        "app.celery.tasks.batch_selection_consumer": {"queue": "selection"},
         "app.celery.tasks.doubao_generate_task": {"queue": "publish"},
         # Seedance 官方 API 直连出片(HTTP 直连,无浏览器;复用 publish 队列即可,
         # 不依赖 rpa_worker,普通 worker 即可消费)
@@ -100,6 +104,11 @@ celery_app.conf.update(
         # 解耦模式：批次状态聚合器
         "batch-aggregate-periodic": {
             "task": "app.celery.tasks.batch_aggregate",
+            "schedule": settings.BATCH_AGGREGATE_INTERVAL_SECONDS,
+        },
+        # 解耦模式：终态回收器（切片终态回填 + 成功才删源视频，复用聚合节奏）
+        "batch-finalize-periodic": {
+            "task": "app.celery.tasks.batch_slice_finalize",
             "schedule": settings.BATCH_AGGREGATE_INTERVAL_SECONDS,
         },
         # 定时发布（R99）：每分钟扫描到期的预约发布任务并投递 publish 队列
@@ -281,13 +290,16 @@ def batch_selection_consumer(self, batch_id: str, item_id: str, episode_id: str)
     """解耦模式选点消费者：对单个剧集执行 AI 选点 + 自动审核，完成后标记为「已选点待切片」。
 
     处理完成后写入「已选点池」（item.phase=autoclip_done），供切片投递守护消费。
+    失败时不置 item 终态、由 process_selection 向上抛出，这里经 self.retry() 交由
+    Celery 重试接管（max_retries=3），重试耗尽才真正失败，避免 item 永久卡死。
     """
     from app.services.batch_decoupled_service import process_selection
     try:
         run_async(process_selection(batch_id, item_id, episode_id))
     except Exception as e:
         logger.error("选点消费者异常 batch=%s item=%s: %s", batch_id, item_id, e)
-        raise
+        # 让 Celery 重试接管（默认延时 10s，最多重试 3 次），而非直接失败。
+        raise self.retry(exc=e)
 
 
 @celery_app.task(bind=True, max_retries=0)
@@ -301,6 +313,21 @@ def batch_slice_dispatch(self):
         run_async(dispatch_ready_slices())
     except Exception as e:
         logger.error("切片投递守护异常: %s", e)
+        raise
+
+
+@celery_app.task(bind=True, max_retries=0)
+def batch_slice_finalize(self):
+    """解耦模式终态回收器：扫描 phase='slicing' 的 item，按 slice_task_id 查 SliceTask 终态回填。
+
+    成功回填 completed 并仅在成功时删除源视频（_delete_source）；失败回填 failed。
+    与 batch_slice_dispatch 解耦，独立 beat 周期轮询，不阻塞切片投递、完全幂等。
+    """
+    from app.services.batch_decoupled_service import finalize_slices
+    try:
+        run_async(finalize_slices())
+    except Exception as e:
+        logger.error("终态回收器异常: %s", e)
         raise
 
 

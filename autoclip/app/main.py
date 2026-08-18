@@ -727,4 +727,9 @@ async def clips(project_id: str, min_score: float = 0.0, max_clips: int = 30,
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
+    # 解耦模式提速上限受 autoclip 单进程并发约束：多进程并行选点（2~3）可发挥
+    # 并行价值。WORKER_CONCURRENCY 默认 1（历史行为），生产按需提到 2~3。
+    # 注意：多进程会各自持有 LLM/whisper 实例，需 GPU/内存足够；
+    # 画面理解（frame analysis）等有状态缓存按需关闭避免进程间竞争。
+    workers = int(os.environ.get("WORKER_CONCURRENCY", "1"))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), workers=workers)
