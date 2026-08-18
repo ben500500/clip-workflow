@@ -346,6 +346,7 @@ async def upload_multi(
     project_name: str = Form(""),
     project_id: Optional[str] = Form(None),
     merge: str = Form("false"),
+    title: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
@@ -434,6 +435,11 @@ async def upload_multi(
             local_paths.append(p)
             names.append(safe_name)
 
+        # 标题规则：merge=true 时整批产出一条 Episode，直接用传入标题；
+        # merge=false 时每个视频一条 Episode，标题作为前缀 + 序号（如「短剧名 第01集」），
+        # 未传标题则回退为文件名。
+        custom_title = (title or "").strip()
+
         do_merge = str(merge).strip().lower() in ("1", "true", "yes")
         if do_merge and len(local_paths) > 1:
             merged_path = os.path.join(tmp_dir, f"merged_{uuid.uuid4().hex}.mp4")
@@ -452,9 +458,16 @@ async def upload_multi(
             ok = await upload_file_from_path(settings.MINIO_BUCKET_RAW, file_key, p)
             if not ok:
                 raise HTTPException(status_code=500, detail=f"存储 {name} 失败")
+            if custom_title:
+                if do_merge:
+                    episode_title = custom_title
+                else:
+                    episode_title = f"{custom_title} 第{idx:02d}集" if len(local_paths) > 1 else custom_title
+            else:
+                episode_title = name
             episode = Episode(
                 project_id=project.id,
-                title=name,
+                title=episode_title,
                 episode_no=base_episode_no + idx,
                 source_file_key=file_key,
                 file_size=os.path.getsize(p),

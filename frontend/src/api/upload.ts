@@ -48,6 +48,7 @@ export const uploadApi = {
     projectName?: string;
     files: File[];
     merge: boolean;
+    title?: string;
     description?: string;
     onProgress?: (percent: number) => void;
   }) => {
@@ -55,6 +56,7 @@ export const uploadApi = {
     if (params.projectId) formData.append('project_id', params.projectId);
     if (params.projectName) formData.append('project_name', params.projectName);
     formData.append('merge', params.merge ? 'true' : 'false');
+    if (params.title) formData.append('title', params.title);
     if (params.description) formData.append('description', params.description);
     params.files.forEach((f) => formData.append('files', f));
     return client.post('/upload/multi', formData, {
