@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -468,9 +469,14 @@ func (w *Worker) runTask(msg *StreamMessage) {
 
 	// 1.6 下载视频封面（如有），写入本地 path 供引擎作为视频首帧叠加
 	if task.Cover.URL != "" {
-		coverExt := filepath.Ext(task.Cover.URL)
-		if coverExt == "" {
-			coverExt = ".jpg"
+		// presigned URL 带签名查询参数（?X-Amz-...），直接 filepath.Ext(URL) 会把查询串
+		// 带进扩展名（如 cover.png?X-Amz-Algorithm=...）→ 文件名超长 file name too long。
+		// 先解析 URL 取 Path 再取扩展名。
+		coverExt := ".jpg"
+		if u, err := url.Parse(task.Cover.URL); err == nil && u.Path != "" {
+			if e := filepath.Ext(u.Path); e != "" {
+				coverExt = e
+			}
 		}
 		coverPath := filepath.Join(taskDir, "cover"+coverExt)
 		if err := w.transfer.DownloadFile(taskCtx, task.Cover.URL, coverPath, task.TaskID); err != nil {
