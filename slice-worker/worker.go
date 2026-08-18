@@ -466,6 +466,20 @@ func (w *Worker) runTask(msg *StreamMessage) {
 		b.Path = badgePath
 	}
 
+	// 1.6 下载视频封面（如有），写入本地 path 供引擎作为视频首帧叠加
+	if task.Cover.URL != "" {
+		coverExt := filepath.Ext(task.Cover.URL)
+		if coverExt == "" {
+			coverExt = ".jpg"
+		}
+		coverPath := filepath.Join(taskDir, "cover"+coverExt)
+		if err := w.transfer.DownloadFile(taskCtx, task.Cover.URL, coverPath, task.TaskID); err != nil {
+			w.handleTaskError(taskCtx, task, msg, fmt.Errorf("下载封面图片失败: %w", err))
+			return
+		}
+		task.Cover.Path = coverPath
+	}
+
 	// 2. 执行切片（引擎内部会解析 PROGRESS 并回调真实进度）
 	w.emitProgress(task.TaskID, "ffmpeg", 0, "开始切片")
 	outputDir := filepath.Join(taskDir, "output")

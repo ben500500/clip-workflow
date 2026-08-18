@@ -144,6 +144,11 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		args = append(args, "--badge-default-width", strconv.Itoa(task.BadgeDefaultWidth))
 	}
 
+	// 视频封面：作为视频首帧叠加（后端下发 cover URL，Worker 已下载到本地 path）
+	if task.Cover.Path != "" {
+		args = append(args, "--cover", task.Cover.Path)
+	}
+
 	// ASR 字幕烧录：把后端下发的 SRT 内容写到本地文件，透传给引擎 --subtitle
 	if len(task.Subtitle) > 0 {
 		enabled, _ := task.Subtitle["enabled"].(bool)

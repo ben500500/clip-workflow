@@ -42,4 +42,28 @@ export const projectApi = {
       duration: number | null;
       title: string | null;
     }>,
+
+  getOutputs: (projectId: string) =>
+    client.get(`/projects/${projectId}/outputs`) as Promise<{
+      items: ProjectOutputItem[];
+      total: number;
+    }>,
 };
+
+export interface ProjectOutputItem {
+  output_id: string;
+  task_id: string;
+  episode_id: string;
+  episode_no: number | null;
+  episode_title: string | null;
+  mode: string | null;
+  task_status: string | null;
+  clip_id: string | null;
+  file_key: string | null;
+  file_name: string | null;
+  duration: number | null;
+  file_size: number | null;
+  resolution: string | null;
+  created_at: string;
+  presigned_url: string | null;
+}

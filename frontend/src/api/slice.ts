@@ -114,6 +114,8 @@ export const sliceApi = {
       output_id?: string;
       cut_start?: number;
       cut_end?: number;
+      // 视频封面：选择图片作为视频首帧（MinIO key，通过 uploadBadge 上传）
+      cover_image_key?: string;
     }
   ) =>
     client.post(`/episodes/${episodeId}/slice/run`, { mode, ...data }) as Promise<{

@@ -3653,6 +3653,48 @@ def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict,
     run_ffmpeg(cmd, timeout=3600, threads=threads)
 
 
+def apply_cover_first_frame(video_path: str, cover_path: str, out_path: str,
+                         threads: int = 1, encoder: str = "libx264") -> None:
+    """在成品开头叠加一张静止封面画面作为视频首帧（默认约 1.5s），再衔接源视频内容。
+
+    封面图会等比缩放并裁剪填满输出画面，生成一段无声静止片段前置到成品开头。
+    已生成源内容首帧即为封面（若封面图与源首帧不同，成品开头的画面即为封面）。
+    """
+    if not cover_path or not os.path.isfile(cover_path):
+        return
+    w, h = ffprobe_resolution(video_path)
+    if not w or not h:
+        w, h = 1280, 720
+    fps = ffprobe_framerate(video_path) or "25"
+    cover_mp4 = out_path + ".cover.mp4"
+    try:
+        # 生成静止封面片段（等比缩放+裁剪填满 + 无声音轨，时长 1.5s）
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-loop", "1", "-i", cover_path,
+            "-t", "1.5",
+            "-vf", (
+                f"scale={w}:{h}:force_original_aspect_ratio=increase,"
+                f"crop={w}:{h},setsar=1,fps={fps},format=yuv420p"
+            ),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k", "-shortest",
+            cover_mp4,
+        ]
+        run_ffmpeg(cmd, timeout=3600, threads=threads)
+        if not os.path.isfile(cover_mp4):
+            return
+        # 前置拼接：封面片段 + 原成品
+        concat_segments([cover_mp4, video_path], out_path, threads=threads, encoder=encoder)
+        print(f"视频封面已作为首帧叠加: {os.path.basename(out_path)}", file=sys.stderr)
+    finally:
+        try:
+            os.unlink(cover_mp4)
+        except OSError:
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("source")
@@ -3760,6 +3802,11 @@ def main():
         "--watermark-mask",
         default=None,
         help="恒定水印/角标打码配置 JSON（{\"enabled\":true, \"style\":\"delogo|mosaic|blur|gblur|fill\", \"width_ratio\":..., \"height_ratio\":..., \"bottom_ratio\":..., \"top_ratio\":..., \"x\":..., \"y\":..., \"width\":..., \"height\":...}）。开启后自动检测恒定出现的水印/角标区域（区别于间歇对话字幕），无检测结果时回退到指定比例区域（默认底部）。独立开关，仅打掉片源恒定水印",
+    )
+    parser.add_argument(
+        "--cover",
+        default=None,
+        help="视频封面图片路径（可选）。选择图片作为视频首帧：在成品开头叠加一张静止封面画面，再衔接源视频内容",
     )
     args = parser.parse_args()
 
@@ -4192,6 +4239,12 @@ def main():
                     threads=threads, encoder=encoder,
                 )
                 os.replace(txt_out, out_path)
+            # 视频封面：在成品开头叠加静止封面画面作为视频首帧
+            if args.cover:
+                cover_out = out_path + ".coverout.mp4"
+                apply_cover_first_frame(out_path, args.cover, cover_out, threads=threads, encoder=encoder)
+                if os.path.isfile(cover_out):
+                    os.replace(cover_out, out_path)
             duration = ffprobe_duration(out_path)
             outputs.append((name, duration))
             processed += 1

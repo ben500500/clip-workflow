@@ -22,11 +22,12 @@ from app.models.models import (
     AutoClipProject,
     AutoClipRun,
     SliceTask,
+    SliceOutput,
     DetectedInterval,
     user_can_access_all_materials,
 )
 from app.services.data_scope import check_project_access_by_episode
-from app.api.slice_helpers import _not_detect_task
+from app.api.slice_helpers import _not_detect_task, _serialize_output
 from app.services.minio_service import get_presigned_url, delete_file, list_files
 from app.utils.helpers import utc_iso
 
@@ -105,6 +106,29 @@ class EpisodeResponse(BaseModel):
 
 class EpisodeListResponse(BaseModel):
     items: List[EpisodeResponse]
+    total: int
+
+
+class ProjectOutputItem(BaseModel):
+    output_id: str
+    task_id: str
+    episode_id: str
+    episode_no: Optional[int] = None
+    episode_title: Optional[str] = None
+    mode: Optional[str] = None
+    task_status: Optional[str] = None
+    clip_id: Optional[str] = None
+    file_key: Optional[str] = None
+    file_name: Optional[str] = None
+    duration: Optional[float] = None
+    file_size: Optional[int] = None
+    resolution: Optional[str] = None
+    created_at: str
+    presigned_url: Optional[str] = None
+
+
+class ProjectOutputListResponse(BaseModel):
+    items: List[ProjectOutputItem]
     total: int
 
 
@@ -495,6 +519,89 @@ async def list_episodes(
         "items": [_serialize_episode(e) for e in episodes],
         "total": len(episodes),
     }
+
+
+@router.get("/projects/{project_id}/outputs", response_model=ProjectOutputListResponse)
+async def list_project_outputs(
+    project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """项目级成品预览：聚合项目下所有剧集的已完成切片任务产出（数据隔离）。
+
+    供「剧集列表下方成品预览 Tab」一次拉全，避免逐剧集轮询。
+    仅返回 completed 任务的成品，附带所属剧集信息便于按集展示。
+    """
+    try:
+        pid = uuid.UUID(project_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid project ID format")
+
+    result = await db.execute(select(Project).where(Project.id == pid))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not _check_project_access(project, current_user):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # 取项目下所有剧集 + 已完成切片任务
+    episodes_res = await db.execute(
+        select(Episode).where(Episode.project_id == pid)
+    )
+    episodes = episodes_res.scalars().all()
+    ep_ids = [e.id for e in episodes]
+    ep_map = {str(e.id): e for e in episodes}
+
+    if not ep_ids:
+        return {"items": [], "total": 0}
+
+    tasks_res = await db.execute(
+        select(SliceTask)
+        .where(SliceTask.episode_id.in_(ep_ids), SliceTask.status == "completed")
+        .order_by(SliceTask.created_at.asc())
+    )
+    tasks = tasks_res.scalars().all()
+    if not tasks:
+        return {"items": [], "total": 0}
+    task_ids = [t.id for t in tasks]
+    task_map = {str(t.id): t for t in tasks}
+
+    outputs_res = await db.execute(
+        select(SliceOutput)
+        .where(SliceOutput.task_id.in_(task_ids))
+        .order_by(SliceOutput.created_at.asc())
+    )
+    outputs = outputs_res.scalars().all()
+
+    items = []
+    for out in outputs:
+        task = task_map.get(str(out.task_id))
+        if not task:
+            continue
+        episode = ep_map.get(str(task.episode_id))
+        url = None
+        if out.file_key:
+            url = await get_presigned_url("sliced", out.file_key, expires_seconds=3600)
+        items.append({
+            "output_id": str(out.id),
+            "task_id": str(out.task_id),
+            "episode_id": str(task.episode_id),
+            "episode_no": episode.episode_no if episode else None,
+            "episode_title": episode.title if episode else None,
+            "mode": task.mode,
+            "task_status": task.status,
+            "clip_id": str(out.clip_id) if out.clip_id else None,
+            "file_key": out.file_key,
+            "file_name": out.file_name,
+            "duration": out.duration,
+            "file_size": out.file_size,
+            "resolution": out.resolution,
+            "created_at": utc_iso(out.created_at) if out.created_at else "",
+            "presigned_url": url,
+        })
+
+    return {"items": items, "total": len(items)}
+
 
 
 @router.get("/projects/{project_id}/workflow-status")
