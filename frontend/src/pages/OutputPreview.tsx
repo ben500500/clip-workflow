@@ -8,6 +8,7 @@ import { sliceApi } from '../api/slice';
 import { previewApi } from '../api/preview';
 import { publishApi } from '../api/publish';
 import { publishMaterialApi, type PublishMaterialRecord } from '../api/publishMaterial';
+import { listDramas, getDramaPublishContext, linkDramaMaterial, type Drama } from '../api/dramas';
 import type { Publication, SliceOutput, SliceTask, VideoAccount, MiniProgram } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
@@ -168,6 +169,9 @@ const OutputPreview: React.FC = () => {
   // 账号矩阵 / 小程序库（一期）
   const [videoAccounts, setVideoAccounts] = useState<VideoAccount[]>([]);
   const [miniPrograms, setMiniPrograms] = useState<MiniProgram[]>([]);
+  // 剧目库（发布弹窗选剧目 → 以剧情简介一键生成发布素材）
+  const [dramas, setDramas] = useState<Drama[]>([]);
+  const [generatingDramaMaterial, setGeneratingDramaMaterial] = useState(false);
 
   // ── 成品重新剪辑 ──
   const [recutModal, setRecutModal] = useState(false);
@@ -358,6 +362,13 @@ const OutputPreview: React.FC = () => {
     } catch {
       setMiniPrograms([]);
     }
+    // 加载剧目库（供选剧目 → 以剧情简介一键生成发布素材）
+    try {
+      const dramaList = await listDramas();
+      setDramas(dramaList);
+    } catch {
+      setDramas([]);
+    }
   };
 
   const submitPublish = async () => {
@@ -494,6 +505,64 @@ const OutputPreview: React.FC = () => {
       message.error(err instanceof Error ? err.message : '发布素材生成失败');
     } finally {
       setGeneratingMaterial(false);
+    }
+  };
+
+  // 选剧目 → 取剧情简介 → 以剧情简介一键生成发布素材 → 挂 material_id + 剧目关联
+  const onGenerateMaterialFromDrama = async () => {
+    const dramaId = publishForm.getFieldValue('drama_id');
+    if (!dramaId) {
+      message.warning('请先选择一个剧目');
+      return;
+    }
+    setGeneratingDramaMaterial(true);
+    try {
+      const ctx = await getDramaPublishContext(dramaId);
+      if (!ctx.has_synopsis) {
+        message.warning(`剧目「${ctx.name}」尚未填写剧情简介，请先在剧目库补充简介后再生成发布素材`);
+        return;
+      }
+      // 剧情简介作为 story 入参，题材 tags 作为额外要求，复用短片制作-发布素材链路
+      const res = await publishMaterialApi.generate({
+        story: ctx.story,
+        extra_requirements: ctx.tags?.length ? `题材：${ctx.tags.join('/')}` : undefined,
+        platform: 'wechat_channel',
+        save: true,
+      });
+      const m = res.material;
+      if (!res.record_id) {
+        message.warning('发布素材已生成但未保存记录，无法关联剧目');
+        return;
+      }
+      // 建立 剧目↔发布素材 关联（drama_materials）
+      await linkDramaMaterial(dramaId, res.record_id, publishForm.getFieldValue('video_account_id') || undefined).catch(() => {});
+      // 把新素材加入历史列表并选中，确保提交时带上 material_id（发布后自动置顶神评）
+      const newRecord: PublishMaterialRecord = {
+        id: res.record_id,
+        story: ctx.story,
+        title: m.short_title || null,
+        theme: null,
+        tone: null,
+        platform: 'wechat_channel',
+        extra_requirements: ctx.tags?.length ? `题材：${ctx.tags.join('/')}` : null,
+        model: res.model || null,
+        material: m,
+        prompt_record_id: null,
+        created_at: new Date().toISOString(),
+      };
+      setMaterialRecords((prev) => [newRecord, ...prev]);
+      publishForm.setFieldsValue({
+        title: m.short_title || '',
+        description: m.captions?.suspense_hook || '',
+        tags: Object.values(m.tags || {}).flat(),
+        material_id: newRecord.id,
+      });
+      setSelectedMaterial(newRecord);
+      message.success(`已根据剧目「${ctx.name}」的剧情简介生成标题/配文/标签，并关联该剧目`);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '按剧目生成发布素材失败');
+    } finally {
+      setGeneratingDramaMaterial(false);
     }
   };
 
@@ -788,6 +857,33 @@ const OutputPreview: React.FC = () => {
                 { value: 'kuaishou', label: '快手' },
               ]}
             />
+          </Form.Item>
+          <Form.Item label="关联剧目（选填，可用剧情简介一键生成发布素材）">
+            <Space.Compact style={{ width: '100%' }}>
+              <Form.Item name="drama_id" noStyle>
+                <Select
+                  style={{ width: '100%' }}
+                  allowClear
+                  showSearch
+                  placeholder="选择剧目，可自动带入剧情简介"
+                  optionFilterProp="label"
+                  options={dramas.map((d) => ({
+                    value: d.id,
+                    label: `${d.code} ${d.name}${d.frequency ? `（${d.frequency}）` : ''}`,
+                  }))}
+                />
+              </Form.Item>
+              <Button
+                icon={<ThunderboltOutlined />}
+                loading={generatingDramaMaterial}
+                onClick={onGenerateMaterialFromDrama}
+              >
+                按剧情简介生成发布素材
+              </Button>
+            </Space.Compact>
+            <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+              选择剧目后点击按钮，将调用短片制作-发布素材链路，把该剧目的剧情简介作为输入，自动生成短标题/三款配文/话题标签/置顶神评并挂到当前发布任务。
+            </div>
           </Form.Item>
           <Form.Item name="material_id" label="发布素材（选填，自动代入标题/配文/标签）">
             <Select
