@@ -282,7 +282,17 @@ async def create_drama(
     db.add(d)
     await db.flush()
     await _associate_accounts(db, d.id, data.account_ids or [])
-    await db.refresh(d)
+    # 重新预加载关系后序列化（async 会话同步访问 lazy 关系会触发 MissingGreenlet）
+    result = await db.execute(
+        select(Drama)
+        .where(Drama.id == d.id)
+        .options(
+            selectinload(Drama.stills),
+            selectinload(Drama.accounts),
+            selectinload(Drama.episodes),
+        )
+    )
+    d = result.scalar_one()
     return await _serialize_drama_detail(d)
 
 
@@ -947,7 +957,17 @@ async def link_drama_episodes(
             .execution_options(synchronize_session=False)
         )
     await db.commit()
-    await db.refresh(d)
+    # commit 后实例过期，重新预加载关系再序列化（避免 async 会话同步访问 lazy 关系触发 MissingGreenlet）
+    result = await db.execute(
+        select(Drama)
+        .where(Drama.id == d.id)
+        .options(
+            selectinload(Drama.stills),
+            selectinload(Drama.accounts),
+            selectinload(Drama.episodes),
+        )
+    )
+    d = result.scalar_one()
     return await _serialize_drama_detail(d)
 
 
