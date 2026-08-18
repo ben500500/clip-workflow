@@ -1,0 +1,30 @@
+# backend/app/api/channel_accounts.py
+
+- OperatorCreate · class · L38-L41 — class OperatorCreate(BaseModel)
+- OperatorUpdate · class · L44-L47 — class OperatorUpdate(BaseModel)
+- OperatorResponse · class · L50-L58 — class OperatorResponse(BaseModel)
+- ChannelAccountCreate · class · L61-L73 — class ChannelAccountCreate(BaseModel): # 视频号列表先登记：直接填写名称/视频号ID，创建后自动同步到账号库
+- ChannelAccountFromVideoAccount · class · L76-L88 — class ChannelAccountFromVideoAccount(BaseModel)
+- ChannelAccountUpdate · class · L91-L101 — class ChannelAccountUpdate(BaseModel)
+- ChannelAccountResponse · class · L104-L125 — class ChannelAccountResponse(BaseModel)
+- _serialize_operator · function · L130-L138 — def _serialize_operator(op: ChannelOperator) -> dict
+- _load_report_metrics · function · L141-L184 — async def _load_report_metrics(db: AsyncSession, video_account_ids: List[uuid.UUID]) -> dict
+- _serialize_channel_account · function · L187-L210 — def _serialize_channel_account(acc: ChannelAccount, report: Optional[dict] = None) -> dict
+- _reload_channel_account · function · L213-L221 — async def _reload_channel_account(db: AsyncSession, acc_id: uuid.UUID) -> ChannelAccount
+- _parse_date · function · L224-L232 — def _parse_date(value: Optional[str])
+- _parse_uuid · function · L235-L241 — def _parse_uuid(value: Optional[str], field: str)
+- _validate_operator_identity · function · L244-L250 — def _validate_operator_identity(op: OperatorCreate)
+- list_channel_accounts · function · L256-L289 — async def list_channel_accounts( keyword: Optional[str] = Query(None), enabled: Optional[bool] = Query(None), db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- get_channel_account · function · L293-L312 — async def get_channel_account( account_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- create_channel_account · function · L316-L361 — async def create_channel_account( data: ChannelAccountCreate, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- create_channel_from_video_account · function · L369-L403 — async def create_channel_from_video_account( data: ChannelAccountFromVideoAccount, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- update_channel_account · function · L407-L445 — async def update_channel_account( account_id: str, data: ChannelAccountUpdate, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- delete_channel_account · function · L449-L465 — async def delete_channel_account( account_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- add_operator · function · L471-L492 — async def add_operator( account_id: str, data: OperatorCreate, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- update_operator · function · L496-L533 — async def update_operator( account_id: str, op_id: str, data: OperatorUpdate, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- delete_operator · function · L537-L560 — async def delete_operator( account_id: str, op_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- _load_account · function · L565-L572 — async def _load_account(account_id: uuid.UUID, db: AsyncSession) -> ChannelAccount
+- _load_video_account · function · L575-L583 — async def _load_video_account(video_account_id: uuid.UUID, db: AsyncSession) -> VideoAccount
+- _find_or_create_video_account · function · L586-L630 — async def _find_or_create_video_account( db: AsyncSession, channel_name: str, wechat_id: str, platform: str, remark: Optional[str], current_user_id: Optional[uuid.UUID], ) -> VideoAccount
+- _ensure_no_existing · function · L633-L649 — async def _ensure_no_existing( video_account_id: uuid.UUID, db: AsyncSession, exclude_id: Optional[uuid.UUID], ) -> None
+- _check_access · function · L652-L656 — def _check_access(acc: ChannelAccount, current_user: Optional[User])

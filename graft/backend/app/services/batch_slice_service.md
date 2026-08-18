@@ -12,7 +12,7 @@
 - _trigger_detect · function · L204-L230 — async def _trigger_detect(episode_id: str, item: BatchSliceItem, user: User, detect_config: dict) -> str
 - _wait_detect · function · L233-L256 — async def _wait_detect(episode_id: str, timeout: float = DETECT_TIMEOUT)
 - _accept_all_candidates · function · L259-L271 — async def _accept_all_candidates(episode_id: str) -> int
-- _trigger_slice · function · L274-L304 — async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slice_config: dict) -> str
-- _wait_slice · function · L307-L333 — async def _wait_slice(episode_id: str, timeout: float = SLICE_TIMEOUT) -> tuple[bool, str, int]
-- _delete_source · function · L336-L357 — async def _delete_source(item: BatchSliceItem)
-- run_batch · function · L360-L533 — async def run_batch(batch_id: str)
+- _trigger_slice · function · L274-L305 — async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slice_config: dict) -> str
+- _wait_slice · function · L308-L334 — async def _wait_slice(episode_id: str, timeout: float = SLICE_TIMEOUT) -> tuple[bool, str, int]
+- _delete_source · function · L337-L358 — async def _delete_source(item: BatchSliceItem)
+- run_batch · function · L361-L534 — async def run_batch(batch_id: str)

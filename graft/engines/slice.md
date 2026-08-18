@@ -1,78 +1,80 @@
 # engines/slice.py
 
-- _even · function · L169-L174 — def _even(n: int) -> int
-- _resolve_dedupe_config · function · L177-L209 — def _resolve_dedupe_config(cfg: dict) -> dict
-- build_dedupe_filter · function · L212-L296 — def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0) -> tuple[str, str]
-- build_dedupe_watermark · function · L299-L340 — def build_dedupe_watermark(wm: dict, width: int = 0, height: int = 0) -> str
-- cpu_threads_for_percent · function · L343-L362 — def cpu_threads_for_percent(percent: int) -> int
-- parse_time · function · L365-L371 — def parse_time(s: str) -> float
-- read_cutlist · function · L374-L390 — def read_cutlist(path: str)
-- read_intervals · function · L393-L409 — def read_intervals(path: str)
-- subtract_intervals · function · L412-L434 — def subtract_intervals(cuts, intervals)
-- ffprobe_duration · function · L437-L446 — def ffprobe_duration(path: str) -> float
-- ffprobe_resolution · function · L449-L463 — def ffprobe_resolution(path: str) -> tuple[int, int]
-- ffprobe_size · function · L466-L482 — def ffprobe_size(path: str) -> tuple[int, int]
-- _fallback_libx264_args · function · L485-L513 — def _fallback_libx264_args(args, threads)
-- run_ffmpeg · function · L516-L534 — def run_ffmpeg(args, timeout=3600, threads=1): # 若未显式设置 -threads，则追加（避免并发切片抢占过多 CPU）
-- detect_best_encoder · function · L537-L565 — def detect_best_encoder(preferred: str | None = None) -> str
-- build_encoder_args · function · L568-L575 — def build_encoder_args(encoder: str, threads: int) -> list[str]
-- slice_segment · function · L578-L597 — def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="libx264", copy_if_possible=True): # fast 模式且无滤镜时走流拷贝（-c copy），只切不重编码，速度 10×+； # 需要滤镜（去重/水印/竖转横）或显式关闭时回退到重编码分支。
-- concat_segments · function · L600-L624 — def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True)
-- _is_copy_segment · function · L627-L632 — def _is_copy_segment(path: str) -> bool
-- _concat_demuxer · function · L635-L650 — def _concat_demuxer(parts, out)
-- safe_name · function · L653-L657 — def safe_name(name: str) -> str
-- _badge_scale_and_opacity · function · L682-L708 — def _badge_scale_and_opacity(badge: dict, default_width: int) -> str
-- build_badges_overlay_args · function · L711-L775 — def build_badges_overlay_args( badges: list, threads: int, encoder: str, default_width: int = BADGE_DEFAULT_WIDTH, ) -> list[str]
-- apply_badges · function · L778-L786 — def apply_badges(src, out, badges, threads=1, encoder="libx264", default_width: int = BADGE_DEFAULT_WIDTH)
-- _fc_match_sc_font · function · L860-L892 — def _fc_match_sc_font() -> str
-- _extract_sc_face · function · L895-L944 — def _extract_sc_face(ttc_path: str) -> str
-- _fontconfig_has_cjk_sc · function · L947-L962 — def _fontconfig_has_cjk_sc() -> bool
-- _resolve_drawtext_font · function · L965-L995 — def _resolve_drawtext_font() -> str
-- _build_text_overlays_filter · function · L998-L1067 — def _build_text_overlays_filter(text_overlays: list) -> str
-- apply_text_overlays · function · L1070-L1087 — def apply_text_overlays(src, out, text_overlays, threads=1, encoder="libx264")
-- build_watermark_filter · function · L1090-L1134 — def build_watermark_filter(wm: dict) -> str
-- _watermark_style_exprs · function · L1137-L1183 — def _watermark_style_exprs(style: str, base_y: str) -> tuple[str, str, str]
-- css_hex_to_ass · function · L1212-L1232 — def css_hex_to_ass(color: Optional[str]) -> str
-- _css_to_drawtext · function · L1235-L1251 — def _css_to_drawtext(color: Optional[str]) -> str
-- _parse_srt_timestamp · function · L1254-L1262 — def _parse_srt_timestamp(ts: str) -> float
-- _format_srt_timestamp · function · L1265-L1272 — def _format_srt_timestamp(seconds: float) -> str
-- read_srt · function · L1275-L1352 — def read_srt(path: str) -> list[dict]
-- detect_speech_windows · function · L1367-L1438 — def detect_speech_windows(video_path: str, silence_threshold: float = SILENCE_THRESHOLD_DB, min_silence: float = MIN_SILENCE_SECONDS) -> list[tuple]
-- _trim_to_speech · function · L1441-L1457 — def _trim_to_speech(start: float, end: float, speech_windows: list[tuple]) -> list[tuple]
-- _filter_and_align_srt · function · L1460-L1488 — def _filter_and_align_srt(records: list[dict], seg_start: float, seg_end: float, offset: float, out: list[dict], speech_windows: list[tuple] | None = None, scale: float = 1.0) -> None
-- build_clip_subtitle · function · L1491-L1530 — def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str, speech_windows: list[tuple] | None = None, scale: float = 1.0) -> str
-- burn_subtitle · function · L1535-L1632 — def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str, threads: int = 1, encoder: str = "libx264", font_ratio: Optional[float] = None, spacing: Optional[int] = None, style: Optional[str] = None, font_color: Optional[str] = None, border_color: Optional[str] = None, margin_v: Optional[int] = None, bold: Optional[int] = None) -> None
-- _mask_text_clusters · function · L1676-L1685 — def _mask_text_clusters(mask)
-- _split_tall_band · function · L1688-L1783 — def _split_tall_band(y0: int, y1: int, smooth, height: int, max_band_h: int)
-- detect_subtitle_region · function · L1786-L2058 — def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int, int, int, int]]]
-- _low_percentile · function · L2081-L2094 — def _low_percentile(values: list[float], p: float) -> float
-- _bimodal_threshold · function · L2097-L2138 — def _bimodal_threshold(values: list[float]) -> float
-- detect_watermark_region · function · L2141-L2276 — def detect_watermark_region(video: str, max_frames: int = 12) -> Optional[list[tuple[int, int, int, int]]]
-- detect_subtitle_temporal_windows · function · L2279-L2405 — def detect_subtitle_temporal_windows(video: str, region: tuple[int, int, int, int], max_frames: int = 600) -> Optional[list[tuple]]
-- detect_subtitle_spatial_regions · function · L2417-L2504 — def detect_subtitle_spatial_regions(video: str, region: tuple[int, int, int, int], temporal_windows: list[tuple]) -> Optional[list[tuple]]
-- detect_subtitle_dynamic_regions · function · L2519-L2664 — def detect_subtitle_dynamic_regions(video: str, srt: str) -> Optional[list[tuple]]
-- _parse_subtitle_mask_config · function · L2667-L2677 — def _parse_subtitle_mask_config(raw: str | None) -> dict | None
-- _source_intervals_to_local_intervals · function · L2680-L2707 — def _source_intervals_to_local_intervals(src_intervals: list[tuple], seg_times: list[tuple], scale: float = 1.0) -> list[tuple]
-- _scale_region · function · L2710-L2725 — def _scale_region(region: tuple, cfg: dict, width: int, height: int) -> tuple
-- _mask_enable_expr · function · L2728-L2731 — def _mask_enable_expr(intervals: list[tuple]) -> str
-- _source_intervals_to_local_enable · function · L2734-L2765 — def _source_intervals_to_local_enable(src_intervals: list[tuple], seg_times: list[tuple], scale: float = 1.0) -> str
-- _spatial_windows_to_local · function · L2768-L2809 — def _spatial_windows_to_local(src_windows: list[tuple], seg_times: list[tuple], cfg: dict, width: int, scale: float = 1.0) -> list[tuple]
-- _dynamic_windows_to_local · function · L2812-L2859 — def _dynamic_windows_to_local(src_windows: list[tuple], seg_times: list[tuple], cfg: dict, width: int, height: int, scale: float = 1.0) -> list[tuple]
-- build_subtitle_mask_enable · function · L2862-L2881 — def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple], offset: float = 0.0, scale: float = 1.0) -> str
-- _subtitle_mask_area · function · L2884-L2931 — def _subtitle_mask_area(cfg: dict, width: int, height: int) -> tuple[int, int, int, int]
-- _f · function · L2895-L2902 — def _f(key, default)
-- subtitle_mask_bottom_margin · function · L2934-L2994 — def subtitle_mask_bottom_margin(cfg: dict, width: int, height: int) -> int
-- _merge_regions · function · L2997-L3023 — def _merge_regions(regions: list[tuple], gap: int = 30) -> list[tuple]
-- _scale_regions · function · L3026-L3043 — def _scale_regions(regions: list[tuple], cfg: dict, width: int, height: int) -> list[tuple]
-- build_subtitle_mask_filter · function · L3046-L3099 — def build_subtitle_mask_filter(cfg: dict, enable: str) -> str
-- build_subtitle_mask_filter_multi · function · L3102-L3185 — def build_subtitle_mask_filter_multi(cfg: dict, windows: list[tuple], y: int, h: int, width: int) -> str
-- _clip · function · L3121-L3124 — def _clip(x, w, width)
-- build_subtitle_mask_filter_multi_region · function · L3188-L3272 — def build_subtitle_mask_filter_multi_region(cfg: dict, regions: list[tuple], enable: str = "", width: int = 0, height: int = 0) -> str
-- _clip · function · L3208-L3215 — def _clip(x, y, w, h)
-- build_subtitle_mask_filter_multi_region_windows · function · L3275-L3361 — def build_subtitle_mask_filter_multi_region_windows(cfg: dict, region_windows: list, width: int = 0, height: int = 0) -> str
-- _enable · function · L3291-L3295 — def _enable(windows: list) -> str
-- build_subtitle_mask_filter_dynamic · function · L3364-L3443 — def build_subtitle_mask_filter_dynamic(cfg: dict, windows: list, width: int = 0, height: int = 0) -> str
-- apply_subtitle_mask · function · L3446-L3551 — def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict, enable: str = "", spatial_windows: Optional[list[tuple]] = None, dynamic_windows: Optional[list[tuple]] = None, seg_times: Optional[list[tuple]] = None, threads: int = 1, encoder: str = "libx264") -> None
-- main · function · L3554-L4104 — def main()
-- parse_vert2horiz_config · function · L4107-L4117 — def parse_vert2horiz_config(raw: str) -> dict | None
-- apply_vert2horiz · function · L4120-L4179 — def apply_vert2horiz(source: str, cfg: dict) -> str
+- _even · function · L174-L179 — def _even(n: int) -> int
+- _resolve_dedupe_config · function · L182-L214 — def _resolve_dedupe_config(cfg: dict) -> dict
+- build_dedupe_filter · function · L217-L317 — def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: str = "") -> tuple[str, str]
+- build_dedupe_audio_filter · function · L320-L345 — def build_dedupe_audio_filter(mode) -> str
+- build_dedupe_watermark · function · L348-L389 — def build_dedupe_watermark(wm: dict, width: int = 0, height: int = 0) -> str
+- cpu_threads_for_percent · function · L392-L411 — def cpu_threads_for_percent(percent: int) -> int
+- parse_time · function · L414-L420 — def parse_time(s: str) -> float
+- read_cutlist · function · L423-L439 — def read_cutlist(path: str)
+- read_intervals · function · L442-L458 — def read_intervals(path: str)
+- subtract_intervals · function · L461-L483 — def subtract_intervals(cuts, intervals)
+- ffprobe_duration · function · L486-L495 — def ffprobe_duration(path: str) -> float
+- ffprobe_resolution · function · L498-L512 — def ffprobe_resolution(path: str) -> tuple[int, int]
+- ffprobe_framerate · function · L515-L541 — def ffprobe_framerate(path: str) -> str
+- ffprobe_size · function · L544-L560 — def ffprobe_size(path: str) -> tuple[int, int]
+- _fallback_libx264_args · function · L563-L591 — def _fallback_libx264_args(args, threads)
+- run_ffmpeg · function · L594-L612 — def run_ffmpeg(args, timeout=3600, threads=1): # 若未显式设置 -threads，则追加（避免并发切片抢占过多 CPU）
+- detect_best_encoder · function · L615-L643 — def detect_best_encoder(preferred: str | None = None) -> str
+- build_encoder_args · function · L646-L653 — def build_encoder_args(encoder: str, threads: int) -> list[str]
+- slice_segment · function · L656-L675 — def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="libx264", copy_if_possible=True): # fast 模式且无滤镜时走流拷贝（-c copy），只切不重编码，速度 10×+； # 需要滤镜（去重/水印/竖转横）或显式关闭时回退到重编码分支。
+- concat_segments · function · L678-L702 — def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True)
+- _is_copy_segment · function · L705-L710 — def _is_copy_segment(path: str) -> bool
+- _concat_demuxer · function · L713-L728 — def _concat_demuxer(parts, out)
+- safe_name · function · L731-L735 — def safe_name(name: str) -> str
+- _badge_scale_and_opacity · function · L760-L786 — def _badge_scale_and_opacity(badge: dict, default_width: int) -> str
+- build_badges_overlay_args · function · L789-L853 — def build_badges_overlay_args( badges: list, threads: int, encoder: str, default_width: int = BADGE_DEFAULT_WIDTH, ) -> list[str]
+- apply_badges · function · L856-L864 — def apply_badges(src, out, badges, threads=1, encoder="libx264", default_width: int = BADGE_DEFAULT_WIDTH)
+- _fc_match_sc_font · function · L938-L970 — def _fc_match_sc_font() -> str
+- _extract_sc_face · function · L973-L1022 — def _extract_sc_face(ttc_path: str) -> str
+- _fontconfig_has_cjk_sc · function · L1025-L1040 — def _fontconfig_has_cjk_sc() -> bool
+- _resolve_drawtext_font · function · L1043-L1073 — def _resolve_drawtext_font() -> str
+- _build_text_overlays_filter · function · L1076-L1145 — def _build_text_overlays_filter(text_overlays: list) -> str
+- apply_text_overlays · function · L1148-L1165 — def apply_text_overlays(src, out, text_overlays, threads=1, encoder="libx264")
+- build_watermark_filter · function · L1168-L1212 — def build_watermark_filter(wm: dict) -> str
+- _watermark_style_exprs · function · L1215-L1261 — def _watermark_style_exprs(style: str, base_y: str) -> tuple[str, str, str]
+- css_hex_to_ass · function · L1290-L1310 — def css_hex_to_ass(color: Optional[str]) -> str
+- _css_to_drawtext · function · L1313-L1329 — def _css_to_drawtext(color: Optional[str]) -> str
+- _parse_srt_timestamp · function · L1332-L1340 — def _parse_srt_timestamp(ts: str) -> float
+- _format_srt_timestamp · function · L1343-L1350 — def _format_srt_timestamp(seconds: float) -> str
+- read_srt · function · L1353-L1430 — def read_srt(path: str) -> list[dict]
+- detect_speech_windows · function · L1445-L1516 — def detect_speech_windows(video_path: str, silence_threshold: float = SILENCE_THRESHOLD_DB, min_silence: float = MIN_SILENCE_SECONDS) -> list[tuple]
+- _trim_to_speech · function · L1519-L1535 — def _trim_to_speech(start: float, end: float, speech_windows: list[tuple]) -> list[tuple]
+- _filter_and_align_srt · function · L1538-L1566 — def _filter_and_align_srt(records: list[dict], seg_start: float, seg_end: float, offset: float, out: list[dict], speech_windows: list[tuple] | None = None, scale: float = 1.0) -> None
+- build_clip_subtitle · function · L1569-L1608 — def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str, speech_windows: list[tuple] | None = None, scale: float = 1.0) -> str
+- burn_subtitle · function · L1613-L1710 — def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str, threads: int = 1, encoder: str = "libx264", font_ratio: Optional[float] = None, spacing: Optional[int] = None, style: Optional[str] = None, font_color: Optional[str] = None, border_color: Optional[str] = None, margin_v: Optional[int] = None, bold: Optional[int] = None) -> None
+- _mask_text_clusters · function · L1754-L1763 — def _mask_text_clusters(mask)
+- _split_tall_band · function · L1766-L1861 — def _split_tall_band(y0: int, y1: int, smooth, height: int, max_band_h: int)
+- detect_subtitle_region · function · L1864-L2136 — def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int, int, int, int]]]
+- _low_percentile · function · L2159-L2172 — def _low_percentile(values: list[float], p: float) -> float
+- _bimodal_threshold · function · L2175-L2216 — def _bimodal_threshold(values: list[float]) -> float
+- detect_watermark_region · function · L2219-L2354 — def detect_watermark_region(video: str, max_frames: int = 12) -> Optional[list[tuple[int, int, int, int]]]
+- detect_subtitle_temporal_windows · function · L2357-L2483 — def detect_subtitle_temporal_windows(video: str, region: tuple[int, int, int, int], max_frames: int = 600) -> Optional[list[tuple]]
+- detect_subtitle_spatial_regions · function · L2495-L2582 — def detect_subtitle_spatial_regions(video: str, region: tuple[int, int, int, int], temporal_windows: list[tuple]) -> Optional[list[tuple]]
+- detect_subtitle_dynamic_regions · function · L2597-L2742 — def detect_subtitle_dynamic_regions(video: str, srt: str) -> Optional[list[tuple]]
+- _parse_subtitle_mask_config · function · L2745-L2755 — def _parse_subtitle_mask_config(raw: str | None) -> dict | None
+- _source_intervals_to_local_intervals · function · L2758-L2785 — def _source_intervals_to_local_intervals(src_intervals: list[tuple], seg_times: list[tuple], scale: float = 1.0) -> list[tuple]
+- _scale_region · function · L2788-L2803 — def _scale_region(region: tuple, cfg: dict, width: int, height: int) -> tuple
+- _mask_enable_expr · function · L2806-L2809 — def _mask_enable_expr(intervals: list[tuple]) -> str
+- _source_intervals_to_local_enable · function · L2812-L2843 — def _source_intervals_to_local_enable(src_intervals: list[tuple], seg_times: list[tuple], scale: float = 1.0) -> str
+- _spatial_windows_to_local · function · L2846-L2887 — def _spatial_windows_to_local(src_windows: list[tuple], seg_times: list[tuple], cfg: dict, width: int, scale: float = 1.0) -> list[tuple]
+- _dynamic_windows_to_local · function · L2890-L2937 — def _dynamic_windows_to_local(src_windows: list[tuple], seg_times: list[tuple], cfg: dict, width: int, height: int, scale: float = 1.0) -> list[tuple]
+- build_subtitle_mask_enable · function · L2940-L2959 — def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple], offset: float = 0.0, scale: float = 1.0) -> str
+- _subtitle_mask_area · function · L2962-L3009 — def _subtitle_mask_area(cfg: dict, width: int, height: int) -> tuple[int, int, int, int]
+- _f · function · L2973-L2980 — def _f(key, default)
+- subtitle_mask_bottom_margin · function · L3012-L3072 — def subtitle_mask_bottom_margin(cfg: dict, width: int, height: int) -> int
+- _merge_regions · function · L3075-L3101 — def _merge_regions(regions: list[tuple], gap: int = 30) -> list[tuple]
+- _scale_regions · function · L3104-L3121 — def _scale_regions(regions: list[tuple], cfg: dict, width: int, height: int) -> list[tuple]
+- build_subtitle_mask_filter · function · L3124-L3177 — def build_subtitle_mask_filter(cfg: dict, enable: str) -> str
+- build_subtitle_mask_filter_multi · function · L3180-L3263 — def build_subtitle_mask_filter_multi(cfg: dict, windows: list[tuple], y: int, h: int, width: int) -> str
+- _clip · function · L3199-L3202 — def _clip(x, w, width)
+- build_subtitle_mask_filter_multi_region · function · L3266-L3350 — def build_subtitle_mask_filter_multi_region(cfg: dict, regions: list[tuple], enable: str = "", width: int = 0, height: int = 0) -> str
+- _clip · function · L3286-L3293 — def _clip(x, y, w, h)
+- build_subtitle_mask_filter_multi_region_windows · function · L3353-L3439 — def build_subtitle_mask_filter_multi_region_windows(cfg: dict, region_windows: list, width: int = 0, height: int = 0) -> str
+- _enable · function · L3369-L3373 — def _enable(windows: list) -> str
+- build_subtitle_mask_filter_dynamic · function · L3442-L3521 — def build_subtitle_mask_filter_dynamic(cfg: dict, windows: list, width: int = 0, height: int = 0) -> str
+- apply_subtitle_mask · function · L3524-L3629 — def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict, enable: str = "", spatial_windows: Optional[list[tuple]] = None, dynamic_windows: Optional[list[tuple]] = None, seg_times: Optional[list[tuple]] = None, threads: int = 1, encoder: str = "libx264") -> None
+- main · function · L3632-L4183 — def main()
+- parse_vert2horiz_config · function · L4186-L4196 — def parse_vert2horiz_config(raw: str) -> dict | None
+- apply_vert2horiz · function · L4199-L4258 — def apply_vert2horiz(source: str, cfg: dict) -> str
