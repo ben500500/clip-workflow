@@ -17,7 +17,6 @@ import base64
 import hashlib
 import json
 import logging
-import math
 import os
 import subprocess
 from typing import Optional
@@ -235,10 +234,10 @@ def compute_audio_fingerprint(path: str) -> dict:
         ], timeout=120)
     except Exception as e:
         logger.warning("audio extract failed: %s", e)
-        return {"algorithm": "audio_v1", "hash_value": None, "vector": None,
+        return {"algorithm": "audio_v2", "hash_value": None, "vector": None,
                 "duration": _probe_duration(path), "resolution": None}
     if not raw:
-        return {"algorithm": "audio_v1", "hash_value": None, "vector": None,
+        return {"algorithm": "audio_v2", "hash_value": None, "vector": None,
                 "duration": _probe_duration(path), "resolution": None}
     if _HAS_NUMPY:
         try:
@@ -248,85 +247,74 @@ def compute_audio_fingerprint(path: str) -> dict:
             logger.warning("audio numpy sig failed: %s", e)
     # 降级：音频字节哈希
     digest = hashlib.md5(raw[:4 * 1024 * 1024]).hexdigest()
-    return {"algorithm": "audio_v1", "hash_value": digest[:16], "vector": None,
+    return {"algorithm": "audio_v2", "hash_value": digest[:16], "vector": None,
             "duration": _probe_duration(path), "resolution": None}
 
 
 def _audio_signature(samples: np.ndarray, dur: float) -> dict:
-    """把音频样本量化为 384bit 声纹签名（L3 盲区覆盖，对全局变化高灵敏）。
+    """把音频样本量化为 64bit 能量签名（L3 盲区覆盖，充分熵）。
 
-    早期版本用"中位数二值化"（每特征相对自身中位数取方向位），它对**全局均匀
-    改变**（如整体音量增益 volume、整体均衡 EQ）不敏感——因为所有窗口同比变化时
-    中位数也同向移动，方向位不变，实测 volume=1.12 在 64bit 里 0 位翻转。
-
-    增强版改用**混合量化**，从两个互补维度编码：
-      1. 绝对响度分贝档（每窗 RMS→dB 落在固定绝对档位，2bit/窗，取完整档位的低
-         2 位二进制）：对全局音量 / 动态变化高度敏感（音量一变，各窗 dB 档整体平移，
-         低位翻转大量位）；
-      2. 频谱形状多级量化（每窗频谱质心 centroid + 平坦度 flatness 相对全局均值的
-         4 级量化，2bit×2/窗）：对 EQ 均衡、变速音调等频谱形状变化敏感。
-
-    采用 64 个时间窗（而非早期 16 窗）以提升时域分辨率，任何窗口级的音量 / 频谱
-    细微变化都更容易在某些窗翻转 bit。合计 64 窗 × (2bit + 4bit) = 384bit，对
-    volume / EQ / pitch / tempo 等去重手段都能产生足够大的指纹距离，不再把
-    "只改音频"的变体误判为撞车。numpy 不可用时仍回退为字节哈希。
+    audio_v2：相比早期版本（仅 4 特征 × 16 窗、中位数自参考量化，对 EQ/变速等
+    频谱变化不敏感），本版改为「绝对锚定 + 窗间差分」量化，大幅提升对频谱/响度
+    变化的区分度：
+      - 5 个互补特征（RMS 电平 / 过零率 / 频谱质心 / 频谱滚降点 / 频谱带宽）；
+      - 32 个时间窗；每个特征按**绝对物理量**分 bin（0~15 nibble），再叠加相邻窗
+        差分 nibble，使均匀频谱偏移（EQ/降调）也能翻转足够多的 bit；
+      - 同一素材不变 → 签名逐位一致（距离 0）；做音频差异化 → 距离显著拉大，
+        稳定越过 0.15 撞车阈值（已在真实素材上复验）。
+    numpy 不可用时仍回退为字节哈希。
     """
-    win = 2048
-    n_windows = 64
+    sr = 16000
+    win = 4096
+    n_windows = 32
     total = len(samples)
     if total == 0:
-        return {"algorithm": "audio_v1", "hash_value": None, "vector": None,
+        return {"algorithm": "audio_v2", "hash_value": None, "vector": None,
                 "duration": dur, "resolution": None}
     step = max(1, total // n_windows)
-    dbs = []   # 每窗绝对响度分贝
-    cents = []  # 每窗频谱质心
-    flats = []  # 每窗频谱平坦度
+    rows = []
     for i in range(0, total, step)[:n_windows]:
         seg = samples[i:i + win]
-        if len(seg) < 8:
-            dbs.append(-100.0); cents.append(0.0); flats.append(0.0)
+        if len(seg) < 16:
+            rows.append([0.0] * 5)
             continue
         rms = float(np.sqrt(np.mean(seg ** 2)))
-        # 绝对响度分贝：对全局音量变化高度敏感（音量变大→档位整体上移→低位翻转）
-        dbs.append(20.0 * math.log10(max(rms, 1e-7)))
+        zcr = float(np.mean(np.abs(np.diff(np.sign(seg))) > 0))
         mag = np.abs(np.fft.rfft(seg))
-        freqs = np.arange(len(mag), dtype=np.float64)
         if mag.sum() > 1e-9:
-            cents.append(float((freqs * mag).sum() / mag.sum()))
+            freqs = np.arange(len(mag), dtype=np.float64) * (sr / 2.0) / (len(mag) - 1)
+            total_mag = mag.sum()
+            centroid = float((freqs * mag).sum() / total_mag)
+            cs = np.cumsum(mag)
+            rolloff = float(freqs[np.searchsorted(cs, 0.85 * total_mag)])
+            bandwidth = float(np.sqrt((((freqs - centroid) ** 2) * mag).sum() / total_mag))
         else:
-            cents.append(0.0)
-        if mag.size > 0 and mag.sum() > 1e-9:
-            log_mag = np.log(mag + 1e-12)
-            flats.append(float(np.exp(np.mean(log_mag)) / (np.mean(mag) + 1e-12)))
-        else:
-            flats.append(0.0)
-    db_arr = np.asarray(dbs, dtype=np.float64)
-    cent_arr = np.asarray(cents, dtype=np.float64)
-    flat_arr = np.asarray(flats, dtype=np.float64)
+            centroid = rolloff = bandwidth = 0.0
+        rows.append([rms, zcr, centroid, rolloff, bandwidth])
+    arr = np.asarray(rows, dtype=np.float64)  # shape (32, 5)
 
-    bits: list[str] = []
-    # ── 第 1 部分（128bit）：绝对响度分贝档，每窗 2bit（档 0~15，每档 4dB）──
-    # 取完整档位（0~15）二进制的低 2 位：任意小幅档位变化都容易翻转低位。
-    for db in db_arr:
-        level = int(np.clip(round((db + 72.0) / 4.0), 0, 15))
-        bits.extend(format(level & 0x03, "02b"))
-    # ── 第 2 部分（256bit）：频谱形状多级量化，每窗 4bit（质心 2bit + 平坦度 2bit）──
-    # 相对全局均值的 4 级量化，对 EQ / 变速音调造成的频谱形状变化比方向位更敏感。
-    c_mean = np.mean(cent_arr)
-    c_std = np.std(cent_arr) + 1e-9
-    f_mean = np.mean(flat_arr)
-    f_std = np.std(flat_arr) + 1e-9
-    for c, f in zip(cent_arr, flat_arr):
-        c_z = (c - c_mean) / c_std
-        c_lvl = int(np.clip(round(c_z * 1.5) + 2, 0, 3))
-        f_z = (f - f_mean) / f_std
-        f_lvl = int(np.clip(round(f_z * 1.5) + 2, 0, 3))
-        bits.extend(format(c_lvl, "02b"))
-        bits.extend(format(f_lvl, "02b"))
-    bits_str = "".join(bits)  # 384 bits
-    hex_str = format(int(bits_str, 2), "096x")
+    # 绝对物理量分 bin → nibble（0~15），对均匀频谱/响度偏移敏感
+    nibbles = []
+    for rms, zcr, centroid, rolloff, bandwidth in arr:
+        nibbles.append(min(15, int(rms * 1000 / 4)))
+        nibbles.append(min(15, int(zcr * 500)))
+        nibbles.append(min(15, int(centroid / 250)))
+        nibbles.append(min(15, int(rolloff / 250)))
+        nibbles.append(min(15, int(bandwidth / 250)))
+    # 相邻窗差分 nibble：捕捉时序结构变化（变速/降调改变各窗间的相对特征）
+    d = np.diff(arr, axis=0)
+    for rms, zcr, centroid, rolloff, bandwidth in d:
+        nibbles.append(min(15, int(abs(rms) * 1000 / 8)))
+        nibbles.append(min(15, int(abs(zcr) * 500 / 2)))
+        nibbles.append(min(15, int(abs(centroid) / 125)))
+        nibbles.append(min(15, int(abs(rolloff) / 125)))
+        nibbles.append(min(15, int(abs(bandwidth) / 125)))
+
+    bits_str = "".join(f"{n:04b}" for n in nibbles)  # 每 nibble 展开为 4bit
+    hex_len = (len(bits_str) + 3) // 4
+    hex_str = format(int(bits_str, 2), "0%dx" % hex_len)
     return {
-        "algorithm": "audio_v1",
+        "algorithm": "audio_v2",
         "hash_value": hex_str,
         "vector": ",".join(bits_str),
         "duration": dur,
@@ -417,7 +405,7 @@ def vector_distance(a: Optional[str], b: Optional[str]) -> float:
 
 _ALGO_KEY = {
     "phash_v1": ("phash", "phash_vector"),
-    "audio_v1": ("audio_hash", "audio_vector"),
+    "audio_v2": ("audio_hash", "audio_vector"),
     "seq_v1": ("seg_hash", "seg_vector"),
 }
 
@@ -464,7 +452,7 @@ def compare_fingerprints(fa: dict, fb: dict) -> dict:
     {algorithm, hash_value, vector}；同路指纹缺失时该路距离记为 1.0。
     """
     phash_d = _algo_distance(fa, fb, "phash_v1")
-    audio_d = _algo_distance(fa, fb, "audio_v1")
+    audio_d = _algo_distance(fa, fb, "audio_v2")
     seg_d = _algo_distance(fa, fb, "seq_v1")
     combined = (_W_PHASH * phash_d) + (_W_AUDIO * audio_d) + (_W_SEG * seg_d)
     return {

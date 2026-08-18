@@ -152,22 +152,22 @@ DEDUPE_PRESETS = {
         "watermark": None,
         "audio": None,  # 音频指纹差异化（L3），None 不叠加，仅多版本变体使用
     },
-    # std_retro_scan 保留（供手动选择）：无镜像，但明显影响画质的复古暖调/扫描线/
-    #   噪点已按画质优先降到最低（偏色≈0、色温≈中性、无扫描线、噪点≈0），
-    #   默认不再作为系统首选档位。
+    # std_retro_scan 复古扫描（第二选择，非默认）：还原老电视扫描线+噪点质感——
+    #   复古暖调（偏色+色温5800）+ 噪点 + 扫描线 + 暗角，适合追求复古出片质感的场景。
+    #   默认仍是 std_crop_desat（画质优先），本档位保留作为手动选择的第二档。
     "std_retro_scan": {
         "crop": 0.05,
         "hflip": False,
         "speed": 1.04,
-        "saturation": 0.88,
-        "gamma": 1.02,
-        "contrast": 1.02,
-        "brightness": 0.008,
-        "colorbalance": "rs=0:gs=0:bs=0:rm=0:gm=0:bm=0",
-        "colortemperature": "temperature=6500",
-        "noise": 1,
-        "scanline": None,
-        "vignette": None,
+        "saturation": 0.85,
+        "gamma": 1.03,
+        "contrast": 1.03,
+        "brightness": 0.01,
+        "colorbalance": "rs=.06:gs=.03:bs=-.06:rm=.06:gm=.03:bm=-.06",
+        "colortemperature": "temperature=5800",
+        "noise": 7,
+        "scanline": {"h": 3, "color": "black@0.10"},
+        "vignette": "PI/5",
         "roll_band": 0,
         "jitter": 0,
         "sharpen": 0.4,
@@ -331,10 +331,14 @@ def build_dedupe_audio_filter(mode) -> str:
 
     模式（mode）：
       - None / "" / "none"：不叠加（默认，普通去重保持不变）。
-      - "volume"：轻微音量增益，改变响度分布。
-      - "eq_mild"：轻微中频 EQ（提升/压低），改变频谱指纹。
+      - "volume"：音量增益（默认 1.12，改变响度分布）。
+      - "eq_mild"：中频 EQ（提升/压低），改变频谱指纹。
       - "eq_strong"：更强 EQ（多频段均衡），频谱指纹差异更明显。
-      - "pitch"：轻微变速音调（asetrate+aresample），改音高/节奏指纹。
+      - "pitch" / "pitch_down"：降调（asetrate+aresample），改音高/节奏指纹。
+      - "pitch_up"：升调（asetrate+aresample）。
+      - "bandpass"：带通滤波（切除极低/极高），改频谱包络。
+      - "bass_boost"：低频增强 + 高频衰减。
+      - "vocal_boost"：人声带通增强（350Hz~9kHz 带通 + 1.8kHz 人声带提升）。
     返回空字符串表示不叠加。
     """
     if not mode:
@@ -343,23 +347,25 @@ def build_dedupe_audio_filter(mode) -> str:
     if m in ("none", "null"):
         return ""
     if m == "volume":
-        # 动态压缩 + 增益：整体响度分布明显改变，人耳仍自然（L3 音量指纹差异化）
-        return "acompressor=threshold=-20dB:ratio=3:attack=20:release=250,volume=1.5"
+        return "volume=1.12"
     if m == "eq_mild":
-        return "equalizer=f=2500:t=q:w=1.0:g=5,equalizer=f=400:t=q:w=1.0:g=-3"
+        return ("equalizer=f=2500:t=q:w=0.8:g=5,equalizer=f=400:t=q:w=0.8:g=-3,"
+                "equalizer=f=8000:t=q:w=0.8:g=2")
     if m == "eq_strong":
-        return ("equalizer=f=300:t=q:w=0.8:g=10,equalizer=f=1200:t=q:w=0.8:g=-7,"
-                "equalizer=f=4200:t=q:w=0.8:g=7,equalizer=f=9000:t=q:w=0.8:g=-6")
-    if m == "bass_treble":
-        return "bass=g=6:f=120,treble=g=-5:f=4000"
-    if m == "pitch":
-        # 明显变速音调（改音高/节奏指纹）+ 轻 EQ，确保频谱与时序指纹同时拉开；
-        # atempo 回补时长避免音画时长漂移。
-        return ("asetrate=44100*0.94,aresample=44100,atempo=1.064,"
-                "equalizer=f=300:t=q:w=0.8:g=6,equalizer=f=5000:t=q:w=0.8:g=-4")
-    if m == "chorus":
-        # 回声/合唱效果：同时改变频谱与时序指纹（L3 差异化最明显的一档）
-        return "aecho=0.8:0.9:500|1000:0.4|0.3"
+        return ("equalizer=f=300:t=q:w=0.6:g=7,equalizer=f=1000:t=q:w=0.6:g=-5,"
+                "equalizer=f=3500:t=q:w=0.7:g=6,equalizer=f=8000:t=q:w=0.6:g=-4,"
+                "equalizer=f=12000:t=q:w=0.6:g=3")
+    if m in ("pitch", "pitch_down"):
+        return "asetrate=44100*0.90,aresample=44100"
+    if m == "pitch_up":
+        return "asetrate=44100*1.12,aresample=44100"
+    if m == "bandpass":
+        return "highpass=f=150,lowpass=f=8000"
+    if m == "bass_boost":
+        return ("equalizer=f=120:t=q:w=0.8:g=8,equalizer=f=5000:t=q:w=0.8:g=-4")
+    if m == "vocal_boost":
+        return ("highpass=f=350,lowpass=f=9000,equalizer=f=1800:t=q:w=0.7:g=7,"
+                "equalizer=f=6000:t=q:w=0.7:g=-4")
     return ""
 
 
