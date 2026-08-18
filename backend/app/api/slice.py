@@ -32,6 +32,7 @@ from app.models.models import (
     SliceOutput,
     ClipCandidate,
     DetectedInterval,
+    AutoClipProject,
     User,
     UserPreference,
 )
@@ -80,6 +81,9 @@ from app.api.slice_helpers import (
     _dispatch_celery,
     _verify_worker_token,
 )
+# 后端兜底：无候选片段时复用 autoclip 的选点触发流程（仅 auto_autoclip_if_empty 分支导入使用，
+# 无循环依赖：autoclip 模块不反向导入 slice）
+from app.api.autoclip import AutoClipRunRequest, run_autoclip
 
 logger = logging.getLogger(__name__)
 
@@ -404,6 +408,56 @@ async def run_slice(
                         )
                         all_clips = retry_clips
                         break
+            if not all_clips and data.auto_autoclip_if_empty:
+                # 后端兜底：无候选片段时自动补一轮 AI 选点（复用 autoclip run 流程），
+                # 等待选点完成后重新取候选再切片——前端提交即走、关窗口安全。
+                logger.info(
+                    "Episode %s 无候选片段，自动补一轮 AI 选点（后端兜底）", eid
+                )
+                try:
+                    await run_autoclip(
+                        episode_id,
+                        AutoClipRunRequest(config=data.autoclip_config),
+                        current_user,
+                        db,
+                    )
+                except HTTPException as e:
+                    # 选点触发失败（如 autoclip 服务不可达）不阻断，继续走整片回退/报错分支
+                    logger.warning(
+                        "Episode %s 自动补选点触发失败: %s", eid, e.detail
+                    )
+                else:
+                    # 轮询等待选点完成（最长 ~10 分钟，每 5s 查一次 DB 状态）
+                    for _ in range(120):
+                        await asyncio.sleep(5)
+                        st_result = await db.execute(
+                            select(AutoClipProject.pipeline_status).where(
+                                AutoClipProject.episode_id == eid
+                            )
+                        )
+                        st = st_result.scalar_one_or_none()
+                        if st in ("completed", "failed"):
+                            break
+                    # 重新取候选（含竞态：选点标 completed 后候选落库约滞后 1-2s）
+                    for _ in range(10):
+                        retry_result = await db.execute(
+                            select(ClipCandidate)
+                            .where(ClipCandidate.episode_id == eid)
+                            .order_by(ClipCandidate.clip_index.asc().nullslast())
+                        )
+                        all_clips = retry_result.scalars().all()
+                        if all_clips:
+                            break
+                        await asyncio.sleep(2)
+                    if all_clips:
+                        logger.info(
+                            "Episode %s 自动补选点完成，纳入 %d 个候选",
+                            eid, len(all_clips),
+                        )
+                    else:
+                        logger.warning(
+                            "Episode %s 自动补选点后仍无候选片段", eid
+                        )
             if not all_clips:
                 if not data.allow_fallback_whole_video:
                     # 显式关闭整片回退：选点未产出候选片段时明确报错，

@@ -16,7 +16,7 @@ import { intervalApi } from '../api/intervals';
 import { sliceApi, type BadgeItem, type TextOverlayItem } from '../api/slice';
 import ErrorHint from '../components/ErrorHint';
 import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/DedupeManualConfig';
-import type { AutoClipRunRecord, ClipCandidate, Episode, IntervalHistoryItem, SliceTask } from '../types';
+import type { AutoClipRunRecord, Episode, IntervalHistoryItem, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 import { buildSliceConfigTooltip } from '../utils/sliceConfigTooltip';
 import { WATERMARK_STYLE_OPTIONS, WATERMARK_STYLE_LABEL } from '../utils/watermarkStyles';
@@ -1097,64 +1097,22 @@ const EpisodeDetail: React.FC = () => {
   // ─── 一键切片（免审核直接出片） ──────────────────────
   const oneClickSlice = async () => {
     setOneClickSlicing(true);
-    setOneClickProgress({ status: 'running', progress: 5, message: '正在检查候选片段…' });
+    setOneClickProgress({ status: 'running', progress: 5, message: '正在提交一键切片任务…' });
     try {
-      // ── 无候选片段时自动补一轮 AI 智能选点（一键切片 = 选点 + 切片全自动） ──
-      let existingClips: ClipCandidate[] = [];
-      try {
-        existingClips = await autoclipApi.getCandidates(episodeId);
-      } catch {
-        existingClips = [];
-      }
-      if (existingClips.length === 0) {
-        setOneClickProgress({ status: 'running', progress: 10, message: '该剧集还没有候选片段，正在自动运行 AI 智能选点…' });
-        await autoclipApi.run(episodeId, {
+      // auto_accept_all=true：后端自动把所有候选片段（含 pending）纳入切片，
+      // 无需逐个审核/预览，直接产出成品视频；无候选片段时由后端自动补一轮 AI 选点
+      // （auto_autoclip_if_empty）——提交即走，关窗口安全
+      const res = await sliceApi.run(episodeId, dedupeEnabled ? 'dedupe' : 'fast', {
+        auto_accept_all: true,
+        // 后端兜底：无候选片段时后端自动补一轮 AI 选点再切片
+        auto_autoclip_if_empty: true,
+        autoclip_config: {
           max_clips: maxClips,
           min_score_threshold: minScoreThreshold ?? undefined,
           min_duration: minClipDuration ?? undefined,
           max_duration: maxClipDuration ?? undefined,
           frame_analysis: frameAnalysis,
-        });
-        let selected = false;
-        for (let i = 0; i < 200 && !selected; i++) {
-          await new Promise((r) => setTimeout(r, 3000));
-          const p = await autoclipApi.progress(episodeId);
-          if (p.status === 'completed') {
-            selected = true;
-          } else if (p.status === 'failed') {
-            throw new Error(p.error_message || 'AI 智能选点失败，请稍后重试');
-          } else {
-            setOneClickProgress({
-              status: 'running',
-              progress: 10 + Math.round((p.progress || 0) * 0.6),
-              message: `AI 智能选点中 ${Math.round(p.progress || 0)}%…`,
-            });
-          }
-        }
-        if (!selected) throw new Error('AI 智能选点超时，请稍后重试');
-        setOneClickProgress({ status: 'running', progress: 75, message: '选点完成，正在提交一键切片任务…' });
-        // 选点完成后等候选真正落库：autoclip 服务标 completed 先于本库写入候选
-        // （celery 回调滞后约 1-2s），立即切片会查到空候选 → 后端回退整片只出 1 个。
-        // 这里轮询 getCandidates 直到非空（最多 ~20s）再提交切片，消除竞态。
-        let after: ClipCandidate[] = [];
-        for (let i = 0; i < 10; i++) {
-          try {
-            after = await autoclipApi.getCandidates(episodeId);
-          } catch {
-            after = [];
-          }
-          if (after.length > 0) break;
-          await new Promise((r) => setTimeout(r, 2000));
-        }
-        // 等满仍无候选片段，后端会回退为「整片切片」，这里只做提示不中断
-        if (after.length === 0) {
-          setOneClickProgress({ status: 'running', progress: 75, message: '未发现候选片段，将回退为整片切片…' });
-        }
-      }
-      // auto_accept_all=true：后端自动把所有候选片段（含 pending）纳入切片，
-      // 无需逐个审核/预览，直接产出成品视频
-      const res = await sliceApi.run(episodeId, dedupeEnabled ? 'dedupe' : 'fast', {
-        auto_accept_all: true,
+        },
         // 去重模式：一键切片启用后按档位做画面去重（手动配置沿用主页「去重高级配置」）
         dedupe_config: dedupeEnabled ? buildDedupeConfig(dedupePreset, dedupeManual) : undefined,
         // 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本）

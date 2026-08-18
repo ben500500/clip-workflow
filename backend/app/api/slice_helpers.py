@@ -110,6 +110,12 @@ class SliceRunRequest(BaseModel):
     # - True（默认）：静默回退为「整片切片」，保证自动化流程一定出片（响应会带 fallback_whole_video=true 提示）；
     # - False：不回退，直接返回 400 明确报错，供自动化脚本识别并单独处理。
     allow_fallback_whole_video: bool = True
+    # 后端兜底：免审核一键切片时选点未产出候选片段，是否由后端自动补一轮 AI 选点。
+    # True 时后端先触发 AI 选点并等待完成，重新取候选后再切片（前端提交即走、关窗口安全）。
+    auto_autoclip_if_empty: bool = False
+    # 补选点时的 AI 选点配置（max_clips / min_score_threshold / min_duration / max_duration / frame_analysis），
+    # 留空则用系统默认选点配置
+    autoclip_config: Optional[dict] = None
     # 快速转换：为 True 时跳过 AI 选点与区间检测，直接把整段源视频作为单个
     # 片段（0 ~ 源时长），应用下方切片配置（竖屏转横屏/水印/角标/字幕/固定文字等）
     # 做一次整片转换输出，无需候选片段

@@ -9,7 +9,6 @@ import { projectApi } from '../api/projects';
 import type { ProjectOutputItem } from '../api/projects';
 import { uploadApi } from '../api/upload';
 import { sliceApi } from '../api/slice';
-import { autoclipApi } from '../api/autoclip';
 import type { Episode, Project } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
@@ -455,46 +454,20 @@ const ProjectDetail: React.FC = () => {
     return false;
   };
 
-  // 对单个剧集执行一次「一键切片」（无候选时自动补选点，等价于剧集详情页的一键切片）
+  // 对单个剧集执行一次「一键切片」（提交即走：无候选时由后端自动补 AI 选点，关窗口安全）
   const runOneClickSlice = async (episode: Episode) => {
     const cfg = batchConfig;
-    // 无候选片段时自动补一轮 AI 选点
-    if (cfg.autoClipIfNeeded) {
-      try {
-        const candidates = await autoclipApi.getCandidates(episode.id);
-        if (candidates.length === 0) {
-          await autoclipApi.run(episode.id, {
-            max_clips: cfg.maxClips,
-            min_score_threshold: cfg.minScoreThreshold ?? undefined,
-            min_duration: cfg.minClipDuration ?? undefined,
-            max_duration: cfg.maxClipDuration ?? undefined,
-            frame_analysis: cfg.frameAnalysis,
-          });
-          let selected = false;
-          for (let i = 0; i < 200 && !selected; i++) {
-            await new Promise((r) => setTimeout(r, 3000));
-            const p = await autoclipApi.progress(episode.id);
-            if (p.status === 'completed') {
-              selected = true;
-            } else if (p.status === 'failed') {
-              throw new Error(p.error_message || `${episode.title || episode.episode_no} AI 选点失败`);
-            }
-          }
-          if (!selected) throw new Error(`${episode.title || episode.episode_no} AI 选点超时`);
-          // 等候选真正落库
-          for (let i = 0; i < 10; i++) {
-            const after = await autoclipApi.getCandidates(episode.id);
-            if (after.length > 0) break;
-            await new Promise((r) => setTimeout(r, 2000));
-          }
-        }
-      } catch (err: unknown) {
-        // 选点失败不阻断：后端会自动回退整片切片
-        if (err instanceof Error && /选点失败|选点超时/.test(err.message)) throw err;
-      }
-    }
     await sliceApi.run(episode.id, cfg.mode, {
       auto_accept_all: true,
+      // 后端兜底：无候选片段时后端自动补一轮 AI 选点再切片
+      auto_autoclip_if_empty: cfg.autoClipIfNeeded,
+      autoclip_config: {
+        max_clips: cfg.maxClips,
+        min_score_threshold: cfg.minScoreThreshold ?? undefined,
+        min_duration: cfg.minClipDuration ?? undefined,
+        max_duration: cfg.maxClipDuration ?? undefined,
+        frame_analysis: cfg.frameAnalysis,
+      },
       vert2horiz_enabled: cfg.vert2horizEnabled,
       subtitle_enabled: cfg.subtitleEnabled,
       // 去重档位：mode=dedupe 时下发（批量无手动覆盖，只按档位）
@@ -982,6 +955,30 @@ const ProjectDetail: React.FC = () => {
                 value={batchConfig.maxClips}
                 onChange={(v) => setBatchConfig((prev) => ({ ...prev, maxClips: v ?? 10 }))}
               />
+            </Space>
+            <Space>
+              <Text style={{ fontSize: 13 }}>最短时长</Text>
+              <InputNumber
+                size="small"
+                style={{ width: 80 }}
+                min={0}
+                placeholder="默认"
+                value={batchConfig.minClipDuration ?? undefined}
+                onChange={(v) => setBatchConfig((prev) => ({ ...prev, minClipDuration: v ?? null }))}
+              />
+              <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
+            </Space>
+            <Space>
+              <Text style={{ fontSize: 13 }}>最长时长</Text>
+              <InputNumber
+                size="small"
+                style={{ width: 80 }}
+                min={1}
+                placeholder="默认"
+                value={batchConfig.maxClipDuration ?? undefined}
+                onChange={(v) => setBatchConfig((prev) => ({ ...prev, maxClipDuration: v ?? null }))}
+              />
+              <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
             </Space>
           </Space>
 
