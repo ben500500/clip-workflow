@@ -434,9 +434,9 @@ class VideoChannelPublisher:
         # 可能命中无效占位 input，导致"set 成功但页面无任何上传"（空表单静默通过）。
         uploaded = False
         try:
+            # 注意：text= 引擎语法不能与 CSS 选择器混用，这里用纯 CSS
             zone = self.page.locator(
-                "[class*='upload'], [class*='upload-area'], [class*='upload-box'], "
-                "text=上传"
+                "[class*='upload'], [class*='upload-area'], [class*='upload-box']"
             ).first
             async with self.page.expect_file_chooser(timeout=15000) as fc_info:
                 await zone.click(timeout=10000)
