@@ -36,7 +36,7 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_time_limit=7200,          # 2 hours hard limit
     task_soft_time_limit=6600,     # 1h50m soft limit (graceful shutdown)
-    result_expires=86400,          # results expire after 24h
+    result_expires=43200,          # results expire after 12h（收紧防 Redis celery-task-meta 堆积）
     broker_connection_retry_on_startup=True,
     broker_heartbeat=30,
     task_queues={
