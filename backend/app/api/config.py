@@ -194,7 +194,7 @@ DEFAULT_PLATFORM_PROFILES: List[dict] = [
     {
         "name": "视频号-轻度去重",
         "platform": "wechat_channel",
-        "description": "视频号默认去重配方（预设 light + 手动微调）：轻微变速+降饱和+轻锐化+半透明贴纸水印，兼顾成片质量与查重，适合常规内容分发。",
+        "description": "视频号默认去重配方（预设 light + 手动微调）：轻微变速+轻微降饱和+轻锐化+半透明贴纸水印；统一不做镜像，明显影响画质的效果均降到最低，兼顾成片质量与查重。",
         "dedupe_config": {
             "preset": "light",
             "manual": {
@@ -214,10 +214,11 @@ DEFAULT_PLATFORM_PROFILES: List[dict] = [
     {
         "name": "抖音-标准去重",
         "platform": "douyin",
-        "description": "抖音标准去重配方（预设 standard 全四层）：镜像+变速+降饱和/复古偏色+老电视质感+锐化+贴纸水印，综合降低平台查重风险。",
+        "description": "抖音标准去重配方（预设 standard）：变速+轻微降饱和+轻锐化+贴纸水印；统一不做镜像，去掉明显影响画质的噪点/扫描线/偏色/色温/暗角。",
         "dedupe_config": {
             "preset": "standard",
             "manual": {
+                "hflip": False,
                 "speed": 1.05,
                 "sharpen": 0.8,
                 "watermark": {"text": "DY原创", "opacity": 0.25, "position": "top-right"},
@@ -230,12 +231,12 @@ DEFAULT_PLATFORM_PROFILES: List[dict] = [
     {
         "name": "快手-深度去重",
         "platform": "kuaishou",
-        "description": "快手深度去重配方（预设 heavy + 手动强化）：镜像+较大幅度变速/色调+老电视质感+滚动暗带+抖动+锐化+贴纸水印，用于高查重风险的二创内容。",
+        "description": "快手深度去重配方（预设 heavy + 手动强化）：较大幅度变速/轻微降饱和+锐化+贴纸水印；统一不做镜像，去掉滚动暗带等明显影响画质的效果。",
         "dedupe_config": {
             "preset": "heavy",
             "manual": {
+                "hflip": False,
                 "speed": 1.08,
-                "roll_band": 14,
                 "sharpen": 1.0,
                 "watermark": {"text": "KS精选", "opacity": 0.28, "position": "bottom-center"},
             },
