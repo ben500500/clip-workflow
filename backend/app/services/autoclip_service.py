@@ -115,10 +115,10 @@ async def get_clips(
         "min_score": min_score,
         "max_clips": max_clips,
     }
-    if min_duration and min_duration > 0:
-        params["min_duration"] = min_duration
-    if max_duration and max_duration > 0:
-        params["max_duration"] = max_duration
+    # P1-5 修复：显式传 0 表示"时长不限"，不再被 `and min_duration > 0` 跳过。
+    # 始终把 min_duration/max_duration 传给引擎（0=不限），让调用方能真正"放宽"。
+    params["min_duration"] = min_duration
+    params["max_duration"] = max_duration
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.get(

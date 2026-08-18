@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   Card, Table, Tag, Button, Space, Typography, message, Select, Modal, Form, Input, DatePicker, Popconfirm, Alert, Spin, InputNumber, Slider,
 } from 'antd';
-import { ArrowLeftOutlined, PlayCircleOutlined, PauseCircleOutlined, DownloadOutlined, LinkOutlined, CloudDownloadOutlined, EditOutlined, SendOutlined, QuestionCircleOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, PlayCircleOutlined, PauseCircleOutlined, DownloadOutlined, LinkOutlined, CloudDownloadOutlined, EditOutlined, SendOutlined, QuestionCircleOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { sliceApi } from '../api/slice';
 import { previewApi } from '../api/preview';
@@ -161,6 +161,10 @@ const OutputPreview: React.FC = () => {
   const [publishTarget, setPublishTarget] = useState<SliceOutput | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [materialRecords, setMaterialRecords] = useState<PublishMaterialRecord[]>([]);
+  // 当前选中的发布素材（用于「三款配文选一款」切换）
+  const [selectedMaterial, setSelectedMaterial] = useState<PublishMaterialRecord | null>(null);
+  // 一键生成标题/配文/标签的加载态
+  const [generatingMaterial, setGeneratingMaterial] = useState(false);
   // 账号矩阵 / 小程序库（一期）
   const [videoAccounts, setVideoAccounts] = useState<VideoAccount[]>([]);
   const [miniPrograms, setMiniPrograms] = useState<MiniProgram[]>([]);
@@ -418,6 +422,7 @@ const OutputPreview: React.FC = () => {
   // 选择发布素材后自动填入标题/描述/标签
   const onMaterialChange = (materialId: string | undefined) => {
     const rec = materialRecords.find((r) => r.id === materialId);
+    setSelectedMaterial(rec || null);
     if (!rec?.material) return;
     const m = rec.material;
     publishForm.setFieldsValue({
@@ -425,6 +430,60 @@ const OutputPreview: React.FC = () => {
       description: m.captions?.suspense_hook || '',
       tags: Object.values(m.tags || {}).flat(),
     });
+  };
+
+  // 三款配文选一款（悬念钩子/精简爆款/情绪爽文），切换时更新描述
+  const onCaptionVersionChange = (version: string) => {
+    const m = selectedMaterial?.material;
+    if (!m?.captions) return;
+    const captionMap: Record<string, string> = {
+      suspense_hook: m.captions?.suspense_hook || '',
+      concise_viral: m.captions?.concise_viral || '',
+      emotional: m.captions?.emotional || '',
+    };
+    publishForm.setFieldsValue({ description: captionMap[version] || '' });
+  };
+
+  // 一键生成：从当前切片成品组装剧情梗概 → 生成标题/配文/标签
+  const onGenerateMaterialFromOutput = async () => {
+    if (!publishTarget) {
+      message.warning('请先选择要发布的切片成品');
+      return;
+    }
+    setGeneratingMaterial(true);
+    try {
+      const res = await publishMaterialApi.generateFromOutput({
+        output_id: publishTarget.id,
+      });
+      const m = res.material;
+      // 一键生成：把新素材加入历史列表并选中，确保提交时带上 material_id（发布后自动置顶神评）
+      const newRecord: PublishMaterialRecord = {
+        id: res.record_id || '',
+        story: '',
+        title: m.short_title || null,
+        theme: null,
+        tone: null,
+        platform: null,
+        extra_requirements: null,
+        model: res.model || null,
+        material: m,
+        prompt_record_id: null,
+        created_at: new Date().toISOString(),
+      };
+      setMaterialRecords((prev) => [newRecord, ...prev]);
+      publishForm.setFieldsValue({
+        title: m.short_title || '',
+        description: m.captions?.suspense_hook || '',
+        tags: Object.values(m.tags || {}).flat(),
+        material_id: newRecord.id,
+      });
+      setSelectedMaterial(newRecord);
+      message.success('已为该切片生成标题/配文/标签');
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '发布素材生成失败');
+    } finally {
+      setGeneratingMaterial(false);
+    }
   };
 
   const openRecutModal = async (o: SliceOutput) => {
@@ -731,6 +790,28 @@ const OutputPreview: React.FC = () => {
                 label: `${r.material?.short_title || r.story?.slice(0, 20) || r.id}（${formatDateTime(r.created_at)}）`,
               }))}
             />
+          </Form.Item>
+          <Form.Item label="配文版本（三选一，切换自动更新下方描述）">
+            <Space.Compact style={{ width: '100%' }}>
+              <Select
+                style={{ width: '100%' }}
+                placeholder="选取已生成素材后选择配文版本"
+                onChange={onCaptionVersionChange}
+                disabled={!selectedMaterial?.material?.captions}
+                options={[
+                  { value: 'suspense_hook', label: '悬念钩子' },
+                  { value: 'concise_viral', label: '精简爆款' },
+                  { value: 'emotional', label: '情绪爽文' },
+                ]}
+              />
+              <Button
+                icon={<ThunderboltOutlined />}
+                loading={generatingMaterial}
+                onClick={onGenerateMaterialFromOutput}
+              >
+                为该切片一键生成
+              </Button>
+            </Space.Compact>
           </Form.Item>
           <Form.Item name="video_account_id" label="发布账号（从账号库选择）">
             <Select

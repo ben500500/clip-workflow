@@ -23,6 +23,16 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+class PublishTimeoutError(Exception):
+    """发布结果确认超时。
+
+    与 P0-1 假成功根因对应：`_wait_for_publish` 不应在超时后以 `except` 兜底
+    静默返回 (url, None) 当作已发布，而应显式抛出本异常，让调用方（publish /
+    confirm_publish）走 `failed`/`error` 分支，避免把"没发出去"误判为"发布成功"。
+    """
+
+
 # 进程内待确认发布 tab 缓存：publish_task_id -> {"browser": Browser, "page": Page}
 # backend worker 采用 --concurrency=1 串行处理 publish 队列任务，publish 与后续
 # confirm 在同一 worker 进程内执行，模块级缓存跨任务存活可用。
@@ -100,6 +110,10 @@ class VideoChannelPublisher:
 
     PLATFORM = "wechat_channel"
     CREATOR_URL = "https://channels.weixin.qq.com/platform/post/create"
+    # 视频号没有独立的话题输入框：话题以 `#话题#` 形式嵌在视频描述里。
+    # 该开关为 True 时，publish/confirm 会把 tags 拼进描述末尾、不再调用 `_set_tags`
+    # （避免误找无关输入框导致标签静默丢失）。抖音/快手有独立话题框，覆盖为 False。
+    EMBED_TAGS_IN_DESC = True
 
     def __init__(
         self,
@@ -159,6 +173,7 @@ class VideoChannelPublisher:
         mini_program_link: Optional[str] = None,
         publish_jump: Optional[list] = None,
         task_id: Optional[str] = None,
+        publish_comments: Optional[list] = None,
     ) -> dict:
         """
         Execute the full publishing workflow.
@@ -189,11 +204,14 @@ class VideoChannelPublisher:
 
             # Set title and description
             await self._set_title(title)
+            if self.EMBED_TAGS_IN_DESC and tags:
+                # 视频号：话题嵌进描述（`#话题#` 形式），没有独立话题框
+                description = self._merge_tags_into_description(description, tags)
             if description:
                 await self._set_description(description)
 
-            # Set tags
-            if tags:
+            # Set tags（仅抖音/快手等有独立话题框的平台走独立 `_set_tags`）
+            if tags and not self.EMBED_TAGS_IN_DESC:
                 await self._set_tags(tags)
 
             # Set cover image if provided
@@ -218,7 +236,7 @@ class VideoChannelPublisher:
                     # 多运营者（R13/R18）：同时把结构化 payload 外移到 Redis，
                     # 供 worker 重启/多副本时 confirm 幂等重填（含 selector 版本校验）
                     await self._save_pending_payload(
-                        task_id, title, description, tags, cover_file_key, mini_program_link, publish_jump
+                        task_id, title, description, tags, cover_file_key, mini_program_link, publish_jump, publish_comments
                     )
                     # 连接对象交由缓存管理，不在此关闭
                     self.browser = None
@@ -237,6 +255,9 @@ class VideoChannelPublisher:
                 # Auto-publish
                 await self._click_publish()
                 published_url, published_id = await self._wait_for_publish()
+                # 发布后置顶神评（可选，探活式；失败不阻断发布成功）
+                if published_url and publish_comments:
+                    await self._post_publish_comments(published_url, publish_comments)
                 await self._close_connection()
                 return {
                     "success": True,
@@ -258,6 +279,83 @@ class VideoChannelPublisher:
                 "published_url": None,
                 "published_id": None,
             }
+
+    async def _post_publish_comments_from_payload(self, task_id, published_url):
+        """从 Redis 待确认 payload 中取神评并在发布后触发置顶评论（探活式，失败不阻断）。"""
+        if not task_id or not published_url:
+            return
+        try:
+            from app.services import multi_operator
+            pending = await multi_operator.get_pending(task_id)
+            comments = (pending or {}).get("publish_comments") or []
+            if comments:
+                await self._post_publish_comments(published_url, comments)
+        except Exception as e:
+            logger.warning(
+                "post-publish comments from payload failed (non-blocking): %s", e
+            )
+
+    async def _post_publish_comments(self, published_url: str, comments: list):
+        """发布后置顶神评（视频号，探活式保守实现，失败不阻断发布）。
+
+        短片制作产线会产出三条互动神评（`PublishMaterial.comments`），本方法在视频
+        发布成功后尝试前往成品详情页，在评论区发表神评并置顶，拉高互动率。
+
+        ⚠️ 视频号评论区 DOM 随版本变化较大，这里采用**探活式**策略：
+          - 定位评论区输入框失败 → 记录日志后跳过，绝不抛异常阻断发布成功；
+          - 置顶按钮探不到 → 仅发表不置顶，避免误操作；
+        
+        为避免误把神评发到无关视频/触发风控，只有显式传入 `publish_comments`
+        （来自所选发布素材的神评）时才会执行本动作。
+        """
+        if not published_url or not comments:
+            return
+        try:
+            await self.page.goto(published_url, wait_until="domcontentloaded")
+            await asyncio.sleep(2)
+            comment_input = await self.page.query_selector(
+                "textarea[placeholder*='评论'], [class*='comment'] textarea, "
+                "[class*='comment'] input, [placeholder*='说点什么']"
+            )
+            if not comment_input:
+                logger.info(
+                    "post-publish comment input not found on %s, skip comments (non-blocking)",
+                    published_url,
+                )
+                return
+            for idx, comment in enumerate(comments):
+                content = (
+                    comment.get("content")
+                    if isinstance(comment, dict)
+                    else str(comment)
+                )
+                if not content:
+                    continue
+                await comment_input.fill(content)
+                await asyncio.sleep(1)
+                send_btn = await self.page.query_selector(
+                    "[class*='comment'] button, button:has-text('发表'), button:has-text('发送')"
+                )
+                if send_btn:
+                    await send_btn.click()
+                    await asyncio.sleep(1.5)
+                # 尝试置顶第一条神评（可选，探不到即跳过）
+                if idx == 0:
+                    pin_btn = await self.page.query_selector(
+                        "[class*='pin'] button, [class*='top'] button, "
+                        "button:has-text('置顶')"
+                    )
+                    if pin_btn:
+                        try:
+                            await pin_btn.click()
+                            await asyncio.sleep(1)
+                        except Exception:
+                            pass
+            logger.info("post-publish comments sent for %s", published_url)
+        except Exception as e:
+            logger.warning(
+                "post-publish comments failed (non-blocking): %s", e, exc_info=True
+            )
 
     async def _close_connection(self) -> None:
         """关闭当前 publisher 持有的连接（pending tab 由缓存管理，不在此关闭）。
@@ -301,19 +399,42 @@ class VideoChannelPublisher:
         await self._wait_for_upload()
 
     async def _wait_for_upload(self, timeout: int = 300):
-        """Wait for the video upload to complete (up to timeout seconds)."""
+        """Wait for the video upload to complete (up to timeout seconds).
+
+        P1-3 修复：不再以泛化的 `upload-success/preview` 类名选择器作为成功判据
+        （实测视频上传区为空时这些选择器可能被无关元素命中而误报成功），改为等待
+        页面上**真实出现带 src 的 <video> 预览元素**，确认视频确实已渲染成功。
+        找不到则抛 RuntimeError，让上游走失败分支，避免"上传未完成就点发表"。
+        """
         try:
-            # Wait for upload progress to disappear or success indicator
             await self.page.wait_for_selector(
-                "[class*='upload-success'], [class*='upload-complete'], [class*='preview']",
+                "video[src], video source[src], [class*='preview'] video",
                 timeout=timeout * 1000,
             )
             await asyncio.sleep(3)  # Extra wait for processing
+            # 二次确认：video 元素已带可播放源（非空 src/currentSrc）
+            has_src = await self.page.evaluate("""() => {
+                const v = document.querySelector('video');
+                return !!(v && (v.getAttribute('src') || (v.currentSrc || '')));
+            }""")
+            if not has_src:
+                raise RuntimeError("video element present but has no playable src")
         except Exception:
-            logger.warning("Upload wait timed out, continuing anyway...")
+            logger.warning("Upload wait timed out or video not ready, failing (P1-3)")
+            raise RuntimeError("video upload did not complete in time (no playable <video>)")
 
     async def _set_title(self, title: str):
-        """Set the video title."""
+        """Set the video title.
+
+        P1-4 修复：视频号短标题上限 16 字，超限会触发页面红字限制且"发表"按钮
+        可能置灰，是 P0-1 假成功的诱因之一。这里在填充前统一截断到 16 字。
+        """
+        if title and len(title) > 16:
+            logger.warning(
+                "title truncated to 16 chars for video channel (P1-4): %s -> %s",
+                title, title[:16],
+            )
+            title = title[:16]
         title_input = await self.page.query_selector(
             "[class*='title'] textarea, [class*='title'] input, [placeholder*='标题']"
         )
@@ -330,17 +451,33 @@ class VideoChannelPublisher:
             await desc_input.fill("")
             await desc_input.fill(description)
 
+    def _merge_tags_into_description(self, description: str, tags: list) -> str:
+        """把话题标签拼进视频描述末尾（视频号话题是嵌在描述里的 `#话题#`，无独立框）。
+
+        已有 `#话题#` 时不重复追加，避免描述里话题重复。
+        """
+        cleaned = [t for t in (tags or []) if t]
+        if not cleaned:
+            return description
+        # 拼接 `#话题#` 形式（去掉 tag 本身可能带的多余 #）
+        topic_str = "".join(f"#{str(t).strip().lstrip('#')}#" for t in cleaned)
+        if not topic_str:
+            return description
+        if description:
+            return f"{description}\n{topic_str}"
+        return topic_str
+
     async def _set_tags(self, tags: list):
-        """Set video tags."""
-        tag_input = await self.page.query_selector(
-            "[class*='tag'] input, [placeholder*='标签'], [placeholder*='话题']"
+        """Set video tags.
+
+        视频号没有独立的话题输入框（话题嵌在描述里），此方法为占位空实现；
+        真实话题由 `_merge_tags_into_description` 拼进描述。仅在继承类
+        （抖音/快手等有独立话题框的平台）覆盖实现时才会实际写入。
+        """
+        logger.info(
+            "%s has no standalone tag input (tags embedded in description), skip _set_tags",
+            self.PLATFORM,
         )
-        if tag_input:
-            for tag in tags:
-                await tag_input.fill(f"#{tag}")
-                await asyncio.sleep(0.5)
-                await self.page.keyboard.press("Enter")
-                await asyncio.sleep(0.3)
 
     async def _set_cover(self, cover_file_key: str):
         """Set the video cover image."""
@@ -445,19 +582,38 @@ class VideoChannelPublisher:
         raise RuntimeError("Cannot find publish button")
 
     async def _wait_for_publish(self, timeout: int = 60) -> tuple:
-        """Wait for the publish action to complete and return (url, id)."""
+        """Wait for the publish action to complete and return (url, id).
+
+        P0-1 修复：
+        - **以 success 页 URL 为主判据**：等待地址跳转到发布成功页，URL 命中才算成功；
+        - published_id 仅作辅助（`[data-id]` 选择器太宽泛，可能命中无关元素，不再作为
+          成功判据）；
+        - 超时不再以 `except` 兜底静默返回 (url, None)，而是显式抛 `PublishTimeoutError`，
+          让调用方走 failed/error 分支，杜绝"假成功"。
+        """
         try:
-            await self.page.wait_for_url("**/success**", timeout=timeout * 1000)
+            # 主判据：URL 跳到成功页。视频号成功页含 /success 或 published 结果页特征。
+            await self.page.wait_for_url(
+                "**/success**",
+                timeout=timeout * 1000,
+            )
             await asyncio.sleep(2)
             current_url = self.page.url
-            # Try to extract published ID from URL or page content
+            # 辅助提取 published_id（仅尽力而为，不因取不到而判失败）
             published_id = None
-            id_el = await self.page.query_selector("[class*='post-id'], [data-id]")
-            if id_el:
-                published_id = await id_el.get_attribute("data-id")
+            try:
+                id_el = await self.page.query_selector("[class*='post-id']")
+                if id_el:
+                    published_id = await id_el.get_attribute("data-id")
+            except Exception:
+                published_id = None
             return current_url, published_id
         except Exception:
-            return self.page.url, None
+            # P0-1：超时即失败，交由调用方判定 failed，而非当成功返回
+            raise PublishTimeoutError(
+                "publish result not confirmed: page did not reach success URL within "
+                f"{timeout}s (url={self.page.url})"
+            )
 
     async def _save_pending_payload(
         self,
@@ -468,6 +624,7 @@ class VideoChannelPublisher:
         cover_file_key: Optional[str],
         mini_program_link: Optional[str],
         publish_jump: Optional[list] = None,
+        publish_comments: Optional[list] = None,
     ) -> None:
         """把待确认发布的结构化 payload 外移到 Redis（R13/R18）。
 
@@ -488,6 +645,8 @@ class VideoChannelPublisher:
                 "cover_key": cover_file_key,
                 "mini_program_link": mini_program_link,
                 "publish_jump": publish_jump or [],
+                # 发布后置顶神评（可选，来自发布素材 comments；探活式，失败不阻断）
+                "publish_comments": publish_comments or [],
                 # 选择器集中管理并带版本号（R18）：confirm 前校验页面结构匹配
                 "selector_version": "v1",
             }
@@ -515,10 +674,15 @@ class VideoChannelPublisher:
             # 清空再填（全量幂等），避免半填
             if payload.get("title"):
                 await self._set_title(payload["title"])
-            if payload.get("description"):
-                await self._set_description(payload["description"])
-            if payload.get("tags"):
-                await self._set_tags(payload["tags"])
+            # 视频号：话题嵌进描述，confirm 幂等重填时同样把 tags 拼进描述，避免话题丢失
+            description = payload.get("description") or ""
+            tags = payload.get("tags") or []
+            if self.EMBED_TAGS_IN_DESC and tags:
+                description = self._merge_tags_into_description(description, tags)
+            if description:
+                await self._set_description(description)
+            if tags and not self.EMBED_TAGS_IN_DESC:
+                await self._set_tags(tags)
             if payload.get("cover_key"):
                 await self._set_cover(payload["cover_key"])
             if payload.get("publish_jump"):
@@ -560,16 +724,24 @@ class VideoChannelPublisher:
                 await self.page.bring_to_front()
                 await self._click_publish()
                 published_url, published_id = await self._wait_for_publish()
+                # 发布后置顶神评（探活式，失败不阻断；从 Redis payload 取神评）
+                await self._post_publish_comments_from_payload(task_id, published_url)
                 await self._close_connection()
                 return {
                     "success": True,
                     "published_url": published_url,
                     "published_id": published_id,
                 }
+            except PublishTimeoutError as e:
+                # P0-1：发布结果未确认即失败，不 fallback（缓存 tab 即真实表单，
+                # 再重开会造成重复发布/误发风险），直接返回失败交由 celery 判定 failed
+                await self._close_connection()
+                return {"success": False, "error": str(e), "timeout": True}
             except Exception as e:
                 logger.error(f"Confirm publish via cached tab failed: {e}", exc_info=True)
                 await self._close_connection()
-                # 继续尝试 fallback
+                # 仅非超时异常才继续尝试 fallback
+
 
         # 2. fallback：从 Redis payload 幂等重填（R13/R18）后再点击发布
         pending = None
@@ -593,6 +765,8 @@ class VideoChannelPublisher:
                     }
                 await self._click_publish()
                 published_url, published_id = await self._wait_for_publish()
+                # 发布后置顶神评（探活式，失败不阻断；从 Redis payload 取神评）
+                await self._post_publish_comments_from_payload(task_id, published_url)
                 await self._close_connection()
                 try:
                     await multi_operator.delete_pending(task_id)
@@ -614,6 +788,8 @@ class VideoChannelPublisher:
             await self.page.goto(self.CREATOR_URL, wait_until="domcontentloaded")
             await self._click_publish()
             published_url, published_id = await self._wait_for_publish()
+            # 发布后置顶神评（探活式，失败不阻断；从 Redis payload 取神评）
+            await self._post_publish_comments_from_payload(task_id, published_url)
             await self._close_connection()
             return {
                 "success": True,
@@ -646,6 +822,8 @@ class DouyinPublisher(VideoChannelPublisher):
 
     PLATFORM = "douyin"
     CREATOR_URL = "https://creator.douyin.com/creator-micro/content/upload"
+    # 抖音有独立话题框，话题不嵌进描述，走 `_set_tags` 独立写入
+    EMBED_TAGS_IN_DESC = False
 
     async def _need_login(self) -> bool:
         """Check Douyin login state."""
@@ -677,6 +855,8 @@ class KuaishouPublisher(VideoChannelPublisher):
 
     PLATFORM = "kuaishou"
     CREATOR_URL = "https://cp.kuaishou.com/article/publish/video"
+    # 快手有独立话题框
+    EMBED_TAGS_IN_DESC = False
 
     async def _need_login(self) -> bool:
         """Check Kuaishou login state."""
