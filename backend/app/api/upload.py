@@ -343,7 +343,8 @@ async def upload_single(
 @router.post("/upload/multi", status_code=201)
 async def upload_multi(
     files: List[UploadFile] = File(...),
-    project_name: str = Form(...),
+    project_name: str = Form(""),
+    project_id: Optional[str] = Form(None),
     merge: str = Form("false"),
     description: Optional[str] = Form(None),
     current_user: Annotated[User, Depends(get_current_user)] = None,
@@ -353,36 +354,54 @@ async def upload_multi(
 
     - merge=false：每个视频分别创建一条 Episode（按顺序编号）；
     - merge=true：先用 ffmpeg concat 把多个视频拼接成一个，再创建一条 Episode
-      （作为「正片」整体进入 AI 选点/切片流水线）。项目名称由用户输入。
-    - 项目按「名称 + 当前用户」查找：已存在则追加剧集（保留原剧集，编号顺延），
+      （作为「正片」整体进入 AI 选点/切片流水线）。
+
+    归属规则（二选一）：
+    - 传入 project_id：直接在当前项目下创建剧集（**不新建项目**，也不做名称查找），
+      用于「项目详情页」内的多视频上传；
+    - 未传 project_id（仅 project_name）：按「名称 + 当前用户」查找/新建项目，
+      用于项目外批量导入；已存在则追加剧集（保留原剧集，编号顺延），
       不存在才新建，避免同名重复项目覆盖原剧集。
     """
     if not files:
         raise HTTPException(status_code=400, detail="至少需要上传一个视频")
-    project_name = (project_name or "").strip()
-    if not project_name:
-        raise HTTPException(status_code=400, detail="项目名称不能为空")
 
-    # 数据隔离：按项目名查找当前用户已有项目，存在则追加剧集（保留原剧集），
-    # 不存在才新建，避免产生同名重复项目把原剧集「冲掉」。
-    stmt = select(Project).where(Project.name == project_name)
-    if current_user is not None:
-        stmt = stmt.where(Project.created_by == current_user.id)
-    stmt = stmt.order_by(Project.created_at.asc())
-    res = await db.execute(stmt)
-    project = res.scalars().first()
-
-    created_new = project is None
-    if created_new:
-        project = Project(
-            name=project_name,
-            description=description or "多视频批量上传创建",
-            config={"source": "multi_upload"},
-            created_by=current_user.id if current_user else None,
-        )
-        db.add(project)
-        await db.flush()
-        await db.refresh(project)
+    # ── 归属目标：优先按 project_id 落到当前项目，其次按 project_name 查找/新建 ──
+    created_new = False
+    if project_id:
+        try:
+            pid = uuid.UUID(project_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid project ID format")
+        project = (
+            await db.execute(select(Project).where(Project.id == pid))
+        ).scalar_one_or_none()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        await _check_project_access(project, current_user)
+    else:
+        project_name = (project_name or "").strip()
+        if not project_name:
+            raise HTTPException(status_code=400, detail="项目名称不能为空")
+        # 数据隔离：按项目名查找当前用户已有项目，存在则追加剧集（保留原剧集），
+        # 不存在才新建，避免产生同名重复项目把原剧集「冲掉」。
+        stmt = select(Project).where(Project.name == project_name)
+        if current_user is not None:
+            stmt = stmt.where(Project.created_by == current_user.id)
+        stmt = stmt.order_by(Project.created_at.asc())
+        res = await db.execute(stmt)
+        project = res.scalars().first()
+        created_new = project is None
+        if created_new:
+            project = Project(
+                name=project_name,
+                description=description or "多视频批量上传创建",
+                config={"source": "multi_upload"},
+                created_by=current_user.id if current_user else None,
+            )
+            db.add(project)
+            await db.flush()
+            await db.refresh(project)
 
     # 已有最大剧集号：新剧集在其后连续编号，避免与原有剧集号冲突
     base_res = await db.execute(
@@ -421,7 +440,8 @@ async def upload_multi(
             merged = await _ffmpeg_concat(local_paths, merged_path)
             if merged:
                 local_paths = [merged_path]
-                names = [f"{project_name}.mp4"]
+                # 合并后的命名：优先用传入的项目名，否则用当前项目名
+                names = [f"{(project_name or project.name or 'merged')}.mp4"]
             else:
                 # 拼接失败时不阻断：回退为逐集上传
                 do_merge = False

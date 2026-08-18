@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
   Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col, Statistic,
-  message, Upload, Breadcrumb, Descriptions, Progress, Modal, Input, Checkbox, Popconfirm,
+  message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm,
 } from 'antd';
 import { UploadOutlined, ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, Link } from 'react-router-dom';
@@ -31,10 +31,9 @@ const ProjectDetail: React.FC = () => {
   const [previewLoading, setPreviewLoading] = useState<Record<string, boolean>>({});
   const [previewErrors, setPreviewErrors] = useState<Record<string, string>>({});
 
-  // ── 多视频合并上传（可选择是否合并成一个创建项目，项目名称由用户输入） ──
+  // ── 多视频合并上传（可选择是否合并成一个在当前项目下创建剧集） ──
   const [multiModalOpen, setMultiModalOpen] = useState(false);
   const [multiFiles, setMultiFiles] = useState<File[]>([]);
-  const [multiProjectName, setMultiProjectName] = useState('');
   const [multiMerge, setMultiMerge] = useState(true);
   const [multiUploading, setMultiUploading] = useState(false);
 
@@ -102,22 +101,21 @@ const ProjectDetail: React.FC = () => {
     }
   };
 
-  // ── 多视频批量上传：可合并成一个项目，项目名称由用户输入 ──
+  // ── 多视频批量上传：在当前项目下创建剧集，不再新创建项目 ──
   const submitMultiUpload = async () => {
     if (multiFiles.length === 0) {
       message.warning('请先选择视频文件');
       return;
     }
-    const name = multiProjectName.trim();
-    if (!name) {
-      message.warning('请输入项目名称');
+    if (!projectId) {
+      message.warning('缺少当前项目信息，无法上传');
       return;
     }
     setMultiUploading(true);
     setUploadProgress(0);
     try {
       const resp = await uploadApi.uploadMulti({
-        projectName: name,
+        projectId,
         files: multiFiles,
         merge: multiMerge,
         onProgress: (p) => setUploadProgress(p),
@@ -125,10 +123,9 @@ const ProjectDetail: React.FC = () => {
       message.success(resp.message);
       setMultiModalOpen(false);
       setMultiFiles([]);
-      setMultiProjectName('');
       setMultiMerge(true);
-      // 合并上传创建的是新项目：跳转到新项目详情
-      navigate(`/projects/${resp.project_id}`);
+      // 在当前项目下创建剧集，不跳转新项目，直接刷新当前项目的剧集列表
+      await fetchData(true);
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '批量上传失败');
     } finally {
@@ -387,7 +384,7 @@ const ProjectDetail: React.FC = () => {
             icon={<MergeCellsOutlined />}
             onClick={() => { setMultiMerge(true); setMultiModalOpen(true); }}
           >
-            多视频上传（可合并成项目）
+            多视频上传（合并成剧集）
           </Button>
           <Dragger
             accept=".mp4,.avi,.mov,.mkv,.webm"
@@ -428,9 +425,9 @@ const ProjectDetail: React.FC = () => {
         />
       </Card>
 
-      {/* 多视频批量上传弹窗（可合并成一个视频创建项目，项目名称由用户输入） */}
+      {/* 多视频批量上传弹窗（在当前项目下创建剧集） */}
       <Modal
-        title="多视频上传（创建项目）"
+        title="多视频上传（当前项目下创建剧集）"
         open={multiModalOpen}
         onOk={submitMultiUpload}
         onCancel={() => setMultiModalOpen(false)}
@@ -441,15 +438,7 @@ const ProjectDetail: React.FC = () => {
         destroyOnClose
       >
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
-          <div>
-            <Text strong>项目名称</Text>
-            <Input
-              style={{ marginTop: 6 }}
-              placeholder="请输入项目名称"
-              value={multiProjectName}
-              onChange={(e) => setMultiProjectName(e.target.value)}
-            />
-          </div>
+          <Alert type="info" showIcon message={`上传后将作为「${project?.name || '当前项目'}」下的剧集，不会新创建项目。`} />
           <Dragger
             accept=".mp4,.avi,.mov,.mkv,.webm"
             multiple
