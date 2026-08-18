@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
-  Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col,
+  Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col, Statistic,
   message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm, Input, Tabs, Switch, Select, Divider, InputNumber,
 } from 'antd';
 import { ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined, PlayCircleOutlined, ThunderboltOutlined, PictureOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons';
