@@ -32,6 +32,8 @@ class PublishProfileCreate(BaseModel):
     require_manual_confirm: bool = True
     min_interval_seconds: int = 300
     max_daily_publish: int = 20
+    # 发布页「位置」配置（按账号注入，P2）：如"广东·深圳"；留空则不填
+    location: Optional[str] = None
     # 多运营者（R14/Part3）：operator_id=号主；tier/proxy/fingerprint/egress_ip/chrome_debug_host 毕业字段
     operator_id: Optional[str] = None
     tier: Optional[int] = 0
@@ -54,6 +56,7 @@ class PublishProfileUpdate(BaseModel):
     require_manual_confirm: Optional[bool] = None
     min_interval_seconds: Optional[int] = None
     max_daily_publish: Optional[int] = None
+    location: Optional[str] = None
     operator_id: Optional[str] = None
     tier: Optional[int] = None
     proxy_url: Optional[str] = None
@@ -77,6 +80,7 @@ class PublishProfileResponse(BaseModel):
     require_manual_confirm: bool = True
     min_interval_seconds: int = 300
     max_daily_publish: int = 20
+    location: Optional[str] = None
     created_by: Optional[str] = None
     operator_id: Optional[str] = None
     tier: Optional[int] = 0
@@ -106,6 +110,7 @@ def _serialize_publish_profile(profile: PublishProfile) -> dict:
         "require_manual_confirm": profile.require_manual_confirm if profile.require_manual_confirm is not None else True,
         "min_interval_seconds": profile.min_interval_seconds or 300,
         "max_daily_publish": profile.max_daily_publish or 20,
+        "location": profile.location,
         "created_by": str(profile.created_by) if profile.created_by else None,
         "operator_id": str(profile.operator_id) if profile.operator_id else None,
         "tier": profile.tier or 0,
@@ -165,6 +170,7 @@ async def create_publish_profile(
         require_manual_confirm=data.require_manual_confirm,
         min_interval_seconds=data.min_interval_seconds,
         max_daily_publish=data.max_daily_publish,
+        location=data.location,
         # 多运营者归属：created_by=操作人；operator_id=号主（缺省同操作人）
         created_by=current_user.id if current_user else None,
         operator_id=uuid.UUID(data.operator_id) if data.operator_id else (current_user.id if current_user else None),

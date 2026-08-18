@@ -209,6 +209,7 @@ class VideoChannelPublisher:
         publish_jump: Optional[list] = None,
         task_id: Optional[str] = None,
         publish_comments: Optional[list] = None,
+        location: Optional[str] = None,
     ) -> dict:
         """发布整体超时护栏：整个发布流程（上传/填表/跳转/提交）最长 900s，
         超时强制 failed 并释放连接，避免任一环节卡死占住 publish worker
@@ -218,6 +219,7 @@ class VideoChannelPublisher:
                 self._publish_body(
                     video_path, title, description, tags, cover_file_key,
                     mini_program_link, publish_jump, task_id, publish_comments,
+                    location,
                 ),
                 timeout=900,
             )
@@ -257,6 +259,7 @@ class VideoChannelPublisher:
         publish_jump: Optional[list] = None,
         task_id: Optional[str] = None,
         publish_comments: Optional[list] = None,
+        location: Optional[str] = None,
     ) -> dict:
         """
         Execute the full publishing workflow (body, wrapped by publish() timeout guard).
@@ -310,6 +313,10 @@ class VideoChannelPublisher:
             if description:
                 await self._set_description(description)
 
+            # 发布页「位置」配置（按账号注入，P2）：有值才定位，避免干扰默认行为
+            if location:
+                await self._set_location(location)
+
             # Set tags（仅抖音/快手等有独立话题框的平台走独立 `_set_tags`）
             if tags and not self.EMBED_TAGS_IN_DESC:
                 await self._set_tags(tags)
@@ -336,7 +343,7 @@ class VideoChannelPublisher:
                     # 多运营者（R13/R18）：同时把结构化 payload 外移到 Redis，
                     # 供 worker 重启/多副本时 confirm 幂等重填（含 selector 版本校验）
                     await self._save_pending_payload(
-                        task_id, title, description, tags, cover_file_key, mini_program_link, publish_jump, publish_comments
+                        task_id, title, description, tags, cover_file_key, mini_program_link, publish_jump, publish_comments, location
                     )
                     # 连接对象交由缓存管理，不在此关闭
                     self.browser = None
@@ -661,6 +668,32 @@ class VideoChannelPublisher:
             await desc_input.fill("")
             await desc_input.fill(description)
 
+    async def _set_location(self, location: str):
+        """Set the publish-page「位置」控件（P2，按账号注入）。
+
+        位置输入在视频号发布页通常是一个搜索/选择框（输入城市后从下拉选中）。
+        这里先尝试输入位置文本并回车选中候选；若页面无对应控件（不同版本/改版）
+        则记录日志跳过，不阻断发布（位置属选填，宁可留空也不误操作）。
+        """
+        try:
+            loc_input = await self.page.query_selector(
+                "[placeholder*='位置'], [class*='location'] input, [class*='locate'] input, [class*='region'] input"
+            )
+            if not loc_input:
+                logger.info(
+                    "location control not found on publish page, skip (optional): %s",
+                    location,
+                )
+                return
+            await loc_input.click()
+            await asyncio.sleep(0.5)
+            await loc_input.fill(location)
+            # 触发下拉候选并选中第一项（按回车/点击候选项）
+            await loc_input.press("Enter")
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.warning("set location failed (optional, skip): %s", e)
+
     def _merge_tags_into_description(self, description: str, tags: list) -> str:
         """把话题标签拼进视频描述末尾（视频号话题是嵌在描述里的 `#话题#`，无独立框）。
 
@@ -835,6 +868,7 @@ class VideoChannelPublisher:
         mini_program_link: Optional[str],
         publish_jump: Optional[list] = None,
         publish_comments: Optional[list] = None,
+        location: Optional[str] = None,
     ) -> None:
         """把待确认发布的结构化 payload 外移到 Redis（R13/R18）。
 
@@ -855,6 +889,8 @@ class VideoChannelPublisher:
                 "cover_key": cover_file_key,
                 "mini_program_link": mini_program_link,
                 "publish_jump": publish_jump or [],
+                # 发布页「位置」配置（按账号注入，P2），confirm 重填时恢复
+                "location": location,
                 # 发布后置顶神评（可选，来自发布素材 comments；探活式，失败不阻断）
                 "publish_comments": publish_comments or [],
                 # 选择器集中管理并带版本号（R18）：confirm 前校验页面结构匹配
@@ -899,6 +935,9 @@ class VideoChannelPublisher:
                 await self._select_jump_type(payload["publish_jump"])
             if payload.get("mini_program_link"):
                 await self._attach_mini_program(payload["mini_program_link"])
+            # 发布页「位置」配置：confirm 幂等重填时同样恢复
+            if payload.get("location"):
+                await self._set_location(payload["location"])
             return True
         except Exception as e:
             logger.error(f"refill pending form failed: {e}", exc_info=True)
