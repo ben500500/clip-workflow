@@ -11,6 +11,7 @@ Phase 1 上帝类拆分：原「上帝类」slice.py（~2170 行）中的 Pydant
 引擎封装辅助函数、序列化器与 Worker/Celery 分发逻辑已拆入 `slice_helpers.py`，
 本文件保留业务路由（router）与 Worker 回调路由（worker_router），职责更聚焦于路由。
 """
+import asyncio
 import json
 import logging
 import os
@@ -383,6 +384,26 @@ async def run_slice(
                 .order_by(ClipCandidate.clip_index.asc().nullslast())
             )
             all_clips = all_clips_result.scalars().all()
+            if not all_clips:
+                # 竞态防护：autoclip 服务标 completed 先于候选写入本库（celery 回调
+                # _save_autoclip_results 滞后约 1-2s），一键切片在选点刚完成时可能查到
+                # 空候选 → 静默回退整片（表现为「选点 N 个高光、切片只出 1 个整片」）。
+                # 短轮询等待候选落库（最多 ~20s），消除竞态窗口。
+                for _ in range(10):
+                    await asyncio.sleep(2)
+                    retry_result = await db.execute(
+                        select(ClipCandidate)
+                        .where(ClipCandidate.episode_id == eid)
+                        .order_by(ClipCandidate.clip_index.asc().nullslast())
+                    )
+                    retry_clips = retry_result.scalars().all()
+                    if retry_clips:
+                        logger.info(
+                            "Episode %s 选点候选已落库（等待 %d 轮），纳入 %d 个候选",
+                            eid, _, len(retry_clips),
+                        )
+                        all_clips = retry_clips
+                        break
             if not all_clips:
                 if not data.allow_fallback_whole_video:
                     # 显式关闭整片回退：选点未产出候选片段时明确报错，
