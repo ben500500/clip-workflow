@@ -292,7 +292,7 @@ class VideoChannelPublisher:
             # 视频号发布页文件上传 input 为隐藏元素且渲染较晚（约 5-8s），
             # 用 wait_for_selector 等待出现而非一次性 query，避免误报找不到
             upload_input = await self.page.wait_for_selector(
-                "input[type='file']", timeout=60000
+                "input[type='file']", state="attached", timeout=60000
             )
         except Exception:
             raise RuntimeError("Cannot find video upload input element")
