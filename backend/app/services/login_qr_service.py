@@ -109,8 +109,18 @@ async def capture_login_qr(account_id, port: int, profile_dir: Optional[str] = N
         async with async_playwright() as p:
             browser = await p.chromium.connect_over_cdp(f"http://{host}:{port}")
             ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
-            page = await ctx.new_page()
-            await page.goto(CREATOR_LOGIN, wait_until="domcontentloaded", timeout=30000)
+            # P0-2 修复：优先复用已存在的 channels 登录页标签页，避免每次新建堆叠；
+            # 新建后**不得 `page.close()`**（原实现 `await page.close()` 会把扫码会话所在的
+            # 标签页关掉，导致用户微信扫完码后 Web 端会话"必死"、登录态建立失败）。
+            page = None
+            for pg in ctx.pages:
+                if pg.url and "channels.weixin.qq.com" in pg.url:
+                    page = pg
+                    break
+            if page is None:
+                page = await ctx.new_page()
+                await page.goto(CREATOR_LOGIN, wait_until="domcontentloaded", timeout=30000)
+            await page.bring_to_front()
             await page.wait_for_timeout(3000)
             # 定位二维码：常见选择器（微信登录二维码元素），集中管理可版本化（R18）
             qr_selectors = [
@@ -131,7 +141,7 @@ async def capture_login_qr(account_id, port: int, profile_dir: Optional[str] = N
                         qr_img = None
                     except Exception:
                         qr_img = None
-            await page.close()
+            # 不 close page：保持登录页存活，供扫码后会话建立（P0-2）
             if not qr_img:
                 logger.warning("[qr_spike] 未在 profile(%s) 页面定位到二维码元素", account_id)
                 return None
@@ -218,8 +228,15 @@ async def check_login_status_via_cdp(account_id, port: int, host: Optional[str] 
         async with async_playwright() as p:
             browser = await p.chromium.connect_over_cdp(f"http://{host}:{port}")
             ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
-            page = await ctx.new_page()
-            await page.goto("https://channels.weixin.qq.com/", wait_until="domcontentloaded", timeout=20000)
+            # 复用已有 channels 页面，避免新建+close 干扰共享浏览器会话
+            page = None
+            for pg in ctx.pages:
+                if pg.url and "channels.weixin.qq.com" in pg.url:
+                    page = pg
+                    break
+            if page is None:
+                page = await ctx.new_page()
+                await page.goto("https://channels.weixin.qq.com/", wait_until="domcontentloaded", timeout=20000)
             await page.wait_for_timeout(2000)
             login_selectors = [
                 "img.qrcode", "canvas",
@@ -231,7 +248,7 @@ async def check_login_status_via_cdp(account_id, port: int, host: Optional[str] 
                 if el:
                     need_login = True
                     break
-            await page.close()
+            # 不 close page（保持共享浏览器会话稳定）
             return "need_login" if need_login else "valid"
     except Exception as e:
         logger.warning("[login_heartbeat] profile(%s) 心跳检查失败：%s", account_id, e)
@@ -246,11 +263,18 @@ async def silent_keepalive(account_id, port: int, host: Optional[str] = None) ->
         async with async_playwright() as p:
             browser = await p.chromium.connect_over_cdp(f"http://{host}:{port}")
             ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
-            page = await ctx.new_page()
-            await page.goto("https://channels.weixin.qq.com/post/create",
-                            wait_until="domcontentloaded", timeout=20000)
+            # 复用已有 channels 页面，避免新建+close 干扰共享浏览器会话
+            page = None
+            for pg in ctx.pages:
+                if pg.url and "channels.weixin.qq.com" in pg.url:
+                    page = pg
+                    break
+            if page is None:
+                page = await ctx.new_page()
+                await page.goto("https://channels.weixin.qq.com/post/create",
+                                wait_until="domcontentloaded", timeout=20000)
             await page.wait_for_timeout(2000)
-            await page.close()
+            # 不 close page（保持共享浏览器会话稳定）
             return True
     except Exception as e:
         logger.warning("[keepalive] profile(%s) 静默续活失败：%s", account_id, e)

@@ -220,9 +220,11 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
 
         clips = run_async(get_clips(
             autoclip_project_id,
-            min_score=float(config.get("min_score_threshold") or 60),
-            min_duration=float(config.get("min_duration") or 0),
-            max_duration=float(config.get("max_duration") or 0),
+            # P1-5 修复：用 is not None 判断而非 `or`（falsy 陷阱）。
+            # 显式传 0 表示"最低分不限/时长不限"，不再被 `or 60` / `or 0` 回退吞掉。
+            min_score=float(config.get("min_score_threshold")) if config.get("min_score_threshold") is not None else 60.0,
+            min_duration=float(config.get("min_duration")) if config.get("min_duration") is not None else 0.0,
+            max_duration=float(config.get("max_duration")) if config.get("max_duration") is not None else 0.0,
         ))
         run_async(_save_autoclip_results(episode_id, autoclip_project_id, clips, completed, config))
         run_async(_update_autoclip_run(

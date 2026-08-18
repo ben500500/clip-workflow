@@ -23,6 +23,16 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+class PublishTimeoutError(Exception):
+    """发布结果确认超时。
+
+    与 P0-1 假成功根因对应：`_wait_for_publish` 不应在超时后以 `except` 兜底
+    静默返回 (url, None) 当作已发布，而应显式抛出本异常，让调用方（publish /
+    confirm_publish）走 `failed`/`error` 分支，避免把"没发出去"误判为"发布成功"。
+    """
+
+
 # 进程内待确认发布 tab 缓存：publish_task_id -> {"browser": Browser, "page": Page}
 # backend worker 采用 --concurrency=1 串行处理 publish 队列任务，publish 与后续
 # confirm 在同一 worker 进程内执行，模块级缓存跨任务存活可用。
@@ -301,19 +311,42 @@ class VideoChannelPublisher:
         await self._wait_for_upload()
 
     async def _wait_for_upload(self, timeout: int = 300):
-        """Wait for the video upload to complete (up to timeout seconds)."""
+        """Wait for the video upload to complete (up to timeout seconds).
+
+        P1-3 修复：不再以泛化的 `upload-success/preview` 类名选择器作为成功判据
+        （实测视频上传区为空时这些选择器可能被无关元素命中而误报成功），改为等待
+        页面上**真实出现带 src 的 <video> 预览元素**，确认视频确实已渲染成功。
+        找不到则抛 RuntimeError，让上游走失败分支，避免"上传未完成就点发表"。
+        """
         try:
-            # Wait for upload progress to disappear or success indicator
             await self.page.wait_for_selector(
-                "[class*='upload-success'], [class*='upload-complete'], [class*='preview']",
+                "video[src], video source[src], [class*='preview'] video",
                 timeout=timeout * 1000,
             )
             await asyncio.sleep(3)  # Extra wait for processing
+            # 二次确认：video 元素已带可播放源（非空 src/currentSrc）
+            has_src = await self.page.evaluate("""() => {
+                const v = document.querySelector('video');
+                return !!(v && (v.getAttribute('src') || (v.currentSrc || '')));
+            }""")
+            if not has_src:
+                raise RuntimeError("video element present but has no playable src")
         except Exception:
-            logger.warning("Upload wait timed out, continuing anyway...")
+            logger.warning("Upload wait timed out or video not ready, failing (P1-3)")
+            raise RuntimeError("video upload did not complete in time (no playable <video>)")
 
     async def _set_title(self, title: str):
-        """Set the video title."""
+        """Set the video title.
+
+        P1-4 修复：视频号短标题上限 16 字，超限会触发页面红字限制且"发表"按钮
+        可能置灰，是 P0-1 假成功的诱因之一。这里在填充前统一截断到 16 字。
+        """
+        if title and len(title) > 16:
+            logger.warning(
+                "title truncated to 16 chars for video channel (P1-4): %s -> %s",
+                title, title[:16],
+            )
+            title = title[:16]
         title_input = await self.page.query_selector(
             "[class*='title'] textarea, [class*='title'] input, [placeholder*='标题']"
         )
@@ -445,19 +478,38 @@ class VideoChannelPublisher:
         raise RuntimeError("Cannot find publish button")
 
     async def _wait_for_publish(self, timeout: int = 60) -> tuple:
-        """Wait for the publish action to complete and return (url, id)."""
+        """Wait for the publish action to complete and return (url, id).
+
+        P0-1 修复：
+        - **以 success 页 URL 为主判据**：等待地址跳转到发布成功页，URL 命中才算成功；
+        - published_id 仅作辅助（`[data-id]` 选择器太宽泛，可能命中无关元素，不再作为
+          成功判据）；
+        - 超时不再以 `except` 兜底静默返回 (url, None)，而是显式抛 `PublishTimeoutError`，
+          让调用方走 failed/error 分支，杜绝"假成功"。
+        """
         try:
-            await self.page.wait_for_url("**/success**", timeout=timeout * 1000)
+            # 主判据：URL 跳到成功页。视频号成功页含 /success 或 published 结果页特征。
+            await self.page.wait_for_url(
+                "**/success**",
+                timeout=timeout * 1000,
+            )
             await asyncio.sleep(2)
             current_url = self.page.url
-            # Try to extract published ID from URL or page content
+            # 辅助提取 published_id（仅尽力而为，不因取不到而判失败）
             published_id = None
-            id_el = await self.page.query_selector("[class*='post-id'], [data-id]")
-            if id_el:
-                published_id = await id_el.get_attribute("data-id")
+            try:
+                id_el = await self.page.query_selector("[class*='post-id']")
+                if id_el:
+                    published_id = await id_el.get_attribute("data-id")
+            except Exception:
+                published_id = None
             return current_url, published_id
         except Exception:
-            return self.page.url, None
+            # P0-1：超时即失败，交由调用方判定 failed，而非当成功返回
+            raise PublishTimeoutError(
+                "publish result not confirmed: page did not reach success URL within "
+                f"{timeout}s (url={self.page.url})"
+            )
 
     async def _save_pending_payload(
         self,
@@ -566,10 +618,16 @@ class VideoChannelPublisher:
                     "published_url": published_url,
                     "published_id": published_id,
                 }
+            except PublishTimeoutError as e:
+                # P0-1：发布结果未确认即失败，不 fallback（缓存 tab 即真实表单，
+                # 再重开会造成重复发布/误发风险），直接返回失败交由 celery 判定 failed
+                await self._close_connection()
+                return {"success": False, "error": str(e), "timeout": True}
             except Exception as e:
                 logger.error(f"Confirm publish via cached tab failed: {e}", exc_info=True)
                 await self._close_connection()
-                # 继续尝试 fallback
+                # 仅非超时异常才继续尝试 fallback
+
 
         # 2. fallback：从 Redis payload 幂等重填（R13/R18）后再点击发布
         pending = None
