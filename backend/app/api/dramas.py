@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.auth import get_current_user
 from app.config import settings
@@ -148,7 +149,15 @@ async def _resolve_drama(db: AsyncSession, drama_id: str) -> Drama:
         did = uuid.UUID(drama_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid drama ID format")
-    result = await db.execute(select(Drama).where(Drama.id == did))
+    result = await db.execute(
+        select(Drama)
+        .where(Drama.id == did)
+        .options(
+            selectinload(Drama.stills),
+            selectinload(Drama.accounts),
+            selectinload(Drama.episodes),
+        )
+    )
     d = result.scalar_one_or_none()
     if not d:
         raise HTTPException(status_code=404, detail="Drama not found")
