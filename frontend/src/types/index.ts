@@ -273,6 +273,7 @@ export interface PublishProfile {
   require_manual_confirm: boolean;
   min_interval_seconds: number;
   max_daily_publish: number;
+  location: string | null;
   created_by: string | null;
   operator_id: string | null;
   tier: number;
