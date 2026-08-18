@@ -78,6 +78,7 @@ from app.api.slice_helpers import (
     _acquire_concurrency_slot,
     _output_prefix,
     _refresh_episode_status,
+    refine_clip_boundaries,
     _publish_to_worker,
     _dispatch_celery,
     _verify_worker_token,
@@ -498,6 +499,38 @@ async def run_slice(
             cutlist = ""
             intervals_content = ""
         else:
+            # 选点结尾优化：boundary_refine="silence" 时，生成 cutlist 前把每个片段
+            # 的 start/end 吸附到最近的自然停顿（静音）处，解决“突然中断”和“高光后拖尾”。
+            # 需要本地源视频：优先用 data.video_path；否则下载 MinIO 源到临时文件检测。
+            refine_mode = (data.boundary_refine or "off").strip().lower()
+            if refine_mode == "silence" and accepted_clips:
+                local_video = data.video_path if data.video_path and os.path.isfile(data.video_path) else None
+                _tmp_local = None
+                try:
+                    if not local_video and source_file_key:
+                        from app.services.minio_service import download_to_file
+                        _tmp_local = (
+                            f"/tmp/refine_{uuid.uuid4().hex}"
+                            f"{os.path.splitext(source_file_key)[1] or '.mp4'}"
+                        )
+                        if await download_to_file(source_bucket, source_file_key, _tmp_local):
+                            local_video = _tmp_local
+                    if local_video:
+                        refined_n = refine_clip_boundaries(
+                            accepted_clips, local_video, mode="silence"
+                        )
+                        if refined_n:
+                            await db.flush()
+                            logger.info("选点结尾优化：%d 个片段已做静音边界吸附", refined_n)
+                except Exception as e:  # 边界精修失败不影响主流程，仅记录
+                    logger.warning("静音边界吸附失败（回退原边界）: %s", e)
+                finally:
+                    if _tmp_local and os.path.isfile(_tmp_local):
+                        try:
+                            os.unlink(_tmp_local)
+                        except OSError:
+                            pass
+
             cutlist = generate_cutlist(accepted_clips, episode_title=episode.title if episode else None)
 
             # Generate intervals from enabled intervals

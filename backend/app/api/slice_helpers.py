@@ -120,6 +120,15 @@ class SliceRunRequest(BaseModel):
     # 片段（0 ~ 源时长），应用下方切片配置（竖屏转横屏/水印/角标/字幕/固定文字等）
     # 做一次整片转换输出，无需候选片段
     no_cut: bool = False
+    # ── 选点结尾优化：边界精修 ──
+    # 选点（LLM step2）产出的 start/end 是裸时间戳，可能落在句子中间或把高光后的
+    # 反应/过渡/废话硬收进结尾，导致切片“突然中断”或“高光之后拖尾几秒”。
+    # boundary_refine 开启后，生成 cutlist 前把每个片段的 start/end 吸附到最近的自然
+    # 停顿（静音）处，提升切片结尾质感。
+    #   "off"（默认）：完全走老逻辑，零影响
+    #   "silence"：用 ffmpeg silencedetect 检测静音，把 end 吸附到窗口内最近静音起点、
+    #               start 吸附到最近静音终点（话语开始处）
+    boundary_refine: Optional[str] = None
     # ── 自定义文字水印 ──
     # 水印开关：开启后会在切片成品视频上叠加动态文字水印
     watermark_enabled: bool = False
@@ -1143,3 +1152,134 @@ async def _verify_worker_token(
     if not expected:
         return False
     return secrets.compare_digest(expected, x_worker_token)
+
+
+# ──────────────────────────────────────────────
+# 选点结尾优化：静音边界吸附（boundary_refine="silence"）
+# ──────────────────────────────────────────────
+
+# 静音检测参数（与 engines/slice.py 的默认值保持一致）
+_SILENCE_THRESHOLD_DB = -30.0
+_MIN_SILENCE_SECONDS = 0.35
+# 边界吸附搜索窗口（秒）：对 end 在 [end-WINDOW, end+WINDOW] 内找最近静音
+_REFINE_WINDOW_SECONDS = 1.5
+
+
+def _detect_silence_points(video_path: str) -> dict:
+    """用 ffmpeg silencedetect 检测源视频的静音起点/终点（秒）。
+
+    返回 {"starts": [s1, s2, ...], "ends": [e1, e2, ...]}：
+    - starts：静音开始时间戳（上一句讲完、进入停顿）
+    - ends：静音结束时间戳（停顿结束、下一句开始）
+    失败或无法检测时返回 {"starts": [], "ends": []}（调用方回退为不吸附）。
+    """
+    import subprocess
+    if not video_path or not os.path.isfile(video_path):
+        return {"starts": [], "ends": []}
+    cmd = [
+        "ffmpeg", "-i", video_path,
+        "-af", (f"silencedetect=noise={_SILENCE_THRESHOLD_DB}dB:"
+                 f"d={_MIN_SILENCE_SECONDS}"),
+        "-f", "null", "-",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3600
+        )
+    except Exception:
+        return {"starts": [], "ends": []}
+    if proc.returncode != 0:
+        return {"starts": [], "ends": []}
+    out = proc.stderr.decode(errors="replace")
+    starts: list[float] = []
+    ends: list[float] = []
+    for line in out.splitlines():
+        if "silence_start:" in line:
+            try:
+                starts.append(float(line.split("silence_start:")[1].strip()))
+            except ValueError:
+                pass
+        elif "silence_end:" in line:
+            try:
+                ends.append(float(line.split("silence_end:")[1].strip().split()[0]))
+            except ValueError:
+                pass
+    starts.sort()
+    ends.sort()
+    logger.info(
+        "silencedetect 检测到 %d 个静音起点 / %d 个静音终点", len(starts), len(ends)
+    )
+    return {"starts": starts, "ends": ends}
+
+
+def _nearest_in_window(points: list[float], target: float, window: float, prefer_after: bool) -> Optional[float]:
+    """在 [target-window, target+window] 内找离 target 最近的吸附点。
+
+    prefer_after=True 时优先选 >= target 的点（把结尾略微往后收进自然停顿起点）；
+    prefer_after=False 时优先选 <= target 的点（把开头略微往前拉到话语开始）。
+    无命中返回 None（保持原值）。
+    """
+    if not points:
+        return None
+    lo, hi = target - window, target + window
+    candidates = [p for p in points if lo <= p <= hi]
+    if not candidates:
+        return None
+    # 若窗口两侧都有候选，优先取更近的；同距时按 prefer_after 决定方向
+    best = min(candidates, key=lambda p: (abs(p - target), 0 if (p >= target) == prefer_after else 1))
+    return best
+
+
+def refine_clip_boundaries(
+    clips: List[ClipCandidate],
+    video_path: str,
+    mode: str = "silence",
+) -> int:
+    """把每个候选片段的 start/end 吸附到最近的自然停顿（静音）处。
+
+    - end_time：在 [end - WINDOW, end + WINDOW] 内找最近的静音起点（上一句讲完处）并吸附，
+      解决“高光之后拖尾”和“句子中间硬切”。
+    - start_time：在 [start - WINDOW, start + WINDOW] 内找最近的静音终点（下一句说话开始处）
+      并吸附，解决“开头截在半句话”里。
+
+    通过写回 clip.adjusted_end / clip.adjusted_start 生效（generate_cutlist 优先用 adjusted_*）。
+    仅在有本地视频且检测到静音时吸附；失败或无损时保持原值。返回发生吸附的 clip 数量。
+    """
+    if mode != "silence":
+        return 0
+    points = _detect_silence_points(video_path)
+    if not points["starts"] and not points["ends"]:
+        logger.info("未检测到静音，跳过边界吸附（保持原边界）")
+        return 0
+    refined = 0
+    for clip in clips:
+        if clip is None:
+            continue
+        start = clip.start_time
+        end = clip.end_time
+        if start is None or end is None:
+            continue
+        changed = False
+        # end 吸附：往最近的静音起点靠（静音起点 = 上一句讲完）
+        new_end = _nearest_in_window(
+            points["starts"], end, _REFINE_WINDOW_SECONDS, prefer_after=True
+        )
+        if new_end is not None and abs(new_end - end) > 0.05:
+            clip.adjusted_end = round(new_end, 3)
+            changed = True
+        # start 吸附：往最近的静音终点靠（静音终点 = 下一句开始）
+        new_start = _nearest_in_window(
+            points["ends"], start, _REFINE_WINDOW_SECONDS, prefer_after=False
+        )
+        if new_start is not None and abs(new_start - start) > 0.05:
+            clip.adjusted_start = round(new_start, 3)
+            changed = True
+        if changed:
+            refined += 1
+            logger.info(
+                "边界吸附: clip[%s] start %s->%s, end %s->%s",
+                clip.clip_index,
+                start, clip.adjusted_start,
+                end, clip.adjusted_end,
+            )
+    return refined

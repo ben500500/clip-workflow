@@ -195,6 +195,32 @@ docker-compose 已把 `WORKER_CONCURRENCY` 透传给 autoclip 服务，由 uvico
 > 注意：多进程各自持有 LLM / Whisper 实例，需确认显存/内存足够；若开启画面理解（frame analysis）
 > 等有状态缓存，多进程下需评估进程间竞争，必要时降低并发。
 
+### 选点结尾优化（`boundary_refine="silence"`）
+
+LLM 选点（step2）产出的 `start_time`/`end_time` 是**裸时间戳**，可能落在句子中间、或把高光剧情
+之后的反应/过渡/无关镜头硬收进结尾，导致切片**突然中断**或**高光之后拖尾几秒**。
+
+开启后，生成 cutlist 前用 ffmpeg `silencedetect` 检测源视频的**自然停顿（静音）**，把每个片段的
+`start`/`end` 吸附到最近停顿处：
+
+- **end**：吸附到窗口内最近的**静音起点**（上一句讲完处）→ 解决“句子中间硬切”与“高光后拖尾”
+- **start**：吸附到窗口内最近的**静音终点**（下一句说话开始处）→ 解决“开头截在半句话里”
+
+开启方式（二选一，默认关闭、对历史行为零影响）：
+
+```bash
+# 1) 单个切片请求透传
+curl -X POST .../api/slice/... \
+  -H 'Content-Type: application/json' \
+  -d '{"boundary_refine": "silence"}'
+
+# 2) 批量切片（串行/解耦模式）在 slice_config 里开启
+slice_config: { "pipeline_mode": "serial", "boundary_refine": "silence" }
+```
+
+- 静音检测失败、窗口内无自然停顿、或源视频不可达时，**自动回退原边界**，不影响主流程。
+- 仅当 `end`/`start` 附近 1.5s 窗口内有静音才吸附，保证只做“把切点挪到自然停顿”这类无损精修。
+
 ---
 
 ## API 说明
