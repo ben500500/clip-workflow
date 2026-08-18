@@ -7,7 +7,7 @@ import {
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
   CheckCircleOutlined, ClockCircleOutlined, InfoCircleOutlined, PlayCircleOutlined,
-  UploadOutlined, DeleteOutlined as DelIcon, PlusOutlined, SettingOutlined, StopOutlined, ReloadOutlined,
+  UploadOutlined, DeleteOutlined as DelIcon, PlusOutlined, SettingOutlined, StopOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projectApi } from '../api/projects';
@@ -353,33 +353,12 @@ const EpisodeDetail: React.FC = () => {
     };
   }, []);
 
-  // ── 源视频预览（短剧切片：剧集原始素材在线播放） ──
-  const [sourceVideoUrl, setSourceVideoUrl] = useState<string | null>(null);
-  const [sourceVideoLoading, setSourceVideoLoading] = useState(false);
-  const [sourceVideoError, setSourceVideoError] = useState<string | null>(null);
-
-  const fetchSourceVideoUrl = async () => {
-    if (!episodeId) return;
-    setSourceVideoLoading(true);
-    setSourceVideoError(null);
-    try {
-      const res = await projectApi.getVideoUrl(episodeId);
-      if (mountedRef.current) setSourceVideoUrl(res.url);
-    } catch (err: unknown) {
-      if (mountedRef.current) setSourceVideoError(err instanceof Error ? err.message : '源视频链接获取失败');
-    } finally {
-      if (mountedRef.current) setSourceVideoLoading(false);
-    }
-  };
-
   const fetchEpisode = () => {
     setLoading(true);
     projectApi
       .getEpisode(episodeId)
       .then((data) => {
         if (mountedRef.current) setEpisode(data);
-        // 有源视频文件时预取预览链接
-        if (data.source_file_key) void fetchSourceVideoUrl();
       })
       .catch((err: unknown) => {
         if (mountedRef.current) setError(err instanceof Error ? err.message : '获取剧集失败');
@@ -2703,59 +2682,6 @@ const EpisodeDetail: React.FC = () => {
         </Space>
         {/* 一键切片实时进度条：任务进行中时展示在按钮下方 */}
         {renderProgress(oneClickProgress)}
-      </Card>
-
-      {/* 源视频预览：剧集原始素材在线播放（同源 presigned URL，支持拖动进度） */}
-      <Card
-        size="small"
-        style={{ marginBottom: 16 }}
-        title={(
-          <Space size={8}>
-            <PlayCircleOutlined />
-            <span>源视频预览</span>
-            {episode.duration ? (
-              <Text type="secondary" style={{ fontSize: 12, fontWeight: 'normal' }}>{formatDuration(episode.duration)}</Text>
-            ) : null}
-          </Space>
-        )}
-        extra={
-          episode.source_file_key ? (
-            <Space size={8}>
-              {sourceVideoError && <Text type="danger" style={{ fontSize: 12 }}>链接失效</Text>}
-              <Button size="small" icon={<ReloadOutlined />} loading={sourceVideoLoading} onClick={() => void fetchSourceVideoUrl()}>
-                刷新链接
-              </Button>
-            </Space>
-          ) : undefined
-        }
-      >
-        {episode.source_file_key ? (
-          sourceVideoUrl ? (
-            <video
-              controls
-              preload="metadata"
-              src={sourceVideoUrl}
-              style={{ width: '100%', maxHeight: 380, background: '#000', borderRadius: 6 }}
-              onError={() => {
-                setSourceVideoUrl(null);
-                setSourceVideoError('源视频加载失败（链接可能已过期），可点击「刷新链接」重试');
-              }}
-            />
-          ) : (
-            <div style={{ textAlign: 'center', padding: '28px 0' }}>
-              {sourceVideoError ? (
-                <Space direction="vertical" size={8}>
-                  <Text type="danger">{sourceVideoError}</Text>
-                  <Button size="small" type="primary" onClick={() => void fetchSourceVideoUrl()}>重试</Button>
-                </Space>
-              ) : (
-                <Spin size="small" />
-              )}
-            </div>
-          )
-        ) : (
-          <Text type="secondary">该剧集没有源视频文件</Text>
-        )}
       </Card>
 
       {/* 一键切片配置弹窗：可自定义所有默认值并保存多套配置 */}

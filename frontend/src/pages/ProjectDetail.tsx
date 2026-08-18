@@ -3,7 +3,7 @@ import {
   Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col, Statistic,
   message, Upload, Breadcrumb, Descriptions, Progress, Modal, Input, Checkbox, Popconfirm,
 } from 'antd';
-import { UploadOutlined, ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined } from '@ant-design/icons';
+import { UploadOutlined, ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { projectApi } from '../api/projects';
 import { uploadApi } from '../api/upload';
@@ -24,6 +24,12 @@ const ProjectDetail: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+
+  // ── 源视频预览：剧集列表中按需展开，点击「预览」后再加载在线播放链接 ──
+  const [previewExpanded, setPreviewExpanded] = useState<Set<string>>(new Set());
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const [previewLoading, setPreviewLoading] = useState<Record<string, boolean>>({});
+  const [previewErrors, setPreviewErrors] = useState<Record<string, string>>({});
 
   // ── 多视频合并上传（可选择是否合并成一个创建项目，项目名称由用户输入） ──
   const [multiModalOpen, setMultiModalOpen] = useState(false);
@@ -130,6 +136,130 @@ const ProjectDetail: React.FC = () => {
     }
   };
 
+  // ── 源视频预览：展开/收起，展开时按需加载在线播放链接 ──
+  const togglePreview = async (record: Episode, expanded?: boolean) => {
+    const id = record.id;
+    const willExpand = expanded ?? !previewExpanded.has(id);
+    if (!willExpand) {
+      // 收起：移除展开状态与链接，释放资源
+      setPreviewExpanded((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setPreviewUrls((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setPreviewErrors((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      return;
+    }
+    setPreviewExpanded((prev) => new Set(prev).add(id));
+    if (previewUrls[id]) return;
+    setPreviewLoading((prev) => ({ ...prev, [id]: true }));
+    setPreviewErrors((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    try {
+      const res = await projectApi.getVideoUrl(id);
+      if (mountedRef.current) setPreviewUrls((prev) => ({ ...prev, [id]: res.url }));
+    } catch (err: unknown) {
+      if (mountedRef.current) {
+        setPreviewErrors((prev) => ({ ...prev, [id]: err instanceof Error ? err.message : '源视频链接获取失败' }));
+      }
+    } finally {
+      if (mountedRef.current) setPreviewLoading((prev) => ({ ...prev, [id]: false }));
+    }
+  };
+
+  const refreshPreview = (id: string) => {
+    setPreviewUrls((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setPreviewErrors((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setPreviewLoading((prev) => ({ ...prev, [id]: true }));
+    projectApi
+      .getVideoUrl(id)
+      .then((res) => {
+        if (mountedRef.current) setPreviewUrls((prev) => ({ ...prev, [id]: res.url }));
+      })
+      .catch((err: unknown) => {
+        if (mountedRef.current) {
+          setPreviewErrors((prev) => ({ ...prev, [id]: err instanceof Error ? err.message : '源视频链接获取失败' }));
+        }
+      })
+      .finally(() => {
+        if (mountedRef.current) setPreviewLoading((prev) => ({ ...prev, [id]: false }));
+      });
+  };
+
+  const renderSourcePreview = (record: Episode) => {
+    const id = record.id;
+    if (!previewExpanded.has(id)) return null;
+    if (!record.source_file_key) {
+      return (
+        <div style={{ padding: '16px 0', textAlign: 'center' }}>
+          <Text type="secondary">该剧集没有源视频文件</Text>
+        </div>
+      );
+    }
+    if (previewLoading[id]) {
+      return (
+        <div style={{ padding: '28px 0', textAlign: 'center' }}>
+          <Spin size="small" />
+        </div>
+      );
+    }
+    if (previewErrors[id]) {
+      return (
+        <div style={{ padding: '16px 0', textAlign: 'center' }}>
+          <Space direction="vertical" size={8}>
+            <Text type="danger">{previewErrors[id]}</Text>
+            <Button size="small" type="primary" onClick={() => refreshPreview(id)}>重试</Button>
+          </Space>
+        </div>
+      );
+    }
+    if (previewUrls[id]) {
+      return (
+        <video
+          controls
+          preload="metadata"
+          src={previewUrls[id]}
+          style={{ width: '100%', maxHeight: 380, background: '#000', borderRadius: 6 }}
+          onError={() => {
+            setPreviewUrls((prev) => {
+              const next = { ...prev };
+              delete next[id];
+              return next;
+            });
+            setPreviewErrors((prev) => ({ ...prev, [id]: '源视频加载失败（链接可能已过期），可点击「刷新链接」重试' }));
+          }}
+        />
+      );
+    }
+    return (
+      <div style={{ padding: '16px 0', textAlign: 'center' }}>
+        <Space direction="vertical" size={8}>
+          <Text type="secondary">暂无预览</Text>
+        </Space>
+      </div>
+    );
+  };
+
   if (loading) {
     return <Spin size="large" style={{ display: 'block', margin: '120px auto' }} />;
   }
@@ -187,9 +317,17 @@ const ProjectDetail: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 160,
+      width: 200,
       render: (_: unknown, record: Episode) => (
         <Space size="small">
+          <Button
+            type="link"
+            size="small"
+            icon={<EyeOutlined />}
+            onClick={() => void togglePreview(record)}
+          >
+            {previewExpanded.has(record.id) ? '收起' : '预览'}
+          </Button>
           <Button type="link" size="small" onClick={() => navigate(`/episodes/${record.id}`)}>处理</Button>
           <Popconfirm
             title="确定删除该剧集？"
@@ -274,7 +412,20 @@ const ProjectDetail: React.FC = () => {
       </Card>
       {/* 剧集列表：位于上传正片下方 */}
       <Card size="small" title="剧集列表" extra={<Button size="small" icon={<UploadOutlined />} onClick={() => navigate('/settings')}>去系统设置</Button>}>
-        <Table rowKey="id" columns={episodeColumns} dataSource={episodes} pagination={false} size="small" scroll={{ x: 920 }} />
+        <Table
+          rowKey="id"
+          columns={episodeColumns}
+          dataSource={episodes}
+          pagination={false}
+          size="small"
+          scroll={{ x: 920 }}
+          expandable={{
+            expandedRowKeys: Array.from(previewExpanded),
+            onExpand: (expanded, record) => void togglePreview(record, expanded),
+            expandedRowRender: (record) => renderSourcePreview(record),
+            expandIconColumnIndex: -1,
+          }}
+        />
       </Card>
 
       {/* 多视频批量上传弹窗（可合并成一个视频创建项目，项目名称由用户输入） */}
