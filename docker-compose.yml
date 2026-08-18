@@ -201,6 +201,9 @@ services:
       API_MODEL_NAME: ${API_MODEL_NAME:-qwen-plus}
       DASHSCOPE_MODE: ${DASHSCOPE_MODE:-compatible}
       SERVICE_MODE: api
+      # 解耦模式提速：autoclip 多进程选点并发（1=单进程，建议 2~3 发挥并行价值；
+      # 需 GPU/内存足够，多进程各自持有 LLM/whisper 实例）
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
       # 本地 whisper 模型路径（避免每次容器重建从 HuggingFace 下载，国内网络不稳定）
       # 切换模型：改这里即可（旧模型保留在 ./whisper-model，新模型在 ./whisper-model-turbo）
       WHISPER_MODEL: /app/whisper-model-turbo
@@ -344,6 +347,8 @@ services:
     container_name: clip-worker-fast
     # 指标/默认任务（轻量）—— 高并发 4，不再被视频任务饿死
     # 视频号导入下载（wechat_dl，HTTP 拉流轻量）并入本 worker；剥离形态 B 可单独拉起 wechat_dl worker
+    # 解耦模式选点消费者（batch_selection_consumer）独立 selection 队列，与本 worker 同进程消费，
+    # 与串行批处理（default）隔离，避免长轮询选点抢占 default。
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "metrics,default,celery,wechat_dl,selection", "--loglevel=info", "--concurrency=4"]
 
   beat:

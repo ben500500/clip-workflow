@@ -12,11 +12,10 @@
         beat 每 N 秒扫描 phase='autoclip_done' 的 item
         → 复用 run_slice → publish_slice_task 入 Redis Stream（slice:tasks:*）
         → Go slice-worker 消费切片 → item.phase='slicing'（防重复投递）
-        → 每个 item 投递一个轻量收尾任务 batch_slice_finalize（独立异步，不阻塞投递守护）
 
-    终态回收（Celery 任务 batch_slice_finalize）
-        在独立任务内复用串行的 _wait_slice + _delete_source + 置 completed：
-        轮询 SliceTask 至终态 → 回填 item.output_count/status/completed_at → 删除源视频。
+    终态回收（Celery beat 任务 batch_slice_finalize）
+        扫描 phase='slicing' 的 item，按 slice_task_id 查 SliceTask 终态，
+        回填 BatchSliceItem（completed/failed），成功才 _delete_source。
         （Go worker 回调 slice_task_callback 只回写 SliceTask/Episode，不涉及 BatchSliceItem，
         故必须由本回收环节回填 item 终态。）
 
@@ -52,7 +51,6 @@ logger = logging.getLogger(__name__)
 PHASE_SELECT_DONE = "autoclip_done"   # 已选点待切片（「已选点池」状态位）
 STATUS_READY_SLICE = "ready_slice"    # 选点完成、待切片
 PHASE_SLICING = "slicing"
-PHASE_FINALIZE = "finalize"           # 切片终态回收（异步收尾）阶段
 
 
 async def _get_batch(batch_id: str):
@@ -95,15 +93,6 @@ async def _update_batch(batch_id, **fields):
             update(BatchSlice).where(BatchSlice.id == uuid.UUID(batch_id)).values(**fields)
         )
         await session.commit()
-
-
-async def _set_item_failed(item_id, error_message: str = None):
-    """将 item 置为终态 failed（供选点重试耗尽后调用）。"""
-    item = await _load_item(item_id)
-    if item is None:
-        return
-    await serial._set_phase(item, serial.PHASE_AUTOCLIP, "failed", 0)
-    await _update_item(item_id, error_message=error_message)
 
 
 async def _get_operator(batch: BatchSlice):
@@ -245,11 +234,9 @@ async def process_selection(batch_id: str, item_id: str, episode_id: str):
             # 关闭 AI 选点：直接跳过选点阶段
             logger.info("剧集 %s 已关闭 AI 智能选点，跳过选点与自动审核", episode_id)
     except Exception as e:
+        # 失败不置 item 终态、不 return：向上抛出交由 batch_selection_consumer
+        # 的 Celery 重试（max_retries=3）接管，避免 item 永久卡在 failed。
         logger.exception("AI 选点失败 item=%s: %s", item_id, e)
-        # P1-3 修复：不在本处置终态 failed，而是重抛让 Celery 重试接管。
-        # 若提前置 failed，重试时 process_selection 开头会因 status=failed 直接 return，
-        # 导致 max_retries 形同虚设。重试耗尽后的终态置失败由 batch_selection_consumer
-        # 统一处理（_set_item_failed）。
         raise
 
     # ── 标记为「已选点待切片」，写入已选点池 ──
@@ -334,64 +321,83 @@ async def dispatch_ready_slices():
             await _update_item(item.id, error_message=f"一键切片失败: {e}")
             continue
 
-        # ── 终态回收：投递独立的异步收尾任务（不阻塞本投递守护）──
-        # 切片 worker 完成回调（slice_task_callback）只回写 SliceTask/Episode，
-        # 并不涉及 BatchSliceItem 的终态回填。若在这里阻塞式 _wait_slice，会让
-        # 周期守护任务变成长任务，拖慢其余 item 的投递节奏，甚至超过 beat 间隔
-        # 触发重复调度竞态。故每个 item 单独投递一个轻量收尾任务 batch_slice_finalize，
-        # 在该任务内复用串行的 _wait_slice + _delete_source + 置 completed 逻辑。
-        try:
-            from app.celery.tasks import batch_slice_finalize
-            batch_slice_finalize.delay(str(item.id), str(item.episode_id))
-        except Exception as e:
-            logger.exception("投递终态收尾任务失败 item=%s: %s", item.id, e)
-
 
 # ─────────────────────────────────────────────────────────────────────
-# 四、终态回收（Celery task batch_slice_finalize，独立异步收尾）
+# 四、终态回收器（Celery beat task batch_slice_finalize）
 # ─────────────────────────────────────────────────────────────────────
-async def finalize_slice(item_id: str, episode_id: str):
-    """切片终态回收：轮询 SliceTask 至终态，成功后回填 item 并删除源视频。
+async def finalize_slices():
+    """终态回收器：扫描 phase='slicing' 的 item，按 slice_task_id 查 SliceTask 终态回填。
 
-    复用串行模块已验证的 _wait_slice + _delete_source 逻辑，保证与串行模式
-    收尾语义完全一致。作为独立轻量 Celery 任务异步执行，避免阻塞
-    dispatch_ready_slices 投递守护。
+    切片由 Go slice-worker 异步消费 Redis Stream，切完才回写 SliceTask 终态，
+    与解耦模式「不阻塞投递」的目标一致，这里在独立 beat 周期内做终态回收：
+
+        - SliceTask.status == "completed" → item 置 completed（回填 output_count / completed_at）
+          并仅在成功时才调用 _delete_source（删除本地 + MinIO 源视频，回收空间）；
+        - SliceTask.status in ("failed", "cancelled") → item 置 failed；
+        - 任务仍在 running/pending/超时（未达终态）→ 本轮跳过，下次 beat 继续轮询。
+
+    与 aggregate_batches 同构：幂等（按 slice_task_id 判终态，不重复回填/删除）、
+    不阻塞切片投递、不引入长任务。
     """
-    item = await _load_item(item_id)
-    if item is None:
-        logger.error("BatchSliceItem %s 不存在", item_id)
-        return
-    # 幂等：已进入终态的 item 直接返回（防重复回调/重复收尾叠加）
-    if item.status in ("completed", "failed", "cancelled"):
-        return
-    # 仅在切片阶段执行回收（防止误收尚未投递的 item）
-    if item.phase != PHASE_SLICING:
-        return
+    from app.models.models import SliceTask
 
-    await serial._set_phase(item, PHASE_FINALIZE, "slicing", 80)
-    ok, _status, ocount = await serial._wait_slice(episode_id)
-    if not ok:
-        logger.warning("切片终态回收失败 item=%s status=%s", item_id, _status)
-        await serial._set_phase(item, PHASE_SLICING, "failed", 0)
-        await _update_item(
-            item.id, error_message=f"切片未完成（{_status}）"
+    # 扫描所有 phase='slicing'（切片投递后待回收终态）的 item
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(BatchSliceItem).where(BatchSliceItem.phase == PHASE_SLICING)
         )
-        return
+        items = result.scalars().all()
 
-    # 删除源视频（源视频空间回收是硬性要求）
-    try:
-        await serial._delete_source(item)
-    except Exception as e:
-        logger.warning("删除源视频失败 item=%s: %s", item.id, e)
+    for item in items:
+        if not item.slice_task_id:
+            # 无 slice_task_id 的异常项：置失败便于人工介入，避免永久卡在 slicing
+            logger.warning("终态回收：item %s 处于 slicing 但无 slice_task_id，置 failed", item.id)
+            await serial._set_phase(item, serial.PHASE_DELETE, "failed", 0)
+            await _update_item(item.id, error_message="切片任务缺失，无法回收终态")
+            continue
 
-    await _update_item(
-        item.id, output_count=ocount, completed_at=datetime.utcnow()
-    )
-    await serial._set_phase(item, serial.PHASE_DELETE, "completed", 100)
-    logger.info(
-        "切片终态回收完成 episode=%s item=%s outputs=%s",
-        episode_id, item_id, ocount,
-    )
+        async with async_session_factory() as session:
+            task = (
+                await session.execute(
+                    select(SliceTask).where(SliceTask.id == item.slice_task_id)
+                )
+            ).scalar_one_or_none()
+
+        # 任务尚未到终态（running/pending/未生成）：本轮跳过，幂等等待下一 beat
+        if task is None or task.status in (None, "pending", "running", "started"):
+            continue
+
+        if task.status == "completed":
+            ocount = task.output_count or 0
+            # 成功才回收源视频（与串行路径 PHASE_DELETE 阶段语义一致）
+            await serial._set_phase(item, serial.PHASE_DELETE, "deleting", 90)
+            try:
+                await serial._delete_source(item)
+            except Exception as e:
+                logger.warning("终态回收：删除源视频失败 item=%s: %s", item.id, e)
+            await serial._set_phase(item, serial.PHASE_DELETE, "completed", 100)
+            await _update_item(
+                item.id,
+                status="completed",
+                output_count=ocount,
+                completed_at=datetime.utcnow(),
+                error_message=None,
+            )
+            logger.info(
+                "终态回收：item %s 切片完成，回填 completed（outputs=%s）并删除源视频",
+                item.id, ocount,
+            )
+        elif task.status in ("failed", "cancelled"):
+            await serial._set_phase(item, serial.PHASE_DELETE, "failed", 0)
+            await _update_item(
+                item.id,
+                status="failed",
+                error_message=f"切片失败（{task.status}）: {task.error_message or ''}",
+            )
+            logger.info("终态回收：item %s 切片%s，回填 failed", item.id, task.status)
+        else:
+            # 其它未知状态：暂不处置，等待下一轮
+            logger.warning("终态回收：item %s slice_task 状态未知 %s", item.id, task.status)
 
 
 # ─────────────────────────────────────────────────────────────────────
