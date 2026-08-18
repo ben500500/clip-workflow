@@ -33,6 +33,41 @@ class PublishTimeoutError(Exception):
     """
 
 
+class UploadRiskError(Exception):
+    """上传被平台风控/环境级拒绝（区别于普通超时/网络失败）。
+
+    视频号等平台在上传阶段可能返回 `300001`/`upload_params` 等环境级风控信号，
+    表现为"上传无进展或直接被拒"。这类失败不应与普通超时混为一谈：
+    - 语义上它是账号/环境受限（风控），而非瞬时故障；
+    - 处置上不应自动重试（重试只会重复消耗账号安全额度），应走 `upload_limited` /
+      `env_risk` 分级并进死信队列人工/定时重放。
+
+    `risk_code` 承载探测到的风控码/文案分类，供上层落 `risk_type`。
+    """
+
+    def __init__(self, risk_code: str = "upload_limited", detail: str = ""):
+        super().__init__(detail or risk_code)
+        self.risk_code = risk_code
+        self.detail = detail
+
+
+# 上传/环境级风控信号的 DOM/文案探测规则（集中管理，微信改版时可热修）
+# key=探测出的分类，value=命中关键词（页面文本/URL/类名，大小写不敏感）
+UPLOAD_RISK_PROBES: dict = {
+    "env_risk": [   # 环境级风控（300001 / upload_params / 设备环境异常）
+        "300001", "upload_params", "环境异常", "设备异常", "存在风险",
+        "当前环境", "操作频繁", "请稍后再试", "验证", "安全校验",
+    ],
+    "upload_limited": [   # 账号级上传受限（发布额度/功能限制）
+        "上传失败", "上传受限", "发布受限", "功能受限", "无法上传",
+        "次数已达上限", "今日已用完", "被限制", "无法发布",
+    ],
+    "need_login": [   # 登录态被踢/失效
+        "登录已失效", "请先登录", "重新登录", "登录过期", "扫码登录",
+    ],
+}
+
+
 # 进程内待确认发布 tab 缓存：publish_task_id -> {"browser": Browser, "page": Page}
 # backend worker 采用 --concurrency=1 串行处理 publish 队列任务，publish 与后续
 # confirm 在同一 worker 进程内执行，模块级缓存跨任务存活可用。
@@ -204,6 +239,8 @@ class VideoChannelPublisher:
                 "success": False,
                 "status": "error",
                 "error": str(e),
+                # PR①：风控拒发时透出 risk_type，供 worker 落 upload_limited/env_risk
+                "risk_type": getattr(e, "risk_code", None),
                 "screenshot_path": None,
                 "published_url": None,
                 "published_id": None,
@@ -240,6 +277,27 @@ class VideoChannelPublisher:
             # Navigate to creator page
             await self.page.goto(self.CREATOR_URL, wait_until="domcontentloaded")
             await asyncio.sleep(2)
+
+            # 上传前预检（PR①）：轻量探测页面上是否已出现账号级风控/登录失效信号，
+            # 命中则提前返回，避免白白消耗 worker 与账号安全额度进入上传。
+            pre_risk = await self._probe_upload_risk_signal()
+            if pre_risk == "need_login":
+                await self._close_connection()
+                return {
+                    "success": False,
+                    "status": "need_login",
+                    "error": "Login session expired before upload.",
+                    "screenshot_path": None,
+                }
+            if pre_risk in ("env_risk", "upload_limited"):
+                await self._close_connection()
+                return {
+                    "success": False,
+                    "status": "error",
+                    "error": f"pre-upload risk signal: {pre_risk}",
+                    "risk_type": pre_risk,
+                    "screenshot_path": None,
+                }
 
             # Upload video
             await self._upload_video(video_path)
@@ -317,6 +375,8 @@ class VideoChannelPublisher:
                 "success": False,
                 "status": "error",
                 "error": str(e),
+                # PR①：风控拒发时透出 risk_type，供 worker 落 upload_limited/env_risk
+                "risk_type": getattr(e, "risk_code", None),
                 "screenshot_path": None,
                 "published_url": None,
                 "published_id": None,
@@ -426,6 +486,44 @@ class VideoChannelPublisher:
         except Exception:
             return True
 
+    async def _probe_upload_risk_signal(self) -> Optional[str]:
+        """轻量探测页面上是否存在风控/登录失效信号，命中返回分类，否则 None。
+
+        从 URL、可见文本、常见弹层文案中匹配 `UPLOAD_RISK_PROBES` 的关键词，
+        用于：
+        - `_wait_for_upload` 超时/不可播放时区分"普通超时"与"风控拒发"；
+        - `_publish_body` 上传前预检，避免白白消耗 worker 与账号安全额度。
+
+        探测本身是只读的，不产生副作用；命中则返回分类（env_risk / upload_limited /
+        need_login），供上层抛 `UploadRiskError(risk_code=分类)` 或提前返回。
+        """
+        try:
+            url = await self.page.url()
+            text = await self.page.evaluate("""() => {
+                // 取 body 可见文本 + 常见弹层/提示文本，控制长度避免过重
+                const parts = [document.title || ''];
+                const body = document.body ? document.body.innerText : '';
+                parts.push(body ? body.slice(0, 3000) : '');
+                // 弹层/提示区域
+                for (const sel of ['.weui-mask, .wx-msg, [class*=toast], [class*=popup], '
+                                    '[class*=dialog], [class*=modal], [class*=notice]']) {
+                    try {
+                        const el = document.querySelector(sel);
+                        if (el && el.innerText) parts.push(el.innerText.slice(0, 800));
+                    } catch (e) {}
+                }
+                return parts.join('\n').toLowerCase();
+            }""")
+            haystack = f"{url.lower()} {text}"
+            for category, keywords in UPLOAD_RISK_PROBES.items():
+                for kw in keywords:
+                    if kw.lower() in haystack:
+                        logger.warning("upload risk signal hit: %s (kw=%s)", category, kw)
+                        return category
+        except Exception as e:
+            logger.warning("risk probe failed (non-fatal): %s", e)
+        return None
+
     async def _upload_video(self, video_path: str):
         """Upload the video file through the file input element."""
         await self.page.wait_for_timeout(8000)
@@ -488,9 +586,23 @@ class VideoChannelPublisher:
                     break
                 await asyncio.sleep(2)
             if not uploaded:
+                risk = await self._probe_upload_risk_signal()
+                if risk:
+                    raise UploadRiskError(
+                        risk_code=risk,
+                        detail=f"upload rejected by platform risk control ({risk})",
+                    )
                 raise RuntimeError("video not actually playable (readyState/duration)")
+        except UploadRiskError:
+            raise
         except Exception:
             logger.warning("Upload wait timed out or video not ready, failing (P1-3)")
+            risk = await self._probe_upload_risk_signal()
+            if risk:
+                raise UploadRiskError(
+                    risk_code=risk,
+                    detail=f"upload wait failed, risk signal detected ({risk})",
+                )
             raise RuntimeError("video upload did not complete in time (no playable <video>)")
 
     async def _set_title(self, title: str):

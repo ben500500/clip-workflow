@@ -1222,6 +1222,13 @@ def task_publish_video(self, publish_task_id: str):
 
     downloaded_video_path = None
     quota_acquired = False
+    # PR③(inflight 防御性加固)：预声明 operator_id，finally 复用局部变量，
+    # 避免跨块重复 publish_task_data.get() 的 NameError 风险。
+    # 前提约束：acquire_quota 必须保持在 _get_publish_task 之后执行（quota_acquired
+    # 仅在 publish_task_data 赋值后才可能为 True）；若有人前移会破坏该不变量。
+    operator_id = None
+    # PR②：发布失败时的风控分类（upload_limited / env_risk / 默认 publish_limited）
+    _risk_type = None
     try:
         publish_task_data = run_async(_get_publish_task(publish_task_id))
         if not publish_task_data:
@@ -1379,6 +1386,8 @@ def task_publish_video(self, publish_task_id: str):
             )
             return result
 
+        # PR②：publish 返回的风控分类透传给 except 分支，落 upload_limited/env_risk
+        _risk_type = result.get("risk_type")
         raise Exception(result.get("error", "Unknown publish error"))
 
     except Exception as e:
@@ -1399,12 +1408,14 @@ def task_publish_video(self, publish_task_id: str):
                 risk_note=str(e)[:500],
                 request_id=rid,
             ))
-            # 风控/失败归入 risk_event(publish_limited),供毕业阈值统计
+            # 风控/失败归入 risk_event(默认 publish_limited;PR②:风控拒发则落 upload_limited/env_risk),
+            # 供毕业阈值统计与运维处置(风控不自动重试,走死信队列人工/定时重放)
+            _final_risk_type = _risk_type or audit_service.RISK_TYPE_PUBLISH_LIMITED
             run_async(audit_service.log_risk_event(
                 account_id=publish_task_data.get("account_id"),
                 operator_id=publish_task_data.get("operator_id"),
                 actor_id=publish_task_data.get("actor_id") or publish_task_data.get("operator_id"),
-                risk_type="publish_limited",
+                risk_type=_final_risk_type,
                 level="warning",
                 message=str(e)[:1000],
                 request_id=rid,
@@ -1438,7 +1449,7 @@ def task_publish_video(self, publish_task_id: str):
         if quota_acquired:
             try:
                 from app.services import multi_operator
-                operator_id = publish_task_data.get("operator_id")
+                # PR③：复用局部变量 operator_id（已在配额块赋值），不再重新 .get()
                 if operator_id:
                     run_async(multi_operator.release_inflight(operator_id))
             except Exception:

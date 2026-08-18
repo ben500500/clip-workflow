@@ -115,7 +115,7 @@ class RiskEvent(Base):
     account_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     operator_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     actor_id = Column(UUID(as_uuid=True), nullable=True, index=True)
-    risk_type = Column(String(100), nullable=False, index=True)   # login_restricted / publish_limited / captcha / ban
+    risk_type = Column(String(100), nullable=False, index=True)   # login_restricted / publish_limited / captcha / ban / upload_limited / env_risk
     level = Column(String(20), default="warning")                 # warning / critical
     message = Column(String(1000), nullable=True)
     disposition = Column(String(200), nullable=True)   # 处置：tier_up / re_login / manual_review

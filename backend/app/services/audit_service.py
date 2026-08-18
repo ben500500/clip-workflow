@@ -43,6 +43,17 @@ def content_hash(text: Optional[str]) -> Optional[str]:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 
+# ── 风控类型常量（PR②）──
+# 收敛 risk_type 取值，避免自由字符串散落；RiskEvent.risk_type 为自由列，
+# 新增取值零迁移。供发布失败分类与毕业阈值统计（7 日 ≥2 次）使用。
+RISK_TYPE_LOGIN_RESTRICTED = "login_restricted"
+RISK_TYPE_PUBLISH_LIMITED = "publish_limited"
+RISK_TYPE_CAPTCHA = "captcha"
+RISK_TYPE_BAN = "ban"
+RISK_TYPE_UPLOAD_LIMITED = "upload_limited"   # 上传被平台拒发（300001/upload_params 类）
+RISK_TYPE_ENV_RISK = "env_risk"               # 环境级风控（设备/环境异常）
+
+
 async def _log_publish_audit(db: AsyncSession, *, task_id=None, account_id=None,
                              operator_id=None, actor_id=None, profile_id=None,
                              content_hash=None, cover_variant=None, copy_template=None,
