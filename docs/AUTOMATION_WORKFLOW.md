@@ -1,10 +1,11 @@
 # 端到端自动化操作流程（Computer-Use Playbook）
 
-> 版本：v1.1（契约对齐）| 日期：2026-08-18
+> 版本：v1.2（含 P0 扫码登录修复 + F1/F3 契约校准）| 日期：2026-08-18
 > 适用对象：Computer-Use / Agent 类插件（Claude、Codex、Browser-Use 等）
 > 目标链路：**资源导入 → AI 选点 → 区间检测 → 切片 → 视频号发布**
 > 说明：本文档是给 **Computer-Use 类插件**看的「操作手册」，所有步骤都给出可执行的 API 调用序列和浏览器操作路径。插件可以直接按步骤逐步执行。
 > ⚠️ **v1.1 契约对齐**：本文档所有接口契约已与 `main` 分支真实代码逐一核对修正（登录/刷新路径、登录态 `state` 枚举、发布确认 `pending_confirm`、tus 分片上传、账号 `enabled` 字段）；第四节问题清单已按 PR #177 标注修复状态。**测试请以本文档为准**，避免按旧契约踩 404/判错。
+> ⚠️ **v1.2 修订（对应测试报告问题修正）**：① 修复 **P0 扫码登录 502**——rpa Chromium 现按路由表端口池真实端口启动（start_chromium.sh 全程轮询 profile 集合），且 `_resolve_profile_port` 增加 CDP `/json/version` 探活对齐，避免池端口与实跑端口漂移；② 统一 `platform` 枚举为 **`wechat_channel`**（原示例 `wechat` 不准）；③ 明确 `video_account_id` **非必填**（可自动推导）。
 
 ---
 
@@ -440,13 +441,15 @@ body 为原始二进制分片数据（**不是 multipart，直接 raw bytes**）
   {
     "id": "account_uuid",
     "account_name": "运营者-张三",
-    "platform": "wechat",
+    "platform": "wechat_channel",
     "enabled": true,
     "profile_id": "profile_uuid",
     "operator_id": "operator_uuid"
   }
 ]
 ```
+
+> ⚠️ **F1 注意**：`platform` 字段实测值为 **`wechat_channel`**（不是 `wechat`）。不同平台枚举：`wechat_channel` / `douyin` / `kuaishou`。
 
 **检查点**：
 - [ ] 至少有 1 个 `enabled == true` 的账号（注意是 `enabled: bool`，不是 `status`）
@@ -477,7 +480,7 @@ body 为原始二进制分片数据（**不是 multipart，直接 raw bytes**）
 ```json
 {
   "output_id": "切片输出UUID",
-  "platform": "wechat",
+  "platform": "wechat_channel",
   "video_account_id": "视频号账号UUID",
   "title": "测试视频标题",
   "description": "测试视频描述",
@@ -486,6 +489,9 @@ body 为原始二进制分片数据（**不是 multipart，直接 raw bytes**）
   "scheduled_at": null
 }
 ```
+
+> ⚠️ **F3 注意**：`output_id` 与 `platform` 为必填；**`video_account_id` 非必填**（可省略，系统按 `operator_id` 自动推导绑定账号）。自动化脚本可传也可省；若省略需保证账号归属已配置。
+> `platform` 取值也用 **`wechat_channel`**（视频号），而非 `wechat`。
 
 **响应**：
 ```json
@@ -552,13 +558,13 @@ body 为原始二进制分片数据（**不是 multipart，直接 raw bytes**）
   "tasks": [
     {
       "output_id": "切片输出1",
-      "platform": "wechat",
+      "platform": "wechat_channel",
       "video_account_id": "账号1",
       "title": "标题1"
     },
     {
       "output_id": "切片输出2",
-      "platform": "wechat",
+      "platform": "wechat_channel",
       "video_account_id": "账号2",
       "title": "标题2"
     }
@@ -701,7 +707,7 @@ steps:
     path: /api/publish/tasks
     body:
       output_id: "{{get_outputs.outputs[0].id}}"
-      platform: "wechat"
+      platform: "wechat_channel"
       video_account_id: "{{get_accounts.accounts[0].id}}"
       title: "{{FLOW.VIDEO_TITLE}}"
       require_manual_confirm: false

@@ -44,40 +44,99 @@ class LoginScanCallback(BaseModel):
     message: Optional[str] = None
 
 
+async def _probe_cdp_port(host: str, port: int, timeout: float = 2.0) -> bool:
+    """探测目标 host:port 是否有 Chromium 的 CDP /json/version 响应。
+
+    用于把「路由表分配的端口」与「实际在跑的端口」对齐，避免出现池分配 9224
+    而 Chromium 只监听 9223 的端口漂移（P0 扫码登录 502 根因）。
+    """
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(f"http://{host}:{port}/json/version")
+            return resp.status_code == 200
+    except Exception:
+        return False
+
+
 async def _resolve_profile_port(db: AsyncSession, account_id) -> tuple:
-    """解析账号对应的 profile 端口（优先路由表，回退 PublishProfile.chrome_debug_port）。
+    """解析账号对应的 profile 端口，并把端口探活对齐到「实际在跑的 Chromium 端口」。
+
+    - 优先路由表（multi_operator 端口池分配）
+    - 回退 PublishProfile.chrome_debug_port（零侵入旧链路）
+    - 再探活候选端口，取第一个有 /json/version 响应的作为真实端口，避免 9223/9224 漂移。
 
     返回 (port, host, profile_dir, operator_id) 元组。
     """
+    import logging
     from app.services import multi_operator
     from app.models.models import VideoAccount
 
-    port = await multi_operator.resolve_port(account_id)
+    logger = logging.getLogger(__name__)
+
+    candidate_port = await multi_operator.resolve_port(account_id)
     operator_id = None
     host = settings.CHROME_DEBUG_HOST  # 默认 cdp 探活 host（跨容器时由配置覆盖）
     profile_dir = None
+    fallback_port = None
 
     # 从 VideoAccount 找关联 profile
     acc = await db.scalar(select(VideoAccount).where(VideoAccount.id == uuid.UUID(account_id)))
     if acc:
         operator_id = acc.operator_id
-    if port is None:
-        # 回退：读 PublishProfile.chrome_debug_port（零侵入旧链路）
-        route = await multi_operator.get_route(account_id)
-        if route:
-            port = int(route.get("port") or 0)
-            profile_dir = route.get("profile_dir")
-            host = route.get("chrome_debug_host") or host
-            operator_id = route.get("operator_id") or operator_id
-        if not port:
-            prof = await db.scalar(
-                select(PublishProfile).where(PublishProfile.operator_id == operator_id)
-                if operator_id else select(PublishProfile).limit(1)
-            )
-            if prof:
-                port = prof.chrome_debug_port
-                host = prof.chrome_debug_host or host
-    return port, host, profile_dir, operator_id
+
+    # 收集候选端口：路由表端口（若启用则已在 candidate_port）
+    route = await multi_operator.get_route(account_id)
+    if route:
+        if not candidate_port:
+            candidate_port = int(route.get("port") or 0)
+        profile_dir = route.get("profile_dir")
+        host = route.get("chrome_debug_host") or host
+        operator_id = route.get("operator_id") or operator_id
+
+    # PublishProfile.chrome_debug_port 兜底
+    if not candidate_port:
+        prof = await db.scalar(
+            select(PublishProfile).where(PublishProfile.operator_id == operator_id)
+            if operator_id else select(PublishProfile).limit(1)
+        )
+        if prof:
+            candidate_port = prof.chrome_debug_port
+            host = prof.chrome_debug_host or host
+    elif not profile_dir:
+        prof = await db.scalar(
+            select(PublishProfile).where(PublishProfile.operator_id == operator_id)
+            if operator_id else select(PublishProfile).limit(1)
+        )
+        if prof:
+            fallback_port = prof.chrome_debug_port
+            profile_dir = route.get("profile_dir") or getattr(prof, "profile_dir", None)
+
+    if not candidate_port:
+        return 0, host, profile_dir, operator_id
+
+    # ---- 端口探活对齐（P0 修复）：从「分配的端口」收敛到「实际在跑的端口」 ----
+    # 候选顺序：路由表/池端口 → profile 配置端口 → 单实例基址 9223 / 9222。
+    # 取第一个 /json/version 有响应的作为真实端口，避免连到池端口但无 Chrome 监听。
+    candidates = []
+    if candidate_port not in candidates:
+        candidates.append(candidate_port)
+    if fallback_port and fallback_port not in candidates:
+        candidates.append(fallback_port)
+    for p in (9223, 9222):
+        if p not in candidates:
+            candidates.append(p)
+    for p in candidates:
+        if await _probe_cdp_port(host, p):
+            if p != candidate_port:
+                logger.info(
+                    "[login-qr] 端口对齐 %s -> %s (host=%s)，路由表端口无监听",
+                    candidate_port, p, host,
+                )
+            return p, host, profile_dir, operator_id
+
+    # 均无监听：返回候选端口（前端可退化「本机扫码+cookie 注入」）
+    return candidate_port, host, profile_dir, operator_id
 
 
 @router.post("/publish/login/qr", response_model=dict, status_code=201)
