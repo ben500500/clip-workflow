@@ -255,10 +255,6 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
         logger.error(f"AutoClip task failed: {e}")
         run_async(_mark_autoclip_failed(episode_id, str(e)))
         run_async(_update_autoclip_run(episode_id, autoclip_project_id, "failed", 0.0, str(e)))
-        self.update_state(
-            state="FAILURE",
-            meta={"progress": 0, "message": str(e)},
-        )
         raise
     finally:
         # Clean up downloaded source video
@@ -460,10 +456,6 @@ def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict,
 
     except Exception as e:
         logger.error(f"Detect task failed: {e}")
-        self.update_state(
-            state="FAILURE",
-            meta={"progress": 0, "message": str(e)},
-        )
         if detect_task_id:
             try:
                 run_async(_fail_detect_task(detect_task_id, str(e)))
@@ -791,10 +783,6 @@ def slice_task(
     except Exception as e:
         logger.error(f"Slice task failed: {e}")
         run_async(_fail_slice_task(task_id, str(e)))
-        self.update_state(
-            state="FAILURE",
-            meta={"progress": 0, "message": str(e)},
-        )
         raise
     finally:
         # Clean up temp files
@@ -1300,7 +1288,6 @@ def task_publish_video(self, publish_task_id: str):
                 publish_task_id, status="failed",
                 error_message="one-account-one-variant guard: " + str(e),
             ))
-            self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
             raise
 
         # 多运营者(R22):配额双闸门 + inflight 信号量(Lua 原子,nil 兜底)
@@ -1338,7 +1325,6 @@ def task_publish_video(self, publish_task_id: str):
                     publish_task_id, status="failed",
                     error_message=f"multi_operator quota: {e}",
                 ))
-                self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
                 raise
 
         platform = publish_task_data["platform"]
@@ -1483,10 +1469,6 @@ def task_publish_video(self, publish_task_id: str):
             mark_dead_letter=True,
             dead_letter_reason=str(e),
         ))
-        self.update_state(
-            state="FAILURE",
-            meta={"progress": 0, "message": str(e)},
-        )
         raise
     finally:
         # Clean up downloaded video file
@@ -1552,7 +1534,6 @@ def confirm_publish_worker(self, publish_task_id: str):
         # 锁获取失败即视为并发冲突，直接失败不重复发布
         logger.warning("confirm idempotent lock failed: %s", e)
         run_async(_update_publish_task_status(publish_task_id, status="failed", error_message=str(e)))
-        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
 
     try:
@@ -1631,7 +1612,6 @@ def confirm_publish_worker(self, publish_task_id: str):
             dead_letter_reason=str(e),
         ))
         _release_confirm_lock(lock_key, lock_acquired)
-        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
 
 
@@ -1700,7 +1680,6 @@ def check_cookie_status(self):
         return results
     except Exception as e:
         logger.error(f"Cookie status check failed: {e}")
-        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
 
 
@@ -1721,7 +1700,6 @@ def sync_multi_operator_profiles(self):
         return {"enabled": True, "count": len(profiles), "profiles": profiles}
     except Exception as e:
         logger.error(f"sync_multi_operator_profiles failed: {e}")
-        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
 
 
@@ -1742,7 +1720,6 @@ def watch_multi_operator_routes(self):
         return {"enabled": True, "summary": summary}
     except Exception as e:
         logger.error(f"watch_multi_operator_routes failed: {e}")
-        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
 
 
@@ -1773,7 +1750,6 @@ def task_collect_metrics(self, account_id: Optional[str] = None, target_date: Op
         }
     except Exception as e:
         logger.error(f"Metrics collection failed: {e}")
-        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
 
 
@@ -2142,7 +2118,6 @@ def run_alert_check_task(self):
         return result
     except Exception as e:
         logger.error(f"Alert check failed: {e}")
-        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
 
 
@@ -2164,7 +2139,6 @@ def maintenance_daily_task(self):
         return results
     except Exception as e:
         logger.error(f"Maintenance daily task failed: {e}")
-        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
 
 
