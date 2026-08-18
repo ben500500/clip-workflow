@@ -152,22 +152,22 @@ DEDUPE_PRESETS = {
         "watermark": None,
         "audio": None,  # 音频指纹差异化（L3），None 不叠加，仅多版本变体使用
     },
-    # std_retro_scan 保留（供手动选择）：无镜像，但明显影响画质的复古暖调/扫描线/
-    #   噪点已按画质优先降到最低（偏色≈0、色温≈中性、无扫描线、噪点≈0），
-    #   默认不再作为系统首选档位。
+    # std_retro_scan 复古扫描（第二选择，非默认）：还原老电视扫描线+噪点质感——
+    #   复古暖调（偏色+色温5800）+ 噪点 + 扫描线 + 暗角，适合追求复古出片质感的场景。
+    #   默认仍是 std_crop_desat（画质优先），本档位保留作为手动选择的第二档。
     "std_retro_scan": {
         "crop": 0.05,
         "hflip": False,
         "speed": 1.04,
-        "saturation": 0.88,
-        "gamma": 1.02,
-        "contrast": 1.02,
-        "brightness": 0.008,
-        "colorbalance": "rs=0:gs=0:bs=0:rm=0:gm=0:bm=0",
-        "colortemperature": "temperature=6500",
-        "noise": 1,
-        "scanline": None,
-        "vignette": None,
+        "saturation": 0.85,
+        "gamma": 1.03,
+        "contrast": 1.03,
+        "brightness": 0.01,
+        "colorbalance": "rs=.06:gs=.03:bs=-.06:rm=.06:gm=.03:bm=-.06",
+        "colortemperature": "temperature=5800",
+        "noise": 7,
+        "scanline": {"h": 3, "color": "black@0.10"},
+        "vignette": "PI/5",
         "roll_band": 0,
         "jitter": 0,
         "sharpen": 0.4,
