@@ -425,13 +425,24 @@ class VideoChannelPublisher:
 
     async def _click_publish(self):
         """Click the publish/submit button."""
-        publish_btn = await self.page.query_selector(
-            "button:has-text('发布'), button:has-text('Publish'), [class*='publish-btn']"
-        )
-        if publish_btn:
-            await publish_btn.click()
-        else:
-            raise RuntimeError("Cannot find publish button")
+        # 视频号发布页实际按钮文案为「发表」；先精确匹配，再回退旧选择器
+        try:
+            btn = self.page.get_by_role("button", name="发表", exact=True).first
+            await btn.click(timeout=15000)
+            return
+        except Exception:
+            pass
+        try:
+            publish_btn = await self.page.query_selector(
+                "button:has-text('发布'), button:has-text('发表'), "
+                "button:has-text('Publish'), [class*='publish-btn']"
+            )
+            if publish_btn:
+                await publish_btn.click()
+                return
+        except Exception:
+            pass
+        raise RuntimeError("Cannot find publish button")
 
     async def _wait_for_publish(self, timeout: int = 60) -> tuple:
         """Wait for the publish action to complete and return (url, id)."""
