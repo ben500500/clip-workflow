@@ -40,6 +40,7 @@ class PublishTaskCreate(BaseModel):
     require_manual_confirm: bool = True
     # 一期：账号矩阵 / 小程序库 / 短片来源关联
     video_account_id: Optional[str] = None
+    operator_id: Optional[str] = None
     mini_program_id: Optional[str] = None
     prompt_record_id: Optional[str] = None
     material_id: Optional[str] = None
