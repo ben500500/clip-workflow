@@ -18,7 +18,7 @@ from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
@@ -31,9 +31,13 @@ from app.models.models import (
     DramaMaterial,
     User,
     ImportHistory,
+    Episode,
+    AutoClipRun,
+    SliceTask,
     user_can_access_all_materials,
     gen_drama_code,
 )
+from app.api.slice_helpers import _not_detect_task
 from app.services.minio_service import get_presigned_url, upload_file_from_path
 from app.utils.helpers import utc_iso
 
@@ -135,6 +139,9 @@ async def _serialize_drama_detail(d: Drama) -> dict:
         })
     data["stills"] = stills
     data["account_ids"] = [str(a.account_id) for a in d.accounts]
+    # 剧集维度打通切片产线：归属剧集的 id（供剧目下展示该剧已切片/待切片）
+    data["episode_ids"] = [str(e.id) for e in d.episodes]
+    data["episode_count"] = len(d.episodes)
     return data
 
 
@@ -873,6 +880,189 @@ async def link_drama_material(
     db.add(dm)
     await db.flush()
     return {"id": str(dm.id), "drama_id": str(d.id), "material_id": str(mid)}
+
+
+# ─────────────────────────────── 剧集维度打通切片产线 ───────────────────────────────
+
+class DramaLinkEpisodes(BaseModel):
+    """将剧集关联到剧目（set 语义：传入全集即替换）。"""
+    episode_ids: List[str]
+
+
+@router.post("/dramas/{drama_id}/episodes", response_model=dict)
+async def link_drama_episodes(
+    drama_id: str,
+    data: DramaLinkEpisodes,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """剧集维度打通切片产线：将指定剧集关联到剧目（一剧多集）。
+
+    set 语义：传入的 episode_ids 全集替换该剧目下已关联的剧集（传入空列表即清空关联）。
+    数据隔离：剧集须为当前用户可访问（数据范围校验），operator 仅可关联自己创建的剧集。
+    """
+    d = await _resolve_drama(db, drama_id)
+    if not _can_manage(d, current_user):
+        raise HTTPException(status_code=403, detail="No permission to manage this drama")
+
+    # 解析并校验剧集存在（且当前用户可访问）
+    ep_ids = []
+    seen = set()
+    for raw in data.episode_ids:
+        try:
+            eid = uuid.UUID(raw)
+        except ValueError:
+            continue
+        if eid in seen:
+            continue
+        seen.add(eid)
+        ep = (await db.execute(select(Episode).where(Episode.id == eid))).scalar_one_or_none()
+        if not ep:
+            raise HTTPException(status_code=404, detail=f"Episode not found: {raw}")
+        if current_user and not user_can_access_all_materials(current_user):
+            # 剧集通过项目归属做数据隔离
+            from app.services.data_scope import check_project_access_by_episode
+            if not check_project_access_by_episode(ep.project_id, current_user):
+                raise HTTPException(status_code=403, detail=f"No permission to link episode: {raw}")
+        ep_ids.append(eid)
+
+    # set 语义：先把该剧目下已关联的剧集解绑，再绑定新全集
+    from sqlalchemy import update
+    await db.execute(
+        update(Episode)
+        .where(Episode.drama_id == d.id)
+        .values(drama_id=None)
+        .execution_options(synchronize_session=False)
+    )
+    if ep_ids:
+        await db.execute(
+            update(Episode)
+            .where(Episode.id.in_(ep_ids))
+            .values(drama_id=d.id)
+            .execution_options(synchronize_session=False)
+        )
+    await db.commit()
+    await db.refresh(d)
+    return await _serialize_drama_detail(d)
+
+
+@router.get("/dramas/{drama_id}/slice-status", response_model=dict)
+async def get_drama_slice_status(
+    drama_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """剧集维度打通切片产线：剧目级切片产线状态聚合。
+
+    汇总该剧目下所有关联剧集在「选点 autoclip / 区间检测 detect / 切片 slice」
+    三个阶段的实时状态，输出每集明细 + 整体进度，供剧目详情展示「该剧已切片/待切片」。
+    """
+    d = await _resolve_drama(db, drama_id)
+    if not _can_manage(d, current_user):
+        raise HTTPException(status_code=403, detail="No permission to view this drama")
+
+    episodes = (
+        await db.execute(
+            select(Episode)
+            .where(Episode.drama_id == d.id)
+            .order_by(Episode.episode_no, Episode.created_at)
+        )
+    ).scalars().all()
+    ep_ids = [e.id for e in episodes]
+
+    autoclip_runs = []
+    slice_tasks = []
+    detect_counts = {}
+    if ep_ids:
+        autoclip_runs = (
+            await db.execute(
+                select(AutoClipRun)
+                .where(AutoClipRun.episode_id.in_(ep_ids))
+                .order_by(AutoClipRun.created_at)
+            )
+        ).scalars().all()
+        slice_tasks = (
+            await db.execute(
+                select(SliceTask)
+                .where(SliceTask.episode_id.in_(ep_ids))
+                .where(_not_detect_task())
+                .order_by(SliceTask.created_at)
+            )
+        ).scalars().all()
+        detect_rows = (
+            await db.execute(
+                select(SliceTask.episode_id, func.count())
+                .where(SliceTask.episode_id.in_(ep_ids))
+                .where(SliceTask.mode.like("detect_%"))
+                .group_by(SliceTask.episode_id)
+            )
+        ).all()
+        detect_counts = {str(r[0]): r[1] for r in detect_rows}
+
+    def _stage_status(status):
+        s = (status or "pending").lower()
+        if s in ("completed", "success"):
+            return "completed"
+        if s in ("failed", "cancelled"):
+            return "failed"
+        if s in ("running", "processing", "uploading"):
+            return "running"
+        if s in ("pending", "parsing", "downloading", "queued"):
+            return "pending"
+        return "unknown"
+
+    episodes_payload = []
+    slice_done = 0
+    for ep in episodes:
+        eid = ep.id
+        run = next((r for r in autoclip_runs if r.episode_id == eid), None)
+        task = next((t for t in slice_tasks if t.episode_id == eid), None)
+        detect_count = detect_counts.get(str(eid), 0)
+        detect_status = "completed" if detect_count > 0 else "pending"
+        slice_status = _stage_status(task.status if task else None)
+        if slice_status == "completed":
+            slice_done += 1
+
+        episodes_payload.append({
+            "episode_id": str(eid),
+            "title": ep.title,
+            "episode_no": ep.episode_no,
+            "source_file_key": ep.source_file_key,
+            "status": ep.status,
+            "stages": {
+                "autoclip": {
+                    "status": _stage_status(run.status if run else None),
+                    "progress": (run.progress or 0) if run else 0,
+                    "run_count": sum(1 for r in autoclip_runs if r.episode_id == eid),
+                },
+                "detect": {
+                    "status": detect_status,
+                    "progress": 100.0 if detect_status == "completed" else 0,
+                    "interval_count": detect_count,
+                },
+                "slice": {
+                    "status": slice_status,
+                    "progress": (task.progress or 0) if task else 0,
+                    "task_count": sum(1 for t in slice_tasks if t.episode_id == eid),
+                    "output_count": task.output_count if task else 0,
+                },
+            },
+            # 该集是否已切片（切片任务完成且产出非空）
+            "sliced": slice_status == "completed" and bool(task and task.output_count > 0),
+            "pending": slice_status in ("pending", "unknown", "running") or task is None,
+        })
+
+    total = len(episodes)
+    return {
+        "drama_id": str(d.id),
+        "code": d.code,
+        "name": d.name,
+        "total_episodes": total,
+        "sliced_count": slice_done,
+        "pending_count": total - slice_done,
+        "progress_percent": round((slice_done / total * 100), 1) if total else 0,
+        "episodes": episodes_payload,
+    }
 
 
 # ─────────────────────────────── 工具 ───────────────────────────────

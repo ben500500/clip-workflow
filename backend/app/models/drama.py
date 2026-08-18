@@ -88,6 +88,8 @@ class Drama(Base):
     )
     # 关联视频号（多对多）
     accounts = relationship("DramaAccount", back_populates="drama", cascade="all, delete-orphan")
+    # 关联剧集（切片产线；Episode.drama_id 反查，用于剧目下「该剧已切片/待切片」聚合）
+    episodes = relationship("Episode", back_populates="drama")
 
     def __repr__(self) -> str:
         return f"<Drama(id={self.id}, code={self.code}, name={self.name})>"

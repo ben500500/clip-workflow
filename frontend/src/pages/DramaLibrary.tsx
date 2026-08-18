@@ -16,6 +16,8 @@ import {
   listDramas, getDrama, createDrama, updateDrama, deleteDrama,
   uploadDramaImage, addDramaStill, deleteDramaStill, linkDramaAccounts,
   dramaImportParse, dramaImportPreview, dramaImportConfirm,
+  getDramaSliceStatus, linkDramaEpisodes,
+  DramaSliceStatus,
 } from '../api/dramas';
 import { publishApi } from '../api/publish';
 import type { VideoAccount } from '../types';
@@ -33,6 +35,13 @@ const STATUS_COLORS: Record<string, string> = {
   草稿: 'default',
   已下架: 'red',
   归档: 'default',
+  // 切片产线阶段状态
+  completed: 'green',
+  running: 'blue',
+  pending: 'orange',
+  failed: 'red',
+  cancelled: 'red',
+  unknown: 'default',
 };
 
 const DraggableUpload: React.FC<{
@@ -87,6 +96,10 @@ const DramaLibrary: React.FC = () => {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [detail, setDetail] = useState<DramaDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // 切片产线状态（剧集维度打通切片产线）
+  const [sliceStatus, setSliceStatus] = useState<DramaSliceStatus | null>(null);
+  const [sliceLoading, setSliceLoading] = useState(false);
+  const [episodeInput, setEpisodeInput] = useState('');
 
   // 导入弹窗
   const [importOpen, setImportOpen] = useState(false);
@@ -193,6 +206,7 @@ const DramaLibrary: React.FC = () => {
     setDetailId(d.id);
     setDetailOpen(true);
     setDetailLoading(true);
+    setSliceStatus(null);
     try {
       const res = await getDrama(d.id);
       setDetail(res);
@@ -200,6 +214,36 @@ const DramaLibrary: React.FC = () => {
       message.error((e as Error).message || '加载详情失败');
     } finally {
       setDetailLoading(false);
+    }
+    loadSliceStatus(d.id);
+  };
+
+  // 剧集维度打通切片产线：加载剧目切片产线状态
+  const loadSliceStatus = async (dramaId: string) => {
+    setSliceLoading(true);
+    try {
+      const res = await getDramaSliceStatus(dramaId);
+      setSliceStatus(res);
+    } catch (e) {
+      message.error((e as Error).message || '加载切片产线状态失败');
+    } finally {
+      setSliceLoading(false);
+    }
+  };
+
+  // 剧集维度打通切片产线：关联剧集（逗号/换行分隔的 episode id）
+  const saveLinkedEpisodes = async () => {
+    if (!detailId) return;
+    const ids = episodeInput.split(/[,，\n\s]+/).map((s) => s.trim()).filter(Boolean);
+    try {
+      await linkDramaEpisodes(detailId, ids);
+      message.success(`已关联 ${ids.length} 个剧集`);
+      setEpisodeInput('');
+      const res = await getDrama(detailId);
+      setDetail(res);
+      loadSliceStatus(detailId);
+    } catch (e) {
+      message.error((e as Error).message || '关联剧集失败');
     }
   };
 
@@ -557,6 +601,79 @@ const DramaLibrary: React.FC = () => {
             />
             {detail.material_link && (
               <Alert type="info" showIcon message="素材链接" description={detail.material_link} />
+            )}
+
+            <Divider orientation="left">切片产线（剧集维度）</Divider>
+            {sliceLoading && !sliceStatus ? (
+              <div style={{ textAlign: 'center', padding: 16 }}><Spin size="small" /></div>
+            ) : (
+              <Space direction="vertical" style={{ width: '100%' }} size="small">
+                {sliceStatus && sliceStatus.total_episodes > 0 ? (
+                  <Space wrap>
+                    <Tag color="blue">关联剧集 {sliceStatus.total_episodes} 集</Tag>
+                    <Tag color="green">已切片 {sliceStatus.sliced_count}</Tag>
+                    <Tag color="orange">待切片 {sliceStatus.pending_count}</Tag>
+                    <Tag>整体进度 {sliceStatus.progress_percent}%</Tag>
+                  </Space>
+                ) : (
+                  <Alert type="warning" showIcon message="尚未关联任何剧集" description="在下方输入剧集 id 关联后，即可在剧目维度查看每集选点/检测/切片的产线状态（该剧已切片/待切片）。" />
+                )}
+
+                {sliceStatus && sliceStatus.episodes.length > 0 && (
+                  <Table
+                    rowKey="episode_id"
+                    size="small"
+                    pagination={{ pageSize: 5, showSizeChanger: false }}
+                    dataSource={sliceStatus.episodes}
+                    columns={[
+                      {
+                        title: '集', dataIndex: 'episode_no', width: 48,
+                        render: (v, r) => v ?? r.title ?? '-',
+                      },
+                      { title: '标题', dataIndex: 'title', ellipsis: true, render: (v) => v || '-' },
+                      {
+                        title: '选点', dataIndex: ['stages', 'autoclip', 'status'], width: 76,
+                        render: (v: string) => <Tag color={STATUS_COLORS[v] || 'default'}>{v}</Tag>,
+                      },
+                      {
+                        title: '检测', dataIndex: ['stages', 'detect', 'status'], width: 76,
+                        render: (v: string) => <Tag color={STATUS_COLORS[v] || 'default'}>{v}</Tag>,
+                      },
+                      {
+                        title: '切片', dataIndex: ['stages', 'slice', 'status'], width: 76,
+                        render: (v: string) => <Tag color={STATUS_COLORS[v] || 'default'}>{v}</Tag>,
+                      },
+                      {
+                        title: '产出', dataIndex: ['stages', 'slice', 'output_count'], width: 56,
+                        render: (v) => v ?? '-',
+                      },
+                      {
+                        title: '切片状态', width: 100,
+                        render: (_, r) => r.sliced
+                          ? <Tag color="green">已切片</Tag>
+                          : <Tag color="orange">待切片</Tag>,
+                      },
+                    ]}
+                  />
+                )}
+
+                <Divider orientation="left" style={{ margin: '8px 0' }}>关联剧集</Divider>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Input.TextArea
+                    placeholder="粘贴剧集 id（逗号/换行分隔）— 例如从切片产线剧集列表复制 id"
+                    value={episodeInput}
+                    onChange={(e) => setEpisodeInput(e.target.value)}
+                    autoSize={{ minRows: 1, maxRows: 3 }}
+                  />
+                  <Button type="primary" onClick={saveLinkedEpisodes}>关联</Button>
+                </Space.Compact>
+                <Space>
+                  <Button size="small" icon={<ReloadOutlined />} onClick={() => detailId && loadSliceStatus(detailId)}>刷新状态</Button>
+                  {sliceStatus && sliceStatus.total_episodes > 0 && (
+                    <Button size="small" danger onClick={async () => { if (!detailId) return; try { await linkDramaEpisodes(detailId, []); message.success('已清空关联'); setDetail(await getDrama(detailId)); loadSliceStatus(detailId); } catch (e) { message.error((e as Error).message || '清空失败'); } }}>清空关联</Button>
+                  )}
+                </Space>
+              </Space>
             )}
           </Space>
         )}
