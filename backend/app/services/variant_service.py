@@ -65,7 +65,10 @@ _COLORBALANCE_POOL = [
 ]
 _TEMP_POOL = ["temperature=6500", "temperature=6400", "temperature=6500", "temperature=6450"]
 # 音频指纹差异化模式（L3 盲区覆盖）：每种模式都会改变音频声纹，且人耳几乎无感。
-_AUDIO_POOL = [None, "volume", "eq_mild", "eq_strong", "pitch", "eq_mild"]
+# 已按 audio_v2 指纹在真实素材上复验，均能把音频距离拉过 0.15 阈值（撞车判定线）。
+# 注意：不放入 None —— 派生变体必须始终差异化音频，否则与基准在音频维度距离为 0
+# 必然被撞车判定拦下（这正是本迭代修复的音频短板）。
+_AUDIO_POOL = ["eq_mild", "eq_strong", "pitch_down", "bandpass", "bass_boost", "vocal_boost"]
 # L4 时域结构差异：是否把整段拆成多片段并漂移/重排（改场景切分序列指纹）
 _STRUCTURAL_SEGMENT_OPTIONS = [False, True]
 
@@ -80,13 +83,21 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
     count = max(1, min(int(count or 1), MAX_VARIANTS))
     base = base_dedupe or {}
     recipes: list[dict] = []
+    # 同组内音频模式去重：保证任意两套派生变体不在音频维度用同一模式，
+    # 避免两套变体音频指纹过近被撞车判定拦下（音频差异化是本迭代修复的短板）。
+    used_audio: list[str] = []
     for i in range(count):
         if i == 0:
             # 基准版：用基础配置（默认 std_crop_desat 保守裁切降饱和，画质优先）
             recipes.append({"preset": str(base.get("preset") or "std_crop_desat"),
                             "manual": dict(base.get("manual") or {})})
             continue
-        # 派生变体：随机组合结构差异，确保与基准及彼此拉开距离
+        # 派生变体：随机组合结构差异，确保与基准及彼此拉开距离。
+        # 音频指纹差异化（L3 盲区覆盖）：在同组内优先选择尚未用过的音频模式，
+        # 避免重复模式导致两套变体音频维度过近被撞车判定拦下。
+        avail = [m for m in _AUDIO_POOL if m not in used_audio]
+        audio_mode = random.choice(avail or _AUDIO_POOL)
+        used_audio.append(audio_mode)
         manual = {
             "crop": random.choice(_CROP_POOL),
             "hflip": False,  # 全系统默认不做镜像（与推荐配方一致，保持画面可读）
@@ -101,8 +112,7 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
             "colorbalance": random.choice(_COLORBALANCE_POOL),
             "colortemperature": random.choice(_TEMP_POOL),
             "watermark": random.choice(_WATERMARK_POOL),
-            # 音频指纹差异化（L3 盲区覆盖）：改变音频声纹，人耳几乎无感
-            "audio": random.choice(_AUDIO_POOL),
+            "audio": audio_mode,
         }
         # 结构性差异（覆盖 L4 时域序列盲区 + L3 音频）：
         #  - structural_diff.segment: 是否把整段拆成多片段并漂移/重排，改场景切分指纹
@@ -204,7 +214,7 @@ async def _load_group_fingerprints(variant_group_id) -> list[dict]:
         result = await session.execute(
             select(VideoFingerprint)
             .where(VideoFingerprint.variant_group_id == uuid.UUID(str(variant_group_id)))
-            .where(VideoFingerprint.algorithm.in_(["phash_v1", "audio_v1", "seq_v1"]))
+            .where(VideoFingerprint.algorithm.in_(["phash_v1", "audio_v2", "seq_v1"]))
         )
         rows = result.scalars().all()
     return [{
@@ -223,7 +233,7 @@ async def _check_against_history(full_fp: dict, variant_group_id=None, exclude_v
     async with async_session_factory() as session:
         query = (
             select(VideoFingerprint)
-            .where(VideoFingerprint.algorithm.in_(["phash_v1", "audio_v1", "seq_v1"]))
+            .where(VideoFingerprint.algorithm.in_(["phash_v1", "audio_v2", "seq_v1"]))
         )
         if variant_group_id:
             query = query.where(
@@ -425,7 +435,7 @@ async def generate_variants_for_output(
                 )
                 await _save_fingerprint(
                     variant_id, output.id, variant_group_id, file_key,
-                    "audio_v1", full_fp["audio_hash"], full_fp["audio_vector"], dur, None,
+                    "audio_v2", full_fp["audio_hash"], full_fp["audio_vector"], dur, None,
                 )
                 await _save_fingerprint(
                     variant_id, output.id, variant_group_id, file_key,

@@ -104,7 +104,7 @@ class VideoFingerprint(Base):
     variant_id = Column(UUID(as_uuid=True), ForeignKey("clip_variants.id", ondelete="CASCADE"), nullable=True, index=True)
     # 视频文件（MinIO key）与版本，便于对同一文件重算
     file_key = Column(String(500), nullable=True)
-    # 指纹算法版本（phash_v1 / audio_v1 / seq_v1），便于升级
+    # 指纹算法版本（phash_v1 / audio_v2 / seq_v1），便于升级
     algorithm = Column(String(50), nullable=False, default="phash_v1")
     # 指纹内容（十六进制字符串 / JSON）
     hash_value = Column(Text, nullable=True)
