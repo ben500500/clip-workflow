@@ -418,7 +418,7 @@ services:
     healthcheck:
       # rpa 镜像无 python（chromium 环境），healthcheck 用容器内已有的 curl
       # 探测 cdp_proxy(9222)/chromium 端口（多账号 profile 时依次探测）。
-      test: ["CMD-SHELL", "ports=$( (grep -oE '\"port\"[: ]*[0-9]+' /app/profiles.json 2>/dev/null | grep -oE '[0-9]+') || echo 9222); ok=0; for p in $ports; do curl -sf -m 3 \"http://127.0.0.1:$p/json/version\" >/dev/null 2>&1 && ok=1 && break; done; exit $((1-ok))"]
+      test: ["CMD-SHELL", "ports=$$( (grep -oE '\"port\"[: ]*[0-9]+' /app/profiles.json 2>/dev/null | grep -oE '[0-9]+') || echo 9222); ok=0; for p in $$ports; do curl -sf -m 3 \"http://127.0.0.1:$$p/json/version\" >/dev/null 2>&1 && ok=1 && break; done; exit $$((1-ok))"]
       interval: 30s
       timeout: 10s
       retries: 3
