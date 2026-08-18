@@ -403,7 +403,7 @@ class VideoChannelPublisher:
         # Wait for upload to complete
         await self._wait_for_upload()
 
-    async def _wait_for_upload(self, timeout: int = 300):
+    async def _wait_for_upload(self, timeout: int = 600):
         """Wait for the video upload to complete (up to timeout seconds).
 
         P1-3 修复：不再以泛化的 `upload-success/preview` 类名选择器作为成功判据
