@@ -22,11 +22,9 @@ from app.models.models import (
     AutoClipProject,
     SliceTask,
     SliceOutput,
-    DetectedInterval,
     user_can_access_all_materials,
 )
 from app.services.data_scope import check_project_access_by_episode
-from app.api.slice_helpers import _serialize_output
 from app.services.minio_service import get_presigned_url, delete_file, list_files
 from app.utils.helpers import utc_iso
 
