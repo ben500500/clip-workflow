@@ -331,10 +331,14 @@ def build_dedupe_audio_filter(mode) -> str:
 
     模式（mode）：
       - None / "" / "none"：不叠加（默认，普通去重保持不变）。
-      - "volume"：轻微音量增益，改变响度分布。
-      - "eq_mild"：轻微中频 EQ（提升/压低），改变频谱指纹。
+      - "volume"：音量增益（默认 1.12，改变响度分布）。
+      - "eq_mild"：中频 EQ（提升/压低），改变频谱指纹。
       - "eq_strong"：更强 EQ（多频段均衡），频谱指纹差异更明显。
-      - "pitch"：轻微变速音调（asetrate+aresample），改音高/节奏指纹。
+      - "pitch" / "pitch_down"：降调（asetrate+aresample），改音高/节奏指纹。
+      - "pitch_up"：升调（asetrate+aresample）。
+      - "bandpass"：带通滤波（切除极低/极高），改频谱包络。
+      - "bass_boost"：低频增强 + 高频衰减。
+      - "vocal_boost"：人声带通增强（350Hz~9kHz 带通 + 1.8kHz 人声带提升）。
     返回空字符串表示不叠加。
     """
     if not mode:
@@ -345,12 +349,23 @@ def build_dedupe_audio_filter(mode) -> str:
     if m == "volume":
         return "volume=1.12"
     if m == "eq_mild":
-        return "equalizer=f=2500:t=q:w=1.0:g=3,equalizer=f=400:t=q:w=1.0:g=-2"
+        return ("equalizer=f=2500:t=q:w=0.8:g=5,equalizer=f=400:t=q:w=0.8:g=-3,"
+                "equalizer=f=8000:t=q:w=0.8:g=2")
     if m == "eq_strong":
-        return ("equalizer=f=300:t=q:w=0.8:g=4,equalizer=f=1200:t=q:w=0.8:g=-3,"
-                "equalizer=f=4200:t=q:w=0.8:g=3,equalizer=f=9000:t=q:w=0.8:g=-2")
-    if m == "pitch":
-        return "asetrate=44100*0.97,aresample=44100"
+        return ("equalizer=f=300:t=q:w=0.6:g=7,equalizer=f=1000:t=q:w=0.6:g=-5,"
+                "equalizer=f=3500:t=q:w=0.7:g=6,equalizer=f=8000:t=q:w=0.6:g=-4,"
+                "equalizer=f=12000:t=q:w=0.6:g=3")
+    if m in ("pitch", "pitch_down"):
+        return "asetrate=44100*0.90,aresample=44100"
+    if m == "pitch_up":
+        return "asetrate=44100*1.12,aresample=44100"
+    if m == "bandpass":
+        return "highpass=f=150,lowpass=f=8000"
+    if m == "bass_boost":
+        return ("equalizer=f=120:t=q:w=0.8:g=8,equalizer=f=5000:t=q:w=0.8:g=-4")
+    if m == "vocal_boost":
+        return ("highpass=f=350,lowpass=f=9000,equalizer=f=1800:t=q:w=0.7:g=7,"
+                "equalizer=f=6000:t=q:w=0.7:g=-4")
     return ""
 
 
