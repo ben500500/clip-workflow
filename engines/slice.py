@@ -214,7 +214,7 @@ def _resolve_dedupe_config(cfg: dict) -> dict:
     return p
 
 
-def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0) -> tuple[str, str]:
+def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: str = "") -> tuple[str, str]:
     """根据去重配置构造 (vf, af) 滤镜链。
 
     cfg 支持 preset（light/standard/heavy 基础档位，或推荐配方 std_retro_scan/
@@ -224,6 +224,12 @@ def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0) -> tuple[str
 
     width/height 用于在裁切后缩放回原始分辨率（保持输出尺寸一致）；未提供或为 0 时
     仅做相对裁切（轻微改变分辨率，同样有效）。
+
+    framerate：源视频帧率（ffmpeg fps 参数形式，如 '30000/1001'）。变速会压缩视频
+    PTS 但不会自动调整帧率，若不在 setpts 后追加 fps 重采样，ffmpeg 会按原帧率重新
+    对齐帧并丢帧，使视频实际变速比例偏离 speed，与音频 atempo 产生漂移、音画逐渐
+    不同步。传入源帧率并在 setpts 后追加 fps 即可把视频时间轴拉回与音频精确一致。
+    未提供/未知时回退为旧行为（不追加 fps）。
     """
     p = _resolve_dedupe_config(cfg or {})
 
@@ -240,8 +246,12 @@ def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0) -> tuple[str
     if p["hflip"]:
         spatial += ",hflip"
 
-    # 时域层：变速（视频 setpts 与音频 atempo 需一一对应）
+    # 时域层：变速（视频 setpts 与音频 atempo 需一一对应）。
+    # setpts 只压缩 PTS 不改帧率；变速后需用 fps 按源帧率重采样帧，否则视频实际
+    # 变速比例偏离 speed、与音频 atempo 漂移导致音画不同步（见函数 docstring）。
     vf_parts = [spatial, f"setpts=PTS/{speed:.3f}"]
+    if speed != 1.0 and framerate:
+        vf_parts.append(f"fps={framerate}")
     af = f"atempo={speed:.3f}"
 
     # 音频层（L3 盲区覆盖）：在 atempo 之后追加音频指纹差异化滤镜。
@@ -500,6 +510,35 @@ def ffprobe_resolution(path: str) -> tuple[int, int]:
     except Exception:
         pass
     return 0, 0
+
+
+def ffprobe_framerate(path: str) -> str:
+    """探测源视频帧率（返回 ffmpeg fps 参数形式，如 '30000/1001'），失败返回 ''。"""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        fr = (out.stdout or "").strip()
+        if "/" in fr:
+            num, den = fr.split("/", 1)
+            try:
+                n, d = float(num), float(den)
+                if n > 0 and d > 0:
+                    return fr
+            except ValueError:
+                pass
+        try:
+            val = float(fr)
+        except ValueError:
+            return ""
+        if val <= 0:
+            return ""
+        return f"{val:.6f}"
+    except Exception:
+        return ""
 
 
 def ffprobe_size(path: str) -> tuple[int, int]:
@@ -3784,7 +3823,8 @@ def main():
             dedupe_speed = 1.0
         dedupe_hflip = bool(_dedupe_p.get("hflip", False))
         w, h = ffprobe_resolution(source_path)
-        vf, af = build_dedupe_filter(dedupe_cfg, width=w, height=h)
+        src_fr = ffprobe_framerate(source_path)
+        vf, af = build_dedupe_filter(dedupe_cfg, width=w, height=h, framerate=src_fr)
         print(f"去重档位: {preset} (speed={dedupe_speed:.3f}, hflip={dedupe_hflip})", file=sys.stderr)
 
     # 动态文字水印：开启后在去重/普通滤镜基础上叠加 drawtext
