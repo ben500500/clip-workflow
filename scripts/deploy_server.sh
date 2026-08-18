@@ -177,7 +177,9 @@ else
     ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose logs --since 2m $SERVICES 2>&1 | grep -iE 'error|traceback|panic|undefined|exception' | tail -10 || true"
   fi
 
-  # 6. 记录本次部署 commit
+  # 6. 记录本次部署 commit（本地 + 远端标记同步，避免两侧失配）
   git -C "$LOCAL_DIR" rev-parse HEAD > "$LAST_FILE"
+  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "echo -n \"$(cat "$LAST_FILE")\" > '$REMOTE_DIR/.deploy_last_commit'" \
+    || log "WARN: 远端部署标记写入失败（不影响部署）"
   log "部署完成 ✅  (commit $(cat "$LAST_FILE"))"
 fi
