@@ -98,18 +98,18 @@ const DEDUPE_PRESETS: Record<string, Partial<DedupeManualConfigValue>> = {
     jitter: 0,
     sharpen: 0.3,
   },
-  // std_retro_scan 保留（供手动选择）：无镜像，明显影响画质的复古暖调/扫描线/噪点
-  //   已按画质优先降到最低（偏色≈0、色温≈中性、无扫描线、噪点≈0），不再作为首选。
+  // std_retro_scan 复古扫描（第二选择，非默认）：还原老电视扫描线+噪点质感
+  //   （复古暖调+噪点+扫描线+暗角），与后端 engines/slice.py 的 DEDUPE_PRESETS 保持一致。
   std_retro_scan: {
     crop: 0.05,
     hflip: false,
     speed: 1.04,
-    saturation: 0.88,
-    gamma: 1.02,
-    contrast: 1.02,
-    brightness: 0.008,
-    noise: 1,
-    vignette: '',
+    saturation: 0.85,
+    gamma: 1.03,
+    contrast: 1.03,
+    brightness: 0.01,
+    noise: 7,
+    vignette: 'PI/5',
     roll_band: 0,
     jitter: 0,
     sharpen: 0.4,
