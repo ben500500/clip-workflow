@@ -3655,42 +3655,53 @@ def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict,
 
 def apply_cover_first_frame(video_path: str, cover_path: str, out_path: str,
                          threads: int = 1, encoder: str = "libx264") -> None:
-    """在成品开头叠加一张静止封面画面作为视频首帧（默认约 1.5s），再衔接源视频内容。
+    """将封面图片叠加到成品第一帧（仅首帧显示封面，随即切入源视频内容）。
 
-    封面图会等比缩放并裁剪填满输出画面，生成一段无声静止片段前置到成品开头。
-    已生成源内容首帧即为封面（若封面图与源首帧不同，成品开头的画面即为封面）。
+    封面图会等比缩放并裁剪填满输出画面，通过 overlay 只作用于视频第一帧
+    （约 1/帧率 秒），不额外前置静止封面片段，视频总时长保持不变。
     """
     if not cover_path or not os.path.isfile(cover_path):
         return
     w, h = ffprobe_resolution(video_path)
     if not w or not h:
         w, h = 1280, 720
-    fps = ffprobe_framerate(video_path) or "25"
-    cover_mp4 = out_path + ".cover.mp4"
+    cover_jpg = out_path + ".cover.jpg"
     try:
-        # 生成静止封面片段（等比缩放+裁剪填满 + 无声音轨，时长 1.5s）
+        # 将封面图等比缩放+裁剪填满输出画面，输出为单张封面帧
         cmd = [
             "ffmpeg", "-y",
-            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-            "-loop", "1", "-i", cover_path,
-            "-t", "1.5",
+            "-i", cover_path,
             "-vf", (
                 f"scale={w}:{h}:force_original_aspect_ratio=increase,"
-                f"crop={w}:{h},setsar=1,fps={fps},format=yuv420p"
+                f"crop={w}:{h},setsar=1"
             ),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "128k", "-shortest",
-            cover_mp4,
+            "-frames:v", "1",
+            cover_jpg,
         ]
         run_ffmpeg(cmd, timeout=3600, threads=threads)
-        if not os.path.isfile(cover_mp4):
+        if not os.path.isfile(cover_jpg):
             return
-        # 前置拼接：封面片段 + 原成品
-        concat_segments([cover_mp4, video_path], out_path, threads=threads, encoder=encoder)
+        # 封面仅叠加到视频第一帧（n=0），后续帧保持源内容不变
+        cmd = [
+            "ffmpeg", "-y",
+            "-threads", str(threads),
+            "-i", video_path,
+            "-i", cover_jpg,
+            "-filter_complex", (
+                f"[1:v]format=yuv420p,scale={w}:{h}:force_original_aspect_ratio=increase,"
+                f"crop={w}:{h},setsar=1[cover];"
+                "[0:v][cover]overlay=0:0:enable='eq(n,0)'[vout]"
+            ),
+            "-map", "[vout]",
+            "-map", "0:a?",
+        ]
+        cmd += build_encoder_args(encoder, threads)
+        cmd += ["-c:a", "copy", out_path]
+        run_ffmpeg(cmd, timeout=3600, threads=threads)
         print(f"视频封面已作为首帧叠加: {os.path.basename(out_path)}", file=sys.stderr)
     finally:
         try:
-            os.unlink(cover_mp4)
+            os.unlink(cover_jpg)
         except OSError:
             pass
 
@@ -3806,7 +3817,7 @@ def main():
     parser.add_argument(
         "--cover",
         default=None,
-        help="视频封面图片路径（可选）。选择图片作为视频首帧：在成品开头叠加一张静止封面画面，再衔接源视频内容",
+        help="视频封面图片路径（可选）。选择图片作为视频首帧：叠加到成品第一帧（仅首帧显示封面，随即切入源视频内容）",
     )
     args = parser.parse_args()
 
@@ -4239,7 +4250,7 @@ def main():
                     threads=threads, encoder=encoder,
                 )
                 os.replace(txt_out, out_path)
-            # 视频封面：在成品开头叠加静止封面画面作为视频首帧
+            # 视频封面：将封面叠加到成品第一帧作为视频首帧
             if args.cover:
                 cover_out = out_path + ".coverout.mp4"
                 apply_cover_first_frame(out_path, args.cover, cover_out, threads=threads, encoder=encoder)
