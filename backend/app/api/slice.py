@@ -49,6 +49,7 @@ from app.services.minio_service import (
 from app.services.redis_stream import (
     get_task_redis_status,
     mark_task_cancelled,
+    remove_slice_task_from_streams,
     get_redis,
 )
 from app.api.slice_helpers import (
@@ -1216,6 +1217,10 @@ async def delete_slice_task(
         task.status = "cancelled"
         await mark_task_cancelled(task_id)
         await db.flush()
+
+    # 清理该任务在 Redis Stream（含消费者组 PEL）中的残留消息，
+    # 避免 Worker 读到已删除任务的 task_id 反复重试而卡死队列
+    await remove_slice_task_from_streams(task_id)
 
     # 删除该任务在 MinIO 中的输出文件（slices/{episode}/{task}/ 前缀）
     prefix = _output_prefix(task)
