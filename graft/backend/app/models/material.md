@@ -2,31 +2,31 @@
 
 - Project · class · L29-L45 — class Project(Base)
 - __repr__ · method · L44-L45 — def __repr__(self) -> str
-- Episode · class · L48-L73 — class Episode(Base)
-- __repr__ · method · L72-L73 — def __repr__(self) -> str
-- AutoClipProject · class · L76-L91 — class AutoClipProject(Base)
-- __repr__ · method · L90-L91 — def __repr__(self) -> str
-- AutoClipRun · class · L94-L117 — class AutoClipRun(Base)
-- __repr__ · method · L116-L117 — def __repr__(self) -> str
-- ClipCandidate · class · L120-L143 — class ClipCandidate(Base)
-- __repr__ · method · L142-L143 — def __repr__(self) -> str
-- DetectedInterval · class · L146-L164 — class DetectedInterval(Base)
-- __repr__ · method · L163-L164 — def __repr__(self) -> str
-- SliceTask · class · L167-L217 — class SliceTask(Base)
-- __repr__ · method · L216-L217 — def __repr__(self) -> str
-- SliceOutput · class · L220-L242 — class SliceOutput(Base)
-- __repr__ · method · L241-L242 — def __repr__(self) -> str
-- Publication · class · L245-L263 — class Publication(Base)
-- __repr__ · method · L262-L263 — def __repr__(self) -> str
-- SystemConfig · class · L266-L275 — class SystemConfig(Base)
-- __repr__ · method · L274-L275 — def __repr__(self) -> str
-- PlatformProfile · class · L278-L292 — class PlatformProfile(Base)
-- __repr__ · method · L291-L292 — def __repr__(self) -> str
-- ImportTemplate · class · L295-L307 — class ImportTemplate(Base)
-- __repr__ · method · L306-L307 — def __repr__(self) -> str
-- ImportHistory · class · L310-L326 — class ImportHistory(Base)
-- __repr__ · method · L325-L326 — def __repr__(self) -> str
-- BatchSlice · class · L329-L359 — class BatchSlice(Base)
-- __repr__ · method · L358-L359 — def __repr__(self) -> str
-- BatchSliceItem · class · L362-L390 — class BatchSliceItem(Base)
-- __repr__ · method · L389-L390 — def __repr__(self) -> str
+- Episode · class · L48-L76 — class Episode(Base)
+- __repr__ · method · L75-L76 — def __repr__(self) -> str
+- AutoClipProject · class · L79-L94 — class AutoClipProject(Base)
+- __repr__ · method · L93-L94 — def __repr__(self) -> str
+- AutoClipRun · class · L97-L120 — class AutoClipRun(Base)
+- __repr__ · method · L119-L120 — def __repr__(self) -> str
+- ClipCandidate · class · L123-L146 — class ClipCandidate(Base)
+- __repr__ · method · L145-L146 — def __repr__(self) -> str
+- DetectedInterval · class · L149-L167 — class DetectedInterval(Base)
+- __repr__ · method · L166-L167 — def __repr__(self) -> str
+- SliceTask · class · L170-L220 — class SliceTask(Base)
+- __repr__ · method · L219-L220 — def __repr__(self) -> str
+- SliceOutput · class · L223-L245 — class SliceOutput(Base)
+- __repr__ · method · L244-L245 — def __repr__(self) -> str
+- Publication · class · L248-L266 — class Publication(Base)
+- __repr__ · method · L265-L266 — def __repr__(self) -> str
+- SystemConfig · class · L269-L278 — class SystemConfig(Base)
+- __repr__ · method · L277-L278 — def __repr__(self) -> str
+- PlatformProfile · class · L281-L295 — class PlatformProfile(Base)
+- __repr__ · method · L294-L295 — def __repr__(self) -> str
+- ImportTemplate · class · L298-L310 — class ImportTemplate(Base)
+- __repr__ · method · L309-L310 — def __repr__(self) -> str
+- ImportHistory · class · L313-L329 — class ImportHistory(Base)
+- __repr__ · method · L328-L329 — def __repr__(self) -> str
+- BatchSlice · class · L332-L362 — class BatchSlice(Base)
+- __repr__ · method · L361-L362 — def __repr__(self) -> str
+- BatchSliceItem · class · L365-L393 — class BatchSliceItem(Base)
+- __repr__ · method · L392-L393 — def __repr__(self) -> str

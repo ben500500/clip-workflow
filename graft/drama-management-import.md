@@ -15,112 +15,124 @@ generator:
 covers:
   - symbol: DramaCreate
     kind: class
-    at: 'backend/app/api/dramas.py:L45-L60'
+    at: 'backend/app/api/dramas.py:L46-L61'
   - symbol: DramaUpdate
     kind: class
-    at: 'backend/app/api/dramas.py:L63-L76'
+    at: 'backend/app/api/dramas.py:L64-L77'
   - symbol: DramaStillPayload
     kind: class
-    at: 'backend/app/api/dramas.py:L79-L82'
+    at: 'backend/app/api/dramas.py:L80-L83'
   - symbol: DramaLinkAccounts
     kind: class
-    at: 'backend/app/api/dramas.py:L85-L86'
+    at: 'backend/app/api/dramas.py:L86-L87'
   - symbol: _resolve_image_url
     kind: function
-    at: 'backend/app/api/dramas.py:L91-L98'
+    at: 'backend/app/api/dramas.py:L92-L99'
   - symbol: _serialize_drama
     kind: function
-    at: 'backend/app/api/dramas.py:L101-L123'
+    at: 'backend/app/api/dramas.py:L102-L124'
   - symbol: _serialize_drama_detail
     kind: function
-    at: 'backend/app/api/dramas.py:L126-L138'
+    at: 'backend/app/api/dramas.py:L127-L142'
   - symbol: _resolve_drama
     kind: function
-    at: 'backend/app/api/dramas.py:L143-L152'
+    at: 'backend/app/api/dramas.py:L147-L164'
   - symbol: _can_manage
     kind: function
-    at: 'backend/app/api/dramas.py:L155-L160'
+    at: 'backend/app/api/dramas.py:L167-L172'
   - symbol: _apply_rbac_filter
     kind: function
-    at: 'backend/app/api/dramas.py:L163-L166'
+    at: 'backend/app/api/dramas.py:L175-L178'
   - symbol: _associate_accounts
     kind: function
-    at: 'backend/app/api/dramas.py:L169-L182'
+    at: 'backend/app/api/dramas.py:L181-L194'
   - symbol: list_dramas
     kind: function
-    at: 'backend/app/api/dramas.py:L188-L226'
+    at: 'backend/app/api/dramas.py:L200-L238'
   - symbol: create_drama
     kind: function
-    at: 'backend/app/api/dramas.py:L230-L274'
+    at: 'backend/app/api/dramas.py:L242-L296'
   - symbol: get_drama
     kind: function
-    at: 'backend/app/api/dramas.py:L278-L287'
+    at: 'backend/app/api/dramas.py:L300-L309'
   - symbol: update_drama
     kind: function
-    at: 'backend/app/api/dramas.py:L291-L326'
+    at: 'backend/app/api/dramas.py:L313-L348'
   - symbol: delete_drama
     kind: function
-    at: 'backend/app/api/dramas.py:L330-L341'
+    at: 'backend/app/api/dramas.py:L352-L363'
   - symbol: add_drama_still
     kind: function
-    at: 'backend/app/api/dramas.py:L347-L363'
+    at: 'backend/app/api/dramas.py:L369-L385'
   - symbol: delete_drama_still
     kind: function
-    at: 'backend/app/api/dramas.py:L367-L386'
+    at: 'backend/app/api/dramas.py:L389-L408'
   - symbol: upload_drama_image
     kind: function
-    at: 'backend/app/api/dramas.py:L390-L445'
+    at: 'backend/app/api/dramas.py:L412-L467'
   - symbol: link_drama_accounts
     kind: function
-    at: 'backend/app/api/dramas.py:L451-L464'
+    at: 'backend/app/api/dramas.py:L473-L486'
   - symbol: DramaImportRow
     kind: class
-    at: 'backend/app/api/dramas.py:L469-L484'
+    at: 'backend/app/api/dramas.py:L491-L506'
   - symbol: DramaImportRequest
     kind: class
-    at: 'backend/app/api/dramas.py:L487-L489'
+    at: 'backend/app/api/dramas.py:L509-L511'
   - symbol: DramaImportConfirmItem
     kind: class
-    at: 'backend/app/api/dramas.py:L492-L510'
+    at: 'backend/app/api/dramas.py:L514-L532'
   - symbol: DramaImportConfirm
     kind: class
-    at: 'backend/app/api/dramas.py:L513-L516'
+    at: 'backend/app/api/dramas.py:L535-L538'
   - symbol: _row_key
     kind: function
-    at: 'backend/app/api/dramas.py:L519-L521'
+    at: 'backend/app/api/dramas.py:L541-L543'
   - symbol: _diff_fields
     kind: function
-    at: 'backend/app/api/dramas.py:L524-L542'
+    at: 'backend/app/api/dramas.py:L546-L564'
   - symbol: drama_import_preview
     kind: function
-    at: 'backend/app/api/dramas.py:L546-L609'
+    at: 'backend/app/api/dramas.py:L568-L631'
   - symbol: drama_import_parse
     kind: function
-    at: 'backend/app/api/dramas.py:L613-L695'
+    at: 'backend/app/api/dramas.py:L635-L717'
   - symbol: _norm
     kind: function
-    at: 'backend/app/api/dramas.py:L649-L650'
+    at: 'backend/app/api/dramas.py:L671-L672'
   - symbol: _find
     kind: function
-    at: 'backend/app/api/dramas.py:L654-L659'
+    at: 'backend/app/api/dramas.py:L676-L681'
   - symbol: drama_import_confirm
     kind: function
-    at: 'backend/app/api/dramas.py:L699-L821'
+    at: 'backend/app/api/dramas.py:L721-L843'
   - symbol: get_drama_publish_context
     kind: function
-    at: 'backend/app/api/dramas.py:L827-L841'
+    at: 'backend/app/api/dramas.py:L849-L863'
   - symbol: DramaMaterialLink
     kind: class
-    at: 'backend/app/api/dramas.py:L844-L847'
+    at: 'backend/app/api/dramas.py:L866-L869'
   - symbol: link_drama_material
     kind: function
-    at: 'backend/app/api/dramas.py:L851-L875'
+    at: 'backend/app/api/dramas.py:L873-L897'
+  - symbol: DramaLinkEpisodes
+    kind: class
+    at: 'backend/app/api/dramas.py:L902-L904'
+  - symbol: link_drama_episodes
+    kind: function
+    at: 'backend/app/api/dramas.py:L908-L971'
+  - symbol: get_drama_slice_status
+    kind: function
+    at: 'backend/app/api/dramas.py:L975-L1090'
+  - symbol: _stage_status
+    kind: function
+    at: 'backend/app/api/dramas.py:L1027-L1037'
   - symbol: _parse_date
     kind: function
-    at: 'backend/app/api/dramas.py:L880-L885'
+    at: 'backend/app/api/dramas.py:L1095-L1100'
   - symbol: _parse_dt
     kind: function
-    at: 'backend/app/api/dramas.py:L888-L893'
+    at: 'backend/app/api/dramas.py:L1103-L1108'
 ---
 <!-- context:generated:start -->
 ## Summary

@@ -12,61 +12,67 @@ generator:
 covers:
   - symbol: DraggableUpload
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L38-L67'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L47-L76'
   - symbol: handle
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L43-L55'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L52-L64'
   - symbol: DramaLibrary
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L69-L677'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L78-L794'
   - symbol: doSearch
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L127-L127'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L140-L140'
   - symbol: openCreate
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L130-L135'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L143-L148'
   - symbol: openEdit
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L137-L151'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L150-L164'
   - symbol: submit
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L153-L179'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L166-L192'
   - symbol: remove
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L181-L189'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L194-L202'
   - symbol: openDetail
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L192-L204'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L205-L219'
+  - symbol: loadSliceStatus
+    kind: function
+    at: 'frontend/src/pages/DramaLibrary.tsx:L222-L232'
+  - symbol: saveLinkedEpisodes
+    kind: function
+    at: 'frontend/src/pages/DramaLibrary.tsx:L235-L248'
   - symbol: setCover
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L206-L217'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L250-L261'
   - symbol: addStill
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L219-L229'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L263-L273'
   - symbol: removeStill
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L231-L242'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L275-L286'
   - symbol: linkAccounts
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L244-L254'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L288-L298'
   - symbol: resetImport
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L257-L264'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L301-L308'
   - symbol: onImportFile
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L266-L283'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L310-L327'
   - symbol: toggleNew
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L285-L289'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L329-L333'
   - symbol: toggleUpdate
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L290-L294'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L334-L338'
   - symbol: doImport
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L296-L338'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L340-L382'
   - symbol: accountNameById
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L392-L392'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L436-L436'
 ---
 <!-- context:generated:start -->
 ## Summary

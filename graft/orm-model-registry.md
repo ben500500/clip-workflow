@@ -115,22 +115,22 @@ covers:
     at: 'backend/app/models/drama.py:L33-L38'
   - symbol: Drama
     kind: class
-    at: 'backend/app/models/drama.py:L41-L93'
+    at: 'backend/app/models/drama.py:L41-L95'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/drama.py:L92-L93'
+    at: 'backend/app/models/drama.py:L94-L95'
   - symbol: DramaStill
     kind: class
-    at: 'backend/app/models/drama.py:L96-L108'
+    at: 'backend/app/models/drama.py:L98-L110'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/drama.py:L107-L108'
+    at: 'backend/app/models/drama.py:L109-L110'
   - symbol: DramaAccount
     kind: class
-    at: 'backend/app/models/drama.py:L111-L129'
+    at: 'backend/app/models/drama.py:L113-L131'
   - symbol: DramaMaterial
     kind: class
-    at: 'backend/app/models/drama.py:L132-L144'
+    at: 'backend/app/models/drama.py:L134-L146'
   - symbol: Project
     kind: class
     at: 'backend/app/models/material.py:L29-L45'
@@ -139,88 +139,88 @@ covers:
     at: 'backend/app/models/material.py:L44-L45'
   - symbol: Episode
     kind: class
-    at: 'backend/app/models/material.py:L48-L73'
+    at: 'backend/app/models/material.py:L48-L76'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L72-L73'
+    at: 'backend/app/models/material.py:L75-L76'
   - symbol: AutoClipProject
     kind: class
-    at: 'backend/app/models/material.py:L76-L91'
+    at: 'backend/app/models/material.py:L79-L94'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L90-L91'
+    at: 'backend/app/models/material.py:L93-L94'
   - symbol: AutoClipRun
     kind: class
-    at: 'backend/app/models/material.py:L94-L117'
+    at: 'backend/app/models/material.py:L97-L120'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L116-L117'
+    at: 'backend/app/models/material.py:L119-L120'
   - symbol: ClipCandidate
     kind: class
-    at: 'backend/app/models/material.py:L120-L143'
+    at: 'backend/app/models/material.py:L123-L146'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L142-L143'
+    at: 'backend/app/models/material.py:L145-L146'
   - symbol: DetectedInterval
     kind: class
-    at: 'backend/app/models/material.py:L146-L164'
+    at: 'backend/app/models/material.py:L149-L167'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L163-L164'
+    at: 'backend/app/models/material.py:L166-L167'
   - symbol: SliceTask
     kind: class
-    at: 'backend/app/models/material.py:L167-L217'
+    at: 'backend/app/models/material.py:L170-L220'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L216-L217'
+    at: 'backend/app/models/material.py:L219-L220'
   - symbol: SliceOutput
     kind: class
-    at: 'backend/app/models/material.py:L220-L242'
+    at: 'backend/app/models/material.py:L223-L245'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L241-L242'
+    at: 'backend/app/models/material.py:L244-L245'
   - symbol: Publication
     kind: class
-    at: 'backend/app/models/material.py:L245-L263'
+    at: 'backend/app/models/material.py:L248-L266'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L262-L263'
+    at: 'backend/app/models/material.py:L265-L266'
   - symbol: SystemConfig
     kind: class
-    at: 'backend/app/models/material.py:L266-L275'
+    at: 'backend/app/models/material.py:L269-L278'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L274-L275'
+    at: 'backend/app/models/material.py:L277-L278'
   - symbol: PlatformProfile
     kind: class
-    at: 'backend/app/models/material.py:L278-L292'
+    at: 'backend/app/models/material.py:L281-L295'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L291-L292'
+    at: 'backend/app/models/material.py:L294-L295'
   - symbol: ImportTemplate
     kind: class
-    at: 'backend/app/models/material.py:L295-L307'
+    at: 'backend/app/models/material.py:L298-L310'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L306-L307'
+    at: 'backend/app/models/material.py:L309-L310'
   - symbol: ImportHistory
     kind: class
-    at: 'backend/app/models/material.py:L310-L326'
+    at: 'backend/app/models/material.py:L313-L329'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L325-L326'
+    at: 'backend/app/models/material.py:L328-L329'
   - symbol: BatchSlice
     kind: class
-    at: 'backend/app/models/material.py:L329-L359'
+    at: 'backend/app/models/material.py:L332-L362'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L358-L359'
+    at: 'backend/app/models/material.py:L361-L362'
   - symbol: BatchSliceItem
     kind: class
-    at: 'backend/app/models/material.py:L362-L390'
+    at: 'backend/app/models/material.py:L365-L393'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L389-L390'
+    at: 'backend/app/models/material.py:L392-L393'
   - symbol: WorkerNode
     kind: class
     at: 'backend/app/models/monitor.py:L25-L55'
