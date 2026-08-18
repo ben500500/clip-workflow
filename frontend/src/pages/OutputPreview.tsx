@@ -236,17 +236,25 @@ const OutputPreview: React.FC = () => {
   const toggleRowExpand = useCallback(async (output: SliceOutput) => {
     const isExpanded = expandedRowKeys.includes(output.id);
     if (isExpanded) {
+      // 收起：停止该预览窗口的视频（卸载 video 元素），并清掉已加载的预览地址
       setExpandedRowKeys(expandedRowKeys.filter((k) => k !== output.id));
+      setExpandedVideoUrls((prev) => {
+        if (!(output.id in prev)) return prev;
+        const next = { ...prev };
+        delete next[output.id];
+        return next;
+      });
       return;
     }
-    // 展开并自动加载视频预览地址
-    setExpandedRowKeys([...expandedRowKeys, output.id]);
+    // 展开：同一时间只保留一个预览窗口，其它预览窗口自动收起并停止播放
+    setExpandedRowKeys([output.id]);
+    setExpandedVideoUrls({});
     // 当前输出也同步到预览/发布记录区
     setCurrentOutput(output.id);
     try {
       const video = await previewApi.getVideoUrl(output.id);
       if (mountedRef.current) {
-        setExpandedVideoUrls((prev) => ({ ...prev, [output.id]: video.url }));
+        setExpandedVideoUrls({ [output.id]: video.url });
       }
       const pubs = await previewApi.getPublications(output.id);
       if (mountedRef.current) setPublications(pubs);
@@ -577,7 +585,27 @@ const OutputPreview: React.FC = () => {
                 })}
                 expandable={{
                   expandedRowKeys,
-                  onExpandedRowsChange: (keys: readonly React.Key[]) => setExpandedRowKeys(keys as React.Key[]),
+                  onExpandedRowsChange: (keys: readonly React.Key[]) => {
+                    const next = keys as React.Key[];
+                    // 单预览窗口：同一时间只保留一个展开的预览，其它预览窗口自动收起
+                    let keep: React.Key[] = next;
+                    if (next.length > 1) {
+                      // 找到刚新增的那一行（不在旧展开列表里），只保留它
+                      const added = next.find((k) => !expandedRowKeys.includes(k)) ?? next[next.length - 1];
+                      keep = added !== undefined ? [added] : [];
+                    }
+                    setExpandedRowKeys(keep);
+                    // 收起其它预览窗口时，卸载其 video 元素以停止播放
+                    setExpandedVideoUrls((prev) => {
+                      const filtered = Object.keys(prev)
+                        .filter((id) => keep.includes(id))
+                        .reduce<Record<string, string>>((acc, id) => {
+                          acc[id] = prev[id];
+                          return acc;
+                        }, {});
+                      return JSON.stringify(filtered) === JSON.stringify(prev) ? prev : filtered;
+                    });
+                  },
                   expandedRowRender: (record: SliceOutput) => {
                     const url = expandedVideoUrls[record.id];
                     return (
