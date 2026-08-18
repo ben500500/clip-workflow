@@ -289,14 +289,14 @@ class VideoChannelPublisher:
     async def _upload_video(self, video_path: str):
         """Upload the video file through the file input element."""
         try:
-            # 视频号发布页文件上传 input 为隐藏元素且渲染较晚（约 5-8s），
-            # 用 wait_for_selector 等待出现而非一次性 query，避免误报找不到
-            upload_input = await self.page.wait_for_selector(
-                "input[type='file']", state="attached", timeout=60000
+            # 视频号发布页文件上传 input 为隐藏元素、渲染较晚（约 5-8s），
+            # 且 SPA 重渲染会替换 DOM 导致元素 detached；用 locator.set_input_files，
+            # 它在元素附着后自动重试（每次重新解析），规避 detached 竞态。
+            await self.page.locator("input[type='file']").first.set_input_files(
+                video_path, timeout=60000
             )
         except Exception:
             raise RuntimeError("Cannot find video upload input element")
-        await upload_input.set_input_files(video_path)
         # Wait for upload to complete
         await self._wait_for_upload()
 
