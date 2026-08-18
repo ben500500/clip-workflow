@@ -1,6 +1,6 @@
-# clip-workflow 自动化产线 Agent 提示词（v1.4）
+# clip-workflow 自动化产线 Agent 提示词（v1.5）
 
-> 版本：v1.4（对齐 `main` 真实代码 + AUTOMATION_WORKFLOW v1.4 + PR #177/#178/#182 及发布链路最后三公里）| 日期：2026-08-18
+> 版本：v1.5（对齐 `main` 真实代码 + AUTOMATION_WORKFLOW v1.5 + PR #177/#178/#182/#187 及风控分级识别）| 日期：2026-08-18
 > 用途：**直接粘贴给 Computer-Use / Claude / Codex 等 Agent 的启动提示词**，让它自动走完
 > 「资源导入 → AI 选点 → 区间检测 → 切片 → 视频号上传发布」全链路，并自带问题自检与测试报告输出。
 > 本文件与 `docs/AUTOMATION_WORKFLOW.md` 互为补充：后者是机器可解析的完整操作手册，本文档是 Agent 的人话指令。
@@ -89,6 +89,13 @@
     - **发布成功判定（P0-1，不再假成功）**：仅当 `status == "published"` 且 `published_url` 非空才算
       发布成功；若 `status == "failed"`（已写死信 `dead_letter=true`），说明发布结果未被确认
       （成功页 URL 未命中/超时/上传未完成），**不要误判为成功**，记录 `error_message` 并走重发/重试。
+    - **发布失败分级（v1.5/PR #187）**：失败时看 `risk_type` 决定处置：
+        - `upload_limited` / `env_risk` → **上传/环境级风控拒发**（如 `300001`/`upload_params`）——
+          **不要自动重试**（重复消耗账号安全额度），记录并报告人工/定时重放，等待环境冷却；
+        - `need_login` → 登录态失效，重新扫码登录（阶段 A 第 3 步）后再发；
+        - 默认 `publish_limited` → 普通发布受限/失败，可评估瞬态原因后重发。
+    - **上传前预检（v1.5）**：命中 `need_login`/风控会在上传前提前失败（返回 `need_login` 或
+      `error` + `risk_type`），Agent 不要重复尝试，先处理登录态或报告环境问题。
     - **发布后置顶神评（v1.4）**：发布成功且任务关联了发布素材（含三条神评 `comments`）时，系统会
       在发布后自动尝试发表并置顶互动神评（**探活式，失败不阻断发布成功**）。Agent 可关注任务是否
       带 `publish_comments`（来自发布素材神评），无需额外处理。
@@ -130,5 +137,14 @@
 | 2 | **一键生成发布素材** | `POST /shortdrama/publish-material/generate-from-output`：从切片成品组装剧情梗概→生成短标题/三款配文/成套标签/三条神评（短片制作链路复用） | publish_material.py |
 | 3 | **发布后置顶神评** | 发布成功且任务关联发布素材（含神评）时，自动发表+置顶互动神评；**探活式，失败不阻断发布** | `_post_publish_comments` / publish_service.py + tasks.py |
 | 4 | **三款配文选一款** | 发布弹窗支持在悬念钩子/精简爆款/情绪爽文间切换配文 | OutputPreview.tsx |
+
+## v1.5 相对 v1.4 的新增行为（PR #187 风控分级识别，已合并 main）
+
+| # | 新增行为 | 说明 | 落点 |
+|---|---|---|---|
+| 1 | **上传/环境级风控分级** | 风控拒发（`300001`/`upload_params` 类）与普通超时**不再混为一谈**：`_wait_for_upload` 超时/不可播放时探测风控信号，命中抛 `UploadRiskError` | `UploadRiskError` + `_probe_upload_risk_signal` / publish_service.py |
+| 2 | **失败 `risk_type` 分级** | `upload_limited`/`env_risk`（风控拒发）/ `need_login`（登录失效）/ 默认 `publish_limited`；Agent 据此决定重试 or 报告 | audit_service.py + tasks.py |
+| 3 | **上传前预检** | 上传前轻量探测风控/登录失效信号，命中提前失败，不进入上传，避免白白消耗 worker 与账号安全额度 | publish_service.py `_publish_body` |
+| 4 | **风控不自动重试** | 风控拒发不自动重试（重复消耗账号安全额度），走死信队列人工/定时重放 | tasks.py |
 
 > 说明：本提示词与 `AUTOMATION_WORKFLOW.md` 保持一致，两端契约同源，agent 照任一执行都应一次走通。
