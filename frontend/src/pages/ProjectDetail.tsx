@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
-  Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col, Statistic,
+  Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col,
   message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm, Input, Tabs, Switch, Select, Divider, InputNumber,
 } from 'antd';
 import { ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined, PlayCircleOutlined, ThunderboltOutlined, PictureOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons';
@@ -10,7 +10,7 @@ import type { ProjectOutputItem } from '../api/projects';
 import { uploadApi } from '../api/upload';
 import { sliceApi } from '../api/slice';
 import { autoclipApi } from '../api/autoclip';
-import type { Episode, EpisodeWorkflowItem, EpisodeWorkflowStage, Project, ProjectWorkflowStatus, WorkflowStageStatus } from '../types';
+import type { Episode, Project } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 
 const { Title, Text } = Typography;
@@ -19,6 +19,7 @@ const { Dragger } = Upload;
 // 批量一键切片配置（面向已上传剧集，复用一键切片核心参数 + 视频封面）
 interface BatchSliceConfig {
   mode: string;              // fast / dedupe
+  dedupePreset: string;      // 去重档位（mode=dedupe 时生效，无手动覆盖）
   maxClips: number;
   minScoreThreshold: number | null;
   minClipDuration: number | null;
@@ -34,6 +35,7 @@ interface BatchSliceConfig {
 
 const DEFAULT_BATCH_CONFIG: BatchSliceConfig = {
   mode: 'fast',
+  dedupePreset: 'std_crop_desat',
   maxClips: 10,
   minScoreThreshold: null,
   minClipDuration: null,
@@ -45,6 +47,26 @@ const DEFAULT_BATCH_CONFIG: BatchSliceConfig = {
   coverImageKey: null,
   coverImageName: null,
 };
+
+// 去重档位选项（与剧集详情页一致）
+const DEDUPE_PRESET_OPTIONS = [
+  { value: 'std_crop_desat', label: '保守裁切降饱和（推荐）' },
+  { value: 'std_retro_scan', label: '复古扫描' },
+  { value: 'light', label: '轻' },
+  { value: 'standard', label: '标准' },
+  { value: 'heavy', label: '重' },
+];
+
+// 与剧集详情页「一键切片配置」共用的一套预设（localStorage slice_presets_v1）
+interface BatchPresetOption {
+  id: string;
+  name: string;
+  dedupe_enabled: boolean;
+  dedupe_preset: string;
+  vert2horiz_enabled: boolean;
+  subtitle_enabled: boolean;
+}
+const BATCH_PRESET_STORAGE_KEY = 'slice_presets_v1';
 
 const ProjectDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -58,10 +80,6 @@ const ProjectDetail: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
 
-  // ── 项目工作流状态聚合（P2-4） ──
-  const [workflow, setWorkflow] = useState<ProjectWorkflowStatus | null>(null);
-  const [workflowLoading, setWorkflowLoading] = useState(false);
-  const [workflowError, setWorkflowError] = useState<string | null>(null);
 
   // ── 源视频预览：剧集列表中按需展开，点击「预览」后再加载在线播放链接 ──
   const [previewExpanded, setPreviewExpanded] = useState<Set<string>>(new Set());
@@ -83,6 +101,37 @@ const ProjectDetail: React.FC = () => {
   const [batchSlicing, setBatchSlicing] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number; current: string } | null>(null);
   const [coverUploading, setCoverUploading] = useState(false);
+
+  // ── 批量一键切片可选的「一键切片配置」预设（与剧集详情页共享 localStorage） ──
+  const [presetOptions, setPresetOptions] = useState<BatchPresetOption[]>([]);
+  const [batchPresetId, setBatchPresetId] = useState<string>('default');
+
+  // 应用选中的一键切片配置预设到批量切片参数
+  const applyBatchPreset = (id: string) => {
+    const p = presetOptions.find((x) => x.id === id);
+    if (!p) return;
+    setBatchPresetId(id);
+    setBatchConfig((prev) => ({
+      ...prev,
+      mode: p.dedupe_enabled ? 'dedupe' : 'fast',
+      dedupePreset: p.dedupe_preset || 'std_crop_desat',
+      vert2horizEnabled: p.vert2horiz_enabled,
+      subtitleEnabled: p.subtitle_enabled,
+    }));
+  };
+
+  // 加载剧集详情页保存过的一键切片配置预设
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(BATCH_PRESET_STORAGE_KEY);
+      if (raw) {
+        const list = JSON.parse(raw) as BatchPresetOption[];
+        if (Array.isArray(list) && list.length > 0) setPresetOptions(list);
+      }
+    } catch {
+      // 预设读取失败不影响页面
+    }
+  }, []);
 
   // ── 成品预览 Tab：项目下所有剧集的已完成切片产出 ──
   const [activeTab, setActiveTab] = useState('episodes');
@@ -121,26 +170,10 @@ const ProjectDetail: React.FC = () => {
     }
   };
 
-  // P2-4 拉取项目工作流状态聚合
-  const fetchWorkflow = async (silent = false) => {
-    if (!silent) setWorkflowLoading(true);
-    setWorkflowError(null);
-    try {
-      const data = await projectApi.getWorkflowStatus(projectId);
-      if (mountedRef.current) setWorkflow(data);
-    } catch (err: unknown) {
-      if (mountedRef.current) {
-        setWorkflowError(err instanceof Error ? err.message : '获取工作流状态失败');
-      }
-    } finally {
-      if (mountedRef.current) setWorkflowLoading(false);
-    }
-  };
 
   useEffect(() => {
     if (projectId) {
       fetchData();
-      fetchWorkflow();
     }
   }, [projectId]);
 
@@ -464,6 +497,8 @@ const ProjectDetail: React.FC = () => {
       auto_accept_all: true,
       vert2horiz_enabled: cfg.vert2horizEnabled,
       subtitle_enabled: cfg.subtitleEnabled,
+      // 去重档位：mode=dedupe 时下发（批量无手动覆盖，只按档位）
+      dedupe_config: cfg.mode === 'dedupe' ? { preset: cfg.dedupePreset } : undefined,
       // 视频封面：作为视频首帧
       cover_image_key: cfg.coverImageKey || undefined,
     });
@@ -504,161 +539,6 @@ const ProjectDetail: React.FC = () => {
     return <Alert type="error" message="加载失败" description={error} showIcon />;
   }
 
-  // 工作流阶段标签（选点/检测/切片）
-  const workflowStageColor = (s: WorkflowStageStatus | 'empty'): string => {
-    switch (s) {
-      case 'completed': return 'green';
-      case 'running': return 'blue';
-      case 'failed': return 'red';
-      case 'pending': return 'default';
-      case 'empty': return 'default';
-      default: return 'orange';
-    }
-  };
-  const workflowStageLabel = (s: WorkflowStageStatus): string => {
-    switch (s) {
-      case 'completed': return '已完成';
-      case 'running': return '进行中';
-      case 'failed': return '失败';
-      case 'pending': return '待处理';
-      default: return '未知';
-    }
-  };
-  const workflowOverallLabel = (s: WorkflowStageStatus): string => {
-    switch (s) {
-      case 'completed': return '全部完成';
-      case 'running': return '进行中';
-      case 'failed': return '存在失败';
-      case 'pending': return '待处理';
-      case 'empty': return '暂无剧集';
-      default: return '未知';
-    }
-  };
-
-  // 工作流聚合看板渲染
-  const renderWorkflowBoard = () => {
-    if (!workflow) return null;
-    const stageNames = ['选点', '区间检测', '切片'];
-    const stageColors = ['blue', 'cyan', 'purple'];
-    return (
-      <Card
-        size="small"
-        title={
-          <Space>
-            <span>项目工作流状态</span>
-            <Tag color={workflowStageColor(workflow.overall.status)}>{workflowOverallLabel(workflow.overall.status)}</Tag>
-            {workflow.overall.progress > 0 && <Text type="secondary" style={{ fontSize: 12 }}>{workflow.overall.progress.toFixed(0)}%</Text>}
-          </Space>
-        }
-        extra={
-          <Space size="small">
-            <Progress percent={Math.round(workflow.overall.progress)} size="small" style={{ width: 140 }} />
-            <Button size="small" icon={<ReloadOutlined />} onClick={() => void fetchWorkflow(true)}>刷新</Button>
-          </Space>
-        }
-        style={{ marginBottom: 16 }}
-      >
-        {workflowError ? (
-          <Alert type="warning" showIcon message="工作流状态加载失败" description={workflowError} action={<Button size="small" onClick={() => void fetchWorkflow(true)}>重试</Button>} />
-        ) : workflowLoading && !workflow ? (
-          <div style={{ padding: 24, textAlign: 'center' }}><Spin /></div>
-        ) : (
-          <Space direction="vertical" style={{ width: '100%' }} size="middle">
-            {/* 各阶段完成统计 */}
-            <Row gutter={16}>
-              {stageNames.map((name, i) => {
-                const stageKey = ['autoclip', 'detect', 'slice'][i] as keyof typeof workflow.overall.stages;
-                return (
-                  <Col span={8} key={name}>
-                    <Statistic
-                      title={`${name}（${stageColors[i]}）`}
-                      value={workflow.overall.stages[stageKey].completed}
-                      suffix={`/ ${workflow.overall.stages[stageKey].total}`}
-                      valueStyle={{ fontSize: 18 }}
-                    />
-                  </Col>
-                );
-              })}
-            </Row>
-            {/* 各剧集工作流明细表 */}
-            {workflow.episodes.length === 0 ? (
-              <Text type="secondary">暂无剧集，上传视频后即可在此查看选点/检测/切片三阶段进度。</Text>
-            ) : (
-              <Table
-                rowKey={(r) => r.episode.id}
-                size="small"
-                pagination={false}
-                dataSource={workflow.episodes}
-                scroll={{ x: 720 }}
-                columns={[
-                  {
-                    title: '剧集',
-                    dataIndex: ['episode', 'episode_no'],
-                    width: 70,
-                    render: (v: number | null) => (v ?? '-'),
-                  },
-                  {
-                    title: '标题',
-                    dataIndex: ['episode', 'title'],
-                    render: (v: string | null) => v || '(未命名)',
-                  },
-                  {
-                    title: '总状态',
-                    dataIndex: 'status',
-                    width: 90,
-                    render: (s: WorkflowStageStatus) => (
-                      <Tag color={workflowStageColor(s)}>{workflowStageLabel(s)}</Tag>
-                    ),
-                  },
-                  {
-                    title: '选点',
-                    dataIndex: ['stages', 'autoclip'],
-                    width: 90,
-                    render: (st: EpisodeWorkflowStage) => (
-                      <Space size={4}>
-                        <Tag color={workflowStageColor(st.status)}>{workflowStageLabel(st.status)}</Tag>
-                        {st.run_count ? <Text type="secondary" style={{ fontSize: 12 }}>×{st.run_count}</Text> : null}
-                      </Space>
-                    ),
-                  },
-                  {
-                    title: '区间检测',
-                    dataIndex: ['stages', 'detect'],
-                    width: 100,
-                    render: (st: EpisodeWorkflowStage) => (
-                      <Tag color={workflowStageColor(st.status)}>{workflowStageLabel(st.status)}</Tag>
-                    ),
-                  },
-                  {
-                    title: '切片',
-                    dataIndex: ['stages', 'slice'],
-                    width: 100,
-                    render: (st: EpisodeWorkflowStage) => (
-                      <Space size={4}>
-                        <Tag color={workflowStageColor(st.status)}>{workflowStageLabel(st.status)}</Tag>
-                        {st.output_count ? <Text type="secondary" style={{ fontSize: 12 }}>{st.output_count}产出</Text> : null}
-                      </Space>
-                    ),
-                  },
-                  {
-                    title: '进度',
-                    dataIndex: ['stages', 'slice', 'progress'],
-                    width: 120,
-                    render: (_v: number, record: EpisodeWorkflowItem) => {
-                      const stages = [record.stages.autoclip, record.stages.detect, record.stages.slice];
-                      const running = stages.find((s) => s.status === 'running');
-                      const progress = running ? running.progress : (record.status === 'completed' ? 100 : 0);
-                      return <Progress percent={Math.round(progress)} size="small" />;
-                    },
-                  },
-                ]}
-              />
-            )}
-          </Space>
-        )}
-      </Card>
-    );
-  };
 
   const episodeColumns = [
     {
@@ -772,8 +652,6 @@ const ProjectDetail: React.FC = () => {
           <Descriptions.Item label="更新时间">{formatDateTime(project.updated_at)}</Descriptions.Item>
         </Descriptions>
       </Card>
-      {/* 工作流状态聚合看板（P2-4） */}
-      {renderWorkflowBoard()}
       {/* 上传正片：置于上方，占满整行 */}
       <Card size="small" title="上传正片" style={{ marginBottom: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -831,6 +709,15 @@ const ProjectDetail: React.FC = () => {
                     >
                       批量一键切片{selectedRowKeys.length > 0 ? `（${selectedRowKeys.length}）` : ''}
                     </Button>
+                    {/* 一键切片配置选择：与剧集详情页共用一套预设，选中即应用到批量切片 */}
+                    <Select
+                      size="small"
+                      style={{ width: 190 }}
+                      placeholder="选择配置"
+                      value={presetOptions.some((p) => p.id === batchPresetId) ? batchPresetId : undefined}
+                      onChange={applyBatchPreset}
+                      options={presetOptions.map((p) => ({ value: p.id, label: p.name }))}
+                    />
                     {selectedRowKeys.length > 0 && (
                       <Button size="small" onClick={() => setSelectedRowKeys([])}>清空选择</Button>
                     )}
@@ -1074,6 +961,18 @@ const ProjectDetail: React.FC = () => {
                 ]}
               />
             </Space>
+            {batchConfig.mode === 'dedupe' && (
+              <Space>
+                <Text style={{ fontSize: 13 }}>去重档位</Text>
+                <Select
+                  size="small"
+                  style={{ width: 200 }}
+                  value={batchConfig.dedupePreset}
+                  onChange={(v) => setBatchConfig((prev) => ({ ...prev, dedupePreset: v }))}
+                  options={DEDUPE_PRESET_OPTIONS}
+                />
+              </Space>
+            )}
             <Space>
               <Text style={{ fontSize: 13 }}>AI 选点上限</Text>
               <InputNumber
