@@ -44,14 +44,16 @@ export const uploadApi = {
 
   // 多视频批量上传正片：可选择是否合并成一个视频创建项目（项目名称由用户输入）
   uploadMulti: (params: {
-    projectName: string;
+    projectId?: string;
+    projectName?: string;
     files: File[];
     merge: boolean;
     description?: string;
     onProgress?: (percent: number) => void;
   }) => {
     const formData = new FormData();
-    formData.append('project_name', params.projectName);
+    if (params.projectId) formData.append('project_id', params.projectId);
+    if (params.projectName) formData.append('project_name', params.projectName);
     formData.append('merge', params.merge ? 'true' : 'false');
     if (params.description) formData.append('description', params.description);
     params.files.forEach((f) => formData.append('files', f));
