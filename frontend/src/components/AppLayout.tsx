@@ -22,6 +22,7 @@ import {
   CloudDownloadOutlined,
   ContactsOutlined,
   ThunderboltOutlined,
+  FolderOpenOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -72,6 +73,11 @@ const allMenuItems = [
     key: '/channel-accounts',
     icon: <ContactsOutlined />,
     label: '视频号列表',
+  },
+  {
+    key: '/dramas',
+    icon: <FolderOpenOutlined />,
+    label: '剧目库',
   },
   {
     key: '/workers',

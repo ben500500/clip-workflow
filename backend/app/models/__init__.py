@@ -51,6 +51,13 @@ from app.models.variant import (
     ClipVariant,
     VideoFingerprint,
 )
+from app.models.drama import (
+    Drama,
+    DramaStill,
+    DramaAccount,
+    DramaMaterial,
+    gen_drama_code,
+)
 
 __all__ = [
     "Project",
@@ -101,4 +108,10 @@ __all__ = [
     # 多视频号素材去重
     "ClipVariant",
     "VideoFingerprint",
+    # 剧目管理（ISSUE #130）
+    "Drama",
+    "DramaStill",
+    "DramaAccount",
+    "DramaMaterial",
+    "gen_drama_code",
 ]
