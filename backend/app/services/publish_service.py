@@ -181,7 +181,7 @@ class VideoChannelPublisher:
                 }
 
             # Navigate to creator page
-            await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
+            await self.page.goto(self.CREATOR_URL, wait_until="domcontentloaded")
             await asyncio.sleep(2)
 
             # Upload video
@@ -276,7 +276,7 @@ class VideoChannelPublisher:
     async def _need_login(self) -> bool:
         """Check if the current session requires login."""
         try:
-            await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
+            await self.page.goto(self.CREATOR_URL, wait_until="domcontentloaded")
             await asyncio.sleep(2)
             # Check for login indicators (e.g., QR code or login button)
             login_selector = await self.page.query_selector(
@@ -566,7 +566,7 @@ class VideoChannelPublisher:
         if pending:
             try:
                 await self._connect()
-                await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
+                await self.page.goto(self.CREATOR_URL, wait_until="domcontentloaded")
                 refilled = await self._refill_pending_form(pending, task_id=task_id)
                 if not refilled:
                     await self._close_connection()
@@ -595,7 +595,7 @@ class VideoChannelPublisher:
         # 3. 兜底：重新连接并打开创作中心尽力点击发布（一期旧行为）
         try:
             await self._connect()
-            await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
+            await self.page.goto(self.CREATOR_URL, wait_until="domcontentloaded")
             await self._click_publish()
             published_url, published_id = await self._wait_for_publish()
             await self._close_connection()
@@ -634,7 +634,7 @@ class DouyinPublisher(VideoChannelPublisher):
     async def _need_login(self) -> bool:
         """Check Douyin login state."""
         try:
-            await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
+            await self.page.goto(self.CREATOR_URL, wait_until="domcontentloaded")
             await asyncio.sleep(2)
             login_selector = await self.page.query_selector(
                 ".login-container, [class*='login']"
@@ -665,7 +665,7 @@ class KuaishouPublisher(VideoChannelPublisher):
     async def _need_login(self) -> bool:
         """Check Kuaishou login state."""
         try:
-            await self.page.goto(self.CREATOR_URL, wait_until="networkidle")
+            await self.page.goto(self.CREATOR_URL, wait_until="domcontentloaded")
             await asyncio.sleep(2)
             login_selector = await self.page.query_selector(
                 "[class*='login'], .qr-login"
