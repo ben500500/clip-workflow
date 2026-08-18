@@ -175,12 +175,54 @@ class VideoChannelPublisher:
         task_id: Optional[str] = None,
         publish_comments: Optional[list] = None,
     ) -> dict:
-        """
-        Execute the full publishing workflow.
+        """发布整体超时护栏：整个发布流程（上传/填表/跳转/提交）最长 900s，
+        超时强制 failed 并释放连接，避免任一环节卡死占住 publish worker
+        （concurrency=1，卡死会阻塞所有后续发布）。"""
+        try:
+            return await asyncio.wait_for(
+                self._publish_body(
+                    video_path, title, description, tags, cover_file_key,
+                    mini_program_link, publish_jump, task_id, publish_comments,
+                ),
+                timeout=900,
+            )
+        except asyncio.TimeoutError:
+            logger.error("Publish timed out after 900s (overall guard), failing")
+            await self._close_connection()
+            return {
+                "success": False,
+                "status": "timeout",
+                "error": "Publish timed out after 900s (overall guard)",
+                "screenshot_path": None,
+                "published_url": None,
+                "published_id": None,
+            }
+        except Exception as e:
+            logger.error(f"Publishing failed: {e}", exc_info=True)
+            await self._close_connection()
+            return {
+                "success": False,
+                "status": "error",
+                "error": str(e),
+                "screenshot_path": None,
+                "published_url": None,
+                "published_id": None,
+            }
 
-        Returns:
-            dict with keys: success, status, published_url, published_id,
-                            screenshot_path, error
+    async def _publish_body(
+        self,
+        video_path: str,
+        title: str,
+        description: str = "",
+        tags: Optional[list] = None,
+        cover_file_key: Optional[str] = None,
+        mini_program_link: Optional[str] = None,
+        publish_jump: Optional[list] = None,
+        task_id: Optional[str] = None,
+        publish_comments: Optional[list] = None,
+    ) -> dict:
+        """
+        Execute the full publishing workflow (body, wrapped by publish() timeout guard).
         """
         try:
             await self._connect()
@@ -447,12 +489,40 @@ class VideoChannelPublisher:
                 title, title[:16],
             )
             title = title[:16]
-        title_input = await self.page.query_selector(
-            "[class*='title'] textarea, [class*='title'] input, [placeholder*='标题']"
-        )
+        # 视频号服务端处理视频期间标题输入框可能 disabled / 尚未渲染，
+        # 静默跳过会以空标题继续发布（平台拒发且流程卡死）。这里轮询等待
+        # 输入框出现并可编辑（最长约 60s），仍不可编辑则明确失败。
+        title_input = None
+        for _ in range(12):
+            title_input = await self.page.query_selector(
+                "[class*='title'] textarea, [class*='title'] input, [placeholder*='标题']"
+            )
+            if title_input:
+                try:
+                    if await title_input.is_editable():
+                        break
+                except Exception:
+                    pass
+            await asyncio.sleep(5)
         if title_input:
-            await title_input.fill("")
-            await title_input.fill(title)
+            try:
+                if not await title_input.is_editable():
+                    # 已出现但不可编辑：再等最后一轮
+                    for _ in range(6):
+                        await asyncio.sleep(5)
+                        if await title_input.is_editable():
+                            break
+                    if not await title_input.is_editable():
+                        raise RuntimeError("title input not editable in time")
+                await title_input.fill("")
+                await title_input.fill(title)
+                return
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+        logger.warning("title input not editable/found in time, failing (empty title would be rejected)")
+        raise RuntimeError("title input not editable/found in time")
 
     async def _set_description(self, description: str):
         """Set the video description."""
