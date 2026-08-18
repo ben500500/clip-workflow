@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
   Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col, Statistic,
-  message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm,
+  message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm, Input,
 } from 'antd';
 import { UploadOutlined, ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, Link } from 'react-router-dom';
@@ -35,6 +35,7 @@ const ProjectDetail: React.FC = () => {
   const [multiModalOpen, setMultiModalOpen] = useState(false);
   const [multiFiles, setMultiFiles] = useState<File[]>([]);
   const [multiMerge, setMultiMerge] = useState(true);
+  const [multiTitle, setMultiTitle] = useState('');
   const [multiUploading, setMultiUploading] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -118,12 +119,14 @@ const ProjectDetail: React.FC = () => {
         projectId,
         files: multiFiles,
         merge: multiMerge,
+        title: multiTitle.trim() || undefined,
         onProgress: (p) => setUploadProgress(p),
       });
       message.success(resp.message);
       setMultiModalOpen(false);
       setMultiFiles([]);
       setMultiMerge(true);
+      setMultiTitle('');
       // 在当前项目下创建剧集，不跳转新项目，直接刷新当前项目的剧集列表
       await fetchData(true);
     } catch (err: unknown) {
@@ -439,6 +442,16 @@ const ProjectDetail: React.FC = () => {
       >
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <Alert type="info" showIcon message={`上传后将作为「${project?.name || '当前项目'}」下的剧集，不会新创建项目。`} />
+          <Space direction="vertical" style={{ width: '100%' }} size={2}>
+            <Text type="secondary" style={{ fontSize: 13 }}>标题（可选）</Text>
+            <Input
+              placeholder="勾选合并时作为合并剧集标题；未勾选时作为剧集标题前缀（自动追加 第01集/第02集…）"
+              value={multiTitle}
+              onChange={(e) => setMultiTitle(e.target.value)}
+              maxLength={100}
+              allowClear
+            />
+          </Space>
           <Dragger
             accept=".mp4,.avi,.mov,.mkv,.webm"
             multiple
