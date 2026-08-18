@@ -7,7 +7,7 @@ import {
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
   CheckCircleOutlined, ClockCircleOutlined, InfoCircleOutlined, PlayCircleOutlined,
-  UploadOutlined, DeleteOutlined as DelIcon, PlusOutlined, SettingOutlined, StopOutlined,
+  UploadOutlined, DeleteOutlined as DelIcon, PlusOutlined, SettingOutlined, StopOutlined, PictureOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projectApi } from '../api/projects';
@@ -234,6 +234,29 @@ const EpisodeDetail: React.FC = () => {
   const [dedupePreset, setDedupePreset] = useState<string>('std_crop_desat');
   // 一键切片去重模式开关（配置弹窗内可设，开启后一键切片按档位做画面去重）
   const [dedupeEnabled, setDedupeEnabled] = useState(false);
+  // ── 视频封面（选择图片作为视频首帧，一键切片时下发） ──
+  const [coverImageKey, setCoverImageKey] = useState<string | null>(null);
+  const [coverImageName, setCoverImageName] = useState<string | null>(null);
+  const [coverUploading, setCoverUploading] = useState(false);
+
+  const handleCoverUpload = async (file: File) => {
+    setCoverUploading(true);
+    try {
+      const res = await sliceApi.uploadBadge(file);
+      if (mountedRef.current) {
+        setCoverImageKey(res.file_key);
+        setCoverImageName(res.file_name);
+        message.success(`封面已上传：${res.file_name}`);
+      }
+    } catch (err: unknown) {
+      if (mountedRef.current) {
+        message.error(err instanceof Error ? err.message : '封面上传失败');
+      }
+    } finally {
+      if (mountedRef.current) setCoverUploading(false);
+    }
+    return false;
+  };
   // ── 切片自定义文字水印开关与参数 ──
   // 去重模式手动配置（每项去重手段可单独覆盖预设，为空时沿用预设档位）
   const [dedupeManual, setDedupeManual] = useState<DedupeManualConfigValue>({});
@@ -1113,6 +1136,8 @@ const EpisodeDetail: React.FC = () => {
           max_duration: maxClipDuration ?? undefined,
           frame_analysis: frameAnalysis,
         },
+        // 视频封面：作为视频首帧
+        cover_image_key: coverImageKey || undefined,
         // 去重模式：一键切片启用后按档位做画面去重（手动配置沿用主页「去重高级配置」）
         dedupe_config: dedupeEnabled ? buildDedupeConfig(dedupePreset, dedupeManual) : undefined,
         // 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本）
@@ -2699,6 +2724,30 @@ const EpisodeDetail: React.FC = () => {
               onChange={(e) => setNewPresetName(e.target.value)}
             />
             <Button size="small" type="primary" onClick={handleSavePreset}>保存当前配置</Button>
+          </div>
+
+          {/* ── 视频封面（选择图片作为视频首帧） ── */}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+            <Space wrap align="center" size={8} style={{ marginBottom: 8 }}>
+              <PictureOutlined />
+              <Text strong style={{ fontSize: 13 }}>视频封面（首帧，可选）</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>选择一张图片作为视频首帧（成品开头先展示封面画面），不选择则直接按源视频首帧出片</Text>
+            </Space>
+            <Space wrap align="center" size={8}>
+              <Upload
+                accept="image/*"
+                showUploadList={false}
+                beforeUpload={(file) => handleCoverUpload(file as File)}
+                disabled={coverUploading}
+              >
+                <Button size="small" icon={<PictureOutlined />} loading={coverUploading}>选择封面图片</Button>
+              </Upload>
+              {coverImageKey && (
+                <Tag closable onClose={() => { setCoverImageKey(null); setCoverImageName(null); }}>
+                  封面：{coverImageName || '已选择'}
+                </Tag>
+              )}
+            </Space>
           </div>
 
           {/* ── 去重模式 ── */}
