@@ -262,30 +262,21 @@ async def save_slice_preferences(
     return {"ok": True, "slice_config": data.slice_config}
 
 
-@router.post("/episodes/{episode_id}/slice/run", response_model=SliceRunResponse)
-async def run_slice(
-    episode_id: str,
+async def _resolve_slice_inputs(
+    db: AsyncSession,
+    eid: uuid.UUID,
+    episode: Episode,
     data: SliceRunRequest,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
-    db: AsyncSession = Depends(get_db),
-):
-    """Trigger video slicing for an episode via Worker node or Celery（数据隔离）. """
-    engine = _resolve_engine(data.engine)
+    source_file_key: Optional[str],
+    source_bucket: str,
+    episode_id: str,
+    current_user: Optional[User] = None,
+) -> tuple:
+    """解析源视频来源并生成 cutlist / intervals。
 
-    try:
-        eid = uuid.UUID(episode_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid episode ID format")
-
-    # Get episode
-    result = await db.execute(select(Episode).where(Episode.id == eid))
-    episode = result.scalar_one_or_none()
-    if not episode:
-        raise HTTPException(status_code=404, detail="Episode not found")
-
-    # 数据隔离
-    await check_project_access_by_episode(db, episode, current_user)
-
+    返回 (source_file_key, source_bucket, cutlist, intervals_content, fallback_whole_video)。
+    run_slice 三阶段之「输入解析」。
+    """
     # 免审核一键切片：选点未产出候选片段时是否回退为整片切片（仅 auto_accept_all 分支会置 True）
     fallback_whole_video = False
 
@@ -294,8 +285,6 @@ async def run_slice(
             status_code=400,
             detail=f"video_path 指向的文件不存在: {data.video_path}",
         )
-    source_file_key = episode.source_file_key
-    source_bucket = settings.MINIO_BUCKET_RAW
     if not data.video_path and not source_file_key:
         raise HTTPException(
             status_code=400,
@@ -543,6 +532,24 @@ async def run_slice(
             enabled_intervals = intervals_result.scalars().all()
             intervals_content = generate_intervals_file(enabled_intervals)
 
+    return source_file_key, source_bucket, cutlist, intervals_content, fallback_whole_video
+
+
+async def _create_slice_task_record(
+    db: AsyncSession,
+    eid: uuid.UUID,
+    episode: Episode,
+    data: SliceRunRequest,
+    cutlist: str,
+    intervals_content: str,
+    source_file_key: Optional[str],
+    source_bucket: str,
+) -> tuple:
+    """获取并发闸门、创建 SliceTask 记录并构造全部转换配置。
+
+    run_slice 三阶段之「任务记录构建」。返回 (slice_task, configs)。
+    configs 为分派阶段所需的全部 *_config 字典。
+    """
     # 多人同时切片的全局并发闸门：超过 max_concurrent_tasks 上限直接拒绝。
     # 在创建任务记录前检查，running_count 为当前在飞任务数（不含本任务），
     # 保证“同时处理的切片任务数不超过 max_concurrent_tasks”。
@@ -604,6 +611,43 @@ async def run_slice(
     slice_task.watermark_mask_config = watermark_mask_config
     # 视频封面：选择图片作为视频首帧（重试时保留）
     slice_task.cover_image_key = data.cover_image_key or None
+
+    configs = {
+        "watermark": watermark_config,
+        "vert2horiz": vert2horiz_config,
+        "badges": badges_config,
+        "subtitle": subtitle_config,
+        "text_overlays": text_overlays_config,
+        "subtitle_mask": subtitle_mask_config,
+        "watermark_mask": watermark_mask_config,
+    }
+    return slice_task, configs
+
+
+async def _dispatch_slice_task(
+    db: AsyncSession,
+    engine: str,
+    episode: Episode,
+    slice_task: SliceTask,
+    data: SliceRunRequest,
+    source_file_key: Optional[str],
+    source_bucket: str,
+    cutlist: str,
+    intervals_content: str,
+    configs: dict,
+    fallback_whole_video: bool,
+) -> SliceRunResponse:
+    """按引擎（worker/celery）分发切片任务并推进状态。
+
+    run_slice 三阶段之「分发与收尾」。返回 SliceRunResponse。
+    """
+    watermark_config = configs["watermark"]
+    vert2horiz_config = configs["vert2horiz"]
+    badges_config = configs["badges"]
+    subtitle_config = configs["subtitle"]
+    text_overlays_config = configs["text_overlays"]
+    subtitle_mask_config = configs["subtitle_mask"]
+    watermark_mask_config = configs["watermark_mask"]
 
     if engine == "worker":
         # 确保输出桶存在（全新部署时 sliced 桶可能未初始化）
@@ -692,6 +736,50 @@ async def run_slice(
             % (engine, data.mode)
         )
         + ("（已整片回退：AI 选点未产出候选片段）" if fallback_whole_video else ""),
+    )
+
+
+@router.post("/episodes/{episode_id}/slice/run", response_model=SliceRunResponse)
+async def run_slice(
+    episode_id: str,
+    data: SliceRunRequest,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger video slicing for an episode via Worker node or Celery（数据隔离）.
+
+    三阶段编排：① 解析源视频并生成 cutlist → ② 创建任务记录与配置 → ③ 按引擎分发。
+    """
+    engine = _resolve_engine(data.engine)
+
+    try:
+        eid = uuid.UUID(episode_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    # Get episode
+    result = await db.execute(select(Episode).where(Episode.id == eid))
+    episode = result.scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    # 数据隔离
+    await check_project_access_by_episode(db, episode, current_user)
+
+    source_file_key = episode.source_file_key
+    source_bucket = settings.MINIO_BUCKET_RAW
+
+    source_file_key, source_bucket, cutlist, intervals_content, fallback_whole_video = (
+        await _resolve_slice_inputs(
+            db, eid, episode, data, source_file_key, source_bucket, episode_id, current_user
+        )
+    )
+    slice_task, configs = await _create_slice_task_record(
+        db, eid, episode, data, cutlist, intervals_content, source_file_key, source_bucket
+    )
+    return await _dispatch_slice_task(
+        db, engine, episode, slice_task, data, source_file_key, source_bucket,
+        cutlist, intervals_content, configs, fallback_whole_video,
     )
 
 

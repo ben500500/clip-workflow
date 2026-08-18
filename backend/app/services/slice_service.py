@@ -278,19 +278,3 @@ async def run_slice_fast(
         cover_path=cover_path,
     )
 
-
-async def run_preview(
-    source_path: str,
-    output_dir: str,
-    engine_path: Optional[str] = None,
-    progress_cb: ProgressCallback = None,
-    timeout: float = 600,
-) -> tuple[int, str, str]:
-    """Run preview frame extraction."""
-    engine_path = engine_path or _engine_path("preview.py")
-    _require_engine(engine_path)
-
-    cmd = ["python", engine_path, source_path, output_dir]
-    logger.info("Running preview: %s", " ".join(cmd))
-
-    return await _run_cmd(cmd, timeout, progress_cb)

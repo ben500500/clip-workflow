@@ -788,5 +788,8 @@ def seedance_generate_task(
             message=f"Seedance 直连生成任务异常: {e}",
             error_message=str(e),
         ))
-        self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
+        # 与 L432 已修复模式对齐：不 update_state(state="FAILURE") 后再 return dict,
+        # 否则 Celery 后端 mark_as_done 读旧 FAILURE meta 会把 result 当异常解析,
+        # 抛 ValueError('Exception information must include the exception type')。
+        # 前端状态展示依赖 DB 轮询(_update_seedance_prompt 已置 failed)。
         return {"success": False, "status": "failed", "message": str(e)}
