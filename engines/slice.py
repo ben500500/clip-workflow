@@ -3659,18 +3659,37 @@ def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict,
     run_ffmpeg(cmd, timeout=3600, threads=threads)
 
 
+def _video_has_audio(path: str) -> bool:
+    """判断视频是否包含音轨，供前置封面片段时决定是否拼接/延迟音频。"""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_type",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return (out.stdout or "").strip() == "audio"
+    except Exception:
+        return False
+
+
 def apply_cover_first_frame(video_path: str, cover_path: str, out_path: str,
                          threads: int = 1, encoder: str = "libx264") -> None:
-    """将封面图片叠加到成品第一帧（仅首帧显示封面，随即切入源视频内容）。
+    """在成品开头前置一段封面静止画面作为视频首帧封面。
 
-    封面图会等比缩放并裁剪填满输出画面，通过 overlay 只作用于视频第一帧
-    （约 1/帧率 秒），不额外前置静止封面片段，视频总时长保持不变。
+    封面图等比缩放裁剪填满输出画面，前置约 1.5s 静止画面后拼接源内容。
+    相比仅叠加单帧（约 1/帧率 秒，肉眼几乎不可见），前置画面能让打开视频
+    第一眼即看到封面。源音频相应延迟封面时长以保持音画同步；无音轨时
+    仅拼接视频流。
     """
     if not cover_path or not os.path.isfile(cover_path):
         return
     w, h = ffprobe_resolution(video_path)
     if not w or not h:
         w, h = 1280, 720
+    fps = ffprobe_framerate(video_path)
+    fps_arg = f"fps={fps}" if fps else "fps=25"
+    cover_dur = 1.5  # 前置封面静止画面时长（秒）
     cover_jpg = out_path + ".cover.jpg"
     try:
         # 将封面图等比缩放+裁剪填满输出画面，输出为单张封面帧
@@ -3687,22 +3706,42 @@ def apply_cover_first_frame(video_path: str, cover_path: str, out_path: str,
         run_ffmpeg(cmd, timeout=3600, threads=threads)
         if not os.path.isfile(cover_jpg):
             return
-        # 封面仅叠加到视频第一帧（n=0），后续帧保持源内容不变
-        cmd = [
-            "ffmpeg", "-y",
-            "-threads", str(threads),
-            "-i", video_path,
-            "-i", cover_jpg,
-            "-filter_complex", (
-                f"[1:v]format=yuv420p,scale={w}:{h}:force_original_aspect_ratio=increase,"
-                f"crop={w}:{h},setsar=1[cover];"
-                "[0:v][cover]overlay=0:0:enable='eq(n,0)'[vout]"
-            ),
-            "-map", "[vout]",
-            "-map", "0:a?",
-        ]
+        # 封面片段：-loop 读封面帧 -> trim 到 cover_dur -> 归一化匹配源视频参数
+        cv = (
+            f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{h},setsar=1,trim=duration={cover_dur},setpts=PTS-STARTPTS,"
+            f"{fps_arg},format=yuv420p[cv]"
+        )
+        # 源视频也归一化到与封面片段一致（分辨率/帧率/像素格式），保证 concat 可拼接
+        sv = f"[1:v]{fps_arg},format=yuv420p[sv]"
+        if _video_has_audio(video_path):
+            # 源音频整体延迟封面时长，使源画面出现时音画同步
+            delay_ms = int(cover_dur * 1000)
+            fc = (
+                f"{cv};{sv};"
+                f"[cv][sv]concat=n=2:v=1:a=0[vout];"
+                f"[1:a]adelay={delay_ms}|{delay_ms},asetpts=PTS-STARTPTS[aout]"
+            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-threads", str(threads),
+                "-loop", "1", "-i", cover_jpg,
+                "-i", video_path,
+                "-filter_complex", fc,
+                "-map", "[vout]", "-map", "[aout]",
+            ]
+        else:
+            fc = f"{cv};{sv};[cv][sv]concat=n=2:v=1:a=0[vout]"
+            cmd = [
+                "ffmpeg", "-y",
+                "-threads", str(threads),
+                "-loop", "1", "-i", cover_jpg,
+                "-i", video_path,
+                "-filter_complex", fc,
+                "-map", "[vout]",
+            ]
         cmd += build_encoder_args(encoder, threads)
-        cmd += ["-c:a", "copy", out_path]
+        cmd += ["-c:a", "aac", "-b:a", "128k", out_path]
         run_ffmpeg(cmd, timeout=3600, threads=threads)
         print(f"视频封面已作为首帧叠加: {os.path.basename(out_path)}", file=sys.stderr)
     finally:
