@@ -34,6 +34,7 @@ import BatchSlice from './pages/BatchSlice';
 import VariantMatrix from './pages/VariantMatrix';
 import ResourceDownload from './pages/ResourceDownload';
 import ChannelAccounts from './pages/ChannelAccounts';
+import DramaLibrary from './pages/DramaLibrary';
 
 const App: React.FC = () => {
   return (
@@ -61,6 +62,7 @@ const App: React.FC = () => {
             <Route path="publish" element={<PublishManagement />} />
             <Route path="variant-matrix" element={<VariantMatrix />} />
             <Route path="channel-accounts" element={<ChannelAccounts />} />
+            <Route path="dramas" element={<DramaLibrary />} />
             <Route path="analytics/overview" element={<DashboardOverview />} />
             <Route path="analytics/shortdrama" element={<ShortDramaAnalysis />} />
             <Route path="analytics/content" element={<ContentAnalysis />} />

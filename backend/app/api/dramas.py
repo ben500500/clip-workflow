@@ -11,15 +11,18 @@
 
 唯一 ID 生成规则：`DR-<8位大写HEX>`（如 DR-0A3F9C2E），入库前做唯一性冲突重抽。
 """
+import os
+import posixpath
 import uuid
 from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
+from app.config import settings
 from app.database import get_db
 from app.models.models import (
     Drama,
@@ -31,6 +34,7 @@ from app.models.models import (
     user_can_access_all_materials,
     gen_drama_code,
 )
+from app.services.minio_service import get_presigned_url, upload_file_from_path
 from app.utils.helpers import utc_iso
 
 router = APIRouter()
@@ -84,7 +88,17 @@ class DramaLinkAccounts(BaseModel):
 
 # ─────────────────────────────── Serialize ───────────────────────────────
 
-def _serialize_drama(d: Drama) -> dict:
+async def _resolve_image_url(file_key: Optional[str]) -> Optional[str]:
+    """将 MinIO file_key 解析为临时可访问的 presigned URL（用于封面/剧照展示）。"""
+    if not file_key:
+        return None
+    try:
+        return await get_presigned_url(settings.MINIO_BUCKET_RAW, file_key, expires_seconds=3600)
+    except Exception:
+        return None
+
+
+async def _serialize_drama(d: Drama) -> dict:
     return {
         "id": str(d.id),
         "code": d.code,
@@ -95,6 +109,7 @@ def _serialize_drama(d: Drama) -> dict:
         "rating": d.rating,
         "synopsis": d.synopsis,
         "cover_file_key": d.cover_file_key,
+        "cover_url": await _resolve_image_url(d.cover_file_key),
         "listing_status": d.listing_status,
         "updated_date": d.updated_date.isoformat() if d.updated_date else None,
         "listed_at": utc_iso(d.listed_at) if d.listed_at else None,
@@ -108,12 +123,17 @@ def _serialize_drama(d: Drama) -> dict:
     }
 
 
-def _serialize_drama_detail(d: Drama) -> dict:
-    data = _serialize_drama(d)
-    data["stills"] = [
-        {"id": str(s.id), "file_key": s.file_key, "sort_order": s.sort_order}
-        for s in d.stills
-    ]
+async def _serialize_drama_detail(d: Drama) -> dict:
+    data = await _serialize_drama(d)
+    stills = []
+    for s in d.stills:
+        stills.append({
+            "id": str(s.id),
+            "file_key": s.file_key,
+            "sort_order": s.sort_order,
+            "presigned_url": await _resolve_image_url(s.file_key),
+        })
+    data["stills"] = stills
     data["account_ids"] = [str(a.account_id) for a in d.accounts]
     return data
 
@@ -203,7 +223,7 @@ async def list_dramas(
     query = query.order_by(Drama.updated_at.desc())
     result = await db.execute(query)
     dramas = result.unique().scalars().all()
-    return [_serialize_drama(d) for d in dramas]
+    return [await _serialize_drama(d) for d in dramas]
 
 
 @router.post("/dramas", response_model=dict, status_code=201)
@@ -251,7 +271,7 @@ async def create_drama(
     await db.flush()
     await _associate_accounts(db, d.id, data.account_ids or [])
     await db.refresh(d)
-    return _serialize_drama_detail(d)
+    return await _serialize_drama_detail(d)
 
 
 @router.get("/dramas/{drama_id}", response_model=dict)
@@ -264,7 +284,7 @@ async def get_drama(
     d = await _resolve_drama(db, drama_id)
     if not _can_manage(d, current_user):
         raise HTTPException(status_code=403, detail="No permission to view this drama")
-    return _serialize_drama_detail(d)
+    return await _serialize_drama_detail(d)
 
 
 @router.put("/dramas/{drama_id}", response_model=dict)
@@ -303,7 +323,7 @@ async def update_drama(
 
     await db.flush()
     await db.refresh(d)
-    return _serialize_drama_detail(d)
+    return await _serialize_drama_detail(d)
 
 
 @router.delete("/dramas/{drama_id}", status_code=204)
@@ -364,6 +384,65 @@ async def delete_drama_still(
     await db.delete(s)
     await db.flush()
     return None
+
+
+@router.post("/dramas/image-upload", response_model=dict)
+async def upload_drama_image(
+    file: UploadFile = File(...),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """上传剧目封面/剧照图片，存入 MinIO（raw-footage 桶 drama/ 前缀）。
+
+    返回 file_key，前端将其分别作为 `cover_file_key` / 剧照 file_key 提交。
+    """
+    raw_name = file.filename or ""
+    safe_name = posixpath.basename(raw_name.replace("\\", "/")).strip()
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="empty file name")
+
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+        raise HTTPException(status_code=400, detail="剧目图片仅支持图片文件（png/jpg/jpeg/webp/gif/bmp）")
+
+    upload_id = str(uuid.uuid4())
+    local_path = f"/tmp/drama_upload/{upload_id}_{safe_name}"
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+    size = 0
+    with open(local_path, "wb") as out:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > settings.UPLOAD_MAX_SIZE:
+                out.close()
+                os.unlink(local_path)
+                raise HTTPException(status_code=413, detail="文件超过大小上限")
+            out.write(chunk)
+
+    if size == 0:
+        os.unlink(local_path)
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    # 剧目图片存 raw-footage 桶 drama/ 前缀
+    file_key = f"drama/{upload_id}_{safe_name}"
+    ok = await upload_file_from_path(
+        settings.MINIO_BUCKET_RAW,
+        file_key,
+        local_path,
+        content_type=file.content_type or "image/png",
+    )
+    os.unlink(local_path)
+    if not ok:
+        raise HTTPException(status_code=500, detail="剧目图片上传存储失败")
+
+    return {
+        "file_name": safe_name,
+        "file_key": file_key,
+        "file_size": size,
+        "upload_id": upload_id,
+    }
 
 
 # ─────────────────────────────── 剧目↔视频号关联 ───────────────────────────────
@@ -528,6 +607,92 @@ async def drama_import_preview(
         # 前端展示提示
         "message": "请核对新增/更新项后确认；未勾选的项不落库。",
     }
+
+
+@router.post("/dramas/import/parse", response_model=dict)
+async def drama_import_parse(
+    file: UploadFile = File(...),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """上传剧目 Excel 文件并解析为结构化行（供前端调用 /dramas/import/preview）。
+
+    列名对齐《剧目管理设计方案》数据底座表（漫剧名称/更新日期/男/女频/题材/漫剧类型/
+    上架状态/上架日期/评级/素材链接/上架账号）。题材列按 /、, 分隔拆成标签数组。
+    返回 DramaImportRow 数组，前端原样传给 preview。
+    """
+    import io as _io
+
+    try:
+        import pandas as pd  # 与 smart_import_service 一致
+    except Exception:
+        raise HTTPException(status_code=500, detail="服务端缺少 pandas，无法解析 Excel")
+
+    raw_name = file.filename or ""
+    safe_name = posixpath.basename(raw_name.replace("\\", "/")).strip()
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext not in (".xlsx", ".xls", ".csv"):
+        raise HTTPException(status_code=400, detail="仅支持 .xlsx / .xls / .csv")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    try:
+        df = pd.read_excel(_io.BytesIO(file_bytes), engine="openpyxl").fillna("")
+    except Exception:
+        try:
+            df = pd.read_csv(_io.BytesIO(file_bytes)).fillna("")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Excel 解析失败，请检查文件格式")
+
+    # 列名 → 目标字段映射（模糊匹配表头）
+    def _norm(v: str) -> str:
+        return str(v).strip().replace("\u00a0", " ").replace("\ufeff", "")
+
+    cols = {_norm(c): str(c) for c in df.columns}
+
+    def _find(*keys: str):
+        for k in keys:
+            for norm, orig in cols.items():
+                if k in norm:
+                    return orig
+        return None
+
+    col_name = _find("漫剧名称") or _find("名称") or _find("剧名")
+    col_update = _find("更新日期")
+    col_freq = _find("男/女频") or _find("男女频") or _find("频")
+    col_type = _find("漫剧类型") or _find("剧类型")
+    col_tags = _find("题材")
+    col_status = _find("上架状态")
+    col_listed = _find("上架日期")
+    col_rating = _find("评级")
+    col_link = _find("素材链接")
+    col_account = _find("上架账号")
+
+    rows = []
+    for _, row in df.iterrows():
+        name = _norm(row.get(col_name, "")) if col_name else ""
+        if not name:
+            continue  # 跳过空行
+        tags_raw = _norm(row.get(col_tags, "")) if col_tags else ""
+        tags = [t for t in [x.strip() for x in tags_raw.replace(";", "/").replace("，", "/").split("/")] if t] if tags_raw else None
+        rows.append({
+            "name": name,
+            "frequency": _norm(row.get(col_freq, "")) if col_freq else None,
+            "type": _norm(row.get(col_type, "")) if col_type else None,
+            "tags": tags,
+            "rating": _norm(row.get(col_rating, "")) if col_rating else None,
+            "listing_status": _norm(row.get(col_status, "")) if col_status else "已上架",
+            "updated_date": _norm(row.get(col_update, "")) if col_update else None,
+            "listed_at": _norm(row.get(col_listed, "")) if col_listed else None,
+            "material_link": _norm(row.get(col_link, "")) if col_link else None,
+            "account_name": _norm(row.get(col_account, "")) if col_account else None,
+        })
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="未识别到有效数据行（缺少「漫剧名称」列或全为空行）")
+
+    return {"rows": rows, "total": len(rows), "file_name": safe_name, "message": f"解析到 {len(rows)} 条剧目"}
 
 
 @router.post("/dramas/import/confirm", response_model=dict)

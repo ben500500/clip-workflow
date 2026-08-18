@@ -12,6 +12,7 @@ export interface Drama {
   rating: string | null; // 评级
   synopsis: string | null; // 剧情简介
   cover_file_key: string | null; // 封面 MinIO key
+  cover_url?: string | null; // 封面临时可访问 URL
   listing_status: string;
   updated_date: string | null;
   listed_at: string | null;
@@ -24,7 +25,7 @@ export interface Drama {
 }
 
 export interface DramaDetail extends Drama {
-  stills: Array<{ id: string; file_key: string; sort_order: number }>;
+  stills: Array<{ id: string; file_key: string; sort_order: number; presigned_url?: string | null }>;
   account_ids: string[];
 }
 
@@ -144,6 +145,22 @@ export function deleteDrama(dramaId: string): Promise<void> {
 }
 
 // 剧照
+// 上传剧目封面/剧照图片，返回 file_key（MinIO）
+export function uploadDramaImage(file: File, onProgress?: (percent: number) => void): Promise<{ file_name: string; file_key: string; file_size: number }> {
+  const formData = new FormData();
+  formData.append('file', file);
+  return client.post('/dramas/image-upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 3600000,
+    onUploadProgress: (progressEvent) => {
+      if (onProgress && progressEvent.total) {
+        const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+        onProgress(percent);
+      }
+    },
+  }) as Promise<{ file_name: string; file_key: string; file_size: number }>;
+}
+
 export function addDramaStill(dramaId: string, fileKey: string, sortOrder?: number): Promise<DramaStill> {
   return client.post('/dramas/stills', { drama_id: dramaId, file_key: fileKey, sort_order: sortOrder ?? 0 });
 }
@@ -158,6 +175,26 @@ export function linkDramaAccounts(dramaId: string, accountIds: string[]): Promis
 }
 
 // 导入
+export function dramaImportParse(file: File, onProgress?: (percent: number) => void): Promise<{
+  rows: DramaImportRow[];
+  total: number;
+  file_name: string;
+  message: string;
+}> {
+  const formData = new FormData();
+  formData.append('file', file);
+  return client.post('/dramas/import/parse', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 600000,
+    onUploadProgress: (progressEvent) => {
+      if (onProgress && progressEvent.total) {
+        const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+        onProgress(percent);
+      }
+    },
+  }) as Promise<{ rows: DramaImportRow[]; total: number; file_name: string; message: string }>;
+}
+
 export function dramaImportPreview(rows: DramaImportRow[], fileName?: string): Promise<DramaImportPreviewResult> {
   return client.post('/dramas/import/preview', { rows, file_name: fileName });
 }
