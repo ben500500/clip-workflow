@@ -11,15 +11,16 @@
     切片流水线（Celery beat 任务 batch_slice_dispatch）
         beat 每 N 秒扫描 phase='autoclip_done' 的 item
         → 复用 run_slice → publish_slice_task 入 Redis Stream（slice:tasks:*）
-        → Go slice-worker 消费切片 → item.phase='slicing'（防重复投递）→ 终态回填
-
-    状态聚合（Celery beat 任务 batch_aggregate）
-        按 batch 维度 COUNT 各终态，幂等回填 BatchSlice.done/failed/output_count
+        → Go slice-worker 消费切片 → item.phase='slicing'（防重复投递）
 
     终态回收（Celery beat 任务 batch_slice_finalize）
         扫描 phase='slicing' 的 item，按 slice_task_id 查 SliceTask 终态，
         回填 BatchSliceItem（completed/failed），成功才 _delete_source。
-        与 aggregate_batches 同构：完全幂等、不阻塞投递、不引入长任务。
+        （Go worker 回调 slice_task_callback 只回写 SliceTask/Episode，不涉及 BatchSliceItem，
+        故必须由本回收环节回填 item 终态。）
+
+    状态聚合（Celery beat 任务 batch_aggregate）
+        按 batch 维度 COUNT 各终态，幂等回填 BatchSlice.done/failed/output_count
 
 开关：BatchSlice.slice_config.pipeline_mode = "serial" | "decoupled"（默认 serial）。
 decoupled 模式仅处理开启了该模式的批次，串行模式（batch_slice_service.run_batch）零改动。
@@ -318,6 +319,7 @@ async def dispatch_ready_slices():
             # 投递失败：回退到 ready_slice，供下次轮询重试
             await serial._set_phase(item, PHASE_SELECT_DONE, STATUS_READY_SLICE, 60)
             await _update_item(item.id, error_message=f"一键切片失败: {e}")
+            continue
 
 
 # ─────────────────────────────────────────────────────────────────────

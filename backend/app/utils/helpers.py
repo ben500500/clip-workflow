@@ -1,6 +1,7 @@
 import os
 import json
-from datetime import timezone
+import re
+from datetime import datetime, timedelta, timezone
 import tempfile
 from typing import List, Optional
 
@@ -25,7 +26,34 @@ def parse_time(time_str: str) -> float:
     return float(parts[0])
 
 
-def generate_cutlist(clips: List[ClipCandidate]) -> str:
+def sanitize_filename(name: str, max_len: int = 80) -> str:
+    """清洗文件名：保留中文/字母/数字/._-，其余替换为 _，去首尾分隔符。
+
+    防剧集名含 / \\ : * ? " < > | 等路径/文件名非法字符破坏输出路径。
+    """
+    if not name:
+        return "clip"
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff.-]", "_", name, flags=re.UNICODE)
+    cleaned = cleaned.strip("._- ") or "clip"
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len].rstrip("._- ") or "clip"
+    return cleaned
+
+
+def build_clip_name(episode_title: Optional[str], index: int) -> str:
+    """切片成品文件名：剧集名 + 当前日期(MMdd, 北京时间, 无年份) + 3位自增序号。
+
+    例：剧集「扫地出门三胎宝妈是千金」→ 扫地出门三胎宝妈是千金_0818_001.mp4
+    剧集名缺失/清洗后为空时回退 clip_{index:02d}（与历史命名兼容）。
+    """
+    mmdd = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%m%d")
+    title = sanitize_filename(episode_title or "")
+    if title == "clip":
+        return f"clip_{index:02d}"
+    return f"{title}_{mmdd}_{index:03d}"
+
+
+def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = None) -> str:
     """Generate cutlist content from accepted clip candidates.
 
     Format per line:
@@ -37,7 +65,7 @@ def generate_cutlist(clips: List[ClipCandidate]) -> str:
         start = clip.adjusted_start if clip.adjusted_start is not None else clip.start_time
         end = clip.adjusted_end if clip.adjusted_end is not None else clip.end_time
         if start is not None and end is not None:
-            name = f"clip_{i + 1:02d}"
+            name = build_clip_name(episode_title, i + 1)
             lines.append(f"{format_time(start)} {format_time(end)} {name}")
     return "\n".join(lines)
 

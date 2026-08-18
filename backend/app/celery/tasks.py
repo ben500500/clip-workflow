@@ -65,6 +65,8 @@ celery_app.conf.update(
         "app.celery.tasks.seedance_generate_task": {"queue": "publish"},
         # 视频号素材导入下载（wechat_download）：独立 wechat_dl 队列（可剥离形态 B 单独拉起）
         "wechat_dl.download": {"queue": "wechat_dl"},
+        # 解耦模式选点消费者（重计算，独立 selection 队列，防与 default 队列互相饥饿）
+        "app.celery.tasks.batch_selection_consumer": {"queue": "selection"},
     },
     beat_schedule={
         "collect-metrics-daily": {
@@ -307,6 +309,7 @@ def batch_slice_dispatch(self):
     """解耦模式切片投递守护：扫描已选点池（autoclip_done）并投递切片任务。
 
     复用 run_slice → publish_slice_task 入 Redis Stream，由 Go slice-worker 消费。
+    切片终态由独立 beat 任务 batch_slice_finalize 扫描回收，不阻塞本投递守护。
     """
     from app.services.batch_decoupled_service import dispatch_ready_slices
     try:

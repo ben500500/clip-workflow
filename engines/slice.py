@@ -616,9 +616,15 @@ def _fallback_libx264_args(args, threads):
 
 
 def run_ffmpeg(args, timeout=3600, threads=1):
-    # 若未显式设置 -threads，则追加（避免并发切片抢占过多 CPU）
+    # 若未显式设置 -threads，则追加（避免并发切片抢占过多 CPU）。
+    # 注意：args 以 "ffmpeg" 可执行文件开头，插入必须放在可执行文件之后，
+    # 否则 args[0] 变成 "-threads" 会被 subprocess 当作可执行文件
+    # （FileNotFoundError: No such file or directory: '-threads'）。
     if "-threads" not in args:
-        args = ["-threads", str(threads)] + list(args)
+        if args and args[0] == "ffmpeg":
+            args = [args[0], "-threads", str(threads)] + list(args[1:])
+        else:
+            args = ["-threads", str(threads)] + list(args)
     proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     if proc.returncode != 0:
         stderr_txt = proc.stderr.decode(errors="replace")

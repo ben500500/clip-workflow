@@ -315,7 +315,7 @@ services:
     profiles:
       - forbid
     # 指标/默认任务（轻量）—— 高并发 4，不再被视频任务饿死
-    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "metrics,default", "--loglevel=info", "--concurrency=4"]
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "metrics,default,selection", "--loglevel=info", "--concurrency=4"]
 
   beat:
     image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:${CLIP_VERSION}

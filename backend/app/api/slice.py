@@ -37,7 +37,7 @@ from app.models.models import (
     UserPreference,
 )
 from app.services.data_scope import check_project_access_by_episode
-from app.utils.helpers import utc_iso, generate_cutlist, generate_intervals_file, format_time
+from app.utils.helpers import utc_iso, generate_cutlist, build_clip_name, generate_intervals_file, format_time
 from app.services.minio_service import (
     get_presigned_url,
     get_presigned_upload_url,
@@ -329,7 +329,7 @@ async def run_slice(
                 status_code=400,
                 detail="该剧集未记录视频时长，且探测源视频时长失败，无法快速转换。请重新上传视频。",
             )
-        cutlist = f"{format_time(0.0)} {format_time(float(duration))} clip_01"
+        cutlist = f"{format_time(0.0)} {format_time(float(duration))} {build_clip_name(episode.title if episode else None, 1)}"
         intervals_content = ""
 
     # ── 成品重新剪辑：以某个切片输出（成品）为源，重新裁剪出一个新片段 ──
@@ -368,7 +368,7 @@ async def run_slice(
 
         source_file_key = output.file_key
         source_bucket = settings.MINIO_BUCKET_SLICED
-        cutlist = f"{format_time(start)} {format_time(end)} clip_01"
+        cutlist = f"{format_time(start)} {format_time(end)} {build_clip_name(episode.title if episode else None, 1)}"
         intervals_content = ""
     else:
         # Generate cutlist from accepted clips
@@ -497,7 +497,7 @@ async def run_slice(
             cutlist = ""
             intervals_content = ""
         else:
-            cutlist = generate_cutlist(accepted_clips)
+            cutlist = generate_cutlist(accepted_clips, episode_title=episode.title if episode else None)
 
             # Generate intervals from enabled intervals
             intervals_result = await db.execute(

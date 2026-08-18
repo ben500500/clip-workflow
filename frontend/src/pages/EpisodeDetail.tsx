@@ -1298,6 +1298,8 @@ const EpisodeDetail: React.FC = () => {
       const res = await sliceApi.run(episodeId, mode, {
         // 快速转换：跳过 AI 选点与区间检测，整段源视频直接应用下方配置转换输出
         no_cut: noCut || undefined,
+        // 视频封面（首帧）：选择图片作为成品视频首帧（与一键切片共用同一封面选择）
+        cover_image_key: coverImageKey || undefined,
         // 去重模式档位（轻/标准/重）+ 手动配置（每项手段可单独覆盖预设），仅去重模式生效
         dedupe_config: mode === 'dedupe'
           ? buildDedupeConfig(dedupePreset, dedupeManual)
@@ -1743,6 +1745,25 @@ const EpisodeDetail: React.FC = () => {
               style={{ width: 220 }}
             />
           </Tooltip>
+          {/* 视频封面（首帧，可选）：选择图片作为成品第一帧，不选则按源视频首帧 */}
+          <Space wrap align="center" size={8}>
+            <Text strong style={{ fontSize: 13 }}>视频封面（首帧）</Text>
+            <Upload
+              accept="image/*"
+              showUploadList={false}
+              beforeUpload={(file) => handleCoverUpload(file as File)}
+              disabled={coverUploading}
+            >
+              <Button size="small" icon={<PictureOutlined />} loading={coverUploading}>
+                {coverImageKey ? '更换封面' : '选择封面图片'}
+              </Button>
+            </Upload>
+            {coverImageKey && (
+              <Tag closable onClose={() => { setCoverImageKey(null); setCoverImageName(null); }}>
+                封面：{coverImageName || '已选择'}
+              </Tag>
+            )}
+          </Space>
           {/* 去重高级配置：仅在去重模式显示，逐项手动覆盖各去重手段 */}
           {sliceMode === 'dedupe' && (
             <Space wrap>

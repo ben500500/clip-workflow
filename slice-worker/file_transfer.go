@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -199,10 +200,13 @@ type uploadURLResponse struct {
 // 修复"单 URL 拼文件名导致 MinIO 签名失效"问题：
 // 每个输出文件都通过后端生成精确绑定 object key 的 presigned PUT URL。
 func (ft *FileTransfer) GetUploadURL(ctx context.Context, backendURL, taskID, fileName, token string) (string, string, error) {
+	// file_name 可能是中文剧集名（如 扫地出门三胎宝妈是千金_0818_001.mp4），
+	// 直接拼进 query 会因未 URL 编码导致后端 400 Invalid HTTP request，必须转义。
+	query := url.Values{"file_name": {filepath.Base(fileName)}}.Encode()
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
-		fmt.Sprintf("%s/api/slice-tasks/%s/upload-url?file_name=%s", backendURL, taskID, filepath.Base(fileName)),
+		fmt.Sprintf("%s/api/slice-tasks/%s/upload-url?%s", backendURL, taskID, query),
 		nil,
 	)
 	if err != nil {
