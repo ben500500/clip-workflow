@@ -8,6 +8,7 @@
 - 审计日志：登录/登出/角色变更等关键操作落库
 """
 
+import logging
 from typing import Annotated
 
 import uuid
@@ -29,6 +30,9 @@ from app.auth import (
 )
 from app.database import get_db
 from app.utils.helpers import utc_iso
+
+logger = logging.getLogger(__name__)
+
 from app.models.models import (
     ROLE_DISPLAY_NAMES,
     AuditLog,
@@ -169,8 +173,8 @@ async def _write_audit(
         db.add(log)
         await db.flush()
     except Exception:
-        # 审计日志失败不应影响主流程
-        pass
+        # 审计日志失败不应影响主流程，但需记录失败原因供运维排查
+        logger.exception("审计日志写入失败 action=%s target=%s", action, target_type)
 
 
 async def _revoke_session_by_refresh_token(db: AsyncSession, refresh_token: str):
