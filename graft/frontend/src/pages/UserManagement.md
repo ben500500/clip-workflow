@@ -1,4 +1,4 @@
-# frontend/src/pages/UserManagement.tsx · [[auth-users-settings]]
+# frontend/src/pages/UserManagement.tsx · [[admin-user-management]]
 
 - UserManagement · function · L13-L214 — UserManagement: React.FC = ()
 - fetchUsers · function · L22-L32 — fetchUsers = async ()

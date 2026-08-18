@@ -1,4 +1,4 @@
-# backend/app/services/maintenance_service.py
+# backend/app/services/maintenance_service.py · [[dashboard-metrics-aggregation]]
 
 - archive_old_metrics · function · L32-L64 — async def archive_old_metrics(days: int | None = None) -> dict
 - cleanup_temp_files · function · L67-L101 — async def cleanup_temp_files(max_age_hours: int = 24) -> dict

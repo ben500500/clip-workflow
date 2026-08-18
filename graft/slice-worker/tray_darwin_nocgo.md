@@ -1,4 +1,4 @@
-# slice-worker/tray_darwin_nocgo.go
+# slice-worker/tray_darwin_nocgo.go · [[worker-platform-abstractions]]
 
 Fallback tray implementation for macOS builds without cgo, degrading to log-only mode so CGO_ENABLED=0 builds compile.
 

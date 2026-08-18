@@ -1,4 +1,4 @@
-# backend/app/models/shortdrama.py
+# backend/app/models/shortdrama.py · [[orm-model-registry]] [[short-drama-generation-channels]]
 
 - ShortdramaPrompt · class · L26-L100 — class ShortdramaPrompt(Base)
 - __repr__ · method · L99-L100 — def __repr__(self) -> str

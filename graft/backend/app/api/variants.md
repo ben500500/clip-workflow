@@ -1,4 +1,4 @@
-# backend/app/api/variants.py
+# backend/app/api/variants.py · [[variant-matrix-deduplication]]
 
 - VariantGenerateRequest · class · L41-L45 — Request payload for manually triggering variant generation on an existing slice output, with optional dedupe config and threshold overrides.
 - VariantBindRequest · class · L48-L50 — Request payload for binding a variant to an account, allowing unbinding via null account_id.

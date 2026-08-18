@@ -1,4 +1,4 @@
-# alembic/versions/0011_doubao_generation.py · [[alembic-migration-chain]]
+# alembic/versions/0011_doubao_generation.py · [[alembic-migration-chain]] [[short-drama-production-workflow]]
 
 Alembic migration adding Doubao (豆包) one-click generation fields to users and shortdrama_prompts tables for the short-drama production feature.
 

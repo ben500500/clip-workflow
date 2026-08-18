@@ -1,4 +1,4 @@
-# eval/grade_highlight_llm.py · [[llm-evaluation-harness]]
+# eval/grade_highlight_llm.py · [[autoclip-llm-evaluation-harness]]
 
 - time_to_seconds · function · L37-L48 — def time_to_seconds(s: str) -> float
 - srt_block_end · function · L51-L57 — def srt_block_end(srt_text: str) -> float

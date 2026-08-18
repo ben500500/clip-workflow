@@ -1,4 +1,4 @@
-# autoclip/app/utils/ffmpeg_utils.py · [[ffmpeg-path-resolution]]
+# autoclip/app/utils/ffmpeg_utils.py · [[ffmpeg-utilities]]
 
 Module that resolves ffmpeg/ffprobe executable paths with a priority order (env vars, then system PATH, then fallback command name) to support zero-dependency desktop packaging.
 

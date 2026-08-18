@@ -1,4 +1,4 @@
-# rpa/cdp_proxy.py · [[rpa-multi-operator-infrastructure]]
+# rpa/cdp_proxy.py · [[rpa-multi-operator-container]]
 
 CDP reverse proxy that rewrites Host headers to localhost to bypass Chromium's DNS-rebinding protection, and rewrites localhost back to the client's original host in JSON responses so Playwright's ws URLs reconnect through the proxy; supports multi-tenant auth via single-use Redis tokens.
 

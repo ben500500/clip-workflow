@@ -1,4 +1,4 @@
-# backend/app/api/publish_material.py
+# backend/app/api/publish_material.py · [[publish-material-generation]]
 
 - PublishMaterialGenerateRequest · class · L42-L54 — Request model for generating publish material from a user-supplied story synopsis with optional title/theme/tone/platform overrides.
 - PublishMaterialGenerateFromOutputRequest · class · L57-L66 — Request model for generating publish material from a slice output id, auto-assembling the story from upstream context.

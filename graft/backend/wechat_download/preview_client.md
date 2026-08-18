@@ -1,4 +1,4 @@
-# backend/wechat_download/preview_client.py · [[wechat-download-pipeline]]
+# backend/wechat_download/preview_client.py · [[provider-fallback-chain]] [[wechat-download-pipeline]]
 
 - PreviewClient · class · L37-L164 — class PreviewClient
 - __init__ · method · L40-L43 — def __init__(self) -> None

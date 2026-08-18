@@ -1,4 +1,4 @@
-# backend/app/config.py
+# backend/app/config.py · [[configuration-database-bootstrap]]
 
 - _parse_origins · function · L15-L17 — Parses a comma-separated CORS origins string into a trimmed list, dropping empty entries.
 - Settings · class · L20-L193 — Pydantic settings model declaring every environment variable for the backend (DB, Redis, MinIO, JWT, watermark, Seedance, wechat download, etc.) with defaults and required-field enforcement.

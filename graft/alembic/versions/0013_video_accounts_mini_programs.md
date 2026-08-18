@@ -1,4 +1,4 @@
-# alembic/versions/0013_video_accounts_mini_programs.py · [[alembic-migration-chain]]
+# alembic/versions/0013_video_accounts_mini_programs.py · [[alembic-migration-chain]] [[publishing-video-account-matrix]]
 
 Alembic migration adding video_accounts and mini_programs tables plus publish_tasks/video_metrics/publish_materials columns for the video account matrix and short-video analysis feature.
 

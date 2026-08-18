@@ -1,4 +1,4 @@
-# alembic/versions/0029_wechat_download.py · [[alembic-migration-chain]]
+# alembic/versions/0029_wechat_download.py · [[alembic-migration-chain]] [[wechat-download-drama-management]]
 
 Alembic migration adding three wechat_download tables (tasks, source auths, parse records) plus an episodes.source_url column to support WeChat video material import/download, designed to be independently strippable.
 

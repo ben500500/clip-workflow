@@ -1,4 +1,4 @@
-# alembic/versions/0024_user_preferences.py · [[alembic-migration-chain]]
+# alembic/versions/0024_user_preferences.py · [[alembic-migration-chain]] [[slice-task-config-persistence]]
 
 - upgrade · function · L24-L33 — def upgrade() -> None
 - downgrade · function · L36-L38 — def downgrade() -> None

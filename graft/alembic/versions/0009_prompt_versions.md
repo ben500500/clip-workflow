@@ -1,4 +1,4 @@
-# alembic/versions/0009_prompt_versions.py · [[alembic-migration-chain]]
+# alembic/versions/0009_prompt_versions.py · [[alembic-migration-chain]] [[short-drama-production-workflow]]
 
 Alembic migration adding prompt_long and prompt_short columns to shortdrama_prompts to support three-version prompts (long/short fixed templates plus AI-generated Seedance prompt).
 

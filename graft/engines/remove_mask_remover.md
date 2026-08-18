@@ -1,4 +1,4 @@
-# engines/remove_mask_remover.py · [[opencv-watermark-remover]]
+# engines/remove_mask_remover.py · [[video-processing-engines]] [[watermark-removal-degradation-chain]]
 
 Remove Mask 去水印引擎，基于 ROI + cv2.inpaint 方案，支持自动检测水印带、预置 ROI 匹配、inpaint/crop 两种去水印模式及多种预设参数方案。
 

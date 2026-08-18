@@ -1,4 +1,4 @@
-# engines/preview.py · [[preview-frame-extraction-engine]]
+# engines/preview.py · [[video-processing-engines]]
 
 CLI tool that extracts evenly-spaced preview frames from a video using ffmpeg and reports progress/output to stdout.
 

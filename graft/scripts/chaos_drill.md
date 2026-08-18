@@ -1,4 +1,4 @@
-# scripts/chaos_drill.py · [[rpa-multi-operator-infrastructure]]
+# scripts/chaos_drill.py · [[rpa-route-table-chaos-validation]]
 
 R21 混沌演练编排脚本，注入 Chromium 崩溃/Redis 重启/worker 重启三种故障并验证全链路自愈，作为上线前强制演练工具。
 

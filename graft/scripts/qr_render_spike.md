@@ -1,4 +1,4 @@
-# scripts/qr_render_spike.py · [[storage-cleanup-orphan-reclamation]]
+# scripts/qr_render_spike.py · [[qr-spike-validation]]
 
 R7 spike script that verifies whether headless Chromium can render and capture the WeChat login QR code via CDP, deciding between the CDP-QR-to-MinIO flow and the fallback local-browser+cookie-injection approach.
 

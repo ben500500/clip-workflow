@@ -1,4 +1,4 @@
-# backend/app/api/publish_time_slots.py
+# backend/app/api/publish_time_slots.py · [[publish-tasks-scheduling]]
 
 - PublishTimeSlotCreate · class · L38-L42 — Request schema for creating a custom publish time window.
 - PublishTimeSlotUpdate · class · L45-L49 — Request schema for partially updating a custom publish time window.

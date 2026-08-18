@@ -1,4 +1,4 @@
-# engines/seedance_wm/log.py · [[seedance-watermark-removal-engine]]
+# engines/seedance_wm/log.py · [[seedance-wm-engine]] [[seedance-wm-logging-convention]]
 
 Logging module enforcing the TRD §5.3/API §2 spec: all logs go to stderr in [HH:MM:SS.mmm] [LEVEL] [module] format, with optional file output to ./remove-wm.log.
 

@@ -1,4 +1,4 @@
-# backend/app/api/publications.py
+# backend/app/api/publications.py · [[data-isolation-access-control]]
 
 - PublicationCreate · class · L19-L25 — class PublicationCreate(BaseModel)
 - PublicationUpdate · class · L28-L34 — class PublicationUpdate(BaseModel)

@@ -1,4 +1,4 @@
-# backend/app/api/publish_batches.py
+# backend/app/api/publish_batches.py · [[publish-tasks-scheduling]]
 
 - PublishTaskAssignRequest · class · L29-L40 — class PublishTaskAssignRequest(BaseModel)
 - PublishBatchResponse · class · L43-L52 — class PublishBatchResponse(BaseModel)

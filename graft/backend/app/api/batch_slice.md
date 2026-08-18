@@ -1,4 +1,4 @@
-# backend/app/api/batch_slice.py
+# backend/app/api/batch_slice.py · [[autoclip-pipeline-batch-slicing]] [[data-isolation-access-control]]
 
 - BatchEpisodeItem · class · L42-L45 — Pydantic model for one episode in the batch request, carrying optional title and required video file path.
 - BatchSliceRunRequest · class · L48-L59 — Request body for batch slice run: drama name, ordered episode list, unified slice config, and whether to auto-delete source videos.

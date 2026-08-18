@@ -1,4 +1,4 @@
-# alembic/versions/0025_slice_task_subtitle_align_mask.py · [[alembic-migration-chain]]
+# alembic/versions/0025_slice_task_subtitle_align_mask.py · [[alembic-migration-chain]] [[slice-task-config-persistence]]
 
 Alembic migration adding a subtitle_align_mask boolean column to slice_tasks to persist the ASR subtitle alignment-to-source-mask toggle (default True, retained on retry).
 

@@ -1,4 +1,4 @@
-# backend/app/services/data_import_service.py
+# backend/app/services/data_import_service.py · [[dashboard-metrics-aggregation]]
 
 - _validate_columns · function · L47-L58 — Checks that all required columns exist in the DataFrame (case-insensitive, whitespace-trimmed) and returns a list of missing-column error messages.
 - _normalize_columns · function · L61-L64 — Lowercases and strips whitespace from all DataFrame column names so downstream lookups are case-insensitive.

@@ -1,4 +1,4 @@
-# slice-worker/config.go
+# slice-worker/config.go · [[slice-worker-node]]
 
 Worker configuration file defining node identity, Redis connection, task routing streams, and capability detection for the slice worker.
 

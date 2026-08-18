@@ -1,4 +1,4 @@
-# alembic/versions/0012_prompt_default_duration.py · [[alembic-migration-chain]]
+# alembic/versions/0012_prompt_default_duration.py · [[alembic-migration-chain]] [[short-drama-production-workflow]]
 
 Alembic migration adding a per-user default prompt-generation duration (seconds) column to the users table, so a user's chosen duration (10s/15s/20s/25s/30s/custom) persists as their default.
 

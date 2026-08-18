@@ -1,4 +1,4 @@
-# frontend/src/utils/format.ts · [[frontend-api-layer]]
+# frontend/src/utils/format.ts · [[shared-frontend-types-formatting]]
 
 Central formatting utilities module providing consistent display formatting for file sizes, durations, dates, percentages, and status values across the frontend.
 

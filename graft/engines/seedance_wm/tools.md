@@ -1,4 +1,4 @@
-# engines/seedance_wm/tools.py · [[detection-mask-inpaint-pipeline]] [[ffmpeg-i-o-layer]] [[seedance-watermark-removal-engine]]
+# engines/seedance_wm/tools.py · [[seedance-wm-engine]]
 
 Agent tool registration layer exposing 5 atomic watermark-removal operations (extract, detect, mask, inpaint, smooth, mux) plus metadata probing for Agno Agent registration.
 

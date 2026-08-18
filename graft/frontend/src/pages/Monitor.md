@@ -1,4 +1,6 @@
-# frontend/src/pages/Monitor.tsx · [[monitoring-maintenance-workers]]
+# frontend/src/pages/Monitor.tsx · [[monitoring-alerting-dashboard]]
+
+React page for the monitoring & alerting dashboard, rendering health checks, alert rules CRUD, current metrics, and alert event history, with a modal form to create/edit alert rules.
 
 - HealthCheck · interface · L14-L18 — Type describing the health-check payload: overall status, service name, and per-check status/error/usage details.
 - Monitor · function · L30-L336 — Main dashboard component that fetches all monitoring data in parallel and renders health cards, alert rule table, metrics table, and event log.

@@ -1,4 +1,4 @@
-# engines/tests/test_subtitle_mask_regression.py · [[subtitle-mask-regression]]
+# engines/tests/test_subtitle_mask_regression.py · [[subtitle-mask-regression-test]]
 
 Regression test suite that synthesizes a video+SRT and verifies PR #148 acceptance criteria: dynamic mask region height ≤9% screen height and source subtitle text density drop ≥60%.
 

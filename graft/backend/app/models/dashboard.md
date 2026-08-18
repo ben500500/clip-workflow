@@ -1,4 +1,4 @@
-# backend/app/models/dashboard.py
+# backend/app/models/dashboard.py · [[dashboard-metrics-aggregation]] [[orm-model-registry]]
 
 - VideoMetric · class · L26-L64 — class VideoMetric(Base)
 - __repr__ · method · L63-L64 — def __repr__(self) -> str

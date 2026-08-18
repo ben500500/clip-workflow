@@ -1,4 +1,4 @@
-# frontend/src/pages/ShortDrama.tsx · [[short-drama-generation-workflow]]
+# frontend/src/pages/ShortDrama.tsx · [[short-drama-production-workflow]]
 
 - ShortDrama · function · L110-L1881 — ShortDrama: React.FC = ()
 - handleGenerate · function · L346-L378 — handleGenerate = async ()

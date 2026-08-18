@@ -1,4 +1,4 @@
-# slice-worker/tray_windows.go
+# slice-worker/tray_windows.go · [[worker-platform-abstractions]]
 
 - WindowsTray · struct · L26-L36 — WindowsTray
 - newPlatformTrayController · function · L39-L41 — func newPlatformTrayController() TrayController

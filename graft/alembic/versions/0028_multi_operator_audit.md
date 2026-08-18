@@ -1,4 +1,4 @@
-# alembic/versions/0028_multi_operator_audit.py · [[alembic-migration-chain]]
+# alembic/versions/0028_multi_operator_audit.py · [[alembic-migration-chain]] [[multi-operator-rbac-audit]]
 
 Alembic migration adding four new audit/risk tables (publish_audits, login_audits, cookie_access_logs, risk_events) to support multi-operator observability and risk-graduation statistics for the WeChat Channels publishing flow.
 

@@ -1,4 +1,4 @@
-# backend/app/api/shortdrama.py
+# backend/app/api/shortdrama.py · [[seedance-prompt-generation]]
 
 - _load_prompt_templates · function · L83-L95 — Loads user-customized long/short prompt templates from system_config, falling back to built-in defaults when unset.
 - _save_prompt_templates · function · L98-L113 — Persists user-edited long/short prompt templates into system_config, creating the row if absent.

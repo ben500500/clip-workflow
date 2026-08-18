@@ -1,4 +1,4 @@
-# backend/app/services/doubao_service.py
+# backend/app/services/doubao_service.py · [[short-drama-generation-channels]]
 
 - NeedLoginError · class · L47-L48 — Exception raised when Doubao page shows a login-blocking modal mid-flow, triggering QR push to user.
 - get_account_limits · function · L51-L59 — Returns per-account-type max duration limits, merging custom overrides from config.

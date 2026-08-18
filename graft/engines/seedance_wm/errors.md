@@ -1,4 +1,4 @@
-# engines/seedance_wm/errors.py · [[seedance-watermark-removal-engine]]
+# engines/seedance_wm/errors.py · [[video-processing-engines]] [[watermark-removal-degradation-chain]]
 
 Defines the exit codes and exception hierarchy for the watermark remover, mapping each failure mode to a documented exit code.
 

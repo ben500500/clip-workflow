@@ -1,4 +1,4 @@
-# backend/app/services/login_qr_service.py
+# backend/app/services/login_qr_service.py · [[login-qr-self-service]] [[redis-streams-real-time-state]]
 
 - _redis · function · L57-L60 — async def _redis() -> aioredis.Redis
 - issue_claim · function · L63-L76 — async def issue_claim(account_id, operator_id, qr_key: str, ttl: int = CLAIM_TTL) -> str

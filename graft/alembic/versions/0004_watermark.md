@@ -1,4 +1,4 @@
-# alembic/versions/0004_watermark.py · [[alembic-migration-chain]]
+# alembic/versions/0004_watermark.py · [[alembic-migration-chain]] [[short-drama-production-workflow]]
 
 Alembic migration adding watermark_tasks and watermark_videos tables to support the v4 batch watermark-removal feature with async execution, progress tracking, history, and resource cleanup.
 

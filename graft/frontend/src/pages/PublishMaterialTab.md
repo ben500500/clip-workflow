@@ -1,4 +1,4 @@
-# frontend/src/pages/PublishMaterialTab.tsx · [[publishing-material-generation]]
+# frontend/src/pages/PublishMaterialTab.tsx · [[publish-materials-generation]]
 
 - PublishMaterialTab · function · L59-L736 — PublishMaterialTab: React.FC<{ promptRecords?: ShortdramaPromptRecord[]; onLoadPromptRecords?: () => void; initialPromptRecordId?: string | null; onPromptIdConsumed?: () => void; }> = ({ promptRecords = [], onLoadPromptRecords, initialPromptRecordId, onPromptIdConsumed })
 - importPromptRecord · function · L148-L159 — importPromptRecord = (recordId?: string)

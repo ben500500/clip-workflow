@@ -1,4 +1,4 @@
-# backend/app/services/interval_service.py
+# backend/app/services/interval_service.py · [[engine-execution-layer]]
 
 Service module that runs an external detection engine subprocess to identify intervals (credits, static, watermark, custom) in a video file and returns them as structured data.
 

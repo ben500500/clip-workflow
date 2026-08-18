@@ -1,4 +1,4 @@
-# backend/app/api/channel_accounts.py
+# backend/app/api/channel_accounts.py · [[channel-accounts-mini-programs]] [[data-isolation-access-control]]
 
 - OperatorCreate · class · L38-L41 — Input schema for creating an operator, allowing either a system user FK or manually-entered external name/phone.
 - OperatorUpdate · class · L44-L47 — Input schema for updating an operator's user FK or external name/phone fields.

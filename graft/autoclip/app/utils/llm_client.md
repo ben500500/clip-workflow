@@ -1,4 +1,4 @@
-# autoclip/app/utils/llm_client.py
+# autoclip/app/utils/llm_client.py · [[llm-manager-client-compatibility]]
 
 - LLMCallError · class · L38-L43 — class LLMCallError(RuntimeError)
 - LLMClient · class · L46-L280 — class LLMClient

@@ -1,4 +1,4 @@
-# autoclip/app/pipeline/step2_timeline.py · [[autoclip-pipeline-stages]]
+# autoclip/app/pipeline/step2_timeline.py · [[autoclip-pipeline]]
 
 - TimelineExtractor · class · L18-L421 — Orchestrates timeline extraction by loading the timeline prompt, applying custom duration rules, processing SRT chunks through the LLM, and assembling/sorting validated timeline results.
 - __init__ · method · L21-L42 — Initializes the extractor with LLM client, text processor, prompt file, custom duration config, and output directory paths.

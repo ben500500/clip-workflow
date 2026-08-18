@@ -1,4 +1,4 @@
-# frontend/src/components/AuthGuard.tsx · [[auth-session-management]]
+# frontend/src/components/AuthGuard.tsx · [[frontend-auth-session]]
 
 - getMenuKeyFromPath · function · L28-L38 — getMenuKeyFromPath = (pathname: string): string | null
 - ForbiddenPage · function · L40-L54 — ForbiddenPage: React.FC = ()

@@ -1,35 +1,35 @@
-# backend/app/api/slice_helpers.py
+# backend/app/api/slice_helpers.py · [[video-slicing-pipeline]]
 
-- BadgeItem · class · L63-L76 — class BadgeItem(BaseModel)
-- TextOverlayItem · class · L79-L96 — class TextOverlayItem(BaseModel)
-- SliceRunRequest · class · L99-L239 — class SliceRunRequest(BaseModel)
-- SliceRunResponse · class · L242-L247 — class SliceRunResponse(BaseModel)
-- SliceTaskResponse · class · L250-L275 — class SliceTaskResponse(BaseModel)
-- SliceOutputResponse · class · L278-L290 — class SliceOutputResponse(BaseModel)
-- SliceTaskCallback · class · L293-L303 — class SliceTaskCallback(BaseModel)
-- UserSliceConfigRequest · class · L306-L307 — class UserSliceConfigRequest(BaseModel)
-- _serialize_task · function · L315-L339 — def _serialize_task(task: SliceTask) -> dict
-- _serialize_output · function · L342-L354 — def _serialize_output(output: SliceOutput, presigned_url: Optional[str] = None) -> dict
-- _ffprobe_duration · function · L362-L373 — def _ffprobe_duration(path: str) -> float
-- _resolve_engine · function · L376-L384 — def _resolve_engine(request_engine: Optional[str]) -> str
-- _build_watermark_config · function · L387-L419 — def _build_watermark_config( data: SliceRunRequest, episode: Episode, ) -> Optional[dict]
-- _build_vert2horiz_config · function · L422-L454 — def _build_vert2horiz_config(data: SliceRunRequest) -> Optional[dict]
-- _build_badges_config · function · L457-L489 — def _build_badges_config(data: SliceRunRequest) -> Optional[list]
-- _build_text_overlays_config · function · L492-L525 — def _build_text_overlays_config(data: SliceRunRequest) -> Optional[list]
-- _build_subtitle_mask_config · function · L528-L565 — def _build_subtitle_mask_config(data: SliceRunRequest, source_srt: Optional[str] = None) -> Optional[dict]
-- _build_watermark_mask_config · function · L568-L596 — def _build_watermark_mask_config(data: SliceRunRequest) -> Optional[dict]
-- _read_existing_subtitle · function · L609-L643 — async def _read_existing_subtitle(episode: Episode, db: AsyncSession) -> Optional[dict]
-- _with_subtitle_options · function · L646-L660 — def _with_subtitle_options(cfg: dict, data: SliceRunRequest) -> dict
-- _read_uploaded_subtitle · function · L663-L691 — async def _read_uploaded_subtitle(file_key: str) -> Optional[dict]
-- _vtt_to_srt · function · L694-L753 — def _vtt_to_srt(content: str) -> str
-- _resolve_source_subtitle_srt · function · L756-L793 — async def _resolve_source_subtitle_srt( data: SliceRunRequest, source_file_key: Optional[str], source_bucket: str, episode: Optional[Episode] = None, db: Optional[AsyncSession] = None, ) -> Optional[str]
-- _generate_subtitle_config · function · L796-L810 — def _generate_subtitle_config( data: SliceRunRequest, source_srt: Optional[str], ) -> Optional[dict]
-- _not_detect_task · function · L813-L822 — def _not_detect_task()
-- _get_max_concurrent_tasks · function · L825-L841 — async def _get_max_concurrent_tasks(db: AsyncSession) -> int
-- _acquire_concurrency_slot · function · L844-L868 — async def _acquire_concurrency_slot(db: AsyncSession) -> None
-- _output_prefix · function · L871-L873 — def _output_prefix(slice_task: SliceTask) -> str
-- _refresh_episode_status · function · L876-L920 — async def _refresh_episode_status(db: AsyncSession, episode_id) -> None
-- _publish_to_worker · function · L923-L1051 — async def _publish_to_worker( slice_task: SliceTask, episode: Episode, cutlist: str, intervals_content: str, source_file_key: Optional[str], dedupe_config: Optional[dict], watermark_config: Optional[dict] = None, encoder: Optional[str] = None, vert2horiz_config: Optional[dict] = None, badges_config: Optional[list] = None, badge_default_width: int = 0, source_bucket: str = "", subtitle_config: Optional[dict] = None, text_overlays_config: Optional[list] = None, subtitle_mask_config: Optional[dict] = None, watermark_mask_config: Optional[dict] = None, subtitle_align_mask: bool = True, ) -> bool
-- _subtitle_enabled · function · L984-L985 — def _subtitle_enabled(cfg) -> bool
-- _dispatch_celery · function · L1054-L1108 — async def _dispatch_celery( slice_task: SliceTask, episode: Episode, cutlist: str, intervals_content: str, source_file_key: Optional[str], dedupe_config: Optional[dict], video_path: Optional[str], watermark_config: Optional[dict] = None, encoder: Optional[str] = None, vert2horiz_config: Optional[dict] = None, badges_config: Optional[list] = None, badge_default_width: int = 0, source_bucket: str = "", subtitle_config: Optional[dict] = None, text_overlays_config: Optional[list] = None, subtitle_mask_config: Optional[dict] = None, watermark_mask_config: Optional[dict] = None, subtitle_align_mask: bool = True, ) -> bool
-- _verify_worker_token · function · L1111-L1121 — async def _verify_worker_token( task_id: str, x_worker_token: Optional[str], ) -> bool
+- BadgeItem · class · L63-L76 — Pydantic model describing an image badge overlay to stamp onto sliced output videos at a given position.
+- TextOverlayItem · class · L79-L96 — Pydantic model describing a fixed text overlay to stamp onto sliced output videos at a given position.
+- SliceRunRequest · class · L99-L249 — Pydantic request model carrying all slice-run options (engine, watermark, badges, subtitles, masks, vert2horiz, etc.) from the client.
+- SliceRunResponse · class · L252-L257 — Pydantic response model reporting the dispatched slice task id, chosen engine, and whether it fell back to whole-video slicing.
+- SliceTaskResponse · class · L260-L285 — Pydantic response model exposing a slice task's status, progress, output count, and the config actually applied for history display.
+- SliceOutputResponse · class · L288-L300 — Pydantic response model exposing a slice output's metadata and presigned download URL.
+- SliceTaskCallback · class · L303-L313 — Pydantic model for the Worker callback request body reporting task completion, failure, or progress.
+- UserSliceConfigRequest · class · L316-L317 — Pydantic model wrapping a user's persisted slice configuration dict.
+- _serialize_task · function · L325-L349 — Converts a SliceTask ORM row into the API response dict, including the config actually applied for history hover display.
+- _serialize_output · function · L352-L364 — Converts a SliceOutput ORM row plus optional presigned URL into the API response dict.
+- _ffprobe_duration · function · L372-L383 — Probes a local video file's duration in seconds via ffprobe, returning 0.0 on any failure.
+- _resolve_engine · function · L386-L394 — Resolves the effective engine type from the request or config default, rejecting unsupported engine values with a 400.
+- _build_watermark_config · function · L397-L429 — Builds the engine watermark config dict, filling {title}/{date}/{datetime} placeholders and escaping ffmpeg drawtext special characters.
+- _build_vert2horiz_config · function · L432-L464 — Builds the engine vert2horiz nested config dict from flat request params, validating mode and clamping numeric ranges.
+- _build_badges_config · function · L467-L499 — Builds the engine badges JSON array from request badge items, filtering invalid entries and normalizing positions to the seven allowed slots.
+- _build_text_overlays_config · function · L502-L535 — Builds the engine text-overlays JSON array from request items, keeping only entries with text and normalizing positions.
+- _build_subtitle_mask_config · function · L538-L575 — Builds the engine subtitle-mask config dict from request params, resolving preset vs explicit temporal/spatial switches.
+- _build_watermark_mask_config · function · L578-L606 — Builds the engine watermark-mask config dict from request params, handling manual absolute coordinates vs auto-detect ratios.
+- _read_existing_subtitle · function · L619-L653 — Loads an episode's existing subtitle file from MinIO and returns its content and format for reuse.
+- _with_subtitle_options · function · L656-L670 — Merges subtitle styling options (font ratio, spacing, bold, color, border) into the subtitle config dict.
+- _read_uploaded_subtitle · function · L673-L701 — Downloads a user-uploaded subtitle file from MinIO and returns its content and format.
+- _vtt_to_srt · function · L704-L763 — Converts WebVTT subtitle content into SRT format by stripping VTT headers and normalizing cue timestamps.
+- _resolve_source_subtitle_srt · function · L766-L803 — Resolves the source subtitle SRT content by preferring an uploaded file, then existing episode subtitle, then ASR generation.
+- _generate_subtitle_config · function · L806-L820 — Builds the engine subtitle config dict, enabling ASR subtitle burning when requested and attaching the resolved source SRT.
+- _not_detect_task · function · L823-L832 — Returns a sentinel marker indicating a task should not run detection (used for no-cut whole-video slicing).
+- _get_max_concurrent_tasks · function · L835-L851 — Reads the configured maximum concurrent slice tasks from system config, defaulting when unset.
+- _acquire_concurrency_slot · function · L854-L878 — Acquires a concurrency slot by counting active slice tasks and raising a 429 when the limit is reached.
+- _output_prefix · function · L881-L883 — Returns the MinIO object-key prefix for a slice task's outputs.
+- _refresh_episode_status · function · L886-L930 — Recomputes an episode's status from its slice tasks' statuses and persists the updated state.
+- _publish_to_worker · function · L933-L1073 — Publishes a slice task to the worker via Redis stream, building the full payload with all configs and callback token.
+- _subtitle_enabled · function · L1004-L1005 — Predicate checking whether a subtitle config dict has subtitle burning enabled.
+- _dispatch_celery · function · L1076-L1132 — Dispatches a slice task to Celery, building the task payload with all configs and applying the callback token.
+- _verify_worker_token · function · L1135-L1145 — Verifies the worker callback token matches the stored token for a task, guarding against unauthorized callbacks.

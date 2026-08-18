@@ -1,4 +1,4 @@
-# frontend/src/api/publishMaterial.ts · [[frontend-api-client-layer]]
+# frontend/src/api/publishMaterial.ts · [[frontend-api-layer]]
 
 API client module for generating, listing, fetching, and deleting short-drama publish materials (short titles, captions, tags, and pinned comments).
 

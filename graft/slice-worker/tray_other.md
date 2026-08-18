@@ -1,4 +1,4 @@
-# slice-worker/tray_other.go
+# slice-worker/tray_other.go · [[worker-platform-abstractions]]
 
 Fallback no-op tray implementation for non-Windows/macOS platforms (Linux, containers, servers) that lack a desktop tray, keeping the code structure uniform while running in background/TUI mode.
 

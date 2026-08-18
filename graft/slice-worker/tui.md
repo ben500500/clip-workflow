@@ -1,4 +1,4 @@
-# slice-worker/tui.go
+# slice-worker/tui.go · [[worker-platform-abstractions]]
 
 BubbleTea terminal UI for the slice worker, rendering task progress, logs, and node status in a live dashboard.
 

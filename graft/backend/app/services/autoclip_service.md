@@ -1,4 +1,4 @@
-# backend/app/services/autoclip_service.py
+# backend/app/services/autoclip_service.py · [[autoclip-integration]]
 
 - create_autoclip_project · function · L11-L27 — async def create_autoclip_project(name: str, config: dict) -> Optional[str]
 - upload_video · function · L30-L50 — async def upload_video(autoclip_project_id: str, video_path: str, file_name: str) -> bool

@@ -1,4 +1,4 @@
-# backend/app/models/material.py
+# backend/app/models/material.py · [[batch-slicing-workflow]] [[orm-model-registry]]
 
 - Project · class · L29-L45 — class Project(Base)
 - __repr__ · method · L44-L45 — def __repr__(self) -> str
@@ -12,21 +12,21 @@
 - __repr__ · method · L142-L143 — def __repr__(self) -> str
 - DetectedInterval · class · L146-L164 — class DetectedInterval(Base)
 - __repr__ · method · L163-L164 — def __repr__(self) -> str
-- SliceTask · class · L167-L215 — class SliceTask(Base)
-- __repr__ · method · L214-L215 — def __repr__(self) -> str
-- SliceOutput · class · L218-L240 — class SliceOutput(Base)
-- __repr__ · method · L239-L240 — def __repr__(self) -> str
-- Publication · class · L243-L261 — class Publication(Base)
-- __repr__ · method · L260-L261 — def __repr__(self) -> str
-- SystemConfig · class · L264-L273 — class SystemConfig(Base)
-- __repr__ · method · L272-L273 — def __repr__(self) -> str
-- PlatformProfile · class · L276-L290 — class PlatformProfile(Base)
-- __repr__ · method · L289-L290 — def __repr__(self) -> str
-- ImportTemplate · class · L293-L305 — class ImportTemplate(Base)
-- __repr__ · method · L304-L305 — def __repr__(self) -> str
-- ImportHistory · class · L308-L324 — class ImportHistory(Base)
-- __repr__ · method · L323-L324 — def __repr__(self) -> str
-- BatchSlice · class · L327-L357 — class BatchSlice(Base)
-- __repr__ · method · L356-L357 — def __repr__(self) -> str
-- BatchSliceItem · class · L360-L388 — class BatchSliceItem(Base)
-- __repr__ · method · L387-L388 — def __repr__(self) -> str
+- SliceTask · class · L167-L217 — class SliceTask(Base)
+- __repr__ · method · L216-L217 — def __repr__(self) -> str
+- SliceOutput · class · L220-L242 — class SliceOutput(Base)
+- __repr__ · method · L241-L242 — def __repr__(self) -> str
+- Publication · class · L245-L263 — class Publication(Base)
+- __repr__ · method · L262-L263 — def __repr__(self) -> str
+- SystemConfig · class · L266-L275 — class SystemConfig(Base)
+- __repr__ · method · L274-L275 — def __repr__(self) -> str
+- PlatformProfile · class · L278-L292 — class PlatformProfile(Base)
+- __repr__ · method · L291-L292 — def __repr__(self) -> str
+- ImportTemplate · class · L295-L307 — class ImportTemplate(Base)
+- __repr__ · method · L306-L307 — def __repr__(self) -> str
+- ImportHistory · class · L310-L326 — class ImportHistory(Base)
+- __repr__ · method · L325-L326 — def __repr__(self) -> str
+- BatchSlice · class · L329-L359 — class BatchSlice(Base)
+- __repr__ · method · L358-L359 — def __repr__(self) -> str
+- BatchSliceItem · class · L362-L390 — class BatchSliceItem(Base)
+- __repr__ · method · L389-L390 — def __repr__(self) -> str

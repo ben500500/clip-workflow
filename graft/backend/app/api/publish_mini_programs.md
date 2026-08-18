@@ -1,4 +1,4 @@
-# backend/app/api/publish_mini_programs.py
+# backend/app/api/publish_mini_programs.py · [[channel-accounts-mini-programs]]
 
 - MiniProgramCreate · class · L20-L26 — class MiniProgramCreate(BaseModel)
 - MiniProgramUpdate · class · L29-L35 — class MiniProgramUpdate(BaseModel)

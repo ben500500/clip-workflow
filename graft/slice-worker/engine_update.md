@@ -1,4 +1,4 @@
-# slice-worker/engine_update.go
+# slice-worker/engine_update.go · [[engine-update-versioning]] [[slice-worker-node]]
 
 Engine update module: computes a content-hash engine version, lists distributable files excluding caches, pulls and safely extracts tar.gz engine packages from the backend, and parses Redis update commands.
 

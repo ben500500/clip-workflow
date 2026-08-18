@@ -1,4 +1,4 @@
-# frontend/src/pages/IntervalDetection.tsx · [[episode-production-pipeline-pages]]
+# frontend/src/pages/IntervalDetection.tsx · [[interval-detection-management]]
 
 - IntervalDetection · function · L14-L187 — IntervalDetection: React.FC = ()
 - fetchIntervals · function · L23-L33 — fetchIntervals = async ()

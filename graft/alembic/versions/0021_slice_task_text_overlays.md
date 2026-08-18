@@ -1,4 +1,4 @@
-# alembic/versions/0021_slice_task_text_overlays.py · [[alembic-migration-chain]]
+# alembic/versions/0021_slice_task_text_overlays.py · [[alembic-migration-chain]] [[slice-task-config-persistence]]
 
 Alembic migration adding a JSON column to persist fixed-text overlay configuration on slice tasks so overlays survive retries.
 

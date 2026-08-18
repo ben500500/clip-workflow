@@ -1,4 +1,4 @@
-# alembic/versions/0017_doubao_account.py · [[alembic-migration-chain]]
+# alembic/versions/0017_doubao_account.py · [[alembic-migration-chain]] [[short-drama-production-workflow]]
 
 Alembic migration adding a nullable doubao_account column to shortdrama_prompts to store the currently logged-in Doubao account nickname for frontend display.
 

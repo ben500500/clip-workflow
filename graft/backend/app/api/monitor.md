@@ -1,4 +1,4 @@
-# backend/app/api/monitor.py
+# backend/app/api/monitor.py · [[maintenance-monitoring]]
 
 - AlertRuleCreate · class · L38-L46 — Input schema for creating an alert rule, defaulting operator to '>', threshold to 0, and level to 'warning'.
 - AlertRuleUpdate · class · L49-L57 — Input schema for partially updating an alert rule, with all fields optional so only provided fields are changed.

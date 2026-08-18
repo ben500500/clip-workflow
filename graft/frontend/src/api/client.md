@@ -1,4 +1,4 @@
-# frontend/src/api/client.ts · [[frontend-api-client-layer]]
+# frontend/src/api/client.ts · [[frontend-api-layer]]
 
 Configures the shared axios HTTP client with automatic Bearer token injection and silent token-refresh on 401 responses, redirecting to login when refresh fails.
 

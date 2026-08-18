@@ -1,3 +1,3 @@
-# frontend/src/pages/DashboardOverview.tsx · [[analytics-dashboard-pages]]
+# frontend/src/pages/DashboardOverview.tsx · [[frontend-dashboard-analytics-pages]]
 
 - DashboardOverview · function · L16-L219 — DashboardOverview: React.FC = ()

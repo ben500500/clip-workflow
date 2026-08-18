@@ -1,4 +1,4 @@
-# frontend/src/api/watermark.ts · [[frontend-api-client-layer]]
+# frontend/src/api/watermark.ts · [[frontend-api-layer]]
 
 API client module for watermark removal/processing operations, exposing typed endpoints for upload, run, task management, and video download.
 

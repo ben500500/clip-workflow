@@ -1,4 +1,4 @@
-# frontend/src/api/channelAccounts.ts · [[frontend-api-client-layer]]
+# frontend/src/api/channelAccounts.ts · [[frontend-api-layer]]
 
 API client module for channel account ledger CRUD and operator management, including one-click registration from the video account library.
 

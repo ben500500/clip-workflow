@@ -1,4 +1,4 @@
-# slice-worker/tray_darwin.go
+# slice-worker/tray_darwin.go · [[worker-platform-abstractions]]
 
 - MacOSTray · struct · L20-L29 — State holder for the macOS tray, tracking systray menu items and CPU submenu entries to drive the worker UI.
 - newPlatformTrayController · function · L32-L34 — Platform factory returning the macOS tray controller implementation.

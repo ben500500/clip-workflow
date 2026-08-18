@@ -1,6 +1,6 @@
-# frontend/src/pages/PublishManagement.tsx · [[publishing-output-hub]]
+# frontend/src/pages/PublishManagement.tsx · [[publishing-workflow-management]]
 
-- PublishManagement · function · L19-L1425 — PublishManagement: React.FC = ()
+- PublishManagement · function · L19-L1429 — PublishManagement: React.FC = ()
 - fetchTasks · function · L85-L88 — fetchTasks = ()
 - fetchProfiles · function · L90-L93 — fetchProfiles = ()
 - fetchAccounts · function · L95-L98 — fetchAccounts = ()
@@ -26,5 +26,5 @@
 - saveAccount · function · L359-L387 — saveAccount = async ()
 - saveBatchAssignProfile · function · L390-L412 — saveBatchAssignProfile = async ()
 - saveMiniProgram · function · L414-L438 — saveMiniProgram = async ()
-- traceAction · function · L704-L708 — traceAction = (requestId: string | null)
-- buildVerifySteps · function · L753-L820 — buildVerifySteps = (v: MultiOpVerification)
+- traceAction · function · L705-L709 — traceAction = (requestId: string | null)
+- buildVerifySteps · function · L754-L821 — buildVerifySteps = (v: MultiOpVerification)

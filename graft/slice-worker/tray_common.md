@@ -1,4 +1,4 @@
-# slice-worker/tray_common.go
+# slice-worker/tray_common.go · [[redis-task-coordination-contract]] [[worker-platform-abstractions]]
 
 - registerTray · function · L25-L29 — func registerTray(c TrayController)
 - StopAllTrays · function · L32-L39 — func StopAllTrays()

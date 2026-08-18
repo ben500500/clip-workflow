@@ -1,4 +1,4 @@
-# backend/app/api/preview.py
+# backend/app/api/preview.py · [[data-isolation-access-control]] [[minio-storage-upload]]
 
 - BatchDownloadRequest · class · L29-L30 — class BatchDownloadRequest(BaseModel)
 - BatchDownloadItem · class · L33-L36 — class BatchDownloadItem(BaseModel)

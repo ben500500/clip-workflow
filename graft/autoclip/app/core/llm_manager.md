@@ -1,4 +1,4 @@
-# autoclip/app/core/llm_manager.py · [[llm-manager-provider-abstraction]]
+# autoclip/app/core/llm_manager.py · [[llm-manager-providers]]
 
 - LLMManager · class · L23-L268 — class LLMManager
 - __init__ · method · L26-L30 — def __init__(self, settings_file: Optional[Path] = None)

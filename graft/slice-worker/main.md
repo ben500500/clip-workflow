@@ -1,4 +1,4 @@
-# slice-worker/main.go
+# slice-worker/main.go · [[slice-worker-node]]
 
 Entry point for the Slice Worker distributed slicing execution node, wiring config loading, Redis connection, single-instance locking, and selecting between tray, daemon, or TUI run modes.
 

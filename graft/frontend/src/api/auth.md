@@ -1,3 +1,3 @@
-# frontend/src/api/auth.ts · [[auth-session-management]] [[frontend-api-client-layer]]
+# frontend/src/api/auth.ts · [[frontend-api-layer]]
 
 _No extracted symbols in this file._

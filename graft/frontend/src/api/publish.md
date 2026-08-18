@@ -1,4 +1,4 @@
-# frontend/src/api/publish.ts · [[frontend-api-client-layer]]
+# frontend/src/api/publish.ts · [[frontend-api-layer]]
 
 API client module exposing all publish-domain endpoints (task CRUD, scheduling, video accounts, batches, mini-programs, audit, login QR) via a single publishApi object.
 

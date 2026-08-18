@@ -1,4 +1,4 @@
-# backend/app/models/channel.py
+# backend/app/models/channel.py · [[orm-model-registry]]
 
 - ChannelAccount · class · L33-L61 — class ChannelAccount(Base)
 - __repr__ · method · L60-L61 — def __repr__(self) -> str

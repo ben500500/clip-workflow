@@ -1,4 +1,4 @@
-# backend/app/engines/watermark_runner.py
+# backend/app/engines/watermark_runner.py · [[engine-execution-layer]]
 
 - _run_cmd · function · L33-L130 — async def _run_cmd( cmd: list[str], progress_cb: ProgressCallback = None, timeout: float = 2 * 3600, ) -> tuple[int, str, str]
 - read_stream · function · L57-L74 — async def read_stream(stream, sink)

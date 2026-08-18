@@ -1,4 +1,4 @@
-# alembic/versions/0005_shortdrama_prompts.py · [[alembic-migration-chain]]
+# alembic/versions/0005_shortdrama_prompts.py · [[alembic-migration-chain]] [[short-drama-production-workflow]]
 
 Alembic migration adding the shortdrama_prompts table to persist Seedance prompt generation history for the short-drama production workflow.
 

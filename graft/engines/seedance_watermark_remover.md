@@ -1,4 +1,4 @@
-# engines/seedance_watermark_remover.py
+# engines/seedance_watermark_remover.py · [[video-processing-engines]]
 
 CLI tool that removes Seedance 2.0 'AI生成' and static corner watermarks from videos via median-frame detection, segment-wise region masking, and CPU inpainting with ffmpeg reassembly.
 

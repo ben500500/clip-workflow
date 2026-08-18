@@ -6,10 +6,7 @@ sources:
   - path: backend/app/services/upload_service.py
     hash: 5b6276c62d071348518f752d19994e5715415aceae28e547d39fa9d596b1d8c4
 sources_digest: 932b8379480663f335ad0dc6d607cb2bb44529d17ce5369fe1beb09d142ea577
-links:
-  - to: redis-stream-task-coordination
-    relation: uses
-    description: Uses Redis for upload session state storage
+links: []
 generator:
   version: 1
 covers:
@@ -50,11 +47,7 @@ covers:
 <!-- context:generated:start -->
 ## Summary
 
-Implements a tus-like resumable upload protocol for video files, managing upload sessions in Redis and storing chunks on disk. Persists session state (offset, completion flag, hash digest) in Redis hashes with 24-hour TTL. A notable compromise: MD5 hashing cannot restore internal state from a hex digest, so write_chunk recomputes the hash from all on-disk chunks on every write. Enforces strict offset ordering, rejects writes to completed sessions, and validates extensions against ALLOWED_VIDEO_EXTENSIONS.
-
-## Related
-
-- uses [[redis-stream-task-coordination]] — Uses Redis for upload session state storage
+tus-like resumable upload protocol storing session state (offset, completion flag, hash digest) in Redis hashes with 24-hour TTL and chunks on disk under settings.UPLOAD_TEMP_DIR. Enforces strict offset ordering, rejects writes to completed sessions, validates extensions. Notable compromise: MD5 hashing cannot restore internal state from a hex digest, so write_chunk recomputes the hash from all on-disk chunks on every write.
 <!-- context:generated:end -->
 
 ## Notes

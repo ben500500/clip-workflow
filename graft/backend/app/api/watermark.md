@@ -1,4 +1,4 @@
-# backend/app/api/watermark.py
+# backend/app/api/watermark.py · [[watermark-removal]]
 
 - gen_task_name · function · L46-L65 — 生成日期+4位自增序列的任务名称，优先用 Redis 跨进程全局自增并在日期切换时自动归 1，Redis 不可用时回退到进程内计数。
 - _fallback_seq · function · L71-L74 — Redis 不可用时的进程内自增序列回退实现，保证任务命名不抛错。

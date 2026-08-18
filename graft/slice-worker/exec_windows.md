@@ -1,4 +1,4 @@
-# slice-worker/exec_windows.go
+# slice-worker/exec_windows.go · [[slice-worker-node]] [[worker-platform-abstractions]]
 
 Windows-specific process management helpers for the slice worker, providing Python binary resolution, process group setup, and process tree termination via taskkill.
 

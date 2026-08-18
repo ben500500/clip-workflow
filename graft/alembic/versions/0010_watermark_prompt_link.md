@@ -1,4 +1,4 @@
-# alembic/versions/0010_watermark_prompt_link.py · [[alembic-migration-chain]]
+# alembic/versions/0010_watermark_prompt_link.py · [[alembic-migration-chain]] [[short-drama-production-workflow]]
 
 Alembic migration adding a prompt_record_id column to watermark_videos to link watermark-removal tasks to their source prompt records, enabling automatic copy carry-over when publishing material.
 

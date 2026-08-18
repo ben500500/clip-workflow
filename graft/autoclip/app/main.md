@@ -1,4 +1,4 @@
-# autoclip/app/main.py · [[autoclip-fastapi-service]]
+# autoclip/app/main.py · [[autoclip-service-entry]]
 
 - ffprobe_duration · function · L64-L73 — Probes a media file with ffprobe to return its duration in seconds, defaulting to 0.0 on any failure.
 - _update_progress · function · L76-L80 — Mutates a project's status/progress/message fields and logs the update for progress polling.

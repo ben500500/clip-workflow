@@ -1,4 +1,4 @@
-# backend/app/auth.py
+# backend/app/auth.py · [[auth-session-layer]]
 
 - verify_password · function · L36-L38 — 校验明文密码与 bcrypt 哈希是否匹配。
 - get_password_hash · function · L41-L43 — 对明文密码进行 bcrypt 哈希。

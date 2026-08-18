@@ -4,34 +4,62 @@ slug: project-episode-management
 type: system
 sources:
   - path: frontend/src/pages/ProjectDetail.tsx
-    hash: 9f46b2301f189ebf50fbf53d4e85de4acc9dc779bb39f4b1bfb5339ec6446089
+    hash: 1bbb9d15160553afd40326da2f779f08d7a9fa78c820244d2fed5a200d77cf4f
   - path: frontend/src/pages/Projects.tsx
     hash: 63f814ad98757153a1cf1b3d19b229b8f41cd92869878726676703129244773d
-sources_digest: 478a08048bcdf7c990c4bac68850c17246d7d62d76f27c23884d359560b96b7d
+sources_digest: 435f0c61b6c8d8eb2345a29d05553f008ecde3905b4e1bf1b76044550a3463b6
 links:
-  - to: episode-production-pipeline-pages
-    relation: produces
-    description: >-
-      Episodes created/uploaded here are the entry point for the
-      autoclip→interval→slice pipeline.
-  - to: frontend-api-layer
+  - to: slice-configuration-presets
     relation: uses
-    description: Uses projectApi and uploadApi.
+    description: Shares batch slicing presets via localStorage key slice_presets_v1.
 generator:
   version: 1
 covers:
+  - symbol: BatchSliceConfig
+    kind: interface
+    at: 'frontend/src/pages/ProjectDetail.tsx:L19-L33'
+  - symbol: BatchPresetOption
+    kind: interface
+    at: 'frontend/src/pages/ProjectDetail.tsx:L60-L67'
   - symbol: ProjectDetail
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L16-L341'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L70-L1035'
+  - symbol: applyBatchPreset
+    kind: function
+    at: 'frontend/src/pages/ProjectDetail.tsx:L109-L120'
   - symbol: fetchData
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L47-L62'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L155-L170'
   - symbol: handleUpload
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L68-L97'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L179-L208'
   - symbol: submitMultiUpload
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L100-L131'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L211-L242'
+  - symbol: handleMultiFileUpload
+    kind: function
+    at: 'frontend/src/pages/ProjectDetail.tsx:L245-L282'
+  - symbol: handleTabChange
+    kind: function
+    at: 'frontend/src/pages/ProjectDetail.tsx:L303-L308'
+  - symbol: togglePreview
+    kind: function
+    at: 'frontend/src/pages/ProjectDetail.tsx:L311-L351'
+  - symbol: refreshPreview
+    kind: function
+    at: 'frontend/src/pages/ProjectDetail.tsx:L353-L378'
+  - symbol: renderSourcePreview
+    kind: function
+    at: 'frontend/src/pages/ProjectDetail.tsx:L380-L432'
+  - symbol: handleCoverUpload
+    kind: function
+    at: 'frontend/src/pages/ProjectDetail.tsx:L435-L455'
+  - symbol: runOneClickSlice
+    kind: function
+    at: 'frontend/src/pages/ProjectDetail.tsx:L458-L478'
+  - symbol: runBatchSlice
+    kind: function
+    at: 'frontend/src/pages/ProjectDetail.tsx:L481-L506'
   - symbol: Projects
     kind: function
     at: 'frontend/src/pages/Projects.tsx:L14-L227'
@@ -54,12 +82,11 @@ covers:
 <!-- context:generated:start -->
 ## Summary
 
-Projects is a searchable paginated list with create/edit/delete and a manual refresh trigger in handleSearch because the useEffect on page won't fire when already on page 1. ProjectDetail shows metadata, an episode table, and two upload paths: single-file with AbortController abort support, and multi-file that can optionally merge videos into a new project (with a warning about matching codecs/resolution/framerate); aborts in-flight uploads on unmount.
+Projects list and ProjectDetail pages manage projects and episodes: searchable/paginated table with CRUD, episode upload (single/multi-file with optional merging), batch one-click slicing across episodes, and a finished-products preview. Uses AbortController to abort in-flight uploads, lazy-loads video preview URLs to avoid stale links, and falls back to automatic AI clip when no candidates are found.
 
 ## Related
 
-- produces [[episode-production-pipeline-pages]] — Episodes created/uploaded here are the entry point for the autoclip→interval→slice pipeline.
-- uses [[frontend-api-layer]] — Uses projectApi and uploadApi.
+- uses [[slice-configuration-presets]] — Shares batch slicing presets via localStorage key slice_presets_v1.
 <!-- context:generated:end -->
 
 ## Notes

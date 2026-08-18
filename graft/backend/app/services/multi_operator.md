@@ -1,4 +1,4 @@
-# backend/app/services/multi_operator.py
+# backend/app/services/multi_operator.py · [[multi-operator-routing-service]]
 
 - _redis · function · L91-L93 — Creates a Redis async connection with string decoding for JSON handling.
 - multi_operator_enabled · function · L96-L103 — Reads the hot-reloadable grayscale flag from Redis, defaulting to false so the old single-operator path stays untouched.

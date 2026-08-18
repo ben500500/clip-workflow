@@ -1,4 +1,4 @@
-# autoclip/app/core/llm_providers.py · [[llm-manager-provider-abstraction]]
+# autoclip/app/core/llm_providers.py · [[llm-manager-providers]]
 
 - ProviderType · class · L16-L21 — class ProviderType(Enum)
 - ModelInfo · class · L24-L31 — class ModelInfo

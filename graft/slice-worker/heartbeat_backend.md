@@ -1,4 +1,4 @@
-# slice-worker/heartbeat_backend.go
+# slice-worker/heartbeat_backend.go · [[slice-worker-node]]
 
 - WorkerHeartbeatPayload · struct · L15-L30 — WorkerHeartbeatPayload
 - sendBackendHeartbeat · method · L37-L85 — func (w *Worker) sendBackendHeartbeat() error

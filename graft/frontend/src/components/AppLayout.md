@@ -1,10 +1,10 @@
-# frontend/src/components/AppLayout.tsx · [[frontend-routing-shell]]
+# frontend/src/components/AppLayout.tsx · [[frontend-app-shell-routing]] [[frontend-auth-session]]
 
-- WorkerStatusIcon · function · L132-L291 — WorkerStatusIcon: React.FC = ()
-- toggleWorker · function · L158-L174 — toggleWorker = async (node: WorkerNode, enabled: boolean)
-- onOpenChange · function · L177-L179 — onOpenChange = (open: boolean)
-- AppLayout · function · L293-L489 — AppLayout: React.FC = ()
-- getSelectedKey · function · L321-L326 — getSelectedKey = (pathname: string): string
-- handleMenuClick · function · L348-L350 — handleMenuClick = ({ key }: { key: string })
-- handleUserMenuClick · function · L352-L368 — handleUserMenuClick: MenuProps['onClick'] = ({ key })
-- onOk · method · L362-L365 — onOk()
+- WorkerStatusIcon · function · L138-L297 — WorkerStatusIcon: React.FC = ()
+- toggleWorker · function · L164-L180 — toggleWorker = async (node: WorkerNode, enabled: boolean)
+- onOpenChange · function · L183-L185 — onOpenChange = (open: boolean)
+- AppLayout · function · L299-L495 — AppLayout: React.FC = ()
+- getSelectedKey · function · L327-L332 — getSelectedKey = (pathname: string): string
+- handleMenuClick · function · L354-L356 — handleMenuClick = ({ key }: { key: string })
+- handleUserMenuClick · function · L358-L374 — handleUserMenuClick: MenuProps['onClick'] = ({ key })
+- onOk · method · L368-L371 — onOk()

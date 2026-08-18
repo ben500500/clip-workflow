@@ -1,4 +1,4 @@
-# slice-worker/tray.go
+# slice-worker/tray.go · [[redis-task-coordination-contract]] [[worker-platform-abstractions]]
 
 System tray (menu bar) implementation for the slice worker node, with platform-specific backends for Windows/macOS and a no-tray log mode for Linux/containers.
 

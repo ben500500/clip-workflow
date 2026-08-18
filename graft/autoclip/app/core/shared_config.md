@@ -1,3 +1,3 @@
-# autoclip/app/core/shared_config.py · [[llm-manager-provider-abstraction]]
+# autoclip/app/core/shared_config.py · [[autoclip-pipeline]]
 
 _No extracted symbols in this file._

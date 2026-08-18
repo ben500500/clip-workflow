@@ -1,4 +1,4 @@
-# alembic/versions/0008_data_scope.py · [[alembic-migration-chain]]
+# alembic/versions/0008_data_scope.py · [[alembic-migration-chain]] [[multi-operator-rbac-audit]]
 
 Alembic migration adding data isolation columns (users.data_scope and projects.created_by) to enforce the second-phase data isolation scheme where admins/material/publisher roles see all materials while operators only see their own.
 

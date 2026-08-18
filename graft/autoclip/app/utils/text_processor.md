@@ -1,4 +1,4 @@
-# autoclip/app/utils/text_processor.py
+# autoclip/app/utils/text_processor.py · [[text-processing-utilities]]
 
 - TextProcessor · class · L26-L295 — class TextProcessor
 - chunk_text · method · L30-L79 — def chunk_text(text: str, chunk_size: int = CHUNK_SIZE) -> List[str]

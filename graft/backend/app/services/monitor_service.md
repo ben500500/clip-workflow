@@ -1,4 +1,4 @@
-# backend/app/services/monitor_service.py
+# backend/app/services/monitor_service.py · [[monitoring-alerting-service]]
 
 - ensure_default_alert_rules · function · L66-L76 — async def ensure_default_alert_rules() -> None
 - _get_redis · function · L84-L87 — async def _get_redis() -> Any

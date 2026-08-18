@@ -1,4 +1,4 @@
-# alembic/versions/0006_shortdrama_prompt_video.py · [[alembic-migration-chain]]
+# alembic/versions/0006_shortdrama_prompt_video.py · [[alembic-migration-chain]] [[short-drama-production-workflow]]
 
 Alembic migration adding video attachment columns to shortdrama_prompts to support importing generated videos into the watermark-removal flow.
 

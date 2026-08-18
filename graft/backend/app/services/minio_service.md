@@ -1,4 +1,4 @@
-# backend/app/services/minio_service.py · [[minio-storage-service]]
+# backend/app/services/minio_service.py · [[object-storage-service-minio]]
 
 - _parse_endpoint · function · L22-L30 — Normalizes a MinIO endpoint string into (host:port, secure) by extracting scheme and netloc from URLs.
 - get_minio_client · function · L33-L46 — Returns a lazily-created, cached MinIO client configured from settings for internal container access.

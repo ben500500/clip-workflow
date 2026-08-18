@@ -1,4 +1,4 @@
-# engines/detect_intervals.py · [[interval-detection-engine]]
+# engines/detect_intervals.py · [[video-processing-engines]]
 
 CLI engine that detects credits (trailing black) and static (frozen) intervals in a video via ffmpeg filters and writes the results to a JSON file.
 

@@ -1,4 +1,4 @@
-# engines/seedance_wm/config.py · [[seedance-watermark-removal-engine]]
+# engines/seedance_wm/config.py · [[video-processing-engines]]
 
 Defines the YAML-based configuration schema and load/serialize logic for the watermark-removal engine, covering detector, inpainter, temporal, output, logging, and cache settings.
 

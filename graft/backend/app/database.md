@@ -1,4 +1,4 @@
-# backend/app/database.py
+# backend/app/database.py · [[configuration-database-bootstrap]] [[data-isolation-rbac]]
 
 - Base · class · L34-L35 — Declarative base class that all ORM models inherit from.
 - get_db · function · L38-L48 — FastAPI dependency that yields an async session, committing on success and rolling back on exception.

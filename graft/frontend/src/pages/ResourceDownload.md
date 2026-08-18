@@ -1,4 +1,4 @@
-# frontend/src/pages/ResourceDownload.tsx · [[auth-users-settings]]
+# frontend/src/pages/ResourceDownload.tsx · [[wechat-channels-resource-download]]
 
 - ImportPanel · function · L32-L179 — ImportPanel: React.FC = ()
 - handleResolutionChange · function · L50-L57 — handleResolutionChange = (v: string)

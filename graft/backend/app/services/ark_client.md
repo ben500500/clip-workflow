@@ -1,4 +1,4 @@
-# backend/app/services/ark_client.py
+# backend/app/services/ark_client.py · [[short-drama-generation-channels]]
 
 - _normalize_bool · function · L56-L64 — def _normalize_bool(value) -> bool
 - SeedanceConfig · class · L67-L127 — class SeedanceConfig

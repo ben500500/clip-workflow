@@ -1,4 +1,4 @@
-# frontend/src/api/wechatDl.ts · [[frontend-api-client-layer]]
+# frontend/src/api/wechatDl.ts · [[frontend-api-layer]]
 
 API client module for WeChat download tasks, providing endpoints for single/batch import, task listing, slicing, project import, and provider info.
 

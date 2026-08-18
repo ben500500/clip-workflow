@@ -1,4 +1,4 @@
-# frontend/src/api/shortdrama.ts · [[frontend-api-client-layer]]
+# frontend/src/api/shortdrama.ts · [[frontend-api-layer]]
 
 API client module for all short-drama prompt generation, video upload, Doubao RPA, and Seedance API workflows.
 

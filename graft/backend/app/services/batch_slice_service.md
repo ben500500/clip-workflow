@@ -1,4 +1,4 @@
-# backend/app/services/batch_slice_service.py
+# backend/app/services/batch_slice_service.py · [[batch-slicing-workflow]]
 
 - _get_batch · function · L55-L59 — Loads a single BatchSlice record by id from the database.
 - _load_items · function · L62-L69 — Loads all BatchSliceItem rows for a batch ordered by sequence number.

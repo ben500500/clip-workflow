@@ -1,4 +1,4 @@
-# alembic/versions/0030_publish_task_dead_letter.py · [[alembic-migration-chain]]
+# alembic/versions/0030_publish_task_dead_letter.py · [[alembic-migration-chain]] [[publishing-video-account-matrix]]
 
 Alembic migration adding retry_count, dead_letter, and dead_letter_reason columns to publish_tasks so failed publishes can be retried and dead-lettered instead of silently lost.
 

@@ -1,4 +1,4 @@
-# alembic/versions/0014_seedance_generate.py · [[alembic-migration-chain]]
+# alembic/versions/0014_seedance_generate.py · [[alembic-migration-chain]] [[short-drama-production-workflow]]
 
 Alembic migration adding Seedance official API direct-generate task fields and a gen_channel source-tracking column to shortdrama_prompts, enabling a parallel video-generation channel that still writes results back to existing video_* fields.
 

@@ -1,4 +1,4 @@
-# backend/app/api/autoclip.py
+# backend/app/api/autoclip.py · [[autoclip-pipeline-batch-slicing]] [[data-isolation-access-control]]
 
 - _merge_default_autoclip_config · function · L32-L54 — Merges system-level default_autoclip_config settings (model name, score threshold) as a base layer so system settings take effect, with request-provided config overriding them.
 - AutoClipRunRequest · class · L58-L60 — Request body for triggering an AutoClip run, carrying optional config overrides and an optional video path.

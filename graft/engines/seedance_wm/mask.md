@@ -1,4 +1,4 @@
-# engines/seedance_wm/mask.py · [[seedance-watermark-removal-engine]]
+# engines/seedance_wm/mask.py · [[seedance-wm-engine]] [[seedance-wm-mask-generation]]
 
 Module that converts watermark bounding boxes into per-frame single-channel mask PNGs (white=watermark, black=background) with morphological dilation margin for inpainting.
 

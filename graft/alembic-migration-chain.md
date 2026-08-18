@@ -73,12 +73,18 @@ sources:
     hash: 9fa2c89ea44532d842367f2d176dd21afea85a993455f9f2a874004fd8b1a6d2
   - path: alembic/versions/0034_multi_video_dedup_variants.py
     hash: eadc353ba3ee7e8ddb1c6eea61347df3893f5c7be6cd579715ecdd7350893e12
-sources_digest: 1d65f059ae56d01bd7d174b75e4291303c95583545ef4dbb43e8fc0a10946ce1
+  - path: alembic/versions/0035_publish_profile_location.py
+    hash: ef8f525834b4c02d34a90d6ec6d5ea2710804da55139a5385ab66a2ce3164df6
+  - path: alembic/versions/0035_slice_task_cover_image.py
+    hash: 82bd3bd669022a61921665b6be12b78c3b723ff63b097f4c3574998b1cc546a3
+  - path: alembic/versions/0036_drama_management.py
+    hash: 87e0349c1793c8ac26ee643ae6d520cfafbbeb57c7de121412e71c8ea4925bb0
+sources_digest: 952175471b2813ec71d00ea1b5255dea40d149df9f051e775665eeda2cf9173d
 links:
-  - to: llm-manager-provider-abstraction
+  - to: llm-manager-providers
     relation: uses
     description: >-
-      env.py imports Base from app.database and registers ORM models so schema
+      env.py imports Base and ORM models from app.database/app.models so schema
       changes are detected against the same metadata the app uses.
 generator:
   version: 1
@@ -302,15 +308,33 @@ covers:
   - symbol: downgrade
     kind: function
     at: 'alembic/versions/0034_multi_video_dedup_variants.py:L97-L104'
+  - symbol: upgrade
+    kind: function
+    at: 'alembic/versions/0035_publish_profile_location.py:L25-L33'
+  - symbol: downgrade
+    kind: function
+    at: 'alembic/versions/0035_publish_profile_location.py:L36-L40'
+  - symbol: upgrade
+    kind: function
+    at: 'alembic/versions/0035_slice_task_cover_image.py:L26-L27'
+  - symbol: downgrade
+    kind: function
+    at: 'alembic/versions/0035_slice_task_cover_image.py:L30-L31'
+  - symbol: upgrade
+    kind: function
+    at: 'alembic/versions/0036_drama_management.py:L32-L104'
+  - symbol: downgrade
+    kind: function
+    at: 'alembic/versions/0036_drama_management.py:L107-L111'
 ---
 <!-- context:generated:start -->
 ## Summary
 
-The complete ordered sequence of 34 database migrations (0001-0034) that evolve the PostgreSQL schema. Migrations 0001-0002 establish the core supplementary tables (sessions, audit logs, alerts, autoclip runs); 0003-0025 progressively add per-task config columns (vert2horiz, badges, subtitles, text overlays, masks) to slice_tasks and user_preferences; 0026-0034 implement multi-operator ownership, audit tables, WeChat download, scheduled publishing, and multi-video dedup. A key invariant is that core business tables (projects, episodes) are NOT created here — they come from ORM create_all — and several migrations use raw SQL with IF NOT EXISTS guards for idempotency.
+The full sequence of 36+ Alembic migrations that evolve the PostgreSQL schema from initial supplementary tables through multi-operator RBAC, short-drama production, watermark removal, video account matrix, dedup, and drama management. Migrations chain linearly (each depends on the prior revision) and are overwhelmingly additive/backward-compatible, using nullable columns and IF NOT EXISTS guards to avoid table locks and failures on fresh databases. Core business tables (projects, episodes) are deliberately excluded from migrations and handled by ORM create_all, while slice_tasks config columns are added via raw SQL for idempotency.
 
 ## Related
 
-- uses [[llm-manager-provider-abstraction]] — env.py imports Base from app.database and registers ORM models so schema changes are detected against the same metadata the app uses.
+- uses [[llm-manager-providers]] — env.py imports Base and ORM models from app.database/app.models so schema changes are detected against the same metadata the app uses.
 <!-- context:generated:end -->
 
 ## Notes

@@ -1,4 +1,4 @@
-# backend/app/api/intervals.py
+# backend/app/api/intervals.py · [[autoclip-pipeline-batch-slicing]] [[data-isolation-access-control]]
 
 - DetectRequest · class · L22-L25 — class DetectRequest(BaseModel)
 - DetectResponse · class · L28-L30 — class DetectResponse(BaseModel)

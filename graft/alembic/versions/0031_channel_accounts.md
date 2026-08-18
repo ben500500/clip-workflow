@@ -1,4 +1,4 @@
-# alembic/versions/0031_channel_accounts.py · [[alembic-migration-chain]]
+# alembic/versions/0031_channel_accounts.py · [[alembic-migration-chain]] [[multi-operator-rbac-audit]] [[publishing-video-account-matrix]]
 
 Alembic migration adding channel_accounts ledger and channel_operators sub-tables to decouple video-account business/cooperation info from the publish channel, with a CHECK constraint requiring operator identity.
 

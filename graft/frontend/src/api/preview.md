@@ -1,4 +1,4 @@
-# frontend/src/api/preview.ts · [[frontend-api-client-layer]]
+# frontend/src/api/preview.ts · [[frontend-api-layer]]
 
 API client wrapper exposing preview, download, and publication endpoints for output artifacts.
 

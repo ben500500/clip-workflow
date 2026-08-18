@@ -1,4 +1,4 @@
-# frontend/src/pages/DataImport.tsx · [[analytics-dashboard-pages]]
+# frontend/src/pages/DataImport.tsx · [[data-import-template-workflow]]
 
 - SmartImportPanel · function · L15-L174 — SmartImportPanel: React.FC = ()
 - handleUpload · function · L22-L41 — handleUpload = async (file: File)

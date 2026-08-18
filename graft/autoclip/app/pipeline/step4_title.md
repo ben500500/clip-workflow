@@ -1,4 +1,4 @@
-# autoclip/app/pipeline/step4_title.py · [[autoclip-pipeline-stages]]
+# autoclip/app/pipeline/step4_title.py · [[autoclip-pipeline]]
 
 - TitleGenerator · class · L18-L115 — class TitleGenerator
 - __init__ · method · L21-L34 — def __init__(self, metadata_dir: Optional[Path] = None, prompt_files: Dict = None)

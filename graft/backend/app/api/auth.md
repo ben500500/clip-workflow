@@ -1,4 +1,4 @@
-# backend/app/api/auth.py
+# backend/app/api/auth.py · [[backend-app-factory-auth]]
 
 - LoginRequest · class · L51-L53 — 登录请求体，包含用户名和密码字段。
 - LoginResponse · class · L56-L60 — 登录响应体，返回 access_token 及用户信息。

@@ -1,4 +1,4 @@
-# backend/app/models/user.py
+# backend/app/models/user.py · [[auth-session-layer]] [[data-isolation-rbac]]
 
 - UserRole · class · L25-L30 — class UserRole(str, enum.Enum)
 - default_data_scope_for_role · function · L52-L57 — def default_data_scope_for_role(role: str) -> str

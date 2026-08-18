@@ -1,4 +1,4 @@
-# autoclip/app/pipeline/step3_scoring.py · [[autoclip-pipeline-stages]]
+# autoclip/app/pipeline/step3_scoring.py · [[autoclip-pipeline]]
 
 - ClipScorer · class · L19-L288 — class ClipScorer
 - __init__ · method · L27-L60 — def __init__(self, prompt_files: Dict = None, metadata_dir: Path = None, frame_analysis_enabled: Optional[bool] = None)

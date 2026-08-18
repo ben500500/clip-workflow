@@ -1,4 +1,4 @@
-# backend/app/api/publish_video_accounts.py
+# backend/app/api/publish_video_accounts.py · [[data-isolation-access-control]] [[publish-profiles-video-accounts]]
 
 - VideoAccountCreate · class · L22-L34 — class VideoAccountCreate(BaseModel)
 - VideoAccountUpdate · class · L37-L48 — class VideoAccountUpdate(BaseModel)

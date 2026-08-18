@@ -1,4 +1,4 @@
-# engines/seedance_wm/agent.py · [[seedance-watermark-removal-engine]]
+# engines/seedance_wm/agent.py · [[video-processing-engines]]
 
 - build_agent · function · L18-L71 — Lazily constructs an Agno Agent that chains the five watermark-removal tools with fallback and validation instructions, raising a clear error if agent deps are missing.
 - extract_frames_tool · function · L32-L34 — Exposes frame extraction as an Agno tool by delegating to the core extract_frames function.

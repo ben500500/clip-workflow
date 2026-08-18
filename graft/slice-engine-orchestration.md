@@ -4,19 +4,20 @@ slug: slice-engine-orchestration
 type: system
 sources:
   - path: backend/app/services/slice_service.py
-    hash: 6df06295f325caa64d9caa6a3cb3c5b605cc8809c820757c1496b8d6c73b7ca5
-sources_digest: c6a664b97c4f1c102817248263c9e485cdf6020afe345845f3221b7cd435859f
+    hash: 6aca808cab05a6dd638ab6d3cf4bc7ffa6caddbdb64c64de07bc0138f31c4d87
+sources_digest: 01520d35a78fc408bead5d3530e3ba27f4353b7e367b3c47571354c704a61394
 links:
-  - to: redis-stream-task-coordination
-    relation: depends_on
-    description: >-
-      Slice tasks published to Redis streams are consumed by workers that invoke
-      this service
+  - to: redis-stream-service
+    relation: uses
+    description: Consumes slice tasks published to streams
   - to: variant-generation-pipeline
     relation: uses
     description: >-
-      Variant service invokes run_slice_fast with dedupe mode to generate
-      deduplicated variants
+      variant_service invokes slice engine's dedupe mode to apply variant
+      recipes
+  - to: video-processing-engines
+    relation: uses
+    description: Invokes the Python engine scripts as subprocesses
 generator:
   version: 1
 covers:
@@ -34,26 +35,27 @@ covers:
     at: 'backend/app/services/slice_service.py:L70-L75'
   - symbol: run_slice
     kind: function
-    at: 'backend/app/services/slice_service.py:L78-L162'
+    at: 'backend/app/services/slice_service.py:L78-L165'
   - symbol: run_slice_scrub
     kind: function
-    at: 'backend/app/services/slice_service.py:L165-L216'
+    at: 'backend/app/services/slice_service.py:L168-L221'
   - symbol: run_slice_fast
     kind: function
-    at: 'backend/app/services/slice_service.py:L219-L272'
+    at: 'backend/app/services/slice_service.py:L224-L279'
   - symbol: run_preview
     kind: function
-    at: 'backend/app/services/slice_service.py:L275-L289'
+    at: 'backend/app/services/slice_service.py:L282-L296'
 ---
 <!-- context:generated:start -->
 ## Summary
 
-Service layer that orchestrates video processing by spawning external Python engine scripts as subprocesses. Exposes run_slice, run_slice_scrub, run_slice_fast, and run_preview which build CLI invocations for slice.py and preview.py engines. Manages subprocess execution with timeout enforcement (SIGTERM then SIGKILL), streaming stdout/stderr line-by-line, and parsing PROGRESS: lines to drive progress callbacks. Serializes a large set of optional config parameters (watermarks, badges, subtitles, dedupe, masks, encoder) to JSON passed as CLI flags.
+Service layer orchestrating external video-processing engine subprocesses (slice.py, preview.py in settings.ENGINES_DIR). Builds CLI invocations with JSON-serialized config (watermarks, badges, subtitles, dedupe, masks, encoders), manages subprocess execution with graceful SIGTERM-to-SIGKILL timeout escalation, and parses PROGRESS: lines to drive progress callbacks. Explicit engine file existence checks with Chinese-language errors.
 
 ## Related
 
-- depends on [[redis-stream-task-coordination]] — Slice tasks published to Redis streams are consumed by workers that invoke this service
-- uses [[variant-generation-pipeline]] — Variant service invokes run_slice_fast with dedupe mode to generate deduplicated variants
+- uses [[redis-stream-service]] — Consumes slice tasks published to streams
+- uses [[variant-generation-pipeline]] — variant_service invokes slice engine's dedupe mode to apply variant recipes
+- uses [[video-processing-engines]] — Invokes the Python engine scripts as subprocesses
 <!-- context:generated:end -->
 
 ## Notes

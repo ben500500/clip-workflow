@@ -1,4 +1,4 @@
-# scripts/cleanup_orphans.py · [[storage-cleanup-orphan-reclamation]]
+# scripts/cleanup_orphans.py · [[deployment-ops-scripts]]
 
 Scans and optionally deletes orphaned resources (MinIO raw/sliced objects and media volume files) whose referenced DB records no longer exist, defaulting to a dry-run report.
 

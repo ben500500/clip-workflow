@@ -1,4 +1,4 @@
-# backend/app/api/workers.py
+# backend/app/api/workers.py · [[redis-streams-real-time-state]] [[worker-node-management-engine-update]]
 
 - WorkerNodeResponse · class · L47-L77 — Worker 节点对外展示的响应模型，聚合数据库字段与 Redis 实时状态（进度、运行任务、CPU 比例、引擎版本、编码能力）。
 - WorkerHeartbeatRequest · class · L80-L97 — Worker 心跳上报请求体，携带节点运行状态、累计任务数与硬件能力供服务端同步。

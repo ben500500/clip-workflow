@@ -1,4 +1,4 @@
-# frontend/src/api/slice.ts · [[frontend-api-client-layer]]
+# frontend/src/api/slice.ts · [[frontend-api-layer]]
 
 - BadgeItem · interface · L4-L10 — Describes an image badge overlay to be placed on the output video, specifying its MinIO file key, position, and optional sizing/opacity.
 - BadgeUploadResult · interface · L12-L17 — Result payload returned after uploading a badge image, carrying the file metadata and upload id.

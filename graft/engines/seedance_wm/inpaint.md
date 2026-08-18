@@ -1,4 +1,4 @@
-# engines/seedance_wm/inpaint.py · [[seedance-watermark-removal-engine]]
+# engines/seedance_wm/inpaint.py · [[video-processing-engines]] [[watermark-removal-degradation-chain]]
 
 - _lama_model_ready · function · L29-L57 — Checks whether the LaMa ONNX model is fully downloaded to the local HF cache so offline servers avoid hanging on network timeouts.
 - resolve_device · function · L60-L70 — Resolves 'auto' to cuda when torch reports a GPU, otherwise falls back to cpu.

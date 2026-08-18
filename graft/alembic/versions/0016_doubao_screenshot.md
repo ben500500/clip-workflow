@@ -1,4 +1,4 @@
-# alembic/versions/0016_doubao_screenshot.py · [[alembic-migration-chain]]
+# alembic/versions/0016_doubao_screenshot.py · [[alembic-migration-chain]] [[short-drama-production-workflow]]
 
 Alembic migration adding a doubao_screenshot text column to shortdrama_prompts to store the current Doubao/Seedance conversation window screenshot data URL during running state.
 

@@ -1,4 +1,4 @@
-# engines/vert2horiz_crop.py · [[face-aware-crop]]
+# engines/vert2horiz_crop.py · [[vert2horiz-crop]]
 
 - get_video_info · function · L81-L93 — Reads video dimensions, frame rate, and frame count from a file via OpenCV.
 - FaceDetector · class · L96-L165 — Wraps face detection, preferring YuNet (OpenCV 4.5.1+) with Haar cascade as a fallback for older OpenCV versions.

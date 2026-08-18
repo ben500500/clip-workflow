@@ -1,4 +1,4 @@
-# rpa/bootstrap.py · [[rpa-multi-operator-infrastructure]]
+# rpa/bootstrap.py · [[rpa-multi-operator-container]] [[rpa-route-table-chaos-validation]]
 
 Bootstrap script that reads multi-operator profiles from Redis and writes them to /app/profiles.json for supervisord startup, falling back to single-instance mode when disabled or empty.
 

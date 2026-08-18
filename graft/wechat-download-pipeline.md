@@ -25,19 +25,15 @@ sources:
     hash: a6260bdeb69aa4d8a803d71739b89f4f513f04999bdcd4774bd00a03ac074c15
 sources_digest: b19616321b6aafd70bb72f12d5573bccebb972a208250155fd29d7dba6cebbd4
 links:
-  - to: minio-storage-service
+  - to: multi-operator-routing-service
     relation: uses
-    description: Uploads downloaded videos to MinIO via minio_service.upload_file_from_path
-  - to: slice-engine-orchestration
-    relation: produces
-    description: >-
-      The to-slice endpoint creates a SliceTask with mode=fast and dispatches
-      via the existing slice_task Celery task
-  - to: video-publishing-pipeline
+    description: preview_client routes through multi_operator to get a CDP connection
+  - to: object-storage-service-minio
     relation: uses
-    description: >-
-      PreviewClient routes through multi_operator service to get a CDP
-      connection, same mechanism publish_service uses
+    description: Uploads downloaded videos via minio_service.upload_file_from_path
+  - to: shared-backend-utilities
+    relation: uses
+    description: Uses helpers for temp file management and filename generation
 generator:
   version: 1
 covers:
@@ -330,13 +326,13 @@ covers:
 <!-- context:generated:start -->
 ## Summary
 
-The full WeChat video download subsystem: FastAPI router, ORM models on a standalone WechatDownloadBase (extractable as independent package), downloader with P1-level resumable HTTP Range support and HLS segment concatenation, provider registry with config-driven fallback chain (Yuanbao primary, Preview fallback, extensible HttpApiAdapter), and a Celery task on the wechat_dl queue. Distinguishes retryable failures (RetryableImportError) from permanent ones, preserves temp files on retryable failures for byte-range resume, and publishes progress to Redis for WebSocket delivery. The PreviewClient fallback connects to an already-logged-in WeChat account via Playwright CDP and extracts stream URLs from the finder-preview page DOM.
+End-to-end pipeline importing WeChat video share links: task creation, URL parsing via a config-driven provider fallback chain (Yuanbao primary, Preview fallback, extensible HttpApiAdapter), MP4/HLS downloading with P1-level Range resume, and Episode creation in the main system. Uses a dedicated WechatDownloadBase declarative base so the package can be extracted standalone; WechatParseRecord caches parse results to avoid rate-limited parsing services. Distinguishes retryable failures (preserve temp files for byte-range resume) from permanent ones.
 
 ## Related
 
-- uses [[minio-storage-service]] — Uploads downloaded videos to MinIO via minio_service.upload_file_from_path
-- produces [[slice-engine-orchestration]] — The to-slice endpoint creates a SliceTask with mode=fast and dispatches via the existing slice_task Celery task
-- uses [[video-publishing-pipeline]] — PreviewClient routes through multi_operator service to get a CDP connection, same mechanism publish_service uses
+- uses [[multi-operator-routing-service]] — preview_client routes through multi_operator to get a CDP connection
+- uses [[object-storage-service-minio]] — Uploads downloaded videos via minio_service.upload_file_from_path
+- uses [[shared-backend-utilities]] — Uses helpers for temp file management and filename generation
 <!-- context:generated:end -->
 
 ## Notes

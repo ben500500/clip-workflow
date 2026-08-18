@@ -1,4 +1,4 @@
-# slice-worker/redis_client.go
+# slice-worker/redis_client.go · [[redis-task-coordination-contract]] [[slice-worker-node]]
 
 - RedisClient · struct · L15-L18 — RedisClient
 - NewRedisClient · function · L21-L36 — func NewRedisClient(redisURL string) (*RedisClient, error)
@@ -27,7 +27,8 @@
 - ClearNodeUpdateCommand · method · L361-L363 — func (r *RedisClient) ClearNodeUpdateCommand(nodeID string) error
 - StreamMessage · struct · L366-L371 — StreamMessage
 - NodeInfo · struct · L374-L396 — NodeInfo
-- SliceTask · struct · L399-L435 — SliceTask
-- BadgeItem · struct · L443-L450 — BadgeItem
-- TaskSource · struct · L453-L455 — TaskSource
-- TaskOutput · struct · L458-L466 — TaskOutput
+- SliceTask · struct · L399-L437 — SliceTask
+- BadgeItem · struct · L445-L452 — BadgeItem
+- CoverItem · struct · L456-L459 — CoverItem
+- TaskSource · struct · L462-L464 — TaskSource
+- TaskOutput · struct · L467-L475 — TaskOutput

@@ -1,4 +1,4 @@
-# frontend/src/api/variants.ts · [[frontend-api-client-layer]]
+# frontend/src/api/variants.ts · [[frontend-api-layer]]
 
 API client module for variant management, exposing endpoints to fetch the variant matrix, inspect variant details, generate new variants, verify safety, bind variants to accounts, and update dedupe thresholds.
 

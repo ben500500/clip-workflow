@@ -1,0 +1,25 @@
+# frontend/src/api/dramas.ts · [[frontend-api-layer]]
+
+- Drama · interface · L5-L25 — interface Drama
+- DramaDetail · interface · L27-L30 — interface DramaDetail extends Drama
+- DramaStill · interface · L32-L37 — interface DramaStill
+- DramaCreateParams · interface · L39-L54 — interface DramaCreateParams
+- DramaUpdateParams · interface · L56-L70 — interface DramaUpdateParams
+- DramaImportRow · interface · L72-L84 — interface DramaImportRow
+- DramaImportPreviewResult · interface · L86-L92 — interface DramaImportPreviewResult
+- DramaImportConfirmItem · interface · L94-L108 — interface DramaImportConfirmItem
+- DramaPublishContext · interface · L110-L117 — interface DramaPublishContext
+- listDramas · function · L121-L129 — function listDramas(params?: { q?: string; frequency?: string; rating?: string; listing_status?: string; account_id?: string; }): Promise<Drama[]>
+- getDrama · function · L131-L133 — function getDrama(dramaId: string): Promise<DramaDetail>
+- createDrama · function · L135-L137 — function createDrama(data: DramaCreateParams): Promise<DramaDetail>
+- updateDrama · function · L139-L141 — function updateDrama(dramaId: string, data: DramaUpdateParams): Promise<DramaDetail>
+- deleteDrama · function · L143-L145 — function deleteDrama(dramaId: string): Promise<void>
+- uploadDramaImage · function · L149-L162 — function uploadDramaImage(file: File, onProgress?: (percent: number) => void): Promise<{ file_name: string; file_key: string; file_size: number }>
+- addDramaStill · function · L164-L166 — function addDramaStill(dramaId: string, fileKey: string, sortOrder?: number): Promise<DramaStill>
+- deleteDramaStill · function · L168-L170 — function deleteDramaStill(stillId: string): Promise<void>
+- linkDramaAccounts · function · L173-L175 — function linkDramaAccounts(dramaId: string, accountIds: string[]): Promise<{ account_ids: string[] }>
+- dramaImportParse · function · L178-L196 — function dramaImportParse(file: File, onProgress?: (percent: number) => void): Promise<{ rows: DramaImportRow[]; total: number; file_name: string; message: string; }>
+- dramaImportPreview · function · L198-L200 — function dramaImportPreview(rows: DramaImportRow[], fileName?: string): Promise<DramaImportPreviewResult>
+- dramaImportConfirm · function · L202-L212 — function dramaImportConfirm( acceptNew: DramaImportConfirmItem[], acceptUpdate: DramaImportConfirmItem[], fileName?: string ): Promise<{ imported: number; updated: number; skipped: number; errors: unknown[]; import_history_id?: string }>
+- getDramaPublishContext · function · L215-L217 — function getDramaPublishContext(dramaId: string): Promise<DramaPublishContext>
+- linkDramaMaterial · function · L219-L225 — function linkDramaMaterial( dramaId: string, materialId: string, accountId?: string ): Promise<{ id: string; drama_id: string; material_id: string }>

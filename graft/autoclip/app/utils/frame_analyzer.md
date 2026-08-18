@@ -1,4 +1,4 @@
-# autoclip/app/utils/frame_analyzer.py
+# autoclip/app/utils/frame_analyzer.py · [[frame-analysis]]
 
 - _seconds_to_ffmpeg_ts · function · L55-L60 — def _seconds_to_ffmpeg_ts(sec: float) -> str
 - _extract_frame · function · L63-L81 — def _extract_frame(video_path: str, timestamp: float, out_path: str) -> bool

@@ -1,4 +1,4 @@
-# alembic/versions/0034_multi_video_dedup_variants.py · [[alembic-migration-chain]]
+# alembic/versions/0034_multi_video_dedup_variants.py · [[alembic-migration-chain]] [[multi-video-dedup-fingerprinting]]
 
 Alembic migration adding the multi-video dedup data layer: new clip_variants and video_fingerprints tables plus variant columns on existing tables, with a rollback-capable downgrade.
 

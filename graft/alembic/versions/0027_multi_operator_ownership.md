@@ -1,4 +1,4 @@
-# alembic/versions/0027_multi_operator_ownership.py · [[alembic-migration-chain]]
+# alembic/versions/0027_multi_operator_ownership.py · [[alembic-migration-chain]] [[multi-operator-rbac-audit]] [[publishing-video-account-matrix]]
 
 Alembic migration adding multi-operator ownership fields (created_by/operator_id) to video_accounts, publish_profiles, and publish_tasks, plus the new publish_batches table, to support RBAC own/all data isolation and batch-level publish allocation.
 

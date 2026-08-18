@@ -1,4 +1,4 @@
-# backend/app/models/audit.py
+# backend/app/models/audit.py · [[audit-observability]] [[orm-model-registry]]
 
 - AuditLog · class · L22-L41 — General audit log table capturing operator, action, target object, and before/after JSON values for security compliance and ops traceability, viewable only by superadmin/admin.
 - __repr__ · method · L40-L41 — Human-readable string representation of an AuditLog row for debugging.

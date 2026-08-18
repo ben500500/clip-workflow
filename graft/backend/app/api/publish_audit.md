@@ -1,4 +1,4 @@
-# backend/app/api/publish_audit.py
+# backend/app/api/publish_audit.py · [[publish-audit-login-qr]]
 
 - _serialize_publish_audit · function · L22-L43 — def _serialize_publish_audit(a) -> dict
 - _serialize_login_audit · function · L46-L60 — def _serialize_login_audit(a) -> dict

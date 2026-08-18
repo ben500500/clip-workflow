@@ -1,53 +1,54 @@
-# backend/app/celery/tasks.py
+# backend/app/celery/tasks.py · [[celery-task-layer]]
 
-- run_async · function · L119-L132 — def run_async(coro)
-- _ensure_source_video · function · L135-L148 — async def _ensure_source_video(source_path: Optional[str], source_file_key: Optional[str], source_bucket: Optional[str] = None) -> Optional[str]
-- autoclip_task · function · L152-L258 — def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: str, config: dict, source_file_key: Optional[str] = None)
-- batch_slice_task · function · L262-L276 — def batch_slice_task(self, batch_id: str)
-- batch_selection_consumer · function · L280-L290 — def batch_selection_consumer(self, batch_id: str, item_id: str, episode_id: str)
-- batch_slice_dispatch · function · L294-L304 — def batch_slice_dispatch(self)
-- batch_aggregate · function · L308-L316 — def batch_aggregate(self)
-- publish_schedule_dispatcher · function · L320-L378 — def publish_schedule_dispatcher(self)
-- _dispatch_due · function · L331-L353 — async def _dispatch_due()
-- _write_ckid · function · L362-L370 — async def _write_ckid(task_id: str, ckid: str)
-- detect_task · function · L382-L449 — def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict, source_file_key: Optional[str] = None, task_id: Optional[str] = None)
-- _run · function · L413-L414 — async def _run()
-- _create_detect_task · function · L452-L474 — async def _create_detect_task(episode_id: str, mode: str, config: dict, celery_task_id: Optional[str]) -> Optional[str]
-- _update_detect_task_progress · function · L477-L491 — async def _update_detect_task_progress(detect_task_id: str, progress: float, status: str)
-- _fail_detect_task · function · L494-L509 — async def _fail_detect_task(detect_task_id: str, error: str)
-- slice_task · function · L513-L770 — def slice_task( self, episode_id: str, source_path: str, cutlist: str, intervals: str, mode: str, dedupe_config: Optional[dict] = None, task_id: Optional[str] = None, source_file_key: Optional[str] = None, source_bucket: Optional[str] = None, watermark_config: Optional[dict] = None, encoder: Optional[str] = None, vert2horiz_config: Optional[dict] = None, badges_config: Optional[list] = None, badge_default_width: int = 0, subtitle_config: Optional[dict] = None, text_overlays_config: Optional[list] = None, subtitle_mask_config: Optional[dict] = None, watermark_mask_config: Optional[dict] = None, subtitle_align_mask: bool = True, )
-- progress_cb · function · L640-L645 — def progress_cb(pct: int, message: str = "")
-- _parse_engine_manifest · function · L773-L790 — def _parse_engine_manifest(stdout: str, output_dir: str) -> list[dict]
-- _save_autoclip_results · function · L793-L895 — async def _save_autoclip_results( episode_id: str, autoclip_project_id: str, clips: list[dict], completed: bool, config: Optional[dict] = None, )
-- _in_duration_range · function · L816-L821 — def _in_duration_range(dur: float) -> bool
-- _mark_autoclip_failed · function · L898-L914 — async def _mark_autoclip_failed(episode_id: str, error: str)
-- _update_autoclip_run · function · L917-L977 — async def _update_autoclip_run( episode_id: str, autoclip_project_id: Optional[str], status: str, progress: float, message: Optional[str] = None, )
-- _save_detected_intervals · function · L980-L1046 — async def _save_detected_intervals( episode_id: str, intervals: list[dict], mode: str, config: dict )
-- _update_episode_status · function · L1049-L1062 — async def _update_episode_status(episode_id: str, status: str)
-- _update_slice_task_progress · function · L1065-L1081 — async def _update_slice_task_progress(task_id: Optional[str], progress: float)
-- _save_slice_outputs · function · L1084-L1192 — async def _save_slice_outputs( task_id: Optional[str], episode_id: str, output_files: list[dict], mode: str, )
-- _fail_slice_task · function · L1195-L1212 — async def _fail_slice_task(task_id: Optional[str], error: str)
-- task_publish_video · function · L1216-L1445 — def task_publish_video(self, publish_task_id: str)
-- _release_confirm_lock · function · L1448-L1464 — def _release_confirm_lock(lock_key: str, acquired: bool) -> None
-- _release · function · L1455-L1460 — async def _release()
-- confirm_publish_worker · function · L1468-L1574 — def confirm_publish_worker(self, publish_task_id: str)
-- _acquire_lock · function · L1479-L1484 — async def _acquire_lock()
-- check_cookie_status · function · L1578-L1643 — def check_cookie_status(self)
-- sync_multi_operator_profiles · function · L1647-L1664 — def sync_multi_operator_profiles(self)
-- watch_multi_operator_routes · function · L1668-L1685 — def watch_multi_operator_routes(self)
-- task_collect_metrics · function · L1689-L1716 — def task_collect_metrics(self, account_id: Optional[str] = None, target_date: Optional[str] = None)
-- gen_publish_trace_id · function · L1719-L1722 — def gen_publish_trace_id(publish_task_id: str) -> str
-- _get_publish_rate_config · function · L1736-L1755 — async def _get_publish_rate_config() -> dict
-- _get_publish_task · function · L1758-L1859 — async def _get_publish_task(publish_task_id: str) -> Optional[dict]
-- _download_video_for_publish · function · L1862-L1926 — async def _download_video_for_publish(output_id: str, account_id: str = None) -> Optional[str]
-- _update_publish_task_status · function · L1929-L1979 — async def _update_publish_task_status( publish_task_id: str, status: str = None, published_url: str = None, published_id: str = None, screenshot_key: str = None, error_message: str = None, celery_task_id: str = None, published_at: datetime = None, mark_dead_letter: bool = False, dead_letter_reason: str = None, incr_retry: bool = False, )
-- _compute_funnel_snapshot · function · L1982-L2068 — async def _compute_funnel_snapshot(collect_date, account_uuid) -> dict
-- run_alert_check_task · function · L2072-L2083 — def run_alert_check_task(self)
-- maintenance_daily_task · function · L2087-L2105 — def maintenance_daily_task(self)
-- _update_watermark_video · function · L2112-L2155 — async def _update_watermark_video( video_id: str, *, status: Optional[str] = None, progress: Optional[float] = None, output_file_key: Optional[str] = None, output_bucket: Optional[str] = None, output_file_size: Optional[int] = None, error_message: Optional[str] = None, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, ) -> None
-- _recalc_watermark_task · function · L2158-L2213 — async def _recalc_watermark_task(task_id: str) -> None
-- watermark_task · function · L2217-L2430 — def watermark_task( self, task_id: str, engine: str, options: Optional[dict] = None, )
-- _load_videos · function · L2241-L2251 — async def _load_videos()
-- _mark_task_running · function · L2262-L2271 — async def _mark_task_running()
-- _persist_progress · function · L2325-L2328 — async def _persist_progress(pct: int)
-- _cb · function · L2330-L2345 — def _cb(pct: int, message: str = "")
+- run_async · function · L130-L143 — def run_async(coro)
+- _ensure_source_video · function · L146-L159 — async def _ensure_source_video(source_path: Optional[str], source_file_key: Optional[str], source_bucket: Optional[str] = None) -> Optional[str]
+- autoclip_task · function · L163-L269 — def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: str, config: dict, source_file_key: Optional[str] = None)
+- batch_slice_task · function · L273-L287 — def batch_slice_task(self, batch_id: str)
+- batch_selection_consumer · function · L291-L304 — def batch_selection_consumer(self, batch_id: str, item_id: str, episode_id: str)
+- batch_slice_dispatch · function · L308-L319 — def batch_slice_dispatch(self)
+- batch_slice_finalize · function · L323-L334 — def batch_slice_finalize(self)
+- batch_aggregate · function · L338-L346 — def batch_aggregate(self)
+- publish_schedule_dispatcher · function · L350-L408 — def publish_schedule_dispatcher(self)
+- _dispatch_due · function · L361-L383 — async def _dispatch_due()
+- _write_ckid · function · L392-L400 — async def _write_ckid(task_id: str, ckid: str)
+- detect_task · function · L412-L479 — def detect_task(self, episode_id: str, video_path: str, mode: str, config: dict, source_file_key: Optional[str] = None, task_id: Optional[str] = None)
+- _run · function · L443-L444 — async def _run()
+- _create_detect_task · function · L482-L504 — async def _create_detect_task(episode_id: str, mode: str, config: dict, celery_task_id: Optional[str]) -> Optional[str]
+- _update_detect_task_progress · function · L507-L521 — async def _update_detect_task_progress(detect_task_id: str, progress: float, status: str)
+- _fail_detect_task · function · L524-L539 — async def _fail_detect_task(detect_task_id: str, error: str)
+- slice_task · function · L543-L819 — def slice_task( self, episode_id: str, source_path: str, cutlist: str, intervals: str, mode: str, dedupe_config: Optional[dict] = None, task_id: Optional[str] = None, source_file_key: Optional[str] = None, source_bucket: Optional[str] = None, watermark_config: Optional[dict] = None, encoder: Optional[str] = None, vert2horiz_config: Optional[dict] = None, badges_config: Optional[list] = None, badge_default_width: int = 0, subtitle_config: Optional[dict] = None, text_overlays_config: Optional[list] = None, subtitle_mask_config: Optional[dict] = None, watermark_mask_config: Optional[dict] = None, subtitle_align_mask: bool = True, cover_image_key: Optional[str] = None, )
+- progress_cb · function · L687-L692 — def progress_cb(pct: int, message: str = "")
+- _parse_engine_manifest · function · L822-L839 — def _parse_engine_manifest(stdout: str, output_dir: str) -> list[dict]
+- _save_autoclip_results · function · L842-L944 — async def _save_autoclip_results( episode_id: str, autoclip_project_id: str, clips: list[dict], completed: bool, config: Optional[dict] = None, )
+- _in_duration_range · function · L865-L870 — def _in_duration_range(dur: float) -> bool
+- _mark_autoclip_failed · function · L947-L963 — async def _mark_autoclip_failed(episode_id: str, error: str)
+- _update_autoclip_run · function · L966-L1026 — async def _update_autoclip_run( episode_id: str, autoclip_project_id: Optional[str], status: str, progress: float, message: Optional[str] = None, )
+- _save_detected_intervals · function · L1029-L1095 — async def _save_detected_intervals( episode_id: str, intervals: list[dict], mode: str, config: dict )
+- _update_episode_status · function · L1098-L1111 — async def _update_episode_status(episode_id: str, status: str)
+- _update_slice_task_progress · function · L1114-L1130 — async def _update_slice_task_progress(task_id: Optional[str], progress: float)
+- _save_slice_outputs · function · L1133-L1241 — async def _save_slice_outputs( task_id: Optional[str], episode_id: str, output_files: list[dict], mode: str, )
+- _fail_slice_task · function · L1244-L1261 — async def _fail_slice_task(task_id: Optional[str], error: str)
+- task_publish_video · function · L1265-L1506 — def task_publish_video(self, publish_task_id: str)
+- _release_confirm_lock · function · L1509-L1525 — def _release_confirm_lock(lock_key: str, acquired: bool) -> None
+- _release · function · L1516-L1521 — async def _release()
+- confirm_publish_worker · function · L1529-L1635 — def confirm_publish_worker(self, publish_task_id: str)
+- _acquire_lock · function · L1540-L1545 — async def _acquire_lock()
+- check_cookie_status · function · L1639-L1704 — def check_cookie_status(self)
+- sync_multi_operator_profiles · function · L1708-L1725 — def sync_multi_operator_profiles(self)
+- watch_multi_operator_routes · function · L1729-L1746 — def watch_multi_operator_routes(self)
+- task_collect_metrics · function · L1750-L1777 — def task_collect_metrics(self, account_id: Optional[str] = None, target_date: Optional[str] = None)
+- gen_publish_trace_id · function · L1780-L1783 — def gen_publish_trace_id(publish_task_id: str) -> str
+- _get_publish_rate_config · function · L1797-L1816 — async def _get_publish_rate_config() -> dict
+- _get_publish_task · function · L1819-L1922 — async def _get_publish_task(publish_task_id: str) -> Optional[dict]
+- _download_video_for_publish · function · L1925-L1989 — async def _download_video_for_publish(output_id: str, account_id: str = None) -> Optional[str]
+- _update_publish_task_status · function · L1992-L2042 — async def _update_publish_task_status( publish_task_id: str, status: str = None, published_url: str = None, published_id: str = None, screenshot_key: str = None, error_message: str = None, celery_task_id: str = None, published_at: datetime = None, mark_dead_letter: bool = False, dead_letter_reason: str = None, incr_retry: bool = False, )
+- _compute_funnel_snapshot · function · L2045-L2131 — async def _compute_funnel_snapshot(collect_date, account_uuid) -> dict
+- run_alert_check_task · function · L2135-L2146 — def run_alert_check_task(self)
+- maintenance_daily_task · function · L2150-L2168 — def maintenance_daily_task(self)
+- _update_watermark_video · function · L2175-L2218 — async def _update_watermark_video( video_id: str, *, status: Optional[str] = None, progress: Optional[float] = None, output_file_key: Optional[str] = None, output_bucket: Optional[str] = None, output_file_size: Optional[int] = None, error_message: Optional[str] = None, started_at: Optional[datetime] = None, completed_at: Optional[datetime] = None, ) -> None
+- _recalc_watermark_task · function · L2221-L2276 — async def _recalc_watermark_task(task_id: str) -> None
+- watermark_task · function · L2280-L2493 — def watermark_task( self, task_id: str, engine: str, options: Optional[dict] = None, )
+- _load_videos · function · L2304-L2314 — async def _load_videos()
+- _mark_task_running · function · L2325-L2334 — async def _mark_task_running()
+- _persist_progress · function · L2388-L2391 — async def _persist_progress(pct: int)
+- _cb · function · L2393-L2408 — def _cb(pct: int, message: str = "")

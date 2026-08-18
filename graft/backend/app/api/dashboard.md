@@ -1,4 +1,4 @@
-# backend/app/api/dashboard.py
+# backend/app/api/dashboard.py · [[dashboard-analytics]]
 
 FastAPI router exposing dashboard analytics, metrics, and data-import endpoints for short drama operations.
 

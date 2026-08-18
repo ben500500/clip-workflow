@@ -1,4 +1,4 @@
-# frontend/src/api/batchSlice.ts · [[frontend-api-client-layer]]
+# frontend/src/api/batchSlice.ts · [[frontend-api-layer]]
 
 Defines the API client and TypeScript types for the batch-slice backend endpoints, covering run, list, get, outputs, retry, and cancel operations.
 

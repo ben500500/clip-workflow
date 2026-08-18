@@ -1,4 +1,4 @@
-# frontend/src/pages/ChannelAccounts.tsx · [[clip-workflow-pages]]
+# frontend/src/pages/ChannelAccounts.tsx · [[frontend-workflow-pages]]
 
 - OperatorForm · interface · L37-L41 — interface OperatorForm
 - ChannelAccounts · function · L43-L531 — ChannelAccounts: React.FC = ()

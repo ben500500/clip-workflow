@@ -1,4 +1,4 @@
-# engines/seedance_wm/cli.py · [[seedance-watermark-removal-engine]]
+# engines/seedance_wm/cli.py · [[video-processing-engines]]
 
 - _parse_bbox · function · L52-L62 — def _parse_bbox(text: str) -> list[int] | None
 - build_parser · function · L65-L112 — def build_parser() -> argparse.ArgumentParser

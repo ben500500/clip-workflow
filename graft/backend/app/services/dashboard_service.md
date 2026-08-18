@@ -1,4 +1,4 @@
-# backend/app/services/dashboard_service.py
+# backend/app/services/dashboard_service.py · [[dashboard-metrics-aggregation]] [[redis-streams-real-time-state]]
 
 - _cache_key · function · L41-L48 — Builds a namespaced Redis cache key that isolates cached aggregates by parameter dimensions, skipping None values.
 - _get_cached_agg · function · L51-L62 — Reads a cached aggregate from Redis, returning None on cache miss or Redis failure so the main query path is never blocked.

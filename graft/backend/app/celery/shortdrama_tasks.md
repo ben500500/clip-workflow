@@ -1,4 +1,4 @@
-# backend/app/celery/shortdrama_tasks.py
+# backend/app/celery/shortdrama_tasks.py · [[celery-task-layer]]
 
 Celery task module for short-drama video generation, providing two independent channels: Doubao RPA one-click generation and Seedance official API direct generation.
 

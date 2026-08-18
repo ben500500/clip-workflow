@@ -1,3 +1,3 @@
-# frontend/src/App.tsx · [[frontend-routing-shell]]
+# frontend/src/App.tsx · [[frontend-app-shell-routing]]
 
-- App · function · L38-L87 — App: React.FC = ()
+- App · function · L39-L89 — App: React.FC = ()

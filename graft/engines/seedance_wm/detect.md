@@ -1,4 +1,4 @@
-# engines/seedance_wm/detect.py · [[seedance-watermark-removal-engine]]
+# engines/seedance_wm/detect.py · [[video-processing-engines]] [[watermark-removal-degradation-chain]]
 
 Watermark detection module implementing a fallback chain of detectors (matchTemplate, YOLOv8-seg, PaddleOCR, manual bbox) that all return a unified bbox dict.
 

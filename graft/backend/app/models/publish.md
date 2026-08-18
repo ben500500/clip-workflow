@@ -1,4 +1,4 @@
-# backend/app/models/publish.py
+# backend/app/models/publish.py · [[orm-model-registry]]
 
 - VideoAccount · class · L26-L60 — class VideoAccount(Base)
 - __repr__ · method · L59-L60 — def __repr__(self) -> str
@@ -8,9 +8,9 @@
 - __repr__ · method · L103-L104 — def __repr__(self) -> str
 - PublishTask · class · L107-L155 — class PublishTask(Base)
 - __repr__ · method · L154-L155 — def __repr__(self) -> str
-- PublishProfile · class · L158-L187 — class PublishProfile(Base)
-- __repr__ · method · L186-L187 — def __repr__(self) -> str
-- PublishTimeSlot · class · L190-L212 — class PublishTimeSlot(Base)
-- __repr__ · method · L211-L212 — def __repr__(self) -> str
-- PublishMaterial · class · L215-L242 — class PublishMaterial(Base)
-- __repr__ · method · L241-L242 — def __repr__(self) -> str
+- PublishProfile · class · L158-L189 — class PublishProfile(Base)
+- __repr__ · method · L188-L189 — def __repr__(self) -> str
+- PublishTimeSlot · class · L192-L214 — class PublishTimeSlot(Base)
+- __repr__ · method · L213-L214 — def __repr__(self) -> str
+- PublishMaterial · class · L217-L244 — class PublishMaterial(Base)
+- __repr__ · method · L243-L244 — def __repr__(self) -> str

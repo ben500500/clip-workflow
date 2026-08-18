@@ -1,7 +1,7 @@
 {
   "version": 1,
   "model": "openai:deepseek-chat",
-  "repoDigest": "2a5d6c9279d82d5fa210577f8416942a8fc8e4f03cf3a22a81a2dd3386f1e8c9",
+  "repoDigest": "731c0a7cbead21d3723ab6e1a472e459139ebf07b979c1188d15b168185698a7",
   "files": [
     {
       "path": "alembic/env.py",
@@ -144,6 +144,18 @@
       "hash": "eadc353ba3ee7e8ddb1c6eea61347df3893f5c7be6cd579715ecdd7350893e12"
     },
     {
+      "path": "alembic/versions/0035_publish_profile_location.py",
+      "hash": "ef8f525834b4c02d34a90d6ec6d5ea2710804da55139a5385ab66a2ce3164df6"
+    },
+    {
+      "path": "alembic/versions/0035_slice_task_cover_image.py",
+      "hash": "82bd3bd669022a61921665b6be12b78c3b723ff63b097f4c3574998b1cc546a3"
+    },
+    {
+      "path": "alembic/versions/0036_drama_management.py",
+      "hash": "87e0349c1793c8ac26ee643ae6d520cfafbbeb57c7de121412e71c8ea4925bb0"
+    },
+    {
       "path": "autoclip/app/__init__.py",
       "hash": "3123268fa28e5fed9cb25338d5ac2f057962b25aeaba82f3453fb5b2dd7d8369"
     },
@@ -173,7 +185,7 @@
     },
     {
       "path": "autoclip/app/main.py",
-      "hash": "4b7a13caea6461ffe50ccd6b015f25216cab71411aad95eb12d3b577a8924e7b"
+      "hash": "da9158c536e9c4af5c8f6282c9b7f5551a69bfdb5e6641c411d79bf9d08049c9"
     },
     {
       "path": "autoclip/app/pipeline/__init__.py",
@@ -261,11 +273,15 @@
     },
     {
       "path": "backend/app/api/config.py",
-      "hash": "f15370c69aab7937d7c53cc47e9bf5407aa5780aadb52c8984e78e502ba105f1"
+      "hash": "2319c504c38c2ce6f9e24a49e0de7b99726795477cc47cce78e1696dccb0bc5f"
     },
     {
       "path": "backend/app/api/dashboard.py",
       "hash": "49d2a534cc9105116ee74539e9800cb69015546b3d091da5e31305e33abb44f4"
+    },
+    {
+      "path": "backend/app/api/dramas.py",
+      "hash": "376897f4f9eb3ae6cf47db97bdd042041c84f855764b241b8282b6792c2934b5"
     },
     {
       "path": "backend/app/api/intervals.py",
@@ -285,7 +301,7 @@
     },
     {
       "path": "backend/app/api/projects.py",
-      "hash": "b8fc9e7c44c329530c015e7212b090f13a240a1b547d77a05cc12c65f349bf81"
+      "hash": "37f06b824474fae30f8705f8d2e947a87d0ac69f820336301c760537a0a1377c"
     },
     {
       "path": "backend/app/api/publications.py",
@@ -317,7 +333,7 @@
     },
     {
       "path": "backend/app/api/publish_profiles.py",
-      "hash": "be993a3534aaff1e60ede3843f9cd59be3aa26d182b62a4e4c2bc6bb7549f7b3"
+      "hash": "2e935850119e576a43ff80976d0031c0dcc43cec621c44c12b5d7c8e605a57cc"
     },
     {
       "path": "backend/app/api/publish_tasks.py",
@@ -341,15 +357,15 @@
     },
     {
       "path": "backend/app/api/slice_helpers.py",
-      "hash": "30207f41c54b3c497489988d2a9a6e2c599d98e443c531f52f8116d3eb69e3f3"
+      "hash": "cf30b6d84ff85693edfdddf545be88db80f054845506ceddf93d08f26fe37ffb"
     },
     {
       "path": "backend/app/api/slice.py",
-      "hash": "2ead616121cd79b7433bf66f7a9e6df77230d235be71d89796117fa247825845"
+      "hash": "827b87b74fad0a42eb282ac3cde89d47711b448dd68c59bd21d28997a9c9c6d0"
     },
     {
       "path": "backend/app/api/upload.py",
-      "hash": "1c467277fd8173be4a1f8f7edc7eaeae1c63ef1e5e604ae54c9a4f5aa26e2b13"
+      "hash": "097ff2da64325f228b294f641404a42a6e0d05c82ab593adb1b5607642fb9fea"
     },
     {
       "path": "backend/app/api/variants.py",
@@ -377,7 +393,7 @@
     },
     {
       "path": "backend/app/celery/tasks.py",
-      "hash": "6dd5004a4f46fdc623f39b58272746658a9348881ac219d675c684a91a1e95f3"
+      "hash": "58a8621b622bdb4caafd09b7c02c7f92bdcf9f247be94042e6104a74ba0cb0bf"
     },
     {
       "path": "backend/app/celery/variant_tasks.py",
@@ -401,11 +417,11 @@
     },
     {
       "path": "backend/app/main.py",
-      "hash": "d826dd8fb74070830aafb081841a769117dda8e51270677326f45ffe11e58c4e"
+      "hash": "48e1415d633aea9f92e66063204d5263b995fd4d08dcc2d5d0bb00e831db6270"
     },
     {
       "path": "backend/app/models/__init__.py",
-      "hash": "ef2ce93f4bc78b5c468ce61bf8b934e0d708b42a62c7c3d0cd21e8deee64556b"
+      "hash": "100682b3206fc5e75f6bd183dbea53a12c3980147c793f61d9382eecee86f125"
     },
     {
       "path": "backend/app/models/audit.py",
@@ -420,8 +436,12 @@
       "hash": "080c8d83b6633f3a9558716aec32758c74ca8e73ded679719bbbee6913c06140"
     },
     {
+      "path": "backend/app/models/drama.py",
+      "hash": "d92c9c97e108ebd4aab5a799784dc073cdee2bf795c74bd08e1a88c1b4e01730"
+    },
+    {
       "path": "backend/app/models/material.py",
-      "hash": "4a2662f89339c46133447434f5869b82080b0f215fd9fbf24ea47f0902b14bf6"
+      "hash": "a88c6f0f451a2c6fac47bf9ad2a307d26d478224ebab1d5d478b62a13e7f82d8"
     },
     {
       "path": "backend/app/models/models.py",
@@ -429,11 +449,11 @@
     },
     {
       "path": "backend/app/models/monitor.py",
-      "hash": "2208a22aacf1195ec94bfe34d40e240fc38a7ece9887da7031027aa551a44652"
+      "hash": "02281c162a148f812ccbc31ff28dca2415a5002ecc9647603ef6261617a488f7"
     },
     {
       "path": "backend/app/models/publish.py",
-      "hash": "9dd3a9238663581b100977405527fcbf6b84a70f4829c701daa5aba32b9b44bb"
+      "hash": "a35d874c0b7e68264d8a6eed0d068c484a19d9a617c9c4d4bc10d9f009defa1b"
     },
     {
       "path": "backend/app/models/shortdrama.py",
@@ -445,7 +465,7 @@
     },
     {
       "path": "backend/app/models/variant.py",
-      "hash": "6660ee48c8803f135783681fadbbd1efd4515a597151efe4557ed9a9c1eab97b"
+      "hash": "27f6c33ce119bf8b2d06316d46411d4cae5b18b7b23945bb387fd8fd1a0c24c0"
     },
     {
       "path": "backend/app/services/__init__.py",
@@ -457,7 +477,7 @@
     },
     {
       "path": "backend/app/services/audit_service.py",
-      "hash": "b1aa579ec4bee227feeb61cdfe6ce4ffae206e6290d680b405f99311efd97274"
+      "hash": "320b2740e8d62703a618a272193e96734be95f81f9ae603a9e8184d55b676e93"
     },
     {
       "path": "backend/app/services/autoclip_service.py",
@@ -465,7 +485,7 @@
     },
     {
       "path": "backend/app/services/batch_decoupled_service.py",
-      "hash": "b210cf927d87c28e1b4c31b00892e9d1286c6bc54696de1317d76bdba9f1d28f"
+      "hash": "05649e2ec4b11377e6b4db183671fd5a63dddcd77ec78779ec0a66dd22accf96"
     },
     {
       "path": "backend/app/services/batch_slice_service.py",
@@ -489,7 +509,7 @@
     },
     {
       "path": "backend/app/services/fingerprint_service.py",
-      "hash": "10b7ba56d215c07defb6b62d7ea51e855a3e22aa445145e265164887c10ca941"
+      "hash": "1110fe920e9b42f0087487d8556ae749d25485c8d264333d73898512ae028f1d"
     },
     {
       "path": "backend/app/services/interval_service.py",
@@ -517,15 +537,15 @@
     },
     {
       "path": "backend/app/services/publish_service.py",
-      "hash": "34f37428ee2c49936c4150bc41af8b8f72578e79691231d07efd61bef4debe91"
+      "hash": "ad8ddb02bbbc2dad889c31745016efb746e2cf16fbb8c2a7e09cf2fb8febfbae"
     },
     {
       "path": "backend/app/services/redis_stream.py",
-      "hash": "10ee017b50e40dd3f273ca06681f120e726a450097e777a6e26d1862ff53925e"
+      "hash": "584398d379bfbb9315a93fff0be4cd64c8fc4e0a6b8595a44c8d8e74d5ef4b68"
     },
     {
       "path": "backend/app/services/slice_service.py",
-      "hash": "6df06295f325caa64d9caa6a3cb3c5b605cc8809c820757c1496b8d6c73b7ca5"
+      "hash": "6aca808cab05a6dd638ab6d3cf4bc7ffa6caddbdb64c64de07bc0138f31c4d87"
     },
     {
       "path": "backend/app/services/smart_import_service.py",
@@ -537,7 +557,7 @@
     },
     {
       "path": "backend/app/services/variant_service.py",
-      "hash": "cfbe73212c29c4726a8a0ca2abdeabc4c6b540824969fc6c85a19429be0c5113"
+      "hash": "aa4586ca686771ac2c29849458ef498668ae413eb10524e2ab87ecde4eb7c6ea"
     },
     {
       "path": "backend/app/utils/__init__.py",
@@ -545,7 +565,7 @@
     },
     {
       "path": "backend/app/utils/helpers.py",
-      "hash": "f76510424c6850e469490e35c4db355699c8a08f8917783b2ca8b891cd82206e"
+      "hash": "b7c222f4dacb42e4bafc09fd8ed6e32ea82b96d6d7aaf1762a16141256c7c054"
     },
     {
       "path": "backend/wechat_download/__init__.py",
@@ -689,7 +709,7 @@
     },
     {
       "path": "engines/slice.py",
-      "hash": "55b468c581be224e69f0ad25332a5d06b18c84547dd0f466c6f968d51957dba5"
+      "hash": "23e69efab7790d2613658e66961be2aa13c91cce58b448fc2d4c17d038906b8a"
     },
     {
       "path": "engines/tests/test_subtitle_mask_regression.py",
@@ -732,6 +752,10 @@
       "hash": "e325735856e558dc9c1d231c293b6a585d604251045cf2bc4605835a765105d0"
     },
     {
+      "path": "frontend/src/api/dramas.ts",
+      "hash": "4e3f7d2340d487c6658393ccb49d24dd07caa3fac07d4ead4769709ac6c9ad94"
+    },
+    {
       "path": "frontend/src/api/intervals.ts",
       "hash": "43d318e9bef45719a0fdbee4214417233c90c6e4ace5eeae31bf6af69bfacfdc"
     },
@@ -745,7 +769,7 @@
     },
     {
       "path": "frontend/src/api/projects.ts",
-      "hash": "4740b1ba9325f69ef61995a4cc2a84843a3d9509b1671c85bf93053f2d05b38a"
+      "hash": "1d8df540b4e44e9bed66757f30fcd7868b508c1058095372c1ca7e3102ff798a"
     },
     {
       "path": "frontend/src/api/publish.ts",
@@ -761,11 +785,11 @@
     },
     {
       "path": "frontend/src/api/slice.ts",
-      "hash": "7fa67ba6c4625a81a21ac7c7124e10fb8c86c970cf8a90d3ea6c2aae5ff92e13"
+      "hash": "34be03907aba862382c7b9a4cd9e88864e5807b9fc6e9da4ff361034220124aa"
     },
     {
       "path": "frontend/src/api/upload.ts",
-      "hash": "066adc8dd3151ec4961a68a06e6f34eec0722d97b85cbb438f7b325b2a7059b6"
+      "hash": "d4c4a413919f98d86e3a8412151c2cc21113045bbe1f410915e734955c9a79dd"
     },
     {
       "path": "frontend/src/api/variants.ts",
@@ -781,11 +805,11 @@
     },
     {
       "path": "frontend/src/App.tsx",
-      "hash": "20419ea6411db7c4ac06c5b2b18450987c34726e6a14516b243c507886f9f31e"
+      "hash": "3c4dc25d1ea5c207b711dc4afed199c36298e0532ecb365a04aa46da8b1a736b"
     },
     {
       "path": "frontend/src/components/AppLayout.tsx",
-      "hash": "e66e7fab76393d6f601cc979f6c220ae7ac69ebd7014ddbc8fbcdf0ee7cb3c6a"
+      "hash": "c06942f43e0e884f165854cae769a87d6831dec03266de4898f8c87c833fdce0"
     },
     {
       "path": "frontend/src/components/AuthGuard.tsx",
@@ -793,7 +817,7 @@
     },
     {
       "path": "frontend/src/components/DedupeManualConfig.tsx",
-      "hash": "6bf98508e17a711ac02a5dac2e676c8f6d48ff443d35f011d6a41402e1e765a8"
+      "hash": "a5edec8a5255d61a0739cbfb23fadfc028d091c2fb3238f2d038de62b69e0ab6"
     },
     {
       "path": "frontend/src/components/ErrorHint.tsx",
@@ -805,7 +829,7 @@
     },
     {
       "path": "frontend/src/contexts/AuthContext.tsx",
-      "hash": "ef3d7e17a1c5feae93d78e7de3ccef5fa58291e25140859049def799ffbb4af6"
+      "hash": "df27092e40f207edb8262938c23e06641f3ba23c3b6fe9b55177b4719ec28714"
     },
     {
       "path": "frontend/src/main.tsx",
@@ -813,7 +837,7 @@
     },
     {
       "path": "frontend/src/pages/BatchSlice.tsx",
-      "hash": "dc98ccea38a0d0c5800ac23b90c721efc1cb2de626a31a570532df1966d7ce28"
+      "hash": "f2a0cd97d8d1487af1465214f77bc3ec7ec1aa082e10ba9b0f548876495a73ce"
     },
     {
       "path": "frontend/src/pages/ChannelAccounts.tsx",
@@ -844,6 +868,10 @@
       "hash": "e4878acff05eb6067d0cea018315968ec441b2c4947d778725e14c52c00874e5"
     },
     {
+      "path": "frontend/src/pages/DramaLibrary.tsx",
+      "hash": "56a3afcc829328654367def87c3362eb9d30f8133d27f39158d4303ba19cf777"
+    },
+    {
       "path": "frontend/src/pages/DramaMonetization.tsx",
       "hash": "16c2d8a56ebfd7748507bd8eb2a434103a2ba9877650bbb88f93b7bd8b4d7c5f"
     },
@@ -853,7 +881,7 @@
     },
     {
       "path": "frontend/src/pages/EpisodeDetail.tsx",
-      "hash": "1f5a1b7cf052264085fde1ecada8ffe186504ac5f5435031bd9eedbb6353b8b8"
+      "hash": "f2fca04ec36f037da6e9cc8de3c8f9b9de673d4c68dd47a6602e97091192ff32"
     },
     {
       "path": "frontend/src/pages/FunnelAnalysis.tsx",
@@ -881,7 +909,7 @@
     },
     {
       "path": "frontend/src/pages/OutputPreview.tsx",
-      "hash": "1d94981e928e40a70ad1a32d812ddcdeba4f25cf4aae18a97fbcf893864c7935"
+      "hash": "64411e8d99fa34027d64c2724c46d21739cf795b4f4b1fb0361ef365cf489e27"
     },
     {
       "path": "frontend/src/pages/Profile.tsx",
@@ -889,7 +917,7 @@
     },
     {
       "path": "frontend/src/pages/ProjectDetail.tsx",
-      "hash": "9f46b2301f189ebf50fbf53d4e85de4acc9dc779bb39f4b1bfb5339ec6446089"
+      "hash": "1bbb9d15160553afd40326da2f779f08d7a9fa78c820244d2fed5a200d77cf4f"
     },
     {
       "path": "frontend/src/pages/Projects.tsx",
@@ -897,7 +925,7 @@
     },
     {
       "path": "frontend/src/pages/PublishManagement.tsx",
-      "hash": "f6feabff263cb962500f480410449e4c20525a3874e55c4e2375f8eb6e8f38b7"
+      "hash": "d4eabac2dfd632e2558b7577222054ebe70599d583ee21f7648befe6c1be9b7a"
     },
     {
       "path": "frontend/src/pages/PublishMaterialTab.tsx",
@@ -921,7 +949,7 @@
     },
     {
       "path": "frontend/src/pages/SliceTasks.tsx",
-      "hash": "410d7389db1036c077d6edd69d428a2b8a88280aaefb577c00e30964069d1d92"
+      "hash": "ec69d10d256335a970e04f662b670fad9a8c2b36a6196b9f0826c3349325e059"
     },
     {
       "path": "frontend/src/pages/UserManagement.tsx",
@@ -941,7 +969,7 @@
     },
     {
       "path": "frontend/src/types/index.ts",
-      "hash": "4e4e97941b1a9c684221522deca24dfa3f8f0bf6c4ee87af50a0d517bffb8496"
+      "hash": "da7127de58db22604b5dd519f3c41ec8e0c73bee43a5c23e0a3c3364a7587dd3"
     },
     {
       "path": "frontend/src/utils/format.ts",
@@ -1069,7 +1097,7 @@
     },
     {
       "path": "slice-worker/file_transfer.go",
-      "hash": "c666b91a2d283fc09275ff077800c7333cd111243d68914deefb728baa412f6a"
+      "hash": "eb4cf18cfc1bec640117863da1396f68846235c5a909a8c24375d3e1225caf92"
     },
     {
       "path": "slice-worker/heartbeat_backend.go",
@@ -1097,11 +1125,11 @@
     },
     {
       "path": "slice-worker/redis_client.go",
-      "hash": "5274790f078b5b5d03de54f74ed9f11f996c585e7a6a0f2a351af337aeb0af19"
+      "hash": "9e927d48a03637cb0144a9ec2f60d8932bd15f91d9c3096e3c5b1687a41cd9c6"
     },
     {
       "path": "slice-worker/task_executor.go",
-      "hash": "28a40ff004272d1075bf68dbcec6b3242720c5923e2c2f9946aebec0cd048d90"
+      "hash": "aaa82c70cb559d63c5f7b83eba3c81864b5a2c63ed8e1b16426911aec96ab55b"
     },
     {
       "path": "slice-worker/tray_common.go",
@@ -1141,10 +1169,20 @@
     },
     {
       "path": "slice-worker/worker.go",
-      "hash": "35f1fd11217ca79234dd5fdac3bb7a07eb8647e13a2d6796747d9c4f9c153e3e"
+      "hash": "bd1b8addc17eb148fc81e26f8fccfb32d94936eed9c682ab3ae24b941ecc603b"
     }
   ],
   "nodes": [
+    {
+      "slug": "admin-user-management",
+      "name": "Admin & User Management",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/Settings.tsx",
+        "frontend/src/pages/UserManagement.tsx"
+      ],
+      "sourcesDigest": "b450c956d83f252bcf751ab3535c72c51d2de6bb2d46d22655af9d9faaec71a2"
+    },
     {
       "slug": "alembic-migration-chain",
       "name": "Alembic Migration Chain",
@@ -1184,124 +1222,222 @@
         "alembic/versions/0031_channel_accounts.py",
         "alembic/versions/0032_channel_video_account_unique.py",
         "alembic/versions/0033_publish_time_slots_scheduled_at.py",
-        "alembic/versions/0034_multi_video_dedup_variants.py"
+        "alembic/versions/0034_multi_video_dedup_variants.py",
+        "alembic/versions/0035_publish_profile_location.py",
+        "alembic/versions/0035_slice_task_cover_image.py",
+        "alembic/versions/0036_drama_management.py"
       ],
-      "sourcesDigest": "1d65f059ae56d01bd7d174b75e4291303c95583545ef4dbb43e8fc0a10946ce1"
+      "sourcesDigest": "952175471b2813ec71d00ea1b5255dea40d149df9f051e775665eeda2cf9173d"
     },
     {
-      "slug": "analytics-dashboard-pages",
-      "name": "Analytics Dashboard Pages",
+      "slug": "audit-observability",
+      "name": "Audit & Observability",
       "type": "system",
       "sources": [
-        "frontend/src/pages/ContentAnalysis.tsx",
-        "frontend/src/pages/DashboardOverview.tsx",
-        "frontend/src/pages/DashboardSettings.tsx",
-        "frontend/src/pages/DataImport.tsx",
-        "frontend/src/pages/DramaMonetization.tsx",
-        "frontend/src/pages/Ecosystem.tsx"
+        "backend/app/models/audit.py",
+        "backend/app/models/monitor.py",
+        "backend/app/services/audit_service.py"
       ],
-      "sourcesDigest": "274358f52e134d5ff3471f22b158e333b7d15835cce5ef01a0d4728d356ad625"
+      "sourcesDigest": "fcfcdf2a5062305b41f968ab71e5c18760672802ef997b0c77ab629e796c7807"
     },
     {
-      "slug": "analytics-dashboards",
-      "name": "Analytics Dashboards",
+      "slug": "auth-session-layer",
+      "name": "Auth & Session Layer",
       "type": "system",
       "sources": [
-        "frontend/src/pages/FunnelAnalysis.tsx",
-        "frontend/src/pages/ShortDramaAnalysis.tsx"
+        "backend/app/auth.py",
+        "backend/app/models/user.py"
       ],
-      "sourcesDigest": "b156ae6f67cf5e12b5f1a1cc3aa4e383d53a1efb4a1f65f340a96e3b2c8d1d67"
+      "sourcesDigest": "55a2c088ec2393bbf3c17fd423d7bccdec5ca57e51cc7084d2c9e8465427c9ad"
     },
     {
-      "slug": "auth-session-management",
-      "name": "Auth & Session Management",
-      "type": "system",
-      "sources": [
-        "frontend/src/api/auth.ts",
-        "frontend/src/components/AuthGuard.tsx",
-        "frontend/src/contexts/AuthContext.tsx"
-      ],
-      "sourcesDigest": "bedd219eebc337844cce638d990bd7ed075892a001b595e2f0715ca3ea7aab1b"
-    },
-    {
-      "slug": "auth-users-settings",
-      "name": "Auth, Users & Settings",
+      "slug": "authentication-profile",
+      "name": "Authentication & Profile",
       "type": "system",
       "sources": [
         "frontend/src/pages/Login.tsx",
-        "frontend/src/pages/Profile.tsx",
-        "frontend/src/pages/ResourceDownload.tsx",
-        "frontend/src/pages/Settings.tsx",
-        "frontend/src/pages/UserManagement.tsx"
+        "frontend/src/pages/Profile.tsx"
       ],
-      "sourcesDigest": "365dd686614de8e0a8467298d992527cc8a513824cf2c0f9829ab2c8d3fb4cc5"
+      "sourcesDigest": "0d2f9933a809f48090150883f6794767a7708576eda55f2a1f9db07d3be2f99a"
     },
     {
-      "slug": "autoclip-auxiliary-services",
-      "name": "AutoClip Auxiliary Services",
+      "slug": "autoclip-integration",
+      "name": "AutoClip Integration",
       "type": "system",
       "sources": [
-        "autoclip/app/services/publish_material_generator.py",
-        "autoclip/app/services/script_optimizer.py",
-        "autoclip/app/services/seedance_prompt_generator.py"
+        "backend/app/services/autoclip_service.py"
       ],
-      "sourcesDigest": "e17b1099a6ab7c1901832417882a8176e9f2a740ea4f7a5a518507a7d481a1c8"
+      "sourcesDigest": "386bc2aa83841a844c973c2f004f6f6f70bb007085b934666a91ff0737159b73"
     },
     {
-      "slug": "autoclip-fastapi-service",
-      "name": "AutoClip FastAPI Service",
-      "type": "system",
+      "slug": "autoclip-llm-evaluation-harness",
+      "name": "AutoClip LLM evaluation harness",
+      "type": "file",
       "sources": [
-        "autoclip/app/main.py"
+        "eval/grade_highlight_llm.py"
       ],
-      "sourcesDigest": "2d651fbad6c569ac3ee955e8621a44d64352cd638eeea6cd25e021ade8079a34"
+      "sourcesDigest": "3c7a99e83bbf9989a12cb3d58a6f339569b6a9813b791665fb0627dc55aa32aa"
     },
     {
-      "slug": "autoclip-pipeline-stages",
-      "name": "AutoClip Pipeline Stages",
+      "slug": "autoclip-pipeline",
+      "name": "AutoClip Pipeline",
       "type": "system",
       "sources": [
+        "autoclip/app/core/shared_config.py",
         "autoclip/app/pipeline/step1_outline.py",
         "autoclip/app/pipeline/step2_timeline.py",
         "autoclip/app/pipeline/step3_scoring.py",
         "autoclip/app/pipeline/step4_title.py"
       ],
-      "sourcesDigest": "6e9fa03934abbf2fcee3e4253d2faf93ff3f451d098311c50a0e49ded0ab550f"
+      "sourcesDigest": "f53fff2a6e3010fb95c20784ca5afde1f982d890925ffe00a6e7663e652a4c4d"
     },
     {
-      "slug": "backend-utility-layer",
-      "name": "Backend Utility Layer",
+      "slug": "autoclip-pipeline-batch-slicing",
+      "name": "AutoClip Pipeline & Batch Slicing",
       "type": "system",
       "sources": [
-        "backend/app/utils/__init__.py",
-        "backend/app/utils/helpers.py"
+        "backend/app/api/autoclip.py",
+        "backend/app/api/batch_slice.py",
+        "backend/app/api/intervals.py"
       ],
-      "sourcesDigest": "e7aa0c09814cd5997323c154b2335de732cedd04c2d979fc664609b0bbd3016d"
+      "sourcesDigest": "db14c38ba28d7552f962cbafacab88312684490cb34729056c50f6e64c000a4b"
     },
     {
-      "slug": "celery-task-queue",
-      "name": "Celery Task Queue",
-      "type": "file",
-      "sources": [
-        "autoclip/app/celery_app.py"
-      ],
-      "sourcesDigest": "e6c6e40268f1bb76c731893de2effaa09526ba57f7b58c5c8e71dcdfcb9cd0ce"
-    },
-    {
-      "slug": "clip-workflow-pages",
-      "name": "Clip Workflow Pages",
+      "slug": "autoclip-service-entry",
+      "name": "AutoClip Service Entry",
       "type": "system",
       "sources": [
-        "frontend/src/pages/BatchSlice.tsx",
-        "frontend/src/pages/ChannelAccounts.tsx",
-        "frontend/src/pages/ClipReview.tsx",
-        "frontend/src/pages/Dashboard.tsx"
+        "autoclip/app/celery_app.py",
+        "autoclip/app/main.py",
+        "autoclip/app/services/publish_material_generator.py",
+        "autoclip/app/services/script_optimizer.py"
       ],
-      "sourcesDigest": "219608c83c9d48440712eb3e151bd7aaa07c8920e1c11788b297bd4c187052a2"
+      "sourcesDigest": "f493b4eab413d81f956b4c159757830030c50aac9bbd7fd3115aae0006352938"
     },
     {
-      "slug": "database-schema-migrations",
-      "name": "Database Schema & Migrations",
+      "slug": "backend-app-factory-auth",
+      "name": "Backend App Factory & Auth",
+      "type": "system",
+      "sources": [
+        "backend/app/__init__.py",
+        "backend/app/api/auth.py"
+      ],
+      "sourcesDigest": "69e1d1ab2e65cea7bff9a4a66ded49d2c5038cbeec65151a68425e7370721fe2"
+    },
+    {
+      "slug": "batch-slicing-workflow",
+      "name": "Batch Slicing Workflow",
+      "type": "system",
+      "sources": [
+        "backend/app/models/material.py",
+        "backend/app/services/batch_decoupled_service.py",
+        "backend/app/services/batch_slice_service.py"
+      ],
+      "sourcesDigest": "dce404ac584ae67a96965911849cfe6da398ed139836a6dc8f7d523023b3eb33"
+    },
+    {
+      "slug": "celery-task-layer",
+      "name": "Celery Task Layer",
+      "type": "system",
+      "sources": [
+        "backend/app/celery/__init__.py",
+        "backend/app/celery/shortdrama_tasks.py",
+        "backend/app/celery/tasks.py",
+        "backend/app/celery/variant_tasks.py"
+      ],
+      "sourcesDigest": "33d9d32ea1d5fa609a292a5ea0ac9f79b19672bb9f5a4a9782c765caff1466e1"
+    },
+    {
+      "slug": "channel-accounts-mini-programs",
+      "name": "Channel Accounts & Mini Programs",
+      "type": "system",
+      "sources": [
+        "backend/app/api/channel_accounts.py",
+        "backend/app/api/publish_mini_programs.py"
+      ],
+      "sourcesDigest": "3b9204fb1cf44c80a7ef08e73e43f12e659ec4aeea8954329f617f1f09ebb39e"
+    },
+    {
+      "slug": "configuration-database-bootstrap",
+      "name": "Configuration & Database Bootstrap",
+      "type": "system",
+      "sources": [
+        "backend/app/config.py",
+        "backend/app/database.py"
+      ],
+      "sourcesDigest": "df334f322685b10d5c27922d685847dbff7780f1992848fdd7e7c87724e85304"
+    },
+    {
+      "slug": "dashboard-analytics",
+      "name": "Dashboard & Analytics",
+      "type": "system",
+      "sources": [
+        "backend/app/api/dashboard.py"
+      ],
+      "sourcesDigest": "b43f8e676810f75597b583f40b7ff8c6786fd46915811224c652e280606ba276"
+    },
+    {
+      "slug": "dashboard-analytics-pages",
+      "name": "Dashboard Analytics Pages",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/DramaMonetization.tsx",
+        "frontend/src/pages/Ecosystem.tsx",
+        "frontend/src/pages/FunnelAnalysis.tsx",
+        "frontend/src/pages/ShortDramaAnalysis.tsx"
+      ],
+      "sourcesDigest": "3f3a86144b9b02fbba17e70fa7c53e3ff1e7f5354efa71c9f15268c2ea6d4d18"
+    },
+    {
+      "slug": "dashboard-metrics-aggregation",
+      "name": "Dashboard & Metrics Aggregation",
+      "type": "system",
+      "sources": [
+        "backend/app/models/dashboard.py",
+        "backend/app/services/dashboard_service.py",
+        "backend/app/services/data_import_service.py",
+        "backend/app/services/maintenance_service.py"
+      ],
+      "sourcesDigest": "889bf3716aa48a094202386544fcd8ac461715caaca2136532ff8c69f04fbb17"
+    },
+    {
+      "slug": "data-import-template-workflow",
+      "name": "Data Import & Template Workflow",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/DataImport.tsx"
+      ],
+      "sourcesDigest": "1e249a50a83c3cf9ee5dc48115db1b4985cefb2ffac63fa5121ab5ed68d75396"
+    },
+    {
+      "slug": "data-isolation-access-control",
+      "name": "Data Isolation & Access Control",
+      "type": "system",
+      "sources": [
+        "backend/app/api/autoclip.py",
+        "backend/app/api/batch_slice.py",
+        "backend/app/api/channel_accounts.py",
+        "backend/app/api/intervals.py",
+        "backend/app/api/preview.py",
+        "backend/app/api/publications.py",
+        "backend/app/api/publish_video_accounts.py"
+      ],
+      "sourcesDigest": "5c0b518a9af110d9dbee60de72aee3112502badd2d925f36c03cfbcd41027c6e"
+    },
+    {
+      "slug": "data-isolation-rbac",
+      "name": "Data Isolation & RBAC",
+      "type": "concept",
+      "sources": [
+        "backend/app/database.py",
+        "backend/app/models/user.py",
+        "backend/app/services/data_scope.py"
+      ],
+      "sourcesDigest": "07a08d6786ccc2bc22191de31dfaaf61b64e91c8e00a2fc2e6c5d7c5fc9552a1"
+    },
+    {
+      "slug": "database-schema-migration-tooling",
+      "name": "Database Schema & Migration Tooling",
       "type": "system",
       "sources": [
         "init.sql",
@@ -1311,8 +1447,18 @@
       "sourcesDigest": "70384877b5cbefeb996d7f51f2adcf673999c394d0e0ae35ffeaacb8c80f8d0c"
     },
     {
-      "slug": "deployment-operations",
-      "name": "Deployment & Operations",
+      "slug": "dedupe-config-contract",
+      "name": "dedupe config contract",
+      "type": "concept",
+      "sources": [
+        "engines/slice.py",
+        "frontend/src/components/DedupeManualConfig.tsx"
+      ],
+      "sourcesDigest": "cd0ea576bed0a060d172708f153985c85c524e80cc375053fa88d630eb99036b"
+    },
+    {
+      "slug": "deployment-infrastructure",
+      "name": "Deployment & Infrastructure",
       "type": "system",
       "sources": [
         "deploy_remote_worker.sh",
@@ -1327,68 +1473,112 @@
       "name": "Deployment & Ops Scripts",
       "type": "system",
       "sources": [
+        "scripts/cleanup_orphans.py",
         "scripts/deploy_server.sh",
         "scripts/healthcheck.sh",
         "scripts/init_admin.sh",
         "scripts/init.sh",
         "scripts/logs.sh",
         "scripts/restart.sh",
-        "scripts/server-setup.sh"
+        "scripts/server-setup.sh",
+        "scripts/start.sh",
+        "scripts/status.sh",
+        "scripts/stop.sh"
       ],
-      "sourcesDigest": "e42b5e7e3d867ab4b8a581e92cf62a149e8681fe6477114e215c1325d26b95bc"
+      "sourcesDigest": "4165967e0d00818e3eb38ce82d2a32fc6cf8df1e58ca6dd9627f87a4fd86d2f1"
     },
     {
-      "slug": "detection-mask-inpaint-pipeline",
-      "name": "Detection/Mask/Inpaint Pipeline",
+      "slug": "docker-compose-stack-contract",
+      "name": "Docker Compose Stack Contract",
+      "type": "concept",
+      "sources": [
+        "scripts/logs.sh",
+        "scripts/restart.sh",
+        "scripts/server-setup.sh",
+        "scripts/start.sh",
+        "scripts/status.sh"
+      ],
+      "sourcesDigest": "790bf97286c363f4af5adb67ab843b040b8281ff35cd5c62461d75b19c164c8d"
+    },
+    {
+      "slug": "drama-library-management",
+      "name": "Drama Library Management",
       "type": "system",
       "sources": [
-        "engines/seedance_wm/tools.py"
+        "frontend/src/pages/DramaLibrary.tsx"
       ],
-      "sourcesDigest": "3f1830d5a81d01ee80f6e43db9ecb250578a2be7627790d55b6e0346f92dba36"
+      "sourcesDigest": "a1336a4b576ca25463e33c98c970f4bbd717776dab0daa5ff502ba78fce108e4"
     },
     {
-      "slug": "episode-production-pipeline-pages",
-      "name": "Episode Production Pipeline Pages",
+      "slug": "drama-management-import",
+      "name": "Drama Management & Import",
       "type": "system",
       "sources": [
-        "frontend/src/pages/EpisodeDetail.tsx",
-        "frontend/src/pages/IntervalDetection.tsx",
-        "frontend/src/pages/SliceTasks.tsx"
+        "backend/app/api/dramas.py"
       ],
-      "sourcesDigest": "a6a11e1909bce68c3f9f9534e80a0c5a1a5175cd1407783b79146304969dd4f9"
+      "sourcesDigest": "d836dcd25c047a9b8c05ae6eaabc6f106720be35bd04d1d0e4e2c4731ee1540f"
     },
     {
-      "slug": "face-aware-crop",
-      "name": "Face-Aware Crop",
-      "type": "file",
-      "sources": [
-        "engines/vert2horiz_crop.py"
-      ],
-      "sourcesDigest": "77a42b2dc98ce7169e841ad80d2a5d1ba529432c504ba45b3474f73de9573a30"
-    },
-    {
-      "slug": "ffmpeg-i-o-layer",
-      "name": "FFmpeg I/O Layer",
+      "slug": "engine-execution-layer",
+      "name": "Engine Execution Layer",
       "type": "system",
       "sources": [
-        "engines/seedance_wm/remover.py",
-        "engines/seedance_wm/tools.py",
-        "engines/slice.py"
+        "backend/app/engines/__init__.py",
+        "backend/app/engines/watermark_runner.py",
+        "backend/app/services/interval_service.py"
       ],
-      "sourcesDigest": "7de1b1d57bd900bc18010250cb1dd22f56cd6b2372abc7c53c00ff8c9486df78"
+      "sourcesDigest": "43595e0084327ac3da5c94ab7591827062defa8562b4ead6c92635ee5cc89b4e"
     },
     {
-      "slug": "ffmpeg-path-resolution",
-      "name": "FFmpeg Path Resolution",
-      "type": "file",
+      "slug": "engine-update-versioning",
+      "name": "Engine Update & Versioning",
+      "type": "concept",
+      "sources": [
+        "scripts/sync-engines-to-worker.sh",
+        "slice-worker/engine_update_test.go",
+        "slice-worker/engine_update.go"
+      ],
+      "sourcesDigest": "d240583b64d264ec92f5f3f128a0dbc677ffc92b3fbb1c0e18205dfd0a047873"
+    },
+    {
+      "slug": "episode-slicing-control-panel",
+      "name": "Episode Slicing Control Panel",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/EpisodeDetail.tsx"
+      ],
+      "sourcesDigest": "4c798052444a8d2ad09df537754ac5bad4442dc3c56c018f5b695c58b8fd8890"
+    },
+    {
+      "slug": "fastapi-application-wiring",
+      "name": "FastAPI Application Wiring",
+      "type": "system",
+      "sources": [
+        "backend/app/main.py"
+      ],
+      "sourcesDigest": "85cd5467ae72ef3065799d3f6cb370d08621076b22d5c95809d8bf8be667dcc9"
+    },
+    {
+      "slug": "ffmpeg-utilities",
+      "name": "FFmpeg Utilities",
+      "type": "system",
       "sources": [
         "autoclip/app/utils/ffmpeg_utils.py"
       ],
       "sourcesDigest": "74e1e90cdb269c26fd1800eeb3ed19e7e000c61180095f83fc13093ff9230abb"
     },
     {
-      "slug": "frontend-api-client-layer",
-      "name": "Frontend API Client Layer",
+      "slug": "frame-analysis",
+      "name": "Frame Analysis",
+      "type": "system",
+      "sources": [
+        "autoclip/app/utils/frame_analyzer.py"
+      ],
+      "sourcesDigest": "ad34c021d4c98d91ba978b67a3012ce528b45fdf97080b048dd4aff7f66024ad"
+    },
+    {
+      "slug": "frontend-api-layer",
+      "name": "frontend API layer",
       "type": "system",
       "sources": [
         "frontend/src/api/auth.ts",
@@ -1398,6 +1588,7 @@
         "frontend/src/api/client.ts",
         "frontend/src/api/config.ts",
         "frontend/src/api/dashboard.ts",
+        "frontend/src/api/dramas.ts",
         "frontend/src/api/intervals.ts",
         "frontend/src/api/monitor.ts",
         "frontend/src/api/preview.ts",
@@ -1411,74 +1602,210 @@
         "frontend/src/api/watermark.ts",
         "frontend/src/api/wechatDl.ts"
       ],
-      "sourcesDigest": "4618a0ff216012a1e2eedcb9432b16748a6ca56a6709ad210939dceca1e694bd"
+      "sourcesDigest": "76f399c501bf777d3812b0618971c731a17e45f1f0dd3c628ffbf750a3c3df2e"
     },
     {
-      "slug": "frontend-api-layer",
-      "name": "Frontend API Layer",
-      "type": "system",
-      "sources": [
-        "frontend/src/types/index.ts",
-        "frontend/src/utils/format.ts",
-        "frontend/vite.config.ts"
-      ],
-      "sourcesDigest": "c5109f951fa406e36457853857d9982d066e1a328727442082b4ba0304e53776"
-    },
-    {
-      "slug": "frontend-routing-shell",
-      "name": "Frontend Routing & Shell",
+      "slug": "frontend-app-shell-routing",
+      "name": "frontend app shell & routing",
       "type": "system",
       "sources": [
         "frontend/src/App.tsx",
         "frontend/src/components/AppLayout.tsx",
         "frontend/src/main.tsx"
       ],
-      "sourcesDigest": "55ead5be5f710147b6a3b9cc206f32db97193ca8f7453912206c69e3133c90a8"
+      "sourcesDigest": "23fa8f19eb5ad88cbb50ca62d891e003770e1a371a500cb38821f36f5e6ea9ba"
     },
     {
-      "slug": "frontend-shared-ui-components",
-      "name": "Frontend Shared UI Components",
+      "slug": "frontend-auth-session",
+      "name": "frontend auth & session",
+      "type": "system",
+      "sources": [
+        "frontend/src/components/AppLayout.tsx",
+        "frontend/src/components/AuthGuard.tsx",
+        "frontend/src/contexts/AuthContext.tsx"
+      ],
+      "sourcesDigest": "4535d45be1935bd79c78fcf45538e425dfb8d3a98057306309046de3ae0ce4df"
+    },
+    {
+      "slug": "frontend-build-dev-server",
+      "name": "Frontend Build & Dev Server",
+      "type": "file",
+      "sources": [
+        "frontend/vite.config.ts"
+      ],
+      "sourcesDigest": "35f9220082ae3a5e4dcf8598a02c59649a878474c65bb9d1503a28394fd464d1"
+    },
+    {
+      "slug": "frontend-dashboard-analytics-pages",
+      "name": "frontend dashboard & analytics pages",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/ContentAnalysis.tsx",
+        "frontend/src/pages/Dashboard.tsx",
+        "frontend/src/pages/DashboardOverview.tsx",
+        "frontend/src/pages/DashboardSettings.tsx"
+      ],
+      "sourcesDigest": "6399bc9a624a42c9f10061db68df36e9d2270f9ce64a6bc54c81dfb2d61f4975"
+    },
+    {
+      "slug": "frontend-reusable-ui-components",
+      "name": "frontend reusable UI components",
       "type": "system",
       "sources": [
         "frontend/src/components/DedupeManualConfig.tsx",
         "frontend/src/components/ErrorHint.tsx",
         "frontend/src/components/ResizableTable.tsx"
       ],
-      "sourcesDigest": "3cfd2f6ed0cbc9902ea291606f0f21b4cf78632fe6c298804b32bbcf0d6aa6a4"
+      "sourcesDigest": "c7945b6221cb50e1cd3e6a31cb8037a37b13ecbb76660ef7458417d3c8153eb3"
     },
     {
-      "slug": "interval-detection-engine",
-      "name": "Interval Detection Engine",
+      "slug": "frontend-workflow-pages",
+      "name": "frontend workflow pages",
       "type": "system",
       "sources": [
-        "engines/detect_intervals.py"
+        "frontend/src/pages/BatchSlice.tsx",
+        "frontend/src/pages/ChannelAccounts.tsx",
+        "frontend/src/pages/ClipReview.tsx"
       ],
-      "sourcesDigest": "c52218e6c86974882808196d915d0bb4c832ef5d6001ed8ad4b048a458e6a272"
+      "sourcesDigest": "5166de0e230cd48f5a092969063bb49ce7bf3410b3023ddd7284fc8dc1d80680"
     },
     {
-      "slug": "llm-evaluation-harness",
-      "name": "LLM Evaluation Harness",
+      "slug": "git-remote-sync",
+      "name": "Git Remote Sync",
       "type": "file",
       "sources": [
-        "eval/grade_highlight_llm.py"
+        "scripts/sync_remotes.sh"
       ],
-      "sourcesDigest": "3c7a99e83bbf9989a12cb3d58a6f339569b6a9813b791665fb0627dc55aa32aa"
+      "sourcesDigest": "6552f04aab69cb38b8fd7031be5ef958562cb3c835412c117b7ec8cb599cf37f"
     },
     {
-      "slug": "llm-manager-provider-abstraction",
-      "name": "LLM Manager & Provider Abstraction",
+      "slug": "interval-detection-management",
+      "name": "Interval Detection Management",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/IntervalDetection.tsx"
+      ],
+      "sourcesDigest": "34ccef51af30115334677614cd4bdb853de822e7e58ee6c109b82bc66c68aa72"
+    },
+    {
+      "slug": "llm-manager-client-compatibility",
+      "name": "LLM Manager & Client Compatibility",
+      "type": "system",
+      "sources": [
+        "autoclip/app/utils/llm_client.py"
+      ],
+      "sourcesDigest": "3b3af92b4f0577acae68e065904f7a2a91b5af46d88fae8b5ae6e46b0a8c9a44"
+    },
+    {
+      "slug": "llm-manager-providers",
+      "name": "LLM Manager & Providers",
       "type": "system",
       "sources": [
         "autoclip/app/core/llm_manager.py",
         "autoclip/app/core/llm_providers.py",
-        "autoclip/app/core/ollama_client.py",
-        "autoclip/app/core/shared_config.py"
+        "autoclip/app/core/ollama_client.py"
       ],
-      "sourcesDigest": "61c41938962a92bb8e775d72c66758f37879ee3ab89253a44b13b1a7e7e03463"
+      "sourcesDigest": "eb91fc9f52c582add3b41d131364b8b779eaafdb00e9ecc7ee694a41f04bc6c5"
     },
     {
-      "slug": "minio-storage-service",
-      "name": "MinIO Storage Service",
+      "slug": "login-qr-self-service",
+      "name": "Login QR Self-Service",
+      "type": "system",
+      "sources": [
+        "backend/app/services/login_qr_service.py"
+      ],
+      "sourcesDigest": "db4ab59175fbc6bbc4278b8480b2baf86cd45184a573438a0c78940809ff13f7"
+    },
+    {
+      "slug": "maintenance-monitoring",
+      "name": "Maintenance & Monitoring",
+      "type": "system",
+      "sources": [
+        "backend/app/api/maintenance.py",
+        "backend/app/api/monitor.py"
+      ],
+      "sourcesDigest": "d6d5d0ce34f77108efe78cc695714872d19386a527d9a8fab47cef046e05b159"
+    },
+    {
+      "slug": "maintenance-operations",
+      "name": "Maintenance Operations",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/Maintenance.tsx"
+      ],
+      "sourcesDigest": "cd236b8ef0a9e1cb51c217e0a15a7343293ec126ac78b96fda232c08e8a1d5ef"
+    },
+    {
+      "slug": "minio-storage-upload",
+      "name": "MinIO Storage & Upload",
+      "type": "system",
+      "sources": [
+        "backend/app/api/preview.py",
+        "backend/app/api/upload.py"
+      ],
+      "sourcesDigest": "7412e017b12fbcf4f939bbd110fba861b1577ec623203c5f62d93df3e527bedc"
+    },
+    {
+      "slug": "monitoring-alerting-dashboard",
+      "name": "Monitoring & Alerting Dashboard",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/Monitor.tsx"
+      ],
+      "sourcesDigest": "d1934891c152b1833fd5048efaebe12be841c1a004a9ff0b2163657bf4ab4ebc"
+    },
+    {
+      "slug": "monitoring-alerting-service",
+      "name": "Monitoring & Alerting Service",
+      "type": "system",
+      "sources": [
+        "backend/app/services/monitor_service.py"
+      ],
+      "sourcesDigest": "d1cd03268e20ed0a684eb964bcc920b1ac6e1c0679d3bfc3c8396d0c2c99f01c"
+    },
+    {
+      "slug": "multi-operator-rbac-audit",
+      "name": "Multi-Operator RBAC & Audit",
+      "type": "concept",
+      "sources": [
+        "alembic/versions/0008_data_scope.py",
+        "alembic/versions/0027_multi_operator_ownership.py",
+        "alembic/versions/0028_multi_operator_audit.py",
+        "alembic/versions/0031_channel_accounts.py",
+        "alembic/versions/0032_channel_video_account_unique.py"
+      ],
+      "sourcesDigest": "c7d7ded28aaeda417c1562fc6f57273b67c0cc025ae8c0422bb029d12cc54c20"
+    },
+    {
+      "slug": "multi-operator-routing-service",
+      "name": "Multi-Operator Routing Service",
+      "type": "system",
+      "sources": [
+        "backend/app/services/multi_operator.py"
+      ],
+      "sourcesDigest": "e2dccedbb022819284468df3e64038c2ecfaced64001991438d63aad774410bc"
+    },
+    {
+      "slug": "multi-video-dedup-fingerprinting",
+      "name": "Multi-Video Dedup & Fingerprinting",
+      "type": "concept",
+      "sources": [
+        "alembic/versions/0034_multi_video_dedup_variants.py"
+      ],
+      "sourcesDigest": "ae6313709c66c4ef49fb532b9d363aa378d047967dd4046e9199348157a567d1"
+    },
+    {
+      "slug": "notfound-fallback",
+      "name": "NotFound Fallback",
+      "type": "file",
+      "sources": [
+        "frontend/src/pages/NotFound.tsx"
+      ],
+      "sourcesDigest": "dd9d3d605a36c901da03aa9e8a7724ffd097956323dd1321e9b4b29bcadbe272"
+    },
+    {
+      "slug": "object-storage-service-minio",
+      "name": "Object Storage Service (MinIO)",
       "type": "system",
       "sources": [
         "backend/app/services/minio_service.py"
@@ -1486,33 +1813,23 @@
       "sourcesDigest": "3180034db6bd2b274c24a5441f4c6ad5273cf4fa39a91e89c9f893e85c20e30e"
     },
     {
-      "slug": "monitoring-maintenance-workers",
-      "name": "Monitoring, Maintenance & Workers",
+      "slug": "orm-model-registry",
+      "name": "ORM Model Registry",
       "type": "system",
       "sources": [
-        "frontend/src/pages/Maintenance.tsx",
-        "frontend/src/pages/Monitor.tsx",
-        "frontend/src/pages/Workers.tsx"
+        "backend/app/models/__init__.py",
+        "backend/app/models/audit.py",
+        "backend/app/models/channel.py",
+        "backend/app/models/dashboard.py",
+        "backend/app/models/drama.py",
+        "backend/app/models/material.py",
+        "backend/app/models/models.py",
+        "backend/app/models/monitor.py",
+        "backend/app/models/publish.py",
+        "backend/app/models/shortdrama.py",
+        "backend/app/models/variant.py"
       ],
-      "sourcesDigest": "8505a40c32eb76085da3c63871c31c73821a607a2e53d5707922a709a4344394"
-    },
-    {
-      "slug": "opencv-watermark-remover",
-      "name": "OpenCV Watermark Remover",
-      "type": "system",
-      "sources": [
-        "engines/remove_mask_remover.py"
-      ],
-      "sourcesDigest": "257e2f509e192e5ad54c48f290a7f5a2ad6a4659de1d3114925b9629f9044961"
-    },
-    {
-      "slug": "preview-frame-extraction-engine",
-      "name": "Preview Frame Extraction Engine",
-      "type": "system",
-      "sources": [
-        "engines/preview.py"
-      ],
-      "sourcesDigest": "46f4d072cac42cccc118c70a335c5d2f54c4b4cc079bd96eac319508b9e89086"
+      "sourcesDigest": "cb25755cdd85198ac320e4e012172031825f9d4d291b77e5c58ac7eaa5200af6"
     },
     {
       "slug": "project-episode-management",
@@ -1522,11 +1839,51 @@
         "frontend/src/pages/ProjectDetail.tsx",
         "frontend/src/pages/Projects.tsx"
       ],
-      "sourcesDigest": "478a08048bcdf7c990c4bac68850c17246d7d62d76f27c23884d359560b96b7d"
+      "sourcesDigest": "435f0c61b6c8d8eb2345a29d05553f008ecde3905b4e1bf1b76044550a3463b6"
     },
     {
-      "slug": "publishing-material-generation",
-      "name": "Publishing Material Generation",
+      "slug": "provider-fallback-chain",
+      "name": "Provider Fallback Chain",
+      "type": "concept",
+      "sources": [
+        "backend/wechat_download/preview_client.py",
+        "backend/wechat_download/provider_registry.py",
+        "backend/wechat_download/yuanbao_client.py"
+      ],
+      "sourcesDigest": "a2f814047bb1363c07ea91430872c3aa05abe68dfc6d0d1b40e96eb327f71961"
+    },
+    {
+      "slug": "publish-api-facade",
+      "name": "Publish API Facade",
+      "type": "system",
+      "sources": [
+        "backend/app/api/publish_common.py",
+        "backend/app/api/publish.py"
+      ],
+      "sourcesDigest": "46058f6a7a7771f5f891859f455cfe5779e9cb63a6a2d6f3e8059e3d06a8104f"
+    },
+    {
+      "slug": "publish-audit-login-qr",
+      "name": "Publish Audit & Login QR",
+      "type": "system",
+      "sources": [
+        "backend/app/api/publish_audit.py",
+        "backend/app/api/publish_login_qr.py"
+      ],
+      "sourcesDigest": "c5a90d1ec8a6e1290832a695ed5ad11cd8cb6d37b766178c351f6b5439e4fa19"
+    },
+    {
+      "slug": "publish-material-generation",
+      "name": "Publish Material Generation",
+      "type": "system",
+      "sources": [
+        "backend/app/api/publish_material.py"
+      ],
+      "sourcesDigest": "3dcf62aa3c4e81fdbab545e32d8738b41d418c9a4916b029177682ea9839d1f1"
+    },
+    {
+      "slug": "publish-materials-generation",
+      "name": "Publish Materials Generation",
       "type": "system",
       "sources": [
         "frontend/src/pages/PublishMaterialTab.tsx"
@@ -1534,23 +1891,90 @@
       "sourcesDigest": "1b69aba59841a96f0ad31249bc484c58c0ad73f4f5385992881b4d4dbe2e8bb2"
     },
     {
-      "slug": "publishing-output-hub",
-      "name": "Publishing & Output Hub",
+      "slug": "publish-profiles-video-accounts",
+      "name": "Publish Profiles & Video Accounts",
       "type": "system",
       "sources": [
-        "frontend/src/pages/OutputPreview.tsx",
-        "frontend/src/pages/PublishManagement.tsx"
+        "backend/app/api/publish_profiles.py",
+        "backend/app/api/publish_video_accounts.py"
       ],
-      "sourcesDigest": "5ccce62ceb424e9b7c34cde9fe0ebad635ea630c4422002a277c62ad624b9f7f"
+      "sourcesDigest": "7ed8f178e4151d87d31e594780680cc18345a41b81d10c98c6deab8d9f632c0c"
     },
     {
-      "slug": "redis-stream-task-coordination",
-      "name": "Redis Stream Task Coordination",
+      "slug": "publish-tasks-scheduling",
+      "name": "Publish Tasks & Scheduling",
+      "type": "system",
+      "sources": [
+        "backend/app/api/publish_batches.py",
+        "backend/app/api/publish_tasks.py",
+        "backend/app/api/publish_time_slots.py"
+      ],
+      "sourcesDigest": "5f16aa24bc57eac2251b36cfc7e9987a00264f79f62fb412b1628041faadeaf2"
+    },
+    {
+      "slug": "publishing-video-account-matrix",
+      "name": "Publishing & Video Account Matrix",
+      "type": "concept",
+      "sources": [
+        "alembic/versions/0013_video_accounts_mini_programs.py",
+        "alembic/versions/0027_multi_operator_ownership.py",
+        "alembic/versions/0030_publish_task_dead_letter.py",
+        "alembic/versions/0031_channel_accounts.py",
+        "alembic/versions/0032_channel_video_account_unique.py",
+        "alembic/versions/0033_publish_time_slots_scheduled_at.py",
+        "alembic/versions/0035_publish_profile_location.py"
+      ],
+      "sourcesDigest": "6fcd061279056ab8d9046e260fbc1a657bf7cb347dad43099f5a29dc8f611dbf"
+    },
+    {
+      "slug": "publishing-workflow-management",
+      "name": "Publishing Workflow Management",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/PublishManagement.tsx"
+      ],
+      "sourcesDigest": "65a9d4708e5b8c568200b2334e356047a9c48a7712dc6842d238b184f964032b"
+    },
+    {
+      "slug": "qr-spike-validation",
+      "name": "QR Spike Validation",
+      "type": "file",
+      "sources": [
+        "scripts/qr_render_spike.py"
+      ],
+      "sourcesDigest": "9f2f605b4931ffc8610ba004a724b5fa1da495e42856ec753658bca6adbe0eb1"
+    },
+    {
+      "slug": "redis-stream-service",
+      "name": "Redis Stream Service",
       "type": "system",
       "sources": [
         "backend/app/services/redis_stream.py"
       ],
-      "sourcesDigest": "50d7d8e12ed5a13b58278673b7051b3c405a684e87fb152110cf5e543ef7f1bc"
+      "sourcesDigest": "cf2bdc09a639ed2fbfe3618783bafd8dea0784642ca90668a5324edb0e0fd395"
+    },
+    {
+      "slug": "redis-streams-real-time-state",
+      "name": "Redis Streams & Real-time State",
+      "type": "concept",
+      "sources": [
+        "backend/app/api/workers.py",
+        "backend/app/services/batch_decoupled_service.py",
+        "backend/app/services/dashboard_service.py",
+        "backend/app/services/login_qr_service.py"
+      ],
+      "sourcesDigest": "66671268142f2d791aa4dd63371b63fb033cbc17ff64949e8bd3fe969b4f99e2"
+    },
+    {
+      "slug": "redis-task-coordination-contract",
+      "name": "Redis Task Coordination Contract",
+      "type": "concept",
+      "sources": [
+        "slice-worker/redis_client.go",
+        "slice-worker/tray_common.go",
+        "slice-worker/tray.go"
+      ],
+      "sourcesDigest": "501ab55fa4af3460579c822a7c29f1d2715b570b40c3cecba6a5a3c65b1c0ad4"
     },
     {
       "slug": "resumable-upload-service",
@@ -1562,32 +1986,50 @@
       "sourcesDigest": "932b8379480663f335ad0dc6d607cb2bb44529d17ce5369fe1beb09d142ea577"
     },
     {
-      "slug": "rpa-multi-operator-infrastructure",
-      "name": "RPA Multi-Operator Infrastructure",
+      "slug": "rpa-multi-operator-container",
+      "name": "RPA Multi-Operator Container",
       "type": "system",
       "sources": [
         "rpa/bootstrap.py",
         "rpa/cdp_proxy.py",
-        "rpa/start_chromium.sh",
-        "scripts/chaos_drill.py"
+        "rpa/start_chromium.sh"
       ],
-      "sourcesDigest": "6f8d239324e60c9180cfc8c9a2a3aadcca50a0716b9e49f97e82753cc3074937"
+      "sourcesDigest": "8d182e536b2cff303966bda391e29cdcccc5890ffeebb34496f589adf92d96da"
     },
     {
-      "slug": "seedance-watermark-removal-engine",
-      "name": "Seedance Watermark Removal Engine",
+      "slug": "rpa-publishing-service",
+      "name": "RPA Publishing Service",
       "type": "system",
       "sources": [
-        "engines/seedance_wm_runner.py",
-        "engines/seedance_wm/__init__.py",
-        "engines/seedance_wm/__main__.py",
-        "engines/seedance_wm/agent.py",
-        "engines/seedance_wm/cli.py",
-        "engines/seedance_wm/config.py",
-        "engines/seedance_wm/detect.py",
-        "engines/seedance_wm/errors.py",
-        "engines/seedance_wm/ffmpeg_io.py",
-        "engines/seedance_wm/inpaint.py",
+        "backend/app/services/publish_service.py"
+      ],
+      "sourcesDigest": "6623dc9cf645b6a733a69cca95540d8dbe902af96637e491fc2eeeeae9c8c721"
+    },
+    {
+      "slug": "rpa-route-table-chaos-validation",
+      "name": "RPA Route Table & Chaos Validation",
+      "type": "concept",
+      "sources": [
+        "rpa/bootstrap.py",
+        "scripts/chaos_drill.py"
+      ],
+      "sourcesDigest": "ccb86b410ba6845791228955a2e671c9b5ba01d43d16594bc4423f2bed9caf79"
+    },
+    {
+      "slug": "seedance-prompt-generation",
+      "name": "Seedance Prompt Generation",
+      "type": "system",
+      "sources": [
+        "autoclip/app/services/seedance_prompt_generator.py",
+        "backend/app/api/shortdrama.py"
+      ],
+      "sourcesDigest": "c901f710fb636528d6a1b2973c7ca557711b68b17838134a894c52ddbfaa0804"
+    },
+    {
+      "slug": "seedance-wm-engine",
+      "name": "seedance_wm engine",
+      "type": "system",
+      "sources": [
         "engines/seedance_wm/log.py",
         "engines/seedance_wm/mask.py",
         "engines/seedance_wm/pipeline.py",
@@ -1595,30 +2037,116 @@
         "engines/seedance_wm/tools.py",
         "engines/seedance_wm/version.py"
       ],
-      "sourcesDigest": "5b7b1ea9b1d4c90799e64f86136aeba02bdf70bcbd61b62b51a8ea4aa105060c"
+      "sourcesDigest": "4fa58511a1c7634a5e9e4070aadc56243779b5a8585e6654b5570f825fbea28a"
     },
     {
-      "slug": "short-drama-generation-workflow",
-      "name": "Short-Drama Generation Workflow",
-      "type": "system",
-      "sources": [
-        "frontend/src/pages/ShortDrama.tsx",
-        "frontend/src/pages/Watermark.tsx"
-      ],
-      "sourcesDigest": "f1a47e9c7977ab552841ca87370e45c7984909a8714f1778a2309766ab12691a"
-    },
-    {
-      "slug": "slice-configuration-presets",
-      "name": "Slice Configuration & Presets",
+      "slug": "seedance-wm-logging-convention",
+      "name": "seedance_wm logging convention",
       "type": "concept",
       "sources": [
-        "frontend/src/pages/EpisodeDetail.tsx",
-        "frontend/src/pages/Settings.tsx",
-        "frontend/src/pages/SliceTasks.tsx",
+        "engines/seedance_wm/log.py"
+      ],
+      "sourcesDigest": "d6607c47a39b0eef7917e55f2114a7202f337544754b34e4663d325bb65bbf5b"
+    },
+    {
+      "slug": "seedance-wm-mask-generation",
+      "name": "seedance_wm mask generation",
+      "type": "file",
+      "sources": [
+        "engines/seedance_wm/mask.py"
+      ],
+      "sourcesDigest": "edbd51d44dc8ab5d1091a6325585def207cf5194786440079bdc623697af8285"
+    },
+    {
+      "slug": "seedance-wm-resumability-state",
+      "name": "seedance_wm resumability & state",
+      "type": "concept",
+      "sources": [
+        "engines/seedance_wm/pipeline.py"
+      ],
+      "sourcesDigest": "65bf64de9f5a68c708658fd541c1432b4fe3181f2151ad3709e6495d2385a95b"
+    },
+    {
+      "slug": "shared-backend-utilities",
+      "name": "Shared Backend Utilities",
+      "type": "system",
+      "sources": [
+        "backend/app/utils/__init__.py",
+        "backend/app/utils/helpers.py"
+      ],
+      "sourcesDigest": "2ecc2fd91746ed8a30b94d327051d7b27cc6d7c1758957ec3a48278653547ca5"
+    },
+    {
+      "slug": "shared-frontend-types-formatting",
+      "name": "Shared Frontend Types & Formatting",
+      "type": "file",
+      "sources": [
+        "frontend/src/types/index.ts",
+        "frontend/src/utils/format.ts"
+      ],
+      "sourcesDigest": "c8d934aac8772e646ba619effd3306c4e002de02b5e743790b9216fb6761e34e"
+    },
+    {
+      "slug": "short-drama-generation-channels",
+      "name": "Short-Drama Generation Channels",
+      "type": "system",
+      "sources": [
+        "backend/app/models/shortdrama.py",
+        "backend/app/services/ark_client.py",
+        "backend/app/services/doubao_service.py"
+      ],
+      "sourcesDigest": "cca8ff3a8c276c04178cf964abe555b020ce8cf36a5cb0abe2d85bfd4e3ce8fc"
+    },
+    {
+      "slug": "short-drama-production-workflow",
+      "name": "Short-Drama Production Workflow",
+      "type": "system",
+      "sources": [
+        "alembic/versions/0004_watermark.py",
+        "alembic/versions/0005_shortdrama_prompts.py",
+        "alembic/versions/0006_shortdrama_prompt_video.py",
+        "alembic/versions/0007_publish_materials.py",
+        "alembic/versions/0009_prompt_versions.py",
+        "alembic/versions/0010_watermark_prompt_link.py",
+        "alembic/versions/0011_doubao_generation.py",
+        "alembic/versions/0012_prompt_default_duration.py",
+        "alembic/versions/0014_seedance_generate.py",
+        "alembic/versions/0015_doubao_progress.py",
+        "alembic/versions/0016_doubao_screenshot.py",
+        "alembic/versions/0017_doubao_account.py",
+        "frontend/src/pages/ShortDrama.tsx"
+      ],
+      "sourcesDigest": "cec1d6803a38c9b08ba897e5f92306bc8a8ae7a694684bf650bb073c6812acfd"
+    },
+    {
+      "slug": "slice-config-tooltip-watermark-styles",
+      "name": "Slice Config Tooltip & Watermark Styles",
+      "type": "file",
+      "sources": [
         "frontend/src/utils/sliceConfigTooltip.ts",
         "frontend/src/utils/watermarkStyles.ts"
       ],
-      "sourcesDigest": "50d3324dafe6fa415396604fc2c0fb60529a19e4fd6cde1b478b8548b18c3f3b"
+      "sourcesDigest": "c67fe74ed83d955a839882c0585e4db93ff0fb3d3c69558ee6428dc41b925271"
+    },
+    {
+      "slug": "slice-configuration-presets",
+      "name": "Slice Configuration Presets",
+      "type": "concept",
+      "sources": [
+        "frontend/src/pages/EpisodeDetail.tsx",
+        "frontend/src/pages/ProjectDetail.tsx",
+        "frontend/src/pages/SliceTasks.tsx"
+      ],
+      "sourcesDigest": "f8f94675dc0f57346f5a091fb17bdfcba566be7a42157917a13316e2e935d2d0"
+    },
+    {
+      "slug": "slice-engine",
+      "name": "slice engine",
+      "type": "system",
+      "sources": [
+        "engines/slice.py"
+      ],
+      "sourcesDigest": "1b5fed13b23b1c2bc716ea1536d2d8ccc321787b85db714d6acc30a99866a6e2"
     },
     {
       "slug": "slice-engine-orchestration",
@@ -1627,16 +2155,55 @@
       "sources": [
         "backend/app/services/slice_service.py"
       ],
-      "sourcesDigest": "c6a664b97c4f1c102817248263c9e485cdf6020afe345845f3221b7cd435859f"
+      "sourcesDigest": "01520d35a78fc408bead5d3530e3ba27f4353b7e367b3c47571354c704a61394"
     },
     {
-      "slug": "slicing-engine",
-      "name": "Slicing Engine",
+      "slug": "slice-task-config-persistence",
+      "name": "Slice Task Config Persistence",
+      "type": "concept",
+      "sources": [
+        "alembic/versions/0003_slice_task_vert2horiz.py",
+        "alembic/versions/0018_slice_task_badges.py",
+        "alembic/versions/0019_slice_task_badge_default_width.py",
+        "alembic/versions/0020_slice_task_subtitle.py",
+        "alembic/versions/0021_slice_task_text_overlays.py",
+        "alembic/versions/0023_slice_task_subtitle_mask.py",
+        "alembic/versions/0024_user_preferences.py",
+        "alembic/versions/0025_slice_task_subtitle_align_mask.py",
+        "alembic/versions/0035_slice_task_cover_image.py"
+      ],
+      "sourcesDigest": "54930dad3c346e254f73d2424e90ff63961351aba118e69bf07877980d418015"
+    },
+    {
+      "slug": "slice-tasks-output-management",
+      "name": "Slice Tasks & Output Management",
       "type": "system",
       "sources": [
-        "engines/slice.py"
+        "frontend/src/pages/OutputPreview.tsx",
+        "frontend/src/pages/SliceTasks.tsx"
       ],
-      "sourcesDigest": "f8e930be916522ce780e8335e160702f857e2608ec8720057f4ebeb5190cc647"
+      "sourcesDigest": "a4f40ea46cc573160a852c4cef67ab8dae7744a4983c14cbe3d8e52ff0aeb884"
+    },
+    {
+      "slug": "slice-worker-node",
+      "name": "Slice Worker Node",
+      "type": "system",
+      "sources": [
+        "slice-worker/callback.go",
+        "slice-worker/config.go",
+        "slice-worker/engine_update_test.go",
+        "slice-worker/engine_update.go",
+        "slice-worker/exec_unix.go",
+        "slice-worker/exec_windows.go",
+        "slice-worker/file_transfer.go",
+        "slice-worker/heartbeat_backend.go",
+        "slice-worker/instance_lock.go",
+        "slice-worker/main.go",
+        "slice-worker/redis_client.go",
+        "slice-worker/task_executor.go",
+        "slice-worker/worker.go"
+      ],
+      "sourcesDigest": "255ed8498ec8f4c22c858436710481d2d5f84a54b2e10b522c34ea187374c23a"
     },
     {
       "slug": "smart-import-service",
@@ -1648,23 +2215,50 @@
       "sourcesDigest": "6938bb78d75a0c40cf1b8f8af7a47218a53b608339f7586089d4c47ff578a7f7"
     },
     {
-      "slug": "storage-cleanup-orphan-reclamation",
-      "name": "Storage Cleanup & Orphan Reclamation",
+      "slug": "speech-recognition",
+      "name": "Speech Recognition",
       "type": "system",
       "sources": [
-        "scripts/cleanup_orphans.py",
-        "scripts/qr_render_spike.py"
+        "autoclip/app/utils/speech_recognizer.py"
       ],
-      "sourcesDigest": "13083178b7e594c0a5c24c8931e56bc2ea490e974ec91686c649bd50129891ac"
+      "sourcesDigest": "a2c8d8fad44d473b39fbb8fcb37f1df4151b880651ccc89aee766b6a6fd4b736"
     },
     {
-      "slug": "subtitle-mask-regression",
-      "name": "Subtitle Mask Regression",
+      "slug": "subtitle-mask-regression-test",
+      "name": "subtitle mask regression test",
       "type": "file",
       "sources": [
         "engines/tests/test_subtitle_mask_regression.py"
       ],
       "sourcesDigest": "4d6bb1b72ad28df8a7d0cd7d05037b21d7c9e654ab738a4aaadbf84506856a72"
+    },
+    {
+      "slug": "system-config-platform-profiles",
+      "name": "System Config & Platform Profiles",
+      "type": "system",
+      "sources": [
+        "backend/app/api/config.py"
+      ],
+      "sourcesDigest": "f9e5ec19de7d06e05d6f82aa8ad33db9d6ccb682c8dd9e767b4d074d1ad28c73"
+    },
+    {
+      "slug": "text-processing-utilities",
+      "name": "Text Processing Utilities",
+      "type": "system",
+      "sources": [
+        "autoclip/app/utils/text_processor.py"
+      ],
+      "sourcesDigest": "b79be48c63047ffb7168c123a2b133957bdbe9bc7301ffab89068768dfbfaebf"
+    },
+    {
+      "slug": "variant-deduplication",
+      "name": "Variant Deduplication",
+      "type": "system",
+      "sources": [
+        "backend/app/models/variant.py",
+        "backend/app/services/fingerprint_service.py"
+      ],
+      "sourcesDigest": "fd1c9b42930fafe0a532f498f09c51b9807f896c3ecd8dc216c74723ec7ea68b"
     },
     {
       "slug": "variant-generation-pipeline",
@@ -1673,11 +2267,11 @@
       "sources": [
         "backend/app/services/variant_service.py"
       ],
-      "sourcesDigest": "50bbc6ad52b1bbffdc3c03395e5b61f21ab884d07c8de286ea14c120bbe81676"
+      "sourcesDigest": "39cbe5e4a46ea0797ee648c7e8c46716283e389a7c0ee18b2b8956ee9ce1c6d2"
     },
     {
-      "slug": "variant-matrix-dedupe-verification",
-      "name": "Variant Matrix & Dedupe Verification",
+      "slug": "variant-matrix-dedup-dashboard",
+      "name": "Variant Matrix Dedup Dashboard",
       "type": "system",
       "sources": [
         "frontend/src/pages/VariantMatrix.tsx"
@@ -1685,22 +2279,106 @@
       "sourcesDigest": "e9426c90a5e4f8dff2c69f5dedaf2a0b636ba4111228baeaf5bfa782b27b0de9"
     },
     {
-      "slug": "video-publishing-pipeline",
-      "name": "Video Publishing Pipeline",
+      "slug": "variant-matrix-deduplication",
+      "name": "Variant Matrix & Deduplication",
       "type": "system",
       "sources": [
-        "backend/app/services/publish_service.py"
+        "backend/app/api/variants.py"
       ],
-      "sourcesDigest": "bcfb3fa17a59ae5b4d684df8ea4aa2d54a36aa1af768c2dd2badd1c57a922d1f"
+      "sourcesDigest": "3898c7f3b4f18bcfa21af10856467d8f549eaaee72c6f591409d78b4c7cff142"
     },
     {
-      "slug": "watermark-removal-roi-library",
-      "name": "Watermark Removal ROI Library",
+      "slug": "vert2horiz-crop",
+      "name": "vert2horiz crop",
+      "type": "file",
+      "sources": [
+        "engines/vert2horiz_crop.py"
+      ],
+      "sourcesDigest": "77a42b2dc98ce7169e841ad80d2a5d1ba529432c504ba45b3474f73de9573a30"
+    },
+    {
+      "slug": "video-processing-engines",
+      "name": "Video Processing Engines",
       "type": "system",
       "sources": [
-        "engines/remove_mask_rois.py"
+        "engines/detect_intervals.py",
+        "engines/preview.py",
+        "engines/remove_mask_remover.py",
+        "engines/remove_mask_rois.py",
+        "engines/seedance_watermark_remover.py",
+        "engines/seedance_wm_runner.py",
+        "engines/seedance_wm/__init__.py",
+        "engines/seedance_wm/__main__.py",
+        "engines/seedance_wm/agent.py",
+        "engines/seedance_wm/cli.py",
+        "engines/seedance_wm/config.py",
+        "engines/seedance_wm/detect.py",
+        "engines/seedance_wm/errors.py",
+        "engines/seedance_wm/ffmpeg_io.py",
+        "engines/seedance_wm/inpaint.py"
       ],
-      "sourcesDigest": "bdb4b636a97592e0a2730aa86cd9e22618034b19e02d6b98b58cae745475bba6"
+      "sourcesDigest": "67ff1821dbbe96fc15681c6ac4f9be43432d8e54d7aa800bd3cd8b06a488db50"
+    },
+    {
+      "slug": "video-slicing-pipeline",
+      "name": "Video Slicing Pipeline",
+      "type": "system",
+      "sources": [
+        "backend/app/api/projects.py",
+        "backend/app/api/slice_helpers.py",
+        "backend/app/api/slice.py"
+      ],
+      "sourcesDigest": "cd08a9251ac5d19eef1711fdb4fdfdee61eea67d07a608fe295c6db01b260c47"
+    },
+    {
+      "slug": "watermark-removal",
+      "name": "Watermark Removal",
+      "type": "system",
+      "sources": [
+        "backend/app/api/watermark.py"
+      ],
+      "sourcesDigest": "f2e09511377cf3cebd29063e972a44c31862fda5a597e7eb91cda39297bef3db"
+    },
+    {
+      "slug": "watermark-removal-degradation-chain",
+      "name": "Watermark Removal Degradation Chain",
+      "type": "concept",
+      "sources": [
+        "engines/remove_mask_remover.py",
+        "engines/remove_mask_rois.py",
+        "engines/seedance_wm/detect.py",
+        "engines/seedance_wm/errors.py",
+        "engines/seedance_wm/inpaint.py"
+      ],
+      "sourcesDigest": "8ad28f25b36241abc53a4bc4af57ab12559ba708ca83b6ca971b74d0ffaafc91"
+    },
+    {
+      "slug": "watermark-removal-workflow",
+      "name": "Watermark Removal Workflow",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/Watermark.tsx"
+      ],
+      "sourcesDigest": "417dec2ddb736f9e791385a3516281eb049d86e4a5179d7fe8e4f7c7a9a4380b"
+    },
+    {
+      "slug": "wechat-channels-resource-download",
+      "name": "WeChat Channels Resource Download",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/ResourceDownload.tsx"
+      ],
+      "sourcesDigest": "cad804860b56b77aa0641e782ed33e01e55ab187d41eebe5dfc1173f17dda0fa"
+    },
+    {
+      "slug": "wechat-download-drama-management",
+      "name": "WeChat Download & Drama Management",
+      "type": "system",
+      "sources": [
+        "alembic/versions/0029_wechat_download.py",
+        "alembic/versions/0036_drama_management.py"
+      ],
+      "sourcesDigest": "382123fc8173abcc48867b5fcbce82afebc47c365552b3f678b0f2fc10b08c00"
     },
     {
       "slug": "wechat-download-pipeline",
@@ -1719,6 +2397,54 @@
         "backend/wechat_download/yuanbao_client.py"
       ],
       "sourcesDigest": "b19616321b6aafd70bb72f12d5573bccebb972a208250155fd29d7dba6cebbd4"
+    },
+    {
+      "slug": "worker-node-management",
+      "name": "Worker Node Management",
+      "type": "system",
+      "sources": [
+        "frontend/src/pages/Workers.tsx"
+      ],
+      "sourcesDigest": "2f1c51a1f3fef31f5b680e3cb021cce9d9b2aea956dbd37e0754775a954db323"
+    },
+    {
+      "slug": "worker-node-management-engine-update",
+      "name": "Worker Node Management & Engine Update",
+      "type": "system",
+      "sources": [
+        "backend/app/api/workers.py"
+      ],
+      "sourcesDigest": "c82459be5b33dff05207d07ec6f6b4311e2b0b3c7d5075e88af63e2043ebf5dc"
+    },
+    {
+      "slug": "worker-packaging-deployment",
+      "name": "Worker Packaging & Deployment",
+      "type": "system",
+      "sources": [
+        "slice-worker/macos/build_mac.sh",
+        "slice-worker/macos/launchd_worker.sh",
+        "slice-worker/macos/manage_worker.sh",
+        "slice-worker/ubuntu/build_package.sh",
+        "slice-worker/ubuntu/deploy_ubuntu.sh"
+      ],
+      "sourcesDigest": "efd815d6b6cba9fff947d840bfc3e9f7b7f3debc70d3add3dd5849a98f8a756e"
+    },
+    {
+      "slug": "worker-platform-abstractions",
+      "name": "Worker Platform Abstractions",
+      "type": "system",
+      "sources": [
+        "slice-worker/exec_unix.go",
+        "slice-worker/exec_windows.go",
+        "slice-worker/tray_common.go",
+        "slice-worker/tray_darwin_nocgo.go",
+        "slice-worker/tray_darwin.go",
+        "slice-worker/tray_other.go",
+        "slice-worker/tray_windows.go",
+        "slice-worker/tray.go",
+        "slice-worker/tui.go"
+      ],
+      "sourcesDigest": "9537a4191ef753eeadaf3e71b30dea359329cd95027273a0de48fa168f8aedc6"
     }
   ]
 }

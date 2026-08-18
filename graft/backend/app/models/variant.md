@@ -1,4 +1,4 @@
-# backend/app/models/variant.py
+# backend/app/models/variant.py · [[orm-model-registry]] [[variant-deduplication]]
 
 - ClipVariant · class · L39-L87 — class ClipVariant(Base)
 - __repr__ · method · L86-L87 — def __repr__(self) -> str

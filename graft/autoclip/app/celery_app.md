@@ -1,3 +1,3 @@
-# autoclip/app/celery_app.py · [[celery-task-queue]]
+# autoclip/app/celery_app.py · [[autoclip-service-entry]]
 
 _No extracted symbols in this file._

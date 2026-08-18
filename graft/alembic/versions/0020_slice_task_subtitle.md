@@ -1,4 +1,4 @@
-# alembic/versions/0020_slice_task_subtitle.py · [[alembic-migration-chain]]
+# alembic/versions/0020_slice_task_subtitle.py · [[alembic-migration-chain]] [[slice-task-config-persistence]]
 
 Alembic migration adding a subtitle_config JSON column to slice_tasks to persist per-task subtitle settings across retries.
 

@@ -59,7 +59,7 @@ covers:
 <!-- context:generated:start -->
 ## Summary
 
-Automatically detects and imports platform export data (WeChat Channels, Mini Program, Ad Platform, Douyin, Kuaishou) using platform fingerprints with required headers, field transforms, and target tables. Uses scoring-based platform matching that weights required headers more heavily, header normalization for encoding variations, and unit conversion for ad revenue (cents to yuan). Provides ecosystem metrics and cross-analysis aggregation functions grouping video metrics by content type and traffic method.
+Auto-detects and imports platform export data (WeChat Channels, Mini Program, Ad Platform, Douyin, Kuaishou) via scoring-based platform fingerprint matching that weights required headers more heavily. Normalizes headers for encoding variations, converts ad revenue cents to yuan, and provides ecosystem metrics and cross-analysis aggregation.
 <!-- context:generated:end -->
 
 ## Notes

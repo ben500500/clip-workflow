@@ -1,4 +1,4 @@
-# slice-worker/engine_update_test.go
+# slice-worker/engine_update_test.go · [[engine-update-versioning]] [[slice-worker-node]]
 
 Test file covering engine version computation determinism and tar.gz extraction safety, including path traversal protection.
 
