@@ -24,18 +24,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
+from app.models.drama import Drama, DramaStill, DramaAccount, DramaMaterial, gen_drama_code
 from app.models.models import (
-    Drama,
-    DramaStill,
-    DramaAccount,
-    DramaMaterial,
     User,
     ImportHistory,
     Episode,
     AutoClipRun,
     SliceTask,
     user_can_access_all_materials,
-    gen_drama_code,
 )
 from app.api.slice_helpers import _not_detect_task
 from app.services.minio_service import get_presigned_url, upload_file_from_path
