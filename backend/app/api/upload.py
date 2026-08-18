@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -118,6 +119,14 @@ async def _store_uploaded_file(
     result_path = finalize_upload(upload_id, local_path)
     if not result_path:
         raise HTTPException(status_code=400, detail="Upload session is not complete or invalid")
+
+    # 音画同步粗检：防带病文件静默进入产线（tus 续传入口）
+    sync = await _check_av_sync(result_path)
+    if not sync["ok"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"上传被拦截（音画校验未通过）：{sync['msg']}。请使用系统「多视频合并」重新合并后再上传。",
+        )
 
     file_key = f"raw-footage/{project_id}/{upload_id}_{safe_name}"
     ok = await upload_file_from_path(settings.MINIO_BUCKET_RAW, file_key, result_path)
@@ -319,6 +328,15 @@ async def upload_single(
                 raise HTTPException(status_code=413, detail="File exceeds maximum allowed size")
             out.write(chunk)
 
+    # 音画同步粗检：防带病文件（外部合并导致音视频时长差）静默进入产线
+    sync = await _check_av_sync(local_path)
+    if not sync["ok"]:
+        os.unlink(local_path)
+        raise HTTPException(
+            status_code=400,
+            detail=f"上传被拦截（音画校验未通过）：{sync['msg']}。请使用系统「多视频合并」重新合并后再上传。",
+        )
+
     file_key = f"raw-footage/{pid}/{upload_id}_{safe_name}"
     ok = await upload_file_from_path(settings.MINIO_BUCKET_RAW, file_key, local_path)
     if not ok:
@@ -435,6 +453,14 @@ async def upload_multi(
             local_paths.append(p)
             names.append(safe_name)
 
+            # 音画同步粗检：防带病文件（外部合并音视频时长差）静默进入产线
+            sync = await _check_av_sync(p)
+            if not sync["ok"]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{safe_name} 上传被拦截（音画校验未通过）：{sync['msg']}。请修复或使用系统「多视频合并」重新合并。",
+                )
+
         # 标题规则：merge=true 时整批产出一条 Episode，直接用传入标题；
         # merge=false 时每个视频一条 Episode，标题作为前缀 + 序号（如「短剧名 第01集」），
         # 未传标题则回退为文件名。
@@ -445,6 +471,13 @@ async def upload_multi(
             merged_path = os.path.join(tmp_dir, f"merged_{uuid.uuid4().hex}.mp4")
             merged = await _ffmpeg_concat(local_paths, merged_path)
             if merged:
+                # 合并产物音画校验（双保险）：系统 concat 一般同步，仍防接缝异常
+                msync = await _check_av_sync(merged_path)
+                if not msync["ok"]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"合并产物音画校验未通过：{msync['msg']}。请检查原始分段或改用重编码合并。",
+                    )
                 local_paths = [merged_path]
                 # 合并后的命名：优先用传入的项目名，否则用当前项目名
                 names = [f"{(project_name or project.name or 'merged')}.mp4"]
@@ -490,6 +523,48 @@ async def upload_multi(
             + ("（已合并为一个）" if do_merge else "")
         ),
     )
+
+
+async def _check_av_sync(file_path: str, threshold: float = 0.5) -> dict:
+    """音画同步粗检：对比视频流与音频流时长，防带病文件（如外部合并导致
+    音视频时长差）静默进入产线。返回 {"ok": bool, "diff": float|None, "msg": str}。
+
+    - 无音频流（无声视频）视为通过；无视频流视为无效文件；
+    - 视频/音频时长差绝对值 > threshold（默认 0.5s）判定为音画不同步。
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error",
+            "-show_entries", "stream=codec_type,duration",
+            "-of", "json", file_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await proc.communicate()
+        if proc.returncode != 0:
+            return {"ok": False, "diff": None,
+                    "msg": f"无法解析视频文件: {err.decode(errors='replace')[-200:]}"}
+        data = json.loads(out.decode(errors="replace"))
+        v_dur = a_dur = None
+        for s in data.get("streams", []):
+            if s.get("codec_type") == "video" and s.get("duration"):
+                v_dur = float(s["duration"])
+            elif s.get("codec_type") == "audio" and s.get("duration"):
+                a_dur = float(s["duration"])
+        if v_dur is None:
+            return {"ok": False, "diff": None, "msg": "文件中未找到视频流，不是有效视频"}
+        if a_dur is None:
+            return {"ok": True, "diff": None, "msg": "无音频流（无声视频），跳过音画校验"}
+        import math
+        if not math.isfinite(v_dur) or not math.isfinite(a_dur):
+            return {"ok": True, "diff": None, "msg": "时长信息不完整，跳过音画校验"}
+        diff = round(v_dur - a_dur, 3)
+        if abs(diff) > threshold:
+            return {"ok": False, "diff": diff,
+                    "msg": f"音画时长不一致：视频 {v_dur:.2f}s / 音频 {a_dur:.2f}s（差 {diff:.2f}s）"}
+        return {"ok": True, "diff": diff, "msg": ""}
+    except Exception as e:
+        logger.error("音画校验异常: %s", e)
+        return {"ok": False, "diff": None, "msg": f"音画校验异常: {e}"}
 
 
 async def _run_ffmpeg(cmd: List[str]) -> bool:
