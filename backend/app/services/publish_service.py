@@ -288,8 +288,13 @@ class VideoChannelPublisher:
 
     async def _upload_video(self, video_path: str):
         """Upload the video file through the file input element."""
-        upload_input = await self.page.query_selector("input[type='file']")
-        if not upload_input:
+        try:
+            # 视频号发布页文件上传 input 为隐藏元素且渲染较晚（约 5-8s），
+            # 用 wait_for_selector 等待出现而非一次性 query，避免误报找不到
+            upload_input = await self.page.wait_for_selector(
+                "input[type='file']", timeout=60000
+            )
+        except Exception:
             raise RuntimeError("Cannot find video upload input element")
         await upload_input.set_input_files(video_path)
         # Wait for upload to complete
