@@ -175,6 +175,60 @@ async def mark_task_cancelled(task_id: str) -> None:
         logger.error(f"Failed to mark task {task_id} as cancelled: {e}")
 
 
+async def remove_slice_task_from_streams(task_id: str) -> None:
+    """从所有切片任务 Stream（含消费者组 PEL）中移除指定任务的残留消息。
+
+    Worker 通过 Redis Stream 消费切片任务：任务消息发布到 high/normal/low/
+    subtitle 四个流后，Worker 用 XReadGroup 读取进入消费者组 PEL（Pending
+    Entries List），任务完成才 XAck 移除。若删除任务时不清理这些消息，残留
+    消息会成为「队列炸弹」：Worker 读到已删除任务的 task_id 后再查 DB 会落空
+    或反复重试，长期阻塞 Worker。本函数遍历所有流，把 payload 中 task_id
+    匹配的消息同时从主 Stream 和消费者组 PEL 中移除。
+    """
+    try:
+        redis = await get_redis()
+        # task_id 在 JSON payload 中以带引号的字符串出现，精确匹配整串避免误删
+        needle = f'"task_id": "{task_id}"'
+        for stream in (STREAM_HIGH, STREAM_NORMAL, STREAM_LOW, STREAM_SUBTITLE):
+            try:
+                # 1) 分页扫描主 Stream，收集 payload 含该 task_id 的消息 ID
+                ids_to_del: list[str] = []
+                start = "-"
+                while True:
+                    batch = await redis.xrange(stream, min=start, max="+", count=200)
+                    if not batch:
+                        break
+                    for mid, fields in batch:
+                        data = fields.get("data", "")
+                        if isinstance(data, str) and needle in data:
+                            ids_to_del.append(mid)
+                    last_id = batch[-1][0]
+                    # 以「(上一批最后一条 ID」作为排他起点翻页
+                    start = f"({last_id}"
+                    if len(batch) < 200:
+                        break
+
+                if ids_to_del:
+                    await redis.xdel(stream, *ids_to_del)
+                    # 2) 同时从消费者组 PEL 中 XAck，避免 Worker 侧仍挂着残留
+                    try:
+                        group_infos = await redis.xinfo_groups(stream)
+                        for gi in group_infos:
+                            gname = gi.get("name")
+                            if gname:
+                                await redis.xack(stream, gname, *ids_to_del)
+                    except Exception as e:
+                        logger.debug("No consumer group to ack on %s: %s", stream, e)
+                    logger.info(
+                        "Removed %d pending stream message(s) for slice task %s from %s",
+                        len(ids_to_del), task_id, stream,
+                    )
+            except Exception as e:
+                logger.warning("Failed to clean stream %s for task %s: %s", stream, task_id, e)
+    except Exception as e:
+        logger.error(f"Failed to remove slice task {task_id} from Redis streams: {e}")
+
+
 async def get_task_redis_status(task_id: str) -> Optional[dict]:
     """从 Redis 查询 Worker 上报的任务状态。
 
