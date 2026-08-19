@@ -251,6 +251,8 @@ const EpisodeDetail: React.FC = () => {
   const [detectProgress, setDetectProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null; interval_count?: number | null; interval_type?: string | null } | null>(null);
   const [detectResultCount, setDetectResultCount] = useState<number | null>(null);
   const [sliceRunning, setSliceRunning] = useState(false);
+  // 开始切片时选择的 AI 选点历史（用于补选点配置复用）
+  const [sliceAutoclipRunId, setSliceAutoclipRunId] = useState<string | undefined>(undefined);
   const [sliceProgress, setSliceProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
   // 快速转换（跳过 AI 选点/区间检测，整片应用下方配置直接出片，位于「开始切片」旁）
   const [quickConverting, setQuickConverting] = useState(false);
@@ -989,6 +991,30 @@ const EpisodeDetail: React.FC = () => {
     setSubtitleFileName(null);
   };
 
+  // ─── 补选点配置：选择某套 AI 选点历史时复用其参数，否则用当前表单值 ──
+  const resolveAutoclipConfig = () => {
+    const selected = sliceAutoclipRunId
+      ? autoclipHistory.find((h) => h.id === sliceAutoclipRunId)
+      : undefined;
+    if (selected && selected.config) {
+      const c = selected.config as Record<string, unknown>;
+      return {
+        max_clips: c.max_clips != null ? Number(c.max_clips) : undefined,
+        min_score_threshold: c.min_score_threshold != null ? Number(c.min_score_threshold) : undefined,
+        min_duration: c.min_duration != null ? Number(c.min_duration) : undefined,
+        max_duration: c.max_duration != null ? Number(c.max_duration) : undefined,
+        frame_analysis: typeof c.frame_analysis === 'boolean' ? c.frame_analysis : undefined,
+      };
+    }
+    return {
+      max_clips: maxClips,
+      min_score_threshold: minScoreThreshold ?? undefined,
+      min_duration: minClipDuration ?? undefined,
+      max_duration: maxClipDuration ?? undefined,
+      frame_analysis: frameAnalysis,
+    };
+  };
+
   // ─── 一键切片（免审核直接出片） ──────────────────────
   const oneClickSlice = async () => {
     setOneClickSlicing(true);
@@ -1001,13 +1027,7 @@ const EpisodeDetail: React.FC = () => {
         auto_accept_all: true,
         // 后端兜底：无候选片段时后端自动补一轮 AI 选点再切片
         auto_autoclip_if_empty: true,
-        autoclip_config: {
-          max_clips: maxClips,
-          min_score_threshold: minScoreThreshold ?? undefined,
-          min_duration: minClipDuration ?? undefined,
-          max_duration: maxClipDuration ?? undefined,
-          frame_analysis: frameAnalysis,
-        },
+        autoclip_config: resolveAutoclipConfig(),
         // 视频封面：作为视频首帧
         cover_image_key: coverImageKey || undefined,
         // 去重模式：一键切片启用后按档位做画面去重（手动配置沿用主页「去重高级配置」）
@@ -1186,6 +1206,9 @@ const EpisodeDetail: React.FC = () => {
       const res = await sliceApi.run(episodeId, mode, {
         // 快速转换：跳过 AI 选点与区间检测，整段源视频直接应用下方配置转换输出
         no_cut: noCut || undefined,
+        // 无候选片段时自动补一轮 AI 选点（复用所选选点历史参数）
+        auto_autoclip_if_empty: true,
+        autoclip_config: resolveAutoclipConfig(),
         // 视频封面（首帧）：选择图片作为成品视频首帧（与一键切片共用同一封面选择）
         cover_image_key: coverImageKey || undefined,
         // 去重模式档位（轻/标准/重）+ 手动配置（每项手段可单独覆盖预设），仅去重模式生效
@@ -1381,6 +1404,41 @@ const EpisodeDetail: React.FC = () => {
     </div>
   );
 
+  // ─── 选点历史参数单行摘要（用于 Select 选项） ──
+  const renderAutoclipParamsLabel = (r: AutoClipRunRecord) => {
+    const c = (r.config || {}) as Record<string, unknown>;
+    const min = c.min_duration as number | undefined;
+    const max = c.max_duration as number | undefined;
+    const clips = c.max_clips as number | undefined;
+    const parts: string[] = [];
+    if (min != null || max != null) parts.push(`${min ?? '默认'}~${max ?? '默认'}s`);
+    if (clips != null) parts.push(`${clips}个`);
+    return parts.length > 0 ? `(${parts.join('，')})` : '(默认)';
+  };
+
+  // ─── 选点历史参数展示：从 config 中提取时间范围等选点参数 ──
+  const renderAutoclipParams = (r: AutoClipRunRecord) => {
+    const c = (r.config || {}) as Record<string, unknown>;
+    const min = c.min_duration as number | undefined;
+    const max = c.max_duration as number | undefined;
+    const clips = c.max_clips as number | undefined;
+    const score = c.min_score_threshold as number | undefined;
+    const frame = c.frame_analysis as boolean | undefined;
+    const parts: string[] = [];
+    if (min != null || max != null) {
+      parts.push(`时长 ${min ?? '默认'}~${max ?? '默认'}s`);
+    }
+    if (clips != null) parts.push(`个数 ${clips}`);
+    if (score != null) parts.push(`评分 ${score}`);
+    if (frame != null) parts.push(`画面理解 ${frame ? '开' : '关'}`);
+    if (parts.length === 0) return <Text type="secondary" style={{ fontSize: 12 }}>默认</Text>;
+    return (
+      <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'pre-line' }}>
+        {parts.join('\n')}
+      </Text>
+    );
+  };
+
   const actions: { title: string; node: React.ReactNode }[] = [
     {
       title: 'AI 智能选点',
@@ -1474,7 +1532,7 @@ const EpisodeDetail: React.FC = () => {
               size="small"
               pagination={false}
               dataSource={autoclipHistory.slice(0, 8)}
-              scroll={{ x: 400 }}
+              scroll={{ x: 640 }}
               columns={[
                 {
                   title: '状态',
@@ -1498,6 +1556,13 @@ const EpisodeDetail: React.FC = () => {
                     ) : (
                       <Text style={{ fontSize: 12 }}>{m || '-'}</Text>
                     ),
+                },
+                {
+                  title: '选点参数',
+                  dataIndex: 'config',
+                  key: 'config',
+                  width: 200,
+                  render: (_: unknown, r: AutoClipRunRecord) => renderAutoclipParams(r),
                 },
                 {
                   title: '时间',
@@ -1633,6 +1698,25 @@ const EpisodeDetail: React.FC = () => {
               style={{ width: 220 }}
             />
           </Tooltip>
+          {/* 选择 AI 选点历史：补选点/切片复用它那套选点参数（时长范围等） */}
+          <Space wrap align="center" size={8}>
+            <Text strong style={{ fontSize: 13 }}>选点历史</Text>
+            <Select
+              size="small"
+              allowClear
+              placeholder="不选则用当前选点参数"
+              value={sliceAutoclipRunId}
+              onChange={(v) => setSliceAutoclipRunId(v ?? undefined)}
+              style={{ width: 260 }}
+              options={autoclipHistory.map((h, i) => ({
+                value: h.id,
+                label: `${formatDateTime(h.created_at)} · ${renderAutoclipParamsLabel(h)}`,
+              }))}
+            />
+            <Tooltip title="选择某一套 AI 智能选点历史后，切片时（含无候选自动补选点）将复用该次选点的时间范围等参数；不选则使用当前页面设置的选点参数。">
+              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+            </Tooltip>
+          </Space>
           {/* 视频封面（首帧，可选）：选择图片作为成品第一帧，不选则按源视频首帧 */}
           <Space wrap align="center" size={8}>
             <Text strong style={{ fontSize: 13 }}>视频封面（首帧）</Text>
