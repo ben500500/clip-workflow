@@ -320,7 +320,9 @@ CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created
 --       连接以 idle in transaction 悬挂并持有 autoclip_runs 表级 RowExclusiveLock，
 --       挡死 worker-selection 的 UPDATE，导致选点卡「排队中」。
 -- 该设置把悬挂事务最迟 60s 交由 PG 自动回滚，作为代码修复的防御层。
--- ALTER SYSTEM + pg_reload_conf 无需重启 PG 即可生效（POSTGRES_USER 为超级用户）。
+-- 目录级 ALTER ROLE（基于 pg_authid / pg_db_role_setting 系统目录）：
+-- - 不受 postgresql.conf 缺少 include 'postgresql.auto.conf' 的影响（Issue #163）；
+-- - 必定生效、容器重建后保留、新连接即时继承，无需 reload。
+-- POSTGRES_USER（默认 clipworkflow）即超级用户，拥有 ALTER ROLE 权限。
 -- =============================================================================
-ALTER SYSTEM SET idle_in_transaction_session_timeout = '60s';
-SELECT pg_reload_conf();
+ALTER ROLE clipworkflow SET idle_in_transaction_session_timeout = '60s';
