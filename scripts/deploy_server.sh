@@ -182,4 +182,12 @@ else
   ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "echo -n \"$(cat "$LAST_FILE")\" > '$REMOTE_DIR/.deploy_last_commit'" \
     || log "WARN: 远端部署标记写入失败（不影响部署）"
   log "部署完成 ✅  (commit $(cat "$LAST_FILE"))"
+
+  # 7. 自动清理 Docker 垃圾（悬空镜像 + 构建缓存）——每次部署 --build 会产生
+  #    新镜像覆盖旧 tag，旧镜像层变 <none> 悬空；BuildKit 缓存默认不自动清，
+  #    几天就累积数十 GB（2026-08-19 实测 39 悬空镜像 + 10.5GB 缓存）。
+  #    在部署成功后顺带清理，避免手工运维。
+  log "自动清理 Docker 垃圾（悬空镜像 + 构建缓存）..."
+  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker image prune -f 2>&1 | tail -2; docker builder prune -f 2>&1 | tail -2" \
+    || log "WARN: Docker 垃圾清理失败（不影响部署）"
 fi
