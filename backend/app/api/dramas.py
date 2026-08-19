@@ -41,6 +41,45 @@ from app.utils.helpers import utc_iso
 router = APIRouter()
 
 
+# ─────────────────────────────── 话题大方向预设 ───────────────────────────────
+
+# 视频号 AI 短剧 50岁+ 中老年话题标签组合（ISSUE #93）
+# 单条视频 3-5 个标签，搭配逻辑：大盘流量标签 + 题材精准标签 + 情绪痛点标签。
+# 剧目详情中按「大方向」选择后自动带入对应组合（可再手动微调）并保存，发布时复用。
+TOPIC_PRESETS: list[dict] = [
+    {
+        "key": "family",
+        "name": "婆媳家庭伦理",
+        "desc": "婆媳矛盾、家庭伦理、不孝子女、分家财产、继母、反击白眼狼",
+        "topics": ["#短剧", "#婆媳关系", "#家庭伦理剧", "#人间真实", "#热门短剧"],
+    },
+    {
+        "key": "comeback",
+        "name": "中年逆袭爽剧",
+        "desc": "受气女主翻身、保洁阿姨、大妈豪门身份曝光、隐忍女主反击、晚年开挂",
+        "topics": ["#热门短剧", "#中年逆袭", "#爽剧", "#反转剧情", "#家庭情感"],
+    },
+    {
+        "key": "twilight",
+        "name": "黄昏恋中老年甜宠",
+        "desc": "大妈遇到豪门老伴、晚年遇见真爱、离异后再幸福",
+        "topics": ["#短剧推荐", "#黄昏恋", "#晚年幸福", "#反转剧情", "#情感短剧"],
+    },
+    {
+        "key": "retro",
+        "name": "年代重生怀旧",
+        "desc": "70-80年代、重生大妈整顿全家、收拾坏人、护儿女、年代家长里短",
+        "topics": ["#AI短剧", "#年代短剧", "#重生", "#七八十年代的回忆", "#微短剧"],
+    },
+    {
+        "key": "grandkid",
+        "name": "萌宝护母亲情",
+        "desc": "萌宝护妈、祖孙亲情、隔代亲、认亲寻亲、四胞胎三胞胎",
+        "topics": ["#微短剧", "#萌宝短剧", "#亲情故事", "#寻亲", "#好看的短剧又来了"],
+    },
+]
+
+
 # ─────────────────────────────── Schema ───────────────────────────────
 
 class DramaCreate(BaseModel):
@@ -57,6 +96,8 @@ class DramaCreate(BaseModel):
     material_link: Optional[str] = None
     material_link_pwd: Optional[str] = None
     operator_id: Optional[str] = None
+    # 发布话题标签（JSON 数组，发布时复用）
+    topics: Optional[List[str]] = None
     # 关联视频号（可空，创建时一并关联）
     account_ids: Optional[List[str]] = None
 
@@ -75,6 +116,7 @@ class DramaUpdate(BaseModel):
     material_link: Optional[str] = None
     material_link_pwd: Optional[str] = None
     operator_id: Optional[str] = None
+    topics: Optional[List[str]] = None
 
 
 class DramaStillPayload(BaseModel):
@@ -107,6 +149,7 @@ async def _serialize_drama(d: Drama) -> dict:
         "frequency": d.frequency,
         "type": d.type,
         "tags": list(d.tags) if d.tags else None,
+        "topics": list(d.topics) if d.topics else None,
         "rating": d.rating,
         "synopsis": d.synopsis,
         "cover_file_key": d.cover_file_key,
@@ -196,6 +239,24 @@ async def _associate_accounts(db: AsyncSession, drama_id: uuid.UUID, account_ids
 
 # ─────────────────────────────── CRUD ───────────────────────────────
 
+@router.get("/dramas/topic-presets", response_model=dict)
+async def list_topic_presets(
+    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """获取视频号中老年短剧话题大方向预设（ISSUE #93）。
+
+    返回 5 个大方向：婆媳家庭伦理 / 中年逆袭爽剧 / 黄昏恋中老年甜宠 /
+    年代重生怀旧 / 萌宝护母亲情。每个方向含可复制的成套话题标签。
+    前端在剧目详情中按大方向选择后自动带入并保存到 dramas.topics。
+    """
+    return {
+        "presets": TOPIC_PRESETS,
+        "total": len(TOPIC_PRESETS),
+        "message": "选择大方向可自动带入成套话题标签，发布时直接复用。",
+    }
+
+
 @router.get("/dramas", response_model=List[dict])
 async def list_dramas(
     q: Optional[str] = Query(None, description="按名称/编码模糊搜索"),
@@ -272,6 +333,7 @@ async def create_drama(
         listing_status=data.listing_status,
         material_link=data.material_link,
         material_link_pwd=data.material_link_pwd,
+        topics=data.topics,
         created_by=current_user.id if current_user else None,
         operator_id=uuid.UUID(data.operator_id) if data.operator_id else (current_user.id if current_user else None),
     )
@@ -859,6 +921,8 @@ async def get_drama_publish_context(
         "name": d.name,
         "story": d.synopsis or "",
         "tags": list(d.tags) if d.tags else [],
+        # 发布话题标签（剧目详情中按大方向选择并保存，发布时直接复用）
+        "topics": list(d.topics) if d.topics else [],
         "has_synopsis": bool(d.synopsis and d.synopsis.strip()),
     }
 

@@ -9,6 +9,7 @@ export interface Drama {
   frequency: string | null; // 男频 / 女频
   type: string | null; // AI真人剧 / 真人剧 / 动漫…
   tags: string[] | null; // 题材多选标签
+  topics?: string[] | null; // 发布话题标签（按大方向带入并保存，发布时复用）
   rating: string | null; // 评级
   synopsis: string | null; // 剧情简介
   cover_file_key: string | null; // 封面 MinIO key
@@ -53,6 +54,7 @@ export interface DramaCreateParams {
   material_link?: string | null;
   material_link_pwd?: string | null;
   operator_id?: string | null;
+  topics?: string[] | null;
   account_ids?: string[] | null;
 }
 
@@ -70,6 +72,7 @@ export interface DramaUpdateParams {
   material_link?: string | null;
   material_link_pwd?: string | null;
   operator_id?: string | null;
+  topics?: string[] | null;
 }
 
 export interface DramaImportRow {
@@ -116,12 +119,31 @@ export interface DramaPublishContext {
   name: string;
   story: string;
   tags: string[];
+  topics: string[]; // 发布话题标签（剧目详情按大方向带入并保存，发布时复用）
   has_synopsis: boolean;
+}
+
+// ========== 话题大方向预设（ISSUE #93 视频号中老年短剧话题）==========
+
+export interface TopicPreset {
+  key: string;
+  name: string;
+  desc: string;
+  topics: string[];
+}
+
+export interface TopicPresetsResult {
+  presets: TopicPreset[];
+  total: number;
+  message: string;
 }
 
 // ========== API ==========
 
-export function listDramas(params?: {
+// 获取视频号中老年短剧话题大方向预设
+export function getTopicPresets(): Promise<TopicPresetsResult> {
+  return client.get('/dramas/topic-presets');
+}
   q?: string;
   frequency?: string;
   rating?: string;

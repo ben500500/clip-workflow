@@ -17,7 +17,7 @@ import {
   uploadDramaImage, addDramaStill, deleteDramaStill, linkDramaAccounts,
   dramaImportParse, dramaImportPreview, dramaImportConfirm,
   getDramaSliceStatus, linkDramaEpisodes,
-  DramaSliceStatus,
+  DramaSliceStatus, getTopicPresets, TopicPreset,
 } from '../api/dramas';
 import { lanSourceApi } from '../api/lanSource';
 import type { LanSourceEpisodeItem } from '../api/lanSource';
@@ -92,6 +92,8 @@ const DramaLibrary: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Drama | null>(null);
   const [form] = Form.useForm();
+  // 话题大方向预设（ISSUE #93 视频号中老年短剧话题）
+  const [topicPresets, setTopicPresets] = useState<TopicPreset[]>([]);
 
   // 详情抽屉
   const [detailOpen, setDetailOpen] = useState(false);
@@ -152,6 +154,11 @@ const DramaLibrary: React.FC = () => {
     publishApi.getVideoAccounts().then(setVideoAccounts).catch(() => setVideoAccounts([]));
   }, []);
 
+  // 加载话题大方向预设（ISSUE #93 视频号中老年短剧话题）
+  useEffect(() => {
+    getTopicPresets().then((r) => setTopicPresets(r.presets || [])).catch(() => setTopicPresets([]));
+  }, []);
+
   const doSearch = () => fetchList(keyword, freq, rating, status);
 
   // ── 新增/编辑 ──
@@ -173,9 +180,18 @@ const DramaLibrary: React.FC = () => {
       synopsis: d.synopsis || undefined,
       listing_status: d.listing_status,
       material_link: d.material_link || undefined,
+      topics: d.topics || [],
       updated_date: d.updated_date ? dayjs(d.updated_date) : undefined,
     });
     setModalOpen(true);
+  };
+
+  // 选择话题大方向 → 自动带入对应成套话题标签到表单 topics（可再手动微调）
+  const onTopicPresetChange = (presetKey?: string) => {
+    const preset = topicPresets.find((p) => p.key === presetKey);
+    if (preset) {
+      form.setFieldsValue({ topics: [...preset.topics] });
+    }
   };
 
   const submit = async () => {
@@ -189,6 +205,7 @@ const DramaLibrary: React.FC = () => {
       synopsis: values.synopsis || null,
       listing_status: values.listing_status,
       material_link: values.material_link || null,
+      topics: values.topics || null,
       updated_date: values.updated_date ? values.updated_date.format('YYYY-MM-DD') : null,
     };
     try {
@@ -628,6 +645,19 @@ const DramaLibrary: React.FC = () => {
           <Form.Item name="tags" label="题材标签">
             <Select mode="tags" placeholder="输入题材，回车添加" tokenSeparators={[',', '/']} />
           </Form.Item>
+          <Form.Item label="话题大方向" extra="选择后自动带入对应成套话题标签，可再手动增删；发布时直接复用。">
+            <Select
+              placeholder="选择话题大方向（视频号中老年短剧）"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              onChange={onTopicPresetChange}
+              options={(topicPresets || []).map((p) => ({ value: p.key, label: p.name }))}
+            />
+          </Form.Item>
+          <Form.Item name="topics" label="话题标签">
+            <Select mode="tags" placeholder="回车添加话题标签（如 #短剧）" tokenSeparators={[',', '/', ' ']} />
+          </Form.Item>
           <Form.Item name="synopsis" label="剧情简介">
             <Input.TextArea rows={3} placeholder="用于发布时生成短标题/配文/话题" />
           </Form.Item>
@@ -666,6 +696,15 @@ const DramaLibrary: React.FC = () => {
             </Descriptions>
             {detail.synopsis && (
               <Alert type="info" showIcon message="剧情简介" description={detail.synopsis} />
+            )}
+
+            <Divider orientation="left">发布话题（发布时复用）</Divider>
+            {detail.topics && detail.topics.length > 0 ? (
+              <Space wrap>
+                {detail.topics.map((t) => <Tag key={t} color="volcano">{t}</Tag>)}
+              </Space>
+            ) : (
+              <Text type="secondary">尚未设置发布话题，可在编辑剧目中选择「话题大方向」自动带入。</Text>
             )}
 
             <Divider orientation="left">封面</Divider>
