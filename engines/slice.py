@@ -3718,12 +3718,12 @@ def _video_has_audio(path: str) -> bool:
 
 def apply_cover_first_frame(video_path: str, cover_path: str, out_path: str,
                          threads: int = 1, encoder: str = "libx264") -> None:
-    """在成品开头前置一段封面静止画面作为视频首帧封面。
+    """在成品开头置入封面图作为视频首帧（单帧封面）。
 
-    封面图等比缩放裁剪填满输出画面，前置约 1.5s 静止画面后拼接源内容。
-    相比仅叠加单帧（约 1/帧率 秒，肉眼几乎不可见），前置画面能让打开视频
-    第一眼即看到封面。源音频相应延迟封面时长以保持音画同步；无音轨时
-    仅拼接视频流。
+    封面图等比缩放裁剪填满输出画面，作为成品的**第一帧**（时长 ≈ 1/帧率，
+    约 0.04s，肉眼不可感知的瞬间），随后立即进入源内容——满足「首帧是封面图、
+    不是整秒被封面占满」的预期。源音频相应延迟封面帧时长以保持音画同步；
+    无音轨时仅拼接视频流。
     """
     if not cover_path or not os.path.isfile(cover_path):
         return
@@ -3732,7 +3732,18 @@ def apply_cover_first_frame(video_path: str, cover_path: str, out_path: str,
         w, h = 1280, 720
     fps = ffprobe_framerate(video_path)
     fps_arg = f"fps={fps}" if fps else "fps=25"
-    cover_dur = 1.5  # 前置封面静止画面时长（秒）
+    # 首帧封面时长：单帧（1/帧率 秒）。此前实现为 1.5s 前置静止画面，
+    # 用户明确要求「首帧而非整秒封面」，改为单帧时长（约 0.04s / 0.033s）。
+    # fps 为 ffmpeg 分数形式（如 '30/1' / '30000/1001'），需解析为数值。
+    try:
+        if fps and "/" in fps:
+            _num, _den = fps.split("/", 1)
+            _fpsv = float(_num) / float(_den)
+        else:
+            _fpsv = float(fps) if fps else 25.0
+        cover_dur = 1.0 / _fpsv if _fpsv > 0 else 0.04
+    except (ValueError, ZeroDivisionError):
+        cover_dur = 0.04
     cover_jpg = out_path + ".cover.jpg"
     try:
         # 将封面图等比缩放+裁剪填满输出画面，输出为单张封面帧
