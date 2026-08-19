@@ -2685,6 +2685,16 @@ const EpisodeDetail: React.FC = () => {
                   ]}
                 />
                 <Text type="secondary" style={{ fontSize: 12 }}>手动逐项配置沿用主页「去重高级配置」</Text>
+                <InputNumber
+                  size="small"
+                  min={1}
+                  max={20}
+                  placeholder="变体数"
+                  value={variantCount}
+                  onChange={(v) => setVariantCount(v ?? undefined)}
+                  style={{ width: 90 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>多版本数（&gt;1 时切片后派生 N 个去重版本）</Text>
               </Space>
             )}
           </div>
