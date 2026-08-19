@@ -492,12 +492,11 @@ const BatchSlicePage: React.FC = () => {
   const renderOutputModal = () => {
     const allOutputs: FlattenOutput[] = [];
     outputs.forEach((item) => {
+      // 后端统一返回恒定结构 { outputs: [...], count: n }
       const out = item.output;
       const files: Record<string, unknown>[] = [];
-      if (out && 'outputs' in out && Array.isArray((out as any).outputs)) {
+      if (out && Array.isArray((out as any).outputs)) {
         (out as any).outputs.forEach((f: Record<string, unknown>) => files.push(f));
-      } else if (out) {
-        files.push(out);
       }
       files.forEach((f) => allOutputs.push({
         seq: item.seq,
