@@ -25,15 +25,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models.models import User
+from app.models.models import User, SystemConfig
 
 from lan_source.client import get_client
+from lan_source.config import load_lan_source_config
 from lan_source.models import LanSourceImport
 from lan_source.service import (
     create_import_task,
     get_import_task,
     serialize_task,
     ST_COMPLETED,
+    LAN_SOURCE_CONFIG_KEY,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,21 +43,36 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/lan-source", tags=["lan-source"])
 
 
+async def _load_config(db: AsyncSession):
+    """读取局域网源配置：system_config > 环境变量 > 默认。"""
+    try:
+        result = await db.execute(
+            select(SystemConfig).where(SystemConfig.key == LAN_SOURCE_CONFIG_KEY)
+        )
+        row = result.scalar_one_or_none()
+        db_config = row.value if (row and isinstance(row.value, dict)) else {}
+    except Exception:
+        db_config = {}
+    return load_lan_source_config(db_config=db_config)
+
+
 @router.get("/config")
-async def lan_source_config(current_user: User = Depends(get_current_user)):
+async def lan_source_config(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """返回局域网源配置（只读，不含任何密钥/密码）。"""
-    return {
-        "enabled": bool(settings.LAN_SOURCE_ENABLED),
-        "base_url": settings.LAN_SOURCE_BASE_URL,
-        "manage_base": settings.LAN_SOURCE_MANAGE_BASE,
-        "default_project": settings.LAN_SOURCE_DEFAULT_PROJECT,
-    }
+    return (await _load_config(db)).to_public_dict()
 
 
 @router.get("/dramas")
-async def lan_source_dramas(current_user: User = Depends(get_current_user)):
+async def lan_source_dramas(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """拉取局域网源可导入的剧目清单（来自管理平台 /api/bg/sync/tasks）。"""
-    client = get_client()
+    cfg = await _load_config(db)
+    client = get_client(cfg)
     try:
         dramas = await client.discover_dramas()
     except Exception as e:
@@ -77,9 +94,11 @@ async def lan_source_dramas(current_user: User = Depends(get_current_user)):
 async def lan_source_preview(
     drama_name: str = Query(..., description="剧目名"),
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """预览某剧目直链（仅发现，不入库）。"""
-    client = get_client()
+    cfg = await _load_config(db)
+    client = get_client(cfg)
     try:
         episodes = await client.fetch_episodes(drama_name)
     except Exception as e:
@@ -119,8 +138,9 @@ async def lan_source_import(
     db: AsyncSession = Depends(get_db),
 ):
     """提交局域网剧集导入任务（直接创建并投递 lan_source 队列）。"""
-    if not settings.LAN_SOURCE_ENABLED:
-        raise HTTPException(status_code=400, detail="局域网获取剧集功能未开启（LAN_SOURCE_ENABLED=false）")
+    cfg = await _load_config(db)
+    if not cfg.enabled:
+        raise HTTPException(status_code=400, detail="局域网获取剧集功能未开启（可在系统设置-局域网获取剧集中开启）")
     name = (data.drama_name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="剧目名不能为空")
@@ -137,7 +157,7 @@ async def lan_source_import(
     celery_task = celery_app.send_task(
         "lan_source.import_episodes",
         args=[str(task.id)],
-        queue=settings.LAN_SOURCE_QUEUE,
+        queue=cfg.queue,
     )
     task.celery_task_id = celery_task.id if celery_task else None
     await db.commit()

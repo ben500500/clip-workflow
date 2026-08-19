@@ -22,12 +22,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.drama import Drama, gen_drama_code
-from app.models.models import Episode, Project
+from app.models.models import Episode, Project, SystemConfig
 
 from lan_source.client import CdnEpisode, LanSourceError, get_client
+from lan_source.config import LanSourceConfig, load_lan_source_config
 from lan_source.models import LanSourceImport
 
 logger = logging.getLogger(__name__)
+
+# 局域网源配置在 system_config 中的 key（与 app/api/config.py DEFAULT_CONFIGS 一致）
+LAN_SOURCE_CONFIG_KEY = "lan_source_config"
 
 # 任务状态机
 ST_PENDING = "pending"
@@ -120,9 +124,12 @@ async def run_import_pipeline(task_id: uuid.UUID) -> dict:
         if task is None:
             return {"ok": False, "error": f"task {task_id} not found"}
 
+        # 从 system_config 读取局域网源配置（DB 热更 > 环境变量 > 默认），并贯穿流水线
+        cfg = await load_db_config(db)
+
         try:
             await _set_status(db, task, ST_DISCOVERING, 5, "正在发现局域网剧集直链...")
-            episodes = await _discover_episodes(task)
+            episodes = await _discover_episodes(task, cfg)
             if not episodes:
                 raise LanSourceImportError(f"未从局域网源获取到《{task.drama_name}》的剧集直链")
 
@@ -140,7 +147,7 @@ async def run_import_pipeline(task_id: uuid.UUID) -> dict:
             # 并发受限下载到本地临时目录
             local_dir = _temp_dir(task.id)
             url_paths = [(e.url, os.path.join(local_dir, f"{idx:03d}.mp4")) for idx, e in enumerate(episodes)]
-            ok_flags = await _download_all(url_paths)
+            ok_flags = await _download_all(url_paths, cfg)
 
             for idx, ok in enumerate(ok_flags):
                 task.episode_items[idx]["status"] = "downloaded" if ok else "failed"
@@ -149,7 +156,7 @@ async def run_import_pipeline(task_id: uuid.UUID) -> dict:
             await _set_status(db, task, ST_IMPORTING, 65, "下载完成，正在入库 MinIO 并建剧集...")
 
             # 入库：建剧目（幂等）+ 切片项目（幂等）+ 剧集（MinIO 上传 + Episode 记录）
-            project_id = await _ensure_project(db, task)
+            project_id = await _ensure_project(db, task, cfg)
             task.project_id = project_id
             drama_id = await _ensure_drama(db, task)
 
@@ -209,29 +216,48 @@ async def run_import_pipeline(task_id: uuid.UUID) -> dict:
             _cleanup_temp(task.id)
 
 
-async def _discover_episodes(task: LanSourceImport) -> list[CdnEpisode]:
-    """发现剧集直链（可重试的网络瞬态由 Celery 重试处理）。"""
+async def load_db_config(db: AsyncSession) -> LanSourceConfig:
+    """从 system_config 读取局域网源配置并与环境变量合并。
+
+    未保存记录（或值为空）时回落到 .env settings 默认值。
+    """
     try:
-        return await get_client().fetch_episodes(task.drama_name)
+        result = await db.execute(
+            select(SystemConfig).where(SystemConfig.key == LAN_SOURCE_CONFIG_KEY)
+        )
+        row = result.scalar_one_or_none()
+        db_config = row.value if (row and isinstance(row.value, dict)) else {}
+    except Exception:  # pragma: no cover
+        logger.warning("读取 lan_source_config 失败，回退到环境变量配置", exc_info=True)
+        db_config = {}
+    return load_lan_source_config(db_config=db_config)
+
+
+async def _discover_episodes(task: LanSourceImport, cfg: Optional[LanSourceConfig] = None) -> list[CdnEpisode]:
+    """发现剧集直链（可重试的网络瞬态由 Celery 重试处理）。"""
+    client = get_client(cfg)
+    try:
+        return await client.fetch_episodes(task.drama_name)
     except LanSourceError as e:
         raise LanSourceImportError(str(e)) from e
     except Exception as e:
         raise RetryableLanSourceError(f"发现剧集直链失败(可重试): {e}") from e
 
 
-async def _download_all(url_paths: list[tuple[str, str]]) -> list[bool]:
+async def _download_all(url_paths: list[tuple[str, str]], cfg: Optional[LanSourceConfig] = None) -> list[bool]:
     """并发受限下载全部直链；单项失败记录，不阻塞整剧。"""
     from lan_source.downloader import run_bounded_downloads
-    return await run_bounded_downloads(url_paths)
+    concurrency = cfg.concurrency if cfg else None
+    return await run_bounded_downloads(url_paths, concurrency=concurrency)
 
 
-async def _ensure_project(db: AsyncSession, task: LanSourceImport) -> uuid.UUID:
+async def _ensure_project(db: AsyncSession, task: LanSourceImport, cfg: Optional[LanSourceConfig] = None) -> uuid.UUID:
     """确保切片项目存在（未指定 project_id 时按默认项目名创建/复用）。"""
     if task.project_id is not None:
         result = await db.execute(select(Project).where(Project.id == task.project_id))
         if result.scalar_one_or_none() is not None:
             return task.project_id
-    default_name = settings.LAN_SOURCE_DEFAULT_PROJECT
+    default_name = (cfg.default_project if cfg else None) or settings.LAN_SOURCE_DEFAULT_PROJECT
     result = await db.execute(select(Project).where(Project.name == default_name))
     proj = result.scalar_one_or_none()
     if proj is None:
