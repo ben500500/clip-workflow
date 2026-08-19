@@ -84,6 +84,8 @@ class PublishTaskResponse(BaseModel):
     # ── 定时发布（R99）：快照与调度时间 ──
     scheduled_at: Optional[str] = None
     time_slot_label: Optional[str] = None
+    # ── 方案A：执行引擎（remote=163 CDP / local=本机执行器） ──
+    executor: Optional[str] = None
     created_at: str
     updated_at: str
 
