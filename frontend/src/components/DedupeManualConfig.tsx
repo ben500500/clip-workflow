@@ -31,6 +31,21 @@ export interface DedupeManualConfigValue {
     position?: string;
     drift?: boolean;
   };
+  // 扩展特效（三方向）
+  sparkle?: {            // 方向一：若隐若现星星点/小光环
+    enabled?: boolean;
+    count?: number;
+    size?: number;
+    opacity?: number;
+    seed?: number;
+  };
+  face_watermark?: {     // 方向三：人脸跟踪动态漂浮淡色水印
+    enabled?: boolean;
+    text?: string;
+    opacity?: number;
+    font_size?: number;
+    interval?: number;
+  };
 }
 
 // 各档位的默认去重参数（与后端 engines/slice.py 的 DEDUPE_PRESETS 保持一致），
@@ -147,6 +162,19 @@ const DedupeManualConfig: React.FC<Props> = ({ value, onChange, preset }) => {
   };
   const wmEnabled = !!value.watermark?.enabled;
 
+  const setSparkle = (key: string, val: unknown) => {
+    const cfg = { enabled: true, ...(value.sparkle || {}) } as Record<string, unknown>;
+    cfg[key] = val;
+    set('sparkle', cfg as DedupeManualConfigValue['sparkle']);
+  };
+  const sparkleEnabled = !!value.sparkle?.enabled;
+  const setFaceWm = (key: string, val: unknown) => {
+    const cfg = { enabled: true, ...(value.face_watermark || {}) } as Record<string, unknown>;
+    cfg[key] = val;
+    set('face_watermark', cfg as DedupeManualConfigValue['face_watermark']);
+  };
+  const faceWmEnabled = !!value.face_watermark?.enabled;
+
   const row = (label: string, tip: string, control: React.ReactNode) => (
     <Space style={{ display: 'flex', justifyContent: 'space-between', width: '100%', marginBottom: 6 }}>
       <Space size={4}>
@@ -229,6 +257,41 @@ const DedupeManualConfig: React.FC<Props> = ({ value, onChange, preset }) => {
               onChange={(v) => setWm('position', v)} options={WATERMARK_POSITIONS} />)}
           {row('缓慢漂移', '水印随时间缓慢移动，增强时序差异化。',
             <Switch size="small" checked={!!value.watermark?.drift} onChange={(v) => setWm('drift', v)} />)}
+        </Space>
+      )}
+
+      <Divider orientation="left" plain style={{ marginTop: 8, fontSize: 13 }}>扩展特效（星星点 / 人脸漂浮水印）</Divider>
+      <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+        若隐若现的星星点/小光环与跟随人脸漂浮的极淡水印，均为低频可选特效，默认关闭。
+      </Text>
+      {row('若隐若现星星点', '叠加带呼吸闪烁的星点/光点，几乎不可察觉但在帧级特征上增加差异化。',
+        <Switch size="small" checked={sparkleEnabled} onChange={(v) => setSparkle('enabled', v)} />)}
+      {sparkleEnabled && (
+        <Space direction="vertical" style={{ width: '100%' }}>
+          {row('光点数量', '叠加的光点个数（1~8）。',
+            <InputNumber min={1} max={8} step={1} value={value.sparkle?.count ?? 3} style={{ width: 120 }}
+              onChange={(v) => setSparkle('count', v ?? 3)} />)}
+          {row('光点大小', '星点半径 px（1~6，越大越像小光环）。',
+            <InputNumber min={1} max={6} step={1} value={value.sparkle?.size ?? 3} style={{ width: 120 }}
+              onChange={(v) => setSparkle('size', v ?? 3)} />)}
+          {row('峰值亮度', '1~40，越小越不易察觉。',
+            <Slider min={1} max={40} step={1} value={value.sparkle?.opacity ?? 10} style={{ width: 160 }}
+              onChange={(v) => setSparkle('opacity', v)} />)}
+        </Space>
+      )}
+      {row('人脸漂浮水印', '跟随人脸移动的极淡水印（复用人脸检测引擎），人脸位置变化时水印随之漂浮。',
+        <Switch size="small" checked={faceWmEnabled} onChange={(v) => setFaceWm('enabled', v)} />)}
+      {faceWmEnabled && (
+        <Space direction="vertical" style={{ width: '100%' }}>
+          {row('水印文字', '跟随人脸漂浮的文字内容。',
+            <Input value={value.face_watermark?.text} maxLength={10} style={{ width: 160 }}
+              onChange={(e) => setFaceWm('text', e.target.value)} />)}
+          {row('透明度', '0.02~0.3，越低越淡（建议很淡很淡）。',
+            <Slider min={0.02} max={0.3} step={0.01} value={value.face_watermark?.opacity ?? 0.08} style={{ width: 160 }}
+              onChange={(v) => setFaceWm('opacity', v)} />)}
+          {row('字号', '水印字号。',
+            <InputNumber min={12} max={60} step={1} value={value.face_watermark?.font_size ?? 24} style={{ width: 120 }}
+              onChange={(v) => setFaceWm('font_size', v ?? 24)} />)}
         </Space>
       )}
     </div>

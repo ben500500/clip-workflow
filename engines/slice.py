@@ -25,6 +25,14 @@ try:
 except ImportError:  # pragma: no cover - OpenCV 未安装时动态模式不可用
     vert2horiz_crop = None
 
+# 去重扩展特效（三方向：星星点/小光环 sparkle、mask 加速、人脸跟踪水印）。
+# 与 vert2horiz_crop 一样做可选导入，OpenCV/依赖缺失时特效自动禁用，不影响既有链路。
+try:
+    from dedupe_effects import build_sparkle_filter, build_face_watermark_filter
+except ImportError:  # pragma: no cover
+    build_sparkle_filter = None
+    build_face_watermark_filter = None
+
 
 # 引擎使用了 PEP 604 联合类型（str | None 等），要求 Python 3.10+。
 # 版本检查必须放在任何 def 之前（注解在模块加载时求值，低版本会抛
@@ -91,6 +99,8 @@ DEDUPE_PRESETS = {
         "sharpen": 0,
         "watermark": None,
         "audio": None,  # 音频指纹差异化（L3），None 不叠加，仅多版本变体使用
+        "sparkle": None,  # 方向一：若隐若现星星点/小光环（dict 或 None，None 关闭）
+        "face_watermark": None,  # 方向三：人脸跟踪漂浮淡色水印（dict 或 None，None 关闭）
     },
     "standard": {
         "crop": 0.03,
@@ -110,6 +120,8 @@ DEDUPE_PRESETS = {
         "sharpen": 0.4,
         "watermark": None,
         "audio": None,  # 音频指纹差异化（L3），None 不叠加，仅多版本变体使用
+        "sparkle": None,  # 方向一：若隐若现星星点/小光环（dict 或 None，None 关闭）
+        "face_watermark": None,  # 方向三：人脸跟踪漂浮淡色水印（dict 或 None，None 关闭）
     },
     "heavy": {
         "crop": 0.05,
@@ -129,6 +141,8 @@ DEDUPE_PRESETS = {
         "sharpen": 0.6,
         "watermark": None,
         "audio": None,  # 音频指纹差异化（L3），None 不叠加，仅多版本变体使用
+        "sparkle": None,  # 方向一：若隐若现星星点/小光环（dict 或 None，None 关闭）
+        "face_watermark": None,  # 方向三：人脸跟踪漂浮淡色水印（dict 或 None，None 关闭）
     },
     # 实测推荐的配方（对原画面影响最小 + 平台查重风险最低），无镜像。
     # 默认配方切为 std_crop_desat（保守裁切降饱和）：裁切 + 变速 + 轻微降饱和，
@@ -151,6 +165,8 @@ DEDUPE_PRESETS = {
         "sharpen": 0.3,
         "watermark": None,
         "audio": None,  # 音频指纹差异化（L3），None 不叠加，仅多版本变体使用
+        "sparkle": None,  # 方向一：若隐若现星星点/小光环（dict 或 None，None 关闭）
+        "face_watermark": None,  # 方向三：人脸跟踪漂浮淡色水印（dict 或 None，None 关闭）
     },
     # std_retro_scan 复古扫描（第二选择，非默认）：还原老电视扫描线+噪点质感——
     #   复古暖调（偏色+色温5800）+ 噪点 + 扫描线 + 暗角，适合追求复古出片质感的场景。
@@ -173,6 +189,8 @@ DEDUPE_PRESETS = {
         "sharpen": 0.4,
         "watermark": None,
         "audio": None,  # 音频指纹差异化（L3），None 不叠加，仅多版本变体使用
+        "sparkle": None,  # 方向一：若隐若现星星点/小光环（dict 或 None，None 关闭）
+        "face_watermark": None,  # 方向三：人脸跟踪漂浮淡色水印（dict 或 None，None 关闭）
     },
 }
 
@@ -220,7 +238,7 @@ def _resolve_dedupe_config(cfg: dict) -> dict:
     return p
 
 
-def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: str = "") -> tuple[str, str]:
+def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: str = "", source_path: str = "") -> tuple[str, str]:
     """根据去重配置构造 (vf, af) 滤镜链。
 
     cfg 支持 preset（light/standard/heavy 基础档位，或推荐配方 std_crop_desat/
@@ -322,6 +340,27 @@ def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: s
         wm_filter = build_dedupe_watermark(wm, width, height)
         if wm_filter:
             vf_parts.append(wm_filter)
+
+    # ── 扩展特效层（三方向，均默认关闭，可选开启） ──
+    # 方向一：若隐若现星星点/小光环（sparkle）。复用 dedupe_effects 生成带正弦
+    #   呼吸透明度的光点 sprite 叠加，几乎不可察觉，却在帧级特征上增加差异化。
+    sparkle = p.get("sparkle")
+    if (isinstance(sparkle, dict) and sparkle.get("enabled")
+            and build_sparkle_filter is not None):
+        eff_parts = build_sparkle_filter(sparkle, width=width, height=height)
+        if eff_parts:
+            vf_parts.extend(eff_parts)
+
+    # 方向三：人脸跟踪 + 动态漂浮淡色水印（face_watermark）。
+    #   复用 vert2horiz_crop.FaceDetector 算出脸中心轨迹，用 drawtext 跟随漂浮。
+    face_wm = p.get("face_watermark")
+    if (isinstance(face_wm, dict) and face_wm.get("enabled") and source_path
+            and build_face_watermark_filter is not None):
+        fw_filter = build_face_watermark_filter(
+            face_wm, source_path, width=width, height=height
+        )
+        if fw_filter:
+            vf_parts.append(fw_filter)
 
     return ",".join(vf_parts), af
 
@@ -3952,7 +3991,7 @@ def main():
         dedupe_hflip = bool(_dedupe_p.get("hflip", False))
         w, h = ffprobe_resolution(source_path)
         src_fr = ffprobe_framerate(source_path)
-        vf, af = build_dedupe_filter(dedupe_cfg, width=w, height=h, framerate=src_fr)
+        vf, af = build_dedupe_filter(dedupe_cfg, width=w, height=h, framerate=src_fr, source_path=source_path)
         print(f"去重档位: {preset} (speed={dedupe_speed:.3f}, hflip={dedupe_hflip})", file=sys.stderr)
 
     # 动态文字水印：开启后在去重/普通滤镜基础上叠加 drawtext

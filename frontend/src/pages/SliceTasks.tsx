@@ -188,6 +188,22 @@ const SUBTITLE_MASK_PRESETS = [
         drift: !!manual.watermark.drift,
       };
     }
+    if (manual.sparkle?.enabled) {
+      m.sparkle = {
+        enabled: true,
+        count: manual.sparkle.count ?? 3,
+        size: manual.sparkle.size ?? 3,
+        opacity: manual.sparkle.opacity ?? 10,
+      };
+    }
+    if (manual.face_watermark?.enabled) {
+      m.face_watermark = {
+        enabled: true,
+        text: manual.face_watermark.text || 'W',
+        opacity: manual.face_watermark.opacity ?? 0.08,
+        font_size: manual.face_watermark.font_size ?? 24,
+      };
+    }
     return Object.keys(m).length > 0 ? { preset, manual: m } : { preset };
   };
 
