@@ -930,6 +930,40 @@ async def get_slice_outputs(
     return result_list
 
 
+@router.get("/slice-outputs/{output_id}", response_model=SliceOutputResponse)
+async def get_slice_output(
+    output_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """按 output_id 单查切片输出（方案A：本机发布执行器据此拿 file_key/下载地址）。"""
+    try:
+        oid = uuid.UUID(output_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid output ID format")
+
+    result = await db.execute(select(SliceOutput).where(SliceOutput.id == oid))
+    output = result.scalar_one_or_none()
+    if not output:
+        raise HTTPException(status_code=404, detail="Slice output not found")
+
+    # 数据隔离（复用现有权限校验）
+    task = (
+        await db.execute(select(SliceTask).where(SliceTask.id == output.task_id))
+    ).scalar_one_or_none()
+    if task:
+        episode = (
+            await db.execute(select(Episode).where(Episode.id == task.episode_id))
+        ).scalar_one_or_none()
+        if episode:
+            await check_project_access_by_episode(db, episode, current_user)
+
+    url = None
+    if output.file_key:
+        url = await get_presigned_url("sliced", output.file_key, expires_seconds=3600)
+    return _serialize_output(output, url)
+
+
 @worker_router.get("/slice-tasks/{task_id}/upload-url")
 async def get_slice_upload_url(
     task_id: str,
