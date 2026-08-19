@@ -85,7 +85,7 @@ export const variantsApi = {
 
   // 去重处理入口：列出全部已切片输出（SliceOutput 多选）
   listSliceOutputs: (params: { page?: number; page_size?: number; keyword?: string } = {}) =>
-    client.get('/slice-outputs/list', { params }) as Promise<SliceOutputList>,
+    client.get('/dedupe/slice-outputs', { params }) as Promise<SliceOutputList>,
 
   verify: (id: string) =>
     client.post(`/variants/${id}/verify`) as Promise<VariantVerifyResult>,

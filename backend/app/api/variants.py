@@ -343,7 +343,7 @@ async def _check_output_access(session, out: SliceOutput, current_user: User):
     await check_project_access_by_episode(session, episode, current_user)
 
 
-@router.get("/slice-outputs/list")
+@router.get("/dedupe/slice-outputs")
 async def list_slice_outputs(
     page: int = 1,
     page_size: int = 50,
