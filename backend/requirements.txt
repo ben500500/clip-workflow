@@ -11,7 +11,7 @@ pydantic>=2.5.0
 pydantic-settings>=2.1.0
 aiofiles>=23.2.0
 tuspy>=1.0.0
-playwright>=1.45.0
+playwright==1.61.0  # pin：connect_over_cdp(headers=) 的 Python API 在 1.45~1.61 均接受 dict（内部 serialize_headers 转 array），锁版本防未来破坏
 pandas>=2.1.0
 openpyxl>=3.1.0
 python-jose[cryptography]>=3.3.0

@@ -185,6 +185,12 @@ class VideoChannelPublisher:
             self.browser = await self._playwright.chromium.connect_over_cdp(
                 self.cdp_url, headers=headers
             )
+            context = (
+                self.browser.contexts[0]
+                if self.browser.contexts
+                else await self.browser.new_context()
+            )
+            self.context = context
         elif self.chrome_debug_port:
             from app.config import settings as s
             self.browser = await self._playwright.chromium.connect_over_cdp(

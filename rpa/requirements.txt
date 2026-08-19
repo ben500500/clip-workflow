@@ -1,2 +1,2 @@
-playwright>=1.45.0
+playwright==1.61.0  # pin 与 backend 一致：connect_over_cdp(headers=) 锁版本防 API 破坏
 redis>=5.0.0
