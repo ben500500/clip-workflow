@@ -232,8 +232,12 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
             # P1-5 修复：用 is not None 判断而非 `or`（falsy 陷阱）。
             # 显式传 0 表示"最低分不限/时长不限"，不再被 `or 60` / `or 0` 回退吞掉。
             min_score=float(config.get("min_score_threshold")) if config.get("min_score_threshold") is not None else 60.0,
-            min_duration=float(config.get("min_duration")) if config.get("min_duration") is not None else 0.0,
-            max_duration=float(config.get("max_duration")) if config.get("max_duration") is not None else 0.0,
+            # P1 修复（#228）：min_duration/max_duration 不再作为硬过滤传给引擎 /api/v1/clips。
+            # 引擎产出的高光片段天然 50~145s，若把用户配置的 max_duration=30 作为硬过滤，
+            # 会把全部候选砍成 0。duration 仅作引擎 step2 定位参考（经 trigger_pipeline 的 config 下发），
+            # 此处统一传 0（不限），保证引擎把候选高光片段全部返回。
+            min_duration=0.0,
+            max_duration=0.0,
         ))
         run_async(_save_autoclip_results(episode_id, autoclip_project_id, clips, completed, config))
         run_async(_update_autoclip_run(
@@ -834,46 +838,13 @@ async def _save_autoclip_results(
 ):
     """Replace clip candidates for an episode with AutoClip results.
 
-    若配置了 min_duration / max_duration(秒),会在落库前对候选片段做
-    确定性时长范围过滤,确保保存的片段严格落在用户指定范围内(除了 AutoClip
-    LLM 提示词引导外,再加一道硬性约束)。
+    注意：min_duration / max_duration 不再作为落库前的硬性时长过滤（P1 修复 #228）。
+    引擎产出的高光片段天然 50~145s，若把用户配置的 max_duration=30 作为硬过滤，
+    会把全部候选砍成 0。duration 仅作引擎 step2 定位参考，候选片段一律原样保存，
+    由下游切片/剪辑按需处理，避免"选点 0 候选"问题。
     """
     from sqlalchemy import select, delete, update
     from app.models.models import ClipCandidate, SliceOutput, AutoClipProject, Episode
-
-    # 用户自定义时长范围(秒),0 表示未设置
-    try:
-        min_dur = float((config or {}).get("min_duration") or 0)
-        max_dur = float((config or {}).get("max_duration") or 0)
-    except (TypeError, ValueError):
-        min_dur, max_dur = 0.0, 0.0
-
-    def _in_duration_range(dur: float) -> bool:
-        if min_dur > 0 and dur < min_dur:
-            return False
-        if max_dur > 0 and dur > max_dur:
-            return False
-        return True
-
-    # 先过滤:只保留时长在 [min_dur, max_dur] 范围内的候选片段
-    if min_dur > 0 or max_dur > 0:
-        filtered = []
-        for clip in clips:
-            start = clip.get("start_time")
-            end = clip.get("end_time")
-            dur = clip.get("duration")
-            if dur is None and start is not None and end is not None:
-                try:
-                    dur = max(0.0, float(end) - float(start))
-                except (TypeError, ValueError):
-                    dur = 0.0
-            try:
-                dur = float(dur or 0)
-            except (TypeError, ValueError):
-                dur = 0.0
-            if _in_duration_range(dur):
-                filtered.append(clip)
-        clips = filtered
 
     async with async_session_factory() as session:
         eid = uuid.UUID(episode_id)
