@@ -55,6 +55,11 @@ type RunningTask struct {
 	Stream    string
 	StartTime time.Time
 	Cancel    context.CancelFunc
+	// 最近一次进度上报时间戳（Unix 纳秒，原子存储；emitProgress 更新）。
+	// 卡死检测据此判断任务是否仍在推进，跨 goroutine 读写无数据竞争。
+	LastProgress atomic.Int64
+	// 是否被卡死检测强制 kill（区别于用户取消，runTask 据此走重新入队而非置为 cancelled）。
+	stuckKilled atomic.Bool
 }
 
 // NewWorker 创建Worker
@@ -203,6 +208,9 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// 启动 PEL 恢复（认领崩溃遗留的未完成消息）
 	go w.claimLoop(ctx)
+
+	// 启动卡死任务检测（issue #242 P1）：进度长时间停更的存活任务强制 kill 重投
+	go w.stuckTaskLoop(ctx)
 
 	// 主消费循环
 	w.log("info", "开始消费任务，最大并发: %d，消费流: %v", w.config.MaxConcurrent, streams)
@@ -368,6 +376,93 @@ func (w *Worker) claimLoop(ctx context.Context) {
 	}
 }
 
+// stuckTaskLoop 卡死任务检测（issue #242 P1）。
+//
+// 背景：worker 进程活着但某任务卡死（如 ffmpeg 挂起），此时消费者未断开，
+// XAutoClaim 不会认领（它只认领 idle 过久且租约过期的 PEL 消息），任务会永久
+// running。这里在本节点内存里跟踪每个运行任务的最近进度时间戳（emitProgress 刷新，
+// 与 claimLoop 用的 Redis lease 解耦——leaseRenewal 每 30s 无条件续期会掩盖挂起），
+// 若某存活任务的进度停更超过阈值，则强制 kill 引擎进程树并重新入队，释放 worker 槽位。
+func (w *Worker) stuckTaskLoop(ctx context.Context) {
+	minutes := w.config.StuckTaskMinutes
+	if minutes <= 0 {
+		w.log("info", "卡死任务检测已禁用（stuck_task_minutes=0）")
+		return
+	}
+	stuckAfter := time.Duration(minutes) * time.Minute
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.runningTasks.Range(func(key, value interface{}) bool {
+				rt := value.(*RunningTask)
+				// 已被卡死 kill 正在清理/重投的任务不再重复处理
+				if rt.stuckKilled.Load() {
+					return true
+				}
+				if time.Since(time.Unix(0, rt.LastProgress.Load())) < stuckAfter {
+					return true // 仍在推进，跳过
+				}
+				w.log("warn", "检测到卡死任务: %s（进度已停更 %s），强制 kill 并重投",
+					rt.Task.TaskID, time.Since(time.Unix(0, rt.LastProgress.Load())).Round(time.Minute))
+				rt.stuckKilled.Store(true)
+				// 取消 context（exec.CommandContext 会杀掉引擎进程树）。
+				// 重新入队在 runTask 退出时（handleTaskError 识别 stuckKilled）统一执行，
+				// 避免与旧 runTask 的清理/去重产生竞态，也不会丢重投消息。
+				rt.Cancel()
+				return true
+			})
+		}
+	}
+}
+
+// requeueStuckTask 卡死任务重新入队：向原 Stream 重新投递一份，并把当前 PEL 消息 ACK 掉，
+// 避免残留。runTask 随后的退出路径会识别 stuckKilled，走重投清理而非置为 cancelled。
+// 重投次数受 MaxRetries 限制：反复卡死的任务重投耗尽后直接置为 failed，避免无限循环。
+func (w *Worker) requeueStuckTask(rt *RunningTask) {
+	if rt == nil || rt.Task == nil {
+		return
+	}
+	taskID := rt.Task.TaskID
+	// 递增重投次数（用任务自身的 RetryCount，随重投消息透传，跨次累加），
+	// 超过 MaxRetries 则直接置为 failed，避免反复卡死的任务无限循环重投
+	rt.Task.RetryCount++
+	if rt.Task.RetryCount > w.config.MaxRetries {
+		w.log("error", "卡死任务 %s 重投次数耗尽（%d 次），标记失败", taskID, w.config.MaxRetries)
+		w.redis.UpdateTaskStatus(taskID, "failed", map[string]interface{}{
+			"error":     "任务反复卡死，重投次数耗尽",
+			"failed_at": time.Now().Unix(),
+		})
+		w.redis.ExpireTaskStatus(taskID, 7*24*time.Hour)
+		// ACK 掉当前 PEL 消息，避免残留
+		w.redis.AckTask(rt.Stream, "workers", rt.MsgID)
+		return
+	}
+
+	data, err := json.Marshal(rt.Task)
+	if err != nil {
+		w.log("error", "卡死任务重投序列化失败: %v", err)
+		return
+	}
+	// 任务 hash 置为 pending，避免被误判为终态
+	w.redis.UpdateTaskStatus(taskID, "pending", map[string]interface{}{
+		"error":    "卡死任务被强制重投",
+		"retry_at": time.Now().Unix(),
+	})
+	if err := w.redis.RequeueTask(rt.Stream, string(data)); err != nil {
+		w.log("error", "卡死任务重投入队失败: %v", err)
+		return
+	}
+	// ACK 掉当前 PEL 消息，让重投的那份成为唯一在途任务
+	if err := w.redis.AckTask(rt.Stream, "workers", rt.MsgID); err != nil {
+		w.log("error", "卡死任务 PEL ACK 失败: %v", err)
+	}
+}
+
 // runTask 执行单个任务
 func (w *Worker) runTask(msg *StreamMessage) {
 	task := msg.Task
@@ -404,11 +499,16 @@ func (w *Worker) runTask(msg *StreamMessage) {
 		StartTime: time.Now(),
 		Cancel:    cancel,
 	}
+	rt.LastProgress.Store(time.Now().UnixNano())
 	w.runningTasks.Store(task.TaskID, rt)
 	atomic.AddInt32(&w.currentTasks, 1)
 	defer func() {
-		w.runningTasks.Delete(task.TaskID)
-		atomic.AddInt32(&w.currentTasks, -1)
+		// 仅删除/递减当前这个 rt（卡死重投时旧 rt 已在 handleTaskError 中先被清理，
+		// 这里通过指针一致性避免误删新 runTask 存入的同 TaskID 记录）。
+		if cur, ok := w.runningTasks.Load(task.TaskID); ok && cur == rt {
+			w.runningTasks.Delete(task.TaskID)
+			atomic.AddInt32(&w.currentTasks, -1)
+		}
 	}()
 
 	w.log("info", "开始任务: %s (模式: %s)", task.TaskID, task.Mode)
@@ -444,12 +544,16 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	os.MkdirAll(taskDir, 0755)
 	defer os.RemoveAll(taskDir)
 
-	// 1. 下载素材
+	// 1. 下载素材（断点续传优化：重启后 source.mp4 若已存在则直接复用，避免重复下载）
 	sourcePath := filepath.Join(taskDir, "source.mp4")
-	w.emitProgress(task.TaskID, "download", 0, "开始下载素材")
-	if err := w.transfer.DownloadFile(taskCtx, task.Source.URL, sourcePath, task.TaskID); err != nil {
-		w.handleTaskError(taskCtx, task, msg, fmt.Errorf("下载素材失败: %w", err))
-		return
+	if _, statErr := os.Stat(sourcePath); statErr != nil {
+		w.emitProgress(task.TaskID, "download", 0, "开始下载素材")
+		if err := w.transfer.DownloadFile(taskCtx, task.Source.URL, sourcePath, task.TaskID); err != nil {
+			w.handleTaskError(taskCtx, task, msg, fmt.Errorf("下载素材失败: %w", err))
+			return
+		}
+	} else {
+		w.log("info", "断点续传: 任务 %s 复用已存在素材", task.TaskID)
 	}
 	w.emitProgress(task.TaskID, "download", 100, "素材下载完成")
 
@@ -562,6 +666,17 @@ func (w *Worker) runTask(msg *StreamMessage) {
 // handleTaskError 处理任务错误（支持重试）
 func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *StreamMessage, err error) {
 	w.log("error", "任务失败: %s - %v", task.TaskID, err)
+
+	// 卡死检测强制 kill：任务已超时无进度，runTask 即将退出。这里先清理 runningTasks
+	// （删除当前 rt + 递减并发槽，先于重投执行，避免新 runTask 的同 TaskID 去重误跳），
+	// 再重新入队，当前 PEL 消息由 requeueStuckTask 一并 ACK。
+	if rt, ok := w.runningTasks.Load(task.TaskID); ok && rt.(*RunningTask).stuckKilled.Load() {
+		w.log("warn", "任务 %s 因卡死被强制终止，重新入队", task.TaskID)
+		w.runningTasks.Delete(task.TaskID)
+		atomic.AddInt32(&w.currentTasks, -1)
+		w.requeueStuckTask(rt.(*RunningTask))
+		return
+	}
 
 	// 区分取消 / 超时：取消不重试，超时按可重试处理
 	if taskCtx.Err() == context.Canceled || strings.Contains(err.Error(), "已取消") {
@@ -792,6 +907,10 @@ func (w *Worker) emitProgress(taskID, phase string, percent float64, detail stri
 		"phase":    phase,
 		"lease":    time.Now().Unix(),
 	})
+	// 刷新卡死检测的进度时间戳：只要有进度上报就说明任务仍在推进
+	if rt, ok := w.runningTasks.Load(taskID); ok {
+		rt.(*RunningTask).LastProgress.Store(time.Now().UnixNano())
+	}
 }
 
 // matchTags 检查标签匹配

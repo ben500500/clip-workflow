@@ -36,6 +36,10 @@ type Config struct {
 	// 具备字幕烧录能力的节点（ffmpeg 带 libass）可额外加入 slice:tasks:subtitle，
 	// 从而专门承接字幕类任务，避免无 libass 的节点（如 Mac）领取后烧录失败。
 	ConsumeStreams []string `json:"consume_streams"`
+	// 卡死任务检测阈值（分钟，issue #242 P1）：运行中任务若超过该时长没有任何
+	// 进度上报（进度停留、引擎/ffmpeg 挂起），且进程仍存活，则强制 kill 并重新入队。
+	// 0 表示不启用卡死检测。默认 30 分钟。
+	StuckTaskMinutes int `json:"stuck_task_minutes"`
 }
 
 // DefaultNodeID 生成统一的默认节点 ID（命名规则：slice-worker-<本机名>）。
@@ -78,6 +82,7 @@ func DefaultConfig() *Config {
 		NodeTTL:           0,
 		BackendURL:        "http://backend:8080",
 		CPUPercent:        50,
+		StuckTaskMinutes:  30,
 	}
 }
 

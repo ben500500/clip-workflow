@@ -179,9 +179,20 @@ func parseStreamMessage(msg redis.XMessage) (*SliceTask, string, error) {
 	return &task, data, nil
 }
 
-// AckTask 确认任务完成（从 PEL 移除）
+// AckTask 确认任务完成（从 PEL 移除），并同步从主 Stream 中 XDel 删除该消息。
+//
+// 背景（issue #242 根因 1）：历史上 AckTask 只调 XAck（从 PEL 移除），从不 XDel
+// 主 Stream，处理完的任务消息永久残留 `slice:tasks:*`，实测 7 天累积 231 条
+// （160+71），误导排查（看着像积压）。XDel 直接从主 Stream 删除对应条目，
+// 不影响已 XAck 的消费者，PEL 与主 Stream 一起清干净。
 func (r *RedisClient) AckTask(stream, group, msgID string) error {
-	return r.client.XAck(r.ctx, stream, group, msgID).Err()
+	err := r.client.XAck(r.ctx, stream, group, msgID).Err()
+	if err != nil {
+		return err
+	}
+	// 仅当 XAck 成功后才 XDel 主 Stream，避免消息仍在 PEL 中但主 Stream 已删，
+	// 造成其他消费者组认领时找不到消息条目。
+	return r.client.XDel(r.ctx, stream, msgID).Err()
 }
 
 // RequeueTask 重新入队任务（用于标签不匹配或延迟重试）

@@ -13,5 +13,6 @@
   "node_ttl": ${NODE_TTL},
   "backend_url": "${BACKEND_URL}",
   "cpu_percent": ${CPU_PERCENT},
+  "stuck_task_minutes": 30,
   "consume_streams": ["slice:tasks:high", "slice:tasks:normal", "slice:tasks:low", "slice:tasks:subtitle"]
 }
