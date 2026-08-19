@@ -24,6 +24,7 @@ from typing import Optional
 
 from sqlalchemy import select
 
+from app.config import settings
 from app.database import async_session_factory
 from app.models.models import (
     SliceOutput,
@@ -143,12 +144,15 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
         # 结构性差异（覆盖 L4 时域序列盲区 + L3 音频）：
         #  - structural_diff.segment: 是否把整段拆成多片段并漂移/重排，改场景切分指纹
         #  - structural_diff.reorder: 是否对片段顺序重排（改变时域序列）
+        # P3 落地：默认带重排（唯一撞车对全是拆段不重排，reorder=True 变体两两全过）。
+        # 运营开关控制（STRUCTURAL_REORDER_DEFAULT，默认开）；segment 仍维持随机 [False,True] 不变。
+        # reorder 依赖拆段：仅在 segment=True 且片段数≥3 时生效，故保留 True 作为默认值即可。
         recipes.append({
             "preset": "standard",
             "manual": manual,
             "structural": {
                 "segment": random.choice(_STRUCTURAL_SEGMENT_OPTIONS),
-                "reorder": random.choice([False, True]),
+                "reorder": settings.STRUCTURAL_REORDER_DEFAULT,
             },
         })
     return recipes

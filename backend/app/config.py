@@ -126,6 +126,12 @@ class Settings(BaseSettings):
     # Worker 任务超时（秒）
     SLICE_TASK_TIMEOUT_SECONDS: int = 7200
 
+    # ── 素材变体去重（variant_service）──
+    # 常规配方 structural.reorder 默认值（运营开关，默认开）。
+    # reorder 依赖拆段：仅当 segment=True 且片段数≥3 时生效（对时域序列重排以拉开 L4 指纹）。
+    # 置 False 可关闭默认重排（segment 仍维持随机 [False,True] 不变）。
+    STRUCTURAL_REORDER_DEFAULT: bool = True
+
     # JWT
     JWT_SECRET: str  # 必填无默认；启动时 field_validator 拒绝占位符/默认值
     JWT_EXPIRE_MINUTES: int = 30  # access_token 有效期（分钟）
