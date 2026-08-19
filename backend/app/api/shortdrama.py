@@ -973,15 +973,6 @@ async def switch_doubao_account(
     }
 
 
-@router.get("/shortdrama/doubao/config", response_model=dict)
-async def get_doubao_config(
-    db: AsyncSession = Depends(get_db),
-):
-    """读取豆包配置（账户时长上限等，可在系统设置中修改）。"""
-    limits = await _load_doubao_limits(db)
-    return {"config": limits}
-
-
 async def _load_doubao_limits(db: AsyncSession) -> dict:
     """读取豆包账户时长上限配置（默认 free=10s / pro=30s），支持 system_config 覆盖。"""
     result = await db.execute(

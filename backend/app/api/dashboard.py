@@ -447,18 +447,6 @@ async def get_drama_ranking(
 
 # ---- Funnel endpoints ----
 
-@router.get("/dashboard/funnel")
-async def get_funnel(
-    account_id: Optional[str] = Query(None),
-    date: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get funnel data."""
-    aid = _parse_account_id(account_id)
-    target_date = _parse_date(date)
-    return await dashboard_service.get_funnel(db, aid, target_date)
-
-
 @router.get("/dashboard/funnel/trend")
 async def get_funnel_trend(
     account_id: Optional[str] = Query(None),
