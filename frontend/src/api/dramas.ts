@@ -144,6 +144,8 @@ export interface TopicPresetsResult {
 export function getTopicPresets(): Promise<TopicPresetsResult> {
   return client.get('/dramas/topic-presets');
 }
+
+export function listDramas(params?: {
   q?: string;
   frequency?: string;
   rating?: string;
