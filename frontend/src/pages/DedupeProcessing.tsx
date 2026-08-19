@@ -45,7 +45,7 @@ const DedupeProcessing: React.FC = () => {
   const [total, setTotal] = useState(0);
   const [keyword, setKeyword] = useState('');
   const pageSize = 20;
-  // 分组表格折叠控制：默认全部展开，变更分组时刷新展开态
+  // 分组表格折叠控制：默认全部折叠（用户手动展开项目/剧集查看输出）
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
 
   // ── Tab2：批量文件拖入 ──
@@ -60,13 +60,8 @@ const DedupeProcessing: React.FC = () => {
       const data = await variantsApi.listSliceOutputs({ page: p, page_size: pageSize, keyword: kw || undefined });
       setGroups(data.groups || []);
       setTotal(data.total || 0);
-      // 默认展开全部项目/剧集分组
-      const keys: React.Key[] = [];
-      (data.groups || []).forEach((g) => {
-        keys.push(`p_${g.project_id || 'none'}`);
-        (g.episodes || []).forEach((e) => keys.push(`e_${e.episode_id || g.project_id || 'none'}_${e.episode_title}`));
-      });
-      setExpandedKeys(keys);
+      // 默认不展开分组（用户手动展开项目/剧集查看输出）
+      setExpandedKeys([]);
     } catch (e) {
       message.error((e as Error).message || '加载已切片任务失败');
     } finally {
