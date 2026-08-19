@@ -49,6 +49,10 @@ class PublishTaskCreate(BaseModel):
     # scheduled_at：直接指定具体发布时间点（ISO 字符串）。两者都不传=立即发布。
     time_slot_id: Optional[str] = None
     scheduled_at: Optional[str] = None
+    # ── 方案A：执行引擎选择 ──
+    # executor="remote"（默认）：163 CDP 浏览器发布（历史行为，投递 celery）；
+    # executor="local"：本机 Mac 真实浏览器执行器发布（不投递 celery，由本机执行器轮询接管）。
+    executor: Optional[str] = None
 
 
 class PublishTaskResponse(BaseModel):
@@ -138,6 +142,9 @@ async def create_publish_task(
     await db.commit()
     # 定时发布：到点前不投递，由调度守护到点触发（status=scheduled）
     if task.scheduled_at:
+        return _serialize_publish_task(task)
+    # 方案A：executor=local 由本机真实浏览器执行器接管，不投递 celery（本机执行器轮询 pending 领取）
+    if data.executor == "local":
         return _serialize_publish_task(task)
     try:
         from app.celery.tasks import task_publish_video
@@ -383,6 +390,7 @@ async def _create_publish_task_internal(
         material_id=_to_uuid_or_none(data.material_id),
         scheduled_at=scheduled_at,
         time_slot_label=time_slot_label,
+        executor=data.executor,
         status="scheduled" if scheduled_at else "pending",
     )
     db.add(task)
@@ -395,6 +403,7 @@ async def _create_publish_task_internal(
 async def list_publish_tasks(
     platform: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    executor: Optional[str] = Query(None),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
@@ -405,6 +414,8 @@ async def list_publish_tasks(
         filters.append(PublishTask.platform == platform)
     if status:
         filters.append(PublishTask.status == status)
+    if executor:
+        filters.append(PublishTask.executor == executor)
     if start_date:
         try:
             sd = datetime.fromisoformat(start_date)
@@ -619,3 +630,54 @@ async def requeue_publish_task(
         "celery_task_id": task.celery_task_id,
         "message": "已清除死信标记并重新投递发布队列",
     }
+
+
+class ExecutorResultRequest(BaseModel):
+    """方案A：本机发布执行器回调任务结果。"""
+
+    status: str  # completed / failed / pending_confirm / processing
+    error_message: Optional[str] = None
+    published_url: Optional[str] = None
+    published_id: Optional[str] = None
+    screenshot_key: Optional[str] = None
+    risk_type: Optional[str] = None
+
+
+@router.post("/publish/tasks/{task_id}/executor-result", response_model=PublishTaskResponse)
+async def publish_task_executor_result(
+    task_id: str,
+    data: ExecutorResultRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """方案A：本机真实浏览器发布执行器回调任务结果。
+
+    仅允许 executor=local 的任务由外部执行器回调，防止误改远程发布任务状态。
+    """
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid task ID format")
+
+    result = await db.execute(select(PublishTask).where(PublishTask.id == tid))
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="Publish task not found")
+    if task.executor != "local":
+        raise HTTPException(status_code=403, detail="仅 local 执行器任务可回调")
+
+    if data.status not in ("completed", "failed", "pending_confirm", "processing"):
+        raise HTTPException(status_code=400, detail="Invalid status")
+
+    task.status = data.status
+    if data.error_message:
+        task.error_message = data.error_message
+    if data.published_url:
+        task.published_url = data.published_url
+    if data.published_id:
+        task.published_id = data.published_id
+    if data.screenshot_key:
+        task.screenshot_key = data.screenshot_key
+    if data.status == "completed" and not task.published_at:
+        task.published_at = datetime.utcnow()
+    await db.commit()
+    return _serialize_publish_task(task)

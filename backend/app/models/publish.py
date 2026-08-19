@@ -145,6 +145,9 @@ class PublishTask(Base):
     scheduled_at = Column(DateTime, nullable=True, index=True)
     # 来源时间窗口快照（前端展示用）：如 07:00-08:00（预置）/ 自定义窗口名
     time_slot_label = Column(String(100), nullable=True)
+    # ── 方案A：本机真实浏览器发布执行器 ──
+    # executor="remote"=163 CDP 浏览器（历史默认）；"local"=本机 Mac 执行器（真实 Edge+家庭 IP+OS 文件对话框），不投递 celery
+    executor = Column(String(16), nullable=True, default="remote")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

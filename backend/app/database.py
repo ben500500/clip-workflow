@@ -220,6 +220,8 @@ async def _apply_compat_migrations():
         ("publish_tasks", "mini_program_id", "UUID"),
         ("publish_tasks", "prompt_record_id", "UUID"),
         ("publish_tasks", "material_id", "UUID"),
+        # 方案A：本机真实浏览器发布执行器（executor=local 不投递 celery，由本机执行器接管）
+        ("publish_tasks", "executor", "VARCHAR(16) DEFAULT 'remote'"),
         ("video_metrics", "platform", "VARCHAR(50)"),
         ("publish_materials", "prompt_record_id", "UUID"),
         # 视频号素材导入（wechat_download）：episodes 最小粘合字段 source_url
