@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.config import settings
-from app.database import get_db
+from app.database import get_db, async_session_factory
 from app.models.models import (
     Episode,
     SliceTask,
@@ -402,9 +402,19 @@ async def _resolve_slice_inputs(
             if not all_clips and data.auto_autoclip_if_empty:
                 # 后端兜底：无候选片段时自动补一轮 AI 选点（复用 autoclip run 流程），
                 # 等待选点完成后重新取候选再切片——前端提交即走、关窗口安全。
+                #
+                # 事务安全（P0，Issue #236）：本分支复用接口主事务 db 调用 run_autoclip
+                # 后再长轮询，若复用同一 db 事务，run_autoclip 末尾 flush 开启的新事务会
+                # 持 autoclip_runs 的 RowExclusiveLock 跨最长 10 分钟轮询悬挂，挡死
+                # worker-selection 的 UPDATE（statement_timeout）→ 任务死在 pending。
+                # 因此：调用前先提交主事务，轮询改用独立 session（每轮 rollback），
+                # 任何路径（成功/异常/超时）都不把事务带锁悬挂。
                 logger.info(
                     "Episode %s 无候选片段，自动补一轮 AI 选点（后端兜底）", eid
                 )
+                # 先提交接口主事务，避免与 run_autoclip 的写操作混在同一事务里
+                #（共享事务会让 autoclip_runs 锁延续到后续长轮询）
+                await db.commit()
                 try:
                     await run_autoclip(
                         episode_id,
@@ -413,22 +423,31 @@ async def _resolve_slice_inputs(
                         db,
                     )
                 except HTTPException as e:
-                    # 选点触发失败（如 autoclip 服务不可达）不阻断，继续走整片回退/报错分支
+                    # 选点触发失败（如 autoclip 服务不可达）不阻断，继续走整片回退/报错分支；
+                    # 回滚 run_autoclip 中途可能留下的未提交事务，确保不悬挂锁
+                    await db.rollback()
                     logger.warning(
                         "Episode %s 自动补选点触发失败: %s", eid, e.detail
                     )
                 else:
+                    # run_autoclip 末尾 flush 会开启新事务并持有 autoclip_runs 锁，
+                    # 先提交把锁释放，再开始轮询（轮询改独立 session，不再复用主事务）
+                    await db.commit()
                     # 轮询等待选点完成（最长 ~10 分钟，每 5s 查一次 DB 状态）
-                    for _ in range(120):
-                        await asyncio.sleep(5)
-                        st_result = await db.execute(
-                            select(AutoClipProject.pipeline_status).where(
-                                AutoClipProject.episode_id == eid
+                    # 用独立 session，每轮结束 rollback 归还事务，避免主事务跨轮询悬挂
+                    async with async_session_factory() as poll:
+                        for _ in range(120):
+                            await asyncio.sleep(5)
+                            st_result = await poll.execute(
+                                select(AutoClipProject.pipeline_status).where(
+                                    AutoClipProject.episode_id == eid
+                                )
                             )
-                        )
-                        st = st_result.scalar_one_or_none()
-                        if st in ("completed", "failed"):
-                            break
+                            st = st_result.scalar_one_or_none()
+                            # 每轮结束 rollback，不留空事务跨轮悬挂（读多轮无需保留状态）
+                            await poll.rollback()
+                            if st in ("completed", "failed"):
+                                break
                     # 重新取候选（含竞态：选点标 completed 后候选落库约滞后 1-2s）
                     for _ in range(10):
                         retry_result = await db.execute(
