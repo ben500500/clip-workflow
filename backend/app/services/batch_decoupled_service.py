@@ -293,7 +293,7 @@ async def dispatch_ready_slices():
                 )
                 if detect_task_id:
                     await _update_item(item.id, detect_task_id=uuid.UUID(detect_task_id))
-                ok, dstatus = await serial._wait_detect(episode_id)
+                ok, dstatus = await serial._wait_detect(episode_id, task_id=detect_task_id or None)
                 if not ok:
                     raise RuntimeError(f"区间检测未完成（{dstatus}）")
             except Exception as e:
@@ -302,14 +302,18 @@ async def dispatch_ready_slices():
                 await _update_item(item.id, error_message=f"区间检测失败: {e}")
                 continue
 
-        # ── 一键切片：标记 slicing 防止重复投递，再投递 ──
-        await serial._set_phase(item, PHASE_SLICING, "slicing", 60)
+        # ── 一键切片：先投递拿到 slice_task_id，再标记 slicing ──
+        # 顺序关键：必须先落 slice_task_id 再置 phase=slicing，否则 finalize_slices 在
+        # 两个 beat 重叠窗口内可能扫到「phase=slicing 但 slice_task_id 为空」的项而误判
+        # “切片任务缺失”置 failed（衔接竞态）。
         try:
             task_id = await serial._trigger_slice(
                 episode_id, item, operator, batch.slice_config or {}
             )
-            if task_id:
-                await _update_item(item.id, slice_task_id=uuid.UUID(task_id))
+            if not task_id:
+                raise RuntimeError("切片任务未返回 task_id")
+            await _update_item(item.id, slice_task_id=uuid.UUID(task_id))
+            await serial._set_phase(item, PHASE_SLICING, "slicing", 60)
             logger.info(
                 "已投递切片任务 episode=%s item=%s slice_task=%s",
                 episode_id, item.id, task_id,

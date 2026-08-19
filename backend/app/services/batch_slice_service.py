@@ -19,6 +19,7 @@ import os
 import time
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import select, update
 
@@ -230,21 +231,27 @@ async def _trigger_detect(episode_id: str, item: BatchSliceItem, user: User, det
     return str(task.id) if task else ""
 
 
-async def _wait_detect(episode_id: str, timeout: float = DETECT_TIMEOUT):
-    """轮询区间检测任务（SliceTask mode=detect_*）直至终态，返回 (成功?, 最新状态)。"""
+async def _wait_detect(episode_id: str, task_id: Optional[str] = None, timeout: float = DETECT_TIMEOUT):
+    """轮询区间检测任务（SliceTask mode=detect_*）直至终态，返回 (成功?, 最新状态)。
+
+    task_id 为已记录的 detect_task_id 时按精确 id 轮询，避免与同集其它 detect 任务混淆
+    （衔接健壮性：_trigger_detect 已把 id 落到 item.detect_task_id，这里优先精确匹配）。
+    """
     eid = uuid.UUID(episode_id)
     from app.models.models import SliceTask
     deadline = time.time() + timeout
     while time.time() < deadline:
         async with async_session_factory() as session:
-            result = await session.execute(
+            query = (
                 select(SliceTask)
                 .where(SliceTask.episode_id == eid)
                 .where(SliceTask.mode.like("detect_%"))
-                .order_by(SliceTask.created_at.desc())
-                .limit(1)
             )
-            task = result.scalar_one_or_none()
+            if task_id:
+                query = query.where(SliceTask.id == uuid.UUID(task_id))
+            else:
+                query = query.order_by(SliceTask.created_at.desc()).limit(1)
+            task = (await session.execute(query)).scalar_one_or_none()
         if task is None:
             time.sleep(POLL_INTERVAL)
             continue
@@ -307,20 +314,29 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
     return resp.task_id
 
 
-async def _wait_slice(episode_id: str, timeout: float = SLICE_TIMEOUT) -> tuple[bool, str, int]:
-    """轮询 SliceTask 直至终态，返回 (成功?, 最新状态, output_count)。"""
+async def _wait_slice(episode_id: str, task_id: Optional[str] = None, timeout: float = SLICE_TIMEOUT) -> tuple[bool, str, int]:
+    """轮询切片 SliceTask 直至终态，返回 (成功?, 最新状态, output_count)。
+
+    ⚠️ 区间检测复用了 slice_tasks 表（mode 前缀 detect_*），_wait_slice 必须排除这些
+    detect_* 记录，否则可能误把「区间检测任务」当作「切片任务」轮询（两者 created_at
+    可能同秒、无确定性排序），从而拿到 output_count=None / 错误状态。
+    有 task_id 时按精确 id 轮询（与解耦路径 finalize_slices 按 slice_task_id 一致）。
+    """
     eid = uuid.UUID(episode_id)
     deadline = time.time() + timeout
     last_output_count = 0
     while time.time() < deadline:
         async with async_session_factory() as session:
-            result = await session.execute(
+            query = (
                 select(SliceTask)
                 .where(SliceTask.episode_id == eid)
-                .order_by(SliceTask.created_at.desc())
-                .limit(1)
+                .where(~SliceTask.mode.like("detect_%"))
             )
-            task = result.scalar_one_or_none()
+            if task_id:
+                query = query.where(SliceTask.id == uuid.UUID(task_id))
+            else:
+                query = query.order_by(SliceTask.created_at.desc()).limit(1)
+            task = (await session.execute(query)).scalar_one_or_none()
         if task is None:
             time.sleep(POLL_INTERVAL)
             continue
@@ -484,7 +500,7 @@ async def run_batch(batch_id: str):
                 if detect_task_id:
                     await _update_item(item.id, detect_task_id=uuid.UUID(detect_task_id))
                     item.detect_task_id = uuid.UUID(detect_task_id)
-                ok, _dstatus = await _wait_detect(episode_id)
+                ok, _dstatus = await _wait_detect(episode_id, task_id=detect_task_id or None)
                 if not ok:
                     raise RuntimeError(f"区间检测未完成（{_dstatus}）")
             except Exception as e:
@@ -501,7 +517,7 @@ async def run_batch(batch_id: str):
             if task_id:
                 await _update_item(item.id, slice_task_id=uuid.UUID(task_id))
                 item.slice_task_id = uuid.UUID(task_id)
-            ok, _status, ocount = await _wait_slice(episode_id)
+            ok, _status, ocount = await _wait_slice(episode_id, task_id=task_id or None)
             if not ok:
                 raise RuntimeError(f"切片未完成（{_status}）")
         except Exception as e:
