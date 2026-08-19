@@ -15,6 +15,7 @@ import Dragger from 'antd/es/upload/Dragger';
 import { batchSliceApi, BatchSlice, BatchSliceItem, BatchSliceOutputItem } from '../api/batchSlice';
 import { sliceApi, type TextOverlayItem } from '../api/slice';
 import { formatDuration } from '../utils/format';
+import { loadCustomPresets, type SlicePreset } from '../utils/slicePresets';
 
 const { Text, Title } = Typography;
 
@@ -135,47 +136,7 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   watermark_style: 'scroll',
 };
 
-// 与剧集详情页「一键切片配置」共用的一套预设（localStorage slice_presets_v1）
-interface SlicePresetOption {
-  id: string;
-  name: string;
-  dedupe_enabled: boolean;
-  dedupe_preset: string;
-  vert2horiz_enabled: boolean;
-  vert2horiz_mode?: 'fixed' | 'dynamic';
-  vert2horiz_ratio: number;
-  vert2horiz_output_size: string;
-  vert2horiz_detect_interval: number;
-  vert2horiz_smooth_window: number;
-  vert2horiz_min_step: number;
-  vert2horiz_face_margin: number;
-  subtitle_enabled: boolean;
-  subtitle_font_ratio: number;
-  subtitle_spacing: number;
-  subtitle_bold: number;
-  subtitle_style: 'default' | 'custom';
-  subtitle_color: string;
-  subtitle_border_color: string;
-  subtitle_align_mask: boolean;
-  subtitle_mask_enabled: boolean;
-  subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill';
-  subtitle_mask_temporal: boolean;
-  subtitle_mask_spatial: boolean;
-  subtitle_mask_preset: string;
-  subtitle_mask_width_ratio: number;
-  subtitle_mask_height_ratio: number;
-  subtitle_mask_bottom_ratio: number;
-  subtitle_mask_srt_offset: number;
-  text_overlay_enabled: boolean;
-  text_overlays: { text: string; position: string; font_size: number; color: string; border_color?: string; vertical?: boolean; offset?: number }[];
-  watermark_enabled: boolean;
-  watermark_text: string;
-  watermark_font_size: number;
-  watermark_opacity: number;
-  watermark_position: string;
-  watermark_style: string;
-}
-const BATCH_PRESET_STORAGE_KEY = 'slice_presets_v1';
+// 与剧集详情页「一键切片配置」共用的一套预设（C2 收敛到 utils/slicePresets.ts，读 slice_presets_v1）
 
 const POSITIONS = ['top-left', 'top-center', 'top-right', 'left', 'bottom-left', 'bottom-center', 'bottom-right'];
 
@@ -220,20 +181,12 @@ const BatchSlicePage: React.FC = () => {
   const [form] = Form.useForm();
   const [sliceConfig, setSliceConfig] = useState<SliceConfigState>({ ...DEFAULT_SLICE_CONFIG, text_overlays: DEFAULT_SLICE_CONFIG.text_overlays.map((t) => ({ ...t })) });
   // ── 一键切片配置预设（与剧集详情页共用，选中即套用到本页全部配置） ──
-  const [presetOptions, setPresetOptions] = useState<SlicePresetOption[]>([]);
+  const [presetOptions, setPresetOptions] = useState<SlicePreset[]>([]);
   const [slicePresetId, setSlicePresetId] = useState<string>('default');
 
-  // 加载剧集详情页保存过的一键切片配置预设
+  // 加载剧集详情页保存过的一键切片配置预设（C2 收敛：统一走 utils/slicePresets.ts）
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(BATCH_PRESET_STORAGE_KEY);
-      if (raw) {
-        const list = JSON.parse(raw) as SlicePresetOption[];
-        if (Array.isArray(list) && list.length > 0) setPresetOptions(list);
-      }
-    } catch {
-      // 预设读取失败不影响页面
-    }
+    setPresetOptions(loadCustomPresets());
   }, []);
 
   // 应用选中的一键切片配置预设：把与详情页重叠的字段映射到本页 sliceConfig
@@ -263,14 +216,14 @@ const BatchSlicePage: React.FC = () => {
       subtitle_mask_style: p.subtitle_mask_style,
       subtitle_mask_temporal: p.subtitle_mask_temporal,
       subtitle_mask_spatial: p.subtitle_mask_spatial,
-      subtitle_mask_preset: p.subtitle_mask_preset,
+      subtitle_mask_preset: p.subtitle_mask_preset || 'auto',
       subtitle_mask_width_ratio: p.subtitle_mask_width_ratio,
       subtitle_mask_height_ratio: p.subtitle_mask_height_ratio,
       subtitle_mask_bottom_ratio: p.subtitle_mask_bottom_ratio,
       subtitle_mask_srt_offset: p.subtitle_mask_srt_offset,
       dedupe_preset: p.dedupe_preset || 'standard',
       text_overlay_enabled: p.text_overlay_enabled,
-      text_overlays: p.text_overlays ? p.text_overlays.map((t) => ({ ...t })) : prev.text_overlays,
+      text_overlays: p.text_overlays ? p.text_overlays.map((t) => ({ text: t.text, position: t.position, font_size: t.font_size ?? 40, color: t.color ?? '#EDD736', border_color: t.border_color, vertical: t.vertical, offset: t.offset })) : prev.text_overlays,
       watermark_enabled: p.watermark_enabled,
       watermark_text: p.watermark_text,
       watermark_font_size: p.watermark_font_size,

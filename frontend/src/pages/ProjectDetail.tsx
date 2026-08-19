@@ -11,6 +11,7 @@ import { uploadApi } from '../api/upload';
 import { sliceApi } from '../api/slice';
 import type { Episode, Project } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
+import { loadCustomPresets, type SlicePreset } from '../utils/slicePresets';
 
 const { Title, Text } = Typography;
 const { Dragger } = Upload;
@@ -56,16 +57,7 @@ const DEDUPE_PRESET_OPTIONS = [
   { value: 'heavy', label: '重' },
 ];
 
-// 与剧集详情页「一键切片配置」共用的一套预设（localStorage slice_presets_v1）
-interface BatchPresetOption {
-  id: string;
-  name: string;
-  dedupe_enabled: boolean;
-  dedupe_preset: string;
-  vert2horiz_enabled: boolean;
-  subtitle_enabled: boolean;
-}
-const BATCH_PRESET_STORAGE_KEY = 'slice_presets_v1';
+// 与剧集详情页「一键切片配置」共用的一套预设（C2 收敛到 utils/slicePresets.ts，读 slice_presets_v1）
 
 const ProjectDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -102,7 +94,7 @@ const ProjectDetail: React.FC = () => {
   const [coverUploading, setCoverUploading] = useState(false);
 
   // ── 批量一键切片可选的「一键切片配置」预设（与剧集详情页共享 localStorage） ──
-  const [presetOptions, setPresetOptions] = useState<BatchPresetOption[]>([]);
+  const [presetOptions, setPresetOptions] = useState<SlicePreset[]>([]);
   const [batchPresetId, setBatchPresetId] = useState<string>('default');
 
   // 应用选中的一键切片配置预设到批量切片参数
@@ -119,17 +111,9 @@ const ProjectDetail: React.FC = () => {
     }));
   };
 
-  // 加载剧集详情页保存过的一键切片配置预设
+  // 加载剧集详情页保存过的一键切片配置预设（C2 收敛：统一走 utils/slicePresets.ts）
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(BATCH_PRESET_STORAGE_KEY);
-      if (raw) {
-        const list = JSON.parse(raw) as BatchPresetOption[];
-        if (Array.isArray(list) && list.length > 0) setPresetOptions(list);
-      }
-    } catch {
-      // 预设读取失败不影响页面
-    }
+    setPresetOptions(loadCustomPresets());
   }, []);
 
   // ── 成品预览 Tab：项目下所有剧集的已完成切片产出 ──

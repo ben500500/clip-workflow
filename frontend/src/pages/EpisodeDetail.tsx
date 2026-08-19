@@ -20,6 +20,7 @@ import type { AutoClipRunRecord, Episode, IntervalHistoryItem, SliceTask } from 
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 import { buildSliceConfigTooltip } from '../utils/sliceConfigTooltip';
 import { WATERMARK_STYLE_OPTIONS, WATERMARK_STYLE_LABEL } from '../utils/watermarkStyles';
+import { DEFAULT_SLICE_PRESET, SLICE_ACTIVE_PRESET_KEY, SLICE_PRESET_STORAGE_KEY, loadPresetList, persistPresets, type SlicePreset } from '../utils/slicePresets';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -112,113 +113,8 @@ const BADGE_POSITIONS = [
 ];
 
 // ─── 一键切片配置预设（可自定义所有默认值并保存多套） ───
-interface SlicePreset {
-  id: string;
-  name: string;
-  // 竖屏转横屏
-  vert2horiz_enabled: boolean;
-  vert2horiz_mode: 'fixed' | 'dynamic';
-  vert2horiz_ratio: number;
-  vert2horiz_output_size: string;
-  vert2horiz_detect_interval: number;
-  vert2horiz_smooth_window: number;
-  vert2horiz_min_step: number;
-  vert2horiz_face_margin: number;
-  // ASR 字幕
-  subtitle_enabled: boolean;
-  subtitle_font_ratio: number;
-  subtitle_spacing: number;
-  subtitle_bold: number;
-  subtitle_style: 'default' | 'custom';
-  subtitle_color: string;
-  subtitle_border_color: string;
-  // 源视频字幕打码
-  subtitle_mask_enabled: boolean;
-  subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill';
-  subtitle_mask_temporal: boolean;
-  subtitle_mask_spatial: boolean;
-  subtitle_mask_preset?: 'auto' | 'fine' | 'quick' | string;
-  subtitle_mask_width_ratio: number;
-  subtitle_mask_height_ratio: number;
-  subtitle_mask_bottom_ratio: number;
-  subtitle_mask_srt_offset: number;
-  // 字幕对齐源字幕打码区域（默认开启）
-  subtitle_align_mask: boolean;
-  // 恒定水印/角标打码
-  watermark_mask_enabled: boolean;
-  watermark_mask_style: 'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill';
-  watermark_mask_width_ratio: number;
-  watermark_mask_height_ratio: number;
-  watermark_mask_bottom_ratio: number;
-  // 固定文字
-  text_overlay_enabled: boolean;
-  text_overlays: TextOverlayItem[];
-  // 动态文字水印
-  watermark_enabled: boolean;
-  watermark_text: string;
-  watermark_font_size: number;
-  watermark_opacity: number;
-  watermark_position: string;
-  watermark_style: string;
-  // 图片角标默认尺寸
-  badge_default_width: number;
-  // 去重模式（一键切片启用后按档位做画面去重）
-  dedupe_enabled: boolean;
-  dedupe_preset: string;
-}
-
-const SLICE_PRESET_STORAGE_KEY = 'slice_presets_v1';
-
-// 默认配置（在默认项基础上：竖屏转横屏开 / ASR字幕开 / 固定文字开）
-const DEFAULT_SLICE_PRESET: SlicePreset = {
-  id: 'default',
-  name: '默认配置',
-  vert2horiz_enabled: true,
-  vert2horiz_mode: 'dynamic',
-  vert2horiz_ratio: 0.5625,
-  vert2horiz_output_size: '1280x720',
-  vert2horiz_detect_interval: 2,
-  vert2horiz_smooth_window: 15,
-  vert2horiz_min_step: 5,
-  vert2horiz_face_margin: 0.30,
-  subtitle_enabled: true,
-  subtitle_font_ratio: 0.22,
-  subtitle_spacing: -2,
-  subtitle_bold: 0,
-  subtitle_style: 'custom',
-  subtitle_color: '#EDD736',
-  subtitle_border_color: '#000000',
-  subtitle_mask_enabled: false,
-  subtitle_mask_style: 'delogo',
-  subtitle_mask_temporal: true,
-  subtitle_mask_spatial: false,
-  subtitle_mask_preset: 'auto',
-  subtitle_mask_width_ratio: 0.9,
-  subtitle_mask_height_ratio: 0.12,
-  subtitle_mask_bottom_ratio: 0.02,
-  subtitle_mask_srt_offset: 0,
-  subtitle_align_mask: true,
-  text_overlay_enabled: true,
-  text_overlays: [
-    { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000', vertical: false, offset: 10 },
-    { text: '免费热门短剧', position: 'bottom-left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: false, offset: 10 },
-    { text: '本故事纯属虚构', position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true, offset: 10 },
-  ],
-  watermark_enabled: false,
-  watermark_text: '',
-  watermark_font_size: 28,
-  watermark_opacity: 0.5,
-  watermark_position: 'bottom',
-  watermark_style: 'scroll',
-  watermark_mask_enabled: false,
-  watermark_mask_style: 'delogo',
-  watermark_mask_width_ratio: 0.9,
-  watermark_mask_height_ratio: 0.12,
-  watermark_mask_bottom_ratio: 0.02,
-  badge_default_width: 0,
-  dedupe_enabled: false,
-  dedupe_preset: 'std_crop_desat',
-};
+// C2 收敛：SlicePreset / DEFAULT_SLICE_PRESET / 存储键 / loadPresetList / persistPresets
+// 已统一到 utils/slicePresets.ts 作为单一事实源，三页面共用。
 
 const EpisodeDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -466,38 +362,14 @@ const EpisodeDetail: React.FC = () => {
     return formatDuration(diff);
   };
 
-  // ── 一键切片配置预设：加载 / 保存 / 应用 ──
+  // ── 一键切片配置预设：加载 / 保存 / 应用（C2 收敛到 utils/slicePresets.ts） ──
   const loadPresets = React.useCallback((): SlicePreset => {
-    let toApply: SlicePreset | null = null;
-    try {
-      const raw = localStorage.getItem(SLICE_PRESET_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          // 始终保证默认配置在列表头部
-          const list = [DEFAULT_SLICE_PRESET, ...parsed.filter((p: SlicePreset) => p.id !== DEFAULT_SLICE_PRESET.id)];
-          setPresets(list);
-          const savedActive = localStorage.getItem('slice_active_preset');
-          const activeId = savedActive && list.some((p) => p.id === savedActive) ? savedActive : DEFAULT_SLICE_PRESET.id;
-          setActivePresetId(activeId);
-          toApply = list.find((p) => p.id === activeId) || null;
-        }
-      }
-    } catch {
-      // 解析失败则保持默认
-    }
-    return toApply || DEFAULT_SLICE_PRESET;
+    // 读取完整列表（默认头 + 自定义）并解析激活 id；始终保证默认配置在列表头部
+    const { presets: list, activeId } = loadPresetList();
+    setPresets(list);
+    setActivePresetId(activeId);
+    return list.find((p) => p.id === activeId) || DEFAULT_SLICE_PRESET;
   }, []);
-
-  const persistPresets = (list: SlicePreset[], activeId: string) => {
-    try {
-      const withoutDefault = list.filter((p) => p.id !== DEFAULT_SLICE_PRESET.id);
-      localStorage.setItem(SLICE_PRESET_STORAGE_KEY, JSON.stringify(withoutDefault));
-      localStorage.setItem('slice_active_preset', activeId);
-    } catch {
-      // 存储失败忽略
-    }
-  };
 
   // 收集当前页面切片状态为一套配置
   const collectCurrentPresetConfig = (): SlicePreset => ({
@@ -629,7 +501,7 @@ const EpisodeDetail: React.FC = () => {
     // 应用云端个人配置时保留用户当前激活的预设 id（从 localStorage 读），
     // 避免把 activePresetId 覆盖成不存在的 'cloud' 占位 id，
     // 否则「选择配置」下拉会因为 value 无匹配选项而显示出一个名为 "cloud" 的幽灵配置。
-    const savedActive = localStorage.getItem('slice_active_preset');
+    const savedActive = localStorage.getItem(SLICE_ACTIVE_PRESET_KEY);
     const keepId = savedActive && presets.some((p) => p.id === savedActive) ? savedActive : DEFAULT_SLICE_PRESET.id;
     applyPreset({ ...collectCurrentPresetConfig(), ...cfg, id: keepId, name: '个人配置' } as SlicePreset);
   };
