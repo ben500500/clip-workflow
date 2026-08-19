@@ -77,7 +77,10 @@ _STRUCTURAL_SEGMENT_OPTIONS = [False, True]
 # 方向一扩展特效：随机给部分派生变体叠加若隐若现星星点/小光环，进一步拉开画面特征。
 # 部分为 None（不叠加），部分带参数；固定用低位噪声，透明度极低以保持画面几乎无感。
 # 已知项：sparkle 非默认开启（仅 40% 派生变体随机启用），如批量生成性能受影响，下轮可做轻量优化。
-_SPARKLE_POOL = [
+# 生产安全开关：geq 全分辨率渲染约 0.5fps，批量切片/生产侧默认不叠加 sparkle（全 None），
+# 避免拖慢吞吐。如需启用在配方池里手动放回带参条目即可。
+_SPARKLE_ENABLED = False  # 生产默认关闭；True 时按 _SPARKLE_POOL 随机叠加 sparkle
+_SPARKLE_POOL = [None] * 5 if not _SPARKLE_ENABLED else [
     None,
     None,
     None,
