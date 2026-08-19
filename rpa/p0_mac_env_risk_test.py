@@ -12,12 +12,28 @@ Issue #130「方案 A 落地顺序前置实测」：
   →「真实浏览器 + 家庭 IP」已绕过环境级风控，**直接复用 `set_files()` 路径**，
     P1 无需建 OS 对话框（os_dialog）通道。
 - 若仍出现 `env_risk`/`300001` → 环境级风控仍触发，P1 需按原设计建 OS 对话框通道。
+- 若返回 `need_login` → 账号登录态已过期/未登录，需先用**微信扫码**重新登录再测。
+
+【测试文件来源】
+- 任意一段真实 MP4 即可（几十秒即可，建议 >10s，微信发布页对过短视频不友好）。
+- 可随手用手机拍/录一段，或从已有成片里挑一个（本脚本只读本地文件，不改任何数据）。
+- 脚本只做**一次**真实上传，不会重复发布，安全可逆。
+
+【百花剧社登录态（⚠️ 唯一不可替代的真人动作）】
+- 百花剧社账号登录态当前已过期。本脚本开始前，必须先由**号主本人**用手机微信
+  （绑定该账号的微信）扫码重新登录：
+    1) 在下面第 1 步启动的调试浏览器窗口打开 https://channels.weixin.qq.com ；
+    2) 若显示「扫码登录」，用**手机微信**扫二维码 → 手机上点「允许」；
+    3) 登录态 cookie 会存进 `--user-data-dir` 指定的 profile，之后每次用同一 profile
+       启动即复用，无需重复扫码。
+- ⚠️ 不要用其他管理员/运营者的微信扫——登录态会绑错账号。
 
 用法（在真实 Mac 上）：
     1) 用真实 Edge/Chrome 登录视频号创作平台：https://channels.weixin.qq.com
+       （百花剧社：用号主微信扫码 + 允许，见上方说明）
     2) 用下列任一方式暴露本机 CDP（二选一，见下面 launch 说明）
     3) 运行：  python3 p0_mac_env_risk_test.py --video <测试视频.mp4> [--cdp <ws|http地址>]
-    4) 看输出： PASS 还是 RISK_FAIL
+    4) 看输出： PASS / RISK_FAIL / NEED_LOGIN
 
 本脚本直接 import 后端 `VideoChannelPublisher` 并调用其 `_upload_video`，
 保证与线上 `_upload_video` 走完全相同的 file-chooser / set_files 逻辑（不复制脆弱的
@@ -105,6 +121,25 @@ async def run_p0(video_path: str, cdp_url: str, timeout_s: int = 600) -> dict:
     print(f"  创作页   : {CREATOR_URL}")
     print("=" * 72)
 
+    # 进入发布流程前先探测登录态（百花剧社登录态已过期，需先扫码）。
+    # 命中 need_login/expired 直接返回，避免空跑一次真实发布流程。
+    try:
+        precheck = await pub.check_login_status()
+    except Exception as e:  # CDP 连不上也先提示，不进入发布
+        print(f"⚠️ 登录态预检失败（CDP 可能未就绪）：{e}")
+        print(mac_launch_hint(cdp_url))
+        print("\n结论:")
+        print("  [ PRECHECK_FAIL ] 请按上面指引拉起带 CDP 的真实浏览器并登录后再重跑。")
+        return {"verdict": {"verdict": "PRECHECK_FAIL", "reason": str(e)}}
+    precheck_login = precheck.get("status") in ("expired", "error")
+    if precheck_login:
+        print(f"\n⚠️ 登录态预检：{precheck.get('status')}（账号未登录/已过期）")
+        print(wx_scan_login_hint())
+        print("结论:")
+        print("  [ NEED_LOGIN ] 请先用号主手机微信扫码（扫 + 允许）重新登录后再重跑。")
+        return {"verdict": {"verdict": "NEED_LOGIN", "reason": "precheck login expired"}}
+    print(f"✓ 登录态预检通过（{precheck.get('status')}）")
+
     result = await pub.publish(
         video_path=video_path,
         title="P0-env-risk-test",
@@ -124,7 +159,22 @@ async def run_p0(video_path: str, cdp_url: str, timeout_s: int = 600) -> dict:
     print(f"  error         : {error}")
     print("-" * 72)
 
-    # ---- 判读 ----
+    # 登录态过期/未登录：给出微信扫码指引（预检已拦截多数，此处兜底发布后返回值）
+    if status == "need_login":
+        verdict = {
+            "verdict": "NEED_LOGIN",
+            "reason": (
+                "登录态过期或未登录（status=need_login）。"
+                "这是唯一不可替代的真人动作：请先用号主手机微信扫码（扫 + 允许）"
+                "重新登录该视频号账号，再重跑本脚本。"
+            ),
+            "next": "login-then-retry",
+        }
+        print("\n" + wx_scan_login_hint())
+        print(f"\n结论:\n  [ {verdict['verdict']} ]")
+        print(f"  {verdict['reason']}")
+        return {**result, "verdict": verdict}
+
     if status == "published" and published_url:
         verdict = {
             "verdict": "PASS",
@@ -159,6 +209,28 @@ async def run_p0(video_path: str, cdp_url: str, timeout_s: int = 600) -> dict:
     print(f"  [ {verdict['verdict']} ]")
     print(f"  {verdict['reason']}")
     return {**result, "verdict": verdict}
+
+
+def wx_scan_login_hint() -> str:
+    """百花剧社账号「微信扫码重新登录」专属指引（唯一不可替代的真人动作）。"""
+    return """
+--------------------------------------------------------------------------------
+【百花剧社账号 · 微信扫码重新登录（必须由号主本人操作）】
+--------------------------------------------------------------------------------
+P0 实测 / 真实发布前，百花剧社登录态已过期，必须先重新登录。步骤如下：
+
+  1) 在当前调试浏览器窗口打开视频号创作平台：
+       https://channels.weixin.qq.com
+  2) 页面若显示「扫码登录」二维码，用**号主本人手机上的微信**扫码，
+     手机上出现「视频号助手」登录确认后，点**允许**；
+  3) 登录态 cookie 会写入 --user-data-dir 指定的 profile，之后每次用同一
+     profile 启动即复用，无需重复扫码；
+  4) 登录后回到发布页，确认右上角头像显示的是「百花剧社」，再重跑本脚本。
+
+⚠️ 自动化替代不了这一步：扫码 + 允许必须由号主真人完成（绑定手机 + 指纹）。
+⚠️ 不要用其他管理员/运营者的微信扫——登录态会绑错账号、串号。
+--------------------------------------------------------------------------------
+"""
 
 
 def mac_launch_hint(cdp_url: str) -> str:
