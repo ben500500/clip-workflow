@@ -979,6 +979,9 @@ async def slice_task_callback(
 
     now = datetime.utcnow()
 
+    # 本次新建的切片输出（variant_count>1 时用于投递变体生成；非 completed 分支保持空列表）
+    created_outputs: list = []
+
     if data.status == "completed":
         # ── 幂等保护 ──
         # 任务可能因 PEL 重新认领 / 回调重发被重复上报 completed。
@@ -1047,6 +1050,7 @@ async def slice_task_callback(
                 created_at=now,
             )
             db.add(db_output)
+            created_outputs.append(db_output)
 
         task.status = "completed"
         task.progress = 100.0
@@ -1083,6 +1087,27 @@ async def slice_task_callback(
         await _refresh_episode_status(db, task.episode_id)
 
     await db.flush()
+
+    # 多视频号素材去重：variant_count>1 时对本次新建的每个切片输出触发变体生成（异步，不阻塞主链路）
+    # 对齐 celery slice_task（backend/app/celery/tasks.py 1214-1227）逻辑：零侵入，variant_count<=1 直接跳过。
+    variant_count = int(task.variant_count or 1) if task.variant_count else 1
+    if variant_count > 1 and created_outputs:
+        try:
+            from app.celery.variant_tasks import generate_variants_task
+            for out in created_outputs:
+                generate_variants_task.delay(
+                    str(out.id),
+                    count=variant_count,
+                    base_dedupe=task.dedupe_config,
+                    created_by=None,
+                )
+            logger.info(
+                "已投递变体生成任务: task=%s outputs=%s variant_count=%s",
+                task_id, len(created_outputs), variant_count,
+            )
+        except Exception as e:  # noqa: BLE001 - 投递失败不阻塞回调主流程
+            logger.exception("投递变体生成任务失败 task=%s: %s", task_id, e)
+
     return {"ok": True}
 
 

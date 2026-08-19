@@ -370,7 +370,7 @@ def build_dedupe_audio_filter(mode) -> str:
 
     模式（mode）：
       - None / "" / "none"：不叠加（默认，普通去重保持不变）。
-      - "volume"：音量增益（默认 1.12，改变响度分布）。
+      - "volume"：音量增益（默认 1.28，改变响度分布；此前 1.12 实测音频距离不稳超 0.15）。
       - "eq_mild"：中频 EQ（提升/压低），改变频谱指纹。
       - "eq_strong"：更强 EQ（多频段均衡），频谱指纹差异更明显。
       - "pitch" / "pitch_down"：降调（asetrate+aresample），改音高/节奏指纹。
@@ -386,7 +386,7 @@ def build_dedupe_audio_filter(mode) -> str:
     if m in ("none", "null"):
         return ""
     if m == "volume":
-        return "volume=1.12"
+        return "volume=1.28"
     if m == "eq_mild":
         return ("equalizer=f=2500:t=q:w=0.8:g=5,equalizer=f=400:t=q:w=0.8:g=-3,"
                 "equalizer=f=8000:t=q:w=0.8:g=2")
@@ -395,9 +395,13 @@ def build_dedupe_audio_filter(mode) -> str:
                 "equalizer=f=3500:t=q:w=0.7:g=6,equalizer=f=8000:t=q:w=0.6:g=-4,"
                 "equalizer=f=12000:t=q:w=0.6:g=3")
     if m in ("pitch", "pitch_down"):
-        return "asetrate=44100*0.90,aresample=44100"
+        # 降调加深（0.90 → 0.85）并叠轻 EQ：安静音轨频谱区分度提升，实测音频距离稳定过 0.15。
+        return ("asetrate=44100*0.85,aresample=44100,"
+                "equalizer=f=2000:t=q:w=0.8:g=4,equalizer=f=200:t=q:w=0.8:g=-2")
     if m == "pitch_up":
-        return "asetrate=44100*1.12,aresample=44100"
+        # 升调对称加深（1.12 → 1.18，与降调 0.85 互为镜像），同样叠轻 EQ 拉开频谱指纹。
+        return ("asetrate=44100*1.18,aresample=44100,"
+                "equalizer=f=2000:t=q:w=0.8:g=4,equalizer=f=200:t=q:w=0.8:g=-2")
     if m == "bandpass":
         return "highpass=f=150,lowpass=f=8000"
     if m == "bass_boost":
@@ -4201,10 +4205,11 @@ def main():
             else:
                 print("恒定水印打码自动定位失败，回退默认区域（底部水印带）", file=sys.stderr)
 
-    # Group segments by original cut index for scrub mode.
+    # Group segments by name（而非 idx）：同 name 的多段（如 dedupe 变体拆段）
+    # 按顺序拼接为单一输出。scrub 模式下同一 idx 的片段共享同一 name，等效于原行为。
     groups = {}
     for start, end, name, idx in segments:
-        groups.setdefault(idx, []).append((start, end, name))
+        groups.setdefault(name, []).append((start, end, name))
 
     # 字幕开启时，预计算源视频的语音（非静音）区间，用于"只在说话时显示字幕"。
     # 静音/停顿期间字幕自动隐藏，避免字幕一直挂在屏幕上。
@@ -4215,9 +4220,9 @@ def main():
         outputs = []
         total = len(groups)
         processed = 0
-        for idx in sorted(groups):
-            group = groups[idx]
-            name = safe_name(group[0][2])
+        for name_key in groups:
+            group = groups[name_key]
+            name = safe_name(name_key)
             out_path = os.path.join(args.output_dir, name)
             parts = []
             with tempfile.TemporaryDirectory() as tmp:

@@ -24,6 +24,7 @@ from typing import Optional
 
 from sqlalchemy import select
 
+from app.config import settings
 from app.database import async_session_factory
 from app.models.models import (
     SliceOutput,
@@ -40,7 +41,9 @@ MAX_VARIANTS = 20
 MAX_RETRY = 5
 
 # 各结构维度的随机取值池（用于组合出差异化配方）
-_CROP_POOL = [0.04, 0.05, 0.06, 0.07, 0.08]
+# 裁切保底 ≥0.09、上限 0.13：用保底替换原均匀随机（原 0.04~0.08），
+# 保证每个常规配方画面差异都够拉开（稳过 phash 阈值），同时守住画质优先护栏。
+_CROP_POOL = [0.09, 0.10, 0.11, 0.12, 0.13]
 _SPEED_POOL = [1.03, 1.04, 1.05, 1.06]
 _SATURATION_POOL = [0.78, 0.82, 0.85, 0.88, 0.92]
 # 画质优先：明显影响画质的颗粒噪点/扫描线/暗角/滚动暗带/抖动在变体配方中
@@ -66,20 +69,36 @@ _COLORBALANCE_POOL = [
 _TEMP_POOL = ["temperature=6500", "temperature=6400", "temperature=6500", "temperature=6450"]
 # 音频指纹差异化模式（L3 盲区覆盖）：每种模式都会改变音频声纹，且人耳几乎无感。
 # 已按 audio_v2 指纹在真实素材上复验，均能把音频距离拉过 0.15 阈值（撞车判定线）。
+# volume 模式已从 1.12 提至 1.28（engines/slice.py），实测在真实素材上稳定过 0.15。
 # 注意：不放入 None —— 派生变体必须始终差异化音频，否则与基准在音频维度距离为 0
 # 必然被撞车判定拦下（这正是本迭代修复的音频短板）。
-_AUDIO_POOL = ["eq_mild", "eq_strong", "pitch_down", "bandpass", "bass_boost", "vocal_boost"]
+_AUDIO_POOL = ["eq_mild", "eq_strong", "pitch_down", "pitch_up", "bandpass", "bass_boost", "vocal_boost", "volume"]
 # L4 时域结构差异：是否把整段拆成多片段并漂移/重排（改场景切分序列指纹）
 _STRUCTURAL_SEGMENT_OPTIONS = [False, True]
 # 方向一扩展特效：随机给部分派生变体叠加若隐若现星星点/小光环，进一步拉开画面特征。
 # 部分为 None（不叠加），部分带参数；固定用低位噪声，透明度极低以保持画面几乎无感。
-_SPARKLE_POOL = [
+# 已知项：sparkle 非默认开启（仅 40% 派生变体随机启用），如批量生成性能受影响，下轮可做轻量优化。
+# 生产安全开关：geq 全分辨率渲染约 0.5fps，批量切片/生产侧默认不叠加 sparkle（全 None），
+# 避免拖慢吞吐。如需启用在配方池里手动放回带参条目即可。
+_SPARKLE_ENABLED = False  # 生产默认关闭；True 时按 _SPARKLE_POOL 随机叠加 sparkle
+_SPARKLE_POOL = [None] * 5 if not _SPARKLE_ENABLED else [
     None,
     None,
     None,
     {"enabled": True, "count": 3, "size": 3, "opacity": 8},
     {"enabled": True, "count": 5, "size": 2, "opacity": 6},
 ]
+
+
+def _pick_audio_mode(used_audio: list) -> str:
+    """在同组已用音频模式之外选一个（音频差异化，避免音频维度撞车）。
+
+    优先选尚未用过的模式；池被耗尽时退化为随机。分配后写入 used_audio。
+    """
+    avail = [m for m in _AUDIO_POOL if m not in used_audio]
+    mode = random.choice(avail or _AUDIO_POOL)
+    used_audio.append(mode)
+    return mode
 
 
 def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> list[dict]:
@@ -104,9 +123,7 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
         # 派生变体：随机组合结构差异，确保与基准及彼此拉开距离。
         # 音频指纹差异化（L3 盲区覆盖）：在同组内优先选择尚未用过的音频模式，
         # 避免重复模式导致两套变体音频维度过近被撞车判定拦下。
-        avail = [m for m in _AUDIO_POOL if m not in used_audio]
-        audio_mode = random.choice(avail or _AUDIO_POOL)
-        used_audio.append(audio_mode)
+        audio_mode = _pick_audio_mode(used_audio)
         manual = {
             "crop": random.choice(_CROP_POOL),
             "hflip": False,  # 全系统默认不做镜像（与推荐配方一致，保持画面可读）
@@ -127,12 +144,15 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
         # 结构性差异（覆盖 L4 时域序列盲区 + L3 音频）：
         #  - structural_diff.segment: 是否把整段拆成多片段并漂移/重排，改场景切分指纹
         #  - structural_diff.reorder: 是否对片段顺序重排（改变时域序列）
+        # P3 落地：默认带重排（唯一撞车对全是拆段不重排，reorder=True 变体两两全过）。
+        # 运营开关控制（STRUCTURAL_REORDER_DEFAULT，默认开）；segment 仍维持随机 [False,True] 不变。
+        # reorder 依赖拆段：仅在 segment=True 且片段数≥3 时生效，故保留 True 作为默认值即可。
         recipes.append({
             "preset": "standard",
             "manual": manual,
             "structural": {
                 "segment": random.choice(_STRUCTURAL_SEGMENT_OPTIONS),
-                "reorder": random.choice([False, True]),
+                "reorder": settings.STRUCTURAL_REORDER_DEFAULT,
             },
         })
     return recipes
@@ -413,6 +433,9 @@ async def generate_variants_for_output(
         await session.commit()
 
     recipes = build_variant_recipes(int(count), base_dedupe)
+    # 收集同组已分配的音频模式：撞车换参重试需沿用同一去重集（而非重建空池），
+    # 否则重试配方可能在音频维度随机到已用模式，导致音频距离不足被撞车判定拦下。
+    used_audio: list = [r["manual"]["audio"] for r in recipes if r.get("manual", {}).get("audio")]
     results = []
     collisions = []
     used_recipes: set[str] = set()
@@ -427,7 +450,7 @@ async def generate_variants_for_output(
             try:
                 key = _recipe_fingerprint_key(recipe_attempt)
                 if key in used_recipes:
-                    recipe_attempt = _regenerate_recipe(base_dedupe, recipe)
+                    recipe_attempt = _regenerate_recipe(base_dedupe, recipe, used_audio)
                     retry += 1
                     continue
                 used_recipes.add(key)
@@ -489,7 +512,7 @@ async def generate_variants_for_output(
                 break
             except Exception as e:
                 logger.warning("variant %s recipe %s failed: %s (retry %s)", idx, recipe_attempt, e, retry)
-                recipe_attempt = _regenerate_recipe(base_dedupe, recipe)
+                recipe_attempt = _regenerate_recipe(base_dedupe, recipe, used_audio)
                 retry += 1
                 if retry > MAX_RETRY:
                     await _update_variant(variant_id, status="failed", error_message=str(e))
@@ -505,9 +528,15 @@ async def generate_variants_for_output(
     return {"variant_count": len(results), "variants": results, "collisions": collisions}
 
 
-def _regenerate_recipe(base: Optional[dict], prev: dict) -> dict:
-    """换参：在配方各维度上随机扰动，生成一个与 prev 不同的配方。"""
+def _regenerate_recipe(base: Optional[dict], prev: dict, used_audio: list) -> dict:
+    """换参：在配方各维度上随机扰动，生成一个与 prev 不同的配方。
+
+    音频维度沿用同组 used_audio 去重集（优先选未用过的音频模式），
+    不重建空池，避免重试配方随机回已用模式导致音频维度撞车。
+    """
     new = build_variant_recipes(2, base)[1]
+    # 音频沿用同组去重集：强制分配一个尚未用过的音频模式
+    new["manual"]["audio"] = _pick_audio_mode(used_audio)
     # 确保与 prev 不同
     if _recipe_fingerprint_key(new) == _recipe_fingerprint_key(prev):
         new["manual"]["speed"] = float(new["manual"]["speed"]) + 0.01
