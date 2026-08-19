@@ -28,6 +28,7 @@ from app.models.models import (
     VideoFingerprint,
     SystemConfig,
     User,
+    Project,
     user_can_access_all_materials,
 )
 from app.services.minio_service import get_presigned_url
