@@ -15,17 +15,9 @@ import { variantsApi, SliceOutputListItem } from '../api/variants';
 import { dedupeApi, DedupeUploadedFile } from '../api/dedupe';
 import { batchSliceApi } from '../api/batchSlice';
 import { useNavigate } from 'react-router-dom';
+import { useDedupePresets } from '../hooks/useDedupePresets';
 
 const { Text } = Typography;
-
-// 去重档位（与后端 engines/slice.py DEDUPE_PRESETS / slice_presets_v1 兼容）
-const DEDUPE_PRESET_OPTIONS = [
-  { value: 'std_crop_desat', label: '保守裁切降饱和（推荐）' },
-  { value: 'std_retro_scan', label: '复古扫描' },
-  { value: 'light', label: '轻' },
-  { value: 'standard', label: '标准' },
-  { value: 'heavy', label: '重' },
-];
 
 const VARIANT_COUNT_DEFAULT = 3;
 
@@ -37,6 +29,8 @@ const VARIANT_COUNT_DEFAULT = 3;
  */
 const DedupeProcessing: React.FC = () => {
   const navigate = useNavigate();
+  // 去重配置单一来源：档位下拉统一来自共享 hook（接口失败回退硬编码默认）
+  const { presetOptions: DEDUPE_PRESET_OPTIONS } = useDedupePresets();
 
   // ── 去重配置（两个输入模式共用）──
   const [dedupePreset, setDedupePreset] = useState<string>('std_crop_desat');

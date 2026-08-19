@@ -16,6 +16,7 @@ import { batchSliceApi, BatchSlice, BatchSliceItem, BatchSliceOutputItem } from 
 import { sliceApi, type TextOverlayItem } from '../api/slice';
 import { formatDuration } from '../utils/format';
 import { loadCustomPresets, type SlicePreset } from '../utils/slicePresets';
+import { useDedupePresets } from '../hooks/useDedupePresets';
 
 const { Text, Title } = Typography;
 
@@ -178,6 +179,7 @@ const STATUS_TEXT: Record<string, string> = {
 
 const BatchSlicePage: React.FC = () => {
   const navigate = useNavigate();
+  const { presetOptions: dedupePresetOptions } = useDedupePresets();
   const [form] = Form.useForm();
   const [sliceConfig, setSliceConfig] = useState<SliceConfigState>({ ...DEFAULT_SLICE_CONFIG, text_overlays: DEFAULT_SLICE_CONFIG.text_overlays.map((t) => ({ ...t })) });
   // ── 一键切片配置预设（与剧集详情页共用，选中即套用到本页全部配置） ──
@@ -969,12 +971,8 @@ const BatchSlicePage: React.FC = () => {
             <Select
               value={sliceConfig.dedupe_preset}
               onChange={(v) => setSliceConfig({ ...sliceConfig, dedupe_preset: v })}
-              style={{ width: 110 }}
-              options={[
-                { value: 'light', label: '轻' },
-                { value: 'standard', label: '标准' },
-                { value: 'heavy', label: '重' },
-              ]}
+              style={{ width: 190 }}
+              options={dedupePresetOptions}
             />
             <Tooltip title="去重档位（轻/标准/重），用于降低平台查重风险。仅 dedupe 切片模式生效。">
               <Tag color="blue">去重档位</Tag>

@@ -12,6 +12,7 @@ import { sliceApi } from '../api/slice';
 import type { Episode, Project } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 import { loadCustomPresets, type SlicePreset } from '../utils/slicePresets';
+import { useDedupePresets } from '../hooks/useDedupePresets';
 
 const { Title, Text } = Typography;
 const { Dragger } = Upload;
@@ -73,21 +74,13 @@ function saveBatchConfig(projectId: string, cfg: BatchSliceConfig): void {
   }
 }
 
-// 去重档位选项（与剧集详情页一致）
-const DEDUPE_PRESET_OPTIONS = [
-  { value: 'std_crop_desat', label: '保守裁切降饱和（推荐）' },
-  { value: 'std_retro_scan', label: '复古扫描' },
-  { value: 'light', label: '轻' },
-  { value: 'standard', label: '标准' },
-  { value: 'heavy', label: '重' },
-];
-
 // 与剧集详情页「一键切片配置」共用的一套预设（C2 收敛到 utils/slicePresets.ts，读 slice_presets_v1）
 
 const ProjectDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const projectId = id || '';
+  const { presetOptions: DEDUPE_PRESET_OPTIONS } = useDedupePresets();
 
   const [project, setProject] = useState<Project | null>(null);
   const [episodes, setEpisodes] = useState<Episode[]>([]);

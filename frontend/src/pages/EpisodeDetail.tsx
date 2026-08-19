@@ -16,6 +16,7 @@ import { intervalApi } from '../api/intervals';
 import { sliceApi, type BadgeItem, type TextOverlayItem } from '../api/slice';
 import ErrorHint from '../components/ErrorHint';
 import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/DedupeManualConfig';
+import { useDedupePresets } from '../hooks/useDedupePresets';
 import type { AutoClipRunRecord, Episode, IntervalHistoryItem, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 import { buildSliceConfigTooltip } from '../utils/sliceConfigTooltip';
@@ -62,24 +63,14 @@ function resolveSubtitleMaskPreset(p: any): 'auto' | 'fine' | 'quick' {
   return 'auto';
 }
 
-// ─── 切片模式级联选项（去重模式带 轻/标准/重 档位 + 两套推荐配方，悬停即弹出选择框）──
-// 两套推荐配方：
-//   std_crop_desat 保守裁切降饱和（首选/默认）：裁切5%+变速1.03+轻微降饱和0.9，
-//     统一不做镜像，明显影响画质的噪点/扫描线/偏色/色温/暗角均去掉或降到最低，画面几乎无感
-//   std_retro_scan 复古扫描（第二选择）：还原老电视扫描线+噪点质感（复古暖调+噪点+扫描线+暗角），
-//     适合追求复古出片质感的场景，查重差异化也更强
-const SLICE_MODE_OPTIONS = [
+// ─── 切片模式级联选项（去重模式带档位，档位来自共享 hook 的 useDedupePresets）──
+// 两套推荐配方说明见各档位 desc；档位 value/label 以后端 GET /api/dedupe/presets 为准。
+const buildSliceModeOptions = (dedupePresets: { value: string; label: string }[]) => [
   { value: 'fast', label: '快速模式' },
   {
     value: 'dedupe',
     label: '去重模式',
-    children: [
-      { value: 'std_crop_desat', label: '保守裁切降饱和（推荐）' },
-      { value: 'std_retro_scan', label: '复古扫描' },
-      { value: 'light', label: '轻' },
-      { value: 'standard', label: '标准' },
-      { value: 'heavy', label: '重' },
-    ],
+    children: dedupePresets.map((p) => ({ value: p.value, label: p.label })),
   },
   { value: 'scrub', label: '挖洞模式' },
 ];
@@ -120,6 +111,8 @@ const EpisodeDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const episodeId = id || '';
+  const { presetOptions } = useDedupePresets();
+  const SLICE_MODE_OPTIONS = buildSliceModeOptions(presetOptions);
 
   const [episode, setEpisode] = useState<Episode | null>(null);
   const [loading, setLoading] = useState(true);
