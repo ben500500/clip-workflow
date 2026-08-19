@@ -58,6 +58,33 @@ async def init_db():
     await _backfill_data_scope()
     # wechat_download 独立包（并入形态）：确保其独立表存在（幂等）
     await _ensure_wechat_download_tables()
+    # P1 防御：空闲事务超时自动回滚（防事务泄漏占锁 autoclip_runs）
+    await _enforce_idle_in_transaction_timeout()
+
+
+async def _enforce_idle_in_transaction_timeout():
+    """固化 idle_in_transaction_session_timeout=60s（幂等、尽力而为）。
+
+    根因（Issue #219）：autoclip 某接口在事务内 SELECT 后未 commit/rollback 就把
+    连接归还连接池，连接以 idle in transaction 悬挂并持有 autoclip_runs 表级
+    RowExclusiveLock，挡死 worker-selection 的 UPDATE。把该 GUC 固化到服务端，
+    悬挂事务最迟 60s 被 PG 自动回滚，作为代码修复的防御层。
+    ALTER SYSTEM + pg_reload_conf 不需要重启 PG 即可生效（需超级用户权限，
+    docker-compose 默认 POSTGRES_USER 即超级用户）。
+    """
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                sqlalchemy.text(
+                    "ALTER SYSTEM SET idle_in_transaction_session_timeout = '60s'"
+                )
+            )
+            await conn.execute(sqlalchemy.text("SELECT pg_reload_conf()"))
+    except Exception as e:
+        # 权限不足或非 PG 环境时静默降级，不阻断服务启动
+        logger.warning(
+            "enforce idle_in_transaction_session_timeout 失败（降级）: %s", e
+        )
 
 
 async def _backfill_data_scope():

@@ -947,6 +947,9 @@ async def _mark_autoclip_failed(episode_id: str, error: str):
             proj.pipeline_status = "failed"
             proj.error_message = error[:2000]
             await session.commit()
+        else:
+            # 无匹配记录：事务内只读，显式结束事务避免连接以 idle in transaction 回池
+            await session.rollback()
 
 
 async def _update_autoclip_run(
@@ -1785,6 +1788,8 @@ async def _get_publish_rate_config() -> dict:
             row = result.scalar_one_or_none()
             if row and isinstance(row.value, dict):
                 cfg.update(row.value)
+            # 事务内只读：显式结束事务
+            await session.rollback()
     except Exception:
         logger.warning("failed to load publish_rate_config, fallback to defaults", exc_info=True)
     return cfg
@@ -1893,6 +1898,8 @@ async def _get_publish_task(publish_task_id: str) -> Optional[dict]:
                 except Exception:
                     logger.warning("Failed to decrypt cookie for profile %s", profile.account_name)
 
+        # 事务内只读：显式结束事务
+        await session.rollback()
         return data
 
 
@@ -1916,6 +1923,8 @@ async def _download_video_for_publish(output_id: str, account_id: str = None) ->
         )
         output = result.scalar_one_or_none()
         if not output or not output.file_key:
+            # 事务内只读：显式结束事务
+            await session.rollback()
             return None
         file_key = output.file_key
         base_key = output.file_key
@@ -1941,6 +1950,8 @@ async def _download_video_for_publish(output_id: str, account_id: str = None) ->
                         and str(variant.variant_group_id) == str(target_group)
                     if same_output or same_group:
                         file_key = variant.file_key
+        # 事务内只读：显式结束事务
+        await session.rollback()
 
     data = await download_file(settings.MINIO_BUCKET_SLICED, file_key)
     # 变体文件缺失时回退到基准切片文件（保证发布不被阻断，同时保持非变体行为兼容）
@@ -2279,11 +2290,15 @@ def watermark_task(
             task_res = await session.execute(select(WatermarkTask).where(WatermarkTask.id == tid))
             task = task_res.scalar_one_or_none()
             if not task:
+                await session.rollback()
                 return None, []
             videos_res = await session.execute(
                 select(WatermarkVideo).where(WatermarkVideo.task_id == tid)
             )
-            return task, videos_res.scalars().all()
+            videos = videos_res.scalars().all()
+            # 事务内只读：显式结束事务
+            await session.rollback()
+            return task, videos
 
     task, videos = run_async(_load_videos())
     if not task:

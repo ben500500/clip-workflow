@@ -124,6 +124,8 @@ async def collect_metrics() -> dict[str, float]:
             )
         ).scalar() or -1
         metrics["ecpm_low"] = float(ecpm)
+        # 事务内只读：显式结束事务
+        await session.rollback()
 
     # disk_usage：根分区使用率
     try:
@@ -300,6 +302,8 @@ async def check_health() -> dict:
     try:
         async with async_session_factory() as session:
             await session.execute(select(func.count(WorkerNode.id)).limit(1))
+            # 事务内只读：显式结束事务
+            await session.rollback()
         result["checks"]["database"] = {"status": "ok"}
     except Exception as e:
         all_ok = False
