@@ -6,7 +6,11 @@ export interface LanSourceConfig {
   enabled: boolean;
   base_url: string;
   manage_base: string;
+  api_prefix: string;
+  download_timeout: number;
+  queue: string;
   default_project: string;
+  concurrency: number;
 }
 
 export interface LanSourceManageDrama {

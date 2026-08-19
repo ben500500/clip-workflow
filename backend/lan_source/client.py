@@ -14,7 +14,7 @@ from typing import Optional
 
 import httpx
 
-from app.config import settings
+from lan_source.config import LanSourceConfig, load_lan_source_config
 
 logger = logging.getLogger(__name__)
 
@@ -47,18 +47,17 @@ class ManageDrama:
         self.desc = desc
 
 
-def _norm_base(base: str) -> str:
-    return (base or "").rstrip("/")
-
-
 class LanSourceClient:
     """局域网 cdn 源客户端。"""
 
-    def __init__(self) -> None:
-        self.base = _norm_base(settings.LAN_SOURCE_BASE_URL)
-        self.manage_base = _norm_base(settings.LAN_SOURCE_MANAGE_BASE)
-        self.prefix = (settings.LAN_SOURCE_API_PREFIX or "").strip("/")
-        self.timeout = settings.LAN_SOURCE_DOWNLOAD_TIMEOUT
+    def __init__(self, config: Optional[LanSourceConfig] = None) -> None:
+        # 未显式注入时回退到 settings(.env) 默认值，保证向后兼容
+        cfg = config or load_lan_source_config()
+        self.base = cfg.base_url.rstrip("/")
+        self.manage_base = cfg.manage_base.rstrip("/")
+        self.prefix = (cfg.api_prefix or "").strip("/")
+        self.timeout = cfg.download_timeout
+        self.config = cfg
 
     async def _get_json(self, url: str, *, base: Optional[str] = None) -> dict:
         b = base or self.base
@@ -140,8 +139,9 @@ class LanSourceClient:
 _client: Optional[LanSourceClient] = None
 
 
-def get_client() -> LanSourceClient:
+def get_client(config: Optional[LanSourceConfig] = None) -> LanSourceClient:
+    """获取客户端；显式传入 config 时重建（用于 system_config 热更）。"""
     global _client
-    if _client is None:
-        _client = LanSourceClient()
+    if _client is None or config is not None:
+        _client = LanSourceClient(config=config)
     return _client

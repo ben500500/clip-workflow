@@ -11,7 +11,7 @@ from typing import Optional
 
 import httpx
 
-from app.config import settings
+from lan_source.config import LanSourceConfig, load_lan_source_config
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +23,10 @@ class LanSourceDownloadError(Exception):
 class LanSourceDownloader:
     """cdn 直链下载器。"""
 
-    def __init__(self) -> None:
-        self.timeout = settings.LAN_SOURCE_DOWNLOAD_TIMEOUT
+    def __init__(self, config: Optional[LanSourceConfig] = None) -> None:
+        cfg = config or load_lan_source_config()
+        self.timeout = cfg.download_timeout
+        self.config = cfg
 
     async def download_to_file(self, url: str, local_path: str) -> int:
         """下载直链 url 到 local_path，返回字节数（支持断点续传）。"""
@@ -65,10 +67,10 @@ class LanSourceDownloader:
 _downloader: Optional[LanSourceDownloader] = None
 
 
-def get_downloader() -> LanSourceDownloader:
+def get_downloader(config: Optional[LanSourceConfig] = None) -> LanSourceDownloader:
     global _downloader
-    if _downloader is None:
-        _downloader = LanSourceDownloader()
+    if _downloader is None or config is not None:
+        _downloader = LanSourceDownloader(config=config)
     return _downloader
 
 
@@ -88,12 +90,16 @@ async def probe_file_size(url: str) -> Optional[int]:
     return None
 
 
-async def run_bounded_downloads(url_path_pairs: list[tuple[str, str]]) -> list[str]:
+async def run_bounded_downloads(url_path_pairs: list[tuple[str, str]], concurrency: Optional[int] = None) -> list[str]:
     """并发受限批量下载（LAN_SOURCE_CONCURRENCY）。返回成功与否列表。
 
     供 Celery 任务在下载阶段并发拉取多集；每项独立 try，单项失败不影响其他集。
+    concurrency 未显式指定时回退到配置/settings 默认值。
     """
-    sem = asyncio.Semaphore(max(1, settings.LAN_SOURCE_CONCURRENCY))
+    if concurrency is None:
+        cfg = load_lan_source_config()
+        concurrency = cfg.concurrency
+    sem = asyncio.Semaphore(max(1, concurrency))
     dl = get_downloader()
 
     async def _one(pair):

@@ -73,6 +73,7 @@ CONFIG_DESCRIPTIONS: Dict[str, str] = {
     "asr_method": "语音识别(ASR)引擎：aliyun_speech=阿里云 qwen3-asr-flash(需 DASHSCOPE_API_KEY)；whisper=本地 faster-whisper(无需 Key)；funasr_local=本地 FunASR SenseVoice(需安装 FunASR 运行时，未装前选择会失败)。",
     "publish_rate_config": "发布风控/节奏参数（JSON）：acct_limit 单账号每日发布上限；op_limit 单运营者每日发布上限；op_inflight_limit 单运营者并发在途上限；global_inflight_limit 全局并发在途上限；min_delay_ms/max_delay_ms 发布 tab 启动前随机延迟区间(毫秒)；fingerprint_variant 是否启用 UA/指纹变体。用于多运营者发布时降低风控风险，支持运行时热更。",
     "default_download_resolution": "资源下载默认分辨率：720p 或 1080p（默认 720p）。下载视频资源入库时按该分辨率统一缩放，节省存储并适配各平台主流清晰度。",
+    "lan_source_config": "局域网获取剧集配置（JSON）：enabled 为总开关（默认 false，开启后剧目详情页显示「局域网获取剧集」面板）；base_url 为 dupload cdn 源基础地址；manage_base 为 IAA 管理平台基础地址（可选，提供剧目清单）；api_prefix 为剧集清单接口路径前缀（可选）；download_timeout 为单集拉流整体超时(秒)；queue 为导入任务队列；default_project 为默认入库归属项目名；concurrency 为每集 HTTP 下载并发数。可在系统设置热更，无需改 .env。",
 }
 
 

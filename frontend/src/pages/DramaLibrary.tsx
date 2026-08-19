@@ -758,7 +758,7 @@ const DramaLibrary: React.FC = () => {
 
             <Divider orientation="left">局域网获取剧集</Divider>
             {!lanEnabled ? (
-              <Alert type="warning" showIcon message="局域网获取剧集功能未开启" description="请在 .env 设置 LAN_SOURCE_ENABLED=true（及 LAN_SOURCE_BASE_URL 指向局域网 cdn 源），重启后端后即可在此导入局域网剧集。" />
+              <Alert type="warning" showIcon message="局域网获取剧集功能未开启" description="请在系统设置中开启「局域网获取剧集」（配置 lan_source_config.enabled=true 及 base_url 指向局域网 cdn 源），保存后即可在此导入局域网剧集，无需重启。" />
             ) : (
               <Space direction="vertical" style={{ width: '100%' }} size="small">
                 <Space wrap>
