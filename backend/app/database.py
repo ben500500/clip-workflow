@@ -69,17 +69,17 @@ async def _enforce_idle_in_transaction_timeout():
     连接归还连接池，连接以 idle in transaction 悬挂并持有 autoclip_runs 表级
     RowExclusiveLock，挡死 worker-selection 的 UPDATE。把该 GUC 固化到服务端，
     悬挂事务最迟 60s 被 PG 自动回滚，作为代码修复的防御层。
-    ALTER SYSTEM + pg_reload_conf 不需要重启 PG 即可生效（需超级用户权限，
-    docker-compose 默认 POSTGRES_USER 即超级用户）。
+    目录级 ALTER ROLE 基于 pg_authid（角色级设置，覆盖该角色所有连接/所有库），
+    不写 postgresql.auto.conf，不受 163 生产库缺 include 缺陷影响，容器重建后保留；
+    新连接即时生效，无需 pg_reload_conf()。
     """
     try:
         async with engine.begin() as conn:
             await conn.execute(
                 sqlalchemy.text(
-                    "ALTER SYSTEM SET idle_in_transaction_session_timeout = '60s'"
+                    "ALTER ROLE clipworkflow SET idle_in_transaction_session_timeout = '60s'"
                 )
             )
-            await conn.execute(sqlalchemy.text("SELECT pg_reload_conf()"))
     except Exception as e:
         # 权限不足或非 PG 环境时静默降级，不阻断服务启动
         logger.warning(
