@@ -35,6 +35,10 @@ type Worker struct {
 	runningTasks   sync.Map // taskID -> *RunningTask
 	totalCompleted int32
 	totalFailed    int32
+	// 后端心跳响应带回的启停状态（管理员 PATCH 启停节点）。
+	// true=启用（可领取任务）；false=停用（暂停领取，保持心跳、当前任务跑完）。
+	// 初始视为启用；旧后端/未读到 enabled 字段时保持启用，兼容旧契约。
+	backendEnabled atomic.Bool
 	// 本节点当前引擎版本（启动时计算，推送更新后原子更新）
 	engineVersion string
 	// 本节点硬件编码能力（启动时检测一次，供心跳/注册上报；预留 GPU 自动分派接口）
@@ -64,13 +68,26 @@ type RunningTask struct {
 
 // NewWorker 创建Worker
 func NewWorker(config *Config, redis *RedisClient) *Worker {
-	return &Worker{
+	w := &Worker{
 		config:   config,
 		redis:    redis,
 		executor: NewTaskExecutor(config),
 		transfer: NewFileTransfer(),
 		callback: NewCallbackService(config.NodeID),
 	}
+	// 初始视为启用；心跳响应未带 enabled 字段（旧后端）时保持启用
+	w.backendEnabled.Store(true)
+	return w
+}
+
+// setBackendEnabled 记录后端心跳响应带回的启停状态。
+func (w *Worker) setBackendEnabled(enabled bool) {
+	w.backendEnabled.Store(enabled)
+}
+
+// getBackendEnabled 返回当前后端心跳确认的启停状态。
+func (w *Worker) getBackendEnabled() bool {
+	return w.backendEnabled.Load()
 }
 
 // SetCallbacks 设置回调
@@ -223,10 +240,18 @@ func (w *Worker) Run(ctx context.Context) error {
 			w.log("info", "优雅退出完成")
 			return nil
 		default:
-			// 检查节点是否被管理员停用（停用后暂停领取新任务，正在执行的不受影响）
+			// 检查节点是否被管理员停用（停用后暂停领取新任务，正在执行的不受影响）。
+			// 双源判定：① Redis 控制 key（取任务前直接读，立即生效）；
+			// ② 后端心跳响应带回的 enabled（PATCH 后下一次心跳生效，兼容无 Redis 直连的场景）。
+			// 任一方判定停用即暂停消费。
 			enabled, err := w.redis.IsNodeEnabled(w.config.NodeID)
 			if err == nil && !enabled {
-				w.log("warn", "节点已被管理员停用，暂停领取新任务")
+				w.log("warn", "节点已被管理员停用（Redis 控制 key），暂停领取新任务")
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			if !w.getBackendEnabled() {
+				w.log("warn", "节点已被管理员停用（后端心跳响应），暂停领取新任务")
 				time.Sleep(3 * time.Second)
 				continue
 			}
@@ -335,6 +360,12 @@ func (w *Worker) claimLoop(ctx context.Context) {
 	// 调大至 5 分钟（原为 3×心跳≈30s）：切片任务通常耗时数分钟，过短阈值会把
 	// 正常处理中的任务误判为孤儿重新执行，导致与已完成任务冲突、状态污染。
 	minIdle := time.Duration(5) * time.Minute
+
+	// 启动时立即做一次 PEL 恢复 + pending 可观测日志：
+	// Worker 刚重启（或从 crash 恢复）时，上一次会话遗留的 PEL 消息需要尽快认领，
+	// 否则会永久卡 pending（本 issue P1 背景）。先跑一次再进入周期循环。
+	w.claimOnce(streams, minIdle, true)
+
 	ticker := time.NewTicker(minIdle)
 	defer ticker.Stop()
 
@@ -343,35 +374,62 @@ func (w *Worker) claimLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			claimed, err := w.redis.ClaimStaleTasks(streams, "workers", w.config.NodeID, minIdle)
-			if err != nil {
-				w.log("error", "PEL 认领失败: %v", err)
-				continue
-			}
-			for _, msg := range claimed {
-				// 跳过仍在正常处理中的任务（任务 Hash 中 status 仍为 running 且租约新鲜）
-				hash, err := w.redis.GetTaskHash(msg.Task.TaskID)
-				if err != nil {
-					continue
-				}
-				if hash["status"] == "running" && hash["lease"] != "" {
-					leaseTS, _ := strconvParseInt(hash["lease"])
-					// 租约新鲜度阈值与 minIdle 一致（5 分钟）：心跳每 10s 续期，
-					// 正常任务租约恒新鲜，只有 Worker 真正宕机 5 分钟后才会被认领
-					if time.Now().Unix()-leaseTS < int64(5*60) {
-						continue // 任务仍被存活 Worker 处理
-					}
-				}
-				if hash["status"] == "completed" || hash["status"] == "failed" {
-					// 终态任务直接 ACK，避免重复处理
-					w.redis.AckTask(msg.Stream, "workers", msg.ID)
-					continue
-				}
+			w.claimOnce(streams, minIdle, false)
+		}
+	}
+}
 
-				// 标记为待重试并重新执行
-				w.log("warn", "认领到孤儿任务: %s (stream=%s, msg=%s)", msg.Task.TaskID, msg.Stream, msg.ID)
-				go w.runTask(msg)
+// claimOnce 执行一次 PEL 认领（XAUTOCLAIM）。
+// startup 为 true 时额外输出 pending 数量/消息 ID 日志，满足「Worker 启动时对
+// pending 消息做 XAUTOCLAIM/至少打日志提示」的可观测要求。
+func (w *Worker) claimOnce(streams []string, minIdle time.Duration, startup bool) {
+	claimed, err := w.redis.ClaimStaleTasks(streams, "workers", w.config.NodeID, minIdle)
+	if err != nil {
+		w.log("error", "PEL 认领失败: %v", err)
+		return
+	}
+	if startup {
+		// 启动时即使无可认领任务也输出 pending 概况，便于排查「消息卡 PEL」问题
+		w.logPendingOverview(streams)
+	}
+	for _, msg := range claimed {
+		// 跳过仍在正常处理中的任务（任务 Hash 中 status 仍为 running 且租约新鲜）
+		hash, err := w.redis.GetTaskHash(msg.Task.TaskID)
+		if err != nil {
+			continue
+		}
+		if hash["status"] == "running" && hash["lease"] != "" {
+			leaseTS, _ := strconvParseInt(hash["lease"])
+			// 租约新鲜度阈值与 minIdle 一致（5 分钟）：心跳每 10s 续期，
+			// 正常任务租约恒新鲜，只有 Worker 真正宕机 5 分钟后才会被认领
+			if time.Now().Unix()-leaseTS < int64(5*60) {
+				continue // 任务仍被存活 Worker 处理
 			}
+		}
+		if hash["status"] == "completed" || hash["status"] == "failed" {
+			// 终态任务直接 ACK，避免重复处理
+			w.redis.AckTask(msg.Stream, "workers", msg.ID)
+			continue
+		}
+
+		// 标记为待重试并重新执行
+		w.log("warn", "认领到孤儿任务: %s (stream=%s, msg=%s)", msg.Task.TaskID, msg.Stream, msg.ID)
+		go w.runTask(msg)
+	}
+}
+
+// logPendingOverview 输出本节点 consumer 在 PEL 中的 pending 消息概况（可观测）。
+func (w *Worker) logPendingOverview(streams []string) {
+	for _, stream := range streams {
+		p, err := w.redis.PendingOverview(stream, "workers", w.config.NodeID)
+		if err != nil {
+			w.log("debug", "查询 %s pending 概况失败: %v", stream, err)
+			continue
+		}
+		if p > 0 {
+			w.log("warn", "启动时检测到本节点在 %s 的 PEL 有 %d 条 pending 消息（将 XAUTOCLAIM 认领）", stream, p)
+		} else {
+			w.log("info", "启动时 %s PEL 无 pending 消息", stream)
 		}
 	}
 }

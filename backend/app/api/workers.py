@@ -129,7 +129,11 @@ async def worker_heartbeat(
     data: WorkerHeartbeatRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Worker 节点心跳上报（由 Worker 定时调用）。"""
+    """Worker 节点心跳上报（由 Worker 定时调用）。
+
+    响应带该节点 enabled 状态（供 Worker 判断是否暂停消费）；兼容旧 Worker：
+    未读取 enabled 字段的旧版本行为不变（视为已启用）。
+    """
     result = await db.execute(
         select(WorkerNode).where(WorkerNode.node_id == data.node_id)
     )
@@ -174,7 +178,11 @@ async def worker_heartbeat(
         db.add(node)
 
     await db.flush()
-    return {"ok": True, "node_id": data.node_id}
+
+    # 读取该节点当前启停状态（管理员 PATCH 写入 Redis 控制 key），随心跳响应带回，
+    # 供 Worker 判断是否暂停领取新任务。读不到（如 Redis 异常）时默认视为启用。
+    enabled = await is_node_enabled(data.node_id)
+    return {"ok": True, "node_id": data.node_id, "enabled": enabled}
 
 
 @router.get("/workers", response_model=List[WorkerNodeResponse])
@@ -332,6 +340,40 @@ async def disable_worker_node(
     # 写入 Redis 控制 key，Worker 端每次取任务前读取
     await set_node_enabled(node_id, False)
     return {"ok": True, "node_id": node_id, "enabled": False, "message": f"节点 {node_id} 已停用（正在执行的任务不受影响）"}
+
+
+class _NodeEnabledPatch(BaseModel):
+    """PATCH /workers/{node_id}/enabled 请求体：统一启停开关。"""
+    enabled: bool = True
+
+
+@router.patch("/workers/{node_id}/enabled")
+async def set_worker_enabled(
+    node_id: str,
+    data: _NodeEnabledPatch,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+    db: AsyncSession = Depends(get_db),
+):
+    """统一启停节点（RESTful PATCH）：body `{"enabled": bool}`。
+
+    与 POST /enable 与 /disable 等价，提供更符合 REST 语义的单接口
+    （P1 worker 节点功能开关）。停用后 Worker 暂停领取新任务（正在执行的
+    任务跑完不受影响），启用以恢复消费。状态写入 Redis 控制 key，并在
+    下一次心跳响应中带给节点。
+    """
+    # 更新数据库标记（若已存在记录）
+    result = await db.execute(
+        select(WorkerNode).where(WorkerNode.node_id == node_id)
+    )
+    node = result.scalar_one_or_none()
+    if node:
+        node.enabled = data.enabled
+        await db.flush()
+
+    # 写入 Redis 控制 key，Worker 端取任务前读取；心跳响应也会回传该状态
+    await set_node_enabled(node_id, data.enabled)
+    action = "已启用" if data.enabled else "已停用（正在执行的任务不受影响）"
+    return {"ok": True, "node_id": node_id, "enabled": data.enabled, "message": f"节点 {node_id} {action}"}
 
 
 @router.delete("/workers/{node_id}")

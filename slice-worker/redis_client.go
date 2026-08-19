@@ -246,6 +246,21 @@ func (r *RedisClient) ClaimStaleTasks(streams []string, group, consumer string, 
 	return claimed, nil
 }
 
+// PendingOverview 返回指定 consumer 在消费者组 PEL 中的 pending 消息数量。
+// 供 Worker 启动时输出可观测日志（本 issue P1：pending 消息可观测）。
+// 优先返回该 consumer 的 pending 数（XPending 的 Consumers 映射）；
+// 若该 consumer 不在映射中则回退到组内总 pending 数。
+func (r *RedisClient) PendingOverview(stream, group, consumer string) (int64, error) {
+	p, err := r.client.XPending(r.ctx, stream, group).Result()
+	if err != nil {
+		return 0, err
+	}
+	if n, ok := p.Consumers[consumer]; ok {
+		return n, nil
+	}
+	return p.Count, nil
+}
+
 // UpdateTaskStatus 更新任务状态
 func (r *RedisClient) UpdateTaskStatus(taskID string, status string, extra map[string]interface{}) error {
 	fields := map[string]interface{}{

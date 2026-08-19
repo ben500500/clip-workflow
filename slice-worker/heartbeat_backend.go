@@ -29,11 +29,22 @@ type WorkerHeartbeatPayload struct {
 	EncoderCapabilities []string `json:"encoder_capabilities"`
 }
 
+// WorkerHeartbeatResponse 后端 /api/workers/heartbeat 接口的响应体。
+// 兼容旧后端：enabled 字段缺失时按 true（启用）处理，不破坏旧版契约。
+type WorkerHeartbeatResponse struct {
+	OK       string `json:"ok"`
+	NodeID   string `json:"node_id"`
+	Enabled  *bool  `json:"enabled"`
+}
+
 // sendBackendHeartbeat 向后端 API 上报心跳，把节点信息同步到数据库 worker_nodes 表。
 //
 // 此前节点只写 Redis（slice:nodes:{id}），后端 DB 表 worker_nodes 仅在被查询/手动同步时
 // 才合并 Redis 数据；若 Redis 与后端网络/权限异常，页面就会“看不到任何数据”。
 // 这里直接调用后端心跳接口，保证 DB 与 Redis 双写、数据实时同步。
+//
+// 同时把响应中的 enabled 状态写回 w.backendEnabled（管理员 PATCH 启停节点后，
+// 下一次心跳即生效：enabled=false 时 Worker 暂停领取新任务，保持心跳）。
 func (w *Worker) sendBackendHeartbeat() error {
 	base := strings.TrimRight(w.config.BackendURL, "/")
 	if base == "" {
@@ -80,6 +91,12 @@ func (w *Worker) sendBackendHeartbeat() error {
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("心跳接口返回非 2xx: %d", resp.StatusCode)
+	}
+
+	// 解析响应，把 enabled 状态写回 Worker（enabled 缺失时视为启用，兼容旧后端）
+	var hbResp WorkerHeartbeatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&hbResp); err == nil && hbResp.Enabled != nil {
+		w.setBackendEnabled(*hbResp.Enabled)
 	}
 	return nil
 }
