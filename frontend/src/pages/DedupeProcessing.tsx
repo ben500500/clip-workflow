@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Card, Tabs, Table, Tag, Button, Space, Typography, message, InputNumber, Select,
-  Divider, Alert, Empty, Tooltip, Input,
+  Alert, Empty, Tooltip, Input, Modal,
 } from 'antd';
 import {
   ThunderboltOutlined, UploadOutlined, FileAddOutlined, ReloadOutlined,
-  PlayCircleOutlined, DeleteOutlined, FolderOutlined, VideoCameraOutlined,
+  PlayCircleOutlined, DeleteOutlined, FolderOutlined, VideoCameraOutlined, SettingOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -53,6 +53,10 @@ const DedupeProcessing: React.FC = () => {
   const [dramaName, setDramaName] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [generating, setGenerating] = useState(false);
+
+  // ── 去重配置弹窗 ──
+  const [configOpen, setConfigOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState('outputs');
 
   const fetchOutputs = useCallback(async (p: number = page, kw: string = keyword) => {
     setOutputsLoading(true);
@@ -242,12 +246,6 @@ const DedupeProcessing: React.FC = () => {
   return (
     <Card
       title={<Space><ThunderboltOutlined />去重处理（多视频号素材去重）</Space>}
-      extra={
-        <Space>
-          <Button size="small" icon={<ReloadOutlined />} onClick={() => { fetchOutputs(); }}>刷新已切片任务</Button>
-          <Button size="small" onClick={() => navigate('/variant-matrix')}>查看变体矩阵</Button>
-        </Space>
-      }
       style={{ margin: 16 }}
     >
       <Alert
@@ -255,7 +253,36 @@ const DedupeProcessing: React.FC = () => {
         message="输入（批量文件拖入 或 从已切片任务多选）→ 配置去重手段 + 变体数量 → 复用现有切片/变体链路产出变体，出现在「变体矩阵」。"
       />
 
+      {/* 顶部操作栏：所有操作按钮置顶 */}
+      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <Space wrap>
+          <Button icon={<SettingOutlined />} onClick={() => setConfigOpen(true)}>去重配置</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => fetchOutputs()}>刷新</Button>
+          <Button icon={<ThunderboltOutlined />} onClick={() => navigate('/variant-matrix')}>查看变体矩阵</Button>
+        </Space>
+        <Space wrap>
+          {activeTab === 'outputs' ? (
+            <Button type="primary" icon={<PlayCircleOutlined />} loading={generating} onClick={handleGenerateSelected}>
+              提交生成
+            </Button>
+          ) : (
+            <>
+              <Input
+                placeholder="批次名称（留空自动生成）" value={dramaName}
+                onChange={(e) => setDramaName(e.target.value)} style={{ width: 240 }}
+              />
+              <Button type="primary" icon={<UploadOutlined />} loading={submitting} onClick={handleRunBatch}>
+                上传去重
+              </Button>
+            </>
+          )}
+        </Space>
+      </div>
+
+      {/* 下方空间全部留给列表 */}
       <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'outputs',
@@ -293,8 +320,6 @@ const DedupeProcessing: React.FC = () => {
             label: '批量文件拖入（上传→切片）',
             children: (
               <div>
-                <Input placeholder="批次名称（留空自动生成）" value={dramaName}
-                  onChange={(e) => setDramaName(e.target.value)} style={{ width: 280, marginBottom: 12 }} />
                 <Dragger multiple accept="video/*" showUploadList={false}
                   beforeUpload={(file) => handleUpload(file as unknown as File)} style={{ marginBottom: 12 }}>
                   <p className="ant-upload-drag-icon"><FileAddOutlined /></p>
@@ -329,26 +354,24 @@ const DedupeProcessing: React.FC = () => {
         ]}
       />
 
-      <Divider orientation="left" plain>去重配置（preset + 全量 manual + 变体数量）</Divider>
-      <Card size="small" style={{ marginBottom: 16 }}>
+      {/* 去重配置弹窗：档位 + 变体数 + 手动配置（复用 DedupeManualConfig 动态渲染） */}
+      <Modal
+        title="去重配置（档位 + 变体数量 + 手动手段）"
+        open={configOpen}
+        onOk={() => setConfigOpen(false)}
+        onCancel={() => setConfigOpen(false)}
+        width={560}
+        footer={<Button type="primary" onClick={() => setConfigOpen(false)}>确定</Button>}
+      >
         <Space style={{ marginBottom: 12 }} wrap>
           <Text>去重档位：</Text>
           <Select value={dedupePreset} onChange={setDedupePreset} options={DEDUPE_PRESET_OPTIONS} style={{ width: 220 }} />
           <Text>变体数量：</Text>
           <InputNumber min={1} max={20} value={variantCount} onChange={(v) => setVariantCount(v ?? 1)} style={{ width: 100 }} />
-          <Text type="secondary" style={{ fontSize: 12 }}>每个素材派生 N 套去重变体（默认 3）</Text>
         </Space>
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>每个素材派生 N 套去重变体（默认 3）</Text>
         <DedupeManualConfig value={dedupeManual} onChange={setDedupeManual} preset={dedupePreset} />
-      </Card>
-
-      <Space>
-        <Button type="primary" icon={<PlayCircleOutlined />} loading={generating} onClick={handleGenerateSelected}>
-          对已选切片输出批量生成变体
-        </Button>
-        <Button type="primary" icon={<UploadOutlined />} loading={submitting} onClick={handleRunBatch}>
-          提交拖入文件去重切片
-        </Button>
-      </Space>
+      </Modal>
     </Card>
   );
 };
