@@ -71,6 +71,15 @@ _TEMP_POOL = ["temperature=6500", "temperature=6400", "temperature=6500", "tempe
 _AUDIO_POOL = ["eq_mild", "eq_strong", "pitch_down", "bandpass", "bass_boost", "vocal_boost"]
 # L4 时域结构差异：是否把整段拆成多片段并漂移/重排（改场景切分序列指纹）
 _STRUCTURAL_SEGMENT_OPTIONS = [False, True]
+# 方向一扩展特效：随机给部分派生变体叠加若隐若现星星点/小光环，进一步拉开画面特征。
+# 部分为 None（不叠加），部分带参数；固定用低位噪声，透明度极低以保持画面几乎无感。
+_SPARKLE_POOL = [
+    None,
+    None,
+    None,
+    {"enabled": True, "count": 3, "size": 3, "opacity": 8},
+    {"enabled": True, "count": 5, "size": 2, "opacity": 6},
+]
 
 
 def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> list[dict]:
@@ -112,6 +121,7 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
             "colorbalance": random.choice(_COLORBALANCE_POOL),
             "colortemperature": random.choice(_TEMP_POOL),
             "watermark": random.choice(_WATERMARK_POOL),
+            "sparkle": random.choice(_SPARKLE_POOL),
             "audio": audio_mode,
         }
         # 结构性差异（覆盖 L4 时域序列盲区 + L3 音频）：

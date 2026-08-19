@@ -97,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detector-fallback", nargs="+", default=None, help="检测器降级链")
     parser.add_argument("--inpainter", default=None, help="主修复器 (lama/cv2_telea/cv2_ns)")
     parser.add_argument("--inpainter-fallback", nargs="+", default=None, help="修复器降级链")
+    parser.add_argument("--roi-only", action="store_true", help="方向二 mask 加速：仅对 mask 覆盖的 ROI 做局部修复（cv2 修复路径提速）")
     parser.add_argument("--device", default=None, help="auto/cuda/cpu")
     parser.add_argument("-b", "--bbox", default=None, help="手动指定水印位置 x,y,w,h")
     parser.add_argument("--crf", type=int, default=None, help="libx264 CRF (0-51，默认 18)")
@@ -124,6 +125,8 @@ def _apply_cli_overrides(config: Config, args: argparse.Namespace) -> None:
         config.inpainter.fallback = list(args.inpainter_fallback)
     if args.device:
         config.inpainter.device = args.device
+    if args.roi_only:
+        config.inpainter.roi_only = True
     if args.crf is not None:
         config.output.crf = args.crf
     if args.smooth_window is not None:

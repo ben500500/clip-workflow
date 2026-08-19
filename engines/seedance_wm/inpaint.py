@@ -81,6 +81,23 @@ def _inpaint_cv2(
     return cv2.inpaint(image, mask, radius, cv2.INPAINT_TELEA)
 
 
+def _inpaint_cv2_roi(
+    image: np.ndarray,
+    mask: np.ndarray,
+    method: str = "cv2_telea",
+) -> np.ndarray:
+    """方向二 mask 加速：仅对 mask 覆盖的 ROI 做局部修复，其余像素不重算。
+
+    通过 dedupe_effects.crop_inpaint_roi 裁剪到 mask 外接框（含过渡边距），
+    只对该小区域跑 cv2.inpaint，再贴回原帧。ROI 越小提速越明显。
+    """
+    try:
+        from dedupe_effects import crop_inpaint_roi
+        return crop_inpaint_roi(image, mask)
+    except Exception:  # pragma: no cover - 依赖缺失时回退全帧
+        return _inpaint_cv2(image, mask, method)
+
+
 _LAMA = None
 
 
@@ -107,11 +124,15 @@ def inpaint_frames(
     device: str = "auto",
     fp16: bool = True,
     progress_callback=None,
+    roi_only: bool = False,
 ) -> dict:
     """逐帧修复。
 
     Args:
         progress_callback: 可选 ``callable(pct: int, msg: str)``，按帧批次上报进度。
+        roi_only: 方向二 mask 加速——仅对 mask 覆盖的 ROI 做局部修复，其余像素
+            不参与重算。ROI 通常只占画面 10%~20%，可显著降低无效计算量；
+            仅对 cv2 修复路径生效（LaMa 走全图）。
 
     Returns:
         dict: {clean_dir, processed, failed, duration_sec, model_used, device_used}
@@ -146,7 +167,10 @@ def inpaint_frames(
         for name, use in chain:
             try:
                 if use == "cv2":
-                    clean = _inpaint_cv2(img, mask, name)
+                    if roi_only:
+                        clean = _inpaint_cv2_roi(img, mask, name)
+                    else:
+                        clean = _inpaint_cv2(img, mask, name)
                 else:
                     clean = _inpaint_lama(img, mask, resolved)
                 break

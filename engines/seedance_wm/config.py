@@ -34,6 +34,7 @@ class InpainterConfig:
     fp16: bool = True
     batch_size: int = 1
     expand_px: int = 5
+    roi_only: bool = False  # 方向二 mask 加速：仅对 mask 覆盖 ROI 做局部修复
 
 
 @dataclass
