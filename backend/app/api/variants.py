@@ -56,8 +56,8 @@ async def _get_thresholds() -> dict:
             select(SystemConfig).where(SystemConfig.key == "variant_thresholds")
         )
         cfg = result.scalar_one_or_none()
-        # 事务内只读：显式结束事务，避免把 idle in transaction 的连接归还连接池
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 cfg 被 expire，会话外访问 cfg.value 抛 DetachedInstanceError（#230）。
     if cfg and isinstance(cfg.value, dict):
         merged = dict(DEFAULT_THRESHOLDS)
         merged.update(cfg.value)
@@ -131,8 +131,8 @@ async def variant_detail(
         fps = (await session.execute(
             _sel(VideoFingerprint).where(VideoFingerprint.variant_id == v.id)
         )).scalars().all()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 v/fps 被 expire，会话外访问 v.id/v.status 等属性抛 DetachedInstanceError（#230）。
     return {
         "id": str(v.id),
         "variant_group_id": str(v.variant_group_id) if v.variant_group_id else None,

@@ -42,8 +42,8 @@ async def _load_shortdrama_prompt(prompt_id: str):
             select(ShortdramaPrompt).where(ShortdramaPrompt.id == pid)
         )
         rec = result.scalar_one_or_none()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 rec 被 expire，调用方在会话外访问 record.xxx 属性时抛 DetachedInstanceError（#230）。
         return rec
 
 
@@ -208,8 +208,8 @@ async def _load_doubao_config() -> dict:
             select(SystemConfig).where(SystemConfig.key == "shortdrama_doubao_config")
         )
         cfg = result.scalar_one_or_none()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 cfg 被 expire，访问 cfg.value 抛 DetachedInstanceError（#230）。
         return (cfg.value or {}) if cfg and isinstance(cfg.value, dict) else {}
 
 
@@ -496,8 +496,8 @@ async def _load_seedance_db_config() -> dict:
             select(SystemConfig).where(SystemConfig.key == "shortdrama_seedance_config")
         )
         cfg = result.scalar_one_or_none()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 cfg 被 expire，访问 cfg.value 抛 DetachedInstanceError（#230）。
         return (cfg.value or {}) if cfg and isinstance(cfg.value, dict) else {}
 
 

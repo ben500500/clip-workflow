@@ -2267,8 +2267,8 @@ def watermark_task(
                 select(WatermarkVideo).where(WatermarkVideo.task_id == tid)
             )
             videos = videos_res.scalars().all()
-            # 事务内只读：显式结束事务
-            await session.rollback()
+            # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+            # 否则 task/videos 被 expire，会话外访问 task.status / video.id 抛 DetachedInstanceError（#230）。
             return task, videos
 
     task, videos = run_async(_load_videos())

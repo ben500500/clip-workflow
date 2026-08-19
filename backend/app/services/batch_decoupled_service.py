@@ -59,8 +59,8 @@ async def _get_batch(batch_id: str):
             select(BatchSlice).where(BatchSlice.id == uuid.UUID(batch_id))
         )
         batch = result.scalar_one_or_none()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 batch 被 expire，调用方在会话外访问 batch.xxx 抛 DetachedInstanceError（#230）。
         return batch
 
 
@@ -72,8 +72,8 @@ async def _load_items(batch_id: str) -> list:
             .order_by(BatchSliceItem.seq.asc())
         )
         items = result.scalars().all()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 items 被 expire，调用方在会话外访问 item.xxx 抛 DetachedInstanceError（#230）。
         return items
 
 
@@ -83,8 +83,8 @@ async def _load_item(item_id: str) -> BatchSliceItem:
             select(BatchSliceItem).where(BatchSliceItem.id == uuid.UUID(str(item_id)))
         )
         item = result.scalar_one_or_none()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 item 被 expire，调用方在会话外访问 item.xxx 抛 DetachedInstanceError（#230）。
         return item
 
 
@@ -111,8 +111,8 @@ async def _get_operator(batch: BatchSlice):
     async with async_session_factory() as session:
         result = await session.execute(select(User).where(User.id == batch.created_by))
         user = result.scalar_one_or_none()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 user 被 expire，调用方在会话外访问 user.xxx 抛 DetachedInstanceError（#230）。
         return user
 
 
@@ -126,8 +126,8 @@ async def _resolve_project(batch: BatchSlice):
             )
             proj = result.scalar_one_or_none()
             if proj:
-                # 事务内只读：显式结束事务
-                await session.rollback()
+                # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+                # 否则 proj 被 expire，调用方在会话外访问 proj.xxx 抛 DetachedInstanceError（#230）。
                 return proj
     # 否则按剧名查找/创建
     project = await serial._find_or_create_project(
@@ -279,8 +279,8 @@ async def dispatch_ready_slices():
             .limit(100)
         )
         items = result.scalars().all()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 items 被 expire，会话外访问 item.batch_id 抛 DetachedInstanceError（#230）。
 
     for item in items:
         batch = await _get_batch(str(item.batch_id))
@@ -367,8 +367,8 @@ async def finalize_slices():
             select(BatchSliceItem).where(BatchSliceItem.phase == PHASE_SLICING)
         )
         items = result.scalars().all()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 items 被 expire，会话外访问 item.slice_task_id/status 抛 DetachedInstanceError（#230）。
 
     for item in items:
         if not item.slice_task_id:
@@ -384,8 +384,8 @@ async def finalize_slices():
                     select(SliceTask).where(SliceTask.id == item.slice_task_id)
                 )
             ).scalar_one_or_none()
-            # 事务内只读：显式结束事务
-            await session.rollback()
+            # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+            # 否则 task 被 expire，会话外访问 task.status 抛 DetachedInstanceError（#230）。
 
         # 任务尚未到终态（running/pending/未生成）：本轮跳过，幂等等待下一 beat
         if task is None or task.status in (None, "pending", "running", "started"):
@@ -439,8 +439,8 @@ async def aggregate_batches():
             select(BatchSlice).where(BatchSlice.status == "running")
         )
         batches = result.scalars().all()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 batches 被 expire，会话外访问 batch.xxx 抛 DetachedInstanceError（#230）。
 
     for batch in batches:
         async with async_session_factory() as session:

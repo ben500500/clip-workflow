@@ -169,8 +169,9 @@ async def _load_output(output_id) -> Optional[SliceOutput]:
             select(SliceOutput).where(SliceOutput.id == uuid.UUID(str(output_id)))
         )
         output = result.scalar_one_or_none()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 会自动回滚事务并归还连接（expire_on_commit=False
+        # 不会过期已加载属性），这里显式 rollback() 反而会 expire 返回的 ORM 对象，
+        # 导致调用方在会话外访问 output 属性时抛 DetachedInstanceError（#230），故移除。
         return output
 
 
@@ -250,8 +251,8 @@ async def _load_group_fingerprints(variant_group_id) -> list[dict]:
             .where(VideoFingerprint.algorithm.in_(["phash_v1", "audio_v2", "seq_v1"]))
         )
         rows = result.scalars().all()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 rows 被 expire，退出会话后访问 r.algorithm 会抛 DetachedInstanceError（#230）。
     return [{
         "algorithm": r.algorithm,
         "hash_value": r.hash_value,
@@ -280,8 +281,8 @@ async def _check_against_history(full_fp: dict, variant_group_id=None, exclude_v
             )
         result = await session.execute(query)
         rows = result.scalars().all()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 rows 被 expire，退出会话后访问 r.algorithm 会抛 DetachedInstanceError（#230）。
     if not rows:
         return {"phash_distance": 1.0, "audio_distance": 1.0, "seg_distance": 1.0,
                 "combined_distance": 1.0, "collision": False, "collision_reason": ""}
@@ -568,8 +569,8 @@ async def verify_variant_fingerprint(variant_id: str, thresholds: Optional[dict]
             select(VideoFingerprint).where(VideoFingerprint.variant_id == uuid.UUID(str(variant_id)))
         )
         rows = result.scalars().all()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 rows 被 expire，退出会话后访问 r.algorithm 会抛 DetachedInstanceError（#230）。
     fp_map = {r.algorithm: {"algorithm": r.algorithm, "hash_value": r.hash_value, "vector": r.vector}
               for r in rows}
     # 与同组其它变体比对

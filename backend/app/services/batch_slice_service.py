@@ -57,8 +57,8 @@ async def _get_batch(batch_id: str):
     async with async_session_factory() as session:
         result = await session.execute(select(BatchSlice).where(BatchSlice.id == uuid.UUID(batch_id)))
         batch = result.scalar_one_or_none()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 batch 被 expire，调用方在会话外访问 batch.xxx 抛 DetachedInstanceError（#230）。
         return batch
 
 
@@ -70,8 +70,8 @@ async def _load_items(batch_id: str) -> list[BatchSliceItem]:
             .order_by(BatchSliceItem.seq.asc())
         )
         items = result.scalars().all()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 items 被 expire，调用方在会话外访问 item.xxx 抛 DetachedInstanceError（#230）。
         return items
 
 
@@ -137,8 +137,8 @@ async def _find_or_create_project(name: str, created_by: str) -> Project:
             select(Project).where(Project.name == name).order_by(Project.created_at.asc())
         )
         earliest = result.scalars().first()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 earliest 被 expire，会话外访问 earliest.id 抛 DetachedInstanceError（#230）。
     if earliest is not None and earliest.id != project.id:
         logger.warning(
             "并发去重：剧名 %s 已存在更早项目 %s，回滚本次新建 %s 并复用",
@@ -211,8 +211,8 @@ async def _trigger_autoclip(episode_id: str, item: BatchSliceItem, user: User, c
             .limit(1)
         )
         run = result.scalar_one_or_none()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 run 被 expire，会话外访问 run.id 抛 DetachedInstanceError（#230）。
     return str(run.id) if run else ""
 
 
@@ -229,8 +229,8 @@ async def _wait_autoclip(episode_id: str, timeout: float = AUTOCLIP_TIMEOUT):
                 .limit(1)
             )
             run = result.scalar_one_or_none()
-            # 事务内只读：显式结束事务
-            await session.rollback()
+            # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+            # 否则 run 被 expire，会话外访问 run.status 抛 DetachedInstanceError（#230）。
         if run is None:
             time.sleep(POLL_INTERVAL)
             continue
@@ -268,8 +268,8 @@ async def _trigger_detect(episode_id: str, item: BatchSliceItem, user: User, det
             .limit(1)
         )
         task = result.scalar_one_or_none()
-        # 事务内只读：显式结束事务
-        await session.rollback()
+        # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+        # 否则 task 被 expire，会话外访问 task.id 抛 DetachedInstanceError（#230）。
     return str(task.id) if task else ""
 
 
@@ -294,8 +294,8 @@ async def _wait_detect(episode_id: str, task_id: Optional[str] = None, timeout: 
             else:
                 query = query.order_by(SliceTask.created_at.desc()).limit(1)
             task = (await session.execute(query)).scalar_one_or_none()
-            # 事务内只读：显式结束事务
-            await session.rollback()
+            # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+            # 否则 task 被 expire，会话外访问 task.status 抛 DetachedInstanceError（#230）。
         if task is None:
             time.sleep(POLL_INTERVAL)
             continue
@@ -394,8 +394,8 @@ async def _wait_slice(episode_id: str, task_id: Optional[str] = None, timeout: f
             else:
                 query = query.order_by(SliceTask.created_at.desc()).limit(1)
             task = (await session.execute(query)).scalar_one_or_none()
-            # 事务内只读：显式结束事务
-            await session.rollback()
+            # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+            # 否则 task 被 expire，会话外访问 task.status/output_count 抛 DetachedInstanceError（#230）。
         if task is None:
             time.sleep(POLL_INTERVAL)
             continue
@@ -469,8 +469,8 @@ async def run_batch(batch_id: str):
         async with async_session_factory() as session:
             result = await session.execute(select(User).where(User.id == batch.created_by))
             operator = result.scalar_one_or_none()
-            # 事务内只读：显式结束事务
-            await session.rollback()
+            # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+            # 否则 operator 被 expire，后续访问抛 DetachedInstanceError（#230）。
     if operator is None:
         await _update_batch(batch_id, status="failed", error_message="无法确定批次操作人")
         return
@@ -481,8 +481,8 @@ async def run_batch(batch_id: str):
         async with async_session_factory() as session:
             result = await session.execute(select(Project).where(Project.id == batch.project_id))
             project = result.scalar_one_or_none()
-            # 事务内只读：显式结束事务
-            await session.rollback()
+            # 只读块：async with 退出 close() 自动回滚事务并归还连接；不要显式 rollback()，
+            # 否则 project 被 expire，后续访问 project.id 抛 DetachedInstanceError（#230）。
     if project is None and batch.created_by:
         project = await _find_or_create_project(batch.name or "批量切片", str(batch.created_by))
         await _update_batch(batch_id, project_id=project.id)
