@@ -289,6 +289,7 @@ def process_video(
                 model=config.inpainter.primary,
                 device=config.inpainter.device,
                 fp16=config.inpainter.fp16,
+                roi_only=config.inpainter.roi_only,
                 progress_callback=_inpaint_progress,
             )
             if inpaint_info["processed"] == 0:
