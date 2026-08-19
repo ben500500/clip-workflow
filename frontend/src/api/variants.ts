@@ -60,8 +60,21 @@ export interface SliceOutputListItem {
   presigned_url: string | null;
 }
 
+export interface SliceOutputEpisode {
+  episode_id: string | null;
+  episode_title: string;
+  drama_name: string | null;
+  outputs: SliceOutputListItem[];
+}
+
+export interface SliceOutputProject {
+  project_id: string | null;
+  project_name: string;
+  episodes: SliceOutputEpisode[];
+}
+
 export interface SliceOutputList {
-  items: SliceOutputListItem[];
+  groups: SliceOutputProject[];
   total: number;
   page: number;
   page_size: number;

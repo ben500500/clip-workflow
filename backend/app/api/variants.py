@@ -15,7 +15,7 @@ from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.auth import get_current_user
 from app.config import settings
@@ -31,6 +31,7 @@ from app.models.models import (
     Project,
     user_can_access_all_materials,
 )
+from app.models.drama import Drama
 from app.services.minio_service import get_presigned_url
 
 router = APIRouter()
@@ -359,7 +360,7 @@ async def list_slice_outputs(
     page_size = max(1, min(page_size, 200))
 
     async with async_session_factory() as session:
-        # 非 all 用户：先收集其可访问的项目集合，再按 project → episode → task 过滤输出
+        # ── 数据隔离：非 all 用户先收集可访问的 project → episode 集合 ──
         allowed_episode_ids = None
         if current_user is not None and not user_can_access_all_materials(current_user):
             projects = (await session.execute(
@@ -370,43 +371,99 @@ async def list_slice_outputs(
                 select(Episode).where(Episode.project_id.in_(allowed_project_ids))
             )).scalars().all() if allowed_project_ids else []
             allowed_episode_ids = [e.id for e in episodes]
-            if not allowed_episode_ids:
-                return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
+        # ── 关键词搜索：匹配 project_name / episode_title / file_name（模糊）──
         conds = []
         if keyword:
-            conds.append(SliceOutput.file_name.ilike(f"%{keyword}%"))
+            # 命中项目名 → 该项目的 episode_id 集合
+            kw_projects = (await session.execute(
+                select(Project.id).where(Project.name.ilike(f"%{keyword}%"))
+            )).scalars().all()
+            kw_episode_ids = set()
+            if kw_projects:
+                kw_episode_ids.update((await session.execute(
+                    select(Episode.id).where(Episode.project_id.in_(kw_projects))
+                )).scalars().all())
+            # 命中剧集名 → 对应 episode_id
+            kw_episode_ids.update((await session.execute(
+                select(Episode.id).where(Episode.title.ilike(f"%{keyword}%"))
+            )).scalars().all())
+            kw_task_ids = set()
+            if kw_episode_ids:
+                kw_task_ids.update((await session.execute(
+                    select(SliceTask.id).where(SliceTask.episode_id.in_(kw_episode_ids))
+                )).scalars().all())
+            conds.append(or_(
+                SliceOutput.file_name.ilike(f"%{keyword}%"),
+                SliceOutput.task_id.in_(kw_task_ids) if kw_task_ids else False,
+            ))
 
+        # ── 数据隔离：限制到可访问剧集下的切片任务 ──
         if allowed_episode_ids is not None:
             tasks = (await session.execute(
                 select(SliceTask).where(SliceTask.episode_id.in_(allowed_episode_ids))
             )).scalars().all()
             task_ids = [t.id for t in tasks]
-            if not task_ids:
-                return {"items": [], "total": 0, "page": page, "page_size": page_size}
             conds.append(SliceOutput.task_id.in_(task_ids))
 
-        total = (await session.execute(
-            select(SliceOutput.id).where(*conds)
-        )).scalars().all()
-        total_count = len(total)
+        if conds:
+            total = (await session.execute(
+                select(SliceOutput.id).where(*conds)
+            )).scalars().all()
+            total_count = len(total)
+        else:
+            total_count = (await session.execute(
+                select(SliceOutput.id)
+            )).scalars().all().__len__()
 
-        outputs = (await session.execute(
-            select(SliceOutput)
-            .where(*conds)
-            .order_by(SliceOutput.created_at.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )).scalars().all()
+        if conds:
+            outputs = (await session.execute(
+                select(SliceOutput)
+                .where(*conds)
+                .order_by(SliceOutput.created_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )).scalars().all()
+        else:
+            outputs = (await session.execute(
+                select(SliceOutput)
+                .order_by(SliceOutput.created_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )).scalars().all()
 
-        items = []
+        # ── 逐条补齐 task → episode → project → drama 元数据 ──
+        tasks = (await session.execute(
+            select(SliceTask).where(SliceTask.id.in_([o.task_id for o in outputs]))
+        )).scalars().all() if outputs else []
+        task_map = {t.id: t for t in tasks}
+        episode_ids = [t.episode_id for t in tasks if t.episode_id]
+        episodes = (await session.execute(
+            select(Episode).where(Episode.id.in_(episode_ids))
+        )).scalars().all() if episode_ids else []
+        episode_map = {e.id: e for e in episodes}
+        project_ids = [e.project_id for e in episodes if e.project_id]
+        projects = (await session.execute(
+            select(Project).where(Project.id.in_(project_ids))
+        )).scalars().all() if project_ids else []
+        project_map = {p.id: p for p in projects}
+        drama_ids = [e.drama_id for e in episodes if e.drama_id]
+        dramas = (await session.execute(
+            select(Drama).where(Drama.id.in_(drama_ids))
+        )).scalars().all() if drama_ids else []
+        drama_map = {d.id: d for d in dramas}
+
+        # ── 组装分组结构：project → episodes → outputs ──
+        groups = []
+        project_index = {}  # project_id -> groups idx
+        episode_index = {}  # (project_id, episode_id) -> episodes idx
         for out in outputs:
             url = None
             if out.file_key:
                 url = await get_presigned_url(
                     settings.MINIO_BUCKET_SLICED, out.file_key, expires_seconds=3600
                 )
-            items.append({
+            item = {
                 "id": str(out.id),
                 "task_id": str(out.task_id),
                 "file_name": out.file_name,
@@ -417,9 +474,36 @@ async def list_slice_outputs(
                 "variant_group_id": str(out.variant_group_id) if out.variant_group_id else None,
                 "created_at": out.created_at.isoformat() if out.created_at else "",
                 "presigned_url": url,
-            })
+            }
+            task = task_map.get(out.task_id)
+            episode = episode_map.get(task.episode_id) if task and task.episode_id else None
+            project = project_map.get(episode.project_id) if episode and episode.project_id else None
+            drama = drama_map.get(episode.drama_id) if episode and episode.drama_id else None
+
+            pid = str(project.id) if project else ""
+            if pid not in project_index:
+                project_index[pid] = len(groups)
+                groups.append({
+                    "project_id": pid or None,
+                    "project_name": project.name if project else "未分类",
+                    "episodes": [],
+                })
+            g_idx = project_index[pid]
+            eid = str(episode.id) if episode else ""
+            ekey = (pid, eid)
+            if ekey not in episode_index:
+                episode_index[ekey] = len(groups[g_idx]["episodes"])
+                groups[g_idx]["episodes"].append({
+                    "episode_id": eid or None,
+                    "episode_title": (episode.title if episode and episode.title else "未分类"),
+                    "drama_name": drama.name if drama else None,
+                    "outputs": [],
+                })
+            groups[g_idx]["episodes"][episode_index[ekey]]["outputs"].append(item)
+
         # 事务内只读：显式结束事务
         await session.rollback()
 
-    return {"items": items, "total": total_count, "page": page, "page_size": page_size}
+    return {"groups": groups, "total": total_count, "page": page, "page_size": page_size}
+
 

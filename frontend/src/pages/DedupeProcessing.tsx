@@ -5,13 +5,13 @@ import {
 } from 'antd';
 import {
   ThunderboltOutlined, UploadOutlined, FileAddOutlined, ReloadOutlined,
-  PlayCircleOutlined, DeleteOutlined,
+  PlayCircleOutlined, DeleteOutlined, FolderOutlined, VideoCameraOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import Dragger from 'antd/es/upload/Dragger';
 import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/DedupeManualConfig';
-import { variantsApi, SliceOutputListItem } from '../api/variants';
+import { variantsApi, SliceOutputListItem, SliceOutputProject } from '../api/variants';
 import { dedupeApi, DedupeUploadedFile } from '../api/dedupe';
 import { batchSliceApi } from '../api/batchSlice';
 import { useNavigate } from 'react-router-dom';
@@ -38,13 +38,15 @@ const DedupeProcessing: React.FC = () => {
   const [variantCount, setVariantCount] = useState<number>(VARIANT_COUNT_DEFAULT);
 
   // ── Tab1：从已切片任务多选 SliceOutput ──
-  const [outputs, setOutputs] = useState<SliceOutputListItem[]>([]);
+  const [groups, setGroups] = useState<SliceOutputProject[]>([]);
   const [outputsLoading, setOutputsLoading] = useState(false);
   const [selectedRows, setSelectedRows] = useState<SliceOutputListItem[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [keyword, setKeyword] = useState('');
   const pageSize = 20;
+  // 分组表格折叠控制：默认全部展开，变更分组时刷新展开态
+  const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
 
   // ── Tab2：批量文件拖入 ──
   const [uploadedFiles, setUploadedFiles] = useState<DedupeUploadedFile[]>([]);
@@ -56,8 +58,15 @@ const DedupeProcessing: React.FC = () => {
     setOutputsLoading(true);
     try {
       const data = await variantsApi.listSliceOutputs({ page: p, page_size: pageSize, keyword: kw || undefined });
-      setOutputs(data.items || []);
+      setGroups(data.groups || []);
       setTotal(data.total || 0);
+      // 默认展开全部项目/剧集分组
+      const keys: React.Key[] = [];
+      (data.groups || []).forEach((g) => {
+        keys.push(`p_${g.project_id || 'none'}`);
+        (g.episodes || []).forEach((e) => keys.push(`e_${e.episode_id || g.project_id || 'none'}_${e.episode_title}`));
+      });
+      setExpandedKeys(keys);
     } catch (e) {
       message.error((e as Error).message || '加载已切片任务失败');
     } finally {
@@ -179,18 +188,60 @@ const DedupeProcessing: React.FC = () => {
     }
   };
 
-  const outputColumns: ColumnsType<SliceOutputListItem> = [
+  // 把分组结构展开成树形行：项目行 → 剧集行 → 输出行（children 嵌套，支持折叠）
+  type GroupRow = {
+    key: string;
+    type: 'project' | 'episode' | 'output';
+    title: string;
+    meta?: string;
+    item?: SliceOutputListItem;
+    children?: GroupRow[];
+  };
+  const buildTreeData = (): GroupRow[] =>
+    (groups || []).map((g) => ({
+      key: `p_${g.project_id || 'none'}`,
+      type: 'project' as const,
+      title: g.project_name,
+      children: (g.episodes || []).map((e) => ({
+        key: `e_${e.episode_id || g.project_id || 'none'}_${e.episode_title}`,
+        type: 'episode' as const,
+        title: e.episode_title,
+        meta: e.drama_name || undefined,
+        children: (e.outputs || []).map((o) => ({
+          key: o.id,
+          type: 'output' as const,
+          title: o.file_name || '—',
+          item: o,
+        })),
+      })),
+    }));
+
+  const outputColumns: ColumnsType<GroupRow> = [
     {
-      title: '文件名', dataIndex: 'file_name', ellipsis: true,
-      render: (v: string | null) => v || '—',
+      title: '项目 / 剧集 / 文件名',
+      key: 'name',
+      render: (_: unknown, row: GroupRow) => {
+        if (row.type === 'project') {
+          return <Space><FolderOutlined />{row.title}</Space>;
+        }
+        if (row.type === 'episode') {
+          return (
+            <Space style={{ paddingLeft: 12 }}>
+              <VideoCameraOutlined />{row.title}
+              {row.meta ? <Tag>{row.meta}</Tag> : null}
+            </Space>
+          );
+        }
+        return <span style={{ paddingLeft: 24 }}>{row.title}</span>;
+      },
     },
-    { title: '分辨率', dataIndex: 'resolution', width: 100, render: (v: string | null) => v || '—' },
-    { title: '时长', dataIndex: 'duration', width: 90, render: (v: number | null) => (v != null ? `${v.toFixed(1)}s` : '—') },
+    { title: '分辨率', dataIndex: 'resolution', width: 110, render: (_: unknown, row: GroupRow) => (row.type === 'output' ? (row.item?.resolution || '—') : '') },
+    { title: '时长', dataIndex: 'duration', width: 90, render: (_: unknown, row: GroupRow) => (row.type === 'output' && row.item?.duration != null ? `${row.item.duration.toFixed(1)}s` : '') },
     {
       title: '变体组', dataIndex: 'variant_group_id', width: 110,
-      render: (v: string | null) => v ? <Tag color="blue">已生成</Tag> : <Tag>未去重</Tag>,
+      render: (_: unknown, row: GroupRow) => (row.type === 'output' ? (row.item?.variant_group_id ? <Tag color="blue">已生成</Tag> : <Tag>未去重</Tag>) : ''),
     },
-    { title: '生成时间', dataIndex: 'created_at', width: 140, render: (v: string) => (v ? dayjs(v).format('MM-DD HH:mm') : '—') },
+    { title: '生成时间', dataIndex: 'created_at', width: 150, render: (_: unknown, row: GroupRow) => (row.type === 'output' && row.item?.created_at ? dayjs(row.item.created_at).format('MM-DD HH:mm') : '') },
   ];
 
   return (
@@ -218,23 +269,25 @@ const DedupeProcessing: React.FC = () => {
               <div>
                 <Space style={{ marginBottom: 12 }}>
                   <Input.Search
-                    placeholder="按文件名筛选" allowClear style={{ width: 240 }}
+                    placeholder="按项目 / 剧集 / 文件名筛选" allowClear style={{ width: 260 }}
                     onSearch={(v) => { setKeyword(v); fetchOutputs(1, v); }}
                   />
                   <Text type="secondary">已选 {selectedRows.length} 个输出</Text>
                 </Space>
                 <Table
-                  rowKey="id" columns={outputColumns} dataSource={outputs} loading={outputsLoading} size="small"
+                  rowKey="key" columns={outputColumns} dataSource={buildTreeData()} loading={outputsLoading} size="small"
+                  expandable={{ expandedRowKeys: expandedKeys, onExpandedRowsChange: (keys) => setExpandedKeys(keys as React.Key[]) }}
                   rowSelection={{
                     selectedRowKeys: selectedRows.map((r) => r.id),
-                    onChange: (_keys, rows) => setSelectedRows(rows),
+                    getCheckboxProps: (row: GroupRow) => ({ disabled: row.type !== 'output' }),
+                    onChange: (_keys, rows) => setSelectedRows((rows as GroupRow[]).filter((r) => r.type === 'output' && r.item).map((r) => r.item as SliceOutputListItem)),
                   }}
                   pagination={{
                     current: page, pageSize, total, showSizeChanger: false,
                     onChange: (p) => { setPage(p); fetchOutputs(p); },
                   }}
                 />
-                {outputs.length === 0 && !outputsLoading && (
+                {total === 0 && !outputsLoading && (
                   <Empty style={{ marginTop: 24 }} description="暂无已切片输出。可拖入文件去重，或先去「批量切片」产出切片。" />
                 )}
               </div>
