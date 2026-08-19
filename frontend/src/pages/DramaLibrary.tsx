@@ -243,6 +243,8 @@ const DramaLibrary: React.FC = () => {
     try {
       const res = await getDrama(d.id);
       setDetail(res);
+      // 打开剧目详情自动用当前剧目名拉取局域网预览（保留下方手动输入兜底）
+      if (res?.name) previewLanDrama(res.name);
     } catch (e) {
       message.error((e as Error).message || '加载详情失败');
     } finally {

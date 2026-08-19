@@ -103,7 +103,9 @@ class LanSourceClient:
             )
         return dramas
 
-    # ── 剧集直链发现（dupload /videos/{drama}/cdn）──
+    # ── 剧集直链发现 ──
+    # 优先走管理平台 /api/ext/drama/{name}/videos（21:8800）；未配置 MANAGE_BASE
+    # 时回退到 dupload cdn 源 /videos/{drama}/cdn。返回结构兼容（episode+url）。
     def _drama_path(self, drama_name: str) -> str:
         import urllib.parse
         encoded = urllib.parse.quote(drama_name)
@@ -111,9 +113,20 @@ class LanSourceClient:
         return f"{prefix}/videos/{encoded}/cdn"
 
     async def fetch_episodes(self, drama_name: str) -> list[CdnEpisode]:
-        """拉取某剧目全部剧集直链（按 episode 升序）。"""
-        url = self._drama_path(drama_name)
-        data = await self._get_json(url)
+        """拉取某剧目全部剧集直链（按 episode 升序）。
+
+        优先请求管理平台 `GET /api/ext/drama/{name}/videos`（21:8800）；
+        未配置 MANAGE_BASE 时回退到 dupload cdn 源 `GET /videos/{drama}/cdn`。
+        """
+        import urllib.parse
+        if self.manage_base:
+            encoded = urllib.parse.quote(drama_name)
+            url = f"/api/ext/drama/{encoded}/videos"
+            base = self.manage_base
+        else:
+            url = self._drama_path(drama_name)
+            base = self.base
+        data = await self._get_json(url, base=base)
         items = data if isinstance(data, list) else data.get("items") or data.get("videos") or []
         episodes: list[CdnEpisode] = []
         if isinstance(items, list):
