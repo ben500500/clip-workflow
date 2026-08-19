@@ -513,7 +513,7 @@ class VideoChannelPublisher:
         need_login），供上层抛 `UploadRiskError(risk_code=分类)` 或提前返回。
         """
         try:
-            url = await self.page.url()
+            url = self.page.url  # page.url 是属性（str），不是方法，不能加 ()/await
             text = await self.page.evaluate("""() => {
                 // 取 body 可见文本 + 常见弹层/提示文本，控制长度避免过重
                 const parts = [document.title || ''];
