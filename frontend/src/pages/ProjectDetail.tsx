@@ -48,6 +48,31 @@ const DEFAULT_BATCH_CONFIG: BatchSliceConfig = {
   coverImageName: null,
 };
 
+// 批量一键切片配置持久化：按项目维度存 localStorage，重新进入页面/重开弹窗时恢复
+// 用户最后输入（AI 智能选点参数 + 视频封面选择），不再每次重置为默认
+const BATCH_SLICE_STORAGE_PREFIX = 'project_batch_slice_config_v1_';
+
+function loadSavedBatchConfig(projectId: string): BatchSliceConfig | null {
+  try {
+    const raw = localStorage.getItem(`${BATCH_SLICE_STORAGE_PREFIX}${projectId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    // 与默认配置合并，缺失字段用默认值兜底（字段随版本演进时仍可安全恢复）
+    return { ...DEFAULT_BATCH_CONFIG, ...parsed };
+  } catch {
+    return null;
+  }
+}
+
+function saveBatchConfig(projectId: string, cfg: BatchSliceConfig): void {
+  try {
+    localStorage.setItem(`${BATCH_SLICE_STORAGE_PREFIX}${projectId}`, JSON.stringify(cfg));
+  } catch {
+    // 存储失败忽略（与既有 localStorage 逻辑一致）
+  }
+}
+
 // 去重档位选项（与剧集详情页一致）
 const DEDUPE_PRESET_OPTIONS = [
   { value: 'std_crop_desat', label: '保守裁切降饱和（推荐）' },
@@ -88,10 +113,17 @@ const ProjectDetail: React.FC = () => {
   // ── 剧集多选 + 批量一键切片 ──
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [sliceModalOpen, setSliceModalOpen] = useState(false);
-  const [batchConfig, setBatchConfig] = useState<BatchSliceConfig>({ ...DEFAULT_BATCH_CONFIG });
+  const [batchConfig, setBatchConfig] = useState<BatchSliceConfig>(() => loadSavedBatchConfig(projectId) ?? { ...DEFAULT_BATCH_CONFIG });
   const [batchSlicing, setBatchSlicing] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number; current: string } | null>(null);
   const [coverUploading, setCoverUploading] = useState(false);
+
+  // 批量一键切片配置变更即保存（含封面选择），重开弹窗/重新进入均恢复用户上次输入
+  useEffect(() => {
+    if (!projectId) return;
+    saveBatchConfig(projectId, batchConfig);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batchConfig, projectId]);
 
   // ── 批量一键切片可选的「一键切片配置」预设（与剧集详情页共享 localStorage） ──
   const [presetOptions, setPresetOptions] = useState<SlicePreset[]>([]);
