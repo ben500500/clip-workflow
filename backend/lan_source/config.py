@@ -27,7 +27,8 @@ from typing import Optional
 DEFAULT_LAN_SOURCE_CONFIG: dict = {
     "enabled": False,
     "base_url": "http://192.168.1.163:8765",
-    "manage_base": "",
+    # 管理平台基础地址（剧集直链主来源：/api/ext/drama/{name}/videos；可经系统设置覆盖）
+    "manage_base": "http://192.168.1.21:8800",
     "api_prefix": "",
     "download_timeout": 900,
     "queue": "lan_source",
@@ -42,7 +43,7 @@ class LanSourceConfig:
 
     enabled: bool = False
     base_url: str = "http://192.168.1.163:8765"
-    manage_base: str = ""
+    manage_base: str = "http://192.168.1.21:8800"
     api_prefix: str = ""
     download_timeout: int = 900
     queue: str = "lan_source"

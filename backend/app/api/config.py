@@ -197,14 +197,14 @@ DEFAULT_CONFIGS: List[dict] = [
         "value": {
             "enabled": False,
             "base_url": "http://192.168.1.163:8765",
-            "manage_base": "",
+            "manage_base": "http://192.168.1.21:8800",
             "api_prefix": "",
             "download_timeout": 900,
             "queue": "lan_source",
             "default_project": "局域网导入",
             "concurrency": 2,
         },
-        "description": "局域网获取剧集配置（JSON）：enabled 为总开关（默认 false，开启后剧目详情页出现「局域网获取剧集」面板）；base_url 为 dupload cdn 源基础地址（返回 /videos/{drama}/cdn 直链的服务，默认 192.168.1.163:8765）；manage_base 为 IAA 小程序管理平台基础地址（可选，提供 /api/bg/sync/tasks 剧名清单）；api_prefix 剧集清单接口路径前缀（可选）；download_timeout 单集拉流整体超时(秒)；default_project 默认入库归属项目名；concurrency 每集 HTTP 下载并发数。配置保存后即时生效，无需重启。",
+        "description": "局域网获取剧集配置（JSON）：enabled 为总开关（默认 false，开启后剧目详情页出现「局域网获取剧集」面板）；base_url 为 dupload cdn 源基础地址（回退路径，默认 192.168.1.163:8765）；manage_base 为 IAA 小程序管理平台基础地址（**剧集直链主来源**：/api/ext/drama/{name}/videos，默认 192.168.1.21:8800）；api_prefix 剧集清单接口路径前缀（可选）；download_timeout 单集拉流整体超时(秒)；default_project 默认入库归属项目名；concurrency 每集 HTTP 下载并发数。配置保存后即时生效，无需重启。",
     },
 ]
 
