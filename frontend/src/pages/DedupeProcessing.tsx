@@ -297,8 +297,9 @@ const DedupeProcessing: React.FC = () => {
                   <Text type="secondary">已选 {selectedRows.length} 个输出</Text>
                 </Space>
                 <Table
-                  rowKey="key" columns={outputColumns} dataSource={buildTreeData()} loading={outputsLoading} size="small"
+                  rowKey="key" columns={outputColumns} dataSource={buildTreeData()} loading={outputsLoading} size="middle"
                   expandable={{ expandedRowKeys: expandedKeys, onExpandedRowsChange: (keys) => setExpandedKeys(keys as React.Key[]) }}
+                  scroll={{ y: 520 }}
                   rowSelection={{
                     selectedRowKeys: selectedRows.map((r) => r.id),
                     getCheckboxProps: (row: GroupRow) => ({ disabled: row.type !== 'output' }),
