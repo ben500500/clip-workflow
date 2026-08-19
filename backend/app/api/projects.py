@@ -741,6 +741,8 @@ async def _cleanup_orphan_media_files() -> None:
                     )
                 )
             ).scalars().all()
+            # 事务内只读：显式结束事务，避免把 idle in transaction 的连接归还连接池
+            await session.rollback()
         keep = set(rows)
         removed = 0
         for p in media_base.glob("*.mp4"):

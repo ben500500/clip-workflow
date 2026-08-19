@@ -57,6 +57,8 @@ async def _get_batch(batch_id: str):
     async with async_session_factory() as session:
         result = await session.execute(select(BatchSlice).where(BatchSlice.id == uuid.UUID(batch_id)))
         batch = result.scalar_one_or_none()
+        # 事务内只读：显式结束事务
+        await session.rollback()
         return batch
 
 
@@ -67,7 +69,10 @@ async def _load_items(batch_id: str) -> list[BatchSliceItem]:
             .where(BatchSliceItem.batch_id == uuid.UUID(batch_id))
             .order_by(BatchSliceItem.seq.asc())
         )
-        return result.scalars().all()
+        items = result.scalars().all()
+        # 事务内只读：显式结束事务
+        await session.rollback()
+        return items
 
 
 async def _update_item(item_id, **fields):
@@ -132,6 +137,8 @@ async def _find_or_create_project(name: str, created_by: str) -> Project:
             select(Project).where(Project.name == name).order_by(Project.created_at.asc())
         )
         earliest = result.scalars().first()
+        # 事务内只读：显式结束事务
+        await session.rollback()
     if earliest is not None and earliest.id != project.id:
         logger.warning(
             "并发去重：剧名 %s 已存在更早项目 %s，回滚本次新建 %s 并复用",
@@ -143,6 +150,9 @@ async def _find_or_create_project(name: str, created_by: str) -> Project:
             if dup is not None and dup.id != earliest.id:
                 await session.delete(dup)
                 await session.commit()
+            else:
+                # 无重复可删：显式结束事务
+                await session.rollback()
         return earliest
     return project
 
@@ -201,6 +211,8 @@ async def _trigger_autoclip(episode_id: str, item: BatchSliceItem, user: User, c
             .limit(1)
         )
         run = result.scalar_one_or_none()
+        # 事务内只读：显式结束事务
+        await session.rollback()
     return str(run.id) if run else ""
 
 
@@ -217,6 +229,8 @@ async def _wait_autoclip(episode_id: str, timeout: float = AUTOCLIP_TIMEOUT):
                 .limit(1)
             )
             run = result.scalar_one_or_none()
+            # 事务内只读：显式结束事务
+            await session.rollback()
         if run is None:
             time.sleep(POLL_INTERVAL)
             continue
@@ -254,6 +268,8 @@ async def _trigger_detect(episode_id: str, item: BatchSliceItem, user: User, det
             .limit(1)
         )
         task = result.scalar_one_or_none()
+        # 事务内只读：显式结束事务
+        await session.rollback()
     return str(task.id) if task else ""
 
 
@@ -278,6 +294,8 @@ async def _wait_detect(episode_id: str, task_id: Optional[str] = None, timeout: 
             else:
                 query = query.order_by(SliceTask.created_at.desc()).limit(1)
             task = (await session.execute(query)).scalar_one_or_none()
+            # 事务内只读：显式结束事务
+            await session.rollback()
         if task is None:
             time.sleep(POLL_INTERVAL)
             continue
@@ -376,6 +394,8 @@ async def _wait_slice(episode_id: str, task_id: Optional[str] = None, timeout: f
             else:
                 query = query.order_by(SliceTask.created_at.desc()).limit(1)
             task = (await session.execute(query)).scalar_one_or_none()
+            # 事务内只读：显式结束事务
+            await session.rollback()
         if task is None:
             time.sleep(POLL_INTERVAL)
             continue
@@ -413,6 +433,9 @@ async def _delete_source(item: BatchSliceItem):
                 await delete_file(settings.MINIO_BUCKET_RAW, episode.source_file_key)
                 episode.source_file_key = None
                 await session.commit()
+            else:
+                # 无关联源文件：事务内只读，显式结束事务
+                await session.rollback()
 
 
 async def run_batch(batch_id: str):
@@ -446,6 +469,8 @@ async def run_batch(batch_id: str):
         async with async_session_factory() as session:
             result = await session.execute(select(User).where(User.id == batch.created_by))
             operator = result.scalar_one_or_none()
+            # 事务内只读：显式结束事务
+            await session.rollback()
     if operator is None:
         await _update_batch(batch_id, status="failed", error_message="无法确定批次操作人")
         return
@@ -456,6 +481,8 @@ async def run_batch(batch_id: str):
         async with async_session_factory() as session:
             result = await session.execute(select(Project).where(Project.id == batch.project_id))
             project = result.scalar_one_or_none()
+            # 事务内只读：显式结束事务
+            await session.rollback()
     if project is None and batch.created_by:
         project = await _find_or_create_project(batch.name or "批量切片", str(batch.created_by))
         await _update_batch(batch_id, project_id=project.id)

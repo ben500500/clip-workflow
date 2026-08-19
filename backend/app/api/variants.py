@@ -56,6 +56,8 @@ async def _get_thresholds() -> dict:
             select(SystemConfig).where(SystemConfig.key == "variant_thresholds")
         )
         cfg = result.scalar_one_or_none()
+        # 事务内只读：显式结束事务，避免把 idle in transaction 的连接归还连接池
+        await session.rollback()
     if cfg and isinstance(cfg.value, dict):
         merged = dict(DEFAULT_THRESHOLDS)
         merged.update(cfg.value)
@@ -98,6 +100,8 @@ async def _list_variant_groups() -> list[dict]:
                     "created_at": v.created_at.isoformat() if v.created_at else "",
                 } for v in variants],
             }
+        # 事务内只读：显式结束事务
+        await session.rollback()
     return list(groups.values())
 
 
@@ -127,6 +131,8 @@ async def variant_detail(
         fps = (await session.execute(
             _sel(VideoFingerprint).where(VideoFingerprint.variant_id == v.id)
         )).scalars().all()
+        # 事务内只读：显式结束事务
+        await session.rollback()
     return {
         "id": str(v.id),
         "variant_group_id": str(v.variant_group_id) if v.variant_group_id else None,
@@ -164,6 +170,8 @@ async def generate_variants(
         )).scalar_one_or_none()
         if out is None:
             raise HTTPException(status_code=404, detail="output not found")
+        # 事务内只读：显式结束事务
+        await session.rollback()
     task = generate_variants_task.delay(
         data.output_id, count=data.count,
         base_dedupe=data.dedupe_config, thresholds=data.thresholds,

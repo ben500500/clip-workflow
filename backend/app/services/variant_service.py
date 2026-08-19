@@ -148,7 +148,10 @@ async def _load_output(output_id) -> Optional[SliceOutput]:
         result = await session.execute(
             select(SliceOutput).where(SliceOutput.id == uuid.UUID(str(output_id)))
         )
-        return result.scalar_one_or_none()
+        output = result.scalar_one_or_none()
+        # 事务内只读：显式结束事务
+        await session.rollback()
+        return output
 
 
 async def _load_output_video_path(output: SliceOutput) -> Optional[str]:
@@ -227,6 +230,8 @@ async def _load_group_fingerprints(variant_group_id) -> list[dict]:
             .where(VideoFingerprint.algorithm.in_(["phash_v1", "audio_v2", "seq_v1"]))
         )
         rows = result.scalars().all()
+        # 事务内只读：显式结束事务
+        await session.rollback()
     return [{
         "algorithm": r.algorithm,
         "hash_value": r.hash_value,
@@ -255,6 +260,8 @@ async def _check_against_history(full_fp: dict, variant_group_id=None, exclude_v
             )
         result = await session.execute(query)
         rows = result.scalars().all()
+        # 事务内只读：显式结束事务
+        await session.rollback()
     if not rows:
         return {"phash_distance": 1.0, "audio_distance": 1.0, "seg_distance": 1.0,
                 "combined_distance": 1.0, "collision": False, "collision_reason": ""}
@@ -518,8 +525,11 @@ async def verify_variant_fingerprint(variant_id: str, thresholds: Optional[dict]
         )
         variant = result.scalar_one_or_none()
         if variant is None:
+            await session.rollback()
             return {"safe": False, "reason": "variant not found"}
         vgid = variant.variant_group_id
+        # 事务内只读：显式结束事务
+        await session.rollback()
     if not vgid:
         return {"safe": True, "distances": {"combined_distance": 1.0}, "reason": "standalone variant"}
     group_fps = await _load_group_fingerprints(vgid)
@@ -529,6 +539,8 @@ async def verify_variant_fingerprint(variant_id: str, thresholds: Optional[dict]
             select(VideoFingerprint).where(VideoFingerprint.variant_id == uuid.UUID(str(variant_id)))
         )
         rows = result.scalars().all()
+        # 事务内只读：显式结束事务
+        await session.rollback()
     fp_map = {r.algorithm: {"algorithm": r.algorithm, "hash_value": r.hash_value, "vector": r.vector}
               for r in rows}
     # 与同组其它变体比对
@@ -571,6 +583,7 @@ async def guard_account_variant_unique(account_id, output_id=None, variant_group
             select(ClipVariant).where(ClipVariant.account_id == acc)
         )).scalar_one_or_none()
         if occupied is None:
+            await session.rollback()
             return {"allowed": True, "reason": "", "occupied_variant_id": None}
 
         # 确定目标变体组：优先用传入的 group，其次由 output_id 推导
@@ -589,15 +602,18 @@ async def guard_account_variant_unique(account_id, output_id=None, variant_group
         if target_group and occupied.variant_group_id:
             if str(occupied.variant_group_id) == str(target_group):
                 # 同素材组：该账号发布自己的变体（一账号一变体），正常放行
+                await session.rollback()
                 return {
                     "allowed": True,
                     "reason": "",
                     "occupied_variant_id": str(occupied.id),
                 }
             # 异组：账号已绑定其它素材的变体，不能再来发本素材（避免基准裸发）
+            await session.rollback()
             return {
                 "allowed": False,
                 "reason": f"该账号已绑定其它素材的变体（{occupied.variant_index} 号），请先解绑或另选未绑定账号",
                 "occupied_variant_id": str(occupied.id),
             }
+        await session.rollback()
     return {"allowed": True, "reason": "", "occupied_variant_id": None}

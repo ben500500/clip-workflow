@@ -41,7 +41,10 @@ async def _load_shortdrama_prompt(prompt_id: str):
         result = await session.execute(
             select(ShortdramaPrompt).where(ShortdramaPrompt.id == pid)
         )
-        return result.scalar_one_or_none()
+        rec = result.scalar_one_or_none()
+        # 事务内只读：显式结束事务
+        await session.rollback()
+        return rec
 
 
 def _now_str() -> str:
@@ -80,6 +83,8 @@ async def _update_doubao_prompt(
         )
         record = result.scalar_one_or_none()
         if not record:
+            # 事务内已执行 SELECT：显式结束事务
+            await session.rollback()
             return False
         if status is not None:
             record.doubao_status = status
@@ -147,6 +152,8 @@ async def _sync_doubao_video(
             )
             record = result.scalar_one_or_none()
             if not record:
+                # 事务内已执行 SELECT：显式结束事务
+                await session.rollback()
                 return {"ok": False, "error": "提示词记录不存在"}
 
             safe_name = file_name or f"doubao_{_now_str()}.mp4"
@@ -158,6 +165,7 @@ async def _sync_doubao_video(
                 content_type="video/mp4",
             )
             if not uploaded:
+                await session.rollback()
                 return {"ok": False, "error": "上传豆包成片到 MinIO 失败"}
 
             # 清理旧成片
@@ -200,6 +208,8 @@ async def _load_doubao_config() -> dict:
             select(SystemConfig).where(SystemConfig.key == "shortdrama_doubao_config")
         )
         cfg = result.scalar_one_or_none()
+        # 事务内只读：显式结束事务
+        await session.rollback()
         return (cfg.value or {}) if cfg and isinstance(cfg.value, dict) else {}
 
 
@@ -486,6 +496,8 @@ async def _load_seedance_db_config() -> dict:
             select(SystemConfig).where(SystemConfig.key == "shortdrama_seedance_config")
         )
         cfg = result.scalar_one_or_none()
+        # 事务内只读：显式结束事务
+        await session.rollback()
         return (cfg.value or {}) if cfg and isinstance(cfg.value, dict) else {}
 
 
@@ -541,6 +553,8 @@ async def _sync_generated_video(
             )
             record = result.scalar_one_or_none()
             if not record:
+                # 事务内已执行 SELECT：显式结束事务
+                await session.rollback()
                 return {"ok": False, "error": "提示词记录不存在"}
 
             safe_name = file_name or f"{channel}_{_now_str()}.mp4"
@@ -552,6 +566,7 @@ async def _sync_generated_video(
                 content_type="video/mp4",
             )
             if not uploaded:
+                await session.rollback()
                 return {"ok": False, "error": f"上传成片到 MinIO 失败({channel})"}
 
             # 清理旧成片

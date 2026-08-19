@@ -313,3 +313,14 @@ CREATE INDEX IF NOT EXISTS idx_celery_tasks_name ON celery_tasks(name);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications(is_read);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
+
+-- =============================================================================
+-- P1 防御：空闲事务超时自动回滚（Issue #219）
+-- 根因：autoclip 某接口在事务内 SELECT 后未 commit/rollback 就把连接归还连接池，
+--       连接以 idle in transaction 悬挂并持有 autoclip_runs 表级 RowExclusiveLock，
+--       挡死 worker-selection 的 UPDATE，导致选点卡「排队中」。
+-- 该设置把悬挂事务最迟 60s 交由 PG 自动回滚，作为代码修复的防御层。
+-- ALTER SYSTEM + pg_reload_conf 无需重启 PG 即可生效（POSTGRES_USER 为超级用户）。
+-- =============================================================================
+ALTER SYSTEM SET idle_in_transaction_session_timeout = '60s';
+SELECT pg_reload_conf();

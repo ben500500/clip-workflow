@@ -360,6 +360,8 @@ async def sync_profiles_from_db() -> list:
                 "profile_dir": profile_dir,
                 "operator_id": str(prof.operator_id) if prof.operator_id else "",
             })
+        # 事务内只读：显式结束事务
+        await session.rollback()
     if profiles_out:
         r = _redis()
         try:
@@ -564,6 +566,8 @@ async def get_verification_status() -> dict:
             login_audit_count = (await session.execute(
                 select(func.count(LoginAudit.id))
             )).scalar_one()
+            # 事务内只读：显式结束事务
+            await session.rollback()
     except Exception:
         pass
 

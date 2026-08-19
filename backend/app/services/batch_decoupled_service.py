@@ -58,7 +58,10 @@ async def _get_batch(batch_id: str):
         result = await session.execute(
             select(BatchSlice).where(BatchSlice.id == uuid.UUID(batch_id))
         )
-        return result.scalar_one_or_none()
+        batch = result.scalar_one_or_none()
+        # 事务内只读：显式结束事务
+        await session.rollback()
+        return batch
 
 
 async def _load_items(batch_id: str) -> list:
@@ -68,7 +71,10 @@ async def _load_items(batch_id: str) -> list:
             .where(BatchSliceItem.batch_id == uuid.UUID(batch_id))
             .order_by(BatchSliceItem.seq.asc())
         )
-        return result.scalars().all()
+        items = result.scalars().all()
+        # 事务内只读：显式结束事务
+        await session.rollback()
+        return items
 
 
 async def _load_item(item_id: str) -> BatchSliceItem:
@@ -76,7 +82,10 @@ async def _load_item(item_id: str) -> BatchSliceItem:
         result = await session.execute(
             select(BatchSliceItem).where(BatchSliceItem.id == uuid.UUID(str(item_id)))
         )
-        return result.scalar_one_or_none()
+        item = result.scalar_one_or_none()
+        # 事务内只读：显式结束事务
+        await session.rollback()
+        return item
 
 
 async def _update_item(item_id, **fields):
@@ -101,7 +110,10 @@ async def _get_operator(batch: BatchSlice):
         return None
     async with async_session_factory() as session:
         result = await session.execute(select(User).where(User.id == batch.created_by))
-        return result.scalar_one_or_none()
+        user = result.scalar_one_or_none()
+        # 事务内只读：显式结束事务
+        await session.rollback()
+        return user
 
 
 async def _resolve_project(batch: BatchSlice):
@@ -114,6 +126,8 @@ async def _resolve_project(batch: BatchSlice):
             )
             proj = result.scalar_one_or_none()
             if proj:
+                # 事务内只读：显式结束事务
+                await session.rollback()
                 return proj
     # 否则按剧名查找/创建
     project = await serial._find_or_create_project(
@@ -265,6 +279,8 @@ async def dispatch_ready_slices():
             .limit(100)
         )
         items = result.scalars().all()
+        # 事务内只读：显式结束事务
+        await session.rollback()
 
     for item in items:
         batch = await _get_batch(str(item.batch_id))
@@ -351,6 +367,8 @@ async def finalize_slices():
             select(BatchSliceItem).where(BatchSliceItem.phase == PHASE_SLICING)
         )
         items = result.scalars().all()
+        # 事务内只读：显式结束事务
+        await session.rollback()
 
     for item in items:
         if not item.slice_task_id:
@@ -366,6 +384,8 @@ async def finalize_slices():
                     select(SliceTask).where(SliceTask.id == item.slice_task_id)
                 )
             ).scalar_one_or_none()
+            # 事务内只读：显式结束事务
+            await session.rollback()
 
         # 任务尚未到终态（running/pending/未生成）：本轮跳过，幂等等待下一 beat
         if task is None or task.status in (None, "pending", "running", "started"):
@@ -419,6 +439,8 @@ async def aggregate_batches():
             select(BatchSlice).where(BatchSlice.status == "running")
         )
         batches = result.scalars().all()
+        # 事务内只读：显式结束事务
+        await session.rollback()
 
     for batch in batches:
         async with async_session_factory() as session:
@@ -453,6 +475,8 @@ async def aggregate_batches():
                 )
             )
             output_count = output_res.scalar() or 0
+            # 事务内只读：显式结束事务
+            await session.rollback()
 
         # 回填批次汇总
         fields = {
