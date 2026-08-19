@@ -342,14 +342,20 @@ services:
     # 发布/豆包生成（浏览器 CDP）—— 独占 publish 队列，并发 1
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "publish", "--loglevel=info", "--concurrency=1"]
 
+  worker-selection:
+    <<: *celery-worker-base
+    container_name: clip-worker-selection
+    # AI 选点独立 worker：独占 selection 队列（autoclip_task + batch_selection_consumer），
+    # 与切片/检测/去水印（video_processing）分属独立容器，长切片不再阻塞选点。并发 2。
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "selection", "--loglevel=info", "--concurrency=2"]
+
   worker-fast:
     <<: *celery-worker-base
     container_name: clip-worker-fast
     # 指标/默认任务（轻量）—— 高并发 4，不再被视频任务饿死
     # 视频号导入下载（wechat_dl，HTTP 拉流轻量）并入本 worker；剥离形态 B 可单独拉起 wechat_dl worker
-    # 解耦模式选点消费者（batch_selection_consumer）独立 selection 队列，与本 worker 同进程消费，
-    # 与串行批处理（default）隔离，避免长轮询选点抢占 default。
-    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "metrics,default,celery,wechat_dl,selection", "--loglevel=info", "--concurrency=4"]
+    # 选点已独立到 worker-selection 独占消费 selection 队列，此处不再订阅，避免重复消费。
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "metrics,default,celery,wechat_dl", "--loglevel=info", "--concurrency=4"]
 
   beat:
     image: clip-backend:latest

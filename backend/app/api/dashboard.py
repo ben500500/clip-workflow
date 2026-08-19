@@ -251,25 +251,6 @@ async def get_video_ranking(
     return await dashboard_service.get_video_ranking(db, aid, sort_by=sort_by, limit=limit)
 
 
-@router.get("/dashboard/videos/{video_id}")
-async def get_video_detail(
-    video_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Get video metric detail."""
-    try:
-        vid = uuid.UUID(video_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid video ID format")
-
-    result = await db.execute(select(VideoMetric).where(VideoMetric.id == vid))
-    video = result.scalar_one_or_none()
-    if not video:
-        raise HTTPException(status_code=404, detail="Video metric not found")
-
-    return _serialize_video_metric(video)
-
-
 @router.put("/dashboard/videos/{video_id}/tags")
 async def update_video_tags(
     video_id: str,

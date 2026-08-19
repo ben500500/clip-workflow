@@ -49,7 +49,7 @@ celery_app.conf.update(
         "default": {"exchange": "default"},
     },
     task_routes={
-        "app.celery.tasks.autoclip_task": {"queue": "video_processing"},
+        "app.celery.tasks.autoclip_task": {"queue": "selection"},
         "app.celery.tasks.detect_task": {"queue": "video_processing"},
         "app.celery.tasks.slice_task": {"queue": "video_processing"},
         "app.celery.tasks.task_publish_video": {"queue": "publish"},
@@ -65,8 +65,6 @@ celery_app.conf.update(
         "app.celery.tasks.seedance_generate_task": {"queue": "publish"},
         # 视频号素材导入下载（wechat_download）：独立 wechat_dl 队列（可剥离形态 B 单独拉起）
         "wechat_dl.download": {"queue": "wechat_dl"},
-        # 解耦模式选点消费者（重计算，独立 selection 队列，防与 default 队列互相饥饿）
-        "app.celery.tasks.batch_selection_consumer": {"queue": "selection"},
     },
     beat_schedule={
         "collect-metrics-daily": {

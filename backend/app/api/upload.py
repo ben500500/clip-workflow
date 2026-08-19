@@ -230,22 +230,6 @@ async def upload_chunk(
     )
 
 
-@router.get("/upload/{upload_id}/progress", response_model=UploadProgressResponse)
-async def get_upload_progress_endpoint(upload_id: str):
-    """Get the current upload progress."""
-    progress = get_upload_progress(upload_id)
-    if not progress:
-        raise HTTPException(status_code=404, detail="Upload session not found")
-    return UploadProgressResponse(
-        id=progress["id"],
-        file_name=progress["file_name"],
-        file_size=progress["file_size"],
-        offset=progress["offset"],
-        completed=progress["completed"],
-        progress_pct=progress["progress_pct"],
-    )
-
-
 @router.post("/upload/complete")
 async def complete_upload(
     data: UploadCompleteRequest,
