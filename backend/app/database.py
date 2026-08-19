@@ -69,15 +69,16 @@ async def _enforce_idle_in_transaction_timeout():
     连接归还连接池，连接以 idle in transaction 悬挂并持有 autoclip_runs 表级
     RowExclusiveLock，挡死 worker-selection 的 UPDATE。把该 GUC 固化到服务端，
     悬挂事务最迟 60s 被 PG 自动回滚，作为代码修复的防御层。
-    目录级 ALTER ROLE 基于 pg_authid（角色级设置，覆盖该角色所有连接/所有库），
-    不写 postgresql.auto.conf，不受 163 生产库缺 include 缺陷影响，容器重建后保留；
-    新连接即时生效，无需 pg_reload_conf()。
+    采用目录级 ALTER ROLE（基于 pg_authid / pg_db_role_setting 系统目录）：
+    - 不受 postgresql.conf 缺少 include 'postgresql.auto.conf' 的影响（Issue #163）；
+    - 必定生效、容器重建后保留、新连接即时继承，无需 reload。
     """
     try:
         async with engine.begin() as conn:
             await conn.execute(
                 sqlalchemy.text(
-                    "ALTER ROLE clipworkflow SET idle_in_transaction_session_timeout = '60s'"
+                    "ALTER ROLE clipworkflow SET "
+                    "idle_in_transaction_session_timeout = '60s'"
                 )
             )
     except Exception as e:
