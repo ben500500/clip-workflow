@@ -43,10 +43,11 @@ class PreviewClient:
         self._playwright = None
 
     async def _connect(self, cdp_url: str, token: Optional[str] = None):
-        from playwright.async_api import async_playwright
+        # C3：统一走 playwright_manager 进程级单例（get_shared 永久 pin，进程内共享一个驱动）
+        from app.services.playwright_manager import get_playwright_manager
 
         if self._playwright is None:
-            self._playwright = await async_playwright().start()
+            self._playwright = await get_playwright_manager().get_shared()
         headers = {"Authorization": f"Bearer {token}"} if token else None
         browser = await self._playwright.chromium.connect_over_cdp(
             cdp_url, headers=headers
@@ -156,9 +157,12 @@ class PreviewClient:
             raise PreviewUnavailableError(f"preview parse failed: {e}") from e
 
     async def close(self) -> None:
+        # C3：close 实际未被外部调用（get_preview_client 为进程级单例、驱动经
+        # playwright_manager 管理）；此处改为显式回收共享驱动，避免直接 stop 残留句柄。
         if self._playwright is not None:
             try:
-                await self._playwright.stop()
+                from app.services.playwright_manager import get_playwright_manager
+                await get_playwright_manager().stop_now()
             except Exception:
                 pass
             self._playwright = None

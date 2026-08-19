@@ -76,20 +76,22 @@ _PENDING_TABS_LOCK = threading.Lock()
 
 # 进程级共享 Playwright 实例：backend worker 常驻，所有 CDP 连接复用同一个
 # driver，避免缓存 tab 的 browser 代理因 driver 被 GC 而失效。
-_shared_playwright = None
-_shared_playwright_lock = threading.Lock()
+# C3：收敛到 playwright_manager 进程级单例（引用计数 + 空闲回收），此处以
+# get_shared() 永久 pin 方式持有，保证跨任务复用待确认 tab 的 browser 代理安全。
+_shared_pw = None
+_shared_pw_lock = threading.Lock()
 
 
 async def _get_playwright():
-    """获取进程级共享 Playwright 实例（懒启动，worker 进程内复用）。"""
-    global _shared_playwright
-    if _shared_playwright is None:
+    """获取进程级共享 Playwright 实例（懒启动，worker 进程内常驻）。"""
+    global _shared_pw
+    if _shared_pw is None:
         # Celery worker 默认单进程；用锁保证多线程/多 worker 场景下只初始化一次
-        with _shared_playwright_lock:
-            if _shared_playwright is None:
-                from playwright.async_api import async_playwright
-                _shared_playwright = await async_playwright().start()
-    return _shared_playwright
+        with _shared_pw_lock:
+            if _shared_pw is None:
+                from app.services.playwright_manager import get_playwright_manager
+                _shared_pw = await get_playwright_manager().get_shared()
+    return _shared_pw
 
 
 def _cache_pending_tab(task_id: str, browser, page) -> None:

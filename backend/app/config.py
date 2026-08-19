@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     # Chrome CDP 地址（容器内发布时指向 rpa_worker）
     CHROME_DEBUG_HOST: str = "localhost"
 
+    # Playwright 统一管理器空闲回收超时（秒）：引用归零且无长驻句柄后，
+    # 超过该时长无新使用才 stop 进程级驱动（<=0 表示禁用空闲回收，保持常驻）
+    PLAYWRIGHT_IDLE_TIMEOUT: int = 300
+
     # 视频处理引擎根目录
     ENGINES_DIR: str = "engines"
 

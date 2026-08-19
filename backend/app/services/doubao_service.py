@@ -70,9 +70,11 @@ class DoubaoGenerator:
         self._pw = None
 
     async def _connect(self):
-        from playwright.async_api import async_playwright
+        # C3：统一走 playwright_manager 进程级单例（引用计数 + 空闲回收），
+        # 不再每次自建 async_playwright() 驱动（避免驱动/浏览器句柄堆积泄漏）。
+        from app.services.playwright_manager import get_playwright_manager
 
-        self._pw = await async_playwright().start()
+        self._pw = await get_playwright_manager().get_playwright()
         self.browser = await self._pw.chromium.connect_over_cdp(
             f"http://{self.chrome_host}:{self.chrome_port}"
         )
@@ -83,16 +85,27 @@ class DoubaoGenerator:
         self.page = await self.context.new_page()
 
     async def _close(self):
+        # C3：关闭本次新建的 page / CDP 浏览器句柄，并归还共享驱动引用；
+        # 不再 stop 共享驱动（生命周期由 playwright_manager 空闲回收统一管理）。
         try:
             if self.page:
                 await self.page.close()
         except Exception:
             pass
         try:
-            if self._pw:
-                await self._pw.stop()
+            if self.browser:
+                await self.browser.close()
         except Exception:
             pass
+        try:
+            if self._pw is not None:
+                from app.services.playwright_manager import get_playwright_manager
+                get_playwright_manager().release()
+        except Exception:
+            pass
+        self.browser = None
+        self.page = None
+        self._pw = None
 
     # ──────────────────────────────────────────────
     # 工具方法

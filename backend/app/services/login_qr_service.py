@@ -98,7 +98,7 @@ async def capture_login_qr(account_id, port: int, profile_dir: Optional[str] = N
     """
     host = host or "127.0.0.1"
     try:
-        from playwright.async_api import async_playwright
+        from app.services.playwright_manager import get_playwright_manager
     except Exception as e:  # pragma: no cover
         logger.warning("playwright 未安装，无法抽 QR：%s", e)
         return None
@@ -106,7 +106,7 @@ async def capture_login_qr(account_id, port: int, profile_dir: Optional[str] = N
     # 创作中心登录页（视频号创作者平台）
     CREATOR_LOGIN = "https://channels.weixin.qq.com/"
     try:
-        async with async_playwright() as p:
+        async with get_playwright_manager().acquire() as p:
             browser = await p.chromium.connect_over_cdp(f"http://{host}:{port}")
             ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
             # P0-2 修复：优先复用已存在的 channels 登录页标签页，避免每次新建堆叠；
@@ -224,8 +224,8 @@ async def check_login_status_via_cdp(account_id, port: int, host: Optional[str] 
     """
     host = host or "127.0.0.1"
     try:
-        from playwright.async_api import async_playwright
-        async with async_playwright() as p:
+        from app.services.playwright_manager import get_playwright_manager
+        async with get_playwright_manager().acquire() as p:
             browser = await p.chromium.connect_over_cdp(f"http://{host}:{port}")
             ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
             # 复用已有 channels 页面，避免新建+close 干扰共享浏览器会话
@@ -259,8 +259,8 @@ async def silent_keepalive(account_id, port: int, host: Optional[str] = None) ->
     """每日 ≥1 次静默访问续活（主题1 ⑤）：访问创作中心，维持登录态不被后台回收。"""
     host = host or "127.0.0.1"
     try:
-        from playwright.async_api import async_playwright
-        async with async_playwright() as p:
+        from app.services.playwright_manager import get_playwright_manager
+        async with get_playwright_manager().acquire() as p:
             browser = await p.chromium.connect_over_cdp(f"http://{host}:{port}")
             ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
             # 复用已有 channels 页面，避免新建+close 干扰共享浏览器会话
