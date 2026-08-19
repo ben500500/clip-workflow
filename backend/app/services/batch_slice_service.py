@@ -101,7 +101,14 @@ async def _set_phase(item, phase: str, status: str = None, progress: float = Non
 
 
 async def _find_or_create_project(name: str, created_by: str) -> Project:
-    """按剧名查找项目；不存在则创建（归属创建人，用于数据隔离）。"""
+    """按剧名查找项目；不存在则创建（归属创建人，用于数据隔离）。
+
+    并发安全：Project.name 无唯一约束，且「先查后建」非原子，两个同时到达的批次
+    用同名剧名可能同时创建出重复项目。这里在提交后再复核一次：若刚创建的
+    project 不是最早的（存在更早的同名项目，即并发下别人先建），则删除本次
+    刚创建的空项目（此时还没有 episode，删除安全）并复用已存在的项目，
+    保证同名剧名全局只落一个 Project。
+    """
     async with async_session_factory() as session:
         result = await session.execute(
             select(Project).where(Project.name == name).order_by(Project.created_at.asc())
@@ -118,7 +125,26 @@ async def _find_or_create_project(name: str, created_by: str) -> Project:
         session.add(project)
         await session.commit()
         await session.refresh(project)
-        return project
+
+    # 并发去重：提交后复核，若存在更早的同名项目则复用并回滚本次新建
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Project).where(Project.name == name).order_by(Project.created_at.asc())
+        )
+        earliest = result.scalars().first()
+    if earliest is not None and earliest.id != project.id:
+        logger.warning(
+            "并发去重：剧名 %s 已存在更早项目 %s，回滚本次新建 %s 并复用",
+            name, earliest.id, project.id,
+        )
+        # 删除本次刚创建的空项目（尚未挂 episode，删除安全）
+        async with async_session_factory() as session:
+            dup = await session.get(Project, project.id)
+            if dup is not None and dup.id != earliest.id:
+                await session.delete(dup)
+                await session.commit()
+        return earliest
+    return project
 
 
 async def _upload_and_create_episode(item: BatchSliceItem, project_id) -> str:
@@ -264,18 +290,20 @@ async def _wait_detect(episode_id: str, task_id: Optional[str] = None, timeout: 
 
 
 async def _accept_all_candidates(episode_id: str) -> int:
-    """自动审核：将该剧集所有候选片段置为 accepted。返回数量。"""
+    """自动审核：将该剧集所有候选片段置为 accepted。返回本次新增 accepted 的数量。"""
     eid = uuid.UUID(episode_id)
     async with async_session_factory() as session:
         result = await session.execute(
             select(ClipCandidate).where(ClipCandidate.episode_id == eid)
         )
         clips = result.scalars().all()
+        accepted = 0
         for clip in clips:
             if clip.status == "pending":
                 clip.status = "accepted"
+                accepted += 1
         await session.commit()
-        return len(clips)
+        return accepted
 
 
 async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slice_config: dict) -> str:
@@ -284,20 +312,31 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
 
     cfg = slice_config or {}
     # 仅透传 SliceRunRequest 已知字段，避免前端预设里的额外键导致 pydantic 报错
+    # 注意：白名单需覆盖 SliceRunRequest 全部可选字段，否则前端已配置的项会被静默丢弃。
     known_fields = {
         "mode", "dedupe_config", "engine", "auto_accept_all",
         "variant_count",
+        # 三期 GPU 加速编码（白名单原缺失：前端选了编码器会被静默丢弃，补上）
+        "encoder",
+        # 快速整片转换 / 选点回退策略
+        "no_cut", "allow_fallback_whole_video", "auto_autoclip_if_empty", "autoclip_config",
+        # 视频封面
+        "cover_image_key",
         "watermark_enabled", "watermark_text", "watermark_font_size",
         "watermark_opacity", "watermark_position", "watermark_style", "badges", "badge_default_width",
         "vert2horiz_enabled", "vert2horiz_mode", "vert2horiz_ratio",
         "vert2horiz_output_size", "vert2horiz_detect_interval",
         "vert2horiz_smooth_window", "vert2horiz_min_step", "vert2horiz_face_margin",
         "subtitle_enabled", "subtitle_font_ratio", "subtitle_spacing", "subtitle_bold", "subtitle_style",
-        "subtitle_color", "subtitle_border_color", "text_overlays",
-        "subtitle_mask_enabled", "subtitle_mask_style", "subtitle_mask_temporal",
-        "subtitle_mask_spatial",
+        "subtitle_color", "subtitle_border_color", "subtitle_file_key", "text_overlays",
+        "subtitle_mask_enabled", "subtitle_mask_style", "subtitle_mask_preset",
+        "subtitle_mask_temporal", "subtitle_mask_spatial",
         "subtitle_mask_width_ratio", "subtitle_mask_height_ratio", "subtitle_mask_bottom_ratio",
         "subtitle_mask_srt_offset", "subtitle_align_mask",
+        "watermark_mask_enabled", "watermark_mask_style",
+        "watermark_mask_width_ratio", "watermark_mask_height_ratio", "watermark_mask_bottom_ratio",
+        "watermark_mask_top_ratio", "watermark_mask_x", "watermark_mask_y",
+        "watermark_mask_width", "watermark_mask_height",
         "output_id", "cut_start", "cut_end",
         # 选点结尾优化：boundary_refine="silence" 时把片段边界吸附到自然停顿处
         "boundary_refine",

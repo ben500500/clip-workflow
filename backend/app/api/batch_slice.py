@@ -23,6 +23,7 @@ from app.models.models import (
     BatchSliceItem,
     SliceTask,
     SliceOutput,
+    user_can_access_all_materials,
 )
 from app.services.data_scope import check_project_access_by_id
 from app.services.minio_service import get_presigned_url
@@ -247,8 +248,17 @@ async def list_batch_slices(
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """批量切片批次历史列表。"""
+    """批量切片批次历史列表。
+
+    数据隔离：与项目/剧集规则对齐——
+    - admin / material / publisher（data_scope=all）可见全部批次；
+    - 运营专员（operator，默认 own）仅可见自己创建的批次（created_by == 当前用户），
+      避免在批次列表中泄露其它运营者的批次（详见 _load_batch_owned 的单条隔离）。
+    """
     query = select(BatchSlice).order_by(BatchSlice.created_at.desc())
+    # 数据隔离：非 all 范围用户仅见自己创建的批次
+    if not user_can_access_all_materials(current_user):
+        query = query.where(BatchSlice.created_by == current_user.id)
     result = await db.execute(query.offset((page - 1) * page_size).limit(page_size))
     batches = result.scalars().all()
     return [_serialize_batch(b) for b in batches]
@@ -324,9 +334,12 @@ async def get_batch_outputs(
                     "presigned_url": url,
                 })
         # 若批次项直接关联了多个切片任务（历史遗留），也可兜底扫描该 episode
+        # （仅取真正的切片任务，排除 mode=detect_* 的区间检测记录，避免污染输出列表）
         if not outputs and item.episode_id:
             res = await db.execute(
-                select(SliceTask).where(SliceTask.episode_id == item.episode_id)
+                select(SliceTask)
+                .where(SliceTask.episode_id == item.episode_id)
+                .where(~SliceTask.mode.like("detect_%"))
             )
             tasks = res.scalars().all()
             for t in tasks:
@@ -354,7 +367,9 @@ async def get_batch_outputs(
                 episode_id=str(item.episode_id) if item.episode_id else None,
                 slice_task_id=str(item.slice_task_id) if item.slice_task_id else None,
                 item_status=item.status,
-                output=outputs[0] if len(outputs) == 1 else ({"outputs": outputs, "count": len(outputs)} if outputs else None),
+                # 统一为恒定结构 {"outputs": [...], "count": n}，消费方无需再兼容
+                # 单成品对象 vs 对象数组两种形状。
+                output={"outputs": outputs, "count": len(outputs)} if outputs else None,
             )
         )
 
@@ -367,8 +382,15 @@ async def retry_batch_slice(
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """重试批次中失败的项（成功项跳过）。"""
+    """重试批次中失败的项（成功项跳过）。
+
+    同时重置失败项的 phase，确保解耦模式（decoupled）下 run_batch_decoupled
+    不会因 phase 停留在 autoclip/review/interval 等而跳过重跑项
+    （解耦模式按 phase 判断是否已在流程中，失败项需回到待上传/待选点起点）。
+    """
     batch = await _load_batch_owned(db, batch_id, current_user)
+    if batch.status in ("running", "pending"):
+        raise HTTPException(status_code=400, detail="批次仍在处理中，请稍后再重试")
     # 重置失败项状态
     result = await db.execute(
         select(BatchSliceItem).where(
@@ -379,7 +401,10 @@ async def retry_batch_slice(
     failed_items = result.scalars().all()
     for it in failed_items:
         it.status = "pending"
+        it.phase = None          # 回到初始态，解耦模式才能重新投递选点
         it.error_message = None
+        it.progress = 0.0
+    # 单次提交
     await db.commit()
     batch.status = "pending"
     await db.commit()
