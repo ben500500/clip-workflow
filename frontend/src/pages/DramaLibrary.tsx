@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   Card, Form, Input, Button, Select, Table, Tag, Modal, message, Space, Typography,
   Popconfirm, Drawer, Descriptions, Upload, Image as AntImage, Empty, Tooltip, Spin,
-  Radio, Checkbox, Divider, Alert, Steps,
+  Radio, Checkbox, Divider, Alert, Steps, Progress,
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined, ImportOutlined,
@@ -19,6 +19,8 @@ import {
   getDramaSliceStatus, linkDramaEpisodes,
   DramaSliceStatus,
 } from '../api/dramas';
+import { lanSourceApi } from '../api/lanSource';
+import type { LanSourceEpisodeItem } from '../api/lanSource';
 import { publishApi } from '../api/publish';
 import type { VideoAccount } from '../types';
 
@@ -116,6 +118,19 @@ const DramaLibrary: React.FC = () => {
   const [checkUpdate, setCheckUpdate] = useState<Set<number>>(new Set());
   const [importing, setImporting] = useState(false);
 
+  // 局域网获取剧集（lan_source）面板
+  const [lanEnabled, setLanEnabled] = useState(false);
+  const [lanDramas, setLanDramas] = useState<{ name: string; total: number | null }[]>([]);
+  const [lanPreview, setLanPreview] = useState<LanSourceEpisodeItem[] | null>(null);
+  const [lanPreviewLoading, setLanPreviewLoading] = useState(false);
+  const [lanImporting, setLanImporting] = useState(false);
+  const [lanTask, setLanTask] = useState<{
+    id: string; drama_name: string; status: string; progress: number; message: string | null;
+    imported_count: number; failed_count: number; total_episodes: number | null;
+  } | null>(null);
+  const [lanSelectName, setLanSelectName] = useState('');
+  const [lanManualName, setLanManualName] = useState('');
+
   const fetchList = useCallback(async (kw?: string, f?: string, r?: string, s?: string) => {
     setLoading(true);
     try {
@@ -207,6 +222,7 @@ const DramaLibrary: React.FC = () => {
     setDetailOpen(true);
     setDetailLoading(true);
     setSliceStatus(null);
+    loadLanConfig();
     try {
       const res = await getDrama(d.id);
       setDetail(res);
@@ -228,6 +244,104 @@ const DramaLibrary: React.FC = () => {
       message.error((e as Error).message || '加载切片产线状态失败');
     } finally {
       setSliceLoading(false);
+    }
+  };
+
+  // ── 局域网获取剧集（lan_source）面板 ──
+  const loadLanConfig = async () => {
+    try {
+      const cfg = await lanSourceApi.getConfig();
+      setLanEnabled(cfg.enabled);
+    } catch {
+      setLanEnabled(false);
+    }
+  };
+
+  // 加载局域网可导入的剧目清单
+  const loadLanDramas = async () => {
+    setLanPreview(null);
+    try {
+      const res = await lanSourceApi.getDramas();
+      setLanDramas(res.items.map((d) => ({ name: d.name, total: d.total })));
+      if (!res.items.length) message.info('管理平台未返回剧目清单，可手动输入剧目名预览');
+    } catch (e) {
+      message.error((e as Error).message || '获取局域网剧目清单失败');
+      setLanDramas([]);
+    }
+  };
+
+  // 预览某剧目直链（发现但不入库）
+  const previewLanDrama = async (name: string) => {
+    const trimmed = (name || '').trim();
+    if (!trimmed) return;
+    setLanPreviewLoading(true);
+    setLanPreview(null);
+    try {
+      const res = await lanSourceApi.preview(trimmed);
+      setLanPreview(res.items);
+      if (!res.items.length) message.warning(`《${trimmed}》未返回剧集直链，请确认局域网源地址或剧目名`);
+    } catch (e) {
+      message.error((e as Error).message || `预览《${trimmed}》剧集失败`);
+    } finally {
+      setLanPreviewLoading(false);
+    }
+  };
+
+  // 提交导入任务
+  const submitLanImport = async (name: string) => {
+    const trimmed = (name || '').trim();
+    if (!trimmed) return;
+    setLanImporting(true);
+    try {
+      const res = await lanSourceApi.import({ drama_name: trimmed });
+      message.success(`已创建《${trimmed}》导入任务，开始从局域网拉流`);
+      setLanTask({
+        id: res.task_id, drama_name: res.drama_name, status: res.status, progress: 0,
+        message: res.message, imported_count: 0, failed_count: 0, total_episodes: null,
+      });
+      pollLanTask(res.task_id);
+    } catch (e) {
+      message.error((e as Error).message || '创建导入任务失败');
+    } finally {
+      setLanImporting(false);
+    }
+  };
+
+  // 轮询导入任务进度
+  const pollLanTask = async (taskId: string) => {
+    let finished = false;
+    for (let i = 0; i < 600 && !finished; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        const t = await lanSourceApi.getTask(taskId);
+        setLanTask({
+          id: t.id, drama_name: t.drama_name, status: t.status, progress: t.progress,
+          message: t.message, imported_count: t.imported_count, failed_count: t.failed_count,
+          total_episodes: t.total_episodes,
+        });
+        if (t.status === 'completed' || t.status === 'failed') {
+          finished = true;
+          if (detailId) {
+            // 导入完成后刷新剧目剧集与切片产线状态
+            try { setDetail(await getDrama(detailId)); } catch { /* ignore */ }
+            loadSliceStatus(detailId);
+            loadLanDramas();
+          }
+        }
+      } catch {
+        // 单次查询失败继续轮询
+      }
+    }
+  };
+
+  // 已导入剧集一键投入切片（默认第一集 fast）
+  const lanToSlice = async (taskId: string) => {
+    try {
+      const res = await lanSourceApi.toSlice(taskId, { mode: 'fast' });
+      message.success('已创建切片任务并投入切片队列');
+      if (detailId) loadSliceStatus(detailId);
+    } catch (e) {
+      message.error((e as Error).message || '一键入切片失败');
     }
   };
 
@@ -601,6 +715,83 @@ const DramaLibrary: React.FC = () => {
             />
             {detail.material_link && (
               <Alert type="info" showIcon message="素材链接" description={detail.material_link} />
+            )}
+
+            <Divider orientation="left">局域网获取剧集</Divider>
+            {!lanEnabled ? (
+              <Alert type="warning" showIcon message="局域网获取剧集功能未开启" description="请在 .env 设置 LAN_SOURCE_ENABLED=true（及 LAN_SOURCE_BASE_URL 指向局域网 cdn 源），重启后端后即可在此导入局域网剧集。" />
+            ) : (
+              <Space direction="vertical" style={{ width: '100%' }} size="small">
+                <Space wrap>
+                  <Button size="small" icon={<ReloadOutlined />} onClick={loadLanDramas}>加载局域网剧目</Button>
+                </Space>
+                <Space.Compact style={{ width: '100%' }}>
+                  <Select
+                    style={{ width: '45%' }}
+                    placeholder="选择局域网剧目"
+                    value={lanSelectName}
+                    onChange={setLanSelectName}
+                    showSearch
+                    optionFilterProp="label"
+                    options={lanDramas.map((d) => ({ value: d.name, label: `${d.name}${d.total ? `（${d.total}集）` : ''}` }))}
+                    onDropdownVisibleChange={(open) => { if (open && !lanDramas.length) loadLanDramas(); }}
+                  />
+                  <Input
+                    style={{ flex: 1 }}
+                    placeholder="或手动输入剧目名（用于预览直链）"
+                    value={lanManualName}
+                    onChange={(e) => setLanManualName(e.target.value)}
+                  />
+                  <Button
+                    type="primary"
+                    loading={lanPreviewLoading}
+                    onClick={() => previewLanDrama(lanSelectName || lanManualName)}
+                  >预览</Button>
+                  <Button
+                    type="primary"
+                    danger
+                    loading={lanImporting}
+                    onClick={() => submitLanImport(lanSelectName || lanManualName)}
+                  >导入到切片</Button>
+                </Space.Compact>
+                {lanPreview && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message={`《${lanSelectName || lanManualName}》发现 ${lanPreview.length} 集直链`}
+                    description={
+                      <Table
+                        rowKey={(r, i) => String(r.episode ?? i)}
+                        size="small"
+                        pagination={{ pageSize: 5, showSizeChanger: false }}
+                        dataSource={lanPreview}
+                        columns={[
+                          { title: '集', dataIndex: 'episode', width: 56, render: (v) => v ?? '-' },
+                          { title: '标题', dataIndex: 'title', ellipsis: true, render: (v) => v || '-' },
+                          { title: '大小', dataIndex: 'size', width: 90, render: (v) => (v ? `${Math.round(v / 1024 / 1024)}MB` : '-') },
+                        ]}
+                      />
+                    }
+                  />
+                )}
+                {lanTask && (
+                  <Card size="small" style={{ background: '#fafafa' }}>
+                    <Space direction="vertical" style={{ width: '100%' }} size="small">
+                      <Space wrap>
+                        <Text strong>《{lanTask.drama_name}》</Text>
+                        <Tag color={lanTask.status === 'completed' ? 'green' : lanTask.status === 'failed' ? 'red' : 'blue'}>{lanTask.status}</Tag>
+                        <Tag>成功 {lanTask.imported_count}</Tag>
+                        <Tag>失败 {lanTask.failed_count}</Tag>
+                        {lanTask.status === 'completed' && (
+                          <Button size="small" type="primary" onClick={() => lanToSlice(lanTask.id)}>一键投入切片</Button>
+                        )}
+                      </Space>
+                      <Progress percent={Math.round(lanTask.progress)} size="small" />
+                      <Text type="secondary">{lanTask.message}</Text>
+                    </Space>
+                  </Card>
+                )}
+              </Space>
             )}
 
             <Divider orientation="left">切片产线（剧集维度）</Divider>

@@ -18,6 +18,9 @@ from app.services.monitor_service import ensure_default_alert_rules
 # 视频号素材导入下载（wechat_download 独立包，立项决策④：并入 + 可剥离）
 from wechat_download import api as wechat_dl_api
 
+# 局域网获取剧集导入（lan_source 独立包，并入 + 可剥离）
+from lan_source import api as lan_source_api
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -186,13 +189,52 @@ async def websocket_wechat_dl(websocket: WebSocket, task_id: str):
         pass
 
 
+@app.websocket("/ws/lan-source/{task_id}")
+async def websocket_lan_source(websocket: WebSocket, task_id: str):
+    """局域网剧集导入进度实时回传（WebSocket，跨进程 Redis pub/sub）。
+
+    订阅 Redis 频道 `lan_source:progress`，按 task_id 过滤后转发给前端。
+    """
+    import asyncio
+    import json
+    import redis.asyncio as aioredis
+
+    from app.config import settings as _s
+    await websocket.accept()
+    try:
+        r = aioredis.from_url(_s.REDIS_URL, decode_responses=True)
+        pubsub = r.pubsub()
+        await pubsub.subscribe("lan_source:progress")
+        try:
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg and msg.get("type") == "message":
+                    try:
+                        data = json.loads(msg["data"])
+                    except Exception:
+                        continue
+                    if data.get("task_id") == task_id:
+                        await websocket.send_text(json.dumps(data))
+                try:
+                    await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
+                except (asyncio.TimeoutError, Exception):
+                    pass
+        finally:
+            await pubsub.unsubscribe("lan_source:progress")
+            await r.aclose()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+
+
 # Mount all API routers
 # 业务路由统一加用户鉴权依赖；auth(login/refresh) 与 Worker/心跳回调（走各自 Token）不在此列
 _protected_routers = [
     projects, upload, autoclip, intervals, slice, preview, publications,
     config_api, publish, dashboard, workers, monitor, maintenance,
     watermark, shortdrama, publish_material, batch_slice,
-    wechat_dl_api, channel_accounts, variants, dramas,
+    wechat_dl_api, channel_accounts, variants, dramas, lan_source_api,
 ]
 for _r in _protected_routers:
     app.include_router(_r.router, prefix="/api", dependencies=[Depends(get_current_user)])

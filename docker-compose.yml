@@ -354,8 +354,9 @@ services:
     container_name: clip-worker-fast
     # 指标/默认任务（轻量）—— 高并发 4，不再被视频任务饿死
     # 视频号导入下载（wechat_dl，HTTP 拉流轻量）并入本 worker；剥离形态 B 可单独拉起 wechat_dl worker
+    # 局域网剧集导入（lan_source，HTTP 拉流轻量）并入本 worker；可单独拉起 lan_source worker
     # 选点已独立到 worker-selection 独占消费 selection 队列，此处不再订阅，避免重复消费。
-    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "metrics,default,celery,wechat_dl", "--loglevel=info", "--concurrency=4"]
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "metrics,default,celery,wechat_dl,lan_source", "--loglevel=info", "--concurrency=4"]
 
   beat:
     image: clip-backend:latest

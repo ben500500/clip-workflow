@@ -44,6 +44,7 @@ celery_app.conf.update(
         "publish": {"exchange": "publish"},
         "metrics": {"exchange": "metrics"},
         "wechat_dl": {"exchange": "wechat_dl"},
+        "lan_source": {"exchange": "lan_source"},
         # 解耦模式 AI 选点消费者独立队列：重计算 + 长轮询，避免与串行批处理抢占 default
         "selection": {"exchange": "selection"},
         "default": {"exchange": "default"},
@@ -65,6 +66,8 @@ celery_app.conf.update(
         "app.celery.tasks.seedance_generate_task": {"queue": "publish"},
         # 视频号素材导入下载（wechat_download）：独立 wechat_dl 队列（可剥离形态 B 单独拉起）
         "wechat_dl.download": {"queue": "wechat_dl"},
+        # 局域网获取剧集导入（lan_source）：独立 lan_source 队列
+        "lan_source.import_episodes": {"queue": "lan_source"},
     },
     beat_schedule={
         "collect-metrics-daily": {
@@ -2488,3 +2491,10 @@ try:
     import wechat_download.tasks  # noqa: F401  # 触发任务注册
 except Exception as _wechat_dl_import_err:  # pragma: no cover
     logger.warning("wechat_download.tasks 注册失败（不影响主系统其他任务）: %s", _wechat_dl_import_err)
+
+# 注册局域网剧集导入（lan_source）任务到本 Celery app。
+# 置于文件末尾避免循环导入；并入形态需要（可剥离形态可单独拉起 lan_source app）。
+try:
+    import lan_source.tasks  # noqa: F401  # 触发任务注册
+except Exception as _lan_source_import_err:  # pragma: no cover
+    logger.warning("lan_source.tasks 注册失败（不影响主系统其他任务）: %s", _lan_source_import_err)

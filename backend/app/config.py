@@ -176,6 +176,26 @@ class Settings(BaseSettings):
     # 未设置时回退 "yuanbao,preview"（向后兼容）。
     WECHAT_DL_PROVIDERS: str = "yuanbao,preview"
 
+    # ── 局域网获取剧集（lan_source，立项设计：独立配置命名空间）──
+    # 总开关（默认关闭）。开启后在剧目详情页出现「局域网获取剧集」面板，
+    # 从局域网 dupload 源拉取剧集直链、下载入库并导入切片流程。
+    LAN_SOURCE_ENABLED: bool = False
+    # dupload cdn 源基础地址（返回 /videos/{drama}/cdn 直链的服务），默认局域网 8765
+    LAN_SOURCE_BASE_URL: str = "http://192.168.1.163:8765"
+    # 剧目清单来源（可选）：IAA 小程序管理平台基础地址（提供 /api/bg/sync/tasks 剧名清单）。
+    # 未配置时允许从 API 手工提交剧名清单。
+    LAN_SOURCE_MANAGE_BASE: str = ""
+    # 剧集清单接口是否带路径前缀（有的源在 {base}/videos/{drama}/cdn）
+    LAN_SOURCE_API_PREFIX: str = ""
+    # 下载超时（秒，单集拉流整体超时）
+    LAN_SOURCE_DOWNLOAD_TIMEOUT: int = 900
+    # 导入任务队列（并入 worker-fast 的 metrics,default,celery,wechat_dl 同 worker）
+    LAN_SOURCE_QUEUE: str = "lan_source"
+    # 默认入库归属项目名（未指定 project_id 时，按需创建/复用）
+    LAN_SOURCE_DEFAULT_PROJECT: str = "局域网导入"
+    # 每集 HTTP 下载并发数（默认 2，避免打爆源服务器）
+    LAN_SOURCE_CONCURRENCY: int = 2
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
