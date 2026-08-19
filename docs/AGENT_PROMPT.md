@@ -1,6 +1,6 @@
-# clip-workflow 自动化产线 Agent 提示词（v1.5）
+# clip-workflow 自动化产线 Agent 提示词（v1.6）
 
-> 版本：v1.5（对齐 `main` 真实代码 + AUTOMATION_WORKFLOW v1.5 + PR #177/#178/#182/#187 及风控分级识别）| 日期：2026-08-18
+> 版本：v1.6（对齐 `main` 真实代码 + AUTOMATION_WORKFLOW v1.6 + PR #177/#178/#182/#187/#211 及风控分级识别 + 阶段E人在环兜底）| 日期：2026-08-19
 > 用途：**直接粘贴给 Computer-Use / Claude / Codex 等 Agent 的启动提示词**，让它自动走完
 > 「资源导入 → AI 选点 → 区间检测 → 切片 → 视频号上传发布」全链路，并自带问题自检与测试报告输出。
 > 本文件与 `docs/AUTOMATION_WORKFLOW.md` 互为补充：后者是机器可解析的完整操作手册，本文档是 Agent 的人话指令。
@@ -100,6 +100,34 @@
       在发布后自动尝试发表并置顶互动神评（**探活式，失败不阻断发布成功**）。Agent 可关注任务是否
       带 `publish_comments`（来自发布素材神评），无需额外处理。
 
+## 阶段 E · 人在环兜底（无「真人化 worker」时的安全退路，v1.6 新增）
+
+> **适用场景**：当你确认当前部署环境**没有可用「真人化 worker」**（本机已登录真实 Edge/Chrome + OS 级文件对话框），
+> 且自动化发布被**微信环境级风控**拦截（`env_risk` / `upload_limited`，典型 `300001`/`upload_params`，
+> 数据中心 IP + Playwright Chromium + `set_input_files` 浏览器内部注入触发）时，**不要强行反复自动重试**。
+> 此时走本兜底：系统把链路**制备齐全**（素材/选点/切片/文案/神评全部就绪，只差最后一步真实浏览器上传），
+> 产出「一键真人发布」入口 + 由人来完成最后的上传发布（真实浏览器 + OS 级文件对话框，环境级风控即可通过）。
+
+### E1 · 判定：是否需要走兜底
+- 发布任务返回 `risk_type == "env_risk"` 或 `"upload_limited"`，且已按阶段 D 第 14 步进死信（`dead_letter=true`）
+  → 判定为「环境级风控拒发」，**不要自动重试**（重复消耗账号安全额度），进入 E2。
+- 若同一文件在本机真实浏览器 + OS 级文件对话框能成功上传（对照实验），即确认是环境风控而非素材问题。
+
+### E2 · 制备齐全（自动化完成，不涉真实浏览器）
+1. 确认该发布任务的素材/选点/切片/发布素材（标题/三段配文/标签/三条神评）均已生成并落库
+   （`material_id` 已关联，`GET /publish/tasks/{task_id}` 可查到完整发布 payload）。
+2. 把待发布的**最终成片文件路径**、标题、描述、话题、神评、目标账号（含所属运营者）整理成
+   一份「一键真人发布」操作清单（Markdown），随任务 `dead_letter` 记录留存。
+3. 在发布任务上标记 `disposition = "manual_publish"`，等待人工/定时在真人环境重放。
+
+### E3 · 一键真人发布（人来完成最后一步，交给 Computer Use / 真人）
+> 以下指令可直接粘贴给 Computer Use（无痕窗口即可）或人工照做：
+1. **用运营者本人微信已登录的浏览器**（本机 Edge/Chrome，**真实/家庭 IP**）打开视频号创作中心发布页。
+2. 选视频：走 **OS 级文件选择对话框**（系统 Finder/资源管理器，**不要用 `set_input_files` 浏览器注入**）。
+3. 填标题/描述/话题（用 E2 操作清单里的文案），选封面、挂小程序链接。
+4. 点发布；成功后把 `published_url` 回填到发布任务（或告诉运维手动确认），链路即闭环。
+5. **风控冷却**：若连续失败，遵守 2–24h 冷却窗口再试；发布成功前保持谨慎节奏（同 IP 小时 ≤2 条）。
+
 # 自检 & 测试报告
 - 每步通过/失败/耗时都写进报告；失败必带 request/response/status 日志。
 - 全程记录你发现的不合理流程或契约差异，按 P0/P1/P2/P3 分级。
@@ -146,5 +174,12 @@
 | 2 | **失败 `risk_type` 分级** | `upload_limited`/`env_risk`（风控拒发）/ `need_login`（登录失效）/ 默认 `publish_limited`；Agent 据此决定重试 or 报告 | audit_service.py + tasks.py |
 | 3 | **上传前预检** | 上传前轻量探测风控/登录失效信号，命中提前失败，不进入上传，避免白白消耗 worker 与账号安全额度 | publish_service.py `_publish_body` |
 | 4 | **风控不自动重试** | 风控拒发不自动重试（重复消耗账号安全额度），走死信队列人工/定时重放 | tasks.py |
+
+## v1.6 相对 v1.5 的新增行为（PR #211 衔接修复 + 人在环兜底）
+
+| # | 新增行为 | 说明 | 落点 |
+|---|---|---|---|
+| 1 | **批量切片阶段衔接修复** | `_wait_slice` 排除 `detect_%` 复用表记录 + 按 `slice_task_id` 精确轮询；`_wait_detect` 按 `detect_task_id` 轮询；`dispatch_ready_slices` 先落 `slice_task_id` 再置 `phase=slicing` | PR #211 / batch_slice_service.py + batch_decoupled_service.py |
+| 2 | **阶段 E 人在环兜底** | 无真人化 worker 且被环境级风控拒发时，制备齐全 → 一键真人发布（真实浏览器 + OS 级文件对话框）→ 人工回填 `published_url` 闭环 | 本文档阶段 E |
 
 > 说明：本提示词与 `AUTOMATION_WORKFLOW.md` 保持一致，两端契约同源，agent 照任一执行都应一次走通。
