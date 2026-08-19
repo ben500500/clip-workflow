@@ -551,10 +551,14 @@ const OutputPreview: React.FC = () => {
         created_at: new Date().toISOString(),
       };
       setMaterialRecords((prev) => [newRecord, ...prev]);
+      // 合并剧目保存的发布话题（topics）与素材生成的成套话题，发布时直接复用
+      const genTags: string[] = Object.values(m.tags || {}).flat();
+      const dramaTopics: string[] = ctx.topics || [];
+      const mergedTags = [...genTags, ...dramaTopics.filter((t) => !genTags.includes(t))];
       publishForm.setFieldsValue({
         title: m.short_title || '',
         description: m.captions?.suspense_hook || '',
-        tags: Object.values(m.tags || {}).flat(),
+        tags: mergedTags,
         material_id: newRecord.id,
       });
       setSelectedMaterial(newRecord);

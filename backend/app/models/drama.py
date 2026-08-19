@@ -57,6 +57,9 @@ class Drama(Base):
     type = Column(String(30), nullable=True)
     # 题材多选标签（JSON 数组，如 ["都市","反击"]）
     tags = Column(JSON, nullable=True)
+    # 发布话题标签（JSON 数组，如 ["#短剧", "#婆媳关系"]）
+    # 剧目详情中按「话题大方向」选择自动带入并保存，发布时直接复用
+    topics = Column(JSON, nullable=True)
     # 评级（新剧S+ / 新剧A+ / SS+ / 空）
     rating = Column(String(20), nullable=True)
     # 剧情简介（人工录入，也是发布素材生成的入参 story）
