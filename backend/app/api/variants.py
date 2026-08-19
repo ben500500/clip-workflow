@@ -18,14 +18,19 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.auth import get_current_user
+from app.config import settings
 from app.database import async_session_factory, get_db
 from app.models.models import (
     SliceOutput,
+    SliceTask,
+    Episode,
     ClipVariant,
     VideoFingerprint,
     SystemConfig,
     User,
+    user_can_access_all_materials,
 )
+from app.services.minio_service import get_presigned_url
 
 router = APIRouter()
 
@@ -253,3 +258,167 @@ def uuid_of(v: str):
         return uuid.UUID(str(v))
     except (ValueError, AttributeError):
         raise HTTPException(status_code=400, detail="Invalid UUID format")
+
+class VariantGenerateBatchRequest(BaseModel):
+    output_ids: List[str]
+    count: int = 3
+    dedupe_config: Optional[dict] = None
+    thresholds: Optional[dict] = None
+
+
+class SliceOutputListRequest(BaseModel):
+    page: int = 1
+    page_size: int = 50
+    keyword: Optional[str] = None
+
+
+@router.post("/variants/generate-batch")
+async def generate_variants_batch(
+    data: VariantGenerateBatchRequest,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """批量变体生成（去重处理入口）：对多个切片输出各生成 N 套变体。
+
+    比前端逐个循环 /variants/generate 更稳：单次请求投递全部任务、
+    统一去重配置与变体数量，避免前端循环因网络抖动/超时部分漏发。
+    count=1 时对单个输出零侵入。
+    """
+    if not data.output_ids:
+        raise HTTPException(status_code=400, detail="output_ids 不能为空")
+    if len(data.output_ids) > 200:
+        raise HTTPException(status_code=400, detail="单次最多处理 200 个切片输出")
+    count = max(1, min(int(data.count or 1), 20))  # 硬上限 MAX_VARIANTS=20
+
+    from app.celery.variant_tasks import generate_variants_task
+    from sqlalchemy import select as _sel
+    tasks = []
+    async with async_session_factory() as session:
+        for raw_id in data.output_ids:
+            try:
+                out_id = uuid_of(raw_id)
+            except HTTPException:
+                continue  # 非法 UUID 直接跳过，不阻断整批
+            out = (await session.execute(
+                _sel(SliceOutput).where(SliceOutput.id == out_id)
+            )).scalar_one_or_none()
+            if out is None:
+                continue  # 不存在的输出跳过，不阻断整批
+            # 数据隔离：校验当前用户对输出所属项目的访问权限；
+            # 无权限的输出直接跳过（不抛 404 中断整批，也不泄露存在性）
+            try:
+                await _check_output_access(session, out, current_user)
+            except HTTPException:
+                continue
+            task = generate_variants_task.delay(
+                str(out.id), count=count,
+                base_dedupe=data.dedupe_config, thresholds=data.thresholds,
+            )
+            tasks.append({"output_id": str(out.id), "task_id": task.id})
+        # 事务内只读：显式结束事务
+        await session.rollback()
+
+    if not tasks:
+        raise HTTPException(status_code=404, detail="没有找到任何可处理的切片输出")
+    return {"tasks": tasks, "count": count, "total": len(tasks)}
+
+
+async def _check_output_access(session, out: SliceOutput, current_user: User):
+    """数据隔离：校验当前用户对某个切片输出所属剧集/项目的访问权限。
+
+    与 preview 等接口一致：all 范围用户放行；否则校验 project.created_by。
+    """
+    if current_user is None or user_can_access_all_materials(current_user):
+        return
+    task = (await session.execute(
+        select(SliceTask).where(SliceTask.id == out.task_id)
+    )).scalar_one_or_none()
+    if not task:
+        return
+    episode = (await session.execute(
+        select(Episode).where(Episode.id == task.episode_id)
+    )).scalar_one_or_none()
+    if not episode:
+        return
+    await check_project_access_by_episode(session, episode, current_user)
+
+
+@router.get("/slice-outputs/list")
+async def list_slice_outputs(
+    page: int = 1,
+    page_size: int = 50,
+    keyword: Optional[str] = None,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """列出全部已切片输出（去重处理入口：从已切片任务多选 SliceOutput）。
+
+    数据隔离：all 范围用户见全部；运营专员仅见自己项目下的输出。
+    返回带 presigned_url，供前端直接预览/下载。
+    """
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
+
+    async with async_session_factory() as session:
+        # 非 all 用户：先收集其可访问的项目集合，再按 project → episode → task 过滤输出
+        allowed_episode_ids = None
+        if current_user is not None and not user_can_access_all_materials(current_user):
+            projects = (await session.execute(
+                select(Project).where(Project.created_by == current_user.id)
+            )).scalars().all()
+            allowed_project_ids = [p.id for p in projects]
+            episodes = (await session.execute(
+                select(Episode).where(Episode.project_id.in_(allowed_project_ids))
+            )).scalars().all() if allowed_project_ids else []
+            allowed_episode_ids = [e.id for e in episodes]
+            if not allowed_episode_ids:
+                return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+        conds = []
+        if keyword:
+            conds.append(SliceOutput.file_name.ilike(f"%{keyword}%"))
+
+        if allowed_episode_ids is not None:
+            tasks = (await session.execute(
+                select(SliceTask).where(SliceTask.episode_id.in_(allowed_episode_ids))
+            )).scalars().all()
+            task_ids = [t.id for t in tasks]
+            if not task_ids:
+                return {"items": [], "total": 0, "page": page, "page_size": page_size}
+            conds.append(SliceOutput.task_id.in_(task_ids))
+
+        total = (await session.execute(
+            select(SliceOutput.id).where(*conds)
+        )).scalars().all()
+        total_count = len(total)
+
+        outputs = (await session.execute(
+            select(SliceOutput)
+            .where(*conds)
+            .order_by(SliceOutput.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )).scalars().all()
+
+        items = []
+        for out in outputs:
+            url = None
+            if out.file_key:
+                url = await get_presigned_url(
+                    settings.MINIO_BUCKET_SLICED, out.file_key, expires_seconds=3600
+                )
+            items.append({
+                "id": str(out.id),
+                "task_id": str(out.task_id),
+                "file_name": out.file_name,
+                "file_key": out.file_key,
+                "duration": out.duration,
+                "file_size": out.file_size,
+                "resolution": out.resolution,
+                "variant_group_id": str(out.variant_group_id) if out.variant_group_id else None,
+                "created_at": out.created_at.isoformat() if out.created_at else "",
+                "presigned_url": url,
+            })
+        # 事务内只读：显式结束事务
+        await session.rollback()
+
+    return {"items": items, "total": total_count, "page": page, "page_size": page_size}
+

@@ -47,6 +47,26 @@ export interface VariantVerifyResult {
   reason?: string;
 }
 
+export interface SliceOutputListItem {
+  id: string;
+  task_id: string;
+  file_name: string | null;
+  file_key: string | null;
+  duration: number | null;
+  file_size: number | null;
+  resolution: string | null;
+  variant_group_id: string | null;
+  created_at: string;
+  presigned_url: string | null;
+}
+
+export interface SliceOutputList {
+  items: SliceOutputListItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export const variantsApi = {
   matrix: () => client.get('/variant-matrix') as Promise<VariantMatrix>,
 
@@ -54,6 +74,18 @@ export const variantsApi = {
 
   generate: (data: { output_id: string; count?: number; dedupe_config?: Record<string, unknown>; thresholds?: Record<string, unknown> }) =>
     client.post('/variants/generate', data) as Promise<{ task_id: string; output_id: string; count: number }>,
+
+  // 去重处理入口：批量对多个切片输出生成变体（单次投递全部任务，比前端循环稳）
+  generateBatch: (data: { output_ids: string[]; count?: number; dedupe_config?: Record<string, unknown>; thresholds?: Record<string, unknown> }) =>
+    client.post('/variants/generate-batch', data) as Promise<{
+      tasks: { output_id: string; task_id: string }[];
+      count: number;
+      total: number;
+    }>,
+
+  // 去重处理入口：列出全部已切片输出（SliceOutput 多选）
+  listSliceOutputs: (params: { page?: number; page_size?: number; keyword?: string } = {}) =>
+    client.get('/slice-outputs/list', { params }) as Promise<SliceOutputList>,
 
   verify: (id: string) =>
     client.post(`/variants/${id}/verify`) as Promise<VariantVerifyResult>,

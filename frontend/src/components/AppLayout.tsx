@@ -23,6 +23,7 @@ import {
   ContactsOutlined,
   ThunderboltOutlined,
   FolderOpenOutlined,
+  FileAddOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -68,6 +69,11 @@ const allMenuItems = [
     key: '/variant-matrix',
     icon: <ThunderboltOutlined />,
     label: '变体矩阵',
+  },
+  {
+    key: '/dedupe',
+    icon: <FileAddOutlined />,
+    label: '去重处理',
   },
   {
     key: '/channel-accounts',

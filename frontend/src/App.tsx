@@ -32,6 +32,7 @@ import ShortDrama from './pages/ShortDrama';
 import NotFound from './pages/NotFound';
 import BatchSlice from './pages/BatchSlice';
 import VariantMatrix from './pages/VariantMatrix';
+import DedupeProcessing from './pages/DedupeProcessing';
 import ResourceDownload from './pages/ResourceDownload';
 import ChannelAccounts from './pages/ChannelAccounts';
 import DramaLibrary from './pages/DramaLibrary';
@@ -61,6 +62,7 @@ const App: React.FC = () => {
             <Route path="episodes/:episodeId/preview" element={<OutputPreviewPage />} />
             <Route path="publish" element={<PublishManagement />} />
             <Route path="variant-matrix" element={<VariantMatrix />} />
+            <Route path="dedupe" element={<DedupeProcessing />} />
             <Route path="channel-accounts" element={<ChannelAccounts />} />
             <Route path="dramas" element={<DramaLibrary />} />
             <Route path="analytics/overview" element={<DashboardOverview />} />

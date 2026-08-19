@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.config import settings, cors_origins
 from app.database import init_db, close_db, async_session_factory
-from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers, monitor, maintenance, watermark, shortdrama, publish_material, batch_slice, channel_accounts, variants, dramas
+from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers, monitor, maintenance, watermark, shortdrama, publish_material, batch_slice, channel_accounts, variants, dramas, dedupe
 from app.auth import get_password_hash, get_current_user
 from app.models.models import User, UserRole, PlatformProfile
 from app.api.config import DEFAULT_PLATFORM_PROFILES
@@ -235,6 +235,7 @@ _protected_routers = [
     config_api, publish, dashboard, workers, monitor, maintenance,
     watermark, shortdrama, publish_material, batch_slice,
     wechat_dl_api, channel_accounts, variants, dramas, lan_source_api,
+    dedupe,
 ]
 for _r in _protected_routers:
     app.include_router(_r.router, prefix="/api", dependencies=[Depends(get_current_user)])
