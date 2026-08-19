@@ -68,6 +68,7 @@ _COLORBALANCE_POOL = [
 _TEMP_POOL = ["temperature=6500", "temperature=6400", "temperature=6500", "temperature=6450"]
 # 音频指纹差异化模式（L3 盲区覆盖）：每种模式都会改变音频声纹，且人耳几乎无感。
 # 已按 audio_v2 指纹在真实素材上复验，均能把音频距离拉过 0.15 阈值（撞车判定线）。
+# volume 模式已从 1.12 提至 1.28（engines/slice.py），实测在真实素材上稳定过 0.15。
 # 注意：不放入 None —— 派生变体必须始终差异化音频，否则与基准在音频维度距离为 0
 # 必然被撞车判定拦下（这正是本迭代修复的音频短板）。
 _AUDIO_POOL = ["eq_mild", "eq_strong", "pitch_down", "pitch_up", "bandpass", "bass_boost", "vocal_boost", "volume"]
@@ -75,6 +76,7 @@ _AUDIO_POOL = ["eq_mild", "eq_strong", "pitch_down", "pitch_up", "bandpass", "ba
 _STRUCTURAL_SEGMENT_OPTIONS = [False, True]
 # 方向一扩展特效：随机给部分派生变体叠加若隐若现星星点/小光环，进一步拉开画面特征。
 # 部分为 None（不叠加），部分带参数；固定用低位噪声，透明度极低以保持画面几乎无感。
+# 已知项：sparkle 非默认开启（仅 40% 派生变体随机启用），如批量生成性能受影响，下轮可做轻量优化。
 _SPARKLE_POOL = [
     None,
     None,
