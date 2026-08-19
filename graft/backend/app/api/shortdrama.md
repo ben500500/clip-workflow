@@ -36,13 +36,12 @@
 - get_doubao_account_type · function · L922-L932 — Returns the current user's Doubao account type (free/pro).
 - update_doubao_account_type · function · L936-L950 — Updates the current user's Doubao account type, which governs generation duration limits.
 - switch_doubao_account · function · L954-L973 — Switches the current user's Doubao account to the next available account type.
-- get_doubao_config · function · L977-L982 — Returns the Doubao generation configuration including account type and limits.
-- _load_doubao_limits · function · L985-L995 — Loads Doubao generation duration limits from system_config, falling back to defaults.
-- SeedanceGenerateRequest · class · L1015-L1019 — Request schema for Seedance API generation carrying duration, which is capped at 5s/10s for Seedance 1.0.
-- SeedanceGenerateResponse · class · L1022-L1025 — Response schema confirming a Seedance API generation task has been started.
-- _load_seedance_config · function · L1028-L1037 — Loads Seedance API configuration (enabled flag, API key, model, duration policy) from system_config.
-- _require_seedance_enabled · function · L1040-L1048 — Raises 400 if the Seedance API channel is not enabled in configuration.
-- get_seedance_config · function · L1052-L1064 — Returns the Seedance API configuration including enabled state and duration policy.
-- start_seedance_generate · function · L1068-L1109 — Starts a Seedance API generation task for a prompt record, enforcing the configured duration policy and persisting task state.
-- cancel_seedance_generate · function · L1113-L1149 — Cancels an in-flight Seedance API generation task and clears its task state.
-- get_seedance_status · function · L1153-L1164 — Returns the current Seedance API generation task status for a prompt record.
+- _load_doubao_limits · function · L976-L986 — Loads Doubao generation duration limits from system_config, falling back to defaults.
+- SeedanceGenerateRequest · class · L1006-L1010 — Request schema for Seedance API generation carrying duration, which is capped at 5s/10s for Seedance 1.0.
+- SeedanceGenerateResponse · class · L1013-L1016 — Response schema confirming a Seedance API generation task has been started.
+- _load_seedance_config · function · L1019-L1028 — Loads Seedance API configuration (enabled flag, API key, model, duration policy) from system_config.
+- _require_seedance_enabled · function · L1031-L1039 — Raises 400 if the Seedance API channel is not enabled in configuration.
+- get_seedance_config · function · L1043-L1055 — Returns the Seedance API configuration including enabled state and duration policy.
+- start_seedance_generate · function · L1059-L1100 — Starts a Seedance API generation task for a prompt record, enforcing the configured duration policy and persisting task state.
+- cancel_seedance_generate · function · L1104-L1140 — Cancels an in-flight Seedance API generation task and clears its task state.
+- get_seedance_status · function · L1144-L1155 — Returns the current Seedance API generation task status for a prompt record.

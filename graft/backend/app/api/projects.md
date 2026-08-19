@@ -1,33 +1,31 @@
 # backend/app/api/projects.py · [[video-slicing-pipeline]]
 
-- _remove_path · function · L37-L47 — Deletes a file or directory, silently ignoring missing paths and OSErrors.
-- ProjectCreate · class · L54-L57 — Pydantic schema for creating a project with name, description, and config.
-- ProjectUpdate · class · L60-L64 — Pydantic schema for partial updates to a project's fields.
-- ProjectResponse · class · L67-L79 — Pydantic response schema for a project including creator and episode count.
-- EpisodeCreate · class · L82-L88 — Pydantic schema for creating an episode with optional media metadata.
-- EpisodeResponse · class · L91-L104 — Pydantic response schema for an episode's serialized fields.
-- EpisodeListResponse · class · L107-L109 — Pydantic wrapper for a paginated list of episodes with total count.
-- ProjectOutputItem · class · L112-L127 — class ProjectOutputItem(BaseModel)
-- ProjectOutputListResponse · class · L130-L132 — class ProjectOutputListResponse(BaseModel)
-- _serialize_project · function · L137-L153 — Converts a Project ORM object to a dict, defensively handling unloaded episode relations to avoid MissingGreenlet errors.
-- _serialize_episode · function · L156-L169 — Converts an Episode ORM object to a serializable dict with ISO timestamps.
-- _data_scope_filter · function · L175-L183 — Returns a SQLAlchemy filter restricting projects to those created by the current user, unless the user has full material access.
-- _check_project_access · function · L186-L190 — Determines whether a user may access a given project based on full-access role or ownership.
-- create_project · function · L194-L209 — Creates a new project, recording the current user as creator for data isolation.
-- list_projects · function · L213-L249 — Lists projects with search, status filter, pagination, and data-isolation scoping.
-- project_stats · function · L253-L310 — Computes dashboard counts for projects/episodes/slices and recent projects, applying data-isolation scope across all queries.
-- get_project · function · L314-L336 — Fetches a single project by ID, enforcing data isolation so non-full-access users only see their own projects.
-- update_project · function · L340-L371 — Partially updates a project's fields after verifying ownership, and bumps updated_at.
-- _cleanup_episode_minio · function · L374-L389 — Deletes an episode's source file and all sliced output objects from MinIO before DB deletion.
-- _cleanup_episode_media · function · L392-L408 — Locates an episode's autoclip media reference and cleans its local files, then sweeps orphan media files.
-- delete_project · function · L412-L451 — Deletes a project and all episodes, cleaning up MinIO objects and local media files, plus orphan raw-footage objects.
-- create_episode · function · L458-L490 — Adds an episode to a project after verifying project existence and user access.
-- list_episodes · function · L494-L521 — Lists a project's episodes ordered by episode number then creation time, after access check.
-- list_project_outputs · function · L525-L603 — async def list_project_outputs( project_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- project_workflow_status · function · L608-L791 — Aggregates per-episode autoclip/detect/slice workflow status and progress for a project in one query to avoid N+1 polling.
-- _stage_status · function · L671-L682 — Maps a raw stage status string to a normalized display status.
-- get_episode · function · L795-L847 — Fetches a single episode with its project access check and serialization.
-- get_episode_video_url · function · L851-L881 — Returns a presigned URL for an episode's source video after verifying access.
-- delete_episode · function · L885-L915 — Deletes an episode after access check, cleaning up its MinIO and local media files.
-- _cleanup_orphan_media_files · function · L918-L957 — Sweeps the media volume for orphaned files not referenced by any autoclip project.
-- _cleanup_episode_media_files · function · L960-L981 — Removes local media files for a given autoclip media UUID.
+- _remove_path · function · L34-L44 — Deletes a file or directory, silently ignoring missing paths and OSErrors.
+- ProjectCreate · class · L51-L54 — Pydantic schema for creating a project with name, description, and config.
+- ProjectUpdate · class · L57-L61 — Pydantic schema for partial updates to a project's fields.
+- ProjectResponse · class · L64-L76 — Pydantic response schema for a project including creator and episode count.
+- EpisodeCreate · class · L79-L85 — Pydantic schema for creating an episode with optional media metadata.
+- EpisodeResponse · class · L88-L101 — Pydantic response schema for an episode's serialized fields.
+- EpisodeListResponse · class · L104-L106 — Pydantic wrapper for a paginated list of episodes with total count.
+- ProjectOutputItem · class · L109-L124 — class ProjectOutputItem(BaseModel)
+- ProjectOutputListResponse · class · L127-L129 — class ProjectOutputListResponse(BaseModel)
+- _serialize_project · function · L134-L150 — Converts a Project ORM object to a dict, defensively handling unloaded episode relations to avoid MissingGreenlet errors.
+- _serialize_episode · function · L153-L166 — Converts an Episode ORM object to a serializable dict with ISO timestamps.
+- _data_scope_filter · function · L172-L180 — Returns a SQLAlchemy filter restricting projects to those created by the current user, unless the user has full material access.
+- _check_project_access · function · L183-L187 — Determines whether a user may access a given project based on full-access role or ownership.
+- create_project · function · L191-L206 — Creates a new project, recording the current user as creator for data isolation.
+- list_projects · function · L210-L246 — Lists projects with search, status filter, pagination, and data-isolation scoping.
+- project_stats · function · L250-L307 — Computes dashboard counts for projects/episodes/slices and recent projects, applying data-isolation scope across all queries.
+- get_project · function · L311-L333 — Fetches a single project by ID, enforcing data isolation so non-full-access users only see their own projects.
+- update_project · function · L337-L368 — Partially updates a project's fields after verifying ownership, and bumps updated_at.
+- _cleanup_episode_minio · function · L371-L386 — Deletes an episode's source file and all sliced output objects from MinIO before DB deletion.
+- _cleanup_episode_media · function · L389-L405 — Locates an episode's autoclip media reference and cleans its local files, then sweeps orphan media files.
+- delete_project · function · L409-L448 — Deletes a project and all episodes, cleaning up MinIO objects and local media files, plus orphan raw-footage objects.
+- create_episode · function · L455-L487 — Adds an episode to a project after verifying project existence and user access.
+- list_episodes · function · L491-L518 — Lists a project's episodes ordered by episode number then creation time, after access check.
+- list_project_outputs · function · L522-L600 — async def list_project_outputs( project_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- get_episode · function · L604-L656 — Fetches a single episode with its project access check and serialization.
+- get_episode_video_url · function · L660-L690 — Returns a presigned URL for an episode's source video after verifying access.
+- delete_episode · function · L694-L724 — Deletes an episode after access check, cleaning up its MinIO and local media files.
+- _cleanup_orphan_media_files · function · L727-L766 — Sweeps the media volume for orphaned files not referenced by any autoclip project.
+- _cleanup_episode_media_files · function · L769-L790 — Removes local media files for a given autoclip media UUID.

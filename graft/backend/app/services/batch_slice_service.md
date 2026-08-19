@@ -12,7 +12,7 @@
 - _trigger_detect · function · L204-L230 — Invokes the interval detection API and returns the id of the most recent detect_* SliceTask.
 - _wait_detect · function · L233-L256 — Polls the latest detect_* SliceTask until terminal state or timeout.
 - _accept_all_candidates · function · L259-L271 — Auto-review: flips all pending ClipCandidates for an episode to accepted, returning the count.
-- _trigger_slice · function · L274-L305 — Invokes the slice API with auto_accept_all forced on, filtering config to known fields to avoid pydantic errors, and returns the SliceTask id.
-- _wait_slice · function · L308-L334 — Polls the latest SliceTask until completed/failed/cancelled or timeout, tracking output_count.
-- _delete_source · function · L337-L358 — Deletes the source video from local disk and MinIO, clearing the episode's source_file_key to save space.
-- run_batch · function · L361-L534 — Entry point that routes to decoupled vs serial pipeline modes and orchestrates the full per-episode upload→autoclip→review→interval→slice→delete workflow.
+- _trigger_slice · function · L274-L307 — Invokes the slice API with auto_accept_all forced on, filtering config to known fields to avoid pydantic errors, and returns the SliceTask id.
+- _wait_slice · function · L310-L336 — Polls the latest SliceTask until completed/failed/cancelled or timeout, tracking output_count.
+- _delete_source · function · L339-L360 — Deletes the source video from local disk and MinIO, clearing the episode's source_file_key to save space.
+- run_batch · function · L363-L536 — Entry point that routes to decoupled vs serial pipeline modes and orchestrates the full per-episode upload→autoclip→review→interval→slice→delete workflow.

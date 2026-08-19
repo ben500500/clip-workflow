@@ -19,5 +19,5 @@ Celery task module for short-drama video generation, providing two independent c
 - _load_seedance_db_config · function · L480-L489 — Loads the Seedance direct-connection configuration from system_config, returning an empty dict when absent or malformed.
 - _check_seedance_cancelled · function · L492-L497 — Checks whether the Seedance task has been cancelled by the user, treating a missing record as cancelled.
 - _sync_generated_video · function · L500-L583 — Downloads a generated video from its URL, uploads it to MinIO, and backfills the prompt record's video fields while cleaning up the old video and tagging the generation channel.
-- seedance_generate_task · function · L587-L792 — Orchestrates the Seedance official API direct-generation flow: submits a generation request, polls for completion, then downloads and syncs the finished video to MinIO while driving the seedance_status state machine.
+- seedance_generate_task · function · L587-L795 — Orchestrates the Seedance official API direct-generation flow: submits a generation request, polls for completion, then downloads and syncs the finished video to MinIO while driving the seedance_status state machine.
 - _progress_cb · function · L653-L659 — Reports Seedance generation progress to both the Celery state and the database prompt record.

@@ -59,12 +59,6 @@ covers:
   - symbol: main
     kind: function
     at: 'engines/detect_intervals.py:L91-L145'
-  - symbol: ffprobe_duration
-    kind: function
-    at: 'engines/preview.py:L15-L24'
-  - symbol: main
-    kind: function
-    at: 'engines/preview.py:L27-L55'
   - symbol: _load_sampled_frames
     kind: function
     at: 'engines/remove_mask_remover.py:L87-L103'

@@ -11,11 +11,10 @@
 - create_upload · function · L153-L178 — Creates a new tus-like resumable upload session after validating file size bounds and file name.
 - get_upload_info · function · L182-L197 — Handles tus HEAD requests to report current upload offset and length via response headers.
 - upload_chunk · function · L201-L230 — Handles tus PATCH requests to write a chunk of data at the given offset, returning updated progress.
-- get_upload_progress_endpoint · function · L234-L246 — Returns the current upload progress for a session as a JSON response.
-- complete_upload · function · L250-L284 — Finalizes a completed upload session into an Episode after validating project access and upload completion.
-- upload_single · function · L288-L358 — Handles a single-request file upload: validates project access, streams the file to disk enforcing max size, runs AV-sync check, stores in MinIO, and creates an Episode.
-- upload_multi · function · L362-L525 — Batch-uploads multiple videos into a project (found by id or created/found by name), optionally merging them into one Episode via ffmpeg concat, with per-file AV-sync checks and sequential episode numbering.
-- _check_av_sync · function · L528-L567 — Rough audio-video sync validation that blocks files with mismatched audio/video durations from silently entering the production pipeline.
-- _run_ffmpeg · function · L570-L583 — Runs a single ffmpeg subprocess command and returns success, logging the stderr tail on failure.
-- _ffmpeg_concat · function · L586-L635 — Concatenates multiple videos into one using ffmpeg, first normalizing timestamps losslessly to fix DTS discontinuities, then stream-copying, and falling back to re-encoding when parameters mismatch.
-- cancel_upload · function · L639-L642 — Cancels an in-progress upload session.
+- complete_upload · function · L234-L268 — Finalizes a completed upload session into an Episode after validating project access and upload completion.
+- upload_single · function · L272-L342 — Handles a single-request file upload: validates project access, streams the file to disk enforcing max size, runs AV-sync check, stores in MinIO, and creates an Episode.
+- upload_multi · function · L346-L509 — Batch-uploads multiple videos into a project (found by id or created/found by name), optionally merging them into one Episode via ffmpeg concat, with per-file AV-sync checks and sequential episode numbering.
+- _check_av_sync · function · L512-L551 — Rough audio-video sync validation that blocks files with mismatched audio/video durations from silently entering the production pipeline.
+- _run_ffmpeg · function · L554-L567 — Runs a single ffmpeg subprocess command and returns success, logging the stderr tail on failure.
+- _ffmpeg_concat · function · L570-L619 — Concatenates multiple videos into one using ffmpeg, first normalizing timestamps losslessly to fix DTS discontinuities, then stream-copying, and falling back to re-encoding when parameters mismatch.
+- cancel_upload · function · L623-L626 — Cancels an in-progress upload session.

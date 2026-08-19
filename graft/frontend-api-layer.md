@@ -180,7 +180,7 @@ covers:
     at: 'frontend/src/api/projects.ts:L4-L9'
   - symbol: ProjectOutputItem
     kind: interface
-    at: 'frontend/src/api/projects.ts:L56-L72'
+    at: 'frontend/src/api/projects.ts:L53-L69'
   - symbol: PublishTaskCreate
     kind: interface
     at: 'frontend/src/api/publish.ts:L4-L22'

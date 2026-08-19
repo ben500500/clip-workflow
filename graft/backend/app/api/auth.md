@@ -1,25 +1,25 @@
 # backend/app/api/auth.py · [[backend-app-factory-auth]]
 
-- LoginRequest · class · L51-L53 — 登录请求体，包含用户名和密码字段。
-- LoginResponse · class · L56-L60 — 登录响应体，返回 access_token 及用户信息。
-- RefreshResponse · class · L63-L65 — 刷新响应体，仅返回新的 access_token。
-- LogoutResponse · class · L68-L70 — 登出响应体，返回成功标志与提示消息。
-- UserResponse · class · L73-L86 — 用户响应模型，包含角色、数据可见范围、菜单等前端展示所需字段。
-- RegisterRequest · class · L89-L93 — 注册请求体，校验用户名长度、密码长度并指定角色。
-- UpdateRoleRequest · class · L96-L97 — 修改角色请求体，仅含角色字段。
-- UpdateDataScopeRequest · class · L100-L101 — 修改数据可见范围请求体，仅含 data_scope 字段。
-- UpdateProfileRequest · class · L104-L107 — 修改个人资料请求体，支持昵称与密码修改。
-- _user_to_response · function · L115-L128 — 将 User ORM 对象转换为响应模型，解析角色显示名、数据范围与菜单。
-- _set_refresh_cookie · function · L131-L144 — 将 refresh_token 写入或清除 HttpOnly Cookie，用于无感刷新与登出。
-- _write_audit · function · L147-L173 — 写入审计日志，记录登录/登出/角色变更等关键操作，失败不影响主流程。
-- _revoke_session_by_refresh_token · function · L176-L189 — 根据 refresh_token 哈希查找并吊销对应会话，实现登出黑名单。
-- login · function · L198-L235 — 用户名密码登录，校验凭据与激活状态后签发双 Token 并下发 refresh Cookie。
-- refresh_token · function · L239-L321 — 用 refresh_token 无感刷新 access_token，校验会话有效性并复用固定 jti 签发新 token。
-- logout · function · L325-L337 — 退出登录，吊销 refresh_token 会话并清除 Cookie。
-- get_me · function · L341-L345 — 返回当前登录用户信息。
-- register · function · L349-L390 — 管理员注册新用户，校验角色合法性、用户名唯一性并按角色默认数据范围创建。
-- list_users · function · L394-L401 — 管理员获取全部用户列表。
-- update_user_role · function · L405-L442 — 管理员修改用户角色，校验角色合法性并同步重置为角色默认数据范围。
-- update_user_data_scope · function · L446-L486 — 管理员授予/收回用户数据可见范围（all/own），覆盖角色默认范围。
-- toggle_user_active · function · L490-L518 — 管理员启用/停用用户，禁止停用当前登录用户。
-- update_profile · function · L522-L541 — 用户修改个人昵称或密码，修改密码需校验原密码。
+- LoginRequest · class · L55-L57 — 登录请求体，包含用户名和密码字段。
+- LoginResponse · class · L60-L64 — 登录响应体，返回 access_token 及用户信息。
+- RefreshResponse · class · L67-L69 — 刷新响应体，仅返回新的 access_token。
+- LogoutResponse · class · L72-L74 — 登出响应体，返回成功标志与提示消息。
+- UserResponse · class · L77-L90 — 用户响应模型，包含角色、数据可见范围、菜单等前端展示所需字段。
+- RegisterRequest · class · L93-L97 — 注册请求体，校验用户名长度、密码长度并指定角色。
+- UpdateRoleRequest · class · L100-L101 — 修改角色请求体，仅含角色字段。
+- UpdateDataScopeRequest · class · L104-L105 — 修改数据可见范围请求体，仅含 data_scope 字段。
+- UpdateProfileRequest · class · L108-L111 — 修改个人资料请求体，支持昵称与密码修改。
+- _user_to_response · function · L119-L132 — 将 User ORM 对象转换为响应模型，解析角色显示名、数据范围与菜单。
+- _set_refresh_cookie · function · L135-L148 — 将 refresh_token 写入或清除 HttpOnly Cookie，用于无感刷新与登出。
+- _write_audit · function · L151-L177 — 写入审计日志，记录登录/登出/角色变更等关键操作，失败不影响主流程。
+- _revoke_session_by_refresh_token · function · L180-L193 — 根据 refresh_token 哈希查找并吊销对应会话，实现登出黑名单。
+- login · function · L202-L239 — 用户名密码登录，校验凭据与激活状态后签发双 Token 并下发 refresh Cookie。
+- refresh_token · function · L243-L325 — 用 refresh_token 无感刷新 access_token，校验会话有效性并复用固定 jti 签发新 token。
+- logout · function · L329-L341 — 退出登录，吊销 refresh_token 会话并清除 Cookie。
+- get_me · function · L345-L349 — 返回当前登录用户信息。
+- register · function · L353-L394 — 管理员注册新用户，校验角色合法性、用户名唯一性并按角色默认数据范围创建。
+- list_users · function · L398-L405 — 管理员获取全部用户列表。
+- update_user_role · function · L409-L446 — 管理员修改用户角色，校验角色合法性并同步重置为角色默认数据范围。
+- update_user_data_scope · function · L450-L490 — 管理员授予/收回用户数据可见范围（all/own），覆盖角色默认范围。
+- toggle_user_active · function · L494-L522 — 管理员启用/停用用户，禁止停用当前登录用户。
+- update_profile · function · L526-L545 — 用户修改个人昵称或密码，修改密码需校验原密码。

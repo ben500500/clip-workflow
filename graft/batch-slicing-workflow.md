@@ -187,16 +187,16 @@ covers:
     at: 'backend/app/services/batch_slice_service.py:L259-L271'
   - symbol: _trigger_slice
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L274-L305'
+    at: 'backend/app/services/batch_slice_service.py:L274-L307'
   - symbol: _wait_slice
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L308-L334'
+    at: 'backend/app/services/batch_slice_service.py:L310-L336'
   - symbol: _delete_source
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L337-L358'
+    at: 'backend/app/services/batch_slice_service.py:L339-L360'
   - symbol: run_batch
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L361-L534'
+    at: 'backend/app/services/batch_slice_service.py:L363-L536'
 ---
 <!-- context:generated:start -->
 ## Summary

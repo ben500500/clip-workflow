@@ -15,32 +15,30 @@ FastAPI router exposing dashboard analytics, metrics, and data-import endpoints 
 - get_top_videos · function · L176-L183 — Endpoint returning top videos ranked by attributed revenue.
 - list_video_metrics · function · L189-L239 — Endpoint listing video metrics with account/content-type/play-level filters, whitelisted sorting, and pagination.
 - get_video_ranking · function · L243-L251 — Endpoint returning a video ranking by a chosen metric and limit.
-- get_video_detail · function · L255-L270 — Endpoint fetching a single video metric by UUID, returning 404 if not found.
-- update_video_tags · function · L274-L308 — Endpoint updating a video's tags, normalizing/deduplicating them and back-writing the first tag into content_type for compatibility.
-- get_mini_program_metrics · function · L314-L353 — Endpoint listing mini-program metrics filtered by account and date range, ordered newest first.
-- get_ad_metrics · function · L359-L402 — Endpoint listing ad metrics filtered by account and date range, ordered newest first.
-- get_drama_ranking · function · L408-L445 — Endpoint returning dramas ranked by play count, optionally filtered by account and date.
-- get_funnel · function · L451-L459 — Endpoint returning funnel data for a given account and date.
-- get_funnel_trend · function · L463-L504 — Endpoint returning funnel snapshot time series over a date range, ordered chronologically.
-- import_video_metrics · function · L510-L518 — Endpoint accepting an Excel upload to bulk-import video metrics for an account.
-- import_mini_program_metrics · function · L522-L530 — Endpoint accepting an Excel upload to bulk-import mini-program metrics for an account.
-- import_ad_metrics · function · L534-L542 — Endpoint accepting an Excel upload to bulk-import ad metrics for an account.
-- download_import_template · function · L546-L559 — Endpoint generating and streaming an Excel import template for the requested metric type.
-- get_dashboard_config · function · L565-L585 — Endpoint returning the dashboard configuration.
-- update_dashboard_config · function · L589-L609 — Endpoint updating the dashboard configuration.
-- smart_import_upload · function · L615-L623 — Endpoint uploading a file for smart/auto-detected import.
-- import_preview · function · L627-L632 — Endpoint previewing an uploaded file's parsed columns before import.
-- import_confirm · function · L636-L652 — Endpoint confirming a smart import with a field mapping and target table, applying the parsed data.
-- list_import_templates · function · L656-L660 — Endpoint listing available import templates.
-- save_custom_import_template · function · L664-L673 — Endpoint persisting a user-defined custom import template.
-- list_import_history · function · L677-L681 — Endpoint listing past import history records.
-- get_ecosystem · function · L687-L697 — Endpoint returning ecosystem metrics filtered by account and date range.
-- get_cross_analysis · function · L703-L711 — Endpoint returning cross-analysis of video metrics with pagination.
-- get_drama_detail · function · L717-L763 — Endpoint returning detailed metrics for a single drama, optionally scoped to an account.
-- get_funnel_compare · function · L769-L832 — Endpoint comparing current-period funnel metrics against the previous period, computing percentage changes.
-- build_filter · function · L782-L786 — Builds a date-range filter predicate for funnel snapshots between start and end dates.
-- calc_change · function · L808-L811 — Computes the percentage change between current and previous values, guarding against zero/None denominators.
-- _serialize_shortdrama_analysis_row · function · L841-L896 — Serializes a video metric row into the short-drama analysis response shape using context-derived derived metrics.
-- get_shortdrama_analysis · function · L900-L970 — Endpoint returning paginated short-drama analysis rows filtered by platform and date range.
-- get_shortdrama_summary · function · L974-L1027 — Endpoint returning aggregate summary metrics for short-drama analysis within a date range.
-- get_shortdrama_topics · function · L1031-L1089 — Endpoint returning top short-drama topics ranked by a metric within a date range.
+- update_video_tags · function · L255-L289 — Endpoint updating a video's tags, normalizing/deduplicating them and back-writing the first tag into content_type for compatibility.
+- get_mini_program_metrics · function · L295-L334 — Endpoint listing mini-program metrics filtered by account and date range, ordered newest first.
+- get_ad_metrics · function · L340-L383 — Endpoint listing ad metrics filtered by account and date range, ordered newest first.
+- get_drama_ranking · function · L389-L426 — Endpoint returning dramas ranked by play count, optionally filtered by account and date.
+- get_funnel_trend · function · L432-L473 — Endpoint returning funnel snapshot time series over a date range, ordered chronologically.
+- import_video_metrics · function · L479-L487 — Endpoint accepting an Excel upload to bulk-import video metrics for an account.
+- import_mini_program_metrics · function · L491-L499 — Endpoint accepting an Excel upload to bulk-import mini-program metrics for an account.
+- import_ad_metrics · function · L503-L511 — Endpoint accepting an Excel upload to bulk-import ad metrics for an account.
+- download_import_template · function · L515-L528 — Endpoint generating and streaming an Excel import template for the requested metric type.
+- get_dashboard_config · function · L534-L554 — Endpoint returning the dashboard configuration.
+- update_dashboard_config · function · L558-L578 — Endpoint updating the dashboard configuration.
+- smart_import_upload · function · L584-L592 — Endpoint uploading a file for smart/auto-detected import.
+- import_preview · function · L596-L601 — Endpoint previewing an uploaded file's parsed columns before import.
+- import_confirm · function · L605-L621 — Endpoint confirming a smart import with a field mapping and target table, applying the parsed data.
+- list_import_templates · function · L625-L629 — Endpoint listing available import templates.
+- save_custom_import_template · function · L633-L642 — Endpoint persisting a user-defined custom import template.
+- list_import_history · function · L646-L650 — Endpoint listing past import history records.
+- get_ecosystem · function · L656-L666 — Endpoint returning ecosystem metrics filtered by account and date range.
+- get_cross_analysis · function · L672-L680 — Endpoint returning cross-analysis of video metrics with pagination.
+- get_drama_detail · function · L686-L732 — Endpoint returning detailed metrics for a single drama, optionally scoped to an account.
+- get_funnel_compare · function · L738-L801 — Endpoint comparing current-period funnel metrics against the previous period, computing percentage changes.
+- build_filter · function · L751-L755 — Builds a date-range filter predicate for funnel snapshots between start and end dates.
+- calc_change · function · L777-L780 — Computes the percentage change between current and previous values, guarding against zero/None denominators.
+- _serialize_shortdrama_analysis_row · function · L810-L865 — Serializes a video metric row into the short-drama analysis response shape using context-derived derived metrics.
+- get_shortdrama_analysis · function · L869-L939 — Endpoint returning paginated short-drama analysis rows filtered by platform and date range.
+- get_shortdrama_summary · function · L943-L996 — Endpoint returning aggregate summary metrics for short-drama analysis within a date range.
+- get_shortdrama_topics · function · L1000-L1058 — Endpoint returning top short-drama topics ranked by a metric within a date range.

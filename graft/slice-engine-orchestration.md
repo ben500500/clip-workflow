@@ -42,9 +42,6 @@ covers:
   - symbol: run_slice_fast
     kind: function
     at: 'backend/app/services/slice_service.py:L224-L279'
-  - symbol: run_preview
-    kind: function
-    at: 'backend/app/services/slice_service.py:L282-L296'
 ---
 <!-- context:generated:start -->
 ## Summary

@@ -27,139 +27,142 @@ generator:
 covers:
   - symbol: _remove_path
     kind: function
-    at: 'backend/app/api/projects.py:L37-L47'
+    at: 'backend/app/api/projects.py:L34-L44'
   - symbol: ProjectCreate
     kind: class
-    at: 'backend/app/api/projects.py:L54-L57'
+    at: 'backend/app/api/projects.py:L51-L54'
   - symbol: ProjectUpdate
     kind: class
-    at: 'backend/app/api/projects.py:L60-L64'
+    at: 'backend/app/api/projects.py:L57-L61'
   - symbol: ProjectResponse
     kind: class
-    at: 'backend/app/api/projects.py:L67-L79'
+    at: 'backend/app/api/projects.py:L64-L76'
   - symbol: EpisodeCreate
     kind: class
-    at: 'backend/app/api/projects.py:L82-L88'
+    at: 'backend/app/api/projects.py:L79-L85'
   - symbol: EpisodeResponse
     kind: class
-    at: 'backend/app/api/projects.py:L91-L104'
+    at: 'backend/app/api/projects.py:L88-L101'
   - symbol: EpisodeListResponse
     kind: class
-    at: 'backend/app/api/projects.py:L107-L109'
+    at: 'backend/app/api/projects.py:L104-L106'
   - symbol: ProjectOutputItem
     kind: class
-    at: 'backend/app/api/projects.py:L112-L127'
+    at: 'backend/app/api/projects.py:L109-L124'
   - symbol: ProjectOutputListResponse
     kind: class
-    at: 'backend/app/api/projects.py:L130-L132'
+    at: 'backend/app/api/projects.py:L127-L129'
   - symbol: _serialize_project
     kind: function
-    at: 'backend/app/api/projects.py:L137-L153'
+    at: 'backend/app/api/projects.py:L134-L150'
   - symbol: _serialize_episode
     kind: function
-    at: 'backend/app/api/projects.py:L156-L169'
+    at: 'backend/app/api/projects.py:L153-L166'
   - symbol: _data_scope_filter
     kind: function
-    at: 'backend/app/api/projects.py:L175-L183'
+    at: 'backend/app/api/projects.py:L172-L180'
   - symbol: _check_project_access
     kind: function
-    at: 'backend/app/api/projects.py:L186-L190'
+    at: 'backend/app/api/projects.py:L183-L187'
   - symbol: create_project
     kind: function
-    at: 'backend/app/api/projects.py:L194-L209'
+    at: 'backend/app/api/projects.py:L191-L206'
   - symbol: list_projects
     kind: function
-    at: 'backend/app/api/projects.py:L213-L249'
+    at: 'backend/app/api/projects.py:L210-L246'
   - symbol: project_stats
     kind: function
-    at: 'backend/app/api/projects.py:L253-L310'
+    at: 'backend/app/api/projects.py:L250-L307'
   - symbol: get_project
     kind: function
-    at: 'backend/app/api/projects.py:L314-L336'
+    at: 'backend/app/api/projects.py:L311-L333'
   - symbol: update_project
     kind: function
-    at: 'backend/app/api/projects.py:L340-L371'
+    at: 'backend/app/api/projects.py:L337-L368'
   - symbol: _cleanup_episode_minio
     kind: function
-    at: 'backend/app/api/projects.py:L374-L389'
+    at: 'backend/app/api/projects.py:L371-L386'
   - symbol: _cleanup_episode_media
     kind: function
-    at: 'backend/app/api/projects.py:L392-L408'
+    at: 'backend/app/api/projects.py:L389-L405'
   - symbol: delete_project
     kind: function
-    at: 'backend/app/api/projects.py:L412-L451'
+    at: 'backend/app/api/projects.py:L409-L448'
   - symbol: create_episode
     kind: function
-    at: 'backend/app/api/projects.py:L458-L490'
+    at: 'backend/app/api/projects.py:L455-L487'
   - symbol: list_episodes
     kind: function
-    at: 'backend/app/api/projects.py:L494-L521'
+    at: 'backend/app/api/projects.py:L491-L518'
   - symbol: list_project_outputs
     kind: function
-    at: 'backend/app/api/projects.py:L525-L603'
-  - symbol: project_workflow_status
-    kind: function
-    at: 'backend/app/api/projects.py:L608-L791'
-  - symbol: _stage_status
-    kind: function
-    at: 'backend/app/api/projects.py:L671-L682'
+    at: 'backend/app/api/projects.py:L522-L600'
   - symbol: get_episode
     kind: function
-    at: 'backend/app/api/projects.py:L795-L847'
+    at: 'backend/app/api/projects.py:L604-L656'
   - symbol: get_episode_video_url
     kind: function
-    at: 'backend/app/api/projects.py:L851-L881'
+    at: 'backend/app/api/projects.py:L660-L690'
   - symbol: delete_episode
     kind: function
-    at: 'backend/app/api/projects.py:L885-L915'
+    at: 'backend/app/api/projects.py:L694-L724'
   - symbol: _cleanup_orphan_media_files
     kind: function
-    at: 'backend/app/api/projects.py:L918-L957'
+    at: 'backend/app/api/projects.py:L727-L766'
   - symbol: _cleanup_episode_media_files
     kind: function
-    at: 'backend/app/api/projects.py:L960-L981'
+    at: 'backend/app/api/projects.py:L769-L790'
   - symbol: upload_badge_image
     kind: function
-    at: 'backend/app/api/slice.py:L104-L166'
+    at: 'backend/app/api/slice.py:L105-L167'
   - symbol: upload_subtitle_file
     kind: function
-    at: 'backend/app/api/slice.py:L170-L228'
+    at: 'backend/app/api/slice.py:L171-L229'
   - symbol: get_slice_preferences
     kind: function
-    at: 'backend/app/api/slice.py:L232-L241'
+    at: 'backend/app/api/slice.py:L233-L242'
   - symbol: save_slice_preferences
     kind: function
-    at: 'backend/app/api/slice.py:L245-L261'
+    at: 'backend/app/api/slice.py:L246-L262'
+  - symbol: _resolve_slice_inputs
+    kind: function
+    at: 'backend/app/api/slice.py:L265-L535'
+  - symbol: _create_slice_task_record
+    kind: function
+    at: 'backend/app/api/slice.py:L538-L624'
+  - symbol: _dispatch_slice_task
+    kind: function
+    at: 'backend/app/api/slice.py:L627-L739'
   - symbol: run_slice
     kind: function
-    at: 'backend/app/api/slice.py:L265-L662'
+    at: 'backend/app/api/slice.py:L743-L783'
   - symbol: list_slice_tasks
     kind: function
-    at: 'backend/app/api/slice.py:L666-L693'
+    at: 'backend/app/api/slice.py:L787-L814'
   - symbol: get_slice_task
     kind: function
-    at: 'backend/app/api/slice.py:L697-L746'
+    at: 'backend/app/api/slice.py:L818-L867'
   - symbol: get_slice_outputs
     kind: function
-    at: 'backend/app/api/slice.py:L750-L790'
+    at: 'backend/app/api/slice.py:L871-L911'
   - symbol: get_slice_upload_url
     kind: function
-    at: 'backend/app/api/slice.py:L794-L831'
+    at: 'backend/app/api/slice.py:L915-L952'
   - symbol: slice_task_callback
     kind: function
-    at: 'backend/app/api/slice.py:L835-L965'
+    at: 'backend/app/api/slice.py:L956-L1086'
   - symbol: update_slice_progress
     kind: function
-    at: 'backend/app/api/slice.py:L969-L995'
+    at: 'backend/app/api/slice.py:L1090-L1116'
   - symbol: retry_slice_task
     kind: function
-    at: 'backend/app/api/slice.py:L999-L1140'
+    at: 'backend/app/api/slice.py:L1120-L1261'
   - symbol: cancel_slice_task
     kind: function
-    at: 'backend/app/api/slice.py:L1144-L1183'
+    at: 'backend/app/api/slice.py:L1265-L1304'
   - symbol: delete_slice_task
     kind: function
-    at: 'backend/app/api/slice.py:L1187-L1245'
+    at: 'backend/app/api/slice.py:L1308-L1366'
   - symbol: BadgeItem
     kind: class
     at: 'backend/app/api/slice_helpers.py:L63-L76'
@@ -168,97 +171,106 @@ covers:
     at: 'backend/app/api/slice_helpers.py:L79-L96'
   - symbol: SliceRunRequest
     kind: class
-    at: 'backend/app/api/slice_helpers.py:L99-L249'
+    at: 'backend/app/api/slice_helpers.py:L99-L258'
   - symbol: SliceRunResponse
     kind: class
-    at: 'backend/app/api/slice_helpers.py:L252-L257'
+    at: 'backend/app/api/slice_helpers.py:L261-L266'
   - symbol: SliceTaskResponse
     kind: class
-    at: 'backend/app/api/slice_helpers.py:L260-L285'
+    at: 'backend/app/api/slice_helpers.py:L269-L294'
   - symbol: SliceOutputResponse
     kind: class
-    at: 'backend/app/api/slice_helpers.py:L288-L300'
+    at: 'backend/app/api/slice_helpers.py:L297-L309'
   - symbol: SliceTaskCallback
     kind: class
-    at: 'backend/app/api/slice_helpers.py:L303-L313'
+    at: 'backend/app/api/slice_helpers.py:L312-L322'
   - symbol: UserSliceConfigRequest
     kind: class
-    at: 'backend/app/api/slice_helpers.py:L316-L317'
+    at: 'backend/app/api/slice_helpers.py:L325-L326'
   - symbol: _serialize_task
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L325-L349'
+    at: 'backend/app/api/slice_helpers.py:L334-L358'
   - symbol: _serialize_output
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L352-L364'
+    at: 'backend/app/api/slice_helpers.py:L361-L373'
   - symbol: _ffprobe_duration
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L372-L383'
+    at: 'backend/app/api/slice_helpers.py:L381-L392'
   - symbol: _resolve_engine
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L386-L394'
+    at: 'backend/app/api/slice_helpers.py:L395-L403'
   - symbol: _build_watermark_config
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L397-L429'
+    at: 'backend/app/api/slice_helpers.py:L406-L438'
   - symbol: _build_vert2horiz_config
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L432-L464'
+    at: 'backend/app/api/slice_helpers.py:L441-L473'
   - symbol: _build_badges_config
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L467-L499'
+    at: 'backend/app/api/slice_helpers.py:L476-L508'
   - symbol: _build_text_overlays_config
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L502-L535'
+    at: 'backend/app/api/slice_helpers.py:L511-L544'
   - symbol: _build_subtitle_mask_config
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L538-L575'
+    at: 'backend/app/api/slice_helpers.py:L547-L584'
   - symbol: _build_watermark_mask_config
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L578-L606'
+    at: 'backend/app/api/slice_helpers.py:L587-L615'
   - symbol: _read_existing_subtitle
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L619-L653'
+    at: 'backend/app/api/slice_helpers.py:L628-L662'
   - symbol: _with_subtitle_options
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L656-L670'
+    at: 'backend/app/api/slice_helpers.py:L665-L679'
   - symbol: _read_uploaded_subtitle
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L673-L701'
+    at: 'backend/app/api/slice_helpers.py:L682-L710'
   - symbol: _vtt_to_srt
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L704-L763'
+    at: 'backend/app/api/slice_helpers.py:L713-L772'
   - symbol: _resolve_source_subtitle_srt
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L766-L803'
+    at: 'backend/app/api/slice_helpers.py:L775-L812'
   - symbol: _generate_subtitle_config
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L806-L820'
+    at: 'backend/app/api/slice_helpers.py:L815-L829'
   - symbol: _not_detect_task
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L823-L832'
+    at: 'backend/app/api/slice_helpers.py:L832-L841'
   - symbol: _get_max_concurrent_tasks
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L835-L851'
+    at: 'backend/app/api/slice_helpers.py:L844-L860'
   - symbol: _acquire_concurrency_slot
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L854-L878'
+    at: 'backend/app/api/slice_helpers.py:L863-L887'
   - symbol: _output_prefix
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L881-L883'
+    at: 'backend/app/api/slice_helpers.py:L890-L892'
   - symbol: _refresh_episode_status
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L886-L930'
+    at: 'backend/app/api/slice_helpers.py:L895-L939'
   - symbol: _publish_to_worker
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L933-L1073'
+    at: 'backend/app/api/slice_helpers.py:L942-L1082'
   - symbol: _subtitle_enabled
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L1004-L1005'
+    at: 'backend/app/api/slice_helpers.py:L1013-L1014'
   - symbol: _dispatch_celery
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L1076-L1132'
+    at: 'backend/app/api/slice_helpers.py:L1085-L1141'
   - symbol: _verify_worker_token
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L1135-L1145'
+    at: 'backend/app/api/slice_helpers.py:L1144-L1154'
+  - symbol: _detect_silence_points
+    kind: function
+    at: 'backend/app/api/slice_helpers.py:L1168-L1212'
+  - symbol: _nearest_in_window
+    kind: function
+    at: 'backend/app/api/slice_helpers.py:L1215-L1230'
+  - symbol: refine_clip_boundaries
+    kind: function
+    at: 'backend/app/api/slice_helpers.py:L1233-L1285'
 ---
 <!-- context:generated:start -->
 ## Summary

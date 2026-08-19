@@ -24,73 +24,73 @@ generator:
 covers:
   - symbol: LoginRequest
     kind: class
-    at: 'backend/app/api/auth.py:L51-L53'
+    at: 'backend/app/api/auth.py:L55-L57'
   - symbol: LoginResponse
     kind: class
-    at: 'backend/app/api/auth.py:L56-L60'
+    at: 'backend/app/api/auth.py:L60-L64'
   - symbol: RefreshResponse
     kind: class
-    at: 'backend/app/api/auth.py:L63-L65'
+    at: 'backend/app/api/auth.py:L67-L69'
   - symbol: LogoutResponse
     kind: class
-    at: 'backend/app/api/auth.py:L68-L70'
+    at: 'backend/app/api/auth.py:L72-L74'
   - symbol: UserResponse
     kind: class
-    at: 'backend/app/api/auth.py:L73-L86'
+    at: 'backend/app/api/auth.py:L77-L90'
   - symbol: RegisterRequest
     kind: class
-    at: 'backend/app/api/auth.py:L89-L93'
+    at: 'backend/app/api/auth.py:L93-L97'
   - symbol: UpdateRoleRequest
     kind: class
-    at: 'backend/app/api/auth.py:L96-L97'
+    at: 'backend/app/api/auth.py:L100-L101'
   - symbol: UpdateDataScopeRequest
     kind: class
-    at: 'backend/app/api/auth.py:L100-L101'
+    at: 'backend/app/api/auth.py:L104-L105'
   - symbol: UpdateProfileRequest
     kind: class
-    at: 'backend/app/api/auth.py:L104-L107'
+    at: 'backend/app/api/auth.py:L108-L111'
   - symbol: _user_to_response
     kind: function
-    at: 'backend/app/api/auth.py:L115-L128'
+    at: 'backend/app/api/auth.py:L119-L132'
   - symbol: _set_refresh_cookie
     kind: function
-    at: 'backend/app/api/auth.py:L131-L144'
+    at: 'backend/app/api/auth.py:L135-L148'
   - symbol: _write_audit
     kind: function
-    at: 'backend/app/api/auth.py:L147-L173'
+    at: 'backend/app/api/auth.py:L151-L177'
   - symbol: _revoke_session_by_refresh_token
     kind: function
-    at: 'backend/app/api/auth.py:L176-L189'
+    at: 'backend/app/api/auth.py:L180-L193'
   - symbol: login
     kind: function
-    at: 'backend/app/api/auth.py:L198-L235'
+    at: 'backend/app/api/auth.py:L202-L239'
   - symbol: refresh_token
     kind: function
-    at: 'backend/app/api/auth.py:L239-L321'
+    at: 'backend/app/api/auth.py:L243-L325'
   - symbol: logout
     kind: function
-    at: 'backend/app/api/auth.py:L325-L337'
+    at: 'backend/app/api/auth.py:L329-L341'
   - symbol: get_me
     kind: function
-    at: 'backend/app/api/auth.py:L341-L345'
+    at: 'backend/app/api/auth.py:L345-L349'
   - symbol: register
     kind: function
-    at: 'backend/app/api/auth.py:L349-L390'
+    at: 'backend/app/api/auth.py:L353-L394'
   - symbol: list_users
     kind: function
-    at: 'backend/app/api/auth.py:L394-L401'
+    at: 'backend/app/api/auth.py:L398-L405'
   - symbol: update_user_role
     kind: function
-    at: 'backend/app/api/auth.py:L405-L442'
+    at: 'backend/app/api/auth.py:L409-L446'
   - symbol: update_user_data_scope
     kind: function
-    at: 'backend/app/api/auth.py:L446-L486'
+    at: 'backend/app/api/auth.py:L450-L490'
   - symbol: toggle_user_active
     kind: function
-    at: 'backend/app/api/auth.py:L490-L518'
+    at: 'backend/app/api/auth.py:L494-L522'
   - symbol: update_profile
     kind: function
-    at: 'backend/app/api/auth.py:L522-L541'
+    at: 'backend/app/api/auth.py:L526-L545'
 ---
 <!-- context:generated:start -->
 ## Summary

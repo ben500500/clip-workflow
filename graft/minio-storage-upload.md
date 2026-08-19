@@ -80,30 +80,27 @@ covers:
   - symbol: upload_chunk
     kind: function
     at: 'backend/app/api/upload.py:L201-L230'
-  - symbol: get_upload_progress_endpoint
-    kind: function
-    at: 'backend/app/api/upload.py:L234-L246'
   - symbol: complete_upload
     kind: function
-    at: 'backend/app/api/upload.py:L250-L284'
+    at: 'backend/app/api/upload.py:L234-L268'
   - symbol: upload_single
     kind: function
-    at: 'backend/app/api/upload.py:L288-L358'
+    at: 'backend/app/api/upload.py:L272-L342'
   - symbol: upload_multi
     kind: function
-    at: 'backend/app/api/upload.py:L362-L525'
+    at: 'backend/app/api/upload.py:L346-L509'
   - symbol: _check_av_sync
     kind: function
-    at: 'backend/app/api/upload.py:L528-L567'
+    at: 'backend/app/api/upload.py:L512-L551'
   - symbol: _run_ffmpeg
     kind: function
-    at: 'backend/app/api/upload.py:L570-L583'
+    at: 'backend/app/api/upload.py:L554-L567'
   - symbol: _ffmpeg_concat
     kind: function
-    at: 'backend/app/api/upload.py:L586-L635'
+    at: 'backend/app/api/upload.py:L570-L619'
   - symbol: cancel_upload
     kind: function
-    at: 'backend/app/api/upload.py:L639-L642'
+    at: 'backend/app/api/upload.py:L623-L626'
 ---
 <!-- context:generated:start -->
 ## Summary

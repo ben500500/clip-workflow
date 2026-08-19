@@ -52,93 +52,87 @@ covers:
   - symbol: get_video_ranking
     kind: function
     at: 'backend/app/api/dashboard.py:L243-L251'
-  - symbol: get_video_detail
-    kind: function
-    at: 'backend/app/api/dashboard.py:L255-L270'
   - symbol: update_video_tags
     kind: function
-    at: 'backend/app/api/dashboard.py:L274-L308'
+    at: 'backend/app/api/dashboard.py:L255-L289'
   - symbol: get_mini_program_metrics
     kind: function
-    at: 'backend/app/api/dashboard.py:L314-L353'
+    at: 'backend/app/api/dashboard.py:L295-L334'
   - symbol: get_ad_metrics
     kind: function
-    at: 'backend/app/api/dashboard.py:L359-L402'
+    at: 'backend/app/api/dashboard.py:L340-L383'
   - symbol: get_drama_ranking
     kind: function
-    at: 'backend/app/api/dashboard.py:L408-L445'
-  - symbol: get_funnel
-    kind: function
-    at: 'backend/app/api/dashboard.py:L451-L459'
+    at: 'backend/app/api/dashboard.py:L389-L426'
   - symbol: get_funnel_trend
     kind: function
-    at: 'backend/app/api/dashboard.py:L463-L504'
+    at: 'backend/app/api/dashboard.py:L432-L473'
   - symbol: import_video_metrics
     kind: function
-    at: 'backend/app/api/dashboard.py:L510-L518'
+    at: 'backend/app/api/dashboard.py:L479-L487'
   - symbol: import_mini_program_metrics
     kind: function
-    at: 'backend/app/api/dashboard.py:L522-L530'
+    at: 'backend/app/api/dashboard.py:L491-L499'
   - symbol: import_ad_metrics
     kind: function
-    at: 'backend/app/api/dashboard.py:L534-L542'
+    at: 'backend/app/api/dashboard.py:L503-L511'
   - symbol: download_import_template
     kind: function
-    at: 'backend/app/api/dashboard.py:L546-L559'
+    at: 'backend/app/api/dashboard.py:L515-L528'
   - symbol: get_dashboard_config
     kind: function
-    at: 'backend/app/api/dashboard.py:L565-L585'
+    at: 'backend/app/api/dashboard.py:L534-L554'
   - symbol: update_dashboard_config
     kind: function
-    at: 'backend/app/api/dashboard.py:L589-L609'
+    at: 'backend/app/api/dashboard.py:L558-L578'
   - symbol: smart_import_upload
     kind: function
-    at: 'backend/app/api/dashboard.py:L615-L623'
+    at: 'backend/app/api/dashboard.py:L584-L592'
   - symbol: import_preview
     kind: function
-    at: 'backend/app/api/dashboard.py:L627-L632'
+    at: 'backend/app/api/dashboard.py:L596-L601'
   - symbol: import_confirm
     kind: function
-    at: 'backend/app/api/dashboard.py:L636-L652'
+    at: 'backend/app/api/dashboard.py:L605-L621'
   - symbol: list_import_templates
     kind: function
-    at: 'backend/app/api/dashboard.py:L656-L660'
+    at: 'backend/app/api/dashboard.py:L625-L629'
   - symbol: save_custom_import_template
     kind: function
-    at: 'backend/app/api/dashboard.py:L664-L673'
+    at: 'backend/app/api/dashboard.py:L633-L642'
   - symbol: list_import_history
     kind: function
-    at: 'backend/app/api/dashboard.py:L677-L681'
+    at: 'backend/app/api/dashboard.py:L646-L650'
   - symbol: get_ecosystem
     kind: function
-    at: 'backend/app/api/dashboard.py:L687-L697'
+    at: 'backend/app/api/dashboard.py:L656-L666'
   - symbol: get_cross_analysis
     kind: function
-    at: 'backend/app/api/dashboard.py:L703-L711'
+    at: 'backend/app/api/dashboard.py:L672-L680'
   - symbol: get_drama_detail
     kind: function
-    at: 'backend/app/api/dashboard.py:L717-L763'
+    at: 'backend/app/api/dashboard.py:L686-L732'
   - symbol: get_funnel_compare
     kind: function
-    at: 'backend/app/api/dashboard.py:L769-L832'
+    at: 'backend/app/api/dashboard.py:L738-L801'
   - symbol: build_filter
     kind: function
-    at: 'backend/app/api/dashboard.py:L782-L786'
+    at: 'backend/app/api/dashboard.py:L751-L755'
   - symbol: calc_change
     kind: function
-    at: 'backend/app/api/dashboard.py:L808-L811'
+    at: 'backend/app/api/dashboard.py:L777-L780'
   - symbol: _serialize_shortdrama_analysis_row
     kind: function
-    at: 'backend/app/api/dashboard.py:L841-L896'
+    at: 'backend/app/api/dashboard.py:L810-L865'
   - symbol: get_shortdrama_analysis
     kind: function
-    at: 'backend/app/api/dashboard.py:L900-L970'
+    at: 'backend/app/api/dashboard.py:L869-L939'
   - symbol: get_shortdrama_summary
     kind: function
-    at: 'backend/app/api/dashboard.py:L974-L1027'
+    at: 'backend/app/api/dashboard.py:L943-L996'
   - symbol: get_shortdrama_topics
     kind: function
-    at: 'backend/app/api/dashboard.py:L1031-L1089'
+    at: 'backend/app/api/dashboard.py:L1000-L1058'
 ---
 <!-- context:generated:start -->
 ## Summary

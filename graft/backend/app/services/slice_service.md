@@ -7,4 +7,3 @@
 - run_slice · function · L78-L165 — Builds the full ffmpeg slice engine CLI command from all optional configs (watermark, badges, subtitles, masks, dedupe, cover) and executes it, returning the engine's exit code and output.
 - run_slice_scrub · function · L168-L221 — Delegates to run_slice in scrub mode, slicing the cutlist minus removed intervals by passing the intervals path.
 - run_slice_fast · function · L224-L279 — Validates the mode is fast or dedupe, then delegates to run_slice without intervals for fast/dedupe slicing.
-- run_preview · function · L282-L296 — Runs the preview.py engine to extract preview frames from a source video into an output directory.
