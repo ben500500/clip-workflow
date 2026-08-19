@@ -521,13 +521,13 @@ class VideoChannelPublisher:
                 parts.push(body ? body.slice(0, 3000) : '');
                 // 弹层/提示区域
                 for (const sel of ['.weui-mask, .wx-msg, [class*=toast], [class*=popup], '
-                                    '[class*=dialog], [class*=modal], [class*=notice]']) {
+                                    + '[class*=dialog], [class*=modal], [class*=notice]']) {
                     try {
                         const el = document.querySelector(sel);
                         if (el && el.innerText) parts.push(el.innerText.slice(0, 800));
                     } catch (e) {}
                 }
-                return parts.join('\n').toLowerCase();
+                return parts.join(String.fromCharCode(10)).toLowerCase();
             }""")
             haystack = f"{url.lower()} {text}"
             for category, keywords in UPLOAD_RISK_PROBES.items():
