@@ -154,7 +154,8 @@ def load_lan_source_config(
         cfg.enabled = _as_bool(db.get("enabled"))
     if db.get("base_url"):
         cfg.base_url = str(db.get("base_url"))
-    if db.get("manage_base"):
+    if "manage_base" in db:
+        # 显式判断 key 是否存在：DB 中置空字符串也生效，可强制回退到 dupload cdn 源
         cfg.manage_base = str(db.get("manage_base"))
     if db.get("api_prefix"):
         cfg.api_prefix = str(db.get("api_prefix"))
