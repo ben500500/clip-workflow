@@ -196,6 +196,21 @@ class Settings(BaseSettings):
     # 每集 HTTP 下载并发数（默认 2，避免打爆源服务器）
     LAN_SOURCE_CONCURRENCY: int = 2
 
+    # ── 推送到下载平台（dupload，对接 21:8800 dramaupload / dupload 独立服务）──
+    # 总开关（默认关闭）。开启后剧目详情页出现「推送到下载平台」区块，
+    # 一键调用 POST /api/dupload/tasks（action=only_download）把剧目素材链接推给下载平台。
+    DUPLOAD_ENABLED: bool = False
+    # dupload 服务基础地址（默认局域网 21:8800）
+    DUPLOAD_BASE_URL: str = "http://192.168.1.21:8800"
+    # 批量导入接口路径
+    DUPLOAD_IMPORT_PATH: str = "/api/dupload/tasks"
+    # 动作：only_download(仅下载)/upload_miniapp(上传小程序)
+    DUPLOAD_ACTION: str = "only_download"
+    # 剧目模型里素材链接(shareUrl)的字段名（默认 material_link）
+    DUPLOAD_SHARE_URL_FIELD: str = "material_link"
+    # 单次请求超时（秒）
+    DUPLOAD_REQUEST_TIMEOUT: int = 30
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

@@ -74,6 +74,7 @@ CONFIG_DESCRIPTIONS: Dict[str, str] = {
     "publish_rate_config": "发布风控/节奏参数（JSON）：acct_limit 单账号每日发布上限；op_limit 单运营者每日发布上限；op_inflight_limit 单运营者并发在途上限；global_inflight_limit 全局并发在途上限；min_delay_ms/max_delay_ms 发布 tab 启动前随机延迟区间(毫秒)；fingerprint_variant 是否启用 UA/指纹变体。用于多运营者发布时降低风控风险，支持运行时热更。",
     "default_download_resolution": "资源下载默认分辨率：720p 或 1080p（默认 720p）。下载视频资源入库时按该分辨率统一缩放，节省存储并适配各平台主流清晰度。",
     "lan_source_config": "局域网获取剧集配置（JSON）：enabled 为总开关（默认 false，开启后剧目详情页显示「局域网获取剧集」面板）；base_url 为 dupload cdn 源基础地址；manage_base 为 IAA 管理平台基础地址（可选，提供剧目清单）；api_prefix 为剧集清单接口路径前缀（可选）；download_timeout 为单集拉流整体超时(秒)；queue 为导入任务队列；default_project 为默认入库归属项目名；concurrency 为每集 HTTP 下载并发数。可在系统设置热更，无需改 .env。",
+    "dupload_config": "推送到下载平台(dupload)配置（JSON）：enabled 为总开关（默认 false，开启后剧目详情页出现「推送到下载平台」区块）；base_url 为 dupload 服务基础地址（默认 http://192.168.1.21:8800）；import_path 为批量导入接口路径（默认 /api/dupload/tasks）；action 为动作（only_download 仅下载 / upload_miniapp 上传小程序，默认 only_download）；share_url_field 为剧目模型里素材链接(shareUrl)的字段名（默认 material_link）；request_timeout 为单次请求超时(秒)；auth_headers 为附加鉴权请求头(JSON，可放 Authorization/Cookie 等，保存后不回显)。可在系统设置热更，无需改 .env。",
 }
 
 
@@ -205,6 +206,19 @@ DEFAULT_CONFIGS: List[dict] = [
             "concurrency": 2,
         },
         "description": "局域网获取剧集配置（JSON）：enabled 为总开关（默认 false，开启后剧目详情页出现「局域网获取剧集」面板）；base_url 为 dupload cdn 源基础地址（回退路径，默认 192.168.1.163:8765）；manage_base 为 IAA 小程序管理平台基础地址（**剧集直链主来源**：/api/ext/drama/{name}/videos，默认 192.168.1.21:8800）；api_prefix 剧集清单接口路径前缀（可选）；download_timeout 单集拉流整体超时(秒)；default_project 默认入库归属项目名；concurrency 每集 HTTP 下载并发数。配置保存后即时生效，无需重启。",
+    },
+    {
+        "key": "dupload_config",
+        "value": {
+            "enabled": False,
+            "base_url": "http://192.168.1.21:8800",
+            "import_path": "/api/dupload/tasks",
+            "action": "only_download",
+            "share_url_field": "material_link",
+            "request_timeout": 30,
+            "auth_headers": {},
+        },
+        "description": "推送到下载平台(dupload)配置（JSON）：enabled 为总开关（默认 false，开启后剧目详情页出现「推送到下载平台」区块）；base_url 为 dupload 服务基础地址（默认 http://192.168.1.21:8800）；import_path 为批量导入接口路径（默认 /api/dupload/tasks）；action 为动作（only_download 仅下载 / upload_miniapp 上传小程序，默认 only_download）；share_url_field 为剧目模型里素材链接(shareUrl)的字段名（默认 material_link）；request_timeout 为单次请求超时(秒)；auth_headers 为附加鉴权请求头(JSON，可放 Authorization/Cookie 等，保存后不回显)。配置保存后即时生效，无需重启。",
     },
 ]
 

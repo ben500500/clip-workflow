@@ -20,6 +20,8 @@ from wechat_download import api as wechat_dl_api
 
 # 局域网获取剧集导入（lan_source 独立包，并入 + 可剥离）
 from lan_source import api as lan_source_api
+# 推送到下载平台（dupload 独立包，并入 + 可剥离）
+from dupload import api as dupload_api
 
 
 logging.basicConfig(level=logging.INFO)
@@ -235,6 +237,7 @@ _protected_routers = [
     config_api, publish, dashboard, workers, monitor, maintenance,
     watermark, shortdrama, publish_material, batch_slice,
     wechat_dl_api, channel_accounts, variants, dramas, lan_source_api,
+    dupload_api,
     dedupe,
 ]
 for _r in _protected_routers:

@@ -1699,6 +1699,27 @@ const EpisodeDetail: React.FC = () => {
               style={{ width: 220 }}
             />
           </Tooltip>
+          {/* 输出档位：高分辨率/高 fps 素材可降档提速（与一键切片配置弹窗同源，runSlice 已透传 output_tier） */}
+          <Space wrap align="center" size={8}>
+            <Text strong style={{ fontSize: 13 }}>输出档位</Text>
+            <Tooltip title="高分辨率/高 fps 素材可降档提速（引擎滤镜链末尾追加 scale+fps，cover concat 同步同档位）。">
+              <InfoCircleOutlined style={{ color: '#999' }} />
+            </Tooltip>
+            <Select
+              size="small"
+              style={{ width: 220 }}
+              value={outputTier || 'original'}
+              onChange={setOutputTier}
+              options={[
+                { value: 'original', label: '原档（不处理）' },
+                { value: 'auto', label: '自动（高规格自动降 720P30）' },
+                { value: '1080p', label: '1080P（宽≤1080/fps≤60）' },
+                { value: '720p', label: '720P（宽≤720/fps≤30）' },
+                { value: '480p', label: '480P（宽≤480/fps≤30）' },
+              ]}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>降档后编码耗时显著下降（预计 1/3 以下）</Text>
+          </Space>
           {/* 选择 AI 选点历史：补选点/切片复用它那套选点参数（时长范围等） */}
           <Space wrap align="center" size={8}>
             <Text strong style={{ fontSize: 13 }}>选点历史</Text>

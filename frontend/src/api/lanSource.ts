@@ -101,4 +101,32 @@ export const lanSourceApi = {
       mode: string;
       message: string;
     }>,
+
+  // ── 推送到下载平台（dupload，对接 21:8800 dramaupload / dupload） ──
+  // 只读配置（不含 auth_headers 明文）
+  getDuploadConfig: () =>
+    client.get('/dupload/config') as Promise<{
+      enabled: boolean;
+      base_url: string;
+      import_path: string;
+      action: string;
+      share_url_field: string;
+      request_timeout: number;
+      has_auth_headers: boolean;
+    }>,
+
+  // 推送单个剧目到下载平台（action=only_download）；二选一：drama_id 或 drama_name+share_url
+  duploadTrigger: (data: {
+    drama_id?: string;
+    drama_name?: string;
+    share_url?: string;
+  }) =>
+    client.post('/dupload/trigger', data) as Promise<{
+      drama_name: string;
+      share_url: string;
+      action: string;
+      sent: boolean;
+      message: string;
+      remote?: Record<string, unknown>;
+    }>,
 };

@@ -6,7 +6,7 @@ import {
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined, ImportOutlined,
-  UploadOutlined, LinkOutlined, FileImageOutlined, ReloadOutlined,
+  UploadOutlined, LinkOutlined, FileImageOutlined, ReloadOutlined, ExportOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd/es/upload/interface';
@@ -133,6 +133,10 @@ const DramaLibrary: React.FC = () => {
   const [lanSelectName, setLanSelectName] = useState('');
   const [lanManualName, setLanManualName] = useState('');
 
+  // ── 推送到下载平台（dupload） ──
+  const [duploadEnabled, setDuploadEnabled] = useState(false);
+  const [duploadPushing, setDuploadPushing] = useState(false);
+
   const fetchList = useCallback(async (kw?: string, f?: string, r?: string, s?: string) => {
     setLoading(true);
     try {
@@ -240,6 +244,7 @@ const DramaLibrary: React.FC = () => {
     setDetailLoading(true);
     setSliceStatus(null);
     loadLanConfig();
+    loadDuploadConfig();
     try {
       const res = await getDrama(d.id);
       setDetail(res);
@@ -273,6 +278,30 @@ const DramaLibrary: React.FC = () => {
       setLanEnabled(cfg.enabled);
     } catch {
       setLanEnabled(false);
+    }
+  };
+
+  // ── 推送到下载平台（dupload） ──
+  const loadDuploadConfig = async () => {
+    try {
+      const cfg = await lanSourceApi.getDuploadConfig();
+      setDuploadEnabled(cfg.enabled);
+    } catch {
+      setDuploadEnabled(false);
+    }
+  };
+
+  // 推送当前剧目到下载平台（仅下载）
+  const submitDuploadPush = async () => {
+    if (!detailId) return;
+    setDuploadPushing(true);
+    try {
+      const res = await lanSourceApi.duploadTrigger({ drama_id: detailId });
+      message.success(`已推送《${res.drama_name}》到下载平台（仅下载）`);
+    } catch (e) {
+      message.error((e as Error).message || '推送失败');
+    } finally {
+      setDuploadPushing(false);
     }
   };
 
@@ -756,6 +785,26 @@ const DramaLibrary: React.FC = () => {
             />
             {detail.material_link && (
               <Alert type="info" showIcon message="素材链接" description={detail.material_link} />
+            )}
+
+            <Divider orientation="left">推送到下载平台</Divider>
+            {!duploadEnabled ? (
+              <Alert type="warning" showIcon message="推送到下载平台功能未开启" description="请在系统设置中开启「推送到下载平台」（配置 dupload_config.enabled=true 及 base_url 指向 dupload 服务），保存后即可在此把剧目素材链接推给下载平台，无需重启。" />
+            ) : (
+              <Space direction="vertical" style={{ width: '100%' }} size="small">
+                {!detail.material_link ? (
+                  <Alert type="warning" showIcon message="当前剧目未填写素材链接" description="请先在剧目编辑中填写「素材链接」（百度网盘等 shareUrl），再一键推送到下载平台。" />
+                ) : (
+                  <Space wrap>
+                    <Button
+                      type="primary"
+                      icon={<ExportOutlined />}
+                      loading={duploadPushing}
+                      onClick={submitDuploadPush}
+                    >推送到下载平台（仅下载）</Button>
+                  </Space>
+                )}
+              </Space>
             )}
 
             <Divider orientation="left">局域网获取剧集</Divider>
