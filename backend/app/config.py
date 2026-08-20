@@ -119,7 +119,7 @@ class Settings(BaseSettings):
     # 每日配额（0=不限）
     SEEDANCE_DAILY_QUOTA: int = 0
 
-    # 切片分发引擎：worker（Redis Stream / Go Worker）或 celery（回退）
+    # 切片分发引擎：worker（Redis Stream / Go Worker）、local（单机同步执行）或 celery（回退）
     SLICE_ENGINE: str = "worker"
     # Worker 回调/上传 URL 的基础地址（远程物理机部署时配置为可访问的地址）
     WORKER_CALLBACK_BASE_URL: str = "http://backend:8080"

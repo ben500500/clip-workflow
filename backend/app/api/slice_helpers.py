@@ -52,7 +52,7 @@ from app.services.redis_stream import (
 logger = logging.getLogger(__name__)
 
 # 允许的引擎类型
-ALLOWED_ENGINES = ("celery", "worker")
+ALLOWED_ENGINES = ("worker", "local", "celery")
 
 
 # ──────────────────────────────────────────────
@@ -102,7 +102,7 @@ class SliceRunRequest(BaseModel):
     # 多视频号素材去重：需要生成的素材变体数（null/1=不生成，零侵入；>1=切片后自动派生 N 个去重版本）
     variant_count: Optional[int] = None
     video_path: Optional[str] = None
-    engine: Optional[str] = None  # "celery" | "worker"，默认取配置 SLICE_ENGINE
+    engine: Optional[str] = None  # "worker" | "local" | "celery"，默认取配置 SLICE_ENGINE
     # 免审核一键切片：为 True 时自动把所有候选片段（含 pending）纳入切片，
     # 不再要求存在 status=accepted 的片段
     auto_accept_all: bool = False
@@ -1139,6 +1139,243 @@ async def _dispatch_celery(
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
     return True
+
+
+async def _dispatch_local(
+    slice_task: SliceTask,
+    episode: Episode,
+    cutlist: str,
+    intervals_content: str,
+    source_file_key: Optional[str],
+    dedupe_config: Optional[dict],
+    video_path: Optional[str],
+    source_bucket: str = "",
+    watermark_config: Optional[dict] = None,
+    encoder: Optional[str] = None,
+    vert2horiz_config: Optional[dict] = None,
+    badges_config: Optional[list] = None,
+    badge_default_width: int = 0,
+    subtitle_config: Optional[dict] = None,
+    text_overlays_config: Optional[list] = None,
+    subtitle_mask_config: Optional[dict] = None,
+    watermark_mask_config: Optional[dict] = None,
+    subtitle_align_mask: bool = True,
+    cover_image_key: Optional[str] = None,
+) -> None:
+    """单机同步执行切片引擎（SLICE_ENGINE=local）。
+
+    不走 stream / celery 队列：直接在当前进程内 `await` 执行 run_slice_fast / \
+    run_slice_scrub，并在成功后复用现有收尾（上传 MinIO + 更新 DB）。
+    失败时直接把任务回写为 failed + error_message 并抛出 HTTPException。
+    """
+    from app.celery.tasks import (
+        _ensure_source_video,
+        _parse_engine_manifest,
+        _save_slice_outputs,
+        _fail_slice_task,
+    )
+    from app.services.slice_service import run_slice_scrub, run_slice_fast
+    from app.services.minio_service import upload_file_from_path, download_to_file, ensure_bucket
+    from app.utils.helpers import write_temp_file, ensure_dir
+
+    mode = slice_task.mode or "fast"
+    task_id = str(slice_task.id)
+
+    downloaded_source_path = None
+    output_dir = None
+    cutlist_path = None
+    intervals_path = None
+    try:
+        # 源视频本地化：优先用给定 video_path，否则从 MinIO 下载
+        source_path = await _ensure_source_video(
+            video_path, source_file_key, source_bucket or None
+        )
+        if not source_path or not os.path.isfile(source_path):
+            raise FileNotFoundError(f"Source video not found: {source_path}")
+        downloaded_source_path = source_path
+
+        cutlist_path = write_temp_file(cutlist, suffix=".txt")
+        intervals_path = write_temp_file(intervals_content, suffix=".txt")
+        output_dir = ensure_dir(f"/tmp/slice_outputs/{slice_task.episode_id}/{task_id}")
+
+        # 图片角标：下载每个角标图片到本地，构造引擎期望的 badge 配置（含 path）
+        badge_items = None
+        if badges_config:
+            badge_items = []
+            badge_dir = ensure_dir(f"/tmp/slice_outputs/{slice_task.episode_id}/{task_id}/badges")
+            for bi in badges_config:
+                fk = bi.get("file_key") or ""
+                if not fk:
+                    continue
+                local = os.path.join(badge_dir, os.path.basename(fk))
+                ok = await download_to_file(settings.MINIO_BUCKET_RAW, fk, local)
+                if not ok or not os.path.isfile(local):
+                    logger.warning("角标图片下载失败，跳过: %s", fk)
+                    continue
+                item = {"path": local, "position": bi.get("position", "top-left")}
+                if bi.get("width"):
+                    item["width"] = int(bi["width"])
+                if bi.get("offset") is not None:
+                    item["offset"] = int(bi["offset"])
+                if bi.get("opacity") is not None:
+                    item["opacity"] = float(bi["opacity"])
+                badge_items.append(item)
+
+        # 视频封面：下载封面图片到本地，作为视频首帧叠加
+        cover_path = None
+        if cover_image_key:
+            cover_local = os.path.join(
+                output_dir, f"cover_{os.path.basename(cover_image_key)}"
+            )
+            ok = await download_to_file(settings.MINIO_BUCKET_RAW, cover_image_key, cover_local)
+            if ok and os.path.isfile(cover_local):
+                cover_path = cover_local
+            else:
+                logger.warning("视频封面下载失败，忽略: %s", cover_image_key)
+
+        # 字幕烧录：把 ASR 生成的 SRT 写到本地文件
+        subtitle_srt_path = None
+        subtitle_font_ratio = None
+        subtitle_spacing = None
+        subtitle_style = None
+        subtitle_color = None
+        subtitle_border_color = None
+        subtitle_bold = None
+        if subtitle_config and subtitle_config.get("enabled"):
+            srt_content = subtitle_config.get("srt") or ""
+            if srt_content.strip():
+                subtitle_srt_path = write_temp_file(srt_content, suffix=".srt")
+            fr = subtitle_config.get("font_ratio")
+            if isinstance(fr, (int, float)) and fr > 0:
+                subtitle_font_ratio = float(fr)
+            sp = subtitle_config.get("spacing")
+            if isinstance(sp, (int, float)):
+                subtitle_spacing = int(sp)
+            st = subtitle_config.get("style")
+            if st:
+                subtitle_style = str(st)
+            fc = subtitle_config.get("font_color")
+            if fc:
+                subtitle_color = str(fc)
+            bc = subtitle_config.get("border_color")
+            if bc:
+                subtitle_border_color = str(bc)
+            bd = subtitle_config.get("bold")
+            if bd is not None:
+                subtitle_bold = int(bd)
+
+        # 源字幕打码时间轴 SRT：后端已把内容放进 subtitle_mask_config["srt"]，写本地文件并替换为路径
+        if subtitle_mask_config and subtitle_mask_config.get("enabled"):
+            mask_srt_content = subtitle_mask_config.get("srt") or ""
+            if mask_srt_content.strip():
+                mask_srt_path = write_temp_file(mask_srt_content, suffix=".srt")
+                subtitle_mask_config["srt"] = mask_srt_path
+
+        if mode == "scrub":
+            returncode, stdout, stderr = await run_slice_scrub(
+                source_path,
+                cutlist_path,
+                intervals_path,
+                output_dir,
+                watermark_config=watermark_config,
+                encoder=encoder,
+                vert2horiz_config=vert2horiz_config,
+                badges_config=badge_items,
+                badge_default_width=badge_default_width,
+                subtitle_srt_path=subtitle_srt_path,
+                subtitle_font_ratio=subtitle_font_ratio,
+                subtitle_spacing=subtitle_spacing,
+                subtitle_style=subtitle_style,
+                subtitle_color=subtitle_color,
+                subtitle_border_color=subtitle_border_color,
+                subtitle_bold=subtitle_bold,
+                text_overlays_config=text_overlays_config,
+                dedupe_config=dedupe_config,
+                subtitle_mask_config=subtitle_mask_config,
+                watermark_mask_config=watermark_mask_config,
+                subtitle_align_mask=subtitle_align_mask,
+                cover_path=cover_path,
+            )
+        else:
+            returncode, stdout, stderr = await run_slice_fast(
+                source_path,
+                cutlist_path,
+                output_dir,
+                mode,
+                watermark_config=watermark_config,
+                encoder=encoder,
+                vert2horiz_config=vert2horiz_config,
+                badges_config=badge_items,
+                badge_default_width=badge_default_width,
+                subtitle_srt_path=subtitle_srt_path,
+                subtitle_font_ratio=subtitle_font_ratio,
+                subtitle_spacing=subtitle_spacing,
+                subtitle_style=subtitle_style,
+                subtitle_color=subtitle_color,
+                subtitle_border_color=subtitle_border_color,
+                subtitle_bold=subtitle_bold,
+                text_overlays_config=text_overlays_config,
+                dedupe_config=dedupe_config,
+                subtitle_mask_config=subtitle_mask_config,
+                watermark_mask_config=watermark_mask_config,
+                subtitle_align_mask=subtitle_align_mask,
+                cover_path=cover_path,
+            )
+
+        if returncode != 0:
+            raise RuntimeError(stderr or "Slice script failed")
+
+        await ensure_bucket(settings.MINIO_BUCKET_SLICED)
+        manifest = _parse_engine_manifest(stdout, output_dir)
+        output_files = []
+        for entry in manifest:
+            file_path = entry["path"]
+            if not os.path.isfile(file_path):
+                continue
+            file_key = f"slices/{slice_task.episode_id}/{task_id}/{entry['name']}"
+            ok = await upload_file_from_path(settings.MINIO_BUCKET_SLICED, file_key, file_path)
+            if not ok:
+                raise RuntimeError(f"Failed to upload slice output to MinIO: {entry['name']}")
+            output_files.append({
+                "file_key": file_key,
+                "file_name": entry["name"],
+                "file_size": os.path.getsize(file_path),
+                "duration": entry.get("duration"),
+            })
+
+        # 复用现有收尾：落库 SliceOutput + 推进任务/剧集状态为 completed
+        await _save_slice_outputs(task_id, str(slice_task.episode_id), output_files, mode)
+        logger.info(
+            "Local slice completed: task=%s episode=%s files=%s",
+            task_id, slice_task.episode_id, len(output_files),
+        )
+
+    except Exception as e:
+        logger.error("Local slice task failed task=%s: %s", task_id, e)
+        # 失败直接回写 failed + error_message
+        try:
+            await _fail_slice_task(task_id, str(e))
+        except Exception:
+            logger.exception("failed 状态回写失败 task=%s", task_id)
+        raise HTTPException(status_code=500, detail=f"本地同步切片失败: {e}")
+    finally:
+        for p in (cutlist_path, intervals_path):
+            if p:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        if output_dir and os.path.isdir(output_dir):
+            import shutil
+            try:
+                shutil.rmtree(output_dir)
+            except OSError:
+                pass
+        if downloaded_source_path and os.path.isfile(downloaded_source_path):
+            try:
+                os.unlink(downloaded_source_path)
+            except OSError:
+                pass
 
 
 async def _verify_worker_token(

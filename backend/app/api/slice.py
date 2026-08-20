@@ -1,7 +1,8 @@
 """切片任务 API。
 
-支持两种引擎分发方式：
+支持三种引擎分发方式：
 - worker：通过 Redis Stream 将切片任务分发到分布式 Worker 节点（默认）
+- local：单机同步执行（SLICE_ENGINE=local，不走队列，直接 await 引擎）
 - celery：回退到 Celery 队列（兼容旧版，迁移期可回退）
 
 Worker 完成/失败/进度均通过回调接口上报，回调与上传 URL 申请接口使用
@@ -81,6 +82,7 @@ from app.api.slice_helpers import (
     refine_clip_boundaries,
     _publish_to_worker,
     _dispatch_celery,
+    _dispatch_local,
     _verify_worker_token,
 )
 # 后端兜底：无候选片段时复用 autoclip 的选点触发流程（仅 auto_autoclip_if_empty 分支导入使用，
@@ -702,6 +704,39 @@ async def _dispatch_slice_task(
                 status_code=500,
                 detail="发布切片任务到 Worker 队列失败，请检查 Redis 连接",
             )
+    elif engine == "local":
+        # 单机同步执行：直接 await 引擎（复用 run_slice_fast/scrub），不走队列。
+        # 成功时 _dispatch_local 内部已复用现有收尾（上传 MinIO + 更新 DB，任务落为 completed）；
+        # 失败时内部已回写 failed + error_message 并抛出 HTTPException。
+        # 先 commit 任务记录，确保 _save_slice_outputs 的独立会话能读到刚创建的 slice_task。
+        await db.commit()
+        try:
+            await _dispatch_local(
+                slice_task,
+                episode,
+                cutlist,
+                intervals_content,
+                source_file_key,
+                data.dedupe_config,
+                data.video_path,
+                source_bucket,
+                watermark_config,
+                data.encoder,
+                vert2horiz_config,
+                badges_config,
+                data.badge_default_width,
+                subtitle_config,
+                text_overlays_config,
+                subtitle_mask_config,
+                watermark_mask_config,
+                data.subtitle_align_mask,
+                data.cover_image_key,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Local 切片任务执行失败: %s", e)
+            raise HTTPException(status_code=500, detail=f"本地同步切片失败: {e}")
     else:
         try:
             dispatched = await _dispatch_celery(
@@ -738,21 +773,34 @@ async def _dispatch_slice_task(
             raise HTTPException(status_code=500, detail="Celery 分发切片任务失败")
 
     # 切片启动时推进剧集状态，使工作流步骤条正确展示到“切片执行”
-    if episode.status not in ("slicing", "completed"):
-        episode.status = "slicing"
-    await db.flush()
+    # （local 同步模式在 _dispatch_local 内已把任务/剧集推进到 completed，跳过）
+    if engine != "local":
+        if episode.status not in ("slicing", "completed"):
+            episode.status = "slicing"
+        await db.flush()
 
-    slice_task.status = "running"
-    slice_task.started_at = datetime.utcnow()
-    await db.flush()
+        slice_task.status = "running"
+        slice_task.started_at = datetime.utcnow()
+        await db.flush()
 
+        return SliceRunResponse(
+            task_id=str(slice_task.id),
+            engine=engine,
+            fallback_whole_video=fallback_whole_video,
+            message=(
+                "切片任务已发布到 %s 队列（模式: %s），正在处理中…"
+                % (engine, data.mode)
+            )
+            + ("（已整片回退：AI 选点未产出候选片段）" if fallback_whole_video else ""),
+        )
+
+    # local 同步模式：任务已同步完成
     return SliceRunResponse(
         task_id=str(slice_task.id),
         engine=engine,
         fallback_whole_video=fallback_whole_video,
         message=(
-            "切片任务已发布到 %s 队列（模式: %s），正在处理中…"
-            % (engine, data.mode)
+            "切片任务已同步完成（模式: %s）" % data.mode
         )
         + ("（已整片回退：AI 选点未产出候选片段）" if fallback_whole_video else ""),
     )
@@ -1297,6 +1345,39 @@ async def retry_slice_task(
                 status_code=500,
                 detail="发布切片任务到 Worker 队列失败",
             )
+    elif engine == "local":
+        # 单机同步执行：直接 await 引擎（复用 run_slice_fast/scrub），不走队列。
+        # 先 commit 任务记录，确保 _save_slice_outputs 的独立会话能读到刚创建的 slice_task。
+        await db.commit()
+        try:
+            await _dispatch_local(
+                new_task,
+                ep,
+                task.cutlist or "",
+                task.intervals or "",
+                source_file_key,
+                task.dedupe_config,
+                None,
+                source_bucket,
+                task.watermark_config,
+                None,
+                task.vert2horiz_config,
+                task.badges_config,
+                task.badge_default_width or 0,
+                task.subtitle_config,
+                task.text_overlays_config,
+                task.subtitle_mask_config,
+                task.watermark_mask_config,
+                getattr(task, "subtitle_align_mask", True),
+                task.cover_image_key,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            new_task.status = "failed"
+            new_task.error_message = f"本地同步切片失败: {e}"
+            await db.flush()
+            raise HTTPException(status_code=500, detail=f"本地同步切片任务失败: {e}")
     else:
         try:
             await _dispatch_celery(
@@ -1326,16 +1407,24 @@ async def retry_slice_task(
             await db.flush()
             raise HTTPException(status_code=500, detail=f"Celery 分发切片任务失败: {e}")
 
-    new_task.status = "running"
-    new_task.started_at = datetime.utcnow()
-    if ep.status not in ("slicing", "completed"):
-        ep.status = "slicing"
-    await db.flush()
+    if engine != "local":
+        new_task.status = "running"
+        new_task.started_at = datetime.utcnow()
+        if ep.status not in ("slicing", "completed"):
+            ep.status = "slicing"
+        await db.flush()
 
+        return SliceRunResponse(
+            task_id=str(new_task.id),
+            engine=engine,
+            message="切片任务已重新发布到 Worker 队列",
+        )
+
+    # local 同步模式：重试已同步完成
     return SliceRunResponse(
         task_id=str(new_task.id),
         engine=engine,
-        message="切片任务已重新发布到 Worker 队列",
+        message="切片任务已同步完成",
     )
 
 
