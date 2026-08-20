@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Card, Table, Tag, Button, Space, Typography, message, Modal, Select, InputNumber,
-  Descriptions, Divider, Alert, Tooltip, Popconfirm, Row, Col, Empty,
+  Descriptions, Divider, Alert, Tooltip, Popconfirm, Row, Col, Empty, Collapse, Input, Badge,
 } from 'antd';
 import {
   ReloadOutlined, SafetyCertificateOutlined, LinkOutlined, SettingOutlined,
-  ThunderboltOutlined, CheckCircleOutlined,
+  ThunderboltOutlined, CheckCircleOutlined, SearchOutlined, FolderOpenOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -32,11 +32,24 @@ const THRESHOLD_FIELDS: { key: 'phash' | 'audio' | 'seg' | 'combined'; label: st
   { key: 'combined', label: '综合加权', hint: '加权综合距离（默认 0.15）' },
 ];
 
+// 筛选维度
+type FilterKey = 'all' | 'collision' | 'unbound';
+
+const FILTER_OPTIONS: { value: FilterKey; label: string }[] = [
+  { value: 'all', label: '全部' },
+  { value: 'collision', label: '有碰撞' },
+  { value: 'unbound', label: '未绑定账号' },
+];
+
 const VariantMatrix: React.FC = () => {
   const [groups, setGroups] = useState<VariantGroup[]>([]);
   const [thresholds, setThresholds] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [videoAccounts, setVideoAccounts] = useState<VideoAccount[]>([]);
+  // 浏览态：搜索 / 筛选 / 展开面板
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<FilterKey>('all');
+  const [activeKeys, setActiveKeys] = useState<string[]>([]);
   // 绑定弹窗
   const [bindTarget, setBindTarget] = useState<VariantMatrixItem | null>(null);
   const [bindAccountId, setBindAccountId] = useState<string | undefined>();
@@ -72,6 +85,52 @@ const VariantMatrix: React.FC = () => {
     fetchMatrix();
     fetchAccounts();
   }, [fetchMatrix, fetchAccounts]);
+
+  // ── 组统计与筛选排序 ──
+  const enrichGroups = useCallback(
+    (raw: VariantGroup[]) =>
+      raw.map((g) => {
+        let collisionCount = 0;
+        let unboundCount = 0;
+        for (const v of g.variants) {
+          if (v.collision) collisionCount++;
+          if (!v.account_id) unboundCount++;
+        }
+        return { ...g, collisionCount, unboundCount };
+      }),
+    []
+  );
+
+  // 应用搜索 + 筛选，并排序：碰撞多 → 未绑定多 → 时间倒序
+  const visibleGroups = useMemo(() => {
+    const kw = search.trim().toLowerCase();
+    const filtered = enrichGroups(groups)
+      .filter((g) => {
+        if (kw && !(g.base_file_name || '').toLowerCase().includes(kw)) return false;
+        if (filter === 'collision') return g.collisionCount > 0;
+        if (filter === 'unbound') return g.unboundCount > 0;
+        return true;
+      })
+      .sort((a, b) => {
+        if (b.collisionCount !== a.collisionCount) return b.collisionCount - a.collisionCount;
+        if (b.unboundCount !== a.unboundCount) return b.unboundCount - a.unboundCount;
+        const ta = a.created_at ? dayjs(a.created_at).valueOf() : 0;
+        const tb = b.created_at ? dayjs(b.created_at).valueOf() : 0;
+        return tb - ta;
+      });
+    return filtered;
+  }, [groups, search, filter, enrichGroups]);
+
+  // 待处理（有碰撞）组默认展开；搜索结果变化时重置展开态
+  const hasCollision = useMemo(
+    () => visibleGroups.filter((g) => g.collisionCount > 0).map((g) => g.variant_group_id),
+    [visibleGroups]
+  );
+  useEffect(() => {
+    // 有碰撞的组自动展开，其余收起 —— 让运营第一眼看到要处理的
+    setActiveKeys(hasCollision);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, filter]);
 
   const handleVerify = async (v: VariantMatrixItem) => {
     try {
@@ -198,6 +257,40 @@ const VariantMatrix: React.FC = () => {
     },
   ];
 
+  // 折叠面板项
+  const collapseItems = useMemo(
+    () =>
+      visibleGroups.map((g) => ({
+        key: g.variant_group_id,
+        label: (
+          <Space size={8} wrap>
+            <FolderOpenOutlined />
+            <Text strong>变体组 {String(g.variant_group_id).slice(0, 8)}</Text>
+            <Text type="secondary">{g.base_file_name || '—'}</Text>
+            {g.collisionCount > 0 && <Badge count={g.collisionCount} color="red" title="碰撞数" />}
+            {g.unboundCount > 0 && <Badge count={g.unboundCount} color="gold" title="未绑定账号数" />}
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {g.created_at ? dayjs(g.created_at).format('MM-DD HH:mm') : ''}
+            </Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>共 {g.variants.length} 变体</Text>
+          </Space>
+        ),
+        children: (
+          <Table
+            rowKey="id"
+            columns={variantColumns}
+            dataSource={g.variants}
+            loading={loading}
+            size="small"
+            pagination={false}
+            scroll={{ x: 1100 }}
+          />
+        ),
+      })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visibleGroups, loading, videoAccounts, thresholds]
+  );
+
   return (
     <Card
       title={<Space><ThunderboltOutlined />变体矩阵看板（多视频号素材去重）</Space>}
@@ -213,37 +306,40 @@ const VariantMatrix: React.FC = () => {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="多视频号素材去重：一套切片派生 N 套结构性差异变体，各变体在画面/音频/时域三路指纹上互相拉开距离，供不同视频号分别上传，避免同素材原样发多号撞车。"
+        message="多视频号素材去重：一套切片派生 N 套结构性差异变体，各变体在画面/音频/时域三路指纹上互相拉开距离，供不同视频号分别上传，避免同素材原样发多号撞车。变体组默认收起，有碰撞需处理的组自动展开并置顶。"
       />
-      {groups.length === 0 && !loading ? (
-        <Empty description="暂无变体组。在去重模式下配置「多版本数 > 1」切片后，将在此展示生成的素材变体。" />
+
+      {/* 浏览工具条：搜索 + 筛选 */}
+      <Space style={{ marginBottom: 16 }} wrap>
+        <Input
+          allowClear
+          prefix={<SearchOutlined style={{ color: '#bbb' }} />}
+          placeholder="按基准文件名搜索变体组"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ width: 260 }}
+        />
+        <Select<FilterKey>
+          value={filter}
+          onChange={setFilter}
+          options={FILTER_OPTIONS}
+          style={{ width: 140 }}
+        />
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          共 {visibleGroups.length} 组 · {visibleGroups.reduce((s, g) => s + g.variants.length, 0)} 变体
+          {filter !== 'all' || search ? '（已筛选）' : ''}
+        </Text>
+      </Space>
+
+      {visibleGroups.length === 0 && !loading ? (
+        <Empty description="没有匹配的变体组。在去重模式下配置「多版本数 > 1」切片后，将在此展示生成的素材变体。" />
       ) : (
-        groups.map((g) => (
-          <Card
-            key={g.variant_group_id}
-            size="small"
-            title={
-              <Space>
-                <Text strong>变体组 {String(g.variant_group_id).slice(0, 8)}</Text>
-                <Text type="secondary">{g.base_file_name || '—'}</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {g.created_at ? dayjs(g.created_at).format('MM-DD HH:mm') : ''}
-                </Text>
-              </Space>
-            }
-            style={{ marginBottom: 16 }}
-          >
-            <Table
-              rowKey="id"
-              columns={variantColumns}
-              dataSource={g.variants}
-              loading={loading}
-              size="small"
-              pagination={false}
-              scroll={{ x: 1100 }}
-            />
-          </Card>
-        ))
+        <Collapse
+          activeKey={activeKeys}
+          onChange={(keys) => setActiveKeys(keys as string[])}
+          expandIconPosition="start"
+          items={collapseItems}
+        />
       )}
 
       {/* 账号绑定弹窗 */}
