@@ -12,8 +12,9 @@ system_config key = `dupload_config`（JSON）：
       "action": "only_download", # 动作：only_download(仅下载)/upload_miniapp(上传小程序)
       "share_url_field": "material_link",      # 剧目模型里素材链接(shareUrl)的字段名
       "request_timeout": 30,     # 单次请求超时（秒）
-      "work_host": "",           # dupload 批量导入必填：workHost（下载平台侧工作组/域名标识）
-      "app_secret": "",          # dupload 批量导入必填：appSecret（下载平台侧凭据，按 workHost 匹配）
+      "work_host": "",           # 可选：指定推送的 workHost（字符串）；配置了则仅推送该主机
+      "work_hosts": [],           # 可选：指定推送的 workHost 列表；work_host 优先，均未配置时默认拉取全部 hosts
+      "app_secret": "",          # 可选：appSecret（下载平台侧凭据，按 workHost 匹配；缺省则从 hosts 接口探测）
       "cp_id": "",               # dupload 批量导入必填：cpID（下载平台侧合作方 ID）
       "auth_headers": {},        # 附加鉴权请求头（保留字段；实测 /api/dupload/tasks 公开，不强制）
     }
@@ -33,6 +34,7 @@ DEFAULT_DUPLOAD_CONFIG: dict = {
     "share_url_field": "material_link",
     "request_timeout": 30,
     "work_host": "",
+    "work_hosts": [],
     "app_secret": "",
     "cp_id": "",
     "auth_headers": {},
@@ -50,6 +52,7 @@ class DuploadConfig:
     share_url_field: str = "material_link"
     request_timeout: int = 30
     work_host: str = ""
+    work_hosts: list = field(default_factory=list)
     app_secret: str = ""
     cp_id: str = ""
     auth_headers: dict = field(default_factory=dict)
@@ -69,6 +72,7 @@ class DuploadConfig:
             "share_url_field": self.share_url_field,
             "request_timeout": self.request_timeout,
             "work_host": self.work_host,
+            "work_hosts": list(self.work_hosts or []),
             # 不暴露 appSecret 明文，只暴露是否已配置
             "has_app_secret": bool(self.app_secret),
             "cp_id": self.cp_id,
@@ -87,6 +91,17 @@ def _as_bool(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("true", "1", "yes", "on", "y")
     return False
+
+
+def _as_list(value) -> list:
+    """兼容逗号分隔字符串 / JSON 数组 / None。"""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
 
 
 def _as_int(value, default: int) -> int:
@@ -134,6 +149,7 @@ def load_dupload_config(
     env_share_url_field = _env_get("DUPLOAD_SHARE_URL_FIELD")
     env_request_timeout = _env_get("DUPLOAD_REQUEST_TIMEOUT")
     env_work_host = _env_get("DUPLOAD_WORK_HOST")
+    env_work_hosts = _env_get("DUPLOAD_WORK_HOSTS")
     env_app_secret = _env_get("DUPLOAD_APP_SECRET")
     env_cp_id = _env_get("DUPLOAD_CP_ID")
 
@@ -145,6 +161,7 @@ def load_dupload_config(
         share_url_field=(env_share_url_field or DEFAULT_DUPLOAD_CONFIG["share_url_field"]),
         request_timeout=_as_int(env_request_timeout, DEFAULT_DUPLOAD_CONFIG["request_timeout"]),
         work_host=(env_work_host or DEFAULT_DUPLOAD_CONFIG["work_host"]),
+        work_hosts=_as_list(env_work_hosts) if env_work_hosts is not None else DEFAULT_DUPLOAD_CONFIG["work_hosts"],
         app_secret=(env_app_secret or DEFAULT_DUPLOAD_CONFIG["app_secret"]),
         cp_id=(env_cp_id or DEFAULT_DUPLOAD_CONFIG["cp_id"]),
     )
@@ -165,6 +182,14 @@ def load_dupload_config(
         cfg.request_timeout = _as_int(db.get("request_timeout"), cfg.request_timeout)
     if db.get("work_host") is not None:
         cfg.work_host = str(db.get("work_host"))
+    if db.get("work_hosts") is not None:
+        hosts = db.get("work_hosts")
+        if isinstance(hosts, str):
+            cfg.work_hosts = [h.strip() for h in hosts.split(",") if h.strip()]
+        elif isinstance(hosts, (list, tuple)):
+            cfg.work_hosts = [str(h).strip() for h in hosts if str(h).strip()]
+        else:
+            cfg.work_hosts = []
     if db.get("app_secret") is not None:
         cfg.app_secret = str(db.get("app_secret"))
     if db.get("cp_id") is not None:

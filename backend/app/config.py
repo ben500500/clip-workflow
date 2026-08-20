@@ -210,6 +210,14 @@ class Settings(BaseSettings):
     DUPLOAD_SHARE_URL_FIELD: str = "material_link"
     # 单次请求超时（秒）
     DUPLOAD_REQUEST_TIMEOUT: int = 30
+    # 可选：指定推送的 workHost（字符串）；配置了则仅推送该主机
+    DUPLOAD_WORK_HOST: str = ""
+    # 可选：指定推送的 workHost 列表（逗号分隔或 JSON 数组）；work_host 优先，均未配置时默认拉取全部 hosts
+    DUPLOAD_WORK_HOSTS: str = ""
+    # 可选：appSecret（按 workHost 匹配；缺省时尝试从 hosts 接口探测，否则传空串）
+    DUPLOAD_APP_SECRET: str = ""
+    # dupload 批量导入必填：cpID（下载平台侧合作方 ID）
+    DUPLOAD_CP_ID: str = ""
 
     model_config = {
         "env_file": ".env",

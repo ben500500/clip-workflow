@@ -9,7 +9,7 @@
 
 import logging
 import uuid
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -61,12 +61,25 @@ class DuploadTriggerRequest(BaseModel):
     share_url: Optional[str] = Field(None, description="素材链接/网盘 shareUrl（与 drama_id 二选一）")
 
 
+class DuploadHostResult(BaseModel):
+    """单个主机的推送结果。"""
+    host: str
+    ok: bool
+    status_code: Optional[int] = None
+    error: Optional[str] = None
+    response: Optional[dict] = None
+
+
 class DuploadTriggerResponse(BaseModel):
     drama_name: str
     share_url: str
     action: str
     sent: bool
     message: str
+    hosts: Optional[List[str]] = None
+    success_count: Optional[int] = None
+    failed_count: Optional[int] = None
+    results: Optional[List[DuploadHostResult]] = None
     remote: Optional[dict] = None
 
 
@@ -114,11 +127,37 @@ async def dupload_trigger(
     except DuploadError as e:
         raise HTTPException(status_code=502, detail=f"推送失败: {e}")
 
+    success_count = int(remote.get("success_count") or 0)
+    failed_count = int(remote.get("failed_count") or 0)
+    results = remote.get("results") or []
+    hosts = [r.get("host") for r in results] or remote.get("targets") or []
+
+    if success_count and failed_count:
+        sent = True
+        message = f"已推送到 {success_count} 台主机，{failed_count} 台失败：" + "；".join(
+            f"{r.get('host')} {r.get('error') or 'ok'}" for r in results if not r.get("ok")
+        )
+    elif failed_count:
+        sent = False
+        message = "推送失败：" + "；".join(
+            f"{r.get('host')} {r.get('error') or '未知错误'}" for r in results if not r.get("ok")
+        )
+    else:
+        sent = True
+        message = f"已推送到下载平台（仅下载），共 {success_count} 台主机"
+
     return DuploadTriggerResponse(
         drama_name=drama_name,
         share_url=share_url,
         action=cfg.action or "only_download",
-        sent=True,
-        message="已推送到下载平台（仅下载）",
+        sent=sent,
+        message=message,
+        hosts=hosts,
+        success_count=success_count,
+        failed_count=failed_count,
+        results=[
+            DuploadHostResult(**{k: r.get(k) for k in ("host", "ok", "status_code", "error", "response")})
+            for r in results
+        ],
         remote=remote,
     )
