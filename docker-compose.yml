@@ -56,6 +56,9 @@ x-celery-worker: &celery-worker-base
     # 批量切片源视频目录：rsync 同步到宿主机 /home/cc12703/videos 后，
     # 容器内以相同路径可见（batch_slice path 直接填 /home/cc12703/videos/...）
     - /home/cc12703/videos:/home/cc12703/videos
+    # 去重处理上传目录：与 backend 共享同名 named volume，celery worker
+    # 才能读到 /tmp/dedupe_upload 下的批量上传文件（跨容器 /tmp 不共享）
+    - dedupe_upload_data:/tmp/dedupe_upload
   # celery worker 无 HTTP 端口，用 python redis ping 作为健康检查（覆盖镜像默认的 curl 检查）
   healthcheck:
     test: ["CMD", "python", "-c", "import redis,sys; sys.exit(0 if redis.Redis(host='redis',port=6379,password='${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}').ping() else 1)"]
@@ -76,6 +79,7 @@ volumes:
   media_data:
   chrome_profiles:
   slice_worker_temp:
+  dedupe_upload_data:
   ollama_data:
 
 services:
@@ -322,6 +326,8 @@ services:
       - ./hf-cache:/app/.cache
       # 批量切片源视频目录（与 worker 一致）
       - /home/cc12703/videos:/home/cc12703/videos
+      # 去重处理上传目录：与 celery worker 共享，批量上传后 worker 才能读到源文件
+      - dedupe_upload_data:/tmp/dedupe_upload
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 15s
