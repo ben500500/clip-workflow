@@ -787,24 +787,29 @@ const DramaLibrary: React.FC = () => {
               <Alert type="info" showIcon message="素材链接" description={detail.material_link} />
             )}
 
-            <Divider orientation="left">推送到下载平台</Divider>
-            {!duploadEnabled ? (
-              <Alert type="warning" showIcon message="推送到下载平台功能未开启" description="请在系统设置中开启「推送到下载平台」（配置 dupload_config.enabled=true 及 base_url 指向 dupload 服务），保存后即可在此把剧目素材链接推给下载平台，无需重启。" />
-            ) : (
-              <Space direction="vertical" style={{ width: '100%' }} size="small">
-                {!detail.material_link ? (
-                  <Alert type="warning" showIcon message="当前剧目未填写素材链接" description="请先在剧目编辑中填写「素材链接」（百度网盘等 shareUrl），再一键推送到下载平台。" />
+            {/* 剧集已获取（lanPreview 有剧集直链数组且 length>0）时隐藏推送区块 */}
+            {(!lanPreview || lanPreview.length === 0) && (
+              <>
+                <Divider orientation="left">推送到下载平台</Divider>
+                {!duploadEnabled ? (
+                  <Alert type="warning" showIcon message="推送到下载平台功能未开启" description="请在系统设置中开启「推送到下载平台」（配置 dupload_config.enabled=true 及 base_url 指向 dupload 服务），保存后即可在此把剧目素材链接推给下载平台，无需重启。" />
                 ) : (
-                  <Space wrap>
-                    <Button
-                      type="primary"
-                      icon={<ExportOutlined />}
-                      loading={duploadPushing}
-                      onClick={submitDuploadPush}
-                    >推送到下载平台（仅下载）</Button>
+                  <Space direction="vertical" style={{ width: '100%' }} size="small">
+                    {!detail.material_link ? (
+                      <Alert type="warning" showIcon message="当前剧目未填写素材链接" description="请先在剧目编辑中填写「素材链接」（百度网盘等 shareUrl），再一键推送到下载平台。" />
+                    ) : (
+                      <Space wrap>
+                        <Button
+                          type="primary"
+                          icon={<ExportOutlined />}
+                          loading={duploadPushing}
+                          onClick={submitDuploadPush}
+                        >推送到下载平台（仅下载）</Button>
+                      </Space>
+                    )}
                   </Space>
                 )}
-              </Space>
+              </>
             )}
 
             <Divider orientation="left">局域网获取剧集</Divider>
