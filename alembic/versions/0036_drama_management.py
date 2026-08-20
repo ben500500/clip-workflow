@@ -1,7 +1,7 @@
 """剧目管理：dramas + drama_stills + drama_accounts + drama_materials
 
 Revision ID: 0036_drama_management
-Revises: 0035_publish_profile_location
+Revises: 0035_slice_task_cover_image
 Create Date: 2026-08-18
 
 ISSUE #130「视频号自动发布」→ 剧目管理（《剧目管理设计方案-20260818.md》P0）。
@@ -24,7 +24,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 # revision identifiers, used by Alembic.
 revision: str = "0036_drama_management"
-down_revision: Union[str, None] = "0035_publish_profile_location"
+down_revision: Union[str, None] = "0035_slice_task_cover_image"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
