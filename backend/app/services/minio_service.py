@@ -242,9 +242,10 @@ async def get_presigned_upload_url(
 ) -> Optional[str]:
     """Generate a presigned PUT URL for Worker to upload files.
 
-    注意：上传 URL 供 Worker（容器内）使用，始终用内部 endpoint 生成。
+    优先用 MINIO_EXTERNAL_ENDPOINT 生成（外部 Worker 无法解析容器内 minio 主机名）；
+    未配置时回退内部 endpoint，与旧行为兼容。
     """
-    client = get_minio_client()
+    client = get_external_minio_client() or get_minio_client()
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,

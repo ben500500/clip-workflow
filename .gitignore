@@ -130,3 +130,4 @@ slice-worker/temp/
 # 队友 clone 后跑 `graft build` 即可重新生成 .graph/ 符号图与 .cache/ 缓存。
 graft/.cache/
 graft/.graph/
+.sshKey
