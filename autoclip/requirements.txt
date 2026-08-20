@@ -50,11 +50,8 @@ prometheus-client>=0.19.0,<1.0.0
 # 本地 Whisper 语音识别（AUTOCLIP_ASR_METHOD=whisper 时使用）
 faster-whisper>=1.0.0
 
-# ==================== 本地 FunASR（AUTOCLIP_ASR_METHOD=funasr_local 时启用） ====================
-# 163 无 GPU：torch 强制走 CPU 轮子源，避免拉取 ~2GB 的 CUDA 版本。
---extra-index-url https://download.pytorch.org/whl/cpu
-funasr>=1.0.0
-modelscope>=1.11.0
-torch>=2.1.0
-torchaudio>=2.1.0
+# ==================== 本地 FunASR（AUTOCLIP_ASR_METHOD=funasr_local 时启用，可选） ====================
+# torch/torchaudio/funasr/modelscope 为可选重依赖，已拆分至 requirements-funasr.txt，
+# 默认不安装（避免拉取 ~190MB torch 轮子导致构建超时）。需要本地 FunASR 时构建镜像传
+# --build-arg ENABLE_FUNASR=true 追加安装（见 Dockerfile）。代码对缺依赖做了优雅降级。
 

@@ -1,0 +1,22 @@
+# =============================================================================
+# AutoClip Service - 可选 FunASR 本地语音识别依赖
+# =============================================================================
+# 本文件包含仅用于 AUTOCLIP_ASR_METHOD=funasr_local（本地 FunASR）的可选重依赖
+# （torch / torchaudio / funasr / modelscope）。
+#
+# 这些依赖体积巨大（torch CPU 轮子约 190MB），强制装进基础镜像会导致：
+#   1. 镜像体积暴涨；
+#   2. 构建时从 download.pytorch.org 拉取大轮子极易超时（CNB runner 超过 10min
+#      无输出会强制关闭任务，历史构建即因此失败）。
+#
+# 默认基础镜像不安装本文件。需要本地 FunASR 时，在构建 autoclip 镜像时传
+#   --build-arg ENABLE_FUNASR=true
+# 即会追加安装本文件。代码对缺依赖做了优雅降级（_check_funasr_availability 检测
+# import funasr，未安装时该 ASR 方式不可用，不影响默认 aliyun_speech / whisper）。
+#
+# 163 无 GPU：torch 强制走 CPU 轮子源，避免拉取 ~2GB 的 CUDA 版本。
+--extra-index-url https://download.pytorch.org/whl/cpu
+funasr>=1.0.0
+modelscope>=1.11.0
+torch>=2.1.0
+torchaudio>=2.1.0
