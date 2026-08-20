@@ -33,6 +33,13 @@ except ImportError:  # pragma: no cover
     build_sparkle_filter = None
     build_face_watermark_filter = None
 
+# ── sparkle 生产安全开关（与 backend/app/services/variant_service.py 的
+#    _SPARKLE_ENABLED 对齐）──
+# sparkle 走 ffmpeg geq 全分辨率渲染约 0.5fps，1080p 竖屏 + 多光点会把切片任务
+# 拖到超时/进程被杀（2026-08-20 实测 8 个 geq 让 ffmpeg 卡 6.5h+、2 个僵尸进程
+# 卡 13h）。生产默认关闭：即使 dedupe_config.manual 传入 sparkle 也被强制忽略。
+SPARKLE_ENABLED = False  # 生产默认关闭；True 时 manual.sparkle 生效（测试/受控使用）
+
 
 # 引擎使用了 PEP 604 联合类型（str | None 等），要求 Python 3.10+。
 # 版本检查必须放在任何 def 之前（注解在模块加载时求值，低版本会抛
@@ -344,8 +351,10 @@ def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: s
     # ── 扩展特效层（三方向，均默认关闭，可选开启） ──
     # 方向一：若隐若现星星点/小光环（sparkle）。复用 dedupe_effects 生成带正弦
     #   呼吸透明度的光点 sprite 叠加，几乎不可察觉，却在帧级特征上增加差异化。
+    # 生产安全：SPARKLE_ENABLED=False 时强制忽略 manual.sparkle（geq 0.5fps 会
+    #   把 1080p 切片拖到超时/进程被杀，2026-08-20 实测卡 6.5h+）。
     sparkle = p.get("sparkle")
-    if (isinstance(sparkle, dict) and sparkle.get("enabled")
+    if (SPARKLE_ENABLED and isinstance(sparkle, dict) and sparkle.get("enabled")
             and build_sparkle_filter is not None):
         eff_parts = build_sparkle_filter(sparkle, width=width, height=height)
         if eff_parts:
