@@ -24,22 +24,22 @@ covers:
     at: 'backend/app/services/monitor_service.py:L84-L87'
   - symbol: collect_metrics
     kind: function
-    at: 'backend/app/services/monitor_service.py:L90-L155'
+    at: 'backend/app/services/monitor_service.py:L90-L157'
   - symbol: send_dingtalk_alert
     kind: function
-    at: 'backend/app/services/monitor_service.py:L163-L186'
+    at: 'backend/app/services/monitor_service.py:L165-L188'
   - symbol: _evaluate
     kind: function
-    at: 'backend/app/services/monitor_service.py:L194-L208'
+    at: 'backend/app/services/monitor_service.py:L196-L210'
   - symbol: _format_metric_value
     kind: function
-    at: 'backend/app/services/monitor_service.py:L211-L219'
+    at: 'backend/app/services/monitor_service.py:L213-L221'
   - symbol: run_alert_checks
     kind: function
-    at: 'backend/app/services/monitor_service.py:L222-L282'
+    at: 'backend/app/services/monitor_service.py:L224-L284'
   - symbol: check_health
     kind: function
-    at: 'backend/app/services/monitor_service.py:L290-L339'
+    at: 'backend/app/services/monitor_service.py:L292-L343'
 ---
 <!-- context:generated:start -->
 ## Summary

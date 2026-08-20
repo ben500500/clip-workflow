@@ -1,0 +1,28 @@
+# backend/app/services/playwright_manager.py
+
+- PlaywrightManager · class · L36-L164 — class PlaywrightManager
+- __init__ · method · L39-L46 — def __init__(self, idle_timeout: Optional[float] = None) -> None
+- get_playwright · method · L50-L56 — async def get_playwright(self) -> object
+- release · method · L58-L64 — def release(self) -> None
+- get_shared · method · L66-L77 — async def get_shared(self) -> object
+- acquire · method · L79-L84 — def acquire(self) -> "_PlaywrightLease"
+- pin · method · L86-L90 — def pin(self) -> None
+- unpin · method · L92-L98 — def unpin(self) -> None
+- stop_now · method · L102-L114 — async def stop_now(self) -> None
+- _mutex · method · L118-L120 — def _mutex(self)
+- _ensure_started_locked · method · L122-L126 — async def _ensure_started_locked(self) -> None
+- _schedule_idle_reclaim_locked · method · L128-L139 — def _schedule_idle_reclaim_locked(self) -> None
+- _cancel_idle_task_locked · method · L141-L145 — def _cancel_idle_task_locked(self) -> None
+- _idle_reclaim · method · L147-L164 — async def _idle_reclaim(self, timeout: float) -> None
+- _PlaywrightLease · class · L167-L181 — class _PlaywrightLease
+- __init__ · method · L170-L172 — def __init__(self, manager: "PlaywrightManager") -> None
+- __aenter__ · method · L174-L176 — async def __aenter__(self)
+- __aexit__ · method · L178-L181 — async def __aexit__(self, *exc)
+- _ThreadLockToAsync · class · L184-L196 — class _ThreadLockToAsync
+- __init__ · method · L187-L188 — def __init__(self, lock: threading.Lock) -> None
+- __aenter__ · method · L190-L192 — async def __aenter__(self)
+- __aexit__ · method · L194-L196 — async def __aexit__(self, *exc)
+- _resolve_idle_timeout · function · L201-L207 — def _resolve_idle_timeout() -> Optional[float]
+- get_playwright_manager · function · L214-L221 — def get_playwright_manager() -> PlaywrightManager
+- get_playwright · function · L224-L226 — async def get_playwright() -> object
+- release · function · L229-L231 — def release() -> None

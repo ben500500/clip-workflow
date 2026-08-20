@@ -1,30 +1,30 @@
 # backend/app/services/doubao_service.py · [[short-drama-generation-channels]]
 
-- NeedLoginError · class · L47-L48 — Exception raised when Doubao page shows a login-blocking modal mid-flow, triggering QR push to user.
-- get_account_limits · function · L51-L59 — Returns per-account-type max duration limits, merging custom overrides from config.
-- DoubaoGenerator · class · L62-L904 — Playwright RPA orchestrator for Doubao video generation, from login to download.
-- __init__ · method · L65-L70 — Stores CDP connection host/port and initializes browser/page state holders.
-- _connect · method · L72-L83 — Connects to the rpa_worker Chromium over CDP and opens a new page in the existing context.
-- _close · method · L85-L95 — Closes the page and stops the Playwright driver, swallowing errors.
-- _sleep · method · L101-L103 — Adds randomized delay to reduce anti-bot risk.
-- _take_screenshot · method · L105-L111 — Captures current Doubao page as a PNG data URL for frontend progress display.
-- _extract_qrcode · method · L113-L139 — Extracts login QR code as PNG data URL, preferring a dedicated SVG node and falling back to full-page screenshot.
-- _click_login_button · method · L141-L162 — Clicks the top-right login button to trigger the QR modal, skipping if modal already present.
-- _detect_login_modal · method · L164-L173 — Checks whether a login-blocking semi-modal is currently shown by matching marker text.
-- _dismiss_modal · method · L175-L189 — Closes non-login semi-modal popups (guides/announcements) via close button or Escape key.
-- _has_login_button · method · L191-L207 — Detects the top-right login button as a strong not-logged-in signal, matching exact text '登录'.
-- _login_status · method · L209-L243 — Determines login state (valid/need_login/unknown) by checking login button, intercept modal, and chat input presence.
-- _extract_account · method · L245-L289 — Heuristically extracts the logged-in Doubao account nickname from avatar attributes or header text nodes.
-- clear_login · method · L291-L311 — Clears cookies and localStorage to log out Doubao so a different account can be scanned in.
-- _is_cancelled · method · L317-L327 — Evaluates a cancel check that may be None, a sync callable, or a coroutine.
-- generate · method · L329-L477 — Main orchestration: connect, handle login QR flow, run video generation, and return result with approved prompt and rewrites.
-- progress_cb · function · L368-L369 — Default no-op progress callback used when caller provides none.
-- _run_video_generation · method · L479-L597 — Enters video-gen skill, sets duration, and runs the prompt rewrite loop until success or max rounds.
-- _set_duration · method · L603-L617 — Sets the video duration parameter in the Doubao UI.
-- _send_prompt · method · L619-L702 — Types and sends the prompt into the chat input and submits it.
-- _wait_for_generation_outcome · method · L704-L754 — Polls for generation result, detecting success, rejection, or timeout and extracting the video URL.
-- _extract_reject_reason · method · L756-L763 — Extracts the rejection reason text from a page message around a given marker.
-- _get_last_message_text · method · L765-L789 — Retrieves the text of the last assistant message in the chat.
-- _llm_rewrite_prompt · method · L791-L843 — Asks Doubao to rewrite a rejected prompt in-session, returning the rewritten text.
-- _capture_video_url · method · L845-L904 — Intercepts network responses to capture the generated video download URL.
-- _on_resp · function · L875-L882 — Network response handler that extracts the video URL from matching response bodies.
+- NeedLoginError · class · L47-L48 — class NeedLoginError(RuntimeError)
+- get_account_limits · function · L51-L59 — def get_account_limits(custom: Optional[dict] = None) -> dict
+- DoubaoGenerator · class · L62-L917 — class DoubaoGenerator
+- __init__ · method · L65-L70 — def __init__(self, chrome_port: int = 9222, chrome_host: str = "127.0.0.1")
+- _connect · method · L72-L85 — async def _connect(self): # C3：统一走 playwright_manager 进程级单例（引用计数 + 空闲回收）， # 不再每次自建 async_playwright() 驱动（避免驱动/浏览器句柄堆积泄漏）。
+- _close · method · L87-L108 — async def _close(self): # C3：关闭本次新建的 page / CDP 浏览器句柄，并归还共享驱动引用； # 不再 stop 共享驱动（生命周期由 playwright_manager 空闲回收统一管理）。
+- _sleep · method · L114-L116 — async def _sleep(self, lo: float = 0.4, hi: float = 1.2)
+- _take_screenshot · method · L118-L124 — async def _take_screenshot(self) -> Optional[str]
+- _extract_qrcode · method · L126-L152 — async def _extract_qrcode(self, full_page_fallback: bool = True) -> Optional[str]
+- _click_login_button · method · L154-L175 — async def _click_login_button(self) -> bool
+- _detect_login_modal · method · L177-L186 — async def _detect_login_modal(self) -> bool
+- _dismiss_modal · method · L188-L202 — async def _dismiss_modal(self) -> bool
+- _has_login_button · method · L204-L220 — async def _has_login_button(self) -> bool
+- _login_status · method · L222-L256 — async def _login_status(self) -> str
+- _extract_account · method · L258-L302 — async def _extract_account(self) -> Optional[str]
+- clear_login · method · L304-L324 — async def clear_login(self) -> bool
+- _is_cancelled · method · L330-L340 — async def _is_cancelled(self, cancel_check) -> bool
+- generate · method · L342-L490 — async def generate( self, prompt: str, *, account_type: str = "free", duration: Optional[int] = None, limits: Optional[dict] = None, progress_cb=None, qrcode_cb=None, screenshot_cb=None, on_rewrite_available=None, on_login_success=None, on_account_cb=None, cancel_check=None, ) -> dict
+- progress_cb · function · L381-L382 — async def progress_cb(msg: str, progress: float)
+- _run_video_generation · method · L492-L610 — async def _run_video_generation( self, prompt: str, duration: int, account_type: str, progress_cb, rewrites: list, screenshot_cb=None, on_rewrite_available=None, cancel_check=None, ) -> dict
+- _set_duration · method · L616-L630 — async def _set_duration(self, duration: int)
+- _send_prompt · method · L632-L715 — async def _send_prompt(self, prompt: str) -> bool
+- _wait_for_generation_outcome · method · L717-L767 — async def _wait_for_generation_outcome(self, progress_cb, cancel_check=None, screenshot_cb=None) -> dict
+- _extract_reject_reason · method · L769-L776 — def _extract_reject_reason(self, page_text: str, marker: str) -> str
+- _get_last_message_text · method · L778-L802 — async def _get_last_message_text(self) -> str
+- _llm_rewrite_prompt · method · L804-L856 — async def _llm_rewrite_prompt(self, original: str, reason: str) -> Optional[str]
+- _capture_video_url · method · L858-L917 — async def _capture_video_url(self) -> Optional[str]
+- _on_resp · function · L888-L895 — def _on_resp(resp)

@@ -1,20 +1,20 @@
 # backend/app/api/upload.py · [[minio-storage-upload]]
 
-- UploadResumeRequest · class · L36-L40 — Request payload for initiating a resumable upload session, carrying file name, size, chunk size, and metadata.
-- UploadResumeResponse · class · L43-L49 — Response model returning the created upload session id and current offset for resumable uploads.
-- UploadProgressResponse · class · L52-L58 — Response model reporting upload progress including offset, completion flag, and percentage.
-- UploadCompleteRequest · class · L61-L65 — Request payload finalizing an upload session into an Episode, carrying upload id, project id, title, and episode number.
-- MultiUploadResponse · class · L68-L72 — Response model summarizing a multi-video batch upload result with project info and created episodes.
-- _serialize_episode · function · L75-L88 — Converts an Episode ORM object into a plain dict with stringified ids and ISO timestamps for API responses.
-- _check_project_access · function · L91-L99 — Enforces data isolation by allowing only the project creator (or a user with global material access) to upload to a project, returning 404 otherwise.
-- _store_uploaded_file · function · L102-L149 — Finalizes a completed tus upload session by validating the project exists, running AV-sync check, storing the file in MinIO, and creating an Episode record.
-- create_upload · function · L153-L178 — Creates a new tus-like resumable upload session after validating file size bounds and file name.
-- get_upload_info · function · L182-L197 — Handles tus HEAD requests to report current upload offset and length via response headers.
-- upload_chunk · function · L201-L230 — Handles tus PATCH requests to write a chunk of data at the given offset, returning updated progress.
-- complete_upload · function · L234-L268 — Finalizes a completed upload session into an Episode after validating project access and upload completion.
-- upload_single · function · L272-L342 — Handles a single-request file upload: validates project access, streams the file to disk enforcing max size, runs AV-sync check, stores in MinIO, and creates an Episode.
-- upload_multi · function · L346-L509 — Batch-uploads multiple videos into a project (found by id or created/found by name), optionally merging them into one Episode via ffmpeg concat, with per-file AV-sync checks and sequential episode numbering.
-- _check_av_sync · function · L512-L551 — Rough audio-video sync validation that blocks files with mismatched audio/video durations from silently entering the production pipeline.
-- _run_ffmpeg · function · L554-L567 — Runs a single ffmpeg subprocess command and returns success, logging the stderr tail on failure.
-- _ffmpeg_concat · function · L570-L619 — Concatenates multiple videos into one using ffmpeg, first normalizing timestamps losslessly to fix DTS discontinuities, then stream-copying, and falling back to re-encoding when parameters mismatch.
-- cancel_upload · function · L623-L626 — Cancels an in-progress upload session.
+- UploadResumeRequest · class · L36-L40 — class UploadResumeRequest(BaseModel)
+- UploadResumeResponse · class · L43-L49 — class UploadResumeResponse(BaseModel)
+- UploadProgressResponse · class · L52-L58 — class UploadProgressResponse(BaseModel)
+- UploadCompleteRequest · class · L61-L65 — class UploadCompleteRequest(BaseModel)
+- MultiUploadResponse · class · L68-L72 — class MultiUploadResponse(BaseModel)
+- _serialize_episode · function · L75-L88 — def _serialize_episode(episode: Episode) -> dict
+- _check_project_access · function · L91-L99 — async def _check_project_access(project: Project, current_user: User)
+- _store_uploaded_file · function · L102-L149 — async def _store_uploaded_file( upload_id: str, project_id: uuid.UUID, file_name: str, file_size: int, db: AsyncSession, title: Optional[str] = None, episode_no: Optional[int] = None, ) -> Episode
+- create_upload · function · L153-L178 — async def create_upload(data: UploadResumeRequest)
+- get_upload_info · function · L182-L197 — async def get_upload_info( upload_id: str, tus_resumable: Optional[str] = Header(None, alias="Tus-Resumable"), )
+- upload_chunk · function · L201-L230 — async def upload_chunk( upload_id: str, request: Request, upload_offset: Optional[str] = Header(None, alias="Upload-Offset"), )
+- complete_upload · function · L234-L268 — async def complete_upload( data: UploadCompleteRequest, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- upload_single · function · L272-L342 — async def upload_single( file: UploadFile = File(...), project_id: str = Form(...), title: Optional[str] = Form(None), episode_no: Optional[int] = Form(None), current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- upload_multi · function · L346-L509 — async def upload_multi( files: List[UploadFile] = File(...), project_name: str = Form(""), project_id: Optional[str] = Form(None), merge: str = Form("false"), title: Optional[str] = Form(None), description: Optional[str] = Form(None), current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- _check_av_sync · function · L512-L551 — async def _check_av_sync(file_path: str, threshold: float = 0.5) -> dict
+- _run_ffmpeg · function · L554-L567 — async def _run_ffmpeg(cmd: List[str]) -> bool
+- _ffmpeg_concat · function · L570-L619 — async def _ffmpeg_concat(paths: List[str], out_path: str) -> bool
+- cancel_upload · function · L623-L626 — async def cancel_upload(upload_id: str)

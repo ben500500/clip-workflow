@@ -72,55 +72,55 @@ covers:
     at: 'backend/app/api/autoclip.py:L444-L484'
   - symbol: BatchEpisodeItem
     kind: class
-    at: 'backend/app/api/batch_slice.py:L42-L45'
+    at: 'backend/app/api/batch_slice.py:L43-L46'
   - symbol: BatchSliceRunRequest
     kind: class
-    at: 'backend/app/api/batch_slice.py:L48-L59'
+    at: 'backend/app/api/batch_slice.py:L49-L60'
   - symbol: BatchSliceRunResponse
     kind: class
-    at: 'backend/app/api/batch_slice.py:L62-L65'
+    at: 'backend/app/api/batch_slice.py:L63-L66'
   - symbol: BatchSliceItemResponse
     kind: class
-    at: 'backend/app/api/batch_slice.py:L68-L86'
+    at: 'backend/app/api/batch_slice.py:L69-L87'
   - symbol: BatchSliceResponse
     kind: class
-    at: 'backend/app/api/batch_slice.py:L89-L104'
+    at: 'backend/app/api/batch_slice.py:L90-L105'
   - symbol: BatchSliceOutputItem
     kind: class
-    at: 'backend/app/api/batch_slice.py:L107-L114'
+    at: 'backend/app/api/batch_slice.py:L108-L115'
   - symbol: BatchSliceOutputResponse
     kind: class
-    at: 'backend/app/api/batch_slice.py:L117-L119'
+    at: 'backend/app/api/batch_slice.py:L118-L120'
   - symbol: _serialize_batch
     kind: function
-    at: 'backend/app/api/batch_slice.py:L127-L142'
+    at: 'backend/app/api/batch_slice.py:L128-L143'
   - symbol: _serialize_item
     kind: function
-    at: 'backend/app/api/batch_slice.py:L145-L163'
+    at: 'backend/app/api/batch_slice.py:L146-L164'
   - symbol: _load_batch_owned
     kind: function
-    at: 'backend/app/api/batch_slice.py:L166-L179'
+    at: 'backend/app/api/batch_slice.py:L167-L180'
   - symbol: run_batch_slice
     kind: function
-    at: 'backend/app/api/batch_slice.py:L188-L240'
+    at: 'backend/app/api/batch_slice.py:L189-L241'
   - symbol: list_batch_slices
     kind: function
-    at: 'backend/app/api/batch_slice.py:L244-L254'
+    at: 'backend/app/api/batch_slice.py:L245-L264'
   - symbol: get_batch_slice
     kind: function
-    at: 'backend/app/api/batch_slice.py:L258-L265'
+    at: 'backend/app/api/batch_slice.py:L268-L275'
   - symbol: get_batch_items
     kind: function
-    at: 'backend/app/api/batch_slice.py:L269-L282'
+    at: 'backend/app/api/batch_slice.py:L279-L292'
   - symbol: get_batch_outputs
     kind: function
-    at: 'backend/app/api/batch_slice.py:L286-L361'
+    at: 'backend/app/api/batch_slice.py:L296-L376'
   - symbol: retry_batch_slice
     kind: function
-    at: 'backend/app/api/batch_slice.py:L365-L395'
+    at: 'backend/app/api/batch_slice.py:L380-L420'
   - symbol: cancel_batch_slice
     kind: function
-    at: 'backend/app/api/batch_slice.py:L399-L420'
+    at: 'backend/app/api/batch_slice.py:L424-L445'
   - symbol: OperatorCreate
     kind: class
     at: 'backend/app/api/channel_accounts.py:L38-L41'

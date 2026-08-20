@@ -10,27 +10,42 @@ links: []
 generator:
   version: 1
 covers:
+  - symbol: FilterKey
+    kind: type
+    at: 'frontend/src/pages/VariantMatrix.tsx:L37-L37'
   - symbol: VariantMatrix
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L35-L310'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L45-L494'
   - symbol: handleVerify
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L76-L87'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L136-L147'
   - symbol: openBind
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L89-L92'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L149-L152'
   - symbol: handleBind
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L94-L107'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L154-L167'
   - symbol: openThreshold
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L109-L112'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L169-L172'
   - symbol: handleSaveThreshold
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L114-L126'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L174-L186'
+  - symbol: handleDownload
+    kind: function
+    at: 'frontend/src/pages/VariantMatrix.tsx:L189-L200'
+  - symbol: handleDeleteVariant
+    kind: function
+    at: 'frontend/src/pages/VariantMatrix.tsx:L203-L211'
+  - symbol: handleDeleteGroup
+    kind: function
+    at: 'frontend/src/pages/VariantMatrix.tsx:L214-L222'
+  - symbol: handleCleanupStuck
+    kind: function
+    at: 'frontend/src/pages/VariantMatrix.tsx:L225-L240'
   - symbol: DistanceCell
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L312-L324'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L496-L508'
 ---
 <!-- context:generated:start -->
 ## Summary

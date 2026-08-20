@@ -115,88 +115,88 @@ covers:
     at: 'backend/app/models/material.py:L392-L393'
   - symbol: _get_batch
     kind: function
-    at: 'backend/app/services/batch_decoupled_service.py:L56-L61'
+    at: 'backend/app/services/batch_decoupled_service.py:L56-L64'
   - symbol: _load_items
     kind: function
-    at: 'backend/app/services/batch_decoupled_service.py:L64-L71'
+    at: 'backend/app/services/batch_decoupled_service.py:L67-L77'
   - symbol: _load_item
     kind: function
-    at: 'backend/app/services/batch_decoupled_service.py:L74-L79'
+    at: 'backend/app/services/batch_decoupled_service.py:L80-L88'
   - symbol: _update_item
     kind: function
-    at: 'backend/app/services/batch_decoupled_service.py:L82-L87'
+    at: 'backend/app/services/batch_decoupled_service.py:L91-L96'
   - symbol: _update_batch
     kind: function
-    at: 'backend/app/services/batch_decoupled_service.py:L90-L95'
+    at: 'backend/app/services/batch_decoupled_service.py:L99-L104'
   - symbol: _get_operator
     kind: function
-    at: 'backend/app/services/batch_decoupled_service.py:L98-L104'
+    at: 'backend/app/services/batch_decoupled_service.py:L107-L116'
   - symbol: _resolve_project
     kind: function
-    at: 'backend/app/services/batch_decoupled_service.py:L107-L123'
+    at: 'backend/app/services/batch_decoupled_service.py:L119-L137'
   - symbol: run_batch_decoupled
     kind: function
-    at: 'backend/app/services/batch_decoupled_service.py:L129-L186'
+    at: 'backend/app/services/batch_decoupled_service.py:L143-L200'
   - symbol: process_selection
     kind: function
-    at: 'backend/app/services/batch_decoupled_service.py:L192-L246'
+    at: 'backend/app/services/batch_decoupled_service.py:L206-L260'
   - symbol: dispatch_ready_slices
     kind: function
-    at: 'backend/app/services/batch_decoupled_service.py:L252-L322'
+    at: 'backend/app/services/batch_decoupled_service.py:L266-L342'
   - symbol: finalize_slices
     kind: function
-    at: 'backend/app/services/batch_decoupled_service.py:L328-L400'
+    at: 'backend/app/services/batch_decoupled_service.py:L348-L424'
   - symbol: aggregate_batches
     kind: function
-    at: 'backend/app/services/batch_decoupled_service.py:L406-L470'
+    at: 'backend/app/services/batch_decoupled_service.py:L430-L498'
   - symbol: _get_batch
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L55-L59'
+    at: 'backend/app/services/batch_slice_service.py:L56-L62'
   - symbol: _load_items
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L62-L69'
+    at: 'backend/app/services/batch_slice_service.py:L65-L75'
   - symbol: _update_item
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L72-L77'
+    at: 'backend/app/services/batch_slice_service.py:L78-L83'
   - symbol: _update_batch
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L80-L85'
+    at: 'backend/app/services/batch_slice_service.py:L86-L91'
   - symbol: _set_phase
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L88-L99'
+    at: 'backend/app/services/batch_slice_service.py:L94-L105'
   - symbol: _find_or_create_project
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L102-L120'
+    at: 'backend/app/services/batch_slice_service.py:L108-L157'
   - symbol: _upload_and_create_episode
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L123-L153'
+    at: 'backend/app/services/batch_slice_service.py:L160-L190'
   - symbol: _trigger_autoclip
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L156-L177'
+    at: 'backend/app/services/batch_slice_service.py:L193-L216'
   - symbol: _wait_autoclip
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L180-L201'
+    at: 'backend/app/services/batch_slice_service.py:L219-L242'
   - symbol: _trigger_detect
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L204-L230'
+    at: 'backend/app/services/batch_slice_service.py:L245-L273'
   - symbol: _wait_detect
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L233-L256'
+    at: 'backend/app/services/batch_slice_service.py:L276-L307'
   - symbol: _accept_all_candidates
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L259-L271'
+    at: 'backend/app/services/batch_slice_service.py:L310-L324'
   - symbol: _trigger_slice
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L274-L307'
+    at: 'backend/app/services/batch_slice_service.py:L327-L371'
   - symbol: _wait_slice
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L310-L336'
+    at: 'backend/app/services/batch_slice_service.py:L374-L411'
   - symbol: _delete_source
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L339-L360'
+    at: 'backend/app/services/batch_slice_service.py:L414-L438'
   - symbol: run_batch
     kind: function
-    at: 'backend/app/services/batch_slice_service.py:L363-L536'
+    at: 'backend/app/services/batch_slice_service.py:L441-L618'
 ---
 <!-- context:generated:start -->
 ## Summary

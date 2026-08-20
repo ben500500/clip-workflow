@@ -1,26 +1,25 @@
 # frontend/src/pages/BatchSlice.tsx · [[frontend-workflow-pages]]
 
-- FlattenOutput · interface · L22-L28 — Flattened output item combining batch item metadata with a single output file, used for preview and trim actions.
-- AutoClipConfig · interface · L32-L39 — Configuration for AI smart clip-point selection (enabled, clip count, score threshold, duration bounds, frame analysis).
-- IntervalConfig · interface · L41-L44 — Configuration for generic interval detection (credits/static/watermark) applied across the batch.
-- SliceConfigState · interface · L46-L83 — Full one-click slicing configuration state shared across the batch, covering autoclip, interval, vertical-to-horizontal, subtitle, text overlay, and watermark settings.
-- SlicePresetOption · interface · L139-L177 — interface SlicePresetOption
-- BatchSlicePage · function · L218-L1412 — Main page component orchestrating batch creation, per-batch detail expansion with polling, output preview/trim modals, and all slicing configuration UI.
-- applySlicePreset · function · L240-L281 — applySlicePreset = (id: string)
-- handleFileUpload · function · L377-L394 — Reads an uploaded JSON manifest file into state and validates it contains drama and episodes fields.
-- buildPayload · function · L396-L436 — Parses and validates the JSON manifest, then assembles the run payload by flattening the UI slice config into the API's autoclip/interval/dedupe/text_overlay fields.
-- addTextOverlay · function · L438-L443 — Appends a new default text overlay entry to the slice config.
-- updateTextOverlay · function · L445-L450 — Merges a partial patch into a specific text overlay entry by index.
-- removeTextOverlay · function · L452-L457 — Removes a text overlay entry from the slice config by index.
-- handleRun · function · L459-L485 — Validates the manifest, submits the batch run to the API, then auto-expands and loads the newly created batch's detail.
-- handleRetry · function · L487-L505 — Confirms with the user and retries failed episodes of the selected batch, skipping already-completed ones.
-- handleCancel · function · L507-L525 — Confirms with the user and cancels the selected batch, marking unfinished episodes as cancelled.
-- showOutputs · function · L527-L537 — Opens the output modal and fetches the selected batch's output item list from the API.
-- renderOutputModal · function · L539-L598 — Renders the output list modal, flattening each batch item's nested outputs into a single list with preview/edit/download actions.
-- handlePreviewOutput · function · L601-L609 — Opens the preview modal for an output item using its presigned URL, warning if no URL is available.
-- openTrimModal · function · L612-L621 — Opens the trim modal for an output item, initializing the trim range to the clip's full duration and guarding against items without an associated episode.
-- handleTrimRangeChange · function · L624-L630 — Updates the trim range state and seeks the preview video to the new start point.
-- submitTrim · function · L633-L655 — Validates the trim interval and launches a re-encode slice task using the output as source to produce a new trimmed clip.
-- renderPreviewModal · function · L657-L670 — Renders the modal that plays the selected output clip via its presigned URL.
-- renderTrimModal · function · L672-L725 — Renders the trim modal with a video preview and dual-handle slider for selecting the cut range.
-- formatSize · function · L727-L732 — Formats a byte size into a human-readable string with appropriate units.
+- FlattenOutput · interface · L24-L30 — interface FlattenOutput
+- AutoClipConfig · interface · L34-L41 — interface AutoClipConfig
+- IntervalConfig · interface · L43-L46 — interface IntervalConfig
+- SliceConfigState · interface · L48-L85 — interface SliceConfigState
+- BatchSlicePage · function · L180-L1362 — BatchSlicePage: React.FC = ()
+- applySlicePreset · function · L195-L236 — applySlicePreset = (id: string)
+- handleFileUpload · function · L332-L349 — handleFileUpload = (file: File)
+- buildPayload · function · L351-L391 — buildPayload = ()
+- addTextOverlay · function · L393-L398 — addTextOverlay = ()
+- updateTextOverlay · function · L400-L405 — updateTextOverlay = (index: number, patch: Partial<TextOverlayItem>)
+- removeTextOverlay · function · L407-L412 — removeTextOverlay = (index: number)
+- handleRun · function · L414-L440 — handleRun = async ()
+- handleRetry · function · L442-L460 — handleRetry = async ()
+- handleCancel · function · L462-L480 — handleCancel = async ()
+- showOutputs · function · L482-L492 — showOutputs = async ()
+- renderOutputModal · function · L494-L552 — renderOutputModal = ()
+- handlePreviewOutput · function · L555-L563 — handlePreviewOutput = async (item: FlattenOutput)
+- openTrimModal · function · L566-L575 — openTrimModal = (item: FlattenOutput)
+- handleTrimRangeChange · function · L578-L584 — handleTrimRangeChange = (val: [number, number])
+- submitTrim · function · L587-L609 — submitTrim = async ()
+- renderPreviewModal · function · L611-L624 — renderPreviewModal = ()
+- renderTrimModal · function · L626-L679 — renderTrimModal = ()
+- formatSize · function · L681-L686 — formatSize = (size?: number | null)

@@ -22,28 +22,28 @@ generator:
 covers:
   - symbol: PreviewClient
     kind: class
-    at: 'backend/wechat_download/preview_client.py:L37-L164'
+    at: 'backend/wechat_download/preview_client.py:L37-L168'
   - symbol: __init__
     kind: method
     at: 'backend/wechat_download/preview_client.py:L40-L43'
   - symbol: _connect
     kind: method
-    at: 'backend/wechat_download/preview_client.py:L45-L54'
+    at: 'backend/wechat_download/preview_client.py:L45-L55'
   - symbol: _pick_account_cdp
     kind: method
-    at: 'backend/wechat_download/preview_client.py:L56-L79'
+    at: 'backend/wechat_download/preview_client.py:L57-L80'
   - symbol: parse
     kind: method
-    at: 'backend/wechat_download/preview_client.py:L81-L156'
+    at: 'backend/wechat_download/preview_client.py:L82-L157'
   - symbol: close
     kind: method
-    at: 'backend/wechat_download/preview_client.py:L158-L164'
+    at: 'backend/wechat_download/preview_client.py:L159-L168'
   - symbol: PreviewUnavailableError
     kind: class
-    at: 'backend/wechat_download/preview_client.py:L167-L168'
+    at: 'backend/wechat_download/preview_client.py:L171-L172'
   - symbol: get_preview_client
     kind: function
-    at: 'backend/wechat_download/preview_client.py:L174-L178'
+    at: 'backend/wechat_download/preview_client.py:L178-L182'
   - symbol: ProviderParseError
     kind: class
     at: 'backend/wechat_download/provider_registry.py:L45-L46'

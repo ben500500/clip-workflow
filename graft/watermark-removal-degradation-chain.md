@@ -155,21 +155,24 @@ covers:
   - symbol: _inpaint_cv2
     kind: function
     at: 'engines/seedance_wm/inpaint.py:L73-L81'
+  - symbol: _inpaint_cv2_roi
+    kind: function
+    at: 'engines/seedance_wm/inpaint.py:L84-L98'
   - symbol: _inpaint_lama
     kind: function
-    at: 'engines/seedance_wm/inpaint.py:L87-L99'
+    at: 'engines/seedance_wm/inpaint.py:L104-L116'
   - symbol: inpaint_frames
     kind: function
-    at: 'engines/seedance_wm/inpaint.py:L102-L185'
+    at: 'engines/seedance_wm/inpaint.py:L119-L209'
   - symbol: _build_inpaint_chain
     kind: function
-    at: 'engines/seedance_wm/inpaint.py:L188-L223'
+    at: 'engines/seedance_wm/inpaint.py:L212-L247'
   - symbol: temporal_smooth
     kind: function
-    at: 'engines/seedance_wm/inpaint.py:L226-L295'
+    at: 'engines/seedance_wm/inpaint.py:L250-L319'
   - symbol: _read_frame
     kind: function
-    at: 'engines/seedance_wm/inpaint.py:L264-L269'
+    at: 'engines/seedance_wm/inpaint.py:L288-L293'
 ---
 <!-- context:generated:start -->
 ## Summary

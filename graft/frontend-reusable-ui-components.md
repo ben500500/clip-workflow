@@ -24,25 +24,31 @@ generator:
 covers:
   - symbol: DedupeManualConfigValue
     kind: interface
-    at: 'frontend/src/components/DedupeManualConfig.tsx:L10-L34'
+    at: 'frontend/src/components/DedupeManualConfig.tsx:L12-L51'
   - symbol: Props
     kind: interface
-    at: 'frontend/src/components/DedupeManualConfig.tsx:L129-L134'
+    at: 'frontend/src/components/DedupeManualConfig.tsx:L53-L58'
   - symbol: DedupeManualConfig
     kind: function
-    at: 'frontend/src/components/DedupeManualConfig.tsx:L137-L236'
+    at: 'frontend/src/components/DedupeManualConfig.tsx:L66-L218'
   - symbol: set
     kind: function
-    at: 'frontend/src/components/DedupeManualConfig.tsx:L140-L142'
-  - symbol: setWm
+    at: 'frontend/src/components/DedupeManualConfig.tsx:L70-L72'
+  - symbol: setDict
     kind: function
-    at: 'frontend/src/components/DedupeManualConfig.tsx:L143-L147'
+    at: 'frontend/src/components/DedupeManualConfig.tsx:L73-L77'
   - symbol: row
     kind: function
-    at: 'frontend/src/components/DedupeManualConfig.tsx:L150-L158'
+    at: 'frontend/src/components/DedupeManualConfig.tsx:L79-L87'
+  - symbol: renderControl
+    kind: function
+    at: 'frontend/src/components/DedupeManualConfig.tsx:L90-L138'
   - symbol: num
     kind: function
-    at: 'frontend/src/components/DedupeManualConfig.tsx:L160-L160'
+    at: 'frontend/src/components/DedupeManualConfig.tsx:L95-L95'
+  - symbol: renderDictGroup
+    kind: function
+    at: 'frontend/src/components/DedupeManualConfig.tsx:L141-L179'
   - symbol: ErrorHintProps
     kind: interface
     at: 'frontend/src/components/ErrorHint.tsx:L7-L14'

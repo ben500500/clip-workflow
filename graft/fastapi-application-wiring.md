@@ -21,25 +21,28 @@ generator:
 covers:
   - symbol: _create_seed_users
     kind: function
-    at: 'backend/app/main.py:L33-L73'
+    at: 'backend/app/main.py:L36-L76'
   - symbol: _create_seed_platform_profiles
     kind: function
-    at: 'backend/app/main.py:L76-L96'
+    at: 'backend/app/main.py:L79-L99'
   - symbol: _create_seed_alert_rules
     kind: function
-    at: 'backend/app/main.py:L99-L101'
+    at: 'backend/app/main.py:L102-L104'
   - symbol: lifespan
     kind: function
-    at: 'backend/app/main.py:L105-L119'
+    at: 'backend/app/main.py:L108-L122'
   - symbol: websocket_wechat_dl
     kind: function
-    at: 'backend/app/main.py:L149-L186'
+    at: 'backend/app/main.py:L152-L189'
+  - symbol: websocket_lan_source
+    kind: function
+    at: 'backend/app/main.py:L193-L228'
   - symbol: health_check
     kind: function
-    at: 'backend/app/main.py:L215-L217'
+    at: 'backend/app/main.py:L258-L260'
   - symbol: health_check_detailed
     kind: function
-    at: 'backend/app/main.py:L221-L224'
+    at: 'backend/app/main.py:L264-L267'
 ---
 <!-- context:generated:start -->
 ## Summary

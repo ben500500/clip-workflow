@@ -29,118 +29,118 @@ covers:
     at: 'backend/app/services/publish_service.py:L48-L51'
   - symbol: _get_playwright
     kind: function
-    at: 'backend/app/services/publish_service.py:L83-L92'
+    at: 'backend/app/services/publish_service.py:L85-L94'
   - symbol: _cache_pending_tab
     kind: function
-    at: 'backend/app/services/publish_service.py:L95-L109'
+    at: 'backend/app/services/publish_service.py:L97-L111'
   - symbol: _pop_pending_tab
     kind: function
-    at: 'backend/app/services/publish_service.py:L112-L115'
+    at: 'backend/app/services/publish_service.py:L114-L117'
   - symbol: release_pending_tab
     kind: function
-    at: 'backend/app/services/publish_service.py:L118-L129'
+    at: 'backend/app/services/publish_service.py:L120-L131'
   - symbol: VideoChannelPublisher
     kind: class
-    at: 'backend/app/services/publish_service.py:L132-L1066'
+    at: 'backend/app/services/publish_service.py:L134-L1074'
   - symbol: __init__
     kind: method
-    at: 'backend/app/services/publish_service.py:L153-L169'
+    at: 'backend/app/services/publish_service.py:L155-L171'
   - symbol: _connect
     kind: method
-    at: 'backend/app/services/publish_service.py:L171-L199'
+    at: 'backend/app/services/publish_service.py:L173-L207'
   - symbol: publish
     kind: method
-    at: 'backend/app/services/publish_service.py:L201-L249'
+    at: 'backend/app/services/publish_service.py:L209-L257'
   - symbol: _publish_body
     kind: method
-    at: 'backend/app/services/publish_service.py:L251-L390'
+    at: 'backend/app/services/publish_service.py:L259-L398'
   - symbol: _post_publish_comments_from_payload
     kind: method
-    at: 'backend/app/services/publish_service.py:L392-L405'
+    at: 'backend/app/services/publish_service.py:L400-L413'
   - symbol: _post_publish_comments
     kind: method
-    at: 'backend/app/services/publish_service.py:L407-L467'
+    at: 'backend/app/services/publish_service.py:L415-L475'
   - symbol: _close_connection
     kind: method
-    at: 'backend/app/services/publish_service.py:L469-L481'
+    at: 'backend/app/services/publish_service.py:L477-L489'
   - symbol: _need_login
     kind: method
-    at: 'backend/app/services/publish_service.py:L483-L494'
+    at: 'backend/app/services/publish_service.py:L491-L502'
   - symbol: _probe_upload_risk_signal
     kind: method
-    at: 'backend/app/services/publish_service.py:L496-L532'
+    at: 'backend/app/services/publish_service.py:L504-L540'
   - symbol: _upload_video
     kind: method
-    at: 'backend/app/services/publish_service.py:L534-L562'
+    at: 'backend/app/services/publish_service.py:L542-L570'
   - symbol: _wait_for_upload
     kind: method
-    at: 'backend/app/services/publish_service.py:L564-L613'
+    at: 'backend/app/services/publish_service.py:L572-L621'
   - symbol: _set_title
     kind: method
-    at: 'backend/app/services/publish_service.py:L615-L660'
+    at: 'backend/app/services/publish_service.py:L623-L668'
   - symbol: _set_description
     kind: method
-    at: 'backend/app/services/publish_service.py:L662-L669'
+    at: 'backend/app/services/publish_service.py:L670-L677'
   - symbol: _set_location
     kind: method
-    at: 'backend/app/services/publish_service.py:L671-L695'
+    at: 'backend/app/services/publish_service.py:L679-L703'
   - symbol: _merge_tags_into_description
     kind: method
-    at: 'backend/app/services/publish_service.py:L697-L711'
+    at: 'backend/app/services/publish_service.py:L705-L719'
   - symbol: _set_tags
     kind: method
-    at: 'backend/app/services/publish_service.py:L713-L723'
+    at: 'backend/app/services/publish_service.py:L721-L731'
   - symbol: _set_cover
     kind: method
-    at: 'backend/app/services/publish_service.py:L725-L749'
+    at: 'backend/app/services/publish_service.py:L733-L757'
   - symbol: _select_jump_type
     kind: method
-    at: 'backend/app/services/publish_service.py:L751-L775'
+    at: 'backend/app/services/publish_service.py:L759-L783'
   - symbol: _attach_mini_program
     kind: method
-    at: 'backend/app/services/publish_service.py:L777-L795'
+    at: 'backend/app/services/publish_service.py:L785-L803'
   - symbol: _take_screenshot
     kind: method
-    at: 'backend/app/services/publish_service.py:L797-L804'
+    at: 'backend/app/services/publish_service.py:L805-L812'
   - symbol: _click_publish
     kind: method
-    at: 'backend/app/services/publish_service.py:L806-L825'
+    at: 'backend/app/services/publish_service.py:L814-L833'
   - symbol: _wait_for_publish
     kind: method
-    at: 'backend/app/services/publish_service.py:L827-L859'
+    at: 'backend/app/services/publish_service.py:L835-L867'
   - symbol: _save_pending_payload
     kind: method
-    at: 'backend/app/services/publish_service.py:L861-L901'
+    at: 'backend/app/services/publish_service.py:L869-L909'
   - symbol: _refill_pending_form
     kind: method
-    at: 'backend/app/services/publish_service.py:L903-L944'
+    at: 'backend/app/services/publish_service.py:L911-L952'
   - symbol: _selector_ok
     kind: method
-    at: 'backend/app/services/publish_service.py:L946-L958'
+    at: 'backend/app/services/publish_service.py:L954-L966'
   - symbol: confirm_publish
     kind: method
-    at: 'backend/app/services/publish_service.py:L960-L1051'
+    at: 'backend/app/services/publish_service.py:L968-L1059'
   - symbol: check_login_status
     kind: method
-    at: 'backend/app/services/publish_service.py:L1053-L1066'
+    at: 'backend/app/services/publish_service.py:L1061-L1074'
   - symbol: DouyinPublisher
     kind: class
-    at: 'backend/app/services/publish_service.py:L1069-L1099'
+    at: 'backend/app/services/publish_service.py:L1077-L1107'
   - symbol: _need_login
     kind: method
-    at: 'backend/app/services/publish_service.py:L1077-L1087'
+    at: 'backend/app/services/publish_service.py:L1085-L1095'
   - symbol: _set_tags
     kind: method
-    at: 'backend/app/services/publish_service.py:L1089-L1099'
+    at: 'backend/app/services/publish_service.py:L1097-L1107'
   - symbol: KuaishouPublisher
     kind: class
-    at: 'backend/app/services/publish_service.py:L1102-L1120'
+    at: 'backend/app/services/publish_service.py:L1110-L1128'
   - symbol: _need_login
     kind: method
-    at: 'backend/app/services/publish_service.py:L1110-L1120'
+    at: 'backend/app/services/publish_service.py:L1118-L1128'
   - symbol: get_publisher
     kind: function
-    at: 'backend/app/services/publish_service.py:L1123-L1135'
+    at: 'backend/app/services/publish_service.py:L1131-L1143'
 ---
 <!-- context:generated:start -->
 ## Summary

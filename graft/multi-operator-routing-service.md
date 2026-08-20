@@ -70,37 +70,37 @@ covers:
     at: 'backend/app/services/multi_operator.py:L312-L319'
   - symbol: sync_profiles_from_db
     kind: function
-    at: 'backend/app/services/multi_operator.py:L322-L369'
+    at: 'backend/app/services/multi_operator.py:L322-L371'
   - symbol: save_pending
     kind: function
-    at: 'backend/app/services/multi_operator.py:L375-L381'
+    at: 'backend/app/services/multi_operator.py:L377-L383'
   - symbol: get_pending
     kind: function
-    at: 'backend/app/services/multi_operator.py:L384-L390'
+    at: 'backend/app/services/multi_operator.py:L386-L392'
   - symbol: delete_pending
     kind: function
-    at: 'backend/app/services/multi_operator.py:L393-L398'
+    at: 'backend/app/services/multi_operator.py:L395-L400'
   - symbol: freeze_pending
     kind: function
-    at: 'backend/app/services/multi_operator.py:L401-L416'
+    at: 'backend/app/services/multi_operator.py:L403-L418'
   - symbol: issue_cdp_token
     kind: function
-    at: 'backend/app/services/multi_operator.py:L422-L437'
+    at: 'backend/app/services/multi_operator.py:L424-L439'
   - symbol: verify_cdp_token
     kind: function
-    at: 'backend/app/services/multi_operator.py:L440-L458'
+    at: 'backend/app/services/multi_operator.py:L442-L460'
   - symbol: _fmt_ts
     kind: function
-    at: 'backend/app/services/multi_operator.py:L464-L471'
+    at: 'backend/app/services/multi_operator.py:L466-L473'
   - symbol: get_route_matrix
     kind: function
-    at: 'backend/app/services/multi_operator.py:L474-L511'
+    at: 'backend/app/services/multi_operator.py:L476-L513'
   - symbol: get_verification_status
     kind: function
-    at: 'backend/app/services/multi_operator.py:L514-L582'
+    at: 'backend/app/services/multi_operator.py:L516-L586'
   - symbol: get_operator_stats
     kind: function
-    at: 'backend/app/services/multi_operator.py:L585-L608'
+    at: 'backend/app/services/multi_operator.py:L589-L612'
 ---
 <!-- context:generated:start -->
 ## Summary

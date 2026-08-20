@@ -240,6 +240,8 @@ services:
     image: docker.cnb.cool/ben500500/clip-workflow/clip-backend:${CLIP_VERSION}
     container_name: clip-backend
     restart: unless-stopped
+    ports:
+      - 12808:8080
     networks:
       - clip-network
     depends_on:
@@ -296,24 +298,33 @@ services:
   worker-video:
     <<: *celery-worker-base
     container_name: clip-worker-video
-    profiles:
-      - forbid
     # 视频处理（切片/去水印/检测）—— 独占 video_processing 队列，ffmpeg 已占满 CPU，并发 1 正确
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "video_processing", "--loglevel=info", "--concurrency=1"]
 
   worker-publish:
     <<: *celery-worker-base
     container_name: clip-worker-publish
-    profiles:
-      - forbid
     # 发布/豆包生成（浏览器 CDP）—— 独占 publish 队列，并发 1
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "publish", "--loglevel=info", "--concurrency=1"]
+
+
+  worker-variant:
+    <<: *celery-worker-base
+    container_name: clip-worker-variant
+    # 变体生成独立 worker：独占 variant 队列（generate_variants_task + verify_variant_fingerprint_task）。
+    # #274 A2：ffmpeg 重计算，不再与 batch/slice 挤 default/video_processing，杜绝排队 8 小时 + 超时被杀。并发 1。
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "variant", "--loglevel=info", "--concurrency=1"]
+
+  worker-selection:
+    <<: *celery-worker-base
+    container_name: clip-worker-selection
+    # AI 选点独立 worker：独占 selection 队列（autoclip_task + batch_selection_consumer），
+    # 与切片/检测/去水印（video_processing）分属独立容器，长切片不再阻塞选点。并发 2。
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "selection", "--loglevel=info", "--concurrency=2"]
 
   worker-fast:
     <<: *celery-worker-base
     container_name: clip-worker-fast
-    profiles:
-      - forbid
     # 指标/默认任务（轻量）—— 高并发 4，不再被视频任务饿死
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "metrics,default,selection", "--loglevel=info", "--concurrency=4"]
 

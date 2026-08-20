@@ -45,55 +45,61 @@ covers:
     at: 'backend/app/api/publish_batches.py:L159-L238'
   - symbol: PublishTaskCreate
     kind: class
-    at: 'backend/app/api/publish_tasks.py:L30-L51'
+    at: 'backend/app/api/publish_tasks.py:L30-L55'
   - symbol: PublishTaskResponse
     kind: class
-    at: 'backend/app/api/publish_tasks.py:L54-L86'
+    at: 'backend/app/api/publish_tasks.py:L58-L92'
   - symbol: PublishTaskConfirmResponse
     kind: class
-    at: 'backend/app/api/publish_tasks.py:L89-L93'
+    at: 'backend/app/api/publish_tasks.py:L95-L99'
   - symbol: PublishBatchCreate
     kind: class
-    at: 'backend/app/api/publish_tasks.py:L96-L98'
+    at: 'backend/app/api/publish_tasks.py:L102-L104'
   - symbol: PublishTaskScheduleUpdate
     kind: class
-    at: 'backend/app/api/publish_tasks.py:L101-L111'
+    at: 'backend/app/api/publish_tasks.py:L107-L117'
   - symbol: create_publish_task
     kind: function
-    at: 'backend/app/api/publish_tasks.py:L115-L153'
+    at: 'backend/app/api/publish_tasks.py:L121-L162'
   - symbol: create_publish_tasks_batch
     kind: function
-    at: 'backend/app/api/publish_tasks.py:L157-L204'
+    at: 'backend/app/api/publish_tasks.py:L166-L213'
   - symbol: _resolve_schedule
     kind: function
-    at: 'backend/app/api/publish_tasks.py:L207-L250'
+    at: 'backend/app/api/publish_tasks.py:L216-L259'
   - symbol: _check_publish_limits
     kind: function
-    at: 'backend/app/api/publish_tasks.py:L253-L320'
+    at: 'backend/app/api/publish_tasks.py:L262-L329'
   - symbol: _create_publish_task_internal
     kind: function
-    at: 'backend/app/api/publish_tasks.py:L323-L391'
+    at: 'backend/app/api/publish_tasks.py:L332-L401'
   - symbol: _to_uuid_or_none
     kind: function
-    at: 'backend/app/api/publish_tasks.py:L336-L343'
+    at: 'backend/app/api/publish_tasks.py:L345-L352'
   - symbol: list_publish_tasks
     kind: function
-    at: 'backend/app/api/publish_tasks.py:L395-L428'
+    at: 'backend/app/api/publish_tasks.py:L405-L441'
   - symbol: get_publish_task
     kind: function
-    at: 'backend/app/api/publish_tasks.py:L432-L447'
+    at: 'backend/app/api/publish_tasks.py:L445-L460'
   - symbol: get_publish_task_screenshot
     kind: function
-    at: 'backend/app/api/publish_tasks.py:L451-L475'
+    at: 'backend/app/api/publish_tasks.py:L464-L488'
   - symbol: confirm_publish_task
     kind: function
-    at: 'backend/app/api/publish_tasks.py:L479-L514'
+    at: 'backend/app/api/publish_tasks.py:L492-L527'
   - symbol: reschedule_publish_task
     kind: function
-    at: 'backend/app/api/publish_tasks.py:L518-L577'
+    at: 'backend/app/api/publish_tasks.py:L531-L590'
   - symbol: requeue_publish_task
     kind: function
-    at: 'backend/app/api/publish_tasks.py:L581-L621'
+    at: 'backend/app/api/publish_tasks.py:L594-L634'
+  - symbol: ExecutorResultRequest
+    kind: class
+    at: 'backend/app/api/publish_tasks.py:L637-L645'
+  - symbol: publish_task_executor_result
+    kind: function
+    at: 'backend/app/api/publish_tasks.py:L649-L685'
   - symbol: PublishTimeSlotCreate
     kind: class
     at: 'backend/app/api/publish_time_slots.py:L38-L42'

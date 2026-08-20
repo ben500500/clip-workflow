@@ -9,26 +9,27 @@
 - Heartbeat · method · L114-L135 — func (r *RedisClient) Heartbeat(nodeID string, currentTasks, totalCompleted, totalFailed int, engineVersion string, encoderCapabilities []string, heartbeatTTL time.Duration) error
 - FetchTask · method · L138-L167 — func (r *RedisClient) FetchTask(streams []string, group, consumer string, timeout time.Duration) (*StreamMessage, error)
 - parseStreamMessage · function · L170-L180 — func parseStreamMessage(msg redis.XMessage) (*SliceTask, string, error)
-- AckTask · method · L183-L185 — func (r *RedisClient) AckTask(stream, group, msgID string) error
-- RequeueTask · method · L188-L193 — func (r *RedisClient) RequeueTask(stream, rawData string) error
-- CreateConsumerGroup · method · L196-L202 — func (r *RedisClient) CreateConsumerGroup(stream, group string) error
-- ClaimStaleTasks · method · L208-L236 — func (r *RedisClient) ClaimStaleTasks(streams []string, group, consumer string, minIdle time.Duration) ([]*StreamMessage, error)
-- UpdateTaskStatus · method · L239-L247 — func (r *RedisClient) UpdateTaskStatus(taskID string, status string, extra map[string]interface{}) error
-- TouchTask · method · L250-L254 — func (r *RedisClient) TouchTask(taskID string) error
-- IsTaskCancelled · method · L257-L266 — func (r *RedisClient) IsTaskCancelled(taskID string) (bool, error)
-- ExpireTaskStatus · method · L269-L271 — func (r *RedisClient) ExpireTaskStatus(taskID string, ttl time.Duration) error
-- GetTaskHash · method · L274-L276 — func (r *RedisClient) GetTaskHash(taskID string) (map[string]string, error)
-- GetTaskStatus · method · L279-L288 — func (r *RedisClient) GetTaskStatus(taskID string) (string, error)
-- IsNodeEnabled · method · L291-L300 — func (r *RedisClient) IsNodeEnabled(nodeID string) (bool, error)
-- GetNodeCPUPercent · method · L304-L323 — func (r *RedisClient) GetNodeCPUPercent(nodeID string, fallback int) (int, error)
-- SetNodeEnabled · method · L326-L332 — func (r *RedisClient) SetNodeEnabled(nodeID string, enabled bool) error
-- SetNodeCPUPercent · method · L336-L344 — func (r *RedisClient) SetNodeCPUPercent(nodeID string, percent int) error
-- GetNodeUpdateCommand · method · L349-L358 — func (r *RedisClient) GetNodeUpdateCommand(nodeID string) (string, error)
-- ClearNodeUpdateCommand · method · L361-L363 — func (r *RedisClient) ClearNodeUpdateCommand(nodeID string) error
-- StreamMessage · struct · L366-L371 — StreamMessage
-- NodeInfo · struct · L374-L396 — NodeInfo
-- SliceTask · struct · L399-L437 — SliceTask
-- BadgeItem · struct · L445-L452 — BadgeItem
-- CoverItem · struct · L456-L459 — CoverItem
-- TaskSource · struct · L462-L464 — TaskSource
-- TaskOutput · struct · L467-L475 — TaskOutput
+- AckTask · method · L188-L196 — func (r *RedisClient) AckTask(stream, group, msgID string) error
+- RequeueTask · method · L199-L204 — func (r *RedisClient) RequeueTask(stream, rawData string) error
+- CreateConsumerGroup · method · L207-L213 — func (r *RedisClient) CreateConsumerGroup(stream, group string) error
+- ClaimStaleTasks · method · L219-L247 — func (r *RedisClient) ClaimStaleTasks(streams []string, group, consumer string, minIdle time.Duration) ([]*StreamMessage, error)
+- PendingOverview · method · L253-L262 — func (r *RedisClient) PendingOverview(stream, group, consumer string) (int64, error)
+- UpdateTaskStatus · method · L265-L273 — func (r *RedisClient) UpdateTaskStatus(taskID string, status string, extra map[string]interface{}) error
+- TouchTask · method · L276-L280 — func (r *RedisClient) TouchTask(taskID string) error
+- IsTaskCancelled · method · L283-L292 — func (r *RedisClient) IsTaskCancelled(taskID string) (bool, error)
+- ExpireTaskStatus · method · L295-L297 — func (r *RedisClient) ExpireTaskStatus(taskID string, ttl time.Duration) error
+- GetTaskHash · method · L300-L302 — func (r *RedisClient) GetTaskHash(taskID string) (map[string]string, error)
+- GetTaskStatus · method · L305-L314 — func (r *RedisClient) GetTaskStatus(taskID string) (string, error)
+- IsNodeEnabled · method · L317-L326 — func (r *RedisClient) IsNodeEnabled(nodeID string) (bool, error)
+- GetNodeCPUPercent · method · L330-L349 — func (r *RedisClient) GetNodeCPUPercent(nodeID string, fallback int) (int, error)
+- SetNodeEnabled · method · L352-L358 — func (r *RedisClient) SetNodeEnabled(nodeID string, enabled bool) error
+- SetNodeCPUPercent · method · L362-L370 — func (r *RedisClient) SetNodeCPUPercent(nodeID string, percent int) error
+- GetNodeUpdateCommand · method · L375-L384 — func (r *RedisClient) GetNodeUpdateCommand(nodeID string) (string, error)
+- ClearNodeUpdateCommand · method · L387-L389 — func (r *RedisClient) ClearNodeUpdateCommand(nodeID string) error
+- StreamMessage · struct · L392-L397 — StreamMessage
+- NodeInfo · struct · L400-L422 — NodeInfo
+- SliceTask · struct · L425-L463 — SliceTask
+- BadgeItem · struct · L471-L478 — BadgeItem
+- CoverItem · struct · L482-L485 — CoverItem
+- TaskSource · struct · L488-L490 — TaskSource
+- TaskOutput · struct · L493-L501 — TaskOutput

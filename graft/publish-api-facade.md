@@ -23,10 +23,10 @@ generator:
 covers:
   - symbol: _serialize_publish_task
     kind: function
-    at: 'backend/app/api/publish_common.py:L19-L50'
+    at: 'backend/app/api/publish_common.py:L19-L51'
   - symbol: _require_admin
     kind: function
-    at: 'backend/app/api/publish_common.py:L53-L56'
+    at: 'backend/app/api/publish_common.py:L54-L57'
 ---
 <!-- context:generated:start -->
 ## Summary

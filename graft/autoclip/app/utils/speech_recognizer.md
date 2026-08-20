@@ -1,32 +1,32 @@
 # autoclip/app/utils/speech_recognizer.py · [[speech-recognition]]
 
-- SpeechRecognitionMethod · class · L30-L34 — Enum of supported speech recognition backends (aliyun, whisper, funasr).
-- LanguageCode · class · L37-L41 — Enum of supported language codes for recognition (zh, en, auto).
-- SpeechRecognitionConfig · class · L45-L69 — Dataclass holding all recognition options, API credentials, and fallback settings.
-- SpeechRecognitionError · class · L72-L74 — Exception type for speech recognition failures.
-- SpeechRecognizer · class · L77-L1024 — Main recognizer orchestrating audio extraction, backend transcription, and SRT subtitle generation/refinement.
-- __init__ · method · L80-L86 — Stores config and probes availability of each recognition backend at construction time.
-- _check_whisper_availability · method · L88-L95 — Returns whether the faster-whisper package is importable (no API key needed).
-- _check_aliyun_speech_availability · method · L97-L106 — Returns whether an Aliyun/DashScope API key is available from env vars or config.
-- _check_funasr_availability · method · L108-L115 — Returns whether the local FunASR package is importable.
-- _extract_audio_from_video · method · L117-L156 — Extracts 16kHz mono PCM WAV audio from a video via ffmpeg, reusing an existing file if present.
-- generate_subtitle · method · L158-L185 — Dispatches subtitle generation to the configured backend method and validates the input video exists.
-- _format_srt_timestamp · method · L188-L195 — Formats a float seconds value into SRT HH:MM:SS,mmm timestamp, clamping negatives to zero.
-- _segments_to_srt · method · L198-L207 — Serializes segment dicts into SRT block text with sequential numbering and timestamps.
-- _aggregate_word_timestamps · method · L210-L288 — Aggregates whisper word-level timestamps into 2-5s subtitle segments, breaking on pauses, punctuation, or max duration.
-- flush · function · L243-L253 — Emits the accumulated word group as one subtitle record, stripping spaces before punctuation.
-- _merge_short_segments · method · L291-L318 — Merges adjacent very-short subtitle segments to avoid flickering, combining them when both are brief and close together.
-- _detect_speech_windows · method · L321-L389 — Uses ffmpeg silencedetect to compute non-silent speech intervals, merging silences and deriving speech gaps.
-- _split_text_by_punctuation · method · L392-L429 — Splits long text into short sentences, preferring sentence-end punctuation then commas, hard-cutting at max_chars.
-- _refine_srt_with_speech_windows · method · L432-L550 — Aligns SRT subtitle display times to detected speech windows, splitting long ASR text across windows and dropping silent spans.
-- _parse_srt_records · method · L553-L581 — Parses SRT content into a list of record dicts with start/end/text.
-- _parse_srt_time · method · L584-L592 — Parses an SRT timestamp string into float seconds.
-- _get_media_duration · method · L595-L608 — Returns media duration in seconds via ffprobe.
-- _aliyun_speech_transcribe_audio · method · L610-L673 — Calls the Aliyun DashScope qwen3-asr-flash API to transcribe audio into text.
-- _generate_subtitle_whisper · method · L675-L730 — Runs local faster-whisper transcription and produces an SRT file from word timestamps.
-- _aggregate_funasr_char_timestamps · method · L733-L838 — Aggregates FunASR character-level timestamps into subtitle segments, breaking on punctuation and duration limits.
-- emit · function · L783-L786 — Flushes accumulated characters into a subtitle record with start/end/text.
-- _generate_subtitle_funasr_local · method · L840-L916 — Runs local FunASR transcription and writes an SRT subtitle file.
-- _strip_funasr_tags · method · L919-L923 — Removes FunASR markup tags from recognized text.
-- _generate_subtitle_aliyun_speech · method · L925-L1024 — Transcribes via Aliyun, segments audio, and writes an SRT file with optional speech-window refinement.
-- generate_subtitle_for_video · function · L1027-L1059 — Module-level convenience wrapper that builds a config and calls SpeechRecognizer.generate_subtitle.
+- SpeechRecognitionMethod · class · L30-L34 — class SpeechRecognitionMethod(str, Enum)
+- LanguageCode · class · L37-L41 — class LanguageCode(str, Enum)
+- SpeechRecognitionConfig · class · L45-L69 — class SpeechRecognitionConfig
+- SpeechRecognitionError · class · L72-L74 — class SpeechRecognitionError(Exception)
+- SpeechRecognizer · class · L77-L1024 — class SpeechRecognizer
+- __init__ · method · L80-L86 — def __init__(self, config: Optional[SpeechRecognitionConfig] = None)
+- _check_whisper_availability · method · L88-L95 — def _check_whisper_availability(self) -> bool
+- _check_aliyun_speech_availability · method · L97-L106 — def _check_aliyun_speech_availability(self) -> bool
+- _check_funasr_availability · method · L108-L115 — def _check_funasr_availability(self) -> bool
+- _extract_audio_from_video · method · L117-L156 — def _extract_audio_from_video(self, video_path: Path, output_dir: Path) -> Path
+- generate_subtitle · method · L158-L185 — def generate_subtitle(self, video_path: Path, output_path: Optional[Path] = None, config: Optional[SpeechRecognitionConfig] = None) -> Path
+- _format_srt_timestamp · method · L188-L195 — def _format_srt_timestamp(seconds: float) -> str
+- _segments_to_srt · method · L198-L207 — def _segments_to_srt(cls, segments: List[Dict[str, Any]]) -> str
+- _aggregate_word_timestamps · method · L210-L288 — def _aggregate_word_timestamps(words: list) -> List[Dict[str, Any]]
+- flush · function · L243-L253 — def flush()
+- _merge_short_segments · method · L291-L318 — def _merge_short_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]
+- _detect_speech_windows · method · L321-L389 — def _detect_speech_windows(audio_path: Path, silence_threshold: float = -35.0, min_silence: float = 0.5) -> list
+- _split_text_by_punctuation · method · L392-L429 — def _split_text_by_punctuation(text: str, max_chars: int = 40) -> list
+- _refine_srt_with_speech_windows · method · L432-L550 — def _refine_srt_with_speech_windows(cls, srt_content: str, speech_windows: list) -> str
+- _parse_srt_records · method · L553-L581 — def _parse_srt_records(cls, srt_content: str) -> list
+- _parse_srt_time · method · L584-L592 — def _parse_srt_time(ts: str) -> float
+- _get_media_duration · method · L595-L608 — def _get_media_duration(media_path: Path) -> float
+- _aliyun_speech_transcribe_audio · method · L610-L673 — def _aliyun_speech_transcribe_audio(self, audio_path: Path, config: SpeechRecognitionConfig, api_key: str) -> str
+- _generate_subtitle_whisper · method · L675-L730 — def _generate_subtitle_whisper(self, video_path: Path, output_path: Path, config: SpeechRecognitionConfig) -> Path
+- _aggregate_funasr_char_timestamps · method · L733-L838 — def _aggregate_funasr_char_timestamps(text: str, timestamps: list) -> List[Dict[str, Any]]
+- emit · function · L783-L786 — def emit(items: List[Dict[str, Any]]) -> None
+- _generate_subtitle_funasr_local · method · L840-L916 — def _generate_subtitle_funasr_local(self, video_path: Path, output_path: Path, config: SpeechRecognitionConfig) -> Path
+- _strip_funasr_tags · method · L919-L923 — def _strip_funasr_tags(text: str) -> str
+- _generate_subtitle_aliyun_speech · method · L925-L1024 — def _generate_subtitle_aliyun_speech(self, video_path: Path, output_path: Path, config: SpeechRecognitionConfig) -> Path
+- generate_subtitle_for_video · function · L1027-L1059 — def generate_subtitle_for_video(video_path: Path, output_path: Optional[Path] = None, method: str = "aliyun_speech", language: str = "auto", model: str = "base", enable_fallback: bool = True, api_key: Optional[str] = None) -> Path

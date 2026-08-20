@@ -91,13 +91,13 @@ covers:
     at: 'engines/seedance_wm/pipeline.py:L111-L119'
   - symbol: process_video
     kind: function
-    at: 'engines/seedance_wm/pipeline.py:L122-L367'
+    at: 'engines/seedance_wm/pipeline.py:L122-L368'
   - symbol: _inpaint_progress
     kind: function
     at: 'engines/seedance_wm/pipeline.py:L280-L283'
   - symbol: _qa_check
     kind: function
-    at: 'engines/seedance_wm/pipeline.py:L370-L384'
+    at: 'engines/seedance_wm/pipeline.py:L371-L385'
   - symbol: BatchResult
     kind: class
     at: 'engines/seedance_wm/remover.py:L28-L39'

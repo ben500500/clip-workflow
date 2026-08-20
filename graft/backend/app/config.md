@@ -1,7 +1,7 @@
 # backend/app/config.py · [[configuration-database-bootstrap]]
 
-- _parse_origins · function · L15-L17 — Parses a comma-separated CORS origins string into a trimmed list, dropping empty entries.
-- Settings · class · L20-L193 — Pydantic settings model declaring every environment variable for the backend (DB, Redis, MinIO, JWT, watermark, Seedance, wechat download, etc.) with defaults and required-field enforcement.
-- _no_default_secret · method · L179-L184 — Rejects a missing or placeholder JWT_SECRET at startup to force a strong production secret in production environments.
-- _cookie_key_differs · method · L188-L193 — Enforces that a configured COOKIE_ENCRYPT_KEY must differ from JWT_SECRET to avoid reusing the same key for both token signing and cookie encryption.
-- _ensure_cookie_key · function · L196-L211 — Generates a persistent random cookie encryption key when none is configured, writing it to disk so it survives restarts and never falls back to JWT_SECRET.
+- _parse_origins · function · L15-L17 — def _parse_origins(raw: str) -> list[str]
+- Settings · class · L20-L223 — class Settings(BaseSettings): # Database # 必填：必须通过 .env / 环境变量注入，缺失时启动即报错 # 示例：postgresql+asyncpg://user:password@host:5432/dbname
+- _no_default_secret · method · L209-L214 — def _no_default_secret(cls, v: str) -> str
+- _cookie_key_differs · method · L218-L223 — def _cookie_key_differs(cls, v: str, info) -> str: # 若配置了 COOKIE_ENCRYPT_KEY，则不能与 JWT_SECRET 相同
+- _ensure_cookie_key · function · L226-L241 — def _ensure_cookie_key() -> str

@@ -25,16 +25,16 @@ covers:
     at: 'backend/app/config.py:L15-L17'
   - symbol: Settings
     kind: class
-    at: 'backend/app/config.py:L20-L193'
+    at: 'backend/app/config.py:L20-L223'
   - symbol: _no_default_secret
     kind: method
-    at: 'backend/app/config.py:L179-L184'
+    at: 'backend/app/config.py:L209-L214'
   - symbol: _cookie_key_differs
     kind: method
-    at: 'backend/app/config.py:L188-L193'
+    at: 'backend/app/config.py:L218-L223'
   - symbol: _ensure_cookie_key
     kind: function
-    at: 'backend/app/config.py:L196-L211'
+    at: 'backend/app/config.py:L226-L241'
   - symbol: Base
     kind: class
     at: 'backend/app/database.py:L34-L35'
@@ -43,22 +43,25 @@ covers:
     at: 'backend/app/database.py:L38-L48'
   - symbol: init_db
     kind: function
-    at: 'backend/app/database.py:L51-L60'
+    at: 'backend/app/database.py:L51-L62'
+  - symbol: _enforce_idle_in_transaction_timeout
+    kind: function
+    at: 'backend/app/database.py:L65-L88'
   - symbol: _backfill_data_scope
     kind: function
-    at: 'backend/app/database.py:L63-L84'
+    at: 'backend/app/database.py:L91-L112'
   - symbol: _ensure_autoclip_runs_table
     kind: function
-    at: 'backend/app/database.py:L87-L128'
+    at: 'backend/app/database.py:L115-L156'
   - symbol: _apply_compat_migrations
     kind: function
-    at: 'backend/app/database.py:L131-L219'
+    at: 'backend/app/database.py:L159-L257'
   - symbol: close_db
     kind: function
-    at: 'backend/app/database.py:L222-L224'
+    at: 'backend/app/database.py:L260-L262'
   - symbol: _ensure_wechat_download_tables
     kind: function
-    at: 'backend/app/database.py:L226-L238'
+    at: 'backend/app/database.py:L264-L276'
 ---
 <!-- context:generated:start -->
 ## Summary

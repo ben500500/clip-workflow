@@ -115,22 +115,22 @@ covers:
     at: 'backend/app/models/drama.py:L33-L38'
   - symbol: Drama
     kind: class
-    at: 'backend/app/models/drama.py:L41-L95'
+    at: 'backend/app/models/drama.py:L41-L98'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/drama.py:L94-L95'
+    at: 'backend/app/models/drama.py:L97-L98'
   - symbol: DramaStill
     kind: class
-    at: 'backend/app/models/drama.py:L98-L110'
+    at: 'backend/app/models/drama.py:L101-L113'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/drama.py:L109-L110'
+    at: 'backend/app/models/drama.py:L112-L113'
   - symbol: DramaAccount
     kind: class
-    at: 'backend/app/models/drama.py:L113-L131'
+    at: 'backend/app/models/drama.py:L116-L134'
   - symbol: DramaMaterial
     kind: class
-    at: 'backend/app/models/drama.py:L134-L146'
+    at: 'backend/app/models/drama.py:L137-L149'
   - symbol: Project
     kind: class
     at: 'backend/app/models/material.py:L29-L45'
@@ -265,28 +265,28 @@ covers:
     at: 'backend/app/models/publish.py:L103-L104'
   - symbol: PublishTask
     kind: class
-    at: 'backend/app/models/publish.py:L107-L155'
+    at: 'backend/app/models/publish.py:L107-L158'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/publish.py:L154-L155'
+    at: 'backend/app/models/publish.py:L157-L158'
   - symbol: PublishProfile
     kind: class
-    at: 'backend/app/models/publish.py:L158-L189'
+    at: 'backend/app/models/publish.py:L161-L192'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/publish.py:L188-L189'
+    at: 'backend/app/models/publish.py:L191-L192'
   - symbol: PublishTimeSlot
     kind: class
-    at: 'backend/app/models/publish.py:L192-L214'
+    at: 'backend/app/models/publish.py:L195-L217'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/publish.py:L213-L214'
+    at: 'backend/app/models/publish.py:L216-L217'
   - symbol: PublishMaterial
     kind: class
-    at: 'backend/app/models/publish.py:L217-L244'
+    at: 'backend/app/models/publish.py:L220-L247'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/publish.py:L243-L244'
+    at: 'backend/app/models/publish.py:L246-L247'
   - symbol: ShortdramaPrompt
     kind: class
     at: 'backend/app/models/shortdrama.py:L26-L100'

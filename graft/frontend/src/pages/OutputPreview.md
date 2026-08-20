@@ -2,7 +2,7 @@
 
 - isRealSliceTask · function · L32-L32 — isRealSliceTask = (t: SliceTask)
 - RecutVideoPreview · function · L35-L143 — RecutVideoPreview: React.FC<{ videoUrl: string; duration: number; onRangeChange: (start: number, end: number) => void; }> = ({ videoUrl, duration, onRangeChange })
-- OutputPreview · function · L145-L1057 — OutputPreview: React.FC = ()
+- OutputPreview · function · L145-L1061 — OutputPreview: React.FC = ()
 - loadTask · function · L223-L240 — loadTask = async (taskId: string)
 - downloadSelected · function · L275-L309 — downloadSelected = async ()
 - downloadOne · function · L314-L334 — downloadOne = async (o: SliceOutput)
@@ -11,6 +11,6 @@
 - onMaterialChange · function · L445-L455 — onMaterialChange = (materialId: string | undefined)
 - onCaptionVersionChange · function · L458-L467 — onCaptionVersionChange = (version: string)
 - onGenerateMaterialFromOutput · function · L470-L509 — onGenerateMaterialFromOutput = async ()
-- onGenerateMaterialFromDrama · function · L512-L567 — onGenerateMaterialFromDrama = async ()
-- openRecutModal · function · L569-L588 — openRecutModal = async (o: SliceOutput)
-- submitRecut · function · L595-L622 — submitRecut = async ()
+- onGenerateMaterialFromDrama · function · L512-L571 — onGenerateMaterialFromDrama = async ()
+- openRecutModal · function · L573-L592 — openRecutModal = async (o: SliceOutput)
+- submitRecut · function · L599-L626 — submitRecut = async ()

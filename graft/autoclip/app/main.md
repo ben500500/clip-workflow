@@ -1,35 +1,35 @@
 # autoclip/app/main.py · [[autoclip-service-entry]]
 
-- ffprobe_duration · function · L64-L73 — Probes a media file with ffprobe to return its duration in seconds, defaulting to 0.0 on any failure.
-- _update_progress · function · L76-L80 — Mutates a project's status/progress/message fields and logs the update for progress polling.
-- _fail · function · L83-L89 — Marks a project as failed with an error message while preserving any existing progress value.
-- _srt_time_to_seconds · function · L94-L105 — Converts SRT time strings (HH:MM:SS,mmm) or numeric values into seconds, returning 0.0 on malformed input.
-- _safe_str · function · L108-L117 — Coerces pipeline output values (None/list/dict/str) into a stable string representation for the contract, preferring a dict's 'title' field.
-- _to_contract_clips · function · L120-L160 — Transforms raw pipeline clip records into the external API contract shape, computing seconds-based times, clamping scores to 0-100, and filling fallback titles.
-- _parse_srt_ts · function · L165-L169 — Parses an SRT timestamp 'HH:MM:SS,mmm' into total seconds.
-- _filter_srt_by_time · function · L172-L216 — Filters an SRT file to keep only subtitle blocks overlapping a [start,end] time window, renumbering kept blocks and writing a new file.
-- _run_asr · function · L219-L256 — Runs speech recognition (aliyun/whisper/funasr) to produce an SRT file, reusing a content-hash-based cache to avoid re-transcribing the same video.
-- _asr_cache_enabled · function · L259-L261 — Reads the AUTOCLIP_ASR_CACHE env var to decide whether ASR subtitle caching is on.
-- _asr_cache_dir · function · L264-L268 — Returns (and creates) the persistent directory used to store ASR subtitle cache files.
-- _asr_cache_key · function · L271-L281 — Builds a cache key from the video's content hash plus ASR method so identical videos reuse the same transcription.
-- _asr_cache_get · function · L284-L294 — Reads a cached ASR subtitle if caching is enabled and the cache file exists and is non-empty.
-- _asr_cache_put · function · L297-L307 — Atomically writes an ASR subtitle to the cache, swallowing failures so caching never breaks the main flow.
-- _run_pipeline · function · L310-L403 — Orchestrates the full background highlight-selection pipeline (ASR, windowing, outline, timeline, scoring, top-N clip selection, titles) and stores contract clips on the project.
-- health · function · L409-L410 — Simple liveness endpoint returning service status.
-- SeedancePromptRequest · class · L413-L418 — Request model for prompt generation carrying text, duration, params, templates, and retry count.
-- generate_prompt · function · L422-L449 — Generates three prompt versions (long/short/AI) from short-drama text via the configured LLM, returning them plus the current model name.
-- _current_llm_model · function · L452-L458 — Returns the currently configured LLM model name from the manager, empty string on failure.
-- SubtitleGenerateRequest · class · L461-L470 — Request model for subtitle generation specifying video URL or base64, optional time window, and ASR engine override.
-- generate_subtitle · function · L474-L549 — Performs ASR on a video (from base64 or URL) and returns SRT subtitles, reusing the ASR cache and enforcing API-key requirements for aliyun.
-- PublishMaterialRequest · class · L552-L555 — Request model for publish-material generation.
-- ScriptOptimizeRequest · class · L558-L561 — Request model for script optimization.
-- optimize_script · function · L565-L587 — Endpoint that optimizes a script text via the script optimizer service and returns the improved result.
-- generate_material · function · L591-L612 — Endpoint that generates publish material from a request via the publish material generator service.
-- health_v1 · function · L617-L618 — Versioned health endpoint returning service status.
-- ProjectCreate · class · L621-L623 — Request model for creating a project.
-- create_project · function · L627-L640 — Creates a new project in the in-memory registry with a generated id and returns it.
-- upload · function · L644-L658 — Saves an uploaded video file to the project's media directory and records its path on the project.
-- PipelineRun · class · L661-L674 — Request model for triggering the pipeline with optional steps, clip limits, time window, frame analysis, and model overrides.
-- pipeline_run · function · L678-L697 — Validates the project exists and launches the background pipeline task, returning the project id.
-- progress · function · L701-L709 — Returns a project's current status, progress percentage, and message for polling.
-- clips · function · L713-L725 — Returns a project's clips filtered by minimum score, duration bounds, and capped count.
+- ffprobe_duration · function · L64-L73 — def ffprobe_duration(path: str) -> float
+- _update_progress · function · L76-L80 — def _update_progress(proj: dict, status: str, progress: int, message: str) -> None
+- _fail · function · L83-L89 — def _fail(proj: dict, message: str) -> None
+- _srt_time_to_seconds · function · L94-L105 — def _srt_time_to_seconds(value) -> float
+- _safe_str · function · L108-L117 — def _safe_str(value, default: str = "") -> str
+- _to_contract_clips · function · L120-L160 — def _to_contract_clips(raw_clips: list) -> list
+- _parse_srt_ts · function · L165-L169 — def _parse_srt_ts(ts: str) -> float
+- _filter_srt_by_time · function · L172-L216 — def _filter_srt_by_time(srt_path: Path, out_path: Path, start_time: Optional[float] = None, end_time: Optional[float] = None) -> Path
+- _run_asr · function · L219-L256 — def _run_asr(video_path: str, srt_path: Path, api_key: str, method_name: Optional[str] = None) -> None
+- _asr_cache_enabled · function · L259-L261 — def _asr_cache_enabled() -> bool
+- _asr_cache_dir · function · L264-L268 — def _asr_cache_dir() -> Path
+- _asr_cache_key · function · L271-L281 — def _asr_cache_key(video: Path, method_name: str) -> str
+- _asr_cache_get · function · L284-L294 — def _asr_cache_get(cache_key: str) -> Optional[str]
+- _asr_cache_put · function · L297-L307 — def _asr_cache_put(cache_key: str, content: str) -> None
+- _run_pipeline · function · L310-L403 — async def _run_pipeline(project_id: str, steps: list[int], max_clips: Optional[int] = None, start_time: Optional[float] = None, end_time: Optional[float] = None, frame_analysis: Optional[bool] = None, model_name: Optional[str] = None, llm_provider: Optional[str] = None) -> None
+- health · function · L409-L410 — async def health()
+- SeedancePromptRequest · class · L413-L418 — class SeedancePromptRequest(BaseModel)
+- generate_prompt · function · L422-L449 — async def generate_prompt(data: SeedancePromptRequest)
+- _current_llm_model · function · L452-L458 — def _current_llm_model() -> str
+- SubtitleGenerateRequest · class · L461-L470 — class SubtitleGenerateRequest(BaseModel)
+- generate_subtitle · function · L474-L549 — async def generate_subtitle(data: SubtitleGenerateRequest)
+- PublishMaterialRequest · class · L552-L555 — class PublishMaterialRequest(BaseModel)
+- ScriptOptimizeRequest · class · L558-L561 — class ScriptOptimizeRequest(BaseModel)
+- optimize_script · function · L565-L587 — async def optimize_script(data: ScriptOptimizeRequest)
+- generate_material · function · L591-L612 — async def generate_material(data: PublishMaterialRequest)
+- health_v1 · function · L617-L618 — async def health_v1()
+- ProjectCreate · class · L621-L623 — class ProjectCreate(BaseModel)
+- create_project · function · L627-L640 — async def create_project(data: ProjectCreate)
+- upload · function · L644-L658 — async def upload(project_id: str, file: UploadFile = File(...))
+- PipelineRun · class · L661-L674 — class PipelineRun(BaseModel)
+- pipeline_run · function · L678-L697 — async def pipeline_run(data: PipelineRun)
+- progress · function · L701-L709 — async def progress(project_id: str)
+- clips · function · L713-L725 — async def clips(project_id: str, min_score: float = 0.0, max_clips: int = 30, min_duration: float = 0.0, max_duration: float = 0.0)

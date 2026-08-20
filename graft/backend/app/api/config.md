@@ -1,19 +1,19 @@
 # backend/app/api/config.py · [[system-config-platform-profiles]]
 
-- ConfigUpdateRequest · class · L17-L19 — Request body for updating or resetting a single config key-value pair.
-- ConfigResponse · class · L22-L26 — Response schema for a config entry including key, value, optional description, and updated timestamp.
-- ProfileCreate · class · L29-L36 — Request body for creating a new platform profile with dedupe and encoding settings.
-- ProfileUpdate · class · L39-L46 — Request body for partially updating an existing platform profile; all fields optional.
-- ProfileResponse · class · L49-L60 — Response schema for a platform profile including id, dedupe config, and encoding targets.
-- _default_profile_for · function · L275-L283 — Finds the built-in default dedupe recipe for a profile by matching name first, then platform, to support restoring defaults.
-- _serialize_config · function · L286-L292 — Converts a SystemConfig ORM row into a plain dict, falling back to built-in descriptions when none stored.
-- _serialize_profile · function · L295-L306 — Converts a PlatformProfile ORM row into a plain dict for API responses.
-- get_all_config · function · L310-L339 — Returns all config entries by merging saved DB values over built-in defaults, so unmodified defaults still appear and user-added custom keys are included.
-- update_config · function · L343-L368 — Upserts a config value, updating an existing row or creating a new one, and stamps the current timestamp.
-- reset_config_default · function · L372-L399 — Restores a config key to its built-in default by deleting any DB override record, returning the default value.
-- list_platform_profiles · function · L403-L409 — Lists all platform profiles ordered by name.
-- create_platform_profile · function · L413-L440 — Creates a new platform profile, rejecting duplicate names with a 409 conflict.
-- update_platform_profile · function · L444-L491 — Partially updates a platform profile, validating UUID format and rejecting duplicate names while applying only provided fields.
-- reset_platform_profile_default · function · L495-L531 — Restores a platform profile's dedupe/encoding settings to the built-in default recipe for its name or platform.
-- get_platform_presets · function · L535-L547 — Returns the curated per-platform resolution/bitrate quick-select options for the frontend dropdown.
-- delete_platform_profile · function · L551-L570 — Deletes a platform profile by id, validating UUID format and returning 404 if not found.
+- ConfigUpdateRequest · class · L17-L19 — class ConfigUpdateRequest(BaseModel)
+- ConfigResponse · class · L22-L26 — class ConfigResponse(BaseModel)
+- ProfileCreate · class · L29-L36 — class ProfileCreate(BaseModel)
+- ProfileUpdate · class · L39-L46 — class ProfileUpdate(BaseModel)
+- ProfileResponse · class · L49-L60 — class ProfileResponse(BaseModel)
+- _default_profile_for · function · L296-L304 — def _default_profile_for(profile: PlatformProfile) -> dict | None
+- _serialize_config · function · L307-L313 — def _serialize_config(cfg: SystemConfig) -> dict
+- _serialize_profile · function · L316-L327 — def _serialize_profile(profile: PlatformProfile) -> dict
+- get_all_config · function · L331-L360 — async def get_all_config(db: AsyncSession = Depends(get_db))
+- update_config · function · L364-L389 — async def update_config( data: ConfigUpdateRequest, db: AsyncSession = Depends(get_db), )
+- reset_config_default · function · L393-L420 — async def reset_config_default( data: ConfigUpdateRequest, db: AsyncSession = Depends(get_db), )
+- list_platform_profiles · function · L424-L430 — async def list_platform_profiles(db: AsyncSession = Depends(get_db))
+- create_platform_profile · function · L434-L461 — async def create_platform_profile( data: ProfileCreate, db: AsyncSession = Depends(get_db), )
+- update_platform_profile · function · L465-L512 — async def update_platform_profile( profile_id: str, data: ProfileUpdate, db: AsyncSession = Depends(get_db), )
+- reset_platform_profile_default · function · L516-L552 — async def reset_platform_profile_default( profile_id: str, db: AsyncSession = Depends(get_db), )
+- get_platform_presets · function · L556-L568 — async def get_platform_presets()
+- delete_platform_profile · function · L572-L591 — async def delete_platform_profile( profile_id: str, db: AsyncSession = Depends(get_db), )

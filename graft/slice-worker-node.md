@@ -67,43 +67,43 @@ covers:
     at: 'slice-worker/callback.go:L55-L88'
   - symbol: Config
     kind: struct
-    at: 'slice-worker/config.go:L14-L39'
+    at: 'slice-worker/config.go:L14-L43'
   - symbol: DefaultNodeID
     kind: function
-    at: 'slice-worker/config.go:L46-L62'
+    at: 'slice-worker/config.go:L50-L66'
   - symbol: DefaultConfig
     kind: function
-    at: 'slice-worker/config.go:L65-L82'
+    at: 'slice-worker/config.go:L69-L87'
   - symbol: LoadConfig
     kind: function
-    at: 'slice-worker/config.go:L85-L109'
+    at: 'slice-worker/config.go:L90-L114'
   - symbol: ClampCPUPercent
     kind: function
-    at: 'slice-worker/config.go:L112-L120'
+    at: 'slice-worker/config.go:L117-L125'
   - symbol: HeartbeatTTL
     kind: method
-    at: 'slice-worker/config.go:L123-L128'
+    at: 'slice-worker/config.go:L128-L133'
   - symbol: EffectiveConsumeStreams
     kind: method
-    at: 'slice-worker/config.go:L141-L146'
+    at: 'slice-worker/config.go:L146-L151'
   - symbol: GetOS
     kind: function
-    at: 'slice-worker/config.go:L149-L151'
+    at: 'slice-worker/config.go:L154-L156'
   - symbol: GetArch
     kind: function
-    at: 'slice-worker/config.go:L154-L156'
+    at: 'slice-worker/config.go:L159-L161'
   - symbol: GetFFmpegVersion
     kind: function
-    at: 'slice-worker/config.go:L159-L170'
+    at: 'slice-worker/config.go:L164-L175'
   - symbol: GetEncoderCapabilities
     kind: function
-    at: 'slice-worker/config.go:L191-L209'
+    at: 'slice-worker/config.go:L196-L214'
   - symbol: GetIP
     kind: function
-    at: 'slice-worker/config.go:L216-L254'
+    at: 'slice-worker/config.go:L221-L259'
   - symbol: isPrivateIPv4
     kind: function
-    at: 'slice-worker/config.go:L257-L259'
+    at: 'slice-worker/config.go:L262-L264'
   - symbol: nodeUpdateCommand
     kind: struct
     at: 'slice-worker/engine_update.go:L33-L36'
@@ -185,9 +185,12 @@ covers:
   - symbol: WorkerHeartbeatPayload
     kind: struct
     at: 'slice-worker/heartbeat_backend.go:L15-L30'
+  - symbol: WorkerHeartbeatResponse
+    kind: struct
+    at: 'slice-worker/heartbeat_backend.go:L34-L38'
   - symbol: sendBackendHeartbeat
     kind: method
-    at: 'slice-worker/heartbeat_backend.go:L37-L85'
+    at: 'slice-worker/heartbeat_backend.go:L48-L102'
   - symbol: acquireInstanceLock
     kind: function
     at: 'slice-worker/instance_lock.go:L23-L59'
@@ -232,169 +235,229 @@ covers:
     at: 'slice-worker/redis_client.go:L170-L180'
   - symbol: AckTask
     kind: method
-    at: 'slice-worker/redis_client.go:L183-L185'
+    at: 'slice-worker/redis_client.go:L188-L196'
   - symbol: RequeueTask
     kind: method
-    at: 'slice-worker/redis_client.go:L188-L193'
+    at: 'slice-worker/redis_client.go:L199-L204'
   - symbol: CreateConsumerGroup
     kind: method
-    at: 'slice-worker/redis_client.go:L196-L202'
+    at: 'slice-worker/redis_client.go:L207-L213'
   - symbol: ClaimStaleTasks
     kind: method
-    at: 'slice-worker/redis_client.go:L208-L236'
+    at: 'slice-worker/redis_client.go:L219-L247'
+  - symbol: PendingOverview
+    kind: method
+    at: 'slice-worker/redis_client.go:L253-L262'
   - symbol: UpdateTaskStatus
     kind: method
-    at: 'slice-worker/redis_client.go:L239-L247'
+    at: 'slice-worker/redis_client.go:L265-L273'
   - symbol: TouchTask
     kind: method
-    at: 'slice-worker/redis_client.go:L250-L254'
+    at: 'slice-worker/redis_client.go:L276-L280'
   - symbol: IsTaskCancelled
     kind: method
-    at: 'slice-worker/redis_client.go:L257-L266'
+    at: 'slice-worker/redis_client.go:L283-L292'
   - symbol: ExpireTaskStatus
     kind: method
-    at: 'slice-worker/redis_client.go:L269-L271'
+    at: 'slice-worker/redis_client.go:L295-L297'
   - symbol: GetTaskHash
     kind: method
-    at: 'slice-worker/redis_client.go:L274-L276'
+    at: 'slice-worker/redis_client.go:L300-L302'
   - symbol: GetTaskStatus
     kind: method
-    at: 'slice-worker/redis_client.go:L279-L288'
+    at: 'slice-worker/redis_client.go:L305-L314'
   - symbol: IsNodeEnabled
     kind: method
-    at: 'slice-worker/redis_client.go:L291-L300'
+    at: 'slice-worker/redis_client.go:L317-L326'
   - symbol: GetNodeCPUPercent
     kind: method
-    at: 'slice-worker/redis_client.go:L304-L323'
+    at: 'slice-worker/redis_client.go:L330-L349'
   - symbol: SetNodeEnabled
     kind: method
-    at: 'slice-worker/redis_client.go:L326-L332'
+    at: 'slice-worker/redis_client.go:L352-L358'
   - symbol: SetNodeCPUPercent
     kind: method
-    at: 'slice-worker/redis_client.go:L336-L344'
+    at: 'slice-worker/redis_client.go:L362-L370'
   - symbol: GetNodeUpdateCommand
     kind: method
-    at: 'slice-worker/redis_client.go:L349-L358'
+    at: 'slice-worker/redis_client.go:L375-L384'
   - symbol: ClearNodeUpdateCommand
     kind: method
-    at: 'slice-worker/redis_client.go:L361-L363'
+    at: 'slice-worker/redis_client.go:L387-L389'
   - symbol: StreamMessage
     kind: struct
-    at: 'slice-worker/redis_client.go:L366-L371'
+    at: 'slice-worker/redis_client.go:L392-L397'
   - symbol: NodeInfo
     kind: struct
-    at: 'slice-worker/redis_client.go:L374-L396'
+    at: 'slice-worker/redis_client.go:L400-L422'
   - symbol: SliceTask
     kind: struct
-    at: 'slice-worker/redis_client.go:L399-L437'
+    at: 'slice-worker/redis_client.go:L425-L463'
   - symbol: BadgeItem
     kind: struct
-    at: 'slice-worker/redis_client.go:L445-L452'
+    at: 'slice-worker/redis_client.go:L471-L478'
   - symbol: CoverItem
     kind: struct
-    at: 'slice-worker/redis_client.go:L456-L459'
+    at: 'slice-worker/redis_client.go:L482-L485'
   - symbol: TaskSource
     kind: struct
-    at: 'slice-worker/redis_client.go:L462-L464'
+    at: 'slice-worker/redis_client.go:L488-L490'
   - symbol: TaskOutput
     kind: struct
-    at: 'slice-worker/redis_client.go:L467-L475'
+    at: 'slice-worker/redis_client.go:L493-L501'
   - symbol: TaskExecutor
     kind: struct
-    at: 'slice-worker/task_executor.go:L18-L21'
+    at: 'slice-worker/task_executor.go:L19-L22'
   - symbol: NewTaskExecutor
     kind: function
-    at: 'slice-worker/task_executor.go:L24-L28'
+    at: 'slice-worker/task_executor.go:L25-L29'
   - symbol: SetProgressCallback
     kind: method
-    at: 'slice-worker/task_executor.go:L31-L33'
+    at: 'slice-worker/task_executor.go:L32-L34'
   - symbol: ExecuteTask
     kind: method
-    at: 'slice-worker/task_executor.go:L40-L329'
+    at: 'slice-worker/task_executor.go:L41-L363'
   - symbol: parseEngineLine
     kind: method
-    at: 'slice-worker/task_executor.go:L332-L352'
+    at: 'slice-worker/task_executor.go:L367-L389'
   - symbol: collectOutputs
     kind: method
-    at: 'slice-worker/task_executor.go:L355-L384'
+    at: 'slice-worker/task_executor.go:L392-L421'
+  - symbol: cutSegment
+    kind: struct
+    at: 'slice-worker/task_executor.go:L425-L429'
+  - symbol: parseCutlist
+    kind: function
+    at: 'slice-worker/task_executor.go:L433-L455'
+  - symbol: parseCutTime
+    kind: function
+    at: 'slice-worker/task_executor.go:L458-L493'
+  - symbol: outputName
+    kind: method
+    at: 'slice-worker/task_executor.go:L496-L502'
+  - symbol: filterCompletedSegments
+    kind: method
+    at: 'slice-worker/task_executor.go:L511-L525'
+  - symbol: preservedOutputs
+    kind: method
+    at: 'slice-worker/task_executor.go:L528-L543'
+  - symbol: outputFileValid
+    kind: method
+    at: 'slice-worker/task_executor.go:L548-L558'
+  - symbol: ffprobeDurationSec
+    kind: function
+    at: 'slice-worker/task_executor.go:L561-L574'
+  - symbol: readCompletedCheckpoint
+    kind: method
+    at: 'slice-worker/task_executor.go:L580-L593'
+  - symbol: appendCompletedCheckpoint
+    kind: method
+    at: 'slice-worker/task_executor.go:L596-L623'
+  - symbol: cutlistForSegments
+    kind: function
+    at: 'slice-worker/task_executor.go:L627-L633'
+  - symbol: formatSec
+    kind: function
+    at: 'slice-worker/task_executor.go:L636-L646'
+  - symbol: mergeOutputPaths
+    kind: function
+    at: 'slice-worker/task_executor.go:L649-L660'
   - symbol: Worker
     kind: struct
-    at: 'slice-worker/worker.go:L26-L49'
+    at: 'slice-worker/worker.go:L26-L53'
   - symbol: RunningTask
     kind: struct
-    at: 'slice-worker/worker.go:L52-L58'
+    at: 'slice-worker/worker.go:L56-L67'
   - symbol: NewWorker
     kind: function
-    at: 'slice-worker/worker.go:L61-L69'
+    at: 'slice-worker/worker.go:L70-L81'
+  - symbol: setBackendEnabled
+    kind: method
+    at: 'slice-worker/worker.go:L84-L86'
+  - symbol: getBackendEnabled
+    kind: method
+    at: 'slice-worker/worker.go:L89-L91'
   - symbol: SetCallbacks
     kind: method
-    at: 'slice-worker/worker.go:L72-L102'
+    at: 'slice-worker/worker.go:L94-L124'
   - symbol: checkEngine
     kind: method
-    at: 'slice-worker/worker.go:L110-L134'
+    at: 'slice-worker/worker.go:L132-L156'
   - symbol: Run
     kind: method
-    at: 'slice-worker/worker.go:L136-L254'
+    at: 'slice-worker/worker.go:L158-L287'
   - symbol: cleanupOrphanDirs
     kind: method
-    at: 'slice-worker/worker.go:L266-L300'
+    at: 'slice-worker/worker.go:L299-L333'
   - symbol: waitRunningTasks
     kind: method
-    at: 'slice-worker/worker.go:L303-L321'
+    at: 'slice-worker/worker.go:L336-L354'
   - symbol: claimLoop
     kind: method
-    at: 'slice-worker/worker.go:L324-L369'
+    at: 'slice-worker/worker.go:L357-L380'
+  - symbol: claimOnce
+    kind: method
+    at: 'slice-worker/worker.go:L385-L419'
+  - symbol: logPendingOverview
+    kind: method
+    at: 'slice-worker/worker.go:L422-L435'
+  - symbol: stuckTaskLoop
+    kind: method
+    at: 'slice-worker/worker.go:L444-L479'
+  - symbol: requeueStuckTask
+    kind: method
+    at: 'slice-worker/worker.go:L484-L522'
   - symbol: runTask
     kind: method
-    at: 'slice-worker/worker.go:L372-L560'
+    at: 'slice-worker/worker.go:L525-L722'
   - symbol: handleTaskError
     kind: method
-    at: 'slice-worker/worker.go:L563-L632'
+    at: 'slice-worker/worker.go:L725-L805'
   - symbol: sendFailureCallback
     kind: method
-    at: 'slice-worker/worker.go:L635-L647'
+    at: 'slice-worker/worker.go:L808-L820'
   - symbol: watchCancellation
     kind: method
-    at: 'slice-worker/worker.go:L650-L670'
+    at: 'slice-worker/worker.go:L823-L843'
   - symbol: leaseRenewal
     kind: method
-    at: 'slice-worker/worker.go:L678-L691'
+    at: 'slice-worker/worker.go:L851-L864'
   - symbol: heartbeatLoop
     kind: method
-    at: 'slice-worker/worker.go:L694-L716'
+    at: 'slice-worker/worker.go:L867-L889'
   - symbol: engineUpdateLoop
     kind: method
-    at: 'slice-worker/worker.go:L725-L741'
+    at: 'slice-worker/worker.go:L898-L914'
   - symbol: checkEngineUpdate
     kind: method
-    at: 'slice-worker/worker.go:L744-L783'
+    at: 'slice-worker/worker.go:L917-L956'
   - symbol: emitProgress
     kind: method
-    at: 'slice-worker/worker.go:L786-L795'
+    at: 'slice-worker/worker.go:L959-L972'
   - symbol: matchTags
     kind: method
-    at: 'slice-worker/worker.go:L798-L814'
+    at: 'slice-worker/worker.go:L975-L991'
   - symbol: log
     kind: method
-    at: 'slice-worker/worker.go:L817-L824'
+    at: 'slice-worker/worker.go:L994-L1001'
   - symbol: GetRunningTasks
     kind: method
-    at: 'slice-worker/worker.go:L827-L834'
+    at: 'slice-worker/worker.go:L1004-L1011'
   - symbol: CancelTask
     kind: method
-    at: 'slice-worker/worker.go:L837-L846'
+    at: 'slice-worker/worker.go:L1014-L1023'
   - symbol: GetCurrentTaskCount
     kind: method
-    at: 'slice-worker/worker.go:L849-L851'
+    at: 'slice-worker/worker.go:L1026-L1028'
   - symbol: getHostname
     kind: function
-    at: 'slice-worker/worker.go:L854-L860'
+    at: 'slice-worker/worker.go:L1031-L1037'
   - symbol: getFileSize
     kind: function
-    at: 'slice-worker/worker.go:L863-L868'
+    at: 'slice-worker/worker.go:L1040-L1045'
   - symbol: strconvParseInt
     kind: function
-    at: 'slice-worker/worker.go:L871-L883'
+    at: 'slice-worker/worker.go:L1048-L1060'
 ---
 <!-- context:generated:start -->
 ## Summary

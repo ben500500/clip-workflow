@@ -108,61 +108,64 @@ covers:
     at: 'backend/app/api/projects.py:L694-L724'
   - symbol: _cleanup_orphan_media_files
     kind: function
-    at: 'backend/app/api/projects.py:L727-L766'
+    at: 'backend/app/api/projects.py:L727-L768'
   - symbol: _cleanup_episode_media_files
     kind: function
-    at: 'backend/app/api/projects.py:L769-L790'
+    at: 'backend/app/api/projects.py:L771-L792'
   - symbol: upload_badge_image
     kind: function
-    at: 'backend/app/api/slice.py:L105-L167'
+    at: 'backend/app/api/slice.py:L107-L169'
   - symbol: upload_subtitle_file
     kind: function
-    at: 'backend/app/api/slice.py:L171-L229'
+    at: 'backend/app/api/slice.py:L173-L231'
   - symbol: get_slice_preferences
     kind: function
-    at: 'backend/app/api/slice.py:L233-L242'
+    at: 'backend/app/api/slice.py:L235-L244'
   - symbol: save_slice_preferences
     kind: function
-    at: 'backend/app/api/slice.py:L246-L262'
+    at: 'backend/app/api/slice.py:L248-L264'
   - symbol: _resolve_slice_inputs
     kind: function
-    at: 'backend/app/api/slice.py:L265-L535'
+    at: 'backend/app/api/slice.py:L267-L556'
   - symbol: _create_slice_task_record
     kind: function
-    at: 'backend/app/api/slice.py:L538-L624'
+    at: 'backend/app/api/slice.py:L559-L645'
   - symbol: _dispatch_slice_task
     kind: function
-    at: 'backend/app/api/slice.py:L627-L739'
+    at: 'backend/app/api/slice.py:L648-L806'
   - symbol: run_slice
     kind: function
-    at: 'backend/app/api/slice.py:L743-L783'
+    at: 'backend/app/api/slice.py:L810-L850'
   - symbol: list_slice_tasks
     kind: function
-    at: 'backend/app/api/slice.py:L787-L814'
+    at: 'backend/app/api/slice.py:L854-L881'
   - symbol: get_slice_task
     kind: function
-    at: 'backend/app/api/slice.py:L818-L867'
+    at: 'backend/app/api/slice.py:L885-L934'
   - symbol: get_slice_outputs
     kind: function
-    at: 'backend/app/api/slice.py:L871-L911'
+    at: 'backend/app/api/slice.py:L938-L978'
+  - symbol: get_slice_output
+    kind: function
+    at: 'backend/app/api/slice.py:L982-L1012'
   - symbol: get_slice_upload_url
     kind: function
-    at: 'backend/app/api/slice.py:L915-L952'
+    at: 'backend/app/api/slice.py:L1016-L1053'
   - symbol: slice_task_callback
     kind: function
-    at: 'backend/app/api/slice.py:L956-L1086'
+    at: 'backend/app/api/slice.py:L1057-L1212'
   - symbol: update_slice_progress
     kind: function
-    at: 'backend/app/api/slice.py:L1090-L1116'
+    at: 'backend/app/api/slice.py:L1216-L1242'
   - symbol: retry_slice_task
     kind: function
-    at: 'backend/app/api/slice.py:L1120-L1261'
+    at: 'backend/app/api/slice.py:L1246-L1428'
   - symbol: cancel_slice_task
     kind: function
-    at: 'backend/app/api/slice.py:L1265-L1304'
+    at: 'backend/app/api/slice.py:L1432-L1471'
   - symbol: delete_slice_task
     kind: function
-    at: 'backend/app/api/slice.py:L1308-L1366'
+    at: 'backend/app/api/slice.py:L1475-L1533'
   - symbol: BadgeItem
     kind: class
     at: 'backend/app/api/slice_helpers.py:L63-L76'
@@ -259,18 +262,21 @@ covers:
   - symbol: _dispatch_celery
     kind: function
     at: 'backend/app/api/slice_helpers.py:L1085-L1141'
+  - symbol: _dispatch_local
+    kind: function
+    at: 'backend/app/api/slice_helpers.py:L1144-L1378'
   - symbol: _verify_worker_token
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L1144-L1154'
+    at: 'backend/app/api/slice_helpers.py:L1381-L1391'
   - symbol: _detect_silence_points
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L1168-L1212'
+    at: 'backend/app/api/slice_helpers.py:L1405-L1449'
   - symbol: _nearest_in_window
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L1215-L1230'
+    at: 'backend/app/api/slice_helpers.py:L1452-L1467'
   - symbol: refine_clip_boundaries
     kind: function
-    at: 'backend/app/api/slice_helpers.py:L1233-L1285'
+    at: 'backend/app/api/slice_helpers.py:L1470-L1522'
 ---
 <!-- context:generated:start -->
 ## Summary

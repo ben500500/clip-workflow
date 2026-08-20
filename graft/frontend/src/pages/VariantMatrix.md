@@ -1,9 +1,14 @@
 # frontend/src/pages/VariantMatrix.tsx · [[variant-matrix-dedup-dashboard]]
 
-- VariantMatrix · function · L35-L310 — Main dashboard component that fetches variant groups and thresholds, renders per-group tables with distance/collision columns, and hosts bind/threshold modals.
-- handleVerify · function · L76-L87 — Triggers a pre-publish fingerprint re-verification for a variant and reports whether it is safe to publish.
-- openBind · function · L89-L92 — Opens the account-binding modal pre-populated with the variant's current account.
-- handleBind · function · L94-L107 — Binds a video account to a variant (one account per variant) and refreshes the matrix.
-- openThreshold · function · L109-L112 — Opens the collision-threshold config modal seeded with current threshold values.
-- handleSaveThreshold · function · L114-L126 — Persists updated collision-detection thresholds via the API and applies the returned values.
-- DistanceCell · function · L312-L324 — Renders a fingerprint distance value colored green when above threshold (safe) or red when below (collision risk).
+- FilterKey · type · L37-L37 — type FilterKey = 'all' | 'collision' | 'unbound';
+- VariantMatrix · function · L45-L494 — VariantMatrix: React.FC = ()
+- handleVerify · function · L136-L147 — handleVerify = async (v: VariantMatrixItem)
+- openBind · function · L149-L152 — openBind = (v: VariantMatrixItem)
+- handleBind · function · L154-L167 — handleBind = async ()
+- openThreshold · function · L169-L172 — openThreshold = ()
+- handleSaveThreshold · function · L174-L186 — handleSaveThreshold = async ()
+- handleDownload · function · L189-L200 — handleDownload = async (v: VariantMatrixItem)
+- handleDeleteVariant · function · L203-L211 — handleDeleteVariant = async (v: VariantMatrixItem)
+- handleDeleteGroup · function · L214-L222 — handleDeleteGroup = async (g: VariantGroup)
+- handleCleanupStuck · function · L225-L240 — handleCleanupStuck = async ()
+- DistanceCell · function · L496-L508 — DistanceCell: React.FC<{ v: number | null; threshold?: number; label: string }> = ({ v, threshold, label })

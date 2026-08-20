@@ -11,6 +11,6 @@
 - _cache_dir · function · L99-L100 — def _cache_dir(config: Config, video_hash: str) -> Path
 - _ensure_disk · function · L103-L108 — def _ensure_disk(cache_dir: Path, video_hash: str) -> None
 - _emit · function · L111-L119 — def _emit(progress_callback, pct: float, msg: str = "") -> None
-- process_video · function · L122-L367 — def process_video( input_path: str, output_path: str, config: Config, bbox: list[int] | None = None, bboxes: list[list[int]] | None = None, progress_callback=None, ) -> ProcessResult
+- process_video · function · L122-L368 — def process_video( input_path: str, output_path: str, config: Config, bbox: list[int] | None = None, bboxes: list[list[int]] | None = None, progress_callback=None, ) -> ProcessResult
 - _inpaint_progress · function · L280-L283 — def _inpaint_progress(stage_pct: int, _msg: str = "") -> None: # 将逐帧修复阶段进度 (0-100) 映射到整体进度 25%-85%
-- _qa_check · function · L370-L384 — def _qa_check(dst: Path, source_duration: float, mux_info: dict) -> None
+- _qa_check · function · L371-L385 — def _qa_check(dst: Path, source_duration: float, mux_info: dict) -> None

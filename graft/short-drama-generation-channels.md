@@ -97,82 +97,82 @@ covers:
     at: 'backend/app/services/doubao_service.py:L51-L59'
   - symbol: DoubaoGenerator
     kind: class
-    at: 'backend/app/services/doubao_service.py:L62-L904'
+    at: 'backend/app/services/doubao_service.py:L62-L917'
   - symbol: __init__
     kind: method
     at: 'backend/app/services/doubao_service.py:L65-L70'
   - symbol: _connect
     kind: method
-    at: 'backend/app/services/doubao_service.py:L72-L83'
+    at: 'backend/app/services/doubao_service.py:L72-L85'
   - symbol: _close
     kind: method
-    at: 'backend/app/services/doubao_service.py:L85-L95'
+    at: 'backend/app/services/doubao_service.py:L87-L108'
   - symbol: _sleep
     kind: method
-    at: 'backend/app/services/doubao_service.py:L101-L103'
+    at: 'backend/app/services/doubao_service.py:L114-L116'
   - symbol: _take_screenshot
     kind: method
-    at: 'backend/app/services/doubao_service.py:L105-L111'
+    at: 'backend/app/services/doubao_service.py:L118-L124'
   - symbol: _extract_qrcode
     kind: method
-    at: 'backend/app/services/doubao_service.py:L113-L139'
+    at: 'backend/app/services/doubao_service.py:L126-L152'
   - symbol: _click_login_button
     kind: method
-    at: 'backend/app/services/doubao_service.py:L141-L162'
+    at: 'backend/app/services/doubao_service.py:L154-L175'
   - symbol: _detect_login_modal
     kind: method
-    at: 'backend/app/services/doubao_service.py:L164-L173'
+    at: 'backend/app/services/doubao_service.py:L177-L186'
   - symbol: _dismiss_modal
     kind: method
-    at: 'backend/app/services/doubao_service.py:L175-L189'
+    at: 'backend/app/services/doubao_service.py:L188-L202'
   - symbol: _has_login_button
     kind: method
-    at: 'backend/app/services/doubao_service.py:L191-L207'
+    at: 'backend/app/services/doubao_service.py:L204-L220'
   - symbol: _login_status
     kind: method
-    at: 'backend/app/services/doubao_service.py:L209-L243'
+    at: 'backend/app/services/doubao_service.py:L222-L256'
   - symbol: _extract_account
     kind: method
-    at: 'backend/app/services/doubao_service.py:L245-L289'
+    at: 'backend/app/services/doubao_service.py:L258-L302'
   - symbol: clear_login
     kind: method
-    at: 'backend/app/services/doubao_service.py:L291-L311'
+    at: 'backend/app/services/doubao_service.py:L304-L324'
   - symbol: _is_cancelled
     kind: method
-    at: 'backend/app/services/doubao_service.py:L317-L327'
+    at: 'backend/app/services/doubao_service.py:L330-L340'
   - symbol: generate
     kind: method
-    at: 'backend/app/services/doubao_service.py:L329-L477'
+    at: 'backend/app/services/doubao_service.py:L342-L490'
   - symbol: progress_cb
     kind: function
-    at: 'backend/app/services/doubao_service.py:L368-L369'
+    at: 'backend/app/services/doubao_service.py:L381-L382'
   - symbol: _run_video_generation
     kind: method
-    at: 'backend/app/services/doubao_service.py:L479-L597'
+    at: 'backend/app/services/doubao_service.py:L492-L610'
   - symbol: _set_duration
     kind: method
-    at: 'backend/app/services/doubao_service.py:L603-L617'
+    at: 'backend/app/services/doubao_service.py:L616-L630'
   - symbol: _send_prompt
     kind: method
-    at: 'backend/app/services/doubao_service.py:L619-L702'
+    at: 'backend/app/services/doubao_service.py:L632-L715'
   - symbol: _wait_for_generation_outcome
     kind: method
-    at: 'backend/app/services/doubao_service.py:L704-L754'
+    at: 'backend/app/services/doubao_service.py:L717-L767'
   - symbol: _extract_reject_reason
     kind: method
-    at: 'backend/app/services/doubao_service.py:L756-L763'
+    at: 'backend/app/services/doubao_service.py:L769-L776'
   - symbol: _get_last_message_text
     kind: method
-    at: 'backend/app/services/doubao_service.py:L765-L789'
+    at: 'backend/app/services/doubao_service.py:L778-L802'
   - symbol: _llm_rewrite_prompt
     kind: method
-    at: 'backend/app/services/doubao_service.py:L791-L843'
+    at: 'backend/app/services/doubao_service.py:L804-L856'
   - symbol: _capture_video_url
     kind: method
-    at: 'backend/app/services/doubao_service.py:L845-L904'
+    at: 'backend/app/services/doubao_service.py:L858-L917'
   - symbol: _on_resp
     kind: function
-    at: 'backend/app/services/doubao_service.py:L875-L882'
+    at: 'backend/app/services/doubao_service.py:L888-L895'
 ---
 <!-- context:generated:start -->
 ## Summary

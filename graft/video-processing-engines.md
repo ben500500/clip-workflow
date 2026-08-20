@@ -193,52 +193,52 @@ covers:
     at: 'engines/seedance_wm/cli.py:L52-L62'
   - symbol: build_parser
     kind: function
-    at: 'engines/seedance_wm/cli.py:L65-L112'
+    at: 'engines/seedance_wm/cli.py:L65-L113'
   - symbol: _apply_cli_overrides
     kind: function
-    at: 'engines/seedance_wm/cli.py:L115-L140'
+    at: 'engines/seedance_wm/cli.py:L116-L143'
   - symbol: _confirm_disclaimer
     kind: function
-    at: 'engines/seedance_wm/cli.py:L143-L149'
+    at: 'engines/seedance_wm/cli.py:L146-L152'
   - symbol: _print_metrics
     kind: function
-    at: 'engines/seedance_wm/cli.py:L152-L165'
+    at: 'engines/seedance_wm/cli.py:L155-L168'
   - symbol: run
     kind: function
-    at: 'engines/seedance_wm/cli.py:L168-L240'
+    at: 'engines/seedance_wm/cli.py:L171-L243'
   - symbol: main
     kind: function
-    at: 'engines/seedance_wm/cli.py:L243-L250'
+    at: 'engines/seedance_wm/cli.py:L246-L253'
   - symbol: DetectorConfig
     kind: class
     at: 'engines/seedance_wm/config.py:L21-L26'
   - symbol: InpainterConfig
     kind: class
-    at: 'engines/seedance_wm/config.py:L30-L36'
+    at: 'engines/seedance_wm/config.py:L30-L37'
   - symbol: TemporalConfig
     kind: class
-    at: 'engines/seedance_wm/config.py:L40-L43'
+    at: 'engines/seedance_wm/config.py:L41-L44'
   - symbol: OutputConfig
     kind: class
-    at: 'engines/seedance_wm/config.py:L47-L52'
+    at: 'engines/seedance_wm/config.py:L48-L53'
   - symbol: LoggingConfig
     kind: class
-    at: 'engines/seedance_wm/config.py:L56-L59'
+    at: 'engines/seedance_wm/config.py:L57-L60'
   - symbol: CacheConfig
     kind: class
-    at: 'engines/seedance_wm/config.py:L63-L66'
+    at: 'engines/seedance_wm/config.py:L64-L67'
   - symbol: Config
     kind: class
-    at: 'engines/seedance_wm/config.py:L70-L163'
+    at: 'engines/seedance_wm/config.py:L71-L164'
   - symbol: from_yaml
     kind: method
-    at: 'engines/seedance_wm/config.py:L79-L81'
+    at: 'engines/seedance_wm/config.py:L80-L82'
   - symbol: _from_dict
     kind: method
-    at: 'engines/seedance_wm/config.py:L84-L125'
+    at: 'engines/seedance_wm/config.py:L85-L126'
   - symbol: to_yaml
     kind: method
-    at: 'engines/seedance_wm/config.py:L127-L163'
+    at: 'engines/seedance_wm/config.py:L128-L164'
   - symbol: _roi_image
     kind: function
     at: 'engines/seedance_wm/detect.py:L36-L40'
@@ -320,21 +320,24 @@ covers:
   - symbol: _inpaint_cv2
     kind: function
     at: 'engines/seedance_wm/inpaint.py:L73-L81'
+  - symbol: _inpaint_cv2_roi
+    kind: function
+    at: 'engines/seedance_wm/inpaint.py:L84-L98'
   - symbol: _inpaint_lama
     kind: function
-    at: 'engines/seedance_wm/inpaint.py:L87-L99'
+    at: 'engines/seedance_wm/inpaint.py:L104-L116'
   - symbol: inpaint_frames
     kind: function
-    at: 'engines/seedance_wm/inpaint.py:L102-L185'
+    at: 'engines/seedance_wm/inpaint.py:L119-L209'
   - symbol: _build_inpaint_chain
     kind: function
-    at: 'engines/seedance_wm/inpaint.py:L188-L223'
+    at: 'engines/seedance_wm/inpaint.py:L212-L247'
   - symbol: temporal_smooth
     kind: function
-    at: 'engines/seedance_wm/inpaint.py:L226-L295'
+    at: 'engines/seedance_wm/inpaint.py:L250-L319'
   - symbol: _read_frame
     kind: function
-    at: 'engines/seedance_wm/inpaint.py:L264-L269'
+    at: 'engines/seedance_wm/inpaint.py:L288-L293'
   - symbol: _parse_region
     kind: function
     at: 'engines/seedance_wm_runner.py:L44-L48'

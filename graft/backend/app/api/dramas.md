@@ -1,42 +1,43 @@
 # backend/app/api/dramas.py · [[drama-management-import]]
 
-- DramaCreate · class · L46-L61 — 创建剧目的请求体 schema，定义可录入字段及可选关联视频号列表。
-- DramaUpdate · class · L64-L77 — 更新剧目的请求体 schema，所有字段可选以支持部分更新。
-- DramaStillPayload · class · L80-L83 — 添加剧照的请求体，携带剧目 id、MinIO file_key 与排序号。
-- DramaLinkAccounts · class · L86-L87 — 批量关联视频号到剧目的请求体，仅含 account_ids 列表。
-- _resolve_image_url · function · L92-L99 — 将 MinIO file_key 解析为临时可访问的 presigned URL 用于封面/剧照展示，失败时静默返回 None。
-- _serialize_drama · function · L102-L124 — 将 Drama ORM 对象序列化为 API 响应 dict，含封面 URL 解析与网盘提取码掩码处理。
-- _serialize_drama_detail · function · L127-L142 — 在基础序列化之上追加剧照列表与关联视频号 id，构成剧目详情响应。
-- _resolve_drama · function · L147-L164 — 按 UUID 解析剧目，校验 ID 格式并处理不存在时的 404。
-- _can_manage · function · L167-L172 — RBAC 权限判定：operator 仅可管理自己创建/归属的剧目，admin/material/publisher 全量放行。
-- _apply_rbac_filter · function · L175-L178 — 构造 RBAC 查询过滤条件，非全量权限用户仅可见自己创建或归属的剧目。
-- _associate_accounts · function · L181-L194 — 幂等地将视频号关联到剧目（一剧多号），跳过已存在关联与非法 UUID。
-- list_dramas · function · L200-L238 — 剧目库列表接口，支持名称/编码模糊搜索、多条件筛选、按视频号反查及 RBAC 过滤。
-- create_drama · function · L242-L296 — 新增剧目：校验 name 非空且唯一，生成 DR-HEX code 并做冲突重抽，写入后关联视频号。
-- get_drama · function · L300-L309 — 获取剧目详情，先做 RBAC 权限校验再返回序列化数据。
-- update_drama · function · L313-L348 — 更新剧目信息：校验改名唯一性，按字段类型转换（UUID/日期/名称）后逐字段写入。
-- delete_drama · function · L352-L363 — 删除剧目（级联删除剧照/关联），先做权限校验。
-- add_drama_still · function · L369-L385 — 为剧目添加一张剧照记录（MinIO key + 排序号），先做权限校验。
-- delete_drama_still · function · L389-L408 — 删除一张剧照，校验 ID 格式、存在性及所属剧目权限。
-- upload_drama_image · function · L412-L467 — 上传剧目封面/剧照图片到 MinIO raw-footage 桶 drama/ 前缀，校验扩展名与大小上限。
-- link_drama_accounts · function · L473-L486 — 为剧目批量关联视频号并返回当前全部关联 id。
-- DramaImportRow · class · L491-L506 — 单条导入数据 schema，与表格字段一一对应，name 为去重键。
-- DramaImportRequest · class · L509-L511 — 导入预览请求体，携带行列表与文件名。
-- DramaImportConfirmItem · class · L514-L532 — confirm 时的一条确定项，携带 id（update 时=drama 主键）+ 完整字段，保证 confirm 自包含。
-- DramaImportConfirm · class · L535-L538 — 导入确认请求体，分 accept_new 与 accept_update 两组勾选项。
-- _row_key · function · L541-L543 — 行去重键：以 name 作为唯一键。
-- _diff_fields · function · L546-L564 — 对比旧剧目与新导入行，返回差异字段的旧值 vs 新值映射。
-- drama_import_preview · function · L568-L631 — 导入预览：按 name 去重将行分为 new/update/unchanged 三组，update 带 diff 供前端勾选。
-- drama_import_parse · function · L635-L717 — 解析上传的 Excel 文件为结构化行数据，供前端映射后提交预览。
-- _norm · function · L671-L672 — 规范化单元格字符串（去空白）。
-- _find · function · L676-L681 — 在行数据中按多个候选键查找首个非空值。
-- drama_import_confirm · function · L721-L843 — 导入确认：仅对用户勾选的 new/update 项执行写入/更新，未勾选不落库，并记录导入历史。
-- get_drama_publish_context · function · L849-L863 — 获取剧目发布上下文（关联视频号/素材等），供发布弹窗使用。
-- DramaMaterialLink · class · L866-L869 — 剧目↔发布素材关联请求体 schema。
-- link_drama_material · function · L873-L897 — 将发布素材关联到剧目（发布弹窗一键生成素材后挂关联）。
-- DramaLinkEpisodes · class · L902-L904 — class DramaLinkEpisodes(BaseModel)
-- link_drama_episodes · function · L908-L971 — async def link_drama_episodes( drama_id: str, data: DramaLinkEpisodes, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- get_drama_slice_status · function · L975-L1090 — async def get_drama_slice_status( drama_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- _stage_status · function · L1027-L1037 — def _stage_status(status)
-- _parse_date · function · L1095-L1100 — 解析日期字符串为 date 对象。
-- _parse_dt · function · L1103-L1108 — 解析日期时间字符串为 datetime 对象。
+- DramaCreate · class · L85-L102 — class DramaCreate(BaseModel)
+- DramaUpdate · class · L105-L119 — class DramaUpdate(BaseModel)
+- DramaStillPayload · class · L122-L125 — class DramaStillPayload(BaseModel)
+- DramaLinkAccounts · class · L128-L129 — class DramaLinkAccounts(BaseModel)
+- _resolve_image_url · function · L134-L141 — async def _resolve_image_url(file_key: Optional[str]) -> Optional[str]
+- _serialize_drama · function · L144-L167 — async def _serialize_drama(d: Drama) -> dict
+- _serialize_drama_detail · function · L170-L185 — async def _serialize_drama_detail(d: Drama) -> dict
+- _resolve_drama · function · L190-L207 — async def _resolve_drama(db: AsyncSession, drama_id: str) -> Drama
+- _can_manage · function · L210-L215 — def _can_manage(d: Drama, current_user: User) -> bool
+- _apply_rbac_filter · function · L218-L221 — def _apply_rbac_filter(current_user: User)
+- _associate_accounts · function · L224-L237 — async def _associate_accounts(db: AsyncSession, drama_id: uuid.UUID, account_ids: List[str])
+- list_topic_presets · function · L243-L257 — async def list_topic_presets( db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- list_dramas · function · L261-L299 — async def list_dramas( q: Optional[str] = Query(None, description="按名称/编码模糊搜索"), frequency: Optional[str] = Query(None), rating: Optional[str] = Query(None), listing_status: Optional[str] = Query(None), account_id: Optional[str] = Query(None, description="反查：该视频号关联的剧目"), db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- create_drama · function · L303-L358 — async def create_drama( data: DramaCreate, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- get_drama · function · L362-L371 — async def get_drama( drama_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- update_drama · function · L375-L410 — async def update_drama( drama_id: str, data: DramaUpdate, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- delete_drama · function · L414-L425 — async def delete_drama( drama_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- add_drama_still · function · L431-L447 — async def add_drama_still( data: DramaStillPayload, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- delete_drama_still · function · L451-L470 — async def delete_drama_still( still_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- upload_drama_image · function · L474-L529 — async def upload_drama_image( file: UploadFile = File(...), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- link_drama_accounts · function · L535-L548 — async def link_drama_accounts( drama_id: str, data: DramaLinkAccounts, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- DramaImportRow · class · L553-L568 — class DramaImportRow(BaseModel)
+- DramaImportRequest · class · L571-L573 — class DramaImportRequest(BaseModel)
+- DramaImportConfirmItem · class · L576-L594 — class DramaImportConfirmItem(BaseModel)
+- DramaImportConfirm · class · L597-L600 — class DramaImportConfirm(BaseModel)
+- _row_key · function · L603-L605 — def _row_key(row: DramaImportRow) -> str
+- _diff_fields · function · L608-L626 — def _diff_fields(old: Drama, row: DramaImportRow) -> dict
+- drama_import_preview · function · L630-L693 — async def drama_import_preview( data: DramaImportRequest, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- drama_import_parse · function · L697-L779 — async def drama_import_parse( file: UploadFile = File(...), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- _norm · function · L733-L734 — def _norm(v: str) -> str
+- _find · function · L738-L743 — def _find(*keys: str)
+- drama_import_confirm · function · L783-L905 — async def drama_import_confirm( data: DramaImportConfirm, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- get_drama_publish_context · function · L911-L927 — async def get_drama_publish_context( drama_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- DramaMaterialLink · class · L930-L933 — class DramaMaterialLink(BaseModel)
+- link_drama_material · function · L937-L961 — async def link_drama_material( data: DramaMaterialLink, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- DramaLinkEpisodes · class · L966-L968 — class DramaLinkEpisodes(BaseModel)
+- link_drama_episodes · function · L972-L1035 — async def link_drama_episodes( drama_id: str, data: DramaLinkEpisodes, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- get_drama_slice_status · function · L1039-L1154 — async def get_drama_slice_status( drama_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- _stage_status · function · L1091-L1101 — def _stage_status(status)
+- _parse_date · function · L1159-L1164 — def _parse_date(s: str)
+- _parse_dt · function · L1167-L1172 — def _parse_dt(s: str)

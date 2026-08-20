@@ -28,22 +28,25 @@ covers:
     at: 'backend/app/database.py:L38-L48'
   - symbol: init_db
     kind: function
-    at: 'backend/app/database.py:L51-L60'
+    at: 'backend/app/database.py:L51-L62'
+  - symbol: _enforce_idle_in_transaction_timeout
+    kind: function
+    at: 'backend/app/database.py:L65-L88'
   - symbol: _backfill_data_scope
     kind: function
-    at: 'backend/app/database.py:L63-L84'
+    at: 'backend/app/database.py:L91-L112'
   - symbol: _ensure_autoclip_runs_table
     kind: function
-    at: 'backend/app/database.py:L87-L128'
+    at: 'backend/app/database.py:L115-L156'
   - symbol: _apply_compat_migrations
     kind: function
-    at: 'backend/app/database.py:L131-L219'
+    at: 'backend/app/database.py:L159-L257'
   - symbol: close_db
     kind: function
-    at: 'backend/app/database.py:L222-L224'
+    at: 'backend/app/database.py:L260-L262'
   - symbol: _ensure_wechat_download_tables
     kind: function
-    at: 'backend/app/database.py:L226-L238'
+    at: 'backend/app/database.py:L264-L276'
   - symbol: UserRole
     kind: class
     at: 'backend/app/models/user.py:L25-L30'

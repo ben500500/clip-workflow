@@ -1,13 +1,25 @@
 # backend/app/api/variants.py · [[variant-matrix-deduplication]]
 
-- VariantGenerateRequest · class · L41-L45 — Request payload for manually triggering variant generation on an existing slice output, with optional dedupe config and threshold overrides.
-- VariantBindRequest · class · L48-L50 — Request payload for binding a variant to an account, allowing unbinding via null account_id.
-- _get_thresholds · function · L53-L63 — Loads collision-detection thresholds from system_config, merging stored overrides on top of defaults so operators can tune dedupe strictness.
-- _list_variant_groups · function · L66-L101 — Aggregates slice outputs into variant groups with their full variant lists, distances, collision flags, and account bindings for the dashboard.
-- variant_matrix · function · L105-L111 — Dashboard endpoint returning variant groups plus current thresholds, combining aggregation and config in one response.
-- variant_detail · function · L115-L150 — Returns a single variant's metadata, dedupe recipe, and all its fingerprints for pre-publish inspection.
-- generate_variants · function · L154-L171 — Validates the target slice output exists, then enqueues an async Celery task to generate variants with the requested count and dedupe config.
-- verify_variant · function · L175-L190 — Pre-publish fingerprint recheck that runs the verification task synchronously with a short timeout, failing the request if the variant collides with its group.
-- bind_variant_account · function · L194-L216 — Enforces the one-account-per-variant hard constraint by rejecting a bind when the account is already claimed by another variant.
-- update_thresholds · function · L220-L239 — Upserts operator-tunable collision thresholds into system_config, merging only provided keys over defaults.
-- uuid_of · function · L242-L247 — Parses a string into a UUID, raising a 400 HTTP error on invalid format.
+- VariantGenerateRequest · class · L49-L53 — class VariantGenerateRequest(BaseModel)
+- VariantBindRequest · class · L56-L58 — class VariantBindRequest(BaseModel)
+- _get_thresholds · function · L61-L73 — async def _get_thresholds() -> dict
+- _list_variant_groups · function · L76-L113 — async def _list_variant_groups() -> list[dict]
+- variant_matrix · function · L117-L123 — async def variant_matrix( current_user: Annotated[User, Depends(get_current_user)] = None, )
+- variant_detail · function · L127-L164 — async def variant_detail( variant_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, )
+- generate_variants · function · L168-L187 — async def generate_variants( data: VariantGenerateRequest, current_user: Annotated[User, Depends(get_current_user)] = None, )
+- verify_variant · function · L191-L206 — async def verify_variant( variant_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, )
+- bind_variant_account · function · L210-L232 — async def bind_variant_account( variant_id: str, data: VariantBindRequest, current_user: Annotated[User, Depends(get_current_user)] = None, )
+- update_thresholds · function · L236-L255 — async def update_thresholds( data: dict, current_user: Annotated[User, Depends(get_current_user)] = None, )
+- uuid_of · function · L258-L263 — def uuid_of(v: str)
+- VariantGenerateBatchRequest · class · L265-L269 — class VariantGenerateBatchRequest(BaseModel)
+- SliceOutputListRequest · class · L272-L275 — class SliceOutputListRequest(BaseModel)
+- generate_variants_batch · function · L279-L325 — async def generate_variants_batch( data: VariantGenerateBatchRequest, current_user: Annotated[User, Depends(get_current_user)] = None, )
+- _check_output_access · function · L328-L345 — async def _check_output_access(session, out: SliceOutput, current_user: User)
+- _load_variant_or_404 · function · L348-L355 — async def _load_variant_or_404(session, variant_id: str) -> ClipVariant
+- _guard_variant_access · function · L358-L367 — async def _guard_variant_access(session, v: ClipVariant, current_user)
+- _delete_minio_file · function · L370-L379 — async def _delete_minio_file(file_key: str, bucket: str = settings.MINIO_BUCKET_SLICED)
+- cleanup_stuck_variants · function · L383-L413 — async def cleanup_stuck_variants( timeout_minutes: int = 30, current_user: Annotated[User, Depends(get_current_user)] = None, )
+- delete_variant · function · L417-L433 — async def delete_variant( variant_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, )
+- delete_variant_group · function · L437-L467 — async def delete_variant_group( group_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, )
+- download_variant · function · L471-L489 — async def download_variant( variant_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, )
+- list_slice_outputs · function · L493-L652 — async def list_slice_outputs( page: int = 1, page_size: int = 50, keyword: Optional[str] = None, current_user: Annotated[User, Depends(get_current_user)] = None, )

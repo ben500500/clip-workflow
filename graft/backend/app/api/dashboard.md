@@ -1,44 +1,42 @@
 # backend/app/api/dashboard.py · [[dashboard-analytics]]
 
-FastAPI router exposing dashboard analytics, metrics, and data-import endpoints for short drama operations.
-
-- VideoMetricResponse · class · L34-L63 — Pydantic response schema serializing a video metric row into the API's JSON shape.
-- VideoTagsUpdate · class · L66-L67 — Request body schema carrying the list of tags to assign to a video.
-- ImportResultResponse · class · L70-L73 — Response schema reporting success, imported count, and errors from a bulk import.
-- DashboardConfigResponse · class · L76-L77 — Response schema wrapping a dashboard configuration dictionary.
-- _serialize_video_metric · function · L82-L112 — Converts a VideoMetric ORM object into the API response dict, normalizing nulls to defaults and UUIDs to strings.
-- _parse_account_id · function · L115-L122 — Validates and converts an account_id query string into a UUID, raising 400 on malformed input.
-- _parse_date · function · L125-L132 — Parses an ISO date string into a date object, raising 400 on invalid format.
-- get_overview · function · L138-L146 — Endpoint returning today/week revenue, total play, UV, eCPM and revenue-per-UV for the dashboard overview.
-- get_overview_trend · function · L150-L160 — Endpoint returning time-series trend data for overview charts within a date range.
-- get_overview_funnel · function · L164-L172 — Endpoint returning funnel conversion data for the overview panel.
-- get_top_videos · function · L176-L183 — Endpoint returning top videos ranked by attributed revenue.
-- list_video_metrics · function · L189-L239 — Endpoint listing video metrics with account/content-type/play-level filters, whitelisted sorting, and pagination.
-- get_video_ranking · function · L243-L251 — Endpoint returning a video ranking by a chosen metric and limit.
-- update_video_tags · function · L255-L289 — Endpoint updating a video's tags, normalizing/deduplicating them and back-writing the first tag into content_type for compatibility.
-- get_mini_program_metrics · function · L295-L334 — Endpoint listing mini-program metrics filtered by account and date range, ordered newest first.
-- get_ad_metrics · function · L340-L383 — Endpoint listing ad metrics filtered by account and date range, ordered newest first.
-- get_drama_ranking · function · L389-L426 — Endpoint returning dramas ranked by play count, optionally filtered by account and date.
-- get_funnel_trend · function · L432-L473 — Endpoint returning funnel snapshot time series over a date range, ordered chronologically.
-- import_video_metrics · function · L479-L487 — Endpoint accepting an Excel upload to bulk-import video metrics for an account.
-- import_mini_program_metrics · function · L491-L499 — Endpoint accepting an Excel upload to bulk-import mini-program metrics for an account.
-- import_ad_metrics · function · L503-L511 — Endpoint accepting an Excel upload to bulk-import ad metrics for an account.
-- download_import_template · function · L515-L528 — Endpoint generating and streaming an Excel import template for the requested metric type.
-- get_dashboard_config · function · L534-L554 — Endpoint returning the dashboard configuration.
-- update_dashboard_config · function · L558-L578 — Endpoint updating the dashboard configuration.
-- smart_import_upload · function · L584-L592 — Endpoint uploading a file for smart/auto-detected import.
-- import_preview · function · L596-L601 — Endpoint previewing an uploaded file's parsed columns before import.
-- import_confirm · function · L605-L621 — Endpoint confirming a smart import with a field mapping and target table, applying the parsed data.
-- list_import_templates · function · L625-L629 — Endpoint listing available import templates.
-- save_custom_import_template · function · L633-L642 — Endpoint persisting a user-defined custom import template.
-- list_import_history · function · L646-L650 — Endpoint listing past import history records.
-- get_ecosystem · function · L656-L666 — Endpoint returning ecosystem metrics filtered by account and date range.
-- get_cross_analysis · function · L672-L680 — Endpoint returning cross-analysis of video metrics with pagination.
-- get_drama_detail · function · L686-L732 — Endpoint returning detailed metrics for a single drama, optionally scoped to an account.
-- get_funnel_compare · function · L738-L801 — Endpoint comparing current-period funnel metrics against the previous period, computing percentage changes.
-- build_filter · function · L751-L755 — Builds a date-range filter predicate for funnel snapshots between start and end dates.
-- calc_change · function · L777-L780 — Computes the percentage change between current and previous values, guarding against zero/None denominators.
-- _serialize_shortdrama_analysis_row · function · L810-L865 — Serializes a video metric row into the short-drama analysis response shape using context-derived derived metrics.
-- get_shortdrama_analysis · function · L869-L939 — Endpoint returning paginated short-drama analysis rows filtered by platform and date range.
-- get_shortdrama_summary · function · L943-L996 — Endpoint returning aggregate summary metrics for short-drama analysis within a date range.
-- get_shortdrama_topics · function · L1000-L1058 — Endpoint returning top short-drama topics ranked by a metric within a date range.
+- VideoMetricResponse · class · L34-L63 — class VideoMetricResponse(BaseModel)
+- VideoTagsUpdate · class · L66-L67 — class VideoTagsUpdate(BaseModel)
+- ImportResultResponse · class · L70-L73 — class ImportResultResponse(BaseModel)
+- DashboardConfigResponse · class · L76-L77 — class DashboardConfigResponse(BaseModel)
+- _serialize_video_metric · function · L82-L112 — def _serialize_video_metric(m: VideoMetric) -> dict
+- _parse_account_id · function · L115-L122 — def _parse_account_id(account_id: Optional[str]) -> Optional[uuid.UUID]
+- _parse_date · function · L125-L132 — def _parse_date(date_str: Optional[str]) -> Optional[date]
+- get_overview · function · L138-L146 — async def get_overview( account_id: Optional[str] = Query(None), date: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- get_overview_trend · function · L150-L160 — async def get_overview_trend( account_id: Optional[str] = Query(None), start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- get_overview_funnel · function · L164-L172 — async def get_overview_funnel( account_id: Optional[str] = Query(None), date: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- get_top_videos · function · L176-L183 — async def get_top_videos( account_id: Optional[str] = Query(None), limit: int = Query(10, ge=1, le=100), db: AsyncSession = Depends(get_db), )
+- list_video_metrics · function · L189-L239 — async def list_video_metrics( account_id: Optional[str] = Query(None), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), sort_by: Optional[str] = Query("play_count"), content_type: Optional[str] = Query(None), play_level: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- get_video_ranking · function · L243-L251 — async def get_video_ranking( account_id: Optional[str] = Query(None), sort_by: str = Query("play_count"), limit: int = Query(20, ge=1, le=100), db: AsyncSession = Depends(get_db), )
+- update_video_tags · function · L255-L289 — async def update_video_tags( video_id: str, data: VideoTagsUpdate, db: AsyncSession = Depends(get_db), )
+- get_mini_program_metrics · function · L295-L334 — async def get_mini_program_metrics( account_id: Optional[str] = Query(None), start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- get_ad_metrics · function · L340-L383 — async def get_ad_metrics( account_id: Optional[str] = Query(None), start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- get_drama_ranking · function · L389-L426 — async def get_drama_ranking( account_id: Optional[str] = Query(None), date: Optional[str] = Query(None), limit: int = Query(20, ge=1, le=100), db: AsyncSession = Depends(get_db), )
+- get_funnel_trend · function · L432-L473 — async def get_funnel_trend( account_id: Optional[str] = Query(None), start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- import_video_metrics · function · L479-L487 — async def import_video_metrics( file: UploadFile = File(...), account_id: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- import_mini_program_metrics · function · L491-L499 — async def import_mini_program_metrics( file: UploadFile = File(...), account_id: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- import_ad_metrics · function · L503-L511 — async def import_ad_metrics( file: UploadFile = File(...), account_id: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- download_import_template · function · L515-L528 — async def download_import_template( type: str = Query("video", regex="^(video|mini_program|ad)$"), )
+- get_dashboard_config · function · L534-L554 — async def get_dashboard_config(db: AsyncSession = Depends(get_db))
+- update_dashboard_config · function · L558-L578 — async def update_dashboard_config( data: dict, db: AsyncSession = Depends(get_db), )
+- smart_import_upload · function · L584-L592 — async def smart_import_upload( file: UploadFile = File(...), account_id: Optional[str] = Query(None), )
+- import_preview · function · L596-L601 — async def import_preview( file: UploadFile = File(...), )
+- import_confirm · function · L605-L621 — async def import_confirm( file: UploadFile = File(...), mapping: str = Query(..., description="JSON string of field mapping"), target_table: str = Query(...), account_id: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- list_import_templates · function · L625-L629 — async def list_import_templates( db: AsyncSession = Depends(get_db), )
+- save_custom_import_template · function · L633-L642 — async def save_custom_import_template( data: dict, db: AsyncSession = Depends(get_db), )
+- list_import_history · function · L646-L650 — async def list_import_history( db: AsyncSession = Depends(get_db), )
+- get_ecosystem · function · L656-L666 — async def get_ecosystem( account_id: Optional[str] = Query(None), start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- get_cross_analysis · function · L672-L680 — async def get_cross_analysis( account_id: Optional[str] = Query(None), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), db: AsyncSession = Depends(get_db), )
+- get_drama_detail · function · L686-L732 — async def get_drama_detail( drama_id: str, account_id: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- get_funnel_compare · function · L738-L801 — async def get_funnel_compare( account_id: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- build_filter · function · L751-L755 — def build_filter(start, end)
+- calc_change · function · L777-L780 — def calc_change(current, previous)
+- _serialize_shortdrama_analysis_row · function · L810-L865 — def _serialize_shortdrama_analysis_row(v: VideoMetric, ctx: dict) -> dict
+- get_shortdrama_analysis · function · L869-L939 — async def get_shortdrama_analysis( platform: Optional[str] = Query(None), start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), db: AsyncSession = Depends(get_db), )
+- get_shortdrama_summary · function · L943-L996 — async def get_shortdrama_summary( platform: Optional[str] = Query(None), start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), )
+- get_shortdrama_topics · function · L1000-L1058 — async def get_shortdrama_topics( platform: Optional[str] = Query(None), start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None), limit: int = Query(10, ge=1, le=50), db: AsyncSession = Depends(get_db), )

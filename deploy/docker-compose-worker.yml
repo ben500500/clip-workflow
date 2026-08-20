@@ -1,0 +1,46 @@
+version: "3.8"
+
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-common-env: &common-env
+  TZ: Asia/Shanghai
+
+
+
+networks:
+  clip-network:
+    driver: bridge
+
+services:
+  slice-worker:
+      image: docker.cnb.cool/ben500500/clip-workflow/clip-slice-worker:${CLIP_VERSION}
+      container_name: clip-slice-worker
+      restart: unless-stopped
+      # 优雅退出窗口：SIGTERM 后等待当前任务完成再退出（worker 会停止认领新任务），
+      # 避免强杀正在处理的任务导致临时目录残留
+      stop_grace_period: 15m
+      networks:
+        - clip-network
+      env_file:
+        - .env
+      environment:
+        <<: *common-env
+        NODE_ID: slice-worker-${HOST_IP}
+        REDIS_URL: redis://:${REDIS_PASSWORD}@${CTRL_HOST_IP}:12637/0
+        MAX_CONCURRENT: "2"
+        CPU_PERCENT: ${CPU_PERCENT:-50}
+        HEARTBEAT_INTERVAL: "10"
+        LOG_LEVEL: info
+        TASK_TIMEOUT: "7200"
+        MAX_RETRIES: "2"
+        RETRY_DELAY: "30"
+        NODE_TTL: "0"
+        BACKEND_URL: http://${CTRL_HOST_IP}:12808
+      volumes:
+        - ./data/slice_worker_temp:/tmp/slice-worker
+      logging: *default-logging

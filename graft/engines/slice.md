@@ -1,84 +1,82 @@
 # engines/slice.py · [[dedupe-config-contract]] [[slice-engine]]
 
-ffmpeg-based slice engine that cuts source video into clips per a cutlist, applies dedupe filter chains (spatial/temporal/color/texture layers) to evade platform fingerprinting, and reports output/progress lines.
-
-- _even · function · L180-L185 — Rounds an integer down to the nearest even number (min 2) to keep yuv420p encode dimensions valid.
-- _resolve_dedupe_config · function · L188-L220 — Merges a dedupe preset with manual overrides (and legacy flat config fields) into a single complete parameter dict, falling back to the default std_crop_desat preset for unknown names.
-- build_dedupe_filter · function · L223-L326 — Builds the ffmpeg video/audio filter chains that apply the four-layer dedupe recipe (crop/hflip, speed, color grading, and texture effects) to make output clips differ from the source at frame, histogram, and temporal-fingerprint levels.
-- build_dedupe_audio_filter · function · L329-L369 — Maps a named audio-fingerprint-differentiation mode to the corresponding ffmpeg audio filter string (volume/EQ/pitch/bandpass/boost), returning empty when no differentiation is wanted.
-- build_dedupe_watermark · function · L372-L413 — Builds a drawtext filter for a semi-transparent static or slowly-drifting sticker watermark used as a dedupe texture layer.
-- cpu_threads_for_percent · function · L416-L435 — Computes the ffmpeg thread count from a CPU allocation percentage, clamped to at least 1 and at most the core count.
-- parse_time · function · L438-L444 — Parses HH:MM:SS.mmm, MM:SS.mmm, or plain-seconds time strings into a float seconds value.
-- read_cutlist · function · L447-L463 — Reads a cutlist file into (start, end, name) tuples, skipping malformed or short lines.
-- read_intervals · function · L466-L482 — Reads an interval file into (start, end) tuples, skipping malformed or short lines.
-- subtract_intervals · function · L485-L507 — Removes interval overlaps from each cut, producing non-overlapping (start, end, name, cut_index) segments.
-- ffprobe_duration · function · L510-L519 — Probes a video's duration in seconds via ffprobe, returning 0.0 on any failure.
-- ffprobe_resolution · function · L522-L536 — Probes a video's (width, height) resolution via ffprobe, returning (0,0) on failure.
-- ffprobe_framerate · function · L539-L565 — Probes the source video frame rate as an ffmpeg fps parameter string (e.g. '30000/1001'), returning '' on failure.
-- ffprobe_size · function · L568-L584 — Reads video resolution (width, height) via ffprobe CSV output, returning (0,0) on failure.
-- _fallback_libx264_args · function · L587-L615 — Rewrites a command's hardware encoder (-c:v videotoolbox/nvenc) to software libx264, stripping hardware-only quality options, or returns None if no hardware encoder present.
-- run_ffmpeg · function · L618-L642 — Runs an ffmpeg subprocess, injecting a -threads argument after the executable when not already set so concurrent slices don't oversubscribe the CPU.
-- detect_best_encoder · function · L645-L673 — Selects the best available video encoder, preferring the caller's choice and falling back to hardware then software encoders.
-- build_encoder_args · function · L676-L683 — Builds the ffmpeg encoder argument list for a given encoder name and thread count.
-- slice_segment · function · L686-L705 — Cuts one segment from the source, using stream copy (-c copy) in fast mode with no filters for 10x+ speed, else re-encoding with the given filter chain.
-- concat_segments · function · L708-L732 — Concatenates sliced segment files into a single output, using stream copy when all parts are copy segments else re-encoding.
-- _is_copy_segment · function · L735-L740 — Determines whether a segment file was produced by stream copy (no re-encode) by inspecting its container/codec.
-- _concat_demuxer · function · L743-L758 — Concatenates segment files using ffmpeg's concat demuxer into a single output file.
-- safe_name · function · L761-L765 — Sanitizes a name into a filesystem-safe string for output filenames.
-- _badge_scale_and_opacity · function · L790-L816 — Computes the scale and opacity ffmpeg filter expressions for a badge overlay based on its config and default width.
-- build_badges_overlay_args · function · L819-L883 — Builds the full ffmpeg argument list to overlay corner badges onto a video, handling scaling, opacity, and positioning.
-- apply_badges · function · L886-L894 — Applies badge overlays to a source video, producing an output file via ffmpeg.
-- _fc_match_sc_font · function · L968-L1000 — Uses fontconfig to find a Simplified Chinese-capable font path, returning empty string if none found.
-- _extract_sc_face · function · L1003-L1052 — Extracts a Simplified Chinese font face from a TTC collection file into a temporary TTF for drawtext use.
-- _fontconfig_has_cjk_sc · function · L1055-L1070 — Checks whether fontconfig reports any Simplified Chinese-capable font available on the system.
-- _resolve_drawtext_font · function · L1073-L1103 — Resolves a usable font path for drawtext, preferring a Simplified Chinese-capable font and falling back to defaults.
-- _build_text_overlays_filter · function · L1106-L1175 — Builds a drawtext filter chain for a list of text overlay configs (text, position, style, timing).
-- apply_text_overlays · function · L1178-L1195 — Applies text overlays to a source video via ffmpeg, producing an output file.
-- build_watermark_filter · function · L1198-L1242 — Builds a drawtext filter for a dynamic text watermark with configurable style, position, and animation.
-- _watermark_style_exprs · function · L1245-L1291 — Returns the x/y/alpha drawtext expressions for a given watermark style and base y position.
-- css_hex_to_ass · function · L1320-L1340 — Converts a CSS hex color to ASS subtitle color format (&HAABBGGRR), returning default on invalid input.
-- _css_to_drawtext · function · L1343-L1359 — Converts a CSS hex color to a drawtext-compatible color string, returning default on invalid input.
-- _parse_srt_timestamp · function · L1362-L1370 — Parses an SRT timestamp (HH:MM:SS,mmm) into float seconds.
-- _format_srt_timestamp · function · L1373-L1380 — Formats float seconds into an SRT timestamp string (HH:MM:SS,mmm).
-- read_srt · function · L1383-L1460 — Parses an SRT subtitle file into a list of records with start/end times and text, handling multi-line cues and malformed entries.
-- detect_speech_windows · function · L1475-L1546 — Uses ffmpeg silencedetect to find speech (non-silent) time windows in a video, returning (start, end) tuples.
-- _trim_to_speech · function · L1549-L1565 — Trims a segment's start/end to the nearest speech window boundaries so cuts land on speech rather than silence.
-- _filter_and_align_srt · function · L1568-L1596 — Filters SRT records to those overlapping a segment and shifts their times by an offset (and scale) into local clip time.
-- build_clip_subtitle · function · L1599-L1638 — Builds a per-clip SRT file from the source SRT by filtering/aligning records to each segment, optionally trimming to speech windows.
-- burn_subtitle · function · L1643-L1740 — Burns a subtitle SRT into a video via ffmpeg subtitles filter with configurable font, style, color, and margins.
-- _mask_text_clusters · function · L1784-L1793 — Merges adjacent text clusters in a mask into combined bounding boxes.
-- _split_tall_band · function · L1796-L1891 — Splits an overly tall horizontal band into multiple shorter bands to avoid masking non-subtitle content.
-- detect_subtitle_region · function · L1894-L2166 — Detects the subtitle region (bounding boxes) in a video by analyzing frame differences, optionally guided by an SRT.
-- _low_percentile · function · L2189-L2202 — Computes a low percentile value from a list of floats.
-- _bimodal_threshold · function · L2205-L2246 — Finds a threshold separating two modes in a value distribution (bimodal analysis) for distinguishing content from background.
-- detect_watermark_region · function · L2249-L2384 — Detects persistent watermark regions in a video by sampling frames and finding static high-contrast areas.
-- detect_subtitle_temporal_windows · function · L2387-L2513 — Detects time windows where subtitles appear within a region by analyzing frame changes over time.
-- detect_subtitle_spatial_regions · function · L2525-L2612 — Detects spatial subtitle regions within a given region during the detected temporal windows.
-- detect_subtitle_dynamic_regions · function · L2627-L2772 — Detects dynamic subtitle regions (moving/animating subtitles) by correlating video frames with SRT timing.
-- _parse_subtitle_mask_config · function · L2775-L2785 — Parses a raw subtitle mask config string into a dict, returning None for empty/invalid input.
-- _source_intervals_to_local_intervals · function · L2788-L2815 — Converts source-timeline intervals to local clip intervals by subtracting segment start and applying scale.
-- _scale_region · function · L2818-L2833 — Scales a region's coordinates by the configured scale factor relative to the video dimensions.
-- _mask_enable_expr · function · L2836-L2839 — Builds an ffmpeg enable expression from a list of local time intervals.
-- _source_intervals_to_local_enable · function · L2842-L2873 — Converts source intervals to a local enable expression for masking within a segment.
-- _spatial_windows_to_local · function · L2876-L2917 — Converts source spatial subtitle windows to local clip coordinates, applying scale and segment offsets.
-- _dynamic_windows_to_local · function · L2920-L2967 — Converts source dynamic subtitle windows to local clip coordinates with scaling and segment offsets.
-- build_subtitle_mask_enable · function · L2970-L2989 — Builds the ffmpeg enable expression for subtitle masking from the source SRT and segment times.
-- _subtitle_mask_area · function · L2992-L3039 — Computes the subtitle mask area rectangle from config and video dimensions.
-- _f · function · L3003-L3010 — Helper that reads a config key with a default value.
-- subtitle_mask_bottom_margin · function · L3042-L3102 — Computes the bottom margin (in pixels) to reserve for the subtitle mask area based on config and dimensions.
-- _merge_regions · function · L3105-L3131 — Merges nearby region rectangles into combined regions when separated by less than a gap.
-- _scale_regions · function · L3134-L3151 — Scales a list of region rectangles by the configured scale factor relative to video dimensions.
-- build_subtitle_mask_filter · function · L3154-L3207 — Builds a single-region subtitle mask filter (boxblur/drawbox) with an enable expression.
-- build_subtitle_mask_filter_multi · function · L3210-L3293 — Builds a multi-window subtitle mask filter chain for a fixed y/h band across multiple time windows.
-- _clip · function · L3229-L3232 — Clips an x coordinate to stay within the frame width.
-- build_subtitle_mask_filter_multi_region · function · L3296-L3380 — Builds a subtitle mask filter chain for multiple spatial regions with an enable expression.
-- _clip · function · L3316-L3323 — Clips a rectangle to stay within the frame bounds.
-- build_subtitle_mask_filter_multi_region_windows · function · L3383-L3469 — Builds a subtitle mask filter chain for multiple regions each with their own time windows.
-- _enable · function · L3399-L3403 — Builds an enable expression from a list of time windows.
-- build_subtitle_mask_filter_dynamic · function · L3472-L3551 — Builds a subtitle mask filter chain for dynamic (moving) subtitle windows.
-- apply_subtitle_mask · function · L3554-L3659 — Applies the subtitle mask filter to a video via ffmpeg, producing an output file with subtitles blurred/masked.
-- _video_has_audio · function · L3662-L3673 — Probes whether a video file contains an audio stream, used to decide whether audio processing is needed.
-- apply_cover_first_frame · function · L3676-L3751 — Re-encodes a clip so its first frame is replaced by a cover image, ensuring the output's opening frame matches the requested cover.
-- main · function · L3754-L4317 — CLI entry point that parses arguments, reads the cutlist/intervals, dispatches to fast/dedupe/scrub slicing modes, and prints OUTPUT and PROGRESS lines.
-- parse_vert2horiz_config · function · L4320-L4330 — Parses a raw vertical-to-horizontal config string into a dict, returning None for empty/invalid input.
-- apply_vert2horiz · function · L4333-L4392 — Applies vertical-to-horizontal conversion to a source video using the vert2horiz_crop engine, returning the output path.
+- _even · function · L205-L210 — def _even(n: int) -> int
+- _resolve_dedupe_config · function · L213-L245 — def _resolve_dedupe_config(cfg: dict) -> dict
+- build_dedupe_filter · function · L248-L374 — def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: str = "", source_path: str = "") -> tuple[str, str]
+- build_dedupe_audio_filter · function · L377-L421 — def build_dedupe_audio_filter(mode) -> str
+- build_dedupe_watermark · function · L424-L465 — def build_dedupe_watermark(wm: dict, width: int = 0, height: int = 0) -> str
+- cpu_threads_for_percent · function · L468-L487 — def cpu_threads_for_percent(percent: int) -> int
+- parse_time · function · L490-L496 — def parse_time(s: str) -> float
+- read_cutlist · function · L499-L515 — def read_cutlist(path: str)
+- read_intervals · function · L518-L534 — def read_intervals(path: str)
+- subtract_intervals · function · L537-L559 — def subtract_intervals(cuts, intervals)
+- ffprobe_duration · function · L562-L571 — def ffprobe_duration(path: str) -> float
+- ffprobe_resolution · function · L574-L588 — def ffprobe_resolution(path: str) -> tuple[int, int]
+- ffprobe_framerate · function · L591-L617 — def ffprobe_framerate(path: str) -> str
+- ffprobe_size · function · L620-L636 — def ffprobe_size(path: str) -> tuple[int, int]
+- _fallback_libx264_args · function · L639-L667 — def _fallback_libx264_args(args, threads)
+- run_ffmpeg · function · L670-L694 — def run_ffmpeg(args, timeout=3600, threads=1): # 若未显式设置 -threads，则追加（避免并发切片抢占过多 CPU）。 # 注意：args 以 "ffmpeg" 可执行文件开头，插入必须放在可执行文件之后， # 否则 args[0] 变成 "-threads" 会被 subprocess 当作可执行文件 # （FileNotFoundError: No such file or directory: '-threads'）。
+- detect_best_encoder · function · L697-L725 — def detect_best_encoder(preferred: str | None = None) -> str
+- build_encoder_args · function · L728-L735 — def build_encoder_args(encoder: str, threads: int) -> list[str]
+- slice_segment · function · L738-L757 — def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="libx264", copy_if_possible=True): # fast 模式且无滤镜时走流拷贝（-c copy），只切不重编码，速度 10×+； # 需要滤镜（去重/水印/竖转横）或显式关闭时回退到重编码分支。
+- concat_segments · function · L760-L784 — def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True)
+- _is_copy_segment · function · L787-L792 — def _is_copy_segment(path: str) -> bool
+- _concat_demuxer · function · L795-L810 — def _concat_demuxer(parts, out)
+- safe_name · function · L813-L817 — def safe_name(name: str) -> str
+- _badge_scale_and_opacity · function · L842-L868 — def _badge_scale_and_opacity(badge: dict, default_width: int) -> str
+- build_badges_overlay_args · function · L871-L935 — def build_badges_overlay_args( badges: list, threads: int, encoder: str, default_width: int = BADGE_DEFAULT_WIDTH, ) -> list[str]
+- apply_badges · function · L938-L946 — def apply_badges(src, out, badges, threads=1, encoder="libx264", default_width: int = BADGE_DEFAULT_WIDTH)
+- _fc_match_sc_font · function · L1020-L1052 — def _fc_match_sc_font() -> str
+- _extract_sc_face · function · L1055-L1104 — def _extract_sc_face(ttc_path: str) -> str
+- _fontconfig_has_cjk_sc · function · L1107-L1122 — def _fontconfig_has_cjk_sc() -> bool
+- _resolve_drawtext_font · function · L1125-L1155 — def _resolve_drawtext_font() -> str
+- _build_text_overlays_filter · function · L1158-L1227 — def _build_text_overlays_filter(text_overlays: list) -> str
+- apply_text_overlays · function · L1230-L1247 — def apply_text_overlays(src, out, text_overlays, threads=1, encoder="libx264")
+- build_watermark_filter · function · L1250-L1294 — def build_watermark_filter(wm: dict) -> str
+- _watermark_style_exprs · function · L1297-L1343 — def _watermark_style_exprs(style: str, base_y: str) -> tuple[str, str, str]
+- css_hex_to_ass · function · L1372-L1392 — def css_hex_to_ass(color: Optional[str]) -> str
+- _css_to_drawtext · function · L1395-L1411 — def _css_to_drawtext(color: Optional[str]) -> str
+- _parse_srt_timestamp · function · L1414-L1422 — def _parse_srt_timestamp(ts: str) -> float
+- _format_srt_timestamp · function · L1425-L1432 — def _format_srt_timestamp(seconds: float) -> str
+- read_srt · function · L1435-L1512 — def read_srt(path: str) -> list[dict]
+- detect_speech_windows · function · L1527-L1598 — def detect_speech_windows(video_path: str, silence_threshold: float = SILENCE_THRESHOLD_DB, min_silence: float = MIN_SILENCE_SECONDS) -> list[tuple]
+- _trim_to_speech · function · L1601-L1617 — def _trim_to_speech(start: float, end: float, speech_windows: list[tuple]) -> list[tuple]
+- _filter_and_align_srt · function · L1620-L1648 — def _filter_and_align_srt(records: list[dict], seg_start: float, seg_end: float, offset: float, out: list[dict], speech_windows: list[tuple] | None = None, scale: float = 1.0) -> None
+- build_clip_subtitle · function · L1651-L1690 — def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str, speech_windows: list[tuple] | None = None, scale: float = 1.0) -> str
+- burn_subtitle · function · L1695-L1792 — def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str, threads: int = 1, encoder: str = "libx264", font_ratio: Optional[float] = None, spacing: Optional[int] = None, style: Optional[str] = None, font_color: Optional[str] = None, border_color: Optional[str] = None, margin_v: Optional[int] = None, bold: Optional[int] = None) -> None
+- _mask_text_clusters · function · L1836-L1845 — def _mask_text_clusters(mask)
+- _split_tall_band · function · L1848-L1943 — def _split_tall_band(y0: int, y1: int, smooth, height: int, max_band_h: int)
+- detect_subtitle_region · function · L1946-L2218 — def detect_subtitle_region(video: str, srt: str = "") -> Optional[list[tuple[int, int, int, int]]]
+- _low_percentile · function · L2241-L2254 — def _low_percentile(values: list[float], p: float) -> float
+- _bimodal_threshold · function · L2257-L2298 — def _bimodal_threshold(values: list[float]) -> float
+- detect_watermark_region · function · L2301-L2436 — def detect_watermark_region(video: str, max_frames: int = 12) -> Optional[list[tuple[int, int, int, int]]]
+- detect_subtitle_temporal_windows · function · L2439-L2565 — def detect_subtitle_temporal_windows(video: str, region: tuple[int, int, int, int], max_frames: int = 600) -> Optional[list[tuple]]
+- detect_subtitle_spatial_regions · function · L2577-L2664 — def detect_subtitle_spatial_regions(video: str, region: tuple[int, int, int, int], temporal_windows: list[tuple]) -> Optional[list[tuple]]
+- detect_subtitle_dynamic_regions · function · L2679-L2824 — def detect_subtitle_dynamic_regions(video: str, srt: str) -> Optional[list[tuple]]
+- _parse_subtitle_mask_config · function · L2827-L2837 — def _parse_subtitle_mask_config(raw: str | None) -> dict | None
+- _source_intervals_to_local_intervals · function · L2840-L2867 — def _source_intervals_to_local_intervals(src_intervals: list[tuple], seg_times: list[tuple], scale: float = 1.0) -> list[tuple]
+- _scale_region · function · L2870-L2885 — def _scale_region(region: tuple, cfg: dict, width: int, height: int) -> tuple
+- _mask_enable_expr · function · L2888-L2891 — def _mask_enable_expr(intervals: list[tuple]) -> str
+- _source_intervals_to_local_enable · function · L2894-L2925 — def _source_intervals_to_local_enable(src_intervals: list[tuple], seg_times: list[tuple], scale: float = 1.0) -> str
+- _spatial_windows_to_local · function · L2928-L2969 — def _spatial_windows_to_local(src_windows: list[tuple], seg_times: list[tuple], cfg: dict, width: int, scale: float = 1.0) -> list[tuple]
+- _dynamic_windows_to_local · function · L2972-L3019 — def _dynamic_windows_to_local(src_windows: list[tuple], seg_times: list[tuple], cfg: dict, width: int, height: int, scale: float = 1.0) -> list[tuple]
+- build_subtitle_mask_enable · function · L3022-L3041 — def build_subtitle_mask_enable(src_srt: str, seg_times: list[tuple], offset: float = 0.0, scale: float = 1.0) -> str
+- _subtitle_mask_area · function · L3044-L3091 — def _subtitle_mask_area(cfg: dict, width: int, height: int) -> tuple[int, int, int, int]
+- _f · function · L3055-L3062 — def _f(key, default)
+- subtitle_mask_bottom_margin · function · L3094-L3154 — def subtitle_mask_bottom_margin(cfg: dict, width: int, height: int) -> int
+- _merge_regions · function · L3157-L3183 — def _merge_regions(regions: list[tuple], gap: int = 30) -> list[tuple]
+- _scale_regions · function · L3186-L3203 — def _scale_regions(regions: list[tuple], cfg: dict, width: int, height: int) -> list[tuple]
+- build_subtitle_mask_filter · function · L3206-L3259 — def build_subtitle_mask_filter(cfg: dict, enable: str) -> str
+- build_subtitle_mask_filter_multi · function · L3262-L3345 — def build_subtitle_mask_filter_multi(cfg: dict, windows: list[tuple], y: int, h: int, width: int) -> str
+- _clip · function · L3281-L3284 — def _clip(x, w, width)
+- build_subtitle_mask_filter_multi_region · function · L3348-L3432 — def build_subtitle_mask_filter_multi_region(cfg: dict, regions: list[tuple], enable: str = "", width: int = 0, height: int = 0) -> str
+- _clip · function · L3368-L3375 — def _clip(x, y, w, h)
+- build_subtitle_mask_filter_multi_region_windows · function · L3435-L3521 — def build_subtitle_mask_filter_multi_region_windows(cfg: dict, region_windows: list, width: int = 0, height: int = 0) -> str
+- _enable · function · L3451-L3455 — def _enable(windows: list) -> str
+- build_subtitle_mask_filter_dynamic · function · L3524-L3603 — def build_subtitle_mask_filter_dynamic(cfg: dict, windows: list, width: int = 0, height: int = 0) -> str
+- apply_subtitle_mask · function · L3606-L3711 — def apply_subtitle_mask(video_in: str, video_out: str, cfg: dict, enable: str = "", spatial_windows: Optional[list[tuple]] = None, dynamic_windows: Optional[list[tuple]] = None, seg_times: Optional[list[tuple]] = None, threads: int = 1, encoder: str = "libx264") -> None
+- _video_has_audio · function · L3714-L3725 — def _video_has_audio(path: str) -> bool
+- apply_cover_first_frame · function · L3728-L3814 — def apply_cover_first_frame(video_path: str, cover_path: str, out_path: str, threads: int = 1, encoder: str = "libx264") -> None
+- main · function · L3817-L4381 — def main()
+- parse_vert2horiz_config · function · L4384-L4394 — def parse_vert2horiz_config(raw: str) -> dict | None
+- apply_vert2horiz · function · L4397-L4456 — def apply_vert2horiz(source: str, cfg: dict) -> str

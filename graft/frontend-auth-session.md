@@ -26,28 +26,28 @@ generator:
 covers:
   - symbol: WorkerStatusIcon
     kind: function
-    at: 'frontend/src/components/AppLayout.tsx:L138-L297'
+    at: 'frontend/src/components/AppLayout.tsx:L144-L303'
   - symbol: toggleWorker
     kind: function
-    at: 'frontend/src/components/AppLayout.tsx:L164-L180'
+    at: 'frontend/src/components/AppLayout.tsx:L170-L186'
   - symbol: onOpenChange
     kind: function
-    at: 'frontend/src/components/AppLayout.tsx:L183-L185'
+    at: 'frontend/src/components/AppLayout.tsx:L189-L191'
   - symbol: AppLayout
     kind: function
-    at: 'frontend/src/components/AppLayout.tsx:L299-L495'
+    at: 'frontend/src/components/AppLayout.tsx:L305-L501'
   - symbol: getSelectedKey
     kind: function
-    at: 'frontend/src/components/AppLayout.tsx:L327-L332'
+    at: 'frontend/src/components/AppLayout.tsx:L333-L338'
   - symbol: handleMenuClick
     kind: function
-    at: 'frontend/src/components/AppLayout.tsx:L354-L356'
+    at: 'frontend/src/components/AppLayout.tsx:L360-L362'
   - symbol: handleUserMenuClick
     kind: function
-    at: 'frontend/src/components/AppLayout.tsx:L358-L374'
+    at: 'frontend/src/components/AppLayout.tsx:L364-L380'
   - symbol: onOk
     kind: method
-    at: 'frontend/src/components/AppLayout.tsx:L368-L371'
+    at: 'frontend/src/components/AppLayout.tsx:L374-L377'
   - symbol: getMenuKeyFromPath
     kind: function
     at: 'frontend/src/components/AuthGuard.tsx:L28-L38'

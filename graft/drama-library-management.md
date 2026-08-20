@@ -12,67 +12,88 @@ generator:
 covers:
   - symbol: DraggableUpload
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L47-L76'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L49-L78'
   - symbol: handle
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L52-L64'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L54-L66'
   - symbol: DramaLibrary
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L78-L794'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L80-L1026'
   - symbol: doSearch
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L140-L140'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L162-L162'
   - symbol: openCreate
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L143-L148'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L165-L170'
   - symbol: openEdit
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L150-L164'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L172-L187'
+  - symbol: onTopicPresetChange
+    kind: function
+    at: 'frontend/src/pages/DramaLibrary.tsx:L190-L195'
   - symbol: submit
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L166-L192'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L197-L224'
   - symbol: remove
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L194-L202'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L226-L234'
   - symbol: openDetail
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L205-L219'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L237-L254'
   - symbol: loadSliceStatus
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L222-L232'
-  - symbol: saveLinkedEpisodes
+    at: 'frontend/src/pages/DramaLibrary.tsx:L257-L267'
+  - symbol: loadLanConfig
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L235-L248'
-  - symbol: setCover
+    at: 'frontend/src/pages/DramaLibrary.tsx:L270-L277'
+  - symbol: loadLanDramas
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L250-L261'
-  - symbol: addStill
+    at: 'frontend/src/pages/DramaLibrary.tsx:L280-L290'
+  - symbol: previewLanDrama
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L263-L273'
-  - symbol: removeStill
-    kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L275-L286'
-  - symbol: linkAccounts
-    kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L288-L298'
-  - symbol: resetImport
-    kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L301-L308'
-  - symbol: onImportFile
+    at: 'frontend/src/pages/DramaLibrary.tsx:L293-L307'
+  - symbol: submitLanImport
     kind: function
     at: 'frontend/src/pages/DramaLibrary.tsx:L310-L327'
+  - symbol: pollLanTask
+    kind: function
+    at: 'frontend/src/pages/DramaLibrary.tsx:L330-L354'
+  - symbol: lanToSlice
+    kind: function
+    at: 'frontend/src/pages/DramaLibrary.tsx:L357-L365'
+  - symbol: saveLinkedEpisodes
+    kind: function
+    at: 'frontend/src/pages/DramaLibrary.tsx:L368-L381'
+  - symbol: setCover
+    kind: function
+    at: 'frontend/src/pages/DramaLibrary.tsx:L383-L394'
+  - symbol: addStill
+    kind: function
+    at: 'frontend/src/pages/DramaLibrary.tsx:L396-L406'
+  - symbol: removeStill
+    kind: function
+    at: 'frontend/src/pages/DramaLibrary.tsx:L408-L419'
+  - symbol: linkAccounts
+    kind: function
+    at: 'frontend/src/pages/DramaLibrary.tsx:L421-L431'
+  - symbol: resetImport
+    kind: function
+    at: 'frontend/src/pages/DramaLibrary.tsx:L434-L441'
+  - symbol: onImportFile
+    kind: function
+    at: 'frontend/src/pages/DramaLibrary.tsx:L443-L460'
   - symbol: toggleNew
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L329-L333'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L462-L466'
   - symbol: toggleUpdate
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L334-L338'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L467-L471'
   - symbol: doImport
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L340-L382'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L473-L515'
   - symbol: accountNameById
     kind: function
-    at: 'frontend/src/pages/DramaLibrary.tsx:L436-L436'
+    at: 'frontend/src/pages/DramaLibrary.tsx:L569-L569'
 ---
 <!-- context:generated:start -->
 ## Summary

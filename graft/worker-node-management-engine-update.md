@@ -29,52 +29,58 @@ covers:
     at: 'backend/app/api/workers.py:L100-L124'
   - symbol: worker_heartbeat
     kind: function
-    at: 'backend/app/api/workers.py:L128-L177'
+    at: 'backend/app/api/workers.py:L128-L185'
   - symbol: list_workers
     kind: function
-    at: 'backend/app/api/workers.py:L181-L278'
+    at: 'backend/app/api/workers.py:L189-L286'
   - symbol: get_worker
     kind: function
-    at: 'backend/app/api/workers.py:L282-L294'
+    at: 'backend/app/api/workers.py:L290-L302'
   - symbol: enable_worker_node
     kind: function
-    at: 'backend/app/api/workers.py:L298-L314'
+    at: 'backend/app/api/workers.py:L306-L322'
   - symbol: disable_worker_node
     kind: function
-    at: 'backend/app/api/workers.py:L318-L334'
+    at: 'backend/app/api/workers.py:L326-L342'
+  - symbol: _NodeEnabledPatch
+    kind: class
+    at: 'backend/app/api/workers.py:L345-L347'
+  - symbol: set_worker_enabled
+    kind: function
+    at: 'backend/app/api/workers.py:L351-L376'
   - symbol: delete_worker
     kind: function
-    at: 'backend/app/api/workers.py:L338-L366'
+    at: 'backend/app/api/workers.py:L380-L408'
   - symbol: SetNodeCpuPercentRequest
     kind: class
-    at: 'backend/app/api/workers.py:L369-L371'
+    at: 'backend/app/api/workers.py:L411-L413'
   - symbol: set_worker_cpu_percent
     kind: function
-    at: 'backend/app/api/workers.py:L375-L404'
+    at: 'backend/app/api/workers.py:L417-L446'
   - symbol: sync_workers_from_redis
     kind: function
-    at: 'backend/app/api/workers.py:L408-L488'
+    at: 'backend/app/api/workers.py:L450-L530'
   - symbol: _resolve_engines_dir
     kind: function
-    at: 'backend/app/api/workers.py:L513-L518'
+    at: 'backend/app/api/workers.py:L555-L560'
   - symbol: _iter_engine_files
     kind: function
-    at: 'backend/app/api/workers.py:L521-L533'
+    at: 'backend/app/api/workers.py:L563-L575'
   - symbol: _compute_engine_version
     kind: function
-    at: 'backend/app/api/workers.py:L536-L551'
+    at: 'backend/app/api/workers.py:L578-L593'
   - symbol: _build_engine_archive
     kind: function
-    at: 'backend/app/api/workers.py:L554-L562'
+    at: 'backend/app/api/workers.py:L596-L604'
   - symbol: get_engines_status
     kind: function
-    at: 'backend/app/api/workers.py:L566-L583'
+    at: 'backend/app/api/workers.py:L608-L625'
   - symbol: get_engines_package
     kind: function
-    at: 'backend/app/api/workers.py:L587-L607'
+    at: 'backend/app/api/workers.py:L629-L649'
   - symbol: push_worker_update
     kind: function
-    at: 'backend/app/api/workers.py:L611-L645'
+    at: 'backend/app/api/workers.py:L653-L687'
 ---
 <!-- context:generated:start -->
 ## Summary

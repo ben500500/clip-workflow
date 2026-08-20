@@ -1,30 +1,34 @@
 # slice-worker/worker.go · [[slice-worker-node]]
 
-The worker node that consumes slice tasks from Redis streams, executes them via ffmpeg engine, uploads results, and reports status/heartbeat.
-
-- Worker · struct · L26-L49 — Core worker node struct holding config, redis client, executor, transfer, callbacks, and runtime state (running tasks, counters, engine version, capabilities).
-- RunningTask · struct · L52-L58 — Data holder describing a task currently executing on this worker, including its context cancel function for cancellation support.
-- NewWorker · function · L61-L69 — Constructor wiring up the worker's executor, file transfer, and callback service from config and redis client.
-- SetCallbacks · method · L72-L102 — Registers user callbacks and bridges transfer/executor progress events into the unified onTaskProgress callback.
-- checkEngine · method · L110-L134 — Self-checks the Python engine at startup using ast.parse (read-only, avoids py_compile cache writes on read-only mounts) to surface version incompatibility early.
-- Run · method · L136-L254 — Main worker loop: registers node, starts heartbeat/claim/update goroutines, and continuously fetches and dispatches tasks respecting concurrency limits and admin disable state.
-- cleanupOrphanDirs · method · L266-L300 — Cleans leftover temp directories from crashed workers, removing only non-UUID dirs or UUID dirs whose redis task is absent/terminal to avoid touching live tasks.
-- waitRunningTasks · method · L303-L321 — Polls running task count during graceful shutdown, returning when all finish or the timeout deadline is reached.
-- claimLoop · method · L324-L369 — Periodically claims stale PEL messages, skipping tasks with fresh leases or terminal status, and re-executes genuine orphans.
-- runTask · method · L372-L560 — Executes a full slice task pipeline: dedup/idempotency checks, download source and badges, run ffmpeg engine, upload outputs, ACK, update status, and send callback.
-- handleTaskError · method · L563-L632 — Routes task failures: cancels without retry, retries with backoff by re-queueing when under max retries, or marks failed when retries exhausted.
-- sendFailureCallback · method · L635-L647 — Sends an HTTP failure callback to the backend if a callback URL is configured.
-- watchCancellation · method · L650-L670 — Polls redis task status every 3 seconds to detect backend cancellation and trigger the task context cancel.
-- leaseRenewal · method · L678-L691 — Periodically refreshes the task lease in redis so long-running tasks aren't misjudged as orphans by claimLoop.
-- heartbeatLoop · method · L694-L716 — Periodically reports node liveness, current task counts, and engine version to redis to keep the node online.
-- engineUpdateLoop · method · L725-L741 — Periodically checks for pushed engine updates and applies them without redeployment.
-- checkEngineUpdate · method · L744-L783 — Compares remote engine version against local and downloads/applies the new engine when a newer version is available.
-- emitProgress · method · L786-L795 — Forwards progress events to the registered onTaskProgress callback if present.
-- matchTags · method · L798-L814 — Determines whether this worker's configured tags satisfy all required tags for a task.
-- log · method · L817-L824 — Routes log messages to the registered onLog callback.
-- GetRunningTasks · method · L827-L834 — Returns a snapshot of all currently running tasks from the sync.Map.
-- CancelTask · method · L837-L846 — Cancels a running task by invoking its stored context cancel function, returning whether the task was found.
-- GetCurrentTaskCount · method · L849-L851 — Returns the atomic count of currently executing tasks.
-- getHostname · function · L854-L860 — Returns the machine hostname, falling back to 'unknown' on error.
-- getFileSize · function · L863-L868 — Returns the byte size of a file, or 0 if stat fails.
-- strconvParseInt · function · L871-L883 — Parses a string to int64, returning 0 on parse failure.
+- Worker · struct · L26-L53 — Worker
+- RunningTask · struct · L56-L67 — RunningTask
+- NewWorker · function · L70-L81 — func NewWorker(config *Config, redis *RedisClient) *Worker
+- setBackendEnabled · method · L84-L86 — func (w *Worker) setBackendEnabled(enabled bool)
+- getBackendEnabled · method · L89-L91 — func (w *Worker) getBackendEnabled() bool
+- SetCallbacks · method · L94-L124 — func (w *Worker) SetCallbacks( onStart func(task *SliceTask), onProgress func(taskID string, phase string, percent float64, detail string), onComplete func(taskID string, outputs []string), onError func(taskID string, err error), onLog func(level string, msg string), )
+- checkEngine · method · L132-L156 — func (w *Worker) checkEngine()
+- Run · method · L158-L287 — func (w *Worker) Run(ctx context.Context) error
+- cleanupOrphanDirs · method · L299-L333 — func (w *Worker) cleanupOrphanDirs()
+- waitRunningTasks · method · L336-L354 — func (w *Worker) waitRunningTasks(timeout time.Duration)
+- claimLoop · method · L357-L380 — func (w *Worker) claimLoop(ctx context.Context)
+- claimOnce · method · L385-L419 — func (w *Worker) claimOnce(streams []string, minIdle time.Duration, startup bool)
+- logPendingOverview · method · L422-L435 — func (w *Worker) logPendingOverview(streams []string)
+- stuckTaskLoop · method · L444-L479 — func (w *Worker) stuckTaskLoop(ctx context.Context)
+- requeueStuckTask · method · L484-L522 — func (w *Worker) requeueStuckTask(rt *RunningTask)
+- runTask · method · L525-L722 — func (w *Worker) runTask(msg *StreamMessage)
+- handleTaskError · method · L725-L805 — func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *StreamMessage, err error)
+- sendFailureCallback · method · L808-L820 — func (w *Worker) sendFailureCallback(task *SliceTask, errMsg string)
+- watchCancellation · method · L823-L843 — func (w *Worker) watchCancellation(ctx context.Context, taskID string, cancel context.CancelFunc)
+- leaseRenewal · method · L851-L864 — func (w *Worker) leaseRenewal(ctx context.Context, taskID string)
+- heartbeatLoop · method · L867-L889 — func (w *Worker) heartbeatLoop(ctx context.Context)
+- engineUpdateLoop · method · L898-L914 — func (w *Worker) engineUpdateLoop(ctx context.Context)
+- checkEngineUpdate · method · L917-L956 — func (w *Worker) checkEngineUpdate()
+- emitProgress · method · L959-L972 — func (w *Worker) emitProgress(taskID, phase string, percent float64, detail string)
+- matchTags · method · L975-L991 — func (w *Worker) matchTags(required []string) bool
+- log · method · L994-L1001 — func (w *Worker) log(level, format string, args ...interface{})
+- GetRunningTasks · method · L1004-L1011 — func (w *Worker) GetRunningTasks() []*RunningTask
+- CancelTask · method · L1014-L1023 — func (w *Worker) CancelTask(taskID string) bool
+- GetCurrentTaskCount · method · L1026-L1028 — func (w *Worker) GetCurrentTaskCount() int
+- getHostname · function · L1031-L1037 — func getHostname() string
+- getFileSize · function · L1040-L1045 — func getFileSize(path string) int64
+- strconvParseInt · function · L1048-L1060 — func strconvParseInt(s string) (int64, error)
