@@ -56,7 +56,7 @@ async def _run_cmd(
             timeout=timeout,
         )
     except asyncio.TimeoutError:
-        _terminate_proc(proc)
+        await _terminate_proc(proc)
         raise TimeoutError(f"Engine timed out after {timeout}s: {' '.join(cmd)}")
     finally:
         if task_id:
@@ -70,10 +70,12 @@ async def _run_cmd(
 RUNNING_SLICE_PROCS: dict = {}
 
 
-def _terminate_proc(proc) -> None:
+async def _terminate_proc(proc) -> None:
     """向引擎子进程所在进程组发送 SIGTERM（SIGKILL 兜底），确保连带杀掉 ffmpeg 子进程。
 
     引擎进程用 start_new_session=True 独立成组，killpg 可整树终止（含 python 子进程 ffmpeg）。
+    使用 asyncio 原生方式等待退出：asyncio.subprocess.Process 无 poll()（那是 multiprocessing 的 API），
+    以 returncode is None 判断存活，并用 asyncio.wait_for(proc.wait(), ...) 实现超时强杀兜底。
     """
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -81,17 +83,16 @@ def _terminate_proc(proc) -> None:
         pass
     try:
         # 短暂宽限后仍未退出则强杀（避免 ffmpeg 忽略 SIGTERM 拖住）
-        proc.returncode = proc.poll()
         if proc.returncode is None:
-            import time
-            time.sleep(0.3)
-            if proc.poll() is None:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=0.3)
+            except asyncio.TimeoutError:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         pass
 
 
-def kill_slice_proc(task_id: str) -> bool:
+async def kill_slice_proc(task_id: str) -> bool:
     """终止指定切片任务在本地进程内运行的引擎子进程（含其 ffmpeg 子进程）。
 
     供「停止任务/取消」接口调用：任务在排队中（未认领）时无进程登记，返回 False 由调用方兜底。
@@ -102,7 +103,7 @@ def kill_slice_proc(task_id: str) -> bool:
     if proc is None:
         return False
     try:
-        _terminate_proc(proc)
+        await _terminate_proc(proc)
     except Exception:
         logger.exception("kill_slice_proc 失败 task=%s", task_id)
     return True
