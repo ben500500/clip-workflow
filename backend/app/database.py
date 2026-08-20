@@ -238,6 +238,8 @@ async def _apply_compat_migrations():
         ("slice_tasks", "cover_image_key", "VARCHAR(500)"),
         # 发布页位置配置（0035_publish_profile_location）
         ("publish_profiles", "location", "VARCHAR(200)"),
+        # 输出档位（0040_slice_task_output_tier）：original/auto/1080p/720p/480p
+        ("slice_tasks", "output_tier", "VARCHAR(20)"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
