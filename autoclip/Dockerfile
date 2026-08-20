@@ -16,6 +16,11 @@ ARG WORKER_CONCURRENCY=4
 # 并在部署机安装 NVIDIA 驱动 + nvidia-container-toolkit，配合 docker-compose
 # 的 WHISPER_DEVICE=cuda / WHISPER_COMPUTE_TYPE=float16 使用。
 ARG ENABLE_CUDA=false
+# 可选：是否安装本地 FunASR 重依赖（torch/torchaudio/funasr/modelscope，见
+# requirements-funasr.txt）。默认 false，避免拉取 ~190MB 的 torch CPU 轮子导致
+# 构建超时（CNB runner 超过 10min 无输出会强制关闭任务）。需要
+# AUTOCLIP_ASR_METHOD=funasr_local 时传 --build-arg ENABLE_FUNASR=true。
+ARG ENABLE_FUNASR=false
 
 # ==================== 环境变量 ====================
 ENV PYTHONUNBUFFERED=1 \
@@ -60,12 +65,16 @@ RUN set -eux; \
 # ==================== 安装 Python 依赖 ====================
 WORKDIR ${APP_HOME}
 
-COPY requirements.txt .
+COPY requirements.txt requirements-funasr.txt ./
 RUN set -eux; \
     pip install --no-cache-dir -r requirements.txt; \
     # 可选 CUDA 后端：faster-whisper 的 GPU 推理依赖 ctranslate2 的 CUDA 版（nvidia-ctranslate2）
     if [ "$ENABLE_CUDA" = "true" ]; then \
         pip install --no-cache-dir "nvidia-ctranslate2>=4.0"; \
+    fi; \
+    # 可选本地 FunASR 重依赖（torch/funasr/modelscope 等，默认不装避免构建超时）
+    if [ "$ENABLE_FUNASR" = "true" ]; then \
+        pip install --no-cache-dir -r requirements-funasr.txt; \
     fi; \
     # 验证关键包安装成功
     python -c "import fastapi; import uvicorn; import celery; import redis; import httpx; import sqlalchemy; print('All dependencies verified')"
