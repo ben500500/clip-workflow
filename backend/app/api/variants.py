@@ -472,17 +472,21 @@ async def download_variant(
     variant_id: str,
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
-    """C 下载变体视频：返回 MinIO presigned URL（强制下载，数据隔离校验）。"""
+    """C 下载变体视频：返回 MinIO presigned URL（强制下载，数据隔离校验）。
+    下载文件名用资源原名（v.file_name），而非 MinIO 对象名 variant_N.mp4。
+    """
     async with async_session_factory() as session:
         v = await _load_variant_or_404(session, variant_id)
         await _guard_variant_access(session, v, current_user)
         file_key = v.file_key
+        file_name = v.file_name or "variant.mp4"
     if not file_key:
         raise HTTPException(status_code=404, detail="variant has no file")
     url = await get_presigned_url(
-        settings.MINIO_BUCKET_SLICED, file_key, expires_seconds=3600, as_attachment=True
+        settings.MINIO_BUCKET_SLICED, file_key, expires_seconds=3600,
+        as_attachment=True, filename=file_name,
     )
-    return {"download_url": url, "file_name": v.file_name or "variant.mp4"}
+    return {"download_url": url, "file_name": file_name}
 
 
 @router.get("/dedupe/slice-outputs")
