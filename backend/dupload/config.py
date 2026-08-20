@@ -12,7 +12,10 @@ system_config key = `dupload_config`（JSON）：
       "action": "only_download", # 动作：only_download(仅下载)/upload_miniapp(上传小程序)
       "share_url_field": "material_link",      # 剧目模型里素材链接(shareUrl)的字段名
       "request_timeout": 30,     # 单次请求超时（秒）
-      "auth_headers": {},        # 附加鉴权请求头（JSON，可放 Authorization/Cookie 等）
+      "work_host": "",           # dupload 批量导入必填：workHost（下载平台侧工作组/域名标识）
+      "app_secret": "",          # dupload 批量导入必填：appSecret（下载平台侧凭据，按 workHost 匹配）
+      "cp_id": "",               # dupload 批量导入必填：cpID（下载平台侧合作方 ID）
+      "auth_headers": {},        # 附加鉴权请求头（保留字段；实测 /api/dupload/tasks 公开，不强制）
     }
 
 调用方（client / api）统一从 settings 或注入的 DuploadConfig 读取。
@@ -29,6 +32,9 @@ DEFAULT_DUPLOAD_CONFIG: dict = {
     "action": "only_download",
     "share_url_field": "material_link",
     "request_timeout": 30,
+    "work_host": "",
+    "app_secret": "",
+    "cp_id": "",
     "auth_headers": {},
 }
 
@@ -43,6 +49,9 @@ class DuploadConfig:
     action: str = "only_download"
     share_url_field: str = "material_link"
     request_timeout: int = 30
+    work_host: str = ""
+    app_secret: str = ""
+    cp_id: str = ""
     auth_headers: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -59,6 +68,10 @@ class DuploadConfig:
             "action": self.action,
             "share_url_field": self.share_url_field,
             "request_timeout": self.request_timeout,
+            "work_host": self.work_host,
+            # 不暴露 appSecret 明文，只暴露是否已配置
+            "has_app_secret": bool(self.app_secret),
+            "cp_id": self.cp_id,
             # 只暴露是否已配置鉴权头，不暴露其明文
             "has_auth_headers": bool(self.auth_headers),
         }
@@ -120,6 +133,9 @@ def load_dupload_config(
     env_action = _env_get("DUPLOAD_ACTION")
     env_share_url_field = _env_get("DUPLOAD_SHARE_URL_FIELD")
     env_request_timeout = _env_get("DUPLOAD_REQUEST_TIMEOUT")
+    env_work_host = _env_get("DUPLOAD_WORK_HOST")
+    env_app_secret = _env_get("DUPLOAD_APP_SECRET")
+    env_cp_id = _env_get("DUPLOAD_CP_ID")
 
     cfg = DuploadConfig(
         enabled=_as_bool(env_enabled) if env_enabled is not None else DEFAULT_DUPLOAD_CONFIG["enabled"],
@@ -128,6 +144,9 @@ def load_dupload_config(
         action=(env_action or DEFAULT_DUPLOAD_CONFIG["action"]),
         share_url_field=(env_share_url_field or DEFAULT_DUPLOAD_CONFIG["share_url_field"]),
         request_timeout=_as_int(env_request_timeout, DEFAULT_DUPLOAD_CONFIG["request_timeout"]),
+        work_host=(env_work_host or DEFAULT_DUPLOAD_CONFIG["work_host"]),
+        app_secret=(env_app_secret or DEFAULT_DUPLOAD_CONFIG["app_secret"]),
+        cp_id=(env_cp_id or DEFAULT_DUPLOAD_CONFIG["cp_id"]),
     )
 
     # system_config 显式覆盖（仅覆盖已显式给出的字段）
@@ -144,6 +163,12 @@ def load_dupload_config(
         cfg.share_url_field = str(db.get("share_url_field"))
     if "request_timeout" in db:
         cfg.request_timeout = _as_int(db.get("request_timeout"), cfg.request_timeout)
+    if db.get("work_host") is not None:
+        cfg.work_host = str(db.get("work_host"))
+    if db.get("app_secret") is not None:
+        cfg.app_secret = str(db.get("app_secret"))
+    if db.get("cp_id") is not None:
+        cfg.cp_id = str(db.get("cp_id"))
     if db.get("auth_headers") is not None:
         hdrs = db.get("auth_headers")
         cfg.auth_headers = hdrs if isinstance(hdrs, dict) else {}

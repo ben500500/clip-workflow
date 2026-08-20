@@ -1,19 +1,23 @@
 """dupload 客户端（对接 192.168.1.21:8800 dramaupload / dupload 独立服务）。
 
 调用 `POST {base_url}{import_path}`（默认 `POST /api/dupload/tasks`），
-body 单条任务：
+body 单条任务（与 21:8800 前端批量导入单条一致）：
     {
+      "workHost": <workHost 配置项>,
+      "appID": "",                     # only_download 时用字符串 ""（不关联小程序）
+      "appSecret": <appSecret 配置项>,
+      "cpID": <cpID 配置项>,
       "dramaName": <剧名>,
       "shareUrl": <网盘地址>,
       "action": "only_download",      # 仅下载
-      "appID": [""],                   # only_download 时不关联小程序
       "extKeyWords": [],
       "extIgnoreDirNames": [],
       "extCoverKeyWords": []
     }
 
 「仅下载」动作：dupload 服务自行去百度网盘下载该剧入库，clip-workflow 只转交
-shareUrl，不做网盘解析/登录。鉴权头由 dupload_config.auth_headers 注入（可配置）。
+shareUrl，不做网盘解析/登录。实测 POST /api/dupload/tasks 为公开接口（无鉴权），
+故不再依赖 auth_headers；workHost/appSecret/cpID 从 dupload_config 读取。
 """
 
 import logging
@@ -39,15 +43,10 @@ class DuploadClient:
         self.path = cfg.import_path
         self.action = cfg.action
         self.timeout = cfg.request_timeout
-        self.auth_headers = cfg.auth_headers or {}
+        self.work_host = cfg.work_host or ""
+        self.app_secret = cfg.app_secret or ""
+        self.cp_id = cfg.cp_id or ""
         self.config = cfg
-
-    def _build_headers(self) -> dict:
-        headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
-        for k, v in (self.auth_headers or {}).items():
-            if v is not None:
-                headers[str(k)] = str(v)
-        return headers
 
     async def push_task(self, drama_name: str, share_url: str) -> dict:
         """推送单条任务到 dupload 批量导入接口（action=only_download）。
@@ -64,11 +63,16 @@ class DuploadClient:
         if not (share_url or "").strip():
             raise DuploadError("素材链接(shareUrl)不能为空")
 
+        # workHost/appSecret/cpID 为接口必填；缺任一 dupload 返回 422。
+        # 这些配置在系统设置（dupload_config）中录入，这里读 self.* 取值。
         body = {
+            "workHost": self.work_host,
+            "appID": "",  # action=only_download 时 appID 用字符串 ""（非数组）
+            "appSecret": self.app_secret,
+            "cpID": self.cp_id,
             "dramaName": drama_name,
             "shareUrl": share_url,
             "action": self.action or "only_download",
-            "appID": [""],  # only_download 时不关联小程序（与 21:8800 前端实际调用一致）
             "extKeyWords": [],
             "extIgnoreDirNames": [],
             "extCoverKeyWords": [],
@@ -78,7 +82,7 @@ class DuploadClient:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout),
                 follow_redirects=True,
-                headers=self._build_headers(),
+                headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
             ) as client:
                 resp = await client.post(url, json=body)
         except DuploadError:
