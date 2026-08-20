@@ -168,6 +168,12 @@ python slice.py <source> <cutlist> <output_dir> --mode fast|dedupe|scrub [--inte
 | `--intervals` | string | 挖洞模式使用的区间文件（每行 `start end`） | - |
 | `--cpu-percent` | int | CPU 资源分配比例（1~100），限制 ffmpeg 线程数 | 50 |
 | `--watermark` | string | 动态文字水印配置 JSON | - |
+| `--encoder` | string | 视频编码器（h264_nvenc/hevc_nvenc/h264_videotoolbox/hevc_videotoolbox/libx264），不填自动探测 | 自动探测 |
+
+**编码器自动探测（三重保障）**：
+1. 环境变量 `SLICE_ENCODER` 可**强制**指定编码器（如 `SLICE_ENCODER=libx264`），优先级最高，无 GPU 机器推荐设置；
+2. 硬件编码器（nvenc/videotoolbox）探测后会**实际编码 1 帧做运行时验证**，无 GPU/驱动时（如 163 服务器）nvenc 虽在 `ffmpeg -encoders` 列表里但运行时必失败，会被自动跳过；
+3. 最终兜底软件 `libx264`。硬件编码运行时失败会自动回退完整 `libx264` 参数（`-preset veryfast -crf 23`）重试一次。
 
 **水印 JSON 结构**:
 

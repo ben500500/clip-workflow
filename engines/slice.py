@@ -637,7 +637,14 @@ def ffprobe_size(path: str) -> tuple[int, int]:
 
 
 def _fallback_libx264_args(args, threads):
-    """把命令中的硬件编码器（videotoolbox/nvenc）替换为软件 libx264，保留其余参数。
+    """把命令中的硬件编码器（videotoolbox/nvenc）替换为完整的软件 libx264 编码参数。
+
+    不采用"只替换编码器名 + 跳过硬件专属质量参数"的做法——因为：
+    - 跳过的 opt+value 里可能残留硬件专属参数（-preset p5 / -cq 23），libx264 不识别会报
+      -22 Invalid argument（163 无 GPU 回退后仍失败即源于此）；
+    - 只留 `-c:v libx264` 会让 libx264 缺 -preset，参数不完整。
+
+    因此这里重建一组完整的 libx264 参数（-preset veryfast -crf 23），保证回退稳定。
 
     返回替换后的命令列表；若命令中没有可识别的硬件编码器则返回 None。
     """
@@ -649,8 +656,8 @@ def _fallback_libx264_args(args, threads):
     hw = ("h264_videotoolbox", "hevc_videotoolbox", "h264_nvenc", "hevc_nvenc")
     if enc not in hw:
         return None
-    # 删除 -c:v <enc> 之后的硬件专属质量参数（opt+value 对），直到遇到音频/输出段
-    # 或命令结尾。硬件质量选项均带一个值，逐对跳过即可。
+    # 跳过 -c:v <enc> 之后的硬件专属质量参数（opt+value 对），直到遇到下一个独立选项
+    #（如 -c:a / -vf / -af）或输出文件。硬件质量选项均带一个值，逐对跳过即可。
     VALUE_OPTS = {"-q:v", "-preset", "-cq", "-crf", "-b:v", "-maxrate", "-bufsize"}
     j = i + 2
     while j < len(args):
@@ -661,10 +668,10 @@ def _fallback_libx264_args(args, threads):
                 continue
             break  # 遇到非质量选项（如 -c:a），停止
         j += 1
-    new_args = list(args)
-    new_args[i + 1] = "libx264"
-    new_args = new_args[:i + 2] + args[j:]
-    return new_args
+    # 重建完整的软件 libx264 编码参数（含 -preset），替换整段硬件编码块 [-c:v enc <opts>]，
+    # 避免硬件专属参数（-preset p5 / -cq 23）残留或缺 -preset 导致 libx264 报 -22。
+    libx264_block = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
+    return list(args)[:i] + libx264_block + list(args)[j:]
 
 
 def run_ffmpeg(args, timeout=3600, threads=1):
@@ -689,39 +696,80 @@ def run_ffmpeg(args, timeout=3600, threads=1):
             proc2 = subprocess.run(sw_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
             if proc2.returncode == 0:
                 return proc2
-            stderr_txt = proc2.stderr.decode(errors="replace")
+            # 回退也失败：合并硬件原命令与回退命令两侧的 stderr，报错信息更清晰
+            sw_stderr = proc2.stderr.decode(errors="replace")
+            raise RuntimeError(
+                "ffmpeg failed (硬件编码器与 libx264 回退均失败)\n"
+                f"原命令 stderr: {stderr_txt[-1200:]}\n"
+                f"回退命令 stderr: {sw_stderr[-1200:]}"
+            )
         raise RuntimeError("ffmpeg failed: " + stderr_txt[-2000:])
     return proc
+
+
+def _encoder_runtime_ok(enc: str) -> bool:
+    """运行时验证编码器是否真的可用：实际编码 1 帧测试帧。
+
+    仅查 `ffmpeg -encoders` 静态列表不可靠：无 NVIDIA GPU/驱动时 nvenc 仍会被列出，
+    但运行时必然失败（-22 Invalid argument）。软件 libx264 无驱动依赖，直接放行。
+    """
+    if not enc or enc == "libx264":
+        return True
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1:r=1",
+        "-frames:v", "1", "-c:v", enc,
+        "-f", "null", "-",
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return r.returncode == 0
+    except Exception:
+        return False
 
 
 def detect_best_encoder(preferred: str | None = None) -> str:
     """探测可用的最佳编码器。
 
-    三期 GPU 加速编码：优先使用硬件编码器（nvenc/hevc_videotoolbox），
-    不可用则回退到软件 libx264。
+    三期 GPU 加速编码：优先使用硬件编码器（nvenc/hevc_videotoolbox），不可用则回退
+    到软件 libx264。
+
+    三重保障，避免无 GPU 机器（163）上 nvenc 探测通过但运行时必失败：
+    1. SLICE_ENCODER 环境变量可**强制**指定编码器（如 libx264），部署在无 GPU 机器时直接覆盖探测；
+    2. 硬件编码器探测后额外做**运行时编码测试**（实际编码 1 帧），失败即跳过该编码器；
+    3. 最终兜底软件 libx264。
     """
-    if preferred:
-        try:
-            probe = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-encoders"],
-                capture_output=True, text=True, timeout=15,
-            )
-            encoders = probe.stdout or ""
-            if preferred in encoders:
-                return preferred
-        except Exception:
-            pass
+    # 1) 配置强制覆盖：SLICE_ENCODER 显式指定时优先采用（需静态存在）
     try:
         probe = subprocess.run(
             ["ffmpeg", "-hide_banner", "-encoders"],
             capture_output=True, text=True, timeout=15,
         )
         encoders = probe.stdout or ""
-        for enc in ("hevc_videotoolbox", "h264_videotoolbox", "h264_nvenc", "hevc_nvenc", "libx264"):
-            if enc in encoders:
-                return enc
     except Exception:
-        pass
+        encoders = ""
+    force = os.environ.get("SLICE_ENCODER", "").strip()
+    if force:
+        if force in encoders and _encoder_runtime_ok(force):
+            return force
+        print(f"[slice.py] SLICE_ENCODER={force} 不可用（未安装或无 GPU/驱动），忽略，继续自动探测", file=sys.stderr)
+
+    # 2) 运行时验证 + 自动探测
+    candidates = []
+    if preferred:
+        candidates.append(preferred)
+    candidates += ["hevc_videotoolbox", "h264_videotoolbox", "h264_nvenc", "hevc_nvenc", "libx264"]
+    seen = set()
+    for enc in candidates:
+        if enc in seen:
+            continue
+        seen.add(enc)
+        if enc not in encoders:
+            continue
+        # 软件编码直接采用；硬件编码需通过运行时编码测试（无 GPU 时跳过，避免运行时必失败）
+        if enc == "libx264" or _encoder_runtime_ok(enc):
+            return enc
+        print(f"[slice.py] 编码器 {enc} 运行时不可用（无 GPU/驱动），跳过", file=sys.stderr)
     return "libx264"
 
 
@@ -3835,7 +3883,8 @@ def main():
     parser.add_argument(
         "--encoder",
         default=None,
-        help="视频编码器（h264_nvenc/hevc_nvenc/h264_videotoolbox/hevc_videotoolbox/libx264），不填自动探测",
+        help="视频编码器（h264_nvenc/hevc_nvenc/h264_videotoolbox/hevc_videotoolbox/libx264），不填自动探测；"
+             "可用 SLICE_ENCODER 环境变量强制指定（如 libx264，无 GPU 机器推荐），优先于本参数",
     )
     parser.add_argument(
         "--vert2horiz",
