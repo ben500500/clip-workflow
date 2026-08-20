@@ -48,3 +48,16 @@
 - 契约换算与 clips 过滤：`autoclip/app/main.py`（L141 `*100` / L155 写 score / L604 过滤）
 - 后端客户端：`backend/app/services/autoclip_service.py`
 - 评测集说明：`eval/README.md`
+
+## 数据库 schema 变更（必读 — 2026-08-20 两次翻车后立规）
+
+部署链路**不跑 `alembic upgrade head`**（`alembic-migrate` 容器只 stamp head，见 docker-compose.yml 注释）。存量库加列唯一生效路径是 `backend/app/database.py` 的 `_apply_compat_migrations` 幂等补列清单（`init_db()` 启动时执行 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`）。
+
+**规矩：任何给已有表加列的改动，必须三处同步，缺一必炸 500（UndefinedColumnError）：**
+1. ORM 模型（`backend/app/models/*.py`）加 `Column`
+2. 新建 alembic 迁移（`alembic/versions/00XX_*.py`，供 fresh DB 参考）
+3. **`backend/app/database.py` 的 `migrations = [...]` 清单登记同名列** ← 两次都是漏了这步
+
+翻车案例：`slice_tasks.cover_image_key`（0035）、`slice_tasks.output_tier`（0040）——只写了迁移和模型，没登记 compat 清单，老库查询直接 500。
+
+存量库紧急止血（不重启）：`docker exec clip-postgres psql -U clipworkflow -d clipworkflow -c 'ALTER TABLE <表> ADD COLUMN IF NOT EXISTS <列> <类型>'`。新表（`create_table`）不受此规影响，`create_all` 会建。
