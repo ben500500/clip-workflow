@@ -63,6 +63,9 @@ echo "[start_chromium] 使用浏览器: $CHROME_BIN" >&2
 
 # 确保用户数据根目录存在
 mkdir -p /data/chrome-profiles
+# 清理上次异常退出残留的 profile 锁（容器重建/被 kill 后 Singleton* 残留会导致 Chromium 拒绝启动）
+rm -f /data/chrome-profiles/Singleton* 2>/dev/null
+find /data/chrome-profiles -maxdepth 2 -name Singleton* -delete 2>/dev/null
 
 # ---- 通用 chromium 启动参数 ----
 BASE_ARGS=(

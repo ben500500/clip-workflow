@@ -6,6 +6,7 @@
 
 本模块不定义任何路由，仅提供纯函数与数据模型。
 """
+import asyncio
 import json
 import logging
 import os
@@ -1177,14 +1178,44 @@ async def _dispatch_local(
     from app.services.slice_service import run_slice_scrub, run_slice_fast
     from app.services.minio_service import upload_file_from_path, download_to_file, ensure_bucket
     from app.utils.helpers import write_temp_file, ensure_dir
+    from app.database import async_session_factory
 
     mode = slice_task.mode or "fast"
     task_id = str(slice_task.id)
+
+    # 创建即置 running：local 同步执行期间，任务对外显示 running 而非 pending。
+    # 用独立会话回写并 commit，确保 _save_slice_outputs / _fail_slice_task 等独立会话可见。
+    from sqlalchemy import select as _select
+    async with async_session_factory() as _sess:
+        _row = (await _sess.execute(
+            _select(SliceTask).where(SliceTask.id == slice_task.id)
+        )).scalar_one_or_none()
+        if _row:
+            _row.status = "running"
+            _row.started_at = datetime.utcnow()
+            await _sess.commit()
 
     downloaded_source_path = None
     output_dir = None
     cutlist_path = None
     intervals_path = None
+    finished = False          # 是否已出片（收到取消时决定走收尾还是标记失败）
+    output_files = []         # 收尾闭包读取的已上传成果清单
+
+    def _finalize():
+        """复用现有收尾：落库 SliceOutput + 推进任务/剧集状态为 completed。
+
+        作为闭包供正常完成路径直接调用；当任务在已出片后收到取消时，
+        通过 asyncio.shield(_finalize()) 完成收尾，避免成果丢失。
+        """
+        async def _do() -> None:
+            await _save_slice_outputs(task_id, str(slice_task.episode_id), output_files, mode)
+            logger.info(
+                "Local slice completed: task=%s episode=%s files=%s",
+                task_id, slice_task.episode_id, len(output_files),
+            )
+        return _do()
+
     try:
         # 源视频本地化：优先用给定 video_path，否则从 MinIO 下载
         source_path = await _ensure_source_video(
@@ -1327,7 +1358,6 @@ async def _dispatch_local(
 
         await ensure_bucket(settings.MINIO_BUCKET_SLICED)
         manifest = _parse_engine_manifest(stdout, output_dir)
-        output_files = []
         for entry in manifest:
             file_path = entry["path"]
             if not os.path.isfile(file_path):
@@ -1343,12 +1373,27 @@ async def _dispatch_local(
                 "duration": entry.get("duration"),
             })
 
+        finished = True
+
         # 复用现有收尾：落库 SliceOutput + 推进任务/剧集状态为 completed
-        await _save_slice_outputs(task_id, str(slice_task.episode_id), output_files, mode)
-        logger.info(
-            "Local slice completed: task=%s episode=%s files=%s",
-            task_id, slice_task.episode_id, len(output_files),
-        )
+        await _finalize()
+
+    except asyncio.CancelledError:
+        # 请求中断兜底：绝不遗留 pending。
+        logger.warning("Local slice task cancelled task=%s", task_id)
+        if not finished:
+            # 未出片：直接标记失败
+            try:
+                await _fail_slice_task(task_id, "请求中断")
+            except Exception:
+                logger.exception("取消时 failed 状态回写失败 task=%s", task_id)
+        else:
+            # 已出片：shield 完成收尾（上传 MinIO + 落库 completed），不因取消而丢失成果
+            try:
+                await asyncio.shield(_finalize())
+            except Exception:
+                logger.exception("取消后 shield 收尾失败 task=%s", task_id)
+        raise
 
     except Exception as e:
         logger.error("Local slice task failed task=%s: %s", task_id, e)
