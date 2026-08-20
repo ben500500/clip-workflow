@@ -6,7 +6,7 @@
 
 system_config key = `dupload_config`（JSON）：
     {
-      "enabled": false,          # 总开关（默认关闭）
+      "enabled": true,           # 总开关（默认开启）
       "base_url": "http://192.168.1.21:8800",  # dupload 服务基础地址
       "import_path": "/api/dupload/tasks",     # 批量导入接口路径
       "action": "only_download", # 动作：only_download(仅下载)/upload_miniapp(上传小程序)
@@ -26,7 +26,7 @@ from typing import Optional
 
 # 与 backend/app/api/config.py DEFAULT_CONFIGS 中 dupload_config 保持一致
 DEFAULT_DUPLOAD_CONFIG: dict = {
-    "enabled": False,
+    "enabled": True,
     "base_url": "http://192.168.1.21:8800",
     "import_path": "/api/dupload/tasks",
     "action": "only_download",
@@ -43,7 +43,7 @@ DEFAULT_DUPLOAD_CONFIG: dict = {
 class DuploadConfig:
     """dupload 合并后的配置（对外只读，不含 auth_headers 明文）。"""
 
-    enabled: bool = False
+    enabled: bool = True
     base_url: str = "http://192.168.1.21:8800"
     import_path: str = "/api/dupload/tasks"
     action: str = "only_download"

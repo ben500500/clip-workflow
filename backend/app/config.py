@@ -197,9 +197,9 @@ class Settings(BaseSettings):
     LAN_SOURCE_CONCURRENCY: int = 2
 
     # ── 推送到下载平台（dupload，对接 21:8800 dramaupload / dupload 独立服务）──
-    # 总开关（默认关闭）。开启后剧目详情页出现「推送到下载平台」区块，
+    # 总开关（默认开启）。开启后剧目详情页出现「推送到下载平台」区块，
     # 一键调用 POST /api/dupload/tasks（action=only_download）把剧目素材链接推给下载平台。
-    DUPLOAD_ENABLED: bool = False
+    DUPLOAD_ENABLED: bool = True
     # dupload 服务基础地址（默认局域网 21:8800）
     DUPLOAD_BASE_URL: str = "http://192.168.1.21:8800"
     # 批量导入接口路径

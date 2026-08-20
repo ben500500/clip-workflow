@@ -210,7 +210,7 @@ DEFAULT_CONFIGS: List[dict] = [
     {
         "key": "dupload_config",
         "value": {
-            "enabled": False,
+            "enabled": True,
             "base_url": "http://192.168.1.21:8800",
             "import_path": "/api/dupload/tasks",
             "action": "only_download",
