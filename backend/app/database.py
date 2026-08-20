@@ -226,10 +226,18 @@ async def _apply_compat_migrations():
         ("publish_materials", "prompt_record_id", "UUID"),
         # 视频号素材导入（wechat_download）：episodes 最小粘合字段 source_url
         ("episodes", "source_url", "VARCHAR(2000)"),
+        # 剧目管理 P2（0037_episode_drama）：剧集归属剧目；老库由 compat 补列
+        ("episodes", "drama_id", "UUID"),
+        # 剧目话题标签（0039_drama_topics）
+        ("dramas", "topics", "JSON"),
         # 多视频号素材去重（圆桌定稿）：SliceOutput 变体组 + Publication 变体回写
         ("slice_outputs", "variant_group_id", "UUID"),
         ("publications", "variant_id", "UUID"),
         ("slice_tasks", "variant_count", "INTEGER"),
+        # 视频封面（0035_slice_task_cover_image）：成品首帧封面图 MinIO key
+        ("slice_tasks", "cover_image_key", "VARCHAR(500)"),
+        # 发布页位置配置（0035_publish_profile_location）
+        ("publish_profiles", "location", "VARCHAR(200)"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
