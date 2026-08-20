@@ -632,6 +632,8 @@ async def _create_slice_task_record(
     slice_task.watermark_mask_config = watermark_mask_config
     # 视频封面：选择图片作为视频首帧（重试时保留）
     slice_task.cover_image_key = data.cover_image_key or None
+    # 输出档位：高分辨率/高 fps 素材降档提速（重试时保留）
+    slice_task.output_tier = data.output_tier or "original"
 
     configs = {
         "watermark": watermark_config,
@@ -693,6 +695,7 @@ async def _dispatch_slice_task(
             watermark_mask_config,
             data.subtitle_align_mask,
             data.cover_image_key,
+            data.output_tier,
         )
 
         if not published:
@@ -731,6 +734,7 @@ async def _dispatch_slice_task(
                 watermark_mask_config,
                 data.subtitle_align_mask,
                 data.cover_image_key,
+                data.output_tier,
             )
         except HTTPException:
             raise
@@ -759,6 +763,7 @@ async def _dispatch_slice_task(
                 watermark_mask_config,
                 data.subtitle_align_mask,
                 data.cover_image_key,
+                data.output_tier,
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
@@ -1303,6 +1308,7 @@ async def retry_slice_task(
         text_overlays_config=task.text_overlays_config,
         watermark_mask_config=task.watermark_mask_config,
         cover_image_key=task.cover_image_key,
+        output_tier=getattr(task, "output_tier", None) or "original",
         status="pending",
         progress=0.0,
     )
@@ -1335,6 +1341,7 @@ async def retry_slice_task(
             task.watermark_mask_config,
             getattr(task, "subtitle_align_mask", True),
             task.cover_image_key,
+            getattr(task, "output_tier", None) or "original",
         )
 
         if not published:
@@ -1370,6 +1377,7 @@ async def retry_slice_task(
                 task.watermark_mask_config,
                 getattr(task, "subtitle_align_mask", True),
                 task.cover_image_key,
+                getattr(task, "output_tier", None) or "original",
             )
         except HTTPException:
             raise
@@ -1400,6 +1408,7 @@ async def retry_slice_task(
                 task.watermark_mask_config,
                 getattr(task, "subtitle_align_mask", True),
                 task.cover_image_key,
+                getattr(task, "output_tier", None) or "original",
             )
         except Exception as e:
             new_task.status = "failed"
@@ -1468,6 +1477,14 @@ async def cancel_slice_task(
     # 写入 Redis，通知 Worker 端强杀任务
     await mark_task_cancelled(task_id)
 
+    # 本地引擎（SLICE_ENGINE=local）同步路径：引擎子进程由后端进程内运行，
+    # 这里直接查杀（连带 ffmpeg 子进程），避免「前端停任务后 ffmpeg 白跑」。
+    # Worker/Celery 路径无本地进程登记，kill 返回 False 由 Worker 端 Redis 轮询处理。
+    from app.services.slice_service import kill_slice_proc
+    killed = kill_slice_proc(task_id)
+    if killed:
+        logger.info("Local slice 引擎子进程已终止 task=%s", task_id)
+
     return {"message": "任务已取消（Worker 端将收到取消信号并终止 ffmpeg）", "task_id": task_id}
 
 
@@ -1504,6 +1521,10 @@ async def delete_slice_task(
     if task.status in ("pending", "running"):
         task.status = "cancelled"
         await mark_task_cancelled(task_id)
+        # 本地引擎同步路径：直接查杀引擎子进程（连带 ffmpeg），避免删任务后白跑
+        from app.services.slice_service import kill_slice_proc
+        if kill_slice_proc(task_id):
+            logger.info("Local slice 引擎子进程已终止（删除任务） task=%s", task_id)
         await db.flush()
 
     # 清理该任务在 Redis Stream（含消费者组 PEL）中的残留消息，

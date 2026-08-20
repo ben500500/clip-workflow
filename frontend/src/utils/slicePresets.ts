@@ -66,6 +66,8 @@ export interface SlicePreset {
   // 去重模式（一键切片启用后按档位做画面去重）
   dedupe_enabled: boolean;
   dedupe_preset: string;
+  // 输出档位（高分辨率/高 fps 素材降档提速）：original=不处理 / auto=自动降档 / 1080p / 720p / 480p
+  output_tier: string;
 }
 
 // ─── 默认配置（在默认项基础上：竖屏转横屏开 / ASR字幕开 / 固定文字开） ───
@@ -117,6 +119,7 @@ export const DEFAULT_SLICE_PRESET: SlicePreset = {
   badge_default_width: 0,
   dedupe_enabled: false,
   dedupe_preset: 'std_crop_desat',
+  output_tier: 'original',
 };
 
 /**

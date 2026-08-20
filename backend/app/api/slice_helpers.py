@@ -148,6 +148,10 @@ class SliceRunRequest(BaseModel):
     # 视频编码器：h264_nvenc / hevc_nvenc / h264_videotoolbox / hevc_videotoolbox / libx264
     # 不传时引擎自动探测（有 GPU 硬件编码器则优先使用，否则回退 libx264）
     encoder: Optional[str] = None
+    # ── 输出档位（高分辨率/高 fps 素材降档提速）──
+    # 取值 original（默认，不处理）/ auto（源宽>720 或 fps>30 时自动降 720P@30）/ 1080p / 720p / 480p。
+    # 引擎在滤镜链末尾追加 scale+fps，cover concat 同步同档位。
+    output_tier: Optional[str] = None
     # ── 成品重新剪辑 ──
     # 指定某个切片输出（成品视频）作为源，重新裁剪出一个新片段。
     # 提供 output_id 时，源视频为该成品的 file_key（sliced 桶），而非剧集原始素材。
@@ -291,6 +295,7 @@ class SliceTaskResponse(BaseModel):
     subtitle_mask_config: Optional[dict] = None
     watermark_mask_config: Optional[dict] = None
     text_overlays_config: Optional[list] = None
+    output_tier: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -356,6 +361,7 @@ def _serialize_task(task: SliceTask) -> dict:
         "subtitle_mask_config": task.subtitle_mask_config,
         "watermark_mask_config": task.watermark_mask_config,
         "text_overlays_config": task.text_overlays_config,
+        "output_tier": task.output_tier,
     }
 
 
@@ -959,6 +965,7 @@ async def _publish_to_worker(
     watermark_mask_config: Optional[dict] = None,
     subtitle_align_mask: bool = True,
     cover_image_key: Optional[str] = None,
+    output_tier: Optional[str] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -1056,6 +1063,8 @@ async def _publish_to_worker(
         "subtitle_align_mask": subtitle_align_mask,
         # 恒定水印/角标打码（可选，Go Worker 透传给引擎 --watermark-mask）
         "watermark_mask": watermark_mask_config,
+        # 输出档位（可选，Go Worker 透传给引擎 --output-tier）
+        "output_tier": output_tier or "original",
         "output": {
             "upload_url": f"{callback_base}/api/slice-tasks/{slice_task.id}/upload-url",
             "callback_url": callback_url,
@@ -1103,6 +1112,7 @@ async def _dispatch_celery(
     watermark_mask_config: Optional[dict] = None,
     subtitle_align_mask: bool = True,
     cover_image_key: Optional[str] = None,
+    output_tier: Optional[str] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -1136,6 +1146,7 @@ async def _dispatch_celery(
         watermark_mask_config=watermark_mask_config,
         subtitle_align_mask=subtitle_align_mask,
         cover_image_key=cover_image_key,
+        output_tier=output_tier or "original",
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -1162,6 +1173,7 @@ async def _dispatch_local(
     watermark_mask_config: Optional[dict] = None,
     subtitle_align_mask: bool = True,
     cover_image_key: Optional[str] = None,
+    output_tier: Optional[str] = None,
 ) -> None:
     """单机同步执行切片引擎（SLICE_ENGINE=local）。
 
@@ -1326,6 +1338,8 @@ async def _dispatch_local(
                 watermark_mask_config=watermark_mask_config,
                 subtitle_align_mask=subtitle_align_mask,
                 cover_path=cover_path,
+                output_tier=output_tier,
+                task_id=task_id,
             )
         else:
             returncode, stdout, stderr = await run_slice_fast(
@@ -1351,6 +1365,8 @@ async def _dispatch_local(
                 watermark_mask_config=watermark_mask_config,
                 subtitle_align_mask=subtitle_align_mask,
                 cover_path=cover_path,
+                output_tier=output_tier,
+                task_id=task_id,
             )
 
         if returncode != 0:

@@ -3865,6 +3865,67 @@ def apply_cover_first_frame(video_path: str, cover_path: str, out_path: str,
             pass
 
 
+OUTPUT_TIER_ORIGINAL = "original"
+OUTPUT_TIER_AUTO = "auto"
+OUTPUT_TIER_1080P = "1080p"
+OUTPUT_TIER_720P = "720p"
+OUTPUT_TIER_480P = "480p"
+OUTPUT_TIERS = (
+    OUTPUT_TIER_ORIGINAL,
+    OUTPUT_TIER_AUTO,
+    OUTPUT_TIER_1080P,
+    OUTPUT_TIER_720P,
+    OUTPUT_TIER_480P,
+)
+
+
+def _fps_value(fps: str) -> float:
+    """解析 ffmpeg fps 字符串为数值（'30000/1001' -> 29.97）。失败返回 0.0。"""
+    try:
+        if fps and "/" in fps:
+            num, den = fps.split("/", 1)
+            return float(num) / float(den)
+        return float(fps) if fps else 0.0
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def build_output_tier_filter(tier: str, width: int, height: int, fps: str) -> str:
+    """构造「输出档位」滤镜链（scale + fps）。
+
+    档位语义（仅降档，不升档；等比缩放按宽保持宽高比）：
+      - original：不处理（返回空串）
+      - auto：源宽>720 或 fps>30 时降到 720P@30，否则原样
+      - 1080p：宽封顶 1080 / fps 封顶 60（等比缩放）
+      - 720p：宽封顶 720 / fps 封顶 30（等比缩放）
+      - 480p：宽封顶 480 / fps 封顶 30（等比缩放）
+    返回要在滤镜链末尾追加的滤镜串；无需降档时返回 ''。
+    """
+    tier = (tier or OUTPUT_TIER_ORIGINAL).lower()
+    if tier == OUTPUT_TIER_ORIGINAL:
+        return ""
+    cap = {
+        OUTPUT_TIER_AUTO: (720, 30),
+        OUTPUT_TIER_1080P: (1080, 60),
+        OUTPUT_TIER_720P: (720, 30),
+        OUTPUT_TIER_480P: (480, 30),
+    }.get(tier)
+    if cap is None:
+        return ""
+    cap_w, cap_fps = cap
+    fps_v = _fps_value(fps)
+    need_scale = width > cap_w
+    need_fps = fps_v > 0 and fps_v > cap_fps
+    if not need_scale and not need_fps:
+        return ""
+    parts = []
+    if need_scale:
+        parts.append(f"scale={cap_w}:-2")
+    if need_fps:
+        parts.append(f"fps={cap_fps}")
+    return ",".join(parts)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("source")
@@ -3979,6 +4040,13 @@ def main():
         default=None,
         help="视频封面图片路径（可选）。选择图片作为视频首帧：叠加到成品第一帧（仅首帧显示封面，随即切入源视频内容）",
     )
+    parser.add_argument(
+        "--output-tier",
+        default="original",
+        choices=OUTPUT_TIERS,
+        help="输出档位：original=不处理（默认）/ auto=按源规格自动降档 / 1080p / 720p / 480p。"
+             "高分辨率/高 fps 素材可降档提速（滤镜链末尾追加 scale+fps，cover concat 同步同档位）。",
+    )
     args = parser.parse_args()
 
     threads = cpu_threads_for_percent(args.cpu_percent)
@@ -4007,6 +4075,15 @@ def main():
     subtitle_bold = args.subtitle_bold
     # 字幕对齐源字幕打码区域开关（默认开启）：开启后 ASR 字幕位置对齐到检测到的源字幕打码区域
     subtitle_align_mask = bool(args.subtitle_align_mask)
+
+    # 输出档位：探测源分辨率+帧率，构造滤镜链末尾的 scale+fps 降档滤镜。
+    # 与原档位一致或无需降档时为空串（不改变既有 copy 快速通道行为）。
+    tier_w, tier_h = ffprobe_resolution(source_path)
+    tier_fps = ffprobe_framerate(source_path)
+    tier_filter = build_output_tier_filter(args.output_tier, tier_w, tier_h, tier_fps)
+    if tier_filter:
+        print(f"输出档位: {args.output_tier} -> {tier_filter} "
+              f"(源 {tier_w}x{tier_h}@{_fps_value(tier_fps):.3f}fps)", file=sys.stderr)
 
     os.makedirs(args.output_dir, exist_ok=True)
     cuts = read_cutlist(args.cutlist)
@@ -4276,6 +4353,12 @@ def main():
                       + "".join(f" ({wx},{wy},{ww},{wh})" for (wx, wy, ww, wh) in wm_merged), file=sys.stderr)
             else:
                 print("恒定水印打码自动定位失败，回退默认区域（底部水印带）", file=sys.stderr)
+
+    # 输出档位降档滤镜追加到滤镜链末尾（覆盖到每个切片的重编码滤镜链）。
+    # tier_filter 非空时 vf 不再为空，slice_segment 会强制走重编码（而非 copy 快速通道），
+    # 从而保证 scale/fps 真正生效；concat 各段同参数可安全拼接。
+    if tier_filter:
+        vf = f"{vf},{tier_filter}" if vf else tier_filter
 
     # Group segments by name（而非 idx）：同 name 的多段（如 dedupe 变体拆段）
     # 按顺序拼接为单一输出。scrub 模式下同一 idx 的片段共享同一 name，等效于原行为。

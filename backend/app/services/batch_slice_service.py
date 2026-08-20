@@ -340,6 +340,8 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
         "no_cut", "allow_fallback_whole_video", "auto_autoclip_if_empty", "autoclip_config",
         # 视频封面
         "cover_image_key",
+        # 输出档位（高分辨率/高 fps 素材降档提速）
+        "output_tier",
         "watermark_enabled", "watermark_text", "watermark_font_size",
         "watermark_opacity", "watermark_position", "watermark_style", "badges", "badge_default_width",
         "vert2horiz_enabled", "vert2horiz_mode", "vert2horiz_ratio",

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 from typing import Callable, Optional
 
 from app.config import settings
@@ -15,13 +16,18 @@ async def _run_cmd(
     cmd: list[str],
     timeout: float,
     progress_cb: ProgressCallback = None,
+    task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run an engine subprocess with timeout and optional PROGRESS: line parsing."""
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,  # 独立进程组，便于取消时整树 kill（含 ffmpeg 子进程）
     )
+    # 登记当前任务在跑的引擎子进程，供「停止任务」时查杀
+    if task_id:
+        RUNNING_SLICE_PROCS[task_id] = proc
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
 
@@ -50,17 +56,56 @@ async def _run_cmd(
             timeout=timeout,
         )
     except asyncio.TimeoutError:
-        try:
-            proc.terminate()  # SIGTERM
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                proc.kill()  # SIGKILL as fallback
-        except ProcessLookupError:
-            pass
+        _terminate_proc(proc)
         raise TimeoutError(f"Engine timed out after {timeout}s: {' '.join(cmd)}")
+    finally:
+        if task_id:
+            RUNNING_SLICE_PROCS.pop(task_id, None)
 
     return proc.returncode or 0, "".join(stdout_lines), "".join(stderr_lines)
+
+
+# ── 本地引擎子进程登记：供「停止任务」取消时查杀（见 api/slice.cancel_slice_task）──
+# key: slice_task.id，value: asyncio 子进程对象
+RUNNING_SLICE_PROCS: dict = {}
+
+
+def _terminate_proc(proc) -> None:
+    """向引擎子进程所在进程组发送 SIGTERM（SIGKILL 兜底），确保连带杀掉 ffmpeg 子进程。
+
+    引擎进程用 start_new_session=True 独立成组，killpg 可整树终止（含 python 子进程 ffmpeg）。
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        # 短暂宽限后仍未退出则强杀（避免 ffmpeg 忽略 SIGTERM 拖住）
+        proc.returncode = proc.poll()
+        if proc.returncode is None:
+            import time
+            time.sleep(0.3)
+            if proc.poll() is None:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
+def kill_slice_proc(task_id: str) -> bool:
+    """终止指定切片任务在本地进程内运行的引擎子进程（含其 ffmpeg 子进程）。
+
+    供「停止任务/取消」接口调用：任务在排队中（未认领）时无进程登记，返回 False 由调用方兜底。
+    Returns:
+        True=已找到并终止进程；False=无该任务在跑的进程（可能已结束/在 Worker 端）。
+    """
+    proc = RUNNING_SLICE_PROCS.get(task_id)
+    if proc is None:
+        return False
+    try:
+        _terminate_proc(proc)
+    except Exception:
+        logger.exception("kill_slice_proc 失败 task=%s", task_id)
+    return True
 
 
 def _engine_path(name: str) -> str:
@@ -102,6 +147,8 @@ async def run_slice(
     watermark_mask_config: Optional[dict] = None,
     subtitle_align_mask: bool = True,
     cover_path: Optional[str] = None,
+    output_tier: Optional[str] = None,
+    task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run the ffmpeg slice engine.
 
@@ -160,9 +207,11 @@ async def run_slice(
         cmd.extend(["--watermark-mask", json.dumps(watermark_mask_config)])
     if cover_path:
         cmd.extend(["--cover", cover_path])
+    if output_tier:
+        cmd.extend(["--output-tier", output_tier])
     logger.info("Running slice: %s", " ".join(cmd))
 
-    return await _run_cmd(cmd, timeout, progress_cb)
+    return await _run_cmd(cmd, timeout, progress_cb, task_id=task_id)
 
 
 async def run_slice_scrub(
@@ -190,6 +239,8 @@ async def run_slice_scrub(
     watermark_mask_config: Optional[dict] = None,
     subtitle_align_mask: bool = True,
     cover_path: Optional[str] = None,
+    output_tier: Optional[str] = None,
+    task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run scrub-mode slicing (cutlist minus removed intervals)."""
     return await run_slice(
@@ -218,6 +269,8 @@ async def run_slice_scrub(
         watermark_mask_config=watermark_mask_config,
         subtitle_align_mask=subtitle_align_mask,
         cover_path=cover_path,
+        output_tier=output_tier,
+        task_id=task_id,
     )
 
 
@@ -246,6 +299,8 @@ async def run_slice_fast(
     watermark_mask_config: Optional[dict] = None,
     subtitle_align_mask: bool = True,
     cover_path: Optional[str] = None,
+    output_tier: Optional[str] = None,
+    task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run fast/dedupe mode slicing."""
     if mode not in ("fast", "dedupe"):
@@ -276,5 +331,7 @@ async def run_slice_fast(
         watermark_mask_config=watermark_mask_config,
         subtitle_align_mask=subtitle_align_mask,
         cover_path=cover_path,
+        output_tier=output_tier,
+        task_id=task_id,
     )
 

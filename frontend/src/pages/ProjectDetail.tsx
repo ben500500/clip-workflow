@@ -29,6 +29,8 @@ interface BatchSliceConfig {
   autoClipIfNeeded: boolean; // 无候选片段时自动补一轮 AI 选点
   vert2horizEnabled: boolean;
   subtitleEnabled: boolean;
+  // 输出档位：original（默认）/ auto / 1080p / 720p / 480p（高分辨率/高 fps 素材降档提速）
+  outputTier: string;
   // 视频封面：选择图片作为视频首帧（MinIO key）
   coverImageKey: string | null;
   coverImageName: string | null;
@@ -45,6 +47,7 @@ const DEFAULT_BATCH_CONFIG: BatchSliceConfig = {
   autoClipIfNeeded: true,
   vert2horizEnabled: false,
   subtitleEnabled: false,
+  outputTier: 'original',
   coverImageKey: null,
   coverImageName: null,
 };
@@ -133,6 +136,7 @@ const ProjectDetail: React.FC = () => {
       dedupePreset: p.dedupe_preset || 'std_crop_desat',
       vert2horizEnabled: p.vert2horiz_enabled,
       subtitleEnabled: p.subtitle_enabled,
+      outputTier: p.output_tier || 'original',
     }));
   };
 
@@ -483,6 +487,8 @@ const ProjectDetail: React.FC = () => {
       dedupe_config: cfg.mode === 'dedupe' ? { preset: cfg.dedupePreset } : undefined,
       // 视频封面：作为视频首帧
       cover_image_key: cfg.coverImageKey || undefined,
+      // 输出档位：高分辨率/高 fps 素材降档提速
+      output_tier: cfg.outputTier || 'original',
     });
   };
 
@@ -1011,6 +1017,22 @@ const ProjectDetail: React.FC = () => {
               onChange={(v) => setBatchConfig((prev) => ({ ...prev, subtitleEnabled: v }))}
             />
             <Text style={{ fontSize: 13 }}>ASR 字幕烧录</Text>
+          </Space>
+          <Space style={{ width: '100%' }} wrap>
+            <Text style={{ fontSize: 13 }}>输出档位</Text>
+            <Select
+              value={batchConfig.outputTier || 'original'}
+              onChange={(v) => setBatchConfig((prev) => ({ ...prev, outputTier: v }))}
+              style={{ width: 240 }}
+              options={[
+                { value: 'original', label: '原档（不处理）' },
+                { value: 'auto', label: '自动（高规格自动降 720P30）' },
+                { value: '1080p', label: '1080P（宽≤1080/fps≤60）' },
+                { value: '720p', label: '720P（宽≤720/fps≤30）' },
+                { value: '480p', label: '480P（宽≤480/fps≤30）' },
+              ]}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>高分辨率/高 fps 素材可降档提速</Text>
           </Space>
 
           {batchProgress && batchSlicing && (

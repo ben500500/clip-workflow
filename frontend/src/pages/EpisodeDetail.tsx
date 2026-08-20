@@ -121,6 +121,8 @@ const EpisodeDetail: React.FC = () => {
   const [sliceMode, setSliceMode] = useState('fast');
   // 去重模式档位：轻/标准/重（老电视质感去重强度，默认标准档）
   const [dedupePreset, setDedupePreset] = useState<string>('std_crop_desat');
+  // 输出档位：original（默认）/ auto / 1080p / 720p / 480p（高分辨率/高 fps 素材降档提速）
+  const [outputTier, setOutputTier] = useState<string>('original');
   // 一键切片去重模式开关（配置弹窗内可设，开启后一键切片按档位做画面去重）
   const [dedupeEnabled, setDedupeEnabled] = useState(false);
   // ── 视频封面（选择图片作为视频首帧，一键切片时下发） ──
@@ -411,6 +413,7 @@ const EpisodeDetail: React.FC = () => {
     badge_default_width: badgeDefaultWidth,
     dedupe_enabled: dedupeEnabled,
     dedupe_preset: dedupePreset,
+    output_tier: outputTier,
   });
 
   // 将一套配置应用到页面切片状态
@@ -457,6 +460,7 @@ const EpisodeDetail: React.FC = () => {
     setBadgeDefaultWidth(p.badge_default_width);
     setDedupeEnabled(p.dedupe_enabled ?? false);
     setDedupePreset(p.dedupe_preset ?? 'std_crop_desat');
+    setOutputTier(p.output_tier ?? 'original');
     setActivePresetId(p.id);
   };
 
@@ -1023,6 +1027,8 @@ const EpisodeDetail: React.FC = () => {
         autoclip_config: resolveAutoclipConfig(),
         // 视频封面：作为视频首帧
         cover_image_key: coverImageKey || undefined,
+        // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
+        output_tier: outputTier || 'original',
         // 去重模式：一键切片启用后按档位做画面去重（手动配置沿用主页「去重高级配置」）
         dedupe_config: dedupeEnabled ? buildDedupeConfig(dedupePreset, dedupeManual) : undefined,
         // 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本）
@@ -1204,6 +1210,8 @@ const EpisodeDetail: React.FC = () => {
         autoclip_config: resolveAutoclipConfig(),
         // 视频封面（首帧）：选择图片作为成品视频首帧（与一键切片共用同一封面选择）
         cover_image_key: coverImageKey || undefined,
+        // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
+        output_tier: outputTier || 'original',
         // 去重模式档位（轻/标准/重）+ 手动配置（每项手段可单独覆盖预设），仅去重模式生效
         dedupe_config: mode === 'dedupe'
           ? buildDedupeConfig(dedupePreset, dedupeManual)
@@ -2733,6 +2741,30 @@ const EpisodeDetail: React.FC = () => {
                   封面：{coverImageName || '已选择'}
                 </Tag>
               )}
+            </Space>
+          </div>
+
+          {/* ── 输出档位 ── */}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+            <Space wrap align="center" size={8}>
+              <Text strong style={{ fontSize: 13 }}>输出档位</Text>
+              <Tooltip title="高分辨率/高 fps 素材可降档提速（引擎滤镜链末尾追加 scale+fps，cover concat 同步同档位）。">
+                <InfoCircleOutlined style={{ color: '#999' }} />
+              </Tooltip>
+              <Select
+                size="small"
+                style={{ width: 240 }}
+                value={outputTier || 'original'}
+                onChange={setOutputTier}
+                options={[
+                  { value: 'original', label: '原档（不处理）' },
+                  { value: 'auto', label: '自动（高规格自动降 720P30）' },
+                  { value: '1080p', label: '1080P（宽≤1080/fps≤60）' },
+                  { value: '720p', label: '720P（宽≤720/fps≤30）' },
+                  { value: '480p', label: '480P（宽≤480/fps≤30）' },
+                ]}
+              />
+              <Text type="secondary" style={{ fontSize: 12 }}>降档后编码耗时显著下降（预计 1/3 以下）</Text>
             </Space>
           </div>
 

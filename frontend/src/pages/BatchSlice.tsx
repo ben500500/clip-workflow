@@ -74,6 +74,7 @@ interface SliceConfigState {
   subtitle_mask_bottom_ratio: number;
   subtitle_mask_srt_offset: number;
   dedupe_preset: string;
+  output_tier: string;
   text_overlay_enabled: boolean;
   text_overlays: { text: string; position: string; font_size: number; color: string; border_color?: string; vertical?: boolean }[];
   watermark_enabled: boolean;
@@ -123,6 +124,7 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   subtitle_mask_bottom_ratio: 0.02,
   subtitle_mask_srt_offset: 0,
   dedupe_preset: 'standard',
+  output_tier: 'original',
   text_overlay_enabled: true,
   text_overlays: [
     { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000' },
@@ -224,6 +226,7 @@ const BatchSlicePage: React.FC = () => {
       subtitle_mask_bottom_ratio: p.subtitle_mask_bottom_ratio,
       subtitle_mask_srt_offset: p.subtitle_mask_srt_offset,
       dedupe_preset: p.dedupe_preset || 'standard',
+      output_tier: p.output_tier || 'original',
       text_overlay_enabled: p.text_overlay_enabled,
       text_overlays: p.text_overlays ? p.text_overlays.map((t) => ({ text: t.text, position: t.position, font_size: t.font_size ?? 40, color: t.color ?? '#EDD736', border_color: t.border_color, vertical: t.vertical, offset: t.offset })) : prev.text_overlays,
       watermark_enabled: p.watermark_enabled,
@@ -976,6 +979,25 @@ const BatchSlicePage: React.FC = () => {
             />
             <Tooltip title="去重档位（轻/标准/重），用于降低平台查重风险。仅 dedupe 切片模式生效。">
               <Tag color="blue">去重档位</Tag>
+            </Tooltip>
+          </Space>
+
+          <Space size="large" align="center">
+            <Text>输出档位：</Text>
+            <Select
+              value={sliceConfig.output_tier}
+              onChange={(v) => setSliceConfig({ ...sliceConfig, output_tier: v })}
+              style={{ width: 190 }}
+              options={[
+                { value: 'original', label: '原档（不处理）' },
+                { value: 'auto', label: '自动（高规格自动降 720P30）' },
+                { value: '1080p', label: '1080P（宽≤1080/fps≤60）' },
+                { value: '720p', label: '720P（宽≤720/fps≤30）' },
+                { value: '480p', label: '480P（宽≤480/fps≤30）' },
+              ]}
+            />
+            <Tooltip title="输出档位：高分辨率/高 fps 素材可降档提速（引擎滤镜链末尾追加 scale+fps，cover concat 同步同档位）。">
+              <Tag color="purple">输出档位</Tag>
             </Tooltip>
           </Space>
 

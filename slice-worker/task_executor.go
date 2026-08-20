@@ -251,6 +251,11 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		}
 	}
 
+	// 输出档位：透传给引擎 --output-tier（高分辨率/高 fps 素材降档提速，默认 original）
+	if task.OutputTier != "" && task.OutputTier != "original" {
+		args = append(args, "--output-tier", task.OutputTier)
+	}
+
 	// Alpine 镜像提供 python3 可执行文件；Windows 上为 python
 	cmd := exec.CommandContext(ctx, pythonBinary(), args...)
 

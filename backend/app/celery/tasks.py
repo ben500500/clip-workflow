@@ -565,6 +565,7 @@ def slice_task(
     watermark_mask_config: Optional[dict] = None,
     subtitle_align_mask: bool = True,
     cover_image_key: Optional[str] = None,
+    output_tier: Optional[str] = None,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
@@ -720,6 +721,8 @@ def slice_task(
                     watermark_mask_config=watermark_mask_config,
                     subtitle_align_mask=subtitle_align_mask,
                     cover_path=cover_path,
+                    output_tier=output_tier,
+                    task_id=task_id,
                 )
             )
         else:
@@ -748,6 +751,8 @@ def slice_task(
                     watermark_mask_config=watermark_mask_config,
                     subtitle_align_mask=subtitle_align_mask,
                     cover_path=cover_path,
+                    output_tier=output_tier,
+                    task_id=task_id,
                 )
             )
 
