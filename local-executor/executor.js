@@ -41,6 +41,12 @@ function loadEnv() {
     POLL_INTERVAL: parseInt(env.POLL_INTERVAL || '15', 10),
     AUTO_PUBLISH: (env.AUTO_PUBLISH || 'true') === 'true',
     LOGIN_WAIT_SEC: parseInt(env.LOGIN_WAIT_SEC || '150', 10),
+    // ── 频率护栏（方案B：单IP ≤2条/小时 + 随机延迟，保号优先） ──
+    HOUR_LIMIT: parseInt(env.HOUR_LIMIT || '2', 10),
+    RATE_STATE_FILE: env.RATE_STATE_FILE || '/tmp/executor-work/publish-rate.json',
+    RANDOM_DELAY_MIN: parseInt(env.RANDOM_DELAY_MIN || '8', 10),
+    RANDOM_DELAY_MAX: parseInt(env.RANDOM_DELAY_MAX || '20', 10),
+    CONFIRM_TIMEOUT_SEC: parseInt(env.CONFIRM_TIMEOUT_SEC || '90', 10),
     CREATOR_URL: 'https://channels.weixin.qq.com/platform/post/create',
   };
 }
@@ -89,6 +95,58 @@ async function callbackResult(cfg, taskId, payload) {
     return null;
   }
 }
+
+/* ───────────────────────── 频率护栏（单IP ≤2条/小时 + 随机延迟） ───────────────────────── */
+// 本机 Mac 单 IP：滚动 1 小时内最多 HOUR_LIMIT 条。状态持久化到文件，跨重启仍计数。
+function loadRateState(cfg) {
+  try {
+    if (fs.existsSync(cfg.RATE_STATE_FILE)) {
+      return JSON.parse(fs.readFileSync(cfg.RATE_STATE_FILE, 'utf8'));
+    }
+  } catch (e) { /* 状态文件损坏则重置 */ }
+  return { publishedAt: [] };  // 每条发布成功的时间戳（ms）
+}
+
+function saveRateState(cfg, state) {
+  try {
+    fs.mkdirSync(path.dirname(cfg.RATE_STATE_FILE), { recursive: true });
+    fs.writeFileSync(cfg.RATE_STATE_FILE, JSON.stringify(state), 'utf8');
+  } catch (e) { log('RATE', `状态写入失败: ${e.message}`); }
+}
+
+// 清理滚动窗口外的时间戳，返回最近 1 小时内已发布条数
+function hourPublishedCount(cfg, state) {
+  const now = Date.now();
+  state.publishedAt = state.publishedAt.filter((t) => now - t < 3600 * 1000);
+  saveRateState(cfg, state);
+  return state.publishedAt.length;
+}
+
+// 本任务是否被护栏拦下（达到单IP小时上限）
+function rateLimited(cfg) {
+  const state = loadRateState(cfg);
+  const cnt = hourPublishedCount(cfg, state);
+  if (cnt >= cfg.HOUR_LIMIT) {
+    const oldest = state.publishedAt.length ? Math.min(...state.publishedAt) : Date.now();
+    const waitMin = Math.ceil((oldest + 3600 * 1000 - Date.now()) / 60000);
+    log('RATE', `已到单IP护栏上限（${cnt}/${cfg.HOUR_LIMIT} 条/小时），需等待约 ${waitMin} 分钟`);
+    return true;
+  }
+  return false;
+}
+
+// 记录一次成功发布，并返回本次随机延迟毫秒（发布后按此休息，拉长节奏保号）
+function recordPublishAndDelay(cfg) {
+  const state = loadRateState(cfg);
+  state.publishedAt.push(Date.now());
+  saveRateState(cfg, state);
+  const delayMin = cfg.RANDOM_DELAY_MIN + Math.random() * (cfg.RANDOM_DELAY_MAX - cfg.RANDOM_DELAY_MIN);
+  const delayMs = Math.round(delayMin * 60 * 1000);
+  log('RATE', `本次发布已记录（${hourPublishedCount(cfg, state)}/${cfg.HOUR_LIMIT} 条/小时），随机延迟 ${delayMin.toFixed(1)} 分钟`);
+  return delayMs;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function downloadFile(url, dest) {
   const r = await fetch(url, { timeout: 120000 });
@@ -253,6 +311,36 @@ async function waitForLogin(page, cfg) {
   return false;
 }
 
+// 点发表后确认成功：以 URL 跳到成功页为主判据，并尽力提取 objectId（published_id）。
+// 超时未确认成功 → 抛错判 failed，杜绝"假成功"（复刻 163 publish_service._wait_for_publish）。
+async function confirmPublish(cfg, page, iframe) {
+  const deadline = Date.now() + cfg.CONFIRM_TIMEOUT_SEC * 1000;
+  const candidates = [iframe, page].filter(Boolean);
+  log('PUBLISH', `等待成功页确认（${cfg.CONFIRM_TIMEOUT_SEC}s）...`);
+  while (Date.now() < deadline) {
+    for (const f of candidates) {
+      try {
+        const url = f.url() || '';
+        if (/\/success/.test(url)) {
+          log('PUBLISH', `发布成功页已确认: ${url.slice(0, 80)}`);
+          await page.waitForTimeout(2500);
+          // 尽力提取 objectId（published_id）：post-id 元素 data-id
+          let objectId = null;
+          try {
+            objectId = await iframe.evaluate(() => {
+              const el = document.querySelector("[class*='post-id']");
+              return el ? (el.getAttribute('data-id') || el.getAttribute('data-object-id') || null) : null;
+            });
+          } catch (e) { /* 提取不到不影响成功判定 */ }
+          return { url, objectId };
+        }
+      } catch (e) { /* frame 可能正在跳转 */ }
+    }
+    await page.waitForTimeout(2000);
+  }
+  throw new Error(`发布结果未确认：${cfg.CONFIRM_TIMEOUT_SEC}s 内未到达成功页`);
+}
+
 /* ───────────────────────── 发布流程 ───────────────────────── */
 async function publishOne(cfg, task) {
   const taskId = task.id;
@@ -371,7 +459,7 @@ async function publishOne(cfg, task) {
       const publishBtn = iframe.getByRole('button', { name: /发表|发\s*布/, exact: false }).first();
       await publishBtn.click({ timeout: 10000 });
       log('PUBLISH', '已点击发表按钮，等待结果...');
-      await page.waitForTimeout(6000);
+      await page.waitForTimeout(3000);
       // 发表后可能出现确认弹窗/成功提示
       await closeModals(page, iframe);
       const riskAfter = await probeRisk(iframe);
@@ -379,9 +467,16 @@ async function publishOne(cfg, task) {
         await callbackResult(cfg, taskId, { status: 'failed', error_message: `发布后风险: ${riskAfter}`, risk_type: riskAfter });
         return;
       }
-      const finalUrl = page.url();
-      await callbackResult(cfg, taskId, { status: 'completed', published_url: finalUrl });
-      log('TASK', `✅ 任务完成: ${taskId}`);
+      // 方案B：以成功页确认成功，并尽力提取 objectId 回写 published_id（杜绝假成功）
+      const { url, objectId } = await confirmPublish(cfg, page, iframe);
+      const cb = { status: 'completed', published_url: url };
+      if (objectId) cb.published_id = objectId;
+      await callbackResult(cfg, taskId, cb);
+      log('TASK', `✅ 任务完成: ${taskId} objectId=${objectId || '(未提取到)'}`);
+      // 频率护栏：记录本次成功发布，并按随机延迟休息（拉长节奏保号）
+      const delayMs = recordPublishAndDelay(cfg);
+      log('RATE', `成功发布后休息 ${(delayMs / 60000).toFixed(1)} 分钟`);
+      await sleep(delayMs);
     } else {
       await callbackResult(cfg, taskId, { status: 'pending_confirm' });
       log('TASK', `任务停在待确认: ${taskId}`);
@@ -428,6 +523,7 @@ async function main() {
   if (args.includes('--once')) {
     const tasks = await listPending(cfg);
     if (!tasks.length) { log('POLL', '无待处理任务'); return; }
+    if (rateLimited(cfg)) { log('POLL', '已被频率护栏拦下，本次 --once 不执行'); return; }
     await publishOne(cfg, tasks[0]);
     return;
   }
@@ -437,7 +533,12 @@ async function main() {
       const tasks = await listPending(cfg);
       if (tasks.length) {
         log('POLL', `发现 ${tasks.length} 个待处理任务`);
-        for (const t of tasks) await publishOne(cfg, t);
+        // 频率护栏（单IP ≤2条/小时）：达到上限则跳过本轮，避免超发
+        if (rateLimited(cfg)) {
+          log('POLL', '已达单IP小时护栏上限，本轮跳过，等下个窗口');
+        } else {
+          for (const t of tasks) await publishOne(cfg, t);
+        }
       }
     } catch (e) {
       log('POLL', `轮询出错: ${e.message}`);
