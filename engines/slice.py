@@ -3824,7 +3824,10 @@ def apply_cover_first_frame(video_path: str, cover_path: str, out_path: str,
             f"{fps_arg},format=yuv420p[cv]"
         )
         # 源视频也归一化到与封面片段一致（分辨率/帧率/像素格式），保证 concat 可拼接
-        sv = f"[1:v]{fps_arg},format=yuv420p[sv]"
+        # 源视频也归一化到与封面片段一致（分辨率/帧率/像素格式/SAR），保证 concat 可拼接。
+        # setsar=1 必须加：源视频 SAR 若为非 1:1（如 2116:2115）会与封面段 SAR 1:1 不匹配，
+        # concat 报「Input link parameters do not match」→ -22 Invalid argument（2026-08-20 实测）。
+        sv = f"[1:v]{fps_arg},setsar=1,format=yuv420p[sv]"
         if _video_has_audio(video_path):
             # 源音频整体延迟封面时长，使源画面出现时音画同步
             delay_ms = int(cover_dur * 1000)
