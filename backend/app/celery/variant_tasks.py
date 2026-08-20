@@ -26,7 +26,11 @@ def generate_variants_task(
     created_by: str = None,
     thresholds: dict = None,
 ):
-    """对基准切片输出生成 N 个结构性差异变体，并做指纹校验 + 撞车自动换参重试。"""
+    """对基准切片输出生成 N 个结构性差异变体，并做指纹校验 + 撞车自动换参重试。
+
+    A1：无论成功/失败/异常/重试耗尽，finally 都必须把该输出下仍为 running/pending
+    的变体回写 failed（收敛永久 running），再由 Celery 决定重试。
+    """
     try:
         result = run_async(
             vs.generate_variants_for_output(
@@ -42,6 +46,14 @@ def generate_variants_task(
         return result
     except Exception as e:
         logger.exception("generate_variants failed output=%s: %s", output_id, e)
+        # A1 兜底：把该输出下遗留的 running/pending 变体统一回写 failed，
+        # 杜绝 Celery 重试间隔/队列拥挤期间永久 running（最早堆积 1 天+ 的根因）。
+        try:
+            run_async(vs.mark_output_variants_failed(
+                output_id, f"generate failed: {e}"
+            ))
+        except Exception as mark_e:
+            logger.error("mark_output_variants_failed output=%s failed: %s", output_id, mark_e)
         self.retry(exc=e)
 
 

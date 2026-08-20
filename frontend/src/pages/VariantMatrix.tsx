@@ -6,6 +6,7 @@ import {
 import {
   ReloadOutlined, SafetyCertificateOutlined, LinkOutlined, SettingOutlined,
   ThunderboltOutlined, CheckCircleOutlined, SearchOutlined, FolderOpenOutlined,
+  DeleteOutlined, DownloadOutlined, ClearOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -184,6 +185,60 @@ const VariantMatrix: React.FC = () => {
     }
   };
 
+  // #274 C：下载变体视频（presigned URL 强制下载）
+  const handleDownload = async (v: VariantMatrixItem) => {
+    try {
+      const res = await variantsApi.downloadVariant(v.id);
+      if (res.download_url) {
+        window.open(res.download_url, '_blank');
+      } else {
+        message.warning('该变体没有可下载的文件');
+      }
+    } catch (e) {
+      message.error((e as Error).message || '下载失败');
+    }
+  };
+
+  // #274 B：删除单变体（DB + MinIO）
+  const handleDeleteVariant = async (v: VariantMatrixItem) => {
+    try {
+      await variantsApi.removeVariant(v.id);
+      message.success(`变体 ${v.variant_index === 1 ? '基准' : `变体 ${v.variant_index}`} 已删除`);
+      fetchMatrix();
+    } catch (e) {
+      message.error((e as Error).message || '删除变体失败');
+    }
+  };
+
+  // #274 B：删除整组（组内全部变体 + MinIO；基准切片输出保留）
+  const handleDeleteGroup = async (g: VariantGroup) => {
+    try {
+      const res = await variantsApi.removeGroup(g.variant_group_id);
+      message.success(`已删除整组 ${res.deleted} 个变体`);
+      fetchMatrix();
+    } catch (e) {
+      message.error((e as Error).message || '删除整组失败');
+    }
+  };
+
+  // #274 A4：清理存量卡住的 running 变体
+  const handleCleanupStuck = async () => {
+    setLoading(true);
+    try {
+      const res = await variantsApi.cleanupStuck(30);
+      if (res.cleaned > 0) {
+        message.success(`已清理 ${res.cleaned} 个卡住的生成任务`);
+      } else {
+        message.info('没有需要清理的卡住任务');
+      }
+      fetchMatrix();
+    } catch (e) {
+      message.error((e as Error).message || '清理失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const variantColumns: ColumnsType<VariantMatrixItem> = [
     {
       title: '变体', dataIndex: 'variant_index', width: 80,
@@ -252,6 +307,20 @@ const VariantMatrix: React.FC = () => {
               绑定
             </Button>
           </Tooltip>
+          <Tooltip title="下载变体视频">
+            <Button size="small" icon={<DownloadOutlined />} onClick={() => handleDownload(r)} />
+          </Tooltip>
+          <Popconfirm
+            title="确认删除该变体？"
+            description="将同时删除 MinIO 变体文件，不可恢复。"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            onConfirm={() => handleDeleteVariant(r)}
+          >
+            <Tooltip title="删除变体（DB + MinIO）">
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Tooltip>
+          </Popconfirm>
         </Space>
       ),
     },
@@ -273,6 +342,22 @@ const VariantMatrix: React.FC = () => {
               {g.created_at ? dayjs(g.created_at).format('MM-DD HH:mm') : ''}
             </Text>
             <Text type="secondary" style={{ fontSize: 12 }}>共 {g.variants.length} 变体</Text>
+            <Popconfirm
+              title="确认删除整组变体？"
+              description="将删除组内全部变体（DB + MinIO），基准切片输出保留。不可恢复。"
+              okText="删除"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => handleDeleteGroup(g)}
+            >
+              <Button
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+                onClick={(e) => e.stopPropagation()}
+              >
+                删除整组
+              </Button>
+            </Popconfirm>
           </Space>
         ),
         children: (
@@ -296,6 +381,9 @@ const VariantMatrix: React.FC = () => {
       title={<Space><ThunderboltOutlined />变体矩阵看板（多视频号素材去重）</Space>}
       extra={
         <Space>
+          <Tooltip title="清理存量卡住的生成任务（running 超时 30 分钟 → failed）">
+            <Button size="small" icon={<ClearOutlined />} onClick={handleCleanupStuck}>清理卡住</Button>
+          </Tooltip>
           <Button size="small" icon={<SettingOutlined />} onClick={openThreshold}>撞车阈值</Button>
           <Button size="small" icon={<ReloadOutlined />} onClick={fetchMatrix}>刷新</Button>
         </Space>

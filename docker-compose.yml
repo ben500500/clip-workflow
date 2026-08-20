@@ -348,6 +348,13 @@ services:
     # 发布/豆包生成（浏览器 CDP）—— 独占 publish 队列，并发 1
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "publish", "--loglevel=info", "--concurrency=1"]
 
+  worker-variant:
+    <<: *celery-worker-base
+    container_name: clip-worker-variant
+    # 变体生成独立 worker：独占 variant 队列（generate_variants_task + verify_variant_fingerprint_task）。
+    # #274 A2：ffmpeg 重计算，不再与 batch/slice 挤 default/video_processing，杜绝排队 8 小时 + 超时被杀。并发 1。
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "variant", "--loglevel=info", "--concurrency=1"]
+
   worker-selection:
     <<: *celery-worker-base
     container_name: clip-worker-selection

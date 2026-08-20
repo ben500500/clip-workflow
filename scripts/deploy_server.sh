@@ -79,7 +79,7 @@ compute_services() {
 
   local svc=""
   if [ "$changed" = "ALL" ] || printf '%s\n' "$changed" | grep -q '^backend/'; then
-    svc="$svc backend worker-video worker-publish worker-fast beat rpa_worker"
+    svc="$svc backend worker-video worker-variant worker-publish worker-fast beat rpa_worker"
   fi
   if [ "$changed" = "ALL" ] || printf '%s\n' "$changed" | grep -q '^frontend/'; then
     svc="$svc frontend"

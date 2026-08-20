@@ -155,6 +155,14 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
                 "reorder": settings.STRUCTURAL_REORDER_DEFAULT,
             },
         })
+    # A3 性能护栏：无论调用方传入的 base_dedupe/manual 是否带 sparkle（基准版 manual
+    # 直接拷贝可能泄漏 sparkle，派生池理论上全 None 但兜底再强制清零一次），统一置 None。
+    # sparkle 走 ffmpeg geq 全分辨率渲染约 0.5fps，极易把批量任务拖到超时/进程被杀，
+    # 生产默认关闭（_SPARKLE_ENABLED=False），这里从源头保证不再进入配方。
+    for r in recipes:
+        m = r.get("manual")
+        if m and isinstance(m, dict):
+            m["sparkle"] = None
     return recipes
 
 
@@ -221,6 +229,24 @@ async def _update_variant(variant_id, **fields):
             update(ClipVariant).where(ClipVariant.id == variant_id).values(**fields)
         )
         await session.commit()
+
+
+async def mark_output_variants_failed(output_id: str, error_message: str) -> int:
+    """A1 兜底收敛：把某切片输出下仍处于 running/pending 的变体统一回写 failed。
+
+    generate_variants_task 失败（异常/进程被杀/超时）时调用，杜绝变体永久 running。
+    返回被回写的变体数。
+    """
+    from sqlalchemy import update
+    async with async_session_factory() as session:
+        result = await session.execute(
+            update(ClipVariant)
+            .where(ClipVariant.output_id == uuid.UUID(str(output_id)))
+            .where(ClipVariant.status.in_(["running", "pending"]))
+            .values(status="failed", error_message=error_message)
+        )
+        await session.commit()
+        return result.rowcount or 0
 
 
 async def _save_fingerprint(

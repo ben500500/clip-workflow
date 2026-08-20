@@ -33,7 +33,7 @@ else
 fi
 
 # 可用的服务列表
-SERVICES=("postgres" "redis" "minio" "minio_init" "autoclip" "autoclip_worker" "backend" "worker-video" "worker-publish" "worker-fast" "beat" "frontend" "nginx")
+SERVICES=("postgres" "redis" "minio" "minio_init" "autoclip" "autoclip_worker" "backend" "worker-video" "worker-variant" "worker-publish" "worker-fast" "beat" "frontend" "nginx")
 
 show_usage() {
     echo "用法: bash scripts/logs.sh [service_name] [options]"

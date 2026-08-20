@@ -108,4 +108,24 @@ export const variantsApi = {
 
   updateThresholds: (data: Partial<Record<'phash' | 'audio' | 'seg' | 'combined', number>>) =>
     client.put('/variant-thresholds', data) as Promise<Record<string, number>>,
+
+  // #274 A4：清理存量卡住的 running 变体（标记为 failed）
+  cleanupStuck: (timeoutMinutes = 30) =>
+    client.post('/variants/cleanup-stuck', null, { params: { timeout_minutes: timeoutMinutes } }) as Promise<{
+      cleaned: number;
+      remaining_running: number;
+      stuck_count: number;
+    }>,
+
+  // #274 B：删除单变体（DB + MinIO）
+  removeVariant: (id: string) =>
+    client.delete(`/variants/${id}`) as Promise<{ deleted: string }>,
+
+  // #274 B：删除整组（组内全部变体 + MinIO；基准切片输出保留）
+  removeGroup: (groupId: string) =>
+    client.delete(`/variants/group/${groupId}`) as Promise<{ deleted: number }>,
+
+  // #274 C：下载变体视频（返回 presigned URL 强制下载链接）
+  downloadVariant: (id: string) =>
+    client.get(`/variants/${id}/download`) as Promise<{ download_url: string; file_name: string }>,
 };

@@ -32,7 +32,8 @@ from app.models.models import (
     user_can_access_all_materials,
 )
 from app.models.drama import Drama
-from app.services.minio_service import get_presigned_url
+from app.services.data_scope import check_project_access_by_episode
+from app.services.minio_service import get_presigned_url, delete_file
 
 router = APIRouter()
 
@@ -342,6 +343,146 @@ async def _check_output_access(session, out: SliceOutput, current_user: User):
     if not episode:
         return
     await check_project_access_by_episode(session, episode, current_user)
+
+
+async def _load_variant_or_404(session, variant_id: str) -> ClipVariant:
+    """按 UUID 加载变体，不存在/格式非法抛 404/400。"""
+    v = (await session.execute(
+        select(ClipVariant).where(ClipVariant.id == uuid_of(variant_id))
+    )).scalar_one_or_none()
+    if v is None:
+        raise HTTPException(status_code=404, detail="variant not found")
+    return v
+
+
+async def _guard_variant_access(session, v: ClipVariant, current_user):
+    """数据隔离：删除/下载前校验当前用户对该变体所属切片输出的项目访问权限。"""
+    if current_user is None or user_can_access_all_materials(current_user):
+        return
+    out = (await session.execute(
+        select(SliceOutput).where(SliceOutput.id == v.output_id)
+    )).scalar_one_or_none()
+    if out is None:
+        return
+    await _check_output_access(session, out, current_user)
+
+
+async def _delete_minio_file(file_key: str, bucket: str = settings.MINIO_BUCKET_SLICED):
+    """删 MinIO 对象（容错：对象不存在时忽略，防孤儿）。"""
+    if not file_key:
+        return
+    try:
+        await delete_file(bucket, file_key)
+    except Exception as e:
+        # 删除失败不阻断 DB 删除，仅记录（对象可能已不存在，留日志便于排查）
+        import logging
+        logging.getLogger(__name__).warning("delete MinIO %s/%s failed: %s", bucket, file_key, e)
+
+
+@router.post("/variants/cleanup-stuck")
+async def cleanup_stuck_variants(
+    timeout_minutes: int = 30,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """A4 存量清理：把长时间未更新（status=running 且超时）的变体标记为 failed。
+
+    DSH 冒烟可直接调用清存量 16 个永久 running。
+    返回 {cleaned, remaining_running}。
+    """
+    from datetime import timedelta
+    from sqlalchemy import update as _update
+    from datetime import datetime as _dt
+    cutoff = _dt.utcnow() - timedelta(minutes=max(1, int(timeout_minutes)))
+    async with async_session_factory() as session:
+        stuck = (await session.execute(
+            select(ClipVariant)
+            .where(ClipVariant.status == "running")
+            .where(ClipVariant.updated_at < cutoff)
+        )).scalars().all()
+        ids = [v.id for v in stuck]
+        cleaned = 0
+        if ids:
+            result = await session.execute(
+                _update(ClipVariant)
+                .where(ClipVariant.id.in_(ids))
+                .values(status="failed", error_message="cleanup-stuck: 超时未更新，标记失败")
+            )
+            cleaned = result.rowcount or 0
+        # 事务内只读 + 写：统一提交
+        await session.commit()
+    return {"cleaned": cleaned, "remaining_running": cleaned, "stuck_count": len(ids)}
+
+
+@router.delete("/variants/{variant_id}")
+async def delete_variant(
+    variant_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """B 删除单变体：DB 记录（ClipVariant + VideoFingerprint 级联）+ MinIO 变体文件。"""
+    from sqlalchemy import delete as _delete
+    async with async_session_factory() as session:
+        v = await _load_variant_or_404(session, variant_id)
+        await _guard_variant_access(session, v, current_user)
+        file_key = v.file_key
+        await session.execute(
+            _delete(ClipVariant).where(ClipVariant.id == v.id)
+        )
+        # VideoFingerprint 有 ondelete=CASCADE，ORM 级联删除
+        await session.commit()
+    await _delete_minio_file(file_key)
+    return {"deleted": variant_id}
+
+
+@router.delete("/variants/group/{group_id}")
+async def delete_variant_group(
+    group_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """B 删除整组：组内全部变体（DB + MinIO）；基准 SliceOutput 保留，仅重置 variant_group_id。"""
+    from sqlalchemy import delete as _delete, update as _update
+    async with async_session_factory() as session:
+        group_uuid = uuid_of(group_id)
+        variants = (await session.execute(
+            select(ClipVariant).where(ClipVariant.variant_group_id == group_uuid)
+        )).scalars().all()
+        if not variants:
+            raise HTTPException(status_code=404, detail="variant group not found")
+        # 数据隔离：以组内第一个变体为锚校验访问权限
+        await _guard_variant_access(session, variants[0], current_user)
+        file_keys = [v.file_key for v in variants if v.file_key]
+        vid_list = [v.id for v in variants]
+        # 删除组内变体（VideoFingerprint 级联）
+        await session.execute(
+            _delete(ClipVariant).where(ClipVariant.variant_group_id == group_uuid)
+        )
+        # 重置基准 SliceOutput：解除变体组归属（基准文件本身保留，不删）
+        await session.execute(
+            _update(SliceOutput)
+            .where(SliceOutput.variant_group_id == group_uuid)
+            .values(variant_group_id=None)
+        )
+        await session.commit()
+    for fk in file_keys:
+        await _delete_minio_file(fk)
+    return {"deleted": len(vid_list)}
+
+
+@router.get("/variants/{variant_id}/download")
+async def download_variant(
+    variant_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """C 下载变体视频：返回 MinIO presigned URL（强制下载，数据隔离校验）。"""
+    async with async_session_factory() as session:
+        v = await _load_variant_or_404(session, variant_id)
+        await _guard_variant_access(session, v, current_user)
+        file_key = v.file_key
+    if not file_key:
+        raise HTTPException(status_code=404, detail="variant has no file")
+    url = await get_presigned_url(
+        settings.MINIO_BUCKET_SLICED, file_key, expires_seconds=3600, as_attachment=True
+    )
+    return {"download_url": url, "file_name": v.file_name or "variant.mp4"}
 
 
 @router.get("/dedupe/slice-outputs")

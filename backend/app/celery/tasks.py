@@ -47,6 +47,8 @@ celery_app.conf.update(
         "lan_source": {"exchange": "lan_source"},
         # 解耦模式 AI 选点消费者独立队列：重计算 + 长轮询，避免与串行批处理抢占 default
         "selection": {"exchange": "selection"},
+        # 变体生成独立队列：ffmpeg 重计算 + 撞车重试，避免被 batch 任务挤占 default 8 小时（#274 A2）
+        "variant": {"exchange": "variant"},
         "default": {"exchange": "default"},
     },
     task_routes={
@@ -68,6 +70,10 @@ celery_app.conf.update(
         "wechat_dl.download": {"queue": "wechat_dl"},
         # 局域网获取剧集导入（lan_source）：独立 lan_source 队列
         "lan_source.import_episodes": {"queue": "lan_source"},
+        # 变体生成/指纹复核（#274 A2）：独立 variant 队列，独占 worker-variant 消费，
+        # 不再与 batch/slice 抢 default/video_processing，杜绝排队 8 小时 + 超时被杀。
+        "app.celery.variant_tasks.generate_variants_task": {"queue": "variant"},
+        "app.celery.variant_tasks.verify_variant_fingerprint_task": {"queue": "variant"},
     },
     beat_schedule={
         "collect-metrics-daily": {
