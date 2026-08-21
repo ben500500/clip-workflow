@@ -24,7 +24,7 @@ from app.config import settings
 from app.models.drama import Drama, gen_drama_code
 from app.models.models import Episode, Project, SystemConfig
 
-from lan_source.client import CdnEpisode, LanSourceError, get_client
+from lan_source.client import CdnEpisode, LanSourceNotFound, get_client
 from lan_source.config import LanSourceConfig, load_lan_source_config
 from lan_source.models import LanSourceImport
 
@@ -238,8 +238,9 @@ async def _discover_episodes(task: LanSourceImport, cfg: Optional[LanSourceConfi
     client = get_client(cfg)
     try:
         return await client.fetch_episodes(task.drama_name)
-    except LanSourceError as e:
-        raise LanSourceImportError(str(e)) from e
+    except LanSourceNotFound as e:
+        # 剧不存在（精确匹配 + 归一化模糊匹配均未命中），属确定性失败，不可重试
+        raise LanSourceImportError(f"《{task.drama_name}》在局域网源暂无剧集: {e}") from e
     except Exception as e:
         raise RetryableLanSourceError(f"发现剧集直链失败(可重试): {e}") from e
 

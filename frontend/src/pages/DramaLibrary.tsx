@@ -125,6 +125,8 @@ const DramaLibrary: React.FC = () => {
   const [lanDramas, setLanDramas] = useState<{ name: string; total: number | null }[]>([]);
   const [lanPreview, setLanPreview] = useState<LanSourceEpisodeItem[] | null>(null);
   const [lanPreviewLoading, setLanPreviewLoading] = useState(false);
+  // 局域网面板内的轻提示（打开详情自动 preview / 加载清单 失败时不弹全局 error，只在面板内提示）
+  const [lanNotice, setLanNotice] = useState<string | null>(null);
   const [lanImporting, setLanImporting] = useState(false);
   const [lanTask, setLanTask] = useState<{
     id: string; drama_name: string; status: string; progress: number; message: string | null;
@@ -249,7 +251,8 @@ const DramaLibrary: React.FC = () => {
       const res = await getDrama(d.id);
       setDetail(res);
       // 打开剧目详情自动用当前剧目名拉取局域网预览（保留下方手动输入兜底）
-      if (res?.name) previewLanDrama(res.name);
+      // silent=true：自动 preview 失败时不弹全局 error，只在局域网面板内轻提示
+      if (res?.name) previewLanDrama(res.name, true);
     } catch (e) {
       message.error((e as Error).message || '加载详情失败');
     } finally {
@@ -308,28 +311,43 @@ const DramaLibrary: React.FC = () => {
   // 加载局域网可导入的剧目清单
   const loadLanDramas = async () => {
     setLanPreview(null);
+    setLanNotice(null);
     try {
       const res = await lanSourceApi.getDramas();
       setLanDramas(res.items.map((d) => ({ name: d.name, total: d.total })));
-      if (!res.items.length) message.info('管理平台未返回剧目清单，可手动输入剧目名预览');
+      if (!res.items.length) {
+        setLanNotice('局域网源暂未返回剧目清单，可手动输入剧目名预览重试');
+      }
     } catch (e) {
-      message.error((e as Error).message || '获取局域网剧目清单失败');
+      // 清单拉取失败只在面板内轻提示，不弹全局 error 打断
+      setLanNotice((e as Error).message || '获取局域网剧目清单失败');
       setLanDramas([]);
     }
   };
 
   // 预览某剧目直链（发现但不入库）
-  const previewLanDrama = async (name: string) => {
+  // silent=true 时失败不弹全局 error（打开详情自动预览场景），只在局域网面板内轻提示
+  const previewLanDrama = async (name: string, silent?: boolean) => {
     const trimmed = (name || '').trim();
     if (!trimmed) return;
     setLanPreviewLoading(true);
     setLanPreview(null);
+    setLanNotice(null);
     try {
       const res = await lanSourceApi.preview(trimmed);
       setLanPreview(res.items);
-      if (!res.items.length) message.warning(`《${trimmed}》未返回剧集直链，请确认局域网源地址或剧目名`);
+      if (!res.items.length) setLanNotice(`《${trimmed}》未返回剧集直链，请确认局域网源地址或剧目名`);
     } catch (e) {
-      message.error((e as Error).message || `预览《${trimmed}》剧集失败`);
+      const err = e as Error & { status?: number };
+      // 剧不存在（404）：语义明确，一律走面板内轻提示（自动/手动预览都不弹全局 error）
+      if (err.status === 404) {
+        setLanNotice(err.message || `《${trimmed}》在局域网源暂无剧集`);
+      } else if (silent) {
+        // 自动 preview 静默：失败不弹全局 error，只在面板内轻提示
+        setLanNotice(err.message || `预览《${trimmed}》剧集失败`);
+      } else {
+        message.error(err.message || `预览《${trimmed}》剧集失败`);
+      }
     } finally {
       setLanPreviewLoading(false);
     }
@@ -849,6 +867,15 @@ const DramaLibrary: React.FC = () => {
                     onClick={() => submitLanImport(lanSelectName || lanManualName)}
                   >导入到切片</Button>
                 </Space.Compact>
+                {lanNotice && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={lanNotice}
+                    closable
+                    onClose={() => setLanNotice(null)}
+                  />
+                )}
                 {lanPreview && (
                   <Alert
                     type="info"

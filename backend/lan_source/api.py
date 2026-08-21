@@ -27,7 +27,7 @@ from app.config import settings
 from app.database import get_db
 from app.models.models import User, SystemConfig
 
-from lan_source.client import get_client
+from lan_source.client import LanSourceNotFound, get_client
 from lan_source.config import load_lan_source_config
 from lan_source.models import LanSourceImport
 from lan_source.service import (
@@ -101,6 +101,8 @@ async def lan_source_preview(
     client = get_client(cfg)
     try:
         episodes = await client.fetch_episodes(drama_name)
+    except LanSourceNotFound:
+        raise HTTPException(status_code=404, detail=f"《{drama_name}》在局域网源暂无剧集")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"获取《{drama_name}》剧集直链失败: {e}")
     return {

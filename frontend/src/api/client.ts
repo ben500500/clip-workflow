@@ -109,7 +109,9 @@ client.interceptors.response.use(
         error.response.data?.message ||
         error.response.statusText ||
         '请求失败';
-      return Promise.reject(new Error(detail));
+      const err = new Error(detail) as Error & { status?: number };
+      err.status = status;
+      return Promise.reject(err);
     }
     if (error.message?.includes('Network Error')) {
       return Promise.reject(new Error('网络连接失败，请检查服务是否已启动'));
