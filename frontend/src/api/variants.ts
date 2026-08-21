@@ -16,6 +16,8 @@ export interface VariantMatrixItem {
   phash_distance?: number | null;
   audio_distance?: number | null;
   seg_distance?: number | null;
+  // 各算法指纹可用性标注：false 表示指纹缺失，distance 为降级占位 1.0（非真实无差异）
+  available?: { phash?: boolean; audio?: boolean; seg?: boolean } | null;
   structural_diff?: Record<string, unknown> | null;
   collision: boolean;
   collision_reason?: string | null;

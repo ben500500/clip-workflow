@@ -432,34 +432,54 @@ def _extract_algo(fp_dict: dict, algo: str):
 
 def _algo_distance(fa: dict, fb: dict, algo: str) -> float:
     """比较两组指纹在指定算法上的距离（0~1）。缺失视为 1.0。"""
+    d, _ = _algo_distance_available(fa, fb, algo)
+    return d
+
+
+def _algo_distance_available(fa: dict, fb: dict, algo: str) -> tuple[float, bool]:
+    """比较两组指纹在指定算法上的距离（0~1），并标注可用性。
+
+    返回 (distance, available)：
+      - available=True  ：该算法两端指纹均存在，distance 为真实计算值；
+      - available=False ：任一/两端指纹缺失（如无音频轨、样本过短、无场景切换），
+                           distance 降级为占位 1.0，并非真实“无差异”。
+    """
     ha, va = _extract_algo(fa, algo)
     hb, vb = _extract_algo(fb, algo)
     if not ha or not hb:
-        return 1.0
+        return 1.0, False
     # 画面类（phash）优先用向量距离（对尺寸变化更鲁棒）
     if algo == "phash_v1" and va and vb:
-        return vector_distance(va, vb)
-    return hamming_distance_hex(ha, hb)
+        return vector_distance(va, vb), True
+    return hamming_distance_hex(ha, hb), True
 
 
 def compare_fingerprints(fa: dict, fb: dict) -> dict:
-    """比较两组指纹，返回多路距离 + 综合距离。
+    """比较两组指纹，返回多路距离 + 综合距离 + 各算法可用性标注。
 
-    返回 {phash_distance, audio_distance, seg_distance, combined_distance}，
+    返回 {phash_distance, audio_distance, seg_distance, combined_distance, available}，
     各距离 0~1（0=完全相同，1=完全不同）。
+    - available: {phash, audio, seg} 三个 bool，标注对应算法是否为**真实计算**；
+      为 False 表示该算法指纹缺失（无音频轨 / 样本过短 / 无场景切换等），
+      此时对应 distance 为**降级占位 1.0**，不代表真实“无差异”。
 
     兼容两种输入结构：compute_full_fingerprint 的全量输出，或单算法 DB 记录
     {algorithm, hash_value, vector}；同路指纹缺失时该路距离记为 1.0。
     """
-    phash_d = _algo_distance(fa, fb, "phash_v1")
-    audio_d = _algo_distance(fa, fb, "audio_v2")
-    seg_d = _algo_distance(fa, fb, "seq_v1")
+    phash_d, phash_av = _algo_distance_available(fa, fb, "phash_v1")
+    audio_d, audio_av = _algo_distance_available(fa, fb, "audio_v2")
+    seg_d, seg_av = _algo_distance_available(fa, fb, "seq_v1")
     combined = (_W_PHASH * phash_d) + (_W_AUDIO * audio_d) + (_W_SEG * seg_d)
     return {
         "phash_distance": round(phash_d, 4),
         "audio_distance": round(audio_d, 4),
         "seg_distance": round(seg_d, 4),
         "combined_distance": round(combined, 4),
+        "available": {
+            "phash": phash_av,
+            "audio": audio_av,
+            "seg": seg_av,
+        },
     }
 
 
