@@ -84,10 +84,10 @@ DEFAULT_CONFIGS: List[dict] = [
         "value": {
             "llm_provider": "dashscope",
             "llm_model": "qwen-plus",
-            "min_score_threshold": 60,
+            "min_score_threshold": 50,
             "max_clips": 30,
-            "min_duration": 30,
-            "max_duration": 180,
+            "min_duration": 20,
+            "max_duration": 70,
         },
         "description": "AI 智能选点默认参数：min_score_threshold 为入选最低评分(0-100)；max_clips 为最多生成的候选片段数；min_duration/max_duration 为候选片段的最短/最长时长(秒)，超出范围的高光片段会被裁剪或过滤。",
     },
