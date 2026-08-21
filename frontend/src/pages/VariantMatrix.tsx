@@ -199,6 +199,24 @@ const VariantMatrix: React.FC = () => {
     }
   };
 
+  // 整组一键打包下载（auth blob 触发，避免 window.open 带不上 auth header）
+  const handleDownloadGroup = async (groupId: string) => {
+    try {
+      const blob = await variantsApi.downloadGroupZip(groupId);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `variants_${groupId.slice(0, 8)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      message.success('整组变体已开始下载');
+    } catch (e) {
+      message.error((e as Error).message || '整组下载失败');
+    }
+  };
+
   // #274 B：删除单变体（DB + MinIO）
   const handleDeleteVariant = async (v: VariantMatrixItem) => {
     try {
@@ -250,6 +268,14 @@ const VariantMatrix: React.FC = () => {
         const meta = STATUS_META[s] || { color: 'default', label: s };
         return <Tag color={meta.color}>{meta.label}</Tag>;
       },
+    },
+    {
+      title: '预览', dataIndex: 'preview_url', width: 170,
+      render: (url: string | null | undefined) =>
+        url ? (
+          <video src={url} muted preload="metadata" controls
+                 style={{ height: 120, borderRadius: 6, background: '#000' }} />
+        ) : <Text type="secondary">-</Text>,
     },
     {
       title: '画面距离', dataIndex: 'phash_distance', width: 100,
@@ -342,6 +368,13 @@ const VariantMatrix: React.FC = () => {
               {g.created_at ? dayjs(g.created_at).format('MM-DD HH:mm') : ''}
             </Text>
             <Text type="secondary" style={{ fontSize: 12 }}>共 {g.variants.length} 变体</Text>
+            <Button
+              size="small"
+              icon={<DownloadOutlined />}
+              onClick={(e) => { e.stopPropagation(); handleDownloadGroup(g.variant_group_id); }}
+            >
+              一键下载全部
+            </Button>
             <Popconfirm
               title="确认删除整组变体？"
               description="将删除组内全部变体（DB + MinIO），基准切片输出保留。不可恢复。"
@@ -368,7 +401,7 @@ const VariantMatrix: React.FC = () => {
             loading={loading}
             size="small"
             pagination={false}
-            scroll={{ x: 1100 }}
+            scroll={{ x: 1300 }}
           />
         ),
       })),

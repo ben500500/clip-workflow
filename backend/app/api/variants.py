@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 
@@ -33,7 +34,7 @@ from app.models.models import (
 )
 from app.models.drama import Drama
 from app.services.data_scope import check_project_access_by_episode
-from app.services.minio_service import get_presigned_url, delete_file
+from app.services.minio_service import get_presigned_url, delete_file, download_file
 
 router = APIRouter()
 
@@ -98,6 +99,10 @@ async def _list_variant_groups() -> list[dict]:
                     "status": v.status,
                     "file_name": v.file_name,
                     "file_key": v.file_key,
+                    # 行内视频预览：内联可播放的 presigned URL（as_attachment=False），与下载（attachment）区分
+                    "preview_url": (await get_presigned_url(
+                        settings.MINIO_BUCKET_SLICED, v.file_key, expires_seconds=3600, as_attachment=False
+                    )) if v.file_key else None,
                     "phash_distance": v.phash_distance,
                     "audio_distance": v.audio_distance,
                     "seg_distance": v.seg_distance,
@@ -465,6 +470,65 @@ async def delete_variant_group(
     for fk in file_keys:
         await _delete_minio_file(fk)
     return {"deleted": len(vid_list)}
+
+
+@router.get("/variants/group/{group_id}/download-zip")
+async def download_variant_group_zip(
+    group_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """整组一键打包下载：把组内全部变体视频打成一个 zip 返回。
+
+    与单变体 /variants/{id}/download 不同，本端点直接返回 zip 字节流（需 auth header），
+    前端用 blob 触发下载（window.open 带不上 auth，故不可用）。
+    路由 /variants/group/{group_id}/download-zip（4 段）不会与
+    /variants/{variant_id}（2 段）或 /variants/{variant_id}/download（3 段）冲突。
+    """
+    import io
+    import zipfile
+
+    group_uuid = uuid_of(group_id)
+    async with async_session_factory() as session:
+        variants = (await session.execute(
+            select(ClipVariant).where(ClipVariant.variant_group_id == group_uuid)
+        )).scalars().all()
+        if not variants:
+            raise HTTPException(status_code=404, detail="variant group not found")
+        # 数据隔离：以组内第一个变体为锚校验当前用户对所属项目的访问权限
+        await _guard_variant_access(session, variants[0], current_user)
+        # 快照文件信息（在事务内读取，避免提交/回滚后访问过期对象）
+        variant_snapshot = [{
+            "variant_index": v.variant_index,
+            "file_key": v.file_key,
+            "file_name": v.file_name,
+        } for v in variants]
+        # 只读块：结束事务，MinIO 下载在事务外进行，避免长占 DB 连接
+        await session.rollback()
+
+    # 按 variant_index 排序，保证 zip 内顺序稳定
+    variant_snapshot.sort(key=lambda x: (x["variant_index"] or 0))
+    buf = io.BytesIO()
+    any_file = False
+    # 短视频已压缩，ZIP_STORED 省 CPU（DEFLATED 几乎压不动）
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        for idx, v in enumerate(variant_snapshot, start=1):
+            file_key = v["file_key"]
+            if not file_key:
+                continue
+            data = await download_file(settings.MINIO_BUCKET_SLICED, file_key)
+            if not data:
+                continue
+            any_file = True
+            vi = v["variant_index"] or idx
+            name = f"variant_{vi}_{v['file_name'] or f'variant_{vi}.mp4'}"
+            z.writestr(name, data)
+    if not any_file:
+        raise HTTPException(status_code=404, detail="该组没有可下载的变体视频文件")
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="variants_{group_id}.zip"'},
+    )
 
 
 @router.get("/variants/{variant_id}/download")
