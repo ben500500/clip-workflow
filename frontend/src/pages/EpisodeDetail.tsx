@@ -121,8 +121,8 @@ const EpisodeDetail: React.FC = () => {
   const [sliceMode, setSliceMode] = useState('fast');
   // 去重模式档位：轻/标准/重（老电视质感去重强度，默认标准档）
   const [dedupePreset, setDedupePreset] = useState<string>('std_crop_desat');
-  // 输出档位：original（默认）/ auto / 1080p / 720p / 480p（高分辨率/高 fps 素材降档提速）
-  const [outputTier, setOutputTier] = useState<string>('original');
+  // 输出档位：original / auto（默认）/ 1080p / 720p / 480p（高分辨率/高 fps 素材降档提速）
+  const [outputTier, setOutputTier] = useState<string>('auto');
   // 一键切片去重模式开关（配置弹窗内可设，开启后一键切片按档位做画面去重）
   const [dedupeEnabled, setDedupeEnabled] = useState(false);
   // ── 视频封面（选择图片作为视频首帧，一键切片时下发） ──
@@ -327,6 +327,19 @@ const EpisodeDetail: React.FC = () => {
     }
   };
 
+  // 删除单条选点执行历史记录
+  const handleDeleteAutoclipHistory = async (runId: string) => {
+    try {
+      await autoclipApi.deleteHistory(episodeId, runId);
+      // 若被删的正是「选点历史」下拉中选中的那条，清除选择，避免引用已删除记录
+      if (sliceAutoclipRunId === runId) setSliceAutoclipRunId(undefined);
+      message.success('选点执行记录已删除');
+      fetchAutoclipHistory();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '删除失败');
+    }
+  };
+
   // ── 单独刷新「区间检测执行历史」 ──
   const fetchIntervalHistory = async () => {
     if (!episodeId) return;
@@ -460,7 +473,7 @@ const EpisodeDetail: React.FC = () => {
     setBadgeDefaultWidth(p.badge_default_width);
     setDedupeEnabled(p.dedupe_enabled ?? false);
     setDedupePreset(p.dedupe_preset ?? 'std_crop_desat');
-    setOutputTier(p.output_tier ?? 'original');
+    setOutputTier(p.output_tier ?? 'auto');
     setActivePresetId(p.id);
   };
 
@@ -485,18 +498,38 @@ const EpisodeDetail: React.FC = () => {
     message.success(`已应用配置「${preset.name}」`);
   };
 
-  // 收集需持久化到个人账号的切片配置（含切片模式/去重档位）
+  // 收集需持久化到个人账号的切片配置（含切片模式/去重档位/AI 选点参数/视频首帧封面）
   const collectPersistConfig = () => ({
     sliceMode,
     dedupePreset,
     ...collectCurrentPresetConfig(),
     badge_default_width: badgeDefaultWidth,
+    // AI 智能选点参数
+    autoclip_max_clips: maxClips,
+    autoclip_min_score_threshold: minScoreThreshold,
+    autoclip_min_duration: minClipDuration,
+    autoclip_max_duration: maxClipDuration,
+    autoclip_frame_analysis: frameAnalysis,
+    // 视频首帧封面
+    cover_image_key: coverImageKey,
+    cover_image_name: coverImageName,
   });
 
   // 应用个人账号配置到当前页面状态
   const applyPersistConfig = (cfg: Record<string, unknown>) => {
     if (cfg.sliceMode) setSliceMode(String(cfg.sliceMode));
     if (cfg.dedupePreset) setDedupePreset(String(cfg.dedupePreset));
+    // AI 智能选点参数
+    if (typeof cfg.autoclip_max_clips === 'number') setMaxClips(cfg.autoclip_max_clips);
+    if (typeof cfg.autoclip_min_score_threshold === 'number') setMinScoreThreshold(cfg.autoclip_min_score_threshold);
+    if (typeof cfg.autoclip_min_duration === 'number') setMinClipDuration(cfg.autoclip_min_duration);
+    if (typeof cfg.autoclip_max_duration === 'number') setMaxClipDuration(cfg.autoclip_max_duration);
+    if (typeof cfg.autoclip_frame_analysis === 'boolean') setFrameAnalysis(cfg.autoclip_frame_analysis);
+    // 视频首帧封面
+    if (typeof cfg.cover_image_key === 'string' && cfg.cover_image_key) {
+      setCoverImageKey(cfg.cover_image_key);
+      setCoverImageName(typeof cfg.cover_image_name === 'string' ? cfg.cover_image_name : null);
+    }
     // 应用云端个人配置时保留用户当前激活的预设 id（从 localStorage 读），
     // 避免把 activePresetId 覆盖成不存在的 'cloud' 占位 id，
     // 否则「选择配置」下拉会因为 value 无匹配选项而显示出一个名为 "cloud" 的幽灵配置。
@@ -570,12 +603,16 @@ const EpisodeDetail: React.FC = () => {
     sliceMode, dedupePreset, vert2horizEnabled, vert2horizMode, vert2horizRatio,
     vert2horizOutputSize, vert2horizDetectInterval, vert2horizSmoothWindow,
     vert2horizMinStep, vert2horizFaceMargin, subtitleEnabled, subtitleFontRatio,
-    subtitleSpacing, subtitleStyle, subtitleColor, subtitleBorderColor,
+    subtitleSpacing, subtitleBold, subtitleStyle, subtitleColor, subtitleBorderColor,
     subtitleMaskEnabled, subtitleMaskStyle, subtitleMaskTemporal, subtitleMaskSpatial,
-    subtitleMaskWidthRatio, subtitleMaskHeightRatio, subtitleMaskBottomRatio, subtitleMaskSrtOffset,
+    subtitleMaskPreset, subtitleMaskWidthRatio, subtitleMaskHeightRatio, subtitleMaskBottomRatio,
+    subtitleMaskSrtOffset, subtitleAlignMask,
     watermarkMaskEnabled, watermarkMaskStyle, watermarkMaskWidthRatio, watermarkMaskHeightRatio,
     watermarkMaskBottomRatio, textOverlayEnabled, textOverlays, watermarkEnabled, watermarkText,
     watermarkFontSize, watermarkOpacity, watermarkPosition, watermarkStyle, badgeDefaultWidth,
+    dedupeEnabled, outputTier,
+    maxClips, minScoreThreshold, minClipDuration, maxClipDuration, frameAnalysis,
+    coverImageKey, coverImageName,
   ]);
 
   useEffect(() => {
@@ -1028,7 +1065,7 @@ const EpisodeDetail: React.FC = () => {
         // 视频封面：作为视频首帧
         cover_image_key: coverImageKey || undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
-        output_tier: outputTier || 'original',
+        output_tier: outputTier || 'auto',
         // 去重模式：一键切片启用后按档位做画面去重（手动配置沿用主页「去重高级配置」）
         dedupe_config: dedupeEnabled ? buildDedupeConfig(dedupePreset, dedupeManual) : undefined,
         // 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本）
@@ -1211,7 +1248,7 @@ const EpisodeDetail: React.FC = () => {
         // 视频封面（首帧）：选择图片作为成品视频首帧（与一键切片共用同一封面选择）
         cover_image_key: coverImageKey || undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
-        output_tier: outputTier || 'original',
+        output_tier: outputTier || 'auto',
         // 去重模式档位（轻/标准/重）+ 手动配置（每项手段可单独覆盖预设），仅去重模式生效
         dedupe_config: mode === 'dedupe'
           ? buildDedupeConfig(dedupePreset, dedupeManual)
@@ -1574,6 +1611,26 @@ const EpisodeDetail: React.FC = () => {
                     <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text>
                   ),
                 },
+                {
+                  title: '操作',
+                  key: 'action',
+                  width: 80,
+                  render: (_: unknown, r: AutoClipRunRecord) =>
+                    r.status === 'running' || r.status === 'pending' ? (
+                      <Text type="secondary" style={{ fontSize: 12 }}>运行中</Text>
+                    ) : (
+                      <Popconfirm
+                        title="确定删除该条选点执行记录？"
+                        description="仅删除历史记录，不影响片段审核结果"
+                        okText="删除"
+                        cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                        onConfirm={() => handleDeleteAutoclipHistory(r.id)}
+                      >
+                        <Button size="small" danger type="text" icon={<DelIcon />}>删除</Button>
+                      </Popconfirm>
+                    ),
+                },
               ]}
             />
           )}
@@ -1708,7 +1765,7 @@ const EpisodeDetail: React.FC = () => {
             <Select
               size="small"
               style={{ width: 220 }}
-              value={outputTier || 'original'}
+              value={outputTier || 'auto'}
               onChange={setOutputTier}
               options={[
                 { value: 'original', label: '原档（不处理）' },
@@ -2775,7 +2832,7 @@ const EpisodeDetail: React.FC = () => {
               <Select
                 size="small"
                 style={{ width: 240 }}
-                value={outputTier || 'original'}
+                value={outputTier || 'auto'}
                 onChange={setOutputTier}
                 options={[
                   { value: 'original', label: '原档（不处理）' },

@@ -633,7 +633,7 @@ async def _create_slice_task_record(
     # 视频封面：选择图片作为视频首帧（重试时保留）
     slice_task.cover_image_key = data.cover_image_key or None
     # 输出档位：高分辨率/高 fps 素材降档提速（重试时保留）
-    slice_task.output_tier = data.output_tier or "original"
+    slice_task.output_tier = data.output_tier or "auto"
 
     configs = {
         "watermark": watermark_config,
@@ -1308,7 +1308,7 @@ async def retry_slice_task(
         text_overlays_config=task.text_overlays_config,
         watermark_mask_config=task.watermark_mask_config,
         cover_image_key=task.cover_image_key,
-        output_tier=getattr(task, "output_tier", None) or "original",
+        output_tier=getattr(task, "output_tier", None) or "auto",
         status="pending",
         progress=0.0,
     )
@@ -1341,7 +1341,7 @@ async def retry_slice_task(
             task.watermark_mask_config,
             getattr(task, "subtitle_align_mask", True),
             task.cover_image_key,
-            getattr(task, "output_tier", None) or "original",
+            getattr(task, "output_tier", None) or "auto",
         )
 
         if not published:
@@ -1377,7 +1377,7 @@ async def retry_slice_task(
                 task.watermark_mask_config,
                 getattr(task, "subtitle_align_mask", True),
                 task.cover_image_key,
-                getattr(task, "output_tier", None) or "original",
+                getattr(task, "output_tier", None) or "auto",
             )
         except HTTPException:
             raise
@@ -1408,7 +1408,7 @@ async def retry_slice_task(
                 task.watermark_mask_config,
                 getattr(task, "subtitle_align_mask", True),
                 task.cover_image_key,
-                getattr(task, "output_tier", None) or "original",
+                getattr(task, "output_tier", None) or "auto",
             )
         except Exception as e:
             new_task.status = "failed"

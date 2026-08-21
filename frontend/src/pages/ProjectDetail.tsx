@@ -47,7 +47,7 @@ const DEFAULT_BATCH_CONFIG: BatchSliceConfig = {
   autoClipIfNeeded: true,
   vert2horizEnabled: false,
   subtitleEnabled: false,
-  outputTier: 'original',
+  outputTier: 'auto',
   coverImageKey: null,
   coverImageName: null,
 };
@@ -136,7 +136,7 @@ const ProjectDetail: React.FC = () => {
       dedupePreset: p.dedupe_preset || 'std_crop_desat',
       vert2horizEnabled: p.vert2horiz_enabled,
       subtitleEnabled: p.subtitle_enabled,
-      outputTier: p.output_tier || 'original',
+      outputTier: p.output_tier || 'auto',
     }));
   };
 
@@ -488,7 +488,7 @@ const ProjectDetail: React.FC = () => {
       // 视频封面：作为视频首帧
       cover_image_key: cfg.coverImageKey || undefined,
       // 输出档位：高分辨率/高 fps 素材降档提速
-      output_tier: cfg.outputTier || 'original',
+      output_tier: cfg.outputTier || 'auto',
     });
   };
 
@@ -1021,7 +1021,7 @@ const ProjectDetail: React.FC = () => {
           <Space style={{ width: '100%' }} wrap>
             <Text style={{ fontSize: 13 }}>输出档位</Text>
             <Select
-              value={batchConfig.outputTier || 'original'}
+              value={batchConfig.outputTier || 'auto'}
               onChange={(v) => setBatchConfig((prev) => ({ ...prev, outputTier: v }))}
               style={{ width: 240 }}
               options={[
