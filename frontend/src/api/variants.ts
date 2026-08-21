@@ -129,8 +129,4 @@ export const variantsApi = {
   // #274 C：下载变体视频（返回 presigned URL 强制下载链接）
   downloadVariant: (id: string) =>
     client.get(`/variants/${id}/download`) as Promise<{ download_url: string; file_name: string }>,
-
-  // 整组一键打包下载（带 auth，blob 响应）。注意不可用 window.open（带不上 auth header）
-  downloadGroupZip: (groupId: string) =>
-    client.get(`/variants/group/${groupId}/download-zip`, { responseType: 'blob' }) as Promise<Blob>,
 };

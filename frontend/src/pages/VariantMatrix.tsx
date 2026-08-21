@@ -199,22 +199,36 @@ const VariantMatrix: React.FC = () => {
     }
   };
 
-  // 整组一键打包下载（auth blob 触发，避免 window.open 带不上 auth header）
-  const handleDownloadGroup = async (groupId: string) => {
-    try {
-      const blob = await variantsApi.downloadGroupZip(groupId);
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `variants_${groupId.slice(0, 8)}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-      message.success('整组变体已开始下载');
-    } catch (e) {
-      message.error((e as Error).message || '整组下载失败');
+  // 整组一键下载：不打包，逐个顺序触发浏览器下载（带间隔避免被拦截）
+  const handleDownloadGroup = async (g: VariantGroup) => {
+    const variants = g.variants ?? [];
+    if (!variants.length) {
+      message.warning('该组没有可导出的变体');
+      return;
     }
+    let ok = 0;
+    for (const v of variants) {
+      if (!v.id) continue;
+      try {
+        const res = await variantsApi.downloadVariant(v.id);
+        if (res.download_url) {
+          const a = document.createElement('a');
+          a.href = res.download_url;
+          a.download = res.file_name || `variant_${v.id}.mp4`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          ok++;
+        } else {
+          message.warning(`变体 ${v.variant_index ?? v.id} 无下载文件`);
+        }
+      } catch (e) {
+        message.error(`变体 ${v.variant_index ?? v.id} 下载失败: ${(e as Error).message}`);
+      }
+      // 顺序下载间隔，避免浏览器把多次下载当弹窗拦截
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    message.success(`已触发 ${ok}/${variants.length} 个变体下载`);
   };
 
   // #274 B：删除单变体（DB + MinIO）
@@ -371,7 +385,7 @@ const VariantMatrix: React.FC = () => {
             <Button
               size="small"
               icon={<DownloadOutlined />}
-              onClick={(e) => { e.stopPropagation(); handleDownloadGroup(g.variant_group_id); }}
+              onClick={(e) => { e.stopPropagation(); handleDownloadGroup(g); }}
             >
               一键下载全部
             </Button>
