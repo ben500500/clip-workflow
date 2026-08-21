@@ -93,6 +93,7 @@ DEDUPE_PRESETS = {
         "hflip": False,
         "speed": 1.02,
         "saturation": 0.92,
+        "hue": 0.0,  # P1 色相旋转（度），0 不旋转；变体生成按配方池随机，普通去重不生效
         "gamma": 1.02,
         "contrast": 1.01,
         "brightness": 0.005,
@@ -114,6 +115,7 @@ DEDUPE_PRESETS = {
         "hflip": False,
         "speed": 1.03,
         "saturation": 0.88,
+        "hue": 0.0,  # P1 色相旋转（度），0 不旋转；变体生成按配方池随机，普通去重不生效
         "gamma": 1.02,
         "contrast": 1.02,
         "brightness": 0.008,
@@ -135,6 +137,7 @@ DEDUPE_PRESETS = {
         "hflip": False,
         "speed": 1.05,
         "saturation": 0.84,
+        "hue": 0.0,  # P1 色相旋转（度），0 不旋转；变体生成按配方池随机，普通去重不生效
         "gamma": 1.03,
         "contrast": 1.03,
         "brightness": 0.012,
@@ -159,6 +162,7 @@ DEDUPE_PRESETS = {
         "hflip": False,
         "speed": 1.03,
         "saturation": 0.90,
+        "hue": 0.0,  # P1 色相旋转（度），0 不旋转；变体生成按配方池随机，普通去重不生效
         "gamma": 1.02,
         "contrast": 1.02,
         "brightness": 0.008,
@@ -183,6 +187,7 @@ DEDUPE_PRESETS = {
         "hflip": False,
         "speed": 1.04,
         "saturation": 0.85,
+        "hue": 0.0,  # P1 色相旋转（度），0 不旋转；变体生成按配方池随机，普通去重不生效
         "gamma": 1.03,
         "contrast": 1.03,
         "brightness": 0.01,
@@ -336,6 +341,13 @@ def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: s
         vf_parts.append(f"colorbalance={p['colorbalance']}")
     if p.get("colortemperature"):
         vf_parts.append(f"colortemperature={p['colortemperature']}")
+
+    # P1 色相旋转（hue 滤镜）：标准 libavfilter 滤镜，按配方池随机 ±6° 微调色相，
+    # 在不动画质的前提下增加画面 pHash 差异（de-du P1 画面差异化加强）。
+    # hue 为 0 时不叠加滤镜（普通去重默认 0，无影响）。
+    hue_deg = float(p.get("hue") or 0.0)
+    if hue_deg != 0.0:
+        vf_parts.append(f"hue=H={hue_deg:.1f}")
 
     # 质感层：颗粒噪点（时域+空域，老电视颗粒感；>0 才叠加，0 不引入颗粒）
     if float(p["noise"] or 0) > 0:

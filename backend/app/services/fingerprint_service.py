@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover
     _HAS_CV2 = False
 
 # 默认距离阈值（0~1，越大越安全）：综合指纹距离 < 0.15 判定为撞车（高度相似）
-DEFAULT_PHASH_THRESHOLD = 0.20    # 画面 pHash 汉明距离占比阈值
+DEFAULT_PHASH_THRESHOLD = 0.30    # 画面 pHash 汉明距离占比阈值（de-du P1 校准：0.2→0.3）
 DEFAULT_AUDIO_THRESHOLD = 0.15    # 音频指纹距离阈值
 DEFAULT_SEG_THRESHOLD = 0.30      # 时域序列距离阈值
 # 综合加权（画面为主，音频与时序为辅）

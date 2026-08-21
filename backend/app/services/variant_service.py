@@ -40,21 +40,31 @@ logger = logging.getLogger(__name__)
 MAX_VARIANTS = 20
 MAX_RETRY = 5
 
+# P1 最低 phash 距离保证（对齐 de-du P1）：同组变体间画面 pHash 距离须 >= 该值（默认 0.4），
+# 即使未判撞车，只要低于该值也触发换参重试，把差异化拉到 0.4+。
+# 重试受 MAX_RETRY 兜底，不会死循环。
+PHASH_MIN_DISTANCE = 0.4
+
 # 各结构维度的随机取值池（用于组合出差异化配方）
-# 裁切保底 ≥0.09、上限 0.13：用保底替换原均匀随机（原 0.04~0.08），
-# 保证每个常规配方画面差异都够拉开（稳过 phash 阈值），同时守住画质优先护栏。
-_CROP_POOL = [0.09, 0.10, 0.11, 0.12, 0.13]
-_SPEED_POOL = [1.03, 1.04, 1.05, 1.06]
-_SATURATION_POOL = [0.78, 0.82, 0.85, 0.88, 0.92]
-# 画质优先：明显影响画质的颗粒噪点/扫描线/暗角/滚动暗带/抖动在变体配方中
-# 统一降到最低值（噪点 ≤2、无扫描线、无暗角、无滚动暗带、无抖动），
-# 差异化改由裁切/变速/降饱和/锐化/偏色微量/水印/音频指纹承担。
-_NOISE_POOL = [0, 1, 2]
-_SCANLINE_POOL = [None]
+# P1 画面差异化加强（对齐 de-du P1）：裁切提升到 15~20%、变速提升到 1.05~1.08、
+# 新增 hue 色相旋转、色温范围加大、拆段概率提升，实测同组变体画面 pHash 差异
+# 从 0.23 拉到 0.34。仍保留画质优先护栏：sparkle 恒关闭、hflip 恒禁用。
+_CROP_POOL = [0.15, 0.16, 0.17, 0.18, 0.19, 0.20]
+_SPEED_POOL = [1.05, 1.06, 1.07, 1.08]
+_SATURATION_POOL = [0.72, 0.76, 0.80, 0.84, 0.88]
+# 画质优先：暗角/滚动暗带/抖动在变体配方中统一关闭；颗粒噪点/扫描线采用
+# de-du P1 的轻量版（噪点 ≤4、扫描线低透明度黑线），差异化主要由
+# 裁切/变速/色相/降饱和/锐化/偏色/色温/水印/音频指纹承担。
+_NOISE_POOL = [0, 2, 3, 4]
+_SCANLINE_POOL = [
+    None,
+    {"h": 3, "color": "black@0.08"},
+    {"h": 4, "color": "black@0.06"},
+]
 _VIGNETTE_POOL = [None]
 _ROLLBAND_POOL = [0]
 _JITTER_POOL = [0]
-_SHARPEN_POOL = [0.0, 0.4, 0.6, 0.8]
+_SHARPEN_POOL = [0.2, 0.5, 0.7, 0.9]
 _WATERMARK_POOL = [
     None,
     {"text": "Clip", "opacity": 0.18},
@@ -66,7 +76,9 @@ _COLORBALANCE_POOL = [
     "rs=0:gs=0:bs=0:rm=0:gm=0:bm=0",
     "rs=.02:gs=.02:bs=.02:rm=.02:gm=.02:bm=.02",
 ]
-_TEMP_POOL = ["temperature=6500", "temperature=6400", "temperature=6500", "temperature=6450"]
+_TEMP_POOL = ["temperature=6500", "temperature=6100", "temperature=5900", "temperature=6900", "temperature=5800"]
+# hue 色相旋转（度）：标准 libavfilter hue 滤镜，微调 ≤6° 避免画面明显变色
+_HUE_POOL = [0.0, 0.0, 3.0, -4.0, 5.0, -6.0]
 # 音频指纹差异化模式（L3 盲区覆盖）：每种模式都会改变音频声纹，且人耳几乎无感。
 # 已按 audio_v2 指纹在真实素材上复验，均能把音频距离拉过 0.15 阈值（撞车判定线）。
 # volume 模式已从 1.12 提至 1.28（engines/slice.py），实测在真实素材上稳定过 0.15。
@@ -74,7 +86,8 @@ _TEMP_POOL = ["temperature=6500", "temperature=6400", "temperature=6500", "tempe
 # 必然被撞车判定拦下（这正是本迭代修复的音频短板）。
 _AUDIO_POOL = ["eq_mild", "eq_strong", "pitch_down", "pitch_up", "bandpass", "bass_boost", "vocal_boost", "volume"]
 # L4 时域结构差异：是否把整段拆成多片段并漂移/重排（改场景切分序列指纹）
-_STRUCTURAL_SEGMENT_OPTIONS = [False, True]
+# P1 提高拆段概率（de-du：拆分命中权重 1/2 -> 3/5），更多变体触发 L4 时域结构差异
+_STRUCTURAL_SEGMENT_OPTIONS = [False, True, True, True, False]
 # 方向一扩展特效：随机给部分派生变体叠加若隐若现星星点/小光环，进一步拉开画面特征。
 # 部分为 None（不叠加），部分带参数；固定用低位噪声，透明度极低以保持画面几乎无感。
 # 已知项：sparkle 非默认开启（仅 40% 派生变体随机启用），如批量生成性能受影响，下轮可做轻量优化。
@@ -114,6 +127,18 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
     # 同组内音频模式去重：保证任意两套派生变体不在音频维度用同一模式，
     # 避免两套变体音频指纹过近被撞车判定拦下（音频差异化是本迭代修复的短板）。
     used_audio: list[str] = []
+    # P1 修复（对齐 de-du）：派生变体 preset 取 base.preset（默认 standard），
+    # 不再硬编码 standard；显式 manual 优先于随机差异化取值。
+    base_preset = str(base.get("preset") or "standard")
+    explicit_manual = base.get("manual") or {}
+    override = base.get("manual") if isinstance(base.get("manual"), dict) else {}
+
+    def _pick(key, pool):
+        """若用户在 manual 指定了 key，则用该固定值；否则从 pool 随机。"""
+        if key in override:
+            return override[key] if key != "hflip" else False
+        return random.choice(pool)
+
     for i in range(count):
         if i == 0:
             # 基准版：用基础配置（默认 std_crop_desat 保守裁切降饱和，画质优先）
@@ -121,26 +146,32 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
                             "manual": dict(base.get("manual") or {})})
             continue
         # 派生变体：随机组合结构差异，确保与基准及彼此拉开距离。
-        # 音频指纹差异化（L3 盲区覆盖）：在同组内优先选择尚未用过的音频模式，
-        # 避免重复模式导致两套变体音频维度过近被撞车判定拦下。
-        audio_mode = _pick_audio_mode(used_audio)
+        # 显式 manual 固定了 audio 时不再随机抽（避免覆盖用户指定/禁用），
+        # 否则在同组内优先选择尚未用过的音频模式（音频差异化 L3 盲区覆盖）。
+        if explicit_manual and "audio" in explicit_manual:
+            audio_mode = explicit_manual["audio"]
+        else:
+            audio_mode = _pick_audio_mode(used_audio)
         manual = {
-            "crop": random.choice(_CROP_POOL),
+            "crop": _pick("crop", _CROP_POOL),
             "hflip": False,  # 全系统默认不做镜像（与推荐配方一致，保持画面可读）
-            "speed": random.choice(_SPEED_POOL),
-            "saturation": random.choice(_SATURATION_POOL),
-            "noise": random.choice(_NOISE_POOL),
-            "scanline": random.choice(_SCANLINE_POOL),
-            "vignette": random.choice(_VIGNETTE_POOL),
-            "roll_band": random.choice(_ROLLBAND_POOL),
-            "jitter": random.choice(_JITTER_POOL),
-            "sharpen": random.choice(_SHARPEN_POOL),
-            "colorbalance": random.choice(_COLORBALANCE_POOL),
-            "colortemperature": random.choice(_TEMP_POOL),
-            "watermark": random.choice(_WATERMARK_POOL),
-            "sparkle": random.choice(_SPARKLE_POOL),
+            "speed": _pick("speed", _SPEED_POOL),
+            "saturation": _pick("saturation", _SATURATION_POOL),
+            "noise": _pick("noise", _NOISE_POOL),
+            "scanline": _pick("scanline", _SCANLINE_POOL),
+            "hue": _pick("hue", _HUE_POOL),
+            "vignette": _pick("vignette", _VIGNETTE_POOL),
+            "roll_band": _pick("roll_band", _ROLLBAND_POOL),
+            "jitter": _pick("jitter", _JITTER_POOL),
+            "sharpen": _pick("sharpen", _SHARPEN_POOL),
+            "colorbalance": _pick("colorbalance", _COLORBALANCE_POOL),
+            "colortemperature": _pick("colortemperature", _TEMP_POOL),
+            "watermark": _pick("watermark", _WATERMARK_POOL),
+            "sparkle": _pick("sparkle", _SPARKLE_POOL),
             "audio": audio_mode,
         }
+        if "audio" in override and override["audio"]:
+            manual["audio"] = override["audio"]
         # 结构性差异（覆盖 L4 时域序列盲区 + L3 音频）：
         #  - structural_diff.segment: 是否把整段拆成多片段并漂移/重排，改场景切分指纹
         #  - structural_diff.reorder: 是否对片段顺序重排（改变时域序列）
@@ -148,7 +179,7 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
         # 运营开关控制（STRUCTURAL_REORDER_DEFAULT，默认开）；segment 仍维持随机 [False,True] 不变。
         # reorder 依赖拆段：仅在 segment=True 且片段数≥3 时生效，故保留 True 作为默认值即可。
         recipes.append({
-            "preset": "standard",
+            "preset": base_preset,
             "manual": manual,
             "structural": {
                 "segment": random.choice(_STRUCTURAL_SEGMENT_OPTIONS),
@@ -159,10 +190,17 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
     # 直接拷贝可能泄漏 sparkle，派生池理论上全 None 但兜底再强制清零一次），统一置 None。
     # sparkle 走 ffmpeg geq 全分辨率渲染约 0.5fps，极易把批量任务拖到超时/进程被杀，
     # 生产默认关闭（_SPARKLE_ENABLED=False），这里从源头保证不再进入配方。
+    # P1（对齐 de-du）：强制 hflip 禁用、hue 限 ±6°、drawtext 不可用时关 watermark。
     for r in recipes:
         m = r.get("manual")
         if m and isinstance(m, dict):
             m["sparkle"] = None
+            m["hflip"] = False
+            try:
+                hue = float(m.get("hue") or 0.0)
+                m["hue"] = max(-6.0, min(6.0, hue))
+            except (TypeError, ValueError):
+                m["hue"] = 0.0
     return recipes
 
 
@@ -286,11 +324,15 @@ async def _load_group_fingerprints(variant_group_id) -> list[dict]:
     } for r in rows]
 
 
-async def _check_against_history(full_fp: dict, variant_group_id=None, exclude_variant_id=None) -> dict:
+async def _check_against_history(
+    full_fp: dict, variant_group_id=None, exclude_variant_id=None, thresholds=None
+) -> dict:
     """把新指纹与同组历史指纹比对，返回最小距离与是否撞车。
 
     仅与**同变体组**的已生成变体比对（排除自身），避免跨素材误报撞车。
     variant_group_id 为空时仅与自身组比对（实为无历史，返回安全）。
+    thresholds：{phash, audio, seg, combined} 覆盖默认撞车阈值；不传用默认。
+    （修复：此前不透传运营配置的 variant_thresholds，撞车判定用死默认值，对齐 de-du）
     """
     async with async_session_factory() as session:
         query = (
@@ -329,7 +371,7 @@ async def _check_against_history(full_fp: dict, variant_group_id=None, exclude_v
         best_avail["phash"] = best_avail["phash"] or bool(av.get("phash"))
         best_avail["audio"] = best_avail["audio"] or bool(av.get("audio"))
         best_avail["seg"] = best_avail["seg"] or bool(av.get("seg"))
-    coll, reason = fp.is_collision(best)
+    coll, reason = fp.is_collision(best, thresholds)
     return {**best, "collision": coll, "collision_reason": reason, "available": best_avail}
 
 
@@ -516,8 +558,25 @@ async def generate_variants_for_output(
                     variant_id, output.id, variant_group_id, file_key,
                     "seq_v1", full_fp["seg_hash"], full_fp["seg_vector"], dur, None,
                 )
-                # 撞车比对
-                chk = await _check_against_history(full_fp, variant_group_id=variant_group_id, exclude_variant_id=variant_id)
+                # 撞车比对（透传运营配置的 thresholds，对齐 de-du 修复）
+                chk = await _check_against_history(
+                    full_fp, variant_group_id=variant_group_id,
+                    exclude_variant_id=variant_id, thresholds=thresholds,
+                )
+                # P1 最低 phash 距离保证（对齐 de-du）：未判撞车但同组已有历史变体、
+                # 且画面 phash 距离过低（< PHASH_MIN_DISTANCE）时，也触发换参重试，
+                # 把差异化拉到 0.4+（MAX_RETRY 兜底不进入死循环）。
+                phash_d = chk.get("phash_distance", 1.0)
+                need_pull = (
+                    not chk["collision"]
+                    and chk.get("available", {}).get("phash", False)
+                    and phash_d < PHASH_MIN_DISTANCE
+                )
+                if need_pull and retry < MAX_RETRY:
+                    recipe_attempt = _regenerate_recipe(base_dedupe, recipe, used_audio)
+                    retry += 1
+                    continue
+                # 撞车 / 距离不足但已达重试上限：落库 + 标记，交人工复核
                 await _update_variant(
                     variant_id,
                     file_key=file_key, file_name=f"variant_{idx}.mp4",
@@ -531,9 +590,9 @@ async def generate_variants_for_output(
                     collision_reason=chk["collision_reason"],
                     status="completed",
                 )
-                if chk["collision"]:
+                if chk["collision"] or need_pull:
                     collisions.append({"index": idx, "variant_id": str(variant_id),
-                                       "reason": chk["collision_reason"]})
+                                       "reason": chk["collision_reason"] or "phash 距离不足"})
                 results.append({"index": idx, "variant_id": str(variant_id),
                                 "file_key": file_key, "collision": chk["collision"],
                                 "phash_distance": chk["phash_distance"],
@@ -568,10 +627,13 @@ def _regenerate_recipe(base: Optional[dict], prev: dict, used_audio: list) -> di
 
     音频维度沿用同组 used_audio 去重集（优先选未用过的音频模式），
     不重建空池，避免重试配方随机回已用模式导致音频维度撞车。
+    若 base manual 显式固定/禁用了 audio，则保持原值不被覆盖（对齐 de-du）。
     """
     new = build_variant_recipes(2, base)[1]
     # 音频沿用同组去重集：强制分配一个尚未用过的音频模式
-    new["manual"]["audio"] = _pick_audio_mode(used_audio)
+    base_manual = (base or {}).get("manual") or {}
+    if "audio" not in base_manual:
+        new["manual"]["audio"] = _pick_audio_mode(used_audio)
     # 确保与 prev 不同
     if _recipe_fingerprint_key(new) == _recipe_fingerprint_key(prev):
         new["manual"]["speed"] = float(new["manual"]["speed"]) + 0.01
