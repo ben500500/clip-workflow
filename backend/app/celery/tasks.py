@@ -240,7 +240,7 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
             autoclip_project_id,
             # P1-5 修复：用 is not None 判断而非 `or`（falsy 陷阱）。
             # 显式传 0 表示"最低分不限/时长不限"，不再被 `or 60` / `or 0` 回退吞掉。
-            min_score=float(config.get("min_score_threshold")) if config.get("min_score_threshold") is not None else 60.0,
+            min_score=float(config.get("min_score_threshold")) if config.get("min_score_threshold") is not None else 50.0,
             # P1 修复（#228）：min_duration/max_duration 不再作为硬过滤传给引擎 /api/v1/clips。
             # 引擎产出的高光片段天然 50~145s，若把用户配置的 max_duration=30 作为硬过滤，
             # 会把全部候选砍成 0。duration 仅作引擎 step2 定位参考（经 trigger_pipeline 的 config 下发），

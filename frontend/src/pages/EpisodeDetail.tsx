@@ -1463,14 +1463,14 @@ const EpisodeDetail: React.FC = () => {
                 />
               </Space>
             </Tooltip>
-            <Tooltip title="设置候选片段入选的最低评分（0-100），留空则使用系统默认（60 分）">
+            <Tooltip title="设置候选片段入选的最低评分（0-100），留空则使用系统默认（50 分）">
               <Space size={4}>
                 <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>入选评分:</Text>
                 <InputNumber
                   size="small"
                   min={0}
                   max={100}
-                  placeholder="60"
+                  placeholder="50"
                   value={minScoreThreshold}
                   onChange={(v) => setMinScoreThreshold(v ?? null)}
                   style={{ width: 70 }}
@@ -1480,14 +1480,14 @@ const EpisodeDetail: React.FC = () => {
             </Tooltip>
           </Space>
           <Space wrap>
-            <Tooltip title="设置候选片段的最短时长（秒），留空则使用系统默认（30 秒）">
+            <Tooltip title="设置候选片段的最短时长（秒），留空则使用系统默认（20 秒）">
               <Space size={4}>
                 <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>最短时长:</Text>
                 <InputNumber
                   size="small"
                   min={1}
                   max={86400}
-                  placeholder="30"
+                  placeholder="20"
                   value={minClipDuration}
                   onChange={(v) => setMinClipDuration(v ?? null)}
                   style={{ width: 80 }}
@@ -1495,14 +1495,14 @@ const EpisodeDetail: React.FC = () => {
                 <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
               </Space>
             </Tooltip>
-            <Tooltip title="设置候选片段的最长时长（秒），留空则使用系统默认（180 秒）">
+            <Tooltip title="设置候选片段的最长时长（秒），留空则使用系统默认（70 秒）">
               <Space size={4}>
                 <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>最长时长:</Text>
                 <InputNumber
                   size="small"
                   min={1}
                   max={86400}
-                  placeholder="180"
+                  placeholder="70"
                   value={maxClipDuration}
                   onChange={(v) => setMaxClipDuration(v ?? null)}
                   style={{ width: 80 }}

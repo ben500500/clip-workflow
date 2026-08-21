@@ -89,9 +89,9 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   autoclip: {
     enabled: true,
     max_clips: 30,
-    min_score_threshold: 60,
-    min_duration: 30,
-    max_duration: 180,
+    min_score_threshold: 50,
+    min_duration: 20,
+    max_duration: 70,
     frame_analysis: true,
   },
   interval: {
@@ -851,7 +851,7 @@ const BatchSlicePage: React.FC = () => {
                 <Text>最低评分</Text>
                 <InputNumber
                   value={sliceConfig.autoclip.min_score_threshold}
-                  onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, min_score_threshold: v ?? 60 } })}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, min_score_threshold: v ?? 50 } })}
                   min={0}
                   max={100}
                 />
