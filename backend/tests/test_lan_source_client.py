@@ -21,12 +21,12 @@ from lan_source.config import LanSourceConfig
 BASE = "http://192.168.1.163:8765"
 MANAGE = "http://192.168.1.21:8800"
 
-# dupload/tasks 返回结构（{data:[{dramaName,...}]}，317 个剧，含「扫地出门，三胎宝妈是千金」）
+# dupload/tasks 返回**裸数组**，每项剧名字段为 `drama`、全集数为 `totalCount`（317 个剧，含「扫地出门，三胎宝妈是千金」）
 DUP_ITEMS = [
-    {"dramaName": "扫地出门，三胎宝妈是千金", "dramaId": 10001, "total": 30, "desc": "含全角逗号"},
-    {"dramaName": "双宝牵线", "dramaId": 10002, "total": 48, "desc": ""},
+    {"id": 167, "host": "192.168.1.163:8765", "drama": "扫地出门，三胎宝妈是千金", "action": "only_download", "totalCount": 30},
+    {"id": 168, "host": "192.168.1.163:8765", "drama": "双宝牵线", "action": "only_download", "totalCount": 48},
 ]
-DUP_DATA = {"data": DUP_ITEMS}
+DUP_DATA = DUP_ITEMS  # 裸数组（非 {data:[...]}）
 
 # sync/tasks 返回结构（{tasks:[{dramaInfo:{dramaName,...}}]}，21 个剧，与 dupload 部分重叠）
 SYNC_TASKS = [
@@ -69,7 +69,7 @@ class FakeClient:
         if url.endswith("/api/bg/sync/tasks"):
             return FakeResp(200, SYNC_DATA)
         if url.endswith("/api/dupload/tasks"):
-            return FakeResp(200, DUP_DATA)
+            return FakeResp(200, DUP_DATA)  # 裸数组
         raise AssertionError(f"unexpected url: {url}")
 
 
@@ -90,6 +90,20 @@ async def test_dupload_uses_manage_base(client):
     out = await client._discover_from_dupload()
     assert FakeClient.requests == [f"{MANAGE}/api/dupload/tasks"]
     assert names(out) == ["扫地出门，三胎宝妈是千金", "双宝牵线"]
+
+
+async def test_dupload_parses_drama_field(client):
+    """回归：dupload/tasks 为裸数组，剧名字段是 `drama`（非 dramaName/drama_name/name）。
+
+    修复前此场景 `_discover_from_dupload` 因取不到 name 全部被跳过 → 返回 0 个，
+    导致「扫地出门」不在清单、模糊匹配失效。
+    """
+    out = await client._discover_from_dupload()
+    assert len(out) == 2
+    assert out[0].name == "扫地出门，三胎宝妈是千金"
+    # totalCount 兼容
+    assert out[0].total == 30
+    assert out[1].total == 48
 
 
 async def test_dupload_fallback_to_base_when_no_manage(monkeypatch):

@@ -132,7 +132,7 @@ class LanSourceClient:
         """拉取剧目清单（manage + dupload 两个数据源**合并去重**）。
 
         - `GET {manage_base}/api/bg/sync/tasks`（dramaInfo.dramaName 结构，21 个剧）；
-        - `GET {manage_base}/api/dupload/tasks`（{data:[{dramaName,...}]} 结构，317 个剧）。
+        - `GET {manage_base}/api/dupload/tasks`（裸数组 [{drama, totalCount, ...}] 结构，317 个剧）。
 
         两源是**不同数据源**，剧名可能只存在于其中一个，因此不可互相跳过，
         必须都拉取后合并（按归一化剧名去重）。单个源失败仅告警不阻塞；
@@ -184,10 +184,11 @@ class LanSourceClient:
         return dramas
 
     async def _discover_from_dupload(self) -> list[ManageDrama]:
-        """从 dupload 源 `GET /api/dupload/tasks` 解析剧目清单（兼容 `{data:[{dramaName}]}`）。
+        """从 dupload 源 `GET /api/dupload/tasks` 解析剧目清单。
 
         实测该接口位于**管理平台 manage_base（21:8800）**，163:8765 上不存在；
         因此优先请求 `{manage_base}`，未配置 manage_base 时回退 `{base}`。
+        响应为**裸数组**，每项剧名字段为 `drama`、全集数为 `totalCount`。
         """
         base = self.manage_base or self.base
         if not base:
@@ -213,14 +214,16 @@ class LanSourceClient:
         for it in items:
             if not isinstance(it, dict):
                 continue
-            name = (it.get("dramaName") or it.get("drama_name") or it.get("name") or "").strip()
+            # 实测 dupload/tasks 返回裸数组，剧名字段为 `drama`（非 dramaName/drama_name/name）
+            name = (it.get("dramaName") or it.get("drama_name") or it.get("name") or it.get("drama") or "").strip()
             if not name:
                 continue
             dramas.append(
                 ManageDrama(
                     name=name,
                     drama_id=it.get("dramaId") or it.get("drama_id") or it.get("id"),
-                    total=it.get("total"),
+                    # dupload 全集数字段为 totalCount（非 total），两字段都兼容
+                    total=it.get("total") or it.get("totalCount"),
                     desc=it.get("desc") or it.get("description"),
                 )
             )
