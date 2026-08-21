@@ -14,9 +14,11 @@ cdn 直链为纯静态 MP4（无鉴权/UA 要求），可直接 HTTP 拉流入�
 平台剧名存在细微差异（全/半角标点、空格、大小写）时返回 400
 `{"error": "drama not found"}`。为此当精确查 400 时自动做归一化模糊匹配：
 
-1. 拉取平台剧目清单（`GET /api/bg/sync/tasks`，未配置 manage_base 时也尝试
-   dupload `GET /api/dupload/tasks` 的 `{data:[{dramaName}]}` 结构）；
+1. 拉取平台剧目清单（管理平台 `GET {manage_base}/api/bg/sync/tasks` 与 dupload
+   `GET {manage_base}/api/dupload/tasks` 两个数据源**合并去重**，剧名可能只存在于
+   其中一个）；
 2. 对目标剧名与清单剧名做**归一化**（去标点、全角转半角、去空格、转小写）后比对；
+   （manage 与 dupload 两源清单均优先走 `manage_base`，dupload/tasks 接口位于 21:8800。）
 3. 命中后用平台正确剧名重新调 `GET /api/ext/drama/{name}/videos` 取剧集。
 """
 
@@ -127,21 +129,35 @@ class LanSourceClient:
 
     # ── 剧目清单发现（管理平台 /api/bg/sync/tasks，兜底 dupload /api/dupload/tasks）──
     async def discover_dramas(self) -> list[ManageDrama]:
-        """从管理平台拉取剧目清单（未配置 MANAGE_BASE 时也尝试 dupload 源）。
+        """拉取剧目清单（manage + dupload 两个数据源**合并去重**）。
 
-        优先 `GET {manage_base}/api/bg/sync/tasks`（dramaInfo.dramaName 结构）；
-        未配置 manage_base 或清单为空时，回退 `GET {base}/api/dupload/tasks`
-        （兼容 `{data:[{dramaName,...}]}` 结构）。均失败/为空返回 []。
+        - `GET {manage_base}/api/bg/sync/tasks`（dramaInfo.dramaName 结构，21 个剧）；
+        - `GET {manage_base}/api/dupload/tasks`（{data:[{dramaName,...}]} 结构，317 个剧）。
+
+        两源是**不同数据源**，剧名可能只存在于其中一个，因此不可互相跳过，
+        必须都拉取后合并（按归一化剧名去重）。单个源失败仅告警不阻塞；
+        全部失败/为空返回 []。
         """
-        tasks = []
+        dramas: list[ManageDrama] = []
+        seen: set[str] = set()
+
+        def _merge(source: list[ManageDrama]) -> None:
+            for d in source:
+                key = normalize_drama_name(d.name)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                dramas.append(d)
+
+        # 1. 管理平台剧目清单（/api/bg/sync/tasks）
         if self.manage_base:
             try:
-                tasks = await self._discover_from_manage()
+                _merge(await self._discover_from_manage())
             except Exception as e:
-                logger.warning("从管理平台拉取剧目清单失败，尝试 dupload 源: %s", e)
-        if not tasks:
-            tasks = await self._discover_from_dupload()
-        return tasks
+                logger.warning("从管理平台拉取剧目清单失败（忽略该源）: %s", e)
+        # 2. dupload 源剧目清单（/api/dupload/tasks，接口同样在 manage_base）
+        _merge(await self._discover_from_dupload())
+        return dramas
 
     async def _discover_from_manage(self) -> list[ManageDrama]:
         """从管理平台 `GET /api/bg/sync/tasks` 解析剧目清单。"""
@@ -168,11 +184,16 @@ class LanSourceClient:
         return dramas
 
     async def _discover_from_dupload(self) -> list[ManageDrama]:
-        """从 dupload 源 `GET /api/dupload/tasks` 解析剧目清单（兼容 `{data:[{dramaName}]}`）。"""
-        if not self.base:
+        """从 dupload 源 `GET /api/dupload/tasks` 解析剧目清单（兼容 `{data:[{dramaName}]}`）。
+
+        实测该接口位于**管理平台 manage_base（21:8800）**，163:8765 上不存在；
+        因此优先请求 `{manage_base}`，未配置 manage_base 时回退 `{base}`。
+        """
+        base = self.manage_base or self.base
+        if not base:
             return []
         try:
-            data = await self._get_json("/api/dupload/tasks", base=self.base)
+            data = await self._get_json("/api/dupload/tasks", base=base)
         except Exception as e:
             logger.debug("dupload 源剧目清单拉取失败（忽略）: %s", e)
             return []
