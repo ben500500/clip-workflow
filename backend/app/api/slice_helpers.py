@@ -1064,7 +1064,7 @@ async def _publish_to_worker(
         # 恒定水印/角标打码（可选，Go Worker 透传给引擎 --watermark-mask）
         "watermark_mask": watermark_mask_config,
         # 输出档位（可选，Go Worker 透传给引擎 --output-tier）
-        "output_tier": output_tier or "original",
+        "output_tier": output_tier or "auto",
         "output": {
             "upload_url": f"{callback_base}/api/slice-tasks/{slice_task.id}/upload-url",
             "callback_url": callback_url,
@@ -1146,7 +1146,7 @@ async def _dispatch_celery(
         watermark_mask_config=watermark_mask_config,
         subtitle_align_mask=subtitle_align_mask,
         cover_image_key=cover_image_key,
-        output_tier=output_tier or "original",
+        output_tier=output_tier or "auto",
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)

@@ -68,7 +68,7 @@ const SliceTasks: React.FC = () => {
   const [engine, setEngine] = useState('worker');
   // 去重模式档位：轻/标准/重 + 两套推荐配方（复古扫描为默认首选配方）
   const [dedupePreset, setDedupePreset] = useState<string>('std_crop_desat');
-  const [outputTier, setOutputTier] = useState<string>('original');
+  const [outputTier, setOutputTier] = useState<string>('auto');
   // 去重模式手动配置（每项去重手段可单独覆盖预设，为空时沿用预设档位）
   const [dedupeManual, setDedupeManual] = useState<DedupeManualConfigValue>({});
   const [dedupeManualOpen, setDedupeManualOpen] = useState(false);
@@ -211,7 +211,7 @@ const SUBTITLE_MASK_PRESETS = [
           ? buildDedupeConfig(dedupePreset, dedupeManual)
           : undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
-        output_tier: outputTier || 'original',
+        output_tier: outputTier || 'auto',
         // 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本）
         variant_count: mode === 'dedupe' && variantCount && variantCount > 1 ? variantCount : undefined,
         watermark_enabled: watermarkEnabled,
@@ -654,7 +654,7 @@ const SUBTITLE_MASK_PRESETS = [
             {engine === 'worker' ? '分布式 Worker 节点执行' : 'Celery 队列（回退）'}
           </Text>
           {/* 输出档位：高分辨率/高 fps 素材降档提速 */}
-          <Select value={outputTier || 'original'} onChange={setOutputTier} style={{ width: 200 }}
+          <Select value={outputTier || 'auto'} onChange={setOutputTier} style={{ width: 200 }}
             options={[
               { value: 'original', label: '原档（不处理）' },
               { value: 'auto', label: '自动（高规格自动降 720P30）' },

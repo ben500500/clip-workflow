@@ -482,3 +482,43 @@ async def regenerate_autoclip(
     await db.flush()
 
     return response
+
+@router.delete("/episodes/{episode_id}/autoclip/history/{run_id}", status_code=200)
+async def delete_autoclip_history(
+    episode_id: str,
+    run_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """删除一条 AI 选点执行历史记录（数据隔离）。
+
+    仅删除 AutoClipRun 历史记录本身；已产出的 clip_candidates 片段候选
+    与 AutoClip 远端项目不受影响，避免误删正在「片段审核」使用的选点结果。
+    """
+    try:
+        eid = uuid.UUID(episode_id)
+        rid = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    # 数据隔离：先校验当前用户对剧集所属项目的访问权限
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == eid))
+    ).scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    await check_project_access_by_episode(db, episode, current_user)
+
+    result = await db.execute(
+        select(AutoClipRun).where(
+            AutoClipRun.id == rid,
+            AutoClipRun.episode_id == eid,
+        )
+    )
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="选点执行记录不存在")
+
+    await db.delete(run)
+    await db.commit()
+    return {"message": "选点执行记录已删除", "run_id": run_id}

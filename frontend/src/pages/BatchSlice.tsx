@@ -124,7 +124,7 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   subtitle_mask_bottom_ratio: 0.02,
   subtitle_mask_srt_offset: 0,
   dedupe_preset: 'standard',
-  output_tier: 'original',
+  output_tier: 'auto',
   text_overlay_enabled: true,
   text_overlays: [
     { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000' },
@@ -226,7 +226,7 @@ const BatchSlicePage: React.FC = () => {
       subtitle_mask_bottom_ratio: p.subtitle_mask_bottom_ratio,
       subtitle_mask_srt_offset: p.subtitle_mask_srt_offset,
       dedupe_preset: p.dedupe_preset || 'standard',
-      output_tier: p.output_tier || 'original',
+      output_tier: p.output_tier || 'auto',
       text_overlay_enabled: p.text_overlay_enabled,
       text_overlays: p.text_overlays ? p.text_overlays.map((t) => ({ text: t.text, position: t.position, font_size: t.font_size ?? 40, color: t.color ?? '#EDD736', border_color: t.border_color, vertical: t.vertical, offset: t.offset })) : prev.text_overlays,
       watermark_enabled: p.watermark_enabled,

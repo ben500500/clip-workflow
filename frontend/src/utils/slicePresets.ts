@@ -119,7 +119,7 @@ export const DEFAULT_SLICE_PRESET: SlicePreset = {
   badge_default_width: 0,
   dedupe_enabled: false,
   dedupe_preset: 'std_crop_desat',
-  output_tier: 'original',
+  output_tier: 'auto',
 };
 
 /**
