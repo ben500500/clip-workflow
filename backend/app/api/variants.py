@@ -88,6 +88,24 @@ async def _list_variant_groups() -> list[dict]:
             variants = (await session.execute(
                 select(ClipVariant).where(ClipVariant.variant_group_id == out.variant_group_id)
             )).scalars().all()
+            # 批量加载该组所有变体指纹，按 variant_id 聚合，用于各算法可用性标注
+            fps = (await session.execute(
+                select(VideoFingerprint).where(VideoFingerprint.variant_group_id == out.variant_group_id)
+            )).scalars().all()
+            fp_by_variant: dict[str, dict[str, bool]] = {}
+            for fp_row in fps:
+                if fp_row.variant_id is None:
+                    continue
+                vid = str(fp_row.variant_id)
+                entry = fp_by_variant.setdefault(vid, {})
+                # 该算法指纹 hash 真实存在（非 None/空）→ 真实计算；否则为降级占位
+                has_hash = bool(fp_row.hash_value)
+                if fp_row.algorithm == "phash_v1":
+                    entry["phash"] = has_hash
+                elif fp_row.algorithm == "audio_v2":
+                    entry["audio"] = has_hash
+                elif fp_row.algorithm == "seq_v1":
+                    entry["seg"] = has_hash
             groups[vg] = {
                 "variant_group_id": vg,
                 "base_output_id": str(out.id),
@@ -106,6 +124,12 @@ async def _list_variant_groups() -> list[dict]:
                     "phash_distance": v.phash_distance,
                     "audio_distance": v.audio_distance,
                     "seg_distance": v.seg_distance,
+                    # 各算法指纹可用性标注（available=False 表示指纹缺失，distance 为降级占位 1.0）
+                    "available": {
+                        "phash": fp_by_variant.get(str(v.id), {}).get("phash", False),
+                        "audio": fp_by_variant.get(str(v.id), {}).get("audio", False),
+                        "seg": fp_by_variant.get(str(v.id), {}).get("seg", False),
+                    },
                     "structural_diff": v.structural_diff,
                     "collision": v.collision,
                     "collision_reason": v.collision_reason,

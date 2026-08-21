@@ -210,6 +210,39 @@ def _even(n: int) -> int:
     return n if n % 2 == 0 else n - 1
 
 
+# ── drawtext 滤镜可用性检测（watermark / face_watermark 依赖）──
+# watermark / face_watermark 依赖 ffmpeg 的 drawtext 滤镜（需 libfreetype/fontconfig
+# 编译支持）。若当前 ffmpeg 构建未启用该滤镜（如 Homebrew 默认 build），叠加 drawtext
+# 会直接失败导致整个去重任务报错。这里缓存检测结果，不可用时上层自动跳过
+# watermark / face_watermark，避免整个去重任务失败（优雅降级，对齐 de-du）。
+_DRAWTEXT_SUPPORTED: Optional[bool] = None
+
+
+def _ffmpeg_has_drawtext() -> bool:
+    """检测当前 ffmpeg 是否支持 drawtext 滤镜（结果缓存）。
+
+    通过 `ffmpeg -hide_banner -filters` 输出中是否含 drawtext 判断。
+    检测失败 / 找不到 ffmpeg 时保守返回 False（宁可不加水印，不冒险失败）。
+    """
+    global _DRAWTEXT_SUPPORTED
+    if _DRAWTEXT_SUPPORTED is not None:
+        return _DRAWTEXT_SUPPORTED
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-filters"],
+            capture_output=True, text=True, timeout=15,
+        )
+        _DRAWTEXT_SUPPORTED = "drawtext" in (r.stdout + r.stderr)
+    except Exception:  # noqa: BLE001
+        _DRAWTEXT_SUPPORTED = False
+    return _DRAWTEXT_SUPPORTED
+
+
+def drawtext_available() -> bool:
+    """对外暴露 drawtext 滤镜可用性（供变体配方生成决定是否启用 watermark）。"""
+    return _ffmpeg_has_drawtext()
+
+
 def _resolve_dedupe_config(cfg: dict) -> dict:
     """解析去重配置，返回合并后的完整参数 dict。
 
@@ -298,8 +331,11 @@ def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: s
         f"eq=saturation={p['saturation']}:gamma={p['gamma']}"
         f":contrast={p['contrast']}:brightness={p['brightness']}"
     )
-    vf_parts.append(f"colorbalance={p['colorbalance']}")
-    vf_parts.append(f"colortemperature={p['colortemperature']}")
+    # 空串（manual 关闭偏色/色温）时不追加空滤镜段，避免 ffmpeg 'No such filter' 报错
+    if p.get("colorbalance"):
+        vf_parts.append(f"colorbalance={p['colorbalance']}")
+    if p.get("colortemperature"):
+        vf_parts.append(f"colortemperature={p['colortemperature']}")
 
     # 质感层：颗粒噪点（时域+空域，老电视颗粒感；>0 才叠加，0 不引入颗粒）
     if float(p["noise"] or 0) > 0:
@@ -342,8 +378,10 @@ def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: s
         vf_parts.append(f"unsharp=5:5:{sharpen:.2f}:5:5:0.0")
 
     # 质感层：贴纸水印叠加（半透明标识，去重差异化；None 关闭）
+    # drawtext 不可用时跳过 watermark（优雅降级，避免整个去重任务因 ffmpeg
+    # 不支持 drawtext 而失败；对齐 de-du 的行为）。
     wm = p.get("watermark")
-    if wm:
+    if wm and _ffmpeg_has_drawtext():
         wm_filter = build_dedupe_watermark(wm, width, height)
         if wm_filter:
             vf_parts.append(wm_filter)
@@ -362,15 +400,18 @@ def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: s
 
     # 方向三：人脸跟踪 + 动态漂浮淡色水印（face_watermark）。
     #   复用 vert2horiz_crop.FaceDetector 算出脸中心轨迹，用 drawtext 跟随漂浮。
+    #   drawtext 不可用时跳过（优雅降级，避免整个去重任务失败）。
     face_wm = p.get("face_watermark")
     if (isinstance(face_wm, dict) and face_wm.get("enabled") and source_path
-            and build_face_watermark_filter is not None):
+            and build_face_watermark_filter is not None and _ffmpeg_has_drawtext()):
         fw_filter = build_face_watermark_filter(
             face_wm, source_path, width=width, height=height
         )
         if fw_filter:
             vf_parts.append(fw_filter)
 
+    # 过滤空段（个别滤镜手动关闭时可能留下空串），避免 ffmpeg 'No such filter' 报错
+    vf_parts = [s for s in vf_parts if s]
     return ",".join(vf_parts), af
 
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Card, Table, Tag, Button, Space, Typography, message, Modal, Select, InputNumber,
-  Descriptions, Divider, Alert, Tooltip, Popconfirm, Row, Col, Empty, Collapse, Input, Badge,
+  Descriptions, Divider, Alert, Tooltip, Popconfirm, Row, Col, Empty, Collapse, Input, Badge, Progress,
 } from 'antd';
 import {
   ReloadOutlined, SafetyCertificateOutlined, LinkOutlined, SettingOutlined,
@@ -93,11 +93,15 @@ const VariantMatrix: React.FC = () => {
       raw.map((g) => {
         let collisionCount = 0;
         let unboundCount = 0;
+        let runningCount = 0;
+        let completedCount = 0;
         for (const v of g.variants) {
           if (v.collision) collisionCount++;
           if (!v.account_id) unboundCount++;
+          if (v.status === 'running' || v.status === 'pending') runningCount++;
+          if (v.status === 'completed') completedCount++;
         }
-        return { ...g, collisionCount, unboundCount };
+        return { ...g, collisionCount, unboundCount, runningCount, completedCount };
       }),
     []
   );
@@ -292,16 +296,16 @@ const VariantMatrix: React.FC = () => {
         ) : <Text type="secondary">-</Text>,
     },
     {
-      title: '画面距离', dataIndex: 'phash_distance', width: 100,
-      render: (v: number | null) => <DistanceCell v={v} threshold={thresholds.phash} label="phash" />,
+      title: '画面距离', dataIndex: 'phash_distance', width: 110,
+      render: (v: number | null, r) => <DistanceCell v={v} threshold={thresholds.phash} label="phash" degraded={r.available?.phash === false} />,
     },
     {
-      title: '音频距离', dataIndex: 'audio_distance', width: 100,
-      render: (v: number | null) => <DistanceCell v={v} threshold={thresholds.audio} label="audio" />,
+      title: '音频距离', dataIndex: 'audio_distance', width: 110,
+      render: (v: number | null, r) => <DistanceCell v={v} threshold={thresholds.audio} label="audio" degraded={r.available?.audio === false} />,
     },
     {
-      title: '时域距离', dataIndex: 'seg_distance', width: 100,
-      render: (v: number | null) => <DistanceCell v={v} threshold={thresholds.seg} label="seg" />,
+      title: '时域距离', dataIndex: 'seg_distance', width: 110,
+      render: (v: number | null, r) => <DistanceCell v={v} threshold={thresholds.seg} label="seg" degraded={r.available?.seg === false} />,
     },
     {
       title: '结构差异', dataIndex: 'structural_diff', width: 130,
@@ -382,6 +386,19 @@ const VariantMatrix: React.FC = () => {
               {g.created_at ? dayjs(g.created_at).format('MM-DD HH:mm') : ''}
             </Text>
             <Text type="secondary" style={{ fontSize: 12 }}>共 {g.variants.length} 变体</Text>
+            {/* 生成进度：运行中的组展示已生成数/总数 + 进度条 */}
+            {g.runningCount > 0 && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Progress
+                  percent={g.variants.length ? Math.round((g.completedCount / g.variants.length) * 100) : 0}
+                  size="small"
+                  style={{ width: 90, margin: 0 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {g.completedCount}/{g.variants.length} 已生成
+                </Text>
+              </span>
+            )}
             <Button
               size="small"
               icon={<DownloadOutlined />}
@@ -540,16 +557,30 @@ const VariantMatrix: React.FC = () => {
   );
 };
 
-const DistanceCell: React.FC<{ v: number | null; threshold?: number; label: string }> = ({ v, threshold, label }) => {
+const DistanceCell: React.FC<{ v: number | null; threshold?: number; label: string; degraded?: boolean }> = ({ v, threshold, label, degraded }) => {
   if (v === null || v === undefined) return <Text type="secondary">-</Text>;
   const th = threshold ?? 0.2;
   const safe = v > th;
+  const dist = (
+    <Text style={{ color: safe ? '#389e0d' : '#cf1322' }}>
+      {v.toFixed(3)}
+      {safe ? <CheckCircleOutlined style={{ marginLeft: 4 }} /> : null}
+    </Text>
+  );
+  // 降级占位：该算法指纹缺失，distance 为降级 1.0，非真实“无差异”，灰色 + 标注区分
+  if (degraded) {
+    return (
+      <Tooltip title={`${label} 指纹缺失（无音频轨/样本过短/无场景切换），此值(1.0)为降级占位，非真实无差异`}>
+        <Space size={2}>
+          <Text type="secondary">{v.toFixed(3)}</Text>
+          <Tag style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: '16px', padding: '0 4px' }} color="default">降级</Tag>
+        </Space>
+      </Tooltip>
+    );
+  }
   return (
     <Tooltip title={`${label} 距离 ${v.toFixed(3)}，阈值 ${th}`}>
-      <Text style={{ color: safe ? '#389e0d' : '#cf1322' }}>
-        {v.toFixed(3)}
-        {safe ? <CheckCircleOutlined style={{ marginLeft: 4 }} /> : null}
-      </Text>
+      {dist}
     </Tooltip>
   );
 };

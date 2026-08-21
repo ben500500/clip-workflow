@@ -311,9 +311,13 @@ async def _check_against_history(full_fp: dict, variant_group_id=None, exclude_v
         # 否则 rows 被 expire，退出会话后访问 r.algorithm 会抛 DetachedInstanceError（#230）。
     if not rows:
         return {"phash_distance": 1.0, "audio_distance": 1.0, "seg_distance": 1.0,
-                "combined_distance": 1.0, "collision": False, "collision_reason": ""}
+                "combined_distance": 1.0, "collision": False, "collision_reason": "",
+                "available": {"phash": False, "audio": False, "seg": False}}
     best = {"phash_distance": 1.0, "audio_distance": 1.0, "seg_distance": 1.0,
             "combined_distance": 1.0}
+    # available 标注：任一历史指纹在某算法上真实存在，即视为真实计算（True）；
+    # 仅当所有历史指纹该算法均缺失时才标 False（降级占位 1.0）。
+    best_avail = {"phash": False, "audio": False, "seg": False}
     for r in rows:
         rfp = {"algorithm": r.algorithm, "hash_value": r.hash_value, "vector": r.vector}
         d = fp.compare_fingerprints(full_fp, rfp)
@@ -321,8 +325,12 @@ async def _check_against_history(full_fp: dict, variant_group_id=None, exclude_v
         best["audio_distance"] = min(best["audio_distance"], d["audio_distance"])
         best["seg_distance"] = min(best["seg_distance"], d["seg_distance"])
         best["combined_distance"] = min(best["combined_distance"], d["combined_distance"])
+        av = d.get("available") or {}
+        best_avail["phash"] = best_avail["phash"] or bool(av.get("phash"))
+        best_avail["audio"] = best_avail["audio"] or bool(av.get("audio"))
+        best_avail["seg"] = best_avail["seg"] or bool(av.get("seg"))
     coll, reason = fp.is_collision(best)
-    return {**best, "collision": coll, "collision_reason": reason}
+    return {**best, "collision": coll, "collision_reason": reason, "available": best_avail}
 
 
 def _build_variant_cutlist(dur: float, structural: dict) -> list[tuple]:
