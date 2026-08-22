@@ -49,6 +49,8 @@ export interface Episode {
   title: string | null;
   episode_no: number | null;
   source_file_key: string | null;
+  // 剧集封面（作为切片首帧叠加，按剧集独立存储；为空时切片用源视频首帧）
+  cover_image_key?: string | null;
   duration: number | null;
   resolution: string | null;
   file_size: number | null;

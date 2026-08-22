@@ -79,6 +79,7 @@ def _serialize_episode(episode: Episode) -> dict:
         "title": episode.title,
         "episode_no": episode.episode_no,
         "source_file_key": episode.source_file_key,
+        "cover_image_key": episode.cover_image_key,
         "duration": episode.duration,
         "resolution": episode.resolution,
         "file_size": episode.file_size,

@@ -152,6 +152,13 @@ export const sliceApi = {
     }) as Promise<BadgeUploadResult>;
   },
 
+  // 更新剧集封面（按剧集独立存储，作为切片首帧叠加；传 null 清除该集封面）
+  updateEpisodeCover: (episodeId: string, coverImageKey: string | null) =>
+    client.put(`/episodes/${episodeId}`, { cover_image_key: coverImageKey }) as Promise<{
+      id: string;
+      cover_image_key: string | null;
+    }>,
+
   // 上传字幕文件（srt/vtt）
   uploadSubtitle: (file: File, onProgress?: (percent: number) => void) => {
     const formData = new FormData();

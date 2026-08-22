@@ -365,8 +365,15 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
     payload["mode"] = cfg.get("mode") or "fast"
     payload["auto_accept_all"] = True
     payload["video_path"] = item.source_path
-    data = SliceRunRequest(**payload)
+    # 批量切片不再应用统一封面：封面按剧集独立存储，逐集从 episodes 表下发；
+    # 某集未设置封面时由切片引擎直接使用源视频首帧。
+    payload.pop("cover_image_key", None)
     async with async_session_factory() as session:
+        # 取该集独立封面（session.get 无记录时返回 None，保持无封面行为）
+        ep = await session.get(Episode, uuid.UUID(episode_id))
+        if ep is not None and getattr(ep, "cover_image_key", None):
+            payload["cover_image_key"] = ep.cover_image_key
+        data = SliceRunRequest(**payload)
         resp = await run_slice(episode_id, data, current_user=user, db=session)
         # run_slice 内部仅 flush 未 commit，这里显式提交以便后续轮询可见
         await session.commit()

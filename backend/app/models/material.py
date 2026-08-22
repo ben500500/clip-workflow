@@ -55,6 +55,8 @@ class Episode(Base):
     source_file_key = Column(String(500), nullable=True)
     # 视频号素材导入（wechat_download）：URL 导入的最小粘合字段（来源链接，便于溯源）
     source_url = Column(String(2000), nullable=True)
+    # 剧集封面（作为切片首帧叠加，按剧集独立存储；为空时切片用源视频首帧）
+    cover_image_key = Column(String(500), nullable=True)
     # 剧集维度打通切片产线：归属剧目（可空，关联 dramas 表；用于剧目下「该剧已切片/待切片」聚合）
     drama_id = Column(UUID(as_uuid=True), ForeignKey("dramas.id", ondelete="SET NULL"), nullable=True, index=True)
     duration = Column(Float, nullable=True)

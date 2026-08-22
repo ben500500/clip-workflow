@@ -137,6 +137,10 @@ const EpisodeDetail: React.FC = () => {
       if (mountedRef.current) {
         setCoverImageKey(res.file_key);
         setCoverImageName(res.file_name);
+        // 封面按剧集独立存储：上传后同步写回该集，切片时用本集封面
+        sliceApi.updateEpisodeCover(episodeId, res.file_key).catch((err: unknown) => {
+          console.error('封面保存到剧集失败', err);
+        });
         message.success(`封面已上传：${res.file_name}`);
       }
     } catch (err: unknown) {
@@ -282,7 +286,14 @@ const EpisodeDetail: React.FC = () => {
     projectApi
       .getEpisode(episodeId)
       .then((data) => {
-        if (mountedRef.current) setEpisode(data);
+        if (mountedRef.current) {
+          setEpisode(data);
+          // 封面按剧集独立存储：进入页面时从剧集恢复（不再从个人账号恢复）
+          setCoverImageKey(data.cover_image_key || null);
+          if (data.cover_image_key) {
+            setCoverImageName(null);
+          }
+        }
       })
       .catch((err: unknown) => {
         if (mountedRef.current) setError(err instanceof Error ? err.message : '获取剧集失败');
@@ -498,7 +509,7 @@ const EpisodeDetail: React.FC = () => {
     message.success(`已应用配置「${preset.name}」`);
   };
 
-  // 收集需持久化到个人账号的切片配置（含切片模式/去重档位/AI 选点参数/视频首帧封面）
+  // 收集需持久化到个人账号的切片配置（含切片模式/去重档位/AI 选点参数；封面按剧集存储不入个人配置）
   const collectPersistConfig = () => ({
     sliceMode,
     dedupePreset,
@@ -510,9 +521,6 @@ const EpisodeDetail: React.FC = () => {
     autoclip_min_duration: minClipDuration,
     autoclip_max_duration: maxClipDuration,
     autoclip_frame_analysis: frameAnalysis,
-    // 视频首帧封面
-    cover_image_key: coverImageKey,
-    cover_image_name: coverImageName,
   });
 
   // 应用个人账号配置到当前页面状态
@@ -525,11 +533,6 @@ const EpisodeDetail: React.FC = () => {
     if (typeof cfg.autoclip_min_duration === 'number') setMinClipDuration(cfg.autoclip_min_duration);
     if (typeof cfg.autoclip_max_duration === 'number') setMaxClipDuration(cfg.autoclip_max_duration);
     if (typeof cfg.autoclip_frame_analysis === 'boolean') setFrameAnalysis(cfg.autoclip_frame_analysis);
-    // 视频首帧封面
-    if (typeof cfg.cover_image_key === 'string' && cfg.cover_image_key) {
-      setCoverImageKey(cfg.cover_image_key);
-      setCoverImageName(typeof cfg.cover_image_name === 'string' ? cfg.cover_image_name : null);
-    }
     // 应用云端个人配置时保留用户当前激活的预设 id（从 localStorage 读），
     // 避免把 activePresetId 覆盖成不存在的 'cloud' 占位 id，
     // 否则「选择配置」下拉会因为 value 无匹配选项而显示出一个名为 "cloud" 的幽灵配置。
@@ -612,7 +615,6 @@ const EpisodeDetail: React.FC = () => {
     watermarkFontSize, watermarkOpacity, watermarkPosition, watermarkStyle, badgeDefaultWidth,
     dedupeEnabled, outputTier,
     maxClips, minScoreThreshold, minClipDuration, maxClipDuration, frameAnalysis,
-    coverImageKey, coverImageName,
   ]);
 
   useEffect(() => {
@@ -1810,7 +1812,13 @@ const EpisodeDetail: React.FC = () => {
               </Button>
             </Upload>
             {coverImageKey && (
-              <Tag closable onClose={() => { setCoverImageKey(null); setCoverImageName(null); }}>
+              <Tag closable onClose={() => {
+  setCoverImageKey(null);
+  setCoverImageName(null);
+  sliceApi.updateEpisodeCover(episodeId, null).catch((err: unknown) => {
+    console.error('清除剧集封面失败', err);
+  });
+}}>
                 封面：{coverImageName || '已选择'}
               </Tag>
             )}
@@ -2815,7 +2823,13 @@ const EpisodeDetail: React.FC = () => {
                 <Button size="small" icon={<PictureOutlined />} loading={coverUploading}>选择封面图片</Button>
               </Upload>
               {coverImageKey && (
-                <Tag closable onClose={() => { setCoverImageKey(null); setCoverImageName(null); }}>
+                <Tag closable onClose={() => {
+  setCoverImageKey(null);
+  setCoverImageName(null);
+  sliceApi.updateEpisodeCover(episodeId, null).catch((err: unknown) => {
+    console.error('清除剧集封面失败', err);
+  });
+}}>
                   封面：{coverImageName || '已选择'}
                 </Tag>
               )}

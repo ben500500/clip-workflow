@@ -3,7 +3,7 @@ import {
   Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col,
   message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm, Input, Tabs, Switch, Select, Divider, InputNumber,
 } from 'antd';
-import { ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined, PlayCircleOutlined, ThunderboltOutlined, PictureOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined, PlayCircleOutlined, ThunderboltOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { projectApi } from '../api/projects';
 import type { ProjectOutputItem } from '../api/projects';
@@ -17,7 +17,7 @@ import { useDedupePresets } from '../hooks/useDedupePresets';
 const { Title, Text } = Typography;
 const { Dragger } = Upload;
 
-// 批量一键切片配置（面向已上传剧集，复用一键切片核心参数 + 视频封面）
+// 批量一键切片配置（面向已上传剧集，复用一键切片核心参数）
 interface BatchSliceConfig {
   mode: string;              // fast / dedupe
   dedupePreset: string;      // 去重档位（mode=dedupe 时生效，无手动覆盖）
@@ -31,9 +31,6 @@ interface BatchSliceConfig {
   subtitleEnabled: boolean;
   // 输出档位：original（默认）/ auto / 1080p / 720p / 480p（高分辨率/高 fps 素材降档提速）
   outputTier: string;
-  // 视频封面：选择图片作为视频首帧（MinIO key）
-  coverImageKey: string | null;
-  coverImageName: string | null;
 }
 
 const DEFAULT_BATCH_CONFIG: BatchSliceConfig = {
@@ -48,12 +45,10 @@ const DEFAULT_BATCH_CONFIG: BatchSliceConfig = {
   vert2horizEnabled: false,
   subtitleEnabled: false,
   outputTier: 'auto',
-  coverImageKey: null,
-  coverImageName: null,
 };
 
 // 批量一键切片配置持久化：按项目维度存 localStorage，重新进入页面/重开弹窗时恢复
-// 用户最后输入（AI 智能选点参数 + 视频封面选择），不再每次重置为默认
+// 用户最后输入（AI 智能选点参数），不再每次重置为默认
 const BATCH_SLICE_STORAGE_PREFIX = 'project_batch_slice_config_v1_';
 
 function loadSavedBatchConfig(projectId: string): BatchSliceConfig | null {
@@ -112,9 +107,8 @@ const ProjectDetail: React.FC = () => {
   const [batchConfig, setBatchConfig] = useState<BatchSliceConfig>(() => loadSavedBatchConfig(projectId) ?? { ...DEFAULT_BATCH_CONFIG });
   const [batchSlicing, setBatchSlicing] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number; current: string } | null>(null);
-  const [coverUploading, setCoverUploading] = useState(false);
 
-  // 批量一键切片配置变更即保存（含封面选择），重开弹窗/重新进入均恢复用户上次输入
+  // 批量一键切片配置变更即保存，重开弹窗/重新进入均恢复用户上次输入
   useEffect(() => {
     if (!projectId) return;
     saveBatchConfig(projectId, batchConfig);
@@ -444,29 +438,6 @@ const ProjectDetail: React.FC = () => {
     );
   };
 
-  // ── 视频封面：选择图片上传（作为视频首帧） ──
-  const handleCoverUpload = async (file: File) => {
-    setCoverUploading(true);
-    try {
-      const res = await sliceApi.uploadBadge(file);
-      if (mountedRef.current) {
-        setBatchConfig((prev) => ({
-          ...prev,
-          coverImageKey: res.file_key,
-          coverImageName: res.file_name,
-        }));
-        message.success(`封面已上传：${res.file_name}`);
-      }
-    } catch (err: unknown) {
-      if (mountedRef.current) {
-        message.error(err instanceof Error ? err.message : '封面上传失败');
-      }
-    } finally {
-      if (mountedRef.current) setCoverUploading(false);
-    }
-    return false;
-  };
-
   // 对单个剧集执行一次「一键切片」（提交即走：无候选时由后端自动补 AI 选点，关窗口安全）
   const runOneClickSlice = async (episode: Episode) => {
     const cfg = batchConfig;
@@ -485,8 +456,8 @@ const ProjectDetail: React.FC = () => {
       subtitle_enabled: cfg.subtitleEnabled,
       // 去重档位：mode=dedupe 时下发（批量无手动覆盖，只按档位）
       dedupe_config: cfg.mode === 'dedupe' ? { preset: cfg.dedupePreset } : undefined,
-      // 视频封面：作为视频首帧
-      cover_image_key: cfg.coverImageKey || undefined,
+      // 视频封面：使用该集独立封面（按剧集存储；为空时引擎用源视频首帧）
+      cover_image_key: episode.cover_image_key || undefined,
       // 输出档位：高分辨率/高 fps 素材降档提速
       output_tier: cfg.outputTier || 'auto',
     });
@@ -911,27 +882,6 @@ const ProjectDetail: React.FC = () => {
       >
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <Alert type="info" showIcon message="将对选中的每个剧集执行一次「一键切片」（免审核直接出片）。没有候选片段的剧集会自动补一轮 AI 选点。" />
-
-          {/* 视频封面：选择图片作为视频首帧 */}
-          <Space direction="vertical" style={{ width: '100%' }} size={6}>
-            <Text strong>视频封面（可选）</Text>
-            <Text type="secondary" style={{ fontSize: 12 }}>选择一张图片作为视频的首帧（成品开头会先展示封面画面）。不选择则直接按源视频首帧出片。</Text>
-            <Space wrap>
-              <Upload
-                accept="image/*"
-                showUploadList={false}
-                beforeUpload={(file) => handleCoverUpload(file as File)}
-                disabled={coverUploading}
-              >
-                <Button icon={<PictureOutlined />} loading={coverUploading}>选择封面图片</Button>
-              </Upload>
-              {batchConfig.coverImageKey && (
-                <Tag closable onClose={() => setBatchConfig((prev) => ({ ...prev, coverImageKey: null, coverImageName: null }))}>
-                  封面：{batchConfig.coverImageName || '已选择'}
-                </Tag>
-              )}
-            </Space>
-          </Space>
 
           <Divider style={{ margin: '4px 0' }} />
 

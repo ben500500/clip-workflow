@@ -91,6 +91,8 @@ class EpisodeResponse(BaseModel):
     title: Optional[str] = None
     episode_no: Optional[int] = None
     source_file_key: Optional[str] = None
+    # 剧集封面（作为切片首帧叠加，按剧集独立存储；为空时切片用源视频首帧）
+    cover_image_key: Optional[str] = None
     duration: Optional[float] = None
     resolution: Optional[str] = None
     file_size: Optional[int] = None
@@ -157,6 +159,7 @@ def _serialize_episode(episode: Episode) -> dict:
         "title": episode.title,
         "episode_no": episode.episode_no,
         "source_file_key": episode.source_file_key,
+        "cover_image_key": episode.cover_image_key,
         "duration": episode.duration,
         "resolution": episode.resolution,
         "file_size": episode.file_size,
@@ -653,6 +656,53 @@ async def get_episode(
                     episode.status = "failed"
                 await db.flush()
 
+    return _serialize_episode(episode)
+
+
+class EpisodeUpdate(BaseModel):
+    title: Optional[str] = None
+    cover_image_key: Optional[str] = None
+
+
+@router.put("/episodes/{episode_id}", response_model=EpisodeResponse)
+async def update_episode(
+    episode_id: str,
+    data: EpisodeUpdate,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update an episode（数据隔离）.
+
+    当前支持更新标题与剧集封面（cover_image_key 按剧集独立存储，
+    作为切片首帧叠加；传 null 即清除该集封面）。仅更新显式提供的字段。
+    """
+    try:
+        eid = uuid.UUID(episode_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid episode ID format")
+
+    result = await db.execute(select(Episode).where(Episode.id == eid))
+    episode = result.scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    # 数据隔离：通过剧集所属项目判断访问权限
+    project = await db.execute(select(Project).where(Project.id == episode.project_id))
+    proj = project.scalar_one_or_none()
+    if proj and not _check_project_access(proj, current_user):
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    # 仅更新显式提供的字段（model_fields_set 区分「未传」与「传 null」，
+    # 传 null 的 cover_image_key 表示清除该集封面）
+    fields = data.model_fields_set
+    if "title" in fields and data.title is not None:
+        episode.title = data.title
+    if "cover_image_key" in fields:
+        episode.cover_image_key = data.cover_image_key
+
+    episode.updated_at = datetime.utcnow()
+    await db.flush()
+    await db.refresh(episode)
     return _serialize_episode(episode)
 
 
