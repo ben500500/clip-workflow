@@ -161,7 +161,9 @@ DEDUPE_PRESETS = {
         "crop": 0.05,
         "hflip": False,
         "speed": 1.03,
-        "saturation": 0.90,
+        # 颜色参数按真实短剧素材校准（对齐 de-du b22a8f0）：saturation 从 0.90 收敛到 0.95，
+        # 避免与 crop 叠加后 Δsat 超阈、画面发灰变色；colorbalance 保持中性，colortemperature 6500K（不偏冷）。
+        "saturation": 0.95,
         "hue": 0.0,  # P1 色相旋转（度），0 不旋转；变体生成按配方池随机，普通去重不生效
         "gamma": 1.02,
         "contrast": 1.02,
