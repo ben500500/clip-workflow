@@ -616,6 +616,7 @@ def _diff_fields(old: Drama, row: DramaImportRow) -> dict:
         ("synopsis", "synopsis"),
         ("listing_status", "listing_status"),
         ("material_link", "material_link"),
+        ("material_link_pwd", "material_link_pwd"),
     ]
     for attr, field in mapping:
         new_val = getattr(row, field)
@@ -753,7 +754,10 @@ async def drama_import_parse(
     col_listed = _find("上架日期")
     col_rating = _find("评级")
     col_synopsis = _find("简介") or _find("剧情简介") or _find("内容简介")
-    col_link = _find("素材链接")
+    # 链接列兼容多种网盘列头（素材链接/网盘链接/网盘地址/百度网盘/夸克网盘/分享链接）
+    col_link = _find("素材链接", "网盘链接", "网盘地址", "百度网盘", "夸克网盘", "分享链接", "盘链接")
+    # 网盘提取码/密码列（之前未解析，导致密码一并丢失）
+    col_pwd = _find("网盘密码", "提取码", "网盘提取码", "密码")
     col_account = _find("上架账号")
 
     rows = []
@@ -774,6 +778,7 @@ async def drama_import_parse(
             "updated_date": _norm(row.get(col_update, "")) if col_update else None,
             "listed_at": _norm(row.get(col_listed, "")) if col_listed else None,
             "material_link": _norm(row.get(col_link, "")) if col_link else None,
+            "material_link_pwd": _norm(row.get(col_pwd, "")) if col_pwd else None,
             "account_name": _norm(row.get(col_account, "")) if col_account else None,
         })
 
