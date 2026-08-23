@@ -560,6 +560,7 @@ class DramaImportRow(BaseModel):
     type: Optional[str] = None
     tags: Optional[List[str]] = None
     rating: Optional[str] = None
+    synopsis: Optional[str] = None
     listing_status: str = "已上架"
     updated_date: Optional[str] = None
     listed_at: Optional[str] = None
@@ -660,6 +661,7 @@ async def drama_import_preview(
                     "type": row.type,
                     "tags": row.tags,
                     "rating": row.rating,
+                    "synopsis": row.synopsis,
                     "listing_status": row.listing_status,
                     "updated_date": row.updated_date,
                     "listed_at": row.listed_at,
@@ -750,6 +752,7 @@ async def drama_import_parse(
     col_status = _find("上架状态")
     col_listed = _find("上架日期")
     col_rating = _find("评级")
+    col_synopsis = _find("简介") or _find("剧情简介") or _find("内容简介")
     col_link = _find("素材链接")
     col_account = _find("上架账号")
 
@@ -766,6 +769,7 @@ async def drama_import_parse(
             "type": _norm(row.get(col_type, "")) if col_type else None,
             "tags": tags,
             "rating": _norm(row.get(col_rating, "")) if col_rating else None,
+            "synopsis": _norm(row.get(col_synopsis, "")) if col_synopsis else None,
             "listing_status": _norm(row.get(col_status, "")) if col_status else "已上架",
             "updated_date": _norm(row.get(col_update, "")) if col_update else None,
             "listed_at": _norm(row.get(col_listed, "")) if col_listed else None,
