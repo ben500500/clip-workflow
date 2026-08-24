@@ -219,6 +219,16 @@ class Settings(BaseSettings):
     # dupload 批量导入必填：cpID（下载平台侧合作方 ID）
     DUPLOAD_CP_ID: str = ""
 
+    # 飞书（Lark）表格自动爬取（ISSUE #142）
+    # 方式一（公共分享）：直接填表格链接，无需凭证；
+    # 方式二（Open API）：填 app_id / app_secret 走飞书开放平台，可访问受限表格。
+    FEISHU_SPREADSHEET_URL: str = ""
+    FEISHU_APP_ID: str = ""
+    FEISHU_APP_SECRET: str = ""
+    # 剧目名称列 / 剧场列 在飞书表中的列名（按表头自动匹配，可空则走默认匹配）
+    FEISHU_DRAMA_COL: str = "剧目名称"
+    FEISHU_THEATER_COL: str = "剧场"
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

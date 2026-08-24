@@ -56,6 +56,7 @@ async def init_db():
     await _apply_compat_migrations()
     await _ensure_autoclip_runs_table()
     await _backfill_data_scope()
+    await _backfill_drama_theaters()
     # wechat_download 独立包（并入形态）：确保其独立表存在（幂等）
     await _ensure_wechat_download_tables()
     # P1 防御：空闲事务超时自动回滚（防事务泄漏占锁 autoclip_runs）
@@ -110,6 +111,47 @@ async def _backfill_data_scope():
             # 运营专员可见范围依赖其创建的素材；这里不猜测归属）
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to backfill data_scope: %s", e)
+
+
+async def _backfill_drama_theaters():
+    """剧目 ↔ 剧场多对多回填（幂等，ISSUE #142）。
+
+    新表 `drama_theaters` 由 create_all 自动创建；此处把存量 `dramas.theater_id`
+    （一剧一场时期遗留）回填进关联表，保证老库升级后多剧场关系可用。
+    同时兜底建表（老库 create_all 不建新表的场景）。
+    """
+    try:
+        from sqlalchemy import inspect as sa_inspect
+        async with engine.begin() as conn:
+            has_table = await conn.run_sync(
+                lambda sync_conn: sa_inspect(sync_conn).has_table("drama_theaters")
+            )
+            if not has_table:
+                await conn.execute(
+                    sqlalchemy.text("""
+                        CREATE TABLE IF NOT EXISTS drama_theaters (
+                            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                            drama_id UUID NOT NULL REFERENCES dramas(id) ON DELETE CASCADE,
+                            theater_id UUID NOT NULL REFERENCES theaters(id) ON DELETE CASCADE,
+                            created_at TIMESTAMP NOT NULL DEFAULT now(),
+                            CONSTRAINT uq_drama_theater UNIQUE (drama_id, theater_id)
+                        )
+                    """)
+                )
+            await conn.execute(
+                sqlalchemy.text("""
+                    INSERT INTO drama_theaters (id, drama_id, theater_id, created_at)
+                    SELECT gen_random_uuid(), d.id, d.theater_id, now()
+                    FROM dramas d
+                    WHERE d.theater_id IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM drama_theaters dt
+                          WHERE dt.drama_id = d.id AND dt.theater_id = d.theater_id
+                      )
+                """)
+            )
+    except Exception as e:
+        logging.getLogger(__name__).warning("backfill drama_theaters 失败（降级）: %s", e)
 
 
 async def _ensure_autoclip_runs_table():

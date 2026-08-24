@@ -21,8 +21,10 @@ export interface Drama {
   material_link_pwd_masked?: boolean;
   created_by: string | null;
   operator_id: string | null;
-  theater_id?: string | null;      // 所属剧场
-  theater_name?: string | null;    // 所属剧场名
+  theater_ids?: string[];        // 所属剧场（一剧多剧场，ISSUE #142）
+  theater_names?: string[];      // 所属剧场名
+  theater_id?: string | null;    // 兼容遗留：第一剧场 id
+  theater_name?: string | null;  // 兼容遗留：第一剧场名
   created_at: string;
   updated_at: string;
 }
@@ -57,7 +59,8 @@ export interface DramaCreateParams {
   material_link_pwd?: string | null;
   operator_id?: string | null;
   topics?: string[] | null;
-  theater_id?: string | null;      // 所属剧场（剧目直接挂剧场）
+  theater_ids?: string[] | null; // 所属剧场（一剧多剧场，可空）
+  theater_id?: string | null;    // 兼容遗留单字段
   account_ids?: string[] | null;
 }
 
@@ -76,7 +79,8 @@ export interface DramaUpdateParams {
   material_link_pwd?: string | null;
   operator_id?: string | null;
   topics?: string[] | null;
-  theater_id?: string | null;      // 所属剧场（剧目直接挂剧场）
+  theater_ids?: string[] | null; // 所属剧场（一剧多剧场，可空）
+  theater_id?: string | null;    // 兼容遗留单字段
 }
 
 export interface DramaImportRow {
@@ -173,9 +177,20 @@ export function createDrama(data: DramaCreateParams): Promise<DramaDetail> {
 export function updateDrama(dramaId: string, data: DramaUpdateParams): Promise<DramaDetail> {
   return client.put(`/dramas/${dramaId}`, data);
 }
-
 export function deleteDrama(dramaId: string): Promise<void> {
   return client.delete(`/dramas/${dramaId}`);
+}
+
+// 飞书表格自动爬取（ISSUE #142）：手动触发，更新现有剧目的剧场关联
+export function feishuImportDrama(url?: string): Promise<{
+  success: boolean;
+  matched?: number;
+  updated?: number;
+  errors?: string[];
+  message?: string;
+  error?: string;
+}> {
+  return client.post('/dramas/import/feishu', { url: url || undefined });
 }
 
 // 剧照
