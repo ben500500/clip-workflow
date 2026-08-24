@@ -1189,12 +1189,13 @@ const DramaLibrary: React.FC = () => {
             仅更新存量剧目，不自动新建。
           </Typography.Text>
           <Input
-            placeholder="粘贴飞书表格链接（可留空，用后端配置的默认链接）"
+            placeholder="粘贴飞书表格链接（电子表格 / 知识库多维表格 / wiki 链接均可）"
             value={feishuUrl}
             onChange={(e) => setFeishuUrl(e.target.value)}
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            需要后端配置 FEISHU_APP_ID / FEISHU_APP_SECRET 及默认表格链接，方可读取。
+            支持普通电子表格（/sheets/…）、多维表格（/base/…、/wiki/…）链接；
+            需要后端配置 FEISHU_APP_ID / FEISHU_APP_SECRET 方可读取。
           </Typography.Text>
         </Space>
       </Modal>
