@@ -1753,7 +1753,8 @@ def _filter_and_align_srt(records: list[dict], seg_start: float, seg_end: float,
 
 def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str,
                         speech_windows: list[tuple] | None = None,
-                        scale: float = 1.0) -> str:
+                        scale: float = 1.0,
+                        lead_offset: float = 0.0) -> str:
     """根据一个切片的源时间段列表，从源 SRT 截取并拼接出该切片对应的字幕文件。
 
     segments: 按拼接顺序排列的源时间段 [(start, end), ...]。
@@ -1764,10 +1765,13 @@ def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str,
 
     scale: 输出时间轴缩放因子（>1 表示切片时对视频做了变速压缩，如去重 mode 的
         setpts 变速；源时间 t 对应输出画面时间 t/scale）。默认 1 不缩放（普通/快速模式）。
+
+    lead_offset: 输出视频前置时长（如钩子片头），字幕时间轴整体后移该秒数，
+        保证与拼接后成品的实际播放时间轴对齐。默认 0。
     """
     records = read_srt(src_srt)
     merged = []
-    offset = 0.0
+    offset = float(lead_offset or 0.0)
     for start, end in segments:
         _filter_and_align_srt(records, start, end, offset, merged, speech_windows, scale)
         offset += max(0.0, (end - start) / scale)
@@ -1780,7 +1784,7 @@ def build_clip_subtitle(src_srt: str, segments: list[tuple], out_srt: str,
     # 正常有内容时保持原行为（字幕仅在说话时显示）。
     if not merged and records and segments:
         merged = []
-        offset = 0.0
+        offset = float(lead_offset or 0.0)
         for start, end in segments:
             _filter_and_align_srt(records, start, end, offset, merged, None, scale)
             offset += max(0.0, (end - start) / scale)
@@ -4096,6 +4100,16 @@ def main():
         help="视频封面图片路径（可选）。选择图片作为视频首帧：叠加到成品第一帧（仅首帧显示封面，随即切入源视频内容）",
     )
     parser.add_argument(
+        "--hook",
+        default=None,
+        help="钩子视频路径（可选）。将钩子视频作为片头，拼接在封面首帧与本体视频之间（[封面][钩子][本体]）。无封面时顺序为 [钩子][本体]。钩子与本体经同一次 concat 归一化，只重编码一次",
+    )
+    parser.add_argument(
+        "--hook-target",
+        default=None,
+        help="钩子注入的目标切片名（name）。默认自动取首个切片组，若指定则按 name 精确匹配并在其前拼接钩子视频",
+    )
+    parser.add_argument(
         "--output-tier",
         default="original",
         choices=OUTPUT_TIERS,
@@ -4421,6 +4435,31 @@ def main():
     for start, end, name, idx in segments:
         groups.setdefault(name, []).append((start, end, name))
 
+    # 钩子拼接：把钩子视频作为片头注入目标切片组（part_0），与本体同一次
+    # concat 归一化，只重编码一次，避免在 apply_cover_first_frame 之后再二次拼接。
+    # 最终顺序：[封面帧][钩子][本体]（无封面则 [钩子][本体]）。
+    hook_part_path = None
+    hook_target_key = None
+    hook_dur = 0.0
+    if args.hook:
+        if not os.path.isfile(args.hook):
+            print(f"警告: 钩子视频文件不存在，跳过钩子拼接: {args.hook}", file=sys.stderr)
+        else:
+            hook_dur = ffprobe_duration(args.hook)
+            if not hook_dur or hook_dur <= 0:
+                print(f"警告: 无法解析钩子视频时长，跳过钩子拼接: {args.hook}", file=sys.stderr)
+            elif not groups:
+                print("警告: 无任何切片分组，跳过钩子拼接", file=sys.stderr)
+            else:
+                if args.hook_target and args.hook_target in groups:
+                    hook_target_key = args.hook_target
+                else:
+                    # 未指定或指定不存在时，默认注入首个切片组
+                    hook_target_key = next(iter(groups))
+                    if args.hook_target:
+                        print(f"警告: 钩子目标切片名 '{args.hook_target}' 不存在，回退到首个切片组 '{hook_target_key}'", file=sys.stderr)
+                print(f"钩子拼接: {os.path.basename(args.hook)} (时长 {hook_dur:.3f}s) -> 注入切片组 '{hook_target_key}'", file=sys.stderr)
+
     # 字幕开启时，预计算源视频的语音（非静音）区间，用于"只在说话时显示字幕"。
     # 静音/停顿期间字幕自动隐藏，避免字幕一直挂在屏幕上。
     # detect_speech_windows 失败返回 [] 时回退为整段都显示，不影响烧录。
@@ -4436,11 +4475,38 @@ def main():
             out_path = os.path.join(args.output_dir, name)
             parts = []
             with tempfile.TemporaryDirectory() as tmp:
+                part_offset = 0
+                hook_injected = False
+                # 钩子注入：目标组把钩子视频作为 part_0，本体各段从 part_1 起编号。
+                # 钩子与本体共用同一套 vf/af/threads/encoder 归一化，保证 concat 参数对齐。
+                # 注意：钩子是独立视频文件，其原生分辨率/帧率/编码可能与本体(源视频)不同。
+                # 若仅复用 vf(无去重/水印/降档时 vf 为空)会让钩子走流拷贝切片，与本体规格
+                # 不一致 -> concat demuxer 免重编码拼接产出混规格坏片。故钩子段始终显式归一化
+                # 到本体(源/档位)分辨率+帧率+像素格式，并强制本组 concat 走重编码。
+                if name_key == hook_target_key:
+                    hook_injected = True
+                    hook_part = os.path.join(tmp, "part_0.mp4")
+                    hook_w = tier_w or 1280
+                    hook_h = tier_h or 720
+                    hook_fps = _fps_value(tier_fps) if tier_fps else 25.0
+                    hook_vf = (
+                        f"scale={hook_w}:{hook_h}:force_original_aspect_ratio=increase,"
+                        f"crop={hook_w}:{hook_h},fps={hook_fps:.3f},setsar=1,format=yuv420p"
+                    )
+                    if vf:
+                        hook_vf = f"{hook_vf},{vf}"
+                    slice_segment(args.hook, 0.0, hook_dur, hook_part,
+                                  vf=hook_vf, af=af, threads=threads, encoder=encoder)
+                    parts.append(hook_part)
+                    part_offset = 1
                 for i, (start, end, _) in enumerate(group):
-                    part = os.path.join(tmp, f"part_{i}.mp4")
+                    part = os.path.join(tmp, f"part_{i + part_offset}.mp4")
                     slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder)
                     parts.append(part)
-                concat_segments(parts, out_path, threads=threads, encoder=encoder)
+                # 含钩子段时强制走 filter_complex 重编码 concat（各段参数已归一化对齐），
+                # 不做 concat demuxer 免重编码拼接，避免钩子与本体规格差异导致坏片。
+                concat_segments(parts, out_path, threads=threads, encoder=encoder,
+                                copy_if_possible=(not hook_injected))
                 seg_times = [(s, e) for s, e, _ in group]
                 # 源字幕打码：打掉片源自带字幕（在烧录自己的新字幕之前）
                 if subtitle_mask:
@@ -4504,7 +4570,8 @@ def main():
                     # 去重变速(speed)会压缩视频时长，ASR 字幕时间轴需按 speed 缩放，
                     # 否则字幕与语音/画面错位、末尾字幕超出视频时长而显示不全。
                     build_clip_subtitle(args.subtitle, seg_times, sub_srt, speech_windows,
-                                        scale=dedupe_speed)
+                                        scale=dedupe_speed,
+                                        lead_offset=hook_dur if name_key == hook_target_key else 0.0)
                     sub_out = out_path + ".sub.mp4"
                     # 源字幕对齐：开启对齐开关且有源字幕打码时，把 ASR 字幕默认位置
                     # 对齐到检测到的打码区域（与被打掉的源字幕位置重合）。

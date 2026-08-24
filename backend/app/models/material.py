@@ -207,6 +207,8 @@ class SliceTask(Base):
     text_overlays_config = Column(JSON, nullable=True)
     # 视频封面（可选）：选择图片作为视频首帧；重试时保留
     cover_image_key = Column(String(500), nullable=True)
+    # 钩子视频（可选）：选择视频作为片头（[封面][钩子][本体]）；重试时保留
+    hook_video_key = Column(String(500), nullable=True)
     # 输出档位（original/auto/1080p/720p/480p）：高分辨率/高 fps 素材降档提速；重试时保留
     output_tier = Column(String(20), nullable=True)
     status = Column(String(50), nullable=True)

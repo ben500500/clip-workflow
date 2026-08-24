@@ -173,6 +173,11 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		args = append(args, "--cover", task.Cover.Path)
 	}
 
+	// 钩子视频：作为片头拼接在封面与本体之间（后端下发 hook URL，Worker 已下载到本地 path）
+	if task.Hook.Path != "" {
+		args = append(args, "--hook", task.Hook.Path)
+	}
+
 	// ASR 字幕烧录：把后端下发的 SRT 内容写到本地文件，透传给引擎 --subtitle
 	if len(task.Subtitle) > 0 {
 		enabled, _ := task.Subtitle["enabled"].(bool)

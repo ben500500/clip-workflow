@@ -152,6 +152,30 @@ const EpisodeDetail: React.FC = () => {
     }
     return false;
   };
+  // ── 钩子视频（作为片头拼接在封面与本体之间，一键切片时下发） ──
+  // 钩子是临时素材，不按剧集持久化，仅随本次切片请求透传。
+  const [hookVideoKey, setHookVideoKey] = useState<string | null>(null);
+  const [hookVideoName, setHookVideoName] = useState<string | null>(null);
+  const [hookUploading, setHookUploading] = useState(false);
+
+  const handleHookUpload = async (file: File) => {
+    setHookUploading(true);
+    try {
+      const res = await sliceApi.uploadHook(file);
+      if (mountedRef.current) {
+        setHookVideoKey(res.file_key);
+        setHookVideoName(res.file_name);
+        message.success(`钩子视频已上传：${res.file_name}`);
+      }
+    } catch (err: unknown) {
+      if (mountedRef.current) {
+        message.error(err instanceof Error ? err.message : '钩子视频上传失败');
+      }
+    } finally {
+      if (mountedRef.current) setHookUploading(false);
+    }
+    return false;
+  };
   // ── 切片自定义文字水印开关与参数 ──
   // 去重模式手动配置（每项去重手段可单独覆盖预设，为空时沿用预设档位）
   const [dedupeManual, setDedupeManual] = useState<DedupeManualConfigValue>({});
@@ -1066,6 +1090,8 @@ const EpisodeDetail: React.FC = () => {
         autoclip_config: resolveAutoclipConfig(),
         // 视频封面：作为视频首帧
         cover_image_key: coverImageKey || undefined,
+        // 钩子视频：作为片头拼接在封面与本体之间（[封面][钩子][本体]）
+        hook_video_key: hookVideoKey || undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
         output_tier: outputTier || 'auto',
         // 去重模式：一键切片启用后按档位做画面去重（手动配置沿用主页「去重高级配置」）
@@ -1249,6 +1275,7 @@ const EpisodeDetail: React.FC = () => {
         autoclip_config: resolveAutoclipConfig(),
         // 视频封面（首帧）：选择图片作为成品视频首帧（与一键切片共用同一封面选择）
         cover_image_key: coverImageKey || undefined,
+        hook_video_key: hookVideoKey || undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
         output_tier: outputTier || 'auto',
         // 去重模式档位（轻/标准/重）+ 手动配置（每项手段可单独覆盖预设），仅去重模式生效
@@ -1820,6 +1847,28 @@ const EpisodeDetail: React.FC = () => {
   });
 }}>
                 封面：{coverImageName || '已选择'}
+              </Tag>
+            )}
+          </Space>
+          {/* 钩子视频（片头，可选）：选择视频作为片头，拼接在封面首帧与本体之间（[封面][钩子][本体]） */}
+          <Space wrap align="center" size={8}>
+            <Text strong style={{ fontSize: 13 }}>钩子视频（片头）</Text>
+            <Upload
+              accept="video/*"
+              showUploadList={false}
+              beforeUpload={(file) => handleHookUpload(file as File)}
+              disabled={hookUploading}
+            >
+              <Button size="small" icon={<PlayCircleOutlined />} loading={hookUploading}>
+                {hookVideoKey ? '更换钩子' : '选择钩子视频'}
+              </Button>
+            </Upload>
+            {hookVideoKey && (
+              <Tag closable onClose={() => {
+  setHookVideoKey(null);
+  setHookVideoName(null);
+}}>
+                钩子：{hookVideoName || '已选择'}
               </Tag>
             )}
           </Space>
@@ -2831,6 +2880,33 @@ const EpisodeDetail: React.FC = () => {
   });
 }}>
                   封面：{coverImageName || '已选择'}
+                </Tag>
+              )}
+            </Space>
+          </div>
+
+          {/* ── 钩子视频（片头，可选） ── */}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+            <Space wrap align="center" size={8} style={{ marginBottom: 8 }}>
+              <PlayCircleOutlined />
+              <Text strong style={{ fontSize: 13 }}>钩子视频（片头，可选）</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>选择一段视频作为片头，拼接在封面首帧与本体之间（[封面][钩子][本体]）；不选择则直接按源视频首帧出片</Text>
+            </Space>
+            <Space wrap align="center" size={8}>
+              <Upload
+                accept="video/*"
+                showUploadList={false}
+                beforeUpload={(file) => handleHookUpload(file as File)}
+                disabled={hookUploading}
+              >
+                <Button size="small" icon={<PlayCircleOutlined />} loading={hookUploading}>选择钩子视频</Button>
+              </Upload>
+              {hookVideoKey && (
+                <Tag closable onClose={() => {
+  setHookVideoKey(null);
+  setHookVideoName(null);
+}}>
+                  钩子：{hookVideoName || '已选择'}
                 </Tag>
               )}
             </Space>

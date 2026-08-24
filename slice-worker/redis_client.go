@@ -454,6 +454,8 @@ type SliceTask struct {
 	WatermarkMask map[string]interface{} `json:"watermark_mask"`
 	// 视频封面（可选，后端透传；Worker 下载图片后透传给引擎 --cover 参数，作为视频首帧）
 	Cover CoverItem `json:"cover"`
+	// 钩子视频（可选，后端透传；Worker 下载视频后透传给引擎 --hook 参数，作为片头拼接在封面与本体之间）
+	Hook HookItem `json:"hook"`
 	// 输出档位（可选，后端透传；Worker 透传给引擎 --output-tier 参数，高分辨率/高 fps 素材降档提速）
 	OutputTier string `json:"output_tier"`
 	Output         TaskOutput             `json:"output"`
@@ -482,6 +484,13 @@ type BadgeItem struct {
 // CoverItem 视频封面配置
 // url: 封面图片 presigned GET URL（Worker 下载后写入 Path 本地路径，透传给引擎 --cover）
 type CoverItem struct {
+	URL  string `json:"url"`
+	Path string `json:"-"`
+}
+
+// HookItem 钩子视频配置
+// url: 钩子视频 presigned GET URL（Worker 下载后写入 Path 本地路径，透传给引擎 --hook）
+type HookItem struct {
 	URL  string `json:"url"`
 	Path string `json:"-"`
 }

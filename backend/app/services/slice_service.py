@@ -149,6 +149,7 @@ async def run_slice(
     subtitle_align_mask: bool = True,
     cover_path: Optional[str] = None,
     output_tier: Optional[str] = None,
+    hook_path: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run the ffmpeg slice engine.
@@ -208,6 +209,8 @@ async def run_slice(
         cmd.extend(["--watermark-mask", json.dumps(watermark_mask_config)])
     if cover_path:
         cmd.extend(["--cover", cover_path])
+    if hook_path:
+        cmd.extend(["--hook", hook_path])
     if output_tier:
         cmd.extend(["--output-tier", output_tier])
     logger.info("Running slice: %s", " ".join(cmd))
@@ -241,6 +244,7 @@ async def run_slice_scrub(
     subtitle_align_mask: bool = True,
     cover_path: Optional[str] = None,
     output_tier: Optional[str] = None,
+    hook_path: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run scrub-mode slicing (cutlist minus removed intervals)."""
@@ -271,6 +275,7 @@ async def run_slice_scrub(
         subtitle_align_mask=subtitle_align_mask,
         cover_path=cover_path,
         output_tier=output_tier,
+        hook_path=hook_path,
         task_id=task_id,
     )
 
@@ -301,6 +306,7 @@ async def run_slice_fast(
     subtitle_align_mask: bool = True,
     cover_path: Optional[str] = None,
     output_tier: Optional[str] = None,
+    hook_path: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run fast/dedupe mode slicing."""
@@ -333,6 +339,7 @@ async def run_slice_fast(
         subtitle_align_mask=subtitle_align_mask,
         cover_path=cover_path,
         output_tier=output_tier,
+        hook_path=hook_path,
         task_id=task_id,
     )
 

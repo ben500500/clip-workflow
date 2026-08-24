@@ -648,6 +648,23 @@ func (w *Worker) runTask(msg *StreamMessage) {
 		task.Cover.Path = coverPath
 	}
 
+	// 1.7 下载钩子视频（如有），写入本地 path 供引擎作为片头拼接（[封面][钩子][本体]）
+	if task.Hook.URL != "" {
+		// presigned URL 带签名查询参数，先解析 URL 取 Path 再取扩展名。
+		hookExt := ".mp4"
+		if u, err := url.Parse(task.Hook.URL); err == nil && u.Path != "" {
+			if e := filepath.Ext(u.Path); e != "" {
+				hookExt = e
+			}
+		}
+		hookPath := filepath.Join(taskDir, "hook"+hookExt)
+		if err := w.transfer.DownloadFile(taskCtx, task.Hook.URL, hookPath, task.TaskID); err != nil {
+			w.handleTaskError(taskCtx, task, msg, fmt.Errorf("下载钩子视频失败: %w", err))
+			return
+		}
+		task.Hook.Path = hookPath
+	}
+
 	// 2. 执行切片（引擎内部会解析 PROGRESS 并回调真实进度）
 	w.emitProgress(task.TaskID, "ffmpeg", 0, "开始切片")
 	outputDir := filepath.Join(taskDir, "output")

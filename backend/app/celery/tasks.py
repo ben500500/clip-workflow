@@ -566,6 +566,7 @@ def slice_task(
     subtitle_align_mask: bool = True,
     cover_image_key: Optional[str] = None,
     output_tier: Optional[str] = None,
+    hook_video_key: Optional[str] = None,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
@@ -577,6 +578,7 @@ def slice_task(
     badge_default_width: 角标默认宽度(px,0=保持原图尺寸;角标未单独设 width 时生效)。
     subtitle_config: 字幕烧录配置({"enabled": True, "srt": str},切片时烧录到成品)。
     cover_image_key: 视频封面图片 MinIO key(可选,作为成品视频首帧叠加)。
+    hook_video_key: 钩子视频 MinIO key(可选,作为片头拼接在封面与本体之间)。
     """
     from app.services.slice_service import run_slice_scrub, run_slice_fast
     from app.services.minio_service import upload_file_from_path, download_to_file
@@ -638,6 +640,21 @@ def slice_task(
                 logger.info("视频封面已下载到本地: %s", cover_local)
             else:
                 logger.warning("视频封面下载失败,忽略: %s", cover_image_key)
+
+        # 钩子视频:下载到本地,作为片头拼接([封面][钩子][本体])
+        hook_path = None
+        if hook_video_key:
+            hook_local = os.path.join(
+                output_dir, f"hook_{os.path.basename(hook_video_key)}"
+            )
+            ok = run_async(
+                download_to_file(settings.MINIO_BUCKET_RAW, hook_video_key, hook_local)
+            )
+            if ok and os.path.isfile(hook_local):
+                hook_path = hook_local
+                logger.info("钩子视频已下载到本地: %s", hook_local)
+            else:
+                logger.warning("钩子视频下载失败,忽略: %s", hook_video_key)
 
         # 字幕烧录:把 ASR 生成的 SRT 写到本地文件,供引擎 --subtitle 使用
         subtitle_srt_path = None
@@ -722,6 +739,7 @@ def slice_task(
                     subtitle_align_mask=subtitle_align_mask,
                     cover_path=cover_path,
                     output_tier=output_tier,
+                    hook_path=hook_path,
                     task_id=task_id,
                 )
             )
@@ -752,6 +770,7 @@ def slice_task(
                     subtitle_align_mask=subtitle_align_mask,
                     cover_path=cover_path,
                     output_tier=output_tier,
+                    hook_path=hook_path,
                     task_id=task_id,
                 )
             )

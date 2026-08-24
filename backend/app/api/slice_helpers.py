@@ -169,6 +169,11 @@ class SliceRunRequest(BaseModel):
     # 提供封面图片 MinIO key（通过 /slice/badge-upload 上传）后，切片引擎会在每个
     # 成品开头叠加一张静止封面画面作为视频首帧。可选，不提供则直接按源视频首帧出片。
     cover_image_key: Optional[str] = None
+    # ── 钩子视频（片头拼接）──
+    # 提供钩子视频 MinIO key（通过 /slice/hook-upload 上传）后，切片引擎会把钩子
+    # 视频作为片头拼接在封面首帧与本体视频之间（[封面][钩子][本体]）；无封面则
+    # 顺序为 [钩子][本体]。可选。与封面同一次 concat 归一化，只重编码一次。
+    hook_video_key: Optional[str] = None
     # ── 竖屏转横屏智能裁切（切片前预处理）──
     # 开启后切片前自动检测素材方向，竖屏素材先转成横屏再切片
     vert2horiz_enabled: bool = False
@@ -966,6 +971,7 @@ async def _publish_to_worker(
     subtitle_align_mask: bool = True,
     cover_image_key: Optional[str] = None,
     output_tier: Optional[str] = None,
+    hook_video_key: Optional[str] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -1113,6 +1119,7 @@ async def _dispatch_celery(
     subtitle_align_mask: bool = True,
     cover_image_key: Optional[str] = None,
     output_tier: Optional[str] = None,
+    hook_video_key: Optional[str] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -1147,6 +1154,7 @@ async def _dispatch_celery(
         subtitle_align_mask=subtitle_align_mask,
         cover_image_key=cover_image_key,
         output_tier=output_tier or "auto",
+        hook_video_key=hook_video_key,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -1174,6 +1182,7 @@ async def _dispatch_local(
     subtitle_align_mask: bool = True,
     cover_image_key: Optional[str] = None,
     output_tier: Optional[str] = None,
+    hook_video_key: Optional[str] = None,
 ) -> None:
     """单机同步执行切片引擎（SLICE_ENGINE=local）。
 
@@ -1276,6 +1285,18 @@ async def _dispatch_local(
             else:
                 logger.warning("视频封面下载失败，忽略: %s", cover_image_key)
 
+        # 钩子视频：下载到本地，作为片头拼接（[封面][钩子][本体]）
+        hook_path = None
+        if hook_video_key:
+            hook_local = os.path.join(
+                output_dir, f"hook_{os.path.basename(hook_video_key)}"
+            )
+            ok = await download_to_file(settings.MINIO_BUCKET_RAW, hook_video_key, hook_local)
+            if ok and os.path.isfile(hook_local):
+                hook_path = hook_local
+            else:
+                logger.warning("钩子视频下载失败，忽略: %s", hook_video_key)
+
         # 字幕烧录：把 ASR 生成的 SRT 写到本地文件
         subtitle_srt_path = None
         subtitle_font_ratio = None
@@ -1339,6 +1360,7 @@ async def _dispatch_local(
                 subtitle_align_mask=subtitle_align_mask,
                 cover_path=cover_path,
                 output_tier=output_tier,
+                hook_path=hook_path,
                 task_id=task_id,
             )
         else:
@@ -1366,6 +1388,7 @@ async def _dispatch_local(
                 subtitle_align_mask=subtitle_align_mask,
                 cover_path=cover_path,
                 output_tier=output_tier,
+                hook_path=hook_path,
                 task_id=task_id,
             )
 

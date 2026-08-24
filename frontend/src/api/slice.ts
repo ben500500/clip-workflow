@@ -126,6 +126,8 @@ export const sliceApi = {
       cut_end?: number;
       // 视频封面：选择图片作为视频首帧（MinIO key，通过 uploadBadge 上传）
       cover_image_key?: string;
+      // 钩子视频：作为片头拼接在封面首帧与本体之间（[封面][钩子][本体]，MinIO key，通过 uploadHook 上传）
+      hook_video_key?: string;
       // 输出档位：original（默认）/ auto（源宽>720 或 fps>30 自动降 720P@30）/ 1080p / 720p / 480p
       output_tier?: 'original' | 'auto' | '1080p' | '720p' | '480p' | string;
     }
@@ -141,6 +143,22 @@ export const sliceApi = {
     const formData = new FormData();
     formData.append('file', file);
     return client.post('/slice/badge-upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 3600000,
+      onUploadProgress: (progressEvent) => {
+        if (onProgress && progressEvent.total) {
+          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          onProgress(percent);
+        }
+      },
+    }) as Promise<BadgeUploadResult>;
+  },
+
+  // 上传钩子视频（作为片头拼接在封面与本体之间）
+  uploadHook: (file: File, onProgress?: (percent: number) => void) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return client.post('/slice/hook-upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 3600000,
       onUploadProgress: (progressEvent) => {
