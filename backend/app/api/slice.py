@@ -554,9 +554,11 @@ async def _resolve_slice_inputs(
                 fallback_whole_video = True
             else:
                 fallback_whole_video = False
-                # 自动通过所有待审核片段，方便后续在切片任务/成品预览中看到关联关系
+                # 自动通过所有待审核片段，方便后续在切片任务/成品预览中看到关联关系。
+                # 一键切片=候选自动全部通过审核：不仅 pending，之前被手动拒绝(rejected)的
+                # 候选也一并恢复为 accepted，确保一次一键切片后所有候选都处于「已通过」状态。
                 for clip in all_clips:
-                    if clip.status == "pending":
+                    if clip.status in ("pending", "rejected"):
                         clip.status = "accepted"
                 await db.flush()
                 accepted_clips = all_clips
