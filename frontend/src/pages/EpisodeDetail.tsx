@@ -208,6 +208,16 @@ const EpisodeDetail: React.FC = () => {
   const [vert2horizFaceMargin, setVert2horizFaceMargin] = useState(0.30);
   // 竖屏转横屏设置弹窗是否打开（详细配置收进弹窗，节省主界面空间）
   const [vert2horizModalOpen, setVert2horizModalOpen] = useState(false);
+  // ── 高光混剪（把入选高光段按源时间顺序混剪拼接为一个成品）──
+  const [highlightMixEnabled, setHighlightMixEnabled] = useState(false);
+  // 输出总时长上限（秒，可选）：累计各高光段不超过该值，最后一段会超额时丢弃
+  const [highlightMixMaxDuration, setHighlightMixMaxDuration] = useState<number | null>(null);
+  // 单段最大时长（秒，可选）：仅纳入时长不超过该值的短高光段
+  const [highlightMixMaxClipDuration, setHighlightMixMaxClipDuration] = useState<number | null>(null);
+  // 拼接顺序：time（源时间顺序，默认）/ score（评分从高到低）
+  const [highlightMixOrder, setHighlightMixOrder] = useState<'time' | 'score'>('time');
+  // 高光混剪设置弹窗是否打开
+  const [highlightMixModalOpen, setHighlightMixModalOpen] = useState(false);
   // ── ASR 字幕烧录开关 ──
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
   // 字幕字号（相对输出视频高度的比例，默认 0.22→FontSize 22；转横屏开启时默认套用，用户可调）
@@ -268,6 +278,12 @@ const EpisodeDetail: React.FC = () => {
   const [maxClipDuration, setMaxClipDuration] = useState<number | null>(null);
   // 画面理解（MiniCPM-V 本地视觉模型）：AI 选点时对候选片段抽帧分析画面，辅助打分，默认开启
   const [frameAnalysis, setFrameAnalysis] = useState(true);
+  // ── 高光识别（AI 选点找出多段 ≤10s 的短高光片段）──
+  const [highlightMode, setHighlightMode] = useState(false);
+  // 高光单段最大时长（秒，默认 10）：仅保留不超过该时长的短高光
+  const [highlightMaxDuration, setHighlightMaxDuration] = useState<number>(10);
+  // 高光识别配置弹窗是否打开
+  const [highlightModalOpen, setHighlightModalOpen] = useState(false);
   const [autoclipProgress, setAutoclipProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
   const [autoclipRunning, setAutoclipRunning] = useState(false);
   const [detectRunning, setDetectRunning] = useState(false);
@@ -462,6 +478,10 @@ const EpisodeDetail: React.FC = () => {
     dedupe_enabled: dedupeEnabled,
     dedupe_preset: dedupePreset,
     output_tier: outputTier,
+    highlight_mix_enabled: highlightMixEnabled,
+    highlight_mix_max_duration: highlightMixMaxDuration ?? undefined,
+    highlight_mix_max_clip_duration: highlightMixMaxClipDuration ?? undefined,
+    highlight_mix_order: highlightMixOrder,
   });
 
   // 将一套配置应用到页面切片状态
@@ -509,6 +529,10 @@ const EpisodeDetail: React.FC = () => {
     setDedupeEnabled(p.dedupe_enabled ?? false);
     setDedupePreset(p.dedupe_preset ?? 'std_crop_desat');
     setOutputTier(p.output_tier ?? 'auto');
+    setHighlightMixEnabled(p.highlight_mix_enabled ?? false);
+    setHighlightMixMaxDuration(p.highlight_mix_max_duration ?? null);
+    setHighlightMixMaxClipDuration(p.highlight_mix_max_clip_duration ?? null);
+    setHighlightMixOrder(p.highlight_mix_order ?? 'time');
     setActivePresetId(p.id);
   };
 
@@ -545,6 +569,8 @@ const EpisodeDetail: React.FC = () => {
     autoclip_min_duration: minClipDuration,
     autoclip_max_duration: maxClipDuration,
     autoclip_frame_analysis: frameAnalysis,
+    autoclip_highlight_mode: highlightMode,
+    autoclip_highlight_max_duration: highlightMaxDuration,
   });
 
   // 应用个人账号配置到当前页面状态
@@ -557,6 +583,8 @@ const EpisodeDetail: React.FC = () => {
     if (typeof cfg.autoclip_min_duration === 'number') setMinClipDuration(cfg.autoclip_min_duration);
     if (typeof cfg.autoclip_max_duration === 'number') setMaxClipDuration(cfg.autoclip_max_duration);
     if (typeof cfg.autoclip_frame_analysis === 'boolean') setFrameAnalysis(cfg.autoclip_frame_analysis);
+    if (typeof cfg.autoclip_highlight_mode === 'boolean') setHighlightMode(cfg.autoclip_highlight_mode);
+    if (typeof cfg.autoclip_highlight_max_duration === 'number') setHighlightMaxDuration(cfg.autoclip_highlight_max_duration);
     // 应用云端个人配置时保留用户当前激活的预设 id（从 localStorage 读），
     // 避免把 activePresetId 覆盖成不存在的 'cloud' 占位 id，
     // 否则「选择配置」下拉会因为 value 无匹配选项而显示出一个名为 "cloud" 的幽灵配置。
@@ -850,6 +878,8 @@ const EpisodeDetail: React.FC = () => {
         min_duration: minClipDuration ?? undefined,
         max_duration: maxClipDuration ?? undefined,
         frame_analysis: frameAnalysis,
+        highlight_mode: highlightMode,
+        highlight_max_duration: highlightMode ? highlightMaxDuration : undefined,
       });
       message.success(res.message);
       fetchHistories();
@@ -1064,6 +1094,8 @@ const EpisodeDetail: React.FC = () => {
         min_duration: c.min_duration != null ? Number(c.min_duration) : undefined,
         max_duration: c.max_duration != null ? Number(c.max_duration) : undefined,
         frame_analysis: typeof c.frame_analysis === 'boolean' ? c.frame_analysis : undefined,
+        highlight_mode: typeof c.highlight_mode === 'boolean' ? c.highlight_mode : undefined,
+        highlight_max_duration: c.highlight_max_duration != null ? Number(c.highlight_max_duration) : undefined,
       };
     }
     return {
@@ -1072,6 +1104,8 @@ const EpisodeDetail: React.FC = () => {
       min_duration: minClipDuration ?? undefined,
       max_duration: maxClipDuration ?? undefined,
       frame_analysis: frameAnalysis,
+      highlight_mode: highlightMode,
+      highlight_max_duration: highlightMode ? highlightMaxDuration : undefined,
     };
   };
 
@@ -1092,6 +1126,11 @@ const EpisodeDetail: React.FC = () => {
         cover_image_key: coverImageKey || undefined,
         // 钩子视频：作为片头拼接在封面与本体之间（[封面][钩子][本体]）
         hook_video_key: hookVideoKey || undefined,
+        // 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品
+        highlight_mix_enabled: highlightMixEnabled,
+        highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
+        highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
+        highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
         output_tier: outputTier || 'auto',
         // 去重模式：一键切片启用后按档位做画面去重（手动配置沿用主页「去重高级配置」）
@@ -1276,6 +1315,10 @@ const EpisodeDetail: React.FC = () => {
         // 视频封面（首帧）：选择图片作为成品视频首帧（与一键切片共用同一封面选择）
         cover_image_key: coverImageKey || undefined,
         hook_video_key: hookVideoKey || undefined,
+        highlight_mix_enabled: highlightMixEnabled,
+        highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
+        highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
+        highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
         output_tier: outputTier || 'auto',
         // 去重模式档位（轻/标准/重）+ 手动配置（每项手段可单独覆盖预设），仅去重模式生效
@@ -1583,6 +1626,21 @@ const EpisodeDetail: React.FC = () => {
                 <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
               </Tooltip>
             </Space>
+            <Space size={4} align="center">
+              <Switch size="small" checked={highlightMode} onChange={setHighlightMode} />
+              <Text strong style={{ fontSize: 12 }}>高光识别</Text>
+              <Tooltip title="开启后，AI 选点改为找出多段 ≤ 单段最大时长的短高光片段（默认 10s），适合高光混剪等需要多段短爆点的场景。">
+                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+              </Tooltip>
+              <Button
+                size="small"
+                icon={<SettingOutlined />}
+                disabled={!highlightMode}
+                onClick={() => setHighlightModalOpen(true)}
+              >
+                配置
+              </Button>
+            </Space>
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>
             自动分析视频内容，推荐精彩片段作为切片候选
@@ -1872,6 +1930,33 @@ const EpisodeDetail: React.FC = () => {
               </Tag>
             )}
           </Space>
+          {/* 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品 */}
+          <Space wrap align="center" size={8}>
+            <Text strong style={{ fontSize: 13 }}>高光混剪</Text>
+            <Switch
+              size="small"
+              checked={highlightMixEnabled}
+              onChange={(v) => setHighlightMixEnabled(v)}
+            />
+            <Tooltip title="开启后不再把每个高光段切成独立文件，而是把所有入选高光段按源时间顺序混剪拼接为单个成品视频（可设输出总时长上限/单段最大时长/拼接顺序）。">
+              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+            </Tooltip>
+            <Button
+              size="small"
+              icon={<SettingOutlined />}
+              disabled={!highlightMixEnabled}
+              onClick={() => setHighlightMixModalOpen(true)}
+            >
+              混剪配置
+            </Button>
+            {highlightMixEnabled && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {highlightMixMaxDuration ? `总时长≤${highlightMixMaxDuration}s` : '总时长由片段自然决定'}
+                {highlightMixMaxClipDuration ? ` · 单段≤${highlightMixMaxClipDuration}s` : ''}
+                {highlightMixOrder === 'score' ? ' · 评分优先' : ' · 时间顺序'}
+              </Text>
+            )}
+          </Space>
           {/* 去重高级配置：仅在去重模式显示，逐项手动覆盖各去重手段 */}
           {sliceMode === 'dedupe' && (
             <Space wrap>
@@ -2022,6 +2107,85 @@ const EpisodeDetail: React.FC = () => {
                   </Space>
                 </Space>
               )}
+            </Space>
+          </Modal>
+
+          {/* 高光混剪设置弹窗（详细配置收进弹窗，节省主界面空间） */}
+          <Modal
+            title="高光混剪配置"
+            open={highlightMixModalOpen}
+            onCancel={() => setHighlightMixModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setHighlightMixModalOpen(false)}>完成</Button>
+            )}
+            width={560}
+          >
+            <Space direction="vertical" size={14} style={{ width: '100%' }}>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>输出总时长上限(秒)</Text>
+                <InputNumber
+                  size="small"
+                  min={5}
+                  max={600}
+                  placeholder="不填=由片段自然决定"
+                  value={highlightMixMaxDuration}
+                  onChange={(v) => setHighlightMixMaxDuration(v ?? null)}
+                  style={{ width: 150 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>累计各高光段时长不超过该值，最后一段塞入会超额时自动丢弃（不裁剪首尾）</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>单段最大时长(秒)</Text>
+                <InputNumber
+                  size="small"
+                  min={2}
+                  max={60}
+                  placeholder="不填=不限（短高光建议10）"
+                  value={highlightMixMaxClipDuration}
+                  onChange={(v) => setHighlightMixMaxClipDuration(v ?? null)}
+                  style={{ width: 150 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>仅纳入时长不超过该值的短高光片段</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>拼接顺序</Text>
+                <Select
+                  size="small"
+                  style={{ width: 180 }}
+                  value={highlightMixOrder}
+                  onChange={setHighlightMixOrder}
+                  options={[
+                    { value: 'time', label: '源时间顺序（默认）' },
+                    { value: 'score', label: '评分从高到低' },
+                  ]}
+                />
+              </Space>
+            </Space>
+          </Modal>
+
+          {/* 高光识别配置弹窗（AI 选点找出多段短高光） */}
+          <Modal
+            title="高光识别配置"
+            open={highlightModalOpen}
+            onCancel={() => setHighlightModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setHighlightModalOpen(false)}>完成</Button>
+            )}
+            width={520}
+          >
+            <Space direction="vertical" size={14} style={{ width: '100%' }}>
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>单段最大时长(秒)</Text>
+                <InputNumber
+                  size="small"
+                  min={2}
+                  max={30}
+                  value={highlightMaxDuration}
+                  onChange={(v) => setHighlightMaxDuration(v ?? 10)}
+                  style={{ width: 100 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>仅保留时长不超过该值的短高光片段（默认 10s），用于高光混剪等多段短爆点场景</Text>
+              </Space>
             </Space>
           </Modal>
 

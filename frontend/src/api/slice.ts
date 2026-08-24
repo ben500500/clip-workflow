@@ -128,6 +128,14 @@ export const sliceApi = {
       cover_image_key?: string;
       // 钩子视频：作为片头拼接在封面首帧与本体之间（[封面][钩子][本体]，MinIO key，通过 uploadHook 上传）
       hook_video_key?: string;
+      // 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品
+      highlight_mix_enabled?: boolean;
+      // 输出总时长上限（秒）：累计各高光段不超过该值，最后一段会超额时丢弃
+      highlight_mix_max_duration?: number;
+      // 单段最大时长（秒）：仅纳入时长不超过该值的短高光段
+      highlight_mix_max_clip_duration?: number;
+      // 拼接顺序：time（源时间顺序，默认）/ score（评分从高到低）
+      highlight_mix_order?: 'time' | 'score';
       // 输出档位：original（默认）/ auto（源宽>720 或 fps>30 自动降 720P@30）/ 1080p / 720p / 480p
       output_tier?: 'original' | 'auto' | '1080p' | '720p' | '480p' | string;
     }

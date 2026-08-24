@@ -73,6 +73,7 @@ export interface ClipCandidate {
   outline: string | null;
   score: number | null;
   recommend_reason: string | null;
+  clip_type: string | null;
   status: string;
   adjusted_start: number | null;
   adjusted_end: number | null;
@@ -108,6 +109,14 @@ export interface IntervalHistoryItem {
 }
 
 export interface AutoClipConfig {
+  max_clips?: number;
+  min_score_threshold?: number;
+  min_duration?: number;
+  max_duration?: number;
+  frame_analysis?: boolean;
+  // 高光识别：AI 选点找出多段 ≤highlight_max_duration 的短高光片段
+  highlight_mode?: boolean;
+  highlight_max_duration?: number;
   [key: string]: unknown;
 }
 

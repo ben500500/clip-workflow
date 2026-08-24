@@ -174,6 +174,18 @@ class SliceRunRequest(BaseModel):
     # 视频作为片头拼接在封面首帧与本体视频之间（[封面][钩子][本体]）；无封面则
     # 顺序为 [钩子][本体]。可选。与封面同一次 concat 归一化，只重编码一次。
     hook_video_key: Optional[str] = None
+    # ── 高光混剪（AI 高光片段按源时间顺序混剪拼接为一个成品）──
+    # 开启后，不再把每个 accepted 高光片段切成独立文件，而是把所有入选高光段按
+    # 源视频内 start_time 升序、共用同一输出文件名生成 cutlist，引擎 groups 按
+    # name 分组后天然顺序 concat 成单个混剪视频，输出指定时间范围的切片。
+    highlight_mix_enabled: bool = False
+    # 输出总时长上限（秒，可选）。开启混剪时，累计各高光段时长不超过该上限；
+    # 最后一段塞入会超额时丢弃该段（不裁剪首尾）。默认 None = 由入选片段自然决定。
+    highlight_mix_max_duration: Optional[float] = None
+    # 单段最大时长（秒，可选）。开启混剪时仅纳入时长不超过该值的片段（短高光）。
+    highlight_mix_max_clip_duration: Optional[float] = None
+    # 拼接顺序：time（按源时间顺序，默认）/ score（按评分从高到低）。
+    highlight_mix_order: str = "time"
     # ── 竖屏转横屏智能裁切（切片前预处理）──
     # 开启后切片前自动检测素材方向，竖屏素材先转成横屏再切片
     vert2horiz_enabled: bool = False

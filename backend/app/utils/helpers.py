@@ -53,14 +53,54 @@ def build_clip_name(episode_title: Optional[str], index: int) -> str:
     return f"{title}_{mmdd}_{index:03d}"
 
 
-def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = None) -> str:
+def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = None,
+                    highlight_mix: bool = False,
+                    max_duration: Optional[float] = None,
+                    max_clip_duration: Optional[float] = None,
+                    order: str = "time") -> str:
     """Generate cutlist content from accepted clip candidates.
 
     Format per line:
         start_time end_time clip_name
+
+    highlight_mix=True 时，把所有入选高光段共用同一输出文件名（同 name）生成 cutlist：
+    引擎 groups 按 name 分组后天然顺序 concat 成单个混剪视频。可选配置：
+    - max_duration: 输出总时长上限（秒），累计段长不超过该值，最后一段塞入会超额时丢弃；
+    - max_clip_duration: 单段最大时长（秒），仅纳入时长不超过该值的短高光段；
+    - order: "time"（按源时间升序，默认）/ "score"（按评分从高到低）。
+    不开启混剪时行为不变：每段独立命名（独立输出文件）。
     """
     lines = []
     accepted = [c for c in clips if c.status == "accepted"]
+    if not accepted:
+        return ""
+    if highlight_mix:
+        # 高光混剪：所有入选段共用一个输出文件名（同 name -> 引擎同组顺序 concat 成一个文件）
+        mix_name = build_clip_name(episode_title, 1)
+        segs = []
+        for c in accepted:
+            start = c.adjusted_start if c.adjusted_start is not None else c.start_time
+            end = c.adjusted_end if c.adjusted_end is not None else c.end_time
+            if start is None or end is None or end <= start:
+                continue
+            dur = end - start
+            if max_clip_duration is not None and dur > max_clip_duration:
+                continue  # 单段超长：不纳入短高光混剪
+            segs.append((start, end, dur, c))
+        if not segs:
+            return ""
+        if order == "score":
+            segs.sort(key=lambda s: (s[3].score if s[3].score is not None else 0.0), reverse=True)
+        else:  # 默认 time：按源时间顺序
+            segs.sort(key=lambda s: s[0])
+        total = 0.0
+        for start, end, dur, _c in segs:
+            if max_duration is not None and total + dur > max_duration:
+                # 最后一段塞入会超额：丢弃该段（不裁剪首尾），保持累计不超过上限
+                break
+            lines.append(f"{format_time(start)} {format_time(end)} {mix_name}")
+            total += dur
+        return "\n".join(lines)
     for i, clip in enumerate(accepted):
         start = clip.adjusted_start if clip.adjusted_start is not None else clip.start_time
         end = clip.adjusted_end if clip.adjusted_end is not None else clip.end_time

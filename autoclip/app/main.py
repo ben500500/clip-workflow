@@ -146,8 +146,13 @@ def _to_contract_clips(raw_clips: list) -> list:
 
         reason = c.get("recommend_reason") or "基于 ASR 文本与剧情节奏综合评分"
 
+        clip_type = c.get("clip_type")
+        if clip_type not in ("suspense_cut", "full_highlight", "highlight"):
+            clip_type = None
+
         result.append({
             "clip_index": i,
+            "clip_type": clip_type,
             "start_time": round(start, 3),
             "end_time": round(end, 3),
             "duration": round(max(end - start, 0.0), 3),
@@ -372,9 +377,12 @@ async def _run_pipeline(project_id: str, steps: list[int],
         # Step 3: 评分（画面理解：把源视频路径注入环境变量，供 frame_analyzer 抽帧分析）
         if video_path:
             os.environ["FRAME_ANALYSIS_VIDEO_PATH"] = str(video_path)
+        cfg = proj.get("config") or {}
         scored = await asyncio.to_thread(
             run_step3_scoring, meta_dir / "step2_timeline.json", meta_dir, None, PROMPT_FILES,
-            frame_analysis_enabled=frame_analysis)
+            frame_analysis_enabled=frame_analysis,
+            highlight_mode=bool(cfg.get("highlight_mode", False)),
+            highlight_max_duration=float(cfg.get("highlight_max_duration") or 10.0))
         _update_progress(proj, "running", 80,
                          f"评分完成（{len(scored)} 个高分片段），生成标题")
 

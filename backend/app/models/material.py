@@ -136,6 +136,9 @@ class ClipCandidate(Base):
     outline = Column(String(500), nullable=True)
     score = Column(Float, nullable=True)
     recommend_reason = Column(Text, nullable=True)
+    # 出片形态（可选）：suspense_cut（30-60s 悬念断点片）/ full_highlight（60-90s 完整高光段）/
+    # highlight（高光识别模式产出的短高光段 ≤10s）。切片端高光混剪据此标记高光段。
+    clip_type = Column(String(50), nullable=True)
     status = Column(String(50), default="pending")
     adjusted_start = Column(Float, nullable=True)
     adjusted_end = Column(Float, nullable=True)

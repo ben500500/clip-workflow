@@ -911,6 +911,7 @@ async def _save_autoclip_results(
                 outline=clip.get("outline"),
                 score=clip.get("score"),
                 recommend_reason=clip.get("recommend_reason"),
+                clip_type=clip.get("clip_type"),
                 status="pending",
             )
             session.add(candidate)

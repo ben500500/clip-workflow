@@ -108,6 +108,8 @@ class ClipResponse(BaseModel):
     outline: Optional[str] = None
     score: Optional[float] = None
     recommend_reason: Optional[str] = None
+    # 出片形态：suspense_cut / full_highlight / highlight（高光识别模式的短高光段）
+    clip_type: Optional[str] = None
     status: str
     adjusted_start: Optional[float] = None
     adjusted_end: Optional[float] = None
@@ -129,6 +131,7 @@ def _serialize_clip(clip: ClipCandidate) -> dict:
         "outline": clip.outline,
         "score": clip.score,
         "recommend_reason": clip.recommend_reason,
+        "clip_type": clip.clip_type,
         "status": clip.status,
         "adjusted_start": clip.adjusted_start,
         "adjusted_end": clip.adjusted_end,

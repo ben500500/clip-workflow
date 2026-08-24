@@ -68,6 +68,14 @@ export interface SlicePreset {
   dedupe_preset: string;
   // 输出档位（高分辨率/高 fps 素材降档提速）：original=不处理 / auto=自动降档 / 1080p / 720p / 480p
   output_tier: string;
+  // 高光混剪（把入选高光段按源时间顺序混剪拼接为一个成品）
+  highlight_mix_enabled: boolean;
+  // 输出总时长上限（秒，可选）：累计各高光段不超过该值，最后一段会超额时丢弃
+  highlight_mix_max_duration?: number;
+  // 单段最大时长（秒，可选）：仅纳入时长不超过该值的短高光段
+  highlight_mix_max_clip_duration?: number;
+  // 拼接顺序：time（源时间顺序，默认）/ score（评分从高到低）
+  highlight_mix_order?: 'time' | 'score';
 }
 
 // ─── 默认配置（在默认项基础上：竖屏转横屏开 / ASR字幕开 / 固定文字开） ───
@@ -120,6 +128,10 @@ export const DEFAULT_SLICE_PRESET: SlicePreset = {
   dedupe_enabled: false,
   dedupe_preset: 'std_crop_desat',
   output_tier: 'auto',
+  highlight_mix_enabled: false,
+  highlight_mix_max_duration: undefined,
+  highlight_mix_max_clip_duration: undefined,
+  highlight_mix_order: 'time',
 };
 
 /**

@@ -240,6 +240,8 @@ async def _apply_compat_migrations():
         ("publish_profiles", "location", "VARCHAR(200)"),
         # 输出档位（0040_slice_task_output_tier）：original/auto/1080p/720p/480p
         ("slice_tasks", "output_tier", "VARCHAR(20)"),
+        # 切片候选高光形态（0042_clip_candidate_clip_type）：suspense_cut/full_highlight/highlight
+        ("clip_candidates", "clip_type", "VARCHAR(50)"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

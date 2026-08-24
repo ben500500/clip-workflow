@@ -606,7 +606,14 @@ async def _resolve_slice_inputs(
                         except OSError:
                             pass
 
-            cutlist = generate_cutlist(accepted_clips, episode_title=episode.title if episode else None)
+            cutlist = generate_cutlist(
+                accepted_clips,
+                episode_title=episode.title if episode else None,
+                highlight_mix=bool(data.highlight_mix_enabled),
+                max_duration=data.highlight_mix_max_duration,
+                max_clip_duration=data.highlight_mix_max_clip_duration,
+                order=data.highlight_mix_order or "time",
+            )
 
             # Generate intervals from enabled intervals
             intervals_result = await db.execute(

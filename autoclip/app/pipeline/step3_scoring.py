@@ -25,9 +25,15 @@ class ClipScorer:
     _TRANSCRIPT_TAIL_RATIO = 0.4   # 保留结尾比例
 
     def __init__(self, prompt_files: Dict = None, metadata_dir: Path = None,
-                 frame_analysis_enabled: Optional[bool] = None):
+                 frame_analysis_enabled: Optional[bool] = None,
+                 highlight_mode: bool = False,
+                 highlight_max_duration: float = 10.0):
         self.llm_client = LLMClient()
         self.text_processor = TextProcessor()
+        # 高光识别模式：从长剧集中找出多段 ≤highlight_max_duration 的短高光片段。
+        # 开启时 LLM 更聚焦"三秒留人"的短爆点，并把 clip_type 判定为 highlight。
+        self.highlight_mode = bool(highlight_mode)
+        self.highlight_max_duration = float(highlight_max_duration or 10.0)
 
         # 台词回填依赖的 SRT 分块目录（Step1 产出）
         if metadata_dir is None:
@@ -142,8 +148,19 @@ class ClipScorer:
                 } for clip in clips
             ]
             
+            # 高光识别模式：在共享评分提示词后追加一段"短高光"判定指令，
+            # 让 LLM 聚焦 ≤highlight_max_duration 的"三秒留人"短爆点，并把 clip_type
+            # 判定为 highlight（区别于常规 suspense_cut/full_highlight）。
+            prompt_to_use = self.recommendation_prompt
+            if self.highlight_mode:
+                prompt_to_use = (
+                    self.recommendation_prompt
+                    + "\n\n## 高光识别模式（本次启用）\n"
+                    + f"当前为「高光识别」模式：请从候选片段中挑出时长 ≤ {self.highlight_max_duration:.0f} 秒的短高光爆点（三秒留人、情绪浓度最高、最适合信息流黄金前几秒的片段）。\n"
+                    + "`clip_type` 在本模式下只能取 `highlight`（短高光段）。评分请更看重：开头几秒的钩子强度、名场面/金句密度、情绪爆点的紧凑性。\n"
+                )
             try:
-                response = self.llm_client.call_with_retry(self.recommendation_prompt, input_for_llm)
+                response = self.llm_client.call_with_retry(prompt_to_use, input_for_llm)
             except Exception as e:
                 # 模型调用失败 → 显式上浮，让流水线以 failed 结束并保留真实错误，
                 # 而非把所有片段标 0 分后由 clips 接口按 60 分阈值过滤成 0 片段。
@@ -168,9 +185,12 @@ class ClipScorer:
                 else:
                     original_clip['final_score'] = round(float(score), 2)
                     original_clip['recommend_reason'] = reason
-                    # 出片形态：suspense_cut（30-60s 悬念断点片）/ full_highlight（60-90s 完整高光段）
-                    # 兼容模型不返回或返回非法值的情况，默认按时长推断
-                    if clip_type not in ("suspense_cut", "full_highlight"):
+                    # 出片形态：suspense_cut（30-60s 悬念断点片）/ full_highlight（60-90s 完整高光段）/
+                    # highlight（高光识别模式产出的短高光段）。兼容模型不返回或返回非法值的情况。
+                    if self.highlight_mode:
+                        # 高光识别模式：统一判为 highlight（短高光）
+                        clip_type = "highlight"
+                    elif clip_type not in ("suspense_cut", "full_highlight", "highlight"):
                         clip_type = self._infer_clip_type(
                             original_clip.get('start_time'),
                             original_clip.get('end_time'),
@@ -287,7 +307,7 @@ class ClipScorer:
             json.dump(scored_clips, f, ensure_ascii=False, indent=2)
         logger.info(f"评分结果已保存到: {output_path}")
 
-def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None, frame_analysis_enabled: Optional[bool] = None) -> List[Dict]:
+def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None, frame_analysis_enabled: Optional[bool] = None, highlight_mode: bool = False, highlight_max_duration: float = 10.0) -> List[Dict]:
     """
     运行Step 3: 内容评分与筛选
     
@@ -296,6 +316,8 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
         output_path: 输出文件路径
         prompt_files: 自定义提示词文件
         frame_analysis_enabled: 画面理解（MiniCPM-V）开关，None 时回退到环境变量
+        highlight_mode: 高光识别开关，开启时找出多段 ≤highlight_max_duration 的短高光
+        highlight_max_duration: 高光单段最大时长（秒，默认 10）
         
     Returns:
         高分切片列表
@@ -313,7 +335,10 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
         frame_analysis_enabled = FRAME_ANALYSIS_ENABLED
 
     # 创建评分器
-    scorer = ClipScorer(prompt_files, metadata_dir, frame_analysis_enabled=frame_analysis_enabled)
+    scorer = ClipScorer(prompt_files, metadata_dir,
+                        frame_analysis_enabled=frame_analysis_enabled,
+                        highlight_mode=highlight_mode,
+                        highlight_max_duration=highlight_max_duration)
     
     # 评分
     scored_clips = scorer.score_clips(timeline_data)
