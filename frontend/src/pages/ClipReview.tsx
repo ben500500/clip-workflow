@@ -12,7 +12,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { autoclipApi } from '../api/autoclip';
 import { projectApi } from '../api/projects';
 import type { ClipCandidate } from '../types';
-import { formatDuration, formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
+import { formatDuration, formatDateTime, getStatusColor, getStatusLabel, getClipTypeLabel, getClipTypeColor } from '../utils/format';
 
 const { Title, Text } = Typography;
 
@@ -284,6 +284,8 @@ const ClipReview: React.FC = () => {
   const rejectedCount = clips.filter((c) => c.status === 'rejected').length;
   const availableCount = acceptedCount + adjustedCount;
   const allReviewed = pendingCount === 0 && clips.length > 0;
+  // 高光识别片段：clip_type = highlight（短高光段）
+  const highlightCount = clips.filter((c) => c.clip_type === 'highlight').length;
 
   // ─── 点击标题展开行 ─────────────────────────────────
   const onTitleClick = (clipId: string) => {
@@ -337,6 +339,30 @@ const ClipReview: React.FC = () => {
         </Space>
       ),
     },
+    {
+      title: '出片形态',
+      dataIndex: 'clip_type',
+      key: 'clip_type',
+      width: 110,
+      render: (t: string | null) =>
+        t ? (
+          <Tooltip
+            title={
+              t === 'highlight'
+                ? '高光识别模式产出的短高光段（≤ 单段最大时长，适合高光混剪）'
+                : t === 'suspense_cut'
+                  ? '常规 AI 选点的悬念断点片（约 30-60s）'
+                  : t === 'full_highlight'
+                    ? '常规 AI 选点的完整高光段（约 60-90s）'
+                    : t
+            }
+          >
+            <Tag color={getClipTypeColor(t)}>{getClipTypeLabel(t)}</Tag>
+          </Tooltip>
+        ) : (
+          <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
+        ),
+    },
     { title: '时长', key: 'duration', width: 90, render: (_: unknown, c: ClipCandidate) => formatDuration(c.duration) },
     { title: '评分', dataIndex: 'score', key: 'score', width: 80 },
     {
@@ -378,6 +404,11 @@ const ClipReview: React.FC = () => {
           <Text><Tag color="green">已通过: {acceptedCount}</Tag></Text>
           <Text><Tag color="cyan">已调整: {adjustedCount}</Tag></Text>
           <Text><Tag color="red">已拒绝: {rejectedCount}</Tag></Text>
+          {highlightCount > 0 && (
+            <Text>
+              <Tag color="magenta">高光识别: {highlightCount}</Tag>
+            </Text>
+          )}
           {allReviewed && (
             <Text style={{ color: '#52c41a' }}>
               <CheckCircleOutlined /> 所有片段已审核完成
@@ -476,7 +507,7 @@ const ClipReview: React.FC = () => {
             dataSource={clips}
             pagination={false}
             size="small"
-            scroll={{ x: 950 }}
+            scroll={{ x: 1050 }}
             rowSelection={{
               selectedRowKeys,
               onChange: (keys) => setSelectedRowKeys(keys),
@@ -521,6 +552,7 @@ const ClipReview: React.FC = () => {
                       <Space direction="vertical" size={4} style={{ width: '100%' }}>
                         <Text strong>片段信息</Text>
                         <Space wrap>
+                          <Text type="secondary">形态: <Tag color={c.clip_type ? getClipTypeColor(c.clip_type) : 'default'} style={{ marginInlineEnd: 0 }}>{c.clip_type ? getClipTypeLabel(c.clip_type) : '-'}</Tag></Text>
                           <Text type="secondary">评分: {c.score ?? '-'}</Text>
                           <Text type="secondary">原始时长: {formatDuration(clipDuration)}</Text>
                           <Text type="secondary">调整后时长: {formatDuration(actualDuration)}</Text>

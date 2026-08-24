@@ -48,6 +48,27 @@ export function formatPercent(value: number | null | undefined, decimals = 1): s
   return `${Number(value).toFixed(decimals)}%`;
 }
 
+// 出片形态（clip_type）：highlight = 高光识别模式产出的短高光段（≤ 单段最大时长）；
+// suspense_cut / full_highlight = 常规 AI 选点产出的长片段。
+export function getClipTypeLabel(clipType: string | null | undefined): string {
+  const map: Record<string, string> = {
+    highlight: '高光识别',
+    suspense_cut: '悬念断点',
+    full_highlight: '完整高光',
+  };
+  if (!clipType) return '-';
+  return map[clipType] || clipType;
+}
+
+export function getClipTypeColor(clipType: string | null | undefined): string {
+  const map: Record<string, string> = {
+    highlight: 'magenta',
+    suspense_cut: 'blue',
+    full_highlight: 'cyan',
+  };
+  return map[clipType || ''] || 'default';
+}
+
 export function getStatusColor(status: string): string {
   const map: Record<string, string> = {
     draft: '#8c8c8c',
