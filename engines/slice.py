@@ -285,7 +285,7 @@ def _resolve_dedupe_config(cfg: dict) -> dict:
     return p
 
 
-def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: str = "", source_path: str = "") -> tuple[str, str]:
+def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: str = "", source_path: str = "") -> tuple[str, str, Optional[dict]]:
     """根据去重配置构造 (vf, af) 滤镜链。
 
     cfg 支持 preset（light/standard/heavy 基础档位，或推荐配方 std_crop_desat/
@@ -329,7 +329,13 @@ def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: s
 
     # 音频层（L3 盲区覆盖）：在 atempo 之后追加音频指纹差异化滤镜。
     # 仅用于多视频号素材去重的变体生成；普通去重模式 manual.audio 为空则不叠加。
-    af_extra = build_dedupe_audio_filter(p.get("audio"))
+    # BGM 模式（audio 为 dict {"mode":"bgm",...}）不叠加 -af 字符串滤镜，改由
+    # slice_segment 的双输入 filter_complex 混音（见下方 bgm_audio 第三返回值）。
+    audio_cfg = p.get("audio")
+    if isinstance(audio_cfg, dict) and audio_cfg.get("mode") == "bgm":
+        af_extra = ""
+    else:
+        af_extra = build_dedupe_audio_filter(audio_cfg)
     if af_extra:
         af = f"{af},{af_extra}"
 
@@ -426,7 +432,8 @@ def build_dedupe_filter(cfg: dict, width: int = 0, height: int = 0, framerate: s
 
     # 过滤空段（个别滤镜手动关闭时可能留下空串），避免 ffmpeg 'No such filter' 报错
     vf_parts = [s for s in vf_parts if s]
-    return ",".join(vf_parts), af
+    bgm_audio = audio_cfg if (isinstance(audio_cfg, dict) and audio_cfg.get("mode") == "bgm") else None
+    return ",".join(vf_parts), af, bgm_audio
 
 
 def build_dedupe_audio_filter(mode) -> str:
@@ -838,17 +845,66 @@ def build_encoder_args(encoder: str, threads: int) -> list[str]:
     return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", str(threads)]
 
 
-def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="libx264", copy_if_possible=True):
-    # fast 模式且无滤镜时走流拷贝（-c copy），只切不重编码，速度 10×+；
-    # 需要滤镜（去重/水印/竖转横）或显式关闭时回退到重编码分支。
-    copy_mode = bool(copy_if_possible and not vf and not af)
+def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="libx264", copy_if_possible=True,
+                  bgm=None, bgm_volume=0.35, duck=True):
+    """切片单段：支持单输入 -af 音频链（原逻辑）与 BGM 双输入 filter_complex 混音。
+
+    bgm：BGM 模式音频 dict {"mode":"bgm","source":<授权BGM绝对路径>,"volume":0.35,"duck":True}
+         （配方分配层 recipe.manual.audio 产出，见 PR #319）。传入时走双输入
+         filter_complex：把 BGM 源（-i bgm）按 bgm_volume 叠加到本段音频上，
+         duck=True 时用 sidechaincompress 让 BGM 在语音响起时自动压低（不压人声）。
+    bgm_volume：BGM 母音量（弱背景，默认 0.35）。duck：是否让 BGM 随本段语音侧链闪避。
+    向后兼容：bgm 为 None（或非 BGM dict）时完全走原单输入逻辑，零回归。
+    """
+    bgm_active = isinstance(bgm, dict) and bgm.get("mode") == "bgm" and bgm.get("source")
+    # fast 模式且无滤镜/无 BGM 时走流拷贝（-c copy），只切不重编码，速度 10×+；
+    # 需要滤镜（去重/水印/竖转横）或 BGM 混音或显式关闭时回退到重编码分支。
+    copy_mode = bool(copy_if_possible and not vf and not af and not bgm_active)
     cmd = [
         "ffmpeg", "-y",
         "-threads", str(threads),
         "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", src,
     ]
-    if copy_mode:
-        cmd += ["-c", "copy", "-movflags", "+faststart"]
+    if bgm_active:
+        # 双输入 BGM 混音：第二个输入为 BGM 源（完整文件），filter_complex 内
+        # atrim 对齐本段时长并按 bgm_volume 衰减叠加；duck 时用 sidechaincompress
+        # 让 BGM 侧链闪避（本段语音响起自动压低），避免压住人声/旁白。
+        bgm_src = bgm["source"]
+        try:
+            vol = float(bgm.get("volume") if bgm.get("volume") is not None else bgm_volume)
+        except (TypeError, ValueError):
+            vol = float(bgm_volume or 0.35)
+        duck_flag = bool(bgm.get("duck", duck))
+        dur = max(end - start, 0.001)
+        cmd += ["-i", bgm_src]
+        # 本段音频先走原 af 链（atempo/eq 等），再与 BGM 混音；af 为空时直通。
+        if af:
+            fc = f"[0:a]{af}[seg0];"
+        else:
+            fc = "[0:a]anull[seg0];"
+        fc += (
+            f"[1:a]atrim=0:{dur:.3f},asetpts=PTS-STARTPTS,"
+            f"volume={vol:.3f}[bgm0];"
+        )
+        if duck_flag:
+            # sidechaincompress：主输入为 BGM(被压)，侧链为本段语音。
+            # 攻击 20ms/释放 250ms，阈值 0.05/比 8，语音响起 BGM 快速让位。
+            fc += (
+                f"[seg0]asplit=2[seg_v][seg_sc];"
+                f"[bgm0][seg_sc]sidechaincompress=threshold=0.05:ratio=8:"
+                f"attack=20:release=250[duckbgm];"
+                f"[seg_v][duckbgm]amix=inputs=2:duration=first:"
+                f"dropout_transition=0,volume=1.0[a]"
+            )
+        else:
+            fc += (
+                f"[seg0][bgm0]amix=inputs=2:duration=first:"
+                f"dropout_transition=0,volume=1.0[a]"
+            )
+        cmd += [
+            "-filter_complex", fc,
+            "-map", "0:v", "-map", "[a]",
+        ]
     else:
         cmd += build_encoder_args(encoder, threads)
         cmd += ["-c:a", "aac", "-b:a", "128k"]
@@ -4184,6 +4240,7 @@ def main():
 
     vf = None
     af = None
+    bgm_audio = None
     # 去重模式的时空变换（影响打码/字幕的坐标与时间轴）：
     #   dedupe_speed  - setpts 变速因子（源时间 t 对应输出画面时间 t/speed）
     #   dedupe_hflip  - 是否水平镜像画面（打码区域需按镜像映射，否则打码位置会错）
@@ -4213,7 +4270,7 @@ def main():
         dedupe_hflip = bool(_dedupe_p.get("hflip", False))
         w, h = ffprobe_resolution(source_path)
         src_fr = ffprobe_framerate(source_path)
-        vf, af = build_dedupe_filter(dedupe_cfg, width=w, height=h, framerate=src_fr, source_path=source_path)
+        vf, af, bgm_audio = build_dedupe_filter(dedupe_cfg, width=w, height=h, framerate=src_fr, source_path=source_path)
         print(f"去重档位: {preset} (speed={dedupe_speed:.3f}, hflip={dedupe_hflip})", file=sys.stderr)
 
     # 动态文字水印：开启后在去重/普通滤镜基础上叠加 drawtext
@@ -4496,12 +4553,14 @@ def main():
                     if vf:
                         hook_vf = f"{hook_vf},{vf}"
                     slice_segment(args.hook, 0.0, hook_dur, hook_part,
-                                  vf=hook_vf, af=af, threads=threads, encoder=encoder)
+                                  vf=hook_vf, af=af, threads=threads, encoder=encoder,
+                                  bgm=bgm_audio)
                     parts.append(hook_part)
                     part_offset = 1
                 for i, (start, end, _) in enumerate(group):
                     part = os.path.join(tmp, f"part_{i + part_offset}.mp4")
-                    slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder)
+                    slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder,
+                                  bgm=bgm_audio)
                     parts.append(part)
                 # 含钩子段时强制走 filter_complex 重编码 concat（各段参数已归一化对齐），
                 # 不做 concat demuxer 免重编码拼接，避免钩子与本体规格差异导致坏片。
