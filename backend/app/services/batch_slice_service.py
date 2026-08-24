@@ -308,7 +308,11 @@ async def _wait_detect(episode_id: str, task_id: Optional[str] = None, timeout: 
 
 
 async def _accept_all_candidates(episode_id: str) -> int:
-    """自动审核：将该剧集所有候选片段置为 accepted。返回本次新增 accepted 的数量。"""
+    """自动审核：将该剧集所有候选片段置为 accepted。返回本次新增 accepted 的数量。
+
+    一键切片=候选自动全部通过审核：不仅 pending，之前被手动拒绝(rejected)的候选
+    也一并恢复为 accepted，确保一次一键切片后所有候选都处于「已通过」状态。
+    """
     eid = uuid.UUID(episode_id)
     async with async_session_factory() as session:
         result = await session.execute(
@@ -317,7 +321,7 @@ async def _accept_all_candidates(episode_id: str) -> int:
         clips = result.scalars().all()
         accepted = 0
         for clip in clips:
-            if clip.status == "pending":
+            if clip.status in ("pending", "rejected"):
                 clip.status = "accepted"
                 accepted += 1
         await session.commit()
