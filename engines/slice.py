@@ -865,7 +865,10 @@ def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="li
         "-threads", str(threads),
         "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", src,
     ]
-    if bgm_active:
+    if copy_mode:
+        # 无滤镜/无 af/无 BGM 快通道：流拷贝（-c copy）只切不重编码，速度 10×+
+        cmd += ["-c", "copy", "-movflags", "+faststart"]
+    elif bgm_active:
         # 双输入 BGM 混音：第二个输入为 BGM 源（完整文件），filter_complex 内
         # atrim 对齐本段时长并按 bgm_volume 衰减叠加；duck 时用 sidechaincompress
         # 让 BGM 侧链闪避（本段语音响起自动压低），避免压住人声/旁白。
