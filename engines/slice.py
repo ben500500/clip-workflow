@@ -877,11 +877,17 @@ def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="li
         duck_flag = bool(bgm.get("duck", duck))
         dur = max(end - start, 0.001)
         cmd += ["-i", bgm_src]
+        # 视频先走原 vf 链（去重 crop/scale、setpts 变速、fps、eq 降饱和、水印等），
+        # 与音频混音一起并入同一个 filter_complex，避免用 -map 0:v 丢帧 vf。
+        if vf:
+            fc = f"[0:v]{vf}[v];"
+        else:
+            fc = "[0:v]null[v];"
         # 本段音频先走原 af 链（atempo/eq 等），再与 BGM 混音；af 为空时直通。
         if af:
-            fc = f"[0:a]{af}[seg0];"
+            fc += f"[0:a]{af}[seg0];"
         else:
-            fc = "[0:a]anull[seg0];"
+            fc += "[0:a]anull[seg0];"
         fc += (
             f"[1:a]atrim=0:{dur:.3f},asetpts=PTS-STARTPTS,"
             f"volume={vol:.3f}[bgm0];"
@@ -903,8 +909,12 @@ def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="li
             )
         cmd += [
             "-filter_complex", fc,
-            "-map", "0:v", "-map", "[a]",
+            "-map", "[v]", "-map", "[a]",
         ]
+        # BGM 重编码分支与单输入重编码分支保持一致的编码规格：
+        # 视频走 encoder/threads 入参，音频统一 aac 128k，避免 ffmpeg 默认编码。
+        cmd += build_encoder_args(encoder, threads)
+        cmd += ["-c:a", "aac", "-b:a", "128k"]
     else:
         cmd += build_encoder_args(encoder, threads)
         cmd += ["-c:a", "aac", "-b:a", "128k"]
