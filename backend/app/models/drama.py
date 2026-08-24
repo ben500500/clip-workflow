@@ -38,6 +38,30 @@ def gen_drama_code() -> str:
     return "DR-" + uuid.uuid4().hex[:8].upper()
 
 
+class DramaTheater(Base):
+    """剧目 ↔ 剧场（多对多，一剧多剧场）。
+
+    ISSUE #142：同一剧目可出现在多个剧场（如「海漫剧场」与其它剧场同时上架）。
+    兼容既有 `dramas.theater_id`（一剧一场时期遗留）：迁移时已把存量 theater_id
+    回填进本表；此后以本关联表为权威。
+    """
+    __tablename__ = "drama_theaters"
+    __table_args__ = (
+        UniqueConstraint("drama_id", "theater_id", name="uq_drama_theater"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    drama_id = Column(UUID(as_uuid=True), ForeignKey("dramas.id", ondelete="CASCADE"), nullable=False, index=True)
+    theater_id = Column(UUID(as_uuid=True), ForeignKey("theaters.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    drama = relationship("Drama", back_populates="theater_links")
+    theater = relationship("Theater")
+
+    def __repr__(self) -> str:
+        return f"<DramaTheater(drama={self.drama_id}, theater={self.theater_id})>"
+
+
 class Drama(Base):
     """剧目主表。
 
@@ -79,12 +103,16 @@ class Drama(Base):
     # 归属（R17 actor/operator 分离）
     created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
     operator_id = Column(UUID(as_uuid=True), nullable=True, index=True)
-    # 所属剧场（直接挂剧场；一剧一场，可空）
+    # 兼容遗留列：一剧一场时期的主剧场（可空）。已迁移进 drama_theaters 关联表，
+    # 后续以 drama_theaters 为权威；该列仅用于历史数据兼容/迁移标记。
     theater_id = Column(UUID(as_uuid=True), ForeignKey("theaters.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
-    # 所属剧场（反向关联 theaters）
+    # 所属剧场（一剧多剧场，多对多，ISSUE #142）
+    theater_links = relationship("DramaTheater", back_populates="drama", cascade="all, delete-orphan")
+    theaters = relationship("Theater", secondary="drama_theaters", viewonly=True)
+    # 兼容遗留单关系（仅在 theater_id 仍存值时生效，用于旧逻辑过渡）
     theater = relationship("Theater", back_populates="dramas")
     # 剧照（一对多）
     stills = relationship(

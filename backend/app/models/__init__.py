@@ -53,6 +53,7 @@ from app.models.variant import (
 )
 from app.models.drama import (
     Drama,
+    DramaTheater,
     DramaStill,
     DramaAccount,
     DramaMaterial,

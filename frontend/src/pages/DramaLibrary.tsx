@@ -7,6 +7,7 @@ import {
 import {
   PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined, ImportOutlined,
   UploadOutlined, LinkOutlined, FileImageOutlined, ReloadOutlined, ExportOutlined,
+  CloudSyncOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd/es/upload/interface';
@@ -17,7 +18,7 @@ import {
   uploadDramaImage, addDramaStill, deleteDramaStill, linkDramaAccounts,
   dramaImportParse, dramaImportPreview, dramaImportConfirm,
   getDramaSliceStatus, linkDramaEpisodes,
-  DramaSliceStatus, getTopicPresets, TopicPreset,
+  DramaSliceStatus, getTopicPresets, TopicPreset, feishuImportDrama,
 } from '../api/dramas';
 import { lanSourceApi } from '../api/lanSource';
 import type { LanSourceEpisodeItem } from '../api/lanSource';
@@ -196,7 +197,7 @@ const DramaLibrary: React.FC = () => {
       listing_status: d.listing_status,
       material_link: d.material_link || undefined,
       topics: d.topics || [],
-      theater_id: d.theater_id || undefined,
+      theater_ids: d.theater_ids || (d.theater_id ? [d.theater_id] : []),
       updated_date: d.updated_date ? dayjs(d.updated_date) : undefined,
     });
     setModalOpen(true);
@@ -222,7 +223,7 @@ const DramaLibrary: React.FC = () => {
       listing_status: values.listing_status,
       material_link: values.material_link || null,
       topics: values.topics || null,
-      theater_id: values.theater_id || null,
+      theater_ids: values.theater_ids || [],
       updated_date: values.updated_date ? values.updated_date.format('YYYY-MM-DD') : null,
     };
     try {
@@ -247,6 +248,29 @@ const DramaLibrary: React.FC = () => {
       fetchList(keyword, freq, rating, status, theaterFilter);
     } catch (e) {
       message.error((e as Error).message || '删除失败');
+    }
+  };
+
+  // ── 飞书自动爬取（ISSUE #142）──
+  const [feishuOpen, setFeishuOpen] = useState(false);
+  const [feishuUrl, setFeishuUrl] = useState('');
+  const [feishuLoading, setFeishuLoading] = useState(false);
+
+  const runFeishuSync = async () => {
+    setFeishuLoading(true);
+    try {
+      const res = await feishuImportDrama(feishuUrl.trim() || undefined);
+      if (res && res.success) {
+        message.success(res.message || '飞书同步完成');
+      } else {
+        message.warning(res?.error || res?.message || '飞书同步未完成');
+      }
+      setFeishuOpen(false);
+      fetchList(keyword, freq, rating, status, theaterFilter);
+    } catch (e) {
+      message.error((e as Error).message || '飞书同步失败');
+    } finally {
+      setFeishuLoading(false);
     }
   };
 
@@ -612,6 +636,17 @@ const DramaLibrary: React.FC = () => {
       render: (v) => <Tag color={STATUS_COLORS[v] || 'default'}>{v}</Tag>,
     },
     {
+      title: '剧场',
+      dataIndex: 'theater_names',
+      width: 160,
+      render: (v: string[] | null) => {
+        const names = (v || []).filter(Boolean);
+        return names.length
+          ? names.map((n) => <Tag key={n} color="purple">{n}</Tag>)
+          : '-';
+      },
+    },
+    {
       title: '操作',
       width: 180,
       render: (_, r) => (
@@ -678,6 +713,7 @@ const DramaLibrary: React.FC = () => {
             />
             <Button icon={<SearchOutlined />} onClick={doSearch}>查询</Button>
             <Button icon={<ImportOutlined />} onClick={() => { resetImport(); setImportOpen(true); }}>导入剧目</Button>
+            <Button icon={<CloudSyncOutlined />} onClick={() => setFeishuOpen(true)}>飞书同步</Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增剧目</Button>
           </Space>
         }
@@ -741,9 +777,10 @@ const DramaLibrary: React.FC = () => {
               <Input type="date" style={{ width: 160 }} />
             </Form.Item>
           </Space>
-          <Form.Item name="theater_id" label="所属剧场（剧目直接挂剧场）">
+          <Form.Item name="theater_ids" label="所属剧场（一剧多剧场，可多选）">
             <Select
-              placeholder="选择所属剧场"
+              mode="multiple"
+              placeholder="选择所属剧场（可多选）"
               allowClear
               showSearch
               optionFilterProp="label"
@@ -1134,6 +1171,33 @@ const DramaLibrary: React.FC = () => {
             </Space>
           </Space>
         )}
+      </Modal>
+
+      {/* 飞书自动爬取弹窗（ISSUE #142） */}
+      <Modal
+        title="飞书表格自动同步"
+        open={feishuOpen}
+        onCancel={() => { setFeishuOpen(false); setFeishuUrl(''); }}
+        onOk={runFeishuSync}
+        okText="开始同步"
+        confirmLoading={feishuLoading}
+        destroyOnClose
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Typography.Text type="secondary">
+            从飞书表格拉取「剧目 ↔ 剧场」对应关系，自动更新现有剧目的剧场关联（一剧多剧场）。
+            仅更新存量剧目，不自动新建。
+          </Typography.Text>
+          <Input
+            placeholder="粘贴飞书表格链接（电子表格 / 知识库多维表格 / wiki 链接均可）"
+            value={feishuUrl}
+            onChange={(e) => setFeishuUrl(e.target.value)}
+          />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            支持普通电子表格（/sheets/…）、多维表格（/base/…、/wiki/…）链接；
+            需要后端配置 FEISHU_APP_ID / FEISHU_APP_SECRET 方可读取。
+          </Typography.Text>
+        </Space>
       </Modal>
     </div>
   );

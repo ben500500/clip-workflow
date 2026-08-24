@@ -13,6 +13,7 @@
 """
 import os
 import posixpath
+import re
 import uuid
 from typing import Annotated, List, Optional
 
@@ -25,7 +26,7 @@ from sqlalchemy.orm import selectinload
 from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models.drama import Drama, DramaStill, DramaAccount, DramaMaterial, gen_drama_code
+from app.models.drama import Drama, DramaTheater, DramaStill, DramaAccount, DramaMaterial, gen_drama_code
 from app.models.theater import Theater
 from app.models.models import (
     User,
@@ -99,7 +100,9 @@ class DramaCreate(BaseModel):
     operator_id: Optional[str] = None
     # 发布话题标签（JSON 数组，发布时复用）
     topics: Optional[List[str]] = None
-    # 所属剧场（剧目直接挂剧场，可空）
+    # 所属剧场（多选，一剧多剧场，可空；ISSUE #142）
+    theater_ids: Optional[List[str]] = None
+    # 兼容遗留单字段（一剧一场；新逻辑优先用 theater_ids）
     theater_id: Optional[str] = None
     # 关联视频号（可空，创建时一并关联）
     account_ids: Optional[List[str]] = None
@@ -120,7 +123,9 @@ class DramaUpdate(BaseModel):
     material_link_pwd: Optional[str] = None
     operator_id: Optional[str] = None
     topics: Optional[List[str]] = None
-    # 所属剧场（剧目直接挂剧场，可空）
+    # 所属剧场（多选，一剧多剧场，可空；ISSUE #142）
+    theater_ids: Optional[List[str]] = None
+    # 兼容遗留单字段（一剧一场；新逻辑优先用 theater_ids）
     theater_id: Optional[str] = None
 
 
@@ -146,11 +151,27 @@ async def _resolve_image_url(file_key: Optional[str]) -> Optional[str]:
         return None
 
 
+# 预加载剧目关联剧场（一剧多剧场），避免 async 会话 lazy 触发 MissingGreenlet
+def _load_drama_theaters():
+    from sqlalchemy.orm import selectinload
+    return selectinload(Drama.theater_links).selectinload(DramaTheater.theater)
+
+
 async def _serialize_drama(d: Drama) -> dict:
-    # 解析所属剧场（名称，供展示/筛选下拉）
-    theater_name = None
-    if d.theater:
-        theater_name = d.theater.name
+    # 解析所属剧场（一剧多剧场：名称数组 + id 数组，供展示/多选/筛选）
+    theater_ids = []
+    theater_names = []
+    if d.theater_links:
+        for link in d.theater_links:
+            theater_ids.append(str(link.theater_id))
+            if link.theater is not None:
+                theater_names.append(link.theater.name)
+            else:
+                theater_names.append(str(link.theater_id))
+    # 兼容遗留：若 theater_links 为空但 theater_id 仍存值（老数据/迁移前），回退到单字段
+    if not theater_ids and d.theater_id:
+        theater_ids = [str(d.theater_id)]
+        theater_names = [d.theater.name] if d.theater else [str(d.theater_id)]
     return {
         "id": str(d.id),
         "code": d.code,
@@ -171,8 +192,11 @@ async def _serialize_drama(d: Drama) -> dict:
         "material_link_pwd_masked": bool(d.material_link_pwd),
         "created_by": str(d.created_by) if d.created_by else None,
         "operator_id": str(d.operator_id) if d.operator_id else None,
-        "theater_id": str(d.theater_id) if d.theater_id else None,
-        "theater_name": theater_name,
+        "theater_ids": theater_ids,
+        "theater_names": theater_names,
+        # 兼容遗留单字段（前端旧逻辑仍可用）
+        "theater_id": theater_ids[0] if theater_ids else None,
+        "theater_name": theater_names[0] if theater_names else None,
         "created_at": utc_iso(d.created_at) if d.created_at else "",
         "updated_at": utc_iso(d.updated_at) if d.updated_at else "",
     }
@@ -210,7 +234,7 @@ async def _resolve_drama(db: AsyncSession, drama_id: str) -> Drama:
             selectinload(Drama.stills),
             selectinload(Drama.accounts),
             selectinload(Drama.episodes),
-            selectinload(Drama.theater),
+            _load_drama_theaters(),
         )
     )
     d = result.scalar_one_or_none()
@@ -231,6 +255,38 @@ def _apply_rbac_filter(current_user: User):
     if current_user and not user_can_access_all_materials(current_user):
         return (Drama.operator_id == current_user.id) | (Drama.created_by == current_user.id)
     return None
+
+
+async def _sync_drama_theaters(db: AsyncSession, drama: Drama, theater_ids: Optional[List[str]]):
+    """同步剧目关联剧场（一剧多剧场，ISSUE #142）。
+
+    以传入的 theater_ids 为最终集合：清除旧关联、写入新关联（幂等）。
+    空/None 表示清空多剧场归属。兼容遗留：若调用方仅传单值 theater_id，
+    由上层先归一化成 theater_ids 再传入。
+    """
+    if theater_ids is None:
+        return
+    target = set()
+    for raw in theater_ids:
+        try:
+            target.add(uuid.UUID(raw))
+        except ValueError:
+            continue
+    # 查既有关联
+    existing_rows = await db.execute(
+        select(DramaTheater).where(DramaTheater.drama_id == drama.id)
+    )
+    existing = existing_rows.scalars().all()
+    existing_ids = {row.theater_id for row in existing}
+    # 删除不在目标集合中的关联
+    for row in existing:
+        if row.theater_id not in target:
+            await db.delete(row)
+    # 新增缺失关联
+    for tid in target:
+        if tid not in existing_ids:
+            db.add(DramaTheater(drama_id=drama.id, theater_id=tid))
+    await db.flush()
 
 
 async def _associate_accounts(db: AsyncSession, drama_id: uuid.UUID, account_ids: List[str]):
@@ -290,17 +346,22 @@ async def list_dramas(
         filters.append(Drama.rating == rating)
     if listing_status:
         filters.append(Drama.listing_status == listing_status)
+    theater_join = None
     if theater_id:
         try:
-            filters.append(Drama.theater_id == uuid.UUID(theater_id))
+            tid = uuid.UUID(theater_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid theater_id")
+        # 一剧多剧场：按关联表过滤（含老数据回填后的 theater_id）
+        theater_join = (DramaTheater.drama_id == Drama.id) & (DramaTheater.theater_id == tid)
 
     rbac = _apply_rbac_filter(current_user)
     if rbac is not None:
         filters.append(rbac)
 
     query = select(Drama)
+    if theater_join is not None:
+        query = query.join(DramaTheater, theater_join)
     if account_id:
         try:
             aid = uuid.UUID(account_id)
@@ -311,7 +372,7 @@ async def list_dramas(
         )
     if filters:
         query = query.where(and_(*filters))
-    query = query.options(selectinload(Drama.theater)).order_by(Drama.updated_at.desc())
+    query = query.options(_load_drama_theaters()).order_by(Drama.updated_at.desc())
     result = await db.execute(query)
     dramas = result.unique().scalars().all()
     return [await _serialize_drama(d) for d in dramas]
@@ -339,6 +400,11 @@ async def create_drama(
             break
         code = gen_drama_code()
 
+    # 归一化剧场：优先多选 theater_ids，否则回退遗留单值 theater_id
+    theater_ids = data.theater_ids
+    if not theater_ids and data.theater_id:
+        theater_ids = [data.theater_id]
+
     d = Drama(
         code=code,
         name=data.name.strip(),
@@ -352,7 +418,7 @@ async def create_drama(
         material_link=data.material_link,
         material_link_pwd=data.material_link_pwd,
         topics=data.topics,
-        theater_id=uuid.UUID(data.theater_id) if data.theater_id else None,
+        theater_id=uuid.UUID(theater_ids[0]) if theater_ids else None,
         created_by=current_user.id if current_user else None,
         operator_id=uuid.UUID(data.operator_id) if data.operator_id else (current_user.id if current_user else None),
     )
@@ -362,6 +428,7 @@ async def create_drama(
         d.listed_at = _parse_dt(data.listed_at)
     db.add(d)
     await db.flush()
+    await _sync_drama_theaters(db, d, theater_ids or [])
     await _associate_accounts(db, d.id, data.account_ids or [])
     # 重新预加载关系后序列化（async 会话同步访问 lazy 关系会触发 MissingGreenlet）
     result = await db.execute(
@@ -371,7 +438,7 @@ async def create_drama(
             selectinload(Drama.stills),
             selectinload(Drama.accounts),
             selectinload(Drama.episodes),
-            selectinload(Drama.theater),
+            _load_drama_theaters(),
         )
     )
     d = result.scalar_one()
@@ -404,6 +471,13 @@ async def update_drama(
         raise HTTPException(status_code=403, detail="No permission to update this drama")
 
     payload = data.model_dump(exclude_unset=True)
+    # 多剧场（一剧多剧场）：从普通字段中摘出，单独走关联表同步
+    theater_ids = payload.pop("theater_ids", None)
+    if "theater_id" in payload:
+        # 兼容遗留单字段：若传了 theater_id 则并入
+        tid = payload.pop("theater_id")
+        if theater_ids is None and tid:
+            theater_ids = [tid]
     # name 冲突校验（改名）
     new_name = payload.get("name")
     if new_name and new_name.strip() != d.name:
@@ -416,8 +490,6 @@ async def update_drama(
     for field, value in payload.items():
         if field == "operator_id":
             setattr(d, field, uuid.UUID(value) if value else None)
-        elif field == "theater_id":
-            setattr(d, field, uuid.UUID(value) if value else None)
         elif field == "updated_date":
             d.updated_date = _parse_date(value) if value else None
         elif field == "listed_at":
@@ -426,6 +498,9 @@ async def update_drama(
             d.name = value.strip()
         else:
             setattr(d, field, value)
+
+    if theater_ids is not None:
+        await _sync_drama_theaters(db, d, theater_ids)
 
     await db.flush()
     await db.refresh(d)
@@ -649,35 +724,65 @@ def _diff_fields(old: Drama, row: DramaImportRow) -> dict:
             diffs[field] = {"old": old_val, "new": new_val}
     if row.tags is not None and list(row.tags) != (list(old.tags) if old.tags else []):
         diffs["tags"] = {"old": list(old.tags) if old.tags else [], "new": list(row.tags)}
-    # 剧场差异（比较剧场名；旧剧场名从关联关系解析）
+    # 剧场差异（比较剧场名列表；旧剧场名从关联关系解析，一剧多剧场）
     if row.theater_name is not None:
-        old_theater_name = old.theater.name if old.theater else None
-        new_theater_name = row.theater_name.strip() if row.theater_name.strip() else None
-        if new_theater_name != old_theater_name:
-            diffs["theater_name"] = {"old": old_theater_name, "new": new_theater_name}
+        old_theater_names = []
+        if old.theater_links:
+            for link in old.theater_links:
+                old_theater_names.append(link.theater.name if link.theater else str(link.theater_id))
+        elif old.theater:
+            old_theater_names = [old.theater.name]
+        new_theater_names = _split_theater_names(row.theater_name)
+        if new_theater_names != old_theater_names:
+            diffs["theater_name"] = {"old": old_theater_names, "new": new_theater_names}
     return diffs
+
+
+def _split_theater_names(theater_name: Optional[str]) -> list:
+    """把导入的「剧场」单元格拆成多个剧场名（一剧多剧场，ISSUE #142）。
+
+    同一单元格可能含多个剧场，分隔符兼容中文顿号、逗号、斜杠、分号：
+    「海漫剧场、星河剧场」→ [海漫剧场, 星河剧场]。空值返回空列表。
+    """
+    if not theater_name or not str(theater_name).strip():
+        return []
+    raw = str(theater_name).strip()
+    parts = re.split(r"[、,，/;；\\|]+", raw)
+    return [p.strip() for p in parts if p.strip()]
+
+
+async def _resolve_theater_ids(db: AsyncSession, theater_name: Optional[str], current_user: Optional[User]) -> List[uuid.UUID]:
+    """按剧场名列表查找或自动创建剧场，返回 theater_id 列表（一剧多剧场）。
+
+    支持一个单元格含多个剧场名（顿号/逗号/斜杠/分号分隔）。同名已存在则复用，
+    否则自动创建新剧场。空值返回空列表。
+    """
+    names = _split_theater_names(theater_name)
+    ids = []
+    for name in names:
+        result = await db.execute(select(Theater).where(Theater.name == name))
+        t = result.scalar_one_or_none()
+        if t:
+            ids.append(t.id)
+            continue
+        t = Theater(
+            name=name,
+            created_by=current_user.id if current_user else None,
+            operator_id=current_user.id if current_user else None,
+        )
+        db.add(t)
+        await db.flush()
+        ids.append(t.id)
+    return ids
 
 
 async def _resolve_theater_id(db: AsyncSession, theater_name: Optional[str], current_user: Optional[User]) -> Optional[uuid.UUID]:
     """按剧场名查找或自动创建剧场，返回 theater_id（空剧场名返回 None）。
 
-    导入剧目出现「剧场」列时调用：同名已存在则复用，否则自动创建新剧场。
+    兼容遗留：仅返回第一个剧场 id（供旧字段写入）；多剧场走 _resolve_theater_ids。
     """
-    if not theater_name or not theater_name.strip():
-        return None
-    name = theater_name.strip()
-    result = await db.execute(select(Theater).where(Theater.name == name))
-    t = result.scalar_one_or_none()
-    if t:
-        return t.id
-    t = Theater(
-        name=name,
-        created_by=current_user.id if current_user else None,
-        operator_id=current_user.id if current_user else None,
-    )
-    db.add(t)
-    await db.flush()
-    return t.id
+    ids = await _resolve_theater_ids(db, theater_name, current_user)
+    return ids[0] if ids else None
 
 
 @router.post("/dramas/import/preview", response_model=dict)
@@ -700,7 +805,7 @@ async def drama_import_preview(
     unchanged = []
     existing_names = {}
     result = await db.execute(
-        select(Drama).where(Drama.name.in_([_row_key(r) for r in data.rows])).options(selectinload(Drama.theater))
+        select(Drama).where(Drama.name.in_([_row_key(r) for r in data.rows])).options(_load_drama_theaters())
     )
     for d in result.scalars().all():
         existing_names[d.name] = d
@@ -893,7 +998,6 @@ async def drama_import_confirm(
             listing_status=item.listing_status,
             material_link=item.material_link,
             material_link_pwd=item.material_link_pwd,
-            theater_id=await _resolve_theater_id(db, item.theater_name, current_user),
             created_by=created_by,
             operator_id=operator_id,
         )
@@ -902,6 +1006,12 @@ async def drama_import_confirm(
         if item.listed_at:
             d.listed_at = _parse_dt(item.listed_at)
         db.add(d)
+        await db.flush()
+        # 一剧多剧场：按剧场名查找/自动创建并同步关联表
+        theater_ids = await _resolve_theater_ids(db, item.theater_name, current_user)
+        if theater_ids:
+            d.theater_id = theater_ids[0]
+            await _sync_drama_theaters(db, d, theater_ids)
         imported += 1
 
     # 2) 处理更新（按 id 定位，应用新值）
@@ -941,13 +1051,15 @@ async def drama_import_confirm(
         d.listing_status = item.listing_status
         d.material_link = item.material_link
         d.material_link_pwd = item.material_link_pwd
-        # 更新所属剧场（按剧场名查找/自动创建）
-        theater_id = await _resolve_theater_id(db, item.theater_name, current_user)
-        if theater_id is not None:
-            d.theater_id = theater_id
+        # 更新所属剧场（一剧多剧场：按剧场名查找/自动创建并同步关联表）
+        theater_ids = await _resolve_theater_ids(db, item.theater_name, current_user)
+        if theater_ids:
+            d.theater_id = theater_ids[0]
+            await _sync_drama_theaters(db, d, theater_ids)
         elif item.theater_name is not None:
             # 显式传空剧场名 → 解除归属
             d.theater_id = None
+            await _sync_drama_theaters(db, d, [])
         if item.updated_date:
             d.updated_date = _parse_date(item.updated_date)
         if item.listed_at:
@@ -977,6 +1089,29 @@ async def drama_import_confirm(
         "errors": errors,
         "import_history_id": str(history.id) if history.id else None,
     }
+
+
+# ─────────────────────────────── 飞书自动爬取（ISSUE #142）───────────────────────────────
+
+class FeishuImportRequest(BaseModel):
+    url: Optional[str] = None  # 飞书表格链接（可空：回退到 FEISHU_SPREADSHEET_URL）
+
+
+@router.post("/dramas/import/feishu", response_model=dict)
+async def drama_import_feishu(
+    data: Optional[FeishuImportRequest] = None,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """手动触发：从飞书表格自动爬取并更新现有剧目的剧场关联（一剧多剧场）。
+
+    - 请求体可选传 `url`（飞书表格链接）；未传则用后端配置 FEISHU_SPREADSHEET_URL。
+    - 按「剧目名称」匹配现有 dramas（只更新存量，不新建）；
+    - 按「剧场」列（可多个，顿号/逗号分隔）查找/创建 theaters 并更新关联表。
+    需要后端配置 FEISHU_APP_ID / FEISHU_APP_SECRET 以走飞书 Open API 读取。
+    """
+    from app.services.feishu_service import sync_from_feishu
+    url = data.url if data else None
+    return await sync_from_feishu(url)
 
 
 # ─────────────────────────────── 发布联动（选剧目→带剧情简介→挂素材）───────────────────────────────
@@ -1103,7 +1238,7 @@ async def link_drama_episodes(
             selectinload(Drama.stills),
             selectinload(Drama.accounts),
             selectinload(Drama.episodes),
-            selectinload(Drama.theater),
+            _load_drama_theaters(),
         )
     )
     d = result.scalar_one()
