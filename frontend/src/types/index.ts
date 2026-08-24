@@ -818,6 +818,16 @@ export interface ChannelOperator {
   created_at: string;
 }
 
+export interface Theater {
+  id: string;
+  name: string;
+  remark: string | null;
+  operator_id: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ChannelAccount {
   id: string;
   channel_name: string;
@@ -828,6 +838,8 @@ export interface ChannelAccount {
   cooperation_modes: string[] | null; // ["IAA","IAP"]
   coop_company: string | null;
   video_account_id: string | null;   // 关联发布账号库，可空
+  theater_id: string | null;         // 所属剧场，可空
+  theater_name: string | null;       // 所属剧场名
   remark: string | null;
   enabled: boolean;
   created_by: string | null;

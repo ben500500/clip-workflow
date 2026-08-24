@@ -79,9 +79,13 @@ class Drama(Base):
     # 归属（R17 actor/operator 分离）
     created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
     operator_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # 所属剧场（直接挂剧场；一剧一场，可空）
+    theater_id = Column(UUID(as_uuid=True), ForeignKey("theaters.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
+    # 所属剧场（反向关联 theaters）
+    theater = relationship("Theater", back_populates="dramas")
     # 剧照（一对多）
     stills = relationship(
         "DramaStill",

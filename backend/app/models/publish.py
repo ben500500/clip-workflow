@@ -51,6 +51,8 @@ class VideoAccount(Base):
     # 发布跳转配置（多选）：端原生对应「视频号剧集」、小程序对应「小程序短剧」
     # 值为 ['native'] / ['mini_program'] / ['native','mini_program']，发布时据此选择
     publish_jump = Column(JSON, nullable=True)
+    # 所属剧场（直接挂剧场；可空，与台账口径一致）
+    theater_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     remark = Column(String(500), nullable=True)
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
