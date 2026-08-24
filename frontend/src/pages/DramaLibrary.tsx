@@ -22,6 +22,8 @@ import {
 import { lanSourceApi } from '../api/lanSource';
 import type { LanSourceEpisodeItem } from '../api/lanSource';
 import { publishApi } from '../api/publish';
+import { theaterApi } from '../api/theaters';
+import type { Theater } from '../types';
 import type { VideoAccount } from '../types';
 
 const { Text } = Typography;
@@ -87,6 +89,8 @@ const DramaLibrary: React.FC = () => {
   const [freq, setFreq] = useState<string | undefined>();
   const [rating, setRating] = useState<string | undefined>();
   const [status, setStatus] = useState<string | undefined>();
+  const [theaterFilter, setTheaterFilter] = useState<string | undefined>();
+  const [theaters, setTheaters] = useState<Theater[]>([]);
 
   // 新增/编辑弹窗
   const [modalOpen, setModalOpen] = useState(false);
@@ -139,10 +143,10 @@ const DramaLibrary: React.FC = () => {
   const [duploadEnabled, setDuploadEnabled] = useState(false);
   const [duploadPushing, setDuploadPushing] = useState(false);
 
-  const fetchList = useCallback(async (kw?: string, f?: string, r?: string, s?: string) => {
+  const fetchList = useCallback(async (kw?: string, f?: string, r?: string, s?: string, t?: string) => {
     setLoading(true);
     try {
-      const list = await listDramas({ q: kw, frequency: f, rating: r, listing_status: s });
+      const list = await listDramas({ q: kw, frequency: f, rating: r, listing_status: s, theater_id: t });
       setData(list);
     } catch (e) {
       message.error((e as Error).message || '加载剧目库失败');
@@ -155,6 +159,11 @@ const DramaLibrary: React.FC = () => {
     fetchList();
   }, [fetchList]);
 
+  // 加载剧场列表（供筛选 + 编辑表单）
+  useEffect(() => {
+    theaterApi.list().then(setTheaters).catch(() => setTheaters([]));
+  }, []);
+
   // 加载视频号账号库（用于关联）
   useEffect(() => {
     publishApi.getVideoAccounts().then(setVideoAccounts).catch(() => setVideoAccounts([]));
@@ -165,7 +174,7 @@ const DramaLibrary: React.FC = () => {
     getTopicPresets().then((r) => setTopicPresets(r.presets || [])).catch(() => setTopicPresets([]));
   }, []);
 
-  const doSearch = () => fetchList(keyword, freq, rating, status);
+  const doSearch = () => fetchList(keyword, freq, rating, status, theaterFilter);
 
   // ── 新增/编辑 ──
   const openCreate = () => {
@@ -187,6 +196,7 @@ const DramaLibrary: React.FC = () => {
       listing_status: d.listing_status,
       material_link: d.material_link || undefined,
       topics: d.topics || [],
+      theater_id: d.theater_id || undefined,
       updated_date: d.updated_date ? dayjs(d.updated_date) : undefined,
     });
     setModalOpen(true);
@@ -212,6 +222,7 @@ const DramaLibrary: React.FC = () => {
       listing_status: values.listing_status,
       material_link: values.material_link || null,
       topics: values.topics || null,
+      theater_id: values.theater_id || null,
       updated_date: values.updated_date ? values.updated_date.format('YYYY-MM-DD') : null,
     };
     try {
@@ -223,7 +234,7 @@ const DramaLibrary: React.FC = () => {
         message.success('剧目已创建');
       }
       setModalOpen(false);
-      fetchList(keyword, freq, rating, status);
+      fetchList(keyword, freq, rating, status, theaterFilter);
     } catch (e) {
       message.error((e as Error).message || '保存失败');
     }
@@ -233,7 +244,7 @@ const DramaLibrary: React.FC = () => {
     try {
       await deleteDrama(id);
       message.success(`已删除 ${name}`);
-      fetchList(keyword, freq, rating, status);
+      fetchList(keyword, freq, rating, status, theaterFilter);
     } catch (e) {
       message.error((e as Error).message || '删除失败');
     }
@@ -434,7 +445,7 @@ const DramaLibrary: React.FC = () => {
       message.success('封面已更新');
       const res = await getDrama(detailId);
       setDetail(res);
-      fetchList(keyword, freq, rating, status);
+      fetchList(keyword, freq, rating, status, theaterFilter);
     } catch (e) {
       message.error((e as Error).message || '更新封面失败');
     }
@@ -533,6 +544,7 @@ const DramaLibrary: React.FC = () => {
           listed_at: ((preview!.new[i] as { fields: Record<string, unknown> }).fields.listed_at as string) || null,
           material_link: ((preview!.new[i] as { fields: Record<string, unknown> }).fields.material_link as string) || null,
           account_name: ((preview!.new[i] as { fields: Record<string, unknown> }).fields.account_name as string) || null,
+          theater_name: ((preview!.new[i] as { fields: Record<string, unknown> }).fields.theater_name as string) || null,
         }));
       const acceptUpdate = [...checkUpdate].sort((a, b) => a - b).map((i) => {
         const u = preview!.update[i] as { id: string; code: string; name: string; diff: Record<string, { old: unknown; new: unknown }> };
@@ -547,13 +559,14 @@ const DramaLibrary: React.FC = () => {
           updated_date: (u.diff.updated_date?.new as string) || null,
           listed_at: (u.diff.listed_at?.new as string) || null,
           material_link: (u.diff.material_link?.new as string) || null,
+          theater_name: (u.diff.theater_name?.new as string) || null,
         };
       });
       const res = await dramaImportConfirm(acceptNew, acceptUpdate, fileName);
       message.success(`导入完成：新增 ${res.imported}，更新 ${res.updated}，跳过 ${res.skipped}`);
       setImportOpen(false);
       resetImport();
-      fetchList(keyword, freq, rating, status);
+      fetchList(keyword, freq, rating, status, theaterFilter);
     } catch (e) {
       message.error((e as Error).message || '导入失败');
     } finally {
@@ -634,7 +647,7 @@ const DramaLibrary: React.FC = () => {
               allowClear
               style={{ width: 110 }}
               value={freq}
-              onChange={(v) => { setFreq(v); fetchList(keyword, v, rating, status); }}
+              onChange={(v) => { setFreq(v); fetchList(keyword, v, rating, status, theaterFilter); }}
               options={FREQUENCIES.map((f) => ({ value: f, label: f }))}
             />
             <Select
@@ -642,7 +655,7 @@ const DramaLibrary: React.FC = () => {
               allowClear
               style={{ width: 120 }}
               value={rating}
-              onChange={(v) => { setRating(v); fetchList(keyword, freq, v, status); }}
+              onChange={(v) => { setRating(v); fetchList(keyword, freq, v, status, theaterFilter); }}
               options={RATINGS.map((f) => ({ value: f, label: f }))}
             />
             <Select
@@ -650,8 +663,18 @@ const DramaLibrary: React.FC = () => {
               allowClear
               style={{ width: 110 }}
               value={status}
-              onChange={(v) => { setStatus(v); fetchList(keyword, freq, rating, v); }}
+              onChange={(v) => { setStatus(v); fetchList(keyword, freq, rating, v, theaterFilter); }}
               options={LISTING_STATUSES.map((f) => ({ value: f, label: f }))}
+            />
+            <Select
+              placeholder="按剧场筛选"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              style={{ width: 150 }}
+              value={theaterFilter}
+              onChange={(v) => { setTheaterFilter(v); fetchList(keyword, freq, rating, status, v); }}
+              options={theaters.map((t) => ({ value: t.id, label: t.name }))}
             />
             <Button icon={<SearchOutlined />} onClick={doSearch}>查询</Button>
             <Button icon={<ImportOutlined />} onClick={() => { resetImport(); setImportOpen(true); }}>导入剧目</Button>
@@ -718,6 +741,15 @@ const DramaLibrary: React.FC = () => {
               <Input type="date" style={{ width: 160 }} />
             </Form.Item>
           </Space>
+          <Form.Item name="theater_id" label="所属剧场（剧目直接挂剧场）">
+            <Select
+              placeholder="选择所属剧场"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              options={theaters.map((t) => ({ value: t.id, label: t.name }))}
+            />
+          </Form.Item>
           <Form.Item name="material_link" label="素材链接">
             <Input placeholder="百度网盘等素材链接（提取码请勿填入）" />
           </Form.Item>
@@ -1054,6 +1086,7 @@ const DramaLibrary: React.FC = () => {
                     { title: '题材', dataIndex: ['fields', 'tags'], render: (v: string[]) => (v && v.length ? v.join(' / ') : '-') },
                     { title: '评级', dataIndex: ['fields', 'rating'], render: (v) => v || '-' },
                     { title: '状态', dataIndex: ['fields', 'listing_status'], render: (v) => v || '已上架' },
+                    { title: '剧场', dataIndex: ['fields', 'theater_name'], render: (v) => v || '-' },
                   ]}
                 />
               </div>

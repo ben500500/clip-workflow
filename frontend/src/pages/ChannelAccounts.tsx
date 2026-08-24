@@ -5,12 +5,13 @@ import {
 } from 'antd';
 import {
   PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined, TeamOutlined,
-  UserAddOutlined, BarChartOutlined,
+  UserAddOutlined, BarChartOutlined, ClusterOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { useNavigate } from 'react-router-dom';
 import { channelAccountApi, ChannelAccountInput, OperatorInput } from '../api/channelAccounts';
+import { theaterApi, Theater, TheaterInput } from '../api/theaters';
 import { publishApi } from '../api/publish';
 import { authApi } from '../api/auth';
 import type { ChannelAccount, ChannelOperator, VideoAccount, User } from '../types';
@@ -48,6 +49,13 @@ const ChannelAccounts: React.FC = () => {
   const [videoAccounts, setVideoAccounts] = useState<VideoAccount[]>([]);
   const [users, setUsers] = useState<User[]>([]);
 
+  // 剧场管理
+  const [theaters, setTheaters] = useState<Theater[]>([]);
+  const [theaterFilter, setTheaterFilter] = useState<string | undefined>(undefined);
+  const [theaterModalOpen, setTheaterModalOpen] = useState(false);
+  const [theaterEditing, setTheaterEditing] = useState<Theater | null>(null);
+  const [theaterForm] = Form.useForm();
+
   // 台账表单
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<ChannelAccount | null>(null);
@@ -59,10 +67,10 @@ const ChannelAccounts: React.FC = () => {
   const [opForm] = Form.useForm();
   const [operatorList, setOperatorList] = useState<ChannelOperator[]>([]);
 
-  const fetchData = useCallback(async (kw?: string) => {
+  const fetchData = useCallback(async (kw?: string, tid?: string) => {
     setLoading(true);
     try {
-      const list = await channelAccountApi.list({ keyword: kw });
+      const list = await channelAccountApi.list({ keyword: kw, theater_id: tid });
       setData(list);
     } catch (e) {
       message.error((e as Error).message || '加载视频号列表失败');
@@ -74,6 +82,20 @@ const ChannelAccounts: React.FC = () => {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // 加载剧场列表
+  const fetchTheaters = useCallback(async () => {
+    try {
+      const list = await theaterApi.list();
+      setTheaters(list);
+    } catch (e) {
+      message.error((e as Error).message || '加载剧场列表失败');
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTheaters();
+  }, [fetchTheaters]);
 
   // 加载关联下拉数据（发布账号库 + 系统用户）
   useEffect(() => {
@@ -100,6 +122,7 @@ const ChannelAccounts: React.FC = () => {
       cooperation_modes: acc.cooperation_modes || [],
       coop_company: acc.coop_company || undefined,
       video_account_id: acc.video_account_id || undefined,
+      theater_id: acc.theater_id || undefined,
       remark: acc.remark || undefined,
       enabled: acc.enabled,
     });
@@ -139,7 +162,7 @@ const ChannelAccounts: React.FC = () => {
         message.success('视频号列表已创建，账号库已同步');
       }
       setModalOpen(false);
-      fetchData(keyword);
+      fetchData(keyword, theaterFilter);
     } catch (e) {
       if ((e as Error).message) message.error((e as Error).message);
     }
@@ -149,10 +172,65 @@ const ChannelAccounts: React.FC = () => {
     try {
       await channelAccountApi.remove(id);
       message.success('已删除');
-      fetchData(keyword);
+      fetchData(keyword, theaterFilter);
     } catch (e) {
       message.error((e as Error).message || '删除失败');
     }
+  };
+
+  // ── 剧场管理（新增/编辑/删除）──
+  const openTheaterCreate = () => {
+    setTheaterEditing(null);
+    theaterForm.resetFields();
+    setTheaterModalOpen(true);
+  };
+
+  const openTheaterEdit = (t: Theater) => {
+    setTheaterEditing(t);
+    theaterForm.setFieldsValue({ name: t.name, remark: t.remark || undefined });
+    setTheaterModalOpen(true);
+  };
+
+  const handleTheaterSubmit = async () => {
+    try {
+      const values = await theaterForm.validateFields();
+      if (!values.name) {
+        message.error('请填写剧场名称');
+        return;
+      }
+      const payload: TheaterInput = { name: values.name, remark: values.remark };
+      if (theaterEditing) {
+        await theaterApi.update(theaterEditing.id, payload);
+        message.success('剧场已更新');
+      } else {
+        await theaterApi.create(payload);
+        message.success('剧场已新增');
+      }
+      setTheaterModalOpen(false);
+      await fetchTheaters();
+      fetchData(keyword, theaterFilter);
+    } catch (e) {
+      if ((e as Error).message) message.error((e as Error).message);
+    }
+  };
+
+  const handleTheaterDelete = async (t: Theater) => {
+    try {
+      await theaterApi.remove(t.id);
+      message.success('剧场已删除');
+      if (theaterFilter === t.id) {
+        setTheaterFilter(undefined);
+      }
+      await fetchTheaters();
+      fetchData(keyword, theaterFilter === t.id ? undefined : theaterFilter);
+    } catch (e) {
+      message.error((e as Error).message || '删除失败');
+    }
+  };
+
+  const handleTheaterFilterChange = (val?: string) => {
+    setTheaterFilter(val);
+    fetchData(keyword, val);
   };
 
   // ── 运营者管理 ──
@@ -182,7 +260,7 @@ const ChannelAccounts: React.FC = () => {
       opForm.resetFields();
       message.success('运营者已添加');
       // 刷新主列表以同步
-      fetchData(keyword);
+      fetchData(keyword, theaterFilter);
     } catch (e) {
       const msg = (e as Error).message;
       if (msg) message.error(msg);
@@ -195,7 +273,7 @@ const ChannelAccounts: React.FC = () => {
       await channelAccountApi.removeOperator(currentAccount.id, op.id);
       setOperatorList((prev) => prev.filter((x) => x.id !== op.id));
       message.success('运营者已移除');
-      fetchData(keyword);
+      fetchData(keyword, theaterFilter);
     } catch (e) {
       message.error((e as Error).message || '移除失败');
     }
@@ -224,6 +302,12 @@ const ChannelAccounts: React.FC = () => {
         const acc = videoAccounts.find((a) => a.id === v);
         return acc ? <Tag color="geekblue">{acc.account_name}</Tag> : <Tag>已关联</Tag>;
       },
+    },
+    {
+      title: '剧场',
+      dataIndex: 'theater_name',
+      width: 120,
+      render: (v: string) => (v ? <Tag color="purple">{v}</Tag> : <Text type="secondary">-</Text>),
     },
     {
       title: '累计播放',
@@ -357,12 +441,25 @@ const ChannelAccounts: React.FC = () => {
             placeholder="搜索名称/视频号ID"
             prefix={<SearchOutlined />}
             allowClear
-            style={{ width: 220 }}
+            style={{ width: 200 }}
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
-            onPressEnter={() => fetchData(keyword)}
+            onPressEnter={() => fetchData(keyword, theaterFilter)}
           />
-          <Button onClick={() => fetchData(keyword)}>查询</Button>
+          <Select
+            placeholder="按剧场筛选"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            style={{ width: 160 }}
+            value={theaterFilter}
+            onChange={handleTheaterFilterChange}
+            options={theaters.map((t) => ({ value: t.id, label: t.name }))}
+          />
+          <Button icon={<ClusterOutlined />} onClick={openTheaterCreate}>
+            新增剧场
+          </Button>
+          <Button onClick={() => fetchData(keyword, theaterFilter)}>查询</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
             新增
           </Button>
@@ -415,6 +512,19 @@ const ChannelAccounts: React.FC = () => {
                 value: a.id,
                 label: `${a.account_name} (${a.platform})`,
               }))}
+            />
+          </Form.Item>
+          <Form.Item
+            name="theater_id"
+            label="所属剧场（选填）"
+            extra="视频号对应的剧场是分散的，可选择归属剧场；需先新增剧场"
+          >
+            <Select
+              placeholder="可选：选择所属剧场"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              options={theaters.map((t) => ({ value: t.id, label: t.name }))}
             />
           </Form.Item>
           <Space style={{ display: 'flex' }} size="large">
@@ -525,6 +635,55 @@ const ChannelAccounts: React.FC = () => {
             </List.Item>
           )}
         />
+      </Modal>
+
+      {/* 剧场管理（新增/编辑） */}
+      <Modal
+        title={theaterEditing ? '编辑剧场' : '新增剧场'}
+        open={theaterModalOpen}
+        onOk={handleTheaterSubmit}
+        onCancel={() => setTheaterModalOpen(false)}
+        width={460}
+        destroyOnClose
+      >
+        <Form form={theaterForm} layout="vertical">
+          <Form.Item
+            name="name"
+            label="剧场名称"
+            rules={[{ required: true, message: '请填写剧场名称' }]}
+          >
+            <Input placeholder="如：海漫剧场" />
+          </Form.Item>
+          <Form.Item name="remark" label="备注（选填）">
+            <Input.TextArea rows={2} placeholder="选填" />
+          </Form.Item>
+        </Form>
+        {theaters.length > 0 && (
+          <Divider style={{ margin: '8px 0' }} />
+        )}
+        {theaters.length > 0 && (
+          <List
+            size="small"
+            dataSource={theaters}
+            locale={{ emptyText: '暂无剧场' }}
+            renderItem={(t) => (
+              <List.Item
+                actions={[
+                  <Button key="edit" type="link" size="small" icon={<EditOutlined />} onClick={() => openTheaterEdit(t)}>
+                    编辑
+                  </Button>,
+                  <Popconfirm key="del" title={`确认删除剧场「${t.name}」？关联剧目/视频号将解除归属`} onConfirm={() => handleTheaterDelete(t)}>
+                    <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                      删除
+                    </Button>
+                  </Popconfirm>,
+                ]}
+              >
+                <List.Item.Meta title={t.name} description={t.remark || '暂无备注'} />
+              </List.Item>
+            )}
+          />
+        )}
       </Modal>
     </Card>
   );

@@ -21,6 +21,8 @@ export interface Drama {
   material_link_pwd_masked?: boolean;
   created_by: string | null;
   operator_id: string | null;
+  theater_id?: string | null;      // 所属剧场
+  theater_name?: string | null;    // 所属剧场名
   created_at: string;
   updated_at: string;
 }
@@ -55,6 +57,7 @@ export interface DramaCreateParams {
   material_link_pwd?: string | null;
   operator_id?: string | null;
   topics?: string[] | null;
+  theater_id?: string | null;      // 所属剧场（剧目直接挂剧场）
   account_ids?: string[] | null;
 }
 
@@ -73,6 +76,7 @@ export interface DramaUpdateParams {
   material_link_pwd?: string | null;
   operator_id?: string | null;
   topics?: string[] | null;
+  theater_id?: string | null;      // 所属剧场（剧目直接挂剧场）
 }
 
 export interface DramaImportRow {
@@ -87,6 +91,7 @@ export interface DramaImportRow {
   material_link?: string | null;
   material_link_pwd?: string | null;
   account_name?: string | null;
+  theater_name?: string | null;    // 所属剧场名（剧目直接挂剧场）
 }
 
 export interface DramaImportPreviewResult {
@@ -111,6 +116,7 @@ export interface DramaImportConfirmItem {
   material_link?: string | null;
   material_link_pwd?: string | null;
   account_name?: string | null;
+  theater_name?: string | null;    // 所属剧场名（剧目直接挂剧场）
 }
 
 export interface DramaPublishContext {
@@ -151,6 +157,7 @@ export function listDramas(params?: {
   rating?: string;
   listing_status?: string;
   account_id?: string;
+  theater_id?: string;
 }): Promise<Drama[]> {
   return client.get('/dramas', { params });
 }

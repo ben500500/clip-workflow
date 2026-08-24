@@ -24,6 +24,7 @@ from app.models.models import (
     VideoMetric,
     user_can_access_all_materials,
 )
+from app.models.theater import Theater
 from app.utils.helpers import utc_iso
 
 router = APIRouter()
@@ -69,6 +70,7 @@ class ChannelAccountCreate(BaseModel):
     cooperation_modes: Optional[List[CooperationMode]] = None   # ["IAA","IAP"]
     coop_company: Optional[str] = None
     video_account_id: Optional[str] = None   # 选填：已存在账号库关联时直接绑定
+    theater_id: Optional[str] = None         # 所属剧场（可空）
     remark: Optional[str] = None
     enabled: bool = True
 
@@ -97,6 +99,7 @@ class ChannelAccountUpdate(BaseModel):
     cooperation_modes: Optional[List[CooperationMode]] = None
     coop_company: Optional[str] = None
     video_account_id: Optional[str] = None   # 方向1：不可置空，只能换绑到其它账号库
+    theater_id: Optional[str] = None         # 所属剧场（可空）
     remark: Optional[str] = None
     enabled: Optional[bool] = None
 
@@ -111,6 +114,8 @@ class ChannelAccountResponse(BaseModel):
     cooperation_modes: Optional[List[str]] = None
     coop_company: Optional[str] = None
     video_account_id: Optional[str] = None
+    theater_id: Optional[str] = None
+    theater_name: Optional[str] = None
     remark: Optional[str] = None
     enabled: bool = True
     created_by: Optional[str] = None
@@ -184,7 +189,7 @@ async def _load_report_metrics(db: AsyncSession, video_account_ids: List[uuid.UU
     return result
 
 
-def _serialize_channel_account(acc: ChannelAccount, report: Optional[dict] = None) -> dict:
+def _serialize_channel_account(acc: ChannelAccount, report: Optional[dict] = None, theater_names: Optional[dict] = None) -> dict:
     data = {
         "id": str(acc.id),
         "channel_name": acc.channel_name,
@@ -195,6 +200,8 @@ def _serialize_channel_account(acc: ChannelAccount, report: Optional[dict] = Non
         "cooperation_modes": acc.cooperation_modes or [],
         "coop_company": acc.coop_company,
         "video_account_id": str(acc.video_account_id) if acc.video_account_id else None,
+        "theater_id": str(acc.theater_id) if acc.theater_id else None,
+        "theater_name": (theater_names or {}).get(str(acc.theater_id)) if acc.theater_id else None,
         "remark": acc.remark,
         "enabled": acc.enabled if acc.enabled is not None else True,
         "created_by": str(acc.created_by) if acc.created_by else None,
@@ -208,6 +215,15 @@ def _serialize_channel_account(acc: ChannelAccount, report: Optional[dict] = Non
     if report:
         data.update(report)
     return data
+
+
+async def _load_theater_names(db: AsyncSession, theater_ids) -> dict:
+    """按 theater_id 批量查询剧场名，返回 {str(id): name}。"""
+    ids = [t for t in theater_ids if t]
+    if not ids:
+        return {}
+    result = await db.execute(select(Theater).where(Theater.id.in_(ids)))
+    return {str(t.id): t.name for t in result.scalars().all()}
 
 
 async def _reload_channel_account(db: AsyncSession, acc_id: uuid.UUID) -> ChannelAccount:
@@ -256,10 +272,11 @@ def _validate_operator_identity(op: OperatorCreate):
 async def list_channel_accounts(
     keyword: Optional[str] = Query(None),
     enabled: Optional[bool] = Query(None),
+    theater_id: Optional[str] = Query(None, description="按所属剧场筛选视频号"),
     db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
-    """台账列表（可按名称/微信号关键字、启停状态过滤；RBAC 数据隔离）。"""
+    """台账列表（可按名称/微信号关键字、启停状态、所属剧场过滤；RBAC 数据隔离）。"""
     query = select(ChannelAccount).options(selectinload(ChannelAccount.operators))
     filters = []
     if keyword:
@@ -269,6 +286,11 @@ async def list_channel_accounts(
         )
     if enabled is not None:
         filters.append(ChannelAccount.enabled == enabled)
+    if theater_id:
+        try:
+            filters.append(ChannelAccount.theater_id == uuid.UUID(theater_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid theater_id")
     if current_user and not user_can_access_all_materials(current_user):
         filters.append(ChannelAccount.created_by == current_user.id)
     if filters:
@@ -280,10 +302,12 @@ async def list_channel_accounts(
     # 批量聚合报表域数据（按 video_account_id）
     account_ids = [a.video_account_id for a in accounts if a.video_account_id]
     report = await _load_report_metrics(db, account_ids)
+    theater_names = await _load_theater_names(db, [a.theater_id for a in accounts])
     return [
         _serialize_channel_account(
             a,
             report.get(str(a.video_account_id)) if a.video_account_id else None,
+            theater_names,
         )
         for a in accounts
     ]
@@ -309,7 +333,8 @@ async def get_channel_account(
         report = (await _load_report_metrics(db, [acc.video_account_id])).get(
             str(acc.video_account_id)
         )
-    return _serialize_channel_account(acc, report)
+    theater_names = await _load_theater_names(db, [acc.theater_id])
+    return _serialize_channel_account(acc, report, theater_names)
 
 
 @router.post("/channel-accounts", response_model=ChannelAccountResponse, status_code=201)
@@ -351,6 +376,7 @@ async def create_channel_account(
         cooperation_modes=data.cooperation_modes,
         coop_company=data.coop_company,
         video_account_id=video_account.id,
+        theater_id=_parse_uuid(data.theater_id, "theater_id"),
         remark=data.remark,
         enabled=data.enabled,
         created_by=current_user.id if current_user else None,
@@ -358,7 +384,8 @@ async def create_channel_account(
     db.add(acc)
     await db.flush()
     acc = await _reload_channel_account(db, acc.id)
-    return _serialize_channel_account(acc)
+    theater_names = await _load_theater_names(db, [acc.theater_id])
+    return _serialize_channel_account(acc, None, theater_names)
 
 
 @router.post(
@@ -385,6 +412,7 @@ async def create_channel_from_video_account(
         cooperation_modes=data.cooperation_modes,
         coop_company=data.coop_company,
         video_account_id=video_account.id,
+        theater_id=_parse_uuid(data.theater_id, "theater_id"),
         remark=data.remark,
         enabled=data.enabled,
         created_by=current_user.id if current_user else None,
@@ -400,7 +428,8 @@ async def create_channel_from_video_account(
     db.add(acc)
     await db.flush()
     acc = await _reload_channel_account(db, acc.id)
-    return _serialize_channel_account(acc)
+    theater_names = await _load_theater_names(db, [acc.theater_id])
+    return _serialize_channel_account(acc, None, theater_names)
 
 
 @router.put("/channel-accounts/{account_id}", response_model=ChannelAccountResponse)
@@ -437,12 +466,15 @@ async def update_channel_account(
                 acc.channel_name = video_account.account_name
             if "wechat_id" not in updates:
                 acc.wechat_id = video_account.wxid
+    if "theater_id" in updates:
+        acc.theater_id = _parse_uuid(updates.pop("theater_id"), "theater_id")
     for field, value in updates.items():
         setattr(acc, field, value)
 
     await db.flush()
     acc = await _reload_channel_account(db, acc.id)
-    return _serialize_channel_account(acc)
+    theater_names = await _load_theater_names(db, [acc.theater_id])
+    return _serialize_channel_account(acc, None, theater_names)
 
 
 @router.delete("/channel-accounts/{account_id}", status_code=204)

@@ -44,6 +44,8 @@ class ChannelAccount(Base):
     coop_company = Column(String(200), nullable=True)                # 合作公司
     # 软关联发布账号库（先登记后关联，可空）；不设物理 FK 约束，与 PublishTask 快照路线一致
     video_account_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # 所属剧场（直接挂剧场；可空，用于视频号列表按剧场筛选）
+    theater_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     remark = Column(String(500), nullable=True)
     enabled = Column(Boolean, default=True)
     # 数据隔离（同 video_accounts）：操作人审计 + 列表 RBAC 过滤

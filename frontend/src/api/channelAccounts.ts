@@ -11,6 +11,7 @@ export interface ChannelAccountInput {
   cooperation_modes?: string[];  // IAA / IAP
   coop_company?: string;
   video_account_id?: string;     // 选填：已存在账号库关联时直接绑定；否则自动同步创建
+  theater_id?: string;           // 所属剧场（可空）
   remark?: string;
   enabled?: boolean;
 }
@@ -22,6 +23,7 @@ export interface ChannelAccountFromVideoAccountInput {
   register_date?: string;
   cooperation_modes?: string[];
   coop_company?: string;
+  theater_id?: string;           // 所属剧场（可空）
   remark?: string;
   enabled?: boolean;
 }
@@ -34,7 +36,7 @@ export interface OperatorInput {
 
 export const channelAccountApi = {
   // 台账 CRUD
-  list: (params?: { keyword?: string; enabled?: boolean }) =>
+  list: (params?: { keyword?: string; enabled?: boolean; theater_id?: string }) =>
     client.get('/channel-accounts', { params }) as Promise<ChannelAccount[]>,
   get: (id: string) =>
     client.get(`/channel-accounts/${id}`) as Promise<ChannelAccount>,

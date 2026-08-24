@@ -58,6 +58,9 @@ from app.models.drama import (
     DramaMaterial,
     gen_drama_code,
 )
+from app.models.theater import (
+    Theater,
+)
 
 __all__ = [
     "Project",
@@ -114,4 +117,5 @@ __all__ = [
     "DramaAccount",
     "DramaMaterial",
     "gen_drama_code",
+    "Theater",
 ]

@@ -26,6 +26,7 @@ from app.auth import get_current_user
 from app.config import settings
 from app.database import get_db
 from app.models.drama import Drama, DramaStill, DramaAccount, DramaMaterial, gen_drama_code
+from app.models.theater import Theater
 from app.models.models import (
     User,
     ImportHistory,
@@ -98,6 +99,8 @@ class DramaCreate(BaseModel):
     operator_id: Optional[str] = None
     # 发布话题标签（JSON 数组，发布时复用）
     topics: Optional[List[str]] = None
+    # 所属剧场（剧目直接挂剧场，可空）
+    theater_id: Optional[str] = None
     # 关联视频号（可空，创建时一并关联）
     account_ids: Optional[List[str]] = None
 
@@ -117,6 +120,8 @@ class DramaUpdate(BaseModel):
     material_link_pwd: Optional[str] = None
     operator_id: Optional[str] = None
     topics: Optional[List[str]] = None
+    # 所属剧场（剧目直接挂剧场，可空）
+    theater_id: Optional[str] = None
 
 
 class DramaStillPayload(BaseModel):
@@ -142,6 +147,10 @@ async def _resolve_image_url(file_key: Optional[str]) -> Optional[str]:
 
 
 async def _serialize_drama(d: Drama) -> dict:
+    # 解析所属剧场（名称，供展示/筛选下拉）
+    theater_name = None
+    if d.theater:
+        theater_name = d.theater.name
     return {
         "id": str(d.id),
         "code": d.code,
@@ -162,6 +171,8 @@ async def _serialize_drama(d: Drama) -> dict:
         "material_link_pwd_masked": bool(d.material_link_pwd),
         "created_by": str(d.created_by) if d.created_by else None,
         "operator_id": str(d.operator_id) if d.operator_id else None,
+        "theater_id": str(d.theater_id) if d.theater_id else None,
+        "theater_name": theater_name,
         "created_at": utc_iso(d.created_at) if d.created_at else "",
         "updated_at": utc_iso(d.updated_at) if d.updated_at else "",
     }
@@ -199,6 +210,7 @@ async def _resolve_drama(db: AsyncSession, drama_id: str) -> Drama:
             selectinload(Drama.stills),
             selectinload(Drama.accounts),
             selectinload(Drama.episodes),
+            selectinload(Drama.theater),
         )
     )
     d = result.scalar_one_or_none()
@@ -264,6 +276,7 @@ async def list_dramas(
     rating: Optional[str] = Query(None),
     listing_status: Optional[str] = Query(None),
     account_id: Optional[str] = Query(None, description="反查：该视频号关联的剧目"),
+    theater_id: Optional[str] = Query(None, description="按所属剧场筛选剧目"),
     db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
@@ -277,6 +290,11 @@ async def list_dramas(
         filters.append(Drama.rating == rating)
     if listing_status:
         filters.append(Drama.listing_status == listing_status)
+    if theater_id:
+        try:
+            filters.append(Drama.theater_id == uuid.UUID(theater_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid theater_id")
 
     rbac = _apply_rbac_filter(current_user)
     if rbac is not None:
@@ -293,7 +311,7 @@ async def list_dramas(
         )
     if filters:
         query = query.where(and_(*filters))
-    query = query.order_by(Drama.updated_at.desc())
+    query = query.options(selectinload(Drama.theater)).order_by(Drama.updated_at.desc())
     result = await db.execute(query)
     dramas = result.unique().scalars().all()
     return [await _serialize_drama(d) for d in dramas]
@@ -334,6 +352,7 @@ async def create_drama(
         material_link=data.material_link,
         material_link_pwd=data.material_link_pwd,
         topics=data.topics,
+        theater_id=uuid.UUID(data.theater_id) if data.theater_id else None,
         created_by=current_user.id if current_user else None,
         operator_id=uuid.UUID(data.operator_id) if data.operator_id else (current_user.id if current_user else None),
     )
@@ -352,6 +371,7 @@ async def create_drama(
             selectinload(Drama.stills),
             selectinload(Drama.accounts),
             selectinload(Drama.episodes),
+            selectinload(Drama.theater),
         )
     )
     d = result.scalar_one()
@@ -395,6 +415,8 @@ async def update_drama(
 
     for field, value in payload.items():
         if field == "operator_id":
+            setattr(d, field, uuid.UUID(value) if value else None)
+        elif field == "theater_id":
             setattr(d, field, uuid.UUID(value) if value else None)
         elif field == "updated_date":
             d.updated_date = _parse_date(value) if value else None
@@ -567,6 +589,7 @@ class DramaImportRow(BaseModel):
     material_link: Optional[str] = None
     material_link_pwd: Optional[str] = None
     account_name: Optional[str] = None  # 上架账号名（映射到 VideoAccount）
+    theater_name: Optional[str] = None  # 所属剧场名（剧目直接挂剧场）
 
 
 class DramaImportRequest(BaseModel):
@@ -593,6 +616,7 @@ class DramaImportConfirmItem(BaseModel):
     material_link: Optional[str] = None
     material_link_pwd: Optional[str] = None
     account_name: Optional[str] = None
+    theater_name: Optional[str] = None  # 所属剧场名（剧目直接挂剧场）
 
 
 class DramaImportConfirm(BaseModel):
@@ -625,7 +649,35 @@ def _diff_fields(old: Drama, row: DramaImportRow) -> dict:
             diffs[field] = {"old": old_val, "new": new_val}
     if row.tags is not None and list(row.tags) != (list(old.tags) if old.tags else []):
         diffs["tags"] = {"old": list(old.tags) if old.tags else [], "new": list(row.tags)}
+    # 剧场差异（比较剧场名；旧剧场名从关联关系解析）
+    if row.theater_name is not None:
+        old_theater_name = old.theater.name if old.theater else None
+        new_theater_name = row.theater_name.strip() if row.theater_name.strip() else None
+        if new_theater_name != old_theater_name:
+            diffs["theater_name"] = {"old": old_theater_name, "new": new_theater_name}
     return diffs
+
+
+async def _resolve_theater_id(db: AsyncSession, theater_name: Optional[str], current_user: Optional[User]) -> Optional[uuid.UUID]:
+    """按剧场名查找或自动创建剧场，返回 theater_id（空剧场名返回 None）。
+
+    导入剧目出现「剧场」列时调用：同名已存在则复用，否则自动创建新剧场。
+    """
+    if not theater_name or not theater_name.strip():
+        return None
+    name = theater_name.strip()
+    result = await db.execute(select(Theater).where(Theater.name == name))
+    t = result.scalar_one_or_none()
+    if t:
+        return t.id
+    t = Theater(
+        name=name,
+        created_by=current_user.id if current_user else None,
+        operator_id=current_user.id if current_user else None,
+    )
+    db.add(t)
+    await db.flush()
+    return t.id
 
 
 @router.post("/dramas/import/preview", response_model=dict)
@@ -647,7 +699,9 @@ async def drama_import_preview(
     update = []
     unchanged = []
     existing_names = {}
-    result = await db.execute(select(Drama).where(Drama.name.in_([_row_key(r) for r in data.rows])))
+    result = await db.execute(
+        select(Drama).where(Drama.name.in_([_row_key(r) for r in data.rows])).options(selectinload(Drama.theater))
+    )
     for d in result.scalars().all():
         existing_names[d.name] = d
 
@@ -668,6 +722,7 @@ async def drama_import_preview(
                     "listed_at": row.listed_at,
                     "material_link": row.material_link,
                     "account_name": row.account_name,
+                    "theater_name": row.theater_name,
                 },
             })
         else:
@@ -759,6 +814,7 @@ async def drama_import_parse(
     # 网盘提取码/密码列（之前未解析，导致密码一并丢失）
     col_pwd = _find("网盘密码", "提取码", "网盘提取码", "密码")
     col_account = _find("上架账号")
+    col_theater = _find("剧场")
 
     rows = []
     for _, row in df.iterrows():
@@ -780,6 +836,7 @@ async def drama_import_parse(
             "material_link": _norm(row.get(col_link, "")) if col_link else None,
             "material_link_pwd": _norm(row.get(col_pwd, "")) if col_pwd else None,
             "account_name": _norm(row.get(col_account, "")) if col_account else None,
+            "theater_name": _norm(row.get(col_theater, "")) if col_theater else None,
         })
 
     if not rows:
@@ -836,6 +893,7 @@ async def drama_import_confirm(
             listing_status=item.listing_status,
             material_link=item.material_link,
             material_link_pwd=item.material_link_pwd,
+            theater_id=await _resolve_theater_id(db, item.theater_name, current_user),
             created_by=created_by,
             operator_id=operator_id,
         )
@@ -883,6 +941,13 @@ async def drama_import_confirm(
         d.listing_status = item.listing_status
         d.material_link = item.material_link
         d.material_link_pwd = item.material_link_pwd
+        # 更新所属剧场（按剧场名查找/自动创建）
+        theater_id = await _resolve_theater_id(db, item.theater_name, current_user)
+        if theater_id is not None:
+            d.theater_id = theater_id
+        elif item.theater_name is not None:
+            # 显式传空剧场名 → 解除归属
+            d.theater_id = None
         if item.updated_date:
             d.updated_date = _parse_date(item.updated_date)
         if item.listed_at:
@@ -1038,6 +1103,7 @@ async def link_drama_episodes(
             selectinload(Drama.stills),
             selectinload(Drama.accounts),
             selectinload(Drama.episodes),
+            selectinload(Drama.theater),
         )
     )
     d = result.scalar_one()
