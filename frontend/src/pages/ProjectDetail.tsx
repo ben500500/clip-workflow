@@ -1,11 +1,12 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import {
   Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col,
-  message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm, Input, Tabs, Switch, Select, Divider, InputNumber,
+  message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm, Input, Tabs, Switch, Select, Divider, InputNumber, Collapse,
 } from 'antd';
-import { ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined, PlayCircleOutlined, ThunderboltOutlined, ReloadOutlined, DownloadOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined, ThunderboltOutlined, ReloadOutlined, DownloadOutlined, FolderOpenOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { projectApi } from '../api/projects';
+import { previewApi } from '../api/preview';
 import type { ProjectOutputItem } from '../api/projects';
 import { uploadApi } from '../api/upload';
 import { sliceApi } from '../api/slice';
@@ -144,8 +145,10 @@ const ProjectDetail: React.FC = () => {
   const [outputs, setOutputs] = useState<ProjectOutputItem[]>([]);
   const [outputsLoading, setOutputsLoading] = useState(false);
   const [outputsLoaded, setOutputsLoaded] = useState(false);
-  const [previewModal, setPreviewModal] = useState(false);
-  const [previewItem, setPreviewItem] = useState<ProjectOutputItem | null>(null);
+  // 成品预览 Tab：按剧集分组折叠 + 行内展开预览（单选展开，切换行自动收起）
+  const [activeOutputGroups, setActiveOutputGroups] = useState<string[]>([]);
+  const [expandedOutputId, setExpandedOutputId] = useState<string | null>(null);
+  const [groupDownloading, setGroupDownloading] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
@@ -296,6 +299,9 @@ const ProjectDetail: React.FC = () => {
       if (mountedRef.current) {
         setOutputs(data.items);
         setOutputsLoaded(true);
+        // 默认展开所有剧集分组（按剧集维度折叠展示）
+        const groupKeys = Array.from(new Set(data.items.map((o) => o.episode_id)));
+        setActiveOutputGroups(groupKeys);
       }
     } catch (err: unknown) {
       if (mountedRef.current) {
@@ -306,11 +312,89 @@ const ProjectDetail: React.FC = () => {
     }
   }, [projectId]);
 
-  // 切换到成品预览 Tab 时拉取一次（避免每次切换都请求）
+  // 切换到成品预览 Tab 时拉取一次（避免每次切换都请求；挂载时也已预拉一次）
   const handleTabChange = (key: string) => {
     setActiveTab(key);
     if (key === 'outputs' && !outputsLoaded) {
       loadProjectOutputs();
+    }
+  };
+
+  // 需求1：进入页面即拉取成品数量（无需切换到成品预览 Tab 才看到数量）
+  useEffect(() => {
+    if (projectId) loadProjectOutputs();
+  }, [projectId, loadProjectOutputs]);
+
+  // ── 成品预览：按剧集分组 ──
+  const outputGroups = useMemo(() => {
+    const map = new Map<string, ProjectOutputItem[]>();
+    for (const o of outputs) {
+      const arr = map.get(o.episode_id) ?? [];
+      arr.push(o);
+      map.set(o.episode_id, arr);
+    }
+    return Array.from(map.entries()).map(([epId, items]) => ({
+      episode_id: epId,
+      episode_no: items[0]?.episode_no ?? null,
+      episode_title: items[0]?.episode_title ?? null,
+      items,
+    }));
+  }, [outputs]);
+
+  // 点击成品行任意区域：展开/收起行内预览（单选展开，切换行自动收起）
+  const toggleOutputRow = (record: ProjectOutputItem) => {
+    setExpandedOutputId((prev) => (prev === record.output_id ? null : record.output_id));
+  };
+
+  // 单条下载：经 axios 换取带 Content-Disposition: attachment 的直链再触发下载
+  const downloadOutputOne = async (o: ProjectOutputItem) => {
+    try {
+      const res = await previewApi.download(o.output_id);
+      if (!res.url) {
+        message.warning('该成品暂无可用下载链接，请稍后重试');
+        return;
+      }
+      const a = document.createElement('a');
+      a.href = res.url;
+      a.download = res.file_name || o.file_name || `output_${o.output_id}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '下载失败');
+    }
+  };
+
+  // 每组成品一键下载全部：复用批量下载接口，按顺序逐个触发
+  const downloadOutputGroup = async (epId: string) => {
+    const group = outputGroups.find((g) => g.episode_id === epId);
+    if (!group || group.items.length === 0) return;
+    setGroupDownloading(epId);
+    try {
+      const res = await previewApi.batchDownload(group.items.map((o) => o.output_id));
+      const files = res.files ?? [];
+      if (files.length === 0) {
+        message.warning('该剧集暂无可用下载文件');
+        return;
+      }
+      let done = 0;
+      for (const f of files) {
+        const a = document.createElement('a');
+        a.href = f.url;
+        a.download = f.file_name || `output_${f.output_id}.mp4`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        done += 1;
+        if (done < files.length) {
+          await new Promise((r) => setTimeout(r, 800));
+        }
+      }
+      message.success(`已开始按顺序下载 ${files.length} 个成品`);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '批量下载失败');
+    } finally {
+      setGroupDownloading(null);
     }
   };
 
@@ -716,84 +800,125 @@ const ProjectDetail: React.FC = () => {
               label: `成品预览（${outputsLoaded ? outputs.length : ''}）`,
               children: (
                 <Space direction="vertical" style={{ width: '100%' }} size="middle">
-                  <Alert type="info" showIcon message="项目下所有剧集的已完成切片产出，可预览/下载。" />
+                  <Alert type="info" showIcon message="项目下所有剧集的已完成切片产出，按剧集折叠展示。点击任一行任意区域直接展开预览，点击「下载」可单条下载，或使用每组顶部的「一键下载全部」。" />
                   {outputsLoading ? (
                     <div style={{ textAlign: 'center', padding: 32 }}><Spin /></div>
                   ) : outputs.length === 0 ? (
                     <Text type="secondary">暂无成品。请先对剧集执行切片（可勾选多个剧集后使用「批量一键切片」），完成后即可在此预览。</Text>
                   ) : (
-                    <Table
-                      rowKey="output_id"
-                      size="small"
-                      pagination={{ pageSize: 10, showSizeChanger: false }}
-                      dataSource={outputs}
-                      columns={[
-                        {
-                          title: '所属剧集',
-                          key: 'episode',
-                          width: 180,
-                          render: (_: unknown, r: ProjectOutputItem) => (
-                            <Link to={`/episodes/${r.episode_id}`}>
-                              {r.episode_title || (r.episode_no != null ? `第 ${r.episode_no} 集` : '(未命名剧集)')}
-                            </Link>
-                          ),
-                        },
-                        {
-                          title: '成品',
-                          dataIndex: 'file_name',
-                          key: 'file_name',
-                          ellipsis: true,
-                          render: (v: string | null) => v || '(未命名)'
-                        },
-                        {
-                          title: '模式',
-                          dataIndex: 'mode',
-                          key: 'mode',
-                          width: 90,
-                          render: (m: string | null) => (m ? <Tag>{m}</Tag> : '-'),
-                        },
-                        {
-                          title: '时长',
-                          dataIndex: 'duration',
-                          key: 'duration',
-                          width: 90,
-                          render: (d: number | null) => (d != null ? formatDuration(d) : '-'),
-                        },
-                        {
-                          title: '分辨率',
-                          dataIndex: 'resolution',
-                          key: 'resolution',
-                          width: 100,
-                          render: (v: string | null) => v || '-',
-                        },
-                        {
-                          title: '大小',
-                          dataIndex: 'file_size',
-                          key: 'file_size',
-                          width: 100,
-                          render: (s: number | null) => (s != null ? formatFileSize(s) : '-'),
-                        },
-                        {
-                          title: '生成时间',
-                          dataIndex: 'created_at',
-                          key: 'created_at',
-                          width: 150,
-                          render: (d: string) => formatDateTime(d),
-                        },
-                        {
-                          title: '操作',
-                          key: 'action',
-                          width: 150,
-                          render: (_: unknown, r: ProjectOutputItem) => (
-                            <Space size="small">
-                              <Button size="small" icon={<PlayCircleOutlined />} onClick={() => { setPreviewItem(r); setPreviewModal(true); }}>预览</Button>
-                              {r.presigned_url && (
-                                <a href={r.presigned_url} target="_blank" rel="noreferrer">下载</a>
-                              )}
-                            </Space>
-                          ),
-                        },
-                      ]}
+                    <Collapse
+                      activeKey={activeOutputGroups}
+                      onChange={(keys) => setActiveOutputGroups(keys as string[])}
+                      expandIconPosition="start"
+                      items={outputGroups.map((g) => ({
+                        key: g.episode_id,
+                        label: (
+                          <Space size={8} wrap>
+                            <FolderOpenOutlined />
+                            <Text strong>
+                              <Link to={`/episodes/${g.episode_id}`} onClick={(e) => e.stopPropagation()}>
+                                {g.episode_title || (g.episode_no != null ? `第 ${g.episode_no} 集` : '(未命名剧集)')}
+                              </Link>
+                            </Text>
+                            <Text type="secondary" style={{ fontSize: 12 }}>共 {g.items.length} 个成品</Text>
+                            <Button
+                              size="small"
+                              icon={<DownloadOutlined />}
+                              loading={groupDownloading === g.episode_id}
+                              onClick={(e) => { e.stopPropagation(); downloadOutputGroup(g.episode_id); }}
+                            >
+                              一键下载全部
+                            </Button>
+                          </Space>
+                        ),
+                        children: (
+                          <Table
+                            rowKey="output_id"
+                            size="small"
+                            pagination={false}
+                            dataSource={g.items}
+                            onRow={(record) => ({
+                              onClick: () => toggleOutputRow(record),
+                              style: { cursor: 'pointer' },
+                            })}
+                            expandable={{
+                              expandedRowKeys: expandedOutputId ? [expandedOutputId] : [],
+                              onExpand: (expanded, record) => setExpandedOutputId(expanded ? record.output_id : null),
+                              expandIcon: () => null,
+                              expandIconColumnIndex: -1,
+                              expandedRowRender: (record) =>
+                                record.presigned_url ? (
+                                  <video
+                                    controls
+                                    preload="metadata"
+                                    src={record.presigned_url}
+                                    style={{ width: '100%', maxHeight: 420, background: '#000', borderRadius: 6 }}
+                                  />
+                                ) : (
+                                  <Text type="secondary">该成品暂无可用预览地址（链接可能已过期），请点击「下载」获取。</Text>
+                                ),
+                            }}
+                            columns={[
+                              {
+                                title: '成品',
+                                dataIndex: 'file_name',
+                                key: 'file_name',
+                                ellipsis: true,
+                                render: (v: string | null) => v || '(未命名)',
+                              },
+                              {
+                                title: '模式',
+                                dataIndex: 'mode',
+                                key: 'mode',
+                                width: 90,
+                                render: (m: string | null) => (m ? <Tag>{m}</Tag> : '-'),
+                              },
+                              {
+                                title: '时长',
+                                dataIndex: 'duration',
+                                key: 'duration',
+                                width: 90,
+                                render: (d: number | null) => (d != null ? formatDuration(d) : '-'),
+                              },
+                              {
+                                title: '分辨率',
+                                dataIndex: 'resolution',
+                                key: 'resolution',
+                                width: 100,
+                                render: (v: string | null) => v || '-',
+                              },
+                              {
+                                title: '大小',
+                                dataIndex: 'file_size',
+                                key: 'file_size',
+                                width: 100,
+                                render: (s: number | null) => (s != null ? formatFileSize(s) : '-'),
+                              },
+                              {
+                                title: '生成时间',
+                                dataIndex: 'created_at',
+                                key: 'created_at',
+                                width: 150,
+                                render: (d: string) => formatDateTime(d),
+                              },
+                              {
+                                title: '操作',
+                                key: 'action',
+                                width: 100,
+                                render: (_: unknown, r: ProjectOutputItem) => (
+                                  <Button
+                                    size="small"
+                                    icon={<DownloadOutlined />}
+                                    onClick={(e) => { e.stopPropagation(); downloadOutputOne(r); }}
+                                  >
+                                    下载
+                                  </Button>
+                                ),
+                              },
+                            ]}
+                          />
+                        ),
+                      }))}
                     />
                   )}
                   {outputsLoaded && (
@@ -989,27 +1114,6 @@ const ProjectDetail: React.FC = () => {
             <Progress percent={Math.round((batchProgress.done / batchProgress.total) * 100)} size="small" status="active" />
           )}
         </Space>
-      </Modal>
-
-      {/* 成品预览弹窗 */}
-      <Modal
-        title={previewItem ? `成品预览 · ${previewItem.file_name || ''}` : '成品预览'}
-        open={previewModal}
-        onCancel={() => setPreviewModal(false)}
-        footer={previewItem?.presigned_url ? <a href={previewItem.presigned_url} target="_blank" rel="noreferrer"><Button type="primary" icon={<DownloadOutlined />}>下载</Button></a> : null}
-        width={820}
-        destroyOnClose
-      >
-        {previewItem?.presigned_url ? (
-          <video
-            controls
-            preload="metadata"
-            src={previewItem.presigned_url}
-            style={{ width: '100%', maxHeight: 460, background: '#000', borderRadius: 6 }}
-          />
-        ) : (
-          <Text type="secondary">该成品暂无可用预览地址（链接可能已过期），请尝试重新加载列表。</Text>
-        )}
       </Modal>
     </div>
   );
