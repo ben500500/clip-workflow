@@ -68,6 +68,16 @@ async def trigger_pipeline(
     frame_analysis_provider = (config or {}).get("frame_analysis_provider")
     if frame_analysis_provider:
         payload["frame_analysis_provider"] = str(frame_analysis_provider)
+    # 画面理解在线视觉模型名 / 网关（来自系统设置 frame_analysis_config）
+    frame_analysis_model = (config or {}).get("frame_analysis_model")
+    if frame_analysis_model:
+        payload["frame_analysis_model"] = str(frame_analysis_model)
+    frame_vision_base = (config or {}).get("frame_vision_base") or (config or {}).get("vision_base")
+    if frame_vision_base:
+        payload["frame_vision_base"] = str(frame_vision_base)
+    frame_vision_key = (config or {}).get("frame_vision_key") or (config or {}).get("vision_api_key")
+    if frame_vision_key:
+        payload["frame_vision_key"] = str(frame_vision_key)
     # AI 选点模型覆盖：来自系统设置 default_autoclip_config.llm_model / llm_provider，
     # 使“系统设置里改模型名”能真正下达到选点引擎（之前是孤立配置项，无人读取）。
     llm_model = (config or {}).get("llm_model") or (config or {}).get("model_name")
@@ -76,6 +86,13 @@ async def trigger_pipeline(
     llm_provider = (config or {}).get("llm_provider")
     if llm_provider:
         payload["llm_provider"] = str(llm_provider)
+    # 在线 LLM 网关（来自系统设置 llm_config）：base_url / api_key 透传给 AutoClip 覆盖环境变量
+    llm_api_base = (config or {}).get("llm_api_base")
+    if llm_api_base:
+        payload["llm_api_base"] = str(llm_api_base)
+    llm_api_key = (config or {}).get("llm_api_key")
+    if llm_api_key:
+        payload["llm_api_key"] = str(llm_api_key)
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.post(url, json=payload)

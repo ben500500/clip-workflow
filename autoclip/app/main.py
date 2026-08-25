@@ -14,7 +14,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import subprocess
 import tempfile
 import uuid
@@ -273,17 +272,41 @@ def _asr_cache_dir() -> Path:
     return cache_dir
 
 
+# ASR 缓存键采样窗口大小：每段采样 4MB，总共头/中/尾三段 = 12MB。
+# 相比对整段视频做全量 SHA256（GB 级视频要读完全部字节，缓存命中也极慢），
+# 采样哈希 + 文件大小在保持足够区分度的同时，命中缓存时几乎瞬时，避免用户感知"每次都在重新识别"。
+_ASR_SAMPLE_CHUNK = 4 * 1024 * 1024
+
+
 def _asr_cache_key(video: Path, method_name: str) -> str:
-    """根据视频内容生成缓存键：文件名(前40) + 内容哈希(前12) + ASR方式。"""
+    """根据视频内容生成缓存键：文件大小 + 采样内容哈希(前12) + ASR方式。
+
+    采样哈希取文件开头/中间/结尾各 4MB 拼上文件大小计算 SHA256，避免对 GB 级视频
+    全量读取导致缓存命中时仍要等待整段 IO。文件大小作为强约束，避免不同视频采样区
+    恰好相同造成误判。缓存键不含文件名/路径，保证同一源视频在不同任务间复用。
+    """
+    size = 0
     digest = hashlib.sha256()
     try:
         with open(video, "rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                digest.update(chunk)
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            if size > 0:
+                f.seek(0)
+                digest.update(f.read(_ASR_SAMPLE_CHUNK))
+                if size > _ASR_SAMPLE_CHUNK * 2:
+                    f.seek(size // 2)
+                    digest.update(f.read(_ASR_SAMPLE_CHUNK))
+                if size > _ASR_SAMPLE_CHUNK:
+                    f.seek(max(size - _ASR_SAMPLE_CHUNK, 0))
+                    digest.update(f.read(_ASR_SAMPLE_CHUNK))
     except OSError as e:
         raise SpeechRecognitionError(f"读取视频内容失败（无法计算缓存键）: {e}") from e
-    stem = re.sub(r"[^\w.-]+", "_", video.stem)[:40] or "video"
-    return f"{stem}-{digest.hexdigest()[:12]}-{method_name}.srt"
+    # 缓存键不含文件名/路径：选点与切片、不同 project_id 保存的文件名不同，
+    # 若带上 stem（project_id / input_video）会导致同一视频在不同任务间无法命中缓存，
+    # 每次都要重新 ASR。这里用「文件大小 + 采样内容哈希 + ASR 方式」作为纯内容标识，
+    # 同一源视频无论以何文件名、在选点或切片中都会命中同一缓存。
+    return f"{size}-{digest.hexdigest()[:12]}-{method_name}.srt"
 
 
 def _asr_cache_get(cache_key: str) -> Optional[str]:
@@ -318,13 +341,38 @@ async def _run_pipeline(project_id: str, steps: list[int],
                         end_time: Optional[float] = None,
                         frame_analysis: Optional[bool] = None,
                         frame_analysis_provider: Optional[str] = None,
+                        frame_analysis_model: Optional[str] = None,
+                        frame_vision_base: Optional[str] = None,
+                        frame_vision_key: Optional[str] = None,
+                        llm_api_base: Optional[str] = None,
+                        llm_api_key: Optional[str] = None,
                         model_name: Optional[str] = None,
                         llm_provider: Optional[str] = None) -> None:
     proj = projects.get(project_id)
     if not proj:
         return
 
+    # 系统设置 llm_config / frame_analysis_config 的运行时覆盖：
+    # 把下发的网关地址/密钥/视觉模型临时写入环境变量（本次运行期间有效），
+    # 供 llm_providers / vision_llm_client 等读环境变量的模块使用；结束时恢复，避免影响后续运行。
+    _env_snapshot: dict = {}
+    _overrides = {
+        "LLM_API_BASE": llm_api_base,
+        "LLM_API_KEY": llm_api_key,
+        "FRAME_ANALYSIS_MODEL": frame_analysis_model,
+    }
+    # 画面理解在线视觉网关地址/密钥（未单独下发时复用 llm_api_base / llm_api_key）
+    if frame_vision_base:
+        _overrides["LLM_API_BASE"] = frame_vision_base
+    if frame_vision_key:
+        _overrides["LLM_API_KEY"] = frame_vision_key
+
     try:
+        for _k, _v in _overrides.items():
+            if _v is not None and str(_v).strip():
+                _env_snapshot[_k] = os.environ.get(_k)
+                os.environ[_k] = str(_v).strip()
+
         # 运行时覆盖选点模型（来自系统设置 default_autoclip_config / 请求参数），不落盘
         if model_name:
             get_llm_manager().set_runtime_model(model_name, llm_provider)
@@ -383,6 +431,9 @@ async def _run_pipeline(project_id: str, steps: list[int],
             run_step3_scoring, meta_dir / "step2_timeline.json", meta_dir, None, PROMPT_FILES,
             frame_analysis_enabled=frame_analysis,
             frame_analysis_provider=frame_analysis_provider,
+            frame_analysis_model=frame_analysis_model,
+            frame_vision_base=frame_vision_base,
+            frame_vision_key=frame_vision_key,
             highlight_mode=bool(cfg.get("highlight_mode", False)),
             highlight_max_duration=float(cfg.get("highlight_max_duration") or 10.0))
         _update_progress(proj, "running", 80,
@@ -440,6 +491,14 @@ async def _run_pipeline(project_id: str, steps: list[int],
         _fail(proj, str(e))
     except Exception as e:
         _fail(proj, f"流水线执行失败: {e}")
+    finally:
+        # 恢复本次运行时覆盖的环境变量，避免影响后续选点运行
+        for _k, _v in _env_snapshot.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
+        _env_snapshot.clear()
 
 
 # ----------------------- 对外 API -----------------------
@@ -709,6 +768,16 @@ class PipelineRun(BaseModel):
     frame_analysis: Optional[bool] = None
     # 画面理解视觉模型提供商（`ollama`/`llm`）：None 时回退环境变量 FRAME_ANALYSIS_PROVIDER
     frame_analysis_provider: Optional[str] = None
+    # 画面理解在线视觉模型名（来自系统设置 frame_analysis_config）：None 时回退环境变量 FRAME_ANALYSIS_MODEL
+    frame_analysis_model: Optional[str] = None
+    # 画面理解在线视觉网关地址（来自系统设置 frame_analysis_config）：None 时回退环境变量 LLM_API_BASE
+    frame_vision_base: Optional[str] = None
+    # 画面理解在线视觉密钥（来自系统设置 frame_analysis_config）：None 时回退环境变量 LLM_API_KEY
+    frame_vision_key: Optional[str] = None
+    # 在线 LLM 网关地址（来自系统设置 llm_config）：None 时回退环境变量 LLM_API_BASE
+    llm_api_base: Optional[str] = None
+    # 在线 LLM 网关密钥（来自系统设置 llm_config）：None 时回退环境变量 LLM_API_KEY
+    llm_api_key: Optional[str] = None
     # 选点模型覆盖（来自系统设置 default_autoclip_config.llm_model / 请求参数）；
     # 指定后本次运行使用该模型，不修改磁盘上的用户配置
     model_name: Optional[str] = None
@@ -733,6 +802,11 @@ async def pipeline_run(data: PipelineRun):
         end_time=data.end_time,
         frame_analysis=data.frame_analysis,
         frame_analysis_provider=data.frame_analysis_provider,
+        frame_analysis_model=data.frame_analysis_model,
+        frame_vision_base=data.frame_vision_base,
+        frame_vision_key=data.frame_vision_key,
+        llm_api_base=data.llm_api_base,
+        llm_api_key=data.llm_api_key,
         model_name=data.model_name,
         llm_provider=data.llm_provider,
     ))

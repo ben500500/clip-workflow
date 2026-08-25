@@ -47,6 +47,42 @@ async def _merge_default_autoclip_config(db, config: Optional[dict]) -> dict:
             base = dict(cfg.value)
     except Exception as e:
         logger.warning("读取系统设置 default_autoclip_config 失败，使用请求参数: %s", e)
+
+    # 并入在线 LLM 网关配置（llm_config）：把 llm_api_base / llm_model / llm_api_key
+    # 平铺进选点 config，供 trigger_pipeline 透传给 AutoClip 覆盖环境变量。
+    try:
+        result = await db.execute(
+            select(SystemConfig).where(SystemConfig.key == "llm_config")
+        )
+        llm_cfg = result.scalar_one_or_none()
+        if llm_cfg and isinstance(llm_cfg.value, dict):
+            for k, v in llm_cfg.value.items():
+                if v not in (None, ""):
+                    base.setdefault(k, v)
+    except Exception as e:
+        logger.warning("读取系统设置 llm_config 失败，使用请求参数: %s", e)
+
+    # 并入画面理解配置（frame_analysis_config）：把 provider/model/vision_base/vision_api_key
+    # 平铺进选点 config，供 trigger_pipeline 透传给 AutoClip。
+    try:
+        result = await db.execute(
+            select(SystemConfig).where(SystemConfig.key == "frame_analysis_config")
+        )
+        fa_cfg = result.scalar_one_or_none()
+        if fa_cfg and isinstance(fa_cfg.value, dict):
+            fa_val = dict(fa_cfg.value)
+            # provider -> frame_analysis_provider（与现有前端字段对齐）
+            if fa_val.get("provider"):
+                base.setdefault("frame_analysis_provider", fa_val["provider"])
+            if fa_val.get("model"):
+                base.setdefault("frame_analysis_model", fa_val["model"])
+            if fa_val.get("vision_base"):
+                base.setdefault("vision_base", fa_val["vision_base"])
+            if fa_val.get("vision_api_key"):
+                base.setdefault("vision_api_key", fa_val["vision_api_key"])
+    except Exception as e:
+        logger.warning("读取系统设置 frame_analysis_config 失败，使用请求参数: %s", e)
+
     if not isinstance(config, dict):
         config = {}
     merged = dict(base)
