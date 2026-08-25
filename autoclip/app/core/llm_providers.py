@@ -97,8 +97,9 @@ class DashScopeProvider(LLMProvider):
         super().__init__(api_key, model_name, **kwargs)
         # 模式切换: native (SDK Generation.call) | compatible (OpenAI兼容)
         self.mode = (kwargs.get("mode") or os.getenv("DASHSCOPE_MODE") or "native").lower()
-        # 兼容模式 base_url
-        self.base_url = kwargs.get("base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        # 兼容模式 base_url（优先 kwargs -> LLM_API_BASE 环境变量 -> 默认阿里 DashScope）
+        default_base = os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
+        self.base_url = kwargs.get("base_url", default_base)
         # 原生模式 SDK
         self._ds_generation = None
         if self.mode == "native":
@@ -252,7 +253,12 @@ class OpenAIProvider(LLMProvider):
         super().__init__(api_key, model_name, **kwargs)
         try:
             import openai
-            self.client = openai.OpenAI(api_key=api_key)
+            # 支持自定义 base_url（兼容 Agnes / 硅基流动等 OpenAI 兼容网关）
+            self.base_url = kwargs.get("base_url", os.getenv("LLM_API_BASE", "")) or None
+            if self.base_url:
+                self.client = openai.OpenAI(api_key=api_key, base_url=self.base_url)
+            else:
+                self.client = openai.OpenAI(api_key=api_key)
         except ImportError:
             raise ImportError("请安装openai: pip install openai")
     

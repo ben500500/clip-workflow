@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -326,6 +326,41 @@ async def upload_hook_folder(
         "items": uploaded,
         "errors": errors,
     }
+
+
+@router.get("/slice/raw-preview")
+async def get_raw_preview_url(
+    file_key: str = Query(..., description="raw-footage 桶内的文件 key（封面/钩子视频/角标等）"),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """为 raw-footage 桶内的已上传文件生成临时 presigned URL，供前端悬停预览封面/钩子视频。
+
+    仅允许解析本桶内的文件，且 file_key 必须是上传类前缀（badge/ 封面角标、hook/ 钩子、
+    subtitle/ 字幕等），避免泄露任意对象路径。返回内联可播放/可显示的 URL。
+    """
+    key = (file_key or "").strip()
+    # 规范化并拒绝路径穿越（仅允许 raw-footage 桶内、形如 <前缀>/<文件名> 的相对 key）
+    if not key or key.startswith("/") or ".." in key.split("/"):
+        raise HTTPException(status_code=400, detail="非法的 file_key")
+    top = key.split("/", 1)[0]
+    allowed_prefixes = {"badge", "hook", "subtitle", "raw-footage"}
+    if top not in allowed_prefixes:
+        raise HTTPException(status_code=400, detail="仅支持预览已上传的封面/钩子/角标/字幕等文件")
+
+    try:
+        url = await get_presigned_url(
+            settings.MINIO_BUCKET_RAW,
+            key,
+            expires_seconds=3600,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("raw-preview 生成 presigned URL 失败: %s", e)
+        raise HTTPException(status_code=404, detail="文件不存在或无法访问")
+
+    if not url:
+        raise HTTPException(status_code=404, detail="文件不存在或无法访问")
+    return {"file_key": key, "url": url}
 
 
 async def upload_subtitle_file(

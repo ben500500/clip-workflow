@@ -74,6 +74,8 @@ export interface SlicePreset {
   min_clip_duration?: number | null;
   max_clip_duration?: number | null;
   frame_analysis?: boolean;
+  // 画面理解视觉模型提供商：`ollama`（本地 MiniCPM-V）/ `llm`（在线 OpenAI 兼容视觉模型）
+  frame_analysis_provider?: string;
   highlight_mode?: boolean;
   highlight_max_duration?: number;
   auto_autoclip_if_empty?: boolean;

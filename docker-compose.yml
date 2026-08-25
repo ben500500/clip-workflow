@@ -203,6 +203,7 @@ services:
       <<: *common-env
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       API_MODEL_NAME: ${API_MODEL_NAME:-qwen-plus}
+      LLM_API_BASE: ${LLM_API_BASE:-}
       DASHSCOPE_MODE: ${DASHSCOPE_MODE:-compatible}
       SERVICE_MODE: api
       # 解耦模式提速：autoclip 多进程选点并发（1=单进程，建议 2~3 发挥并行价值；
@@ -218,6 +219,11 @@ services:
       WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
       # 画面理解（Frame Analysis）：本地 Ollama 视觉模型，容器内经 clip-network 直达
       FRAME_ANALYSIS_ENABLED: ${FRAME_ANALYSIS_ENABLED:-false}
+      FRAME_ANALYSIS_PROVIDER: ${FRAME_ANALYSIS_PROVIDER:-ollama}
+      # 在线视觉模型（FRAME_ANALYSIS_PROVIDER=llm 时启用，如 Agnes agnes-2.0-flash）
+      LLM_API_BASE: ${LLM_API_BASE:-https://apihub.agnes-ai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      FRAME_ANALYSIS_MODEL: ${FRAME_ANALYSIS_MODEL:-agnes-2.0-flash}
       OLLAMA_HOST: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-openbmb/minicpm-v4.6}
       FRAME_ANALYSIS_PER_CLIP: ${FRAME_ANALYSIS_PER_CLIP:-2}

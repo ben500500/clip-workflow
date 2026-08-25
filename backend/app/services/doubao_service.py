@@ -823,7 +823,7 @@ class DoubaoGenerator:
             f"【平台拒绝原因】\n{reason}\n\n"
             "请直接输出改写后的提示词全文："
         )
-        url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        url = os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         payload = {
             "model": model,

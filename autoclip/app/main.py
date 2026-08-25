@@ -317,6 +317,7 @@ async def _run_pipeline(project_id: str, steps: list[int],
                         start_time: Optional[float] = None,
                         end_time: Optional[float] = None,
                         frame_analysis: Optional[bool] = None,
+                        frame_analysis_provider: Optional[str] = None,
                         model_name: Optional[str] = None,
                         llm_provider: Optional[str] = None) -> None:
     proj = projects.get(project_id)
@@ -381,6 +382,7 @@ async def _run_pipeline(project_id: str, steps: list[int],
         scored = await asyncio.to_thread(
             run_step3_scoring, meta_dir / "step2_timeline.json", meta_dir, None, PROMPT_FILES,
             frame_analysis_enabled=frame_analysis,
+            frame_analysis_provider=frame_analysis_provider,
             highlight_mode=bool(cfg.get("highlight_mode", False)),
             highlight_max_duration=float(cfg.get("highlight_max_duration") or 10.0))
         _update_progress(proj, "running", 80,
@@ -705,6 +707,8 @@ class PipelineRun(BaseModel):
     end_time: Optional[float] = None
     # 画面理解（MiniCPM-V）开关：None 时回退到环境变量 FRAME_ANALYSIS_ENABLED
     frame_analysis: Optional[bool] = None
+    # 画面理解视觉模型提供商（`ollama`/`llm`）：None 时回退环境变量 FRAME_ANALYSIS_PROVIDER
+    frame_analysis_provider: Optional[str] = None
     # 选点模型覆盖（来自系统设置 default_autoclip_config.llm_model / 请求参数）；
     # 指定后本次运行使用该模型，不修改磁盘上的用户配置
     model_name: Optional[str] = None
@@ -728,6 +732,7 @@ async def pipeline_run(data: PipelineRun):
         start_time=data.start_time,
         end_time=data.end_time,
         frame_analysis=data.frame_analysis,
+        frame_analysis_provider=data.frame_analysis_provider,
         model_name=data.model_name,
         llm_provider=data.llm_provider,
     ))

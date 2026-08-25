@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Space, Typography, Spin, Alert, Breadcrumb, Descriptions, Tag, message, Select, Row, Col, Progress,
   Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input, Table, Upload, Image as AntImage, Radio, ColorPicker,
-  Checkbox, Modal, Cascader,
+  Checkbox, Modal, Cascader, Popover,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
@@ -24,6 +24,107 @@ import { WATERMARK_STYLE_OPTIONS, WATERMARK_STYLE_LABEL } from '../utils/waterma
 import { DEFAULT_SLICE_PRESET, SLICE_ACTIVE_PRESET_KEY, SLICE_PRESET_STORAGE_KEY, loadPresetList, persistPresets, type SlicePreset } from '../utils/slicePresets';
 
 const { Title, Text, Paragraph } = Typography;
+
+// ─── 悬停预览（封面图 / 钩子视频） ───────────────────────────
+// 鼠标移到文件名上时，延迟打开 Popover 并懒加载对应 file_key 的临时预览 URL。
+// 图片用 <img> 显示、视频用 <video> 自动播放，松开/移开即收起。
+// 传单个 fileKey 显示单条预览；传 fileKeys 数组（钩子文件夹）按网格展示全部视频预览。
+function FileHoverPreview({
+  fileKey,
+  fileKeys,
+  kind,
+  children,
+}: {
+  fileKey?: string | null;
+  fileKeys?: Array<string | null>;
+  kind: 'image' | 'video';
+  children: React.ReactNode;
+}) {
+  const keys = fileKeys && fileKeys.length > 0 ? fileKeys : fileKey ? [fileKey] : [];
+  const [urls, setUrls] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const fetchedRef = useRef<string | null>(null);
+
+  const signature = keys.join('\u0001');
+  const ensureUrls = async () => {
+    if (fetchedRef.current === signature) return;
+    fetchedRef.current = signature;
+    setLoading(true);
+    try {
+      const entries = await Promise.all(
+        keys.map(async (k) => {
+          if (!k) return null;
+          try {
+            const res = await sliceApi.getRawPreviewUrl(k);
+            return { k, url: res.url };
+          } catch {
+            return { k, url: null };
+          }
+        }),
+      );
+      const map: Record<string, string> = {};
+      entries.forEach((e) => { if (e && e.url) map[e.k] = e.url; });
+      setUrls(map);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o) ensureUrls();
+      }}
+      trigger="hover"
+      mouseEnterDelay={0.25}
+      mouseLeaveDelay={0.1}
+      content={
+        <div style={{ maxWidth: 400, maxHeight: 280, overflow: 'auto' }}>
+          {loading ? (
+            <div style={{ width: 240, height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Spin size="small" />
+            </div>
+          ) : keys.length === 0 ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>预览不可用</Text>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {keys.map((k, idx) =>
+                urls[k as string] ? (
+                  kind === 'image' ? (
+                    <img
+                      key={k as string}
+                      src={urls[k as string]}
+                      alt={`预览 ${idx + 1}`}
+                      style={{ maxWidth: 360, maxHeight: 240, display: 'block', objectFit: 'contain' }}
+                    />
+                  ) : (
+                    <video
+                      key={k as string}
+                      src={urls[k as string]}
+                      controls
+                      autoPlay
+                      muted
+                      style={{ maxWidth: 360, maxHeight: 240, display: 'block', background: '#000' }}
+                    />
+                  )
+                ) : (
+                  <Text key={k as string} type="secondary" style={{ fontSize: 12 }}>
+                    第 {idx + 1} 个：预览不可用
+                  </Text>
+                ),
+              )}
+            </div>
+          )}
+        </div>
+      }
+    >
+      {children}
+    </Popover>
+  );
+}
 
 // ─── 切片模式说明 ─────────────────────────────────────
 const SLICE_MODE_HELP: Record<string, { label: string; desc: string; detail: string }> = {
@@ -336,6 +437,8 @@ const EpisodeDetail: React.FC = () => {
   const [maxClipDuration, setMaxClipDuration] = useState<number | null>(null);
   // 画面理解（MiniCPM-V 本地视觉模型）：AI 选点时对候选片段抽帧分析画面，辅助打分，默认开启
   const [frameAnalysis, setFrameAnalysis] = useState(true);
+  // 画面理解视觉模型提供商：`ollama`（本地）/ `llm`（在线 OpenAI 兼容视觉模型如 Agnes）
+  const [frameAnalysisProvider, setFrameAnalysisProvider] = useState('ollama');
   // ── 高光识别（AI 选点找出多段 ≤10s 的短高光片段）──
   const [highlightMode, setHighlightMode] = useState(false);
   // 高光单段最大时长（秒，默认 10）：仅保留不超过该时长的短高光
@@ -542,6 +645,7 @@ const EpisodeDetail: React.FC = () => {
     min_clip_duration: minClipDuration ?? null,
     max_clip_duration: maxClipDuration ?? null,
     frame_analysis: frameAnalysis,
+    frame_analysis_provider: frameAnalysisProvider,
     highlight_mode: highlightMode,
     highlight_max_duration: highlightMode ? highlightMaxDuration : undefined,
     highlight_mix_enabled: highlightMixEnabled,
@@ -601,6 +705,7 @@ const EpisodeDetail: React.FC = () => {
     setMinClipDuration(p.min_clip_duration != null ? p.min_clip_duration : null);
     setMaxClipDuration(p.max_clip_duration != null ? p.max_clip_duration : null);
     setFrameAnalysis(p.frame_analysis ?? true);
+    setFrameAnalysisProvider(p.frame_analysis_provider ?? 'ollama');
     setHighlightMode(p.highlight_mode ?? false);
     if (p.highlight_mode && p.highlight_max_duration != null) setHighlightMaxDuration(p.highlight_max_duration);
     setHighlightMixEnabled(p.highlight_mix_enabled ?? false);
@@ -643,6 +748,7 @@ const EpisodeDetail: React.FC = () => {
     autoclip_min_duration: minClipDuration,
     autoclip_max_duration: maxClipDuration,
     autoclip_frame_analysis: frameAnalysis,
+    autoclip_frame_analysis_provider: frameAnalysisProvider,
     autoclip_highlight_mode: highlightMode,
     autoclip_highlight_max_duration: highlightMaxDuration,
   });
@@ -657,6 +763,7 @@ const EpisodeDetail: React.FC = () => {
     if (typeof cfg.autoclip_min_duration === 'number') setMinClipDuration(cfg.autoclip_min_duration);
     if (typeof cfg.autoclip_max_duration === 'number') setMaxClipDuration(cfg.autoclip_max_duration);
     if (typeof cfg.autoclip_frame_analysis === 'boolean') setFrameAnalysis(cfg.autoclip_frame_analysis);
+    if (typeof cfg.autoclip_frame_analysis_provider === 'string') setFrameAnalysisProvider(cfg.autoclip_frame_analysis_provider);
     if (typeof cfg.autoclip_highlight_mode === 'boolean') setHighlightMode(cfg.autoclip_highlight_mode);
     if (typeof cfg.autoclip_highlight_max_duration === 'number') setHighlightMaxDuration(cfg.autoclip_highlight_max_duration);
     // 应用云端个人配置时保留用户当前激活的预设 id（从 localStorage 读），
@@ -952,6 +1059,7 @@ const EpisodeDetail: React.FC = () => {
         min_duration: minClipDuration ?? undefined,
         max_duration: maxClipDuration ?? undefined,
         frame_analysis: frameAnalysis,
+        frame_analysis_provider: frameAnalysisProvider,
         highlight_mode: highlightMode,
         highlight_max_duration: highlightMode ? highlightMaxDuration : undefined,
       });
@@ -1168,6 +1276,7 @@ const EpisodeDetail: React.FC = () => {
         min_duration: c.min_duration != null ? Number(c.min_duration) : undefined,
         max_duration: c.max_duration != null ? Number(c.max_duration) : undefined,
         frame_analysis: typeof c.frame_analysis === 'boolean' ? c.frame_analysis : undefined,
+        frame_analysis_provider: typeof c.frame_analysis_provider === 'string' ? c.frame_analysis_provider : undefined,
         highlight_mode: typeof c.highlight_mode === 'boolean' ? c.highlight_mode : undefined,
         highlight_max_duration: c.highlight_max_duration != null ? Number(c.highlight_max_duration) : undefined,
       };
@@ -1178,6 +1287,7 @@ const EpisodeDetail: React.FC = () => {
       min_duration: minClipDuration ?? undefined,
       max_duration: maxClipDuration ?? undefined,
       frame_analysis: frameAnalysis,
+      frame_analysis_provider: frameAnalysisProvider,
       highlight_mode: highlightMode,
       highlight_max_duration: highlightMode ? highlightMaxDuration : undefined,
     };
@@ -1620,7 +1730,7 @@ const EpisodeDetail: React.FC = () => {
     }
     if (clips != null) parts.push(`个数 ${clips}`);
     if (score != null) parts.push(`评分 ${score}`);
-    if (frame != null) parts.push(`画面理解 ${frame ? '开' : '关'}`);
+    if (frame != null) parts.push(`画面理解 ${frame ? '开' : '关'}${c.frame_analysis_provider === 'llm' ? '·在线' : '·本地'}`);
     if (parts.length === 0) return <Text type="secondary" style={{ fontSize: 12 }}>默认</Text>;
     return (
       <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'pre-line' }}>
@@ -1702,9 +1812,21 @@ const EpisodeDetail: React.FC = () => {
             <Space size={4} align="center">
               <Switch size="small" checked={frameAnalysis} onChange={setFrameAnalysis} />
               <Text strong style={{ fontSize: 12 }}>画面理解</Text>
-              <Tooltip title="开启后，AI 选点会对候选片段进行画面理解（抽帧送本地 MiniCPM-V 视觉模型分析场景/动作/情绪/精彩度），结合台词综合打分。关闭则仅依据台词与文案判断。（默认开启）">
+              <Tooltip title="开启后，AI 选点会对候选片段进行画面理解（抽帧分析场景/动作/情绪/精彩度），结合台词综合打分。关闭则仅依据台词与文案判断。（默认开启）">
                 <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
               </Tooltip>
+              {frameAnalysis && (
+                <Select
+                  size="small"
+                  value={frameAnalysisProvider}
+                  onChange={setFrameAnalysisProvider}
+                  style={{ width: 100 }}
+                  options={[
+                    { value: 'ollama', label: '本地模型' },
+                    { value: 'llm', label: '在线模型' },
+                  ]}
+                />
+              )}
             </Space>
             <Space size={4} align="center">
               <Switch size="small" checked={highlightMode} onChange={setHighlightMode} />
@@ -1977,6 +2099,7 @@ const EpisodeDetail: React.FC = () => {
               </Button>
             </Upload>
             {coverImageKey && (
+              <FileHoverPreview fileKey={coverImageKey} kind="image">
               <Tag closable onClose={() => {
   setCoverImageKey(null);
   setCoverImageName(null);
@@ -1984,8 +2107,9 @@ const EpisodeDetail: React.FC = () => {
     console.error('清除剧集封面失败', err);
   });
 }}>
-                封面：{coverImageName || '已选择'}
+                  封面：{coverImageName || '已选择'}
               </Tag>
+              </FileHoverPreview>
             )}
           </Space>
           {/* 钩子视频文件夹（片头，可选）：选择整个文件夹，含多个钩子视频，切片时随机取一个作为片头，
@@ -2007,12 +2131,14 @@ const EpisodeDetail: React.FC = () => {
               <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
             </Tooltip>
             {hookVideoKeys.length > 0 && (
+              <FileHoverPreview fileKeys={hookVideoKeys} kind="video">
               <Tag closable onClose={() => {
   setHookVideoKeys([]);
   setHookVideoNames([]);
 }}>
-                钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
+                  钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
               </Tag>
+              </FileHoverPreview>
             )}
           </Space>
           {/* 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品 */}
@@ -3121,6 +3247,7 @@ const EpisodeDetail: React.FC = () => {
                 <Button size="small" icon={<PictureOutlined />} loading={coverUploading}>选择封面图片</Button>
               </Upload>
               {coverImageKey && (
+                <FileHoverPreview fileKey={coverImageKey} kind="image">
                 <Tag closable onClose={() => {
   setCoverImageKey(null);
   setCoverImageName(null);
@@ -3128,8 +3255,9 @@ const EpisodeDetail: React.FC = () => {
     console.error('清除剧集封面失败', err);
   });
 }}>
-                  封面：{coverImageName || '已选择'}
+                    封面：{coverImageName || '已选择'}
                 </Tag>
+                </FileHoverPreview>
               )}
             </Space>
           </div>
@@ -3152,12 +3280,14 @@ const EpisodeDetail: React.FC = () => {
                 <Button size="small" icon={<PlayCircleOutlined />} loading={hookUploading}>{hookVideoKeys.length > 0 ? '更换钩子文件夹' : '选择钩子文件夹'}</Button>
               </Upload>
               {hookVideoKeys.length > 0 && (
+                <FileHoverPreview fileKeys={hookVideoKeys} kind="video">
                 <Tag closable onClose={() => {
   setHookVideoKeys([]);
   setHookVideoNames([]);
 }}>
-                  钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
+                    钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
                 </Tag>
+                </FileHoverPreview>
               )}
             </Space>
           </div>
@@ -3208,6 +3338,18 @@ const EpisodeDetail: React.FC = () => {
             <Space wrap align="center" size={8} style={{ marginTop: 8 }}>
               <Switch size="small" checked={frameAnalysis} onChange={setFrameAnalysis} />
               <Text style={{ fontSize: 12 }}>画面理解（帧分析）</Text>
+              {frameAnalysis && (
+                <Select
+                  size="small"
+                  value={frameAnalysisProvider}
+                  onChange={setFrameAnalysisProvider}
+                  style={{ width: 100 }}
+                  options={[
+                    { value: 'ollama', label: '本地模型' },
+                    { value: 'llm', label: '在线模型' },
+                  ]}
+                />
+              )}
               <Switch size="small" checked={highlightMode} onChange={setHighlightMode} />
               <Text style={{ fontSize: 12 }}>高光识别模式</Text>
               {highlightMode && (

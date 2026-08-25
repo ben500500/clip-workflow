@@ -212,6 +212,13 @@ export const sliceApi = {
       cover_image_key: string | null;
     }>,
 
+  // 为已上传的封面/钩子/角标等 raw-footage 文件生成临时预览 URL（悬停预览用）
+  getRawPreviewUrl: (fileKey: string) =>
+    client.get('/slice/raw-preview', { params: { file_key: fileKey } }) as Promise<{
+      file_key: string;
+      url: string;
+    }>,
+
   // 上传字幕文件（srt/vtt）
   uploadSubtitle: (file: File, onProgress?: (percent: number) => void) => {
     const formData = new FormData();

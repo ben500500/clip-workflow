@@ -38,6 +38,7 @@ interface AutoClipConfig {
   min_duration: number;
   max_duration: number;
   frame_analysis: boolean;
+  frame_analysis_provider?: string;
 }
 // 通用区间检测配置
 interface IntervalConfig {
@@ -93,6 +94,7 @@ const DEFAULT_SLICE_CONFIG: SliceConfigState = {
     min_duration: 20,
     max_duration: 70,
     frame_analysis: true,
+    frame_analysis_provider: 'ollama',
   },
   interval: {
     enabled: true,
@@ -379,6 +381,7 @@ const BatchSlicePage: React.FC = () => {
           min_duration: sliceConfig.autoclip.min_duration,
           max_duration: sliceConfig.autoclip.max_duration,
           frame_analysis: sliceConfig.autoclip.frame_analysis,
+          frame_analysis_provider: sliceConfig.autoclip.frame_analysis_provider,
         },
         // 通用区间检测：配置并入 interval_config / interval_enabled
         interval_enabled: sliceConfig.interval.enabled,
@@ -872,6 +875,18 @@ const BatchSlicePage: React.FC = () => {
                   checked={sliceConfig.autoclip.frame_analysis}
                   onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, frame_analysis: v } })}
                 />
+                {sliceConfig.autoclip.frame_analysis && (
+                  <Select
+                    size="small"
+                    value={sliceConfig.autoclip.frame_analysis_provider}
+                    onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, frame_analysis_provider: v } })}
+                    style={{ width: 100 }}
+                    options={[
+                      { value: 'ollama', label: '本地模型' },
+                      { value: 'llm', label: '在线模型' },
+                    ]}
+                  />
+                )}
               </>
             )}
           </Space>
