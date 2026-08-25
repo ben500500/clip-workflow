@@ -388,9 +388,11 @@ async def _run_pipeline(project_id: str, steps: list[int],
 
         # 时长硬性规整（2026-08-25）：LLM 提示词仅软约束，这里确定性兜底——
         # > max_duration 的片段拆分为 ≤max_duration；< min_duration 的过短片段丢弃。
+        # 注意：step2/step3 的 start_time/end_time 是 SRT 字符串（"00:02:00,500"）而非秒数，
+        # 必须用 _srt_time_to_seconds 转换，直接 float() 会炸（2026-08-25 实测选点失败根因）。
         for c in scored:
-            if c.get("duration") is None:
-                c["duration"] = round(float(c.get("end_time") or 0) - float(c.get("start_time") or 0), 3)
+            c["duration"] = round(
+                _srt_time_to_seconds(c.get("end_time") or 0) - _srt_time_to_seconds(c.get("start_time") or 0), 3)
         min_dur_cfg = float(cfg.get("min_duration") or 0)
         max_dur_cfg = float(cfg.get("max_duration") or 0)
         if max_dur_cfg > 0:
@@ -400,7 +402,7 @@ async def _run_pipeline(project_id: str, steps: list[int],
                 _update_progress(proj, "running", 80,
                                  f"时长硬性规整：{before} 个超长片段拆分为 {len(scored)} 个 ≤{max_dur_cfg:.0f}s 片段")
         if min_dur_cfg > 0:
-            keep = [c for c in scored if float(c.get("duration") or 0) >= min_dur_cfg]
+            keep = [c for c in scored if _srt_time_to_seconds(c.get("duration") or 0) >= min_dur_cfg]
             if len(keep) != len(scored):
                 _update_progress(proj, "running", 80,
                                  f"时长硬性规整：过滤 {len(scored) - len(keep)} 个 <{min_dur_cfg:.0f}s 的过短片段")
@@ -764,8 +766,8 @@ def _split_overlong_clips(clips: list, max_dur: float) -> list:
         return clips
     out: list = []
     for c in clips:
-        s = float(c.get("start_time") or 0)
-        e = float(c.get("end_time") or 0)
+        s = _srt_time_to_seconds(c.get("start_time") or 0)
+        e = _srt_time_to_seconds(c.get("end_time") or 0)
         dur = e - s
         if dur <= max_dur + 0.5:
             out.append(c)
