@@ -522,6 +522,18 @@ const ProjectDetail: React.FC = () => {
     );
   };
 
+  // 读取本集已选的钩子视频 key（EpisodeDetail 选择后持久化在 localStorage.hook_video_<episodeId>）
+  const readEpisodeHookKey = (episodeId: string): string | undefined => {
+    try {
+      const raw = localStorage.getItem(`hook_video_${episodeId}`);
+      if (raw) {
+        const o = JSON.parse(raw) as { key?: string };
+        return o?.key || undefined;
+      }
+    } catch { /* 忽略 */ }
+    return undefined;
+  };
+
   // 对单个剧集执行一次「一键切片」（提交即走：无候选时由后端自动补 AI 选点，关窗口安全）
   const runOneClickSlice = async (episode: Episode) => {
     const cfg = batchConfig;
@@ -542,6 +554,8 @@ const ProjectDetail: React.FC = () => {
       dedupe_config: cfg.mode === 'dedupe' ? { preset: cfg.dedupePreset } : undefined,
       // 视频封面：使用该集独立封面（按剧集存储；为空时引擎用源视频首帧）
       cover_image_key: episode.cover_image_key || undefined,
+      // 钩子视频：读取剧集钩子选择（EpisodeDetail 持久化到 localStorage.hook_video_<episodeId>）
+      hook_video_key: readEpisodeHookKey(episode.id),
       // 输出档位：高分辨率/高 fps 素材降档提速
       output_tier: cfg.outputTier || 'auto',
     });
@@ -573,6 +587,8 @@ const ProjectDetail: React.FC = () => {
       message.success(`已为 ${selected.length} 个剧集启动一键切片，完成后可到「成品预览」Tab 查看结果`);
     }
     setSliceModalOpen(false);
+    // 提交后立即刷新剧集列表，任务状态（排队/运行中）即时可见，无需手动刷新页面
+    void fetchData(true);
   };
 
   if (loading) {

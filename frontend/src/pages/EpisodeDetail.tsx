@@ -153,10 +153,38 @@ const EpisodeDetail: React.FC = () => {
     return false;
   };
   // ── 钩子视频（作为片头拼接在封面与本体之间，一键切片时下发） ──
-  // 钩子是临时素材，不按剧集持久化，仅随本次切片请求透传。
+  // 钩子选择按剧集持久化到 localStorage（刷新/切换页面不丢失，一键切片同浏览器同剧集可复用）。
   const [hookVideoKey, setHookVideoKey] = useState<string | null>(null);
   const [hookVideoName, setHookVideoName] = useState<string | null>(null);
   const [hookUploading, setHookUploading] = useState(false);
+
+  // 钩子选择持久化：变化时写 localStorage（key 为空则清除）
+  useEffect(() => {
+    if (!episodeId) return;
+    const k = `hook_video_${episodeId}`;
+    try {
+      if (hookVideoKey) {
+        localStorage.setItem(k, JSON.stringify({ key: hookVideoKey, name: hookVideoName || null }));
+      } else {
+        localStorage.removeItem(k);
+      }
+    } catch { /* 忽略存储异常 */ }
+  }, [hookVideoKey, hookVideoName, episodeId]);
+
+  // 页面加载恢复本集已选的钩子
+  useEffect(() => {
+    if (!episodeId) return;
+    try {
+      const raw = localStorage.getItem(`hook_video_${episodeId}`);
+      if (raw) {
+        const o = JSON.parse(raw);
+        if (o && o.key) {
+          setHookVideoKey(o.key);
+          setHookVideoName(o.name || null);
+        }
+      }
+    } catch { /* 忽略 */ }
+  }, [episodeId]);
 
   const handleHookUpload = async (file: File) => {
     setHookUploading(true);
