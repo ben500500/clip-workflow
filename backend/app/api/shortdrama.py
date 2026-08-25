@@ -683,10 +683,14 @@ async def update_shortdrama_prompt_templates(
     long_tpl = data.long if data.long is not None else current["long"]
     short_tpl = data.short if data.short is not None else current["short"]
 
-    # 校验 / 补齐占位符，避免模板保存后文案丢失
-    if PLACEHOLDER_VIDEO_TEXT not in (long_tpl or ""):
+    # 空模板 = 恢复默认（_load 时回退内置默认模板）；仅对非空模板补齐占位符，
+    # 避免「恢复默认」把占位符 [视频文案] 误存为模板内容（2026-08-25 线上事故：
+    # system_config.shortdrama_prompt_templates 被存成 {"long":"[视频文案]",...}）。
+    long_tpl = (long_tpl or "").strip()
+    short_tpl = (short_tpl or "").strip()
+    if long_tpl and PLACEHOLDER_VIDEO_TEXT not in long_tpl:
         long_tpl = f"{long_tpl}\n{PLACEHOLDER_VIDEO_TEXT}"
-    if PLACEHOLDER_VIDEO_TEXT not in (short_tpl or ""):
+    if short_tpl and PLACEHOLDER_VIDEO_TEXT not in short_tpl:
         short_tpl = f"{short_tpl}\n{PLACEHOLDER_VIDEO_TEXT}"
 
     templates = {"long": long_tpl.strip(), "short": short_tpl.strip()}
