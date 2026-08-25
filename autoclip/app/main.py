@@ -408,6 +408,13 @@ async def _run_pipeline(project_id: str, steps: list[int],
                                  f"时长硬性规整：过滤 {len(scored) - len(keep)} 个 <{min_dur_cfg:.0f}s 的过短片段")
                 scored = keep
 
+        # 规整后无条件重写 step3 结果 json，供 step4 标题生成读取：
+        # 否则 step4 仍读旧 json（未拆分原始片段），落库全是超长片段——
+        # 2026-08-25 实测：5 个超长拆成 10 个 ≤max_clips 时旧代码不重写 json，
+        # 候选表里仍是 79~105s 原始片段。
+        with open(meta_dir / "step3_high_score_clips.json", "w", encoding="utf-8") as f:
+            json.dump(scored, f, ensure_ascii=False, indent=2)
+
         # 切片数量控制：按 final_score 降序取 top-N，并重写 step3 结果供 step4 使用
         if max_clips and max_clips > 0 and len(scored) > max_clips:
             scored = sorted(scored, key=lambda c: c.get("final_score", 0), reverse=True)[:max_clips]
