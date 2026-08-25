@@ -3876,11 +3876,14 @@ def apply_cover_first_frame(video_path: str, cover_path: str, out_path: str,
         run_ffmpeg(cmd, timeout=3600, threads=threads)
         if not os.path.isfile(cover_jpg):
             return
-        # 封面片段：-loop 读封面帧 -> trim 到 cover_dur -> 归一化匹配源视频参数
+        # 封面片段：-loop 读封面帧 -> fps 补帧到目标帧率 -> trim=end_frame=1 只留第 1 帧
+        # （帧级精确单帧：fps=30 下单帧时长 1/30≈0.033s，肉眼不可感知）。
+        # 顺序必须 fps 在前 trim 在后：fps 滤镜按输入流时长（-t 1 = 1s）补帧，
+        # 若 trim=duration=cover_dur 在前会失效，实测封面被补成整 1 秒（2026-08-25）。
         cv = (
             f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
-            f"crop={w}:{h},setsar=1,trim=duration={cover_dur},setpts=PTS-STARTPTS,"
-            f"{fps_arg},format=yuv420p[cv]"
+            f"crop={w}:{h},setsar=1,{fps_arg},trim=end_frame=1,setpts=PTS-STARTPTS,"
+            f"format=yuv420p[cv]"
         )
         # 源视频也归一化到与封面片段一致（分辨率/帧率/像素格式），保证 concat 可拼接
         # 源视频也归一化到与封面片段一致（分辨率/帧率/像素格式/SAR），保证 concat 可拼接。
