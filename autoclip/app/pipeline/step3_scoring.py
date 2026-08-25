@@ -27,6 +27,9 @@ class ClipScorer:
     def __init__(self, prompt_files: Dict = None, metadata_dir: Path = None,
                  frame_analysis_enabled: Optional[bool] = None,
                  frame_analysis_provider: Optional[str] = None,
+                 frame_analysis_model: Optional[str] = None,
+                 frame_vision_base: Optional[str] = None,
+                 frame_vision_key: Optional[str] = None,
                  highlight_mode: bool = False,
                  highlight_max_duration: float = 10.0):
         self.llm_client = LLMClient()
@@ -37,6 +40,10 @@ class ClipScorer:
         self.highlight_max_duration = float(highlight_max_duration or 10.0)
         # 画面理解视觉模型提供商（ollama 本地 / llm 在线），透传给 frame_analyzer
         self.frame_analysis_provider = (frame_analysis_provider or "").strip() or None
+        # 画面理解在线视觉模型运行时配置（来自系统设置 frame_analysis_config），透传给 frame_analyzer
+        self.frame_analysis_model = (frame_analysis_model or "").strip() or None
+        self.frame_vision_base = (frame_vision_base or "").strip() or None
+        self.frame_vision_key = (frame_vision_key or "").strip() or None
 
         # 台词回填依赖的 SRT 分块目录（Step1 产出）
         if metadata_dir is None:
@@ -127,7 +134,11 @@ class ClipScorer:
             if self.frame_analysis_enabled:
                 try:
                     frame_map = self._analyze_timeline_frames(
-                        clips, self.video_path, provider=self.frame_analysis_provider,
+                        clips, self.video_path,
+                        provider=self.frame_analysis_provider,
+                        vision_model=self.frame_analysis_model,
+                        vision_base=self.frame_vision_base,
+                        vision_key=self.frame_vision_key,
                     )
                     if frame_map:
                         logger.info(f"画面分析完成，{len(frame_map)}/{len(clips)} 个片段获得画面描述")
@@ -312,7 +323,7 @@ class ClipScorer:
             json.dump(scored_clips, f, ensure_ascii=False, indent=2)
         logger.info(f"评分结果已保存到: {output_path}")
 
-def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None, frame_analysis_enabled: Optional[bool] = None, frame_analysis_provider: Optional[str] = None, highlight_mode: bool = False, highlight_max_duration: float = 10.0) -> List[Dict]:
+def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None, frame_analysis_enabled: Optional[bool] = None, frame_analysis_provider: Optional[str] = None, frame_analysis_model: Optional[str] = None, frame_vision_base: Optional[str] = None, frame_vision_key: Optional[str] = None, highlight_mode: bool = False, highlight_max_duration: float = 10.0) -> List[Dict]:
     """
     运行Step 3: 内容评分与筛选
     
@@ -322,6 +333,9 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
         prompt_files: 自定义提示词文件
         frame_analysis_enabled: 画面理解（MiniCPM-V）开关，None 时回退到环境变量
         frame_analysis_provider: 画面理解视觉模型提供商（`ollama`/`llm`），None 时回退环境变量
+        frame_analysis_model: 在线视觉模型名（可选，优先级高于环境变量 FRAME_ANALYSIS_MODEL）
+        frame_vision_base: 在线视觉网关地址（可选，优先级高于环境变量 LLM_API_BASE）
+        frame_vision_key: 在线视觉密钥（可选，优先级高于环境变量 LLM_API_KEY）
         highlight_mode: 高光识别开关，开启时找出多段 ≤highlight_max_duration 的短高光
         highlight_max_duration: 高光单段最大时长（秒，默认 10）
         
@@ -344,6 +358,9 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
     scorer = ClipScorer(prompt_files, metadata_dir,
                         frame_analysis_enabled=frame_analysis_enabled,
                         frame_analysis_provider=frame_analysis_provider,
+                        frame_analysis_model=frame_analysis_model,
+                        frame_vision_base=frame_vision_base,
+                        frame_vision_key=frame_vision_key,
                         highlight_mode=highlight_mode,
                         highlight_max_duration=highlight_max_duration)
     

@@ -61,7 +61,7 @@ class ProfileResponse(BaseModel):
 
 
 CONFIG_DESCRIPTIONS: Dict[str, str] = {
-    "default_autoclip_config": "AI 智能选点默认参数：min_score_threshold 为入选最低评分(0-100)；max_clips 为最多生成的候选片段数；min_duration/max_duration 为候选片段的最短/最长时长(秒)，超出范围的高光片段会被裁剪或过滤。",
+    "default_autoclip_config": "AI 智能选点默认参数：llm_provider 为 LLM 提供商(dashscope/openai)；llm_model 为选点用模型名；min_score_threshold 为入选最低评分(0-100)；max_clips 为最多生成的候选片段数；min_duration/max_duration 为候选片段的最短/最长时长(秒)，超出范围的高光片段会被裁剪或过滤。模型名/提供商在此修改即可切换 AI 选点所用模型。",
     "default_dedupe_config": "默认去重参数（新四层体系）：preset 为基础档位(light/standard/heavy)；manual 可逐项覆盖各去重手段（crop/hflip/speed/saturation/gamma/contrast/brightness/colorbalance/colortemperature/noise/scanline/vignette/roll_band/jitter/sharpen/watermark），未填 manual 时沿用 preset 预设。用于切片时降低平台查重风险。",
     "default_interval_config": "区间检测默认参数：mode 为检测模式(credits 片尾字幕/static 静止画面/watermark 水印)；scan_window 扫描窗口(秒)；frame_interval 抽帧间隔(秒)；static_threshold 静止画面判定阈值；gold_ratio_threshold 黄金比例阈值；min_static_duration 静止画面最短持续时间(秒)。",
     "storage_retention_days": "素材与成品文件保留天数，超过该时限的临时文件会被自动清理。",
@@ -75,6 +75,8 @@ CONFIG_DESCRIPTIONS: Dict[str, str] = {
     "default_download_resolution": "资源下载默认分辨率：720p 或 1080p（默认 720p）。下载视频资源入库时按该分辨率统一缩放，节省存储并适配各平台主流清晰度。",
     "lan_source_config": "局域网获取剧集配置（JSON）：enabled 为总开关（默认 false，开启后剧目详情页显示「局域网获取剧集」面板）；base_url 为 dupload cdn 源基础地址；manage_base 为 IAA 管理平台基础地址（可选，提供剧目清单）；api_prefix 为剧集清单接口路径前缀（可选）；download_timeout 为单集拉流整体超时(秒)；queue 为导入任务队列；default_project 为默认入库归属项目名；concurrency 为每集 HTTP 下载并发数。可在系统设置热更，无需改 .env。",
     "dupload_config": "推送到下载平台(dupload)配置（JSON）：enabled 为总开关（默认 false，开启后剧目详情页出现「推送到下载平台」区块）；base_url 为 dupload 服务基础地址（默认 http://192.168.1.21:8800）；import_path 为批量导入接口路径（默认 /api/dupload/tasks）；action 为动作（only_download 仅下载 / upload_miniapp 上传小程序，默认 only_download）；share_url_field 为剧目模型里素材链接(shareUrl)的字段名（默认 material_link）；request_timeout 为单次请求超时(秒)；work_host 可选指定推送的单个主机(字符串)，work_hosts 可选指定推送的主机列表(数组)，均未配置时默认拉取 dupload 全部 hosts 逐台推送；app_secret 可选(按 workHost 匹配，缺省时尝试从 hosts 接口探测，否则传空串)；cp_id 为批量导入接口必填字段（POST /api/dupload/tasks 公开无鉴权，缺任一返回 422，保存后 app_secret 不回显）；auth_headers 为附加鉴权请求头(JSON，可放 Authorization/Cookie 等，保存后不回显，接口公开时可留空)。可在系统设置热更，无需改 .env。",
+    "llm_config": "在线 LLM 网关配置（JSON）：llm_api_base 为 OpenAI 兼容网关地址（默认 Agnes https://apihub.agnes-ai.com/v1，可换成 DashScope 等）；llm_model 为选点 LLM 模型名（可选，优先级高于 default_autoclip_config.llm_model）；llm_api_key 为网关密钥（**建议配置在部署侧 .env 的 LLM_API_KEY**，此处留空则沿用环境变量，避免密钥明文入库）。保存后即可在系统设置热更，无需重启。",
+    "frame_analysis_config": "画面理解（Frame Analysis）配置（JSON）：provider 为视觉模型提供商（ollama 本地 / llm 在线 OpenAI 兼容，默认 ollama）；model 为在线视觉模型名（默认 agnes-2.0-flash，支持图片理解）；vision_base 为在线视觉网关地址（默认 Agnes https://apihub.agnes-ai.com/v1）；vision_api_key 为在线视觉密钥（**建议配置在部署侧 .env 的 LLM_API_KEY**，此处留空则沿用环境变量）。provider 切到 llm 即走在线视觉模型，在线不可用自动回退本地 Ollama。保存后即可在系统设置热更，无需重启。",
 }
 
 
@@ -223,6 +225,25 @@ DEFAULT_CONFIGS: List[dict] = [
             "auth_headers": {},
         },
         "description": "推送到下载平台(dupload)配置（JSON）：enabled 为总开关（默认 false，开启后剧目详情页出现「推送到下载平台」区块）；base_url 为 dupload 服务基础地址（默认 http://192.168.1.21:8800）；import_path 为批量导入接口路径（默认 /api/dupload/tasks）；action 为动作（only_download 仅下载 / upload_miniapp 上传小程序，默认 only_download）；share_url_field 为剧目模型里素材链接(shareUrl)的字段名（默认 material_link）；request_timeout 为单次请求超时(秒)；work_host 可选指定推送的单个主机(字符串)，work_hosts 可选指定推送的主机列表(数组)，均未配置时默认拉取 dupload 全部 hosts 逐台推送；app_secret 可选(按 workHost 匹配，缺省时尝试从 hosts 接口探测，否则传空串)；cp_id 为批量导入接口必填字段（POST /api/dupload/tasks 公开无鉴权，缺任一返回 422，保存后 app_secret 不回显）；auth_headers 为附加鉴权请求头(JSON，可放 Authorization/Cookie 等，保存后不回显，接口公开时可留空)。配置保存后即时生效，无需重启。",
+    },
+    {
+        "key": "llm_config",
+        "value": {
+            "llm_api_base": "https://apihub.agnes-ai.com/v1",
+            "llm_model": "",
+            "llm_api_key": "",
+        },
+        "description": "在线 LLM 网关配置（JSON）：llm_api_base 为 OpenAI 兼容网关地址（默认 Agnes https://apihub.agnes-ai.com/v1，可换成 DashScope 等）；llm_model 为选点 LLM 模型名（可选，优先级高于 default_autoclip_config.llm_model）；llm_api_key 为网关密钥（**建议配置在部署侧 .env 的 LLM_API_KEY**，此处留空则沿用环境变量，避免密钥明文入库）。保存后即可在系统设置热更，无需重启。",
+    },
+    {
+        "key": "frame_analysis_config",
+        "value": {
+            "provider": "ollama",
+            "model": "agnes-2.0-flash",
+            "vision_base": "https://apihub.agnes-ai.com/v1",
+            "vision_api_key": "",
+        },
+        "description": "画面理解（Frame Analysis）配置（JSON）：provider 为视觉模型提供商（ollama 本地 / llm 在线 OpenAI 兼容，默认 ollama）；model 为在线视觉模型名（默认 agnes-2.0-flash，支持图片理解）；vision_base 为在线视觉网关地址（默认 Agnes https://apihub.agnes-ai.com/v1）；vision_api_key 为在线视觉密钥（**建议配置在部署侧 .env 的 LLM_API_KEY**，此处留空则沿用环境变量）。provider 切到 llm 即走在线视觉模型，在线不可用自动回退本地 Ollama。保存后即可在系统设置热更，无需重启。",
     },
 ]
 

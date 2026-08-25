@@ -136,6 +136,9 @@ def analyze_clip_frames(
     end_time: str,
     project_id: Optional[str] = None,
     provider: Optional[str] = None,
+    vision_model: Optional[str] = None,
+    vision_base: Optional[str] = None,
+    vision_key: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     分析单个候选片段的画面，返回结构化描述（合并该片段所有抽帧的结果）。
@@ -146,6 +149,9 @@ def analyze_clip_frames(
         end_time:   片段结束时间
         project_id: 项目 ID（用于日志，可选）
         provider:   视觉模型提供商（`ollama`/`llm`），None 时回退环境变量 FRAME_ANALYSIS_PROVIDER
+        vision_model: 在线视觉模型名（可选，优先级高于环境变量 FRAME_ANALYSIS_MODEL）
+        vision_base:  在线视觉网关地址（可选，优先级高于环境变量 LLM_API_BASE）
+        vision_key:   在线视觉密钥（可选，优先级高于环境变量 LLM_API_KEY）
 
     Returns:
         合并后的画面描述 dict；不可用/失败返回 None。
@@ -196,8 +202,10 @@ def analyze_clip_frames(
     eff_provider = (provider or FRAME_ANALYSIS_PROVIDER or "ollama").strip().lower()
     online_client = None
     if eff_provider in ("llm", "online"):
-        from ..core.vision_llm_client import get_vision_llm_client
-        online_client = get_vision_llm_client()
+        # 支持系统设置下发的运行时配置（vision_model/vision_base/vision_key），
+        # 未传时回退到环境变量（FRAME_ANALYSIS_MODEL / LLM_API_BASE / LLM_API_KEY）。
+        from ..core.vision_llm_client import VisionLLMClient
+        online_client = VisionLLMClient(base_url=vision_base, api_key=vision_key, model=vision_model)
         if not online_client.available:
             logger.warning("画面分析：在线视觉模型未配置（LLM_API_KEY/模型），回退本地 Ollama")
             online_client = None
@@ -254,6 +262,9 @@ def analyze_timeline_frames(
     project_id: Optional[str] = None,
     enabled: Optional[bool] = None,
     provider: Optional[str] = None,
+    vision_model: Optional[str] = None,
+    vision_base: Optional[str] = None,
+    vision_key: Optional[str] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     批量分析时间线中所有候选片段的画面。
@@ -261,6 +272,9 @@ def analyze_timeline_frames(
     Args:
         enabled: 画面理解开关，None 时回退到环境变量 FRAME_ANALYSIS_ENABLED
         provider: 视觉模型提供商（`ollama`/`llm`），None 时回退环境变量 FRAME_ANALYSIS_PROVIDER
+        vision_model: 在线视觉模型名（可选，优先级高于环境变量 FRAME_ANALYSIS_MODEL）
+        vision_base:  在线视觉网关地址（可选，优先级高于环境变量 LLM_API_BASE）
+        vision_key:   在线视觉密钥（可选，优先级高于环境变量 LLM_API_KEY）
 
     Returns:
         {片段 id: 画面描述} 映射；未开启/失败返回空 dict。
@@ -281,6 +295,9 @@ def analyze_timeline_frames(
             clip.get("end_time", ""),
             project_id,
             provider=provider,
+            vision_model=vision_model,
+            vision_base=vision_base,
+            vision_key=vision_key,
         )
         if desc:
             results[clip_id] = desc
