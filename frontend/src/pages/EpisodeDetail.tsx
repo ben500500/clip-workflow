@@ -536,6 +536,14 @@ const EpisodeDetail: React.FC = () => {
     dedupe_enabled: dedupeEnabled,
     dedupe_preset: dedupePreset,
     output_tier: outputTier,
+    // AI 智能选点参数（随预设持久化，缺失时按页面默认）
+    max_clips: maxClips,
+    min_score_threshold: minScoreThreshold ?? null,
+    min_clip_duration: minClipDuration ?? null,
+    max_clip_duration: maxClipDuration ?? null,
+    frame_analysis: frameAnalysis,
+    highlight_mode: highlightMode,
+    highlight_max_duration: highlightMode ? highlightMaxDuration : undefined,
     highlight_mix_enabled: highlightMixEnabled,
     highlight_mix_max_duration: highlightMixMaxDuration ?? undefined,
     highlight_mix_max_clip_duration: highlightMixMaxClipDuration ?? undefined,
@@ -587,6 +595,14 @@ const EpisodeDetail: React.FC = () => {
     setDedupeEnabled(p.dedupe_enabled ?? false);
     setDedupePreset(p.dedupe_preset ?? 'std_crop_desat');
     setOutputTier(p.output_tier ?? 'auto');
+    // AI 智能选点参数（预设优先，缺失回退页面默认）
+    setMaxClips(p.max_clips ?? 10);
+    setMinScoreThreshold(p.min_score_threshold != null ? p.min_score_threshold : null);
+    setMinClipDuration(p.min_clip_duration != null ? p.min_clip_duration : null);
+    setMaxClipDuration(p.max_clip_duration != null ? p.max_clip_duration : null);
+    setFrameAnalysis(p.frame_analysis ?? true);
+    setHighlightMode(p.highlight_mode ?? false);
+    if (p.highlight_mode && p.highlight_max_duration != null) setHighlightMaxDuration(p.highlight_max_duration);
     setHighlightMixEnabled(p.highlight_mix_enabled ?? false);
     setHighlightMixMaxDuration(p.highlight_mix_max_duration ?? null);
     setHighlightMixMaxClipDuration(p.highlight_mix_max_clip_duration ?? null);
@@ -3163,6 +3179,40 @@ const EpisodeDetail: React.FC = () => {
                 ]}
               />
               <Text type="secondary" style={{ fontSize: 12 }}>降档后编码耗时显著下降（预计 1/3 以下）</Text>
+            </Space>
+          </div>
+
+          {/* ── AI 智能选点 ── */}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
+            <Space wrap align="center" size={8} style={{ marginBottom: 8 }}>
+              <CheckCircleOutlined />
+              <Text strong style={{ fontSize: 13 }}>AI 智能选点</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>一键切片自动补选点时按此参数生成候选片段（与主页「AI 智能选点」参数同步）</Text>
+            </Space>
+            <Space wrap align="center" size={8}>
+              <Text style={{ fontSize: 12 }}>选点上限</Text>
+              <InputNumber size="small" min={1} max={20} style={{ width: 70 }} value={maxClips} onChange={(v) => setMaxClips(v ?? 10)} />
+              <Text style={{ fontSize: 12 }}>最短时长</Text>
+              <InputNumber size="small" min={0} style={{ width: 70 }} placeholder="不限" value={minClipDuration ?? undefined} onChange={(v) => setMinClipDuration(v ?? null)} />
+              <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
+              <Text style={{ fontSize: 12 }}>最长时长</Text>
+              <InputNumber size="small" min={1} style={{ width: 70 }} placeholder="不限" value={maxClipDuration ?? undefined} onChange={(v) => setMaxClipDuration(v ?? null)} />
+              <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
+              <Text style={{ fontSize: 12 }}>最低分数</Text>
+              <InputNumber size="small" min={0} max={100} style={{ width: 70 }} placeholder="不限" value={minScoreThreshold ?? undefined} onChange={(v) => setMinScoreThreshold(v ?? null)} />
+            </Space>
+            <Space wrap align="center" size={8} style={{ marginTop: 8 }}>
+              <Switch size="small" checked={frameAnalysis} onChange={setFrameAnalysis} />
+              <Text style={{ fontSize: 12 }}>画面理解（帧分析）</Text>
+              <Switch size="small" checked={highlightMode} onChange={setHighlightMode} />
+              <Text style={{ fontSize: 12 }}>高光识别模式</Text>
+              {highlightMode && (
+                <>
+                  <Text style={{ fontSize: 12 }}>高光单段上限</Text>
+                  <InputNumber size="small" min={3} max={60} style={{ width: 70 }} value={highlightMaxDuration} onChange={(v) => setHighlightMaxDuration(v ?? 10)} />
+                  <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
+                </>
+              )}
             </Space>
           </div>
 

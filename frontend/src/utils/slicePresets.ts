@@ -68,6 +68,15 @@ export interface SlicePreset {
   dedupe_preset: string;
   // 输出档位（高分辨率/高 fps 素材降档提速）：original=不处理 / auto=自动降档 / 1080p / 720p / 480p
   output_tier: string;
+  // AI 智能选点参数（可选：旧预设无，缺失时按页面默认）
+  max_clips?: number;
+  min_score_threshold?: number | null;
+  min_clip_duration?: number | null;
+  max_clip_duration?: number | null;
+  frame_analysis?: boolean;
+  highlight_mode?: boolean;
+  highlight_max_duration?: number;
+  auto_autoclip_if_empty?: boolean;
   // 高光混剪（把入选高光段按源时间顺序混剪拼接为一个成品）
   highlight_mix_enabled: boolean;
   // 输出总时长上限（秒，可选）：累计各高光段不超过该值，最后一段会超额时丢弃
