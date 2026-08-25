@@ -128,6 +128,9 @@ export const sliceApi = {
       cover_image_key?: string;
       // 钩子视频：作为片头拼接在封面首帧与本体之间（[封面][钩子][本体]，MinIO key，通过 uploadHook 上传）
       hook_video_key?: string;
+      // 钩子视频文件夹：选择整个文件夹，含多个钩子视频（MinIO key 列表，通过 uploadHookFolder 上传）。
+      // 切片时每个成品随机从文件夹中取一个钩子作为片头。优先于 hook_video_key。
+      hook_video_keys?: string[];
       // 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品
       highlight_mix_enabled?: boolean;
       // 输出总时长上限（秒）：累计各高光段不超过该值，最后一段会超额时丢弃
@@ -176,6 +179,27 @@ export const sliceApi = {
         }
       },
     }) as Promise<BadgeUploadResult>;
+  },
+
+  // 上传整个钩子视频文件夹（多个视频，切片时随机组合）。
+  // 返回每个视频的 file_key 列表，前端作为 hook_video_keys 传入切片请求。
+  uploadHookFolder: (files: File[], onProgress?: (percent: number) => void) => {
+    const formData = new FormData();
+    files.forEach((f) => formData.append('files', f));
+    return client.post('/slice/hook-folder-upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 3600000,
+      onUploadProgress: (progressEvent) => {
+        if (onProgress && progressEvent.total) {
+          const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          onProgress(percent);
+        }
+      },
+    }) as Promise<{
+      folder_id: string;
+      items: Array<{ file_name: string; file_key: string; file_size: number }>;
+      errors: string[];
+    }>;
   },
 
   // 更新剧集封面（按剧集独立存储，作为切片首帧叠加；传 null 清除该集封面）

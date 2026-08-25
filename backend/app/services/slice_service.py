@@ -150,6 +150,7 @@ async def run_slice(
     cover_path: Optional[str] = None,
     output_tier: Optional[str] = None,
     hook_path: Optional[str] = None,
+    hook_paths: Optional[list] = None,
     task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run the ffmpeg slice engine.
@@ -209,8 +210,14 @@ async def run_slice(
         cmd.extend(["--watermark-mask", json.dumps(watermark_mask_config)])
     if cover_path:
         cmd.extend(["--cover", cover_path])
-    if hook_path:
-        cmd.extend(["--hook", hook_path])
+    # 钩子视频：文件夹方式（多个）优先，否则回退到单钩子。
+    # 引擎把每个 --hook 作为可选项，对每个成品切片随机取一个作为片头。
+    hook_list = list(hook_paths or [])
+    if not hook_list and hook_path:
+        hook_list = [hook_path]
+    for hp in hook_list:
+        cmd.extend(["--hook", hp])
+    if hook_list:
         # 钩子注入所有切片片段：每个候选片段都带 [封面][钩子][本体] 片头（2026-08-25 需求）
         cmd.append("--hook-all")
     if output_tier:
@@ -247,6 +254,7 @@ async def run_slice_scrub(
     cover_path: Optional[str] = None,
     output_tier: Optional[str] = None,
     hook_path: Optional[str] = None,
+    hook_paths: Optional[list] = None,
     task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run scrub-mode slicing (cutlist minus removed intervals)."""
@@ -278,6 +286,7 @@ async def run_slice_scrub(
         cover_path=cover_path,
         output_tier=output_tier,
         hook_path=hook_path,
+        hook_paths=hook_paths,
         task_id=task_id,
     )
 
@@ -309,6 +318,7 @@ async def run_slice_fast(
     cover_path: Optional[str] = None,
     output_tier: Optional[str] = None,
     hook_path: Optional[str] = None,
+    hook_paths: Optional[list] = None,
     task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run fast/dedupe mode slicing."""
@@ -342,6 +352,7 @@ async def run_slice_fast(
         cover_path=cover_path,
         output_tier=output_tier,
         hook_path=hook_path,
+        hook_paths=hook_paths,
         task_id=task_id,
     )
 

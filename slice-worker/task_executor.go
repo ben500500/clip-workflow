@@ -173,9 +173,19 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		args = append(args, "--cover", task.Cover.Path)
 	}
 
-	// 钩子视频：作为片头拼接在封面与本体之间（后端下发 hook URL，Worker 已下载到本地 path）
-	if task.Hook.Path != "" {
-		args = append(args, "--hook", task.Hook.Path)
+	// 钩子视频：作为片头拼接在封面与本体之间（后端下发 hook URL，Worker 已下载到本地 path）。
+	// 支持多个钩子（文件夹方式），全部透传给引擎 --hook，引擎每个成品切片随机取一个。
+	hookArgs := 0
+	for _, h := range task.Hooks {
+		if h.Path == "" {
+			continue
+		}
+		args = append(args, "--hook", h.Path)
+		hookArgs++
+	}
+	// 钩子注入所有切片片段：每个候选片段都带 [封面][钩子][本体] 片头
+	if hookArgs > 0 {
+		args = append(args, "--hook-all")
 	}
 
 	// ASR 字幕烧录：把后端下发的 SRT 内容写到本地文件，透传给引擎 --subtitle

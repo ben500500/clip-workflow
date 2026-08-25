@@ -12,6 +12,7 @@ Prints OUTPUT:<name>:<duration> and PROGRESS:<pct> lines to stdout.
 import argparse
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -4104,8 +4105,9 @@ def main():
     )
     parser.add_argument(
         "--hook",
+        action="append",
         default=None,
-        help="钩子视频路径（可选）。将钩子视频作为片头，拼接在封面首帧与本体视频之间（[封面][钩子][本体]）。无封面时顺序为 [钩子][本体]。钩子与本体经同一次 concat 归一化，只重编码一次",
+        help="钩子视频路径（可选，可重复）。将钩子视频作为片头，拼接在封面首帧与本体视频之间（[封面][钩子][本体]）。传多个时每个成品切片随机取一个（随机组合）",
     )
     parser.add_argument(
         "--hook-target",
@@ -4449,28 +4451,27 @@ def main():
     hook_part_path = None
     hook_target_key = None
     hook_dur = 0.0
-    if args.hook:
-        if not os.path.isfile(args.hook):
-            print(f"警告: 钩子视频文件不存在，跳过钩子拼接: {args.hook}", file=sys.stderr)
+    # 钩子视频：--hook 可重复传入多个路径（文件夹方式，切片时随机组合）。
+    # 过滤出不存在的文件，保留有效钩子列表。
+    hook_paths = [h for h in (args.hook or []) if os.path.isfile(h)]
+    if (args.hook or []) and not hook_paths:
+        print("警告: 所有钩子视频文件均不存在，跳过钩子拼接", file=sys.stderr)
+    if hook_paths:
+        if not groups:
+            print("警告: 无任何切片分组，跳过钩子拼接", file=sys.stderr)
+            hook_paths = []
+        elif args.hook_all:
+            # 钩子注入所有切片组（每个候选片段都带钩子片头，与封面行为对齐）
+            print(f"钩子拼接: {len(hook_paths)} 个钩子（随机组合）-> 注入全部切片组 ({len(groups)} 组)", file=sys.stderr)
         else:
-            hook_dur = ffprobe_duration(args.hook)
-            if not hook_dur or hook_dur <= 0:
-                print(f"警告: 无法解析钩子视频时长，跳过钩子拼接: {args.hook}", file=sys.stderr)
-            elif not groups:
-                print("警告: 无任何切片分组，跳过钩子拼接", file=sys.stderr)
+            if args.hook_target and args.hook_target in groups:
+                hook_target_key = args.hook_target
             else:
-                if args.hook_all:
-                    # 钩子注入所有切片组（每个候选片段都带钩子片头，与封面行为对齐）
-                    print(f"钩子拼接: {os.path.basename(args.hook)} (时长 {hook_dur:.3f}s) -> 注入全部切片组 ({len(groups)} 组)", file=sys.stderr)
-                else:
-                    if args.hook_target and args.hook_target in groups:
-                        hook_target_key = args.hook_target
-                    else:
-                        # 未指定或指定不存在时，默认注入首个切片组
-                        hook_target_key = next(iter(groups))
-                        if args.hook_target:
-                            print(f"警告: 钩子目标切片名 '{args.hook_target}' 不存在，回退到首个切片组 '{hook_target_key}'", file=sys.stderr)
-                    print(f"钩子拼接: {os.path.basename(args.hook)} (时长 {hook_dur:.3f}s) -> 注入切片组 '{hook_target_key}'", file=sys.stderr)
+                # 未指定或指定不存在时，默认注入首个切片组
+                hook_target_key = next(iter(groups))
+                if args.hook_target:
+                    print(f"警告: 钩子目标切片名 '{args.hook_target}' 不存在，回退到首个切片组 '{hook_target_key}'", file=sys.stderr)
+            print(f"钩子拼接: {len(hook_paths)} 个钩子（随机组合）-> 注入切片组 '{hook_target_key}'", file=sys.stderr)
 
     # 字幕开启时，预计算源视频的语音（非静音）区间，用于"只在说话时显示字幕"。
     # 静音/停顿期间字幕自动隐藏，避免字幕一直挂在屏幕上。
@@ -4497,6 +4498,9 @@ def main():
                 # 到本体(源/档位)分辨率+帧率+像素格式，并强制本组 concat 走重编码。
                 if args.hook_all or name_key == hook_target_key:
                     hook_injected = True
+                    # 随机组合：每个成品切片从钩子文件夹中随机取一个钩子视频作为片头。
+                    hook_path = random.choice(hook_paths)
+                    hook_dur = ffprobe_duration(hook_path) or 0.0
                     hook_part = os.path.join(tmp, "part_0.mp4")
                     hook_w = tier_w or 1280
                     hook_h = tier_h or 720
@@ -4507,8 +4511,9 @@ def main():
                     )
                     if vf:
                         hook_vf = f"{hook_vf},{vf}"
-                    slice_segment(args.hook, 0.0, hook_dur, hook_part,
+                    slice_segment(hook_path, 0.0, hook_dur, hook_part,
                                   vf=hook_vf, af=af, threads=threads, encoder=encoder)
+                    print(f"钩子拼接: {os.path.basename(hook_path)} (时长 {hook_dur:.3f}s) -> 切片 '{name_key}'", file=sys.stderr)
                     parts.append(hook_part)
                     part_offset = 1
                 for i, (start, end, _) in enumerate(group):

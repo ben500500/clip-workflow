@@ -234,7 +234,97 @@ async def upload_hook_video(
     }
 
 
-@router.post("/slice/subtitle-upload")
+@router.post("/slice/hook-folder-upload")
+async def upload_hook_folder(
+    files: List[UploadFile] = File(...),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """上传整个钩子视频文件夹（多个视频），存入 MinIO（raw-footage 桶 hook/ 前缀）。
+
+    需求：钩子视频选择改成选择文件夹，文件夹中含多个钩子视频，切片时随机组合。
+    把所有文件统一存到同一个文件夹前缀 hook/<folder_id>/ 下，返回每个文件的
+    file_key；前端将其作为 hook_video_keys 列表传入切片请求，引擎在每个成品
+    切片时随机取一个钩子作为片头。
+    """
+    import posixpath
+
+    folder_id = str(uuid.uuid4())
+    allowed_video = {e.strip().lower() for e in settings.ALLOWED_VIDEO_EXTENSIONS.split(",")}
+    uploaded: list = []
+    errors: list = []
+
+    for file in files:
+        raw_name = file.filename or ""
+        safe_name = posixpath.basename(raw_name.replace("\\", "/")).strip()
+        if not safe_name:
+            continue
+        ext = os.path.splitext(safe_name)[1].lower()
+        if ext not in allowed_video:
+            errors.append(f"{safe_name}: 仅支持视频文件（{settings.ALLOWED_VIDEO_EXTENSIONS}）")
+            continue
+
+        local_path = f"/tmp/hook_upload/{folder_id}_{safe_name}"
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        size = 0
+        try:
+            with open(local_path, "wb") as out:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > settings.UPLOAD_MAX_SIZE:
+                        out.close()
+                        os.unlink(local_path)
+                        raise HTTPException(status_code=413, detail=f"文件超过大小上限: {safe_name}")
+                    out.write(chunk)
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{safe_name}: 读取失败 {e}")
+            if os.path.exists(local_path):
+                os.unlink(local_path)
+            continue
+
+        if size == 0:
+            if os.path.exists(local_path):
+                os.unlink(local_path)
+            errors.append(f"{safe_name}: 文件为空")
+            continue
+
+        # 整个文件夹统一存到同一前缀 hook/<folder_id>/ 下
+        file_key = f"hook/{folder_id}/{safe_name}"
+        ok = await upload_file_from_path(
+            settings.MINIO_BUCKET_RAW,
+            file_key,
+            local_path,
+            content_type=file.content_type or "video/mp4",
+        )
+        if os.path.exists(local_path):
+            os.unlink(local_path)
+        if not ok:
+            errors.append(f"{safe_name}: 上传存储失败")
+            continue
+        uploaded.append({
+            "file_name": safe_name,
+            "file_key": file_key,
+            "file_size": size,
+        })
+
+    if not uploaded:
+        raise HTTPException(
+            status_code=400,
+            detail="钩子文件夹中没有可用的视频文件" + (f"（{'；'.join(errors)}）" if errors else ""),
+        )
+
+    return {
+        "folder_id": folder_id,
+        "items": uploaded,
+        "errors": errors,
+    }
+
+
 async def upload_subtitle_file(
     file: UploadFile = File(...),
     current_user: Annotated[User, Depends(get_current_user)] = None,
@@ -711,7 +801,10 @@ async def _create_slice_task_record(
     slice_task.cover_image_key = cover_key or None
     # 钩子视频：作为片头拼接（[封面][钩子][本体]）。钩子是临时素材，不按剧集持久化，
     # 仅随本次切片请求透传（重试时保留）。
+    # 文件夹方式优先：勾选了文件夹（多个钩子）时保存 hook_video_keys 列表；
+    # 否则回退到单钩子 hook_video_key。
     slice_task.hook_video_key = data.hook_video_key or None
+    slice_task.hook_video_keys = data.hook_video_keys or None
     # 输出档位：高分辨率/高 fps 素材降档提速（重试时保留）
     slice_task.output_tier = data.output_tier or "auto"
 
@@ -777,6 +870,7 @@ async def _dispatch_slice_task(
             data.cover_image_key,
             data.output_tier,
             data.hook_video_key,
+            data.hook_video_keys,
         )
 
         if not published:
@@ -817,6 +911,7 @@ async def _dispatch_slice_task(
                 data.cover_image_key,
                 data.output_tier,
                 data.hook_video_key,
+                data.hook_video_keys,
             )
         except HTTPException:
             raise
@@ -847,6 +942,7 @@ async def _dispatch_slice_task(
                 data.cover_image_key,
                 data.output_tier,
                 data.hook_video_key,
+                data.hook_video_keys,
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
@@ -1392,6 +1488,7 @@ async def retry_slice_task(
         watermark_mask_config=task.watermark_mask_config,
         cover_image_key=task.cover_image_key,
         hook_video_key=getattr(task, "hook_video_key", None),
+        hook_video_keys=getattr(task, "hook_video_keys", None),
         output_tier=getattr(task, "output_tier", None) or "auto",
         status="pending",
         progress=0.0,
@@ -1427,6 +1524,7 @@ async def retry_slice_task(
             task.cover_image_key,
             getattr(task, "output_tier", None) or "auto",
             getattr(task, "hook_video_key", None),
+            getattr(task, "hook_video_keys", None),
         )
 
         if not published:
@@ -1464,6 +1562,7 @@ async def retry_slice_task(
                 task.cover_image_key,
                 getattr(task, "output_tier", None) or "auto",
                 getattr(task, "hook_video_key", None),
+                getattr(task, "hook_video_keys", None),
             )
         except HTTPException:
             raise
@@ -1496,6 +1595,7 @@ async def retry_slice_task(
                 task.cover_image_key,
                 getattr(task, "output_tier", None) or "auto",
                 getattr(task, "hook_video_key", None),
+                getattr(task, "hook_video_keys", None),
             )
         except Exception as e:
             new_task.status = "failed"
