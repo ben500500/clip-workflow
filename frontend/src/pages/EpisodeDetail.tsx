@@ -191,25 +191,6 @@ const EpisodeDetail: React.FC = () => {
     } catch { /* 忽略 */ }
   }, [episodeId]);
 
-  const handleHookUpload = async (file: File) => {
-    setHookUploading(true);
-    try {
-      const res = await sliceApi.uploadHook(file);
-      if (mountedRef.current) {
-        setHookVideoKey(res.file_key);
-        setHookVideoName(res.file_name);
-        message.success(`钩子视频已上传：${res.file_name}`);
-      }
-    } catch (err: unknown) {
-      if (mountedRef.current) {
-        message.error(err instanceof Error ? err.message : '钩子视频上传失败');
-      }
-    } finally {
-      if (mountedRef.current) setHookUploading(false);
-    }
-    return false;
-  };
-
   // 上传整个钩子视频文件夹（多个视频，切片时随机组合）
   const handleHookFolderUpload = async (files: File[]) => {
     if (!files || files.length === 0) return false;
