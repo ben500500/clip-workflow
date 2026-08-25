@@ -26,6 +26,8 @@ PROMPT_FILES = {
 # API 配置
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 MODEL_NAME = os.getenv("API_MODEL_NAME", "qwen-plus")
+# 在线 LLM 网关 base_url（OpenAI 兼容），如 Agnes：https://apihub.agnes-ai.com/v1
+LLM_API_BASE = os.getenv("LLM_API_BASE", "")
 
 # 画面理解（Frame Analysis）配置：本地 Ollama 视觉模型，默认关闭
 FRAME_ANALYSIS_ENABLED = os.getenv("FRAME_ANALYSIS_ENABLED", "false").strip().lower() in ("1", "true", "yes")
