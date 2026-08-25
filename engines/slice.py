@@ -4110,6 +4110,11 @@ def main():
         help="钩子注入的目标切片名（name）。默认自动取首个切片组，若指定则按 name 精确匹配并在其前拼接钩子视频",
     )
     parser.add_argument(
+        "--hook-all",
+        action="store_true",
+        help="钩子视频注入所有切片组：每个候选片段都拼 [封面][钩子][本体] 片头（默认仅注入首个切片组）",
+    )
+    parser.add_argument(
         "--output-tier",
         default="original",
         choices=OUTPUT_TIERS,
@@ -4451,14 +4456,18 @@ def main():
             elif not groups:
                 print("警告: 无任何切片分组，跳过钩子拼接", file=sys.stderr)
             else:
-                if args.hook_target and args.hook_target in groups:
-                    hook_target_key = args.hook_target
+                if args.hook_all:
+                    # 钩子注入所有切片组（每个候选片段都带钩子片头，与封面行为对齐）
+                    print(f"钩子拼接: {os.path.basename(args.hook)} (时长 {hook_dur:.3f}s) -> 注入全部切片组 ({len(groups)} 组)", file=sys.stderr)
                 else:
-                    # 未指定或指定不存在时，默认注入首个切片组
-                    hook_target_key = next(iter(groups))
-                    if args.hook_target:
-                        print(f"警告: 钩子目标切片名 '{args.hook_target}' 不存在，回退到首个切片组 '{hook_target_key}'", file=sys.stderr)
-                print(f"钩子拼接: {os.path.basename(args.hook)} (时长 {hook_dur:.3f}s) -> 注入切片组 '{hook_target_key}'", file=sys.stderr)
+                    if args.hook_target and args.hook_target in groups:
+                        hook_target_key = args.hook_target
+                    else:
+                        # 未指定或指定不存在时，默认注入首个切片组
+                        hook_target_key = next(iter(groups))
+                        if args.hook_target:
+                            print(f"警告: 钩子目标切片名 '{args.hook_target}' 不存在，回退到首个切片组 '{hook_target_key}'", file=sys.stderr)
+                    print(f"钩子拼接: {os.path.basename(args.hook)} (时长 {hook_dur:.3f}s) -> 注入切片组 '{hook_target_key}'", file=sys.stderr)
 
     # 字幕开启时，预计算源视频的语音（非静音）区间，用于"只在说话时显示字幕"。
     # 静音/停顿期间字幕自动隐藏，避免字幕一直挂在屏幕上。
@@ -4483,7 +4492,7 @@ def main():
                 # 若仅复用 vf(无去重/水印/降档时 vf 为空)会让钩子走流拷贝切片，与本体规格
                 # 不一致 -> concat demuxer 免重编码拼接产出混规格坏片。故钩子段始终显式归一化
                 # 到本体(源/档位)分辨率+帧率+像素格式，并强制本组 concat 走重编码。
-                if name_key == hook_target_key:
+                if args.hook_all or name_key == hook_target_key:
                     hook_injected = True
                     hook_part = os.path.join(tmp, "part_0.mp4")
                     hook_w = tier_w or 1280
@@ -4571,7 +4580,7 @@ def main():
                     # 否则字幕与语音/画面错位、末尾字幕超出视频时长而显示不全。
                     build_clip_subtitle(args.subtitle, seg_times, sub_srt, speech_windows,
                                         scale=dedupe_speed,
-                                        lead_offset=hook_dur if name_key == hook_target_key else 0.0)
+                                        lead_offset=hook_dur if (args.hook_all or name_key == hook_target_key) else 0.0)
                     sub_out = out_path + ".sub.mp4"
                     # 源字幕对齐：开启对齐开关且有源字幕打码时，把 ASR 字幕默认位置
                     # 对齐到检测到的打码区域（与被打掉的源字幕位置重合）。

@@ -211,6 +211,8 @@ async def run_slice(
         cmd.extend(["--cover", cover_path])
     if hook_path:
         cmd.extend(["--hook", hook_path])
+        # 钩子注入所有切片片段：每个候选片段都带 [封面][钩子][本体] 片头（2026-08-25 需求）
+        cmd.append("--hook-all")
     if output_tier:
         cmd.extend(["--output-tier", output_tier])
     logger.info("Running slice: %s", " ".join(cmd))
