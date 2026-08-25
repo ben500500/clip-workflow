@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from celery import Celery
 from celery.schedules import crontab
@@ -567,6 +567,7 @@ def slice_task(
     cover_image_key: Optional[str] = None,
     output_tier: Optional[str] = None,
     hook_video_key: Optional[str] = None,
+    hook_video_keys: Optional[List[str]] = None,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
@@ -641,20 +642,21 @@ def slice_task(
             else:
                 logger.warning("视频封面下载失败,忽略: %s", cover_image_key)
 
-        # 钩子视频:下载到本地,作为片头拼接([封面][钩子][本体])
-        hook_path = None
-        if hook_video_key:
-            hook_local = os.path.join(
-                output_dir, f"hook_{os.path.basename(hook_video_key)}"
-            )
-            ok = run_async(
-                download_to_file(settings.MINIO_BUCKET_RAW, hook_video_key, hook_local)
-            )
+        # 钩子视频:下载到本地,作为片头拼接([封面][钩子][本体])。
+        # 文件夹方式(多个)优先,否则回退到单钩子;引擎每个成品随机取一个。
+        hook_paths: list = []
+        hook_keys = list(hook_video_keys or [])
+        if not hook_keys and hook_video_key:
+            hook_keys = [hook_video_key]
+        for i, hk in enumerate(hook_keys):
+            hook_local = os.path.join(output_dir, f"hook_{i}_{os.path.basename(hk)}")
+            ok = run_async(download_to_file(settings.MINIO_BUCKET_RAW, hk, hook_local))
             if ok and os.path.isfile(hook_local):
-                hook_path = hook_local
+                hook_paths.append(hook_local)
                 logger.info("钩子视频已下载到本地: %s", hook_local)
             else:
-                logger.warning("钩子视频下载失败,忽略: %s", hook_video_key)
+                logger.warning("钩子视频下载失败,忽略: %s", hk)
+        hook_path = hook_paths[0] if hook_paths else None
 
         # 字幕烧录:把 ASR 生成的 SRT 写到本地文件,供引擎 --subtitle 使用
         subtitle_srt_path = None
@@ -771,6 +773,7 @@ def slice_task(
                     cover_path=cover_path,
                     output_tier=output_tier,
                     hook_path=hook_path,
+                    hook_paths=hook_paths,
                     task_id=task_id,
                 )
             )

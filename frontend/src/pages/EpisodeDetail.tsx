@@ -152,24 +152,25 @@ const EpisodeDetail: React.FC = () => {
     }
     return false;
   };
-  // ── 钩子视频（作为片头拼接在封面与本体之间，一键切片时下发） ──
+  // ── 钩子视频文件夹（作为片头拼接在封面与本体之间，一键切片时下发） ──
+  // 需求：钩子视频选择改成选择文件夹，文件夹中含多个钩子视频，切片时随机组合。
   // 钩子选择按剧集持久化到 localStorage（刷新/切换页面不丢失，一键切片同浏览器同剧集可复用）。
-  const [hookVideoKey, setHookVideoKey] = useState<string | null>(null);
-  const [hookVideoName, setHookVideoName] = useState<string | null>(null);
+  const [hookVideoKeys, setHookVideoKeys] = useState<string[]>([]);
+  const [hookVideoNames, setHookVideoNames] = useState<string[]>([]);
   const [hookUploading, setHookUploading] = useState(false);
 
-  // 钩子选择持久化：变化时写 localStorage（key 为空则清除）
+  // 钩子选择持久化：变化时写 localStorage（为空则清除）
   useEffect(() => {
     if (!episodeId) return;
     const k = `hook_video_${episodeId}`;
     try {
-      if (hookVideoKey) {
-        localStorage.setItem(k, JSON.stringify({ key: hookVideoKey, name: hookVideoName || null }));
+      if (hookVideoKeys.length > 0) {
+        localStorage.setItem(k, JSON.stringify({ keys: hookVideoKeys, names: hookVideoNames }));
       } else {
         localStorage.removeItem(k);
       }
     } catch { /* 忽略存储异常 */ }
-  }, [hookVideoKey, hookVideoName, episodeId]);
+  }, [hookVideoKeys, hookVideoNames, episodeId]);
 
   // 页面加载恢复本集已选的钩子
   useEffect(() => {
@@ -178,9 +179,13 @@ const EpisodeDetail: React.FC = () => {
       const raw = localStorage.getItem(`hook_video_${episodeId}`);
       if (raw) {
         const o = JSON.parse(raw);
-        if (o && o.key) {
-          setHookVideoKey(o.key);
-          setHookVideoName(o.name || null);
+        // 兼容旧版单钩子格式 {key, name}
+        if (o && Array.isArray(o.keys)) {
+          setHookVideoKeys(o.keys);
+          setHookVideoNames(Array.isArray(o.names) ? o.names : []);
+        } else if (o && o.key) {
+          setHookVideoKeys([o.key]);
+          setHookVideoNames(o.name ? [o.name] : []);
         }
       }
     } catch { /* 忽略 */ }
@@ -202,6 +207,50 @@ const EpisodeDetail: React.FC = () => {
     } finally {
       if (mountedRef.current) setHookUploading(false);
     }
+    return false;
+  };
+
+  // 上传整个钩子视频文件夹（多个视频，切片时随机组合）
+  const handleHookFolderUpload = async (files: File[]) => {
+    if (!files || files.length === 0) return false;
+    setHookUploading(true);
+    try {
+      const res = await sliceApi.uploadHookFolder(files);
+      if (mountedRef.current) {
+        if (res.items && res.items.length > 0) {
+          setHookVideoKeys(res.items.map((it) => it.file_key));
+          setHookVideoNames(res.items.map((it) => it.file_name));
+          message.success(`已上传 ${res.items.length} 个钩子视频，切片时随机组合`);
+        } else {
+          message.error('钩子文件夹中没有可用的视频文件');
+        }
+        if (res.errors && res.errors.length > 0) {
+          message.warning(`部分文件未上传：${res.errors.join('；')}`);
+        }
+      }
+    } catch (err: unknown) {
+      if (mountedRef.current) {
+        message.error(err instanceof Error ? err.message : '钩子文件夹上传失败');
+      }
+    } finally {
+      if (mountedRef.current) setHookUploading(false);
+    }
+    return false;
+  };
+
+  // 钩子文件夹选择：AntD Upload 在 directory 模式下会按文件逐个触发 beforeUpload，
+  // 这里把同一批选择的文件累积到 ref，稍后统一上传一次，避免重复上传。
+  const hookFilesRef = useRef<File[]>([]);
+  const hookUploadTimerRef = useRef<number | null>(null);
+  const collectHookFolderFiles = (file: File) => {
+    hookFilesRef.current.push(file);
+    if (hookUploadTimerRef.current) clearTimeout(hookUploadTimerRef.current);
+    hookUploadTimerRef.current = window.setTimeout(() => {
+      const files = hookFilesRef.current;
+      hookFilesRef.current = [];
+      hookUploadTimerRef.current = null;
+      if (files.length > 0) handleHookFolderUpload(files);
+    }, 300);
     return false;
   };
   // ── 切片自定义文字水印开关与参数 ──
@@ -1152,8 +1201,9 @@ const EpisodeDetail: React.FC = () => {
         autoclip_config: resolveAutoclipConfig(),
         // 视频封面：作为视频首帧
         cover_image_key: coverImageKey || undefined,
-        // 钩子视频：作为片头拼接在封面与本体之间（[封面][钩子][本体]）
-        hook_video_key: hookVideoKey || undefined,
+        // 钩子视频文件夹：作为片头拼接在封面与本体之间（[封面][钩子][本体]）；切片时随机取一个
+        hook_video_keys: hookVideoKeys.length > 0 ? hookVideoKeys : undefined,
+        hook_video_key: hookVideoKeys.length === 1 ? hookVideoKeys[0] : undefined,
         // 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品
         highlight_mix_enabled: highlightMixEnabled,
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
@@ -1342,7 +1392,8 @@ const EpisodeDetail: React.FC = () => {
         autoclip_config: resolveAutoclipConfig(),
         // 视频封面（首帧）：选择图片作为成品视频首帧（与一键切片共用同一封面选择）
         cover_image_key: coverImageKey || undefined,
-        hook_video_key: hookVideoKey || undefined,
+        hook_video_keys: hookVideoKeys.length > 0 ? hookVideoKeys : undefined,
+        hook_video_key: hookVideoKeys.length === 1 ? hookVideoKeys[0] : undefined,
         highlight_mix_enabled: highlightMixEnabled,
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
         highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
@@ -1936,25 +1987,30 @@ const EpisodeDetail: React.FC = () => {
               </Tag>
             )}
           </Space>
-          {/* 钩子视频（片头，可选）：选择视频作为片头，拼接在封面首帧与本体之间（[封面][钩子][本体]） */}
+          {/* 钩子视频文件夹（片头，可选）：选择整个文件夹，含多个钩子视频，切片时随机取一个作为片头，
+              拼接在封面首帧与本体之间（[封面][钩子][本体]） */}
           <Space wrap align="center" size={8}>
-            <Text strong style={{ fontSize: 13 }}>钩子视频（片头）</Text>
+            <Text strong style={{ fontSize: 13 }}>钩子视频（文件夹）</Text>
             <Upload
+              directory
               accept="video/*"
               showUploadList={false}
-              beforeUpload={(file) => handleHookUpload(file as File)}
+              beforeUpload={(file) => collectHookFolderFiles(file as File)}
               disabled={hookUploading}
             >
               <Button size="small" icon={<PlayCircleOutlined />} loading={hookUploading}>
-                {hookVideoKey ? '更换钩子' : '选择钩子视频'}
+                {hookVideoKeys.length > 0 ? '更换文件夹' : '选择钩子文件夹'}
               </Button>
             </Upload>
-            {hookVideoKey && (
+            <Tooltip title="选择整个文件夹，文件夹中的多个钩子视频会在切片时随机组合（每个成品随机取一个作为片头）。">
+              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+            </Tooltip>
+            {hookVideoKeys.length > 0 && (
               <Tag closable onClose={() => {
-  setHookVideoKey(null);
-  setHookVideoName(null);
+  setHookVideoKeys([]);
+  setHookVideoNames([]);
 }}>
-                钩子：{hookVideoName || '已选择'}
+                钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
               </Tag>
             )}
           </Space>
@@ -3077,28 +3133,29 @@ const EpisodeDetail: React.FC = () => {
             </Space>
           </div>
 
-          {/* ── 钩子视频（片头，可选） ── */}
+          {/* ── 钩子视频文件夹（片头，可选） ── */}
           <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
             <Space wrap align="center" size={8} style={{ marginBottom: 8 }}>
               <PlayCircleOutlined />
-              <Text strong style={{ fontSize: 13 }}>钩子视频（片头，可选）</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>选择一段视频作为片头，拼接在封面首帧与本体之间（[封面][钩子][本体]）；不选择则直接按源视频首帧出片</Text>
+              <Text strong style={{ fontSize: 13 }}>钩子视频（文件夹，可选）</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>选择整个文件夹（含多个钩子视频）作为片头，拼接在封面首帧与本体之间（[封面][钩子][本体]）；切片时每个成品随机取一个作为片头；不选择则直接按源视频首帧出片</Text>
             </Space>
             <Space wrap align="center" size={8}>
               <Upload
+                directory
                 accept="video/*"
                 showUploadList={false}
-                beforeUpload={(file) => handleHookUpload(file as File)}
+                beforeUpload={(file) => collectHookFolderFiles(file as File)}
                 disabled={hookUploading}
               >
-                <Button size="small" icon={<PlayCircleOutlined />} loading={hookUploading}>选择钩子视频</Button>
+                <Button size="small" icon={<PlayCircleOutlined />} loading={hookUploading}>{hookVideoKeys.length > 0 ? '更换钩子文件夹' : '选择钩子文件夹'}</Button>
               </Upload>
-              {hookVideoKey && (
+              {hookVideoKeys.length > 0 && (
                 <Tag closable onClose={() => {
-  setHookVideoKey(null);
-  setHookVideoName(null);
+  setHookVideoKeys([]);
+  setHookVideoNames([]);
 }}>
-                  钩子：{hookVideoName || '已选择'}
+                  钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
                 </Tag>
               )}
             </Space>

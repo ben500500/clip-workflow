@@ -174,6 +174,10 @@ class SliceRunRequest(BaseModel):
     # 视频作为片头拼接在封面首帧与本体视频之间（[封面][钩子][本体]）；无封面则
     # 顺序为 [钩子][本体]。可选。与封面同一次 concat 归一化，只重编码一次。
     hook_video_key: Optional[str] = None
+    # 钩子视频文件夹（可选）：选择整个文件夹，含多个钩子视频。值为 MinIO file_key
+    # 列表（通过 /slice/hook-folder-upload 上传）。切片时每个成品随机从文件夹中
+    # 取一个钩子作为片头。优先于 hook_video_key。
+    hook_video_keys: Optional[List[str]] = None
     # ── 高光混剪（AI 高光片段按源时间顺序混剪拼接为一个成品）──
     # 开启后，不再把每个 accepted 高光片段切成独立文件，而是把所有入选高光段按
     # 源视频内 start_time 升序、共用同一输出文件名生成 cutlist，引擎 groups 按
@@ -313,6 +317,8 @@ class SliceTaskResponse(BaseModel):
     watermark_mask_config: Optional[dict] = None
     text_overlays_config: Optional[list] = None
     output_tier: Optional[str] = None
+    hook_video_key: Optional[str] = None
+    hook_video_keys: Optional[list] = None
 
     model_config = {"from_attributes": True}
 
@@ -984,6 +990,7 @@ async def _publish_to_worker(
     cover_image_key: Optional[str] = None,
     output_tier: Optional[str] = None,
     hook_video_key: Optional[str] = None,
+    hook_video_keys: Optional[List[str]] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -1029,6 +1036,21 @@ async def _publish_to_worker(
                     "opacity": b.get("opacity"),
                 })
 
+    # 钩子视频：文件夹方式（多个）优先，否则回退到单钩子。为每个钩子生成
+    # presigned GET URL，Worker 下载后作为片头拼接（[封面][钩子][本体]）。
+    hook_urls: list = []
+    hook_keys = list(hook_video_keys or [])
+    if not hook_keys and hook_video_key:
+        hook_keys = [hook_video_key]
+    for hk in hook_keys:
+        url = await get_presigned_url(
+            settings.MINIO_BUCKET_RAW,
+            hk,
+            expires_seconds=7200,
+        )
+        if url:
+            hook_urls.append(url)
+
     # 每次任务生成独立的回调/上传鉴权 Token
     callback_token = secrets.token_hex(16)
 
@@ -1058,6 +1080,8 @@ async def _publish_to_worker(
         },
         # 视频封面（可选，Go Worker 下载图片后透传给引擎 --cover）
         "cover": {"url": cover_url or ""} if cover_url else None,
+        # 钩子视频列表（可选，Go Worker 下载后透传给引擎 --hook，引擎每个成品随机取一个）
+        "hook": [{"url": u} for u in hook_urls] if hook_urls else None,
         "cutlist": cutlist,
         "intervals": intervals_content,
         "dedupe_config": dedupe_config or {},
@@ -1132,6 +1156,7 @@ async def _dispatch_celery(
     cover_image_key: Optional[str] = None,
     output_tier: Optional[str] = None,
     hook_video_key: Optional[str] = None,
+    hook_video_keys: Optional[List[str]] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -1167,6 +1192,7 @@ async def _dispatch_celery(
         cover_image_key=cover_image_key,
         output_tier=output_tier or "auto",
         hook_video_key=hook_video_key,
+        hook_video_keys=hook_video_keys,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -1195,6 +1221,7 @@ async def _dispatch_local(
     cover_image_key: Optional[str] = None,
     output_tier: Optional[str] = None,
     hook_video_key: Optional[str] = None,
+    hook_video_keys: Optional[List[str]] = None,
 ) -> None:
     """单机同步执行切片引擎（SLICE_ENGINE=local）。
 
@@ -1297,17 +1324,22 @@ async def _dispatch_local(
             else:
                 logger.warning("视频封面下载失败，忽略: %s", cover_image_key)
 
-        # 钩子视频：下载到本地，作为片头拼接（[封面][钩子][本体]）
-        hook_path = None
-        if hook_video_key:
+        # 钩子视频：下载到本地，作为片头拼接（[封面][钩子][本体]）。
+        # 文件夹方式（多个）优先，否则回退到单钩子；引擎每个成品随机取一个。
+        hook_paths: list = []
+        hook_keys = list(hook_video_keys or [])
+        if not hook_keys and hook_video_key:
+            hook_keys = [hook_video_key]
+        for i, hk in enumerate(hook_keys):
             hook_local = os.path.join(
-                output_dir, f"hook_{os.path.basename(hook_video_key)}"
+                output_dir, f"hook_{i}_{os.path.basename(hk)}"
             )
-            ok = await download_to_file(settings.MINIO_BUCKET_RAW, hook_video_key, hook_local)
+            ok = await download_to_file(settings.MINIO_BUCKET_RAW, hk, hook_local)
             if ok and os.path.isfile(hook_local):
-                hook_path = hook_local
+                hook_paths.append(hook_local)
             else:
-                logger.warning("钩子视频下载失败，忽略: %s", hook_video_key)
+                logger.warning("钩子视频下载失败，忽略: %s", hk)
+        hook_path = hook_paths[0] if hook_paths else None
 
         # 字幕烧录：把 ASR 生成的 SRT 写到本地文件
         subtitle_srt_path = None
@@ -1373,6 +1405,7 @@ async def _dispatch_local(
                 cover_path=cover_path,
                 output_tier=output_tier,
                 hook_path=hook_path,
+                hook_paths=hook_paths,
                 task_id=task_id,
             )
         else:
@@ -1401,6 +1434,7 @@ async def _dispatch_local(
                 cover_path=cover_path,
                 output_tier=output_tier,
                 hook_path=hook_path,
+                hook_paths=hook_paths,
                 task_id=task_id,
             )
 

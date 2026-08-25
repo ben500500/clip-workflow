@@ -454,8 +454,9 @@ type SliceTask struct {
 	WatermarkMask map[string]interface{} `json:"watermark_mask"`
 	// 视频封面（可选，后端透传；Worker 下载图片后透传给引擎 --cover 参数，作为视频首帧）
 	Cover CoverItem `json:"cover"`
-	// 钩子视频（可选，后端透传；Worker 下载视频后透传给引擎 --hook 参数，作为片头拼接在封面与本体之间）
-	Hook HookItem `json:"hook"`
+	// 钩子视频列表（可选，后端透传；Worker 下载视频后透传给引擎 --hook 参数，
+	// 作为片头拼接在封面与本体之间；多个时引擎每个成品切片随机取一个）
+	Hooks []HookItem `json:"hook"`
 	// 输出档位（可选，后端透传；Worker 透传给引擎 --output-tier 参数，高分辨率/高 fps 素材降档提速）
 	OutputTier string `json:"output_tier"`
 	Output         TaskOutput             `json:"output"`

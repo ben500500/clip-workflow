@@ -522,16 +522,18 @@ const ProjectDetail: React.FC = () => {
     );
   };
 
-  // 读取本集已选的钩子视频 key（EpisodeDetail 选择后持久化在 localStorage.hook_video_<episodeId>）
-  const readEpisodeHookKey = (episodeId: string): string | undefined => {
+  // 读取本集已选的钩子视频 key 列表（EpisodeDetail 选择后持久化在 localStorage.hook_video_<episodeId>）。
+  // 兼容旧版单钩子格式 {key, name} 与新格式 {keys, names}。
+  const readEpisodeHookKeys = (episodeId: string): string[] => {
     try {
       const raw = localStorage.getItem(`hook_video_${episodeId}`);
       if (raw) {
-        const o = JSON.parse(raw) as { key?: string };
-        return o?.key || undefined;
+        const o = JSON.parse(raw) as { key?: string; keys?: string[] };
+        if (o && Array.isArray(o.keys) && o.keys.length > 0) return o.keys;
+        if (o && o.key) return [o.key];
       }
     } catch { /* 忽略 */ }
-    return undefined;
+    return [];
   };
 
   // 对单个剧集执行一次「一键切片」（提交即走：无候选时由后端自动补 AI 选点，关窗口安全）
@@ -554,8 +556,10 @@ const ProjectDetail: React.FC = () => {
       dedupe_config: cfg.mode === 'dedupe' ? { preset: cfg.dedupePreset } : undefined,
       // 视频封面：使用该集独立封面（按剧集存储；为空时引擎用源视频首帧）
       cover_image_key: episode.cover_image_key || undefined,
-      // 钩子视频：读取剧集钩子选择（EpisodeDetail 持久化到 localStorage.hook_video_<episodeId>）
-      hook_video_key: readEpisodeHookKey(episode.id),
+      // 钩子视频文件夹：读取剧集钩子选择（EpisodeDetail 持久化到 localStorage.hook_video_<episodeId>）。
+      // 含多个钩子时切片随机组合（每个成品随机取一个作为片头）。
+      hook_video_keys: readEpisodeHookKeys(episode.id).length > 0 ? readEpisodeHookKeys(episode.id) : undefined,
+      hook_video_key: readEpisodeHookKeys(episode.id).length === 1 ? readEpisodeHookKeys(episode.id)[0] : undefined,
       // 输出档位：高分辨率/高 fps 素材降档提速
       output_tier: cfg.outputTier || 'auto',
     });
