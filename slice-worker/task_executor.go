@@ -174,7 +174,7 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 	}
 
 	// 钩子视频：作为片头拼接在封面与本体之间（后端下发 hook URL，Worker 已下载到本地 path）。
-	// 支持多个钩子（文件夹方式），全部透传给引擎 --hook，引擎每个成品切片随机取一个。
+	// 支持多个钩子（文件夹方式），全部透传给引擎 --hook，引擎每个成品切片按顺序循环取一个。
 	hookArgs := 0
 	for _, h := range task.Hooks {
 		if h.Path == "" {

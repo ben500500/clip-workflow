@@ -12,7 +12,6 @@ Prints OUTPUT:<name>:<duration> and PROGRESS:<pct> lines to stdout.
 import argparse
 import json
 import os
-import random
 import shutil
 import subprocess
 import sys
@@ -4107,7 +4106,7 @@ def main():
         "--hook",
         action="append",
         default=None,
-        help="钩子视频路径（可选，可重复）。将钩子视频作为片头，拼接在封面首帧与本体视频之间（[封面][钩子][本体]）。传多个时每个成品切片随机取一个（随机组合）",
+        help="钩子视频路径（可选，可重复）。将钩子视频作为片头，拼接在封面首帧与本体视频之间（[封面][钩子][本体]）。传多个时每个成品切片按顺序循环取一个（round-robin，确保所有钩子都被用到）",
     )
     parser.add_argument(
         "--hook-target",
@@ -4451,7 +4450,7 @@ def main():
     hook_part_path = None
     hook_target_key = None
     hook_dur = 0.0
-    # 钩子视频：--hook 可重复传入多个路径（文件夹方式，切片时随机组合）。
+    # 钩子视频：--hook 可重复传入多个路径（文件夹方式，切片时按顺序循环取用）。
     # 过滤出不存在的文件，保留有效钩子列表。
     hook_paths = [h for h in (args.hook or []) if os.path.isfile(h)]
     if (args.hook or []) and not hook_paths:
@@ -4462,7 +4461,7 @@ def main():
             hook_paths = []
         elif args.hook_all:
             # 钩子注入所有切片组（每个候选片段都带钩子片头，与封面行为对齐）
-            print(f"钩子拼接: {len(hook_paths)} 个钩子（随机组合）-> 注入全部切片组 ({len(groups)} 组)", file=sys.stderr)
+            print(f"钩子拼接: {len(hook_paths)} 个钩子（按顺序循环）-> 注入全部切片组 ({len(groups)} 组)", file=sys.stderr)
         else:
             if args.hook_target and args.hook_target in groups:
                 hook_target_key = args.hook_target
@@ -4471,7 +4470,7 @@ def main():
                 hook_target_key = next(iter(groups))
                 if args.hook_target:
                     print(f"警告: 钩子目标切片名 '{args.hook_target}' 不存在，回退到首个切片组 '{hook_target_key}'", file=sys.stderr)
-            print(f"钩子拼接: {len(hook_paths)} 个钩子（随机组合）-> 注入切片组 '{hook_target_key}'", file=sys.stderr)
+            print(f"钩子拼接: {len(hook_paths)} 个钩子（按顺序循环）-> 注入切片组 '{hook_target_key}'", file=sys.stderr)
 
     # 字幕开启时，预计算源视频的语音（非静音）区间，用于"只在说话时显示字幕"。
     # 静音/停顿期间字幕自动隐藏，避免字幕一直挂在屏幕上。
@@ -4482,6 +4481,9 @@ def main():
         outputs = []
         total = len(groups)
         processed = 0
+        # 钩子视频按顺序循环取用（round-robin）：每个注入钩子的切片组依次取下一个
+        # 钩子，取完一轮再从第一个开始，确保所有钩子都被用到、且不会饿死末尾钩子。
+        hook_idx = 0
         for name_key in groups:
             group = groups[name_key]
             name = safe_name(name_key)
@@ -4498,8 +4500,10 @@ def main():
                 # 到本体(源/档位)分辨率+帧率+像素格式，并强制本组 concat 走重编码。
                 if args.hook_all or name_key == hook_target_key:
                     hook_injected = True
-                    # 随机组合：每个成品切片从钩子文件夹中随机取一个钩子视频作为片头。
-                    hook_path = random.choice(hook_paths)
+                    # 按顺序循环取用：从钩子文件夹中依次取一个钩子视频作为片头，
+                    # 用完一轮后回到第一个（round-robin），保证所有钩子都被用到。
+                    hook_path = hook_paths[hook_idx % len(hook_paths)]
+                    hook_idx += 1
                     hook_dur = ffprobe_duration(hook_path) or 0.0
                     hook_part = os.path.join(tmp, "part_0.mp4")
                     hook_w = tier_w or 1280

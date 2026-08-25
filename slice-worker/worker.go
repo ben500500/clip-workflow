@@ -649,7 +649,7 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	}
 
 	// 1.7 下载钩子视频（如有），写入本地 path 供引擎作为片头拼接（[封面][钩子][本体]）。
-	// 支持文件夹方式（多个钩子），全部下载，引擎每个成品切片随机取一个。
+	// 支持文件夹方式（多个钩子），全部下载，引擎每个成品切片按顺序循环取一个。
 	for i := range task.Hooks {
 		if task.Hooks[i].URL == "" {
 			continue

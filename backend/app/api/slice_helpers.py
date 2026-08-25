@@ -1083,7 +1083,7 @@ async def _publish_to_worker(
         },
         # 视频封面（可选，Go Worker 下载图片后透传给引擎 --cover）
         "cover": {"url": cover_url or ""} if cover_url else None,
-        # 钩子视频列表（可选，Go Worker 下载后透传给引擎 --hook，引擎每个成品随机取一个）
+        # 钩子视频列表（可选，Go Worker 下载后透传给引擎 --hook，引擎每个成品按顺序循环取一个）
         "hook": [{"url": u} for u in hook_urls] if hook_urls else None,
         "cutlist": cutlist,
         "intervals": intervals_content,
@@ -1328,7 +1328,7 @@ async def _dispatch_local(
                 logger.warning("视频封面下载失败，忽略: %s", cover_image_key)
 
         # 钩子视频：下载到本地，作为片头拼接（[封面][钩子][本体]）。
-        # 文件夹方式（多个）优先，否则回退到单钩子；引擎每个成品随机取一个。
+        # 文件夹方式（多个）优先，否则回退到单钩子；引擎每个成品按顺序循环取一个。
         hook_paths: list = []
         hook_keys = list(hook_video_keys or [])
         if not hook_keys and hook_video_key:

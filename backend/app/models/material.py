@@ -214,7 +214,7 @@ class SliceTask(Base):
     # 单钩子：单个视频 MinIO key（旧版，向后兼容）
     hook_video_key = Column(String(500), nullable=True)
     # 钩子视频文件夹（可选）：选择整个文件夹，含多个钩子视频；切片时每个成品
-    # 随机从文件夹中取一个钩子作为片头。值为 MinIO file_key 列表。优先于 hook_video_key。
+    # 按顺序循环从文件夹中取一个钩子作为片头。值为 MinIO file_key 列表。优先于 hook_video_key。
     hook_video_keys = Column(JSON, nullable=True)
     # 输出档位（original/auto/1080p/720p/480p）：高分辨率/高 fps 素材降档提速；重试时保留
     output_tier = Column(String(20), nullable=True)
