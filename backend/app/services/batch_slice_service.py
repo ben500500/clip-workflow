@@ -364,6 +364,9 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
         "output_id", "cut_start", "cut_end",
         # 选点结尾优化：boundary_refine="silence" 时把片段边界吸附到自然停顿处
         "boundary_refine",
+        # 高光混剪：批量切片时把多个片段合并成一个混剪视频（白名单原缺失，导致前端配置被静默丢弃）
+        "highlight_mix_enabled", "highlight_mix_max_duration",
+        "highlight_mix_max_clip_duration", "highlight_mix_order",
     }
     payload = {k: v for k, v in cfg.items() if k in known_fields and v is not None}
     payload["mode"] = cfg.get("mode") or "fast"
