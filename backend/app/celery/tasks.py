@@ -643,7 +643,7 @@ def slice_task(
                 logger.warning("视频封面下载失败,忽略: %s", cover_image_key)
 
         # 钩子视频:下载到本地,作为片头拼接([封面][钩子][本体])。
-        # 文件夹方式(多个)优先,否则回退到单钩子;引擎每个成品随机取一个。
+        # 文件夹方式(多个)优先,否则回退到单钩子;引擎每个成品按顺序循环取一个。
         hook_paths: list = []
         hook_keys = list(hook_video_keys or [])
         if not hook_keys and hook_video_key:

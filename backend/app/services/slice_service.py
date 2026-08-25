@@ -211,7 +211,7 @@ async def run_slice(
     if cover_path:
         cmd.extend(["--cover", cover_path])
     # 钩子视频：文件夹方式（多个）优先，否则回退到单钩子。
-    # 引擎把每个 --hook 作为可选项，对每个成品切片随机取一个作为片头。
+    # 引擎把每个 --hook 作为可选项，对每个成品切片按顺序循环取一个作为片头。
     hook_list = list(hook_paths or [])
     if not hook_list and hook_path:
         hook_list = [hook_path]
