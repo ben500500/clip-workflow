@@ -117,6 +117,9 @@ class SliceRunRequest(BaseModel):
     # 补选点时的 AI 选点配置（max_clips / min_score_threshold / min_duration / max_duration / frame_analysis），
     # 留空则用系统默认选点配置
     autoclip_config: Optional[dict] = None
+    # 指定某一次「AI 选点历史」run（autoclip_runs.id）：切片时若当前候选为空
+    # （如最近一次选点失败导致候选被清空），用该 run 的选点结果恢复候选后再切片。
+    slice_autoclip_run_id: Optional[str] = None
     # 快速转换：为 True 时跳过 AI 选点与区间检测，直接把整段源视频作为单个
     # 片段（0 ~ 源时长），应用下方切片配置（竖屏转横屏/水印/角标/字幕/固定文字等）
     # 做一次整片转换输出，无需候选片段

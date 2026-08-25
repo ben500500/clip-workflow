@@ -1206,6 +1206,8 @@ const EpisodeDetail: React.FC = () => {
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
         highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
         highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
+        // 选点历史：当前候选为空（最近选点失败）时用所选历史 run 恢复候选再切片
+        slice_autoclip_run_id: sliceAutoclipRunId || undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
         output_tier: outputTier || 'auto',
         // 去重模式：一键切片启用后按档位做画面去重（手动配置沿用主页「去重高级配置」）
@@ -1395,6 +1397,8 @@ const EpisodeDetail: React.FC = () => {
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
         highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
         highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
+        // 选点历史：当前候选为空（最近选点失败）时用所选历史 run 恢复候选再切片
+        slice_autoclip_run_id: sliceAutoclipRunId || undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
         output_tier: outputTier || 'auto',
         // 去重模式档位（轻/标准/重）+ 手动配置（每项手段可单独覆盖预设），仅去重模式生效

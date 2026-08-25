@@ -141,6 +141,9 @@ export const sliceApi = {
       highlight_mix_order?: 'time' | 'score';
       // 输出档位：original（默认）/ auto（源宽>720 或 fps>30 自动降 720P@30）/ 1080p / 720p / 480p
       output_tier?: 'original' | 'auto' | '1080p' | '720p' | '480p' | string;
+      // 指定某一次「AI 选点历史」run：切片时若当前候选为空（最近选点失败清空候选），
+      // 后端用该 run 的选点结果恢复候选后再切片
+      slice_autoclip_run_id?: string;
     }
   ) =>
     client.post(`/episodes/${episodeId}/slice/run`, { mode, ...data }) as Promise<{

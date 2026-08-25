@@ -21,8 +21,10 @@ from datetime import datetime
 from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
+
+import httpx
 
 from app.auth import get_current_user
 from app.config import settings
@@ -34,6 +36,7 @@ from app.models.models import (
     ClipCandidate,
     DetectedInterval,
     AutoClipProject,
+    AutoClipRun,
     User,
     UserPreference,
 )
@@ -556,6 +559,19 @@ async def _resolve_slice_inputs(
                         )
                         all_clips = retry_clips
                         break
+            if not all_clips and data.slice_autoclip_run_id:
+                # 从选点历史恢复候选：最近一次选点失败会清空候选（regenerate 创建新
+                # project 后即删旧候选），此时即使用户选了之前成功的选点历史仍会因
+                # 无候选报错。用指定 run 的选点结果恢复候选后再切片。
+                restored = await _restore_clips_from_run(
+                    db, eid, data.slice_autoclip_run_id, current_user
+                )
+                if restored:
+                    all_clips = restored
+                    logger.info(
+                        "Episode %s 已从选点历史 %s 恢复 %d 个候选片段",
+                        eid, data.slice_autoclip_run_id, len(restored),
+                    )
             if not all_clips and data.auto_autoclip_if_empty:
                 # 后端兜底：无候选片段时自动补一轮 AI 选点（复用 autoclip run 流程），
                 # 等待选点完成后重新取候选再切片——前端提交即走、关窗口安全。
@@ -988,6 +1004,79 @@ async def _dispatch_slice_task(
         )
         + ("（已整片回退：AI 选点未产出候选片段）" if fallback_whole_video else ""),
     )
+
+
+async def _restore_clips_from_run(
+    db: AsyncSession, eid, run_id: str, current_user
+):
+    """从选点历史 run 恢复候选片段（autoclip 引擎结果 → clip_candidates）。
+
+    最近一次选点失败会清空当前候选（regenerate 在创建新 autoclip project 后即删
+    旧候选，执行失败后候选就没了）。此时若用户指定了之前成功的选点历史
+    （slice_autoclip_run_id），用该 run 的 autoclip_project_id 从引擎拉回那次的
+    片段结果并恢复为候选（status=accepted），让「选点历史」真正复用它那次的候选。
+
+    返回恢复后的候选列表；任何失败/无结果返回 None（走原有补选点/整片回退逻辑）。
+    """
+    try:
+        rid = uuid.UUID(run_id)
+    except (ValueError, TypeError):
+        return None
+    run = (
+        await db.execute(select(AutoClipRun).where(AutoClipRun.id == rid))
+    ).scalar_one_or_none()
+    if not run or run.episode_id != eid:
+        return None
+    # 数据隔离：校验当前用户对该剧集所属项目的访问权限
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == eid))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
+    project_id = run.autoclip_project_id
+    if not project_id:
+        return None
+    # 从 autoclip 引擎拉该次选点的历史片段结果
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{settings.AUTOCLIP_URL}/api/v1/clips",
+                params={"project_id": project_id, "max_clips": 200},
+            )
+            resp.raise_for_status()
+            engine_clips = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("从 autoclip 引擎拉选点历史结果失败 run=%s: %s", run_id, exc)
+        return None
+    if not engine_clips:
+        return None
+    # 删除现有候选（若有）并写入历史候选（accepted，切片直接用）
+    await db.execute(delete(ClipCandidate).where(ClipCandidate.episode_id == eid))
+    rows: list = []
+    for i, c in enumerate(engine_clips, start=1):
+        start = c.get("start_time")
+        end = c.get("end_time")
+        if start is None or end is None:
+            continue
+        rows.append(ClipCandidate(
+            episode_id=eid,
+            clip_index=c.get("clip_index", i),
+            start_time=start,
+            end_time=end,
+            duration=c.get("duration", 0.0),
+            title=c.get("title"),
+            content=c.get("content"),
+            outline=c.get("outline"),
+            score=c.get("score"),
+            recommend_reason=c.get("recommend_reason"),
+            clip_type=c.get("clip_type"),
+            status="accepted",
+        ))
+    if not rows:
+        return None
+    db.add_all(rows)
+    await db.flush()
+    return rows
 
 
 @router.post("/episodes/{episode_id}/slice/run", response_model=SliceRunResponse)
