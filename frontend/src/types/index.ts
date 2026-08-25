@@ -114,6 +114,8 @@ export interface AutoClipConfig {
   min_duration?: number;
   max_duration?: number;
   frame_analysis?: boolean;
+  // 画面理解视觉模型提供商：`ollama`（本地 MiniCPM-V）/ `llm`（在线 OpenAI 兼容视觉模型）
+  frame_analysis_provider?: string;
   // 高光识别：AI 选点找出多段 ≤highlight_max_duration 的短高光片段
   highlight_mode?: boolean;
   highlight_max_duration?: number;
