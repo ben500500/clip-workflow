@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..core.ollama_client import get_ollama_client
-from ..core.shared_config import MEDIA_DIR, METADATA_DIR
+from ..core.shared_config import MEDIA_DIR, METADATA_DIR, FRAME_ANALYSIS_PROVIDER
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +135,7 @@ def analyze_clip_frames(
     start_time: str,
     end_time: str,
     project_id: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     分析单个候选片段的画面，返回结构化描述（合并该片段所有抽帧的结果）。
@@ -144,6 +145,7 @@ def analyze_clip_frames(
         start_time: 片段开始时间（HH:MM:SS,mmm 或 HH:MM:SS.mmm）
         end_time:   片段结束时间
         project_id: 项目 ID（用于日志，可选）
+        provider:   视觉模型提供商（`ollama`/`llm`），None 时回退环境变量 FRAME_ANALYSIS_PROVIDER
 
     Returns:
         合并后的画面描述 dict；不可用/失败返回 None。
@@ -189,10 +191,23 @@ def analyze_clip_frames(
     else:
         ts_list = [mid]
 
-    client = get_ollama_client()
-    if not client.available:
-        logger.warning("画面分析：Ollama 服务不可用，跳过")
-        return None
+    # 视觉模型提供商分发：默认本地 Ollama；配置为 `llm` 时走在线 OpenAI 兼容视觉模型（如 Agnes）
+    # 在线不可用（未配置 key/模型）时自动回退本地 Ollama，本地也不可用则跳过。
+    eff_provider = (provider or FRAME_ANALYSIS_PROVIDER or "ollama").strip().lower()
+    online_client = None
+    if eff_provider in ("llm", "online"):
+        from ..core.vision_llm_client import get_vision_llm_client
+        online_client = get_vision_llm_client()
+        if not online_client.available:
+            logger.warning("画面分析：在线视觉模型未配置（LLM_API_KEY/模型），回退本地 Ollama")
+            online_client = None
+
+    client = None
+    if online_client is None:
+        client = get_ollama_client()
+        if not client.available:
+            logger.warning("画面分析：Ollama 服务不可用，跳过")
+            return None
 
     descriptions: List[Dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="frame_") as tmp:
@@ -205,7 +220,10 @@ def analyze_clip_frames(
                     img_bytes = f.read()
             except OSError:
                 continue
-            desc = client.describe_image(img_bytes, FRAME_PROMPT)
+            if online_client is not None:
+                desc = online_client.describe_image(img_bytes, FRAME_PROMPT)
+            else:
+                desc = client.describe_image(img_bytes, FRAME_PROMPT)
             if desc:
                 descriptions.append(_normalize_description(desc))
             logger.info(
@@ -235,12 +253,14 @@ def analyze_timeline_frames(
     video_path: str,
     project_id: Optional[str] = None,
     enabled: Optional[bool] = None,
+    provider: Optional[str] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     批量分析时间线中所有候选片段的画面。
 
     Args:
         enabled: 画面理解开关，None 时回退到环境变量 FRAME_ANALYSIS_ENABLED
+        provider: 视觉模型提供商（`ollama`/`llm`），None 时回退环境变量 FRAME_ANALYSIS_PROVIDER
 
     Returns:
         {片段 id: 画面描述} 映射；未开启/失败返回空 dict。
@@ -260,6 +280,7 @@ def analyze_timeline_frames(
             clip.get("start_time", ""),
             clip.get("end_time", ""),
             project_id,
+            provider=provider,
         )
         if desc:
             results[clip_id] = desc

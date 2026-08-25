@@ -437,6 +437,8 @@ const EpisodeDetail: React.FC = () => {
   const [maxClipDuration, setMaxClipDuration] = useState<number | null>(null);
   // 画面理解（MiniCPM-V 本地视觉模型）：AI 选点时对候选片段抽帧分析画面，辅助打分，默认开启
   const [frameAnalysis, setFrameAnalysis] = useState(true);
+  // 画面理解视觉模型提供商：`ollama`（本地）/ `llm`（在线 OpenAI 兼容视觉模型如 Agnes）
+  const [frameAnalysisProvider, setFrameAnalysisProvider] = useState('ollama');
   // ── 高光识别（AI 选点找出多段 ≤10s 的短高光片段）──
   const [highlightMode, setHighlightMode] = useState(false);
   // 高光单段最大时长（秒，默认 10）：仅保留不超过该时长的短高光
@@ -643,6 +645,7 @@ const EpisodeDetail: React.FC = () => {
     min_clip_duration: minClipDuration ?? null,
     max_clip_duration: maxClipDuration ?? null,
     frame_analysis: frameAnalysis,
+    frame_analysis_provider: frameAnalysisProvider,
     highlight_mode: highlightMode,
     highlight_max_duration: highlightMode ? highlightMaxDuration : undefined,
     highlight_mix_enabled: highlightMixEnabled,
@@ -702,6 +705,7 @@ const EpisodeDetail: React.FC = () => {
     setMinClipDuration(p.min_clip_duration != null ? p.min_clip_duration : null);
     setMaxClipDuration(p.max_clip_duration != null ? p.max_clip_duration : null);
     setFrameAnalysis(p.frame_analysis ?? true);
+    setFrameAnalysisProvider(p.frame_analysis_provider ?? 'ollama');
     setHighlightMode(p.highlight_mode ?? false);
     if (p.highlight_mode && p.highlight_max_duration != null) setHighlightMaxDuration(p.highlight_max_duration);
     setHighlightMixEnabled(p.highlight_mix_enabled ?? false);
@@ -744,6 +748,7 @@ const EpisodeDetail: React.FC = () => {
     autoclip_min_duration: minClipDuration,
     autoclip_max_duration: maxClipDuration,
     autoclip_frame_analysis: frameAnalysis,
+    autoclip_frame_analysis_provider: frameAnalysisProvider,
     autoclip_highlight_mode: highlightMode,
     autoclip_highlight_max_duration: highlightMaxDuration,
   });
@@ -758,6 +763,7 @@ const EpisodeDetail: React.FC = () => {
     if (typeof cfg.autoclip_min_duration === 'number') setMinClipDuration(cfg.autoclip_min_duration);
     if (typeof cfg.autoclip_max_duration === 'number') setMaxClipDuration(cfg.autoclip_max_duration);
     if (typeof cfg.autoclip_frame_analysis === 'boolean') setFrameAnalysis(cfg.autoclip_frame_analysis);
+    if (typeof cfg.autoclip_frame_analysis_provider === 'string') setFrameAnalysisProvider(cfg.autoclip_frame_analysis_provider);
     if (typeof cfg.autoclip_highlight_mode === 'boolean') setHighlightMode(cfg.autoclip_highlight_mode);
     if (typeof cfg.autoclip_highlight_max_duration === 'number') setHighlightMaxDuration(cfg.autoclip_highlight_max_duration);
     // 应用云端个人配置时保留用户当前激活的预设 id（从 localStorage 读），
@@ -1053,6 +1059,7 @@ const EpisodeDetail: React.FC = () => {
         min_duration: minClipDuration ?? undefined,
         max_duration: maxClipDuration ?? undefined,
         frame_analysis: frameAnalysis,
+        frame_analysis_provider: frameAnalysisProvider,
         highlight_mode: highlightMode,
         highlight_max_duration: highlightMode ? highlightMaxDuration : undefined,
       });
@@ -1269,6 +1276,7 @@ const EpisodeDetail: React.FC = () => {
         min_duration: c.min_duration != null ? Number(c.min_duration) : undefined,
         max_duration: c.max_duration != null ? Number(c.max_duration) : undefined,
         frame_analysis: typeof c.frame_analysis === 'boolean' ? c.frame_analysis : undefined,
+        frame_analysis_provider: typeof c.frame_analysis_provider === 'string' ? c.frame_analysis_provider : undefined,
         highlight_mode: typeof c.highlight_mode === 'boolean' ? c.highlight_mode : undefined,
         highlight_max_duration: c.highlight_max_duration != null ? Number(c.highlight_max_duration) : undefined,
       };
@@ -1279,6 +1287,7 @@ const EpisodeDetail: React.FC = () => {
       min_duration: minClipDuration ?? undefined,
       max_duration: maxClipDuration ?? undefined,
       frame_analysis: frameAnalysis,
+      frame_analysis_provider: frameAnalysisProvider,
       highlight_mode: highlightMode,
       highlight_max_duration: highlightMode ? highlightMaxDuration : undefined,
     };
@@ -1717,7 +1726,7 @@ const EpisodeDetail: React.FC = () => {
     }
     if (clips != null) parts.push(`个数 ${clips}`);
     if (score != null) parts.push(`评分 ${score}`);
-    if (frame != null) parts.push(`画面理解 ${frame ? '开' : '关'}`);
+    if (frame != null) parts.push(`画面理解 ${frame ? '开' : '关'}${c.frame_analysis_provider === 'llm' ? '·在线' : '·本地'}`);
     if (parts.length === 0) return <Text type="secondary" style={{ fontSize: 12 }}>默认</Text>;
     return (
       <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'pre-line' }}>
@@ -1799,9 +1808,21 @@ const EpisodeDetail: React.FC = () => {
             <Space size={4} align="center">
               <Switch size="small" checked={frameAnalysis} onChange={setFrameAnalysis} />
               <Text strong style={{ fontSize: 12 }}>画面理解</Text>
-              <Tooltip title="开启后，AI 选点会对候选片段进行画面理解（抽帧送本地 MiniCPM-V 视觉模型分析场景/动作/情绪/精彩度），结合台词综合打分。关闭则仅依据台词与文案判断。（默认开启）">
+              <Tooltip title="开启后，AI 选点会对候选片段进行画面理解（抽帧分析场景/动作/情绪/精彩度），结合台词综合打分。关闭则仅依据台词与文案判断。（默认开启）">
                 <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
               </Tooltip>
+              {frameAnalysis && (
+                <Select
+                  size="small"
+                  value={frameAnalysisProvider}
+                  onChange={setFrameAnalysisProvider}
+                  style={{ width: 100 }}
+                  options={[
+                    { value: 'ollama', label: '本地模型' },
+                    { value: 'llm', label: '在线模型' },
+                  ]}
+                />
+              )}
             </Space>
             <Space size={4} align="center">
               <Switch size="small" checked={highlightMode} onChange={setHighlightMode} />
@@ -3313,6 +3334,18 @@ const EpisodeDetail: React.FC = () => {
             <Space wrap align="center" size={8} style={{ marginTop: 8 }}>
               <Switch size="small" checked={frameAnalysis} onChange={setFrameAnalysis} />
               <Text style={{ fontSize: 12 }}>画面理解（帧分析）</Text>
+              {frameAnalysis && (
+                <Select
+                  size="small"
+                  value={frameAnalysisProvider}
+                  onChange={setFrameAnalysisProvider}
+                  style={{ width: 100 }}
+                  options={[
+                    { value: 'ollama', label: '本地模型' },
+                    { value: 'llm', label: '在线模型' },
+                  ]}
+                />
+              )}
               <Switch size="small" checked={highlightMode} onChange={setHighlightMode} />
               <Text style={{ fontSize: 12 }}>高光识别模式</Text>
               {highlightMode && (

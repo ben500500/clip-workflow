@@ -64,6 +64,10 @@ async def trigger_pipeline(
     frame_analysis = (config or {}).get("frame_analysis")
     if frame_analysis is not None:
         payload["frame_analysis"] = bool(frame_analysis)
+    # 画面理解视觉模型提供商（ollama 本地 / llm 在线）：透传给 AutoClip 微服务
+    frame_analysis_provider = (config or {}).get("frame_analysis_provider")
+    if frame_analysis_provider:
+        payload["frame_analysis_provider"] = str(frame_analysis_provider)
     # AI 选点模型覆盖：来自系统设置 default_autoclip_config.llm_model / llm_provider，
     # 使“系统设置里改模型名”能真正下达到选点引擎（之前是孤立配置项，无人读取）。
     llm_model = (config or {}).get("llm_model") or (config or {}).get("model_name")

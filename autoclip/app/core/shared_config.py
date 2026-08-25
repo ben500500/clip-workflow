@@ -32,6 +32,15 @@ LLM_API_BASE = os.getenv("LLM_API_BASE", "")
 # 画面理解（Frame Analysis）配置：本地 Ollama 视觉模型，默认关闭
 FRAME_ANALYSIS_ENABLED = os.getenv("FRAME_ANALYSIS_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 
+# 画面理解视觉模型提供商：`ollama`（本地 MiniCPM-V，默认）/ `llm`（在线 OpenAI 兼容视觉模型，如 Agnes agnes-2.0-flash）
+FRAME_ANALYSIS_PROVIDER = os.getenv("FRAME_ANALYSIS_PROVIDER", "ollama").strip().lower()
+# 在线视觉模型 base_url（OpenAI 兼容 /chat/completions）。默认指向 Agnes AI，可被 .env 覆盖成任意网关
+LLM_API_BASE = os.getenv("LLM_API_BASE", "https://apihub.agnes-ai.com/v1").rstrip("/")
+# 在线视觉模型 API Key（如 Agnes 密钥 sk-...）
+LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
+# 在线视觉模型名（支持图片 URL 理解的 OpenAI 兼容模型，默认 Agnes 免费 flash）
+FRAME_ANALYSIS_MODEL = os.getenv("FRAME_ANALYSIS_MODEL", "agnes-2.0-flash").strip()
+
 # 处理参数
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "5000"))
 # 注意：这里默认 0.0，评分过滤交给 clips 接口的 min_score（契约默认 60）执行，
