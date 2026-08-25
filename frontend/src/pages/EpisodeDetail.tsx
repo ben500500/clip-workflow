@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Space, Typography, Spin, Alert, Breadcrumb, Descriptions, Tag, message, Select, Row, Col, Progress,
   Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input, Table, Upload, Image as AntImage, Radio, ColorPicker,
-  Checkbox, Modal, Cascader,
+  Checkbox, Modal, Cascader, Popover,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
@@ -24,6 +24,107 @@ import { WATERMARK_STYLE_OPTIONS, WATERMARK_STYLE_LABEL } from '../utils/waterma
 import { DEFAULT_SLICE_PRESET, SLICE_ACTIVE_PRESET_KEY, SLICE_PRESET_STORAGE_KEY, loadPresetList, persistPresets, type SlicePreset } from '../utils/slicePresets';
 
 const { Title, Text, Paragraph } = Typography;
+
+// ─── 悬停预览（封面图 / 钩子视频） ───────────────────────────
+// 鼠标移到文件名上时，延迟打开 Popover 并懒加载对应 file_key 的临时预览 URL。
+// 图片用 <img> 显示、视频用 <video> 自动播放，松开/移开即收起。
+// 传单个 fileKey 显示单条预览；传 fileKeys 数组（钩子文件夹）按网格展示全部视频预览。
+function FileHoverPreview({
+  fileKey,
+  fileKeys,
+  kind,
+  children,
+}: {
+  fileKey?: string | null;
+  fileKeys?: Array<string | null>;
+  kind: 'image' | 'video';
+  children: React.ReactNode;
+}) {
+  const keys = fileKeys && fileKeys.length > 0 ? fileKeys : fileKey ? [fileKey] : [];
+  const [urls, setUrls] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const fetchedRef = useRef<string | null>(null);
+
+  const signature = keys.join('\u0001');
+  const ensureUrls = async () => {
+    if (fetchedRef.current === signature) return;
+    fetchedRef.current = signature;
+    setLoading(true);
+    try {
+      const entries = await Promise.all(
+        keys.map(async (k) => {
+          if (!k) return null;
+          try {
+            const res = await sliceApi.getRawPreviewUrl(k);
+            return { k, url: res.url };
+          } catch {
+            return { k, url: null };
+          }
+        }),
+      );
+      const map: Record<string, string> = {};
+      entries.forEach((e) => { if (e && e.url) map[e.k] = e.url; });
+      setUrls(map);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o) ensureUrls();
+      }}
+      trigger="hover"
+      mouseEnterDelay={0.25}
+      mouseLeaveDelay={0.1}
+      content={
+        <div style={{ maxWidth: 400, maxHeight: 280, overflow: 'auto' }}>
+          {loading ? (
+            <div style={{ width: 240, height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Spin size="small" />
+            </div>
+          ) : keys.length === 0 ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>预览不可用</Text>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {keys.map((k, idx) =>
+                urls[k as string] ? (
+                  kind === 'image' ? (
+                    <img
+                      key={k as string}
+                      src={urls[k as string]}
+                      alt={`预览 ${idx + 1}`}
+                      style={{ maxWidth: 360, maxHeight: 240, display: 'block', objectFit: 'contain' }}
+                    />
+                  ) : (
+                    <video
+                      key={k as string}
+                      src={urls[k as string]}
+                      controls
+                      autoPlay
+                      muted
+                      style={{ maxWidth: 360, maxHeight: 240, display: 'block', background: '#000' }}
+                    />
+                  )
+                ) : (
+                  <Text key={k as string} type="secondary" style={{ fontSize: 12 }}>
+                    第 {idx + 1} 个：预览不可用
+                  </Text>
+                ),
+              )}
+            </div>
+          )}
+        </div>
+      }
+    >
+      {children}
+    </Popover>
+  );
+}
 
 // ─── 切片模式说明 ─────────────────────────────────────
 const SLICE_MODE_HELP: Record<string, { label: string; desc: string; detail: string }> = {
@@ -1973,6 +2074,7 @@ const EpisodeDetail: React.FC = () => {
               </Button>
             </Upload>
             {coverImageKey && (
+              <FileHoverPreview fileKey={coverImageKey} kind="image">
               <Tag closable onClose={() => {
   setCoverImageKey(null);
   setCoverImageName(null);
@@ -1980,8 +2082,9 @@ const EpisodeDetail: React.FC = () => {
     console.error('清除剧集封面失败', err);
   });
 }}>
-                封面：{coverImageName || '已选择'}
+                  封面：{coverImageName || '已选择'}
               </Tag>
+              </FileHoverPreview>
             )}
           </Space>
           {/* 钩子视频文件夹（片头，可选）：选择整个文件夹，含多个钩子视频，切片时随机取一个作为片头，
@@ -2003,12 +2106,14 @@ const EpisodeDetail: React.FC = () => {
               <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
             </Tooltip>
             {hookVideoKeys.length > 0 && (
+              <FileHoverPreview fileKeys={hookVideoKeys} kind="video">
               <Tag closable onClose={() => {
   setHookVideoKeys([]);
   setHookVideoNames([]);
 }}>
-                钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
+                  钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
               </Tag>
+              </FileHoverPreview>
             )}
           </Space>
           {/* 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品 */}
@@ -3117,6 +3222,7 @@ const EpisodeDetail: React.FC = () => {
                 <Button size="small" icon={<PictureOutlined />} loading={coverUploading}>选择封面图片</Button>
               </Upload>
               {coverImageKey && (
+                <FileHoverPreview fileKey={coverImageKey} kind="image">
                 <Tag closable onClose={() => {
   setCoverImageKey(null);
   setCoverImageName(null);
@@ -3124,8 +3230,9 @@ const EpisodeDetail: React.FC = () => {
     console.error('清除剧集封面失败', err);
   });
 }}>
-                  封面：{coverImageName || '已选择'}
+                    封面：{coverImageName || '已选择'}
                 </Tag>
+                </FileHoverPreview>
               )}
             </Space>
           </div>
@@ -3148,12 +3255,14 @@ const EpisodeDetail: React.FC = () => {
                 <Button size="small" icon={<PlayCircleOutlined />} loading={hookUploading}>{hookVideoKeys.length > 0 ? '更换钩子文件夹' : '选择钩子文件夹'}</Button>
               </Upload>
               {hookVideoKeys.length > 0 && (
+                <FileHoverPreview fileKeys={hookVideoKeys} kind="video">
                 <Tag closable onClose={() => {
   setHookVideoKeys([]);
   setHookVideoNames([]);
 }}>
-                  钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
+                    钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
                 </Tag>
+                </FileHoverPreview>
               )}
             </Space>
           </div>
