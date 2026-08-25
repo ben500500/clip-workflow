@@ -386,6 +386,26 @@ async def _run_pipeline(project_id: str, steps: list[int],
         _update_progress(proj, "running", 80,
                          f"评分完成（{len(scored)} 个高分片段），生成标题")
 
+        # 时长硬性规整（2026-08-25）：LLM 提示词仅软约束，这里确定性兜底——
+        # > max_duration 的片段拆分为 ≤max_duration；< min_duration 的过短片段丢弃。
+        for c in scored:
+            if c.get("duration") is None:
+                c["duration"] = round(float(c.get("end_time") or 0) - float(c.get("start_time") or 0), 3)
+        min_dur_cfg = float(cfg.get("min_duration") or 0)
+        max_dur_cfg = float(cfg.get("max_duration") or 0)
+        if max_dur_cfg > 0:
+            before = len(scored)
+            scored = _split_overlong_clips(scored, max_dur_cfg)
+            if len(scored) != before:
+                _update_progress(proj, "running", 80,
+                                 f"时长硬性规整：{before} 个超长片段拆分为 {len(scored)} 个 ≤{max_dur_cfg:.0f}s 片段")
+        if min_dur_cfg > 0:
+            keep = [c for c in scored if float(c.get("duration") or 0) >= min_dur_cfg]
+            if len(keep) != len(scored):
+                _update_progress(proj, "running", 80,
+                                 f"时长硬性规整：过滤 {len(scored) - len(keep)} 个 <{min_dur_cfg:.0f}s 的过短片段")
+                scored = keep
+
         # 切片数量控制：按 final_score 降序取 top-N，并重写 step3 结果供 step4 使用
         if max_clips and max_clips > 0 and len(scored) > max_clips:
             scored = sorted(scored, key=lambda c: c.get("final_score", 0), reverse=True)[:max_clips]
@@ -731,6 +751,34 @@ async def clips(project_id: str, min_score: float = 0.0, max_clips: int = 30,
     if max_duration > 0:
         result = [c for c in result if c.get("duration", 0) <= max_duration]
     return result[:max_clips]
+
+
+def _split_overlong_clips(clips: list, max_dur: float) -> list:
+    """把超过 max_dur 的候选片段按时长均匀拆分为多个 ≤max_dur 的子片段。
+
+    LLM 提示词对时长只是软约束（2026-08-25 实测 qwen3.7-flash 在 min/max=15/45
+    限制下仍产出 52~137s 片段），这里做确定性兜底：duration > max_dur 的片段
+    拆成 ceil(dur/max_dur) 段，每段时长 ≈ dur/n（均 ≤max_dur）。
+    """
+    if max_dur <= 0:
+        return clips
+    out: list = []
+    for c in clips:
+        s = float(c.get("start_time") or 0)
+        e = float(c.get("end_time") or 0)
+        dur = e - s
+        if dur <= max_dur + 0.5:
+            out.append(c)
+            continue
+        n = max(2, int(dur / max_dur) + 1)
+        seg = dur / n
+        base = {k: v for k, v in c.items() if k not in ("start_time", "end_time", "duration")}
+        for i in range(n):
+            cs = s + i * seg
+            ce = e if i == n - 1 else cs + seg
+            out.append({**base, "start_time": round(cs, 3), "end_time": round(ce, 3),
+                        "duration": round(ce - cs, 3), "split_from": c.get("id") or c.get("clip_index")})
+    return out
 
 
 if __name__ == "__main__":
