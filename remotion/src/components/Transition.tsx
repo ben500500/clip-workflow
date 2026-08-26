@@ -14,17 +14,20 @@ export const Transition: React.FC<{
   type: TransitionType;
   /** 转场帧数 */
   frames?: number;
-}> = ({children, type = 'dissolve', frames = 12}) => {
+  /** 段总时长（帧），用于计算退出时序 */
+  durationInFrames?: number;
+}> = ({children, type = 'dissolve', frames = 12, durationInFrames}) => {
   const frame = useCurrentFrame();
-  const {fps} = useVideoConfig();
+  const {fps, height} = useVideoConfig();
 
   // 进入：前 transitionFrames 帧从 0 → 1
   const enter = interpolate(frame, [0, frames], [0, 1], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
   });
-  // 退出：最后 transitionFrames 帧从 1 → 0
-  const exit = interpolate(frame, [frames, frames * 2], [1, 0], {
+  // 退出：最后 transitionFrames 帧从 1 → 0（在段尾部淡出，而非段开头）
+  const exitEnd = durationInFrames ?? frames * 2;
+  const exit = interpolate(frame, [Math.max(exitEnd - frames, 0), exitEnd], [1, 0], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
   });
@@ -50,8 +53,8 @@ export const Transition: React.FC<{
     });
     style = {...style, transform: `scale(${scale})`};
   } else if (type === 'slide') {
-    // slide：从下方 8% 滑入
-    const translateY = interpolate(frame, [0, frames], [frame, 0], {
+    // slide：从下方 8% 滑入（用常量作为起点，避免帧号当像素）
+    const translateY = interpolate(frame, [0, frames], [height * 0.08, 0], {
       extrapolateLeft: 'clamp',
       extrapolateRight: 'clamp',
     });

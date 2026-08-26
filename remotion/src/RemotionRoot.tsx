@@ -1,6 +1,6 @@
 import React from 'react';
 import {Composition} from 'remotion';
-import {HighlightMix} from './components/HighlightMix';
+import {HighlightMix, computeMixLayout} from './components/HighlightMix';
 import {
   DEFAULT_FPS,
   DEFAULT_HEIGHT,
@@ -35,6 +35,12 @@ export const RemotionRoot: React.FC = () => {
       width={DEFAULT_WIDTH}
       height={DEFAULT_HEIGHT}
       defaultProps={defaultProps}
+      // 根据实际 props（片头+各段+片尾+转场重叠）动态计算渲染时长，
+      // 避免静态注册 30 帧导致真实混剪被截断成 1 秒。
+      calculateMetadata={({props}) => ({
+        durationInFrames: Math.max(1, Math.round(computeMixLayout(props).totalFrames)),
+        props,
+      })}
     />
   );
 };

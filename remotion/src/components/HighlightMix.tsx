@@ -7,6 +7,43 @@ import {Outro} from './Outro';
 import {Segment} from './Segment';
 import {Transition} from './Transition';
 
+/** 时间轴布局计算结果：片头/片尾帧数、各段帧数、各段绝对起始帧、总帧数 */
+export interface MixLayout {
+  introFrames: number;
+  outroFrames: number;
+  segFrames: number[];
+  segStarts: number[];
+  totalFrames: number;
+}
+
+/**
+ * 计算混剪整体时间轴布局：片头 + 各段 + 片尾，段间含转场重叠。
+ * 供 <Composition> 的 calculateMetadata 与 HighlightMix 渲染共用，
+ * 保证静态注册时长与实际渲染时长一致（修复 30 帧截断）。
+ */
+export const computeMixLayout = (props: HighlightMixProps): MixLayout => {
+  const {segments = [], intro, outro, transitionFrames = DEFAULT_TRANSITION_FRAMES, fps = 30} = props;
+
+  const introFrames = intro
+    ? Math.round((intro.title || intro.episode || intro.cover ? 3.2 : 2) * fps)
+    : 0;
+  const outroFrames = outro ? Math.round(2.5 * fps) : 0;
+
+  const segFrames = segments.map((s) => Math.round((s.end - s.start) * fps));
+
+  // 各段在绝对时间轴的起始帧（含转场重叠）
+  let cursor = introFrames;
+  const segStarts: number[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    segStarts.push(cursor);
+    cursor += segFrames[i] - (i < segments.length - 1 ? Math.min(transitionFrames, segFrames[i]) : 0);
+  }
+  const totalFrames = cursor + outroFrames;
+
+  return {introFrames, outroFrames, segFrames, segStarts, totalFrames};
+};
+
+
 /**
  * 混剪增强根编排组件（T2）。
  *
@@ -26,22 +63,16 @@ export const HighlightMix: React.FC<HighlightMixProps> = ({
 }) => {
   const {fps, height} = useVideoConfig();
 
-  // ── 计算各段时间轴 ──
-  const introFrames = intro ? Math.round((intro.title || intro.episode || intro.cover ? 3.2 : 2) * fps) : 0;
-  const outroFrames = outro ? Math.round(2.5 * fps) : 0;
-
-  const segFrames = segments.map((s) => Math.round((s.end - s.start) * fps));
-
-  // 各段在绝对时间轴的起始帧（含转场重叠）
-  let cursor = introFrames;
-  const segStarts: number[] = [];
-  for (let i = 0; i < segments.length; i++) {
-    segStarts.push(cursor);
-    // 下一段与当前段重叠 transitionFrames 帧（转场过渡区间）
-    cursor += segFrames[i] - (i < segments.length - 1 ? Math.min(transitionFrames, segFrames[i]) : 0);
-  }
-  const bodyEnd = cursor;
-  const outroStart = bodyEnd;
+  // ── 时间轴布局（片头 + 各段 + 片尾，段间含转场重叠）──
+  const {introFrames, outroFrames, segFrames, segStarts, totalFrames} = computeMixLayout({
+    segments,
+    subtitles,
+    intro,
+    outro,
+    transitionFrames,
+    fps,
+  });
+  const outroStart = totalFrames - outroFrames;
 
   // 转场类型轮换：显式指定则统一，否则按 dissolve → zoom → slide 循环
   const types: TransitionType[] = ['dissolve', 'zoom', 'slide'];
@@ -62,7 +93,11 @@ export const HighlightMix: React.FC<HighlightMixProps> = ({
         const dur = segFrames[i];
         return (
           <Sequence key={i} from={start} durationInFrames={dur}>
-            <Transition type={type} frames={Math.min(transitionFrames, dur)}>
+            <Transition
+              type={type}
+              frames={Math.min(transitionFrames, dur)}
+              durationInFrames={dur}
+            >
               <Segment segment={seg} subtitles={subtitles} subtitleStyle={subtitleStyle} />
             </Transition>
           </Sequence>
