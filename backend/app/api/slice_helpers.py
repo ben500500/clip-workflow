@@ -193,6 +193,22 @@ class SliceRunRequest(BaseModel):
     highlight_mix_max_clip_duration: Optional[float] = None
     # 拼接顺序：time（按源时间顺序，默认）/ score（按评分从高到低）。
     highlight_mix_order: str = "time"
+    # ── Remotion 混剪增强（模板化编排，替代/增强基础 concat 混剪）──
+    # 全部可选、默认关闭，零侵入基础高光混剪。开启后走 Remotion 后处理增强层
+    # （独立容器渲染），用片头/片尾/段间转场/动态字幕替代裸 concat 拼贴。
+    remotion_mix_enabled: bool = False
+    # 模板名：MVP 仅 highlight（高光混剪增强模板）
+    remotion_template: str = "highlight"
+    # 段间转场帧数（可选，默认 12）
+    remotion_transition_frames: Optional[int] = None
+    # 片头配置：{title, episode, cover_file_key}
+    remotion_intro: Optional[dict] = None
+    # 片尾配置：{text}
+    remotion_outro: Optional[dict] = None
+    # 字幕样式：{fontRatio, color, borderColor}
+    remotion_subtitle_style: Optional[dict] = None
+    # 输出档位（复用 output_tier 语义：720p/1080p）
+    remotion_output_tier: Optional[str] = None
     # ── 竖屏转横屏智能裁切（切片前预处理）──
     # 开启后切片前自动检测素材方向，竖屏素材先转成横屏再切片
     vert2horiz_enabled: bool = False
@@ -322,6 +338,8 @@ class SliceTaskResponse(BaseModel):
     output_tier: Optional[str] = None
     hook_video_key: Optional[str] = None
     hook_video_keys: Optional[list] = None
+    # Remotion 混剪增强配置（开启时展示）
+    remotion_mix_config: Optional[dict] = None
 
     model_config = {"from_attributes": True}
 
@@ -388,6 +406,7 @@ def _serialize_task(task: SliceTask) -> dict:
         "watermark_mask_config": task.watermark_mask_config,
         "text_overlays_config": task.text_overlays_config,
         "output_tier": task.output_tier,
+        "remotion_mix_config": task.remotion_mix_config,
     }
 
 
@@ -575,6 +594,71 @@ def _build_text_overlays_config(data: SliceRunRequest) -> Optional[list]:
             item["offset"] = max(0, int(t.offset))
         result.append(item)
     return result if result else None
+
+
+def _build_remotion_mix_config(data: SliceRunRequest) -> Optional[dict]:
+    """构造 Remotion 混剪增强配置（整包 JSON），未启用时返回 None。
+
+    开启（remotion_mix_enabled=True）时，把前端的平铺字段收敛为 render.ts
+    期望的 HighlightMixProps 数据契约（与 remotion/src/types.ts 一一对应）：
+
+    {
+      "template": "highlight",
+      "enabled": true,
+      "intro": {title, episode, cover_file_key},
+      "outro": {text},
+      "transition_frames": int,
+      "subtitle_style": {fontRatio, color, borderColor},
+      "output_tier": "720p" | "1080p",
+    }
+    """
+    if not data.remotion_mix_enabled:
+        return None
+
+    cfg: dict = {
+        "enabled": True,
+        "template": data.remotion_template or "highlight",
+    }
+
+    # 段间转场帧数（默认 12，>=0）
+    if data.remotion_transition_frames is not None:
+        cfg["transition_frames"] = max(0, int(data.remotion_transition_frames))
+    else:
+        cfg["transition_frames"] = 12
+
+    # 片头配置（可选）
+    if data.remotion_intro:
+        intro: dict = {}
+        if data.remotion_intro.get("title"):
+            intro["title"] = str(data.remotion_intro["title"]).strip()
+        if data.remotion_intro.get("episode"):
+            intro["episode"] = str(data.remotion_intro["episode"]).strip()
+        if data.remotion_intro.get("cover_file_key"):
+            intro["cover_file_key"] = str(data.remotion_intro["cover_file_key"]).strip()
+        if intro:
+            cfg["intro"] = intro
+
+    # 片尾配置（可选）
+    if data.remotion_outro and data.remotion_outro.get("text"):
+        cfg["outro"] = {"text": str(data.remotion_outro["text"]).strip()}
+
+    # 字幕样式（可选，校验关键字段类型）
+    if data.remotion_subtitle_style:
+        style: dict = {}
+        if data.remotion_subtitle_style.get("fontRatio") is not None:
+            style["fontRatio"] = max(0.05, min(0.5, float(data.remotion_subtitle_style["fontRatio"])))
+        if data.remotion_subtitle_style.get("color"):
+            style["color"] = str(data.remotion_subtitle_style["color"])
+        if data.remotion_subtitle_style.get("borderColor"):
+            style["borderColor"] = str(data.remotion_subtitle_style["borderColor"])
+        if style:
+            cfg["subtitle_style"] = style
+
+    # 输出档位（720p/1080p，复用 output_tier 语义）
+    tier = (data.remotion_output_tier or "720p").lower()
+    cfg["output_tier"] = tier if tier in ("720p", "1080p") else "720p"
+
+    return cfg
 
 
 def _build_subtitle_mask_config(data: SliceRunRequest, source_srt: Optional[str] = None) -> Optional[dict]:

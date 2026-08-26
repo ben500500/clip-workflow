@@ -75,6 +75,7 @@ from app.api.slice_helpers import (
     _build_text_overlays_config,
     _build_subtitle_mask_config,
     _build_watermark_mask_config,
+    _build_remotion_mix_config,
     _read_uploaded_subtitle,
     _resolve_source_subtitle_srt,
     _generate_subtitle_config,
@@ -836,7 +837,9 @@ async def _create_slice_task_record(
     subtitle_mask_config = _build_subtitle_mask_config(data, source_subtitle_srt)
     # 构造恒定水印/角标打码配置（打掉片源固定水印，独立开关）
     watermark_mask_config = _build_watermark_mask_config(data)
-    # 持久化竖屏转横屏/角标/字幕/打码/固定文字配置，重试时保留
+    # 构造 Remotion 混剪增强配置（模板化编排，开启时透传给渲染容器；重试时保留）
+    remotion_mix_config = _build_remotion_mix_config(data)
+    # 持久化竖屏转横屏/角标/字幕/打码/固定文字/混剪增强配置，重试时保留
     slice_task.vert2horiz_config = vert2horiz_config
     slice_task.watermark_config = watermark_config
     slice_task.badges_config = badges_config
@@ -845,6 +848,7 @@ async def _create_slice_task_record(
     slice_task.subtitle_mask_config = subtitle_mask_config
     slice_task.text_overlays_config = text_overlays_config
     slice_task.watermark_mask_config = watermark_mask_config
+    slice_task.remotion_mix_config = remotion_mix_config
     # 视频封面：选择图片作为视频首帧（重试时保留）。
     # 优先请求中的封面；未显式指定时回退到该集独立封面（按剧集存储），
     # 仍为空则引擎使用源视频首帧。
@@ -867,6 +871,7 @@ async def _create_slice_task_record(
         "text_overlays": text_overlays_config,
         "subtitle_mask": subtitle_mask_config,
         "watermark_mask": watermark_mask_config,
+        "remotion_mix": remotion_mix_config,
     }
     return slice_task, configs
 
@@ -1613,6 +1618,7 @@ async def retry_slice_task(
         cover_image_key=task.cover_image_key,
         hook_video_key=getattr(task, "hook_video_key", None),
         hook_video_keys=getattr(task, "hook_video_keys", None),
+        remotion_mix_config=getattr(task, "remotion_mix_config", None),
         output_tier=getattr(task, "output_tier", None) or "auto",
         status="pending",
         progress=0.0,
