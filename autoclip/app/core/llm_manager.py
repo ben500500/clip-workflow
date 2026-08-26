@@ -108,6 +108,15 @@ class LLMManager:
 
     def _get_api_key_for_provider(self, provider_type: ProviderType) -> Optional[str]:
         """获取指定提供商的API密钥"""
+        # 在线网关优先：当 LLM_API_BASE 指向非默认 DashScope 网关（如 Agnes/硅基流动等）时，
+        # 系统设置 llm_config.llm_api_key 已运行时下发到 LLM_API_KEY，优先使用它作为网关密钥，
+        # 避免拿 DashScope key 去打 Agnes 网关导致 401 无效令牌。
+        llm_api_base = os.getenv("LLM_API_BASE", "").rstrip("/")
+        if llm_api_base and "dashscope" not in llm_api_base:
+            llm_api_key = os.getenv("LLM_API_KEY", "").strip()
+            if llm_api_key:
+                logger.info(f"{provider_type.value} 使用在线网关密钥 LLM_API_KEY（base={llm_api_base}）")
+                return llm_api_key
         key_mapping = {
             ProviderType.DASHSCOPE: "dashscope_api_key",
             ProviderType.OPENAI: "openai_api_key",

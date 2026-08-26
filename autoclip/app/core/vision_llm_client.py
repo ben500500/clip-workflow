@@ -89,16 +89,21 @@ class VisionLLMClient:
         url = f"{self.base_url}/chat/completions"
 
         try:
-            import httpx
+            from curl_cffi import requests as cfrequests
         except ImportError:
-            logger.error("在线视觉模型需要 httpx（pip install httpx）")
+            logger.error("在线视觉模型需要 curl_cffi（pip install curl_cffi）")
             return None
 
         last_err: Optional[Exception] = None
         for attempt in range(VISION_MAX_RETRIES + 1):
             try:
-                with httpx.Client(timeout=httpx.Timeout(VISION_TIMEOUT)) as client:
-                    resp = client.post(url, headers=headers, json=payload)
+                resp = cfrequests.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    impersonate="chrome",
+                    timeout=VISION_TIMEOUT,
+                )
                 if resp.status_code >= 400:
                     logger.warning(
                         f"在线视觉模型 HTTP {resp.status_code}（第{attempt + 1}次）: {resp.text[:300]}"

@@ -16,6 +16,7 @@ redis>=5.0.0,<6.0.0
 
 # ==================== HTTP 客户端 ====================
 httpx>=0.26.0,<1.0.0
+curl_cffi>=0.16.0,<1.0.0  # 浏览器TLS指纹伪装，绕过Cloudflare对Agnes POST的Bot拦截
 requests>=2.31.0,<3.0.0  # DashScope compatible-mode / ASR 调用
 
 # ==================== 数据库 ====================

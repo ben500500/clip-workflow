@@ -58,7 +58,7 @@ async def _merge_default_autoclip_config(db, config: Optional[dict]) -> dict:
         if llm_cfg and isinstance(llm_cfg.value, dict):
             for k, v in llm_cfg.value.items():
                 if v not in (None, ""):
-                    base.setdefault(k, v)
+                    base[k] = v  # 覆盖语义：系统 llm_config（网关/模型/key）优先于 default_autoclip_config
     except Exception as e:
         logger.warning("读取系统设置 llm_config 失败，使用请求参数: %s", e)
 

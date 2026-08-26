@@ -203,7 +203,6 @@ services:
       <<: *common-env
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       API_MODEL_NAME: ${API_MODEL_NAME:-qwen-plus}
-      LLM_API_BASE: ${LLM_API_BASE:-}
       DASHSCOPE_MODE: ${DASHSCOPE_MODE:-compatible}
       SERVICE_MODE: api
       # 解耦模式提速：autoclip 多进程选点并发（1=单进程，建议 2~3 发挥并行价值；
