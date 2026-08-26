@@ -49,6 +49,9 @@ celery_app.conf.update(
         "selection": {"exchange": "selection"},
         # 变体生成独立队列：ffmpeg 重计算 + 撞车重试，避免被 batch 任务挤占 default 8 小时（#274 A2）
         "variant": {"exchange": "variant"},
+        # Remotion 混剪增强独立队列：Node+Chrome 逐帧渲染慢，独占 worker-remotion 容器，
+        # 避免与 ffmpeg 切片抢 CPU 导致双方超时被杀
+        "remotion": {"exchange": "remotion"},
         "default": {"exchange": "default"},
     },
     task_routes={
@@ -74,6 +77,9 @@ celery_app.conf.update(
         # 不再与 batch/slice 抢 default/video_processing，杜绝排队 8 小时 + 超时被杀。
         "app.celery.variant_tasks.generate_variants_task": {"queue": "variant"},
         "app.celery.variant_tasks.verify_variant_fingerprint_task": {"queue": "variant"},
+        # Remotion 混剪增强：独立 remotion 队列，独占 worker-remotion 容器消费（Node+Chrome 渲染）。
+        "app.celery.remotion_tasks.run_remotion_mix_task": {"queue": "remotion"},
+        "app.celery.remotion_tasks.remotion_stale_recovery_task": {"queue": "remotion"},
     },
     beat_schedule={
         "collect-metrics-daily": {
@@ -124,6 +130,12 @@ celery_app.conf.update(
         "publish-schedule-dispatcher": {
             "task": "app.celery.tasks.publish_schedule_dispatcher",
             "schedule": 60.0,
+        },
+        # Remotion 混剪增强：周期巡检 stuck 在 rendering 的超时渲染任务并回写 failed
+        #（防 Remotion worker 崩溃/节点重启导致永久 rendering，参考 video_processing 队列守护）
+        "remotion-stale-recovery": {
+            "task": "app.celery.remotion_tasks.remotion_stale_recovery_task",
+            "schedule": settings.REMOTION_STALE_INTERVAL_SECONDS,
         },
     },
 )

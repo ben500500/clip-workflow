@@ -361,6 +361,31 @@ services:
     # #274 A2：ffmpeg 重计算，不再与 batch/slice 挤 default/video_processing，杜绝排队 8 小时 + 超时被杀。并发 1。
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "variant", "--loglevel=info", "--concurrency=1"]
 
+  worker-remotion:
+    <<: *celery-worker-base
+    # Remotion 混剪增强独立 worker：使用专用镜像（node:20-slim + chromium + Python/Celery），
+    # 独占 remotion 队列（run_remotion_mix_task）。Node+Chrome 逐帧渲染慢，并发 1，
+    # 不与其他 ffmpeg worker 抢 CPU。复用 x-celery-worker-base anchor（env/volumes/healthcheck）。
+    image: clip-remotion-worker:latest
+    container_name: clip-worker-remotion
+    # REMOTION_ENABLED 关闭时任务内部直接跳过（零侵入），镜像默认 CMD 已订阅 remotion 队列，
+    # 此处显式声明以明确队列与并发。
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "remotion", "--loglevel=info", "--concurrency=1"]
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/2
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+      # Remotion 渲染容器内 render.js 入口 / chromium 路径
+      REMOTION_RENDER_SCRIPT: /remotion/dist/render.js
+      REMOTION_CHROMIUM_EXECUTABLE: /usr/bin/chromium
+      REMOTION_TMP_DIR: /tmp/remotion
+
   worker-selection:
     <<: *celery-worker-base
     container_name: clip-worker-selection

@@ -221,6 +221,10 @@ class SliceTask(Base):
     # Remotion 混剪增强配置（可选，整包 JSON：enabled/template/intro/outro/transition_frames/
     # subtitle_style/output_tier）；开启时透传给独立 Remotion 渲染容器；重试时保留
     remotion_mix_config = Column(JSON, nullable=True)
+    # Remotion 混剪增强渲染产物 MinIO file_key（渲染成功后写入，成品库可预览/发布）
+    remotion_output_file_key = Column(String(500), nullable=True)
+    # Remotion 混剪增强渲染状态（pending/rendering/done/failed；未启用时为 None）
+    remotion_status = Column(String(20), nullable=True)
     status = Column(String(50), nullable=True)
     progress = Column(Float, default=0.0)
     output_count = Column(Integer, default=0)
