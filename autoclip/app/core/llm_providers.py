@@ -153,7 +153,12 @@ class DashScopeProvider(LLMProvider):
         else:
             # compatible
             try:
-                import requests
+                try:
+                    from curl_cffi import requests as http_client
+                    _http_kwargs = {"impersonate": "chrome"}
+                except ImportError:
+                    import requests as http_client
+                    _http_kwargs = {}
                 full_input = self._build_full_input(prompt, input_data)
                 headers = {
                     "Authorization": f"Bearer {self.api_key}",
@@ -172,7 +177,7 @@ class DashScopeProvider(LLMProvider):
                     timeout = int(os.getenv("API_TIMEOUT", "120") or 120)
                 except (TypeError, ValueError):
                     timeout = 120
-                resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+                resp = http_client.post(url, headers=headers, json=payload, timeout=timeout, **_http_kwargs)
                 if resp.status_code != 200:
                     try:
                         err = resp.json()
