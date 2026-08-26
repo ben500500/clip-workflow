@@ -15,7 +15,7 @@ import Dragger from 'antd/es/upload/Dragger';
 import { batchSliceApi, BatchSlice, BatchSliceItem, BatchSliceOutputItem } from '../api/batchSlice';
 import { sliceApi, type TextOverlayItem } from '../api/slice';
 import { formatDuration } from '../utils/format';
-import { loadCustomPresets, type SlicePreset } from '../utils/slicePresets';
+import { loadCustomPresets, buildBatchSlicePayload, DEFAULT_SLICE_PRESET, type SlicePreset } from '../utils/slicePresets';
 import { useDedupePresets } from '../hooks/useDedupePresets';
 
 const { Text, Title } = Typography;
@@ -29,116 +29,27 @@ interface FlattenOutput {
   file: Record<string, unknown>;
 }
 
-// ── 一键切片配置（复用剧集详情页的常用配置项，整批统一生效）──
-// AI 智能选点配置
-interface AutoClipConfig {
-  enabled: boolean;
-  max_clips: number;
-  min_score_threshold: number;
-  min_duration: number;
-  max_duration: number;
-  frame_analysis: boolean;
-  frame_analysis_provider?: string;
-}
-// 通用区间检测配置
+// ── 一键切片配置（单一事实源 = utils/slicePresets.ts 的 SlicePreset；批量专属开关不入预设）──
+// 通用区间检测配置（批量专属）
 interface IntervalConfig {
   enabled: boolean;
   mode: 'credits' | 'static' | 'watermark';
 }
 
-interface SliceConfigState {
-  autoclip: AutoClipConfig;
+// 复用 SlicePreset 全部字段（含扁平 AI 选点 max_clips/min_clip_duration/max_clip_duration/
+// min_score_threshold/frame_analysis/frame_analysis_provider、dedupe_enabled、highlight_mix_*、
+// watermark_mask_*、badge_default_width、auto_autoclip_if_empty 等），仅补充批量专属 autoclip.enabled / interval。
+type SliceConfigState = Omit<SlicePreset, 'id' | 'name'> & {
+  autoclip: { enabled: boolean };
   interval: IntervalConfig;
-  vert2horiz_enabled: boolean;
-  vert2horiz_mode: 'fixed' | 'dynamic';
-  vert2horiz_ratio: number;
-  vert2horiz_output_size: string;
-  vert2horiz_detect_interval: number;
-  vert2horiz_smooth_window: number;
-  vert2horiz_min_step: number;
-  vert2horiz_face_margin: number;
-  subtitle_enabled: boolean;
-  subtitle_font_ratio: number;
-  subtitle_spacing: number;
-  subtitle_bold: number;
-  subtitle_style: 'default' | 'custom';
-  subtitle_color: string;
-  subtitle_border_color: string;
-  subtitle_align_mask: boolean;
-  subtitle_mask_enabled: boolean;
-  subtitle_mask_style: 'delogo' | 'mosaic' | 'blur' | 'gblur' | 'fill';
-  subtitle_mask_temporal: boolean;
-  subtitle_mask_spatial: boolean;
-  subtitle_mask_preset: string;
-  subtitle_mask_width_ratio: number;
-  subtitle_mask_height_ratio: number;
-  subtitle_mask_bottom_ratio: number;
-  subtitle_mask_srt_offset: number;
-  dedupe_preset: string;
-  output_tier: string;
-  text_overlay_enabled: boolean;
-  text_overlays: { text: string; position: string; font_size: number; color: string; border_color?: string; vertical?: boolean }[];
-  watermark_enabled: boolean;
-  watermark_text: string;
-  watermark_font_size: number;
-  watermark_opacity: number;
-  watermark_position: string;
-  watermark_style: string;
-}
+};
 
+// 批量默认配置派生自 DEFAULT_SLICE_PRESET（subtitle_font_ratio=0.22 / subtitle_spacing=-2 /
+// dedupe_preset='std_crop_desat' 等随之统一），仅批量专属开关单独初始化。
 const DEFAULT_SLICE_CONFIG: SliceConfigState = {
-  autoclip: {
-    enabled: true,
-    max_clips: 30,
-    min_score_threshold: 50,
-    min_duration: 20,
-    max_duration: 70,
-    frame_analysis: true,
-    frame_analysis_provider: 'ollama',
-  },
-  interval: {
-    enabled: true,
-    mode: 'credits',
-  },
-  vert2horiz_enabled: true,
-  vert2horiz_mode: 'dynamic',
-  vert2horiz_ratio: 0.5625,
-  vert2horiz_output_size: '1280x720',
-  vert2horiz_detect_interval: 2,
-  vert2horiz_smooth_window: 15,
-  vert2horiz_min_step: 5,
-  vert2horiz_face_margin: 0.30,
-  subtitle_enabled: true,
-  subtitle_font_ratio: 0.30,
-  subtitle_spacing: 0,
-  subtitle_bold: 0,
-  subtitle_style: 'custom',
-  subtitle_color: '#EDD736',
-  subtitle_border_color: '#000000',
-  subtitle_align_mask: true,
-  subtitle_mask_enabled: false,
-  subtitle_mask_style: 'delogo',
-  subtitle_mask_temporal: true,
-  subtitle_mask_spatial: false,
-  subtitle_mask_preset: 'auto',
-  subtitle_mask_width_ratio: 0.9,
-  subtitle_mask_height_ratio: 0.12,
-  subtitle_mask_bottom_ratio: 0.02,
-  subtitle_mask_srt_offset: 0,
-  dedupe_preset: 'standard',
-  output_tier: 'auto',
-  text_overlay_enabled: true,
-  text_overlays: [
-    { text: '热门短剧', position: 'top-right', font_size: 40, color: '#EDD736', border_color: '#000000' },
-    { text: '免费热门短剧', position: 'bottom-left', font_size: 36, color: '#FFFFFF', border_color: '#000000' },
-    { text: '本故事纯属虚构', position: 'left', font_size: 36, color: '#FFFFFF', border_color: '#000000', vertical: true },
-  ],
-  watermark_enabled: false,
-  watermark_text: '',
-  watermark_font_size: 28,
-  watermark_opacity: 0.5,
-  watermark_position: 'bottom',
-  watermark_style: 'scroll',
+  ...DEFAULT_SLICE_PRESET,
+  autoclip: { enabled: true },
+  interval: { enabled: true, mode: 'credits' },
 };
 
 // 与剧集详情页「一键切片配置」共用的一套预设（C2 收敛到 utils/slicePresets.ts，读 slice_presets_v1）
@@ -195,48 +106,22 @@ const BatchSlicePage: React.FC = () => {
     setPresetOptions(loadCustomPresets());
   }, []);
 
-  // 应用选中的一键切片配置预设：把与详情页重叠的字段映射到本页 sliceConfig
+  // 应用选中的一键切片配置预设：完整映射 SlicePreset 全部字段到本页 sliceConfig（单一事实源）
   const applySlicePreset = (id: string) => {
     const p = presetOptions.find((x) => x.id === id);
     if (!p) return;
     setSlicePresetId(id);
+    const { id: _pid, name: _pname, ...presetFields } = p;
     setSliceConfig((prev) => ({
       ...prev,
-      vert2horiz_enabled: p.vert2horiz_enabled,
-      vert2horiz_mode: p.vert2horiz_mode || 'dynamic',
-      vert2horiz_ratio: p.vert2horiz_ratio,
-      vert2horiz_output_size: p.vert2horiz_output_size,
-      vert2horiz_detect_interval: p.vert2horiz_detect_interval,
-      vert2horiz_smooth_window: p.vert2horiz_smooth_window,
-      vert2horiz_min_step: p.vert2horiz_min_step,
-      vert2horiz_face_margin: p.vert2horiz_face_margin,
-      subtitle_enabled: p.subtitle_enabled,
-      subtitle_font_ratio: p.subtitle_font_ratio,
-      subtitle_spacing: p.subtitle_spacing,
-      subtitle_bold: p.subtitle_bold,
-      subtitle_style: p.subtitle_style,
-      subtitle_color: p.subtitle_color,
-      subtitle_border_color: p.subtitle_border_color,
-      subtitle_align_mask: p.subtitle_align_mask,
-      subtitle_mask_enabled: p.subtitle_mask_enabled,
-      subtitle_mask_style: p.subtitle_mask_style,
-      subtitle_mask_temporal: p.subtitle_mask_temporal,
-      subtitle_mask_spatial: p.subtitle_mask_spatial,
-      subtitle_mask_preset: p.subtitle_mask_preset || 'auto',
-      subtitle_mask_width_ratio: p.subtitle_mask_width_ratio,
-      subtitle_mask_height_ratio: p.subtitle_mask_height_ratio,
-      subtitle_mask_bottom_ratio: p.subtitle_mask_bottom_ratio,
-      subtitle_mask_srt_offset: p.subtitle_mask_srt_offset,
-      dedupe_preset: p.dedupe_preset || 'standard',
-      output_tier: p.output_tier || 'auto',
-      text_overlay_enabled: p.text_overlay_enabled,
-      text_overlays: p.text_overlays ? p.text_overlays.map((t) => ({ text: t.text, position: t.position, font_size: t.font_size ?? 40, color: t.color ?? '#EDD736', border_color: t.border_color, vertical: t.vertical, offset: t.offset })) : prev.text_overlays,
-      watermark_enabled: p.watermark_enabled,
-      watermark_text: p.watermark_text,
-      watermark_font_size: p.watermark_font_size,
-      watermark_opacity: p.watermark_opacity,
-      watermark_position: p.watermark_position,
-      watermark_style: p.watermark_style,
+      ...presetFields,
+      // 批量专属开关保持本页值，不随预设覆盖
+      autoclip: prev.autoclip,
+      interval: prev.interval,
+      // 固定文字深拷贝，避免与预设对象共享引用
+      text_overlays: presetFields.text_overlays
+        ? presetFields.text_overlays.map((t) => ({ ...t, offset: t.offset }))
+        : prev.text_overlays,
     }));
   };
 
@@ -370,29 +255,12 @@ const BatchSlicePage: React.FC = () => {
     return {
       drama: parsed.drama.trim(),
       episodes: parsed.episodes,
-      slice_config: {
-        mode: 'fast',
-        ...sliceConfig,
-        // AI 智能选点：配置并入 autoclip_config / autoclip_enabled
-        autoclip_enabled: sliceConfig.autoclip.enabled,
-        autoclip_config: {
-          max_clips: sliceConfig.autoclip.max_clips,
-          min_score_threshold: sliceConfig.autoclip.min_score_threshold,
-          min_duration: sliceConfig.autoclip.min_duration,
-          max_duration: sliceConfig.autoclip.max_duration,
-          frame_analysis: sliceConfig.autoclip.frame_analysis,
-          frame_analysis_provider: sliceConfig.autoclip.frame_analysis_provider,
-        },
-        // 通用区间检测：配置并入 interval_config / interval_enabled
-        interval_enabled: sliceConfig.interval.enabled,
-        interval_config: {
-          mode: sliceConfig.interval.mode,
-        },
-        // text_overlays 仅开启时透传
-        text_overlays: sliceConfig.text_overlay_enabled ? sliceConfig.text_overlays : [],
-        // 去重档位（轻/标准/重，仅 dedupe 模式生效）
-        dedupe_config: { preset: sliceConfig.dedupe_preset },
-      },
+      // 统一走共享映射 buildBatchSlicePayload（SlicePreset → 批量后端 payload，单一事实源）
+      slice_config: buildBatchSlicePayload(sliceConfig, {
+        autoclipEnabled: sliceConfig.autoclip.enabled,
+        intervalEnabled: sliceConfig.interval.enabled,
+        intervalMode: sliceConfig.interval.mode,
+      }),
     };
   };
 
@@ -846,40 +714,40 @@ const BatchSlicePage: React.FC = () => {
               <>
                 <Text>候选数</Text>
                 <InputNumber
-                  value={sliceConfig.autoclip.max_clips}
-                  onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, max_clips: v ?? 30 } })}
+                  value={sliceConfig.max_clips}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, max_clips: v ?? 30 })}
                   min={1}
                   max={200}
                 />
                 <Text>最低评分</Text>
                 <InputNumber
-                  value={sliceConfig.autoclip.min_score_threshold}
-                  onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, min_score_threshold: v ?? 50 } })}
+                  value={sliceConfig.min_score_threshold}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, min_score_threshold: v ?? 50 })}
                   min={0}
                   max={100}
                 />
                 <Text>最短时长(s)</Text>
                 <InputNumber
-                  value={sliceConfig.autoclip.min_duration}
-                  onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, min_duration: v ?? 0 } })}
+                  value={sliceConfig.min_clip_duration}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, min_clip_duration: v ?? 0 })}
                   min={0}
                 />
                 <Text>最长时长(s)</Text>
                 <InputNumber
-                  value={sliceConfig.autoclip.max_duration}
-                  onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, max_duration: v ?? 0 } })}
+                  value={sliceConfig.max_clip_duration}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, max_clip_duration: v ?? 0 })}
                   min={0}
                 />
                 <Text>画面理解</Text>
                 <Switch
-                  checked={sliceConfig.autoclip.frame_analysis}
-                  onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, frame_analysis: v } })}
+                  checked={sliceConfig.frame_analysis}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, frame_analysis: v })}
                 />
-                {sliceConfig.autoclip.frame_analysis && (
+                {sliceConfig.frame_analysis && (
                   <Select
                     size="small"
-                    value={sliceConfig.autoclip.frame_analysis_provider}
-                    onChange={(v) => setSliceConfig({ ...sliceConfig, autoclip: { ...sliceConfig.autoclip, frame_analysis_provider: v } })}
+                    value={sliceConfig.frame_analysis_provider}
+                    onChange={(v) => setSliceConfig({ ...sliceConfig, frame_analysis_provider: v })}
                     style={{ width: 100 }}
                     options={[
                       { value: 'ollama', label: '本地模型' },
@@ -985,14 +853,20 @@ const BatchSlicePage: React.FC = () => {
           </Space>
 
           <Space size="large" align="center">
-            <Text>去重档位：</Text>
+            <Text>画面去重：</Text>
+            <Switch
+              checked={sliceConfig.dedupe_enabled}
+              onChange={(v) => setSliceConfig({ ...sliceConfig, dedupe_enabled: v })}
+            />
+            <Text>档位</Text>
             <Select
               value={sliceConfig.dedupe_preset}
               onChange={(v) => setSliceConfig({ ...sliceConfig, dedupe_preset: v })}
               style={{ width: 190 }}
               options={dedupePresetOptions}
+              disabled={!sliceConfig.dedupe_enabled}
             />
-            <Tooltip title="去重档位（轻/标准/重），用于降低平台查重风险。仅 dedupe 切片模式生效。">
+            <Tooltip title="画面去重：开启后按档位做画面去重，降低平台查重风险；与单切片预设 dedupe_enabled 一致。">
               <Tag color="blue">去重档位</Tag>
             </Tooltip>
           </Space>

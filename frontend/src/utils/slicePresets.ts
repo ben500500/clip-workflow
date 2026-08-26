@@ -146,6 +146,67 @@ export const DEFAULT_SLICE_PRESET: SlicePreset = {
 };
 
 /**
+ * 批量切片专用额外配置（不纳入预设，仅 BatchSlice 页使用）。
+ */
+export interface BatchSliceExtras {
+  autoclipEnabled?: boolean;
+  intervalEnabled?: boolean;
+  intervalMode?: 'credits' | 'static' | 'watermark';
+}
+
+/**
+ * 共享映射：SlicePreset → 批量切片后端 slice_config（单一事实源）。
+ *
+ * 批量切片接口（backend/app/api/batch_slice.py → _trigger_slice）对 slice_config
+ * 按白名单透传，本函数严格对齐该白名单字段名，确保前端预设里配置的每一项都能生效。
+ *
+ * AI 选点参数统一为扁平 `max_clips/min_clip_duration/max_clip_duration/`
+ * `min_score_threshold/frame_analysis/frame_analysis_provider`（与 SlicePreset 一致），
+ * 再映射进后端 `autoclip_config` 期望的 `min_duration/max_duration`（与 EpisodeDetail 一致）。
+ */
+export function buildBatchSlicePayload(
+  preset: Omit<SlicePreset, 'id' | 'name'>,
+  extras: BatchSliceExtras = {},
+): Record<string, unknown> {
+  return {
+    // 透传 SlicePreset 全字段（白名单过滤掉 id/name/扁平 AI 选点等非后端字段）
+    ...preset,
+    mode: 'fast',
+    auto_accept_all: true,
+    // AI 智能选点：扁平参数并入 autoclip_config / autoclip_enabled
+    autoclip_enabled: extras.autoclipEnabled ?? true,
+    autoclip_config: {
+      max_clips: preset.max_clips,
+      min_score_threshold: preset.min_score_threshold ?? undefined,
+      min_duration: preset.min_clip_duration ?? undefined,
+      max_duration: preset.max_clip_duration ?? undefined,
+      frame_analysis: preset.frame_analysis,
+      frame_analysis_provider: preset.frame_analysis_provider ?? undefined,
+      highlight_mode: preset.highlight_mode,
+      highlight_max_duration: preset.highlight_mode ? preset.highlight_max_duration : undefined,
+    },
+    // 通用区间检测：配置并入 interval_config / interval_enabled
+    interval_enabled: extras.intervalEnabled ?? true,
+    interval_config: { mode: extras.intervalMode ?? 'credits' },
+    // 去重：仅开关启用时下发档位（与单切片一致）
+    dedupe_config: preset.dedupe_enabled ? { preset: preset.dedupe_preset } : undefined,
+    // 固定文字角标：仅开启时透传
+    text_overlays: preset.text_overlay_enabled ? preset.text_overlays : [],
+    // 恒定水印/角标打码：仅开启时透传
+    watermark_mask_enabled: preset.watermark_mask_enabled,
+    watermark_mask_style: preset.watermark_mask_enabled ? preset.watermark_mask_style : undefined,
+    watermark_mask_width_ratio: preset.watermark_mask_enabled ? preset.watermark_mask_width_ratio : undefined,
+    watermark_mask_height_ratio: preset.watermark_mask_enabled ? preset.watermark_mask_height_ratio : undefined,
+    watermark_mask_bottom_ratio: preset.watermark_mask_enabled ? preset.watermark_mask_bottom_ratio : undefined,
+    // 高光混剪：仅启用时透传
+    highlight_mix_enabled: preset.highlight_mix_enabled,
+    highlight_mix_max_duration: preset.highlight_mix_enabled ? preset.highlight_mix_max_duration : undefined,
+    highlight_mix_max_clip_duration: preset.highlight_mix_enabled ? preset.highlight_mix_max_clip_duration : undefined,
+    highlight_mix_order: preset.highlight_mix_enabled ? preset.highlight_mix_order : undefined,
+  };
+}
+
+/**
  * 读取保存的自定义预设（localStorage slice_presets_v1 存的都是非默认预设，与旧逻辑一致）。
  * 失败或为空返回 []。BatchSlice / ProjectDetail 用它展示「一键切片配置」下拉选项。
  */
