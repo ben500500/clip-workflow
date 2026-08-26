@@ -229,6 +229,23 @@ class Settings(BaseSettings):
     FEISHU_DRAMA_COL: str = "剧目名称"
     FEISHU_THEATER_COL: str = "剧场"
 
+    # ── Remotion 高光混剪增强（MVP：模板化编排的混剪包装层）──
+    # 生产安全开关（参考 SPARKLE_ENABLED 思路）：默认关闭，开启后切片启用
+    # remotion_mix_enabled 时才会触发 Remotion 渲染容器出增强版混剪。
+    REMOTION_ENABLED: bool = False
+    # Remotion 渲染容器内 render.js 入口路径（可被 env 覆盖）
+    REMOTION_RENDER_SCRIPT: str = "/remotion/dist/render.js"
+    # Remotion 渲染临时目录（源视频/封面/props/产物落盘）
+    REMOTION_TMP_DIR: str = "/tmp/remotion"
+    # 渲染产物上传到 sliced 桶的 key 前缀
+    REMOTION_OUTPUT_PREFIX: str = "remotion"
+    # Remotion 渲染独立队列（由 worker-remotion 独占消费）
+    REMOTION_QUEUE: str = "remotion"
+    # Remotion 渲染超时守护巡检间隔（秒）：周期回写 stuck 在 rendering 的超时任务为 failed
+    REMOTION_STALE_INTERVAL_SECONDS: int = 300
+    # Remotion 渲染任务超时阈值（秒）：超过该时长仍 rendering 视为卡死，守护任务回写 failed
+    REMOTION_RENDER_TIMEOUT_SECONDS: int = 3600
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

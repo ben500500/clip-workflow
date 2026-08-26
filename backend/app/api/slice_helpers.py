@@ -340,6 +340,9 @@ class SliceTaskResponse(BaseModel):
     hook_video_keys: Optional[list] = None
     # Remotion 混剪增强配置（开启时展示）
     remotion_mix_config: Optional[dict] = None
+    # Remotion 混剪增强渲染产物 MinIO key / 渲染状态（P2 回写，前端任务列表展示）
+    remotion_output_file_key: Optional[str] = None
+    remotion_status: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -407,6 +410,8 @@ def _serialize_task(task: SliceTask) -> dict:
         "text_overlays_config": task.text_overlays_config,
         "output_tier": task.output_tier,
         "remotion_mix_config": task.remotion_mix_config,
+        "remotion_output_file_key": task.remotion_output_file_key,
+        "remotion_status": task.remotion_status,
     }
 
 

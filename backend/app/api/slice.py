@@ -93,6 +93,10 @@ from app.api.slice_helpers import (
 # 无循环依赖：autoclip 模块不反向导入 slice）
 from app.api.autoclip import AutoClipRunRequest, run_autoclip
 
+# Remotion 混剪增强：任务创建时若启用了 remotion_mix_config，投递渲染任务到 remotion 队列
+# （独立 worker-remotion 容器消费；REMOTION_ENABLED 关闭时任务内部直接跳过，零侵入）
+from app.celery.remotion_tasks import run_remotion_mix_task
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -873,6 +877,19 @@ async def _create_slice_task_record(
         "watermark_mask": watermark_mask_config,
         "remotion_mix": remotion_mix_config,
     }
+
+    # Remotion 混剪增强：启用时投递渲染任务到 remotion 队列（独立 worker-remotion 消费）。
+    # 仅当 remotion_mix_config 非空时触发，未启用零侵入。任务内部由 REMOTION_ENABLED 开关兜底。
+    if slice_task.remotion_mix_config:
+        try:
+            run_remotion_mix_task.delay(str(slice_task.id))
+        except Exception as e:
+            # 投递失败不阻塞主切片链路：记录日志，渲染状态置 failed 供重试
+            logger.error("投递 Remotion 渲染任务失败 slice_task=%s: %s", slice_task.id, e)
+            slice_task.remotion_status = "failed"
+            slice_task.error_message = f"投递 Remotion 渲染任务失败: {e}"
+            await db.flush()
+
     return slice_task, configs
 
 

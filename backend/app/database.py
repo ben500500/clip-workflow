@@ -284,6 +284,9 @@ async def _apply_compat_migrations():
         ("slice_tasks", "output_tier", "VARCHAR(20)"),
         # Remotion 混剪增强（0046_slice_task_remotion_mix）：整包 JSON config，老库由 compat 补列
         ("slice_tasks", "remotion_mix_config", "JSON"),
+        # Remotion 混剪增强渲染结果（0047_slice_task_remotion_result）：产物 file_key + 渲染状态
+        ("slice_tasks", "remotion_output_file_key", "VARCHAR(500)"),
+        ("slice_tasks", "remotion_status", "VARCHAR(20)"),
         # 切片候选高光形态（0042_clip_candidate_clip_type）：suspense_cut/full_highlight/highlight
         ("clip_candidates", "clip_type", "VARCHAR(50)"),
     ]
