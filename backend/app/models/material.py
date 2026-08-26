@@ -218,6 +218,9 @@ class SliceTask(Base):
     hook_video_keys = Column(JSON, nullable=True)
     # 输出档位（original/auto/1080p/720p/480p）：高分辨率/高 fps 素材降档提速；重试时保留
     output_tier = Column(String(20), nullable=True)
+    # Remotion 混剪增强配置（可选，整包 JSON：enabled/template/intro/outro/transition_frames/
+    # subtitle_style/output_tier）；开启时透传给独立 Remotion 渲染容器；重试时保留
+    remotion_mix_config = Column(JSON, nullable=True)
     status = Column(String(50), nullable=True)
     progress = Column(Float, default=0.0)
     output_count = Column(Integer, default=0)

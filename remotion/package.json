@@ -1,0 +1,30 @@
+{
+  "name": "clip-remotion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Remotion 混剪增强渲染工程（P1 MVP）",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "render": "node dist/render.js",
+    "typecheck": "tsc --noEmit",
+    "start": "remotion studio"
+  },
+  "dependencies": {
+    "@remotion/bundler": "^4.0.0",
+    "@remotion/cli": "^4.0.0",
+    "@remotion/renderer": "^4.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "esbuild@0.20.2": true
+  }
+}
