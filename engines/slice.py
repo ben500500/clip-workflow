@@ -753,11 +753,14 @@ def run_ffmpeg(args, timeout=3600, threads=1):
                 return proc2
             # 回退也失败：合并硬件原命令与回退命令两侧的 stderr，报错信息更清晰
             sw_stderr = proc2.stderr.decode(errors="replace")
+            open("/app/media/ffmpeg_err.log","w").write(stderr_txt + "\n\n===回退命令 stderr===\n" + sw_stderr)
             raise RuntimeError(
                 "ffmpeg failed (硬件编码器与 libx264 回退均失败)\n"
                 f"原命令 stderr: {stderr_txt[-1200:]}\n"
                 f"回退命令 stderr: {sw_stderr[-1200:]}"
             )
+        import datetime
+        open("/app/media/ffmpeg_err.log","w").write(stderr_txt)
         raise RuntimeError("ffmpeg failed: " + stderr_txt[-2000:])
     return proc
 
@@ -869,9 +872,17 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
     if copy_if_possible and all(_is_copy_segment(p) for p in parts):
         _concat_demuxer(parts, out)
         return
-    filter_complex = "".join(
-        f"[{i}:v][{i}:a]" for i in range(len(parts))
-    ) + f"concat=n={len(parts)}:v=1:a=1[v][a]"
+    # 统一所有输入的分辨率/SAR/音频格式，避免 concat filter 因参数不一致失败
+    # target尺寸取竖屏标准 720x1280（hook封面叠加尺寸），源视频 scale 后可能非整数高度
+    TW, TH = 720, 1280
+    uniform_filter = "".join(
+        f"[{i}:v]scale={TW}:{TH}:force_original_aspect_ratio=decrease,"
+        f"pad={TW}:{TH}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{i}];"
+        f"[{i}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a{i}];"
+        for i in range(len(parts))
+    )
+    concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(parts)))
+    filter_complex = uniform_filter + concat_inputs + f"concat=n={len(parts)}:v=1:a=1[v][a]"
     cmd = [
         "ffmpeg", "-y",
         "-threads", str(threads),
@@ -884,6 +895,8 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
     ]
     cmd += build_encoder_args(encoder, threads)
     cmd += ["-c:a", "aac", "-b:a", "128k", out]
+    print(f"[SLICE-DEBUG] concat cmd: filter_complex={filter_complex[:500]}", file=sys.stderr)
+    print(f"[SLICE-DEBUG] concat parts: {parts}", file=sys.stderr)
     run_ffmpeg(cmd, threads=threads)
 
 
