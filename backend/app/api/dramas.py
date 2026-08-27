@@ -1058,14 +1058,23 @@ async def drama_import_confirm(
                 errors.append({"id": raw_id, "error": f"name conflict: {new_name}"})
                 continue
             d.name = new_name
-        d.frequency = item.frequency
-        d.type = item.type
-        d.tags = item.tags
-        d.rating = item.rating
-        d.synopsis = item.synopsis
-        d.listing_status = item.listing_status
-        d.material_link = item.material_link
-        d.material_link_pwd = item.material_link_pwd
+        # 只在有新值时更新，避免空值覆盖既有数据
+        if item.frequency is not None:
+            d.frequency = item.frequency
+        if item.type is not None:
+            d.type = item.type
+        if item.tags is not None:
+            d.tags = item.tags
+        if item.rating is not None:
+            d.rating = item.rating
+        if item.synopsis is not None:
+            d.synopsis = item.synopsis
+        if item.listing_status is not None:
+            d.listing_status = item.listing_status
+        if item.material_link is not None:
+            d.material_link = item.material_link
+        if item.material_link_pwd is not None:
+            d.material_link_pwd = item.material_link_pwd
         # 更新所属剧场（一剧多剧场：按剧场名查找/自动创建并同步关联表）
         theater_ids = await _resolve_theater_ids(db, item.theater_name, current_user)
         if theater_ids:
