@@ -911,7 +911,7 @@ async def drama_import_parse(
     col_type = _find("漫剧类型") or _find("剧类型")
     col_tags = _find("题材")
     col_status = _find("上架状态")
-    col_listed = _find("上架日期")
+    col_listed = _find("上架日期") or _find("上线时间") or _find("上线日期")
     col_rating = _find("评级")
     col_synopsis = _find("简介") or _find("剧情简介") or _find("内容简介")
     # 链接列兼容多种网盘列头（素材链接/网盘链接/网盘地址/百度网盘/夸克网盘/分享链接）
