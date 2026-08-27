@@ -17,8 +17,10 @@ import re
 import uuid
 from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, Request
 from pydantic import BaseModel
+import logging
+logger = logging.getLogger(__name__)
 from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -952,7 +954,7 @@ async def drama_import_parse(
 
 @router.post("/dramas/import/confirm", response_model=dict)
 async def drama_import_confirm(
-    data: DramaImportConfirm,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
@@ -963,6 +965,16 @@ async def drama_import_confirm(
     - accept_new 项按 name 新增（同名已存在则跳过）并自动生成 DR-<8位HEX> code；
     - accept_update 项按 id 定位既有剧目，将 payload 新值覆盖旧值（diff 已在 preview 展示）。
     """
+    import json
+    body = await request.body()
+    try:
+        body_json = json.loads(body)
+        logger.info(f"[drama_import_confirm] Request body: {json.dumps(body_json, ensure_ascii=False)[:2000]}")
+        data = DramaImportConfirm(**body_json)
+    except Exception as e:
+        logger.error(f"[drama_import_confirm] Validation error: {e}")
+        logger.error(f"[drama_import_confirm] Raw body: {body.decode('utf-8', errors='replace')[:2000]}")
+        raise
     imported = 0
     updated = 0
     skipped = 0
