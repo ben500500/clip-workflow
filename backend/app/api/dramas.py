@@ -259,7 +259,7 @@ def _apply_rbac_filter(current_user: User):
     return None
 
 
-async def _sync_drama_theaters(db: AsyncSession, drama: Drama, theater_ids: Optional[List[str]]):
+async def _sync_drama_theaters(db: AsyncSession, drama: Drama, theater_ids: Optional[List]):
     """同步剧目关联剧场（一剧多剧场，ISSUE #142）。
 
     以传入的 theater_ids 为最终集合：清除旧关联、写入新关联（幂等）。
@@ -271,8 +271,11 @@ async def _sync_drama_theaters(db: AsyncSession, drama: Drama, theater_ids: Opti
     target = set()
     for raw in theater_ids:
         try:
-            target.add(uuid.UUID(raw))
-        except ValueError:
+            if isinstance(raw, uuid.UUID):
+                target.add(raw)
+            else:
+                target.add(uuid.UUID(str(raw)))
+        except (ValueError, AttributeError):
             continue
     # 查既有关联
     existing_rows = await db.execute(
