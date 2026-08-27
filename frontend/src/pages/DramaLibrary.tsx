@@ -583,7 +583,9 @@ const DramaLibrary: React.FC = () => {
           updated_date: (u.diff.updated_date?.new as string) || null,
           listed_at: (u.diff.listed_at?.new as string) || null,
           material_link: (u.diff.material_link?.new as string) || null,
-          theater_name: (u.diff.theater_name?.new as string) || null,
+          theater_name: Array.isArray(u.diff.theater_name?.new)
+            ? (u.diff.theater_name!.new as string[]).join(',')
+            : (u.diff.theater_name?.new as string) || null,
         };
       });
       const res = await dramaImportConfirm(acceptNew, acceptUpdate, fileName);
