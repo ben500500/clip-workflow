@@ -367,6 +367,10 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
         # 高光混剪：批量切片时把多个片段合并成一个混剪视频（白名单原缺失，导致前端配置被静默丢弃）
         "highlight_mix_enabled", "highlight_mix_max_duration",
         "highlight_mix_max_clip_duration", "highlight_mix_order",
+        # 钩子视频混搭模式（sequential/random/combine）
+        "hook_video_key", "hook_video_keys", "hook_mix_mode",
+        # 优先级流映射（方案A）：标准生产→normal / 高清首发→high / 实验测试→low
+        "priority",
     }
     payload = {k: v for k, v in cfg.items() if k in known_fields and v is not None}
     payload["mode"] = cfg.get("mode") or "fast"

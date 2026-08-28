@@ -864,6 +864,8 @@ async def _create_slice_task_record(
     # 否则回退到单钩子 hook_video_key。
     slice_task.hook_video_key = data.hook_video_key or None
     slice_task.hook_video_keys = data.hook_video_keys or None
+    # 钩子混搭模式（sequential/random/combine，重试时保留）
+    slice_task.hook_mix_mode = data.hook_mix_mode or None
     # 输出档位：高分辨率/高 fps 素材降档提速（重试时保留）
     slice_task.output_tier = data.output_tier or "auto"
 
@@ -944,6 +946,8 @@ async def _dispatch_slice_task(
             data.output_tier,
             data.hook_video_key,
             data.hook_video_keys,
+            data.hook_mix_mode,
+            data.priority,
         )
 
         if not published:
@@ -1635,6 +1639,7 @@ async def retry_slice_task(
         cover_image_key=task.cover_image_key,
         hook_video_key=getattr(task, "hook_video_key", None),
         hook_video_keys=getattr(task, "hook_video_keys", None),
+        hook_mix_mode=getattr(task, "hook_mix_mode", None),
         remotion_mix_config=getattr(task, "remotion_mix_config", None),
         output_tier=getattr(task, "output_tier", None) or "auto",
         status="pending",
@@ -1672,6 +1677,8 @@ async def retry_slice_task(
             getattr(task, "output_tier", None) or "auto",
             getattr(task, "hook_video_key", None),
             getattr(task, "hook_video_keys", None),
+            getattr(task, "hook_mix_mode", None),
+            None,  # 重试沿用默认 priority
         )
 
         if not published:
@@ -1710,6 +1717,8 @@ async def retry_slice_task(
                 getattr(task, "output_tier", None) or "auto",
                 getattr(task, "hook_video_key", None),
                 getattr(task, "hook_video_keys", None),
+                getattr(task, "hook_mix_mode", None),
+                None,
             )
         except HTTPException:
             raise
@@ -1743,6 +1752,8 @@ async def retry_slice_task(
                 getattr(task, "output_tier", None) or "auto",
                 getattr(task, "hook_video_key", None),
                 getattr(task, "hook_video_keys", None),
+                getattr(task, "hook_mix_mode", None),
+                None,
             )
         except Exception as e:
             new_task.status = "failed"

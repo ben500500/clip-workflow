@@ -181,6 +181,13 @@ class SliceRunRequest(BaseModel):
     # 列表（通过 /slice/hook-folder-upload 上传）。切片时每个成品随机从文件夹中
     # 取一个钩子作为片头。优先于 hook_video_key。
     hook_video_keys: Optional[List[str]] = None
+    # 钩子视频混搭模式：sequential（默认，顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
+    hook_mix_mode: Optional[str] = None
+    # ── 优先级流映射（方案A：档位→优先级流）──
+    # 取值 high / normal / low（缺省 normal，向后兼容）。路由规则：
+    #   标准生产 → normal 流；高清首发 → high 流（优先消费）；实验测试 → low 流。
+    # 字幕任务始终走独立 subtitle 流（不受此字段影响）。
+    priority: Optional[str] = None
     # ── 高光混剪（AI 高光片段按源时间顺序混剪拼接为一个成品）──
     # 开启后，不再把每个 accepted 高光片段切成独立文件，而是把所有入选高光段按
     # 源视频内 start_time 升序、共用同一输出文件名生成 cutlist，引擎 groups 按
@@ -338,6 +345,8 @@ class SliceTaskResponse(BaseModel):
     output_tier: Optional[str] = None
     hook_video_key: Optional[str] = None
     hook_video_keys: Optional[list] = None
+    # 钩子混搭模式（sequential/random/combine，开启时展示）
+    hook_mix_mode: Optional[str] = None
     # Remotion 混剪增强配置（开启时展示）
     remotion_mix_config: Optional[dict] = None
     # Remotion 混剪增强渲染产物 MinIO key / 渲染状态（P2 回写，前端任务列表展示）
@@ -1083,6 +1092,8 @@ async def _publish_to_worker(
     output_tier: Optional[str] = None,
     hook_video_key: Optional[str] = None,
     hook_video_keys: Optional[List[str]] = None,
+    hook_mix_mode: Optional[str] = None,
+    priority: Optional[str] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -1154,7 +1165,13 @@ async def _publish_to_worker(
         return bool(cfg) and bool(getattr(cfg, "get", lambda k: None)("enabled"))
 
     needs_subtitle = _subtitle_enabled(subtitle_config) or _subtitle_enabled(subtitle_mask_config)
-    queue = "subtitle" if needs_subtitle else "normal"
+    # 档位→优先级流映射（方案A）：标准生产→normal / 高清首发→high / 实验测试→low。
+    # 字幕任务始终优先走独立 subtitle 流（仅带 libass 的 163 Linux worker 消费）。
+    priority = priority or "normal"
+    if priority not in ("high", "normal", "low"):
+        priority = "normal"
+    queue = "subtitle" if needs_subtitle else priority
+
 
     # 回调地址使用可配置的基础地址（支持远程 Worker 通过公网/内网访问）
     callback_base = settings.WORKER_CALLBACK_BASE_URL.rstrip("/")
@@ -1174,6 +1191,8 @@ async def _publish_to_worker(
         "cover": {"url": cover_url or ""} if cover_url else None,
         # 钩子视频列表（可选，Go Worker 下载后透传给引擎 --hook，引擎每个成品按顺序循环取一个）
         "hook": [{"url": u} for u in hook_urls] if hook_urls else None,
+        # 钩子混搭模式（sequential/random/combine，可选；Worker 透传给引擎 --hook-mix-mode）
+        "hook_mix_mode": hook_mix_mode,
         "cutlist": cutlist,
         "intervals": intervals_content,
         "dedupe_config": dedupe_config or {},
@@ -1249,6 +1268,8 @@ async def _dispatch_celery(
     output_tier: Optional[str] = None,
     hook_video_key: Optional[str] = None,
     hook_video_keys: Optional[List[str]] = None,
+    hook_mix_mode: Optional[str] = None,
+    priority: Optional[str] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
     from app.celery.tasks import slice_task as celery_slice_task
@@ -1285,6 +1306,7 @@ async def _dispatch_celery(
         output_tier=output_tier or "auto",
         hook_video_key=hook_video_key,
         hook_video_keys=hook_video_keys,
+        hook_mix_mode=hook_mix_mode,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -1314,6 +1336,8 @@ async def _dispatch_local(
     output_tier: Optional[str] = None,
     hook_video_key: Optional[str] = None,
     hook_video_keys: Optional[List[str]] = None,
+    hook_mix_mode: Optional[str] = None,
+    priority: Optional[str] = None,
 ) -> None:
     """单机同步执行切片引擎（SLICE_ENGINE=local）。
 
@@ -1498,6 +1522,7 @@ async def _dispatch_local(
                 output_tier=output_tier,
                 hook_path=hook_path,
                 hook_paths=hook_paths,
+                hook_mix_mode=hook_mix_mode,
                 task_id=task_id,
             )
         else:
@@ -1527,6 +1552,7 @@ async def _dispatch_local(
                 output_tier=output_tier,
                 hook_path=hook_path,
                 hook_paths=hook_paths,
+                hook_mix_mode=hook_mix_mode,
                 task_id=task_id,
             )
 

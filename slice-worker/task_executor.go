@@ -186,6 +186,10 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 	// 钩子注入所有切片片段：每个候选片段都带 [封面][钩子][本体] 片头
 	if hookArgs > 0 {
 		args = append(args, "--hook-all")
+		// 钩子混搭模式：透传给引擎（sequential/random/combine，可选）
+		if task.HookMixMode != "" {
+			args = append(args, "--hook-mix-mode", task.HookMixMode)
+		}
 	}
 
 	// ASR 字幕烧录：把后端下发的 SRT 内容写到本地文件，透传给引擎 --subtitle

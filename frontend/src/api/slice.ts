@@ -131,6 +131,10 @@ export const sliceApi = {
       // 钩子视频文件夹：选择整个文件夹，含多个钩子视频（MinIO key 列表，通过 uploadHookFolder 上传）。
       // 切片时每个成品随机从文件夹中取一个钩子作为片头。优先于 hook_video_key。
       hook_video_keys?: string[];
+      // 钩子混搭模式：sequential（默认，顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
+      hook_mix_mode?: 'sequential' | 'random' | 'combine';
+      // 优先级流：high / normal / low（缺省 normal）。标准生产→normal / 高清首发→high / 实验测试→low
+      priority?: 'high' | 'normal' | 'low';
       // 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品
       highlight_mix_enabled?: boolean;
       // 输出总时长上限（秒）：累计各高光段不超过该值，最后一段会超额时丢弃

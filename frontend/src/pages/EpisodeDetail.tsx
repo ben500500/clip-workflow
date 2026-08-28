@@ -259,6 +259,8 @@ const EpisodeDetail: React.FC = () => {
   const [hookVideoKeys, setHookVideoKeys] = useState<string[]>([]);
   const [hookVideoNames, setHookVideoNames] = useState<string[]>([]);
   const [hookUploading, setHookUploading] = useState(false);
+  // 钩子混搭模式：sequential（顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
+  const [hookMixMode, setHookMixMode] = useState<'sequential' | 'random' | 'combine'>('sequential');
 
   // 钩子选择持久化：变化时写 localStorage（为空则清除）
   useEffect(() => {
@@ -1311,6 +1313,8 @@ const EpisodeDetail: React.FC = () => {
         // 钩子视频文件夹：作为片头拼接在封面与本体之间（[封面][钩子][本体]）；切片时随机取一个
         hook_video_keys: hookVideoKeys.length > 0 ? hookVideoKeys : undefined,
         hook_video_key: hookVideoKeys.length === 1 ? hookVideoKeys[0] : undefined,
+        // 钩子混搭模式：多钩子时生效（sequential/random/combine）
+        hook_mix_mode: hookVideoKeys.length > 1 ? (hookMixMode || 'sequential') : undefined,
         // 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品
         highlight_mix_enabled: highlightMixEnabled,
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
@@ -1503,6 +1507,7 @@ const EpisodeDetail: React.FC = () => {
         cover_image_key: coverImageKey || undefined,
         hook_video_keys: hookVideoKeys.length > 0 ? hookVideoKeys : undefined,
         hook_video_key: hookVideoKeys.length === 1 ? hookVideoKeys[0] : undefined,
+        hook_mix_mode: hookVideoKeys.length > 1 ? (hookMixMode || 'sequential') : undefined,
         highlight_mix_enabled: highlightMixEnabled,
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
         highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
@@ -2139,6 +2144,19 @@ const EpisodeDetail: React.FC = () => {
                   钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
               </Tag>
               </FileHoverPreview>
+            )}
+            {hookVideoKeys.length > 1 && (
+              <Select
+                size="small"
+                style={{ width: 140 }}
+                value={hookMixMode}
+                onChange={(v) => setHookMixMode(v as 'sequential' | 'random' | 'combine')}
+                options={[
+                  { value: 'sequential', label: '顺序循环' },
+                  { value: 'random', label: '随机混搭' },
+                  { value: 'combine', label: '拼接组合' },
+                ]}
+              />
             )}
           </Space>
           {/* 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品 */}

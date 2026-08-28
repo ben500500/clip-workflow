@@ -32,6 +32,10 @@ interface BatchSliceConfig {
   subtitleEnabled: boolean;
   // 输出档位：original（默认）/ auto / 1080p / 720p / 480p（高分辨率/高 fps 素材降档提速）
   outputTier: string;
+  // 优先级流：high / normal / low（标准生产→normal / 高清首发→high / 实验测试→low）
+  priority: 'high' | 'normal' | 'low';
+  // 钩子混搭模式：sequential / random / combine（仅多钩子时生效）
+  hookMixMode: 'sequential' | 'random' | 'combine';
 }
 
 const DEFAULT_BATCH_CONFIG: BatchSliceConfig = {
@@ -46,6 +50,8 @@ const DEFAULT_BATCH_CONFIG: BatchSliceConfig = {
   vert2horizEnabled: false,
   subtitleEnabled: false,
   outputTier: 'auto',
+  priority: 'normal' as 'high' | 'normal' | 'low',
+  hookMixMode: 'sequential' as 'sequential' | 'random' | 'combine',
 };
 
 // 批量一键切片配置持久化：按项目维度存 localStorage，重新进入页面/重开弹窗时恢复
@@ -560,8 +566,12 @@ const ProjectDetail: React.FC = () => {
       // 含多个钩子时切片随机组合（每个成品随机取一个作为片头）。
       hook_video_keys: readEpisodeHookKeys(episode.id).length > 0 ? readEpisodeHookKeys(episode.id) : undefined,
       hook_video_key: readEpisodeHookKeys(episode.id).length === 1 ? readEpisodeHookKeys(episode.id)[0] : undefined,
+      // 钩子混搭模式：多钩子时生效
+      hook_mix_mode: readEpisodeHookKeys(episode.id).length > 1 ? (cfg.hookMixMode || 'sequential') : undefined,
       // 输出档位：高分辨率/高 fps 素材降档提速
       output_tier: cfg.outputTier || 'auto',
+      // 优先级流：high / normal / low
+      priority: (cfg.priority as 'high' | 'normal' | 'low') || 'normal',
     });
   };
 
@@ -1128,6 +1138,20 @@ const ProjectDetail: React.FC = () => {
               ]}
             />
             <Text type="secondary" style={{ fontSize: 12 }}>高分辨率/高 fps 素材可降档提速</Text>
+          </Space>
+          <Space style={{ width: '100%' }} wrap>
+            <Text style={{ fontSize: 13 }}>优先级</Text>
+            <Select
+              value={batchConfig.priority || 'normal'}
+              onChange={(v) => setBatchConfig((prev) => ({ ...prev, priority: v as 'high' | 'normal' | 'low' }))}
+              style={{ width: 240 }}
+              options={[
+                { value: 'normal', label: '标准生产（normal）' },
+                { value: 'high', label: '高清首发（high）' },
+                { value: 'low', label: '实验测试（low）' },
+              ]}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>档位映射到 Redis 优先级流</Text>
           </Space>
 
           {batchProgress && batchSlicing && (

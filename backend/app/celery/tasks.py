@@ -580,6 +580,7 @@ def slice_task(
     output_tier: Optional[str] = None,
     hook_video_key: Optional[str] = None,
     hook_video_keys: Optional[List[str]] = None,
+    hook_mix_mode: Optional[str] = None,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
@@ -754,6 +755,8 @@ def slice_task(
                     cover_path=cover_path,
                     output_tier=output_tier,
                     hook_path=hook_path,
+                    hook_paths=hook_paths,
+                    hook_mix_mode=hook_mix_mode,
                     task_id=task_id,
                 )
             )
@@ -786,6 +789,7 @@ def slice_task(
                     output_tier=output_tier,
                     hook_path=hook_path,
                     hook_paths=hook_paths,
+                    hook_mix_mode=hook_mix_mode,
                     task_id=task_id,
                 )
             )

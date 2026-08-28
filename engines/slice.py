@@ -12,6 +12,7 @@ Prints OUTPUT:<name>:<duration> and PROGRESS:<pct> lines to stdout.
 import argparse
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -831,17 +832,23 @@ def detect_best_encoder(preferred: str | None = None) -> str:
     return "libx264"
 
 
-def build_encoder_args(encoder: str, threads: int) -> list[str]:
-    """根据编码器构造 ffmpeg 编码参数."""
+def build_encoder_args(encoder: str, threads: int, quality_level: str = "standard") -> list[str]:
+    """根据编码器构造 ffmpeg 编码参数.
+
+    quality_level: standard=默认（crf 23 / cq 23）/ high=高清（crf 18 / cq 18，画质更高文件更大）。
+    """
     if encoder in ("h264_nvenc", "hevc_nvenc"):
-        return ["-c:v", encoder, "-preset", "p5", "-cq", "23"]
+        cq = "18" if quality_level == "high" else "23"
+        return ["-c:v", encoder, "-preset", "p5", "-cq", cq]
     if encoder in ("h264_videotoolbox", "hevc_videotoolbox"):
-        return ["-c:v", encoder, "-q:v", "65"]
+        qv = "55" if quality_level == "high" else "65"
+        return ["-c:v", encoder, "-q:v", qv]
     # 软件编码回退
-    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", str(threads)]
+    crf = "18" if quality_level == "high" else "23"
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-threads", str(threads)]
 
 
-def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="libx264", copy_if_possible=True):
+def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="libx264", copy_if_possible=True, quality_level="standard"):
     # fast 模式且无滤镜时走流拷贝（-c copy），只切不重编码，速度 10×+；
     # 需要滤镜（去重/水印/竖转横）或显式关闭时回退到重编码分支。
     copy_mode = bool(copy_if_possible and not vf and not af)
@@ -853,7 +860,7 @@ def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="li
     if copy_mode:
         cmd += ["-c", "copy", "-movflags", "+faststart"]
     else:
-        cmd += build_encoder_args(encoder, threads)
+        cmd += build_encoder_args(encoder, threads, quality_level)
         cmd += ["-c:a", "aac", "-b:a", "128k"]
         if vf:
             cmd += ["-vf", vf]
@@ -863,7 +870,7 @@ def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="li
     run_ffmpeg(cmd, timeout=3600, threads=threads)
 
 
-def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True):
+def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True, quality_level="standard"):
     if len(parts) == 1:
         # 单段时无需重新编码（水印已在 slice_segment 阶段叠加）
         shutil.move(parts[0], out)
@@ -893,7 +900,7 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "[a]",
     ]
-    cmd += build_encoder_args(encoder, threads)
+    cmd += build_encoder_args(encoder, threads, quality_level)
     cmd += ["-c:a", "aac", "-b:a", "128k", out]
     print(f"[SLICE-DEBUG] concat cmd: filter_complex={filter_complex[:500]}", file=sys.stderr)
     print(f"[SLICE-DEBUG] concat parts: {parts}", file=sys.stderr)
@@ -1343,7 +1350,7 @@ def _build_text_overlays_filter(text_overlays: list) -> str:
     return ",".join(filters)
 
 
-def apply_text_overlays(src, out, text_overlays, threads=1, encoder="libx264"):
+def apply_text_overlays(src, out, text_overlays, threads=1, encoder="libx264", quality_level="standard"):
     """对成品视频执行一次固定文字叠加，产出新文件。
 
     text_overlays 为空或全无效时直接复制源文件，不做重编码。
@@ -1358,7 +1365,7 @@ def apply_text_overlays(src, out, text_overlays, threads=1, encoder="libx264"):
         "-vf", vf,
         "-map", "0:v:0", "-map", "0:a:0?",
     ]
-    cmd += build_encoder_args(encoder, threads)
+    cmd += build_encoder_args(encoder, threads, quality_level)
     cmd += ["-c:a", "aac", "-b:a", "128k", out]
     run_ffmpeg(cmd, timeout=3600, threads=threads)
 
@@ -4026,6 +4033,12 @@ def main():
              "可用 SLICE_ENCODER 环境变量强制指定（如 libx264，无 GPU 机器推荐），优先于本参数",
     )
     parser.add_argument(
+        "--quality-level",
+        default=None,
+        choices=["standard", "high"],
+        help="输出画质档位：standard=默认（crf 23）/ high=高清（crf 18，画质更高文件更大）。高清首发档使用",
+    )
+    parser.add_argument(
         "--vert2horiz",
         default=None,
         help="竖屏转横屏预处理配置 JSON（{\"enabled\":true, \"mode\":\"fixed|dynamic\", ...}），切片前把竖屏素材转成横屏",
@@ -4132,6 +4145,12 @@ def main():
         help="钩子视频注入所有切片组：每个候选片段都拼 [封面][钩子][本体] 片头（默认仅注入首个切片组）",
     )
     parser.add_argument(
+        "--hook-mix-mode",
+        default=None,
+        choices=["sequential", "random", "combine"],
+        help="钩子混搭模式：sequential=按顺序循环（默认）/ random=每个切片随机选一个 / combine=所有钩子依次拼接成片头",
+    )
+    parser.add_argument(
         "--output-tier",
         default="original",
         choices=OUTPUT_TIERS,
@@ -4144,7 +4163,10 @@ def main():
     print(f"CPU 分配: {args.cpu_percent}%% -> ffmpeg 线程数 {threads} (核数 {os.cpu_count() or '?'})", file=sys.stderr)
 
     encoder = detect_best_encoder(args.encoder)
+    quality_level = getattr(args, "quality_level", None) or "standard"
     print(f"编码器: {encoder}", file=sys.stderr)
+    if quality_level == "high":
+        print(f"画质档位: high（高清，crf 18）", file=sys.stderr)
 
     if not os.path.isfile(args.source):
         print(f"Source video not found: {args.source}", file=sys.stderr)
@@ -4494,9 +4516,12 @@ def main():
         outputs = []
         total = len(groups)
         processed = 0
-        # 钩子视频按顺序循环取用（round-robin）：每个注入钩子的切片组依次取下一个
-        # 钩子，取完一轮再从第一个开始，确保所有钩子都被用到、且不会饿死末尾钩子。
+        # 钩子视频选择策略（hook_mix_mode）：
+        #   sequential（默认）：round-robin 顺序循环取用，确保所有钩子都被用到；
+        #   random：每个切片随机选一个钩子，增加素材多样性；
+        #   combine：所有钩子依次拼接成完整片头（compose 为 part_0 的 concat）。
         hook_idx = 0
+        hook_mix_mode = getattr(args, "hook_mix_mode", None) or "sequential"
         for name_key in groups:
             group = groups[name_key]
             name = safe_name(name_key)
@@ -4513,34 +4538,76 @@ def main():
                 # 到本体(源/档位)分辨率+帧率+像素格式，并强制本组 concat 走重编码。
                 if args.hook_all or name_key == hook_target_key:
                     hook_injected = True
-                    # 按顺序循环取用：从钩子文件夹中依次取一个钩子视频作为片头，
-                    # 用完一轮后回到第一个（round-robin），保证所有钩子都被用到。
-                    hook_path = hook_paths[hook_idx % len(hook_paths)]
-                    hook_idx += 1
-                    hook_dur = ffprobe_duration(hook_path) or 0.0
-                    hook_part = os.path.join(tmp, "part_0.mp4")
-                    hook_w = tier_w or 1280
-                    hook_h = tier_h or 720
-                    hook_fps = _fps_value(tier_fps) if tier_fps else 25.0
-                    hook_vf = (
-                        f"scale={hook_w}:{hook_h}:force_original_aspect_ratio=increase,"
-                        f"crop={hook_w}:{hook_h},fps={hook_fps:.3f},setsar=1,format=yuv420p"
-                    )
-                    if vf:
-                        hook_vf = f"{hook_vf},{vf}"
-                    slice_segment(hook_path, 0.0, hook_dur, hook_part,
-                                  vf=hook_vf, af=af, threads=threads, encoder=encoder)
-                    print(f"钩子拼接: {os.path.basename(hook_path)} (时长 {hook_dur:.3f}s) -> 切片 '{name_key}'", file=sys.stderr)
+                    if hook_mix_mode == "combine" and len(hook_paths) > 1:
+                        # combine 模式：所有钩子依次拼接成完整片头（part_0 为多个钩子 concat）
+                        hook_parts_concat = []
+                        hook_total_dur = 0.0
+                        for ci, chp in enumerate(hook_paths):
+                            ch_dur = ffprobe_duration(chp) or 0.0
+                            hook_total_dur += ch_dur
+                            ch_part = os.path.join(tmp, f"hook_{ci}.mp4")
+                            hook_w = tier_w or 1280
+                            hook_h = tier_h or 720
+                            hook_fps = _fps_value(tier_fps) if tier_fps else 25.0
+                            hook_vf = (
+                                f"scale={hook_w}:{hook_h}:force_original_aspect_ratio=increase,"
+                                f"crop={hook_w}:{hook_h},fps={hook_fps:.3f},setsar=1,format=yuv420p"
+                            )
+                            if vf:
+                                hook_vf = f"{hook_vf},{vf}"
+                            slice_segment(chp, 0.0, ch_dur, ch_part,
+                                          vf=hook_vf, af=af, threads=threads, encoder=encoder, quality_level=quality_level)
+                            hook_parts_concat.append(ch_part)
+                            print(f"钩子拼接[combine]: {os.path.basename(chp)} (时长 {ch_dur:.3f}s) -> 切片 '{name_key}'", file=sys.stderr)
+                        # concat 所有钩子段为完整片头 part_0
+                        hook_part = os.path.join(tmp, "part_0.mp4")
+                        concat_list = os.path.join(tmp, "hook_concat.txt")
+                        with open(concat_list, "w") as f:
+                            for hp in hook_parts_concat:
+                                f.write(f"file '{hp}\n")
+                        concat_cmd = [
+                            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                            "-i", concat_list,
+                        ]
+                        concat_cmd += build_encoder_args(encoder, threads, quality_level)
+                        concat_cmd += ["-c:a", "aac", "-b:a", "128k", hook_part]
+                        subprocess.run(concat_cmd, capture_output=True, check=True)
+                        hook_dur = hook_total_dur
+                        print(f"钩子拼接[combine]: 已拼接 {len(hook_parts_concat)} 个钩子 (总时长 {hook_dur:.3f}s) -> 切片 '{name_key}'", file=sys.stderr)
+                    else:
+                        # sequential 或 random：取一个钩子
+                        if hook_mix_mode == "random" and len(hook_paths) > 1:
+                            hook_path = random.choice(hook_paths)
+                        else:
+                            # 顺序循环取用：从钩子文件夹中依次取一个钩子视频作为片头，
+                            # 用完一轮后回到第一个（round-robin），保证所有钩子都被用到。
+                            hook_path = hook_paths[hook_idx % len(hook_paths)]
+                            hook_idx += 1
+                        hook_dur = ffprobe_duration(hook_path) or 0.0
+                        hook_part = os.path.join(tmp, "part_0.mp4")
+                        hook_w = tier_w or 1280
+                        hook_h = tier_h or 720
+                        hook_fps = _fps_value(tier_fps) if tier_fps else 25.0
+                        hook_vf = (
+                            f"scale={hook_w}:{hook_h}:force_original_aspect_ratio=increase,"
+                            f"crop={hook_w}:{hook_h},fps={hook_fps:.3f},setsar=1,format=yuv420p"
+                        )
+                        if vf:
+                            hook_vf = f"{hook_vf},{vf}"
+                        slice_segment(hook_path, 0.0, hook_dur, hook_part,
+                                      vf=hook_vf, af=af, threads=threads, encoder=encoder, quality_level=quality_level)
+                        print(f"钩子拼接: {os.path.basename(hook_path)} (时长 {hook_dur:.3f}s) -> 切片 '{name_key}'", file=sys.stderr)
                     parts.append(hook_part)
                     part_offset = 1
                 for i, (start, end, _) in enumerate(group):
                     part = os.path.join(tmp, f"part_{i + part_offset}.mp4")
-                    slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder)
+                    slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder, quality_level=quality_level)
                     parts.append(part)
                 # 含钩子段时强制走 filter_complex 重编码 concat（各段参数已归一化对齐），
                 # 不做 concat demuxer 免重编码拼接，避免钩子与本体规格差异导致坏片。
                 concat_segments(parts, out_path, threads=threads, encoder=encoder,
-                                copy_if_possible=(not hook_injected))
+                                copy_if_possible=(not hook_injected),
+                                quality_level=quality_level)
                 seg_times = [(s, e) for s, e, _ in group]
                 # 源字幕打码：打掉片源自带字幕（在烧录自己的新字幕之前）
                 if subtitle_mask:
@@ -4647,7 +4714,7 @@ def main():
                 txt_out = out_path + ".textov.mp4"
                 apply_text_overlays(
                     out_path, txt_out, text_overlays,
-                    threads=threads, encoder=encoder,
+                    threads=threads, encoder=encoder, quality_level=quality_level,
                 )
                 os.replace(txt_out, out_path)
             # 视频封面：将封面叠加到成品第一帧作为视频首帧

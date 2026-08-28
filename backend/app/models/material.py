@@ -216,6 +216,8 @@ class SliceTask(Base):
     # 钩子视频文件夹（可选）：选择整个文件夹，含多个钩子视频；切片时每个成品
     # 按顺序循环从文件夹中取一个钩子作为片头。值为 MinIO file_key 列表。优先于 hook_video_key。
     hook_video_keys = Column(JSON, nullable=True)
+    # 钩子混搭模式：sequential（默认，顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
+    hook_mix_mode = Column(String(20), nullable=True)
     # 输出档位（original/auto/1080p/720p/480p）：高分辨率/高 fps 素材降档提速；重试时保留
     output_tier = Column(String(20), nullable=True)
     # Remotion 混剪增强配置（可选，整包 JSON：enabled/template/intro/outro/transition_frames/

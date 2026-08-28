@@ -39,7 +39,7 @@ COPY --from=builder /build/engines /app/engines
 COPY worker.json /app/worker.json.template
 
 # CPU 分配比例默认值（1~100，默认 50）：直接 docker run 未设置时也能正常生成配置
-ENV CPU_PERCENT=50
+ENV CPU_PERCENT=80
 
 RUN mkdir -p /tmp/slice-worker
 
