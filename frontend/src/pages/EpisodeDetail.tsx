@@ -2168,10 +2168,9 @@ const EpisodeDetail: React.FC = () => {
               <InputNumber
                 size="small"
                 min={1}
-                max={20}
                 style={{ width: 80 }}
                 value={hookMixOutputCount}
-                onChange={(v) => setHookMixOutputCount(v || 1)}
+                onChange={(v) => setHookMixOutputCount(v ?? 1)}
                 addonBefore="生成数量"
               />
             )}
