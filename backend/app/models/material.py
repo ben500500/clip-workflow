@@ -218,6 +218,8 @@ class SliceTask(Base):
     hook_video_keys = Column(JSON, nullable=True)
     # 钩子混搭模式：sequential（默认，顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
     hook_mix_mode = Column(String(20), nullable=True)
+    # 钩子混搭输出数量：当 hook_mix_mode 为 random/combine 时，生成多个不同钩子组合的成品（-v1, -v2 后缀）
+    hook_mix_output_count = Column(Integer, nullable=True)
     # 输出档位（original/auto/1080p/720p/480p）：高分辨率/高 fps 素材降档提速；重试时保留
     output_tier = Column(String(20), nullable=True)
     # Remotion 混剪增强配置（可选，整包 JSON：enabled/template/intro/outro/transition_frames/

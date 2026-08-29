@@ -13,7 +13,7 @@ WORKDIR /remotion
 COPY remotion/package.json remotion/package-lock.json ./
 RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
 # 复制源码并编译 dist/render.js
-COPY remotion/tsconfig.json remotion.config.ts ./
+COPY remotion/tsconfig.json remotion/remotion.config.ts ./
 COPY remotion/scripts ./scripts
 COPY remotion/src ./src
 RUN npm run build
@@ -28,21 +28,22 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # ---------- Stage 3: 运行时 ----------
-FROM node:20-slim
+FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 运行系统依赖：chromium（Remotion 渲染内核）+ ffmpeg + python3 + 中文字体 + curl
+# 运行系统依赖：chromium（Remotion 渲染内核）+ ffmpeg + 中文字体 + curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     fonts-noto-cjk \
     fontconfig \
     ffmpeg \
-    python3 \
-    python3-pip \
     curl \
     libpq5 \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -s /usr/bin/python3 /usr/local/bin/python
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 Node.js 20（用于 Remotion 渲染）
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs
 
 # 指定 Remotion 使用系统 chromium，避免运行时内置下载
 ENV REMOTION_CHROMIUM_EXECUTABLE=/usr/bin/chromium

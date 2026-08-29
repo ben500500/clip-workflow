@@ -4151,6 +4151,12 @@ def main():
         help="钩子混搭模式：sequential=按顺序循环（默认）/ random=每个切片随机选一个 / combine=所有钩子依次拼接成片头",
     )
     parser.add_argument(
+        "--hook-mix-output-count",
+        type=int,
+        default=None,
+        help="钩子混搭输出数量：当 hook_mix_mode 为 random/combine 且值 > 1 时，生成多个不同钩子组合的成品（-v1, -v2 后缀）",
+    )
+    parser.add_argument(
         "--output-tier",
         default="original",
         choices=OUTPUT_TIERS,
@@ -4522,15 +4528,35 @@ def main():
         #   combine：所有钩子依次拼接成完整片头（compose 为 part_0 的 concat）。
         hook_idx = 0
         hook_mix_mode = getattr(args, "hook_mix_mode", None) or "sequential"
+        # 钩子混搭输出数量：当为 random/combine 且值 > 1 时，生成多个不同钩子组合的成品
+        hook_mix_output_count = getattr(args, "hook_mix_output_count", None) or 1
+        if hook_mix_output_count <= 1:
+            hook_mix_output_count = 1
+
         for name_key in groups:
             group = groups[name_key]
-            name = safe_name(name_key)
-            out_path = os.path.join(args.output_dir, name)
-            parts = []
-            with tempfile.TemporaryDirectory() as tmp:
-                part_offset = 0
-                hook_injected = False
-                # 钩子注入：目标组把钩子视频作为 part_0，本体各段从 part_1 起编号。
+            base_name = safe_name(name_key)
+            # 确定实际输出数量
+            actual_output_count = hook_mix_output_count if (
+                hook_mix_output_count > 1 and hook_mix_mode in ("random", "combine")
+                and len(hook_paths) > 1
+            ) else 1
+            # 为每个输出变体预先生成钩子选择（random模式）
+            if actual_output_count > 1 and hook_mix_mode == "random":
+                preselected_hooks = [random.choice(hook_paths) for _ in range(actual_output_count)]
+            else:
+                preselected_hooks = []
+            for variant_idx in range(actual_output_count):
+                variant_suffix = f"-v{variant_idx + 1}" if actual_output_count > 1 else ""
+                name = base_name + variant_suffix
+                out_path = os.path.join(args.output_dir, name)
+                parts = []
+                with tempfile.TemporaryDirectory() as tmp:
+                    part_offset = 0
+                    hook_injected = False
+                    # 根据变体索引选择钩子（random模式）
+                    current_hook_idx = variant_idx if actual_output_count > 1 and hook_mix_mode == "random" else 0
+                    # 钩子注入：目标组把钩子视频作为 part_0，本体各段从 part_1 起编号。
                 # 钩子与本体共用同一套 vf/af/threads/encoder 归一化，保证 concat 参数对齐。
                 # 注意：钩子是独立视频文件，其原生分辨率/帧率/编码可能与本体(源视频)不同。
                 # 若仅复用 vf(无去重/水印/降档时 vf 为空)会让钩子走流拷贝切片，与本体规格
@@ -4540,6 +4566,7 @@ def main():
                     hook_injected = True
                     if hook_mix_mode == "combine" and len(hook_paths) > 1:
                         # combine 模式：所有钩子依次拼接成完整片头（part_0 为多个钩子 concat）
+                        # 注意：combine 模式下所有变体使用相同的钩子组合，因为 combine 模式本身就是拼接所有钩子
                         hook_parts_concat = []
                         hook_total_dur = 0.0
                         for ci, chp in enumerate(hook_paths):
@@ -4558,7 +4585,7 @@ def main():
                             slice_segment(chp, 0.0, ch_dur, ch_part,
                                           vf=hook_vf, af=af, threads=threads, encoder=encoder, quality_level=quality_level)
                             hook_parts_concat.append(ch_part)
-                            print(f"钩子拼接[combine]: {os.path.basename(chp)} (时长 {ch_dur:.3f}s) -> 切片 '{name_key}'", file=sys.stderr)
+                            print(f"钩子拼接[combine]: {os.path.basename(chp)} (时长 {ch_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
                         # concat 所有钩子段为完整片头 part_0
                         hook_part = os.path.join(tmp, "part_0.mp4")
                         concat_list = os.path.join(tmp, "hook_concat.txt")
@@ -4573,11 +4600,17 @@ def main():
                         concat_cmd += ["-c:a", "aac", "-b:a", "128k", hook_part]
                         subprocess.run(concat_cmd, capture_output=True, check=True)
                         hook_dur = hook_total_dur
-                        print(f"钩子拼接[combine]: 已拼接 {len(hook_parts_concat)} 个钩子 (总时长 {hook_dur:.3f}s) -> 切片 '{name_key}'", file=sys.stderr)
+                        print(f"钩子拼接[combine]: 已拼接 {len(hook_parts_concat)} 个钩子 (总时长 {hook_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
                     else:
                         # sequential 或 random：取一个钩子
                         if hook_mix_mode == "random" and len(hook_paths) > 1:
-                            hook_path = random.choice(hook_paths)
+                            # 使用预先生成的随机钩子选择
+                            if actual_output_count > 1:
+                                hook_path = preselected_hooks[current_hook_idx]
+                                print(f"钩子拼接[random 变体 {current_hook_idx + 1}]: {os.path.basename(hook_path)} -> 切片 '{name}'", file=sys.stderr)
+                            else:
+                                hook_path = random.choice(hook_paths)
+                                print(f"钩子拼接[random]: {os.path.basename(hook_path)} -> 切片 '{name}'", file=sys.stderr)
                         else:
                             # 顺序循环取用：从钩子文件夹中依次取一个钩子视频作为片头，
                             # 用完一轮后回到第一个（round-robin），保证所有钩子都被用到。
@@ -4596,7 +4629,7 @@ def main():
                             hook_vf = f"{hook_vf},{vf}"
                         slice_segment(hook_path, 0.0, hook_dur, hook_part,
                                       vf=hook_vf, af=af, threads=threads, encoder=encoder, quality_level=quality_level)
-                        print(f"钩子拼接: {os.path.basename(hook_path)} (时长 {hook_dur:.3f}s) -> 切片 '{name_key}'", file=sys.stderr)
+                        print(f"钩子拼接: {os.path.basename(hook_path)} (时长 {hook_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
                     parts.append(hook_part)
                     part_offset = 1
                 for i, (start, end, _) in enumerate(group):

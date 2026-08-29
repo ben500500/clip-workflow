@@ -261,6 +261,8 @@ const EpisodeDetail: React.FC = () => {
   const [hookUploading, setHookUploading] = useState(false);
   // 钩子混搭模式：sequential（顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
   const [hookMixMode, setHookMixMode] = useState<'sequential' | 'random' | 'combine'>('sequential');
+  // 钩子混搭输出数量：当模式为 random/combine 时，生成多个不同钩子组合的成品（-v1, -v2 后缀）
+  const [hookMixOutputCount, setHookMixOutputCount] = useState<number>(1);
 
   // 钩子选择持久化：变化时写 localStorage（为空则清除）
   useEffect(() => {
@@ -1315,6 +1317,8 @@ const EpisodeDetail: React.FC = () => {
         hook_video_key: hookVideoKeys.length === 1 ? hookVideoKeys[0] : undefined,
         // 钩子混搭模式：多钩子时生效（sequential/random/combine）
         hook_mix_mode: hookVideoKeys.length > 1 ? (hookMixMode || 'sequential') : undefined,
+        // 钩子混搭输出数量：random/combine 模式下生效
+        hook_mix_output_count: (hookVideoKeys.length > 1 && (hookMixMode === 'random' || hookMixMode === 'combine')) && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
         // 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品
         highlight_mix_enabled: highlightMixEnabled,
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
@@ -1508,6 +1512,7 @@ const EpisodeDetail: React.FC = () => {
         hook_video_keys: hookVideoKeys.length > 0 ? hookVideoKeys : undefined,
         hook_video_key: hookVideoKeys.length === 1 ? hookVideoKeys[0] : undefined,
         hook_mix_mode: hookVideoKeys.length > 1 ? (hookMixMode || 'sequential') : undefined,
+        hook_mix_output_count: (hookVideoKeys.length > 1 && (hookMixMode === 'random' || hookMixMode === 'combine')) && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
         highlight_mix_enabled: highlightMixEnabled,
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
         highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
@@ -2156,6 +2161,18 @@ const EpisodeDetail: React.FC = () => {
                   { value: 'random', label: '随机混搭' },
                   { value: 'combine', label: '拼接组合' },
                 ]}
+              />
+            )}
+            {/* 钩子混搭输出数量：仅在 random/combine 模式且多钩子时显示 */}
+            {hookVideoKeys.length > 1 && (hookMixMode === 'random' || hookMixMode === 'combine') && (
+              <InputNumber
+                size="small"
+                min={1}
+                max={20}
+                style={{ width: 80 }}
+                value={hookMixOutputCount}
+                onChange={(v) => setHookMixOutputCount(v || 1)}
+                addonBefore="生成数量"
               />
             )}
           </Space>

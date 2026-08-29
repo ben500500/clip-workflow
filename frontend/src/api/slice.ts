@@ -133,6 +133,8 @@ export const sliceApi = {
       hook_video_keys?: string[];
       // 钩子混搭模式：sequential（默认，顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
       hook_mix_mode?: 'sequential' | 'random' | 'combine';
+      // 钩子混搭输出数量：当 hook_mix_mode 为 random/combine 时，生成多个不同钩子组合的成品（-v1, -v2 后缀）
+      hook_mix_output_count?: number;
       // 优先级流：high / normal / low（缺省 normal）。标准生产→normal / 高清首发→high / 实验测试→low
       priority?: 'high' | 'normal' | 'low';
       // 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品
