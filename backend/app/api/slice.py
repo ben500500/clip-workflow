@@ -1383,6 +1383,7 @@ async def get_slice_upload_url(
         "sliced",
         file_key,
         expires_seconds=7200,
+        internal=True,
     )
     if not upload_url:
         raise HTTPException(status_code=500, detail="生成上传 URL 失败")

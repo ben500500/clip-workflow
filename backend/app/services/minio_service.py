@@ -205,6 +205,7 @@ async def get_presigned_url(
     expires_seconds: int = 3600,
     as_attachment: bool = False,
     filename: Optional[str] = None,
+    internal: bool = False,
 ) -> Optional[str]:
     """Generate a presigned GET URL for temporary access.
 
@@ -212,6 +213,12 @@ async def get_presigned_url(
     保证浏览器可访问且签名有效（直接替换 host 会使 SigV4 签名失效）。
     as_attachment=True 时附加 response-content-disposition=attachment，
     使浏览器跨域访问该链接时强制下载而非内联播放。
+
+    internal=True 时强制使用内部 MinIO client（MINIO_ENDPOINT，如 minio:9000）。
+    供 Worker 节点消费的 URL（源视频/封面/钩子/角标下载、成品上传）必须走内部
+    client：Worker 与 MinIO 同处 Docker 网络、可直连 minio:9000；而 MINIO_EXTERNAL_ENDPOINT
+    通常是 localhost:9000 或宿主机 LAN 地址，从后端容器内无法直连（region 探测会
+    Connection refused），导致 presigned 生成失败、Worker 拿到空 URL 而下载素材报错。
     """
     response_headers = None
     if as_attachment:
@@ -219,7 +226,7 @@ async def get_presigned_url(
         response_headers = {
             "response-content-disposition": f'attachment; filename="{safe_name}"',
         }
-    client = get_external_minio_client() or get_minio_client()
+    client = get_minio_client() if internal else (get_external_minio_client() or get_minio_client())
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
@@ -239,13 +246,18 @@ async def get_presigned_upload_url(
     bucket: str,
     object_key: str,
     expires_seconds: int = 7200,
+    internal: bool = False,
 ) -> Optional[str]:
     """Generate a presigned PUT URL for Worker to upload files.
 
     优先用 MINIO_EXTERNAL_ENDPOINT 生成（外部 Worker 无法解析容器内 minio 主机名）；
     未配置时回退内部 endpoint，与旧行为兼容。
+
+    internal=True 时强制使用内部 MinIO client（MINIO_ENDPOINT，如 minio:9000）。
+    成品上传由同处 Docker 网络的 Worker 发起，必须走内部 client 才能生成可用 URL
+    （见 get_presigned_url 同名校验说明）。
     """
-    client = get_external_minio_client() or get_minio_client()
+    client = get_minio_client() if internal else (get_external_minio_client() or get_minio_client())
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
