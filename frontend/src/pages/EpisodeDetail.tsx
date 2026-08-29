@@ -2165,14 +2165,17 @@ const EpisodeDetail: React.FC = () => {
             )}
             {/* 钩子混搭输出数量：仅在 random/combine 模式且多钩子时显示 */}
             {hookVideoKeys.length > 1 && (hookMixMode === 'random' || hookMixMode === 'combine') && (
-              <InputNumber
-                size="small"
-                min={1}
-                style={{ width: 80 }}
-                value={hookMixOutputCount}
-                onChange={(v) => setHookMixOutputCount(v ?? 1)}
-                addonBefore="生成数量"
-              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ fontSize: 12, color: '#666', whiteSpace: 'nowrap' }}>生成数量：</span>
+                <InputNumber
+                  size="small"
+                  min={1}
+                  max={999}
+                  style={{ width: 100 }}
+                  value={hookMixOutputCount}
+                  onChange={(v) => setHookMixOutputCount(v ?? 1)}
+                />
+              </div>
             )}
           </Space>
           {/* 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品 */}
