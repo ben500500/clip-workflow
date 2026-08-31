@@ -183,14 +183,17 @@ $:
             echo "  改动源码文件数: $N_CHANGED"
             for f in $CHANGED_FILES; do
               [ -f "$f" ] || continue
-              SYMS="$(git diff -U0 "${BASE_SHA:-HEAD~1}...${HEAD_SHA:-HEAD}" -- "$f" 2>/dev/null | \
+              # diff 新增定义符号（新函数）+ 该文件顶层符号（含被修改的既有函数），去重
+              SYMS="$( { git diff -U0 "${BASE_SHA:-HEAD~1}...${HEAD_SHA:-HEAD}" -- "$f" 2>/dev/null | \
                 grep -E '^\+' | grep -vE '^\+\+\+' | \
                 grep -oE '(def|class|func|function|const|let|var|type|interface|struct) [A-Za-z_][A-Za-z0-9_]*' | \
-                awk '{print $2}' | sort -u)"
+                awk '{print $2}'; \
+                graft skeleton "$f" 2>/dev/null | \
+                grep -oE '^\s*- L[0-9]+-L[0-9]+\s+[a-z]+\s+[A-Za-z_][A-Za-z0-9_]*' | awk '{print $4}'; } | sort -u | head -25)"
               if [ -n "$SYMS" ]; then
                 {
                   echo ""
-                  echo "## $f"
+                  echo "## $f（改动符号的 graft 调用链）"
                   for s in $SYMS; do
                     echo "### graft callers $s --depth 2"
                     graft callers "$s" --depth 2 2>/dev/null | grep -v '^\[graft\] tokens saved' \
