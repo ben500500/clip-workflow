@@ -227,8 +227,22 @@ const BatchSlicePage: React.FC = () => {
       setJsonError(null);
       try {
         const parsed = JSON.parse(text);
-        if (!parsed.drama || !Array.isArray(parsed.episodes)) {
-          setJsonError('JSON 需包含 drama（剧名）与 episodes（剧集数组）字段');
+        // 支持两种格式：单个对象 { drama, episodes } 或数组 [{ drama, episodes }, ...]
+        if (Array.isArray(parsed)) {
+          if (parsed.length === 0) {
+            setJsonError('JSON 数组不能为空');
+            return;
+          }
+          for (const item of parsed) {
+            if (!item.drama || !Array.isArray(item.episodes)) {
+              setJsonError('数组中每项需包含 drama（剧名）与 episodes（剧集数组）字段');
+              return;
+            }
+          }
+        } else {
+          if (!parsed.drama || !Array.isArray(parsed.episodes)) {
+            setJsonError('JSON 需包含 drama（剧名）与 episodes（剧集数组）字段');
+          }
         }
       } catch {
         setJsonError('JSON 解析失败，请检查格式');
@@ -239,29 +253,53 @@ const BatchSlicePage: React.FC = () => {
   };
 
   const buildPayload = () => {
-    let parsed: { drama?: string; episodes?: { title?: string; path: string }[] };
+    let parsed: unknown;
     try {
       parsed = JSON.parse(jsonText);
     } catch {
       throw new Error('JSON 解析失败，请检查格式');
     }
-    if (!parsed.drama || !parsed.drama.trim()) throw new Error('缺少剧名 drama');
-    if (!Array.isArray(parsed.episodes) || parsed.episodes.length === 0) {
-      throw new Error('缺少剧集列表 episodes');
+
+    const sliceConfigPayload = buildBatchSlicePayload(sliceConfig, {
+      autoclipEnabled: sliceConfig.autoclip.enabled,
+      intervalEnabled: sliceConfig.interval.enabled,
+      intervalMode: sliceConfig.interval.mode,
+    });
+
+    // 支持两种格式：单个对象或数组
+    if (Array.isArray(parsed)) {
+      if (parsed.length === 0) throw new Error('JSON 数组不能为空');
+      const payloads: Array<{ drama: string; episodes: Array<{ title?: string; path: string }>; slice_config: unknown }> = [];
+      for (const item of parsed) {
+        if (!item.drama || !String(item.drama).trim()) throw new Error(`缺少剧名 drama: ${JSON.stringify(item)}`);
+        if (!Array.isArray(item.episodes) || item.episodes.length === 0) {
+          throw new Error(`剧目「${item.drama}」缺少剧集列表 episodes`);
+        }
+        for (const ep of item.episodes) {
+          if (!ep.path) throw new Error(`剧目「${item.drama}」中存在缺少 path 的项`);
+        }
+        payloads.push({
+          drama: String(item.drama).trim(),
+          episodes: item.episodes,
+          slice_config: sliceConfigPayload,
+        });
+      }
+      return payloads;
+    } else {
+      const item = parsed as { drama?: string; episodes?: Array<{ title?: string; path: string }> };
+      if (!item.drama || !item.drama.trim()) throw new Error('缺少剧名 drama');
+      if (!Array.isArray(item.episodes) || item.episodes.length === 0) {
+        throw new Error('缺少剧集列表 episodes');
+      }
+      for (const ep of item.episodes) {
+        if (!ep.path) throw new Error('剧集中存在缺少 path 的项');
+      }
+      return [{
+        drama: item.drama.trim(),
+        episodes: item.episodes,
+        slice_config: sliceConfigPayload,
+      }];
     }
-    for (const ep of parsed.episodes) {
-      if (!ep.path) throw new Error('剧集中存在缺少 path 的项');
-    }
-    return {
-      drama: parsed.drama.trim(),
-      episodes: parsed.episodes,
-      // 统一走共享映射 buildBatchSlicePayload（SlicePreset → 批量后端 payload，单一事实源）
-      slice_config: buildBatchSlicePayload(sliceConfig, {
-        autoclipEnabled: sliceConfig.autoclip.enabled,
-        intervalEnabled: sliceConfig.interval.enabled,
-        intervalMode: sliceConfig.interval.mode,
-      }),
-    };
   };
 
   const addTextOverlay = () => {
@@ -287,24 +325,33 @@ const BatchSlicePage: React.FC = () => {
 
   const handleRun = async () => {
     setJsonError(null);
-    let payload: ReturnType<typeof buildPayload>;
+    let payloads: ReturnType<typeof buildPayload>;
     try {
-      payload = buildPayload();
+      payloads = buildPayload();
     } catch (err) {
       setJsonError(err instanceof Error ? err.message : '参数校验失败');
       return;
     }
     setCreating(true);
     try {
-      const resp = await batchSliceApi.run(payload);
-      message.success(resp.message);
+      let lastBatchId: string | undefined;
+      let totalCreated = 0;
+      // 依次提交每个剧目（共享同一批次或创建新批次）
+      for (const payload of payloads) {
+        const resp = await batchSliceApi.run(payload);
+        if (resp.batch_id) {
+          lastBatchId = resp.batch_id;
+        }
+        totalCreated++;
+      }
+      message.success(`成功创建 ${totalCreated} 个剧目批次`);
       setJsonText('');
       form.resetFields();
       fetchBatches();
-      if (resp.batch_id) {
+      if (lastBatchId) {
         // 新批次创建后自动展开该批次明细
-        setExpandedBatchIds((prev) => (prev.includes(resp.batch_id!) ? prev : [...prev, resp.batch_id!]));
-        await loadBatchDetail(resp.batch_id);
+        setExpandedBatchIds((prev) => (prev.includes(lastBatchId!) ? prev : [...prev, lastBatchId!]));
+        await loadBatchDetail(lastBatchId);
       }
     } catch (err) {
       message.error(err instanceof Error ? err.message : '创建批次失败');
