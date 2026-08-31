@@ -26,6 +26,7 @@ alembic>=1.13.0,<2.0.0
 
 # ==================== AI 服务 SDK ====================
 dashscope>=1.18.0,<2.0.0
+openai>=1.0.0  # 40 专属：MiMo Token Plan 走 openai-compatible 接口（LLM_PROVIDER=openai）
 
 # ==================== 工具库 ====================
 python-multipart>=0.0.6
