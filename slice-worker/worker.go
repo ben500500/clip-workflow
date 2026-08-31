@@ -293,12 +293,17 @@ func (w *Worker) Run(ctx context.Context) error {
 // 中间文件）残留。重启后这些消息会被幂等检测跳过（终态直接 ACK），不再触发清理，
 // 需要在此兜底。
 //
-// 注意 TempDir 为多 worker 共享卷：只清理「非 UUID 目录」或「UUID 目录但 redis 中
-// 无对应任务 / 任务已终态」的目录；running/pending 的任务目录必须跳过（可能正被
-// 其他 worker 使用）。
+// TempDir 为多 worker 共享卷，每个 worker 的任务目录都在自己的
+// TempDir/{node_id}/ 子目录下（见 runTask）：本函数只扫描本节点的子目录，
+// 绝不触碰其他节点正在使用的目录。对每个 UUID 任务目录查 redis 任务状态，
+// 仅当「无对应任务 / 任务已终态」时才清理；running/pending 的目录必须跳过。
 func (w *Worker) cleanupOrphanDirs() {
-	entries, err := os.ReadDir(w.config.TempDir)
+	nodeRoot := filepath.Join(w.config.TempDir, w.config.NodeID)
+	entries, err := os.ReadDir(nodeRoot)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
 		w.log("warn", "扫描临时目录失败: %v", err)
 		return
 	}
@@ -308,7 +313,7 @@ func (w *Worker) cleanupOrphanDirs() {
 			continue
 		}
 		name := e.Name()
-		dir := filepath.Join(w.config.TempDir, name)
+		dir := filepath.Join(nodeRoot, name)
 		if !uuidDirRe.MatchString(name) {
 			// 非 UUID 目录（如手工测试残留 repro-* 等）：直接清理
 			if rmErr := os.RemoveAll(dir); rmErr == nil {
@@ -542,12 +547,38 @@ func (w *Worker) runTask(msg *StreamMessage) {
 		}
 	}
 
+	// 跨节点原子认领：同一任务只允许一个 Worker 处理。
+	// 背景：任务可能因 PEL 认领（XAUTOCLAIM）或重复入队被两个 Worker 同时拿到，
+	// 历史实现各自在共享 TempDir 下写同一 taskID 目录导致互相覆盖/误删（临时目录消失）。
+	// 这里用 Redis SETNX 租约做互斥：认领成功才真正开工，失败说明已被其他节点处理，
+	// 直接 ACK 掉本副本避免重复执行；租约由 leaseRenewal 周期续期，崩溃后自动过期可接管。
+	leaseTTL := time.Duration(task.TimeoutSec) * time.Second
+	if leaseTTL <= 0 {
+		leaseTTL = time.Duration(w.config.TaskTimeout) * time.Second
+	}
+	if leaseTTL < 10*time.Minute {
+		leaseTTL = 10 * time.Minute
+	}
+	acquired, err := w.redis.TryAcquireTaskLease(task.TaskID, w.config.NodeID, leaseTTL)
+	if err != nil {
+		// 认领异常保守放行（Redis 抖动时不阻塞任务，仍有下方租约续期兜底）
+		w.log("warn", "任务 %s 认领异常: %v", task.TaskID, err)
+	} else if !acquired {
+		w.log("warn", "任务 %s 正被其他节点处理，跳过本副本并 ACK", task.TaskID)
+		if ackErr := w.redis.AckTask(msg.Stream, "workers", msg.ID); ackErr != nil {
+			w.log("error", "任务 %s 重复副本 ACK 失败: %v", task.TaskID, ackErr)
+		}
+		return
+	}
+
 	timeout := time.Duration(task.TimeoutSec) * time.Second
 	if timeout <= 0 {
 		timeout = time.Duration(w.config.TaskTimeout) * time.Second
 	}
 	taskCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	// 任务退出（完成/失败/取消/超时）时释放认领租约，允许后续重试或其他节点接管
+	defer w.redis.ReleaseTaskLease(task.TaskID, w.config.NodeID)
 
 	// 记录运行中的任务（Cancel 可在取消接口中调用）
 	rt := &RunningTask{
@@ -598,7 +629,9 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	go w.leaseRenewal(taskCtx, task.TaskID)
 
 	// 创建临时目录
-	taskDir := filepath.Join(w.config.TempDir, task.TaskID)
+	// 目录按 node_id 隔离（TempDir/{node_id}/{task_id}）：即使同一任务被两个 Worker
+	// 同时认领（如 PEL 重复），各自在独立目录下载/切片，互不覆盖、互不误删。
+	taskDir := filepath.Join(w.config.TempDir, w.config.NodeID, task.TaskID)
 	os.MkdirAll(taskDir, 0755)
 	defer os.RemoveAll(taskDir)
 
@@ -872,6 +905,11 @@ func (w *Worker) watchCancellation(ctx context.Context, taskID string, cancel co
 func (w *Worker) leaseRenewal(ctx context.Context, taskID string) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+	// 认领租约 TTL 与任务超时对齐（runTask 里认领时用的同一值），续期期间保持新鲜
+	ttl := time.Duration(w.config.TaskTimeout) * time.Second
+	if ttl < 10*time.Minute {
+		ttl = 10 * time.Minute
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -879,6 +917,19 @@ func (w *Worker) leaseRenewal(ctx context.Context, taskID string) {
 		case <-ticker.C:
 			if err := w.redis.TouchTask(taskID); err != nil {
 				w.log("warn", "任务 %s 租约续期失败: %v", taskID, err)
+			}
+			// 同步刷新跨节点认领租约：若租约已被其他节点接管（如本节点长时间暂停），
+			// RefreshTaskLease 返回 false，说明本节点不应继续处理，放弃执行
+			if ok, rerr := w.redis.RefreshTaskLease(taskID, w.config.NodeID, ttl); rerr != nil {
+				w.log("warn", "任务 %s 认领租约续期失败: %v", taskID, rerr)
+			} else if !ok {
+				w.log("warn", "任务 %s 认领租约已被其他节点接管，终止本副本", taskID)
+				if rt, exists := w.runningTasks.Load(taskID); exists {
+					if rt.(*RunningTask).Cancel != nil {
+						rt.(*RunningTask).Cancel()
+					}
+				}
+				return
 			}
 		}
 	}

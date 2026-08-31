@@ -279,6 +279,57 @@ func (r *RedisClient) TouchTask(taskID string) error {
 	}).Err()
 }
 
+// TryAcquireTaskLease 原子认领任务处理权（防止多个 Worker 并发处理同一任务）。
+//
+// 用独立 key `slice:task:lease:{task_id}` + SET NX EX 实现跨节点互斥：
+// 只有一个 Worker 能认领成功；认领者通过 RefreshTaskLease 周期续期，
+// 节点崩溃/任务超时后 key 自动过期，其他 Worker 才能接管。
+// 返回 true 表示本节点获得处理权。
+func (r *RedisClient) TryAcquireTaskLease(taskID, nodeID string, ttl time.Duration) (bool, error) {
+	ok, err := r.client.SetNX(r.ctx, taskLeaseKey(taskID), nodeID, ttl).Result()
+	if err != nil {
+		return false, err
+	}
+	return ok, nil
+}
+
+// RefreshTaskLease 刷新任务处理权租约（处理期间由 leaseRenewal 周期调用）。
+// 租约被其他节点接管（值非本节点）时返回 false；本节点续期成功返回 true；
+// 租约已过期则重新认领。
+func (r *RedisClient) RefreshTaskLease(taskID, nodeID string, ttl time.Duration) (bool, error) {
+	key := taskLeaseKey(taskID)
+	val, err := r.client.Get(r.ctx, key).Result()
+	if err == redis.Nil {
+		// 租约已过期（节点故障后恢复或长时间暂停）：重新认领
+		return r.TryAcquireTaskLease(taskID, nodeID, ttl)
+	}
+	if err != nil {
+		return false, err
+	}
+	if val != nodeID {
+		return false, nil // 已被其他节点接管，本节点不应再处理
+	}
+	r.client.Expire(r.ctx, key, ttl)
+	return true, nil
+}
+
+// ReleaseTaskLease 释放任务处理权（任务完成/失败/取消/超时退出时调用）。
+// 仅当租约仍属于本节点时才删除，避免误删后来接管者的租约。
+func (r *RedisClient) ReleaseTaskLease(taskID, nodeID string) error {
+	script := redis.NewScript(`
+if redis.call("get", KEYS[1]) == ARGV[1] then
+	return redis.call("del", KEYS[1])
+else
+	return 0
+end`)
+	return script.Run(r.ctx, r.client, []string{taskLeaseKey(taskID)}, nodeID).Err()
+}
+
+// taskLeaseKey 任务认领租约 key。
+func taskLeaseKey(taskID string) string {
+	return fmt.Sprintf("slice:task:lease:%s", taskID)
+}
+
 // IsTaskCancelled 检查任务是否被后端标记为取消
 func (r *RedisClient) IsTaskCancelled(taskID string) (bool, error) {
 	status, err := r.client.HGet(r.ctx, fmt.Sprintf("slice:task:%s", taskID), "status").Result()
@@ -460,6 +511,8 @@ type SliceTask struct {
 	// 钩子混搭模式（可选，后端透传；Worker 透传给引擎 --hook-mix-mode 参数）
 	// sequential=顺序循环（默认）/ random=随机混搭 / combine=拼接所有钩子
 	HookMixMode string `json:"hook_mix_mode"`
+	// 钩子混搭输出数量（可选，后端透传；Worker 透传给引擎 --hook-mix-output-count 参数）
+	HookMixOutputCount int `json:"hook_mix_output_count"`
 	// 输出档位（可选，后端透传；Worker 透传给引擎 --output-tier 参数，高分辨率/高 fps 素材降档提速）
 	OutputTier string `json:"output_tier"`
 	Output         TaskOutput             `json:"output"`

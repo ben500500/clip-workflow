@@ -152,6 +152,7 @@ async def run_slice(
     hook_path: Optional[str] = None,
     hook_paths: Optional[list] = None,
     hook_mix_mode: Optional[str] = None,
+    hook_mix_output_count: Optional[int] = None,
     task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run the ffmpeg slice engine.
@@ -225,6 +226,8 @@ async def run_slice(
         cmd.extend(["--output-tier", output_tier])
     if hook_mix_mode and hook_mix_mode in ("sequential", "random", "combine"):
         cmd.extend(["--hook-mix-mode", hook_mix_mode])
+    if hook_mix_output_count and hook_mix_output_count > 1:
+        cmd.extend(["--hook-mix-output-count", str(int(hook_mix_output_count))])
     logger.info("Running slice: %s", " ".join(cmd))
 
     return await _run_cmd(cmd, timeout, progress_cb, task_id=task_id)
@@ -259,6 +262,7 @@ async def run_slice_scrub(
     hook_path: Optional[str] = None,
     hook_paths: Optional[list] = None,
     hook_mix_mode: Optional[str] = None,
+    hook_mix_output_count: Optional[int] = None,
     task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run scrub-mode slicing (cutlist minus removed intervals)."""
@@ -292,6 +296,7 @@ async def run_slice_scrub(
         hook_path=hook_path,
         hook_paths=hook_paths,
         hook_mix_mode=hook_mix_mode,
+        hook_mix_output_count=hook_mix_output_count,
         task_id=task_id,
     )
 
@@ -325,6 +330,7 @@ async def run_slice_fast(
     hook_path: Optional[str] = None,
     hook_paths: Optional[list] = None,
     hook_mix_mode: Optional[str] = None,
+    hook_mix_output_count: Optional[int] = None,
     task_id: Optional[str] = None,
 ) -> tuple[int, str, str]:
     """Run fast/dedupe mode slicing."""
@@ -360,6 +366,6 @@ async def run_slice_fast(
         hook_path=hook_path,
         hook_paths=hook_paths,
         hook_mix_mode=hook_mix_mode,
+        hook_mix_output_count=hook_mix_output_count,
         task_id=task_id,
     )
-

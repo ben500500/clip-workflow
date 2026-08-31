@@ -190,6 +190,10 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		if task.HookMixMode != "" {
 			args = append(args, "--hook-mix-mode", task.HookMixMode)
 		}
+		// 钩子混搭输出数量：透传给引擎（当 random/combine 且 >1 时，生成多个变体成品）
+		if task.HookMixOutputCount > 1 {
+			args = append(args, "--hook-mix-output-count", strconv.Itoa(task.HookMixOutputCount))
+		}
 	}
 
 	// ASR 字幕烧录：把后端下发的 SRT 内容写到本地文件，透传给引擎 --subtitle
