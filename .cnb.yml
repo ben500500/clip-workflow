@@ -128,3 +128,35 @@ $:
             docker build -t "$IMAGE:$VERSION" -t "$IMAGE:latest" ./slice-worker
             docker push "$IMAGE:$VERSION"
             docker push "$IMAGE:latest"
+
+  # ==================== NPC：@ben500500/clip-workflow(代码审查员) 代码评审 ====================
+  # 在 PR 评论中提及该 NPC 即触发 PR 代码评审（角色定义见 .cnb/settings.yml）。
+  # 流程：先装 graft CLI 并现场重建代码地图（标准版零 LLM、零费用）→ 再让 CodeBuddy 按
+  # AGENTS.md / 系统提示词 先查 graft 再读源码，带全仓调用边审 PR diff。
+  pull_request.comment@npc:
+    - docker:
+        image: cnbcool/default-npc:latest
+      stages:
+        - name: 准备 graft 代码地图
+          script: |
+            set +e
+            echo "=== 环境检查 ==="
+            node -v 2>&1; npm -v 2>&1
+            echo "=== 安装 graft CLI（官方源，规避国内镜像缺 tree-sitter-wasm）==="
+            npm install -g @nanonets/graft --registry=https://registry.npmjs.org --allow-scripts 2>&1 | tail -5
+            graft --version 2>&1 || echo "!! graft 安装失败，本次评审退化为无地图模式"
+            echo "=== 现场重建 graft 代码地图（标准版，不接 LLM，零费用）==="
+            time graft build . 2>&1 | tail -8
+            graft map 2>&1 | head -6
+            echo "=== graft 就绪 ==="
+        - name: 代码评审
+          type: npc:go
+          options:
+            role: 代码审查员
+            systemPrompt: |
+              你是本仓库资深代码审查员。铁律：先查 graft 代码地图（graft grep / graft callers / graft ask），
+              再读源码。每条意见必须带 file:line 和具体修改建议，按 🔴严重 / 🟡建议 / 🟢小问题 分组。
+              不写空话，核查后没问题就明确说"未发现严重问题"并列出已核查的调用链。
+            userPrompt: |
+              审查本次 PR 的代码变更，给出改进建议。请用 graft 代码地图判断改动波及的调用方，
+              重点检查有没有被 PR 遗漏的调用链和破坏面。
