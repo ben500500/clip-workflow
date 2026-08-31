@@ -81,109 +81,112 @@ covers:
     at: 'frontend/src/api/batchSlice.ts:L66-L69'
   - symbol: ChannelAccountInput
     kind: interface
-    at: 'frontend/src/api/channelAccounts.ts:L4-L16'
+    at: 'frontend/src/api/channelAccounts.ts:L4-L17'
   - symbol: ChannelAccountFromVideoAccountInput
     kind: interface
-    at: 'frontend/src/api/channelAccounts.ts:L18-L27'
+    at: 'frontend/src/api/channelAccounts.ts:L19-L29'
   - symbol: OperatorInput
     kind: interface
-    at: 'frontend/src/api/channelAccounts.ts:L29-L33'
+    at: 'frontend/src/api/channelAccounts.ts:L31-L35'
   - symbol: refreshAccessToken
     kind: function
     at: 'frontend/src/api/client.ts:L27-L39'
   - symbol: Drama
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L5-L26'
+    at: 'frontend/src/api/dramas.ts:L5-L30'
   - symbol: DramaDetail
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L28-L34'
+    at: 'frontend/src/api/dramas.ts:L32-L38'
   - symbol: DramaStill
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L36-L41'
+    at: 'frontend/src/api/dramas.ts:L40-L45'
   - symbol: DramaCreateParams
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L43-L59'
+    at: 'frontend/src/api/dramas.ts:L47-L65'
   - symbol: DramaUpdateParams
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L61-L76'
+    at: 'frontend/src/api/dramas.ts:L67-L84'
   - symbol: DramaImportRow
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L78-L90'
+    at: 'frontend/src/api/dramas.ts:L86-L99'
   - symbol: DramaImportPreviewResult
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L92-L98'
+    at: 'frontend/src/api/dramas.ts:L101-L107'
   - symbol: DramaImportConfirmItem
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L100-L114'
+    at: 'frontend/src/api/dramas.ts:L109-L124'
   - symbol: DramaPublishContext
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L116-L124'
+    at: 'frontend/src/api/dramas.ts:L126-L134'
   - symbol: TopicPreset
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L128-L133'
+    at: 'frontend/src/api/dramas.ts:L138-L143'
   - symbol: TopicPresetsResult
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L135-L139'
+    at: 'frontend/src/api/dramas.ts:L145-L149'
   - symbol: getTopicPresets
     kind: function
-    at: 'frontend/src/api/dramas.ts:L144-L146'
+    at: 'frontend/src/api/dramas.ts:L154-L156'
   - symbol: listDramas
     kind: function
-    at: 'frontend/src/api/dramas.ts:L148-L156'
+    at: 'frontend/src/api/dramas.ts:L158-L167'
   - symbol: getDrama
     kind: function
-    at: 'frontend/src/api/dramas.ts:L158-L160'
+    at: 'frontend/src/api/dramas.ts:L169-L171'
   - symbol: createDrama
     kind: function
-    at: 'frontend/src/api/dramas.ts:L162-L164'
+    at: 'frontend/src/api/dramas.ts:L173-L175'
   - symbol: updateDrama
     kind: function
-    at: 'frontend/src/api/dramas.ts:L166-L168'
+    at: 'frontend/src/api/dramas.ts:L177-L179'
   - symbol: deleteDrama
     kind: function
-    at: 'frontend/src/api/dramas.ts:L170-L172'
+    at: 'frontend/src/api/dramas.ts:L180-L182'
+  - symbol: feishuImportDrama
+    kind: function
+    at: 'frontend/src/api/dramas.ts:L185-L194'
   - symbol: uploadDramaImage
     kind: function
-    at: 'frontend/src/api/dramas.ts:L176-L189'
+    at: 'frontend/src/api/dramas.ts:L198-L211'
   - symbol: addDramaStill
     kind: function
-    at: 'frontend/src/api/dramas.ts:L191-L193'
+    at: 'frontend/src/api/dramas.ts:L213-L215'
   - symbol: deleteDramaStill
     kind: function
-    at: 'frontend/src/api/dramas.ts:L195-L197'
+    at: 'frontend/src/api/dramas.ts:L217-L219'
   - symbol: linkDramaAccounts
     kind: function
-    at: 'frontend/src/api/dramas.ts:L200-L202'
+    at: 'frontend/src/api/dramas.ts:L222-L224'
   - symbol: dramaImportParse
     kind: function
-    at: 'frontend/src/api/dramas.ts:L205-L223'
+    at: 'frontend/src/api/dramas.ts:L227-L245'
   - symbol: dramaImportPreview
     kind: function
-    at: 'frontend/src/api/dramas.ts:L225-L227'
+    at: 'frontend/src/api/dramas.ts:L247-L249'
   - symbol: dramaImportConfirm
     kind: function
-    at: 'frontend/src/api/dramas.ts:L229-L239'
+    at: 'frontend/src/api/dramas.ts:L251-L261'
   - symbol: getDramaPublishContext
     kind: function
-    at: 'frontend/src/api/dramas.ts:L242-L244'
+    at: 'frontend/src/api/dramas.ts:L264-L266'
   - symbol: linkDramaMaterial
     kind: function
-    at: 'frontend/src/api/dramas.ts:L246-L252'
+    at: 'frontend/src/api/dramas.ts:L268-L274'
   - symbol: DramaEpisodeStage
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L257-L264'
+    at: 'frontend/src/api/dramas.ts:L279-L286'
   - symbol: DramaSliceEpisode
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L266-L279'
+    at: 'frontend/src/api/dramas.ts:L288-L301'
   - symbol: DramaSliceStatus
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L281-L290'
+    at: 'frontend/src/api/dramas.ts:L303-L312'
   - symbol: linkDramaEpisodes
     kind: function
-    at: 'frontend/src/api/dramas.ts:L293-L295'
+    at: 'frontend/src/api/dramas.ts:L315-L317'
   - symbol: getDramaSliceStatus
     kind: function
-    at: 'frontend/src/api/dramas.ts:L298-L300'
+    at: 'frontend/src/api/dramas.ts:L320-L322'
   - symbol: ProjectListParams
     kind: interface
     at: 'frontend/src/api/projects.ts:L4-L9'
@@ -267,31 +270,31 @@ covers:
     at: 'frontend/src/api/variants.ts:L3-L7'
   - symbol: VariantMatrixItem
     kind: interface
-    at: 'frontend/src/api/variants.ts:L9-L23'
+    at: 'frontend/src/api/variants.ts:L9-L26'
   - symbol: VariantGroup
     kind: interface
-    at: 'frontend/src/api/variants.ts:L25-L31'
+    at: 'frontend/src/api/variants.ts:L28-L34'
   - symbol: VariantMatrix
     kind: interface
-    at: 'frontend/src/api/variants.ts:L33-L36'
+    at: 'frontend/src/api/variants.ts:L36-L39'
   - symbol: VariantDetail
     kind: interface
-    at: 'frontend/src/api/variants.ts:L38-L42'
+    at: 'frontend/src/api/variants.ts:L41-L45'
   - symbol: VariantVerifyResult
     kind: interface
-    at: 'frontend/src/api/variants.ts:L44-L48'
+    at: 'frontend/src/api/variants.ts:L47-L51'
   - symbol: SliceOutputListItem
     kind: interface
-    at: 'frontend/src/api/variants.ts:L50-L61'
+    at: 'frontend/src/api/variants.ts:L53-L64'
   - symbol: SliceOutputEpisode
     kind: interface
-    at: 'frontend/src/api/variants.ts:L63-L68'
+    at: 'frontend/src/api/variants.ts:L66-L71'
   - symbol: SliceOutputProject
     kind: interface
-    at: 'frontend/src/api/variants.ts:L70-L74'
+    at: 'frontend/src/api/variants.ts:L73-L77'
   - symbol: SliceOutputList
     kind: interface
-    at: 'frontend/src/api/variants.ts:L76-L81'
+    at: 'frontend/src/api/variants.ts:L79-L84'
   - symbol: WatermarkVideoItem
     kind: interface
     at: 'frontend/src/api/watermark.ts:L3-L19'

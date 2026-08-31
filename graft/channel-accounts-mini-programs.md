@@ -17,88 +17,91 @@ generator:
 covers:
   - symbol: OperatorCreate
     kind: class
-    at: 'backend/app/api/channel_accounts.py:L38-L41'
+    at: 'backend/app/api/channel_accounts.py:L39-L42'
   - symbol: OperatorUpdate
     kind: class
-    at: 'backend/app/api/channel_accounts.py:L44-L47'
+    at: 'backend/app/api/channel_accounts.py:L45-L48'
   - symbol: OperatorResponse
     kind: class
-    at: 'backend/app/api/channel_accounts.py:L50-L58'
+    at: 'backend/app/api/channel_accounts.py:L51-L59'
   - symbol: ChannelAccountCreate
     kind: class
-    at: 'backend/app/api/channel_accounts.py:L61-L73'
+    at: 'backend/app/api/channel_accounts.py:L62-L75'
   - symbol: ChannelAccountFromVideoAccount
     kind: class
-    at: 'backend/app/api/channel_accounts.py:L76-L88'
+    at: 'backend/app/api/channel_accounts.py:L78-L90'
   - symbol: ChannelAccountUpdate
     kind: class
-    at: 'backend/app/api/channel_accounts.py:L91-L101'
+    at: 'backend/app/api/channel_accounts.py:L93-L104'
   - symbol: ChannelAccountResponse
     kind: class
-    at: 'backend/app/api/channel_accounts.py:L104-L125'
+    at: 'backend/app/api/channel_accounts.py:L107-L130'
   - symbol: _serialize_operator
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L130-L138'
+    at: 'backend/app/api/channel_accounts.py:L135-L143'
   - symbol: _load_report_metrics
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L141-L184'
+    at: 'backend/app/api/channel_accounts.py:L146-L189'
   - symbol: _serialize_channel_account
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L187-L210'
+    at: 'backend/app/api/channel_accounts.py:L192-L217'
+  - symbol: _load_theater_names
+    kind: function
+    at: 'backend/app/api/channel_accounts.py:L220-L226'
   - symbol: _reload_channel_account
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L213-L221'
+    at: 'backend/app/api/channel_accounts.py:L229-L237'
   - symbol: _parse_date
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L224-L232'
+    at: 'backend/app/api/channel_accounts.py:L240-L248'
   - symbol: _parse_uuid
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L235-L241'
+    at: 'backend/app/api/channel_accounts.py:L251-L257'
   - symbol: _validate_operator_identity
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L244-L250'
+    at: 'backend/app/api/channel_accounts.py:L260-L266'
   - symbol: list_channel_accounts
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L256-L289'
+    at: 'backend/app/api/channel_accounts.py:L272-L313'
   - symbol: get_channel_account
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L293-L312'
+    at: 'backend/app/api/channel_accounts.py:L317-L337'
   - symbol: create_channel_account
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L316-L361'
+    at: 'backend/app/api/channel_accounts.py:L341-L388'
   - symbol: create_channel_from_video_account
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L369-L403'
+    at: 'backend/app/api/channel_accounts.py:L396-L432'
   - symbol: update_channel_account
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L407-L445'
+    at: 'backend/app/api/channel_accounts.py:L436-L477'
   - symbol: delete_channel_account
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L449-L465'
+    at: 'backend/app/api/channel_accounts.py:L481-L497'
   - symbol: add_operator
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L471-L492'
+    at: 'backend/app/api/channel_accounts.py:L503-L524'
   - symbol: update_operator
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L496-L533'
+    at: 'backend/app/api/channel_accounts.py:L528-L565'
   - symbol: delete_operator
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L537-L560'
+    at: 'backend/app/api/channel_accounts.py:L569-L592'
   - symbol: _load_account
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L565-L572'
+    at: 'backend/app/api/channel_accounts.py:L597-L604'
   - symbol: _load_video_account
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L575-L583'
+    at: 'backend/app/api/channel_accounts.py:L607-L615'
   - symbol: _find_or_create_video_account
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L586-L630'
+    at: 'backend/app/api/channel_accounts.py:L618-L662'
   - symbol: _ensure_no_existing
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L633-L649'
+    at: 'backend/app/api/channel_accounts.py:L665-L681'
   - symbol: _check_access
     kind: function
-    at: 'backend/app/api/channel_accounts.py:L652-L656'
+    at: 'backend/app/api/channel_accounts.py:L684-L688'
   - symbol: MiniProgramCreate
     kind: class
     at: 'backend/app/api/publish_mini_programs.py:L20-L26'

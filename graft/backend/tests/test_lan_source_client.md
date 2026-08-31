@@ -1,0 +1,28 @@
+# backend/tests/test_lan_source_client.py
+
+- FakeResp · class · L39-L46 — class FakeResp
+- __init__ · method · L40-L43 — def __init__(self, status_code, payload, text=None)
+- json · method · L45-L46 — def json(self)
+- FakeClient · class · L49-L73 — class FakeClient
+- reset · method · L55-L56 — def reset(cls)
+- __init__ · method · L58-L59 — def __init__(self, *args, **kwargs)
+- __aenter__ · method · L61-L62 — async def __aenter__(self)
+- __aexit__ · method · L64-L65 — async def __aexit__(self, *exc)
+- get · method · L67-L73 — async def get(self, url)
+- client · function · L77-L81 — def client(monkeypatch)
+- names · function · L84-L85 — def names(dramas)
+- test_dupload_uses_manage_base · function · L89-L92 — async def test_dupload_uses_manage_base(client)
+- test_dupload_parses_drama_field · function · L95-L106 — async def test_dupload_parses_drama_field(client)
+- test_dupload_fallback_to_base_when_no_manage · function · L109-L116 — async def test_dupload_fallback_to_base_when_no_manage(monkeypatch)
+- test_discover_merges_both_sources · function · L120-L125 — async def test_discover_merges_both_sources(client)
+- test_discover_skips_failed_manage · function · L128-L141 — async def test_discover_skips_failed_manage(monkeypatch, client)
+- FailManage · class · L131-L136 — class FailManage(FakeClient)
+- get · method · L132-L136 — async def get(self, url)
+- test_discover_skips_failed_dupload · function · L144-L160 — async def test_discover_skips_failed_dupload(client)
+- FailDup · class · L147-L152 — class FailDup(FakeClient)
+- get · method · L148-L152 — async def get(self, url)
+- test_normalize_strips_fullwidth_punct · function · L164-L165 — def test_normalize_strips_fullwidth_punct()
+- test_find_matched_drama_hits_dupload_only · function · L168-L170 — async def test_find_matched_drama_hits_dupload_only(client)
+- test_fetch_episodes_fuzzy_fallback · function · L173-L201 — async def test_fetch_episodes_fuzzy_fallback(client)
+- FuzzyFake · class · L180-L189 — class FuzzyFake(FakeClient)
+- get · method · L181-L189 — async def get(self, url)

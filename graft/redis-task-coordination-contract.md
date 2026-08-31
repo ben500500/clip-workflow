@@ -68,57 +68,72 @@ covers:
   - symbol: TouchTask
     kind: method
     at: 'slice-worker/redis_client.go:L276-L280'
+  - symbol: TryAcquireTaskLease
+    kind: method
+    at: 'slice-worker/redis_client.go:L288-L294'
+  - symbol: RefreshTaskLease
+    kind: method
+    at: 'slice-worker/redis_client.go:L299-L314'
+  - symbol: ReleaseTaskLease
+    kind: method
+    at: 'slice-worker/redis_client.go:L318-L326'
+  - symbol: taskLeaseKey
+    kind: function
+    at: 'slice-worker/redis_client.go:L329-L331'
   - symbol: IsTaskCancelled
     kind: method
-    at: 'slice-worker/redis_client.go:L283-L292'
+    at: 'slice-worker/redis_client.go:L334-L343'
   - symbol: ExpireTaskStatus
     kind: method
-    at: 'slice-worker/redis_client.go:L295-L297'
+    at: 'slice-worker/redis_client.go:L346-L348'
   - symbol: GetTaskHash
     kind: method
-    at: 'slice-worker/redis_client.go:L300-L302'
+    at: 'slice-worker/redis_client.go:L351-L353'
   - symbol: GetTaskStatus
     kind: method
-    at: 'slice-worker/redis_client.go:L305-L314'
+    at: 'slice-worker/redis_client.go:L356-L365'
   - symbol: IsNodeEnabled
     kind: method
-    at: 'slice-worker/redis_client.go:L317-L326'
+    at: 'slice-worker/redis_client.go:L368-L377'
   - symbol: GetNodeCPUPercent
     kind: method
-    at: 'slice-worker/redis_client.go:L330-L349'
+    at: 'slice-worker/redis_client.go:L381-L400'
   - symbol: SetNodeEnabled
     kind: method
-    at: 'slice-worker/redis_client.go:L352-L358'
+    at: 'slice-worker/redis_client.go:L403-L409'
   - symbol: SetNodeCPUPercent
     kind: method
-    at: 'slice-worker/redis_client.go:L362-L370'
+    at: 'slice-worker/redis_client.go:L413-L421'
   - symbol: GetNodeUpdateCommand
     kind: method
-    at: 'slice-worker/redis_client.go:L375-L384'
+    at: 'slice-worker/redis_client.go:L426-L435'
   - symbol: ClearNodeUpdateCommand
     kind: method
-    at: 'slice-worker/redis_client.go:L387-L389'
+    at: 'slice-worker/redis_client.go:L438-L440'
   - symbol: StreamMessage
     kind: struct
-    at: 'slice-worker/redis_client.go:L392-L397'
+    at: 'slice-worker/redis_client.go:L443-L448'
   - symbol: NodeInfo
     kind: struct
-    at: 'slice-worker/redis_client.go:L400-L422'
+    at: 'slice-worker/redis_client.go:L451-L473'
   - symbol: SliceTask
     kind: struct
-    at: 'slice-worker/redis_client.go:L425-L463'
+    at: 'slice-worker/redis_client.go:L476-L524'
   - symbol: BadgeItem
     kind: struct
-    at: 'slice-worker/redis_client.go:L471-L478'
+    at: 'slice-worker/redis_client.go:L532-L539'
   - symbol: CoverItem
     kind: struct
-    at: 'slice-worker/redis_client.go:L482-L485'
+    at: 'slice-worker/redis_client.go:L543-L546'
+  - symbol: HookItem
+    kind: struct
+    at: 'slice-worker/redis_client.go:L550-L553'
   - symbol: TaskSource
     kind: struct
-    at: 'slice-worker/redis_client.go:L488-L490'
+    at: 'slice-worker/redis_client.go:L556-L558'
   - symbol: TaskOutput
     kind: struct
-    at: 'slice-worker/redis_client.go:L493-L501'
+    at: 'slice-worker/redis_client.go:L561-L569'
   - symbol: TrayController
     kind: interface
     at: 'slice-worker/tray.go:L19-L29'

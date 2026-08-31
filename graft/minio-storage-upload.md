@@ -64,43 +64,43 @@ covers:
     at: 'backend/app/api/upload.py:L68-L72'
   - symbol: _serialize_episode
     kind: function
-    at: 'backend/app/api/upload.py:L75-L88'
+    at: 'backend/app/api/upload.py:L75-L89'
   - symbol: _check_project_access
     kind: function
-    at: 'backend/app/api/upload.py:L91-L99'
+    at: 'backend/app/api/upload.py:L92-L100'
   - symbol: _store_uploaded_file
     kind: function
-    at: 'backend/app/api/upload.py:L102-L149'
+    at: 'backend/app/api/upload.py:L103-L150'
   - symbol: create_upload
     kind: function
-    at: 'backend/app/api/upload.py:L153-L178'
+    at: 'backend/app/api/upload.py:L154-L179'
   - symbol: get_upload_info
     kind: function
-    at: 'backend/app/api/upload.py:L182-L197'
+    at: 'backend/app/api/upload.py:L183-L198'
   - symbol: upload_chunk
     kind: function
-    at: 'backend/app/api/upload.py:L201-L230'
+    at: 'backend/app/api/upload.py:L202-L231'
   - symbol: complete_upload
     kind: function
-    at: 'backend/app/api/upload.py:L234-L268'
+    at: 'backend/app/api/upload.py:L235-L269'
   - symbol: upload_single
     kind: function
-    at: 'backend/app/api/upload.py:L272-L342'
+    at: 'backend/app/api/upload.py:L273-L343'
   - symbol: upload_multi
     kind: function
-    at: 'backend/app/api/upload.py:L346-L509'
+    at: 'backend/app/api/upload.py:L347-L510'
   - symbol: _check_av_sync
     kind: function
-    at: 'backend/app/api/upload.py:L512-L551'
+    at: 'backend/app/api/upload.py:L513-L552'
   - symbol: _run_ffmpeg
     kind: function
-    at: 'backend/app/api/upload.py:L554-L567'
+    at: 'backend/app/api/upload.py:L555-L568'
   - symbol: _ffmpeg_concat
     kind: function
-    at: 'backend/app/api/upload.py:L570-L619'
+    at: 'backend/app/api/upload.py:L571-L620'
   - symbol: cancel_upload
     kind: function
-    at: 'backend/app/api/upload.py:L623-L626'
+    at: 'backend/app/api/upload.py:L624-L627'
 ---
 <!-- context:generated:start -->
 ## Summary

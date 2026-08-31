@@ -1,30 +1,31 @@
 # backend/app/api/channel_accounts.py · [[channel-accounts-mini-programs]] [[data-isolation-access-control]]
 
-- OperatorCreate · class · L38-L41 — class OperatorCreate(BaseModel)
-- OperatorUpdate · class · L44-L47 — class OperatorUpdate(BaseModel)
-- OperatorResponse · class · L50-L58 — class OperatorResponse(BaseModel)
-- ChannelAccountCreate · class · L61-L73 — class ChannelAccountCreate(BaseModel): # 视频号列表先登记：直接填写名称/视频号ID，创建后自动同步到账号库
-- ChannelAccountFromVideoAccount · class · L76-L88 — class ChannelAccountFromVideoAccount(BaseModel)
-- ChannelAccountUpdate · class · L91-L101 — class ChannelAccountUpdate(BaseModel)
-- ChannelAccountResponse · class · L104-L125 — class ChannelAccountResponse(BaseModel)
-- _serialize_operator · function · L130-L138 — def _serialize_operator(op: ChannelOperator) -> dict
-- _load_report_metrics · function · L141-L184 — async def _load_report_metrics(db: AsyncSession, video_account_ids: List[uuid.UUID]) -> dict
-- _serialize_channel_account · function · L187-L210 — def _serialize_channel_account(acc: ChannelAccount, report: Optional[dict] = None) -> dict
-- _reload_channel_account · function · L213-L221 — async def _reload_channel_account(db: AsyncSession, acc_id: uuid.UUID) -> ChannelAccount
-- _parse_date · function · L224-L232 — def _parse_date(value: Optional[str])
-- _parse_uuid · function · L235-L241 — def _parse_uuid(value: Optional[str], field: str)
-- _validate_operator_identity · function · L244-L250 — def _validate_operator_identity(op: OperatorCreate)
-- list_channel_accounts · function · L256-L289 — async def list_channel_accounts( keyword: Optional[str] = Query(None), enabled: Optional[bool] = Query(None), db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- get_channel_account · function · L293-L312 — async def get_channel_account( account_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- create_channel_account · function · L316-L361 — async def create_channel_account( data: ChannelAccountCreate, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- create_channel_from_video_account · function · L369-L403 — async def create_channel_from_video_account( data: ChannelAccountFromVideoAccount, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- update_channel_account · function · L407-L445 — async def update_channel_account( account_id: str, data: ChannelAccountUpdate, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- delete_channel_account · function · L449-L465 — async def delete_channel_account( account_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- add_operator · function · L471-L492 — async def add_operator( account_id: str, data: OperatorCreate, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- update_operator · function · L496-L533 — async def update_operator( account_id: str, op_id: str, data: OperatorUpdate, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- delete_operator · function · L537-L560 — async def delete_operator( account_id: str, op_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- _load_account · function · L565-L572 — async def _load_account(account_id: uuid.UUID, db: AsyncSession) -> ChannelAccount
-- _load_video_account · function · L575-L583 — async def _load_video_account(video_account_id: uuid.UUID, db: AsyncSession) -> VideoAccount
-- _find_or_create_video_account · function · L586-L630 — async def _find_or_create_video_account( db: AsyncSession, channel_name: str, wechat_id: str, platform: str, remark: Optional[str], current_user_id: Optional[uuid.UUID], ) -> VideoAccount
-- _ensure_no_existing · function · L633-L649 — async def _ensure_no_existing( video_account_id: uuid.UUID, db: AsyncSession, exclude_id: Optional[uuid.UUID], ) -> None
-- _check_access · function · L652-L656 — def _check_access(acc: ChannelAccount, current_user: Optional[User])
+- OperatorCreate · class · L39-L42 — Input schema for creating an operator, allowing either a system user FK or manually-entered external name/phone.
+- OperatorUpdate · class · L45-L48 — Input schema for updating an operator's user FK or external name/phone fields.
+- OperatorResponse · class · L51-L59 — Output schema serializing an operator record with its channel account linkage and creation timestamp.
+- ChannelAccountCreate · class · L62-L75 — Input schema for registering a new channel account directly by name/wechat ID, optionally binding an existing video_account_id or auto-syncing to the account library.
+- ChannelAccountFromVideoAccount · class · L78-L90 — Input schema for one-click ledger registration from an existing account-library record, auto-filling name/wechat and linking the account owner as first operator.
+- ChannelAccountUpdate · class · L93-L104 — Input schema for updating a channel account, including rebinding video_account_id (cannot be nulled, only swapped).
+- ChannelAccountResponse · class · L107-L130 — Output schema for a channel account including operators list and aggregated report-domain metrics (play count, attributed/ad revenue).
+- _serialize_operator · function · L135-L143 — Converts a ChannelOperator ORM object into a plain dict for API response.
+- _load_report_metrics · function · L146-L189 — Batch-aggregates report-domain metrics (video play/attributed revenue and ad revenue) per video_account_id, returning zeros for unlinked accounts.
+- _serialize_channel_account · function · L192-L217 — Converts a ChannelAccount ORM object into a response dict, merging optional report metrics and serializing operators.
+- _load_theater_names · function · L220-L226 — async def _load_theater_names(db: AsyncSession, theater_ids) -> dict
+- _reload_channel_account · function · L229-L237 — Re-queries a channel account with operators eager-loaded to avoid async MissingGreenlet serialization errors.
+- _parse_date · function · L240-L248 — Parses an ISO date string, returning None for empty input and raising 400 for malformed dates.
+- _parse_uuid · function · L251-L257 — Parses a UUID string, returning None for empty input and raising 400 for invalid format.
+- _validate_operator_identity · function · L260-L266 — Enforces that an operator provides at least one of operator_user_id or operator_name.
+- list_channel_accounts · function · L272-L313 — Lists channel accounts with keyword/enabled filters, RBAC data isolation, and batch report-metric aggregation.
+- get_channel_account · function · L317-L337 — Fetches a single channel account detail with operators and its report metrics, enforcing access control.
+- create_channel_account · function · L341-L388 — Creates a channel account, binding to an existing video_account_id or finding/auto-creating one in the account library, ensuring no duplicate linkage.
+- create_channel_from_video_account · function · L396-L432 — Registers a ledger from an existing account-library record, auto-filling name/wechat and linking the account owner as the first operator.
+- update_channel_account · function · L436-L477 — Updates a channel account, handling register_date parsing and video_account_id rebind/unbind with auto-sync of name/wechat from the new account.
+- delete_channel_account · function · L481-L497 — Deletes a channel account (cascading operators) after access check.
+- add_operator · function · L503-L524 — Adds an operator to a channel account after validating identity and access.
+- update_operator · function · L528-L565 — Updates an operator's fields, scoped to the owning channel account with access control.
+- delete_operator · function · L569-L592 — Deletes an operator scoped to its channel account after access check.
+- _load_account · function · L597-L604 — Loads a ChannelAccount by id, raising 404 if not found.
+- _load_video_account · function · L607-L615 — Loads a VideoAccount by id, raising 404 if not found.
+- _find_or_create_video_account · function · L618-L662 — Finds an existing account-library record by name/wechat ID, or creates and syncs a new one so the video-account list stays in sync with the account library.
+- _ensure_no_existing · function · L665-L681 — Guards against a video_account_id being bound to more than one channel account, raising 409 on conflict.
+- _check_access · function · L684-L688 — Enforces RBAC: non-admin users may only access channel accounts they created.

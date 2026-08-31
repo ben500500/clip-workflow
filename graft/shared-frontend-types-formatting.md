@@ -35,166 +35,169 @@ covers:
     at: 'frontend/src/types/index.ts:L37-L44'
   - symbol: Episode
     kind: interface
-    at: 'frontend/src/types/index.ts:L46-L58'
+    at: 'frontend/src/types/index.ts:L46-L60'
   - symbol: ClipCandidate
     kind: interface
-    at: 'frontend/src/types/index.ts:L62-L78'
+    at: 'frontend/src/types/index.ts:L64-L81'
   - symbol: AutoClipRunRecord
     kind: interface
-    at: 'frontend/src/types/index.ts:L80-L93'
+    at: 'frontend/src/types/index.ts:L83-L96'
   - symbol: IntervalHistoryItem
     kind: interface
-    at: 'frontend/src/types/index.ts:L95-L106'
+    at: 'frontend/src/types/index.ts:L98-L109'
   - symbol: AutoClipConfig
     kind: interface
-    at: 'frontend/src/types/index.ts:L108-L110'
+    at: 'frontend/src/types/index.ts:L111-L123'
   - symbol: DetectedInterval
     kind: interface
-    at: 'frontend/src/types/index.ts:L114-L126'
+    at: 'frontend/src/types/index.ts:L127-L139'
   - symbol: SliceTask
     kind: interface
-    at: 'frontend/src/types/index.ts:L130-L154'
+    at: 'frontend/src/types/index.ts:L143-L167'
   - symbol: WorkerNode
     kind: interface
-    at: 'frontend/src/types/index.ts:L156-L185'
+    at: 'frontend/src/types/index.ts:L169-L198'
   - symbol: WorkerRunningTask
     kind: interface
-    at: 'frontend/src/types/index.ts:L187-L195'
+    at: 'frontend/src/types/index.ts:L200-L208'
   - symbol: SliceOutput
     kind: interface
-    at: 'frontend/src/types/index.ts:L197-L209'
+    at: 'frontend/src/types/index.ts:L210-L222'
   - symbol: DedupeConfig
     kind: interface
-    at: 'frontend/src/types/index.ts:L211-L213'
+    at: 'frontend/src/types/index.ts:L224-L226'
   - symbol: PublishTask
     kind: interface
-    at: 'frontend/src/types/index.ts:L217-L249'
+    at: 'frontend/src/types/index.ts:L230-L262'
   - symbol: PublishTimeSlot
     kind: interface
-    at: 'frontend/src/types/index.ts:L251-L260'
+    at: 'frontend/src/types/index.ts:L264-L273'
   - symbol: PublishProfile
     kind: interface
-    at: 'frontend/src/types/index.ts:L262-L286'
+    at: 'frontend/src/types/index.ts:L275-L299'
   - symbol: PublishBatch
     kind: interface
-    at: 'frontend/src/types/index.ts:L288-L296'
+    at: 'frontend/src/types/index.ts:L301-L309'
   - symbol: Publication
     kind: interface
-    at: 'frontend/src/types/index.ts:L298-L308'
+    at: 'frontend/src/types/index.ts:L311-L321'
   - symbol: VideoAccount
     kind: interface
-    at: 'frontend/src/types/index.ts:L312-L329'
+    at: 'frontend/src/types/index.ts:L325-L342'
   - symbol: MiniProgram
     kind: interface
-    at: 'frontend/src/types/index.ts:L331-L340'
+    at: 'frontend/src/types/index.ts:L344-L353'
   - symbol: OperatorRouteRow
     kind: interface
-    at: 'frontend/src/types/index.ts:L344-L359'
+    at: 'frontend/src/types/index.ts:L357-L372'
   - symbol: OperatorStat
     kind: interface
-    at: 'frontend/src/types/index.ts:L361-L365'
+    at: 'frontend/src/types/index.ts:L374-L378'
   - symbol: PublishAuditItem
     kind: interface
-    at: 'frontend/src/types/index.ts:L367-L387'
+    at: 'frontend/src/types/index.ts:L380-L400'
   - symbol: LoginAuditItem
     kind: interface
-    at: 'frontend/src/types/index.ts:L389-L402'
+    at: 'frontend/src/types/index.ts:L402-L415'
   - symbol: RiskEventItem
     kind: interface
-    at: 'frontend/src/types/index.ts:L404-L416'
+    at: 'frontend/src/types/index.ts:L417-L429'
   - symbol: AuditResult
     kind: interface
-    at: 'frontend/src/types/index.ts:L418-L421'
+    at: 'frontend/src/types/index.ts:L431-L434'
   - symbol: MultiOpVerification
     kind: interface
-    at: 'frontend/src/types/index.ts:L425-L437'
+    at: 'frontend/src/types/index.ts:L438-L450'
   - symbol: ShortDramaGeneration
     kind: interface
-    at: 'frontend/src/types/index.ts:L441-L450'
+    at: 'frontend/src/types/index.ts:L454-L463'
   - symbol: ShortDramaAnalysisRow
     kind: interface
-    at: 'frontend/src/types/index.ts:L452-L472'
+    at: 'frontend/src/types/index.ts:L465-L485'
   - symbol: ShortDramaSummary
     kind: interface
-    at: 'frontend/src/types/index.ts:L474-L481'
+    at: 'frontend/src/types/index.ts:L487-L494'
   - symbol: ShortDramaTopic
     kind: interface
-    at: 'frontend/src/types/index.ts:L483-L486'
+    at: 'frontend/src/types/index.ts:L496-L499'
   - symbol: PlatformProfile
     kind: interface
-    at: 'frontend/src/types/index.ts:L490-L500'
+    at: 'frontend/src/types/index.ts:L503-L513'
   - symbol: SystemConfig
     kind: interface
-    at: 'frontend/src/types/index.ts:L502-L507'
+    at: 'frontend/src/types/index.ts:L515-L520'
   - symbol: DashboardOverview
     kind: interface
-    at: 'frontend/src/types/index.ts:L511-L520'
+    at: 'frontend/src/types/index.ts:L524-L533'
   - symbol: TrendPoint
     kind: interface
-    at: 'frontend/src/types/index.ts:L522-L533'
+    at: 'frontend/src/types/index.ts:L535-L546'
   - symbol: FunnelData
     kind: interface
-    at: 'frontend/src/types/index.ts:L535-L547'
+    at: 'frontend/src/types/index.ts:L548-L560'
   - symbol: VideoMetric
     kind: interface
-    at: 'frontend/src/types/index.ts:L549-L578'
+    at: 'frontend/src/types/index.ts:L562-L591'
   - symbol: MiniProgramMetric
     kind: interface
-    at: 'frontend/src/types/index.ts:L580-L590'
+    at: 'frontend/src/types/index.ts:L593-L603'
   - symbol: AdMetric
     kind: interface
-    at: 'frontend/src/types/index.ts:L592-L606'
+    at: 'frontend/src/types/index.ts:L605-L619'
   - symbol: DramaMetric
     kind: interface
-    at: 'frontend/src/types/index.ts:L608-L619'
+    at: 'frontend/src/types/index.ts:L621-L632'
   - symbol: EcosystemMetric
     kind: interface
-    at: 'frontend/src/types/index.ts:L621-L632'
+    at: 'frontend/src/types/index.ts:L634-L645'
   - symbol: ImportTemplate
     kind: interface
-    at: 'frontend/src/types/index.ts:L634-L641'
+    at: 'frontend/src/types/index.ts:L647-L654'
   - symbol: ImportHistoryRecord
     kind: interface
-    at: 'frontend/src/types/index.ts:L643-L654'
+    at: 'frontend/src/types/index.ts:L656-L667'
   - symbol: PlatformDetectResult
     kind: interface
-    at: 'frontend/src/types/index.ts:L656-L670'
+    at: 'frontend/src/types/index.ts:L669-L683'
   - symbol: FilePreviewResult
     kind: interface
-    at: 'frontend/src/types/index.ts:L672-L676'
+    at: 'frontend/src/types/index.ts:L685-L689'
   - symbol: CrossAnalysisData
     kind: interface
-    at: 'frontend/src/types/index.ts:L678-L687'
+    at: 'frontend/src/types/index.ts:L691-L700'
   - symbol: FunnelCompareData
     kind: interface
-    at: 'frontend/src/types/index.ts:L689-L708'
+    at: 'frontend/src/types/index.ts:L702-L721'
   - symbol: DramaDetail
     kind: interface
-    at: 'frontend/src/types/index.ts:L710-L727'
+    at: 'frontend/src/types/index.ts:L723-L740'
   - symbol: Role
     kind: type
-    at: 'frontend/src/types/index.ts:L731-L731'
+    at: 'frontend/src/types/index.ts:L744-L744'
   - symbol: User
     kind: interface
-    at: 'frontend/src/types/index.ts:L733-L744'
+    at: 'frontend/src/types/index.ts:L746-L757'
   - symbol: LoginResponse
     kind: interface
-    at: 'frontend/src/types/index.ts:L746-L750'
+    at: 'frontend/src/types/index.ts:L759-L763'
   - symbol: RoleOption
     kind: interface
-    at: 'frontend/src/types/index.ts:L752-L755'
+    at: 'frontend/src/types/index.ts:L765-L768'
   - symbol: AlertRule
     kind: interface
-    at: 'frontend/src/types/index.ts:L771-L783'
+    at: 'frontend/src/types/index.ts:L784-L796'
   - symbol: AlertEvent
     kind: interface
-    at: 'frontend/src/types/index.ts:L785-L797'
+    at: 'frontend/src/types/index.ts:L798-L810'
   - symbol: ChannelOperator
     kind: interface
-    at: 'frontend/src/types/index.ts:L801-L808'
+    at: 'frontend/src/types/index.ts:L814-L821'
+  - symbol: Theater
+    kind: interface
+    at: 'frontend/src/types/index.ts:L823-L831'
   - symbol: ChannelAccount
     kind: interface
-    at: 'frontend/src/types/index.ts:L810-L830'
+    at: 'frontend/src/types/index.ts:L833-L855'
   - symbol: formatFileSize
     kind: function
     at: 'frontend/src/utils/format.ts:L3-L10'
@@ -216,15 +219,21 @@ covers:
   - symbol: formatPercent
     kind: function
     at: 'frontend/src/utils/format.ts:L46-L49'
+  - symbol: getClipTypeLabel
+    kind: function
+    at: 'frontend/src/utils/format.ts:L53-L61'
+  - symbol: getClipTypeColor
+    kind: function
+    at: 'frontend/src/utils/format.ts:L63-L70'
   - symbol: getStatusColor
     kind: function
-    at: 'frontend/src/utils/format.ts:L51-L77'
+    at: 'frontend/src/utils/format.ts:L72-L98'
   - symbol: getStatusLabel
     kind: function
-    at: 'frontend/src/utils/format.ts:L79-L105'
+    at: 'frontend/src/utils/format.ts:L100-L126'
   - symbol: truncateText
     kind: function
-    at: 'frontend/src/utils/format.ts:L107-L110'
+    at: 'frontend/src/utils/format.ts:L128-L131'
 ---
 <!-- context:generated:start -->
 ## Summary

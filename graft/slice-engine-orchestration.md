@@ -23,25 +23,31 @@ generator:
 covers:
   - symbol: _run_cmd
     kind: function
-    at: 'backend/app/services/slice_service.py:L14-L63'
+    at: 'backend/app/services/slice_service.py:L15-L65'
   - symbol: read_stream
     kind: function
-    at: 'backend/app/services/slice_service.py:L28-L41'
+    at: 'backend/app/services/slice_service.py:L34-L47'
+  - symbol: _terminate_proc
+    kind: function
+    at: 'backend/app/services/slice_service.py:L73-L92'
+  - symbol: kill_slice_proc
+    kind: function
+    at: 'backend/app/services/slice_service.py:L95-L109'
   - symbol: _engine_path
     kind: function
-    at: 'backend/app/services/slice_service.py:L66-L67'
+    at: 'backend/app/services/slice_service.py:L112-L113'
   - symbol: _require_engine
     kind: function
-    at: 'backend/app/services/slice_service.py:L70-L75'
+    at: 'backend/app/services/slice_service.py:L116-L121'
   - symbol: run_slice
     kind: function
-    at: 'backend/app/services/slice_service.py:L78-L165'
+    at: 'backend/app/services/slice_service.py:L124-L233'
   - symbol: run_slice_scrub
     kind: function
-    at: 'backend/app/services/slice_service.py:L168-L221'
+    at: 'backend/app/services/slice_service.py:L236-L301'
   - symbol: run_slice_fast
     kind: function
-    at: 'backend/app/services/slice_service.py:L224-L279'
+    at: 'backend/app/services/slice_service.py:L304-L371'
 ---
 <!-- context:generated:start -->
 ## Summary

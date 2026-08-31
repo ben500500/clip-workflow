@@ -1,21 +1,21 @@
 # autoclip/app/core/llm_manager.py · [[llm-manager-providers]]
 
-- LLMManager · class · L23-L268 — class LLMManager
+- LLMManager · class · L23-L277 — class LLMManager
 - __init__ · method · L26-L30 — def __init__(self, settings_file: Optional[Path] = None)
 - _get_default_settings_file · method · L32-L38 — def _get_default_settings_file(self) -> Path
 - _load_settings · method · L40-L79 — def _load_settings(self) -> Dict[str, Any]
 - _save_settings · method · L81-L89 — def _save_settings(self)
 - _initialize_provider · method · L91-L107 — def _initialize_provider(self)
-- _get_api_key_for_provider · method · L109-L134 — def _get_api_key_for_provider(self, provider_type: ProviderType) -> Optional[str]
-- update_settings · method · L136-L140 — def update_settings(self, new_settings: Dict[str, Any])
-- set_provider · method · L142-L165 — def set_provider(self, provider_type: ProviderType, api_key: str, model_name: str)
-- call · method · L167-L176 — def call(self, prompt: str, input_data: Any = None, **kwargs) -> str
-- call_with_retry · method · L178-L192 — def call_with_retry(self, prompt: str, input_data: Any = None, max_retries: int = 3, **kwargs) -> str
-- test_provider_connection · method · L194-L201 — def test_provider_connection(self, provider_type: ProviderType, api_key: str, model_name: str) -> bool
-- set_runtime_model · method · L203-L224 — def set_runtime_model(self, model_name: Optional[str] = None, provider: Optional[str] = None)
-- get_current_provider_info · method · L226-L237 — def get_current_provider_info(self) -> Dict[str, Any]
-- _get_provider_display_name · method · L239-L246 — def _get_provider_display_name(self, provider_type: ProviderType) -> str
-- get_all_available_models · method · L248-L261 — def get_all_available_models(self) -> Dict[str, List[Dict[str, Any]]]
-- parse_json_response · method · L263-L268 — def parse_json_response(self, response: str) -> Any
-- get_llm_manager · function · L275-L280 — def get_llm_manager() -> LLMManager
-- initialize_llm_manager · function · L283-L287 — def initialize_llm_manager(settings_file: Optional[Path] = None) -> LLMManager
+- _get_api_key_for_provider · method · L109-L143 — def _get_api_key_for_provider(self, provider_type: ProviderType) -> Optional[str]
+- update_settings · method · L145-L149 — def update_settings(self, new_settings: Dict[str, Any])
+- set_provider · method · L151-L174 — def set_provider(self, provider_type: ProviderType, api_key: str, model_name: str)
+- call · method · L176-L185 — def call(self, prompt: str, input_data: Any = None, **kwargs) -> str
+- call_with_retry · method · L187-L201 — def call_with_retry(self, prompt: str, input_data: Any = None, max_retries: int = 3, **kwargs) -> str
+- test_provider_connection · method · L203-L210 — def test_provider_connection(self, provider_type: ProviderType, api_key: str, model_name: str) -> bool
+- set_runtime_model · method · L212-L233 — def set_runtime_model(self, model_name: Optional[str] = None, provider: Optional[str] = None)
+- get_current_provider_info · method · L235-L246 — def get_current_provider_info(self) -> Dict[str, Any]
+- _get_provider_display_name · method · L248-L255 — def _get_provider_display_name(self, provider_type: ProviderType) -> str
+- get_all_available_models · method · L257-L270 — def get_all_available_models(self) -> Dict[str, List[Dict[str, Any]]]
+- parse_json_response · method · L272-L277 — def parse_json_response(self, response: str) -> Any
+- get_llm_manager · function · L284-L289 — def get_llm_manager() -> LLMManager
+- initialize_llm_manager · function · L292-L296 — def initialize_llm_manager(settings_file: Optional[Path] = None) -> LLMManager

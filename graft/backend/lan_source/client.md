@@ -1,14 +1,22 @@
 # backend/lan_source/client.py
 
-- LanSourceError · class · L22-L23 — class LanSourceError(Exception)
-- CdnEpisode · class · L26-L35 — class CdnEpisode
-- __init__ · method · L31-L35 — def __init__(self, episode, url, title=None, size=None)
-- ManageDrama · class · L38-L47 — class ManageDrama
-- __init__ · method · L43-L47 — def __init__(self, name, drama_id=None, total=None, desc=None)
-- LanSourceClient · class · L50-L149 — class LanSourceClient
-- __init__ · method · L53-L60 — def __init__(self, config: Optional[LanSourceConfig] = None) -> None: # 未显式注入时回退到 settings(.env) 默认值，保证向后兼容
-- _get_json · method · L62-L77 — async def _get_json(self, url: str, *, base: Optional[str] = None) -> dict
-- discover_dramas · method · L80-L104 — async def discover_dramas(self) -> list[ManageDrama]
-- _drama_path · method · L109-L113 — def _drama_path(self, drama_name: str) -> str
-- fetch_episodes · method · L115-L149 — async def fetch_episodes(self, drama_name: str) -> list[CdnEpisode]
-- get_client · function · L155-L160 — def get_client(config: Optional[LanSourceConfig] = None) -> LanSourceClient
+- normalize_drama_name · function · L45-L59 — def normalize_drama_name(name: str) -> str
+- LanSourceError · class · L62-L63 — class LanSourceError(Exception)
+- LanSourceNotFound · class · L66-L71 — class LanSourceNotFound(LanSourceError)
+- CdnEpisode · class · L74-L83 — class CdnEpisode
+- __init__ · method · L79-L83 — def __init__(self, episode, url, title=None, size=None)
+- ManageDrama · class · L86-L95 — class ManageDrama
+- __init__ · method · L91-L95 — def __init__(self, name, drama_id=None, total=None, desc=None)
+- LanSourceClient · class · L98-L322 — class LanSourceClient
+- __init__ · method · L101-L108 — def __init__(self, config: Optional[LanSourceConfig] = None) -> None: # 未显式注入时回退到 settings(.env) 默认值，保证向后兼容
+- _get_json · method · L110-L128 — async def _get_json(self, url: str, *, base: Optional[str] = None) -> dict
+- discover_dramas · method · L131-L160 — async def discover_dramas(self) -> list[ManageDrama]
+- _merge · function · L144-L150 — def _merge(source: list[ManageDrama]) -> None
+- _discover_from_manage · method · L162-L184 — async def _discover_from_manage(self) -> list[ManageDrama]
+- _discover_from_dupload · method · L186-L230 — async def _discover_from_dupload(self) -> list[ManageDrama]
+- _drama_path · method · L235-L239 — def _drama_path(self, drama_name: str) -> str
+- _fetch_ext_episodes · method · L241-L252 — async def _fetch_ext_episodes(self, drama_name: str) -> list[CdnEpisode]
+- _parse_episodes · method · L255-L276 — def _parse_episodes(data) -> list[CdnEpisode]
+- _find_matched_drama · method · L278-L289 — async def _find_matched_drama(self, drama_name: str) -> Optional[str]
+- fetch_episodes · method · L291-L322 — async def fetch_episodes(self, drama_name: str) -> list[CdnEpisode]
+- get_client · function · L328-L333 — def get_client(config: Optional[LanSourceConfig] = None) -> LanSourceClient

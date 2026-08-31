@@ -1,22 +1,22 @@
 # engines/vert2horiz_crop.py · [[vert2horiz-crop]]
 
-- get_video_info · function · L81-L93 — def get_video_info(path)
-- FaceDetector · class · L96-L165 — class FaceDetector
-- __init__ · method · L103-L107 — def __init__(self)
-- _ensure_yunet · method · L109-L123 — def _ensure_yunet(self, w, h)
-- _ensure_haar · method · L125-L133 — def _ensure_haar(self)
-- detect · method · L135-L165 — def detect(self, frame)
-- sample_avg_face · function · L168-L202 — def sample_avg_face(detector, video_path, src_w, src_h, max_frames=FIXED_SAMPLE_MAX)
-- pick_main_face · function · L205-L226 — def pick_main_face(faces)
-- score · function · L218-L223 — def score(f)
-- compute_crop_y_keep_face · function · L229-L248 — def compute_crop_y_keep_face(face_box, src_h, crop_h)
-- generate_fixed_crop_params · function · L251-L289 — def generate_fixed_crop_params(detector, video_path, src_w, src_h, crop_ratio=9 / 16)
-- analyze_faces · function · L292-L361 — def analyze_faces(video_path, detect_interval=2, smooth_window=15, detector=None)
-- smooth_face_boxes · function · L364-L380 — def smooth_face_boxes(faces, window=15)
-- savgol_smooth · function · L383-L419 — def savgol_smooth(values, window=11, polyorder=2)
-- debounce_crop_y · function · L422-L442 — def debounce_crop_y(crop_ys, min_step=5)
-- keep_window_when_face_in_frame · function · L445-L488 — def keep_window_when_face_in_frame(crop_ys, faces, src_h, crop_h, face_margin=FACE_MARGIN_DEFAULT)
-- generate_dynamic_crop_params · function · L491-L547 — def generate_dynamic_crop_params(faces, src_w, src_h, crop_ratio=9 / 16, min_step=MIN_STEP_DEFAULT, face_margin=FACE_MARGIN_DEFAULT)
-- apply_fixed_crop · function · L550-L575 — def apply_fixed_crop(video_path, output_path, crop_params, output_size="1280x720")
-- apply_dynamic_crop · function · L578-L637 — def apply_dynamic_crop(video_path, output_path, crop_params, fps, output_size="1280x720", min_step=MIN_STEP_DEFAULT)
-- main · function · L640-L738 — def main()
+- get_video_info · function · L81-L93 — Reads video dimensions, frame rate, and frame count from a file via OpenCV.
+- FaceDetector · class · L96-L165 — Wraps face detection, preferring YuNet (OpenCV 4.5.1+) with Haar cascade as a fallback for older OpenCV versions.
+- __init__ · method · L103-L107 — Initializes lazy detector handles and cached input dimensions.
+- _ensure_yunet · method · L109-L123 — Lazily loads the YuNet ONNX model and updates its input size when frame dimensions change.
+- _ensure_haar · method · L125-L133 — Lazily loads the Haar cascade classifier as a fallback detector.
+- detect · method · L135-L165 — Detects faces in a frame, returning bounding boxes with confidence, falling back from YuNet to Haar on failure.
+- sample_avg_face · function · L168-L202 — Uniformly samples frames and returns the median main-face bounding box to anchor fixed-mode cropping.
+- pick_main_face · function · L205-L226 — Selects the subject face from multiple detections by scoring area, confidence, and upper-position preference.
+- score · function · L218-L223 — Scores a face by area times confidence times an upper-position weight so the closest/clearest subject wins.
+- compute_crop_y_keep_face · function · L229-L248 — Computes the crop window top y that keeps the full face plus head margin inside the window while respecting bounds.
+- generate_fixed_crop_params · function · L251-L289 — Builds a single fixed crop window, anchoring on the sampled average face or falling back to a top-protective default.
+- analyze_faces · function · L292-L361 — Per-frame face analysis for dynamic mode, holding the last detected face between detections and smoothing results.
+- smooth_face_boxes · function · L364-L380 — Sliding-window averages face boxes to reduce crop-window jitter from detection noise.
+- savgol_smooth · function · L383-L419 — Savitzky-Golay low-pass filter on a 1D sequence that preserves low-frequency motion while removing high-frequency detection noise.
+- debounce_crop_y · function · L422-L442 — Applies a minimum-move dead zone to crop_y so sub-threshold pixel changes are swallowed, eliminating per-frame micro-panning jitter.
+- keep_window_when_face_in_frame · function · L445-L488 — Holds the crop window stationary whenever the face stays comfortably inside it, only following when the face nears the window edges.
+- generate_dynamic_crop_params · function · L491-L547 — Computes per-frame crop windows anchored on faces and applies three-stage anti-jitter (savgol, debounce, comfort-zone dead zone).
+- apply_fixed_crop · function · L550-L575 — Runs ffmpeg to apply a single fixed crop and scale to the output resolution.
+- apply_dynamic_crop · function · L578-L637 — Runs ffmpeg sendcmd to apply per-frame dynamic crops, writing commands only when crop_y changes by at least min_step.
+- main · function · L640-L738 — CLI entry point that parses arguments, selects fixed or dynamic mode, and orchestrates analysis, crop-param generation, and ffmpeg execution.

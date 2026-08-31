@@ -1,6 +1,8 @@
 # alembic/env.py · [[alembic-migration-chain]]
 
-- run_migrations_offline · function · L36-L47 — def run_migrations_offline() -> None
-- do_run_migrations · function · L50-L54 — def do_run_migrations(connection: Connection) -> None
-- run_async_migrations · function · L57-L68 — async def run_async_migrations() -> None
-- run_migrations_online · function · L71-L73 — def run_migrations_online() -> None
+Alembic migration environment that injects the app's async DATABASE_URL and runs migrations against the ORM metadata.
+
+- run_migrations_offline · function · L36-L47 — Runs migrations in offline mode by emitting SQL with literal binds instead of connecting to a database.
+- do_run_migrations · function · L50-L54 — Configures the migration context on a live connection and executes pending migrations within a transaction.
+- run_async_migrations · function · L57-L68 — Builds an async engine from config and runs migrations synchronously on the connection via run_sync.
+- run_migrations_online · function · L71-L73 — Entry point that drives the async migration loop from the synchronous online-mode path.

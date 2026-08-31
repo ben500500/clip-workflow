@@ -76,16 +76,19 @@ covers:
     at: 'backend/app/services/fingerprint_service.py:L413-L430'
   - symbol: _algo_distance
     kind: function
-    at: 'backend/app/services/fingerprint_service.py:L433-L442'
+    at: 'backend/app/services/fingerprint_service.py:L433-L436'
+  - symbol: _algo_distance_available
+    kind: function
+    at: 'backend/app/services/fingerprint_service.py:L439-L454'
   - symbol: compare_fingerprints
     kind: function
-    at: 'backend/app/services/fingerprint_service.py:L445-L463'
+    at: 'backend/app/services/fingerprint_service.py:L457-L483'
   - symbol: is_collision
     kind: function
-    at: 'backend/app/services/fingerprint_service.py:L466-L488'
+    at: 'backend/app/services/fingerprint_service.py:L486-L508'
   - symbol: compute_full_fingerprint
     kind: function
-    at: 'backend/app/services/fingerprint_service.py:L491-L505'
+    at: 'backend/app/services/fingerprint_service.py:L511-L525'
 ---
 <!-- context:generated:start -->
 ## Summary

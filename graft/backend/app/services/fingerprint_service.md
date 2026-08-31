@@ -14,7 +14,8 @@
 - hamming_distance_hex · function · L376-L389 — def hamming_distance_hex(a: str, b: str) -> float
 - vector_distance · function · L392-L403 — def vector_distance(a: Optional[str], b: Optional[str]) -> float
 - _extract_algo · function · L413-L430 — def _extract_algo(fp_dict: dict, algo: str)
-- _algo_distance · function · L433-L442 — def _algo_distance(fa: dict, fb: dict, algo: str) -> float
-- compare_fingerprints · function · L445-L463 — def compare_fingerprints(fa: dict, fb: dict) -> dict
-- is_collision · function · L466-L488 — def is_collision(distances: dict, thresholds: Optional[dict] = None) -> tuple[bool, str]
-- compute_full_fingerprint · function · L491-L505 — def compute_full_fingerprint(path: str) -> dict
+- _algo_distance · function · L433-L436 — def _algo_distance(fa: dict, fb: dict, algo: str) -> float
+- _algo_distance_available · function · L439-L454 — def _algo_distance_available(fa: dict, fb: dict, algo: str) -> tuple[float, bool]
+- compare_fingerprints · function · L457-L483 — def compare_fingerprints(fa: dict, fb: dict) -> dict
+- is_collision · function · L486-L508 — def is_collision(distances: dict, thresholds: Optional[dict] = None) -> tuple[bool, str]
+- compute_full_fingerprint · function · L511-L525 — def compute_full_fingerprint(path: str) -> dict

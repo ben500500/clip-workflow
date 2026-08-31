@@ -6,5 +6,5 @@
 - to_db_dict · method · L72-L74 — def to_db_dict(self) -> dict
 - _as_bool · function · L77-L86 — def _as_bool(value) -> bool
 - _as_int · function · L89-L95 — def _as_int(value, default: int) -> int
-- load_lan_source_config · function · L98-L175 — def load_lan_source_config( db_config: Optional[dict] = None, env: Optional[dict] = None, ) -> LanSourceConfig
+- load_lan_source_config · function · L98-L176 — def load_lan_source_config( db_config: Optional[dict] = None, env: Optional[dict] = None, ) -> LanSourceConfig
 - _env_get · function · L121-L128 — def _env_get(key: str)

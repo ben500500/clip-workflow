@@ -39,13 +39,13 @@ covers:
     at: 'autoclip/app/utils/frame_analyzer.py:L125-L130'
   - symbol: analyze_clip_frames
     kind: function
-    at: 'autoclip/app/utils/frame_analyzer.py:L133-L230'
+    at: 'autoclip/app/utils/frame_analyzer.py:L133-L256'
   - symbol: to_sec
     kind: function
-    at: 'autoclip/app/utils/frame_analyzer.py:L160-L168'
+    at: 'autoclip/app/utils/frame_analyzer.py:L168-L176'
   - symbol: analyze_timeline_frames
     kind: function
-    at: 'autoclip/app/utils/frame_analyzer.py:L233-L266'
+    at: 'autoclip/app/utils/frame_analyzer.py:L259-L304'
 ---
 <!-- context:generated:start -->
 ## Summary

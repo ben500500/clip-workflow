@@ -69,52 +69,52 @@ covers:
     at: 'frontend/src/pages/SliceTasks.tsx:L49-L57'
   - symbol: SliceTasks
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L59-L1246'
+    at: 'frontend/src/pages/SliceTasks.tsx:L59-L1259'
   - symbol: buildDedupeConfig
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L162-L201'
+    at: 'frontend/src/pages/SliceTasks.tsx:L163-L202'
   - symbol: runSlice
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L203-L279'
+    at: 'frontend/src/pages/SliceTasks.tsx:L204-L282'
   - symbol: showOutputs
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L281-L289'
+    at: 'frontend/src/pages/SliceTasks.tsx:L284-L292'
   - symbol: deleteTask
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L291-L303'
+    at: 'frontend/src/pages/SliceTasks.tsx:L294-L306'
   - symbol: uploadBadgeFile
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L306-L327'
+    at: 'frontend/src/pages/SliceTasks.tsx:L309-L330'
   - symbol: updateBadge
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L329-L331'
+    at: 'frontend/src/pages/SliceTasks.tsx:L332-L334'
   - symbol: removeBadge
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L333-L335'
+    at: 'frontend/src/pages/SliceTasks.tsx:L336-L338'
   - symbol: addTextOverlay
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L338-L343'
+    at: 'frontend/src/pages/SliceTasks.tsx:L341-L346'
   - symbol: updateTextOverlay
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L344-L346'
+    at: 'frontend/src/pages/SliceTasks.tsx:L347-L349'
   - symbol: removeTextOverlay
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L347-L349'
+    at: 'frontend/src/pages/SliceTasks.tsx:L350-L352'
   - symbol: applyDefaultTextOverlays
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L356-L368'
+    at: 'frontend/src/pages/SliceTasks.tsx:L359-L371'
   - symbol: exists
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L363-L364'
+    at: 'frontend/src/pages/SliceTasks.tsx:L366-L367'
   - symbol: handleVert2horizToggle
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L369-L383'
+    at: 'frontend/src/pages/SliceTasks.tsx:L372-L386'
   - symbol: formatTaskDuration
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L405-L410'
+    at: 'frontend/src/pages/SliceTasks.tsx:L408-L413'
   - symbol: downloadOne
     kind: function
-    at: 'frontend/src/pages/SliceTasks.tsx:L527-L547'
+    at: 'frontend/src/pages/SliceTasks.tsx:L530-L550'
 ---
 <!-- context:generated:start -->
 ## Summary

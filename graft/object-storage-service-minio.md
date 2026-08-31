@@ -44,28 +44,28 @@ covers:
     at: 'backend/app/services/minio_service.py:L188-L199'
   - symbol: get_presigned_url
     kind: function
-    at: 'backend/app/services/minio_service.py:L202-L235'
+    at: 'backend/app/services/minio_service.py:L202-L242'
   - symbol: get_presigned_upload_url
     kind: function
-    at: 'backend/app/services/minio_service.py:L238-L252'
+    at: 'backend/app/services/minio_service.py:L245-L265'
   - symbol: delete_file
     kind: function
-    at: 'backend/app/services/minio_service.py:L255-L265'
+    at: 'backend/app/services/minio_service.py:L268-L278'
   - symbol: _list_objects_sync
     kind: function
-    at: 'backend/app/services/minio_service.py:L268-L280'
+    at: 'backend/app/services/minio_service.py:L281-L293'
   - symbol: list_files
     kind: function
-    at: 'backend/app/services/minio_service.py:L283-L291'
+    at: 'backend/app/services/minio_service.py:L296-L304'
   - symbol: get_file_info
     kind: function
-    at: 'backend/app/services/minio_service.py:L294-L308'
+    at: 'backend/app/services/minio_service.py:L307-L321'
   - symbol: ensure_bucket
     kind: function
-    at: 'backend/app/services/minio_service.py:L311-L323'
+    at: 'backend/app/services/minio_service.py:L324-L336'
   - symbol: download_to_file
     kind: function
-    at: 'backend/app/services/minio_service.py:L326-L349'
+    at: 'backend/app/services/minio_service.py:L339-L362'
 ---
 <!-- context:generated:start -->
 ## Summary

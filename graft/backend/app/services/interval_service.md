@@ -1,3 +1,5 @@
 # backend/app/services/interval_service.py · [[engine-execution-layer]]
 
-- detect_intervals · function · L13-L99 — async def detect_intervals( video_path: str, mode: str, config: Optional[dict] = None, engine_path: Optional[str] = None, timeout: float = 600, ) -> list[dict[str, Any]]
+Service module that runs an external detection engine subprocess to identify intervals (credits, static, watermark, custom) in a video file and returns them as structured data.
+
+- detect_intervals · function · L13-L99 — Runs the detection engine as a subprocess with a timeout, validates its output, and parses the resulting intervals from JSON into a list.

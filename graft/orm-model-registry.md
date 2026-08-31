@@ -64,16 +64,16 @@ covers:
     at: 'backend/app/models/audit.py:L121-L122'
   - symbol: ChannelAccount
     kind: class
-    at: 'backend/app/models/channel.py:L33-L61'
+    at: 'backend/app/models/channel.py:L33-L63'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/channel.py:L60-L61'
+    at: 'backend/app/models/channel.py:L62-L63'
   - symbol: ChannelOperator
     kind: class
-    at: 'backend/app/models/channel.py:L64-L93'
+    at: 'backend/app/models/channel.py:L66-L95'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/channel.py:L92-L93'
+    at: 'backend/app/models/channel.py:L94-L95'
   - symbol: VideoMetric
     kind: class
     at: 'backend/app/models/dashboard.py:L26-L64'
@@ -113,24 +113,30 @@ covers:
   - symbol: gen_drama_code
     kind: function
     at: 'backend/app/models/drama.py:L33-L38'
+  - symbol: DramaTheater
+    kind: class
+    at: 'backend/app/models/drama.py:L41-L62'
+  - symbol: __repr__
+    kind: method
+    at: 'backend/app/models/drama.py:L61-L62'
   - symbol: Drama
     kind: class
-    at: 'backend/app/models/drama.py:L41-L98'
+    at: 'backend/app/models/drama.py:L65-L130'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/drama.py:L97-L98'
+    at: 'backend/app/models/drama.py:L129-L130'
   - symbol: DramaStill
     kind: class
-    at: 'backend/app/models/drama.py:L101-L113'
+    at: 'backend/app/models/drama.py:L133-L145'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/drama.py:L112-L113'
+    at: 'backend/app/models/drama.py:L144-L145'
   - symbol: DramaAccount
     kind: class
-    at: 'backend/app/models/drama.py:L116-L134'
+    at: 'backend/app/models/drama.py:L148-L166'
   - symbol: DramaMaterial
     kind: class
-    at: 'backend/app/models/drama.py:L137-L149'
+    at: 'backend/app/models/drama.py:L169-L181'
   - symbol: Project
     kind: class
     at: 'backend/app/models/material.py:L29-L45'
@@ -139,88 +145,88 @@ covers:
     at: 'backend/app/models/material.py:L44-L45'
   - symbol: Episode
     kind: class
-    at: 'backend/app/models/material.py:L48-L76'
+    at: 'backend/app/models/material.py:L48-L78'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L75-L76'
+    at: 'backend/app/models/material.py:L77-L78'
   - symbol: AutoClipProject
     kind: class
-    at: 'backend/app/models/material.py:L79-L94'
+    at: 'backend/app/models/material.py:L81-L96'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L93-L94'
+    at: 'backend/app/models/material.py:L95-L96'
   - symbol: AutoClipRun
     kind: class
-    at: 'backend/app/models/material.py:L97-L120'
+    at: 'backend/app/models/material.py:L99-L122'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L119-L120'
+    at: 'backend/app/models/material.py:L121-L122'
   - symbol: ClipCandidate
     kind: class
-    at: 'backend/app/models/material.py:L123-L146'
+    at: 'backend/app/models/material.py:L125-L151'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L145-L146'
+    at: 'backend/app/models/material.py:L150-L151'
   - symbol: DetectedInterval
     kind: class
-    at: 'backend/app/models/material.py:L149-L167'
+    at: 'backend/app/models/material.py:L154-L172'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L166-L167'
+    at: 'backend/app/models/material.py:L171-L172'
   - symbol: SliceTask
     kind: class
-    at: 'backend/app/models/material.py:L170-L220'
+    at: 'backend/app/models/material.py:L175-L244'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L219-L220'
+    at: 'backend/app/models/material.py:L243-L244'
   - symbol: SliceOutput
     kind: class
-    at: 'backend/app/models/material.py:L223-L245'
+    at: 'backend/app/models/material.py:L247-L269'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L244-L245'
+    at: 'backend/app/models/material.py:L268-L269'
   - symbol: Publication
     kind: class
-    at: 'backend/app/models/material.py:L248-L266'
+    at: 'backend/app/models/material.py:L272-L290'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L265-L266'
+    at: 'backend/app/models/material.py:L289-L290'
   - symbol: SystemConfig
     kind: class
-    at: 'backend/app/models/material.py:L269-L278'
+    at: 'backend/app/models/material.py:L293-L302'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L277-L278'
+    at: 'backend/app/models/material.py:L301-L302'
   - symbol: PlatformProfile
     kind: class
-    at: 'backend/app/models/material.py:L281-L295'
+    at: 'backend/app/models/material.py:L305-L319'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L294-L295'
+    at: 'backend/app/models/material.py:L318-L319'
   - symbol: ImportTemplate
     kind: class
-    at: 'backend/app/models/material.py:L298-L310'
+    at: 'backend/app/models/material.py:L322-L334'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L309-L310'
+    at: 'backend/app/models/material.py:L333-L334'
   - symbol: ImportHistory
     kind: class
-    at: 'backend/app/models/material.py:L313-L329'
+    at: 'backend/app/models/material.py:L337-L353'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L328-L329'
+    at: 'backend/app/models/material.py:L352-L353'
   - symbol: BatchSlice
     kind: class
-    at: 'backend/app/models/material.py:L332-L362'
+    at: 'backend/app/models/material.py:L356-L386'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L361-L362'
+    at: 'backend/app/models/material.py:L385-L386'
   - symbol: BatchSliceItem
     kind: class
-    at: 'backend/app/models/material.py:L365-L393'
+    at: 'backend/app/models/material.py:L389-L417'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/material.py:L392-L393'
+    at: 'backend/app/models/material.py:L416-L417'
   - symbol: WorkerNode
     kind: class
     at: 'backend/app/models/monitor.py:L25-L55'
@@ -247,46 +253,46 @@ covers:
     at: 'backend/app/models/monitor.py:L126-L127'
   - symbol: VideoAccount
     kind: class
-    at: 'backend/app/models/publish.py:L26-L60'
+    at: 'backend/app/models/publish.py:L26-L62'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/publish.py:L59-L60'
+    at: 'backend/app/models/publish.py:L61-L62'
   - symbol: MiniProgram
     kind: class
-    at: 'backend/app/models/publish.py:L63-L82'
+    at: 'backend/app/models/publish.py:L65-L84'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/publish.py:L81-L82'
+    at: 'backend/app/models/publish.py:L83-L84'
   - symbol: PublishBatch
     kind: class
-    at: 'backend/app/models/publish.py:L85-L104'
+    at: 'backend/app/models/publish.py:L87-L106'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/publish.py:L103-L104'
+    at: 'backend/app/models/publish.py:L105-L106'
   - symbol: PublishTask
     kind: class
-    at: 'backend/app/models/publish.py:L107-L158'
+    at: 'backend/app/models/publish.py:L109-L160'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/publish.py:L157-L158'
+    at: 'backend/app/models/publish.py:L159-L160'
   - symbol: PublishProfile
     kind: class
-    at: 'backend/app/models/publish.py:L161-L192'
+    at: 'backend/app/models/publish.py:L163-L194'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/publish.py:L191-L192'
+    at: 'backend/app/models/publish.py:L193-L194'
   - symbol: PublishTimeSlot
     kind: class
-    at: 'backend/app/models/publish.py:L195-L217'
+    at: 'backend/app/models/publish.py:L197-L219'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/publish.py:L216-L217'
+    at: 'backend/app/models/publish.py:L218-L219'
   - symbol: PublishMaterial
     kind: class
-    at: 'backend/app/models/publish.py:L220-L247'
+    at: 'backend/app/models/publish.py:L222-L249'
   - symbol: __repr__
     kind: method
-    at: 'backend/app/models/publish.py:L246-L247'
+    at: 'backend/app/models/publish.py:L248-L249'
   - symbol: ShortdramaPrompt
     kind: class
     at: 'backend/app/models/shortdrama.py:L26-L100'

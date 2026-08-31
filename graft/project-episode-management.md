@@ -17,52 +17,61 @@ generator:
 covers:
   - symbol: BatchSliceConfig
     kind: interface
-    at: 'frontend/src/pages/ProjectDetail.tsx:L21-L35'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L22-L39'
   - symbol: loadSavedBatchConfig
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L56-L67'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L61-L72'
   - symbol: saveBatchConfig
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L69-L75'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L74-L80'
   - symbol: ProjectDetail
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L79-L1044'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L84-L1164'
   - symbol: applyBatchPreset
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L126-L137'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L130-L142'
   - symbol: fetchData
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L164-L179'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L171-L186'
   - symbol: handleUpload
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L188-L217'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L195-L224'
   - symbol: submitMultiUpload
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L220-L251'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L227-L258'
   - symbol: handleMultiFileUpload
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L254-L291'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L261-L298'
   - symbol: handleTabChange
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L312-L317'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L322-L327'
+  - symbol: toggleOutputRow
+    kind: function
+    at: 'frontend/src/pages/ProjectDetail.tsx:L351-L353'
+  - symbol: downloadOutputOne
+    kind: function
+    at: 'frontend/src/pages/ProjectDetail.tsx:L356-L372'
+  - symbol: downloadOutputGroup
+    kind: function
+    at: 'frontend/src/pages/ProjectDetail.tsx:L375-L405'
   - symbol: togglePreview
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L320-L360'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L408-L448'
   - symbol: refreshPreview
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L362-L387'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L450-L475'
   - symbol: renderSourcePreview
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L389-L441'
-  - symbol: handleCoverUpload
+    at: 'frontend/src/pages/ProjectDetail.tsx:L477-L529'
+  - symbol: readEpisodeHookKeys
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L444-L464'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L533-L543'
   - symbol: runOneClickSlice
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L467-L487'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L546-L576'
   - symbol: runBatchSlice
     kind: function
-    at: 'frontend/src/pages/ProjectDetail.tsx:L490-L515'
+    at: 'frontend/src/pages/ProjectDetail.tsx:L579-L606'
   - symbol: Projects
     kind: function
     at: 'frontend/src/pages/Projects.tsx:L14-L227'

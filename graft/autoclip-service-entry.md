@@ -34,103 +34,106 @@ generator:
 covers:
   - symbol: ffprobe_duration
     kind: function
-    at: 'autoclip/app/main.py:L64-L73'
+    at: 'autoclip/app/main.py:L63-L72'
   - symbol: _update_progress
     kind: function
-    at: 'autoclip/app/main.py:L76-L80'
+    at: 'autoclip/app/main.py:L75-L79'
   - symbol: _fail
     kind: function
-    at: 'autoclip/app/main.py:L83-L89'
+    at: 'autoclip/app/main.py:L82-L88'
   - symbol: _srt_time_to_seconds
     kind: function
-    at: 'autoclip/app/main.py:L94-L105'
+    at: 'autoclip/app/main.py:L93-L104'
   - symbol: _safe_str
     kind: function
-    at: 'autoclip/app/main.py:L108-L117'
+    at: 'autoclip/app/main.py:L107-L116'
   - symbol: _to_contract_clips
     kind: function
-    at: 'autoclip/app/main.py:L120-L160'
+    at: 'autoclip/app/main.py:L119-L164'
   - symbol: _parse_srt_ts
     kind: function
-    at: 'autoclip/app/main.py:L165-L169'
+    at: 'autoclip/app/main.py:L169-L173'
   - symbol: _filter_srt_by_time
     kind: function
-    at: 'autoclip/app/main.py:L172-L216'
+    at: 'autoclip/app/main.py:L176-L220'
   - symbol: _run_asr
     kind: function
-    at: 'autoclip/app/main.py:L219-L256'
+    at: 'autoclip/app/main.py:L223-L260'
   - symbol: _asr_cache_enabled
     kind: function
-    at: 'autoclip/app/main.py:L259-L261'
+    at: 'autoclip/app/main.py:L263-L265'
   - symbol: _asr_cache_dir
     kind: function
-    at: 'autoclip/app/main.py:L264-L268'
+    at: 'autoclip/app/main.py:L268-L272'
   - symbol: _asr_cache_key
     kind: function
-    at: 'autoclip/app/main.py:L271-L281'
+    at: 'autoclip/app/main.py:L281-L309'
   - symbol: _asr_cache_get
     kind: function
-    at: 'autoclip/app/main.py:L284-L294'
+    at: 'autoclip/app/main.py:L312-L322'
   - symbol: _asr_cache_put
     kind: function
-    at: 'autoclip/app/main.py:L297-L307'
+    at: 'autoclip/app/main.py:L325-L335'
   - symbol: _run_pipeline
     kind: function
-    at: 'autoclip/app/main.py:L310-L403'
+    at: 'autoclip/app/main.py:L338-L501'
   - symbol: health
     kind: function
-    at: 'autoclip/app/main.py:L409-L410'
+    at: 'autoclip/app/main.py:L507-L508'
   - symbol: SeedancePromptRequest
     kind: class
-    at: 'autoclip/app/main.py:L413-L418'
+    at: 'autoclip/app/main.py:L511-L516'
   - symbol: generate_prompt
     kind: function
-    at: 'autoclip/app/main.py:L422-L449'
+    at: 'autoclip/app/main.py:L520-L547'
   - symbol: _current_llm_model
     kind: function
-    at: 'autoclip/app/main.py:L452-L458'
+    at: 'autoclip/app/main.py:L550-L556'
   - symbol: SubtitleGenerateRequest
     kind: class
-    at: 'autoclip/app/main.py:L461-L470'
+    at: 'autoclip/app/main.py:L559-L568'
   - symbol: generate_subtitle
     kind: function
-    at: 'autoclip/app/main.py:L474-L549'
+    at: 'autoclip/app/main.py:L572-L647'
   - symbol: PublishMaterialRequest
     kind: class
-    at: 'autoclip/app/main.py:L552-L555'
+    at: 'autoclip/app/main.py:L650-L653'
   - symbol: ScriptOptimizeRequest
     kind: class
-    at: 'autoclip/app/main.py:L558-L561'
+    at: 'autoclip/app/main.py:L656-L659'
   - symbol: optimize_script
     kind: function
-    at: 'autoclip/app/main.py:L565-L587'
+    at: 'autoclip/app/main.py:L663-L685'
   - symbol: generate_material
     kind: function
-    at: 'autoclip/app/main.py:L591-L612'
+    at: 'autoclip/app/main.py:L689-L710'
   - symbol: health_v1
     kind: function
-    at: 'autoclip/app/main.py:L617-L618'
+    at: 'autoclip/app/main.py:L715-L716'
   - symbol: ProjectCreate
     kind: class
-    at: 'autoclip/app/main.py:L621-L623'
+    at: 'autoclip/app/main.py:L719-L721'
   - symbol: create_project
     kind: function
-    at: 'autoclip/app/main.py:L627-L640'
+    at: 'autoclip/app/main.py:L725-L738'
   - symbol: upload
     kind: function
-    at: 'autoclip/app/main.py:L644-L658'
+    at: 'autoclip/app/main.py:L742-L756'
   - symbol: PipelineRun
     kind: class
-    at: 'autoclip/app/main.py:L661-L674'
+    at: 'autoclip/app/main.py:L759-L784'
   - symbol: pipeline_run
     kind: function
-    at: 'autoclip/app/main.py:L678-L697'
+    at: 'autoclip/app/main.py:L788-L813'
   - symbol: progress
     kind: function
-    at: 'autoclip/app/main.py:L701-L709'
+    at: 'autoclip/app/main.py:L817-L825'
   - symbol: clips
     kind: function
-    at: 'autoclip/app/main.py:L713-L725'
+    at: 'autoclip/app/main.py:L829-L841'
+  - symbol: _split_overlong_clips
+    kind: function
+    at: 'autoclip/app/main.py:L844-L869'
   - symbol: load_publish_material_template
     kind: function
     at: 'autoclip/app/services/publish_material_generator.py:L27-L32'

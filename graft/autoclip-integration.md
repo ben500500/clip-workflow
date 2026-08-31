@@ -24,22 +24,22 @@ covers:
     at: 'backend/app/services/autoclip_service.py:L30-L50'
   - symbol: trigger_pipeline
     kind: function
-    at: 'backend/app/services/autoclip_service.py:L53-L84'
+    at: 'backend/app/services/autoclip_service.py:L53-L105'
   - symbol: get_pipeline_progress
     kind: function
-    at: 'backend/app/services/autoclip_service.py:L87-L101'
+    at: 'backend/app/services/autoclip_service.py:L108-L122'
   - symbol: get_clips
     kind: function
-    at: 'backend/app/services/autoclip_service.py:L104-L137'
+    at: 'backend/app/services/autoclip_service.py:L125-L158'
   - symbol: check_autoclip_health
     kind: function
-    at: 'backend/app/services/autoclip_service.py:L140-L159'
+    at: 'backend/app/services/autoclip_service.py:L161-L180'
   - symbol: delete_autoclip_project
     kind: function
-    at: 'backend/app/services/autoclip_service.py:L162-L174'
+    at: 'backend/app/services/autoclip_service.py:L183-L195'
   - symbol: generate_subtitle
     kind: function
-    at: 'backend/app/services/autoclip_service.py:L176-L206'
+    at: 'backend/app/services/autoclip_service.py:L197-L227'
 ---
 <!-- context:generated:start -->
 ## Summary

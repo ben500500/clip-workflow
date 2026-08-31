@@ -98,31 +98,31 @@ covers:
     at: 'autoclip/app/pipeline/step2_timeline.py:L423-L444'
   - symbol: ClipScorer
     kind: class
-    at: 'autoclip/app/pipeline/step3_scoring.py:L19-L288'
+    at: 'autoclip/app/pipeline/step3_scoring.py:L19-L324'
   - symbol: __init__
     kind: method
-    at: 'autoclip/app/pipeline/step3_scoring.py:L27-L60'
+    at: 'autoclip/app/pipeline/step3_scoring.py:L27-L76'
   - symbol: score_clips
     kind: method
-    at: 'autoclip/app/pipeline/step3_scoring.py:L62-L109'
+    at: 'autoclip/app/pipeline/step3_scoring.py:L78-L125'
   - symbol: _get_llm_evaluation
     kind: method
-    at: 'autoclip/app/pipeline/step3_scoring.py:L111-L197'
+    at: 'autoclip/app/pipeline/step3_scoring.py:L127-L233'
   - symbol: _extract_transcript
     kind: method
-    at: 'autoclip/app/pipeline/step3_scoring.py:L199-L252'
+    at: 'autoclip/app/pipeline/step3_scoring.py:L235-L288'
   - symbol: _truncate_transcript
     kind: method
-    at: 'autoclip/app/pipeline/step3_scoring.py:L254-L270'
+    at: 'autoclip/app/pipeline/step3_scoring.py:L290-L306'
   - symbol: _infer_clip_type
     kind: method
-    at: 'autoclip/app/pipeline/step3_scoring.py:L272-L282'
+    at: 'autoclip/app/pipeline/step3_scoring.py:L308-L318'
   - symbol: save_scores
     kind: method
-    at: 'autoclip/app/pipeline/step3_scoring.py:L284-L288'
+    at: 'autoclip/app/pipeline/step3_scoring.py:L320-L324'
   - symbol: run_step3_scoring
     kind: function
-    at: 'autoclip/app/pipeline/step3_scoring.py:L290-L334'
+    at: 'autoclip/app/pipeline/step3_scoring.py:L326-L383'
   - symbol: TitleGenerator
     kind: class
     at: 'autoclip/app/pipeline/step4_title.py:L18-L115'

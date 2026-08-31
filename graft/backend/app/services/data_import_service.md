@@ -1,14 +1,14 @@
 # backend/app/services/data_import_service.py · [[dashboard-metrics-aggregation]]
 
-- _validate_columns · function · L47-L58 — def _validate_columns(df: pd.DataFrame, required: list, import_type: str) -> list
-- _normalize_columns · function · L61-L64 — def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame
-- _parse_date · function · L67-L78 — def _parse_date(value) -> Optional[date]
-- _safe_int · function · L81-L88 — def _safe_int(value, default=0) -> int
-- _safe_float · function · L91-L98 — def _safe_float(value, default=0.0) -> float
-- _upsert_video_metric · function · L101-L125 — async def _upsert_video_metric( db: AsyncSession, video_id: str, publish_date, account_id: Optional[uuid.UUID], values: dict, )
-- _upsert_metric · function · L128-L150 — async def _upsert_metric( db: AsyncSession, model, date_field: str, record_date, account_id: Optional[uuid.UUID], values: dict, )
-- import_video_metrics · function · L153-L244 — async def import_video_metrics( file, account_id: Optional[uuid.UUID], db: AsyncSession, ) -> dict
-- import_mini_program_metrics · function · L247-L313 — async def import_mini_program_metrics( file, account_id: Optional[uuid.UUID], db: AsyncSession, ) -> dict
-- import_ad_metrics · function · L316-L386 — async def import_ad_metrics( file, account_id: Optional[uuid.UUID], db: AsyncSession, ) -> dict
-- _generate_template_sync · function · L389-L439 — def _generate_template_sync(import_type: str) -> bytes
-- generate_import_template · function · L442-L454 — async def generate_import_template(import_type: str) -> bytes
+- _validate_columns · function · L47-L58 — Checks that all required columns exist in the DataFrame (case-insensitive, whitespace-trimmed) and returns a list of missing-column error messages.
+- _normalize_columns · function · L61-L64 — Lowercases and strips whitespace from all DataFrame column names so downstream lookups are case-insensitive.
+- _parse_date · function · L67-L78 — Converts a cell value from various formats (datetime, date, string) into a date object, returning None for missing or unparseable values.
+- _safe_int · function · L81-L88 — Converts a cell value to int, returning a default for NaN or non-numeric values to avoid import crashes.
+- _safe_float · function · L91-L98 — Converts a cell value to float, returning a default for NaN or non-numeric values to avoid import crashes.
+- _upsert_video_metric · function · L101-L125 — Finds an existing video metric by (video_id, publish_date, optional account_id) and updates it, or inserts a new row when none exists.
+- _upsert_metric · function · L128-L150 — Generic upsert for daily metric tables keyed by (date_field, optional account_id), updating an existing row or inserting a new one.
+- import_video_metrics · function · L153-L244 — Reads a video metrics Excel file, validates required columns, parses each row into typed values, and upserts them per video, returning per-row errors.
+- import_mini_program_metrics · function · L247-L313 — Reads a mini program metrics Excel file, validates required columns, and upserts daily metric rows keyed by date and account.
+- import_ad_metrics · function · L316-L386 — Reads an ad metrics Excel file, validates required columns, and upserts daily ad metric rows keyed by date and account.
+- _generate_template_sync · function · L389-L439 — Builds an Excel template with required and optional columns plus a sample row for a given import type, raising on unknown types.
+- generate_import_template · function · L442-L454 — Async wrapper that offloads Excel template generation to an executor thread to avoid blocking the event loop.

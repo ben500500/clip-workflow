@@ -7,6 +7,6 @@
 - _cache_dir · function · L109-L112 — def _cache_dir() -> Path
 - _read_cache · function · L115-L122 — def _read_cache(key: str) -> Optional[Dict[str, Any]]
 - _write_cache · function · L125-L130 — def _write_cache(key: str, desc: Dict[str, Any]) -> None
-- analyze_clip_frames · function · L133-L230 — def analyze_clip_frames( video_path: str, start_time: str, end_time: str, project_id: Optional[str] = None, ) -> Optional[Dict[str, Any]]
-- to_sec · function · L160-L168 — def to_sec(t: str) -> Optional[float]
-- analyze_timeline_frames · function · L233-L266 — def analyze_timeline_frames( timeline_data: List[Dict], video_path: str, project_id: Optional[str] = None, enabled: Optional[bool] = None, ) -> Dict[str, Dict[str, Any]]
+- analyze_clip_frames · function · L133-L256 — def analyze_clip_frames( video_path: str, start_time: str, end_time: str, project_id: Optional[str] = None, provider: Optional[str] = None, vision_model: Optional[str] = None, vision_base: Optional[str] = None, vision_key: Optional[str] = None, ) -> Optional[Dict[str, Any]]
+- to_sec · function · L168-L176 — def to_sec(t: str) -> Optional[float]
+- analyze_timeline_frames · function · L259-L304 — def analyze_timeline_frames( timeline_data: List[Dict], video_path: str, project_id: Optional[str] = None, enabled: Optional[bool] = None, provider: Optional[str] = None, vision_model: Optional[str] = None, vision_base: Optional[str] = None, vision_key: Optional[str] = None, ) -> Dict[str, Dict[str, Any]]

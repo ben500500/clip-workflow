@@ -1,12 +1,14 @@
 # frontend/src/api/variants.ts · [[frontend-api-layer]]
 
-- VariantFingerprint · interface · L3-L7 — interface VariantFingerprint
-- VariantMatrixItem · interface · L9-L23 — interface VariantMatrixItem
-- VariantGroup · interface · L25-L31 — interface VariantGroup
-- VariantMatrix · interface · L33-L36 — interface VariantMatrix
-- VariantDetail · interface · L38-L42 — interface VariantDetail extends VariantMatrixItem
-- VariantVerifyResult · interface · L44-L48 — interface VariantVerifyResult
-- SliceOutputListItem · interface · L50-L61 — interface SliceOutputListItem
-- SliceOutputEpisode · interface · L63-L68 — interface SliceOutputEpisode
-- SliceOutputProject · interface · L70-L74 — interface SliceOutputProject
-- SliceOutputList · interface · L76-L81 — interface SliceOutputList
+API client module for variant management, exposing endpoints to fetch the variant matrix, inspect variant details, generate new variants, verify safety, bind variants to accounts, and update dedupe thresholds.
+
+- VariantFingerprint · interface · L3-L7 — Data holder describing a single fingerprint (algorithm, hash, duration) used to identify a variant.
+- VariantMatrixItem · interface · L9-L26 — Data holder describing one variant row in the matrix, including its status, distance metrics, and collision flags.
+- VariantGroup · interface · L28-L34 — Data holder grouping a base output with its set of variant matrix items.
+- VariantMatrix · interface · L36-L39 — Data holder for the full variant matrix: variant groups plus the dedupe thresholds used.
+- VariantDetail · interface · L41-L45 — Data holder extending a matrix item with group id, dedupe config, and fingerprints for a single variant's detail view.
+- VariantVerifyResult · interface · L47-L51 — Data holder for a verification outcome, reporting whether a variant is safe along with distance metrics and a reason.
+- SliceOutputListItem · interface · L53-L64 — interface SliceOutputListItem
+- SliceOutputEpisode · interface · L66-L71 — interface SliceOutputEpisode
+- SliceOutputProject · interface · L73-L77 — interface SliceOutputProject
+- SliceOutputList · interface · L79-L84 — interface SliceOutputList

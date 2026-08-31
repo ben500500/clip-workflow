@@ -15,37 +15,40 @@ covers:
     at: 'frontend/src/pages/VariantMatrix.tsx:L37-L37'
   - symbol: VariantMatrix
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L45-L494'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L45-L558'
   - symbol: handleVerify
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L136-L147'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L140-L151'
   - symbol: openBind
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L149-L152'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L153-L156'
   - symbol: handleBind
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L154-L167'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L158-L171'
   - symbol: openThreshold
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L169-L172'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L173-L176'
   - symbol: handleSaveThreshold
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L174-L186'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L178-L190'
   - symbol: handleDownload
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L189-L200'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L193-L204'
+  - symbol: handleDownloadGroup
+    kind: function
+    at: 'frontend/src/pages/VariantMatrix.tsx:L207-L236'
   - symbol: handleDeleteVariant
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L203-L211'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L239-L247'
   - symbol: handleDeleteGroup
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L214-L222'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L250-L258'
   - symbol: handleCleanupStuck
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L225-L240'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L261-L276'
   - symbol: DistanceCell
     kind: function
-    at: 'frontend/src/pages/VariantMatrix.tsx:L496-L508'
+    at: 'frontend/src/pages/VariantMatrix.tsx:L560-L586'
 ---
 <!-- context:generated:start -->
 ## Summary

@@ -22,108 +22,120 @@ covers:
   - symbol: FlattenOutput
     kind: interface
     at: 'frontend/src/pages/BatchSlice.tsx:L24-L30'
-  - symbol: AutoClipConfig
-    kind: interface
-    at: 'frontend/src/pages/BatchSlice.tsx:L34-L41'
   - symbol: IntervalConfig
     kind: interface
-    at: 'frontend/src/pages/BatchSlice.tsx:L43-L46'
+    at: 'frontend/src/pages/BatchSlice.tsx:L34-L37'
   - symbol: SliceConfigState
-    kind: interface
-    at: 'frontend/src/pages/BatchSlice.tsx:L48-L85'
+    kind: type
+    at: 'frontend/src/pages/BatchSlice.tsx:L42-L45'
   - symbol: BatchSlicePage
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L180-L1362'
+    at: 'frontend/src/pages/BatchSlice.tsx:L95-L1273'
   - symbol: applySlicePreset
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L195-L236'
+    at: 'frontend/src/pages/BatchSlice.tsx:L110-L126'
   - symbol: handleFileUpload
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L332-L349'
+    at: 'frontend/src/pages/BatchSlice.tsx:L222-L239'
   - symbol: buildPayload
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L351-L391'
+    at: 'frontend/src/pages/BatchSlice.tsx:L241-L265'
   - symbol: addTextOverlay
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L393-L398'
+    at: 'frontend/src/pages/BatchSlice.tsx:L267-L272'
   - symbol: updateTextOverlay
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L400-L405'
+    at: 'frontend/src/pages/BatchSlice.tsx:L274-L279'
   - symbol: removeTextOverlay
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L407-L412'
+    at: 'frontend/src/pages/BatchSlice.tsx:L281-L286'
   - symbol: handleRun
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L414-L440'
+    at: 'frontend/src/pages/BatchSlice.tsx:L288-L314'
   - symbol: handleRetry
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L442-L460'
+    at: 'frontend/src/pages/BatchSlice.tsx:L316-L334'
   - symbol: handleCancel
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L462-L480'
+    at: 'frontend/src/pages/BatchSlice.tsx:L336-L354'
   - symbol: showOutputs
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L482-L492'
+    at: 'frontend/src/pages/BatchSlice.tsx:L356-L366'
   - symbol: renderOutputModal
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L494-L552'
+    at: 'frontend/src/pages/BatchSlice.tsx:L368-L426'
   - symbol: handlePreviewOutput
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L555-L563'
+    at: 'frontend/src/pages/BatchSlice.tsx:L429-L437'
   - symbol: openTrimModal
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L566-L575'
+    at: 'frontend/src/pages/BatchSlice.tsx:L440-L449'
   - symbol: handleTrimRangeChange
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L578-L584'
+    at: 'frontend/src/pages/BatchSlice.tsx:L452-L458'
   - symbol: submitTrim
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L587-L609'
+    at: 'frontend/src/pages/BatchSlice.tsx:L461-L483'
   - symbol: renderPreviewModal
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L611-L624'
+    at: 'frontend/src/pages/BatchSlice.tsx:L485-L498'
   - symbol: renderTrimModal
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L626-L679'
+    at: 'frontend/src/pages/BatchSlice.tsx:L500-L553'
   - symbol: formatSize
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L681-L686'
+    at: 'frontend/src/pages/BatchSlice.tsx:L555-L560'
   - symbol: OperatorForm
     kind: interface
-    at: 'frontend/src/pages/ChannelAccounts.tsx:L37-L41'
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L38-L42'
   - symbol: ChannelAccounts
     kind: function
-    at: 'frontend/src/pages/ChannelAccounts.tsx:L43-L531'
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L44-L690'
   - symbol: openCreate
     kind: function
-    at: 'frontend/src/pages/ChannelAccounts.tsx:L85-L90'
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L107-L112'
   - symbol: openEdit
     kind: function
-    at: 'frontend/src/pages/ChannelAccounts.tsx:L92-L107'
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L114-L130'
   - symbol: handleVideoAccountChange
     kind: function
-    at: 'frontend/src/pages/ChannelAccounts.tsx:L110-L118'
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L133-L141'
   - symbol: handleSubmit
     kind: function
-    at: 'frontend/src/pages/ChannelAccounts.tsx:L120-L146'
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L143-L169'
   - symbol: handleDelete
     kind: function
-    at: 'frontend/src/pages/ChannelAccounts.tsx:L148-L156'
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L171-L179'
+  - symbol: openTheaterCreate
+    kind: function
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L182-L186'
+  - symbol: openTheaterEdit
+    kind: function
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L188-L192'
+  - symbol: handleTheaterSubmit
+    kind: function
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L194-L215'
+  - symbol: handleTheaterDelete
+    kind: function
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L217-L229'
+  - symbol: handleTheaterFilterChange
+    kind: function
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L231-L234'
   - symbol: openOperator
     kind: function
-    at: 'frontend/src/pages/ChannelAccounts.tsx:L159-L164'
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L237-L242'
   - symbol: handleAddOperator
     kind: function
-    at: 'frontend/src/pages/ChannelAccounts.tsx:L166-L190'
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L244-L268'
   - symbol: handleRemoveOperator
     kind: function
-    at: 'frontend/src/pages/ChannelAccounts.tsx:L192-L202'
+    at: 'frontend/src/pages/ChannelAccounts.tsx:L270-L280'
   - symbol: VideoPreview
     kind: function
     at: 'frontend/src/pages/ClipReview.tsx:L20-L144'
   - symbol: ClipReview
     kind: function
-    at: 'frontend/src/pages/ClipReview.tsx:L147-L553'
+    at: 'frontend/src/pages/ClipReview.tsx:L147-L585'
   - symbol: fetchClips
     kind: function
     at: 'frontend/src/pages/ClipReview.tsx:L158-L169'
@@ -147,7 +159,7 @@ covers:
     at: 'frontend/src/pages/ClipReview.tsx:L248-L257'
   - symbol: onTitleClick
     kind: function
-    at: 'frontend/src/pages/ClipReview.tsx:L289-L296'
+    at: 'frontend/src/pages/ClipReview.tsx:L291-L298'
 ---
 <!-- context:generated:start -->
 ## Summary

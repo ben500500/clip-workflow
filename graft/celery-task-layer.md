@@ -90,157 +90,157 @@ covers:
     at: 'backend/app/celery/shortdrama_tasks.py:L668-L674'
   - symbol: run_async
     kind: function
-    at: 'backend/app/celery/tasks.py:L137-L150'
+    at: 'backend/app/celery/tasks.py:L149-L162'
   - symbol: _ensure_source_video
     kind: function
-    at: 'backend/app/celery/tasks.py:L153-L166'
+    at: 'backend/app/celery/tasks.py:L165-L178'
   - symbol: autoclip_task
     kind: function
-    at: 'backend/app/celery/tasks.py:L170-L276'
+    at: 'backend/app/celery/tasks.py:L182-L288'
   - symbol: batch_slice_task
     kind: function
-    at: 'backend/app/celery/tasks.py:L280-L294'
+    at: 'backend/app/celery/tasks.py:L292-L306'
   - symbol: batch_selection_consumer
     kind: function
-    at: 'backend/app/celery/tasks.py:L298-L311'
+    at: 'backend/app/celery/tasks.py:L310-L323'
   - symbol: batch_slice_dispatch
     kind: function
-    at: 'backend/app/celery/tasks.py:L315-L326'
+    at: 'backend/app/celery/tasks.py:L327-L338'
   - symbol: batch_slice_finalize
     kind: function
-    at: 'backend/app/celery/tasks.py:L330-L341'
+    at: 'backend/app/celery/tasks.py:L342-L353'
   - symbol: batch_aggregate
     kind: function
-    at: 'backend/app/celery/tasks.py:L345-L353'
+    at: 'backend/app/celery/tasks.py:L357-L365'
   - symbol: publish_schedule_dispatcher
     kind: function
-    at: 'backend/app/celery/tasks.py:L357-L415'
+    at: 'backend/app/celery/tasks.py:L369-L427'
   - symbol: _dispatch_due
     kind: function
-    at: 'backend/app/celery/tasks.py:L368-L390'
+    at: 'backend/app/celery/tasks.py:L380-L402'
   - symbol: _write_ckid
     kind: function
-    at: 'backend/app/celery/tasks.py:L399-L407'
+    at: 'backend/app/celery/tasks.py:L411-L419'
   - symbol: detect_task
     kind: function
-    at: 'backend/app/celery/tasks.py:L419-L482'
+    at: 'backend/app/celery/tasks.py:L431-L494'
   - symbol: _run
     kind: function
-    at: 'backend/app/celery/tasks.py:L450-L451'
+    at: 'backend/app/celery/tasks.py:L462-L463'
   - symbol: _create_detect_task
     kind: function
-    at: 'backend/app/celery/tasks.py:L485-L507'
+    at: 'backend/app/celery/tasks.py:L497-L519'
   - symbol: _update_detect_task_progress
     kind: function
-    at: 'backend/app/celery/tasks.py:L510-L524'
+    at: 'backend/app/celery/tasks.py:L522-L536'
   - symbol: _fail_detect_task
     kind: function
-    at: 'backend/app/celery/tasks.py:L527-L542'
+    at: 'backend/app/celery/tasks.py:L539-L554'
   - symbol: slice_task
     kind: function
-    at: 'backend/app/celery/tasks.py:L546-L818'
+    at: 'backend/app/celery/tasks.py:L558-L864'
   - symbol: progress_cb
     kind: function
-    at: 'backend/app/celery/tasks.py:L690-L695'
+    at: 'backend/app/celery/tasks.py:L724-L729'
   - symbol: _parse_engine_manifest
     kind: function
-    at: 'backend/app/celery/tasks.py:L821-L838'
+    at: 'backend/app/celery/tasks.py:L867-L884'
   - symbol: _save_autoclip_results
     kind: function
-    at: 'backend/app/celery/tasks.py:L841-L910'
+    at: 'backend/app/celery/tasks.py:L887-L957'
   - symbol: _mark_autoclip_failed
     kind: function
-    at: 'backend/app/celery/tasks.py:L913-L932'
+    at: 'backend/app/celery/tasks.py:L960-L979'
   - symbol: _update_autoclip_run
     kind: function
-    at: 'backend/app/celery/tasks.py:L935-L995'
+    at: 'backend/app/celery/tasks.py:L982-L1042'
   - symbol: _save_detected_intervals
     kind: function
-    at: 'backend/app/celery/tasks.py:L998-L1064'
+    at: 'backend/app/celery/tasks.py:L1045-L1111'
   - symbol: _update_episode_status
     kind: function
-    at: 'backend/app/celery/tasks.py:L1067-L1080'
+    at: 'backend/app/celery/tasks.py:L1114-L1127'
   - symbol: _update_slice_task_progress
     kind: function
-    at: 'backend/app/celery/tasks.py:L1083-L1099'
+    at: 'backend/app/celery/tasks.py:L1130-L1146'
   - symbol: _save_slice_outputs
     kind: function
-    at: 'backend/app/celery/tasks.py:L1102-L1210'
+    at: 'backend/app/celery/tasks.py:L1149-L1257'
   - symbol: _fail_slice_task
     kind: function
-    at: 'backend/app/celery/tasks.py:L1213-L1230'
+    at: 'backend/app/celery/tasks.py:L1260-L1277'
   - symbol: task_publish_video
     kind: function
-    at: 'backend/app/celery/tasks.py:L1234-L1469'
+    at: 'backend/app/celery/tasks.py:L1281-L1516'
   - symbol: _release_confirm_lock
     kind: function
-    at: 'backend/app/celery/tasks.py:L1472-L1488'
+    at: 'backend/app/celery/tasks.py:L1519-L1535'
   - symbol: _release
     kind: function
-    at: 'backend/app/celery/tasks.py:L1479-L1484'
+    at: 'backend/app/celery/tasks.py:L1526-L1531'
   - symbol: confirm_publish_worker
     kind: function
-    at: 'backend/app/celery/tasks.py:L1492-L1596'
+    at: 'backend/app/celery/tasks.py:L1539-L1643'
   - symbol: _acquire_lock
     kind: function
-    at: 'backend/app/celery/tasks.py:L1503-L1508'
+    at: 'backend/app/celery/tasks.py:L1550-L1555'
   - symbol: check_cookie_status
     kind: function
-    at: 'backend/app/celery/tasks.py:L1600-L1664'
+    at: 'backend/app/celery/tasks.py:L1647-L1711'
   - symbol: sync_multi_operator_profiles
     kind: function
-    at: 'backend/app/celery/tasks.py:L1668-L1684'
+    at: 'backend/app/celery/tasks.py:L1715-L1731'
   - symbol: watch_multi_operator_routes
     kind: function
-    at: 'backend/app/celery/tasks.py:L1688-L1704'
+    at: 'backend/app/celery/tasks.py:L1735-L1751'
   - symbol: task_collect_metrics
     kind: function
-    at: 'backend/app/celery/tasks.py:L1708-L1734'
+    at: 'backend/app/celery/tasks.py:L1755-L1781'
   - symbol: gen_publish_trace_id
     kind: function
-    at: 'backend/app/celery/tasks.py:L1737-L1740'
+    at: 'backend/app/celery/tasks.py:L1784-L1787'
   - symbol: _get_publish_rate_config
     kind: function
-    at: 'backend/app/celery/tasks.py:L1754-L1775'
+    at: 'backend/app/celery/tasks.py:L1801-L1822'
   - symbol: _get_publish_task
     kind: function
-    at: 'backend/app/celery/tasks.py:L1778-L1883'
+    at: 'backend/app/celery/tasks.py:L1825-L1930'
   - symbol: _download_video_for_publish
     kind: function
-    at: 'backend/app/celery/tasks.py:L1886-L1954'
+    at: 'backend/app/celery/tasks.py:L1933-L2001'
   - symbol: _update_publish_task_status
     kind: function
-    at: 'backend/app/celery/tasks.py:L1957-L2007'
+    at: 'backend/app/celery/tasks.py:L2004-L2054'
   - symbol: _compute_funnel_snapshot
     kind: function
-    at: 'backend/app/celery/tasks.py:L2010-L2096'
+    at: 'backend/app/celery/tasks.py:L2057-L2143'
   - symbol: run_alert_check_task
     kind: function
-    at: 'backend/app/celery/tasks.py:L2100-L2110'
+    at: 'backend/app/celery/tasks.py:L2147-L2157'
   - symbol: maintenance_daily_task
     kind: function
-    at: 'backend/app/celery/tasks.py:L2114-L2131'
+    at: 'backend/app/celery/tasks.py:L2161-L2178'
   - symbol: _update_watermark_video
     kind: function
-    at: 'backend/app/celery/tasks.py:L2138-L2181'
+    at: 'backend/app/celery/tasks.py:L2185-L2228'
   - symbol: _recalc_watermark_task
     kind: function
-    at: 'backend/app/celery/tasks.py:L2184-L2239'
+    at: 'backend/app/celery/tasks.py:L2231-L2286'
   - symbol: watermark_task
     kind: function
-    at: 'backend/app/celery/tasks.py:L2243-L2460'
+    at: 'backend/app/celery/tasks.py:L2290-L2507'
   - symbol: _load_videos
     kind: function
-    at: 'backend/app/celery/tasks.py:L2267-L2281'
+    at: 'backend/app/celery/tasks.py:L2314-L2328'
   - symbol: _mark_task_running
     kind: function
-    at: 'backend/app/celery/tasks.py:L2292-L2301'
+    at: 'backend/app/celery/tasks.py:L2339-L2348'
   - symbol: _persist_progress
     kind: function
-    at: 'backend/app/celery/tasks.py:L2355-L2358'
+    at: 'backend/app/celery/tasks.py:L2402-L2405'
   - symbol: _cb
     kind: function
-    at: 'backend/app/celery/tasks.py:L2360-L2375'
+    at: 'backend/app/celery/tasks.py:L2407-L2422'
   - symbol: generate_variants_task
     kind: function
     at: 'backend/app/celery/variant_tasks.py:L21-L57'

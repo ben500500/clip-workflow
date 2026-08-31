@@ -29,28 +29,28 @@ covers:
     at: 'backend/app/utils/helpers.py:L43-L53'
   - symbol: generate_cutlist
     kind: function
-    at: 'backend/app/utils/helpers.py:L56-L70'
+    at: 'backend/app/utils/helpers.py:L56-L110'
   - symbol: generate_intervals_file
     kind: function
-    at: 'backend/app/utils/helpers.py:L73-L84'
+    at: 'backend/app/utils/helpers.py:L113-L124'
   - symbol: write_temp_file
     kind: function
-    at: 'backend/app/utils/helpers.py:L87-L91'
+    at: 'backend/app/utils/helpers.py:L127-L131'
   - symbol: write_temp_json
     kind: function
-    at: 'backend/app/utils/helpers.py:L94-L98'
+    at: 'backend/app/utils/helpers.py:L134-L138'
   - symbol: ensure_dir
     kind: function
-    at: 'backend/app/utils/helpers.py:L101-L104'
+    at: 'backend/app/utils/helpers.py:L141-L144'
   - symbol: generate_signed_url_headers
     kind: function
-    at: 'backend/app/utils/helpers.py:L107-L109'
+    at: 'backend/app/utils/helpers.py:L147-L149'
   - symbol: human_readable_size
     kind: function
-    at: 'backend/app/utils/helpers.py:L112-L120'
+    at: 'backend/app/utils/helpers.py:L152-L160'
   - symbol: utc_iso
     kind: function
-    at: 'backend/app/utils/helpers.py:L122-L133'
+    at: 'backend/app/utils/helpers.py:L162-L173'
 ---
 <!-- context:generated:start -->
 ## Summary

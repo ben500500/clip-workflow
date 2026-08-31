@@ -1,18 +1,21 @@
 # frontend/src/pages/ProjectDetail.tsx · [[project-episode-management]] [[slice-configuration-presets]]
 
-- BatchSliceConfig · interface · L21-L35 — interface BatchSliceConfig
-- loadSavedBatchConfig · function · L56-L67 — function loadSavedBatchConfig(projectId: string): BatchSliceConfig | null
-- saveBatchConfig · function · L69-L75 — function saveBatchConfig(projectId: string, cfg: BatchSliceConfig): void
-- ProjectDetail · function · L79-L1044 — ProjectDetail: React.FC = ()
-- applyBatchPreset · function · L126-L137 — applyBatchPreset = (id: string)
-- fetchData · function · L164-L179 — fetchData = async (silent = false)
-- handleUpload · function · L188-L217 — handleUpload = async (file: File)
-- submitMultiUpload · function · L220-L251 — submitMultiUpload = async ()
-- handleMultiFileUpload · function · L254-L291 — handleMultiFileUpload = async (files: File[])
-- handleTabChange · function · L312-L317 — handleTabChange = (key: string)
-- togglePreview · function · L320-L360 — togglePreview = async (record: Episode, expanded?: boolean)
-- refreshPreview · function · L362-L387 — refreshPreview = (id: string)
-- renderSourcePreview · function · L389-L441 — renderSourcePreview = (record: Episode)
-- handleCoverUpload · function · L444-L464 — handleCoverUpload = async (file: File)
-- runOneClickSlice · function · L467-L487 — runOneClickSlice = async (episode: Episode)
-- runBatchSlice · function · L490-L515 — runBatchSlice = async ()
+- BatchSliceConfig · interface · L22-L39 — interface BatchSliceConfig
+- loadSavedBatchConfig · function · L61-L72 — function loadSavedBatchConfig(projectId: string): BatchSliceConfig | null
+- saveBatchConfig · function · L74-L80 — function saveBatchConfig(projectId: string, cfg: BatchSliceConfig): void
+- ProjectDetail · function · L84-L1164 — ProjectDetail: React.FC = ()
+- applyBatchPreset · function · L130-L142 — applyBatchPreset = (id: string)
+- fetchData · function · L171-L186 — fetchData = async (silent = false)
+- handleUpload · function · L195-L224 — handleUpload = async (file: File)
+- submitMultiUpload · function · L227-L258 — submitMultiUpload = async ()
+- handleMultiFileUpload · function · L261-L298 — handleMultiFileUpload = async (files: File[])
+- handleTabChange · function · L322-L327 — handleTabChange = (key: string)
+- toggleOutputRow · function · L351-L353 — toggleOutputRow = (record: ProjectOutputItem)
+- downloadOutputOne · function · L356-L372 — downloadOutputOne = async (o: ProjectOutputItem)
+- downloadOutputGroup · function · L375-L405 — downloadOutputGroup = async (epId: string)
+- togglePreview · function · L408-L448 — togglePreview = async (record: Episode, expanded?: boolean)
+- refreshPreview · function · L450-L475 — refreshPreview = (id: string)
+- renderSourcePreview · function · L477-L529 — renderSourcePreview = (record: Episode)
+- readEpisodeHookKeys · function · L533-L543 — readEpisodeHookKeys = (episodeId: string): string[]
+- runOneClickSlice · function · L546-L576 — runOneClickSlice = async (episode: Episode)
+- runBatchSlice · function · L579-L606 — runBatchSlice = async ()

@@ -21,58 +21,61 @@ generator:
 covers:
   - symbol: _pick_audio_mode
     kind: function
-    at: 'backend/app/services/variant_service.py:L93-L101'
+    at: 'backend/app/services/variant_service.py:L115-L123'
   - symbol: build_variant_recipes
     kind: function
-    at: 'backend/app/services/variant_service.py:L104-L166'
+    at: 'backend/app/services/variant_service.py:L126-L213'
+  - symbol: _pick
+    kind: function
+    at: 'backend/app/services/variant_service.py:L145-L149'
   - symbol: _recipe_fingerprint_key
     kind: function
-    at: 'backend/app/services/variant_service.py:L169-L171'
+    at: 'backend/app/services/variant_service.py:L216-L218'
   - symbol: _load_output
     kind: function
-    at: 'backend/app/services/variant_service.py:L174-L183'
+    at: 'backend/app/services/variant_service.py:L221-L230'
   - symbol: _load_output_video_path
     kind: function
-    at: 'backend/app/services/variant_service.py:L186-L199'
+    at: 'backend/app/services/variant_service.py:L233-L246'
   - symbol: _save_variant_row
     kind: function
-    at: 'backend/app/services/variant_service.py:L202-L222'
+    at: 'backend/app/services/variant_service.py:L249-L269'
   - symbol: _update_variant
     kind: function
-    at: 'backend/app/services/variant_service.py:L225-L231'
+    at: 'backend/app/services/variant_service.py:L272-L278'
   - symbol: mark_output_variants_failed
     kind: function
-    at: 'backend/app/services/variant_service.py:L234-L249'
+    at: 'backend/app/services/variant_service.py:L281-L296'
   - symbol: _save_fingerprint
     kind: function
-    at: 'backend/app/services/variant_service.py:L252-L268'
+    at: 'backend/app/services/variant_service.py:L299-L315'
   - symbol: _load_group_fingerprints
     kind: function
-    at: 'backend/app/services/variant_service.py:L271-L286'
+    at: 'backend/app/services/variant_service.py:L318-L333'
   - symbol: _check_against_history
     kind: function
-    at: 'backend/app/services/variant_service.py:L289-L325'
+    at: 'backend/app/services/variant_service.py:L336-L384'
   - symbol: _build_variant_cutlist
     kind: function
-    at: 'backend/app/services/variant_service.py:L328-L366'
+    at: 'backend/app/services/variant_service.py:L387-L425'
   - symbol: _generate_variant_file
     kind: function
-    at: 'backend/app/services/variant_service.py:L369-L411'
+    at: 'backend/app/services/variant_service.py:L428-L470'
   - symbol: _probe_duration_sec
     kind: function
-    at: 'backend/app/services/variant_service.py:L414-L424'
+    at: 'backend/app/services/variant_service.py:L473-L483'
   - symbol: generate_variants_for_output
     kind: function
-    at: 'backend/app/services/variant_service.py:L427-L555'
+    at: 'backend/app/services/variant_service.py:L486-L631'
   - symbol: _regenerate_recipe
     kind: function
-    at: 'backend/app/services/variant_service.py:L558-L570'
+    at: 'backend/app/services/variant_service.py:L634-L649'
   - symbol: verify_variant_fingerprint
     kind: function
-    at: 'backend/app/services/variant_service.py:L573-L615'
+    at: 'backend/app/services/variant_service.py:L652-L694'
   - symbol: guard_account_variant_unique
     kind: function
-    at: 'backend/app/services/variant_service.py:L618-L675'
+    at: 'backend/app/services/variant_service.py:L697-L754'
 ---
 <!-- context:generated:start -->
 ## Summary
