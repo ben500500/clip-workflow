@@ -269,7 +269,7 @@ const BatchSlicePage: React.FC = () => {
     // 支持两种格式：单个对象或数组
     if (Array.isArray(parsed)) {
       if (parsed.length === 0) throw new Error('JSON 数组不能为空');
-      const payloads: Array<{ drama: string; episodes: Array<{ title?: string; path: string }>; slice_config: unknown }> = [];
+      const payloads: Array<{ drama: string; episodes: Array<{ title?: string; path: string }>; slice_config: Record<string, unknown> }> = [];
       for (const item of parsed) {
         if (!item.drama || !String(item.drama).trim()) throw new Error(`缺少剧名 drama: ${JSON.stringify(item)}`);
         if (!Array.isArray(item.episodes) || item.episodes.length === 0) {
@@ -297,7 +297,7 @@ const BatchSlicePage: React.FC = () => {
       return [{
         drama: item.drama.trim(),
         episodes: item.episodes,
-        slice_config: sliceConfigPayload,
+        slice_config: sliceConfigPayload as Record<string, unknown>,
       }];
     }
   };
