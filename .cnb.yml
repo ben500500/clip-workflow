@@ -173,9 +173,14 @@ $:
             fi
             [ -z "$BASE_SHA" ] && BASE_SHA="$(git rev-parse HEAD~1 2>/dev/null || true)"
             echo "  base=$BASE_SHA head=$HEAD_SHA"
+            # CNB 只 clone 触发分支，PR 另一端的 commit 通常不在本地 → 先 fetch 再 diff
+            for ref in "${CNB_PULL_REQUEST_BRANCH:-}" "${CNB_DEFAULT_BRANCH:-main}"; do
+              [ -n "$ref" ] && git fetch -q origin "$ref" 2>/dev/null || true
+            done
             # 改动源码文件（graft 可解析的 py/ts/tsx/js/go）
             CHANGED_FILES="$(git diff --name-only "${BASE_SHA:-HEAD~1}...${HEAD_SHA:-HEAD}" 2>/dev/null | grep -E '\.(py|ts|tsx|js|go)$' || true)"
-            echo "  改动源码文件数: $(echo "$CHANGED_FILES" | grep -c . || echo 0)"
+            N_CHANGED="$(printf '%s\n' "$CHANGED_FILES" | grep -c . 2>/dev/null || echo 0)"
+            echo "  改动源码文件数: $N_CHANGED"
             for f in $CHANGED_FILES; do
               [ -f "$f" ] || continue
               SYMS="$(git diff -U0 "${BASE_SHA:-HEAD~1}...${HEAD_SHA:-HEAD}" -- "$f" 2>/dev/null | \
