@@ -139,15 +139,17 @@ $:
       stages:
         - name: 准备 graft 代码地图
           script: |
-            set +e
-            echo "=== 环境检查 ==="
-            node -v 2>&1; npm -v 2>&1
-            echo "=== 安装 graft CLI（官方源，规避国内镜像缺 tree-sitter-wasm）==="
-            npm install -g @nanonets/graft --registry=https://registry.npmjs.org --allow-scripts 2>&1 | tail -5
-            graft --version 2>&1 || echo "!! graft 安装失败，本次评审退化为无地图模式"
-            echo "=== 现场重建 graft 代码地图（标准版，不接 LLM，零费用）==="
-            time graft build . 2>&1 | tail -8
-            graft map 2>&1 | head -6
+            set -e
+            echo "=== 1/4 安装构建工具（graft 依赖 tree-sitter 原生绑定，需要 python3/make/g++）==="
+            (apt-get update -qq 2>&1 | tail -1; apt-get install -y -qq python3 make g++ 2>&1 | tail -2) \
+              || echo "(apt 不可用，尝试直接装 graft，若原生编译失败会显式报错)"
+            echo "=== 2/4 安装 graft CLI（官方源，规避国内镜像缺 tree-sitter-wasm）==="
+            npm install -g @nanonets/graft --registry=https://registry.npmjs.org --allow-scripts 2>&1 | tail -4
+            echo "=== 3/4 校验 graft ==="
+            graft --version || { echo "!! graft 安装失败"; exit 1; }
+            echo "=== 4/4 现场重建 graft 代码地图（标准版零 LLM/零费用）==="
+            graft build . 2>&1 | tail -6
+            graft map 2>&1 | head -4
             echo "=== graft 就绪 ==="
         - name: 代码评审
           type: npc:go
