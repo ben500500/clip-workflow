@@ -169,6 +169,12 @@ class DashScopeProvider(LLMProvider):
                     "messages": [{"role": "user", "content": full_input}],
                     "stream": False,
                 }
+                # 默认 max_tokens：避免输出被截断导致 LLM 回显输入/半截 JSON（MiMo 等推理模型易触发）
+                try:
+                    default_max_tokens = int(os.getenv("API_MAX_TOKENS", "8192") or 8192)
+                except (TypeError, ValueError):
+                    default_max_tokens = 8192
+                payload.setdefault("max_tokens", default_max_tokens)
                 payload.update({k: v for k, v in kwargs.items() if v is not None})
                 url = f"{self.base_url}/chat/completions"
                 # 超时可配置（环境变量 API_TIMEOUT，秒），默认 120s；

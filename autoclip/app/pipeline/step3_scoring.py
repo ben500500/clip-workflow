@@ -199,12 +199,27 @@ class ClipScorer:
 
                 if parsed_list is not None:
                     if isinstance(parsed_list, list) and len(parsed_list) == len(clips):
-                        break  # 解析成功，跳出重试循环
-                    last_err = ValueError(
-                        f"LLM返回的评分结果数量与输入不匹配。输入: {len(clips)}, 输出: {len(parsed_list)}"
-                    )
-                    parsed_list = None
-                    logger.warning(f"  > 第 {retry_count + 1}/{max_parse_retries + 1} 次评分结果数量不匹配: {last_err}")
+                        # 字段完整性校验：每个元素必须含 final_score 与 recommend_reason，
+                        # 否则视为无效响应（MiMo 偶发"回显输入"缺字段，2026-09-01 实测）→ 走重试
+                        missing_idx = [
+                            i for i, item in enumerate(parsed_list)
+                            if not isinstance(item, dict)
+                            or item.get('final_score') is None
+                            or item.get('recommend_reason') is None
+                        ]
+                        if not missing_idx:
+                            break  # 解析成功且字段完整，跳出重试循环
+                        last_err = ValueError(
+                            f"LLM返回的评分结果缺少 final_score/recommend_reason 字段: 元素索引 {missing_idx}"
+                        )
+                        parsed_list = None
+                        logger.warning(f"  > 第 {retry_count + 1}/{max_parse_retries + 1} 次评分结果字段缺失: {last_err}")
+                    else:
+                        last_err = ValueError(
+                            f"LLM返回的评分结果数量与输入不匹配。输入: {len(clips)}, 输出: {len(parsed_list)}"
+                        )
+                        parsed_list = None
+                        logger.warning(f"  > 第 {retry_count + 1}/{max_parse_retries + 1} 次评分结果数量不匹配: {last_err}")
 
                 if retry_count < max_parse_retries:
                     # 强化提示词，强调严格 JSON 格式（复用 step2 已验证写法）
