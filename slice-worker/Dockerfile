@@ -19,13 +19,16 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o slice-worker .
 # 之后依赖层被 Docker 缓存。
 FROM alpine:3.19 AS ffmpeg-nvenc
 RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
- && apk add --no-cache build-base yasm nasm git pkgconf \
+ && apk add --no-cache build-base yasm nasm git pkgconf curl \
     x264-dev x265-dev libass-dev freetype-dev fribidi-dev harfbuzz-dev fontconfig-dev
-# ffmpeg 6.1.1 与运行环境当前使用的 alpine ffmpeg 版本对齐，降低行为差异风险；
-# nv-codec-headers 无对应版本标签，取 master（与 6.1.1 兼容）。
-RUN git clone --depth 1 https://github.com/FFmpeg/nv-codec-headers.git /nv-codec-headers \
- && make -C /nv-codec-headers install
-RUN git clone --depth 1 --branch n6.1.1 https://github.com/FFmpeg/FFmpeg.git /ffmpeg
+# nv-codec-headers：打进仓库（slice-worker/nv-codec-headers/），构建时免网络依赖。
+# （来源：FFmpeg/nv-codec-headers master，仅 5 个 ffnvcodec 头文件）
+COPY nv-codec-headers /nv-codec-headers
+RUN make -C /nv-codec-headers install
+# ffmpeg 6.1.1 与运行环境当前使用的 alpine ffmpeg 版本对齐，降低行为差异风险。
+# 用 Gitee 镜像 clone（国内稳），规避 GitHub 大仓库 clone/tar 下载断流。
+RUN git -c http.version=HTTP/1.1 clone --depth 1 --branch n6.1.1 \
+      https://gitee.com/mirrors/FFmpeg.git /ffmpeg
 WORKDIR /ffmpeg
 RUN ./configure \
       --prefix=/usr \
