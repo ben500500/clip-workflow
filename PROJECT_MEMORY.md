@@ -13,6 +13,20 @@
 
 ---
 
+## ⛔ 0.5 用户冻结项：RPA（163 的 clip-rpa-worker）—— 不许动
+
+> **用户明确指示（2026-09-01）：RPA 现在不用，先放着；直到用户以后明确说「启用 RPA」才允许动它。**
+> 在此之前，**任何 Agent / 任何人不得重启、重建、修复、删除、改动 rpa 相关容器/镜像/profile/配置**（包括顺手清理、健康检查修复等）。
+
+**背景（为什么是冻结状态）**：
+- 2026-09-01 做垃圾清理时，按当时建议重启了 163 的 `clip-rpa-worker` 以释放 /tmp 被占用文件，**导致其 chromium 的 CDP 端口（9227）不再响应 HTTP，容器 unhealthy**。
+- 排查过：多次重启 / 清 profile 缓存 / 重建 profile / 重建 rpa 镜像均复现；chromium 日志报 "DevTools listening" 但 HTTP 空响应，怀疑 `cdp_proxy` 与 chrome 同绑 9227（profiles.json `listen_port==target_port==9227`）的端口冲突，属组件级配置问题，未深入修。
+- 旧发布账号 profile 已备份在 163 卷 `clip-workflow_chrome_profiles`：`29033bb6-corrupt-20260901.bak`（登录态在其中，如需恢复登录可从这里找）。
+
+**解除冻结的条件**：用户明确说「启用 RPA / 修 RPA」后才处理；届时优先查 cdp_proxy 端口冲突 + 恢复/重建 profile 登录态。
+
+---
+
 ## 1. 真实规模（实测，勿信旧文档）
 
 | 维度 | 数值 | 备注 |
