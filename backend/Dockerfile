@@ -3,6 +3,10 @@
 # ============================================================
 FROM python:3.11-slim AS builder
 
+# Use China mirror for faster apt downloads
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
+
 # Install system build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
@@ -21,6 +25,10 @@ RUN pip install --no-cache-dir --user -r requirements.txt
 # Stage 2: Runtime stage
 # ============================================================
 FROM python:3.11-slim
+
+# Use China mirror for faster apt downloads
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
 
 # Install runtime system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
