@@ -19,51 +19,50 @@
 # =============================================================================
 
 services:
+  # ==================== Ollama（画面理解 GPU 加速） ====================
+  # Ollama 内置 CUDA 支持，把宿主机 GPU 挂给容器即可让 MiniCPM-V 走 GPU。
+  # 需配合 .env 中 FRAME_ANALYSIS_ENABLED=true 生效。
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
-# ==================== Ollama（画面理解 GPU 加速） ====================
-# Ollama 内置 CUDA 支持，把宿主机 GPU 挂给容器即可让 MiniCPM-V 走 GPU。
-# 需配合 .env 中 FRAME_ANALYSIS_ENABLED=true 生效。
-ollama:
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: all
-            capabilities: [gpu]
+  # ==================== AutoClip（Whisper ASR GPU 加速） ====================
+  # faster-whisper 走 NVIDIA GPU 需满足：
+  #   1. 用 GPU 版镜像构建：docker build --build-arg ENABLE_CUDA=true -t clip-autoclip:latest ./autoclip
+  #   2. .env 中配置 WHISPER_DEVICE=cuda、WHISPER_COMPUTE_TYPE=float16
+  #   3. 本文件为 autoclip 透传 GPU
+  autoclip:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
-# ==================== AutoClip（Whisper ASR GPU 加速） ====================
-# faster-whisper 走 NVIDIA GPU 需满足：
-#   1. 用 GPU 版镜像构建：docker build --build-arg ENABLE_CUDA=true -t clip-autoclip:latest ./autoclip
-#   2. .env 中配置 WHISPER_DEVICE=cuda、WHISPER_COMPUTE_TYPE=float16
-#   3. 本文件为 autoclip 透传 GPU
-autoclip:
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: all
-            capabilities: [gpu]
+  # ==================== slice-worker / slice-worker-2（NVENC 硬件编码） ====================
+  # 切片 NVENC 编码（h264_nvenc/hevc_nvenc）需要 GPU。透传后 worker 心跳会上报
+  # encoder_capabilities（如 ["h264_nvenc","hevc_nvenc"]），节点界面「硬件编码」列可见。
+  # 仍需宿主机 ffmpeg 带 NVENC（系统 apt ffmpeg 一般不带，需 NVIDIA 官方 ffmpeg 或编译版）。
+  slice-worker:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
-# ==================== slice-worker / slice-worker-2（NVENC 硬件编码） ====================
-# 切片 NVENC 编码（h264_nvenc/hevc_nvenc）需要 GPU。透传后 worker 心跳会上报
-# encoder_capabilities（如 ["h264_nvenc","hevc_nvenc"]），节点界面「硬件编码」列可见。
-# 仍需宿主机 ffmpeg 带 NVENC（系统 apt ffmpeg 一般不带，需 NVIDIA 官方 ffmpeg 或编译版）。
-slice-worker:
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: all
-            capabilities: [gpu]
-
-slice-worker-2:
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: all
-            capabilities: [gpu]
+  slice-worker-2:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
