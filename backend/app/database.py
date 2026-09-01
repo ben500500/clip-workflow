@@ -270,6 +270,10 @@ async def _apply_compat_migrations():
         ("episodes", "source_url", "VARCHAR(2000)"),
         # 剧目管理 P2（0037_episode_drama）：剧集归属剧目；老库由 compat 补列
         ("episodes", "drama_id", "UUID"),
+        # 多视频上传「秒差检测」（0050_episode_av_sync_warning）：音画同步标注列。
+        # 注意：40/163 部署走 alembic stamp（不执行 upgrade），老库补列只能靠 compat 列表。
+        ("episodes", "av_sync_warning", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("episodes", "av_sync_diff", "FLOAT"),
         # 剧目话题标签（0039_drama_topics）
         ("dramas", "topics", "JSON"),
         # 多视频号素材去重（圆桌定稿）：SliceOutput 变体组 + Publication 变体回写
