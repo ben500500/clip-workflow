@@ -70,6 +70,8 @@ class MultiUploadResponse(BaseModel):
     project_name: str
     episodes: List[dict]
     message: str
+    # 秒差检测（音画同步）命中警告：开启检测后不同步的视频不拦截，仅提示并标注
+    warnings: List[str] = []
 
 
 def _serialize_episode(episode: Episode) -> dict:
@@ -86,6 +88,9 @@ def _serialize_episode(episode: Episode) -> dict:
         "status": episode.status,
         "created_at": utc_iso(episode.created_at) if episode.created_at else "",
         "updated_at": utc_iso(episode.updated_at) if episode.updated_at else "",
+        # 秒差检测（音画同步）标注
+        "av_sync_warning": bool(episode.av_sync_warning) if episode.av_sync_warning is not None else False,
+        "av_sync_diff": episode.av_sync_diff,
     }
 
 
@@ -351,6 +356,7 @@ async def upload_multi(
     merge: str = Form("false"),
     title: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
+    second_diff_detect: str = Form("false"),
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -366,6 +372,11 @@ async def upload_multi(
     - 未传 project_id（仅 project_name）：按「名称 + 当前用户」查找/新建项目，
       用于项目外批量导入；已存在则追加剧集（保留原剧集，编号顺延），
       不存在才新建，避免同名重复项目覆盖原剧集。
+
+    秒差检测（音画同步粗检）开关：`second_diff_detect=true` 或环境变量
+    `MULTI_UPLOAD_SECOND_DIFF_DETECT=true` 时开启。开启后对每个视频做音画时长差
+    校验，命中（不同步）不再拦截上传，而是标注该集（av_sync_warning）并在响应
+    warnings 中提示；默认关闭（不检测、不拦截）。
     """
     if not files:
         raise HTTPException(status_code=400, detail="至少需要上传一个视频")
@@ -418,6 +429,13 @@ async def upload_multi(
     os.makedirs(tmp_dir, exist_ok=True)
     local_paths: List[str] = []
     names: List[str] = []
+    # 秒差检测（音画同步）开关：请求显式 true 或 env 总闸开启时生效；默认关闭。
+    sec_diff_on = (
+        str(second_diff_detect).strip().lower() in ("1", "true", "yes")
+        or settings.MULTI_UPLOAD_SECOND_DIFF_DETECT
+    )
+    # 检测命中警告（不拦截，仅提示+标注）
+    warnings: List[str] = []
     try:
         for f in files:
             try:
@@ -437,14 +455,6 @@ async def upload_multi(
                     out.write(chunk)
             local_paths.append(p)
             names.append(safe_name)
-
-            # 音画同步粗检：防带病文件（外部合并音视频时长差）静默进入产线
-            sync = await _check_av_sync(p)
-            if not sync["ok"]:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{safe_name} 上传被拦截（音画校验未通过）：{sync['msg']}。请修复或使用系统「多视频合并」重新合并。",
-                )
 
         # 标题规则：merge=true 时整批产出一条 Episode，直接用传入标题；
         # merge=false 时每个视频一条 Episode，标题作为前缀 + 序号（如「短剧名 第01集」），
@@ -483,6 +493,20 @@ async def upload_multi(
                     episode_title = f"{custom_title} 第{idx:02d}集" if len(local_paths) > 1 else custom_title
             else:
                 episode_title = name
+
+            # 秒差检测（音画同步）：开启时逐个校验，命中则标注+警告（不拦截）
+            av_sync_warning = False
+            av_sync_diff = None
+            if sec_diff_on:
+                sync = await _check_av_sync(p)
+                if not sync["ok"]:
+                    diff = sync.get("diff")
+                    av_sync_warning = True
+                    av_sync_diff = diff
+                    warnings.append(
+                        f"{name} 音画不同步（视频/音频时长差 {diff}s）：{sync['msg']}"
+                    )
+
             episode = Episode(
                 project_id=project.id,
                 title=episode_title,
@@ -490,6 +514,8 @@ async def upload_multi(
                 source_file_key=file_key,
                 file_size=os.path.getsize(p),
                 status="uploaded",
+                av_sync_warning=av_sync_warning,
+                av_sync_diff=av_sync_diff,
             )
             db.add(episode)
             await db.flush()
@@ -507,6 +533,7 @@ async def upload_multi(
             f"{'已追加到' if not created_new else '已创建'}项目「{project.name}」并上传 {len(episodes)} 个正片"
             + ("（已合并为一个）" if do_merge else "")
         ),
+        warnings=warnings,
     )
 
 

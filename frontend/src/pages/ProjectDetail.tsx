@@ -107,6 +107,8 @@ const ProjectDetail: React.FC = () => {
   const [multiMerge, setMultiMerge] = useState(true);
   const [multiTitle, setMultiTitle] = useState('');
   const [multiUploading, setMultiUploading] = useState(false);
+  // 多视频上传「秒差检测」（音画同步）开关：默认关闭
+  const [multiSecondDiff, setMultiSecondDiff] = useState(false);
 
   // ── 剧集多选 + 批量一键切片 ──
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
@@ -241,12 +243,20 @@ const ProjectDetail: React.FC = () => {
         files: multiFiles,
         merge: multiMerge,
         title: multiTitle.trim() || undefined,
+        secondDiff: multiSecondDiff,
         onProgress: (p) => setUploadProgress(p),
       });
-      message.success(resp.message);
+      if (resp.warnings && resp.warnings.length > 0) {
+        message.warning(
+          `上传完成，但 ${resp.warnings.length} 个视频音画不同步：${resp.warnings.join('；')}`,
+        );
+      } else {
+        message.success(resp.message);
+      }
       setMultiModalOpen(false);
       setMultiFiles([]);
       setMultiMerge(true);
+      setMultiSecondDiff(false);
       setMultiTitle('');
       // 在当前项目下创建剧集，不跳转新项目，直接刷新当前项目的剧集列表
       await fetchData(true);
@@ -654,6 +664,18 @@ const ProjectDetail: React.FC = () => {
       render: (s: string) => <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>,
     },
     {
+      title: '音画',
+      dataIndex: 'av_sync_warning',
+      key: 'av_sync_warning',
+      width: 120,
+      render: (_: unknown, record: Episode) =>
+        record.av_sync_warning ? (
+          <Tag color="warning">不同步{record.av_sync_diff ? ` (${record.av_sync_diff}s)` : ''}</Tag>
+        ) : (
+          <Tag>正常</Tag>
+        ),
+    },
+    {
       title: '上传时间',
       dataIndex: 'created_at',
       key: 'created_at',
@@ -1013,6 +1035,14 @@ const ProjectDetail: React.FC = () => {
           {multiMerge && multiFiles.length > 1 && (
             <Alert type="info" showIcon message="合并将直接无损拼接（不转码），各视频需编码/分辨率/帧率一致；若素材不一致建议取消勾选，每个视频分别作为一集。" />
           )}
+          <Space style={{ width: '100%' }} wrap>
+            <Switch
+              checked={multiSecondDiff}
+              onChange={(v) => setMultiSecondDiff(v)}
+            />
+            <Text style={{ fontSize: 13 }}>秒差检测（音画同步校验）</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>开启后逐个视频校验音画时长差，不同步仅提示并标注、不拦截上传（默认关闭）</Text>
+          </Space>
           {multiUploading && (
             uploadProgress < 0 ? (
               <Space size={4}><Spin size="small" /><Text type="secondary" style={{ fontSize: 12 }}>上传中…</Text></Space>

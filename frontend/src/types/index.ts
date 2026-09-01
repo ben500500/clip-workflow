@@ -57,6 +57,9 @@ export interface Episode {
   status: string;
   created_at: string;
   updated_at: string;
+  // 秒差检测（音画同步）标注：多视频上传开启检测且命中不同步时为 true
+  av_sync_warning?: boolean;
+  av_sync_diff?: number | null;
 }
 
 // ========== AutoClip 选点 ==========

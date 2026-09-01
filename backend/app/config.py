@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     UPLOAD_TEMP_DIR: str = "/tmp/uploads"
     UPLOAD_MAX_SIZE: int = 50 * 1024 * 1024 * 1024  # 50GB
     ALLOWED_VIDEO_EXTENSIONS: str = ".mp4,.avi,.mov,.mkv,.webm"
+    # 多视频上传「秒差检测」（音画同步粗检）总开关：默认关闭。
+    # 开启后多视频批量上传会对每个视频做音画时长差校验，发现不同步时
+    # 改为「提示警告 + 标注剧集」而非拦截上传；前端上传弹窗另有独立开关，
+    # 前端显式传 true 时生效，env=true 作为默认/总闸（前端未传或传 false 仍受 env 强制）。
+    MULTI_UPLOAD_SECOND_DIFF_DETECT: bool = False
 
     # App
     APP_HOST: str = "0.0.0.0"

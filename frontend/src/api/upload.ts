@@ -50,6 +50,7 @@ export const uploadApi = {
     merge: boolean;
     title?: string;
     description?: string;
+    secondDiff?: boolean;
     onProgress?: (percent: number) => void;
   }) => {
     const formData = new FormData();
@@ -58,6 +59,9 @@ export const uploadApi = {
     formData.append('merge', params.merge ? 'true' : 'false');
     if (params.title) formData.append('title', params.title);
     if (params.description) formData.append('description', params.description);
+    if (params.secondDiff !== undefined) {
+      formData.append('second_diff_detect', params.secondDiff ? 'true' : 'false');
+    }
     params.files.forEach((f) => formData.append('files', f));
     return client.post('/upload/multi', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -76,6 +80,7 @@ export const uploadApi = {
       project_name: string;
       episodes: Episode[];
       message: string;
+      warnings?: string[];
     }>;
   },
 };

@@ -62,6 +62,10 @@ class Episode(Base):
     duration = Column(Float, nullable=True)
     resolution = Column(String(50), nullable=True)
     file_size = Column(BigInteger, nullable=True)
+    # 多视频上传「秒差检测」（音画同步粗检）：命中时标注该集为疑似音画不同步，
+    # 仍正常入库不拦截，供运营在剧集列表识别。
+    av_sync_warning = Column(Boolean, default=False, nullable=False)
+    av_sync_diff = Column(Float, nullable=True)  # 音视频时长差（秒），命中时记录
     status = Column(String(50), default="uploaded")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
