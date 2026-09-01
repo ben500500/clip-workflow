@@ -43,6 +43,46 @@ class LLMCallError(RuntimeError):
     """
 
 
+def _escape_in_string_quotes(json_str: str) -> str:
+    """修复 JSON 字符串内未转义的 ASCII 引号（模型常把中文引号“”打成英文引号 "）。
+
+    状态机跟踪是否处于字符串内：字符串内的裸 `"` 若后面不是 `, : } ] 空白` 等
+    分隔符，则视为内容引号补上 `\\"` 转义；已在字符串内被转义的 `\\` 原样保留。
+    仅在 json.loads 已失败的兜底修复路径调用，最坏情况修复后仍解析失败，由调用方兜底。
+    """
+    out: list[str] = []
+    in_str = False
+    i = 0
+    n = len(json_str)
+    while i < n:
+        ch = json_str[i]
+        if ch == '\\' and in_str:
+            # 字符串内已转义序列（如 \" \\ \n）：连同下一个字符一起保留
+            out.append(ch)
+            if i + 1 < n:
+                out.append(json_str[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            if not in_str:
+                in_str = True
+                out.append(ch)
+            else:
+                nxt = json_str[i + 1] if i + 1 < n else ''
+                if nxt in ',:]}\n\r\t ':
+                    # 后面紧跟 JSON 分隔符 → 是真正的字符串结束引号
+                    in_str = False
+                    out.append(ch)
+                else:
+                    # 字符串内的内容引号 → 转义
+                    out.append('\\"')
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
 class LLMClient:
     """LLM客户端 - 兼容性包装器"""
     
@@ -210,6 +250,16 @@ class LLMClient:
                 json_str += '}' * (open_braces - close_braces)
             if open_brackets > close_brackets:
                 json_str += ']' * (open_brackets - close_brackets)
+
+            # 8. 修复字符串值内未转义的 ASCII 引号（模型常把中文引号“”打成英文引号 "，
+            #    导致 JSON 非法）。用状态机跟踪是否在字符串内：字符串内的裸 `"` 若后面
+            #    不是 `, : } ] 空白` 等分隔符，则视为内容引号补上反斜杠转义。
+            #    2026-09-01 实测 agnes-2.0-flash 评分响应含多处此类错误
+            #    （如 `"顾言以"上纲上线"反驳"`、`金句密集——"我要的是..."`），
+            #    修复后可避免 step3 评分解析失败后全部 0 分导致 0 候选。
+            #    注：此函数只在 json.loads 已失败的兜底路径执行，最坏情况修复后仍解析失败，
+            #    由调用方（step3 重试 / 显式上浮）兜底，不会把原本合法的 JSON 改坏。
+            json_str = _escape_in_string_quotes(json_str)
             
             # 记录修复过程
             if json_str != original_str:

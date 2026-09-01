@@ -175,19 +175,52 @@ class ClipScorer:
                     + f"当前为「高光识别」模式：请从候选片段中挑出时长 ≤ {self.highlight_max_duration:.0f} 秒的短高光爆点（三秒留人、情绪浓度最高、最适合信息流黄金前几秒的片段）。\n"
                     + "`clip_type` 在本模式下只能取 `highlight`（短高光段）。评分请更看重：开头几秒的钩子强度、名场面/金句密度、情绪爆点的紧凑性。\n"
                 )
-            try:
-                response = self.llm_client.call_with_retry(prompt_to_use, input_for_llm)
-            except Exception as e:
-                # 模型调用失败 → 显式上浮，让流水线以 failed 结束并保留真实错误，
-                # 而非把所有片段标 0 分后由 clips 接口按 60 分阈值过滤成 0 片段。
-                logger.error(f"LLM 批量评估调用失败: {e}")
-                raise LLMCallError(str(e)) from e
-            parsed_list = self.llm_client.parse_json_response(response)
-            
-            if not isinstance(parsed_list, list) or len(parsed_list) != len(clips):
-                logger.error(f"LLM返回的评分结果数量与输入不匹配。输入: {len(clips)}, 输出: {len(parsed_list)}")
-                return []
-                
+            # 评分响应解析失败 → 重试（复用 step2 已验证的模式）：
+            # LLM 偶尔会返回带未转义英文双引号的非法 JSON（2026-09-01 实测 agnes-2.0-flash），
+            # 一次失败就把全部片段标 0 分 → /clips 接口按 min_score 过滤成 0 候选（"又是0个候选"根因）。
+            # 失败后追加"严格 JSON"约束重试；仍失败则显式上浮，让流水线以 failed 结束并保留真实错误，
+            # 而不是把所有片段标 0 分后由 /clips 接口按 min_score 过滤成 0 候选。
+            max_parse_retries = 2
+            parsed_list = None
+            last_err: Optional[Exception] = None
+            for retry_count in range(max_parse_retries + 1):
+                try:
+                    response = self.llm_client.call_with_retry(prompt_to_use, input_for_llm)
+                except Exception as e:
+                    # 模型调用失败（网络/鉴权/模型名错误）→ 显式上浮，不重试（call_with_retry 已内部重试过）
+                    logger.error(f"LLM 批量评估调用失败: {e}")
+                    raise LLMCallError(str(e)) from e
+                try:
+                    parsed_list = self.llm_client.parse_json_response(response)
+                except Exception as e:
+                    parsed_list = None
+                    last_err = e
+                    logger.warning(f"  > 第 {retry_count + 1}/{max_parse_retries + 1} 次评分响应解析失败: {e}")
+
+                if parsed_list is not None:
+                    if isinstance(parsed_list, list) and len(parsed_list) == len(clips):
+                        break  # 解析成功，跳出重试循环
+                    last_err = ValueError(
+                        f"LLM返回的评分结果数量与输入不匹配。输入: {len(clips)}, 输出: {len(parsed_list)}"
+                    )
+                    parsed_list = None
+                    logger.warning(f"  > 第 {retry_count + 1}/{max_parse_retries + 1} 次评分结果数量不匹配: {last_err}")
+
+                if retry_count < max_parse_retries:
+                    # 强化提示词，强调严格 JSON 格式（复用 step2 已验证写法）
+                    prompt_to_use = (prompt_to_use or "") + (
+                        "\n\n【重要】输出要求：\n1. 必须以[开始，以]结束\n"
+                        "2. 使用英文双引号，不要使用中文引号\n"
+                        "3. 字符串中的引号必须转义为\\\"\n"
+                        "4. 不要添加任何解释文字或代码块标记\n"
+                        "5. 确保JSON格式完全正确"
+                    )
+
+            if parsed_list is None:
+                raise LLMCallError(
+                    f"LLM评分响应解析失败（重试 {max_parse_retries + 1} 次仍失败）: {last_err}"
+                )
+
             # 将评分结果合并回原始的clips数据
             for original_clip, llm_result in zip(clips, parsed_list):
                 score = llm_result.get('final_score')
