@@ -10,6 +10,33 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o slice-worker .
 
+# ========== ffmpeg（NVENC 硬编 + 完整 CPU 软编回退）构建阶段 ==========
+# 通用编码策略：有 GPU 的机器用 nvenc 硬编（引擎 detect_best_encoder 自动探测 +
+# 运行时验证通过才用），无 GPU 的机器自动回退 libx264（CPU）。
+# 本镜像同时带齐引擎依赖的 libx264/libx265（CPU 回退）与 libass/libfreetype
+# （ass/subtitles/drawtext 滤镜），保证两种机器上功能都完整。
+# 需 GitHub 可达（拉 ffmpeg + nv-codec-headers 源码）；首次构建约 20-40 分钟，
+# 之后依赖层被 Docker 缓存。
+FROM alpine:3.19 AS ffmpeg-nvenc
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
+ && apk add --no-cache build-base yasm nasm git pkgconf \
+    x264-dev x265-dev libass-dev freetype-dev fribidi-dev harfbuzz-dev fontconfig-dev
+# ffmpeg 6.1.1 与运行环境当前使用的 alpine ffmpeg 版本对齐，降低行为差异风险；
+# nv-codec-headers 无对应版本标签，取 master（与 6.1.1 兼容）。
+RUN git clone --depth 1 https://github.com/FFmpeg/nv-codec-headers.git /nv-codec-headers \
+ && make -C /nv-codec-headers install
+RUN git clone --depth 1 --branch n6.1.1 https://github.com/FFmpeg/FFmpeg.git /ffmpeg
+WORKDIR /ffmpeg
+RUN ./configure \
+      --prefix=/usr \
+      --disable-doc --disable-debug --disable-htmlpages --disable-manpages \
+      --enable-gpl --enable-version3 \
+      --enable-libx264 --enable-libx265 \
+      --enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfribidi \
+      --enable-nvenc --enable-ffnvcodec \
+    && make -j"$(nproc)" \
+    && make install
+
 # ========== 运行阶段 ==========
 FROM alpine:3.19
 
@@ -17,7 +44,6 @@ FROM alpine:3.19
 RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
 
 RUN apk add --no-cache \
-    ffmpeg \
     python3 \
     py3-opencv \
     bash \
@@ -31,6 +57,9 @@ RUN apk add --no-cache \
 
 # 竖屏转横屏智能裁切：引擎 vert2horiz_crop.py 依赖 OpenCV（人脸检测/动态跟踪）
 # 使用 Alpine 包管理器安装 py3-opencv，避免 pip 编译需要 gcc
+# 用自编译的 ffmpeg（含 nvenc + libx264/x265 + libass/freetype）替换 alpine 自带包
+COPY --from=ffmpeg-nvenc /usr/bin/ffmpeg /usr/bin/ffmpeg
+COPY --from=ffmpeg-nvenc /usr/bin/ffprobe /usr/bin/ffprobe
 
 WORKDIR /app
 COPY --from=builder /build/slice-worker .
