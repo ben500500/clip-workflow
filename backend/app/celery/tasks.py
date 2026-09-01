@@ -261,6 +261,11 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
             max_duration=0.0,
         ))
         run_async(_save_autoclip_results(episode_id, autoclip_project_id, clips, completed, config))
+        # 选点成功后自动创建带 cutlist 的切片任务（修复「选点→切片」断链）。
+        # 仅独立选点路径生效（批量模式有独立自动切片守护，此处跳过避免重复切）；
+        # 失败仅记日志，不影响选点任务本身。
+        if completed and clips:
+            run_async(_autoclip_auto_dispatch_slice(episode_id))
         run_async(_update_autoclip_run(
             episode_id, autoclip_project_id,
             "completed" if completed else "failed",
@@ -955,6 +960,78 @@ async def _save_autoclip_results(
             episode.status = "clips_detected"
 
         await session.commit()
+
+
+async def _autoclip_auto_dispatch_slice(episode_id: str):
+    """选点成功后自动创建带 cutlist 的切片任务并分发（复用前端「一键切片」run_slice 链路）。
+
+    背景：独立「AI 选点」完成后不会自动切片，用户手动建切片任务时往往没有候选上下文，
+    cutlist 为空 → 整片切片（40 生产实测：选点 3 个却只出 1 个整片）。
+    这里在选点完成后自动走 run_slice（自动通过候选 → 生成 cutlist → 建 SliceTask → 分发）。
+
+    门控与容错：
+    - 批量切片模式有独立的自动切片守护（dispatch_ready_slices），此处跳过避免重复切；
+    - 无候选片段时跳过（不触发整片回退）；
+    - 并发闸门/其它异常仅记日志，不影响选点任务本身。
+    """
+    from sqlalchemy import select
+    from app.models.models import BatchSliceItem, ClipCandidate, User
+    from app.models.user import UserRole
+
+    try:
+        eid = uuid.UUID(episode_id)
+    except ValueError:
+        return
+
+    async with async_session_factory() as session:
+        try:
+            # 门控 1：批量切片模式（batch_slice_items 有进行中记录）→ 由批量守护自动切片
+            active_batch = (
+                await session.execute(
+                    select(BatchSliceItem.id)
+                    .where(BatchSliceItem.episode_id == eid)
+                    .where(BatchSliceItem.status.notin_(["completed", "cancelled", "failed", "skipped"]))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if active_batch is not None:
+                logger.info("剧集 %s 属于进行中的批量切片项，跳过选点后自动切片（由批量守护处理）", episode_id)
+                return
+
+            # 门控 2：无候选片段时不自动切片（避免触发整片回退）
+            has_candidate = (
+                await session.execute(
+                    select(ClipCandidate.id).where(ClipCandidate.episode_id == eid).limit(1)
+                )
+            ).scalar_one_or_none()
+            if has_candidate is None:
+                logger.info("剧集 %s 选点后无候选片段，跳过自动切片", episode_id)
+                return
+
+            # 取一个可访问全部素材的系统用户（admin/material/publisher）作鉴权旁路
+            admin = (
+                await session.execute(
+                    select(User)
+                    .where(User.role.in_([UserRole.admin.value, UserRole.material.value, UserRole.publisher.value]))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if admin is None:
+                logger.warning("剧集 %s 选点后自动切片失败：未找到可用的系统用户", episode_id)
+                return
+
+            # 复用前端「一键切片」完整链路：解析源+自动通过候选+生成 cutlist+建任务+分发。
+            # engine=None → 取部署侧 SLICE_ENGINE（40=worker / 163=local）。
+            from app.api.slice import run_slice
+            from app.api.slice_helpers import SliceRunRequest
+
+            data = SliceRunRequest(auto_accept_all=True)
+            resp = await run_slice(episode_id, data, current_user=admin, db=session)
+            await session.commit()
+            logger.info("剧集 %s 选点后自动切片已创建 task=%s engine=%s", episode_id, resp.task_id, resp.engine)
+        except Exception as e:
+            await session.rollback()
+            logger.error("剧集 %s 选点后自动切片失败: %s", episode_id, e)
 
 
 async def _mark_autoclip_failed(episode_id: str, error: str):
