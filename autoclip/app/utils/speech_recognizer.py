@@ -32,6 +32,7 @@ class SpeechRecognitionMethod(str, Enum):
     ALIYUN_SPEECH = "aliyun_speech"
     WHISPER = "whisper"
     FUNASR_LOCAL = "funasr_local"
+    MIMO_ASR = "mimo_asr"
 
 
 class LanguageCode(str, Enum):
@@ -67,6 +68,9 @@ class SpeechRecognitionConfig:
 
     # 本地 FunASR 模型标识（如 iic/SenseVoiceSmall），None 时走默认值/环境变量
     funasr_model: Optional[str] = None
+
+    # MiMo ASR API Key
+    mimo_api_key: Optional[str] = None
 
 
 class SpeechRecognitionError(Exception):
@@ -182,6 +186,8 @@ class SpeechRecognizer:
             return self._generate_subtitle_whisper(video_path, output_path, config)
         if config.method == SpeechRecognitionMethod.FUNASR_LOCAL:
             return self._generate_subtitle_funasr_local(video_path, output_path, config)
+        if config.method == SpeechRecognitionMethod.MIMO_ASR:
+            return self._generate_subtitle_mimo_asr(video_path, output_path, config)
         raise SpeechRecognitionError(f"不支持的语音识别方法: {config.method}")
 
     @staticmethod
@@ -672,6 +678,65 @@ class SpeechRecognizer:
             raise SpeechRecognitionError(
                 f"阿里云语音识别API调用失败: {response.status_code} - {error_detail}")
 
+
+    def _mimo_asr_transcribe_audio(self, audio_path, config, api_key):
+        """调用小米 MiMo-V2.5-ASR 转写单个音频文件，返回纯文本。"""
+        import base64
+
+        with open(audio_path, 'rb') as f:
+            audio_data = base64.b64encode(f.read()).decode('utf-8')
+
+        suffix = audio_path.suffix.lower()
+        if suffix == '.mp3':
+            mime_type, fmt = 'audio/mpeg', 'mp3'
+        else:
+            mime_type, fmt = 'audio/wav', 'wav'
+
+        request_data = {
+            "model": "mimo-v2.5-asr",
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": f"data:{mime_type};base64,{audio_data}",
+                        "format": fmt
+                    }
+                }]
+            }],
+            "asr_options": {
+                "language": str(config.language).split("-")[0] if config.language != LanguageCode.AUTO else "auto"
+            }
+        }
+
+        headers = {'api-key': api_key, 'Content-Type': 'application/json'}
+        # 根据 key 格式选择 endpoint: tp- 用 Token Plan, sk- 用按量付费
+        if api_key.startswith("tp-"):
+            base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+        else:
+            base_url = "https://api.xiaomimimo.com/v1"
+        resp = requests.post(
+            f"{base_url}/chat/completions",
+            headers=headers, json=request_data,
+            timeout=config.timeout if config.timeout > 0 else 300
+        )
+        if resp.status_code == 200:
+            result = resp.json()
+            transcript = None
+            try:
+                choices = result.get('choices') or []
+                if choices:
+                    transcript = (choices[0].get('message') or {}).get('content')
+            except Exception:
+                transcript = None
+            if not transcript:
+                logger.warning("MiMo ASR 返回结果为空（可能为静音视频）")
+                return ""
+            return transcript
+        else:
+            err = resp.json().get('error', {}).get('message', resp.text) if 'json' in resp.headers.get('content-type', '') else resp.text
+            raise SpeechRecognitionError(f"MiMo ASR API 调用失败: {resp.status_code} - {err}")
+
     def _generate_subtitle_whisper(self, video_path: Path, output_path: Path,
                                    config: SpeechRecognitionConfig) -> Path:
         """使用本地 faster-whisper 生成字幕（CPU 推理，无需 API Key）。
@@ -862,6 +927,9 @@ class SpeechRecognizer:
                         or os.getenv("AUTOCLIP_ASR_FUNASR_MODEL", "iic/SenseVoiceSmall"))
             language = None if config.language == LanguageCode.AUTO else str(config.language).split("-")[0]
             logger.info(f"使用 FunASR 生成字幕: model={model_id} lang={language or 'auto'}")
+            import torch
+            asr_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            logger.info(f"FunASR 推理设备: {asr_device}")
             audio_path = self._extract_audio_from_video(video_path, output_path.parent)
             model = AutoModel(
                 model=model_id,
@@ -869,7 +937,7 @@ class SpeechRecognizer:
                 vad_kwargs={"max_single_segment_time": 30000},
                 punc_model="ct-punc",
                 disable_update=True,
-                device="cpu",
+                device=asr_device,
             )
             res = model.generate(
                 input=[str(audio_path)],
@@ -914,6 +982,80 @@ class SpeechRecognizer:
         except Exception as e:  # noqa: BLE001
             logger.error(f"本地 FunASR 生成字幕失败: {e}", exc_info=True)
             raise SpeechRecognitionError(f"本地 FunASR 生成字幕失败: {e}")
+
+    @staticmethod
+
+    def _generate_subtitle_mimo_asr(self, video_path, output_path, config):
+        """使用小米 MiMo-V2.5-ASR 生成字幕（长音频自动分段转写）"""
+        if not self.available_methods.get(SpeechRecognitionMethod.MIMO_ASR):
+            raise SpeechRecognitionError("MiMo ASR 不可用，请配置 MIMO_API_KEY")
+
+        try:
+            logger.info(f"开始使用 MiMo ASR 生成字幕: {video_path}")
+            audio_path = self._extract_audio_from_video(video_path, output_path.parent)
+            api_key = config.mimo_api_key or os.getenv("MIMO_API_KEY", "")
+            duration = self._get_media_duration(audio_path)
+
+            # MiMo ASR 10MB base64 limit ~ 5 min audio
+            mimo_seg = 300
+
+            if duration <= mimo_seg:
+                transcript = self._mimo_asr_transcribe_audio(audio_path, config, api_key)
+                srt_lines = self._segments_to_srt(
+                    [{"start": 0.0, "end": max(duration, 1.0), "text": transcript}])
+                sw = self._detect_speech_windows(audio_path)
+                if sw:
+                    srt_lines = self._refine_srt_with_speech_windows(srt_lines, sw)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(srt_lines, encoding='utf-8')
+                logger.info(f"MiMo ASR 字幕生成成功: {output_path}")
+                return output_path
+
+            logger.info(f"音频 {duration:.1f}s > {mimo_seg}s，开始分段")
+            ffmpeg_bin = get_ffmpeg_path()
+            seg_dir = Path(tempfile.mkdtemp(prefix="mimo_seg_", dir=str(output_path.parent)))
+            try:
+                cmd = [ffmpeg_bin, '-y', '-i', str(audio_path),
+                       '-f', 'segment', '-segment_time', str(mimo_seg),
+                       '-ac', '1', '-ar', '16000', str(seg_dir / "seg_%04d.wav")]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+                if r.returncode != 0:
+                    raise SpeechRecognitionError(f"音频分段失败: {(r.stderr or '')[-2000:]}")
+                seg_files = sorted(seg_dir.glob("seg_*.wav"))
+                if not seg_files:
+                    raise SpeechRecognitionError("音频分段失败：无分段")
+                logger.info(f"切分为 {len(seg_files)} 段")
+
+                all_segs, ok, cur = [], 0, 0.0
+                for i, sp in enumerate(seg_files, 1):
+                    sd = self._get_media_duration(sp)
+                    ss, se = cur, cur + sd
+                    cur = se
+                    try:
+                        txt = self._mimo_asr_transcribe_audio(sp, config, api_key)
+                        all_segs.append({"start": ss, "end": se, "text": txt})
+                        ok += 1
+                        logger.info(f"第 {i}/{len(seg_files)} 段 OK ({sd:.1f}s)")
+                    except Exception as e:
+                        logger.error(f"第 {i}/{len(seg_files)} 段失败: {e}")
+
+                if ok == 0:
+                    raise SpeechRecognitionError("MiMo ASR 全部分段失败")
+
+                srt_lines = self._segments_to_srt(all_segs)
+                sw = self._detect_speech_windows(audio_path)
+                if sw:
+                    srt_lines = self._refine_srt_with_speech_windows(srt_lines, sw)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(srt_lines, encoding='utf-8')
+                logger.info(f"MiMo ASR 字幕生成成功（{ok}/{len(seg_files)} 段）: {output_path}")
+                return output_path
+            finally:
+                shutil.rmtree(seg_dir, ignore_errors=True)
+
+        except Exception as e:
+            logger.error(f"MiMo ASR 生成字幕错误: {e}")
+            raise SpeechRecognitionError(f"MiMo ASR 生成字幕错误: {e}")
 
     @staticmethod
     def _strip_funasr_tags(text: str) -> str:
@@ -1029,7 +1171,7 @@ def generate_subtitle_for_video(video_path: Path, output_path: Optional[Path] = 
                                model: str = "base", enable_fallback: bool = True,
                                api_key: Optional[str] = None) -> Path:
     """
-    为视频生成字幕文件的便捷函数（仅支持 aliyun_speech）
+    为视频生成字幕文件的便捷函数。支持 aliyun_speech / whisper / funasr_local / mimo_asr。
 
     Args:
         video_path: 视频文件路径
@@ -1046,14 +1188,25 @@ def generate_subtitle_for_video(video_path: Path, output_path: Optional[Path] = 
     Raises:
         SpeechRecognitionError: 语音识别失败
     """
+    method_lower = method.strip().lower()
+    method_map = {
+        "mimo_asr": SpeechRecognitionMethod.MIMO_ASR,
+        "whisper": SpeechRecognitionMethod.WHISPER,
+        "funasr_local": SpeechRecognitionMethod.FUNASR_LOCAL,
+    }
+    method_enum = method_map.get(method_lower, SpeechRecognitionMethod.ALIYUN_SPEECH)
+
     config = SpeechRecognitionConfig(
-        method=SpeechRecognitionMethod.ALIYUN_SPEECH,
+        method=method_enum,
         language=LanguageCode(language) if language != "auto" else LanguageCode.AUTO,
         model=model,
         enable_fallback=False,
     )
     if api_key:
-        config.aliyun_access_key = api_key
+        if method_enum == SpeechRecognitionMethod.MIMO_ASR:
+            config.mimo_api_key = api_key
+        else:
+            config.aliyun_access_key = api_key
 
     recognizer = SpeechRecognizer()
     return recognizer.generate_subtitle(video_path, output_path, config)
