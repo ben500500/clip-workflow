@@ -24,7 +24,8 @@ RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
 # nv-codec-headers：打进仓库（slice-worker/nv-codec-headers/），构建时免网络依赖。
 # （来源：FFmpeg/nv-codec-headers master，仅 5 个 ffnvcodec 头文件）
 COPY nv-codec-headers /nv-codec-headers
-RUN make -C /nv-codec-headers install
+RUN mkdir -p /usr/include/ffnvcodec \
+ && cp /nv-codec-headers/include/ffnvcodec/*.h /usr/include/ffnvcodec/
 # ffmpeg 6.1.1 与运行环境当前使用的 alpine ffmpeg 版本对齐，降低行为差异风险。
 # 用 Gitee 镜像 clone（国内稳），规避 GitHub 大仓库 clone/tar 下载断流。
 RUN git -c http.version=HTTP/1.1 clone --depth 1 --branch n6.1.1 \
