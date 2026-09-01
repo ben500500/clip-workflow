@@ -466,13 +466,14 @@ async def upload_multi(
             merged_path = os.path.join(tmp_dir, f"merged_{uuid.uuid4().hex}.mp4")
             merged = await _ffmpeg_concat(local_paths, merged_path)
             if merged:
-                # 合并产物音画校验（双保险）：系统 concat 一般同步，仍防接缝异常
-                msync = await _check_av_sync(merged_path)
-                if not msync["ok"]:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"合并产物音画校验未通过：{msync['msg']}。请检查原始分段或改用重编码合并。",
-                    )
+                # 合并产物音画校验：仅在秒差检测开启时执行（与逐集检测共用开关）
+                if sec_diff_on:
+                    msync = await _check_av_sync(merged_path)
+                    if not msync["ok"]:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"合并产物音画校验未通过：{msync['msg']}。请检查原始分段或改用重编码合并。",
+                        )
                 local_paths = [merged_path]
                 # 合并后的命名：优先用传入的项目名，否则用当前项目名
                 names = [f"{(project_name or project.name or 'merged')}.mp4"]
