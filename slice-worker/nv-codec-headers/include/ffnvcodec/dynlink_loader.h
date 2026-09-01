@@ -50,11 +50,7 @@
 # define CUDA_LIBNAME "nvcuda.dll"
 # define NVCUVID_LIBNAME "nvcuvid.dll"
 # if defined(_WIN64) || defined(__CYGWIN64__)
-#  if defined(_M_ARM64) || defined(__aarch64__)
-#   define NVENC_LIBNAME "nvEncodeAPI.dll"
-#  else
-#   define NVENC_LIBNAME "nvEncodeAPI64.dll"
-#  endif
+#  define NVENC_LIBNAME "nvEncodeAPI64.dll"
 # else
 #  define NVENC_LIBNAME "nvEncodeAPI.dll"
 # endif
@@ -153,8 +149,6 @@ typedef struct CudaFunctions {
     tcuDeviceGetPCIBusId *cuDeviceGetPCIBusId;
     tcuDeviceComputeCapability *cuDeviceComputeCapability;
     tcuCtxCreate_v2 *cuCtxCreate;
-    tcuCtxSynchronize *cuCtxSynchronize;
-    tcuCtxGetStreamPriorityRange *cuCtxGetStreamPriorityRange;
     tcuCtxGetCurrent *cuCtxGetCurrent;
     tcuCtxSetLimit *cuCtxSetLimit;
     tcuCtxPushCurrent_v2 *cuCtxPushCurrent;
@@ -164,16 +158,7 @@ typedef struct CudaFunctions {
     tcuMemAllocPitch_v2 *cuMemAllocPitch;
     tcuMemAllocManaged *cuMemAllocManaged;
     tcuMemsetD8Async *cuMemsetD8Async;
-    tcuMemsetD16Async *cuMemsetD16Async;
-    tcuMemsetD32Async *cuMemsetD32Async;
-    tcuMemsetD2D8Async *cuMemsetD2D8Async;
-    tcuMemsetD2D16Async *cuMemsetD2D16Async;
-    tcuMemsetD2D32Async *cuMemsetD2D32Async;
     tcuMemFree_v2 *cuMemFree;
-    tcuMemHostAlloc *cuMemHostAlloc;
-    tcuMemFreeHost *cuMemFreeHost;
-    tcuMemAllocAsync *cuMemAllocAsync;
-    tcuMemFreeAsync *cuMemFreeAsync;
     tcuMemcpy *cuMemcpy;
     tcuMemcpyAsync *cuMemcpyAsync;
     tcuMemcpy2D_v2 *cuMemcpy2D;
@@ -195,7 +180,6 @@ typedef struct CudaFunctions {
     tcuDevicePrimaryCtxReset *cuDevicePrimaryCtxReset;
 
     tcuStreamCreate *cuStreamCreate;
-    tcuStreamCreateWithPriority *cuStreamCreateWithPriority;
     tcuStreamQuery *cuStreamQuery;
     tcuStreamSynchronize *cuStreamSynchronize;
     tcuStreamDestroy_v2 *cuStreamDestroy;
@@ -208,7 +192,6 @@ typedef struct CudaFunctions {
     tcuEventRecord *cuEventRecord;
 
     tcuLaunchKernel *cuLaunchKernel;
-    tcuLaunchHostFunc *cuLaunchHostFunc;
     tcuLinkCreate *cuLinkCreate;
     tcuLinkAddData *cuLinkAddData;
     tcuLinkComplete *cuLinkComplete;
@@ -244,8 +227,6 @@ typedef struct CudaFunctions {
     tcuArrayCreate *cuArrayCreate;
     tcuArray3DCreate *cuArray3DCreate;
     tcuArrayDestroy *cuArrayDestroy;
-    tcuArray3DGetDescriptor *cuArray3DGetDescriptor;
-    tcuArrayGetPlane *cuArrayGetPlane;
 
     tcuEGLStreamProducerConnect *cuEGLStreamProducerConnect;
     tcuEGLStreamProducerDisconnect *cuEGLStreamProducerDisconnect;
@@ -269,8 +250,6 @@ typedef struct CuvidFunctions {
     tcuvidGetDecoderCaps *cuvidGetDecoderCaps;
     tcuvidCreateDecoder *cuvidCreateDecoder;
     tcuvidDestroyDecoder *cuvidDestroyDecoder;
-    tcuvidRegisterDecodeSurfaces *cuvidRegisterDecodeSurfaces;
-    tcuvidDecodePictureAsync *cuvidDecodePictureAsync;
     tcuvidDecodePicture *cuvidDecodePicture;
     tcuvidGetDecodeStatus *cuvidGetDecodeStatus;
     tcuvidReconfigureDecoder *cuvidReconfigureDecoder;
@@ -337,8 +316,6 @@ static inline int cuda_load_functions(CudaFunctions **functions, void *logctx)
     LOAD_SYMBOL(cuDeviceGetName, tcuDeviceGetName, "cuDeviceGetName");
     LOAD_SYMBOL(cuDeviceComputeCapability, tcuDeviceComputeCapability, "cuDeviceComputeCapability");
     LOAD_SYMBOL(cuCtxCreate, tcuCtxCreate_v2, "cuCtxCreate_v2");
-    LOAD_SYMBOL(cuCtxSynchronize, tcuCtxSynchronize, "cuCtxSynchronize");
-    LOAD_SYMBOL(cuCtxGetStreamPriorityRange, tcuCtxGetStreamPriorityRange, "cuCtxGetStreamPriorityRange");
     LOAD_SYMBOL(cuCtxGetCurrent, tcuCtxGetCurrent, "cuCtxGetCurrent");
     LOAD_SYMBOL(cuCtxSetLimit, tcuCtxSetLimit, "cuCtxSetLimit");
     LOAD_SYMBOL(cuCtxPushCurrent, tcuCtxPushCurrent_v2, "cuCtxPushCurrent_v2");
@@ -348,16 +325,7 @@ static inline int cuda_load_functions(CudaFunctions **functions, void *logctx)
     LOAD_SYMBOL(cuMemAllocPitch, tcuMemAllocPitch_v2, "cuMemAllocPitch_v2");
     LOAD_SYMBOL(cuMemAllocManaged, tcuMemAllocManaged, "cuMemAllocManaged");
     LOAD_SYMBOL(cuMemsetD8Async, tcuMemsetD8Async, "cuMemsetD8Async");
-    LOAD_SYMBOL(cuMemsetD16Async, tcuMemsetD16Async, "cuMemsetD16Async");
-    LOAD_SYMBOL(cuMemsetD32Async, tcuMemsetD32Async, "cuMemsetD32Async");
-    LOAD_SYMBOL(cuMemsetD2D8Async, tcuMemsetD2D8Async, "cuMemsetD2D8Async");
-    LOAD_SYMBOL(cuMemsetD2D16Async, tcuMemsetD2D16Async, "cuMemsetD2D16Async");
-    LOAD_SYMBOL(cuMemsetD2D32Async, tcuMemsetD2D32Async, "cuMemsetD2D32Async");
     LOAD_SYMBOL(cuMemFree, tcuMemFree_v2, "cuMemFree_v2");
-    LOAD_SYMBOL(cuMemHostAlloc, tcuMemHostAlloc, "cuMemHostAlloc");
-    LOAD_SYMBOL(cuMemFreeHost, tcuMemFreeHost, "cuMemFreeHost");
-    LOAD_SYMBOL(cuMemAllocAsync, tcuMemAllocAsync, "cuMemAllocAsync");
-    LOAD_SYMBOL(cuMemFreeAsync, tcuMemFreeAsync, "cuMemFreeAsync");
     LOAD_SYMBOL(cuMemcpy, tcuMemcpy, "cuMemcpy");
     LOAD_SYMBOL(cuMemcpyAsync, tcuMemcpyAsync, "cuMemcpyAsync");
     LOAD_SYMBOL(cuMemcpy2D, tcuMemcpy2D_v2, "cuMemcpy2D_v2");
@@ -379,7 +347,6 @@ static inline int cuda_load_functions(CudaFunctions **functions, void *logctx)
     LOAD_SYMBOL(cuDevicePrimaryCtxReset, tcuDevicePrimaryCtxReset, "cuDevicePrimaryCtxReset");
 
     LOAD_SYMBOL(cuStreamCreate, tcuStreamCreate, "cuStreamCreate");
-    LOAD_SYMBOL(cuStreamCreateWithPriority, tcuStreamCreateWithPriority, "cuStreamCreateWithPriority");
     LOAD_SYMBOL(cuStreamQuery, tcuStreamQuery, "cuStreamQuery");
     LOAD_SYMBOL(cuStreamSynchronize, tcuStreamSynchronize, "cuStreamSynchronize");
     LOAD_SYMBOL(cuStreamDestroy, tcuStreamDestroy_v2, "cuStreamDestroy_v2");
@@ -392,7 +359,6 @@ static inline int cuda_load_functions(CudaFunctions **functions, void *logctx)
     LOAD_SYMBOL(cuEventRecord, tcuEventRecord, "cuEventRecord");
 
     LOAD_SYMBOL(cuLaunchKernel, tcuLaunchKernel, "cuLaunchKernel");
-    LOAD_SYMBOL(cuLaunchHostFunc, tcuLaunchHostFunc, "cuLaunchHostFunc");
     LOAD_SYMBOL(cuLinkCreate, tcuLinkCreate, "cuLinkCreate");
     LOAD_SYMBOL(cuLinkAddData, tcuLinkAddData, "cuLinkAddData");
     LOAD_SYMBOL(cuLinkComplete, tcuLinkComplete, "cuLinkComplete");
@@ -432,8 +398,6 @@ static inline int cuda_load_functions(CudaFunctions **functions, void *logctx)
     LOAD_SYMBOL(cuArrayCreate, tcuArrayCreate, "cuArrayCreate_v2");
     LOAD_SYMBOL(cuArray3DCreate, tcuArray3DCreate, "cuArray3DCreate_v2");
     LOAD_SYMBOL(cuArrayDestroy, tcuArrayDestroy, "cuArrayDestroy");
-    LOAD_SYMBOL(cuArray3DGetDescriptor, tcuArray3DGetDescriptor, "cuArray3DGetDescriptor_v2");
-    LOAD_SYMBOL_OPT(cuArrayGetPlane, tcuArrayGetPlane, "cuArrayGetPlane");
 
     LOAD_SYMBOL_OPT(cuEGLStreamProducerConnect, tcuEGLStreamProducerConnect, "cuEGLStreamProducerConnect");
     LOAD_SYMBOL_OPT(cuEGLStreamProducerDisconnect, tcuEGLStreamProducerDisconnect, "cuEGLStreamProducerDisconnect");
@@ -458,8 +422,6 @@ static inline int cuvid_load_functions(CuvidFunctions **functions, void *logctx)
     LOAD_SYMBOL_OPT(cuvidGetDecoderCaps, tcuvidGetDecoderCaps, "cuvidGetDecoderCaps");
     LOAD_SYMBOL(cuvidCreateDecoder, tcuvidCreateDecoder, "cuvidCreateDecoder");
     LOAD_SYMBOL(cuvidDestroyDecoder, tcuvidDestroyDecoder, "cuvidDestroyDecoder");
-    LOAD_SYMBOL_OPT(cuvidRegisterDecodeSurfaces, tcuvidRegisterDecodeSurfaces, "cuvidRegisterDecodeSurfaces");
-    LOAD_SYMBOL_OPT(cuvidDecodePictureAsync, tcuvidDecodePictureAsync, "cuvidDecodePictureAsync");
     LOAD_SYMBOL(cuvidDecodePicture, tcuvidDecodePicture, "cuvidDecodePicture");
     LOAD_SYMBOL(cuvidGetDecodeStatus, tcuvidGetDecodeStatus, "cuvidGetDecodeStatus");
     LOAD_SYMBOL(cuvidReconfigureDecoder, tcuvidReconfigureDecoder, "cuvidReconfigureDecoder");

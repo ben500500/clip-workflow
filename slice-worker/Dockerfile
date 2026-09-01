@@ -21,11 +21,12 @@ FROM alpine:3.19 AS ffmpeg-nvenc
 RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
  && apk add --no-cache build-base yasm nasm git pkgconf curl \
     x264-dev x265-dev libass-dev freetype-dev fribidi-dev harfbuzz-dev fontconfig-dev
-# nv-codec-headers：打进仓库（slice-worker/nv-codec-headers/），构建时免网络依赖。
-# （来源：FFmpeg/nv-codec-headers master，仅 5 个 ffnvcodec 头文件）
+# nv-codec-headers（n12.1.14.0，匹配 ffmpeg 6.1.1）：打进仓库，构建时免网络依赖。
+# 含 5 个 ffnvcodec 头文件 + ffnvcodec.pc（ffmpeg configure 用 pkg-config 校验版本）。
 COPY nv-codec-headers /nv-codec-headers
-RUN mkdir -p /usr/include/ffnvcodec \
- && cp /nv-codec-headers/include/ffnvcodec/*.h /usr/include/ffnvcodec/
+RUN mkdir -p /usr/include/ffnvcodec /usr/lib/pkgconfig \
+ && cp /nv-codec-headers/include/ffnvcodec/*.h /usr/include/ffnvcodec/ \
+ && cp /nv-codec-headers/ffnvcodec.pc /usr/lib/pkgconfig/ffnvcodec.pc
 # ffmpeg 6.1.1 与运行环境当前使用的 alpine ffmpeg 版本对齐，降低行为差异风险。
 # 用 Gitee 镜像 clone（国内稳），规避 GitHub 大仓库 clone/tar 下载断流。
 RUN git -c http.version=HTTP/1.1 clone --depth 1 --branch n6.1.1 \
