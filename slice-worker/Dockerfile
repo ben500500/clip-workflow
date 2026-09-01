@@ -49,6 +49,7 @@ FROM alpine:3.19
 RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
 
 RUN apk add --no-cache \
+    ffmpeg \
     python3 \
     py3-opencv \
     bash \
@@ -62,7 +63,9 @@ RUN apk add --no-cache \
 
 # 竖屏转横屏智能裁切：引擎 vert2horiz_crop.py 依赖 OpenCV（人脸检测/动态跟踪）
 # 使用 Alpine 包管理器安装 py3-opencv，避免 pip 编译需要 gcc
-# 用自编译的 ffmpeg（含 nvenc + libx264/x265 + libass/freetype）替换 alpine 自带包
+# 用自编译的 ffmpeg（含 nvenc + libx264/x265 + libass/freetype）替换 alpine 自带包。
+# 注意：保留 apk ffmpeg 只为它提供的共享库（libass/libxcb/harfbuzz/fribidi 等，
+# 自编译 ffmpeg 对这些是动态链接）；自编译二进制会覆盖 /usr/bin/ffmpeg|ffprobe。
 COPY --from=ffmpeg-nvenc /usr/bin/ffmpeg /usr/bin/ffmpeg
 COPY --from=ffmpeg-nvenc /usr/bin/ffprobe /usr/bin/ffprobe
 
