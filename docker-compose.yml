@@ -192,6 +192,10 @@ services:
       # “No module named 'funasr'” ASR 故障（历史上反复发生）。
       args:
         ENABLE_FUNASR: "true"
+        # torch 轮子来源：默认 CPU 轮子源（163 无 GPU）；有 GPU 部署（如 40）
+        # 在 .env 配 TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121，
+        # 并用 docker-compose.gpu.yml overlay 透传 GPU（FunASR 运行时自动用 cuda:0）
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
     image: clip-autoclip:latest
     container_name: clip-autoclip
     restart: unless-stopped

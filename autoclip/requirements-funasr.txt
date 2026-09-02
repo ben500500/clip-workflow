@@ -4,18 +4,24 @@
 # 本文件包含仅用于 AUTOCLIP_ASR_METHOD=funasr_local（本地 FunASR）的可选重依赖
 # （torch / torchaudio / funasr / modelscope）。
 #
-# 这些依赖体积巨大（torch CPU 轮子约 190MB），强制装进基础镜像会导致：
-#   1. 镜像体积暴涨；
-#   2. 构建时从 download.pytorch.org 拉取大轮子极易超时（CNB runner 超过 10min
-#      无输出会强制关闭任务，历史构建即因此失败）。
+# 这些依赖体积巨大（torch CPU 轮子约 190MB，CUDA 轮子约 2.5GB），强制装进基础
+# 镜像会导致镜像体积暴涨、构建耗时大增。
 #
 # 默认基础镜像不安装本文件。需要本地 FunASR 时，在构建 autoclip 镜像时传
 #   --build-arg ENABLE_FUNASR=true
 # 即会追加安装本文件。代码对缺依赖做了优雅降级（_check_funasr_availability 检测
 # import funasr，未安装时该 ASR 方式不可用，不影响默认 aliyun_speech / whisper）。
 #
-# 163 无 GPU：torch 强制走 CPU 轮子源，避免拉取 ~2GB 的 CUDA 版本。
---extra-index-url https://download.pytorch.org/whl/cpu
+# torch 轮子来源由 Dockerfile 的 TORCH_INDEX_URL 构建参数控制（Dockerfile 里会
+# 先按该源装好 torch/torchaudio，再装本文件时 pip 检测已满足即跳过）：
+#   - 无 GPU 部署（如 163）：默认 https://download.pytorch.org/whl/cpu（CPU 轮子）；
+#   - 有 GPU 部署（如 40，驱动 535 最高支持 CUDA 12.2）：
+#       https://download.pytorch.org/whl/cu121（torch 2.5.1+cu121，含 sm_75），
+#     同时需要 docker-compose.gpu.yml overlay 提供 GPU 透传；容器运行时 FunASR
+#     会自动检测 torch.cuda.is_available() 选 cuda:0（speech_recognizer.py）。
+#   注意：cu126+ 索引已无 Python 3.11（cp311）轮子；cu124 最高 torch 2.6.0。
+#   注意：本文件严禁再写死 --extra-index-url，否则会与 TORCH_INDEX_URL 冲突
+#   把 torch 锁死在单一来源。
 funasr>=1.0.0
 modelscope>=1.11.0
 torch>=2.1.0

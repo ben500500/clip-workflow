@@ -11,16 +11,27 @@ ARG APP_USER=autoclip
 ARG APP_GROUP=autoclip
 ARG APP_HOME=/app
 ARG WORKER_CONCURRENCY=4
-# 可选：是否安装 faster-whisper 的 CUDA 后端（nvidia-ctranslate2）。
+# 可选：是否安装 faster-whisper 的 CUDA 后端（ctranslate2 的 CUDA 版）。
 # 默认 false（镜像更小，纯 CPU）。构建 GPU 版时传 --build-arg ENABLE_CUDA=true，
 # 并在部署机安装 NVIDIA 驱动 + nvidia-container-toolkit，配合 docker-compose
 # 的 WHISPER_DEVICE=cuda / WHISPER_COMPUTE_TYPE=float16 使用。
+# 踩坑记录：历史版本误写为 "nvidia-ctranslate2"——该包在 PyPI 上根本不存在
+# （404 实锤），任何 ENABLE_CUDA=true 的构建都必然失败，即当年「装不上」的根因。
+# 另注意：ctranslate2==4.4.0 需 cuDNN 8，而 torch CUDA 轮子（cu121）固定依赖
+# cuDNN 9（nvidia-cudnn-cu12==9.x），同名 pip 包无法并存两个版本——因此
+# ENABLE_CUDA 与 ENABLE_FUNASR 的 torch CUDA 版不能同时开启。
 ARG ENABLE_CUDA=false
 # 可选：是否安装本地 FunASR 重依赖（torch/torchaudio/funasr/modelscope，见
 # requirements-funasr.txt）。默认 false，避免拉取 ~190MB 的 torch CPU 轮子导致
 # 构建超时（CNB runner 超过 10min 无输出会强制关闭任务）。需要
 # AUTOCLIP_ASR_METHOD=funasr_local 时传 --build-arg ENABLE_FUNASR=true。
 ARG ENABLE_FUNASR=false
+# torch 轮子来源：默认 CPU 轮子源（163 等无 GPU 部署）。有 GPU 部署（如 40，
+# 驱动 535.261.03 最高支持 CUDA 12.2）在 .env 配
+#   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+# 即安装 torch 2.5.1+cu121（含 sm_75），FunASR 运行时自动检测 cuda:0。
+# 注意：cu126+ 索引已无 cp311（Python 3.11）轮子；cu124 最高 torch 2.6.0。
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
 # ==================== 环境变量 ====================
 ENV PYTHONUNBUFFERED=1 \
@@ -68,12 +79,16 @@ WORKDIR ${APP_HOME}
 COPY requirements.txt requirements-funasr.txt ./
 RUN set -eux; \
     pip install --no-cache-dir -r requirements.txt; \
-    # 可选 CUDA 后端：faster-whisper 的 GPU 推理依赖 ctranslate2 的 CUDA 版（nvidia-ctranslate2）
+    # 可选 CUDA 后端：faster-whisper 的 GPU 推理依赖 ctranslate2 的 CUDA 版。
+    # 驱动 535 兼容链：CUDA ≤12.2 + cuDNN 8 → ctranslate2 只能用 4.4.0
     if [ "$ENABLE_CUDA" = "true" ]; then \
-        pip install --no-cache-dir "nvidia-ctranslate2>=4.0"; \
+        pip install --no-cache-dir "ctranslate2==4.4.0" "nvidia-cudnn-cu12==8.9.*" "nvidia-cublas-cu12==12.2.*"; \
     fi; \
-    # 可选本地 FunASR 重依赖（torch/funasr/modelscope 等，默认不装避免构建超时）
+    # 可选本地 FunASR 重依赖（torch/funasr/modelscope 等，默认不装避免构建超时）。
+    # torch/torchaudio 先按 TORCH_INDEX_URL 装好对应 CUDA/CPU 版本，再装
+    # requirements-funasr.txt 时 pip 检测 torch 已满足即跳过（不会重装覆盖）。
     if [ "$ENABLE_FUNASR" = "true" ]; then \
+        pip install --no-cache-dir torch torchaudio --index-url "$TORCH_INDEX_URL"; \
         pip install --no-cache-dir -r requirements-funasr.txt; \
     fi; \
     # 验证关键包安装成功
