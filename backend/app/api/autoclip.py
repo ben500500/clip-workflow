@@ -5,9 +5,10 @@ from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.slice_helpers import _refresh_episode_status
 from app.auth import get_current_user
 from app.database import get_db
 from app.models.models import Episode, AutoClipProject, ClipCandidate, AutoClipRun, User, SystemConfig
@@ -372,6 +373,14 @@ async def get_autoclip_progress(
     if not autoclip_project:
         raise HTTPException(status_code=404, detail="No AutoClip project found for this episode")
 
+    # 选点执行历史已全部删除时不再返回「已完成」等残留进度，
+    # 返回 404 让前端隐藏选点进度条（与删除历史后的状态一致）。
+    runs_res = await db.execute(
+        select(func.count()).select_from(AutoClipRun).where(AutoClipRun.episode_id == eid)
+    )
+    if (runs_res.scalar() or 0) == 0:
+        raise HTTPException(status_code=404, detail="No AutoClip history for this episode")
+
     # Try to get progress from AutoClip service
     if autoclip_project.autoclip_project_id:
         progress = await get_pipeline_progress(autoclip_project.autoclip_project_id)
@@ -559,5 +568,20 @@ async def delete_autoclip_history(
         raise HTTPException(status_code=404, detail="选点执行记录不存在")
 
     await db.delete(run)
+    await db.flush()
+    # 选点历史删光后联动重置：清掉残留的「已完成/失败」选点项目状态并
+    # 回滚剧集状态，避免进度条与剧集状态停留在删除前的旧结果上。
+    remain_res = await db.execute(
+        select(func.count()).select_from(AutoClipRun).where(AutoClipRun.episode_id == eid)
+    )
+    if (remain_res.scalar() or 0) == 0:
+        proj_res = await db.execute(
+            select(AutoClipProject).where(AutoClipProject.episode_id == eid)
+        )
+        proj = proj_res.scalar_one_or_none()
+        if proj and proj.pipeline_status in ("completed", "failed"):
+            proj.pipeline_status = None
+            proj.error_message = None
+    await _refresh_episode_status(db, eid)
     await db.commit()
     return {"message": "选点执行记录已删除", "run_id": run_id}

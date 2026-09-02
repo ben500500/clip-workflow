@@ -381,7 +381,17 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
         node_running: dict[str, list[dict]] = {}
         try:
             async for key in redis.scan_iter(match=f"{TASK_STATUS_PREFIX}*", count=200):
-                task_data = await redis.hgetall(key)
+                # 同一前缀下还存在非任务状态的 key：回调 Token `slice:task:token:*`
+                # 与 Worker 互斥租约 `slice:task:lease:*`（均为 string 类型）。
+                # 对它们执行 HGETALL 会抛 WRONGTYPE 并中断整个扫描循环，导致
+                # 「运行中任务」面板永远为空，这里显式跳过。
+                if key.startswith(TASK_TOKEN_PREFIX) or key.startswith(f"{TASK_STATUS_PREFIX}lease:"):
+                    continue
+                try:
+                    task_data = await redis.hgetall(key)
+                except Exception:
+                    # 单个 key 类型异常只跳过该 key，不中断整个扫描
+                    continue
                 if not task_data:
                     continue
                 status = task_data.get("status", "")

@@ -585,24 +585,17 @@ const ProjectDetail: React.FC = () => {
     });
   };
 
-  // 批量一键切片：对选中的剧集逐个启动一键切片
+  // 批量一键切片：对选中的剧集并发启动一键切片（提交即走，后端兜底自动选点）。
+  // 不用串行循环：提交过程中刷新页面会中断循环，剩余剧集的请求永远发不出去。
   const runBatchSlice = async () => {
     const selected = episodes.filter((e) => selectedRowKeys.includes(e.id));
     if (selected.length === 0) return;
     setBatchSlicing(true);
-    setBatchProgress({ done: 0, total: selected.length, current: '' });
-    let done = 0;
-    const failed: string[] = [];
-    for (const ep of selected) {
-      setBatchProgress({ done, total: selected.length, current: `${ep.title || ep.episode_no || ep.id}` });
-      try {
-        await runOneClickSlice(ep);
-      } catch (err: unknown) {
-        failed.push(ep.title || `第 ${ep.episode_no} 集`);
-      }
-      done += 1;
-      setBatchProgress({ done, total: selected.length, current: '' });
-    }
+    setBatchProgress({ done: 0, total: selected.length, current: `正在并发提交 ${selected.length} 个剧集` });
+    const results = await Promise.allSettled(selected.map((ep) => runOneClickSlice(ep)));
+    const failed = results
+      .map((r, i) => (r.status === 'rejected' ? (selected[i].title || `第 ${selected[i].episode_no} 集`) : ''))
+      .filter(Boolean);
     setBatchSlicing(false);
     setBatchProgress(null);
     if (failed.length > 0) {

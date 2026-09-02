@@ -1036,7 +1036,8 @@ async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
     - 否则若存在已完成任务且无失败 → completed
     - 否则若全部为失败/取消 → failed（有失败任务时保持 slicing 会导致用户永远看不到
       "已切完还是切片中"的问题，因此这里统一推进到 failed，由前端引导重试）
-    - 若没有任何任务 → 不改变（避免误覆盖新上传/选点状态）
+    - 若没有任何任务 → 从切片相关状态回滚：仍有片段候选 → clips_detected，
+      否则 → uploaded（修复：删除全部切片历史后剧集状态冻结在 completed/failed）
     """
     try:
         eid = uuid.UUID(str(episode_id))
@@ -1056,6 +1057,16 @@ async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
     )
     all_tasks = tasks_res.scalars().all()
     if not all_tasks:
+        # 切片任务已全部删除：仅当剧集停留在切片相关状态时回滚，
+        # 避免误覆盖 uploaded / clips_detected 等前置状态。
+        if episode.status in ("slicing", "completed", "failed"):
+            cand_res = await db.execute(
+                select(func.count())
+                .select_from(ClipCandidate)
+                .where(ClipCandidate.episode_id == eid)
+            )
+            has_candidates = (cand_res.scalar() or 0) > 0
+            episode.status = "clips_detected" if has_candidates else "uploaded"
         return
 
     has_running = any(t.status in ("running", "pending") for t in all_tasks)
