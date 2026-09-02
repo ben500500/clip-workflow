@@ -169,7 +169,7 @@ async def run_slice(
     subtitle_srt_path: 源视频 SRT 字幕文件路径（切片时烧录到成品，可选）。
     subtitle_font_ratio: 字幕字号（相对输出视频高度的比例，可选；不传用引擎默认值）。
     subtitle_margin_ratio: 字幕距底边距离（相对输出视频高度的比例，可选；
-        默认 1/3 即字幕块中心约在 2/3 屏高处）。
+        默认 1/4 即字幕块中心约在 3/4 屏高处）。
     subtitle_spacing: 字幕字间距（ASS Spacing 像素，可选；不传用引擎默认值）。
     """
     engine_path = engine_path or _engine_path("slice.py")
@@ -192,7 +192,7 @@ async def run_slice(
         cmd.extend(["--subtitle", subtitle_srt_path])
     if subtitle_font_ratio and subtitle_font_ratio > 0:
         cmd.extend(["--subtitle-font-ratio", str(float(subtitle_font_ratio))])
-    # 字幕距底边距离（相对高度比例）：透传给引擎 --subtitle-margin-ratio，未设置用引擎默认 1/3
+    # 字幕距底边距离（相对高度比例）：透传给引擎 --subtitle-margin-ratio，未设置用引擎默认 1/4
     if subtitle_margin_ratio and subtitle_margin_ratio > 0:
         cmd.extend(["--subtitle-margin-ratio", str(float(subtitle_margin_ratio))])
     if subtitle_spacing is not None:

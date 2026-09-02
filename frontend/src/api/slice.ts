@@ -80,9 +80,9 @@ export const sliceApi = {
       vert2horiz_face_margin?: number;
       // ASR 字幕烧录：开启后对源视频做 ASR 识别并烧录到成品视频
       subtitle_enabled?: boolean;
-      // 字幕字号（相对输出视频高度的比例，默认 0.07；可调大让字幕更清晰易读）
+      // 字幕字号（相对输出视频高度的比例，前端默认 0.30；可调大让字幕更清晰易读）
       subtitle_font_ratio?: number;
-      // 字幕距底边距离（相对输出高度比例，默认 1/3=0.333，字幕块中心约在 2/3 屏高处；0.05≈贴底，0.5≈居中）
+      // 字幕高度（距画面底边的比例，默认 1/4=0.25，字幕块中心约在 3/4 屏高处；越小越贴底，0.5≈居中）
       subtitle_margin_ratio?: number;
       // 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；负值/调小让字幕文字更紧凑，调大则字距变宽）
       subtitle_spacing?: number;

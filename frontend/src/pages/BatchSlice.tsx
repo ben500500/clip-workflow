@@ -44,7 +44,7 @@ type SliceConfigState = Omit<SlicePreset, 'id' | 'name'> & {
   interval: IntervalConfig;
 };
 
-// 批量默认配置派生自 DEFAULT_SLICE_PRESET（subtitle_font_ratio=0.22 / subtitle_spacing=-2 /
+// 批量默认配置派生自 DEFAULT_SLICE_PRESET（subtitle_font_ratio=0.30 / subtitle_spacing=-2 /
 // dedupe_preset='std_crop_desat' 等随之统一），仅批量专属开关单独初始化。
 const DEFAULT_SLICE_CONFIG: SliceConfigState = {
   ...DEFAULT_SLICE_PRESET,
@@ -962,12 +962,12 @@ const BatchSlicePage: React.FC = () => {
                   max={20}
                   style={{ width: 70 }}
                 />
-                <Tooltip title="字幕距画面底部的距离（占画面高度比例）。默认 0.333（1/3 屏高，字幕块中心约在 2/3 屏高处）；越小越贴底，0.05≈贴底，0.5≈居中">
-                  <Text style={{ cursor: 'help' }}>距底</Text>
+                <Tooltip title="字幕高度：字幕块中心距画面底部的距离（占屏高比例）。默认 0.25 = 字幕位于画面下方 1/4 处；越小越贴底，0.5 ≈ 垂直居中">
+                  <Text style={{ cursor: 'help' }}>字幕高度</Text>
                 </Tooltip>
                 <InputNumber
                   value={sliceConfig.subtitle_margin_ratio}
-                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_margin_ratio: v ?? 0.333 })}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_margin_ratio: v ?? 0.25 })}
                   step={0.01}
                   min={0.02}
                   max={0.6}

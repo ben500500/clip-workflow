@@ -707,7 +707,7 @@ def slice_task(
             fr = subtitle_config.get("font_ratio")
             if isinstance(fr, (int, float)) and fr > 0:
                 subtitle_font_ratio = float(fr)
-            # 字幕距底边距离(相对高度比例),默认 1/3 即字幕块中心约在 2/3 屏高处
+            # 字幕距底边距离(相对高度比例),默认 1/4 即字幕块中心约在 3/4 屏高处
             mr = subtitle_config.get("margin_ratio")
             if isinstance(mr, (int, float)) and mr > 0:
                 subtitle_margin_ratio = float(mr)

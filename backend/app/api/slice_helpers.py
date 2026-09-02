@@ -241,12 +241,12 @@ class SliceRunRequest(BaseModel):
     # 开启后对源视频做 ASR 语音识别生成字幕，并烧录到每个切片成品上
     subtitle_enabled: bool = False
     # 字幕字号（ASS FontSize 像素值 = ratio*100，前端「字体大小」10~60 即 0.10~0.60；
-    # 不传时引擎按画面高度自适应：横屏 6%/竖屏 5%）。
+    # 不传时引擎按画面高度自适应：横屏 7%/竖屏 5.5%）。
     subtitle_font_ratio: Optional[float] = None
     # 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；负值/调小让字幕文字更紧凑，调大则字距变宽）。
     # 不传用引擎默认值 SUBTITLE_SPACING。
     subtitle_spacing: Optional[int] = None
-    # 字幕距底边距离（相对输出视频高度的比例，可选；默认 1/3 即字幕块中心约在 2/3 屏高处）。
+    # 字幕高度（距画面底边的比例，可选；默认 1/4 即字幕块中心约在 3/4 屏高处）。
     # 越大字幕越靠上、越小越贴底；0.05≈贴底，0.5≈居中。
     subtitle_margin_ratio: Optional[float] = None
     # 字幕字体粗细（ASS Bold：0=不加粗，-1 或 1=加粗，默认 0 不加粗）。加粗让字幕文字更醒目。
@@ -1508,7 +1508,7 @@ async def _dispatch_local(
             fr = subtitle_config.get("font_ratio")
             if isinstance(fr, (int, float)) and fr > 0:
                 subtitle_font_ratio = float(fr)
-            # 字幕距底边距离（相对高度比例）：默认 1/3 即字幕块中心约在 2/3 屏高处
+            # 字幕距底边距离（相对高度比例）：默认 1/4 即字幕块中心约在 3/4 屏高处
             mr = subtitle_config.get("margin_ratio")
             if isinstance(mr, (int, float)) and mr > 0:
                 subtitle_margin_ratio = float(mr)
