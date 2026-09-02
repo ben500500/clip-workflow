@@ -852,6 +852,11 @@ const EpisodeDetail: React.FC = () => {
     watermarkFontSize, watermarkOpacity, watermarkPosition, watermarkStyle, badgeDefaultWidth,
     dedupeEnabled, outputTier,
     maxClips, minScoreThreshold, minClipDuration, maxClipDuration, frameAnalysis,
+    // 高光识别 / 高光混剪及其子参数：不加入则切换开关不会触发自动保存，
+    // 刷新页面后被预设重置回默认关闭（用户感知为「开关状态没保存」）
+    frameAnalysisProvider,
+    highlightMode, highlightMaxDuration,
+    highlightMixEnabled, highlightMixMaxDuration, highlightMixMaxClipDuration, highlightMixOrder,
   ]);
 
   useEffect(() => {
