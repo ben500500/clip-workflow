@@ -48,7 +48,7 @@ services:
   # ==================== slice-worker / slice-worker-2（NVENC 硬件编码） ====================
   # 切片 NVENC 编码（h264_nvenc/hevc_nvenc）需要 GPU。透传后 worker 心跳会上报
   # encoder_capabilities（如 ["h264_nvenc","hevc_nvenc"]），节点界面「硬件编码」列可见。
-  # 仍需宿主机 ffmpeg 带 NVENC（系统 apt ffmpeg 一般不带，需 NVIDIA 官方 ffmpeg 或编译版）。
+  # ffmpeg 由镜像内自编译版本提供（含 NVENC + libx264/x265 + libass），无需宿主机 ffmpeg。
   slice-worker:
     deploy:
       resources:

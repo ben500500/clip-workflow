@@ -51,6 +51,31 @@ from app.core.llm_manager import get_llm_manager  # noqa: E402
 
 logger = logging.getLogger("autoclip.main")
 
+
+def _warn_funasr_at_boot() -> None:
+    """启动自检：若配置了 AUTOCLIP_ASR_METHOD=funasr_local 但容器内没有 funasr 运行时，
+    启动即大声告警，避免任务跑到一半才报「No module named funasr」（历史反复踩坑：
+    镜像未带 ENABLE_FUNASR=true 构建导致 ASR 故障，见 docs/autoclip-funasr-修复总结-20260902.md）。
+    用 find_spec 只探测不 import，避免加载 torch 等重依赖拖慢启动；仅告警不阻断。
+    """
+    try:
+        method = (os.getenv("AUTOCLIP_ASR_METHOD") or "").strip().lower()
+        if method != "funasr_local":
+            return
+        import importlib.util
+        if importlib.util.find_spec("funasr") is not None:
+            return
+    except Exception:
+        return
+    logger.error(
+        "启动自检失败：AUTOCLIP_ASR_METHOD=funasr_local，但容器内找不到 funasr 运行时，"
+        "所有 ASR 任务将报『No module named funasr』。请用 ENABLE_FUNASR=true 重建 autoclip "
+        "镜像（docker-compose 已固定该参数），或在容器内 pip install -r requirements-funasr.txt。"
+    )
+
+
+_warn_funasr_at_boot()
+
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/app/media"))
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -1,7 +1,9 @@
-# clip-workflow 切片 GPU 加速（NVENC）— 方案与问题总结
+# clip-workflow 切片 GPU 加速（NVENC）— 方案与问题总结（已落地版）
 
-> 整理时间：2026-09-02 ｜ 涉及版本：slice-worker Dockerfile 改造（commit `43f3bd8` ~ `900f0c4`）
-> 结论先行：**引擎已具备「有 GPU 用 nvenc、无 GPU 自动回退 libx264」的通用能力**，163（无 GPU）已验证自动走 CPU；40 已透传 GPU，但因 **alpine(musl) 无法加载 glibc 的 NVIDIA 驱动库**，nvenc 实际仍加载失败、走 CPU。要真正用上 GPU 需把 slice-worker 运行时换成 glibc 基础镜像（Debian），属较大改动（见文末选项）。
+> 整理时间：2026-09-02 ｜ 版本状态：**alpine→glibc 迁移已落地（commit `5c363f2`，09:51）并在 40 生产验证通过**
+> 修订说明：本文档初版（`2788567`，10:20）写于迁移落地的**前一刻**，属"迁移前快照"（误把已办结的 Option A 写成待办）。经 CodeBuddy 专家评审（Issue #344）指正后，本版已与代码对账修订为**落地结论**。
+>
+> 结论先行：**40 生产已用上 NVENC（RTX 2070 SUPER 实测 h264_nvenc 编码通过）**；163（无 GPU）自动回退 libx264（CPU）。引擎「有 GPU 用硬编、无 GPU 走软编」的通用能力端到端成立。
 
 ---
 
@@ -9,74 +11,78 @@
 
 让切片编码**通用**：部署机有 GPU 时优先用 NVENC 硬编，无 GPU 时自动回退 CPU 软编（libx264），两端行为一致、无需分别配置。
 
-## 二、现状（改造前）
+## 二、最终状态（现状，2026-09-02）
 
-| 项 | 40（生产） | 163（测试） |
-|---|---|---|
-| 宿主 GPU | ✅ RTX 2070 SUPER | ❌ 无 |
-| slice-worker 容器 GPU 透传 | ❌ 未启用 | ❌ 无 |
-| 容器内 ffmpeg | Alpine 自带包，**无 nvenc** | 同左 |
-| 实际编码 | **libx264（CPU）** | libx264（CPU） |
-
-引擎 `engines/slice.py` 的 `detect_best_encoder()` **本就通用**：探测 `ffmpeg -encoders` → 优先 nvenc/videotoolbox → 额外做**运行时编码测试**（无 GPU 时跳过）→ 兜底 libx264；`SLICE_ENCODER` 环境变量可强制指定。**缺的只是镜像里没有 nvenc 的 ffmpeg + GPU 没透传。**
-
-## 三、改动方案（已实施并进 cnb）
-
-### 1. `slice-worker/Dockerfile`：多阶段自编译 ffmpeg 6.1.1
-- 新增 `ffmpeg-nvenc` 构建阶段：`--enable-nvenc --enable-ffnvcodec`（GPU）+ `--enable-libx264 --enable-libx265`（CPU 回退，**必需**）+ `--enable-libass --enable-libfreetype --enable-libharfbuzz --enable-libfribidi`（ass/subtitles/drawtext 滤镜，引擎依赖）。
-- 版本对齐当前 Alpine 包自带的 **ffmpeg 6.1.1**，降低行为差异。
-- nv-codec-headers（`n12.1.14.0`）**打进仓库**（`slice-worker/nv-codec-headers/`，含 5 个头文件 + `ffnvcodec.pc`），构建时免网络依赖。
-- 运行时阶段：**保留 `apk add ffmpeg`**（提供自编译二进制动态依赖的共享库），再用自编译 nvenc 二进制覆盖 `/usr/bin/ffmpeg|ffprobe`。
-
-### 2. `docker-compose.gpu.yml`：修复 GPU overlay
-- 原文件服务名写在顶层（无 `services:` 包装），compose 合并必失败，**GPU 透传从未真正生效过**。
-- 补 `services:` 包装 + 服务名正确缩进后，`docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d slice-worker slice-worker-2` 可正常应用（给 slice-worker/slice-worker-2/autoclip/ollama 透传 GPU）。
-
-### 3. 40 生产启用 GPU overlay
-- 用 GPU overlay 重建 slice-worker/slice-worker-2，`docker inspect` 确认 `DeviceRequests: [nvidia]`，GPU 已透传进容器。
-
-## 四、验证结果
-
-| 场景 | 结果 |
+| 项 | 状态 |
 |---|---|
-| **163（无 GPU）**：容器内 `ffmpeg -encoders` | nvenc×3、libx264/x265×3、libass 滤镜 ✓ |
-| **163** 引擎 `detect_best_encoder()` | 探测 hevc_nvenc → 运行时测试失败 → **自动回退 libx264（CPU）** ✓ 符合预期 |
-| **163** CPU 编码实测 | libx264 出片正常 ✓ |
-| **40（有 GPU）**：GPU 透传 | `DeviceRequests: [nvidia]` ✓ |
-| **40** 引擎 `detect_best_encoder()` | 仍回退 libx264（原因见「关键问题」）|
-| **40** CPU 编码 / 容器健康 | 正常 ✓（功能安全）|
+| slice-worker 运行时 / ffmpeg 构建基座 | `debian:bookworm-slim`（**glibc**，替换原 alpine/musl）|
+| ffmpeg | 自编译 6.1.1：`--enable-nvenc --enable-ffnvcodec`（GPU）+ `--enable-libx264 --enable-libx265`（CPU 回退，必需）+ `--enable-libass/--enable-libfreetype/--enable-libharfbuzz/--enable-libfribidi`（ass/subtitles/drawtext）|
+| apt ffmpeg | 保留，仅作**共享库提供者**（自编译 ffmpeg 对 libass/x264/glib/xcb 等为动态链接）；自编译二进制覆盖 `/usr/bin/ffmpeg\|ffprobe` |
+| 引擎通用检测 | `engines/slice.py::detect_best_encoder()` 三重保障：`SLICE_ENCODER` 强制覆盖 → 运行时 1 帧实测 → libx264 兜底（与基座无关）|
+| **40 生产** | GPU 透传 + **h264_nvenc 实测编码通过**（RTX 2070 SUPER，`5c363f2` 提交信息记录）|
+| **163** | 无 GPU → 自动回退 libx264（CPU）；**glibc 镜像兼容性待验**（见 §七 收尾）|
 
-## 五、遇到的问题与解决（含未解决）
+## 三、关键根因（为什么必须换 glibc）
+
+- 宿主机经 `nvidia-container-toolkit` 透传进容器的 NVIDIA 驱动**用户态库**（`libnvidia-encode.so.1` 等）是 **glibc ELF**。
+- **alpine(musl) 进程 dlopen 必然失败**（glibc 特有符号 / ld.so 依赖），ffmpeg 报 `Cannot load libnvidia-encode.so.1`，`detect_best_encoder()` 永远回退 libx264。
+- 换 **glibc 基座**是让 NVENC 真正可用的**唯一正解**（业界公认，非"选项"而是"墙"）。gcompat/libc6-compat 兼容层对 NVIDIA 驱动库**不可靠**，不采用。
+
+## 四、演进过程与踩坑记录
+
+### 4.1 alpine 阶段：自编译 NVENC ffmpeg（commit `43f3bd8` ~ `900f0c4`）
+
+在 alpine 基座内自编译带 nvenc 的 ffmpeg，打通了"镜像带 nvenc 能力 + GPU 透传"，但 musl 无法加载 NVIDIA 库，实际仍走 CPU。
+
+### 4.2 遇到的问题与解决
 
 | # | 问题 | 根因 | 解决 |
 |---|---|---|---|
-| 1 | FFmpeg/nv-codec-headers 下载失败 | 国内访问 GitHub 大仓库/文件 SSL 断流（`curl 92` / `SSL_read eof`）| FFmpeg 源码改用 **Gitee 镜像**（`gitee.com/mirrors/FFmpeg`，n6.1.1 可用）；nv-codec-headers 本地经 `raw.githubusercontent.com` 下载后**打进仓库** |
-| 2 | configure 报 `nvenc requested, but not all dependencies are satisfied: ffnvcodec` | nv-codec-headers master（API 13.1）与 ffmpeg 6.1.1（2023，配 12.x）版本不匹配 | 换用 **n12.1.14.0** 头文件（NVENC API 12.1，ffmpeg 6.1.1 同期配对）|
-| 3 | 同上 ffnvcodec 校验失败 | ffmpeg configure 用 **pkg-config** 查 `ffnvcodec >= 版本`，缺 `ffnvcodec.pc` | 补 `ffnvcodec.pc`（Version 12.1.14.0）装入 `/usr/lib/pkgconfig/` |
-| 4 | 容器内 ffmpeg 启动报 `libass.so.9 not found` | 自编译 ffmpeg 对 libass/x264/x265/freetype/glib/xcb 等是**动态链接**（非全静态），runtime 删了 `apk add ffmpeg` 导致缺共享库 | runtime **保留 `apk add ffmpeg`**（提供同版本共享库），再 COPY 自编译二进制覆盖 |
-| 5 | 构建慢/误判卡死 | runtime 的 `apk add py3-opencv` 拉 gstreamer 等 ~224-252 包，下载慢（~30min）| 耐心等待（层缓存后不再重复）；曾误 kill 一次已重启恢复 |
-| 6 | GPU overlay 合并失败 `additional properties not allowed` | `docker-compose.gpu.yml` 服务名在顶层、缺 `services:` 包装，且未缩进 | 补 `services:` + 正确缩进（`900f0c4`）|
-| 7 | **❌ 40 上 nvenc 仍加载失败（未解决）**：ffmpeg 报 `Cannot load libnvidia-encode.so.1` | **alpine(musl) 容器无法 dlopen glibc 构建的 NVIDIA 驱动库**（libnvidia-encode.so.1 等是 glibc 产物），musl 进程加载即失败 | **需要把 slice-worker 运行时从 alpine 换成 glibc 基础镜像（Debian）**，属较大改动，尚未实施 |
+| 1 | FFmpeg/nv-codec-headers 下载失败 | 国内访问 GitHub 大文件 SSL 断流（curl 92）| FFmpeg 源码用 **Gitee 镜像**；nv-codec-headers 打进仓库（`slice-worker/nv-codec-headers/`，n12.1.14.0 + `ffnvcodec.pc`）|
+| 2 | configure 报 `nvenc requested, but not all dependencies are satisfied: ffnvcodec` | headers master(API 13.1) 与 ffmpeg 6.1.1 不匹配 | 换 **n12.1.14.0**（API 12.1，与 6.1.1 同期配对）|
+| 3 | ffnvcodec 校验失败 | 缺 `ffnvcodec.pc`（pkg-config 查版本）| 补装 `/usr/lib/pkgconfig/ffnvcodec.pc` |
+| 4 | ffmpeg 启动报 `libass.so.9 not found` | 自编译 ffmpeg 对 libass/x264 等**动态链接** | runtime 保留 apt `ffmpeg` 提供共享库，再 COPY 自编译二进制覆盖 |
+| 5 | 构建慢/误判卡死 | runtime apt 拉 ~224-252 包下载慢 | 耐心等待（层缓存后不重复）|
+| 6 | GPU overlay 合并失败 `additional properties not allowed` | `docker-compose.gpu.yml` 服务名缺 `services:` 包装/未缩进 | 补 `services:` + 正确缩进（`900f0c4`）|
+| **7** | **nvenc 仍加载失败 `Cannot load libnvidia-encode.so.1`** | **alpine(musl) 无法 dlopen glibc 构建的 NVIDIA 驱动库** | **✅ 换 glibc 基座解决（见 §五，`5c363f2`）** |
+
+## 五、落地：alpine→glibc 迁移（commit `5c363f2`，2026-09-02 09:51）
+
+`slice-worker/Dockerfile` 改动（唯一文件）：
+
+- `ffmpeg-nvenc` 构建段与运行段均换 `debian:bookworm-slim`，apt 源切 aliyun（`/etc/apt/sources.list.d/debian.sources`）。
+- 构建段补 `ca-certificates`（git https clone gitee 需要）。
+- 自编译 ffmpeg 保持 **n6.1.1 + nv-codec-headers n12.1.14.0** 与 configure 旗标不变（刻意降行为差异）。
+- 运行段 apt 依赖：`ffmpeg`、`python3`、`python3-opencv`、`fontconfig`、`fonts-noto-cjk`、`fonts-droid-fallback`、`python3-fonttools`、`procps`、`gettext`、`tzdata`、`bash`、`ca-certificates`。
+- **python 版本 3.12（alpine）→ 3.11（Debian），与 backend/autoclip 完全对齐**（引擎在 backend 已验证过），是迁移的加分项而非风险。
+- 验证：**40 生产已重建，两个 worker h264_nvenc 实测编码通过（RTX 2070 SUPER）**；libx264/libx265 CPU 回退、libass 字幕滤镜链保留。
 
 ## 六、相关提交（cnb main）
 
 | commit | 内容 |
 |---|---|
-| `43f3bd8` | slice-worker: ffmpeg 自编译带 NVENC（初版，源码 git clone）|
+| `43f3bd8` | slice-worker: ffmpeg 自编译带 NVENC（初版）|
 | `f1e443a` | 改用 Gitee + 仓库内置 nv-codec-headers（规避 GitHub 断流）|
-| `4f04556` | nv-codec-headers 直接拷到 /usr/include/ffnvcodec |
-| `b28869b` | nv-codec-headers 换 n12.1.14.0 + 补 ffnvcodec.pc |
-| `c1066fe` | runtime 保留 apk ffmpeg（提供动态依赖共享库）|
+| `4f04556` / `b28869b` | nv-codec-headers 直拷 + 换 n12.1.14.0 + 补 ffnvcodec.pc |
+| `c1066fe` | runtime 保留 apt ffmpeg（提供动态依赖共享库）|
 | `1170450` / `900f0c4` | docker-compose.gpu.yml 补 services 包装 + 正确缩进 |
+| **`5c363f2`** | **运行时与 ffmpeg 构建基座 alpine(musl) → Debian(glibc)，NVENC 真正可用（40 已验）** |
 
-## 七、现状小结与后续选项
+## 七、专家评审与收尾（CodeBuddy Issue #344）
 
-**当前状态（安全）**：40/163 切片都走 CPU（libx264），功能正常；镜像已带 nvenc 能力 + GPU 已透传，只差 glibc 运行时就能真正用 GPU。
+> CodeBuddy 专家评审（架构/容器/GPU 编码三方向，流水线 `cnb-epo-1k1ge7ov0`，2026-09-02）结论：
+> ① glibc 迁移方向唯一正确、已实证；② 风险可控（最高 R1）；③ 保留自编译 ffmpeg 判定正确（deb-multimedia/jellyfin 不带 libass/新 x264，不换）；④ 备选（gcompat/distroless/独立容器）均不推荐；⑤ 批准验收，剩余 ~0.5–1 人日收尾。
 
-| 选项 | 说明 | 风险/成本 |
+### 收尾清单进度
+
+| # | 项 | 状态 |
 |---|---|---|
-| **A. 换 glibc 基座（Debian）** | slice-worker 运行时 + ffmpeg 构建阶段都换成 glibc（apt 装 python3/opencv/字体），nvenc 才能加载 NVIDIA 库 | 改动大、40 生产重建、需重新验证 CPU 回退与字幕滤镜 |
-| **B. 保持现状（CPU）** | 当前通用镜像 + 自动回退已进 cnb；GPU 暂不用 | 零风险，但 40 的 RTX 2070 继续闲置 |
-| **C. 委托 CodeBuddy** | 把「glibc 基座改造」作为独立大任务，交给 CNB CodeBuddy 出方案/PR，本侧负责构建验证与验收 | 符合「大活委派」原则 |
+| 1 | 本文档对账为落地结论 | ✅ 本次修订 |
+| 2 | `docker-compose.gpu.yml` 清理"仍需宿主机 ffmpeg 带 NVENC"过时注释 | ✅ 本次修订 |
+| 3 | 163 无 GPU 兼容性验证（glibc 镜像跑 CPU 回退 / 字幕滤镜 / 竖转横）| 🔄 进行中（163 先行验证，40 不动）|
+| 4 | 引擎热更链路 `engine_update.go` 在新镜像回归一次 | ⏳ 待 |
+| 5 | 镜像体积优化（`--strip` / 裁剪 noto-cjk 子集，可选）| ⏳ 可选 |
 
-> 备注：本方案的目标（引擎通用检测）已达成并验证；剩余唯一硬骨头是 **alpine→glibc 运行时切换**（问题 #7），决定 40 能否真正用上 GPU。
+### 遗留风险 R1（中，未处理）
+
+`deploy_remote_worker.sh` 的 `base-images-arm64.tar.gz` 仍只打包 `golang:1.22-alpine` / `alpine:3.19`；新 Dockerfile 已引入 `debian:bookworm-slim`（双段），**arm64 离线远程节点**会去 Docker Hub 拉 debian → 国内/离线超时，与"免 Hub"初衷冲突。处理：后续把 `debian:bookworm-slim` 加进该离线包。
