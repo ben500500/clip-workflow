@@ -228,6 +228,7 @@ def doubao_generate_task(
     *,
     account_type: str = "free",
     duration: Optional[int] = None,
+    lock_token: Optional[str] = None,
 ):
     """一键豆包生成:RPA 自动打开豆包 → 检测登录(弹二维码)→ 设置参数 →
     贴提示词发送 → 等待生成 → 被拒改写确认 → 下载成片上传 MinIO 回填记录。
@@ -441,6 +442,14 @@ def doubao_generate_task(
         ))
         # 与失败分支同理:不 update_state(FAILURE)+return dict,避免 Celery 后端解析异常
         return {"success": False, "status": "failed", "message": str(e)}
+    finally:
+        # 释放入口互斥锁（token 不匹配时 Lua 不会误删他人的锁）
+        if lock_token:
+            try:
+                from app.services.distributed_lock import release_lock
+                run_async(release_lock(f"shortdrama:lock:doubao:{prompt_id}", lock_token))
+            except Exception:
+                logger.warning("释放豆包互斥锁失败 prompt=%s", prompt_id)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -605,6 +614,7 @@ def seedance_generate_task(
     *,
     duration: Optional[int] = None,
     resolution: Optional[str] = None,
+    lock_token: Optional[str] = None,
 ):
     """Seedance 官方 API 直连出片:HTTP 调用火山方舟(无浏览器 / 无扫码)。
 
@@ -808,3 +818,11 @@ def seedance_generate_task(
         # 抛 ValueError('Exception information must include the exception type')。
         # 前端状态展示依赖 DB 轮询(_update_seedance_prompt 已置 failed)。
         return {"success": False, "status": "failed", "message": str(e)}
+    finally:
+        # 释放入口互斥锁（token 不匹配时 Lua 不会误删他人的锁）
+        if lock_token:
+            try:
+                from app.services.distributed_lock import release_lock
+                run_async(release_lock(f"shortdrama:lock:seedance:{prompt_id}", lock_token))
+            except Exception:
+                logger.warning("释放 Seedance 互斥锁失败 prompt=%s", prompt_id)

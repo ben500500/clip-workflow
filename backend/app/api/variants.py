@@ -209,10 +209,21 @@ async def generate_variants(
             raise HTTPException(status_code=404, detail="output not found")
         # 事务内只读：显式结束事务
         await session.rollback()
-    task = generate_variants_task.delay(
-        data.output_id, count=data.count,
-        base_dedupe=data.dedupe_config, thresholds=data.thresholds,
-    )
+    # 互斥锁：防同输出发并发双跑（A1 兜底会误杀对方任务的 running 变体）
+    from app.services.distributed_lock import acquire_lock, release_lock
+    lock_key = f"variant:lock:{data.output_id}"
+    lock_token = await acquire_lock(lock_key, ttl=900)
+    if not lock_token:
+        raise HTTPException(status_code=409, detail="该切片输出已有变体任务在运行中，请稍后再试")
+    try:
+        task = generate_variants_task.delay(
+            data.output_id, count=data.count,
+            base_dedupe=data.dedupe_config, thresholds=data.thresholds,
+            lock_token=lock_token,
+        )
+    except Exception:
+        await release_lock(lock_key, lock_token)
+        raise
     return {"task_id": task.id, "output_id": data.output_id, "count": data.count}
 
 
@@ -323,6 +334,7 @@ async def generate_variants_batch(
 
     from app.celery.variant_tasks import generate_variants_task
     from sqlalchemy import select as _sel
+    from app.services.distributed_lock import acquire_lock, release_lock
     tasks = []
     async with async_session_factory() as session:
         for raw_id in data.output_ids:
@@ -341,10 +353,20 @@ async def generate_variants_batch(
                 await _check_output_access(session, out, current_user)
             except HTTPException:
                 continue
-            task = generate_variants_task.delay(
-                str(out.id), count=count,
-                base_dedupe=data.dedupe_config, thresholds=data.thresholds,
-            )
+            # 互斥锁：已被其它任务占用的输出直接跳过，不阻断整批
+            lock_key = f"variant:lock:{out.id}"
+            lock_token = await acquire_lock(lock_key, ttl=900)
+            if not lock_token:
+                continue
+            try:
+                task = generate_variants_task.delay(
+                    str(out.id), count=count,
+                    base_dedupe=data.dedupe_config, thresholds=data.thresholds,
+                    lock_token=lock_token,
+                )
+            except Exception:
+                await release_lock(lock_key, lock_token)
+                raise
             tasks.append({"output_id": str(out.id), "task_id": task.id})
         # 事务内只读：显式结束事务
         await session.rollback()

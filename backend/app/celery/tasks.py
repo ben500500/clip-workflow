@@ -179,12 +179,15 @@ async def _ensure_source_video(source_path: Optional[str], source_file_key: Opti
 
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
-def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: str, config: dict, source_file_key: Optional[str] = None):
+def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: str, config: dict, source_file_key: Optional[str] = None, lock_token: Optional[str] = None):
     """Execute the AutoClip pipeline as a Celery task.
 
     Downloads the source video (if needed), uploads it to the AutoClip service,
     triggers the remote pipeline, polls progress, then persists the returned
     clip candidates into the database.
+
+    lock_token: API 触发端获取的互斥锁 token（autoclip:lock:{episode_id}），
+    任务结束时负责释放；防同一剧集并发选点互相覆盖数据。
     """
     from app.services.autoclip_service import (
         upload_video,
@@ -283,10 +286,17 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
 
     except Exception as e:
         logger.error(f"AutoClip task failed: {e}")
-        run_async(_mark_autoclip_failed(episode_id, str(e)))
+        run_async(_mark_autoclip_failed(episode_id, str(e), expected_project_id=autoclip_project_id))
         run_async(_update_autoclip_run(episode_id, autoclip_project_id, "failed", 0.0, str(e)))
         raise
     finally:
+        # 释放选点互斥锁（token 不匹配时 Lua 不会误删他人的锁）
+        if lock_token:
+            try:
+                from app.services.distributed_lock import release_lock
+                run_async(release_lock(f"autoclip:lock:{episode_id}", lock_token))
+            except Exception:
+                logger.warning("释放选点互斥锁失败 episode=%s", episode_id)
         # Clean up downloaded source video
         if downloaded_video_path and os.path.isfile(downloaded_video_path):
             try:
@@ -918,6 +928,19 @@ async def _save_autoclip_results(
     async with async_session_factory() as session:
         eid = uuid.UUID(episode_id)
 
+        # 防御纵深：写前校验项目归属。若 DB 中的 autoclip_project_id 已被更新的任务
+        # 接管（并发竞态：僵尸任务晚于新任务收尾），本任务不得清空/覆盖新数据。
+        proj_result = await session.execute(
+            select(AutoClipProject).where(AutoClipProject.episode_id == eid)
+        )
+        proj = proj_result.scalar_one_or_none()
+        if proj and proj.autoclip_project_id and proj.autoclip_project_id != autoclip_project_id:
+            logger.warning(
+                "跳过选点结果写入 episode=%s：项目已被接管（db=%s, 本任务=%s）",
+                episode_id, proj.autoclip_project_id, autoclip_project_id,
+            )
+            return
+
         # 旧候选可能被 slice_outputs.clip_id 外键引用(切片输出已生成),
         # 直接 DELETE 会触发 ForeignKeyViolation 导致选点任务失败。
         # 先解除引用(成品切片输出保留,仅断开与旧候选的关联),再删除候选。
@@ -1043,7 +1066,7 @@ async def _autoclip_auto_dispatch_slice(episode_id: str):
             logger.error("剧集 %s 选点后自动切片失败: %s", episode_id, e)
 
 
-async def _mark_autoclip_failed(episode_id: str, error: str):
+async def _mark_autoclip_failed(episode_id: str, error: str, expected_project_id: Optional[str] = None):
     from sqlalchemy import select
     from app.models.models import AutoClipProject
 
@@ -1056,6 +1079,15 @@ async def _mark_autoclip_failed(episode_id: str, error: str):
             select(AutoClipProject).where(AutoClipProject.episode_id == eid)
         )
         proj = result.scalar_one_or_none()
+        # 接管校验：项目已被新任务接管时，旧任务不得覆盖失败状态
+        if proj and expected_project_id and proj.autoclip_project_id \
+                and proj.autoclip_project_id != expected_project_id:
+            logger.warning(
+                "跳过选点失败标记 episode=%s：项目已被接管（db=%s, 本任务=%s）",
+                episode_id, proj.autoclip_project_id, expected_project_id,
+            )
+            await session.rollback()
+            return
         if proj:
             proj.pipeline_status = "failed"
             proj.error_message = error[:2000]

@@ -240,6 +240,20 @@ async def run_autoclip(
     if not healthy:
         raise HTTPException(status_code=503, detail="AutoClip service is not reachable")
 
+    # 并发互斥锁：同一剧集同时只允许一个选点任务。
+    # 背景：并发触发时两个 Celery 任务都会「清空全剧集候选再写入自己的结果」，
+    # 后收尾者会覆盖/清空先收尾者的数据（2026-09-02 事故）。
+    # 锁 TTL 1800s 覆盖上传视频 + 10 分钟轮询 + 收尾；崩溃未释放时自动过期兜底。
+    from app.services.distributed_lock import acquire_lock, release_lock
+
+    lock_key = f"autoclip:lock:{eid}"
+    lock_token = await acquire_lock(lock_key, ttl=1800)
+    if not lock_token:
+        raise HTTPException(
+            status_code=409,
+            detail="该剧集已有选点任务在运行中，请等待完成或失败后再触发",
+        )
+
     # Create AutoClip project
     # 合并系统设置 default_autoclip_config（模型名/评分阈值等），使系统设置生效
     config = await _merge_default_autoclip_config(db, data.config)
@@ -300,6 +314,7 @@ async def run_autoclip(
             video_path=video_path,
             config=config,
             source_file_key=source_file_key,
+            lock_token=lock_token,
         )
     except Exception as e:
         # Celery dispatch failed: mark DB status as failed
@@ -308,6 +323,8 @@ async def run_autoclip(
         autoclip_run.status = "failed"
         autoclip_run.error_message = f"选点任务调度失败: {e}"
         autoclip_run.completed_at = datetime.utcnow()
+        # 任务未跑起来，无人释放互斥锁，这里释放避免死锁 30 分钟
+        await release_lock(lock_key, lock_token)
         # 历史记录已提前提交，这里单独提交失败状态
         await db.commit()
         raise

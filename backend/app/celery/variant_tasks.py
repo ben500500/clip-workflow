@@ -25,6 +25,7 @@ def generate_variants_task(
     base_dedupe: dict = None,
     created_by: str = None,
     thresholds: dict = None,
+    lock_token: str = None,
 ):
     """对基准切片输出生成 N 个结构性差异变体，并做指纹校验 + 撞车自动换参重试。
 
@@ -55,6 +56,15 @@ def generate_variants_task(
         except Exception as mark_e:
             logger.error("mark_output_variants_failed output=%s failed: %s", output_id, mark_e)
         self.retry(exc=e)
+    finally:
+        # 释放入口互斥锁。retry 重投会携带同一 token，重试收尾时锁已不存在，
+        # Lua compare-and-delete 返回 0，无副作用。
+        if lock_token:
+            try:
+                from app.services.distributed_lock import release_lock
+                run_async(release_lock(f"variant:lock:{output_id}", lock_token))
+            except Exception:
+                logger.warning("释放变体互斥锁失败 output=%s", output_id)
 
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30)

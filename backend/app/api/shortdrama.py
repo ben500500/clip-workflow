@@ -754,6 +754,13 @@ async def start_doubao_generate(
     if record.doubao_status in ("pending", "running", "need_login", "awaiting_rewrite"):
         raise HTTPException(status_code=409, detail="该记录已有豆包任务在进行中，请先等待完成或取消")
 
+    # 互斥锁：软检查存在 TOCTOU 窗口，并发双投递会导致双 RPA 争抢同一浏览器
+    from app.services.distributed_lock import acquire_lock, release_lock
+    lock_key = f"shortdrama:lock:doubao:{record_id}"
+    lock_token = await acquire_lock(lock_key, ttl=3600)
+    if not lock_token:
+        raise HTTPException(status_code=409, detail="该记录已有豆包任务在进行中，请先等待完成或取消")
+
     # 账户类型选择后作为当前登录用户的默认值
     if current_user and current_user.doubao_account_type != data.account_type:
         current_user.doubao_account_type = data.account_type
@@ -769,11 +776,17 @@ async def start_doubao_generate(
 
     # 异步派发到 publish 队列（rpa_worker 上的 Celery worker 消费，连接 Chromium）
     from app.celery.tasks import doubao_generate_task
-    celery_result = doubao_generate_task.delay(
-        str(record.id),
-        account_type=data.account_type,
-        duration=data.duration,
-    )
+    try:
+        celery_result = doubao_generate_task.delay(
+            str(record.id),
+            account_type=data.account_type,
+            duration=data.duration,
+            lock_token=lock_token,
+        )
+    except Exception:
+        await release_lock(lock_key, lock_token)
+        await db.rollback()
+        raise
     record.doubao_task_id = celery_result.id
     await db.commit()
 
@@ -1077,6 +1090,13 @@ async def start_seedance_generate(
     if record.seedance_status in ("pending", "running"):
         raise HTTPException(status_code=409, detail="该记录已有 Seedance 直连任务在进行中，请先等待完成或取消")
 
+    # 互斥锁：软检查存在 TOCTOU 窗口，并发双投递会双倍烧 API 费用
+    from app.services.distributed_lock import acquire_lock, release_lock
+    lock_key = f"shortdrama:lock:seedance:{record_id}"
+    lock_token = await acquire_lock(lock_key, ttl=1800)
+    if not lock_token:
+        raise HTTPException(status_code=409, detail="该记录已有 Seedance 直连任务在进行中，请先等待完成或取消")
+
     # 校验时长：Seedance 1.0 仅支持 5s/10s；>10s 由任务内按策略截断/拒绝
     want_duration = _normalize_duration(data.duration) if data.duration is not None else (record.duration or 10)
 
@@ -1089,11 +1109,17 @@ async def start_seedance_generate(
 
     # 异步派发到 publish 队列（普通 worker 即可消费，不依赖 rpa_worker）
     from app.celery.tasks import seedance_generate_task
-    celery_result = seedance_generate_task.delay(
-        str(record.id),
-        duration=want_duration,
-        resolution=data.resolution,
-    )
+    try:
+        celery_result = seedance_generate_task.delay(
+            str(record.id),
+            duration=want_duration,
+            resolution=data.resolution,
+            lock_token=lock_token,
+        )
+    except Exception:
+        await release_lock(lock_key, lock_token)
+        await db.rollback()
+        raise
     record.seedance_task_id = celery_result.id
     await db.commit()
 

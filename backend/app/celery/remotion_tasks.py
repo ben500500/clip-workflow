@@ -23,11 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
-def run_remotion_mix_task(self, slice_task_id: str):
+def run_remotion_mix_task(self, slice_task_id: str, lock_token: str = None):
     """对指定切片任务执行 Remotion 高光混剪增强渲染，并回写渲染结果状态。
 
     成功：更新 SliceTask.remotion_output_file_key + remotion_status="done"；
     失败：更新 remotion_status="failed" + error_message，并按重试策略 retry。
+
+    lock_token：手动触发入口（/v1/remotion/render）持有的互斥锁令牌，收尾时释放；
+    自动触发路径（切片完成后派发）不传 token，不涉及锁。
     """
     if not settings.REMOTION_ENABLED:
         logger.info("REMOTION_ENABLED 关闭，跳过 Remotion 渲染 slice_task=%s", slice_task_id)
@@ -47,6 +50,14 @@ def run_remotion_mix_task(self, slice_task_id: str):
         if self.request.retries < self.max_retries:
             raise self.retry(exc=e)
         return {"ok": False, "error": str(e), "retries_exhausted": True}
+    finally:
+        # 释放入口互斥锁（仅手动触发路径持有；token 不匹配时 Lua 不会误删）
+        if lock_token:
+            try:
+                from app.services.distributed_lock import release_lock
+                run_async(release_lock(f"remotion:lock:{slice_task_id}", lock_token))
+            except Exception:
+                logger.warning("释放 Remotion 互斥锁失败 slice_task=%s", slice_task_id)
 
 
 async def _run_remotion_mix_flow(slice_task_id: str) -> dict:

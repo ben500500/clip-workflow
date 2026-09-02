@@ -113,14 +113,22 @@ async def trigger_remotion_render(
 
     from app.celery.remotion_tasks import run_remotion_mix_task
 
+    # 互斥锁：防同任务重复渲染（输出写同一 MinIO key 会互相覆盖）
+    from app.services.distributed_lock import acquire_lock, release_lock
+    lock_key = f"remotion:lock:{task.id}"
+    lock_token = await acquire_lock(lock_key, ttl=1800)
+    if not lock_token:
+        raise HTTPException(status_code=409, detail="该切片任务已有 Remotion 渲染在进行中，请稍后再试")
+
     # 重置状态，便于手动重试
     task.remotion_status = "pending"
     task.error_message = None
     await db.flush()
 
     try:
-        run_remotion_mix_task.delay(str(task.id))
+        run_remotion_mix_task.delay(str(task.id), lock_token=lock_token)
     except Exception as e:
+        await release_lock(lock_key, lock_token)
         logger.error("手动触发 Remotion 渲染失败 slice_task=%s: %s", task.id, e)
         task.remotion_status = "failed"
         task.error_message = f"触发 Remotion 渲染失败: {e}"
