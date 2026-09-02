@@ -13,7 +13,7 @@ export const autoclipApi = {
     client.get(`/episodes/${episodeId}/autoclip/history`) as Promise<AutoClipRunRecord[]>,
 
   deleteHistory: (episodeId: string, runId: string) =>
-    client.delete(`/episodes/${episodeId}/autoclip/history/${runId}`) as Promise<{ message: string; run_id: string }>,
+    client.delete(`/episodes/${episodeId}/autoclip/history/${runId}`) as Promise<{ message: string; run_id: string; cleared_results?: boolean }>,
 
   progress: (episodeId: string) =>
     client.get(`/episodes/${episodeId}/autoclip/progress`) as Promise<{

@@ -5,13 +5,22 @@ from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.slice_helpers import _refresh_episode_status
 from app.auth import get_current_user
 from app.database import get_db
-from app.models.models import Episode, AutoClipProject, ClipCandidate, AutoClipRun, User, SystemConfig
+from app.models.models import (
+    Episode,
+    AutoClipProject,
+    ClipCandidate,
+    AutoClipRun,
+    DetectedInterval,
+    SliceOutput,
+    User,
+    SystemConfig,
+)
 from app.services.data_scope import check_project_access_by_episode
 from app.services.autoclip_service import (
     create_autoclip_project,
@@ -540,8 +549,11 @@ async def delete_autoclip_history(
 ):
     """删除一条 AI 选点执行历史记录（数据隔离）。
 
-    仅删除 AutoClipRun 历史记录本身；已产出的 clip_candidates 片段候选
-    与 AutoClip 远端项目不受影响，避免误删正在「片段审核」使用的选点结果。
+    删除 AutoClipRun 历史记录本身；若删除后该集已无任何选点历史，
+    则视为「清空选点结果」：片段候选（clip_candidates）与区间检测
+    （detected_intervals）一并删除，剧集回滚到未选点状态——否则残留
+    候选会让一键切片误判「已有选点结果」而跳过重新选点，直接拿旧
+    候选切片（表现为「没有选点直接进入切片流程」）。
     """
     try:
         eid = uuid.UUID(episode_id)
@@ -567,6 +579,8 @@ async def delete_autoclip_history(
     if not run:
         raise HTTPException(status_code=404, detail="选点执行记录不存在")
 
+    cleared_results = False
+    result_message = "选点执行记录已删除"
     await db.delete(run)
     await db.flush()
     # 选点历史删光后联动重置：清掉残留的「已完成/失败」选点项目状态并
@@ -582,6 +596,54 @@ async def delete_autoclip_history(
         if proj and proj.pipeline_status in ("completed", "failed"):
             proj.pipeline_status = None
             proj.error_message = None
+        # 选点产物一并清空（语义：删光历史 = 清空选点结果），让下一次
+        # 一键切片正确触发重新选点，而不是复用旧候选直接切片。
+        # 例外：候选已被切片成品（slice_outputs.clip_id）引用时不能硬删
+        # （外键 RESTRICT 且会误删成品数据）；删除切片任务会级联清理成品
+        # 记录，此时保留选点结果并在 message 中引导用户先删切片任务。
+        cand_ids = (
+            await db.execute(
+                select(ClipCandidate.id).where(ClipCandidate.episode_id == eid)
+            )
+        ).scalars().all()
+        if cand_ids:
+            ref_count = (
+                await db.execute(
+                    select(func.count())
+                    .select_from(SliceOutput)
+                    .where(SliceOutput.clip_id.in_(cand_ids))
+                )
+            ).scalar() or 0
+            if ref_count == 0:
+                await db.execute(
+                    delete(ClipCandidate).where(ClipCandidate.episode_id == eid)
+                )
+                await db.execute(
+                    delete(DetectedInterval).where(DetectedInterval.episode_id == eid)
+                )
+                cleared_results = True
+                result_message = (
+                    "选点执行记录已删除，该集选点结果（片段候选/区间检测）已一并清空"
+                )
+            else:
+                result_message = (
+                    f"选点执行记录已删除；该集切片成品仍引用片段候选（{ref_count} 条成品），"
+                    "选点结果未清空。如需重新选点：请先删除相关切片任务"
+                    "（会一并清理切片成品），再删除选点历史"
+                )
+        else:
+            # 已无候选：区间检测若无引用残留也一并清掉，保持状态自洽
+            await db.execute(
+                delete(DetectedInterval).where(DetectedInterval.episode_id == eid)
+            )
+            cleared_results = True
+            result_message = (
+                "选点执行记录已删除，该集选点结果（片段候选/区间检测）已一并清空"
+            )
     await _refresh_episode_status(db, eid)
     await db.commit()
-    return {"message": "选点执行记录已删除", "run_id": run_id}
+    return {
+        "message": result_message,
+        "run_id": run_id,
+        "cleared_results": cleared_results,
+    }

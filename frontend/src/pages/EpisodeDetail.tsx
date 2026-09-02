@@ -546,10 +546,10 @@ const EpisodeDetail: React.FC = () => {
   // 删除单条选点执行历史记录
   const handleDeleteAutoclipHistory = async (runId: string) => {
     try {
-      await autoclipApi.deleteHistory(episodeId, runId);
+      const res = await autoclipApi.deleteHistory(episodeId, runId);
       // 若被删的正是「选点历史」下拉中选中的那条，清除选择，避免引用已删除记录
       if (sliceAutoclipRunId === runId) setSliceAutoclipRunId(undefined);
-      message.success('选点执行记录已删除');
+      message.success(res?.message || '选点执行记录已删除');
       fetchAutoclipHistory();
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '删除失败');
@@ -1925,7 +1925,7 @@ const EpisodeDetail: React.FC = () => {
                     ) : (
                       <Popconfirm
                         title="确定删除该条选点执行记录？"
-                        description="仅删除历史记录，不影响片段审核结果"
+                        description="删除后若该集已无选点历史，片段候选与区间检测结果将一并清空，下次一键切片会重新选点；若切片成品仍在引用候选，需先删除切片任务"
                         okText="删除"
                         cancelText="取消"
                         okButtonProps={{ danger: true }}

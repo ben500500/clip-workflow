@@ -1057,9 +1057,12 @@ async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
     )
     all_tasks = tasks_res.scalars().all()
     if not all_tasks:
-        # 切片任务已全部删除：仅当剧集停留在切片相关状态时回滚，
-        # 避免误覆盖 uploaded / clips_detected 等前置状态。
-        if episode.status in ("slicing", "completed", "failed"):
+        # 切片任务已全部删除：选点/切片相关状态均回滚（选点历史删光时
+        # 片段候选会被一并清空，此时应回到 uploaded 而非停留在
+        # clips_detected/intervals_detected），避免误覆盖 uploaded。
+        if episode.status in (
+            "clips_detected", "intervals_detected", "slicing", "completed", "failed",
+        ):
             cand_res = await db.execute(
                 select(func.count())
                 .select_from(ClipCandidate)
