@@ -20,8 +20,9 @@ from .shared_config import LLM_API_BASE, LLM_API_KEY, FRAME_ANALYSIS_MODEL
 
 logger = logging.getLogger(__name__)
 
-# 在线调用超时（秒）。视觉理解含图片上传与推理，适当放宽
-VISION_TIMEOUT = int(os.getenv("VISION_TIMEOUT", "120"))
+# 在线调用超时（秒）。视觉理解含图片上传与推理，适当放宽；
+# 统一走 MiMo(mimo-v2.5) 后推理耗时长，默认 240s（2026-09-02）
+VISION_TIMEOUT = int(os.getenv("VISION_TIMEOUT", "240"))
 # 最大重试次数
 VISION_MAX_RETRIES = int(os.getenv("VISION_MAX_RETRIES", "2"))
 

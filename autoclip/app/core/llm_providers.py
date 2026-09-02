@@ -177,12 +177,13 @@ class DashScopeProvider(LLMProvider):
                 payload.setdefault("max_tokens", default_max_tokens)
                 payload.update({k: v for k, v in kwargs.items() if v is not None})
                 url = f"{self.base_url}/chat/completions"
-                # 超时可配置（环境变量 API_TIMEOUT，秒），默认 120s；
-                # 长文本提示词 + 慢模型（如 qwen3.7-plus）可能超过 30s，避免硬编码超时
+                # 超时可配置（环境变量 API_TIMEOUT，秒），默认 240s；
+                # 选点统一走 MiMo(推理模型)，step2 时间线等大请求常超 120s
+                # （2026-09-02 40 生产 3 次 120s 超时致选点失败），故默认放宽到 240s
                 try:
-                    timeout = int(os.getenv("API_TIMEOUT", "120") or 120)
+                    timeout = int(os.getenv("API_TIMEOUT", "240") or 240)
                 except (TypeError, ValueError):
-                    timeout = 120
+                    timeout = 240
                 resp = http_client.post(url, headers=headers, json=payload, timeout=timeout, **_http_kwargs)
                 if resp.status_code != 200:
                     try:
