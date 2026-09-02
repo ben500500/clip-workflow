@@ -187,6 +187,11 @@ services:
     build:
       context: ./autoclip
       dockerfile: Dockerfile
+      # 默认 ASR 已切 funasr_local(Paraformer-Large)，funasr/torch 必须烤进镜像；
+      # 否则任何不带 --build-arg ENABLE_FUNASR=true 的重建都会导致
+      # “No module named 'funasr'” ASR 故障（历史上反复发生）。
+      args:
+        ENABLE_FUNASR: "true"
     image: clip-autoclip:latest
     container_name: clip-autoclip
     restart: unless-stopped
