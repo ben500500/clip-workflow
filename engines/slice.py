@@ -1854,22 +1854,25 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
         shutil.copy(video_in, video_out)
         return
 
-    # 字幕字号：未指定时用默认值；竖屏视频显式设 PlayResY 后字幕偏小，
-    # 按画面高度补偿到 PORTRAIT_SUBTITLE_HEIGHT_RATIO（默认与用户自定义字号均补偿）
-    font_ratio = font_ratio if font_ratio is not None else SUBTITLE_FONT_RATIO
-    if vh > vw:  # 竖屏：显式 PlayResY 抵消 libass 放大，按画面高度补偿字幕字号
-        font_ratio = (vh * PORTRAIT_SUBTITLE_HEIGHT_RATIO) / 100.0
-    else:  # 横屏：同样按画面高度占比计算，保证不同分辨率下字幕视觉大小一致
-        font_ratio = (vh * SUBTITLE_FONT_RATIO) / 100.0
+    # 字幕字号：用户显式指定 font_ratio 时按「绝对字号」渲染
+    # （FontSize = ratio*100，前端「字体大小」10~60 直接对应 ASS FontSize 像素值，
+    # PlayResY=视频高 下 1:1 生效）；未指定时按画面高度占比换算（横屏 6%、竖屏 5%），
+    # 保证不同分辨率下字幕视觉大小一致。
+    # 此前实现无论是否传值都强制按 vh*6%/5% 覆盖，用户设置的字号完全不生效
+    # （"ASR 字幕大小不按设置来"的根因），已修正为以用户值为准。
+    if font_ratio is None:
+        base_ratio = PORTRAIT_SUBTITLE_HEIGHT_RATIO if vh > vw else SUBTITLE_FONT_RATIO
+        font_ratio = (vh * base_ratio) / 100.0
     # 字幕字间距：未指定时用默认值（默认 0 更紧凑），用户可通过切片配置调节
     spacing = spacing if spacing is not None else SUBTITLE_SPACING
     # 字幕字体粗细：未指定时用默认值（默认不加粗），用户可通过配置调节
     bold = bold if bold is not None else SUBTITLE_BOLD_DEFAULT
-    # 字幕距底边距离（像素）：未指定时用默认比例 SUBTITLE_BOTTOM_RATIO（与原实现一致，
-    # 按 1000 基准换算成固定像素值）。开启源字幕对齐时由调用方传入打码区域底边到
-    # 视频底部的像素距离，使 ASR 字幕默认位置与源字幕打码区域重合。
+    # 字幕距底边距离（像素）：未指定时按画面高度比例 SUBTITLE_BOTTOM_RATIO 换算
+    # （此前按 1000 基准换算成固定 50px，在低分辨率竖转横 406p 输出上占比达 12%，
+    # 会把字幕抬得过高）。开启源字幕对齐时由调用方传入打码区域底边到视频底部的
+    # 像素距离，使 ASR 字幕默认位置与源字幕打码区域重合。
     if margin_v is None:
-        margin_v = int(SUBTITLE_BOTTOM_RATIO * 1000)
+        margin_v = int(vh * SUBTITLE_BOTTOM_RATIO)
 
     # subtitles filter 需要能定位到字幕文件；路径含特殊字符时需转义冒号/逗号/引号
     srt_esc = (subtitle_srt.replace("\\", "\\\\")
@@ -4056,7 +4059,7 @@ def main():
         "--subtitle-font-ratio",
         type=float,
         default=None,
-        help="字幕字号（相对输出视频高度的比例，可选，默认 0.20→FontSize 20，约占画面 5pct）。越大字幕越清晰易读",
+        help="字幕字号（ASS FontSize 像素值=ratio*100，可选；未指定时按画面高度自适应：横屏 6%/竖屏 5%）。越大字幕越清晰易读",
     )
     parser.add_argument(
         "--subtitle-spacing",
@@ -4170,9 +4173,9 @@ def main():
     if vert2horiz_cfg:
         source_path = apply_vert2horiz(source_path, vert2horiz_cfg)
 
-    # 字幕字号：字号本身按输出画面高度比例自适应（约占画面 5%），
-    # 横屏/竖屏无需区别对待；用户显式指定 --subtitle-font-ratio 时以用户值为准，
-    # 未指定时 burn_subtitle 内部统一用 SUBTITLE_FONT_RATIO。
+    # 字幕字号：用户显式指定 --subtitle-font-ratio 时以用户值为准（绝对字号，
+    # FontSize=ratio*100）；未指定时 burn_subtitle 内部按画面高度自适应
+    # （横屏 6%/竖屏 5%），保证不同分辨率下视觉大小一致。
     subtitle_font_ratio = args.subtitle_font_ratio
     # 字幕字间距：用户显式指定 --subtitle-spacing 时以用户值为准，未指定时用默认值
     subtitle_spacing = args.subtitle_spacing
