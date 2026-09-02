@@ -257,6 +257,8 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
             # 引擎产出的高光片段天然 50~145s，若把用户配置的 max_duration=30 作为硬过滤，
             # 会把全部候选砍成 0。duration 仅作引擎 step2 定位参考（经 trigger_pipeline 的 config 下发），
             # 此处统一传 0（不限），保证引擎把候选高光片段全部返回。
+            # 需要真正限制输出时长时：在系统配置 default_autoclip_config 设 duration_hard_limit=true，
+            # 由 api/slice.py 在 cutlist 阶段做「超长裁剪 + 过短丢弃（保底 1 段）」，无 0 候选风险。
             min_duration=0.0,
             max_duration=0.0,
         ))

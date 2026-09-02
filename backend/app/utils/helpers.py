@@ -57,7 +57,9 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
                     highlight_mix: bool = False,
                     max_duration: Optional[float] = None,
                     max_clip_duration: Optional[float] = None,
-                    order: str = "time") -> str:
+                    order: str = "time",
+                    trim_over_duration: Optional[float] = None,
+                    drop_under_duration: Optional[float] = None) -> str:
     """Generate cutlist content from accepted clip candidates.
 
     Format per line:
@@ -69,6 +71,12 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
     - max_clip_duration: 单段最大时长（秒），仅纳入时长不超过该值的短高光段；
     - order: "time"（按源时间升序，默认）/ "score"（按评分从高到低）。
     不开启混剪时行为不变：每段独立命名（独立输出文件）。
+
+    非混剪路径的时长硬规整（duration_hard_limit=true 时由 api/slice.py 传入）：
+    - trim_over_duration: 单段超过该时长（秒）→ 裁剪 end=start+上限。只裁不丢，段数不变，
+      避免「硬过滤砍成 0 候选」问题（P1 #228 的安全替代）；
+    - drop_under_duration: 短于该时长（秒）的段丢弃；若全部段都过短则保留最长一段，
+      保证 cutlist 非空（不出 0 候选）。
     """
     lines = []
     accepted = [c for c in clips if c.status == "accepted"]
@@ -101,12 +109,25 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
             lines.append(f"{format_time(start)} {format_time(end)} {mix_name}")
             total += dur
         return "\n".join(lines)
-    for i, clip in enumerate(accepted):
+    # 非混剪路径：可选时长硬规整（duration_hard_limit=true 时由 api/slice.py 传入）
+    segs = []
+    for clip in accepted:
         start = clip.adjusted_start if clip.adjusted_start is not None else clip.start_time
         end = clip.adjusted_end if clip.adjusted_end is not None else clip.end_time
-        if start is not None and end is not None:
-            name = build_clip_name(episode_title, i + 1)
-            lines.append(f"{format_time(start)} {format_time(end)} {name}")
+        if start is None or end is None or end <= start:
+            continue
+        # 超长裁剪：只裁不丢，段数不变，避免「硬过滤砍成 0 候选」（P1 #228 的安全替代）
+        if trim_over_duration is not None and trim_over_duration > 0 and (end - start) > trim_over_duration:
+            end = start + float(trim_over_duration)
+        segs.append((start, end, clip))
+    kept = segs
+    # 过短丢弃：若全部段都过短则保留最长一段，保证 cutlist 非空（不出 0 候选）
+    if drop_under_duration is not None and drop_under_duration > 0 and segs:
+        filtered = [s for s in segs if (s[1] - s[0]) >= drop_under_duration]
+        kept = filtered if filtered else [max(segs, key=lambda s: s[1] - s[0])]
+    for i, (start, end, _clip) in enumerate(kept):
+        name = build_clip_name(episode_title, i + 1)
+        lines.append(f"{format_time(start)} {format_time(end)} {name}")
     return "\n".join(lines)
 
 

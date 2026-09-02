@@ -40,6 +40,7 @@ from app.models.models import (
     User,
     UserPreference,
 )
+from app.models.material import SystemConfig
 from app.services.data_scope import check_project_access_by_episode
 from app.utils.helpers import utc_iso, generate_cutlist, build_clip_name, generate_intervals_file, format_time
 from app.services.minio_service import (
@@ -754,6 +755,25 @@ async def _resolve_slice_inputs(
                         except OSError:
                             pass
 
+            # duration_hard_limit=true 时启用 cutlist 阶段时长硬规整（遗留问题②的安全开关）：
+            # 默认关闭，保持 P1 #228 行为（min/max_duration 仅作选点引擎定位参考，不做硬过滤）；
+            # 开启后超长段裁剪（只裁不丢）、过短段丢弃（全过短保底最长 1 段），无 0 候选风险。
+            trim_over_duration = None
+            drop_under_duration = None
+            try:
+                _cfg_row = (
+                    await db.execute(
+                        select(SystemConfig).where(SystemConfig.key == "default_autoclip_config")
+                    )
+                ).scalar_one_or_none()
+                if _cfg_row and isinstance(_cfg_row.value, dict):
+                    _cfg = _cfg_row.value
+                    if bool(_cfg.get("duration_hard_limit", False)):
+                        trim_over_duration = float(_cfg.get("max_duration") or 0) or None
+                        drop_under_duration = float(_cfg.get("min_duration") or 0) or None
+            except Exception as e:  # 配置读取失败不影响主流程，仅跳过时长规整
+                logger.warning("读取 duration_hard_limit 配置失败（跳过时长规整）: %s", e)
+
             cutlist = generate_cutlist(
                 accepted_clips,
                 episode_title=episode.title if episode else None,
@@ -761,6 +781,8 @@ async def _resolve_slice_inputs(
                 max_duration=data.highlight_mix_max_duration,
                 max_clip_duration=data.highlight_mix_max_clip_duration,
                 order=data.highlight_mix_order or "time",
+                trim_over_duration=trim_over_duration,
+                drop_under_duration=drop_under_duration,
             )
 
             # Generate intervals from enabled intervals

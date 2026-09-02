@@ -392,10 +392,13 @@ services:
       - ./data/media:/app/media
     # 不再对外暴露 9222 调试端口：backend/worker 经 clip-network 访问 rpa_worker:9222
     # （见 CHROME_DEBUG_HOST=rpa_worker），无需发布到宿主机，避免零凭据接管浏览器。
+    # 健康检查（健壮版，修复 163 误报 unhealthy）：
+    # 端口来源：/proc/*/cmdline 的 --remote-debugging-port → profiles.json → 回退 9222/9227；
+    # 地址覆盖 127.0.0.1 + 容器自身 IP（CDP 可能只绑特定网卡）。compose 转义：$$ → $。
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:9222/json/version"]
+      test: ['CMD-SHELL', 'ports=$$({ grep -hoE "remote-debugging-port=[0-9]+" /proc/[0-9]*/cmdline 2>/dev/null; grep -oE "\"port\"[: ]*[0-9]+" /app/profiles.json 2>/dev/null | grep -oE "[0-9]+"; echo 9222; echo 9227; } | grep -oE "[0-9]+" | sort -u); addrs="127.0.0.1 $$(hostname -i 2>/dev/null)"; ok=0; for p in $$ports; do for a in $$addrs; do curl -sf -m 2 "http://$$a:$$p/json/version" >/dev/null 2>&1 && ok=1 && break 2; done; done; exit $$((1-ok))']
       interval: 30s
-      timeout: 10s
+      timeout: 15s
       retries: 3
       start_period: 30s
     logging: *default-logging

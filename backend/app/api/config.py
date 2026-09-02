@@ -61,7 +61,7 @@ class ProfileResponse(BaseModel):
 
 
 CONFIG_DESCRIPTIONS: Dict[str, str] = {
-    "default_autoclip_config": "AI 智能选点默认参数：llm_provider 为 LLM 提供商(dashscope/openai)；llm_model 为选点用模型名；min_score_threshold 为入选最低评分(0-100)；max_clips 为最多生成的候选片段数；min_duration/max_duration 为候选片段的最短/最长时长(秒)，超出范围的高光片段会被裁剪或过滤。模型名/提供商在此修改即可切换 AI 选点所用模型。",
+    "default_autoclip_config": "AI 智能选点默认参数：llm_provider 为 LLM 提供商(dashscope/openai)；llm_model 为选点用模型名（优先级低于 llm_config.llm_model）；min_score_threshold 为入选最低评分(0-100)；max_clips 为最多生成的候选片段数。min_duration/max_duration(秒) 仅作为选点引擎定位高光的参考区间，默认【不做】硬性过滤/裁剪（引擎高光片段天然 50~145s，硬过滤会把候选砍成 0）；确需限制单段时长时把 duration_hard_limit 设为 true，切片生成 cutlist 阶段会把超过 max_duration 的片段裁剪到该上限（不减少段数），并丢弃短于 min_duration 的片段（保证至少保留 1 段）。模型名/提供商在此修改即可切换 AI 选点所用模型。",
     "default_dedupe_config": "默认去重参数（新四层体系）：preset 为基础档位(light/standard/heavy)；manual 可逐项覆盖各去重手段（crop/hflip/speed/saturation/gamma/contrast/brightness/colorbalance/colortemperature/noise/scanline/vignette/roll_band/jitter/sharpen/watermark），未填 manual 时沿用 preset 预设。用于切片时降低平台查重风险。",
     "default_interval_config": "区间检测默认参数：mode 为检测模式(credits 片尾字幕/static 静止画面/watermark 水印)；scan_window 扫描窗口(秒)；frame_interval 抽帧间隔(秒)；static_threshold 静止画面判定阈值；gold_ratio_threshold 黄金比例阈值；min_static_duration 静止画面最短持续时间(秒)。",
     "storage_retention_days": "素材与成品文件保留天数，超过该时限的临时文件会被自动清理。",
@@ -90,8 +90,11 @@ DEFAULT_CONFIGS: List[dict] = [
             "max_clips": 30,
             "min_duration": 20,
             "max_duration": 70,
+            # duration_hard_limit=false：min/max_duration 仅作引擎定位参考（P1 #228 行为）；
+            # true 时在切片 cutlist 阶段执行「超长裁剪 + 过短丢弃（保底 1 段）」，无 0 候选风险。
+            "duration_hard_limit": False,
         },
-        "description": "AI 智能选点默认参数：min_score_threshold 为入选最低评分(0-100)；max_clips 为最多生成的候选片段数；min_duration/max_duration 为候选片段的最短/最长时长(秒)，超出范围的高光片段会被裁剪或过滤。",
+        "description": "AI 智能选点默认参数：min_score_threshold 为入选最低评分(0-100)；max_clips 为最多生成的候选片段数；min_duration/max_duration(秒) 仅作为选点引擎定位高光的参考区间，默认【不做】硬性过滤/裁剪（引擎高光片段天然 50~145s，硬过滤会把候选砍成 0）；确需限制单段时长时把 duration_hard_limit 设为 true，切片生成 cutlist 阶段会把超过 max_duration 的片段裁剪到该上限（不减少段数），并丢弃短于 min_duration 的片段（保证至少保留 1 段）。",
     },
     {
         "key": "default_dedupe_config",
