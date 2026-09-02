@@ -15,19 +15,27 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o slice-worker .
 # 运行时验证通过才用），无 GPU 的机器自动回退 libx264（CPU）。
 # 本镜像同时带齐引擎依赖的 libx264/libx265（CPU 回退）与 libass/libfreetype
 # （ass/subtitles/drawtext 滤镜），保证两种机器上功能都完整。
-# 需 GitHub 可达（拉 ffmpeg + nv-codec-headers 源码）；首次构建约 20-40 分钟，
-# 之后依赖层被 Docker 缓存。
-FROM alpine:3.19 AS ffmpeg-nvenc
-RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories \
- && apk add --no-cache build-base yasm nasm git pkgconf curl \
-    x264-dev x265-dev libass-dev freetype-dev fribidi-dev harfbuzz-dev fontconfig-dev
+#
+# 基座选型（关键）：必须用 Debian(glibc) 而非 alpine(musl)——宿主机 NVIDIA 驱动库
+# （libnvidia-encode.so.1 等）是 glibc 产物，musl 进程 dlopen 即失败
+# （「Cannot load libnvidia-encode.so.1」，2026-09 生产已踩坑）。glibc 基座下
+# ffmpeg 才能加载透传进容器的 NVIDIA 驱动库，NVENC 才真正可用。
+# 需 Gitee 可达（拉 ffmpeg 源码）；首次构建约 15-30 分钟，之后依赖层被 Docker 缓存。
+FROM debian:bookworm-slim AS ffmpeg-nvenc
+# 国内镜像源加速（bookworm 源文件为 /etc/apt/sources.list.d/debian.sources）
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+    build-essential yasm nasm git pkg-config curl ca-certificates \
+    libx264-dev libx265-dev libass-dev libfreetype-dev libharfbuzz-dev libfribidi-dev \
+ && rm -rf /var/lib/apt/lists/*
 # nv-codec-headers（n12.1.14.0，匹配 ffmpeg 6.1.1）：打进仓库，构建时免网络依赖。
 # 含 5 个 ffnvcodec 头文件 + ffnvcodec.pc（ffmpeg configure 用 pkg-config 校验版本）。
 COPY nv-codec-headers /nv-codec-headers
 RUN mkdir -p /usr/include/ffnvcodec /usr/lib/pkgconfig \
  && cp /nv-codec-headers/include/ffnvcodec/*.h /usr/include/ffnvcodec/ \
  && cp /nv-codec-headers/ffnvcodec.pc /usr/lib/pkgconfig/ffnvcodec.pc
-# ffmpeg 6.1.1 与运行环境当前使用的 alpine ffmpeg 版本对齐，降低行为差异风险。
+# ffmpeg 6.1.1 与 40 生产既有版本对齐，降低行为差异风险。
 # 用 Gitee 镜像 clone（国内稳），规避 GitHub 大仓库 clone/tar 下载断流。
 RUN git -c http.version=HTTP/1.1 clone --depth 1 --branch n6.1.1 \
       https://gitee.com/mirrors/FFmpeg.git /ffmpeg
@@ -43,29 +51,32 @@ RUN ./configure \
     && make install
 
 # ========== 运行阶段 ==========
-FROM alpine:3.19
+# Debian(glibc) 运行时：NVENC 依赖的宿主机 NVIDIA 驱动库可正常 dlopen。
+# apt 自带 ffmpeg 保留只为提供共享库（libass/libxcb/harfbuzz/fribidi 等，
+# 自编译 ffmpeg 对这些是动态链接）；随后用自编译二进制覆盖 /usr/bin/ffmpeg|ffprobe。
+FROM debian:bookworm-slim
 
-# 使用国内镜像源：font-noto-cjk 包约 75MB，从官方 dl-cdn.alpinelinux.org 下载易超时卡死
-RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
+# 国内镜像源加速（bookworm 源文件为 /etc/apt/sources.list.d/debian.sources）
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
 
-RUN apk add --no-cache \
+# python3-opencv：竖屏转横屏智能裁切引擎（vert2horiz_crop.py）依赖 OpenCV（人脸检测/动态跟踪），
+# 用 apt 包避免 pip 编译；fonts-noto-cjk 提供中文字幕渲染字体。
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     python3 \
-    py3-opencv \
+    python3-opencv \
     bash \
     ca-certificates \
     tzdata \
     gettext \
-    font-noto-cjk \
-    font-droid \
     fontconfig \
-    py3-fonttools
+    fonts-noto-cjk \
+    fonts-droid-fallback \
+    python3-fonttools \
+    procps \
+ && rm -rf /var/lib/apt/lists/*
 
-# 竖屏转横屏智能裁切：引擎 vert2horiz_crop.py 依赖 OpenCV（人脸检测/动态跟踪）
-# 使用 Alpine 包管理器安装 py3-opencv，避免 pip 编译需要 gcc
-# 用自编译的 ffmpeg（含 nvenc + libx264/x265 + libass/freetype）替换 alpine 自带包。
-# 注意：保留 apk ffmpeg 只为它提供的共享库（libass/libxcb/harfbuzz/fribidi 等，
-# 自编译 ffmpeg 对这些是动态链接）；自编译二进制会覆盖 /usr/bin/ffmpeg|ffprobe。
+# 用自编译的 ffmpeg（含 nvenc + libx264/x265 + libass/freetype）替换发行版自带二进制
 COPY --from=ffmpeg-nvenc /usr/bin/ffmpeg /usr/bin/ffmpeg
 COPY --from=ffmpeg-nvenc /usr/bin/ffprobe /usr/bin/ffprobe
 
