@@ -784,6 +784,14 @@ async def _resolve_slice_inputs(
                 trim_over_duration=trim_over_duration,
                 drop_under_duration=drop_under_duration,
             )
+            if not cutlist and not fallback_whole_video:
+                # 防御性日志：候选非空但 cutlist 为空（如全部候选时间轴无效）。
+                # 此前该路径完全静默，空 cutlist 进引擎后会兜底整片切片，难以排查。
+                logger.warning(
+                    "Episode %s 已通过候选 %d 个但 cutlist 生成结果为空（候选时间轴均无效？），"
+                    "引擎将按整片切片",
+                    eid, len(accepted_clips),
+                )
 
             # Generate intervals from enabled intervals
             intervals_result = await db.execute(

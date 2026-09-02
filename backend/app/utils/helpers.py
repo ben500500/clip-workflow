@@ -1,11 +1,14 @@
 import os
 import json
 import re
+import logging
 from datetime import datetime, timedelta, timezone
 import tempfile
 from typing import List, Optional
 
 from app.models.models import ClipCandidate, DetectedInterval
+
+logger = logging.getLogger(__name__)
 
 
 def format_time(seconds: float) -> str:
@@ -68,7 +71,8 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
     highlight_mix=True 时，把所有入选高光段共用同一输出文件名（同 name）生成 cutlist：
     引擎 groups 按 name 分组后天然顺序 concat 成单个混剪视频。可选配置：
     - max_duration: 输出总时长上限（秒），累计段长不超过该值，最后一段塞入会超额时丢弃；
-    - max_clip_duration: 单段最大时长（秒），仅纳入时长不超过该值的短高光段；
+    - max_clip_duration: 单段最大时长（秒），超长段裁剪到该上限后纳入（只裁不丢，段数不变），
+      避免全部候选超长被过滤后静默返回空 cutlist -> 引擎兜底整片切片；
     - order: "time"（按源时间升序，默认）/ "score"（按评分从高到低）。
     不开启混剪时行为不变：每段独立命名（独立输出文件）。
 
@@ -86,6 +90,7 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
         # 高光混剪：所有入选段共用一个输出文件名（同 name -> 引擎同组顺序 concat 成一个文件）
         mix_name = build_clip_name(episode_title, 1)
         segs = []
+        trimmed_long = 0
         for c in accepted:
             start = c.adjusted_start if c.adjusted_start is not None else c.start_time
             end = c.adjusted_end if c.adjusted_end is not None else c.end_time
@@ -93,9 +98,14 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
                 continue
             dur = end - start
             if max_clip_duration is not None and dur > max_clip_duration:
-                continue  # 单段超长：不纳入短高光混剪
+                # 单段超长：只裁不丢（裁到单段上限后纳入）。原先「整段跳过」在全部候选
+                # 超长时会静默返回空 cutlist -> 引擎兜底整片切片（2026-09 生产事故根因）
+                end = start + float(max_clip_duration)
+                dur = float(max_clip_duration)
+                trimmed_long += 1
             segs.append((start, end, dur, c))
         if not segs:
+            logger.warning("高光混剪无有效段（候选 %d 个时间轴均无效），cutlist 将为空", len(accepted))
             return ""
         if order == "score":
             segs.sort(key=lambda s: (s[3].score if s[3].score is not None else 0.0), reverse=True)
@@ -108,6 +118,22 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
                 break
             lines.append(f"{format_time(start)} {format_time(end)} {mix_name}")
             total += dur
+        if not lines:
+            # 全部段都超总时长上限：保底裁剪纳入排序后首段，保证 cutlist 非空
+            # （对齐 duration_hard_limit「不出 0 候选」的兜底哲学，杜绝静默整片）
+            start, end, _dur, _c = segs[0]
+            if max_duration is not None and end - start > max_duration:
+                end = start + float(max_duration)
+            lines.append(f"{format_time(start)} {format_time(end)} {mix_name}")
+            total = end - start
+            logger.warning(
+                "高光混剪全部段超总时长上限(max_duration=%s)，保底裁剪纳入首段 %s-%s",
+                max_duration, format_time(start), format_time(end),
+            )
+        logger.info(
+            "高光混剪 cutlist：候选 %d 段，超长裁剪 %d 段(max_clip_duration=%s)，纳入 %d 段，总时长 %.1fs",
+            len(accepted), trimmed_long, max_clip_duration, len(lines), total,
+        )
         return "\n".join(lines)
     # 非混剪路径：可选时长硬规整（duration_hard_limit=true 时由 api/slice.py 传入）
     segs = []
