@@ -26,28 +26,34 @@ import os
 
 import asyncpg
 
-# 与 backend/app/api/config.py DEFAULT_CONFIGS 保持同源
-SEEDS = [
-    {
-        "key": "llm_config",
-        "value": {
-            "llm_api_base": "https://apihub.agnes-ai.com/v1",
-            "llm_model": "",
-            "llm_api_key": "",
+# 直接从代码 DEFAULT_CONFIGS 导入（backend 容器内运行，永远与代码同源）：
+# 覆盖 default_autoclip_config（含 duration_hard_limit 开关）/ llm_config /
+# frame_analysis_config / dupload_config 等全部系统配置种子。
+try:
+    from app.api.config import DEFAULT_CONFIGS as SEEDS
+except ImportError as e:  # 兜底：脱离 app 包运行时仅播两个核心 LLM key
+    print(f"WARN: 无法导入 DEFAULT_CONFIGS（{e}），回退内置最小种子")
+    SEEDS = [
+        {
+            "key": "llm_config",
+            "value": {
+                "llm_api_base": "https://apihub.agnes-ai.com/v1",
+                "llm_model": "",
+                "llm_api_key": "",
+            },
+            "description": "在线 LLM 网关配置（JSON）",
         },
-        "description": "在线 LLM 网关配置（JSON）：llm_api_base 为 OpenAI 兼容网关地址；llm_model 为选点 LLM 模型名（优先级高于 default_autoclip_config.llm_model）；llm_api_key 建议留空走 .env 的 LLM_API_KEY。保存后热更，无需重启。",
-    },
-    {
-        "key": "frame_analysis_config",
-        "value": {
-            "provider": "ollama",
-            "model": "agnes-2.0-flash",
-            "vision_base": "https://apihub.agnes-ai.com/v1",
-            "vision_api_key": "",
+        {
+            "key": "frame_analysis_config",
+            "value": {
+                "provider": "ollama",
+                "model": "agnes-2.0-flash",
+                "vision_base": "https://apihub.agnes-ai.com/v1",
+                "vision_api_key": "",
+            },
+            "description": "画面理解（Frame Analysis）配置（JSON）",
         },
-        "description": "画面理解（Frame Analysis）配置（JSON）：provider 为 ollama 本地 / llm 在线；model 为在线视觉模型名；vision_base 为在线视觉网关；vision_api_key 建议留空走 .env。保存后热更，无需重启。",
-    },
-]
+    ]
 
 
 async def main() -> None:
@@ -68,12 +74,13 @@ async def main() -> None:
             if row:
                 skipped.append(seed["key"])
                 continue
+            desc = (seed.get("description") or "")[:500]  # 列宽 varchar(500)，超长截断
             await conn.execute(
                 "INSERT INTO system_config (key, value, description, updated_at) "
                 "VALUES ($1, $2::jsonb, $3, now())",
                 seed["key"],
                 json.dumps(seed["value"], ensure_ascii=False),
-                seed["description"],
+                desc,
             )
             inserted.append(seed["key"])
         print(f"SEED_DONE inserted={inserted} skipped(已存在,不覆盖)={skipped}")
