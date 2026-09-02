@@ -59,12 +59,15 @@ FROM debian:bookworm-slim
 # 国内镜像源加速（bookworm 源文件为 /etc/apt/sources.list.d/debian.sources）
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
 
-# python3-opencv：竖屏转横屏智能裁切引擎（vert2horiz_crop.py）依赖 OpenCV（人脸检测/动态跟踪），
-# 用 apt 包避免 pip 编译；fonts-noto-cjk 提供中文字幕渲染字体。
+# OpenCV 不用 apt 的 python3-opencv：bookworm 只有 4.6.0，跑不动引擎内置的 yunet.onnx
+# （DNN 层报 eltwise 形状错，且 apt 版缺 cv2.data.haarcascades），竖转横人脸检测会静默退化
+# （2026-09-02 在 163 的 glibc 兼容性验证发现）。改装 pip 预编译 wheel（opencv-python-headless，
+# 免编译），版本对齐 alpine 期验证过的 4.8.1。
+# fonts-noto-cjk 提供中文字幕渲染字体。
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     python3 \
-    python3-opencv \
+    python3-pip \
     bash \
     ca-certificates \
     tzdata \
@@ -75,6 +78,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-fonttools \
     procps \
  && rm -rf /var/lib/apt/lists/*
+# pip 轮子：清华源（国内稳），Debian12 的 PEP668 需 --break-system-packages（容器单用途可接受）
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+      -i https://pypi.tuna.tsinghua.edu.cn/simple \
+      "opencv-python-headless==4.8.1.78"
 
 # 用自编译的 ffmpeg（含 nvenc + libx264/x265 + libass/freetype）替换发行版自带二进制
 COPY --from=ffmpeg-nvenc /usr/bin/ffmpeg /usr/bin/ffmpeg

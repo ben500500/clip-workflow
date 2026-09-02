@@ -79,10 +79,33 @@
 |---|---|---|
 | 1 | 本文档对账为落地结论 | ✅ 本次修订 |
 | 2 | `docker-compose.gpu.yml` 清理"仍需宿主机 ffmpeg 带 NVENC"过时注释 | ✅ 本次修订 |
-| 3 | 163 无 GPU 兼容性验证（glibc 镜像跑 CPU 回退 / 字幕滤镜 / 竖转横）| 🔄 进行中（163 先行验证，40 不动）|
+| 3 | 163 无 GPU 兼容性验证（glibc 镜像跑 CPU 回退 / 字幕滤镜 / 竖转横）| ✅ 已验（见 §八），40 不动 |
 | 4 | 引擎热更链路 `engine_update.go` 在新镜像回归一次 | ⏳ 待 |
 | 5 | 镜像体积优化（`--strip` / 裁剪 noto-cjk 子集，可选）| ⏳ 可选 |
 
 ### 遗留风险 R1（中，未处理）
 
 `deploy_remote_worker.sh` 的 `base-images-arm64.tar.gz` 仍只打包 `golang:1.22-alpine` / `alpine:3.19`；新 Dockerfile 已引入 `debian:bookworm-slim`（双段），**arm64 离线远程节点**会去 Docker Hub 拉 debian → 国内/离线超时，与"免 Hub"初衷冲突。处理：后续把 `debian:bookworm-slim` 加进该离线包。
+
+## 八、163 无 GPU 兼容性验证（2026-09-02，收尾清单 #3）
+
+在 163（无 GPU、alpine→glibc 前为旧 alpine worker）用新 glibc 镜像部署 slice-worker/slice-worker-2 验证：
+
+| 项 | 结果 |
+|---|---|
+| 镜像构建（Debian/glibc，aliyun 源）| ✅ |
+| 容器健康 / 注册 / 心跳 | ✅（Python 3.11 OK，检测到 `[h264_nvenc hevc_nvenc]` 能力）|
+| `detect_best_encoder()`（无 GPU）| ✅ 自动回退 **libx264**（h264_nvenc/hevc_nvenc 运行时不可用被跳过）|
+| CPU 编码实测 | ✅ libx264 出片正常 |
+| drawtext + 中文字体 | ✅（Noto Sans CJK）|
+| libass `.srt` 字幕烧录 | ✅ |
+| **竖转横（vert2horiz）人脸检测** | ⚠️ **发现回归并已修复**（见下）|
+
+### 回归发现与修复：apt OpenCV 4.6.0 跑不了引擎的 yunet.onnx
+
+- **现象**：新 glibc 镜像内 `python3-opencv`（Debian bookworm = **4.6.0**）创建 YuNet 成功，但 `detect()` 报 DNN `eltwise_layer` 形状错误；且 apt 版缺 `cv2.data`（haarcascades），Haar 兜底也失效 → 竖转横人脸检测**静默退化**（返回空，走无检测兜底）。
+- **对照**：旧 alpine worker 的 opencv 是 **4.8.1**，YuNet 正常（回归由基座迁移引入；40 迁移验证只测了编码、未覆盖竖转横，故漏过）。
+- **修复**（`slice-worker/Dockerfile`）：apt 去掉 `python3-opencv`，改装 pip 预编译 wheel **`opencv-python-headless==4.8.1.78`**（清华源，`--break-system-packages`），版本对齐 alpine 期验证过的 4.8.1，并自带 `cv2.data`。
+- **修复后复测**：cv2 4.8.1、`cv2.data.haarcascades` 存在、**YuNet detect 正常** ✅。
+
+> 注：40 生产已按 `5c363f2` 迁移为 glibc（apt opencv 4.6.0），**同样存在该竖转横回归**，待本次修复镜像随下次部署替换（用户要求暂不动 40）。
