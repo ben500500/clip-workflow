@@ -69,7 +69,8 @@ async def main() -> None:
                 skipped.append(seed["key"])
                 continue
             await conn.execute(
-                "INSERT INTO system_config (key, value, description) VALUES ($1, $2::jsonb, $3)",
+                "INSERT INTO system_config (key, value, description, updated_at) "
+                "VALUES ($1, $2::jsonb, $3, now())",
                 seed["key"],
                 json.dumps(seed["value"], ensure_ascii=False),
                 seed["description"],
