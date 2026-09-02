@@ -85,7 +85,7 @@ DEFAULT_CONFIGS: List[dict] = [
         "key": "default_autoclip_config",
         "value": {
             "llm_provider": "dashscope",
-            "llm_model": "qwen-plus",
+            "llm_model": "mimo-v2.5-pro",
             "min_score_threshold": 50,
             "max_clips": 30,
             "min_duration": 20,
@@ -177,7 +177,7 @@ DEFAULT_CONFIGS: List[dict] = [
     },
     {
         "key": "asr_method",
-        "value": "whisper",
+        "value": "funasr_local",
         "description": "语音识别(ASR)引擎：aliyun_speech=阿里云 qwen3-asr-flash(需 DASHSCOPE_API_KEY)；whisper=本地 faster-whisper(无需 Key)；funasr_local=本地 FunASR SenseVoice(需安装 FunASR 运行时，未装前选择会失败)。",
     },
     {
@@ -232,8 +232,8 @@ DEFAULT_CONFIGS: List[dict] = [
     {
         "key": "llm_config",
         "value": {
-            "llm_api_base": "https://apihub.agnes-ai.com/v1",
-            "llm_model": "",
+            "llm_api_base": "https://token-plan-cn.xiaomimimo.com/v1",
+            "llm_model": "mimo-v2.5-pro",
             "llm_api_key": "",
         },
         "description": "在线 LLM 网关配置（JSON）：llm_api_base 为 OpenAI 兼容网关地址（默认 Agnes https://apihub.agnes-ai.com/v1，可换成 DashScope 等）；llm_model 为选点 LLM 模型名（可选，优先级高于 default_autoclip_config.llm_model）；llm_api_key 为网关密钥（**建议配置在部署侧 .env 的 LLM_API_KEY**，此处留空则沿用环境变量，避免密钥明文入库）。保存后即可在系统设置热更，无需重启。",
@@ -241,9 +241,9 @@ DEFAULT_CONFIGS: List[dict] = [
     {
         "key": "frame_analysis_config",
         "value": {
-            "provider": "ollama",
-            "model": "agnes-2.0-flash",
-            "vision_base": "https://apihub.agnes-ai.com/v1",
+            "provider": "llm",
+            "model": "mimo-v2.5",
+            "vision_base": "https://token-plan-cn.xiaomimimo.com/v1",
             "vision_api_key": "",
         },
         "description": "画面理解（Frame Analysis）配置（JSON）：provider 为视觉模型提供商（ollama 本地 / llm 在线 OpenAI 兼容，默认 ollama）；model 为在线视觉模型名（默认 agnes-2.0-flash，支持图片理解）；vision_base 为在线视觉网关地址（默认 Agnes https://apihub.agnes-ai.com/v1）；vision_api_key 为在线视觉密钥（**建议配置在部署侧 .env 的 LLM_API_KEY**，此处留空则沿用环境变量）。provider 切到 llm 即走在线视觉模型，在线不可用自动回退本地 Ollama。保存后即可在系统设置热更，无需重启。",

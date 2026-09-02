@@ -441,10 +441,11 @@ const EpisodeDetail: React.FC = () => {
   const [minScoreThreshold, setMinScoreThreshold] = useState<number | null>(null);
   const [minClipDuration, setMinClipDuration] = useState<number | null>(null);
   const [maxClipDuration, setMaxClipDuration] = useState<number | null>(null);
-  // 画面理解（MiniCPM-V 本地视觉模型）：AI 选点时对候选片段抽帧分析画面，辅助打分，默认开启
+  // 画面理解（AI 选点时对候选片段抽帧分析画面，辅助打分）：默认开启
+  // 视觉模型提供商默认走在线（llm，OpenAI 兼容网关如 MiMo/Agnes），本地 ollama 为可选回退
   const [frameAnalysis, setFrameAnalysis] = useState(true);
-  // 画面理解视觉模型提供商：`ollama`（本地）/ `llm`（在线 OpenAI 兼容视觉模型如 Agnes）
-  const [frameAnalysisProvider, setFrameAnalysisProvider] = useState('ollama');
+  // 画面理解视觉模型提供商：`ollama`（本地）/ `llm`（在线 OpenAI 兼容视觉模型如 MiMo/Agnes）
+  const [frameAnalysisProvider, setFrameAnalysisProvider] = useState('llm');
   // ── 高光识别（AI 选点找出多段 ≤10s 的短高光片段）──
   const [highlightMode, setHighlightMode] = useState(false);
   // 高光单段最大时长（秒，默认 10）：仅保留不超过该时长的短高光
@@ -713,7 +714,7 @@ const EpisodeDetail: React.FC = () => {
     setMinClipDuration(p.min_clip_duration != null ? p.min_clip_duration : null);
     setMaxClipDuration(p.max_clip_duration != null ? p.max_clip_duration : null);
     setFrameAnalysis(p.frame_analysis ?? true);
-    setFrameAnalysisProvider(p.frame_analysis_provider ?? 'ollama');
+    setFrameAnalysisProvider(p.frame_analysis_provider ?? 'llm');
     setHighlightMode(p.highlight_mode ?? false);
     if (p.highlight_mode && p.highlight_max_duration != null) setHighlightMaxDuration(p.highlight_max_duration);
     setHighlightMixEnabled(p.highlight_mix_enabled ?? false);
