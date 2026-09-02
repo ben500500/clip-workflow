@@ -214,6 +214,11 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 			if sp, ok := task.Subtitle["spacing"].(float64); ok {
 				args = append(args, "--subtitle-spacing", strconv.FormatFloat(sp, 'f', 0, 64))
 			}
+			// 字幕距底边距离（相对高度比例）：透传给引擎 --subtitle-margin-ratio，
+			// 未设置时用引擎默认值（1/3 屏高，字幕块中心约在 2/3 屏高处）
+			if mr, ok := task.Subtitle["margin_ratio"].(float64); ok && mr > 0 {
+				args = append(args, "--subtitle-margin-ratio", strconv.FormatFloat(mr, 'f', -1, 64))
+			}
 			// 字幕样式（default/custom 自定义字体色+边框色、无底色）：透传给引擎
 			if st, ok := task.Subtitle["style"].(string); ok && st != "" {
 				args = append(args, "--subtitle-style", st)

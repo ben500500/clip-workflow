@@ -1476,8 +1476,9 @@ PORTRAIT_SUBTITLE_HEIGHT_RATIO = 0.05
 # 字幕字间距（ASS Spacing，单位像素）。默认 -2 为字体原生字距基础上的轻微收紧；
 # 用户实测字距偏宽，已将半角标点归一化、更负 Spacing 等间距实验复原，保留字体原生全角标点字距。
 SUBTITLE_SPACING = -2
-# 字幕距底边距离（相对输出高度比例，越小越贴近画面底部；用户反馈原 0.08 偏高，调低到 0.05 更贴底）
-SUBTITLE_BOTTOM_RATIO = 0.05
+# 字幕距底边距离（相对输出高度比例）。默认 1/3：字幕块中心落在约 2/3 屏高处
+# （视觉黄金位，抖音短剧常用字幕位）。用户可通过切片配置 margin_ratio 自定义。
+SUBTITLE_BOTTOM_RATIO = 0.333
 
 # 字幕样式：默认（白字黑边 + 半透明黑底）与自定义（可选字体/边框色，无底色）
 SUBTITLE_STYLE_DEFAULT = "default"
@@ -1821,6 +1822,7 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
                   font_color: Optional[str] = None,
                   border_color: Optional[str] = None,
                   margin_v: Optional[int] = None,
+                  margin_ratio: Optional[float] = None,
                   bold: Optional[int] = None) -> None:
     """用 ffmpeg subtitles filter 把字幕烧录到成品视频。
 
@@ -1828,7 +1830,9 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
     font_ratio: 字幕字号（相对输出视频高度的比例，不传用默认值 SUBTITLE_FONT_RATIO）。
     spacing: 字幕字间距（ASS Spacing 像素，不传用默认值 SUBTITLE_SPACING）。
     bold: 字幕字体粗细（ASS Bold，0=不加粗，-1/1=加粗）。不传用默认值 SUBTITLE_BOLD_DEFAULT。
-    margin_v: 字幕距底边距离（像素）。不传用默认值 SUBTITLE_BOTTOM_RATIO；
+    margin_ratio: 字幕距底边距离（相对输出视频高度的比例，可选；默认 SUBTITLE_BOTTOM_RATIO=1/3，
+        字幕块中心约在 2/3 屏高处）。
+    margin_v: 字幕距底边距离（像素，优先级高于 margin_ratio）。
         开启源字幕对齐时传入检测到的打码区域底边到视频底部的像素距离，
         使 ASR 字幕位置与源字幕打码区域重合。
     style: 字幕样式（SUBTITLE_STYLE_DEFAULT=白字黑边+半透明黑底 / SUBTITLE_STYLE_CUSTOM=可
@@ -1867,12 +1871,15 @@ def burn_subtitle(video_in: str, subtitle_srt: str, video_out: str,
     spacing = spacing if spacing is not None else SUBTITLE_SPACING
     # 字幕字体粗细：未指定时用默认值（默认不加粗），用户可通过配置调节
     bold = bold if bold is not None else SUBTITLE_BOLD_DEFAULT
-    # 字幕距底边距离（像素）：未指定时按画面高度比例 SUBTITLE_BOTTOM_RATIO 换算
-    # （此前按 1000 基准换算成固定 50px，在低分辨率竖转横 406p 输出上占比达 12%，
-    # 会把字幕抬得过高）。开启源字幕对齐时由调用方传入打码区域底边到视频底部的
-    # 像素距离，使 ASR 字幕默认位置与源字幕打码区域重合。
+    # 字幕距底边距离（像素）：优先级 margin_v > margin_ratio > SUBTITLE_BOTTOM_RATIO。
+    # 未指定时按画面高度比例换算（默认 1/3，字幕块中心约在 2/3 屏高处）；
+    # 开启源字幕对齐时由调用方传入打码区域底边到视频底部的像素距离，使 ASR 字幕
+    # 默认位置与源字幕打码区域重合（此时忽略 margin_ratio）。
     if margin_v is None:
-        margin_v = int(vh * SUBTITLE_BOTTOM_RATIO)
+        if margin_ratio is not None and margin_ratio > 0:
+            margin_v = int(vh * margin_ratio)
+        else:
+            margin_v = int(vh * SUBTITLE_BOTTOM_RATIO)
 
     # subtitles filter 需要能定位到字幕文件；路径含特殊字符时需转义冒号/逗号/引号
     srt_esc = (subtitle_srt.replace("\\", "\\\\")
@@ -4068,6 +4075,13 @@ def main():
         help="字幕字间距（ASS Spacing 像素，可选，默认 0 更紧凑）。调小/为负可让字幕文字更紧凑，调大则字距变宽",
     )
     parser.add_argument(
+        "--subtitle-margin-ratio",
+        type=float,
+        default=None,
+        help="字幕距底边距离（相对输出视频高度的比例，可选，默认 1/3 即字幕块中心约在 2/3 屏高处）。"
+             "越大字幕越靠上、越小越贴底；0.05≈贴底，0.5≈居中",
+    )
+    parser.add_argument(
         "--subtitle-bold",
         type=int,
         default=None,
@@ -4179,6 +4193,9 @@ def main():
     subtitle_font_ratio = args.subtitle_font_ratio
     # 字幕字间距：用户显式指定 --subtitle-spacing 时以用户值为准，未指定时用默认值
     subtitle_spacing = args.subtitle_spacing
+    # 字幕距底边距离（相对高度比例）：用户显式指定 --subtitle-margin-ratio 时以用户值为准，
+    # 未指定时 burn_subtitle 内部按 SUBTITLE_BOTTOM_RATIO（默认 1/3）换算
+    subtitle_margin_ratio = args.subtitle_margin_ratio
     # 字幕字体粗细：用户显式指定 --subtitle-bold 时以用户值为准，未指定时用默认值
     subtitle_bold = args.subtitle_bold
     # 字幕对齐源字幕打码区域开关（默认开启）：开启后 ASR 字幕位置对齐到检测到的源字幕打码区域
@@ -4717,7 +4734,8 @@ def main():
                                   font_color=args.subtitle_color,
                                   border_color=args.subtitle_border_color,
                                   bold=subtitle_bold,
-                                  margin_v=margin_v)
+                                  margin_v=margin_v,
+                                  margin_ratio=subtitle_margin_ratio)
                     os.replace(sub_out, out_path)
             # 恒定水印/角标打码：切片+字幕完成后，打掉片源固定水印（全程打码，
             # 水印是恒定元素无时间轴可言；区域由自动检测或手动 x/y/width/height 指定）。

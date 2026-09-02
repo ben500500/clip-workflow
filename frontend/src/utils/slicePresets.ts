@@ -28,6 +28,8 @@ export interface SlicePreset {
   // ASR 字幕
   subtitle_enabled: boolean;
   subtitle_font_ratio: number;
+  // 字幕距底边距离（相对输出高度比例，默认 1/3=0.333，字幕块中心约在 2/3 屏高处）
+  subtitle_margin_ratio: number;
   subtitle_spacing: number;
   subtitle_bold: number;
   subtitle_style: 'default' | 'custom';
@@ -103,6 +105,8 @@ export const DEFAULT_SLICE_PRESET: SlicePreset = {
   vert2horiz_face_margin: 0.30,
   subtitle_enabled: true,
   subtitle_font_ratio: 0.22,
+  // 字幕距底 1/3 屏高（字幕块中心约在 2/3 屏高处，抖音短剧常用位）
+  subtitle_margin_ratio: 0.333,
   subtitle_spacing: -2,
   subtitle_bold: 0,
   subtitle_style: 'custom',

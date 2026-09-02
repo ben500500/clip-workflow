@@ -351,7 +351,7 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
         "vert2horiz_enabled", "vert2horiz_mode", "vert2horiz_ratio",
         "vert2horiz_output_size", "vert2horiz_detect_interval",
         "vert2horiz_smooth_window", "vert2horiz_min_step", "vert2horiz_face_margin",
-        "subtitle_enabled", "subtitle_font_ratio", "subtitle_spacing", "subtitle_bold", "subtitle_style",
+        "subtitle_enabled", "subtitle_font_ratio", "subtitle_margin_ratio", "subtitle_spacing", "subtitle_bold", "subtitle_style",
         "subtitle_color", "subtitle_border_color", "subtitle_file_key", "text_overlays",
         "subtitle_mask_enabled", "subtitle_mask_style", "subtitle_mask_preset",
         "subtitle_mask_temporal", "subtitle_mask_spatial",

@@ -682,6 +682,7 @@ def slice_task(
         # 字幕烧录:把 ASR 生成的 SRT 写到本地文件,供引擎 --subtitle 使用
         subtitle_srt_path = None
         subtitle_font_ratio = None
+        subtitle_margin_ratio = None
         subtitle_spacing = None
         subtitle_style = None
         subtitle_color = None
@@ -696,6 +697,10 @@ def slice_task(
             fr = subtitle_config.get("font_ratio")
             if isinstance(fr, (int, float)) and fr > 0:
                 subtitle_font_ratio = float(fr)
+            # 字幕距底边距离(相对高度比例),默认 1/3 即字幕块中心约在 2/3 屏高处
+            mr = subtitle_config.get("margin_ratio")
+            if isinstance(mr, (int, float)) and mr > 0:
+                subtitle_margin_ratio = float(mr)
             # 字幕字间距(ASS Spacing 像素),让字幕文字更紧凑
             sp = subtitle_config.get("spacing")
             if isinstance(sp, (int, float)):
@@ -750,6 +755,7 @@ def slice_task(
                     badge_default_width=badge_default_width,
                     subtitle_srt_path=subtitle_srt_path,
                     subtitle_font_ratio=subtitle_font_ratio,
+                    subtitle_margin_ratio=subtitle_margin_ratio,
                     subtitle_spacing=subtitle_spacing,
                     subtitle_style=subtitle_style,
                     subtitle_color=subtitle_color,
@@ -784,6 +790,7 @@ def slice_task(
                     badge_default_width=badge_default_width,
                     subtitle_srt_path=subtitle_srt_path,
                     subtitle_font_ratio=subtitle_font_ratio,
+                    subtitle_margin_ratio=subtitle_margin_ratio,
                     subtitle_spacing=subtitle_spacing,
                     subtitle_style=subtitle_style,
                     subtitle_color=subtitle_color,

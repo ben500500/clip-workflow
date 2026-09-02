@@ -137,6 +137,7 @@ async def run_slice(
     badge_default_width: int = 0,
     subtitle_srt_path: Optional[str] = None,
     subtitle_font_ratio: Optional[float] = None,
+    subtitle_margin_ratio: Optional[float] = None,
     subtitle_spacing: Optional[int] = None,
     subtitle_bold: Optional[int] = None,
     subtitle_style: Optional[str] = None,
@@ -167,6 +168,8 @@ async def run_slice(
     badge_default_width: 角标默认宽度（px，0=保持原图尺寸；角标未单独设 width 时生效）。
     subtitle_srt_path: 源视频 SRT 字幕文件路径（切片时烧录到成品，可选）。
     subtitle_font_ratio: 字幕字号（相对输出视频高度的比例，可选；不传用引擎默认值）。
+    subtitle_margin_ratio: 字幕距底边距离（相对输出视频高度的比例，可选；
+        默认 1/3 即字幕块中心约在 2/3 屏高处）。
     subtitle_spacing: 字幕字间距（ASS Spacing 像素，可选；不传用引擎默认值）。
     """
     engine_path = engine_path or _engine_path("slice.py")
@@ -189,6 +192,9 @@ async def run_slice(
         cmd.extend(["--subtitle", subtitle_srt_path])
     if subtitle_font_ratio and subtitle_font_ratio > 0:
         cmd.extend(["--subtitle-font-ratio", str(float(subtitle_font_ratio))])
+    # 字幕距底边距离（相对高度比例）：透传给引擎 --subtitle-margin-ratio，未设置用引擎默认 1/3
+    if subtitle_margin_ratio and subtitle_margin_ratio > 0:
+        cmd.extend(["--subtitle-margin-ratio", str(float(subtitle_margin_ratio))])
     if subtitle_spacing is not None:
         cmd.extend(["--subtitle-spacing", str(int(subtitle_spacing))])
     if subtitle_bold is not None:
@@ -247,6 +253,7 @@ async def run_slice_scrub(
     badge_default_width: int = 0,
     subtitle_srt_path: Optional[str] = None,
     subtitle_font_ratio: Optional[float] = None,
+    subtitle_margin_ratio: Optional[float] = None,
     subtitle_spacing: Optional[int] = None,
     subtitle_bold: Optional[int] = None,
     subtitle_style: Optional[str] = None,
@@ -281,6 +288,7 @@ async def run_slice_scrub(
         badge_default_width=badge_default_width,
         subtitle_srt_path=subtitle_srt_path,
         subtitle_font_ratio=subtitle_font_ratio,
+        subtitle_margin_ratio=subtitle_margin_ratio,
         subtitle_spacing=subtitle_spacing,
         subtitle_bold=subtitle_bold,
         subtitle_style=subtitle_style,
@@ -315,6 +323,7 @@ async def run_slice_fast(
     badge_default_width: int = 0,
     subtitle_srt_path: Optional[str] = None,
     subtitle_font_ratio: Optional[float] = None,
+    subtitle_margin_ratio: Optional[float] = None,
     subtitle_spacing: Optional[int] = None,
     subtitle_bold: Optional[int] = None,
     subtitle_style: Optional[str] = None,
@@ -351,6 +360,7 @@ async def run_slice_fast(
         badge_default_width=badge_default_width,
         subtitle_srt_path=subtitle_srt_path,
         subtitle_font_ratio=subtitle_font_ratio,
+        subtitle_margin_ratio=subtitle_margin_ratio,
         subtitle_spacing=subtitle_spacing,
         subtitle_bold=subtitle_bold,
         subtitle_style=subtitle_style,

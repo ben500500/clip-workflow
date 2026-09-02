@@ -82,6 +82,8 @@ export const sliceApi = {
       subtitle_enabled?: boolean;
       // 字幕字号（相对输出视频高度的比例，默认 0.07；可调大让字幕更清晰易读）
       subtitle_font_ratio?: number;
+      // 字幕距底边距离（相对输出高度比例，默认 1/3=0.333，字幕块中心约在 2/3 屏高处；0.05≈贴底，0.5≈居中）
+      subtitle_margin_ratio?: number;
       // 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；负值/调小让字幕文字更紧凑，调大则字距变宽）
       subtitle_spacing?: number;
       // 字幕字体粗细（ASS Bold：0=不加粗，-1 或 1=加粗，默认 0 不加粗）

@@ -962,6 +962,17 @@ const BatchSlicePage: React.FC = () => {
                   max={20}
                   style={{ width: 70 }}
                 />
+                <Tooltip title="字幕距画面底部的距离（占画面高度比例）。默认 0.333（1/3 屏高，字幕块中心约在 2/3 屏高处）；越小越贴底，0.05≈贴底，0.5≈居中">
+                  <Text style={{ cursor: 'help' }}>距底</Text>
+                </Tooltip>
+                <InputNumber
+                  value={sliceConfig.subtitle_margin_ratio}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_margin_ratio: v ?? 0.333 })}
+                  step={0.01}
+                  min={0.02}
+                  max={0.6}
+                  style={{ width: 80 }}
+                />
                 <Text>粗细</Text>
                 <Select
                   value={sliceConfig.subtitle_bold}

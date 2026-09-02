@@ -385,6 +385,8 @@ const EpisodeDetail: React.FC = () => {
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
   // 字幕字号（相对输出视频高度的比例，默认 0.22→FontSize 22；转横屏开启时默认套用，用户可调）
   const [subtitleFontRatio, setSubtitleFontRatio] = useState(0.22);
+  // 字幕距底边距离（相对输出高度比例，默认 1/3=0.333，字幕块中心约在 2/3 屏高处）
+  const [subtitleMarginRatio, setSubtitleMarginRatio] = useState(0.333);
   // 字幕字间距（ASS Spacing 像素，默认 -1 更紧凑；调小/负值让字幕文字更紧凑，调大则字距变宽）
   const [subtitleSpacing, setSubtitleSpacing] = useState(-2);
   // 字幕字体粗细（ASS Bold：0=不加粗，-1 或 1=加粗，默认 0 不加粗；加粗让字幕更醒目）
@@ -611,6 +613,7 @@ const EpisodeDetail: React.FC = () => {
     vert2horiz_face_margin: vert2horizFaceMargin,
     subtitle_enabled: subtitleEnabled,
     subtitle_font_ratio: subtitleFontRatio,
+    subtitle_margin_ratio: subtitleMarginRatio,
     subtitle_spacing: subtitleSpacing,
     subtitle_bold: subtitleBold,
     subtitle_style: subtitleStyle,
@@ -670,6 +673,7 @@ const EpisodeDetail: React.FC = () => {
     setVert2horizFaceMargin(p.vert2horiz_face_margin);
     setSubtitleEnabled(p.subtitle_enabled);
     setSubtitleFontRatio(p.subtitle_font_ratio);
+    setSubtitleMarginRatio(p.subtitle_margin_ratio ?? 0.333);
     setSubtitleSpacing(p.subtitle_spacing ?? -2);
     setSubtitleBold(p.subtitle_bold ?? 0);
     setSubtitleStyle(p.subtitle_style);
@@ -843,7 +847,7 @@ const EpisodeDetail: React.FC = () => {
     sliceMode, dedupePreset, vert2horizEnabled, vert2horizMode, vert2horizRatio,
     vert2horizOutputSize, vert2horizDetectInterval, vert2horizSmoothWindow,
     vert2horizMinStep, vert2horizFaceMargin, subtitleEnabled, subtitleFontRatio,
-    subtitleSpacing, subtitleBold, subtitleStyle, subtitleColor, subtitleBorderColor,
+    subtitleMarginRatio, subtitleSpacing, subtitleBold, subtitleStyle, subtitleColor, subtitleBorderColor,
     subtitleMaskEnabled, subtitleMaskStyle, subtitleMaskTemporal, subtitleMaskSpatial,
     subtitleMaskPreset, subtitleMaskWidthRatio, subtitleMaskHeightRatio, subtitleMaskBottomRatio,
     subtitleMaskSrtOffset, subtitleAlignMask,
@@ -1361,6 +1365,8 @@ const EpisodeDetail: React.FC = () => {
         subtitle_enabled: subtitleEnabled,
         // 字幕字号（相对高度比例）：可调大让字幕更清晰易读
         subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
+        // 字幕距底边距离（相对高度比例，默认 1/3，字幕块中心约在 2/3 屏高处）
+        subtitle_margin_ratio: subtitleEnabled ? subtitleMarginRatio : undefined,
         // 字幕字间距（ASS Spacing 像素）：让字幕文字更紧凑
         subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
         // 字幕字体粗细：加粗让字幕文字更醒目
@@ -1571,6 +1577,8 @@ const EpisodeDetail: React.FC = () => {
         subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
         // 字幕字间距（ASS Spacing 像素）：让字幕文字更紧凑
         subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
+        // 字幕距底边距离（相对高度比例，默认 1/3，字幕块中心约在 2/3 屏高处）
+        subtitle_margin_ratio: subtitleEnabled ? subtitleMarginRatio : undefined,
         // 字幕字体粗细：加粗让字幕文字更醒目
         subtitle_bold: subtitleEnabled ? subtitleBold : undefined,
         subtitle_align_mask: subtitleEnabled ? subtitleAlignMask : undefined,
@@ -3487,6 +3495,10 @@ const EpisodeDetail: React.FC = () => {
               <Space wrap align="center" size={8}>
                 <Text style={{ fontSize: 12 }}>字号</Text>
                 <InputNumber size="small" min={10} max={60} step={1} value={Math.round(subtitleFontRatio * 100)} onChange={(v) => { const fs = v ?? 22; setSubtitleFontRatio(Math.max(0.1, Math.min(0.6, fs / 100))); }} style={{ width: 80 }} />
+                <Tooltip title="字幕距画面底部的距离（占画面高度比例）。默认 0.333（1/3 屏高，字幕块中心约在 2/3 屏高处）；越小越贴底，0.05≈贴底，0.5≈居中">
+                  <Text style={{ fontSize: 12, cursor: 'help' }}>距底</Text>
+                </Tooltip>
+                <InputNumber size="small" min={0.02} max={0.6} step={0.01} value={subtitleMarginRatio} onChange={(v) => setSubtitleMarginRatio(v ?? 0.333)} style={{ width: 70 }} />
                 <Radio.Group size="small" value={subtitleStyle} onChange={(e) => setSubtitleStyle(e.target.value)}>
                   <Radio.Button value="default">默认</Radio.Button>
                   <Radio.Button value="custom">自定义</Radio.Button>

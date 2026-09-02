@@ -105,6 +105,8 @@ const SliceTasks: React.FC = () => {
   const [subtitleFontSize, setSubtitleFontSize] = useState(30);
   // 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；调小/负值让字幕文字更紧凑，调大则字距变宽）
   const [subtitleSpacing, setSubtitleSpacing] = useState(0);
+  // 字幕距底边距离（相对输出高度比例，默认 1/3：字幕块中心约在 2/3 屏高处）
+  const [subtitleMarginRatio, setSubtitleMarginRatio] = useState(0.333);
   // 字幕样式：default（白字黑边带底色）/ custom（自定义字体色+边框色，无底色）
   const [subtitleStyle, setSubtitleStyle] = useState<'default' | 'custom'>('custom');
   // 自定义样式的字体色 / 边框色（默认 #EDD736 黄 / 黑边）
@@ -246,6 +248,8 @@ const SUBTITLE_MASK_PRESETS = [
         subtitle_font_ratio: subtitleEnabled ? Math.max(0.1, Math.min(0.6, subtitleFontSize / 100)) : undefined,
         // 字幕字间距（ASS Spacing 像素）：让字幕文字更紧凑
         subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
+        // 字幕距底边距离（相对高度比例）：默认 1/3（字幕块中心约在 2/3 屏高处）
+        subtitle_margin_ratio: subtitleEnabled ? subtitleMarginRatio : undefined,
         // 字幕样式：custom 时可选字体色/边框色（无底色）
         subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
         subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
@@ -1016,6 +1020,21 @@ const SUBTITLE_MASK_PRESETS = [
                   addonAfter="px"
                 />
                 <Text type="secondary" style={{ fontSize: 12 }}>越小越紧凑</Text>
+              </Space>
+              <Space wrap align="center" size={8}>
+                <Tooltip title="字幕距画面底部的距离（占画面高度比例）。默认 0.333（1/3 屏高，字幕块中心约在 2/3 屏高处）；越小越贴底，0.05≈贴底，0.5≈居中">
+                  <Text strong style={{ fontSize: 12, cursor: 'help' }}>字幕距底</Text>
+                </Tooltip>
+                <InputNumber
+                  size="small"
+                  min={0.02}
+                  max={0.6}
+                  step={0.01}
+                  value={subtitleMarginRatio}
+                  onChange={(v) => setSubtitleMarginRatio(v ?? 0.333)}
+                  style={{ width: 100 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>默认 0.333（1/3 屏高）</Text>
               </Space>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 12 }}>字幕样式</Text>

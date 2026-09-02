@@ -246,6 +246,9 @@ class SliceRunRequest(BaseModel):
     # 字幕字间距（ASS Spacing 像素，默认 0 更紧凑；负值/调小让字幕文字更紧凑，调大则字距变宽）。
     # 不传用引擎默认值 SUBTITLE_SPACING。
     subtitle_spacing: Optional[int] = None
+    # 字幕距底边距离（相对输出视频高度的比例，可选；默认 1/3 即字幕块中心约在 2/3 屏高处）。
+    # 越大字幕越靠上、越小越贴底；0.05≈贴底，0.5≈居中。
+    subtitle_margin_ratio: Optional[float] = None
     # 字幕字体粗细（ASS Bold：0=不加粗，-1 或 1=加粗，默认 0 不加粗）。加粗让字幕文字更醒目。
     subtitle_bold: Optional[int] = None
     # 字幕对齐源字幕打码区域开关（默认 True 开启）：开启源字幕打码并检测到字幕区域时，
@@ -799,11 +802,14 @@ async def _read_existing_subtitle(episode: Episode, db: AsyncSession) -> Optiona
 
 
 def _with_subtitle_options(cfg: dict, data: SliceRunRequest) -> dict:
-    """把用户设置的字幕样式（字号/字间距/自定义字体色/边框色）写入字幕配置，随任务下发给引擎。"""
+    """把用户设置的字幕样式（字号/字间距/距底位置/自定义字体色/边框色）写入字幕配置，随任务下发给引擎。"""
     if data.subtitle_font_ratio is not None and data.subtitle_font_ratio > 0:
         cfg["font_ratio"] = round(float(data.subtitle_font_ratio), 4)
     if data.subtitle_spacing is not None:
         cfg["spacing"] = int(data.subtitle_spacing)
+    # 字幕距底边距离（相对高度比例）：随任务下发，Go worker 透传 --subtitle-margin-ratio
+    if data.subtitle_margin_ratio is not None and data.subtitle_margin_ratio > 0:
+        cfg["margin_ratio"] = round(float(data.subtitle_margin_ratio), 4)
     if data.subtitle_bold is not None:
         cfg["bold"] = int(data.subtitle_bold)
     if data.subtitle_style:
@@ -1489,6 +1495,7 @@ async def _dispatch_local(
         # 字幕烧录：把 ASR 生成的 SRT 写到本地文件
         subtitle_srt_path = None
         subtitle_font_ratio = None
+        subtitle_margin_ratio = None
         subtitle_spacing = None
         subtitle_style = None
         subtitle_color = None
@@ -1501,6 +1508,10 @@ async def _dispatch_local(
             fr = subtitle_config.get("font_ratio")
             if isinstance(fr, (int, float)) and fr > 0:
                 subtitle_font_ratio = float(fr)
+            # 字幕距底边距离（相对高度比例）：默认 1/3 即字幕块中心约在 2/3 屏高处
+            mr = subtitle_config.get("margin_ratio")
+            if isinstance(mr, (int, float)) and mr > 0:
+                subtitle_margin_ratio = float(mr)
             sp = subtitle_config.get("spacing")
             if isinstance(sp, (int, float)):
                 subtitle_spacing = int(sp)
@@ -1537,6 +1548,7 @@ async def _dispatch_local(
                 badge_default_width=badge_default_width,
                 subtitle_srt_path=subtitle_srt_path,
                 subtitle_font_ratio=subtitle_font_ratio,
+                subtitle_margin_ratio=subtitle_margin_ratio,
                 subtitle_spacing=subtitle_spacing,
                 subtitle_style=subtitle_style,
                 subtitle_color=subtitle_color,
@@ -1568,6 +1580,7 @@ async def _dispatch_local(
                 badge_default_width=badge_default_width,
                 subtitle_srt_path=subtitle_srt_path,
                 subtitle_font_ratio=subtitle_font_ratio,
+                subtitle_margin_ratio=subtitle_margin_ratio,
                 subtitle_spacing=subtitle_spacing,
                 subtitle_style=subtitle_style,
                 subtitle_color=subtitle_color,
