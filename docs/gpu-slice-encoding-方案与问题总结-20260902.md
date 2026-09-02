@@ -109,3 +109,28 @@
 - **修复后复测**：cv2 4.8.1、`cv2.data.haarcascades` 存在、**YuNet detect 正常** ✅。
 
 > 注：40 生产已按 `5c363f2` 迁移为 glibc（apt opencv 4.6.0），**同样存在该竖转横回归**，待本次修复镜像随下次部署替换（用户要求暂不动 40）。
+
+## 九、40 生产落地（2026-09-02，GPU 方案收官）
+
+163 验证通过后，把修复滚到 40 生产（注意用 `docker-compose.gpu.yml` overlay 才能透传 GPU）：
+
+| 项 | 结果 |
+|---|---|
+| opencv 4.8.1 修复镜像（`bbd4b10`）上 40 | ✅ cv2 4.8.1 + cv2.data + YuNet 正常 |
+| **新发现并修复**：`detect_best_encoder` 探测帧 64x64 < NVENC 最小尺寸（Turing≥128）→ 有 GPU 也误判 nvenc 不可用、**40 一直静默走 CPU** | ✅ 探测帧改 320x240（commit `d2a7e79`），40 实测 `encoder => h264_nvenc` |
+| 真实 NVENC 出片 | ✅ `wrapped_avframe -> h264 (h264_nvenc)`，640x360 出片成功 |
+| worker 启动 | ✅ 检测到硬件编码能力 `[h264_nvenc hevc_nvenc]`，Python 3.11 OK |
+| 全栈 | ✅ 18 容器健康 |
+
+> ⚠️ 坑：40 重建 slice-worker 必须带 `docker-compose.gpu.yml` overlay（`docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d`），否则 GPU 透传丢失、nvenc 回退 CPU；且 compose 优雅停机（stop_grace_period=15m）会卡重建，先 `docker stop -t 20` 旧容器再 `up`。
+
+### 收尾清单最终状态
+
+| # | 项 | 状态 |
+|---|---|---|
+| 1 | 本文档对账 | ✅ |
+| 2 | gpu.yml 注释清理 | ✅ |
+| 3 | 163/40 兼容性 + 竖转横 opencv 回归修复 | ✅（40 已随本轮落地）|
+| 4 | 引擎热更链路回归 | ⏳ 待 |
+| 5 | 体积优化（可选）| ⏳ 可选 |
+| R1 | arm64 离线节点补 debian 基座 | ⏳ 待 |
