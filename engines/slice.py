@@ -771,12 +771,15 @@ def _encoder_runtime_ok(enc: str) -> bool:
 
     仅查 `ffmpeg -encoders` 静态列表不可靠：无 NVIDIA GPU/驱动时 nvenc 仍会被列出，
     但运行时必然失败（-22 Invalid argument）。软件 libx264 无驱动依赖，直接放行。
+    测试帧尺寸必须 ≥ NVENC 最小分辨率（Turing 最小 128x128，取 320x240）——
+    曾用 64x64 导致有 GPU 时 nvenc 也报 “Frame Dimension less than the minimum
+    supported value” 被误判不可用、永远回退 CPU（2026-09-02 40 生产实测）。
     """
     if not enc or enc == "libx264":
         return True
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1:r=1",
+        "-f", "lavfi", "-i", "color=c=black:s=320x240:d=0.1:r=1",
         "-frames:v", "1", "-c:v", enc,
         "-f", "null", "-",
     ]
