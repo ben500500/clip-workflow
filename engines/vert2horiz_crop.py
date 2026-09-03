@@ -76,6 +76,12 @@ SAVGOL_WINDOW_DEFAULT = 15
 # 角度出发，把人脸仍在窗口内的整段移动都吞掉，从根本上避免频繁移动带来的抖动。
 # 值越大越稳（但跟手性变差），越小越跟手。可通过 --face-margin / vert2horiz_face_margin 配置。
 FACE_MARGIN_DEFAULT = 0.30
+# 动态模式缓动：裁切窗重定位时每帧最多移动的像素数（源画面坐标）。
+# apply_dynamic_crop 用 ffmpeg sendcmd 让 crop_y 跳变，若目标一次移动几十~上百
+# 像素会整帧“瞬移”，观感即画面跳动（2026-09-03 40 生产 9月1日.mp4 反馈）。本常量把
+# 每次重定位限速为每帧最多移动该像素数，让裁切窗平滑平移（约 5px/帧@30fps≈150px/s）。
+# 可经 apply_dynamic_crop 的 ease_px_per_frame 参数覆盖；越小越平滑、跟随越滞后。
+DYNAMIC_EASE_PX_PER_FRAME = 5
 
 
 def get_video_info(path):
@@ -575,15 +581,18 @@ def apply_fixed_crop(video_path, output_path, crop_params, output_size="1280x720
     print(f"输出: {output_path}")
 
 
-def apply_dynamic_crop(video_path, output_path, crop_params, fps, output_size="1280x720", min_step=MIN_STEP_DEFAULT):
+def apply_dynamic_crop(video_path, output_path, crop_params, fps, output_size="1280x720",
+                       min_step=MIN_STEP_DEFAULT, ease_px_per_frame=DYNAMIC_EASE_PX_PER_FRAME):
     """
     用 ffmpeg sendcmd 应用动态裁切
 
     Args:
-        min_step: 最小移动阈值（像素，源画面坐标），与
-                  generate_dynamic_crop_params 保持一致。只有 crop_y 变化
-                  超过该值才写入一条 sendcmd，其余帧自动保持上一位置，
-                  从而避免逐帧微平移导致的画面抖动。
+        min_step: 最小移动阈值（像素，源画面坐标），保留用于兼容；
+                  目标位置序列已在 generate_dynamic_crop_params 阶段做过
+                  平滑/死区/舒适区处理，此处主要依赖缓动保证平滑。
+        ease_px_per_frame: 每帧最多移动像素数（缓动限速）。若目标 crop_y
+                  一次移动较大，会分成多帧逐步逼近，把“瞬移”变成平滑平移，
+                  消除画面跳动；越小越平滑但跟随滞后越大。
     """
     if not crop_params:
         raise ValueError("裁切参数为空")
@@ -593,17 +602,30 @@ def apply_dynamic_crop(video_path, output_path, crop_params, fps, output_size="1
 
     out_w, out_h = output_size.split("x")
 
-    # 稀疏化写入 sendcmd：只在 crop_y 显著变化时才写命令，未变化/微变的帧
-    # 自动保持上一写入位置。这样既大幅减少 ffmpeg 命令数，也彻底避免
-    # 逐帧微平移造成的画面抖动（配合 generate_dynamic_crop_params 的
-    # Savitzky-Golay 平滑 + 死区去抖，效果最佳）。
+    # 目标 crop_y 序列（generate 阶段已做 Savitzky-Golay 平滑 + 死区 + 舒适区）
+    ys = [p["crop_y"] for p in crop_params]
+    # 逐帧限速缓动：把目标序列中的“大跳变”重定位转成平滑平移。
+    # 目标每帧最多逼近 ease_px_per_frame px，避免 sendcmd 直接跳变造成的画面跳动。
+    eased = []
+    cur = float(ys[0])
+    for y in ys:
+        target = float(y)
+        if abs(target - cur) > 0.5:
+            d = target - cur
+            if abs(d) <= ease_px_per_frame:
+                cur = target
+            else:
+                cur += ease_px_per_frame if d > 0 else -ease_px_per_frame
+        eased.append(int(round(cur)))
+
+    # 稀疏化写入 sendcmd：缓动后相邻帧最多移动 ease_px_per_frame px，
+    # 只在位置确实变化时写命令（平滑平移期间逐帧小步写入，静止帧自动保持）。
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         cmd_file = f.name
         last_y = None
         written = 0
-        for p in crop_params:
-            y = p["crop_y"]
-            if last_y is None or abs(y - last_y) >= min_step:
+        for p, y in zip(crop_params, eased):
+            if last_y is None or y != last_y:
                 timestamp = p["frame"] / fps
                 # ffmpeg sendcmd 要求每条命令以分号结尾，否则解析报错
                 # （“Missing terminator or extraneous data”），这里补上；
