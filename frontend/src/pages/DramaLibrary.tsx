@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Card, Form, Input, Button, Select, Table, Tag, Modal, message, Space, Typography,
   Popconfirm, Drawer, Descriptions, Upload, Image as AntImage, Empty, Tooltip, Spin,
@@ -9,6 +9,7 @@ import {
   UploadOutlined, LinkOutlined, FileImageOutlined, ReloadOutlined, ExportOutlined,
   CloudSyncOutlined,
 } from '@ant-design/icons';
+import { DatePicker } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd/es/upload/interface';
 import dayjs from 'dayjs';
@@ -93,6 +94,12 @@ const DramaLibrary: React.FC = () => {
   const [theaterFilter, setTheaterFilter] = useState<string | undefined>();
   const [theaters, setTheaters] = useState<Theater[]>([]);
 
+  // 上线时间日期筛选（默认 当日+明日：展示今天与明天上线待发的剧目）
+  // 预设：all / today / tomorrow / today_tomorrow / custom
+  const [onlineFilter, setOnlineFilter] = useState<string>('today_tomorrow');
+  const [onlineRange, setOnlineRange] = useState<[string, string] | null>(null);
+  const onlineParamsRef = useRef<Record<string, string>>({});
+
   // 新增/编辑弹窗
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Drama | null>(null);
@@ -147,7 +154,10 @@ const DramaLibrary: React.FC = () => {
   const fetchList = useCallback(async (kw?: string, f?: string, r?: string, s?: string, t?: string) => {
     setLoading(true);
     try {
-      const list = await listDramas({ q: kw, frequency: f, rating: r, listing_status: s, theater_id: t });
+      const list = await listDramas({
+        q: kw, frequency: f, rating: r, listing_status: s, theater_id: t,
+        ...onlineParamsRef.current,
+      });
       setData(list);
     } catch (e) {
       message.error((e as Error).message || '加载剧目库失败');
@@ -155,6 +165,19 @@ const DramaLibrary: React.FC = () => {
       setLoading(false);
     }
   }, []);
+
+  // 上线时间筛选参数：随预设/区间变化重算并重新拉取（默认 当日+明日）
+  useEffect(() => {
+    const today = dayjs().format('YYYY-MM-DD');
+    const tomorrow = dayjs().add(1, 'day').format('YYYY-MM-DD');
+    let p: Record<string, string> = {};
+    if (onlineFilter === 'today') p = { online_date: today };
+    else if (onlineFilter === 'tomorrow') p = { online_date: tomorrow };
+    else if (onlineFilter === 'today_tomorrow') p = { online_from: today, online_to: tomorrow };
+    else if (onlineFilter === 'custom' && onlineRange) p = { online_from: onlineRange[0], online_to: onlineRange[1] };
+    onlineParamsRef.current = p;
+    fetchList(keyword, freq, rating, status, theaterFilter);
+  }, [onlineFilter, onlineRange, fetchList, keyword, freq, rating, status, theaterFilter]);
 
   useEffect(() => {
     fetchList();
@@ -199,6 +222,7 @@ const DramaLibrary: React.FC = () => {
       topics: d.topics || [],
       theater_ids: d.theater_ids || (d.theater_id ? [d.theater_id] : []),
       updated_date: d.updated_date ? dayjs(d.updated_date) : undefined,
+      listed_at: d.listed_at ? dayjs(d.listed_at) : undefined,
     });
     setModalOpen(true);
   };
@@ -225,6 +249,7 @@ const DramaLibrary: React.FC = () => {
       topics: values.topics || null,
       theater_ids: values.theater_ids || [],
       updated_date: values.updated_date ? values.updated_date.format('YYYY-MM-DD') : null,
+      listed_at: values.listed_at ? values.listed_at.format('YYYY-MM-DD HH:mm:ss') : null,
     };
     try {
       if (editing) {
@@ -632,6 +657,12 @@ const DramaLibrary: React.FC = () => {
     },
     { title: '评级', dataIndex: 'rating', width: 90, render: (v) => (v ? <Tag color="gold">{v}</Tag> : '-') },
     {
+      title: '上线时间',
+      dataIndex: 'listed_at',
+      width: 140,
+      render: (v: string | null) => (v ? dayjs(v).format('MM-DD HH:mm') : '-'),
+    },
+    {
       title: '状态',
       dataIndex: 'listing_status',
       width: 90,
@@ -713,6 +744,32 @@ const DramaLibrary: React.FC = () => {
               onChange={(v) => { setTheaterFilter(v); fetchList(keyword, freq, rating, status, v); }}
               options={theaters.map((t) => ({ value: t.id, label: t.name }))}
             />
+            <Select
+              placeholder="上线时间"
+              style={{ width: 140 }}
+              value={onlineFilter}
+              onChange={(v) => setOnlineFilter(v)}
+              options={[
+                { value: 'all', label: '全部上线时间' },
+                { value: 'today', label: '当日' },
+                { value: 'tomorrow', label: '明日' },
+                { value: 'today_tomorrow', label: '当日+明日' },
+                { value: 'custom', label: '自定义区间' },
+              ]}
+            />
+            {onlineFilter === 'custom' && (
+              <DatePicker.RangePicker
+                style={{ width: 260 }}
+                value={onlineRange ? [dayjs(onlineRange[0]), dayjs(onlineRange[1])] : null}
+                onChange={(dates) => {
+                  if (dates && dates[0] && dates[1]) {
+                    setOnlineRange([dates[0].format('YYYY-MM-DD'), dates[1].format('YYYY-MM-DD')]);
+                  } else {
+                    setOnlineRange(null);
+                  }
+                }}
+              />
+            )}
             <Button icon={<SearchOutlined />} onClick={doSearch}>查询</Button>
             <Button icon={<ImportOutlined />} onClick={() => { resetImport(); setImportOpen(true); }}>导入剧目</Button>
             <Button icon={<CloudSyncOutlined />} onClick={() => setFeishuOpen(true)}>飞书同步</Button>
@@ -778,6 +835,9 @@ const DramaLibrary: React.FC = () => {
             <Form.Item name="updated_date" label="更新日期">
               <Input type="date" style={{ width: 160 }} />
             </Form.Item>
+            <Form.Item name="listed_at" label="上线时间">
+              <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: 200 }} placeholder="选择上线日期时间" />
+            </Form.Item>
           </Space>
           <Form.Item name="theater_ids" label="所属剧场（一剧多剧场，可多选）">
             <Select
@@ -813,6 +873,7 @@ const DramaLibrary: React.FC = () => {
               <Descriptions.Item label="类型">{detail.type || '-'}</Descriptions.Item>
               <Descriptions.Item label="评级">{detail.rating || '-'}</Descriptions.Item>
               <Descriptions.Item label="状态">{detail.listing_status}</Descriptions.Item>
+              <Descriptions.Item label="上线时间">{detail.listed_at ? dayjs(detail.listed_at).format('YYYY-MM-DD HH:mm') : '-'}</Descriptions.Item>
             </Descriptions>
             {detail.synopsis && (
               <Alert type="info" showIcon message="剧情简介" description={detail.synopsis} />
@@ -1124,6 +1185,7 @@ const DramaLibrary: React.FC = () => {
                     { title: '频', dataIndex: ['fields', 'frequency'], render: (v) => v || '-' },
                     { title: '题材', dataIndex: ['fields', 'tags'], render: (v: string[]) => (v && v.length ? v.join(' / ') : '-') },
                     { title: '评级', dataIndex: ['fields', 'rating'], render: (v) => v || '-' },
+                    { title: '上线时间', dataIndex: ['fields', 'listed_at'], render: (v) => v || '-' },
                     { title: '状态', dataIndex: ['fields', 'listing_status'], render: (v) => v || '已上架' },
                     { title: '剧场', dataIndex: ['fields', 'theater_name'], render: (v) => v || '-' },
                   ]}

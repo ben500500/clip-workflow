@@ -162,6 +162,9 @@ export function listDramas(params?: {
   listing_status?: string;
   account_id?: string;
   theater_id?: string;
+  online_date?: string;
+  online_from?: string;
+  online_to?: string;
 }): Promise<Drama[]> {
   return client.get('/dramas', { params });
 }

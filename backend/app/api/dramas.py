@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from pydantic import BaseModel
 import logging
 logger = logging.getLogger(__name__)
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, cast, Date
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -338,6 +338,10 @@ async def list_dramas(
     listing_status: Optional[str] = Query(None),
     account_id: Optional[str] = Query(None, description="反查：该视频号关联的剧目"),
     theater_id: Optional[str] = Query(None, description="按所属剧场筛选剧目"),
+    # 上线时间（listed_at）日期筛选：online_date 单日；online_from/online_to 闭区间（含当天）
+    online_date: Optional[str] = Query(None, description="按上线日期精确匹配（YYYY-MM-DD）"),
+    online_from: Optional[str] = Query(None, description="上线日期区间起点（含当天，YYYY-MM-DD）"),
+    online_to: Optional[str] = Query(None, description="上线日期区间终点（含当天，YYYY-MM-DD）"),
     db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
@@ -351,6 +355,20 @@ async def list_dramas(
         filters.append(Drama.rating == rating)
     if listing_status:
         filters.append(Drama.listing_status == listing_status)
+    # 上线时间日期筛选（listed_at 为 DateTime，按日期维度比对；非法日期忽略该条件）
+    if online_date or online_from or online_to:
+        try:
+            if online_date:
+                _od = date.fromisoformat(str(online_date)[:10])
+                filters.append(cast(Drama.listed_at, Date) == _od)
+            if online_from:
+                _of = date.fromisoformat(str(online_from)[:10])
+                filters.append(cast(Drama.listed_at, Date) >= _of)
+            if online_to:
+                _ot = date.fromisoformat(str(online_to)[:10])
+                filters.append(cast(Drama.listed_at, Date) <= _ot)
+        except Exception:
+            pass
     theater_join = None
     if theater_id:
         try:
