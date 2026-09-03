@@ -649,7 +649,7 @@ const DramaLibrary: React.FC = () => {
     { title: '名称', dataIndex: 'name', ellipsis: true },
     { title: '频', dataIndex: 'frequency', width: 70, render: (v) => v || '-' },
     {
-      title: '题材',
+      title: '剧名',
       dataIndex: 'tags',
       width: 200,
       render: (v: string[] | null) =>
@@ -809,8 +809,8 @@ const DramaLibrary: React.FC = () => {
               <Select allowClear placeholder="评级" style={{ width: 120 }} options={RATINGS.map((f) => ({ value: f, label: f }))} />
             </Form.Item>
           </Space>
-          <Form.Item name="tags" label="题材标签">
-            <Select mode="tags" placeholder="输入题材，回车添加" tokenSeparators={[',', '/']} />
+          <Form.Item name="tags" label="剧名">
+            <Select mode="tags" placeholder="输入剧名，回车添加" tokenSeparators={[',', '/']} />
           </Form.Item>
           <Form.Item label="话题大方向" extra="选择后自动带入对应成套话题标签，可再手动增删；发布时直接复用。">
             <Select
@@ -1145,7 +1145,7 @@ const DramaLibrary: React.FC = () => {
           >
             <p className="ant-upload-drag-icon"><ImportOutlined /></p>
             <p className="ant-upload-text">点击或拖拽剧目 Excel 文件到此处</p>
-            <p className="ant-upload-hint">列名对齐：漫剧名称 / 更新日期 / 男/女频 / 题材 / 漫剧类型 / 上架状态 / 上架日期 / 评级 / 素材链接 / 上架账号</p>
+            <p className="ant-upload-hint">列名对齐：漫剧名称 / 更新日期 / 男/女频 / 剧名 / 漫剧类型 / 上架状态 / 上架日期 / 评级 / 素材链接 / 上架账号</p>
           </Upload.Dragger>
         )}
         {importStep === 1 && (
@@ -1183,7 +1183,7 @@ const DramaLibrary: React.FC = () => {
                     },
                     { title: '名称', dataIndex: 'name' },
                     { title: '频', dataIndex: ['fields', 'frequency'], render: (v) => v || '-' },
-                    { title: '题材', dataIndex: ['fields', 'tags'], render: (v: string[]) => (v && v.length ? v.join(' / ') : '-') },
+                    { title: '剧名', dataIndex: ['fields', 'tags'], render: (v: string[]) => (v && v.length ? v.join(' / ') : '-') },
                     { title: '评级', dataIndex: ['fields', 'rating'], render: (v) => v || '-' },
                     { title: '上线时间', dataIndex: ['fields', 'listed_at'], render: (v) => v || '-' },
                     { title: '状态', dataIndex: ['fields', 'listing_status'], render: (v) => v || '已上架' },

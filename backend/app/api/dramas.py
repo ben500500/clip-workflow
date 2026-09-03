@@ -957,6 +957,11 @@ async def drama_import_parse(
     col_freq = _find("男/女频") or _find("男女频") or _find("频")
     col_type = _find("漫剧类型") or _find("剧类型")
     col_tags = _find("题材")
+    # 兼容：若列头改名为「剧名」且不与名称列冲突，则映射到 tags
+    if col_tags is None:
+        alt = _find("剧名")
+        if alt and alt != col_name:
+            col_tags = alt
     col_status = _find("上架状态")
     col_listed = _find("上架日期") or _find("上线时间") or _find("上线日期")
     col_rating = _find("评级")
