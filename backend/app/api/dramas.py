@@ -710,6 +710,23 @@ def _row_key(row: DramaImportRow) -> str:
     return row.name.strip()
 
 
+def _validate_import_rating(rating: Optional[str]) -> Optional[str]:
+    """校验导入的 rating（评级）字段合法性——DB 为 VARCHAR(20) 且不应是链接。
+
+    返回错误说明字符串（非空即非法，应被跳过并提示用户）；None 表示合法。
+    用于拦截「把网盘/分享链接填进评级列」这类 CSV 列错位（曾导致整批 500 回滚）。
+    """
+    if not rating:
+        return None
+    r = str(rating).strip()
+    if len(r) > 20:
+        return f"长度 {len(r)} 超过 20 字符上限，疑似把链接/长文本填进了评级列"
+    low = r.lower()
+    if any(k in low for k in ("http", "://", "www.", "pan.", ".com", ".cn", ".net", ".link", "网盘", "提取码", "pwd", "password")):
+        return "内容疑似网盘/分享链接，链接应填在「素材链接」列，评级请填短值(如 S/A/B)"
+    return None
+
+
 def _diff_fields(old: Drama, row: DramaImportRow) -> dict:
     """对比旧值与新值，返回差异字段的旧值vs新值。"""
     diffs = {}
@@ -808,6 +825,7 @@ async def drama_import_preview(
     new = []
     update = []
     unchanged = []
+    warnings = []
     existing_names = {}
     result = await db.execute(
         select(Drama).where(Drama.name.in_([_row_key(r) for r in data.rows])).options(_load_drama_theaters())
@@ -817,6 +835,10 @@ async def drama_import_preview(
 
     for row in data.rows:
         key = _row_key(row)
+        # 预览阶段即提示错位行（如链接填进评级列），避免 confirm 时才整批崩溃
+        rating_err = _validate_import_rating(row.rating)
+        if rating_err:
+            warnings.append({"name": key, "field": "rating", "message": rating_err})
         old = existing_names.get(key)
         if old is None:
             new.append({
@@ -851,6 +873,7 @@ async def drama_import_preview(
         "new": new,
         "update": update,
         "unchanged": unchanged,
+        "warnings": warnings,
         "summary": {
             "new_count": len(new),
             "update_count": len(update),
@@ -992,6 +1015,12 @@ async def drama_import_confirm(
         if not name:
             skipped += 1
             continue
+        # 校验易错位字段（如评级列被填成网盘链接），非法行跳过并提示，避免写入时整批回滚
+        rating_err = _validate_import_rating(item.rating)
+        if rating_err:
+            errors.append({"name": name, "error": f"评级(rating){rating_err}"})
+            skipped += 1
+            continue
         existing = await db.execute(select(Drama).where(Drama.name == name))
         if existing.scalar_one_or_none():
             skipped += 1
@@ -1020,14 +1049,20 @@ async def drama_import_confirm(
             d.updated_date = _parse_date(item.updated_date)
         if item.listed_at:
             d.listed_at = _parse_dt(item.listed_at)
-        db.add(d)
-        await db.flush()
-        # 一剧多剧场：按剧场名查找/自动创建并同步关联表
-        theater_ids = await _resolve_theater_ids(db, item.theater_name, current_user)
-        if theater_ids:
-            d.theater_id = theater_ids[0]
-            await _sync_drama_theaters(db, d, theater_ids)
-        imported += 1
+        try:
+            db.add(d)
+            await db.flush()
+            # 一剧多剧场：按剧场名查找/自动创建并同步关联表
+            theater_ids = await _resolve_theater_ids(db, item.theater_name, current_user)
+            if theater_ids:
+                d.theater_id = theater_ids[0]
+                await _sync_drama_theaters(db, d, theater_ids)
+            imported += 1
+        except Exception as e:
+            # 单行异常隔离：记录错误并跳过该行，不连累整批回滚
+            await db.expunge(d)
+            logger.error(f"[drama_import_confirm] 新增失败 name={name}: {e}")
+            errors.append({"name": name, "error": f"写入失败: {e}"})
 
     # 2) 处理更新（按 id 定位，应用新值）
     for item in data.accept_update:
@@ -1048,6 +1083,12 @@ async def drama_import_confirm(
         if not _can_manage(d, current_user):
             errors.append({"id": raw_id, "error": "no permission"})
             continue
+        # 校验易错位字段（整批隔离）：单行非法直接跳过，避免后续 flush 时炸整批
+        if item.rating is not None:
+            rating_err = _validate_import_rating(item.rating)
+            if rating_err:
+                errors.append({"id": raw_id, "name": item.name, "error": f"评级(rating){rating_err}"})
+                continue
         # 应用新值（name 冲突保护）
         new_name = (item.name or "").strip()
         if new_name and new_name != d.name:
