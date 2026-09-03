@@ -20,6 +20,7 @@ from typing import Annotated, List, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, Request
 from pydantic import BaseModel
 import logging
+from datetime import date
 logger = logging.getLogger(__name__)
 from sqlalchemy import select, and_, func, cast, Date
 from sqlalchemy.ext.asyncio import AsyncSession
