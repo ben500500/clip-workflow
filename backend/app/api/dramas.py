@@ -189,7 +189,9 @@ async def _serialize_drama(d: Drama) -> dict:
         "cover_url": await _resolve_image_url(d.cover_file_key),
         "listing_status": d.listing_status,
         "updated_date": d.updated_date.isoformat() if d.updated_date else None,
-        "listed_at": utc_iso(d.listed_at) if d.listed_at else None,
+        # 上线时间为用户录入的本地业务时间（非服务端 UTC 时间戳），
+        # 不能用 utc_iso（会把 naive 值当 UTC 导致前端 +8h 偏移），原样输出本地时间。
+        "listed_at": d.listed_at.isoformat() if d.listed_at else None,
         "material_link": d.material_link,
         # 网盘提取码不回传明文（密文），前端不可见
         "material_link_pwd_masked": bool(d.material_link_pwd),
