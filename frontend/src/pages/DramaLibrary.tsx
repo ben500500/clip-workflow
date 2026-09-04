@@ -33,11 +33,12 @@ const { Text } = Typography;
 // 受控枚举
 const FREQUENCIES = ['男频', '女频'];
 const DRAMA_TYPES = ['AI真人剧', '真人剧', '动漫', '微短剧'];
-const LISTING_STATUSES = ['草稿', '待上架', '已上架', '已下架', '归档'];
+const LISTING_STATUSES = ['草稿', '待上架', '待上线', '审核中', '已上架', '已下架', '归档'];
 const RATINGS = ['SS+', '新剧S+', '新剧A+', '新剧B+'];
 const STATUS_COLORS: Record<string, string> = {
   已上架: 'green',
   待上架: 'orange',
+  待上线: 'orange',
   审核中: 'processing',
   草稿: 'default',
   已下架: 'red',
