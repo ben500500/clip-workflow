@@ -90,7 +90,7 @@ class Drama(Base):
     synopsis = Column(Text, nullable=True)
     # 剧目封面（MinIO object key，图片类型）
     cover_file_key = Column(String(500), nullable=True)
-    # 上架状态（草稿/待上架/已上架/已下架/归档）
+    # 上架状态（草稿/待上架/审核中/已上架/已下架/归档）
     listing_status = Column(String(20), nullable=False, default="已上架", index=True)
     # 更新日期（表内）
     updated_date = Column(Date, nullable=True)

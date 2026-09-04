@@ -38,6 +38,7 @@ const RATINGS = ['SS+', '新剧S+', '新剧A+', '新剧B+'];
 const STATUS_COLORS: Record<string, string> = {
   已上架: 'green',
   待上架: 'orange',
+  审核中: 'processing',
   草稿: 'default',
   已下架: 'red',
   归档: 'default',
@@ -698,10 +699,9 @@ const DramaLibrary: React.FC = () => {
 
   return (
     <div>
-      <Card
-        title="剧目库"
-        extra={
-          <Space>
+      <Card title="剧目库">
+        <div style={{ marginBottom: 16 }}>
+          <Space wrap size={[8, 8]} align="center">
             <Input
               placeholder="搜索名称/ID"
               prefix={<SearchOutlined />}
@@ -771,12 +771,15 @@ const DramaLibrary: React.FC = () => {
               />
             )}
             <Button icon={<SearchOutlined />} onClick={doSearch}>查询</Button>
-            <Button icon={<ImportOutlined />} onClick={() => { resetImport(); setImportOpen(true); }}>导入剧目</Button>
-            <Button icon={<CloudSyncOutlined />} onClick={() => setFeishuOpen(true)}>飞书同步</Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增剧目</Button>
           </Space>
-        }
-      >
+          <div style={{ marginTop: 12 }}>
+            <Space wrap size={[8, 8]} align="center">
+              <Button icon={<ImportOutlined />} onClick={() => { resetImport(); setImportOpen(true); }}>导入剧目</Button>
+              <Button icon={<CloudSyncOutlined />} onClick={() => setFeishuOpen(true)}>飞书同步</Button>
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增剧目</Button>
+            </Space>
+          </div>
+        </div>
         <Table
           rowKey="id"
           columns={columns}
