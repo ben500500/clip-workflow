@@ -964,7 +964,7 @@ async def drama_import_parse(
         alt = _find("剧名")
         if alt and alt != col_name:
             col_tags = alt
-    col_status = _find("上架状态")
+    col_status = _find("上架状态") or _find("上线状态") or _find("状态")
     col_listed = _find("上架日期") or _find("上线时间") or _find("上线日期")
     col_rating = _find("评级")
     col_synopsis = _find("简介") or _find("剧情简介") or _find("内容简介")
@@ -1458,16 +1458,43 @@ async def get_drama_slice_status(
 # ─────────────────────────────── 工具 ───────────────────────────────
 
 def _parse_date(s: str):
-    from datetime import date
+    from datetime import date, datetime
+    raw = str(s).strip()
+    if not raw:
+        return None
+    # 统一分隔符：/ 和 . -> -（兼容 2026/9/4、2026.9.4 等非 ISO 格式）
+    norm = raw.replace("/", "-").replace(".", "-")
     try:
-        return date.fromisoformat(str(s)[:10])
+        return datetime.strptime(norm[:10], "%Y-%m-%d").date()
+    except ValueError:
+        pass
+    try:
+        return date.fromisoformat(norm[:10])
     except Exception:
         return None
 
 
 def _parse_dt(s: str):
     from datetime import datetime
+    raw = str(s).strip()
+    if not raw:
+        return None
+    # 统一分隔符：/ 和 . -> -（兼容 2026/9/4 16:00、2026.9.4 等常见非 ISO 格式）
+    norm = raw.replace("Z", "+00:00").replace("/", "-").replace(".", "-")
+    fmts = (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d",
+    )
+    for f in fmts:
+        try:
+            return datetime.strptime(norm, f)
+        except ValueError:
+            continue
     try:
-        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        return datetime.fromisoformat(norm)
     except Exception:
         return None
