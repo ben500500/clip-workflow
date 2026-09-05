@@ -642,7 +642,6 @@ const DramaLibrary: React.FC = () => {
           </div>
         ),
     },
-    },
     { title: '剧名', dataIndex: 'name', ellipsis: true },
     { title: '频', dataIndex: 'frequency', width: 70, render: (v) => v || '-' },
     { title: '评级', dataIndex: 'rating', width: 90, render: (v) => (v ? <Tag color="gold">{v}</Tag> : '-') },
