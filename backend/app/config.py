@@ -233,6 +233,9 @@ class Settings(BaseSettings):
     # 剧目名称列 / 剧场列 在飞书表中的列名（按表头自动匹配，可空则走默认匹配）
     FEISHU_DRAMA_COL: str = "剧目名称"
     FEISHU_THEATER_COL: str = "剧场"
+    # 平阅剧单本地快照目录（无 FEISHU_APP_ID/SECRET 时的回退数据源）：
+    # 存放 lark-cli 拉取的 6 个 Sheet JSON（{sheet_id}.json，scripts/refresh_pingyue_roster.sh 产出）
+    FEISHU_ROSTER_CACHE_DIR: str = "/app/media/pingyue"
 
     # ── Remotion 高光混剪增强（MVP：模板化编排的混剪包装层）──
     # 生产安全开关（参考 SPARKLE_ENABLED 思路）：默认关闭，开启后切片启用

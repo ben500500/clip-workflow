@@ -1220,7 +1220,7 @@ async def drama_import_feishu_roster(
     from app.services.feishu_service import fetch_pingyue_roster
     url = data.url if data else None
     try:
-        rows, err = await fetch_pingyue_roster(url)
+        rows, err, note = await fetch_pingyue_roster(url)
     except Exception as e:
         logger.error("平阅剧单拉取失败: %s", e, exc_info=True)
         raise HTTPException(status_code=502, detail=f"飞书拉取异常: {e}")
@@ -1230,7 +1230,7 @@ async def drama_import_feishu_roster(
         "rows": rows,
         "total": len(rows),
         "file_name": "平阅剧单(飞书同步)",
-        "message": f"从飞书拉取到 {len(rows)} 条剧目",
+        "message": f"从飞书拉取到 {len(rows)} 条剧目{note}",
     }
 
 

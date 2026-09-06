@@ -21,9 +21,14 @@
 """
 
 import asyncio
+import csv
+import io
+import json
 import logging
+import os
 import re
-from typing import List, Optional
+from datetime import datetime
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 
 import httpx
@@ -609,59 +614,20 @@ def _parse_pingyue_grid(grid: List[List], sheet_name: str) -> List[dict]:
     return rows
 
 
-async def fetch_pingyue_roster(url: Optional[str] = None) -> tuple:
-    """拉取并解析平阅剧单（6 个 Sheet 并行），返回 (DramaImportRow 字典列表, 错误信息)。
-
-    - 跨 Sheet 以剧名为唯一键去重（先出现的优先，综合剧单排最前）
-    - 每行输出与 /dramas/import/parse 相同的结构化字段，前端可直接复用导入预览/确认流程
-    - listing_status 取该剧所有剧场中的最高状态（已上线→已上架 > 待上线 > 审核中）
-    """
-    wiki_url = (url or "").strip() or settings.FEISHU_SPREADSHEET_URL or PINGYUE_WIKI_URL
-    parsed = parse_feishu_url(wiki_url)
-    if not parsed:
-        return [], f"无法解析飞书链接: {wiki_url}"
-
-    async with httpx.AsyncClient() as client:
-        token = await _get_tenant_access_token(client)
-        if not token:
-            return [], "未配置 FEISHU_APP_ID/FEISHU_APP_SECRET，无法访问飞书表格"
-        headers = {"Authorization": f"Bearer {token}"}
-
-        # wiki 链接 → 解析出电子表格 obj_token；直链电子表格直接用 token
-        spreadsheet_token = parsed["token"]
-        if parsed["type"] == "wiki":
-            node = await _wiki_node_to_obj(client, headers, parsed["token"])
-            if not node or not node.get("obj_token"):
-                return [], "无法从飞书 wiki 链接解析出电子表格（检查节点权限）"
-            spreadsheet_token = node["obj_token"]
-        elif parsed["type"] == "bitable":
-            return [], "平阅剧单为电子表格（/wiki/ 链接），不支持多维表格直链"
-
-        # 6 个 Sheet 并行拉取
-        async def _one(s: dict):
-            grid = await _fetch_sheet_range(client, headers, spreadsheet_token, s["sheet_id"], s["range"])
-            return s["name"], grid
-
-        results = await asyncio.gather(*[_one(s) for s in PINGYUE_SHEETS], return_exceptions=True)
-
-    # 合并解析（剧名唯一键，先出现优先）
+def _merge_pingyue_rows(parsed: List[Tuple[str, List[dict]]]) -> Tuple[dict, int]:
+    """合并各 Sheet 的解析结果（剧名唯一键、先出现优先），返回 (all_data, 解析成功的 sheet 数)。"""
     all_data: dict = {}
     sheets_ok = 0
-    for r in results:
-        if isinstance(r, Exception):
-            logger.warning("平阅剧单拉取异常: %s", r)
-            continue
-        sheet_name, grid = r
-        parsed_rows = _parse_pingyue_grid(grid, sheet_name)
-        if parsed_rows:
+    for sheet_name, rows in parsed:
+        if rows:
             sheets_ok += 1
-        for row in parsed_rows:
+        for row in rows:
             all_data.setdefault(row["name"], row)
+    return all_data, sheets_ok
 
-    if not all_data:
-        return [], "平阅剧单解析结果为空（检查表格权限/Sheet 结构是否变更）"
 
-    # 转 DramaImportRow 格式
+def _rows_to_import_rows(all_data: dict) -> List[dict]:
+    """中间行数据 → DramaImportRow 字典列表（listing_status 取最高剧场状态映射）。"""
     rows = []
     for name, d in all_data.items():
         theaters = d["theaters"]
@@ -681,6 +647,227 @@ async def fetch_pingyue_roster(url: Optional[str] = None) -> tuple:
             "account_name": None,
             "theater_name": ",".join(theaters.keys()) or None,
         })
+    return rows
 
-    logger.info("平阅剧单拉取完成: %d 个 sheet 解析成功, %d 条剧目", sheets_ok, len(rows))
-    return rows, None
+
+async def _fetch_pingyue_via_api(wiki_url: str) -> tuple:
+    """Open API 直连拉取（需 FEISHU_APP_ID/SECRET）。
+
+    返回 (rows, err, note)：rows 为空列表且 err 非空表示失败，调用方可回退本地快照。
+    """
+    if not settings.FEISHU_APP_ID or not settings.FEISHU_APP_SECRET:
+        return None, "未配置 FEISHU_APP_ID/FEISHU_APP_SECRET，无法访问飞书表格", ""
+
+    parsed = parse_feishu_url(wiki_url)
+    if not parsed:
+        return None, f"无法解析飞书链接: {wiki_url}", ""
+
+    async with httpx.AsyncClient() as client:
+        token = await _get_tenant_access_token(client)
+        if not token:
+            return None, "飞书凭证无效（FEISHU_APP_ID/SECRET 被拒绝），无法获取 tenant_access_token", ""
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # wiki 链接 → 解析出电子表格 obj_token；直链电子表格直接用 token
+        spreadsheet_token = parsed["token"]
+        if parsed["type"] == "wiki":
+            node = await _wiki_node_to_obj(client, headers, parsed["token"])
+            if not node or not node.get("obj_token"):
+                return None, "无法从飞书 wiki 链接解析出电子表格（检查节点权限）", ""
+            spreadsheet_token = node["obj_token"]
+        elif parsed["type"] == "bitable":
+            return None, "平阅剧单为电子表格（/wiki/ 链接），不支持多维表格直链", ""
+
+        # 6 个 Sheet 并行拉取
+        async def _one(s: dict):
+            grid = await _fetch_sheet_range(client, headers, spreadsheet_token, s["sheet_id"], s["range"])
+            return s["name"], grid
+
+        results = await asyncio.gather(*[_one(s) for s in PINGYUE_SHEETS], return_exceptions=True)
+
+    # 合并解析（剧名唯一键，先出现优先）
+    parsed_rows: List[Tuple[str, List[dict]]] = []
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning("平阅剧单拉取异常: %s", r)
+            continue
+        sheet_name, grid = r
+        parsed_rows.append((sheet_name, _parse_pingyue_grid(grid, sheet_name)))
+
+    all_data, sheets_ok = _merge_pingyue_rows(parsed_rows)
+    if not all_data:
+        return None, "平阅剧单解析结果为空（检查表格权限/Sheet 结构是否变更）", ""
+
+    rows = _rows_to_import_rows(all_data)
+    logger.info("平阅剧单拉取完成(Open API): %d 个 sheet 解析成功, %d 条剧目", sheets_ok, len(rows))
+    return rows, None, ""
+
+
+# ── 本地快照回退（无 FEISHU_APP_ID/SECRET 时，由 scripts/refresh_pingyue_roster.sh 供数）──
+
+def _annotated_csv_to_grid(text: str) -> List[List]:
+    """lark-cli `sheets +csv-get` 输出的 annotated_csv（[row=N] 前缀行）→ 二维网格。
+
+    非 [row=] 开头的物理行是上一条记录被引号单元格内换行拆出的续行，回接后统一交给
+    csv 模块解析，避免单元格内容被截断。
+    """
+    records: List[str] = []
+    for line in (text or "").split("\n"):
+        s = line.rstrip("\r")
+        if s.startswith("[row="):
+            idx = s.find("] ")
+            records.append(s[idx + 2:] if idx >= 0 else "")
+        elif records:
+            records[-1] += "\n" + s
+    grid: List[List] = []
+    for rec in records:
+        try:
+            grid.extend(csv.reader(io.StringIO(rec)))
+        except Exception:
+            grid.append([rec])
+    return grid
+
+
+def _pingyue_cache_note(cache_dir: str) -> str:
+    """快照新鲜度标注：优先读刷新脚本写入的 _meta.json，否则取目录内最新修改时间。"""
+    meta_path = os.path.join(cache_dir, "_meta.json")
+    try:
+        if os.path.exists(meta_path):
+            with open(meta_path, "r", encoding="utf-8") as f:
+                pulled_at = (json.load(f) or {}).get("pulled_at") or ""
+            if pulled_at:
+                return f"（本地快照 {pulled_at}，可运行 scripts/refresh_pingyue_roster.sh 更新）"
+    except Exception:
+        pass
+    try:
+        latest = max(
+            os.path.getmtime(os.path.join(cache_dir, fn))
+            for fn in os.listdir(cache_dir)
+            if fn != "_meta.json"
+        )
+        return f"（本地快照 {datetime.fromtimestamp(latest).strftime('%Y-%m-%d %H:%M')}，可运行 scripts/refresh_pingyue_roster.sh 更新）"
+    except Exception:
+        return "（本地快照）"
+
+
+def _load_pingyue_sheet_cache(cache_dir: str) -> List[Tuple[str, List[dict]]]:
+    """回退一：读取 6 个 Sheet 的 lark-cli 原始拉取结果 {sheet_id}.json → 各自解析。"""
+    parsed: List[Tuple[str, List[dict]]] = []
+    found = 0
+    for s in PINGYUE_SHEETS:
+        path = os.path.join(cache_dir, f"{s['sheet_id']}.json")
+        if not os.path.exists(path):
+            continue
+        found += 1
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as e:
+            logger.warning("平阅剧单快照 %s 读取失败: %s", path, e)
+            continue
+        data = payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
+        text = (data or {}).get("annotated_csv") or ""
+        rows = _parse_pingyue_grid(_annotated_csv_to_grid(text), s["name"])
+        parsed.append((s["name"], rows))
+        if (data or {}).get("has_more"):
+            logger.warning(
+                "平阅剧单快照 sheet=%s 未拉全（has_more=true，被 max-chars 截断），建议重跑刷新脚本",
+                s["sheet_id"],
+            )
+    if not found:
+        logger.warning("平阅剧单快照目录 %s 中未找到任何 {{sheet_id}}.json", cache_dir)
+    return parsed
+
+
+def _load_pingyue_csv_cache(cache_dir: str) -> List[Tuple[str, List[dict]]]:
+    """回退二：读取能力文档管线的合并产出 平阅剧单.csv（剧名,上线时间,剧场,状态,男/女频,评级,网盘链接）。
+
+    注意：CSV 的「剧场」列已合并、状态为全剧场最高状态，按列回填（粒度低于回退一，仅兜底）。
+    """
+    path = os.path.join(cache_dir, "平阅剧单.csv")
+    if not os.path.exists(path):
+        return []
+    rows: List[dict] = []
+    try:
+        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+            for rec in csv.DictReader(f):
+                name = (rec.get("剧名") or "").strip()
+                if not name:
+                    continue
+                status = (rec.get("状态") or "").strip()
+                if status not in PINGYUE_STATUSES:
+                    status = "审核中"  # 保守兜底，避免误置为已上架
+                theaters: dict = {}
+                for part in re.split(r"[,，、;；]", (rec.get("剧场") or "").strip()):
+                    t = part.strip()
+                    if t:
+                        theaters[t] = status
+                if not theaters:
+                    continue
+                rows.append({
+                    "name": name,
+                    "date": (rec.get("上线时间") or "").strip(),
+                    "theaters": theaters,
+                    "gender": (rec.get("男/女频") or "").strip(),
+                    "rating": (rec.get("评级") or "").strip(),
+                    "url": (rec.get("网盘链接") or "").strip(),
+                })
+    except Exception as e:
+        logger.warning("平阅剧单快照 CSV %s 读取失败: %s", path, e)
+        return []
+    return [("平阅剧单.csv", rows)] if rows else []
+
+
+def _fetch_pingyue_from_cache(cache_dir: str) -> tuple:
+    """从本地快照目录构建导入行。返回 (rows, err, note)。"""
+    parsed = _load_pingyue_sheet_cache(cache_dir)
+    source = "快照JSON"
+    if not parsed or not any(rows for _, rows in parsed):
+        parsed = _load_pingyue_csv_cache(cache_dir)
+        source = "快照CSV"
+    if not parsed:
+        return [], f"本地快照目录 {cache_dir} 无可用数据（先运行 scripts/refresh_pingyue_roster.sh）", ""
+
+    all_data, sheets_ok = _merge_pingyue_rows(parsed)
+    rows = _rows_to_import_rows(all_data)
+    note = _pingyue_cache_note(cache_dir)
+    logger.info("平阅剧单拉取完成(%s): %d 个数据源解析成功, %d 条剧目", source, sheets_ok, len(rows))
+    return rows, None, note
+
+
+async def fetch_pingyue_roster(url: Optional[str] = None) -> tuple:
+    """拉取并解析平阅剧单（6 个 Sheet 并行），返回 (DramaImportRow 字典列表, 错误信息, 附加说明)。
+
+    数据源优先级：
+      1. 飞书 Open API 直连（需 FEISHU_APP_ID/FEISHU_APP_SECRET）
+      2. 本地快照 {FEISHU_ROSTER_CACHE_DIR}/{sheet_id}.json（lark-cli 拉取）
+      3. 本地快照 {FEISHU_ROSTER_CACHE_DIR}/平阅剧单.csv（能力文档管线产出）
+
+    - 跨 Sheet 以剧名为唯一键去重（先出现的优先，综合剧单排最前）
+    - 每行输出与 /dramas/import/parse 相同的结构化字段，前端可直接复用导入预览/确认流程
+    - listing_status 取该剧所有剧场中的最高状态（已上线→已上架 > 待上线 > 审核中）
+    """
+    wiki_url = (url or "").strip() or settings.FEISHU_SPREADSHEET_URL or PINGYUE_WIKI_URL
+
+    # 显式传入的自定义链接解析失败时直接报错（不静默回退快照）
+    explicit_url = bool((url or "").strip())
+    parsed_url = parse_feishu_url(wiki_url)
+    if explicit_url and not parsed_url:
+        return [], f"无法解析飞书链接: {wiki_url}", ""
+
+    # 1) Open API 直连
+    rows, err, note = await _fetch_pingyue_via_api(wiki_url)
+    if rows:
+        return rows, err, note
+
+    # 2)/3) 本地快照回退
+    cache_dir = (settings.FEISHU_ROSTER_CACHE_DIR or "").strip()
+    if cache_dir and os.path.isdir(cache_dir):
+        if err:
+            logger.warning("平阅剧单 Open API 拉取失败（%s），回退本地快照 %s", err, cache_dir)
+        return _fetch_pingyue_from_cache(cache_dir)
+
+    return [], err or (
+        "未配置 FEISHU_APP_ID/FEISHU_APP_SECRET，且本地快照目录不存在"
+        "（运行 scripts/refresh_pingyue_roster.sh 生成快照，或在 .env 配置飞书应用凭证）"
+    ), ""
