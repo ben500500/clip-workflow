@@ -21,6 +21,15 @@ const instanceLockDir = "temp" // 相对 slice-worker 根目录
 // acquireInstanceLock 尝试获取单实例锁。
 // 返回 release 函数（进程退出时释放锁）；已存在存活实例时返回错误。
 func acquireInstanceLock(nodeID string) (release func(), err error) {
+	// 容器内跳过单实例锁：
+	// 1. 容器可写层的锁文件在重启（restart policy）后残留，而 PID namespace
+	//    中 PID 会被 entrypoint 进程复用，「PID 存活」校验误判 → 无限重启循环；
+	// 2. 各容器文件系统相互独立，锁文件本就不共享，防不了跨容器重复启动。
+	// 容器场景的单实例由编排副本数保证（macOS 托管模式不受影响）。
+	if _, serr := os.Stat("/.dockerenv"); serr == nil {
+		return func() {}, nil
+	}
+
 	dir := instanceLockDir
 	if abs, aerr := filepath.Abs(dir); aerr == nil {
 		dir = abs
