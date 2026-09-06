@@ -1205,6 +1205,35 @@ async def drama_import_feishu(
     return await sync_from_feishu(url)
 
 
+@router.post("/dramas/import/feishu-roster", response_model=dict)
+async def drama_import_feishu_roster(
+    data: Optional[FeishuImportRequest] = None,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """平阅剧单同步：拉取飞书表格 6 个 Sheet 并合并解析为导入行（不落库）。
+
+    - 默认读取平阅剧单 wiki 表格（可传 url 覆盖）；
+    - 跨 Sheet 以剧名为唯一键去重（先出现优先）；
+    - 剧场状态取最高（已上线→已上架 > 待上线 > 审核中）；
+    - 返回与 /dramas/import/parse 相同的 rows 结构，前端复用导入预览/确认流程。
+    """
+    from app.services.feishu_service import fetch_pingyue_roster
+    url = data.url if data else None
+    try:
+        rows, err = await fetch_pingyue_roster(url)
+    except Exception as e:
+        logger.error("平阅剧单拉取失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"飞书拉取异常: {e}")
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    return {
+        "rows": rows,
+        "total": len(rows),
+        "file_name": "平阅剧单(飞书同步)",
+        "message": f"从飞书拉取到 {len(rows)} 条剧目",
+    }
+
+
 # ─────────────────────────────── 发布联动（选剧目→带剧情简介→挂素材）───────────────────────────────
 
 @router.get("/dramas/{drama_id}/publish-context", response_model=dict)

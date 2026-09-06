@@ -455,3 +455,232 @@ async def _sync_theaters(db, drama: Drama, theater_ids: List):
         drama.theater_id = theater_ids[0]
     else:
         drama.theater_id = None
+
+
+# ─────────────────────────── 平阅剧单同步（6 Sheet 合并导入）───────────────────────────
+
+# 平阅剧单 wiki 链接（电子表格，6 个固定 Sheet）
+PINGYUE_WIKI_URL = "https://my.feishu.cn/wiki/PTW7wRpY9iFJ8TkGILfciu1rnrh"
+
+# 6 个 Sheet 的固定 ID 与数据范围（除非表格结构被修改，否则不变）
+PINGYUE_SHEETS = [
+    {"name": "综合剧单", "sheet_id": "9dbac7", "range": "A1:AJ650"},
+    {"name": "老剧场-剧单", "sheet_id": "HbqYes", "range": "A1:AU200"},
+    {"name": "新剧场-剧单1", "sheet_id": "rEysGs", "range": "A1:BD207"},
+    {"name": "新剧场-剧单2", "sheet_id": "qaCvR8", "range": "A1:BE300"},
+    {"name": "新剧场-剧单3", "sheet_id": "8MyIUq", "range": "A1:BE250"},
+    {"name": "新剧场-剧单4", "sheet_id": "bTRn76", "range": "A1:BE250"},
+]
+
+# 平阅剧单支持的 7 个剧场
+PINGYUE_THEATERS = ["海漫剧场", "云烬剧场", "晚柠漫剧", "信远漫剧社", "信远漫影", "信远漫享", "信远漫时光"]
+
+# 剧场单元格合法状态
+PINGYUE_STATUSES = {"已上线", "待上线", "审核中"}
+# 状态优先级（已上线 > 待上线 > 审核中）
+_PINGYUE_STATUS_RANK = {"已上线": 3, "待上线": 2, "审核中": 1}
+# 飞书状态 → 剧目库 listing_status（库里合法值见前端 LISTING_STATUSES，无「已上线」）
+_PINGYUE_STATUS_MAP = {"已上线": "已上架", "待上线": "待上线", "审核中": "审核中"}
+
+
+def _norm_cell(v) -> str:
+    """单元格值 → 去空白字符串。兼容飞书返回的文本/数字/链接对象形态。"""
+    if v is None:
+        return ""
+    if isinstance(v, dict):
+        # 超链接等富文本对象：优先取 text / name / value
+        for key in ("text", "name", "value", "title"):
+            if key in v:
+                return _norm_cell(v[key])
+        return ""
+    if isinstance(v, list):
+        return "".join(_norm_cell(x) for x in v)
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).replace("\u00a0", " ").strip()
+
+
+def _norm_header(v) -> str:
+    """表头归一化：去掉所有空格（含全角），如「剧  名」→「剧名」。"""
+    return _norm_cell(v).replace(" ", "").replace("\u3000", "")
+
+
+def _norm_pingyue_date(raw: str) -> str:
+    """上线时间归一化：无年份时补当前年（如 9/5 10:00 → 2026/9/5 10:00）。"""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if re.match(r"^\d{1,2}/\d{1,2}", s):
+        from datetime import datetime as _dt
+        return f"{_dt.now().year}/{s}"
+    return s
+
+
+async def _fetch_sheet_range(
+    client: httpx.AsyncClient, headers: dict, spreadsheet_token: str, sheet_id: str, cell_range: str
+) -> List[List]:
+    """读取电子表格指定 sheet 的指定区域，返回二维网格。失败返回 []。"""
+    try:
+        resp = await client.get(
+            f"{FEISHU_API_BASE}/sheets/v2/spreadsheets/{spreadsheet_token}/values/{sheet_id}!{cell_range}",
+            headers=headers,
+            timeout=TIMEOUT,
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.warning("平阅剧单 sheet=%s 读取失败: %s", sheet_id, data.get("msg"))
+            return []
+        return data.get("data", {}).get("valueRange", {}).get("values") or []
+    except Exception as e:
+        logger.warning("平阅剧单 sheet=%s 请求异常: %s", sheet_id, e)
+        return []
+
+
+def _parse_pingyue_grid(grid: List[List], sheet_name: str) -> List[dict]:
+    """解析单个平阅 Sheet 网格 → 中间行数据列表。
+
+    - 前 5 行内定位表头（含「剧名」列），自适应各 Sheet 列结构差异
+    - 动态识别 7 个目标剧场列，提取每个剧场的状态（已上线/待上线/审核中）
+    - 过滤无效行（剧名为空、无任何有效剧场状态）
+    """
+    if not grid:
+        return []
+    header_idx = None
+    for i, row in enumerate(grid[:5]):
+        cells = [_norm_header(c) for c in (row or [])]
+        if "剧名" in cells:
+            header_idx = i
+            break
+    if header_idx is None:
+        logger.warning("平阅剧单 sheet=%s 未找到「剧名」表头，跳过", sheet_name)
+        return []
+    hdr = [_norm_header(c) for c in (grid[header_idx] or [])]
+
+    name_idx = date_idx = gender_idx = rating_idx = link_idx = None
+    theater_cols: dict = {}
+    for i, h in enumerate(hdr):
+        if not h:
+            continue
+        if h == "剧名" and name_idx is None:
+            name_idx = i
+        elif h == "上线时间" and date_idx is None:
+            date_idx = i
+        elif h in ("男/女频", "男女频") and gender_idx is None:
+            gender_idx = i
+        elif h == "评级" and rating_idx is None:
+            rating_idx = i
+        elif h == "网盘链接" and link_idx is None:
+            link_idx = i
+        else:
+            for t in PINGYUE_THEATERS:
+                if t in h:
+                    theater_cols[i] = t
+                    break
+    if name_idx is None:
+        return []
+
+    def _cell(raw: List, idx) -> str:
+        if idx is None or idx >= len(raw):
+            return ""
+        return _norm_cell(raw[idx])
+
+    rows = []
+    for raw in grid[header_idx + 1:]:
+        if not raw:
+            continue
+        name = _cell(raw, name_idx)
+        if not name or name == "剧名":
+            continue
+        theaters: dict = {}
+        for idx, tname in theater_cols.items():
+            status = _cell(raw, idx)
+            if status in PINGYUE_STATUSES:
+                theaters[tname] = status
+        if not theaters:
+            continue  # 无任何有效剧场状态的行（说明行/空行）过滤
+        rows.append({
+            "name": name,
+            "date": _cell(raw, date_idx),
+            "theaters": theaters,
+            "gender": _cell(raw, gender_idx),
+            "rating": _cell(raw, rating_idx),
+            "url": _cell(raw, link_idx),
+        })
+    return rows
+
+
+async def fetch_pingyue_roster(url: Optional[str] = None) -> tuple:
+    """拉取并解析平阅剧单（6 个 Sheet 并行），返回 (DramaImportRow 字典列表, 错误信息)。
+
+    - 跨 Sheet 以剧名为唯一键去重（先出现的优先，综合剧单排最前）
+    - 每行输出与 /dramas/import/parse 相同的结构化字段，前端可直接复用导入预览/确认流程
+    - listing_status 取该剧所有剧场中的最高状态（已上线→已上架 > 待上线 > 审核中）
+    """
+    wiki_url = (url or "").strip() or settings.FEISHU_SPREADSHEET_URL or PINGYUE_WIKI_URL
+    parsed = parse_feishu_url(wiki_url)
+    if not parsed:
+        return [], f"无法解析飞书链接: {wiki_url}"
+
+    async with httpx.AsyncClient() as client:
+        token = await _get_tenant_access_token(client)
+        if not token:
+            return [], "未配置 FEISHU_APP_ID/FEISHU_APP_SECRET，无法访问飞书表格"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # wiki 链接 → 解析出电子表格 obj_token；直链电子表格直接用 token
+        spreadsheet_token = parsed["token"]
+        if parsed["type"] == "wiki":
+            node = await _wiki_node_to_obj(client, headers, parsed["token"])
+            if not node or not node.get("obj_token"):
+                return [], "无法从飞书 wiki 链接解析出电子表格（检查节点权限）"
+            spreadsheet_token = node["obj_token"]
+        elif parsed["type"] == "bitable":
+            return [], "平阅剧单为电子表格（/wiki/ 链接），不支持多维表格直链"
+
+        # 6 个 Sheet 并行拉取
+        async def _one(s: dict):
+            grid = await _fetch_sheet_range(client, headers, spreadsheet_token, s["sheet_id"], s["range"])
+            return s["name"], grid
+
+        results = await asyncio.gather(*[_one(s) for s in PINGYUE_SHEETS], return_exceptions=True)
+
+    # 合并解析（剧名唯一键，先出现优先）
+    all_data: dict = {}
+    sheets_ok = 0
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning("平阅剧单拉取异常: %s", r)
+            continue
+        sheet_name, grid = r
+        parsed_rows = _parse_pingyue_grid(grid, sheet_name)
+        if parsed_rows:
+            sheets_ok += 1
+        for row in parsed_rows:
+            all_data.setdefault(row["name"], row)
+
+    if not all_data:
+        return [], "平阅剧单解析结果为空（检查表格权限/Sheet 结构是否变更）"
+
+    # 转 DramaImportRow 格式
+    rows = []
+    for name, d in all_data.items():
+        theaters = d["theaters"]
+        top = max(theaters.values(), key=lambda s: _PINGYUE_STATUS_RANK.get(s, 0))
+        rows.append({
+            "name": name,
+            "frequency": d["gender"] or None,
+            "type": None,
+            "tags": None,
+            "rating": d["rating"] or None,
+            "synopsis": None,
+            "listing_status": _PINGYUE_STATUS_MAP.get(top, "已上架"),
+            "updated_date": None,
+            "listed_at": _norm_pingyue_date(d["date"]) or None,
+            "material_link": d["url"] or None,
+            "material_link_pwd": None,
+            "account_name": None,
+            "theater_name": ",".join(theaters.keys()) or None,
+        })
+
+    logger.info("平阅剧单拉取完成: %d 个 sheet 解析成功, %d 条剧目", sheets_ok, len(rows))
+    return rows, None

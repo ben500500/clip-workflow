@@ -19,7 +19,7 @@ import {
   uploadDramaImage, addDramaStill, deleteDramaStill, linkDramaAccounts,
   dramaImportParse, dramaImportPreview, dramaImportConfirm,
   getDramaSliceStatus, linkDramaEpisodes,
-  DramaSliceStatus, getTopicPresets, TopicPreset, feishuImportDrama,
+  DramaSliceStatus, getTopicPresets, TopicPreset, feishuImportDrama, feishuRosterRows,
 } from '../api/dramas';
 import { lanSourceApi } from '../api/lanSource';
 import type { LanSourceEpisodeItem } from '../api/lanSource';
@@ -296,6 +296,31 @@ const DramaLibrary: React.FC = () => {
       fetchList(keyword, freq, rating, status, theaterFilter);
     } catch (e) {
       message.error((e as Error).message || '飞书同步失败');
+    } finally {
+      setFeishuLoading(false);
+    }
+  };
+
+  // 平阅剧单同步：拉取飞书 6 个 Sheet 合并解析 → 复用导入预览/确认流程
+  const runFeishuRosterSync = async () => {
+    setFeishuLoading(true);
+    try {
+      const res = await feishuRosterRows(feishuUrl.trim() || undefined);
+      message.success(res.message || `从飞书拉取到 ${res.total} 条剧目`);
+      setFeishuOpen(false);
+      setFeishuUrl('');
+      // 复用导入弹窗预览流程（与 onImportFile 一致）
+      setParsedRows(res.rows as unknown as DramaImportRow[]);
+      setFileName(res.file_name);
+      setImportOpen(true);
+      setImportStep(1);
+      const pv = await dramaImportPreview(res.rows as unknown as DramaImportRow[], res.file_name);
+      setPreview(pv);
+      setCheckNew(new Set(pv.new.map((_, i) => i)));
+      setCheckUpdate(new Set(pv.update.map((_, i) => i)));
+      setImportStep(2);
+    } catch (e) {
+      message.error((e as Error).message || '飞书剧单拉取失败');
     } finally {
       setFeishuLoading(false);
     }
@@ -1228,30 +1253,37 @@ const DramaLibrary: React.FC = () => {
         )}
       </Modal>
 
-      {/* 飞书自动爬取弹窗（ISSUE #142） */}
+      {/* 飞书同步弹窗：平阅剧单 6 Sheet 合并导入 + 旧版剧场关联同步 */}
       <Modal
-        title="飞书表格自动同步"
+        title="飞书同步（平阅剧单）"
         open={feishuOpen}
         onCancel={() => { setFeishuOpen(false); setFeishuUrl(''); }}
-        onOk={runFeishuSync}
-        okText="开始同步"
+        onOk={runFeishuRosterSync}
+        okText="拉取剧单并预览导入"
         confirmLoading={feishuLoading}
         destroyOnClose
       >
         <Space direction="vertical" style={{ width: '100%' }} size="small">
           <Typography.Text type="secondary">
-            从飞书表格拉取「剧目 ↔ 剧场」对应关系，自动更新现有剧目的剧场关联（一剧多剧场）。
-            仅更新存量剧目，不自动新建。
+            从平阅剧单飞书表格（6 个 Sheet）拉取全部剧目，自动合并去重、识别各剧场状态
+            （已上线/待上线/审核中），进入导入预览：新增剧目、更新字段与剧场关联。
           </Typography.Text>
           <Input
-            placeholder="粘贴飞书表格链接（电子表格 / 知识库多维表格 / wiki 链接均可）"
+            placeholder="粘贴平阅剧单 wiki 链接（留空使用默认链接）"
             value={feishuUrl}
             onChange={(e) => setFeishuUrl(e.target.value)}
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            支持普通电子表格（/sheets/…）、多维表格（/base/…、/wiki/…）链接；
+            默认链接：https://my.feishu.cn/wiki/PTW7wRpY9iFJ8TkGILfciu1rnrh（6 个固定 Sheet）；
             需要后端配置 FEISHU_APP_ID / FEISHU_APP_SECRET 方可读取。
           </Typography.Text>
+          <Button
+            size="small"
+            loading={feishuLoading}
+            onClick={runFeishuSync}
+          >
+            仅同步现有剧目剧场关联（旧版，不新建剧目）
+          </Button>
         </Space>
       </Modal>
     </div>

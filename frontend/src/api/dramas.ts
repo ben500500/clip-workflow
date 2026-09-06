@@ -196,6 +196,16 @@ export function feishuImportDrama(url?: string): Promise<{
   return client.post('/dramas/import/feishu', { url: url || undefined });
 }
 
+// 平阅剧单同步：拉取飞书 6 个 Sheet 合并解析为导入行（不落库，复用导入预览/确认流程）
+export function feishuRosterRows(url?: string): Promise<{
+  rows: Array<Record<string, unknown>>;
+  total: number;
+  file_name: string;
+  message: string;
+}> {
+  return client.post('/dramas/import/feishu-roster', { url: url || undefined });
+}
+
 // 剧照
 // 上传剧目封面/剧照图片，返回 file_key（MinIO）
 export function uploadDramaImage(file: File, onProgress?: (percent: number) => void): Promise<{ file_name: string; file_key: string; file_size: number }> {
