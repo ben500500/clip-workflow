@@ -206,6 +206,32 @@ export function feishuRosterRows(url?: string): Promise<{
   return client.post('/dramas/import/feishu-roster', { url: url || undefined });
 }
 
+// 飞书剧单同步实时状态（凭证配置/本地快照/最近一次拉取结果）
+export interface FeishuRosterSnapshot {
+  name: string;
+  pulled_at: string;
+}
+
+export interface FeishuRosterStatus {
+  configured: boolean;
+  cache_dir: string;
+  cache_dir_exists: boolean;
+  snapshots: FeishuRosterSnapshot[];
+  wiki_url: string;
+  last_fetch: {
+    source: string;
+    ok: boolean;
+    rows: number;
+    err: string;
+    note: string;
+    at: string;
+  } | null;
+}
+
+export function feishuRosterStatus(): Promise<FeishuRosterStatus> {
+  return client.get('/dramas/feishu-roster/status');
+}
+
 // 剧照
 // 上传剧目封面/剧照图片，返回 file_key（MinIO）
 export function uploadDramaImage(file: File, onProgress?: (percent: number) => void): Promise<{ file_name: string; file_key: string; file_size: number }> {

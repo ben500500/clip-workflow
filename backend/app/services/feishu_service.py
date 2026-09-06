@@ -819,20 +819,69 @@ def _load_pingyue_csv_cache(cache_dir: str) -> List[Tuple[str, List[dict]]]:
 
 
 def _fetch_pingyue_from_cache(cache_dir: str) -> tuple:
-    """从本地快照目录构建导入行。返回 (rows, err, note)。"""
+    """从本地快照目录构建导入行。返回 (rows, err, note, source)，source ∈ {快照JSON, 快照CSV}。"""
     parsed = _load_pingyue_sheet_cache(cache_dir)
     source = "快照JSON"
     if not parsed or not any(rows for _, rows in parsed):
         parsed = _load_pingyue_csv_cache(cache_dir)
         source = "快照CSV"
     if not parsed:
-        return [], f"本地快照目录 {cache_dir} 无可用数据（先运行 scripts/refresh_pingyue_roster.sh）", ""
+        return [], f"本地快照目录 {cache_dir} 无可用数据（先运行 scripts/refresh_pingyue_roster.sh）", "", source
 
     all_data, sheets_ok = _merge_pingyue_rows(parsed)
     rows = _rows_to_import_rows(all_data)
     note = _pingyue_cache_note(cache_dir)
     logger.info("平阅剧单拉取完成(%s): %d 个数据源解析成功, %d 条剧目", source, sheets_ok, len(rows))
-    return rows, None, note
+    return rows, None, note, source
+
+
+# ─────────────────────── 拉取状态记录（供 /dramas/feishu-roster/status 展示实时状态）───────────────────────
+
+_LAST_PINGYUE_FETCH: Optional[dict] = None
+
+
+def _record_pingyue_fetch(source: str, ok: bool, rows_count: int, err: Optional[str], note: str) -> None:
+    """记录最近一次平阅剧单拉取的数据源与结果（进程内内存态，供状态端点查询）。"""
+    global _LAST_PINGYUE_FETCH
+    _LAST_PINGYUE_FETCH = {
+        "source": source,
+        "ok": ok,
+        "rows": rows_count,
+        "err": (err or "").strip(),
+        "note": (note or "").strip(),
+        "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def get_pingyue_fetch_status() -> dict:
+    """飞书剧单同步实时状态：凭证配置、本地快照文件与时间、最近一次拉取的数据源/结果。"""
+    cache_dir = (settings.FEISHU_ROSTER_CACHE_DIR or "").strip()
+    snapshots: List[dict] = []
+    if cache_dir and os.path.isdir(cache_dir):
+        for fn in sorted(os.listdir(cache_dir)):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                pulled_at = datetime.fromtimestamp(os.path.getmtime(os.path.join(cache_dir, fn)))
+            except OSError:
+                continue
+            snapshots.append({"name": fn, "pulled_at": pulled_at.strftime("%Y-%m-%d %H:%M:%S")})
+        csv_path = os.path.join(cache_dir, "平阅剧单.csv")
+        if os.path.exists(csv_path):
+            try:
+                pulled_at = datetime.fromtimestamp(os.path.getmtime(csv_path))
+                snapshots.append({"name": "平阅剧单.csv", "pulled_at": pulled_at.strftime("%Y-%m-%d %H:%M:%S")})
+            except OSError:
+                pass
+    configured = bool((settings.FEISHU_APP_ID or "").strip() and (settings.FEISHU_APP_SECRET or "").strip())
+    return {
+        "configured": configured,
+        "cache_dir": cache_dir,
+        "cache_dir_exists": bool(cache_dir and os.path.isdir(cache_dir)),
+        "snapshots": snapshots,
+        "wiki_url": settings.FEISHU_SPREADSHEET_URL or PINGYUE_WIKI_URL,
+        "last_fetch": _LAST_PINGYUE_FETCH,
+    }
 
 
 async def fetch_pingyue_roster(url: Optional[str] = None) -> tuple:
@@ -853,11 +902,14 @@ async def fetch_pingyue_roster(url: Optional[str] = None) -> tuple:
     explicit_url = bool((url or "").strip())
     parsed_url = parse_feishu_url(wiki_url)
     if explicit_url and not parsed_url:
-        return [], f"无法解析飞书链接: {wiki_url}", ""
+        parse_err = f"无法解析飞书链接: {wiki_url}"
+        _record_pingyue_fetch("url_parse", False, 0, parse_err, "")
+        return [], parse_err, ""
 
     # 1) Open API 直连
     rows, err, note = await _fetch_pingyue_via_api(wiki_url)
     if rows:
+        _record_pingyue_fetch("api", True, len(rows), err, note)
         return rows, err, note
 
     # 2)/3) 本地快照回退
@@ -865,9 +917,14 @@ async def fetch_pingyue_roster(url: Optional[str] = None) -> tuple:
     if cache_dir and os.path.isdir(cache_dir):
         if err:
             logger.warning("平阅剧单 Open API 拉取失败（%s），回退本地快照 %s", err, cache_dir)
-        return _fetch_pingyue_from_cache(cache_dir)
+        cache_rows, cache_err, cache_note, cache_source = _fetch_pingyue_from_cache(cache_dir)
+        # 即使快照成功也保留 API 失败原因，便于状态端点解释为何走了快照
+        _record_pingyue_fetch(cache_source, bool(cache_rows), len(cache_rows), err or cache_err, cache_note)
+        return cache_rows, cache_err, cache_note
 
-    return [], err or (
+    final_err = err or (
         "未配置 FEISHU_APP_ID/FEISHU_APP_SECRET，且本地快照目录不存在"
         "（运行 scripts/refresh_pingyue_roster.sh 生成快照，或在 .env 配置飞书应用凭证）"
-    ), ""
+    )
+    _record_pingyue_fetch("none", False, 0, final_err, "")
+    return [], final_err, ""

@@ -1234,6 +1234,21 @@ async def drama_import_feishu_roster(
     }
 
 
+@router.get("/dramas/feishu-roster/status", response_model=dict)
+async def drama_feishu_roster_status(
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """飞书剧单同步实时状态（供前端同步弹窗展示与刷新）。
+
+    - configured：后端是否已配置 FEISHU_APP_ID/FEISHU_APP_SECRET（决定能否走 Open API 实时拉取）；
+    - snapshots：本地快照文件列表与生成时间（API 不可用时的回退数据源）；
+    - last_fetch：最近一次拉取的数据源/条数/结果/时间（进程内存态，后端重启后清空）。
+    注意：本路由必须注册在 /dramas/{drama_id}/publish-context 之前，避免被路径参数吞掉。
+    """
+    from app.services.feishu_service import get_pingyue_fetch_status
+    return get_pingyue_fetch_status()
+
+
 # ─────────────────────────────── 发布联动（选剧目→带剧情简介→挂素材）───────────────────────────────
 
 @router.get("/dramas/{drama_id}/publish-context", response_model=dict)

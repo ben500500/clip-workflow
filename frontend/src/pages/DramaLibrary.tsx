@@ -19,14 +19,24 @@ import {
   uploadDramaImage, addDramaStill, deleteDramaStill, linkDramaAccounts,
   dramaImportParse, dramaImportPreview, dramaImportConfirm,
   getDramaSliceStatus, linkDramaEpisodes,
-  DramaSliceStatus, getTopicPresets, TopicPreset, feishuImportDrama, feishuRosterRows,
+  DramaSliceStatus, getTopicPresets, TopicPreset, feishuImportDrama, feishuRosterRows, feishuRosterStatus,
 } from '../api/dramas';
+import type { FeishuRosterStatus } from '../api/dramas';
 import { lanSourceApi } from '../api/lanSource';
 import type { LanSourceEpisodeItem } from '../api/lanSource';
 import { publishApi } from '../api/publish';
 import { theaterApi } from '../api/theaters';
 import type { Theater } from '../types';
 import type { VideoAccount } from '../types';
+
+// 飞书剧单拉取数据源 → 中文标签（同步弹窗状态卡展示用）
+const FEISHU_SOURCE_LABEL: Record<string, string> = {
+  api: '实时API',
+  '快照JSON': '本地快照JSON',
+  '快照CSV': '本地快照CSV',
+  url_parse: '链接解析',
+  none: '无数据源',
+};
 
 const { Text } = Typography;
 
@@ -282,6 +292,26 @@ const DramaLibrary: React.FC = () => {
   const [feishuOpen, setFeishuOpen] = useState(false);
   const [feishuUrl, setFeishuUrl] = useState('');
   const [feishuLoading, setFeishuLoading] = useState(false);
+  // 飞书剧单同步实时状态（凭证配置/本地快照/最近一次拉取结果）
+  const [feishuStatus, setFeishuStatus] = useState<FeishuRosterStatus | null>(null);
+  const [feishuStatusLoading, setFeishuStatusLoading] = useState(false);
+
+  const loadFeishuStatus = async () => {
+    setFeishuStatusLoading(true);
+    try {
+      const res = await feishuRosterStatus();
+      setFeishuStatus(res);
+    } catch {
+      setFeishuStatus(null); // 状态获取失败不阻塞主流程，状态卡显示"获取失败"
+    } finally {
+      setFeishuStatusLoading(false);
+    }
+  };
+
+  // 最新快照（按生成时间倒序取第一个）
+  const latestFeishuSnapshot = feishuStatus?.snapshots?.length
+    ? [...feishuStatus.snapshots].sort((a, b) => (a.pulled_at < b.pulled_at ? 1 : -1))[0]
+    : null;
 
   const runFeishuSync = async () => {
     setFeishuLoading(true);
@@ -307,6 +337,7 @@ const DramaLibrary: React.FC = () => {
     try {
       const res = await feishuRosterRows(feishuUrl.trim() || undefined);
       message.success(res.message || `从飞书拉取到 ${res.total} 条剧目`);
+      loadFeishuStatus(); // 拉取完成后刷新最近拉取状态（下次打开弹窗即显示最新）
       setFeishuOpen(false);
       setFeishuUrl('');
       // 复用导入弹窗预览流程（与 onImportFile 一致）
@@ -1268,14 +1299,50 @@ const DramaLibrary: React.FC = () => {
             从平阅剧单飞书表格（6 个 Sheet）拉取全部剧目，自动合并去重、识别各剧场状态
             （已上线/待上线/审核中），进入导入预览：新增剧目、更新字段与剧场关联。
           </Typography.Text>
+          {/* 实时状态卡：凭证/最近拉取/本地快照 + 刷新按钮 */}
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, padding: '8px 12px', background: '#fafafa' }}>
+            <Space size={[8, 8]} wrap align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
+              <Space size={[6, 6]} wrap align="center">
+                <Typography.Text strong style={{ fontSize: 12 }}>实时状态</Typography.Text>
+                {feishuStatus === null ? (
+                  <Tag color="default">状态获取失败</Tag>
+                ) : (
+                  <>
+                    <Tag color={feishuStatus.configured ? 'green' : 'red'}>
+                      {feishuStatus.configured ? '飞书凭证已配置·可实时拉取' : '飞书凭证未配置·仅本地快照'}
+                    </Tag>
+                    {feishuStatus.last_fetch ? (
+                      <Tag color={feishuStatus.last_fetch.ok ? (feishuStatus.last_fetch.source === 'api' ? 'green' : 'orange') : 'red'}>
+                        {feishuStatus.last_fetch.ok
+                          ? `最近拉取：${FEISHU_SOURCE_LABEL[feishuStatus.last_fetch.source] || feishuStatus.last_fetch.source} · ${feishuStatus.last_fetch.rows} 条 · ${feishuStatus.last_fetch.at}`
+                          : `最近拉取失败：${feishuStatus.last_fetch.err || '未知原因'}`}
+                      </Tag>
+                    ) : (
+                      <Tag color="default">服务启动后尚未拉取</Tag>
+                    )}
+                    {latestFeishuSnapshot ? (
+                      <Tag color="blue">本地快照 {feishuStatus.snapshots.length} 个 · 最新 {latestFeishuSnapshot.name}（{latestFeishuSnapshot.pulled_at}）</Tag>
+                    ) : (
+                      <Tag color="default">无本地快照</Tag>
+                    )}
+                  </>
+                )}
+              </Space>
+              <Button size="small" type="link" icon={<ReloadOutlined />} loading={feishuStatusLoading} onClick={loadFeishuStatus} style={{ padding: 0 }}>
+                刷新状态
+              </Button>
+            </Space>
+          </div>
           <Input
             placeholder="粘贴平阅剧单 wiki 链接（留空使用默认链接）"
             value={feishuUrl}
             onChange={(e) => setFeishuUrl(e.target.value)}
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            默认链接：https://my.feishu.cn/wiki/PTW7wRpY9iFJ8TkGILfciu1rnrh（6 个固定 Sheet）；
-            需要后端配置 FEISHU_APP_ID / FEISHU_APP_SECRET 方可读取。
+            默认链接：https://my.feishu.cn/wiki/PTW7wRpY9iFJ8TkGILfciu1rnrh（6 个固定 Sheet）。
+            {feishuStatus?.configured
+              ? '后端已配置飞书应用凭证，点击「拉取剧单并预览导入」即通过 Open API 实时读取。'
+              : '后端未配置飞书应用凭证，拉取时将回退本地快照。'}
           </Typography.Text>
           <Button
             size="small"
