@@ -510,11 +510,24 @@ def _norm_header(v) -> str:
     return _norm_cell(v).replace(" ", "").replace("\u3000", "")
 
 
-def _norm_pingyue_date(raw: str) -> str:
-    """上线时间归一化：无年份时补当前年（如 9/5 10:00 → 2026/9/5 10:00）。"""
-    s = (raw or "").strip()
+def _norm_pingyue_date(raw) -> str:
+    """上线时间归一化：
+    - 文本无年份时补当前年（如 9/5 10:00 → 2026/9/5 10:00）；
+    - 飞书 Open API 对日期单元格返回 Excel 序列号数值（1900 系统，如 46272.4166 → 2026/09/07 10:00）。
+    """
+    if raw is None:
+        return ""
+    s = raw.strip() if isinstance(raw, str) else str(raw).strip()
     if not s:
         return ""
+    # Excel 日期序列号（飞书 API 数值型日期：自 1899-12-30 起的天数，含小数时间部分）
+    if re.match(r"^\d{5}(\.\d+)?$", s):
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            dt = _dt(1899, 12, 30) + _td(days=float(s))
+            return dt.strftime("%Y/%m/%d %H:%M")
+        except (ValueError, OverflowError):
+            return s
     if re.match(r"^\d{1,2}/\d{1,2}", s):
         from datetime import datetime as _dt
         return f"{_dt.now().year}/{s}"
