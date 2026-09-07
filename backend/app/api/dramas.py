@@ -776,7 +776,8 @@ def _diff_fields(old: Drama, row: DramaImportRow) -> dict:
         elif old.theater:
             old_theater_names = [old.theater.name]
         new_theater_names = _split_theater_names(row.theater_name)
-        if new_theater_names != old_theater_names:
+        # 剧场差异：仅比较集合内容，不区分顺序（「云烬,海漫」和「海漫,云烬」视为相同）
+        if sorted(new_theater_names) != sorted(old_theater_names):
             diffs["theater_name"] = {"old": old_theater_names, "new": new_theater_names}
     return diffs
 
