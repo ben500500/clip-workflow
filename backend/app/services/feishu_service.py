@@ -650,14 +650,29 @@ def _parse_pingyue_grid(grid: List[List], sheet_name: str, theaters_list: Option
 
 
 def _merge_pingyue_rows(parsed: List[Tuple[str, List[dict]]]) -> Tuple[dict, int]:
-    """合并各 Sheet 的解析结果（剧名唯一键、先出现优先），返回 (all_data, 解析成功的 sheet 数)。"""
+    """合并各 Sheet 的解析结果（剧名唯一键，跨 Sheet 合并剧场信息），返回 (all_data, 解析成功的 sheet 数)。
+
+    - 同一剧名出现在多个 Sheet 时：合并 theaters 字典（取并集），同剧场状态取最高 rank
+      （已上线 > 待上线 > 审核中），避免先出现的 Sheet 覆盖后续 Sheet 的剧场信息。
+    """
     all_data: dict = {}
     sheets_ok = 0
     for sheet_name, rows in parsed:
         if rows:
             sheets_ok += 1
         for row in rows:
-            all_data.setdefault(row["name"], row)
+            name = row["name"]
+            if name not in all_data:
+                all_data[name] = row
+            else:
+                existing = all_data[name]
+                for tname, status in row.get("theaters", {}).items():
+                    if tname not in existing.get("theaters", {}):
+                        existing["theaters"][tname] = status
+                    else:
+                        cur = existing["theaters"][tname]
+                        if _PINGYUE_STATUS_RANK.get(status, 0) > _PINGYUE_STATUS_RANK.get(cur, 0):
+                            existing["theaters"][tname] = status
     return all_data, sheets_ok
 
 
