@@ -477,7 +477,7 @@ PINGYUE_SHEETS = [
     {"name": "新剧场-剧单4", "sheet_id": "bTRn76", "range": "A1:BE250"},
 ]
 
-# 平阅剧单支持的 7 个剧场
+# 内置兜底剧场列表（仅当读取系统 theaters 表失败时使用；正常以剧目库配置的剧场为准）
 PINGYUE_THEATERS = ["海漫剧场", "云烬剧场", "晚柠漫剧", "信远漫剧社", "信远漫影", "信远漫享", "信远漫时光"]
 
 # 剧场单元格合法状态
@@ -534,6 +534,26 @@ def _norm_pingyue_date(raw) -> str:
     return s
 
 
+async def _get_configured_theaters() -> Optional[List[str]]:
+    """读取剧目库 theaters 表中当前配置的剧场名（按创建时间排序）。
+
+    - 返回 None：查询失败（调用方回退内置 PINGYUE_THEATERS）
+    - 返回空列表：系统未配置任何剧场（将匹配不到任何剧场列，导入结果为空属预期）
+    """
+    try:
+        from sqlalchemy import text
+        from app.database import async_session_factory
+
+        async with async_session_factory() as db:
+            recs = (await db.execute(text("select name from theaters order by created_at, id"))).fetchall()
+        names = [r[0].strip() for r in recs if r[0] and r[0].strip()]
+        logger.info("平阅剧单按系统配置的 %d 个剧场匹配: %s", len(names), "、".join(names) or "（无）")
+        return names
+    except Exception as e:
+        logger.warning("读取系统剧场配置失败，回退内置剧场列表: %s", e)
+        return None
+
+
 async def _fetch_sheet_range(
     client: httpx.AsyncClient, headers: dict, spreadsheet_token: str, sheet_id: str, cell_range: str
 ) -> List[List]:
@@ -554,15 +574,17 @@ async def _fetch_sheet_range(
         return []
 
 
-def _parse_pingyue_grid(grid: List[List], sheet_name: str) -> List[dict]:
+def _parse_pingyue_grid(grid: List[List], sheet_name: str, theaters_list: Optional[List[str]] = None) -> List[dict]:
     """解析单个平阅 Sheet 网格 → 中间行数据列表。
 
     - 前 5 行内定位表头（含「剧名」列），自适应各 Sheet 列结构差异
-    - 动态识别 7 个目标剧场列，提取每个剧场的状态（已上线/待上线/审核中）
+    - 按传入剧场列表动态识别剧场列，提取每个剧场的状态（已上线/待上线/审核中）；
+      未传入时回退内置 PINGYUE_THEATERS
     - 过滤无效行（剧名为空、无任何有效剧场状态）
     """
     if not grid:
         return []
+    match_theaters = theaters_list if theaters_list is not None else PINGYUE_THEATERS
     header_idx = None
     for i, row in enumerate(grid[:5]):
         cells = [_norm_header(c) for c in (row or [])]
@@ -590,7 +612,7 @@ def _parse_pingyue_grid(grid: List[List], sheet_name: str) -> List[dict]:
         elif h == "网盘链接" and link_idx is None:
             link_idx = i
         else:
-            for t in PINGYUE_THEATERS:
+            for t in match_theaters:
                 if t in h:
                     theater_cols[i] = t
                     break
@@ -663,10 +685,11 @@ def _rows_to_import_rows(all_data: dict) -> List[dict]:
     return rows
 
 
-async def _fetch_pingyue_via_api(wiki_url: str) -> tuple:
+async def _fetch_pingyue_via_api(wiki_url: str, theaters_list: Optional[List[str]] = None) -> tuple:
     """Open API 直连拉取（需 FEISHU_APP_ID/SECRET）。
 
     返回 (rows, err, note)：rows 为空列表且 err 非空表示失败，调用方可回退本地快照。
+    theaters_list 为匹配用的剧场列表（None 时回退内置列表）。
     """
     if not settings.FEISHU_APP_ID or not settings.FEISHU_APP_SECRET:
         return None, "未配置 FEISHU_APP_ID/FEISHU_APP_SECRET，无法访问飞书表格", ""
@@ -705,11 +728,12 @@ async def _fetch_pingyue_via_api(wiki_url: str) -> tuple:
             logger.warning("平阅剧单拉取异常: %s", r)
             continue
         sheet_name, grid = r
-        parsed_rows.append((sheet_name, _parse_pingyue_grid(grid, sheet_name)))
+        parsed_rows.append((sheet_name, _parse_pingyue_grid(grid, sheet_name, theaters_list)))
 
     all_data, sheets_ok = _merge_pingyue_rows(parsed_rows)
     if not all_data:
-        return None, "平阅剧单解析结果为空（检查表格权限/Sheet 结构是否变更）", ""
+        hint = "、".join(theaters_list) if theaters_list else "（系统未配置剧场或使用内置列表）"
+        return None, f"平阅剧单解析结果为空（检查表格权限/Sheet 结构，或确认系统配置的剧场与剧单表头匹配，当前匹配剧场: {hint}）", ""
 
     rows = _rows_to_import_rows(all_data)
     logger.info("平阅剧单拉取完成(Open API): %d 个 sheet 解析成功, %d 条剧目", sheets_ok, len(rows))
@@ -763,7 +787,7 @@ def _pingyue_cache_note(cache_dir: str) -> str:
         return "（本地快照）"
 
 
-def _load_pingyue_sheet_cache(cache_dir: str) -> List[Tuple[str, List[dict]]]:
+def _load_pingyue_sheet_cache(cache_dir: str, theaters_list: Optional[List[str]] = None) -> List[Tuple[str, List[dict]]]:
     """回退一：读取 6 个 Sheet 的 lark-cli 原始拉取结果 {sheet_id}.json → 各自解析。"""
     parsed: List[Tuple[str, List[dict]]] = []
     found = 0
@@ -780,7 +804,7 @@ def _load_pingyue_sheet_cache(cache_dir: str) -> List[Tuple[str, List[dict]]]:
             continue
         data = payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
         text = (data or {}).get("annotated_csv") or ""
-        rows = _parse_pingyue_grid(_annotated_csv_to_grid(text), s["name"])
+        rows = _parse_pingyue_grid(_annotated_csv_to_grid(text), s["name"], theaters_list)
         parsed.append((s["name"], rows))
         if (data or {}).get("has_more"):
             logger.warning(
@@ -792,11 +816,13 @@ def _load_pingyue_sheet_cache(cache_dir: str) -> List[Tuple[str, List[dict]]]:
     return parsed
 
 
-def _load_pingyue_csv_cache(cache_dir: str) -> List[Tuple[str, List[dict]]]:
+def _load_pingyue_csv_cache(cache_dir: str, theaters_list: Optional[List[str]] = None) -> List[Tuple[str, List[dict]]]:
     """回退二：读取能力文档管线的合并产出 平阅剧单.csv（剧名,上线时间,剧场,状态,男/女频,评级,网盘链接）。
 
     注意：CSV 的「剧场」列已合并、状态为全剧场最高状态，按列回填（粒度低于回退一，仅兜底）。
+    theaters_list 用于过滤仅保留系统配置的剧场。
     """
+    match_theaters = theaters_list if theaters_list is not None else PINGYUE_THEATERS
     path = os.path.join(cache_dir, "平阅剧单.csv")
     if not os.path.exists(path):
         return []
@@ -813,8 +839,11 @@ def _load_pingyue_csv_cache(cache_dir: str) -> List[Tuple[str, List[dict]]]:
                 theaters: dict = {}
                 for part in re.split(r"[,，、;；]", (rec.get("剧场") or "").strip()):
                     t = part.strip()
-                    if t:
-                        theaters[t] = status
+                    if not t:
+                        continue
+                    if not any(cfg in t or t in cfg for cfg in match_theaters):
+                        continue  # 仅保留系统配置的剧场
+                    theaters[t] = status
                 if not theaters:
                     continue
                 rows.append({
@@ -831,12 +860,12 @@ def _load_pingyue_csv_cache(cache_dir: str) -> List[Tuple[str, List[dict]]]:
     return [("平阅剧单.csv", rows)] if rows else []
 
 
-def _fetch_pingyue_from_cache(cache_dir: str) -> tuple:
+def _fetch_pingyue_from_cache(cache_dir: str, theaters_list: Optional[List[str]] = None) -> tuple:
     """从本地快照目录构建导入行。返回 (rows, err, note, source)，source ∈ {快照JSON, 快照CSV}。"""
-    parsed = _load_pingyue_sheet_cache(cache_dir)
+    parsed = _load_pingyue_sheet_cache(cache_dir, theaters_list)
     source = "快照JSON"
     if not parsed or not any(rows for _, rows in parsed):
-        parsed = _load_pingyue_csv_cache(cache_dir)
+        parsed = _load_pingyue_csv_cache(cache_dir, theaters_list)
         source = "快照CSV"
     if not parsed:
         return [], f"本地快照目录 {cache_dir} 无可用数据（先运行 scripts/refresh_pingyue_roster.sh）", "", source
@@ -908,8 +937,10 @@ async def fetch_pingyue_roster(url: Optional[str] = None) -> tuple:
     - 跨 Sheet 以剧名为唯一键去重（先出现的优先，综合剧单排最前）
     - 每行输出与 /dramas/import/parse 相同的结构化字段，前端可直接复用导入预览/确认流程
     - listing_status 取该剧所有剧场中的最高状态（已上线→已上架 > 待上线 > 审核中）
+    - 剧场匹配以剧目库「theaters 表」当前配置为准（读取失败时回退内置列表）
     """
     wiki_url = (url or "").strip() or settings.FEISHU_SPREADSHEET_URL or PINGYUE_WIKI_URL
+    theaters_list = await _get_configured_theaters()
 
     # 显式传入的自定义链接解析失败时直接报错（不静默回退快照）
     explicit_url = bool((url or "").strip())
@@ -920,7 +951,7 @@ async def fetch_pingyue_roster(url: Optional[str] = None) -> tuple:
         return [], parse_err, ""
 
     # 1) Open API 直连
-    rows, err, note = await _fetch_pingyue_via_api(wiki_url)
+    rows, err, note = await _fetch_pingyue_via_api(wiki_url, theaters_list)
     if rows:
         _record_pingyue_fetch("api", True, len(rows), err, note)
         return rows, err, note
@@ -930,7 +961,7 @@ async def fetch_pingyue_roster(url: Optional[str] = None) -> tuple:
     if cache_dir and os.path.isdir(cache_dir):
         if err:
             logger.warning("平阅剧单 Open API 拉取失败（%s），回退本地快照 %s", err, cache_dir)
-        cache_rows, cache_err, cache_note, cache_source = _fetch_pingyue_from_cache(cache_dir)
+        cache_rows, cache_err, cache_note, cache_source = _fetch_pingyue_from_cache(cache_dir, theaters_list)
         # 即使快照成功也保留 API 失败原因，便于状态端点解释为何走了快照
         _record_pingyue_fetch(cache_source, bool(cache_rows), len(cache_rows), err or cache_err, cache_note)
         return cache_rows, cache_err, cache_note
