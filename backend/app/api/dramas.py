@@ -1381,8 +1381,6 @@ async def get_drama_slice_status(
     三个阶段的实时状态，输出每集明细 + 整体进度，供剧目详情展示「该剧已切片/待切片」。
     """
     d = await _resolve_drama(db, drama_id)
-    if not _can_manage(d, current_user):
-        raise HTTPException(status_code=403, detail="No permission to view this drama")
 
     episodes = (
         await db.execute(
