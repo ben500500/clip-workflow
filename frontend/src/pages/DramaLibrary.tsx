@@ -106,9 +106,9 @@ const DramaLibrary: React.FC = () => {
   const [theaterFilter, setTheaterFilter] = useState<string | undefined>();
   const [theaters, setTheaters] = useState<Theater[]>([]);
 
-  // 上线时间日期筛选（默认 当日+明日：展示今天与明天上线待发的剧目）
+  // 上线时间日期筛选（默认 全部上线时间）
   // 预设：all / today / tomorrow / today_tomorrow / custom
-  const [onlineFilter, setOnlineFilter] = useState<string>('today_tomorrow');
+  const [onlineFilter, setOnlineFilter] = useState<string>('all');
   const [onlineRange, setOnlineRange] = useState<[string, string] | null>(null);
   const onlineParamsRef = useRef<Record<string, string>>({});
 

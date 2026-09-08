@@ -257,8 +257,17 @@ def _can_manage(d: Drama, current_user: User) -> bool:
 
 
 def _apply_rbac_filter(current_user: User):
+    """列表 RBAC 过滤：operator 可见 自己名下 + 自己创建 + 无号主(公共) 的剧目。
+
+    与 _can_manage 语义对齐（operator_id IS NULL 视为无主公共剧目），
+    否则 operator 名下无剧目时列表为空，而详情/管理接口却按公共放行。
+    """
     if current_user and not user_can_access_all_materials(current_user):
-        return (Drama.operator_id == current_user.id) | (Drama.created_by == current_user.id)
+        return (
+            (Drama.operator_id == current_user.id)
+            | (Drama.operator_id.is_(None))
+            | (Drama.created_by == current_user.id)
+        )
     return None
 
 
