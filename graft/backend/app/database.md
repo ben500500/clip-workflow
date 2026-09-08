@@ -7,6 +7,6 @@
 - _backfill_data_scope · function · L92-L113 — Idempotently backfills users.data_scope for existing rows based on role, granting 'all' to admin/material/publisher and 'own' to operators.
 - _backfill_drama_theaters · function · L116-L154 — async def _backfill_drama_theaters()
 - _ensure_autoclip_runs_table · function · L157-L198 — Explicitly creates the autoclip_runs table (and its episode index) for old databases where create_all won't add it.
-- _apply_compat_migrations · function · L201-L308 — Adds newly-introduced columns to existing tables for old-database upgrades, skipping columns that already exist.
-- close_db · function · L311-L313 — Disposes the async engine to release pooled connections on shutdown.
-- _ensure_wechat_download_tables · function · L315-L327 — Creates tables for the wechat_download package's independent Base metadata, which create_all on the main Base won't cover.
+- _apply_compat_migrations · function · L201-L312 — Adds newly-introduced columns to existing tables for old-database upgrades, skipping columns that already exist.
+- close_db · function · L315-L317 — Disposes the async engine to release pooled connections on shutdown.
+- _ensure_wechat_download_tables · function · L319-L331 — Creates tables for the wechat_download package's independent Base metadata, which create_all on the main Base won't cover.

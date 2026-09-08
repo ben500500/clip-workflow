@@ -65,16 +65,16 @@ covers:
     at: 'backend/app/services/redis_stream.py:L320-L361'
   - symbol: get_worker_nodes_from_redis
     kind: function
-    at: 'backend/app/services/redis_stream.py:L364-L490'
+    at: 'backend/app/services/redis_stream.py:L364-L500'
   - symbol: set_node_update_command
     kind: function
-    at: 'backend/app/services/redis_stream.py:L493-L522'
+    at: 'backend/app/services/redis_stream.py:L503-L532'
   - symbol: get_node_update_command
     kind: function
-    at: 'backend/app/services/redis_stream.py:L525-L534'
+    at: 'backend/app/services/redis_stream.py:L535-L544'
   - symbol: clear_node_update_command
     kind: function
-    at: 'backend/app/services/redis_stream.py:L537-L543'
+    at: 'backend/app/services/redis_stream.py:L547-L553'
 ---
 <!-- context:generated:start -->
 ## Summary

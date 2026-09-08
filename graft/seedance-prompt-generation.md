@@ -132,61 +132,61 @@ covers:
     at: 'backend/app/api/shortdrama.py:L733-L735'
   - symbol: start_doubao_generate
     kind: function
-    at: 'backend/app/api/shortdrama.py:L739-L784'
+    at: 'backend/app/api/shortdrama.py:L739-L797'
   - symbol: confirm_doubao_rewrite
     kind: function
-    at: 'backend/app/api/shortdrama.py:L788-L836'
+    at: 'backend/app/api/shortdrama.py:L801-L849'
   - symbol: cancel_doubao_generate
     kind: function
-    at: 'backend/app/api/shortdrama.py:L840-L864'
+    at: 'backend/app/api/shortdrama.py:L853-L877'
   - symbol: get_doubao_status
     kind: function
-    at: 'backend/app/api/shortdrama.py:L868-L879'
+    at: 'backend/app/api/shortdrama.py:L881-L892'
   - symbol: get_prompt_default_duration
     kind: function
-    at: 'backend/app/api/shortdrama.py:L888-L903'
+    at: 'backend/app/api/shortdrama.py:L901-L916'
   - symbol: PromptDefaultDurationRequest
     kind: class
-    at: 'backend/app/api/shortdrama.py:L906-L908'
+    at: 'backend/app/api/shortdrama.py:L919-L921'
   - symbol: update_prompt_default_duration
     kind: function
-    at: 'backend/app/api/shortdrama.py:L912-L922'
+    at: 'backend/app/api/shortdrama.py:L925-L935'
   - symbol: get_doubao_account_type
     kind: function
-    at: 'backend/app/api/shortdrama.py:L926-L936'
+    at: 'backend/app/api/shortdrama.py:L939-L949'
   - symbol: update_doubao_account_type
     kind: function
-    at: 'backend/app/api/shortdrama.py:L940-L954'
+    at: 'backend/app/api/shortdrama.py:L953-L967'
   - symbol: switch_doubao_account
     kind: function
-    at: 'backend/app/api/shortdrama.py:L958-L977'
+    at: 'backend/app/api/shortdrama.py:L971-L990'
   - symbol: _load_doubao_limits
     kind: function
-    at: 'backend/app/api/shortdrama.py:L980-L990'
+    at: 'backend/app/api/shortdrama.py:L993-L1003'
   - symbol: SeedanceGenerateRequest
     kind: class
-    at: 'backend/app/api/shortdrama.py:L1010-L1014'
+    at: 'backend/app/api/shortdrama.py:L1023-L1027'
   - symbol: SeedanceGenerateResponse
     kind: class
-    at: 'backend/app/api/shortdrama.py:L1017-L1020'
+    at: 'backend/app/api/shortdrama.py:L1030-L1033'
   - symbol: _load_seedance_config
     kind: function
-    at: 'backend/app/api/shortdrama.py:L1023-L1032'
+    at: 'backend/app/api/shortdrama.py:L1036-L1045'
   - symbol: _require_seedance_enabled
     kind: function
-    at: 'backend/app/api/shortdrama.py:L1035-L1043'
+    at: 'backend/app/api/shortdrama.py:L1048-L1056'
   - symbol: get_seedance_config
     kind: function
-    at: 'backend/app/api/shortdrama.py:L1047-L1059'
+    at: 'backend/app/api/shortdrama.py:L1060-L1072'
   - symbol: start_seedance_generate
     kind: function
-    at: 'backend/app/api/shortdrama.py:L1063-L1104'
+    at: 'backend/app/api/shortdrama.py:L1076-L1130'
   - symbol: cancel_seedance_generate
     kind: function
-    at: 'backend/app/api/shortdrama.py:L1108-L1144'
+    at: 'backend/app/api/shortdrama.py:L1134-L1170'
   - symbol: get_seedance_status
     kind: function
-    at: 'backend/app/api/shortdrama.py:L1148-L1159'
+    at: 'backend/app/api/shortdrama.py:L1174-L1185'
 ---
 <!-- context:generated:start -->
 ## Summary

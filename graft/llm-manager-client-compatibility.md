@@ -21,39 +21,42 @@ covers:
   - symbol: LLMCallError
     kind: class
     at: 'autoclip/app/utils/llm_client.py:L38-L43'
+  - symbol: _escape_in_string_quotes
+    kind: function
+    at: 'autoclip/app/utils/llm_client.py:L46-L83'
   - symbol: LLMClient
     kind: class
-    at: 'autoclip/app/utils/llm_client.py:L46-L280'
+    at: 'autoclip/app/utils/llm_client.py:L86-L330'
   - symbol: __init__
     kind: method
-    at: 'autoclip/app/utils/llm_client.py:L49-L51'
+    at: 'autoclip/app/utils/llm_client.py:L89-L91'
   - symbol: call
     kind: method
-    at: 'autoclip/app/utils/llm_client.py:L53-L68'
+    at: 'autoclip/app/utils/llm_client.py:L93-L108'
   - symbol: call_with_retry
     kind: method
-    at: 'autoclip/app/utils/llm_client.py:L70-L86'
+    at: 'autoclip/app/utils/llm_client.py:L110-L126'
   - symbol: _preprocess_llm_response
     kind: method
-    at: 'autoclip/app/utils/llm_client.py:L88-L112'
+    at: 'autoclip/app/utils/llm_client.py:L128-L152'
   - symbol: _auto_fix_response
     kind: method
-    at: 'autoclip/app/utils/llm_client.py:L114-L125'
+    at: 'autoclip/app/utils/llm_client.py:L154-L165'
   - symbol: _validate_json_structure
     kind: method
-    at: 'autoclip/app/utils/llm_client.py:L127-L152'
+    at: 'autoclip/app/utils/llm_client.py:L167-L192'
   - symbol: parse_json_response
     kind: method
-    at: 'autoclip/app/utils/llm_client.py:L154-L276'
+    at: 'autoclip/app/utils/llm_client.py:L194-L326'
   - symbol: sanitize_string
     kind: function
-    at: 'autoclip/app/utils/llm_client.py:L165-L173'
+    at: 'autoclip/app/utils/llm_client.py:L205-L213'
   - symbol: fix_common_json_errors
     kind: function
-    at: 'autoclip/app/utils/llm_client.py:L175-L219'
+    at: 'autoclip/app/utils/llm_client.py:L215-L269'
   - symbol: get_current_provider_info
     kind: method
-    at: 'autoclip/app/utils/llm_client.py:L278-L280'
+    at: 'autoclip/app/utils/llm_client.py:L328-L330'
 ---
 <!-- context:generated:start -->
 ## Summary

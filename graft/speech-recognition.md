@@ -20,94 +20,100 @@ generator:
 covers:
   - symbol: SpeechRecognitionMethod
     kind: class
-    at: 'autoclip/app/utils/speech_recognizer.py:L30-L34'
+    at: 'autoclip/app/utils/speech_recognizer.py:L30-L35'
   - symbol: LanguageCode
     kind: class
-    at: 'autoclip/app/utils/speech_recognizer.py:L37-L41'
+    at: 'autoclip/app/utils/speech_recognizer.py:L38-L42'
   - symbol: SpeechRecognitionConfig
     kind: class
-    at: 'autoclip/app/utils/speech_recognizer.py:L45-L69'
+    at: 'autoclip/app/utils/speech_recognizer.py:L46-L73'
   - symbol: SpeechRecognitionError
     kind: class
-    at: 'autoclip/app/utils/speech_recognizer.py:L72-L74'
+    at: 'autoclip/app/utils/speech_recognizer.py:L76-L78'
   - symbol: SpeechRecognizer
     kind: class
-    at: 'autoclip/app/utils/speech_recognizer.py:L77-L1024'
+    at: 'autoclip/app/utils/speech_recognizer.py:L81-L1166'
   - symbol: __init__
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L80-L86'
+    at: 'autoclip/app/utils/speech_recognizer.py:L84-L90'
   - symbol: _check_whisper_availability
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L88-L95'
+    at: 'autoclip/app/utils/speech_recognizer.py:L92-L99'
   - symbol: _check_aliyun_speech_availability
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L97-L106'
+    at: 'autoclip/app/utils/speech_recognizer.py:L101-L110'
   - symbol: _check_funasr_availability
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L108-L115'
+    at: 'autoclip/app/utils/speech_recognizer.py:L112-L119'
   - symbol: _extract_audio_from_video
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L117-L156'
+    at: 'autoclip/app/utils/speech_recognizer.py:L121-L160'
   - symbol: generate_subtitle
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L158-L185'
+    at: 'autoclip/app/utils/speech_recognizer.py:L162-L191'
   - symbol: _format_srt_timestamp
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L188-L195'
+    at: 'autoclip/app/utils/speech_recognizer.py:L194-L201'
   - symbol: _segments_to_srt
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L198-L207'
+    at: 'autoclip/app/utils/speech_recognizer.py:L204-L213'
   - symbol: _aggregate_word_timestamps
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L210-L288'
+    at: 'autoclip/app/utils/speech_recognizer.py:L216-L294'
   - symbol: flush
     kind: function
-    at: 'autoclip/app/utils/speech_recognizer.py:L243-L253'
+    at: 'autoclip/app/utils/speech_recognizer.py:L249-L259'
   - symbol: _merge_short_segments
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L291-L318'
+    at: 'autoclip/app/utils/speech_recognizer.py:L297-L324'
   - symbol: _detect_speech_windows
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L321-L389'
+    at: 'autoclip/app/utils/speech_recognizer.py:L327-L395'
   - symbol: _split_text_by_punctuation
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L392-L429'
+    at: 'autoclip/app/utils/speech_recognizer.py:L398-L435'
   - symbol: _refine_srt_with_speech_windows
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L432-L550'
+    at: 'autoclip/app/utils/speech_recognizer.py:L438-L556'
   - symbol: _parse_srt_records
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L553-L581'
+    at: 'autoclip/app/utils/speech_recognizer.py:L559-L587'
   - symbol: _parse_srt_time
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L584-L592'
+    at: 'autoclip/app/utils/speech_recognizer.py:L590-L598'
   - symbol: _get_media_duration
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L595-L608'
+    at: 'autoclip/app/utils/speech_recognizer.py:L601-L614'
   - symbol: _aliyun_speech_transcribe_audio
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L610-L673'
+    at: 'autoclip/app/utils/speech_recognizer.py:L616-L679'
+  - symbol: _mimo_asr_transcribe_audio
+    kind: method
+    at: 'autoclip/app/utils/speech_recognizer.py:L682-L738'
   - symbol: _generate_subtitle_whisper
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L675-L730'
+    at: 'autoclip/app/utils/speech_recognizer.py:L740-L795'
   - symbol: _aggregate_funasr_char_timestamps
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L733-L838'
+    at: 'autoclip/app/utils/speech_recognizer.py:L798-L903'
   - symbol: emit
     kind: function
-    at: 'autoclip/app/utils/speech_recognizer.py:L783-L786'
+    at: 'autoclip/app/utils/speech_recognizer.py:L848-L851'
   - symbol: _generate_subtitle_funasr_local
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L840-L916'
+    at: 'autoclip/app/utils/speech_recognizer.py:L905-L984'
+  - symbol: _generate_subtitle_mimo_asr
+    kind: method
+    at: 'autoclip/app/utils/speech_recognizer.py:L988-L1058'
   - symbol: _strip_funasr_tags
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L919-L923'
+    at: 'autoclip/app/utils/speech_recognizer.py:L1061-L1065'
   - symbol: _generate_subtitle_aliyun_speech
     kind: method
-    at: 'autoclip/app/utils/speech_recognizer.py:L925-L1024'
+    at: 'autoclip/app/utils/speech_recognizer.py:L1067-L1166'
   - symbol: generate_subtitle_for_video
     kind: function
-    at: 'autoclip/app/utils/speech_recognizer.py:L1027-L1059'
+    at: 'autoclip/app/utils/speech_recognizer.py:L1169-L1212'
 ---
 <!-- context:generated:start -->
 ## Summary

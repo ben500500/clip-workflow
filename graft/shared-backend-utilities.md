@@ -17,40 +17,40 @@ generator:
 covers:
   - symbol: format_time
     kind: function
-    at: 'backend/app/utils/helpers.py:L11-L16'
+    at: 'backend/app/utils/helpers.py:L14-L19'
   - symbol: parse_time
     kind: function
-    at: 'backend/app/utils/helpers.py:L19-L26'
+    at: 'backend/app/utils/helpers.py:L22-L29'
   - symbol: sanitize_filename
     kind: function
-    at: 'backend/app/utils/helpers.py:L29-L40'
+    at: 'backend/app/utils/helpers.py:L32-L43'
   - symbol: build_clip_name
     kind: function
-    at: 'backend/app/utils/helpers.py:L43-L53'
+    at: 'backend/app/utils/helpers.py:L46-L56'
   - symbol: generate_cutlist
     kind: function
-    at: 'backend/app/utils/helpers.py:L56-L110'
+    at: 'backend/app/utils/helpers.py:L59-L157'
   - symbol: generate_intervals_file
     kind: function
-    at: 'backend/app/utils/helpers.py:L113-L124'
+    at: 'backend/app/utils/helpers.py:L160-L171'
   - symbol: write_temp_file
     kind: function
-    at: 'backend/app/utils/helpers.py:L127-L131'
+    at: 'backend/app/utils/helpers.py:L174-L178'
   - symbol: write_temp_json
     kind: function
-    at: 'backend/app/utils/helpers.py:L134-L138'
+    at: 'backend/app/utils/helpers.py:L181-L185'
   - symbol: ensure_dir
     kind: function
-    at: 'backend/app/utils/helpers.py:L141-L144'
+    at: 'backend/app/utils/helpers.py:L188-L191'
   - symbol: generate_signed_url_headers
     kind: function
-    at: 'backend/app/utils/helpers.py:L147-L149'
+    at: 'backend/app/utils/helpers.py:L194-L196'
   - symbol: human_readable_size
     kind: function
-    at: 'backend/app/utils/helpers.py:L152-L160'
+    at: 'backend/app/utils/helpers.py:L199-L207'
   - symbol: utc_iso
     kind: function
-    at: 'backend/app/utils/helpers.py:L162-L173'
+    at: 'backend/app/utils/helpers.py:L209-L220'
 ---
 <!-- context:generated:start -->
 ## Summary

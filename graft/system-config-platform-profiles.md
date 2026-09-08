@@ -33,40 +33,40 @@ covers:
     at: 'backend/app/api/config.py:L49-L60'
   - symbol: _default_profile_for
     kind: function
-    at: 'backend/app/api/config.py:L335-L343'
+    at: 'backend/app/api/config.py:L338-L346'
   - symbol: _serialize_config
     kind: function
-    at: 'backend/app/api/config.py:L346-L352'
+    at: 'backend/app/api/config.py:L349-L355'
   - symbol: _serialize_profile
     kind: function
-    at: 'backend/app/api/config.py:L355-L366'
+    at: 'backend/app/api/config.py:L358-L369'
   - symbol: get_all_config
     kind: function
-    at: 'backend/app/api/config.py:L370-L399'
+    at: 'backend/app/api/config.py:L373-L402'
   - symbol: update_config
     kind: function
-    at: 'backend/app/api/config.py:L403-L428'
+    at: 'backend/app/api/config.py:L406-L431'
   - symbol: reset_config_default
     kind: function
-    at: 'backend/app/api/config.py:L432-L459'
+    at: 'backend/app/api/config.py:L435-L462'
   - symbol: list_platform_profiles
     kind: function
-    at: 'backend/app/api/config.py:L463-L469'
+    at: 'backend/app/api/config.py:L466-L472'
   - symbol: create_platform_profile
     kind: function
-    at: 'backend/app/api/config.py:L473-L500'
+    at: 'backend/app/api/config.py:L476-L503'
   - symbol: update_platform_profile
     kind: function
-    at: 'backend/app/api/config.py:L504-L551'
+    at: 'backend/app/api/config.py:L507-L554'
   - symbol: reset_platform_profile_default
     kind: function
-    at: 'backend/app/api/config.py:L555-L591'
+    at: 'backend/app/api/config.py:L558-L594'
   - symbol: get_platform_presets
     kind: function
-    at: 'backend/app/api/config.py:L595-L607'
+    at: 'backend/app/api/config.py:L598-L610'
   - symbol: delete_platform_profile
     kind: function
-    at: 'backend/app/api/config.py:L611-L630'
+    at: 'backend/app/api/config.py:L614-L633'
 ---
 <!-- context:generated:start -->
 ## Summary

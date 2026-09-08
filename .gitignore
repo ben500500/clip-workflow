@@ -131,6 +131,3 @@ slice-worker/temp/
 graft/.cache/
 graft/.graph/
 .sshKey
-
-# graft's local graph cache — regenerable, not committed (run `graft build`).
-/graft/

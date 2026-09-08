@@ -1,0 +1,114 @@
+# slice-worker/nv-codec-headers/include/ffnvcodec/nvEncodeAPI.h
+
+- NVENC_RECT · type · L77-L77 — typedef RECT NVENC_RECT;
+- _GUID · class · L87-L94 — typedef struct _GUID
+- _NVENC_RECT · class · L101-L107 — typedef struct _NVENC_RECT
+- _NV_ENC_PARAMS_FRAME_FIELD_MODE · type · L252-L257 — typedef enum _NV_ENC_PARAMS_FRAME_FIELD_MODE
+- _NV_ENC_PARAMS_RC_MODE · type · L262-L267 — typedef enum _NV_ENC_PARAMS_RC_MODE
+- _NV_ENC_MULTI_PASS · type · L272-L277 — typedef enum _NV_ENC_MULTI_PASS
+- _NV_ENC_STATE_RESTORE_TYPE · type · L282-L287 — typedef enum _NV_ENC_STATE_RESTORE_TYPE
+- _NV_ENC_OUTPUT_STATS_LEVEL · type · L289-L296 — typedef enum _NV_ENC_OUTPUT_STATS_LEVEL
+- _NV_ENC_EMPHASIS_MAP_LEVEL · type · L301-L309 — typedef enum _NV_ENC_EMPHASIS_MAP_LEVEL
+- _NV_ENC_QP_MAP_MODE · type · L314-L320 — typedef enum _NV_ENC_QP_MAP_MODE
+- _NV_ENC_PIC_STRUCT · type · L325-L330 — typedef enum _NV_ENC_PIC_STRUCT
+- _NV_ENC_DISPLAY_PIC_STRUCT · type · L337-L344 — typedef enum _NV_ENC_DISPLAY_PIC_STRUCT
+- _NV_ENC_PIC_TYPE · type · L349-L360 — typedef enum _NV_ENC_PIC_TYPE
+- _NV_ENC_MV_PRECISION · type · L365-L371 — typedef enum _NV_ENC_MV_PRECISION
+- _NV_ENC_BUFFER_FORMAT · type · L377-L411 — typedef enum _NV_ENC_BUFFER_FORMAT
+- _NV_ENC_LEVEL · type · L421-L491 — typedef enum _NV_ENC_LEVEL
+- _NVENCSTATUS · type · L496-L673 — typedef enum _NVENCSTATUS
+- _NV_ENC_PIC_FLAGS · type · L678-L688 — typedef enum _NV_ENC_PIC_FLAGS
+- _NV_ENC_MEMORY_HEAP · type · L693-L699 — typedef enum _NV_ENC_MEMORY_HEAP
+- _NV_ENC_BFRAME_REF_MODE · type · L704-L709 — typedef enum _NV_ENC_BFRAME_REF_MODE
+- _NV_ENC_H264_ENTROPY_CODING_MODE · type · L714-L719 — typedef enum _NV_ENC_H264_ENTROPY_CODING_MODE
+- _NV_ENC_H264_BDIRECT_MODE · type · L724-L730 — typedef enum _NV_ENC_H264_BDIRECT_MODE
+- _NV_ENC_H264_FMO_MODE · type · L735-L740 — typedef enum _NV_ENC_H264_FMO_MODE
+- _NV_ENC_H264_ADAPTIVE_TRANSFORM_MODE · type · L745-L750 — typedef enum _NV_ENC_H264_ADAPTIVE_TRANSFORM_MODE
+- _NV_ENC_STEREO_PACKING_MODE · type · L755-L764 — typedef enum _NV_ENC_STEREO_PACKING_MODE
+- _NV_ENC_INPUT_RESOURCE_TYPE · type · L769-L777 — typedef enum _NV_ENC_INPUT_RESOURCE_TYPE
+- _NV_ENC_BUFFER_USAGE · type · L782-L789 — typedef enum _NV_ENC_BUFFER_USAGE
+- _NV_ENC_DEVICE_TYPE · type · L794-L800 — typedef enum _NV_ENC_DEVICE_TYPE
+- _NV_ENC_NUM_REF_FRAMES · type · L805-L815 — typedef enum _NV_ENC_NUM_REF_FRAMES
+- _NV_ENC_CAPS · type · L820-L1194 — typedef enum _NV_ENC_CAPS
+- _NV_ENC_HEVC_CUSIZE · type · L1199-L1206 — typedef enum _NV_ENC_HEVC_CUSIZE
+- _NV_ENC_AV1_PART_SIZE · type · L1211-L1219 — typedef enum _NV_ENC_AV1_PART_SIZE
+- _NV_ENC_VUI_VIDEO_FORMAT · type · L1224-L1232 — typedef enum _NV_ENC_VUI_VIDEO_FORMAT
+- _NV_ENC_VUI_COLOR_PRIMARIES · type · L1234-L1250 — typedef enum _NV_ENC_VUI_COLOR_PRIMARIES
+- _NV_ENC_VUI_TRANSFER_CHARACTERISTIC · type · L1252-L1273 — typedef enum _NV_ENC_VUI_TRANSFER_CHARACTERISTIC
+- _NV_ENC_VUI_MATRIX_COEFFS · type · L1275-L1289 — typedef enum _NV_ENC_VUI_MATRIX_COEFFS
+- _NV_ENC_CAPS_PARAM · class · L1294-L1299 — typedef struct _NV_ENC_CAPS_PARAM
+- _NV_ENC_RESTORE_ENCODER_STATE_PARAMS · class · L1308-L1319 — typedef struct _NV_ENC_RESTORE_ENCODER_STATE_PARAMS
+- _NV_ENC_OUTPUT_STATS_BLOCK · class · L1327-L1334 — typedef struct _NV_ENC_OUTPUT_STATS_BLOCK
+- _NV_ENC_OUTPUT_STATS_ROW · class · L1342-L1349 — typedef struct _NV_ENC_OUTPUT_STATS_ROW
+- _NV_ENC_ENCODE_OUT_PARAMS · class · L1357-L1362 — typedef struct _NV_ENC_ENCODE_OUT_PARAMS
+- _NV_ENC_LOOKAHEAD_PIC_PARAMS · class · L1370-L1377 — typedef struct _NV_ENC_LOOKAHEAD_PIC_PARAMS
+- _NV_ENC_CREATE_INPUT_BUFFER · class · L1385-L1397 — typedef struct _NV_ENC_CREATE_INPUT_BUFFER
+- _NV_ENC_CREATE_BITSTREAM_BUFFER · class · L1405-L1415 — typedef struct _NV_ENC_CREATE_BITSTREAM_BUFFER
+- _NV_ENC_MVECTOR · class · L1423-L1427 — typedef struct _NV_ENC_MVECTOR
+- _NV_ENC_H264_MV_DATA · class · L1432-L1439 — typedef struct _NV_ENC_H264_MV_DATA
+- _NV_ENC_HEVC_MV_DATA · class · L1444-L1453 — typedef struct _NV_ENC_HEVC_MV_DATA
+- _NV_ENC_CREATE_MV_BUFFER · class · L1458-L1464 — typedef struct _NV_ENC_CREATE_MV_BUFFER
+- _NV_ENC_QP · class · L1472-L1477 — typedef struct _NV_ENC_QP
+- _NV_ENC_RC_PARAMS · class · L1482-L1550 — typedef struct _NV_ENC_RC_PARAMS
+- _NV_ENC_CLOCK_TIMESTAMP_SET · class · L1564-L1575 — typedef struct _NV_ENC_CLOCK_TIMESTAMP_SET
+- _NV_ENC_TIME_CODE · class · L1577-L1581 — typedef struct _NV_ENC_TIME_CODE
+- _NV_ENC_CONFIG_H264_VUI_PARAMETERS · class · L1588-L1608 — typedef struct _NV_ENC_CONFIG_H264_VUI_PARAMETERS
+- NV_ENC_CONFIG_HEVC_VUI_PARAMETERS · type · L1610-L1610 — typedef NV_ENC_CONFIG_H264_VUI_PARAMETERS NV_ENC_CONFIG_HEVC_VUI_PARAMETERS;
+- _NVENC_EXTERNAL_ME_HINT_COUNTS_PER_BLOCKTYPE · class · L1617-L1626 — typedef struct _NVENC_EXTERNAL_ME_HINT_COUNTS_PER_BLOCKTYPE
+- _NVENC_EXTERNAL_ME_HINT · class · L1633-L1642 — typedef struct _NVENC_EXTERNAL_ME_HINT
+- _NVENC_EXTERNAL_ME_SB_HINT · class · L1648-L1663 — typedef struct _NVENC_EXTERNAL_ME_SB_HINT
+- _NV_ENC_CONFIG_H264 · class · L1669-L1768 — typedef struct _NV_ENC_CONFIG_H264
+- _NV_ENC_CONFIG_HEVC · class · L1774-L1850 — typedef struct _NV_ENC_CONFIG_HEVC
+- _NV_ENC_FILM_GRAIN_PARAMS_AV1 · class · L1860-L1890 — typedef struct _NV_ENC_FILM_GRAIN_PARAMS_AV1
+- _NV_ENC_CONFIG_AV1 · class · L1896-L1949 — typedef struct _NV_ENC_CONFIG_AV1
+- _NV_ENC_CONFIG_H264_MEONLY · class · L1956-L1967 — typedef struct _NV_ENC_CONFIG_H264_MEONLY
+- _NV_ENC_CONFIG_HEVC_MEONLY · class · L1975-L1979 — typedef struct _NV_ENC_CONFIG_HEVC_MEONLY
+- NV_ENC_CODEC_CONFIG · type · L1985-L1993 — typedef union _NV_ENC_CODEC_CONFIG
+- _NV_ENC_CONFIG · class · L2000-L2015 — typedef struct _NV_ENC_CONFIG
+- NV_ENC_TUNING_INFO · type · L2023-L2031 — typedef enum NV_ENC_TUNING_INFO
+- _NV_ENC_SPLIT_ENCODE_MODE · type · L2036-L2043 — typedef enum _NV_ENC_SPLIT_ENCODE_MODE
+- _NV_ENC_INITIALIZE_PARAMS · class · L2049-L2104 — typedef struct _NV_ENC_INITIALIZE_PARAMS
+- _NV_ENC_RECONFIGURE_PARAMS · class · L2114-L2138 — typedef struct _NV_ENC_RECONFIGURE_PARAMS
+- _NV_ENC_PRESET_CONFIG · class · L2147-L2153 — typedef struct _NV_ENC_PRESET_CONFIG
+- _NV_ENC_PIC_PARAMS_MVC · class · L2163-L2171 — typedef struct _NV_ENC_PIC_PARAMS_MVC
+- NV_ENC_PIC_PARAMS_H264_EXT · type · L2181-L2185 — typedef union _NV_ENC_PIC_PARAMS_H264_EXT
+- _NV_ENC_SEI_PAYLOAD · class · L2191-L2196 — typedef struct _NV_ENC_SEI_PAYLOAD
+- _NV_ENC_PIC_PARAMS_H264 · class · L2204-L2244 — typedef struct _NV_ENC_PIC_PARAMS_H264
+- _NV_ENC_PIC_PARAMS_HEVC · class · L2250-L2288 — typedef struct _NV_ENC_PIC_PARAMS_HEVC
+- _NV_ENC_PIC_PARAMS_AV1 · class · L2296-L2337 — typedef struct _NV_ENC_PIC_PARAMS_AV1
+- NV_ENC_CODEC_PIC_PARAMS · type · L2342-L2348 — typedef union _NV_ENC_CODEC_PIC_PARAMS
+- _NV_ENC_PIC_PARAMS · class · L2355-L2414 — typedef struct _NV_ENC_PIC_PARAMS
+- _NV_ENC_MEONLY_PARAMS · class · L2425-L2452 — typedef struct _NV_ENC_MEONLY_PARAMS
+- _NV_ENC_LOCK_BITSTREAM · class · L2462-L2500 — typedef struct _NV_ENC_LOCK_BITSTREAM
+- _NV_ENC_LOCK_INPUT_BUFFER · class · L2509-L2519 — typedef struct _NV_ENC_LOCK_INPUT_BUFFER
+- _NV_ENC_MAP_INPUT_RESOURCE · class · L2529-L2539 — typedef struct _NV_ENC_MAP_INPUT_RESOURCE
+- _NV_ENC_INPUT_RESOURCE_OPENGL_TEX · class · L2549-L2553 — typedef struct _NV_ENC_INPUT_RESOURCE_OPENGL_TEX
+- _NV_ENC_FENCE_POINT_D3D12 · class · L2558-L2569 — typedef struct _NV_ENC_FENCE_POINT_D3D12
+- _NV_ENC_INPUT_RESOURCE_D3D12 · class · L2578-L2587 — typedef struct _NV_ENC_INPUT_RESOURCE_D3D12
+- _NV_ENC_OUTPUT_RESOURCE_D3D12 · class · L2596-L2605 — typedef struct _NV_ENC_OUTPUT_RESOURCE_D3D12
+- _NV_ENC_REGISTER_RESOURCE · class · L2613-L2653 — typedef struct _NV_ENC_REGISTER_RESOURCE
+- _NV_ENC_STAT · class · L2662-L2682 — typedef struct _NV_ENC_STAT
+- _NV_ENC_SEQUENCE_PARAM_PAYLOAD · class · L2692-L2703 — typedef struct _NV_ENC_SEQUENCE_PARAM_PAYLOAD
+- _NV_ENC_EVENT_PARAMS · class · L2712-L2719 — typedef struct _NV_ENC_EVENT_PARAMS
+- _NV_ENC_OPEN_ENCODE_SESSIONEX_PARAMS · class · L2727-L2736 — typedef struct _NV_ENC_OPEN_ENCODE_SESSIONEX_PARAMS
+- NvEncOpenEncodeSession · function · L2758-L2758 — NVENCSTATUS NVENCAPI NvEncOpenEncodeSession                     (void* device, uint32_t deviceType, void** encoder);
+- NvEncGetEncodeGUIDs · function · L2818-L2818 — NVENCSTATUS NVENCAPI NvEncGetEncodeGUIDs                        (void* encoder, GUID* GUIDs, uint32_t guidArraySize, uint32_t* GUIDCount);
+- NvEncGetEncodeProfileGUIDCount · function · L2849-L2849 — NVENCSTATUS NVENCAPI NvEncGetEncodeProfileGUIDCount                    (void* encoder, GUID encodeGUID, uint32_t* encodeProfileGUIDCount);
+- NvEncGetEncodeProfileGUIDs · function · L2886-L2886 — NVENCSTATUS NVENCAPI NvEncGetEncodeProfileGUIDs                               (void* encoder, GUID encodeGUID, GUID* profileGUIDs, uint32_t guidArraySize, uint32_t* GUIDCount);
+- NvEncGetInputFormatCount · function · L2914-L2914 — NVENCSTATUS NVENCAPI NvEncGetInputFormatCount                   (void* encoder, GUID encodeGUID, uint32_t* inputFmtCount);
+- NvEncGetInputFormats · function · L2948-L2948 — NVENCSTATUS NVENCAPI NvEncGetInputFormats                       (void* encoder, GUID encodeGUID, NV_ENC_BUFFER_FORMAT* inputFmts, uint32_t inputFmtArraySize, uint32_t* inputFmtCount);
+- NvEncGetEncodeCaps · function · L2980-L2980 — NVENCSTATUS NVENCAPI NvEncGetEncodeCaps                     (void* encoder, GUID encodeGUID, NV_ENC_CAPS_PARAM* capsParam, int* capsVal);
+- NvEncGetEncodePresetCount · function · L3010-L3010 — NVENCSTATUS NVENCAPI NvEncGetEncodePresetCount              (void* encoder, GUID encodeGUID, uint32_t* encodePresetGUIDCount);
+- NvEncGetEncodePresetGUIDs · function · L3054-L3054 — NVENCSTATUS NVENCAPI NvEncGetEncodePresetGUIDs                  (void* encoder, GUID encodeGUID, GUID* presetGUIDs, uint32_t guidArraySize, uint32_t* encodePresetGUIDCount);
+- NvEncGetEncodePresetConfig · function · L3094-L3094 — NVENCSTATUS NVENCAPI NvEncGetEncodePresetConfig               (void* encoder, GUID encodeGUID, GUID  presetGUID, NV_ENC_PRESET_CONFIG* presetConfig);
+- NvEncGetEncodePresetConfigEx · function · L3136-L3136 — NVENCSTATUS NVENCAPI NvEncGetEncodePresetConfigEx               (void* encoder, GUID encodeGUID, GUID  presetGUID, NV_ENC_TUNING_INFO tuningInfo, NV_ENC_PRESET_CONFIG* presetConfig);
+- NvEncDestroyInputBuffer · function · L3281-L3281 — NVENCSTATUS NVENCAPI NvEncDestroyInputBuffer                    (void* encoder, NV_ENC_INPUT_PTR inputBuffer);
+- NvEncSetIOCudaStreams · function · L3316-L3316 — NVENCSTATUS NVENCAPI NvEncSetIOCudaStreams                     (void* encoder, NV_ENC_CUSTREAM_PTR inputStream, NV_ENC_CUSTREAM_PTR outputStream);
+- NvEncDestroyBitstreamBuffer · function · L3380-L3380 — NVENCSTATUS NVENCAPI NvEncDestroyBitstreamBuffer                (void* encoder, NV_ENC_OUTPUT_PTR bitstreamBuffer);
+- NvEncUnlockBitstream · function · L3645-L3645 — NVENCSTATUS NVENCAPI NvEncUnlockBitstream                       (void* encoder, NV_ENC_OUTPUT_PTR bitstreamBuffer);
+- NvEncUnlockInputBuffer · function · L3737-L3737 — NVENCSTATUS NVENCAPI NvEncUnlockInputBuffer                     (void* encoder, NV_ENC_INPUT_PTR inputBuffer);
+- NvEncUnmapInputResource · function · L3976-L3976 — NVENCSTATUS NVENCAPI NvEncUnmapInputResource                         (void* encoder, NV_ENC_INPUT_PTR mappedInputBuffer);
+- NvEncInvalidateRefFrames · function · L4039-L4039 — NVENCSTATUS NVENCAPI NvEncInvalidateRefFrames(void* encoder, uint64_t invalidRefFrameTimeStamp);
+- NvEncUnregisterResource · function · L4130-L4130 — NVENCSTATUS NVENCAPI NvEncUnregisterResource                    (void* encoder, NV_ENC_REGISTERED_PTR registeredResource);
+- NvEncDestroyMVBuffer · function · L4223-L4223 — NVENCSTATUS NVENCAPI NvEncDestroyMVBuffer                       (void* encoder, NV_ENC_OUTPUT_PTR mvBuffer);
+- _NV_ENCODE_API_FUNCTION_LIST · class · L4375-L4423 — typedef struct _NV_ENCODE_API_FUNCTION_LIST

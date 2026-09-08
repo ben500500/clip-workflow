@@ -25,16 +25,16 @@ covers:
     at: 'backend/app/config.py:L15-L17'
   - symbol: Settings
     kind: class
-    at: 'backend/app/config.py:L20-L273'
+    at: 'backend/app/config.py:L20-L281'
   - symbol: _no_default_secret
     kind: method
-    at: 'backend/app/config.py:L259-L264'
+    at: 'backend/app/config.py:L267-L272'
   - symbol: _cookie_key_differs
     kind: method
-    at: 'backend/app/config.py:L268-L273'
+    at: 'backend/app/config.py:L276-L281'
   - symbol: _ensure_cookie_key
     kind: function
-    at: 'backend/app/config.py:L276-L291'
+    at: 'backend/app/config.py:L284-L299'
   - symbol: Base
     kind: class
     at: 'backend/app/database.py:L34-L35'
@@ -58,13 +58,13 @@ covers:
     at: 'backend/app/database.py:L157-L198'
   - symbol: _apply_compat_migrations
     kind: function
-    at: 'backend/app/database.py:L201-L308'
+    at: 'backend/app/database.py:L201-L312'
   - symbol: close_db
     kind: function
-    at: 'backend/app/database.py:L311-L313'
+    at: 'backend/app/database.py:L315-L317'
   - symbol: _ensure_wechat_download_tables
     kind: function
-    at: 'backend/app/database.py:L315-L327'
+    at: 'backend/app/database.py:L319-L331'
 ---
 <!-- context:generated:start -->
 ## Summary

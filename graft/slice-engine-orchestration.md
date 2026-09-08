@@ -41,13 +41,13 @@ covers:
     at: 'backend/app/services/slice_service.py:L116-L121'
   - symbol: run_slice
     kind: function
-    at: 'backend/app/services/slice_service.py:L124-L233'
+    at: 'backend/app/services/slice_service.py:L124-L239'
   - symbol: run_slice_scrub
     kind: function
-    at: 'backend/app/services/slice_service.py:L236-L301'
+    at: 'backend/app/services/slice_service.py:L242-L309'
   - symbol: run_slice_fast
     kind: function
-    at: 'backend/app/services/slice_service.py:L304-L371'
+    at: 'backend/app/services/slice_service.py:L312-L381'
 ---
 <!-- context:generated:start -->
 ## Summary

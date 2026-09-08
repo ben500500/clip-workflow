@@ -15,64 +15,64 @@ generator:
 covers:
   - symbol: get_video_info
     kind: function
-    at: 'engines/vert2horiz_crop.py:L81-L93'
+    at: 'engines/vert2horiz_crop.py:L87-L99'
   - symbol: FaceDetector
     kind: class
-    at: 'engines/vert2horiz_crop.py:L96-L165'
+    at: 'engines/vert2horiz_crop.py:L102-L171'
   - symbol: __init__
     kind: method
-    at: 'engines/vert2horiz_crop.py:L103-L107'
+    at: 'engines/vert2horiz_crop.py:L109-L113'
   - symbol: _ensure_yunet
     kind: method
-    at: 'engines/vert2horiz_crop.py:L109-L123'
+    at: 'engines/vert2horiz_crop.py:L115-L129'
   - symbol: _ensure_haar
     kind: method
-    at: 'engines/vert2horiz_crop.py:L125-L133'
+    at: 'engines/vert2horiz_crop.py:L131-L139'
   - symbol: detect
     kind: method
-    at: 'engines/vert2horiz_crop.py:L135-L165'
+    at: 'engines/vert2horiz_crop.py:L141-L171'
   - symbol: sample_avg_face
     kind: function
-    at: 'engines/vert2horiz_crop.py:L168-L202'
+    at: 'engines/vert2horiz_crop.py:L174-L208'
   - symbol: pick_main_face
     kind: function
-    at: 'engines/vert2horiz_crop.py:L205-L226'
+    at: 'engines/vert2horiz_crop.py:L211-L232'
   - symbol: score
     kind: function
-    at: 'engines/vert2horiz_crop.py:L218-L223'
+    at: 'engines/vert2horiz_crop.py:L224-L229'
   - symbol: compute_crop_y_keep_face
     kind: function
-    at: 'engines/vert2horiz_crop.py:L229-L248'
+    at: 'engines/vert2horiz_crop.py:L235-L254'
   - symbol: generate_fixed_crop_params
     kind: function
-    at: 'engines/vert2horiz_crop.py:L251-L289'
+    at: 'engines/vert2horiz_crop.py:L257-L295'
   - symbol: analyze_faces
     kind: function
-    at: 'engines/vert2horiz_crop.py:L292-L361'
+    at: 'engines/vert2horiz_crop.py:L298-L367'
   - symbol: smooth_face_boxes
     kind: function
-    at: 'engines/vert2horiz_crop.py:L364-L380'
+    at: 'engines/vert2horiz_crop.py:L370-L386'
   - symbol: savgol_smooth
     kind: function
-    at: 'engines/vert2horiz_crop.py:L383-L419'
+    at: 'engines/vert2horiz_crop.py:L389-L425'
   - symbol: debounce_crop_y
     kind: function
-    at: 'engines/vert2horiz_crop.py:L422-L442'
+    at: 'engines/vert2horiz_crop.py:L428-L448'
   - symbol: keep_window_when_face_in_frame
     kind: function
-    at: 'engines/vert2horiz_crop.py:L445-L488'
+    at: 'engines/vert2horiz_crop.py:L451-L494'
   - symbol: generate_dynamic_crop_params
     kind: function
-    at: 'engines/vert2horiz_crop.py:L491-L547'
+    at: 'engines/vert2horiz_crop.py:L497-L553'
   - symbol: apply_fixed_crop
     kind: function
-    at: 'engines/vert2horiz_crop.py:L550-L575'
+    at: 'engines/vert2horiz_crop.py:L556-L581'
   - symbol: apply_dynamic_crop
     kind: function
-    at: 'engines/vert2horiz_crop.py:L578-L637'
+    at: 'engines/vert2horiz_crop.py:L584-L659'
   - symbol: main
     kind: function
-    at: 'engines/vert2horiz_crop.py:L640-L738'
+    at: 'engines/vert2horiz_crop.py:L662-L760'
 ---
 <!-- context:generated:start -->
 ## Summary

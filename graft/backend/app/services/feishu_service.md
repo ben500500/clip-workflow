@@ -1,14 +1,33 @@
 # backend/app/services/feishu_service.py
 
-- extract_spreadsheet_token · function · L45-L68 — def extract_spreadsheet_token(url: str) -> Optional[str]
-- parse_feishu_url · function · L71-L110 — def parse_feishu_url(url: str) -> Optional[dict]
-- _split_theater_names · function · L113-L121 — def _split_theater_names(value) -> List[str]
-- _get_tenant_access_token · function · L126-L145 — async def _get_tenant_access_token(client: httpx.AsyncClient) -> Optional[str]
-- fetch_sheet_rows · function · L148-L207 — async def fetch_sheet_rows(spreadsheet_token: str, url: Optional[str] = None) -> List[dict]
-- _bitable_value_to_str · function · L210-L238 — def _bitable_value_to_str(value) -> str
-- _wiki_node_to_obj · function · L241-L257 — async def _wiki_node_to_obj(client: httpx.AsyncClient, headers: dict, wiki_token: str) -> Optional[dict]
-- _fetch_bitable_records · function · L260-L310 — async def _fetch_bitable_records(client: httpx.AsyncClient, headers: dict, app_token: str, table_id: Optional[str]) -> List[dict]
-- fetch_feishu_rows · function · L313-L344 — async def fetch_feishu_rows(url: Optional[str] = None) -> (List[dict], Optional[str])
-- sync_from_feishu · function · L349-L421 — async def sync_from_feishu(url: Optional[str] = None) -> dict
-- _find_col · function · L424-L441 — def _find_col(header_row: dict, target: str) -> Optional[str]
-- _sync_theaters · function · L444-L457 — async def _sync_theaters(db, drama: Drama, theater_ids: List)
+- extract_spreadsheet_token · function · L50-L73 — def extract_spreadsheet_token(url: str) -> Optional[str]
+- parse_feishu_url · function · L76-L115 — def parse_feishu_url(url: str) -> Optional[dict]
+- _split_theater_names · function · L118-L126 — def _split_theater_names(value) -> List[str]
+- _get_tenant_access_token · function · L131-L150 — async def _get_tenant_access_token(client: httpx.AsyncClient) -> Optional[str]
+- fetch_sheet_rows · function · L153-L212 — async def fetch_sheet_rows(spreadsheet_token: str, url: Optional[str] = None) -> List[dict]
+- _bitable_value_to_str · function · L215-L243 — def _bitable_value_to_str(value) -> str
+- _wiki_node_to_obj · function · L246-L262 — async def _wiki_node_to_obj(client: httpx.AsyncClient, headers: dict, wiki_token: str) -> Optional[dict]
+- _fetch_bitable_records · function · L265-L315 — async def _fetch_bitable_records(client: httpx.AsyncClient, headers: dict, app_token: str, table_id: Optional[str]) -> List[dict]
+- fetch_feishu_rows · function · L318-L349 — async def fetch_feishu_rows(url: Optional[str] = None) -> (List[dict], Optional[str])
+- sync_from_feishu · function · L354-L426 — async def sync_from_feishu(url: Optional[str] = None) -> dict
+- _find_col · function · L429-L446 — def _find_col(header_row: dict, target: str) -> Optional[str]
+- _sync_theaters · function · L449-L462 — async def _sync_theaters(db, drama: Drama, theater_ids: List)
+- _norm_cell · function · L491-L505 — def _norm_cell(v) -> str
+- _norm_header · function · L508-L510 — def _norm_header(v) -> str
+- _norm_pingyue_date · function · L513-L534 — def _norm_pingyue_date(raw) -> str
+- _get_configured_theaters · function · L537-L554 — async def _get_configured_theaters() -> Optional[List[str]]
+- _fetch_sheet_range · function · L557-L574 — async def _fetch_sheet_range( client: httpx.AsyncClient, headers: dict, spreadsheet_token: str, sheet_id: str, cell_range: str ) -> List[List]
+- _parse_pingyue_grid · function · L577-L649 — def _parse_pingyue_grid(grid: List[List], sheet_name: str, theaters_list: Optional[List[str]] = None) -> List[dict]
+- _cell · function · L622-L625 — def _cell(raw: List, idx) -> str
+- _merge_pingyue_rows · function · L652-L676 — def _merge_pingyue_rows(parsed: List[Tuple[str, List[dict]]]) -> Tuple[dict, int]
+- _rows_to_import_rows · function · L679-L700 — def _rows_to_import_rows(all_data: dict) -> List[dict]
+- _fetch_pingyue_via_api · function · L703-L755 — async def _fetch_pingyue_via_api(wiki_url: str, theaters_list: Optional[List[str]] = None) -> tuple
+- _one · function · L733-L735 — async def _one(s: dict)
+- _annotated_csv_to_grid · function · L760-L780 — def _annotated_csv_to_grid(text: str) -> List[List]
+- _pingyue_cache_note · function · L783-L802 — def _pingyue_cache_note(cache_dir: str) -> str
+- _load_pingyue_sheet_cache · function · L805-L831 — def _load_pingyue_sheet_cache(cache_dir: str, theaters_list: Optional[List[str]] = None) -> List[Tuple[str, List[dict]]]
+- _load_pingyue_csv_cache · function · L834-L875 — def _load_pingyue_csv_cache(cache_dir: str, theaters_list: Optional[List[str]] = None) -> List[Tuple[str, List[dict]]]
+- _fetch_pingyue_from_cache · function · L878-L892 — def _fetch_pingyue_from_cache(cache_dir: str, theaters_list: Optional[List[str]] = None) -> tuple
+- _record_pingyue_fetch · function · L900-L910 — def _record_pingyue_fetch(source: str, ok: bool, rows_count: int, err: Optional[str], note: str) -> None
+- get_pingyue_fetch_status · function · L913-L941 — def get_pingyue_fetch_status() -> dict
+- fetch_pingyue_roster · function · L944-L989 — async def fetch_pingyue_roster(url: Optional[str] = None) -> tuple

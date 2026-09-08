@@ -1,24 +1,24 @@
 # backend/app/api/slice.py · [[video-slicing-pipeline]]
 
-- upload_badge_image · function · L115-L177 — Uploads a badge image to MinIO raw-footage bucket under badge/ prefix, validating image extension and size limits.
-- upload_hook_video · function · L181-L242 — async def upload_hook_video( file: UploadFile = File(...), current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- upload_hook_folder · function · L246-L333 — async def upload_hook_folder( files: List[UploadFile] = File(...), current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- get_raw_preview_url · function · L337-L368 — async def get_raw_preview_url( file_key: str = Query(..., description="raw-footage 桶内的文件 key（封面/钩子视频/角标等）"), current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- upload_subtitle_file · function · L371-L429 — Uploads a subtitle file (srt/vtt) to MinIO raw-footage bucket under subtitle/ prefix for direct subtitle burning.
-- get_slice_preferences · function · L433-L442 — Retrieves the current user's persisted slice configuration from their account.
-- save_slice_preferences · function · L446-L462 — Persists the user's slice configuration, creating a UserPreference row if none exists.
-- _resolve_slice_inputs · function · L465-L776 — async def _resolve_slice_inputs( db: AsyncSession, eid: uuid.UUID, episode: Episode, data: SliceRunRequest, source_file_key: Optional[str], source_bucket: str, episode_id: str, current_user: Optional[User] = None, ) -> tuple
-- _create_slice_task_record · function · L779-L897 — async def _create_slice_task_record( db: AsyncSession, eid: uuid.UUID, episode: Episode, data: SliceRunRequest, cutlist: str, intervals_content: str, source_file_key: Optional[str], source_bucket: str, ) -> tuple
-- _dispatch_slice_task · function · L900-L1070 — async def _dispatch_slice_task( db: AsyncSession, engine: str, episode: Episode, slice_task: SliceTask, data: SliceRunRequest, source_file_key: Optional[str], source_bucket: str, cutlist: str, intervals_content: str, configs: dict, fallback_whole_video: bool, ) -> SliceRunResponse
-- _restore_clips_from_run · function · L1073-L1143 — async def _restore_clips_from_run( db: AsyncSession, eid, run_id: str, current_user )
-- run_slice · function · L1147-L1187 — Orchestrates a video slicing run: resolves engine, builds cutlist from accepted clips or fallback modes, constructs all configs, and dispatches to worker/celery.
-- list_slice_tasks · function · L1191-L1218 — Lists slice tasks for an episode with data isolation.
-- get_slice_task · function · L1222-L1271 — Returns a single slice task's details with data isolation.
-- get_slice_outputs · function · L1275-L1315 — Returns slice output files for a task with data isolation.
-- get_slice_output · function · L1319-L1349 — async def get_slice_output( output_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
-- get_slice_upload_url · function · L1353-L1391 — Issues a presigned upload URL for worker output uploads, authenticated via worker token.
-- slice_task_callback · function · L1395-L1550 — Handles worker completion/failure callbacks, verifying worker token and updating task/output state.
-- update_slice_progress · function · L1554-L1580 — Updates a slice task's progress percentage from worker callback.
-- retry_slice_task · function · L1584-L1790 — Re-dispatches a failed slice task to the worker, reusing persisted configs.
-- cancel_slice_task · function · L1794-L1841 — Cancels a pending/running slice task and marks it cancelled in Redis.
-- delete_slice_task · function · L1845-L1907 — Deletes a slice task and its associated outputs from storage and DB.
+- upload_badge_image · function · L116-L178 — Uploads a badge image to MinIO raw-footage bucket under badge/ prefix, validating image extension and size limits.
+- upload_hook_video · function · L182-L243 — async def upload_hook_video( file: UploadFile = File(...), current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- upload_hook_folder · function · L247-L334 — async def upload_hook_folder( files: List[UploadFile] = File(...), current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- get_raw_preview_url · function · L338-L369 — async def get_raw_preview_url( file_key: str = Query(..., description="raw-footage 桶内的文件 key（封面/钩子视频/角标等）"), current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- upload_subtitle_file · function · L372-L430 — Uploads a subtitle file (srt/vtt) to MinIO raw-footage bucket under subtitle/ prefix for direct subtitle burning.
+- get_slice_preferences · function · L434-L443 — Retrieves the current user's persisted slice configuration from their account.
+- save_slice_preferences · function · L447-L463 — Persists the user's slice configuration, creating a UserPreference row if none exists.
+- _resolve_slice_inputs · function · L466-L806 — async def _resolve_slice_inputs( db: AsyncSession, eid: uuid.UUID, episode: Episode, data: SliceRunRequest, source_file_key: Optional[str], source_bucket: str, episode_id: str, current_user: Optional[User] = None, ) -> tuple
+- _create_slice_task_record · function · L809-L927 — async def _create_slice_task_record( db: AsyncSession, eid: uuid.UUID, episode: Episode, data: SliceRunRequest, cutlist: str, intervals_content: str, source_file_key: Optional[str], source_bucket: str, ) -> tuple
+- _dispatch_slice_task · function · L930-L1100 — async def _dispatch_slice_task( db: AsyncSession, engine: str, episode: Episode, slice_task: SliceTask, data: SliceRunRequest, source_file_key: Optional[str], source_bucket: str, cutlist: str, intervals_content: str, configs: dict, fallback_whole_video: bool, ) -> SliceRunResponse
+- _restore_clips_from_run · function · L1103-L1173 — async def _restore_clips_from_run( db: AsyncSession, eid, run_id: str, current_user )
+- run_slice · function · L1177-L1217 — Orchestrates a video slicing run: resolves engine, builds cutlist from accepted clips or fallback modes, constructs all configs, and dispatches to worker/celery.
+- list_slice_tasks · function · L1221-L1248 — Lists slice tasks for an episode with data isolation.
+- get_slice_task · function · L1252-L1301 — Returns a single slice task's details with data isolation.
+- get_slice_outputs · function · L1305-L1345 — Returns slice output files for a task with data isolation.
+- get_slice_output · function · L1349-L1379 — async def get_slice_output( output_id: str, current_user: Annotated[User, Depends(get_current_user)] = None, db: AsyncSession = Depends(get_db), )
+- get_slice_upload_url · function · L1383-L1421 — Issues a presigned upload URL for worker output uploads, authenticated via worker token.
+- slice_task_callback · function · L1425-L1580 — Handles worker completion/failure callbacks, verifying worker token and updating task/output state.
+- update_slice_progress · function · L1584-L1610 — Updates a slice task's progress percentage from worker callback.
+- retry_slice_task · function · L1614-L1820 — Re-dispatches a failed slice task to the worker, reusing persisted configs.
+- cancel_slice_task · function · L1824-L1871 — Cancels a pending/running slice task and marks it cancelled in Redis.
+- delete_slice_task · function · L1875-L1937 — Deletes a slice task and its associated outputs from storage and DB.

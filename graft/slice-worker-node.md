@@ -193,10 +193,10 @@ covers:
     at: 'slice-worker/heartbeat_backend.go:L48-L102'
   - symbol: acquireInstanceLock
     kind: function
-    at: 'slice-worker/instance_lock.go:L23-L59'
+    at: 'slice-worker/instance_lock.go:L23-L68'
   - symbol: processAlive
     kind: function
-    at: 'slice-worker/instance_lock.go:L62-L72'
+    at: 'slice-worker/instance_lock.go:L71-L81'
   - symbol: main
     kind: function
     at: 'slice-worker/main.go:L15-L79'
@@ -331,52 +331,52 @@ covers:
     at: 'slice-worker/task_executor.go:L32-L34'
   - symbol: ExecuteTask
     kind: method
-    at: 'slice-worker/task_executor.go:L41-L391'
+    at: 'slice-worker/task_executor.go:L41-L396'
   - symbol: parseEngineLine
     kind: method
-    at: 'slice-worker/task_executor.go:L395-L417'
+    at: 'slice-worker/task_executor.go:L400-L422'
   - symbol: collectOutputs
     kind: method
-    at: 'slice-worker/task_executor.go:L420-L449'
+    at: 'slice-worker/task_executor.go:L425-L454'
   - symbol: cutSegment
     kind: struct
-    at: 'slice-worker/task_executor.go:L453-L457'
+    at: 'slice-worker/task_executor.go:L458-L462'
   - symbol: parseCutlist
     kind: function
-    at: 'slice-worker/task_executor.go:L461-L483'
+    at: 'slice-worker/task_executor.go:L466-L488'
   - symbol: parseCutTime
     kind: function
-    at: 'slice-worker/task_executor.go:L486-L521'
+    at: 'slice-worker/task_executor.go:L491-L526'
   - symbol: outputName
     kind: method
-    at: 'slice-worker/task_executor.go:L524-L530'
+    at: 'slice-worker/task_executor.go:L529-L535'
   - symbol: filterCompletedSegments
     kind: method
-    at: 'slice-worker/task_executor.go:L539-L553'
+    at: 'slice-worker/task_executor.go:L544-L558'
   - symbol: preservedOutputs
     kind: method
-    at: 'slice-worker/task_executor.go:L556-L571'
+    at: 'slice-worker/task_executor.go:L561-L576'
   - symbol: outputFileValid
     kind: method
-    at: 'slice-worker/task_executor.go:L576-L586'
+    at: 'slice-worker/task_executor.go:L581-L591'
   - symbol: ffprobeDurationSec
     kind: function
-    at: 'slice-worker/task_executor.go:L589-L602'
+    at: 'slice-worker/task_executor.go:L594-L607'
   - symbol: readCompletedCheckpoint
     kind: method
-    at: 'slice-worker/task_executor.go:L608-L621'
+    at: 'slice-worker/task_executor.go:L613-L626'
   - symbol: appendCompletedCheckpoint
     kind: method
-    at: 'slice-worker/task_executor.go:L624-L651'
+    at: 'slice-worker/task_executor.go:L629-L656'
   - symbol: cutlistForSegments
     kind: function
-    at: 'slice-worker/task_executor.go:L655-L661'
+    at: 'slice-worker/task_executor.go:L660-L666'
   - symbol: formatSec
     kind: function
-    at: 'slice-worker/task_executor.go:L664-L674'
+    at: 'slice-worker/task_executor.go:L669-L679'
   - symbol: mergeOutputPaths
     kind: function
-    at: 'slice-worker/task_executor.go:L677-L688'
+    at: 'slice-worker/task_executor.go:L682-L693'
   - symbol: Worker
     kind: struct
     at: 'slice-worker/worker.go:L26-L53'

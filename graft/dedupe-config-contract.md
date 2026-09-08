@@ -76,205 +76,205 @@ covers:
     at: 'engines/slice.py:L733-L766'
   - symbol: _encoder_runtime_ok
     kind: function
-    at: 'engines/slice.py:L769-L787'
+    at: 'engines/slice.py:L769-L790'
   - symbol: detect_best_encoder
     kind: function
-    at: 'engines/slice.py:L790-L832'
+    at: 'engines/slice.py:L793-L835'
   - symbol: build_encoder_args
     kind: function
-    at: 'engines/slice.py:L835-L842'
+    at: 'engines/slice.py:L838-L845'
   - symbol: slice_segment
     kind: function
-    at: 'engines/slice.py:L845-L864'
+    at: 'engines/slice.py:L848-L867'
   - symbol: concat_segments
     kind: function
-    at: 'engines/slice.py:L867-L901'
+    at: 'engines/slice.py:L870-L904'
   - symbol: _is_copy_segment
     kind: function
-    at: 'engines/slice.py:L904-L909'
+    at: 'engines/slice.py:L907-L912'
   - symbol: _concat_demuxer
     kind: function
-    at: 'engines/slice.py:L912-L927'
+    at: 'engines/slice.py:L915-L930'
   - symbol: safe_name
     kind: function
-    at: 'engines/slice.py:L930-L934'
+    at: 'engines/slice.py:L933-L937'
   - symbol: _badge_scale_and_opacity
     kind: function
-    at: 'engines/slice.py:L959-L985'
+    at: 'engines/slice.py:L962-L988'
   - symbol: build_badges_overlay_args
     kind: function
-    at: 'engines/slice.py:L988-L1052'
+    at: 'engines/slice.py:L991-L1055'
   - symbol: apply_badges
     kind: function
-    at: 'engines/slice.py:L1055-L1063'
+    at: 'engines/slice.py:L1058-L1066'
   - symbol: _fc_match_sc_font
     kind: function
-    at: 'engines/slice.py:L1137-L1169'
+    at: 'engines/slice.py:L1140-L1172'
   - symbol: _extract_sc_face
     kind: function
-    at: 'engines/slice.py:L1172-L1221'
+    at: 'engines/slice.py:L1175-L1224'
   - symbol: _fontconfig_has_cjk_sc
     kind: function
-    at: 'engines/slice.py:L1224-L1239'
+    at: 'engines/slice.py:L1227-L1242'
   - symbol: _resolve_drawtext_font
     kind: function
-    at: 'engines/slice.py:L1242-L1272'
+    at: 'engines/slice.py:L1245-L1275'
   - symbol: _build_text_overlays_filter
     kind: function
-    at: 'engines/slice.py:L1275-L1344'
+    at: 'engines/slice.py:L1278-L1347'
   - symbol: apply_text_overlays
     kind: function
-    at: 'engines/slice.py:L1347-L1364'
+    at: 'engines/slice.py:L1350-L1367'
   - symbol: build_watermark_filter
     kind: function
-    at: 'engines/slice.py:L1367-L1411'
+    at: 'engines/slice.py:L1370-L1414'
   - symbol: _watermark_style_exprs
     kind: function
-    at: 'engines/slice.py:L1414-L1460'
+    at: 'engines/slice.py:L1417-L1463'
   - symbol: css_hex_to_ass
     kind: function
-    at: 'engines/slice.py:L1489-L1509'
+    at: 'engines/slice.py:L1493-L1513'
   - symbol: _css_to_drawtext
     kind: function
-    at: 'engines/slice.py:L1512-L1528'
+    at: 'engines/slice.py:L1516-L1532'
   - symbol: _parse_srt_timestamp
     kind: function
-    at: 'engines/slice.py:L1531-L1539'
+    at: 'engines/slice.py:L1535-L1543'
   - symbol: _format_srt_timestamp
     kind: function
-    at: 'engines/slice.py:L1542-L1549'
+    at: 'engines/slice.py:L1546-L1553'
   - symbol: read_srt
     kind: function
-    at: 'engines/slice.py:L1552-L1629'
+    at: 'engines/slice.py:L1556-L1633'
   - symbol: detect_speech_windows
     kind: function
-    at: 'engines/slice.py:L1644-L1715'
+    at: 'engines/slice.py:L1648-L1719'
   - symbol: _trim_to_speech
     kind: function
-    at: 'engines/slice.py:L1718-L1734'
+    at: 'engines/slice.py:L1722-L1738'
   - symbol: _filter_and_align_srt
     kind: function
-    at: 'engines/slice.py:L1737-L1765'
+    at: 'engines/slice.py:L1741-L1769'
   - symbol: build_clip_subtitle
     kind: function
-    at: 'engines/slice.py:L1768-L1811'
+    at: 'engines/slice.py:L1772-L1815'
   - symbol: burn_subtitle
     kind: function
-    at: 'engines/slice.py:L1816-L1913'
+    at: 'engines/slice.py:L1820-L1926'
   - symbol: _mask_text_clusters
     kind: function
-    at: 'engines/slice.py:L1957-L1966'
+    at: 'engines/slice.py:L1970-L1979'
   - symbol: _split_tall_band
     kind: function
-    at: 'engines/slice.py:L1969-L2064'
+    at: 'engines/slice.py:L1982-L2077'
   - symbol: detect_subtitle_region
     kind: function
-    at: 'engines/slice.py:L2067-L2339'
+    at: 'engines/slice.py:L2080-L2352'
   - symbol: _low_percentile
     kind: function
-    at: 'engines/slice.py:L2362-L2375'
+    at: 'engines/slice.py:L2375-L2388'
   - symbol: _bimodal_threshold
     kind: function
-    at: 'engines/slice.py:L2378-L2419'
+    at: 'engines/slice.py:L2391-L2432'
   - symbol: detect_watermark_region
     kind: function
-    at: 'engines/slice.py:L2422-L2557'
+    at: 'engines/slice.py:L2435-L2570'
   - symbol: detect_subtitle_temporal_windows
     kind: function
-    at: 'engines/slice.py:L2560-L2686'
+    at: 'engines/slice.py:L2573-L2699'
   - symbol: detect_subtitle_spatial_regions
     kind: function
-    at: 'engines/slice.py:L2698-L2785'
+    at: 'engines/slice.py:L2711-L2798'
   - symbol: detect_subtitle_dynamic_regions
     kind: function
-    at: 'engines/slice.py:L2800-L2945'
+    at: 'engines/slice.py:L2813-L2958'
   - symbol: _parse_subtitle_mask_config
     kind: function
-    at: 'engines/slice.py:L2948-L2958'
+    at: 'engines/slice.py:L2961-L2971'
   - symbol: _source_intervals_to_local_intervals
     kind: function
-    at: 'engines/slice.py:L2961-L2988'
+    at: 'engines/slice.py:L2974-L3001'
   - symbol: _scale_region
     kind: function
-    at: 'engines/slice.py:L2991-L3006'
+    at: 'engines/slice.py:L3004-L3019'
   - symbol: _mask_enable_expr
     kind: function
-    at: 'engines/slice.py:L3009-L3012'
+    at: 'engines/slice.py:L3022-L3025'
   - symbol: _source_intervals_to_local_enable
     kind: function
-    at: 'engines/slice.py:L3015-L3046'
+    at: 'engines/slice.py:L3028-L3059'
   - symbol: _spatial_windows_to_local
     kind: function
-    at: 'engines/slice.py:L3049-L3090'
+    at: 'engines/slice.py:L3062-L3103'
   - symbol: _dynamic_windows_to_local
     kind: function
-    at: 'engines/slice.py:L3093-L3140'
+    at: 'engines/slice.py:L3106-L3153'
   - symbol: build_subtitle_mask_enable
     kind: function
-    at: 'engines/slice.py:L3143-L3162'
+    at: 'engines/slice.py:L3156-L3175'
   - symbol: _subtitle_mask_area
     kind: function
-    at: 'engines/slice.py:L3165-L3212'
+    at: 'engines/slice.py:L3178-L3225'
   - symbol: _f
     kind: function
-    at: 'engines/slice.py:L3176-L3183'
+    at: 'engines/slice.py:L3189-L3196'
   - symbol: subtitle_mask_bottom_margin
     kind: function
-    at: 'engines/slice.py:L3215-L3275'
+    at: 'engines/slice.py:L3228-L3288'
   - symbol: _merge_regions
     kind: function
-    at: 'engines/slice.py:L3278-L3304'
+    at: 'engines/slice.py:L3291-L3317'
   - symbol: _scale_regions
     kind: function
-    at: 'engines/slice.py:L3307-L3324'
+    at: 'engines/slice.py:L3320-L3337'
   - symbol: build_subtitle_mask_filter
     kind: function
-    at: 'engines/slice.py:L3327-L3380'
+    at: 'engines/slice.py:L3340-L3393'
   - symbol: build_subtitle_mask_filter_multi
     kind: function
-    at: 'engines/slice.py:L3383-L3466'
+    at: 'engines/slice.py:L3396-L3479'
   - symbol: _clip
     kind: function
-    at: 'engines/slice.py:L3402-L3405'
+    at: 'engines/slice.py:L3415-L3418'
   - symbol: build_subtitle_mask_filter_multi_region
     kind: function
-    at: 'engines/slice.py:L3469-L3553'
+    at: 'engines/slice.py:L3482-L3566'
   - symbol: _clip
     kind: function
-    at: 'engines/slice.py:L3489-L3496'
+    at: 'engines/slice.py:L3502-L3509'
   - symbol: build_subtitle_mask_filter_multi_region_windows
     kind: function
-    at: 'engines/slice.py:L3556-L3642'
+    at: 'engines/slice.py:L3569-L3655'
   - symbol: _enable
     kind: function
-    at: 'engines/slice.py:L3572-L3576'
+    at: 'engines/slice.py:L3585-L3589'
   - symbol: build_subtitle_mask_filter_dynamic
     kind: function
-    at: 'engines/slice.py:L3645-L3724'
+    at: 'engines/slice.py:L3658-L3737'
   - symbol: apply_subtitle_mask
     kind: function
-    at: 'engines/slice.py:L3727-L3832'
+    at: 'engines/slice.py:L3740-L3845'
   - symbol: _video_has_audio
     kind: function
-    at: 'engines/slice.py:L3835-L3846'
+    at: 'engines/slice.py:L3848-L3859'
   - symbol: apply_cover_first_frame
     kind: function
-    at: 'engines/slice.py:L3849-L3941'
+    at: 'engines/slice.py:L3862-L3954'
   - symbol: _fps_value
     kind: function
-    at: 'engines/slice.py:L3958-L3966'
+    at: 'engines/slice.py:L3971-L3979'
   - symbol: build_output_tier_filter
     kind: function
-    at: 'engines/slice.py:L3969-L4002'
+    at: 'engines/slice.py:L3982-L4015'
   - symbol: main
     kind: function
-    at: 'engines/slice.py:L4005-L4764'
+    at: 'engines/slice.py:L4018-L4788'
   - symbol: parse_vert2horiz_config
     kind: function
-    at: 'engines/slice.py:L4767-L4777'
+    at: 'engines/slice.py:L4791-L4801'
   - symbol: apply_vert2horiz
     kind: function
-    at: 'engines/slice.py:L4780-L4839'
+    at: 'engines/slice.py:L4804-L4863'
   - symbol: DedupeManualConfigValue
     kind: interface
     at: 'frontend/src/components/DedupeManualConfig.tsx:L12-L51'

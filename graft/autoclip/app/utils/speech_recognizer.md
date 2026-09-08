@@ -1,32 +1,34 @@
 # autoclip/app/utils/speech_recognizer.py · [[speech-recognition]]
 
-- SpeechRecognitionMethod · class · L30-L34 — Enum of supported speech recognition backends (aliyun, whisper, funasr).
-- LanguageCode · class · L37-L41 — Enum of supported language codes for recognition (zh, en, auto).
-- SpeechRecognitionConfig · class · L45-L69 — Dataclass holding all recognition options, API credentials, and fallback settings.
-- SpeechRecognitionError · class · L72-L74 — Exception type for speech recognition failures.
-- SpeechRecognizer · class · L77-L1024 — Main recognizer orchestrating audio extraction, backend transcription, and SRT subtitle generation/refinement.
-- __init__ · method · L80-L86 — Stores config and probes availability of each recognition backend at construction time.
-- _check_whisper_availability · method · L88-L95 — Returns whether the faster-whisper package is importable (no API key needed).
-- _check_aliyun_speech_availability · method · L97-L106 — Returns whether an Aliyun/DashScope API key is available from env vars or config.
-- _check_funasr_availability · method · L108-L115 — Returns whether the local FunASR package is importable.
-- _extract_audio_from_video · method · L117-L156 — Extracts 16kHz mono PCM WAV audio from a video via ffmpeg, reusing an existing file if present.
-- generate_subtitle · method · L158-L185 — Dispatches subtitle generation to the configured backend method and validates the input video exists.
-- _format_srt_timestamp · method · L188-L195 — Formats a float seconds value into SRT HH:MM:SS,mmm timestamp, clamping negatives to zero.
-- _segments_to_srt · method · L198-L207 — Serializes segment dicts into SRT block text with sequential numbering and timestamps.
-- _aggregate_word_timestamps · method · L210-L288 — Aggregates whisper word-level timestamps into 2-5s subtitle segments, breaking on pauses, punctuation, or max duration.
-- flush · function · L243-L253 — Emits the accumulated word group as one subtitle record, stripping spaces before punctuation.
-- _merge_short_segments · method · L291-L318 — Merges adjacent very-short subtitle segments to avoid flickering, combining them when both are brief and close together.
-- _detect_speech_windows · method · L321-L389 — Uses ffmpeg silencedetect to compute non-silent speech intervals, merging silences and deriving speech gaps.
-- _split_text_by_punctuation · method · L392-L429 — Splits long text into short sentences, preferring sentence-end punctuation then commas, hard-cutting at max_chars.
-- _refine_srt_with_speech_windows · method · L432-L550 — Aligns SRT subtitle display times to detected speech windows, splitting long ASR text across windows and dropping silent spans.
-- _parse_srt_records · method · L553-L581 — Parses SRT content into a list of record dicts with start/end/text.
-- _parse_srt_time · method · L584-L592 — Parses an SRT timestamp string into float seconds.
-- _get_media_duration · method · L595-L608 — Returns media duration in seconds via ffprobe.
-- _aliyun_speech_transcribe_audio · method · L610-L673 — Calls the Aliyun DashScope qwen3-asr-flash API to transcribe audio into text.
-- _generate_subtitle_whisper · method · L675-L730 — Runs local faster-whisper transcription and produces an SRT file from word timestamps.
-- _aggregate_funasr_char_timestamps · method · L733-L838 — Aggregates FunASR character-level timestamps into subtitle segments, breaking on punctuation and duration limits.
-- emit · function · L783-L786 — Flushes accumulated characters into a subtitle record with start/end/text.
-- _generate_subtitle_funasr_local · method · L840-L916 — Runs local FunASR transcription and writes an SRT subtitle file.
-- _strip_funasr_tags · method · L919-L923 — Removes FunASR markup tags from recognized text.
-- _generate_subtitle_aliyun_speech · method · L925-L1024 — Transcribes via Aliyun, segments audio, and writes an SRT file with optional speech-window refinement.
-- generate_subtitle_for_video · function · L1027-L1059 — Module-level convenience wrapper that builds a config and calls SpeechRecognizer.generate_subtitle.
+- SpeechRecognitionMethod · class · L30-L35 — Enum of supported speech recognition backends (aliyun, whisper, funasr).
+- LanguageCode · class · L38-L42 — Enum of supported language codes for recognition (zh, en, auto).
+- SpeechRecognitionConfig · class · L46-L73 — Dataclass holding all recognition options, API credentials, and fallback settings.
+- SpeechRecognitionError · class · L76-L78 — Exception type for speech recognition failures.
+- SpeechRecognizer · class · L81-L1166 — Main recognizer orchestrating audio extraction, backend transcription, and SRT subtitle generation/refinement.
+- __init__ · method · L84-L90 — Stores config and probes availability of each recognition backend at construction time.
+- _check_whisper_availability · method · L92-L99 — Returns whether the faster-whisper package is importable (no API key needed).
+- _check_aliyun_speech_availability · method · L101-L110 — Returns whether an Aliyun/DashScope API key is available from env vars or config.
+- _check_funasr_availability · method · L112-L119 — Returns whether the local FunASR package is importable.
+- _extract_audio_from_video · method · L121-L160 — Extracts 16kHz mono PCM WAV audio from a video via ffmpeg, reusing an existing file if present.
+- generate_subtitle · method · L162-L191 — Dispatches subtitle generation to the configured backend method and validates the input video exists.
+- _format_srt_timestamp · method · L194-L201 — Formats a float seconds value into SRT HH:MM:SS,mmm timestamp, clamping negatives to zero.
+- _segments_to_srt · method · L204-L213 — Serializes segment dicts into SRT block text with sequential numbering and timestamps.
+- _aggregate_word_timestamps · method · L216-L294 — Aggregates whisper word-level timestamps into 2-5s subtitle segments, breaking on pauses, punctuation, or max duration.
+- flush · function · L249-L259 — Emits the accumulated word group as one subtitle record, stripping spaces before punctuation.
+- _merge_short_segments · method · L297-L324 — Merges adjacent very-short subtitle segments to avoid flickering, combining them when both are brief and close together.
+- _detect_speech_windows · method · L327-L395 — Uses ffmpeg silencedetect to compute non-silent speech intervals, merging silences and deriving speech gaps.
+- _split_text_by_punctuation · method · L398-L435 — Splits long text into short sentences, preferring sentence-end punctuation then commas, hard-cutting at max_chars.
+- _refine_srt_with_speech_windows · method · L438-L556 — Aligns SRT subtitle display times to detected speech windows, splitting long ASR text across windows and dropping silent spans.
+- _parse_srt_records · method · L559-L587 — Parses SRT content into a list of record dicts with start/end/text.
+- _parse_srt_time · method · L590-L598 — Parses an SRT timestamp string into float seconds.
+- _get_media_duration · method · L601-L614 — Returns media duration in seconds via ffprobe.
+- _aliyun_speech_transcribe_audio · method · L616-L679 — Calls the Aliyun DashScope qwen3-asr-flash API to transcribe audio into text.
+- _mimo_asr_transcribe_audio · method · L682-L738 — def _mimo_asr_transcribe_audio(self, audio_path, config, api_key)
+- _generate_subtitle_whisper · method · L740-L795 — Runs local faster-whisper transcription and produces an SRT file from word timestamps.
+- _aggregate_funasr_char_timestamps · method · L798-L903 — Aggregates FunASR character-level timestamps into subtitle segments, breaking on punctuation and duration limits.
+- emit · function · L848-L851 — Flushes accumulated characters into a subtitle record with start/end/text.
+- _generate_subtitle_funasr_local · method · L905-L984 — Runs local FunASR transcription and writes an SRT subtitle file.
+- _generate_subtitle_mimo_asr · method · L988-L1058 — def _generate_subtitle_mimo_asr(self, video_path, output_path, config)
+- _strip_funasr_tags · method · L1061-L1065 — Removes FunASR markup tags from recognized text.
+- _generate_subtitle_aliyun_speech · method · L1067-L1166 — Transcribes via Aliyun, segments audio, and writes an SRT file with optional speech-window refinement.
+- generate_subtitle_for_video · function · L1169-L1212 — Module-level convenience wrapper that builds a config and calls SpeechRecognizer.generate_subtitle.

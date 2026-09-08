@@ -35,58 +35,58 @@ covers:
     at: 'backend/app/api/variants.py:L156-L193'
   - symbol: generate_variants
     kind: function
-    at: 'backend/app/api/variants.py:L197-L216'
+    at: 'backend/app/api/variants.py:L197-L227'
   - symbol: verify_variant
     kind: function
-    at: 'backend/app/api/variants.py:L220-L235'
+    at: 'backend/app/api/variants.py:L231-L246'
   - symbol: bind_variant_account
     kind: function
-    at: 'backend/app/api/variants.py:L239-L261'
+    at: 'backend/app/api/variants.py:L250-L272'
   - symbol: update_thresholds
     kind: function
-    at: 'backend/app/api/variants.py:L265-L284'
+    at: 'backend/app/api/variants.py:L276-L295'
   - symbol: uuid_of
     kind: function
-    at: 'backend/app/api/variants.py:L287-L292'
+    at: 'backend/app/api/variants.py:L298-L303'
   - symbol: VariantGenerateBatchRequest
     kind: class
-    at: 'backend/app/api/variants.py:L294-L298'
+    at: 'backend/app/api/variants.py:L305-L309'
   - symbol: SliceOutputListRequest
     kind: class
-    at: 'backend/app/api/variants.py:L301-L304'
+    at: 'backend/app/api/variants.py:L312-L315'
   - symbol: generate_variants_batch
     kind: function
-    at: 'backend/app/api/variants.py:L308-L354'
+    at: 'backend/app/api/variants.py:L319-L376'
   - symbol: _check_output_access
     kind: function
-    at: 'backend/app/api/variants.py:L357-L374'
+    at: 'backend/app/api/variants.py:L379-L396'
   - symbol: _load_variant_or_404
     kind: function
-    at: 'backend/app/api/variants.py:L377-L384'
+    at: 'backend/app/api/variants.py:L399-L406'
   - symbol: _guard_variant_access
     kind: function
-    at: 'backend/app/api/variants.py:L387-L396'
+    at: 'backend/app/api/variants.py:L409-L418'
   - symbol: _delete_minio_file
     kind: function
-    at: 'backend/app/api/variants.py:L399-L408'
+    at: 'backend/app/api/variants.py:L421-L430'
   - symbol: cleanup_stuck_variants
     kind: function
-    at: 'backend/app/api/variants.py:L412-L442'
+    at: 'backend/app/api/variants.py:L434-L464'
   - symbol: delete_variant
     kind: function
-    at: 'backend/app/api/variants.py:L446-L462'
+    at: 'backend/app/api/variants.py:L468-L484'
   - symbol: delete_variant_group
     kind: function
-    at: 'backend/app/api/variants.py:L466-L496'
+    at: 'backend/app/api/variants.py:L488-L518'
   - symbol: download_variant_group_zip
     kind: function
-    at: 'backend/app/api/variants.py:L500-L555'
+    at: 'backend/app/api/variants.py:L522-L577'
   - symbol: download_variant
     kind: function
-    at: 'backend/app/api/variants.py:L559-L577'
+    at: 'backend/app/api/variants.py:L581-L599'
   - symbol: list_slice_outputs
     kind: function
-    at: 'backend/app/api/variants.py:L581-L740'
+    at: 'backend/app/api/variants.py:L603-L762'
 ---
 <!-- context:generated:start -->
 ## Summary

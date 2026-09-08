@@ -6,6 +6,6 @@
 - kill_slice_proc · function · L95-L109 — async def kill_slice_proc(task_id: str) -> bool
 - _engine_path · function · L112-L113 — Resolves an engine script's absolute path under the configured engines directory.
 - _require_engine · function · L116-L121 — Guards against a missing engine binary by raising FileNotFoundError with a Chinese hint about mounting the engines directory.
-- run_slice · function · L124-L233 — Builds the full ffmpeg slice engine CLI command from all optional configs (watermark, badges, subtitles, masks, dedupe, cover) and executes it, returning the engine's exit code and output.
-- run_slice_scrub · function · L236-L301 — Delegates to run_slice in scrub mode, slicing the cutlist minus removed intervals by passing the intervals path.
-- run_slice_fast · function · L304-L371 — Validates the mode is fast or dedupe, then delegates to run_slice without intervals for fast/dedupe slicing.
+- run_slice · function · L124-L239 — Builds the full ffmpeg slice engine CLI command from all optional configs (watermark, badges, subtitles, masks, dedupe, cover) and executes it, returning the engine's exit code and output.
+- run_slice_scrub · function · L242-L309 — Delegates to run_slice in scrub mode, slicing the cutlist minus removed intervals by passing the intervals path.
+- run_slice_fast · function · L312-L381 — Validates the mode is fast or dedupe, then delegates to run_slice without intervals for fast/dedupe slicing.

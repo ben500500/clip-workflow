@@ -1,50 +1,53 @@
 # backend/app/api/dramas.py · [[drama-management-import]]
 
-- DramaCreate · class · L89-L110 — 创建剧目的请求体 schema，定义可录入字段及可选关联视频号列表。
-- DramaUpdate · class · L113-L131 — 更新剧目的请求体 schema，所有字段可选以支持部分更新。
-- DramaStillPayload · class · L134-L137 — 添加剧照的请求体，携带剧目 id、MinIO file_key 与排序号。
-- DramaLinkAccounts · class · L140-L141 — 批量关联视频号到剧目的请求体，仅含 account_ids 列表。
-- _resolve_image_url · function · L146-L153 — 将 MinIO file_key 解析为临时可访问的 presigned URL 用于封面/剧照展示，失败时静默返回 None。
-- _load_drama_theaters · function · L157-L159 — def _load_drama_theaters()
-- _serialize_drama · function · L162-L204 — 将 Drama ORM 对象序列化为 API 响应 dict，含封面 URL 解析与网盘提取码掩码处理。
-- _serialize_drama_detail · function · L207-L222 — 在基础序列化之上追加剧照列表与关联视频号 id，构成剧目详情响应。
-- _resolve_drama · function · L227-L245 — 按 UUID 解析剧目，校验 ID 格式并处理不存在时的 404。
-- _can_manage · function · L248-L253 — RBAC 权限判定：operator 仅可管理自己创建/归属的剧目，admin/material/publisher 全量放行。
-- _apply_rbac_filter · function · L256-L259 — 构造 RBAC 查询过滤条件，非全量权限用户仅可见自己创建或归属的剧目。
-- _sync_drama_theaters · function · L262-L294 — async def _sync_drama_theaters(db: AsyncSession, drama: Drama, theater_ids: Optional[List])
-- _associate_accounts · function · L297-L310 — 幂等地将视频号关联到剧目（一剧多号），跳过已存在关联与非法 UUID。
-- list_topic_presets · function · L316-L330 — async def list_topic_presets( db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- list_dramas · function · L334-L383 — 剧目库列表接口，支持名称/编码模糊搜索、多条件筛选、按视频号反查及 RBAC 过滤。
-- create_drama · function · L387-L450 — 新增剧目：校验 name 非空且唯一，生成 DR-HEX code 并做冲突重抽，写入后关联视频号。
-- get_drama · function · L454-L463 — 获取剧目详情，先做 RBAC 权限校验再返回序列化数据。
-- update_drama · function · L467-L512 — 更新剧目信息：校验改名唯一性，按字段类型转换（UUID/日期/名称）后逐字段写入。
-- delete_drama · function · L516-L527 — 删除剧目（级联删除剧照/关联），先做权限校验。
-- add_drama_still · function · L533-L549 — 为剧目添加一张剧照记录（MinIO key + 排序号），先做权限校验。
-- delete_drama_still · function · L553-L572 — 删除一张剧照，校验 ID 格式、存在性及所属剧目权限。
-- upload_drama_image · function · L576-L631 — 上传剧目封面/剧照图片到 MinIO raw-footage 桶 drama/ 前缀，校验扩展名与大小上限。
-- link_drama_accounts · function · L637-L650 — 为剧目批量关联视频号并返回当前全部关联 id。
-- DramaImportRow · class · L655-L672 — 单条导入数据 schema，与表格字段一一对应，name 为去重键。
-- DramaImportRequest · class · L675-L677 — 导入预览请求体，携带行列表与文件名。
-- DramaImportConfirmItem · class · L680-L699 — confirm 时的一条确定项，携带 id（update 时=drama 主键）+ 完整字段，保证 confirm 自包含。
-- DramaImportConfirm · class · L702-L705 — 导入确认请求体，分 accept_new 与 accept_update 两组勾选项。
-- _row_key · function · L708-L710 — 行去重键：以 name 作为唯一键。
-- _diff_fields · function · L713-L743 — 对比旧剧目与新导入行，返回差异字段的旧值 vs 新值映射。
-- _split_theater_names · function · L746-L756 — def _split_theater_names(theater_name: Optional[str]) -> list
-- _resolve_theater_ids · function · L759-L781 — async def _resolve_theater_ids(db: AsyncSession, theater_name: Optional[str], current_user: Optional[User]) -> List[uuid.UUID]
-- _resolve_theater_id · function · L784-L790 — async def _resolve_theater_id(db: AsyncSession, theater_name: Optional[str], current_user: Optional[User]) -> Optional[uuid.UUID]
-- drama_import_preview · function · L794-L861 — 导入预览：按 name 去重将行分为 new/update/unchanged 三组，update 带 diff 供前端勾选。
-- drama_import_parse · function · L865-L955 — 解析上传的 Excel 文件为结构化行数据，供前端映射后提交预览。
-- _norm · function · L901-L902 — 规范化单元格字符串（去空白）。
-- _find · function · L906-L911 — 在行数据中按多个候选键查找首个非空值。
-- drama_import_confirm · function · L959-L1115 — 导入确认：仅对用户勾选的 new/update 项执行写入/更新，未勾选不落库，并记录导入历史。
-- FeishuImportRequest · class · L1120-L1121 — class FeishuImportRequest(BaseModel)
-- drama_import_feishu · function · L1125-L1138 — async def drama_import_feishu( data: Optional[FeishuImportRequest] = None, current_user: Annotated[User, Depends(get_current_user)] = None, )
-- get_drama_publish_context · function · L1144-L1160 — 获取剧目发布上下文（关联视频号/素材等），供发布弹窗使用。
-- DramaMaterialLink · class · L1163-L1166 — 剧目↔发布素材关联请求体 schema。
-- link_drama_material · function · L1170-L1194 — 将发布素材关联到剧目（发布弹窗一键生成素材后挂关联）。
-- DramaLinkEpisodes · class · L1199-L1201 — class DramaLinkEpisodes(BaseModel)
-- link_drama_episodes · function · L1205-L1269 — async def link_drama_episodes( drama_id: str, data: DramaLinkEpisodes, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- get_drama_slice_status · function · L1273-L1388 — async def get_drama_slice_status( drama_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
-- _stage_status · function · L1325-L1335 — def _stage_status(status)
-- _parse_date · function · L1393-L1398 — 解析日期字符串为 date 对象。
-- _parse_dt · function · L1401-L1406 — 解析日期时间字符串为 datetime 对象。
+- DramaCreate · class · L90-L111 — 创建剧目的请求体 schema，定义可录入字段及可选关联视频号列表。
+- DramaUpdate · class · L114-L132 — 更新剧目的请求体 schema，所有字段可选以支持部分更新。
+- DramaStillPayload · class · L135-L138 — 添加剧照的请求体，携带剧目 id、MinIO file_key 与排序号。
+- DramaLinkAccounts · class · L141-L142 — 批量关联视频号到剧目的请求体，仅含 account_ids 列表。
+- _resolve_image_url · function · L147-L154 — 将 MinIO file_key 解析为临时可访问的 presigned URL 用于封面/剧照展示，失败时静默返回 None。
+- _load_drama_theaters · function · L158-L160 — def _load_drama_theaters()
+- _serialize_drama · function · L163-L207 — 将 Drama ORM 对象序列化为 API 响应 dict，含封面 URL 解析与网盘提取码掩码处理。
+- _serialize_drama_detail · function · L210-L225 — 在基础序列化之上追加剧照列表与关联视频号 id，构成剧目详情响应。
+- _resolve_drama · function · L230-L248 — 按 UUID 解析剧目，校验 ID 格式并处理不存在时的 404。
+- _can_manage · function · L251-L256 — RBAC 权限判定：operator 仅可管理自己创建/归属的剧目，admin/material/publisher 全量放行。
+- _apply_rbac_filter · function · L259-L262 — 构造 RBAC 查询过滤条件，非全量权限用户仅可见自己创建或归属的剧目。
+- _sync_drama_theaters · function · L265-L297 — async def _sync_drama_theaters(db: AsyncSession, drama: Drama, theater_ids: Optional[List])
+- _associate_accounts · function · L300-L313 — 幂等地将视频号关联到剧目（一剧多号），跳过已存在关联与非法 UUID。
+- list_topic_presets · function · L319-L333 — async def list_topic_presets( db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- list_dramas · function · L337-L404 — 剧目库列表接口，支持名称/编码模糊搜索、多条件筛选、按视频号反查及 RBAC 过滤。
+- create_drama · function · L408-L471 — 新增剧目：校验 name 非空且唯一，生成 DR-HEX code 并做冲突重抽，写入后关联视频号。
+- get_drama · function · L475-L484 — 获取剧目详情，先做 RBAC 权限校验再返回序列化数据。
+- update_drama · function · L488-L533 — 更新剧目信息：校验改名唯一性，按字段类型转换（UUID/日期/名称）后逐字段写入。
+- delete_drama · function · L537-L548 — 删除剧目（级联删除剧照/关联），先做权限校验。
+- add_drama_still · function · L554-L570 — 为剧目添加一张剧照记录（MinIO key + 排序号），先做权限校验。
+- delete_drama_still · function · L574-L593 — 删除一张剧照，校验 ID 格式、存在性及所属剧目权限。
+- upload_drama_image · function · L597-L652 — 上传剧目封面/剧照图片到 MinIO raw-footage 桶 drama/ 前缀，校验扩展名与大小上限。
+- link_drama_accounts · function · L658-L671 — 为剧目批量关联视频号并返回当前全部关联 id。
+- DramaImportRow · class · L676-L693 — 单条导入数据 schema，与表格字段一一对应，name 为去重键。
+- DramaImportRequest · class · L696-L698 — 导入预览请求体，携带行列表与文件名。
+- DramaImportConfirmItem · class · L701-L720 — confirm 时的一条确定项，携带 id（update 时=drama 主键）+ 完整字段，保证 confirm 自包含。
+- DramaImportConfirm · class · L723-L726 — 导入确认请求体，分 accept_new 与 accept_update 两组勾选项。
+- _row_key · function · L729-L731 — 行去重键：以 name 作为唯一键。
+- _validate_import_rating · function · L734-L748 — def _validate_import_rating(rating: Optional[str]) -> Optional[str]
+- _diff_fields · function · L751-L782 — 对比旧剧目与新导入行，返回差异字段的旧值 vs 新值映射。
+- _split_theater_names · function · L785-L795 — def _split_theater_names(theater_name: Optional[str]) -> list
+- _resolve_theater_ids · function · L798-L820 — async def _resolve_theater_ids(db: AsyncSession, theater_name: Optional[str], current_user: Optional[User]) -> List[uuid.UUID]
+- _resolve_theater_id · function · L823-L829 — async def _resolve_theater_id(db: AsyncSession, theater_name: Optional[str], current_user: Optional[User]) -> Optional[uuid.UUID]
+- drama_import_preview · function · L833-L906 — 导入预览：按 name 去重将行分为 new/update/unchanged 三组，update 带 diff 供前端勾选。
+- drama_import_parse · function · L910-L1005 — 解析上传的 Excel 文件为结构化行数据，供前端映射后提交预览。
+- _norm · function · L946-L947 — 规范化单元格字符串（去空白）。
+- _find · function · L951-L956 — 在行数据中按多个候选键查找首个非空值。
+- drama_import_confirm · function · L1009-L1183 — 导入确认：仅对用户勾选的 new/update 项执行写入/更新，未勾选不落库，并记录导入历史。
+- FeishuImportRequest · class · L1188-L1189 — class FeishuImportRequest(BaseModel)
+- drama_import_feishu · function · L1193-L1206 — async def drama_import_feishu( data: Optional[FeishuImportRequest] = None, current_user: Annotated[User, Depends(get_current_user)] = None, )
+- drama_import_feishu_roster · function · L1210-L1235 — async def drama_import_feishu_roster( data: Optional[FeishuImportRequest] = None, current_user: Annotated[User, Depends(get_current_user)] = None, )
+- drama_feishu_roster_status · function · L1239-L1250 — async def drama_feishu_roster_status( current_user: Annotated[User, Depends(get_current_user)] = None, )
+- get_drama_publish_context · function · L1256-L1272 — 获取剧目发布上下文（关联视频号/素材等），供发布弹窗使用。
+- DramaMaterialLink · class · L1275-L1278 — 剧目↔发布素材关联请求体 schema。
+- link_drama_material · function · L1282-L1306 — 将发布素材关联到剧目（发布弹窗一键生成素材后挂关联）。
+- DramaLinkEpisodes · class · L1311-L1313 — class DramaLinkEpisodes(BaseModel)
+- link_drama_episodes · function · L1317-L1381 — async def link_drama_episodes( drama_id: str, data: DramaLinkEpisodes, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- get_drama_slice_status · function · L1385-L1500 — async def get_drama_slice_status( drama_id: str, db: AsyncSession = Depends(get_db), current_user: Annotated[User, Depends(get_current_user)] = None, )
+- _stage_status · function · L1437-L1447 — def _stage_status(status)
+- _parse_date · function · L1505-L1519 — 解析日期字符串为 date 对象。
+- _parse_dt · function · L1522-L1545 — 解析日期时间字符串为 datetime 对象。

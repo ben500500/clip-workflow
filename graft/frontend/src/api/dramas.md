@@ -12,23 +12,27 @@
 - TopicPreset · interface · L138-L143 — interface TopicPreset
 - TopicPresetsResult · interface · L145-L149 — interface TopicPresetsResult
 - getTopicPresets · function · L154-L156 — function getTopicPresets(): Promise<TopicPresetsResult>
-- listDramas · function · L158-L167 — function listDramas(params?: { q?: string; frequency?: string; rating?: string; listing_status?: string; account_id?: string; theater_id?: string; }): Promise<Drama[]>
-- getDrama · function · L169-L171 — function getDrama(dramaId: string): Promise<DramaDetail>
-- createDrama · function · L173-L175 — function createDrama(data: DramaCreateParams): Promise<DramaDetail>
-- updateDrama · function · L177-L179 — function updateDrama(dramaId: string, data: DramaUpdateParams): Promise<DramaDetail>
-- deleteDrama · function · L180-L182 — function deleteDrama(dramaId: string): Promise<void>
-- feishuImportDrama · function · L185-L194 — function feishuImportDrama(url?: string): Promise<{ success: boolean; matched?: number; updated?: number; errors?: string[]; message?: string; error?: string; }>
-- uploadDramaImage · function · L198-L211 — function uploadDramaImage(file: File, onProgress?: (percent: number) => void): Promise<{ file_name: string; file_key: string; file_size: number }>
-- addDramaStill · function · L213-L215 — function addDramaStill(dramaId: string, fileKey: string, sortOrder?: number): Promise<DramaStill>
-- deleteDramaStill · function · L217-L219 — function deleteDramaStill(stillId: string): Promise<void>
-- linkDramaAccounts · function · L222-L224 — function linkDramaAccounts(dramaId: string, accountIds: string[]): Promise<{ account_ids: string[] }>
-- dramaImportParse · function · L227-L245 — function dramaImportParse(file: File, onProgress?: (percent: number) => void): Promise<{ rows: DramaImportRow[]; total: number; file_name: string; message: string; }>
-- dramaImportPreview · function · L247-L249 — function dramaImportPreview(rows: DramaImportRow[], fileName?: string): Promise<DramaImportPreviewResult>
-- dramaImportConfirm · function · L251-L261 — function dramaImportConfirm( acceptNew: DramaImportConfirmItem[], acceptUpdate: DramaImportConfirmItem[], fileName?: string ): Promise<{ imported: number; updated: number; skipped: number; errors: unknown[]; import_history_id?: string }>
-- getDramaPublishContext · function · L264-L266 — function getDramaPublishContext(dramaId: string): Promise<DramaPublishContext>
-- linkDramaMaterial · function · L268-L274 — function linkDramaMaterial( dramaId: string, materialId: string, accountId?: string ): Promise<{ id: string; drama_id: string; material_id: string }>
-- DramaEpisodeStage · interface · L279-L286 — interface DramaEpisodeStage
-- DramaSliceEpisode · interface · L288-L301 — interface DramaSliceEpisode
-- DramaSliceStatus · interface · L303-L312 — interface DramaSliceStatus
-- linkDramaEpisodes · function · L315-L317 — function linkDramaEpisodes(dramaId: string, episodeIds: string[]): Promise<DramaDetail>
-- getDramaSliceStatus · function · L320-L322 — function getDramaSliceStatus(dramaId: string): Promise<DramaSliceStatus>
+- listDramas · function · L158-L170 — function listDramas(params?: { q?: string; frequency?: string; rating?: string; listing_status?: string; account_id?: string; theater_id?: string; online_date?: string; online_from?: string; online_to?: string; }): Promise<Drama[]>
+- getDrama · function · L172-L174 — function getDrama(dramaId: string): Promise<DramaDetail>
+- createDrama · function · L176-L178 — function createDrama(data: DramaCreateParams): Promise<DramaDetail>
+- updateDrama · function · L180-L182 — function updateDrama(dramaId: string, data: DramaUpdateParams): Promise<DramaDetail>
+- deleteDrama · function · L183-L185 — function deleteDrama(dramaId: string): Promise<void>
+- feishuImportDrama · function · L188-L197 — function feishuImportDrama(url?: string): Promise<{ success: boolean; matched?: number; updated?: number; errors?: string[]; message?: string; error?: string; }>
+- feishuRosterRows · function · L200-L207 — function feishuRosterRows(url?: string): Promise<{ rows: Array<Record<string, unknown>>; total: number; file_name: string; message: string; }>
+- FeishuRosterSnapshot · interface · L210-L213 — interface FeishuRosterSnapshot
+- FeishuRosterStatus · interface · L215-L229 — interface FeishuRosterStatus
+- feishuRosterStatus · function · L231-L233 — function feishuRosterStatus(): Promise<FeishuRosterStatus>
+- uploadDramaImage · function · L237-L250 — function uploadDramaImage(file: File, onProgress?: (percent: number) => void): Promise<{ file_name: string; file_key: string; file_size: number }>
+- addDramaStill · function · L252-L254 — function addDramaStill(dramaId: string, fileKey: string, sortOrder?: number): Promise<DramaStill>
+- deleteDramaStill · function · L256-L258 — function deleteDramaStill(stillId: string): Promise<void>
+- linkDramaAccounts · function · L261-L263 — function linkDramaAccounts(dramaId: string, accountIds: string[]): Promise<{ account_ids: string[] }>
+- dramaImportParse · function · L266-L284 — function dramaImportParse(file: File, onProgress?: (percent: number) => void): Promise<{ rows: DramaImportRow[]; total: number; file_name: string; message: string; }>
+- dramaImportPreview · function · L286-L288 — function dramaImportPreview(rows: DramaImportRow[], fileName?: string): Promise<DramaImportPreviewResult>
+- dramaImportConfirm · function · L290-L300 — function dramaImportConfirm( acceptNew: DramaImportConfirmItem[], acceptUpdate: DramaImportConfirmItem[], fileName?: string ): Promise<{ imported: number; updated: number; skipped: number; errors: unknown[]; import_history_id?: string }>
+- getDramaPublishContext · function · L303-L305 — function getDramaPublishContext(dramaId: string): Promise<DramaPublishContext>
+- linkDramaMaterial · function · L307-L313 — function linkDramaMaterial( dramaId: string, materialId: string, accountId?: string ): Promise<{ id: string; drama_id: string; material_id: string }>
+- DramaEpisodeStage · interface · L318-L325 — interface DramaEpisodeStage
+- DramaSliceEpisode · interface · L327-L340 — interface DramaSliceEpisode
+- DramaSliceStatus · interface · L342-L351 — interface DramaSliceStatus
+- linkDramaEpisodes · function · L354-L356 — function linkDramaEpisodes(dramaId: string, episodeIds: string[]): Promise<DramaDetail>
+- getDramaSliceStatus · function · L359-L361 — function getDramaSliceStatus(dramaId: string): Promise<DramaSliceStatus>

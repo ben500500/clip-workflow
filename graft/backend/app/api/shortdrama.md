@@ -26,22 +26,22 @@
 - DoubaoGenerateRequest · class · L720-L724 — Request schema for starting Doubao RPA generation, selecting free/pro account type which caps duration.
 - DoubaoGenerateResponse · class · L727-L730 — Response schema confirming a Doubao generation task has been started.
 - DoubaoRewriteConfirmRequest · class · L733-L735 — Request schema for confirming/rejecting/cancelling a Doubao rewrite attempt.
-- start_doubao_generate · function · L739-L784 — Starts a Doubao RPA video generation task for a prompt record, enforcing account-type duration limits and persisting task state.
-- confirm_doubao_rewrite · function · L788-L836 — Handles user decision on a Doubao rewrite: approves to retry with the rewritten script, rejects to request another version, or cancels the task.
-- cancel_doubao_generate · function · L840-L864 — Cancels an in-flight Doubao generation task and clears its task state.
-- get_doubao_status · function · L868-L879 — Returns the current Doubao generation task status for a prompt record.
-- get_prompt_default_duration · function · L888-L903 — Returns the current user's default prompt generation duration.
-- PromptDefaultDurationRequest · class · L906-L908 — Request schema carrying the user's default prompt duration in seconds.
-- update_prompt_default_duration · function · L912-L922 — Updates the current user's default prompt generation duration after normalizing it.
-- get_doubao_account_type · function · L926-L936 — Returns the current user's Doubao account type (free/pro).
-- update_doubao_account_type · function · L940-L954 — Updates the current user's Doubao account type, which governs generation duration limits.
-- switch_doubao_account · function · L958-L977 — Switches the current user's Doubao account to the next available account type.
-- _load_doubao_limits · function · L980-L990 — Loads Doubao generation duration limits from system_config, falling back to defaults.
-- SeedanceGenerateRequest · class · L1010-L1014 — Request schema for Seedance API generation carrying duration, which is capped at 5s/10s for Seedance 1.0.
-- SeedanceGenerateResponse · class · L1017-L1020 — Response schema confirming a Seedance API generation task has been started.
-- _load_seedance_config · function · L1023-L1032 — Loads Seedance API configuration (enabled flag, API key, model, duration policy) from system_config.
-- _require_seedance_enabled · function · L1035-L1043 — Raises 400 if the Seedance API channel is not enabled in configuration.
-- get_seedance_config · function · L1047-L1059 — Returns the Seedance API configuration including enabled state and duration policy.
-- start_seedance_generate · function · L1063-L1104 — Starts a Seedance API generation task for a prompt record, enforcing the configured duration policy and persisting task state.
-- cancel_seedance_generate · function · L1108-L1144 — Cancels an in-flight Seedance API generation task and clears its task state.
-- get_seedance_status · function · L1148-L1159 — Returns the current Seedance API generation task status for a prompt record.
+- start_doubao_generate · function · L739-L797 — Starts a Doubao RPA video generation task for a prompt record, enforcing account-type duration limits and persisting task state.
+- confirm_doubao_rewrite · function · L801-L849 — Handles user decision on a Doubao rewrite: approves to retry with the rewritten script, rejects to request another version, or cancels the task.
+- cancel_doubao_generate · function · L853-L877 — Cancels an in-flight Doubao generation task and clears its task state.
+- get_doubao_status · function · L881-L892 — Returns the current Doubao generation task status for a prompt record.
+- get_prompt_default_duration · function · L901-L916 — Returns the current user's default prompt generation duration.
+- PromptDefaultDurationRequest · class · L919-L921 — Request schema carrying the user's default prompt duration in seconds.
+- update_prompt_default_duration · function · L925-L935 — Updates the current user's default prompt generation duration after normalizing it.
+- get_doubao_account_type · function · L939-L949 — Returns the current user's Doubao account type (free/pro).
+- update_doubao_account_type · function · L953-L967 — Updates the current user's Doubao account type, which governs generation duration limits.
+- switch_doubao_account · function · L971-L990 — Switches the current user's Doubao account to the next available account type.
+- _load_doubao_limits · function · L993-L1003 — Loads Doubao generation duration limits from system_config, falling back to defaults.
+- SeedanceGenerateRequest · class · L1023-L1027 — Request schema for Seedance API generation carrying duration, which is capped at 5s/10s for Seedance 1.0.
+- SeedanceGenerateResponse · class · L1030-L1033 — Response schema confirming a Seedance API generation task has been started.
+- _load_seedance_config · function · L1036-L1045 — Loads Seedance API configuration (enabled flag, API key, model, duration policy) from system_config.
+- _require_seedance_enabled · function · L1048-L1056 — Raises 400 if the Seedance API channel is not enabled in configuration.
+- get_seedance_config · function · L1060-L1072 — Returns the Seedance API configuration including enabled state and duration policy.
+- start_seedance_generate · function · L1076-L1130 — Starts a Seedance API generation task for a prompt record, enforcing the configured duration policy and persisting task state.
+- cancel_seedance_generate · function · L1134-L1170 — Cancels an in-flight Seedance API generation task and clears its task state.
+- get_seedance_status · function · L1174-L1185 — Returns the current Seedance API generation task status for a prompt record.

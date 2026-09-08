@@ -15,7 +15,7 @@
 - set_node_cpu_percent · function · L287-L302 — Clamps and stores a node's CPU allocation percentage (1-100) in Redis with a 7-day TTL for runtime dynamic adjustment without restart.
 - get_node_cpu_percent · function · L305-L317 — Reads a node's CPU allocation percentage from Redis, clamping to 1-100 and falling back to a default on missing or invalid values.
 - delete_worker_node · function · L320-L361 — Removes all Redis traces of a worker node (info hash, online set, tag sets, control keys, and its running task hashes) in a single pipeline to avoid dangling state.
-- get_worker_nodes_from_redis · function · L364-L490 — Aggregates all worker nodes from Redis into UI-ready dicts, determining online/offline status from heartbeat TTL and attaching running-task progress, enabled state, CPU percent, and encoder capabilities.
-- set_node_update_command · function · L493-L522 — Writes an engine update directive (target version + timestamp) to a node's Redis key with a 1-day TTL so workers self-update their engines without redeployment.
-- get_node_update_command · function · L525-L534 — Reads a node's current engine update directive for UI display of push status and target version.
-- clear_node_update_command · function · L537-L543 — Deletes a node's engine update directive after the worker successfully applies the update to prevent repeated pulls.
+- get_worker_nodes_from_redis · function · L364-L500 — Aggregates all worker nodes from Redis into UI-ready dicts, determining online/offline status from heartbeat TTL and attaching running-task progress, enabled state, CPU percent, and encoder capabilities.
+- set_node_update_command · function · L503-L532 — Writes an engine update directive (target version + timestamp) to a node's Redis key with a 1-day TTL so workers self-update their engines without redeployment.
+- get_node_update_command · function · L535-L544 — Reads a node's current engine update directive for UI display of push status and target version.
+- clear_node_update_command · function · L547-L553 — Deletes a node's engine update directive after the worker successfully applies the update to prevent repeated pulls.

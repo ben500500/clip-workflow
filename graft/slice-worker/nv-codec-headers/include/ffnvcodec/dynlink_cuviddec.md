@@ -1,0 +1,30 @@
+# slice-worker/nv-codec-headers/include/ffnvcodec/dynlink_cuviddec.h
+
+- tcu_ulong · type · L53-L53 — typedef unsigned int tcu_ulong;
+- tcu_ulong · type · L55-L55 — typedef unsigned long tcu_ulong;
+- cudaVideoCodec_enum · type · L66-L86 — typedef enum cudaVideoCodec_enum
+- cudaVideoSurfaceFormat_enum · type · L93-L100 — typedef enum cudaVideoSurfaceFormat_enum
+- cudaVideoDeinterlaceMode_enum · type · L109-L113 — typedef enum cudaVideoDeinterlaceMode_enum
+- cudaVideoChromaFormat_enum · type · L120-L125 — typedef enum cudaVideoChromaFormat_enum
+- cudaVideoCreateFlags_enum · type · L132-L137 — typedef enum cudaVideoCreateFlags_enum
+- cuvidDecodeStatus_enum · type · L145-L153 — typedef enum cuvidDecodeStatus_enum
+- _CUVIDDECODECAPS · class · L159-L181 — typedef struct _CUVIDDECODECAPS
+- _CUVIDDECODECREATEINFO · class · L187-L234 — typedef struct _CUVIDDECODECREATEINFO
+- _CUVIDH264DPBENTRY · class · L241-L249 — typedef struct _CUVIDH264DPBENTRY
+- _CUVIDH264MVCEXT · class · L256-L266 — typedef struct _CUVIDH264MVCEXT
+- _CUVIDH264SVCEXT · class · L273-L307 — typedef struct _CUVIDH264SVCEXT
+- _CUVIDH264PICPARAMS · class · L314-L369 — typedef struct _CUVIDH264PICPARAMS
+- _CUVIDMPEG2PICPARAMS · class · L377-L395 — typedef struct _CUVIDMPEG2PICPARAMS
+- _CUVIDMPEG4PICPARAMS · class · L408-L436 — typedef struct _CUVIDMPEG4PICPARAMS
+- _CUVIDVC1PICPARAMS · class · L443-L481 — typedef struct _CUVIDVC1PICPARAMS
+- _CUVIDJPEGPICPARAMS · class · L488-L491 — typedef struct _CUVIDJPEGPICPARAMS
+- _CUVIDHEVCPICPARAMS · class · L499-L630 — typedef struct _CUVIDHEVCPICPARAMS
+- _CUVIDVP8PICPARAMS · class · L638-L659 — typedef struct _CUVIDVP8PICPARAMS
+- _CUVIDVP9PICPARAMS · class · L666-L730 — typedef struct _CUVIDVP9PICPARAMS
+- _CUVIDAV1PICPARAMS · class · L737-L906 — typedef struct _CUVIDAV1PICPARAMS
+- _CUVIDPICPARAMS · class · L914-L944 — typedef struct _CUVIDPICPARAMS
+- _CUVIDPROCPARAMS · class · L952-L971 — typedef struct _CUVIDPROCPARAMS
+- _CUVIDGETDECODESTATUS · class · L978-L983 — typedef struct _CUVIDGETDECODESTATUS
+- _CUVIDRECONFIGUREDECODERINFO · class · L990-L1017 — typedef struct _CUVIDRECONFIGUREDECODERINFO
+- CUDAAPI · type · L1060-L1060 — typedef CUresult CUDAAPI tcuvidGetDecoderCaps(CUVIDDECODECAPS *pdc);
+- CUDAAPI · type · L1066-L1066 — typedef CUresult CUDAAPI tcuvidCreateDecoder(CUvideodecoder *phDecoder, CUVIDDECODECREATEINFO *pdci);

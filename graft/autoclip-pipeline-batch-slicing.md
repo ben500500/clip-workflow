@@ -22,52 +22,52 @@ generator:
 covers:
   - symbol: _merge_default_autoclip_config
     kind: function
-    at: 'backend/app/api/autoclip.py:L32-L90'
+    at: 'backend/app/api/autoclip.py:L42-L100'
   - symbol: AutoClipRunRequest
     kind: class
-    at: 'backend/app/api/autoclip.py:L94-L96'
+    at: 'backend/app/api/autoclip.py:L104-L106'
   - symbol: AutoClipRunResponse
     kind: class
-    at: 'backend/app/api/autoclip.py:L99-L102'
+    at: 'backend/app/api/autoclip.py:L109-L112'
   - symbol: AutoClipProgressResponse
     kind: class
-    at: 'backend/app/api/autoclip.py:L105-L109'
+    at: 'backend/app/api/autoclip.py:L115-L119'
   - symbol: AutoClipRunResponseItem
     kind: class
-    at: 'backend/app/api/autoclip.py:L112-L126'
+    at: 'backend/app/api/autoclip.py:L122-L136'
   - symbol: ClipUpdateRequest
     kind: class
-    at: 'backend/app/api/autoclip.py:L129-L132'
+    at: 'backend/app/api/autoclip.py:L139-L142'
   - symbol: ClipResponse
     kind: class
-    at: 'backend/app/api/autoclip.py:L135-L154'
+    at: 'backend/app/api/autoclip.py:L145-L164'
   - symbol: _serialize_clip
     kind: function
-    at: 'backend/app/api/autoclip.py:L157-L175'
+    at: 'backend/app/api/autoclip.py:L167-L185'
   - symbol: _serialize_autoclip_run
     kind: function
-    at: 'backend/app/api/autoclip.py:L178-L192'
+    at: 'backend/app/api/autoclip.py:L188-L202'
   - symbol: run_autoclip
     kind: function
-    at: 'backend/app/api/autoclip.py:L196-L314'
+    at: 'backend/app/api/autoclip.py:L206-L341'
   - symbol: get_autoclip_history
     kind: function
-    at: 'backend/app/api/autoclip.py:L318-L344'
+    at: 'backend/app/api/autoclip.py:L345-L371'
   - symbol: get_autoclip_progress
     kind: function
-    at: 'backend/app/api/autoclip.py:L348-L406'
+    at: 'backend/app/api/autoclip.py:L375-L441'
   - symbol: get_autoclip_clips
     kind: function
-    at: 'backend/app/api/autoclip.py:L410-L437'
+    at: 'backend/app/api/autoclip.py:L445-L472'
   - symbol: update_clip
     kind: function
-    at: 'backend/app/api/autoclip.py:L441-L479'
+    at: 'backend/app/api/autoclip.py:L476-L514'
   - symbol: regenerate_autoclip
     kind: function
-    at: 'backend/app/api/autoclip.py:L483-L523'
+    at: 'backend/app/api/autoclip.py:L518-L558'
   - symbol: delete_autoclip_history
     kind: function
-    at: 'backend/app/api/autoclip.py:L526-L563'
+    at: 'backend/app/api/autoclip.py:L561-L666'
   - symbol: BatchEpisodeItem
     kind: class
     at: 'backend/app/api/batch_slice.py:L43-L46'

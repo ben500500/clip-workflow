@@ -111,73 +111,73 @@ covers:
     at: 'autoclip/app/core/llm_providers.py:L84-L91'
   - symbol: DashScopeProvider
     kind: class
-    at: 'autoclip/app/core/llm_providers.py:L93-L252'
+    at: 'autoclip/app/core/llm_providers.py:L93-L259'
   - symbol: __init__
     kind: method
     at: 'autoclip/app/core/llm_providers.py:L96-L110'
   - symbol: call
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L112-L194'
+    at: 'autoclip/app/core/llm_providers.py:L112-L201'
   - symbol: test_connection
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L196-L226'
+    at: 'autoclip/app/core/llm_providers.py:L203-L233'
   - symbol: get_available_models
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L228-L252'
+    at: 'autoclip/app/core/llm_providers.py:L235-L259'
   - symbol: OpenAIProvider
     kind: class
-    at: 'autoclip/app/core/llm_providers.py:L254-L342'
+    at: 'autoclip/app/core/llm_providers.py:L261-L349'
   - symbol: __init__
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L257-L268'
+    at: 'autoclip/app/core/llm_providers.py:L264-L275'
   - symbol: call
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L270-L297'
+    at: 'autoclip/app/core/llm_providers.py:L277-L304'
   - symbol: test_connection
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L299-L316'
+    at: 'autoclip/app/core/llm_providers.py:L306-L323'
   - symbol: get_available_models
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L318-L342'
+    at: 'autoclip/app/core/llm_providers.py:L325-L349'
   - symbol: GeminiProvider
     kind: class
-    at: 'autoclip/app/core/llm_providers.py:L344-L422'
+    at: 'autoclip/app/core/llm_providers.py:L351-L429'
   - symbol: __init__
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L347-L355'
+    at: 'autoclip/app/core/llm_providers.py:L354-L362'
   - symbol: call
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L357-L383'
+    at: 'autoclip/app/core/llm_providers.py:L364-L390'
   - symbol: test_connection
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L385-L396'
+    at: 'autoclip/app/core/llm_providers.py:L392-L403'
   - symbol: get_available_models
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L398-L422'
+    at: 'autoclip/app/core/llm_providers.py:L405-L429'
   - symbol: SiliconFlowProvider
     kind: class
-    at: 'autoclip/app/core/llm_providers.py:L424-L518'
+    at: 'autoclip/app/core/llm_providers.py:L431-L525'
   - symbol: __init__
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L427-L429'
+    at: 'autoclip/app/core/llm_providers.py:L434-L436'
   - symbol: call
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L431-L472'
+    at: 'autoclip/app/core/llm_providers.py:L438-L479'
   - symbol: test_connection
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L474-L485'
+    at: 'autoclip/app/core/llm_providers.py:L481-L492'
   - symbol: get_available_models
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L487-L518'
+    at: 'autoclip/app/core/llm_providers.py:L494-L525'
   - symbol: LLMProviderFactory
     kind: class
-    at: 'autoclip/app/core/llm_providers.py:L520-L551'
+    at: 'autoclip/app/core/llm_providers.py:L527-L558'
   - symbol: create_provider
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L531-L537'
+    at: 'autoclip/app/core/llm_providers.py:L538-L544'
   - symbol: get_all_available_models
     kind: method
-    at: 'autoclip/app/core/llm_providers.py:L540-L551'
+    at: 'autoclip/app/core/llm_providers.py:L547-L558'
   - symbol: OllamaClient
     kind: class
     at: 'autoclip/app/core/ollama_client.py:L32-L142'

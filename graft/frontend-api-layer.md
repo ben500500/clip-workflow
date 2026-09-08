@@ -129,64 +129,76 @@ covers:
     at: 'frontend/src/api/dramas.ts:L154-L156'
   - symbol: listDramas
     kind: function
-    at: 'frontend/src/api/dramas.ts:L158-L167'
+    at: 'frontend/src/api/dramas.ts:L158-L170'
   - symbol: getDrama
     kind: function
-    at: 'frontend/src/api/dramas.ts:L169-L171'
+    at: 'frontend/src/api/dramas.ts:L172-L174'
   - symbol: createDrama
     kind: function
-    at: 'frontend/src/api/dramas.ts:L173-L175'
+    at: 'frontend/src/api/dramas.ts:L176-L178'
   - symbol: updateDrama
     kind: function
-    at: 'frontend/src/api/dramas.ts:L177-L179'
+    at: 'frontend/src/api/dramas.ts:L180-L182'
   - symbol: deleteDrama
     kind: function
-    at: 'frontend/src/api/dramas.ts:L180-L182'
+    at: 'frontend/src/api/dramas.ts:L183-L185'
   - symbol: feishuImportDrama
     kind: function
-    at: 'frontend/src/api/dramas.ts:L185-L194'
+    at: 'frontend/src/api/dramas.ts:L188-L197'
+  - symbol: feishuRosterRows
+    kind: function
+    at: 'frontend/src/api/dramas.ts:L200-L207'
+  - symbol: FeishuRosterSnapshot
+    kind: interface
+    at: 'frontend/src/api/dramas.ts:L210-L213'
+  - symbol: FeishuRosterStatus
+    kind: interface
+    at: 'frontend/src/api/dramas.ts:L215-L229'
+  - symbol: feishuRosterStatus
+    kind: function
+    at: 'frontend/src/api/dramas.ts:L231-L233'
   - symbol: uploadDramaImage
     kind: function
-    at: 'frontend/src/api/dramas.ts:L198-L211'
+    at: 'frontend/src/api/dramas.ts:L237-L250'
   - symbol: addDramaStill
     kind: function
-    at: 'frontend/src/api/dramas.ts:L213-L215'
+    at: 'frontend/src/api/dramas.ts:L252-L254'
   - symbol: deleteDramaStill
     kind: function
-    at: 'frontend/src/api/dramas.ts:L217-L219'
+    at: 'frontend/src/api/dramas.ts:L256-L258'
   - symbol: linkDramaAccounts
     kind: function
-    at: 'frontend/src/api/dramas.ts:L222-L224'
+    at: 'frontend/src/api/dramas.ts:L261-L263'
   - symbol: dramaImportParse
     kind: function
-    at: 'frontend/src/api/dramas.ts:L227-L245'
+    at: 'frontend/src/api/dramas.ts:L266-L284'
   - symbol: dramaImportPreview
     kind: function
-    at: 'frontend/src/api/dramas.ts:L247-L249'
+    at: 'frontend/src/api/dramas.ts:L286-L288'
   - symbol: dramaImportConfirm
     kind: function
-    at: 'frontend/src/api/dramas.ts:L251-L261'
+    at: 'frontend/src/api/dramas.ts:L290-L300'
   - symbol: getDramaPublishContext
     kind: function
-    at: 'frontend/src/api/dramas.ts:L264-L266'
+    at: 'frontend/src/api/dramas.ts:L303-L305'
   - symbol: linkDramaMaterial
     kind: function
-    at: 'frontend/src/api/dramas.ts:L268-L274'
+    at: 'frontend/src/api/dramas.ts:L307-L313'
   - symbol: DramaEpisodeStage
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L279-L286'
+    at: 'frontend/src/api/dramas.ts:L318-L325'
   - symbol: DramaSliceEpisode
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L288-L301'
+    at: 'frontend/src/api/dramas.ts:L327-L340'
   - symbol: DramaSliceStatus
     kind: interface
-    at: 'frontend/src/api/dramas.ts:L303-L312'
+    at: 'frontend/src/api/dramas.ts:L342-L351'
   - symbol: linkDramaEpisodes
     kind: function
-    at: 'frontend/src/api/dramas.ts:L315-L317'
+    at: 'frontend/src/api/dramas.ts:L354-L356'
   - symbol: getDramaSliceStatus
     kind: function
-    at: 'frontend/src/api/dramas.ts:L320-L322'
+    at: 'frontend/src/api/dramas.ts:L359-L361'
   - symbol: ProjectListParams
     kind: interface
     at: 'frontend/src/api/projects.ts:L4-L9'

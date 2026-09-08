@@ -1,0 +1,49 @@
+# slice-worker/nv-codec-headers/include/ffnvcodec/dynlink_cuda.h
+
+- CUdevice · type · L44-L44 — typedef int CUdevice;
+- CUdeviceptr · type · L46-L46 — typedef unsigned long long CUdeviceptr;
+- CUdeviceptr · type · L48-L48 — typedef unsigned int CUdeviceptr;
+- CUtexObject · type · L50-L50 — typedef unsigned long long CUtexObject;
+- cudaError_enum · type · L66-L71 — typedef enum cudaError_enum
+- CUdevice_attribute_enum · type · L76-L98 — typedef enum CUdevice_attribute_enum
+- CUarray_format_enum · type · L100-L109 — typedef enum CUarray_format_enum
+- CUmemorytype_enum · type · L111-L115 — typedef enum CUmemorytype_enum
+- CUlimit_enum · type · L117-L123 — typedef enum CUlimit_enum
+- CUresourcetype_enum · type · L125-L130 — typedef enum CUresourcetype_enum
+- CUaddress_mode_enum · type · L132-L137 — typedef enum CUaddress_mode_enum
+- CUfilter_mode_enum · type · L139-L142 — typedef enum CUfilter_mode_enum
+- CUgraphicsRegisterFlags_enum · type · L144-L150 — typedef enum CUgraphicsRegisterFlags_enum
+- CUexternalMemoryHandleType_enum · type · L152-L158 — typedef enum CUexternalMemoryHandleType_enum
+- CUexternalSemaphoreHandleType_enum · type · L160-L167 — typedef enum CUexternalSemaphoreHandleType_enum
+- CUjit_option_enum · type · L169-L192 — typedef enum CUjit_option_enum
+- CUjitInputType_enum · type · L194-L202 — typedef enum CUjitInputType_enum
+- CUeglFrameType · type · L204-L208 — typedef enum CUeglFrameType
+- CUeglColorFormat · type · L210-L217 — typedef enum CUeglColorFormat
+- CUd3d11DeviceList_enum · type · L219-L224 — typedef enum CUd3d11DeviceList_enum
+- CUuuid_st · class · L228-L230 — typedef struct CUuuid_st
+- CUDA_MEMCPY2D_st · class · L233-L252 — typedef struct CUDA_MEMCPY2D_st
+- CUDA_RESOURCE_DESC_st · class · L254-L282 — typedef struct CUDA_RESOURCE_DESC_st
+- CUDA_TEXTURE_DESC_st · class · L284-L295 — typedef struct CUDA_TEXTURE_DESC_st
+- CUDA_RESOURCE_VIEW_DESC · type · L298-L298 — typedef struct CUDA_RESOURCE_VIEW_DESC_st CUDA_RESOURCE_VIEW_DESC;
+- GLenum · type · L300-L300 — typedef unsigned int GLenum;
+- GLuint · type · L301-L301 — typedef unsigned int GLuint;
+- ffnv_EGLint · type · L306-L306 — typedef int32_t ffnv_EGLint;
+- CUGLDeviceList_enum · type · L309-L313 — typedef enum CUGLDeviceList_enum
+- CUDA_EXTERNAL_MEMORY_HANDLE_DESC_st · class · L315-L327 — typedef struct CUDA_EXTERNAL_MEMORY_HANDLE_DESC_st
+- CUDA_EXTERNAL_MEMORY_BUFFER_DESC_st · class · L329-L334 — typedef struct CUDA_EXTERNAL_MEMORY_BUFFER_DESC_st
+- CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC_st · class · L336-L347 — typedef struct CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC_st
+- CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS_st · class · L349-L358 — typedef struct CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS_st
+- CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS · type · L360-L360 — typedef CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS;
+- CUDA_ARRAY_DESCRIPTOR_st · class · L362-L368 — typedef struct CUDA_ARRAY_DESCRIPTOR_st
+- CUDA_ARRAY3D_DESCRIPTOR_st · class · L370-L378 — typedef struct CUDA_ARRAY3D_DESCRIPTOR_st
+- CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC_st · class · L380-L385 — typedef struct CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC_st
+- CUeglFrame_st · class · L388-L402 — typedef struct CUeglFrame_st
+- CUDAAPI · type · L419-L419 — typedef CUresult CUDAAPI tcuDriverGetVersion(int *driverVersion);
+- CUDAAPI · type · L420-L420 — typedef CUresult CUDAAPI tcuDeviceGetCount(int *count);
+- CUDAAPI · type · L431-L431 — typedef CUresult CUDAAPI tcuCtxGetCurrent(CUcontext *pctx);
+- CUDAAPI · type · L434-L434 — typedef CUresult CUDAAPI tcuCtxPopCurrent_v2(CUcontext *pctx);
+- CUDAAPI · type · L453-L453 — typedef CUresult CUDAAPI tcuCtxGetDevice(CUdevice *device);
+- CUDAAPI · type · L510-L510 — typedef CUresult CUDAAPI tcuEGLStreamProducerDisconnect(CUeglStreamConnection* conn);
+- CUDAAPI · type · L511-L511 — typedef CUresult CUDAAPI tcuEGLStreamConsumerDisconnect(CUeglStreamConnection* conn);
+- CUDAAPI · type · L513-L513 — typedef CUresult CUDAAPI tcuEGLStreamProducerReturnFrame(CUeglStreamConnection* conn, CUeglFrame* eglframe, CUstream* pStream);
+- CUDAAPI · type · L515-L515 — typedef CUresult CUDAAPI tcuD3D11GetDevice(CUdevice *device, void *dxgiAdapter);

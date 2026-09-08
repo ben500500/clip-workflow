@@ -30,61 +30,61 @@ covers:
     at: 'frontend/src/pages/BatchSlice.tsx:L42-L45'
   - symbol: BatchSlicePage
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L95-L1273'
+    at: 'frontend/src/pages/BatchSlice.tsx:L95-L1331'
   - symbol: applySlicePreset
     kind: function
     at: 'frontend/src/pages/BatchSlice.tsx:L110-L126'
   - symbol: handleFileUpload
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L222-L239'
+    at: 'frontend/src/pages/BatchSlice.tsx:L222-L253'
   - symbol: buildPayload
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L241-L265'
+    at: 'frontend/src/pages/BatchSlice.tsx:L255-L303'
   - symbol: addTextOverlay
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L267-L272'
+    at: 'frontend/src/pages/BatchSlice.tsx:L305-L310'
   - symbol: updateTextOverlay
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L274-L279'
+    at: 'frontend/src/pages/BatchSlice.tsx:L312-L317'
   - symbol: removeTextOverlay
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L281-L286'
+    at: 'frontend/src/pages/BatchSlice.tsx:L319-L324'
   - symbol: handleRun
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L288-L314'
+    at: 'frontend/src/pages/BatchSlice.tsx:L326-L361'
   - symbol: handleRetry
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L316-L334'
+    at: 'frontend/src/pages/BatchSlice.tsx:L363-L381'
   - symbol: handleCancel
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L336-L354'
+    at: 'frontend/src/pages/BatchSlice.tsx:L383-L401'
   - symbol: showOutputs
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L356-L366'
+    at: 'frontend/src/pages/BatchSlice.tsx:L403-L413'
   - symbol: renderOutputModal
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L368-L426'
+    at: 'frontend/src/pages/BatchSlice.tsx:L415-L473'
   - symbol: handlePreviewOutput
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L429-L437'
+    at: 'frontend/src/pages/BatchSlice.tsx:L476-L484'
   - symbol: openTrimModal
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L440-L449'
+    at: 'frontend/src/pages/BatchSlice.tsx:L487-L496'
   - symbol: handleTrimRangeChange
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L452-L458'
+    at: 'frontend/src/pages/BatchSlice.tsx:L499-L505'
   - symbol: submitTrim
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L461-L483'
+    at: 'frontend/src/pages/BatchSlice.tsx:L508-L530'
   - symbol: renderPreviewModal
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L485-L498'
+    at: 'frontend/src/pages/BatchSlice.tsx:L532-L545'
   - symbol: renderTrimModal
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L500-L553'
+    at: 'frontend/src/pages/BatchSlice.tsx:L547-L600'
   - symbol: formatSize
     kind: function
-    at: 'frontend/src/pages/BatchSlice.tsx:L555-L560'
+    at: 'frontend/src/pages/BatchSlice.tsx:L602-L607'
   - symbol: OperatorForm
     kind: interface
     at: 'frontend/src/pages/ChannelAccounts.tsx:L38-L42'

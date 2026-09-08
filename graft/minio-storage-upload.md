@@ -61,46 +61,46 @@ covers:
     at: 'backend/app/api/upload.py:L61-L65'
   - symbol: MultiUploadResponse
     kind: class
-    at: 'backend/app/api/upload.py:L68-L72'
+    at: 'backend/app/api/upload.py:L68-L74'
   - symbol: _serialize_episode
     kind: function
-    at: 'backend/app/api/upload.py:L75-L89'
+    at: 'backend/app/api/upload.py:L77-L94'
   - symbol: _check_project_access
     kind: function
-    at: 'backend/app/api/upload.py:L92-L100'
+    at: 'backend/app/api/upload.py:L97-L105'
   - symbol: _store_uploaded_file
     kind: function
-    at: 'backend/app/api/upload.py:L103-L150'
+    at: 'backend/app/api/upload.py:L108-L155'
   - symbol: create_upload
     kind: function
-    at: 'backend/app/api/upload.py:L154-L179'
+    at: 'backend/app/api/upload.py:L159-L184'
   - symbol: get_upload_info
     kind: function
-    at: 'backend/app/api/upload.py:L183-L198'
+    at: 'backend/app/api/upload.py:L188-L203'
   - symbol: upload_chunk
     kind: function
-    at: 'backend/app/api/upload.py:L202-L231'
+    at: 'backend/app/api/upload.py:L207-L236'
   - symbol: complete_upload
     kind: function
-    at: 'backend/app/api/upload.py:L235-L269'
+    at: 'backend/app/api/upload.py:L240-L274'
   - symbol: upload_single
     kind: function
-    at: 'backend/app/api/upload.py:L273-L343'
+    at: 'backend/app/api/upload.py:L278-L348'
   - symbol: upload_multi
     kind: function
-    at: 'backend/app/api/upload.py:L347-L510'
+    at: 'backend/app/api/upload.py:L352-L538'
   - symbol: _check_av_sync
     kind: function
-    at: 'backend/app/api/upload.py:L513-L552'
+    at: 'backend/app/api/upload.py:L541-L580'
   - symbol: _run_ffmpeg
     kind: function
-    at: 'backend/app/api/upload.py:L555-L568'
+    at: 'backend/app/api/upload.py:L583-L596'
   - symbol: _ffmpeg_concat
     kind: function
-    at: 'backend/app/api/upload.py:L571-L620'
+    at: 'backend/app/api/upload.py:L599-L648'
   - symbol: cancel_upload
     kind: function
-    at: 'backend/app/api/upload.py:L624-L627'
+    at: 'backend/app/api/upload.py:L652-L655'
 ---
 <!-- context:generated:start -->
 ## Summary

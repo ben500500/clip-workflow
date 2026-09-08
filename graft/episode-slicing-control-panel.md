@@ -27,7 +27,7 @@ covers:
     at: 'frontend/src/pages/EpisodeDetail.tsx:L169-L177'
   - symbol: EpisodeDetail
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L211-L3671'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L211-L3689'
   - symbol: handleCoverUpload
     kind: function
     at: 'frontend/src/pages/EpisodeDetail.tsx:L234-L255'
@@ -39,127 +39,127 @@ covers:
     at: 'frontend/src/pages/EpisodeDetail.tsx:L331-L341'
   - symbol: fetchEpisode
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L489-L509'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L492-L512'
   - symbol: fetchHistories
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L516-L533'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L519-L536'
   - symbol: fetchAutoclipHistory
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L536-L544'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L539-L547'
   - symbol: handleDeleteAutoclipHistory
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L547-L557'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L550-L560'
   - symbol: fetchIntervalHistory
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L560-L568'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L563-L571'
   - symbol: fetchSliceHistory
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L571-L581'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L574-L584'
   - symbol: formatTaskDuration
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L584-L589'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L587-L592'
   - symbol: collectCurrentPresetConfig
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L601-L659'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L604-L663'
   - symbol: applyPreset
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L662-L720'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L666-L725'
   - symbol: handleSelectPreset
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L735-L741'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L740-L746'
   - symbol: collectPersistConfig
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L744-L758'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L749-L763'
   - symbol: applyPersistConfig
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L761-L779'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L766-L784'
   - symbol: handleSavePreset
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L782-L797'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L787-L802'
   - symbol: handleDeletePreset
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L800-L811'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L805-L816'
   - symbol: getCurrentStep
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L880-L891'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L890-L901'
   - symbol: resumeAutoclipPolling
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L894-L934'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L904-L944'
   - symbol: resumeDetectPolling
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L937-L981'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L947-L991'
   - symbol: resumeSlicePolling
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L984-L1045'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L994-L1055'
   - symbol: runAutoClip
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1056-L1105'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1066-L1115'
   - symbol: runDetect
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1108-L1163'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1118-L1173'
   - symbol: pollLatestSliceProgress
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1166-L1213'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1176-L1223'
   - symbol: uploadBadgeFile
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1216-L1237'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1226-L1247'
   - symbol: updateBadge
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1239-L1241'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1249-L1251'
   - symbol: removeBadge
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1243-L1245'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1253-L1255'
   - symbol: uploadSubtitleFile
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1248-L1263'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1258-L1273'
   - symbol: removeSubtitleFile
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1265-L1268'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1275-L1278'
   - symbol: resolveAutoclipConfig
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1271-L1298'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1281-L1308'
   - symbol: oneClickSlice
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1301-L1405'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1311-L1417'
   - symbol: addTextOverlay
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1408-L1413'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1420-L1425'
   - symbol: updateTextOverlay
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1414-L1416'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1426-L1428'
   - symbol: removeTextOverlay
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1417-L1419'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1429-L1431'
   - symbol: applyDefaultTextOverlays
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1425-L1437'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1437-L1449'
   - symbol: exists
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1432-L1433'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1444-L1445'
   - symbol: handleVert2horizToggle
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1438-L1451'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1450-L1463'
   - symbol: buildDedupeConfig
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1454-L1493'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1466-L1505'
   - symbol: runSlice
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1496-L1613'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1508-L1627'
   - symbol: workflowGuide
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1625-L1684'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1639-L1698'
   - symbol: renderProgress
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1687-L1705'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1701-L1719'
   - symbol: renderHistoryTitle
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1708-L1715'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1722-L1729'
   - symbol: renderAutoclipParamsLabel
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1718-L1727'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1732-L1741'
   - symbol: renderAutoclipParams
     kind: function
-    at: 'frontend/src/pages/EpisodeDetail.tsx:L1730-L1750'
+    at: 'frontend/src/pages/EpisodeDetail.tsx:L1744-L1764'
 ---
 <!-- context:generated:start -->
 ## Summary

@@ -2,41 +2,41 @@
 
 - BadgeItem · class · L64-L77 — Pydantic model describing an image badge overlay to stamp onto sliced output videos at a given position.
 - TextOverlayItem · class · L80-L97 — Pydantic model describing a fixed text overlay to stamp onto sliced output videos at a given position.
-- SliceRunRequest · class · L100-L312 — Pydantic request model carrying all slice-run options (engine, watermark, badges, subtitles, masks, vert2horiz, etc.) from the client.
-- SliceRunResponse · class · L315-L320 — Pydantic response model reporting the dispatched slice task id, chosen engine, and whether it fell back to whole-video slicing.
-- SliceTaskResponse · class · L323-L360 — Pydantic response model exposing a slice task's status, progress, output count, and the config actually applied for history display.
-- SliceOutputResponse · class · L363-L375 — Pydantic response model exposing a slice output's metadata and presigned download URL.
-- SliceTaskCallback · class · L378-L388 — Pydantic model for the Worker callback request body reporting task completion, failure, or progress.
-- UserSliceConfigRequest · class · L391-L392 — Pydantic model wrapping a user's persisted slice configuration dict.
-- _serialize_task · function · L400-L429 — Converts a SliceTask ORM row into the API response dict, including the config actually applied for history hover display.
-- _serialize_output · function · L432-L444 — Converts a SliceOutput ORM row plus optional presigned URL into the API response dict.
-- _ffprobe_duration · function · L452-L463 — Probes a local video file's duration in seconds via ffprobe, returning 0.0 on any failure.
-- _resolve_engine · function · L466-L474 — Resolves the effective engine type from the request or config default, rejecting unsupported engine values with a 400.
-- _build_watermark_config · function · L477-L509 — Builds the engine watermark config dict, filling {title}/{date}/{datetime} placeholders and escaping ffmpeg drawtext special characters.
-- _build_vert2horiz_config · function · L512-L544 — Builds the engine vert2horiz nested config dict from flat request params, validating mode and clamping numeric ranges.
-- _build_badges_config · function · L547-L579 — Builds the engine badges JSON array from request badge items, filtering invalid entries and normalizing positions to the seven allowed slots.
-- _build_text_overlays_config · function · L582-L615 — Builds the engine text-overlays JSON array from request items, keeping only entries with text and normalizing positions.
-- _build_remotion_mix_config · function · L618-L680 — def _build_remotion_mix_config(data: SliceRunRequest) -> Optional[dict]
-- _build_subtitle_mask_config · function · L683-L720 — Builds the engine subtitle-mask config dict from request params, resolving preset vs explicit temporal/spatial switches.
-- _build_watermark_mask_config · function · L723-L751 — Builds the engine watermark-mask config dict from request params, handling manual absolute coordinates vs auto-detect ratios.
-- _read_existing_subtitle · function · L764-L798 — Loads an episode's existing subtitle file from MinIO and returns its content and format for reuse.
-- _with_subtitle_options · function · L801-L815 — Merges subtitle styling options (font ratio, spacing, bold, color, border) into the subtitle config dict.
-- _read_uploaded_subtitle · function · L818-L846 — Downloads a user-uploaded subtitle file from MinIO and returns its content and format.
-- _vtt_to_srt · function · L849-L908 — Converts WebVTT subtitle content into SRT format by stripping VTT headers and normalizing cue timestamps.
-- _resolve_source_subtitle_srt · function · L911-L948 — Resolves the source subtitle SRT content by preferring an uploaded file, then existing episode subtitle, then ASR generation.
-- _generate_subtitle_config · function · L951-L965 — Builds the engine subtitle config dict, enabling ASR subtitle burning when requested and attaching the resolved source SRT.
-- _not_detect_task · function · L968-L977 — Returns a sentinel marker indicating a task should not run detection (used for no-cut whole-video slicing).
-- _get_max_concurrent_tasks · function · L980-L996 — Reads the configured maximum concurrent slice tasks from system config, defaulting when unset.
-- _acquire_concurrency_slot · function · L999-L1023 — Acquires a concurrency slot by counting active slice tasks and raising a 429 when the limit is reached.
-- _output_prefix · function · L1026-L1028 — Returns the MinIO object-key prefix for a slice task's outputs.
-- _refresh_episode_status · function · L1031-L1075 — Recomputes an episode's status from its slice tasks' statuses and persists the updated state.
-- _publish_to_worker · function · L1078-L1257 — Publishes a slice task to the worker via Redis stream, building the full payload with all configs and callback token.
-- _subtitle_enabled · function · L1174-L1175 — Predicate checking whether a subtitle config dict has subtitle burning enabled.
-- _dispatch_celery · function · L1260-L1327 — Dispatches a slice task to Celery, building the task payload with all configs and applying the callback token.
-- _dispatch_local · function · L1330-L1643 — async def _dispatch_local( slice_task: SliceTask, episode: Episode, cutlist: str, intervals_content: str, source_file_key: Optional[str], dedupe_config: Optional[dict], video_path: Optional[str], source_bucket: str = "", watermark_config: Optional[dict] = None, encoder: Optional[str] = None, vert2horiz_config: Optional[dict] = None, badges_config: Optional[list] = None, badge_default_width: int = 0, subtitle_config: Optional[dict] = None, text_overlays_config: Optional[list] = None, subtitle_mask_config: Optional[dict] = None, watermark_mask_config: Optional[dict] = None, subtitle_align_mask: bool = True, cover_image_key: Optional[str] = None, output_tier: Optional[str] = None, hook_video_key: Optional[str] = None, hook_video_keys: Optional[List[str]] = None, hook_mix_mode: Optional[str] = None, hook_mix_output_count: Optional[int] = None, priority: Optional[str] = None, ) -> None
-- _finalize · function · L1396-L1408 — def _finalize()
-- _do · function · L1402-L1407 — async def _do() -> None
-- _verify_worker_token · function · L1646-L1656 — Verifies the worker callback token matches the stored token for a task, guarding against unauthorized callbacks.
-- _detect_silence_points · function · L1670-L1714 — def _detect_silence_points(video_path: str) -> dict
-- _nearest_in_window · function · L1717-L1732 — def _nearest_in_window(points: list[float], target: float, window: float, prefer_after: bool) -> Optional[float]
-- refine_clip_boundaries · function · L1735-L1787 — def refine_clip_boundaries( clips: List[ClipCandidate], video_path: str, mode: str = "silence", ) -> int
+- SliceRunRequest · class · L100-L315 — Pydantic request model carrying all slice-run options (engine, watermark, badges, subtitles, masks, vert2horiz, etc.) from the client.
+- SliceRunResponse · class · L318-L323 — Pydantic response model reporting the dispatched slice task id, chosen engine, and whether it fell back to whole-video slicing.
+- SliceTaskResponse · class · L326-L363 — Pydantic response model exposing a slice task's status, progress, output count, and the config actually applied for history display.
+- SliceOutputResponse · class · L366-L378 — Pydantic response model exposing a slice output's metadata and presigned download URL.
+- SliceTaskCallback · class · L381-L391 — Pydantic model for the Worker callback request body reporting task completion, failure, or progress.
+- UserSliceConfigRequest · class · L394-L395 — Pydantic model wrapping a user's persisted slice configuration dict.
+- _serialize_task · function · L403-L432 — Converts a SliceTask ORM row into the API response dict, including the config actually applied for history hover display.
+- _serialize_output · function · L435-L447 — Converts a SliceOutput ORM row plus optional presigned URL into the API response dict.
+- _ffprobe_duration · function · L455-L466 — Probes a local video file's duration in seconds via ffprobe, returning 0.0 on any failure.
+- _resolve_engine · function · L469-L477 — Resolves the effective engine type from the request or config default, rejecting unsupported engine values with a 400.
+- _build_watermark_config · function · L480-L512 — Builds the engine watermark config dict, filling {title}/{date}/{datetime} placeholders and escaping ffmpeg drawtext special characters.
+- _build_vert2horiz_config · function · L515-L547 — Builds the engine vert2horiz nested config dict from flat request params, validating mode and clamping numeric ranges.
+- _build_badges_config · function · L550-L582 — Builds the engine badges JSON array from request badge items, filtering invalid entries and normalizing positions to the seven allowed slots.
+- _build_text_overlays_config · function · L585-L618 — Builds the engine text-overlays JSON array from request items, keeping only entries with text and normalizing positions.
+- _build_remotion_mix_config · function · L621-L683 — def _build_remotion_mix_config(data: SliceRunRequest) -> Optional[dict]
+- _build_subtitle_mask_config · function · L686-L723 — Builds the engine subtitle-mask config dict from request params, resolving preset vs explicit temporal/spatial switches.
+- _build_watermark_mask_config · function · L726-L754 — Builds the engine watermark-mask config dict from request params, handling manual absolute coordinates vs auto-detect ratios.
+- _read_existing_subtitle · function · L767-L801 — Loads an episode's existing subtitle file from MinIO and returns its content and format for reuse.
+- _with_subtitle_options · function · L804-L821 — Merges subtitle styling options (font ratio, spacing, bold, color, border) into the subtitle config dict.
+- _read_uploaded_subtitle · function · L824-L852 — Downloads a user-uploaded subtitle file from MinIO and returns its content and format.
+- _vtt_to_srt · function · L855-L914 — Converts WebVTT subtitle content into SRT format by stripping VTT headers and normalizing cue timestamps.
+- _resolve_source_subtitle_srt · function · L917-L954 — Resolves the source subtitle SRT content by preferring an uploaded file, then existing episode subtitle, then ASR generation.
+- _generate_subtitle_config · function · L957-L971 — Builds the engine subtitle config dict, enabling ASR subtitle burning when requested and attaching the resolved source SRT.
+- _not_detect_task · function · L974-L983 — Returns a sentinel marker indicating a task should not run detection (used for no-cut whole-video slicing).
+- _get_max_concurrent_tasks · function · L986-L1002 — Reads the configured maximum concurrent slice tasks from system config, defaulting when unset.
+- _acquire_concurrency_slot · function · L1005-L1029 — Acquires a concurrency slot by counting active slice tasks and raising a 429 when the limit is reached.
+- _output_prefix · function · L1032-L1034 — Returns the MinIO object-key prefix for a slice task's outputs.
+- _refresh_episode_status · function · L1037-L1095 — Recomputes an episode's status from its slice tasks' statuses and persists the updated state.
+- _publish_to_worker · function · L1098-L1277 — Publishes a slice task to the worker via Redis stream, building the full payload with all configs and callback token.
+- _subtitle_enabled · function · L1194-L1195 — Predicate checking whether a subtitle config dict has subtitle burning enabled.
+- _dispatch_celery · function · L1280-L1347 — Dispatches a slice task to Celery, building the task payload with all configs and applying the callback token.
+- _dispatch_local · function · L1350-L1670 — async def _dispatch_local( slice_task: SliceTask, episode: Episode, cutlist: str, intervals_content: str, source_file_key: Optional[str], dedupe_config: Optional[dict], video_path: Optional[str], source_bucket: str = "", watermark_config: Optional[dict] = None, encoder: Optional[str] = None, vert2horiz_config: Optional[dict] = None, badges_config: Optional[list] = None, badge_default_width: int = 0, subtitle_config: Optional[dict] = None, text_overlays_config: Optional[list] = None, subtitle_mask_config: Optional[dict] = None, watermark_mask_config: Optional[dict] = None, subtitle_align_mask: bool = True, cover_image_key: Optional[str] = None, output_tier: Optional[str] = None, hook_video_key: Optional[str] = None, hook_video_keys: Optional[List[str]] = None, hook_mix_mode: Optional[str] = None, hook_mix_output_count: Optional[int] = None, priority: Optional[str] = None, ) -> None
+- _finalize · function · L1416-L1428 — def _finalize()
+- _do · function · L1422-L1427 — async def _do() -> None
+- _verify_worker_token · function · L1673-L1683 — Verifies the worker callback token matches the stored token for a task, guarding against unauthorized callbacks.
+- _detect_silence_points · function · L1697-L1741 — def _detect_silence_points(video_path: str) -> dict
+- _nearest_in_window · function · L1744-L1759 — def _nearest_in_window(points: list[float], target: float, window: float, prefer_after: bool) -> Optional[float]
+- refine_clip_boundaries · function · L1762-L1814 — def refine_clip_boundaries( clips: List[ClipCandidate], video_path: str, mode: str = "silence", ) -> int

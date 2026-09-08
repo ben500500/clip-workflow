@@ -1,0 +1,21 @@
+# slice-worker/nv-codec-headers/include/ffnvcodec/dynlink_nvcuvid.h
+
+- CUvideotimestamp · type · L54-L54 — typedef long long CUvideotimestamp;
+- cudaVideoState · type · L62-L66 — typedef enum
+- cudaAudioCodec · type · L73-L80 — typedef enum
+- _HEVCTIMECODESET · class · L87-L105 — typedef struct _HEVCTIMECODESET
+- _HEVCSEITIMECODE · class · L112-L116 — typedef struct _HEVCSEITIMECODE
+- _CUSEIMESSAGE · class · L123-L128 — typedef struct _CUSEIMESSAGE
+- CUVIDEOFORMAT · type · L136-L198 — typedef struct
+- CUVIDOPERATINGPOINTINFO · type · L205-L218 — typedef struct
+- _CUVIDSEIMESSAGEINFO · class · L225-L231 — typedef struct _CUVIDSEIMESSAGEINFO
+- CUVIDAV1SEQHDR · type · L238-L242 — typedef struct
+- CUVIDEOFORMATEX · type · L250-L257 — typedef struct
+- CUAUDIOFORMAT · type · L265-L273 — typedef struct
+- CUvideopacketflags · type · L281-L289 — typedef enum
+- _CUVIDSOURCEDATAPACKET · class · L298-L305 — typedef struct _CUVIDSOURCEDATAPACKET
+- _CUVIDSOURCEPARAMS · class · L317-L327 — typedef struct _CUVIDSOURCEPARAMS
+- CUvideosourceformat_flags · type · L336-L338 — typedef enum
+- _CUVIDPARSERDISPINFO · class · L408-L416 — typedef struct _CUVIDPARSERDISPINFO
+- _CUVIDPARSERPARAMS · class · L444-L465 — typedef struct _CUVIDPARSERPARAMS
+- CUDAAPI · type · L472-L472 — typedef CUresult CUDAAPI tcuvidCreateVideoParser(CUvideoparser *pObj, CUVIDPARSERPARAMS *pParams);

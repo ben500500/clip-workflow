@@ -43,13 +43,13 @@ covers:
     at: 'backend/app/database.py:L157-L198'
   - symbol: _apply_compat_migrations
     kind: function
-    at: 'backend/app/database.py:L201-L308'
+    at: 'backend/app/database.py:L201-L312'
   - symbol: close_db
     kind: function
-    at: 'backend/app/database.py:L311-L313'
+    at: 'backend/app/database.py:L315-L317'
   - symbol: _ensure_wechat_download_tables
     kind: function
-    at: 'backend/app/database.py:L315-L327'
+    at: 'backend/app/database.py:L319-L331'
   - symbol: UserRole
     kind: class
     at: 'backend/app/models/user.py:L25-L30'

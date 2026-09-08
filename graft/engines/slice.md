@@ -20,70 +20,70 @@ ffmpeg-based slice engine that cuts source video into clips per a cutlist, appli
 - ffprobe_size · function · L676-L692 — Reads video resolution (width, height) via ffprobe CSV output, returning (0,0) on failure.
 - _fallback_libx264_args · function · L695-L730 — Rewrites a command's hardware encoder (-c:v videotoolbox/nvenc) to software libx264, stripping hardware-only quality options, or returns None if no hardware encoder present.
 - run_ffmpeg · function · L733-L766 — Runs an ffmpeg subprocess, injecting a -threads argument after the executable when not already set so concurrent slices don't oversubscribe the CPU.
-- _encoder_runtime_ok · function · L769-L787 — def _encoder_runtime_ok(enc: str) -> bool
-- detect_best_encoder · function · L790-L832 — Selects the best available video encoder, preferring the caller's choice and falling back to hardware then software encoders.
-- build_encoder_args · function · L835-L842 — Builds the ffmpeg encoder argument list for a given encoder name and thread count.
-- slice_segment · function · L845-L864 — Cuts one segment from the source, using stream copy (-c copy) in fast mode with no filters for 10x+ speed, else re-encoding with the given filter chain.
-- concat_segments · function · L867-L901 — Concatenates sliced segment files into a single output, using stream copy when all parts are copy segments else re-encoding.
-- _is_copy_segment · function · L904-L909 — Determines whether a segment file was produced by stream copy (no re-encode) by inspecting its container/codec.
-- _concat_demuxer · function · L912-L927 — Concatenates segment files using ffmpeg's concat demuxer into a single output file.
-- safe_name · function · L930-L934 — Sanitizes a name into a filesystem-safe string for output filenames.
-- _badge_scale_and_opacity · function · L959-L985 — Computes the scale and opacity ffmpeg filter expressions for a badge overlay based on its config and default width.
-- build_badges_overlay_args · function · L988-L1052 — Builds the full ffmpeg argument list to overlay corner badges onto a video, handling scaling, opacity, and positioning.
-- apply_badges · function · L1055-L1063 — Applies badge overlays to a source video, producing an output file via ffmpeg.
-- _fc_match_sc_font · function · L1137-L1169 — Uses fontconfig to find a Simplified Chinese-capable font path, returning empty string if none found.
-- _extract_sc_face · function · L1172-L1221 — Extracts a Simplified Chinese font face from a TTC collection file into a temporary TTF for drawtext use.
-- _fontconfig_has_cjk_sc · function · L1224-L1239 — Checks whether fontconfig reports any Simplified Chinese-capable font available on the system.
-- _resolve_drawtext_font · function · L1242-L1272 — Resolves a usable font path for drawtext, preferring a Simplified Chinese-capable font and falling back to defaults.
-- _build_text_overlays_filter · function · L1275-L1344 — Builds a drawtext filter chain for a list of text overlay configs (text, position, style, timing).
-- apply_text_overlays · function · L1347-L1364 — Applies text overlays to a source video via ffmpeg, producing an output file.
-- build_watermark_filter · function · L1367-L1411 — Builds a drawtext filter for a dynamic text watermark with configurable style, position, and animation.
-- _watermark_style_exprs · function · L1414-L1460 — Returns the x/y/alpha drawtext expressions for a given watermark style and base y position.
-- css_hex_to_ass · function · L1489-L1509 — Converts a CSS hex color to ASS subtitle color format (&HAABBGGRR), returning default on invalid input.
-- _css_to_drawtext · function · L1512-L1528 — Converts a CSS hex color to a drawtext-compatible color string, returning default on invalid input.
-- _parse_srt_timestamp · function · L1531-L1539 — Parses an SRT timestamp (HH:MM:SS,mmm) into float seconds.
-- _format_srt_timestamp · function · L1542-L1549 — Formats float seconds into an SRT timestamp string (HH:MM:SS,mmm).
-- read_srt · function · L1552-L1629 — Parses an SRT subtitle file into a list of records with start/end times and text, handling multi-line cues and malformed entries.
-- detect_speech_windows · function · L1644-L1715 — Uses ffmpeg silencedetect to find speech (non-silent) time windows in a video, returning (start, end) tuples.
-- _trim_to_speech · function · L1718-L1734 — Trims a segment's start/end to the nearest speech window boundaries so cuts land on speech rather than silence.
-- _filter_and_align_srt · function · L1737-L1765 — Filters SRT records to those overlapping a segment and shifts their times by an offset (and scale) into local clip time.
-- build_clip_subtitle · function · L1768-L1811 — Builds a per-clip SRT file from the source SRT by filtering/aligning records to each segment, optionally trimming to speech windows.
-- burn_subtitle · function · L1816-L1913 — Burns a subtitle SRT into a video via ffmpeg subtitles filter with configurable font, style, color, and margins.
-- _mask_text_clusters · function · L1957-L1966 — Merges adjacent text clusters in a mask into combined bounding boxes.
-- _split_tall_band · function · L1969-L2064 — Splits an overly tall horizontal band into multiple shorter bands to avoid masking non-subtitle content.
-- detect_subtitle_region · function · L2067-L2339 — Detects the subtitle region (bounding boxes) in a video by analyzing frame differences, optionally guided by an SRT.
-- _low_percentile · function · L2362-L2375 — Computes a low percentile value from a list of floats.
-- _bimodal_threshold · function · L2378-L2419 — Finds a threshold separating two modes in a value distribution (bimodal analysis) for distinguishing content from background.
-- detect_watermark_region · function · L2422-L2557 — Detects persistent watermark regions in a video by sampling frames and finding static high-contrast areas.
-- detect_subtitle_temporal_windows · function · L2560-L2686 — Detects time windows where subtitles appear within a region by analyzing frame changes over time.
-- detect_subtitle_spatial_regions · function · L2698-L2785 — Detects spatial subtitle regions within a given region during the detected temporal windows.
-- detect_subtitle_dynamic_regions · function · L2800-L2945 — Detects dynamic subtitle regions (moving/animating subtitles) by correlating video frames with SRT timing.
-- _parse_subtitle_mask_config · function · L2948-L2958 — Parses a raw subtitle mask config string into a dict, returning None for empty/invalid input.
-- _source_intervals_to_local_intervals · function · L2961-L2988 — Converts source-timeline intervals to local clip intervals by subtracting segment start and applying scale.
-- _scale_region · function · L2991-L3006 — Scales a region's coordinates by the configured scale factor relative to the video dimensions.
-- _mask_enable_expr · function · L3009-L3012 — Builds an ffmpeg enable expression from a list of local time intervals.
-- _source_intervals_to_local_enable · function · L3015-L3046 — Converts source intervals to a local enable expression for masking within a segment.
-- _spatial_windows_to_local · function · L3049-L3090 — Converts source spatial subtitle windows to local clip coordinates, applying scale and segment offsets.
-- _dynamic_windows_to_local · function · L3093-L3140 — Converts source dynamic subtitle windows to local clip coordinates with scaling and segment offsets.
-- build_subtitle_mask_enable · function · L3143-L3162 — Builds the ffmpeg enable expression for subtitle masking from the source SRT and segment times.
-- _subtitle_mask_area · function · L3165-L3212 — Computes the subtitle mask area rectangle from config and video dimensions.
-- _f · function · L3176-L3183 — Helper that reads a config key with a default value.
-- subtitle_mask_bottom_margin · function · L3215-L3275 — Computes the bottom margin (in pixels) to reserve for the subtitle mask area based on config and dimensions.
-- _merge_regions · function · L3278-L3304 — Merges nearby region rectangles into combined regions when separated by less than a gap.
-- _scale_regions · function · L3307-L3324 — Scales a list of region rectangles by the configured scale factor relative to video dimensions.
-- build_subtitle_mask_filter · function · L3327-L3380 — Builds a single-region subtitle mask filter (boxblur/drawbox) with an enable expression.
-- build_subtitle_mask_filter_multi · function · L3383-L3466 — Builds a multi-window subtitle mask filter chain for a fixed y/h band across multiple time windows.
-- _clip · function · L3402-L3405 — Clips an x coordinate to stay within the frame width.
-- build_subtitle_mask_filter_multi_region · function · L3469-L3553 — Builds a subtitle mask filter chain for multiple spatial regions with an enable expression.
-- _clip · function · L3489-L3496 — Clips a rectangle to stay within the frame bounds.
-- build_subtitle_mask_filter_multi_region_windows · function · L3556-L3642 — Builds a subtitle mask filter chain for multiple regions each with their own time windows.
-- _enable · function · L3572-L3576 — Builds an enable expression from a list of time windows.
-- build_subtitle_mask_filter_dynamic · function · L3645-L3724 — Builds a subtitle mask filter chain for dynamic (moving) subtitle windows.
-- apply_subtitle_mask · function · L3727-L3832 — Applies the subtitle mask filter to a video via ffmpeg, producing an output file with subtitles blurred/masked.
-- _video_has_audio · function · L3835-L3846 — Probes whether a video file contains an audio stream, used to decide whether audio processing is needed.
-- apply_cover_first_frame · function · L3849-L3941 — Re-encodes a clip so its first frame is replaced by a cover image, ensuring the output's opening frame matches the requested cover.
-- _fps_value · function · L3958-L3966 — def _fps_value(fps: str) -> float
-- build_output_tier_filter · function · L3969-L4002 — def build_output_tier_filter(tier: str, width: int, height: int, fps: str) -> str
-- main · function · L4005-L4764 — CLI entry point that parses arguments, reads the cutlist/intervals, dispatches to fast/dedupe/scrub slicing modes, and prints OUTPUT and PROGRESS lines.
-- parse_vert2horiz_config · function · L4767-L4777 — Parses a raw vertical-to-horizontal config string into a dict, returning None for empty/invalid input.
-- apply_vert2horiz · function · L4780-L4839 — Applies vertical-to-horizontal conversion to a source video using the vert2horiz_crop engine, returning the output path.
+- _encoder_runtime_ok · function · L769-L790 — def _encoder_runtime_ok(enc: str) -> bool
+- detect_best_encoder · function · L793-L835 — Selects the best available video encoder, preferring the caller's choice and falling back to hardware then software encoders.
+- build_encoder_args · function · L838-L845 — Builds the ffmpeg encoder argument list for a given encoder name and thread count.
+- slice_segment · function · L848-L867 — Cuts one segment from the source, using stream copy (-c copy) in fast mode with no filters for 10x+ speed, else re-encoding with the given filter chain.
+- concat_segments · function · L870-L904 — Concatenates sliced segment files into a single output, using stream copy when all parts are copy segments else re-encoding.
+- _is_copy_segment · function · L907-L912 — Determines whether a segment file was produced by stream copy (no re-encode) by inspecting its container/codec.
+- _concat_demuxer · function · L915-L930 — Concatenates segment files using ffmpeg's concat demuxer into a single output file.
+- safe_name · function · L933-L937 — Sanitizes a name into a filesystem-safe string for output filenames.
+- _badge_scale_and_opacity · function · L962-L988 — Computes the scale and opacity ffmpeg filter expressions for a badge overlay based on its config and default width.
+- build_badges_overlay_args · function · L991-L1055 — Builds the full ffmpeg argument list to overlay corner badges onto a video, handling scaling, opacity, and positioning.
+- apply_badges · function · L1058-L1066 — Applies badge overlays to a source video, producing an output file via ffmpeg.
+- _fc_match_sc_font · function · L1140-L1172 — Uses fontconfig to find a Simplified Chinese-capable font path, returning empty string if none found.
+- _extract_sc_face · function · L1175-L1224 — Extracts a Simplified Chinese font face from a TTC collection file into a temporary TTF for drawtext use.
+- _fontconfig_has_cjk_sc · function · L1227-L1242 — Checks whether fontconfig reports any Simplified Chinese-capable font available on the system.
+- _resolve_drawtext_font · function · L1245-L1275 — Resolves a usable font path for drawtext, preferring a Simplified Chinese-capable font and falling back to defaults.
+- _build_text_overlays_filter · function · L1278-L1347 — Builds a drawtext filter chain for a list of text overlay configs (text, position, style, timing).
+- apply_text_overlays · function · L1350-L1367 — Applies text overlays to a source video via ffmpeg, producing an output file.
+- build_watermark_filter · function · L1370-L1414 — Builds a drawtext filter for a dynamic text watermark with configurable style, position, and animation.
+- _watermark_style_exprs · function · L1417-L1463 — Returns the x/y/alpha drawtext expressions for a given watermark style and base y position.
+- css_hex_to_ass · function · L1493-L1513 — Converts a CSS hex color to ASS subtitle color format (&HAABBGGRR), returning default on invalid input.
+- _css_to_drawtext · function · L1516-L1532 — Converts a CSS hex color to a drawtext-compatible color string, returning default on invalid input.
+- _parse_srt_timestamp · function · L1535-L1543 — Parses an SRT timestamp (HH:MM:SS,mmm) into float seconds.
+- _format_srt_timestamp · function · L1546-L1553 — Formats float seconds into an SRT timestamp string (HH:MM:SS,mmm).
+- read_srt · function · L1556-L1633 — Parses an SRT subtitle file into a list of records with start/end times and text, handling multi-line cues and malformed entries.
+- detect_speech_windows · function · L1648-L1719 — Uses ffmpeg silencedetect to find speech (non-silent) time windows in a video, returning (start, end) tuples.
+- _trim_to_speech · function · L1722-L1738 — Trims a segment's start/end to the nearest speech window boundaries so cuts land on speech rather than silence.
+- _filter_and_align_srt · function · L1741-L1769 — Filters SRT records to those overlapping a segment and shifts their times by an offset (and scale) into local clip time.
+- build_clip_subtitle · function · L1772-L1815 — Builds a per-clip SRT file from the source SRT by filtering/aligning records to each segment, optionally trimming to speech windows.
+- burn_subtitle · function · L1820-L1926 — Burns a subtitle SRT into a video via ffmpeg subtitles filter with configurable font, style, color, and margins.
+- _mask_text_clusters · function · L1970-L1979 — Merges adjacent text clusters in a mask into combined bounding boxes.
+- _split_tall_band · function · L1982-L2077 — Splits an overly tall horizontal band into multiple shorter bands to avoid masking non-subtitle content.
+- detect_subtitle_region · function · L2080-L2352 — Detects the subtitle region (bounding boxes) in a video by analyzing frame differences, optionally guided by an SRT.
+- _low_percentile · function · L2375-L2388 — Computes a low percentile value from a list of floats.
+- _bimodal_threshold · function · L2391-L2432 — Finds a threshold separating two modes in a value distribution (bimodal analysis) for distinguishing content from background.
+- detect_watermark_region · function · L2435-L2570 — Detects persistent watermark regions in a video by sampling frames and finding static high-contrast areas.
+- detect_subtitle_temporal_windows · function · L2573-L2699 — Detects time windows where subtitles appear within a region by analyzing frame changes over time.
+- detect_subtitle_spatial_regions · function · L2711-L2798 — Detects spatial subtitle regions within a given region during the detected temporal windows.
+- detect_subtitle_dynamic_regions · function · L2813-L2958 — Detects dynamic subtitle regions (moving/animating subtitles) by correlating video frames with SRT timing.
+- _parse_subtitle_mask_config · function · L2961-L2971 — Parses a raw subtitle mask config string into a dict, returning None for empty/invalid input.
+- _source_intervals_to_local_intervals · function · L2974-L3001 — Converts source-timeline intervals to local clip intervals by subtracting segment start and applying scale.
+- _scale_region · function · L3004-L3019 — Scales a region's coordinates by the configured scale factor relative to the video dimensions.
+- _mask_enable_expr · function · L3022-L3025 — Builds an ffmpeg enable expression from a list of local time intervals.
+- _source_intervals_to_local_enable · function · L3028-L3059 — Converts source intervals to a local enable expression for masking within a segment.
+- _spatial_windows_to_local · function · L3062-L3103 — Converts source spatial subtitle windows to local clip coordinates, applying scale and segment offsets.
+- _dynamic_windows_to_local · function · L3106-L3153 — Converts source dynamic subtitle windows to local clip coordinates with scaling and segment offsets.
+- build_subtitle_mask_enable · function · L3156-L3175 — Builds the ffmpeg enable expression for subtitle masking from the source SRT and segment times.
+- _subtitle_mask_area · function · L3178-L3225 — Computes the subtitle mask area rectangle from config and video dimensions.
+- _f · function · L3189-L3196 — Helper that reads a config key with a default value.
+- subtitle_mask_bottom_margin · function · L3228-L3288 — Computes the bottom margin (in pixels) to reserve for the subtitle mask area based on config and dimensions.
+- _merge_regions · function · L3291-L3317 — Merges nearby region rectangles into combined regions when separated by less than a gap.
+- _scale_regions · function · L3320-L3337 — Scales a list of region rectangles by the configured scale factor relative to video dimensions.
+- build_subtitle_mask_filter · function · L3340-L3393 — Builds a single-region subtitle mask filter (boxblur/drawbox) with an enable expression.
+- build_subtitle_mask_filter_multi · function · L3396-L3479 — Builds a multi-window subtitle mask filter chain for a fixed y/h band across multiple time windows.
+- _clip · function · L3415-L3418 — Clips an x coordinate to stay within the frame width.
+- build_subtitle_mask_filter_multi_region · function · L3482-L3566 — Builds a subtitle mask filter chain for multiple spatial regions with an enable expression.
+- _clip · function · L3502-L3509 — Clips a rectangle to stay within the frame bounds.
+- build_subtitle_mask_filter_multi_region_windows · function · L3569-L3655 — Builds a subtitle mask filter chain for multiple regions each with their own time windows.
+- _enable · function · L3585-L3589 — Builds an enable expression from a list of time windows.
+- build_subtitle_mask_filter_dynamic · function · L3658-L3737 — Builds a subtitle mask filter chain for dynamic (moving) subtitle windows.
+- apply_subtitle_mask · function · L3740-L3845 — Applies the subtitle mask filter to a video via ffmpeg, producing an output file with subtitles blurred/masked.
+- _video_has_audio · function · L3848-L3859 — Probes whether a video file contains an audio stream, used to decide whether audio processing is needed.
+- apply_cover_first_frame · function · L3862-L3954 — Re-encodes a clip so its first frame is replaced by a cover image, ensuring the output's opening frame matches the requested cover.
+- _fps_value · function · L3971-L3979 — def _fps_value(fps: str) -> float
+- build_output_tier_filter · function · L3982-L4015 — def build_output_tier_filter(tier: str, width: int, height: int, fps: str) -> str
+- main · function · L4018-L4788 — CLI entry point that parses arguments, reads the cutlist/intervals, dispatches to fast/dedupe/scrub slicing modes, and prints OUTPUT and PROGRESS lines.
+- parse_vert2horiz_config · function · L4791-L4801 — Parses a raw vertical-to-horizontal config string into a dict, returning None for empty/invalid input.
+- apply_vert2horiz · function · L4804-L4863 — Applies vertical-to-horizontal conversion to a source video using the vert2horiz_crop engine, returning the output path.
