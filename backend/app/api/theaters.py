@@ -5,7 +5,8 @@
 - 剧目直接挂剧场（dramas.theater_id）、视频号挂剧场（channel_accounts / video_accounts 的 theater_id）；
 - 按剧场筛选（剧目库、视频号列表）。
 
-数据隔离：沿用 `user_can_access_all_materials` RBAC（operator 仅见自己创建的剧场）。
+数据隔离：读接口（列表/详情）全员可见；写操作（新增/更新/删除）沿用
+`user_can_access_all_materials` RBAC（operator 仅可操作自己创建的剧场）。
 """
 import uuid
 from typing import Annotated, List, Optional
@@ -73,12 +74,6 @@ def _parse_uuid(value: Optional[str], field: str):
         raise HTTPException(status_code=400, detail=f"Invalid {field} format")
 
 
-def _apply_rbac_filter(current_user: User):
-    if current_user and not user_can_access_all_materials(current_user):
-        return (Theater.operator_id == current_user.id) | (Theater.created_by == current_user.id)
-    return None
-
-
 # ---------- CRUD ----------
 
 @router.get("/theaters", response_model=List[TheaterResponse])
@@ -87,15 +82,12 @@ async def list_theaters(
     db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
-    """剧场列表（可按名称关键字搜索；RBAC 数据隔离）。"""
+    """剧场列表（可按名称关键字搜索）。读接口全员可见，不做 RBAC 过滤。"""
     query = select(Theater)
     filters = []
     if keyword:
         kw = f"%{keyword}%"
         filters.append(Theater.name.ilike(kw))
-    rbac = _apply_rbac_filter(current_user)
-    if rbac is not None:
-        filters.append(rbac)
     if filters:
         query = query.where(*filters)
     query = query.order_by(Theater.created_at.desc())
