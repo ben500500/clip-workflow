@@ -47,7 +47,7 @@
 7. **`backend/app/api/shortdrama.py:419-475` — 提示词记录无归属隔离**。模型无 `created_by`，任何用户可遍历/删除他人提示词及成片。建议补 `created_by` 并按数据范围过滤。
 8. **`backend/app/api/publish_tasks.py:120-134,404-441` — 发布任务创建不校验 output 归属、列表无分页**。operator 可借他人 `output_id` 创建发布任务。建议按 output→task→episode→project 链路校验访问权。
 9. **`backend/app/api/projects.py:630,692,729,762`、`api/preview.py:55` — 孤儿记录跳过数据隔离**。`if proj and not _check_project_access(...)` 在项目已删而 episode/output 残留时短路放行。建议 proj 为空直接 404。
-10. **`backend/app/api/dramas.py:439`、`api/theaters.py:130` — `operator_id` 由客户端指定可伪造归属**。operator 可把剧目/剧场归属到他人名下；导入自动建剧场（dramas.py:786-808）也绕过剧场写权限。建议服务端强制 `operator_id = current_user.id`（仅 admin 可代指）。
+10. **`backend/app/api/dramas.py:439`、`api/theaters.py:130` — `operator_id` 由客户端指定可伪造归属**。operator 可把剧目/剧场归属到他人名下（导入自动建剧场 dramas.py:786-808 经复核已正确绑定 `current_user.id`，无此问题，故不列入）。建议服务端强制 `operator_id = current_user.id`（仅 admin 可代指）。
 11. **`backend/app/api/dashboard.py:478,490,502,583,595,604` — 看板指标导入类写接口无角色限制**。任何角色可导入/覆盖全量营收与跑量指标。建议限 admin/publisher。
 12. **`backend/app/api/publish_login_qr.py:243-267` — 扫码回调可伪造登录态**。不校验当前账号是否 logging 状态与回调者身份，任意用户可对任意 account_id 直接置 ready。建议校验 Redis login_state 与 claim 的 operator 一致。
 13. **`backend/app/api/shortdrama.py:970-990` — 任意用户可清除全局共享豆包登录态**（672-701 全局模板同理可改）。建议此类全局资源操作限 admin。
