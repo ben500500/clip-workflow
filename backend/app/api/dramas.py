@@ -256,21 +256,6 @@ def _can_manage(d: Drama, current_user: User) -> bool:
     return True
 
 
-def _apply_rbac_filter(current_user: User):
-    """列表 RBAC 过滤：operator 可见 自己名下 + 自己创建 + 无号主(公共) 的剧目。
-
-    与 _can_manage 语义对齐（operator_id IS NULL 视为无主公共剧目），
-    否则 operator 名下无剧目时列表为空，而详情/管理接口却按公共放行。
-    """
-    if current_user and not user_can_access_all_materials(current_user):
-        return (
-            (Drama.operator_id == current_user.id)
-            | (Drama.operator_id.is_(None))
-            | (Drama.created_by == current_user.id)
-        )
-    return None
-
-
 async def _sync_drama_theaters(db: AsyncSession, drama: Drama, theater_ids: Optional[List]):
     """同步剧目关联剧场（一剧多剧场，ISSUE #142）。
 
@@ -390,10 +375,6 @@ async def list_dramas(
         # 一剧多剧场：按关联表过滤（含老数据回填后的 theater_id）
         theater_join = (DramaTheater.drama_id == Drama.id) & (DramaTheater.theater_id == tid)
 
-    rbac = _apply_rbac_filter(current_user)
-    if rbac is not None:
-        filters.append(rbac)
-
     query = select(Drama)
     if theater_join is not None:
         query = query.join(DramaTheater, theater_join)
@@ -486,10 +467,8 @@ async def get_drama(
     db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
-    """剧目详情（含剧照、关联视频号）。"""
+    """剧目详情（含剧照、关联视频号）。剧目库读接口全员可见，不做 RBAC 过滤。"""
     d = await _resolve_drama(db, drama_id)
-    if not _can_manage(d, current_user):
-        raise HTTPException(status_code=403, detail="No permission to view this drama")
     return await _serialize_drama_detail(d)
 
 
