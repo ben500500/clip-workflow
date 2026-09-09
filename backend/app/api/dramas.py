@@ -22,7 +22,7 @@ from pydantic import BaseModel
 import logging
 from datetime import date
 logger = logging.getLogger(__name__)
-from sqlalchemy import select, and_, func, cast, Date
+from sqlalchemy import select, and_, func, cast, Date, case
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
