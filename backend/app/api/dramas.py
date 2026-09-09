@@ -388,14 +388,16 @@ async def list_dramas(
         )
     if filters:
         query = query.where(and_(*filters))
-    # 排序：待上线优先，其次按上线时间倒序
+    # 排序：待上线优先，其余按上线时间倒序（listed_at 为空的排同组最后）
     _status_order = case(
-        ("待上线", 1),
-        ("审核中", 2),
-        ("已上架", 3),
+        (Drama.listing_status == "待上线", 1),
+        (Drama.listing_status == "审核中", 2),
+        (Drama.listing_status == "已上架", 3),
         else_=4,
     )
-    query = query.options(_load_drama_theaters()).order_by(_status_order, Drama.listed_at.desc())
+    query = query.options(_load_drama_theaters()).order_by(
+        _status_order.asc(), Drama.listed_at.desc().nullslast(), Drama.updated_at.desc()
+    )
     result = await db.execute(query)
     dramas = result.unique().scalars().all()
     return [await _serialize_drama(d) for d in dramas]
