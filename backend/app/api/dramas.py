@@ -973,11 +973,19 @@ async def drama_import_parse(
     col_account = _find("上架账号")
     col_theater = _find("剧场")
 
+    # 「审核失败/暂无法上线」的剧不导入剧目库（与飞书同步口径一致）
+    _EXCLUDED_STATUSES = {"审核失败", "暂无法上线"}
+
     rows = []
+    skipped_status = 0
     for _, row in df.iterrows():
         name = _norm(row.get(col_name, "")) if col_name else ""
         if not name:
             continue  # 跳过空行
+        row_status = _norm(row.get(col_status, "")) if col_status else ""
+        if row_status in _EXCLUDED_STATUSES:
+            skipped_status += 1
+            continue
         tags_raw = _norm(row.get(col_tags, "")) if col_tags else ""
         tags = [t for t in [x.strip() for x in tags_raw.replace(";", "/").replace("，", "/").split("/")] if t] if tags_raw else None
         rows.append({
@@ -987,7 +995,7 @@ async def drama_import_parse(
             "tags": tags,
             "rating": _norm(row.get(col_rating, "")) if col_rating else None,
             "synopsis": _norm(row.get(col_synopsis, "")) if col_synopsis else None,
-            "listing_status": _norm(row.get(col_status, "")) if col_status else "已上架",
+            "listing_status": row_status or "已上架",
             "updated_date": _norm(row.get(col_update, "")) if col_update else None,
             "listed_at": _norm(row.get(col_listed, "")) if col_listed else None,
             "material_link": _norm(row.get(col_link, "")) if col_link else None,
@@ -999,7 +1007,8 @@ async def drama_import_parse(
     if not rows:
         raise HTTPException(status_code=400, detail="未识别到有效数据行（缺少「漫剧名称」列或全为空行）")
 
-    return {"rows": rows, "total": len(rows), "file_name": safe_name, "message": f"解析到 {len(rows)} 条剧目"}
+    skip_note = f"；已跳过 {skipped_status} 条审核失败/暂无法上线的剧" if skipped_status else ""
+    return {"rows": rows, "total": len(rows), "file_name": safe_name, "message": f"解析到 {len(rows)} 条剧目{skip_note}"}
 
 
 @router.post("/dramas/import/confirm", response_model=dict)
@@ -1206,6 +1215,7 @@ async def drama_import_feishu(
 @router.post("/dramas/import/feishu-roster", response_model=dict)
 async def drama_import_feishu_roster(
     data: Optional[FeishuImportRequest] = None,
+    db: AsyncSession = Depends(get_db),
     current_user: Annotated[User, Depends(get_current_user)] = None,
 ):
     """平阅剧单同步：拉取飞书表格 6 个 Sheet 并合并解析为导入行（不落库）。
@@ -1213,22 +1223,39 @@ async def drama_import_feishu_roster(
     - 默认读取平阅剧单 wiki 表格（可传 url 覆盖）；
     - 跨 Sheet 以剧名为唯一键去重（先出现优先）；
     - 剧场状态取最高（已上线→已上架 > 待上线 > 审核中）；
+    - 各配置剧场全部为「审核失败/暂无法上线」的剧：自动从剧目库移除；
     - 返回与 /dramas/import/parse 相同的 rows 结构，前端复用导入预览/确认流程。
     """
     from app.services.feishu_service import fetch_pingyue_roster
     url = data.url if data else None
     try:
-        rows, err, note = await fetch_pingyue_roster(url)
+        rows, err, note, excluded = await fetch_pingyue_roster(url)
     except Exception as e:
         logger.error("平阅剧单拉取失败: %s", e, exc_info=True)
         raise HTTPException(status_code=502, detail=f"飞书拉取异常: {e}")
     if err:
         raise HTTPException(status_code=400, detail=err)
+
+    # 全剧场「审核失败/暂无法上线」的剧从剧目库移除（关联表 CASCADE / 置空）
+    removed = 0
+    if excluded:
+        try:
+            from sqlalchemy import delete as _delete
+            res = await db.execute(_delete(Drama).where(Drama.name.in_(list(excluded))))
+            await db.commit()
+            removed = res.rowcount or 0
+            if removed:
+                logger.info("平阅剧单同步移除 %d 部全剧场无效剧目: %s", removed, "、".join(sorted(excluded)))
+        except Exception as e:
+            await db.rollback()
+            logger.error("移除全剧场无效剧目失败: %s", e, exc_info=True)
+
+    remove_note = f"；已移除 {removed} 部审核失败/暂无法上线的剧" if removed else ""
     return {
         "rows": rows,
         "total": len(rows),
         "file_name": "平阅剧单(飞书同步)",
-        "message": f"从飞书拉取到 {len(rows)} 条剧目{note}",
+        "message": f"从飞书拉取到 {len(rows)} 条剧目{note}{remove_note}",
     }
 
 
