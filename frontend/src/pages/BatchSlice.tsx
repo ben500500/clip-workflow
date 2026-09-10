@@ -15,7 +15,7 @@ import Dragger from 'antd/es/upload/Dragger';
 import { batchSliceApi, BatchSlice, BatchSliceItem, BatchSliceOutputItem } from '../api/batchSlice';
 import { sliceApi, type TextOverlayItem } from '../api/slice';
 import { formatDuration } from '../utils/format';
-import { loadCustomPresets, buildBatchSlicePayload, DEFAULT_SLICE_PRESET, type SlicePreset } from '../utils/slicePresets';
+import { loadCustomPresets, buildBatchSlicePayload, DEFAULT_SLICE_PRESET, VERT2HORIZON_OUTPUT_SIZES, type SlicePreset } from '../utils/slicePresets';
 import { useDedupePresets } from '../hooks/useDedupePresets';
 
 const { Text, Title } = Typography;
@@ -855,8 +855,8 @@ const BatchSlicePage: React.FC = () => {
                 <Select
                   value={sliceConfig.vert2horiz_output_size}
                   onChange={(v) => setSliceConfig({ ...sliceConfig, vert2horiz_output_size: v })}
-                  style={{ width: 110 }}
-                  options={['1280x720', '1920x1080'].map((s) => ({ value: s, label: s }))}
+                  style={{ width: 180 }}
+                  options={VERT2HORIZON_OUTPUT_SIZES}
                 />
               </>
             )}

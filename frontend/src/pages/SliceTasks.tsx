@@ -14,6 +14,7 @@ import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStat
 import { buildSliceConfigTooltip } from '../utils/sliceConfigTooltip';
 import { WATERMARK_STYLE_OPTIONS, WATERMARK_STYLE_LABEL } from '../utils/watermarkStyles';
 import { useDedupePresets } from '../hooks/useDedupePresets';
+import { VERT2HORIZON_OUTPUT_SIZES } from '../utils/slicePresets';
 
 const { Title, Text } = Typography;
 
@@ -728,12 +729,12 @@ const SUBTITLE_MASK_PRESETS = [
               </Space>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 13 }}>输出分辨率</Text>
-                <Input
+                <Select
                   size="small"
-                  style={{ width: 130 }}
+                  style={{ width: 180 }}
                   value={vert2horizOutputSize}
-                  onChange={(e) => setVert2horizOutputSize(e.target.value)}
-                  placeholder="1280x720"
+                  onChange={setVert2horizOutputSize}
+                  options={VERT2HORIZON_OUTPUT_SIZES}
                 />
                 <Text strong style={{ fontSize: 13 }}>裁切比例</Text>
                 <InputNumber

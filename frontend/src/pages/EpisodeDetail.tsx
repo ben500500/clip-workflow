@@ -21,7 +21,7 @@ import type { AutoClipRunRecord, Episode, IntervalHistoryItem, SliceTask } from 
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 import { buildSliceConfigTooltip } from '../utils/sliceConfigTooltip';
 import { WATERMARK_STYLE_OPTIONS, WATERMARK_STYLE_LABEL } from '../utils/watermarkStyles';
-import { DEFAULT_SLICE_PRESET, SLICE_ACTIVE_PRESET_KEY, SLICE_PRESET_STORAGE_KEY, loadPresetList, persistPresets, type SlicePreset } from '../utils/slicePresets';
+import { DEFAULT_SLICE_PRESET, SLICE_ACTIVE_PRESET_KEY, SLICE_PRESET_STORAGE_KEY, VERT2HORIZON_OUTPUT_SIZES, loadPresetList, persistPresets, type SlicePreset } from '../utils/slicePresets';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -2305,12 +2305,12 @@ const EpisodeDetail: React.FC = () => {
               </Space>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 13 }}>输出分辨率</Text>
-                <Input
+                <Select
                   size="small"
-                  style={{ width: 140 }}
+                  style={{ width: 180 }}
                   value={vert2horizOutputSize}
-                  onChange={(e) => setVert2horizOutputSize(e.target.value)}
-                  placeholder="1280x720"
+                  onChange={setVert2horizOutputSize}
+                  options={VERT2HORIZON_OUTPUT_SIZES}
                 />
                 <Text strong style={{ fontSize: 13 }}>裁切比例</Text>
                 <InputNumber
@@ -3467,7 +3467,7 @@ const EpisodeDetail: React.FC = () => {
                   { value: 'dynamic', label: '动态跟踪（准）' },
                 ]} />
                 <Text style={{ fontSize: 12 }}>分辨率</Text>
-                <Input size="small" style={{ width: 90 }} value={vert2horizOutputSize} onChange={(e) => setVert2horizOutputSize(e.target.value)} />
+                <Select size="small" style={{ width: 180 }} value={vert2horizOutputSize} onChange={setVert2horizOutputSize} options={VERT2HORIZON_OUTPUT_SIZES} />
                 <Text style={{ fontSize: 12 }}>裁切比例</Text>
                 <InputNumber size="small" min={0.1} max={1} step={0.05} value={vert2horizRatio} onChange={(v) => setVert2horizRatio(v ?? 0.5625)} style={{ width: 80 }} />
                 {vert2horizMode === 'dynamic' && (

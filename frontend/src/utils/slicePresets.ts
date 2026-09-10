@@ -12,6 +12,15 @@ import type { TextOverlayItem } from '../api/slice';
 export const SLICE_PRESET_STORAGE_KEY = 'slice_presets_v1';
 export const SLICE_ACTIVE_PRESET_KEY = 'slice_active_preset';
 
+// ─── 竖屏转横屏：横屏输出分辨率档位（三页面共用；默认 720P） ───
+export const VERT2HORIZON_OUTPUT_SIZES: { value: string; label: string }[] = [
+  { value: '1280x720', label: '1280x720（720P，默认）' },
+  { value: '1920x1080', label: '1920x1080（1080P）' },
+  { value: '2560x1440', label: '2560x1440（2K）' },
+  { value: '960x540', label: '960x540（540P，流畅）' },
+];
+export const VERT2HORIZON_DEFAULT_OUTPUT_SIZE = '1280x720';
+
 // ─── 单一模型（取 EpisodeDetail 全集，为三页面唯一类型；字段与后端 SlicePreset 语义对齐） ───
 export interface SlicePreset {
   id: string;
