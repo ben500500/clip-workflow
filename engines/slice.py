@@ -3979,12 +3979,14 @@ def _fps_value(fps: str) -> float:
         return 0.0
 
 
-def build_output_tier_filter(tier: str, width: int, height: int, fps: str) -> str:
+def build_output_tier_filter(tier: str, width: int, height: int, fps: str, min_width: int = 0) -> str:
     """构造「输出档位」滤镜链（scale + fps）。
 
     档位语义（仅降档，不升档；等比缩放按宽保持宽高比）：
       - original：不处理（返回空串）
       - auto：源宽>720 或 fps>30 时降到 720P@30，否则原样
+        （竖转横启用时宽度封顶不低于竖转横目标宽 min_width，避免把
+         竖转横刚升档的 1280x720 又压回 720x406 —— 见 ISSUE 竖转横档位）
       - 1080p：宽封顶 1080 / fps 封顶 60（等比缩放）
       - 720p：宽封顶 720 / fps 封顶 30（等比缩放）
       - 480p：宽封顶 480 / fps 封顶 30（等比缩放）
@@ -4002,6 +4004,8 @@ def build_output_tier_filter(tier: str, width: int, height: int, fps: str) -> st
     if cap is None:
         return ""
     cap_w, cap_fps = cap
+    if tier == OUTPUT_TIER_AUTO and min_width > cap_w:
+        cap_w = min_width  # auto 不得违背竖转横的目标分辨率（显式档位仍以用户选择为准）
     fps_v = _fps_value(fps)
     need_scale = width > cap_w
     need_fps = fps_v > 0 and fps_v > cap_fps
@@ -4206,12 +4210,20 @@ def main():
 
     # 输出档位：探测源分辨率+帧率，构造滤镜链末尾的 scale+fps 降档滤镜。
     # 与原档位一致或无需降档时为空串（不改变既有 copy 快速通道行为）。
+    # 竖转横启用时，auto 档宽度封顶不低于竖转横目标宽（否则 1280x720 会被 auto 压回 720x406）。
     tier_w, tier_h = ffprobe_resolution(source_path)
     tier_fps = ffprobe_framerate(source_path)
-    tier_filter = build_output_tier_filter(args.output_tier, tier_w, tier_h, tier_fps)
+    v2h_min_w = 0
+    if vert2horiz_cfg:
+        try:
+            v2h_min_w = int(str(vert2horiz_cfg.get("output_size") or "1280x720").lower().split("x")[0])
+        except (ValueError, IndexError, AttributeError):
+            v2h_min_w = 0
+    tier_filter = build_output_tier_filter(args.output_tier, tier_w, tier_h, tier_fps, min_width=v2h_min_w)
     if tier_filter:
         print(f"输出档位: {args.output_tier} -> {tier_filter} "
-              f"(源 {tier_w}x{tier_h}@{_fps_value(tier_fps):.3f}fps)", file=sys.stderr)
+              f"(源 {tier_w}x{tier_h}@{_fps_value(tier_fps):.3f}fps"
+              + (f", 竖转横目标宽 {v2h_min_w}" if v2h_min_w else "") + ")", file=sys.stderr)
 
     os.makedirs(args.output_dir, exist_ok=True)
     cuts = read_cutlist(args.cutlist)
