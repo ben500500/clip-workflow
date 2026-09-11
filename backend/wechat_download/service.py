@@ -492,3 +492,40 @@ async def _create_episode(db, task, project_id, file_key, size, parsed) -> uuid.
     await db.flush()
     await db.refresh(ep)
     return ep.id
+
+
+async def retry_task(db: AsyncSession, task_id: uuid.UUID) -> dict:
+    """重投一个失败任务到下载队列（Web 端「重试」按钮）。
+
+    仅允许 failed 状态任务重试；重置进度/错误信息后重新投递 wechat_dl 队列，
+    复用既有 celery task（wechat_dl.download），无需前端重新提交分享链接。
+    """
+    task = await get_task(db, task_id)
+    if task is None:
+        return {"ok": False, "message": "任务不存在"}
+    if task.status != ST_FAILED:
+        return {"ok": False, "message": f"仅失败任务可重试，当前状态: {task.status}"}
+
+    task.status = ST_PENDING
+    task.progress = 0.0
+    task.message = None
+    task.error_message = None
+    await db.commit()
+
+    # 延迟导入：celery tasks 反向 import 本模块，模块级导入会形成循环依赖
+    from app.celery.tasks import celery_app
+
+    celery_task = celery_app.send_task(
+        "wechat_dl.download",
+        args=[str(task.id)],
+        queue=settings.WECHAT_DL_QUEUE,
+    )
+    task.celery_task_id = celery_task.id if celery_task else None
+    await db.commit()
+
+    logger.info("wechat dl task %s re-queued for retry", task.id)
+    return {
+        "ok": True,
+        "task_id": str(task.id),
+        "message": "任务已重新投递到下载队列",
+    }

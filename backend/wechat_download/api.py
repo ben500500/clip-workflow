@@ -36,6 +36,7 @@ from wechat_download.service import (
     create_import_task,
     create_import_tasks_batch,
     get_task,
+    retry_task,
     _serialize_task,
     ST_COMPLETED,
 )
@@ -403,3 +404,16 @@ async def to_slice(
         mode=data.mode or "fast",
         message="已创建切片任务并投入 video_processing 队列，切片完成后即可在发布管理发布",
     )
+
+
+@router.post("/tasks/{task_id}/retry", response_model=dict)
+async def retry_download_task(
+    task_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """重投失败任务到下载队列（Web 端「重试」按钮）。"""
+    result = await retry_task(db, task_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("message", "重试失败"))
+    return result
