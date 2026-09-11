@@ -9,7 +9,7 @@ import {
   DeleteOutlined, DownloadOutlined, ClearOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import dayjs from 'dayjs';
+import { parseServerTime } from '../utils/format';
 import { variantsApi, VariantGroup, VariantMatrixItem } from '../api/variants';
 import { publishApi } from '../api/publish';
 import type { VideoAccount } from '../types';
@@ -119,8 +119,8 @@ const VariantMatrix: React.FC = () => {
       .sort((a, b) => {
         if (b.collisionCount !== a.collisionCount) return b.collisionCount - a.collisionCount;
         if (b.unboundCount !== a.unboundCount) return b.unboundCount - a.unboundCount;
-        const ta = a.created_at ? dayjs(a.created_at).valueOf() : 0;
-        const tb = b.created_at ? dayjs(b.created_at).valueOf() : 0;
+        const ta = a.created_at ? parseServerTime(a.created_at)?.valueOf() || 0 : 0;
+        const tb = b.created_at ? parseServerTime(b.created_at)?.valueOf() || 0 : 0;
         return tb - ta;
       });
     return filtered;
@@ -383,7 +383,7 @@ const VariantMatrix: React.FC = () => {
             {g.collisionCount > 0 && <Badge count={g.collisionCount} color="red" title="碰撞数" />}
             {g.unboundCount > 0 && <Badge count={g.unboundCount} color="gold" title="未绑定账号数" />}
             <Text type="secondary" style={{ fontSize: 12 }}>
-              {g.created_at ? dayjs(g.created_at).format('MM-DD HH:mm') : ''}
+              {g.created_at ? parseServerTime(g.created_at)?.format('MM-DD HH:mm') || '' : ''}
             </Text>
             <Text type="secondary" style={{ fontSize: 12 }}>共 {g.variants.length} 变体</Text>
             {/* 生成进度：运行中的组展示已生成数/总数 + 进度条 */}

@@ -180,6 +180,11 @@ class Settings(BaseSettings):
     # 或自定义 HTTP 服务商（需配套 WECHAT_DL_<NAME>_BASE/_KEY/_PATH 等 env）。
     # 未设置时回退 "yuanbao,preview"（向后兼容）。
     WECHAT_DL_PROVIDERS: str = "yuanbao,preview"
+    # 卡死任务守护巡检间隔（秒）：周期把超时未收敛的 pending/中间态任务回写 failed
+    WECHAT_DL_STALE_INTERVAL_SECONDS: int = 300
+    # 卡死任务超时阈值（秒）：超过该时长未更新仍非终态视为 worker 崩溃遗留的孤儿任务。
+    # 默认 3600：远大于 WECHAT_DL_DOWNLOAD_TIMEOUT(600) + 解析/入库耗时，避免误杀在跑任务。
+    WECHAT_DL_STALE_TIMEOUT_SECONDS: int = 3600
 
     # ── 局域网获取剧集（lan_source，立项设计：独立配置命名空间）──
     # 总开关（默认关闭）。开启后在剧目详情页出现「局域网获取剧集」面板，

@@ -71,6 +71,7 @@ celery_app.conf.update(
         "app.celery.tasks.seedance_generate_task": {"queue": "publish"},
         # 视频号素材导入下载（wechat_download）：独立 wechat_dl 队列（可剥离形态 B 单独拉起）
         "wechat_dl.download": {"queue": "wechat_dl"},
+        "wechat_dl.recover_stale": {"queue": "wechat_dl"},
         # 局域网获取剧集导入（lan_source）：独立 lan_source 队列
         "lan_source.import_episodes": {"queue": "lan_source"},
         # 变体生成/指纹复核（#274 A2）：独立 variant 队列，独占 worker-variant 消费，
@@ -136,6 +137,12 @@ celery_app.conf.update(
         "remotion-stale-recovery": {
             "task": "app.celery.remotion_tasks.remotion_stale_recovery_task",
             "schedule": settings.REMOTION_STALE_INTERVAL_SECONDS,
+        },
+        # 视频号素材导入下载：周期巡检超时未收敛的任务并回写 failed
+        #（防 wechat_dl worker 崩溃/节点重启导致任务永久 pending，堵塞重试入口）
+        "wechat-dl-stale-recovery": {
+            "task": "wechat_dl.recover_stale",
+            "schedule": settings.WECHAT_DL_STALE_INTERVAL_SECONDS,
         },
     },
 )

@@ -12,6 +12,7 @@ import dayjs from 'dayjs';
 import Dragger from 'antd/es/upload/Dragger';
 import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/DedupeManualConfig';
 import { variantsApi, SliceOutputListItem, SliceOutputProject } from '../api/variants';
+import { parseServerTime } from '../utils/format';
 import { dedupeApi, DedupeUploadedFile } from '../api/dedupe';
 import { batchSliceApi } from '../api/batchSlice';
 import { useNavigate } from 'react-router-dom';
@@ -240,7 +241,7 @@ const DedupeProcessing: React.FC = () => {
       title: '变体组', dataIndex: 'variant_group_id', width: 110,
       render: (_: unknown, row: GroupRow) => (row.type === 'output' ? (row.item?.variant_group_id ? <Tag color="blue">已生成</Tag> : <Tag>未去重</Tag>) : ''),
     },
-    { title: '生成时间', dataIndex: 'created_at', width: 150, render: (_: unknown, row: GroupRow) => (row.type === 'output' && row.item?.created_at ? dayjs(row.item.created_at).format('MM-DD HH:mm') : '') },
+    { title: '生成时间', dataIndex: 'created_at', width: 150, render: (_: unknown, row: GroupRow) => (row.type === 'output' && row.item?.created_at ? parseServerTime(row.item.created_at)?.format('MM-DD HH:mm') || '' : '') },
   ];
 
   return (

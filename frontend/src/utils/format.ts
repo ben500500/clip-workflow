@@ -19,20 +19,42 @@ export function formatDuration(seconds: number | null | undefined): string {
   return `${pad(m)}:${pad(s)}`;
 }
 
+/**
+ * 解析后端时间字符串为 dayjs 实例（统一 UTC 语义）。
+ *
+ * 全库时间列是 timestamp without time zone，后端写入 datetime.utcnow()。
+ * 若 API 输出未带时区标记（如 `2026-09-11T04:47:51`），dayjs 会按浏览器
+ * 本地时区（+8）解析 → 展示时间比实际少 8 小时（任务 89847c6e 实例：
+ * 实际 12:47:51 CST 显示成 04:47:51）。
+ *
+ * 这里对「无时区标记的 ISO 串」显式按 UTC 解析：
+ * - 前端自己提交的时间（如定时发布 `YYYY-MM-DDTHH:mm:ss`，本地时间）会先带
+ *   时区偏移再提交，故一律带标记，不受影响；
+ * - 后端若已补 `Z`/`+00:00`/`+08:00`，原样尊重，不做二次换算。
+ */
+export function parseServerTime(dateStr: string | null | undefined) {
+  if (!dateStr) return null;
+  const hasTz = /(?:Z|[+-]\d{2}:?\d{2})$/.test(dateStr);
+  return hasTz ? dayjs(dateStr) : dayjs(`${dateStr}Z`);
+}
+
 export function formatDateTime(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
-  return dayjs(dateStr).format('YYYY-MM-DD HH:mm:ss');
+  // format() 无参即按运行环境本地时区输出（浏览器 = 用户本地时区，含 +08:00）
+  const d = parseServerTime(dateStr);
+  return d ? d.format('YYYY-MM-DD HH:mm:ss') : '-';
 }
 
 export function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
-  return dayjs(dateStr).format('YYYY-MM-DD');
+  const d = parseServerTime(dateStr);
+  return d ? d.format('YYYY-MM-DD') : '-';
 }
 
 export function formatRelativeTime(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
   const now = dayjs();
-  const target = dayjs(dateStr);
+  const target = parseServerTime(dateStr) as dayjs.Dayjs;
   const diffMinutes = now.diff(target, 'minute');
   if (diffMinutes < 1) return '刚刚';
   if (diffMinutes < 60) return `${diffMinutes}分钟前`;

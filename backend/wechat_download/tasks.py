@@ -13,7 +13,11 @@ import uuid
 
 from app.celery.tasks import celery_app, run_async
 
-from wechat_download.service import run_download_pipeline, RetryableImportError
+from wechat_download.service import (
+    RetryableImportError,
+    recover_stale_tasks,
+    run_download_pipeline,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,3 +54,23 @@ def task_wechat_dl_download(self, task_id: str):
         logger.exception("wechat_dl download task failed for %s", task_id)
         self.update_state(state="FAILURE", meta={"progress": 0, "message": str(e)})
         raise
+
+
+@celery_app.task(bind=True, name="wechat_dl.recover_stale")
+def task_wechat_dl_recover_stale(self):
+    """beat 守护：回收超时未收敛的非终态下载任务（回写 failed）。
+
+    兜底场景：worker 崩溃 / 节点重启 / 消息丢失，任务永久停在 pending 或中间态。
+    Celery 的 task_reject_on_worker_lost 只覆盖「已被消费」的任务，消息丢失时
+    无人消费，因此必须有库侧巡检兜底（参考 remotion_stale_recovery_task）。
+
+    回写 failed 后前端「重试」按钮即可用（retry_task 亦放宽支持超时 pending）。
+    """
+    try:
+        recovered = run_async(recover_stale_tasks())
+        if recovered:
+            logger.warning("wechat_dl stale recovery: %s 条任务回写 failed", len(recovered))
+        return {"ok": True, "affected": len(recovered), "tasks": recovered}
+    except Exception as e:
+        logger.exception("wechat_dl stale recovery failed: %s", e)
+        return {"ok": False, "error": str(e)}
