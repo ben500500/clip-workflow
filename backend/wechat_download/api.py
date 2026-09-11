@@ -102,6 +102,11 @@ async def import_wechat_video(
         authorize_note=data.authorize_note,
     )
 
+    # 先提交事务：worker 另开 session 读库，事务未提交则查不到该行，
+    # 会命中「先投递、后提交」竞态 → 返回 task not found，
+    # 且异常早于 _set_status 抛出 → 任务永久卡在 pending。
+    await db.commit()
+
     # 投递到 wechat_dl 队列
     from app.celery.tasks import celery_app
     celery_task = celery_app.send_task(
@@ -289,6 +294,9 @@ async def import_wechat_video_batch(
         project_id=data.project_id,
         authorize_note=data.authorize_note,
     )
+
+    # 同 /import：先提交再投递，避免 worker 读不到未提交的任务行
+    await db.commit()
 
     from app.celery.tasks import celery_app
     task_ids: list[str] = []
