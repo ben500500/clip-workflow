@@ -90,6 +90,10 @@ export const wechatDlApi = {
   getTask: (id: string) =>
     client.get(`/wechat-dl/tasks/${id}`) as Promise<WechatDlTask>,
 
+  // ── 重试失败的下载任务 ──
+  retry: (id: string) =>
+    client.post(`/wechat-dl/tasks/${id}/retry`) as Promise<{ ok: boolean; message: string }>,
+
   // ── 方向① 闭环：下载完成 → 一键入切片 ──
   toSlice: (id: string, data?: { mode?: string; dedupe_config?: Record<string, unknown> }) =>
     client.post(`/wechat-dl/tasks/${id}/to-slice`, data || { mode: 'fast' }) as Promise<{

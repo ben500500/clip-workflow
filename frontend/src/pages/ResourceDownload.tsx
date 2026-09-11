@@ -250,6 +250,22 @@ const TaskListPanel: React.FC = () => {
   }, [tasks.map((t) => t.id).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const canImport = (t: WechatDlTask) => t.status === 'completed' && !!t.episode_id;
+  const canRetry = (t: WechatDlTask) => t.status === 'failed';
+
+  // 重试失败任务
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const handleRetry = async (task: WechatDlTask) => {
+    setRetryingId(task.id);
+    try {
+      await wechatDlApi.retry(task.id);
+      message.success('任务已重新投递到下载队列');
+      await loadTasks();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '重试失败');
+    } finally {
+      setRetryingId(null);
+    }
+  };
 
   const openPreview = async (t: WechatDlTask) => {
     setPreviewTask(t);
