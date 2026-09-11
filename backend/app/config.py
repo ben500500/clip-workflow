@@ -185,6 +185,12 @@ class Settings(BaseSettings):
     # 卡死任务超时阈值（秒）：超过该时长未更新仍非终态视为 worker 崩溃遗留的孤儿任务。
     # 默认 3600：远大于 WECHAT_DL_DOWNLOAD_TIMEOUT(600) + 解析/入库耗时，避免误杀在跑任务。
     WECHAT_DL_STALE_TIMEOUT_SECONDS: int = 3600
+    # 解析缓存（wechat_parse_records 复用）有效期（秒）。
+    # 腾讯签名直链 play_url 仅 1~3 小时有效，超期复用必然 direct download http 400，
+    # 因此缓存必须带时效窗口：TTL 内的成功解析记录才可复用，超期一律重新实时解析。
+    # 默认 600（10 分钟），建议范围 300~900：既避开易变/限流的元宝接口重复调用，
+    # 又远小于直链有效期，杜绝把过期直链交给下载器。
+    WECHAT_DL_PARSE_CACHE_TTL_SECONDS: int = 600
 
     # ── 局域网获取剧集（lan_source，立项设计：独立配置命名空间）──
     # 总开关（默认关闭）。开启后在剧目详情页出现「局域网获取剧集」面板，
@@ -273,6 +279,18 @@ class Settings(BaseSettings):
         if not v or v.strip() in DEFAULT_JWT_PLACEHOLDERS:
             raise ValueError(
                 "生产环境必须在 .env 设置 JWT_SECRET（随机强密钥），禁止使用默认/占位值"
+            )
+        return v
+
+    @field_validator("WECHAT_DL_PARSE_CACHE_TTL_SECONDS")
+    @classmethod
+    def _parse_cache_ttl_in_range(cls, v: int) -> int:
+        # 建议窗口 300~900s：过小失去缓存意义（回到元宝限流问题），
+        # 过大则可能超过直链 1~3h 有效期（死链回归）。
+        if v < 300 or v > 900:
+            raise ValueError(
+                "WECHAT_DL_PARSE_CACHE_TTL_SECONDS 必须在 300~900 秒之间"
+                "（直链有效期 1~3h，TTL 必须显著小于它）"
             )
         return v
 

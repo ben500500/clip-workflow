@@ -334,8 +334,9 @@ async def run_download_pipeline(task_id: uuid.UUID) -> dict:
 async def _parse_with_fallback(db, task: WechatDownloadTask):
     """多 provider 兜底链解析（P1 增加解析结果缓存）。
 
-    先查本任务 source_url 在 wechat_parse_records 中是否已有成功解析记录
+    先查本任务 source_url 在 wechat_parse_records 中是否已有 **TTL 内**的成功解析记录
     （命中直接复用 play_url，避免重复调用易变/限流的解析接口，评审 R1/R2）。
+    超期记录不复用：直链签名仅 1~3 小时有效，复用死链必然 400。
 
     provider 顺序由 `WECHAT_DL_PROVIDERS`（默认 yuanbao,preview）驱动；逐个尝试，
     每个 provider 的成败都写一条 WechatParseRecord（channel=provider 逻辑名），
@@ -344,7 +345,10 @@ async def _parse_with_fallback(db, task: WechatDownloadTask):
     # P1 解析缓存：同 URL 已有成功解析则直接复用
     cached = await _hit_parse_cache(db, task.source_url)
     if cached is not None:
-        logger.info("parse cache hit for %s (channel=%s)", task.source_url, cached.channel)
+        logger.info(
+            "parse cache hit for %s (channel=%s, ttl=%ss)",
+            task.source_url, cached.channel, settings.WECHAT_DL_PARSE_CACHE_TTL_SECONDS,
+        )
         return cached
 
     errors: list[str] = []
@@ -388,19 +392,43 @@ async def _parse_with_fallback(db, task: WechatDownloadTask):
     raise ImportError_(f"解析失败（全部解析服务均不可用）: {' | '.join(errors)}")
 
 
-async def _hit_parse_cache(db: AsyncSession, source_url: str) -> Optional[ParseResult]:
-    """命中解析缓存：返回同 URL 最近一次成功解析结果（play_url 有效），否则 None。
+def _parse_cache_cutoff(now: Optional[datetime] = None,
+                        ttl_seconds: Optional[int] = None) -> datetime:
+    """解析缓存的截止时间（naive UTC）：早于它的记录视为过期，不可复用。
+
+    ⚠️ 必须在 Python 侧用 `datetime.utcnow()` 计算，**禁止在 SQL 里用 now()**：
+    `wechat_parse_records.created_at` 是 timestamp without time zone，写入的是
+    naive UTC（模型 default=datetime.utcnow）。若改用 SQL now()，PG 会按会话时区
+    解释，在 Asia/Shanghai（+8）实例上 now() 比 UTC 快 8 小时，导致已过期的记录
+    仍被判为「新鲜」，死链 bug 原样保留。用 Python 侧同源（utcnow）比较才与写入值同尺度。
+    """
+    ttl = ttl_seconds if ttl_seconds is not None else settings.WECHAT_DL_PARSE_CACHE_TTL_SECONDS
+    return (now or datetime.utcnow()) - timedelta(seconds=ttl)
+
+
+async def _hit_parse_cache(db: AsyncSession, source_url: str,
+                           now: Optional[datetime] = None,
+                           ttl_seconds: Optional[int] = None) -> Optional[ParseResult]:
+    """命中解析缓存：返回同 URL 在 TTL 内最近一次成功解析结果，否则 None。
 
     仅取 status=success 且 play_url 非空的记录，按时间倒序取最新一条。
-    避免对易变/限流的元宝接口重复调用；拉流地址 TTL 短时可由下载器
-    兜底（断点续传/重试），此处缓存只优化重复 URL 场景。
+    避免对易变/限流的元宝接口重复调用（评审 R1/R2）。
+
+    时效性（本缺陷修复点）：腾讯签名直链 play_url 只活 1~3 小时，过期后直接交给
+    下载器必然 `direct download http 400`，且重试无效（解析缓存永远命中同一条死链）。
+    因此只复用 `created_at >= utcnow() - WECHAT_DL_PARSE_CACHE_TTL_SECONDS` 的记录；
+    超期记录一律不命中 → 走实时解析拿新直链。原 docstring 中「TTL 短时可由下载器
+    兜底」的假设是错的：下载器的断点续传/重试无法修复已失效的签名。
     """
+    cutoff = _parse_cache_cutoff(now, ttl_seconds)
     result = await db.execute(
         select(WechatParseRecord)
         .where(
             WechatParseRecord.source_url == source_url,
             WechatParseRecord.status == "success",
             WechatParseRecord.play_url.isnot(None),
+            # 时效窗口：naive UTC 与 Python 侧 cutoff 同尺度比较（勿用 SQL now()）
+            WechatParseRecord.created_at >= cutoff,
         )
         .order_by(WechatParseRecord.created_at.desc())
         .limit(1)
