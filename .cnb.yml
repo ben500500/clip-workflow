@@ -31,6 +31,23 @@
     - name: run regression test
       script: python3 engines/tests/test_subtitle_mask_regression.py
 
+# 竖转横 SAR 归一化回归测试：验收指标为 fixed/dynamic 两条链路输出
+# width=1280 height=720 SAR=1:1 DAR=16:9（见 issue #351 结论）。
+# 测试脚本在 engines/tests/test_vert2horiz_sar_regression.py，复用同一 ffmpeg 测试镜像，
+# 缺依赖时脚本自动跳过（不误报失败）。
+.vert2horiz-sar-test:
+  &vert2horiz-sar-test
+  name: vert2horiz-sar-regression
+  runner:
+    cpus: 2
+  docker:
+    build:
+      dockerfile: ./engines/tests/Dockerfile
+      by: [engines/tests/Dockerfile, engines/tests/test_vert2horiz_sar_regression.py, engines/vert2horiz_crop.py]
+  stages:
+    - name: run regression test
+      script: python3 engines/tests/test_vert2horiz_sar_regression.py
+
 # graft 代码审查通用 stage 锚点（手动 @NPC 评审 与 PR 创建自动评审 复用，改一处两处生效）
 # 流程：装 graft → 现场重建代码地图（标准版零 LLM/零费用）→ 预生成 review-context.md（改动符号的 graft 调用链）
 # → npc:go 按 AGENTS.md 先查 graft 再审 diff。角色定义见 .cnb/settings.yml。
@@ -124,8 +141,10 @@
 main:
   push:
     - *subtitle-mask-test
+    - *vert2horiz-sar-test
   pull_request:
     - *subtitle-mask-test
+    - *vert2horiz-sar-test
 
   # 功能3：PR 创建时自动跑一次 graft 代码审查（无需手动 @NPC）。
   # 事件用 pull_request.target（可信事件，配置取目标分支 main；审查需读代码+发评论，用可信事件符合
