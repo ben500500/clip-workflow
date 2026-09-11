@@ -15,9 +15,10 @@ import logging
 import os
 import tempfile
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -140,6 +141,23 @@ async def create_import_tasks_batch(
     return tasks, errors
 
 
+def _iso_utc(dt: Optional[datetime]) -> Optional[str]:
+    """naive UTC datetime → 带 Z 后缀的 ISO 字符串。
+
+    全库时间列为 timestamp without time zone，应用写入 datetime.utcnow()。
+    若直接 isoformat() 输出不带时区（如 2026-09-11T04:47:51），前端 dayjs 会
+    按浏览器本地时区（+8）解析 → 显示比实际少 8 小时（任务 89847c6e 实例）。
+
+    这里显式补 UTC 标记，前端 dayjs(dateStr).format() 即自动换算为本地时间。
+    不用 app.utils.helpers.utc_iso 是为了保持本包可剥离（不依赖主系统模块）。
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _serialize_task(t: WechatDownloadTask) -> dict:
     return {
         "id": str(t.id),
@@ -156,8 +174,8 @@ def _serialize_task(t: WechatDownloadTask) -> dict:
         "episode_id": str(t.episode_id) if t.episode_id else None,
         "project_id": str(t.project_id) if t.project_id else None,
         "error_message": t.error_message,
-        "created_at": t.created_at.isoformat() if t.created_at else None,
-        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        "created_at": _iso_utc(t.created_at),
+        "updated_at": _iso_utc(t.updated_at),
     }
 
 
@@ -291,20 +309,13 @@ async def run_download_pipeline(task_id: uuid.UUID) -> dict:
         except RetryableImportError as e:
             # 可重试失败（下载中断/限流）：标记状态后把异常重新抛出，
             # 供 Celery 任务捕获并 self.retry（配合断点续传）。
+            # _fail 内部已即时 commit，此处无需再提交。
             logger.warning("download pipeline retryable failure for task %s: %s", task_id, e)
             await _fail(db, task, str(e))
-            try:
-                await db.commit()
-            except Exception:
-                pass
             raise
         except Exception as e:
             logger.exception("download pipeline failed for task %s", task_id)
             await _fail(db, task, str(e))
-            try:
-                await db.commit()
-            except Exception:
-                pass
             return {"ok": False, "error": str(e)}
         finally:
             # 断点续传（P1）：仅成功/彻底失败后清理临时文件；
@@ -409,18 +420,44 @@ async def _hit_parse_cache(db: AsyncSession, source_url: str) -> Optional[ParseR
     )
 
 
+async def _commit_status(db, task):
+    """提交状态变更（写库优先，失败不抛出）。
+
+    状态/进度必须即时落库：外部（GET /api/wechat-dl/tasks、运维排查）只读库，
+    仅 flush 不 commit 会让中间态在事务结束前对外不可见——worker 崩溃即回滚，
+    任务永久停在 pending（生产实例 1b2eb0ae 卡两周的根因）。
+
+    提交失败时回滚并降级为 flush（保留 WS 实时进度），绝不让「状态写库」
+    这一观测动作影响下载主流程。
+    """
+    try:
+        await db.commit()
+    except Exception as e:  # pragma: no cover - 依赖异常路径
+        logger.warning("commit wechat_dl task %s status failed: %s", task.id, e)
+        try:
+            await db.rollback()
+            await db.flush()
+        except Exception:
+            logger.exception("rollback/flush wechat_dl task %s status failed", task.id)
+
+
 async def _set_status(db, task, status, progress, message):
+    """更新任务状态/进度 → 即时 commit → 发布 WebSocket 进度。
+
+    commit 先于 publish：前端收到 WS 推送后若立刻回查 REST，库里已是新状态。
+    """
     task.status = status
     task.progress = progress
     task.message = message
-    await db.flush()
+    await _commit_status(db, task)
     await _publish_progress(task)
 
 
 async def _fail(db, task, error):
+    """标记任务失败（终态）→ 即时 commit → 发布 WebSocket 进度。"""
     task.status = ST_FAILED
     task.error_message = error
-    await db.flush()
+    await _commit_status(db, task)
     await _publish_progress(task)
 
 
@@ -494,22 +531,59 @@ async def _create_episode(db, task, project_id, file_key, size, parsed) -> uuid.
     return ep.id
 
 
-async def retry_task(db: AsyncSession, task_id: uuid.UUID) -> dict:
-    """重投一个失败任务到下载队列（Web 端「重试」按钮）。
+def _is_stale_pending(task: WechatDownloadTask, now: Optional[datetime] = None,
+                      timeout_seconds: Optional[int] = None) -> bool:
+    """任务是否属于「超时未收敛」的可重试孤儿。
 
-    仅允许 failed 状态任务重试；重置进度/错误信息后重新投递 wechat_dl 队列，
-    复用既有 celery task（wechat_dl.download），无需前端重新提交分享链接。
+    判定条件（须同时满足）：
+    1. 非终态（pending/parsing/downloading/uploading）——已完成任务不可重投；
+    2. 距最后一次更新（updated_at，退化为 created_at）已超过阈值——
+       worker 崩溃/节点重启/消息丢失后，任务永远停在投递时的 pending。
+
+    阈值默认取 WECHAT_DL_STALE_TIMEOUT_SECONDS（3600s），远大于
+    WECHAT_DL_DOWNLOAD_TIMEOUT，避免把正在跑的任务误判为孤儿。
+    """
+    if task.status in (ST_COMPLETED, ST_FAILED):
+        return False
+    timeout = timeout_seconds or settings.WECHAT_DL_STALE_TIMEOUT_SECONDS
+    ref = task.updated_at or task.created_at
+    if ref is None:
+        return False
+    now = now or datetime.utcnow()
+    if ref.tzinfo is not None:
+        ref = ref.replace(tzinfo=None)
+    return (now - ref).total_seconds() > timeout
+
+
+async def retry_task(db: AsyncSession, task_id: uuid.UUID) -> dict:
+    """重投一个失败/超时卡死的任务到下载队列（Web 端「重试」按钮）。
+
+    允许重试的状态（评审放宽）：
+    - failed：明确失败，直接重投；
+    - 非终态但已超时（见 _is_stale_pending）：worker 崩溃遗留的 pending/中间态孤儿
+      （如生产实例 1b2eb0ae 卡两周）。此前这类任务既不落 failed 也无法重试，
+      只能人工改库；本次放宽后可由页面「重试」或 beat 守护任务回收。
+
+    重置进度/错误信息后重新投递 wechat_dl 队列，复用既有 celery task
+    （wechat_dl.download），无需前端重新提交分享链接。
     """
     task = await get_task(db, task_id)
     if task is None:
         return {"ok": False, "message": "任务不存在"}
-    if task.status != ST_FAILED:
-        return {"ok": False, "message": f"仅失败任务可重试，当前状态: {task.status}"}
+    if task.status == ST_COMPLETED:
+        return {"ok": False, "message": "任务已完成，无需重试"}
+    if task.status != ST_FAILED and not _is_stale_pending(task):
+        return {
+            "ok": False,
+            "message": f"任务正在执行中，暂不可重试（当前状态: {task.status}；"
+                       f"超过 {settings.WECHAT_DL_STALE_TIMEOUT_SECONDS}s 未更新后可重试）",
+        }
 
     task.status = ST_PENDING
     task.progress = 0.0
-    task.message = None
+    task.message = "已重新投递到下载队列"
     task.error_message = None
+    # 即时提交再投递：worker 另开 session 读库，未提交则查不到该行（同 /import 竞态）
     await db.commit()
 
     # 延迟导入：celery tasks 反向 import 本模块，模块级导入会形成循环依赖
@@ -529,3 +603,54 @@ async def retry_task(db: AsyncSession, task_id: uuid.UUID) -> dict:
         "task_id": str(task.id),
         "message": "任务已重新投递到下载队列",
     }
+
+
+# ───────────────────────────────
+# 超时卡死任务回收（beat 守护）
+# ───────────────────────────────
+
+async def recover_stale_tasks(timeout_seconds: Optional[int] = None) -> list[dict]:
+    """把超时未收敛的非终态任务回写 failed，返回被回收的任务摘要。
+
+    兜底场景（方案 B）：worker 崩溃 / 节点重启 / 消息丢失，任务永远停在
+    pending 或中间态且无任何外部可见变化。仅靠 RT 侧的「允许超时 pending 重试」
+    仍需人工点击，本守护把孤儿任务收敛为 failed，使既有重试按钮与告警链路生效。
+
+    注意：Celery 的 task_reject_on_worker_lost 只能处理「已被消费」的任务；
+    消息在 broker 中丢失/被 purge 时无人消费，因此必须有库侧巡检兜底。
+    """
+    from app.database import async_session_factory
+
+    timeout = timeout_seconds or settings.WECHAT_DL_STALE_TIMEOUT_SECONDS
+    cutoff = datetime.utcnow() - timedelta(seconds=timeout)
+    active = (ST_PENDING, ST_PARSING, ST_DOWNLOADING, ST_UPLOADING)
+    recovered: list[dict] = []
+
+    async with async_session_factory() as db:
+        # 以 updated_at（退化为 created_at）判定：非终态且超过阈值未更新即为孤儿
+        result = await db.execute(
+            select(WechatDownloadTask).where(
+                WechatDownloadTask.status.in_(active),
+                func.coalesce(
+                    WechatDownloadTask.updated_at, WechatDownloadTask.created_at
+                ) < cutoff,
+            )
+        )
+        for task in result.scalars().all():
+            prev_status = task.status
+            task.status = ST_FAILED
+            task.error_message = (
+                f"任务超时未完成（超过 {timeout}s 无状态更新），"
+                f"判定为 worker 崩溃/节点重启遗留，可由「重试」重新投递"
+            )
+            recovered.append({"task_id": str(task.id), "prev_status": prev_status})
+
+        if recovered:
+            try:
+                await db.commit()
+            except Exception:
+                logger.exception("recover stale wechat_dl tasks commit failed")
+                return []
+            for item in recovered:
+                logger.warning("wechat_dl stale task recovered: %s", item["task_id"])
+    return recovered

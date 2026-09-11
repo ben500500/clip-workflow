@@ -13,7 +13,7 @@ import { useNavigate } from 'react-router-dom';
 import { wechatDlApi, WechatDlTask, WechatDlProviderInfo } from '../api/wechatDl';
 import { projectApi } from '../api/projects';
 import { configApi } from '../api/config';
-import { formatDateTime } from '../utils/format';
+import { formatDateTime, parseServerTime } from '../utils/format';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -26,6 +26,18 @@ const STATUS_META: Record<string, { color: string; label: string }> = {
   uploading: { color: 'processing', label: '入库中' },
   completed: { color: 'success', label: '已完成' },
   failed: { color: 'error', label: '失败' },
+};
+
+// 与后端 WECHAT_DL_STALE_TIMEOUT_SECONDS 对齐（默认 3600s）：
+// 超过该时长未更新仍非终态 = worker 崩溃/节点重启遗留的孤儿任务
+const STALE_TIMEOUT_MS = 60 * 60 * 1000;
+
+/** 判断任务是否「超时卡死」（非终态且长期无更新），用于放行重试入口。 */
+export const isStaleTask = (t: WechatDlTask): boolean => {
+  if (['completed', 'failed'].includes(t.status)) return false;
+  const ref = parseServerTime(t.updated_at || t.created_at);
+  if (!ref) return false;
+  return Date.now() - ref.valueOf() > STALE_TIMEOUT_MS;
 };
 
 // ========== 链接导入 Tab ==========
@@ -250,9 +262,12 @@ const TaskListPanel: React.FC = () => {
   }, [tasks.map((t) => t.id).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const canImport = (t: WechatDlTask) => t.status === 'completed' && !!t.episode_id;
-  const canRetry = (t: WechatDlTask) => t.status === 'failed';
+  // 失败任务，或「超时卡死」的非终态任务（worker 崩溃遗留的 pending/中间态，
+  // 与后端 retry_task 的放宽判定保持一致；beat 守护亦会把它们回写 failed）。
+  const canRetry = (t: WechatDlTask) =>
+    t.status === 'failed' || isStaleTask(t);
 
-  // 重试失败任务
+  // 重试失败/超时任务
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const handleRetry = async (task: WechatDlTask) => {
     setRetryingId(task.id);
@@ -260,8 +275,9 @@ const TaskListPanel: React.FC = () => {
       await wechatDlApi.retry(task.id);
       message.success('任务已重新投递到下载队列');
       await loadTasks();
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail || '重试失败');
+    } catch (e: unknown) {
+      // axios 拦截器已把后端 detail 归一为 Error.message
+      message.error(e instanceof Error ? e.message : '重试失败');
     } finally {
       setRetryingId(null);
     }
@@ -387,21 +403,45 @@ const TaskListPanel: React.FC = () => {
       render: (d: string) => formatDateTime(d),
     },
     {
-      title: '操作', key: 'action', width: 100, fixed: 'right' as const,
-      render: (_: unknown, r: WechatDlTask) =>
-        r.status === 'completed' && r.episode_id ? (
-          <Button
-            size="small"
-            type="link"
-            icon={<ScissorOutlined />}
-            loading={slicingId === r.id}
-            onClick={() => handleToSlice(r)}
-          >
-            入切片
-          </Button>
-        ) : (
-          <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
-        ),
+      title: '操作', key: 'action', width: 160, fixed: 'right' as const,
+      render: (_: unknown, r: WechatDlTask) => {
+        const buttons = [];
+        if (r.status === 'completed' && r.episode_id) {
+          buttons.push(
+            <Button
+              key="slice"
+              size="small"
+              type="link"
+              icon={<ScissorOutlined />}
+              loading={slicingId === r.id}
+              onClick={() => handleToSlice(r)}
+            >
+              入切片
+            </Button>,
+          );
+        }
+        // 失败任务，或超时卡死的孤儿任务：beat 守护回写 failed 之前的人工即时补救入口
+        if (canRetry(r)) {
+          buttons.push(
+            <Tooltip
+              key="retry"
+              title={r.status === 'failed' ? '重新投递到下载队列' : '任务可能已卡死（超 1 小时无更新），点击重新投递'}
+            >
+              <Button
+                size="small"
+                type="link"
+                danger={r.status !== 'failed'}
+                icon={<ReloadOutlined />}
+                loading={retryingId === r.id}
+                onClick={() => handleRetry(r)}
+              >
+                重试
+              </Button>
+            </Tooltip>,
+          );
+        }
+        return buttons.length ? <Space size={0}>{buttons}</Space> : <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+      },
     },
   ];
 
