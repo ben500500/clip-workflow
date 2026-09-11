@@ -568,7 +568,7 @@ def apply_fixed_crop(video_path, output_path, crop_params, output_size="1280x720
 
     cmd = [
         "ffmpeg", "-i", video_path,
-        "-vf", f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={out_w}:{out_h}",
+        "-vf", f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={out_w}:{out_h},setsar=1",
         "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
@@ -640,7 +640,7 @@ def apply_dynamic_crop(video_path, output_path, crop_params, fps, output_size="1
         cmd = [
             "ffmpeg", "-i", video_path,
             "-filter_complex",
-            f"[0:v]sendcmd=f={cmd_file},crop={crop_w}:{crop_h}:0:0,scale={out_w}:{out_h}[v]",
+            f"[0:v]sendcmd=f={cmd_file},crop={crop_w}:{crop_h}:0:0,scale={out_w}:{out_h},setsar=1[v]",
             "-map", "[v]", "-map", "0:a?",
             "-c:v", "libx264", "-preset", "medium", "-crf", "18",
             "-c:a", "aac", "-b:a", "192k",
