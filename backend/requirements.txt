@@ -35,3 +35,12 @@ PyYAML>=6.0
 # seedance_wm LaMa 修补使用 remove-ai-watermarks 的 erase_lama（onnxruntime，已安装）
 # 无需额外安装 torch 或 iopaint
 fonttools>=4.40.0  # 固定文字字体方案C：从 .ttc 提取 SC face 单字体（绕开 JP 字形歧义）
+# ── 测试依赖（显式声明）────────────────────────────────────────────
+# 测试用：issue #354 的登录竞态回归用例需要 sqlite+aiosqlite 内存/临时库驱动
+# （tests/integration/test_auth_login_commit_race.py 在导入期 create_async_engine）。
+# 缺失时会让 `python -m pytest tests/` 在 collection 阶段直接中断（0 条用例执行）。
+aiosqlite>=0.19.0
+# pytest 原先只是 remove-ai-watermarks → c2pa-python 的**意外传递依赖**
+# （pip show pytest: Required-by: c2pa-python），随时可能被动消失，这里显式声明。
+# 版本区间与镜像现状 9.1.1 兼容。注意：不要引入 pytest-asyncio——那是另一个 issue 的范围。
+pytest>=8.0.0,<10

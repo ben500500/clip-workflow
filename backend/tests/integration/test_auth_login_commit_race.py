@@ -14,11 +14,21 @@
 运行：cd backend && python -m pytest tests/integration/test_auth_login_commit_race.py -v
    或  cd backend && python tests/integration/test_auth_login_commit_race.py
 
-依赖真实栈：真实 FastAPI app + 真实 SQLAlchemy AsyncSession + 真实 HTTP（httpx ASGITransport）。
+依赖真实栈：真实 FastAPI app + 真实 SQLAlchemy AsyncSession + 真实 ASGI 协议帧
+（握手用的 `_asgi_request()` 手写 ASGI 收发，不用 httpx.ASGITransport——见下方
+「最小 ASGI 客户端」一节：ASGITransport 会 await 整个 app() 才返回，会把竞态掩盖掉）。
 数据库用 aiosqlite 临时文件（PostgreSQL 专属 UUID 类型由 @compiles 落到 CHAR(36)）。
+
+环境隔离契约（本文件改动过 #356）：导入期**不留下** os.environ 改变——导入 app.*
+所需的变量注入被限制在 `with _EnvOverride(...)` 块内，出块即逐项还原（无原值时 pop）。
+_bootstrap() 同理，只在其调用期间接管 DATABASE_URL。因此
+`pytest tests/unit/test_remotion_mix.py tests/integration/test_auth_login_commit_race.py`
+与反序都全绿，且进程收尾时 DATABASE_URL 与进入本文件前逐字节一致
+（连 `--collect-only` 也不再污染——这正是旧实现踩的坑）。
 """
 import asyncio
 import os
+import shutil
 import sys
 import tempfile
 import uuid
@@ -34,12 +44,78 @@ except ImportError:  # pragma: no cover
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BACKEND_ROOT))
 
-# ── 测试环境：SQLite(async) + 最小必填配置（须在建 app 之前设置）──
-_TMP_DB = tempfile.mktemp(suffix=".db")
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP_DB}"
-os.environ.setdefault("JWT_SECRET", "t" * 64)
-os.environ.setdefault("MINIO_ACCESS_KEY", "test")
-os.environ.setdefault("MINIO_SECRET_KEY", "testtest")
+# ── 测试环境（#356：不在导入期**留下**环境变量改变）────────────────────
+# app.config 在**导入期**就实例化 Settings()，必填项缺失会直接 ImportError；
+# 所以导入本文件所需的那几个 app 模块时，必须让这些变量在环境中短暂存在。
+# 但与旧实现的关键差别是：注入被限制在 _import_app_under_test_env() 的
+# `with _EnvOverride(...)` 块内，块一结束就**逐项还原**（无原值时 pop）。
+# 因此 `pytest --collect-only` 之后，进程的 DATABASE_URL 与进入前完全一致，
+# 不会污染同进程收集/运行的其它测试模块（#356 验收 3/4）。
+_TEST_TMPDIR = Path(tempfile.mkdtemp(prefix="auth-login-race-"))
+_TEST_DB_PATH = _TEST_TMPDIR / "auth_login_race.db"
+_TEST_DATABASE_URL = f"sqlite+aiosqlite:///{_TEST_DB_PATH}"
+
+# 建 app 之前必须就位的必填配置（app.config.Settings 无默认值）
+_TEST_ENV: dict[str, str] = {
+    "DATABASE_URL": _TEST_DATABASE_URL,
+    "JWT_SECRET": "t" * 64,
+    "MINIO_ACCESS_KEY": "test",
+    "MINIO_SECRET_KEY": "testtest",
+}
+
+
+class _EnvOverride:
+    """临时设置环境变量并在退出时还原为原值（无原值时 pop）。
+
+    #356 要求：本文件不得对同进程的其它测试模块留下环境残留。用上下文管理器
+    而不是「导入期 os.environ[...] = ...」，是因为后者改动全局且无法还原
+    （pytest 在 --collect-only 阶段导入模块时就会生效，污染同进程后续模块）。
+    """
+
+    def __init__(self, values: dict[str, str]):
+        self._values = values
+        self._saved: dict[str, str | None] = {}
+
+    def __enter__(self):
+        for k, v in self._values.items():
+            self._saved[k] = os.environ.get(k)
+            os.environ[k] = v
+        return self
+
+    def __exit__(self, *_exc):
+        for k, prev in self._saved.items():
+            if prev is None:
+                os.environ.pop(k, None)   # 进入前无值 → 还原为「无值」
+            else:
+                os.environ[k] = prev      # 进入前有值 → 逐字节还原
+        return False
+
+
+def _install_test_env() -> None:
+    """用例内确保 app.config 已按测试配置实例化（settings 在导入期已固化）。
+
+    仅当必填变量缺失时才补，不覆盖调用者已有值；DATABASE_URL 由 _EnvOverride
+    严格接管（它是本文件唯一要改的变量），不经此处。
+    """
+    for k, v in _TEST_ENV.items():
+        if k == "DATABASE_URL":
+            continue  # DATABASE_URL 由 _EnvOverride 严格接管，避免误指向真实库
+        os.environ.setdefault(k, v)
+
+
+def current_database_url() -> str | None:
+    """本文件对外暴露的自证接口：供验收断言「跑完后 DATABASE_URL 与进入时一致」。"""
+    return os.environ.get("DATABASE_URL")
+
+
+import atexit  # noqa: E402
+
+def _cleanup_tmpdir() -> None:
+    """best-effort 清理本文件的临时目录（含 sqlite 临时库文件）。"""
+    shutil.rmtree(_TEST_TMPDIR, ignore_errors=True)
+
+
+atexit.register(_cleanup_tmpdir)
 
 from sqlalchemy import DateTime as _DateTime
 from sqlalchemy.dialects.postgresql import UUID as _PGUUID
@@ -73,24 +149,31 @@ def _pg_uuid_on_sqlite(type_, compiler, **kw):  # pragma: no cover - 编译期�
     return "CHAR(36)"
 
 
-import app.database as dbmod
 from sqlalchemy import func, select
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+# ── 导入被测 app：仅在 with 块内注入环境，出块即还原 ──────────────────
+# app.config.Settings 在导入期实例化（必填项缺失 → ImportError），所以这里必须
+# 让 DATABASE_URL/密钥短暂可见。_EnvOverride 保证块结束时环境逐项还原为进入前状态。
+with _EnvOverride(_TEST_ENV):
+    import app.database as dbmod
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api.auth import REFRESH_COOKIE_NAME
+    from app.auth import get_password_hash
+    from app.database import Base
+    from app.main import app
+    from app.models.models import User, UserSession
+
+# 注意：app.database 的模块级 engine 是**生产引擎**（PG 专属参数：server_settings/
+# pool_size），SQLite 不接受，故这里另建测试引擎并在 _bootstrap() 内替换回 dbmod 上；
+# 用例结束（_bootstrap 的 finally）时还原，避免把替身泄漏给同进程的其它模块。
+_BACKEND_ENGINE = dbmod.engine
+_BACKEND_SESSION_FACTORY = dbmod.async_session_factory
+
 # 测试专用引擎（生产引擎带 server_settings/pool_size 等 PG 专属参数，SQLite 不接受）
-_test_engine = create_async_engine(f"sqlite+aiosqlite:///{_TMP_DB}")
-dbmod.engine = _test_engine
-dbmod.async_session_factory = async_sessionmaker(
-    _test_engine, class_=AsyncSession, expire_on_commit=False
-)
-
-from httpx import ASGITransport, AsyncClient
-
-from app.api.auth import REFRESH_COOKIE_NAME
-from app.auth import get_password_hash
-from app.database import Base
-from app.main import app
-from app.models.models import User, UserSession
+_test_engine = create_async_engine(_TEST_DATABASE_URL)
 
 # SQLite 不保存 tzinfo：让 expires_at 读出即带 UTC，还原 PG TIMESTAMPTZ 语义。
 # 必须在 create_all 之前生效（DDL 与 result 处理都取自列类型）。
@@ -109,29 +192,97 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _assert_safe_test_database() -> None:
+    """硬断言：测试库必须是落在本文件临时目录下的 sqlite，否则立即 raise。
+
+    防未来有人把 DATABASE_URL 误指向真实库（PG 生产库或他人 sqlite），
+    因为下面会 drop_all——后果不可逆。
+    """
+    url = make_url(_test_engine.url.render_as_string(hide_password=False))
+    backend = _test_engine.url.get_backend_name()
+    if backend != "sqlite":
+        raise RuntimeError(
+            f"[#356 环境隔离] 拒绝在非 sqlite 后端上 drop_all："
+            f"backend={backend!r} url={url}"
+        )
+    db_path = _test_engine.url.database or ""
+    if not db_path:
+        raise RuntimeError(
+            f"[#356 环境隔离] 非文件型 sqlite（内存库）不受支持：url={url}"
+        )
+    resolved = Path(db_path).resolve()
+    tmp = _TEST_TMPDIR.resolve()
+    if tmp not in resolved.parents:
+        raise RuntimeError(
+            f"[#356 环境隔离] 测试库必须落在临时目录 {tmp} 下，实际为 {resolved}"
+        )
+    if db_path != str(_TEST_DB_PATH):
+        raise RuntimeError(
+            f"[#356 环境隔离] 测试库路径与预期不符：{db_path} != {_TEST_DB_PATH}"
+        )
+
+
+_ENGINE_OVERRIDES_INSTALLED = False
+
+
+def _install_engine_overrides() -> None:
+    """把 dbmod 上的生产引擎替换为测试引擎。
+
+    作用域 = 整个 pytest 进程（与模块导入同生命周期），因为被测 app 的
+    `get_db()` 在**每个请求**里读 `dbmod.async_session_factory`，而请求发生在
+    _bootstrap() 返回之后。进程退出时由 atexit 还原，避免把替身留给同一进程的
+    其它测试模块（#356 的核心关切）。
+    """
+    global _ENGINE_OVERRIDES_INSTALLED
+    if _ENGINE_OVERRIDES_INSTALLED:
+        return
+    dbmod.engine = _test_engine
+    dbmod.async_session_factory = async_sessionmaker(
+        _test_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    _ENGINE_OVERRIDES_INSTALLED = True
+
+
+def _restore_engine_overrides() -> None:
+    dbmod.engine = _BACKEND_ENGINE
+    dbmod.async_session_factory = _BACKEND_SESSION_FACTORY
+
+
+# 测试引擎接管整个进程期间生效（还原见下）；这是「同进程隔离」的必要代价：
+# 若在 _bootstrap() 里还原，紧随其后的真实请求会打回 PG 生产引擎。
+_install_engine_overrides()
+atexit.register(_restore_engine_overrides)
+
+
 async def _bootstrap():
-    """建表 + 造一个可登录用户（整体重建，保证用例间互不干扰）。"""
+    """建表 + 造一个可登录用户（整体重建，保证用例间互不干扰）。
+
+    #356：DATABASE_URL 的环境变量接管只发生在本次调用内，退出时（finally）还原。
+    """
     # wechat_download 用独立 Base，不在主 Base.metadata 中，需一并建表
     from wechat_download.base import WechatDownloadBase
 
-    async with _test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(WechatDownloadBase.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(WechatDownloadBase.metadata.create_all)
-    async with dbmod.async_session_factory() as s:
-        s.add(
-            User(
-                id=uuid.uuid4(),
-                username=USERNAME,
-                password_hash=get_password_hash(PASSWORD),
-                display_name="Benny",
-                role="admin",
-                data_scope="all",
-                is_active=True,
+    with _EnvOverride({"DATABASE_URL": _TEST_DATABASE_URL}):
+        _install_test_env()
+        _assert_safe_test_database()  # ← 必须在 drop_all 之前
+        async with _test_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(WechatDownloadBase.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(WechatDownloadBase.metadata.create_all)
+        async with dbmod.async_session_factory() as s:
+            s.add(
+                User(
+                    id=uuid.uuid4(),
+                    username=USERNAME,
+                    password_hash=get_password_hash(PASSWORD),
+                    display_name="Benny",
+                    role="admin",
+                    data_scope="all",
+                    is_active=True,
+                )
             )
-        )
-        await s.commit()
+            await s.commit()
 
 
 async def _count_sessions_independent() -> int:
@@ -182,14 +333,18 @@ async def _asgi_request(method, path, *, body=b"", headers=None, cookies=None) -
     }
 
     sent_body = False
+    client_gone = asyncio.Event()   # 收尾阶段：显式通知 return 后的 receive() 立即发 disconnect
 
     async def receive():
         nonlocal sent_body
         if not sent_body:
             sent_body = True
             return {"type": "http.request", "body": body, "more_body": False}
-        # 客户端拿到响应后即断开，不再等待 app 收尾
-        await asyncio.sleep(3600)
+        # 响应已完整发出 → 客户端断开：补发 http.disconnect 而不是永久 sleep。
+        # #356：原先 `await asyncio.sleep(3600)` 永不返回，收尾时 app 任务被
+        # asyncio.run() 取消，会打印 `Task was destroyed but it is pending!`。
+        # 这里改为等待 client_gone（由 _close_asgi_task 显式 set），再返回 disconnect。
+        await client_gone.wait()
         return {"type": "http.disconnect"}
 
     result: dict = {"status": None, "headers": [], "body": b""}
@@ -215,7 +370,34 @@ async def _asgi_request(method, path, *, body=b"", headers=None, cookies=None) -
     result["_task"] = task
     result["_send_gate"] = send_gate
     result["_body_delivered"] = body_delivered
+    result["_client_gone"] = client_gone
     return result
+
+
+async def _close_asgi_task(resp: dict) -> None:
+    """收尾：放行 send_gate、通知客户端断开，并**显式 cancel + await** app 任务。
+
+    #356 要求：不得把待完成的任务留给 asyncio.run() 去销毁（会打印
+    `Task was destroyed but it is pending!`）。这里按顺序做：
+      1. set(_send_gate)      → 让 app 从 send() 里继续跑完 get_db 的收尾 commit；
+      2. set(_client_gone)    → 让 return 之后的 receive() 返回 http.disconnect；
+      3. await 任务，超时则 cancel 并 await，吞掉 CancelledError。
+    """
+    task = resp.get("_task")
+    if task is None:
+        return
+    resp["_send_gate"].set()
+    resp["_client_gone"].set()
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=10)
+    except asyncio.TimeoutError:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001 - 收尾阶段不掩盖用例判据
+            pass
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        pass
 
 
 async def _send_and_wait_next(resp, coro_factory):
@@ -231,6 +413,35 @@ async def _send_and_wait_next(resp, coro_factory):
     # 放行登录协程继续收尾（get_db 尾部 commit）
     resp["_send_gate"].set()
     return result
+
+
+def _cleanup_temp_db_files() -> None:
+    """清理临时 sqlite 库文件（-wal/-shm 一并删）；目录由 atexit 兜底。
+
+    #356：原先用 tempfile.mktemp()（已废弃且不安全），现改为 mkdtemp + 固定文件名，
+    并在**测试会话结束**时 best-effort 清理。
+
+    注意：不能在单个用例结束时删文件——本文件所有用例共用同一个临时库，
+    而测试引擎的连接池跨用例存活，删掉文件会让下一个用例在 drop_all 时报
+    `sqlite3.OperationalError: unable to open database file`。
+    """
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            Path(str(_TEST_DB_PATH) + suffix).unlink()
+        except OSError:
+            pass
+
+
+if pytest is not None:
+    @pytest.fixture(scope="module", autouse=True)
+    def _cleanup_temp_db_at_module_end():
+        """会话结束（本模块全部用例跑完）后释放测试引擎连接池并清理临时 db。"""
+        yield
+        try:
+            asyncio.run(_test_engine.dispose())
+        except Exception:  # noqa: BLE001 - 清理失败不影响用例结论
+            pass
+        _cleanup_temp_db_files()
 
 
 def _json(resp: dict):
@@ -269,6 +480,9 @@ def test_me_immediately_after_login_is_200_without_sleep():
                 "GET", "/api/auth/me", headers={"authorization": f"Bearer {token}"}
             ),
         )
+        # #356：显式 cancel + await 两个 ASGI 任务，不留「pending task」给 asyncio.run()
+        await _close_asgi_task(login)
+        await _close_asgi_task(me)
         return login, me
 
     _, me = _run(_case())
