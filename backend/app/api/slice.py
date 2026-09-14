@@ -957,6 +957,7 @@ async def _dispatch_slice_task(
         await ensure_bucket(settings.MINIO_BUCKET_SLICED)
 
         published = await _publish_to_worker(
+            db,
             slice_task,
             episode,
             cutlist,
@@ -984,10 +985,13 @@ async def _dispatch_slice_task(
         )
 
         if not published:
-            # 如果发布失败，标记任务为失败
+            # 如果发布失败，标记任务为失败。
+            # 任务行已由 _publish_to_worker 在投递前提交（Issue #355），其失败分支
+            # 也已写入 failed + error_message 并提交；这里保底再写一次并提交，确保
+            # 不留「已提交但无人消费」的悬挂行。
             slice_task.status = "failed"
             slice_task.error_message = "发布到 Worker 队列失败，请检查 Redis 连接"
-            await db.flush()
+            await db.commit()
             raise HTTPException(
                 status_code=500,
                 detail="发布切片任务到 Worker 队列失败，请检查 Redis 连接",
@@ -1691,6 +1695,7 @@ async def retry_slice_task(
     if engine == "worker":
         await ensure_bucket(settings.MINIO_BUCKET_SLICED)
         published = await _publish_to_worker(
+            db,
             new_task,
             ep,
             task.cutlist or "",
@@ -1718,9 +1723,11 @@ async def retry_slice_task(
         )
 
         if not published:
+            # 同 run 路径：行已在投递前提交，失败分支必须提交终态而非仅 flush，
+            # 避免留下悬挂的 pending 行（Issue #355）。
             new_task.status = "failed"
             new_task.error_message = "发布到 Worker 队列失败"
-            await db.flush()
+            await db.commit()
             raise HTTPException(
                 status_code=500,
                 detail="发布切片任务到 Worker 队列失败",

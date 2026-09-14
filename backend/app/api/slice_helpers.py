@@ -1096,6 +1096,7 @@ async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
 
 
 async def _publish_to_worker(
+    db: AsyncSession,
     slice_task: SliceTask,
     episode: Episode,
     cutlist: str,
@@ -1122,6 +1123,10 @@ async def _publish_to_worker(
     priority: Optional[str] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
+
+    投递前会先 `await db.commit()`：Go slice-worker 消费到消息后会**立刻**按
+    task_id 回查 `slice_tasks`（心跳、状态回写、回调鉴权走独立连接）。若本次
+    `flush()` 的 pending 行尚未提交，worker 查不到该任务或读到旧状态（Issue #355）。
 
     Returns:
         是否成功发布
@@ -1263,10 +1268,21 @@ async def _publish_to_worker(
     # 保存回调 Token 到 Redis（供回调/上传接口鉴权校验）
     await store_task_callback_token(str(slice_task.id), callback_token)
 
+    # ── 投递前显式提交（Issue #355）─────────────────────────────────────────
+    # 与 #346 / #354 同一约定：在**业务写路径内、投递之前**提交，使行对被投递方
+    # （独立进程/独立连接）可见。注意不可把 get_db() 的 commit() 挪到 yield 之前，
+    # 那样响应尚未生成就提交，端点抛异常时无法回滚。
+    await db.commit()
+
     # 发布到 Redis Stream（字幕任务走独立 subtitle 流，仅 163 Linux worker 消费）
     msg_id = await publish_slice_task(task_payload, queue)
     if not msg_id:
+        # 任务行已提交但无人消费：必须显式置为失败并提交，不留「已提交但悬挂」的
+        # pending 行（前端会一直显示排队中，且并发闸门把它算作在飞任务）。
         logger.error("Failed to publish slice task %s to Redis Stream", slice_task.id)
+        slice_task.status = "failed"
+        slice_task.error_message = "发布到 Worker 队列失败，请检查 Redis 连接"
+        await db.commit()
         return False
 
     logger.info(
