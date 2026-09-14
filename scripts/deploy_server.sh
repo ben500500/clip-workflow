@@ -16,6 +16,10 @@
 #      SYNC_FILES 补同步，并在同步后用 md5 对账硬校验，不一致直接中止部署。
 #   7. backend/ 变更的重建名单从 compose 自动推导，不再硬编码 —— 硬编码必然漏掉
 #      新增 worker（worker-wechat-dl 就是这么漏的）。
+#   8. 变量展开一律写 ${var}。脚本里中文/全角标点很多，而本机是 bash 3.2：在 C locale
+#      （后台/非交互执行时 LANG 常常没继承）下它会把 >=0x80 的字节当作标识符字符，
+#      于是 "…${_rmd5}），" 若写成裸 "$_rmd5，" 会被解析成一个叫 `_rmd5）` 的变量
+#      → set -u 直接报未绑定并中止部署。
 #
 set -uo pipefail
 
@@ -211,7 +215,7 @@ else
   _pre_lmd5="$(file_md5 "$LOCAL_DIR/docker-compose.yml")"
   _pre_rmd5="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "md5sum '$REMOTE_DIR/docker-compose.yml' 2>/dev/null | awk '{print \$1}'")"
   if [ -n "$_pre_rmd5" ] && [ "$_pre_lmd5" != "$_pre_rmd5" ]; then
-    log "WARN: 服务器根 compose 与仓库不一致（local=$_pre_lmd5 remote=$_pre_rmd5），即将用仓库版本覆盖"
+    log "WARN: 服务器根 compose 与仓库不一致（local=${_pre_lmd5} remote=${_pre_rmd5}），即将用仓库版本覆盖"
     ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cat '$REMOTE_DIR/docker-compose.yml'" > /tmp/.deploy_remote_compose.yml 2>/dev/null \
       && diff -u "$LOCAL_DIR/docker-compose.yml" /tmp/.deploy_remote_compose.yml | head -40
   fi
@@ -229,9 +233,9 @@ else
   _lmd5="$(file_md5 "$LOCAL_DIR/docker-compose.yml")"
   _rmd5="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "md5sum '$REMOTE_DIR/docker-compose.yml' | awk '{print \$1}'")"
   if [ "$_lmd5" != "$_rmd5" ]; then
-    die "根 compose 同步后仍与本地不一致（local=$_lmd5 remote=$_rmd5），中止部署"
+    die "根 compose 同步后仍与本地不一致（local=${_lmd5} remote=${_rmd5}），中止部署"
   fi
-  log "根 compose 与本地一致（md5=$_lmd5）"
+  log "根 compose 与本地一致（md5=${_lmd5}）"
   ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose config -q" \
     || die "docker compose config 语法校验失败"
   log "compose 服务清单: $(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose config --services | sort | tr '\n' ' '")"
