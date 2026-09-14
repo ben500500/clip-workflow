@@ -510,13 +510,20 @@ async def confirm_publish_task(
             detail=f"Task status is '{task.status}', expected 'pending_confirm'",
         )
 
+    # 先把状态写入并**提交**，再投递 Celery（Issue #355）。
+    # confirm_publish_worker 是独立进程、独立会话，按 task_id 回查本行校验状态。
+    # 若投递时 "publishing" 尚未提交，worker 可能读到旧的 "pending_confirm"
+    # 而走进错误分支（或按旧状态直接返回）。
+    task.status = "publishing"
+    await db.commit()
+
     # Trigger the confirmation (clicks publish in the prepared tab) via Celery
     from app.celery.tasks import confirm_publish_worker
     celery_result = confirm_publish_worker.delay(str(task.id))
+    # celery_task_id 属于「投递结果」，只能在投递之后落库；此时行已提交，
+    # 单独一次提交把该字段补上（不再依赖 get_db() 在 yield 之后的 commit）。
     task.celery_task_id = celery_result.id
-    task.status = "publishing"
-
-    await db.flush()
+    await db.commit()
     await db.refresh(task)
 
     return {
@@ -563,7 +570,10 @@ async def reschedule_publish_task(
             raise HTTPException(status_code=400, detail=f"当前状态 {task.status} 非预约状态")
         task.scheduled_at = None
         task.status = "pending"
-        await db.flush()
+        # 先提交再投递（Issue #355，同 confirm/requeue）：worker 是独立进程、独立会话，
+        # 若 status="pending" 未提交就 delay()，worker 按 id 回查读到的仍是 scheduled，
+        # 会直接按旧状态返回、把这次转立即发布吃掉。
+        await db.commit()
         from app.celery.tasks import task_publish_video
         celery_result = task_publish_video.delay(str(task.id))
         task.celery_task_id = celery_result.id
@@ -619,11 +629,16 @@ async def requeue_publish_task(
     task.error_message = None
     task.status = "pending"
 
+    # 先提交再投递（Issue #355）：task_publish_video 是独立进程、独立会话，
+    # 按 task_id 回查本行。若 dead_letter=False / status="pending" 的复位未提交就投递，
+    # worker 读到的仍是旧行（dead_letter=True / status="failed"）→ 直接按旧状态返回，
+    # 重发形同虚设。
+    await db.commit()
+
     from app.celery.tasks import task_publish_video
     celery_result = task_publish_video.delay(str(task.id))
     task.celery_task_id = celery_result.id
-
-    await db.flush()
+    await db.commit()
     await db.refresh(task)
 
     return {

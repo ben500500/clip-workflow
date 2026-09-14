@@ -111,6 +111,13 @@ def _run(coro):
 
 async def _bootstrap():
     """建表 + 造一个可登录用户（整体重建，保证用例间互不干扰）。"""
+    # 同一 pytest 进程里若有其它 sqlite 测试模块，它们也会改 dbmod.engine；
+    # 每次 bootstrap 都把 app 的会话工厂重新指回本模块的测试引擎，
+    # 使本模块与执行顺序无关。
+    dbmod.engine = _test_engine
+    dbmod.async_session_factory = async_sessionmaker(
+        _test_engine, class_=AsyncSession, expire_on_commit=False
+    )
     # wechat_download 用独立 Base，不在主 Base.metadata 中，需一并建表
     from wechat_download.base import WechatDownloadBase
 
