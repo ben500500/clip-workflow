@@ -11,6 +11,11 @@
 #   3. engines/slice.py 是只读 bind mount，同步即生效，无需重建。
 #   4. 用 git diff 智能判定本次改了哪些目录，只重建对应容器，省去无谓的全量重建。
 #   5. 重建后做容器健康 + 错误日志冒烟校验。
+#   6. 根 docker-compose.yml 必须单独同步 —— SYNC_DIRS 只同步「目录」，根文件不在其中，
+#      于是服务器上长出了仓库里没有的 worker-wechat-dl（2026-09-14 发现）。现由
+#      SYNC_FILES 补同步，并在同步后用 md5 对账硬校验，不一致直接中止部署。
+#   7. backend/ 变更的重建名单从 compose 自动推导，不再硬编码 —— 硬编码必然漏掉
+#      新增 worker（worker-wechat-dl 就是这么漏的）。
 #
 set -uo pipefail
 
@@ -23,6 +28,9 @@ SSH_OPTS="${DEPLOY_SSH_OPTS:--o StrictHostKeyChecking=no -o BatchMode=yes}"
 
 # 整目录同步（消除半同步）
 SYNC_DIRS=(backend slice-worker frontend engines alembic deploy scripts autoclip)
+
+# 根级散落文件同步（不在任何 SYNC_DIRS 里，必须单列，否则会与仓库漂移）
+SYNC_FILES=(docker-compose.yml)
 
 # 是否先拉取 cnb 更新（git fetch + ff-only merge + 推 GitHub）
 PULL_CNB="${DEPLOY_PULL_CNB:-1}"
@@ -64,6 +72,63 @@ sync_dir() {
     || die "同步 $dir 失败"
 }
 
+# 单文件同步（根 compose 等散落文件）
+sync_file() {
+  local f="$1"
+  if [ ! -f "$LOCAL_DIR/$f" ]; then
+    log "跳过不存在的本地文件: $f"
+    return
+  fi
+  log "同步 $f -> $REMOTE_HOST:$REMOTE_DIR/$f"
+  tar czf - -C "$LOCAL_DIR" "$f" \
+    | ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && tar xzf -" \
+    || die "同步 $f 失败"
+}
+
+# 可移植 md5（macOS 自带的是 md5，无 md5sum）
+file_md5() {
+  if command -v md5sum >/dev/null 2>&1; then
+    md5sum "$1" | awk '{print $1}'
+  else
+    md5 -q "$1"
+  fi
+}
+
+# 从 compose 推导「运行 clip-backend:latest 镜像」的服务集合 —— 也就是 backend/ 代码
+# 变更后必须重建的容器。以 compose 为唯一事实来源，避免硬编码名单随新增 worker 失效。
+compose_backend_image_services() {
+  awk '
+    /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { svc=$1; sub(/:$/, "", svc); anc[svc]=0; img[svc]=""; order[++n]=svc }
+    /<<: \*celery-worker-base/        { anc[svc]=1 }
+    /^    image:[[:space:]]/          { img[svc]=$2 }
+    END {
+      for (i=1;i<=n;i++) { s=order[i]
+        if (img[s]=="clip-backend:latest")                 print s
+        else if (anc[s]==1 && img[s]=="")                   print s
+      }
+    }
+  ' "$LOCAL_DIR/docker-compose.yml"
+}
+
+# 兜底名单：compose 解析异常时使用（正常路径永不依赖它）
+BACKEND_CORE_SERVICES="backend worker-video worker-variant worker-publish worker-selection worker-fast worker-wechat-dl beat"
+
+# backend/ 变更的重建名单。alembic-migrate 虽跑同一镜像，但它是一次性迁移容器，
+# 只跟随 alembic/ 变更重建，故排除。
+backend_rebuild_services() {
+  local list
+  list="$(compose_backend_image_services | grep -vx 'alembic-migrate' | tr '\n' ' ')"
+  case " $list " in
+    *" backend "*)
+      echo "$list"
+      ;;
+    *)
+      log "WARN: 无法从 compose 解析 backend 镜像服务，回退到内置名单"
+      echo "$BACKEND_CORE_SERVICES"
+      ;;
+  esac
+}
+
 # 根据 git diff 判定需要重建的服务（去重）
 compute_services() {
   local prev="$1"
@@ -78,8 +143,9 @@ compute_services() {
   fi
 
   local svc=""
+  # backend/ 变更 —— 名单从 compose 推导（所有跑 clip-backend:latest 的容器）
   if [ "$changed" = "ALL" ] || printf '%s\n' "$changed" | grep -q '^backend/'; then
-    svc="$svc backend worker-video worker-variant worker-publish worker-fast beat rpa_worker"
+    svc="$svc $(backend_rebuild_services)"
   fi
   if [ "$changed" = "ALL" ] || printf '%s\n' "$changed" | grep -q '^frontend/'; then
     svc="$svc frontend"
@@ -135,14 +201,40 @@ else
   log "需重建容器: $SERVICES"
 fi
 
-# 3. 同步受影响目录（整目录，避免半同步）
+# 3. 同步受影响目录（整目录，避免半同步）+ 根级散落文件
 if [ "$DRY_RUN" = "1" ]; then
   log "[dry-run] 将同步目录: ${SYNC_DIRS[*]}"
+  log "[dry-run] 将同步文件: ${SYNC_FILES[*]}"
 else
+  # 3.1 覆盖前先探测服务器侧根 compose 是否被手改过 —— 只告警，仓库是唯一事实来源。
+  #     如果不报出来，漂移会被静默抹平，下次就再也发现不了「服务器上到底跑的是什么」。
+  _pre_lmd5="$(file_md5 "$LOCAL_DIR/docker-compose.yml")"
+  _pre_rmd5="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "md5sum '$REMOTE_DIR/docker-compose.yml' 2>/dev/null | awk '{print \$1}'")"
+  if [ -n "$_pre_rmd5" ] && [ "$_pre_lmd5" != "$_pre_rmd5" ]; then
+    log "WARN: 服务器根 compose 与仓库不一致（local=$_pre_lmd5 remote=$_pre_rmd5），即将用仓库版本覆盖"
+    ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cat '$REMOTE_DIR/docker-compose.yml'" > /tmp/.deploy_remote_compose.yml 2>/dev/null \
+      && diff -u "$LOCAL_DIR/docker-compose.yml" /tmp/.deploy_remote_compose.yml | head -40
+  fi
+
   for d in "${SYNC_DIRS[@]}"; do
     sync_dir "$d"
   done
-  log "全部目录同步完成"
+  for f in "${SYNC_FILES[@]}"; do
+    sync_file "$f"
+  done
+  log "全部目录 + 根文件同步完成"
+
+  # 3.2 同步后硬校验：必须逐字节一致 + compose 语法可解析。这两条是「配置漂移」的
+  #     最后一道闸 —— 漂移的表现是「代码改了但容器行为没变」，极难排查。宁可中止部署。
+  _lmd5="$(file_md5 "$LOCAL_DIR/docker-compose.yml")"
+  _rmd5="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "md5sum '$REMOTE_DIR/docker-compose.yml' | awk '{print \$1}'")"
+  if [ "$_lmd5" != "$_rmd5" ]; then
+    die "根 compose 同步后仍与本地不一致（local=$_lmd5 remote=$_rmd5），中止部署"
+  fi
+  log "根 compose 与本地一致（md5=$_lmd5）"
+  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose config -q" \
+    || die "docker compose config 语法校验失败"
+  log "compose 服务清单: $(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose config --services | sort | tr '\n' ' '")"
 fi
 
 # 4. 重建受影响容器

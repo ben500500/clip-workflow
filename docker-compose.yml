@@ -404,6 +404,12 @@ services:
     # 与切片/检测/去水印（video_processing）分属独立容器，长切片不再阻塞选点。并发 2。
     command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "selection", "--loglevel=info", "--concurrency=2"]
 
+
+  worker-wechat-dl:
+    <<: *celery-worker-base
+    container_name: clip-worker-wechat-dl
+    # 微信下载（视频号解析 → 拉流 → 入库）—— 独占 wechat_dl 队列，并发 1
+    command: ["celery", "-A", "app.celery.tasks.celery_app", "worker", "-Q", "wechat_dl", "--loglevel=info", "--concurrency=1"]
   worker-fast:
     <<: *celery-worker-base
     container_name: clip-worker-fast
