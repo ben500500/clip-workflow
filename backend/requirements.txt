@@ -35,3 +35,12 @@ PyYAML>=6.0
 # seedance_wm LaMa 修补使用 remove-ai-watermarks 的 erase_lama（onnxruntime，已安装）
 # 无需额外安装 torch 或 iopaint
 fonttools>=4.40.0  # 固定文字字体方案C：从 .ttc 提取 SC face 单字体（绕开 JP 字形歧义）
+
+# ── 测试依赖 ─────────────────────────────────────────────
+# 回归套件里有大量 `@pytest.mark.asyncio` 的 async 用例（wechat_dl 状态机/解析缓存 TTL、
+# lan_source 清单发现等核心写路径）。缺该插件时 pytest 既不执行也不 skip，而是把每条
+# async 用例直接判 FAILED（"async def functions are not natively supported"）——
+# 等于这些回归保护形同虚设。见 Issue #357。
+# pytest 本身此前是 c2pa-python 的传递依赖，这里显式钉住，避免上游去掉依赖后套件消失。
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
