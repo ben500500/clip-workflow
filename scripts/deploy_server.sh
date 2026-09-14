@@ -18,8 +18,9 @@
 #      新增 worker（worker-wechat-dl 就是这么漏的）。
 #   8. 变量展开一律写 ${var}。脚本里中文/全角标点很多，而本机是 bash 3.2：在 C locale
 #      （后台/非交互执行时 LANG 常常没继承）下它会把 >=0x80 的字节当作标识符字符，
-#      于是 "…${_rmd5}），" 若写成裸 "$_rmd5，" 会被解析成一个叫 `_rmd5）` 的变量
-#      → set -u 直接报未绑定并中止部署。
+#      于是「裸展开紧跟全角逗号」会被解析成变量名里带着 `）` 的标识符，
+#      set -u 直接报未绑定并中止部署。（同类隐患：healthcheck.sh / init_admin.sh /
+#      refresh_pingyue_roster.sh / server-setup.sh 各有 1~4 处，非本次范围。）
 #
 set -uo pipefail
 
