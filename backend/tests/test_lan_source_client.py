@@ -86,12 +86,14 @@ def names(dramas):
 
 
 # ── 修复点 1：dupload 清单走 manage_base ──
+@pytest.mark.asyncio
 async def test_dupload_uses_manage_base(client):
     out = await client._discover_from_dupload()
     assert FakeClient.requests == [f"{MANAGE}/api/dupload/tasks"]
     assert names(out) == ["扫地出门，三胎宝妈是千金", "双宝牵线"]
 
 
+@pytest.mark.asyncio
 async def test_dupload_parses_drama_field(client):
     """回归：dupload/tasks 为裸数组，剧名字段是 `drama`（非 dramaName/drama_name/name）。
 
@@ -106,6 +108,7 @@ async def test_dupload_parses_drama_field(client):
     assert out[1].total == 48
 
 
+@pytest.mark.asyncio
 async def test_dupload_fallback_to_base_when_no_manage(monkeypatch):
     monkeypatch.setattr("lan_source.client.httpx.AsyncClient", FakeClient)
     FakeClient.reset()
@@ -117,6 +120,7 @@ async def test_dupload_fallback_to_base_when_no_manage(monkeypatch):
 
 
 # ── 修复点 2：两源合并去重，manage 非空不跳过 dupload ──
+@pytest.mark.asyncio
 async def test_discover_merges_both_sources(client):
     out = await client.discover_dramas()
     # manage 2 个（双宝牵线/六年房贷）+ dupload 2 个，重叠的「双宝牵线」去重 → 3 个
@@ -125,6 +129,7 @@ async def test_discover_merges_both_sources(client):
     assert len(keys) == len(set(keys))
 
 
+@pytest.mark.asyncio
 async def test_discover_skips_failed_manage(monkeypatch, client):
     """manage 源失败不阻塞：仍返回 dupload 清单。"""
 
@@ -141,6 +146,7 @@ async def test_discover_skips_failed_manage(monkeypatch, client):
     assert names(out) == ["扫地出门，三胎宝妈是千金", "双宝牵线"]
 
 
+@pytest.mark.asyncio
 async def test_discover_skips_failed_dupload(client):
     """dupload 源失败不阻塞：仍返回 manage 清单。"""
 
@@ -165,11 +171,13 @@ def test_normalize_strips_fullwidth_punct():
     assert normalize_drama_name("扫地出门，三胎宝妈是千金") == normalize_drama_name("扫地出门三胎宝妈是千金")
 
 
+@pytest.mark.asyncio
 async def test_find_matched_drama_hits_dupload_only(client):
     matched = await client._find_matched_drama("扫地出门三胎宝妈是千金")
     assert matched == "扫地出门，三胎宝妈是千金"
 
 
+@pytest.mark.asyncio
 async def test_fetch_episodes_fuzzy_fallback(client):
     """精确查 400 drama not found → 模糊匹配命中 dupload 清单剧名 → 重查返回 30 集。"""
     from urllib.parse import quote
