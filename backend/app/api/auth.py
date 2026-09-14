@@ -230,7 +230,23 @@ async def login(
     refresh_token = getattr(session, "_plain_refresh_token", None)
 
     _set_refresh_cookie(response, refresh_token)
+    # 审计写入与 session 行置于同一提交边界内：
+    # _write_audit 内部自带 try/except，审计失败只记日志、不影响登录主流程。
     await _write_audit(db, "auth.login", user, "user", str(user.id), request=request)
+
+    # ── 显式提交：必须在返回响应之前落库（Issue #350）────────────────────────
+    # 竞态：create_user_session() 只 flush 不 commit，而 get_db() 的 commit() 写在
+    # `yield` 之后。本仓 FastAPI >= 0.106 起，yield 依赖的退出代码在响应已发给客户端
+    # 之后才执行 → 客户端拿到 200 时 user_sessions 行尚不可见。
+    # app/auth.py get_current_user 用该行做会话黑名单校验，查不到即判
+    # 「会话已失效，请重新登录」(401)，于是「登录后的第一个请求」必被打回。
+    #
+    # 因此这里在业务写路径内显式提交（同 #346 wechat_dl 的处理方式），
+    # 使 session 行在响应发出前对其它连接可见。get_db() 尾部的 commit() 随之成为
+    # 幂等空操作（SQLAlchemy 事务已结束，再次 commit 不产生二次写）。
+    # 注意：不可改把 get_db() 的 commit() 挪到 yield 之前——那样响应未生成就提交，
+    # 端点抛异常时无法回滚。
+    await db.commit()
 
     return LoginResponse(
         access_token=access_token,
