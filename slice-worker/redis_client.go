@@ -45,6 +45,16 @@ func nodeKey(nodeID string) string {
 	return "slice:nodes:" + nodeID
 }
 
+// nodeQueueKey 节点专属任务信箱 List key（契约与 Python 端对齐：RPUSH/BRPOP）。
+func nodeQueueKey(nodeID string) string {
+	return "slice:queue:" + nodeID
+}
+
+// nodeCmdChannel 节点指令 Pub/Sub 通道名（服务器 PUBLISH 唤醒信号）。
+func nodeCmdChannel(nodeID string) string {
+	return "slice:node-cmd:" + nodeID
+}
+
 // RegisterNode 注册节点
 //
 // 数据契约（与后端 Python 读取方保持一致）：
@@ -193,6 +203,88 @@ func (r *RedisClient) AckTask(stream, group, msgID string) error {
 	// 仅当 XAck 成功后才 XDel 主 Stream，避免消息仍在 PEL 中但主 Stream 已删，
 	// 造成其他消费者组认领时找不到消息条目。
 	return r.client.XDel(r.ctx, stream, msgID).Err()
+}
+
+// FetchDirectTask 从节点专属队列阻塞取任务（BRPOP，原子弹出即确认）。
+//
+// 消息体与 Stream 消息同构（{"data": <SliceTask JSON>}），复用同一套 SliceTask
+// 解析。List 弹出即删除，天然不重复，无需 XAck；返回的 StreamMessage 仅用于
+// 统一复用 runTask 的执行流程，其 Stream 字段固定为 "direct"（无对应消费组）。
+func (r *RedisClient) FetchDirectTask(nodeID string, timeout time.Duration) (*StreamMessage, error) {
+	res, err := r.client.BRPop(r.ctx, timeout, nodeQueueKey(nodeID)).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	// BRPop 返回 [key, value]
+	if len(res) < 2 {
+		return nil, nil
+	}
+	return buildDirectMessage(res[1])
+}
+
+// FetchDirectTaskNow 非阻塞地取一个专属队列任务（LPOP），供 Pub/Sub 唤醒信号
+// 到达时立即拉取；队列为空返回 (nil, nil)。
+func (r *RedisClient) FetchDirectTaskNow(nodeID string) (*StreamMessage, error) {
+	val, err := r.client.LPop(r.ctx, nodeQueueKey(nodeID)).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return buildDirectMessage(val)
+}
+
+// buildDirectMessage 将专属队列里的原始 JSON 解析为 StreamMessage（Stream="direct"）。
+func buildDirectMessage(raw string) (*StreamMessage, error) {
+	task, data, err := parseStreamMessage(redis.XMessage{Values: map[string]interface{}{"data": raw}})
+	if err != nil {
+		return nil, err
+	}
+	return &StreamMessage{
+		ID:      "",
+		Stream:  "direct",
+		Task:    task,
+		RawData: data,
+	}, nil
+}
+
+// RequeueDirectTask 把专属队列任务重新压回队尾（用于标签不匹配时不丢任务）。
+func (r *RedisClient) RequeueDirectTask(nodeID, rawData string) error {
+	return r.client.RPush(r.ctx, nodeQueueKey(nodeID), rawData).Err()
+}
+
+// GetNodeQueueLen 返回节点专属队列积压长度（-1 表示查询失败）。
+func (r *RedisClient) GetNodeQueueLen(nodeID string) int64 {
+	n, err := r.client.LLen(r.ctx, nodeQueueKey(nodeID)).Result()
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+// SubscribeNodeCmd 订阅节点指令通道，返回消息 channel（payload 为 JSON 字符串）。
+//
+// 使用独立连接（pubsub 长连接不能与阻塞命令共用连接）；调用方负责在退出时
+// 关闭返回的 PubSub 实例。
+func (r *RedisClient) SubscribeNodeCmd(nodeID string) (<-chan string, *redis.PubSub, error) {
+	ps := r.client.Subscribe(r.ctx, nodeCmdChannel(nodeID))
+	// Ping 确认订阅已建立（避免 Receive 与 Channel 共用导致确认时序问题）
+	if err := ps.Ping(r.ctx); err != nil {
+		_ = ps.Close()
+		return nil, nil, err
+	}
+	ch := make(chan string)
+	go func() {
+		defer close(ch)
+		for msg := range ps.Channel() {
+			ch <- msg.Payload
+		}
+	}()
+	return ch, ps, nil
 }
 
 // RequeueTask 重新入队任务（用于标签不匹配或延迟重试）
@@ -514,13 +606,15 @@ type SliceTask struct {
 	// 钩子混搭输出数量（可选，后端透传；Worker 透传给引擎 --hook-mix-output-count 参数）
 	HookMixOutputCount int `json:"hook_mix_output_count"`
 	// 输出档位（可选，后端透传；Worker 透传给引擎 --output-tier 参数，高分辨率/高 fps 素材降档提速）
-	OutputTier string `json:"output_tier"`
-	Output         TaskOutput             `json:"output"`
-	TimeoutSec     int                      `json:"timeout_seconds"`
-	SourceDuration float64                  `json:"source_duration"`
-	RetryCount     int                      `json:"retry_count"`
-	RetryAt        int64                    `json:"retry_at,omitempty"`
-	CreatedAt      string                   `json:"created_at"`
+	OutputTier     string     `json:"output_tier"`
+	Output         TaskOutput `json:"output"`
+	TimeoutSec     int        `json:"timeout_seconds"`
+	SourceDuration float64    `json:"source_duration"`
+	RetryCount     int        `json:"retry_count"`
+	RetryAt        int64      `json:"retry_at,omitempty"`
+	CreatedAt      string     `json:"created_at"`
+	// 目标节点 ID（可选，服务器指定派发时非空；空/缺省走公共 Stream，兼容旧行为）
+	TargetNodeID string `json:"target_node_id,omitempty"`
 }
 
 // BadgeItem 图片角标配置

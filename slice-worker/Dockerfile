@@ -95,6 +95,9 @@ COPY worker.json /app/worker.json.template
 
 # CPU 分配比例默认值（1~100，默认 50）：直接 docker run 未设置时也能正常生成配置
 ENV CPU_PERCENT=80
+# 节点专属队列开关（默认开启，服务器指定派发任务直投本节点）与 BRPOP 超时（秒）
+ENV ENABLE_DIRECT_QUEUE=true
+ENV DIRECT_QUEUE_TIMEOUT=2
 
 RUN mkdir -p /tmp/slice-worker
 

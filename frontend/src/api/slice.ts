@@ -152,6 +152,8 @@ export const sliceApi = {
       // 指定某一次「AI 选点历史」run：切片时若当前候选为空（最近选点失败清空候选），
       // 后端用该 run 的选点结果恢复候选后再切片
       slice_autoclip_run_id?: string;
+      // 指定目标 Worker 节点（服务器指定派发）：非空时任务直投该节点专属队列
+      target_node_id?: string;
     }
   ) =>
     client.post(`/episodes/${episodeId}/slice/run`, { mode, ...data }) as Promise<{
@@ -298,6 +300,28 @@ export const sliceApi = {
       ok: boolean;
       node_id: string;
       deleted: boolean;
+      message: string;
+    }>,
+
+  // 节点专属队列（服务器指定派发）查询/改派/唤醒
+  getWorkerQueue: (nodeId: string) =>
+    client.get(`/workers/${encodeURIComponent(nodeId)}/queue`) as Promise<{
+      node_id: string;
+      queue_len: number;
+      pending_task_ids: string[];
+    }>,
+
+  requeueWorkerQueue: (nodeId: string) =>
+    client.post(`/workers/${encodeURIComponent(nodeId)}/requeue`) as Promise<{
+      node_id: string;
+      requeued: number;
+      message: string;
+    }>,
+
+  wakeWorker: (nodeId: string) =>
+    client.post(`/workers/${encodeURIComponent(nodeId)}/wake`) as Promise<{
+      ok: boolean;
+      node_id: string;
       message: string;
     }>,
 

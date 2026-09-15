@@ -2,6 +2,7 @@
 
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -43,6 +44,47 @@ NODE_CPU_PERCENT_PREFIX = "slice:node-cpu-percent:"
 # 服务器推送更新时写入，Worker 端在心跳循环中检测到目标版本与本地不一致时
 # 自动从后端拉取引擎更新包并替换本地 engines/ 目录（无需重新部署/重启）。
 NODE_UPDATE_PREFIX = "slice:node-update:"
+
+# 节点专属任务信箱 List key（服务器 RPUSH，Worker BRPOP/LPOP 原子取出）
+NODE_QUEUE_PREFIX = "slice:queue:"
+
+# 节点指令 Pub/Sub 通道（服务器 PUBLISH 唤醒信号，Worker SUBSCRIBE 监听）
+NODE_CMD_CHANNEL_PREFIX = "slice:node-cmd:"
+
+# 唤醒消息 type 字段固定值
+WAKE_TYPE = "wake"
+
+# 改派原子搬迁 Lua 脚本：把节点专属队列（KEYS[1]）的全部元素按序搬到临时 list（KEYS[2]）。
+# 用 LPOP(队头) → RPUSH(队尾) 保序；脚本由 Redis 单线程原子执行，不会出现「半搬」状态。
+_REQUEUE_MOVE_LUA = """
+local moved = 0
+while true do
+    local v = redis.call('LPOP', KEYS[1])
+    if not v then
+        break
+    end
+    redis.call('RPUSH', KEYS[2], v)
+    moved = moved + 1
+end
+return moved
+"""
+
+# 改派回滚 Lua 脚本：把临时 list（KEYS[1]）的全部元素倒序压回专属队列（KEYS[2]）队头。
+# 临时 list 队头是未投递的最早元素；用 RPOP(队尾)→LPUSH(队头) 倒序压回，
+# 使最早元素最终回到专属队列队头，原始顺序不变。
+_REQUEUE_ROLLBACK_LUA = """
+local n = 0
+while true do
+    local v = redis.call('RPOP', KEYS[1])
+    if not v then
+        break
+    end
+    redis.call('LPUSH', KEYS[2], v)
+    n = n + 1
+end
+redis.call('DEL', KEYS[1])
+return n
+"""
 
 
 def _get_stream(priority: str = "normal") -> str:
@@ -100,16 +142,26 @@ def reset_redis_client() -> None:
     _redis_client = None
 
 
-async def publish_slice_task(task_data: dict, priority: str = "normal") -> Optional[str]:
-    """将切片任务发布到 Redis Stream。
+async def publish_slice_task(
+    task_data: dict,
+    priority: str = "normal",
+    target_node_id: Optional[str] = None,
+) -> Optional[str]:
+    """将切片任务发布到 Worker 队列。
 
     Args:
         task_data: 任务数据（JSON 可序列化字典）
-        priority: 优先级 (high/normal/low)
+        priority: 优先级 (high/normal/low)，仅在走公共 Stream 时生效
+        target_node_id: 目标节点 ID。非空时走节点专属队列（RPUSH + PUBLISH 唤醒），
+            实现指定派发；空/缺省时走公共 Stream，与旧行为完全一致。
 
     Returns:
-        消息 ID（成功时）或 None（失败时）
+        消息 ID（Stream）或 "direct"（专属队列，无 Stream 消息 ID），失败时 None
     """
+    # 指定派发：投递到节点专属队列 + 发唤醒信号（唤醒只负责“快”，可靠性由 List 保证）
+    if target_node_id:
+        return await _publish_to_node_queue(target_node_id, task_data)
+
     stream = _get_stream(priority)
     try:
         redis = await get_redis()
@@ -138,6 +190,187 @@ async def publish_slice_task(task_data: dict, priority: str = "normal") -> Optio
     except Exception as e:
         logger.error(f"Failed to publish slice task to Redis Stream: {e}")
         return None
+
+
+async def _publish_to_node_queue(target_node_id: str, task_data: dict) -> Optional[str]:
+    """把任务 RPUSH 到节点专属队列并 PUBLISH 唤醒信号。
+
+    消息体与 Stream 消息同构（{"data": <SliceTask JSON>}），Worker 复用同一套解析。
+    返回 "direct" 表示已入队（无 Stream 消息 ID）。RPUSH 与 PUBLISH 在同一连接上
+    顺序执行，避免每个任务开两次连接；唤醒信号尽力而为（丢失不影响送达）。
+    """
+    redis = None
+    try:
+        redis = await get_redis()
+        queue_key = f"{NODE_QUEUE_PREFIX}{target_node_id}"
+        raw = json.dumps(task_data)
+        await redis.rpush(queue_key, json.dumps({"data": raw}))
+        # 唤醒信号尽力而为：丢失不影响送达（Worker BRPOP 短超时兜底）
+        wake_payload = json.dumps({
+            "type": WAKE_TYPE,
+            "node_id": target_node_id,
+            "issued_at": int(datetime.utcnow().timestamp()),
+        })
+        await redis.publish(f"{NODE_CMD_CHANNEL_PREFIX}{target_node_id}", wake_payload)
+        logger.info(
+            "Published slice task %s to node queue %s (target_node_id=%s)",
+            task_data.get("task_id", "?"),
+            queue_key,
+            target_node_id,
+        )
+        return "direct"
+    except Exception as e:
+        logger.error(f"Failed to publish slice task to node queue {target_node_id}: {e}")
+        return None
+    finally:
+        if redis:
+            await redis.close()
+
+
+async def get_node_queue_len(node_id: str) -> int:
+    """查询节点专属队列积压长度（失败返回 0）。"""
+    redis = None
+    try:
+        redis = await get_redis()
+        n = await redis.llen(f"{NODE_QUEUE_PREFIX}{node_id}")
+        return int(n or 0)
+    except Exception as e:
+        logger.error(f"Failed to get node queue length for {node_id}: {e}")
+        return 0
+    finally:
+        if redis:
+            await redis.close()
+
+
+async def get_node_queue_pending(node_id: str) -> list[str]:
+    """查询节点专属队列积压任务 ID 列表（供运维查看，上限 100）。"""
+    redis = None
+    try:
+        redis = await get_redis()
+        raw_list = await redis.lrange(f"{NODE_QUEUE_PREFIX}{node_id}", 0, 99)
+        task_ids: list[str] = []
+        for item in raw_list:
+            try:
+                # 队列元素为 {"data": <SliceTask JSON 字符串>}，与 Stream 消息同构
+                envelope = json.loads(item)
+                inner = json.loads(envelope.get("data", "{}"))
+                task_ids.append(str(inner.get("task_id", "")))
+            except (ValueError, TypeError):
+                task_ids.append("")
+        return task_ids
+    except Exception as e:
+        logger.error(f"Failed to get node queue pending for {node_id}: {e}")
+        return []
+    finally:
+        if redis:
+            await redis.close()
+
+
+async def requeue_node_queue(node_id: str) -> int:
+    """改派：把节点专属队列积压任务全部转投公共 Stream（节点永久下线时用）。
+
+    分两步保证不丢任务：
+    1. 用 Lua 脚本把队列元素一次性原子搬到临时 list（保序、Redis 单线程执行，
+       不存在「RPOP 后 XADD 失败导致任务丢失」的窗口）；
+    2. 再逐条从临时 list 取出 XADD 到公共 Stream——此步失败则把剩余未投递的
+       元素整体回滚回原专属队列（LRPUSH 倒序压回队头，保持原始顺序），
+       不会丢失任何任务。
+
+    Returns:
+        成功转投公共 Stream 的任务数量；异常时返回 0（并回滚未投递部分）。
+    """
+    redis = None
+    staging_key = None
+    queue_key = None
+    try:
+        redis = await get_redis()
+        queue_key = f"{NODE_QUEUE_PREFIX}{node_id}"
+        # 每次改派使用独立的临时 list，避免并发改派互相污染
+        staging_key = f"{NODE_QUEUE_PREFIX}{node_id}:staging:{uuid.uuid4().hex}"
+
+        # 1) 原子搬迁：专属队列 → 临时 list（保序）
+        total = int(await redis.eval(_REQUEUE_MOVE_LUA, 2, queue_key, staging_key) or 0)
+        if total == 0:
+            logger.info("Node queue %s is empty, nothing to requeue", node_id)
+            return 0
+
+        stream = _get_stream("normal")
+        committed = 0
+        # 2) 逐条投递公共 Stream，失败即停止并回滚剩余元素
+        while True:
+            raw = await redis.lpop(staging_key)
+            if raw is None:
+                break
+            try:
+                await redis.xadd(
+                    stream,
+                    {"data": raw},
+                    maxlen=10000,
+                    approximate=True,
+                )
+                committed += 1
+            except Exception as e:
+                # 本条投递失败：把该条放回临时 list 队头，随剩余元素一起回滚
+                logger.error(
+                    "Failed to XADD requeued task to stream %s: %s", stream, e
+                )
+                await redis.lpush(staging_key, raw)
+                break
+
+        remaining = int(await redis.llen(staging_key) or 0)
+        if remaining > 0:
+            # 回滚：把临时 list 剩余元素按原始顺序压回专属队列队头
+            await redis.eval(_REQUEUE_ROLLBACK_LUA, 2, staging_key, queue_key)
+            logger.warning(
+                "Requeue node queue %s partially failed: %d/%d committed, %d rolled back",
+                node_id, committed, total, remaining,
+            )
+            return committed
+
+        logger.info(
+            "Requeued %d tasks from node queue %s to public stream", committed, node_id
+        )
+        return committed
+    except Exception as e:
+        logger.error(f"Failed to requeue node queue {node_id}: {e}")
+        # 兜底：若临时 list 里仍有元素（搬迁成功但后续异常），尝试整体回滚
+        if redis is not None and staging_key:
+            try:
+                await redis.eval(_REQUEUE_ROLLBACK_LUA, 2, staging_key, queue_key)
+            except Exception as rb:
+                logger.error(
+                    "Failed to rollback staging list for node %s: %s", node_id, rb
+                )
+        return 0
+    finally:
+        # 清理临时 list（正常情况下应已为空），失败仅告警不影响主流程
+        if redis is not None and staging_key:
+            try:
+                await redis.delete(staging_key)
+            except Exception:
+                pass
+        if redis:
+            await redis.close()
+
+
+async def wake_node(node_id: str) -> bool:
+    """向节点指令通道发一次唤醒信号（尽力而为，Pub/Sub 不保证送达）。"""
+    redis = None
+    try:
+        redis = await get_redis()
+        payload = json.dumps({
+            "type": WAKE_TYPE,
+            "node_id": node_id,
+            "issued_at": int(datetime.utcnow().timestamp()),
+        })
+        await redis.publish(f"{NODE_CMD_CHANNEL_PREFIX}{node_id}", payload)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to wake node {node_id}: {e}")
+        return False
+    finally:
+        if redis:
+            await redis.close()
 
 
 async def store_task_callback_token(task_id: str, token: str, ttl_seconds: int = 86400) -> None:
@@ -349,6 +582,8 @@ async def delete_worker_node(node_id: str) -> bool:
         # 删除启停/CPU 控制 key
         pipe.delete(f"{NODE_ENABLED_PREFIX}{node_id}")
         pipe.delete(f"{NODE_CPU_PERCENT_PREFIX}{node_id}")
+        # 删除节点专属任务信箱（避免离线节点积压任务变成孤儿 key）
+        pipe.delete(f"{NODE_QUEUE_PREFIX}{node_id}")
         # 清理该节点正在运行的任务状态 Hash
         async for key in redis.scan_iter(match=f"{TASK_STATUS_PREFIX}*", count=200):
             task_data = await redis.hgetall(key)
@@ -447,6 +682,13 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
             except Exception:
                 pass
 
+            # 节点专属队列积压长度（服务器指定派发任务的积压量）
+            queue_len = 0
+            try:
+                queue_len = int(await redis.llen(f"{NODE_QUEUE_PREFIX}{node_id}") or 0)
+            except Exception:
+                pass
+
             # 节点 CPU 资源分配比例：优先取控制 key（运行时动态调整），否则取配置默认
             cpu_percent = 50
             try:
@@ -484,6 +726,8 @@ async def get_worker_nodes_from_redis(offline_after_seconds: int = 60) -> list[d
                 "last_heartbeat": node_data.get("last_heartbeat", ""),
                 "started_at": node_data.get("started_at", ""),
                 "enabled": enabled,
+                # 节点专属队列积压数（服务器指定派发任务积压量）
+                "queue_len": queue_len,
                 # 该节点 CPU 资源分配比例（%）
                 "cpu_percent": cpu_percent,
                 # 该节点正在运行的任务列表与平均进度（"工作时进度显示"）

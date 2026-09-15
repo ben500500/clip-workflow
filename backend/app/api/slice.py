@@ -982,6 +982,7 @@ async def _dispatch_slice_task(
             data.hook_mix_mode,
             data.hook_mix_output_count,
             data.priority,
+            data.target_node_id,
         )
 
         if not published:

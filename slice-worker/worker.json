@@ -14,5 +14,7 @@
   "backend_url": "${BACKEND_URL}",
   "cpu_percent": ${CPU_PERCENT},
   "stuck_task_minutes": 30,
-  "consume_streams": ["slice:tasks:high", "slice:tasks:normal", "slice:tasks:low", "slice:tasks:subtitle"]
+  "consume_streams": ["slice:tasks:high", "slice:tasks:normal", "slice:tasks:low", "slice:tasks:subtitle"],
+  "enable_direct_queue": ${ENABLE_DIRECT_QUEUE},
+  "direct_queue_timeout": ${DIRECT_QUEUE_TIMEOUT}
 }

@@ -371,6 +371,8 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
         "hook_video_key", "hook_video_keys", "hook_mix_mode",
         # 优先级流映射（方案A）：标准生产→normal / 高清首发→high / 实验测试→low
         "priority",
+        # 服务器指定派发：任务直投目标节点专属队列（空/缺省走公共 Stream）
+        "target_node_id",
     }
     payload = {k: v for k, v in cfg.items() if k in known_fields and v is not None}
     payload["mode"] = cfg.get("mode") or "fast"

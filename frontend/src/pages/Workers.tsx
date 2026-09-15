@@ -273,6 +273,14 @@ const WorkersPage: React.FC = () => {
       ),
     },
     {
+      title: '专属队列',
+      dataIndex: 'queue_len',
+      key: 'queue_len',
+      width: 100,
+      render: (v: number) =>
+        (v && v > 0) ? <Tag color="orange">{v}</Tag> : <Text type="secondary" style={{ fontSize: 12 }}>-</Text>,
+    },
+    {
       title: 'CPU 分配',
       key: 'cpu_percent',
       width: 150,

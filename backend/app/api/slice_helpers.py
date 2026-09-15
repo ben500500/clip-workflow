@@ -104,6 +104,9 @@ class SliceRunRequest(BaseModel):
     variant_count: Optional[int] = None
     video_path: Optional[str] = None
     engine: Optional[str] = None  # "worker" | "local" | "celery"，默认取配置 SLICE_ENGINE
+    # 指定目标 Worker 节点（服务器指定派发）：非空时任务直投该节点专属队列，
+    # 否则走公共 Stream（由任意匹配标签的节点消费，与旧行为一致）
+    target_node_id: Optional[str] = None
     # 免审核一键切片：为 True 时自动把所有候选片段（含 pending）纳入切片，
     # 不再要求存在 status=accepted 的片段
     auto_accept_all: bool = False
@@ -1121,6 +1124,9 @@ async def _publish_to_worker(
     hook_mix_mode: Optional[str] = None,
     hook_mix_output_count: Optional[int] = None,
     priority: Optional[str] = None,
+    # 指定目标 Worker 节点（服务器指定派发）：非空时任务直投该节点专属队列，
+    # 否则走公共 Stream（由任意匹配标签的节点消费，与旧行为一致）
+    target_node_id: Optional[str] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -1265,6 +1271,10 @@ async def _publish_to_worker(
         "created_at": utc_iso(datetime.utcnow()),
     }
 
+    # 指定派发：透传目标节点 ID（非空时后端改投节点专属队列 + 唤醒）
+    if target_node_id:
+        task_payload["target_node_id"] = target_node_id
+
     # 保存回调 Token 到 Redis（供回调/上传接口鉴权校验）
     await store_task_callback_token(str(slice_task.id), callback_token)
 
@@ -1275,7 +1285,8 @@ async def _publish_to_worker(
     await db.commit()
 
     # 发布到 Redis Stream（字幕任务走独立 subtitle 流，仅 163 Linux worker 消费）
-    msg_id = await publish_slice_task(task_payload, queue)
+    # 指定派发时 target_node_id 非空 → publish_slice_task 改投节点专属队列 + 唤醒
+    msg_id = await publish_slice_task(task_payload, queue, target_node_id=target_node_id)
     if not msg_id:
         # 任务行已提交但无人消费：必须显式置为失败并提交，不留「已提交但悬挂」的
         # pending 行（前端会一直显示排队中，且并发闸门把它算作在飞任务）。
@@ -1286,9 +1297,11 @@ async def _publish_to_worker(
         return False
 
     logger.info(
-        "Published slice task %s to Redis Stream (msg_id=%s)",
+        "Published slice task %s via %s (msg_id=%s, target_node_id=%s)",
         slice_task.id,
+        "direct" if target_node_id else "stream",
         msg_id,
+        target_node_id or "",
     )
     return True
 

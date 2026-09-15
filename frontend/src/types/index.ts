@@ -198,6 +198,8 @@ export interface WorkerNode {
   encoder_capabilities?: string[];
   // 该节点正在运行的任务列表（含 task_id/阶段/模式/进度）
   running_tasks?: WorkerRunningTask[];
+  // 节点专属队列积压数（服务器指定派发任务积压量）
+  queue_len?: number;
 }
 
 export interface WorkerRunningTask {

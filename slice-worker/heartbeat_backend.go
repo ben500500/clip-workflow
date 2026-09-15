@@ -27,14 +27,16 @@ type WorkerHeartbeatPayload struct {
 	TotalTasksFailed    int      `json:"total_tasks_failed"`
 	// 节点硬件编码能力（如 h264_nvenc/hevc_nvenc 等；预留 GPU 节点自动分派接口）
 	EncoderCapabilities []string `json:"encoder_capabilities"`
+	// 节点专属队列当前积压数（服务器指定派发任务积压量）
+	DirectQueueLen int64 `json:"direct_queue_len"`
 }
 
 // WorkerHeartbeatResponse 后端 /api/workers/heartbeat 接口的响应体。
 // 兼容旧后端：enabled 字段缺失时按 true（启用）处理，不破坏旧版契约。
 type WorkerHeartbeatResponse struct {
-	OK       string `json:"ok"`
-	NodeID   string `json:"node_id"`
-	Enabled  *bool  `json:"enabled"`
+	OK      string `json:"ok"`
+	NodeID  string `json:"node_id"`
+	Enabled *bool  `json:"enabled"`
 }
 
 // sendBackendHeartbeat 向后端 API 上报心跳，把节点信息同步到数据库 worker_nodes 表。
@@ -65,6 +67,7 @@ func (w *Worker) sendBackendHeartbeat() error {
 		TotalTasksCompleted: int(atomic.LoadInt32(&w.totalCompleted)),
 		TotalTasksFailed:    int(atomic.LoadInt32(&w.totalFailed)),
 		EncoderCapabilities: w.encoderCapabilities,
+		DirectQueueLen:      w.redis.GetNodeQueueLen(w.config.NodeID),
 	}
 
 	body, err := json.Marshal(payload)

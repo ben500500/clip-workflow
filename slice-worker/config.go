@@ -40,6 +40,12 @@ type Config struct {
 	// 进度上报（进度停留、引擎/ffmpeg 挂起），且进程仍存活，则强制 kill 并重新入队。
 	// 0 表示不启用卡死检测。默认 30 分钟。
 	StuckTaskMinutes int `json:"stuck_task_minutes"`
+	// 是否启用节点专属队列（服务器指定派发任务直投本节点信箱，默认 true）。
+	// 关闭后 Worker 不消费专属队列，完全退回公共 Stream 消费（灰度/回滚用）。
+	EnableDirectQueue bool `json:"enable_direct_queue"`
+	// 专属队列 BRPOP 阻塞超时（秒，默认 2）：队列为空时最多阻塞这么久再回落公共池，
+	// 同时作为 Pub/Sub 唤醒消息丢失时的兜底轮询周期。
+	DirectQueueTimeout int `json:"direct_queue_timeout"`
 }
 
 // DefaultNodeID 生成统一的默认节点 ID（命名规则：slice-worker-<本机名>）。
@@ -68,21 +74,11 @@ func DefaultNodeID() string {
 // DefaultConfig 默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		NodeID:            DefaultNodeID(),
-		RedisURL:          "redis://localhost:6379",
-		Tags:              []string{"cpu"},
-		MaxConcurrent:     2,
-		EnginesPath:       "./engines",
-		TempDir:           "/tmp/slice-worker",
-		LogLevel:          "info",
-		HeartbeatInterval: 10,
-		TaskTimeout:       7200,
-		MaxRetries:        2,
-		RetryDelay:        30,
-		NodeTTL:           0,
-		BackendURL:        "http://backend:8080",
-		CPUPercent:        50,
-		StuckTaskMinutes:  30,
+		BackendURL:         "http://backend:8080",
+		CPUPercent:         50,
+		StuckTaskMinutes:   30,
+		EnableDirectQueue:  true,
+		DirectQueueTimeout: 2,
 	}
 }
 
@@ -108,6 +104,11 @@ func LoadConfig(path string) (*Config, error) {
 	// CPU 分配比例范围约束：1 ~ 100，默认 50
 	if cfg.CPUPercent < 1 || cfg.CPUPercent > 100 {
 		cfg.CPUPercent = 50
+	}
+
+	// 专属队列 BRPOP 超时下限保护：<=0 回落默认 2 秒
+	if cfg.DirectQueueTimeout <= 0 {
+		cfg.DirectQueueTimeout = 2
 	}
 
 	return cfg, nil

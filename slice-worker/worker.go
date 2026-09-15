@@ -229,6 +229,17 @@ func (w *Worker) Run(ctx context.Context) error {
 	// 启动卡死任务检测（issue #242 P1）：进度长时间停更的存活任务强制 kill 重投
 	go w.stuckTaskLoop(ctx)
 
+	// 专属队列消费与 Pub/Sub 唤醒监听（可选，灰度/回滚时关闭）
+	var (
+		directCh = make(chan *StreamMessage)
+		wakeCh   = make(chan struct{}, 1)
+	)
+	if w.config.EnableDirectQueue {
+		go w.directQueueLoop(ctx, directCh)
+		go w.nodeCmdLoop(ctx, wakeCh)
+		w.log("info", "节点专属队列已启用（BRPOP 超时 %ds + Pub/Sub 唤醒）", w.config.DirectQueueTimeout)
+	}
+
 	// 主消费循环
 	w.log("info", "开始消费任务，最大并发: %d，消费流: %v", w.config.MaxConcurrent, streams)
 	for {
@@ -255,34 +266,137 @@ func (w *Worker) Run(ctx context.Context) error {
 				time.Sleep(3 * time.Second)
 				continue
 			}
-
-			// 检查并发上限
-			if int(atomic.LoadInt32(&w.currentTasks)) >= w.config.MaxConcurrent {
-				time.Sleep(500 * time.Millisecond)
-				continue
-			}
-
-			// 获取任务
-			msg, err := w.redis.FetchTask(streams, "workers", w.config.NodeID, 1*time.Second)
-			if err != nil {
-				w.log("error", "获取任务失败: %v", err)
-				time.Sleep(1 * time.Second)
-				continue
-			}
-			if msg == nil {
-				continue
-			}
-
-			// 检查标签匹配
-			if !w.matchTags(msg.Task.RequiredTags) {
-				w.log("debug", "标签不匹配，重新入队: %s", msg.Task.TaskID)
-				w.redis.RequeueTask(msg.Stream, msg.RawData)
-				continue
-			}
-
-			// 启动任务
-			go w.runTask(msg)
 		}
+
+		// 检查并发上限（专属队列与公共池共用 MaxConcurrent 槽位，互不挤占超限）
+		if int(atomic.LoadInt32(&w.currentTasks)) >= w.config.MaxConcurrent {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		// 取任务优先级：专属队列（BRPOP）> 公共 Stream（XReadGroup）
+		msg := w.fetchNextTask(directCh, wakeCh, streams)
+		if msg == nil {
+			continue
+		}
+
+		// 检查标签匹配
+		if !w.matchTags(msg.Task.RequiredTags) {
+			w.log("debug", "标签不匹配，重新入队: %s", msg.Task.TaskID)
+			w.requeue(msg)
+			continue
+		}
+
+		// 启动任务
+		go w.runTask(msg)
+	}
+}
+
+// fetchNextTask 按「专属队列优先、公共池回落」的规则取一条任务。
+//
+//   - directCh：专属队列消费 goroutine（BRPOP）投递
+//   - wakeCh：Pub/Sub 唤醒信号，收到后立即非阻塞取一次专属队列
+//   - 两者皆无且专属队列为空时，回落公共 Stream（XReadGroup，1s 超时）
+func (w *Worker) fetchNextTask(directCh <-chan *StreamMessage, wakeCh <-chan struct{}, streams []string) *StreamMessage {
+	if w.config.EnableDirectQueue {
+		select {
+		case msg := <-directCh:
+			return msg
+		case <-wakeCh:
+			// 唤醒即取：立即非阻塞取一次专属队列，实现毫秒级感知
+			if msg, err := w.redis.FetchDirectTaskNow(w.config.NodeID); err == nil && msg != nil {
+				return msg
+			}
+			// 唤醒时队列已被 BRPOP 取走或确实为空：不回落公共池，等下轮 directCh 投递
+			return nil
+		default:
+			// 专属队列空 → 回落公共池
+		}
+	}
+
+	msg, err := w.redis.FetchTask(streams, "workers", w.config.NodeID, 1*time.Second)
+	if err != nil {
+		w.log("error", "获取任务失败: %v", err)
+		time.Sleep(1 * time.Second)
+		return nil
+	}
+	return msg
+}
+
+// directQueueLoop 专属队列消费 goroutine：BRPOP 阻塞取任务，队列空时最多阻塞
+// DirectQueueTimeout 秒再进入下一轮，作为 Pub/Sub 唤醒丢失时的兜底。
+func (w *Worker) directQueueLoop(ctx context.Context, out chan<- *StreamMessage) {
+	timeout := time.Duration(w.config.DirectQueueTimeout) * time.Second
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		msg, err := w.redis.FetchDirectTask(w.config.NodeID, timeout)
+		if err != nil {
+			w.log("error", "专属队列取任务失败: %v", err)
+			// 出错时短睡，避免 Redis 抖动时忙轮询
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		if msg == nil {
+			continue
+		}
+		select {
+		case out <- msg:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// nodeCmdLoop 订阅节点指令通道，把 wake 唤醒信号转发到 wakeCh（尽力而为）。
+// 唤醒丢失不影响任务送达：专属队列的 BRPOP 短超时轮询作为兜底。
+func (w *Worker) nodeCmdLoop(ctx context.Context, wake chan<- struct{}) {
+	ch, ps, err := w.redis.SubscribeNodeCmd(w.config.NodeID)
+	if err != nil {
+		w.log("warn", "订阅节点指令通道失败（唤醒不可用，BRPOP 兜底）: %v", err)
+		return
+	}
+	defer ps.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case payload, ok := <-ch:
+			if !ok {
+				return // 通道已关闭
+			}
+			var cmd struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal([]byte(payload), &cmd); err != nil || cmd.Type != "wake" {
+				continue
+			}
+			// 非阻塞投递唤醒信号（channel 已满说明已有待处理唤醒，丢弃即可）
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+// requeue 任务标签不匹配时按来源放回：专属队列任务回本节点队尾，公共 Stream 任务 XAdd 回原流。
+func (w *Worker) requeue(msg *StreamMessage) {
+	if msg.Stream == "direct" {
+		if err := w.redis.RequeueDirectTask(w.config.NodeID, msg.RawData); err != nil {
+			w.log("error", "专属队列任务重新入队失败: %v", err)
+		}
+		return
+	}
+	if err := w.redis.RequeueTask(msg.Stream, msg.RawData); err != nil {
+		w.log("error", "任务重新入队失败: %v", err)
 	}
 }
 
@@ -535,14 +649,12 @@ func (w *Worker) runTask(msg *StreamMessage) {
 		return
 	}
 
-	// 幂等：若任务已达终态（completed/failed/cancelled），直接 ACK 跳过，
+	// 幂等：若任务已达终态（completed/failed/cancelled），直接确认跳过，
 	// 避免残留消息被重复执行导致状态被污染（已完成的成品不重复生成）。
 	if hash, err := w.redis.GetTaskHash(task.TaskID); err == nil {
 		if st := hash["status"]; st == "completed" || st == "failed" || st == "cancelled" {
-			w.log("info", "任务 %s 已处于终态(%s)，跳过重复执行并 ACK", task.TaskID, st)
-			if ackErr := w.redis.AckTask(msg.Stream, "workers", msg.ID); ackErr != nil {
-				w.log("error", "终态任务 ACK 失败: %v", ackErr)
-			}
+			w.log("info", "任务 %s 已处于终态(%s)，跳过重复执行", task.TaskID, st)
+			w.ackMessage(msg)
 			return
 		}
 	}
@@ -740,10 +852,8 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	}
 	w.emitProgress(task.TaskID, "upload", 100, "上传完成")
 
-	// 4. ACK确认（成功后才从 PEL 移除）
-	if err := w.redis.AckTask(msg.Stream, "workers", msg.ID); err != nil {
-		w.log("error", "ACK失败: %v", err)
-	}
+	// 4. 确认完成（Stream 消息从 PEL 移除；专属队列消息取出即确认，无需处理）
+	w.ackMessage(msg)
 
 	// 5. 更新状态到Redis
 	w.redis.UpdateTaskStatus(task.TaskID, "completed", map[string]interface{}{
@@ -798,7 +908,7 @@ func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *
 		})
 		// cancelled 也设置 TTL，避免历史取消任务的 hash 永久残留
 		w.redis.ExpireTaskStatus(task.TaskID, 7*24*time.Hour)
-		w.redis.AckTask(msg.Stream, "workers", msg.ID)
+		w.ackMessage(msg)
 		atomic.AddInt32(&w.totalFailed, 1)
 		w.sendFailureCallback(task, "任务已取消")
 		if w.onTaskError != nil {
@@ -824,18 +934,24 @@ func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *
 
 		w.log("info", "任务 %s 将在 %s 后重试 (第 %d/%d 次)", task.TaskID, retryDelay, task.RetryCount, w.config.MaxRetries)
 		time.AfterFunc(retryDelay, func() {
-			// 重新发布到 Stream，让任意可用 Worker 消费（携带递增后的重试次数）
+			// 重新发布：专属队列任务回本节点队尾，公共 Stream 任务 XAdd 回原流
 			data, mErr := json.Marshal(task)
 			if mErr != nil {
 				w.log("error", "任务重试序列化失败: %v", mErr)
+				return
+			}
+			if msg.Stream == "direct" {
+				if rerr := w.redis.RequeueDirectTask(w.config.NodeID, string(data)); rerr != nil {
+					w.log("error", "专属队列任务重试重新入队失败: %v", rerr)
+				}
 				return
 			}
 			if rerr := w.redis.RequeueTask(msg.Stream, string(data)); rerr != nil {
 				w.log("error", "任务重试重新入队失败: %v", rerr)
 			}
 		})
-		// 当前消息从 PEL 中 ACK 掉，避免被其他 Worker 重复处理
-		w.redis.AckTask(msg.Stream, "workers", msg.ID)
+		// 当前消息从 PEL 中确认掉（专属队列消息取出即确认，无需处理）
+		w.ackMessage(msg)
 		return
 	}
 
@@ -848,13 +964,22 @@ func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *
 	atomic.AddInt32(&w.totalFailed, 1)
 	w.sendFailureCallback(task, err.Error())
 
-	// ACK 移除 PEL 中的消息
-	if ackErr := w.redis.AckTask(msg.Stream, "workers", msg.ID); ackErr != nil {
-		w.log("error", "ACK失败: %v", ackErr)
-	}
+	// 确认移除 PEL 中的消息（专属队列消息取出即确认，无需处理）
+	w.ackMessage(msg)
 
 	if w.onTaskError != nil {
 		w.onTaskError(task.TaskID, err)
+	}
+}
+
+// ackMessage 确认任务消息：公共 Stream 消息 XAck（从 PEL 移除），专属队列消息
+// 在 BRPOP/LPOP 弹出时即已确认删除，这里无操作。
+func (w *Worker) ackMessage(msg *StreamMessage) {
+	if msg == nil || msg.Stream == "direct" {
+		return
+	}
+	if err := w.redis.AckTask(msg.Stream, "workers", msg.ID); err != nil {
+		w.log("error", "ACK失败: %v", err)
 	}
 }
 
