@@ -374,6 +374,14 @@ services:
     # Remotion 混剪增强独立 worker：使用专用镜像（node:20-slim + chromium + Python/Celery），
     # 独占 remotion 队列（run_remotion_mix_task）。Node+Chrome 逐帧渲染慢，并发 1，
     # 不与其他 ffmpeg worker 抢 CPU。复用 x-celery-worker-base anchor（env/volumes/healthcheck）。
+    #
+    # ⚠️ 用 profile 门控（2026-09-15）：本服务此前「compose 里有定义、163 上却从未启动」，
+    #    属于悬空状态 —— 既不在部署脚本的重建名单，也没有人显式 up 过它。
+    #    REMOTION_ENABLED 默认 false、remotion_mix_config 为空时任务内部直接跳过，
+    #    所以常年空跑一个 chromium 镜像纯属浪费。现改为显式启用：
+    #      docker compose --profile remotion up -d --build worker-remotion
+    #    同时把 REMOTION_ENABLED 置 true，Remotion 渲染才真正可用。
+    profiles: ["remotion"]
     image: clip-remotion-worker:latest
     container_name: clip-worker-remotion
     build:

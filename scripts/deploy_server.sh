@@ -8,7 +8,11 @@
 #   2. 对受影响目录做「整目录完整同步」，避免只同步 diff 文件导致「半同步」——
 #      slice-worker 的 task_executor.go 引用了 redis_client.go 的结构体字段，
 #      只同步前者会让 Go 编译失败 (undefined: task.SubtitleMask) —— 已踩过。
-#   3. engines/slice.py 是只读 bind mount，同步即生效，无需重建。
+#   3. engines/ 与两个消费方的生效方式不同，别搞混：
+#        · slice-worker：镜像内 COPY → 必须重建（且重建前先在服务器跑
+#          sync-engines-to-worker.sh 刷新被 .gitignore 的构建副本）；
+#        · clip-backend：只读 bind mount → 同步即生效，但 uvicorn 无 --reload，
+#          必须 restart 容器才会重新 import。两条现都由脚本自动处理（见第 4 步）。
 #   4. 用 git diff 智能判定本次改了哪些目录，只重建对应容器，省去无谓的全量重建。
 #   5. 重建后做容器健康 + 错误日志冒烟校验。
 #   6. 根 docker-compose.yml 必须单独同步 —— SYNC_DIRS 只同步「目录」，根文件不在其中，
@@ -21,6 +25,8 @@
 #      于是「裸展开紧跟全角逗号」会被解析成变量名里带着 `）` 的标识符，
 #      set -u 直接报未绑定并中止部署。（同类隐患：healthcheck.sh / init_admin.sh /
 #      refresh_pingyue_roster.sh / server-setup.sh 各有 1~4 处，非本次范围。）
+#   9. rpa/ 已纳入同步（2026-09-15）：此前 163 上的 rpa/app/** 在仓库里不存在但
+#      clip-rpa-worker 一直在跑 —— 服务器是唯一事实来源。已回仓 + 加映射 rpa/→rpa_worker。
 #
 set -uo pipefail
 
@@ -32,7 +38,10 @@ LOCAL_DIR="${DEPLOY_LOCAL_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 SSH_OPTS="${DEPLOY_SSH_OPTS:--o StrictHostKeyChecking=no -o BatchMode=yes}"
 
 # 整目录同步（消除半同步）
-SYNC_DIRS=(backend slice-worker frontend engines alembic deploy scripts autoclip)
+# ⚠️ rpa 于 2026-09-15 加入：此前 163 上的 rpa/app/**（8 个文件，含 celery_app/tasks/
+#    publishers）在仓库里根本不存在，而 clip-rpa-worker 一直在跑 —— 典型的「服务器是
+#    唯一事实来源」漂移。已于当日从 163 回仓（逐文件 md5 一致），并纳入同步防复发。
+SYNC_DIRS=(backend slice-worker frontend engines alembic deploy scripts autoclip rpa)
 
 # 根级散落文件同步（不在任何 SYNC_DIRS 里，必须单列，否则会与仓库漂移）
 SYNC_FILES=(docker-compose.yml)
@@ -70,12 +79,18 @@ sync_dir() {
     --exclude='node_modules' --exclude='dist' --exclude='build' \
     --exclude='__pycache__' --exclude='*.pyc' --exclude='.pytest_cache' \
     --exclude='.git' \
+    --exclude='slice-worker/engines' \
     --exclude='slice-worker/ubuntu' --exclude='slice-worker/macos' --exclude='slice-worker/windows' \
     --exclude='slice-worker/slice-worker' --exclude='slice-worker/slice-worker.exe' \
     -C "$LOCAL_DIR" "$dir" \
     | ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && tar xzf -" \
     || die "同步 $dir 失败"
 }
+# ⚠️ 上面对 slice-worker/engines 做了 exclude：它是 .gitignore 忽略的**构建产物副本**
+# （Dockerfile 需要 `COPY --from=builder /build/engines`），唯一事实来源是仓库根 engines/。
+# 本地那份可能长期陈旧（2026-09-14 实测本地是 33d20ff8、生产是 ae14d230）。若把它同步过去，
+# 就等于用陈旧副本覆盖服务器的构建输入。正确做法是同步后在服务器上跑
+# scripts/sync-engines-to-worker.sh（见主流程第 3.5 步）从 engines/ 全量刷新。
 
 # 单文件同步（根 compose 等散落文件）
 sync_file() {
@@ -134,6 +149,18 @@ backend_rebuild_services() {
   esac
 }
 
+# engines/ 是否在本次变更内 —— 决定是否需要 `docker restart clip-backend`
+# （engines 对 slice-worker 是镜像内 COPY，对 clip-backend 是只读 bind mount：
+#  文件同步即生效，但 uvicorn 无 --reload，必须重启才重新 import 新引擎模块）
+engines_changed() {
+  local prev="$1"
+  [ "$FORCE_ALL" = "1" ] && return 0
+  if [ -z "$prev" ] || ! git -C "$LOCAL_DIR" cat-file -e "$prev^{commit}" 2>/dev/null; then
+    return 0
+  fi
+  git -C "$LOCAL_DIR" diff --name-only "$prev" HEAD 2>/dev/null | grep -q '^engines/'
+}
+
 # 根据 git diff 判定需要重建的服务（去重）
 compute_services() {
   local prev="$1"
@@ -155,8 +182,17 @@ compute_services() {
   if [ "$changed" = "ALL" ] || printf '%s\n' "$changed" | grep -q '^frontend/'; then
     svc="$svc frontend"
   fi
+  # slice-worker/ 或 engines/ 变更 —— 都会改变 slice-worker 镜像内容
+  # （engines/ 由 Dockerfile COPY 进镜像，见 sync-engines-to-worker.sh）
   if [ "$changed" = "ALL" ] || printf '%s\n' "$changed" | grep -q '^slice-worker/'; then
     svc="$svc slice-worker slice-worker-2"
+  fi
+  if [ "$changed" = "ALL" ] || printf '%s\n' "$changed" | grep -q '^engines/'; then
+    svc="$svc slice-worker slice-worker-2"
+  fi
+  # rpa/ 变更 —— 镜像 clip-rpa:latest，build context ./rpa（独立于 backend）
+  if [ "$changed" = "ALL" ] || printf '%s\n' "$changed" | grep -q '^rpa/'; then
+    svc="$svc rpa_worker"
   fi
   if [ "$changed" = "ALL" ] || printf '%s\n' "$changed" | grep -q '^autoclip/'; then
     svc="$svc autoclip"
@@ -246,11 +282,38 @@ fi
 if [ -n "$SERVICES" ]; then
   if [ "$DRY_RUN" = "1" ]; then
     log "[dry-run] 将重建容器: $SERVICES"
+    case " $SERVICES " in
+      *" slice-worker "*) log "[dry-run] 将先在服务器执行 sync-engines-to-worker.sh（刷新构建副本）" ;;
+    esac
+    if engines_changed "$PREV"; then
+      log "[dry-run] engines 有变更 → 部署后将需要重启 clip-backend 重新加载引擎"
+    fi
   else
+    # 4.1 slice-worker 镜像是 `COPY --from=builder /build/engines`，其构建输入
+    #     slice-worker/engines 是 .gitignore 忽略的产物副本（本地那份可能长期陈旧，
+    #     且已从同步排除）→ 重建前必须在服务器上从 engines/ 全量刷新，否则镜像里
+    #     还是旧引擎（2026-08-15 / 2026-08-24 两次踩坑）。
+    case " $SERVICES " in
+      *" slice-worker "*)
+        log "刷新构建副本 slice-worker/engines (sync-engines-to-worker.sh)..."
+        ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && bash scripts/sync-engines-to-worker.sh" \
+          || die "sync-engines-to-worker.sh 执行失败"
+        ;;
+    esac
+
     log "重建容器: $SERVICES"
     # shellcheck disable=SC2086
     ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose up -d --build $SERVICES" \
       || die "docker compose 重建失败"
+
+    # 4.2 engines/ 变更且 backend 不在重建名单时：engines 对 clip-backend 是只读
+    #     bind mount（/app/engines），文件已随同步生效，但 uvicorn 无 --reload，
+    #     进程里仍是旧模块 → 必须重启。backend 被重建时新容器自然加载新代码，跳过。
+    if engines_changed "$PREV" && ! printf '%s' " $SERVICES " | grep -q " backend "; then
+      log "engines 变更 → 重启 clip-backend 以重新加载引擎模块..."
+      ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker restart clip-backend" \
+        || log "WARN: clip-backend 重启失败（引擎改动可能未生效，请手工 docker restart clip-backend）"
+    fi
   fi
 else
   log "跳过容器重建"
