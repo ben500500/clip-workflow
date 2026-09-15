@@ -137,6 +137,24 @@ class Settings(BaseSettings):
     # 置 False 可关闭默认重排（segment 仍维持随机 [False,True] 不变）。
     STRUCTURAL_REORDER_DEFAULT: bool = True
 
+    # ── 素材变体去重 · BGM 音频差异化（配方分配层）──
+    # 在音频维度叠加弱背景音乐（BGM）拉稳 RMS 指纹距离（配合 engines/slice.py 的
+    # slice_segment 多输入 filter_complex 改造：bgm/bgm_volume/duck 三个入参）。
+    # BGM_ENABLED：总开关。由于 slice_segment 多输入改造由 FFmpeg 侧 PR 落地，
+    #   在引擎侧合并前保持 False（纯配方层结构，向后兼容）；引擎就绪后置 True 生效。
+    # BGM_DIR：授权 BGM 素材目录（自产/CC0/明确商用授权源）。空串表示未配置。
+    #   recipe 层只从该目录挑选 source 并做授权校验（红线），杜绝非授权曲库入库。
+    # BGM_LICENSE_MANIFEST：可选授权清单 JSON（映射文件名->授权类型），
+    #   未配置时按"整目录视为已授权"兜底；配置后仅放行 manifest 标记为
+    #   cc0 / self_produced / commercial 的文件。
+    # BGM_VOLUME：BGM 母音量（默认 0.35，弱背景、不压人声，与 FFmpeg bgm_volume 对齐）。
+    # BGM_MIX_RATIO：派生变体中采用 BGM 模式的比例（0~1，默认 0.4，其余走原音频模式池）。
+    BGM_ENABLED: bool = False
+    BGM_DIR: str = ""
+    BGM_LICENSE_MANIFEST: str = ""
+    BGM_VOLUME: float = 0.35
+    BGM_MIX_RATIO: float = 0.4
+
     # JWT
     JWT_SECRET: str  # 必填无默认；启动时 field_validator 拒绝占位符/默认值
     JWT_EXPIRE_MINUTES: int = 30  # access_token 有效期（分钟）

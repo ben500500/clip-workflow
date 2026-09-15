@@ -123,6 +123,109 @@ def _pick_audio_mode(used_audio: list) -> str:
     return mode
 
 
+# ── BGM 音频差异化（配方分配层，对接 engines/slice.py 多输入改造）──
+# recipe.manual.audio 结构约定：
+#   · 普通模式：字符串（如 "eq_strong"），走原单输入 -af 路径（向后兼容）。
+#   · BGM 模式：dict {"mode":"bgm","source":<授权BGM绝对路径>,"volume":0.35,"duck":True}，
+#     由引擎侧 slice_segment 的 filter_complex 双输入消费（bgm/bgm_volume/duck 三个入参）。
+# 红线：BGM 源只取自产/CC0/明确商用授权源，配方层强校验，杜绝侵权风险抵消去重收益。
+_BGM_ALLOWED_LICENSES = {"cc0", "self_produced", "commercial"}
+_BGM_AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
+
+
+def _load_bgm_sources() -> list:
+    """扫描授权 BGM 目录，返回可用音频文件绝对路径（仅音频扩展名）。
+
+    目录未配置/不存在时返回空（BGM 特性不启用，配方层零影响）。
+    """
+    bgm_dir = (settings.BGM_DIR or "").strip()
+    if not bgm_dir or not os.path.isdir(bgm_dir):
+        return []
+    return sorted(
+        os.path.join(bgm_dir, fn)
+        for fn in os.listdir(bgm_dir)
+        if os.path.isfile(os.path.join(bgm_dir, fn))
+        and os.path.splitext(fn)[1].lower() in _BGM_AUDIO_EXTS
+    )
+
+
+def _load_bgm_license_manifest() -> dict:
+    """读取可选授权清单 JSON（文件名 -> 授权类型）。
+
+    未配置/解析失败返回 {}（按"整目录已授权"兜底）。仅放行 cc0/self_produced/commercial。
+    """
+    manifest_path = (settings.BGM_LICENSE_MANIFEST or "").strip()
+    if not manifest_path or not os.path.isfile(manifest_path):
+        return {}
+    try:
+        with open(manifest_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        logger.warning("BGM license manifest %s 解析失败，按整目录已授权兜底", manifest_path)
+        return {}
+
+
+def _validate_bgm_source(source: str) -> bool:
+    """配方层授权红线校验：BGM 源必须落在授权目录内且授权类型被放行。
+
+    返回 False 时上层不得将该 source 写入 recipe（防侵权风险抵消去重收益）。
+    """
+    bgm_dir = (settings.BGM_DIR or "").strip()
+    if not bgm_dir or not source:
+        return False
+    try:
+        real_dir = os.path.realpath(bgm_dir)
+        real_src = os.path.realpath(source)
+        if os.path.commonpath([real_dir, real_src]) != real_dir:
+            return False  # source 不在授权目录内（含路径穿越），拒绝
+    except ValueError:
+        return False
+    manifest = _load_bgm_license_manifest()
+    if not manifest:
+        return True  # 未配清单：整目录视为已授权（自产/CC0 前置约定）
+    license_type = str(manifest.get(os.path.basename(source)) or "").lower()
+    return license_type in _BGM_ALLOWED_LICENSES
+
+
+def _build_bgm_audio(used_audio: list) -> Optional[dict]:
+    """构造 BGM 模式 audio 结构（dict），并保证授权红线通过。
+
+    返回 {"mode":"bgm","source":<path>,"volume":<vol>,"duck":True}；
+    授权源不可用/校验失败时返回 None（回退到原音频模式池），绝不写入未授权 source。
+    """
+    sources = _load_bgm_sources()
+    if not sources:
+        return None
+    # 同组差异化：优先未用过的源；耗尽再随机兜底。授权校验失败则跳过该源。
+    unused = [s for s in sources if s not in used_audio]
+    pool = unused or sources
+    for src in random.sample(pool, min(len(pool), 5)):
+        if _validate_bgm_source(src):
+            used_audio.append(src)
+            return {
+                "mode": "bgm",
+                "source": src,
+                "volume": float(getattr(settings, "BGM_VOLUME", 0.35) or 0.35),
+                "duck": True,
+            }
+    return None
+
+
+def _pick_audio(used_audio: list):
+    """音频差异化分配入口：部分变体切 BGM 模式（dict），其余走原字符串模式池。
+
+    BGM 特性总开关 BGM_ENABLED 开启且授权源可用时，按 BGM_MIX_RATIO 概率切 BGM；
+    BGM 源不可用/校验失败时自动回退原模式池，绝不降级为 None（派生变体必须差异化音频）。
+    """
+    bgm_on = bool(getattr(settings, "BGM_ENABLED", False)) and bool(_load_bgm_sources())
+    if bgm_on and random.random() < float(getattr(settings, "BGM_MIX_RATIO", 0.4) or 0.0):
+        bgm_audio = _build_bgm_audio(used_audio)
+        if bgm_audio is not None:
+            return bgm_audio
+    return _pick_audio_mode(used_audio)
+
+
 def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> list[dict]:
     """基于基础去重配置生成 count 套结构性差异配方。
 
@@ -156,11 +259,12 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
             continue
         # 派生变体：随机组合结构差异，确保与基准及彼此拉开距离。
         # 显式 manual 固定了 audio 时不再随机抽（避免覆盖用户指定/禁用），
-        # 否则在同组内优先选择尚未用过的音频模式（音频差异化 L3 盲区覆盖）。
+        # 否则在同组内优先选择尚未用过的音频模式（音频差异化 L3 盲区覆盖），
+        # 并允许部分变体切 BGM 叠加模式（audio 从 None/字符串切 dict，见 _pick_audio）。
         if explicit_manual and "audio" in explicit_manual:
             audio_mode = explicit_manual["audio"]
         else:
-            audio_mode = _pick_audio_mode(used_audio)
+            audio_mode = _pick_audio(used_audio)
         manual = {
             "crop": _pick("crop", _CROP_POOL),
             "hflip": False,  # 全系统默认不做镜像（与推荐配方一致，保持画面可读）
@@ -179,6 +283,12 @@ def build_variant_recipes(count: int, base_dedupe: Optional[dict] = None) -> lis
             "sparkle": _pick("sparkle", _SPARKLE_POOL),
             "audio": audio_mode,
         }
+        # 音画同开护栏：切 BGM 音频模式时，必须保证画面差异化不回归（phash 由 vf 拉、
+        # audio_d 由 BGM 拉，四路才稳）。若用户 manual 显式关掉了画面差异化手段
+        # （crop=0 且 speed=1.0），则强制兜底最小变速，避免"只改音频不动画面"的 phash 隐患。
+        if isinstance(audio_mode, dict) and audio_mode.get("mode") == "bgm":
+            if float(manual.get("crop") or 0.0) <= 0.0 and abs(float(manual.get("speed") or 1.0) - 1.0) < 1e-6:
+                manual["speed"] = 1.05
         if "audio" in override and override["audio"]:
             manual["audio"] = override["audio"]
         # 结构性差异（覆盖 L4 时域序列盲区 + L3 音频）：
@@ -639,10 +749,10 @@ def _regenerate_recipe(base: Optional[dict], prev: dict, used_audio: list) -> di
     若 base manual 显式固定/禁用了 audio，则保持原值不被覆盖（对齐 de-du）。
     """
     new = build_variant_recipes(2, base)[1]
-    # 音频沿用同组去重集：强制分配一个尚未用过的音频模式
+    # 音频沿用同组去重集：强制分配一个尚未用过的音频模式（含 BGM 叠加，见 _pick_audio）
     base_manual = (base or {}).get("manual") or {}
     if "audio" not in base_manual:
-        new["manual"]["audio"] = _pick_audio_mode(used_audio)
+        new["manual"]["audio"] = _pick_audio(used_audio)
     # 确保与 prev 不同
     if _recipe_fingerprint_key(new) == _recipe_fingerprint_key(prev):
         new["manual"]["speed"] = float(new["manual"]["speed"]) + 0.01
