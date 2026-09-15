@@ -459,7 +459,11 @@ def test_publish_to_worker_run_entry_slice_task_visible_at_dispatch_time():
     """
     seen: dict = {}
 
-    async def probe_publish_slice_task(task_data, priority="normal"):
+    async def probe_publish_slice_task(
+        task_data, priority="normal", target_node_id=None
+    ):
+        # #112 节点派发：调用点须把 target_node_id 透传下来（普通路径应为 None）
+        seen["target_node_id"] = target_node_id
         seen.update(
             await _read_slice_task(uuid.UUID(task_data["task_id"]))
         )
@@ -500,13 +504,21 @@ def test_publish_to_worker_run_entry_slice_task_visible_at_dispatch_time():
     assert seen["status"] == "pending", (
         f"投递瞬间 status 对独立连接为 {seen['status']!r}（应为 'pending'）"
     )
+    assert seen["target_node_id"] is None, (
+        f"普通切片请求不应带 target_node_id（实际 {seen['target_node_id']!r}），"
+        "否则会被错误路由进节点专属队列"
+    )
 
 
 def test_publish_to_worker_retry_entry_slice_task_visible_at_dispatch_time():
     """retry_slice_task → _publish_to_worker 调用点（第二个调用点，约 L1694）。"""
     seen: dict = {}
 
-    async def probe_publish_slice_task(task_data, priority="normal"):
+    async def probe_publish_slice_task(
+        task_data, priority="normal", target_node_id=None
+    ):
+        # #112 节点派发：调用点须把 target_node_id 透传下来（普通路径应为 None）
+        seen["target_node_id"] = target_node_id
         seen.update(
             await _read_slice_task(uuid.UUID(task_data["task_id"]))
         )
@@ -558,10 +570,14 @@ def test_dispatch_failure_marks_slice_task_failed_no_orphan():
     """
     dispatch_seen: dict = {}
 
-    async def probe_failing_publish(task_data, priority="normal"):
+    async def probe_failing_publish(
+        task_data, priority="normal", target_node_id=None
+    ):
         # 投递瞬间：行应已提交可见（「先提交再投递」的另一面证据）
         sampled = await _read_slice_task(uuid.UUID(task_data["task_id"]))
         dispatch_seen.update(sampled)
+        # #112 节点派发：普通路径不应带 target_node_id
+        dispatch_seen["target_node_id"] = target_node_id
         # 记下本次新建的任务 id，避免后面误读库里预置的那条 completed 行
         dispatch_seen["task_id"] = uuid.UUID(task_data["task_id"])
         return None  # 模拟 Redis 不可用
@@ -593,6 +609,9 @@ def test_dispatch_failure_marks_slice_task_failed_no_orphan():
     assert resp.status_code == 500, resp.text
     assert not dispatch_seen.get("_missing"), (
         "投递瞬间独立连接查不到新建的任务行：行未在投递前提交"
+    )
+    assert dispatch_seen["target_node_id"] is None, (
+        f"普通切片请求不应带 target_node_id（实际 {dispatch_seen['target_node_id']!r}）"
     )
     # 端点返回后，用独立连接读**本次新建的**任务行：必须是终态 failed，不能停在 pending
     row = _run(_read_slice_task(dispatch_seen["task_id"]))
