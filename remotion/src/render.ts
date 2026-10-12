@@ -7,7 +7,7 @@
  * 流程：
  *   1. 解析 CLI 参数：props.json（HighlightMixProps 数据契约）与输出路径
  *   2. 用 @remotion/bundler 对 src/index.ts 即时 bundle
- *   3. selectComposition 选中 `highlight_mix_enhanced`，注入 props
+ *   3. selectComposition 选中 `highlight-mix-enhanced`，注入 props
  *   4. renderMedia 渲染 h264 mp4
  *   5. STDOUT 输出 `PROGRESS: <pct>%` 供后端解析回传进度
  *
@@ -18,7 +18,10 @@ import {selectComposition, renderMedia} from '@remotion/renderer';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const COMPOSITION_ID = 'highlight_mix_enhanced';
+const COMPOSITION_ID = 'highlight-mix-enhanced';
+
+/** 从环境变量读取 chromium 可执行路径 */
+const CHROMIUM_EXECUTABLE = process.env.REMOTION_CHROMIUM_EXECUTABLE || undefined;
 
 /** 输出档位 → 分辨率 */
 const TIERS: Record<string, {width: number; height: number}> = {
@@ -51,7 +54,7 @@ async function main() {
   const tier = (args['tier'] || '720p').toLowerCase();
 
   if (!propsPath || !outputPath) {
-    console.error('Usage: node render.js --props <props.json> --output <out.mp4> [--tier 720p|1080p]');
+    console.error('Usage: node render.js --props <props.json> --output <out.mp4> [--tier 720p|1080p] [--public-dir /path]');
     process.exit(1);
   }
 
@@ -74,10 +77,11 @@ async function main() {
   };
 
   // 3. 即时 bundle
-  console.error(`[render] bundling entry: ${path.resolve('src/index.ts')}`);
+  const publicDir = args['public-dir'] || null;
+  console.error(`[render] bundling entry: ${path.resolve('src/index.ts')} (publicDir: ${publicDir})`);
   const serveUrl = await bundle({
     entryPoint: path.resolve('src/index.ts'),
-    // 在 docker 内不需要内置浏览器下载，交给运行时 chromium
+    publicDir: publicDir,
   });
 
   // 4. 选中 Composition
@@ -85,6 +89,10 @@ async function main() {
     serveUrl,
     id: COMPOSITION_ID,
     inputProps: props,
+    browserExecutable: CHROMIUM_EXECUTABLE ?? null,
+    onBrowserDownload: () => {
+      throw new Error('Browser download not allowed in container. Set REMOTION_CHROMIUM_EXECUTABLE.');
+    },
   });
 
   // 5. 渲染 h264 mp4
@@ -97,6 +105,7 @@ async function main() {
     codec: 'h264',
     outputLocation: outputPath,
     inputProps: props,
+    browserExecutable: CHROMIUM_EXECUTABLE ?? null,
     onProgress: ({progress}) => {
       const pct = Math.round(progress * 100);
       if (pct !== lastPct) {

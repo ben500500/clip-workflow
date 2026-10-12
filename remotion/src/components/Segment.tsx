@@ -1,5 +1,5 @@
 import React from 'react';
-import {AbsoluteFill, OffthreadVideo, useVideoConfig} from 'remotion';
+import {AbsoluteFill, OffthreadVideo, staticFile, useVideoConfig} from 'remotion';
 import type {Segment as SegmentData, Subtitle, SubtitleStyle} from '../types';
 import {SubtitleOverlay} from './SubtitleOverlay';
 
@@ -18,7 +18,7 @@ export const Segment: React.FC<{
     <AbsoluteFill style={{backgroundColor: '#000'}}>
       {/* cover 裁切：视频等比填满画布 */}
       <OffthreadVideo
-        src={segment.file}
+        src={staticFile(segment.file)}
         style={{
           width: '100%',
           height: '100%',

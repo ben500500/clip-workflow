@@ -10,7 +10,7 @@ import {
 } from './types';
 
 /**
- * Remotion 根组件：注册唯一 Composition `highlight_mix_enhanced`。
+ * Remotion 根组件：注册唯一 Composition `highlight-mix-enhanced`。
  * 实际渲染由 render.ts 注入完整 props.json（覆盖 defaultProps）。
  */
 export const RemotionRoot: React.FC = () => {
@@ -28,7 +28,7 @@ export const RemotionRoot: React.FC = () => {
 
   return (
     <Composition
-      id="highlight_mix_enhanced"
+      id="highlight-mix-enhanced"
       component={HighlightMix}
       durationInFrames={30}
       fps={DEFAULT_FPS}

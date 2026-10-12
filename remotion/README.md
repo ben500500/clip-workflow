@@ -13,7 +13,7 @@ remotion/
 ├── scripts/build.mjs         # esbuild 编译 render.ts → dist/render.js
 ├── src/
 │   ├── index.ts              # registerRoot(RemotionRoot)
-│   ├── RemotionRoot.tsx      # 注册 Composition: highlight_mix_enhanced
+│   ├── RemotionRoot.tsx      # 注册 Composition: highlight-mix-enhanced
 │   ├── render.ts             # CLI 入口（props 注入 + renderMedia + PROGRESS 输出）
 │   ├── types.ts              # HighlightMixProps 数据契约
 │   └── components/
