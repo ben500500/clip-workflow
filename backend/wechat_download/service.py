@@ -523,16 +523,18 @@ def _temp_path(task_id) -> str:
 async def _ensure_project(db, task) -> uuid.UUID:
     """确保任务归属项目存在（未指定 project_id 时复用默认项目，按需创建）。
 
-    created_by 必须落任务发起人：历史上这里漏了 created_by，导致「视频号导入」
-    默认项目 created_by=NULL（无主项目）→ operator 按 created_by 隔离时
-    访问该项目剧集一律 404（ISSUE #361 任务 C）。新项目一律带发起人。
+    注意：默认导入池项目**刻意保持 created_by=NULL（无主=公共）**。它是
+    admin/operator 共用的共享导入池（如「视频号导入」），若落发起人会变成
+    其私有项目，其他 operator 按隔离口径将再次 404（即 ISSUE #361 任务 C
+    修复的问题换个姿势复活）。「新项目 created_by 必落发起人」的源头治理
+    只约束用户显式创建的常规项目，不适用于本共享池。
     """
     from app.models.models import Project
     if task.project_id is not None:
         result = await db.execute(select(Project).where(Project.id == task.project_id))
         if result.scalar_one_or_none() is not None:
             return task.project_id
-    # 查找/创建默认项目（按创建人隔离）
+    # 查找/创建默认导入池（无主=公共项目，所有登录用户可见）
     default_name = settings.WECHAT_DL_DEFAULT_PROJECT
     result = await db.execute(
         select(Project).where(Project.name == default_name)
@@ -543,16 +545,11 @@ async def _ensure_project(db, task) -> uuid.UUID:
             name=default_name,
             description="视频号素材导入默认项目",
             status="draft",
-            created_by=getattr(task, "created_by", None),
+            created_by=None,  # 共享导入池刻意无主（无主=公共），见 docstring
         )
         db.add(proj)
         await db.flush()
         await db.refresh(proj)
-    elif proj.created_by is None and getattr(task, "created_by", None) is not None:
-        # 存量无主默认项目：被发起人接管，避免后续该用户仍看不到自己的素材。
-        # （不改其他历史数据，仅在上传时补归属，属于「源头治理」的最小回填。）
-        proj.created_by = task.created_by
-        await db.flush()
     return proj.id
 
 
