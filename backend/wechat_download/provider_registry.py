@@ -11,6 +11,12 @@
     * http      —— 通用 HTTP API adapter，覆盖 17zhiling/wxshares（GET ?key=&url=）、
                    getoneapi（POST Bearer）等第三方，靠 env 配置适配，无需改代码。
 
+内置智令链路（17zhiling，密钥复用 env WECHAT_DL_ZHILING_KEY）：
+    * zhiling —— doc/107《视频去水印下载》同步解析（P0 主力，约 0.01 元/次）
+      BASE=https://api.17zhiling.com，PATH=/api/video/parse-video-url
+    * doc/120《视频反推提示词（计时）》为异步接口，不在本兜底链内，
+      由 wechat_download/prompt_service.py + /api/wechat-dl/reverse-prompt* 单独承载。
+
 配置示例（.env）：
     WECHAT_DL_PROVIDERS = yuanbao,zhiling,wxshares,preview
     WECHAT_DL_ZHILING_BASE  = https://api.17zhiling.com
@@ -46,10 +52,24 @@ class ProviderParseError(Exception):
     """某一家解析 provider 解析失败（触发兜底链下一家）。"""
 
 
-# 内置 provider 的展示元信息（官网 / 是否需充值）。
+# 内置 provider 的展示元信息（官网 / 是否需充值 / 文档）。
+# 可选键 `doc`：官方接口文档地址（前端「解析服务」面板展示，便于排查接口变更）。
 # - rechargeable=False：微信/腾讯官方链路（元宝 / 预览 / 拉流），免费或走登录态，无需充值。
 # - 自定义 HTTP 服务商（HttpApiAdapter）一律视为 rechargeable=True，官网取 HOME 配置或 base 根域名。
 BUILTIN_PROVIDER_INFO: dict = {
+    # 智令 doc/107《视频去水印下载》——P0 主力解析链路（同步接口，约 0.01 元/次）。
+    # 展示元信息内置，避免仅靠 WECHAT_DL_<NAME>_DISPLAY/_HOME 拼装而丢失产品说明；
+    # BASE/KEY/PATH 仍由 env 提供（WECHAT_DL_ZHILING_*），密钥不落仓库。
+    "zhiling": {
+        "display_name": "视频去水印下载",
+        "home": "https://api.17zhiling.com/doc/107",
+        "doc": "https://api.17zhiling.com/doc/107",
+        "rechargeable": True,
+        "desc": (
+            "智令 doc/107：支持微信视频号、抖音、快手、小红书等 30+ 平台链接解析"
+            "（约 0.01 元/次，注册赠 30 次）"
+        ),
+    },
     "yuanbao": {
         "display_name": "元宝解析",
         "home": "https://yuanbao.tencent.com",
@@ -79,18 +99,19 @@ class ProviderInfo:
     """provider 展示元信息（用于前端展示 API 名称/官网/是否充值/余量）。"""
 
     __slots__ = (
-        "channel", "display_name", "home", "rechargeable", "desc",
+        "channel", "display_name", "home", "doc", "rechargeable", "desc",
         "balance", "balance_unit", "balance_error",
     )
 
     def __init__(
         self, channel: str, display_name: str = "", home: str = "",
-        rechargeable: bool = True, desc: str = "",
+        rechargeable: bool = True, desc: str = "", doc: str = "",
         balance=None, balance_unit: str = "次", balance_error: str = "",
     ) -> None:
         self.channel = channel
         self.display_name = display_name or channel
         self.home = home
+        self.doc = doc
         self.rechargeable = rechargeable
         self.desc = desc
         self.balance = balance
@@ -102,6 +123,7 @@ class ProviderInfo:
             "channel": self.channel,
             "display_name": self.display_name,
             "home": self.home or None,
+            "doc": self.doc or None,
             "rechargeable": self.rechargeable,
             "desc": self.desc,
             "balance": self.balance,
@@ -410,12 +432,19 @@ def get_provider_infos() -> List[ProviderInfo]:
     for n in names:
         if n in BUILTIN_PROVIDER_INFO:
             meta = BUILTIN_PROVIDER_INFO[n]
+            # env 可覆盖内置展示元信息（改展示名/充值入口无需改代码）：
+            #   WECHAT_DL_<NAME>_DISPLAY / _HOME / _DOC / _DESC
+            p = n.upper()
+            override = lambda key, env: (  # noqa: E731
+                (os.getenv(f"WECHAT_DL_{p}_{env}", "") or "").strip() or meta.get(key, "")
+            )
             infos.append(ProviderInfo(
                 channel=n,
-                display_name=meta["display_name"],
-                home=meta["home"],
+                display_name=override("display_name", "DISPLAY"),
+                home=override("home", "HOME"),
                 rechargeable=meta["rechargeable"],
-                desc=meta["desc"],
+                desc=override("desc", "DESC"),
+                doc=override("doc", "DOC"),
             ))
         else:
             p = n.upper()

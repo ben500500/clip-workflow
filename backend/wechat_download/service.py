@@ -521,7 +521,12 @@ def _temp_path(task_id) -> str:
 
 
 async def _ensure_project(db, task) -> uuid.UUID:
-    """确保任务归属项目存在（未指定 project_id 时复用默认项目，按需创建）。"""
+    """确保任务归属项目存在（未指定 project_id 时复用默认项目，按需创建）。
+
+    created_by 必须落任务发起人：历史上这里漏了 created_by，导致「视频号导入」
+    默认项目 created_by=NULL（无主项目）→ operator 按 created_by 隔离时
+    访问该项目剧集一律 404（ISSUE #361 任务 C）。新项目一律带发起人。
+    """
     from app.models.models import Project
     if task.project_id is not None:
         result = await db.execute(select(Project).where(Project.id == task.project_id))
@@ -532,12 +537,22 @@ async def _ensure_project(db, task) -> uuid.UUID:
     result = await db.execute(
         select(Project).where(Project.name == default_name)
     )
-    proj = result.scalar_one_or_none()
+    proj = result.scalars().first()
     if proj is None:
-        proj = Project(name=default_name, description="视频号素材导入默认项目", status="draft")
+        proj = Project(
+            name=default_name,
+            description="视频号素材导入默认项目",
+            status="draft",
+            created_by=getattr(task, "created_by", None),
+        )
         db.add(proj)
         await db.flush()
         await db.refresh(proj)
+    elif proj.created_by is None and getattr(task, "created_by", None) is not None:
+        # 存量无主默认项目：被发起人接管，避免后续该用户仍看不到自己的素材。
+        # （不改其他历史数据，仅在上传时补归属，属于「源头治理」的最小回填。）
+        proj.created_by = task.created_by
+        await db.flush()
     return proj.id
 
 

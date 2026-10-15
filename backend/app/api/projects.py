@@ -24,7 +24,11 @@ from app.models.models import (
     SliceOutput,
     user_can_access_all_materials,
 )
-from app.services.data_scope import check_project_access_by_episode
+from app.services.data_scope import (
+    can_access_project,
+    check_project_access_by_episode,
+    project_scope_filter,
+)
 from app.services.minio_service import get_presigned_url, delete_file, list_files
 from app.utils.helpers import utc_iso
 
@@ -173,21 +177,17 @@ def _serialize_episode(episode: Episode) -> dict:
 
 
 def _data_scope_filter(current_user: User):
-    """数据隔离：返回用户可见项目的过滤条件。
+    """数据隔离：返回用户可见项目的过滤条件（无主项目=公共，operator 也可见）。
 
-    - admin/material/publisher：默认可见全部素材
-    - operator：默认仅可见自己创建的素材；管理员可通过权限编辑授予 all
+    - admin/material/publisher：默认可见全部素材（不过滤）
+    - operator：仅可见自己创建的素材 + 无主公共项目；管理员可授予 all
     """
-    if user_can_access_all_materials(current_user):
-        return None
-    return Project.created_by == current_user.id
+    return project_scope_filter(current_user)
 
 
 def _check_project_access(project: Project, current_user: User) -> bool:
-    """数据隔离：判断当前用户是否可访问该项目。"""
-    if user_can_access_all_materials(current_user):
-        return True
-    return project.created_by == current_user.id
+    """数据隔离：判断当前用户是否可访问该项目（口径见 services.data_scope）。"""
+    return can_access_project(project, current_user)
 
 
 @router.post("/projects", response_model=ProjectResponse, status_code=201)
@@ -329,8 +329,8 @@ async def get_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # 数据隔离：非全部范围用户只能访问自己创建的素材
-    if not user_can_access_all_materials(current_user) and project.created_by != current_user.id:
+    # 数据隔离：非全部范围用户只能访问自己创建的素材（无主项目=公共项目，人人可见）
+    if not _check_project_access(project, current_user):
         raise HTTPException(status_code=404, detail="Project not found")
 
     return _serialize_project(project)

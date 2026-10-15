@@ -8,9 +8,12 @@ import {
   LinkOutlined, ReloadOutlined, ScissorOutlined,
   EyeOutlined, ExportOutlined, PlusOutlined, FolderOpenOutlined,
   VideoCameraOutlined, ApiOutlined, GlobalOutlined, SafetyCertificateOutlined,
+  FileTextOutlined, CopyOutlined, ThunderboltOutlined, RobotOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { wechatDlApi, WechatDlTask, WechatDlProviderInfo } from '../api/wechatDl';
+import {
+  wechatDlApi, WechatDlTask, WechatDlProviderInfo, WechatDlPromptTask,
+} from '../api/wechatDl';
 import { projectApi } from '../api/projects';
 import { configApi } from '../api/config';
 import { formatDateTime, parseServerTime } from '../utils/format';
@@ -27,6 +30,16 @@ const STATUS_META: Record<string, { color: string; label: string }> = {
   completed: { color: 'success', label: '已完成' },
   failed: { color: 'error', label: '失败' },
 };
+
+// 反推提示词任务状态（与后端 wechat_download.models.PT_* 对齐）
+const PROMPT_STATUS_META: Record<string, { color: string; label: string }> = {
+  processing: { color: 'processing', label: '生成中' },
+  success: { color: 'success', label: '已完成' },
+  failed: { color: 'error', label: '失败' },
+};
+
+// 反推任务轮询间隔（官方建议 3~5s 查一次；本系统查自建接口，顺带触发一次上游查询）
+const PROMPT_POLL_INTERVAL_MS = 4000;
 
 // 与后端 WECHAT_DL_STALE_TIMEOUT_SECONDS 对齐（默认 3600s）：
 // 超过该时长未更新仍非终态 = worker 崩溃/节点重启遗留的孤儿任务
@@ -82,7 +95,7 @@ const ImportPanel: React.FC = () => {
           .map((u: string) => u.trim())
           .filter(Boolean);
         if (urls.length === 0) {
-          message.warning('请至少填写一个视频号分享链接');
+          message.warning('请至少填写一个视频分享链接');
           return;
         }
         const res = await wechatDlApi.importBatch({
@@ -109,13 +122,13 @@ const ImportPanel: React.FC = () => {
   };
 
   return (
-    <Card size="small" title="导入视频号素材（URL 直链）">
+    <Card size="small" title="导入视频素材（URL 直链）">
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
         message="直接导入"
-        description="粘贴视频号分享链接即可创建下载任务，无需绑定授权材料（授权校验已移除）。"
+        description="粘贴视频分享链接即可创建下载任务，无需绑定授权材料（授权校验已移除）。支持微信视频号、抖音、快手、小红书等 30+ 平台链接（含视频直链，直链请确保已 URL 编码）。"
       />
       <Space style={{ marginBottom: 16 }}>
         <Button
@@ -159,20 +172,20 @@ const ImportPanel: React.FC = () => {
         {mode === 'single' ? (
           <Form.Item
             name="source_url"
-            label="视频号分享链接"
-            rules={[{ required: true, message: '请输入视频号分享链接' }]}
+            label="视频分享链接"
+            rules={[{ required: true, message: '请输入视频分享链接' }]}
           >
-            <Input placeholder="粘贴视频号分享链接，如 https://channels.weixin.qq.com/..." />
+            <Input placeholder="粘贴视频分享链接（视频号 / 抖音 / 快手 / 小红书等 30+ 平台，或视频直链），如 https://channels.weixin.qq.com/..." />
           </Form.Item>
         ) : (
           <Form.Item
             name="source_urls"
-            label="视频号分享链接（每行一条）"
+            label="视频分享链接（每行一条）"
             rules={[{ required: true, message: '请输入至少一个链接' }]}
           >
             <TextArea
               rows={5}
-              placeholder={'每行粘贴一个视频号分享链接\n支持一次批量导入最多 100 条'}
+              placeholder={'每行粘贴一个视频分享链接（视频号 / 抖音 / 快手 / 小红书等 30+ 平台）\n支持一次批量导入最多 100 条'}
             />
           </Form.Item>
         )}
@@ -191,7 +204,7 @@ const ImportPanel: React.FC = () => {
 };
 
 // ========== 下载任务 Tab ==========
-const TaskListPanel: React.FC = () => {
+const TaskListPanel: React.FC<{ onReversePrompt?: (sourceUrl: string) => void }> = ({ onReversePrompt }) => {
   const navigate = useNavigate();
   const [tasks, setTasks] = useState<WechatDlTask[]>([]);
   const [loading, setLoading] = useState(false);
@@ -420,6 +433,21 @@ const TaskListPanel: React.FC = () => {
             </Button>,
           );
         }
+        // 已完成的任务：用其来源链接一键反推提示词（ISSUE #361 任务 A）
+        if (r.status === 'completed' && onReversePrompt) {
+          buttons.push(
+            <Tooltip key="reverse" title="用该视频反推 AI 提示词">
+              <Button
+                size="small"
+                type="link"
+                icon={<RobotOutlined />}
+                onClick={() => onReversePrompt(r.source_url)}
+              >
+                反推提示词
+              </Button>
+            </Tooltip>,
+          );
+        }
         // 失败任务，或超时卡死的孤儿任务：beat 守护回写 failed 之前的人工即时补救入口
         if (canRetry(r)) {
           buttons.push(
@@ -569,6 +597,246 @@ const TaskListPanel: React.FC = () => {
   );
 };
 
+// ========== 反推提示词 Tab（智令 doc/120 提交 + doc/119 轮询）==========
+const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => {
+  const [form] = Form.useForm();
+  const [tasks, setTasks] = useState<WechatDlPromptTask[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [detail, setDetail] = useState<WechatDlPromptTask | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    wechatDlApi.listReversePrompts({ limit: 50 })
+      .then((res) => setTasks(res.items || []))
+      .catch(() => undefined)
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // 选中某个任务时拉一次最新状态（同时触发后端向上游查询一次）
+  const refreshOne = useCallback(async (id: string) => {
+    try {
+      const t = await wechatDlApi.getReversePrompt(id);
+      setTasks((prev) => prev.map((p) => (p.id === t.id ? t : p)));
+      setDetail((d) => (d && d.id === t.id ? t : d));
+      return t;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // processing 的任务每 4s 轮询一次自建接口，直至终态
+  const processingIds = tasks.filter((t) => t.status === 'processing').map((t) => t.id).join(',');
+  useEffect(() => {
+    if (!processingIds) return undefined;
+    const ids = processingIds.split(',');
+    const timer = setInterval(() => { ids.forEach((id) => { void refreshOne(id); }); }, PROMPT_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [processingIds, refreshOne]);
+
+  // 外部入口（下载任务行「反推提示词」）预填链接
+  useEffect(() => {
+    if (presetUrl) form.setFieldsValue({ source_url: presetUrl });
+  }, [presetUrl, form]);
+
+  const handleSubmit = async () => {
+    const values = await form.validateFields();
+    setSubmitting(true);
+    try {
+      const t = await wechatDlApi.submitReversePrompt({
+        source_url: values.source_url.trim(),
+        max_duration: values.max_duration,
+      });
+      setTasks((prev) => [t, ...prev]);
+      setDetail(t);
+      if (t.status === 'failed') {
+        message.error(`反推任务创建失败：${t.error || '未知原因'}`);
+      } else {
+        message.success('已提交反推任务，正在生成提示词…');
+      }
+      form.resetFields();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '提交失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCopy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success('提示词已复制到剪贴板');
+    } catch {
+      message.warning('复制失败，请手动选中复制');
+    }
+  };
+
+  const columns = [
+    {
+      title: '视频链接', dataIndex: 'source_url', key: 'source_url', ellipsis: true,
+      render: (v: string) => <Text style={{ fontSize: 12 }}>{v}</Text>,
+    },
+    {
+      title: '状态', dataIndex: 'status', key: 'status', width: 110,
+      render: (v: string, r: WechatDlPromptTask) => {
+        const meta = PROMPT_STATUS_META[v] || { color: 'default', label: v };
+        return (
+          <Tooltip title={r.status === 'failed' ? r.error || '' : ''}>
+            <Tag color={meta.color}>{meta.label}</Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: '计时上限', dataIndex: 'max_duration', key: 'max_duration', width: 100,
+      render: (v: number | null) => (
+        <Text type="secondary" style={{ fontSize: 12 }}>{v ? `${v}s` : '-'}</Text>
+      ),
+    },
+    {
+      title: '结果预览', dataIndex: 'content', key: 'content', ellipsis: true,
+      render: (v: string | null, r: WechatDlPromptTask) =>
+        r.status === 'failed' ? (
+          <Text type="danger" style={{ fontSize: 12 }}>{r.error || '生成失败'}</Text>
+        ) : (
+          <Text type="secondary" style={{ fontSize: 12 }}>{v ? v.slice(0, 60) : '生成中…'}</Text>
+        ),
+    },
+    {
+      title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170,
+      render: (d: string) => formatDateTime(d),
+    },
+    {
+      title: '操作', key: 'action', width: 190, fixed: 'right' as const,
+      render: (_: unknown, r: WechatDlPromptTask) => (
+        <Space size={4}>
+          <Button
+            size="small"
+            type="link"
+            icon={<FileTextOutlined />}
+            onClick={() => { setDetail(r); void refreshOne(r.id); }}
+          >
+            查看
+          </Button>
+          {r.content && (
+            <Button size="small" type="link" icon={<CopyOutlined />} onClick={() => handleCopy(r.content as string)}>
+              复制
+            </Button>
+          )}
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <Card
+      size="small"
+      title="视频反推提示词（AI 提示词提取）"
+      extra={<Button size="small" icon={<ReloadOutlined />} onClick={load} loading={loading}>刷新</Button>}
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        icon={<RobotOutlined />}
+        message="粘贴任意视频链接，自动反推生成结构化提示词"
+        description="基于智令 doc/120《视频反推提示词（计时）》：支持 30+ 平台分享链接与视频直链，按计时上限计费（0.00054 元/秒，注册赠 30 次）。生成中约需数十秒，页面每 4s 自动刷新；完成后可一键复制 markdown 提示词。"
+      />
+
+      <Form form={form} layout="inline" style={{ marginBottom: 16, rowGap: 8 }}>
+        <Form.Item
+          name="source_url"
+          label="视频链接"
+          style={{ flex: 1, minWidth: 320, marginBottom: 8 }}
+          rules={[{ required: true, message: '请输入视频链接' }]}
+        >
+          <Input placeholder="粘贴视频链接（视频号 / 抖音 / 快手 / 小红书等 30+ 平台，或视频直链）" />
+        </Form.Item>
+        <Form.Item name="max_duration" label="计时上限" style={{ marginBottom: 8 }}>
+          <Select
+            style={{ width: 130 }}
+            placeholder="默认 600s"
+            allowClear
+            options={[
+              { value: 60, label: '60 秒' },
+              { value: 180, label: '180 秒' },
+              { value: 300, label: '300 秒' },
+              { value: 600, label: '600 秒（最大）' },
+            ]}
+          />
+        </Form.Item>
+        <Form.Item style={{ marginBottom: 8 }}>
+          <Button type="primary" icon={<ThunderboltOutlined />} loading={submitting} onClick={handleSubmit}>
+            开始反推
+          </Button>
+        </Form.Item>
+      </Form>
+
+      <Table
+        rowKey="id"
+        size="small"
+        loading={loading}
+        columns={columns}
+        dataSource={tasks}
+        pagination={{ pageSize: 10 }}
+        scroll={{ x: 1000 }}
+        locale={{ emptyText: '暂无反推任务，粘贴视频链接开始生成' }}
+      />
+
+      <Modal
+        open={!!detail}
+        title="反推提示词结果"
+        footer={null}
+        onCancel={() => setDetail(null)}
+        width={760}
+        destroyOnClose
+      >
+        {detail && (
+          <div>
+            <p style={{ marginBottom: 8 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>{detail.source_url}</Text>
+            </p>
+            <Space style={{ marginBottom: 12 }}>
+              {(() => {
+                const meta = PROMPT_STATUS_META[detail.status] || { color: 'default', label: detail.status };
+                return <Tag color={meta.color}>{meta.label}</Tag>;
+              })()}
+              {detail.status === 'processing' && (
+                <Text type="secondary" style={{ fontSize: 12 }}>生成中，页面每 4s 自动刷新…</Text>
+              )}
+              {detail.content && (
+                <Button
+                  size="small"
+                  icon={<CopyOutlined />}
+                  onClick={() => handleCopy(detail.content as string)}
+                >
+                  一键复制
+                </Button>
+              )}
+            </Space>
+            {detail.status === 'failed' && (
+              <Alert type="error" showIcon message="生成失败" description={detail.error || '未知原因'} />
+            )}
+            {detail.content && (
+              <pre
+                style={{
+                  maxHeight: 420, overflow: 'auto', background: '#fafafa',
+                  border: '1px solid #f0f0f0', borderRadius: 8, padding: 12,
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 13,
+                }}
+              >
+                {detail.content}
+              </pre>
+            )}
+          </div>
+        )}
+      </Modal>
+    </Card>
+  );
+};
+
 // ========== 解析服务商 Tab（API 名称 / 官网 / 余量）==========
 const ProvidersPanel: React.FC = () => {
   const [providers, setProviders] = useState<WechatDlProviderInfo[]>([]);
@@ -626,11 +894,22 @@ const ProvidersPanel: React.FC = () => {
           : <Tag color="default">免费 / 官方链路</Tag>,
     },
     {
-      title: '官网（充值入口）', dataIndex: 'home', key: 'home',
+      title: '官网（充值入口）', dataIndex: 'home', key: 'home', width: 190,
       render: (v: string | null, r: WechatDlProviderInfo) =>
         v ? (
           <a href={v} target="_blank" rel="noreferrer">
             <GlobalOutlined /> {r.rechargeable ? '前往充值 / 开通' : '官方网站'}
+          </a>
+        ) : (
+          <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
+        ),
+    },
+    {
+      title: '接口文档', dataIndex: 'doc', key: 'doc', width: 140,
+      render: (v: string | null) =>
+        v ? (
+          <a href={v} target="_blank" rel="noreferrer">
+            <FileTextOutlined /> 查看文档
           </a>
         ) : (
           <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
@@ -659,8 +938,8 @@ const ProvidersPanel: React.FC = () => {
         showIcon
         style={{ marginBottom: 16 }}
         icon={<ApiOutlined />}
-        message="资源下载通过下方解析服务获取视频号真实播放地址"
-        description="标为「需充值计费」的服务为第三方 API，按次数计费，请在对应官网充值续费；「免费 / 官方链路」为微信/腾讯官方能力，无需充值。余量来自服务商接口，若未配置则显示未知。"
+        message="资源下载通过下方解析服务获取真实视频播放地址（支持 30+ 平台）"
+        description="标为「需充值计费」的服务为第三方 API，按次数计费，请在对应官网充值续费；「免费 / 官方链路」为微信/腾讯官方能力，无需充值。余量来自服务商接口，若未配置则显示未知。默认主力为智令 doc/107《视频去水印下载》，支持微信视频号、抖音、快手、小红书等 30+ 平台链接解析（约 0.01 元/次，注册赠 30 次）。"
       />
       <Table
         rowKey="channel"
@@ -682,11 +961,21 @@ const ProvidersPanel: React.FC = () => {
 
 // ========== 主页面 ==========
 const ResourceDownload: React.FC = () => {
+  const [activeTab, setActiveTab] = useState('import');
+  // 下载任务行「反推提示词」→ 带链接跳到反推页签
+  const [presetUrl, setPresetUrl] = useState<string | undefined>();
+
+  const gotoReversePrompt = (url: string) => {
+    setPresetUrl(url);
+    setActiveTab('reverse-prompt');
+  };
+
   return (
     <div>
       <Title level={4} style={{ marginBottom: 20 }}>资源下载</Title>
       <Tabs
-        defaultActiveKey="import"
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'import',
@@ -699,9 +988,14 @@ const ResourceDownload: React.FC = () => {
             children: <ProvidersPanel />,
           },
           {
+            key: 'reverse-prompt',
+            label: <span><RobotOutlined /> 反推提示词</span>,
+            children: <ReversePromptPanel presetUrl={presetUrl} />,
+          },
+          {
             key: 'tasks',
             label: <span><DownloadOutlined /> 下载任务</span>,
-            children: <TaskListPanel />,
+            children: <TaskListPanel onReversePrompt={gotoReversePrompt} />,
           },
         ]}
       />

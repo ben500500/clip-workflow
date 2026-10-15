@@ -1,9 +1,10 @@
-"""wechat_download 独立数据模型（3 张独立表）。
+"""wechat_download 独立数据模型（4 张独立表）。
 
 对应立项设计文档 §3.1「② 独立数据表」：
 - wechat_download_tasks  下载任务表（URL 导入 → 解析 → 拉流 → 入库）
 - wechat_source_auths    授权素材表（历史遗留，导入流程已不再强制绑定/校验）
 - wechat_parse_records   解析结果表（各解析 provider 产物，可追溯、可重试）
+- wechat_dl_prompt_tasks 视频反推提示词任务表（智令 doc/120 异步提交 + doc/119 轮询）
 
 独立表 + 独立 Base，保证可剥离（随包走）；不改动主系统 episodes 核心结构，
 仅通过 episodes.source_url 最小粘合字段（迁移脚本另行处理）。
@@ -100,6 +101,44 @@ class WechatSourceAuth(WechatDownloadBase):
 
     def __repr__(self) -> str:
         return f"<WechatSourceAuth(id={self.id}, owner={self.authorize_owner})>"
+
+
+# 反推提示词任务状态（与智令 doc/119 的 schedule 归一化后的本系统状态）
+PT_PROCESSING = "processing"
+PT_SUCCESS = "success"
+PT_FAILED = "failed"
+
+
+class WechatDlPromptTask(WechatDownloadBase):
+    """视频反推提示词任务（智令 doc/120 提交 + doc/119 轮询结果）。
+
+    链路：POST /api/video-inference/parse-video-url-time 拿到 provider_task_id，
+    再按 3~5s 轮询 /api/video-inference/task-status 直至终态。
+    计费约 0.00054 元/秒（按 max_duration 上限计），因此 max_duration 落库可追溯。
+    """
+
+    __tablename__ = "wechat_dl_prompt_tasks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 发起人（列表可见口径与 wechat-dl 下载任务保持一致）
+    created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # 用户提交的原始视频链接（分享链接或视频直链）
+    source_url = Column(String(1000), nullable=False)
+    # 智令侧任务 id（提交接口返回的 data 字段）
+    provider_task_id = Column(String(100), nullable=True, index=True)
+    # 状态：processing / success / failed
+    status = Column(String(20), nullable=False, default=PT_PROCESSING, index=True)
+    # 提示词正文（markdown，SUCCESS 时写入）
+    content = Column(Text, nullable=True)
+    # 失败原因（外部接口业务异常 / 网络错误，截断 500 字符）
+    error = Column(String(500), nullable=True)
+    # 计时上限（秒，默认 600，最大 600）：决定计费，落库便于对账
+    max_duration = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<WechatDlPromptTask(id={self.id}, status={self.status})>"
 
 
 class WechatParseRecord(WechatDownloadBase):
