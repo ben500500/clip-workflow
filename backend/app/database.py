@@ -321,8 +321,14 @@ async def _ensure_wechat_download_tables():
 
     wechat_download 使用独立 Base（wechat_download.base.WechatDownloadBase），
     不在主系统 Base.metadata 中，create_all 不会自动建表；此处显式建表，
-    兼容未跑 alembic 迁移的环境。生产建议以 alembic 迁移（0029）为准。
+    兼容未跑 alembic 迁移的环境。生产建议以 alembic 迁移（0029 / 0051）为准。
+
+    注意：必须显式 import models 才能把表注册进独立 Base 的 metadata，
+    否则 create_all 面对空 metadata 静默什么都不建（新表会缺 → 查库 500）。
+    部署链路不跑 `alembic upgrade head`，这里是新增表（如 wechat_dl_prompt_tasks）
+    的唯一兜底，所以这个 import 不能省。
     """
+    import wechat_download.models  # noqa: F401  # 触发独立 Base 表注册
     from wechat_download.base import WechatDownloadBase
     try:
         async with engine.begin() as conn:

@@ -521,20 +521,32 @@ def _temp_path(task_id) -> str:
 
 
 async def _ensure_project(db, task) -> uuid.UUID:
-    """确保任务归属项目存在（未指定 project_id 时复用默认项目，按需创建）。"""
+    """确保任务归属项目存在（未指定 project_id 时复用默认项目，按需创建）。
+
+    注意：默认导入池项目**刻意保持 created_by=NULL（无主=公共）**。它是
+    admin/operator 共用的共享导入池（如「视频号导入」），若落发起人会变成
+    其私有项目，其他 operator 按隔离口径将再次 404（即 ISSUE #361 任务 C
+    修复的问题换个姿势复活）。「新项目 created_by 必落发起人」的源头治理
+    只约束用户显式创建的常规项目，不适用于本共享池。
+    """
     from app.models.models import Project
     if task.project_id is not None:
         result = await db.execute(select(Project).where(Project.id == task.project_id))
         if result.scalar_one_or_none() is not None:
             return task.project_id
-    # 查找/创建默认项目（按创建人隔离）
+    # 查找/创建默认导入池（无主=公共项目，所有登录用户可见）
     default_name = settings.WECHAT_DL_DEFAULT_PROJECT
     result = await db.execute(
         select(Project).where(Project.name == default_name)
     )
-    proj = result.scalar_one_or_none()
+    proj = result.scalars().first()
     if proj is None:
-        proj = Project(name=default_name, description="视频号素材导入默认项目", status="draft")
+        proj = Project(
+            name=default_name,
+            description="视频号素材导入默认项目",
+            status="draft",
+            created_by=None,  # 共享导入池刻意无主（无主=公共），见 docstring
+        )
         db.add(proj)
         await db.flush()
         await db.refresh(proj)

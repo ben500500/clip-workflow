@@ -1,10 +1,13 @@
 """wechat_download API 路由（前缀 /api/wechat-dl/*，独立路由，立项决策④）。
 
 提供：
-- POST /api/wechat-dl/import        提交视频号分享链接 → 创建下载任务并投递 wechat_dl 队列
+- POST /api/wechat-dl/import        提交视频分享链接 → 创建下载任务并投递 wechat_dl 队列
 - GET  /api/wechat-dl/tasks         下载任务列表
 - GET  /api/wechat-dl/tasks/:id     下载任务详情
 - POST /api/wechat-dl/import/batch  批量链接导入
+- POST /api/wechat-dl/reverse-prompt            提交视频反推提示词（智令 doc/120）
+- GET  /api/wechat-dl/reverse-prompt/:id        查询反推任务（顺带轮询，doc/119）
+- GET  /api/wechat-dl/reverse-prompt            反推任务列表
 
 授权校验已移除：任意视频号链接均可直接导入，无需绑定授权材料。
 
@@ -39,6 +42,14 @@ from wechat_download.service import (
     retry_task,
     _serialize_task,
     ST_COMPLETED,
+)
+from wechat_download.prompt_service import (
+    can_access_prompt_task,
+    create_prompt_task,
+    get_prompt_task,
+    prompt_task_scope_stmt,
+    refresh_prompt_task,
+    serialize_prompt_task,
 )
 
 logger = logging.getLogger(__name__)
@@ -412,6 +423,72 @@ async def to_slice(
         mode=data.mode or "fast",
         message="已创建切片任务并投入 video_processing 队列，切片完成后即可在发布管理发布",
     )
+
+
+# ───────────────────────────────
+# 视频反推提示词（智令 doc/120 提交 + doc/119 轮询）
+# ───────────────────────────────
+
+class ReversePromptRequest(BaseModel):
+    """反推提示词请求：任意视频链接（分享链接或视频直链）。"""
+    source_url: str = Field(..., description="视频链接（支持 30+ 平台分享链接与视频直链）")
+    max_duration: Optional[int] = Field(
+        None, ge=1, le=600,
+        description="计时上限（秒，默认 600，最大 600）；决定计费上限",
+    )
+
+
+@router.get("/reverse-prompt")
+async def list_reverse_prompt_tasks(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """反推提示词任务列表（按创建时间倒序，可见口径与下载任务列表一致）。"""
+    stmt = await prompt_task_scope_stmt(current_user, limit)
+    tasks = (await db.execute(stmt)).scalars().all()
+    return {"items": [serialize_prompt_task(t) for t in tasks], "total": len(tasks)}
+
+
+@router.post("/reverse-prompt", status_code=201)
+async def create_reverse_prompt_task(
+    data: ReversePromptRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """提交视频反推提示词任务（智令 doc/120，异步）。
+
+    返回本系统任务 id 与当前状态；外部接口失败不抛 500，任务落库为 failed
+    并带 error，供前端列表展示与重试。
+    """
+    source_url = (data.source_url or "").strip()
+    if not source_url:
+        raise HTTPException(status_code=400, detail="请填写视频链接")
+
+    task = await create_prompt_task(
+        db,
+        created_by=current_user.id if current_user else None,
+        source_url=source_url,
+        max_duration=data.max_duration,
+    )
+    return serialize_prompt_task(task)
+
+
+@router.get("/reverse-prompt/{task_id}")
+async def get_reverse_prompt_task(
+    task_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """查询反推提示词任务；仍在 processing 时顺带向智令查询一次并更新状态。
+
+    前端在 processing 期间每 4s 轮询本接口即可，无需直接访问第三方。
+    """
+    task = await get_prompt_task(db, task_id)
+    if task is None or not can_access_prompt_task(task, current_user):
+        raise HTTPException(status_code=404, detail="反推任务不存在")
+    task = await refresh_prompt_task(db, task)
+    return serialize_prompt_task(task)
 
 
 @router.post("/tasks/{task_id}/retry", response_model=dict)

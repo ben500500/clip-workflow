@@ -618,9 +618,12 @@ async def list_slice_outputs(
         # ── 数据隔离：非 all 用户先收集可访问的 project → episode 集合 ──
         allowed_episode_ids = None
         if current_user is not None and not user_can_access_all_materials(current_user):
-            projects = (await session.execute(
-                select(Project).where(Project.created_by == current_user.id)
-            )).scalars().all()
+            from app.services.data_scope import project_scope_filter
+            scope = project_scope_filter(current_user)
+            stmt_p = select(Project)
+            if scope is not None:
+                stmt_p = stmt_p.where(scope)
+            projects = (await session.execute(stmt_p)).scalars().all()
             allowed_project_ids = [p.id for p in projects]
             episodes = (await session.execute(
                 select(Episode).where(Episode.project_id.in_(allowed_project_ids))

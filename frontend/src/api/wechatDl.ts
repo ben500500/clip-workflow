@@ -63,11 +63,34 @@ export interface WechatDlProviderInfo {
   channel: string;
   display_name: string;
   home: string | null;
+  /** 官方接口文档地址（如 智令 doc/107），无则 null */
+  doc: string | null;
   rechargeable: boolean;
   desc: string;
   balance: number | null;
   balance_unit: string;
   balance_error: string | null;
+}
+
+// ── 视频反推提示词（智令 doc/120 提交 + doc/119 轮询）──
+export interface WechatDlPromptTask {
+  id: string;
+  created_by: string | null;
+  source_url: string;
+  provider_task_id: string | null;
+  /** processing / success / failed */
+  status: string;
+  /** 提示词正文（markdown），success 时有值 */
+  content: string | null;
+  error: string | null;
+  max_duration: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface WechatDlPromptTaskList {
+  items: WechatDlPromptTask[];
+  total: number;
 }
 
 export const wechatDlApi = {
@@ -107,7 +130,17 @@ export const wechatDlApi = {
   importToProject: (taskId: string, data: WechatDlImportToProjectInput) =>
     client.post(`/wechat-dl/tasks/${taskId}/import-to-project`, data) as Promise<WechatDlImportToProjectResult>,
 
-  // ── 解析服务商信息（API 名称 / 官网 / 余量）──
+  // ── 解析服务商信息（API 名称 / 官网 / 文档 / 余量）──
   getProviders: () =>
     client.get('/wechat-dl/providers') as Promise<{ items: WechatDlProviderInfo[] }>,
+
+  // ── 视频反推提示词（异步：提交后轮询）──
+  submitReversePrompt: (data: { source_url: string; max_duration?: number }) =>
+    client.post('/wechat-dl/reverse-prompt', data) as Promise<WechatDlPromptTask>,
+
+  getReversePrompt: (id: string) =>
+    client.get(`/wechat-dl/reverse-prompt/${id}`) as Promise<WechatDlPromptTask>,
+
+  listReversePrompts: (params?: { limit?: number }) =>
+    client.get('/wechat-dl/reverse-prompt', { params }) as Promise<WechatDlPromptTaskList>,
 };

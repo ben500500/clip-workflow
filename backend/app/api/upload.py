@@ -95,13 +95,15 @@ def _serialize_episode(episode: Episode) -> dict:
 
 
 async def _check_project_access(project: Project, current_user: User):
-    """数据隔离：上传素材前校验项目访问权限（运营专员仅可向自己创建的项目上传）. """
+    """数据隔离：上传素材前校验项目访问权限。
+
+    口径与 services.data_scope.can_access_project 完全一致：运营专员仅可向
+    自己创建的项目上传，但**无主项目（created_by IS NULL）视为公共项目**，人人可上传。
+    """
     if current_user is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    from app.models.models import user_can_access_all_materials
-    if user_can_access_all_materials(current_user):
-        return
-    if project.created_by != current_user.id:
+    from app.services.data_scope import can_access_project
+    if not can_access_project(project, current_user):
         raise HTTPException(status_code=404, detail="Project not found")
 
 
@@ -402,7 +404,10 @@ async def upload_multi(
         # 不存在才新建，避免产生同名重复项目把原剧集「冲掉」。
         stmt = select(Project).where(Project.name == project_name)
         if current_user is not None:
-            stmt = stmt.where(Project.created_by == current_user.id)
+            from app.services.data_scope import project_scope_filter
+            scope = project_scope_filter(current_user)
+            if scope is not None:
+                stmt = stmt.where(scope)
         stmt = stmt.order_by(Project.created_at.asc())
         res = await db.execute(stmt)
         project = res.scalars().first()

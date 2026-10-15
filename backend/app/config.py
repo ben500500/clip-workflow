@@ -203,6 +203,18 @@ class Settings(BaseSettings):
     # 卡死任务超时阈值（秒）：超过该时长未更新仍非终态视为 worker 崩溃遗留的孤儿任务。
     # 默认 3600：远大于 WECHAT_DL_DOWNLOAD_TIMEOUT(600) + 解析/入库耗时，避免误杀在跑任务。
     WECHAT_DL_STALE_TIMEOUT_SECONDS: int = 3600
+    # ── 视频反推提示词（智令 doc/120 提交 + doc/119 轮询，异步接口）──
+    # 提交接口基础地址（与 doc/107 解析同域，密钥复用 WECHAT_DL_ZHILING_KEY）。
+    WECHAT_DL_ZHILING_PROMPT_BASE: str = "https://api.17zhiling.com"
+    # 提交路径：POST，form-urlencoded（key/videoUrl/maxDuration），data 返回 taskId
+    WECHAT_DL_ZHILING_PROMPT_SUBMIT_PATH: str = "/api/video-inference/parse-video-url-time"
+    # 轮询路径：GET ?key=&taskId=（官方免费，建议 3~5s 一次）
+    WECHAT_DL_ZHILING_PROMPT_STATUS_PATH: str = "/api/video-inference/task-status"
+    # 外部请求超时（秒）
+    WECHAT_DL_PROMPT_TIMEOUT: int = 15
+    # 计时上限（秒）：默认 600，官方最大 600；按此上限计费（约 0.00054 元/秒）
+    WECHAT_DL_PROMPT_MAX_DURATION: int = 600
+
     # 解析缓存（wechat_parse_records 复用）有效期（秒）。
     # 腾讯签名直链 play_url 仅 1~3 小时有效，超期复用必然 direct download http 400，
     # 因此缓存必须带时效窗口：TTL 内的成功解析记录才可复用，超期一律重新实时解析。
@@ -298,6 +310,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "生产环境必须在 .env 设置 JWT_SECRET（随机强密钥），禁止使用默认/占位值"
             )
+        return v
+
+    @field_validator("WECHAT_DL_PROMPT_MAX_DURATION")
+    @classmethod
+    def _prompt_max_duration_in_range(cls, v: int) -> int:
+        # 官方上限 600s；下限 1s 防止 0/负数被透传成非法参数。
+        if v < 1 or v > 600:
+            raise ValueError("WECHAT_DL_PROMPT_MAX_DURATION 必须在 1~600 秒之间（官方最大 600）")
         return v
 
     @field_validator("WECHAT_DL_PARSE_CACHE_TTL_SECONDS")
