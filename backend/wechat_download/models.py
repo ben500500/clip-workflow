@@ -108,6 +108,10 @@ PT_PROCESSING = "processing"
 PT_SUCCESS = "success"
 PT_FAILED = "failed"
 
+# 反推任务来源：链接提交 / 本地视频上传（doc/125 签名 → S3 temp 桶 → doc/120）
+PST_URL = "url"
+PST_UPLOAD = "upload"
+
 
 class WechatDlPromptTask(WechatDownloadBase):
     """视频反推提示词任务（智令 doc/120 提交 + doc/119 轮询结果）。
@@ -122,8 +126,12 @@ class WechatDlPromptTask(WechatDownloadBase):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # 发起人（列表可见口径与 wechat-dl 下载任务保持一致）
     created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
-    # 用户提交的原始视频链接（分享链接或视频直链）
+    # 视频来源：url（粘贴链接）/ upload（本地视频上传，经 doc/125 传到智令 S3）
+    source_type = Column(String(20), nullable=False, default=PST_URL, server_default=PST_URL)
+    # 用户提交的原始视频链接（分享链接 / 视频直链；上传方式为智令返回的 fileUrl）
     source_url = Column(String(1000), nullable=False)
+    # 上传时的原始文件名（仅 source_type=upload 有值，供列表展示「上传（xxx.mp4）」）
+    file_name = Column(String(255), nullable=True)
     # 智令侧任务 id（提交接口返回的 data 字段）
     provider_task_id = Column(String(100), nullable=True, index=True)
     # 状态：processing / success / failed

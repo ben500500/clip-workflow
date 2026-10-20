@@ -73,10 +73,16 @@ export interface WechatDlProviderInfo {
 }
 
 // ── 视频反推提示词（智令 doc/120 提交 + doc/119 轮询）──
+/** 反推任务来源：url=粘贴链接，upload=本地视频上传（doc/125） */
+export type WechatDlPromptSourceType = 'url' | 'upload';
+
 export interface WechatDlPromptTask {
   id: string;
   created_by: string | null;
+  source_type: WechatDlPromptSourceType;
   source_url: string;
+  /** 上传来源时的原始文件名（url 来源为 null） */
+  file_name: string | null;
   provider_task_id: string | null;
   /** processing / success / failed */
   status: string;
@@ -137,6 +143,27 @@ export const wechatDlApi = {
   // ── 视频反推提示词（异步：提交后轮询）──
   submitReversePrompt: (data: { source_url: string; max_duration?: number }) =>
     client.post('/wechat-dl/reverse-prompt', data) as Promise<WechatDlPromptTask>,
+
+  // ── 本地视频上传反推（doc/125 签名直传 → doc/120，ISSUE #363）──
+  uploadReversePrompt: (
+    data: { file: File; max_duration?: number },
+    onUploadProgress?: (percent: number) => void,
+  ) => {
+    const form = new FormData();
+    form.append('file', data.file);
+    if (data.max_duration != null) form.append('max_duration', String(data.max_duration));
+    return client.post('/wechat-dl/reverse-prompt/upload', form, {
+      // 与仓库其它上传一致：显式 multipart，boundary 由 axios/浏览器补
+      headers: { 'Content-Type': 'multipart/form-data' },
+      // 大视频上传慢：60s 默认超时会把 500MB 上传直接掐断
+      timeout: 0,
+      onUploadProgress: (e) => {
+        if (!onUploadProgress) return;
+        const total = e.total || 0;
+        if (total > 0) onUploadProgress(Math.min(100, Math.round((e.loaded / total) * 100)));
+      },
+    }) as Promise<WechatDlPromptTask>;
+  },
 
   getReversePrompt: (id: string) =>
     client.get(`/wechat-dl/reverse-prompt/${id}`) as Promise<WechatDlPromptTask>,

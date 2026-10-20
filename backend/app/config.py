@@ -214,6 +214,13 @@ class Settings(BaseSettings):
     WECHAT_DL_PROMPT_TIMEOUT: int = 15
     # 计时上限（秒）：默认 600，官方最大 600；按此上限计费（约 0.00054 元/秒）
     WECHAT_DL_PROMPT_MAX_DURATION: int = 600
+    # 本地视频上传反推（智令 doc/125 签名 + S3 POST，ISSUE #363）：
+    # 签名接口路径（GET ?key=&fileName=&contentType=&expiresIn=）
+    WECHAT_DL_ZHILING_UPLOAD_SIGN_PATH: str = "/api/upload/signature"
+    # 上传文件大小上限（MB）：前端预校验 + 后端硬校验，默认 500（S3 POST 单次上限 5GB）
+    WECHAT_DL_PROMPT_UPLOAD_MAX_MB: int = 500
+    # 上传到 S3 的超时下限（秒）：实际超时按 max(该值, 文件MB*6) 动态计算
+    WECHAT_DL_PROMPT_UPLOAD_TIMEOUT: int = 120
 
     # 解析缓存（wechat_parse_records 复用）有效期（秒）。
     # 腾讯签名直链 play_url 仅 1~3 小时有效，超期复用必然 direct download http 400，
@@ -318,6 +325,14 @@ class Settings(BaseSettings):
         # 官方上限 600s；下限 1s 防止 0/负数被透传成非法参数。
         if v < 1 or v > 600:
             raise ValueError("WECHAT_DL_PROMPT_MAX_DURATION 必须在 1~600 秒之间（官方最大 600）")
+        return v
+
+    @field_validator("WECHAT_DL_PROMPT_UPLOAD_MAX_MB")
+    @classmethod
+    def _prompt_upload_max_mb_positive(cls, v: int) -> int:
+        # 0/负数会让「所有上传都超限」，必须挡在启动期。
+        if v < 1:
+            raise ValueError("WECHAT_DL_PROMPT_UPLOAD_MAX_MB 必须为正整数（单位 MB）")
         return v
 
     @field_validator("WECHAT_DL_PARSE_CACHE_TTL_SECONDS")

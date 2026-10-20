@@ -6,6 +6,7 @@
 - GET  /api/wechat-dl/tasks/:id     下载任务详情
 - POST /api/wechat-dl/import/batch  批量链接导入
 - POST /api/wechat-dl/reverse-prompt            提交视频反推提示词（智令 doc/120）
+- POST /api/wechat-dl/reverse-prompt/upload     本地视频上传后反推（doc/125 → doc/120）
 - GET  /api/wechat-dl/reverse-prompt/:id        查询反推任务（顺带轮询，doc/119）
 - GET  /api/wechat-dl/reverse-prompt            反推任务列表
 
@@ -16,11 +17,13 @@
 """
 
 import logging
+import os
+import tempfile
 import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,10 +49,14 @@ from wechat_download.service import (
 from wechat_download.prompt_service import (
     can_access_prompt_task,
     create_prompt_task,
+    create_upload_prompt_task,
     get_prompt_task,
     prompt_task_scope_stmt,
     refresh_prompt_task,
     serialize_prompt_task,
+    upload_max_bytes,
+    validate_upload_ext,
+    validate_upload_size,
 )
 
 logger = logging.getLogger(__name__)
@@ -472,6 +479,92 @@ async def create_reverse_prompt_task(
         max_duration=data.max_duration,
     )
     return serialize_prompt_task(task)
+
+
+def _content_length(headers) -> Optional[int]:
+    raw = headers.get("content-length") if headers else None
+    try:
+        return int(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+
+
+@router.post("/reverse-prompt/upload", status_code=201)
+async def upload_reverse_prompt_task(
+    file: UploadFile = File(..., description="本地视频文件（mp4/mov/webm/avi/mkv/m4v）"),
+    max_duration: Optional[int] = Form(None, description="计时上限（秒），默认 600，最大 600"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """本地视频上传 → 反推提示词（智令 doc/125 签名直传 → doc/120 提交）。
+
+    流程：先按 Content-Length 做**零拷贝早退**校验（超限 413 / 扩展名非法 400，
+    不落盘不建任务）→ 流式落临时文件（不整读进内存）→ 签名 → S3 POST → 提交反推。
+
+    失败口径与 POST /reverse-prompt 一致：doc/125 或 S3 失败不抛 500，
+    任务落库 failed + error 并照常返回 201，让用户能在列表里看到失败原因。
+    """
+    file_name = (file.filename or "").strip()
+    if not file_name:
+        raise HTTPException(status_code=400, detail="请选择要上传的视频文件")
+
+    # ① 早退校验：扩展名（不依赖文件内容，先挡住明显非法请求）
+    ext_err = validate_upload_ext(file_name)
+    if ext_err:
+        raise HTTPException(status_code=400, detail=ext_err)
+
+    # ② 早退校验：大小。优先用 Content-Length，避免把 1GB 文件先写盘再拒
+    limit = upload_max_bytes()
+    declared = _content_length(getattr(file, "headers", None))
+    if declared is not None and declared > limit * 1.02:  # 预留 multipart 边界开销
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件过大（{declared / 1024 / 1024:.1f}MB），上限 {limit // 1024 // 1024}MB",
+        )
+
+    tmp_path = None
+    try:
+        # ③ 流式落临时文件：大视频不整读进内存（RAM 只有几 GB，500MB×N 会直接 OOM）
+        with tempfile.NamedTemporaryFile(prefix="rp_upload_", suffix=".part", delete=False) as tmp:
+            tmp_path = tmp.name
+            size = 0
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件过大（{size / 1024 / 1024:.1f}MB），上限 {limit // 1024 // 1024}MB",
+                    )
+                tmp.write(chunk)
+
+        size_err = validate_upload_size(size)
+        if size_err:
+            raise HTTPException(status_code=400, detail=size_err)
+
+        # ④ 上传 + 提交（fail-soft：内部失败只写 failed，不抛）
+        with open(tmp_path, "rb") as fh:
+            task = await create_upload_prompt_task(
+                db,
+                created_by=current_user.id if current_user else None,
+                file_obj=fh,
+                file_name=file_name,
+                size_bytes=size,
+                max_duration=max_duration,
+            )
+        return serialize_prompt_task(task)
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        try:
+            await file.close()
+        except Exception:
+            pass
 
 
 @router.get("/reverse-prompt/{task_id}")
