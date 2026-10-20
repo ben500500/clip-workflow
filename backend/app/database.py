@@ -293,6 +293,10 @@ async def _apply_compat_migrations():
         ("slice_tasks", "remotion_status", "VARCHAR(20)"),
         # 切片候选高光形态（0042_clip_candidate_clip_type）：suspense_cut/full_highlight/highlight
         ("clip_candidates", "clip_type", "VARCHAR(50)"),
+        # 反推提示词本地视频上传（0052_wechat_dl_prompt_task_upload）：
+        # source_type 区分 url/upload，file_name 存上传原始文件名。老库靠 compat 补列。
+        ("wechat_dl_prompt_tasks", "source_type", "VARCHAR(20) NOT NULL DEFAULT 'url'"),
+        ("wechat_dl_prompt_tasks", "file_name", "VARCHAR(255)"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

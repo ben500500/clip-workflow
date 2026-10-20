@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Card, Tabs, Form, Input, Select, Button, Table, Tag, message, Space,
-  Typography, Progress, Modal, Alert, Radio, Tooltip,
+  Typography, Progress, Modal, Alert, Radio, Tooltip, Upload,
 } from 'antd';
 import {
   ImportOutlined, DownloadOutlined,
@@ -9,6 +9,7 @@ import {
   EyeOutlined, ExportOutlined, PlusOutlined, FolderOpenOutlined,
   VideoCameraOutlined, ApiOutlined, GlobalOutlined, SafetyCertificateOutlined,
   FileTextOutlined, CopyOutlined, ThunderboltOutlined, RobotOutlined,
+  InboxOutlined, CloudUploadOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -40,6 +41,25 @@ const PROMPT_STATUS_META: Record<string, { color: string; label: string }> = {
 
 // 反推任务轮询间隔（官方建议 3~5s 查一次；本系统查自建接口，顺带触发一次上游查询）
 const PROMPT_POLL_INTERVAL_MS = 4000;
+
+// 本地视频上传反推（ISSUE #363）：与后端 wechat_download.prompt_service.UPLOAD_ALLOWED_EXTS
+// 及 settings.WECHAT_DL_PROMPT_UPLOAD_MAX_MB 对齐；前端只做预校验省一次白跑的网络请求。
+export const PROMPT_UPLOAD_ACCEPT = '.mp4,.mov,.webm,.avi,.mkv,.m4v';
+export const PROMPT_UPLOAD_MAX_MB = 500;
+
+/** 上传前本地预校验：返回错误文案，通过返回 null。 */
+export const validatePromptUploadFile = (file: File): string | null => {
+  const ext = `.${(file.name.split('.').pop() || '').toLowerCase()}`;
+  const allow = PROMPT_UPLOAD_ACCEPT.split(',');
+  if (!allow.includes(ext)) {
+    return `不支持的文件类型 ${ext === '.' ? '(无扩展名)' : ext}，仅支持 ${allow.join(' ')}`;
+  }
+  if (file.size <= 0) return '文件为空，请重新选择';
+  if (file.size > PROMPT_UPLOAD_MAX_MB * 1024 * 1024) {
+    return `文件过大（${(file.size / 1024 / 1024).toFixed(1)}MB），上限 ${PROMPT_UPLOAD_MAX_MB}MB`;
+  }
+  return null;
+};
 
 // 与后端 WECHAT_DL_STALE_TIMEOUT_SECONDS 对齐（默认 3600s）：
 // 超过该时长未更新仍非终态 = worker 崩溃/节点重启遗留的孤儿任务
@@ -604,6 +624,10 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [detail, setDetail] = useState<WechatDlPromptTask | null>(null);
+  // 本地视频上传（ISSUE #363）：上传进度 + 当前文件名
+  const [uploading, setUploading] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState(0);
+  const [uploadName, setUploadName] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -664,6 +688,41 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
     }
   };
 
+  // 本地视频上传 → 反推（doc/125 签名直传 → doc/120）；beforeUpload 返回 false 走自定义上传
+  const handleUpload = async (file: File): Promise<boolean> => {
+    const localErr = validatePromptUploadFile(file);
+    if (localErr) {
+      message.error(localErr);
+      return false;
+    }
+    const values = form.getFieldsValue();
+    setUploading(true);
+    setUploadPercent(0);
+    setUploadName(file.name);
+    try {
+      const t = await wechatDlApi.uploadReversePrompt(
+        { file, max_duration: values.max_duration },
+        (percent) => setUploadPercent(percent),
+      );
+      setTasks((prev) => [t, ...prev.filter((p) => p.id !== t.id)]);
+      setDetail(t);
+      if (t.status === 'failed') {
+        message.error(`上传后提交反推失败：${t.error || '未知原因'}`);
+      } else {
+        message.success('视频已上传，正在生成提示词…');
+      }
+    } catch (err: unknown) {
+      const detailMsg = (err as { message?: string })?.message;
+      message.error(detailMsg || '上传失败');
+    } finally {
+      setUploading(false);
+      setUploadPercent(0);
+      setUploadName(null);
+    }
+    // 返回 false：阻止 antd 自己发起上传（我们自己走 axios 以便拿进度与凭据）
+    return false;
+  };
+
   const handleCopy = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -675,8 +734,24 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
 
   const columns = [
     {
-      title: '视频链接', dataIndex: 'source_url', key: 'source_url', ellipsis: true,
-      render: (v: string) => <Text style={{ fontSize: 12 }}>{v}</Text>,
+      title: '来源', dataIndex: 'source_type', key: 'source_type', width: 190, ellipsis: true,
+      render: (v: string | null, r: WechatDlPromptTask) => (
+        v === 'upload' ? (
+          <Tooltip title={r.file_name || ''}>
+            <Tag color="blue" icon={<CloudUploadOutlined />} style={{ maxWidth: 170 }}>
+              <span style={{ display: 'inline-block', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', verticalAlign: 'bottom' }}>
+                {r.file_name || '本地视频'}
+              </span>
+            </Tag>
+          </Tooltip>
+        ) : (
+          <Tag color="default" icon={<LinkOutlined />}>链接</Tag>
+        )
+      ),
+    },
+    {
+      title: '视频地址', dataIndex: 'source_url', key: 'source_url', ellipsis: true,
+      render: (v: string) => <Text style={{ fontSize: 12 }}>{v || '-'}</Text>,
     },
     {
       title: '状态', dataIndex: 'status', key: 'status', width: 110,
@@ -741,8 +816,8 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
         showIcon
         style={{ marginBottom: 16 }}
         icon={<RobotOutlined />}
-        message="粘贴任意视频链接，自动反推生成结构化提示词"
-        description="基于智令 doc/120《视频反推提示词（计时）》：支持 30+ 平台分享链接与视频直链，按计时上限计费（0.00054 元/秒，注册赠 30 次）。生成中约需数十秒，页面每 4s 自动刷新；完成后可一键复制 markdown 提示词。"
+        message="粘贴任意视频链接或上传本地视频，自动反推生成结构化提示词"
+        description="基于智令 doc/120《视频反推提示词（计时）》：支持 30+ 平台分享链接与视频直链，按计时上限计费（0.00054 元/秒，注册赠 30 次）。本地视频经 doc/125 签名直传智令临时桶后走同一反推链路（上传计费 0.001 元/次，文件 6 小时自动删除）。生成中约需数十秒，页面每 4s 自动刷新；完成后可一键复制 markdown 提示词。"
       />
 
       <Form form={form} layout="inline" style={{ marginBottom: 16, rowGap: 8 }}>
@@ -774,6 +849,40 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
         </Form.Item>
       </Form>
 
+      {/* 本地视频上传（ISSUE #363）：没有可分享链接的视频，直接传文件反推 */}
+      <div style={{ marginBottom: 16 }}>
+        <Upload.Dragger
+          accept={PROMPT_UPLOAD_ACCEPT}
+          multiple={false}
+          maxCount={1}
+          showUploadList={false}
+          disabled={uploading}
+          beforeUpload={(file) => { void handleUpload(file as File); return false; }}
+          style={{ background: '#fafafa' }}
+        >
+          <p style={{ margin: 0 }}>
+            <InboxOutlined style={{ fontSize: 28, color: '#1677ff' }} />
+          </p>
+          <p style={{ margin: '6px 0 2px', fontSize: 13 }}>
+            没有链接？点此或拖拽本地视频到这里上传后反推
+          </p>
+          <p style={{ margin: 0 }}>
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              支持 {PROMPT_UPLOAD_ACCEPT.replace(/\./g, '').replace(/,/g, ' / ')}，单个文件 ≤ {PROMPT_UPLOAD_MAX_MB}MB；
+              文件仅中转至智令临时桶，6 小时后自动删除
+            </Text>
+          </p>
+        </Upload.Dragger>
+        {uploading && (
+          <div style={{ marginTop: 8 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              <CloudUploadOutlined /> 正在上传 {uploadName}…
+            </Text>
+            <Progress percent={uploadPercent} size="small" status="active" />
+          </div>
+        )}
+      </div>
+
       <Table
         rowKey="id"
         size="small"
@@ -782,7 +891,7 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
         dataSource={tasks}
         pagination={{ pageSize: 10 }}
         scroll={{ x: 1000 }}
-        locale={{ emptyText: '暂无反推任务，粘贴视频链接开始生成' }}
+        locale={{ emptyText: '暂无反推任务，粘贴视频链接或上传本地视频开始生成' }}
       />
 
       <Modal
@@ -796,7 +905,14 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
         {detail && (
           <div>
             <p style={{ marginBottom: 8 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>{detail.source_url}</Text>
+              <Space size={6} wrap>
+                {detail.source_type === 'upload' ? (
+                  <Tag color="blue" icon={<CloudUploadOutlined />}>{detail.file_name || '本地视频'}</Tag>
+                ) : (
+                  <Tag color="default" icon={<LinkOutlined />}>链接</Tag>
+                )}
+                <Text type="secondary" style={{ fontSize: 12 }}>{detail.source_url || '-'}</Text>
+              </Space>
             </p>
             <Space style={{ marginBottom: 12 }}>
               {(() => {

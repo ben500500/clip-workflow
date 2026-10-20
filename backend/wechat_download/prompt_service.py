@@ -17,14 +17,18 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.models import User, user_can_access_all_materials
 from wechat_download.models import (
+    PST_UPLOAD,
+    PST_URL,
     PT_FAILED,
     PT_PROCESSING,
     PT_SUCCESS,
     WechatDlPromptTask,
 )
 from wechat_download.prompt_client import PromptClient, PromptError
+from wechat_download.upload_client import UploadClient, UploadError
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +37,9 @@ def serialize_prompt_task(t: WechatDlPromptTask) -> dict:
     return {
         "id": str(t.id),
         "created_by": str(t.created_by) if t.created_by else None,
+        "source_type": t.source_type or PST_URL,
         "source_url": t.source_url,
+        "file_name": t.file_name,
         "provider_task_id": t.provider_task_id,
         "status": t.status,
         "content": t.content,
@@ -77,11 +83,19 @@ async def create_prompt_task(
     created_by: Optional[uuid.UUID],
     source_url: str,
     max_duration: Optional[int] = None,
+    source_type: str = PST_URL,
+    file_name: Optional[str] = None,
 ) -> WechatDlPromptTask:
-    """建行 + 提交智令。返回落库后的任务（失败时 status=failed，带 error）。"""
+    """建行 + 提交智令。返回落库后的任务（失败时 status=failed，带 error）。
+
+    source_type=upload 时 source_url 是 doc/125 上传后拿到的 fileUrl，
+    file_name 保留用户原始文件名（仅作展示/追溯）。
+    """
     task = WechatDlPromptTask(
         created_by=created_by,
         source_url=(source_url or "").strip()[:1000],
+        source_type=source_type or PST_URL,
+        file_name=(file_name or None) and str(file_name)[:255],
         max_duration=max_duration,
         status=PT_PROCESSING,
     )
@@ -145,6 +159,135 @@ async def refresh_prompt_task(db: AsyncSession, task: WechatDlPromptTask) -> Wec
         await db.refresh(task)
         return task
 
+    task.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(task)
+    return task
+
+
+# 允许上传的视频扩展名（前端 accept 与后端校验共用一份，避免两边漂移）
+UPLOAD_ALLOWED_EXTS = (".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v")
+
+# 扩展名 → content type：doc/125 签名要按 contentType 签，S3 侧写入同值
+EXT_CONTENT_TYPES = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/x-m4v",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska",
+}
+
+
+def upload_max_bytes() -> int:
+    """上传大小上限（字节）。每次现读 settings，便于测试/运维改 env 后即时生效。"""
+    return int(settings.WECHAT_DL_PROMPT_UPLOAD_MAX_MB) * 1024 * 1024
+
+
+def validate_upload_ext(file_name: Optional[str]) -> Optional[str]:
+    """校验扩展名白名单。返回错误原因（None 表示通过）。
+
+    与大小分开两个函数：API 层要在**落盘之前**先拒非法扩展名，
+    此时还不知道真实大小，硬塞一个假 size 进来只会让校验语义变浑浊。
+    """
+    name = (file_name or "").strip()
+    if not name:
+        return "缺少文件名"
+    ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+    if ext not in UPLOAD_ALLOWED_EXTS:
+        return f"不支持的文件类型 {ext or '(无扩展名)'}，仅支持 {' '.join(UPLOAD_ALLOWED_EXTS)}"
+    return None
+
+
+def validate_upload_size(size_bytes: int) -> Optional[str]:
+    """校验文件大小。返回错误原因（None 表示通过）。超限由 API 层转 413。"""
+    if size_bytes <= 0:
+        return "上传文件为空"
+    limit = upload_max_bytes()
+    if size_bytes > limit:
+        return f"文件过大（{size_bytes / 1024 / 1024:.1f}MB），上限 {limit // 1024 // 1024}MB"
+    return None
+
+
+def validate_upload_file(file_name: Optional[str], size_bytes: int) -> Optional[str]:
+    """扩展名 + 大小一起校验（组合便捷入口），返回错误原因或 None。"""
+    return validate_upload_ext(file_name) or validate_upload_size(size_bytes)
+
+
+def content_type_for(file_name: Optional[str]) -> str:
+    name = (file_name or "").lower()
+    ext = ("." + name.rsplit(".", 1)[-1]) if "." in name else ""
+    return EXT_CONTENT_TYPES.get(ext, "video/mp4")
+
+
+async def create_upload_prompt_task(
+    db: AsyncSession,
+    *,
+    created_by: Optional[uuid.UUID],
+    file_obj,
+    file_name: str,
+    size_bytes: int,
+    max_duration: Optional[int] = None,
+) -> WechatDlPromptTask:
+    """本地视频上传 → 反推：建行（先 commit）→ doc/125 签名 → S3 POST → doc/120 提交。
+
+    与 create_prompt_task 同样 fail-soft：签名/S3 失败只把任务写 failed + error，
+    绝不向上抛（API 层仍返回 201 任务本体），保证一次外部抖动不产生 5xx。
+    文件对象由调用方（API 层）负责生命周期：这里只读不关，临时文件在 API 层 finally 删。
+    """
+    task = WechatDlPromptTask(
+        created_by=created_by,
+        # doc/125 上传完成前还不知道 fileUrl，先占位，成功后回填
+        source_url="",
+        source_type=PST_UPLOAD,
+        file_name=(file_name or "")[:255] or None,
+        max_duration=max_duration,
+        status=PT_PROCESSING,
+    )
+    db.add(task)
+    # 先提交：上传大文件可能耗时数分钟，必须先让用户在列表里看到这条在跑的任务
+    await db.commit()
+    await db.refresh(task)
+
+    ctype = content_type_for(file_name)
+    up = UploadClient()
+    try:
+        ticket = await up.sign(file_name=file_name, content_type=ctype)
+        await up.post_file(
+            ticket, file_obj, file_name=file_name, size_bytes=size_bytes, content_type=ctype,
+        )
+    except UploadError as e:
+        task.status = PT_FAILED
+        task.error = str(e)[:500]
+        task.updated_at = datetime.utcnow()
+        await db.commit()
+        logger.warning("反推提示词上传失败 task=%s: %s", task.id, e)
+        return task
+    finally:
+        await up.close()
+
+    task.source_url = (ticket.file_url or "")[:1000]
+    task.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(task)
+
+    # 拿到 fileUrl 后走既有提交链路（doc/120），复用同一套 fail-soft 与计费口径
+    client = PromptClient()
+    try:
+        provider_task_id = await client.submit(task.source_url, max_duration)
+    except PromptError as e:
+        task.status = PT_FAILED
+        task.error = str(e)[:500]
+        task.updated_at = datetime.utcnow()
+        await db.commit()
+        logger.warning("反推提示词任务提交失败 task=%s: %s", task.id, e)
+        return task
+    finally:
+        await client.close()
+
+    task.provider_task_id = provider_task_id
+    task.status = PT_PROCESSING
+    task.error = None
     task.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(task)
