@@ -153,11 +153,12 @@ def _video(vid, **over):
 
 
 def test_collect_account_videos_unions_and_dedupes():
+    # 真实 board_data.json 形态：accounts 是 {账号名: 账号体} 字典
     payload = {
-        "accounts": [
-            {"account": "太上短剧", "weekly_videos": [_video("a"), _video("b")]},
-            {"account": "帷幕小剧场", "weekly_videos": [_video("c")]},
-        ],
+        "accounts": {
+            "太上短剧": {"theater": "太上", "weekly_videos": [_video("a"), _video("b")]},
+            "帷幕小剧场": {"weekly_videos": [_video("c")]},
+        },
         "all_top_videos": [
             _video("b"),                                   # 与周榜重复 → 去重
             _video("d", account="太上短剧"),                # 总榜独有 → 并入
@@ -170,6 +171,18 @@ def test_collect_account_videos_unions_and_dedupes():
     assert [v["id"] for v in got["太上短剧"]] == ["a", "b", "d"]
     assert [v["id"] for v in got["帷幕小剧场"]] == ["c"]
     assert [v["id"] for v in got["没登记的号"]] == ["e"]
+
+
+def test_collect_account_videos_list_shape_compat():
+    # 兼容：accounts 为列表的合成形态（老样例）
+    payload = {
+        "accounts": [
+            {"account": "太上短剧", "weekly_videos": [_video("a")]},
+        ],
+        "all_top_videos": [],
+    }
+    got = bms.collect_account_videos(payload)
+    assert [v["id"] for v in got["太上短剧"]] == ["a"]
 
 
 def test_collect_account_videos_empty_payload():
@@ -217,12 +230,13 @@ async def test_import_maps_matches_and_skips(tmp_path):
     await _seed_accounts(session)
     payload = {
         "generated_at": "2026-10-20 08:00",
-        "accounts": [
-            {"account": "太上短剧", "weekly_videos": [_video("a"), _video("b", date="坏日期", has_drama=False,
-                                                                    drama_name="残留")]},
-            {"account": "停用剧场", "weekly_videos": [_video("x")]},
-            {"account": "没登记的号", "weekly_videos": [_video("y")]},
-        ],
+        # 真实形态：accounts 为 {账号名: 账号体} 字典
+        "accounts": {
+            "太上短剧": {"weekly_videos": [_video("a"), _video("b", date="坏日期", has_drama=False,
+                                                          drama_name="残留")]},
+            "停用剧场": {"weekly_videos": [_video("x")]},
+            "没登记的号": {"weekly_videos": [_video("y")]},
+        },
         "all_top_videos": [_video("c", account="帷幕小剧场")],
     }
     path = _write_payload(tmp_path, payload)

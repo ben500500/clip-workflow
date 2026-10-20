@@ -163,6 +163,10 @@ def collect_account_videos(payload: dict) -> dict:
 
     同一 video_id 在两处都出现时保留先出现的条目（weekly_videos 在前，
     其指标口径与总榜同构，先到先得即可）；无 `id` 的条目不参与幂等，直接丢弃。
+
+    ⚠️ 真实 board_data.json 里 `accounts` 是 **{账号名: 账号体} 的字典**
+    （账号体含 theater/metrics/weekly_videos 等），账号名在 key 上；
+    列表形态仅保留作兼容（老合成样例）。
     """
     result: dict[str, list] = {}
     seen: dict[str, set] = {}
@@ -185,12 +189,20 @@ def collect_account_videos(payload: dict) -> dict:
         bucket_seen.add(video_id)
         result.setdefault(name, []).append(video)
 
-    for account in payload.get("accounts") or []:
-        if not isinstance(account, dict):
-            continue
-        name = account.get("account") or account.get("channel_name")
-        for video in account.get("weekly_videos") or []:
-            _push(name, video)
+    accounts_field = payload.get("accounts")
+    if isinstance(accounts_field, dict):
+        for name, body in accounts_field.items():
+            if not isinstance(body, dict):
+                continue
+            for video in body.get("weekly_videos") or []:
+                _push(name, video)
+    elif isinstance(accounts_field, list):
+        for account in accounts_field:
+            if not isinstance(account, dict):
+                continue
+            name = account.get("account") or account.get("channel_name")
+            for video in account.get("weekly_videos") or []:
+                _push(name, video)
 
     for video in payload.get("all_top_videos") or []:
         if isinstance(video, dict):
