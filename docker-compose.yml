@@ -48,6 +48,8 @@ x-celery-worker: &celery-worker-base
     # HuggingFace 离线模式：去水印 ONNX 模型从本地预置缓存加载（hf-cache），
     # 禁止检查远程（服务器无法访问 huggingface.co，检查会阻塞超时）
     HF_HUB_OFFLINE: "1"
+    # 看板指标自动导入（ISSUE #366）：board_data.json 容器内路径
+    BOARD_DATA_JSON_PATH: ${BOARD_DATA_JSON_PATH:-/data/board/board_data.json}
   volumes:
     - media_data:/app/media
     - ./engines:/app/engines:ro
@@ -59,6 +61,9 @@ x-celery-worker: &celery-worker-base
     # 去重处理上传目录：与 backend 共享同名 named volume，celery worker
     # 才能读到 /tmp/dedupe_upload 下的批量上传文件（跨容器 /tmp 不共享）
     - dedupe_upload_data:/tmp/dedupe_upload
+    # 看板指标自动导入（ISSUE #366）：163 同机 data-update 采集系统产物只读挂载，
+    # celery beat/worker 读 board_data.json → video_metrics（路径由 BOARD_DATA_JSON_PATH 指定）
+    - /home/cc12703/data-update/data/dashboard:/data/board:ro
   # celery worker 无 HTTP 端口，用 python redis ping 作为健康检查（覆盖镜像默认的 curl 检查）
   healthcheck:
     test: ["CMD", "python", "-c", "import redis,sys; sys.exit(0 if redis.Redis(host='redis',port=6379,password='${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}').ping() else 1)"]
@@ -329,6 +334,8 @@ services:
       # HuggingFace 离线模式：去水印 ONNX 模型从本地预置缓存加载（hf-cache），
       # 禁止检查远程（服务器无法访问 huggingface.co，检查会阻塞超时）
       HF_HUB_OFFLINE: "1"
+      # 看板指标自动导入（ISSUE #366）：board_data.json 容器内路径
+      BOARD_DATA_JSON_PATH: ${BOARD_DATA_JSON_PATH:-/data/board/board_data.json}
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8001}:8080"
@@ -342,6 +349,8 @@ services:
       - /home/cc12703/videos:/home/cc12703/videos
       # 去重处理上传目录：与 celery worker 共享，批量上传后 worker 才能读到源文件
       - dedupe_upload_data:/tmp/dedupe_upload
+      # 看板指标自动导入（ISSUE #366）：backend 侧手动触发端点同样要读 board_data.json
+      - /home/cc12703/data-update/data/dashboard:/data/board:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 15s

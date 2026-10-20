@@ -585,6 +585,14 @@ export interface VideoMetric {
   attributed_uv: number;
   attributed_revenue: number;
   content_type: string | null;
+  /** 今日播放（board_data.json 自动同步口径，手动导入为 null） */
+  today_play_count?: number | null;
+  /** 平均播放时长（秒） */
+  avg_play_time?: number | null;
+  /** 挂载剧名（has_drama=false 时为 null） */
+  drama_name?: string | null;
+  /** 数据来源：import=手动导入 / board=data-update 自动同步 */
+  source?: string | null;
   tags?: string[];
   drama_id: string | null;
   traffic_method: string | null;

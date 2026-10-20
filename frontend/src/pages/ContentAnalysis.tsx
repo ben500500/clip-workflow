@@ -100,11 +100,19 @@ const ContentAnalysis: React.FC = () => {
               size="small"
               loading={loading}
               dataSource={videos}
-              scroll={{ x: 1300 }}
+              scroll={{ x: 1540 }}
               columns={[
                 { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true, render: (t: string) => t || '-' },
                 { title: '视频ID', dataIndex: 'video_id', key: 'video_id', width: 130, ellipsis: true },
                 { title: '播放', dataIndex: 'play_count', key: 'play_count', width: 90 },
+                {
+                  title: '今日播放', dataIndex: 'today_play_count', key: 'today_play_count', width: 100,
+                  render: (v: number | null) => (v === null || v === undefined ? '-' : v),
+                },
+                {
+                  title: '挂载剧名', dataIndex: 'drama_name', key: 'drama_name', width: 140,
+                  ellipsis: true, render: (v: string | null) => v || '-',
+                },
                 { title: '完播率', dataIndex: 'finish_rate', key: 'finish_rate', width: 90, render: (v: number) => formatPercent((v ?? 0) * 100) },
                 { title: '点赞', dataIndex: 'like_count', key: 'like_count', width: 80 },
                 { title: '评论', dataIndex: 'comment_count', key: 'comment_count', width: 80 },
