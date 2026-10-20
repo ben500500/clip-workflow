@@ -134,8 +134,12 @@ class UploadClient:
         # 动态超时：6MB/s 量级 + 120s 兜底，避免固定 15s/120s 掐断大文件
         size_mb = max(1.0, size_bytes / (1024 * 1024))
         upload_timeout = max(float(self.min_upload_timeout), size_mb * 6.0)
-        # formFields 在前、file 最后：AWS POST policy 的硬要求（顺序错 → 403）
-        fields = list(ticket.form_fields.items())
+        # formFields 在前、file 最后：AWS POST policy 的硬要求（顺序错 → 403）。
+        # ⚠️ data 必须传 dict：httpx 0.28 里 data 传 list 时 files 会被静默丢弃
+        # （流变成同步 urlencoded IteratorByteStream → AsyncClient 直接 RuntimeError
+        # "Attempted to send an sync request with an AsyncClient instance"，
+        # 真实 S3 上传 500 的根因，见 ISSUE #363）。dict（保序）才能走 MultipartStream。
+        fields = dict(ticket.form_fields)
         file_obj.seek(0)
         files = {"file": (file_name, file_obj, content_type or "video/mp4")}
         try:

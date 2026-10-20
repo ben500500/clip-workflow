@@ -200,9 +200,11 @@ async def test_post_file_puts_form_fields_first_and_file_last():
     await c.post_file(ticket, _FakeFile(), file_name="a.mp4", size_bytes=1024)
 
     _, kwargs = c._client.post.call_args
-    # data 必须是 list[tuple] 且保持签名里的顺序（dict 保序），不能是 dict 让 httpx 重排
-    assert isinstance(kwargs["data"], list)
-    assert [k for k, _ in kwargs["data"]] == ["key", "policy", "x-amz-signature"]
+    # data 必须是 dict（保序）且保持签名里的字段顺序。
+    # ⚠️ 不能传 list：httpx 0.28 里 data=list 时 files 被静默丢弃（流退化为
+    # 同步 urlencoded IteratorByteStream），AsyncClient 直接 RuntimeError（163 实测 500）。
+    assert isinstance(kwargs["data"], dict)
+    assert list(kwargs["data"].keys()) == ["key", "policy", "x-amz-signature"]
     # file 字段单独走 files（httpx 会把它排在 multipart 最后）
     assert list(kwargs["files"].keys()) == ["file"]
 
