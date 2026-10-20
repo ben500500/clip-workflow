@@ -297,6 +297,13 @@ async def _apply_compat_migrations():
         # source_type 区分 url/upload，file_name 存上传原始文件名。老库靠 compat 补列。
         ("wechat_dl_prompt_tasks", "source_type", "VARCHAR(20) NOT NULL DEFAULT 'url'"),
         ("wechat_dl_prompt_tasks", "file_name", "VARCHAR(255)"),
+        # 看板指标自动导入（0053_board_metrics_import，ISSUE #366）：
+        # 163 data-update 的 board_data.json → video_metrics。
+        # 部署链路只 stamp head，老库加列的唯一生效路径就是这个清单。
+        ("video_metrics", "today_play_count", "INTEGER"),
+        ("video_metrics", "avg_play_time", "DOUBLE PRECISION"),
+        ("video_metrics", "drama_name", "VARCHAR(200)"),
+        ("video_metrics", "source", "VARCHAR(20) NOT NULL DEFAULT 'import'"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

@@ -61,6 +61,7 @@ celery_app.conf.update(
         "app.celery.tasks.task_publish_video": {"queue": "publish"},
         "app.celery.tasks.confirm_publish_worker": {"queue": "publish"},
         "app.celery.tasks.task_collect_metrics": {"queue": "metrics"},
+        "app.celery.tasks.task_import_board_metrics": {"queue": "metrics"},
         "app.celery.tasks.watermark_task": {"queue": "video_processing"},
         "app.celery.tasks.check_cookie_status": {"queue": "publish"},
         # 解耦模式选点消费者：独立 selection 队列（重计算 + 长轮询，避免抢占 default）
@@ -86,6 +87,12 @@ celery_app.conf.update(
         "collect-metrics-daily": {
             "task": "app.celery.tasks.task_collect_metrics",
             "schedule": crontab(hour=0, minute=30),
+        },
+        # 看板指标自动导入（ISSUE #366）：163 data-update 采集系统每 2 小时整点一轮，
+        # 这里错开 40 分钟取它的产出 board_data.json，避免与采集轮次撞车。
+        "board-metrics-import": {
+            "task": "app.celery.tasks.task_import_board_metrics",
+            "schedule": crontab(minute=40, hour="*/2"),
         },
         # 三期监控告警:周期检查告警规则并推送钉钉
         "alert-check-periodic": {
@@ -1904,6 +1911,43 @@ def task_collect_metrics(self, account_id: Optional[str] = None, target_date: Op
     except Exception as e:
         logger.error(f"Metrics collection failed: {e}")
         raise
+
+
+@celery_app.task(bind=True, max_retries=0)
+def task_import_board_metrics(self, path: Optional[str] = None):
+    """定时把 board_data.json 同步进 video_metrics（ISSUE #366）。
+
+    fail-soft：文件缺失 / JSON 损坏 / 顶层非对象都只 warning 后正常返回，
+    不重试不告警 —— 下一轮采集刷新后自然恢复（max_retries=0）。
+    """
+    from app.services import board_metrics_service
+
+    self.update_state(state="STARTED", meta={"progress": 0, "message": "正在导入看板指标..."})
+    try:
+        result = run_async(_run_board_metrics_import(path))
+        self.update_state(
+            state="SUCCESS",
+            meta={"progress": 100, "message": "board metrics import done", "result": result},
+        )
+        return result
+    except Exception as e:
+        # 只有数据库等未预期异常才走到这里；仍不重试，留日志给下一轮覆盖
+        logger.error(f"board metrics import failed: {e}")
+        raise
+
+
+async def _run_board_metrics_import(path: Optional[str] = None) -> dict:
+    """跑一轮导入并提交事务（单轮一个事务，异常整体回滚）。"""
+    from app.services.board_metrics_service import run_board_import
+
+    async with async_session_factory() as db:
+        try:
+            stats = await run_board_import(db, path)
+            await db.commit()
+            return stats
+        except Exception:
+            await db.rollback()
+            raise
 
 
 def gen_publish_trace_id(publish_task_id: str) -> str:

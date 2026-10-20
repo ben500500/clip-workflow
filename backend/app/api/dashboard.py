@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, and_, or_, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import require_roles
 from app.database import get_db
 from app.models.models import (
     VideoMetric,
@@ -23,10 +24,31 @@ from app.models.models import (
     EcosystemMetric,
     SystemConfig,
 )
-from app.services import dashboard_service, data_import_service, smart_import_service
+from app.models.models import User, UserRole
+from app.services import (
+    board_metrics_service,
+    dashboard_service,
+    data_import_service,
+    smart_import_service,
+)
 from app.utils.helpers import utc_iso
 
 router = APIRouter()
+
+
+def _iso_date(value) -> str:
+    """Date 列 → ISO 日期字符串。
+
+    `publish_date` 是 Date（不是 DateTime），直接喂 utc_iso() 会在
+    `dt.tzinfo` 上炸（'datetime.date' object has no attribute 'tzinfo'）。
+    看板表此前一直空着，接上 board_data.json（ISSUE #366）后列表就会 500，
+    统一走这里做 date/datetime 双分支。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return utc_iso(value)
+    return value.isoformat()
 
 
 # ---- Pydantic schemas ----
@@ -52,6 +74,10 @@ class VideoMetricResponse(BaseModel):
     attributed_uv: int = 0
     attributed_revenue: float = 0
     content_type: Optional[str] = None
+    today_play_count: Optional[int] = None
+    avg_play_time: Optional[float] = None
+    drama_name: Optional[str] = None
+    source: Optional[str] = None
     drama_id: Optional[str] = None
     traffic_method: Optional[str] = None
     publish_time_slot: Optional[str] = None
@@ -85,7 +111,7 @@ def _serialize_video_metric(m: VideoMetric) -> dict:
         "publish_task_id": str(m.publish_task_id) if m.publish_task_id else None,
         "video_id": m.video_id,
         "title": m.title,
-        "publish_date": utc_iso(m.publish_date) if m.publish_date else None,
+        "publish_date": _iso_date(m.publish_date) or None,
         "account_id": str(m.account_id) if m.account_id else None,
         "play_count": m.play_count or 0,
         "finish_rate": m.finish_rate or 0,
@@ -101,6 +127,11 @@ def _serialize_video_metric(m: VideoMetric) -> dict:
         "attributed_uv": m.attributed_uv or 0,
         "attributed_revenue": m.attributed_revenue or 0,
         "content_type": m.content_type,
+        # ISSUE #366：board_data.json 导入口径新增列（手动导入为空）
+        "today_play_count": m.today_play_count,
+        "avg_play_time": m.avg_play_time,
+        "drama_name": m.drama_name,
+        "source": m.source or "import",
         "tags": m.tags or [],
         "drama_id": str(m.drama_id) if m.drama_id else None,
         "traffic_method": m.traffic_method,
@@ -650,6 +681,25 @@ async def list_import_history(
     return await smart_import_service.get_import_history(db)
 
 
+@router.post("/dashboard/import/board-sync")
+async def trigger_board_sync(
+    path: Optional[str] = Query(None, description="调试用：覆盖 BOARD_DATA_JSON_PATH"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(UserRole.admin)),
+):
+    """手动触发一轮 board_data.json → video_metrics 导入（ISSUE #366）。
+
+    复用定时任务同一套逻辑，便于部署后立即验证与运维补数。
+    文件缺失/JSON 损坏不抛 500，返回 success=false 并在 errors 里说明原因。
+    """
+    stats = await board_metrics_service.run_board_import(db, path)
+    if stats.get("success"):
+        await db.commit()
+    else:
+        await db.rollback()
+    return stats
+
+
 # ---- Ecosystem endpoints ----
 
 @router.get("/dashboard/ecosystem")
@@ -849,8 +899,12 @@ def _serialize_shortdrama_analysis_row(v: VideoMetric, ctx: dict) -> dict:
         "account_name": account_name,
         "video_id": v.video_id,
         "title": v.title,
-        "publish_date": utc_iso(v.publish_date) if v.publish_date else None,
+        "publish_date": _iso_date(v.publish_date) or None,
         "play_count": v.play_count or 0,
+        "today_play_count": v.today_play_count,
+        "avg_play_time": v.avg_play_time,
+        "drama_name": v.drama_name,
+        "source": v.source or "import",
         "finish_rate": v.finish_rate or 0,
         "like_count": v.like_count or 0,
         "comment_count": v.comment_count or 0,

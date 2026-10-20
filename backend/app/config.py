@@ -249,6 +249,13 @@ class Settings(BaseSettings):
     # 每集 HTTP 下载并发数（默认 2，避免打爆源服务器）
     LAN_SOURCE_CONCURRENCY: int = 2
 
+    # ── 看板指标自动导入（ISSUE #366：163 data-update 采集系统 board_data.json）──
+    # board_data.json 路径（163 宿主机目录以只读卷挂到 /data/board）。
+    # 文件缺失/解析失败时任务 fail-soft 跳过本轮，等下一个采集周期，不重试不告警。
+    BOARD_DATA_JSON_PATH: str = "/data/board/board_data.json"
+    # 导入任务队列（复用 worker-fast 已订阅的 metrics 队列）
+    BOARD_METRICS_QUEUE: str = "metrics"
+
     # ── 推送到下载平台（dupload，对接 21:8800 dramaupload / dupload 独立服务）──
     # 总开关（默认开启）。开启后剧目详情页出现「推送到下载平台」区块，
     # 一键调用 POST /api/dupload/tasks（action=only_download）把剧目素材链接推给下载平台。

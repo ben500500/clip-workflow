@@ -35,6 +35,8 @@ class VideoMetric(Base):
     # 平台显式标记：wechat_channel / douyin / kuaishou（短片分析按平台分 Tab）
     platform = Column(String(50), nullable=True)
     play_count = Column(Integer, default=0)
+    # 今日播放（ISSUE #366：163 data-update 采集源新增口径，手动导入留 NULL）
+    today_play_count = Column(Integer, nullable=True)
     finish_rate = Column(Float, default=0)
     like_count = Column(Integer, default=0)
     comment_count = Column(Integer, default=0)
@@ -55,6 +57,12 @@ class VideoMetric(Base):
     publish_time_slot = Column(String(10), nullable=True)
     play_level = Column(String(10), nullable=True)
     production_cost = Column(Float, default=0)
+    # 平均播放时长（秒）与挂载剧名（ISSUE #366：board_data.json avg_play_time/drama_name；
+    # has_drama=false 时 drama_name 为 NULL）
+    avg_play_time = Column(Float, nullable=True)
+    drama_name = Column(String(200), nullable=True)
+    # 数据来源标记：import=手动 Excel 导入 / board=data-update 自动同步
+    source = Column(String(20), nullable=False, default="import", server_default="import")
     recorded_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
