@@ -168,6 +168,10 @@ export const wechatDlApi = {
   getReversePrompt: (id: string) =>
     client.get(`/wechat-dl/reverse-prompt/${id}`) as Promise<WechatDlPromptTask>,
 
+  // 失败任务一键重试（复制原参数新建任务，仅链接型；上传型请重新上传）
+  retryReversePrompt: (id: string) =>
+    client.post(`/wechat-dl/reverse-prompt/${id}/retry`) as Promise<WechatDlPromptTask>,
+
   listReversePrompts: (params?: { limit?: number }) =>
     client.get('/wechat-dl/reverse-prompt', { params }) as Promise<WechatDlPromptTaskList>,
 };

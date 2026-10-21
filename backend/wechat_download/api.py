@@ -584,6 +584,33 @@ async def get_reverse_prompt_task(
     return serialize_prompt_task(task)
 
 
+@router.post("/reverse-prompt/{task_id}/retry", status_code=201)
+async def retry_reverse_prompt_task(
+    task_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """失败任务一键重试：复制原任务参数新建任务，返回新任务。
+
+    仅支持链接型任务；上传型任务的原始文件提交后即清理，无法重传。
+    智令偶发的「视频理解服务返回空结果」等瞬时故障，重试通常即可恢复。
+    """
+    task = await get_prompt_task(db, task_id)
+    if task is None or not can_access_prompt_task(task, current_user):
+        raise HTTPException(status_code=404, detail="反推任务不存在")
+    if task.status != "failed":
+        raise HTTPException(status_code=400, detail="仅失败任务可重试")
+    if task.source_type == "upload":
+        raise HTTPException(status_code=400, detail="上传任务的原始文件已清理，请重新上传")
+    new_task = await create_prompt_task(
+        db,
+        created_by=current_user.id if current_user else None,
+        source_url=task.source_url or "",
+        max_duration=task.max_duration,
+    )
+    return serialize_prompt_task(new_task)
+
+
 @router.post("/tasks/{task_id}/retry", response_model=dict)
 async def retry_download_task(
     task_id: uuid.UUID,
