@@ -9,7 +9,7 @@ import {
   EyeOutlined, ExportOutlined, PlusOutlined, FolderOpenOutlined,
   VideoCameraOutlined, ApiOutlined, GlobalOutlined, SafetyCertificateOutlined,
   FileTextOutlined, CopyOutlined, ThunderboltOutlined, RobotOutlined,
-  InboxOutlined, CloudUploadOutlined,
+  InboxOutlined, CloudUploadOutlined, RedoOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -660,6 +660,23 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
     return () => clearInterval(timer);
   }, [processingIds, refreshOne]);
 
+  // 失败任务一键重试（智令偶发空返回等瞬时故障，重试通常可恢复）
+  const [retryingPromptId, setRetryPromptId] = useState<string | null>(null);
+  const handlePromptRetry = async (t: WechatDlPromptTask) => {
+    setRetryPromptId(t.id);
+    try {
+      const nt = await wechatDlApi.retryReversePrompt(t.id);
+      message.success('已用原参数重新提交');
+      setTasks((prev) => [nt, ...prev]);
+      setDetail(nt);
+      void refreshOne(nt.id);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '重试失败');
+    } finally {
+      setRetryPromptId(null);
+    }
+  };
+
   // 外部入口（下载任务行「反推提示词」）预填链接
   useEffect(() => {
     if (presetUrl) form.setFieldsValue({ source_url: presetUrl });
@@ -784,7 +801,7 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
       render: (d: string) => formatDateTime(d),
     },
     {
-      title: '操作', key: 'action', width: 190, fixed: 'right' as const,
+      title: '操作', key: 'action', width: 220, fixed: 'right' as const,
       render: (_: unknown, r: WechatDlPromptTask) => (
         <Space size={4}>
           <Button
@@ -798,6 +815,19 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
           {r.content && (
             <Button size="small" type="link" icon={<CopyOutlined />} onClick={() => handleCopy(r.content as string)}>
               复制
+            </Button>
+          )}
+          {r.status === 'failed' && r.source_type !== 'upload' && (
+            <Button
+              size="small"
+              type="link"
+              danger
+              icon={<RedoOutlined />}
+              loading={retryingPromptId === r.id}
+              onClick={() => void handlePromptRetry(r)}
+              title="智令偶发空返回等瞬时故障，用原参数重新提交"
+            >
+              重试
             </Button>
           )}
         </Space>
