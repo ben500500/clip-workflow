@@ -73,6 +73,38 @@ export const isStaleTask = (t: WechatDlTask): boolean => {
   return Date.now() - ref.valueOf() > STALE_TIMEOUT_MS;
 };
 
+/**
+ * 复制文本到剪贴板。
+ * Clipboard API 仅在安全上下文（HTTPS / localhost）可用；本系统经
+ * http://192.168.1.163 局域网 IP 访问时 navigator.clipboard 为 undefined，
+ * 必须回退到隐藏 textarea + document.execCommand('copy')。
+ */
+export const copyTextToClipboard = async (text: string): Promise<boolean> => {
+  if (window.isSecureContext && navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch { /* 安全上下文下也可能被权限拒绝，继续走回退 */ }
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  return ok;
+};
+
 // ========== 链接导入 Tab ==========
 const ImportPanel: React.FC = () => {
   const [form] = Form.useForm();
@@ -741,12 +773,9 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
   };
 
   const handleCopy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      message.success('提示词已复制到剪贴板');
-    } catch {
-      message.warning('复制失败，请手动选中复制');
-    }
+    const ok = await copyTextToClipboard(text);
+    if (ok) message.success('提示词已复制到剪贴板');
+    else message.warning('复制失败，请手动选中复制');
   };
 
   const columns = [
