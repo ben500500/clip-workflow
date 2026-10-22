@@ -5,6 +5,7 @@
 - wechat_source_auths    授权素材表（历史遗留，导入流程已不再强制绑定/校验）
 - wechat_parse_records   解析结果表（各解析 provider 产物，可追溯、可重试）
 - wechat_dl_prompt_tasks 视频反推提示词任务表（智令 doc/120 异步提交 + doc/119 轮询）
+- zhiling_service_tasks  智令其他服务任务表（文案提取/AI消除/画质修复/TTS/音色训练）
 
 独立表 + 独立 Base，保证可剥离（随包走）；不改动主系统 episodes 核心结构，
 仅通过 episodes.source_url 最小粘合字段（迁移脚本另行处理）。
@@ -147,6 +148,68 @@ class WechatDlPromptTask(WechatDownloadBase):
 
     def __repr__(self) -> str:
         return f"<WechatDlPromptTask(id={self.id}, status={self.status})>"
+
+
+# 智令「其他服务」任务状态（与 wechat_download.services_client.STATUS_* 对齐）
+ZS_PROCESSING = "processing"
+ZS_SUCCESS = "success"
+ZS_FAILED = "failed"
+
+# 服务类型：文案提取 / AI消除 / 画质修复 / 文字转语音 / 音色训练
+ZT_COPY_EXTRACT = "copy_extract"
+ZT_AI_ERASER = "ai_eraser"
+ZT_HD_RESTORE = "hd_restore"
+ZT_TTS = "tts"
+ZT_VOICE_CLONE = "voice_clone"
+ZS_TASK_TYPES = (ZT_COPY_EXTRACT, ZT_AI_ERASER, ZT_HD_RESTORE, ZT_TTS, ZT_VOICE_CLONE)
+# 需要视频**直链**的服务（分享链接要先过 doc/107 解析，+0.01 元/次）
+ZS_DIRECT_URL_TYPES = (ZT_AI_ERASER, ZT_HD_RESTORE)
+
+
+class ZhilingServiceTask(WechatDownloadBase):
+    """智令其他服务任务（文案提取 / AI消除 / 画质修复 / TTS / 音色训练）。
+
+    五条链路共用一张表：`task_type` 决定参数与状态映射，差异全部收在
+    `params`（json）与 `provider_task_id` 上，避免为每个能力各开一张结构雷同的表。
+    音色训练是同步接口（无轮询），创建即 success 并把 `voice_model_id` 落库，
+    供「文字转语音」选「自定义音色」时直接粘贴使用。
+    """
+
+    __tablename__ = "zhiling_service_tasks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 发起人（可见口径与反推任务一致）
+    created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # 服务类型：copy_extract / ai_eraser / hd_restore / tts / voice_clone
+    task_type = Column(String(30), nullable=False, index=True)
+    # 用户提交的原始链接（分享链接 / 直链；音色训练为音频 URL）
+    input_url = Column(String(1000), nullable=True)
+    # 用户提交的文本（TTS 正文；文案提取为空）
+    input_text = Column(Text, nullable=True)
+    # 各服务差异化参数（need_srt/voice_type/voice_id/model_id/format/model_name/
+    # description/direct_url 等），一律 JSON 落库便于追溯与重试
+    params = Column(JSON, nullable=True)
+    # 智令侧任务 id（同步接口为空）
+    provider_task_id = Column(String(100), nullable=True, index=True)
+    # 状态：processing / success / failed
+    status = Column(String(20), nullable=False, default=ZS_PROCESSING, index=True)
+    # 处理进度（0~1，仅 AI消除/画质修复有）
+    progress = Column(Float, nullable=True)
+    # 结果地址（音频 / 视频直链）
+    result_url = Column(String(1000), nullable=True)
+    # 结果正文（文案提取的 content）
+    result_text = Column(Text, nullable=True)
+    # 字幕（文案提取 needSrt=true 时的 srtContent）
+    srt_text = Column(Text, nullable=True)
+    # 音色训练产物 modelId
+    voice_model_id = Column(String(100), nullable=True)
+    # 失败原因（截断 500 字符）
+    error = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<ZhilingServiceTask(id={self.id}, type={self.task_type}, status={self.status})>"
 
 
 class WechatParseRecord(WechatDownloadBase):

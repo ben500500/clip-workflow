@@ -99,6 +99,67 @@ export interface WechatDlPromptTaskList {
   total: number;
 }
 
+// ── 智令「其他服务」（文案提取 / AI消除 / 画质修复 / TTS / 音色训练，ISSUE #370）──
+export type ZhilingServiceTaskType =
+  | 'copy_extract'
+  | 'ai_eraser'
+  | 'hd_restore'
+  | 'tts'
+  | 'voice_clone';
+
+/** 各服务的差异参数（后端 zhiling_service_tasks.params，JSON 透传） */
+export interface ZhilingServiceOptions {
+  /** 文案提取：是否同时生成 SRT（默认 true） */
+  need_srt?: boolean;
+  /** TTS：builtin（内置音色）/ cloned（自定义音色） */
+  voice_type?: 'builtin' | 'cloned';
+  /** TTS 内置音色 id（如 306） */
+  voice_id?: string;
+  /** TTS 自定义音色 modelId（音色训练产物） */
+  model_id?: string;
+  /** TTS 音频格式，默认 mp3 */
+  format?: 'mp3' | 'wav' | 'pcm';
+  /** 音色训练：模型名称 */
+  model_name?: string;
+  /** 音色训练：描述（选填） */
+  description?: string;
+  /** 分享链接解析出的视频直链（ai_eraser / hd_restore 落库追溯用） */
+  direct_url?: string;
+  [key: string]: unknown;
+}
+
+export interface ZhilingServiceTask {
+  id: string;
+  created_by: string | null;
+  task_type: ZhilingServiceTaskType;
+  /** 视频 / 音频链接 */
+  input_url: string | null;
+  /** TTS 合成文本 */
+  input_text: string | null;
+  params: ZhilingServiceOptions;
+  provider_task_id: string | null;
+  /** processing / success / failed */
+  status: string;
+  /** 0~1（仅 AI消除 / 画质修复有） */
+  progress: number | null;
+  /** 结果地址（音频 / 视频直链） */
+  result_url: string | null;
+  /** 文案提取正文 */
+  result_text: string | null;
+  /** 文案提取字幕 */
+  srt_text: string | null;
+  /** 音色训练产物 modelId */
+  voice_model_id: string | null;
+  error: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ZhilingServiceTaskList {
+  items: ZhilingServiceTask[];
+  total: number;
+}
+
 export const wechatDlApi = {
   // ── 单链接导入 ──
   import: (data: WechatDlImportInput) =>
@@ -174,4 +235,21 @@ export const wechatDlApi = {
 
   listReversePrompts: (params?: { limit?: number }) =>
     client.get('/wechat-dl/reverse-prompt', { params }) as Promise<WechatDlPromptTaskList>,
+
+  // ── 其他服务（文案提取 / AI消除 / 画质修复 / TTS / 音色训练，ISSUE #370）──
+  submitZhilingService: (data: {
+    task_type: ZhilingServiceTaskType;
+    source_url?: string;
+    text?: string;
+    options?: ZhilingServiceOptions;
+  }) => client.post('/wechat-dl/zhiling-services', data) as Promise<ZhilingServiceTask>,
+
+  getZhilingService: (id: string) =>
+    client.get(`/wechat-dl/zhiling-services/${id}`) as Promise<ZhilingServiceTask>,
+
+  retryZhilingService: (id: string) =>
+    client.post(`/wechat-dl/zhiling-services/${id}/retry`) as Promise<ZhilingServiceTask>,
+
+  listZhilingServices: (params?: { limit?: number }) =>
+    client.get('/wechat-dl/zhiling-services', { params }) as Promise<ZhilingServiceTaskList>,
 };
