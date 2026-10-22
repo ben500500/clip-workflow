@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Card, Tabs, Form, Input, Select, Button, Table, Tag, message, Space,
-  Typography, Progress, Modal, Alert, Radio, Tooltip, Upload,
+  Typography, Progress, Modal, Alert, Radio, Tooltip, Upload, Segmented, Switch,
 } from 'antd';
 import {
   ImportOutlined, DownloadOutlined,
@@ -10,10 +10,13 @@ import {
   VideoCameraOutlined, ApiOutlined, GlobalOutlined, SafetyCertificateOutlined,
   FileTextOutlined, CopyOutlined, ThunderboltOutlined, RobotOutlined,
   InboxOutlined, CloudUploadOutlined, RedoOutlined,
+  AudioOutlined, ScissorOutlined as EraserIcon, PictureOutlined, SoundOutlined,
+  ExperimentOutlined, DownloadOutlined as DownloadFileIcon, PlayCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import {
   wechatDlApi, WechatDlTask, WechatDlProviderInfo, WechatDlPromptTask,
+  ZhilingServiceTask, ZhilingServiceTaskType, ZhilingServiceOptions,
 } from '../api/wechatDl';
 import { projectApi } from '../api/projects';
 import { configApi } from '../api/config';
@@ -1134,6 +1137,855 @@ const ProvidersPanel: React.FC = () => {
   );
 };
 
+
+// ========== 其他服务 Tab（文案提取 / AI消除 / 画质修复 / TTS / 音色训练）==========
+// 后端：wechat_download/services_service.py + /api/wechat-dl/zhiling-services*
+// 智令文档：doc/102 文案提取、doc/114 AI消除、doc/123 画质修复、doc/108 TTS、doc/128 音色训练
+
+const ZS_STATUS_META: Record<string, { color: string; label: string }> = {
+  processing: { color: 'processing', label: '处理中' },
+  success: { color: 'success', label: '已完成' },
+  failed: { color: 'error', label: '失败' },
+};
+
+// 与后端 models.ZS_DIRECT_URL_TYPES 对齐
+const ZS_DIRECT_URL_TYPES: string[] = ['ai_eraser', 'hd_restore'];
+
+/** 结果预览：文案取正文，其余取结果地址 */
+const zsPreview = (t: ZhilingServiceTask): string => {
+  if (t.status === 'failed') return t.error || '处理失败';
+  if (t.task_type === 'copy_extract') return t.result_text ? t.result_text.slice(0, 60) : '提取中…';
+  if (t.task_type === 'voice_clone') return t.voice_model_id ? `modelId: ${t.voice_model_id}` : '训练中…';
+  return t.result_url ? t.result_url : '处理中…';
+};
+
+const zsStatusTag = (t: ZhilingServiceTask) => {
+  const meta = ZS_STATUS_META[t.status] || { color: 'default', label: t.status };
+  return (
+    <Tooltip title={t.status === 'failed' ? t.error || '' : ''}>
+      <Tag color={meta.color}>{meta.label}</Tag>
+    </Tooltip>
+  );
+};
+
+/** 公共列表行为：拉取 / 4s 轮询 processing / 失败重试。各面板只负责表单与详情。 */
+const useZhilingServiceList = (taskType: ZhilingServiceTaskType) => {
+  const [tasks, setTasks] = useState<ZhilingServiceTask[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [detail, setDetail] = useState<ZhilingServiceTask | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    wechatDlApi.listZhilingServices({ limit: 50 })
+      .then((res) => setTasks((res.items || []).filter((t) => t.task_type === taskType)))
+      .catch(() => undefined)
+      .finally(() => setLoading(false));
+  }, [taskType]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const refreshOne = useCallback(async (id: string) => {
+    try {
+      const t = await wechatDlApi.getZhilingService(id);
+      setTasks((prev) => prev.map((p) => (p.id === t.id ? t : p)));
+      setDetail((d) => (d && d.id === t.id ? t : d));
+      return t;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // processing 的任务每 4s 轮询一次自建接口（同时触发后端向上游查一次）
+  const processingIds = tasks.filter((t) => t.status === 'processing').map((t) => t.id).join(',');
+  useEffect(() => {
+    if (!processingIds) return undefined;
+    const ids = processingIds.split(',');
+    const timer = setInterval(() => { ids.forEach((id) => { void refreshOne(id); }); }, PROMPT_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [processingIds, refreshOne]);
+
+  const retry = async (t: ZhilingServiceTask) => {
+    setRetryingId(t.id);
+    try {
+      const nt = await wechatDlApi.retryZhilingService(t.id);
+      message.success('已用原参数重新提交');
+      setTasks((prev) => [nt, ...prev]);
+      setDetail(nt);
+      void refreshOne(nt.id);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '重试失败');
+    } finally {
+      setRetryingId(null);
+    }
+  };
+
+  const prepend = useCallback((t: ZhilingServiceTask) => {
+    setTasks((prev) => [t, ...prev.filter((p) => p.id !== t.id)]);
+    setDetail(t);
+  }, []);
+
+  return { tasks, loading, detail, setDetail, refreshOne, retry, retryingId, prepend, load };
+};
+
+/** 明细 Modal 骨架：头部标签 + 状态 + 正文内容由各面板 provide。 */
+const ZsDetailModal: React.FC<{
+  detail: ZhilingServiceTask | null;
+  onClose: () => void;
+  onRetry: (t: ZhilingServiceTask) => void;
+  retrying: boolean;
+  title: string;
+  children: (t: ZhilingServiceTask) => React.ReactNode;
+}> = ({ detail, onClose, onRetry, retrying, title, children }) => (
+  <Modal
+    open={!!detail}
+    title={title}
+    footer={null}
+    onCancel={onClose}
+    width={760}
+    destroyOnClose
+  >
+    {detail && (
+      <div>
+        <p style={{ marginBottom: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {detail.input_url || (detail.input_text ? `文本 ${detail.input_text.length} 字` : '-')}
+          </Text>
+        </p>
+        <Space style={{ marginBottom: 12 }} wrap>
+          {zsStatusTag(detail)}
+          {detail.status === 'processing' && (
+            <Text type="secondary" style={{ fontSize: 12 }}>处理中，页面每 4s 自动刷新…</Text>
+          )}
+          {detail.status === 'failed' && (
+            <Button
+              size="small"
+              danger
+              icon={<RedoOutlined />}
+              loading={retrying}
+              onClick={() => onRetry(detail)}
+            >
+              重试
+            </Button>
+          )}
+        </Space>
+        {detail.status === 'failed' && (
+          <Alert type="error" showIcon message="处理失败" description={detail.error || '未知原因'} style={{ marginBottom: 12 }} />
+        )}
+        {children(detail)}
+      </div>
+    )}
+  </Modal>
+);
+
+/** 公共操作列：查看 / 失败重试 */
+const zsActions = (
+  t: ZhilingServiceTask,
+  ctx: { onView: (t: ZhilingServiceTask) => void; onRetry: (t: ZhilingServiceTask) => void; retryingId: string | null },
+) => (
+  <Space size={4}>
+    <Button size="small" type="link" icon={<FileTextOutlined />} onClick={() => ctx.onView(t)}>
+      查看
+    </Button>
+    {t.status === 'failed' && (
+      <Button
+        size="small"
+        type="link"
+        danger
+        icon={<RedoOutlined />}
+        loading={ctx.retryingId === t.id}
+        onClick={() => ctx.onRetry(t)}
+      >
+        重试
+      </Button>
+    )}
+  </Space>
+);
+
+const copyWithToast = async (text: string, okMsg: string) => {
+  const ok = await copyTextToClipboard(text);
+  if (ok) message.success(okMsg);
+  else message.warning('复制失败，请手动选中复制');
+};
+
+/** 文案提取（doc/102，0.1 元/次） */
+const CopyExtractPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => {
+  const [form] = Form.useForm();
+  const [submitting, setSubmitting] = useState(false);
+  const list = useZhilingServiceList('copy_extract');
+
+  useEffect(() => {
+    if (presetUrl) form.setFieldsValue({ source_url: presetUrl });
+  }, [presetUrl, form]);
+
+  const submit = async () => {
+    const v = await form.validateFields();
+    setSubmitting(true);
+    try {
+      const t = await wechatDlApi.submitZhilingService({
+        task_type: 'copy_extract',
+        source_url: v.source_url.trim(),
+        options: { need_srt: v.need_srt !== false } as ZhilingServiceOptions,
+      });
+      list.prepend(t);
+      if (t.status === 'failed') message.error(`提交失败：${t.error || '未知原因'}`);
+      else message.success('已提交，正在提取文案…');
+      form.resetFields(['source_url']);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '提交失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const columns = [
+    {
+      title: '来源', dataIndex: 'input_url', key: 'input_url', ellipsis: true,
+      render: (v: string | null) => <Text style={{ fontSize: 12 }}>{v || '-'}</Text>,
+    },
+    { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (_: unknown, r: ZhilingServiceTask) => zsStatusTag(r) },
+    {
+      title: '结果预览', dataIndex: 'result_text', key: 'result_text', ellipsis: true,
+      render: (_: unknown, r: ZhilingServiceTask) => (
+        <Text type={r.status === 'failed' ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>
+          {zsPreview(r)}
+        </Text>
+      ),
+    },
+    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170, render: (d: string) => formatDateTime(d) },
+    {
+      title: '操作', key: 'action', width: 170, fixed: 'right' as const,
+      render: (_: unknown, r: ZhilingServiceTask) => (
+        <Space size={4}>
+          {zsActions(r, { onView: (t) => { list.setDetail(t); void list.refreshOne(t.id); }, onRetry: (t) => void list.retry(t), retryingId: list.retryingId })}
+          {r.result_text && (
+            <Button size="small" type="link" icon={<CopyOutlined />} onClick={() => void copyWithToast(r.result_text as string, '文案已复制')}>
+              复制
+            </Button>
+          )}
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <Card
+      size="small"
+      title="文案提取（视频 → 文案 / 字幕）"
+      extra={<Button size="small" icon={<ReloadOutlined />} onClick={list.load} loading={list.loading}>刷新</Button>}
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        icon={<FileTextOutlined />}
+        message="粘贴 30+ 平台视频链接，自动提取口播文案与 SRT 字幕（0.1 元/次）"
+        description="基于智令 doc/102：支持微信视频号、抖音、快手、小红书等分享链接。勾选「同时生成 SRT」可一并产出字幕文件；处理中页面每 4s 自动刷新，完成后可一键复制文案或字幕。"
+      />
+      <Form form={form} layout="inline" style={{ marginBottom: 16, rowGap: 8 }}>
+        <Form.Item
+          name="source_url"
+          label="视频链接"
+          style={{ flex: 1, minWidth: 320, marginBottom: 8 }}
+          rules={[{ required: true, message: '请输入视频链接' }]}
+        >
+          <Input placeholder="粘贴视频分享链接（视频号 / 抖音 / 快手 / 小红书等）" />
+        </Form.Item>
+        <Form.Item name="need_srt" label="同时生成 SRT" valuePropName="checked" initialValue style={{ marginBottom: 8 }}>
+          <Switch size="small" />
+        </Form.Item>
+        <Form.Item style={{ marginBottom: 8 }}>
+          <Button type="primary" icon={<ThunderboltOutlined />} loading={submitting} onClick={submit}>
+            提取文案
+          </Button>
+        </Form.Item>
+      </Form>
+      <Table
+        rowKey="id" size="small" loading={list.loading} columns={columns}
+        dataSource={list.tasks} pagination={{ pageSize: 10 }} scroll={{ x: 900 }}
+        locale={{ emptyText: '暂无文案提取任务' }}
+      />
+      <ZsDetailModal
+        detail={list.detail}
+        onClose={() => list.setDetail(null)}
+        onRetry={(t) => void list.retry(t)}
+        retrying={list.retryingId === list.detail?.id}
+        title="文案提取结果"
+      >
+        {(t) => (
+          <div>
+            <Space style={{ marginBottom: 12 }} wrap>
+              {t.result_text && (
+                <Button size="small" icon={<CopyOutlined />} onClick={() => void copyWithToast(t.result_text as string, '文案已复制')}>
+                  复制文案
+                </Button>
+              )}
+              {t.srt_text && (
+                <Button size="small" icon={<CopyOutlined />} onClick={() => void copyWithToast(t.srt_text as string, 'SRT 字幕已复制')}>
+                  复制 SRT
+                </Button>
+              )}
+            </Space>
+            <pre
+              style={{
+                maxHeight: 420, overflow: 'auto', background: '#fafafa',
+                border: '1px solid #f0f0f0', borderRadius: 8, padding: 12,
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 13,
+              }}
+            >
+              {t.result_text || (t.status === 'processing' ? '提取中，请稍候…' : '暂无文案')}
+            </pre>
+          </div>
+        )}
+      </ZsDetailModal>
+    </Card>
+  );
+};
+
+/** AI消除（doc/114，0.005 元/秒）+ 画质修复（doc/123，0.3 元/分钟）：同一套 UI，只换文案。 */
+const EraserPanel: React.FC<{
+  taskType: 'ai_eraser' | 'hd_restore';
+  presetUrl?: string;
+}> = ({ taskType, presetUrl }) => {
+  const [form] = Form.useForm();
+  const [submitting, setSubmitting] = useState(false);
+  const list = useZhilingServiceList(taskType);
+  const isHd = taskType === 'hd_restore';
+
+  useEffect(() => {
+    if (presetUrl) form.setFieldsValue({ source_url: presetUrl });
+  }, [presetUrl, form]);
+
+  const submit = async () => {
+    const v = await form.validateFields();
+    setSubmitting(true);
+    try {
+      const t = await wechatDlApi.submitZhilingService({
+        task_type: taskType,
+        source_url: v.source_url.trim(),
+      });
+      list.prepend(t);
+      if (t.status === 'failed') message.error(`提交失败：${t.error || '未知原因'}`);
+      else message.success(isHd ? '已提交画质修复…' : '已提交 AI 消除…');
+      form.resetFields(['source_url']);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '提交失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const columns = [
+    {
+      title: '视频地址', dataIndex: 'input_url', key: 'input_url', ellipsis: true,
+      render: (v: string | null, r: ZhilingServiceTask) => (
+        <Tooltip title={r.params?.direct_url || v || ''}>
+          <Text style={{ fontSize: 12 }}>{v || '-'}</Text>
+        </Tooltip>
+      ),
+    },
+    {
+      title: '状态', dataIndex: 'status', key: 'status', width: 160,
+      render: (_: unknown, r: ZhilingServiceTask) => (
+        <Space size={4}>
+          {zsStatusTag(r)}
+          {r.status === 'processing' && r.progress != null && (
+            <Progress percent={Math.round((r.progress || 0) * 100)} size="small" style={{ width: 70 }} />
+          )}
+        </Space>
+      ),
+    },
+    {
+      title: '结果预览', dataIndex: 'result_url', key: 'result_url', ellipsis: true,
+      render: (_: unknown, r: ZhilingServiceTask) => (
+        <Text type={r.status === 'failed' ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>{zsPreview(r)}</Text>
+      ),
+    },
+    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170, render: (d: string) => formatDateTime(d) },
+    {
+      title: '操作', key: 'action', width: 240, fixed: 'right' as const,
+      render: (_: unknown, r: ZhilingServiceTask) => (
+        <Space size={4}>
+          {zsActions(r, { onView: (t) => { list.setDetail(t); void list.refreshOne(t.id); }, onRetry: (t) => void list.retry(t), retryingId: list.retryingId })}
+          {r.result_url && (
+            <>
+              <Button
+                size="small" type="link" icon={<CopyOutlined />}
+                onClick={() => void copyWithToast(r.result_url as string, '结果地址已复制')}
+              >
+                复制
+              </Button>
+              <Button size="small" type="link" icon={<DownloadFileIcon />} href={r.result_url} target="_blank" rel="noreferrer">
+                下载
+              </Button>
+            </>
+          )}
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <Card
+      size="small"
+      title={isHd ? '画质修复（视频高清化）' : 'AI 消除（去水印 / 去杂物）'}
+      extra={<Button size="small" icon={<ReloadOutlined />} onClick={list.load} loading={list.loading}>刷新</Button>}
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        icon={isHd ? <PictureOutlined /> : <EraserIcon />}
+        message={isHd ? '视频画质修复至高清（0.3 元/分钟）' : '框选区域去水印 / 去杂物（0.005 元/秒）'}
+        description={
+          isHd
+            ? '基于智令 doc/123：接口只接受视频直链。若粘贴的是分享链接，系统会先走 doc/107 解析直链（额外 0.01 元/次）；解析失败会直接置为失败并给出原因。处理耗时较长，页面每 4s 自动刷新进度。'
+            : '基于智令 doc/114：接口只接受视频直链。若粘贴的是分享链接，系统会先走 doc/107 解析直链（额外 0.01 元/次）；解析失败会直接置为失败并给出原因。处理耗时按视频时长计，页面每 4s 自动刷新进度。'
+        }
+      />
+      <Form form={form} layout="inline" style={{ marginBottom: 16, rowGap: 8 }}>
+        <Form.Item
+          name="source_url"
+          label="视频链接"
+          style={{ flex: 1, minWidth: 320, marginBottom: 8 }}
+          rules={[{ required: true, message: '请输入视频链接或直链' }]}
+        >
+          <Input placeholder="视频直链（.mp4/.mov…）或任意平台分享链接（会自动解析直链）" />
+        </Form.Item>
+        <Form.Item style={{ marginBottom: 8 }}>
+          <Button type="primary" icon={<ThunderboltOutlined />} loading={submitting} onClick={submit}>
+            {isHd ? '开始修复' : '开始消除'}
+          </Button>
+        </Form.Item>
+      </Form>
+      <Table
+        rowKey="id" size="small" loading={list.loading} columns={columns}
+        dataSource={list.tasks} pagination={{ pageSize: 10 }} scroll={{ x: 960 }}
+        locale={{ emptyText: isHd ? '暂无画质修复任务' : '暂无 AI 消除任务' }}
+      />
+      <ZsDetailModal
+        detail={list.detail}
+        onClose={() => list.setDetail(null)}
+        onRetry={(t) => void list.retry(t)}
+        retrying={list.retryingId === list.detail?.id}
+        title={isHd ? '画质修复结果' : 'AI 消除结果'}
+      >
+        {(t) => (
+          <div>
+            {t.status === 'processing' && (
+              <div style={{ marginBottom: 12 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  处理进度 {Math.round((t.progress || 0) * 100)}%
+                </Text>
+                <Progress percent={Math.round((t.progress || 0) * 100)} size="small" status="active" />
+              </div>
+            )}
+            {t.result_url ? (
+              <>
+                <video controls src={t.result_url} style={{ width: '100%', maxHeight: 420, background: '#000', borderRadius: 8 }} />
+                <Space style={{ marginTop: 12 }}>
+                  <Button size="small" icon={<CopyOutlined />} onClick={() => void copyWithToast(t.result_url as string, '结果地址已复制')}>
+                    复制地址
+                  </Button>
+                  <Button size="small" type="primary" icon={<DownloadFileIcon />} href={t.result_url} target="_blank" rel="noreferrer">
+                    下载视频
+                  </Button>
+                </Space>
+              </>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {t.status === 'processing' ? '处理中，完成后可在此预览与下载…' : '暂无结果'}
+              </Text>
+            )}
+          </div>
+        )}
+      </ZsDetailModal>
+    </Card>
+  );
+};
+
+/** 文字转语音（doc/108，1 元/万字） */
+const TTS_BUILTIN_VOICES = [
+  { value: '306', label: '306 晓妍 - 自然流畅' },
+  { value: '307', label: '307 晓辰 - 知性女声' },
+  { value: '309', label: '309 晓颜 - 青年女声' },
+  { value: '464', label: '464 解说小美' },
+];
+const TTS_MAX_TEXT = 5000;
+
+const TtsPanel: React.FC = () => {
+  const [form] = Form.useForm();
+  const [submitting, setSubmitting] = useState(false);
+  const list = useZhilingServiceList('tts');
+  const voiceType = (Form.useWatch('voice_type', form) as string) || 'builtin';
+  const textValue = (Form.useWatch('text', form) as string) || '';
+
+  const submit = async () => {
+    const v = await form.validateFields();
+    setSubmitting(true);
+    try {
+      const t = await wechatDlApi.submitZhilingService({
+        task_type: 'tts',
+        text: v.text,
+        options: {
+          voice_type: v.voice_type || 'builtin',
+          voice_id: v.voice_id,
+          model_id: v.model_id,
+          format: v.format || 'mp3',
+        } as ZhilingServiceOptions,
+      });
+      list.prepend(t);
+      if (t.status === 'failed') message.error(`提交失败：${t.error || '未知原因'}`);
+      else message.success('已提交合成任务，处理中…');
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '提交失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const columns = [
+    {
+      title: '文本', dataIndex: 'input_text', key: 'input_text', ellipsis: true,
+      render: (v: string | null) => <Text style={{ fontSize: 12 }}>{v ? v.slice(0, 40) : '-'}</Text>,
+    },
+    {
+      title: '音色', key: 'voice', width: 130,
+      render: (_: unknown, r: ZhilingServiceTask) => (
+        <Text style={{ fontSize: 12 }}>
+          {r.params?.voice_type === 'cloned' ? `自定义 ${r.params?.model_id || ''}` : `内置 ${r.params?.voice_id || ''}`}
+        </Text>
+      ),
+    },
+    { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (_: unknown, r: ZhilingServiceTask) => zsStatusTag(r) },
+    {
+      title: '格式', key: 'format', width: 70,
+      render: (_: unknown, r: ZhilingServiceTask) => <Text style={{ fontSize: 12 }}>{r.params?.format || 'mp3'}</Text>,
+    },
+    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170, render: (d: string) => formatDateTime(d) },
+    {
+      title: '操作', key: 'action', width: 240, fixed: 'right' as const,
+      render: (_: unknown, r: ZhilingServiceTask) => (
+        <Space size={4}>
+          {zsActions(r, { onView: (t) => { list.setDetail(t); void list.refreshOne(t.id); }, onRetry: (t) => void list.retry(t), retryingId: list.retryingId })}
+          {r.result_url && (
+            <Button size="small" type="link" icon={<DownloadFileIcon />} href={r.result_url} target="_blank" rel="noreferrer">
+              下载
+            </Button>
+          )}
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <Card
+      size="small"
+      title="文字转语音（TTS）"
+      extra={<Button size="small" icon={<ReloadOutlined />} onClick={list.load} loading={list.loading}>刷新</Button>}
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        icon={<SoundOutlined />}
+        message="输入文本 → 合成语音（1 元/万字，音频 24 小时有效）"
+        description="基于智令 doc/108：单次文本 ≤5000 字。内置音色可直接选；自定义音色需先在「音色训练」训练出 modelId 后粘贴使用。合成完成后请及时下载，音频链接仅 24 小时有效。"
+      />
+      <Form form={form} layout="vertical" initialValues={{ voice_type: 'builtin', format: 'mp3', voice_id: '306' }} style={{ marginBottom: 16 }}>
+        <Form.Item
+          name="text"
+          label={`合成文本（${textValue.length}/${TTS_MAX_TEXT}）`}
+          rules={[
+            { required: true, message: '请输入要合成的文本' },
+            { max: TTS_MAX_TEXT, message: `单次上限 ${TTS_MAX_TEXT} 字` },
+          ]}
+        >
+          <TextArea rows={4} placeholder="粘贴或输入要合成的文本，单次最多 5000 字" showCount maxLength={TTS_MAX_TEXT} />
+        </Form.Item>
+        <Space wrap style={{ marginBottom: 8 }}>
+          <Form.Item name="voice_type" label="音色类型" style={{ marginBottom: 8 }}>
+            <Segmented
+              options={[
+                { label: '内置音色', value: 'builtin' },
+                { label: '自定义音色', value: 'cloned' },
+              ]}
+            />
+          </Form.Item>
+          {voiceType === 'builtin' ? (
+            <Form.Item
+              name="voice_id"
+              label="内置音色"
+              style={{ minWidth: 260, marginBottom: 8 }}
+              rules={[{ required: true, message: '请选择内置音色' }]}
+              extra={<Text type="secondary" style={{ fontSize: 11 }}>可搜索或直接输入音色 id（完整列表见智令音色文档）</Text>}
+            >
+              <Select
+                showSearch
+                options={TTS_BUILTIN_VOICES}
+                placeholder="搜索或输入音色 id"
+                // 允许自定义输入：官方音色列表远多于预置的 4 个
+                mode={undefined}
+                filterOption={(input, option) => String(option?.label || '').includes(input) || String(option?.value || '').includes(input)}
+                onSearch={(v) => { if (v) form.setFieldsValue({ voice_id: v }); }}
+              />
+            </Form.Item>
+          ) : (
+            <Form.Item
+              name="model_id"
+              label="自定义 modelId"
+              style={{ minWidth: 260, marginBottom: 8 }}
+              rules={[{ required: true, message: '请填写音色训练得到的 modelId' }]}
+              extra={<Text type="secondary" style={{ fontSize: 11 }}>到「音色训练」面板训练后复制 modelId 粘贴到这里</Text>}
+            >
+              <Input placeholder="音色训练产出的 modelId" />
+            </Form.Item>
+          )}
+          <Form.Item name="format" label="音频格式" style={{ marginBottom: 8 }}>
+            <Select
+              style={{ width: 110 }}
+              options={[
+                { value: 'mp3', label: 'mp3' },
+                { value: 'wav', label: 'wav' },
+                { value: 'pcm', label: 'pcm' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item label=" " style={{ marginBottom: 8 }}>
+            <Button type="primary" icon={<AudioOutlined />} loading={submitting} onClick={submit}>
+              合成语音
+            </Button>
+          </Form.Item>
+        </Space>
+      </Form>
+      <Table
+        rowKey="id" size="small" loading={list.loading} columns={columns}
+        dataSource={list.tasks} pagination={{ pageSize: 10 }} scroll={{ x: 900 }}
+        locale={{ emptyText: '暂无语音合成任务' }}
+      />
+      <ZsDetailModal
+        detail={list.detail}
+        onClose={() => list.setDetail(null)}
+        onRetry={(t) => void list.retry(t)}
+        retrying={list.retryingId === list.detail?.id}
+        title="语音合成结果"
+      >
+        {(t) => (
+          <div>
+            {t.result_url ? (
+              <div style={{ marginBottom: 12 }}>
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message={`⚠️ 音频 ${24} 小时有效，请及时下载`}
+                  description="智令侧音频产物 24 小时后失效，需要长期保存请立即下载到本地。"
+                />
+                <audio controls src={t.result_url} style={{ width: '100%' }} />
+                <Space style={{ marginTop: 12 }}>
+                  <Button size="small" icon={<CopyOutlined />} onClick={() => void copyWithToast(t.result_url as string, '音频地址已复制')}>
+                    复制地址
+                  </Button>
+                  <Button size="small" type="primary" icon={<DownloadFileIcon />} href={t.result_url} target="_blank" rel="noreferrer">
+                    下载音频
+                  </Button>
+                </Space>
+              </div>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {t.status === 'processing' ? '合成中，完成后可在此试听与下载…' : '暂无音频'}
+              </Text>
+            )}
+          </div>
+        )}
+      </ZsDetailModal>
+    </Card>
+  );
+};
+
+/** 音色训练（doc/128，1 元/次，同步返回） */
+const VoiceClonePanel: React.FC = () => {
+  const [form] = Form.useForm();
+  const [submitting, setSubmitting] = useState(false);
+  const list = useZhilingServiceList('voice_clone');
+
+  const submit = async () => {
+    const v = await form.validateFields();
+    setSubmitting(true);
+    try {
+      const t = await wechatDlApi.submitZhilingService({
+        task_type: 'voice_clone',
+        source_url: v.audio_url.trim(),
+        options: {
+          model_name: v.model_name.trim(),
+          description: v.description?.trim() || undefined,
+        } as ZhilingServiceOptions,
+      });
+      list.prepend(t);
+      if (t.status === 'failed') message.error(`训练失败：${t.error || '未知原因'}`);
+      else message.success('音色训练完成，可复制 modelId 到「文字转语音」使用');
+      form.resetFields();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '提交失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const columns = [
+    {
+      title: '模型名称', key: 'model_name', width: 180, ellipsis: true,
+      render: (_: unknown, r: ZhilingServiceTask) => <Text style={{ fontSize: 12 }}>{r.params?.model_name || '-'}</Text>,
+    },
+    {
+      title: '音频 URL', dataIndex: 'input_url', key: 'input_url', ellipsis: true,
+      render: (v: string | null) => <Text style={{ fontSize: 12 }}>{v || '-'}</Text>,
+    },
+    { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (_: unknown, r: ZhilingServiceTask) => zsStatusTag(r) },
+    {
+      title: 'modelId', dataIndex: 'voice_model_id', key: 'voice_model_id', width: 200,
+      render: (v: string | null, r: ZhilingServiceTask) => (v ? (
+        <Space size={4}>
+          <Text code style={{ fontSize: 12 }}>{v}</Text>
+          <Button size="small" type="link" icon={<CopyOutlined />} onClick={() => void copyWithToast(v, 'modelId 已复制，到「文字转语音」选自定义音色粘贴使用')}>
+            复制
+          </Button>
+        </Space>
+      ) : (
+        <Text type="secondary" style={{ fontSize: 12 }}>{r.status === 'failed' ? '失败' : '-'}</Text>
+      )),
+    },
+    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170, render: (d: string) => formatDateTime(d) },
+    {
+      title: '操作', key: 'action', width: 120, fixed: 'right' as const,
+      render: (_: unknown, r: ZhilingServiceTask) => zsActions(r, {
+        onView: (t) => { list.setDetail(t); void list.refreshOne(t.id); },
+        onRetry: (t) => void list.retry(t),
+        retryingId: list.retryingId,
+      }),
+    },
+  ];
+
+  return (
+    <Card
+      size="small"
+      title="音色训练（克隆音色）"
+      extra={<Button size="small" icon={<ReloadOutlined />} onClick={list.load} loading={list.loading}>刷新</Button>}
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        icon={<ExperimentOutlined />}
+        message="上传一段干净人声（mp3/wav），训练专属音色（1 元/次）"
+        description="基于智令 doc/128：音频 ≤5 分钟，30 秒左右效果最佳；训练为同步接口，提交后立即返回 modelId。拿到 modelId 后到「文字转语音」选『自定义音色』粘贴即可使用。"
+      />
+      <Form form={form} layout="inline" style={{ marginBottom: 16, rowGap: 8 }}>
+        <Form.Item
+          name="model_name"
+          label="模型名称"
+          style={{ minWidth: 200, marginBottom: 8 }}
+          rules={[{ required: true, message: '请填写音色模型名称' }]}
+        >
+          <Input placeholder="如：解说小哥" />
+        </Form.Item>
+        <Form.Item
+          name="audio_url"
+          label="音频 URL"
+          style={{ flex: 1, minWidth: 300, marginBottom: 8 }}
+          rules={[{ required: true, message: '请填写音频 URL（mp3/wav）' }]}
+        >
+          <Input placeholder="https://…/voice.mp3（mp3/wav，≤5 分钟）" />
+        </Form.Item>
+        <Form.Item name="description" label="参考文本" style={{ minWidth: 200, marginBottom: 8 }}>
+          <Input placeholder="选填，音频对应的文本" />
+        </Form.Item>
+        <Form.Item style={{ marginBottom: 8 }}>
+          <Button type="primary" icon={<ExperimentOutlined />} loading={submitting} onClick={submit}>
+            训练音色（1 元/次）
+          </Button>
+        </Form.Item>
+      </Form>
+      <Table
+        rowKey="id" size="small" loading={list.loading} columns={columns}
+        dataSource={list.tasks} pagination={{ pageSize: 10 }} scroll={{ x: 980 }}
+        locale={{ emptyText: '暂无音色模型' }}
+      />
+      <div style={{ marginTop: 12 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          提示：modelId 是「文字转语音」选『自定义音色』时的必填项；同一音色可反复用于不同文本合成。
+        </Text>
+      </div>
+      <ZsDetailModal
+        detail={list.detail}
+        onClose={() => list.setDetail(null)}
+        onRetry={(t) => void list.retry(t)}
+        retrying={list.retryingId === list.detail?.id}
+        title="音色训练详情"
+      >
+        {(t) => (
+          <div>
+            <p style={{ fontSize: 13 }}>
+              <Text strong>模型名称：</Text>{t.params?.model_name || '-'}
+            </p>
+            {t.voice_model_id ? (
+              <Space style={{ marginBottom: 8 }}>
+                <Text strong style={{ fontSize: 13 }}>modelId：</Text>
+                <Text code>{t.voice_model_id}</Text>
+                <Button
+                  size="small"
+                  icon={<CopyOutlined />}
+                  onClick={() => void copyWithToast(t.voice_model_id as string, 'modelId 已复制')}
+                >
+                  复制 modelId
+                </Button>
+              </Space>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>暂无 modelId</Text>
+            )}
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginTop: 12 }}
+              message="到「文字转语音」面板选『自定义音色』，粘贴此 modelId 即可使用"
+            />
+          </div>
+        )}
+      </ZsDetailModal>
+    </Card>
+  );
+};
+
+/** 其他服务容器：Segmented 切换 5 个面板，共用外部预填链接 */
+const OTHER_SERVICES = [
+  { key: 'copy_extract', label: '文案提取' },
+  { key: 'ai_eraser', label: 'AI 消除' },
+  { key: 'hd_restore', label: '画质修复' },
+  { key: 'tts', label: '文字转语音' },
+  { key: 'voice_clone', label: '音色训练' },
+] as const;
+
+type OtherServiceKey = (typeof OTHER_SERVICES)[number]['key'];
+
+const ZhilingServicesPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => {
+  const [sub, setSub] = useState<OtherServiceKey>('copy_extract');
+  return (
+    <div>
+      <Segmented
+        value={sub}
+        onChange={(v) => setSub(v as OtherServiceKey)}
+        options={OTHER_SERVICES.map((s) => ({ label: s.label, value: s.key }))}
+        style={{ marginBottom: 16 }}
+      />
+      {sub === 'copy_extract' && <CopyExtractPanel presetUrl={presetUrl} />}
+      {sub === 'ai_eraser' && <EraserPanel taskType="ai_eraser" presetUrl={presetUrl} />}
+      {sub === 'hd_restore' && <EraserPanel taskType="hd_restore" presetUrl={presetUrl} />}
+      {sub === 'tts' && <TtsPanel />}
+      {sub === 'voice_clone' && <VoiceClonePanel />}
+    </div>
+  );
+};
+
 // ========== 主页面 ==========
 const ResourceDownload: React.FC = () => {
   const [activeTab, setActiveTab] = useState('import');
@@ -1166,6 +2018,11 @@ const ResourceDownload: React.FC = () => {
             key: 'reverse-prompt',
             label: <span><RobotOutlined /> 反推提示词</span>,
             children: <ReversePromptPanel presetUrl={presetUrl} />,
+          },
+          {
+            key: 'services',
+            label: <span><ThunderboltOutlined /> 其他服务</span>,
+            children: <ZhilingServicesPanel presetUrl={presetUrl} />,
           },
           {
             key: 'tasks',

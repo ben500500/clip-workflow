@@ -9,6 +9,10 @@
 - POST /api/wechat-dl/reverse-prompt/upload     本地视频上传后反推（doc/125 → doc/120）
 - GET  /api/wechat-dl/reverse-prompt/:id        查询反推任务（顺带轮询，doc/119）
 - GET  /api/wechat-dl/reverse-prompt            反推任务列表
+- GET  /api/wechat-dl/zhiling-services          其他服务任务列表（文案提取/AI消除/画质修复/TTS/音色训练）
+- POST /api/wechat-dl/zhiling-services          提交其他服务任务
+- GET  /api/wechat-dl/zhiling-services/:id      查询其他服务任务（顺带懒同步）
+- POST /api/wechat-dl/zhiling-services/:id/retry 失败任务一键重试
 
 授权校验已移除：任意视频号链接均可直接导入，无需绑定授权材料。
 
@@ -45,6 +49,15 @@ from wechat_download.service import (
     retry_task,
     _serialize_task,
     ST_COMPLETED,
+)
+from wechat_download.services_service import (
+    can_access_service_task,
+    create_service_task,
+    get_service_task,
+    refresh_service_task,
+    serialize_service_task,
+    service_task_scope_stmt,
+    validate_submit,
 )
 from wechat_download.prompt_service import (
     can_access_prompt_task,
@@ -609,6 +622,113 @@ async def retry_reverse_prompt_task(
         max_duration=task.max_duration,
     )
     return serialize_prompt_task(new_task)
+
+
+
+# ───────────────────────────────
+# 智令其他服务（文案提取 / AI消除 / 画质修复 / TTS / 音色训练）
+# ───────────────────────────────
+
+class ZhilingServiceSubmitRequest(BaseModel):
+    """提交其他服务任务：五条链路共用一套入参，差异走 options。"""
+    task_type: str = Field(
+        ..., description="copy_extract / ai_eraser / hd_restore / tts / voice_clone",
+    )
+    source_url: Optional[str] = Field(
+        None, description="视频/音频链接（音色训练为音频 URL；TTS 不需要）",
+    )
+    text: Optional[str] = Field(None, description="待合成文本（仅 TTS，≤5000 字）")
+    options: dict = Field(
+        default_factory=dict,
+        description=(
+            "差异参数：need_srt（文案提取）、voice_type/voice_id/model_id/format（TTS）、"
+            "model_name/description（音色训练）"
+        ),
+    )
+
+
+@router.get("/zhiling-services")
+async def list_zhiling_service_tasks(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """其他服务任务列表（新→旧，可见口径同反推任务）。"""
+    stmt = await service_task_scope_stmt(current_user, limit)
+    tasks = (await db.execute(stmt)).scalars().all()
+    return {"items": [serialize_service_task(t) for t in tasks], "total": len(tasks)}
+
+
+@router.post("/zhiling-services", status_code=201)
+async def submit_zhiling_service_task(
+    data: ZhilingServiceSubmitRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """提交智令其他服务任务。
+
+    参数非法 → 400；外部接口失败不抛 500，任务落库 failed + error 照常返回 201，
+    前端列表里可直接看到失败原因并一键重试。
+    """
+    options = data.options or {}
+    err = validate_submit(
+        task_type=data.task_type,
+        source_url=data.source_url,
+        text=data.text,
+        options=options,
+    )
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+    task = await create_service_task(
+        db,
+        created_by=current_user.id if current_user else None,
+        task_type=data.task_type,
+        source_url=data.source_url,
+        text=data.text,
+        options=options,
+    )
+    return serialize_service_task(task)
+
+
+@router.get("/zhiling-services/{task_id}")
+async def get_zhiling_service_task(
+    task_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """查询其他服务任务；仍在 processing 时顺带向上游查询一次并更新。
+
+    前端在 processing 期间每 4s 轮询本接口即可，无需直接访问第三方。
+    """
+    task = await get_service_task(db, task_id)
+    if task is None or not can_access_service_task(task, current_user):
+        raise HTTPException(status_code=404, detail="任务不存在")
+    task = await refresh_service_task(db, task)
+    return serialize_service_task(task)
+
+
+@router.post("/zhiling-services/{task_id}/retry", status_code=201)
+async def retry_zhiling_service_task(
+    task_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """失败任务一键重试：按原参数重新提交，返回新任务（仅 failed 可重试）。"""
+    task = await get_service_task(db, task_id)
+    if task is None or not can_access_service_task(task, current_user):
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.status != "failed":
+        raise HTTPException(status_code=400, detail="仅失败任务可重试")
+    new_task = await create_service_task(
+        db,
+        created_by=current_user.id if current_user else None,
+        task_type=task.task_type,
+        source_url=task.input_url,
+        text=task.input_text,
+        options=dict(task.params or {}),
+    )
+    return serialize_service_task(new_task)
 
 
 @router.post("/tasks/{task_id}/retry", response_model=dict)
