@@ -363,16 +363,16 @@ async def _query_zhiling_balance_detail() -> Dict[str, Any]:
         detail["note"] = f"余额查询异常：{e}"
         return detail
     hit: Dict[str, Any] = {}
+    raw: Dict[str, Any] = {}
     for channel in ("zhiling", "17zhiling"):
         cand = balances.get(channel) or {}
+        if cand:
+            raw = cand
         if isinstance(cand.get("balance"), (int, float)):
             hit = cand
             break
     if not hit:
-        detail["note"] = (
-            "未配置智令余量通道，余额闸门未生效：需要 WECHAT_DL_PROVIDERS 含 zhiling，"
-            "并配 WECHAT_DL_ZHILING_QUOTA_PATH / _QUOTA_FIELD / _QUOTA_UNIT"
-        )
+        detail["note"] = _balance_miss_note(raw)
         return detail
     unit = str(hit.get("unit") or "").strip().lower()
     factor = _QUOTA_UNIT_TO_YUAN.get(unit)
@@ -386,6 +386,36 @@ async def _query_zhiling_balance_detail() -> Dict[str, Any]:
     detail["balance"] = round(float(hit["balance"]) * factor, 4)
     detail["unit"] = unit
     return detail
+
+
+def _balance_miss_note(raw: Dict[str, Any]) -> str:
+    """余量查不到时说清**到底卡在哪一环**——原来一句话全推给「未配置」，可现网实测
+    是另一种情况：三行都配了、服务商根本没有余量接口，运维照着提示再配一遍也还是无数。
+
+    三种原因分开报（11-03 接 163 现网时按实测口径拆的）：
+      ① 链里没 zhiling / 没 BASE → build_providers 直接跳过，压根没建这个适配器；
+      ② 建起来了但没配 QUOTA_PATH → 不查询；
+      ③ 查了但接口报错（智令实测：/api/user/balance 等 12 个候选路径全 404）→ 带原始错误。
+    """
+    chain = (os.getenv("WECHAT_DL_PROVIDERS", "") or "").lower()
+    base = (os.getenv("WECHAT_DL_ZHILING_BASE", "") or "").strip()
+    if "zhiling" not in chain or not base:
+        return (
+            "余额闸门未生效：智令适配器没建起来——"
+            f"WECHAT_DL_PROVIDERS 需含 zhiling（当前「{chain or '未配置'}」），"
+            f"WECHAT_DL_ZHILING_BASE 必填（当前{'已配' if base else '未配置'}）"
+        )
+    if not (os.getenv("WECHAT_DL_ZHILING_QUOTA_PATH", "") or "").strip():
+        return (
+            "余额闸门未生效：未配 WECHAT_DL_ZHILING_QUOTA_PATH（不配＝不查询＝余额未知）。"
+            "注意智令**实测无对外余量接口**，填了也可能是 404，先确认接口存在再配"
+        )
+    err = str(raw.get("error") or "").strip()
+    return (
+        f"余额闸门未生效：余量接口已调用但未取到数（{err or '响应里没找到该字段'}）"
+        "——智令 11-03 实测无对外余量接口，本批按「余额未知＝放行 + 事后对账」执行，"
+        "不是接口故障，也不代表闸门已开"
+    )
 
 
 # 风险词表 TTL 缓存：审核/投产/导出每个动作都要扫几遍，逐条查 system_config 太碎；

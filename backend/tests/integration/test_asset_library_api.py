@@ -465,7 +465,36 @@ def test_balance_channel_only_trusts_zhiling_and_needs_a_yuan_unit():
     assert unknown["balance"] is None and "换算不到元" in unknown["note"]
     # 只有别家钱包有钱 → 不兜底
     other = _run(_detail({"wxshares": {"balance": 999, "unit": "元"}}))
-    assert other["balance"] is None and "未配置智令余量通道" in other["note"]
+    assert other["balance"] is None and "余额闸门未生效" in other["note"]
+
+
+def test_balance_note_says_which_link_is_broken():
+    """余量取不到数时，note 要说清**卡在哪一环**（11-03 接 163 现网后加的口径）。
+
+    起因：现网实测智令没有对外余量接口，可原来的提示一律写「未配置智令余量通道，
+    需要配 QUOTA_PATH/FIELD/UNIT」——照着再配一遍还是无数，运维只会以为是自己漏配。
+    三种原因分开报：适配器没建起来 / 没配 QUOTA_PATH / 配了但接口报错。
+    """
+    from app.api.assets import _query_zhiling_balance_detail
+
+    def _note(env, balances):
+        with patch.dict(os.environ, env, clear=False), \
+             patch("app.api.assets.fetch_provider_balances", AsyncMock(return_value=balances)):
+            return _run(_query_zhiling_balance_detail())["note"]
+
+    # ① 链里没 zhiling → 适配器压根没建，配了 QUOTA_* 也没用
+    assert "没建起来" in _note(
+        {"WECHAT_DL_PROVIDERS": "yuanbao,preview", "WECHAT_DL_ZHILING_BASE": "https://api.17zhiling.com",
+         "WECHAT_DL_ZHILING_QUOTA_PATH": "/api/user/balance"}, {})
+    # ② 通道在但没配查询路径 → 不查询
+    assert "未配 WECHAT_DL_ZHILING_QUOTA_PATH" in _note(
+        {"WECHAT_DL_PROVIDERS": "zhiling", "WECHAT_DL_ZHILING_BASE": "https://api.17zhiling.com",
+         "WECHAT_DL_ZHILING_QUOTA_PATH": ""}, {})
+    # ③ 全配了、接口 404（智令现状）→ 说清不是自己的配置问题，也别说闸门开了
+    assert "http 404" in _note(
+        {"WECHAT_DL_PROVIDERS": "zhiling", "WECHAT_DL_ZHILING_BASE": "https://api.17zhiling.com",
+         "WECHAT_DL_ZHILING_QUOTA_PATH": "/api/user/balance"},
+        {"zhiling": {"error": "http 404"}})
     # 查询炸了 → 也是未知，但不 500
     with patch("app.api.assets.fetch_provider_balances", AsyncMock(side_effect=RuntimeError("网络抖动"))):
         boom = _run(_query_zhiling_balance_detail())

@@ -132,14 +132,32 @@ class ProviderInfo:
         }
 
 
-async def _fetch_http_balance(client: httpx.AsyncClient, name: str) -> dict:
+async def _fetch_http_balance(
+    client: httpx.AsyncClient,
+    name: str,
+    *,
+    base: str = "",
+    key: str = "",
+    auth: str = "query",
+    key_param: str = "key",
+) -> dict:
     """按配置查询第三方 HTTP provider 的余量（未配置则返回空，表示未知）。
 
     配置（WECHAT_DL_<NAME>_ 前缀）：
-      QUOTA_PATH   — 余量查询接口路径（如 /api/user/balance），不配置则不查询
+      QUOTA_PATH   — 余量查询接口，**相对路径或完整 URL 都行**；不配置则不查询
       QUOTA_METHOD — GET / POST，默认 GET
       QUOTA_FIELD  — 余量字段（点分路径），默认 balance
-      QUOTA_PARAM  — 请求参数（JSON 字符串，可选，如 '{"key":"xxx"}'）
+      QUOTA_UNIT   — 余量单位（`元`=1、`点/点数`=0.001，换算不到元的单位按"余额未知"处理）
+      QUOTA_PARAM  — 附加参数（JSON 字符串，可选；会**覆盖**自动带上的同名键）
+
+    两个坑（11-03 接 163 现网实测后才补上）：
+      1. `client` 是 adapter 的裸 httpx 客户端，**没有 base_url**——早先直接
+         `client.request("GET", "/api/user/balance")` 会抛「URL 必须带协议」，
+         配了 QUOTA_PATH 也永远查不到，报的还是一句看不懂的 ValueError。
+         现在相对路径自动拼 `<NAME>_BASE`。
+      2. 余量请求**不自动带 Key**——早想要鉴权只能把明文密钥再抄一份进 QUOTA_PARAM
+         （一个 Key 在 .env 里躺两遍，多一处泄露面）。现在复用 adapter 的 auth 口径
+         （query / bearer / header），Key 只在 `<NAME>_KEY` 存一份。
     """
     p = name.upper()
     path = (os.getenv(f"WECHAT_DL_{p}_QUOTA_PATH", "") or "").strip()
@@ -148,19 +166,29 @@ async def _fetch_http_balance(client: httpx.AsyncClient, name: str) -> dict:
     method = (os.getenv(f"WECHAT_DL_{p}_QUOTA_METHOD", "GET") or "GET").strip().upper()
     field = (os.getenv(f"WECHAT_DL_{p}_QUOTA_FIELD", "balance") or "balance").strip()
     unit = (os.getenv(f"WECHAT_DL_{p}_QUOTA_UNIT", "次") or "次").strip()
-    extra = {}
+    url = path if path.lower().startswith(("http://", "https://")) else f"{base.rstrip('/')}/{path.lstrip('/')}"
+    params: dict = {}
+    headers: dict = {}
+    if key and auth == "query":
+        params[key_param] = key
+    elif key and auth == "bearer":
+        headers["Authorization"] = f"Bearer {key}"
+    elif key and auth == "header":
+        headers["X-API-Key"] = key
     raw_param = os.getenv(f"WECHAT_DL_{p}_QUOTA_PARAM", "") or ""
     if raw_param.strip():
         try:
             import json as _json
             extra = _json.loads(raw_param)
+            if isinstance(extra, dict):
+                params.update({k: v for k, v in extra.items() if k not in ("_header",)})
         except Exception:
-            extra = {}
+            pass
     try:
         if method == "POST":
-            resp = await client.request("POST", path, json=extra or None)
+            resp = await client.request("POST", url, json={**params} or None, headers=headers or None)
         else:
-            resp = await client.request("GET", path, params=extra or None)
+            resp = await client.request("GET", url, params=params or None, headers=headers or None)
         if resp.status_code != 200:
             return {"error": f"http {resp.status_code}"}
         data = resp.json()
@@ -375,8 +403,19 @@ class HttpApiAdapter(BaseParseClient):
             pass
 
     async def check_balance(self) -> dict:
-        """查询该第三方 provider 的余量；未配置 QUOTA_PATH 返回 {}（未知）。"""
-        return await _fetch_http_balance(self._client, self.name)
+        """查询该第三方 provider 的余量；未配置 QUOTA_PATH 返回 {}（未知）。
+
+        把 adapter 自己的 base / Key / 鉴权方式一起传进去：余量接口和解析接口是同一个
+        账号同一种鉴权，不该在 `.env` 里把密钥抄第二遍（见 `_fetch_http_balance`）。
+        """
+        return await _fetch_http_balance(
+            self._client,
+            self.name,
+            base=self.base,
+            key=self.key,
+            auth=self.auth,
+            key_param=self.key_param,
+        )
 
 
 def build_providers() -> List[BaseParseClient]:
