@@ -215,6 +215,11 @@ class Settings(BaseSettings):
     WECHAT_DL_PROMPT_TIMEOUT: int = 15
     # 计时上限（秒）：默认 600，官方最大 600；按此上限计费（约 0.00054 元/秒）
     WECHAT_DL_PROMPT_MAX_DURATION: int = 600
+    # 反推轮询「查询不通」的容忍时长（秒，默认 3600＝1 小时）：
+    # 智令网关自己转发超时（code=500 转发请求失败）时不再当场判死，保持 processing 继续轮；
+    # 但连续不通超过本时长就判 failed 收口，避免任务永远挂在「处理中」。与下载侧
+    # WECHAT_DL_STALE_TIMEOUT_SECONDS 同一量纲、同一默认值，运维只需记一个数。
+    WECHAT_DL_PROMPT_POLL_GIVEUP_SECONDS: int = 3600
     # 本地视频上传反推（智令 doc/125 签名 + S3 POST，ISSUE #363）：
     # 签名接口路径（GET ?key=&fileName=&contentType=&expiresIn=）
     WECHAT_DL_ZHILING_UPLOAD_SIGN_PATH: str = "/api/upload/signature"
