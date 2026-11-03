@@ -339,8 +339,11 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                             {p.prompt_text || '（正文为空：作废/失败单不外泄，看 status）'}
                           </Paragraph>
                           {p.dispatch_note && (
+                            // 不再自己加「投放要求：」前缀——存进来的正文第一句本就是
+                            // 「投放要求（只给人看，不贴进豆包也不进 payload）：」，两处都写会读成
+                            // 「投放要求：投放要求（…）：」这种叠字（11-03 抽屉截图上就是这样）
                             <Text type="secondary" style={{ fontSize: 12 }}>
-                              投放要求：{p.dispatch_note}
+                              {p.dispatch_note}
                             </Text>
                           )}
                           {p.error && (

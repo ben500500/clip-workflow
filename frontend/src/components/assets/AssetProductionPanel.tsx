@@ -315,7 +315,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
           type={today.over_cap > 0 ? 'error' : today.board_rows > today.soft_cap * 0.8 ? 'warning' : 'info'}
           showIcon
           style={{ marginBottom: 12 }}
-          message={`${today.day} 号池：吃掉 ${today.board_rows} 条（Σ 板上 total）／软提示线 ${today.soft_cap} 条／生产单 ${today.tasks} 行；成功 ${today.succeeded}、失败 ${today.failed}${today.over_cap > 0 ? `；超线 ${today.over_cap} 条` : ''}`}
+          message={`${today.day} 号池：吃掉 ${today.board_rows} 条（Σ 板上 total）／软提示线 ${today.soft_cap} 条／板上任务 ${today.tasks} 行（按 board_date，还没投的单不在里面）；成功 ${today.succeeded}、失败 ${today.failed}${today.over_cap > 0 ? `；超线 ${today.over_cap} 条` : ''}`}
           description={
             <Space direction="vertical" size={2}>
               {today.note && <Text style={{ fontSize: 12 }}>{today.note}</Text>}
