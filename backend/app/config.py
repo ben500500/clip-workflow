@@ -4,6 +4,7 @@ import os
 import secrets
 import stat
 from pathlib import Path
+from typing import Optional
 
 
 DEFAULT_JWT_PLACEHOLDERS = {
@@ -308,6 +309,63 @@ class Settings(BaseSettings):
     REMOTION_STALE_INTERVAL_SECONDS: int = 300
     # Remotion 渲染任务超时阈值（秒）：超过该时长仍 rendering 视为卡死，守护任务回写 failed
     REMOTION_RENDER_TIMEOUT_SECONDS: int = 3600
+
+    # ── 素材库（asset_library，设计方案 20261103 P0）──
+    # 单批导入上限（条）：超过必须拆批，防一次粘 500 条链接把解析打爆。
+    # 与 asset_service.normalize_source_list 的 limit 参数默认值保持一致。
+    ASSET_IMPORT_BATCH_MAX: int = 100
+    # 单批反推预算上限（元）：批量反推按**计时上限**扣费，这是最大的烧钱杠杆；
+    # 预估超过该值时 budget_gate 判 need_approval，必须前端二次确认后才放行。
+    ASSET_BATCH_BUDGET_CAP: float = 50.0
+    # 余额安全系数：预估成本 × 该系数 仍 ≤ 账户余额 才算 ok（余额接口有抖动，留余量）
+    ASSET_BALANCE_SAFETY_RATIO: float = 1.2
+    # 反推计时上限默认档位（秒）：可选 60/180/300/600。
+    # 默认 180 而不是现有反推链路的 600 —— 素材库是「批量」场景，
+    # 600 档一条就是 0.324 元，100 条 32 元；180 档一条 0.097 元，够出钩子文案。
+    ASSET_PROMPT_MAX_DURATION: int = 180
+    # 每条素材生成的钩子文案候选数（多候选单审，三选一比生成一条直接过的返工率低）
+    ASSET_HOOK_CANDIDATE_COUNT: int = 3
+    # 风险词表（system_config.asset_risk_lexicon）的现读缓存时长（秒）：
+    # 审核/投产/导出都要扫词，逐条查库太碎；运维改词表后最多等一个 TTL 生效，设 0 = 每次都查。
+    ASSET_RISK_LEXICON_TTL_SECONDS: int = 300
+    # 单条过审文案默认生产份数（N 的语义=同一文案派生 N 条**差异化**提示词，非重复投喂）
+    ASSET_PRODUCE_DEFAULT_N: int = 3
+    # 单条过审文案最大生产份数（硬上限，防误填 999 把号池额度一天烧光）
+    ASSET_PRODUCE_MAX_N: int = 20
+    # 豆包单号每日可出片数（口径来自 short-drama-hook-writer：实测 2~4 条/号/日，按 3 排产）
+    # 注意：这是**额度墙**不是**时长墙**，排产天数用它算，别拿 8 小时工时反推产能。
+    ASSET_DOUBAO_PER_ACCOUNT_PER_DAY: int = 3
+    # 交付包（packages/）相关的 ASSET_PACKAGE_PREFIX / _KEEP_DAYS 曾在 P0 定义里挂空：
+    # 全仓零引用、P2 才做交付包，届时连同桶 lifecycle Expiration 规则一起接线（B 组死配置清理）。
+
+    # ── 素材库 · 单次请求条数上限（原直接 os.getenv，收进 Settings 供运维调）──
+    # 反推/出文案都是**同步等外部接口**的，100 条串跑会把请求挂到网关超时；
+    # P1 上队列后这两个上限交给队列，不由 HTTP 层扛。
+    ASSET_ANALYZE_MAX_PER_CALL: int = 20
+    ASSET_SUMMARY_MAX_PER_CALL: int = 10
+
+    # ── 素材库 · 企微自动化后台「创建 AI 视频」任务板（生产通道 wework_aivideo）──
+    # 权威口径：NAS《每日解压视频-操作手册-20261022.md》+ Drama/共享配置/skill/relax-video-pipeline。
+    # 这条通道**不扣现金**、payload 只有七键（tag/reqID/total/date/prompt/name/picDatas）、
+    # **没有时长与分辨率参数**：成片恒 10.08s / 720×1280。
+    ASSET_BOARD_BASE_URL: str = "http://mp.miwan.synology.me:8500"
+    # Basic Auth 凭据（形如 user:pass）。⚠️ 只在环境变量里给，代码与仓库一律不写死明文。
+    AIVIDEO_AUTH: Optional[str] = None
+    # 板上 tag＝拥有者标记：不填就建成**无主任务**，按天筛不到（回收必然漏）
+    ASSET_BOARD_TAG: str = "suanku"
+    # 板上 total＝同一条 prompt 出几版（1..20）。与「N 份差异化提示词」是两个量，别混用。
+    ASSET_BOARD_TOTAL_MAX: int = 20
+    ASSET_BOARD_DEFAULT_TOTAL: int = 1
+    # 号池实测 ≈120 条/日：1023 叠两份量（240）其中一批 10 分钟内 115/120 全 fail；
+    # 1028 投 230 只到手 162（70%），"超出 120 的那部分基本是白投"。
+    # 用户口径「产能不限」→ **不做硬限**，只在 /produce 返回里给软提示；设 0 关闭提示。
+    ASSET_BOARD_DAILY_SOFT_CAP: int = 120
+    # 板上排日按本地时区（NAS 在 CST），后端存 UTC —— 16:00~24:00 之间会错一天，
+    # 而 date 写错＝额度白烧且成片永久取不回（1021 实测 120 条）。
+    ASSET_BOARD_TZ_OFFSET_HOURS: int = 8
+    # 出片实测锁死的规格（用于把 duration/resolution 标成"意图"而不是"承诺"）
+    ASSET_BOARD_OUTPUT_SECONDS: float = 10.08
+    ASSET_BOARD_OUTPUT_RESOLUTION: str = "720x1280"
 
     model_config = {
         "env_file": ".env",

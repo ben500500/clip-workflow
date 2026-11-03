@@ -62,6 +62,16 @@ from app.models.drama import (
 from app.models.theater import (
     Theater,
 )
+# 素材库（20261103 P0）：表挂主系统 Base，见 models/asset.py 的设计取舍
+from app.models.asset import (
+    AssetBatch,
+    AssetItem,
+    AssetSummary,
+    AssetProduction,
+    AssetOutput,
+    gen_asset_code,
+    gen_batch_code,
+)
 
 __all__ = [
     "Project",
@@ -119,4 +129,12 @@ __all__ = [
     "DramaMaterial",
     "gen_drama_code",
     "Theater",
+    # 素材库（20261103 P0）
+    "AssetBatch",
+    "AssetItem",
+    "AssetSummary",
+    "AssetProduction",
+    "AssetOutput",
+    "gen_asset_code",
+    "gen_batch_code",
 ]

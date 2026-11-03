@@ -304,6 +304,21 @@ async def _apply_compat_migrations():
         ("video_metrics", "avg_play_time", "DOUBLE PRECISION"),
         ("video_metrics", "drama_name", "VARCHAR(200)"),
         ("video_metrics", "source", "VARCHAR(20) NOT NULL DEFAULT 'import'"),
+        # 素材库（0055_asset_library）：开发/测试库可能已按早期形状建过 asset_* 表，
+        # create_all 不给已存在的表加列，所以 board_* 新列在这里补一遍兜底。
+        ("asset_productions", "hook_code", "VARCHAR(10)"),
+        ("asset_productions", "dispatch_note", "TEXT"),
+        ("asset_productions", "board_total", "INTEGER NOT NULL DEFAULT 1"),
+        ("asset_productions", "board_tag", "VARCHAR(60)"),
+        ("asset_productions", "board_date", "TIMESTAMP"),
+        ("asset_productions", "board_name", "VARCHAR(200)"),
+        ("asset_productions", "board_tid", "VARCHAR(60)"),
+        ("asset_productions", "board_rgid", "VARCHAR(60)"),
+        ("asset_productions", "character_card_key", "VARCHAR(500)"),
+        ("asset_productions", "drift_reason", "VARCHAR(500)"),
+        ("asset_outputs", "board_out_url", "VARCHAR(500)"),
+        # D-5（11-03 拍板解析费计入成本）：开发库早先已建过 asset_items，新列靠这里兜底
+        ("asset_items", "cost_parse", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
