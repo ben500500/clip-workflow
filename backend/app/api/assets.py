@@ -2025,8 +2025,20 @@ async def _supersede_productions(
     return len(rows)
 
 
-async def _call_autoclip(path: str, payload: dict, timeout: float = 180.0) -> dict:
-    """调 autoclip 微服务（LLM 只在那边配了 key，后端进程不另起一套凭证）。"""
+async def _call_autoclip(path: str, payload: dict, timeout: float = 900.0) -> dict:
+    """调 autoclip 微服务（LLM 只在那边配了 key，后端进程不另起一套凭证）。
+
+    超时为什么是 900 而不是原来拍的 180：出文案/展开是"浏览器点一下、同步等模型"的
+    接口，11-04 在**同一条 1333 字反推详规**上实测（预览栈 assetprev-autoclip，
+    max_tokens=32768）：mimo-v2.6-pro 96.2s、mimo-v2.6-flash 93.6s 正常回 3 条候选。
+    看着 180 够用——但同一批请求里 flash 也**连续两次卡到 autoclip 自己的
+    `API_TIMEOUT`（默认 240s）才超时**（容器日志 `curl (28) ... 240000ms`，第三次才成功）。
+    网关卡流是常态事件，不是罕见事件（与 `cfdb2a8` 修的"反推查询抖动判死"同一类）。
+    所以外层容忍必须**比 autoclip 单次上限还长**，否则就是"后端先 502、模型那边其实还在跑
+    并最终成功"：钱照扣、候选没落库、一线看到"出文案失败"。
+    口径从外到内递减：nginx `proxy_read_timeout 900s` > 本函数 900s > autoclip 单次
+    `API_TIMEOUT=600` > 内部重试 1 次（见下面两个 payload）。
+    """
     url = f"{settings.AUTOCLIP_URL.rstrip('/')}/{path.lstrip('/')}"
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -2155,6 +2167,11 @@ async def generate_summaries(
         payload = {
             "script": script,
             "count": count,
+            # 内部重试压到 1 次：autoclip 每次网关调用最长 `API_TIMEOUT`（建议配 600s），
+            # 默认 3 次＝最坏 12 分钟，外层（本函数 900s、nginx 900s）必然先崩，
+            # 崩了里面还在烧钱重试。宁可这一次干净地失败（旧候选保留、这条标 failed、
+            # 一线点重试），也不要内外两套超时互相抢。
+            "max_retries": 1,
             "params": {
                 "title": asset.title or "",
                 "platform": asset.platform or "",
@@ -2704,6 +2721,9 @@ async def create_productions(
                             "seq": i,
                             "total": n,
                             "variant_basis": basis,
+                            # 与出文案同口径：内部只试一次，重试交给一线点按钮（理由见
+                            # `_call_autoclip` 的超时链说明，11-04 flash 实测）。
+                            "max_retries": 1,
                             "params": {
                                 "asset_code": asset.code,
                                 "platform": asset.platform or "",
@@ -2719,7 +2739,10 @@ async def create_productions(
                                 "compliance": "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
                             },
                         },
-                        timeout=180.0,
+                        # 用 `_call_autoclip` 的 900s 默认值。⚠️ 本函数是 n 次**串行**展开，
+                        # 一次 HTTP 请求的耗时 ≈ n × 单次模型耗时（实测 pro/flash 各约 90–150s，
+                        # 卡流时到 600s）——n 很大时会顶穿 nginx 的 900s（连接断了但单照样落库，
+                        # 刷新即可看到）。真要在一线上大 n 稳定跑，是 P1 队列化的活，不在 P0。
                     )
                     prompt_text = (expanded.get("prompt_text") or "").strip() or None
                     # B-9：投放要求（改名/跳过二次确认/并行）不进 payload，只给人看。

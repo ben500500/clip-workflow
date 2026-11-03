@@ -2856,3 +2856,70 @@ def test_dispatch_today_counts_uses_board_rows_not_row_count():
         await client.aclose()
 
     _run(_scenario())
+
+
+def test_autoclip_timeout_chain_and_single_inner_retry():
+    """超时口径钉成契约：外层等得比内层久，且内层只试一次（11-04 flash 实测）。
+
+    背景：现网/预览都是「浏览器点一下 → 后端同步等 autoclip → autoclip 同步等网关」。
+    11-04 在同一条 1333 字反推详规上实测：mimo-v2.6-pro 96.2s、mimo-v2.6-flash 93.6s
+    正常回 3 条候选；**同一批里 flash 还连续两次卡到 autoclip 自己的 API_TIMEOUT(240s)
+    才超时、第三次才成功**。旧口径后端只等 180s、现网 nginx 只等 300s，于是
+    「后端先 502 → 模型那边其实还在跑并最终成功 → 钱照扣、候选没落库、一线看到失败」。
+    口径只能是**从外到内递减**：nginx 900s > 后端 900s > autoclip 单次 600s × 重试 1 次。
+    这三条分属三个文件，改一个就得改另两个，所以在这里一次钉死。
+    """
+    import inspect
+    from pathlib import Path
+
+    from app.api import assets as assets_api
+
+    # 1) 后端 → autoclip 的默认超时不能比 autoclip 单次上限（建议 600）短
+    default_timeout = float(
+        inspect.signature(assets_api._call_autoclip).parameters["timeout"].default
+    )
+    assert default_timeout >= 600, f"后端只等 {default_timeout}s，模型卡流时会先崩"
+
+    # 2) 前端 nginx 的 /api 代理超时不能短于后端
+    nginx = (Path(__file__).resolve().parents[3] / "frontend" / "nginx.conf").read_text()
+    api_block = nginx.split("location /api/ {", 1)[1].split("}", 1)[0]
+    read_t = int(re.search(r"proxy_read_timeout\s+(\d+)s", api_block).group(1))
+    assert read_t >= default_timeout, f"nginx {read_t}s 短于后端 {default_timeout}s，会 504"
+
+    # 3) 发给 autoclip 的两个 payload 必须把内部重试压到 1 次
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        seen = []
+        fake = _fake_autoclip()
+
+        async def _recorder(path, payload, timeout=180.0):
+            seen.append({"path": path, "payload": payload, "timeout": timeout})
+            return await fake(path, payload, timeout=timeout)
+
+        with patch("app.api.assets._call_autoclip", _recorder):
+            g = await client.post("/api/assets/summaries/generate",
+                                  json={"asset_ids": [asset_id]}, headers=hm)
+            assert g.status_code == 200, g.text
+            sid = (await _rows(AssetSummary))[0].id
+            await client.post("/api/assets/summaries/review",
+                              json={"summary_ids": [str(sid)], "action": "approve"}, headers=ho)
+            p = await client.post("/api/assets/produce",
+                                  json={"summary_ids": [str(sid)], "n": 2, "expand": True},
+                                  headers=ho)
+            assert p.status_code == 200, p.text
+
+        gen = [x for x in seen if x["path"].endswith("hook-copy/generate")]
+        exp = [x for x in seen if x["path"].endswith("hook-copy/expand")]
+        assert gen and exp, f"没打到两个端点：{[x['path'] for x in seen]}"
+        for call in gen + exp:
+            assert call["payload"].get("max_retries") == 1, (
+                "autoclip 内部重试必须＝1：240s×3 的重试风暴只会让外层先崩，"
+                "重试这件事交给一线点按钮（旧候选/旧单都有保留逻辑）"
+            )
+        await client.aclose()
+
+    _run(_scenario())
