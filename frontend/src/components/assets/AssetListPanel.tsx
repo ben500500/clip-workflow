@@ -307,7 +307,15 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
       ellipsis: true,
       render: (v: string | null, row) => (
         <Space direction="vertical" size={0}>
-          <Text strong={!!v}>{v || <Text type="secondary">（未反推，无标题）</Text>}</Text>
+          {/* 链接素材永远没有标题（title 只有文件上传时取文件名），
+              旧文案写死「未反推」会和五阶段里绿色的「推」自相矛盾，11-03 验收截图上就是这样 */}
+          <Text strong={!!v}>
+            {v || (
+              <Text type="secondary">
+                {row.source_url ? '（链接素材：无标题，只有来源地址）' : '（未取到标题）'}
+              </Text>
+            )}
+          </Text>
           {row.source_url ? (
             <a href={row.source_url} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>
               {row.source_url.slice(0, 60)}
