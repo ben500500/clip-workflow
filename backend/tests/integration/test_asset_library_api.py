@@ -1782,6 +1782,9 @@ def test_produce_blocks_unapproved_and_caps_n():
         assert resp.status_code == 200, resp.text
         assert resp.json()["created"] == 3
         assert resp.json()["capacity_hint"]["days"] == 1
+        # P1 #19：字数软校验字段必须在成功响应里出现。替身给的是「标题1…K」短标题，
+        # 预算内 → 空清单；有超支的也只是多几条 warning，**不拦投产**（见 title_budget 单测）
+        assert resp.json()["title_warnings"] == []
         # B-1：投放量 = 任务数 × 板上 total（默认每任务 1 版）
         board = resp.json()["board"]
         assert board["channel"] == "wework_aivideo" and board["tasks"] == 3

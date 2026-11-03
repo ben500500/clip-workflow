@@ -980,6 +980,24 @@ export interface AssetProduceDriftItem {
   reason: string | null;
 }
 
+/**
+ * 推荐标题正文超预算（P1 #19 **软校验**：只提示一线去改，不拦投产、不改状态）。
+ * 板面/报表标题列只显示前 22 字（发布侧补 4 字【账号】前缀），展开导出的正文不带前缀
+ * → 上限 18 字；字数口径＝含标点不含空白（与后端 count_copy_chars 同一把尺）。
+ */
+export interface AssetProduceTitleWarning {
+  asset_code: string;
+  summary_id: string;
+  seq: number;
+  hook_code: string | null;
+  /** 超预算的标题原文 */
+  title: string;
+  /** 实测字数 */
+  chars: number;
+  /** 正文字数上限（18） */
+  limit: number;
+}
+
 /** POST /assets/produce */
 export interface AssetProduceResponse {
   created: number;
@@ -995,6 +1013,8 @@ export interface AssetProduceResponse {
   recheck_waived: AssetProduceWaivedItem[];
   prompt_skeleton_gaps: AssetProduceSkeletonGap[];
   drifted: AssetProduceDriftItem[];
+  /** 推荐标题正文超 18 字的逐条清单（只警示，单子是建成的） */
+  title_warnings: AssetProduceTitleWarning[];
   /** 缺编号/缺标题/豁免/拦下/缺骨架/漂移等提醒（要逐条显示，别只看 message） */
   warnings: string[];
   message: string;

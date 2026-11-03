@@ -552,3 +552,55 @@ def test_board_payload_is_exactly_the_seven_board_keys():
     assert edge["total"] == 20 and edge["picDatas"] == [] and edge["tag"] == ""
     assert svc.build_board_payload(production_id="x", board_tag="t", board_total=0,
                                    board_date=None, prompt_text="p", board_name="n")["total"] == 1
+
+
+# ─────────────────────────  8. 推荐标题字数软校验（P1 #19：只 warning 不拦）  ─────────────────────────
+
+
+def test_title_budget_over_limit_warns_and_never_raises():
+    """超预算的标题**收进清单**而不是抛异常——抛了就等于把软校验做成闸门。
+
+    11-02 §3.1 的示例正文（20~22 字）比它自己的预算（≤18）长，正好当超支样本。
+    """
+    over = "怀三胎·7G101·刚离婚就孕吐，他撕碎协议"  # 22 字
+    assert svc.count_copy_chars(over) == 22
+    warns = svc.check_video_title_budget([over, "疙瘩汤·7D0B2·替姐出嫁第二天"])
+    assert warns == [{"title": over, "chars": 22, "limit": 18}], warns
+
+
+def test_title_budget_exactly_at_limit_is_not_flagged():
+    """正好 18 字＝贴线合规，不许误报（模板自查行写的就是「每条 ≤18 字」）。"""
+    on_limit = "救总裁·7F2A9·婆婆跪在产房外哭"  # 3+1+5+1+8 = 18
+    assert svc.count_copy_chars(on_limit) == svc.TITLE_BODY_BUDGET_CHARS
+    assert svc.check_video_title_budget([on_limit]) == []
+    assert svc.check_video_title_budget([on_limit + "呢"]) == [{"chars": 19, "limit": 18,
+                                                                "title": on_limit + "呢"}]
+
+
+def test_title_budget_drama_abbr_length_feeds_the_hook_quota():
+    """剧缩越长、精简钩子越挤：上限＝11－剧缩字数，但判据落在正文 ≤18 上（18−「·」−5−「·」＝11）。
+
+    4 字剧缩配 8 字钩子＝19 字正文：按配额钩子只能 7 字，这里必须报——
+    与拆段判「8 > 11−4」结果一致，正文口径不需要知道哪段是剧缩。
+    """
+    tight = "一胎四宝·7D0B2·婆婆跪在产房外哭"  # 4+1+5+1+8 = 19
+    assert svc.check_video_title_budget([tight])[0]["chars"] == 19
+    ok = "一胎四宝·7D0B2·婆婆跪产房外哭"  # 4+1+5+1+7 = 18
+    assert svc.check_video_title_budget([ok]) == []
+
+
+def test_title_budget_empty_and_blank_titles_do_not_explode():
+    """空清单 / None / 混进空串空白 None：一个都不报、一个都不炸（缺标题另有 missing_names 警告）。"""
+    assert svc.check_video_title_budget(None) == []
+    assert svc.check_video_title_budget([]) == []
+    assert svc.check_video_title_budget(["", None, "   ", "·"]) == []
+
+
+def test_title_budget_counts_with_the_same_ruler_as_copy_chars():
+    """字数必须用 count_copy_chars（含标点、不含空白）——换一把尺两边数就对不上。"""
+    spaced = "怀三胎 · 7G101 · 刚离婚就孕吐"  # 空格不算字：3+1+5+1+6=16 正文 → 不超
+    assert svc.count_copy_chars(spaced) == 16
+    assert svc.check_video_title_budget([spaced]) == []
+    punctuated = "怀三胎·7G101·刚离婚就孕吐？？！"  # 19 个非空白（标点全算）
+    assert svc.count_copy_chars(punctuated) == 19
+    assert svc.check_video_title_budget([punctuated])[0]["chars"] == 19

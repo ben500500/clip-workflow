@@ -2573,6 +2573,8 @@ async def create_productions(
     waived_rows: List[dict] = []
     skeleton_gaps: List[dict] = []
     drifted: List[dict] = []
+    # P1 #19：推荐标题正文超预算的软校验结果（只提示一线去改，不拦投产、不改状态）
+    title_warnings: List[dict] = []
     code_pos = 0  # 钩子编号消耗指针：整条文案被拦下时**不进位**，号不该被一次失败的提交烧掉
 
     for sid in data.summary_ids:
@@ -2766,6 +2768,20 @@ async def create_productions(
                 )
                 db.add(prod)
                 productions.append(prod)
+                # P1 #19 推荐标题字数**软校验**（排在投产前复核等既有校验之后）：
+                # 一线在任务板上看到的标题列只显示前 22 字（含发布侧补的 4 字【账号】
+                # 前缀），而展开导出的标题正文不带前缀 → 预算是正文 ≤18 字。超了**不是
+                # 报错**——那条标题会在报表里被截断、回收改名对不上，所以只收进
+                # title_warnings 提示一线去改，不拦投产、不改状态。字数复用
+                # count_copy_chars，与文案侧判据同一把尺。
+                for gap in svc.check_video_title_budget(row["video_titles"]):
+                    title_warnings.append({
+                        "asset_code": asset.code,
+                        "summary_id": str(summary.id),
+                        "seq": row["seq"],
+                        "hook_code": row["hook_code"],
+                        **gap,
+                    })
                 if row["drift"]:
                     # 单子照常生成、不静默丢弃，但逐条点名（投出去烧的是号池额度）
                     drifted.append({
@@ -2850,6 +2866,8 @@ async def create_productions(
             "prompt_skeleton_gaps": skeleton_gaps or None,
             # A3-3：展开结果与过审文案不是同一条的，逐条留成因
             "drifted": drifted or None,
+            # P1 #19：标题字数软校验同样入审计，事后能回看当时超了哪几条
+            "title_warnings": title_warnings or None,
         },
     )
     await db.commit()
@@ -2888,6 +2906,12 @@ async def create_productions(
             "模型改写了钩子原句 / 前面拼了字 / 整句复制了两遍。这批投出去就是烧号池额度，"
             "要么回去重展（expand=true 重投一次，序号接着排），要么人工把原句粘回正文再投"
         )
+    if title_warnings:
+        warnings.append(
+            f"{len(title_warnings)} 条推荐标题正文超 {svc.TITLE_BODY_BUDGET_CHARS} 字"
+            f"（逐条见 title_warnings）：报表/板面标题列只显示前 22 字（含发布侧补的"
+            "4 字【账号】前缀），超了那条会被截断、回收改名对不上——不拦投产，请一线改短后再投"
+        )
     # 当日号池真实消耗 + 本批投递分布（11-03 第 4 条：不硬限，只报数）
     batch_ids = sorted({str(p.batch_id) for p in productions if p.batch_id})
     scope = (
@@ -2916,6 +2940,8 @@ async def create_productions(
         "recheck_waived": waived_rows,
         "prompt_skeleton_gaps": skeleton_gaps,
         "drifted": drifted,
+        # P1 #19：推荐标题正文超 18 字的逐条清单（软校验，单子照常建、状态照常走）
+        "title_warnings": title_warnings,
         "warnings": warnings,
         "message": (
             f"已生成 {len(productions)} 条生产单（{len(data.summary_ids)} 条文案 × {n} 份差异化，"

@@ -904,6 +904,33 @@ def format_titles_with_code(video_titles: Optional[List[str]], hook_code: Option
     return out
 
 
+# 推荐视频标题正文字数预算（P1 #19，与 hook_expand.txt 第 17 条钉死同一口径）：
+# 展开导出的标题数组**不带【账号】前缀**，发布侧补 4 字前缀后小V猫报表/板面标题列
+# 只显示前 22 字 → 正文上限 = 22 − 4 = **18 字**。
+# 「精简钩子上限＝11－剧缩字数」是同一预算的**内部配额**（正文＝剧缩＋「·」＋5 位编号
+# ＋「·」＋精简钩子，18 − 1 − 5 − 1 = 11），标题拼得规范时正文 ≤18 已覆盖它，
+# 拆段重判反而会被「缺剧缩/缺编号」的降级标题误伤——判据统一落在正文上。
+TITLE_BODY_BUDGET_CHARS = 18
+
+
+def check_video_title_budget(
+    video_titles: Optional[List[str]], *, limit: int = TITLE_BODY_BUDGET_CHARS
+) -> List[Dict[str, Any]]:
+    """推荐标题正文逐条软校验：只报超预算的，**不拦、不改状态**（P1 #19）。
+
+    字数口径必须复用 `count_copy_chars`（含标点、不含空白）——前端/报表/本判据
+    三处数是同一把尺，才不会「这边报超、那边看着没超」。
+    空标题/None/纯空白＝0 字，不报（缺标题另有 missing_names 警告，别在这里双报）。
+    """
+    problems: List[Dict[str, Any]] = []
+    for raw in video_titles or []:
+        title = str(raw or "").strip()
+        chars = count_copy_chars(title)
+        if chars > limit:
+            problems.append({"title": title, "chars": chars, "limit": limit})
+    return problems
+
+
 def format_export_block(
     *,
     hook_code: Optional[str],

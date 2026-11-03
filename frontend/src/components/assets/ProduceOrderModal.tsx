@@ -202,6 +202,26 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               }
             />
           )}
+          {!!result.title_warnings?.length && (
+            <Alert
+              type="warning"
+              showIcon
+              message={`${result.title_warnings.length} 条推荐标题正文超预算（软校验：单子已建成、不拦投产，请一线改短后再投）`}
+              description={
+                <Space direction="vertical" size={2}>
+                  {result.title_warnings.slice(0, 8).map((w, i) => (
+                    <Text key={`${w.asset_code}-${w.seq}-${i}`} style={{ fontSize: 12 }}>
+                      {w.asset_code} #{w.seq}：「{w.title}」实测 {w.chars} 字 / 上限 {w.limit} 字
+                    </Text>
+                  ))}
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    报表/板面标题列只显示前 22 字（发布侧补 4 字【账号】前缀，正文 ≤18）：
+                    超了的那条会被截断、回收改名对不上。
+                  </Text>
+                </Space>
+              }
+            />
+          )}
           {!!result.warnings?.length && (
             <Alert
               type="info"
