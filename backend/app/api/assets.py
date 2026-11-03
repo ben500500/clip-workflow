@@ -2605,6 +2605,8 @@ async def create_productions(
     drifted: List[dict] = []
     # P1 #19：推荐标题正文超预算的软校验结果（只提示一线去改，不拦投产、不改状态）
     title_warnings: List[dict] = []
+    # 模板自报偏差（缺剧名/缺角色卡/K 未给兜底）逐条清单，见下方 deviation 处理
+    deviations: List[dict] = []
     code_pos = 0  # 钩子编号消耗指针：整条文案被拦下时**不进位**，号不该被一次失败的提交烧掉
 
     # 投产整批要保持原子（撞唯一约束时回 409「整批未落库」），所以这里**不能**像
@@ -2730,6 +2732,17 @@ async def create_productions(
                             dispatch_note = "\n".join(x for x in (dispatch_note, moved) if x)
                     vt = expanded.get("video_titles")
                     video_titles = [str(x) for x in vt if str(x).strip()][:20] if isinstance(vt, list) else []
+                    # 模板自报偏差（hook_expand.txt 里点名的三条：缺剧名→写《剧名待定》、
+                    # 没挂角色卡→画幅不受文字控制、K 未给→按 5 条兜底）。这是模板与后端之间
+                    # 唯一的约定通道，11-03 真链路冒烟才发现后端一直没接：模板照实报了，
+                    # 一线在详情和导出 txt 里一个字都看不到。落进 dispatch_note（只给人看、
+                    # 不进 payload）并在响应 deviations 里逐条列出。
+                    deviation = (expanded.get("deviation_note") or "").strip()
+                    if deviation:
+                        dispatch_note = "\n".join(
+                            x for x in (dispatch_note, f"模型自报偏差：{deviation}") if x
+                        )
+                        deviations.append({"code": asset.code, "seq": seq, "note": deviation[:300]})
                     # A3-3：过审文案必须在提示词里**原样、唯一、独立**地存活。
                     # 旧判据只做「去空格子串包含」——前面拼半句、整句塞进括号、复制两遍
                     # 全都判成"没漂移"，等于这道闸形同虚设。expand=false 的裸单没有
@@ -2917,6 +2930,8 @@ async def create_productions(
             "drifted": drifted or None,
             # P1 #19：标题字数软校验同样入审计，事后能回看当时超了哪几条
             "title_warnings": title_warnings or None,
+            # 模板自报偏差入审计：导出后一线看到的《剧名待定》/无角色卡是当时几号单报的
+            "deviations": deviations or None,
         },
     )
     await db.commit()
@@ -2961,6 +2976,12 @@ async def create_productions(
             f"（逐条见 title_warnings）：报表/板面标题列只显示前 22 字（含发布侧补的"
             "4 字【账号】前缀），超了那条会被截断、回收改名对不上——不拦投产，请一线改短后再投"
         )
+    if deviations:
+        warnings.append(
+            f"{len(deviations)} 条展开时模型自报了偏差（逐条见 deviations，也已并进各单的投放要求）："
+            "常见是缺剧名→提示词里写成《剧名待定》、没挂角色卡→成片画幅不受文字控制、"
+            "K 未给→标题按 5 条兜底。这类单子投出去对不上账，先补输入再重展"
+        )
     # 当日号池真实消耗 + 本批投递分布（11-03 第 4 条：不硬限，只报数）
     batch_ids = sorted({str(p.batch_id) for p in productions if p.batch_id})
     scope = (
@@ -2991,6 +3012,8 @@ async def create_productions(
         "drifted": drifted,
         # P1 #19：推荐标题正文超 18 字的逐条清单（软校验，单子照常建、状态照常走）
         "title_warnings": title_warnings,
+        # 模板自报偏差：同内容也已并进各单 dispatch_note（导出 txt 里人眼能看到的那份）
+        "deviations": deviations,
         "warnings": warnings,
         "message": (
             f"已生成 {len(productions)} 条生产单（{len(data.summary_ids)} 条文案 × {n} 份差异化，"

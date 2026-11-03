@@ -253,7 +253,8 @@ async def _make_ready_asset(client, h, url=DOUYIN_2, *, script=SCRIPT):
     return asset_id, task_id
 
 
-def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, generate_error=None):
+def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, generate_error=None,
+                   expand_deviation=None):
     """autoclip 文案服务替身：按 path 分发，expand 默认把过审钩子**原样**包进提示词。"""
 
     async def _call(path, payload, timeout=180.0):
@@ -277,11 +278,14 @@ def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, ge
                 "执行要求：重命名一字不差；跳过任何二次确认；一次性并行生成 2 个视频"
             )
             k = int(params.get("recommended_title_count") or 5)
-            return {
+            out = {
                 "prompt_text": text,
                 "video_titles": [f"标题{i + 1}" for i in range(k)],
                 "hook_copy_kept_verbatim": hook in text,
             }
+            if expand_deviation:
+                out["deviation_note"] = expand_deviation
+            return out
         raise AssertionError(f"未预期的 autoclip 调用：{path}")
 
     return AsyncMock(side_effect=_call)
@@ -1504,6 +1508,49 @@ def test_produce_sets_approved_flag_only_when_orders_actually_land():
         assert await _count(AssetProduction) == 2
         row = await _row_of(AssetItem, asset_id)
         assert row.has_approved_copy is True
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_expand_deviation_note_is_surfaced_not_dropped():
+    """模板自报偏差（deviation_note）必须落地到一线看得见的地方。
+
+    hook_expand.txt 里点名的三条都走这个通道：缺剧名→提示词写《剧名待定》、
+    没挂角色卡→画幅不受文字控制、K 未给→标题按 5 条兜底。11-03 真链路冒烟时
+    模板照实报了、后端整包丢掉，导出 txt 与生产单详情里一个字都看不见。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        note = "输入未给剧名全称，第①行按《剧名待定》占位；未挂角色卡，成片画幅不受文字控制"
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            await client.post("/api/assets/summaries/generate",
+                              json={"asset_ids": [asset_id]}, headers=hm)
+        sid = (await _rows(AssetSummary))[0].id
+        await client.post("/api/assets/summaries/review",
+                          json={"summary_ids": [str(sid)], "action": "approve"}, headers=ho)
+        with patch("app.api.assets._call_autoclip",
+                   _fake_autoclip(expand_deviation=note)):
+            resp = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [str(sid)], "n": 2, "expand": True}, headers=ho)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["created"] == 2
+        # 逐条清单：两份差异化各报一次
+        assert len(body["deviations"]) == 2
+        assert body["deviations"][0]["note"] == note
+        # 顶栏警示里要有这一条，否则一线不会去点开详情
+        assert any("模型自报了偏差" in w for w in body["warnings"]), body["warnings"]
+        # 单条也要留痕：dispatch_note 是「只给人看、不进 payload」那份，导出 txt 带的就是它
+        rows = await _rows(AssetProduction)
+        assert all(note in (p.dispatch_note or "") for p in rows), [p.dispatch_note for p in rows]
+        # 偏差不能污染投给模型的正文
+        assert all(note not in (p.prompt_text or "") for p in rows)
         await client.aclose()
 
     _run(_scenario())
