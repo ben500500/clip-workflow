@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 const ROUTE_TO_MENU_KEY: Record<string, string> = {
   '/dashboard': '/dashboard',
   '/projects': '/projects',
+  '/assets': '/assets',
   '/publish': '/publish',
   '/workers': '/workers',
   '/monitor': '/monitor',

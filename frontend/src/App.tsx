@@ -36,6 +36,7 @@ import DedupeProcessing from './pages/DedupeProcessing';
 import ResourceDownload from './pages/ResourceDownload';
 import ChannelAccounts from './pages/ChannelAccounts';
 import DramaLibrary from './pages/DramaLibrary';
+import AssetLibrary from './pages/AssetLibrary';
 
 const App: React.FC = () => {
   return (
@@ -65,6 +66,7 @@ const App: React.FC = () => {
             <Route path="dedupe" element={<DedupeProcessing />} />
             <Route path="channel-accounts" element={<ChannelAccounts />} />
             <Route path="dramas" element={<DramaLibrary />} />
+            <Route path="assets" element={<AssetLibrary />} />
             <Route path="analytics/overview" element={<DashboardOverview />} />
             <Route path="analytics/shortdrama" element={<ShortDramaAnalysis />} />
             <Route path="analytics/content" element={<ContentAnalysis />} />

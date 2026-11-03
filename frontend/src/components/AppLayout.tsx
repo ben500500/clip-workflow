@@ -24,6 +24,7 @@ import {
   ThunderboltOutlined,
   FolderOpenOutlined,
   FileAddOutlined,
+  DatabaseOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -84,6 +85,11 @@ const allMenuItems = [
     key: '/dramas',
     icon: <FolderOpenOutlined />,
     label: '剧目库',
+  },
+  {
+    key: '/assets',
+    icon: <DatabaseOutlined />,
+    label: '素材库',
   },
   {
     key: '/workers',
