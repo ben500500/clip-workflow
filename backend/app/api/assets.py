@@ -47,7 +47,7 @@ from typing import Annotated, Any, Dict, List, Optional, Tuple
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -2115,6 +2115,10 @@ async def generate_summaries(
                 )
             ).scalars().all()
         )
+        # 要删的旧候选先记下来，**等新候选真到手之后**再删（见下方 to_delete）。
+        # 旧写法在调模型之前就删，而调模型之前必须 commit 结束事务（见下），
+        # 于是「模型挂了」会变成「旧文案已经没了、新文案也没来」。
+        to_delete: List[AssetSummary] = []
         if existing and not data.overwrite:
             # 只补差额，已审过的候选不动（历史留痕是抽检的依据）
             if len(existing) >= count or any(s.audit_status != RV_PENDING for s in existing):
@@ -2128,7 +2132,7 @@ async def generate_summaries(
             if blocked:
                 results.append({"asset_id": str(asset.id), "code": asset.code, "created": 0, "error": blocked})
                 continue
-            await _delete_summaries(db, existing, operator=current_user)
+            to_delete = list(existing)
             existing = []
         elif existing and data.overwrite:
             approved = [s for s in existing if s.audit_status in REVIEW_PASSED_STATES]
@@ -2143,11 +2147,10 @@ async def generate_summaries(
             if blocked:
                 results.append({"asset_id": str(asset.id), "code": asset.code, "created": 0, "error": blocked})
                 continue
-            await _delete_summaries(db, existing, operator=current_user)
+            to_delete = list(existing)
             existing = []
 
         svc.apply_stage(asset, "summary", STAGE_RUNNING)
-        await db.flush()
 
         payload = {
             "script": script,
@@ -2159,7 +2162,29 @@ async def generate_summaries(
                 "compliance": "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
             },
         }
-        result = await _call_autoclip("hook-copy/generate", payload)
+        # ⚠️ 调外部模型之前必须**结束事务**，flush 不够（还在同一个事务里）：
+        # PG 侧 idle_in_transaction_session_timeout=60s（app/database.py
+        # ::_enforce_idle_in_transaction_timeout，Issue #219 为防事务泄漏加的防御层）
+        # 会在「SELECT 完就趴着等 HTTP」满 60 秒时**直接把连接掐掉**。
+        # 11-03 预览栈真链路实测：mimo 出 4 条候选花了 9 分钟，回来后 INSERT 报
+        #   asyncpg InterfaceError: connection is closed → 整口 500、候选一条没落库。
+        # 此刻事务里只有 stage 标记（旧候选的删除已挪到模型返回之后），commit 掉
+        # 正好让列表先显示「生成中」，比整批 500 干净。
+        await db.commit()
+
+        try:
+            result = await _call_autoclip("hook-copy/generate", payload)
+        except HTTPException as exc:
+            # 单条失败只标这一条：抬 500 会让同批**已经出到候选**的素材一起回滚，
+            # 而那些模型调用是真花了钱的。
+            svc.apply_stage(asset, "summary", STAGE_FAILED)
+            asset.note = ((asset.note or "") + f"\n出文案失败：{str(exc.detail)[:300]}")[:1000]
+            await db.commit()
+            results.append({
+                "asset_id": str(asset.id), "code": asset.code, "created": 0,
+                "error": str(exc.detail)[:300],
+            })
+            continue
         candidates = result.get("candidates") or []
         if not isinstance(candidates, list) or not candidates:
             svc.apply_stage(asset, "summary", STAGE_FAILED)
@@ -2169,6 +2194,11 @@ async def generate_summaries(
                 "error": "文案服务未返回候选",
             })
             continue
+
+        # 旧候选现在才真删：新候选已经在手，删了不会落空。与下面的 INSERT 同批提交，
+        # 中途任何异常仍然整体回滚，旧文案原样留着。
+        if to_delete:
+            await _delete_summaries(db, to_delete, operator=current_user)
 
         seq = len(existing)
         created = 0
@@ -2577,6 +2607,19 @@ async def create_productions(
     title_warnings: List[dict] = []
     code_pos = 0  # 钩子编号消耗指针：整条文案被拦下时**不进位**，号不该被一次失败的提交烧掉
 
+    # 投产整批要保持原子（撞唯一约束时回 409「整批未落库」），所以这里**不能**像
+    # 出文案口那样在调模型前先 commit；那就必须让本次事务别被空闲超时掐死：
+    # PG 侧 idle_in_transaction_session_timeout=60s（Issue #219 的防御层）会在
+    # 「SELECT 完就趴着等 HTTP」满 60 秒时关掉连接，11-03 预览栈真链路实测
+    # 一次展开跑 9 分钟 → 后面 INSERT 报 connection is closed → 整口 500。
+    # SET LOCAL 只影响**当前这个事务**，提交后自动还原，不改角色级配置、不影响别的请求。
+    # 敢这么做的理由：等待期间本事务不锁任何别人要动的行——
+    # asset_items 的 has_approved_copy 已挪到写单阶段（见下方），
+    # asset_productions 的行是本事务自己新建、还没提交的。
+    # 只在 PG 上做：单测/集成跑 sqlite，没有这个 GUC（`SET` 直接语法错）。
+    if db.get_bind().dialect.name == "postgresql":
+        await db.execute(text("SET LOCAL idle_in_transaction_session_timeout = 0"))
+
     for sid in data.summary_ids:
         uuid_s = _as_uuid(sid, "summary_id")
         summary = (
@@ -2594,8 +2637,10 @@ async def create_productions(
                 "error": f"文案未过审（当前 {summary.audit_status}），生产必须只吃过审文案",
             })
             continue
-        if not asset.has_approved_copy:
-            asset.has_approved_copy = True
+        # 这里原本有一句 `asset.has_approved_copy = True`：挪到**写单阶段**去做
+        # （apply_stage 已经带 has_approved_copy=True）。留在循环顶部会让 asset_items
+        # 那一行在整批外部模型调用期间被本事务锁住——别的请求（比如同批素材的
+        # 反推收敛写 stage）会一直等锁到 statement_timeout。过审时审核口早就置过位了。
 
         # A2-1 投产前复核（方案 §十一.7）：审核时看的是文案，投产时投的是**展开后的提示词**，
         # 中间词表可能已经更新（迁进 system_config 后改词不用发版），文案本身也可能被别处改过。
@@ -2790,6 +2835,10 @@ async def create_productions(
                     })
                 if asset.batch_id:
                     batch_codes.add(str(asset.batch_id))
+            # 过审标记落列（apply_stage 只用它算派生态、**不写列**，所以必须在这里显式置）：
+            # 挪到写单阶段是为了不在外部模型调用期间锁住 asset_items 那一行
+            if not asset.has_approved_copy:
+                asset.has_approved_copy = True
             code_pos += n  # 号只在这批真的成了单之后才算用掉
 
         created = len(pending) if not expand_error else 0

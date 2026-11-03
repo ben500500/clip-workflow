@@ -1429,6 +1429,86 @@ def test_overwrite_refuses_when_a_copy_already_approved():
     _run(_scenario())
 
 
+def test_summary_generate_failure_keeps_old_candidates_and_marks_failed():
+    """模型调不通时：旧的候选一条不许少，本条如实标 failed，整口不抬 500。
+
+    11-03 预览栈真链路实测：mimo 出候选要 9 分钟，PG 的 idle_in_transaction=60s
+    把连接掐了 → 旧写法先删旧候选、再抬 500，用户看到的是「旧文案没了、
+    新文案也没来」。现在删除挪到模型返回之后，失败只标这一条。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            first = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+        assert first.status_code == 200, first.text
+        assert first.json()["results"][0]["created"] == 3
+
+        with patch("app.api.assets._call_autoclip",
+                   _fake_autoclip(generate_error="文案服务调用失败（AutoClip 502）")):
+            bad = await client.post(
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset_id], "overwrite": True}, headers=hm)
+
+        assert bad.status_code == 200, bad.text          # 不再是 500/502
+        entry = bad.json()["results"][0]
+        assert entry["created"] == 0
+        assert "AutoClip" in entry["error"]
+        assert await _count(AssetSummary) == 3           # 旧候选原样留着
+        row = await _row_of(AssetItem, asset_id)
+        assert row.stage_summary == "failed"
+        assert "出文案失败" in (row.note or "")
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_produce_sets_approved_flag_only_when_orders_actually_land():
+    """has_approved_copy 是列，apply_stage 只用它算派生态、不写列。
+
+    11-03 起这行写列挪到**写单阶段**（原来在循环顶部），为的是别在等外部模型的
+    几分钟里锁住 asset_items 那一行——同批素材的反推收敛写 stage 会被挡到超时报错。
+    所以：真成单才置位；展开失败整条没成单时不许留下置位。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            await client.post("/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+        sid = (await _rows(AssetSummary))[0].id
+        await client.post("/api/assets/summaries/review",
+                          json={"summary_ids": [str(sid)], "action": "approve"}, headers=ho)
+
+        # 展开炸了：一条单都没成，列不许被提前置位
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(expand_error="展开服务没回话")):
+            failed = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [str(sid)], "n": 2, "expand": True}, headers=ho)
+        assert failed.status_code == 200, failed.text
+        assert await _count(AssetProduction) == 0
+
+        # 真的成单了：列置位，列表「有过审文案」筛选才对得上
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            ok = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [str(sid)], "n": 2, "expand": True}, headers=ho)
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["created"] == 2
+        assert await _count(AssetProduction) == 2
+        row = await _row_of(AssetItem, asset_id)
+        assert row.has_approved_copy is True
+        await client.aclose()
+
+    _run(_scenario())
+
+
 # ─────────────────────────  5. 审核  ─────────────────────────
 
 
