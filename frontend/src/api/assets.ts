@@ -639,6 +639,12 @@ export interface AssetProduceRequest {
   character_card_key?: string | null;
   /** K＝该剧发布号数，决定推荐视频标题条数（1..20，11-02 版：不再固定 5 条） */
   recommended_title_count?: number | null;
+  /**
+   * 剧名缩写（NAS《剧名缩写表.json》，全团队统一、禁止临时造）。
+   * 推荐标题按 3.1 精简规范要写「剧缩·编号·精简钩子」；不传则模板降级写「编号·精简钩子」
+   * 并在偏差说明里标注缺剧缩——缩写表在容器里读不到，只能由一线带进来。
+   */
+  drama_abbr?: string | null;
   /** 仅 admin：投产前复核未过仍要投递时的豁免理由，写进 AuditLog */
   waive_reason?: string | null;
 }

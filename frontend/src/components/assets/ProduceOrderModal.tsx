@@ -36,6 +36,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const [titleCount, setTitleCount] = useState<number | undefined>(undefined);
   const [boardTag, setBoardTag] = useState('');
   const [cardKey, setCardKey] = useState('');
+  const [dramaAbbr, setDramaAbbr] = useState('');
   const [codeText, setCodeText] = useState('');
   const [expand, setExpand] = useState(true);
   const [waiveReason, setWaiveReason] = useState('');
@@ -71,6 +72,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
         recommended_title_count: titleCount,
         board_tag: boardTag || undefined,
         character_card_key: cardKey || undefined,
+        drama_abbr: dramaAbbr.trim() || undefined,
         hook_codes: codes.length ? codes : undefined,
         expand,
         waive_reason: waiveReason || undefined,
@@ -296,6 +298,15 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             <Input placeholder="板上 tag（留空用配置默认）" style={{ width: 220 }} value={boardTag} onChange={(e) => setBoardTag(e.target.value)} />
             <Tooltip title="角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡，按剧分组投）">
               <Input placeholder="角色卡 key（可选）" style={{ width: 260 }} value={cardKey} onChange={(e) => setCardKey(e.target.value)} />
+            </Tooltip>
+            <Tooltip title="剧名缩写取自 NAS《剧名缩写表.json》，全团队统一、禁止临时造。推荐标题按 3.1 精简规范写「剧缩·编号·精简钩子」；留空则降级成「编号·精简钩子」并在偏差说明里标缺剧缩（缩写表在容器里读不到，只能人工带）">
+              <Input
+                placeholder="剧名缩写（可选，如 救总裁）"
+                style={{ width: 200 }}
+                maxLength={12}
+                value={dramaAbbr}
+                onChange={(e) => setDramaAbbr(e.target.value)}
+              />
             </Tooltip>
           </Space>
 

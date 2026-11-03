@@ -811,6 +811,8 @@ async def expand_hook_copy_route(data: HookCopyExpandRequest):
         "project_title": result.get("project_title"),
         "prompt_text": result.get("prompt_text"),
         "video_titles": result.get("video_titles") or [],
+        # B-9：投放要求单独返回，后端落 dispatch_note 列、不进板面 payload
+        "dispatch_note": result.get("dispatch_note"),
         "hook_copy_kept_verbatim": kept,
         "deviation_note": result.get("deviation_note") or result.get("note"),
         "model": _current_llm_model(),

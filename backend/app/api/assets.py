@@ -92,7 +92,7 @@ from app.models.asset import (
     gen_batch_code,
 )
 from app.models.audit import AuditLog
-from app.models.material import SystemConfig
+from app.models.material import Project, SystemConfig
 from app.models.models import User
 from app.models.user import UserRole
 from app.services import asset_service as svc
@@ -245,6 +245,12 @@ class ProduceRequest(BaseModel):
     hook_codes: Optional[List[str]] = Field(None, description="五位钩子编号（hook_id.py 取来的，按 n 的顺序对应）；后端不自己编号")
     character_card_key: Optional[str] = Field(None, description="角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡，按剧分组投）")
     recommended_title_count: Optional[int] = Field(None, description="K＝该剧发布号数，决定推荐视频标题条数（11-02 版：不再固定 5 条）")
+    drama_abbr: Optional[str] = Field(
+        None,
+        description="剧名缩写（取自 NAS《剧名缩写表.json》，全团队统一、禁止临时造）。"
+                    "推荐标题按 3.1 精简规范要写「剧缩·编号·精简钩子」；不传则模板降级写"
+                    "「编号·精简钩子」并在偏差说明里标注缺剧缩，缩写表在容器里读不到，只能由一线带",
+    )
     waive_reason: Optional[str] = Field(
         None,
         description="仅 admin：投产前复核（超字数/风险词/一致性/骨架）未过仍要投递时的豁免理由，写进 AuditLog",
@@ -1870,6 +1876,22 @@ async def refresh_analyze_batch(
 # ──────────────────────────────────────────────
 # 钩子文案（详规 → 一句话/几句话候选）
 # ──────────────────────────────────────────────
+async def _drama_title_of(db: AsyncSession, asset: AssetItem) -> str:
+    """给展开模板的「剧名全称」（模板第①行要写 `参考【《剧名》】剧情`）。
+
+    优先级：挂接的剧目名 > 素材自带标题 > 空串。**取不到就传空**——模板里写死了
+    「剧名只能由调用方给」，传空比让模型自己编一个剧名安全（编出来的名字会烧进
+    每一条提示词，回收改名与剧目挂接全对不上）。
+    """
+    if asset.project_id:
+        name = (
+            await db.execute(select(Project.name).where(Project.id == asset.project_id))
+        ).scalar_one_or_none()
+        if name:
+            return str(name).strip()
+    return (asset.title or "").strip()
+
+
 async def _prompt_script_of(db: AsyncSession, asset: AssetItem) -> Optional[str]:
     """取该素材的反推详规文本（wechat_dl_prompt_tasks.content）。
 
@@ -2578,6 +2600,8 @@ async def create_productions(
             )
         ).scalar_one()
         codes_for_summary = hook_codes[code_pos: code_pos + n]
+        # 剧名一条文案查一次（不在 n 次展开循环里查）：模板要用它写「参考《剧名》剧情」
+        drama_title = await _drama_title_of(db, asset)
 
         expand_error: Optional[str] = None
         pending: List[dict] = []
@@ -2604,6 +2628,10 @@ async def create_productions(
                             "params": {
                                 "asset_code": asset.code,
                                 "platform": asset.platform or "",
+                                # 剧名全称：模板第①行「参考《剧名》剧情」唯一来源，取不到传空
+                                "drama_title": drama_title,
+                                # 剧名缩写取自 NAS《剧名缩写表.json》，容器内读不到 → 由前端/一线带
+                                "drama_abbr": (data.drama_abbr or "").strip(),
                                 # 板上恒 10.08s：给模板的时长口径只有"10s 单条"这一档
                                 "duration": duration,
                                 "recommended_title_count": title_count,

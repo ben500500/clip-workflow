@@ -1,10 +1,16 @@
 """钩子文案生成器（素材库 P0）
 
-职责边界（和 CodeBuddy 的分工写死在这里，别互相覆盖）：
+职责边界：
 - **本文件只管机制**：输入组装、调用 LLM 管理器、解析与归一化输出结构。
-- **`app/prompt/hook_copy.txt` / `hook_expand.txt` 的文案规则由 CodeBuddy 维护**，
-  权威口径是 NAS《/Volumes/panda/Drama/共享配置/文档/豆包文案生成模板与规则.md》。
-  本仓库里这两个 .txt 只是**能跑通链路的最小占位版**，不是最终规则。
+  模板里点名的输入项（钩子编号、剧名全称、剧名缩写、推荐标题条数 K、角色卡有无）
+  必须由这里透传——少一个，模板就只能让模型编一个。
+- **`app/prompt/hook_copy.txt` / `hook_expand.txt` 是文案规则**，11-03 已按 NAS
+  《/Volumes/panda/Drama/共享配置/豆包文案生成模板与规则.md》**11-02 版**对齐重写
+  （骨架逐行、三处带编号、1020 起取消项目标题行、恒 10.08s 只能按 10 秒版写、
+  推荐标题 K＝号数且各号同钩同标题）。模板里点名的判据与
+  `asset_service.check_copy_shape` / `check_prompt_skeleton` / `judge_drift` 一字对齐，
+  改这两个文件前先读那份文档，两边不能各说一套。
+  改这两个文件前先读那份文档，两边不能各说一套。
 
 模型：复用 autoclip 的 LLM 管理器（DASHSCOPE_API_KEY / API_MODEL_NAME），
 与选点 / Seedance 提示词 / 发布素材同一套配置，不新增凭证。
@@ -57,7 +63,10 @@ def _build_generate_input(script: str, count: int, params: Optional[Dict[str, An
         "补充要求": p.get("extra_requirements") or "",
         "合规要求": p.get("compliance")
         or "不得出现真实人名、地名、机构名、品牌名，一律使用代称；不涉及真实人物、真实事件与敏感内容。",
-        "硬性形态要求": "每条一句话到三句话；首句必须是需要悬念；含标点不超过 80 字；不得以逗号/顿号结尾。",
+        # 这三行必须与 asset_service.check_copy_shape 的判据一字不差：
+        # 首句＝到第一个「。！？；，」（含半角）为止，**顿号不算断句**——模板里写宽了，
+        # 模型按模板判短、代码按判据判超长，候选会整批卡在审核台之前。
+        "硬性形态要求": "含标点（不含空白）不超过 80 字；首句不超过 25 字（首句＝从头到第一个「。！？；，」为止，顿号不算）；不得以逗号或顿号结尾。",
     }
 
 
@@ -94,7 +103,8 @@ def expand_hook_copy(
 ) -> Dict[str, Any]:
     """过审钩子文案 → 一条可投豆包的完整提示词（N 的差异化由 variant_basis 指定）。
 
-    权威展开规则在 NAS 文档里，模板 `hook_expand.txt` 由 CodeBuddy 对齐后维护。
+    展开规则在 `app/prompt/hook_expand.txt`（已按 NAS 11-02 版对齐），本函数只负责
+    把模板点名的输入项凑齐：钩子编号、剧名、K、角色卡有无缺一个都会让模型编数据。
     """
     template = load_hook_expand_template()
     if not template:
@@ -103,11 +113,20 @@ def expand_hook_copy(
     p = params or {}
     input_data = {
         "过审钩子文案（必须原样出现在产物里，不得改写）": hook_copy,
-        "本条序号": f"{int(seq)}/{int(total)}",
+        "本条序号": int(seq),
+        # 段头要写「本钩共 M 条」（0916 数量显性化铁律），M 必须单独给：
+        # 只给 "N/M" 合并串等于让模型自己拆，拆错就把条数写进产物了
+        "本批总条数": int(total),
         "与同批其它条的差异来源": variant_basis or "",
         "素材编号": p.get("asset_code") or "",
+        # 模板第①行要写「参考《剧名全称》剧情」，剧名只能由调用方给——模型自己补会编一个
+        "剧名全称": p.get("drama_title") or "",
+        "剧名缩写（推荐标题用，取自共享盘剧名缩写表）": p.get("drama_abbr") or "",
+        "钩子编号（hook_id.py 取号，模板只照抄不许自己编）": p.get("hook_code") or "",
+        "推荐标题条数 K（＝该剧发布号数）": p.get("recommended_title_count") or "",
         "来源平台": p.get("platform") or "",
         "目标时长（秒）": p.get("duration") or "",
+        "是否已挂角色卡": ("是" if p.get("has_character_card") else "否") if p.get("has_character_card") is not None else "",
         "合规要求": p.get("compliance")
         or "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
     }
@@ -201,7 +220,11 @@ def _parse_candidates(raw: str, count: int) -> Dict[str, Any]:
 
 
 def _parse_expand(raw: str, hook_copy: str) -> Dict[str, Any]:
-    """解析展开产物：project_title / prompt_text / video_titles。"""
+    """解析展开产物：prompt_text / dispatch_note / video_titles / 原句存活自报。
+
+    `project_title` 只读历史：11-02 版「1020 起项目标题行已取消」，模板不再要求模型输出，
+    后端也不再写入，这里留着只是为了让旧版模板产出的 JSON 还能被读出来。
+    """
     stripped = _strip_fence(raw.strip())
     data = _loads_object(stripped)
     if data:
@@ -214,7 +237,12 @@ def _parse_expand(raw: str, hook_copy: str) -> Dict[str, Any]:
         return {
             "project_title": str(data.get("project_title") or data.get("项目标题") or "").strip() or None,
             "prompt_text": prompt_text or None,
-            "video_titles": [str(t).strip() for t in titles if str(t).strip()][:10],
+            # 上限 20 与后端 recommended_title_count 的 1..20 校验同口径（截 10 会把 K>10 的批次腰斩）
+            "video_titles": [str(t).strip() for t in titles if str(t).strip()][:20],
+            # B-9：投放要求（改名/跳过二次确认/并行）单独一字段，绝不混进可投正文
+            "dispatch_note": str(data.get("dispatch_note") or data.get("投放要求") or "").strip() or None,
+            "deviation_note": str(data.get("deviation_note") or data.get("偏差说明") or "").strip() or None,
+            "self_reported_kept": data.get("hook_copy_kept_verbatim"),
         }
     # 非 JSON：整段当提示词，标题行取第一行
     first_line = stripped.splitlines()[0].strip() if stripped else ""
@@ -222,5 +250,6 @@ def _parse_expand(raw: str, hook_copy: str) -> Dict[str, Any]:
         "project_title": first_line[:300] or None,
         "prompt_text": stripped or None,
         "video_titles": [],
+        "dispatch_note": None,
         "note": "未按 JSON 结构返回，已整段作为提示词",
     }
