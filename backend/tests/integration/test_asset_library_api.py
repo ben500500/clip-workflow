@@ -3272,3 +3272,116 @@ def test_risk_lexicon_api_read_update_and_immediate_effect():
         await client.aclose()
 
     _run(_scenario())
+
+
+def test_rejected_copy_goes_back_to_queue_when_its_owner_fixes_it():
+    """11-04 用户问出来的闭环：驳回之后，**出文案的人**能改了重新提审。
+
+    规矩（别在改代码时 loosen）：
+    1. 只有 rejected / need_rewrite 能重提（待审的本来就在队列里）；
+    2. 只有这条素材的负责人（导入人）或 admin 能重提——审核人不能自己擦屁股；
+    3. 形态与 block 级风险词当场拦（改完再提也得干净），一致性只留痕；
+    4. 改前改后进 AuditLog，原文留在 text_before_edit。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        sid = _approvable(items)["id"]
+        old_text = next(i["text"] for i in items if i["id"] == sid)
+
+        # 审核人驳回（理由必填）
+        rej = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [sid], "action": "reject", "reason": "钩子不成立，改成疑问句"},
+            headers=ho,
+        )
+        assert rej.status_code == 200, rej.text
+        assert rej.json()["results"][0]["ok"] is True
+        row = await _row_of(AssetSummary, sid)
+        assert row.audit_status == RV_REJECTED
+        assert row.reject_reason == "钩子不成立，改成疑问句"
+
+        # 列表里这条要标出「可以重提」，且只对负责人亮
+        q_owner = await client.get(f"/api/assets/summaries?asset_id={asset_id}", headers=hm)
+        mine = [i for i in q_owner.json()["items"] if i["id"] == sid][0]
+        assert mine["can_resubmit"] is True
+        q_other = await client.get(f"/api/assets/summaries?asset_id={asset_id}", headers=ho)
+        theirs = [i for i in q_other.json()["items"] if i["id"] == sid][0]
+        assert theirs["can_resubmit"] is False
+
+        # 「等我改的」入口筛选：负责人看得到自己的待改条目，别人看不到
+        only_mine = await client.get("/api/assets/summaries?only_resubmittable=true", headers=hm)
+        assert [i["id"] for i in only_mine.json()["items"]] == [sid]
+        only_other = await client.get("/api/assets/summaries?only_resubmittable=true", headers=ho)
+        assert only_other.json()["items"] == []
+
+        # 审核人自己不能重提（生产者不得自审是同一条线）
+        by_reviewer = await client.post(
+            "/api/assets/summaries/resubmit",
+            json={"summary_ids": [sid], "new_text": "王总在康华医院门口站了三小时，谁也没想到他会当场翻脸？"},
+            headers=ho,
+        )
+        assert by_reviewer.status_code == 200, by_reviewer.text
+        assert by_reviewer.json()["results"][0]["ok"] is False
+        assert "负责人" in by_reviewer.json()["results"][0]["error"]
+
+        # 负责人改了交回待审队列
+        new_text = "王总在康华医院门口站了三小时，他还不敢信这事？"
+        sub = await client.post(
+            "/api/assets/summaries/resubmit",
+            json={"summary_ids": [sid], "new_text": new_text, "note": "按建议改成疑问句"},
+            headers=hm,
+        )
+        assert sub.status_code == 200, sub.text
+        assert sub.json()["results"][0]["ok"] is True
+        row = await _row_of(AssetSummary, sid)
+        assert row.audit_status == RV_PENDING
+        assert row.text == new_text
+        assert row.text_before_edit == old_text
+        assert row.reject_reason is None
+        assert row.reviewed_by is None
+        audits = await _rows(AuditLog, AuditLog.action == "asset.summary_resubmit")
+        assert len(audits) == 1
+        assert audits[0].before["audit_status"] == RV_REJECTED
+        assert audits[0].before["text"] == old_text
+        assert audits[0].after["text"] == new_text
+
+        # 待审的不能再重提（本来就在队列里）
+        again = await client.post(
+            "/api/assets/summaries/resubmit",
+            json={"summary_ids": [sid], "new_text": new_text}, headers=hm)
+        assert again.json()["results"][0]["ok"] is False
+        assert "重新提审" in again.json()["results"][0]["error"]
+
+        # 硬闸门照旧：带 block 级风险词的文案提不上去
+        rej2 = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [sid], "action": "reject", "reason": "再退一次"},
+            headers=ho,
+        )
+        assert rej2.json()["results"][0]["ok"] is True
+        bad = await client.post(
+            "/api/assets/summaries/resubmit",
+            json={"summary_ids": [sid], "new_text": "这药百分百根治，谁都不敢说"}, headers=hm)
+        assert bad.json()["results"][0]["ok"] is False
+        assert bad.json()["results"][0]["error_code"] == "ASSET_RECHECK_FAILED"
+        # block 级的是「根治」（「百分百」只是 warn，只留痕不拦）
+        assert any("根治" in p["message"] for p in bad.json()["results"][0]["problems"])
+
+        # admin 可以代提（逃生门）
+        ok = await client.post(
+            "/api/assets/summaries/resubmit",
+            json={"summary_ids": [sid], "new_text": "王总在康华医院门口站了三小时，他还不敢信这事？"},
+            headers=ha,
+        )
+        assert ok.json()["results"][0]["ok"] is True
+        row = await _row_of(AssetSummary, sid)
+        assert row.audit_status == RV_PENDING
+
+        await client.aclose()
+
+    _run(_scenario())

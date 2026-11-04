@@ -230,6 +230,18 @@ class ReviewRequest(BaseModel):
     )
 
 
+class ResubmitRequest(BaseModel):
+    """改后重新提审：被驳回/需改写的文案，改完交回待审队列。
+
+    谁可以提：**这条素材的负责人（导入人，＝出文案的人）或 admin**。
+    为什么不给「谁点的审核谁就能改」——那等于审核人自己给自己擦屁股；
+    也不给「所有有写权限的人」——文案责任人是素材负责人，不是路人。
+    """
+    summary_ids: List[str] = Field(default_factory=list)
+    new_text: Optional[str] = Field(None, description="改后的文案；留空＝不改文案直接回队列重审")
+    note: Optional[str] = Field(None, description="给审核人的说明（会写进审计）")
+
+
 class ProduceRequest(BaseModel):
     """过审文案 → N 条差异化提示词（生产单）。N 的语义见 asset_models 注释。
 
@@ -573,7 +585,25 @@ def _serialize_item(a: AssetItem, agg: Optional[dict] = None) -> dict:
     return data
 
 
-def _serialize_summary(s: AssetSummary, asset: Optional[AssetItem] = None) -> dict:
+def _can_resubmit(summary: AssetSummary, asset: AssetItem, current_user: User) -> bool:
+    """这条文案现在能不能「改后重新提审」。
+
+    状态门槛：只有**被驳回 / 需改写**的才谈得上重提（待审的本来就在队列里，
+    过审的撤审走审核动作，不需要重提）。
+    权限门槛：这条**素材的负责人（导入人，＝实际出文案的人）**或 admin。
+    为什么不放开给所有有写权限的人：文案责任人是素材负责人，路人改了就等于
+    审核人自己给自己擦屁股（和生产者不得自审是同一条线）。
+    """
+    if summary.audit_status not in (RV_REJECTED, RV_NEED_REWRITE):
+        return False
+    if current_user.role == UserRole.admin.value:
+        return True
+    return asset.created_by == current_user.id
+
+
+def _serialize_summary(
+    s: AssetSummary, asset: Optional[AssetItem] = None, *, can_resubmit: bool = False
+) -> dict:
     data = {
         "id": str(s.id),
         "asset_id": str(s.asset_id),
@@ -592,6 +622,8 @@ def _serialize_summary(s: AssetSummary, asset: Optional[AssetItem] = None) -> di
         "reject_reason": s.reject_reason,
         "text_before_edit": s.text_before_edit,
         "created_at": utc_iso(s.created_at),
+        # 「改后重提」按钮要不要亮：前端不猜权限，按后端给的行级判定画
+        "can_resubmit": bool(can_resubmit),
     }
     if asset is not None:
         data["asset_code"] = asset.code
@@ -2411,6 +2443,7 @@ async def list_summaries(
     only_risk: bool = False,
     only_inconsistent: bool = False,
     recommended_only: bool = False,
+    only_resubmittable: bool = False,
     page: int = 1,
     page_size: int = 100,
     current_user: User = Depends(get_current_user),
@@ -2420,6 +2453,8 @@ async def list_summaries(
 
     `recommended_only`：只出推荐条。方案 §七「默认只过推荐条」防橡皮章——前端默认勾它，
     后端提供口径（B 组：原先只有列、没有参数）。
+
+    `only_resubmittable`：只看「轮到我改」的（被驳回/需改写，且是我负责的素材；admin 看全部）。
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 300)
@@ -2438,6 +2473,12 @@ async def list_summaries(
         conds.append(AssetSummary.consistency_ok.is_(False))
     if recommended_only:
         conds.append(AssetSummary.is_recommended.is_(True))
+    if only_resubmittable:
+        # 「等我改的」：被驳回/需改写、且是我负责的素材（admin 看全部）。
+        # 这是驳回闭环的入口筛选——作者得能一眼找到轮到自己改的那几条。
+        conds.append(AssetSummary.audit_status.in_((RV_REJECTED, RV_NEED_REWRITE)))
+        if current_user.role != UserRole.admin.value:
+            conds.append(AssetItem.created_by == current_user.id)
 
     stmt = (
         select(AssetSummary, AssetItem)
@@ -2457,7 +2498,10 @@ async def list_summaries(
         )
     ).all()
     return {
-        "items": [_serialize_summary(s, a) for s, a in rows],
+        "items": [
+            _serialize_summary(s, a, can_resubmit=_can_resubmit(s, a, current_user))
+            for s, a in rows
+        ],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -2623,6 +2667,146 @@ async def review_summaries(
         "message": (
             f"审核完成：成功 {ok} 条，未通过 {len(results) - ok} 条（未通过原因见 results）"
             + (f"，其中 {waived_cnt} 条为管理员豁免（已入审计，admin 可抽检）" if waived_cnt else "")
+        ),
+    }
+
+
+@router.post("/assets/summaries/resubmit")
+async def resubmit_summaries(
+    data: ResubmitRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """改后重新提审：被驳回 / 需改写的文案，改完交回待审队列。
+
+    这是 11-04 用户问出来的缺口：原来驳回之后**文案作者没有任何入口**——
+    要么审核人自己「改后过」，要么整批重新出文案（再花钱）。
+    现在作者可以改了直接交回来，审核人重新过一遍。
+
+    三条规矩：
+    1. **状态门槛**：只有 rejected / need_rewrite 能重提（待审的本来就在队列里）。
+    2. **权限门槛**：这条素材的负责人（导入人，＝出文案的人）或 admin。审核人不
+       能自己给自己擦屁股——那和生产者不得自审是同一条线。
+    3. **硬闸门照旧**：形态（超字数/首句过长/结尾悬空）与 block 级风险词当场拦下，
+       改完再提也得干净；**一致性只留痕不拦**（那是审核人的判断，且过审时还会再校一次）。
+    改前改后都进 AuditLog，admin 可抽检；文案本身的改前原文留在 text_before_edit。
+    """
+    if not data.summary_ids:
+        raise HTTPException(status_code=400, detail="请选择要重新提审的文案")
+
+    is_admin = current_user.role == UserRole.admin.value
+    book, exemptions = await _risk_lexicon(db)
+    results: List[dict] = []
+
+    for sid in data.summary_ids:
+        uuid_s = _as_uuid(sid, "summary_id")
+        summary = (
+            await db.execute(select(AssetSummary).where(AssetSummary.id == uuid_s))
+        ).scalar_one_or_none()
+        if summary is None:
+            results.append({"summary_id": str(uuid_s), "ok": False, "error": "文案不存在"})
+            continue
+        asset = await _get_asset_or_404(db, summary.asset_id)
+
+        if not _can_resubmit(summary, asset, current_user):
+            if summary.audit_status not in (RV_REJECTED, RV_NEED_REWRITE):
+                results.append({
+                    "summary_id": str(uuid_s), "ok": False, "code": asset.code,
+                    "error": f"只有被驳回/需改写的文案能重新提审（当前 {summary.audit_status}）",
+                })
+            else:
+                results.append({
+                    "summary_id": str(uuid_s), "ok": False, "code": asset.code,
+                    "error": "只有这条素材的负责人（导入人）或管理员能改后重新提审",
+                })
+            continue
+
+        before = {
+            "audit_status": summary.audit_status,
+            "text": summary.text,
+            "reject_reason": summary.reject_reason,
+        }
+        new_text = (data.new_text or "").strip()
+        if new_text and new_text != summary.text:
+            summary.text_before_edit = summary.text
+            summary.text = new_text
+        elif not summary.text.strip():
+            summary.text = new_text
+        text = summary.text.strip()
+        if not text:
+            results.append({"summary_id": str(uuid_s), "ok": False, "code": asset.code, "error": "文案不能为空"})
+            continue
+
+        # 硬闸门：形态 + block 级风险词当场拦；一致性只留痕（见 docstring 第 3 条）
+        script = await _prompt_script_of(db, asset)
+        verdict = svc.recheck_copy(text, script, lexicon=book, exemptions=exemptions)
+        blocking = [p for p in verdict["problems"] if p["code"] != "consistency"]
+        if blocking:
+            results.append({
+                "summary_id": str(uuid_s), "ok": False, "code": asset.code,
+                "error_code": "ASSET_RECHECK_FAILED",
+                "problems": blocking,
+                "error": "复核未过：" + "；".join(p["message"] for p in blocking)
+                         + "（先改干净再提审）",
+            })
+            continue
+
+        summary.word_count = verdict["chars"]
+        summary.risk_hit = svc.format_risk_hits(verdict["risk"])
+        consist = verdict["consistency"]
+        if consist is not None:
+            summary.consistency_ok = consist["ok"]
+            summary.consistency_note = (
+                None if consist["ok"] and consist.get("note") is None
+                else (consist.get("note") or f"实体未命中：{'、'.join(consist['missing'])}")[:300]
+            )
+
+        # 回队列：清掉上一轮的审核痕迹（理由留在 AuditLog 里，不丢）
+        summary.audit_status = RV_PENDING
+        summary.reviewed_by = None
+        summary.reviewed_at = None
+        summary.reject_reason = None
+        summary.updated_at = datetime.utcnow()
+
+        # 素材概要态回写：这条退回待审了，本素材是否还有过审文案要重新数一遍
+        approved_cnt = (
+            await db.execute(
+                select(func.count(AssetSummary.id)).where(
+                    AssetSummary.asset_id == asset.id,
+                    AssetSummary.audit_status.in_(REVIEW_PASSED_STATES),
+                )
+            )
+        ).scalar_one()
+        asset.has_approved_copy = approved_cnt > 0
+
+        await _write_audit(
+            db,
+            action="asset.summary_resubmit",
+            operator=current_user,
+            target_type="asset_summary",
+            target_id=summary.id,
+            before=before,
+            after={
+                "audit_status": summary.audit_status,
+                "text": summary.text,
+                "note": (data.note or "").strip()[:500] or None,
+                "consistency_ok": summary.consistency_ok,
+                "risk_hit": summary.risk_hit,
+            },
+        )
+        results.append({
+            "summary_id": str(uuid_s), "ok": True, "code": asset.code,
+            "audit_status": RV_PENDING, "text": summary.text,
+        })
+
+    await db.flush()
+    await db.commit()
+    ok = sum(1 for r in results if r["ok"])
+    return {
+        "results": results,
+        "message": (
+            f"重新提审：成功 {ok} 条，已交回待审队列"
+            + (f"，未通过 {len(results) - ok} 条（原因见 results）" if ok < len(results) else "")
         ),
     }
 

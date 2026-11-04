@@ -223,6 +223,8 @@ export interface AssetSummary {
   reject_reason: string | null;
   /** 改后通过（passed_edited）的原文留痕，配合 AuditLog 供 admin 抽检 */
   text_before_edit: string | null;
+  /** 这条文案现在能不能「改后重新提审」：被驳回/需改写 且 你是素材负责人或 admin */
+  can_resubmit?: boolean;
   created_at: string;
   // ── 仅 list_summaries 回（join 素材行）；getAsset 的 summaries 不带这些键 ──
   asset_code?: string;
@@ -711,6 +713,8 @@ export interface AssetSummaryListParams {
   only_inconsistent?: boolean;
   /** 只看模型标注的推荐条（审核页默认勾它） */
   recommended_only?: boolean;
+  /** 只看「轮到我改」的：被驳回/需改写且是我负责的素材（admin 看全部） */
+  only_resubmittable?: boolean;
   page?: number;
   /** 默认 100，后端封顶 300 */
   page_size?: number;
@@ -919,6 +923,15 @@ export interface AssetReviewResultItem {
 export interface AssetReviewResponse {
   results: AssetReviewResultItem[];
   message: string;
+}
+
+/** ResubmitRequest：被驳回/需改写的文案，改完交回待审队列 */
+export interface AssetResubmitRequest {
+  summary_ids: string[];
+  /** 改后的文案；留空＝不改文案直接回队列重审 */
+  new_text?: string | null;
+  /** 给审核人的说明（进审计） */
+  note?: string | null;
 }
 
 /**
@@ -1408,6 +1421,10 @@ export const assetApi = {
   // 批量审核：生产者不得自审（admin 除外）、驳回必填理由、改后通过留痕、过审前必须过复核
   reviewSummaries: (data: AssetReviewRequest) =>
     client.post('/assets/summaries/review', data) as Promise<AssetReviewResponse>,
+
+  // 改后重新提审：驳回后文案作者改完交回待审队列（素材负责人或 admin）
+  resubmitSummaries: (data: AssetResubmitRequest) =>
+    client.post('/assets/summaries/resubmit', data) as Promise<AssetReviewResponse>,
 
   // 风险词库：读当前生效词表（block=拦 / warn=警 / exempt=豁免正则），admin 可改
   getRiskLexicon: () =>

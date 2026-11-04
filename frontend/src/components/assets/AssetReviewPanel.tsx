@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Input, Modal, Popover, Select, Space, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Input, Modal, Popover, Segmented, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, EditOutlined, QuestionCircleOutlined,
-  ReloadOutlined, SafetyCertificateOutlined, ThunderboltOutlined,
+  ReloadOutlined, SafetyCertificateOutlined, SendOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { AUDIT_STATUS_LABELS, HOOK_STYLE_LABELS, assetApi } from '../../api/assets';
@@ -42,14 +42,29 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
   const [busy, setBusy] = useState(false);
 
   const [auditStatus, setAuditStatus] = useState<string | undefined>('pending');
-  const [recommendedOnly, setRecommendedOnly] = useState(true);
-  const [onlyRisk, setOnlyRisk] = useState(false);
-  const [onlyInconsistent, setOnlyInconsistent] = useState(false);
+  /**
+   * 三个筛选项**互斥**（11-04 用户纠正）：一次只看一类。
+   * 之前是三个独立勾选框，能同时勾，勾出来的是「推荐条 且 命中风险词 且 一致性不过」
+   * 的交集——又窄又没人看得懂。现在用单选：
+   *   recommended 只看推荐条（默认，防橡皮章）／risk 只看命中风险词／
+   *   inconsistent 只看一致性不过／all 全部候选都列出来
+   */
+  const [scope, setScope] = useState<'recommended' | 'risk' | 'inconsistent' | 'all'>('recommended');
+  const recommendedOnly = scope === 'recommended';
+  const onlyRisk = scope === 'risk';
+  const onlyInconsistent = scope === 'inconsistent';
   const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
+  /** 「等我改的」：只看被驳回/需改写、且轮到我改的条目（驳回闭环的入口） */
+  const [onlyMine, setOnlyMine] = useState(false);
 
   const [selected, setSelected] = useState<AssetSummary[]>([]);
   const [editing, setEditing] = useState<AssetSummary | null>(null);
   const [editText, setEditText] = useState('');
+
+  // 改后重新提审（驳回后由文案作者改完交回队列）
+  const [resubmitFor, setResubmitFor] = useState<AssetSummary | null>(null);
+  const [resubmitText, setResubmitText] = useState('');
+  const [resubmitNote, setResubmitNote] = useState('');
 
   // 复核拦下后的豁免弹窗
   const [waiveFor, setWaiveFor] = useState<AssetReviewResultItem[] | null>(null);
@@ -87,6 +102,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
           recommended_only: recommendedOnly,
           only_risk: onlyRisk,
           only_inconsistent: onlyInconsistent,
+          only_resubmittable: onlyMine,
           batch_id: batchFilter,
         });
         setData(res);
@@ -99,13 +115,13 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
         setLoading(false);
       }
     },
-    [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, batchFilter, page, pageSize],
+    [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, page, pageSize],
   );
 
   useEffect(() => {
     fetchList(1, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, batchFilter]);
+  }, [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter]);
 
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
 
@@ -224,6 +240,62 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
     setEditing(null);
   };
 
+  /**
+   * 改后重新提审：驳回/需改写之后，文案作者（素材负责人）把文案改了交回待审队列。
+   * 与「改后过」的区别：**改后过是审核人自己改、自己过**（一步到位）；
+   * 这里是**作者改、审核人再审一遍**（两方都在场，留痕进审计）。
+   */
+  const submitResubmit = async () => {
+    if (!resubmitFor) return;
+    if (!resubmitText.trim()) {
+      message.warning('文案不能为空');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await assetApi.resubmitSummaries({
+        summary_ids: [resubmitFor.id],
+        new_text: resubmitText.trim(),
+        note: resubmitNote.trim() || null,
+      });
+      const failed = (res.results || []).filter((r) => !r.ok);
+      if (failed.length) {
+        Modal.error({
+          title: '没能重新提审',
+          content: (
+            <Space direction="vertical" size={4}>
+              {failed.map((f) => (
+                <div key={f.summary_id}>
+                  {f.code ? `${f.code}：` : ''}
+                  {f.error}
+                  {(f.problems || []).length > 0 && (
+                    <Space wrap size={4} style={{ marginTop: 4 }}>
+                      {(f.problems || []).map((p, i) => (
+                        <Tag key={`${p.code}-${i}`}>
+                          {p.code}｜{p.message}
+                        </Tag>
+                      ))}
+                    </Space>
+                  )}
+                </div>
+              ))}
+            </Space>
+          ),
+        });
+        return;
+      }
+      message.success('已交回待审队列，等审核人再过一遍');
+      setResubmitFor(null);
+      setResubmitText('');
+      setResubmitNote('');
+      fetchList(1, pageSize);
+    } catch (e) {
+      message.error((e as Error).message || '重新提审失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const columns: ColumnsType<AssetSummary> = [
     {
       title: '素材',
@@ -259,7 +331,9 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
           </Paragraph>
           {r.text_before_edit && (
             <Tooltip title={`改前原文：${r.text_before_edit}`}>
-              <Tag color="cyan">改后通过</Tag>
+              <Tag color="cyan">
+                {r.audit_status === 'approved' || r.audit_status === 'passed_edited' ? '改后通过' : '改过并重提'}
+              </Tag>
             </Tooltip>
           )}
         </Space>
@@ -315,42 +389,62 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
         </Tooltip>
       ),
     },
-    ...(canReview
+    ...(canReview || items.some((r) => r.can_resubmit)
       ? [
           {
             title: '操作',
             key: 'op',
-            width: 190,
+            width: 230,
             fixed: 'right' as const,
             render: (_: unknown, r: AssetSummary) => (
               <Space size={2}>
-                <Tooltip title="生产者不能审自己产的东西（admin 除外）">
-                  <Button
-                    size="small"
-                    type="primary"
-                    icon={<CheckCircleOutlined />}
-                    loading={busy}
-                    onClick={() => runReview('approve', { summaryIds: [r.id] })}
-                  >
-                    过
-                  </Button>
-                </Tooltip>
-                <Button
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={() => {
-                    setEditing(r);
-                    setEditText(r.text);
-                  }}
-                >
-                  改后过
-                </Button>
-                <Button size="small" icon={<CloseCircleOutlined />} onClick={() => {
-                  setSelected([r]);
-                  askReason('reject');
-                }}>
-                  驳
-                </Button>
+                {r.can_resubmit && (
+                  <Tooltip title="把文案改了交回待审队列，等审核人再过一遍（改前改后都进审计）">
+                    <Button
+                      size="small"
+                      icon={<SendOutlined />}
+                      loading={busy}
+                      onClick={() => {
+                        setResubmitFor(r);
+                        setResubmitText(r.text);
+                        setResubmitNote('');
+                      }}
+                    >
+                      改后重提
+                    </Button>
+                  </Tooltip>
+                )}
+                {canReview && (
+                  <>
+                    <Tooltip title="生产者不能审自己产的东西（admin 除外）">
+                      <Button
+                        size="small"
+                        type="primary"
+                        icon={<CheckCircleOutlined />}
+                        loading={busy}
+                        onClick={() => runReview('approve', { summaryIds: [r.id] })}
+                      >
+                        过
+                      </Button>
+                    </Tooltip>
+                    <Button
+                      size="small"
+                      icon={<EditOutlined />}
+                      onClick={() => {
+                        setEditing(r);
+                        setEditText(r.text);
+                      }}
+                    >
+                      改后过
+                    </Button>
+                    <Button size="small" icon={<CloseCircleOutlined />} onClick={() => {
+                      setSelected([r]);
+                      askReason('reject');
+                    }}>
+                      驳
+                    </Button>
+                  </>
+                )}
               </Space>
             ),
           },
@@ -382,6 +476,11 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
                   <strong>驳回／需改写</strong>：必须写理由，理由会回显给写文案的人。
                 </p>
                 <p style={{ marginBottom: 6 }}>
+                  <strong>驳回之后怎么办</strong>：写文案的人（这条素材的负责人）在行上点
+                  <strong>「改后重提」</strong>，把文案改了交回待审队列，审核人再过一遍——
+                  改前改后都进审计。审核人也可以自己点<strong>「改后过」</strong>直接改直接过（一步到位）。
+                </p>
+                <p style={{ marginBottom: 6 }}>
                   <strong>投产</strong>：只吃已过审的文案，一条过审文案派生 N 条差异化提示词。
                 </p>
                 <p style={{ marginBottom: 0 }}>各筛选项的说明在它们右边的问号里。</p>
@@ -405,27 +504,46 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
               <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
             </span>
           </Tooltip>
-          <Tooltip title="每条素材出 3 条候选，模型会标 1 条推荐（通常 3 选 1）。默认只列推荐条，是为了防止 3 条全勾一遍走过场；要看另外两条对照，取消这个勾选。">
+          <Tooltip
+            title={
+              <div style={{ maxWidth: 340 }}>
+                <div><strong>推荐条</strong>：每条素材出 3 条候选，模型标 1 条推荐。默认只看它，是为了防止 3 条全勾一遍走过场。</div>
+                <div><strong>命中风险</strong>：命中风险词的候选。红色「拦」＝不许过审、不许投产；橙色「警」＝只留痕。</div>
+                <div><strong>一致性不过</strong>：与反推详规对不上的候选（实体没命中），通常要人工改或重新出。</div>
+                <div><strong>全部</strong>：3 条候选都列出来，用来看对照。</div>
+                <div style={{ marginTop: 4 }}>这四个是**互斥**的：一次只看一类。</div>
+              </div>
+            }
+          >
             <span>
-              <Checkbox checked={recommendedOnly} onChange={(e) => setRecommendedOnly(e.target.checked)}>
-                只看推荐条
-              </Checkbox>
+              <Segmented
+                size="small"
+                value={scope}
+                onChange={(v) => setScope(v as typeof scope)}
+                options={[
+                  { label: '推荐条', value: 'recommended' },
+                  { label: '命中风险', value: 'risk' },
+                  { label: '一致性不过', value: 'inconsistent' },
+                  { label: '全部', value: 'all' },
+                ]}
+              />
               <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
             </span>
           </Tooltip>
-          <Tooltip title="命中风险词的文案。红色「拦」= 命中即不许过审、不许投产；橙色「警」= 只留痕预警。这个筛选两个级别都会列出来。">
+          <Tooltip title="只看轮到我改的：被驳回 / 需改写、且是我负责的素材。开启后会清掉「审核态」筛选（否则两边互相打架）。点行上的「改后重提」把文案改了交回待审队列。">
             <span>
-              <Checkbox checked={onlyRisk} onChange={(e) => setOnlyRisk(e.target.checked)}>
-                只看命中风险词
-              </Checkbox>
-              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
-            </span>
-          </Tooltip>
-          <Tooltip title="与素材反推出的详规对不上的文案（一致性校验不过）。这类通常要人工改或重新出。">
-            <span>
-              <Checkbox checked={onlyInconsistent} onChange={(e) => setOnlyInconsistent(e.target.checked)}>
-                只看一致性不过
-              </Checkbox>
+              <Button
+                size="small"
+                type={onlyMine ? 'primary' : 'default'}
+                icon={<SendOutlined />}
+                onClick={() => {
+                  const next = !onlyMine;
+                  setOnlyMine(next);
+                  if (next) setAuditStatus(undefined);
+                }}
+              >
+                等我改的
+              </Button>
               <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
             </span>
           </Tooltip>
@@ -540,6 +658,41 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
           <Text type="secondary" style={{ fontSize: 12 }}>
             {editText.trim().length} 字
           </Text>
+        </Space>
+      </Modal>
+
+      <Modal
+        open={!!resubmitFor}
+        title="改后重新提审（交回待审队列）"
+        onCancel={() => setResubmitFor(null)}
+        onOk={submitResubmit}
+        okText="交回待审"
+        confirmLoading={busy}
+        width={680}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={8}>
+          {resubmitFor?.reject_reason && (
+            <Alert
+              type="warning"
+              showIcon
+              message="审核人给的驳回理由"
+              description={resubmitFor.reject_reason}
+            />
+          )}
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            改完点「交回待审」，这条就回到待审队列，审核人会再过一遍。
+            改前原文和改后文案都会进审计，admin 可抽检。
+            超字数、命中拦级风险词的文案**当场就提不上去**，先改干净。
+          </Text>
+          <Input.TextArea rows={8} value={resubmitText} onChange={(e) => setResubmitText(e.target.value)} />
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {resubmitText.trim().length} 字
+          </Text>
+          <Input
+            placeholder="给审核人的说明（可选，会进审计）：比如「按建议把钩子改成疑问句」"
+            value={resubmitNote}
+            onChange={(e) => setResubmitNote(e.target.value)}
+          />
         </Space>
       </Modal>
 
