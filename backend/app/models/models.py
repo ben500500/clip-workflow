@@ -89,10 +89,11 @@ from app.models.variant import (
     VideoFingerprint,
 )
 # 素材库（Asset Library，设计方案 20261103 P0）：必须在此注册，
-# 否则 Base.metadata 看不到这 5 张表，init_db 的 create_all 就不会建表（部署只 stamp，
+# 否则 Base.metadata 看不到这 6 张表，init_db 的 create_all 就不会建表（部署只 stamp，
 # 不跑 alembic upgrade —— 新表唯一生效路径就是 create_all）。
 from app.models.asset import (
     AssetBatch,
+    AssetCategory,
     AssetItem,
     AssetJob,
     AssetSummary,
@@ -165,6 +166,7 @@ __all__ = [
     "VideoFingerprint",
     # 素材库（20261103 P0）
     "AssetBatch",
+    "AssetCategory",
     "AssetItem",
     "AssetJob",
     "AssetSummary",

@@ -57,6 +57,8 @@ async def init_db():
     await _ensure_autoclip_runs_table()
     await _backfill_data_scope()
     await _backfill_drama_theaters()
+    # 钩子原型字典（11-04 拍板①）：新表 asset_categories 由 create_all 建，初始 7 行在这里种
+    await _seed_asset_categories()
     # wechat_download 独立包（并入形态）：确保其独立表存在（幂等）
     await _ensure_wechat_download_tables()
     # P1 防御：空闲事务超时自动回滚（防事务泄漏占锁 autoclip_runs）
@@ -152,6 +154,51 @@ async def _backfill_drama_theaters():
             )
     except Exception as e:
         logging.getLogger(__name__).warning("backfill drama_theaters 失败（降级）: %s", e)
+
+
+async def ensure_default_asset_categories(session: AsyncSession) -> int:
+    """钩子原型字典种入（11-04 拍板①）：**按 name 幂等补插缺失项**。
+
+    为什么不硬灌：字典是运营可改的（admin 能改 sort/说明、能下线），启动时若无脑
+    覆盖会把他们改的东西冲掉。所以只补"名字还不存在"的行，已存在的绝不碰。
+
+    为什么走 ORM 不走裸 SQL：本仓库部署只 `create_all` + `stamp`，但集成测试跑的是
+    SQLite 临时库并直接调本函数；`gen_random_uuid()` 那种 PG 专有写法在测试里会炸。
+
+    返回补插的行数（0＝字典已齐）。调用方：`init_db()` 启动种入 ＋
+    `GET /assets/categories` 读到空表时兜底（老库刚建完表、还没重启过的窗口）。
+    """
+    from app.models.asset import AssetCategory, DEFAULT_ASSET_CATEGORIES
+
+    existing = set((await session.execute(sqlalchemy.select(AssetCategory.name))).scalars().all())
+    added = 0
+    for item in DEFAULT_ASSET_CATEGORIES:
+        name = str(item.get("name") or "").strip()
+        if not name or name in existing:
+            continue
+        session.add(
+            AssetCategory(
+                name=name,
+                sort=int(item.get("sort") or 0),
+                note=item.get("note"),
+                active=True,
+            )
+        )
+        added += 1
+    if added:
+        await session.flush()
+        logger.info("Seeded %d asset_categories rows", added)
+    return added
+
+
+async def _seed_asset_categories():
+    """`init_db()` 用的独立会话包装：失败只告警，不阻断服务启动（照本文件其它兜底口）。"""
+    try:
+        async with async_session_factory() as session:
+            await ensure_default_asset_categories(session)
+            await session.commit()
+    except Exception as e:
+        logger.warning("seed asset_categories 失败（降级）: %s", e)
 
 
 async def _ensure_autoclip_runs_table():
@@ -319,6 +366,11 @@ async def _apply_compat_migrations():
         ("asset_outputs", "board_out_url", "VARCHAR(500)"),
         # D-5（11-03 拍板解析费计入成本）：开发库早先已建过 asset_items，新列靠这里兜底
         ("asset_items", "cost_parse", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
+        # 钩子原型分类（11-04 拍板①）：老库已建的 asset_items/asset_summaries 补 category_id。
+        # 只补列、不补 FK 约束（ADD COLUMN 加约束在老数据上不安全；软下线不硬删，
+        # 所以孤儿值风险由接口侧"只允许挑 active 字典项"挡住）。
+        ("asset_items", "category_id", "UUID"),
+        ("asset_summaries", "category_id", "UUID"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

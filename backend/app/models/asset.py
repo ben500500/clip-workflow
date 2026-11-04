@@ -4,7 +4,8 @@
 分享链接 / 直接视频文件）批量导入，串起「导入 → 反推提示词 → 钩子文案 → 审核 →
 生产单 → 合成 → 交付」全链路，每一环可单独重试、可追溯、可对账。
 
-5 张表：
+6 张表：
+- asset_categories   钩子原型字典（11-04 拍板①：单层、原型 A–G 原名、软下线不硬删）
 - asset_batches      导入批次（含成本预估/实扣，用于熔断与对账）
 - asset_items        素材主表（一行 = 一条素材；批次只是筛选维度，不做父行，
                      批量关系靠 asset_items.batch_id，不建中间表——一批一条没有多对多）
@@ -36,6 +37,7 @@
 """
 import uuid
 from datetime import datetime
+from typing import Any, Dict, Tuple
 
 from sqlalchemy import (
     BigInteger,
@@ -153,6 +155,91 @@ PRODUCTION_CHANNELS = (CH_WEWORK_AIVIDEO, CH_DOUBAO_RPA, CH_SEEDANCE_API)
 DEFAULT_PRODUCTION_CHANNEL = CH_WEWORK_AIVIDEO
 
 
+# ─────────────────────  钩子原型字典（11-04 拍板 ①）  ─────────────────────
+# 初始 7 行照《钩子模版换皮参数设定.docx》（投放主流钩子类别及脚本换皮变量）的原型
+# A–G **原名录入**——用户明确"我不改词、不加项"，G 在文档里写作「补充：原型 G」，
+# 这里去掉"补充："这个段落标记，名称本身一字未动。
+# `note` 是文档自带的「钩法内核」原话（D 另加它那行合规要求），**只作行内说明显示，
+# 不进任何闸门**：分类是纯人工点选（拍板③），模型侧 `hook_copy.txt` 未改一字。
+DEFAULT_ASSET_CATEGORIES: Tuple[Dict[str, Any], ...] = (
+    {
+        "name": "原型 A：非人物件 / 动物开口说话（报恩·预警·神谕）",
+        "sort": 10,
+        "note": "钩法内核：温情/无意善举 → 非人角色开口 → 给反直觉预言或指令 → 逼看后续。",
+    },
+    {
+        "name": "原型 B：偷听泄密（获取关键情报）",
+        "sort": 20,
+        "note": "钩法内核：主角躲在某处摸鱼/藏身 → 意外听到大人物泄密（内部消息/阴谋）→ 得知将改变命运的信息 → 逼看后续。",
+    },
+    {
+        "name": "原型 C：隐藏财富 / 秘境发现（反转爆发）",
+        "sort": 30,
+        "note": "钩法内核：日常场景 → 触发机关/暗格 → 财富或秘境曝光 → 归属悬念。",
+    },
+    {
+        "name": "原型 D：虐待 / 冲突 / 不公反转（情绪引爆）",
+        "sort": 40,
+        "note": (
+            "钩法内核：弱势者（老人/孕妇/妻）被当众打/推/弃 → 极致不公 → 留一句引爆情绪的台词 → 逼看后续（反转打脸）。"
+            "合规（docx 原文要求）：必须加 本故事纯属虚构 + 请勿模仿，肢体冲突尽量侧拍/借位。"
+        ),
+    },
+    {
+        "name": "原型 E：超能力 / 异常 / 猎奇（设定反差）",
+        "sort": 50,
+        "note": "钩法内核：普通表象 → 异常初现 → 设定被点破 → 反差悬念。",
+    },
+    {
+        "name": "原型 F：神力 / 温情 / 绝境反转（其他）",
+        "sort": 60,
+        "note": "钩法内核：绝境 → 神力介入 → 结果反转 → 爽点悬念。",
+    },
+    {
+        "name": "原型 G：前置故事叙事（口播）",
+        "sort": 70,
+        "note": "钩法内核：生成一小段前置剧情 + 衔接原剧高光剧情 → 情绪或爽点爆发。",
+    },
+)
+
+
+class AssetCategory(Base):
+    """钩子原型字典（11-04 拍板 ①：单层字典，素材单选、文案继承）。
+
+    为什么单开一张表，而不是复用已有两根轴：
+    - `asset_summaries.formula_tag`（String(60) 自由文本、无字典、全靠模型自觉）是**文字层**
+      （首句怎么写），没有字典也就没法筛选；
+    - `asset_summaries.style_tag`＝question/statement/dialogue 是**句式层**；
+    - 运营要的 A–G 是**结构层**（整条片子四镜怎么排），且要能同时描述"素材视频本身属于哪一类"
+      ——所以只有它配当"素材＋文案共用"的那根分类轴。三者并存、不合并、不重叠。
+    - 用户明确**不碰 `dramas.tags`**（现网 655 行该列全为 JSON null，是个从没填过的空位），
+      也不回填、不共典。
+
+    `parent_id` 按拍板"留着不填"：列先建、恒 NULL，日后要分层不用再动表结构。
+    行只做 `active=false` 软下线，**不硬删**——素材/文案上的 category_id 是 FK(SET NULL)，
+    真删了会把一线已经点好的分类静默清空。
+    """
+    __tablename__ = "asset_categories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 原型名（docx 原名，唯一：种入靠这个键判重）
+    name = Column(String(100), unique=True, nullable=False, index=True)
+    # 单层字典：列留着不填（11-04 拍板①第 1 条）
+    parent_id = Column(UUID(as_uuid=True), ForeignKey("asset_categories.id", ondelete="SET NULL"), nullable=True, index=True)
+    # 展示顺序（docx 里 A→G 的次序，列表与下拉都按它排）
+    sort = Column(Integer, nullable=False, default=0)
+    # 软下线标记：false＝不再供新条目挑选，但历史条目的分类仍显示、仍可筛
+    active = Column(Boolean, nullable=False, default=True)
+    # 行内说明（docx 的钩法内核原文；纯展示，不参与任何判定）
+    note = Column(String(500), nullable=True)
+    created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<AssetCategory(name={self.name}, sort={self.sort}, active={self.active})>"
+
+
 class AssetBatch(Base):
     """导入批次：批量动作的成本与熔断落点。
 
@@ -225,6 +312,9 @@ class AssetItem(Base):
     resolution = Column(String(50), nullable=True)
     # 反推计时上限（本条实际使用的档位；NULL=未反推）
     prompt_max_duration = Column(Integer, nullable=True)
+    # 钩子原型分类（11-04 拍板①）：单层字典、**纯人工点选**、可不填（不设为必填，
+    # 但列表页要显示"未分类 N 条"让人看见欠账）。文案侧默认继承本列。
+    category_id = Column(UUID(as_uuid=True), ForeignKey("asset_categories.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # 5 个阶段态（列名 stage_<阶段>，取值见 STAGE_STATES）
     stage_import = Column(String(20), nullable=False, default=STAGE_PENDING)
@@ -282,6 +372,10 @@ class AssetSummary(Base):
     text = Column(Text, nullable=False)
     style_tag = Column(String(20), nullable=True)          # question/statement/dialogue
     formula_tag = Column(String(60), nullable=True)        # 命中的爆款公式（防同质化用）
+    # 钩子原型分类（11-04 拍板①）：出文案时默认**继承所属素材的 category_id**，
+    # 审核台可逐条改；改过要留痕（手法同 `text_before_edit`：改前值进 AuditLog before）。
+    # 与上面两根轴并存不合并：style_tag＝句式层、formula_tag＝文字层、本列＝结构层。
+    category_id = Column(UUID(as_uuid=True), ForeignKey("asset_categories.id", ondelete="SET NULL"), nullable=True, index=True)
     word_count = Column(Integer, nullable=True)            # 含标点不含空格
     is_recommended = Column(Boolean, nullable=False, default=False)
     # 一致性校验：文案里的实体是否能在反推脚本中命中（防反推失败却"像模像样"地编）

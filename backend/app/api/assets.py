@@ -99,6 +99,7 @@ from app.models.asset import (
     STAGE_STATES,
     STAGE_SUCCESS,
     AssetBatch,
+    AssetCategory,
     AssetItem,
     AssetJob,
     AssetOutput,
@@ -174,6 +175,11 @@ class ImportBatchRequest(BaseModel):
         None,
         description="逐条强制入库的链接（去重提示返回的 source_url 或原链接都行）：只放行点名的这几条，"
                     "别拿整批 force_duplicates 陪跑（A4-2）",
+    )
+    category_id: Optional[str] = Field(
+        None,
+        description="11-04 拍板①：本批**整批默认钩子原型**（导入抽屉那个下拉）。"
+        "可留空（不设为必填），入库后每条仍可单独改；文案出稿时默认继承所属素材的这一列",
     )
 
 
@@ -327,6 +333,37 @@ class ProductionStatusRequest(BaseModel):
         description="失败成因（我们侧判读；板上失败行没有原因字段，别当成豆包给的成因）；判 failed 时必填",
     )
     board_tid: Optional[str] = Field(None, description="回读主键（info?date= 返回的 tid），逐条钉上便于二次对账")
+
+
+class CategoryUpsertItem(BaseModel):
+    """字典行（PUT /assets/categories 的一条）。`id` 留空＝新增，带 id＝改这一行。"""
+    id: Optional[str] = Field(None, description="已有行的 id；留空＝新增")
+    name: str = Field(..., description="原型名（唯一）。初始 7 行照《钩子模版换皮参数设定.docx》原名")
+    sort: Optional[int] = Field(None, description="展示顺序，小的在前；留空＝排到最后")
+    active: bool = Field(True, description="false＝下线：不再供新条目挑选，历史条目仍显示仍可筛")
+    note: Optional[str] = Field(None, description="行内说明（纯展示，不参与任何判定）")
+
+
+class CategoriesUpdateRequest(BaseModel):
+    """改字典（仅 admin）。
+
+    ⚠️ **整单语义**：`items` 是"你希望字典长这样"。带 id 的改、不带 id 的增、
+    **本次没列出来的既有行＝下线（active=false），不硬删**。
+    为什么不硬删：素材/文案上的 category_id 是真实引用，删行会让一线点好的分类
+    静默变空（而且 FK 是 SET NULL，数据库不会拦你）。
+    """
+    items: List[CategoryUpsertItem] = Field(default_factory=list)
+
+
+class CategoryAssignRequest(BaseModel):
+    """给素材/文案点分类（11-04 拍板①：纯人工点）。
+
+    `category_id` 留空＝**清空分类**（回到"未分类"），不是删素材。
+    两个 id 列表至少给一个；同一次请求里素材与文案各自计数、各自留审计。
+    """
+    asset_ids: List[str] = Field(default_factory=list, description="点名若干条素材")
+    summary_ids: List[str] = Field(default_factory=list, description="点名若干条文案")
+    category_id: Optional[str] = Field(None, description="目标原型 id；留空＝清成未分类")
 
 
 # ──────────────────────────────────────────────
@@ -505,6 +542,308 @@ def _risk_cache_invalidate() -> None:
     _RISK_CACHE["at"], _RISK_CACHE["payload"] = 0.0, None
 
 
+# ─────────────────────  钩子原型字典（11-04 拍板①）  ─────────────────────
+# 字典与风险词表是同一类东西（"运营能改、全员要读、不进模型提示词"），所以形态照
+# risk-lexicon：读用 `_PROD_ROLES`、写只 admin、改动写 AuditLog。
+# 与词表不同的一点：字典是**表**不是 system_config——素材/文案要按它筛选，
+# JSON 里存的名单没法 join，也没法给每行挂"下线"状态与引用计数。
+
+async def _category_rows(db: AsyncSession, *, include_inactive: bool = True) -> List[AssetCategory]:
+    """整张字典（行数是个位数，不做分页）。默认含下线行：历史条目挂在下线行上，
+    列表页要能显示它的名字，审核台也要能按它筛。"""
+    stmt = select(AssetCategory)
+    if not include_inactive:
+        stmt = stmt.where(AssetCategory.active.is_(True))
+    stmt = stmt.order_by(AssetCategory.sort.asc(), AssetCategory.created_at.asc())
+    return list((await db.execute(stmt)).scalars().all())
+
+
+def _serialize_category(c: AssetCategory, usage: Optional[dict] = None) -> dict:
+    data = {
+        "id": str(c.id),
+        "name": c.name,
+        "parent_id": str(c.parent_id) if c.parent_id else None,
+        "sort": c.sort,
+        "active": bool(c.active),
+        "note": c.note,
+        "created_at": utc_iso(c.created_at),
+        "updated_at": utc_iso(c.updated_at),
+    }
+    if usage:
+        data.update(usage)
+    return data
+
+
+async def _category_usage(db: AsyncSession) -> Dict[str, Dict[str, int]]:
+    """每个分类被引用了多少次（素材 / 文案各算各的），给字典抽屉显示"这条挂着 N 条素材"。
+
+    为什么要在意这个数：下线容易、删干净难。admin 看到引用数是 0 才谈得上真删，
+    有引用的行只能 `active=false`（见 CategoriesUpdateRequest 的整单语义）。
+    """
+    usage: Dict[str, Dict[str, int]] = {}
+    for model, key in ((AssetItem, "asset_count"), (AssetSummary, "copy_count")):
+        rows = (
+            await db.execute(
+                select(model.category_id, func.count(model.id))
+                .where(model.category_id.is_not(None))
+                .group_by(model.category_id)
+            )
+        ).all()
+        for cid, cnt in rows:
+            if cid is None:
+                continue
+            usage.setdefault(str(cid), {"asset_count": 0, "copy_count": 0})[key] = int(cnt or 0)
+    return usage
+
+
+async def _resolve_category_or_400(db: AsyncSession, category_id: Optional[str], field: str = "category_id") -> Optional[uuid.UUID]:
+    """把入参的分类 id 校验成 UUID；留空＝未分类（**不是"不改"，是"清成空"**）。
+
+    只认存在的行；`active=false` 的行**允许写**吗——不允许：新条目挑一个已下线的原型
+    说明字典和一线对不上，与其静默收下不如当场说清（历史引用仍然可读可筛，只有写入这条路拦）。
+    """
+    if category_id is None or not str(category_id).strip():
+        return None
+    cid = _as_uuid(category_id, field)
+    row = (await db.execute(select(AssetCategory).where(AssetCategory.id == cid))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=400, detail=f"{field} 指向一个不存在的原型分类，请重新挑选")
+    if not row.active:
+        raise HTTPException(status_code=400, detail=f"「{row.name}」已下线，不能再挂新条目，请改挑在用的原型")
+    return cid
+
+
+async def _category_name_map(db: AsyncSession) -> Dict[str, str]:
+    """id → 名称（序列化时补 `category_name`，避免逐行查）。"""
+    return {str(c.id): c.name for c in await _category_rows(db)}
+
+
+def _category_cond(category_id: Optional[str]):
+    """列表筛选：传 id 按该原型筛；传 `none`／`unclassified` 筛未分类；留空不筛。"""
+    if category_id is None or not str(category_id).strip():
+        return None
+    token = str(category_id).strip().lower()
+    if token in ("none", "unclassified", "null"):
+        return "none"
+    return _as_uuid(category_id, "category_id")
+
+
+@router.get("/assets/categories")
+async def list_categories(
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """读钩子原型字典（11-04 拍板①）。全员可读——被分类筛出来的人有权知道自己被归到哪。
+
+    读到空表时兜底种一次初始 7 行：老库刚建完表、服务还没重启过的窗口，
+    抽屉不该是空的（种入按 name 幂等，重复调用不会插出第二份）。
+    """
+    if not await _category_rows(db):
+        from app.database import ensure_default_asset_categories
+
+        await ensure_default_asset_categories(db)
+        await db.flush()
+    rows = await _category_rows(db)
+    usage = await _category_usage(db)
+    unclassified = {
+        "asset_count": int(
+            (
+                await db.execute(
+                    select(func.count(AssetItem.id)).where(AssetItem.category_id.is_(None))
+                )
+            ).scalar_one()
+            or 0
+        ),
+        "copy_count": int(
+            (
+                await db.execute(
+                    select(func.count(AssetSummary.id)).where(AssetSummary.category_id.is_(None))
+                )
+            ).scalar_one()
+            or 0
+        ),
+    }
+    return {
+        "items": [_serialize_category(c, usage.get(str(c.id))) for c in rows],
+        "unclassified": unclassified,
+        "can_edit": current_user.role == UserRole.admin.value,
+        "note": (
+            "分类是**纯人工点**的（11-04 拍板③）：不填也能走完全链，"
+            "但出文案的提示词模板不读这一列，所以没分类的素材不会自动归类。"
+        ),
+    }
+
+
+@router.put("/assets/categories")
+async def update_categories(
+    data: CategoriesUpdateRequest,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+    db: AsyncSession = Depends(get_db),
+):
+    """改钩子原型字典（仅 admin，形态与风险词库一致：保存即生效、改动进审计）。
+
+    整单语义（见 `CategoriesUpdateRequest`）：带 id 改、不带 id 增、没列出来的既有行**下线**。
+    下线的行不删——素材/文案上还挂着引用，删了会把一线点好的分类静默清空。
+    """
+    items = data.items or []
+    names: List[str] = []
+    for it in items:
+        nm = str(it.name or "").strip()
+        if not nm:
+            raise HTTPException(status_code=400, detail="原型名称不能为空")
+        if nm in names:
+            raise HTTPException(status_code=400, detail=f"字典里有重名的原型：{nm}（同名会撞唯一约束，请先去掉一个）")
+        names.append(nm)
+
+    existing = {str(c.id): c for c in await _category_rows(db)}
+    before = [
+        {"id": str(c.id), "name": c.name, "sort": c.sort, "active": bool(c.active), "note": c.note}
+        for c in existing.values()
+    ]
+
+    touched: List[AssetCategory] = []
+    added = updated = retired = 0
+    for seq, it in enumerate(items):
+        cid = it.id.strip() if it.id else ""
+        if cid:
+            row = existing.get(cid)
+            if row is None:
+                raise HTTPException(status_code=400, detail=f"字典里没有 id={cid} 这一行，请刷新后再改")
+            row.name = str(it.name).strip()
+            row.sort = int(it.sort) if it.sort is not None else row.sort
+            row.active = bool(it.active)
+            row.note = (it.note or None)
+            updated += 1
+        else:
+            row = AssetCategory(
+                name=str(it.name).strip(),
+                # 新增行没给 sort 就排到最后（按提交顺序依次后延），不要挤进 A–G 中间
+                sort=int(it.sort) if it.sort is not None else 1000 + seq,
+                active=bool(it.active),
+                note=(it.note or None),
+                created_by=current_user.id,
+            )
+            db.add(row)
+            added += 1
+        touched.append(row)
+    await db.flush()
+
+    # 没列出来的既有行＝下线（不硬删）
+    touched_ids = {str(r.id) for r in touched}
+    retired_names: List[str] = []
+    for cid, row in existing.items():
+        if cid in touched_ids or not row.active:
+            continue
+        row.active = False
+        retired += 1
+        retired_names.append(row.name)
+    await db.flush()
+
+    after = [
+        {"id": str(r.id), "name": r.name, "sort": r.sort, "active": bool(r.active), "note": r.note}
+        for r in touched
+    ]
+    await _write_audit(
+        db,
+        action="asset.categories.update",
+        operator=current_user,
+        target_type="asset_categories",
+        target_id="asset_categories",
+        before={"items": before},
+        after={"items": after, "retired": retired_names},
+    )
+    usage = await _category_usage(db)
+    rows = await _category_rows(db)
+    return {
+        "ok": True,
+        "added": added,
+        "updated": updated,
+        "retired": retired,
+        "items": [_serialize_category(c, usage.get(str(c.id))) for c in rows],
+        "notes": (
+            [f"已下线（未删除）：{n}" for n in retired_names]
+            if retired_names
+            else []
+        )
+        + ["改名/调整顺序会即时反映到列表与下拉；历史条目的引用不受影响"],
+    }
+
+
+@router.post("/assets/categories/assign")
+async def assign_category(
+    data: CategoryAssignRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """给素材/文案点钩子原型（11-04 拍板①：纯人工点，可不填，也可改回来）。
+
+    审计：素材侧记 before/after 的 category_id；文案侧同样留痕（手法同 `text_before_edit`——
+    改前的值一定要能查回来，否则"这条为什么算 D"事后没人答得上）。
+    """
+    asset_ids = [str(x) for x in (data.asset_ids or []) if str(x or "").strip()]
+    summary_ids = [str(x) for x in (data.summary_ids or []) if str(x or "").strip()]
+    if not asset_ids and not summary_ids:
+        raise HTTPException(status_code=400, detail="请至少点名一条素材或一条文案")
+    total = len(set(asset_ids)) + len(set(summary_ids))
+    # 单次条数借「单批导入上限」这个旋钮（`ASSET_IMPORT_BATCH_MAX`）：语义是
+    # "一次批量动作最多动多少行"，与反推/出文案的 20 条上限不是一回事——
+    # 点分类不花钱、不等模型，卡 20 会让人一次只能挑一屏。
+    cap = int(settings.ASSET_IMPORT_BATCH_MAX)
+    if total > cap:
+        raise HTTPException(
+            status_code=400,
+            detail=f"单次最多点 {cap} 条，当前 {total} 条——分批点，别一把改完整个库",
+        )
+    cid = await _resolve_category_or_400(db, data.category_id)
+
+    changed_assets: List[dict] = []
+    missing_assets: List[str] = []
+    if asset_ids:
+        uuids = [_as_uuid(x, "asset_ids") for x in dict.fromkeys(asset_ids)]
+        rows = list((await db.execute(select(AssetItem).where(AssetItem.id.in_(uuids)))).scalars().all())
+        found = {str(r.id) for r in rows}
+        missing_assets = [x for x in dict.fromkeys(asset_ids) if x not in found]
+        for row in rows:
+            if row.category_id == cid:
+                continue
+            changed_assets.append({"id": str(row.id), "before": str(row.category_id) if row.category_id else None})
+            row.category_id = cid
+    changed_copies: List[dict] = []
+    missing_summaries: List[str] = []
+    if summary_ids:
+        uuids = [_as_uuid(x, "summary_ids") for x in dict.fromkeys(summary_ids)]
+        rows = list((await db.execute(select(AssetSummary).where(AssetSummary.id.in_(uuids)))).scalars().all())
+        found = {str(r.id) for r in rows}
+        missing_summaries = [x for x in dict.fromkeys(summary_ids) if x not in found]
+        for row in rows:
+            if row.category_id == cid:
+                continue
+            changed_copies.append({"id": str(row.id), "before": str(row.category_id) if row.category_id else None})
+            row.category_id = cid
+    await db.flush()
+
+    await _write_audit(
+        db,
+        action="asset.category.assign",
+        operator=current_user,
+        target_type="asset_category",
+        target_id=str(cid) if cid else None,
+        before={"assets": changed_assets, "summaries": changed_copies},
+        after={"category_id": str(cid) if cid else None,
+               "asset_ids": [c["id"] for c in changed_assets],
+               "summary_ids": [c["id"] for c in changed_copies]},
+    )
+    missing = missing_assets + missing_summaries
+    return {
+        "ok": not missing,
+        "asset_changed": len(changed_assets),
+        "summary_changed": len(changed_copies),
+        "category_id": str(cid) if cid else None,
+        "not_found": missing,
+        "notes": ([f"这些 id 在库里查不到，已跳过：{', '.join(missing[:5])}"] if missing else []),
+    }
+
+
 async def _batch_pending_prompt_units(
     db: AsyncSession, *, batch_ids: set, exclude_ids: List[Any]
 ) -> int:
@@ -602,6 +941,9 @@ def _serialize_item(a: AssetItem, agg: Optional[dict] = None) -> dict:
         "duration": a.duration,
         "resolution": a.resolution,
         "prompt_max_duration": a.prompt_max_duration,
+        # 11-04 拍板①：钩子原型（category_name 由列表侧一次性批量补，避免逐行查）
+        "category_id": str(a.category_id) if a.category_id else None,
+        "category_name": None,
         "stage_import": a.stage_import,
         "stage_prompt": a.stage_prompt,
         "stage_summary": a.stage_summary,
@@ -639,7 +981,8 @@ def _can_resubmit(summary: AssetSummary, asset: AssetItem, current_user: User) -
 
 
 def _serialize_summary(
-    s: AssetSummary, asset: Optional[AssetItem] = None, *, can_resubmit: bool = False
+    s: AssetSummary, asset: Optional[AssetItem] = None, *, can_resubmit: bool = False,
+    category_name: Optional[str] = None,
 ) -> dict:
     data = {
         "id": str(s.id),
@@ -648,6 +991,9 @@ def _serialize_summary(
         "text": s.text,
         "style_tag": s.style_tag,
         "formula_tag": s.formula_tag,
+        # 11-04 拍板①：文案的原型（出稿时继承素材，审核台可逐条改）
+        "category_id": str(s.category_id) if s.category_id else None,
+        "category_name": category_name,
         "word_count": s.word_count,
         "is_recommended": bool(s.is_recommended),
         "consistency_ok": s.consistency_ok,
@@ -778,6 +1124,8 @@ async def import_links_batch(
         raise HTTPException(status_code=400, detail="没有可用链接")
 
     project_uuid = _as_uuid(data.project_id, "project_id") if data.project_id else None
+    # 11-04 拍板①：导入抽屉的「整批默认原型」在这里落到每一条素材（可留空＝未分类）
+    category_uuid = await _resolve_category_or_400(db, data.category_id)
     tier = _tier_or_400(data.prompt_max_duration)
 
     # 归一化（无法解析的先记 skipped，不入库——入库了也反推不了）
@@ -878,6 +1226,7 @@ async def import_links_batch(
                 source_url_norm=norm[:2000],
                 platform=platform,
                 project_id=project_uuid,
+                category_id=category_uuid,
                 prompt_max_duration=None,
                 # 链接形态「导入」只是把地址登记进库，真正花钱的是下一步反推
                 stage_import=STAGE_SUCCESS,
@@ -1083,6 +1432,7 @@ async def _upload_into_batch(
     current_user: User,
     action: str,
     batch_is_new: bool = False,
+    category_uuid: Optional[uuid.UUID] = None,
 ) -> dict:
     """文件批量入库的共用内核（/upload/batch 与 /upload/retry 只差批次来源）。
 
@@ -1129,6 +1479,8 @@ async def _upload_into_batch(
             duration=res["duration"],          # A4-4：上传时就回写，列表「时长」列不再空转
             title=res["file_name"],
             project_id=project_uuid,
+            # 11-04 拍板①：文件导入同样吃"整批默认原型"（留空＝未分类，日后逐条点）
+            category_id=category_uuid,
             stage_import=STAGE_SUCCESS,
             status=svc.derive_status({"import": STAGE_SUCCESS}),
             created_by=current_user.id,
@@ -1205,6 +1557,7 @@ async def upload_files_batch(
     project_id: Optional[str] = Form(None, description="归属项目（可选）"),
     max_duration: Optional[int] = Form(None, description="本批反推计时上限档位（秒）"),
     batch_id: Optional[str] = Form(None, description="已有批次 id：前端一次建批次、逐文件（或每 3 个）投同一批（A4-5）"),
+    category_id: Optional[str] = Form(None, description="11-04 拍板①：本批整批默认钩子原型（可留空＝未分类）"),
     current_user: User = Depends(require_roles(*_PROD_ROLES)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1224,6 +1577,8 @@ async def upload_files_batch(
     """
     if not files:
         raise HTTPException(status_code=400, detail="请选择要上传的文件")
+    # 11-04 拍板①：整批默认原型（与链接导入同一个入参口径）
+    category_uuid = await _resolve_category_or_400(db, category_id)
     if len(files) > int(settings.ASSET_IMPORT_BATCH_MAX):
         raise HTTPException(
             status_code=400,
@@ -1245,7 +1600,7 @@ async def upload_files_batch(
         await db.flush()
         return await _upload_into_batch(
             db, batch, files, project_uuid=project_uuid, current_user=current_user,
-            action="asset.upload_files", batch_is_new=False,
+            action="asset.upload_files", batch_is_new=False, category_uuid=category_uuid,
         )
 
     tier = _tier_or_400(max_duration)
@@ -1262,7 +1617,7 @@ async def upload_files_batch(
     await db.flush()
     return await _upload_into_batch(
         db, batch, files, project_uuid=project_uuid, current_user=current_user,
-        action="asset.upload_files", batch_is_new=True,
+        action="asset.upload_files", batch_is_new=True, category_uuid=category_uuid,
     )
 
 
@@ -1288,9 +1643,24 @@ async def retry_upload_files(
         raise HTTPException(status_code=400, detail="该批次是链接批次，没有文件可补投")
     if batch.created_by != current_user.id and current_user.role != UserRole.admin.value:
         raise HTTPException(status_code=403, detail="只能补投自己创建的批次")
+    # 11-04 拍板①：补投的文件**跟原批走**同一个原型。判据只用"这批已入库素材里那一个
+    # 非空分类"：原批里出现过两个不同分类就**不猜**，补投的落未分类（前端可再逐条点）。
+    # 为什么不在这里收 category_id 入参：retry 的语义是"把上次没成功的补回同一批"，
+    # 让前端再选一次原型等于给同一批次开出两种归属的机会。
+    cat_rows = list(
+        (
+            await db.execute(
+                select(AssetItem.category_id)
+                .where(AssetItem.batch_id == batch.id, AssetItem.category_id.is_not(None))
+                .distinct()
+                .limit(2)
+            )
+        ).scalars().all()
+    )
+    category_uuid = cat_rows[0] if len(cat_rows) == 1 else None
     return await _upload_into_batch(
         db, batch, files, project_uuid=None, current_user=current_user,
-        action="asset.upload_retry", batch_is_new=False,
+        action="asset.upload_retry", batch_is_new=False, category_uuid=category_uuid,
     )
 
 
@@ -1316,6 +1686,7 @@ async def list_assets(
     stage_summary: Optional[str] = None,
     stage_produce: Optional[str] = None,
     stage_compose: Optional[str] = None,
+    category_id: Optional[str] = None,
     sort: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
@@ -1329,6 +1700,9 @@ async def list_assets(
     含端点、按 CST 的自然日）、`audit_status`（审核态，命中"这条素材的候选里有该态的"）、
     `stage_*`（**阶段级**：status=failed 只说"失败了"，stage_prompt=failed 才说得出
     是反推挂的还是生产挂的）。`sort=failed_first` 把任一阶段 failed 的顶到最前。
+
+    11-04 拍板①加的 `category_id`：按钩子原型筛；传 `none` 只看未分类——一线靠它清欠账
+    （列表页顶部那个"未分类 N 条"就是拿 `category_id=none` 的 `total` 显示的，不另开口）。
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 200)
@@ -1344,6 +1718,12 @@ async def list_assets(
         conds.append(AssetItem.source_kind == source_kind)
     if has_approved_copy is not None:
         conds.append(AssetItem.has_approved_copy.is_(bool(has_approved_copy)))
+    # 11-04 拍板①：按钩子原型筛；`none`＝只看未分类（一线用它清欠账）
+    cat_cond = _category_cond(category_id)
+    if cat_cond == "none":
+        conds.append(AssetItem.category_id.is_(None))
+    elif cat_cond is not None:
+        conds.append(AssetItem.category_id == cat_cond)
     if keyword:
         kw = f"%{keyword.strip()}%"
         conds.append(
@@ -1457,8 +1837,18 @@ async def list_assets(
         for aid, cnt in prows:
             agg.setdefault(aid, {})["production_count"] = cnt
 
+    # 原型名一次批量补齐（字典是个位数行，不逐行查）
+    cat_names = await _category_name_map(db)
+
     return {
-        "items": [_serialize_item(a, agg.get(a.id)) for a in items],
+        "items": [
+            _serialize_item(
+                a,
+                {**(agg.get(a.id) or {}),
+                 "category_name": cat_names.get(str(a.category_id)) if a.category_id else None},
+            )
+            for a in items
+        ],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -2712,6 +3102,9 @@ async def generate_summaries(
                 text=text,
                 style_tag=str(cand.get("style_tag") or "")[:20] or None,
                 formula_tag=str(cand.get("formula_tag") or "")[:60] or None,
+                # 11-04 拍板①：文案默认**继承所属素材的原型**（审核台可逐条改，改后留痕）。
+                # 继承发生在建行的这一刻，之后素材重新归类不会回头改动已出的候选。
+                category_id=asset.category_id,
                 word_count=shape["chars"],
                 is_recommended=bool(cand.get("is_recommended")),
                 consistency_ok=consist["ok"],
@@ -2901,6 +3294,7 @@ async def list_summaries(
     only_inconsistent: bool = False,
     recommended_only: bool = False,
     only_resubmittable: bool = False,
+    category_id: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
     current_user: User = Depends(get_current_user),
@@ -2936,6 +3330,14 @@ async def list_summaries(
         conds.append(AssetSummary.audit_status.in_((RV_REJECTED, RV_NEED_REWRITE)))
         if current_user.role != UserRole.admin.value:
             conds.append(AssetItem.created_by == current_user.id)
+    # 11-04 拍板①：按**文案自己的**原型筛（继承来的也算它自己的，改过就按改后的），
+    # `none`＝未分类。为什么不用素材那列筛：审核台上"这条文案属于哪个原型"才是审的东西，
+    # 素材被重新归过类不该把已经定性的文案一起带走。
+    cat_cond = _category_cond(category_id)
+    if cat_cond == "none":
+        conds.append(AssetSummary.category_id.is_(None))
+    elif cat_cond is not None:
+        conds.append(AssetSummary.category_id == cat_cond)
 
     stmt = (
         select(AssetSummary, AssetItem)
@@ -2954,9 +3356,14 @@ async def list_summaries(
             .limit(page_size)
         )
     ).all()
+    cat_names = await _category_name_map(db)
     return {
         "items": [
-            _serialize_summary(s, a, can_resubmit=_can_resubmit(s, a, current_user))
+            _serialize_summary(
+                s, a,
+                can_resubmit=_can_resubmit(s, a, current_user),
+                category_name=cat_names.get(str(s.category_id)) if s.category_id else None,
+            )
             for s, a in rows
         ],
         "total": total,
@@ -5319,6 +5726,8 @@ async def get_asset(
             "approved_count": sum(1 for s in summaries if s.audit_status in REVIEW_PASSED_STATES),
             "pending_review_count": sum(1 for s in summaries if s.audit_status == RV_PENDING),
             "production_count": len(prods),
+            "category_name": (await _category_name_map(db)).get(
+                str(asset.category_id)) if asset.category_id else None,
         }),
         "summaries": [_serialize_summary(s) for s in summaries],
         "productions": [_serialize_production(p) for p in prods],

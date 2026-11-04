@@ -120,6 +120,7 @@ with _EnvOverride(_TEST_ENV):
         RV_PASSED_EDITED,
         RV_REJECTED,
         AssetBatch,
+        AssetCategory,
         AssetItem,
         AssetJob,
         AssetOutput,
@@ -130,6 +131,7 @@ with _EnvOverride(_TEST_ENV):
         JB_SUCCEEDED,
         JOB_PRODUCE,
         JOB_SUMMARY_GENERATE,
+        DEFAULT_ASSET_CATEGORIES,
     )
     from app.models.audit import AuditLog
     from app.models.material import Episode, Project, SliceOutput, SliceTask, SystemConfig
@@ -164,6 +166,9 @@ CANDIDATES = [
 DOUYIN_1 = "https://v.douyin.com/iAbcDeF/"
 DOUYIN_2 = "https://www.douyin.com/video/7412345678901234567?utm_source=share&timestamp=1"
 DOUYIN_1_TRACKED = "https://v.douyin.com/iAbcDeF/?utm_source=copy&from=mobile&secuid=MS4w"
+# 第三部**真正不同**的片子。需要"再建一条素材"时用这个，别拿 DOUYIN_1_TRACKED 顶——
+# 它归一化后就是 DOUYIN_1，跨批次会被判重、建不出行。
+DOUYIN_3 = "https://www.douyin.com/video/7511222333444555666"
 
 
 def _run(coro):
@@ -198,6 +203,10 @@ async def _bootstrap():
             User(id=uuid.uuid4(), username=ADMIN_USER, password_hash=get_password_hash(PASSWORD),
                  display_name="管理员", role="admin", data_scope="all", is_active=True),
         ])
+        # 钩子原型字典（11-04 拍板①）：现网是 init_db() 启动时种这 7 行，
+        # 测试侧不走 init_db（直接 create_all），所以在这里点同名函数——
+        # 种入本身也顺带被每条用例验一遍"跑两次不会插出第二份"。
+        await dbmod.ensure_default_asset_categories(s)
         await s.commit()
 
 
@@ -236,10 +245,15 @@ async def _import(client, h, links, **extra):
     return resp
 
 
-async def _make_ready_asset(client, h, url=DOUYIN_2, *, script=SCRIPT):
+async def _make_ready_asset(client, h, url=DOUYIN_2, *, script=SCRIPT, category_id=None):
     """导入一条链接，并把它的反推任务伪造成**已成功**（直接写 prompt 任务行 + 阶段态），
-    返回 (asset_id, task_id)。文案生成/审核/生产这一段只依赖 content，不依赖智令网络。"""
-    resp = await _import(client, h, [url])
+    返回 (asset_id, task_id)。文案生成/审核/生产这一段只依赖 content，不依赖智令网络。
+
+    `category_id`（11-04 拍板①）：带上就是"导入抽屉选了整批默认原型"，用于验文案继承。
+    """
+    resp = await _import(
+        client, h, [url], **({"category_id": category_id} if category_id else {})
+    )
     assert resp.status_code == 201, resp.text
     item = resp.json()["items"][0]
     asset_id = item["id"]
@@ -3894,6 +3908,373 @@ def test_startup_sweep_marks_open_jobs_interrupted():
         detail = await client.get(f"/api/assets/jobs/{rows[0].id}", headers=hm)
         assert detail.json()["status_label"].startswith("已中断"), detail.json()
         assert detail.json()["running"] is False
+        await client.aclose()
+
+    _run(_scenario())
+
+
+# ─────────────────────────────────────────────────────────────
+# 11-04 拍板①：钩子原型字典（asset_categories ＋ 素材/文案 category_id）
+# ─────────────────────────────────────────────────────────────
+
+
+async def _cat_id(client, h, key):
+    """从字典里按"原型 X"这个前缀取一个 id（用例里不写死 uuid）。"""
+    r = await client.get("/api/assets/categories", headers=h)
+    assert r.status_code == 200, r.text
+    hit = [i for i in r.json()["items"] if i["name"].startswith(f"原型 {key}：")]
+    assert len(hit) == 1, hit
+    return hit[0]["id"]
+
+
+def test_category_dictionary_is_seeded_verbatim_from_the_hook_doc():
+    """字典种入：7 行原型 A–G **原名**、按 sort 排、谁读谁的角色决定能不能改。
+
+    钉住"原名"这条：11-04 拍板写的是"照《钩子模版换皮参数设定.docx》原名录入，
+    我不改词、不加项"。名字一旦被后人顺手"优化"成更好看的说法，一线按文档沟通的
+    那套词就和系统对不上了，所以这里按字面断言，不比长度不比数量。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        r = await client.get("/api/assets/categories", headers=h["material"])
+        assert r.status_code == 200, r.text
+        data = r.json()
+        names = [i["name"] for i in data["items"]]
+        assert names == [
+            "原型 A：非人物件 / 动物开口说话（报恩·预警·神谕）",
+            "原型 B：偷听泄密（获取关键情报）",
+            "原型 C：隐藏财富 / 秘境发现（反转爆发）",
+            "原型 D：虐待 / 冲突 / 不公反转（情绪引爆）",
+            "原型 E：超能力 / 异常 / 猎奇（设定反差）",
+            "原型 F：神力 / 温情 / 绝境反转（其他）",
+            "原型 G：前置故事叙事（口播）",
+        ], names
+        assert len(DEFAULT_ASSET_CATEGORIES) == 7
+        # 顺序按 sort 而不是按插入序（字典抽屉要能重排）
+        sorts = [i["sort"] for i in data["items"]]
+        assert sorts == sorted(sorts), sorts
+        # 原型 D 的合规提醒是文档自带口径，作为行内说明显示
+        d = next(i for i in data["items"] if i["name"].startswith("原型 D"))
+        assert "本故事纯属虚构" in (d["note"] or "") and "侧拍" in (d["note"] or ""), d
+        # 读侧：material 读得到、但改不了；admin 能改
+        assert data["can_edit"] is False
+        assert (await client.get("/api/assets/categories", headers=h["admin"])).json()["can_edit"] is True
+        # 未分类计数（列表页那句"未分类 N 条"的数据源）
+        assert data["unclassified"] == {"asset_count": 0, "copy_count": 0}, data["unclassified"]
+        # 发布专员（publisher）不在读口径里：它不参与素材生产
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_empty_dictionary_refills_itself_on_read():
+    """字典被清空后，读口自己补回 7 行（老库刚建完表、服务还没重启过的窗口不能是空的）。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        async with dbmod.async_session_factory() as s:
+            await s.execute(AssetCategory.__table__.delete())
+            await s.commit()
+        assert await _count(AssetCategory) == 0
+
+        r = await client.get("/api/assets/categories", headers=h["material"])
+        assert len(r.json()["items"]) == 7, "读到空表要兜底种入"
+        # 再读一次不会长出第二份（按 name 幂等）
+        await client.get("/api/assets/categories", headers=h["material"])
+        assert await _count(AssetCategory) == 7
+        # 服务每次重启都会再走一遍 init_db 的种入：这里直接点同一个函数，
+        # 断它第二次返回 0 行 —— 否则现网每重启一次就多 7 行原型，下拉会变成两倍长
+        async with dbmod.async_session_factory() as s:
+            again = await dbmod.ensure_default_asset_categories(s)
+            await s.commit()
+        assert again == 0 and await _count(AssetCategory) == 7, again
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_category_dictionary_writes_are_admin_only_and_leave_a_trail():
+    """改字典：material/operator 一律 403，admin 改完进审计（形态照风险词库）。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        cid = await _cat_id(client, h["admin"], "A")
+
+        for role in ("material", "operator"):
+            r = await client.put(
+                "/api/assets/categories",
+                json={"items": [{"id": cid, "name": "被我改掉的原型 A"}]},
+                headers=h[role],
+            )
+            assert r.status_code == 403, (role, r.status_code, r.text)
+        assert (await _row_of(AssetCategory, cid)).name.startswith("原型 A"), "非 admin 不许改到库"
+
+        r = await client.put(
+            "/api/assets/categories",
+            json={"items": [{"id": cid, "name": "原型 A：非人物件开口说话", "sort": 10, "note": "改了说明"}]},
+            headers=h["admin"],
+        )
+        assert r.status_code == 200, r.text
+        assert (await _row_of(AssetCategory, cid)).name == "原型 A：非人物件开口说话"
+        audits = await _rows(AuditLog, AuditLog.action == "asset.categories.update")
+        assert len(audits) == 1 and audits[0].operator_name == ADMIN_USER, audits
+        before = (audits[0].before or {}).get("items") or []
+        assert any(i["id"] == cid and i["name"].startswith("原型 A：非人物件 /") for i in before), before
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_categories_put_retires_unlisted_rows_instead_of_deleting_them():
+    """整单语义：没列出来的行＝下线，**不删**——素材上还挂着引用，删了会静默清空一线点好的分类。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ha = h["material"], h["admin"]
+        a_id = await _cat_id(client, ha, "A")
+        b_id = await _cat_id(client, ha, "B")
+        # 先挂一条素材到 B 上，制造"引用还在"的现场
+        imp = await _import(client, hm, [DOUYIN_1], category_id=b_id)
+        assert imp.status_code == 201, imp.text
+        assert imp.json()["items"][0]["category_id"] == b_id
+
+        rest = [
+            {"id": i["id"], "name": i["name"], "sort": i["sort"], "active": i["active"], "note": i["note"]}
+            for i in (await client.get("/api/assets/categories", headers=ha)).json()["items"]
+            if i["id"] != b_id
+        ]
+        r = await client.put("/api/assets/categories", json={"items": rest}, headers=ha)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["retired"] == 1, body
+        assert any("已下线" in n for n in body["notes"]), body["notes"]
+
+        rows = await _rows(AssetCategory)
+        assert len(rows) == 7, "下线不是删除：行数一根毛都不少"
+        gone = await _row_of(AssetCategory, b_id)
+        assert gone.active is False and gone.name.startswith("原型 B")
+
+        # 历史素材的分类**没被清空**，且名字仍然读得到（列表要显示它挂过哪个原型）
+        got = await client.get(f"/api/assets/{imp.json()['items'][0]['id']}", headers=hm)
+        assert got.json()["asset"]["category_id"] == b_id, got.json()["asset"]
+        assert got.json()["asset"]["category_name"] == gone.name, "下线行的名字仍要读得到"
+        # 但不能再把新条目挂上去
+        bad = await client.post(
+            "/api/assets/categories/assign",
+            json={
+                "asset_ids": [imp.json()["items"][0]["id"]],
+                "summary_ids": [],
+                "category_id": b_id,
+            },
+            headers=hm,
+        )
+        assert bad.status_code == 400 and "已下线" in bad.json()["detail"], bad.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_categories_put_rejects_duplicate_names():
+    """字典里两个同名原型 → 400 说清是哪条（name 上有唯一约束，静默撞上去就是一批 500）。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        r = await client.put(
+            "/api/assets/categories",
+            json={"items": [{"name": "重名原型"}, {"name": "重名原型"}]},
+            headers=h["admin"],
+        )
+        assert r.status_code == 400 and "重名" in r.json()["detail"], r.text
+        assert await _count(AssetCategory) == 7, "400 的这次不许留下半个新行"
+        # 空名同样进不来
+        r2 = await client.put(
+            "/api/assets/categories", json={"items": [{"name": "   "}]}, headers=h["admin"]
+        )
+        assert r2.status_code == 400, r2.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_copy_inherits_the_asset_prototype_and_review_can_override():
+    """文案继承素材的原型（出稿那一刻定下），之后逐条可改、改前值留痕。
+
+    为什么继承发生在建行的那一刻而不是每次读时算：一线把素材重新归过类，
+    不该把已经定性的文案一起带走——那是两组不同的判定对象（审核台筛的就是文案自己那列）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ha = h["material"], h["admin"]
+        a_id = await _cat_id(client, hm, "C")
+        asset_id, _ = await _make_ready_asset(client, hm, category_id=a_id)
+
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            r = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm
+            )
+        assert r.status_code == 200, r.text
+        copies = await _rows(AssetSummary)
+        assert len(copies) == 3 and all(c.category_id is not None for c in copies)
+        assert {str(c.category_id) for c in copies} == {a_id}, "三条候选都要继承到原型"
+
+        # 审核台逐条改：改成 B
+        b_id = await _cat_id(client, hm, "B")
+        ids = [str(c.id) for c in copies]
+        asg = await client.post(
+            "/api/assets/categories/assign",
+            json={"asset_ids": [], "summary_ids": ids[:1], "category_id": b_id},
+            headers=hm,
+        )
+        assert asg.status_code == 200 and asg.json()["summary_changed"] == 1, asg.text
+        assert (await _row_of(AssetSummary, ids[0])).category_id == uuid.UUID(b_id)
+        trail = await _rows(AuditLog, AuditLog.action == "asset.category.assign")
+        assert len(trail) == 1, trail
+        # 改前的值在 before 里查得回来（手法同 text_before_edit：不能只记"改过"）
+        assert trail[0].before["summaries"] == [
+            {"id": ids[0], "before": a_id}
+        ], trail[0].before
+
+        # 素材重新归类**不回写**已出稿的文案
+        e_id = await _cat_id(client, hm, "E")
+        await client.post(
+            "/api/assets/categories/assign",
+            json={"asset_ids": [asset_id], "summary_ids": [], "category_id": e_id},
+            headers=hm,
+        )
+        assert (await _row_of(AssetSummary, ids[1])).category_id == uuid.UUID(a_id), "已定性的文案不跟着素材漂"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_assign_category_reports_what_it_could_not_find():
+    """点分类：点名里查不到的 id 要如实回传，不许"看起来改成功了"。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        cid = await _cat_id(client, hm, "F")
+        imp = await _import(client, hm, [DOUYIN_1])
+        assert imp.status_code == 201, imp.text
+        real = imp.json()["items"][0]["id"]
+        assert imp.json()["items"][0]["category_id"] is None, "不选就是未分类，不许默认塞一个"
+        ghost = str(uuid.uuid4())
+
+        r = await client.post(
+            "/api/assets/categories/assign",
+            json={"asset_ids": [real, ghost], "summary_ids": [], "category_id": cid},
+            headers=hm,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is False and body["not_found"] == [ghost], body
+        assert body["asset_changed"] == 1
+        assert (await _row_of(AssetItem, real)).category_id == uuid.UUID(cid)
+
+        # 留空＝清成未分类（不是"不改"）
+        r2 = await client.post(
+            "/api/assets/categories/assign",
+            json={"asset_ids": [real], "summary_ids": [], "category_id": None},
+            headers=hm,
+        )
+        assert r2.status_code == 200 and r2.json()["asset_changed"] == 1, r2.text
+        assert (await _row_of(AssetItem, real)).category_id is None
+
+        # 空点名 → 400；脏 id → 400（不是 500）
+        assert (await client.post("/api/assets/categories/assign",
+                                  json={"asset_ids": [], "summary_ids": [], "category_id": cid},
+                                  headers=hm)).status_code == 400
+        assert (await client.post("/api/assets/categories/assign",
+                                  json={"asset_ids": ["not-a-uuid"], "summary_ids": [], "category_id": cid},
+                                  headers=hm)).status_code == 400
+
+        # 单次条数借的是「单批导入上限」（100），**不是**反推/出文案那个 20 条上限：
+        # 点分类不花钱、不等模型，卡 20 会让人一次只能挑一屏（25 条必须照常收下）
+        many = [str(uuid.uuid4()) for _ in range(25)]
+        r25 = await client.post("/api/assets/categories/assign",
+                                json={"asset_ids": many, "summary_ids": [], "category_id": cid}, headers=hm)
+        assert r25.status_code == 200 and len(r25.json()["not_found"]) == 25, r25.text
+        over = [str(uuid.uuid4()) for _ in range(int(settings.ASSET_IMPORT_BATCH_MAX) + 1)]
+        big = await client.post("/api/assets/categories/assign",
+                                json={"asset_ids": over, "summary_ids": [], "category_id": cid}, headers=hm)
+        assert big.status_code == 400 and "单次最多点" in big.json()["detail"], big.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_import_accepts_prototype_and_rejects_a_bad_one():
+    """导入时的"整批默认原型"：合法就整批带上，指向不存在的原型当场 400（不静默变未分类）。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        cid = await _cat_id(client, hm, "A")
+        r = await _import(client, hm, [DOUYIN_1, DOUYIN_2], category_id=cid)
+        assert r.status_code == 201, r.text
+        items = r.json()["items"]
+        assert len(items) == 2 and all(i["category_id"] == cid for i in items), items
+
+        bad = await _import(client, hm, [DOUYIN_1], category_id=str(uuid.uuid4()))
+        assert bad.status_code == 400 and "不存在" in bad.json()["detail"], bad.text
+        dirty = await _import(client, hm, [DOUYIN_1], category_id="not-a-uuid")
+        assert dirty.status_code == 400, dirty.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_list_endpoints_filter_by_prototype_and_unclassified():
+    """两个列表口都能按原型筛，且 `none` 筛未分类（列表页那句"未分类 N 条"的数据源）。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        a_id = await _cat_id(client, hm, "A")
+        g_id = await _cat_id(client, hm, "G")
+        await _import(client, hm, [DOUYIN_1], category_id=a_id)
+        await _import(client, hm, [DOUYIN_2], category_id=g_id)
+        # 未分类那条**必须另起一部片子**（DOUYIN_3），并用 _make_ready_asset 拿到行 id：
+        # 库里素材行是按归一化链接判重的，重链接会被 skip、建不出行。
+        real3, _task3 = await _make_ready_asset(client, hm, url=DOUYIN_3)
+
+        la = await client.get(f"/api/assets?category_id={a_id}", headers=hm)
+        assert [i["code"] for i in la.json()["items"]] and la.json()["total"] == 1, la.json()
+        assert la.json()["items"][0]["category_name"].startswith("原型 A"), la.json()["items"][0]
+        lg = await client.get(f"/api/assets?category_id=none", headers=hm)
+        assert lg.json()["total"] == 1 and lg.json()["items"][0]["id"] == real3, lg.json()
+        assert lg.json()["items"][0]["category_name"] is None
+        bad = await client.get("/api/assets?category_id=not-a-uuid", headers=hm)
+        assert bad.status_code == 400, bad.text
+
+        # 文案侧：给那条未分类素材补出文案，然后按原型筛队列
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            await client.post("/api/assets/summaries/generate",
+                              json={"asset_ids": [real3]}, headers=hm)
+        ls_all = await client.get("/api/assets/summaries", headers=hm)
+        assert ls_all.json()["total"] == 3, ls_all.json()
+        ls_none = await client.get("/api/assets/summaries?category_id=none", headers=hm)
+        assert ls_none.json()["total"] == 3, ls_none.json()
+        ls_a = await client.get(f"/api/assets/summaries?category_id={a_id}", headers=hm)
+        assert ls_a.json()["items"] == []
+        # 点一条文案挂到 G 上，队列筛选立刻按**文案自己**那列走
+        sid = ls_none.json()["items"][0]["id"]
+        await client.post("/api/assets/categories/assign",
+                          json={"asset_ids": [], "summary_ids": [sid], "category_id": g_id}, headers=hm)
+        ls_g = await client.get(f"/api/assets/summaries?category_id={g_id}", headers=hm)
+        assert [i["id"] for i in ls_g.json()["items"]] == [sid], ls_g.json()
+        assert ls_g.json()["items"][0]["category_name"].startswith("原型 G")
         await client.aclose()
 
     _run(_scenario())
