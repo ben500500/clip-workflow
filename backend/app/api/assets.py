@@ -2727,19 +2727,16 @@ async def resubmit_summaries(
             "reject_reason": summary.reject_reason,
         }
         new_text = (data.new_text or "").strip()
-        if new_text and new_text != summary.text:
-            summary.text_before_edit = summary.text
-            summary.text = new_text
-        elif not summary.text.strip():
-            summary.text = new_text
-        text = summary.text.strip()
-        if not text:
+        # 先在**候选文本**上过闸门，一个字都还没落库：没过就原样退回，
+        # 作者原来的文案不能被一次失败的提交改掉（11-04 现网验收实测踩到）。
+        candidate = new_text if new_text else (summary.text or "").strip()
+        if not candidate:
             results.append({"summary_id": str(uuid_s), "ok": False, "code": asset.code, "error": "文案不能为空"})
             continue
 
         # 硬闸门：形态 + block 级风险词当场拦；一致性只留痕（见 docstring 第 3 条）
         script = await _prompt_script_of(db, asset)
-        verdict = svc.recheck_copy(text, script, lexicon=book, exemptions=exemptions)
+        verdict = svc.recheck_copy(candidate, script, lexicon=book, exemptions=exemptions)
         blocking = [p for p in verdict["problems"] if p["code"] != "consistency"]
         if blocking:
             results.append({
@@ -2750,6 +2747,14 @@ async def resubmit_summaries(
                          + "（先改干净再提审）",
             })
             continue
+
+        # 过了闸门才落库：原留档，改后写正
+        if new_text and new_text != summary.text:
+            summary.text_before_edit = summary.text
+            summary.text = new_text
+        elif not (summary.text or "").strip():
+            summary.text = new_text
+        text = summary.text.strip()
 
         summary.word_count = verdict["chars"]
         summary.risk_hit = svc.format_risk_hits(verdict["risk"])

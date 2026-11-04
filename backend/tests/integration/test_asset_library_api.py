@@ -3371,6 +3371,12 @@ def test_rejected_copy_goes_back_to_queue_when_its_owner_fixes_it():
         assert bad.json()["results"][0]["error_code"] == "ASSET_RECHECK_FAILED"
         # block 级的是「根治」（「百分百」只是 warn，只留痕不拦）
         assert any("根治" in p["message"] for p in bad.json()["results"][0]["problems"])
+        # 11-04 现网实测踩到的坑：闸门没过时**不能把作者原来的文案改掉**——
+        # 一次失败的提交不该吃掉别人的稿子（这行此时文案还是 admin 上次提的那版）
+        row_after_fail = await _row_of(AssetSummary, sid)
+        assert row_after_fail.text == new_text
+        assert row_after_fail.text_before_edit == old_text
+        assert row_after_fail.audit_status == RV_REJECTED
 
         # admin 可以代提（逃生门）
         ok = await client.post(
