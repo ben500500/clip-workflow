@@ -434,3 +434,61 @@ class AssetOutput(Base):
 
     def __repr__(self) -> str:
         return f"<AssetOutput(asset={self.asset_id}, kind={self.kind}, qc={self.qc_status})>"
+
+
+# ──────────────────────────────────────────────
+# 后台任务（D-1 队列化：出文案 / 投产 提交即回 + 轮询）
+# ──────────────────────────────────────────────
+
+JOB_SUMMARY_GENERATE = "summary_generate"
+JOB_PRODUCE = "produce"
+ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE)
+
+JB_QUEUED = "queued"          # 已落库、协程已排上，还没开跑
+JB_RUNNING = "running"        # 正在逐条调模型（开始跑时落一次 started_at，跑中间不回报心跳）
+JB_SUCCEEDED = "succeeded"    # 整批跑完（**个别条失败也算跑完**，明细在 result 里）
+JB_FAILED = "failed"          # 整批没跑成（编排自身炸了，不是单条失败）
+JB_INTERRUPTED = "interrupted"  # 进程重启把在跑的协程带走了：结果不可信，人工重试
+
+
+class AssetJob(Base):
+    """素材库的「慢活」台账：一条 = 一次后台批量出文案 / 批量投产。
+
+    为什么要有这张表（11-04 第二轮审核 D-1）：出文案与投产是**同步等模型**的
+    （单条 ~95s，一批 10 条串跑就是 15 分钟），一线只能靠浏览器干等。四层超时
+    （nginx 3600s > 前端 960s > 后端单条 900s > autoclip 600s）只保证"不被半路掐"，
+    不保证"人敢点"：刷新页面、切走标签、网关抖动，一次 15 分钟的等待就白扔，
+    而钱和号池编号在那一次已经花掉了。所以：提交即回一个 job_id，前端轮询台账。
+
+    ⚠️ 这不是 Celery 队列，是**同进程 asyncio 后台任务 + 数据库台账**：
+    现网 backend 跑 `--workers 1`，也没有任何 celery worker 订阅素材库队列，
+    真上 Celery 要新队列、新 worker、新部署件，属 P1。这里刻意只做三件事——
+    ① 提交当场落库并回 job_id；② 结果整份存进 `result`（含逐条明细），
+    刷新页面/换浏览器都还查得到；③ 进程重启时把 queued/running 一律标
+    `interrupted`（协程没了，结果不可信，绝不假装还在跑）。
+    多 worker 部署时 `running` 只代表"某个 worker 认为它在跑"，别当分布式锁用。
+
+    `params` 存的是**原请求体**（含 `waive_reason` / `waive_codes` 这类豁免入参）：
+    重放与追溯必须走一模一样的闸门口径，否则"后台再跑一次"就把 admin 的豁免理由丢了，
+    或反过来把一次没豁免的提交偷偷变成永久豁免。
+    """
+    __tablename__ = "asset_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    kind = Column(String(30), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default=JB_QUEUED, index=True)
+    # 归属批次（整批排队时才有；按 id 列表提交时为 NULL，靠 params 里的 asset_ids 追溯）
+    batch_id = Column(UUID(as_uuid=True), ForeignKey("asset_batches.id", ondelete="SET NULL"), nullable=True, index=True)
+    params = Column(JSON, nullable=False, default=dict)
+    # 整份接口响应（results/queue/message/…）。跑完才有；跑废了则为已拿到的部分或 NULL
+    result = Column(JSON, nullable=True)
+    error = Column(String(1000), nullable=True)
+    # 计划/完成条数：提交时按请求体算一次，读取时按台账现算一次（见 API 里的 progress 口径）
+    planned_units = Column(Integer, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
+
+    def __repr__(self) -> str:
+        return f"<AssetJob(kind={self.kind}, status={self.status}, batch={self.batch_id})>"

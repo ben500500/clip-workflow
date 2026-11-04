@@ -353,9 +353,10 @@ class Settings(BaseSettings):
     # 权威口径：NAS《每日解压视频-操作手册-20261022.md》+ Drama/共享配置/skill/relax-video-pipeline。
     # 这条通道**不扣现金**、payload 只有七键（tag/reqID/total/date/prompt/name/picDatas）、
     # **没有时长与分辨率参数**：成片恒 10.08s / 720×1280。
-    ASSET_BOARD_BASE_URL: str = "http://mp.miwan.synology.me:8500"
-    # Basic Auth 凭据（形如 user:pass）。⚠️ 只在环境变量里给，代码与仓库一律不写死明文。
-    AIVIDEO_AUTH: Optional[str] = None
+    # ⚠️ D-3（11-04 第二轮审核）：这里原有 `ASSET_BOARD_BASE_URL` 与 `AIVIDEO_AUTH` 两个字段，
+    # 全仓**零读取**——P0 是人工投板，后端从不连板，留着等于骗运维「改了环境变量就生效」。
+    # 已删。P1 做自动投递时随投递客户端一起接线（`.env.example` 同段有说明，凭据只走 env）。
+    # 现网 .env 若还留着那两行不影响启动：model_config 是 extra="ignore"。
     # 板上 tag＝拥有者标记：不填就建成**无主任务**，按天筛不到（回收必然漏）
     ASSET_BOARD_TAG: str = "suanku"
     # 板上 total＝同一条 prompt 出几版（1..20）。与「N 份差异化提示词」是两个量，别混用。

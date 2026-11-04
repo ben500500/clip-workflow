@@ -312,9 +312,14 @@ def test_recheck_copy_blocks_only_block_level():
     soft = svc.recheck_copy("张总第一次签字，就把合同给了全网最低价的对手。", script)
     assert soft["ok"], soft["problems"]
     assert soft["risk"]
-    # 一致性失败 → 拦，且 problems 里有成因
+    # 一致性对不上 → **预警不拦**（R-6：专名识别只当预警，硬闸会把一线训练成逢钩子必找 admin 豁免，
+    # 而豁免一旦不分类型就把同条里的真违禁词一起放过）。要它拦必须显式传 consistency_blocks=True
     bad = svc.recheck_copy("李总在华尔街撕了合同。", script)
-    assert not bad["ok"] and any(p["code"] == "consistency" for p in bad["problems"])
+    assert bad["ok"] is True, bad["problems"]
+    assert any(p["code"] == "consistency" for p in bad["warnings"]), bad["warnings"]
+    assert bad["consistency"]["ok"] is False
+    hard_consist = svc.recheck_copy("李总在华尔街撕了合同。", script, consistency_blocks=True)
+    assert not hard_consist["ok"] and any(p["code"] == "consistency" for p in hard_consist["problems"])
 
 
 def test_consistency_requires_entities_in_script():

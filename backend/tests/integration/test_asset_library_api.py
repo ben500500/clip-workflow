@@ -105,6 +105,7 @@ with _EnvOverride(_TEST_ENV):
     from sqlalchemy import func, select
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+    from app.api import assets as assets_api
     from app.auth import get_password_hash
     from app.config import settings
     from app.database import Base
@@ -112,6 +113,7 @@ with _EnvOverride(_TEST_ENV):
     from app.main import app
     from app.models.asset import (
         AS_READY_TO_PRODUCE,
+        JB_INTERRUPTED,
         PRODUCTION_STATES,
         RV_APPROVED,
         RV_PENDING,
@@ -119,9 +121,15 @@ with _EnvOverride(_TEST_ENV):
         RV_REJECTED,
         AssetBatch,
         AssetItem,
+        AssetJob,
         AssetOutput,
         AssetProduction,
         AssetSummary,
+        JB_QUEUED,
+        JB_RUNNING,
+        JB_SUCCEEDED,
+        JOB_PRODUCE,
+        JOB_SUMMARY_GENERATE,
     )
     from app.models.audit import AuditLog
     from app.models.material import Episode, Project, SliceOutput, SliceTask, SystemConfig
@@ -367,6 +375,42 @@ def test_import_dedupes_across_batches_and_allows_force():
         assert third.json()["duplicates"] == []
 
         assert await _count(AssetItem) == 4
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_import_same_video_two_share_forms_creates_only_one_row():
+    """R-2（11-04 第二轮审核）：**同一次提交里**同一部片子的两种写法只能建一行。
+
+    `normalize_source_list` 只按**原始字符串**去同批重复，而 `https://v.douyin.com/iAbcDeF/`
+    与它带埋点参数的长版归一化后是同一条（`douyin:iabcdef`）。原来两条都会建素材行，
+    反推**按行计费**＝同一部片子付两遍钱（实测 0.0972 元/条）；库里 `source_url_norm`
+    没有唯一约束（硬唯一会静默丢素材，审核席位明确反对），所以拦不住，只能在建之前拦。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+
+        both = await _import(client, hm, [DOUYIN_1, DOUYIN_1_TRACKED, DOUYIN_2])
+        assert both.status_code == 201, both.text
+        body = both.json()
+        assert len(body["items"]) == 2, (
+            f"同一部片子建了两行：{[i['source_url'] for i in body['items']]}"
+        )
+        assert any("另一种写法" in s for s in body["skipped"]), body["skipped"]
+        urls = [i["source_url"] for i in body["items"]]
+        assert len(set(urls)) == len(urls), "同批内不许出现两条同素材"
+        assert await _count(AssetItem) == 2
+
+        # 换一种写法的第三条：跨批次仍按归一化键命中（与埋点参数、host 写法无关）
+        again = await _import(client, hm, ["https://www.douyin.com/video/7412345678901234567"])
+        assert again.status_code == 201, again.text
+        assert len(again.json()["items"]) == 0
+        assert len(again.json()["duplicates"]) == 1, again.json()["duplicates"]
+
         await client.aclose()
 
     _run(_scenario())
@@ -1648,9 +1692,11 @@ async def _gen_and_list(asset_id, h, client):
 def _approvable(items):
     """三条候选里唯一「形态+风险+一致性」全过关的那条（推荐条）。
 
-    CANDIDATES 的第 2、3 条是故意造的坏样本（实体对不上 / 含 block 风险词），
-    A2-1 之后它们**过不了审也投不了产**，happy path 必须显式挑干净的那条，
-    别靠队列顺序（顺序是 created_at 倒序，等于随机）。
+    CANDIDATES 的第 2、3 条是故意造的坏样本（实体对不上 / 含 block 风险词）。
+    A2-1 之后含 block 词的那条**过不了审也投不了产**；R-6 之后「实体对不上」那条
+    降级成**预警**（能过审，只在 consistency_ok/consistency_note 留痕）。这里仍挑
+    三条全绿的那条走 happy path：测试要的是干净样本，不是"勉强能过"的样本，
+    也别靠队列顺序（顺序是 created_at 倒序，等于随机）。
     """
     good = [i for i in items if not i["risk_hit"] and i["consistency_ok"]]
     assert len(good) == 1, [i["text"] for i in items]
@@ -2374,9 +2420,12 @@ async def _write_lexicon(value):
 
 
 def test_approve_is_actually_gated_and_admin_waiver_is_audited():
-    """A2-1：block 风险词 / 一致性假的候选**approve 真的拦**；只有 admin 能带理由豁免，豁免进审计。
+    """A2-1 + R-6：block 风险词 approve **真的拦**，一致性对不上**只是预警**；
+    豁免只有 admin 能用、可用 `waive_codes` 只放某几类，豁免逐条进审计。
 
     改前的行为是"只记录不拦"——risk_hit 非空照样过审、照样投产，审核台等于橡皮章。
+    R-6 又把一致性从硬闸降成预警：专名靠白名单抽、天然误报，拿它卡人的结果是一线
+    逢人名钩子必找 admin 豁免，而豁免不分类型 → 同条里的真违禁词被一起放过。
     """
     _run(_bootstrap())
 
@@ -2397,17 +2446,36 @@ def test_approve_is_actually_gated_and_admin_waiver_is_audited():
         rows = {str(r.id): r for r in await _rows(AssetSummary)}
         assert rows[risky["id"]].audit_status == RV_PENDING, "拦下必须留在待审，不许偷偷改态"
 
-        # 一致性假的那条同样拦（成因是"实体对不上"，不是风险词）
-        refused2 = await client.post(
+        # R-6：一致性对不上**不再拦过审**（专名白名单天然误报，硬拦只会训练一线找 admin
+        # 豁免，一豁免就连真违禁词一起放过）。现在它是预警：能过、但当场回显并落两列留痕。
+        passed_warn = await client.post(
             "/api/assets/summaries/review",
             json={"summary_ids": [bad_consist["id"]], "action": "approve"}, headers=ho)
-        assert {p["code"] for p in refused2.json()["results"][0]["problems"]} == {"consistency"}
+        w = passed_warn.json()["results"][0]
+        assert w["ok"] is True and w["waived"] is False, "一致性预警不该算管理员豁免"
+        assert {p["code"] for p in w["warnings"]} == {"consistency"}
+        assert "对不上" in "；".join(p["message"] for p in w["warnings"])
+        assert "预警" in passed_warn.json()["message"]
+        rows = {str(r.id): r for r in await _rows(AssetSummary)}
+        assert rows[bad_consist["id"]].audit_status == RV_APPROVED
+        assert rows[bad_consist["id"]].consistency_ok is False, "不拦人，但留痕列必须照实落库"
 
         # 豁免只对 admin 生效：operator 带理由也照样拦
         op_waive = await client.post(
             "/api/assets/summaries/review",
             json={"summary_ids": [risky["id"]], "action": "approve", "waive_reason": "剧情需要"}, headers=ho)
         assert op_waive.json()["results"][0]["ok"] is False
+
+        # R-6 分粒度：`waive_codes` 只点名 shape 时，risk 拦点照旧拦（防"一句理由全放行"）
+        partial = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [risky["id"]], "action": "approve",
+                  "waive_reason": "先只放字数", "waive_codes": ["shape"]}, headers=ha)
+        p1 = partial.json()["results"][0]
+        assert p1["ok"] is False and {x["code"] for x in p1["problems"]} == {"risk"}, (
+            "只豁免 shape 就不该顺手把违禁词一起放过"
+        )
+        assert "risk" in p1["waivable_codes"]
 
         ok = await client.post(
             "/api/assets/summaries/review",
@@ -2720,6 +2788,98 @@ def test_export_txt_and_board_payload_are_directly_usable():
     _run(_scenario())
 
 
+def test_export_rescans_current_risk_lexicon_and_admin_can_force():
+    """R-4（D-2 拍板）：导出是存量单**唯一**还会碰到当前词表的时刻，所以必须重扫。
+
+    钉五件事：
+    1. 过审之后运营新加的禁词，会把**已经建好的**生产单在导出口拦下来（不重扫＝新词管不到存量单）；
+    2. 拦下来是「置灰 + 正文不给」，txt/payload 里同样不出现（不给第二条出口）；
+    3. 放行只有 admin，而且必须带理由（素材专员/运营都踩不动这道闸）；
+    4. 放行后命中信息照实回显（哪几张被点过名、哪几张是放行的），不是当没发生过；
+    5. 谁放行的、放了哪几张、凭什么，进审计。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        good = _approvable(items)
+        sid, copy = good["id"], good["text"]
+        await client.post("/api/assets/summaries/review",
+                          json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            made = await client.post("/api/assets/produce",
+                                     json={"summary_ids": [sid], "n": 1}, headers=ho)
+        assert made.status_code == 200 and made.json()["created"] == 1, made.text
+        pid = (await client.get(f"/api/assets/productions?asset_id={asset_id}", headers=ho)).json()["items"][0]["id"]
+
+        base = f"/api/assets/productions/export?asset_id={asset_id}"
+        # 默认词表下这张单是干净的（投产当场也复扫过），导出正常给正文
+        before = await client.get(f"{base}&format=txt", headers=ho)
+        assert before.json()["delivery_count"] == 1 and copy in before.json()["export_text"]
+        assert before.json()["risk_recheck"]["hit_count"] == 0
+
+        # 过审之后加词：这条文案里有的词（「翻脸」）现在算 block 级
+        added = await client.put("/api/assets/risk-lexicon",
+                                 json={"block": ["翻脸"], "inherit": True}, headers=ha)
+        assert added.status_code == 200, added.text
+
+        # ①②存量单在导出口被新词拦下：正文置空、txt 里也不出现
+        after = await client.get(f"{base}&format=txt", headers=ho)
+        body = after.json()
+        assert body["delivery_count"] == 0 and body["export_text"] == "", "命中行不进交付块"
+        assert body["risk_recheck"]["hit_count"] == 1
+        assert body["risk_recheck"]["blocked"] == [pid] and body["risk_recheck"]["forced"] == []
+        row = [i for i in body["items"] if i["id"] == pid][0]
+        assert row["exportable"] is False and row["prompt_text"] is None
+        assert [x["word"] for x in row["risk_hits"]] == ["翻脸"], row["risk_hits"]
+        assert row["risk_hits"][0]["level"] == "block"
+        assert "词表被改过" in body["blocked"][0]["reason"] and "翻脸" in body["blocked"][0]["reason"]
+
+        # warn 级不拦：词表里降级成 warn 后放行，级别口径不能靠导出侧偷偷收紧
+        await client.put("/api/assets/risk-lexicon",
+                         json={"block": [], "warn": ["翻脸"], "inherit": True}, headers=ha)
+        demoted = await client.get(base, headers=ho)
+        assert demoted.json()["risk_recheck"]["hit_count"] == 0 and demoted.json()["blocked_count"] == 0
+
+        await client.put("/api/assets/risk-lexicon",
+                         json={"block": ["翻脸"], "inherit": True}, headers=ha)
+
+        # ③放行闸门：角色 + 理由，两个都不能少
+        by_operator = await client.get(f"{base}&force_risk=true&force_reason=语境需要", headers=ho)
+        assert by_operator.status_code == 403, by_operator.text
+        no_reason = await client.get(f"{base}&force_risk=true", headers=ha)
+        assert no_reason.status_code == 400 and "force_reason" in no_reason.json()["detail"]
+
+        # ④admin 带理由放行：正文回来、命中信息照实回显，delivery 块也带上
+        forced = await client.get(
+            f"{base}&format=txt&force_risk=true&force_reason=该片语境里不构成承诺，与运营已确认", headers=ha)
+        assert forced.status_code == 200, forced.text
+        fb = forced.json()
+        assert fb["delivery_count"] == 1 and copy in fb["export_text"], "放行的单子要真的能用"
+        frow = [i for i in fb["items"] if i["id"] == pid][0]
+        assert frow["exportable"] is True and frow["prompt_text"] and copy in frow["prompt_text"]
+        assert frow["risk_forced"] is True and [x["word"] for x in frow["risk_hits"]] == ["翻脸"], (
+            "放行不等于没命中：页面上还得看得见这张被点过名"
+        )
+        assert fb["risk_recheck"]["forced"] == [pid] and fb["risk_recheck"]["blocked"] == []
+        assert "已确认" in fb["risk_recheck"]["forced_reason"]
+
+        # ⑤审计：放行记录单独成块，事后能回答「谁放的、放的哪几张、凭什么」
+        audit = (await _rows(AuditLog, AuditLog.action == "asset.production.export"))[-1]
+        rec = audit.after["risk_recheck"]
+        assert rec["hits"] == {pid: ["翻脸"]} and rec["forced_ids"] == [pid]
+        assert rec["blocked_ids"] is None and "不构成承诺" in rec["forced_reason"]
+
+        # 还原默认表，别让这条加词影响同文件后面的用例
+        await client.put("/api/assets/risk-lexicon", json={"block": [], "inherit": True}, headers=ha)
+        await client.aclose()
+
+    _run(_scenario())
+
+
 # ────────────────────────  11. 投递状态回写与成功/失败计数（11-03 拍板第 4 条）  ────────────────────────
 
 
@@ -2851,10 +3011,14 @@ def test_production_status_writeback_and_dispatch_counts():
         row0 = [x for x in listed_all.json()["items"] if x["id"] == ids[0]][0]
         assert row0["attempts"] == 1 and row0["started_at"] and row0["status"] in PRODUCTION_STATES
 
-        # 撤审只作废**未投递**那张（A2-2）：已投的是既成事实，不抹号池当日量
+        # 撤审作废**未投递**与**投失败**那两张（A2-2 + R-5：失败单留着只会被「重投」复活成可导出）；
+        # 已投上板还没回结果的（running）是既成事实，不抹号池当日量
         await client.post("/api/assets/summaries/review",
                           json={"summary_ids": [sid], "action": "reject", "reason": "角度不对"}, headers=ho)
         assert (await _row_of(AssetProduction, ids[3])).status == "superseded"
+        assert (await _row_of(AssetProduction, ids[1])).status == "superseded", (
+            "R-5：failed 单撤审时一并作废，否则一线报一次「失败重投」就把它送回可导出集"
+        )
         assert (await _row_of(AssetProduction, ids[0])).status == "running"
         after_revoke = await client.post(
             "/api/assets/productions/status",
@@ -2862,7 +3026,7 @@ def test_production_status_writeback_and_dispatch_counts():
         assert after_revoke.status_code == 200 and after_revoke.json()["updated"] == 0
         assert "作废" in after_revoke.json()["blocked"][0]["reason"]
         d2 = after_revoke.json()["dispatch"]
-        assert d2["by_status"] == {"running": 1, "success": 1, "failed": 1, "superseded": 1}
+        assert d2["by_status"] == {"running": 1, "success": 1, "superseded": 2}
         assert d2["dispatched"] == 3 and d2["today"]["dispatched"] == 3, "作废不该把已投的量抹成没投"
 
         logs = await _rows(AuditLog, AuditLog.action == "asset.production_status")
@@ -2870,6 +3034,28 @@ def test_production_status_writeback_and_dispatch_counts():
         assert logs[0].before["from"][ids[0]] == "order_ready"
         assert logs[0].after["to"] == "queued" and logs[0].after["board_tid"] == "T-9001"
         assert logs[-1].after["blocked"][0]["id"] == ids[3]
+
+        # ── R-5 第二条路：撤审那一刻单还在板上（running，按口径不动）→ 随后改判 failed →
+        #    再想「失败重投」。这一跳不看文案审核态就能把撤审的稿子送回可导出集，必须挡住。
+        revive = await client.post(
+            "/api/assets/productions/status",
+            json={"ids": [ids[0]], "status": "failed", "error": "回收判不可用"}, headers=ho)
+        assert revive.status_code == 200 and revive.json()["updated"] == 1, revive.text
+        retry = await client.post(
+            "/api/assets/productions/status",
+            json={"ids": [ids[0]], "status": "queued"}, headers=ho)
+        assert retry.status_code == 200 and retry.json()["updated"] == 0
+        assert "已不是过审状态" in retry.json()["blocked"][0]["reason"], retry.json()["blocked"]
+        assert (await _row_of(AssetProduction, ids[0])).status == "failed", "被挡下就一个字都不改"
+
+        # 文案重新过审后，同一张失败单恢复可重投（挡的是状态，不是把单子焊死）
+        await client.post("/api/assets/summaries/review",
+                          json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+        ok_retry = await client.post(
+            "/api/assets/productions/status",
+            json={"ids": [ids[0]], "status": "queued"}, headers=ho)
+        assert ok_retry.json()["updated"] == 1, ok_retry.json()
+
         await client.aclose()
 
     _run(_scenario())
@@ -3482,6 +3668,232 @@ def test_rejected_copy_goes_back_to_queue_when_its_owner_fixes_it():
         row = await _row_of(AssetSummary, sid)
         assert row.audit_status == RV_PENDING
 
+        await client.aclose()
+
+    _run(_scenario())
+
+
+# ─────────────────  11. 后台任务台账（D-1：提交即回 + 轮询）  ─────────────────
+
+
+async def _wait_job(client, headers, job_id, *, timeout=10.0):
+    """轮询到终态。拿到 running 就一直等，超时要明确报错，别默默返回半份状态。"""
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while True:
+        resp = await client.get(f"/api/assets/jobs/{job_id}", headers=headers)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        if not body["running"]:
+            return body
+        if loop.time() > deadline:
+            raise AssertionError(f"任务 {job_id} 在 {timeout}s 内没跑完：{body}")
+        await asyncio.sleep(0.05)
+
+
+def test_generate_hook_copy_async_mode_returns_immediately_and_polling_gets_result():
+    """D-1：`async_mode=true` 提交当场回任务号，模型在后台跑，轮询拿**整份**结果。
+
+    这条测的是"人不用干等"这件事本身：出文案单条 ~95s，一批十几条就是十几分钟，
+    同步等会一路撞上浏览器/nginx 超时（第二轮审核 D-1 的原始事故形态）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+
+        call = _fake_autoclip()
+        with patch("app.api.assets._call_autoclip", call):
+            sub = await client.post(
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset_id], "async_mode": True},
+                headers=hm,
+            )
+            # ① 当场就回，而且**不是**同步那套 {results:[...]} 形状
+            assert sub.status_code == 200, sub.text
+            ack = sub.json()
+            assert ack["queued"] is True and ack["job_id"]
+            assert ack["planned_units"] == 1
+            assert ack["poll_url"] == f"/api/assets/jobs/{ack['job_id']}"
+            assert "results" not in ack, "异步回执不能长得像同步结果（前端会误读成空批次）"
+
+            # ② 轮询到终态：结果整份在台账里
+            done = await _wait_job(client, h["admin"], ack["job_id"])
+        assert done["status"] == "succeeded", done
+        assert done["status_label"] == "已完成"
+        assert done["result"]["results"][0]["created"] == 3, done["result"]
+        assert done["progress"]["done"] == 1 and done["progress"]["total"] == 1
+
+        # ④ 数据真的落库了（台账不是唯一真相，业务表才是）
+        assert await _count(AssetSummary) == 3
+        # ⑤ 台账只有一行——后台重放时 async_mode 被摘掉，没有自我套娃
+        jobs = await _rows(AssetJob)
+        assert len(jobs) == 1, [j.status for j in jobs]
+        assert jobs[0].params["async_mode"] is True, "params 存的是原请求体（追溯用）"
+        # ⑥ 提交动作本身进了审计日志
+        audits = await _rows(AuditLog, AuditLog.action == "asset.job.summary_generate.submit")
+        assert len(audits) == 1 and audits[0].target_id == str(jobs[0].id)
+
+        # ⑦ 列表口：跑完后 only_open 为空，按 kind 能查到
+        open_now = await client.get("/api/assets/jobs?only_open=true", headers=hm)
+        assert open_now.json()["items"] == []
+        by_kind = await client.get("/api/assets/jobs?kind=summary_generate", headers=hm)
+        assert [i["id"] for i in by_kind.json()["items"]] == [str(jobs[0].id)]
+        bad_kind = await client.get("/api/assets/jobs?kind=nonsense", headers=hm)
+        assert bad_kind.status_code == 400 and "kind 只支持" in bad_kind.json()["detail"]
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_produce_async_mode_records_what_failed_and_why():
+    """后台任务的两种"没成"必须分开落账：逐条失败（结果还在）与整批炸了（只有原话）。
+
+    一线最怕"点了没反应"：台账里得写清是模型/展开把这条拒了（还能看出是哪条），
+    还是编排自己炸了（整批作废，得重投）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ha = h["material"], h["admin"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        sid = _approvable(items)["id"]
+        ok = await client.post(
+            "/api/assets/summaries/review", json={"summary_ids": [sid], "action": "approve"}, headers=ha)
+        assert ok.json()["results"][0]["ok"] is True, ok.text
+
+        # ① 展开服务挂了 = **逐条**失败：接口本身回 200，台账是 succeeded，
+        #    明细里带原话，且绝不落半成品行（与同步口的既有口径一致）
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(expand_error="展开服务没回话")):
+            sub = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [sid], "n": 2, "async_mode": True},
+                headers=ha,
+            )
+            assert sub.status_code == 200, sub.text
+            ack = sub.json()
+            assert ack["planned_units"] == 1 and "生成生产单" in ack["message"]
+            done = await _wait_job(client, ha, ack["job_id"])
+        assert done["status"] == "succeeded", done
+        assert done["result"]["results"][0]["created"] == 0, done["result"]
+        assert "展开服务没回话" in done["result"]["results"][0]["error"], done["result"]
+        assert await _count(AssetProduction) == 0, "展开失败不落半成品行"
+
+        # ② 请求体不合法 = **当场拒绝**，根本不排后台、不留台账
+        boom = await client.post(
+            "/api/assets/produce", json={"summary_ids": [], "async_mode": True}, headers=ha)
+        assert boom.status_code == 400, boom.text
+        assert await _count(AssetJob) == 1, "校验没过就不该落台账（否则全是必然失败的行）"
+
+        # ③ 编排炸了（故障注入：读词表这步抛 RuntimeError）= 整批 failed + 异常原话。
+        #    注入的是"接口以外"的意外，真实形态是连不上库/代码抛错，
+        #    判据是同一条：绝不能把异常抛回事件循环，也绝不能标成 succeeded。
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()), \
+             patch("app.api.assets._risk_lexicon", AsyncMock(side_effect=RuntimeError("连不上配置库"))):
+            sub2 = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [sid], "n": 1, "async_mode": True},
+                headers=ha,
+            )
+            assert sub2.status_code == 200, sub2.text
+            done2 = await _wait_job(client, ha, sub2.json()["job_id"])
+        assert done2["status"] == "failed", done2
+        assert done2["result"] is None, "整批没跑成的不该有结果可看"
+        assert "RuntimeError" in done2["error"] and "连不上配置库" in done2["error"], done2["error"]
+        assert done2["status_label"] == "失败"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_async_submit_blocked_by_running_twin_same_batch():
+    """防重复烧钱：同批/同条已经在后台跑着，第二次提交当场 409，不起第二份活。
+
+    这条守卫是**台账自己判**（不靠前端禁用按钮）：两个人同时点、或一个人连点两下，
+    模型费用和钩子编号只会被烧一次。测试里直接造一条 queued 台账，
+    不靠"抢在后台跑完之前发第二次"那种撞时间窗的写法（那是随机测试）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        batch_id = str((await _row_of(AssetItem, asset_id)).batch_id)
+
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetJob(
+                kind=JOB_SUMMARY_GENERATE, status=JB_QUEUED,
+                batch_id=uuid.UUID(batch_id), params={"asset_ids": [asset_id]},
+            ))
+            await s.commit()
+
+        # 点名同一条素材 → 409
+        dup = await client.post(
+            "/api/assets/summaries/generate",
+            json={"asset_ids": [asset_id], "async_mode": True}, headers=hm)
+        assert dup.status_code == 409, dup.text
+        assert "正在后台跑" in dup.json()["detail"] and "重复扣模型费用" in dup.json()["detail"]
+
+        # 整批排队（只有 batch_id）→ 同样 409，话说得更直白
+        dup_batch = await client.post(
+            "/api/assets/summaries/generate",
+            json={"batch_id": batch_id, "async_mode": True}, headers=hm)
+        assert dup_batch.status_code == 409, dup_batch.text
+        assert "已经在后台跑着" in dup_batch.json()["detail"]
+
+        # 同步口径不受影响：没在跑的那批照样能提交（这里换个批次 id 是空队列 → 400 而非 409）
+        other = await client.post(
+            "/api/assets/summaries/generate",
+            json={"batch_id": str(uuid.uuid4())}, headers=hm)
+        assert other.status_code == 400 and "没有待出文案的素材" in other.json()["detail"]
+
+        # 台账里没有第二条：守卫拦在落库之前
+        assert await _count(AssetJob) == 1
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_startup_sweep_marks_open_jobs_interrupted():
+    """重启清扫：进程没了，挂在 queued/running 的任务一律判「已中断」，绝不假装还在跑。
+
+    现网 backend 是 `--workers 1`，协程活在进程内存里，重启即全没；
+    不清扫的话台账永远显示"正在跑"，一线等一个永远不会来的结果。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        async with dbmod.async_session_factory() as s:
+            s.add_all([
+                AssetJob(kind=JOB_SUMMARY_GENERATE, status=JB_QUEUED, params={"asset_ids": [asset_id]},
+                         created_by=None),
+                AssetJob(kind=JOB_PRODUCE, status=JB_RUNNING, params={"summary_ids": []}, created_by=None),
+                AssetJob(kind=JOB_SUMMARY_GENERATE, status=JB_SUCCEEDED, params={}, created_by=None),
+            ])
+            await s.commit()
+
+        swept = await assets_api.sweep_interrupted_asset_jobs()
+        assert swept == 2, swept
+        rows = await _rows(AssetJob, AssetJob.status == JB_INTERRUPTED)
+        assert len(rows) == 2 and all("重启" in r.error for r in rows)
+        # 已经跑完的不动（结果仍然可信）
+        still = await _rows(AssetJob, AssetJob.status == JB_SUCCEEDED)
+        assert len(still) == 1
+
+        # 前端拿到的状态是说人话的
+        listing = await client.get("/api/assets/jobs?only_open=true", headers=hm)
+        assert listing.json()["items"] == [], "中断是终态，不能再算「还在跑」"
+        detail = await client.get(f"/api/assets/jobs/{rows[0].id}", headers=hm)
+        assert detail.json()["status_label"].startswith("已中断"), detail.json()
+        assert detail.json()["running"] is False
         await client.aclose()
 
     _run(_scenario())

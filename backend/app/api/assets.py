@@ -55,12 +55,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user, require_roles
 from app.config import settings
+# ⚠️ `async_session_factory` 走 `app.database` 的**模块属性**取（不在本模块 import 名字）：
+# 后台任务的会话必须和 `init_db()`／测试 bootstrap 换引擎后的那个工厂是同一个，
+# 直接 `from app.database import async_session_factory` 会把导入那一刻的对象绑死，
+# 集成测试替换过引擎后，后台任务就会拿旧引擎去连一个根本不存在的库。
+from app import database as _database
 from app.database import get_db
 from app.models.asset import (
+    ASSET_JOB_KINDS,
     AS_ARCHIVED,
     CH_WEWORK_AIVIDEO,
     DEFAULT_PRODUCTION_CHANNEL,
     EXPORTABLE_PRODUCTION_STATES,
+    JB_FAILED,
+    JB_INTERRUPTED,
+    JB_QUEUED,
+    JB_RUNNING,
+    JB_SUCCEEDED,
+    JOB_PRODUCE,
+    JOB_SUMMARY_GENERATE,
     PR_CANCELLED,
     PR_FAILED,
     PR_ORDER_READY,
@@ -87,6 +100,7 @@ from app.models.asset import (
     STAGE_SUCCESS,
     AssetBatch,
     AssetItem,
+    AssetJob,
     AssetOutput,
     AssetProduction,
     AssetSummary,
@@ -192,6 +206,12 @@ class SummaryGenerateRequest(BaseModel):
     retry_failed: bool = Field(
         False, description="整批排队时把 stage_summary=failed 的也捞回（默认只排没跑过的）"
     )
+    async_mode: bool = Field(
+        False,
+        description="D-1：true＝立即回一个任务号（后台继续跑，前端轮询 /assets/jobs/任务号），"
+        "false＝同步等到模型跑完（等几十秒到十几分钟，浏览器/nginx 都可能先掐）。"
+        "页面按钮走 true；脚本/回归用例保持默认",
+    )
 
 
 class RefreshBatchRequest(BaseModel):
@@ -227,7 +247,13 @@ class ReviewRequest(BaseModel):
     new_text: Optional[str] = Field(None, description="pass_edited 时的改后文案")
     waive_reason: Optional[str] = Field(
         None,
-        description="仅 admin：复核（超字数/风险词/一致性）未过但确需过审时的豁免理由，会写进 AuditLog",
+        description="仅 admin：复核未过但确需过审时的豁免理由，会写进 AuditLog。"
+        "R-6 后真拦点只剩超字数(shape)与高风险词(risk)——一致性已降为预警，不再需要豁免",
+    )
+    waive_codes: Optional[List[str]] = Field(
+        None,
+        description="R-6：只豁免这几类问题（shape/risk，可选其一）；留空＝沿用「整条全豁免」。"
+        "只想放过字数不想放过违禁词时就传 [\"shape\"]",
     )
 
 
@@ -269,7 +295,17 @@ class ProduceRequest(BaseModel):
     )
     waive_reason: Optional[str] = Field(
         None,
-        description="仅 admin：投产前复核（超字数/风险词/一致性/骨架）未过仍要投递时的豁免理由，写进 AuditLog",
+        description="仅 admin：投产前复核（超字数/高风险词）未过仍要投递时的豁免理由，写进 AuditLog",
+    )
+    waive_codes: Optional[List[str]] = Field(
+        None,
+        description="R-6：只豁免这几类问题（shape/risk）；留空＝整条全豁免。"
+        "展开后复扫新发现的 risk 命中（模型自己加的违禁词）不在豁免范围内，仍会拦下",
+    )
+    async_mode: bool = Field(
+        False,
+        description="D-1：true＝立即回一个任务号（展开提示词要等模型，后台跑完再轮询取结果），"
+        "false＝同步等到底（脚本/回归用例走这条，页面按钮走 true）",
     )
 
 
@@ -745,12 +781,23 @@ async def import_links_batch(
     tier = _tier_or_400(data.prompt_max_duration)
 
     # 归一化（无法解析的先记 skipped，不入库——入库了也反推不了）
+    # R-2（11-04 第二轮审核）：`normalize_source_list` 只按**原始字符串**去同批重复，
+    # 而抖音/小红书的同一个视频常有多种写法（`v.douyin.com/x` 与
+    # `www.iesdouyin.com/share/video/x`），归一化后才撞成一条 → 原来两条都会建素材行，
+    # 反推按行计费＝同一条片子付两遍钱。这里补一道**按归一化键**的同批去重。
     entries: List[tuple] = []
+    seen_norm: Dict[str, str] = {}
     for raw in urls:
         norm, platform = svc.normalize_source_url(raw)
         if not norm:
             skipped.append(f"无法识别的链接已跳过: {raw[:40]}")
             continue
+        if norm in seen_norm:
+            skipped.append(
+                f"同一条视频的另一种写法已跳过（与 {seen_norm[norm][:40]} 是同一素材）"
+            )
+            continue
+        seen_norm[norm] = raw
         entries.append((raw, norm, platform))
     if not entries:
         raise HTTPException(status_code=400, detail="链接均无法识别，请检查是否为有效分享链接")
@@ -2038,17 +2085,23 @@ async def _delete_summaries(
 async def _supersede_productions(
     db: AsyncSession, summary: AssetSummary, *, operator: User, reason: str
 ) -> int:
-    """文案被撤销过审 → 它派生的**未投递**生产单整批作废（A2-2）。
+    """文案被撤销过审 → 它派生的**还没成功投出去**的生产单整批作废（A2-2 + R-5，11-04）。
 
     不作废的话：`/productions/export` 会把一张"审核已拒绝的文案"的单导出去投豆包，
     审的和产的就不是同一条了。已投递（queued/running/success）的不动——那些是既成事实，
     只能靠回收侧标记，不能假装没发生。
+
+    R-5：`failed` 原来不在这个集合里，而 `failed → queued` 是允许的迁移（重投），
+    queued 又在可交付集内 → **一张文案早已撤审的失败单，被当「失败重投」报一下就
+    能导出投放**。按 D-4 拍板：失败单一并作废（与「撤审即作废派生单」同型）。
+    代价是台账里那张失败单会变成作废旧单，一线找不到「我投过失败了的那条」——
+    所以作废前后的状态进 AuditLog，`reason` 里带上撤审理由，要追随时查审计。
     """
     rows = (
         await db.execute(
             select(AssetProduction).where(
                 AssetProduction.summary_id == summary.id,
-                AssetProduction.status.in_([PR_ORDER_READY, PR_SKIPPED]),
+                AssetProduction.status.in_([PR_ORDER_READY, PR_SKIPPED, PR_FAILED]),
             )
         )
     ).scalars().all()
@@ -2086,6 +2139,12 @@ async def _call_autoclip(path: str, payload: dict, timeout: float = 900.0) -> di
     11-04 第二轮审核订正：这里原来写"nginx 900s > 本函数 900s"，一是同值本就有竞态，
     二是现网 163 的 `/api/` 由根 `nginx.conf` 直连 backend:8080、**根本不经过** frontend
     容器那份配置，写"同口径"是把预览栈的数当成生产数。
+
+    11-04 批 C（D-1）之后这条链的适用面：出文案 / 投产的页面按钮改成 `async_mode=true`
+    提交即回任务号，本函数在后台协程里跑，**上面那三层（960/1200/3600）不再夹它**，
+    只剩 autoclip 600s < 本函数 900s 这一截。还受整条链约束的是反推（analyze）、
+    收敛在跑结果（refresh-batch）、按需解析（resolve）和同步形态的出文案/投产（脚本、
+    手工调用）——别因为"反正异步了"就把这里的 900 往下调。
     """
     url = f"{settings.AUTOCLIP_URL.rstrip('/')}/{path.lstrip('/')}"
     try:
@@ -2102,6 +2161,367 @@ async def _call_autoclip(path: str, payload: dict, timeout: float = 900.0) -> di
     except httpx.RequestError as e:
         logger.error("autoclip %s 连接失败: %s", path, e)
         raise HTTPException(status_code=502, detail=f"无法连接 AutoClip 服务：{e}")
+
+
+# ──────────────────────────────────────────────
+# 后台任务台账（D-1：出文案 / 投产「提交即回 + 轮询」）
+# ──────────────────────────────────────────────
+
+# asyncio 对 Task 只持**弱引用**：不留引用，正在跑的后台协程可能被 GC 掉，
+# 台账却还挂着 running——看着像"卡在模型上"，其实是活早没了。跑完用回调摘掉。
+_ASSET_JOB_TASKS: set = set()
+
+# 非终态：重复提交守卫与「还在跑吗」都按这两个态判
+JOB_OPEN_STATES = (JB_QUEUED, JB_RUNNING)
+JOB_TERMINAL_STATES = (JB_SUCCEEDED, JB_FAILED, JB_INTERRUPTED)
+# 轮询回给前端的白话状态（键是枚举，别改键）
+ASSET_JOB_STATE_LABELS = {
+    JB_QUEUED: "排队中",
+    JB_RUNNING: "正在跑",
+    JB_SUCCEEDED: "已完成",
+    JB_FAILED: "失败",
+    JB_INTERRUPTED: "已中断（服务重启，结果不可信）",
+}
+
+
+def _job_endpoint(kind: str) -> Tuple[Any, Any, str]:
+    """kind → (请求模型, 真正干活的接口函数, 白话名称)。
+
+    后台任务**不另写一套业务逻辑**，就是把 `/summaries/generate`、`/produce` 这两个
+    接口原样再调一次（自己开会话、自己收尾）。写两套必然分叉——审核/投产/导出三个入口
+    刚刚才因为口径分叉被点名（R-6），这里绝不再造一个。
+    """
+    if kind == JOB_SUMMARY_GENERATE:
+        return SummaryGenerateRequest, generate_summaries, "出钩子文案"
+    if kind == JOB_PRODUCE:
+        return ProduceRequest, create_productions, "生成生产单"
+    raise HTTPException(
+        status_code=400,
+        detail=f"任务类型只支持 {'/'.join(ASSET_JOB_KINDS)}",
+    )
+
+
+def _job_scope_ids(kind: str, params: Dict[str, Any]) -> List[str]:
+    """这次任务真正圈住的 id 列表（出文案＝素材 id，投产＝文案 id），用于防重复烧钱。"""
+    key = "asset_ids" if kind == JOB_SUMMARY_GENERATE else "summary_ids"
+    return [str(x) for x in (params.get(key) or []) if str(x)]
+
+
+async def _assert_no_running_twin(
+    db: AsyncSession, *, kind: str, params: Dict[str, Any], batch_id: Optional[str]
+) -> None:
+    """同一件事已经在跑就**不再起一份**——出文案和投产都是真花钱/真占号的。
+
+    判据两档：按 id 列表提交的，比对 id 是否有交集；整批排队的（只有 batch_id），
+    比对同批次同类型是否已有未结束的活。只回看 3 小时，免得一条历史卡死的活
+    永远挡住新提交（那种情况该由 interrupted 收尾，见 lifespan 的启动清扫）。
+    """
+    label = _job_endpoint(kind)[2]
+    since = datetime.utcnow() - timedelta(hours=3)
+    conds = [AssetJob.kind == kind, AssetJob.status.in_(JOB_OPEN_STATES), AssetJob.created_at >= since]
+    if batch_id:
+        conds.append(AssetJob.batch_id == _as_uuid(batch_id, "batch_id"))
+    rows = list((await db.execute(select(AssetJob).where(and_(*conds)))).scalars().all())
+    if not rows:
+        return
+    ids = set(_job_scope_ids(kind, params))
+    if not ids:
+        # 整批排队：同批同类型有未结束的活就是重复点
+        if batch_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"这批的「{label}」已经在后台跑着（任务 {rows[0].id}，"
+                    f"{ASSET_JOB_STATE_LABELS.get(rows[0].status, rows[0].status)}），"
+                    "请等它跑完或到任务台账里看进度，别再提交一次（重复＝重复花钱）"
+                ),
+            )
+        return
+    for job in rows:
+        if ids & set(_job_scope_ids(job.kind, job.params or {})):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"选中的里有正在后台跑「{label}」的条目（任务 {job.id}，"
+                    f"{ASSET_JOB_STATE_LABELS.get(job.status, job.status)}）。"
+                    "同一批重复提交＝重复扣模型费用，请等它结束或换别的条目"
+                ),
+            )
+
+
+async def _start_asset_job(
+    db: AsyncSession,
+    *,
+    kind: str,
+    data: BaseModel,
+    operator: User,
+    batch_id: Optional[str],
+    planned_units: Optional[int],
+) -> AssetJob:
+    """落一行 queued 台账并排上后台协程。
+
+    ⚠️ 必须先 `commit` 再调度：后台协程用的是**另一个会话**，读不到本会话未提交的行；
+    反过来也不能等本会话的 response 结束——那正是本口要避免的"人得干等着"。
+    """
+    params = data.model_dump(mode="json")
+    await _assert_no_running_twin(db, kind=kind, params=params, batch_id=batch_id)
+    job = AssetJob(
+        kind=kind,
+        status=JB_QUEUED,
+        batch_id=_as_uuid(batch_id, "batch_id") if batch_id else None,
+        params=params,
+        planned_units=planned_units,
+        created_by=operator.id,
+    )
+    db.add(job)
+    await db.flush()
+    await _write_audit(
+        db,
+        action=f"asset.job.{kind}.submit",
+        operator=operator,
+        target_type="asset_job",
+        target_id=job.id,
+        after={"batch_id": batch_id, "planned_units": planned_units, "params": params},
+    )
+    await db.commit()
+    _schedule_asset_job(str(job.id), kind, params, str(operator.id))
+    return job
+
+
+def _schedule_asset_job(job_id: str, kind: str, params: Dict[str, Any], operator_id: str) -> None:
+    task = asyncio.create_task(_run_asset_job(job_id, kind, params, operator_id))
+    _ASSET_JOB_TASKS.add(task)
+    task.add_done_callback(_ASSET_JOB_TASKS.discard)
+
+
+async def _finish_asset_job(job_id: str, status: str, result: Optional[dict], error: Optional[str]) -> None:
+    """终态回写用**新会话**：跑业务那个会话可能已经带着异常事务回滚过，不能再指望它。"""
+    async with _database.async_session_factory() as db:
+        job = await db.get(AssetJob, uuid.UUID(job_id))
+        if job is None:
+            return
+        job.status = status
+        job.result = result
+        job.error = (error or None) and str(error)[:1000]
+        job.finished_at = datetime.utcnow()
+        await db.commit()
+
+
+async def _run_asset_job(job_id: str, kind: str, params: Dict[str, Any], operator_id: str) -> None:
+    """后台把接口原样跑一遍，整份响应进台账。
+
+    这里**故意不做业务判断**：闸门、成本确认、钩子编号、复核全在被包住的那个口里。
+    失败分两类：`HTTPException`＝接口自己拒的（参数不对/闸门没过），照实把 detail 存进
+    error 让一线看到原话；其它异常＝编排炸了（连不上库等），记异常类型 + 日志堆栈。
+    """
+    model_cls, endpoint, _ = _job_endpoint(kind)
+    uid = uuid.UUID(job_id)
+    # ⚠️ 必须摘掉 async_mode：后台任务就是把同一个接口再调一遍，留着 true 会
+    # 再起一份任务、再摘一次……无限套娃，台账里全是自己抄自己的活。
+    params = {**params, "async_mode": False}
+    # 终态在会话**关闭之后**再写：中途另开会话改 asset_jobs 那一行，跑业务的会话还
+    # 挂着未提交事务（异常路径尤其如此），两个会话抢同一条连接在 sqlite 测试里就是死锁。
+    outcome: Optional[Tuple[str, Optional[dict], Optional[str]]] = None
+    async with _database.async_session_factory() as db:
+        job = await db.get(AssetJob, uid)
+        if job is None or job.status not in JOB_OPEN_STATES:
+            # 进程重启的清扫已经把它判成 interrupted，别再假装还在跑
+            return
+        operator = await db.get(User, uuid.UUID(operator_id))
+        if operator is None:
+            outcome = (JB_FAILED, None, "提交人已不存在，任务没执行")
+        else:
+            job.status = JB_RUNNING
+            job.started_at = datetime.utcnow()
+            await db.commit()
+            try:
+                result = await endpoint(model_cls(**params), operator, db)
+                outcome = (
+                    JB_SUCCEEDED,
+                    result if isinstance(result, dict) else {"raw": result},
+                    None,
+                )
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)[:900]
+                logger.warning("素材库后台任务 %s(%s) 被接口拒绝：%s", job_id, kind, detail)
+                await db.rollback()
+                outcome = (JB_FAILED, None, f"HTTP {exc.status_code}：{detail}")
+            except Exception as exc:  # noqa: BLE001 — 后台任务的兜底，绝不能把异常抛回事件循环
+                logger.exception("素材库后台任务 %s(%s) 异常", job_id, kind)
+                await db.rollback()
+                outcome = (JB_FAILED, None, f"{type(exc).__name__}: {exc}"[:900])
+    await _finish_asset_job(job_id, outcome[0], outcome[1], outcome[2])
+
+
+async def _job_progress(db: AsyncSession, job: AssetJob) -> Dict[str, Any]:
+    """进度按台账**现算**（协程不回报中间态，所以口径只能是"数结果"）。
+
+    - 出文案：圈住的素材里 `stage_summary` 已收敛（成功/失败）的条数。
+      ⚠️ 这条口径会把**上一次就跑好的**也算进去，所以它回答的是"还欠几条"，
+      不是"这次跑了几条"——文案不齐时看列表页的逐条阶段标签更准。
+    - 投产：圈住的文案里在本次开跑（started_at）之后**真长出过生产单**的条数。
+    """
+    total = job.planned_units
+    done: Optional[int] = None
+    note = "进度按台账现算；逐条状态看素材列表/生产单列表"
+    ids = _job_scope_ids(job.kind, job.params or {})
+    if job.kind == JOB_SUMMARY_GENERATE:
+        conds = []
+        if ids:
+            conds.append(AssetItem.id.in_([uuid.UUID(x) for x in ids]))
+        elif job.batch_id:
+            conds.append(AssetItem.batch_id == job.batch_id)
+        if conds:
+            total = total or len(ids)
+            done = int(
+                (
+                    await db.execute(
+                        select(func.count(AssetItem.id)).where(
+                            and_(*conds, AssetItem.stage_summary.in_((STAGE_SUCCESS, STAGE_FAILED)))
+                        )
+                    )
+                ).scalar()
+                or 0
+            )
+            if job.batch_id and not ids:
+                note = "整批排队：进度＝本批已出完文案的条数（含上次就跑好的），剩余条数看队列"
+    elif job.kind == JOB_PRODUCE and ids and job.started_at:
+        done = int(
+            (
+                await db.execute(
+                    select(func.count(func.distinct(AssetProduction.summary_id))).where(
+                        AssetProduction.summary_id.in_([uuid.UUID(x) for x in ids]),
+                        AssetProduction.created_at >= job.started_at,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+        total = total or len(ids)
+        note = "投产进度＝已经长出生产单的文案条数（本批开跑之后新建的才算）"
+    return {"total": total, "done": done, "note": note}
+
+
+def _serialize_job(job: AssetJob, progress: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return {
+        "id": str(job.id),
+        "kind": job.kind,
+        "kind_label": _job_kind_label(job.kind),
+        "status": job.status,
+        "status_label": ASSET_JOB_STATE_LABELS.get(job.status, job.status),
+        "running": job.status in JOB_OPEN_STATES,
+        "batch_id": str(job.batch_id) if job.batch_id else None,
+        "planned_units": job.planned_units,
+        "progress": progress,
+        "params": job.params,
+        "error": job.error,
+        # 结果只在终态回；跑一半时前端不该看到半份清单（会让人以为已经完事）
+        "result": job.result if job.status in JOB_TERMINAL_STATES else None,
+        "created_at": utc_iso(job.created_at),
+        "started_at": utc_iso(job.started_at),
+        "finished_at": utc_iso(job.finished_at),
+    }
+
+
+def _job_kind_label(kind: str) -> str:
+    try:
+        return _job_endpoint(kind)[2]
+    except HTTPException:
+        return kind
+
+
+def _job_accepted(job: AssetJob, label: str) -> Dict[str, Any]:
+    """`async_mode` 的统一回执：立即返回任务号，结果靠轮询取。
+
+    故意**不**沿用同步接口的响应形状——同步返回 `{results:[...]}`，异步返回
+    `{job_id, queued:true}`，前端拿到哪个就知道自己该等还是该刷新列表，
+    不会出现"看到 results 是空的以为没素材"这种误读。
+    """
+    return {
+        "job_id": str(job.id),
+        "status": job.status,
+        "status_label": ASSET_JOB_STATE_LABELS.get(job.status, job.status),
+        "queued": True,
+        "planned_units": job.planned_units,
+        "poll_url": f"/api/assets/jobs/{job.id}",
+        "list_url": "/api/assets/jobs?only_open=true",
+        "message": (
+            f"「{label}」已排到后台（本次 {job.planned_units or 0} 条），不用守着页面等；"
+            "跑完会在任务台账里留下整份结果，中途关页面也不影响"
+        ),
+    }
+
+
+async def sweep_interrupted_asset_jobs() -> int:
+    """启动清扫：进程重启前挂在半路的任务一律判「已中断」。
+
+    为什么必须由启动来做：后台协程活在**进程内存**里，`--workers 1` 重启即全没，
+    台账却还挂着 queued/running——一线看到"正在跑"就一直等，等一个永远不会来的结果。
+    判 interrupted 而不是失败：这不是业务失败（模型没拒绝、闸门没过），是**我们没跑完**，
+    结果不可信，绝不能让前端把这种任务的 result 当数据用。
+    """
+    async with _database.async_session_factory() as db:
+        rows = list(
+            (
+                await db.execute(select(AssetJob).where(AssetJob.status.in_(JOB_OPEN_STATES)))
+            ).scalars().all()
+        )
+        for job in rows:
+            job.status = JB_INTERRUPTED
+            job.error = "服务重启，任务没能跑完，结果不可信——需要重做请重新提交"
+            job.finished_at = datetime.utcnow()
+        await db.commit()
+        if rows:
+            logger.warning("素材库启动清扫：%d 个在跑/排队的后台任务已标记中断", len(rows))
+        return len(rows)
+
+
+@router.get("/assets/jobs")
+async def list_asset_jobs(
+    status: Optional[str] = None,
+    kind: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    only_open: bool = False,
+    limit: int = 20,
+    current_user: User = Depends(require_roles(*_PROD_ROLES)),
+    db: AsyncSession = Depends(get_db),
+):
+    """任务台账列表：页面刷新后、换浏览器后，靠这个口找回"我刚才点的那批还在不在跑"。"""
+    limit = min(max(1, int(limit or 20)), 100)
+    conds: List[Any] = []
+    if kind:
+        if kind not in ASSET_JOB_KINDS:
+            raise HTTPException(status_code=400, detail=f"kind 只支持 {'/'.join(ASSET_JOB_KINDS)}")
+        conds.append(AssetJob.kind == kind)
+    if only_open:
+        conds.append(AssetJob.status.in_(JOB_OPEN_STATES))
+    elif status:
+        conds.append(AssetJob.status == status)
+    if batch_id:
+        conds.append(AssetJob.batch_id == _as_uuid(batch_id, "batch_id"))
+    stmt = (
+        select(AssetJob).order_by(AssetJob.created_at.desc()).limit(limit)
+        if not conds
+        else select(AssetJob).where(and_(*conds)).order_by(AssetJob.created_at.desc()).limit(limit)
+    )
+    jobs = list((await db.execute(stmt)).scalars().all())
+    return {
+        "items": [_serialize_job(j) for j in jobs],
+        "note": "进度是现算的粗口径；逐条成败看 result.results 或列表页的阶段标签",
+    }
+
+
+@router.get("/assets/jobs/{job_id}")
+async def get_asset_job(
+    job_id: str,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """轮询单个后台任务：`running` 就继续等，终态时 `result` 里是整份接口响应。"""
+    job = await db.get(AssetJob, _as_uuid(job_id, "job_id"))
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在（台账只留最近的，超期的看审计日志 asset.job.*）")
+    return _serialize_job(job, await _job_progress(db, job))
 
 
 @router.post("/assets/summaries/generate")
@@ -2146,6 +2566,17 @@ async def generate_summaries(
     count = int(settings.ASSET_HOOK_CANDIDATE_COUNT if data.count is None else data.count)
     if not 1 <= count <= 6:
         raise HTTPException(status_code=400, detail="候选数只支持 1~6 条")
+
+    if data.async_mode:
+        job = await _start_asset_job(
+            db,
+            kind=JOB_SUMMARY_GENERATE,
+            data=data,
+            operator=current_user,
+            batch_id=queue_batch_id,
+            planned_units=(len(picked) if queue is not None else len(asset_ids)),
+        )
+        return _job_accepted(job, "出钩子文案")
 
     # 词表整批读一次（带 TTL 缓存）：候选落库时就要把命中连同级别写进 risk_hit
     book, exemptions = await _risk_lexicon(db)
@@ -2534,6 +2965,23 @@ async def list_summaries(
     }
 
 
+def _split_waived(
+    problems: List[Dict[str, str]], waive_codes: Optional[List[str]]
+) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    """R-6：把复核拦点按**问题类型**切成「豁免掉的」和「仍然拦着的」。
+
+    `waive_codes` 留空＝整条全豁免（旧行为，保持兼容）；一旦传了就只放过点名的类型——
+    原来「一致性对不上 → 找 admin 豁免 → 同条里的真违禁词一起被放过」就是这么发生的。
+    返回 (waived, still_blocking)；still_blocking 非空＝这条仍然不许过。
+    """
+    if not waive_codes:
+        return list(problems), []
+    wanted = {str(c).strip() for c in waive_codes if str(c).strip()}
+    waived = [p for p in problems if p["code"] in wanted]
+    still = [p for p in problems if p["code"] not in wanted]
+    return waived, still
+
+
 @router.post("/assets/summaries/review")
 async def review_summaries(
     data: ReviewRequest,
@@ -2546,8 +2994,11 @@ async def review_summaries(
     1. **生产者不得自审**：素材创建人不能过自己素材的文案（admin 除外）；
     2. **驳回必填理由**：否则改写的人只能靠猜；
     3. **改后通过必须留痕**：原文进 text_before_edit，before/after 进 AuditLog，供 admin 抽检；
-    4. **过审前必须过复核**（A2-1）：超字数 / block 级风险词 / 与详规对不上，任一不过即拒；
-       admin 可带 `waive_reason` 豁免，豁免内容和理由逐条进 AuditLog。**撤销过审会连带把
+    4. **过审前必须过复核**（A2-1，R-6 口径）：拦人的只有**超字数**和 **block 级风险词**；
+       「与反推详规对不上」是**预警**——照样落库留痕（consistency_ok/note）、照样在接口里回给
+       前端，但不拦过审（专名白名单天然误报，硬拦只会训练一线来找 admin 豁免）。
+       admin 可带 `waive_reason` 豁免拦点，`waive_codes` 指定只放过哪几类（留空＝整条全放过，
+       兼容旧行为）；豁免内容和理由逐条进 AuditLog。**撤销过审会连带把
        由此文案派生的未投递生产单置为 superseded**（A2-2），不留"审核已拒、单还能导"的孤儿。
     """
     action_map = {
@@ -2598,6 +3049,7 @@ async def review_summaries(
         before = {"audit_status": summary.audit_status, "text": summary.text}
         was_passed = summary.audit_status in REVIEW_PASSED_STATES
         waived: Optional[dict] = None
+        recheck_warnings: List[dict] = []
 
         # A2-1：过审 = 「这条就是要投豆包的那条」。所以过审前跑一遍与投产前**同一套**
         # 复核（形态/风险词 block 级/一致性），而不是只看一眼字数。
@@ -2609,18 +3061,27 @@ async def review_summaries(
             script = await _prompt_script_of(db, asset)
             verdict = svc.recheck_copy(effective, script, lexicon=book, exemptions=exemptions)
             if not verdict["ok"]:
-                if is_admin and (data.waive_reason or "").strip():
+                waived_list, still_blocking = _split_waived(
+                    verdict["problems"], data.waive_codes if is_admin else None
+                )
+                if is_admin and (data.waive_reason or "").strip() and not still_blocking:
                     waived = {
-                        "problems": verdict["problems"],
+                        "problems": waived_list,
+                        "codes": sorted({p["code"] for p in waived_list}),
                         "reason": (data.waive_reason or "").strip()[:500],
                     }
                 else:
+                    # 分粒度豁免没覆盖到的类型照实拦下来，并说清是**哪几类**没被豁免
+                    detail = still_blocking or verdict["problems"]
                     results.append({
                         "summary_id": str(uuid_s), "ok": False, "code": asset.code,
                         "error_code": "ASSET_RECHECK_FAILED",
-                        "problems": verdict["problems"],
-                        "error": "复核未过：" + "；".join(p["message"] for p in verdict["problems"])
-                                 + "（管理员可填豁免理由强过，会记入审计）",
+                        "problems": detail,
+                        "waivable_codes": sorted({p["code"] for p in verdict["problems"]}),
+                        "error": "复核未过：" + "；".join(p["message"] for p in detail)
+                                 + ("（管理员可填豁免理由强过，会记入审计；"
+                                    "只放过某几类问题请传 waive_codes）"
+                                    if is_admin else "（这条过不了，请改文案或找审核人）"),
                     })
                     continue
             if to_state == RV_PASSED_EDITED:
@@ -2628,6 +3089,7 @@ async def review_summaries(
                 summary.text = effective
             summary.word_count = verdict["chars"]
             summary.risk_hit = svc.format_risk_hits(verdict["risk"])
+            recheck_warnings = list(verdict.get("warnings") or [])
             consist = verdict["consistency"]
             if consist is not None:
                 summary.consistency_ok = consist["ok"]
@@ -2681,6 +3143,9 @@ async def review_summaries(
         results.append({
             "summary_id": str(uuid_s), "ok": True, "code": asset.code, "audit_status": to_state,
             "waived": bool(waived),
+            # R-6：一致性这类**预警**不拦人，但必须让审核人看到「过了、只是有预警」，
+            # 否则留痕列 consistency_ok=false 就成了没人解释的红灯。
+            "warnings": recheck_warnings,
             "superseded_productions": superseded,
         })
 
@@ -2688,11 +3153,13 @@ async def review_summaries(
     await db.commit()
     ok = sum(1 for r in results if r["ok"])
     waived_cnt = sum(1 for r in results if r.get("waived"))
+    warn_cnt = sum(1 for r in results if r["ok"] and r.get("warnings"))
     return {
         "results": results,
         "message": (
             f"审核完成：成功 {ok} 条，未通过 {len(results) - ok} 条（未通过原因见 results）"
             + (f"，其中 {waived_cnt} 条为管理员豁免（已入审计，admin 可抽检）" if waived_cnt else "")
+            + (f"；{warn_cnt} 条带预警（与反推详规对不上，不拦过审但请复核一眼）" if warn_cnt else "")
         ),
     }
 
@@ -2760,16 +3227,19 @@ async def resubmit_summaries(
             results.append({"summary_id": str(uuid_s), "ok": False, "code": asset.code, "error": "文案不能为空"})
             continue
 
-        # 硬闸门：形态 + block 级风险词当场拦；一致性只留痕（见 docstring 第 3 条）
+        # 硬闸门：与 /review、/produce **同一套口径**（R-6）——recheck_copy 默认只把
+        # 形态和 block 级风险词算进 problems，一致性掉到 warnings 里留痕不拦。
+        # 所以这里直接信 verdict["ok"]，不再自己按 code 挑挑拣拣：三个入口曾经因为
+        # 各自过滤（这里手动滤 consistency、审核当硬闸拦）而严度不一，同一条文案
+        # 「提审能过、投产被拒」。
         script = await _prompt_script_of(db, asset)
         verdict = svc.recheck_copy(candidate, script, lexicon=book, exemptions=exemptions)
-        blocking = [p for p in verdict["problems"] if p["code"] != "consistency"]
-        if blocking:
+        if not verdict["ok"]:
             results.append({
                 "summary_id": str(uuid_s), "ok": False, "code": asset.code,
                 "error_code": "ASSET_RECHECK_FAILED",
-                "problems": blocking,
-                "error": "复核未过：" + "；".join(p["message"] for p in blocking)
+                "problems": verdict["problems"],
+                "error": "复核未过：" + "；".join(p["message"] for p in verdict["problems"])
                          + "（先改干净再提审）",
             })
             continue
@@ -2832,6 +3302,8 @@ async def resubmit_summaries(
         results.append({
             "summary_id": str(uuid_s), "ok": True, "code": asset.code,
             "audit_status": RV_PENDING, "text": summary.text,
+            # 预警（一致性）随结果回给作者：不拦提审，但要让人知道审核人会看到这条提示
+            "warnings": list(verdict.get("warnings") or []),
         })
 
     await db.flush()
@@ -2945,6 +3417,20 @@ async def create_productions(
     if title_count is not None and not 1 <= int(title_count) <= 20:
         raise HTTPException(status_code=400, detail="K（推荐标题条数=该剧发布号数）只支持 1..20")
 
+    if data.async_mode:
+        # D-1：展开提示词要调模型（实测一次 9 分钟），同步等会一路撞上
+        # 浏览器 960s / 后端 900s / nginx 的超时链，参数校验已经全过完了才排后台，
+        # 所以"提交即回"回的是**已受理**，不是"大概能成"。
+        job = await _start_asset_job(
+            db,
+            kind=JOB_PRODUCE,
+            data=data,
+            operator=current_user,
+            batch_id=None,
+            planned_units=len(data.summary_ids),
+        )
+        return _job_accepted(job, "生成生产单")
+
     productions: List[AssetProduction] = []
     results: List[dict] = []
     batch_codes: set = set()
@@ -3002,24 +3488,32 @@ async def create_productions(
         verdict = svc.recheck_copy(summary.text, script, lexicon=book, exemptions=exemptions)
         waived = None
         if not verdict["ok"]:
-            if is_admin and (data.waive_reason or "").strip():
+            waived_list, still_blocking = _split_waived(
+                verdict["problems"], data.waive_codes if is_admin else None
+            )
+            if is_admin and (data.waive_reason or "").strip() and not still_blocking:
                 waived = {
-                    "problems": verdict["problems"],
+                    "problems": waived_list,
+                    "codes": sorted({p["code"] for p in waived_list}),
                     "reason": (data.waive_reason or "").strip()[:500],
                 }
                 # 注意是**嵌一套**不是摊平：展开后的复扫结果要往同一个 dict 里补
                 # prompt_problems，摊平（`{**waived}`）等于把那个引用丢了、补进去的东西永远看不见
                 waived_rows.append({"summary_id": str(uuid_s), "code": asset.code, "waived": waived})
             else:
+                detail = still_blocking or verdict["problems"]
                 recheck_failed.append({
-                    "summary_id": str(uuid_s), "code": asset.code, "problems": verdict["problems"],
+                    "summary_id": str(uuid_s), "code": asset.code, "problems": detail,
                 })
                 results.append({
                     "summary_id": str(uuid_s), "created": 0, "code": asset.code,
                     "error_code": "ASSET_RECHECK_FAILED",
-                    "problems": verdict["problems"],
-                    "error": "投产前复核未过：" + "；".join(p["message"] for p in verdict["problems"])
-                             + "（本条未生成生产单；管理员可带 waive_reason 豁免，会记入审计）",
+                    "problems": detail,
+                    "waivable_codes": sorted({p["code"] for p in verdict["problems"]}),
+                    "error": "投产前复核未过：" + "；".join(p["message"] for p in detail)
+                             + ("（本条未生成生产单；管理员可带 waive_reason 豁免，"
+                                "只放过某几类问题请传 waive_codes）"
+                                if is_admin else "（本条未生成生产单，请找审核人）"),
                 })
                 continue
 
@@ -3075,8 +3569,11 @@ async def create_productions(
                         },
                         # 用 `_call_autoclip` 的 900s 默认值。⚠️ 本函数是 n 次**串行**展开，
                         # 一次 HTTP 请求的耗时 ≈ n × 单次模型耗时（实测 pro/flash 各约 90–150s，
-                        # 卡流时到 600s）——n 很大时会顶穿 nginx 的 900s（连接断了但单照样落库，
-                        # 刷新即可看到）。真要在一线上大 n 稳定跑，是 P1 队列化的活，不在 P0。
+                        # 卡流时到 600s）——n 很大时早就顶穿浏览器那层 960s（连接断了但单照样
+                        # 落库，刷新即可看到）。11-04 批 C（D-1）已把这条收掉：**页面按钮走
+                        # `async_mode=true`，本函数只在后台任务里跑，没有 HTTP 请求在等它**，
+                        # 所以大 n 不用再「分次投产」；只有不带 async_mode 的同步调用（脚本、
+                        # 手工）还受这条超时链约束。
                     )
                     prompt_text = (expanded.get("prompt_text") or "").strip() or None
                     # B-9：投放要求（改名/跳过二次确认/并行）不进 payload，只给人看。
@@ -3405,6 +3902,11 @@ _DISPATCH_TRANSITIONS: Dict[str, Tuple[str, ...]] = {
 }
 # 「还没投出去」的态：用来判 attempts 该不该 +1（补报也算投过一次的证据）
 _NOT_DISPATCHED = (PR_ORDER_READY,)
+# 「投过、但后来被系统作废」的单（R-5：撤审把 failed 单一并 supersede）。
+# 这类单**当日确实占了号池**，计数时必须还当已投——否则「今天投了多少条」会因为
+# 事后一次撤审而变小，一线据此再排今天的量就会超。判据用 started_at（没真投过的
+# 作废单这个字段是 NULL，撤审只改 status 不改 started_at，两者不会互相污染）。
+_VOIDED_BUT_SENT = and_(AssetProduction.status == PR_SUPERSEDED, AssetProduction.started_at.is_not(None))
 
 
 async def _dispatch_counts(
@@ -3419,15 +3921,25 @@ async def _dispatch_counts(
       回答不了「今天还能不能再投」。
     `success_rate` 分母只算**已终态**（success+failed），在投/出片中不进分母；
     没有终态时回 None，不是 0——0 会被读成「一条都没成」。
+    `dispatched` 含**投过后被作废**的单（见 `_VOIDED_BUT_SENT`）：作废是审核侧的追溯动作，
+    不改变「号池那天已经被吃掉」这个事实；`voided_after_dispatch` 单列出来给前端说明用。
     """
     stmt = select(AssetProduction.status, func.count()).group_by(AssetProduction.status)
     if conds:
         stmt = stmt.where(and_(*conds))
     by_status = {str(s): int(n) for s, n in (await db.execute(stmt)).all()}
 
+    void_conds = [AssetProduction.status == PR_SUPERSEDED, AssetProduction.started_at.is_not(None)]
+    if conds:
+        void_conds.extend(conds)
+    voided_after_dispatch = int(
+        (await db.execute(select(func.count()).select_from(AssetProduction).where(and_(*void_conds)))).scalar()
+        or 0
+    )
+
     succeeded = by_status.get(PR_SUCCESS, 0)
     failed = by_status.get(PR_FAILED, 0)
-    dispatched = sum(by_status.get(s, 0) for s in _DISPATCH_STATES)
+    dispatched = sum(by_status.get(s, 0) for s in _DISPATCH_STATES) + voided_after_dispatch
     terminal = succeeded + failed
 
     day_start = svc.board_timestamp().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -3443,7 +3955,7 @@ async def _dispatch_counts(
                 # 只数**已投**的：没投上板的单不吃号池额度。produce 口的
                 # board_capacity.already_today 含未投单（那是"今天打算投多少"的口径），
                 # 两者不等价，别在页面上互相换算。
-                AssetProduction.status.in_(list(_DISPATCH_STATES)),
+                or_(AssetProduction.status.in_(list(_DISPATCH_STATES)), _VOIDED_BUT_SENT),
             ).group_by(AssetProduction.status)
         )
     ).all()
@@ -3458,12 +3970,13 @@ async def _dispatch_counts(
         "by_status": by_status,
         "order_ready": by_status.get(PR_ORDER_READY, 0),
         "dispatched": dispatched,
+        "voided_after_dispatch": voided_after_dispatch,
         "succeeded": succeeded,
         "failed": failed,
         "success_rate": round(succeeded / terminal, 3) if terminal else None,
         "scope_note": (
             "by_status 含未投的 order_ready；success_rate 只按已终态（成功+失败）算，"
-            "在投/出片中不进分母"
+            "在投/出片中不进分母；投上板后又被撤审作废的单仍计入 dispatched（号池那天真被吃了）"
         ),
         "today": {
             "day": day_start.strftime("%Y-%m-%d"),
@@ -3472,7 +3985,8 @@ async def _dispatch_counts(
             "by_status": today_status,
             "succeeded": today_status.get(PR_SUCCESS, 0),
             "failed": today_status.get(PR_FAILED, 0),
-            "dispatched": sum(today_status.get(s, 0) for s in _DISPATCH_STATES),
+            "dispatched": sum(today_status.get(s, 0) for s in _DISPATCH_STATES)
+            + today_status.get(PR_SUPERSEDED, 0),
             "soft_cap": cap,
             # 软提示线是**条/日**（号池实测 120 条），所以比的是 Σ board_total 不是行数：
             # 6 张 ×20 条的板面吃掉 120 条＝已到线，按 tasks 算只会得出 6，永远提示不到人。
@@ -3539,6 +4053,21 @@ async def update_production_status(
     rows = list(
         (await db.execute(select(AssetProduction).where(AssetProduction.id.in_(ids)))).scalars().all()
     )
+    # R-5（11-04 批 B）双保险：撤审当场已经把失败单作废（见 `_supersede_productions`），
+    # 但还有一条补不上时间差的路——**撤审那一刻这张单正在板上（queued/running）**，
+    # 按口径不动它；它随后失败落成 failed，一线报「失败重投」→ failed→queued→又能导出。
+    # 所以从 failed 往外走的每一次重投，都回来确认一眼：这张单的文案现在还是过审状态吗。
+    summary_state: Dict[str, str] = {}
+    sid_set = {str(p.summary_id) for p in rows if p.summary_id and p.status == PR_FAILED}
+    if sid_set:
+        for sid, state in (
+            await db.execute(
+                select(AssetSummary.id, AssetSummary.audit_status).where(
+                    AssetSummary.id.in_([uuid.UUID(s) for s in sid_set])
+                )
+            )
+        ).all():
+            summary_state[str(sid)] = str(state)
     found = {str(p.id) for p in rows}
     missing = [str(i) for i in ids if str(i) not in found]
     if missing:
@@ -3569,6 +4098,18 @@ async def update_production_status(
             continue
         if before_status in (PR_SUPERSEDED, PR_CANCELLED, PR_SKIPPED):
             entry["reason"] = _export_block_reason(p)
+            blocked.append(entry)
+            continue
+        # R-5：failed 想重投，先确认它的文案还站在过审那一侧（撤审前就已在板上的漏网路径）
+        if (
+            before_status == PR_FAILED
+            and p.summary_id
+            and summary_state.get(str(p.summary_id)) not in REVIEW_PASSED_STATES
+        ):
+            entry["reason"] = (
+                "关联文案已不是过审状态（撤审/驳回/待重写），失败单不重投；"
+                "要再投请先让文案回到过审，或重新投产生成新单"
+            )
             blocked.append(entry)
             continue
         if data.status not in _DISPATCH_TRANSITIONS.get(before_status, ()):
@@ -3739,15 +4280,22 @@ async def _asset_code_map(db: AsyncSession, asset_ids: set) -> Dict[str, str]:
     return {str(r[0]): (r[1] or "") for r in rows}
 
 
-async def _build_delivery(db: AsyncSession, rows: List[AssetProduction], fmt: str) -> dict:
+async def _build_delivery(
+    db: AsyncSession, rows: List[AssetProduction], fmt: str, *, exclude_ids: set | None = None
+) -> dict:
     """format=txt / payload 的两块交付内容（A3-1）。
 
     只吃「可交付 + 有正文」的单：作废/失败/裸单（expand=false）在这里继续被挡，
     和 items[] 的 prompt_text 置空是同一道闸，不给第二条出口。
+    `exclude_ids` 是调用方在这道闸之上再叠的一层（R-4：导出前重扫词表命中的行），
+    同样不给第二条出口——items[] 置灰的行，txt/payload 里也必须没有它。
     """
+    skip = exclude_ids or set()
     ready = [
         p for p in rows
-        if p.status in EXPORTABLE_PRODUCTION_STATES and (p.prompt_text or "").strip()
+        if p.status in EXPORTABLE_PRODUCTION_STATES
+        and str(p.id) not in skip
+        and (p.prompt_text or "").strip()
     ]
     codes = await _asset_code_map(db, {p.asset_id for p in ready})
     manifest = svc.format_output_manifest([
@@ -3821,6 +4369,24 @@ async def _build_delivery(db: AsyncSession, rows: List[AssetProduction], fmt: st
     return out
 
 
+def _risk_recheck_map(
+    rows: List[AssetProduction], book: Dict[str, List[str]], exemptions: Dict[str, Any]
+) -> Dict[str, List[Dict[str, str]]]:
+    """R-4：按**当前**词表重扫每张单的正文，返回 `生产单 id → block 级命中`。
+
+    只扫 block：warn 级当年在审核台就只是留痕，导出侧再拦一遍等于偷偷把口径收紧，
+    一线会看到「昨天还能投今天不能」且没人解释过为什么。要升级警告级别请先改词表级别。
+    """
+    out: Dict[str, List[Dict[str, str]]] = {}
+    for p in rows:
+        if p.status not in EXPORTABLE_PRODUCTION_STATES or not (p.prompt_text or "").strip():
+            continue
+        hits = svc.risk_block_hits(svc.scan_risk(p.prompt_text, lexicon=book, exemptions=exemptions))
+        if hits:
+            out[str(p.id)] = hits
+    return out
+
+
 @router.get("/assets/productions/export")
 async def export_productions(
     batch_id: Optional[str] = None,
@@ -3828,6 +4394,8 @@ async def export_productions(
     ids: Optional[str] = None,
     accounts: int = 1,
     format: str = "json",
+    force_risk: bool = False,
+    force_reason: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -3853,6 +4421,13 @@ async def export_productions(
 
     A2-4：导出＝交付动作，留一条审计（谁、什么时候、拿走了哪几张单）。GET 带副作用
     在这里是有意的——交付口径要能被追溯，比"GET 必须只读"更重要。
+
+    R-4（11-04 第二轮）：**导出前按当前词表重扫一遍正文**。审核时扫的是当时的词表，
+    运营后来往 `asset_risk_lexicon` 里加的禁词不会回头找已经建好的生产单——
+    「过审 → 建单 → 加词 → 导出投放」这条路上，导出是最后一道还碰得到人的闸，
+    不重扫就等于新词永远管不到存量单。命中 block 级的行置灰（items 里 `risk_hits` 说明白），
+    txt/payload 同样不吐正文（和 A2-2 那道闸共用 `_build_delivery` 的 exclude 口径）。
+    放行只给 admin：`force_risk=true` 且必须带 `force_reason`，放行了哪几张、为什么，进审计。
     """
     conds = []
     if ids:
@@ -3870,12 +4445,37 @@ async def export_productions(
     fmt = (format or "json").strip().lower()
     if fmt not in ("json", "txt", "payload"):
         raise HTTPException(status_code=400, detail="format 只认 json / txt / payload")
+
+    # R-4 的放行闸门：**只有 admin**能带着理由把重扫命中的单放出去，且理由必填。
+    # 素材专员能导出但不能自评自放——和「生产者不得自审」「生产台账只有 operator/admin 改得动」
+    # 是同一条纪律：挡词的闸如果谁都能踩，加词的人第二天就会发现那闸没人当回事。
+    if force_risk:
+        if current_user.role != UserRole.admin.value:
+            raise HTTPException(
+                status_code=403,
+                detail="带风险词强制导出只有 admin 能做（导出侧的重扫命中由审核口径决定，不是投放同学自己判的）",
+            )
+        if not (force_reason or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="强制导出必须写理由（force_reason）：放行的是「这个词在这批语境里没问题」，"
+                "不留一句话，事后对账只看到一个绕过闸门的导出记录",
+            )
+
+    book, exemptions = await _risk_lexicon(db)
+    risk_hits = _risk_recheck_map(rows, book, exemptions)
+    forced_ids = sorted(risk_hits) if (force_risk and risk_hits) else []
+    # 命中但没被放行的 → 和状态不可交付同一套处置：正文不给、txt/payload 里也不出现
+    risk_blocked_ids = {pid for pid in risk_hits if not force_risk}
+
     items = []
     blocked: List[dict] = []
     for p in rows:
-        exportable = p.status in EXPORTABLE_PRODUCTION_STATES
-        items.append({
-            "id": str(p.id),
+        pid = str(p.id)
+        status_ok = p.status in EXPORTABLE_PRODUCTION_STATES
+        exportable = status_ok and pid not in risk_blocked_ids
+        entry = {
+            "id": pid,
             "asset_id": str(p.asset_id),
             "seq": p.seq,
             "hook_code": p.hook_code,
@@ -3893,12 +4493,23 @@ async def export_productions(
             "board_tag": p.board_tag,
             "board_date": utc_iso(p.board_date) if p.board_date else None,
             "character_card_key": p.character_card_key,
-        })
+        }
+        # 命中信息**放行与否都回显**：一线要看得见「哪张被新词表点了名、放行的是哪几张」，
+        # 别做成"放行就当没发生过"
+        if pid in risk_hits:
+            entry["risk_hits"] = risk_hits[pid]
+            entry["risk_forced"] = bool(force_risk and pid in risk_hits)
+        items.append(entry)
         if not exportable:
-            blocked.append({
-                "id": str(p.id), "seq": p.seq, "status": p.status,
-                "reason": _export_block_reason(p),
-            })
+            if not status_ok:
+                reason = _export_block_reason(p)
+            else:
+                reason = (
+                    "文案过审后词表被改过：这条正文现在含高风险词「"
+                    + "、".join(h["word"] for h in risk_hits[pid])
+                    + "」（按当前词表重扫命中）。改文案后重新投产，或让 admin 带理由强制导出"
+                )
+            blocked.append({"id": pid, "seq": p.seq, "status": p.status, "reason": reason})
 
     await _write_audit(
         db,
@@ -3915,11 +4526,19 @@ async def export_productions(
             "accounts": account_count,
             # 交付形态也入审计：事后能还原"当时拿走的是 json 还是可直接投的 payload"
             "format": fmt,
+            # R-4：重扫结果单独记一份。**放行的那几张必须能单独查出来**——
+            # 词表是运营加的、放行是 admin 点的，出了事要能回答「谁放行的、放了哪几张、凭什么」
+            "risk_recheck": {
+                "hits": {pid: [h["word"] for h in hits] for pid, hits in risk_hits.items()} or None,
+                "blocked_ids": sorted(risk_blocked_ids) or None,
+                "forced_ids": forced_ids or None,
+                "forced_reason": (force_reason or "").strip()[:500] or None,
+            } if risk_hits else None,
         },
     )
     await db.commit()
 
-    delivery = await _build_delivery(db, rows, fmt) if fmt != "json" else {}
+    delivery = await _build_delivery(db, rows, fmt, exclude_ids=risk_blocked_ids) if fmt != "json" else {}
     return {
         "format": fmt,
         "items": items,
@@ -3927,13 +4546,27 @@ async def export_productions(
         "ready": sum(1 for i in items if i["prompt_text"]),
         "blocked_count": len(blocked),
         "blocked": blocked,
+        "risk_recheck": {
+            "hit_count": len(risk_hits),
+            "blocked": sorted(risk_blocked_ids),
+            "forced": forced_ids,
+            "forced_reason": (force_reason or "").strip() or None,
+            "note": (
+                "导出前按**当前**风险词表重扫过正文：命中 block 级的行已置灰、正文不进 txt/payload。"
+                + (
+                    f"本次由 admin 带理由放行 {len(forced_ids)} 张。"
+                    if forced_ids else ""
+                )
+                + "词表在审核台之外的改动不会回头找存量单，这一道是存量单唯一的重扫点。"
+            ),
+        },
         "capacity": svc.estimate_production_days(
             len(items), account_count=account_count,
             per_account_per_day=settings.ASSET_DOUBAO_PER_ACCOUNT_PER_DAY,
         ),
         "note": (
-            "prompt_text 为空的有两种：作废/失败单（不可投放，见 status）与展开失败"
-            "（看生产单 error），都别硬投"
+            "prompt_text 为空的有三种：作废/失败单（不可投放，见 status）、展开失败"
+            "（看生产单 error）、按当前词表重扫命中高风险词（见 blocked），都别硬投"
         ),
         **delivery,
     }

@@ -94,6 +94,7 @@ from app.models.variant import (
 from app.models.asset import (
     AssetBatch,
     AssetItem,
+    AssetJob,
     AssetSummary,
     AssetProduction,
     AssetOutput,
@@ -165,6 +166,7 @@ __all__ = [
     # 素材库（20261103 P0）
     "AssetBatch",
     "AssetItem",
+    "AssetJob",
     "AssetSummary",
     "AssetProduction",
     "AssetOutput",

@@ -603,15 +603,25 @@ def recheck_copy(
     lexicon: Optional[Dict[str, Any]] = None,
     exemptions: Optional[Dict[str, str]] = None,
     check_consistency_too: bool = True,
+    consistency_blocks: bool = False,
     max_chars: int = 80,
     max_first_clause: int = 25,
 ) -> Dict[str, Any]:
     """过审前 / 投产前的同一套复核（A2-1）：形态、风险词、一致性。
 
-    返回 {"ok", "problems": [{"code","message"}], "chars", "risk", "consistency"}。
-    problems 只收 **block 级**风险词——warn 级进 risk 供人看，但不拦（分级口径见上）。
+    返回 `{"ok", "problems": [...], "warnings": [...], "chars", "risk", "consistency"}`。
+
+    - `problems` 只收 **真拦点**：超字数/首句过长（shape）与 **block 级**风险词（risk）。
+      warn 级风险词进 `risk` 供人看，不拦（分级口径见 `scan_risk`）。
+    - **一致性是预警不是闸门**（R-6，11-04 第二轮；和上面专名识别那条注释同口径）：
+      专名靠姓氏白名单抽，**天然漏报也偶发误报**，把它做成硬闸的结果是一线逢人名钩子必找
+      admin 豁免，豁免又不分问题类型 → 同条里的真违禁词被一起放过。所以默认
+      `consistency_blocks=False`：对不上就进 `warnings` + 落 `consistency_ok/consistency_note`
+      两列，审核人看得见、不拿它卡人。要恢复成硬闸只有显式传 `consistency_blocks=True`，
+      三个入口（/review、/produce、/resubmit）**必须用同一个默认值**——口径分叉本身就是事故源。
     """
     problems: List[Dict[str, str]] = []
+    warnings: List[Dict[str, str]] = []
     shape = check_copy_shape(text, max_chars=max_chars, max_first_clause=max_first_clause)
     for p in shape["problems"]:
         problems.append({"code": "shape", "message": p})
@@ -622,16 +632,17 @@ def recheck_copy(
     if check_consistency_too:
         consist = check_consistency(text or "", script)
         if not consist["ok"]:
-            if consist.get("missing"):
-                problems.append({
-                    "code": "consistency",
-                    "message": "与反推详规对不上：" + "、".join(consist["missing"]),
-                })
-            else:
-                problems.append({"code": "consistency", "message": consist.get("note") or "无反推脚本可比对"})
+            message = (
+                "与反推详规对不上：" + "、".join(consist["missing"])
+                if consist.get("missing")
+                else (consist.get("note") or "无反推脚本可比对")
+            )
+            item = {"code": "consistency", "message": message}
+            (problems if consistency_blocks else warnings).append(item)
     return {
         "ok": not problems,
         "problems": problems,
+        "warnings": warnings,
         "chars": shape["chars"],
         "risk": risk,
         "consistency": consist,
