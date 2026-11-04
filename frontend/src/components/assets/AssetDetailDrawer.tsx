@@ -2,13 +2,14 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert, Button, Descriptions, Divider, Drawer, Empty, List, Modal, Space, Spin, Tabs, Tag, Tooltip, Typography, message,
 } from 'antd';
-import { CopyOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
+import { CopyOutlined, DownloadOutlined, MergeCellsOutlined, ReloadOutlined } from '@ant-design/icons';
 import { assetApi } from '../../api/assets';
-import type { AssetDetailResponse, AssetSourceDownloadResult } from '../../api/assets';
+import type { AssetDetailResponse, AssetOutput, AssetSourceDownloadResult } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import {
   AssetStatusTag, AuditStatusTag, ProductionStateTag, RiskTags, StageTags, MonoText, durationText, yuan,
 } from './AssetBits';
+import AssetComposeModal from './AssetComposeModal';
 import { HOOK_STYLE_LABELS } from '../../api/assets';
 
 const { Text, Paragraph } = Typography;
@@ -34,6 +35,19 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [resolveBusy, setResolveBusy] = useState(false);
+  /** 拼接产物：`GET /assets/{id}` 不带 outputs，所以单独取一次 */
+  const [outputs, setOutputs] = useState<AssetOutput[]>([]);
+  const [composeOpen, setComposeOpen] = useState(false);
+
+  const fetchOutputs = useCallback(async (id: string) => {
+    try {
+      const res = await assetApi.listOutputs({ asset_id: id });
+      setOutputs(res.items || []);
+    } catch {
+      // 产物列表失败不该把整个抽屉判成打不开：详情是主链路，产物是附属信息
+      setOutputs([]);
+    }
+  }, []);
 
   const fetchDetail = useCallback(async (id: string) => {
     setLoading(true);
@@ -47,9 +61,15 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
   }, []);
 
   useEffect(() => {
-    if (open && assetId) fetchDetail(assetId);
-    if (!open) setData(null);
-  }, [open, assetId, fetchDetail]);
+    if (open && assetId) {
+      fetchDetail(assetId);
+      fetchOutputs(assetId);
+    }
+    if (!open) {
+      setData(null);
+      setOutputs([]);
+    }
+  }, [open, assetId, fetchDetail, fetchOutputs]);
 
   const refreshPrompt = async () => {
     if (!assetId) return;
@@ -105,6 +125,17 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
     }
   };
 
+  /** 拼接产物下载：presigned 外链（后端对验收 failed 的会 409 挡下，不静默交付） */
+  const downloadProduct = async (o: AssetOutput) => {
+    try {
+      const res = await assetApi.downloadOutput(o.id);
+      window.open(res.url, '_blank');
+      message.success(`已打开 ${res.file_name || o.file_name || '产物'}`);
+    } catch (e) {
+      message.error((e as Error).message || '取产物链接失败');
+    }
+  };
+
   const showSource = async () => {
     if (!assetId) return;
     try {
@@ -156,6 +187,13 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
           <Button icon={<DownloadOutlined />} onClick={showSource} disabled={!asset}>
             原片
           </Button>
+          {canProduce && asset && (
+            <Tooltip title="两段直拼（再选一条素材／切片／本地文件，可选谁在前）：0 元，不调模型">
+              <Button icon={<MergeCellsOutlined />} onClick={() => setComposeOpen(true)}>
+                拼接
+              </Button>
+            </Tooltip>
+          )}
           {asset?.stage_prompt === 'running' && (
             <Button icon={<ReloadOutlined />} loading={busy} onClick={refreshPrompt}>
               收敛反推
@@ -357,13 +395,65 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                   />
                 ),
               },
+              {
+                key: 'outputs',
+                label: `拼接产物（${outputs.length}）`,
+                children: (
+                  <List
+                    size="small"
+                    dataSource={outputs}
+                    locale={{ emptyText: '还没有拼接产物（点右上角「拼接」，两段直拼、可选谁在前）' }}
+                    renderItem={(o) => (
+                      <List.Item
+                        actions={[
+                          <Button key="d" size="small" icon={<DownloadOutlined />} onClick={() => downloadProduct(o)}>
+                            下载
+                          </Button>,
+                        ]}
+                      >
+                        <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                          <Space wrap>
+                            <Text>{o.file_name || o.file_key || '（无名）'}</Text>
+                            <Tag color={o.kind === 'composed' ? 'blue' : 'default'}>
+                              {o.kind === 'composed' ? '拼接' : o.kind}
+                            </Tag>
+                            <Text type="secondary">
+                              {o.resolution || '画幅未知'}｜{durationText(o.duration)}｜
+                              {o.file_size ? `${(o.file_size / 1024 / 1024).toFixed(1)} MB` : '-'}
+                            </Text>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              {parseServerTime(o.created_at)?.format('MM-DD HH:mm') || '-'}
+                            </Text>
+                          </Space>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            {o.production_id ? `挂生产单 ${o.production_id.slice(0, 8)}…` : '未挂生产单（拼接不强制）'}
+                            {o.qc_status && `｜验收 ${o.qc_status}`}
+                            {o.qc_note && `：${o.qc_note}`}
+                          </Text>
+                        </Space>
+                      </List.Item>
+                    )}
+                  />
+                ),
+              },
             ]}
           />
           <Divider style={{ margin: '12px 0' }} />
           <Text type="secondary" style={{ fontSize: 12 }}>
             链路：导入 → 反推提示词（智令）→ 钩子文案（AutoClip）→ 人工审核 → 生产单 → 导出板面 payload
-            →（人工投板后回写投递状态）。P0 到生产单为止。
+            →（人工投板后回写投递状态）→ 拼接产物（两段直拼，0 元）。
           </Text>
+          <AssetComposeModal
+            open={composeOpen}
+            asset={asset}
+            onClose={() => setComposeOpen(false)}
+            onDone={async () => {
+              if (assetId) {
+                await Promise.all([fetchDetail(assetId), fetchOutputs(assetId)]);
+              }
+              onChanged?.();
+            }}
+          />
         </>
       )}
     </Drawer>

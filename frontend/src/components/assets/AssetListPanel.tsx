@@ -3,7 +3,7 @@ import {
   Alert, Button, Card, Checkbox, DatePicker, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
-  BulbOutlined, CloudDownloadOutlined, DownloadOutlined, FileTextOutlined, ReloadOutlined, SearchOutlined,
+  BulbOutlined, CloudDownloadOutlined, DownloadOutlined, FileTextOutlined, MergeCellsOutlined, ReloadOutlined, SearchOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -17,6 +17,7 @@ import { parseServerTime } from '../../utils/format';
 import { AssetStatusTag, StageTags, durationText, yuan } from './AssetBits';
 import CostConfirmModal from './CostConfirmModal';
 import AssetDetailDrawer from './AssetDetailDrawer';
+import AssetComposeModal from './AssetComposeModal';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -58,6 +59,9 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
 
   // 详情抽屉
   const [drawerId, setDrawerId] = useState<string | null>(null);
+
+  // 拼接弹窗（存整行而不是 id：弹窗里要显示编号/画幅/时长，不该为此再发一次请求）
+  const [composeAsset, setComposeAsset] = useState<AssetItem | null>(null);
 
   // 反推确认
   const [analyzeOpen, setAnalyzeOpen] = useState(false);
@@ -404,7 +408,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
     {
       title: '操作',
       key: 'ops',
-      width: 150,
+      width: 190,
       fixed: 'right',
       render: (_, row) => (
         <Space size={2}>
@@ -414,6 +418,11 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
           <Tooltip title="原片直链（文件素材走自有桶；链接素材不在桶里，会提示用来源链接自取）">
             <Button size="small" icon={<DownloadOutlined />} onClick={() => showSource(row)} />
           </Tooltip>
+          {canProduce && (
+            <Tooltip title="两段直拼：再选一条素材／一个切片／本地文件，选谁在前（0 元，不选点不剪切）">
+              <Button size="small" icon={<MergeCellsOutlined />} onClick={() => setComposeAsset(row)} />
+            </Tooltip>
+          )}
         </Space>
       ),
     },
@@ -607,6 +616,13 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
         canProduce={canProduce}
         onClose={() => setDrawerId(null)}
         onChanged={() => fetchList(page, pageSize)}
+      />
+
+      <AssetComposeModal
+        open={!!composeAsset}
+        asset={composeAsset}
+        onClose={() => setComposeAsset(null)}
+        onDone={() => fetchList(page, pageSize)}
       />
     </Card>
   );

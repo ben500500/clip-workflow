@@ -402,7 +402,11 @@ class AssetOutput(Base):
     __tablename__ = "asset_outputs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    production_id = Column(UUID(as_uuid=True), ForeignKey("asset_productions.id", ondelete="CASCADE"), nullable=False, index=True)
+    # production_id 可空（11-04 改）：拼接产物是「两段视频拼一条」，用户明确要求
+    # 第二段可以来自素材库另一条 / 现网切片产物 / 本地上传，**不必挂生产单**。
+    # 原先 NOT NULL 会逼着每次拼接先造一条生产单——那是造台账噪音，不是业务。
+    # 生产单派生的产物照旧带上 production_id，列表与成本口径不变。
+    production_id = Column(UUID(as_uuid=True), ForeignKey("asset_productions.id", ondelete="CASCADE"), nullable=True, index=True)
     asset_id = Column(UUID(as_uuid=True), ForeignKey("asset_items.id", ondelete="CASCADE"), nullable=False, index=True)
     # 产物类型：doubao_raw（豆包原片）/ composed（拼接成片）/ package（交付包 zip）/ copy（文案 txt）
     kind = Column(String(20), nullable=False, default="doubao_raw", index=True)

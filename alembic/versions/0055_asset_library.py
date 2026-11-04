@@ -245,7 +245,10 @@ def upgrade() -> None:
             "production_id",
             postgresql.UUID(as_uuid=True),
             sa.ForeignKey("asset_productions.id", ondelete="CASCADE"),
-            nullable=False,
+            # 11-04 改可空：拼接产物（composed）按用户口径不必挂生产单，
+            # 详见 models/asset.py::AssetOutput 的注释。0055 未上过现网、
+            # 预览库该表 0 行，所以直接改本迁移而不是补一条 0056。
+            nullable=True,
         ),
         sa.Column(
             "asset_id",

@@ -124,7 +124,7 @@ with _EnvOverride(_TEST_ENV):
         AssetSummary,
     )
     from app.models.audit import AuditLog
-    from app.models.material import SystemConfig
+    from app.models.material import Episode, Project, SliceOutput, SliceTask, SystemConfig
     from app.models.models import User
     from app.services import asset_service as svc
 
@@ -553,6 +553,81 @@ def test_upload_batch_is_fail_soft_per_file():
         assert resp2.json()["batch_id"] is None
         assert len(resp2.json()["failed"]) == 2
         assert await _count(AssetItem) == before
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_upload_writes_the_actual_bytes_into_the_object():
+    """落盘循环必须真的把字节写下去 —— 11-04 拼接真链路实测抓到的 P0 缺陷。
+
+    当时那一版只有 `size += len(chunk)`、漏了 `out.write(chunk)`：接口回 201、DB 的
+    `file_size` 记的是真实大小，而桶里躺着一个 **0 字节对象**（ffprobe 报
+    `moov atom not found`，拼接当场判「第1段探不出视频流」才发现）。
+    本文件其它用例把 `upload_file_from_path` 一律 mock 成 True，这类"计数与写入脱钩"
+    在 mock 世界里是完美通过的 —— 所以这条**让对象存储把收到的字节原样抄回来核对**。
+
+    顺带钉第二道保险：落盘不完整时必须当场失败，而不是把空壳传进桶
+    （反推会拿它走 doc/125 中转上传，**白扣一次钱且必然失败**）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        seen = []
+
+        async def _recording_put(bucket, key, path, content_type="application/octet-stream"):
+            with open(path, "rb") as fh:
+                seen.append(fh.read())
+            return True
+
+        files = [
+            ("files", ("甲.mp4", VIDEO_BYTES, "video/mp4")),
+            ("files", ("乙.mp4", VIDEO_BYTES, "video/mp4")),
+        ]
+        with patch("app.api.assets.upload_file_from_path", _recording_put):
+            resp = await client.post("/api/assets/upload/batch", files=files, headers=hm)
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert len(body["items"]) == 2
+        assert len(seen) == 2, "两个文件都该真的送到对象存储"
+        for got in seen:
+            assert got == VIDEO_BYTES, f"桶里拿到的字节与原文件不符（{len(got)} 字节）"
+        for item in body["items"]:
+            assert item["file_size"] == len(VIDEO_BYTES)
+
+        # 第二道保险：磁盘上比读到的少 → 判失败、不入库、不传空壳
+        from app.api.assets import _ingest_one_video_file
+        import io
+        from fastapi import UploadFile
+
+        with patch("app.api.assets.upload_file_from_path", _recording_put), \
+                patch("app.api.assets.os.path.getsize", return_value=0):
+            res = await _ingest_one_video_file(
+                UploadFile(filename="丙.mp4", file=io.BytesIO(VIDEO_BYTES)),
+                tmp_dir=str(_TMPDIR),
+                batch_code="AB-TEST",
+                max_bytes=10 * 1024 * 1024,
+                sem=asyncio.Semaphore(1),
+            )
+        assert res["ok"] is False, "落盘不完整不能算成功"
+        assert "落盘不完整" in res["error"], res
+
+        # 补一条正向：同一入参在真 getsize 下必须成功，且送进对象存储的字节一个不少
+        # （证明上面的失败是"少字节"造成的，不是这条路径本身不通）
+        before_put = len(seen)
+        with patch("app.api.assets.upload_file_from_path", _recording_put):
+            ok_res = await _ingest_one_video_file(
+                UploadFile(filename="丙.mp4", file=io.BytesIO(VIDEO_BYTES)),
+                tmp_dir=str(_TMPDIR),
+                batch_code="AB-TEST",
+                max_bytes=10 * 1024 * 1024,
+                sem=asyncio.Semaphore(1),
+            )
+        assert ok_res["ok"] is True, ok_res
+        assert len(seen) == before_put + 1
+        assert seen[-1] == VIDEO_BYTES
         await client.aclose()
 
     _run(_scenario())
@@ -2921,5 +2996,204 @@ def test_autoclip_timeout_chain_and_single_inner_retry():
                 "重试这件事交给一线点按钮（旧候选/旧单都有保留逻辑）"
             )
         await client.aclose()
+
+    _run(_scenario())
+
+
+def test_concat_two_videos_lands_a_composed_output_row():
+    """**简单拼接**（11-04 简化口径）：两段直拼、顺序可选、不挂生产单也能落产物行。
+
+    ffmpeg / MinIO 全部 mock（不真跑转码、不碰桶），验的是接线：
+    - 产物落 `asset_outputs(kind="composed")`，**production_id 可以为空**（拼接不强制有生产单）；
+    - `stage_compose` 是五阶段里唯一原先没写入方的，拼成功要置 success 并把派生态推到 ready；
+    - 目标画幅＝**排在最前那一段**，换顺序就换画幅（这是"选顺序"唯一的真实含义）；
+    - 成本 0 元：不调模型不调智令，所以不许污染 cost_*，但要留一条 asset.concat 审计。
+    """
+    _run(_bootstrap())
+
+    VERT = {"duration": 10.08, "width": 720, "height": 1280, "fps": "25/1", "has_audio": True}
+    HORIZ = {"duration": 6.0, "width": 1280, "height": 720, "fps": "30/1", "has_audio": False}
+    OUT = {"duration": 16.08, "width": 720, "height": 1280, "fps": "25/1", "has_audio": True}
+
+    async def _file_asset(client, hm, name):
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+             patch("app.api.assets._ffprobe_duration", lambda p: 10.08):
+            resp = await client.post(
+                "/api/assets/upload/batch",
+                files=[("files", (name, VIDEO_BYTES, "video/mp4"))],
+                headers=hm,
+            )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["items"][0]
+
+    async def _seed_slice():
+        """造一条现网切片产物（sliced 桶），走的是主系统的表，不是素材库的。"""
+        async with dbmod.async_session_factory() as s:
+            project = Project(name="拼接来源项目", created_by=None)   # 无主＝公共项目，四角色都可见
+            s.add(project)
+            await s.flush()
+            episode = Episode(project_id=project.id, title="第1集")
+            s.add(episode)
+            await s.flush()
+            task = SliceTask(episode_id=episode.id, status="completed")
+            s.add(task)
+            await s.flush()
+            out = SliceOutput(task_id=task.id, file_key="slices/e/t/clip1.mp4",
+                              file_name="clip1.mp4", duration=6.0, resolution="1280x720")
+            s.add(out)
+            await s.commit()
+            return str(out.id)
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        a = await _file_asset(client, hm, "正文片段.mp4")
+        b = await _file_asset(client, hm, "另一条片段.mp4")
+        slice_id = await _seed_slice()
+
+        calls = []
+
+        async def _fake_concat(paths, target, out_path):
+            calls.append({"paths": list(paths), "target": dict(target)})
+            with open(out_path, "wb") as fh:
+                fh.write(b"fake composed mp4 bytes")
+            return None
+
+        def _patched(first_info, second_info, out_info):
+            return (
+                patch("app.api.assets.download_to_file", AsyncMock(return_value=True)),
+                patch("app.services.asset_compose_service.probe_media",
+                      AsyncMock(side_effect=[first_info, second_info, out_info])),
+                patch("app.services.asset_compose_service.concat_segments", _fake_concat),
+                patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)),
+            )
+
+        # 1) A 在前（默认）
+        ps = _patched(VERT, HORIZ, OUT)
+        with ps[0], ps[1], ps[2], ps[3]:
+            resp = await client.post("/api/assets/concat", json={
+                "asset_id": a["id"], "second_source": "asset", "second_id": b["id"],
+            }, headers=hm)
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["kind"] == "composed" and body["resolution"] == "720x1280", body
+        assert body["duration"] == 16.08 and body["production_id"] is None
+        assert body["asset_status"] == "ready", f"拼完该推到 ready：{body['asset_status']}"
+        assert calls and calls[0]["target"]["width"] == 720, "画幅必须跟排在最前那一段"
+        row = (await _rows(AssetOutput))[0]
+        assert row.kind == "composed" and row.production_id is None
+        assert row.file_key.startswith(f"asset/composed/{a['code']}/")
+        assert row.bucket == settings.MINIO_BUCKET_RAW
+        assert row.sha256 and len(row.sha256) == 64
+        asset_row = await _row_of(AssetItem, a["id"])
+        assert asset_row.stage_compose == "success" and asset_row.status == "ready"
+        # 拼接不花钱：不许写任何 cost_*，但要留审计（谁拼的、用哪两段、什么顺序）
+        assert float(asset_row.cost_prompt or 0) == 0.0
+        audits = await _rows(AuditLog, AuditLog.action == "asset.concat")
+        assert len(audits) == 1 and audits[0].after["order"] == "asset_first"
+        assert "正文片段" in audits[0].after["first"]
+
+        # 2) 换成 B 在前 → 画幅跟着变（这就是"拼在前/拼在后"的实际作用）
+        calls.clear()
+        ps = _patched(HORIZ, VERT, {**OUT, "width": 1280, "height": 720})
+        with ps[0], ps[1], ps[2], ps[3]:
+            resp2 = await client.post("/api/assets/concat", json={
+                "asset_id": a["id"], "second_source": "slice", "second_id": slice_id,
+                "order": "second_first",
+            }, headers=hm)
+        assert resp2.status_code == 201, resp2.text
+        assert resp2.json()["resolution"] == "1280x720", resp2.json()
+        assert calls[0]["target"]["width"] == 1280
+        # 每条一行不覆盖：两次拼 = 两行产物
+        assert await _count(AssetOutput) == 2
+
+        # 3) 两段是同一个文件 → 400（自己拼自己是废片）
+        bad = await client.post("/api/assets/concat", json={
+            "asset_id": a["id"], "second_source": "asset", "second_id": a["id"],
+        }, headers=hm)
+        assert bad.status_code == 400 and "同一个文件" in bad.json()["detail"]
+
+        # 4) 非法 order / 非法来源都要 400，别把垃圾参数带到 ffmpeg
+        for payload in (
+            {"asset_id": a["id"], "second_source": "asset", "second_id": b["id"], "order": "middle"},
+            {"asset_id": a["id"], "second_source": "nas", "second_id": b["id"]},
+        ):
+            r = await client.post("/api/assets/concat", json=payload, headers=hm)
+            assert r.status_code == 400, (payload, r.text)
+
+        # 5) 不存在的切片 / 不存在的素材
+        r404 = await client.post("/api/assets/concat", json={
+            "asset_id": a["id"], "second_source": "slice", "second_id": str(uuid.uuid4()),
+        }, headers=hm)
+        assert r404.status_code == 404
+        r404b = await client.post("/api/assets/concat", json={
+            "asset_id": str(uuid.uuid4()), "second_source": "asset", "second_id": b["id"],
+        }, headers=hm)
+        assert r404b.status_code == 404
+
+        # 6) 链接素材（还没有文件）→ 400 并指出去哪取回原片
+        link_asset, _ = await _make_ready_asset(client, hm)
+        rlink = await client.post("/api/assets/concat", json={
+            "asset_id": link_asset, "second_source": "asset", "second_id": b["id"],
+        }, headers=hm)
+        assert rlink.status_code == 400 and "/assets/resolve" in rlink.json()["detail"]
+
+        # 7) 发布专员不能拼（拼接是生产侧动作，_PROD_ROLES 不含 publisher）
+        assert "publisher" not in h
+
+        # 8) 下载口复用既有产物下载（composed 可 presigned，qc_status 为空＝未验收但可下）
+        with patch("app.api.assets.get_presigned_url",
+                   AsyncMock(return_value="http://minio/signed?x=1")) as presign:
+            dl = await client.get(f"/api/assets/outputs/{body['id']}/download", headers=hm)
+        assert dl.status_code == 200 and dl.json()["kind"] == "composed"
+        assert presign.await_args.args[0] == settings.MINIO_BUCKET_RAW
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_concat_reports_which_segment_broke():
+    """探不出视频流 / ffmpeg 失败时，错误要指到**第几段**，别回一句"拼接失败"让人猜。"""
+    _run(_bootstrap())
+    VERT = {"duration": 10.0, "width": 720, "height": 1280, "fps": "25", "has_audio": True}
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        a = await _file_asset_simple(client, hm, "能拼的.mp4")
+        b = await _file_asset_simple(client, hm, "也能拼.mp4")
+
+        with patch("app.api.assets.download_to_file", AsyncMock(return_value=True)), \
+             patch("app.services.asset_compose_service.probe_media",
+                   AsyncMock(side_effect=[VERT, None, VERT])):
+            r = await client.post("/api/assets/concat", json={
+                "asset_id": a["id"], "second_source": "asset", "second_id": b["id"],
+            }, headers=hm)
+        assert r.status_code == 400 and "第2段" in r.json()["detail"], r.text
+
+        async def _fail_concat(paths, target, out_path):
+            return "ffmpeg 拼接失败（退出码 234）：Invalid argument"
+
+        with patch("app.api.assets.download_to_file", AsyncMock(return_value=True)), \
+             patch("app.services.asset_compose_service.probe_media",
+                   AsyncMock(side_effect=[VERT, VERT, VERT])), \
+             patch("app.services.asset_compose_service.concat_segments", _fail_concat):
+            r2 = await client.post("/api/assets/concat", json={
+                "asset_id": a["id"], "second_source": "asset", "second_id": b["id"],
+            }, headers=hm)
+        assert r2.status_code == 502 and "退出码 234" in r2.json()["detail"]
+        # 失败了就不许留产物行，也别把 stage_compose 写成 success
+        assert await _count(AssetOutput) == 0
+        asset_row = await _row_of(AssetItem, a["id"])
+        assert asset_row.stage_compose != "success"
+        await client.aclose()
+
+    async def _file_asset_simple(client, hm, name):
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+             patch("app.api.assets._ffprobe_duration", lambda p: 10.0):
+            resp = await client.post("/api/assets/upload/batch",
+                                     files=[("files", (name, VIDEO_BYTES, "video/mp4"))], headers=hm)
+        assert resp.status_code == 201, resp.text
+        return resp.json()["items"][0]
 
     _run(_scenario())

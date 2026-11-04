@@ -92,10 +92,12 @@ from app.models.asset import (
     gen_batch_code,
 )
 from app.models.audit import AuditLog
-from app.models.material import Project, SystemConfig
+from app.models.material import Episode, Project, SliceOutput, SliceTask, SystemConfig
 from app.models.models import User
 from app.models.user import UserRole
+from app.services import asset_compose_service as compose
 from app.services import asset_service as svc
+from app.services.data_scope import check_project_access_by_episode
 from app.services.minio_service import (
     download_file,
     download_to_file,
@@ -954,6 +956,10 @@ async def _ingest_one_video_file(
                     chunk = await f.read(1024 * 1024)
                     if not chunk:
                         break
+                    # 这一行是全部意义的所在：只数长度不落盘，桶里就会躺一个 0 字节对象，
+                    # 而接口照样回 201、file_size 照样记真实大小（11-04 拼接实测才发现，
+                    # 单测把 MinIO 整个 mock 掉，这类"落盘漏字节"只有真链路能抓到）。
+                    out.write(chunk)
                     size += len(chunk)
                     if size > max_bytes:
                         return {
@@ -963,6 +969,14 @@ async def _ingest_one_video_file(
                                 "本接口不分片，请先压一遍或用 /api/upload 的分片续传通道"
                             ),
                         }
+            # 落盘字节数与读到的字节数必须相等：不相等就是"计数与写入脱钩"，
+            # 与其把一个空壳对象传进桶（反推时拿它去 doc/125 会白扣一次钱），不如当场判失败。
+            written = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+            if written != size:
+                return {
+                    "ok": False, "file_name": safe_name,
+                    "error": f"落盘不完整（读到 {size} 字节、磁盘只有 {written} 字节），本个文件未入库",
+                }
             size_err = validate_upload_size(size)
             if size_err:
                 return {"ok": False, "file_name": safe_name, "error": size_err}
@@ -3619,7 +3633,7 @@ async def list_outputs(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """产物列表（P0 通常为空；豆包成片 / 合成成片由 P1/P2 写入）。"""
+    """产物列表。11-04 起 `kind=composed`（简单拼接）有写入方，其余仍等 P1。"""
     conds = []
     if asset_id:
         conds.append(AssetOutput.asset_id == _as_uuid(asset_id, "asset_id"))
@@ -3636,7 +3650,9 @@ async def list_outputs(
             {
                 "id": str(o.id),
                 "asset_id": str(o.asset_id),
-                "production_id": str(o.production_id),
+                # 11-04 起可空（拼接产物不挂生产单）：裸 str(None) 会回字符串 "None"，
+                # 前端拿到就当有生产单了——必须显式回 null。
+                "production_id": str(o.production_id) if o.production_id else None,
                 "kind": o.kind,
                 "file_name": o.file_name,
                 "file_key": o.file_key,
@@ -3717,6 +3733,244 @@ async def download_output(
         "qc_status": out.qc_status,
         "downloaded_at": utc_iso(now),
     }
+
+
+# ──────────────────────────────────────────────
+# 拼接（11-04 简化口径：两段视频按人选的顺序拼一条，不选点不剪切）
+# ──────────────────────────────────────────────
+
+class ConcatRequest(BaseModel):
+    """`POST /assets/concat` 的入参。
+
+    A 段固定是素材库里的一条素材（产物要挂在它名下、`stage_compose` 要写它），
+    B 段由一线现场选：素材库里另一条 / 现网已切的切片产物 / 本地文件（前端先传成
+    素材再当 B 段，服务端不留任何"临时未入库文件"——留了就没人能对账）。
+    """
+
+    asset_id: str = Field(..., description="A 段：素材库里的这条素材（asset_items.id）")
+    second_source: str = Field(..., description=f"B 段来源：{' 或 '.join(compose.INPUT_SOURCES)}")
+    second_id: str = Field(..., description="B 段 ID（asset_items.id 或 slice_outputs.id）")
+    order: str = Field(compose.ORDER_ASSET_FIRST, description="顺序：asset_first＝本条在前 / second_first＝另一段在前")
+    production_id: Optional[str] = Field(None, description="可选：挂回某条生产单（拼接不强制要有生产单）")
+    title: Optional[str] = Field(None, max_length=120, description="可选：产物文件名前缀，默认用素材编号")
+
+
+async def _resolve_concat_input(
+    db: AsyncSession,
+    source: str,
+    value: str,
+    current_user: User,
+    label: str,
+) -> Dict[str, Any]:
+    """把「哪一段」翻成 {bucket, file_key, file_name, label}，取不到就 4xx，绝不带着空往下走。"""
+    if source == compose.SOURCE_ASSET:
+        asset = await _get_asset_or_404(db, value)
+        if not asset.file_key:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{label}（{asset.code}）还没有可拼的文件：链接素材要先取回原片"
+                       f"（`POST /assets/resolve`），文件素材要确认上传成功",
+            )
+        return {
+            "bucket": asset.bucket or settings.MINIO_BUCKET_RAW,
+            "file_key": asset.file_key,
+            "file_name": asset.file_name or f"{asset.code}.mp4",
+            "label": f"{asset.code}·{asset.title or asset.file_name or '未命名'}",
+        }
+    if source == compose.SOURCE_SLICE:
+        out = (
+            await db.execute(
+                select(SliceOutput).where(SliceOutput.id == _as_uuid(value, "second_id"))
+            )
+        ).scalar_one_or_none()
+        if out is None or not out.file_key:
+            raise HTTPException(status_code=404, detail=f"{label}：切片产物不存在或没有文件")
+        # 切片产物不属于素材库那套「全量可见」口径（11-03 取消的是 asset_* 的行级过滤）。
+        # 这里沿用 preview.py `_check_output_scope` 的同一条隔离链：output→task→episode→project，
+        # 无权限按 404 处理（不泄露存在性），与主系统口径一致。
+        task = (
+            await db.execute(select(SliceTask).where(SliceTask.id == out.task_id))
+        ).scalar_one_or_none()
+        episode = None
+        if task is not None:
+            episode = (
+                await db.execute(select(Episode).where(Episode.id == task.episode_id))
+            ).scalar_one_or_none()
+        if episode is not None:
+            await check_project_access_by_episode(db, episode, current_user)
+        return {
+            "bucket": settings.MINIO_BUCKET_SLICED,
+            "file_key": out.file_key,
+            "file_name": out.file_name or "slice.mp4",
+            "label": f"切片·{out.file_name or out.id}",
+        }
+    raise HTTPException(
+        status_code=400,
+        detail=f"second_source 只能是 {' 或 '.join(compose.INPUT_SOURCES)}",
+    )
+
+
+@router.post("/assets/concat", status_code=201)
+async def concat_two_videos(
+    data: ConcatRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """**简单拼接**：两段视频按人选的顺序拼成一条，落一条 `asset_outputs(kind=composed)`。
+
+    口径（11-04 用户改定，覆盖设计方案 §八 原先挂在切片引擎上的那套重方案）：
+    不做智能选点、不做智能剪切、不调 `SliceTask.hook_video_keys` / `hook_mix_mode`。
+    顺序可选就是用户要的全部控制粒度——「拼在前或者拼在后」。
+
+    三条实现约束（都是踩过的人才写得出来的，别当过度设计删掉）：
+    1. **目标规格＝排在最前那一段**（宽/高/帧率），后一段 scale+pad 进去。
+       所以「选顺序」同时决定了画幅：把竖屏放前面就出竖屏。
+       不复用 `api/upload.py::_ffmpeg_concat` 是因为它的重编码回退硬编码 1920×1080 横屏
+       （upload.py:644），会把我们的 9:16 加黑边塞进横框——成功但构图坏。
+    2. **一律 `filter_complex` 重编码，绝不流拷贝**（混规格流拷贝出坏片，切片引擎
+       同结论 `slice-worker/engines/slice.py:4577-4580`）。
+    3. **任一段没有音轨就补一条静音轨**，不静默丢音轨、也不让整条命令失败。
+
+    成本：**0 元**——不调智令、不调模型，纯本机 ffmpeg，所以不进预算闸门、不写 cost_*。
+    同步等：单段上限 `MAX_SEGMENT_SECONDS`（默认 600s）先挡一道；两条短片的拼接是秒级，
+    真要把批量拼接排上去属 P1 队列化（与投产串行展开同一个坑，见 `_call_autoclip` 注释）。
+    """
+    started = time.monotonic()
+    compose.resolve_input_order(data.order, "A", "B")  # 先验 order，非法值别等到下载完文件才报
+    if data.second_source not in compose.INPUT_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"second_source 只能是 {' 或 '.join(compose.INPUT_SOURCES)}",
+        )
+    asset = await _get_asset_or_404(db, data.asset_id)
+    compose.check_inputs_differ(str(asset.id), data.second_source, data.second_id)
+
+    seg_a = await _resolve_concat_input(db, compose.SOURCE_ASSET, str(asset.id), current_user, "A 段")
+    seg_b = await _resolve_concat_input(db, data.second_source, data.second_id, current_user, "B 段")
+    first, second = (
+        (seg_b, seg_a) if data.order == compose.ORDER_SECOND_FIRST else (seg_a, seg_b)
+    )
+
+    production = None
+    if data.production_id:
+        production = await db.get(AssetProduction, _as_uuid(data.production_id, "production_id"))
+        if production is None:
+            raise HTTPException(status_code=404, detail="生产单不存在")
+
+    work_dir = tempfile.mkdtemp(prefix="asset_concat_")
+    try:
+        paths: List[str] = []
+        for idx, seg in enumerate((first, second)):
+            local = os.path.join(work_dir, f"in_{idx}.mp4")
+            ok = await download_to_file(seg["bucket"], seg["file_key"], local)
+            if not ok:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"取回第{idx + 1}段失败（{seg['bucket']}/{seg['file_key'][:60]}），稍后重试",
+                )
+            paths.append(local)
+
+        infos: List[Optional[Dict[str, Any]]] = [await compose.probe_media(p) for p in paths]
+        target = infos[0]
+        if target is None:
+            raise HTTPException(status_code=400, detail="第1段探不出视频流，不是能拼的视频文件")
+        if infos[1] is None:
+            raise HTTPException(status_code=400, detail="第2段探不出视频流，不是能拼的视频文件")
+        for idx, info in enumerate(infos):
+            dur = info.get("duration")
+            if dur and dur > compose.MAX_SEGMENT_SECONDS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"第{idx + 1}段 {dur:.0f}s 超过单次拼接上限 "
+                           f"{compose.MAX_SEGMENT_SECONDS:.0f}s（同步等 ffmpeg，别拿它当队列）",
+                )
+
+        out_path = os.path.join(work_dir, "out.mp4")
+        err = await compose.concat_segments(paths, target, out_path)
+        if err:
+            raise HTTPException(status_code=502, detail=err)
+
+        out_info = await compose.probe_media(out_path) or target
+        size = os.path.getsize(out_path) if os.path.isfile(out_path) else None
+        safe = "".join(c for c in (data.title or asset.code) if c not in '/\\:*?"<>|').strip()[:80] or asset.code
+        file_key = f"asset/composed/{asset.code}/{uuid.uuid4().hex[:16]}_{safe}.mp4"
+        uploaded = await upload_file_from_path(
+            settings.MINIO_BUCKET_RAW, file_key, out_path, content_type="video/mp4"
+        )
+        if not uploaded:
+            raise HTTPException(status_code=502, detail="拼接成功但产物上传失败，请重试（原片未动）")
+
+        out_row = AssetOutput(
+            production_id=production.id if production is not None else None,
+            asset_id=asset.id,
+            kind=compose.KIND_COMPOSED,
+            file_key=file_key,
+            bucket=settings.MINIO_BUCKET_RAW,
+            file_name=f"{safe}.mp4",
+            duration=out_info.get("duration"),
+            file_size=size,
+            resolution=f"{int(out_info['width'])}x{int(out_info['height'])}",
+            sha256=compose.sha256_of(out_path),
+        )
+        db.add(out_row)
+        # 拼接是 AssetItem 五阶段里唯一还没有写入方的那一个（stage_compose）。
+        # 拼成功就置 success，派生态自然从 composing 走到 ready（derive_status 第一命中）。
+        before_stage = asset.stage_compose
+        before_status = asset.status
+        asset.stage_compose = STAGE_SUCCESS
+        asset.status = svc.derive_status(
+            {
+                "import": asset.stage_import,
+                "prompt": asset.stage_prompt,
+                "summary": asset.stage_summary,
+                "produce": asset.stage_produce,
+                "compose": STAGE_SUCCESS,
+            },
+            bool(asset.has_approved_copy),
+        )
+        await _write_audit(
+            db,
+            action="asset.concat",
+            operator=current_user,
+            target_type="asset_output",
+            target_id=None,
+            before={
+                "asset_id": str(asset.id),
+                "stage_compose": before_stage,
+                "status": before_status,
+            },
+            after={
+                "first": first["label"],
+                "second": second["label"],
+                "order": data.order,
+                "target_resolution": out_row.resolution,
+                "duration": out_row.duration,
+                "file_key": out_row.file_key,
+                "cost": 0,
+                "elapsed_seconds": round(time.monotonic() - started, 2),
+            },
+        )
+        await db.commit()
+        await db.refresh(out_row)
+        return {
+            "id": str(out_row.id),
+            "kind": out_row.kind,
+            "asset_id": str(out_row.asset_id),
+            "production_id": str(out_row.production_id) if out_row.production_id else None,
+            "file_name": out_row.file_name,
+            "file_key": out_row.file_key,
+            "bucket": out_row.bucket,
+            "duration": out_row.duration,
+            "file_size": out_row.file_size,
+            "resolution": out_row.resolution,
+            "asset_status": asset.status,
+            "order": data.order,
+            "segments": [first["label"], second["label"]],
+            "elapsed_seconds": round(time.monotonic() - started, 2),
+            "message": "拼好了，产物每条一行不覆盖，可反复拼不同顺序",
+        }
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 # ──────────────────────────────────────────────

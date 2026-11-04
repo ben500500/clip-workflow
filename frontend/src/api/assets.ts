@@ -173,7 +173,7 @@ export interface AssetItem {
   stage_summary: AssetStage;
   /** 生产单阶段态（由投递状态回写口收敛） */
   stage_produce: AssetStage;
-  /** 合成阶段态（P1 写入） */
+  /** 合成阶段态（11-04 起由 POST /assets/concat 写入：拼成功＝success） */
   stage_compose: AssetStage;
   status: AssetStatus;
   has_approved_copy: boolean;
@@ -292,7 +292,8 @@ export interface AssetProduction {
 export interface AssetOutput {
   id: string;
   asset_id: string;
-  production_id: string;
+  /** 11-04 起可空：拼接产物（composed）按用户口径不必挂生产单 */
+  production_id: string | null;
   kind: AssetOutputKind;
   file_name: string | null;
   file_key: string | null;
@@ -1142,6 +1143,51 @@ export interface AssetOutputDownloadResult {
   downloaded_at: string;
 }
 
+/**
+ * 拼接顺序（11-04 用户口径：「可以拼在前或者拼在后」，这就是全部控制粒度）。
+ * ⚠️ 顺序同时决定**画幅**：后端按排在最前那段定宽/高/帧率，后一段 scale+pad 进去。
+ */
+export type AssetConcatOrder = 'asset_first' | 'second_first';
+
+/** B 段来源：素材库里另一条 / 现网已有的切片产物（本地文件先 uploadBatch 成素材再走 asset） */
+export type AssetConcatSecondSource = 'asset' | 'slice';
+
+/** POST /assets/concat —— 两段直拼，不选点、不剪切 */
+export interface AssetConcatRequest {
+  /** A 段：产物挂在这条素材名下，stage_compose 也写它 */
+  asset_id: string;
+  second_source: AssetConcatSecondSource;
+  /** asset_items.id 或 slice_outputs.id */
+  second_id: string;
+  order?: AssetConcatOrder;
+  /** 可选：挂回某条生产单；不传就是无主产物（拼接不强制要有生产单） */
+  production_id?: string | null;
+  /** 产物文件名前缀，默认用素材编号 */
+  title?: string | null;
+}
+
+/** POST /assets/concat 的响应（每条一行不覆盖，可反复拼不同顺序） */
+export interface AssetConcatResult {
+  id: string;
+  kind: AssetOutputKind;
+  asset_id: string;
+  production_id: string | null;
+  file_name: string | null;
+  file_key: string | null;
+  bucket: string | null;
+  duration: number | null;
+  file_size: number | null;
+  /** 实际产出画幅，如 720x1280 —— 由排在最前那段决定 */
+  resolution: string | null;
+  /** 拼完后的素材状态（通常从 composing 收敛到 ready） */
+  asset_status: AssetStatus;
+  order: AssetConcatOrder;
+  /** 两段的可读标签，按实际拼接顺序排 */
+  segments: string[];
+  elapsed_seconds: number;
+  message: string;
+}
+
 /** POST /assets/resolve 的逐条结果 */
 export interface AssetResolveResultItem {
   asset_id: string;
@@ -1354,6 +1400,12 @@ export const assetApi = {
   // 产物下载：presigned 外链（验收 failed 的会被 409 挡住，不静默交付）
   downloadOutput: (outputId: string) =>
     client.get(`/assets/outputs/${outputId}/download`) as Promise<AssetOutputDownloadResult>,
+
+  // 简单拼接：两段按人选顺序直拼（不选点不剪切）。同步等 ffmpeg——
+  // 两条短片实测几秒到几十秒，但"从桶里取回两段 + 重编码"最坏会超过 client.ts 默认的 60 秒，
+  // 那时后端其实还在跑、前端先报超时。上限与 nginx /api 的 900s 同口径，别让它先掐。
+  concat: (data: AssetConcatRequest) =>
+    client.post('/assets/concat', data, { timeout: 900000 }) as Promise<AssetConcatResult>,
 
   // 素材详情：含全部文案候选、生产单、反推任务与详规正文
   getAsset: (assetId: string) =>
