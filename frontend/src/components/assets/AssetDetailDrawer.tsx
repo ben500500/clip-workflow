@@ -77,16 +77,16 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
     try {
       const res = await assetApi.refreshAssetPrompt(assetId);
       setData((prev) => (prev ? { ...prev, asset: res.asset, prompt_task: res.prompt_task } : prev));
-      message.success(res.duration_note || '已收敛反推任务状态');
+      message.success(res.duration_note || '已更新视频读取进度');
       onChanged?.();
     } catch (e) {
-      message.error((e as Error).message || '收敛失败（该素材可能还没有反推任务）');
+      message.error((e as Error).message || '更新失败（该素材可能还没有读详规任务）');
     } finally {
       setBusy(false);
     }
   };
 
-  /** 单条回源解析：0.01 元/次，是「想知道这条到底多长」的唯一显式口子 */
+  /** 单条查时长：0.01 元/次，是「想知道这条到底多长」的唯一显式口子 */
   const resolveOne = async () => {
     if (!assetId) return;
     setResolveBusy(true);
@@ -97,7 +97,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
         message.info(res.message);
       } else if (item.ok) {
         Modal.info({
-          title: `回源解析完成（本条实扣 ${yuan(item.charged)}）`,
+          title: `查时长完成（本条实扣 ${yuan(item.charged)}）`,
           width: 580,
           content: (
             <Space direction="vertical" style={{ width: '100%' }}>
@@ -114,12 +114,12 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
           ),
         });
       } else {
-        message.error(item.error || item.note || '回源解析未拿到结果');
+        message.error(item.error || item.note || '查时长没拿到结果');
       }
       await fetchDetail(assetId);
       onChanged?.();
     } catch (e) {
-      message.error((e as Error).message || '回源解析失败');
+      message.error((e as Error).message || '查时长失败');
     } finally {
       setResolveBusy(false);
     }
@@ -142,7 +142,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
       const res: AssetSourceDownloadResult = await assetApi.downloadAssetSource(assetId);
       if (res.url) {
         window.open(res.url, '_blank');
-        message.success(`已打开直链（${res.mode}，${res.expires_in ?? 3600}s 内有效）`);
+        message.success(`已打开原片直链（${res.expires_in ?? 3600}s 内有效）`);
       } else {
         Modal.info({
           title: '这条素材不在自有桶',
@@ -196,13 +196,13 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
           )}
           {asset?.stage_prompt === 'running' && (
             <Button icon={<ReloadOutlined />} loading={busy} onClick={refreshPrompt}>
-              收敛反推
+              更新读取进度
             </Button>
           )}
           {canProduce && asset?.source_kind === 'link' && asset?.duration === null && (
-            <Tooltip title="doc/107 按次 0.01 元，会计入批次成本">
+            <Tooltip title="去原链接查时长：每次 0.01 元，会计入批次成本">
               <Button loading={resolveBusy} onClick={resolveOne}>
-                回源解析拿时长
+                查视频时长
               </Button>
             </Tooltip>
           )}
@@ -217,7 +217,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
         <>
           <Descriptions size="small" column={2} bordered>
             <Descriptions.Item label="标题" span={2}>
-              {asset.title || <Text type="secondary">（反推成功后才有标题）</Text>}
+              {asset.title || <Text type="secondary">（读详规成功后才有标题）</Text>}
             </Descriptions.Item>
             <Descriptions.Item label="来路">
               <Tag>{asset.source_kind === 'link' ? '链接' : '文件'}</Tag>
@@ -225,24 +225,30 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
             </Descriptions.Item>
             <Descriptions.Item label="时长">{durationText(asset.duration)}</Descriptions.Item>
             <Descriptions.Item label="分辨率">{asset.resolution || '-'}</Descriptions.Item>
-            <Descriptions.Item label="反推档位">
-              {asset.prompt_max_duration ? `${asset.prompt_max_duration}s` : '未定档'}
+            <Descriptions.Item label="视频时长上限">
+              {asset.prompt_max_duration ? `${asset.prompt_max_duration}s` : '未定'}
             </Descriptions.Item>
             <Descriptions.Item label="文件">{asset.file_name || '-'}</Descriptions.Item>
             <Descriptions.Item label="大小">
               {asset.file_size ? `${(asset.file_size / 1024 / 1024).toFixed(1)} MB` : '-'}
             </Descriptions.Item>
             <Descriptions.Item label="成本" span={2}>
-              反推 {yuan(asset.cost_prompt)} ｜ 回源解析 {yuan(asset.cost_parse)}
+              读详规 {yuan(asset.cost_prompt)} ｜ 查时长 {yuan(asset.cost_parse)}
               <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
-                （cost_produce 在 P0 无写入方、恒 0，是留给 P1 的口子，别当预算看）
+                （生产这一环的花费现在不记账、恒为 0，是留给后续版本的口子，别当预算看）
               </Text>
             </Descriptions.Item>
             <Descriptions.Item label="导入时间">
               {parseServerTime(asset.created_at)?.format('YYYY-MM-DD HH:mm') || '-'}
             </Descriptions.Item>
-            <Descriptions.Item label="反推任务">
-              {data?.prompt_task ? String(data.prompt_task.status) : '未提交'}
+            <Descriptions.Item label="读详规任务">
+              {/* 后端这三个状态码是 processing/success/failed，直接 String() 出来一线看不懂
+                  （11-04 抽屉截图上就是裸的「success」），这里翻成人话 */}
+              {data?.prompt_task
+                ? { processing: '还在读（稍等刷新）', success: '读完了', failed: '读失败' }[
+                    String(data.prompt_task.status)
+                  ] || String(data.prompt_task.status)
+                : '未提交'}
             </Descriptions.Item>
             <Descriptions.Item label="来源链接" span={2}>
               {asset.source_url ? (
@@ -267,7 +273,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
             items={[
               {
                 key: 'script',
-                label: `反推详规${data?.prompt_script ? '' : '（未出）'}`,
+                label: `视频详规${data?.prompt_script ? '' : '（还没出）'}`,
                 children: data?.prompt_script ? (
                   <>
                     <Space style={{ marginBottom: 8 }}>
@@ -276,7 +282,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                         icon={<CopyOutlined />}
                         onClick={() => {
                           navigator.clipboard.writeText(data.prompt_script || '');
-                          message.success('已复制反推详规');
+                          message.success('已复制视频详规');
                         }}
                       >
                         复制
@@ -300,7 +306,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                     </Paragraph>
                   </>
                 ) : (
-                  <Empty description="还没有反推详规（先跑反推）" />
+                  <Empty description="还没有视频详规（先在列表页点「读视频详规」）" />
                 ),
               },
               {
@@ -323,12 +329,15 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                             <Text type="secondary">{s.word_count ?? '-'} 字</Text>
                             <RiskTags riskHit={s.risk_hit} />
                           </Space>
-                          <Paragraph style={{ marginBottom: 0 }} ellipsis={{ rows: 4, expandable: true, symbol: '展开' }}>
+                          <Paragraph
+                            style={{ marginBottom: 0 }}
+                            ellipsis={{ rows: 4, expandable: 'collapsible', symbol: (expanded) => (expanded ? '收起' : '展开') }}
+                          >
                             {s.text}
                           </Paragraph>
                           {s.consistency_ok === false && s.consistency_note && (
                             <Text type="warning" style={{ fontSize: 12 }}>
-                              一致性不过：{s.consistency_note}
+                              和原视频对不上：{s.consistency_note}
                             </Text>
                           )}
                           {s.reject_reason && (
@@ -359,22 +368,22 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                       <List.Item key={p.id}>
                         <Space direction="vertical" size={2} style={{ width: '100%' }}>
                           <Space wrap>
-                            <MonoText>{p.hook_code || '缺号'}</MonoText>
+                            <MonoText>{p.hook_code || '（没编号）'}</MonoText>
                             <Text>#{p.seq}</Text>
                             <ProductionStateTag status={p.status} />
                             <Text type="secondary">
-                              板上 {p.board_name || '-'}｜total {p.board_total}｜投 {p.attempts} 次
+                              板上的任务名 {p.board_name || '-'}｜一条出 {p.board_total} 版｜投了 {p.attempts} 次
                             </Text>
                             {p.drift && (
-                              <Tag color="warning">漂移{p.drift_reason ? `：${p.drift_reason}` : ''}</Tag>
+                              <Tag color="warning">正文对不上{p.drift_reason ? `：${p.drift_reason}` : '（展开后的提示词和过审文案不是同一条）'}</Tag>
                             )}
                           </Space>
                           <Paragraph
                             type="secondary"
                             style={{ marginBottom: 0, fontSize: 12 }}
-                            ellipsis={{ rows: 2, expandable: true, symbol: '展开' }}
+                            ellipsis={{ rows: 2, expandable: 'collapsible', symbol: (expanded) => (expanded ? '收起' : '展开') }}
                           >
-                            {p.prompt_text || '（正文为空：作废/失败单不外泄，看 status）'}
+                            {p.prompt_text || '（正文为空：已作废或投放失败的单，不提供正文）'}
                           </Paragraph>
                           {p.dispatch_note && (
                             // 不再自己加「投放要求：」前缀——存进来的正文第一句本就是
@@ -440,8 +449,9 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
           />
           <Divider style={{ margin: '12px 0' }} />
           <Text type="secondary" style={{ fontSize: 12 }}>
-            链路：导入 → 反推提示词（智令）→ 钩子文案（AutoClip）→ 人工审核 → 生产单 → 导出板面 payload
-            →（人工投板后回写投递状态）→ 拼接产物（两段直拼，0 元）。
+            链路：导入 → 把视频读成文字详规 → 出钩子文案 → 人工审核 → 生成生产单（把过审文案变成要投出去的一条条提示词）
+            → 导出提示词 txt 或建板参数（七项）→（人把提示词放进企微后台任务板后，回来登记投放结果）→ 拼接产物（两段直拼，0 元）。
+            钩子编号是五位编号，投放和回收都靠它对上。
           </Text>
           <AssetComposeModal
             open={composeOpen}

@@ -42,9 +42,9 @@ const STAGE_COLOR: Record<AssetStage, string> = {
 
 const STAGE_ABBR: Record<string, string> = {
   stage_import: '导',
-  stage_prompt: '推',
+  stage_prompt: '读',
   stage_summary: '文',
-  stage_produce: '产',
+  stage_produce: '单',
   stage_compose: '拼',
 };
 
@@ -123,7 +123,7 @@ export const GateLine: React.FC<{ gate: AssetBudgetGateInfo | null | undefined; 
   const tone = gate.level === 'blocked' ? 'danger' : gate.level === 'need_approval' ? 'warning' : 'success';
   return (
     <Text type={tone}>
-      {gate.reason || (gate.allowed ? '闸门放行' : '闸门拦下')}
+      {gate.reason || (gate.allowed ? '预算够，可以提交' : '预算不够，先拦下')}
       {gate.note && <span style={{ marginLeft: 8, color: '#8c8c8c' }}>{gate.note}</span>}
     </Text>
   );
@@ -149,7 +149,7 @@ export const RiskTags: React.FC<{ riskHit: string | null | undefined }> = ({ ris
         return (
           <Tag key={`${p}-${i}`} color={level === 'block' ? 'red' : 'orange'}>
             {word}
-            {level === 'block' ? '（拦）' : '（警）'}
+            {level === 'block' ? '（不许用）' : '（要注意）'}
           </Tag>
         );
       })}

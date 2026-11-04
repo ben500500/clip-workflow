@@ -8,16 +8,17 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import {
-  ASSET_STAGE_LABELS, ASSET_STATUS_LABELS, DEFAULT_TIER, DURATION_TIERS, assetApi,
+  ASSET_STAGE_LABELS, ASSET_STATUS_LABELS, DEFAULT_TIER, DURATION_TIERS, assetApi, isAssetJobAck,
 } from '../../api/assets';
 import type {
-  AssetItem, AssetAnalyzeResponse, AssetCostEstimateResponse, AssetResolveResponse, AssetSummaryGenerateResponse,
+  AssetItem, AssetAnalyzeResponse, AssetCostEstimateResponse, AssetResolveResponse,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import { AssetStatusTag, StageTags, durationText, yuan } from './AssetBits';
 import CostConfirmModal from './CostConfirmModal';
 import AssetDetailDrawer from './AssetDetailDrawer';
 import AssetComposeModal from './AssetComposeModal';
+import { nudgeAssetJobBanner } from './AssetJobBanner';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -29,6 +30,11 @@ interface Props {
   /** 仅 admin：余额闸门 blocked 时可以强行提交（余额接口有波动） */
   isAdmin: boolean;
   batchId?: string;
+  /**
+   * 后台任务收敛一次就自增（D-1）：出文案跑完 ⟶ 阶段标签/状态必须刷新，
+   * 但不能靠定时器猜"差不多该刷了"——只有横幅确认任务终态时才 +1。
+   */
+  reloadToken?: number;
 }
 
 /**
@@ -37,11 +43,12 @@ interface Props {
  * 三个批量动作都是「可能花钱或花时间」的，所以一律走成本确认单：
  *  - 反推按**计时上限**扣费（不是实际时长），默认档 180，600 档一条 0.324 元；
  *  - 回源解析 0.01 元/次，≥2 条后端要求 confirmed=true；
- *  - 出文案走 AutoClip（LLM 在那边），同步等，单次条数由后端上限裁。
+ *  - 出文案走 AutoClip（LLM 在那边）：单条 ~95s，所以**提交即回任务号**，
+ *    后台跑完由顶部横幅通知并刷新本页（`reloadToken`）——一线不该守着转圈的按钮等十几分钟。
  * 整批排队（batch_id + offset/limit）是给 200 条那种批次的：提交成功的条会自己离开队列，
  * 所以 offset 默认 0，只有某条反复失败才往后挪。
  */
-const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
+const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadToken }) => {
   const [items, setItems] = useState<AssetItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -114,13 +121,20 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, sourceKind, stagePrompt, batchFilter, dates]);
 
+  // 后台任务刚收敛完（横幅确认终态后 +1）：阶段标签和状态是后端算的，只能重新拉一次
+  useEffect(() => {
+    if (!reloadToken) return;
+    fetchList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadToken]);
+
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
   const runningCount = useMemo(() => items.filter((i) => i.stage_prompt === 'running').length, [items]);
 
-  // ── 反推 ──
+  // ── 读视频详规（原「反推」）──
   const openAnalyze = async () => {
     if (!ids.length) {
-      message.warning('先勾选要反推的素材');
+      message.warning('先勾选要读详规的素材');
       return;
     }
     setAnalyzeOpen(true);
@@ -157,7 +171,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
         retry_failed: retryFailed,
       });
       Modal.info({
-        title: '反推已提交',
+        title: '读详规已提交',
         width: 520,
         content: <Text>{res.message}</Text>,
       });
@@ -165,22 +179,31 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
       setSelected([]);
       fetchList();
     } catch (e) {
-      message.error((e as Error).message || '提交反推失败');
+      message.error((e as Error).message || '提交读详规失败');
     } finally {
       setAnalyzeLoading(false);
     }
   };
 
-  // ── 出文案 ──
+  // ── 出文案（提交即回任务号，顶部横幅负责报"跑完了"）──
   const generateSummaries = async () => {
     const ok = ids.filter((_, i) => selected[i].stage_prompt === 'success');
     if (!ok.length) {
-      message.warning('选中的素材里没有「反推成功」的——文案是从反推详规里出的，得先有详规');
+      message.warning('选中的素材里没有「读详规成功」的——文案是从视频详规里出的，得先有详规');
       return;
     }
     setGenBusy(true);
     try {
-      const res: AssetSummaryGenerateResponse = await assetApi.generateSummaries({ asset_ids: ok });
+      const res = await assetApi.generateSummaries({ asset_ids: ok, async_mode: true });
+      if (isAssetJobAck(res)) {
+        // 回执里没结果，只有任务号：告诉人去哪儿看，别在这里猜跑没跑完
+        // （busy 由下面的 finally 收，这里不重复置位）
+        message.success(res.message, 8);
+        // 叫一声让顶部横幅立刻登记，不等下一个 8 秒定轮——否则这 8 秒看着就像没点
+        nudgeAssetJobBanner();
+        setSelected([]);
+        return;
+      }
       message.success(res.message);
       setSelected([]);
       fetchList();
@@ -191,11 +214,11 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
     }
   };
 
-  // ── 回源解析（拿时长，0.01 元/次）──
+  // ── 查时长（去原链接解析，0.01 元/次）──
   const openResolve = async () => {
     const linkItems = selected.filter((s) => s.source_kind === 'link');
     if (!linkItems.length) {
-      message.warning('回源解析只对**链接**素材有意义：文件素材上传时已经知道时长');
+      message.warning('查时长只对链接导入的素材有意义：上传文件的素材入库时已经知道时长');
       return;
     }
     setResolveOpen(true);
@@ -224,7 +247,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
       });
       const notes = (res.results || []).filter((r) => r.note && !r.ok);
       Modal.info({
-        title: `回源解析：拿到时长 ${res.resolved} 条，实扣 ${yuan(res.charged)}`,
+        title: `查时长：拿到 ${res.resolved} 条，实扣 ${yuan(res.charged)}`,
         width: 640,
         content: (
           <Space direction="vertical" style={{ width: '100%' }}>
@@ -244,7 +267,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
               <Alert
                 type="info"
                 showIcon
-                message={`${notes.length} 条给了说明（有 note ≠ 失败：命中免费兜底渠道本来就不回时长）`}
+                message={`${notes.length} 条给了说明（有说明不等于失败：命中免费兜底渠道本来就不回时长）`}
                 description={notes.slice(0, 5).map((n) => `${n.code}: ${n.note}`).join('；')}
               />
             )}
@@ -255,19 +278,19 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
       setSelected([]);
       fetchList();
     } catch (e) {
-      message.error((e as Error).message || '回源解析失败');
+      message.error((e as Error).message || '查时长失败');
     } finally {
       setResolveBusy(false);
     }
   };
 
-  // ── 收敛在跑的反推任务 ──
+  // ── 收取还在跑的视频读取结果 ──
   const refreshRunning = async () => {
     setRefreshBusy(true);
     try {
       const payload = batchFilter ? { batch_id: batchFilter } : { asset_ids: ids };
       if (!batchFilter && !ids.length) {
-        message.warning('勾选素材，或先按批次筛选再整批收敛');
+        message.warning('先勾选素材，或按批次筛选后一次收取整批');
         setRefreshBusy(false);
         return;
       }
@@ -275,7 +298,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
       message.success(res.message);
       fetchList();
     } catch (e) {
-      message.error((e as Error).message || '收敛失败');
+      message.error((e as Error).message || '收取在跑结果失败');
     } finally {
       setRefreshBusy(false);
     }
@@ -312,7 +335,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
       render: (v: string | null, row) => (
         <Space direction="vertical" size={0}>
           {/* 链接素材永远没有标题（title 只有文件上传时取文件名），
-              旧文案写死「未反推」会和五阶段里绿色的「推」自相矛盾，11-03 验收截图上就是这样 */}
+              旧文案写死「未反推」会和环节标签里绿色的「读」自相矛盾，11-03 验收截图上就是这样 */}
           <Text strong={!!v}>
             {v || (
               <Text type="secondary">
@@ -346,7 +369,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
       width: 76,
       render: (v: number | null) =>
         v === null || v === undefined ? (
-          <Tooltip title="分享页链接库里不存原片，智令反推也只回提示词。要时长点「解析」（0.01 元/次）">
+          <Tooltip title="链接素材库里没存原片，读视频详规也只回文字提示词。要看时长点「查时长」（0.01 元/次）">
             <Text type="warning">未知</Text>
           </Tooltip>
         ) : (
@@ -354,7 +377,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
         ),
     },
     {
-      title: '五阶段',
+      title: '五个环节',
       key: 'stages',
       width: 130,
       render: (_, row) => <StageTags asset={row} />,
@@ -367,9 +390,9 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
         <Space size={4}>
           <Text>{row.summary_count ?? 0}</Text>
           {(row.pending_review_count ?? 0) > 0 && (
-            <Tag color="orange">待审 {row.pending_review_count}</Tag>
+            <Tag color="orange">等审核 {row.pending_review_count}</Tag>
           )}
-          {(row.approved_count ?? 0) > 0 && <Tag color="green">过 {row.approved_count}</Tag>}
+          {(row.approved_count ?? 0) > 0 && <Tag color="green">过审 {row.approved_count}</Tag>}
         </Space>
       ),
     },
@@ -384,7 +407,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
       key: 'cost',
       width: 110,
       render: (_, row) => (
-        <Tooltip title={`反推 ${yuan(row.cost_prompt)}｜回源解析 ${yuan(row.cost_parse)}`}>
+        <Tooltip title={`读详规 ${yuan(row.cost_prompt)}｜查时长 ${yuan(row.cost_parse)}`}>
           <Text>{yuan((row.cost_prompt || 0) + (row.cost_parse || 0))}</Text>
         </Tooltip>
       ),
@@ -415,7 +438,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
           <Button size="small" onClick={() => setDrawerId(row.id)}>
             详情
           </Button>
-          <Tooltip title="原片直链（文件素材走自有桶；链接素材不在桶里，会提示用来源链接自取）">
+          <Tooltip title="原片直链：上传的文件从我们自己的存储里取；链接素材没存原片，会提示你用来源链接自己打开">
             <Button size="small" icon={<DownloadOutlined />} onClick={() => showSource(row)} />
           </Tooltip>
           {canProduce && (
@@ -463,7 +486,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
             ]}
           />
           <Select
-            placeholder="反推阶段"
+            placeholder="读详规环节"
             allowClear
             style={{ width: 120 }}
             value={stagePrompt}
@@ -491,24 +514,24 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
         canProduce ? (
           <Space wrap>
             <Button type="primary" icon={<FileTextOutlined />} onClick={openAnalyze} disabled={!ids.length}>
-              反推提示词（{ids.length}）
+              读视频详规（{ids.length}）
             </Button>
             <Button icon={<BulbOutlined />} loading={genBusy} onClick={generateSummaries} disabled={!ids.length}>
               出钩子文案（{ids.length}）
             </Button>
-            <Tooltip title="整批收敛 stage_prompt=running 的任务，一次请求收完（不必逐条点）">
+            <Tooltip title="把这一批里还在跑的视频读取结果一次性收回来（不用逐条点）">
               <Button icon={<ReloadOutlined />} loading={refreshBusy} onClick={refreshRunning}>
-                收敛在跑（本页 {runningCount}）
+                收取在跑结果（本页 {runningCount}）
               </Button>
             </Tooltip>
-            <Tooltip title="doc/107 按次 0.01 元，计入批次成本；只对链接素材">
+            <Tooltip title="去原链接查视频时长：每次 0.01 元，计入批次成本；只适用于链接素材">
               <Button icon={<CloudDownloadOutlined />} onClick={openResolve} disabled={!ids.length}>
-                回源解析（{ids.length}）
+                查时长（{ids.length}）
               </Button>
             </Tooltip>
           </Space>
         ) : (
-          <Text type="secondary">当前角色只读：导入/反推/出文案需素材专员或运营</Text>
+          <Text type="secondary">当前角色只读：导入、读视频详规、出文案由素材专员或运营来做</Text>
         )
       }
     >
@@ -542,7 +565,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
 
       <CostConfirmModal
         open={analyzeOpen}
-        title={`批量反推提示词（${ids.length} 条）`}
+        title={`批量读视频详规（${ids.length} 条）`}
         preview={analyzePreview}
         previewLoading={previewLoading}
         loading={analyzeLoading}
@@ -557,7 +580,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
         extra={
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
             <Space>
-              <Text>计时上限档位：</Text>
+              <Text>视频时长上限（秒）：</Text>
               <Select
                 style={{ width: 160 }}
                 value={tier}
@@ -568,16 +591,16 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
             <Alert
               type="info"
               showIcon
-              message="反推按计时上限扣费，不按视频实际时长"
+              message="读详规按你选的时长上限扣费，不按视频实际时长"
               description={
                 <span style={{ fontSize: 12 }}>
-                  0.00054 元/秒 × 档位。600 档一条 0.324 元，180 档一条 0.0972 元 —— 档位选错是批次成本翻倍的最快方式。
-                  落库的 cost_prompt 是按档位推算的额度（智令不逐单回传金额），用于对账，别当精确值。
+                  0.00054 元/秒 × 时长上限。600 秒档一条 0.324 元，180 秒档一条 0.0972 元——上限选大了，批次成本直接翻倍。
+                  台账上记的是按时长上限推算的额度（对方服务不逐单回传金额），用来对账，别当精确值。
                 </span>
               }
             />
             <Checkbox checked={retryFailed} onChange={(e) => setRetryFailed(e.target.checked)}>
-              <Text style={{ fontSize: 12 }}>同时重跑反推失败的素材（默认跳过已跑过的）</Text>
+              <Text style={{ fontSize: 12 }}>同时重跑读详规失败的素材（默认跳过已跑过的）</Text>
             </Checkbox>
           </Space>
         }
@@ -585,14 +608,14 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
 
       <CostConfirmModal
         open={resolveOpen}
-        title={`回源解析（${selected.filter((s) => s.source_kind === 'link').length} 条链接素材）`}
+        title={`查时长（${selected.filter((s) => s.source_kind === 'link').length} 条链接素材）`}
         preview={resolvePreview}
         previewLoading={previewLoading}
         loading={resolveBusy}
         needConfirm
         confirmed={resolveConfirmed}
         onConfirmChange={setResolveConfirmed}
-        okText="确认解析（0.01 元/次）"
+        okText="确认查询（0.01 元/次）"
         onOk={submitResolve}
         onCancel={() => setResolveOpen(false)}
         extra={
@@ -603,7 +626,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId }) => {
             description={
               <span style={{ fontSize: 12 }}>
                 实际命中 yuanbao/preview 免费兜底时库里记 0，对账只会偏高不会偏低。
-                拿到时长才能算「这条能不能塞进 180s 档」，所以它是反推前的可选一步，不是反推的替代。
+                拿到时长才能判断「这条能不能放进 180 秒档」，所以它是读详规之前的可选一步，不能替代读详规。
               </span>
             }
           />

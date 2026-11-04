@@ -76,6 +76,10 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
       message.warning('粘贴至少一条分享链接');
       return;
     }
+    // R-2（11-04 第二轮审核）：连点两次＝同一批链接发两个请求，库里没有唯一约束，
+    // 于是同一条视频建出两行素材、反推**按行计费＝同一部片子付两遍钱**（实测 0.0972 元/条）。
+    // 上一份请求没回来之前不再接受第二次提交。
+    if (importing) return;
     setImporting(true);
     try {
       const res = await assetApi.importBatch({
@@ -87,7 +91,16 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
       setLastImport(res);
       message.success(res.message);
       fetchBatches();
-      if (!res.duplicates?.length && !forceUrls) setLinks('');
+      // 原来只在「没有重复且不是放行请求」时清空输入框，于是**这一次真建出来的那几条还留在框里**：
+      // 下次再点（或点某条的放行）它们就全被判成跨批次重复，一线看到的是"怎么全是重复"。
+      // 改成按返回的 items 精确摘掉已入库的那几行，只留下这次没建成的（重复/被跳过）继续在框里等处理。
+      const done = new Set((res.items || []).map((it) => (it.source_url || '').trim()));
+      if (done.size) {
+        const rest = parsedLinks.filter((u) => !done.has(u));
+        setLinks(rest.join('\n'));
+      } else if (!res.duplicates?.length && !forceUrls) {
+        setLinks('');
+      }
     } catch (e) {
       message.error((e as Error).message || '导入失败');
     } finally {
@@ -95,13 +108,16 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
     }
   };
 
-  /** 逐条放行：只放行点名的这几条，别拿整批 force_duplicates 陪跑 */
-  const forceOne = (dup: AssetImportDuplicate) => {
-    const carried = (lastImport?.duplicates || [])
-      .filter((d) => d.source_url !== dup.source_url)
-      .map((d) => d.source_url);
-    submitLinks([dup.source_url, ...carried]);
-  };
+  /**
+   * 逐条放行：**只**放行点名的这一条。
+   *
+   * R-2（11-04 第二轮审核）原来这里把「点名的这条 + 上一次回显里其余全部重复」一起塞进
+   * `force_urls`，注释还写着「别拿整批陪跑」——实现正好相反，等于**整批放行**：
+   * 一线只想放一条，结果另外几条重复素材一起入库、反推按行扣钱。
+   * 放行成功后这条会从重复清单里消失（新响应的 duplicates 不再含它），
+   * 所以不存在"再点一次把同一部片子二次入库"的路径。
+   */
+  const forceOne = (dup: AssetImportDuplicate) => submitLinks([dup.source_url]);
 
   const submitFiles = async () => {
     if (!rawFiles.current.length) {
@@ -139,7 +155,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
     if (!lastUpload?.batch_id || !names.length) return;
     const again = rawFiles.current.filter((f) => names.includes(f.name));
     if (!again.length) {
-      message.warning('失败的文件已不在本次选择里，请重新选中这几个原文件再补投');
+      message.warning('失败的文件已不在本次选择里，请重新选中这几个原文件再补传');
       return;
     }
     setUploading(true);
@@ -149,7 +165,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
       message.success(res.message);
       fetchBatches();
     } catch (e) {
-      message.error((e as Error).message || '补投失败');
+      message.error((e as Error).message || '补传失败');
     } finally {
       setUploading(false);
     }
@@ -175,7 +191,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
     },
     { title: '条数', dataIndex: 'item_count', width: 66 },
     {
-      title: '档位',
+      title: '时长上限',
       dataIndex: 'prompt_max_duration',
       width: 70,
       render: (v: number | null) => (v ? `${v}s` : '未定'),
@@ -191,7 +207,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
       dataIndex: 'cost_actual',
       width: 90,
       render: (v: number | null, row) => (
-        <Tooltip title="实扣是 Σ(反推 + 回源解析) 重算，不是逐条累加；反推落库的是按档位推算的额度，对账用，别当精确值">
+        <Tooltip title="实扣是按（读视频详规 + 查时长）重新汇总的，不是逐条累加；读详规记的是按时长上限推算的额度，对账用，别当精确值">
           <span>{yuan(v)}</span>
           {row.cost_actual != null && row.cost_estimate != null && row.cost_actual > row.cost_estimate && (
             <Tag color="warning" style={{ marginLeft: 4 }}>
@@ -202,7 +218,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
       ),
     },
     {
-      title: '预算闸门',
+      title: '预算检查',
       dataIndex: 'budget_gate',
       width: 110,
       render: (v: string | null, row) => {
@@ -210,7 +226,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
         const color = v === 'blocked' ? 'red' : v === 'need_approval' ? 'orange' : 'green';
         return (
           <Tooltip title={row.budget_note || undefined}>
-            <Tag color={color}>{v}</Tag>
+            <Tag color={color}>{v === 'blocked' ? '已拦下' : v === 'need_approval' ? '要审批' : '正常'}</Tag>
           </Tooltip>
         );
       },
@@ -234,7 +250,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
           type="info"
           showIcon
           message="当前角色不能导入"
-          description="导入/上传属于生产动作，只有素材专员（material）、运营（operator）与管理员可以做；读口不受影响，素材列表照常可看。"
+          description="导入/上传是生产动作，只有素材专员、运营与管理员可以做；浏览不受影响，素材列表照常可看。"
         />
         <Table<AssetBatch>
           rowKey="id"
@@ -294,7 +310,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                     导入 {parsedLinks.length} 条链接
                   </Button>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    导入不扣费：这一步只是登记地址，档位与成本在「反推」那一步才生效
+                    导入不扣费：这一步只是登记地址，视频时长上限和费用在「读视频详规」那一步才生效
                   </Text>
                 </Space>
               </>
@@ -324,8 +340,8 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                   </p>
                   <p className="ant-upload-text">拖入或选择视频文件（可多个）</p>
                   <p className="ant-upload-hint" style={{ fontSize: 12 }}>
-                    落自有 MinIO 桶（raw-footage/asset/），不借智令 temp 桶（那个 6 小时自删）。
-                    逐文件 fail-soft：单个失败不影响整批，失败的一键补投回同一批次。
+                    文件存到我们自己的存储（MinIO raw-footage/asset/），不借智令的临时桶（那个 6 小时自动删）。
+                    单个文件失败不影响整批，失败的可以一键补传到同一批次。
                   </p>
                 </Upload.Dragger>
                 <Space>
@@ -334,7 +350,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                   </Button>
                   {uploading && <Progressish percent={progress} />}
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    反推时文件还要经 doc/125 中转上传一次，所以文件批次的预估里含 0.001 元/次的上传费
+                    读视频详规时文件还要经中转再上传一次，所以文件批次的预估里含每次 0.001 元的上传费
                   </Text>
                 </Space>
               </>
@@ -357,7 +373,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                     )}
                     {lastImport.budget?.gate !== 'ok' && (
                       <Text type="warning" style={{ fontSize: 12 }}>
-                        {lastImport.budget.note || `这批全按 ${lastImport.budget.tier}s 档反推预估 ${yuan(lastImport.budget.cost_estimate)}，超单批上限 ${yuan(lastImport.budget.cap)}`}
+                        {lastImport.budget.note || `这批全按 ${lastImport.budget.tier}s 上限读详规预估要 ${yuan(lastImport.budget.cost_estimate)}，超了单批上限 ${yuan(lastImport.budget.cap)}`}
                       </Text>
                     )}
                   </Space>
@@ -397,7 +413,8 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                       key: 'op',
                       width: 100,
                       render: (_, r) => (
-                        <Button size="small" onClick={() => forceOne(r)}>
+                        // 上一份放行请求没回来前掐住按钮：连点两次＝同一部片子建两行素材（R-2）
+                        <Button size="small" loading={importing} disabled={importing} onClick={() => forceOne(r)}>
                           仍要入库
                         </Button>
                       ),
@@ -421,7 +438,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                         </Text>
                       ))}
                       <Button size="small" icon={<ReloadOutlined />} onClick={retryFailed} loading={uploading}>
-                        一键补投这 {lastUpload.failed_files.length} 个（落回同一批次）
+                        一键补传这 {lastUpload.failed_files.length} 个（放回同一批次）
                       </Button>
                     </Space>
                   )

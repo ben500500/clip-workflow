@@ -471,9 +471,76 @@ export interface AssetQueueSegment {
   hint: string;
 }
 
-/** 复核拦下的单条问题（svc.recheck_copy 的 problems 项，只收 block 级） */
+/**
+ * 后台任务台账（D-1 队列化）。出文案与投产都要等模型（单条 ~95s，一批十几条就是十几分钟），
+ * 同步等会一路撞上浏览器/nginx 超时，所以带 `async_mode: true` 提交时接口**当场回一个任务号**，
+ * 结果靠 `getAssetJob` 轮询取——刷新页面、换浏览器都还查得到（台账在库里，不在前端内存里）。
+ */
+export type AssetJobKind = 'summary_generate' | 'produce';
+export type AssetJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted';
+
+/** 进度是**现算的粗口径**（协程不回报中间态），别当成百分比看 */
+export interface AssetJobProgress {
+  total: number | null;
+  done: number | null;
+  note: string;
+}
+
+/** GET /assets/jobs/{id} 与 GET /assets/jobs 的条目 */
+export interface AssetJobInfo {
+  id: string;
+  kind: AssetJobKind;
+  /** 白话名称：出钩子文案 / 生成生产单 */
+  kind_label: string;
+  status: AssetJobStatus;
+  status_label: string;
+  /** true = queued/running（还没完事），轮询就按这个判停 */
+  running: boolean;
+  batch_id: string | null;
+  planned_units: number | null;
+  progress: AssetJobProgress | null;
+  /** 提交时的原请求体（追溯/重放口径，含 waive 理由这类一次性入参） */
+  params: Record<string, unknown> | null;
+  error: string | null;
+  /**
+   * 终态时是**整份接口响应**（`summary_generate` → AssetSummaryGenerateResponse，
+   * `produce` → AssetProduceResponse）；没跑完一定是 null——半份清单会让人误判已完事。
+   */
+  result: unknown;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** 带 `async_mode: true` 提交时的回执（与同步响应是两种形状，靠 `'queued' in res` 分岔） */
+export interface AssetJobAck {
+  job_id: string;
+  status: AssetJobStatus;
+  status_label: string;
+  queued: true;
+  planned_units: number | null;
+  poll_url: string;
+  list_url: string;
+  message: string;
+}
+
+export interface AssetJobListResult {
+  items: AssetJobInfo[];
+  note: string;
+}
+
+/** 后台任务的状态中文名（后端只回英文枚举 + status_label，这里兜底给列表筛选用） */
+export const ASSET_JOB_STATUS_LABELS: Record<AssetJobStatus, string> = {
+  queued: '排队中',
+  running: '正在跑',
+  succeeded: '已完成',
+  failed: '失败',
+  interrupted: '已中断（服务重启，结果不可信）',
+};
+
+/** 复核的一条问题（svc.recheck_copy）：problems＝真拦点，warnings＝只留痕不拦 */
 export interface AssetRecheckProblem {
-  /** shape=超字数/首句过长 / risk=高风险词 / consistency=与反推详规对不上 */
+  /** shape=超字数/首句过长（拦）/ risk=高风险词（拦）/ consistency=和原视频对不上（只预警） */
   code: string;
   message: string;
 }
@@ -587,6 +654,8 @@ export interface AssetSummaryGenerateRequest {
   limit?: number | null;
   /** 整批排队时把 stage_summary=failed 的也捞回 */
   retry_failed?: boolean;
+  /** D-1：true＝提交即回任务号（后台跑，轮询取结果）。页面按钮一律走 true */
+  async_mode?: boolean;
 }
 
 /** RefreshBatchRequest（一次收敛整批在跑的反推任务） */
@@ -619,6 +688,11 @@ export interface AssetReviewRequest {
   new_text?: string | null;
   /** 仅 admin：复核未过但确需过审时的豁免理由，会写进 AuditLog */
   waive_reason?: string | null;
+  /**
+   * 仅 admin：**只豁免这几类拦点**（shape / risk / consistency 里挑）。
+   * 留空＝整条全放过（旧行为）。勾了 shape 就别想把同条里的违禁词一起带走。
+   */
+  waive_codes?: string[] | null;
 }
 
 /** ProduceRequest（过审文案 → N 条差异化提示词） */
@@ -654,6 +728,10 @@ export interface AssetProduceRequest {
   drama_abbr?: string | null;
   /** 仅 admin：投产前复核未过仍要投递时的豁免理由，写进 AuditLog */
   waive_reason?: string | null;
+  /** 仅 admin：只豁免这几类拦点（留空＝整条全放过），与审核台同一口径 */
+  waive_codes?: string[] | null;
+  /** D-1：true＝提交即回任务号（展开提示词要等模型，后台跑完再轮询取结果） */
+  async_mode?: boolean;
 }
 
 /** ProductionStatusRequest（投递状态回写：只改状态、补 board_tid、记审计） */
@@ -743,6 +821,10 @@ export interface AssetExportParams {
   /** 准备用几个豆包号跑（只用于折算天数），后端夹在 1..50 */
   accounts?: number;
   format?: AssetExportFormat;
+  /** 带违禁词放行（**只有 admin**，且必须同时带 force_reason） */
+  force_risk?: boolean;
+  /** 放行的那句话理由；后端写进审计，事后要能回答「凭什么放的」 */
+  force_reason?: string;
 }
 
 /** GET /assets/outputs */
@@ -918,8 +1000,15 @@ export interface AssetReviewResultItem {
   /** 仅成功条目回：撤销过审时连带作废的未投递生产单张数 */
   superseded_productions?: number;
   error_code?: string;
-  /** 复核未过的拦点（code/message） */
+  /** 复核未过的拦点（code/message）：只有 shape / risk 会进这里 */
   problems?: AssetRecheckProblem[];
+  /**
+   * R-6：**拦人的只有超字数和违禁词**，「和原视频对不上」降级成预警放这里。
+   * ok=true 也可能带预警——过了，但审核人该看一眼。
+   */
+  warnings?: AssetRecheckProblem[];
+  /** 复核未过时回：这条被拦的问题有哪几类，管理员放行时可按类只放一部分 */
+  waivable_codes?: string[];
   error?: string;
 }
 
@@ -980,6 +1069,8 @@ export interface AssetProduceResultItem {
   code?: string;
   error_code?: string;
   problems?: AssetRecheckProblem[];
+  /** 复核未过时回：被拦的问题有哪几类，管理员放行可按类只放一部分（与审核台同口径） */
+  waivable_codes?: string[];
   /** 后端在这一条上显式回 null（成功时） */
   error?: string | null;
 }
@@ -1127,6 +1218,22 @@ export interface AssetExportItem {
   board_tag: string | null;
   board_date: string | null;
   character_card_key: string | null;
+  /** R-4：按**当前**违禁词表重扫正文的命中（只有 block 级；没命中就没这个键） */
+  risk_hits?: { word: string; level: string }[];
+  /** true = 这条被词表点了名，但 admin 带理由放行了（命中信息照实留着） */
+  risk_forced?: boolean;
+}
+
+/** R-4：导出前重扫违禁词表的结论（后端每次导出都重扫，不只看当初过审那一刻的表） */
+export interface AssetExportRiskRecheck {
+  /** 命中几张（0 = 这批都干净） */
+  hit_count: number;
+  /** 因命中被挡下的单 id */
+  blocked: string[];
+  /** admin 带理由放行的单 id */
+  forced: string[];
+  forced_reason: string | null;
+  note: string;
 }
 
 /** 被挡下不给正文的单 */
@@ -1147,6 +1254,8 @@ export interface AssetExportJson {
   ready: number;
   blocked_count: number;
   blocked: AssetExportBlockedItem[];
+  /** R-4：导出前按当前词表重扫正文的结论（每次都回，hit_count=0 表示这批干净） */
+  risk_recheck: AssetExportRiskRecheck;
   capacity: AssetProductionDaysPlan;
   note: string;
 }
@@ -1343,8 +1452,12 @@ const UPLOAD_TIMEOUT = 0;
  * 后端那侧写的是「超时从外到内递减」，前端 60s 是这条口径唯一的破口，所以按 concat
  * 的既有写法统一覆盖成一个常量（新增同步口就加到这里，别再用默认 60s）。
  *
- * ⚠️ 顶穿风险仍在：/produce 是 N 条**串行**展开（N 上限 20，单次 90~600s），最坏远超
- * 900s；根治是提交即回＋轮询进度（本轮排在批 C，不在这里做）。当前口径：大 N 请分次投产。
+ * ⚠️ 顶穿风险已在批 C（D-1）收掉一半：出文案 / 投产这两个最慢的口，页面按钮一律带
+ * `async_mode: true`——后端**提交即回任务号**，前端靠 AssetJobBanner 轮询台账，不再让浏览器
+ * 干等十几分钟，所以大 N 投产不用「分次提交」了。下面的 960s 于是只剩两种用处：
+ * ① 反推（analyze/batch、refresh-batch）与按需解析（resolve）——这两个仍是同步等外部接口；
+ * ② 出文案 / 投产不带 async_mode 的调用（脚本、手工跑），保留原来的同步语义。
+ * 换句话说：**新增同步口才需要加到这里；走异步台账的口不需要**（它只等一个任务号，秒回）。
  *
  * 为什么是 960s 而不是照抄后端的 900s：两层**同值**等于掷硬币——后端还在等模型时浏览器
  * 同时到点报错，而请求其实没取消、后端跑完照样落库扣钱。所以浏览器这层必须**比后端那一层长**
@@ -1438,9 +1551,13 @@ export const assetApi = {
   resolveAssets: (data: AssetResolveRequest) =>
     client.post('/assets/resolve', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetResolveResponse>,
 
-  // 批量出钩子文案候选（默认 3 条：疑问式/陈述式/台词摘录式）；前置是反推已成功
+  // 批量出钩子文案候选（默认 3 条：疑问式/陈述式/台词摘录式）；前置是反推已成功。
+  // 带 `async_mode: true` 时**当场回任务号**（AssetJobAck），结果去 getAssetJob 轮询取；
+  // 不带则同步等到模型跑完（给脚本/手动跑用，页面按钮一律走异步，别让一线干等十几分钟）。
   generateSummaries: (data: AssetSummaryGenerateRequest) =>
-    client.post('/assets/summaries/generate', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetSummaryGenerateResponse>,
+    client.post('/assets/summaries/generate', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<
+      AssetSummaryGenerateResponse | AssetJobAck
+    >,
 
   // 文案审核队列（素材列表点「文案」也走这里）
   listSummaries: (params?: AssetSummaryListParams) =>
@@ -1461,9 +1578,24 @@ export const assetApi = {
   updateRiskLexicon: (data: AssetRiskLexiconUpdate) =>
     client.put('/assets/risk-lexicon', data) as Promise<AssetRiskLexiconUpdateResult>,
 
-  // 过审文案 → N 条差异化提示词（生产单）；P0 到「生产单可导出」为止，投板是人工动作
+  // 过审文案 → N 条差异化提示词（生产单）；P0 到「生产单可导出」为止，投板是人工动作。
+  // 带 `async_mode: true` 时当场回任务号（展开提示词按 n 逐条调模型，30 条就是十几分钟）。
   produce: (data: AssetProduceRequest) =>
-    client.post('/assets/produce', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetProduceResponse>,
+    client.post('/assets/produce', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<
+      AssetProduceResponse | AssetJobAck
+    >,
+
+  // 后台任务台账：刷新页面/换浏览器后靠这两个口找回「我刚才点的那批还在不在跑」
+  listAssetJobs: (params?: {
+    kind?: AssetJobKind;
+    status?: AssetJobStatus;
+    batch_id?: string;
+    only_open?: boolean;
+    limit?: number;
+  }) => client.get('/assets/jobs', { params }) as Promise<AssetJobListResult>,
+
+  getAssetJob: (jobId: string) =>
+    client.get(`/assets/jobs/${jobId}`) as Promise<AssetJobInfo>,
 
   // 投递状态回写：人投完板把真实结果写回台账（只改状态 + 补 board_tid + 记审计，不碰成本）
   updateProductionStatus: (data: AssetProductionStatusRequest) =>
@@ -1512,6 +1644,46 @@ export const assetApi = {
 };
 
 // ──────────────────────────────────────────────
+// 后台任务（D-1）的前端配套
+// ──────────────────────────────────────────────
+
+/**
+ * 提交回执到底是「同步结果」还是「任务号」——两种形状靠 `queued` 分岔。
+ * 后端故意让异步回执**不带** `results`，所以这里判 `queued === true` 就够，
+ * 不要写成 `'results' in res`（异步回执里将来加了字段就会误判成同步）。
+ */
+export const isAssetJobAck = (res: unknown): res is AssetJobAck =>
+  !!res && typeof res === 'object' && (res as AssetJobAck).queued === true && !!(res as AssetJobAck).job_id;
+
+/**
+ * 轮询一个后台任务到终态。
+ *
+ * 节奏 3s：出文案单条 ~95s、投产一批几分钟，3s 足够跟手又不至于刷爆接口。
+ * 上限默认 30 分钟——比后端单条 900s 长，但**不能无限等**：真的卡住了要报错让人去看台账，
+ * 而不是让按钮转圈转到人关页面。
+ */
+export async function waitForAssetJob(
+  jobId: string,
+  opts?: { intervalMs?: number; timeoutMs?: number; onTick?: (job: AssetJobInfo) => void },
+): Promise<AssetJobInfo> {
+  const interval = opts?.intervalMs ?? 3000;
+  const deadline = Date.now() + (opts?.timeoutMs ?? 30 * 60 * 1000);
+  // 第一次先等一下再查：刚提交的 1 秒内查到的必然是 queued，白跑一个请求
+  for (;;) {
+    await new Promise((r) => setTimeout(r, interval));
+    const job = await assetApi.getAssetJob(jobId);
+    opts?.onTick?.(job);
+    if (!job.running) return job;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `后台任务跑了超过 ${Math.round((opts?.timeoutMs ?? 30 * 60 * 1000) / 60000)} 分钟还没完，` +
+          '前端不再干等——任务号 ' + jobId + '，到任务台账里看它现在的状态',
+      );
+    }
+  }
+}
+
+// ──────────────────────────────────────────────
 // 展示口径（后端只回英文枚举，中文名统一放这里，四个面板共用一套）
 // ──────────────────────────────────────────────
 
@@ -1531,33 +1703,43 @@ export const ASSET_STAGE_LABELS: Record<AssetStage, string> = {
 export const ASSET_STATUS_LABELS: Record<AssetStatus, string> = {
   draft: '草稿',
   importing: '导入中',
-  waiting_prompt: '待反推',
-  analyzing: '反推中',
+  waiting_prompt: '等读视频',
+  analyzing: '读视频中',
   summarizing: '出文案中',
-  awaiting_review: '待审核',
-  ready_to_produce: '可投产',
-  producing: '生产中',
+  awaiting_review: '等审核',
+  ready_to_produce: '可以出生产单',
+  producing: '正在出生产单',
   composing: '拼接中',
   ready: '可交付',
   failed: '失败',
   archived: '已归档',
 };
 
+/**
+ * 复核问题类型 → 一线看得懂的说法（后端 problems/warnings 里的 code）。
+ * 后端给的是英文枚举（shape/risk/consistency），一线看不懂，界面一律走这张表。
+ */
+export const RECHECK_CODE_LABELS: Record<string, string> = {
+  shape: '字数或断句超限',
+  risk: '含违禁词',
+  consistency: '和原视频对不上',
+};
+
 export const AUDIT_STATUS_LABELS: Record<AuditStatus, string> = {
-  pending: '待审',
+  pending: '等审核',
   approved: '已过审',
   rejected: '已驳回',
-  need_rewrite: '需改写',
+  need_rewrite: '要求改写',
   passed_edited: '改后通过',
 };
 
 export const PRODUCTION_STATE_LABELS: Record<ProductionState, string> = {
-  order_ready: '待投放',
+  order_ready: '还没投',
   queued: '已投上板',
-  running: '出片中',
-  awaiting_rewrite: '待改写',
-  success: '成功',
-  failed: '失败',
+  running: '正在出片',
+  awaiting_rewrite: '要求改写',
+  success: '出片成功',
+  failed: '投放失败',
   cancelled: '已取消',
   skipped: '已跳过',
   superseded: '已作废',
@@ -1577,17 +1759,17 @@ export const DISPATCH_REPORT_STATUSES: DispatchReportStatus[] = ['queued', 'runn
 
 /** 候选风格（HOOK_STYLES）：审核台用来标三条的差别 */
 export const HOOK_STYLE_LABELS: Record<AssetHookStyle, string> = {
-  question: '疑问式',
-  statement: '陈述式',
+  question: '问句式',
+  statement: '陈述句',
   dialogue: '台词摘录',
 };
 
 /** 五段流水线（面板列头 + 详情抽屉共用） */
 export const STAGE_FIELDS: Array<[keyof AssetItem, string]> = [
   ['stage_import', '导入'],
-  ['stage_prompt', '反推'],
+  ['stage_prompt', '读视频详规'],
   ['stage_summary', '文案'],
-  ['stage_produce', '生产'],
+  ['stage_produce', '生产单'],
   ['stage_compose', '拼接'],
 ];
 

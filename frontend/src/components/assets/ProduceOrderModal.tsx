@@ -1,10 +1,11 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Alert, Button, Checkbox, Descriptions, Input, Modal, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
-import { DEFAULT_TIER, assetApi } from '../../api/assets';
+import { DEFAULT_TIER, RECHECK_CODE_LABELS, assetApi, isAssetJobAck, waitForAssetJob } from '../../api/assets';
 import type { AssetProduceResponse, AssetSummary } from '../../api/assets';
 import { HOOK_CODE_RE, MonoText, parseHookCodes } from './AssetBits';
+import { nudgeAssetJobBanner } from './AssetJobBanner';
 
 const { Text, Paragraph } = Typography;
 
@@ -40,8 +41,21 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const [codeText, setCodeText] = useState('');
   const [expand, setExpand] = useState(true);
   const [waiveReason, setWaiveReason] = useState('');
+  /**
+   * R-6 分粒度：上一次自动检查拦下的问题类型（union）。管理员默认全放行＝整条放过，
+   * 想只放一类（例如只放字数、把违禁词继续卡住）就取消勾选。空列表＝这次不放行任何一类，
+   * 所以提交时不带 waive_codes（后端把留空当整条放过，绝不能由「全取消」误触发）。
+   */
+  const [waiveCodes, setWaiveCodes] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AssetProduceResponse | null>(null);
+  /**
+   * D-1：投产（expand=true）要按 n 逐条调模型，一批几分钟到十几分钟，
+   * 同步等会一路撞上浏览器/nginx 超时。现在提交即回任务号，这里**边轮询边把状态显示出来**；
+   * 人中途关掉窗口也安全——任务在后台照跑，顶部横幅和生产单列表会接住结果。
+   */
+  const [jobHint, setJobHint] = useState<string | null>(null);
+  const giveUpRef = useRef(false);
 
   const needCodes = summaries.length * n;
   const codes = useMemo(() => parseHookCodes(codeText), [codeText]);
@@ -49,20 +63,30 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const dupCodes = codes.length !== new Set(codes).size;
   const plannedRows = summaries.length * n * boardTotal;
 
+  /** 自动检查拦下的问题类型回填到表单，回到表单就能按类只放行一部分（R-6 分粒度） */
+  const collectRecheckCodes = (res: AssetProduceResponse) => {
+    const seen: string[] = [];
+    (res.recheck_failed || []).forEach((f) =>
+      (f.problems || []).forEach((p) => !seen.includes(p.code) && seen.push(p.code)),
+    );
+    if (seen.length) setWaiveCodes(seen);
+  };
+
   const submit = async () => {
     if (!summaries.length) {
       message.warning('没有已过审的文案');
       return;
     }
     if (badCodes.length) {
-      message.error(`钩子编号不合法：${badCodes.slice(0, 3).join('、')}（必须五位 0-9A-Z，来自 hook_id.py）`);
+      message.error(`钩子编号不对：${badCodes.slice(0, 3).join('、')}（必须是五位 0-9/A-Z，从取号工具 hook_id.py 拿，不能自己编）`);
       return;
     }
     if (dupCodes) {
-      message.error('钩子编号重复：一钩一号');
+      message.error('钩子编号重复：一个编号只能用在一条上');
       return;
     }
     setBusy(true);
+    giveUpRef.current = false;
     try {
       const res = await assetApi.produce({
         summary_ids: summaries.map((s) => s.id),
@@ -76,25 +100,62 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
         hook_codes: codes.length ? codes : undefined,
         expand,
         waive_reason: waiveReason || undefined,
+        waive_codes: waiveCodes.length ? waiveCodes : undefined,
+        async_mode: true,
       });
+      if (isAssetJobAck(res)) {
+        // 叫一声让顶部横幅立刻登记这条活：人中途关窗后由横幅接住结果
+        nudgeAssetJobBanner();
+        setJobHint(res.message);
+        const job = await waitForAssetJob(res.job_id, {
+          onTick: (j) => {
+            if (giveUpRef.current) return;
+            const p = j.progress;
+            setJobHint(
+              `「${j.kind_label}」${j.status_label}` +
+                (p?.done !== null && p?.done !== undefined && j.planned_units
+                  ? `（已收敛 ${p.done}/${j.planned_units} 条）`
+                  : '') +
+                '——嫌慢可以关掉窗口，任务在后台照跑，跑完在顶部横幅和生产单列表里都能看到',
+            );
+          },
+        });
+        // 人已经关掉了窗口：结果交给顶部横幅接住，这里不再往已卸载的组件里塞状态
+        if (giveUpRef.current) return;
+        setJobHint(null);
+        if (job.status !== 'succeeded') {
+          message.error(job.error || `后台任务${job.status_label}，生产单没建成（任务号 ${job.id}）`, 8);
+          return;
+        }
+        setResult(job.result as AssetProduceResponse);
+        collectRecheckCodes(job.result as AssetProduceResponse);
+        return;
+      }
       setResult(res);
+      collectRecheckCodes(res);
       message.success(res.message);
     } catch (e) {
-      message.error((e as Error).message || '建单失败');
+      message.error((e as Error).message || '生成生产单失败');
     } finally {
       setBusy(false);
     }
   };
 
+  // 关掉窗口 = 放弃在这里看结果，**不是**取消任务（后台照跑，横幅接住）。
+  // 必须先置 giveUp 再关：轮询回来后靠它决定要不要往已卸载的组件里塞状态。
+  const closeAndGiveUp = () => {
+    giveUpRef.current = true;
+    setJobHint(null);
+    setResult(null);
+    onClose();
+  };
+
   return (
     <Modal
       open={open}
-      title={`投产 ${summaries.length} 条过审文案`}
+      title={`生成生产单：${summaries.length} 条过审文案`}
       width={720}
-      onCancel={() => {
-        setResult(null);
-        onClose();
-      }}
+      onCancel={closeAndGiveUp}
       footer={
         result ? (
           <Space>
@@ -105,9 +166,9 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
           </Space>
         ) : (
           <Space>
-            <Button onClick={onClose}>取消</Button>
+            <Button onClick={closeAndGiveUp}>{busy ? '先关掉，后台继续跑' : '取消'}</Button>
             <Button type="primary" loading={busy} onClick={submit}>
-              生成生产单（{plannedRows} 条投放）
+              生成生产单（要投 {plannedRows} 条）
             </Button>
           </Space>
         )
@@ -119,23 +180,25 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
           <Alert
             type={result.created ? 'success' : 'error'}
             showIcon
-            message={`已生成 ${result.created} 张生产单，本批真实投放 ${result.board.planned_rows} 条（任务 ${result.board.tasks} × 每任务 ${result.board.board_total} 版）`}
+            message={`已生成 ${result.created} 张生产单，本批要投 ${result.board.planned_rows} 条（${result.board.tasks} 个任务 × 每个任务出 ${result.board.board_total} 版）`}
             description={result.message}
           />
           <Descriptions size="small" column={2} bordered>
-            <Descriptions.Item label="通道">{result.board.channel}</Descriptions.Item>
-            <Descriptions.Item label="板上 tag">{result.board.tag}</Descriptions.Item>
-            <Descriptions.Item label="板上 date（后端生成）">{result.board.date}</Descriptions.Item>
+            <Descriptions.Item label="投放渠道">
+              {result.board.channel === 'wework_aivideo' ? '企微后台「创建AI视频」任务板' : result.board.channel}
+            </Descriptions.Item>
+            <Descriptions.Item label="板上的归属标记">{result.board.tag}</Descriptions.Item>
+            <Descriptions.Item label="板上的建任务时间（系统生成）">{result.board.date}</Descriptions.Item>
             <Descriptions.Item label="出片规格">{result.board.output}</Descriptions.Item>
-            <Descriptions.Item label="折算天数">
-              {result.capacity_hint.days} 天（{result.capacity_hint.account_count} 号 × {result.capacity_hint.per_account_per_day} 条/日）
+            <Descriptions.Item label="预计要跑几天">
+              {result.capacity_hint.days} 天（{result.capacity_hint.account_count} 个号 × 每号每日 {result.capacity_hint.per_account_per_day} 条）
             </Descriptions.Item>
-            <Descriptions.Item label="今日号池">
-              {result.dispatch.today.board_rows} 条 / 软提示线 {result.dispatch.today.soft_cap}
-              {result.dispatch.today.over_cap > 0 && <Tag color="red" style={{ marginLeft: 6 }}>超 {result.dispatch.today.over_cap}</Tag>}
+            <Descriptions.Item label="当日投放量">
+              今天已排 {result.dispatch.today.board_rows} 条 / 提示线 {result.dispatch.today.soft_cap}
+              {result.dispatch.today.over_cap > 0 && <Tag color="red" style={{ marginLeft: 6 }}>超出 {result.dispatch.today.over_cap} 条</Tag>}
             </Descriptions.Item>
-            <Descriptions.Item label="今日成/败" span={2}>
-              已投 {result.dispatch.today.dispatched}｜成功 {result.dispatch.today.succeeded}｜失败 {result.dispatch.today.failed}
+            <Descriptions.Item label="今天投放情况" span={2}>
+              已投出 {result.dispatch.today.dispatched} 条｜成功 {result.dispatch.today.succeeded} 条｜失败 {result.dispatch.today.failed} 条
               {result.dispatch.today.note && (
                 <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
                   {result.dispatch.today.note}
@@ -148,7 +211,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             <Alert
               type="warning"
               showIcon
-              message={`${result.recheck_failed.length} 条被投产前复核拦下（没生成单，钩子编号没被烧掉，可原号重投）`}
+              message={`${result.recheck_failed.length} 条在出生产单前的自动检查没通过（没生成单，钩子编号还能原号重投）`}
               description={
                 <Space direction="vertical" size={2}>
                   {result.recheck_failed.slice(0, 8).map((f) => (
@@ -164,23 +227,23 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             <Alert
               type="info"
               showIcon
-              message={`${result.recheck_waived.length} 条经管理员豁免（已入 AuditLog，可抽检）`}
+              message={`${result.recheck_waived.length} 条由管理员带理由放行（已留档，可抽查）`}
             />
           )}
           {!!result.drifted?.length && (
             <Alert
               type="error"
               showIcon
-              message={`${result.drifted.length} 条「审的 ≠ 生产的」：展开后的提示词与过审文案不是同一条`}
+              message={`${result.drifted.length} 条正文对不上：展开后的提示词和过审文案不是同一条`}
               description={
                 <Space direction="vertical" size={2}>
                   {result.drifted.slice(0, 8).map((d) => (
                     <Text key={`${d.summary_id}-${d.seq}`} style={{ fontSize: 12 }}>
-                      {d.code} #{d.seq}：{d.reason || '漂移'}
+                      {d.code} #{d.seq}：{d.reason || '对不上'}
                     </Text>
                   ))}
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    单子照常生成、没静默丢弃，但别硬投——逐条改名或回审核台改文案。
+                    单子照常生成、没有偷偷丢掉，但别直接投——逐条改名或回审核台改文案。
                   </Text>
                 </Space>
               }
@@ -190,7 +253,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             <Alert
               type="warning"
               showIcon
-              message={`${result.prompt_skeleton_gaps.length} 条缺 11-02 骨架行（只警示不拦：缺「负面约束」会出怪片、缺「音频与字幕」会被加字幕）`}
+              message={`${result.prompt_skeleton_gaps.length} 条缺十行模板必须有的行（只提醒不拦：缺「负面约束」会出怪片、缺「音频与字幕」会被加字幕）`}
               description={
                 <Space direction="vertical" size={2}>
                   {result.prompt_skeleton_gaps.slice(0, 6).map((g, i) => (
@@ -206,7 +269,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             <Alert
               type="warning"
               showIcon
-              message={`${result.title_warnings.length} 条推荐标题正文超预算（软校验：单子已建成、不拦投产，请一线改短后再投）`}
+              message={`${result.title_warnings.length} 条推荐标题正文超预算（只提醒：单子已建好、不拦出生产单，请把标题改短再投）`}
               description={
                 <Space direction="vertical" size={2}>
                   {result.title_warnings.slice(0, 8).map((w, i) => (
@@ -215,7 +278,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
                     </Text>
                   ))}
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    报表/板面标题列只显示前 22 字（发布侧补 4 字【账号】前缀，正文 ≤18）：
+                    报表/任务板的标题列只显示前 22 字（发布侧补 4 字【账号】前缀，正文 ≤18）：
                     超了的那条会被截断、回收改名对不上。
                   </Text>
                 </Space>
@@ -250,7 +313,10 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
                 title: '过审文案',
                 dataIndex: 'text',
                 render: (v: string) => (
-                  <Paragraph style={{ marginBottom: 0, fontSize: 12 }} ellipsis={{ rows: 2, expandable: true }}>
+                  <Paragraph
+                    style={{ marginBottom: 0, fontSize: 12 }}
+                    ellipsis={{ rows: 2, expandable: 'collapsible', symbol: (expanded: boolean) => (expanded ? '收起' : '展开') }}
+                  >
                     {v}
                   </Paragraph>
                 ),
@@ -260,11 +326,24 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
         </Space>
       ) : (
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {jobHint && (
+            <Alert
+              type="info"
+              showIcon
+              message={jobHint}
+              description={
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  这一步慢是在等模型逐条展开提示词（一条几十秒），不是在卡住；
+                  重复点「生成」不会跑得更快，只会白烧一次模型费用。
+                </Text>
+              }
+            />
+          )}
           <Descriptions size="small" column={4} bordered>
             <Descriptions.Item label="文案">{summaries.length}</Descriptions.Item>
-            <Descriptions.Item label="N（差异化份数）">{n}</Descriptions.Item>
-            <Descriptions.Item label="board_total（每条几版）">{boardTotal}</Descriptions.Item>
-            <Descriptions.Item label="投放量">
+            <Descriptions.Item label="每条出几份不同写法（N）">{n}</Descriptions.Item>
+            <Descriptions.Item label="每份出几版">{boardTotal}</Descriptions.Item>
+            <Descriptions.Item label="要投多少条">
               <Text strong>{plannedRows} 条</Text>
             </Descriptions.Item>
           </Descriptions>
@@ -274,9 +353,9 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               <Text>N 每条文案派生份数：</Text>
               <Input type="number" min={1} max={10} style={{ width: 80, marginLeft: 6 }} value={n} onChange={(e) => setN(Math.max(1, Math.min(10, Number(e.target.value) || 1)))} />
             </span>
-            <Tooltip title="板上 total＝同一条提示词出几版（1..20）。与 N 是两个量，混用会白烧 N×total">
+            <Tooltip title="板上的 total＝同一条提示词出几版（1..20）。和 N 是两回事，弄混会白花 N×total 的量">
               <span>
-                <Text>board_total：</Text>
+                <Text>每份出几版：</Text>
                 <Input type="number" min={1} max={20} style={{ width: 80, marginLeft: 6 }} value={boardTotal} onChange={(e) => setBoardTotal(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} />
               </span>
             </Tooltip>
@@ -284,9 +363,9 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               <Text>豆包号数（折算天数）：</Text>
               <Input type="number" min={1} max={50} style={{ width: 80, marginLeft: 6 }} value={accounts} onChange={(e) => setAccounts(Math.max(1, Number(e.target.value) || 1))} />
             </span>
-            <Tooltip title="K＝该剧发布号数，决定推荐视频标题条数（11-02 版不再固定 5 条）">
+            <Tooltip title="K＝这部剧发布账号的数量，决定推荐视频标题给几条（现在不再固定 5 条）">
               <span>
-                <Text>K 标题条数：</Text>
+                <Text>推荐标题条数（K）：</Text>
                 <Input type="number" min={1} max={20} style={{ width: 80, marginLeft: 6 }} value={titleCount} onChange={(e) => setTitleCount(e.target.value ? Number(e.target.value) : undefined)} />
               </span>
             </Tooltip>
@@ -294,7 +373,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
 
           <div>
             <Space style={{ marginBottom: 4 }}>
-              <Text>钩子编号（选 {needCodes} 个，来自 hook_id.py）：</Text>
+              <Text>钩子编号（要填 {needCodes} 个，从取号工具 hook_id.py 拿）：</Text>
               {codes.length > 0 && (
                 <Tag color={codes.length === needCodes && !badCodes.length && !dupCodes ? 'green' : 'orange'}>
                   已填 {codes.length}/{needCodes}
@@ -303,23 +382,23 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             </Space>
             <Input.TextArea
               rows={2}
-              placeholder="空格/逗号/换行分隔，例如：7C0B1 7C0B2 7C0B3 …（后端绝不编号，禁止手编）"
+              placeholder="空格/逗号/换行分隔，例如：7C0B1 7C0B2 7C0B3 …（五位编号，投放和回收都靠它对上；系统不给编号，也不能自己编）"
               value={codeText}
               onChange={(e) => setCodeText(e.target.value)}
             />
             {codes.length && codes.length < needCodes && (
               <Text type="warning" style={{ fontSize: 12 }}>
-                还差 {needCodes - codes.length} 个：不足的会建单成功但被标「缺号」，导出 txt 时段头/推荐标题就没编号。
+                还差 {needCodes - codes.length} 个：缺的照样能建单，但单上没编号，导出 txt 时段头和推荐标题就带不上编号。
               </Text>
             )}
           </div>
 
           <Space wrap>
-            <Input placeholder="板上 tag（留空用配置默认）" style={{ width: 220 }} value={boardTag} onChange={(e) => setBoardTag(e.target.value)} />
-            <Tooltip title="角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡，按剧分组投）">
-              <Input placeholder="角色卡 key（可选）" style={{ width: 260 }} value={cardKey} onChange={(e) => setCardKey(e.target.value)} />
+            <Input placeholder="板上的归属标记（留空用默认）" style={{ width: 220 }} value={boardTag} onChange={(e) => setBoardTag(e.target.value)} />
+            <Tooltip title="角色卡存在我们自己存储里的编号，建板任务时当图片带上（同一部剧用同一张卡，按剧分组投）">
+              <Input placeholder="角色卡编号（可选）" style={{ width: 260 }} value={cardKey} onChange={(e) => setCardKey(e.target.value)} />
             </Tooltip>
-            <Tooltip title="剧名缩写取自 NAS《剧名缩写表.json》，全团队统一、禁止临时造。推荐标题按 3.1 精简规范写「剧缩·编号·精简钩子」；留空则降级成「编号·精简钩子」并在偏差说明里标缺剧缩（缩写表在容器里读不到，只能人工带）">
+            <Tooltip title="剧名缩写要用 NAS《剧名缩写表.json》里的，全团队统一、禁止临时造。推荐标题按规范写「剧缩·编号·精简钩子」；留空就降级成「编号·精简钩子」，并在偏差说明里标注缺剧缩（缩写表在容器里读不到，只能由一线带进来）">
               <Input
                 placeholder="剧名缩写（可选，如 救总裁）"
                 style={{ width: 200 }}
@@ -331,30 +410,42 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
           </Space>
 
           <Checkbox checked={expand} onChange={(e) => setExpand(e.target.checked)}>
-            调 AutoClip 按 11-02 权威模板展开成可投提示词
+            让 AI 按标准模板把文案展开成能直接投的提示词
           </Checkbox>
           {!expand && (
-            <Alert type="warning" showIcon message="不展开＝裸单：单子上只有过审文案本身，不许投放也不进导出正文" />
+            <Alert type="warning" showIcon message="不展开就是没正文的单：上面只有过审文案本身，不能投放，导出也不带正文" />
           )}
 
           {isAdmin && (
-            <Input.TextArea
-              rows={2}
-              placeholder="（仅 admin）投产前复核未过仍要投递时的豁免理由——会逐条写进 AuditLog"
-              value={waiveReason}
-              onChange={(e) => setWaiveReason(e.target.value)}
-            />
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <Input.TextArea
+                rows={2}
+                placeholder="（仅管理员）自动检查没过仍要坚持出生产单时的放行理由——会逐条留档"
+                value={waiveReason}
+                onChange={(e) => setWaiveReason(e.target.value)}
+              />
+              {!!waiveCodes.length && (
+                <>
+                  <Text style={{ fontSize: 12 }}>上一次拦下的问题类型，这次放行哪几类（不勾的那类仍然拦着）：</Text>
+                  <Checkbox.Group
+                    value={waiveCodes}
+                    onChange={(v) => setWaiveCodes(v as string[])}
+                    options={waiveCodes.map((c) => ({ label: RECHECK_CODE_LABELS[c] || c, value: c }))}
+                  />
+                </>
+              )}
+            </Space>
           )}
 
           <Alert
             type="info"
             showIcon
-            message="出片恒 10.08s / 720×1280，板上没有时长与分辨率开关"
+            message="出片恒 10.08s / 720×1280，任务板上没有时长与分辨率开关"
             description={
               <span style={{ fontSize: 12 }}>
-                所以这里不填时长：内容更长只能拆上/下集两条各 10s，不是让板子变魔术。
-                本批 {plannedRows} 条会占号池 {plannedRows} 条额度（实测 ≈120 条/日，不做硬限，只报数）。
-                档位 {DEFAULT_TIER}s 只影响反推成本，与板无关。
+                所以这里不填时长：内容更长只能拆成上/下集两条各 10 秒。
+                本批 {plannedRows} 条会算进当日投放量 {plannedRows} 条（实测约 120 条/日，不做硬限，只报数）。
+                视频时长上限 {DEFAULT_TIER}s 只影响读视频详规的成本，跟任务板无关。
               </span>
             }
           />

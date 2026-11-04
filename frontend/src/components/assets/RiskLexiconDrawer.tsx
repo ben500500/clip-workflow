@@ -29,10 +29,10 @@ const parseWords = (raw: string): string[] =>
 const uniq = (arr: string[]): string[] => Array.from(new Set(arr));
 
 /**
- * 风险词库配置抽屉。
+ * 违禁词表配置抽屉。
  *
- * 这份词表就是审核台「复核」列那两行标签的来源：block 命中即不许过审、不许投产，
- * warn 只留痕预警。词表存在 system_config（`asset_risk_lexicon`），
+ * 这份词表就是审核台「自动检查」列那两行标签的来源：block 命中即不许过审、也导不出去，
+ * warn 只提醒。词表存在 system_config（`asset_risk_lexicon`），
  * **改词不用发版**，但只有 admin 能改——它等于投放闸门，运营加词是加严，
  * 写错一个词会把一线正常文案全拦死。
  *
@@ -66,7 +66,7 @@ const RiskLexiconDrawer: React.FC<Props> = ({ open, onClose }) => {
         })),
       );
     } catch (e) {
-      message.error((e as Error).message || '读风险词库失败');
+      message.error((e as Error).message || '读取违禁词表失败');
     } finally {
       setLoading(false);
     }
@@ -130,7 +130,7 @@ const RiskLexiconDrawer: React.FC<Props> = ({ open, onClose }) => {
         inherit,
       });
       (res.notes || []).forEach((n) => message.info(n));
-      message.success('风险词表已保存，下一次审核/投产立即生效');
+      message.success('违禁词表已保存，下一次审核、生成生产单立即生效');
       await load();
     } catch (e) {
       message.error((e as Error).message || '保存失败');
@@ -143,7 +143,7 @@ const RiskLexiconDrawer: React.FC<Props> = ({ open, onClose }) => {
 
   return (
     <Drawer
-      title="风险词库"
+      title="违禁词表"
       width={720}
       open={open}
       onClose={onClose}
@@ -165,19 +165,19 @@ const RiskLexiconDrawer: React.FC<Props> = ({ open, onClose }) => {
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="这份词表就是审核台「复核」列标签的来源"
+        message="这份词表就是审核台「自动检查」列标签的来源"
         description={
           <div>
             <Paragraph style={{ marginBottom: 4 }}>
-              <Tag color="red">拦（block）</Tag>
-              命中即<strong>不许过审、不许投产</strong>（血腥色情违法歧视、医疗绝对化等）
+              <Tag color="red">不许用（block）</Tag>
+              命中就<strong>过不了审、也导不出去</strong>（血腥色情违法歧视、医疗绝对化等）
             </Paragraph>
             <Paragraph style={{ marginBottom: 4 }}>
-              <Tag color="orange">警（warn）</Tag>
-              只留痕预警，人看一眼决定改不改（绝对化用语、夸大承诺等）
+              <Tag color="orange">要注意（warn）</Tag>
+              只留个提醒，人看一眼决定改不改（绝对化用语、夸大承诺等）
             </Paragraph>
             <Paragraph style={{ marginBottom: 4 }}>
-              <Tag>豁免正则</Tag>
+              <Tag>例外写法</Tag>
               命中点被这个正则整个包住就不算命中（例如「第一」不拦「第一次」）
             </Paragraph>
             <Text type="secondary">
@@ -193,7 +193,7 @@ const RiskLexiconDrawer: React.FC<Props> = ({ open, onClose }) => {
           showIcon
           style={{ marginBottom: 12 }}
           message="只读：改词表要管理员权限"
-          description="这份词表等于投放闸门，运营加词是加严、写错会误伤正常文案，所以只有管理员能改。你在这里能看到拦你的到底是哪个词。"
+          description="这份词表管着过审和导出的关口，加词是收紧、写错会误伤正常文案，所以只有管理员能改。你在这里能看到拦你的到底是哪个词。"
         />
       )}
 
@@ -207,7 +207,7 @@ const RiskLexiconDrawer: React.FC<Props> = ({ open, onClose }) => {
         </Space>
         {data && (
           <Text type="secondary">
-            保存后生效：拦级 {preview.block.length} 个、警级 {preview.warn.length} 个
+            保存后生效：不许用 {preview.block.length} 个、要注意 {preview.warn.length} 个
             {data.has_override && `｜上次更新：${data.updated_at || '未知'}`}
           </Text>
         )}
@@ -220,12 +220,12 @@ const RiskLexiconDrawer: React.FC<Props> = ({ open, onClose }) => {
             key: 'block',
             label: (
               <span>
-                拦级 <Tag color="red">{preview.block.length}</Tag>
+                不许用 <Tag color="red">{preview.block.length}</Tag>
               </span>
             ),
             children: (
               <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                <Text type="secondary">每行一个词，命中即不许过审、不许投产。</Text>
+                <Text type="secondary">每行一个词，命中就过不了审、也导不出去。</Text>
                 <Input.TextArea
                   rows={12}
                   value={blockText}
@@ -246,12 +246,12 @@ const RiskLexiconDrawer: React.FC<Props> = ({ open, onClose }) => {
             key: 'warn',
             label: (
               <span>
-                警级 <Tag color="orange">{preview.warn.length}</Tag>
+                要注意 <Tag color="orange">{preview.warn.length}</Tag>
               </span>
             ),
             children: (
               <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                <Text type="secondary">每行一个词，只留痕预警，不挡过审。</Text>
+                <Text type="secondary">每行一个词，只留个提醒，不挡过审。</Text>
                 <Input.TextArea
                   rows={10}
                   value={warnText}
@@ -269,11 +269,11 @@ const RiskLexiconDrawer: React.FC<Props> = ({ open, onClose }) => {
           },
           {
             key: 'exempt',
-            label: <span>豁免正则</span>,
+            label: <span>例外写法</span>,
             children: (
               <Space direction="vertical" size={8} style={{ width: '100%' }}>
                 <Text type="secondary">
-                  命中点被正则整个包住就不算命中。正则写错会被后端拒掉（保存时报错）。
+                  命中点被例外写法整个包住就不算命中。写法（正则）写错会被后端拒掉（保存时报错）。
                 </Text>
                 <Table
                   size="small"
@@ -298,7 +298,7 @@ const RiskLexiconDrawer: React.FC<Props> = ({ open, onClose }) => {
                       ),
                     },
                     {
-                      title: '豁免正则',
+                      title: '例外写法',
                       dataIndex: 'pattern',
                       render: (_, r) => (
                         <Input
@@ -339,12 +339,12 @@ const RiskLexiconDrawer: React.FC<Props> = ({ open, onClose }) => {
                       ])
                     }
                   >
-                    加一条豁免
+                    加一条例外
                   </Button>
                 )}
                 {data && inherit && (
                   <Text type="secondary">
-                    默认豁免：{Object.entries(data.defaults.exempt).map(([w, p]) => `${w} → ${p}`).join('；')}
+                    默认例外：{Object.entries(data.defaults.exempt).map(([w, p]) => `${w} → ${p}`).join('；')}
                   </Text>
                 )}
               </Space>

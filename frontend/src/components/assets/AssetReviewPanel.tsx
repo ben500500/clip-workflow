@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Input, Modal, Popover, Segmented, Select, Space, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, Input, Modal, Popover, Segmented, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, EditOutlined, QuestionCircleOutlined,
   ReloadOutlined, SafetyCertificateOutlined, SendOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { AUDIT_STATUS_LABELS, HOOK_STYLE_LABELS, assetApi } from '../../api/assets';
+import { AUDIT_STATUS_LABELS, HOOK_STYLE_LABELS, RECHECK_CODE_LABELS, assetApi } from '../../api/assets';
 import type {
   AssetBatch, AssetReviewAction, AssetReviewResultItem, AssetSummary, AssetSummaryListResult,
 } from '../../api/assets';
@@ -17,22 +17,42 @@ import RiskLexiconDrawer from './RiskLexiconDrawer';
 
 const { Text, Paragraph } = Typography;
 
+/**
+ * 一条被拦结果里「可以按类放行」的问题类型。
+ * 后端回 `waivable_codes`；老响应没有就从 `problems` 兜底，别让弹窗空转到永远点不动。
+ */
+const waivableCodesOf = (w: AssetReviewResultItem): string[] => {
+  const src = w.waivable_codes && w.waivable_codes.length ? w.waivable_codes : (w.problems || []).map((p) => p.code);
+  return Array.from(new Set(src));
+};
+
+/** 批量审核时，把多条结果的可放行类型并成一组复选框 */
+const unionCodes = (list: AssetReviewResultItem[]): string[] => {
+  const acc: string[] = [];
+  list.forEach((w) => waivableCodesOf(w).forEach((c) => !acc.includes(c) && acc.push(c)));
+  return acc;
+};
+
 interface Props {
   /** operator + admin 才能审；素材专员只读（后端还会挡「生产者不得自审」） */
   canReview: boolean;
   isAdmin: boolean;
   batchId?: string;
+  /** 后台出文案任务收敛后自增（D-1）：新候选是后端落库的，只能重新拉一次才看得到 */
+  reloadToken?: number;
 }
 
 /**
  * 文案审核台。
  *
  * 默认勾「只看推荐条」是方案 §七 的防橡皮章设计：三条候选里通常只有一条能钩人，
- * 全勾一遍＝把审核变成点按钮。风险词（block 级）与一致性不过会被复核挡下，
- * admin 可以带 `waive_reason` 豁免——豁免的每一条都进 AuditLog，可抽检。
+ * 全勾一遍＝把审核变成点按钮。复核真正拦人的只有两件事：**字数/断句超限**和**违禁词**；
+ * 「和原视频对不上」是预警（列里标红给你看，但不卡你过审）。
+ * admin 可以带 `waive_reason` 豁免拦点，还能用 `waive_codes` 只放其中一类——
+ * 豁免的每一条都进 AuditLog，可抽检。
  * 撤销过审会连带作废这条文案下**还没投出去**的生产单，所以撤销动作单独走一次确认。
  */
-const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
+const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken }) => {
   const [data, setData] = useState<AssetSummaryListResult | null>(null);
   const [items, setItems] = useState<AssetSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -44,10 +64,10 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
   const [auditStatus, setAuditStatus] = useState<string | undefined>('pending');
   /**
    * 三个筛选项**互斥**（11-04 用户纠正）：一次只看一类。
-   * 之前是三个独立勾选框，能同时勾，勾出来的是「推荐条 且 命中风险词 且 一致性不过」
+   * 之前是三个独立勾选框，能同时勾，勾出来的是「推荐条 且 命中违禁词 且 和原视频对不上」
    * 的交集——又窄又没人看得懂。现在用单选：
-   *   recommended 只看推荐条（默认，防橡皮章）／risk 只看命中风险词／
-   *   inconsistent 只看一致性不过／all 全部候选都列出来
+   *   recommended 只看推荐条（默认，防橡皮章）／risk 只看命中违禁词／
+   *   inconsistent 只看和原视频对不上／all 全部候选都列出来
    */
   const [scope, setScope] = useState<'recommended' | 'risk' | 'inconsistent' | 'all'>('recommended');
   const recommendedOnly = scope === 'recommended';
@@ -69,6 +89,11 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
   // 复核拦下后的豁免弹窗
   const [waiveFor, setWaiveFor] = useState<AssetReviewResultItem[] | null>(null);
   const [waiveReason, setWaiveReason] = useState('');
+  /**
+   * R-6 分粒度豁免：弹窗里默认全勾＝整条放过（老行为）；
+   * 取消某一类，那类拦点就仍然拦着——防止「一句理由把违禁词也一起带走」。
+   */
+  const [waiveCodes, setWaiveCodes] = useState<string[]>([]);
 
   // 投产弹窗
   const [produceOpen, setProduceOpen] = useState(false);
@@ -123,6 +148,13 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter]);
 
+  // 后台出文案任务跑完（D-1）：新候选不在前端内存里，只能重新拉
+  useEffect(() => {
+    if (!reloadToken) return;
+    fetchList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadToken]);
+
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
 
   /** 批次下拉选项：编号 + 名称 + 条数，比让人手填 UUID 强得多。 */
@@ -144,7 +176,13 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
    */
   const runReview = async (
     action: AssetReviewAction,
-    opts: { reason?: string; new_text?: string; waive_reason?: string; summaryIds?: string[] } = {},
+    opts: {
+      reason?: string;
+      new_text?: string;
+      waive_reason?: string;
+      waive_codes?: string[];
+      summaryIds?: string[];
+    } = {},
   ) => {
     const targetIds = opts.summaryIds || ids;
     if (!targetIds.length) {
@@ -152,7 +190,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
       return;
     }
     if ((action === 'reject' || action === 'need_rewrite') && !(opts.reason || '').trim()) {
-      message.warning('驳回 / 需改写必须填理由');
+      message.warning('驳回 / 要求改写必须填理由');
       return;
     }
     setBusy(true);
@@ -163,6 +201,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
         reason: opts.reason,
         new_text: opts.new_text,
         waive_reason: opts.waive_reason,
+        waive_codes: opts.waive_codes,
       });
       const blocked = (res.results || []).filter(
         (r) => !r.ok && r.error_code === 'ASSET_RECHECK_FAILED',
@@ -171,6 +210,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
       if (blocked.length && !opts.waive_reason) {
         setWaiveFor(blocked);
         setWaiveReason('');
+        // 默认全勾＝整条放过（老行为）；管理员想只放一部分就取消勾选
+        setWaiveCodes(unionCodes(blocked));
       }
       if (failed.length) {
         Modal.warning({
@@ -184,14 +225,17 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
                 </Text>
               ))}
               <Text type="secondary" style={{ fontSize: 12 }}>
-                常见成因：生产者不能审自己产的东西（admin 除外）、并发下已被他人处理、素材已归档。
+                常见原因：写文案的人不能审自己写的文案（管理员除外）、同一批被别人抢先处理了、素材已归档。
               </Text>
             </Space>
           ),
         });
       }
-      if (!failed.length && !blocked.length) message.success(res.message);
-      else if (!blocked.length) message.warning(res.message);
+      // R-6：「和原视频对不上」不拦过审，但要**看得见**——过审成功也弹黄色提示，
+      // 否则留痕列变红却没人解释，反而更像出故障。
+      const warned = (res.results || []).filter((r) => r.ok && (r.warnings || []).length);
+      if (!failed.length && !blocked.length && !warned.length) message.success(res.message);
+      else if (!blocked.length) message.warning(res.message, 8);
       setSelected([]);
       fetchList(1, pageSize);
     } catch (e) {
@@ -208,12 +252,12 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
     }
     let reason = '';
     Modal.confirm({
-      title: action === 'reject' ? `驳回 ${ids.length} 条（必填理由）` : `${ids.length} 条标记需改写（必填理由）`,
+      title: action === 'reject' ? `驳回 ${ids.length} 条（必填理由）` : `标记 ${ids.length} 条要求改写（必填理由）`,
       width: 520,
       content: (
         <Input.TextArea
           rows={3}
-          placeholder="写清楚为什么不行：钩子不成立 / 与画面不符 / 风险表述…（驳回理由会回显给生产者）"
+          placeholder="写清楚为什么不行：钩子不成立 / 与画面不符 / 风险表述…（驳回理由会显示给写文案的人）"
           onChange={(e) => {
             reason = e.target.value;
           }}
@@ -272,7 +316,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
                     <Space wrap size={4} style={{ marginTop: 4 }}>
                       {(f.problems || []).map((p, i) => (
                         <Tag key={`${p.code}-${i}`}>
-                          {p.code}｜{p.message}
+                          {RECHECK_CODE_LABELS[p.code] || p.code}｜{p.message}
                         </Tag>
                       ))}
                     </Space>
@@ -284,7 +328,14 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
         });
         return;
       }
-      message.success('已交回待审队列，等审核人再过一遍');
+      // R-6：提审成功但带预警（和原视频对不上）时说人话给人听，别让人以为已经全绿
+      const warn = (res.results || []).find((r) => r.ok && (r.warnings || []).length);
+      message.success(
+        warn
+          ? `已交回待审队列。提示：${warn.warnings?.map((p) => p.message).join('；')}——不拦提审，但审核人会看到`
+          : '已交回待审队列，等审核人再过一遍',
+        warn ? 8 : 3,
+      );
       setResubmitFor(null);
       setResubmitText('');
       setResubmitNote('');
@@ -326,7 +377,10 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
       dataIndex: 'text',
       render: (v: string, r) => (
         <Space direction="vertical" size={2} style={{ width: '100%' }}>
-          <Paragraph style={{ marginBottom: 0 }} ellipsis={{ rows: 3, expandable: true, symbol: '展开' }}>
+          <Paragraph
+            style={{ marginBottom: 0 }}
+            ellipsis={{ rows: 3, expandable: 'collapsible', symbol: (expanded) => (expanded ? '收起' : '展开') }}
+          >
             {v}
           </Paragraph>
           {r.text_before_edit && (
@@ -361,7 +415,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
       ),
     },
     {
-      title: '复核',
+      title: '自动检查',
       key: 'check',
       width: 150,
       render: (_, r) => (
@@ -369,13 +423,13 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
           <RiskTags riskHit={r.risk_hit} />
           {r.consistency_ok === false ? (
             <Tooltip title={r.consistency_note || ''}>
-              <Tag color="orange">一致性不过</Tag>
+              <Tag color="orange">和原视频对不上</Tag>
             </Tooltip>
           ) : r.consistency_ok === true ? (
-            <Tag color="green">一致性 ok</Tag>
+            <Tag color="green">和原视频对得上</Tag>
           ) : (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              未校验
+              还没校验
             </Text>
           )}
         </Space>
@@ -403,7 +457,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
             render: (_: unknown, r: AssetSummary) => (
               <Space size={2}>
                 {r.can_resubmit && (
-                  <Tooltip title="把文案改了交回待审队列，等审核人再过一遍（改前改后都进审计）">
+                  <Tooltip title="把文案改了交回待审队列，等审核人再过一遍（改前改后都留档）">
                     <Button
                       size="small"
                       icon={<SendOutlined />}
@@ -420,7 +474,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
                 )}
                 {canReview && (
                   <>
-                    <Tooltip title="生产者不能审自己产的东西（admin 除外）">
+                    <Tooltip title="写文案的人不能审自己写的文案（管理员除外）">
                       <Button
                         size="small"
                         type="primary"
@@ -473,19 +527,19 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
                   3 条全勾一遍过，等于没审。
                 </p>
                 <p style={{ marginBottom: 6 }}>
-                  <strong>过审</strong>：这条就是要投豆包的那条。会先跑一遍复核（超字数／命中风险词／与详规对不上都会被拦），
-                  拦下时可让管理员带理由豁免，豁免内容进审计。
+                  <strong>过审</strong>：这条就是要拿去投放的文案。过审前会先自动查一遍（超字数／命中违禁词／和原视频对不上都会被拦），
+                  拦下时可让管理员带理由放行，放行记录会留档。
                 </p>
                 <p style={{ marginBottom: 6 }}>
-                  <strong>驳回／需改写</strong>：必须写理由，理由会回显给写文案的人。
+                  <strong>驳回／要求改写</strong>：必须写理由，理由会显示给写文案的人。
                 </p>
                 <p style={{ marginBottom: 6 }}>
                   <strong>驳回之后怎么办</strong>：写文案的人（这条素材的负责人）在行上点
                   <strong>「改后重提」</strong>，把文案改了交回待审队列，审核人再过一遍——
-                  改前改后都进审计。审核人也可以自己点<strong>「改后过」</strong>直接改直接过（一步到位）。
+                  改前改后都留档。审核人也可以自己点<strong>「改后过」</strong>直接改直接过（一步到位）。
                 </p>
                 <p style={{ marginBottom: 6 }}>
-                  <strong>投产</strong>：只吃已过审的文案，一条过审文案派生 N 条差异化提示词。
+                  <strong>生成生产单</strong>：只认已过审的文案，把过审文案变成要投出去的一条条提示词，一条派生几条不同写法。
                 </p>
                 <p style={{ marginBottom: 0 }}>各筛选项的说明在它们右边的问号里。</p>
               </div>
@@ -495,11 +549,11 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
               怎么用 <QuestionCircleOutlined />
             </Button>
           </Popover>
-          <Tooltip title="按审核状态筛：待审／已过审／已驳回／需改写／改后通过。清空＝所有状态都列出来。">
+          <Tooltip title="按审核状态筛：等审核／已过审／已驳回／要求改写／改后通过。清空＝所有状态都列出来。">
             <span>
               <Select
                 style={{ width: 130 }}
-                placeholder="审核态"
+                placeholder="审核状态"
                 allowClear
                 value={auditStatus}
                 onChange={setAuditStatus}
@@ -512,10 +566,10 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
             title={
               <div style={{ maxWidth: 340 }}>
                 <div><strong>推荐条</strong>：每条素材出 3 条候选，模型标 1 条推荐。默认只看它，是为了防止 3 条全勾一遍走过场。</div>
-                <div><strong>命中风险</strong>：命中风险词的候选。红色「拦」＝不许过审、不许投产；橙色「警」＝只留痕。</div>
-                <div><strong>一致性不过</strong>：与反推详规对不上的候选（实体没命中），通常要人工改或重新出。</div>
+                <div><strong>命中违禁词</strong>：命中违禁词的候选。红色「不许用」＝过不了审、也出不了生产单；橙色「要注意」＝只留个提醒。</div>
+                <div><strong>和原视频对不上</strong>：文案里的人物/场景/事件在视频详规里找不到的候选，通常要人工改或重新出。</div>
                 <div><strong>全部</strong>：3 条候选都列出来，用来看对照。</div>
-                <div style={{ marginTop: 4 }}>这四个是**互斥**的：一次只看一类。</div>
+                <div style={{ marginTop: 4 }}>这四个是互斥的：一次只看一类。</div>
               </div>
             }
           >
@@ -526,15 +580,15 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
                 onChange={(v) => setScope(v as typeof scope)}
                 options={[
                   { label: '推荐条', value: 'recommended' },
-                  { label: '命中风险', value: 'risk' },
-                  { label: '一致性不过', value: 'inconsistent' },
+                  { label: '命中违禁词', value: 'risk' },
+                  { label: '和原视频对不上', value: 'inconsistent' },
                   { label: '全部', value: 'all' },
                 ]}
               />
               <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
             </span>
           </Tooltip>
-          <Tooltip title="只看轮到我改的：被驳回 / 需改写、且是我负责的素材。开启后会清掉「审核态」筛选（否则两边互相打架）。点行上的「改后重提」把文案改了交回待审队列。">
+          <Tooltip title="只看轮到我改的：被驳回 / 要求改写、且是我负责的素材。开启后会清掉「审核状态」筛选（否则两边互相打架）。点行上的「改后重提」把文案改了交回待审队列。">
             <span>
               <Button
                 size="small"
@@ -566,9 +620,9 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
               <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
             </span>
           </Tooltip>
-          <Tooltip title="查看／修改风险词库（审核台「复核」列那些标签的来源）。只有管理员能改。">
+          <Tooltip title="查看／修改违禁词表（审核台「自动检查」列那些标签的来源）。只有管理员能改。">
             <Button size="small" icon={<SafetyCertificateOutlined />} onClick={() => setLexiconOpen(true)}>
-              风险词库
+              违禁词表
             </Button>
           </Tooltip>
           <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
@@ -592,22 +646,22 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
               驳回（{ids.length}）
             </Button>
             <Button disabled={!ids.length} onClick={() => askReason('need_rewrite')}>
-              需改写（{ids.length}）
+              要求改写（{ids.length}）
             </Button>
             {canReview && (
-              <Tooltip title="过审文案 → N 条差异化提示词（投产与审核同侧：material 不能开单）。括号里的数字只算勾选行里已过审/改后通过的那些，待审的不算。">
+              <Tooltip title="生成生产单：把过审文案变成要投出去的一条条提示词，一条派生几条不同写法（开单和审核在同一侧：素材专员不能开单）。括号里的数字只算勾选里已过审/改后通过的那些，等审核的不算。">
                 <Button
                   icon={<ThunderboltOutlined />}
                   disabled={!approvedSelected.length}
                   onClick={() => setProduceOpen(true)}
                 >
-                  投产（{approvedSelected.length}）
+                  生成生产单（{approvedSelected.length}）
                 </Button>
               </Tooltip>
             )}
           </Space>
         ) : (
-          <Text type="secondary">当前角色只读：审核与投产需运营（operator）或管理员</Text>
+          <Text type="secondary">当前角色只读：审核与生成生产单需要运营或管理员</Text>
         )
       }
     >
@@ -647,7 +701,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
 
       <Modal
         open={!!editing}
-        title="改后通过（原文会留痕，admin 可抽检）"
+        title="改后通过（改前原文会留档，管理员可抽查）"
         onCancel={() => setEditing(null)}
         onOk={submitEdited}
         okText="提交改后通过"
@@ -656,7 +710,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
       >
         <Space direction="vertical" style={{ width: '100%' }} size={8}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            改后的文案就是最终投产的那一条：审核的是文字，生产的也是文字，别在这里改口径。
+            改后的文案就是最终投出去的那一条：你在这里审的是文字，生产单用的也是这段文字，别在这里换内容。
           </Text>
           <Input.TextArea rows={8} value={editText} onChange={(e) => setEditText(e.target.value)} />
           <Text type="secondary" style={{ fontSize: 12 }}>
@@ -685,15 +739,15 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
           )}
           <Text type="secondary" style={{ fontSize: 12 }}>
             改完点「交回待审」，这条就回到待审队列，审核人会再过一遍。
-            改前原文和改后文案都会进审计，admin 可抽检。
-            超字数、命中拦级风险词的文案**当场就提不上去**，先改干净。
+            改前原文和改后文案都会留档，管理员可抽查。
+            超字数、命中违禁词（不许用）的文案当场就提不上去，先改干净。
           </Text>
           <Input.TextArea rows={8} value={resubmitText} onChange={(e) => setResubmitText(e.target.value)} />
           <Text type="secondary" style={{ fontSize: 12 }}>
             {resubmitText.trim().length} 字
           </Text>
           <Input
-            placeholder="给审核人的说明（可选，会进审计）：比如「按建议把钩子改成疑问句」"
+            placeholder="给审核人的说明（可选，会留档）：比如「按建议把钩子改成疑问句」"
             value={resubmitNote}
             onChange={(e) => setResubmitNote(e.target.value)}
           />
@@ -702,15 +756,21 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
 
       <Modal
         open={!!waiveFor}
-        title="复核未过"
+        title="自动检查没通过"
         onCancel={() => setWaiveFor(null)}
-        okText={isAdmin ? '带豁免理由通过' : '知道了'}
-        okButtonProps={{ disabled: !isAdmin || !waiveReason.trim() }}
+        okText={isAdmin ? '带放行理由通过' : '知道了'}
+        // 至少要放行一类：全取消勾选＝一类都不放，那这次放行没有意义，
+        // 而且空数组会被后端当成「整条全放过」（兼容旧行为），绝不能由误操作触发
+        okButtonProps={{ disabled: !isAdmin || !waiveReason.trim() || !waiveCodes.length }}
         onOk={async () => {
           if (!isAdmin || !waiveFor) return;
           const targetIds = waiveFor.map((w) => w.summary_id);
           setWaiveFor(null);
-          await runReview('approve', { summaryIds: targetIds, waive_reason: waiveReason.trim() });
+          await runReview('approve', {
+            summaryIds: targetIds,
+            waive_reason: waiveReason.trim(),
+            waive_codes: waiveCodes,
+          });
         }}
         width={640}
       >
@@ -725,7 +785,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
                 <Space wrap size={4}>
                   {(w.problems || []).map((p, i) => (
                     <Tag key={`${p.code}-${i}`}>
-                      {p.code}｜{p.message}
+                      {RECHECK_CODE_LABELS[p.code] || p.code}｜{p.message}
                     </Tag>
                   ))}
                 </Space>
@@ -735,17 +795,31 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
           {isAdmin ? (
             <>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                豁免 = 你确认这些拦点是误报或可接受。理由会逐条写进 AuditLog，admin 可抽检回溯。
+                管理员放行 = 你确认这些拦点是误报或可以接受。理由会逐条留档，可事后抽查追溯。
               </Text>
+              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                <Text style={{ fontSize: 12 }}>这次放行哪几类问题（不放行的那类仍然拦着）：</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  想只放掉字数、把违禁词继续卡住，就取消对应的勾——一句理由全放行的老做法会连真违禁词一起带走。
+                </Text>
+                <Checkbox.Group
+                  value={waiveCodes}
+                  onChange={(v) => setWaiveCodes(v as string[])}
+                  options={unionCodes(waiveFor || []).map((c) => ({
+                    label: RECHECK_CODE_LABELS[c] || c,
+                    value: c,
+                  }))}
+                />
+              </Space>
               <Input.TextArea
                 rows={3}
-                placeholder="豁免理由（必填）"
+                placeholder="放行理由（必填）"
                 value={waiveReason}
                 onChange={(e) => setWaiveReason(e.target.value)}
               />
             </>
           ) : (
-            <Alert type="info" showIcon message="只有管理员可以豁免复核不过的文案" />
+            <Alert type="info" showIcon message="只有管理员可以为检查不过的文案放行" />
           )}
         </Space>
       </Modal>

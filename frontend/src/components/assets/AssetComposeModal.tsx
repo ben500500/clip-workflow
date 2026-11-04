@@ -124,7 +124,7 @@ const AssetComposeModal: React.FC<Props> = ({ open, asset, onClose, onDone }) =>
         id: row?.id || '',
         label: row ? `${row.code}·${row.title || row.file_name || '未命名'}` : '未选',
         ready: ok,
-        hint: row && !row.file_key ? '这条是链接素材，没有原片文件（先「回源解析」或改用文件素材）' : undefined,
+        hint: row && !row.file_key ? '这条是链接素材，库里没有原片文件（先「查视频时长」把文件取回来，或改用文件素材）' : undefined,
       };
     }
     if (sourceTab === 'slice') {
@@ -233,7 +233,7 @@ const AssetComposeModal: React.FC<Props> = ({ open, asset, onClose, onDone }) =>
       width={880}
       title={asset ? `拼接成片：${asset.code}` : '拼接成片'}
       onCancel={onClose}
-      okText={busy ? '拼接中（同步等 ffmpeg）' : '开始拼接'}
+      okText={busy ? '正在拼接，请等它跑完' : '开始拼接'}
       okButtonProps={{ loading: busy, disabled: !second.ready }}
       onOk={submit}
       destroyOnClose
@@ -250,7 +250,7 @@ const AssetComposeModal: React.FC<Props> = ({ open, asset, onClose, onDone }) =>
               <span style={{ fontSize: 12 }}>
                 排在<b>最前</b>那一段决定输出的画幅和帧率（后一段等比缩放后补边进去，不裁头尾）；
                 某一段没有音轨会自动补静音轨，不会整条失败。拼接不调模型、不调智令，<b>0 元</b>，
-                也不走预算闸门。每拼一次新增一条产物、不覆盖旧的，可以拼几个顺序挑一条用。
+                也不做预算检查。每拼一次新增一条产物、不覆盖旧的，可以拼几个顺序挑一条用。
               </span>
             }
           />
@@ -273,7 +273,7 @@ const AssetComposeModal: React.FC<Props> = ({ open, asset, onClose, onDone }) =>
               type="warning"
               showIcon
               message="这条是链接素材、桶里没有原片文件"
-              description={<span style={{ fontSize: 12 }}>先在详情抽屉里「回源解析拿时长」并确认文件已落桶，否则后端会拒。</span>}
+              description={<span style={{ fontSize: 12 }}>先在详情抽屉里「查视频时长」并确认文件已存进我们自己的存储，否则后端会拒。</span>}
             />
           )}
 

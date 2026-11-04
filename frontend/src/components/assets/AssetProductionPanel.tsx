@@ -8,7 +8,7 @@ import {
   DISPATCH_REPORT_STATUSES, PRODUCTION_STATE_LABELS, assetApi,
 } from '../../api/assets';
 import type {
-  AssetDispatchCounts, AssetExportPayload, AssetExportTxt, AssetProduction, DispatchReportStatus, ProductionState,
+  AssetDispatchCounts, AssetExportJson, AssetExportPayload, AssetExportTxt, AssetProduction, DispatchReportStatus, ProductionState,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import { MonoText, ProductionStateTag } from './AssetBits';
@@ -16,9 +16,13 @@ import { MonoText, ProductionStateTag } from './AssetBits';
 const { Text, Paragraph } = Typography;
 
 interface Props {
-  /** 投递状态回写与投产同侧：operator + admin */
+  /** 投放结果登记与投产同侧：operator + admin */
   canWriteBack: boolean;
+  /** 「带违禁词强行导出」只有 admin 能做（后端同一道闸，前端只决定按钮给不给） */
+  isAdmin: boolean;
   batchId?: string;
+  /** 后台投产任务收敛后自增（D-1）：生产单是后端建行的，只能重新拉才看得到 */
+  reloadToken?: number;
 }
 
 const rate = (v: number | null | undefined) =>
@@ -34,7 +38,7 @@ const rate = (v: number | null | undefined) =>
  *    `board_capacity.already_today` 含未投单，两者不等价，别互相换算。
  * P0 没有自动投递：导出 payload → 人在企微后台建任务 → 回来把 queued/running/success/failed 填上。
  */
-const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
+const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId, reloadToken }) => {
   const [items, setItems] = useState<AssetProduction[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -59,6 +63,9 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
   const [exportOnlySelected, setExportOnlySelected] = useState(false);
   const [exportData, setExportData] = useState<AssetExportTxt | AssetExportPayload | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
+  // R-4：导出会按**当前**违禁词表重扫正文，命中的单子会被挡下。放行只有 admin，且必须写一句理由。
+  const [exportForceRisk, setExportForceRisk] = useState(false);
+  const [exportForceReason, setExportForceReason] = useState('');
 
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
 
@@ -90,6 +97,13 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
     fetchList(1, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, batchFilter, assetFilter]);
+
+  // 后台投产任务跑完（D-1）：生产单行是后端建的，只能重新拉
+  useEffect(() => {
+    if (!reloadToken) return;
+    fetchList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadToken]);
 
   const submitWriteBack = async () => {
     if (!ids.length) return;
@@ -152,7 +166,11 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
     }
   };
 
-  const doExport = async () => {
+  const doExport = async (forceRisk = false) => {
+    if (forceRisk && !exportForceReason.trim()) {
+      message.warning('强行导出要写一句为什么（这句话会进审计，事后对账全靠它）');
+      return;
+    }
     setExportBusy(true);
     try {
       const res = await assetApi.exportProductions({
@@ -161,10 +179,12 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
         ids: exportOnlySelected && ids.length ? ids.join(',') : undefined,
         accounts: exportAccounts,
         format: exportFormat,
+        force_risk: forceRisk || undefined,
+        force_reason: forceRisk ? exportForceReason.trim() : undefined,
       });
       if (res.format === 'json') {
         setExportData(null);
-        message.info('json 形态只回 items[]：要粘贴文本选 txt、要板面七键选 payload');
+        message.info('json 这种只给清单、不给正文：要粘进豆包的文本选 txt，要往企微后台建任务的参数选「板面七键」');
       } else {
         setExportData(res as AssetExportTxt | AssetExportPayload);
       }
@@ -253,7 +273,12 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
       render: (v: string | null, r) =>
         v ? (
           <Space size={2}>
-            <Paragraph style={{ marginBottom: 0, fontSize: 12 }} ellipsis={{ rows: 2, expandable: true, symbol: '展开' }}>
+            {/* expandable: 'collapsible'（antd ≥5.18）——原来写 `expandable: true` 只能展开、
+                点了「展开」之后那个按钮就没了，长正文收不回去，表格里一撑到底（11-04 用户反馈）。 */}
+            <Paragraph
+              style={{ marginBottom: 0, fontSize: 12 }}
+              ellipsis={{ rows: 2, expandable: 'collapsible', symbol: (expanded) => (expanded ? '收起' : '展开') }}
+            >
               {v}
             </Paragraph>
             <Button size="small" icon={<CopyOutlined />} onClick={() => copyText(v, '提示词')} />
@@ -475,7 +500,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
                     exportData.format === 'txt'
                       ? exportData.export_text || ''
                       : JSON.stringify((exportData as AssetExportPayload).payloads || [], null, 2),
-                    exportData.format === 'txt' ? '文本' : 'payload',
+                    exportData.format === 'txt' ? '文本' : '板面七键',
                   )
                 }
               >
@@ -485,7 +510,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
           ) : (
             <Space>
               <Button onClick={() => setExportOpen(false)}>关闭</Button>
-              <Button type="primary" loading={exportBusy} onClick={doExport}>
+              <Button type="primary" loading={exportBusy} onClick={() => doExport()}>
                 生成
               </Button>
             </Space>
@@ -502,9 +527,9 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
               }}
               optionType="button"
               options={[
-                { value: 'json', label: 'json（仅列表）' },
+                { value: 'json', label: 'json（只出清单，不给正文）' },
                 { value: 'txt', label: 'txt（段头+正文+推荐标题，可粘豆包）' },
-                { value: 'payload', label: 'payload（板面七键）' },
+                { value: 'payload', label: '板面七键（企微后台建任务那七个字段）' },
               ]}
             />
             <span>
@@ -555,6 +580,59 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
                   </Space>
                 </div>
               )}
+              {/* R-4：导出前按当前违禁词表重扫——命中的一定是「过审之后运营才加的词」，
+                  所以这里必须单独说清楚，不能混在「作废/失败」那堆里让一线以为是单子坏了。 */}
+              {!!(exportData as AssetExportJson).risk_recheck?.hit_count && (
+                <Alert
+                  type={(exportData as AssetExportJson).risk_recheck?.blocked?.length ? 'error' : 'warning'}
+                  showIcon
+                  message={
+                    `${(exportData as AssetExportJson).risk_recheck!.hit_count} 张单的正文里有现在不许用的词：`
+                    + `${(exportData as AssetExportJson).risk_recheck!.blocked.length} 张已挡下`
+                    + ((exportData as AssetExportJson).risk_recheck!.forced?.length
+                      ? `、${(exportData as AssetExportJson).risk_recheck!.forced.length} 张由管理员放行`
+                      : '')
+                  }
+                  description={
+                    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                      <Text style={{ fontSize: 12 }}>
+                        {(exportData as AssetExportJson).risk_recheck!.note}
+                      </Text>
+                      <Space wrap size={4}>
+                        {(exportData as AssetExportJson).items
+                          .filter((i) => i.risk_hits?.length)
+                          .map((i) => (
+                            <Tag key={i.id} color={i.risk_forced ? 'orange' : 'red'}>
+                              {i.hook_code || i.id.slice(0, 8)}#{i.seq}：
+                              {i.risk_hits!.map((x) => x.word).join('、')}
+                              {i.risk_forced ? '（已放行）' : ''}
+                            </Tag>
+                          ))}
+                      </Space>
+                      {isAdmin
+                        && (exportData as AssetExportJson).risk_recheck!.blocked.length > 0 && (
+                        <Space wrap>
+                          <Input
+                            style={{ width: 320 }}
+                            placeholder="写一句为什么这些词在这批里没问题（会进审计）"
+                            value={exportForceReason}
+                            onChange={(e) => setExportForceReason(e.target.value)}
+                          />
+                          <Button size="small" loading={exportBusy} onClick={() => doExport(true)}>
+                            管理员：带理由强行导出
+                          </Button>
+                        </Space>
+                      )}
+                      {!isAdmin && (exportData as AssetExportJson).risk_recheck!.blocked.length > 0 && (
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          要放行得找管理员（谁能导、谁不能导是审核口径定的，不是投放这边自己判）；
+                          或者回去改文案、重新投产。
+                        </Text>
+                      )}
+                    </Space>
+                  }
+                />
+              )}
               {exportData.format === 'txt' ? (
                 <Paragraph>
                   <pre style={{ maxHeight: 420, overflow: 'auto', fontSize: 12, whiteSpace: 'pre-wrap' }}>
@@ -586,7 +664,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
                       key: 'copy',
                       width: 90,
                       render: (_, r: AssetExportPayload['payloads'][number]) => (
-                        <Button size="small" onClick={() => copyText(JSON.stringify(r.payload), '该单 payload')}>
+                        <Button size="small" onClick={() => copyText(JSON.stringify(r.payload), '这单的板面七键')}>
                           复制
                         </Button>
                       ),
@@ -597,8 +675,8 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, batchId }) => {
             </>
           ) : (
             <Text type="secondary">
-              选形态后点「生成」。txt 每条是「段头（五位编号）+ 正文 + 推荐标题（编号在尾）」一整块，末尾接批次级产出清单；
-              payload 每条是可直接 POST 企微后台 /api-g/aivideo/create 的七键。
+              选一种形态再点「生成」。txt 每条是「段头（五位编号）+ 正文 + 推荐标题（编号在尾）」一整块，末尾接这一批的产出清单，复制进豆包就能用；
+              板面七键每条是企微后台「创建AI视频」要收的那七个字段，复制过去直接建任务。
             </Text>
           )}
         </Space>
