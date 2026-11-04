@@ -187,6 +187,12 @@ export interface AssetItem {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * 钩子原型分类（11-04 拍板①）。null＝未分类——**不设为必填**，不填也能走完全链。
+   * `category_name` 只有列表（list_assets）与详情（getAsset）带，单条口为 null。
+   */
+  category_id?: string | null;
+  category_name?: string | null;
   /** 候选文案条数（列表聚合，非列表口缺省） */
   summary_count?: number;
   /** 已过审条数 */
@@ -227,6 +233,13 @@ export interface AssetSummary {
    * 要配合 audit_status 判：passed_edited＝审核人改后过；approved＝作者重提后原样过。
    */
   text_before_edit: string | null;
+  /**
+   * 这条文案的原型（11-04 拍板①）：出稿时**继承所属素材**的 category_id，
+   * 之后素材重新归类**不回写**已出候选——已定性的文案不该被带走。
+   * `category_name` 只有审核台列表口带。
+   */
+  category_id?: string | null;
+  category_name?: string | null;
   /** 这条文案现在能不能「改后重新提审」：被驳回/需改写 且 你是素材负责人或 admin */
   can_resubmit?: boolean;
   created_at: string;
@@ -617,6 +630,11 @@ export interface AssetImportBatchRequest {
   force_duplicates?: boolean;
   /** 逐条放行：只放行点名的这几条（传 dup.source_url 或原链接都认），别拿整批陪跑 */
   force_urls?: string[] | null;
+  /**
+   * 11-04 拍板①：导入抽屉的「整批默认原型」——一次点好，这一批每条素材都带上它。
+   * 留空＝未分类（**不设为必填**）；入库后每条仍可单独改，改后出稿的文案跟着这一列走。
+   */
+  category_id?: string | null;
 }
 
 /** AnalyzeRequest（真金白银的一步，必须带成本确认） */
@@ -782,6 +800,11 @@ export interface AssetListParams {
   page?: number;
   /** 默认 50，后端封顶 200 */
   page_size?: number;
+  /**
+   * 11-04 拍板①：按钩子原型筛。传原型 id；传 `'none'` 只看**未分类**
+   * ——列表页顶部那句「未分类 N 条」就是拿这个筛选的 `total`，后端不另开口。
+   */
+  category_id?: string;
 }
 
 /** GET /assets/summaries */
@@ -800,6 +823,12 @@ export interface AssetSummaryListParams {
   page?: number;
   /** 默认 100，后端封顶 300 */
   page_size?: number;
+  /**
+   * 11-04 拍板①：按**文案自己**那列的原型筛（不是素材的）。
+   * 素材重新归类不该把已定性文案带走，所以这里筛的是 `asset_summaries.category_id`。
+   * 传 `'none'` ＝只看未分类。
+   */
+  category_id?: string;
 }
 
 /** GET /assets/productions（注意：dispatch.by_status 不受 status= 影响） */
@@ -1059,6 +1088,86 @@ export interface AssetRiskLexiconUpdateResult {
   effective: { block: string[]; warn: string[] };
   exempt: Record<string, string>;
   updated_at: string;
+  notes: string[];
+}
+
+// ──────────────────────────────────────────────
+// 钩子原型字典（11-04 拍板①：单层、A–G 原名、读全员写仅 admin）
+// ──────────────────────────────────────────────
+
+/**
+ * 一行原型（`asset_categories`）。
+ *
+ * 名称**照《钩子模版换皮参数设定.docx》原名录入**，初始 7 行由后端种入，
+ * 前端不要自己拼「原型 A」这类短名去比——一律按后端回的字面串显示。
+ * `parent_id` 是拍板"留着不填"的单层字典，恒为 null。
+ */
+export interface AssetCategory {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  /** 展示顺序（docx 里 A→G 的次序）；新增不给就排到最后 */
+  sort: number;
+  /** false＝已下线：不再供新条目挑选，但历史条目仍显示、仍可筛 */
+  active: boolean;
+  /** 行内说明（docx 的钩法内核原文）。纯展示，不参与任何判定 */
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+  /** 引用计数（读口带）：这条挂着多少条素材 / 多少条文案 */
+  asset_count?: number;
+  copy_count?: number;
+}
+
+/** GET /assets/categories */
+export interface AssetCategoriesResult {
+  items: AssetCategory[];
+  /** 列表页那句「未分类 N 条」的数据源（也是 `category_id=none` 的 total） */
+  unclassified: { asset_count: number; copy_count: number };
+  can_edit: boolean;
+  note: string;
+}
+
+/** PUT /assets/categories 的一条：带 id＝改，不带 id＝增 */
+export interface AssetCategoryUpsert {
+  id?: string | null;
+  name: string;
+  sort?: number | null;
+  active?: boolean;
+  note?: string | null;
+}
+
+/**
+ * PUT /assets/categories 的入参。⚠️ **整单语义**：这次没列出来的既有行＝下线
+ * （后端不硬删，历史引用留着），所以前端提交必须把要保留的行**全量**带上。
+ */
+export interface AssetCategoriesUpdate {
+  items: AssetCategoryUpsert[];
+}
+
+export interface AssetCategoriesUpdateResult {
+  ok: boolean;
+  added: number;
+  updated: number;
+  retired: number;
+  items: AssetCategory[];
+  notes: string[];
+}
+
+/** POST /assets/categories/assign：点分类。`category_id` 留空＝清成未分类（不是"不改"） */
+export interface AssetCategoryAssignRequest {
+  asset_ids?: string[];
+  summary_ids?: string[];
+  category_id?: string | null;
+}
+
+export interface AssetCategoryAssignResult {
+  ok: boolean;
+  asset_changed: number;
+  summary_changed: number;
+  category_id: string | null;
+  /** 库里查不到的 id：如实回传，不许"看起来改成功了" */
+  not_found: string[];
   notes: string[];
 }
 
@@ -1493,6 +1602,12 @@ export const assetApi = {
       max_duration?: number;
       /** 传已有批次 id 可把多次提交并进同一批（前端一次建批次、分批投） */
       batch_id?: string;
+      /**
+       * 11-04 拍板①：文件上传同样吃「整批默认原型」。
+       * ⚠️ 补投口（retryUpload）**不收**这个参数——它的语义是"把上次没成功的补回同一批"，
+       * 后端按原批里出现过的那一个原型自动继承（原批混了两个原型就不猜、落未分类）。
+       */
+      category_id?: string;
     },
     onProgress?: (percent: number) => void,
   ) => {
@@ -1501,6 +1616,7 @@ export const assetApi = {
     if (data.name != null) form.append('name', data.name);
     if (data.project_id != null) form.append('project_id', data.project_id);
     if (data.batch_id != null) form.append('batch_id', data.batch_id);
+    if (data.category_id != null) form.append('category_id', data.category_id);
     if (data.max_duration != null) form.append('max_duration', String(data.max_duration));
     return client.post('/assets/upload/batch', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -1577,6 +1693,19 @@ export const assetApi = {
 
   updateRiskLexicon: (data: AssetRiskLexiconUpdate) =>
     client.put('/assets/risk-lexicon', data) as Promise<AssetRiskLexiconUpdateResult>,
+
+  // 钩子原型字典（11-04 拍板①）：读全员、写仅 admin，形态与风险词库一致。
+  // 字典是**表**不是 system_config——素材/文案要按它筛选，JSON 名单没法 join，
+  // 也没法给每行挂「下线」状态与引用计数。
+  listCategories: () =>
+    client.get('/assets/categories') as Promise<AssetCategoriesResult>,
+
+  updateCategories: (data: AssetCategoriesUpdate) =>
+    client.put('/assets/categories', data) as Promise<AssetCategoriesUpdateResult>,
+
+  // 点原型：素材/文案各自留痕；`category_id` 留空＝清成未分类（不是"不改"）
+  assignCategory: (data: AssetCategoryAssignRequest) =>
+    client.post('/assets/categories/assign', data) as Promise<AssetCategoryAssignResult>,
 
   // 过审文案 → N 条差异化提示词（生产单）；P0 到「生产单可导出」为止，投板是人工动作。
   // 带 `async_mode: true` 时当场回任务号（展开提示词按 n 逐条调模型，30 条就是十几分钟）。

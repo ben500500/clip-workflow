@@ -10,6 +10,9 @@ import {
   AssetStatusTag, AuditStatusTag, ProductionStateTag, RiskTags, StageTags, MonoText, durationText, yuan,
 } from './AssetBits';
 import AssetComposeModal from './AssetComposeModal';
+import {
+  CategorySelect, CategoryTag, invalidateAssetCategories, useAssetCategories,
+} from './AssetCategoryBits';
 import { HOOK_STYLE_LABELS } from '../../api/assets';
 
 const { Text, Paragraph } = Typography;
@@ -38,6 +41,9 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
   /** 拼接产物：`GET /assets/{id}` 不带 outputs，所以单独取一次 */
   const [outputs, setOutputs] = useState<AssetOutput[]>([]);
   const [composeOpen, setComposeOpen] = useState(false);
+  /** 钩子原型（11-04 拍板①）：抽屉里就地改，改完把新值并回本地 data，不整块重拉 */
+  const cats = useAssetCategories();
+  const [catBusy, setCatBusy] = useState(false);
 
   const fetchOutputs = useCallback(async (id: string) => {
     try {
@@ -70,6 +76,39 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
       setOutputs([]);
     }
   }, [open, assetId, fetchDetail, fetchOutputs]);
+
+  /**
+   * 就地改这条素材的钩子原型。留空提交＝清成未分类（后端 `category_id=null` 的语义）。
+   * 改成功只把 `category_id/category_name` 并回本地 data：抽屉里其余四块（文案/生产单/详规）
+   * 和这次改动无关，整块重拉会让人看到一次白屏。
+   */
+  const assignCategory = async (next?: string) => {
+    if (!assetId) return;
+    setCatBusy(true);
+    try {
+      const res = await assetApi.assignCategory({ asset_ids: [assetId], category_id: next || null });
+      if (res.not_found?.length) {
+        message.error('这条素材库里已经查不到，分类没改成');
+        return;
+      }
+      const name = next ? cats.byId[next]?.name || null : null;
+      setData((prev) =>
+        prev
+          ? { ...prev, asset: { ...prev.asset, category_id: next || null, category_name: name } }
+          : prev,
+      );
+      (res.notes || []).forEach((n) => message.info(n));
+      message.success(
+        res.asset_changed ? `原型已改成「${name || '未分类'}」（改动留档）` : '原型没有变化',
+      );
+      invalidateAssetCategories();
+      onChanged?.();
+    } catch (e) {
+      message.error((e as Error).message || '改原型失败');
+    } finally {
+      setCatBusy(false);
+    }
+  };
 
   const refreshPrompt = async () => {
     if (!assetId) return;
@@ -222,6 +261,35 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
             <Descriptions.Item label="来路">
               <Tag>{asset.source_kind === 'link' ? '链接' : '文件'}</Tag>
               {asset.platform || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="钩子原型" span={2}>
+              <Space wrap align="center">
+                <CategoryTag categoryId={asset.category_id} categoryName={asset.category_name} />
+                {canProduce && (
+                  <>
+                    <CategorySelect
+                      items={cats.activeItems}
+                      value={asset.category_id || undefined}
+                      onChange={(v) => assignCategory(v)}
+                      width={240}
+                      size="small"
+                      loading={cats.loading || catBusy}
+                      placeholder="选原型（清空＝改成未分类）"
+                    />
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      结构层人工标记，不填照样走完全链；改了只影响这条素材，
+                      <strong>不回写</strong>已经出的候选文案。
+                    </Text>
+                  </>
+                )}
+              </Space>
+              {asset.category_id && cats.byId[asset.category_id]?.note && (
+                <div>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {cats.byId[asset.category_id]?.note}
+                  </Text>
+                </div>
+              )}
             </Descriptions.Item>
             <Descriptions.Item label="时长">{durationText(asset.duration)}</Descriptions.Item>
             <Descriptions.Item label="分辨率">{asset.resolution || '-'}</Descriptions.Item>

@@ -3,7 +3,8 @@ import {
   Alert, Button, Card, Checkbox, DatePicker, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
-  BulbOutlined, CloudDownloadOutlined, DownloadOutlined, FileTextOutlined, MergeCellsOutlined, ReloadOutlined, SearchOutlined,
+  BulbOutlined, CloudDownloadOutlined, DownloadOutlined, FileTextOutlined, MergeCellsOutlined,
+  QuestionCircleOutlined, ReloadOutlined, SearchOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -15,6 +16,9 @@ import type {
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import { AssetStatusTag, StageTags, durationText, yuan } from './AssetBits';
+import {
+  CategorySelect, CategoryTag, UNCLASSIFIED, invalidateAssetCategories, useAssetCategories,
+} from './AssetCategoryBits';
 import CostConfirmModal from './CostConfirmModal';
 import AssetDetailDrawer from './AssetDetailDrawer';
 import AssetComposeModal from './AssetComposeModal';
@@ -47,6 +51,9 @@ interface Props {
  *    后台跑完由顶部横幅通知并刷新本页（`reloadToken`）——一线不该守着转圈的按钮等十几分钟。
  * 整批排队（batch_id + offset/limit）是给 200 条那种批次的：提交成功的条会自己离开队列，
  * 所以 offset 默认 0，只有某条反复失败才往后挪。
+ *
+ * 「原型」那一列（11-04 拍板①）是**结构层人工标记**：不点也能走完全链，所以既不必填也不拦人；
+ * 点原型 0 元、不等模型，因此不走成本确认单，直接批量提交。
  */
 const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadToken }) => {
   const [items, setItems] = useState<AssetItem[]>([]);
@@ -63,6 +70,15 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const [stagePrompt, setStagePrompt] = useState<string | undefined>();
   const [dates, setDates] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
   const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
+  /**
+   * 钩子原型筛选（11-04 拍板①）：`UNCLASSIFIED` 走后端 `category_id=none`，
+   * 就是「未分类 N 条」那个清欠账入口。不设为必填，所以默认不筛。
+   */
+  const [categoryFilter, setCategoryFilter] = useState<string | undefined>();
+  /** 批量点原型：选一条原型，点「应用到勾选的 N 条」→ POST /assets/categories/assign */
+  const [assignTo, setAssignTo] = useState<string | undefined>();
+  const [assignBusy, setAssignBusy] = useState(false);
+  const cats = useAssetCategories();
 
   // 详情抽屉
   const [drawerId, setDrawerId] = useState<string | null>(null);
@@ -101,6 +117,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
           source_kind: sourceKind,
           stage_prompt: stagePrompt,
           batch_id: batchFilter,
+          category_id: categoryFilter,
           date_from: dates?.[0] ? dates[0]!.format('YYYY-MM-DD') : undefined,
           date_to: dates?.[1] ? dates[1]!.format('YYYY-MM-DD') : undefined,
         });
@@ -113,13 +130,13 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         setLoading(false);
       }
     },
-    [keyword, status, sourceKind, stagePrompt, batchFilter, dates, page, pageSize],
+    [keyword, status, sourceKind, stagePrompt, batchFilter, categoryFilter, dates, page, pageSize],
   );
 
   useEffect(() => {
     fetchList(1, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, sourceKind, stagePrompt, batchFilter, dates]);
+  }, [status, sourceKind, stagePrompt, batchFilter, categoryFilter, dates]);
 
   // 后台任务刚收敛完（横幅确认终态后 +1）：阶段标签和状态是后端算的，只能重新拉一次
   useEffect(() => {
@@ -304,6 +321,54 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     }
   };
 
+  /**
+   * 批量点钩子原型（0 元、不等模型，所以直接提交，不走成本确认单）。
+   * `assignTo` 留空＝清成未分类（后端 `category_id=null` 的语义是「清空」，不是「不改」）。
+   * 后端如实回 not_found，这里必须念出来——不然「改了 3 条、其实库里只有 2 条」没人知道。
+   */
+  const applyCategory = async () => {
+    if (!ids.length) {
+      message.warning('先勾选要点原型的素材');
+      return;
+    }
+    setAssignBusy(true);
+    try {
+      const res = await assetApi.assignCategory({ asset_ids: ids, category_id: assignTo || null });
+      const name = assignTo ? cats.byId[assignTo]?.name || '该原型' : '未分类';
+      (res.notes || []).forEach((n) => message.info(n));
+      if (res.not_found?.length) {
+        Modal.warning({
+          title: `有 ${res.not_found.length} 条没点到「${name}」`,
+          width: 600,
+          content: (
+            <Space direction="vertical" size={4}>
+              <Text>
+                改成功 {res.asset_changed} 条；下面这些 id 库里查不到（可能已被删除或归档），没有被改动：
+              </Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {res.not_found.slice(0, 12).join('，')}
+                {res.not_found.length > 12 ? ` 等 ${res.not_found.length} 条` : ''}
+              </Text>
+            </Space>
+          ),
+        });
+      } else {
+        message.success(
+          res.asset_changed
+            ? `已把 ${res.asset_changed} 条素材点成「${name}」`
+            : `勾选的素材本来就是「${name}」，没有改动`,
+        );
+      }
+      invalidateAssetCategories();
+      setSelected([]);
+      fetchList();
+    } catch (e) {
+      message.error((e as Error).message || '点原型失败');
+    } finally {
+      setAssignBusy(false);
+    }
+  };
+
   const showSource = async (asset: AssetItem) => {
     try {
       const res = await assetApi.downloadAssetSource(asset.id);
@@ -362,6 +427,12 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       render: (v: string, row) => (
         <Tag>{v === 'link' ? row.platform || '链接' : '文件'}</Tag>
       ),
+    },
+    {
+      title: '原型',
+      key: 'category',
+      width: 78,
+      render: (_, row) => <CategoryTag categoryId={row.category_id} categoryName={row.category_name} />,
     },
     {
       title: '时长',
@@ -493,6 +564,36 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             onChange={setStagePrompt}
             options={Object.entries(ASSET_STAGE_LABELS).map(([value, label]) => ({ value, label }))}
           />
+          <Tooltip
+            title={
+              <div style={{ maxWidth: 340 }}>
+                <div>
+                  钩子原型＝这条片子的<strong>结构层</strong>（A–G，名字照《钩子模版换皮参数设定.docx》），
+                  和句式标签、公式标签是三回事。
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  原型是<strong>人工点的，也可以不点</strong>——不点照常读详规、出文案、投产。
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  「未分类」是给清欠账用的：现在库里 {cats.unclassified.asset_count} 条素材没点原型，
+                  筛出来一条条补。
+                </div>
+              </div>
+            }
+          >
+            <span>
+              <CategorySelect
+                items={cats.items}
+                value={categoryFilter}
+                onChange={setCategoryFilter}
+                withUnclassified
+                width={150}
+                loading={cats.loading}
+                placeholder="钩子原型"
+              />
+              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+            </span>
+          </Tooltip>
           <Input
             placeholder="批次 ID"
             allowClear
@@ -535,13 +636,68 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         )
       }
     >
+      {canProduce && cats.unclassified.asset_count > 0 && categoryFilter !== UNCLASSIFIED && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 8 }}
+          message={
+            <span>
+              全站还有 <strong>{cats.unclassified.asset_count}</strong> 条素材没点钩子原型
+              （文案侧 {cats.unclassified.copy_count} 条）。不点不影响走流程，
+              但按原型批量出文案、按原型对版都得靠这一列。
+            </span>
+          }
+          action={
+            <Button size="small" onClick={() => setCategoryFilter(UNCLASSIFIED)}>
+              只看未分类
+            </Button>
+          }
+        />
+      )}
+      {/*
+        批量点原型放在表头上方，不塞进 Card 的 extra：
+        extra 里本来就有 4 个动作按钮（读详规／出文案／收结果／查时长），再挤一个 260px 的下拉
+        会把左边那一整排筛选条件压到换行，一线连「状态」「来路」都找不着。
+      */}
+      {canProduce && (
+        <Space size={8} wrap style={{ marginBottom: 8 }}>
+          <Tooltip
+            title={
+              <div style={{ maxWidth: 320 }}>
+                <div>给勾选的素材点钩子原型（0 元、不花钱、不用等模型）。</div>
+                <div style={{ marginTop: 4 }}>
+                  清空下拉再点＝把选中的改回「未分类」。已经出过文案的素材重新归类，
+                  <strong>不会回写</strong>已经出的候选文案。
+                </div>
+              </div>
+            }
+          >
+            <Space.Compact>
+              <CategorySelect
+                items={cats.activeItems}
+                value={assignTo}
+                onChange={setAssignTo}
+                width={210}
+                placeholder="点原型"
+              />
+              <Button loading={assignBusy} disabled={!ids.length} onClick={applyCategory}>
+                应用（{ids.length}）
+              </Button>
+            </Space.Compact>
+          </Tooltip>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            先勾行再点原型；原型只是结构层标记，不填照样走完全链。
+          </Text>
+        </Space>
+      )}
       <Table<AssetItem>
         rowKey="id"
         size="small"
         loading={loading}
         columns={columns}
         dataSource={items}
-        scroll={{ x: 1300 }}
+        scroll={{ x: 1380 }}
         rowSelection={
           canProduce
             ? {

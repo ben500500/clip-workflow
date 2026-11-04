@@ -1,11 +1,13 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Card, Space, Tabs, Tag, Typography, message } from 'antd';
+import { Button, Card, Space, Tabs, Tag, Typography, message } from 'antd';
+import { ApartmentOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import AssetListPanel from '../components/assets/AssetListPanel';
 import AssetImportPanel from '../components/assets/AssetImportPanel';
 import AssetReviewPanel from '../components/assets/AssetReviewPanel';
 import AssetProductionPanel from '../components/assets/AssetProductionPanel';
 import AssetJobBanner from '../components/assets/AssetJobBanner';
+import AssetCategoryDrawer from '../components/assets/AssetCategoryDrawer';
 import type { AssetJobInfo } from '../api/assets';
 
 const { Text, Paragraph } = Typography;
@@ -33,6 +35,11 @@ const AssetLibrary: React.FC = () => {
    * 不用定时器猜"跑了三分钟应该好了"，只有横幅确认任务真到终态才刷。
    */
   const [reloadToken, setReloadToken] = useState(0);
+  /**
+   * 钩子原型字典抽屉：入口只在这张顶部卡片放**一处**（四个页签都看得到），
+   * 面板里只做筛选和点原型，不再各挂一份抽屉——两处入口迟早变成一个新版本一个旧版本。
+   */
+  const [catOpen, setCatOpen] = useState(false);
 
   const onJobSettled = useCallback((job: AssetJobInfo) => {
     setReloadToken((t) => t + 1);
@@ -121,12 +128,20 @@ const AssetLibrary: React.FC = () => {
               当前批次筛选：{batchId.slice(0, 8)}
             </Tag>
           )}
+          <Button size="small" icon={<ApartmentOutlined />} onClick={() => setCatOpen(true)}>
+            钩子原型字典
+          </Button>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            原型（A–G）＝结构层人工标记：全员可看、管理员可改；不点也能走完全链，过审与投产都不看它。
+          </Text>
         </Space>
       </Card>
 
       <AssetJobBanner onSettled={onJobSettled} />
 
       <Tabs items={items} />
+
+      <AssetCategoryDrawer open={catOpen} onClose={() => setCatOpen(false)} />
     </Space>
   );
 };

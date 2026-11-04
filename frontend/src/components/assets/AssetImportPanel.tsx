@@ -9,6 +9,7 @@ import { DEFAULT_TIER, DURATION_TIERS, assetApi } from '../../api/assets';
 import type { AssetBatch, AssetImportBatchResponse, AssetImportDuplicate, AssetUploadResponse } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import { MonoText, yuan } from './AssetBits';
+import { CategorySelect, useAssetCategories } from './AssetCategoryBits';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -28,6 +29,8 @@ interface Props {
  *  - 跨批次重复**默认不入库**，只回「几月几日 谁 导入（AS-XXXX）」；
  *    放行有整批（force_duplicates）和逐条（force_urls）两种粒度，默认用逐条。
  *  - 超单批上限由服务端**自动拆批**（批次名带「第 i/k 批」），不是打回让人自己数。
+ *  - 「整批默认原型」（11-04 拍板①）只是给这一批每条素材起个结构层标记，
+ *    可不选、不拦任何后续动作；建好之后逐条改在素材列表那一列上点。
  */
 const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
   const [tab, setTab] = useState<'link' | 'file'>('link');
@@ -36,6 +39,9 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
   const [links, setLinks] = useState('');
   const [batchName, setBatchName] = useState('');
   const [tier, setTier] = useState<number>(DEFAULT_TIER);
+  /** 整批默认钩子原型：链接导入和文件上传共用这一个选择（不选＝整批未分类） */
+  const [category, setCategory] = useState<string | undefined>();
+  const cats = useAssetCategories();
   const [importing, setImporting] = useState(false);
   const [lastImport, setLastImport] = useState<AssetImportBatchResponse | null>(null);
 
@@ -87,6 +93,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
         name: batchName || undefined,
         prompt_max_duration: tier,
         force_urls: forceUrls,
+        category_id: category || null,
       });
       setLastImport(res);
       message.success(res.message);
@@ -132,6 +139,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
           files: rawFiles.current,
           name: batchName || undefined,
           max_duration: tier,
+          category_id: category,
         },
         setProgress,
       );
@@ -296,6 +304,22 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                 options={DURATION_TIERS.map((t) => ({ value: t, label: `${t}s${t === DEFAULT_TIER ? '（默认）' : ''}` }))}
               />
             </Space.Compact>
+
+            <Space wrap align="center">
+              <Text>整批默认原型</Text>
+              <CategorySelect
+                items={cats.activeItems}
+                value={category}
+                onChange={setCategory}
+                width={250}
+                loading={cats.loading}
+                placeholder="可不选（这批全标未分类）"
+              />
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                只给这一批每条素材起个结构层标记（A–G，照《钩子模版换皮参数设定.docx》）；不选照样导入、
+                照样读详规出文案，之后在素材列表「原型」那列逐条改。
+              </Text>
+            </Space>
 
             {tab === 'link' ? (
               <>

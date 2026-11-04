@@ -12,6 +12,9 @@ import type {
   AssetBatch, AssetReviewAction, AssetReviewResultItem, AssetSummary, AssetSummaryListResult,
 } from '../../api/assets';
 import { AuditStatusTag, RiskTags } from './AssetBits';
+import {
+  CategorySelect, CategoryTag, invalidateAssetCategories, useAssetCategories,
+} from './AssetCategoryBits';
 import ProduceOrderModal from './ProduceOrderModal';
 import RiskLexiconDrawer from './RiskLexiconDrawer';
 
@@ -51,6 +54,8 @@ interface Props {
  * admin 可以带 `waive_reason` 豁免拦点，还能用 `waive_codes` 只放其中一类——
  * 豁免的每一条都进 AuditLog，可抽检。
  * 撤销过审会连带作废这条文案下**还没投出去**的生产单，所以撤销动作单独走一次确认。
+ * 「原型」那一列是结构层人工标记（11-04 拍板①）：出稿时从素材继承，可以就地改、也可以不点，
+ * 它不参与过审判定，所以既不在四个互斥范围里，也不做任何拦截。
  */
 const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken }) => {
   const [data, setData] = useState<AssetSummaryListResult | null>(null);
@@ -76,10 +81,21 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
   const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
   /** 「等我改的」：只看被驳回/需改写、且轮到我改的条目（驳回闭环的入口） */
   const [onlyMine, setOnlyMine] = useState(false);
+  /**
+   * 钩子原型筛选（11-04 拍板①）。和上面那四个互斥范围是**两个轴**：
+   * 范围管「看哪一类候选」，原型管「看哪一类结构」，可以叠加。
+   * 筛的是文案自己那一列（出稿时从素材继承，之后素材重新归类不回写）。
+   */
+  const [categoryFilter, setCategoryFilter] = useState<string | undefined>();
+  /** 批量点原型（文案侧） */
+  const [assignTo, setAssignTo] = useState<string | undefined>();
+  const cats = useAssetCategories();
 
   const [selected, setSelected] = useState<AssetSummary[]>([]);
   const [editing, setEditing] = useState<AssetSummary | null>(null);
   const [editText, setEditText] = useState('');
+  /** 改后通过弹窗里顺带改的原型（留空提交＝没动，不是清成未分类） */
+  const [editCat, setEditCat] = useState<string | undefined>();
 
   // 改后重新提审（驳回后由文案作者改完交回队列）
   const [resubmitFor, setResubmitFor] = useState<AssetSummary | null>(null);
@@ -129,6 +145,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           only_inconsistent: onlyInconsistent,
           only_resubmittable: onlyMine,
           batch_id: batchFilter,
+          category_id: categoryFilter,
         });
         setData(res);
         setItems(res.items || []);
@@ -140,13 +157,13 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         setLoading(false);
       }
     },
-    [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, page, pageSize],
+    [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter, page, pageSize],
   );
 
   useEffect(() => {
     fetchList(1, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter]);
+  }, [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter]);
 
   // 后台出文案任务跑完（D-1）：新候选不在前端内存里，只能重新拉
   useEffect(() => {
@@ -245,6 +262,52 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
     }
   };
 
+  /**
+   * 批量给勾选的文案点钩子原型（0 元、不花钱，所以不过成本确认单）。
+   * 留空提交＝清成未分类；后端如实回 not_found，这里必须念出来，
+   * 不能让人以为「点了 5 条都改好了」其实库里只剩 3 条。
+   */
+  const applyCategory = async () => {
+    if (!ids.length) {
+      message.warning('先勾选要点原型的文案');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await assetApi.assignCategory({ summary_ids: ids, category_id: assignTo || null });
+      const name = assignTo ? cats.byId[assignTo]?.name || '该原型' : '未分类';
+      (res.notes || []).forEach((n) => message.info(n));
+      if (res.not_found?.length) {
+        Modal.warning({
+          title: `有 ${res.not_found.length} 条没点到「${name}」`,
+          width: 600,
+          content: (
+            <Space direction="vertical" size={4}>
+              <Text>改成功 {res.summary_changed} 条；下面这些 id 库里查不到（可能被撤审重出时作废了），没有被改动：</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {res.not_found.slice(0, 12).join('，')}
+                {res.not_found.length > 12 ? ` 等 ${res.not_found.length} 条` : ''}
+              </Text>
+            </Space>
+          ),
+        });
+      } else {
+        message.success(
+          res.summary_changed
+            ? `已把 ${res.summary_changed} 条文案点成「${name}」`
+            : `勾选的文案本来就是「${name}」，没有改动`,
+        );
+      }
+      invalidateAssetCategories();
+      setSelected([]);
+      fetchList(page, pageSize);
+    } catch (e) {
+      message.error((e as Error).message || '点原型失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const askReason = (action: 'reject' | 'need_rewrite') => {
     if (!ids.length) {
       message.warning('先勾选要处理的文案');
@@ -280,8 +343,23 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
       message.warning('改后文案不能为空');
       return;
     }
+    const target = editCat || null;
+    const changedCat = target !== (editing.category_id || null);
     await runReview('pass_edited', { summaryIds: [editing.id], new_text: editText.trim() });
+    // 分类是另一件事：过审若被复核拦下会弹窗，那时不顺手改分类，避免「以为过了其实没」
+    if (changedCat) {
+      try {
+        const res = await assetApi.assignCategory({ summary_ids: [editing.id], category_id: target });
+        if (res.not_found?.length) message.warning('文字已提交，但这条文案已不在库里，分类没改成');
+        else if (!res.summary_changed) message.info('文字已提交；分类没有变化');
+        else message.success('文字与原型都已提交（原型改动留档）');
+        invalidateAssetCategories();
+      } catch (e) {
+        message.error(`文字已按上面结果处理，但改原型失败：${(e as Error).message}`);
+      }
+    }
     setEditing(null);
+    setEditCat(undefined);
   };
 
   /**
@@ -415,6 +493,12 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
       ),
     },
     {
+      title: '原型',
+      key: 'category',
+      width: 76,
+      render: (_, r) => <CategoryTag categoryId={r.category_id} categoryName={r.category_name} />,
+    },
+    {
       title: '自动检查',
       key: 'check',
       width: 150,
@@ -491,6 +575,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                       onClick={() => {
                         setEditing(r);
                         setEditText(r.text);
+                        setEditCat(r.category_id || undefined);
                       }}
                     >
                       改后过
@@ -620,6 +705,37 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
               <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
             </span>
           </Tooltip>
+          <Tooltip
+            title={
+              <div style={{ maxWidth: 340 }}>
+                <div>
+                  <strong>钩子原型</strong>＝这条文案的结构层（A–G，名字照《钩子模版换皮参数设定.docx》）。
+                  出稿时从素材继承，之后素材重新归类<strong>不会回写</strong>已出的候选。
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  它和左边那四个范围（推荐条／命中违禁词／和原视频对不上／全部）是两个轴，可以叠加：
+                  比如「推荐条 + 原型 A」。
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  「未分类」是清欠账用的：现在文案侧还有 {cats.unclassified.copy_count} 条没点原型。
+                  字典本身的名称与说明在页面顶部「钩子原型字典」里改（仅管理员）。
+                </div>
+              </div>
+            }
+          >
+            <span>
+              <CategorySelect
+                items={cats.items}
+                value={categoryFilter}
+                onChange={setCategoryFilter}
+                withUnclassified
+                width={150}
+                loading={cats.loading}
+                placeholder="钩子原型"
+              />
+              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+            </span>
+          </Tooltip>
           <Tooltip title="查看／修改违禁词表（审核台「自动检查」列那些标签的来源）。只有管理员能改。">
             <Button size="small" icon={<SafetyCertificateOutlined />} onClick={() => setLexiconOpen(true)}>
               违禁词表
@@ -674,13 +790,45 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           description="三条候选里通常只有一条能钩人，全勾一遍等于没审。要看对照请把筛选切到「全部」。"
         />
       )}
+      {/* 同素材列表：批量点原型放表头上方，别挤 Card 的 extra，否则那一排筛选会换行 */}
+      {canReview && (
+        <Space size={8} wrap style={{ marginBottom: 8 }}>
+          <Tooltip
+            title={
+              <div style={{ maxWidth: 320 }}>
+                <div>给勾选的文案点钩子原型（结构层标记，0 元，不拦过审也不放过任何拦点）。</div>
+                <div style={{ marginTop: 4 }}>
+                  下拉清空再应用＝把选中的改回「未分类」。已经开过生产单的文案改原型<strong>不会</strong>改动已生成的提示词。
+                </div>
+              </div>
+            }
+          >
+            <Space.Compact>
+              <CategorySelect
+                items={cats.activeItems}
+                value={assignTo}
+                onChange={setAssignTo}
+                width={210}
+                placeholder="点原型"
+                loading={cats.loading}
+              />
+              <Button loading={busy} disabled={!ids.length} onClick={applyCategory}>
+                应用（{ids.length}）
+              </Button>
+            </Space.Compact>
+          </Tooltip>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            文案侧还有 {cats.unclassified.copy_count} 条没点原型；出稿时本来会从素材继承，这里只补漏。
+          </Text>
+        </Space>
+      )}
       <Table<AssetSummary>
         rowKey="id"
         size="small"
         loading={loading}
         columns={columns}
         dataSource={items}
-        scroll={{ x: 1250 }}
+        scroll={{ x: 1330 }}
         rowSelection={
           canReview
             ? { selectedRowKeys: ids, onChange: (_, rows) => setSelected(rows) }
@@ -716,6 +864,20 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           <Text type="secondary" style={{ fontSize: 12 }}>
             {editText.trim().length} 字
           </Text>
+          <Space align="center" wrap>
+            <Text style={{ fontSize: 12 }}>钩子原型：</Text>
+            <CategorySelect
+              items={cats.activeItems}
+              value={editCat}
+              onChange={setEditCat}
+              width={230}
+              loading={cats.loading}
+              placeholder="选原型（清空＝改成未分类）"
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              打开时已带出出稿时继承的原型，<strong>和它不一样才会提交改动</strong>；改完留档。原型本身不拦过审。
+            </Text>
+          </Space>
         </Space>
       </Modal>
 
