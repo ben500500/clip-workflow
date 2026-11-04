@@ -45,6 +45,99 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
   const cats = useAssetCategories();
   const [catBusy, setCatBusy] = useState(false);
 
+  /**
+   * 上栏播放器（批 E）：一条素材一个播放器，原片和拼接产物都往这里换源。
+   *
+   * 为什么之前"播不了"：旧接口 presign 时带了 `response-content-disposition=attachment`，
+   * 浏览器拿到一律当附件存盘，`<video src>` 挂上去就是黑屏——所以这里必须走
+   * `source-preview` / `preview` 两个**内联**口，不能复用 `source-download`。
+   * 拖进度条的 Range 由对象存储直接响应，前端不管，也不占后端连接。
+   */
+  const [player, setPlayer] = useState<{
+    url: string;
+    label: string;
+    /** 播放器上方那排角标：时长／画幅／来路，都跟着"当前在播的这一段"走 */
+    duration?: number | null;
+    resolution?: string | null;
+    platform?: string | null;
+    /** 验收结论：failed 的产物照样能看（看一眼为什么废），但要在播放器上方标红 */
+    qc?: string | null;
+    qcNote?: string | null;
+  } | null>(null);
+  const [playerBusy, setPlayerBusy] = useState(false);
+  /** 播放器自己报的错（直链过期、混合内容、网络不通都长这样） */
+  const [playerErr, setPlayerErr] = useState<string | null>(null);
+
+  const loadSourcePreview = useCallback(async (id: string) => {
+    setPlayerBusy(true);
+    setPlayerErr(null);
+    try {
+      const res = await assetApi.previewAssetSource(id);
+      // 链接素材没有内联源：不报错，交给下面的占位区说明怎么办
+      setPlayer(
+        res.url
+          ? {
+              url: res.url,
+              label: res.file_name || res.asset_code,
+              duration: res.duration,
+              resolution: res.resolution,
+              platform: res.platform,
+            }
+          : null,
+      );
+    } catch (e) {
+      setPlayerErr((e as Error).message || '取预览地址失败');
+    } finally {
+      setPlayerBusy(false);
+    }
+  }, []);
+
+  const previewProduct = async (o: AssetOutput) => {
+    setPlayerBusy(true);
+    setPlayerErr(null);
+    try {
+      const res = await assetApi.previewOutput(o.id);
+      setPlayer({
+        url: res.url,
+        label: res.file_name || '拼接产物',
+        duration: res.duration,
+        resolution: res.resolution,
+        qc: res.qc_status,
+        qcNote: res.qc_note,
+      });
+    } catch (e) {
+      setPlayerErr((e as Error).message || '取产物预览失败');
+    } finally {
+      setPlayerBusy(false);
+    }
+  };
+
+  /**
+   * 链接素材想播只能现取时效直链：走 `POST /assets/resolve`，**0.01 元/次**、计入批次
+   * 成本，所以这是人手点的动作，绝不在打开抽屉时自动发起（取片和取时长是两笔钱）。
+   */
+  const playLinkSource = async () => {
+    if (!assetId) return;
+    setPlayerBusy(true);
+    setPlayerErr(null);
+    try {
+      const res = await assetApi.resolveAssets({ asset_ids: [assetId] });
+      const item = res.results?.[0];
+      if (item?.ok && item.play_url) {
+        setPlayer({ url: item.play_url, label: '原站时效直链（约 6 小时内有效）', duration: item.duration });
+        message.success(`已取到直链播放（本条实扣 ${yuan(item.charged)}，计入批次成本）`);
+      } else {
+        setPlayerErr(item?.error || item?.note || res.message || '没取到直链，这条暂时播不了');
+      }
+      await fetchDetail(assetId);
+      onChanged?.();
+    } catch (e) {
+      setPlayerErr((e as Error).message || '取直链失败');
+    } finally {
+      setPlayerBusy(false);
+    }
+  };
+
   const fetchOutputs = useCallback(async (id: string) => {
     try {
       const res = await assetApi.listOutputs({ asset_id: id });
@@ -70,12 +163,18 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
     if (open && assetId) {
       fetchDetail(assetId);
       fetchOutputs(assetId);
+      // 播放器每次开抽屉都从"没源"开始，否则会看到上一条素材的画面
+      setPlayer(null);
+      setPlayerErr(null);
+      loadSourcePreview(assetId);
     }
     if (!open) {
       setData(null);
       setOutputs([]);
+      setPlayer(null);
+      setPlayerErr(null);
     }
-  }, [open, assetId, fetchDetail, fetchOutputs]);
+  }, [open, assetId, fetchDetail, fetchOutputs, loadSourcePreview]);
 
   /**
    * 就地改这条素材的钩子原型。留空提交＝清成未分类（后端 `category_id=null` 的语义）。
@@ -254,6 +353,96 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
         <Empty description="没有详情" />
       ) : (
         <>
+          {/*
+            上栏＝播放器（批 E）。放在详情表之前是有意的：一线开抽屉八成先要"看一眼这条是什么片子"，
+            再看字段和候选。产物列表里的「预览」也是把源换到这里，不开第二个播放器。
+          */}
+          <div style={{ marginBottom: 12 }}>
+            {player ? (
+              <>
+                <video
+                  key={player.url}
+                  controls
+                  preload="metadata"
+                  style={{ width: '100%', maxHeight: 360, background: '#000', borderRadius: 6 }}
+                  onError={() =>
+                    setPlayerErr(
+                      '这一段放不出来：直链可能已过期（时效链接约 6 小时），或浏览器不允许本页播外部地址。' +
+                        '要留存请点右上角「原片」存盘。',
+                    )
+                  }
+                  src={player.url}
+                />
+                <Space wrap size={4} style={{ marginTop: 6 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    正在预览：{player.label}
+                  </Text>
+                  <Tag>{durationText(player.duration)}</Tag>
+                  {player.resolution && <Tag>{player.resolution}</Tag>}
+                  {player.platform && <Tag>{player.platform}</Tag>}
+                  {asset.source_kind === 'link' && <Tag color="orange">原站时效直链</Tag>}
+                </Space>
+                {player.qc === 'failed' && (
+                  <Alert
+                    type="error"
+                    showIcon
+                    style={{ marginTop: 6 }}
+                    message={`这条产物验收判的是不合格${player.qcNote ? `：${player.qcNote}` : ''}`}
+                    description="不合格的不给下载、也不给投出去；这里能播是为了让你看清废在哪。"
+                  />
+                )}
+              </>
+            ) : (
+              <div
+                style={{
+                  border: '1px dashed #d9d9d9',
+                  borderRadius: 6,
+                  padding: '18px 16px',
+                  background: '#fafafa',
+                  textAlign: 'center',
+                }}
+              >
+                {playerErr && (
+                  <Alert type="warning" showIcon style={{ marginBottom: 10, textAlign: 'left' }} message={playerErr} />
+                )}
+                {asset.source_kind === 'file' ? (
+                  <>
+                    <Text type="secondary">这条的文件预览没取到（可能上传没落成功）。</Text>
+                    <div style={{ marginTop: 8 }}>
+                      <Button size="small" loading={playerBusy} onClick={() => loadSourcePreview(assetId!)}>
+                        重新取预览
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Text type="secondary">
+                      链接素材我们桶里没有原片，不能直接播——想在这儿看画面，得花 <strong>0.01 元</strong>
+                      回源取一条时效直链（约 6 小时过期，计入批次成本）。
+                    </Text>
+                    <div style={{ marginTop: 8 }}>
+                      <Button
+                        size="small"
+                        type="primary"
+                        ghost
+                        loading={playerBusy}
+                        disabled={!canProduce}
+                        onClick={playLinkSource}
+                      >
+                        取直链并播放（0.01 元）
+                      </Button>
+                      {!canProduce && (
+                        <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                          当前角色只读，回源解析要素材专员或运营来做
+                        </Text>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
           <Descriptions size="small" column={2} bordered>
             <Descriptions.Item label="标题" span={2}>
               {asset.title || <Text type="secondary">（读详规成功后才有标题）</Text>}
@@ -344,6 +533,18 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                 label: `视频详规${data?.prompt_script ? '' : '（还没出）'}`,
                 children: data?.prompt_script ? (
                   <>
+                    {/*
+                      拍板②（11-04）：本期**不动闸门**，只在这一处加一行不拦人的提醒。
+                      残留风险要说白：这段是模型自己看片子写的、没人核对过，文案是照它出的；
+                      它读歪了的话一致性检查也判不出来（两边都歪就"对得上"），最后一道刹车是人的眼睛。
+                    */}
+                    <Alert
+                      type="warning"
+                      showIcon
+                      style={{ marginBottom: 8 }}
+                      message="这段是 AI 看片子写出来的，没经过人工核对；下面的钩子文案就是照它写的。"
+                      description="觉得它读歪了（人物认错、情节说反、台词串了），直接驳回对应文案，或回列表对这条重读一遍详规再出文案。这一行只提醒、不拦任何步骤。"
+                    />
                     <Space style={{ marginBottom: 8 }}>
                       <Button
                         size="small"
@@ -483,6 +684,15 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                     renderItem={(o) => (
                       <List.Item
                         actions={[
+                          <Button
+                            key="p"
+                            size="small"
+                            type="link"
+                            loading={playerBusy}
+                            onClick={() => previewProduct(o)}
+                          >
+                            预览
+                          </Button>,
                           <Button key="d" size="small" icon={<DownloadOutlined />} onClick={() => downloadProduct(o)}>
                             下载
                           </Button>,

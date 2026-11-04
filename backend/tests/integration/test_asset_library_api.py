@@ -2297,6 +2297,125 @@ def test_output_download_refuses_failed_qc():
     _run(_scenario())
 
 
+def test_inline_preview_never_forces_download():
+    """批 E：预览口 presign **不带 attachment**（否则 `<video>` 拿到就是存盘＝黑屏），
+    且预览不是交付——不进审计、不点亮 `downloaded_at`；验收不合格的**照样能看**
+    （下载口 409 是防把废片投出去，看一眼为什么废必须放行）。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.services import minio_service as msvc
+
+        client, h = await _client_and_headers()
+        hm = h["material"]
+
+        # ──  机制层先把开关钉住：content-disposition 才是"浏览器存盘"的那一行 ──
+        seen = {}
+
+        def _fake_gen(_client, bucket, key, expires, method="GET", response_headers=None):
+            seen["response_headers"] = response_headers
+            return f"http://minio:9000/{bucket}/{key}?sig=1"
+
+        with patch("app.services.minio_service._generate_presigned_url", _fake_gen), \
+             patch("app.services.minio_service.get_external_minio_client", lambda: object()):
+            await msvc.get_presigned_url("raw", "a.mp4", expires_seconds=60)
+            assert seen["response_headers"] is None, "默认（预览）不该挂任何响应头覆盖"
+            await msvc.get_presigned_url("raw", "a.mp4", expires_seconds=60, as_attachment=True)
+            assert "attachment" in seen["response_headers"]["response-content-disposition"]
+
+        # ──  文件素材原片预览：inline 外链、带时长/平台，供抽屉上栏显示 ──
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+             patch("app.api.assets._ffprobe_duration", lambda p: 45.5):
+            up = await client.post(
+                "/api/assets/upload/batch",
+                files=[("files", ("原片.mp4", VIDEO_BYTES, "video/mp4"))], headers=hm)
+        assert up.status_code == 201, up.text
+        aid = up.json()["items"][0]["id"]
+
+        audit_before = await _count(AuditLog)
+        presign = AsyncMock(return_value="http://minio:9000/raw/a.mp4?sig=2")
+        with patch("app.api.assets.get_presigned_url", presign):
+            got = await client.get(f"/api/assets/{aid}/source-preview", headers=hm)
+        assert got.status_code == 200, got.text
+        body = got.json()
+        assert body["mode"] == "stored" and body["url"].endswith("sig=2")
+        assert body["duration"] == 45.5 and body["file_name"] == "原片.mp4"
+        assert presign.await_args.kwargs.get("as_attachment", False) is False, (
+            "预览口只要带上 as_attachment 就退化成下载，播放器拿不到流——这条是批 E 的全部意义")
+        assert body["note"] is None
+        assert await _count(AuditLog) == audit_before, "预览只是看一眼，不该淹了交付审计"
+
+        # 没落库的文件素材（file_key 空）→ 404，不给半截链接
+        async with dbmod.async_session_factory() as s:
+            a = await s.get(AssetItem, uuid.UUID(aid))
+            key = a.file_key
+            a.file_key = None
+            await s.commit()
+        empty = await client.get(f"/api/assets/{aid}/source-preview", headers=hm)
+        assert empty.status_code == 404 and "没有可预览的原文件" in empty.json()["detail"]
+        async with dbmod.async_session_factory() as s:
+            a = await s.get(AssetItem, uuid.UUID(aid))
+            a.file_key = key
+            await s.commit()
+
+        # ── ③ 链接素材：桶里没文件，如实回 external 并给出显式出口（不是死路） ──
+        lid, _ = await _make_ready_asset(client, hm, url=DOUYIN_1)
+        with patch("app.api.assets.get_presigned_url", AsyncMock(return_value="不该被调用")) as ps:
+            ext = await client.get(f"/api/assets/{lid}/source-preview", headers=hm)
+        assert ext.status_code == 200, ext.text
+        assert ext.json()["mode"] == "external" and ext.json()["url"] is None
+        assert ext.json()["source_url"] == DOUYIN_1 and ps.await_count == 0
+        assert "解析" in ext.json()["note"]
+
+        # ──  产物预览：废片也能看，且不点亮 downloaded_at ──
+        asset_id, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        await client.post("/api/assets/summaries/review",
+                          json={"summary_ids": [_approvable(items)["id"]], "action": "approve"},
+                          headers=h["admin"])
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            await client.post("/api/assets/produce",
+                              json={"summary_ids": [_approvable(items)["id"]], "n": 1}, headers=h["admin"])
+        prod = (await _rows(AssetProduction))[-1]
+
+        async def _add(qc, with_file=True):
+            oid = uuid.uuid4()
+            async with dbmod.async_session_factory() as s:
+                s.add(AssetOutput(
+                    id=oid, production_id=prod.id, asset_id=uuid.UUID(asset_id),
+                    kind="doubao_raw",
+                    file_key=f"asset-out/{oid}.mp4" if with_file else None,
+                    bucket=settings.MINIO_BUCKET_SLICED, file_name="成片.mp4",
+                    duration=10.08, resolution="720x1280",
+                    qc_status=qc, qc_note="字幕压脸" if qc == "failed" else None,
+                ))
+                await s.commit()
+            return oid
+
+        bad = await _add("failed")
+        assert (await client.get(f"/api/assets/outputs/{bad}/download", headers=hm)).status_code == 409
+        audit_before_out = await _count(AuditLog)
+        with patch("app.api.assets.get_presigned_url",
+                   AsyncMock(return_value="http://minio:9000/sliced/x.mp4?sig=3")) as p2:
+            pv = await client.get(f"/api/assets/outputs/{bad}/preview", headers=hm)
+        assert pv.status_code == 200, pv.text
+        assert pv.json()["qc_status"] == "failed" and pv.json()["qc_note"] == "字幕压脸", (
+            "预览要把验收结论一起回，前端才能在播放器上方标红")
+        assert pv.json()["resolution"] == "720x1280" and pv.json()["duration"] == 10.08
+        assert p2.await_args.kwargs.get("as_attachment", False) is False
+        out_row = await _row_of(AssetOutput, bad)
+        assert out_row.downloaded_at is None, "看一眼不算交付，downloaded_at 不能被预览点亮"
+
+        nofile = await _add(None, with_file=False)
+        miss = await client.get(f"/api/assets/outputs/{nofile}/preview", headers=hm)
+        assert miss.status_code == 404 and "没有可预览的文件" in miss.json()["detail"]
+        assert (await client.get(f"/api/assets/outputs/{uuid.uuid4()}/preview", headers=hm)).status_code == 404
+        assert await _count(AuditLog) == audit_before_out, "两个预览口都不写审计"
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_import_is_forbidden_for_publisher_role():
     """发布专员不参与素材采集链路（require_roles 挡在门口）。"""
     _run(_bootstrap())

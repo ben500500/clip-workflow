@@ -5095,6 +5095,53 @@ async def download_output(
     }
 
 
+@router.get("/assets/outputs/{output_id}/preview")
+async def preview_output(
+    output_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """产物**内联预览**地址（批 E）：抽屉里点开就能播，不落到存盘。
+
+    与 `/download` 的三点区别都刻意的：
+
+    1. presign **不带 `as_attachment`**——挂了 `response-content-disposition=attachment`
+       的链接给 `<video>` 就是黑屏，这正是"接口 200 但播不了"的根因；
+    2. **验收不合格的也让播**：`/download` 对 `qc_status=failed` 直接 409（别把废片投出去），
+       但预览是"看一眼为什么废"，拦死等于让人盲判。这里把 `qc_status`/`qc_note` 一起回，
+       前端在播放器上方标红，判的人自己看得见；
+    3. **不写审计、不动 `downloaded_at`**：那个字段是"已交付"的凭据，看一眼不算交付。
+
+    Range 由 MinIO 直接响应（presigned 签名不覆盖 Range），后端不做视频代理，
+    所以拖进度条不占后端连接、也不受 `idle_in_transaction_session_timeout` 那套影响。
+    """
+    oid = _as_uuid(output_id, "output_id")
+    out = (await db.execute(select(AssetOutput).where(AssetOutput.id == oid))).scalar_one_or_none()
+    if out is None:
+        raise HTTPException(status_code=404, detail="产物不存在")
+    await _get_asset_or_404(db, out.asset_id)
+    if not out.file_key:
+        raise HTTPException(status_code=404, detail="产物没有可预览的文件")
+    url = await get_presigned_url(
+        out.bucket or settings.MINIO_BUCKET_SLICED,
+        out.file_key,
+        expires_seconds=3600,
+    )
+    if not url:
+        raise HTTPException(status_code=502, detail="生成预览地址失败（对象存储不可达）")
+    return {
+        "url": url,
+        "file_name": out.file_name,
+        "kind": out.kind,
+        "size": out.file_size,
+        "duration": out.duration,
+        "resolution": out.resolution,
+        "qc_status": out.qc_status,
+        "qc_note": out.qc_note,
+        "expires_in": 3600,
+    }
+
+
 # ──────────────────────────────────────────────
 # 拼接（11-04 简化口径：两段视频按人选的顺序拼一条，不选点不剪切）
 # ──────────────────────────────────────────────
@@ -5691,6 +5738,67 @@ async def download_asset_source(
             "要真实时长与时效直链走 POST /assets/resolve（doc/107 按次 0.01 元，已计入批次成本）"
         ),
         "source_url": asset.source_url if mode == "external" else None,
+    }
+
+
+@router.get("/assets/{asset_id}/source-preview")
+async def preview_asset_source(
+    asset_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """素材**原文件内联预览**地址（批 E，11-04 拍板：抽屉里要能直接播）。
+
+    和 `/source-download` 的唯一区别就是**不强制下载**：
+    `as_attachment=True` 会给 presigned URL 挂上 `response-content-disposition=attachment`，
+    浏览器拿到就当附件存盘，`<video src>` 挂上去是黑屏——一线反馈的"播不了"根因在这，
+    不是前端播放器的问题。这里走 `as_attachment=False`（默认），MinIO 回的是对象自己的
+    `Content-Type`（上传时按真实扩展名存，见 `_upload_into_batch`），
+    Range 请求由 MinIO 直接响应（presigned 签名不覆盖 Range，所以拖动进度条不用我们代理）。
+
+    **不写 AuditLog、不动 `downloaded_at`**：预览是"看"，点开抽屉就算一次，
+    频率和下载不是一个量级，记进审计台账会把真正的交付动作淹掉；
+    `downloaded_at` 的语义是"这条产物已交付出去过"，看一眼不能把它点亮。
+
+    链接形态素材桶里没有文件，回 `mode=external`：`url` 为 null，
+    前端据此显示"这条还没回源，点解析"——时效直链要 `POST /assets/resolve`（0.01 元/次）
+    现拿现用，不在这口里自动发起（取片和取时长是两笔钱、两件事）。
+    """
+    asset = await _get_asset_or_404(db, asset_id)
+
+    if asset.source_kind == SOURCE_FILE:
+        if not asset.file_key:
+            raise HTTPException(status_code=404, detail="该素材没有可预览的原文件（上传未成功）")
+        url = await get_presigned_url(
+            asset.bucket or settings.MINIO_BUCKET_RAW,
+            asset.file_key,
+            expires_seconds=3600,
+        )
+        if not url:
+            raise HTTPException(status_code=502, detail="生成预览地址失败（对象存储不可达）")
+        mode = "stored"
+    else:
+        url = None
+        mode = "external"
+
+    return {
+        "mode": mode,
+        "url": url,
+        "asset_code": asset.code,
+        "file_name": asset.file_name,
+        "source_kind": asset.source_kind,
+        "platform": asset.platform,
+        "size": asset.file_size,
+        "duration": asset.duration,
+        "resolution": asset.resolution,
+        "expires_in": 3600 if url else None,
+        "source_url": asset.source_url if mode == "external" else None,
+        "note": (
+            None
+            if url
+            else "链接素材桶里没有文件，不能内联播放；点「查时长/回源解析」拿时效直链（0.01 元/次）后再播，"
+            "那条直链有时效，过期要重新解析"
+        ),
     }
 
 

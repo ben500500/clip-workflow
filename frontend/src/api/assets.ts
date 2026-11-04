@@ -1528,6 +1528,41 @@ export interface AssetSourceDownloadResult {
   source_url: string | null;
 }
 
+/**
+ * GET /assets/{asset_id}/source-preview（批 E）：给抽屉里 `<video>` 用的**内联**地址。
+ *
+ * 与 `source-download` 的区别只在后端 presign 时不挂 `response-content-disposition`
+ * ——挂了 attachment 的链接浏览器只会存盘，`<video>` 拿到是黑屏。
+ * Range（拖进度条）由对象存储直接响应，前端不用管。
+ */
+export interface AssetSourcePreviewResult {
+  mode: AssetSourceDownloadMode;
+  url: string | null;
+  asset_code: string;
+  file_name: string | null;
+  source_kind: AssetSourceKind;
+  platform: string | null;
+  size: number | null;
+  duration: number | null;
+  resolution: string | null;
+  expires_in: number | null;
+  source_url: string | null;
+  note: string | null;
+}
+
+/** GET /assets/outputs/{output_id}/preview（批 E）：产物内联预览，验收不合格的也能看 */
+export interface AssetOutputPreviewResult {
+  url: string;
+  file_name: string | null;
+  kind: string | null;
+  size: number | null;
+  duration: number | null;
+  resolution: string | null;
+  qc_status: string | null;
+  qc_note: string | null;
+  expires_in: number;
+}
+
 /** POST /assets/{asset_id}/prompt-refresh：轮询反推任务并收敛阶段态 */
 export interface AssetPromptRefreshResponse {
   /** ⚠️ 这一口的 asset **不带** summary_count 等 4 个计数字段 */
@@ -1762,6 +1797,14 @@ export const assetApi = {
   // 素材原文件下载（file=自有桶 presigned；link=只回显原始链接，url 为 null）
   downloadAssetSource: (assetId: string) =>
     client.get(`/assets/${assetId}/source-download`) as Promise<AssetSourceDownloadResult>,
+
+  // 批 E：抽屉里直接播原片（内联，不存盘）
+  previewAssetSource: (assetId: string) =>
+    client.get(`/assets/${assetId}/source-preview`) as Promise<AssetSourcePreviewResult>,
+
+  // 批 E：产物内联预览（验收不合格的也给看——看一眼为什么废，和"能不能投出去"是两件事）
+  previewOutput: (outputId: string) =>
+    client.get(`/assets/outputs/${outputId}/preview`) as Promise<AssetOutputPreviewResult>,
 
   // 单条反推状态刷新并收敛阶段态（直链素材在这里顺带探一次时长，探不到仍是 null）
   refreshAssetPrompt: (assetId: string) =>

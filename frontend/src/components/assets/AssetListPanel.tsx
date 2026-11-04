@@ -617,9 +617,25 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             <Button type="primary" icon={<FileTextOutlined />} onClick={openAnalyze} disabled={!ids.length}>
               读视频详规（{ids.length}）
             </Button>
-            <Button icon={<BulbOutlined />} loading={genBusy} onClick={generateSummaries} disabled={!ids.length}>
-              出钩子文案（{ids.length}）
-            </Button>
+            {/*
+              拍板②（11-04）：出文案没有确认弹窗（D-1 后是"提交即回"的后台任务），
+              所以这句软提示挂在按钮悬浮上——正好在花钱那一下看得见，但不拦人。
+            */}
+            <Tooltip
+              title={
+                <div style={{ maxWidth: 320 }}>
+                  <div>文案是从「视频详规」里出的，而那段是 AI 看片子自己写的、没经过人工核对。</div>
+                  <div style={{ marginTop: 4 }}>
+                    它读歪了，文案会照着歪着写，一致性检查也判不出来（两边都歪就对得上）。
+                    <strong>这一行只提醒、不拦步骤</strong>：觉得歪了就在详情抽屉里驳回文案或重读详规。
+                  </div>
+                </div>
+              }
+            >
+              <Button icon={<BulbOutlined />} loading={genBusy} onClick={generateSummaries} disabled={!ids.length}>
+                出钩子文案（{ids.length}）
+              </Button>
+            </Tooltip>
             <Tooltip title="把这一批里还在跑的视频读取结果一次性收回来（不用逐条点）">
               <Button icon={<ReloadOutlined />} loading={refreshBusy} onClick={refreshRunning}>
                 收取在跑结果（本页 {runningCount}）
