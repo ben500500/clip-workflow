@@ -37,6 +37,7 @@ name/picDatas），不是豆包网页 RPA、也不是火山方舟 Seedance 官�
 import asyncio
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -443,27 +444,16 @@ async def _risk_lexicon(db: AsyncSession) -> Tuple[Dict[str, List[str]], Dict[st
         await db.execute(select(SystemConfig).where(SystemConfig.key == svc.RISK_LEXICON_CONFIG_KEY))
     ).scalar_one_or_none()
     value = row.value if row is not None else None
-    lexicon: Optional[Dict[str, List[str]]] = None
-    exemptions: Optional[Dict[str, str]] = None
-    if isinstance(value, dict):
-        if any(level in value for level in svc.RISK_LEVELS):
-            inherit = bool(value.get("inherit", True))
-            lexicon = (
-                {level: list(words) for level, words in svc.DEFAULT_RISK_LEXICON.items()}
-                if inherit else {level: [] for level in svc.RISK_LEVELS}
-            )
-            for level in svc.RISK_LEVELS:
-                lexicon[level].extend(value.get(level) or [])
-        if isinstance(value.get("exempt"), dict):
-            if bool(value.get("inherit", True)):
-                exemptions = dict(svc.DEFAULT_RISK_EXEMPTIONS)
-                exemptions.update({str(k): v for k, v in value["exempt"].items()})
-            else:
-                exemptions = {str(k): v for k, v in value["exempt"].items()}
+    lexicon, exemptions = svc.merge_risk_config(value)
 
     payload = svc.normalize_risk_lexicon(lexicon, exemptions)
     _RISK_CACHE["at"], _RISK_CACHE["payload"] = now, payload
     return payload
+
+
+def _risk_cache_invalidate() -> None:
+    """改完词表立刻失效缓存（不等 TTL）：运营加一个词就要马上拦得住。"""
+    _RISK_CACHE["at"], _RISK_CACHE["payload"] = 0.0, None
 
 
 async def _batch_pending_prompt_units(
@@ -2299,6 +2289,117 @@ async def generate_summaries(
         "queue": queue,
         "message": f"已为 {sum(1 for r in results if r['created'])} 条素材出文案"
         + (f"；队列还剩 {queue['remaining']} 条，下一次接着排" if queue and queue["remaining"] else ""),
+    }
+
+
+class RiskLexiconUpdateRequest(BaseModel):
+    """风险词表更新（admin）。"""
+    block: List[str] = Field(default_factory=list, description="拦级词：命中即不许过审、不许投产")
+    warn: List[str] = Field(default_factory=list, description="警级词：只留痕预警，人工判断")
+    exempt: Dict[str, str] = Field(default_factory=dict, description="豁免正则：词 → 正则（命中点被它整个包住就不算命中）")
+    inherit: bool = Field(default=True, description="true=在默认词表上追加；false=整体替换默认表")
+
+
+@router.get("/assets/risk-lexicon")
+async def get_risk_lexicon(
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """读当前生效的风险词表（审核/投产闸门用的就是这一份）。
+
+    material 也能读：出文案的就是他们，被 block 词拦下来时得知道拦的是哪个词、怎么绕。
+    """
+    row = (
+        await db.execute(select(SystemConfig).where(SystemConfig.key == svc.RISK_LEXICON_CONFIG_KEY))
+    ).scalar_one_or_none()
+    raw = row.value if row is not None and isinstance(row.value, dict) else {}
+    book, eff_exempt = svc.effective_risk_words(raw)
+    return {
+        "effective": {"block": list(book.get("block") or []), "warn": list(book.get("warn") or [])},
+        "exempt": eff_exempt,
+        "defaults": {
+            "block": list(svc.DEFAULT_RISK_LEXICON[svc.RISK_LEVEL_BLOCK]),
+            "warn": list(svc.DEFAULT_RISK_LEXICON[svc.RISK_LEVEL_WARN]),
+            "exempt": dict(svc.DEFAULT_RISK_EXEMPTIONS),
+        },
+        "override": {
+            "block": [str(w) for w in (raw.get("block") or [])],
+            "warn": [str(w) for w in (raw.get("warn") or [])],
+            "exempt": {str(k): str(v) for k, v in (raw.get("exempt") or {}).items()},
+            "inherit": bool(raw.get("inherit", True)),
+        },
+        "has_override": row is not None,
+        "updated_at": utc_iso(row.updated_at) if row is not None and row.updated_at else "",
+        "ttl_seconds": int(settings.ASSET_RISK_LEXICON_TTL_SECONDS),
+        "can_edit": current_user.role == UserRole.admin.value,
+    }
+
+
+@router.put("/assets/risk-lexicon")
+async def update_risk_lexicon(
+    data: RiskLexiconUpdateRequest,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+    db: AsyncSession = Depends(get_db),
+):
+    """改风险词表（admin）。改完立刻清缓存，下一次审核/投产就用新表。"""
+
+    def _clean(words: List[str]) -> List[str]:
+        out: List[str] = []
+        for w in words or []:
+            s = str(w or "").strip()
+            if s and s not in out:
+                out.append(s)
+        return out
+
+    block = _clean(data.block)
+    warn = _clean(data.warn)
+    exempt: Dict[str, str] = {}
+    for word, pattern in (data.exempt or {}).items():
+        w = str(word or "").strip()
+        p = str(pattern or "").strip()
+        if not w:
+            continue
+        if p:
+            try:
+                re.compile(p)
+            except re.error as e:
+                raise HTTPException(status_code=400, detail=f"豁免正则写错了：{w} → {p}（{e}）")
+        exempt[w] = p
+
+    value = {"block": block, "warn": warn, "exempt": exempt, "inherit": bool(data.inherit)}
+    row = (
+        await db.execute(select(SystemConfig).where(SystemConfig.key == svc.RISK_LEXICON_CONFIG_KEY))
+    ).scalar_one_or_none()
+    if row is None:
+        row = SystemConfig(
+            key=svc.RISK_LEXICON_CONFIG_KEY,
+            value=value,
+            description="素材库风险词表（block=拦 / warn=警 / exempt=豁免正则 / inherit=是否在默认表上追加）",
+        )
+        db.add(row)
+    else:
+        row.value = value
+        row.updated_at = datetime.utcnow()
+        if not row.description:
+            row.description = "素材库风险词表（block=拦 / warn=警 / exempt=豁免正则 / inherit=是否在默认表上追加）"
+    await db.flush()
+    await db.refresh(row)
+    _risk_cache_invalidate()
+
+    book, eff_exempt = svc.effective_risk_words(value)
+    notes: List[str] = []
+    if not data.inherit and not block and not warn:
+        notes.append("两级词表都清空了 → 实际生效的仍是内置默认表（词表全空会自动回落，不会变成全放行）")
+    if not data.inherit:
+        notes.append("已选「整体替换」：默认词表里没列出的词不再拦人")
+    else:
+        notes.append("已选「在默认表上追加」：默认词表仍然生效")
+    return {
+        "ok": True,
+        "effective": {"block": list(book.get("block") or []), "warn": list(book.get("warn") or [])},
+        "exempt": eff_exempt,
+        "updated_at": utc_iso(row.updated_at) if row.updated_at else "",
+        "notes": notes,
     }
 
 

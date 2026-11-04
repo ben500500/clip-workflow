@@ -3197,3 +3197,78 @@ def test_concat_reports_which_segment_broke():
         return resp.json()["items"][0]
 
     _run(_scenario())
+
+
+def test_risk_lexicon_api_read_update_and_immediate_effect():
+    """风险词库接口（GET/PUT /assets/risk-lexicon）。
+
+    要验的：
+    1. material 也能**读**（他被 block 词拦下来时得知道拦的是哪个词），但只有 admin 能改；
+    2. 豁免正则写坏 → 400（不许把闸门搞挂）；
+    3. admin 加一个 block 词 → **立刻**生效（不等 TTL 缓存）：闸门那份词表里已经能看到新词；
+    4. 端到端：含新词的候选会被扫出风险词、并且过审真的被拦（不是只记录不拦）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ha = h["material"], h["admin"]
+
+        # ① 读：能看到「生效词表 / 内置默认表 / 豁免正则 / 能不能改」
+        r = await client.get("/api/assets/risk-lexicon", headers=hm)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert "砍死" in data["effective"]["block"], "生效词表里要有内置 block 词"
+        assert "第一" in data["effective"]["warn"], "生效词表里要有内置 warn 词"
+        assert data["defaults"]["block"], "必须能看见内置默认表（否则不知道哪些词是出厂的）"
+        assert data["defaults"]["exempt"], "必须能看见内置豁免正则"
+        assert data["can_edit"] is False, "material 不是管理员，不能改"
+        r = await client.get("/api/assets/risk-lexicon", headers=ha)
+        assert r.json()["can_edit"] is True
+
+        # ② material 改 → 403（词表等于投放闸门）
+        r = await client.put("/api/assets/risk-lexicon",
+                             json={"block": ["越权词"], "warn": [], "exempt": {}, "inherit": True},
+                             headers=hm)
+        assert r.status_code == 403, r.text
+
+        # ③ 豁免正则写坏 → 400
+        r = await client.put("/api/assets/risk-lexicon",
+                             json={"block": [], "warn": [], "exempt": {"坏": "([a-z"}, "inherit": True},
+                             headers=ha)
+        assert r.status_code == 400, r.text
+
+        # ④ admin 加词 → 立刻生效（缓存必须被清掉）
+        r = await client.put("/api/assets/risk-lexicon",
+                             json={"block": ["新拦词"], "warn": [], "exempt": {}, "inherit": True},
+                             headers=ha)
+        assert r.status_code == 200, r.text
+        assert "新拦词" in r.json()["effective"]["block"]
+        from app.api import assets as assets_api
+        async with dbmod.async_session_factory() as s:
+            lexicon, _exempt = await assets_api._risk_lexicon(s)
+        assert "新拦词" in lexicon["block"], "改完词表必须立刻生效，不能等 TTL 过期"
+
+        # ⑤ 端到端：含新词的候选 → 扫出风险词 + 过审真被拦
+        cands = [{"text": "她一把掀翻了餐桌，新拦词就在这里", "style_tag": "statement",
+                  "formula_tag": "悬念前置", "is_recommended": True}]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(candidates=cands)):
+            resp = await client.post("/api/assets/summaries/generate",
+                                     json={"asset_ids": [asset_id]}, headers=hm)
+        assert resp.status_code == 200, resp.text
+        q = await client.get(f"/api/assets/summaries?asset_id={asset_id}", headers=hm)
+        items = q.json()["items"]
+        assert items, "候选没落库"
+        assert items[0]["risk_hit"] and "新拦词" in items[0]["risk_hit"], \
+            "新加的 block 词必须被扫出来"
+        r = await client.post("/api/assets/summaries/review",
+                              json={"summary_ids": [items[0]["id"]], "action": "approve"},
+                              headers=ha)
+        row = r.json()["results"][0]
+        assert row["ok"] is False and row["error_code"] == "ASSET_RECHECK_FAILED", row
+        assert "新拦词" in row["error"], row
+
+        await client.aclose()
+
+    _run(_scenario())

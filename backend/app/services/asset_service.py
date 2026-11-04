@@ -432,6 +432,59 @@ DEFAULT_RISK_EXEMPTIONS: Dict[str, str] = {
 RISK_LEXICON_CONFIG_KEY = "asset_risk_lexicon"
 
 
+def merge_risk_config(
+    value: Optional[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, List[str]]], Optional[Dict[str, str]]]:
+    """把 system_config 里的原始值合并成 (覆盖词表, 覆盖豁免表)。
+
+    `inherit=true`（缺省）＝在**默认表上追加**（运营加几个词不会把主表清空）；
+    `inherit=false` ＝整体替换。两层都是 None ＝这一层没配，走默认表
+    （`normalize_risk_lexicon` 会兜底）。
+
+    抽出来是为了让「配置页看到的词表」和「闸门实际拦的词表」**永远是同一份**——
+    以前只有闸门里内联着一份合并逻辑，配置页若另写一份，运营加的词会
+    看着生效、实际没拦。
+    """
+    lexicon: Optional[Dict[str, List[str]]] = None
+    exemptions: Optional[Dict[str, str]] = None
+    if isinstance(value, dict):
+        inherit = bool(value.get("inherit", True))
+        # 级别键：block/warn 是已知的；**写错的级别键也要算数**（并进 block），
+        # 不能因为键名拼错就把这批词静默丢掉——那正是「配了看着没生效」。
+        level_keys = [k for k in value.keys() if k not in ("exempt", "inherit")]
+        if level_keys:
+            lexicon = (
+                {level: list(words) for level, words in DEFAULT_RISK_LEXICON.items()}
+                if inherit else {level: [] for level in RISK_LEVELS}
+            )
+            for key in level_keys:
+                level = key if key in RISK_LEVELS else RISK_LEVEL_BLOCK
+                words = value.get(key)
+                if isinstance(words, (list, tuple)):
+                    lexicon[level].extend(words)
+                # 非数组的值忽略（配置写坏不许把闸门搞挂）
+        if isinstance(value.get("exempt"), dict):
+            if inherit:
+                exemptions = dict(DEFAULT_RISK_EXEMPTIONS)
+                exemptions.update({str(k): v for k, v in value["exempt"].items()})
+            else:
+                exemptions = {str(k): v for k, v in value["exempt"].items()}
+    return lexicon, exemptions
+
+
+def effective_risk_words(
+    value: Optional[Dict[str, Any]],
+) -> Tuple[Dict[str, List[str]], Dict[str, str]]:
+    """给「配置页/审计」看的一份：合并后的生效词表 + 生效豁免正则（字符串形态）。
+
+    与 `normalize_risk_lexicon` 同源：词表为空会回落默认表，豁免没配则用默认豁免。
+    """
+    lexicon, exemptions = merge_risk_config(value)
+    book, _compiled = normalize_risk_lexicon(lexicon, exemptions)
+    eff_exempt = dict(exemptions if exemptions is not None else DEFAULT_RISK_EXEMPTIONS)
+    return book, eff_exempt
+
+
 def normalize_risk_lexicon(
     lexicon: Optional[Dict[str, Any]],
     exemptions: Optional[Dict[str, str]],

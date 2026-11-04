@@ -921,6 +921,41 @@ export interface AssetReviewResponse {
   message: string;
 }
 
+/**
+ * GET /assets/risk-lexicon：当前生效的风险词表。
+ *
+ * `effective` 是**真正在拦人**的那份（闸门用的就是它）；
+ * `override` 是运营自己配的覆盖值，`defaults` 是内置默认表——
+ * 三者分开显示，才看得出「我加的词」和「出厂就有的词」分别是什么。
+ */
+export interface AssetRiskLexicon {
+  effective: { block: string[]; warn: string[] };
+  exempt: Record<string, string>;
+  defaults: { block: string[]; warn: string[]; exempt: Record<string, string> };
+  override: { block: string[]; warn: string[]; exempt: Record<string, string>; inherit: boolean };
+  has_override: boolean;
+  updated_at: string;
+  ttl_seconds: number;
+  can_edit: boolean;
+}
+
+/** PUT /assets/risk-lexicon 的入参 */
+export interface AssetRiskLexiconUpdate {
+  block: string[];
+  warn: string[];
+  exempt: Record<string, string>;
+  /** true=在默认表上追加；false=整体替换默认表 */
+  inherit: boolean;
+}
+
+export interface AssetRiskLexiconUpdateResult {
+  ok: boolean;
+  effective: { block: string[]; warn: string[] };
+  exempt: Record<string, string>;
+  updated_at: string;
+  notes: string[];
+}
+
 /** POST /assets/produce 的逐条文案结果 */
 export interface AssetProduceResultItem {
   summary_id: string;
@@ -1373,6 +1408,13 @@ export const assetApi = {
   // 批量审核：生产者不得自审（admin 除外）、驳回必填理由、改后通过留痕、过审前必须过复核
   reviewSummaries: (data: AssetReviewRequest) =>
     client.post('/assets/summaries/review', data) as Promise<AssetReviewResponse>,
+
+  // 风险词库：读当前生效词表（block=拦 / warn=警 / exempt=豁免正则），admin 可改
+  getRiskLexicon: () =>
+    client.get('/assets/risk-lexicon') as Promise<AssetRiskLexicon>,
+
+  updateRiskLexicon: (data: AssetRiskLexiconUpdate) =>
+    client.put('/assets/risk-lexicon', data) as Promise<AssetRiskLexiconUpdateResult>,
 
   // 过审文案 → N 条差异化提示词（生产单）；P0 到「生产单可导出」为止，投板是人工动作
   produce: (data: AssetProduceRequest) =>

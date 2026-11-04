@@ -1,15 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, Input, Modal, Popover, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
-import { CheckCircleOutlined, CloseCircleOutlined, EditOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import {
+  CheckCircleOutlined, CloseCircleOutlined, EditOutlined, QuestionCircleOutlined,
+  ReloadOutlined, SafetyCertificateOutlined, ThunderboltOutlined,
+} from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { AUDIT_STATUS_LABELS, HOOK_STYLE_LABELS, assetApi } from '../../api/assets';
 import type {
-  AssetReviewAction, AssetReviewResultItem, AssetSummary, AssetSummaryListResult,
+  AssetBatch, AssetReviewAction, AssetReviewResultItem, AssetSummary, AssetSummaryListResult,
 } from '../../api/assets';
 import { AuditStatusTag, RiskTags } from './AssetBits';
 import ProduceOrderModal from './ProduceOrderModal';
+import RiskLexiconDrawer from './RiskLexiconDrawer';
 
 const { Text, Paragraph } = Typography;
 
@@ -54,6 +58,24 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
   // 投产弹窗
   const [produceOpen, setProduceOpen] = useState(false);
 
+  // 批次下拉：原来只有一个「批次 ID」输入框，要手填 UUID，填 AB- 编号会一条都查不到
+  const [batches, setBatches] = useState<AssetBatch[]>([]);
+  // 风险词库抽屉
+  const [lexiconOpen, setLexiconOpen] = useState(false);
+
+  const loadBatches = useCallback(async () => {
+    try {
+      const res = await assetApi.listBatches({ limit: 100 });
+      setBatches(res.items || []);
+    } catch {
+      /* 批次下拉拿不到不影响审核，忽略 */
+    }
+  }, []);
+
+  useEffect(() => {
+    loadBatches();
+  }, [loadBatches]);
+
   const fetchList = useCallback(
     async (p: number = page, ps: number = pageSize) => {
       setLoading(true);
@@ -86,6 +108,19 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
   }, [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, batchFilter]);
 
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
+
+  /** 批次下拉选项：编号 + 名称 + 条数，比让人手填 UUID 强得多。 */
+  const batchOptions = useMemo(() => {
+    const opts = batches.map((b) => ({
+      value: b.id,
+      label: `${b.code} · ${b.name || '未命名'}（${b.item_count ?? 0} 条）`,
+    }));
+    // 从别处带进来的批次 id（可能已超出最近 100 批）：补一条，别在下拉里显示成一串裸 uuid
+    if (batchFilter && !opts.some((o) => o.value === batchFilter)) {
+      opts.unshift({ value: batchFilter, label: `当前批次 ${batchFilter.slice(0, 8)}…` });
+    }
+    return opts;
+  }, [batches, batchFilter]);
 
   /**
    * 提交一次审核动作。
@@ -330,30 +365,90 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
       size="small"
       title={
         <Space wrap>
-          <Select
-            style={{ width: 130 }}
-            placeholder="审核态"
-            allowClear
-            value={auditStatus}
-            onChange={setAuditStatus}
-            options={Object.entries(AUDIT_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
-          />
-          <Checkbox checked={recommendedOnly} onChange={(e) => setRecommendedOnly(e.target.checked)}>
-            只看推荐条
-          </Checkbox>
-          <Checkbox checked={onlyRisk} onChange={(e) => setOnlyRisk(e.target.checked)}>
-            只看命中风险词
-          </Checkbox>
-          <Checkbox checked={onlyInconsistent} onChange={(e) => setOnlyInconsistent(e.target.checked)}>
-            只看一致性不过
-          </Checkbox>
-          <Input
-            placeholder="批次 ID（可选）"
-            allowClear
-            style={{ width: 170 }}
-            value={batchFilter}
-            onChange={(e) => setBatchFilter(e.target.value || undefined)}
-          />
+          <Popover
+            placement="bottomLeft"
+            title="审核台怎么用"
+            content={
+              <div style={{ maxWidth: 380 }}>
+                <p style={{ marginBottom: 6 }}>
+                  一条素材出 3 条候选文案，其中 1 条被模型标为推荐。审核台默认只把推荐条摆到你面前——
+                  3 条全勾一遍过，等于没审。
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  <strong>过审</strong>：这条就是要投豆包的那条。会先跑一遍复核（超字数／命中风险词／与详规对不上都会被拦），
+                  拦下时可让管理员带理由豁免，豁免内容进审计。
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  <strong>驳回／需改写</strong>：必须写理由，理由会回显给写文案的人。
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  <strong>投产</strong>：只吃已过审的文案，一条过审文案派生 N 条差异化提示词。
+                </p>
+                <p style={{ marginBottom: 0 }}>各筛选项的说明在它们右边的问号里。</p>
+              </div>
+            }
+          >
+            <Button type="link" size="small" style={{ padding: 0 }}>
+              怎么用 <QuestionCircleOutlined />
+            </Button>
+          </Popover>
+          <Tooltip title="按审核状态筛：待审／已过审／已驳回／需改写／改后通过。清空＝所有状态都列出来。">
+            <span>
+              <Select
+                style={{ width: 130 }}
+                placeholder="审核态"
+                allowClear
+                value={auditStatus}
+                onChange={setAuditStatus}
+                options={Object.entries(AUDIT_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
+              />
+              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+            </span>
+          </Tooltip>
+          <Tooltip title="每条素材出 3 条候选，模型会标 1 条推荐（通常 3 选 1）。默认只列推荐条，是为了防止 3 条全勾一遍走过场；要看另外两条对照，取消这个勾选。">
+            <span>
+              <Checkbox checked={recommendedOnly} onChange={(e) => setRecommendedOnly(e.target.checked)}>
+                只看推荐条
+              </Checkbox>
+              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+            </span>
+          </Tooltip>
+          <Tooltip title="命中风险词的文案。红色「拦」= 命中即不许过审、不许投产；橙色「警」= 只留痕预警。这个筛选两个级别都会列出来。">
+            <span>
+              <Checkbox checked={onlyRisk} onChange={(e) => setOnlyRisk(e.target.checked)}>
+                只看命中风险词
+              </Checkbox>
+              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+            </span>
+          </Tooltip>
+          <Tooltip title="与素材反推出的详规对不上的文案（一致性校验不过）。这类通常要人工改或重新出。">
+            <span>
+              <Checkbox checked={onlyInconsistent} onChange={(e) => setOnlyInconsistent(e.target.checked)}>
+                只看一致性不过
+              </Checkbox>
+              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+            </span>
+          </Tooltip>
+          <Tooltip title="按导入批次筛选。选批次即可，会显示批次编号、名称和条数。">
+            <span>
+              <Select
+                style={{ width: 220 }}
+                placeholder="批次（可选）"
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                value={batchFilter}
+                onChange={setBatchFilter}
+                options={batchOptions}
+              />
+              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+            </span>
+          </Tooltip>
+          <Tooltip title="查看／修改风险词库（审核台「复核」列那些标签的来源）。只有管理员能改。">
+            <Button size="small" icon={<SafetyCertificateOutlined />} onClick={() => setLexiconOpen(true)}>
+              风险词库
+            </Button>
+          </Tooltip>
           <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
             刷新
           </Button>
@@ -378,7 +473,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
               需改写（{ids.length}）
             </Button>
             {canReview && (
-              <Tooltip title="过审文案 → N 条差异化提示词（投产与审核同侧：material 不能开单）">
+              <Tooltip title="过审文案 → N 条差异化提示词（投产与审核同侧：material 不能开单）。括号里的数字只算勾选行里已过审/改后通过的那些，待审的不算。">
                 <Button
                   icon={<ThunderboltOutlined />}
                   disabled={!approvedSelected.length}
@@ -509,6 +604,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
           fetchList(page, pageSize);
         }}
       />
+
+      <RiskLexiconDrawer open={lexiconOpen} onClose={() => setLexiconOpen(false)} />
     </Card>
   );
 };
