@@ -2937,12 +2937,26 @@ def test_autoclip_timeout_chain_and_single_inner_retry():
     """超时口径钉成契约：外层等得比内层久，且内层只试一次（11-04 flash 实测）。
 
     背景：现网/预览都是「浏览器点一下 → 后端同步等 autoclip → autoclip 同步等网关」。
-    11-04 在同一条 1333 字反推详规上实测：mimo-v2.6-pro 96.2s、mimo-v2.6-flash 93.6s
-    正常回 3 条候选；**同一批里 flash 还连续两次卡到 autoclip 自己的 API_TIMEOUT(240s)
-    才超时、第三次才成功**。旧口径后端只等 180s、现网 nginx 只等 300s，于是
-    「后端先 502 → 模型那边其实还在跑并最终成功 → 钱照扣、候选没落库、一线看到失败」。
-    口径只能是**从外到内递减**：nginx 900s > 后端 900s > autoclip 单次 600s × 重试 1 次。
-    这三条分属三个文件，改一个就得改另两个，所以在这里一次钉死。
+    11-04 在同一条 1333 字反推详规上实测：mimo-v2.6-flash 93.6s、pro 96.2s 正常回 3 条
+    候选；**同一批里 flash 还连续两次卡到 autoclip 自己的 API_TIMEOUT(240s) 才超时、
+    第三次才成功**。旧口径后端只等 180s，于是「后端先 502 → 模型那边其实还在跑并最终
+    成功 → 钱照扣、候选没落库、一线看到失败」。
+
+    口径只能是**从请求路径的外到内递减**（浏览器 → nginx → 后端 → autoclip），且**相邻两层
+    必须严格大于、不能同值**——同值等于掷硬币，谁先到期看调度：
+      仓库根 `nginx.conf`（现网 clip-nginx）3600s
+      > `frontend/nginx.conf`（镜像内代理，预览栈走这份）1200s
+      > 浏览器 axios（`frontend/src/api/assets.ts` 的 `MODEL_WAIT_TIMEOUT`）960s
+      > 后端 `_call_autoclip` 默认 900s
+      > autoclip 单次 `API_TIMEOUT`（现网 600s），内部重试只 1 次。
+
+    ⚠️ nginx 那一层 11-04 第二轮审核时订正过两处：① **现网 /api/ 走的是仓库根
+    `nginx.conf`（`clip-nginx` 把它挂成 `conf.d/default.conf`，`proxy_pass backend:8080`
+    直连后端，不经过 clip-frontend），`proxy_read_timeout` 实测 3600s**；
+    `frontend/nginx.conf` 里那份只在「直接访问 frontend 容器」时生效（旁路预览栈就是这么跑的）。
+    两份都读、都断，别再拿其中一份当现网口径。② 那份原来写 900s 并与后端"同口径"，
+    同值就是上面说的竞态，已抬到 1200s。
+    这几条分属四个文件，改一个就得改另几个，所以在这里一次钉死。
     """
     import inspect
     from pathlib import Path
@@ -2955,13 +2969,56 @@ def test_autoclip_timeout_chain_and_single_inner_retry():
     )
     assert default_timeout >= 600, f"后端只等 {default_timeout}s，模型卡流时会先崩"
 
-    # 2) 前端 nginx 的 /api 代理超时不能短于后端
-    nginx = (Path(__file__).resolve().parents[3] / "frontend" / "nginx.conf").read_text()
-    api_block = nginx.split("location /api/ {", 1)[1].split("}", 1)[0]
-    read_t = int(re.search(r"proxy_read_timeout\s+(\d+)s", api_block).group(1))
-    assert read_t >= default_timeout, f"nginx {read_t}s 短于后端 {default_timeout}s，会 504"
+    root = Path(__file__).resolve().parents[3]
 
-    # 3) 发给 autoclip 的两个 payload 必须把内部重试压到 1 次
+    def _api_read_timeout(conf_name: str) -> int:
+        """只读 `/api/` 块里**真正生效**的那行，注释里提到别处的数不算。"""
+        nginx = (root / conf_name).read_text()
+        block = nginx.split("location /api/ {", 1)[1].split("}", 1)[0]
+        live = "\n".join(ln for ln in block.splitlines() if not ln.strip().startswith("#"))
+        return int(re.search(r"proxy_read_timeout\s+(\d+)s", live).group(1))
+
+    # 2a) 镜像内的 frontend 代理（旁路预览栈走这份）必须**严格长于**后端，同值有竞态
+    read_t = _api_read_timeout("frontend/nginx.conf")
+    assert read_t > default_timeout, (
+        f"frontend/nginx.conf {read_t}s 不比后端 {default_timeout}s 长：两层同值时谁先掐看调度"
+    )
+    # 2b) 现网 clip-nginx 挂的是仓库根那份，是最外层，同样必须长于内层代理
+    live_t = _api_read_timeout("nginx.conf")
+    assert live_t > read_t, f"根 nginx.conf {live_t}s 不长于 frontend/nginx.conf {read_t}s，会 504"
+
+    # 3) 浏览器侧：client.ts 的默认 60s 对同步等模型的口是**必掐**的（出文案单条实测 93.6s），
+    #    所以每个同步口都必须显式带 MODEL_WAIT_TIMEOUT，且要长于后端、短于镜像内 nginx。
+    client_ts = (root / "frontend" / "src" / "api" / "client.ts").read_text()
+    default_ms = int(re.search(r"timeout:\s*(\d+)", client_ts).group(1))
+    api_ts = (root / "frontend" / "src" / "api" / "assets.ts").read_text()
+    wait_ms = int(re.search(r"const MODEL_WAIT_TIMEOUT = (\d+)", api_ts).group(1))
+    assert wait_ms > default_timeout * 1000, (
+        f"前端 {wait_ms}ms 不比后端 {default_timeout}s 长，卡流时后端和浏览器同时到期（R-1）"
+    )
+    assert wait_ms < read_t * 1000, (
+        f"前端 {wait_ms}ms 不长于 nginx {read_t}s 的倒数：nginx 先 504、后端其实还在等模型"
+    )
+    assert default_ms < wait_ms, "默认超时若已不小于同步超时，说明口径写反了"
+    sync_paths = (
+        "/assets/analyze/batch",
+        "/assets/analyze/refresh-batch",
+        "/assets/resolve",
+        "/assets/summaries/generate",
+        "/assets/produce",
+        "/assets/concat",
+    )
+    for path in sync_paths:
+        line = next(
+            (ln for ln in api_ts.splitlines() if f"client.post('{path}'" in ln), None
+        )
+        assert line, f"前端没有 {path} 的调用，同步口清单要同步更新"
+        assert "MODEL_WAIT_TIMEOUT" in line, (
+            f"{path} 还在吃 client.ts 的 {default_ms / 1000:.0f}s 默认超时：一线会看到"
+            "「失败」，而后端跑完、钱照扣、结果照落库"
+        )
+
+    # 4) 发给 autoclip 的两个 payload 必须把内部重试压到 1 次
     _run(_bootstrap())
 
     async def _scenario():
@@ -3249,6 +3306,28 @@ def test_risk_lexicon_api_read_update_and_immediate_effect():
             lexicon, _exempt = await assets_api._risk_lexicon(s)
         assert "新拦词" in lexicon["block"], "改完词表必须立刻生效，不能等 TTL 过期"
 
+        # ④b R-3：改词必须留痕——这份表**保存即生效**且直接决定能否过审/投产，
+        #     匿名改闸门等于事后问「谁把这个词挪到 block」答不上。
+        #     ②③ 两次失败（403/400）不该留下任何痕迹，所以这里必须**恰好 1 条**。
+        audits = await _rows(AuditLog, AuditLog.action == "asset.risk_lexicon.update")
+        assert len(audits) == 1, f"改词留痕条数不对（失败请求不该写审计）：{len(audits)}"
+        assert audits[0].target_type == "asset_risk_lexicon"
+        assert audits[0].operator_id is not None, "必须能回答是谁改的"
+        assert not audits[0].before, "第一次改之前没有覆盖配置，before 该是空"
+        assert audits[0].after["block"] == ["新拦词"]
+        assert audits[0].after["inherit"] is True
+
+        # ④c 再改一次：before 必须是上一份的整份覆盖（改前改后连得起来才叫历史）
+        r = await client.put("/api/assets/risk-lexicon",
+                             json={"block": ["新拦词", "又一直播"], "warn": ["全网最低"],
+                                   "exempt": {"第一": "第一次|第一时间"}, "inherit": False},
+                             headers=ha)
+        assert r.status_code == 200, r.text
+        audits = await _rows(AuditLog, AuditLog.action == "asset.risk_lexicon.update")
+        assert len(audits) == 2
+        assert audits[-1].before["block"] == ["新拦词"], "before 要能还原改前那份词表"
+        assert audits[-1].after["inherit"] is False and audits[-1].after["warn"] == ["全网最低"]
+
         # ⑤ 端到端：含新词的候选 → 扫出风险词 + 过审真被拦
         cands = [{"text": "她一把掀翻了餐桌，新拦词就在这里", "style_tag": "statement",
                   "formula_tag": "悬念前置", "is_recommended": True}]
@@ -3330,6 +3409,16 @@ def test_rejected_copy_goes_back_to_queue_when_its_owner_fixes_it():
         assert "负责人" in by_reviewer.json()["results"][0]["error"]
 
         # 负责人改了交回待审队列
+        # 先把 summary 阶段人为打成 failed（真实来路：后来重出文案失败了，但旧的被驳候选
+        # 还在库里）。重提成功后整条状态**必须**跟着收敛，否则一线会看到
+        # 「文案环节＝失败，候选却就在待审队列」这种自相矛盾的行，按阶段筛也筛不到它。
+        from app.services import asset_service as svc
+        async with dbmod.async_session_factory() as s:
+            poisoned = await s.get(AssetItem, uuid.UUID(asset_id))
+            poisoned.stage_summary = "failed"
+            poisoned.status = svc.derive_status(svc.stage_of(poisoned))
+            await s.commit()
+
         new_text = "王总在康华医院门口站了三小时，他还不敢信这事？"
         sub = await client.post(
             "/api/assets/summaries/resubmit",
@@ -3349,6 +3438,11 @@ def test_rejected_copy_goes_back_to_queue_when_its_owner_fixes_it():
         assert audits[0].before["audit_status"] == RV_REJECTED
         assert audits[0].before["text"] == old_text
         assert audits[0].after["text"] == new_text
+        # 阶段收敛（11-04 第二轮审核）：交回队列的这一刻，素材整条状态要从「failed」回到
+        # 「待审」这一档——原来只改了 has_approved_copy，`stage_summary` 和 status 都没跟着走。
+        back = await _row_of(AssetItem, asset_id)
+        assert back.stage_summary == "success", "重提成功必须把 summary 阶段收敛回来"
+        assert back.status != "failed", f"素材整条状态还停在失败：{back.status}"
 
         # 待审的不能再重提（本来就在队列里）
         again = await client.post(

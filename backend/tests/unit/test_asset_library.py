@@ -604,3 +604,40 @@ def test_title_budget_counts_with_the_same_ruler_as_copy_chars():
     punctuated = "怀三胎·7G101·刚离婚就孕吐？？！"  # 19 个非空白（标点全算）
     assert svc.count_copy_chars(punctuated) == 19
     assert svc.check_video_title_budget([punctuated])[0]["chars"] == 19
+
+
+# ─────────────────────────  7. 配置引用守卫  ─────────────────────────
+
+
+def test_every_settings_attribute_used_by_the_code_actually_exists():
+    """代码里写的 `settings.X` 必须真的在 config.py 里定义（11-04 第二轮审核 R-7）。
+
+    为什么值得单独一条：素材库曾有 `settings.ASSET_PROMPT_MAX_DURATION_DEFAULT`，
+    而 **config.py 里根本没有这个字段**——pydantic v2 的 BaseSettings 没有 `__getattr__`
+    兜底，取它就是 AttributeError。它藏在 `batch.prompt_max_duration or settings.…` 的
+    **短路右支**，正常数据永远走不到，于是 389 条测试全绿、代码照旧带病跑；真来一条
+    档位为 NULL 的批次行（历史数据/手工建批），文件批量入库当场 500。
+
+    这类"字段名拼错"不显式引用一遍永远看不见，而全仓 AST 扫一遍不到一秒，
+    所以把它钉成守卫：以后加配置字段忘了写、或引用了别人删掉的字段，测试先红。
+    """
+    import ast
+
+    from app.config import settings
+
+    app_dir = Path(__file__).resolve().parents[2] / "app"
+    bad: dict = {}
+    for py in sorted(app_dir.rglob("*.py")):
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "settings"
+                and not hasattr(settings, node.attr)
+            ):
+                rel = py.relative_to(app_dir.parent)
+                bad.setdefault(node.attr, []).append(f"{rel}:{node.lineno}")
+    assert not bad, "代码引用了 config.py 里不存在的配置字段：" + "; ".join(
+        f"settings.{k}（{', '.join(v)}）" for k, v in sorted(bad.items())
+    )

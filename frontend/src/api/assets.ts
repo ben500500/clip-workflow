@@ -221,7 +221,11 @@ export interface AssetSummary {
   reviewed_at: string | null;
   /** 驳回/需改写的理由（必填才允许进这两个态） */
   reject_reason: string | null;
-  /** 改后通过（passed_edited）的原文留痕，配合 AuditLog 供 admin 抽检 */
+  /**
+   * 改前原文留痕，两种来路都会写：① 审核人「改后通过」（passed_edited）；
+   * ② 作者驳回后自己改完重提（resubmit）。所以**光看这列非空不能断定是审核人改的**，
+   * 要配合 audit_status 判：passed_edited＝审核人改后过；approved＝作者重提后原样过。
+   */
   text_before_edit: string | null;
   /** 这条文案现在能不能「改后重新提审」：被驳回/需改写 且 你是素材负责人或 admin */
   can_resubmit?: boolean;
@@ -1330,6 +1334,30 @@ export interface AssetPromptRefreshResponse {
  */
 const UPLOAD_TIMEOUT = 0;
 
+/**
+ * 同步等模型的口一律显式带下面的 960s（R-1，11-04 四席位第二轮审核）：
+ * client.ts 的默认超时是 **60 秒**，而反推/出文案/投产/解析这四类是「点一下、后端同步
+ * 等外部接口」的请求——出文案单条实测 mimo-v2.6-flash **93.6 秒**，同一批里还连续两次
+ * 卡到 autoclip 自己的 240s 上限才第三次成功（见 backend `_call_autoclip` 的注释）。
+ * 也就是说：**一线点「出文案」必看到「失败」，而后端其实还在跑、钱照扣、候选照落库**。
+ * 后端那侧写的是「超时从外到内递减」，前端 60s 是这条口径唯一的破口，所以按 concat
+ * 的既有写法统一覆盖成一个常量（新增同步口就加到这里，别再用默认 60s）。
+ *
+ * ⚠️ 顶穿风险仍在：/produce 是 N 条**串行**展开（N 上限 20，单次 90~600s），最坏远超
+ * 900s；根治是提交即回＋轮询进度（本轮排在批 C，不在这里做）。当前口径：大 N 请分次投产。
+ *
+ * 为什么是 960s 而不是照抄后端的 900s：两层**同值**等于掷硬币——后端还在等模型时浏览器
+ * 同时到点报错，而请求其实没取消、后端跑完照样落库扣钱。所以浏览器这层必须**比后端那一层长**
+ * （900s + 60s 收尾余量），又比 nginx 短。完整链（请求路径从外到内严格递减）：
+ * 仓库根 `nginx.conf` 3600s（**现网 /api/ 实际走这份**，clip-nginx 直连 backend:8080）
+ * > `frontend/nginx.conf` 1200s（镜像内代理，预览栈/直连 frontend 容器才生效）
+ * > 本常量 960s > 后端 `_call_autoclip` 900s > autoclip 单次 `API_TIMEOUT` 600s。
+ * 详见 backend `app/api/assets.py::_call_autoclip` 的超时链注释；契约测试
+ * `tests/integration/test_asset_library_api.py::test_autoclip_timeout_chain_and_single_inner_retry`
+ * 会把这几层钉死，改一层就要改另几层。
+ */
+const MODEL_WAIT_TIMEOUT = 960000;
+
 export const assetApi = {
   // 素材列表：一行 = 一条素材（批次只是筛选维度，不做批次父行页）
   listAssets: (params?: AssetListParams) =>
@@ -1400,19 +1428,19 @@ export const assetApi = {
 
   // 批量反推提示词（智令 doc/120）：按计时上限扣费，≥2 条必须 confirmed=true，否则 409 回确认单
   analyzeBatch: (data: AssetAnalyzeRequest) =>
-    client.post('/assets/analyze/batch', data) as Promise<AssetAnalyzeResponse>,
+    client.post('/assets/analyze/batch', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetAnalyzeResponse>,
 
   // 一次收敛整批在跑的反推任务（读操作、不扣费；200 条不该发 200 次单条请求）
   refreshAnalyzeBatch: (data: AssetRefreshBatchRequest) =>
-    client.post('/assets/analyze/refresh-batch', data) as Promise<AssetRefreshResponse>,
+    client.post('/assets/analyze/refresh-batch', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetRefreshResponse>,
 
   // 链接素材按需回源解析：显式点、显认、显付费的一次动作（没有 force 后门，blocked 只能充值或改直链）
   resolveAssets: (data: AssetResolveRequest) =>
-    client.post('/assets/resolve', data) as Promise<AssetResolveResponse>,
+    client.post('/assets/resolve', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetResolveResponse>,
 
   // 批量出钩子文案候选（默认 3 条：疑问式/陈述式/台词摘录式）；前置是反推已成功
   generateSummaries: (data: AssetSummaryGenerateRequest) =>
-    client.post('/assets/summaries/generate', data) as Promise<AssetSummaryGenerateResponse>,
+    client.post('/assets/summaries/generate', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetSummaryGenerateResponse>,
 
   // 文案审核队列（素材列表点「文案」也走这里）
   listSummaries: (params?: AssetSummaryListParams) =>
@@ -1435,7 +1463,7 @@ export const assetApi = {
 
   // 过审文案 → N 条差异化提示词（生产单）；P0 到「生产单可导出」为止，投板是人工动作
   produce: (data: AssetProduceRequest) =>
-    client.post('/assets/produce', data) as Promise<AssetProduceResponse>,
+    client.post('/assets/produce', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetProduceResponse>,
 
   // 投递状态回写：人投完板把真实结果写回台账（只改状态 + 补 board_tid + 记审计，不碰成本）
   updateProductionStatus: (data: AssetProductionStatusRequest) =>
@@ -1462,9 +1490,9 @@ export const assetApi = {
 
   // 简单拼接：两段按人选顺序直拼（不选点不剪切）。同步等 ffmpeg——
   // 两条短片实测几秒到几十秒，但"从桶里取回两段 + 重编码"最坏会超过 client.ts 默认的 60 秒，
-  // 那时后端其实还在跑、前端先报超时。上限与 nginx /api 的 900s 同口径，别让它先掐。
+  // 那时后端其实还在跑、前端先报超时。上限与后端 autoclip 的 900s 同口径（同一个常量）。
   concat: (data: AssetConcatRequest) =>
-    client.post('/assets/concat', data, { timeout: 900000 }) as Promise<AssetConcatResult>,
+    client.post('/assets/concat', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetConcatResult>,
 
   // 素材详情：含全部文案候选、生产单、反推任务与详规正文
   getAsset: (assetId: string) =>

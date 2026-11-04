@@ -35,6 +35,7 @@ name/picDatas），不是豆包网页 RPA、也不是火山方舟 Seedance 官�
 """
 
 import asyncio
+import copy
 import logging
 import os
 import re
@@ -1044,7 +1045,13 @@ async def _upload_into_batch(
     传进去的那批一起抹掉——所以只回传失败清单，批次行留着。
     """
     max_bytes = upload_max_bytes()
-    tier = batch.prompt_max_duration or int(settings.ASSET_PROMPT_MAX_DURATION_DEFAULT)
+    # R-7（11-04 第二轮审核）：这里原来写的是 `settings.ASSET_PROMPT_MAX_DURATION_DEFAULT`——
+    # **config.py 里没有这个字段**，取它会 AttributeError（本机 `hasattr` 实测为假）。
+    # 眼下炸不到只是因为上一行 `or` 短路（建批两条路都必写档位），那是踩着运气：一旦出现
+    # tier 为 NULL 的批次行（历史数据、手工建批），文件批量入库当场 500。
+    # 改成走 `_tier_or_400`：没配就取默认档，配了个非白名单档位则**当场 400 说清楚**，
+    # 不拿脏档位去算钱（与链接导入 `:495` 同一个口径）。
+    tier = _tier_or_400(batch.prompt_max_duration)
     sem = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
     tmp_dir = os.path.join(tempfile.gettempdir(), f"asset_upload_{uuid.uuid4().hex}")
     os.makedirs(tmp_dir, exist_ok=True)
@@ -2072,8 +2079,13 @@ async def _call_autoclip(path: str, payload: dict, timeout: float = 900.0) -> di
     网关卡流是常态事件，不是罕见事件（与 `cfdb2a8` 修的"反推查询抖动判死"同一类）。
     所以外层容忍必须**比 autoclip 单次上限还长**，否则就是"后端先 502、模型那边其实还在跑
     并最终成功"：钱照扣、候选没落库、一线看到"出文案失败"。
-    口径从外到内递减：nginx `proxy_read_timeout 900s` > 本函数 900s > autoclip 单次
-    `API_TIMEOUT=600` > 内部重试 1 次（见下面两个 payload）。
+    口径**从内到外严格递增**（任何两层同值等于掷硬币，谁先到期看调度）：
+    autoclip 单次 `API_TIMEOUT=600` < 本函数 900s < 浏览器 `MODEL_WAIT_TIMEOUT=960s`
+    （frontend/src/api/assets.ts）< `frontend/nginx.conf` 的 1200s < 现网实际入口
+    仓库根 `nginx.conf` 的 3600s。
+    11-04 第二轮审核订正：这里原来写"nginx 900s > 本函数 900s"，一是同值本就有竞态，
+    二是现网 163 的 `/api/` 由根 `nginx.conf` 直连 backend:8080、**根本不经过** frontend
+    容器那份配置，写"同口径"是把预览栈的数当成生产数。
     """
     url = f"{settings.AUTOCLIP_URL.rstrip('/')}/{path.lstrip('/')}"
     try:
@@ -2402,6 +2414,11 @@ async def update_risk_lexicon(
     row = (
         await db.execute(select(SystemConfig).where(SystemConfig.key == svc.RISK_LEXICON_CONFIG_KEY))
     ).scalar_one_or_none()
+    # R-3（11-04 第二轮审核）：这份词表**保存即生效**并直接决定谁能过审、谁能投产，
+    # 却没有留痕就答不上「谁在什么时候把哪个词从 warn 挪到 block」。本文件其它写口
+    # （撤销过审、豁免、投产、拼接）都写审计，这是唯一的例外，补上。
+    # before 取**改前的整份覆盖**（没配过就是 None＝当时走默认表），after 取改后的整份。
+    before_value = copy.deepcopy(row.value) if row is not None and row.value else None
     if row is None:
         row = SystemConfig(
             key=svc.RISK_LEXICON_CONFIG_KEY,
@@ -2416,6 +2433,15 @@ async def update_risk_lexicon(
             row.description = "素材库风险词表（block=拦 / warn=警 / exempt=豁免正则 / inherit=是否在默认表上追加）"
     await db.flush()
     await db.refresh(row)
+    await _write_audit(
+        db,
+        action="asset.risk_lexicon.update",
+        operator=current_user,
+        target_type="asset_risk_lexicon",
+        target_id=svc.RISK_LEXICON_CONFIG_KEY,
+        before=before_value,
+        after=value,
+    )
     _risk_cache_invalidate()
 
     book, eff_exempt = svc.effective_risk_words(value)
@@ -2783,6 +2809,10 @@ async def resubmit_summaries(
             )
         ).scalar_one()
         asset.has_approved_copy = approved_cnt > 0
+        # 阶段列一起收敛（对照审核路径 `:2628` 同一行）：原来只改了 has_approved_copy，
+        # `stage_summary` 留在上一轮的值上 → 按阶段筛选/`derive_status` 算出来的整条状态
+        # 跟文案实际所处的环节对不上，列表里会出现「文案阶段=失败但候选就在待审队列」这种矛盾行。
+        svc.apply_stage(asset, "summary", STAGE_SUCCESS, has_approved_copy=asset.has_approved_copy)
 
         await _write_audit(
             db,

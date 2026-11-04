@@ -331,8 +331,12 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
           </Paragraph>
           {r.text_before_edit && (
             <Tooltip title={`改前原文：${r.text_before_edit}`}>
-              <Tag color="cyan">
-                {r.audit_status === 'approved' || r.audit_status === 'passed_edited' ? '改后通过' : '改过并重提'}
+              <Tag color={r.audit_status === 'passed_edited' ? 'cyan' : 'geekblue'}>
+                {r.audit_status === 'passed_edited'
+                  ? '审核人改后通过'
+                  : r.audit_status === 'approved'
+                    ? '作者重提后过审'
+                    : '改过并重提'}
               </Tag>
             </Tooltip>
           )}
