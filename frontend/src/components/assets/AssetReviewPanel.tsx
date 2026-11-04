@@ -613,7 +613,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId }) => {
           showIcon
           style={{ marginBottom: 8 }}
           message="默认只列每条素材的推荐候选"
-          description="三条候选里通常只有一条能钩人，全勾一遍等于没审。要看对照请取消勾选「只看推荐条」。"
+          description="三条候选里通常只有一条能钩人，全勾一遍等于没审。要看对照请把筛选切到「全部」。"
         />
       )}
       <Table<AssetSummary>
