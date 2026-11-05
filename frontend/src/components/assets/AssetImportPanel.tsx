@@ -319,7 +319,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                 placeholder="可不选（这批全标未分类）"
               />
               <Text type="secondary" style={{ fontSize: 12 }}>
-                只给这一批每条素材起个结构层标记（A–G，照《钩子模版换皮参数设定.docx》）；不选照样导入、
+                只给这一批每条素材起个开头套路的标记（A–G，照《钩子模版换皮参数设定.docx》）；不选照样导入、
                 照样反推文案出文案，之后在素材列表「原型」那列逐条改。
               </Text>
             </Space>
@@ -512,7 +512,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
       <Col span={10}>
         <Card
           size="small"
-          title="批次台账（成本对账用）"
+          title="批次账目（每批花了多少钱，对账用）"
           extra={
             <Button size="small" icon={<ReloadOutlined />} onClick={fetchBatches}>
               刷新

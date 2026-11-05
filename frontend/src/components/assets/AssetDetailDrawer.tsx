@@ -527,7 +527,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                       placeholder="选原型（清空＝改成未分类）"
                     />
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      结构层人工标记，不填照样走完全链；改了只影响这条素材，
+                      开头套路的标记，不填照样走完全链；改了只影响这条素材，
                       <strong>不回写</strong>已经出的候选文案。
                     </Text>
                   </>
@@ -715,6 +715,25 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                               改前：{s.text_before_edit.slice(0, 60)}…
                             </Text>
                           )}
+                          {/* 批 J：提示词预览（过审后系统自动备好）。预览≠投产稿要写在标题里，
+                              否则会有人拿这段直接贴给豆包——它缺钩子编号和角色卡信息。 */}
+                          {s.prompt_preview ? (
+                            <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                豆包提示词预览（给人看的样稿，投产时会重新展开）：
+                              </Text>
+                              <Paragraph
+                                style={{ marginBottom: 0, fontSize: 12, background: '#fafafa', padding: 8, borderRadius: 4 }}
+                                ellipsis={{ rows: 6, expandable: 'collapsible', symbol: (expanded) => (expanded ? '收起' : '展开') }}
+                              >
+                                {s.prompt_preview}
+                              </Paragraph>
+                            </Space>
+                          ) : (s.audit_status === 'approved' || s.audit_status === 'passed_edited') ? (
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              提示词预览还没生成出来（过审后系统自动备，备不出来不影响投产——投产时会重新展开）
+                            </Text>
+                          ) : null}
                         </Space>
                       </List.Item>
                     )}

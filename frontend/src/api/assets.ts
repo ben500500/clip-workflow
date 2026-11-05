@@ -186,6 +186,13 @@ export interface AssetItem {
   file_key: string | null;
   bucket: string | null;
   file_size: number | null;
+  /**
+   * 批 J：链接素材的原片下载三态。null=没有要下的（文件素材/图片/没链接）；
+   * running=后台正在下；success=已进自有桶（此时 file_key 一定有值）；
+   * failed=没下成（可再点「下载原片」重试）。**不入五段阶段**——下载是搭车动作，
+   * 失败只影响「离线看原片/内联预览」，不拦反推文案。
+   */
+  download_status: string | null;
   project_id: string | null;
   episode_id: string | null;
   /** 反推提示词任务 id（wechat_dl_prompt_tasks，跨域只存 id） */
@@ -283,6 +290,17 @@ export interface AssetSummary {
    * 和 0（查了、确实一条没产）是两回事，所以类型是 optional 而不是 number。
    */
   output_count?: number;
+  /**
+   * 批 J：豆包生产提示词**预览**（过审即自动备好）。⚠️ 预览≠投产稿——
+   * 投产时会按钩子编号/角色卡/剧名/档位重新展开，这里只是让你先看个大概，
+   * 直接复制它去投板会缺钩子编号等信息。null=还没备好（没过审，或备的过程中
+   * 失败了——失败不拦投产，投产时会重新展开）。
+   */
+  prompt_preview: string | null;
+  /** 预览生成时间（null=同上） */
+  prompt_preview_at: string | null;
+  /** 备预览的实扣（元）。当前口径预览不单独计费，恒 0；保留列是为了对账 */
+  cost_preview: number;
   created_at: string;
   // ── 仅 list_summaries 回（join 素材行）；getAsset 的 summaries 不带这些键 ──
   asset_code?: string;
@@ -544,10 +562,18 @@ export interface AssetQueueSegment {
  * 结果靠 `getAssetJob` 轮询取——刷新页面、换浏览器都还查得到（台账在库里，不在前端内存里）。
  */
 /**
- * 后台任务类型。四类都有写入方（批 F 加 `frames`、批 H 加 `dispatch`）：
- * `dispatch` 是唯一**往外花钱/花号池额度**的那一类，所以提交口另带 `confirm`。
+ * 后台任务类型。六类都有写入方（批 F 加 `frames`、批 H 加 `dispatch`、批 J 加
+ * `download`/`prompt_preview`）：`dispatch` 是唯一**往外花钱/花号池额度**的那一类，
+ * 所以提交口另带 `confirm`；`download`/`prompt_preview` 是批 J 的搭车动作——
+ * 反推时顺带下载原片、过审后自动备提示词，也开放手工批量（重试失败行用）。
  */
-export type AssetJobKind = 'summary_generate' | 'produce' | 'frames' | 'dispatch';
+export type AssetJobKind =
+  | 'summary_generate'
+  | 'produce'
+  | 'frames'
+  | 'dispatch'
+  | 'download'
+  | 'prompt_preview';
 export type AssetJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted';
 
 /** 进度是**现算的粗口径**（协程不回报中间态），别当成百分比看 */
@@ -707,6 +733,11 @@ export interface AssetAnalyzeRequest {
   force?: boolean;
   /** 重跑 stage_prompt=failed 的素材（默认跳过已跑过的，重跑＝重复烧钱） */
   retry_failed?: boolean;
+  /**
+   * 批 J：反推时顺带把链接素材的原片下载进自有桶（默认 true）。
+   * 付费渠道一条 0.01 元解析费；文件素材/图片/已下载过的自动跳过。
+   */
+  download?: boolean;
   /** 整批排队：不传 asset_ids，按批次取「还没反推」的下一段 */
   batch_id?: string | null;
   offset?: number;
@@ -752,6 +783,61 @@ export interface AssetResolveRequest {
   limit?: number | null;
   /** ≥2 条时必须为 true */
   confirmed?: boolean;
+}
+
+/** 批 J：链接素材原片下载（反推默认顺带排上；这里也开放手工批量/失败行重试） */
+export interface AssetDownloadRequest {
+  asset_ids?: string[];
+  /** D-1：true＝提交即回任务号（AssetJobAck）。页面按钮一律走 true */
+  async_mode?: boolean;
+}
+
+/** 下载逐条明细：失败原因/error 里写了「失败不记账」还是「已按渠道记账」 */
+export interface AssetDownloadItemResult {
+  asset_id: string;
+  code: string;
+  ok: boolean;
+  /** 本条实扣解析费（元）；付费渠道 0.01，免费渠道 0 */
+  charged: number;
+  channel: string | null;
+  error: string | null;
+  file_key?: string;
+  size?: number;
+  note?: string;
+}
+
+export interface AssetDownloadResponse {
+  results: AssetDownloadItemResult[];
+  /** 没干活就被跳过的（图片/文件素材/已在桶里/没链接），reason 是白话 */
+  skipped: { code: string; reason: string }[];
+  downloaded: number;
+  charged: number;
+  channels: Record<string, number>;
+  message: string;
+}
+
+/** 批 J：过审文案 → 豆包提示词**预览**（过审自动备；这里也开放手工重跑） */
+export interface AssetPromptPreviewRequest {
+  summary_ids?: string[];
+  /** D-1：true＝提交即回任务号（AssetJobAck）。页面按钮一律走 true */
+  async_mode?: boolean;
+}
+
+export interface AssetPromptPreviewItemResult {
+  summary_id: string;
+  ok: boolean;
+  /** true=已有预览原样复用，没重新等模型 */
+  reused: boolean;
+  error: string | null;
+  code?: string;
+  /** 模型是否自报原样保住了钩子文案；false 时投产会按漂移判拦截重试 */
+  kept_verbatim?: boolean;
+  note?: string;
+}
+
+export interface AssetPromptPreviewResponse {
+  results: AssetPromptPreviewItemResult[];
+  message: string;
 }
 
 /** ReviewRequest */
@@ -1992,6 +2078,20 @@ export const assetApi = {
   // 链接素材按需回源解析：显式点、显认、显付费的一次动作（没有 force 后门，blocked 只能充值或改直链）
   resolveAssets: (data: AssetResolveRequest) =>
     client.post('/assets/resolve', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetResolveResponse>,
+
+  // 批 J：把链接素材的原片拉回自有桶（四件套：解析→拉流→落桶→补时长）。
+  // 幂等：已在桶里的自动跳过；付费渠道按 0.01 元/条记账。失败行改完原因可重跑。
+  downloadSources: (data: AssetDownloadRequest) =>
+    client.post('/assets/download', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<
+      AssetDownloadResponse | AssetJobAck
+    >,
+
+  // 批 J：过审文案备豆包提示词预览（预览≠投产稿，投产时会重新展开）。
+  // 幂等：已有预览的复用不重复等模型；失败不拦投产。
+  previewPrompt: (data: AssetPromptPreviewRequest) =>
+    client.post('/assets/summaries/preview-prompt', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<
+      AssetPromptPreviewResponse | AssetJobAck
+    >,
 
   // 批量出钩子文案候选（默认 3 条：疑问式/陈述式/台词摘录式）；前置是反推已成功。
   // 带 `async_mode: true` 时**当场回任务号**（AssetJobAck），结果去 getAssetJob 轮询取；

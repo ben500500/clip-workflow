@@ -48,7 +48,7 @@ const AssetLibrary: React.FC = () => {
     } else if (job.status === 'interrupted') {
       message.warning(`「${job.kind_label}」被服务重启打断，结果不可信，需要重新提交`, 8);
     } else {
-      message.error(`「${job.kind_label}」没跑成：${job.error || '原因见任务台账'}（任务号 ${job.id.slice(0, 8)}）`, 8);
+      message.error(`「${job.kind_label}」没跑成：${job.error || '原因见「后台任务」列表'}（任务号 ${job.id.slice(0, 8)}）`, 8);
     }
   }, []);
 
@@ -133,7 +133,7 @@ const AssetLibrary: React.FC = () => {
             钩子原型字典
           </Button>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            原型（A–G）＝结构层人工标记：全员可看、管理员可改；不点也能走完全链，过审与投产都不看它。
+            原型（A–G）＝开头套路的标记：全员可看、管理员可改；不点也能走完全链，过审与投产都不看它。
           </Text>
         </Space>
       </Card>

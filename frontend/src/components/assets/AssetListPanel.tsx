@@ -1,10 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Button, Card, Checkbox, DatePicker, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
-  BulbOutlined, CloudDownloadOutlined, DownloadOutlined, FileTextOutlined, MergeCellsOutlined,
-  QuestionCircleOutlined, ReloadOutlined, SearchOutlined,
+  BulbOutlined, CloudDownloadOutlined, DownloadOutlined, FileTextOutlined, LoadingOutlined,
+  MergeCellsOutlined, QuestionCircleOutlined, ReloadOutlined, SearchOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -26,6 +26,76 @@ import { nudgeAssetJobBanner } from './AssetJobBanner';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
+
+/** 列宽拖拽的记忆键（批 J 列表列宽可拖，拖完存本地，下次进来保持） */
+const COL_WIDTH_KEY = 'asset-list-col-widths-v1';
+
+/** 来源链接太长截断成「域名+尾巴」，全文放 Tooltip（批 J：超长链接把列撑爆） */
+const shortUrl = (u: string) => {
+  try {
+    const p = new URL(u);
+    return `${p.host}/…${u.slice(-14)}`;
+  } catch {
+    return u.length > 40 ? `${u.slice(0, 40)}…` : u;
+  }
+};
+
+/** 表头拖拽把手：盖住列分隔线 6px，按住左右拖改列宽（原生 pointer 事件，不引第三方库） */
+const startResize = (
+  e: React.PointerEvent,
+  curWidth: number,
+  onMove: (w: number) => void,
+  onEnd: () => void,
+) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const startX = e.clientX;
+  const startW = curWidth;
+  const move = (ev: PointerEvent) => onMove(Math.max(60, startW + ev.clientX - startX));
+  const up = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    onEnd();
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+};
+
+/**
+ * 表头单元格：只有 `onHeaderCell` 回了 width/handler 的列才渲染拖拽把手
+ * （antd 把 `onHeaderCell` 的返回值当 props 传给这个单元格）。
+ * 没配的列（勾选框、操作列）原样渲染，一个属性都不多。
+ */
+const ResizableHeaderCell: React.FC<{
+  width?: number;
+  onResizeStart?: (e: React.PointerEvent) => void;
+  children?: React.ReactNode;
+  style?: React.CSSProperties;
+  // 其余全是 antd 透传的 th 属性（className/colSpan/…）
+  [key: string]: unknown;
+}> = ({ width, onResizeStart, children, style, ...rest }) => {
+  const thProps = rest as React.ThHTMLAttributes<HTMLTableCellElement>;
+  if (!width || !onResizeStart) return <th style={style} {...thProps}>{children}</th>;
+  return (
+    <th style={{ ...style, position: 'relative' }} {...thProps}>
+      {children}
+      <span
+        title=""
+        onPointerDown={onResizeStart}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: 'absolute',
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: 7,
+          cursor: 'col-resize',
+          zIndex: 2,
+        }}
+      />
+    </th>
+  );
+};
 
 
 interface Props {
@@ -111,6 +181,23 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const [refreshBusy, setRefreshBusy] = useState(false);
   // 行级「重试反推」提交中（11-05：失败行的环节旁小图标）
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  // 行级「重试下载原片」提交中（批 J：下载失败的行就地重试）
+  const [retryDlId, setRetryDlId] = useState<string | null>(null);
+  /**
+   * 批 J：反推时顺带把链接素材的原片下载进自有桶（用户口径：默认要下）。
+   * 只对勾选里的链接视频成立；文件/图片后端本来就会跳过，勾不勾不影响。
+   */
+  const [withDownload, setWithDownload] = useState(true);
+  // 批 J：列宽可拖（记忆在 localStorage）。key→宽度；没记过的列用定义里的默认宽
+  const [colWidths, setColWidths] = useState<Record<string, number>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(COL_WIDTH_KEY) || '{}');
+    } catch {
+      return {};
+    }
+  });
+  const colWidthsRef = useRef(colWidths);
+  colWidthsRef.current = colWidths;
 
   const fetchList = useCallback(
     async (p: number = page, ps: number = pageSize) => {
@@ -219,6 +306,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         confirmed: true,
         force,
         retry_failed: retryFailed,
+        download: withDownload,
       });
       Modal.info({
         title: '反推文案已提交',
@@ -327,7 +415,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
               <Alert
                 type="info"
                 showIcon
-                message={`${notes.length} 条给了说明（有说明不等于失败：命中免费兜底渠道本来就不回时长）`}
+                message={`${notes.length} 条给了说明（有说明不等于失败：命中免费渠道时本来就不回时长）`}
                 description={notes.slice(0, 5).map((n) => `${n.code}: ${n.note}`).join('；')}
               />
             )}
@@ -446,6 +534,29 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     });
   };
 
+  /**
+   * 批 J：行级「重试下载原片」。链接素材下载失败的行就地给红色小标，点了
+   * 只重下这一条（已在桶里的后端会跳过并说明）。免费渠道 0 元；付费渠道一条
+   * 0.01 元——失败那一次多半已把解析费记过账，重试可能再扣一次，话术里说清。
+   */
+  const retryDownload = async (row: AssetItem) => {
+    setRetryDlId(row.id);
+    try {
+      const res = await assetApi.downloadSources({ asset_ids: [row.id], async_mode: true });
+      if (isAssetJobAck(res)) {
+        message.success(res.message || '已排上下载，跑完这行会变绿色', 6);
+        nudgeAssetJobBanner();
+      } else {
+        message.success(res.message || '下载已提交', 6);
+      }
+      fetchList();
+    } catch (e) {
+      message.error((e as Error).message || '下载提交失败');
+    } finally {
+      setRetryDlId(null);
+    }
+  };
+
   const showSource = async (asset: AssetItem) => {
     try {
       const res = await assetApi.downloadAssetSource(asset.id);
@@ -475,34 +586,70 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       dataIndex: 'title',
       ellipsis: true,
       render: (v: string | null, row) => (
-        <Space direction="vertical" size={0}>
-          {/* 链接素材永远没有标题（title 只有文件上传时取文件名），
-              旧文案写死「未反推」会和环节标签里绿色的「读」自相矛盾，11-03 验收截图上就是这样 */}
-          <Text strong={!!v}>
-            {v || (
-              <Text type="secondary">
-                {row.source_url ? '（链接素材：无标题，只有来源地址）' : '（未取到标题）'}
+        // 批 J：全文挪进悬浮提示，列里只显示截断的链接（域名+尾巴），拖宽列也看得到全文
+        <Tooltip
+          title={
+            <div style={{ maxWidth: 420, wordBreak: 'break-all' }}>
+              {row.title && <div>{row.title}</div>}
+              {row.source_url && <div style={{ marginTop: 2 }}>{row.source_url}</div>}
+              {!row.title && !row.source_url && <div>（未取到标题）</div>}
+            </div>
+          }
+        >
+          <Space direction="vertical" size={0}>
+            {/* 链接素材永远没有标题（title 只有文件上传时取文件名），
+                旧文案写死「未反推」会和环节标签里绿色的「读」自相矛盾，11-03 验收截图上就是这样 */}
+            <Text strong={!!v}>
+              {v || (
+                <Text type="secondary">
+                  {row.source_url ? '（链接素材：无标题，只有来源地址）' : '（未取到标题）'}
+                </Text>
+              )}
+            </Text>
+            {row.source_url ? (
+              <a href={row.source_url} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>
+                {shortUrl(row.source_url)}
+              </a>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {row.file_name || '-'}
               </Text>
             )}
-          </Text>
-          {row.source_url ? (
-            <a href={row.source_url} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>
-              {row.source_url.slice(0, 60)}
-            </a>
-          ) : (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {row.file_name || '-'}
-            </Text>
-          )}
-        </Space>
+          </Space>
+        </Tooltip>
       ),
     },
     {
       title: '来路',
       dataIndex: 'source_kind',
-      width: 80,
+      width: 96,
       render: (v: string, row) => (
-        <Tag>{v === 'link' ? row.platform || '链接' : '文件'}</Tag>
+        <Space direction="vertical" size={0}>
+          <Tag>{v === 'link' ? row.platform || '链接' : '文件'}</Tag>
+          {/* 批 J：链接素材的原片下载三态小标——下载是搭车动作，失败不拦流程，
+              但得让人看得见、点得动重试，不能只藏在详情抽屉里 */}
+          {!isImageAsset(row) && v === 'link' && (
+            row.download_status === 'running' ? (
+              <Tag icon={<LoadingOutlined spin />} color="processing" style={{ fontSize: 11, marginInlineEnd: 0 }}>
+                原片下载中
+              </Tag>
+            ) : row.download_status === 'failed' ? (
+              <Tooltip title="原片没下载下来，点这里重试（只重下这一条；走免费渠道不花钱，付费渠道一条 0.01 元）">
+                <a onClick={() => retryDownload(row)}>
+                  <Tag color="red" style={{ fontSize: 11, marginInlineEnd: 0 }}>
+                    {retryDlId === row.id ? '提交中…' : '下载失败·点重试'}
+                  </Tag>
+                </a>
+              </Tooltip>
+            ) : row.file_key ? (
+              <Tag color="green" style={{ fontSize: 11, marginInlineEnd: 0 }}>原片已下载</Tag>
+            ) : (
+              <Tooltip title="原片还在别人平台上，我们自己的存储里没有；反推文案时勾「顺带下载原片」就会存一份进来">
+                <Text type="secondary" style={{ fontSize: 11 }}>原片未下载</Text>
+              </Tooltip>
+            )
+          )}
+        </Space>
       ),
     },
     {
@@ -647,6 +794,40 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     },
   ];
 
+  /**
+   * 批 J：列宽可拖。把每列的默认宽换成「上次拖完记住的宽」，并在表头挂拖拽把手
+   * （操作列是固定列，antd 会复制表头，拖拽把手对它不生效，跳过）。
+   */
+  const resizableColumns: ColumnsType<AssetItem> = columns.map((col) => {
+    if (!('dataIndex' in col) && !col.key) return col;
+    const rawKey: unknown = col.key ?? ('dataIndex' in col ? col.dataIndex : undefined);
+    const key =
+      typeof rawKey === 'string' ? rawKey : Array.isArray(rawKey) ? rawKey.join('.') : undefined;
+    if (!key || col.fixed) return col;
+    const defaultW = typeof col.width === 'number' ? col.width : undefined;
+    const curW = colWidths[key] ?? defaultW;
+    return {
+      ...col,
+      width: curW,
+      onHeaderCell: () => ({
+        width: curW,
+        onResizeStart: (e: React.PointerEvent) =>
+          startResize(
+            e,
+            curW ?? 120,
+            (w) => setColWidths((prev) => ({ ...prev, [key]: w })),
+            () => {
+              try {
+                localStorage.setItem(COL_WIDTH_KEY, JSON.stringify(colWidthsRef.current));
+              } catch {
+                /* 存不了就算了：本次会话内拖宽仍然生效 */
+              }
+            },
+          ),
+      }),
+    };
+  });
+
   return (
     <Card
       size="small"
@@ -704,7 +885,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             title={
               <div style={{ maxWidth: 340 }}>
                 <div>
-                  钩子原型＝这条片子的<strong>结构层</strong>（A–G，名字照《钩子模版换皮参数设定.docx》），
+                  钩子原型＝这条片子的<strong>开头套路</strong>（A–G，名字照《钩子模版换皮参数设定.docx》），
                   和句式标签、公式标签是三回事。
                 </div>
                 <div style={{ marginTop: 4 }}>
@@ -845,7 +1026,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             </Space.Compact>
           </Tooltip>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            先勾行再点原型；原型只是结构层标记，不填照样走完全链。
+            先勾行再点原型；原型只是开头套路的标记，不填照样走完全链。
           </Text>
         </Space>
       )}
@@ -853,9 +1034,10 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         rowKey="id"
         size="small"
         loading={loading}
-        columns={columns}
+        columns={resizableColumns}
         dataSource={items}
         scroll={{ x: 1470 }}
+        components={{ header: { cell: ResizableHeaderCell } }}
         rowSelection={
           canProduce
             ? {
@@ -909,10 +1091,17 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
               description={
                 <span style={{ fontSize: 12 }}>
                   0.00054 元/秒 × 时长上限。600 秒档一条 0.324 元，180 秒档一条 0.0972 元——上限选大了，批次成本直接翻倍。
-                  台账上记的是按时长上限推算的额度（对方服务不逐单回传金额），用来对账，别当精确值。
+                  系统里记的是按时长上限推算的估算金额（对方服务不逐单回传金额），用来对账，别当精确值。
                 </span>
               }
             />
+            <Checkbox checked={withDownload} onChange={(e) => setWithDownload(e.target.checked)}>
+              <Text style={{ fontSize: 12 }}>顺带把链接素材的原片下载到我们自己的存储（默认勾上）</Text>
+            </Checkbox>
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              下载好以后回看、拼接、做合成都不用再蹲原平台的临时链接。走付费渠道时一条加 0.01 元解析费；
+              上传的文件和图片本来就在自己存储里，会自动跳过。原片会一直占存储，目前不自动清理。
+            </Text>
             <Checkbox checked={retryFailed} onChange={(e) => setRetryFailed(e.target.checked)}>
               <Text style={{ fontSize: 12 }}>同时重跑反推文案失败的素材（默认跳过已跑过的）</Text>
             </Checkbox>
@@ -939,7 +1128,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             message="这一步会真扣钱，且预估按「全部走付费渠道」算"
             description={
               <span style={{ fontSize: 12 }}>
-                实际命中 yuanbao/preview 免费兜底时库里记 0，对账只会偏高不会偏低。
+                实际命中 yuanbao/preview 这些免费渠道时库里记 0，对账只会偏高不会偏低。
                 拿到时长才能判断「这条能不能放进 180 秒档」，所以它是反推文案之前的可选一步，不能替代反推文案。
               </span>
             }

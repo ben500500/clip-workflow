@@ -270,7 +270,7 @@ const AssetCategoryDrawer: React.FC<Props> = ({ open, onClose }) => {
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="原型＝结构层（A–G），和句式标签、公式标签是三回事"
+        message="原型＝开头套路（A–G），和句式标签、公式标签是三回事"
         description={
           <div>
             <Paragraph style={{ marginBottom: 4 }}>

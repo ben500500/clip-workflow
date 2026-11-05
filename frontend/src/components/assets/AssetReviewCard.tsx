@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Space, Tag, Tooltip, Typography } from 'antd';
+import { Button, Popover, Space, Tag, Tooltip, Typography } from 'antd';
 import { CheckCircleOutlined, CloseCircleOutlined, EditOutlined, SendOutlined } from '@ant-design/icons';
 import { HOOK_STYLE_LABELS, type AssetFrameSlot, type AssetSummary } from '../../api/assets';
 import { AuditStatusTag, RiskTags } from './AssetBits';
@@ -88,6 +88,30 @@ const AssetReviewCard: React.FC<Props> = ({
                   : '改过并重提'}
             </Tag>
           </Tooltip>
+        )}
+        {/* 批 J：过审即自动备好豆包提示词预览。收进一行点开看——整段提示词几百字，
+            平铺在卡片里会把每行撑到一屏高。「预览≠投产稿」必须跟着标题走。 */}
+        {row.prompt_preview && (
+          <Popover
+            trigger="click"
+            title="豆包提示词预览（给人看的样稿，投产时会重新展开）"
+            content={
+              <div
+                style={{
+                  maxWidth: 480,
+                  maxHeight: 320,
+                  overflow: 'auto',
+                  whiteSpace: 'pre-wrap',
+                  fontSize: 12,
+                  lineHeight: 1.6,
+                }}
+              >
+                {row.prompt_preview}
+              </div>
+            }
+          >
+            <a style={{ fontSize: 12 }}>提示词已备好·查看</a>
+          </Popover>
         )}
       </Space>
     </div>

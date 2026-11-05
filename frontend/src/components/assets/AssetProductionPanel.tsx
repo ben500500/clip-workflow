@@ -909,7 +909,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
             description={
               <span style={{ fontSize: 12 }}>
                 {dispatchRecoverOnly
-                  ? '进程重启把在等的任务带走之后（任务台账显示已中断），用它把片子取回来；同一条 outUrl 不会重复落产物。'
+                  ? '进程重启把在等的任务带走之后（后台任务列表里显示已中断），用它把片子取回来；同一条 outUrl 不会重复落产物。'
                   : '闸门与导出同一套：只投待投放的单、提示词必须与过审文案是同一条、作废单不投、正文含高风险词的按当前词表再扫一遍（admin 可带理由放行）。已拿到 board_tid 的单只回读不重建——再 POST 一次就是同一条烧两遍额度。'}
               </span>
             }

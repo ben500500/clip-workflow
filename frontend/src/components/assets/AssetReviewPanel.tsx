@@ -588,7 +588,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
             title={
               <div style={{ maxWidth: 340 }}>
                 <div>
-                  <strong>钩子原型</strong>＝这条文案的结构层（A–G，名字照《钩子模版换皮参数设定.docx》）。
+                  <strong>钩子原型</strong>＝这条文案的开头套路（A–G，名字照《钩子模版换皮参数设定.docx》）。
                   出稿时从素材继承，之后素材重新归类<strong>不会回写</strong>已出的候选。
                 </div>
                 <div style={{ marginTop: 4 }}>
@@ -675,7 +675,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           <Tooltip
             title={
               <div style={{ maxWidth: 320 }}>
-                <div>给勾选的文案点钩子原型（结构层标记，0 元，不拦过审也不放过任何拦点）。</div>
+                <div>给勾选的文案点钩子原型（开头套路标记，0 元，不拦过审也不拦任何步骤）。</div>
                 <div style={{ marginTop: 4 }}>
                   下拉清空再应用＝把选中的改回「未分类」。已经开过生产单的文案改原型<strong>不会</strong>改动已生成的提示词。
                 </div>
