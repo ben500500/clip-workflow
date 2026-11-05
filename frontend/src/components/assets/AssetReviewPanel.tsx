@@ -278,10 +278,14 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         pass_edited: 'passed_edited',
       };
       const target = afterStatus[action];
+      // AUDIT_STATUS_LABELS 的键类型是 AuditStatus，这里 action 已映射成合法值；
+      // 放宽成 Record<string,string> 取标签，免得 string 索引过不了 tsc -b。
+      const labelMap = AUDIT_STATUS_LABELS as Record<string, string>;
+      const targetLabel = labelMap[target] ?? target;
       const hints: string[] = [];
       if (okCount > 0 && target && auditStatus && auditStatus !== target) {
         hints.push(
-          `这 ${okCount} 条现在已是「${AUDIT_STATUS_LABELS[target] ?? target}」，会被当前状态筛选藏住——状态切到「${AUDIT_STATUS_LABELS[target] ?? target}」能再看到`,
+          `这 ${okCount} 条现在已是「${targetLabel}」，会被当前状态筛选藏住——状态切到「${targetLabel}」能再看到`,
         );
       }
       if (action === 'approve' && scope === 'recommended') {
