@@ -109,6 +109,8 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
 
   const [genBusy, setGenBusy] = useState(false);
   const [refreshBusy, setRefreshBusy] = useState(false);
+  // 行级「重试反推」提交中（11-05：失败行的环节旁小图标）
+  const [retryingId, setRetryingId] = useState<string | null>(null);
 
   const fetchList = useCallback(
     async (p: number = page, ps: number = pageSize) => {
@@ -184,7 +186,9 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       return;
     }
     setAnalyzeOpen(true);
-    setConfirmed(false);
+    // 11-05 用户口径：反推是常规动作，进来就默认勾上「同意提交」——
+    // 想反悔的人再点一下取消即可；确认单上的钱数照旧展示，闸门本身不放松
+    setConfirmed(true);
     setForce(false);
     setPreviewLoading(true);
     try {
@@ -233,9 +237,19 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
 
   // ── 出文案（提交即回任务号，顶部横幅负责报"跑完了"）──
   const generateSummaries = async () => {
-    const ok = ids.filter((_, i) => selected[i].stage_prompt === 'success');
+    // 11-05 修真 bug：原来按 `selected[i].stage_prompt` 判——那是**勾选那一刻的行快照**，
+    // 反推在后台跑完、列表虽然刷新了，`selected` 里存的还是旧对象（stage_prompt 还是
+    // running/未跑），于是「不刷新页面就选它出文案」永远提示"没有反推文案成功的"。
+    // 改成按 id 回当前列表里取最新行：横幅一收敛 fetchList 过，这里看到的就是 success。
+    const freshById = new Map(items.map((it) => [it.id, it]));
+    const ok = ids.filter((id) => freshById.get(id)?.stage_prompt === 'success');
     if (!ok.length) {
-      message.warning('选中的素材里没有「反推文案成功」的——文案是从反推文案稿里出的，得先反推一遍');
+      const waiting = ids.filter((id) => freshById.get(id)?.stage_prompt === 'running').length;
+      message.warning(
+        waiting
+          ? `选中的素材里有 ${waiting} 条反推文案还在跑，跑完（顶部横幅会报）再出文案`
+          : '选中的素材里没有「反推文案成功」的——文案是从反推文案稿里出的，得先反推一遍',
+      );
       return;
     }
     setGenBusy(true);
@@ -398,6 +412,40 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     }
   };
 
+  // ── 行级重试反推（11-05）：失败的行在环节旁给个 ⟳ 小图标，点了按默认档重跑这一条 ──
+  const retryAnalyze = (row: AssetItem) => {
+    const perCost = DEFAULT_TIER * 0.00054;
+    Modal.confirm({
+      title: `重试反推文案（${row.code}）`,
+      width: 520,
+      content: (
+        <Text style={{ fontSize: 12 }}>
+          按 {DEFAULT_TIER}s 默认档扣费，这条约 {yuan(perCost)}。只重跑这一条，不用回上面勾选再开弹窗；
+          跑完列表自己刷新，失败原因看详情抽屉。
+        </Text>
+      ),
+      okText: '重试',
+      onOk: async () => {
+        setRetryingId(row.id);
+        try {
+          const res: AssetAnalyzeResponse = await assetApi.analyzeBatch({
+            asset_ids: [row.id],
+            max_duration: DEFAULT_TIER,
+            confirmed: true,
+            retry_failed: true,
+          });
+          if (isAssetJobAck(res)) nudgeAssetJobBanner();
+          message.success(res.message || '反推文案已重新提交', 8);
+          fetchList();
+        } catch (e) {
+          message.error((e as Error).message || '重试提交失败');
+        } finally {
+          setRetryingId(null);
+        }
+      },
+    });
+  };
+
   const showSource = async (asset: AssetItem) => {
     try {
       const res = await assetApi.downloadAssetSource(asset.id);
@@ -503,8 +551,25 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     {
       title: '五个环节',
       key: 'stages',
-      width: 130,
-      render: (_, row) => <StageTags asset={row} />,
+      width: 148,
+      render: (_, row) => (
+        <Space size={2}>
+          <StageTags asset={row} />
+          {/* 11-05：反推失败的行就地给个 ⟳——不用把这条重新勾一遍再开批量弹窗 */}
+          {canProduce && !isImageAsset(row) && row.stage_prompt === 'failed' && (
+            <Tooltip title="这条反推文案失败了，点重试（按默认时长档扣费）">
+              <Button
+                size="small"
+                type="text"
+                icon={<ReloadOutlined />}
+                loading={retryingId === row.id}
+                onClick={() => retryAnalyze(row)}
+                style={{ width: 20, height: 20, marginLeft: 2 }}
+              />
+            </Tooltip>
+          )}
+        </Space>
+      ),
     },
     {
       title: '文案',
