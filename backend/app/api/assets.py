@@ -8235,9 +8235,18 @@ async def _plan_asset_frames(
             decided.append({**base, "result": "skipped", "frames": len(existing),
                             "reason": f"已经有 {len(existing)} 张帧（要重抽带 force=true）"})
             continue
-        if asset.source_kind != SOURCE_FILE or not asset.file_key:
-            decided.append({**base, "result": "skipped", "frames": 0,
-                            "reason": "链接素材桶里没有原片，抽不了帧；要看画面用抽屉里的「取直链并播放」"})
+        # 11-05 易操作性评估 P0-1（另一半）：老判据 `source_kind != SOURCE_FILE` 把
+        # **下载完成的链接素材也一并拒了**——下载落桶后 file_key 非空、原片就在桶里，
+        # 却照样跳过，导致"下载成功补排抽帧"在执行侧空转（现网回填实测当场暴露）。
+        # 判据改为只看 file_key：有文件就抽，没有才跳过（话术区分"还没下载"与"没文件"）。
+        if not asset.file_key:
+            reason = (
+                "链接素材的原片还没下载到自有桶，抽不了帧；「下载原片」完成后系统会自动补排"
+                "（要看画面也可先在抽屉里「取直链并播放」）"
+                if asset.source_kind != SOURCE_FILE
+                else "这条没有可用的视频文件，抽不了帧"
+            )
+            decided.append({**base, "result": "skipped", "frames": 0, "reason": reason})
             continue
         reason = framesvc.should_skip(asset.duration)
         if reason:

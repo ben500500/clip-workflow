@@ -4735,6 +4735,63 @@ def test_frames_skip_what_they_cannot_draw_and_never_touches_the_bucket():
     _run(_scenario(), with_frames=True)
 
 
+def test_downloaded_link_asset_gets_frames():
+    """11-05 易操作性评估 P0-1 收口：链接素材**下载完成后**（file_key 非空）抽帧必须真抽得出来。
+
+    修前两头一起堵死：排程侧下载完成后没人排、执行侧 `source_kind != SOURCE_FILE`
+    见链接素材就跳过（file_key 非空也一样）——现网 asset_frames 0 行、审核台永远
+    「没有预览图」就是这么来的。修后判据只看 file_key；没下载的链接素材照旧跳过，
+    话术指向「下载完成后系统自动补排」。
+    """
+    if not _HAS_FF:
+        pytest.skip("本机/CI 没装 ffmpeg+ffprobe")
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        link_id, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+        # 模拟「下载原片完成」：原片落自有桶、时长已探、下载状态 success
+        async with dbmod.async_session_factory() as s:
+            a = await s.get(AssetItem, uuid.UUID(link_id))
+            a.file_key = f"asset/source/{a.code}/abc123.mp4"
+            a.bucket = settings.MINIO_BUCKET_RAW
+            a.duration = 6.0
+            a.download_status = "success"
+            await s.commit()
+
+        store: dict = {}
+        p1, p2, p3 = _frames_env(store)
+        with p1, p2, p3:
+            r = await client.post(
+                "/api/assets/frames/extract", json={"asset_ids": [link_id]}, headers=hm)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["extracted"] == 1 and body["frames"] == 4, body
+        rows = await _rows(AssetFrame, AssetFrame.asset_id == uuid.UUID(link_id))
+        assert sorted(f"{x.kind}:{x.seq}" for x in rows) == ["grid:0", "thumb:0", "thumb:1", "thumb:2"]
+        # 封面跟着补上（审核台卡片有图的第一来源）
+        thumb0 = [x for x in rows if x.kind == "thumb" and x.seq == 0][0]
+        assert (await _row_of(AssetItem, link_id)).cover_image_key == thumb0.file_key
+        # 帧确实进桶且是真 JPEG
+        frame_keys = [k for k in store if k.startswith("asset/frames/")]
+        assert len(frame_keys) == 4 and all(store[k][0][:3] == b"\xff\xd8\xff" for k in frame_keys)
+
+        # 反面钉住：链接素材**没** file_key 仍然跳过，话术指向自动补排而不是死路
+        # （换一条没用过的链接，重复链接会被导入去重吃掉）
+        link2, _ = await _make_ready_asset(client, hm, url=DOUYIN_2)
+        with patch("app.api.assets.download_to_file", AsyncMock(return_value=False)):
+            r2 = await client.post(
+                "/api/assets/frames/extract", json={"asset_ids": [link2]}, headers=hm)
+        assert r2.json()["skipped"] == 1, r2.json()
+        reason = r2.json()["results"][0]["reason"]
+        assert "链接素材" in reason and "自动补排" in reason, reason
+
+        await client.aclose()
+
+    _run(_scenario(), with_frames=True)
+
+
 def test_frames_job_is_queued_by_async_mode_and_hidden_from_the_default_ledger():
     """手动 `async_mode=true` 走同一套台账；`GET /assets/jobs` 默认**不列**抽帧。
 
