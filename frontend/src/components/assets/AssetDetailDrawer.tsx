@@ -29,7 +29,7 @@ interface Props {
 }
 
 /**
- * 素材详情抽屉：一条素材的全链路状态 + 候选文案 + 生产单 + 反推详规。
+ * 素材详情抽屉：一条素材的全链路状态 + 候选文案 + 生产单 + 反推文案稿。
  *
  * 一个 `GET /assets/{id}` 就把这四块带回来（详情与列表共用同一套计数字段），
  * 所以这里不必再发三次请求、也不必判 nil。
@@ -179,7 +179,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
 
   /**
    * 就地改这条素材的钩子原型。留空提交＝清成未分类（后端 `category_id=null` 的语义）。
-   * 改成功只把 `category_id/category_name` 并回本地 data：抽屉里其余四块（文案/生产单/详规）
+   * 改成功只把 `category_id/category_name` 并回本地 data：抽屉里其余四块（文案/生产单/反推文案稿）
    * 和这次改动无关，整块重拉会让人看到一次白屏。
    */
   const assignCategory = async (next?: string) => {
@@ -219,7 +219,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
       message.success(res.duration_note || '已更新视频读取进度');
       onChanged?.();
     } catch (e) {
-      message.error((e as Error).message || '更新失败（该素材可能还没有读详规任务）');
+      message.error((e as Error).message || '更新失败（该素材可能还没有反推文案任务）');
     } finally {
       setBusy(false);
     }
@@ -496,7 +496,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
 
           <Descriptions size="small" column={2} bordered>
             <Descriptions.Item label="标题" span={2}>
-              {asset.title || <Text type="secondary">（读详规成功后才有标题）</Text>}
+              {asset.title || <Text type="secondary">（反推文案成功后才有标题）</Text>}
             </Descriptions.Item>
             <Descriptions.Item label="来路">
               <Tag>{asset.source_kind === 'link' ? '链接' : '文件'}</Tag>
@@ -554,7 +554,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
             </Descriptions.Item>
             <Descriptions.Item label="视频时长上限">
               {isImageAsset(asset)
-                ? '不适用（图片不读视频详规）'
+                ? '不适用（图片不反推文案）'
                 : asset.prompt_max_duration
                   ? `${asset.prompt_max_duration}s`
                   : '未定'}
@@ -566,11 +566,11 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
             <Descriptions.Item label="成本" span={2}>
               {isImageAsset(asset) ? (
                 <Text type="secondary">
-                  0 元：图片不读详规、不查时长，也不计入批次预估——它只在投产时当角色卡带上。
+                  0 元：图片不反推文案、不查时长，也不计入批次预估——它只在投产时当角色卡带上。
                 </Text>
               ) : (
                 <>
-                  读详规 {yuan(asset.cost_prompt)} ｜ 查时长 {yuan(asset.cost_parse)}
+                  反推文案 {yuan(asset.cost_prompt)} ｜ 查时长 {yuan(asset.cost_parse)}
                   <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
                     （生产这一环的花费现在不记账、恒为 0，是留给后续版本的口子，别当预算看）
                   </Text>
@@ -580,7 +580,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
             <Descriptions.Item label="导入时间">
               {parseServerTime(asset.created_at)?.format('YYYY-MM-DD HH:mm') || '-'}
             </Descriptions.Item>
-            <Descriptions.Item label="读详规任务">
+            <Descriptions.Item label="反推文案任务">
               {/* 后端这三个状态码是 processing/success/failed，直接 String() 出来一线看不懂
                   （11-04 抽屉截图上就是裸的「success」），这里翻成人话 */}
               {data?.prompt_task
@@ -608,8 +608,8 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
           </Descriptions>
 
           {/*
-            批 G：图片走的是另一条路。详规／文案／生产单／拼接产物这四页对图片**永远为空**
-            （后端四个口都按 media_kind 明确拒绝图片入参），留着只会让人按提示去点「读视频详规」
+            批 G：图片走的是另一条路。反推文案稿／文案／生产单／拼接产物这四页对图片**永远为空**
+            （后端四个口都按 media_kind 明确拒绝图片入参），留着只会让人按提示去点「反推文案」
             ——那是一次白扣钱的反推。所以这几页整块换成一句白话说明。
           */}
           {isImageAsset(asset) ? (
@@ -617,8 +617,8 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
               type="info"
               showIcon
               style={{ marginTop: 16 }}
-              message="这张图只当角色卡，不走读详规 → 出文案 → 审核 → 生产单那四步"
-              description="它不读视频详规、不出钩子文案、不生成生产单、也没有拼接产物（这四页对图片永远是空的，所以这里不摆出来）。真正用它的地方在「生成生产单」弹窗：把要用的卡按顺序挑进来，第 1 张就是板上的主形象；成片挂在被投产的那条视频素材名下，不在这里。"
+              message="这张图只当角色卡，不走反推文案 → 出文案 → 审核 → 生产单那四步"
+              description="它不反推文案、不出钩子文案、不生成生产单、也没有拼接产物（这四页对图片永远是空的，所以这里不摆出来）。真正用它的地方在「生成生产单」弹窗：把要用的卡按顺序挑进来，第 1 张就是板上的主形象；成片挂在被投产的那条视频素材名下，不在这里。"
             />
           ) : (
           <Tabs
@@ -626,7 +626,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
             items={[
               {
                 key: 'script',
-                label: `视频详规${data?.prompt_script ? '' : '（还没出）'}`,
+                label: `反推文案稿${data?.prompt_script ? '' : '（还没出）'}`,
                 children: data?.prompt_script ? (
                   <>
                     {/*
@@ -639,7 +639,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                       showIcon
                       style={{ marginBottom: 8 }}
                       message="这段是 AI 看片子写出来的，没经过人工核对；下面的钩子文案就是照它写的。"
-                      description="觉得它读歪了（人物认错、情节说反、台词串了），直接驳回对应文案，或回列表对这条重读一遍详规再出文案。这一行只提醒、不拦任何步骤。"
+                      description="觉得它读歪了（人物认错、情节说反、台词串了），直接驳回对应文案，或回列表对这条重做一遍反推文案再出文案。这一行只提醒、不拦任何步骤。"
                     />
                     <Space style={{ marginBottom: 8 }}>
                       <Button
@@ -647,7 +647,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                         icon={<CopyOutlined />}
                         onClick={() => {
                           navigator.clipboard.writeText(data.prompt_script || '');
-                          message.success('已复制视频详规');
+                          message.success('已复制反推文案稿');
                         }}
                       >
                         复制
@@ -671,7 +671,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                     </Paragraph>
                   </>
                 ) : (
-                  <Empty description="还没有视频详规（先在列表页点「读视频详规」）" />
+                  <Empty description="还没有反推文案稿（先在列表页点「反推文案」）" />
                 ),
               },
               {
@@ -826,7 +826,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
           <Text type="secondary" style={{ fontSize: 12 }}>
             {isImageAsset(asset)
               ? '图片的链路：导入（拖进上传面板）→ 量尺寸定画幅 → 入库（图片已入库）→ 在「生成生产单」里被挑成角色卡 → 随那条视频一起出片。画幅由这张卡的宽高比决定，提示词写 9:16 也压不住横版卡。'
-              : '链路：导入 → 把视频读成文字详规 → 出钩子文案 → 人工审核 → 生成生产单（把过审文案变成要投出去的一条条提示词）' +
+              : '链路：导入 → 把视频反推成文案稿 → 出钩子文案 → 人工审核 → 生成生产单（把过审文案变成要投出去的一条条提示词）' +
                 ' → 导出提示词 txt 或建板参数（七项）→（人把提示词放进企微后台任务板后，回来登记投放结果）→ 拼接产物（两段直拼，0 元）。' +
                 '钩子编号是五位编号，投放和回收都靠它对上。'}
           </Text>

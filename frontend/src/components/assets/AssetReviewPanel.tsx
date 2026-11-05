@@ -531,7 +531,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
               <div style={{ maxWidth: 340 }}>
                 <div><strong>推荐条</strong>：每条素材出 3 条候选，模型标 1 条推荐。默认只看它，是为了防止 3 条全勾一遍走过场。</div>
                 <div><strong>命中违禁词</strong>：命中违禁词的候选。红色「不许用」＝过不了审、也出不了生产单；橙色「要注意」＝只留个提醒。</div>
-                <div><strong>和原视频对不上</strong>：文案里的人物/场景/事件在视频详规里找不到的候选，通常要人工改或重新出。</div>
+                <div><strong>和原视频对不上</strong>：文案里的人物/场景/事件在反推文案稿里找不到的候选，通常要人工改或重新出。</div>
                 <div><strong>全部</strong>：3 条候选都列出来，用来看对照。</div>
                 <div style={{ marginTop: 4 }}>这四个是互斥的：一次只看一类。</div>
               </div>

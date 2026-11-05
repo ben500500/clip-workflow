@@ -32,7 +32,7 @@ interface Props {
  *  - 「整批默认原型」（11-04 拍板①）只是给这一批每条素材起个结构层标记，
  *    可不选、不拦任何后续动作；建好之后逐条改在素材列表那一列上点。
  *  - 批 G：文件口同时收图片。图片进来是 `media_kind=image` 的**角色卡**，
- *    四环（读详规/出文案/投产/拼接）对它都不成立，也不计费——所以它的「下一步」
+ *    四环（反推文案/出文案/投产/拼接）对它都不成立，也不计费——所以它的「下一步」
  *    不是在本面板提交，而是到投产弹窗里被挑走。
  */
 const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
@@ -218,7 +218,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
       dataIndex: 'cost_actual',
       width: 90,
       render: (v: number | null, row) => (
-        <Tooltip title="实扣是按（读视频详规 + 查时长）重新汇总的，不是逐条累加；读详规记的是按时长上限推算的额度，对账用，别当精确值">
+        <Tooltip title="实扣是按（反推文案 + 查时长）重新汇总的，不是逐条累加；反推文案记的是按时长上限推算的额度，对账用，别当精确值">
           <span>{yuan(v)}</span>
           {row.cost_actual != null && row.cost_estimate != null && row.cost_actual > row.cost_estimate && (
             <Tag color="warning" style={{ marginLeft: 4 }}>
@@ -320,7 +320,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
               />
               <Text type="secondary" style={{ fontSize: 12 }}>
                 只给这一批每条素材起个结构层标记（A–G，照《钩子模版换皮参数设定.docx》）；不选照样导入、
-                照样读详规出文案，之后在素材列表「原型」那列逐条改。
+                照样反推文案出文案，之后在素材列表「原型」那列逐条改。
               </Text>
             </Space>
 
@@ -337,7 +337,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                     导入 {parsedLinks.length} 条链接
                   </Button>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    导入不扣费：这一步只是登记地址，视频时长上限和费用在「读视频详规」那一步才生效
+                    导入不扣费：这一步只是登记地址，视频时长上限和费用在「反推文案」那一步才生效
                   </Text>
                 </Space>
               </>
@@ -377,7 +377,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                     文件存到我们自己的存储（MinIO raw-footage/asset/），不借智令的临时桶（那个 6 小时自动删）。
                     单个文件失败不影响整批，失败的可以一键补传到同一批次。
                     <br />
-                    图片只认 jpg/jpeg/png/webp，进来是<b>投产用的角色卡</b>：不读视频详规、不出文案、
+                    图片只认 jpg/jpeg/png/webp，进来是<b>投产用的角色卡</b>：不反推文案、不出文案、
                     不计费，入库时顺手量好尺寸（长边超了只提醒，不拦）。
                     上传图片和视频可以混在一次提交里，各自按类型入库。
                   </p>
@@ -388,7 +388,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                   </Button>
                   {uploading && <Progressish percent={progress} />}
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    读视频详规时文件还要经中转再上传一次，所以文件批次的预估里含每次 0.001 元的上传费
+                    反推文案时文件还要经中转再上传一次，所以文件批次的预估里含每次 0.001 元的上传费
                     （图片不收这笔：它不进反推）
                   </Text>
                 </Space>
@@ -412,7 +412,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                     )}
                     {lastImport.budget?.gate !== 'ok' && (
                       <Text type="warning" style={{ fontSize: 12 }}>
-                        {lastImport.budget.note || `这批全按 ${lastImport.budget.tier}s 上限读详规预估要 ${yuan(lastImport.budget.cost_estimate)}，超了单批上限 ${yuan(lastImport.budget.cap)}`}
+                        {lastImport.budget.note || `这批全按 ${lastImport.budget.tier}s 上限反推文案预估要 ${yuan(lastImport.budget.cost_estimate)}，超了单批上限 ${yuan(lastImport.budget.cap)}`}
                       </Text>
                     )}
                   </Space>

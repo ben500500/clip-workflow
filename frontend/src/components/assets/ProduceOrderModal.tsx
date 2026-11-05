@@ -376,7 +376,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
                     </Text>
                   ))}
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    导出 payload 时还会逐张核对能不能读到；画幅不合就现在回去换卡，别等投上板。
+                    导出任务文件时还会逐张核对能不能读到；画幅不合就现在回去换卡，别等投上板。
                   </Text>
                 </Space>
               }
@@ -541,7 +541,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               <span style={{ fontSize: 12 }}>
                 所以这里不填时长：内容更长只能拆成上/下集两条各 10 秒。
                 本批 {plannedRows} 条会算进当日投放量 {plannedRows} 条（实测约 120 条/日，不做硬限，只报数）。
-                视频时长上限 {DEFAULT_TIER}s 只影响读视频详规的成本，跟任务板无关。
+                视频时长上限 {DEFAULT_TIER}s 只影响反推文案的成本，跟任务板无关。
               </span>
             }
           />

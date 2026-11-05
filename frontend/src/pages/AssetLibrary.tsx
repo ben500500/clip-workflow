@@ -60,7 +60,7 @@ const AssetLibrary: React.FC = () => {
   const roleHint = useMemo(() => {
     if (!role) return null;
     if (isAdmin) return <Tag color="red">管理员：全部操作都能做，包括余额不够时强行提交、检查不过时带理由放行</Tag>;
-    if (role === 'operator') return <Tag color="orange">运营：可导入、可读视频出详规、可审核过审、可出生产单与登记投放结果</Tag>;
+    if (role === 'operator') return <Tag color="orange">运营：可导入、可反推文案、可审核过审、可出生产单与登记投放结果</Tag>;
     return <Tag color="blue">素材专员：可导入/读视频/出文案，不能审自己写的文案、不能出生产单（审核台与生产单只读）</Tag>;
   }, [isAdmin, role]);
 
@@ -116,7 +116,7 @@ const AssetLibrary: React.FC = () => {
       <Card size="small">
         <Paragraph style={{ marginBottom: 6 }}>
           <Text strong>素材库 P0</Text>
-          ：批量导入（分享链接 / 视频文件）→ 把视频读成文字详规 → AI 出钩子文案候选 → 人工审核 →
+          ：批量导入（分享链接 / 视频文件）→ 反推文案 → AI 出钩子文案候选 → 人工审核 →
           生成生产单（把过审文案变成要投出去的一条条提示词）→ 导出提示词 txt 或建板参数（七项）。P0{' '}
           <Text strong>不自动投放</Text>：导出后由人把提示词放进企微后台「创建AI视频」任务板，
           再回到本页登记投放结果（已投上板 / 正在出片 / 出片成功 / 投放失败）。

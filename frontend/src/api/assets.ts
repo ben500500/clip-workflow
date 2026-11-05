@@ -9,7 +9,7 @@ import client from './client';
  *
  * 链路（每一环可单独重试，且每一环都是真金白银）：
  *   导入 → 反推提示词（智令 doc/120，按**计时上限**扣费）→ 钩子文案（AutoClip）
- *   → 审核 → 生产单（N 条差异化提示词）→ 导出 payload 投企微后台任务板 → 人工回写投递态
+ *   → 审核 → 生产单（N 条差异化提示词）→ 导出任务文件投企微后台任务板 → 人工补记投板结果
  */
 
 // ──────────────────────────────────────────────
@@ -252,7 +252,7 @@ export interface AssetSummary {
   word_count: number | null;
   /** 模型标注的推荐条：审核页默认只批量放推荐条，防橡皮章式全过 */
   is_recommended: boolean;
-  /** 一致性校验（文案实体能否在反推详规里命中）：null=未校验 */
+  /** 一致性校验（文案实体能否在反推文案稿里命中）：null=未校验 */
   consistency_ok: boolean | null;
   consistency_note: string | null;
   /** 风险词命中串 `词|block,词|warn`；null=干净。block 拦过审/投产，warn 只预警 */
@@ -385,7 +385,7 @@ export interface AssetPromptTask {
   file_name: string | null;
   provider_task_id: string | null;
   status: 'processing' | 'success' | 'failed';
-  /** 反推详规正文（markdown），success 时有值 */
+  /** 反推文案稿正文（markdown），success 时有值 */
   content: string | null;
   error: string | null;
   max_duration: number | null;
@@ -1738,7 +1738,7 @@ export interface AssetDetailResponse {
   productions: AssetProduction[];
   /** 反推任务详情；没提交过反推 = null */
   prompt_task: AssetPromptTask | null;
-  /** 反推详规正文（prompt_task.content）；null = 还没有 */
+  /** 反推文案稿正文（prompt_task.content）；null = 还没有 */
   prompt_script: string | null;
 }
 
@@ -2094,7 +2094,7 @@ export const assetApi = {
   concat: (data: AssetConcatRequest) =>
     client.post('/assets/concat', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetConcatResult>,
 
-  // 素材详情：含全部文案候选、生产单、反推任务与详规正文
+  // 素材详情：含全部文案候选、生产单、反推任务与反推文案稿正文
   getAsset: (assetId: string) =>
     client.get(`/assets/${assetId}`) as Promise<AssetDetailResponse>,
 
@@ -2287,7 +2287,7 @@ export const HOOK_STYLE_LABELS: Record<AssetHookStyle, string> = {
 /** 五段流水线（面板列头 + 详情抽屉共用） */
 export const STAGE_FIELDS: Array<[keyof AssetItem, string]> = [
   ['stage_import', '导入'],
-  ['stage_prompt', '读视频详规'],
+  ['stage_prompt', '反推文案'],
   ['stage_summary', '文案'],
   ['stage_produce', '生产单'],
   ['stage_compose', '拼接'],

@@ -154,7 +154,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
   const runningCount = useMemo(() => items.filter((i) => i.stage_prompt === 'running').length, [items]);
   /**
-   * 批 G：勾选里区分「视频」和「图片」。三个花钱按钮（读详规／出文案／查时长）
+   * 批 G：勾选里区分「视频」和「图片」。三个花钱按钮（反推文案／出文案／查时长）
    * 只对视频成立，所以**提交只给视频 id**、预估也只按视频条数算——
    * 把图片混进 count 里报钱，确认单上的数字会比实际扣的多，对账时说不清。
    * 后端那道口（逐条点名拒图）是第二道闸，不能反过来代替这里的分流。
@@ -169,16 +169,16 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   );
   const selectedVideoCount = selectedVideoIds.length;
 
-  // ── 读视频详规（原「反推」）──
+  // ── 反推文案（原「反推」）──
   const openAnalyze = async () => {
     if (!ids.length) {
-      message.warning('先勾选要读详规的素材');
+      message.warning('先勾选要反推文案的素材');
       return;
     }
     // 批 G：一张视频都没选上（全是角色卡）时直接说清，不弹一张 0 条的成本确认单
     if (!selectedVideoCount) {
       message.warning(
-        `选中的 ${ids.length} 条都是图片：图片只当投产用的角色卡，不读视频详规（提交了也是白扣一次钱）`,
+        `选中的 ${ids.length} 条都是图片：图片只当投产用的角色卡，不反推文案（提交了也是白扣一次钱）`,
         8,
       );
       return;
@@ -217,7 +217,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         retry_failed: retryFailed,
       });
       Modal.info({
-        title: '读详规已提交',
+        title: '反推文案已提交',
         width: 520,
         content: <Text>{res.message}</Text>,
       });
@@ -225,7 +225,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       setSelected([]);
       fetchList();
     } catch (e) {
-      message.error((e as Error).message || '提交读详规失败');
+      message.error((e as Error).message || '提交反推文案失败');
     } finally {
       setAnalyzeLoading(false);
     }
@@ -235,7 +235,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const generateSummaries = async () => {
     const ok = ids.filter((_, i) => selected[i].stage_prompt === 'success');
     if (!ok.length) {
-      message.warning('选中的素材里没有「读详规成功」的——文案是从视频详规里出的，得先有详规');
+      message.warning('选中的素材里没有「反推文案成功」的——文案是从反推文案稿里出的，得先反推一遍');
       return;
     }
     setGenBusy(true);
@@ -493,7 +493,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
           // 「未知」在这里的含义是"链接素材还没回源查"，会让人以为点查时长能查出来
           <Text type="secondary">—</Text>
         ) : v === null || v === undefined ? (
-          <Tooltip title="链接素材库里没存原片，读视频详规也只回文字提示词。要看时长点「查时长」（0.01 元/次）">
+          <Tooltip title="链接素材库里没存原片，反推文案也只回文字提示词。要看时长点「查时长」（0.01 元/次）">
             <Text type="warning">未知</Text>
           </Tooltip>
         ) : (
@@ -531,7 +531,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       key: 'cost',
       width: 110,
       render: (_, row) => (
-        <Tooltip title={`读详规 ${yuan(row.cost_prompt)}｜查时长 ${yuan(row.cost_parse)}`}>
+        <Tooltip title={`反推文案 ${yuan(row.cost_prompt)}｜查时长 ${yuan(row.cost_parse)}`}>
           <Text>{yuan((row.cost_prompt || 0) + (row.cost_parse || 0))}</Text>
         </Tooltip>
       ),
@@ -573,7 +573,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
           {/* 批 G：图片不给拼接入口——ffmpeg 拿一张 jpg 当一段会在解码时炸（后端也挡，
               但入口摆在那儿就是让人去撞 400）。它的下一步在「投产」弹窗里被挑成角色卡。 */}
           {canProduce && isImageAsset(row) && (
-            <Tooltip title="图片只作生产输入：投产时在「生成生产单」弹窗里挑它当角色卡。不参与读详规、出文案、拼接。">
+            <Tooltip title="图片只作生产输入：投产时在「生成生产单」弹窗里挑它当角色卡。不参与反推文案、出文案、拼接。">
               <Tag color="purple" style={{ marginLeft: 2 }}>当角色卡用</Tag>
             </Tooltip>
           )}
@@ -628,7 +628,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             ]}
           />
           <Select
-            placeholder="读详规环节"
+            placeholder="反推文案环节"
             allowClear
             style={{ width: 120 }}
             value={stagePrompt}
@@ -643,7 +643,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
                   和句式标签、公式标签是三回事。
                 </div>
                 <div style={{ marginTop: 4 }}>
-                  原型是<strong>人工点的，也可以不点</strong>——不点照常读详规、出文案、投产。
+                  原型是<strong>人工点的，也可以不点</strong>——不点照常反推文案、出文案、投产。
                 </div>
                 <div style={{ marginTop: 4 }}>
                   「未分类」是给清欠账用的：现在库里 {cats.unclassified.asset_count} 条素材没点原型，
@@ -687,12 +687,12 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
           <Space wrap>
             {/* 批 G：图片混在勾选里时先把它摘出来说一句——下面几个按钮只对视频成立 */}
             {!!selectedImageCount && (
-              <Tooltip title="图片（角色卡）不读视频详规、不出文案、不查时长：提交进去也只会逐条回「这是图片」。这几个按钮只动勾到的视频。">
+              <Tooltip title="图片（角色卡）不反推文案、不出文案、不查时长：提交进去也只会逐条回「这是图片」。这几个按钮只动勾到的视频。">
                 <Tag color="purple">另勾了 {selectedImageCount} 张图，不参与这几步</Tag>
               </Tooltip>
             )}
             <Button type="primary" icon={<FileTextOutlined />} onClick={openAnalyze} disabled={!ids.length}>
-              读视频详规（{selectedVideoCount}）
+              反推文案（{selectedVideoCount}）
             </Button>
             {/*
               拍板②（11-04）：出文案没有确认弹窗（D-1 后是"提交即回"的后台任务），
@@ -701,10 +701,10 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             <Tooltip
               title={
                 <div style={{ maxWidth: 320 }}>
-                  <div>文案是从「视频详规」里出的，而那段是 AI 看片子自己写的、没经过人工核对。</div>
+                  <div>文案是从「反推文案稿」里出的，而那段是 AI 看片子自己写的、没经过人工核对。</div>
                   <div style={{ marginTop: 4 }}>
                     它读歪了，文案会照着歪着写，一致性检查也判不出来（两边都歪就对得上）。
-                    <strong>这一行只提醒、不拦步骤</strong>：觉得歪了就在详情抽屉里驳回文案或重读详规。
+                    <strong>这一行只提醒、不拦步骤</strong>：觉得歪了就在详情抽屉里驳回文案或重做反推文案。
                   </div>
                 </div>
               }
@@ -725,7 +725,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             </Tooltip>
           </Space>
         ) : (
-          <Text type="secondary">当前角色只读：导入、读视频详规、出文案由素材专员或运营来做</Text>
+          <Text type="secondary">当前角色只读：导入、反推文案、出文案由素材专员或运营来做</Text>
         )
       }
     >
@@ -750,7 +750,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       )}
       {/*
         批量点原型放在表头上方，不塞进 Card 的 extra：
-        extra 里本来就有 4 个动作按钮（读详规／出文案／收结果／查时长），再挤一个 260px 的下拉
+        extra 里本来就有 4 个动作按钮（反推文案／出文案／收结果／查时长），再挤一个 260px 的下拉
         会把左边那一整排筛选条件压到换行，一线连「状态」「来路」都找不着。
       */}
       {canProduce && (
@@ -814,7 +814,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
 
       <CostConfirmModal
         open={analyzeOpen}
-        title={`批量读视频详规（${selectedVideoCount} 条${selectedImageCount ? `，另勾的 ${selectedImageCount} 张图不读、不计费` : ''}）`}
+        title={`批量反推文案（${selectedVideoCount} 条${selectedImageCount ? `，另勾的 ${selectedImageCount} 张图不读、不计费` : ''}）`}
         preview={analyzePreview}
         previewLoading={previewLoading}
         loading={analyzeLoading}
@@ -840,7 +840,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             <Alert
               type="info"
               showIcon
-              message="读详规按你选的时长上限扣费，不按视频实际时长"
+              message="反推文案按你选的时长上限扣费，不按视频实际时长"
               description={
                 <span style={{ fontSize: 12 }}>
                   0.00054 元/秒 × 时长上限。600 秒档一条 0.324 元，180 秒档一条 0.0972 元——上限选大了，批次成本直接翻倍。
@@ -849,7 +849,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
               }
             />
             <Checkbox checked={retryFailed} onChange={(e) => setRetryFailed(e.target.checked)}>
-              <Text style={{ fontSize: 12 }}>同时重跑读详规失败的素材（默认跳过已跑过的）</Text>
+              <Text style={{ fontSize: 12 }}>同时重跑反推文案失败的素材（默认跳过已跑过的）</Text>
             </Checkbox>
           </Space>
         }
@@ -875,7 +875,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             description={
               <span style={{ fontSize: 12 }}>
                 实际命中 yuanbao/preview 免费兜底时库里记 0，对账只会偏高不会偏低。
-                拿到时长才能判断「这条能不能放进 180 秒档」，所以它是读详规之前的可选一步，不能替代读详规。
+                拿到时长才能判断「这条能不能放进 180 秒档」，所以它是反推文案之前的可选一步，不能替代反推文案。
               </span>
             }
           />
