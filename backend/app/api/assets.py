@@ -7,9 +7,13 @@ P0 只补三件真正缺的事（其余能力复用既有链路）：
 
 链路（每一环可单独重试）：
     导入 → 反推提示词(智令 doc/120) → 钩子文案(autoclip) → 审核 → 生产单(N 条差异化提示词) → 导出
-    └ P0 到此为止。真正投递、与切片视频拼接、交付打包属 P1/P2。
-      但**投递状态**在 P0 有落点（11-03 拍板第 4 条）：人投完板用 `POST /assets/productions/status`
-      回写 queued/running/success/failed，列表与建单响应都带「投了多少、成多少、败多少」。
+    └ 11-05 批 H 起投递也有落点，两条路并存：
+      ① `POST /assets/productions/dispatch`＝**机器连板**（建任务→轮询出片→成片落进产物），
+         但**逐批人工确认**（`confirm=true`），且没配 `AIVIDEO_AUTH` 时当场白话拒收；
+      ② 导出 payload → 人在企微后台建任务 → `POST /assets/productions/status` 回写
+         queued/running/success/failed（11-03 拍板第 4 条，这条路一直没断）。
+      **两条路的闸门与状态迁移是同一套判据**（同一个 `_dispatch_gate`＋同一个 `_build_delivery`），
+      所以别在 ② 里把机器投的结果再报一遍。切片视频拼接、交付打包仍属 P1/P2。
       号池不做硬限（产能不限），只把数报清楚。
 
 生产通道（2026-11-03 用户裁决）：**企微自动化后台「创建 AI 视频」任务板**
@@ -77,6 +81,7 @@ from app.models.asset import (
     JB_QUEUED,
     JB_RUNNING,
     JB_SUCCEEDED,
+    JOB_DISPATCH,
     JOB_FRAMES,
     JOB_PRODUCE,
     JOB_SUMMARY_GENERATE,
@@ -125,6 +130,7 @@ from app.models.user import UserRole
 from app.services import asset_compose_service as compose
 from app.services import asset_frame_service as framesvc
 from app.services import asset_service as svc
+from app.services import aivideo_board as board
 from app.services.data_scope import check_project_access_by_episode
 from app.services.minio_service import (
     download_file,
@@ -347,9 +353,10 @@ class ProduceRequest(BaseModel):
 class ProductionStatusRequest(BaseModel):
     """投递状态回写（11-03 拍板第 4 条：号池**不做硬限**，但要知道投了多少、成多少、败多少）。
 
-    P0 没有自动投递：生产单导出 payload 后由人在企微后台任务板建任务，成片回收在 P1。
-    所以「已投/出片中/成功/失败」这四个态必须有一个**显式的回写口**，否则列表永远停在
-    order_ready，对账页也就无从解释「昨天投的 120 条到手几条」。
+    这条路是「**人工投板之后补账**」：导出 payload → 人在企微后台任务板建任务 → 回这里记账。
+    11-05 批 H 起多了另一条入口 `POST /assets/productions/dispatch`（机器连板、自动回收成片），
+    四条状态由此变成**两个写入方**——所以别在这里把机器已经投好的结果再报一遍。
+    没有回写口时列表会永远停在 order_ready，对账页也就无从解释「昨天投的 120 条到手几条」。
     只做三件事：改状态、补 board_tid 回读主键、记审计——不碰成本、不建产物、不自动重试。
     """
     ids: List[str] = Field(default_factory=list, description="生产单 id 列表（单次上限 ASSET_ANALYZE_MAX_PER_CALL）")
@@ -362,6 +369,42 @@ class ProductionStatusRequest(BaseModel):
         description="失败成因（我们侧判读；板上失败行没有原因字段，别当成豆包给的成因）；判 failed 时必填",
     )
     board_tid: Optional[str] = Field(None, description="回读主键（info?date= 返回的 tid），逐条钉上便于二次对账")
+
+
+class DispatchRequest(BaseModel):
+    """自动投板（11-05 批 H）：把已经建好的生产单真投上企微后台任务板，并回收成片。
+
+    拍板口径是「**可自动投板，但逐批人工确认**」——机器连板、人负责点那一下确认，
+    所以这里没有"整批自动排队今晚全投掉"的入口：`ids` 必须是**点名的一批**，
+    且 `confirm` 不带 true 就当没确认过（400 回去，绝不代签）。
+    """
+    ids: List[str] = Field(
+        default_factory=list,
+        description="要点名投板的生产单 id（单次上限 ASSET_DISPATCH_MAX_PER_CALL，默认 20）",
+    )
+    confirm: bool = Field(
+        False,
+        description="人工确认位：必须 true。投出去占的是当天号池额度，且板侧失败行没有原因字段，"
+        "所以这一下只能由人点，不能由脚本代签",
+    )
+    force_risk: bool = Field(
+        False,
+        description="仅 admin：文案过审后词表又加过词、仍要投这几张（和导出侧 R-4 同一道闸、同一个口径）",
+    )
+    force_reason: Optional[str] = Field(
+        None, description="force_risk 的理由（必填，进 AuditLog）"
+    )
+    recover_only: bool = Field(
+        False,
+        description="true＝**一个都不新建**，只对已有 board_tid 的单做回读＋回收下载。"
+        "进程重启把在等的协程带走之后（任务台账显示已中断），用这个把片子取回来；"
+        "它不烧任何号池额度，所以不看 confirm",
+    )
+    async_mode: bool = Field(
+        True,
+        description="默认 true：投板＝建任务＋轮询出片＋下载落桶，整段几十分钟，"
+        "同步等必然顶穿超时链（前端 960s / 后端 900s）。false 只留给后台协程与回归用例",
+    )
 
 
 class CategoryUpsertItem(BaseModel):
@@ -2905,9 +2948,9 @@ ASSET_JOB_STATE_LABELS = {
 def _job_endpoint(kind: str) -> Tuple[Any, Any, str]:
     """kind → (请求模型, 真正干活的接口函数, 白话名称)。
 
-    后台任务**不另写一套业务逻辑**，就是把 `/summaries/generate`、`/produce` 这两个
-    接口原样再调一次（自己开会话、自己收尾）。写两套必然分叉——审核/投产/导出三个入口
-    刚刚才因为口径分叉被点名（R-6），这里绝不再造一个。
+    后台任务**不另写一套业务逻辑**，就是把 `/summaries/generate`、`/produce`、
+    `/productions/dispatch` 这些接口原样再调一次（自己开会话、自己收尾）。写两套必然分叉——
+    审核/投产/导出三个入口刚刚才因为口径分叉被点名（R-6），这里绝不再造一个。
     """
     if kind == JOB_SUMMARY_GENERATE:
         return SummaryGenerateRequest, generate_summaries, "出钩子文案"
@@ -2915,6 +2958,11 @@ def _job_endpoint(kind: str) -> Tuple[Any, Any, str]:
         return ProduceRequest, create_productions, "生成生产单"
     if kind == JOB_FRAMES:
         return FramesExtractRequest, extract_frames, "抽帧"
+    if kind == JOB_DISPATCH:
+        # 批 H：投板＝建任务＋轮询出片＋下载落桶，一段几十分钟的活。后台跑的仍然是
+        # `/productions/dispatch` 这个口本身（confirm/闸门/审计全在里面），不另写一套——
+        # 投递闸门要是分叉成"人点的严、机器排的松"，号池额度就会替我们发现这个 bug。
+        return DispatchRequest, dispatch_productions, "投板"
     raise HTTPException(
         status_code=400,
         detail=f"任务类型只支持 {'/'.join(ASSET_JOB_KINDS)}",
@@ -2933,13 +2981,27 @@ def _job_scope_ids(kind: str, params: Dict[str, Any]) -> List[str]:
             if str(x)
         ]
     key = "asset_ids" if kind == JOB_SUMMARY_GENERATE else "summary_ids"
+    if kind == JOB_DISPATCH:
+        # 投板圈的是**生产单 id**：防重复判据因此天然是"同一张单没投过第二遍"，
+        # 比按批次判更准（一个批次里可能只有 3 张单要投）。
+        return [str(x) for x in ((params or {}).get("ids") or []) if str(x)]
     return [str(x) for x in (params.get(key) or []) if str(x)]
+
+
+def _twin_cost_phrase(kind: str) -> str:
+    """重复提交烧的是**什么**——三类后台任务各不相同，别说成一句通用话。
+
+    出文案／投产烧模型费用；投板一分钱模型费不花，烧的是**当天号池额度**（1023 那次
+    叠两份量 → 115/120 成批 fail 就是这么来的）。写成"重复扣模型费用"会让一线以为
+    投板重复提交只是多花几厘钱，而它的真实代价是"同一批里几十条额度白烧、还挤掉别人的量"。
+    """
+    return "重复占当天号池额度" if kind == JOB_DISPATCH else "重复扣模型费用"
 
 
 async def _assert_no_running_twin(
     db: AsyncSession, *, kind: str, params: Dict[str, Any], batch_id: Optional[str]
 ) -> None:
-    """同一件事已经在跑就**不再起一份**——出文案和投产都是真花钱/真占号的。
+    """同一件事已经在跑就**不再起一份**——出文案/投产真花钱，投板真占号（批 H 起也有 twin 判据）。
 
     判据两档：按 id 列表提交的，比对 id 是否有交集；整批排队的（只有 batch_id），
     比对同批次同类型是否已有未结束的活。只回看 3 小时，免得一条历史卡死的活
@@ -2973,7 +3035,7 @@ async def _assert_no_running_twin(
                 detail=(
                     f"选中的里有正在后台跑「{label}」的条目（任务 {job.id}，"
                     f"{ASSET_JOB_STATE_LABELS.get(job.status, job.status)}）。"
-                    "同一批重复提交＝重复扣模型费用，请等它结束或换别的条目"
+                    f"同一批重复提交＝{_twin_cost_phrase(kind)}，请等它结束或换别的条目"
                 ),
             )
 
@@ -3148,6 +3210,29 @@ async def _job_progress(db: AsyncSession, job: AssetJob) -> Dict[str, Any]:
             )
         total = total or (len(aids) + len(oids))
         note = "抽帧进度＝已落库的**帧数**（一条素材满帧是 4 张：3 单帧＋1 九宫格），不是完成的条数"
+    elif job.kind == JOB_DISPATCH and ids:
+        pids = []
+        for x in ids:
+            try:
+                pids.append(uuid.UUID(str(x)))
+            except (ValueError, TypeError):
+                continue  # 脏 id 不参与现算，别让它把整条进度查询炸掉
+        if pids:
+            done = int(
+                (
+                    await db.execute(
+                        select(func.count(AssetProduction.id)).where(
+                            AssetProduction.id.in_(pids),
+                            AssetProduction.status.in_((PR_SUCCESS, PR_FAILED)),
+                        )
+                    )
+                ).scalar()
+                or 0
+            )
+        total = total or len(pids)
+        # 为什么只数终态：投板一条要等板子出片（几十分钟），"done"如果按"已经 POST 过"算，
+        # 前端会在一半进度时就以为完事了；按终态算才是"到手了几条"。
+        note = "投板进度＝已落到终态（成片到手/判失败）的张数，还在板上出片的不算完成；逐张看生产单列表"
     return {"total": total, "done": done, "note": note}
 
 
@@ -4342,8 +4427,9 @@ async def create_productions(
     current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
     db: AsyncSession = Depends(get_db),
 ):
-    """过审文案 → N 条生产单（P0 到「生产单可导出」为止，**自动**投递后台板属 P1；
-    人工投完请走 `POST /assets/productions/status` 回写投递态，本口只建 order_ready 单）。
+    """过审文案 → N 条生产单（本口**只建 order_ready 单**，一毛不花也不占号池；
+    往板上投是下一步：批 H 起有 `POST /assets/productions/dispatch`（机器连板、逐批人工确认），
+    或照旧导出 payload 人工投完走 `POST /assets/productions/status` 回写投递态）。
 
     N 的语义（2026-11-03 定稿）：同一条过审文案派生 **N 条差异化提示词**
     （句式轮换 / 换角色卡 / 镜头重排…），**不是**把同一条重复投 N 次——
@@ -4938,7 +5024,8 @@ async def create_productions(
                 if (recheck_failed or waived_rows)
                 else ""
             )
-            + "P0 到生产单为止：可导出投放 payload 与核对 txt，投后台板属 P1。"
+            + "本口只到生产单为止（还没上板、不吃号池）：下一步用「投上后台任务板」自动连板，"
+              "或导出 payload 人工投完再回写投递态。"
         ),
     }
 
@@ -4968,6 +5055,51 @@ _NOT_DISPATCHED = (PR_ORDER_READY,)
 # 事后一次撤审而变小，一线据此再排今天的量就会超。判据用 started_at（没真投过的
 # 作废单这个字段是 NULL，撤审只改 status 不改 started_at，两者不会互相污染）。
 _VOIDED_BUT_SENT = and_(AssetProduction.status == PR_SUPERSEDED, AssetProduction.started_at.is_not(None))
+
+
+async def _converge_produce_stage(db: AsyncSession, asset_ids: set) -> Dict[str, str]:
+    """按「本素材**全部**生产单」重算 produce 阶段，回 `素材 id → 新阶段`。
+
+    抽出来是因为 11-05 批 H 之后 produce 阶段有了**第二个写入方**（自动投板协程）：
+    人工回写走一套判据、机器回写走另一套，同一条素材会因为"谁来收尾"而给出不同的
+    列表颜色——这类分叉在审核台一致性上已经被点名过一次（R-6），不再犯第二遍。
+
+    四条判据（顺序即优先级）：
+    - 没有单 / 全是 `order_ready` → pending：一张都没投出去，本环节还没开始；
+    - 还有 queued/running/order_ready → running：**没投完的也算在跑**。一批 20 张里
+      19 张成功 1 张还在板上，整条素材不能显示"成功"，否则一线会拿它去排发布；
+    - 全终态且有 success → success：部分失败不整条判死，败几条去 `by_status` 看；
+    - 其余（全 failed）→ failed。
+    作废三态（superseded/cancelled/skipped）**不参与重算**：撤审作废掉的单不代表这条
+    素材的生产结果，把它们数进来会让"撤审后素材退回待投产"变成"素材成功"。
+    """
+    stage_by_asset: Dict[str, str] = {}
+    for aid in asset_ids:
+        states = [
+            str(s)
+            for s in (
+                await db.execute(
+                    select(AssetProduction.status).where(
+                        AssetProduction.asset_id == aid,
+                        AssetProduction.status.notin_([PR_SUPERSEDED, PR_CANCELLED, PR_SKIPPED]),
+                    )
+                )
+            ).scalars().all()
+        ]
+        if not states or all(s == PR_ORDER_READY for s in states):
+            state = STAGE_PENDING
+        elif any(s in (PR_QUEUED, PR_RUNNING, PR_ORDER_READY) for s in states):
+            state = STAGE_RUNNING      # 还有没投完/在跑的，本环节没收
+        elif any(s == PR_SUCCESS for s in states):
+            state = STAGE_SUCCESS      # 全终态且有成功：部分失败不整条判死，败几条看 by_status
+        else:
+            state = STAGE_FAILED
+        asset = await db.get(AssetItem, aid)
+        if asset is not None:
+            stage_by_asset[str(aid)] = svc.apply_stage(
+                asset, "produce", state, has_approved_copy=asset.has_approved_copy
+            )
+    return stage_by_asset
 
 
 async def _dispatch_counts(
@@ -5200,32 +5332,8 @@ async def update_production_status(
         touched_assets.append(p.asset_id)
 
     # 素材阶段收敛：逐条按「本素材全部生产单」重算，而不是照抄本次回写的状态
-    stage_by_asset: Dict[str, str] = {}
-    for aid in {a for a in touched_assets if a}:
-        states = [
-            str(s)
-            for s in (
-                await db.execute(
-                    select(AssetProduction.status).where(
-                        AssetProduction.asset_id == aid,
-                        AssetProduction.status.notin_([PR_SUPERSEDED, PR_CANCELLED, PR_SKIPPED]),
-                    )
-                )
-            ).scalars().all()
-        ]
-        if not states or all(s == PR_ORDER_READY for s in states):
-            state = STAGE_PENDING
-        elif any(s in (PR_QUEUED, PR_RUNNING, PR_ORDER_READY) for s in states):
-            state = STAGE_RUNNING      # 还有没投完/在跑的，本环节没收
-        elif any(s == PR_SUCCESS for s in states):
-            state = STAGE_SUCCESS      # 全终态且有成功：部分失败不整条判死，败几条看 by_status
-        else:
-            state = STAGE_FAILED
-        asset = await db.get(AssetItem, aid)
-        if asset is not None:
-            stage_by_asset[str(aid)] = svc.apply_stage(
-                asset, "produce", state, has_approved_copy=asset.has_approved_copy
-            )
+    # （判据抽成 `_converge_produce_stage`，人工回写与自动投板共用一套，见那里的说明）
+    stage_by_asset = await _converge_produce_stage(db, {a for a in touched_assets if a})
 
     await _write_audit(
         db,
@@ -5682,6 +5790,858 @@ async def export_productions(
         ),
         **delivery,
     }
+
+
+# ──────────────────────────────────────────────
+# 自动投板（11-05 批 H）：可自动投板，但**逐批人工确认**
+# ──────────────────────────────────────────────
+#
+# **批量数学**（11-04 拍板④要求把这条写进注释与 UI，别只写在文档里）：
+# - N 份差异化提示词 = **N 张生产单**，每张单一次 `create`、板上 `total` 默认 1；
+# - 号池当天吃的是 **Σ board_total**，不是"单的行数"。20 张单 × total=3 是 **60 条**额度，
+#   而投递台账上只有 20 行——对账看 `dispatch.today.board_rows`，按行数算会少看三倍；
+# - 「同一条文案出 3 版挑最好」才用 total>1，「要 3 条不同钩子」用 N。两个量混用就是白烧。
+#
+# 与人工投板（导出 payload → 人去板面建任务）的关系：**同一条交付线，两个入口**。
+# payload 仍然走 `_build_delivery`（和导出同一个函数），闸门仍然是那四条，
+# 所以"机器投的比人投的松"这种分叉在这里不存在——真要说区别，只有一处：
+# 自动投板会**当场把 board_date 重新按投递时刻生成**（人工投板是建单时的日期，
+# 隔几天再投就会把量记到错误的那一天，见下面 `_refresh_board_date` 的说明）。
+
+# 板子出来的产物在 `asset_outputs.kind` 里就记 `doubao_raw`（模型列注释那一档）：
+# 通道的后端是豆包，任务板只是排队派号，落到桶里的是**没经过我们加工的原片**。
+BOARD_OUTPUT_KIND = "doubao_raw"
+# 进不了投递口的状态：各自成因见 `_dispatch_gate`
+_NOT_DISPATCHABLE = (PR_SUPERSEDED, PR_CANCELLED, PR_SKIPPED, PR_FAILED, PR_SUCCESS)
+
+
+def _dispatch_max_per_call() -> int:
+    return max(1, int(settings.ASSET_DISPATCH_MAX_PER_CALL or 20))
+
+
+def _board_poll_interval_seconds() -> float:
+    """轮询间隔（秒），下限 0.05s。
+
+    下限不是洁癖：`ASSET_BOARD_POLL_INTERVAL=0` 会让整个轮询变成**不带喘气的忙等**
+    （每轮一次回读＋可能一次下载），几十个单一起跑就是把板子当压测目标。
+    回归用例要快就设到这个下限——真板子 45s 一轮的节奏在用例里没必要复现。
+    """
+    return max(0.05, float(settings.ASSET_BOARD_POLL_INTERVAL or 45))
+
+
+def _board_poll_max_minutes() -> float:
+    """轮询最长等待（分钟），下限 0.02 分钟（≈1.2s，保证到期判读这条码路真被执行过）。"""
+    return max(0.02, float(settings.ASSET_BOARD_POLL_MAX_MINUTES or 45))
+
+
+def _refresh_board_date(p: AssetProduction) -> None:
+    """投板前把 `board_date` 按**投递时刻**重新生成（只动这一次真的要新建任务的单）。
+
+    为什么必须重生成：`board_date` 是建单时（`/produce`）盖章的，而"建完单当天就投"
+    只是理想情况——一线经常今天建单、明天投。板上按 `date` 排日，用昨天的日期建任务，
+    量就记到昨天那天的号池上（当日余量提示跟着算错），回收时按今天查还查不到。
+    格式仍然是**后端生成的完整时间戳**（`svc.board_timestamp`），不是前端传的日期：
+    只写日期或不带时分秒＝接口照样回 succ、但 `info?date=` 永远查不到，额度白烧
+    （1021 实测 120 条就是这么丢的）。
+    """
+    p.board_date = svc.board_timestamp(tz_offset_hours=settings.ASSET_BOARD_TZ_OFFSET_HOURS)
+
+
+async def _dispatch_gate(
+    db: AsyncSession,
+    rows: List[AssetProduction],
+    *,
+    operator: User,
+    force_risk: bool,
+    force_reason: Optional[str],
+    recover_only: bool,
+) -> Dict[str, Any]:
+    """把点名的单分成三堆：`to_create`（新建板任务）/ `to_recover`（只回读回收）/ `blocked`。
+
+    闸门四条（11-04 拍板④＋第二轮审核 R-4/R-5 的口径，一条都不能少）：
+    1. **只投 `order_ready`**：已经 success 的不再动；failed 的**不在这里自动重投**——
+       板上失败行没有原因字段，重投与否要人判读（「不自动补投隔夜」是同一条纪律）；
+       superseded/cancelled/skipped 是系统作废态，投出去就是拿废弃文案烧号池；
+    2. **`drift=false`**：展开结果和过审文案不是同一条的单，投出去烧的是号池、
+       发出去的是没人审过的词——这条**不给豁免**（豁免风险词是给语境判断，
+       漂移是"文案没审过"，不是语境问题）；
+    3. **未作废**：见第 1 条；
+    4. **按当前词表重扫不命中 block**：与导出侧 R-4 同一道闸、同一个 admin 放行口径
+       （`force_risk` 只有 admin 能用且必须写理由，放行了哪几张进审计）。
+
+    另外三条是这条线特有的（人工投板靠人眼，自动投板没人看板面）：
+    - 必须有 `prompt_text`（expand=false 的裸单没有正文，投出去是空提示词）；
+    - 必须有 `board_name`（板上 name 空＝回收时按标题找不到、交付文件名也无从生成）；
+    - 通道必须是 `wework_aivideo`（别的通道这块板子不认）。
+
+    `to_recover` 不过内容闸门：回读＋下载**一分钱不花**，片子已经在那儿了。
+    已经付过钱的产物因为"撤审时它正在板上"而取不回来，那才是真亏。
+    """
+    if force_risk:
+        if operator.role != UserRole.admin.value:
+            raise HTTPException(
+                status_code=403,
+                detail="带风险词强制投板只有 admin 能做（挡词的闸由审核口径决定，不是投放同学自己判的）",
+            )
+        if not (force_reason or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="强制投板必须写理由（force_reason）：投出去就烧号池额度，不留一句话事后只看到一个绕过闸门的记录",
+            )
+
+    book, exemptions = await _risk_lexicon(db)
+    risk_hits = _risk_recheck_map(rows, book, exemptions)
+    risk_blocked = {pid for pid in risk_hits if not force_risk}
+    forced_ids = sorted(risk_hits) if (force_risk and risk_hits) else []
+
+    to_create: List[AssetProduction] = []
+    to_recover: List[AssetProduction] = []
+    blocked: List[dict] = []
+
+    def _block(p: AssetProduction, reason: str) -> None:
+        blocked.append({"id": str(p.id), "seq": p.seq, "hook_code": p.hook_code, "reason": reason})
+
+    for p in rows:
+        pid = str(p.id)
+        if p.status == PR_SUCCESS:
+            _block(p, "这张单已经成功到手，投递口不再动它（要重做请重新投产生成新单）")
+            continue
+        if p.status in (PR_SUPERSEDED, PR_CANCELLED, PR_SKIPPED):
+            _block(p, _export_block_reason(p))
+            continue
+        if p.status == PR_FAILED:
+            _block(
+                p,
+                "失败单不在这里自动重投：板上失败行没有原因字段，重投与否要人判读"
+                "（判读后要么走投递状态回写口把它带回 queued，要么重新投产生成新单）",
+            )
+            continue
+        if p.board_tid:
+            # 拍板②「已拿到 board_tid 的单只回读不重建」：这张的号池额度**已经花掉了**，
+            # 再 POST 一次就是同一条文案烧两遍。进程重启、协程被带走时靠这条路把片子取回来。
+            to_recover.append(p)
+            continue
+        if p.status != PR_ORDER_READY:
+            _block(p, f"状态是 {p.status}，不是待投的 order_ready；投递口只接没投过的单")
+            continue
+        if recover_only:
+            _block(p, "本次是「只回读回收」（recover_only=true），这张还没投上过板，不动它")
+            continue
+        if p.channel and p.channel != CH_WEWORK_AIVIDEO:
+            _block(
+                p,
+                f"通道是 {p.channel}，不是后台任务板（wework_aivideo）；这条投递线只认任务板",
+            )
+            continue
+        if not (p.prompt_text or "").strip():
+            _block(p, "没有展开后的提示词正文（expand=false 的裸单）：先补 expand 再投")
+            continue
+        if not (p.board_name or "").strip():
+            _block(p, "缺推荐标题 → 板上 name 会是空的，投放后按标题回收不到、交付文件名也无从生成")
+            continue
+        if p.drift:
+            _block(
+                p,
+                f"提示词与过审文案不是同一条（{p.drift_reason or 'drift=true'}）：漂移单不给豁免、不自动投",
+            )
+            continue
+        if pid in risk_blocked:
+            _block(
+                p,
+                "文案过审后词表被改过：正文现在含高风险词「"
+                + "、".join(h["word"] for h in risk_hits[pid])
+                + "」。改文案后重新投产，或让 admin 带理由强制投板",
+            )
+            continue
+        to_create.append(p)
+
+    return {
+        "to_create": to_create,
+        "to_recover": to_recover,
+        "blocked": blocked,
+        "risk_hits": risk_hits,
+        "risk_blocked_ids": risk_blocked,
+        "forced_ids": forced_ids,
+        "forced_reason": (force_reason or "").strip() or None,
+    }
+
+
+async def _dispatch_capacity(db: AsyncSession, planned_rows: int) -> Dict[str, Any]:
+    """号池当日余量（Σ board_total 口径）。**只提示不拦**——用户拍板「产能不限」。
+
+    为什么不拦：这条线唯一的实测结论是"超出 ≈120 条的部分到手率明显掉"，不是"投不进去"；
+    把它做成熔断就会在一线真需要冲量的那天挡错人。要拦请先给出可信的余量接口，我们没有。
+    为什么这个数**天然偏乐观**：号池是单日上限、且与每天的解压线**共用**（1023 叠两份量
+    → 115/120 成批 fail），而解压线在库里没有台账——这里只能算出素材库自己吃了多少。
+    """
+    day_start = svc.board_timestamp(tz_offset_hours=settings.ASSET_BOARD_TZ_OFFSET_HOURS).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    already = int(
+        (
+            await db.execute(
+                select(func.coalesce(func.sum(AssetProduction.board_total), 0)).where(
+                    AssetProduction.board_date >= day_start,
+                    AssetProduction.board_date < day_start + timedelta(days=1),
+                    # 只数**已投上板**的（含投过后被撤审作废的）：没投的单不吃号池
+                    or_(AssetProduction.status.in_(list(_DISPATCH_STATES)), _VOIDED_BUT_SENT),
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+    hint = svc.board_capacity_hint(
+        planned_rows, already, int(settings.ASSET_BOARD_DAILY_SOFT_CAP)
+    )
+    # 把"这个数没算解压线"写在返回体里，而不是只写在代码注释里：
+    # 一线是看这行字排今天量的，注释帮不到他。
+    hint["note"] = (
+        str(hint.get("note") or "")
+        + "；本数只含**素材库自己**今天投的，不含同日在板子上跑的解压线（那条线库里没有台账），"
+        "所以真实余量比这里显示的小——号池是共用池"
+    )
+    return hint
+
+
+async def _fetch_board_output(
+    p: AssetProduction, task_row: Dict[str, Any], work_dir: str, *, index: int
+) -> Dict[str, Any]:
+    """把板上一条 succ 任务下载→落桶，返回可以直接 `AssetOutput(**…)` 的字段。
+
+    ⚠️ 这个函数**一段 DB 都不碰**，是刻意的：轮询协程里一次下载＋上传可能耗几十秒到
+    两三分钟，而现网 Postgres 的 `idle_in_transaction_session_timeout` 是 60s——
+    事务开着等网络就会被服务端掐死（11-04 真链路撞过一次，那次是等模型）。
+    所以口径是：读板→取文件→传桶全走完之后，调用方才开一次短事务写库。
+    """
+    out_url = str(task_row.get("outUrl") or "")
+    tid = str(task_row.get("tid") or "")
+    raw = await board.download_output(out_url)
+    safe = "".join(c for c in (p.board_name or p.hook_code or str(p.asset_id)[:8]) if c not in '/\\:*?"<>|').strip()[:60]
+    fname = f"{safe}_{index}_{tid[-18:] if tid else uuid.uuid4().hex[:8]}.mp4".strip() or f"{index}.mp4"
+    local = os.path.join(work_dir, f"{uuid.uuid4().hex[:12]}.mp4")
+    with open(local, "wb") as fh:
+        fh.write(raw)
+    file_key = f"asset/board/{safe or 'unknown'}/{uuid.uuid4().hex[:16]}_{fname}"
+    uploaded = await upload_file_from_path(
+        settings.MINIO_BUCKET_RAW, file_key, local, content_type="video/mp4"
+    )
+    size = len(raw)
+    info = await compose.probe_media(local) or {}
+    # ⚠️ 摘要必须在删临时文件**之前**算：先删后算会抛 FileNotFoundError，
+    # 而这条异常会被上层记成「片子没取回来」——其实片子已经落桶了，只是台账没写上。
+    digest = compose.sha256_of(local)
+    try:
+        os.remove(local)
+    except OSError:
+        pass
+    if not uploaded:
+        # 桶里没这个对象，`upload_file_from_path` 已经把 S3Error 吞成 False（和 11-04
+        # 「0 字节对象照样 201」是同一类坑：不信返回值就得信不了这条线）
+        raise board.BoardError(f"成片已下载（{size} 字节）但落桶失败，板上文件还在，重试回收即可")
+    resolution = None
+    if info.get("width") and info.get("height"):
+        resolution = f"{int(info['width'])}x{int(info['height'])}"
+    return {
+        "kind": BOARD_OUTPUT_KIND,
+        "file_key": file_key,
+        "bucket": settings.MINIO_BUCKET_RAW,
+        "file_name": fname,
+        "duration": info.get("duration"),
+        "file_size": size,
+        "resolution": resolution,
+        "sha256": digest,
+        "board_out_url": out_url,
+        "tid": tid,
+        "rgid": str(task_row.get("rgid") or "") or None,
+        "doubao_account": str(task_row.get("doubaoName") or "") or None,
+    }
+
+
+@router.post("/assets/productions/dispatch")
+async def dispatch_productions(
+    data: DispatchRequest,
+    current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """把点名的生产单**真投上企微后台任务板**，轮询出片并回收成片（11-05 批 H）。
+
+    拍板口径（11-04 晚④）：「可自动投板，但**逐批人工确认**」——机器连板、那一下由人点。
+    所以本口没有"整批今晚自动投掉"的形态：`ids` 必须点名，`confirm` 必须为 true，
+    不自动补投隔夜、不自动 QC、号池余量只提示不拦。
+
+    为什么默认 `async_mode=true`：一次投板＝建任务＋等出片（实测单条 45s 一轮、25 分钟
+    到手，整批排队更久）＋下载落桶，几十分钟的活同步等必然顶穿超时链
+    （前端 960s > 后端 900s > …）。它是四类后台任务里唯一**默认就走后台**的：
+    出文案/投产留了同步档给脚本与回归用例，这两条没有"几十分钟"的负担，投板有。
+    后台协程复用**本函数**（`_job_endpoint(JOB_DISPATCH)`），闸门与审计只有一套口径。
+
+    三条不重复烧钱的硬规矩：
+    - 已拿到 `board_tid` 的单**只回读不重建**（它们进 `to_recover`）；
+    - `ids` 里有不存在的 → 整批 400 不落库（和投递状态回写口同一条纪律：
+      台账动作说"投了 12 张"就必须 12 张都投了，静默跳过会留下一张永远没人补）；
+    - 建任务失败的单**留在 order_ready**、不判 failed：连板都没上，没有"失败"可言，
+      判 failed 会让它出现在失败计数里、把当天的到手率算低。
+
+    失败只重启一次（拍板口径）：板面 `fail` 的行没有原因字段，重试一次仍失败就落
+    failed 并把成因写进 `error`（"我们侧判读"），交回人工——不自动补投隔夜。
+
+    没配凭据时**当场白话拒绝**（连库都不查、不进任务台账）：`AIVIDEO_AUTH` /
+    `ASSET_BOARD_BASE_URL` 是这条线的唯一开关，判据就写在 `board.is_configured()`。
+    拒绝的措辞必须把"那我现在怎么办"说清楚——导出 payload 人工投板、投完走回写口记账，
+    这条路一直没断。
+    """
+    if not board.is_configured():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "自动投板还没启用：后台板地址（ASSET_BOARD_BASE_URL）或凭据（AIVIDEO_AUTH）"
+                "没配进环境变量。这一批请照旧导出 payload 人工投板，投完用「投递状态回写」"
+                "把结果记账；配好凭据后重启服务即可用本口自动投。"
+            ),
+        )
+    ids = [_as_uuid(x, "生产单 id") for x in data.ids]
+    if not ids:
+        raise HTTPException(status_code=400, detail="请点名要投板的生产单（ids 为空）")
+    cap = _dispatch_max_per_call()
+    if len(ids) > cap:
+        raise HTTPException(
+            status_code=400,
+            detail=f"单次最多投 {cap} 张（号池是单日上限，一次点太多只会一起排队）；当前 {len(ids)} 张请分批",
+        )
+    rows = list((await db.execute(select(AssetProduction).where(AssetProduction.id.in_(ids)))).scalars().all())
+    found = {str(r.id) for r in rows}
+    missing = [str(i) for i in ids if str(i) not in found]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"这些生产单不存在，整批未投（先刷新列表拿准 id）：{', '.join(missing[:5])}",
+        )
+
+    gate = await _dispatch_gate(
+        db,
+        rows,
+        operator=current_user,
+        force_risk=data.force_risk,
+        force_reason=data.force_reason,
+        recover_only=data.recover_only,
+    )
+    to_create, to_recover, blocked = gate["to_create"], gate["to_recover"], gate["blocked"]
+
+    if to_create and not data.confirm:
+        # P0 的人工确认位：不带 confirm=true 就当没确认过。放在这里而不是让前端拦，
+        # 是因为这条线**任何**调用方都该被拦——脚本、按钮、将来的定时任务都得先过人这一关。
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"要新建 {len(to_create)} 张板任务，必须带 confirm=true（逐批人工确认）。"
+                "投出去吃的是当天号池额度，且板面失败行没有原因字段，事后只能靠这张单自己的台账——"
+                "所以这一下只能由人点。只回收已投出去的片子请带 recover_only=true，那不看 confirm"
+            ),
+        )
+    if data.recover_only and not to_recover:
+        raise HTTPException(
+            status_code=400,
+            detail="只回读回收模式下没有可回收的单：这几张都还没拿到 board_tid（没投上过板，无从回读）",
+        )
+    if not to_create and not to_recover:
+        # 全被挡＝一次网都没出（不花钱），所以这里可以放心把成因说全：一线看到"投不了"
+        # 必须当场知道**为什么**，否则只会反复点同一个按钮。
+        # ⚠️ 措辞纪律：400 的响应体只有 detail 一个字符串，绝不写"见 blocked"这种
+        # 指向不存在字段的指引（11-05 用例抓出来的：让人去结果里找一个永远不会出现的键）。
+        detail = "点名的单子一张都投不了：" + "；".join(
+            f"{b['hook_code'] or b['id'][:8]}：{b['reason']}" for b in blocked[:5]
+        )
+        if len(blocked) > 5:
+            detail += f"（另有 {len(blocked) - 5} 张被挡，本条只列前 5 张）"
+        raise HTTPException(status_code=400, detail=detail)
+
+    # 拍板②：新建的这批按**投递时刻**重新排日（人工投板用不到这条，见函数头说明）
+    for p in to_create:
+        _refresh_board_date(p)
+
+    # payload 与导出**同一个函数**（`_build_delivery`）：逐张取卡、保持 `card_asset_ids`
+    # 顺序＝板上 picDatas 顺序、缺一张就点名。这里多花一次 MinIO 读是值当的——
+    # 它是"投出去画中人不对"这类事故在烧钱前唯一还能看见它的地方。
+    delivery = await _build_delivery(db, to_create, "payload") if to_create else {"payloads": []}
+    await db.commit()  # ⚠️ 建任务前必须收掉事务：板子一次 POST 最长 90s，趴着等会撞 60s 掐断
+    payloads_by_id = {x["id"]: x for x in delivery.get("payloads", [])}
+    card_warnings = [
+        {"id": x["id"], "hook_code": x.get("hook_code"), "warnings": x.get("warnings") or []}
+        for x in delivery.get("payloads", [])
+        if x.get("warnings")
+    ]
+    # `_build_delivery` 会按自己的口径再过一道（不可交付态/无正文）。闸门已经拦过一遍，
+    # 走到这里还少行的话说明两处口径分叉了——**点名报出来**，绝不静默少投。
+    lost = [p for p in to_create if str(p.id) not in payloads_by_id]
+    if lost:
+        blocked.extend(
+            {
+                "id": str(p.id), "seq": p.seq, "hook_code": p.hook_code,
+                "reason": "交付构造这层没给出 payload（与投递闸门口径不一致，请报给后端）",
+            }
+            for p in lost
+        )
+        to_create = [p for p in to_create if str(p.id) in payloads_by_id]
+
+    planned_rows = sum(int(p.board_total or 1) for p in to_create)
+    capacity = await _dispatch_capacity(db, planned_rows)
+
+    if data.async_mode:
+        job = await _start_asset_job(
+            db,
+            kind=JOB_DISPATCH,
+            data=data,
+            operator=current_user,
+            batch_id=None,
+            planned_units=len(to_create) + len(to_recover),
+        )
+        return {
+            **_job_accepted(job, "投板"),
+            "precheck": {
+                "will_create": len(to_create),
+                "will_recover": len(to_recover),
+                "planned_board_rows": planned_rows,
+                "blocked": blocked,
+                "card_warnings": card_warnings,
+                "capacity": capacity,
+                "note": (
+                    "预检已过：闸门按导出/回写同一套判据，payload 与导出同一个函数。"
+                    "后台会建任务、轮询出片、把成片落进产物；跑完整份结果在任务台账里"
+                ),
+            },
+        }
+
+    return await _execute_dispatch(
+        db,
+        to_create=to_create,
+        to_recover=to_recover,
+        payloads_by_id=payloads_by_id,
+        operator=current_user,
+        gate=gate,
+        blocked=blocked,
+        capacity=capacity,
+        card_warnings=card_warnings,
+        recover_only=data.recover_only,
+    )
+
+
+async def _execute_dispatch(
+    db: AsyncSession,
+    *,
+    to_create: List[AssetProduction],
+    to_recover: List[AssetProduction],
+    payloads_by_id: Dict[str, dict],
+    operator: User,
+    gate: Dict[str, Any],
+    blocked: List[dict],
+    capacity: Dict[str, Any],
+    card_warnings: List[dict],
+    recover_only: bool,
+) -> Dict[str, Any]:
+    """投板执行体（后台协程走的就是这里）：建任务 → 钉 tid → 轮询 → 回收 → 落库。
+
+    事务纪律（本函数最容易踩的一条）：**所有网络等待都发生在事务之外**。
+    每一段的结构都是「读库拿数据 → commit → 出网（板子/桶）→ 开短事务写结果 → commit」。
+    建任务 90s、下载 180s、轮询整批可能几十分钟，任何一个趴在开着的事务里，
+    Postgres 的 `idle_in_transaction_session_timeout`（现网 60s）就会把连接掐死，
+    然后一线看到"任务失败"，而板子上那批其实好端端在跑——号池白烧一遍。
+    """
+    created: List[dict] = []
+    uncertain: List[dict] = []
+    errors: List[dict] = []
+    tracked: Dict[str, Dict[str, Any]] = {}   # 生产单 id → {prod, tids, tag, payload, restart_used}
+
+    # ── ① 建任务（只有 to_create；逐张 POST，逐张拿 tid）──
+    for p in to_create:
+        item = payloads_by_id[str(p.id)]
+        payload: Dict[str, Any] = dict(item["payload"])
+        tag = str(payload.get("tag") or "")
+        recovered_note: Optional[str] = None
+        days = board.days_to_query([p.board_date])
+        try:
+            before = await board.readback(days, tag)
+        except board.BoardError as e:
+            # 投前快照拿不到就不敢投：拿不到"已有的 tid 集合"就没法用差集认这条新任务，
+            # 硬投出去只会得到一张对不上账的单（宁可不投，也别投一张认领不了的）。
+            errors.append({"id": str(p.id), "hook_code": p.hook_code, "stage": "投前快照", "error": str(e)})
+            continue
+        try:
+            await board.create_task(payload)
+            after = await board.readback(days, tag)
+        except board.BoardError as e:
+            # POST 失败/超时 ≠ 板上没有这条。先做一次差集回读认领：
+            # 真建上了就照实记账（这条最重要——否则重投会把号池烧两遍），
+            # 确实没建上才留在 order_ready 并说清"没投出去"。
+            try:
+                after = await board.readback(days, tag)
+            except board.BoardError:
+                uncertain.append({
+                    "id": str(p.id), "hook_code": p.hook_code,
+                    "error": f"{e}；而且回读也失败，这张单**状态未知**——请到板面看一眼再决定重投",
+                })
+                continue
+            new_tids = [t for t in after if t not in before]
+            if not new_tids:
+                errors.append({"id": str(p.id), "hook_code": p.hook_code, "stage": "建任务", "error": str(e)})
+                continue
+            recovered_note = str(e)[:200]
+        else:
+            new_tids = [t for t in after if t not in before]
+        if not new_tids:
+            # 板子回了 succ 但按日期/tag 查不到新行——这正是 1021 那次「date 写错、
+            # 120 条永久找不回」的形状。不猜它在哪，直接点名让人工去板面对。
+            uncertain.append({
+                "id": str(p.id), "hook_code": p.hook_code,
+                "error": "建任务回了成功，但按批次日＋今天都没回读到新任务（date/tag 对不上？）："
+                         "这张单先不钉 tid，请立刻到板面核对，直接重投会烧两遍额度",
+            })
+            continue
+        _adopt_tids(p, after, new_tids)
+        tracked[str(p.id)] = {"prod": p, "tids": new_tids, "tag": tag, "payload": payload, "restart_used": False}
+        row: Dict[str, Any] = {"id": str(p.id), "hook_code": p.hook_code, "tids": new_tids, "to": PR_QUEUED}
+        if recovered_note:
+            # POST 这一步报了错，但差集回读认领到了新任务＝板子上真建上了。
+            # 照实记账（并把报错原文带上），别让下一轮把它当没投过再烧一遍。
+            row["recovered_after_error"] = recovered_note
+        created.append(row)
+        # ⚠️ 逐张提交：进程在两张中间被带走时，已建上的那张必须已经带着 tid 落库，
+        # 否则重启后它既没 tid 又已被重投＝同一条烧两遍（这正是拍板②要防的事）。
+        await db.commit()
+
+    # ── ② 认领已投出去的（回读不重建）──
+    for p in to_recover:
+        tag = str(p.board_tag or settings.ASSET_BOARD_TAG)
+        tracked[str(p.id)] = {
+            "prod": p, "tids": [str(p.board_tid)], "tag": tag,
+            "payload": None, "restart_used": True,   # 接续回收的这一批**不再重启**，只取片子
+        }
+
+    if not tracked:
+        await _write_audit(
+            db,
+            action="asset.production.dispatch",
+            operator=operator,
+            target_type="asset_production",
+            target_id=None,
+            after={
+                "requested": len(to_create) + len(to_recover),
+                "created": 0,
+                "blocked": blocked,
+                "errors": errors,
+                "uncertain": uncertain,
+                "recover_only": recover_only,
+            },
+        )
+        await db.commit()
+        counts = await _dispatch_counts(db)
+        return {
+            "dispatched": 0,
+            "recovered": 0,
+            "created": created,
+            "blocked": blocked,
+            "errors": errors,
+            "uncertain": uncertain,
+            "card_warnings": card_warnings,
+            "capacity": capacity,
+            "dispatch": counts,
+            "message": (
+                f"一张都没投出去：{len(errors)} 张建任务被板子拒绝、{len(blocked)} 张过不了闸门"
+                + ("；" + str((errors or blocked)[0].get("error") or (errors or blocked)[0]["reason"])[:200]
+                   if (errors or blocked) else "")
+            ),
+        }
+
+    # ── ③ 轮询回收 ──
+    outcome = await _poll_and_collect(db, tracked, recover_only=recover_only)
+
+    # ── ④ 阶段收敛 + 审计 + 计数 ──
+    stage_by_asset = await _converge_produce_stage(db, {t["prod"].asset_id for t in tracked.values()})
+    await db.commit()
+    await _write_audit(
+        db,
+        action="asset.production.dispatch",
+        operator=operator,
+        target_type="asset_production",
+        target_id=list(tracked)[0] if len(tracked) == 1 else None,
+        before={
+            "ids": sorted(tracked),
+            "from": {pid: t["prod"].status for pid, t in tracked.items()},
+            "board_tid_before": {pid: t["prod"].board_tid for pid, t in tracked.items()},
+        },
+        after={
+            "recover_only": recover_only,
+            "created": created,
+            "outcome": outcome["summary"],
+            "outputs": outcome["outputs"],
+            "uncertain": uncertain,
+            "errors": errors,
+            "blocked": blocked,
+            "asset_status": stage_by_asset,
+            "capacity": capacity,
+            "forced_risk": {"ids": gate["forced_ids"], "reason": gate["forced_reason"]} if gate["forced_ids"] else None,
+            "payload_keys": list(svc.BOARD_PAYLOAD_KEYS),
+        },
+    )
+    await db.commit()
+
+    batch_ids = sorted({str(t["prod"].batch_id) for t in tracked.values() if t["prod"].batch_id})
+    if batch_ids:
+        counts = await _dispatch_counts(db, AssetProduction.batch_id.in_([uuid.UUID(b) for b in batch_ids]))
+    else:
+        counts = await _dispatch_counts(db)
+
+    n_ok = sum(1 for s in outcome["summary"].values() if s["status"] == PR_SUCCESS)
+    n_fail = sum(1 for s in outcome["summary"].values() if s["status"] == PR_FAILED)
+    n_open = len(outcome["summary"]) - n_ok - n_fail
+    return {
+        "dispatched": len(created),
+        "recovered": len(to_recover),
+        "succeeded": n_ok,
+        "failed": n_fail,
+        "still_running": n_open,
+        "results": outcome["summary"],
+        "outputs": outcome["outputs"],
+        "created": created,
+        "blocked": blocked,
+        "errors": errors,
+        "uncertain": uncertain,
+        "card_warnings": card_warnings,
+        "asset_status": stage_by_asset,
+        "capacity": capacity,
+        "dispatch": counts,
+        "message": (
+            f"投板完成：新建 {len(created)} 张、接续回收 {len(to_recover)} 张 → "
+            f"到手 {n_ok} / 失败 {n_fail}"
+            + (f" / 还在板上 {n_open}" if n_open else "")
+            + (f"，新增产物 {len(outcome['outputs'])} 支" if outcome["outputs"] else "")
+            + (f"；闸门挡下 {len(blocked)} 张" if blocked else "")
+            + (f"；{len(uncertain)} 张状态未知需人工看板" if uncertain else "")
+            + f"；号池今天已吃 {capacity['total_today']} 条（软提示线 ≈{capacity['soft_cap']}，不硬拦）"
+        ),
+    }
+
+
+def _adopt_tids(p: AssetProduction, board_rows: Dict[str, Dict[str, Any]], new_tids: List[str]) -> None:
+    """把刚建上的板任务认领给这张生产单：钉 tid/rgid、落 queued、attempts+1。
+
+    `board_tid` 是**逐条**主键，一行只有一个位置：一条 create 出 `total` 个任务时，
+    这里存第一个（代表），其余 tid 由**本次协程在内存里**逐个跟踪并各自落一条产物。
+    这就是"每张单 board_total=1"这条口径存在的原因（拍板④）：total>1 时其余几版
+    只能靠 name＋批次日回查，跨天接续回收会认不全，所以**批量请开 N 张单、每张 total=1**。
+    """
+    first = board_rows.get(new_tids[0]) or {}
+    p.board_tid = str(new_tids[0])[:60]
+    if first.get("rgid"):
+        p.board_rgid = str(first["rgid"])[:60]
+    p.status = PR_QUEUED
+    p.attempts = int(p.attempts or 0) + 1
+    if p.started_at is None:
+        p.started_at = datetime.utcnow()
+    p.completed_at = None
+    p.error = None
+
+
+async def _poll_and_collect(
+    db: AsyncSession,
+    tracked: Dict[str, Dict[str, Any]],
+    *,
+    recover_only: bool,
+) -> Dict[str, Any]:
+    """轮询板面直到这批全终态或到期，其间把 succ 的成片下载落桶并写产物。
+
+    节奏：`ASSET_BOARD_POLL_INTERVAL`（默认 45s）一轮、最多 `ASSET_BOARD_POLL_MAX_MINUTES`
+    （默认 45 分钟，实测单条 45s 一轮、25 分钟内到手）。**到期不判失败**：还在板上跑的单
+    留在 queued/running，由人再点一次回收（`recover_only=true`）——按拍板口径
+    「不自动补投隔夜」，把没出片的单判成失败会诱导人去重投，那才是真烧钱。
+
+    三条判读规矩都来自板子的实测行为，别"优化"掉：
+    - `waiting`／看不懂的词＝**还在跑**。判死→重投→同一条烧两遍号池（11-04 真踩过）；
+    - 回读失败／这一天查不到＝**跳过这一轮**，不是失败（11-04 反推轮询同一条教训）；
+    - `total>1` 的单**全版到手才落 success**：先判成功，剩下的版次再没人回收。
+    """
+    work_dir = tempfile.mkdtemp(prefix="asset_board_")
+    pids = [uuid.UUID(pid) for pid in tracked]
+    # 已经落过库的 outUrl：防重复插产物（同一张单回收两次／进程重启后重新跟踪同一批）
+    seen_urls = {
+        str(u)
+        for u in (
+            await db.execute(
+                select(AssetOutput.board_out_url).where(
+                    AssetOutput.production_id.in_(pids), AssetOutput.board_out_url.is_not(None)
+                )
+            )
+        ).scalars().all()
+        if u
+    }
+    await db.commit()  # ⚠️ 收掉事务：下面每一轮出网（回读/下载/传桶）都可能几十秒到两三分钟
+
+    summary: Dict[str, Dict[str, Any]] = {
+        pid: {
+            "id": pid,
+            "hook_code": t["prod"].hook_code,
+            "asset_id": str(t["prod"].asset_id),
+            "board_total": int(t["prod"].board_total or 1),
+            "tids": list(t["tids"]),
+            "status": t["prod"].status,
+            "board_status": None,
+            "outputs": [],
+            "restarted": False,
+        }
+        for pid, t in tracked.items()
+    }
+    outputs: List[dict] = []
+
+    async def _take_outputs(pid: str, t: Dict[str, Any], rows: List[Dict[str, Any]], s: Dict[str, Any]) -> None:
+        """把这几条 succ 任务下载→落桶，攒进 outputs（**不碰数据库**，写库统一在轮询外）。"""
+        for idx, r in enumerate(rows, start=1):
+            url = str(r.get("outUrl") or "")
+            if not url or url in seen_urls:
+                continue
+            try:
+                rec = await _fetch_board_output(t["prod"], r, work_dir, index=idx)
+            except board.BoardError as e:
+                # 片子取不回**不改投递状态**：单子在板上是真成功了，取文件是我们这侧的事。
+                # 混成 failed 会让"今天的到手率"看不出到底谁掉了。
+                s.setdefault("download_errors", []).append({"tid": str(r.get("tid") or ""), "error": str(e)[:200]})
+                continue
+            seen_urls.add(url)
+            outputs.append({"production_id": pid, **rec})
+            s["outputs"].append(rec["file_key"])
+
+    deadline = time.monotonic() + _board_poll_max_minutes() * 60
+    rounds = 0
+    read_fail_rounds = 0
+    while True:
+        pending = {pid: t for pid, t in tracked.items() if summary[pid]["status"] not in (PR_SUCCESS, PR_FAILED)}
+        if not pending:
+            break
+        if time.monotonic() > deadline:
+            for pid in pending:
+                summary[pid]["note"] = (
+                    f"轮询到期（{_board_poll_max_minutes():g} 分钟）仍没出终态：板子上还在跑，"
+                    "单子留在现在这个态不判失败；稍后带 recover_only=true 再回收一次即可"
+                )
+            break
+        rounds += 1
+        # 按 tag 分组回读（不同 tag 是不同拥有者的账，合一次查询会把别人的任务读进来）
+        snapshots: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for tag in {t["tag"] for t in pending.values()}:
+            days = board.days_to_query([x["prod"].board_date for x in pending.values() if x["tag"] == tag])
+            try:
+                snapshots[tag] = await board.readback(days, tag)
+            except board.BoardError as e:
+                read_fail_rounds += 1
+                snapshots[tag] = {}
+                for pid, t in pending.items():
+                    if t["tag"] == tag:
+                        summary[pid]["last_read_error"] = str(e)[:200]
+        changed = False
+        for pid, t in pending.items():
+            rows = snapshots.get(t["tag"], {})
+            mine = [rows[tid] for tid in t["tids"] if tid in rows]
+            s = summary[pid]
+            if not mine:
+                # 查不到自己的 tid：可能是回读这一天失败（上面记了 last_read_error），
+                # 也可能是板子把行挪走了。两种都不判死，下一轮再说。
+                continue
+            s["board_status"] = "/".join(sorted({str(r.get("status") or "").lower() for r in mine}))
+            got = [r for r in mine if board.state_after_board(r.get("status")) == "success"]
+            bad = [r for r in mine if str(r.get("status") or "").strip().lower() == board.STATE_FAIL]
+            if got and len(got) == len(mine):
+                # 全版都 succ＝板侧事实已定，状态一律 success。个别片子没取回来
+                # 不改这个结论——缺的片子在 `download_errors` 里点名，回收动作再做一次即可。
+                await _take_outputs(pid, t, got, s)
+                t["prod"].status = PR_SUCCESS
+                t["prod"].completed_at = datetime.utcnow()
+                t["prod"].error = None
+                s["status"] = PR_SUCCESS
+                changed = True
+            elif bad and not got:
+                if t["payload"] and not t["restart_used"] and not recover_only:
+                    # 失败**只重启一次**（拍板口径）：同一条 payload 再建一次任务、重新认领 tid
+                    t["restart_used"] = True
+                    days = board.days_to_query([t["prod"].board_date])
+                    try:
+                        before = await board.readback(days, t["tag"])
+                        await board.create_task(t["payload"])
+                        after = await board.readback(days, t["tag"])
+                    except board.BoardError as e:
+                        _mark_dispatch_failed(t["prod"], s, f"板面失败，重启这步也没成：{e}")
+                        changed = True
+                        continue
+                    new_tids = [x for x in after if x not in before]
+                    if not new_tids:
+                        _mark_dispatch_failed(
+                            t["prod"], s,
+                            "板面失败，重启的任务建上了但回读不到（date/tag 对不上？）："
+                            "停在 failed 交人工看板，别再自动重投",
+                        )
+                        changed = True
+                        continue
+                    _adopt_tids(t["prod"], after, new_tids)
+                    t["tids"] = new_tids
+                    s["tids"] = list(new_tids)
+                    s["restarted"] = True
+                    s["board_status"] = None
+                    s.pop("last_read_error", None)
+                    changed = True
+                else:
+                    _mark_dispatch_failed(
+                        t["prod"], s,
+                        "板面 status=fail（板上失败行没有原因字段，这条成因是我们侧判读）；"
+                        + (
+                            "已按口径重启过一次，仍失败"
+                            if t["restart_used"] and t["payload"]
+                            else "本次是只回读回收，不重启"
+                        ),
+                    )
+                    changed = True
+            else:
+                # 还在跑：先把手里已经 succ 的版次取回来（多版单里"先出的那版"），
+                # 再把单子标成 running——有 outUrl 或状态非终态都是"正在出片"的实证。
+                if got:
+                    await _take_outputs(pid, t, got, s)
+                if t["prod"].status != PR_RUNNING:
+                    t["prod"].status = PR_RUNNING
+                    s["status"] = PR_RUNNING
+                    changed = True
+        if outputs and any(not o.get("_inserted") for o in outputs):
+            # 短事务：只在真的多了产物/改了状态时开一次，写完立刻 commit（出网都在事务外）
+            for rec in outputs:
+                if rec.get("_inserted"):
+                    continue
+                prod = tracked[rec["production_id"]]["prod"]
+                db.add(AssetOutput(
+                    production_id=prod.id,
+                    asset_id=prod.asset_id,
+                    **{
+                        k: v
+                        for k, v in rec.items()
+                        if k not in ("production_id", "tid", "rgid", "doubao_account", "_inserted")
+                    },
+                ))
+                rec["_inserted"] = True
+            changed = True
+        if changed:
+            await db.commit()
+        else:
+            await asyncio.sleep(_board_poll_interval_seconds())
+
+    shutil.rmtree(work_dir, ignore_errors=True)
+    return {
+        "summary": summary,
+        "outputs": outputs,
+        "rounds": rounds,
+        "read_fail_rounds": read_fail_rounds,
+    }
+
+
+def _mark_dispatch_failed(p: AssetProduction, s: Dict[str, Any], reason: str) -> None:
+    p.status = PR_FAILED
+    p.error = str(reason)[:500]
+    p.completed_at = datetime.utcnow()
+    s["status"] = PR_FAILED
+    s["error"] = p.error
 
 
 # ──────────────────────────────────────────────

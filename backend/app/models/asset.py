@@ -136,18 +136,24 @@ STYLE_DIALOGUE = "dialogue"     # 台词摘录式
 HOOK_STYLES = (STYLE_QUESTION, STYLE_STATEMENT, STYLE_DIALOGUE)
 
 # ─────────────────────────  生产单状态  ─────────────────────────
-# 建单只写 order_ready（生产单已排好、提示词已按权威模板展开、可导出）；
-# queued/running/success/failed 由人**显式回写**（`POST /assets/productions/status`，
-# 11-03 拍板第 4 条），P0 没有自动投递所以这四个态只能来自报数；
+# 建单只写 order_ready（生产单已排好、提示词已按权威模板展开、可导出）。
+# queued/running/success/failed 这两个来源**都**能写（11-05 批 H 之后）：
+#   ① 人工回写口 `POST /assets/productions/status`（导出 payload → 人去板面投 → 报数）；
+#   ② 自动投板 `POST /assets/productions/dispatch`（后端自己连板：建任务落 queued、
+#      轮询到非终态落 running、succ＋下载到桶里才落 success，板面 fail 只重启一次再 failed）。
+# 两条路的迁移、attempts、阶段收敛共用同一套判据（见 assets.py 的 `_DISPATCH_TRANSITIONS`
+# 与 `_converge_produce_stage`），口径不会因为是机器投的就松一档。
 # awaiting_rewrite 尚无写入方（改写闭环属 P1）。
 PR_ORDER_READY = "order_ready"
-PR_QUEUED = "queued"          # 已投上板（回写口写入，attempts 在这里 +1）
+PR_QUEUED = "queued"          # 已投上板（人工回写或自动投板写入，attempts 在这里 +1）
 PR_RUNNING = "running"        # 板上出片中
 PR_AWAITING_REWRITE = "awaiting_rewrite"
-PR_SUCCESS = "success"        # 成片到手；completed_at 由回写口落
+PR_SUCCESS = "success"        # 成片到手；completed_at 由回写口/投板协程落
 PR_FAILED = "failed"          # 失败/不出片；error 必填（我们侧判读，板上失败行没有原因字段）
-PR_CANCELLED = "cancelled"    # P0 无写入方（取消投递是 P1 队列的活）；列在这里是为了读口能判
-PR_SKIPPED = "skipped"      # 被批次熔断挡下（额度/预算），未投递：P0 无写入方，P1 投递侧才产出
+PR_CANCELLED = "cancelled"    # 仍无写入方：自动投板做的是"重启一次"而不是"取消"（11-05 口径）；
+                              # 列在这里是为了读口能判
+PR_SKIPPED = "skipped"      # 被批次熔断挡下（额度/预算），未投递：仍无写入方——熔断本身没做，
+                            # 号池余量按用户拍板只提示不拦，所以这条态在 P0/P1 都不会自动产生
 PR_SUPERSEDED = "superseded"  # 文案被撤销过审后作废的旧单：不许导出、不许投递（A2-2）
 PRODUCTION_STATES = (
     PR_ORDER_READY, PR_QUEUED, PR_RUNNING, PR_AWAITING_REWRITE,
@@ -639,7 +645,12 @@ JOB_PRODUCE = "produce"
 # 所以 `GET /assets/jobs` 默认不列它（见 list_asset_jobs），任务横幅才不会被人人都有的
 # 抽帧任务把「我刚才点的那批还在不在跑」挤出视野。
 JOB_FRAMES = "frames"
-ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE, JOB_FRAMES)
+# 批 H（11-05）：投板。它是这三类里**唯一会往外花钱/花号池额度**的活，所以
+# ① 权限跟 `_REVIEW_ROLES`（与建单/投产/回写同一侧）；② 必须带 `confirm=true`
+# （P0 拍板口径「可自动投板，但逐批人工确认」）；③ 一个 job 里包含"建任务＋轮询＋
+# 回收下载"整段，跑几十分钟，同步等必然顶穿超时链——只能走这里。
+JOB_DISPATCH = "dispatch"
+ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE, JOB_FRAMES, JOB_DISPATCH)
 
 JB_QUEUED = "queued"          # 已落库、协程已排上，还没开跑
 JB_RUNNING = "running"        # 正在逐条调模型（开始跑时落一次 started_at，跑中间不回报心跳）

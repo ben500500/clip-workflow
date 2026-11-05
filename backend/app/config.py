@@ -353,10 +353,26 @@ class Settings(BaseSettings):
     # 权威口径：NAS《每日解压视频-操作手册-20261022.md》+ Drama/共享配置/skill/relax-video-pipeline。
     # 这条通道**不扣现金**、payload 只有七键（tag/reqID/total/date/prompt/name/picDatas）、
     # **没有时长与分辨率参数**：成片恒 10.08s / 720×1280。
-    # ⚠️ D-3（11-04 第二轮审核）：这里原有 `ASSET_BOARD_BASE_URL` 与 `AIVIDEO_AUTH` 两个字段，
-    # 全仓**零读取**——P0 是人工投板，后端从不连板，留着等于骗运维「改了环境变量就生效」。
-    # 已删。P1 做自动投递时随投递客户端一起接线（`.env.example` 同段有说明，凭据只走 env）。
-    # 现网 .env 若还留着那两行不影响启动：model_config 是 extra="ignore"。
+    # ⚠️ 11-04 第二轮审核（D-3）时这里是两个**零读取**的假旋钮（那版 P0 是人工投板，
+    # 后端从不连板），当时删掉了。11-05 批 H 做「自动投板」，随投递客户端
+    # `app/services/aivideo_board.py` 一起**重新接线**——现在真的有人读了。
+    # 凭据只走环境变量，仓库不写明文；现网由用户本人填进 `.env`（我们不碰那一行）。
+    # `AIVIDEO_AUTH` 留空＝自动投板没启用，投递口当场白话拒绝，人工投板不受影响。
+    ASSET_BOARD_BASE_URL: str = "http://mp.miwan.synology.me:8500"
+    AIVIDEO_AUTH: str = ""                       # "user:pass"（客户端自己 base64）；空＝不启用
+    # 三步各自的超时：建任务要等板子排队收单（权威脚本给 90s），回读是一次列表查询，
+    # 下载是拉一整支 mp4。三个数分开是因为**失败成因完全不同**：90s 到＝没投出去，
+    # 60s 到＝只是查不到（不许判死），180s 到＝片子取不回（单子仍算投过）。
+    ASSET_BOARD_CREATE_TIMEOUT: float = 90.0
+    ASSET_BOARD_READ_TIMEOUT: float = 60.0
+    ASSET_BOARD_DOWNLOAD_TIMEOUT: float = 180.0
+    # 投板后台任务的轮询节奏：45s 一轮、最多等 45 分钟（实测单条 45s 一轮、25 分钟出片；
+    # 整批排队更久）。到期还没终态**不判失败**——留在 queued/running，由人回写或再点回收。
+    ASSET_BOARD_POLL_INTERVAL: float = 45.0
+    ASSET_BOARD_POLL_MAX_MINUTES: float = 45.0
+    # 单次投递请求的条数上限（与反推/出文案同一类"别让一次点击干太多"的闸）。
+    # 20 是拍板值：一次投 20 张＝号池当天 ≈20 条（每张 board_total=1），再大就该分批看结果。
+    ASSET_DISPATCH_MAX_PER_CALL: int = 20
     # 板上 tag＝拥有者标记：不填就建成**无主任务**，按天筛不到（回收必然漏）
     ASSET_BOARD_TAG: str = "suanku"
     # 板上 total＝同一条 prompt 出几版（1..20）。与「N 份差异化提示词」是两个量，别混用。

@@ -43,7 +43,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -5637,3 +5637,890 @@ def test_resolution_string_is_parsed_defensively():
     empty = _card_ratio_fields("unknown")
     assert empty["ratio"] is None and empty["orientation"] is None, empty
 
+
+
+# ══════════════════════════════════════════════════════════════
+#  1105 批 H · 自动投板（可自动投板，但逐批人工确认）
+#
+#  这一节**绝不打真板**：`app.services.aivideo_board` 的三个出网函数
+#  （create_task / readback / download_output）全部由 `_FakeBoard` 替身接管，
+#  桶与 ffprobe 同样 mock。板子的形状照权威脚本实测写死：
+#  ① 行里**没有 reqID**（认领只能靠 tid 差集）；② 一次 create 出 `total` 行；
+#  ③ 状态词只有 succ/fail 算终态，waiting 是"还在跑"。
+# ══════════════════════════════════════════════════════════════
+
+import contextlib  # noqa: E402
+from typing import Dict, List, Tuple  # noqa: E402
+
+from app.services import aivideo_board as board_mod  # noqa: E402
+from app.models.asset import (  # noqa: E402
+    CH_DOUBAO_RPA,
+    CH_WEWORK_AIVIDEO,
+    JOB_DISPATCH,
+    PR_CANCELLED,
+    PR_FAILED,
+    PR_ORDER_READY,
+    PR_QUEUED,
+    PR_RUNNING,
+    PR_SKIPPED,
+    PR_SUCCESS,
+    PR_SUPERSEDED,
+)
+
+
+def _board_today(offset_days: int = 0) -> str:
+    """板面日期串，口径与 `aivideo_board.days_to_query` 完全一致（UTC＋时区偏移）。
+
+    测试里造"昨天的行"必须走这个函数：直接用 `utcnow().strftime` 在傍晚跑用例时
+    会和板面今天差一天，于是一条本来该被并集查到的行永远查不到（假失败）。
+    """
+    return board_mod.board_day(
+        datetime.utcnow() + timedelta(hours=int(settings.ASSET_BOARD_TZ_OFFSET_HOURS or 0))
+        + timedelta(days=offset_days)
+    )
+
+
+class _FakeBoard:
+    """任务板替身：建任务→按 tid 差集回读→下载，全在内存里，一个包都不出。
+
+    形状照权威脚本实测（`aivideo_ops/watch_8K2A1.py` 那一套）：
+    - `info` 回读的行**没有 reqID**——所以"这条 tid 是哪张单"只能靠**投前/投后差集**，
+      本替身因此会先塞一条"别人的旧任务"，代码要是靠"行里有 reqID"认领就会认到别人头上；
+    - 一次 create 出 `total` 行（板上 TOTAL=N＝同一条 prompt 出 N 版）；
+    - 行里就 tid/name/status/outUrl/rgid/doubaoName 这几个键，状态词 waiting 不是终态。
+    """
+
+    def __init__(self, *, status_fn=None, pre_existing=(), create_error=None,
+                 readback_error_after=None, hide_new=False, download_error=None,
+                 video_bytes=None, readback_ok_days=None):
+        self.creates: List[dict] = []
+        self.rows: Dict[str, dict] = {}
+        self.reads: List[Tuple[tuple, str]] = []
+        self.downloads: List[str] = []
+        self._seq = 0
+        self.status_fn = status_fn or (lambda created_index, read_round: "succ")
+        self.create_error = create_error
+        self.readback_error_after = readback_error_after
+        self.hide_new = hide_new
+        self.download_error = download_error
+        self.video_bytes = video_bytes if video_bytes is not None else (b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2048)
+        # 落桶与 ffprobe 的替身（投板协程回收成功条时一定会经过这两步）
+        self.upload = AsyncMock(return_value=True)
+        self.probe = AsyncMock(return_value={"duration": 10.08, "width": 720, "height": 1280})
+        # 某些日期查不到（查询抖动）：给了这个集合就只返回集合内日期的行
+        self.readback_ok_days = readback_ok_days
+        for row_seed in pre_existing:
+            # (tid, name) 或 (tid, name, day)：day 用来造"昨天的行"这种隔夜形状
+            tid, name = row_seed[0], row_seed[1]
+            day = row_seed[2] if len(row_seed) > 2 else None
+            self._add_row(tid=tid, name=name, tag="suanku", created_index=0, day=day)
+
+    def _add_row(self, *, tid, name, tag, created_index, day=None):
+        self.rows[tid] = {
+            "tid": tid, "name": name, "tag": tag, "_created": created_index, "_reads": 0,
+            # 行"属于哪一天"按板接口口径记着：`info?date=` 只按日期返回那天的行，
+            # 跨午夜那批必须靠**双日并集**才查得到（见 test_dispatch_overnight_reclaim_needs_both_days）
+            "day": day or _board_today(),
+            "outUrl": f"/out/{tid}.mp4", "rgid": f"RG{tid[-4:]}", "doubaoName": "豆包A",
+        }
+
+    def _next_tid(self) -> str:
+        """板面 tid 分配：**保证不与已有行撞号**。
+
+        真实板子的 tid 是全局唯一的，替身要是图省事直接 `T{seq}`，一旦和
+        `pre_existing` 里那条同名就会把旧行**覆盖**掉——于是投前/投后差集为空，
+        代码按口径判成"建上了但认不回来"（uncertain），用例红得莫名其妙。
+        11-05 那次"混合点名"用例就是这么撞上的，所以这条写进替身而不是每个用例自己躲。
+        """
+        while True:
+            self._seq += 1
+            tid = f"T{self._seq:06d}"
+            if tid not in self.rows:
+                return tid
+
+    async def create_task(self, payload):
+        self.creates.append(dict(payload))
+        if self.create_error is not None:
+            raise self.create_error
+        idx = len(self.creates)
+        for _ in range(int(payload.get("total") or 1)):
+            self._add_row(tid=self._next_tid(), name=str(payload.get("name") or ""),
+                          tag=str(payload.get("tag") or ""), created_index=idx)
+        return '{"code":0,"msg":"succ"}'
+
+    async def readback(self, days, tag):
+        days = tuple(sorted(days))
+        self.reads.append((days, tag))
+        if self.readback_error_after is not None and len(self.reads) > self.readback_error_after:
+            raise board_mod.BoardError("回读这一天失败了（测试注入）")
+        wanted = set(days)
+        out: Dict[str, dict] = {}
+        for tid, row in self.rows.items():
+            if row["tag"] != tag:
+                continue
+            # 板接口 `info?date=` 是**按天**返回的：不在本次并集里的日期，行就不出来
+            if row["day"] not in wanted:
+                continue
+            # 给了 readback_ok_days 就只有这几天查得到（另几种日期静默为空）
+            if self.readback_ok_days is not None and row["day"] not in set(self.readback_ok_days):
+                continue
+            if self.hide_new and row["_created"] > 0:
+                continue
+            row["_reads"] += 1
+            out[tid] = {
+                "tid": tid, "name": row["name"], "status": self.status_fn(row["_created"], row["_reads"]),
+                "outUrl": row["outUrl"],
+                "rgid": row["rgid"], "doubaoName": row["doubaoName"],
+            }
+        return out
+
+    async def download_output(self, out_url):
+        self.downloads.append(str(out_url))
+        if self.download_error is not None:
+            raise self.download_error
+        return self.video_bytes
+
+
+def _patch_board(fb: _FakeBoard):
+    """把五个"会出网/碰盘"的调用换成替身（板子三个 + 落桶 + ffprobe）。
+
+    ⚠️ 落桶与 ffprobe 必须在同一个替身组里：投板协程回收成功条时会真去
+    `upload_file_from_path`（本机 MinIO:9000 没起 → 整批用例挂在 ConnectionRefused），
+    分开打桩就会有用例漏一个、把"闸门没过"测成"连不上 MinIO"。
+    """
+    return (
+        patch("app.services.aivideo_board.create_task", fb.create_task),
+        patch("app.services.aivideo_board.readback", fb.readback),
+        patch("app.services.aivideo_board.download_output", fb.download_output),
+        patch("app.api.assets.upload_file_from_path", fb.upload),
+        patch("app.services.asset_compose_service.probe_media", fb.probe),
+    )
+
+
+@contextlib.contextmanager
+def _board_off(fb: _FakeBoard):
+    """`with _board_off(fb):` ＝投板这段线全程不出网（含轮询协程），并且**跑得完**。
+
+    除了三个出网函数，这里还顺手钉四件事，每一件都是"不钉就会挂/会假绿"：
+    - `AIVIDEO_AUTH` / `ASSET_BOARD_BASE_URL`：默认空＝自动投板没启用，投递口会**当场 400**
+      （见 test_dispatch_refuses_when_board_not_configured）。不在这儿填上假凭据，
+      整节用例测到的都是"凭据没配"而不是投板；填的是替身用的假值，一个包都不会发出去。
+    - 轮询间隔／最长等待：现网口径 45s×45min，用例里等 45 分钟就是挂。压到下限
+      （0.05s / 0.02 分钟）后，"waiting 若干轮→succ""到期不判失败"两条码路都能真跑过。
+    - 退出时**原样还原**，不污染同进程后面的用例（含那些依赖"凭据为空"的用例）。
+    """
+    saved = {
+        "AIVIDEO_AUTH": settings.AIVIDEO_AUTH,
+        "ASSET_BOARD_BASE_URL": settings.ASSET_BOARD_BASE_URL,
+        "ASSET_BOARD_POLL_INTERVAL": settings.ASSET_BOARD_POLL_INTERVAL,
+        "ASSET_BOARD_POLL_MAX_MINUTES": settings.ASSET_BOARD_POLL_MAX_MINUTES,
+    }
+    settings.AIVIDEO_AUTH = "tester:board-pass-for-tests"
+    settings.ASSET_BOARD_BASE_URL = "http://board.invalid"
+    settings.ASSET_BOARD_POLL_INTERVAL = 0.05
+    settings.ASSET_BOARD_POLL_MAX_MINUTES = 0.02
+    try:
+        with contextlib.ExitStack() as st:
+            for p in _patch_board(fb):
+                st.enter_context(p)
+            yield fb
+    finally:
+        for k, v in saved.items():
+            setattr(settings, k, v)
+
+
+async def _order_ready_production(client, h, *, url=None, n=1, board_total=1,
+                                  hook_codes=None, summary_over=None, produce_extra=None):
+    """跑到「有 N 张 order_ready 生产单」，返回 (asset_id, summary_id, [production 行])。
+
+    全程只 mock autoclip 展开（真链路里唯一花钱的一步），板子一个字都不碰。
+    """
+    hm, ho = h["material"], h["operator"]
+    asset_id, _ = await _make_ready_asset(client, hm, **( {"url": url} if url else {}))
+    items, _ = await _gen_and_list(asset_id, hm, client)
+    sid = _approvable(items)["id"]
+    if summary_over:
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetSummary, uuid.UUID(sid))
+            for k, v in summary_over.items():
+                setattr(row, k, v)
+            await s.commit()
+    ok = await client.post("/api/assets/summaries/review",
+                           json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+    assert ok.json()["results"][0]["ok"] is True, ok.text
+    payload = {"summary_ids": [sid], "n": n, "board_total": board_total,
+               "recommended_title_count": 1, **(produce_extra or {})}
+    if hook_codes:
+        payload["hook_codes"] = hook_codes
+    with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+        made = await client.post("/api/assets/produce", json=payload, headers=ho)
+    assert made.status_code == 200, made.text
+    listed = (await client.get(f"/api/assets/productions?asset_id={asset_id}", headers=ho)).json()["items"]
+    return asset_id, sid, listed
+
+
+def _dispatch(client, headers, ids, **extra):
+    """投板口的统一调用形状（默认同步档，用例里按需改 async_mode）。"""
+    return client.post(
+        "/api/assets/productions/dispatch",
+        json={"ids": [str(i) for i in ids], "confirm": True, "async_mode": False, **extra},
+        headers=headers,
+    )
+
+
+def test_dispatch_creates_tasks_and_collects_outputs_end_to_end():
+    """批 H 主链路：点名 2 张单 → 各建 1 条板任务 → 回读钉 tid → 下载落桶 → 单与素材双双收敛。
+
+    钉的都是"烧钱那条线"不能错的几件事：
+    - payload 与导出**同一个函数**产出（七键、reqID＝生产单 id、date 是完整时间戳）；
+    - 认领靠 **tid 差集**：板面上别人那条旧任务不许被认成我们的；
+    - `board_date` 按**投递时刻**重排（建单是前天的，量必须记在今天那天的号池上）；
+    - 产物落 `asset_outputs`（kind=doubao_raw + sha256 + 实测分辨率），投递台账与素材阶段一起收敛。
+    """
+    import re as _re
+    from app.services import aivideo_board as board_mod
+
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(
+            client, h, n=2, hook_codes=["7C0D1", "7C0D2"])
+        ids = [p["id"] for p in listed]
+        assert [p["status"] for p in listed] == [PR_ORDER_READY, PR_ORDER_READY]
+
+        # 把两张单的排日刻意改成**前天**：投板必须按投递时刻重生成，否则量记错一天
+        aged = datetime.utcnow() - timedelta(days=2)
+        async with dbmod.async_session_factory() as s:
+            for pid in ids:
+                row = await s.get(AssetProduction, uuid.UUID(pid))
+                row.board_date = aged
+                await s.commit()
+
+        fb = _FakeBoard(pre_existing=[("OLD999999", "别人昨天的任务")])
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, ids)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        # ① 建任务：一张单一次 POST，七键 payload
+        assert body["dispatched"] == 2 and body["succeeded"] == 2 and body["failed"] == 0
+        assert len(fb.creates) == 2, "N 份＝N 张单、每张 total=1，不许合并成一条"
+        for payload in fb.creates:
+            assert tuple(payload.keys()) == svc.BOARD_PAYLOAD_KEYS, payload.keys()
+            assert _re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", payload["date"]), payload["date"]
+            assert payload["total"] == 1 and payload["tag"] == settings.ASSET_BOARD_TAG
+            assert payload["name"] and payload["prompt"]
+
+        # ② 排日重生成：不是前天，是板面今天
+        board_today = board_mod.board_day(
+            datetime.utcnow() + timedelta(hours=int(settings.ASSET_BOARD_TZ_OFFSET_HOURS or 0)))
+        assert [p["date"][:10] for p in fb.creates] == [board_today, board_today]
+
+        # ③ 认领＝差集：别人的旧 tid 一个都不许钉到我们单上
+        rows = await _rows(AssetProduction)
+        pinned = {str(r.board_tid) for r in rows}
+        assert "OLD999999" not in pinned, "投前快照里就存在的行不是我们的任务"
+        assert pinned == {"T000001", "T000002"}, pinned
+        assert all(p["reqID"] in {str(r.id) for r in rows} for p in fb.creates), "reqID 钉在生产单 id 上"
+
+        # ④ 状态与台账
+        for r in rows:
+            assert r.status == PR_SUCCESS, r.status
+            assert r.attempts == 1 and r.board_rgid and r.started_at and r.completed_at
+            assert r.error is None
+        # produce 环成了 → 四环状态机把素材推进到下一环（与人工回写口同一套判据）
+        assert body["asset_status"][str(asset_id)] == "composing", body["asset_status"]
+
+        # ⑤ 产物：两支都落库，规格是实测口径（10.08s / 720×1280）
+        outs = await _rows(AssetOutput)
+        assert len(outs) == 2 and [o.kind for o in outs] == ["doubao_raw"] * 2
+        assert {o.production_id for o in outs} == {r.id for r in rows}
+        for o in outs:
+            assert o.bucket == settings.MINIO_BUCKET_RAW
+            assert o.file_key.startswith("asset/board/"), o.file_key
+            assert o.sha256 and len(o.sha256) == 64, "摘要必须在删临时文件之前算出来"
+            assert (o.duration, o.resolution) == (10.08, "720x1280")
+            assert o.board_out_url in {f"/out/T00000{i}.mp4" for i in (1, 2)}
+        assert fb.upload.await_count == 2 and fb.downloads == ["/out/T000001.mp4", "/out/T000002.mp4"]
+
+        # ⑥ 审计 + 当日计数（对账看板上条数，不是行数）
+        audit = (await _rows(AuditLog, AuditLog.action == "asset.production.dispatch"))[-1]
+        assert audit.after["payload_keys"] == list(svc.BOARD_PAYLOAD_KEYS)
+        assert len(audit.after["created"]) == 2
+        assert body["dispatch"]["dispatched"] == 2
+        assert body["dispatch"]["today"]["board_rows"] == 2, body["dispatch"]["today"]
+        assert body["capacity"]["planned"] == 2 and body["capacity"]["over_cap"] == 0
+        assert "解压线" in body["capacity"]["note"], "余量偏乐观这句要给一线看到，不能只写在注释里"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_needs_confirm_and_only_review_roles():
+    """「逐批人工确认」是接口层的闸门，不是前端的按钮：不带 confirm=true 一律 400。
+
+    顺带钉三条同族的纪律：素材专员（material）没资格投、点名点不到就整批不投、
+    一次点太多直接 400 让人分批（号池是单日上限，一起排队只会一起等）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["7C0D3"])
+        pid = listed[0]["id"]
+
+        fb = _FakeBoard()
+        with _board_off(fb):
+            # ① 没有 confirm：闸门判定照跑，但一张都不许投出去
+            no_confirm = await client.post(
+                "/api/assets/productions/dispatch",
+                json={"ids": [pid], "async_mode": False}, headers=ho)
+            assert no_confirm.status_code == 400, no_confirm.text
+            assert "confirm=true" in no_confirm.json()["detail"]
+            assert fb.creates == [], "没确认就不许出网"
+            assert (await _row_of(AssetProduction, pid)).status == PR_ORDER_READY
+
+            # ② 权限：投递口跟审核口同一套角色（_REVIEW_ROLES），素材专员不行
+            forbidden = await _dispatch(client, hm, [pid])
+            assert forbidden.status_code == 403, forbidden.text
+            assert fb.creates == []
+
+            # ③ 点名的单子不存在 → 整批 400（绝不"投了能找到的那些"）
+            ghost = await _dispatch(client, ho, [pid, uuid.uuid4()])
+            assert ghost.status_code == 400 and "不存在" in ghost.json()["detail"]
+            assert fb.creates == [], "缺一张就整批不动，否则台账说投了 2 张其实只投了 1 张"
+
+            # ④ 超单批上限 → 400 且提示分批
+            old_cap = settings.ASSET_DISPATCH_MAX_PER_CALL
+            settings.ASSET_DISPATCH_MAX_PER_CALL = 1
+            try:
+                over = await _dispatch(client, ho, [pid, str(uuid.uuid4())])
+                assert over.status_code == 400 and "单次最多投 1 张" in over.json()["detail"]
+            finally:
+                settings.ASSET_DISPATCH_MAX_PER_CALL = old_cap
+
+            # ⑤ ids 为空
+            empty = await _dispatch(client, ho, [])
+            assert empty.status_code == 400 and "ids 为空" in empty.json()["detail"]
+            assert await _count(AssetJob) == 0, "被拒的提交不进台账"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_gate_blocks_drift_failed_voided_bare_and_wrong_channel():
+    """闸门五条负面：漂移/失败/作废/裸单/错通道，一张都不许替人把钱烧掉。
+
+    与导出侧同一套判据（R-4/R-5），所以这里同时钉"口径没分叉"：
+    失败单**不在投递口自动重投**（板上失败行没有原因字段，重投与否要人判读）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(
+            client, h, n=5, hook_codes=["7C0D4", "7C0D5", "7C0D6", "7C0D7", "7C0D8"])
+        by_code = {p["hook_code"]: p for p in listed}
+        assert len(by_code) == 5
+
+        async with dbmod.async_session_factory() as s:
+            # 漂移单：展开把词改了
+            r = await s.get(AssetProduction, uuid.UUID(by_code["7C0D4"]["id"]))
+            r.drift, r.drift_reason = True, "原句被改写"
+            # 失败单：不自动重投
+            r = await s.get(AssetProduction, uuid.UUID(by_code["7C0D5"]["id"]))
+            r.status, r.error, r.started_at = PR_FAILED, "板面 fail（人工判读）", datetime.utcnow()
+            # 作废单：撤审后作废，导不出也不许投
+            r = await s.get(AssetProduction, uuid.UUID(by_code["7C0D6"]["id"]))
+            r.status = PR_SUPERSEDED
+            # 裸单：没有展开正文
+            r = await s.get(AssetProduction, uuid.UUID(by_code["7C0D7"]["id"]))
+            r.prompt_text = None
+            # 错通道
+            r = await s.get(AssetProduction, uuid.UUID(by_code["7C0D8"]["id"]))
+            r.channel = CH_DOUBAO_RPA
+            await s.commit()
+
+        fb = _FakeBoard()
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, [p["id"] for p in listed])
+            assert resp.status_code == 400, resp.text
+            detail = resp.json()["detail"]
+            assert "一张都投不了" in detail and "漂移" in detail, detail
+            assert fb.creates == []
+
+        # 逐张点名（拿一张可投的进来当对照，blocked 就会带全五条成因）
+        ok_asset, _ok_sid, ok_listed = await _order_ready_production(client, h, url=DOUYIN_3, n=1,
+                                                                    hook_codes=["7C0D9"])
+        with _board_off(_FakeBoard()):
+            resp2 = await _dispatch(client, ho, [p["id"] for p in listed] + [ok_listed[0]["id"]])
+        assert resp2.status_code == 200, resp2.text
+        body = resp2.json()
+        assert body["dispatched"] == 1 and len(body["blocked"]) == 5, body["blocked"]
+        reasons = {b["hook_code"]: b["reason"] for b in body["blocked"]}
+        assert "漂移" in reasons["7C0D4"] and "不给豁免" in reasons["7C0D4"]
+        assert "不在这里自动重投" in reasons["7C0D5"], reasons["7C0D5"]
+        assert "7C0D6" in reasons and reasons["7C0D6"]
+        assert "expand=false" in reasons["7C0D7"] or "没有展开后的提示词正文" in reasons["7C0D7"]
+        assert "wework_aivideo" in reasons["7C0D8"]
+        # 被挡的单子状态一个字都没动
+        for code in ("7C0D4", "7C0D5", "7C0D6", "7C0D7", "7C0D8"):
+            assert (await _row_of(AssetProduction, by_code[code]["id"])).hook_code == code
+        assert (await _row_of(AssetProduction, by_code["7C0D4"]["id"])).board_tid is None
+        assert (await _row_of(AssetProduction, ok_listed[0]["id"])).status == PR_SUCCESS
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_never_rebuilds_a_row_that_already_has_a_tid():
+    """拍板②「已拿到 board_tid 的单只回读不重建」——这条是"重投烧两遍号池"的唯一天花板。
+
+    场景就是现网最怕的那一次：投上板了、协程被进程重启带走、一线又点了一遍投递。
+    正确动作是**把片子取回来**（一分钱不花），绝不再 POST 一次（一分钱都不该再花）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(
+            client, h, n=2, hook_codes=["7C0E1", "7C0E2"])
+        sent, fresh = listed[0], listed[1]
+
+        # 第一张：已经投上板（有 tid、queued、attempts=1）——形状照 `_adopt_tids` 落库
+        async with dbmod.async_session_factory() as s:
+            r = await s.get(AssetProduction, uuid.UUID(sent["id"]))
+            r.status, r.board_tid, r.attempts = PR_QUEUED, "T000001", 1
+            r.started_at = datetime.utcnow()
+            await s.commit()
+
+        fb = _FakeBoard(pre_existing=[("T000001", sent["board_name"] or "标题1")])
+        with _board_off(fb):
+            # ① 只回读回收：已投的那张取片子，没投的那张点名挡下
+            rec = await _dispatch(client, ho, [sent["id"], fresh["id"]], recover_only=True)
+        assert rec.status_code == 200, rec.text
+        assert fb.creates == [], "回收档一次 POST 都不许出网"
+        body = rec.json()
+        assert body["recovered"] == 1 and body["succeeded"] == 1 and body["dispatched"] == 0
+        assert len(body["blocked"]) == 1 and "只回读回收" in body["blocked"][0]["reason"]
+        assert (await _row_of(AssetProduction, sent["id"])).status == PR_SUCCESS
+        assert (await _row_of(AssetProduction, sent["id"])).attempts == 1, "回收不加 attempts（没再投一次）"
+        assert await _count(AssetOutput) == 1
+
+        # ② 混合点名：有 tid 的进回收、没 tid 的才建任务（各走各的，不串）。
+        # 先把①到手的那张放回"已投上板但片子还没回收"的形状——现网进程重启前就是这一瞬，
+        # 留着 success 状态测不到"回收＋新建混在一批"这条真实形状。
+        async with dbmod.async_session_factory() as s:
+            r = await s.get(AssetProduction, uuid.UUID(sent["id"]))
+            r.status, r.completed_at = PR_QUEUED, None
+            await s.commit()
+        fb2 = _FakeBoard(pre_existing=[("T000001", sent["board_name"] or "标题1")])
+        with _board_off(fb2):
+            mixed = await _dispatch(client, ho, [sent["id"], fresh["id"]])
+        assert mixed.status_code == 200, mixed.text
+        assert len(fb2.creates) == 1, "两张单只有一条是新建"
+        assert fb2.creates[0]["reqID"] == str(fresh["id"])
+        mbody = mixed.json()
+        assert mbody["dispatched"] == 1 and mbody["recovered"] == 1
+        # 同一条 outUrl 不会被第二次落进产物：回收幂等靠的就是板上那个 outUrl
+        assert await _count(AssetOutput) == 2, await _count(AssetOutput)
+
+        # ③ 一张都没投过却要求只回收 → 400（不许空跑一次「看起来在回收」）
+        # ② 已经把 fresh 投出去了，所以再建一条真·没投过的来验。
+        # 这里同样要在 `_board_off` 里跑：出了作用域凭据就还原成空，会先撞上
+        # "自动投板还没启用"那道 400（11-05 用例实测：两条 400 措辞完全不同，别混）。
+        _a2, _s2, only_new = await _order_ready_production(client, h, url=DOUYIN_3, n=1,
+                                                          hook_codes=["7C0E3"])
+        fb3 = _FakeBoard()
+        with _board_off(fb3):
+            none = await _dispatch(client, ho, [only_new[0]["id"]], recover_only=True)
+        assert none.status_code == 400 and "board_tid" in none.json()["detail"], none.text
+        assert none.json()["detail"].count("无从回读") == 1
+        assert fb3.creates == [], "空跑一次也不该出网"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_reclaims_a_row_whose_create_timed_out():
+    """POST 报了错 ≠ 板上没有这条：先差集认领，认到就照实记账（这一条最值钱）。
+
+    真实事故形状：90s 超时把连接掐了，板子其实建上了。如果按"报错＝没投"处理，
+    一线重投一次就是同一条文案烧两遍号池。这里钉三件事：
+    ① 只 POST 了一次；② tid 认回来了、片子照样到手；③ `created` 里这条**只有一行**
+    （曾经这里 append 了两次，台账会虚报"投了 2 张"）。
+    """
+    _run(_bootstrap())
+
+    class _TimeoutBoard(_FakeBoard):
+        """建任务超时，但行**已经落在板上**（板子的真实行为）。"""
+
+        async def create_task(self, payload):
+            self.creates.append(dict(payload))
+            self._add_row(tid=self._next_tid(), name=str(payload.get("name") or ""),
+                          tag=str(payload.get("tag") or ""), created_index=len(self.creates))
+            raise board_mod.BoardError("连不上后台任务板（ReadTimeout），本条没投出去，稍后重试或改人工投板")
+
+        async def download_output(self, out_url):
+            self.downloads.append(str(out_url))
+            return self.video_bytes
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["7C0E4"])
+        pid = listed[0]["id"]
+
+        fb = _TimeoutBoard()
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, [pid])
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert len(fb.creates) == 1, "认回来了就绝不重投"
+        assert body["dispatched"] == 1 and len(body["created"]) == 1, body["created"]
+        assert body["created"][0]["recovered_after_error"], body["created"]
+        assert "ReadTimeout" in body["created"][0]["recovered_after_error"]
+        assert body["uncertain"] == [] and body["errors"] == []
+        row = await _row_of(AssetProduction, pid)
+        assert row.status == PR_SUCCESS and row.board_tid == "T000001", (row.status, row.board_tid)
+        assert row.attempts == 1
+        assert await _count(AssetOutput) == 1
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_board_refusal_stays_order_ready_and_vanished_row_is_uncertain():
+    """两种"没对上账"必须分开：板子明确拒了＝留 order_ready；建上了却查不到＝状态未知。
+
+    前者可以放心再点一次；后者**绝不能**自动重投——先让人去板面看一眼
+    （1021 那次 date 写错、120 条永久找不回，就是"投出去了但认不回"的形状）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(
+            client, h, n=2, hook_codes=["7C0E5", "7C0E6"])
+        refused, vanished = listed[0], listed[1]
+
+        # ① 板子拒了（且回读确认没有新行）
+        fb1 = _FakeBoard(create_error=board_mod.BoardError("后台板拒绝建任务（HTTP 200）：号池当天已用完"))
+        with _board_off(fb1):
+            r1 = await _dispatch(client, ho, [refused["id"]])
+        assert r1.status_code == 200, r1.text
+        b1 = r1.json()
+        assert b1["dispatched"] == 0 and len(b1["errors"]) == 1 and b1["errors"][0]["stage"] == "建任务"
+        assert b1["uncertain"] == []
+        assert "号池当天已用完" in b1["errors"][0]["error"]
+        row = await _row_of(AssetProduction, refused["id"])
+        assert row.status == PR_ORDER_READY and row.board_tid is None and row.attempts == 0, (
+            '连板都没上，没有"失败"可言：不许落 failed 污染当天到手率')
+        assert "一张都没投出去" in b1["message"]
+
+        # ② 回了 succ 但按批次日＋今天都查不到新行 → 状态未知，点名人工看板
+        fb2 = _FakeBoard(hide_new=True)
+        with _board_off(fb2):
+            r2 = await _dispatch(client, ho, [vanished["id"]])
+        assert r2.status_code == 200, r2.text
+        b2 = r2.json()
+        assert b2["dispatched"] == 0 and len(b2["uncertain"]) == 1, b2
+        assert "请立刻到板面核对" in b2["uncertain"][0]["error"] and "烧两遍" in b2["uncertain"][0]["error"]
+        assert b2["errors"] == [], '未知不是"板子拒了"，两句话不能混'
+        row2 = await _row_of(AssetProduction, vanished["id"])
+        assert row2.status == PR_ORDER_READY and row2.board_tid is None, "认不回来的单不钉 tid"
+        assert await _count(AssetOutput) == 0
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_waiting_and_read_jitter_are_never_failures():
+    """板面判读的两条"别当失败"：waiting 是还在跑；查不到/查得抖一下也是还在跑。
+
+    判死的后果不是状态难看，而是**诱导重投**——11-04 真把 waiting 当失败重投过，
+    同一条烧了两遍号池。到期同样不判失败，只写"稍后带 recover_only 再回收一次"。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(
+            client, h, n=2, hook_codes=["7C0E7", "7C0E8"])
+        waits, jitters = listed[0], listed[1]
+
+        # ① waiting 两轮 → succ：全程没被改成 failed，最后正常到手
+        fb = _FakeBoard(status_fn=lambda created_index, read_round: "waiting" if read_round < 3 else "succ")
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, [waits["id"]])
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["succeeded"] == 1 and resp.json()["failed"] == 0
+        assert len(fb.creates) == 1, "waiting 期间不许再 POST 一次"
+        assert len(fb.reads) >= 3, "至少轮过 waiting 的那两轮"
+        assert (await _row_of(AssetProduction, waits["id"])).status == PR_SUCCESS
+
+        # ② 回读一直失败（第 3 次起抛错）：不判死，留在 queued 并记下最后一次的原话
+        fb2 = _FakeBoard(readback_error_after=2)
+        with _board_off(fb2):
+            resp2 = await _dispatch(client, ho, [jitters["id"]])
+        assert resp2.status_code == 200, resp2.text
+        body2 = resp2.json()
+        assert body2["failed"] == 0 and body2["still_running"] == 1, body2["results"]
+        s = list(body2["results"].values())[0]
+        assert s["status"] == PR_QUEUED and s["last_read_error"], s
+        assert "到期" in s["note"], s
+        row = await _row_of(AssetProduction, jitters["id"])
+        assert row.status == PR_QUEUED and row.board_tid == "T000001", (row.status, row.board_tid)
+        assert row.error is None, "没出片不等于失败，error 不能写脏"
+        assert await _count(AssetOutput) == 1, "只有 waiting 那条到手，抖动这条取不到片"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_restarts_a_failed_task_exactly_once():
+    """板面 fail → 按同一条 payload **只重启一次**；再失败就落 failed 交人工。
+
+    钉的是"只重启一次"这个次数本身：一次都没重启＝片子没机会回来；重启两次＝
+    同一条烧三遍号池。两次用例共用一条判据：`len(fb.creates)`。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(
+            client, h, n=2, hook_codes=["7C0E9", "7C0F1"])
+        revived, dead = listed[0], listed[1]
+
+        # ① 第一次建的那版 fail，重启的第二版 succ
+        fb = _FakeBoard(status_fn=lambda created_index, read_round: (
+            "fail" if created_index == 1 else "succ"))
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, [revived["id"]])
+        assert resp.status_code == 200, resp.text
+        assert len(fb.creates) == 2, "失败只允许重启一次"
+        body = resp.json()
+        assert body["succeeded"] == 1 and list(body["results"].values())[0]["restarted"] is True
+        row = await _row_of(AssetProduction, revived["id"])
+        assert row.status == PR_SUCCESS and row.board_tid == "T000002", (row.status, row.board_tid)
+        assert row.attempts == 2, "重启是真投了一次，attempts 要如实+1"
+
+        # ② 一直 fail：两次 POST 之后收手，落 failed 且成因写明"我们侧判读"
+        fb2 = _FakeBoard(status_fn=lambda created_index, read_round: "fail")
+        with _board_off(fb2):
+            resp2 = await _dispatch(client, ho, [dead["id"]])
+        assert len(fb2.creates) == 2, "第三次就是重投烧号池了"
+        b2 = resp2.json()
+        assert b2["failed"] == 1 and b2["succeeded"] == 0
+        row2 = await _row_of(AssetProduction, dead["id"])
+        assert row2.status == PR_FAILED
+        assert "重启过一次，仍失败" in row2.error and "没有原因字段" in row2.error, row2.error
+        assert await _count(AssetOutput) == 1, "只有救回来的那条有产物"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_over_capacity_is_a_hint_and_never_a_block():
+    """号池余量**只提示不拦**（11-04 拍板④）：一天叠到 260 条（>240）也必须放行。
+
+    这条是防回归的钉子：谁哪天把软提示改成熔断，这里就会红。
+    同时钉批量数学——260 条额度是 13 张单 × total 20，`today.board_rows` 按**板上条数**算，
+    按行数算会少看 20 倍。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(
+            client, h, n=13, board_total=20)
+        assert len(listed) == 13
+        ids = [p["id"] for p in listed]
+
+        # 一直 waiting：既不下载也不会被判失败，只测"闸门不拦"这一件事
+        fb = _FakeBoard(status_fn=lambda created_index, read_round: "waiting")
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, ids)
+        assert resp.status_code == 200, "产能不限：软闸门不许拒绝"
+        body = resp.json()
+        assert len(fb.creates) == 13 and all(p["total"] == 20 for p in fb.creates)
+        cap = body["capacity"]
+        assert cap["planned"] == 260 and cap["soft_cap"] == settings.ASSET_BOARD_DAILY_SOFT_CAP
+        assert cap["total_today"] >= 260 and cap["over_cap"] > 0, cap
+        assert cap["advisory"] and "分日" in cap["advisory"]
+        assert "解压线" in cap["note"] and "共用池" in cap["note"]
+        assert body["dispatch"]["today"]["board_rows"] == 260, body["dispatch"]["today"]
+        assert body["dispatch"]["dispatched"] == 13, "台账 13 行 ≠ 号池 260 条"
+        assert body["failed"] == 0
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_refuses_when_board_not_configured():
+    """凭据没配＝**当场白话拒绝**：不查库、不建任务、不进台账，也不留半个出网的包。
+
+    这条钉子同时守两件事：
+    ① `AIVIDEO_AUTH` / `ASSET_BOARD_BASE_URL` 不是"改了没读者"的假旋钮（11-04 D-3
+       清掉的正是这类旋钮）——投递口第一件事就是问 `board.is_configured()`；
+    ② 拒绝的话必须把"那我这一批怎么办"说全：导出 payload 人工投板 → 投完走投递状态回写
+       记账。这条老路一直没断，别让人对着一个空 400 猜。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        _aid, _sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["7C0F2"])
+        pid = listed[0]["id"]
+
+        fb = _FakeBoard()
+        saved_auth = settings.AIVIDEO_AUTH
+        saved_url = settings.ASSET_BOARD_BASE_URL
+        try:
+            for label, patch_what in (
+                ("凭据为空", {"AIVIDEO_AUTH": ""}),
+                ("板地址为空", {"ASSET_BOARD_BASE_URL": ""}),
+            ):
+                settings.AIVIDEO_AUTH = saved_auth or "tester:pass"
+                settings.ASSET_BOARD_BASE_URL = saved_url or "http://board.invalid"
+                for k, v in patch_what.items():
+                    setattr(settings, k, v)
+                assert board_mod.is_configured() is False, f"{label} 时判据就该算出没配齐"
+                # 出网函数全程打桩：万一判据失效，这里宁可打桩也不会真连板
+                with contextlib.ExitStack() as st:
+                    for p in _patch_board(fb):
+                        st.enter_context(p)
+                    resp = await client.post(
+                        "/api/assets/productions/dispatch",
+                        json={"ids": [pid], "confirm": True, "async_mode": False}, headers=ho,
+                    )
+                assert resp.status_code == 400, (label, resp.text)
+                detail = resp.json()["detail"]
+                assert "自动投板还没启用" in detail, (label, detail)
+                assert "AIVIDEO_AUTH" in detail and "人工投板" in detail, (label, detail)
+                assert "回写" in detail, (label, detail)
+            assert fb.creates == [] and fb.reads == [] and fb.downloads == [], "拒绝发生在出网之前"
+            assert await _count(AssetJob) == 0, "没启用 ≠ 一次失败的任务，别往台账里塞"
+            assert (await _row_of(AssetProduction, pid)).status == PR_ORDER_READY
+        finally:
+            settings.AIVIDEO_AUTH = saved_auth
+            settings.ASSET_BOARD_BASE_URL = saved_url
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_overnight_reclaim_needs_both_days():
+    """隔夜单靠**双日并集**才认得回来：昨天投的，今天回读必须同时查昨天和板面今天。
+
+    形状照 10-25 那批真实排队跨午夜的情况：`board_date` 是昨天、tid 也落在昨天那一天。
+    只查今天 → 一行都查不到 → 于是"看起来全失败" → 人去重投 → 同一条烧两遍号池。
+    所以这里钉三层：
+    ① 回读带的日期集合**同时含**昨天与板面今天；
+    ② 昨天那一天的行确实被认回来、片子到手；
+    ③ 反过来，把"昨天那天查不到"演出来时**不判失败**——单子留在 queued 并写明稍后再
+       回收一次。认不到不等于没投上（11-04 反推轮询同一条教训）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        _aid, _sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["7C0F3"])
+        old = listed[0]
+        yest, today = _board_today(-1), _board_today()
+        aged = datetime.utcnow() + timedelta(
+            hours=int(settings.ASSET_BOARD_TZ_OFFSET_HOURS or 0)) - timedelta(days=1)
+        async with dbmod.async_session_factory() as s:
+            r = await s.get(AssetProduction, uuid.UUID(old["id"]))
+            r.status, r.board_tid, r.attempts = PR_QUEUED, "T000001", 1
+            r.board_date = aged
+            r.started_at = datetime.utcnow()
+            await s.commit()
+
+        # ①② 昨天的行＋tid 已钉上：只回读回收，一次 POST 都不该出
+        fb = _FakeBoard(pre_existing=[("T000001", old["board_name"] or "隔夜单", yest)])
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, [old["id"]], recover_only=True)
+        assert resp.status_code == 200, resp.text
+        assert fb.creates == [], "回收档不新建"
+        assert fb.reads and set(fb.reads[0][0]) >= {yest, today}, fb.reads[:1]
+        body = resp.json()
+        assert body["recovered"] == 1 and body["succeeded"] == 1, body["results"]
+        assert (await _row_of(AssetProduction, old["id"])).status == PR_SUCCESS
+        assert await _count(AssetOutput) == 1, "隔夜片子必须落进产物"
+
+        # ③ 同一条单，把"昨天那天查不到"演出来：认不到 ≠ 失败
+        async with dbmod.async_session_factory() as s:
+            r = await s.get(AssetProduction, uuid.UUID(old["id"]))
+            r.status, r.completed_at, r.error = PR_QUEUED, None, None
+            await s.commit()
+        fb2 = _FakeBoard(
+            pre_existing=[("T000001", old["board_name"] or "隔夜单", yest)],
+            readback_ok_days=[today],
+        )
+        with _board_off(fb2):
+            resp2 = await _dispatch(client, ho, [old["id"]], recover_only=True)
+        assert resp2.status_code == 200, resp2.text
+        b2 = resp2.json()
+        assert b2["failed"] == 0 and b2["still_running"] == 1, b2["results"]
+        s2 = list(b2["results"].values())[0]
+        assert s2["status"] == PR_QUEUED and "到期" in s2.get("note", ""), s2
+        assert (await _row_of(AssetProduction, old["id"])).status == PR_QUEUED
+        assert (await _row_of(AssetProduction, old["id"])).error is None
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_job_twin_names_the_pool_not_the_model():
+    """同一张单已经在后台投着 → 第二次提交当场 409，而且代价要说成**号池额度**。
+
+    批 H 给 `asset_jobs` 加了第四种 kind，防重复判据（`_assert_no_running_twin`）跟着
+    多一个口径：出文案/投产重复提交烧的是模型费用，投板重复提交烧的是**当天号池额度**
+    （1023 那次叠两份量 → 115/120 成批 fail）。沿用那句"重复扣模型费用"会让一线以为
+    多点一下只多花几厘钱——它真实的代价是几十条额度白烧，还挤掉同日解压线的量。
+    所以这条钉子判两件事：① 409 照样拦得住（台账自己判，不靠前端禁用按钮）；
+    ② 措辞按 kind 走，投板那条**不许**出现"模型费用"。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        _aid, _sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["7C0F2"])
+        pid = listed[0]["id"]
+
+        async with dbmod.async_session_factory() as s:
+            n0 = len((await s.execute(select(AssetJob))).scalars().all())
+            s.add(AssetJob(kind=JOB_DISPATCH, status=JB_QUEUED, params={"ids": [pid]}))
+            await s.commit()
+
+        fb = _FakeBoard()
+        with _board_off(fb):
+            dup = await client.post(
+                "/api/assets/productions/dispatch",
+                json={"ids": [pid], "confirm": True, "async_mode": True}, headers=ho,
+            )
+        assert dup.status_code == 409, dup.text
+        detail = dup.json()["detail"]
+        assert "正在后台跑" in detail and "重复占当天号池额度" in detail, detail
+        assert "模型费用" not in detail, "投板不扣模型费用；串了口径会把重复投板的代价说小一个数量级"
+        assert fb.creates == [] and fb.reads == [], "409 发生在出网之前，一张都没投、一次都没读"
+        async with dbmod.async_session_factory() as s:
+            n1 = len((await s.execute(select(AssetJob))).scalars().all())
+        assert n1 == n0 + 1, "被 409 拦下的提交不许在台账里留下第二份活"
+        assert (await _row_of(AssetProduction, pid)).status == PR_ORDER_READY
+        await client.aclose()
+
+    _run(_scenario())
