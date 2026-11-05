@@ -7759,6 +7759,13 @@ async def preview_prompt_for_summaries(
             continue
 
         drama_title = await _drama_title_of(db, asset)
+        # ⚠️ 调模型前必须**结束事务**（与出文案口同一坑，11-05 现网真链路实锤）：
+        # 一次展开要趴 1~5 分钟等 autoclip，开着事务等会让 PG 的
+        # idle_in_transaction_session_timeout=60s 把连接掐掉——模型明明成功返回
+        # 了 1449 字提示词，回写却报 connection is closed → 整个任务白跑。
+        # 此刻事务里只有读取没有待写状态，commit 正好把读事务收掉；
+        # 对象靠上面 expire_on_commit=False 保活，回写时自动开新事务。
+        await db.commit()
         try:
             expanded = await _call_autoclip(
                 "hook-copy/expand",
@@ -7826,12 +7833,21 @@ async def preview_prompt_for_summaries(
             },
         )
         # 逐条落库（同 analyze 口径：一次展开 90~150s，中途崩不能整批白跑）
+        # 兜底：commit 撞连接死亡时先 rollback 换新事务重写一次——对象在内存里
+        # （expire_on_commit=False），重试只是重放 UPDATE，别让模型白跑一趟。
         try:
             await db.commit()
         except Exception as e:
+            logger.warning("提示词预览落库第一次提交失败（%s），换新事务重试", str(e)[:120])
             await db.rollback()
-            logger.exception("提示词预览落库失败 %s", asset.code)
-            entry.update(ok=False, error=f"提示词已生成但未落库，可重跑本口补写：{str(e)[:200]}")
+            summary.prompt_preview = prompt_text
+            summary.prompt_preview_at = datetime.utcnow()
+            summary.cost_preview = 0.0
+            try:
+                await db.commit()
+            except Exception as e2:
+                logger.exception("提示词预览落库失败 %s", asset.code)
+                entry.update(ok=False, error=f"提示词已生成但未落库，可重跑本口补写：{str(e2)[:200]}")
 
     ok_cnt = sum(1 for r in results if r["ok"])
     reused_cnt = sum(1 for r in results if r.get("reused"))

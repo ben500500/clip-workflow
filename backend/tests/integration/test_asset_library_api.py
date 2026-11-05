@@ -6847,6 +6847,67 @@ def test_preview_prompt_endpoint_gates_idempotent_and_fails_soft():
     _run(_scenario())
 
 
+def test_preview_prompt_ends_transaction_before_model_call():
+    """11-05 现网真链路实锤的坑：预览展开要趴 1~5 分钟等模型，若调模型前不把
+    SELECT 的读事务 commit 收掉，PG 的 idle_in_transaction_session_timeout=60s
+    会把连接掐死——模型明明成功返回了提示词，回写报 connection is closed，
+    整个任务白跑（11-03 出文案口同款事故的预览版）。
+
+    回归判据：用 SQLAlchemy 的 before_commit 事件记录提交次序——
+    「commit 必须发生在调模型之前」（把 SELECT 的读事务收掉），且回写成功。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        from sqlalchemy import event
+        from sqlalchemy.orm import Session as _SyncSession
+
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        good = _approvable(items)
+        # 过审时按住自动预览排程（默认 _run 罩法，见文件头说明）——
+        # 不按住的话后台预览任务会和本测试的直调口并发跑，污染事件序列
+        with patch("app.api.assets._enqueue_preview", AsyncMock(
+                return_value={"queued": True, "job_id": "jp1", "note": None})):
+            ok = await client.post(
+                "/api/assets/summaries/review",
+                json={"summary_ids": [good["id"]], "action": "approve"}, headers=ho)
+        assert ok.status_code == 200
+
+        order = []  # "commit" / "model" 按发生顺序
+
+        def _on_commit(session):
+            order.append("commit")
+
+        fake = _fake_autoclip()
+
+        async def autoclip_spy(path, payload, timeout=900.0):
+            order.append("model")
+            return await fake(path, payload, timeout)
+
+        event.listen(_SyncSession, "before_commit", _on_commit)
+        try:
+            with patch("app.api.assets._call_autoclip", autoclip_spy):
+                resp = await client.post(
+                    "/api/assets/summaries/preview-prompt",
+                    json={"summary_ids": [good["id"]]}, headers=ha)
+        finally:
+            event.remove(_SyncSession, "before_commit", _on_commit)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["results"][0]["ok"] is True
+        assert "model" in order, "模型没被调到，探针失效"
+        assert "commit" in order[:order.index("model")], (
+            "调模型前没 commit 收事务：等模型的 1~5 分钟里读事务一直趴着，"
+            "PG idle_in_transaction 60s 一到连接就被掐（11-05 现网实录："
+            "1449 字提示词生成成功却回写失败，任务白跑）"
+        )
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_download_and_preview_kinds_are_in_job_ledger():
     """两类新任务进 ASSET_JOB_KINDS：kind 校验、白话名称、防重复话术都要认得它们。"""
     assert assets_api.JOB_DOWNLOAD in assets_api.ASSET_JOB_KINDS
