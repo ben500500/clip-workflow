@@ -699,7 +699,18 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         ),
     },
     {
-      title: '五个环节',
+      title: (
+        <Tooltip
+          title={
+            <div>
+              <div>五个字 = 这条素材走到哪一步了：<strong>导</strong>＝导入、<strong>读</strong>＝反推文案、<strong>文</strong>＝钩子文案、<strong>单</strong>＝生产单、<strong>拼</strong>＝拼接产物。</div>
+              <div style={{ marginTop: 4 }}>灰＝没开始、蓝＝进行中、绿＝成功、红＝失败、黄＝跳过。悬停单个字看全称。</div>
+            </div>
+          }
+        >
+          <span>五个环节</span>
+        </Tooltip>
+      ),
       key: 'stages',
       width: 148,
       render: (_, row) => (

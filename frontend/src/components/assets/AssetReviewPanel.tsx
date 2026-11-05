@@ -584,77 +584,6 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
               <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
             </span>
           </Tooltip>
-          <Tooltip title="只看轮到我改的：被驳回 / 要求改写、且是我负责的素材。开启后会清掉「审核状态」筛选（否则两边互相打架）。点行上的「改后重提」把文案改了交回待审队列。">
-            <span>
-              <Button
-                size="small"
-                type={onlyMine ? 'primary' : 'default'}
-                icon={<SendOutlined />}
-                onClick={() => {
-                  const next = !onlyMine;
-                  setOnlyMine(next);
-                  if (next) setAuditStatus(undefined);
-                }}
-              >
-                等我改的
-              </Button>
-              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
-            </span>
-          </Tooltip>
-          <Tooltip title="按导入批次筛选。选批次即可，会显示批次编号、名称和条数。">
-            <span>
-              <Select
-                style={{ width: 220 }}
-                placeholder="批次（可选）"
-                allowClear
-                showSearch
-                optionFilterProp="label"
-                value={batchFilter}
-                onChange={setBatchFilter}
-                options={batchOptions}
-              />
-              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
-            </span>
-          </Tooltip>
-          <Tooltip
-            title={
-              <div style={{ maxWidth: 340 }}>
-                <div>
-                  <strong>钩子原型</strong>＝这条文案的开头套路（A–G，名字照《钩子模版换皮参数设定.docx》）。
-                  出稿时从素材继承，之后素材重新归类<strong>不会回写</strong>已出的候选。
-                </div>
-                <div style={{ marginTop: 4 }}>
-                  它和左边那四个范围（推荐条／命中违禁词／和原视频对不上／全部）是两个轴，可以叠加：
-                  比如「推荐条 + 原型 A」。
-                </div>
-                <div style={{ marginTop: 4 }}>
-                  「未分类」是清欠账用的：现在文案侧还有 {cats.unclassified.copy_count} 条没点原型。
-                  字典本身的名称与说明在页面顶部「钩子原型字典」里改（仅管理员）。
-                </div>
-              </div>
-            }
-          >
-            <span>
-              <CategorySelect
-                items={cats.items}
-                value={categoryFilter}
-                onChange={setCategoryFilter}
-                withUnclassified
-                width={150}
-                loading={cats.loading}
-                placeholder="钩子原型"
-              />
-              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
-            </span>
-          </Tooltip>
-          <Tooltip title="查看／修改违禁词表（审核台「自动检查」列那些标签的来源）。只有管理员能改。">
-            <Button size="small" icon={<SafetyCertificateOutlined />} onClick={() => setLexiconOpen(true)}>
-              违禁词表
-            </Button>
-          </Tooltip>
-          <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
-            刷新
-          </Button>
         </Space>
       }
       extra={
@@ -697,6 +626,80 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         )
       }
     >
+      {/* 第二工具行：低频滤器和工具从标题行挪到这里——标题行只剩「怎么用+状态+范围」，不再挤成两行 */}
+      <Space wrap size={8} style={{ marginBottom: 12 }}>
+        <Tooltip title="只看轮到我改的：被驳回 / 要求改写、且是我负责的素材。开启后会清掉「审核状态」筛选（否则两边互相打架）。点行上的「改后重提」把文案改了交回待审队列。">
+          <span>
+            <Button
+              size="small"
+              type={onlyMine ? 'primary' : 'default'}
+              icon={<SendOutlined />}
+              onClick={() => {
+                const next = !onlyMine;
+                setOnlyMine(next);
+                if (next) setAuditStatus(undefined);
+              }}
+            >
+              等我改的
+            </Button>
+            <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+          </span>
+        </Tooltip>
+        <Tooltip title="按导入批次筛选。选批次即可，会显示批次编号、名称和条数。">
+          <span>
+            <Select
+              style={{ width: 220 }}
+              placeholder="批次（可选）"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              value={batchFilter}
+              onChange={setBatchFilter}
+              options={batchOptions}
+            />
+            <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+          </span>
+        </Tooltip>
+        <Tooltip
+          title={
+            <div style={{ maxWidth: 340 }}>
+              <div>
+                <strong>钩子原型</strong>＝这条文案的开头套路（A–G，名字照《钩子模版换皮参数设定.docx》）。
+                出稿时从素材继承，之后素材重新归类<strong>不会回写</strong>已出的候选。
+              </div>
+              <div style={{ marginTop: 4 }}>
+                它和右上那四个范围（推荐条／命中违禁词／和原视频对不上／全部）是两个轴，可以叠加：
+                比如「推荐条 + 原型 A」。
+              </div>
+              <div style={{ marginTop: 4 }}>
+                「未分类」是清欠账用的：现在文案侧还有 {cats.unclassified.copy_count} 条没点原型。
+                字典本身的名称与说明在页面顶部「钩子原型字典」里改（仅管理员）。
+              </div>
+            </div>
+          }
+        >
+          <span>
+            <CategorySelect
+              items={cats.items}
+              value={categoryFilter}
+              onChange={setCategoryFilter}
+              withUnclassified
+              width={150}
+              loading={cats.loading}
+              placeholder="钩子原型"
+            />
+            <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+          </span>
+        </Tooltip>
+        <Tooltip title="查看／修改违禁词表（审核台「自动检查」列那些标签的来源）。只有管理员能改。">
+          <Button size="small" icon={<SafetyCertificateOutlined />} onClick={() => setLexiconOpen(true)}>
+            违禁词表
+          </Button>
+        </Tooltip>
+        <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
+          刷新
+        </Button>
+      </Space>
       {!!data && recommendedOnly && auditStatus === 'pending' && (
         <Alert
           type="info"

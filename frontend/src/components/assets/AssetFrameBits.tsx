@@ -141,10 +141,10 @@ export const FrameStrip: React.FC<{
           textAlign: 'center',
           padding: 4,
         }}
-        title="图由后台抽帧任务生成；没图不影响审核与投产"
+        title="这里没有图，是因为这条素材的原片还没下载到我们自己的桶里。在列表或抽屉里点「下载原片」，下载成功后系统会自动抽帧补上图；没图不影响审核与投产。"
       >
-        <span>没有</span>
-        <span>预览图</span>
+        <span>没有预览图</span>
+        <span style={{ color: '#8c8c8c' }}>下载原片后自动补</span>
       </div>
     );
   }
