@@ -2798,6 +2798,7 @@ async def refresh_analyze_batch(
         entry["prompt_task_status"] = task.status
         if task.status == PT_SUCCESS:
             svc.apply_stage(asset, "prompt", STAGE_SUCCESS)
+            _backfill_title_on_prompt_success(asset, task.content)
             tally["success"] += 1
         elif task.status == PT_FAILED:
             svc.apply_stage(asset, "prompt", STAGE_FAILED)
@@ -2854,6 +2855,47 @@ async def _drama_title_of(db: AsyncSession, asset: AssetItem) -> str:
     return (asset.title or "").strip()
 
 
+
+def _derive_asset_title_from_script(script: Optional[str]) -> Optional[str]:
+    """反推详规 → 素材标题（≤24 字）。
+
+    11-06 用户实测实锤：抽屉占位承诺「反推文案成功后才有标题」，但**没有任何代码写过
+    asset.title**——链接素材反推成功后标题仍是空，审核台卡片只能靠 AS 号认素材。
+    取「### 视频核心主题」一节第一行；取不到就取第一段像标题的行；再取不到回 None
+    （绝不硬编、绝不写 AS 号当标题）。
+    """
+    if not script:
+        return None
+    m = re.search(r"#{0,4}\s*视频核心主题\s*\n+(.+)", script)
+    line = (m.group(1) if m else "").strip()
+    line = re.sub(r"^[#\*\-\d\.\s]+", "", line).strip()  # 主路径的行也去 markdown 记号
+    if not line:
+        for raw in (script or "").splitlines():
+            t = raw.strip().lstrip("#").strip()
+            t = re.sub(r"^[\*\-\d\.\s]+", "", t).strip()
+            if t and not t.endswith(("：", ":", "—")) and len(t) >= 4:
+                line = t
+                break
+    if not line:
+        return None
+    line = line.replace("**", "").strip()
+    line = re.sub(r"^(视频)?(核心)?主题[:：]\s*", "", line)
+    line = re.sub(r"^[\*\-\d\.\s]+", "", line).strip().strip("。；;，,")
+    return (line[:24] or None)
+
+
+def _backfill_title_on_prompt_success(asset: AssetItem, script: Optional[str]) -> bool:
+    """反推成功收敛处统一调：title 还空着就自动起一个。返回是否写了。"""
+    if (asset.title or "").strip():
+        return False
+    title = _derive_asset_title_from_script(script)
+    if title:
+        asset.title = title
+        logger.info("素材 %s 反推成功自动起标题：%s", asset.code, title)
+        return True
+    return False
+
+
 async def _prompt_script_of(db: AsyncSession, asset: AssetItem) -> Optional[str]:
     """取该素材的反推详规文本（wechat_dl_prompt_tasks.content）。
 
@@ -2871,6 +2913,8 @@ async def _prompt_script_of(db: AsyncSession, asset: AssetItem) -> Optional[str]
         # `stage_prompt` 还停在 running → 列表上"永远在跑"，一线分不清谁卡住了。
         # 落库由调用方的 commit 带上（本函数被 review/produce/generate 复用，都在同一事务里）。
         svc.apply_stage(asset, "prompt", STAGE_SUCCESS if task.status == PT_SUCCESS else STAGE_FAILED)
+        if task.status == PT_SUCCESS:
+            _backfill_title_on_prompt_success(asset, task.content)
     if task.status != PT_SUCCESS:
         return None
     return (task.content or "").strip() or None
@@ -3953,7 +3997,11 @@ async def list_summaries(
     ).scalar_one()
     rows = (
         await db.execute(
-            stmt.order_by(AssetSummary.created_at.desc(), AssetSummary.seq.asc())
+            # 同素材 3 条候选必须相邻：created_at 是同事务批量插入、秒级相同，只按
+            # created_at+seq 排会在平局里把同素材的 3 条打散（用户实测「3 条分开看着搞混」）。
+            stmt.order_by(
+                AssetSummary.created_at.desc(), AssetSummary.asset_id.asc(), AssetSummary.seq.asc()
+            )
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
@@ -8838,6 +8886,7 @@ async def refresh_asset_prompt(
     task = await refresh_prompt_task(db, task)
     if task.status == PT_SUCCESS:
         svc.apply_stage(asset, "prompt", STAGE_SUCCESS)
+        _backfill_title_on_prompt_success(asset, task.content)
         if (
             asset.duration is None
             and asset.source_kind == SOURCE_LINK

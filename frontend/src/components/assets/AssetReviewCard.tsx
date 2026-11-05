@@ -53,9 +53,11 @@ const AssetReviewCard: React.FC<Props> = ({
         <Text type="secondary" style={{ fontSize: 12 }} ellipsis>
           {row.asset_title || '（无标题）'}
         </Text>
-        <Text strong style={{ fontSize: 12 }}>
-          #{row.seq}
-        </Text>
+        <Tooltip title={`同一素材出的第 ${row.seq} 条候选；一条素材通常出 3 条，默认只把推荐条摆出来，切「全部」能看 3 条对照`}>
+          <Text strong style={{ fontSize: 12 }}>
+            候选 #{row.seq}
+          </Text>
+        </Tooltip>
         {row.is_recommended && <Tag color="green">推荐</Tag>}
         <CategoryTag categoryId={row.category_id} categoryName={row.category_name} />
         <Tooltip title={row.reject_reason ? `理由：${row.reject_reason}` : undefined}>

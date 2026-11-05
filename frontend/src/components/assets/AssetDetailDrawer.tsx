@@ -518,7 +518,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
 
           <Descriptions size="small" column={2} bordered>
             <Descriptions.Item label="标题" span={2}>
-              {asset.title || <Text type="secondary">（反推文案成功后才有标题）</Text>}
+              {asset.title || <Text type="secondary">（还没有标题：反推文案成功后系统会自动从「视频核心主题」起一个）</Text>}
             </Descriptions.Item>
             <Descriptions.Item label="来路">
               <Tag>{asset.source_kind === 'link' ? '链接' : '文件'}</Tag>
