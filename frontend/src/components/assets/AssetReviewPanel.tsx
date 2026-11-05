@@ -686,6 +686,11 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                 </Button>
               </Tooltip>
             )}
+            {canReview && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                N 只数已过审/改后通过的条；勾了待审核的数字不变
+              </Text>
+            )}
           </Space>
         ) : (
           <Text type="secondary">当前角色只读：审核与生成生产单需要运营或管理员</Text>

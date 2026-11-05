@@ -152,6 +152,10 @@ const WorkerStatusIcon: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
   const { token } = theme.useToken();
+  // GET /workers 后端只放行 admin（require_roles(UserRole.admin)），material 等角色
+  // 发这个请求必然 403——没权限就不发请求、也不渲染这个图标。
+  const { hasPermission } = useAuth();
+  const canViewWorkers = hasPermission('/workers');
 
   const fetchWorkers = useCallback(async () => {
     setLoading(true);
@@ -168,10 +172,13 @@ const WorkerStatusIcon: React.FC = () => {
   // 挂载后立即拉取一次节点状态，无需点击才显示；
   // 并定时轮询保持图标角标/颜色实时更新
   useEffect(() => {
+    if (!canViewWorkers) return;
     fetchWorkers();
     const timer = window.setInterval(fetchWorkers, 15000);
     return () => window.clearInterval(timer);
-  }, [fetchWorkers]);
+  }, [fetchWorkers, canViewWorkers]);
+
+  if (!canViewWorkers) return null;
 
   const toggleWorker = async (node: WorkerNode, enabled: boolean) => {
     setToggling(node.node_id);

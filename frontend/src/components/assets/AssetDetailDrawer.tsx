@@ -28,6 +28,28 @@ interface Props {
   canProduce?: boolean;
 }
 
+/** style_tag 后端是自由文本（截 20 字），管线会写入历史标记；这里给老标记一句人话解释，没命中就悬停不弹 */
+const STYLE_TAG_GLOSS: Record<string, string> = {
+  导读文单拼: '导读文＋单条拼接：成片由「导读文」开头段和单条正文直接拼接出来',
+};
+
+/**
+ * 备注是追加式的：后端每次反推失败都往尾上拼一行（`\n反推失败：{task.error}`），
+ * 重试再败就会同一条失败信息出现两遍——渲染时按整行去重，只显示第一次。
+ */
+const dedupeNoteLines = (note: string): string => {
+  const seen = new Set<string>();
+  return note
+    .split('\n')
+    .filter((line) => {
+      const key = line.trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join('\n');
+};
+
 /**
  * 素材详情抽屉：一条素材的全链路状态 + 候选文案 + 生产单 + 反推文案稿。
  *
@@ -602,7 +624,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
             </Descriptions.Item>
             {asset.note && (
               <Descriptions.Item label="备注" span={2}>
-                <Text style={{ whiteSpace: 'pre-wrap' }}>{asset.note}</Text>
+                <Text style={{ whiteSpace: 'pre-wrap' }}>{dedupeNoteLines(asset.note)}</Text>
               </Descriptions.Item>
             )}
           </Descriptions>
@@ -689,7 +711,11 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                             <Tag>#{s.seq}</Tag>
                             <AuditStatusTag status={s.audit_status} />
                             {s.is_recommended && <Tag color="green">推荐</Tag>}
-                            {s.style_tag && <Tag>{HOOK_STYLE_LABELS[s.style_tag] || s.style_tag}</Tag>}
+                            {s.style_tag && (
+                              <Tooltip title={STYLE_TAG_GLOSS[s.style_tag] || ''}>
+                                <Tag>{HOOK_STYLE_LABELS[s.style_tag] || s.style_tag}</Tag>
+                              </Tooltip>
+                            )}
                             {s.formula_tag && <Tag color="geekblue">{s.formula_tag}</Tag>}
                             <Text type="secondary">{s.word_count ?? '-'} 字</Text>
                             <RiskTags riskHit={s.risk_hit} />

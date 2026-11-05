@@ -257,6 +257,9 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     try {
       const res = await assetApi.listOutputs({ production_id: r.id });
       setOutItems(res.items || []);
+      // 点开即自动挂第一段的预览（保留手动切换其它段）
+      const first = (res.items || [])[0];
+      if (first) previewOneOutput(first);
     } catch (e) {
       message.error((e as Error).message || '取成片列表失败');
       setOutFor(null);
@@ -638,7 +641,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           type={today.over_cap > 0 ? 'error' : today.board_rows > today.soft_cap * 0.8 ? 'warning' : 'info'}
           showIcon
           style={{ marginBottom: 12 }}
-          message={`${today.day} 号池：吃掉 ${today.board_rows} 条（Σ 板上 total）／软提示线 ${today.soft_cap} 条／板上任务 ${today.tasks} 行（按 board_date，还没投的单不在里面）；成功 ${today.succeeded}、失败 ${today.failed}${today.over_cap > 0 ? `；超线 ${today.over_cap} 条` : ''}`}
+          message={`${today.day} 号池：今天已投出去 ${today.board_rows} 条（按板上任务条数合计，不是行数）／软提示线 ${today.soft_cap} 条（只提示不拦）／板上任务 ${today.tasks} 行；成功 ${today.succeeded}、失败 ${today.failed}${today.over_cap > 0 ? `；超线 ${today.over_cap} 条` : ''}。只算今天板上的任务，还没投的单不在里面；此数只含素材库自己投的，与每日解压线共用同一个池，真实余量比它小。投上板后又被撤审作废的单也算已投（号池那天真被吃了）。`}
           description={
             <Space direction="vertical" size={2}>
               {today.note && <Text style={{ fontSize: 12 }}>{today.note}</Text>}
@@ -886,8 +889,8 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
             </Col>
           </Row>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            号池额度按<b>条数</b>算不按张数：本批 Σ board_total ≈{' '}
-            <Text strong>{dispatchPlan.rows}</Text> 条；今天板上已经吃掉{' '}
+            号池额度按<b>条数</b>算不按张数：本批要投 ≈<Text strong>{dispatchPlan.rows}</Text>{' '}
+            条（各单板上条数相加）；今天板上已经吃掉{' '}
             <Text strong>{dispatch?.today?.board_rows ?? 0}</Text> 条（软提示线 ≈
             {dispatch?.today?.soft_cap ?? '—'}，<b>只提示不拦</b>）。
             这个数只含素材库自己投的，与每日解压线共用同一个池，真实余量比它小。

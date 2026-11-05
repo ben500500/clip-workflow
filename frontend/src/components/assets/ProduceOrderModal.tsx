@@ -477,6 +477,11 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
                 </Tag>
               )}
             </Space>
+            <div style={{ marginBottom: 4 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                取号：在服务器跑 scripts 下的 hook_id.py 取一个五位编号（投放和回收都靠它对上）；取号工具后续会做进系统。
+              </Text>
+            </div>
             <Input.TextArea
               rows={2}
               placeholder="空格/逗号/换行分隔，例如：7C0B1 7C0B2 7C0B3 …（五位编号，投放和回收都靠它对上；系统不给编号，也不能自己编）"
