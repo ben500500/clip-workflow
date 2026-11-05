@@ -2,15 +2,17 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert, Button, Card, Checkbox, Col, Input, Modal, Radio, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
-import { CopyOutlined, DownloadOutlined, ExportOutlined, ReloadOutlined } from '@ant-design/icons';
+import { CloudUploadOutlined, CopyOutlined, DownloadOutlined, ExportOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import {
-  DISPATCH_REPORT_STATUSES, PRODUCTION_STATE_LABELS, assetApi,
+  DISPATCH_REPORT_STATUSES, PRODUCTION_STATE_LABELS, assetApi, isAssetJobAck,
 } from '../../api/assets';
 import type {
-  AssetDispatchCounts, AssetExportJson, AssetExportPayload, AssetExportTxt, AssetProduction, DispatchReportStatus, ProductionState,
+  AssetDispatchAck, AssetDispatchResponse, AssetDispatchCounts, AssetExportJson, AssetExportPayload, AssetExportTxt,
+  AssetProduction, DispatchReportStatus, ProductionState,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
+import { nudgeAssetJobBanner } from './AssetJobBanner';
 import { MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
 
 const { Text, Paragraph } = Typography;
@@ -29,14 +31,20 @@ const rate = (v: number | null | undefined) =>
   v === null || v === undefined ? '—（还没有终态样本）' : `${Math.round(v * 100)}%`;
 
 /**
- * 生产单面板：台账 + 投递计数 + 导出 + 人工回写投递态。
+ * 生产单面板：台账 + 投递计数 + 导出 + **自动投板** + 人工回写投递态。
  *
  * 两个计数口径不能混（这是最容易看错的地方）：
  *  - `dispatch.by_status` 跟 batch_id/asset_id 走、**不跟 status= 走**：
  *    筛「失败」时如果 by_status 跟着筛，就变成「failed: 12」自己报自己，成功几条这个关键数消失了；
  *  - `dispatch.today.board_rows` = Σ board_total＝号池今天真吃进去的条数（软提示线比它，不是行数）；
  *    `board_capacity.already_today` 含未投单，两者不等价，别互相换算。
- * P0 没有自动投递：导出 payload → 人在企微后台建任务 → 回来把 queued/running/success/failed 填上。
+ *
+ * 投递有**两个入口、一条交付线**（11-05 批 H）：
+ *  - 「投上后台任务板」＝后端自己连板：建任务 → 轮询出片 → 把成片收进产物。拍板口径是
+ *    「可自动投板，但**逐批人工确认**」，所以按钮必须勾了确认才点得动，且一次最多 20 张；
+ *  - 「导出（板面七键）」→ 人去企微后台建任务 → 回来「回写投递态」记账。老路没断，
+ *    没配板子凭据时后端会当场白话拒绝自动投板，这条就是唯一走法。
+ * 两条路的闸门、payload、状态迁移共用后端同一套判据，前端不要自己复述规则数字。
  */
 const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId, reloadToken }) => {
   const [items, setItems] = useState<AssetProduction[]>([]);
@@ -67,7 +75,54 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const [exportForceRisk, setExportForceRisk] = useState(false);
   const [exportForceReason, setExportForceReason] = useState('');
 
+  // 批 H：自动投板。同一个抽屉里两种动作——真投（要 confirm）/ 只回收（不花钱，不看 confirm）
+  const [dispatchOpen, setDispatchOpen] = useState(false);
+  const [dispatchRecoverOnly, setDispatchRecoverOnly] = useState(false);
+  const [dispatchConfirm, setDispatchConfirm] = useState(false);
+  const [dispatchForceRisk, setDispatchForceRisk] = useState(false);
+  const [dispatchForceReason, setDispatchForceReason] = useState('');
+  const [dispatchBusy, setDispatchBusy] = useState(false);
+
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
+
+  /**
+   * 选中的单子按状态分堆（**本地先给个预告**，真判据在后端闸门里）。
+   * 后端 `_dispatch_gate` 会拦的条数里，有六条**行数据上就看得见**（状态、有没有 tid、
+   * 漂移、没正文、没推荐标题、通道不对）——本地照同一套判。不这么做会出现在这里报
+   * 「4 张新建」、提交完回执说「新建 1 张」的分叉，一线的第一反应是按钮吞了单子
+   * （11-05 批 H 验收时抓出来的）。
+   * 只有「按**当前**词表重扫风险词」这条本地判不了（词表在服务端），所以 `other`
+   * 仍可能比后端 blocked 少：弹窗里那句"点了也不会投"说的是本地口径，真拦下几张以回执为准。
+   */
+  const canCreateLocally = (p: AssetProduction) =>
+    p.status === 'order_ready' &&
+    !p.board_tid &&
+    !p.drift &&
+    !!(p.prompt_text || '').trim() &&
+    !!(p.board_name || '').trim() &&
+    (!p.channel || p.channel === 'wework_aivideo');
+
+  /**
+   * 回收堆也要按闸门顺序判：`_dispatch_gate` 是**先挡** success/作废/failed，
+   * 剩下的才看有没有 tid 进回收。所以"有 tid 的失败单"本地不许算成会回收——
+   * 后端把它拦在 failed 那条里（失败重投与否要人判读，不在投递口自动做）。
+   */
+  const canRecoverLocally = (p: AssetProduction) =>
+    !!p.board_tid &&
+    p.status !== 'success' &&
+    p.status !== 'failed' &&
+    p.status !== 'superseded' &&
+    p.status !== 'cancelled' &&
+    p.status !== 'skipped';
+
+  const dispatchPlan = useMemo(() => {
+    const creating = selected.filter(canCreateLocally);
+    const recovering = selected.filter(canRecoverLocally);
+    const other = selected.length - creating.length - recovering.length;
+    // 号池额度按 Σ board_total 算，不是张数（20 张 × total 3 是 60 条，不是 20 条）
+    const rows = creating.reduce((acc, p) => acc + (p.board_total || 1), 0);
+    return { willCreate: creating.length, willRecover: recovering.length, other, rows };
+  }, [selected]);
 
   const fetchList = useCallback(
     async (p: number = page, ps: number = pageSize) => {
@@ -195,8 +250,138 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     }
   };
 
-  const copyText = (text: string, label: string) => {
-    navigator.clipboard.writeText(text);
+  /**
+   * 提交投板（批 H）。三件事必须在这里做对，否则一线只会看到一个转圈的按钮：
+   * ① 提交完**立刻** `nudgeAssetJobBanner()`——任务横幅按 8 秒定轮，不补查就会出现
+   *    "任务已排上、横幅却不知道"→`onSettled` 永不触发→列表不刷新（11-04 批 C 实测 8/11→11/11）；
+   * ② 回执按 `isAssetJobAck` 分岔，**不要**判 `results`（异步回执里故意没有它）；
+   * ③ 闸门挡下的单子在 `precheck.blocked` 里逐条带原因，必须原文列出来——
+   *    "投不了"却不告诉人为什么，下一步就是反复点同一个按钮。
+   */
+  const submitDispatch = async () => {
+    if (!ids.length) return;
+    if (!dispatchRecoverOnly && !dispatchConfirm) {
+      message.warning('勾一下「我已逐批确认」：投出去吃的是当天号池额度，这一下只能由人点');
+      return;
+    }
+    if (dispatchForceRisk && !dispatchForceReason.trim()) {
+      message.warning('带高风险词强行投板要写一句为什么（这句话进审计，事后对账全靠它）');
+      return;
+    }
+    setDispatchBusy(true);
+    try {
+      const res = await assetApi.dispatchProductions({
+        ids,
+        confirm: true,
+        recover_only: dispatchRecoverOnly || undefined,
+        force_risk: dispatchForceRisk || undefined,
+        force_reason: dispatchForceRisk ? dispatchForceReason.trim() : undefined,
+        async_mode: true,
+      });
+      setDispatchOpen(false);
+      setDispatchConfirm(false);
+      setDispatchRecoverOnly(false);
+      setDispatchForceRisk(false);
+      setDispatchForceReason('');
+      setSelected([]);
+      nudgeAssetJobBanner();
+      fetchList(page, pageSize);
+      if (isAssetJobAck(res)) {
+        const ack = res as AssetDispatchAck;
+        const pre = ack.precheck;
+        Modal.success({
+          title: ack.message,
+          width: 700,
+          content: (
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              <Text>
+                本批会新建 <Text strong>{pre.will_create}</Text> 张板任务、接续回收{' '}
+                <Text strong>{pre.will_recover}</Text> 张；号池按条数记，本批加{' '}
+                <Text strong>{pre.planned_board_rows}</Text> 条（不是一张一条，Σ board_total）。
+              </Text>
+              {!!pre.capacity?.advisory && (
+                <Alert type="warning" showIcon message="号池余量（只提示不拦）"
+                  description={<Text style={{ fontSize: 12 }}>{pre.capacity.advisory}</Text>} />
+              )}
+              {!!pre.blocked?.length && (
+                <Alert
+                  type="error"
+                  showIcon
+                  message={`${pre.blocked.length} 张过不了闸门，这次没投`}
+                  description={
+                    <Space direction="vertical" size={2}>
+                      {pre.blocked.slice(0, 8).map((b) => (
+                        <Text key={b.id} style={{ fontSize: 12 }}>
+                          {b.hook_code || b.id.slice(0, 8)}：{b.reason}
+                        </Text>
+                      ))}
+                      {pre.blocked.length > 8 && (
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          另有 {pre.blocked.length - 8} 张，本条只列前 8 张
+                        </Text>
+                      )}
+                    </Space>
+                  }
+                />
+              )}
+              {!!pre.card_warnings?.length && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="角色卡有提醒（不影响投，但投出去的画面就是它）"
+                  description={
+                    <Space direction="vertical" size={2}>
+                      {pre.card_warnings.map((c) => (
+                        <Text key={c.id} style={{ fontSize: 12 }}>
+                          {c.hook_code || c.id.slice(0, 8)}：{c.warnings.join('；')}
+                        </Text>
+                      ))}
+                    </Space>
+                  }
+                />
+              )}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {pre.note}投一条实测要 25 分钟起，整批排队更久——可以关页面，跑完在「任务台账」里看整份结果。
+              </Text>
+            </Space>
+          ),
+        });
+      } else {
+        const r = res as AssetDispatchResponse;
+        Modal.info({
+          title: r.message,
+          width: 700,
+          content: (
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              <Text style={{ fontSize: 12 }}>
+                新建 {r.dispatched} 张、回收 {r.recovered} 张、到手 {r.succeeded ?? 0}／失败 {r.failed ?? 0}／还在板上 {r.still_running ?? 0}。
+              </Text>
+              {!!r.uncertain?.length && (
+                <Alert
+                  type="error"
+                  showIcon
+                  message={`${r.uncertain.length} 张状态未知：先别重投`}
+                  description={
+                    <Space direction="vertical" size={2}>
+                      {r.uncertain.map((u) => (
+                        <Text key={u.id} style={{ fontSize: 12 }}>{u.hook_code || u.id.slice(0, 8)}：{u.error}</Text>
+                      ))}
+                    </Space>
+                  }
+                />
+              )}
+            </Space>
+          ),
+        });
+      }
+    } catch (e) {
+      message.error((e as Error).message || '投板失败');
+    } finally {
+      setDispatchBusy(false);
+    }
+  };
+
+  const copyText = (text: string, label: string) => {    navigator.clipboard.writeText(text);
     message.success(`${label}已复制到剪贴板`);
   };
 
@@ -395,6 +580,25 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
             回写投递态（{ids.length}）
           </Button>
         )}
+        {canWriteBack && (
+          <Tooltip title="后端直接连企微后台任务板：建任务 → 等出片 → 把成片收进产物。一次最多 20 张，且必须逐批人工确认。">
+            <Button
+              danger
+              type="primary"
+              icon={<CloudUploadOutlined />}
+              disabled={!ids.length}
+              onClick={() => {
+                setDispatchRecoverOnly(false);
+                setDispatchConfirm(false);
+                setDispatchForceRisk(false);
+                setDispatchForceReason('');
+                setDispatchOpen(true);
+              }}
+            >
+              投上后台任务板（{ids.length}）
+            </Button>
+          </Tooltip>
+        )}
       </Space>
 
       <Table<AssetProduction>
@@ -460,14 +664,93 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           <Alert
             type="info"
             showIcon
-            message="P0 没有自动投递：投板是人在企微后台做的动作，这里只是把台账补上"
+            message="这里是「人工投板之后补账」：导出 payload → 人在企微后台建任务 → 回这里报结果"
             description={
               <span style={{ fontSize: 12 }}>
                 同态重报幂等跳过；queued 每报一次 attempts +1（重投也计）。
                 superseded/cancelled/skipped 是系统态，写不进来。
+                11-05 起另一条入口是「投上后台任务板」（后端自己连板、自动回收成片），
+                <b>两条路的闸门与状态迁移是同一套判据</b>，别在这里把机器投的结果再报一遍。
               </span>
             }
           />
+        </Space>
+      </Modal>
+
+      <Modal
+        open={dispatchOpen}
+        title={`投上后台任务板（已选 ${ids.length} 张生产单）`}
+        width={720}
+        onCancel={() => setDispatchOpen(false)}
+        onOk={submitDispatch}
+        confirmLoading={dispatchBusy}
+        okText={dispatchRecoverOnly ? '开始回收' : '确认投板'}
+        okButtonProps={{
+          danger: !dispatchRecoverOnly,
+          disabled: !dispatchRecoverOnly && !dispatchConfirm,
+        }}
+      >
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Row gutter={12}>
+            <Col span={8}>
+              <Statistic title="会新建板任务" value={dispatchPlan.willCreate} suffix="张" />
+            </Col>
+            <Col span={8}>
+              <Statistic title="只回读回收（已有 tid）" value={dispatchPlan.willRecover} suffix="张" />
+            </Col>
+            <Col span={8}>
+              <Statistic title="点了也不会投（会被挡）" value={dispatchPlan.other} suffix="张" />
+            </Col>
+          </Row>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            号池额度按<b>条数</b>算不按张数：本批 Σ board_total ≈{' '}
+            <Text strong>{dispatchPlan.rows}</Text> 条；今天板上已经吃掉{' '}
+            <Text strong>{dispatch?.today?.board_rows ?? 0}</Text> 条（软提示线 ≈
+            {dispatch?.today?.soft_cap ?? '—'}，<b>只提示不拦</b>）。
+            这个数只含素材库自己投的，与每日解压线共用同一个池，真实余量比它小。
+          </Text>
+          <Checkbox
+            checked={dispatchRecoverOnly}
+            onChange={(e) => setDispatchRecoverOnly(e.target.checked)}
+          >
+            只回收已投出去的片子（一个都不新建）
+          </Checkbox>
+          <Alert
+            type={dispatchRecoverOnly ? 'success' : 'warning'}
+            showIcon
+            message={
+              dispatchRecoverOnly
+                ? '回收档不烧额度：只回读板面、把已经出好的成片取回来，所以不需要人工确认'
+                : '这一步真占当天号池额度：一条投出去要 25 分钟起，失败行板上没有原因字段'
+            }
+            description={
+              <span style={{ fontSize: 12 }}>
+                {dispatchRecoverOnly
+                  ? '进程重启把在等的任务带走之后（任务台账显示已中断），用它把片子取回来；同一条 outUrl 不会重复落产物。'
+                  : '闸门与导出同一套：只投待投放的单、提示词必须与过审文案是同一条、作废单不投、正文含高风险词的按当前词表再扫一遍（admin 可带理由放行）。已拿到 board_tid 的单只回读不重建——再 POST 一次就是同一条烧两遍额度。'}
+              </span>
+            }
+          />
+          {!dispatchRecoverOnly && (
+            <Checkbox checked={dispatchConfirm} onChange={(e) => setDispatchConfirm(e.target.checked)}>
+              我已逐批确认这批要投出去（{dispatchPlan.willCreate} 张新建 · ≈{dispatchPlan.rows} 条额度）
+            </Checkbox>
+          )}
+          {isAdmin && !dispatchRecoverOnly && (
+            <>
+              <Checkbox checked={dispatchForceRisk} onChange={(e) => setDispatchForceRisk(e.target.checked)}>
+                带高风险词强行投板（仅 admin，和导出侧同一道闸）
+              </Checkbox>
+              {dispatchForceRisk && (
+                <Input.TextArea
+                  rows={2}
+                  placeholder="强行投板的理由（必填，进审计）"
+                  value={dispatchForceReason}
+                  onChange={(e) => setDispatchForceReason(e.target.value)}
+                />
+              )}
+            </>
+          )}
         </Space>
       </Modal>
 

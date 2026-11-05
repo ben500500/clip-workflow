@@ -475,6 +475,11 @@ export interface AssetBoardCapacity {
   soft_cap: number;
   over_cap: number;
   advisory: string | null;
+  /**
+   * 批 H：这个数**只含素材库自己**今天投的，不含同日在板子上跑的解压线（那条线库里没台账）。
+   * 号池是共用池，所以真实余量比这里显示的小——这句是给一线排量看的，别当注释。
+   */
+  note?: string | null;
 }
 
 /** 当日号池事实（不受 batch_id/asset_id 过滤影响——按批次过滤就答不了「今天还能不能再投」） */
@@ -536,7 +541,11 @@ export interface AssetQueueSegment {
  * 同步等会一路撞上浏览器/nginx 超时，所以带 `async_mode: true` 提交时接口**当场回一个任务号**，
  * 结果靠 `getAssetJob` 轮询取——刷新页面、换浏览器都还查得到（台账在库里，不在前端内存里）。
  */
-export type AssetJobKind = 'summary_generate' | 'produce';
+/**
+ * 后台任务类型。四类都有写入方（批 F 加 `frames`、批 H 加 `dispatch`）：
+ * `dispatch` 是唯一**往外花钱/花号池额度**的那一类，所以提交口另带 `confirm`。
+ */
+export type AssetJobKind = 'summary_generate' | 'produce' | 'frames' | 'dispatch';
 export type AssetJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted';
 
 /** 进度是**现算的粗口径**（协程不回报中间态），别当成百分比看 */
@@ -550,7 +559,7 @@ export interface AssetJobProgress {
 export interface AssetJobInfo {
   id: string;
   kind: AssetJobKind;
-  /** 白话名称：出钩子文案 / 生成生产单 */
+  /** 白话名称：出钩子文案 / 生成生产单 / 抽帧 / 投板 */
   kind_label: string;
   status: AssetJobStatus;
   status_label: string;
@@ -1427,6 +1436,99 @@ export interface AssetProductionStatusResponse {
   message: string;
 }
 
+// ──────────────────────────────────────────────
+// 批 H（11-05）：自动投板。口径是「可自动投板，但**逐批人工确认**」
+// ──────────────────────────────────────────────
+
+/** POST /assets/productions/dispatch 的请求体 */
+export interface AssetDispatchRequest {
+  /** 点名要投的生产单 id（单次上限由后端 `ASSET_DISPATCH_MAX_PER_CALL` 管，默认 20） */
+  ids: string[];
+  /** 人工确认位：后端没有 true 就 400，脚本代签不算确认 */
+  confirm?: boolean;
+  /** 仅 admin：文案过审后词表又加过词、仍要投这几张（与导出侧 R-4 同一道闸） */
+  force_risk?: boolean;
+  force_reason?: string;
+  /** true＝一个都不新建，只把已经投上板的片子回读＋收回来（不烧额度，所以不看 confirm） */
+  recover_only?: boolean;
+  /** 默认 true（几十分钟的活，页面按钮一律走后台任务）；false 只给脚本与用例 */
+  async_mode?: boolean;
+}
+
+/** 闸门挡下/拒投的逐条说明（三堆里除"要投的"以外都是这个形状） */
+export interface AssetDispatchBlockedItem {
+  id: string;
+  seq: number;
+  hook_code: string | null;
+  reason: string;
+}
+
+/** 建任务这一步的逐张结果：`to` 是落库后的目标态，`recovered_after_error` 说明 POST 报错但板子其实建上了 */
+export interface AssetDispatchCreatedItem {
+  id: string;
+  hook_code: string | null;
+  tids: string[];
+  to: ProductionState;
+  recovered_after_error?: string;
+}
+
+/** 预检（异步回执里随任务号一起给）：闸门分完三堆的结果，跑之前就能看见 */
+export interface AssetDispatchPrecheck {
+  will_create: number;
+  will_recover: number;
+  /** Σ board_total＝本批会吃掉多少条号池额度，不是张数 */
+  planned_board_rows: number;
+  blocked: AssetDispatchBlockedItem[];
+  card_warnings: { id: string; hook_code: string | null; warnings: string[] }[];
+  capacity: AssetBoardCapacity;
+  note: string;
+}
+
+/** 投板的异步回执：任务号 + 预检（整份执行结果将来在任务台账里） */
+export interface AssetDispatchAck extends AssetJobAck {
+  precheck: AssetDispatchPrecheck;
+}
+
+/** 同步档的逐张结果（异步档没有这一份，去任务台账的 result 里看） */
+export interface AssetDispatchResultItem {
+  id: string;
+  hook_code: string | null;
+  asset_id: string;
+  board_total: number;
+  tids: string[];
+  status: ProductionState;
+  board_status: string | null;
+  outputs: string[];
+  restarted: boolean;
+  error?: string;
+  note?: string;
+  last_read_error?: string;
+  download_errors?: { tid: string; error: string }[];
+}
+
+/** POST /assets/productions/dispatch 的同步结果（异步档请判 `isAssetJobAck`） */
+export interface AssetDispatchResponse {
+  /** 本次真建上的板任务张数 */
+  dispatched: number;
+  /** 本次接续回收（只回读不重建）的张数 */
+  recovered: number;
+  succeeded?: number;
+  failed?: number;
+  still_running?: number;
+  results?: Record<string, AssetDispatchResultItem>;
+  outputs?: Array<{ production_id: string; file_key: string; file_name?: string; resolution?: string | null }>;
+  created: AssetDispatchCreatedItem[];
+  blocked: AssetDispatchBlockedItem[];
+  errors: Array<{ id: string; hook_code: string | null; stage?: string; error: string }>;
+  /** 板子回了成功却按日期/tag 认不回来——**绝不能自动重投**，要点名让人去板面对 */
+  uncertain: Array<{ id: string; hook_code: string | null; error: string }>;
+  card_warnings: { id: string; hook_code: string | null; warnings: string[] }[];
+  asset_status?: Record<string, AssetStatus>;
+  capacity: AssetBoardCapacity;
+  dispatch: AssetDispatchCounts;
+  message: string;
+}
+
 /** 导出列表的逐条（作废/失败单**状态照实回显、正文不外泄**：prompt_text 置 null） */
 export interface AssetExportItem {
   id: string;
@@ -1949,6 +2051,19 @@ export const assetApi = {
   // 投递状态回写：人投完板把真实结果写回台账（只改状态 + 补 board_tid + 记审计，不碰成本）
   updateProductionStatus: (data: AssetProductionStatusRequest) =>
     client.post('/assets/productions/status', data) as Promise<AssetProductionStatusResponse>,
+
+  /**
+   * 自动投板（批 H）：把点名的生产单真投上企微后台任务板，轮询出片并把成片收进产物。
+   *
+   * 默认 `async_mode: true` → 当场回 `AssetDispatchAck`（任务号 + **预检**），
+   * 因为一次投板＝建任务＋等板子出片（实测单条 25 分钟起）＋下载落桶，
+   * 同步等必然顶穿超时链。跑完的整份结果在任务台账 `/assets/jobs/{id}` 里。
+   * 用 `isAssetJobAck(res)` 分岔，别判 `results`（异步回执里就是没有它，故意的）。
+   */
+  dispatchProductions: (data: AssetDispatchRequest) =>
+    client.post('/assets/productions/dispatch', data) as Promise<
+      AssetDispatchResponse | AssetDispatchAck
+    >,
 
   // 生产单列表 + 投递计数（by_status 走过滤前口径，不跟 status= 一起筛）
   listProductions: (params?: AssetProductionListParams) =>
