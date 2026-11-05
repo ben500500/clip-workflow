@@ -344,6 +344,8 @@ export interface AssetProduction {
    * 空数组/null = 这单没走新口径，读侧回退 character_card_key（存量单不许因为加列就丢卡）。
    */
   card_asset_ids: string[];
+  /** 批 I（链路收敛）：本单已收进的成片段数（排除 package/copy 附属文件），生产单列表口才有 */
+  output_count?: number;
   status: ProductionState;
   /** 板上失败行**没有原因字段**：这里只能记我们侧的判读，别当成豆包给的成因 */
   error: string | null;

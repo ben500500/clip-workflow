@@ -1126,7 +1126,7 @@ def _serialize_summary(
     return data
 
 
-def _serialize_production(p: AssetProduction) -> dict:
+def _serialize_production(p: AssetProduction, output_count: int = 0) -> dict:
     return {
         "id": str(p.id),
         "asset_id": str(p.asset_id),
@@ -1162,6 +1162,9 @@ def _serialize_production(p: AssetProduction) -> dict:
         "started_at": utc_iso(p.started_at) if p.started_at else None,
         "completed_at": utc_iso(p.completed_at) if p.completed_at else None,
         "created_at": utc_iso(p.created_at),
+        # 批 I（链路收敛）：行上「成片」列的数字——本单已收进几段片。口径与审核台
+        # 卡片「已产 N 条」一致：排除 package/copy 附属文件，拼接产物没挂生产单天然不计。
+        "output_count": int(output_count),
     }
 
 
@@ -5417,8 +5420,24 @@ async def list_productions(
         await db.execute(stmt.order_by(AssetProduction.created_at.desc()).offset((page - 1) * page_size).limit(page_size))
     ).scalars().all()
     dispatch = await _dispatch_counts(db, *scope)
+    # 批 I：整页一次聚合每单的成片数（与上面 summaries 的 out_counts 同一个套路——
+    # 逐行数＝100 次查询）。排除 package/copy 附属文件，只数片。
+    out_counts: Dict[Any, int] = {}
+    pids = [p.id for p in rows]
+    if pids:
+        orows = (
+            await db.execute(
+                select(AssetOutput.production_id, func.count(AssetOutput.id))
+                .where(
+                    AssetOutput.production_id.in_(pids),
+                    AssetOutput.kind.notin_(("package", "copy")),
+                )
+                .group_by(AssetOutput.production_id)
+            )
+        ).all()
+        out_counts = {pid: int(cnt) for pid, cnt in orows}
     return {
-        "items": [_serialize_production(p) for p in rows],
+        "items": [_serialize_production(p, output_count=out_counts.get(p.id, 0)) for p in rows],
         "total": total,
         "page": page,
         "page_size": page_size,

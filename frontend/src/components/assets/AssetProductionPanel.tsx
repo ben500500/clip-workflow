@@ -1,15 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Col, Input, Modal, Radio, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, Col, Dropdown, Input, Modal, Radio, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
-import { CloudUploadOutlined, CopyOutlined, DownloadOutlined, ExportOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  CloudUploadOutlined, CopyOutlined, DownloadOutlined, ExportOutlined, MoreOutlined, PlayCircleOutlined, ReloadOutlined, VideoCameraOutlined,
+} from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import {
   DISPATCH_REPORT_STATUSES, PRODUCTION_STATE_LABELS, assetApi, isAssetJobAck,
 } from '../../api/assets';
 import type {
   AssetDispatchAck, AssetDispatchResponse, AssetDispatchCounts, AssetExportJson, AssetExportPayload, AssetExportTxt,
-  AssetProduction, DispatchReportStatus, ProductionState,
+  AssetOutput, AssetOutputPreviewResult, AssetProduction, DispatchReportStatus, ProductionState,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
@@ -64,6 +66,16 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const [writeError, setWriteError] = useState('');
   const [writeTid, setWriteTid] = useState('');
   const [busy, setBusy] = useState(false);
+  // 批 I（链路收敛）：行级「补记投递结果」记的是这一行，不是整页勾选；顶部批量入口还在，
+  // 但降成普通按钮——它记的是账，不是又一次"投"，不能再跟投板按钮并排抢主位。
+  const [writeTarget, setWriteTarget] = useState<AssetProduction[] | null>(null);
+
+  // 批 I（链路收敛）：行上「成片」列点开的小窗——这一单收回来的片子，就地预览/下载，
+  // 免得用户投完板还要自己去找"片子到底回哪了"。
+  const [outFor, setOutFor] = useState<AssetProduction | null>(null);
+  const [outItems, setOutItems] = useState<AssetOutput[]>([]);
+  const [outLoading, setOutLoading] = useState(false);
+  const [outPreview, setOutPreview] = useState<AssetOutputPreviewResult | null>(null);
 
   const [exportOpen, setExportOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<'json' | 'txt' | 'payload'>('txt');
@@ -160,20 +172,25 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken]);
 
+  // 批 I：补账对象＝行级入口点的那一行；顶部批量入口没指定就还是整页勾选
+  const writeRows = writeTarget ?? selected;
+
   const submitWriteBack = async () => {
-    if (!ids.length) return;
+    const rows = writeRows;
+    if (!rows.length) return;
+    const rowIds = rows.map((r) => r.id);
     if (writeStatus === 'failed' && !writeError.trim()) {
       message.warning('判失败必须写成因（板上失败行没有原因字段，这是我们的判读）');
       return;
     }
-    if (writeTid && ids.length > 1) {
+    if (writeTid && rowIds.length > 1) {
       message.warning('board_tid 是逐条钉的回读主键，多条时只能单选后逐条填');
       return;
     }
     setBusy(true);
     try {
       const res = await assetApi.updateProductionStatus({
-        ids,
+        ids: rowIds,
         status: writeStatus,
         error: writeError || undefined,
         board_tid: writeTid || undefined,
@@ -212,12 +229,65 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         ),
       });
       setWriteOpen(false);
+      setWriteTarget(null);
       setSelected([]);
       fetchList(page, pageSize);
     } catch (e) {
-      message.error((e as Error).message || '回写失败');
+      message.error((e as Error).message || '补记失败');
     } finally {
       setBusy(false);
+    }
+  };
+
+  /** 批 I：行级「补记手工投板结果」——记住是哪一行，别把整页勾选一起写了 */
+  const openWriteBackRow = (r: AssetProduction) => {
+    setWriteTarget([r]);
+    setWriteStatus('queued');
+    setWriteError('');
+    setWriteTid('');
+    setWriteOpen(true);
+  };
+
+  /** 批 I：成片小窗——先列这一单的产物，预览按需取（presign 不带 attachment 才能内联播） */
+  const openOutputs = async (r: AssetProduction) => {
+    setOutFor(r);
+    setOutItems([]);
+    setOutPreview(null);
+    setOutLoading(true);
+    try {
+      const res = await assetApi.listOutputs({ production_id: r.id });
+      setOutItems(res.items || []);
+    } catch (e) {
+      message.error((e as Error).message || '取成片列表失败');
+      setOutFor(null);
+    } finally {
+      setOutLoading(false);
+    }
+  };
+
+  const previewOneOutput = async (o: AssetOutput) => {
+    setOutLoading(true);
+    try {
+      setOutPreview(await assetApi.previewOutput(o.id));
+    } catch (e) {
+      message.error((e as Error).message || '取预览失败');
+    } finally {
+      setOutLoading(false);
+    }
+  };
+
+  const downloadOneOutput = async (o: AssetOutput) => {
+    try {
+      const d = await assetApi.downloadOutput(o.id);
+      const a = document.createElement('a');
+      a.href = d.url;
+      a.download = d.file_name || o.file_name || '';
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.click();
+      message.success('下载链接已打开（一次性外链，链接受限请立刻保存）');
+    } catch (e) {
+      message.error((e as Error).message || '取下载链接失败');
     }
   };
 
@@ -341,7 +411,9 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 />
               )}
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {pre.note}投一条实测要 25 分钟起，整批排队更久——可以关页面，跑完在「任务台账」里看整份结果。
+                接下来不用守着：机器去企微后台排队出片，一条 25 分钟起、整批更久。
+                出好的片子自动回到本页各单的「成片」列（回来点「刷新」或看顶部任务横幅）；
+                板上失败的会计成失败、在行上写清成因。{pre.note ? `｜${pre.note}` : ''}
               </Text>
             </Space>
           ),
@@ -493,6 +565,47 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         </Space>
       ),
     },
+    {
+      // 批 I（链路收敛）：「投完不知道去向」的正解——片子回来了就在这一列，
+      // 点开就地预览/下载，不用再去别处找产物。
+      title: '成片',
+      key: 'outputs',
+      width: 110,
+      render: (_, r) =>
+        (r.output_count ?? 0) > 0 ? (
+          <Button size="small" icon={<VideoCameraOutlined />} onClick={() => openOutputs(r)}>
+            已收 {r.output_count} 段
+          </Button>
+        ) : (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            还没收片
+          </Text>
+        ),
+    },
+    ...(canWriteBack
+      ? [
+          {
+            title: '操作',
+            key: 'ops',
+            width: 84,
+            render: (_: unknown, r: AssetProduction) => (
+              <Dropdown
+                menu={{
+                  items: [
+                    {
+                      key: 'wb',
+                      label: '补记手工投板结果',
+                      onClick: () => openWriteBackRow(r),
+                    },
+                  ],
+                }}
+              >
+                <Button size="small" icon={<MoreOutlined />} />
+              </Dropdown>
+            ),
+          } as ColumnsType<AssetProduction>[number],
+        ]
+      : []),
   ];
 
   const today = dispatch?.today;
@@ -563,25 +676,10 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
           刷新
         </Button>
-        <Button icon={<ExportOutlined />} onClick={() => setExportOpen(true)}>
-          导出（txt / 板面七键）
-        </Button>
+        {/* 批 I（链路收敛）：主按钮只留一个「投」——导出和补账降成次要动作，
+            别再让三个像"投"的按钮并排抢主位。 */}
         {canWriteBack && (
-          <Button
-            type="primary"
-            disabled={!ids.length}
-            onClick={() => {
-              setWriteStatus('queued');
-              setWriteError('');
-              setWriteTid('');
-              setWriteOpen(true);
-            }}
-          >
-            回写投递态（{ids.length}）
-          </Button>
-        )}
-        {canWriteBack && (
-          <Tooltip title="后端直接连企微后台任务板：建任务 → 等出片 → 把成片收进产物。一次最多 20 张，且必须逐批人工确认。">
+          <Tooltip title="机器去企微后台建任务 → 等出片 → 成片自动回到每张单的「成片」列。一次最多 20 张，逐批人工确认。">
             <Button
               danger
               type="primary"
@@ -595,7 +693,26 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 setDispatchOpen(true);
               }}
             >
-              投上后台任务板（{ids.length}）
+              投去 AI 出片（{ids.length}）
+            </Button>
+          </Tooltip>
+        )}
+        <Button icon={<ExportOutlined />} onClick={() => setExportOpen(true)}>
+          导出任务文件（手工投）
+        </Button>
+        {canWriteBack && (
+          <Tooltip title="自己上企微后台手工投的，回来在这里把结果记上账；机器投的不用记。">
+            <Button
+              disabled={!ids.length}
+              onClick={() => {
+                setWriteTarget(null);
+                setWriteStatus('queued');
+                setWriteError('');
+                setWriteTid('');
+                setWriteOpen(true);
+              }}
+            >
+              补记手工投板结果（{ids.length}）
             </Button>
           </Tooltip>
         )}
@@ -634,11 +751,14 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
 
       <Modal
         open={writeOpen}
-        title={`回写 ${ids.length} 张生产单的投递态`}
-        onCancel={() => setWriteOpen(false)}
+        title={`补记手工投板结果（${writeRows.length} 张）`}
+        onCancel={() => {
+          setWriteOpen(false);
+          setWriteTarget(null);
+        }}
         onOk={submitWriteBack}
         confirmLoading={busy}
-        okText="提交"
+        okText="记账"
       >
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
           <Radio.Group
@@ -664,12 +784,12 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           <Alert
             type="info"
             showIcon
-            message="这里是「人工投板之后补账」：导出 payload → 人在企微后台建任务 → 回这里报结果"
+            message="这里是「人工投板之后补账」：导出任务文件 → 人自己在企微后台建任务 → 回这里报结果"
             description={
               <span style={{ fontSize: 12 }}>
                 同态重报幂等跳过；queued 每报一次 attempts +1（重投也计）。
                 superseded/cancelled/skipped 是系统态，写不进来。
-                11-05 起另一条入口是「投上后台任务板」（后端自己连板、自动回收成片），
+                11-05 起另一条入口是「投去 AI 出片」（机器自己连板、自动收成片），
                 <b>两条路的闸门与状态迁移是同一套判据</b>，别在这里把机器投的结果再报一遍。
               </span>
             }
@@ -677,20 +797,83 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         </Space>
       </Modal>
 
+      {/* 批 I（链路收敛）：这一单收回来的片子，就地预览/下载——投完之后「片子在哪」的答案 */}
+      <Modal
+        open={!!outFor}
+        title={outFor ? `成片（${outFor.hook_code || outFor.id.slice(0, 8)}）· 已收 ${outItems.length} 段` : '成片'}
+        width={720}
+        onCancel={() => {
+          setOutFor(null);
+          setOutPreview(null);
+        }}
+        footer={null}
+      >
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          {outPreview && (
+            <video
+              src={outPreview.url}
+              controls
+              autoPlay
+              style={{ width: '100%', maxHeight: 420, background: '#000' }}
+            />
+          )}
+          {outItems.length === 0 && !outLoading && (
+            <Text type="secondary">这一单还没有成片。投出去的等机器收回来；失败的单子看行上的成因。</Text>
+          )}
+          {outItems.map((o) => (
+            <Space
+              key={o.id}
+              style={{ width: '100%', justifyContent: 'space-between' }}
+            >
+              <Space size={6} wrap>
+                <PlayCircleOutlined />
+                <Text style={{ fontSize: 12 }}>{o.file_name || o.id.slice(0, 8)}</Text>
+                {o.resolution && <Tag style={{ fontSize: 11 }}>{o.resolution}</Tag>}
+                {o.qc_status && (
+                  <Tag color={o.qc_status === 'passed' ? 'green' : o.qc_status === 'failed' ? 'red' : 'default'} style={{ fontSize: 11 }}>
+                    {o.qc_status === 'passed' ? '验收过' : o.qc_status === 'failed' ? '验收没过' : `验收 ${o.qc_status}`}
+                  </Tag>
+                )}
+              </Space>
+              <Space size={4}>
+                <Button size="small" onClick={() => previewOneOutput(o)}>
+                  预览
+                </Button>
+                <Button size="small" icon={<DownloadOutlined />} onClick={() => downloadOneOutput(o)}>
+                  下载
+                </Button>
+              </Space>
+            </Space>
+          ))}
+        </Space>
+      </Modal>
+
       <Modal
         open={dispatchOpen}
-        title={`投上后台任务板（已选 ${ids.length} 张生产单）`}
+        title={`投去 AI 出片（已选 ${ids.length} 张生产单）`}
         width={720}
         onCancel={() => setDispatchOpen(false)}
         onOk={submitDispatch}
         confirmLoading={dispatchBusy}
-        okText={dispatchRecoverOnly ? '开始回收' : '确认投板'}
+        okText={dispatchRecoverOnly ? '开始回收' : '确认投去出片'}
         okButtonProps={{
           danger: !dispatchRecoverOnly,
           disabled: !dispatchRecoverOnly && !dispatchConfirm,
         }}
       >
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            message="点了之后会发生什么"
+            description={
+              <span style={{ fontSize: 12 }}>
+                机器去企微后台「AI 视频」任务板建任务 → 排队出片（一条 25 分钟起，整批排队更久）
+                → 出好的片子<b>自动回到本页每张单的「成片」列</b>，点开就能看、能下。
+                可以关掉页面去干别的，回来点「刷新」或看顶部任务横幅。
+              </span>
+            }
+          />
           <Row gutter={12}>
             <Col span={8}>
               <Statistic title="会新建板任务" value={dispatchPlan.willCreate} suffix="张" />
@@ -750,6 +933,19 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 />
               )}
             </>
+          )}
+          {/* 批 I：手工投的退路还在，但从"三个按钮抢主位"降成一句链接 */}
+          {!dispatchRecoverOnly && (
+            <Button
+              type="link"
+              style={{ paddingLeft: 0 }}
+              onClick={() => {
+                setDispatchOpen(false);
+                setExportOpen(true);
+              }}
+            >
+              这批不想机器投？导出任务文件，自己去企微后台手工投（投完回来「补记手工投板结果」）
+            </Button>
           )}
         </Space>
       </Modal>
