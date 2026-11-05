@@ -43,13 +43,14 @@ import shutil
 import tempfile
 import time
 import uuid
+import weakref
 from datetime import datetime, timedelta
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,16 +63,21 @@ from app.config import settings
 from app import database as _database
 from app.database import get_db
 from app.models.asset import (
+    ASSET_FRAME_KINDS,
     ASSET_JOB_KINDS,
     AS_ARCHIVED,
     CH_WEWORK_AIVIDEO,
     DEFAULT_PRODUCTION_CHANNEL,
     EXPORTABLE_PRODUCTION_STATES,
+    FRAME_GRID,
+    FRAME_OUTPUT_THUMB,
+    FRAME_THUMB,
     JB_FAILED,
     JB_INTERRUPTED,
     JB_QUEUED,
     JB_RUNNING,
     JB_SUCCEEDED,
+    JOB_FRAMES,
     JOB_PRODUCE,
     JOB_SUMMARY_GENERATE,
     PR_CANCELLED,
@@ -100,6 +106,7 @@ from app.models.asset import (
     STAGE_SUCCESS,
     AssetBatch,
     AssetCategory,
+    AssetFrame,
     AssetItem,
     AssetJob,
     AssetOutput,
@@ -113,6 +120,7 @@ from app.models.material import Episode, Project, SliceOutput, SliceTask, System
 from app.models.models import User
 from app.models.user import UserRole
 from app.services import asset_compose_service as compose
+from app.services import asset_frame_service as framesvc
 from app.services import asset_service as svc
 from app.services.data_scope import check_project_access_by_episode
 from app.services.minio_service import (
@@ -243,6 +251,18 @@ class ResolveRequest(BaseModel):
     offset: int = Field(0, ge=0, description="游标：跳过队列头部 N 条，默认 0")
     limit: Optional[int] = Field(None, description="本段条数，默认/上限 = ASSET_ANALYZE_MAX_PER_CALL")
     confirmed: bool = Field(False, description="≥2 条时必须为 true（成本确认弹窗已确认）")
+
+
+class FramesExtractRequest(BaseModel):
+    """抽帧（批 F）：给素材抽 3 张单帧 + 1 张九宫格，给产物抽 1 张首帧。
+
+    这条请求模型同时是**后台任务 params 的形状**（`_job_endpoint(JOB_FRAMES)` 回到这里），
+    所以字段必须能 `model_dump(mode="json")` 后原样再喂给自己。
+    """
+    asset_ids: List[str] = Field(default_factory=list, description="点名若干条素材")
+    output_ids: List[str] = Field(default_factory=list, description="点名若干产物（每个补 1 张 output_thumb）")
+    force: bool = Field(False, description="已有帧也重抽（默认跳过，省一次下载＋ffmpeg）")
+    async_mode: bool = Field(False, description="true＝排后台任务立即回任务号；导入侧自动排的那条走这里")
 
 
 class ReviewRequest(BaseModel):
@@ -1531,6 +1551,15 @@ async def _upload_into_batch(
     )
     await db.commit()
 
+    # 批 F：入库成功 = 系统自动排抽帧（只有文件形态抽得了帧，链接素材桶里没原片）。
+    frames = await _enqueue_frames(
+        db,
+        asset_ids=[str(a.id) for a in created],
+        output_ids=[],
+        operator=current_user,
+        why=f"文件入库 {len(created)} 个",
+    )
+
     return {
         "batch": _serialize_batch(batch),
         "batch_id": str(batch.id),
@@ -1538,9 +1567,12 @@ async def _upload_into_batch(
         "failed": failed,
         "failed_files": [x["file_name"] for x in failed],
         "budget": budget,
+        "frames": frames,
         "message": (
             f"上传入库 {len(created)} 个"
             + (f"，失败 {len(failed)} 个（带 batch_id 走 /assets/upload/retry 只补投这几个）" if failed else "")
+            + (f"；{'抽帧已排后台，卡片稍后出图' if frames['queued'] else '卡片图这次没排上'}"
+               if created else "")
             + (
                 f"；这批 {batch.item_count} 个若全按 {tier}s 档反推预估 {budget['cost_estimate']} 元，"
                 f"超单批上限 {budget['cap']} 元，反推时需管理员放批或拆批"
@@ -2585,6 +2617,8 @@ def _job_endpoint(kind: str) -> Tuple[Any, Any, str]:
         return SummaryGenerateRequest, generate_summaries, "出钩子文案"
     if kind == JOB_PRODUCE:
         return ProduceRequest, create_productions, "生成生产单"
+    if kind == JOB_FRAMES:
+        return FramesExtractRequest, extract_frames, "抽帧"
     raise HTTPException(
         status_code=400,
         detail=f"任务类型只支持 {'/'.join(ASSET_JOB_KINDS)}",
@@ -2593,6 +2627,15 @@ def _job_endpoint(kind: str) -> Tuple[Any, Any, str]:
 
 def _job_scope_ids(kind: str, params: Dict[str, Any]) -> List[str]:
     """这次任务真正圈住的 id 列表（出文案＝素材 id，投产＝文案 id），用于防重复烧钱。"""
+    if kind == JOB_FRAMES:
+        # 抽帧同时圈素材和产物两类 id，防重复判据看的是"这批里有没有交集"，
+        # 两类混在一个列表里比较不影响结论（UUID 不会撞）。
+        p = params or {}
+        return [
+            str(x)
+            for x in (list(p.get("asset_ids") or []) + list(p.get("output_ids") or []))
+            if str(x)
+        ]
     key = "asset_ids" if kind == JOB_SUMMARY_GENERATE else "summary_ids"
     return [str(x) for x in (params.get(key) or []) if str(x)]
 
@@ -2789,6 +2832,26 @@ async def _job_progress(db: AsyncSession, job: AssetJob) -> Dict[str, Any]:
         )
         total = total or len(ids)
         note = "投产进度＝已经长出生产单的文案条数（本批开跑之后新建的才算）"
+    elif job.kind == JOB_FRAMES:
+        p = job.params or {}
+        aids = [str(x) for x in (p.get("asset_ids") or []) if str(x)]
+        oids = [str(x) for x in (p.get("output_ids") or []) if str(x)]
+        conds = []
+        if aids:
+            conds.append(AssetFrame.asset_id.in_([uuid.UUID(x) for x in aids]))
+        if oids:
+            conds.append(AssetFrame.output_id.in_([uuid.UUID(x) for x in oids]))
+        if conds:
+            done = int(
+                (
+                    await db.execute(
+                        select(func.count(AssetFrame.id)).where(or_(*conds))
+                    )
+                ).scalar()
+                or 0
+            )
+        total = total or (len(aids) + len(oids))
+        note = "抽帧进度＝已落库的**帧数**（一条素材满帧是 4 张：3 单帧＋1 九宫格），不是完成的条数"
     return {"total": total, "done": done, "note": note}
 
 
@@ -2872,17 +2935,25 @@ async def list_asset_jobs(
     kind: Optional[str] = None,
     batch_id: Optional[str] = None,
     only_open: bool = False,
+    include_frames: bool = False,
     limit: int = 20,
     current_user: User = Depends(require_roles(*_PROD_ROLES)),
     db: AsyncSession = Depends(get_db),
 ):
-    """任务台账列表：页面刷新后、换浏览器后，靠这个口找回"我刚才点的那批还在不在跑"。"""
+    """任务台账列表：页面刷新后、换浏览器后，靠这个口找回"我刚才点的那批还在不在跑"。
+
+    11-04 批 F 起**默认不列抽帧任务**（`include_frames=true` 才给）：抽帧是导入成功后
+    系统自己排的，人人都有一堆，混进列表会把「我刚点的那批还在不在跑」挤出视野——
+    这个口的用途本来就是找回人手点的那件慢活。
+    """
     limit = min(max(1, int(limit or 20)), 100)
     conds: List[Any] = []
     if kind:
         if kind not in ASSET_JOB_KINDS:
             raise HTTPException(status_code=400, detail=f"kind 只支持 {'/'.join(ASSET_JOB_KINDS)}")
         conds.append(AssetJob.kind == kind)
+    elif not include_frames:
+        conds.append(AssetJob.kind != JOB_FRAMES)
     if only_open:
         conds.append(AssetJob.status.in_(JOB_OPEN_STATES))
     elif status:
@@ -5359,6 +5430,12 @@ async def concat_two_videos(
         )
         await db.commit()
         await db.refresh(out_row)
+        # 批 F：产物也补 1 张帧（豆包成片要等批 H 才有第二个 AssetOutput 写入方，
+        # 今天这条是拼接产物唯一的补帧路径）。同样不许把已经拼完的活儿带崩。
+        frames = await _enqueue_frames(
+            db, asset_ids=[], output_ids=[str(out_row.id)], operator=current_user,
+            why="拼接产物",
+        )
         return {
             "id": str(out_row.id),
             "kind": out_row.kind,
@@ -5373,6 +5450,7 @@ async def concat_two_videos(
             "asset_status": asset.status,
             "order": data.order,
             "segments": [first["label"], second["label"]],
+            "frames": frames,
             "elapsed_seconds": round(time.monotonic() - started, 2),
             "message": "拼好了，产物每条一行不覆盖，可反复拼不同顺序",
         }
@@ -5800,6 +5878,577 @@ async def preview_asset_source(
             "那条直链有时效，过期要重新解析"
         ),
     }
+
+
+# ──────────────────────────────────────────────
+# 抽帧（批 F，11-04：审核台卡片图 + 封面图，纯呈现层）
+# ──────────────────────────────────────────────
+
+# 帧图的直链时效：卡片是"看一眼"的东西，1 小时够一轮审核；过期了前端重拉本口即可
+_FRAME_URL_TTL_SECONDS = 3600
+
+_FRAME_KIND_LABELS = {
+    FRAME_THUMB: "单帧",
+    FRAME_GRID: "九宫格",
+    FRAME_OUTPUT_THUMB: "产物帧",
+}
+
+# 抽帧的并发锁按**事件循环**分桶。为什么不能是一个模块级 Semaphore：
+# `asyncio.Semaphore` 在创建时就绑死当前 loop，测试每个用例一个新 loop、生产每个
+# worker 进程一个 loop，模块级单例第二次用就是 "<Semaphore> is bound to a different
+# event loop"。WeakKeyDictionary 让废弃的 loop 连带丢掉它那把锁，不漏水。
+_FRAME_SEMAPHORES: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _frame_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    sem = _FRAME_SEMAPHORES.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(max(1, int(settings.ASSET_FRAME_CONCURRENCY)))
+        _FRAME_SEMAPHORES[loop] = sem
+    return sem
+
+
+def _frame_key(
+    asset_code: str, kind: str, seq: int, output_id: Optional[str] = None
+) -> str:
+    """桶内位置：`asset/frames/<素材码>/<kind>_<seq>.jpg`（产物帧再多一段产物短 id）。
+
+    用**素材码**而不是素材 UUID：出问题时人眼能在桶里认出这是哪条（raw-footage 那套
+    也是这么定的），而且重抽覆盖同名对象，不会越抽越多盘。
+    """
+    stem = f"{kind}_{seq}" if not output_id else f"{kind}_{output_id[:8]}_{seq}"
+    return f"asset/frames/{asset_code}/{stem}.{framesvc.EXT}"
+
+
+def _scaled_height(src_w: Optional[int], src_h: Optional[int], target_w: int) -> Optional[int]:
+    """按 ffmpeg `scale=W:-2` 的算法推帧高（`-2`＝保比例且取偶数）。
+
+    原片分辨率探不到就回 **None**：这个数只给前端占宽高比用，留空＝"不占位、加载出来再说"，
+    比拿一个猜出来的数把卡片撑歪要好。
+    """
+    if not src_w or not src_h or src_w <= 0:
+        return None
+    h = int(round(target_w * src_h / src_w))
+    if h <= 0:
+        return None
+    return h - (h % 2)
+
+
+def _frame_dims(kind: str, src_w: Optional[int], src_h: Optional[int]) -> Tuple[Optional[int], Optional[int]]:
+    """帧的 (宽, 高)：单帧按 `ASSET_FRAME_THUMB_WIDTH`，九宫格按整图宽 = 格宽 × 3。"""
+    if kind == FRAME_GRID:
+        total_w = int(settings.ASSET_FRAME_GRID_WIDTH)
+        cell_w = max(64, total_w // framesvc.GRID_COLS)
+        cell_h = _scaled_height(src_w, src_h, cell_w)
+        return (
+            cell_w * framesvc.GRID_COLS,
+            None if cell_h is None else cell_h * framesvc.GRID_COLS,
+        )
+    w = int(settings.ASSET_FRAME_THUMB_WIDTH)
+    return (w, _scaled_height(src_w, src_h, w))
+
+
+async def _frames_io(task: Dict[str, Any]) -> Dict[str, Any]:
+    """一段**纯 I/O**：取回片子 → ffmpeg 抽帧 → jpg 传回桶。全程不碰 db。
+
+    和 `_ingest_one_video_file` 同一个道理（AsyncSession 不是并发安全的，所以并发只做
+    I/O，写库留给调用方串行做，A4-5）。信号量在这里限流：一批 100 条同时下载＋解码
+    就是把反推/拼接一起拖死。
+
+    `task` 关键字段：`bucket` / `file_key` / `duration` / `asset_code` / `with_grid` /
+    `single`（真＝只要 1 张、且改写成 output_thumb）。
+    """
+    bucket = task["bucket"]
+    file_key = task["file_key"]
+    async with _frame_semaphore():
+        work = tempfile.mkdtemp(prefix="asset_frames_")
+        try:
+            local = os.path.join(work, "src.bin")
+            if not await download_to_file(bucket, file_key, local):
+                return {"ok": False, "skipped": False, "rows": [],
+                        "reason": f"取回原片失败（{bucket}/{file_key[:60]}），稍后重抽"}
+            dur = task.get("duration")
+            if dur is None:
+                # 兜底：入库时（A4-4）本该有时长，真没有就本地探一次，探不到才放弃
+                dur = await _probe_duration(local)
+                if dur is None:
+                    return {"ok": False, "skipped": True, "rows": [],
+                            "reason": "下载到本地也探不到时长，等时间轴有了再抽"}
+            reason = framesvc.should_skip(dur)
+            if reason:
+                return {"ok": False, "skipped": True, "rows": [], "reason": reason}
+
+            info = await compose.probe_media(local) or {}
+            src_w = int(info.get("width") or 0) or None
+            src_h = int(info.get("height") or 0) or None
+            got = await framesvc.extract(
+                local, float(dur), os.path.join(work, "out"), with_grid=bool(task["with_grid"])
+            )
+            picks = list(got["thumbs"])
+            if task["single"]:
+                # 产物只给 1 张：取**中段**那张（10% 处常常还是片头字卡，中段才是正片画面）
+                picks = [picks[len(picks) // 2]] if picks else []
+            if got["grid"] is not None:
+                picks.append(got["grid"])
+            if not picks:
+                return {"ok": False, "skipped": False, "rows": [],
+                        "reason": "；".join(got["errors"]) or "ffmpeg 一张都没抽出来"}
+
+            errors = list(got["errors"])
+            rows: List[Dict[str, Any]] = []
+            for it in picks:
+                kind = FRAME_OUTPUT_THUMB if task["single"] else it["kind"]
+                seq = 0 if task["single"] else int(it["seq"])
+                key = _frame_key(task["asset_code"], kind, seq, output_id=task.get("output_id"))
+                w, h = _frame_dims(kind, src_w, src_h)
+                uploaded = await upload_file_from_path(
+                    settings.MINIO_BUCKET_RAW, key, it["path"], content_type=framesvc.CONTENT_TYPE
+                )
+                if not uploaded:
+                    errors.append(f"{key} 传桶失败")
+                    continue
+                rows.append({
+                    "kind": kind, "seq": seq, "t_offset": it.get("t_offset"),
+                    "file_key": key, "bucket": settings.MINIO_BUCKET_RAW,
+                    "width": w, "height": h, "file_size": it["file_size"],
+                    "source_file_key": file_key,
+                })
+            if not rows:
+                return {"ok": False, "skipped": False, "rows": [],
+                        "reason": "；".join(errors) or "帧传桶全失败（旧帧没动）"}
+            return {"ok": True, "skipped": False, "rows": rows,
+                    "reason": ("部分成功：" + "；".join(errors[:2])) if errors else None}
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+async def _store_frames(
+    db: AsyncSession,
+    asset: AssetItem,
+    rows: List[Dict[str, Any]],
+    *,
+    output_id: Optional[str] = None,
+) -> int:
+    """先删同键旧行再插（幂等覆盖），并把第 1 张单帧写进 `cover_image_key`。
+
+    ⚠️ 只在**这次真抽出图了**才被调用：抽失败时旧帧原样留着，一线顶多是看到旧图，
+    不会看到"图没了"——那会被当成素材被删了。
+    """
+    conds = [AssetFrame.asset_id == asset.id]
+    conds.append(AssetFrame.output_id.is_(None) if not output_id else AssetFrame.output_id == _as_uuid(output_id, "output_id"))
+    await db.execute(delete(AssetFrame).where(and_(*conds)))
+    oid = _as_uuid(output_id, "output_id") if output_id else None
+    for r in rows:
+        db.add(AssetFrame(asset_id=asset.id, output_id=oid, **r))
+    # 封面＝本素材第 1 张单帧（`cover_image_key` 这列 11-04 之前**全链路没有写入方**，
+    # 列表页那格永远空转；批 F 起它终于有值了。产物帧不动封面：封面是素材的卡片图）
+    if not output_id:
+        thumbs = sorted([r for r in rows if r["kind"] == FRAME_THUMB], key=lambda x: x["seq"])
+        asset.cover_image_key = thumbs[0]["file_key"] if thumbs else None
+    await db.commit()
+    return len(rows)
+
+
+def _frames_cap() -> int:
+    return max(1, int(settings.ASSET_FRAME_MAX_PER_CALL))
+
+
+async def _plan_asset_frames(
+    db: AsyncSession, asset_ids: List[str], *, force: bool
+) -> Tuple[List[Tuple[Dict[str, Any], AssetItem, None]], List[Dict[str, Any]]]:
+    """素材侧：串行读库定「抽不抽」，返回 (待办 I/O 任务, 已定的 skip/fail 结果)。"""
+    pending = []
+    decided: List[Dict[str, Any]] = []
+    for aid in asset_ids:
+        base = {"target": "asset", "id": aid}
+        asset = await db.get(AssetItem, _as_uuid(aid, "asset_ids"))
+        if asset is None:
+            decided.append({**base, "result": "failed", "frames": 0, "reason": "素材不存在"})
+            continue
+        base["code"] = asset.code
+        existing = list(
+            (
+                await db.execute(
+                    select(AssetFrame).where(
+                        AssetFrame.asset_id == asset.id, AssetFrame.output_id.is_(None)
+                    )
+                )
+            ).scalars().all()
+        )
+        if existing and not force:
+            decided.append({**base, "result": "skipped", "frames": len(existing),
+                            "reason": f"已经有 {len(existing)} 张帧（要重抽带 force=true）"})
+            continue
+        if asset.source_kind != SOURCE_FILE or not asset.file_key:
+            decided.append({**base, "result": "skipped", "frames": 0,
+                            "reason": "链接素材桶里没有原片，抽不了帧；要看画面用抽屉里的「取直链并播放」"})
+            continue
+        reason = framesvc.should_skip(asset.duration)
+        if reason:
+            decided.append({**base, "result": "skipped", "frames": 0, "reason": reason})
+            continue
+        pending.append((
+            {
+                "bucket": asset.bucket or settings.MINIO_BUCKET_RAW,
+                "file_key": asset.file_key,
+                "duration": asset.duration,
+                "asset_code": asset.code,
+                "with_grid": True,
+                "single": False,
+                "output_id": None,
+            },
+            asset,
+            None,
+        ))
+    return pending, decided
+
+
+async def _plan_output_frames(
+    db: AsyncSession, output_ids: List[str], *, force: bool
+) -> Tuple[List[Tuple[Dict[str, Any], AssetItem, str]], List[Dict[str, Any]]]:
+    """产物侧：每个产物补 1 张 `output_thumb`（豆包成片要等批 H 才有第二个写入方）。"""
+    pending = []
+    decided: List[Dict[str, Any]] = []
+    for oid in output_ids:
+        base = {"target": "output", "id": oid}
+        out_row = await db.get(AssetOutput, _as_uuid(oid, "output_ids"))
+        if out_row is None:
+            decided.append({**base, "result": "failed", "frames": 0, "reason": "产物不存在"})
+            continue
+        asset = await db.get(AssetItem, out_row.asset_id)
+        if asset is None:
+            decided.append({**base, "result": "failed", "frames": 0,
+                            "reason": "产物找不到归属素材（数据异常），没抽"})
+            continue
+        base["code"] = out_row.file_name
+        existing = list(
+            (
+                await db.execute(
+                    select(AssetFrame).where(AssetFrame.output_id == out_row.id)
+                )
+            ).scalars().all()
+        )
+        if existing and not force:
+            decided.append({**base, "result": "skipped", "frames": len(existing),
+                            "reason": f"这个产物已经有 {len(existing)} 张帧（force=true 才重抽）"})
+            continue
+        if not out_row.file_key:
+            decided.append({**base, "result": "skipped", "frames": 0, "reason": "产物没有文件（只有外链），抽不了帧"})
+            continue
+        pending.append((
+            {
+                "bucket": out_row.bucket or settings.MINIO_BUCKET_RAW,
+                "file_key": out_row.file_key,
+                "duration": out_row.duration,
+                "asset_code": asset.code,
+                "with_grid": False,
+                "single": True,
+                "output_id": str(out_row.id),
+            },
+            asset,
+            str(out_row.id),
+        ))
+    return pending, decided
+
+
+async def _run_frames_requests(
+    db: AsyncSession, asset_ids: List[str], output_ids: List[str], *, force: bool
+) -> List[Dict[str, Any]]:
+    """抽帧的执行体：串行定名单 → 并发跑 I/O → 串行写库。"""
+    asset_pending, results = await _plan_asset_frames(db, asset_ids, force=force)
+    output_pending, output_decided = await _plan_output_frames(db, output_ids, force=force)
+    results = results + output_decided
+    pending = asset_pending + output_pending
+    if not pending:
+        return results
+    io_results = await asyncio.gather(
+        *[_frames_io(t) for t, _a, _o in pending], return_exceptions=True
+    )
+    for (task, asset, oid), io in zip(pending, io_results):
+        base = {"target": "asset" if oid is None else "output",
+                "id": str(oid or asset.id), "code": task["asset_code"] if oid is None else asset.code}
+        if isinstance(io, BaseException):
+            logger.exception("抽帧 I/O 异常 %s", base["id"])
+            results.append({**base, "result": "failed", "frames": 0,
+                            "reason": f"{type(io).__name__}: {io}"[:300]})
+            continue
+        if not io["ok"]:
+            results.append({**base, "result": "skipped" if io["skipped"] else "failed",
+                            "frames": 0, "reason": io["reason"]})
+            continue
+        try:
+            n = await _store_frames(db, asset, io["rows"], output_id=oid)
+        except Exception as exc:  # noqa: BLE001 — 单条写库炸了不该把整批带走
+            await db.rollback()
+            logger.exception("抽帧写库失败 %s", base["id"])
+            results.append({**base, "result": "failed", "frames": 0,
+                            "reason": f"帧已传到桶但写库失败：{type(exc).__name__}: {exc}"[:280]})
+            continue
+        results.append({**base, "result": "extracted", "frames": n,
+                        "cover": asset.cover_image_key if oid is None else None,
+                        "reason": io["reason"]})
+    return results
+
+
+@router.post("/assets/frames/extract")
+async def extract_frames(
+    data: FramesExtractRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """手动抽帧 / 重抽（批 F）。`async_mode=true` 排后台任务、立即回任务号。
+
+    这条口同时是**后台任务 `kind=frames` 的执行体**（`_job_endpoint(JOB_FRAMES)` 回到这里），
+    和 D-1 那两条一个规矩：后台不另写一套逻辑，就是把本口原样再调一遍。
+
+    为什么默认不 `force`：抽帧要**把整个原片从桶里拉回本地**再解码，重复抽一条已经有图的
+    素材是白占 CPU（导入自动排的那次通常已经成功）。要看新图就带 `force=true`。
+    """
+    asset_ids = list(dict.fromkeys(str(x) for x in (data.asset_ids or []) if str(x)))
+    output_ids = list(dict.fromkeys(str(x) for x in (data.output_ids or []) if str(x)))
+    if not asset_ids and not output_ids:
+        raise HTTPException(status_code=400, detail="要抽帧至少点名 asset_ids 或 output_ids")
+    total = len(asset_ids) + len(output_ids)
+    cap = _frames_cap()
+    if total > cap:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"一次最多 {cap} 个对象（当前 {total} 个）：抽帧不花钱但每条都要下载原片＋跑 ffmpeg，"
+                f"同步等 {total} 条必然挂到网关超时。要么分次点，要么带 async_mode=true 排后台"
+            ),
+        )
+    for aid in asset_ids:
+        _as_uuid(aid, "asset_ids")
+    for oid in output_ids:
+        _as_uuid(oid, "output_ids")
+
+    if data.async_mode:
+        job = await _start_asset_job(
+            db,
+            kind=JOB_FRAMES,
+            data=data,
+            operator=current_user,
+            batch_id=None,
+            planned_units=total,
+        )
+        return _job_accepted(job, "抽帧")
+
+    results = await _run_frames_requests(db, asset_ids, output_ids, force=data.force)
+    extracted = [r for r in results if r["result"] == "extracted"]
+    skipped = [r for r in results if r["result"] == "skipped"]
+    failed = [r for r in results if r["result"] == "failed"]
+    frames_total = sum(int(r.get("frames") or 0) for r in extracted)
+    await _write_audit(
+        db,
+        action="asset.frames.extract",
+        operator=current_user,
+        target_type="asset_item",
+        target_id=None,
+        after={
+            "asset_ids": asset_ids,
+            "output_ids": output_ids,
+            "force": bool(data.force),
+            "extracted": len(extracted),
+            "skipped": len(skipped),
+            "failed": len(failed),
+            "frames": frames_total,
+        },
+    )
+    await db.commit()
+    return {
+        "results": results,
+        "extracted": len(extracted),
+        "skipped": len(skipped),
+        "failed": len(failed),
+        "frames": frames_total,
+        "note": (
+            "抽帧只出卡片图和封面，抽不到不影响审核、投产、导出任何一步；"
+            "skipped 每条都带人话原因（链接素材没原片／时长未知／超过抽帧上限／已经有帧）"
+        ),
+        "message": (
+            f"抽出 {len(extracted)} 个对象共 {frames_total} 张图"
+            + (f"，跳过 {len(skipped)} 个" if skipped else "")
+            + (f"，失败 {len(failed)} 个（可以再点一次）" if failed else "")
+        ),
+    }
+
+
+@router.get("/assets/frames")
+async def list_asset_frames(
+    asset_ids: Optional[str] = None,
+    output_ids: Optional[str] = None,
+    kind: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """按素材/产物**批量**取卡片图（审核台一次拉一页，别逐行发请求）。
+
+    ⚠️ 路由顺序：本口必须声明在 `GET /assets/{asset_id}` **之前**，否则 "frames"
+    会被当成 asset_id 进详情口，返回的是 400「asset_id 不是合法 id」而不是 404。
+
+    读权限＝`get_current_user`（和 `source-preview` 一个口径：素材内容对全员可见，
+    看图不是写操作），所以审核人（operator/admin）与素材专员都能拉。
+    直链 1 小时过期，不写 AuditLog（翻卡片看图不是交付动作）。
+    """
+    aids = _split_ids(asset_ids, "asset_ids")
+    oids = _split_ids(output_ids, "output_ids")
+    if not aids and not oids:
+        raise HTTPException(status_code=400, detail="要取卡片图至少带 asset_ids 或 output_ids")
+    if len(aids) + len(oids) > 50:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一次最多 50 个对象（当前 {len(aids) + len(oids)}）：一页卡片用不完，翻页再拉",
+        )
+    kinds: Optional[Tuple[str, ...]] = None
+    if kind:
+        if kind not in ASSET_FRAME_KINDS:
+            raise HTTPException(
+                status_code=400, detail=f"kind 只支持 {'/'.join(ASSET_FRAME_KINDS)}"
+            )
+        kinds = (kind,)
+
+    conds = []
+    if aids:
+        conds.append(AssetFrame.asset_id.in_([uuid.UUID(x) for x in aids]))
+    if oids:
+        conds.append(AssetFrame.output_id.in_([uuid.UUID(x) for x in oids]))
+    if kinds:
+        conds.append(AssetFrame.kind.in_(list(kinds)))
+    rows = list(
+        (
+            await db.execute(
+                select(AssetFrame).where(or_(*conds)).order_by(AssetFrame.kind, AssetFrame.seq)
+            )
+        ).scalars().all()
+    )
+
+    frames: List[Dict[str, Any]] = []
+    by_asset: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        url = await get_presigned_url(
+            r.bucket or settings.MINIO_BUCKET_RAW,
+            r.file_key,
+            expires_seconds=_FRAME_URL_TTL_SECONDS,
+        )
+        item = {
+            "id": str(r.id),
+            "asset_id": str(r.asset_id),
+            "output_id": str(r.output_id) if r.output_id else None,
+            "kind": r.kind,
+            "kind_label": _FRAME_KIND_LABELS.get(r.kind, r.kind),
+            "seq": r.seq,
+            "t_offset": r.t_offset,
+            "width": r.width,
+            "height": r.height,
+            "file_size": r.file_size,
+            "url": url,
+            "expires_in": _FRAME_URL_TTL_SECONDS if url else None,
+        }
+        frames.append(item)
+        if r.output_id is None:
+            slot = by_asset.setdefault(str(r.asset_id), {"thumbs": [], "grid": None})
+            if r.kind == FRAME_GRID:
+                slot["grid"] = item
+            elif r.kind == FRAME_THUMB:
+                slot["thumbs"].append(item)
+    for slot in by_asset.values():
+        slot["thumbs"].sort(key=lambda x: x["seq"])
+
+    # 封面：认 `cover_image_key` 这一列（它和帧同一事务写，不会指向一个已被删掉的对象）
+    covers: Dict[str, Optional[str]] = {}
+    if aids:
+        for a in (await db.execute(select(AssetItem).where(AssetItem.id.in_([uuid.UUID(x) for x in aids])))).scalars():
+            url = None
+            if a.cover_image_key:
+                url = await get_presigned_url(
+                    settings.MINIO_BUCKET_RAW, a.cover_image_key,
+                    expires_seconds=_FRAME_URL_TTL_SECONDS,
+                )
+            covers[str(a.id)] = url
+    missing = [a for a in aids if a not in by_asset]
+    return {
+        "frames": frames,
+        "by_asset": by_asset,
+        "cover_url": covers,
+        "missing": missing,
+        "note": (
+            f"图由抽帧任务生成，{len(missing)} 条一张都没有（卡片显示「没有预览图」即可，"
+            "不影响审核与投产）；直链 "
+            f"{_FRAME_URL_TTL_SECONDS // 60} 分钟过期，过期重新拉本口"
+        ),
+    }
+
+
+async def _enqueue_frames(
+    db: AsyncSession,
+    *,
+    asset_ids: List[str],
+    output_ids: List[str],
+    operator: Optional[User],
+    why: str,
+) -> Dict[str, Any]:
+    """系统自己排一份抽帧任务（导入/拼接成功后调用）。**绝不把主流程带崩**。
+
+    抽帧没排上只是卡片没图，而导入已经真金白银落库了、拼接已经花掉 CPU 拼完了——
+    所以整段包住，失败只回一条 note，让一线看得见"这次没排上"而不是以为在排。
+    """
+    if operator is None or (not asset_ids and not output_ids):
+        return {"queued": False, "note": "没排抽帧（缺提交人或缺对象 id）"}
+    try:
+        job = await _start_asset_job(
+            db,
+            kind=JOB_FRAMES,
+            data=FramesExtractRequest(
+                asset_ids=list(asset_ids), output_ids=list(output_ids)
+            ),
+            operator=operator,
+            batch_id=None,
+            planned_units=len(asset_ids) + len(output_ids),
+        )
+        return {
+            "queued": True,
+            "job_id": str(job.id),
+            "note": (
+                f"{why}：抽帧已排后台（{job.planned_units} 个对象），几分钟后卡片就有图；"
+                "这类任务不进任务横幅列表（kind=frames 默认不列），要看进度带 include_frames=true"
+            ),
+        }
+    except HTTPException as exc:
+        # 走到这里基本只有一种：同对象已经在抽（重复导入/连点重抽）——那是好事不是错误
+        logger.info("抽帧任务没排上（%s）：%s", why, exc.detail)
+        return {"queued": False, "note": f"抽帧没重排（{why}）：{str(exc.detail)[:160]}"}
+    except Exception as exc:  # noqa: BLE001 — 排程失败不能连累导入/拼接的结果
+        await db.rollback()
+        logger.exception("抽帧任务排程异常（%s）", why)
+        return {
+            "queued": False,
+            "note": (
+                f"抽帧没排上（{type(exc).__name__}），不影响导入；卡片会一直显示「没有预览图」，"
+                "可以带 asset_ids 走 POST /assets/frames/extract 手动补"
+            ),
+        }
+
+
+def _split_ids(raw: Optional[str], field: str) -> List[str]:
+    """`?asset_ids=a,b` → [a, b]：去空、去重、非法 UUID 当场 400 说清是哪一颗。"""
+    out: List[str] = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            uuid.UUID(part)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=400, detail=f"{field} 里有不是 id 的值：{part[:40]}（多个用英文逗号分隔）"
+            )
+        if part not in out:
+            out.append(part)
+    return out
 
 
 @router.get("/assets/{asset_id}")

@@ -4,7 +4,7 @@
 分享链接 / 直接视频文件）批量导入，串起「导入 → 反推提示词 → 钩子文案 → 审核 →
 生产单 → 合成 → 交付」全链路，每一环可单独重试、可追溯、可对账。
 
-6 张表：
+9 张表（P0 建 6 张，11-04 补 categories/jobs/frames 三张）：
 - asset_categories   钩子原型字典（11-04 拍板①：单层、原型 A–G 原名、软下线不硬删）
 - asset_batches      导入批次（含成本预估/实扣，用于熔断与对账）
 - asset_items        素材主表（一行 = 一条素材；批次只是筛选维度，不做父行，
@@ -12,6 +12,8 @@
 - asset_summaries    钩子文案（1:N 多候选 + 审核态；审核对象就是这张表）
 - asset_productions  生产单条目（一条过审文案 × 第 i 个产物 = 一行，N 的 fan-out 单元）
 - asset_outputs      产物文件（豆包成片 / 合成成片 / 交付包）
+- asset_jobs         后台任务台账（11-04 D-1：出文案/投产/抽帧，提交即回 + 轮询）
+- asset_frames       抽帧图（11-04 批 F：审核台卡片与封面图，纯呈现层不参与判定）
 
 设计取舍（与设计方案一致，改动前先读）：
 1. 挂主系统 `app.database.Base`（不是 WechatDownloadBase）：data_scope 隔离、AuditLog、
@@ -47,11 +49,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -531,12 +535,84 @@ class AssetOutput(Base):
 
 
 # ──────────────────────────────────────────────
+# 抽帧（11-04 批 F：审核台卡片与封面图，纯呈现层）
+# ──────────────────────────────────────────────
+
+FRAME_THUMB = "thumb"                 # 单张缩略帧（一条素材 3 张，卡片左侧横排）
+FRAME_GRID = "grid"                   # 九宫格（一张图 3×3 tiled，点开看整片节奏）
+FRAME_OUTPUT_THUMB = "output_thumb"   # 产物自己的第 1 帧（豆包成片／拼接成片）
+ASSET_FRAME_KINDS = (FRAME_THUMB, FRAME_GRID, FRAME_OUTPUT_THUMB)
+
+
+class AssetFrame(Base):
+    """一条素材/产物的抽帧图。
+
+    ⚠️ **纯呈现层，不参与任何业务判定**：审核过不过、风险词命不命中、一致性判不判得过，
+    全都不看这张表。它存在的唯一理由是——一线审文案时只能读字，读不出"这条片子
+    到底是不是那个画面"，抽三帧挂到卡片上就能。所以：
+
+    - 抽不出来（链接素材桶里没文件、ffmpeg 失败、片子长过 `ASSET_FRAME_MAX_SOURCE_SECONDS`）
+      **不报错、不拦任何步骤**，卡片显示"没有预览图"就完了；
+    - 也不写 AuditLog：翻卡片看图不是交付动作，记进去只会把审计页淹掉。
+
+    幂等键是**两条部分唯一索引**，不是一条 `UniqueConstraint(asset_id, kind, seq)`：
+    后者会把产物的帧撞死——一条素材拼过 3 版就有 3 个产物，它们全都要占
+    `(asset_id, 'output_thumb', 0)` 这一个键（每版产物只抽 1 张首帧，seq 都是 0）。
+    所以按「挂在哪」分两把锁：素材级帧看 `(asset_id, kind, seq)`、产物级帧看
+    `(output_id, kind, seq)`，两边各自幂等。重投同一条素材（upload/retry／手动重抽）
+    走"先删同键旧行再插"覆盖，不会长出第二份帧。
+    """
+    __tablename__ = "asset_frames"
+    __table_args__ = (
+        Index(
+            "uq_asset_frames_asset_kind_seq",
+            "asset_id", "kind", "seq",
+            unique=True,
+            postgresql_where=text("output_id IS NULL"),
+            sqlite_where=text("output_id IS NULL"),
+        ),
+        Index(
+            "uq_asset_frames_output_kind_seq",
+            "output_id", "kind", "seq",
+            unique=True,
+            postgresql_where=text("output_id IS NOT NULL"),
+            sqlite_where=text("output_id IS NOT NULL"),
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 帧一定挂在素材上（thumb/grid）；output_thumb 挂产物时 asset_id 同样必填——
+    # 不然「按素材取卡片图」这一条查询要分两条路径走，前端多判一次空。
+    asset_id = Column(UUID(as_uuid=True), ForeignKey("asset_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    output_id = Column(UUID(as_uuid=True), ForeignKey("asset_outputs.id", ondelete="CASCADE"), nullable=True, index=True)
+    kind = Column(String(20), nullable=False, index=True)
+    seq = Column(Integer, nullable=False, default=0)        # 同 kind 内第几张（grid 恒 0）
+    # 这一帧取自原片第几秒；九宫格取整片中段那帧的时间点，探不到就留 NULL
+    t_offset = Column(Float, nullable=True)
+    file_key = Column(String(500), nullable=False)
+    bucket = Column(String(50), nullable=True)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    file_size = Column(BigInteger, nullable=True)
+    # 抽帧当时读的是桶里哪个对象：回头查"帧和视频对不上"不用猜（重导过就是新 key）
+    source_file_key = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<AssetFrame(asset={self.asset_id}, kind={self.kind}, seq={self.seq})>"
+
+
+# ──────────────────────────────────────────────
 # 后台任务（D-1 队列化：出文案 / 投产 提交即回 + 轮询）
 # ──────────────────────────────────────────────
 
 JOB_SUMMARY_GENERATE = "summary_generate"
 JOB_PRODUCE = "produce"
-ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE)
+# 批 F：抽帧也是活，但它是**导入成功后系统自己排的**，不是人点的慢活——
+# 所以 `GET /assets/jobs` 默认不列它（见 list_asset_jobs），任务横幅才不会被人人都有的
+# 抽帧任务把「我刚才点的那批还在不在跑」挤出视野。
+JOB_FRAMES = "frames"
+ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE, JOB_FRAMES)
 
 JB_QUEUED = "queued"          # 已落库、协程已排上，还没开跑
 JB_RUNNING = "running"        # 正在逐条调模型（开始跑时落一次 started_at，跑中间不回报心跳）

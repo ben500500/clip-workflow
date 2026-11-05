@@ -373,6 +373,32 @@ class Settings(BaseSettings):
     ASSET_BOARD_OUTPUT_SECONDS: float = 10.08
     ASSET_BOARD_OUTPUT_RESOLUTION: str = "720x1280"
 
+    # ── 抽帧（11-04 批 F：审核台卡片图，纯呈现层，不参与任何业务判定）──
+    # 每条素材抽几张单帧（卡片左侧横排）。3 张是拍板值：1 张看不出节奏，5 张以上
+    # 一行卡片放不下，一线也懒得看。
+    ASSET_FRAME_THUMB_COUNT: int = 3
+    # 九宫格一张图里几帧（tile=3x3）：给「这条片子整段在讲什么」用，点开才生成大图。
+    # 改非平方数要同步改 asset_frame_service.GRID_COLS，不然拼图会缺一角。
+    ASSET_FRAME_GRID_TILES: int = 9
+    # 缩略帧宽（px）：卡片上显示宽度约 120，2x 屏留点余量；再大就是白占桶空间
+    ASSET_FRAME_THUMB_WIDTH: int = 360
+    # 九宫格整图宽（px）：3 格 × 360 ≈ 1080，点开看图能看清字幕但不至于拖慢页面
+    ASSET_FRAME_GRID_WIDTH: int = 1080
+    # 超过这个时长（秒）的原片**不抽帧**：一次抽帧＝把整个文件从桶里拉回本地再解码，
+    # 十几分钟的整集片会把 worker 钉在 ffmpeg 上。素材库口径本来只要一分钟以内，
+    # 这条是兜底；设 0 = 全部跳过（关掉抽帧）。
+    ASSET_FRAME_MAX_SOURCE_SECONDS: float = 900.0
+    # 单条 ffmpeg 命令超时（秒）：抽帧是 ffmpeg -ss 精确定位，正常 2~5s；
+    # 卡住的通常是坏文件，等下去没有意义，记一笔失败就放人。
+    ASSET_FRAME_TIMEOUT_SECONDS: int = 120
+    # 同时在跑的抽帧协程数：导入一批 100 个文件会一次排 100 个任务，
+    # 不限流就是 100 个 ffmpeg 抢同一台机的 CPU，把反推/拼接一起拖死。
+    ASSET_FRAME_CONCURRENCY: int = 2
+    # 手动重抽（POST /assets/frames/extract）单次条数上限。抽帧不花钱但**占 CPU**，
+    # 同步等 100 条＝必挂到网关超时（和反推同一个坑），所以这里也设一道：
+    # 超量要么带 async_mode=true 排后台，要么分次点。
+    ASSET_FRAME_MAX_PER_CALL: int = 20
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

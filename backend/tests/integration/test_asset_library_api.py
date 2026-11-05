@@ -24,7 +24,12 @@
    素材列表按 data_scope」两套口径一并取消，谁能看不再受限，谁能**写**（审核/投产）仍按角色，
    生产者不得自审判据照旧；
 8. 列表可用性（A4-3/A4-4）：创建人 / CST 日期区间 / 审核态 / **阶段级** 四个筛选 + `sort=failed_first`
-   把卡住的顶到最前；素材**原文件**有下载口（文件素材 presigned + 审计，链接素材如实回 external）。
+   把卡住的顶到最前；素材**原文件**有下载口（文件素材 presigned + 审计，链接素材如实回 external）；
+9. 抽帧（11-04 批 F）：文件入库**自动排** frames 任务（真跑 ffmpeg，桶 mock）→ 3 单帧 + 1 九宫格
+   落 `asset_frames` 并首次给 `cover_image_key` 写上值；重抽是**覆盖**不是叠加（部分唯一索引
+   让同一素材的两个产物各占一行而不是撞 `(asset_id,kind,seq)`）；链接素材/超上限/时长未知一律
+   `skipped` 带人话原因、不拦任何业务步骤；`GET /assets/frames` 批量取图（inline presign、
+   不写审计）且必须排在 `/assets/{asset_id}` **之前**；任务台账默认不列抽帧。
 
 运行：cd backend && python -m pytest tests/integration/test_asset_library_api.py -v
 """
@@ -34,6 +39,7 @@ import re
 import atexit
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -113,6 +119,9 @@ with _EnvOverride(_TEST_ENV):
     from app.main import app
     from app.models.asset import (
         AS_READY_TO_PRODUCE,
+        FRAME_GRID,
+        FRAME_OUTPUT_THUMB,
+        FRAME_THUMB,
         JB_INTERRUPTED,
         PRODUCTION_STATES,
         RV_APPROVED,
@@ -121,6 +130,7 @@ with _EnvOverride(_TEST_ENV):
         RV_REJECTED,
         AssetBatch,
         AssetCategory,
+        AssetFrame,
         AssetItem,
         AssetJob,
         AssetOutput,
@@ -129,6 +139,7 @@ with _EnvOverride(_TEST_ENV):
         JB_QUEUED,
         JB_RUNNING,
         JB_SUCCEEDED,
+        JOB_FRAMES,
         JOB_PRODUCE,
         JOB_SUMMARY_GENERATE,
         DEFAULT_ASSET_CATEGORIES,
@@ -171,8 +182,20 @@ DOUYIN_1_TRACKED = "https://v.douyin.com/iAbcDeF/?utm_source=copy&from=mobile&se
 DOUYIN_3 = "https://www.douyin.com/video/7511222333444555666"
 
 
-def _run(coro):
-    return asyncio.run(coro)
+def _run(coro, *, with_frames: bool = False):
+    """跑一个测试场景。
+
+    默认把导入/拼接后**自动排的抽帧任务**按住（`_enqueue_frames` 打桩）。原因不是抽帧
+    有问题，而是它是批 F 起第一次出现在这条链路里的后台任务：真排上去就会在同一个 loop 上
+    并发跑，抢别的用例挂在 `download_to_file` / `compose.probe_media` 上的 mock（拼接
+    「第几段坏了」的 side_effect 序列会被抽帧吃掉一格），还会对着本机没有的 MinIO:9000
+    重试。抽帧自己的用例传 `with_frames=True` 走真链路。
+    """
+    if with_frames:
+        return asyncio.run(coro)
+    with patch("app.api.assets._enqueue_frames", AsyncMock(
+            return_value={"queued": False, "job_id": None, "note": "测试侧默认不排抽帧"})):
+        return asyncio.run(coro)
 
 
 async def _bootstrap():
@@ -4397,3 +4420,393 @@ def test_list_endpoints_filter_by_prototype_and_unclassified():
         await client.aclose()
 
     _run(_scenario())
+
+
+# ────────────────  12. 抽帧（批 F：审核台卡片图 + 封面图）  ────────────────
+
+_HAS_FF = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+_FRAMES_CLIP = _TMPDIR / "frames_clip.mp4"
+
+# 抽帧是**纯呈现层**：这条清单就是"业务面"的口径，前后必须一模一样。
+# 只列序列化后与 ORM 取值同型的字段（cost_* 是 Decimal/float、id 是 UUID/str，比不得）。
+_BUSINESS_FIELDS = (
+    "source_kind", "source_url", "file_name", "file_key", "bucket",
+    "title", "duration", "resolution", "prompt_max_duration",
+    "stage_import", "stage_prompt", "stage_summary", "stage_produce", "stage_compose",
+    "status", "has_approved_copy", "note",
+)
+
+
+def _make_frames_clip() -> str:
+    """真造一条 6 秒 720x1280 的片子：抽帧这段只有真 ffmpeg 才算验过。"""
+    if not _FRAMES_CLIP.exists():
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc=size=720x1280:rate=25:duration=6",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+             str(_FRAMES_CLIP)],
+            check=True, capture_output=True,
+        )
+    return str(_FRAMES_CLIP)
+
+
+def _clip_download_writer():
+    """mock 桶读取：把真片子"取回"到调用方要的路径，后面 ffmpeg 真在这条文件上跑。"""
+    src = _make_frames_clip()
+
+    async def _dl(bucket, object_key, local_path):
+        shutil.copyfile(src, local_path)
+        return True
+
+    return AsyncMock(side_effect=_dl)
+
+
+def _frame_put_recorder(store: dict):
+    """mock 桶写入：按 key 收字节，顺带抓住 content_type（帧必须是 image/jpeg）。"""
+
+    async def _put(bucket, object_key, file_path, content_type="application/octet-stream"):
+        with open(file_path, "rb") as fh:
+            store[object_key] = (fh.read(), content_type)
+        return True
+
+    return AsyncMock(side_effect=_put)
+
+
+async def _add_output(asset_id: str, name: str) -> str:
+    """直接插一条产物（拼接口的替身）：批 F 只关心"产物也能挂帧"这件事。"""
+    async with dbmod.async_session_factory() as s:
+        o = AssetOutput(
+            asset_id=uuid.UUID(asset_id), kind="composed",
+            file_key=f"asset/composed/{name}.mp4", bucket=settings.MINIO_BUCKET_RAW,
+            file_name=name, duration=6.0, resolution="720x1280",
+        )
+        s.add(o)
+        await s.commit()
+        return str(o.id)
+
+
+def _frames_env(store):
+    """抽帧用例的公共 mock：桶读写 + 时长。整段套住，别让自动排的任务跑到 patch 外面。"""
+    return (
+        patch("app.api.assets.upload_file_from_path", _frame_put_recorder(store)),
+        patch("app.api.assets.download_to_file", _clip_download_writer()),
+        patch("app.api.assets._ffprobe_duration", lambda p: 6.0),
+    )
+
+
+def test_upload_batch_auto_enqueues_frames_job_and_fills_cover():
+    """文件入库 → 系统自动排抽帧 → 真 ffmpeg 抽出 3 单帧 + 1 九宫格 → 封面列第一次有值。
+
+    这条是批 F 的主干：`cover_image_key` 这列从 0055 建出来就一直**没有写入方**
+    （列表那格永远空转），批 F 起它写的是第 1 张单帧。
+    """
+    if not _HAS_FF:
+        pytest.skip("本机/CI 没装 ffmpeg+ffprobe，抽帧主干跑不了")
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        store: dict = {}
+        p1, p2, p3 = _frames_env(store)
+        with p1, p2, p3:
+            resp = await client.post(
+                "/api/assets/upload/batch",
+                files=[("files", ("卡片原片.mp4", VIDEO_BYTES, "video/mp4"))], headers=hm)
+            assert resp.status_code == 201, resp.text
+            body = resp.json()
+            aid = body["items"][0]["id"]
+            # 抽帧前的业务面快照：跑完还要一模一样（纯呈现层的判据得有个"前"）
+            before = {f: body["items"][0][f] for f in _BUSINESS_FIELDS}
+            assert body["items"][0]["cover_image_key"] is None, "入库那一刻封面还是空的"
+
+            # ① 响应说清了"抽帧已排后台"，而且台账里真有一行 kind=frames
+            assert body["frames"]["queued"] is True, body["frames"]
+            assert "抽帧" in body["message"], body["message"]
+            jobs = await _rows(AssetJob, AssetJob.kind == JOB_FRAMES)
+            assert len(jobs) == 1 and jobs[0].planned_units == 1, [j.kind for j in jobs]
+
+            # ② 轮到终态（同一套 D-1 台账，不另开队列）
+            done = await _wait_job(client, h["admin"], body["frames"]["job_id"])
+        assert done["status"] == "succeeded", done
+        assert done["result"]["extracted"] == 1, done["result"]
+        assert done["kind_label"] == "抽帧"
+
+        rows = await _rows(AssetFrame, AssetFrame.asset_id == uuid.UUID(aid))
+        kinds = sorted(f"{r.kind}:{r.seq}" for r in rows)
+        assert kinds == ["grid:0", "thumb:0", "thumb:1", "thumb:2"], kinds
+
+        # ③ 帧真的进了桶：JPEG 头 + 有字节（0 字节对象照样 200 那个坑在这再挡一次）
+        frame_keys = [k for k in store if k.startswith("asset/frames/")]
+        assert len(frame_keys) == 4, sorted(store)
+        for key in frame_keys:
+            payload, ctype = store[key]
+            assert ctype == "image/jpeg" and payload[:3] == b"\xff\xd8\xff", key
+            assert len(payload) > 1000, (key, len(payload))
+
+        by_key = {f"{r.kind}:{r.seq}": r for r in rows}
+        # ④ 尺寸按原片 720x1280 等比：单帧 360x640、九宫格整图 1080x1920
+        assert by_key["thumb:0"].width == int(settings.ASSET_FRAME_THUMB_WIDTH)
+        assert by_key["thumb:0"].height == 640, by_key["thumb:0"].height
+        assert by_key["grid:0"].width == int(settings.ASSET_FRAME_GRID_WIDTH)
+        assert by_key["grid:0"].height == 1920, by_key["grid:0"].height
+        # ⑤ 不取 t=0：三张分别落在 10%/45%/80%
+        assert [by_key[f"thumb:{i}"].t_offset for i in range(3)] == [0.6, 2.7, 4.8]
+        # ⑥ 每行都记了"抽自哪个对象"，日后查"帧和视频对不上"不用猜
+        assert {r.source_file_key for r in rows} == {body["items"][0]["file_key"]}
+
+        # ⑦ 封面写入方（本批的全部意义之一）
+        item = await _row_of(AssetItem, aid)
+        assert item.cover_image_key == by_key["thumb:0"].file_key
+
+        # ⑧ 纯呈现层：抽帧前后业务字段**一个都没变**（拿抽帧前的快照比，不是自己比自己）
+        after = {f: getattr(item, f) for f in _BUSINESS_FIELDS}
+        assert after == before, f"抽帧动了业务字段：{[(k, before[k], after[k]) for k in before if before[k] != after[k]]}"
+        assert item.stage_prompt == "pending" and item.stage_summary == "pending"
+
+        # ⑨ 取图口：inline presign（不许挂 attachment，否则卡片是黑块）、不写审计
+        audit_before = await _count(AuditLog)
+        presign = AsyncMock(return_value="http://minio:9000/f.jpg?sig=1")
+        with patch("app.api.assets.get_presigned_url", presign):
+            got = await client.get(f"/api/assets/frames?asset_ids={aid}", headers=hm)
+        assert got.status_code == 200, got.text
+        body2 = got.json()
+        assert len(body2["frames"]) == 4
+        slot = body2["by_asset"][aid]
+        assert [t["seq"] for t in slot["thumbs"]] == [0, 1, 2], "卡片左侧横排要按 seq 给"
+        assert slot["grid"]["kind"] == "grid" and slot["grid"]["url"].endswith("sig=1")
+        assert body2["cover_url"][aid].endswith("sig=1")
+        assert body2["missing"] == []
+        assert presign.await_count == 5, presign.await_count  # 4 帧 + 1 封面
+        for call in presign.await_args_list:
+            assert call.kwargs.get("as_attachment", False) is False, "挂上 attachment 播放器/图片都吃不到"
+        assert await _count(AuditLog) == audit_before, "看图不是交付动作，别淹了审计页"
+
+        await client.aclose()
+
+    _run(_scenario(), with_frames=True)
+
+
+def test_frames_are_overwritten_not_duplicated_and_two_outputs_do_not_collide():
+    """重抽＝覆盖（4 行还是 4 行）；同一素材的两个产物各占一行，不撞 `(asset_id,kind,seq)`。
+
+    第二条是本批唯一"只有真库才会露出来"的设计点：如果照原计划用
+    `UniqueConstraint(asset_id, kind, seq)`，两个产物的 `output_thumb` 都是 seq=0，
+    第二个直接 IntegrityError——所以幂等键拆成两条**部分**唯一索引。
+    """
+    if not _HAS_FF:
+        pytest.skip("本机/CI 没装 ffmpeg+ffprobe")
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        store: dict = {}
+        p1, p2, p3 = _frames_env(store)
+        with p1, p2, p3:
+            resp = await client.post(
+                "/api/assets/upload/batch",
+                files=[("files", ("重抽.mp4", VIDEO_BYTES, "video/mp4"))], headers=hm)
+            aid = resp.json()["items"][0]["id"]
+            await _wait_job(client, h["admin"], resp.json()["frames"]["job_id"])
+            assert await _count(AssetFrame) == 4
+
+            # ① 不带 force 再点一次：一句"已经有 4 张帧"就完事，不重跑 ffmpeg
+            again = await client.post(
+                "/api/assets/frames/extract", json={"asset_ids": [aid]}, headers=hm)
+            assert again.status_code == 200, again.text
+            b = again.json()
+            assert b["extracted"] == 0 and b["skipped"] == 1, b
+            assert "已经有" in b["results"][0]["reason"], b["results"][0]
+
+            # ② 带 force：覆盖同键，行数不涨（幂等键真的在挡事）
+            forced = await client.post(
+                "/api/assets/frames/extract",
+                json={"asset_ids": [aid], "force": True}, headers=hm)
+            assert forced.json()["extracted"] == 1, forced.json()
+        assert await _count(AssetFrame) == 4, [
+            (r.kind, r.seq) for r in await _rows(AssetFrame)]
+
+        # ③ 两个产物都抽首帧：两行、同 seq=0、键是 (output_id,kind,seq)
+        out_a = await _add_output(aid, "A 版.mp4")
+        out_b = await _add_output(aid, "B 版.mp4")
+        store2: dict = {}
+        with patch("app.api.assets.upload_file_from_path", _frame_put_recorder(store2)), \
+             patch("app.api.assets.download_to_file", _clip_download_writer()):
+            r = await client.post(
+                "/api/assets/frames/extract",
+                json={"output_ids": [out_a, out_b]}, headers=hm)
+        assert r.status_code == 200, r.text
+        assert r.json()["extracted"] == 2, r.json()
+        rows = await _rows(AssetFrame, AssetFrame.kind == FRAME_OUTPUT_THUMB)
+        assert len(rows) == 2, [(x.output_id, x.seq) for x in rows]
+        assert {x.seq for x in rows} == {0}
+        assert {str(x.output_id) for x in rows} == {out_a, out_b}
+        assert all(x.asset_id is not None for x in rows), "产物帧也挂素材：卡片一条查询拿全"
+        # 产物帧不动素材封面
+        item = await _row_of(AssetItem, aid)
+        assert item.cover_image_key and "output_thumb" not in item.cover_image_key
+
+        await client.aclose()
+
+    _run(_scenario(), with_frames=True)
+
+
+def test_frames_skip_what_they_cannot_draw_and_never_touches_the_bucket():
+    """链接素材／时长未知／超上限：一律 skipped 带人话原因，而且**一次下载都不发起**。
+
+    「不许把整集片拖回来只为抽三张图」是靠这条钉住的：跳过判定在 I/O 之前，
+    所以 download_to_file 的调用次数必须是 0。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        # 链接素材（桶里没文件）
+        link_id, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+        dl = AsyncMock(return_value=False)
+        with patch("app.api.assets.download_to_file", dl), \
+             patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)):
+            r = await client.post(
+                "/api/assets/frames/extract", json={"asset_ids": [link_id]}, headers=hm)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["skipped"] == 1 and body["extracted"] == 0, body
+        assert "链接素材" in body["results"][0]["reason"], body["results"][0]
+        assert dl.await_count == 0, "跳过判定必须在下载之前"
+
+        # 超上限的整集片（1200s > ASSET_FRAME_MAX_SOURCE_SECONDS=900）
+        store: dict = {}
+        with patch("app.api.assets.upload_file_from_path", _frame_put_recorder(store)), \
+             patch("app.api.assets.download_to_file", _clip_download_writer()), \
+             patch("app.api.assets._ffprobe_duration", lambda p: 1200.0):
+            up = await client.post(
+                "/api/assets/upload/batch",
+                files=[("files", ("整集.mp4", VIDEO_BYTES, "video/mp4"))], headers=hm)
+            long_id = up.json()["items"][0]["id"]
+            r2 = await client.post(
+                "/api/assets/frames/extract", json={"asset_ids": [long_id]}, headers=hm)
+        assert "超过抽帧上限" in r2.json()["results"][0]["reason"], r2.json()["results"][0]
+        assert await _count(AssetFrame) == 0, "跳过的东西不该留下半张图"
+
+        # 时长未知（老数据没回填）：也算不出时间点
+        async with dbmod.async_session_factory() as s:
+            a = await s.get(AssetItem, uuid.UUID(long_id))
+            a.duration = None
+            await s.commit()
+        with patch("app.api.assets.download_to_file", _clip_download_writer()):
+            r3 = await client.post(
+                "/api/assets/frames/extract", json={"asset_ids": [long_id]}, headers=hm)
+        assert "时长未知" in r3.json()["results"][0]["reason"], r3.json()["results"][0]
+
+        # 参数面：没点名 / 非法 id / 超单批上限
+        assert (await client.post(
+            "/api/assets/frames/extract", json={}, headers=hm)).status_code == 400
+        assert (await client.post(
+            "/api/assets/frames/extract", json={"asset_ids": ["不是id"]}, headers=hm)).status_code == 400
+        too_many = {"asset_ids": [str(uuid.uuid4()) for _ in range(21)]}
+        r4 = await client.post("/api/assets/frames/extract", json=too_many, headers=hm)
+        assert r4.status_code == 400 and "async_mode" in r4.json()["detail"], r4.json()
+
+        # 取图口的入参面：非法 id / 没点名 / 不认识的 kind / 超 50
+        assert (await client.get("/api/assets/frames", headers=hm)).status_code == 400
+        assert (await client.get("/api/assets/frames?asset_ids=zzz", headers=hm)).status_code == 400
+        assert (await client.get(
+            f"/api/assets/frames?asset_ids={long_id}&kind=nope", headers=hm)).status_code == 400
+        over = ",".join(str(uuid.uuid4()) for _ in range(51))
+        assert (await client.get(f"/api/assets/frames?asset_ids={over}", headers=hm)).status_code == 400
+        # 不存在的素材：200 + missing（不是 404，卡片要的是"这条没图"）
+        ghost = await client.get(f"/api/assets/frames?asset_ids={str(uuid.uuid4())}", headers=hm)
+        assert ghost.status_code == 200 and len(ghost.json()["missing"]) == 1
+
+        await client.aclose()
+
+    _run(_scenario(), with_frames=True)
+
+
+def test_frames_job_is_queued_by_async_mode_and_hidden_from_the_default_ledger():
+    """手动 `async_mode=true` 走同一套台账；`GET /assets/jobs` 默认**不列**抽帧。
+
+    后端重放本口时 `async_mode` 被摘掉，所以台账里只有 1 行（不自我套娃）；
+    横幅默认只看人点的活，否则人人都有的抽帧会把「我刚点的那批还在不在跑」挤出去。
+    """
+    if not _HAS_FF:
+        pytest.skip("本机/CI 没装 ffmpeg+ffprobe")
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        store: dict = {}
+        p1, p2, p3 = _frames_env(store)
+        with p1, p2, p3:
+            resp = await client.post(
+                "/api/assets/upload/batch",
+                files=[("files", ("横幅.mp4", VIDEO_BYTES, "video/mp4"))], headers=hm)
+            aid = resp.json()["items"][0]["id"]
+            await _wait_job(client, h["admin"], resp.json()["frames"]["job_id"])
+
+            r = await client.post(
+                "/api/assets/frames/extract",
+                json={"asset_ids": [aid], "force": True, "async_mode": True}, headers=hm)
+            assert r.status_code == 200, r.text
+            ack = r.json()
+            assert ack["queued"] is True and "results" not in ack, ack
+            done = await _wait_job(client, h["admin"], ack["job_id"])
+        assert done["status"] == "succeeded", done
+        assert done["kind"] == JOB_FRAMES and done["kind_label"] == "抽帧"
+        assert done["progress"]["note"].startswith("抽帧进度"), done["progress"]
+
+        frames_jobs = await _rows(AssetJob, AssetJob.kind == JOB_FRAMES)
+        assert len(frames_jobs) == 2, [j.status for j in frames_jobs]
+        assert await _count(AssetFrame) == 4, "重放是覆盖，不是第二份"
+
+        default = await client.get("/api/assets/jobs", headers=hm)
+        assert default.json()["items"] == [], default.json()
+        opened = await client.get("/api/assets/jobs?only_open=true", headers=hm)
+        assert opened.json()["items"] == []
+        with_frames = await client.get("/api/assets/jobs?include_frames=true", headers=hm)
+        assert len(with_frames.json()["items"]) == 2, with_frames.json()
+        by_kind = await client.get(f"/api/assets/jobs?kind={JOB_FRAMES}", headers=hm)
+        assert len(by_kind.json()["items"]) == 2
+
+        # 自动排的那次也留了痕：提交动作进审计（人点的手动口另算一条 asset.frames.extract）
+        audits = await _rows(AuditLog, AuditLog.action == "asset.job.frames.submit")
+        assert len(audits) == 2, [a.action for a in audits]
+
+        await client.aclose()
+
+    _run(_scenario(), with_frames=True)
+
+
+def test_frames_extraction_never_breaks_the_upload_that_triggered_it():
+    """抽帧排程失败**不许**把已经落库的导入带崩（纯呈现层的代价只能由呈现层自己吃）。
+
+    这里把 `_start_asset_job` 打成异常——真机上对应"排程时库抖了一下"。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+             patch("app.api.assets._ffprobe_duration", lambda p: 8.0), \
+             patch("app.api.assets._start_asset_job", AsyncMock(side_effect=RuntimeError("库抖了"))):
+            resp = await client.post(
+                "/api/assets/upload/batch",
+                files=[("files", ("排程失败.mp4", VIDEO_BYTES, "video/mp4"))], headers=hm)
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert len(body["items"]) == 1, body
+        assert body["frames"]["queued"] is False and "没排上" in body["frames"]["note"], body["frames"]
+        assert await _count(AssetItem) == 1, "素材行不能因为抽帧没排上而回滚"
+        assert await _count(AssetJob) == 0
+
+        # 链接导入本来就没文件：明确告知"这次没排抽帧"，别让前端以为在排
+        imp = await _import(client, hm, [DOUYIN_3])
+        assert imp.status_code == 201, imp.text
+        await client.aclose()
+
+    _run(_scenario(), with_frames=True)
+
