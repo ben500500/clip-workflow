@@ -190,11 +190,21 @@ def _run(coro, *, with_frames: bool = False):
     并发跑，抢别的用例挂在 `download_to_file` / `compose.probe_media` 上的 mock（拼接
     「第几段坏了」的 side_effect 序列会被抽帧吃掉一格），还会对着本机没有的 MinIO:9000
     重试。抽帧自己的用例传 `with_frames=True` 走真链路。
+
+    批 J 起同样的按法也罩住两个新搭车任务（`_enqueue_download`/`_enqueue_preview`）：
+    反推默认搭车下载原片、审核搭车备提示词——真排上去同样会在 loop 上并发跑，
+    抢掉各用例自己挂的 `dispatch_parse`/`_call_autoclip` mock。要测搭车链路的用例
+    自己在这两个名字上另挂替身。
     """
     if with_frames:
         return asyncio.run(coro)
     with patch("app.api.assets._enqueue_frames", AsyncMock(
-            return_value={"queued": False, "job_id": None, "note": "测试侧默认不排抽帧"})):
+            return_value={"queued": False, "job_id": None, "note": "测试侧默认不排抽帧"})), \
+         patch("app.api.assets._enqueue_download", AsyncMock(
+            return_value={"queued": False, "job_id": None, "queued_count": 0,
+                          "note": "测试侧默认不排下载"})), \
+         patch("app.api.assets._enqueue_preview", AsyncMock(
+            return_value={"queued": False, "job_id": None, "note": "测试侧默认不排预览"})):
         return asyncio.run(coro)
 
 
@@ -6524,3 +6534,324 @@ def test_dispatch_job_twin_names_the_pool_not_the_model():
         await client.aclose()
 
     _run(_scenario())
+
+
+# ──────────────────────────────────────────────
+# 批 J（11-05）：反推顺带下载原片 + 过审顺手备豆包提示词
+# ──────────────────────────────────────────────
+
+
+class _FakePullDownloader:
+    """拉流下载替身：往 local_path 写真字节（后面 upload/ffprobe 都按真文件走）。"""
+
+    def __init__(self, *, total=None, fail=False, empty=False):
+        self.total = total if total is not None else len(VIDEO_BYTES)
+        self.fail = fail
+        self.empty = empty
+        self.calls: list = []
+
+    async def download_to_file(self, play_url, local_path):
+        self.calls.append(play_url)
+        if self.fail:
+            raise RuntimeError("direct download http 403")
+        if self.empty:
+            return 0
+        with open(local_path, "wb") as f:
+            f.write(VIDEO_BYTES)
+        return self.total
+
+
+def test_analyze_queues_download_for_link_assets_by_default():
+    """用户口径「反推默认顺带下载」：反推提交完，链接素材自动排下载任务；download=false 才不排。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        async with dbmod.async_session_factory() as s:
+            a = await s.get(AssetItem, uuid.UUID(asset_id))
+            a.prompt_task_id, a.stage_prompt, a.status = None, "pending", "waiting_prompt"
+            await s.commit()
+
+        with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)), \
+             patch("app.api.assets.create_prompt_task", AsyncMock(return_value=_fake_prompt_task())), \
+             patch("app.api.assets._enqueue_download", AsyncMock(
+                 return_value={"queued": True, "job_id": "j1", "queued_count": 1, "note": None})) as enq:
+            resp = await client.post(
+                "/api/assets/analyze/batch", json={"asset_ids": [asset_id]}, headers=hm)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["download"]["queued"] is True and body["download"]["queued_count"] == 1
+        # 排的正是这条链接素材，且是**还没在桶里**的（file_key 为空）
+        assert enq.await_count == 1
+        assert enq.await_args.kwargs["asset_ids"] == [asset_id]
+        assert "原片正在后台下载" in body["message"]
+
+        # download=false：一句话都不排（显式关掉要被尊重）
+        async with dbmod.async_session_factory() as s:
+            a = await s.get(AssetItem, uuid.UUID(asset_id))
+            a.prompt_task_id, a.stage_prompt, a.status = None, "pending", "waiting_prompt"
+            await s.commit()
+        with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)), \
+             patch("app.api.assets.create_prompt_task", AsyncMock(return_value=_fake_prompt_task())), \
+             patch("app.api.assets._enqueue_download", AsyncMock()) as enq2:
+            resp2 = await client.post(
+                "/api/assets/analyze/batch", json={"asset_ids": [asset_id], "download": False}, headers=hm)
+        assert resp2.status_code == 200
+        assert resp2.json()["download"] is None
+        enq2.assert_not_awaited()
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_download_endpoint_four_piece_set_charges_paid_channel_and_is_idempotent():
+    """下载口四件套：解析→拉流→落桶→探时长；付费渠道记 0.01 进 cost_parse；重下跳过不重复占桶。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+
+        parsed = SimpleNamespace(success=True, channel="paid-http", play_url="http://cdn.example/v.mp4",
+                                 duration=None, title="某剧某集", meta={})
+        dl = _FakePullDownloader()
+        upload = AsyncMock(return_value=True)
+        with patch("app.api.assets.dispatch_parse", AsyncMock(return_value=parsed)), \
+             patch("app.api.assets.get_downloader", lambda: dl), \
+             patch("app.api.assets.upload_file_from_path", upload), \
+             patch("app.api.assets._probe_duration", AsyncMock(return_value=8.42)):
+            resp = await client.post(
+                "/api/assets/download", json={"asset_ids": [asset_id]}, headers=hm)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["downloaded"] == 1 and body["charged"] == pytest.approx(0.01, abs=1e-4)
+        assert body["results"][0]["ok"] is True and body["results"][0]["channel"] == "paid-http"
+
+        row = await _row_of(AssetItem, asset_id)
+        assert row.download_status == "success"
+        assert row.file_key and row.file_key.startswith(f"asset/source/{row.code}/")
+        assert row.bucket == settings.MINIO_BUCKET_RAW
+        assert row.file_size == len(VIDEO_BYTES)
+        assert row.duration == 8.42, "没探过时长的链接素材顺带补上真实时长"
+        assert row.cost_parse == pytest.approx(0.01, abs=1e-4)
+        # 落桶的是拉流到的真字节，不是 201 假成功（真链路踩过 0 字节对象的坑）
+        assert upload.await_args.args[2] == dl.calls[0] or upload.await_count == 1
+        audits = await _rows(AuditLog, AuditLog.action == "asset.download")
+        assert len(audits) == 1 and audits[0].after["downloaded"] == 1
+
+        # 幂等：file_key 已非空 → 原样跳过，不再解析（不重复付费）不再拉流
+        with patch("app.api.assets.dispatch_parse", AsyncMock(return_value=parsed)) as dp, \
+             patch("app.api.assets.get_downloader", lambda: _FakePullDownloader()):
+            again = await client.post(
+                "/api/assets/download", json={"asset_ids": [asset_id]}, headers=hm)
+        assert again.status_code == 200
+        assert again.json()["downloaded"] == 0
+        assert "已经在自有桶里" in again.json()["skipped"][0]["reason"]
+        dp.assert_not_awaited(), "重复下载绝不再发起解析（付费渠道重复＝重复扣 0.01）"
+        assert (await _row_of(AssetItem, asset_id)).cost_parse == pytest.approx(0.01, abs=1e-4)
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_download_failures_are_per_item_and_fail_soft():
+    """解析失败/拉流失败都逐条标 failed 带原因，不连坐整批、解析失败不记账。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        from wechat_download.provider_registry import ProviderParseError
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        r1 = await _import(client, hm, ["https://www.douyin.com/video/7611111222222333444"])
+        r2 = await _import(client, hm, ["https://www.douyin.com/video/7619999888882333444"])
+        id1, id2 = r1.json()["items"][0]["id"], r2.json()["items"][0]["id"]
+
+        async def _parse_ok(url):
+            return SimpleNamespace(success=True, channel="yuanbao", play_url="http://cdn.example/a.mp4",
+                                   duration=None, title=None, meta={})
+
+        async def _parse_fail(url):
+            raise ProviderParseError("yuanbao 限流 | preview 不支持该链接")
+
+        dl_fail = _FakePullDownloader(fail=True)
+        with patch("app.api.assets.dispatch_parse", AsyncMock(side_effect=_parse_fail)), \
+             patch("app.api.assets.get_downloader", lambda: _FakePullDownloader()):
+            resp = await client.post(
+                "/api/assets/download", json={"asset_ids": [id1, id2]}, headers=hm)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["downloaded"] == 0 and body["charged"] == 0.0, "解析失败一条都没记账"
+        assert "解析分享链接失败" in body["results"][0]["error"]
+        rows = {str(r.id): r for r in await _rows(AssetItem)}
+        assert rows[id1].download_status == "failed"
+        assert rows[id1].cost_parse == 0.0
+
+        # 拉流失败：解析（免费渠道）成功、不记账，但下载状态标 failed 带原因
+        with patch("app.api.assets.dispatch_parse", AsyncMock(side_effect=_parse_ok)), \
+             patch("app.api.assets.get_downloader", lambda: dl_fail):
+            resp2 = await client.post(
+                "/api/assets/download", json={"asset_ids": [id1]}, headers=hm)
+        assert resp2.status_code == 200
+        assert "拉流下载失败" in resp2.json()["results"][0]["error"]
+        row = await _row_of(AssetItem, id1)
+        assert row.download_status == "failed" and row.file_key is None
+        assert row.cost_parse == 0.0, "yuanbao 是免费渠道，失败也不记账"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_source_preview_and_download_read_file_key_first():
+    """批 J 订正：链接素材下载进桶后（file_key 非空），预览/下载口都按 stored 回，不再 external。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        lid, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+        async with dbmod.async_session_factory() as s:
+            a = await s.get(AssetItem, uuid.UUID(lid))
+            a.file_key = f"asset/source/{a.code}/abc.mp4"
+            a.bucket = settings.MINIO_BUCKET_RAW
+            a.download_status = "success"
+            await s.commit()
+
+        presign = AsyncMock(return_value="https://minio.example/raw?X-Signature=2")
+        with patch("app.api.assets.get_presigned_url", presign):
+            got = await client.get(f"/api/assets/{lid}/source-download", headers=hm)
+            prev = await client.get(f"/api/assets/{lid}/source-preview", headers=hm)
+        assert got.status_code == 200 and got.json()["mode"] == "stored"
+        assert prev.status_code == 200 and prev.json()["mode"] == "stored"
+        assert prev.json()["url"].endswith("X-Signature=2")
+        assert presign.await_count == 2
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_review_approve_enqueues_preview_and_unapprove_invalidates_it():
+    """过审 → 自动排「备豆包提示词」；撤销过审 → 旧预览作废（重新过审会重新备）。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        sid = _approvable(items)["id"]
+
+        # 过审：预览任务自动排上，且话术点明「提示词正在后台备好」
+        with patch("app.api.assets._enqueue_preview", AsyncMock(
+                return_value={"queued": True, "job_id": "jp1", "note": None})) as enq:
+            ok = await client.post(
+                "/api/assets/summaries/review",
+                json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+        assert ok.status_code == 200 and ok.json()["results"][0]["ok"] is True
+        assert enq.await_count == 1
+        assert enq.await_args.kwargs["summary_ids"] == [sid]
+        assert "豆包提示词正在后台备好" in ok.json()["message"]
+
+        # 人为放一份旧预览（模拟「以前过审时备过的」），撤销过审必须把它作废
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetSummary, uuid.UUID(sid))
+            row.prompt_preview = "旧提示词（文案已经要变了）"
+            row.prompt_preview_at = datetime.utcnow()
+            await s.commit()
+        reject = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [sid], "action": "reject", "reason": "口播节奏不对，撤回重写"}, headers=ho)
+        assert reject.status_code == 200 and reject.json()["results"][0]["ok"] is True
+        row = await _row_of(AssetSummary, sid)
+        assert row.prompt_preview is None and row.prompt_preview_at is None, \
+            "过期预览留着，一线会拿它当投产结果——撤销过审必须一起作废"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_preview_prompt_endpoint_gates_idempotent_and_fails_soft():
+    """预览口：没过审不备；备过复用不重复等模型；模型挂了逐条说清且不拦投产。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        good = _approvable(items)
+        pending_id = next(i["id"] for i in items if i["id"] != good["id"])
+
+        # 没过审的不备
+        not_approved = await client.post(
+            "/api/assets/summaries/preview-prompt",
+            json={"summary_ids": [pending_id]}, headers=ha)
+        assert not_approved.status_code == 200
+        assert "还没过审" in not_approved.json()["results"][0]["error"]
+
+        # 过审（默认 _run 把自动预览排程按住了）→ 直接调预览口，mock 模型
+        ok = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [good["id"]], "action": "approve"}, headers=ho)
+        assert ok.status_code == 200
+
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            first = await client.post(
+                "/api/assets/summaries/preview-prompt",
+                json={"summary_ids": [good["id"]]}, headers=ha)
+        assert first.status_code == 200, first.text
+        body = first.json()
+        assert body["results"][0]["ok"] is True and body["results"][0]["kept_verbatim"] is True
+        assert "预览（非投产稿）" in body["results"][0]["note"]
+        assert "重新展开" in body["results"][0]["note"]
+        row = await _row_of(AssetSummary, good["id"])
+        assert row.prompt_preview and "【第 1 段" in row.prompt_preview
+        assert row.prompt_preview_at is not None
+        audits = await _rows(AuditLog, AuditLog.action == "asset.prompt_preview")
+        assert len(audits) == 1 and audits[0].after["kept_verbatim"] is True
+
+        # 幂等：已有预览直接复用（模型一次都不用再等）
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()) as call:
+            second = await client.post(
+                "/api/assets/summaries/preview-prompt",
+                json={"summary_ids": [good["id"]]}, headers=ha)
+        assert second.json()["results"][0]["reused"] is True
+        call.assert_not_awaited()
+
+        # 模型挂了：逐条 fail-soft，话术说清「投产时会重新展开，不拦投产」
+        with patch("app.api.assets._call_autoclip",
+                   AsyncMock(side_effect=HTTPException(status_code=502, detail="AutoClip 炸了"))):
+            boom = await client.post(
+                "/api/assets/summaries/preview-prompt",
+                json={"summary_ids": [pending_id]}, headers=ha)
+        # pending 那条先被「没过审」拦（不发起模型调用），换一条真过审的来验 fail-soft：
+        asset2, _ = await _make_ready_asset(client, hm, url=DOUYIN_1)
+        items2, _ = await _gen_and_list(asset2, hm, client)
+        good2 = _approvable(items2)
+        await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [good2["id"]], "action": "approve"}, headers=ho)
+        with patch("app.api.assets._call_autoclip",
+                   AsyncMock(side_effect=HTTPException(status_code=502, detail="AutoClip 炸了"))):
+            boom = await client.post(
+                "/api/assets/summaries/preview-prompt",
+                json={"summary_ids": [good2["id"]]}, headers=ha)
+        assert boom.status_code == 200, "模型失败不等于接口失败：逐条报原因"
+        assert boom.json()["results"][0]["ok"] is False
+        assert "投产时会重新展开" in boom.json()["results"][0]["error"]
+        assert (await _row_of(AssetSummary, good2["id"])).prompt_preview is None
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_download_and_preview_kinds_are_in_job_ledger():
+    """两类新任务进 ASSET_JOB_KINDS：kind 校验、白话名称、防重复话术都要认得它们。"""
+    assert assets_api.JOB_DOWNLOAD in assets_api.ASSET_JOB_KINDS
+    assert assets_api.JOB_PROMPT_PREVIEW in assets_api.ASSET_JOB_KINDS
+    assert assets_api._job_endpoint(assets_api.JOB_DOWNLOAD)[2] == "下载原片"
+    assert assets_api._job_endpoint(assets_api.JOB_PROMPT_PREVIEW)[2] == "备豆包提示词"
+    assert "解析费" in assets_api._twin_cost_phrase(assets_api.JOB_DOWNLOAD)
+    assert "自动跳过" in assets_api._twin_cost_phrase(assets_api.JOB_PROMPT_PREVIEW)

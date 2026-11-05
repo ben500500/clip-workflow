@@ -82,7 +82,9 @@ from app.models.asset import (
     JB_RUNNING,
     JB_SUCCEEDED,
     JOB_DISPATCH,
+    JOB_DOWNLOAD,
     JOB_FRAMES,
+    JOB_PROMPT_PREVIEW,
     JOB_PRODUCE,
     JOB_SUMMARY_GENERATE,
     MEDIA_IMAGE,
@@ -143,6 +145,9 @@ from app.services.upload_service import validate_file_name
 from app.utils.helpers import utc_iso
 from wechat_download.models import PT_FAILED, PT_SUCCESS
 from wechat_download.provider_registry import ProviderParseError, dispatch_parse
+# 批 J（11-05）：下载原片复用采集侧同一个拉流下载器（断点续传/HLS 都在里面），
+# 不从 service 导——那份还连着采集侧的 session/任务表，借了就会把两条链搅在一起。
+from wechat_download.downloader import get_downloader
 from wechat_download.prompt_service import (
     EXT_CONTENT_TYPES,
     create_prompt_task,
@@ -207,6 +212,12 @@ class AnalyzeRequest(BaseModel):
     confirmed: bool = Field(False, description="前端成本确认弹窗已确认（need_approval 级别必须为 true）")
     force: bool = Field(False, description="仅 admin：余额闸门 blocked 时强行提交（余额接口有波动）")
     retry_failed: bool = Field(False, description="重跑 stage_prompt=failed 的素材（默认跳过已跑过的）")
+    download: bool = Field(
+        True,
+        description="批 J（11-05）：反推提交后**顺带把链接素材的原片下载到自有桶**（默认开，"
+        "用户口径：反推是常规动作，回看原片不该再靠时效直链）。免费渠道解析不花钱，"
+        "落到付费渠道按 0.01 元/条计入批次成本；存储只在桶里占地方，不设过期",
+    )
     batch_id: Optional[str] = Field(
         None,
         description="A4-6 整批排队：不传 asset_ids，改按批次取「还没反推」的下一段（与 offset/limit 用）",
@@ -260,6 +271,29 @@ class ResolveRequest(BaseModel):
     offset: int = Field(0, ge=0, description="游标：跳过队列头部 N 条，默认 0")
     limit: Optional[int] = Field(None, description="本段条数，默认/上限 = ASSET_ANALYZE_MAX_PER_CALL")
     confirmed: bool = Field(False, description="≥2 条时必须为 true（成本确认弹窗已确认）")
+
+
+class AssetDownloadRequest(BaseModel):
+    """批 J（11-05）：把链接素材的**原片**拉回自有桶。
+
+    一般不用手工调——反推弹窗勾了「顺带下载原片」（默认勾）时，反推提交完会自动排上；
+    这个口是下载任务的执行体，也留给「某条下载失败了想单独重试」的场景。
+    """
+    asset_ids: List[str] = Field(default_factory=list, description="要点名：只下载这些链接素材")
+    async_mode: bool = Field(
+        False,
+        description="D-1：页面走 true 提交即回任务号；后台复跑时运行器会把它摘掉，防止无限套娃",
+    )
+
+
+class PromptPreviewRequest(BaseModel):
+    """批 J（11-05）：过审文案 → 豆包生产提示词**预览**。
+
+    同样是任务的执行体：文案一过审，审核口自动排上；某条预览失败想补，
+    也点名 summary_ids 走这个口。
+    """
+    summary_ids: List[str] = Field(default_factory=list, description="要备提示词的文案（必须是已过审的）")
+    async_mode: bool = Field(False, description="D-1：过审口自动排 true；手工补跑同口")
 
 
 class FramesExtractRequest(BaseModel):
@@ -1037,6 +1071,8 @@ def _serialize_item(a: AssetItem, agg: Optional[dict] = None) -> dict:
         "file_key": a.file_key,
         "bucket": a.bucket,
         "file_size": a.file_size,
+        # 批 J：下载动作自己的状态（NULL=没有要下的/还没排到），前端画成小图标
+        "download_status": getattr(a, "download_status", None),
         "project_id": str(a.project_id) if a.project_id else None,
         "episode_id": str(a.episode_id) if a.episode_id else None,
         "prompt_task_id": str(a.prompt_task_id) if a.prompt_task_id else None,
@@ -1108,6 +1144,10 @@ def _serialize_summary(
         "reviewed_at": utc_iso(s.reviewed_at) if s.reviewed_at else None,
         "reject_reason": s.reject_reason,
         "text_before_edit": s.text_before_edit,
+        # 批 J：过审后备好的豆包提示词预览（NULL=还没备好/没排上；备好了审核台直接能看）
+        "prompt_preview": s.prompt_preview,
+        "prompt_preview_at": utc_iso(s.prompt_preview_at) if s.prompt_preview_at else None,
+        "cost_preview": float(s.cost_preview or 0.0),
         "created_at": utc_iso(s.created_at),
         # 「改后重提」按钮要不要亮：前端不猜权限，按后端给的行级判定画
         "can_resubmit": bool(can_resubmit),
@@ -2614,6 +2654,18 @@ async def analyze_batch(
     )
     await db.commit()
 
+    # 批 J：反推提交完，顺带把**还没在桶里的链接素材**排去下载原片（用户 11-05 口径：
+    # 反推是常规动作，回看原片不该靠几小时就过期的时效直链）。放在所有 commit 之后——
+    # 排程函数要自己 commit，且后台协程只读得到已提交的行。
+    download_kick: Optional[dict] = None
+    if data.download:
+        dl_ids = [str(a.id) for a in todo if a.source_kind == SOURCE_LINK and not a.file_key]
+        if dl_ids:
+            download_kick = await _enqueue_download(
+                db, asset_ids=dl_ids, operator=current_user,
+                batch_id=str(next(iter(batch_ids))) if len(batch_ids) == 1 else None,
+            )
+
     return {
         "estimate": estimate,
         "cumulative_cost": cumulative_cost,
@@ -2623,10 +2675,16 @@ async def analyze_batch(
         "results": results,
         "skipped": skipped,
         "queue": queue,
+        "download": download_kick,
         "message": f"已提交 {len(todo)} 条反推（档位 {tier}s，本批预估 {estimate['total_cost']} 元）"
         + (f"，同批未推 {cumulative_units} 条 → 批次累计 {cumulative_cost} 元" if cumulative_units else "")
         + (f"，跳过 {len(skipped)} 条已处理" if skipped else "")
-        + (f"；队列还剩 {queue['remaining']} 条，下一次接着排" if queue and queue["remaining"] else ""),
+        + (f"；队列还剩 {queue['remaining']} 条，下一次接着排" if queue and queue["remaining"] else "")
+        + (
+            f"；{download_kick['queued']} 条原片正在后台下载（完事列表上会显示下载标记）"
+            if download_kick and download_kick["queued"] else ""
+        )
+        + (f"；{download_kick['note']}" if download_kick and download_kick.get("note") else ""),
     }
 
 
@@ -2966,6 +3024,15 @@ def _job_endpoint(kind: str) -> Tuple[Any, Any, str]:
         # `/productions/dispatch` 这个口本身（confirm/闸门/审计全在里面），不另写一套——
         # 投递闸门要是分叉成"人点的严、机器排的松"，号池额度就会替我们发现这个 bug。
         return DispatchRequest, dispatch_productions, "投板"
+    if kind == JOB_DOWNLOAD:
+        # 批 J：下载原片。反推提交后自动排上（用户口径：反推默认顺带下载），
+        # 失败条也能在列表上单独重试——跑的仍是 `/assets/download` 这一个口。
+        return AssetDownloadRequest, download_asset_sources, "下载原片"
+    if kind == JOB_PROMPT_PREVIEW:
+        # 批 J：过审后顺手把豆包提示词展开一遍存起来。跑的仍是
+        # `/summaries/preview-prompt`，与投产展开同一模型同一模板，不会出现
+        # "预览一套、投产另一套"的分叉。
+        return PromptPreviewRequest, preview_prompt_for_summaries, "备豆包提示词"
     raise HTTPException(
         status_code=400,
         detail=f"任务类型只支持 {'/'.join(ASSET_JOB_KINDS)}",
@@ -2988,6 +3055,12 @@ def _job_scope_ids(kind: str, params: Dict[str, Any]) -> List[str]:
         # 投板圈的是**生产单 id**：防重复判据因此天然是"同一张单没投过第二遍"，
         # 比按批次判更准（一个批次里可能只有 3 张单要投）。
         return [str(x) for x in ((params or {}).get("ids") or []) if str(x)]
+    if kind == JOB_DOWNLOAD:
+        # 批 J：下载圈的是素材 id（与出文案同一类），不复用默认分支的 summary_ids 键
+        return [str(x) for x in ((params or {}).get("asset_ids") or []) if str(x)]
+    if kind == JOB_PROMPT_PREVIEW:
+        # 批 J：备提示词圈的是文案 id（与投产同类）
+        return [str(x) for x in ((params or {}).get("summary_ids") or []) if str(x)]
     return [str(x) for x in (params.get(key) or []) if str(x)]
 
 
@@ -2998,6 +3071,14 @@ def _twin_cost_phrase(kind: str) -> str:
     叠两份量 → 115/120 成批 fail 就是这么来的）。写成"重复扣模型费用"会让一线以为
     投板重复提交只是多花几厘钱，而它的真实代价是"同一批里几十条额度白烧、还挤掉别人的量"。
     """
+    if kind == JOB_DOWNLOAD:
+        # 批 J：下载本身 0 元，但重下前要重新解析分享链接——落到付费渠道就是
+        # 0.01 元/条的真金白银，外加桶里白占一份存储（桶不设过期）。
+        return "重复下载既可能重复付解析费、又在桶里白占一份存储"
+    if kind == JOB_PROMPT_PREVIEW:
+        # 批 J：备提示词是真等一次模型（与投产展开同价），但已有预览的条会被幂等跳过，
+        # 重复提交烧的只是"没有预览的那几条"的模型钱——照实说，别吓人也别装没事。
+        return "重复扣模型费用（已有预览的条会自动跳过，不重复生成）"
     return "重复占当天号池额度" if kind == JOB_DISPATCH else "重复扣模型费用"
 
 
@@ -3213,6 +3294,36 @@ async def _job_progress(db: AsyncSession, job: AssetJob) -> Dict[str, Any]:
             )
         total = total or (len(aids) + len(oids))
         note = "抽帧进度＝已落库的**帧数**（一条素材满帧是 4 张：3 单帧＋1 九宫格），不是完成的条数"
+    elif job.kind == JOB_DOWNLOAD and ids:
+        done = int(
+            (
+                await db.execute(
+                    select(func.count(AssetItem.id)).where(
+                        AssetItem.id.in_([uuid.UUID(x) for x in ids]),
+                        AssetItem.download_status == "success",
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+        total = total or len(ids)
+        # 下载逐条落库，success 是可靠的"到手"口径；失败条的原因在任务结果逐条明细里
+        note = "下载进度＝原片已落到自有桶的条数；失败的条看任务结果里的逐条原因，可单独重试"
+    elif job.kind == JOB_PROMPT_PREVIEW and ids:
+        done = int(
+            (
+                await db.execute(
+                    select(func.count(AssetSummary.id)).where(
+                        AssetSummary.id.in_([uuid.UUID(x) for x in ids]),
+                        AssetSummary.prompt_preview.isnot(None),
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+        total = total or len(ids)
+        # 预览失败不拦投产（投产时重新展开），所以进度话术要先把这句话说在前头
+        note = "备提示词进度＝预览已生成的文案条数；没生成出来的投产时会重新展开，不拦投产"
     elif job.kind == JOB_DISPATCH and ids:
         pids = []
         for x in ids:
@@ -3912,6 +4023,8 @@ async def review_summaries(
     is_admin = current_user.role == UserRole.admin.value
     book, exemptions = await _risk_lexicon(db)
     results: List[dict] = []
+    # 批 J：本次真正过审的文案（含"改后过"）——审核 commit 完之后拿去排提示词预览
+    approved_now: List[Any] = []
 
     for sid in data.summary_ids:
         uuid_s = _as_uuid(sid, "summary_id")
@@ -4017,6 +4130,18 @@ async def review_summaries(
                 db, summary, operator=current_user, reason=why,
             )
 
+        # 批 J：预览跟着「这条就是要投的那条」走——
+        # 过审 → 记下来，commit 后排去备提示词；改后过 → 文案已经变了，旧预览作废；
+        # 撤销过审 → 旧预览作废（重新过审会重新备）。留着过期预览，一线会拿它当投产结果。
+        if to_state in REVIEW_PASSED_STATES:
+            approved_now.append(summary.id)
+            if to_state == RV_PASSED_EDITED and summary.prompt_preview is not None:
+                summary.prompt_preview = None
+                summary.prompt_preview_at = None
+        elif summary.prompt_preview is not None:
+            summary.prompt_preview = None
+            summary.prompt_preview_at = None
+
         await _write_audit(
             db,
             action=f"asset.summary_review.{data.action}",
@@ -4043,15 +4168,32 @@ async def review_summaries(
 
     await db.flush()
     await db.commit()
+
+    # 批 J：审核 commit 完，把刚过审的文案排去备豆包提示词（用户口径：过审后提示词就
+    # 备好、审核台直接能看）。排不上绝不能让审核整体报错——审核本身已经落库成功，
+    # 预览只是搭车的。
+    preview_note: Optional[str] = None
+    if approved_now:
+        kick = await _enqueue_preview(
+            db, summary_ids=[str(s) for s in approved_now], operator=current_user,
+        )
+        preview_note = kick.get("note") if not kick.get("queued") else None
+
     ok = sum(1 for r in results if r["ok"])
     waived_cnt = sum(1 for r in results if r.get("waived"))
     warn_cnt = sum(1 for r in results if r["ok"] and r.get("warnings"))
     return {
         "results": results,
+        "prompt_preview_note": preview_note,
         "message": (
             f"审核完成：成功 {ok} 条，未通过 {len(results) - ok} 条（未通过原因见 results）"
             + (f"，其中 {waived_cnt} 条为管理员豁免（已入审计，admin 可抽检）" if waived_cnt else "")
             + (f"；{warn_cnt} 条带预警（与反推详规对不上，不拦过审但请复核一眼）" if warn_cnt else "")
+            + (
+                f"；{len(approved_now)} 条过审文案的豆包提示词正在后台备好（稍后在文案上看预览）"
+                if approved_now and not preview_note else ""
+            )
+            + (f"；{preview_note}" if preview_note else "")
         ),
     }
 
@@ -7372,6 +7514,339 @@ async def resolve_link_assets(
 
 
 # ──────────────────────────────────────────────
+# 下载原片 / 提示词预览（批 J，11-05：都是"跟着主动作顺手排"的后台任务）
+# ──────────────────────────────────────────────
+
+# 下载动作自己的状态字（models 侧不设常量：三取值只在这一个口里写，别处只读）
+_DL_RUNNING, _DL_SUCCESS, _DL_FAILED = "running", "success", "failed"
+
+
+@router.post("/assets/download")
+async def download_asset_sources(
+    data: AssetDownloadRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """把链接素材的**原片**拉回自有桶（批 J，用户口径：反推默认顺带下载）。
+
+    为什么跟着反推走：反推本来就要解析这条分享链接（智令 doc/120 在远端拉），
+    下载只是把"解析出来的直链"顺手落到我们桶里——回看、拼接、交付都不用再
+    蹲一条几小时就过期的时效直链。
+
+    四件套（与采集侧 `run_download_pipeline` 同源但**刻意不整段复用**——那份会建
+    Project/Episode，把素材库的行挂到「视频号导入」项目里，两条链就搅在一起了）：
+    `dispatch_parse`（解析分享链接→直链）→ `get_downloader().download_to_file`
+    （拉流，支持断点续传）→ `upload_file_from_path`（落自有桶）→ `_probe_duration`
+    （ffprobe 探真实时长）。解析落到付费渠道按 0.01 元/条记 `cost_parse`
+    （与 `/assets/resolve` 同一口径）；拉流、落桶、探时长都是 0 元。
+
+    幂等：`file_key` 已非空的原样跳过（不重复下载、不重复占桶）；每条
+    running→终态**逐条落库**（同 analyze 口径：一条几分钟，中途崩不能整批白跑）。
+    `download_status` 是下载自己的状态，不进五阶段、不影响任何闸门。
+    """
+    if not data.asset_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="请点名要下载原片的素材（反推时勾了「顺带下载原片」会自动排，不用手工调）",
+        )
+    assets = [await _get_asset_or_404(db, aid) for aid in data.asset_ids]
+
+    todo: List[AssetItem] = []
+    skipped: List[dict] = []
+    for a in assets:
+        if a.media_kind == MEDIA_IMAGE:
+            skipped.append({"code": a.code, "reason": "图片素材本来就在自有桶里，不用下载"})
+            continue
+        if a.source_kind == SOURCE_FILE:
+            skipped.append({"code": a.code, "reason": "文件素材上传时已经落在自有桶里，不需要下载"})
+            continue
+        if a.file_key:
+            skipped.append({"code": a.code, "reason": "原片已经在自有桶里（之前下载过），不重复下载"})
+            continue
+        if not a.source_url:
+            skipped.append({"code": a.code, "reason": "这条既没有原片也没有来源链接，无从下载"})
+            continue
+        todo.append(a)
+
+    if not todo:
+        # 与 resolve 同口径：没活可干不是错误（排队轮询到队尾不能被当接口故障）
+        return {
+            "results": [],
+            "skipped": skipped,
+            "downloaded": 0,
+            "charged": 0.0,
+            "channels": {},
+            "message": "没有一条需要下载（原片都已在自有桶里），未发起任何外呼"
+            + (f"；{len(skipped)} 条被跳过" if skipped else ""),
+        }
+
+    results: List[dict] = []
+    tmp_dir = os.path.join(tempfile.gettempdir(), f"asset_download_{uuid.uuid4().hex}")
+    os.makedirs(tmp_dir, exist_ok=True)
+    # 逐条 commit（同 analyze_batch 的坑）：commit 后还要读 asset 的列，必须关掉过期刷新
+    db.sync_session.expire_on_commit = False
+    touched_batches: List[Any] = []
+    charged_total = 0.0
+    channels: Dict[str, int] = {}
+
+    for a in todo:
+        entry: Dict[str, Any] = {
+            "asset_id": str(a.id), "code": a.code,
+            "ok": False, "charged": 0.0, "channel": None, "error": None,
+        }
+        results.append(entry)
+        a.download_status = _DL_RUNNING
+        try:
+            await db.commit()  # running 态先落库：中途崩列表上也看得到"正在下载"
+        except Exception as e:  # pragma: no cover
+            await db.rollback()
+            logger.warning("download_status=running 落库失败 %s: %s", a.code, e)
+
+        # ① 解析分享链接 → 直链（付费渠道要记账，失败不记账，与 resolve 同口径）
+        try:
+            parsed = await dispatch_parse(a.source_url)
+        except ProviderParseError as exc:
+            a.download_status = _DL_FAILED
+            entry["error"] = f"解析分享链接失败：{str(exc)[:200]}（失败不记账）"
+            await db.commit()
+            continue
+        except Exception as exc:
+            logger.exception("下载原片解析异常 %s", a.code)
+            a.download_status = _DL_FAILED
+            entry["error"] = f"解析异常：{str(exc)[:200]}（失败不记账）"
+            await db.commit()
+            continue
+
+        channel = str(getattr(parsed, "channel", None) or "unknown")
+        entry["channel"] = channel
+        channels[channel] = channels.get(channel, 0) + 1
+        if channel not in _FREE_PARSE_CHANNELS:
+            fee = round(float(svc.PRICE_PARSE_PER_CALL), 4)
+            a.cost_parse = round(float(a.cost_parse or 0.0) + fee, 4)
+            charged_total = round(charged_total + fee, 4)
+            touched_batches.append(a.batch_id)
+            entry["charged"] = fee
+
+        play_url = getattr(parsed, "play_url", None)
+        if not play_url:
+            a.download_status = _DL_FAILED
+            entry["error"] = "解析成功但没拿到可下载的直链（源站没给播放地址）"
+            await db.commit()
+            continue
+
+        # ② 拉流下载（断点续传在 downloader 里；HLS/直链都归它）
+        local_path = os.path.join(tmp_dir, f"{a.code}.mp4")
+        try:
+            total = await get_downloader().download_to_file(play_url, local_path)
+        except Exception as exc:
+            a.download_status = _DL_FAILED
+            entry["error"] = f"拉流下载失败：{str(exc)[:200]}（解析费已按渠道记账）"
+            await db.commit()
+            continue
+        if not total:
+            a.download_status = _DL_FAILED
+            entry["error"] = "下载到 0 字节（直链秒回空响应），没入桶，不假装成功"
+            await db.commit()
+            continue
+
+        # ③ 落自有桶：key 风格与抽帧/拼接一致（asset/<用途>/<素材号>/…），按素材号聚得拢
+        object_key = f"asset/source/{a.code}/{uuid.uuid4().hex[:16]}.mp4"
+        ok = await upload_file_from_path(
+            settings.MINIO_BUCKET_RAW, object_key, local_path, "video/mp4"
+        )
+        if not ok:
+            a.download_status = _DL_FAILED
+            entry["error"] = "对象存储入库失败（桶不可达或写入被拒）"
+            await db.commit()
+            continue
+
+        # ④ 回写 + 探真实时长（已有时长的不覆盖——那是 resolve/上传时探过的口径）
+        a.file_key = object_key
+        a.bucket = settings.MINIO_BUCKET_RAW
+        a.file_size = total
+        a.file_name = a.file_name or f"{a.code}.mp4"
+        if not a.duration:
+            a.duration = await _probe_duration(local_path)
+        a.download_status = _DL_SUCCESS
+        entry.update(ok=True, file_key=object_key, size=total,
+                     note="原片已落到自有桶，列表/抽屉里可直接预览和下载")
+        try:
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.exception("下载结果落库失败 %s", a.code)
+            # 桶里已经有文件了：状态先如实回 failed，重试会因 file_key 未落而再下一次（白占一份）
+            a.download_status = _DL_FAILED
+            entry["error"] = f"下载成功但状态未落库，重试会重复占桶：{str(e)[:200]}"
+
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    downloaded = sum(1 for r in results if r["ok"])
+    await _recompute_batch_actual_cost(db, touched_batches)
+    await _write_audit(
+        db,
+        action="asset.download",
+        operator=current_user,
+        target_type="asset_batch" if len(todo) > 1 else "asset_item",
+        target_id=None,
+        after={
+            "requested": len(todo),
+            "downloaded": downloaded,
+            "charged": charged_total,
+            "channels": channels,
+            "skipped": [s["code"] for s in skipped],
+            "results": [
+                {k: r.get(k) for k in ("asset_id", "code", "ok", "charged", "error") if k in r}
+                for r in results
+            ],
+        },
+    )
+    await db.commit()
+    return {
+        "results": results,
+        "skipped": skipped,
+        "downloaded": downloaded,
+        "charged": charged_total,
+        "channels": channels,
+        "message": (
+            f"原片下载：成功 {downloaded} 条 / 共 {len(todo)} 条"
+            + (f"，解析实扣 {charged_total} 元" if charged_total else "，未产生解析费")
+            + (f"；跳过 {len(skipped)} 条已在桶里" if skipped else "")
+        ),
+    }
+
+
+@router.post("/assets/summaries/preview-prompt")
+async def preview_prompt_for_summaries(
+    data: PromptPreviewRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """过审文案 → 豆包生产提示词**预览**（批 J，用户口径：过审后提示词就备好、有处可看）。
+
+    与投产展开（`/produce` 里的 `expand`）**同一个模型、同一份模板**，但参数取最保守的
+    一档（无钩子编号、剧名缩写空、按无角色卡）——所以预览回答的是「这条文案能不能展开成
+    像样的提示词」，**不是投产那一份**；投产时仍按当时的编号/卡/剧名重新展开，一字不抄这里。
+
+    幂等：已有预览的原样复用（未重新生成、未重复等模型）；「改后过」和撤销过审会把旧预览
+    作废（审核口负责置空），重新过审时这里自然重新生成。
+    失败不连坐：单条展开失败只记原因，**不拦投产**（投产时反正要重新展开并过漂移判）。
+    """
+    if not data.summary_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="请点名要备提示词的文案（过审时会自动排上，一般不用手工调）",
+        )
+    results: List[dict] = []
+    db.sync_session.expire_on_commit = False
+    for sid in data.summary_ids:
+        uuid_s = _as_uuid(sid, "summary_id")
+        summary = (
+            await db.execute(select(AssetSummary).where(AssetSummary.id == uuid_s))
+        ).scalar_one_or_none()
+        entry: Dict[str, Any] = {"summary_id": str(uuid_s), "ok": False, "reused": False, "error": None}
+        results.append(entry)
+        if summary is None:
+            entry["error"] = "文案不存在"
+            continue
+        asset = await _get_asset_or_404(db, summary.asset_id)
+        entry["code"] = asset.code
+        if summary.audit_status not in REVIEW_PASSED_STATES:
+            entry["error"] = f"这条还没过审（当前 {summary.audit_status}），不过审不备提示词"
+            continue
+        if (summary.prompt_preview or "").strip():
+            entry.update(ok=True, reused=True, note="预览已存在，未重新生成、未重复等模型")
+            continue
+
+        drama_title = await _drama_title_of(db, asset)
+        try:
+            expanded = await _call_autoclip(
+                "hook-copy/expand",
+                {
+                    "hook_copy": summary.text,
+                    # 预览只展开一份：没有 N 的差异化，variant_basis 照实写"预览"
+                    "seq": 1,
+                    "total": 1,
+                    "variant_basis": "preview",
+                    # 与出文案同口径：内部只试一次，重试交给再点一次（见 _call_autoclip 说明）
+                    "max_retries": 1,
+                    "params": {
+                        "asset_code": asset.code,
+                        "platform": asset.platform or "",
+                        "drama_title": drama_title,
+                        # 预览取最保守参数：编号/缩写/卡都按"还不知道"处理，
+                        # 投产时才知道的东西不掺进来，免得预览抄走投产的答案
+                        "drama_abbr": "",
+                        "duration": int(round(settings.ASSET_BOARD_OUTPUT_SECONDS)),
+                        "recommended_title_count": 5,
+                        "hook_code": None,
+                        "has_character_card": False,
+                        "compliance": "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
+                    },
+                },
+            )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            entry["error"] = f"提示词没生成出来：{detail[:200]}（投产时会重新展开，不拦投产）"
+            await db.commit()
+            continue
+
+        prompt_text = (expanded.get("prompt_text") or "").strip() or None
+        if not prompt_text:
+            entry["error"] = "模型没回提示词正文（投产时会重新展开，不拦投产）"
+            await db.commit()
+            continue
+
+        kept = bool(expanded.get("hook_copy_kept_verbatim"))
+        deviation = (expanded.get("deviation_note") or "").strip()
+        summary.prompt_preview = prompt_text
+        summary.prompt_preview_at = datetime.utcnow()
+        summary.cost_preview = 0.0
+        entry.update(
+            ok=True,
+            kept_verbatim=kept,
+            note=(
+                # 「预览≠投产」必须摆在明面上，否则有人会拿预览当投产结果去投板
+                "预览（非投产稿）：投产时会按钩子编号/角色卡/剧名重新展开"
+                + ("" if kept else "；模型自报没能原样保住文案，投产时会按漂移判拦截重试")
+                + (f"；模型自报偏差：{deviation[:150]}" if deviation else "")
+            ),
+        )
+        await _write_audit(
+            db,
+            action="asset.prompt_preview",
+            operator=current_user,
+            target_type="asset_summary",
+            target_id=summary.id,
+            after={
+                "code": asset.code,
+                "kept_verbatim": kept,
+                "chars": len(prompt_text),
+                "deviation": deviation[:300] or None,
+            },
+        )
+        # 逐条落库（同 analyze 口径：一次展开 90~150s，中途崩不能整批白跑）
+        try:
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.exception("提示词预览落库失败 %s", asset.code)
+            entry.update(ok=False, error=f"提示词已生成但未落库，可重跑本口补写：{str(e)[:200]}")
+
+    ok_cnt = sum(1 for r in results if r["ok"])
+    reused_cnt = sum(1 for r in results if r.get("reused"))
+    await db.commit()
+    return {
+        "results": results,
+        "message": (
+            f"提示词预览：备好 {ok_cnt} 条 / 共 {len(results)} 条"
+            + (f"（其中 {reused_cnt} 条用已有预览）" if reused_cnt else "")
+            + "；预览是给人看的，投产时会重新展开"
+        ),
+    }
+
+
+# ──────────────────────────────────────────────
 # 单条详情 / 反推状态刷新（放在所有字面路径之后，避免吞掉 /assets/summaries 等）
 # ──────────────────────────────────────────────
 
@@ -7396,9 +7871,10 @@ async def download_asset_source(
     """
     asset = await _get_asset_or_404(db, asset_id)
 
-    if asset.source_kind == SOURCE_FILE:
-        if not asset.file_key:
-            raise HTTPException(status_code=404, detail="该素材没有可下载的原文件（上传未成功）")
+    # 批 J：判「桶里有没有原片」以 **file_key 为准**，不再看 source_kind——
+    # 链接素材反推后原片也会被下载进桶（download_status=success），这时它就是
+    # stored 形态；只认 source_kind 会让"已经下载好的原片"仍然回 external。
+    if asset.file_key:
         url = await get_presigned_url(
             asset.bucket or settings.MINIO_BUCKET_RAW,
             asset.file_key,
@@ -7409,6 +7885,8 @@ async def download_asset_source(
         if not url:
             raise HTTPException(status_code=502, detail="生成下载地址失败")
         mode = "stored"
+    elif asset.source_kind == SOURCE_FILE:
+        raise HTTPException(status_code=404, detail="该素材没有可下载的原文件（上传未成功）")
     else:
         if not asset.source_url:
             raise HTTPException(status_code=404, detail="该素材既没有原文件也没有来源链接")
@@ -7477,9 +7955,9 @@ async def preview_asset_source(
     """
     asset = await _get_asset_or_404(db, asset_id)
 
-    if asset.source_kind == SOURCE_FILE:
-        if not asset.file_key:
-            raise HTTPException(status_code=404, detail="该素材没有可预览的原文件（上传未成功）")
+    # 批 J：与 /source-download 同一条订正——桶里有没有原片以 **file_key 为准**，
+    # 链接素材反推后下载进桶的，同样能内联播放。
+    if asset.file_key:
         url = await get_presigned_url(
             asset.bucket or settings.MINIO_BUCKET_RAW,
             asset.file_key,
@@ -7488,6 +7966,8 @@ async def preview_asset_source(
         if not url:
             raise HTTPException(status_code=502, detail="生成预览地址失败（对象存储不可达）")
         mode = "stored"
+    elif asset.source_kind == SOURCE_FILE:
+        raise HTTPException(status_code=404, detail="该素材没有可预览的原文件（上传未成功）")
     else:
         url = None
         mode = "external"
@@ -8069,6 +8549,92 @@ async def _enqueue_frames(
                 f"抽帧没排上（{type(exc).__name__}），不影响导入；卡片会一直显示「没有预览图」，"
                 "可以带 asset_ids 走 POST /assets/frames/extract 手动补"
             ),
+        }
+
+
+async def _enqueue_download(
+    db: AsyncSession,
+    *,
+    asset_ids: List[str],
+    operator: Optional[User],
+    batch_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """系统自己排一份「下载原片」任务（反推提交后调用，批 J）。**绝不把主流程带崩**。
+
+    反推本身已经真金白银落库了，下载只是搭车的回看便利——所以整段包住，
+    排不上只回一条 note，让一线看得见"这次没排上、可单独重试"，而不是反推整体报错。
+    """
+    if operator is None or not asset_ids:
+        return {"queued": False, "job_id": None, "queued_count": 0, "note": "没排下载（缺提交人或缺素材 id）"}
+    try:
+        job = await _start_asset_job(
+            db,
+            kind=JOB_DOWNLOAD,
+            data=AssetDownloadRequest(asset_ids=list(asset_ids)),
+            operator=operator,
+            batch_id=batch_id,
+            planned_units=len(asset_ids),
+        )
+        return {
+            "queued": True,
+            "job_id": str(job.id),
+            "queued_count": len(asset_ids),
+            "note": None,
+        }
+    except HTTPException as exc:
+        logger.info("下载原片任务没排上：%s", exc.detail)
+        return {
+            "queued": False, "job_id": None, "queued_count": 0,
+            "note": f"原片下载没排上：{str(exc.detail)[:200]}；可在列表上对素材单独重试",
+        }
+    except Exception as exc:  # noqa: BLE001 — 排程失败不能连累反推的结果
+        await db.rollback()
+        logger.exception("下载原片任务排程异常")
+        return {
+            "queued": False, "job_id": None, "queued_count": 0,
+            "note": f"原片下载没排上（{type(exc).__name__}），不影响反推；可稍后单独重试",
+        }
+
+
+async def _enqueue_preview(
+    db: AsyncSession,
+    *,
+    summary_ids: List[str],
+    operator: Optional[User],
+) -> Dict[str, Any]:
+    """系统自己排一份「备豆包提示词」任务（过审 commit 后调用，批 J）。**绝不把审核带崩**。
+
+    审核结果已经落库生效，预览是搭车的——排不上（同批已有预览任务在跑的 409 也算）
+    只回 note；口径与 `_enqueue_download`/`_enqueue_frames` 一致：搭车动作不倒打主流程。
+    """
+    if operator is None or not summary_ids:
+        return {"queued": False, "job_id": None, "note": "没排预览（缺提交人或缺文案 id）"}
+    try:
+        job = await _start_asset_job(
+            db,
+            kind=JOB_PROMPT_PREVIEW,
+            data=PromptPreviewRequest(summary_ids=list(summary_ids)),
+            operator=operator,
+            batch_id=None,
+            planned_units=len(summary_ids),
+        )
+        return {
+            "queued": True,
+            "job_id": str(job.id),
+            "note": None,
+        }
+    except HTTPException as exc:
+        logger.info("提示词预览任务没排上：%s", exc.detail)
+        return {
+            "queued": False, "job_id": None,
+            "note": f"提示词预览没排上：{str(exc.detail)[:200]}；过审本身已生效，可稍后重跑预览口",
+        }
+    except Exception as exc:  # noqa: BLE001
+        await db.rollback()
+        logger.exception("提示词预览任务排程异常")
+        return {
+            "queued": False, "job_id": None,
+            "note": f"提示词预览没排上（{type(exc).__name__}），不影响审核；可稍后重跑预览口",
         }
 
 

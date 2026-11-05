@@ -327,6 +327,11 @@ class AssetItem(Base):
     file_key = Column(String(500), nullable=True)
     bucket = Column(String(50), nullable=True)
     file_size = Column(BigInteger, nullable=True)
+    # 批 J（11-05）：反推时把链接素材的**原片**拉回自有桶（用户口径：反推默认顺带下载，
+    # 一线回看不用再回源翻直链）。NULL=没有要下的（文件素材本来就在桶里、图片不是视频）；
+    # running/success/failed 是**下载动作自己**的状态——刻意不进五阶段：下载是"回看用"
+    # 的副本动作，不是流水线的一环，塞进 stage_import 会把「导」这个字的口径搅浑。
+    download_status = Column(String(10), nullable=True)
 
     # 与主系统既有产线的挂接（全部可空，导入是渐进的）
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -418,6 +423,16 @@ class AssetSummary(Base):
     reject_reason = Column(String(500), nullable=True)     # 驳回必填
     # 改后通过的原文留痕（配合 AuditLog 的 before/after，admin 抽检用）
     text_before_edit = Column(Text, nullable=True)
+
+    # 批 J（11-05）：过审后**顺手**把豆包生产提示词展开一遍存下来（预览）。它是「看」的：
+    # 让审核人过审那一刻就知道这条文案能不能展开成像样的提示词，而不是等投产才发现。
+    # ⚠️ 绝不把它当投产产物用——投产时仍按当时的钩子编号/角色卡/剧名**重新展开**，
+    # 一字不抄这里（预览取的是最保守参数，两边抄来抄去迟早抄出一条过期的）。
+    prompt_preview = Column(Text, nullable=True)
+    prompt_preview_at = Column(DateTime, nullable=True)
+    # 展开预览与投产同一模型同一模板，P0 **不单记钱**（投产展开也不单记，口径一致）；
+    # 列先立着，将来要对账时不用再动表。
+    cost_preview = Column(Float, nullable=False, default=0.0)
 
     source_prompt_task_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -650,7 +665,13 @@ JOB_FRAMES = "frames"
 # （P0 拍板口径「可自动投板，但逐批人工确认」）；③ 一个 job 里包含"建任务＋轮询＋
 # 回收下载"整段，跑几十分钟，同步等必然顶穿超时链——只能走这里。
 JOB_DISPATCH = "dispatch"
-ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE, JOB_FRAMES, JOB_DISPATCH)
+# 批 J（11-05）新增两类，都是「跟着主动作顺手排」的分钟级慢活，同步等必然顶穿超时链：
+# - download：反推提交后把链接素材原片拉回自有桶（拉流下载，一条几十秒到几分钟）；
+# - prompt_preview：文案过审后把豆包提示词展开一遍存起来（模型 90~150s/条）。
+# 两者都复用 D-1 同一套台账/防重复/进度口径，不另造机制。
+JOB_DOWNLOAD = "download"
+JOB_PROMPT_PREVIEW = "prompt_preview"
+ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE, JOB_FRAMES, JOB_DISPATCH, JOB_DOWNLOAD, JOB_PROMPT_PREVIEW)
 
 JB_QUEUED = "queued"          # 已落库、协程已排上，还没开跑
 JB_RUNNING = "running"        # 正在逐条调模型（开始跑时落一次 started_at，跑中间不回报心跳）

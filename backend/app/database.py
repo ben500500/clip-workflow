@@ -380,6 +380,13 @@ async def _apply_compat_migrations():
         # 改成「从素材库挑图」，挑出来的顺序就是板上 picDatas 的顺序，所以存 id 数组。
         # 可空、不回填：存量单继续读 character_card_key（读侧有数组用数组、没数组回退单值）。
         ("asset_productions", "card_asset_ids", "JSON"),
+        # 反推顺带下载原片（11-05 批 J，0061）：下载动作自己的状态，不进五阶段
+        ("asset_items", "download_status", "VARCHAR(10)"),
+        # 过审顺手备豆包提示词预览（11-05 批 J，0061）：预览是「看」的，投产仍重新展开；
+        # cost_preview 与投产展开同口径不单记钱，列先立着防将来对账没地方写
+        ("asset_summaries", "prompt_preview", "TEXT"),
+        ("asset_summaries", "prompt_preview_at", "TIMESTAMP"),
+        ("asset_summaries", "cost_preview", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
