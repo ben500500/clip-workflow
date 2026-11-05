@@ -650,7 +650,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                   disabled={!approvedSelected.length}
                   onClick={() => setProduceOpen(true)}
                 >
-                  生成生产单（{approvedSelected.length}）
+                  生成生产单（{approvedSelected.length}）· 即投产
                 </Button>
               </Tooltip>
             )}

@@ -4991,6 +4991,9 @@ async def create_productions(
     return {
         "created": len(productions),
         "results": results,
+        # 批 I（链路收敛）：新单 id 列表——投产结果页「顺势投去出片」要拿它点名投板，
+        # 免得用户再回列表勾一遍。没有单是None语义复杂化，空列表=没建出来（recheck 全拦）。
+        "production_ids": [str(p.id) for p in productions],
         "board": {
             "channel": channel,
             "tag": board_tag,
@@ -5027,8 +5030,8 @@ async def create_productions(
                 if (recheck_failed or waived_rows)
                 else ""
             )
-            + "本口只到生产单为止（还没上板、不吃号池）：下一步用「投上后台任务板」自动连板，"
-              "或导出 payload 人工投完再回写投递态。"
+            + "本口只到生产单为止（还没上板、不吃号池）：下一步用「投去 AI 出片」自动连板，"
+              "或导出任务文件手工投完再补记投板结果。"
         ),
     }
 

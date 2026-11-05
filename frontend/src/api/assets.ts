@@ -1380,6 +1380,8 @@ export interface AssetCardCheck {
 export interface AssetProduceResponse {
   created: number;
   results: AssetProduceResultItem[];
+  /** 批 I（链路收敛）：这次新建的生产单 id——投产结果页「顺势投去出片」点名投板用 */
+  production_ids?: string[];
   board: AssetProduceBoard;
   /** 按号池折算的天数（accounts 由调用方声明） */
   capacity_hint: AssetProductionDaysPlan;

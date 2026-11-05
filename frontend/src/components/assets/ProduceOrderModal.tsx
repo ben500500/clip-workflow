@@ -63,6 +63,51 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const [jobHint, setJobHint] = useState<string | null>(null);
   const giveUpRef = useRef(false);
 
+  // 批 I（链路收敛）：投产成功后顺势投板——不用再回生产单列表勾一遍。
+  // 逐批人工确认的口径不放松：这里也要勾一下确认才投得出去。
+  const [followupConfirm, setFollowupConfirm] = useState(false);
+  const [followupBusy, setFollowupBusy] = useState(false);
+
+  const dispatchFollowup = async () => {
+    const ids = (result?.production_ids || []).filter(Boolean);
+    if (!ids.length) return;
+    if (!followupConfirm) {
+      message.warning('勾一下确认：投出去吃的是当天号池额度，这一下只能由人点');
+      return;
+    }
+    setFollowupBusy(true);
+    try {
+      const res = await assetApi.dispatchProductions({
+        ids,
+        confirm: true,
+        async_mode: true,
+      });
+      nudgeAssetJobBanner();
+      if (isAssetJobAck(res)) {
+        const pre = (res as { precheck?: { will_create: number; will_recover: number; blocked?: unknown[]; planned_board_rows: number } }).precheck;
+        Modal.success({
+          title: '已经排上：机器去企微后台建任务出片',
+          content: (
+            <Text style={{ fontSize: 12 }}>
+              新建 {pre?.will_create ?? '—'} 张、回收 {pre?.will_recover ?? 0} 张（≈{pre?.planned_board_rows ?? '—'} 条额度）
+              {pre?.blocked?.length ? `；${pre.blocked.length} 张被闸门挡下没投` : ''}。
+              出好的片子自动回到生产单页各单的「成片」列，可以关页面去干别的。
+            </Text>
+          ),
+        });
+      } else {
+        message.success('已经排上：机器去企微后台建任务出片，成片自动回「成片」列');
+      }
+      setResult(null);
+      onDone();
+    } catch (e) {
+      // 没配凭据/闸门拦截等，后端给的是白话 detail，原样亮出来
+      message.error((e as Error).message || '投板失败', 8);
+    } finally {
+      setFollowupBusy(false);
+    }
+  };
+
   const needCodes = summaries.length * n;
   const codes = useMemo(() => parseHookCodes(codeText), [codeText]);
   const badCodes = codes.filter((c) => !HOOK_CODE_RE.test(c));
@@ -212,6 +257,33 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               )}
             </Descriptions.Item>
           </Descriptions>
+
+          {/* 批 I（链路收敛）：单子建好了顺势问一句投不投——不用回列表再勾一遍。
+              逐批人工确认不放松：还是要点一下勾，但不用换页面。 */}
+          {!!result.production_ids?.length && result.board.channel === 'wework_aivideo' && (
+            <div>
+              <Checkbox
+                checked={followupConfirm}
+                onChange={(e) => setFollowupConfirm(e.target.checked)}
+              >
+                确认把这 {result.production_ids.length} 张新单投去 AI 出片（≈{result.board.planned_rows} 条额度，一条 25 分钟起）
+              </Checkbox>
+              <Space style={{ marginTop: 8 }}>
+                <Button
+                  type="primary"
+                  danger
+                  loading={followupBusy}
+                  disabled={!followupConfirm}
+                  onClick={dispatchFollowup}
+                >
+                  投去出片
+                </Button>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  先不投就点「去生产单列表」，以后随时在生产单页投。
+                </Text>
+              </Space>
+            </div>
+          )}
 
           {!!result.recheck_failed?.length && (
             <Alert
