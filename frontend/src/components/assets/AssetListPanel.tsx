@@ -12,10 +12,10 @@ import {
   ASSET_STAGE_LABELS, ASSET_STATUS_LABELS, DEFAULT_TIER, DURATION_TIERS, assetApi, isAssetJobAck,
 } from '../../api/assets';
 import type {
-  AssetItem, AssetAnalyzeResponse, AssetCostEstimateResponse, AssetResolveResponse,
+  AssetItem, AssetAnalyzeResponse, AssetCostEstimateResponse, AssetMediaKind, AssetResolveResponse,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
-import { AssetStatusTag, StageTags, durationText, yuan } from './AssetBits';
+import { AssetStatusTag, MediaKindTag, StageTags, aspectShortText, durationText, isImageAsset, yuan } from './AssetBits';
 import {
   CategorySelect, CategoryTag, UNCLASSIFIED, invalidateAssetCategories, useAssetCategories,
 } from './AssetCategoryBits';
@@ -67,6 +67,11 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const [keyword, setKeyword] = useState('');
   const [status, setStatus] = useState<string | undefined>();
   const [sourceKind, setSourceKind] = useState<string | undefined>();
+  /**
+   * 批 G：按媒体类型筛。`image` 就是「只看角色卡」——投产前想核对库里有哪些卡、
+   * 画幅对不对，靠这一筛，不用翻整页列表找扩展名。
+   */
+  const [mediaKind, setMediaKind] = useState<AssetMediaKind | undefined>();
   const [stagePrompt, setStagePrompt] = useState<string | undefined>();
   const [dates, setDates] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
   const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
@@ -115,6 +120,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
           keyword: keyword || undefined,
           status,
           source_kind: sourceKind,
+          media_kind: mediaKind,
           stage_prompt: stagePrompt,
           batch_id: batchFilter,
           category_id: categoryFilter,
@@ -130,13 +136,13 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         setLoading(false);
       }
     },
-    [keyword, status, sourceKind, stagePrompt, batchFilter, categoryFilter, dates, page, pageSize],
+    [keyword, status, sourceKind, mediaKind, stagePrompt, batchFilter, categoryFilter, dates, page, pageSize],
   );
 
   useEffect(() => {
     fetchList(1, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, sourceKind, stagePrompt, batchFilter, categoryFilter, dates]);
+  }, [status, sourceKind, mediaKind, stagePrompt, batchFilter, categoryFilter, dates]);
 
   // 后台任务刚收敛完（横幅确认终态后 +1）：阶段标签和状态是后端算的，只能重新拉一次
   useEffect(() => {
@@ -147,6 +153,21 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
 
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
   const runningCount = useMemo(() => items.filter((i) => i.stage_prompt === 'running').length, [items]);
+  /**
+   * 批 G：勾选里区分「视频」和「图片」。三个花钱按钮（读详规／出文案／查时长）
+   * 只对视频成立，所以**提交只给视频 id**、预估也只按视频条数算——
+   * 把图片混进 count 里报钱，确认单上的数字会比实际扣的多，对账时说不清。
+   * 后端那道口（逐条点名拒图）是第二道闸，不能反过来代替这里的分流。
+   */
+  const selectedVideoIds = useMemo(
+    () => selected.filter((s) => !isImageAsset(s)).map((s) => s.id),
+    [selected],
+  );
+  const selectedImageCount = useMemo(
+    () => selected.filter((s) => isImageAsset(s)).length,
+    [selected],
+  );
+  const selectedVideoCount = selectedVideoIds.length;
 
   // ── 读视频详规（原「反推」）──
   const openAnalyze = async () => {
@@ -154,12 +175,20 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       message.warning('先勾选要读详规的素材');
       return;
     }
+    // 批 G：一张视频都没选上（全是角色卡）时直接说清，不弹一张 0 条的成本确认单
+    if (!selectedVideoCount) {
+      message.warning(
+        `选中的 ${ids.length} 条都是图片：图片只当投产用的角色卡，不读视频详规（提交了也是白扣一次钱）`,
+        8,
+      );
+      return;
+    }
     setAnalyzeOpen(true);
     setConfirmed(false);
     setForce(false);
     setPreviewLoading(true);
     try {
-      setAnalyzePreview(await assetApi.estimateCost({ count: ids.length, max_duration: tier }));
+      setAnalyzePreview(await assetApi.estimateCost({ count: selectedVideoCount, max_duration: tier }));
     } catch (e) {
       message.error((e as Error).message || '成本预估失败');
     } finally {
@@ -171,7 +200,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     setTier(nextTier);
     setPreviewLoading(true);
     try {
-      setAnalyzePreview(await assetApi.estimateCost({ count: ids.length, max_duration: nextTier }));
+      setAnalyzePreview(await assetApi.estimateCost({ count: selectedVideoCount, max_duration: nextTier }));
     } finally {
       setPreviewLoading(false);
     }
@@ -181,7 +210,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     setAnalyzeLoading(true);
     try {
       const res: AssetAnalyzeResponse = await assetApi.analyzeBatch({
-        asset_ids: ids,
+        asset_ids: selectedVideoIds,
         max_duration: tier,
         confirmed: true,
         force,
@@ -429,6 +458,26 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       ),
     },
     {
+      /**
+       * 批 G：类型列。图片在这张表里**永远停在「图片已入库」**——它不走五个环节，
+       * 所以把画幅直接写在列上（成片画幅跟卡走，横版卡要在投产前就被认出来）。
+       */
+      title: '类型',
+      key: 'media_kind',
+      width: 96,
+      render: (_, row) =>
+        isImageAsset(row) ? (
+          <Space direction="vertical" size={0}>
+            <MediaKindTag asset={row} />
+            <Text type={row.aspect?.orientation === 'landscape' ? 'danger' : 'secondary'} style={{ fontSize: 11 }}>
+              {aspectShortText(row.aspect)}
+            </Text>
+          </Space>
+        ) : (
+          <MediaKindTag asset={row} />
+        ),
+    },
+    {
       title: '原型',
       key: 'category',
       width: 78,
@@ -438,8 +487,12 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       title: '时长',
       dataIndex: 'duration',
       width: 76,
-      render: (v: number | null) =>
-        v === null || v === undefined ? (
+      render: (v: number | null, row) =>
+        isImageAsset(row) ? (
+          // 批 G：图片没有「时长」这回事，给个横杠而不是「未知」——
+          // 「未知」在这里的含义是"链接素材还没回源查"，会让人以为点查时长能查出来
+          <Text type="secondary">—</Text>
+        ) : v === null || v === undefined ? (
           <Tooltip title="链接素材库里没存原片，读视频详规也只回文字提示词。要看时长点「查时长」（0.01 元/次）">
             <Text type="warning">未知</Text>
           </Tooltip>
@@ -512,9 +565,16 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
           <Tooltip title="原片直链：上传的文件从我们自己的存储里取；链接素材没存原片，会提示你用来源链接自己打开">
             <Button size="small" icon={<DownloadOutlined />} onClick={() => showSource(row)} />
           </Tooltip>
-          {canProduce && (
+          {canProduce && !isImageAsset(row) && (
             <Tooltip title="两段直拼：再选一条素材／一个切片／本地文件，选谁在前（0 元，不选点不剪切）">
               <Button size="small" icon={<MergeCellsOutlined />} onClick={() => setComposeAsset(row)} />
+            </Tooltip>
+          )}
+          {/* 批 G：图片不给拼接入口——ffmpeg 拿一张 jpg 当一段会在解码时炸（后端也挡，
+              但入口摆在那儿就是让人去撞 400）。它的下一步在「投产」弹窗里被挑成角色卡。 */}
+          {canProduce && isImageAsset(row) && (
+            <Tooltip title="图片只作生产输入：投产时在「生成生产单」弹窗里挑它当角色卡。不参与读详规、出文案、拼接。">
+              <Tag color="purple" style={{ marginLeft: 2 }}>当角色卡用</Tag>
             </Tooltip>
           )}
         </Space>
@@ -554,6 +614,17 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             options={[
               { value: 'link', label: '链接' },
               { value: 'file', label: '文件' },
+            ]}
+          />
+          <Select<AssetMediaKind>
+            placeholder="类型"
+            allowClear
+            style={{ width: 120 }}
+            value={mediaKind}
+            onChange={setMediaKind}
+            options={[
+              { value: 'video', label: '视频素材' },
+              { value: 'image', label: '图片（角色卡）' },
             ]}
           />
           <Select
@@ -614,8 +685,14 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       extra={
         canProduce ? (
           <Space wrap>
+            {/* 批 G：图片混在勾选里时先把它摘出来说一句——下面几个按钮只对视频成立 */}
+            {!!selectedImageCount && (
+              <Tooltip title="图片（角色卡）不读视频详规、不出文案、不查时长：提交进去也只会逐条回「这是图片」。这几个按钮只动勾到的视频。">
+                <Tag color="purple">另勾了 {selectedImageCount} 张图，不参与这几步</Tag>
+              </Tooltip>
+            )}
             <Button type="primary" icon={<FileTextOutlined />} onClick={openAnalyze} disabled={!ids.length}>
-              读视频详规（{ids.length}）
+              读视频详规（{selectedVideoCount}）
             </Button>
             {/*
               拍板②（11-04）：出文案没有确认弹窗（D-1 后是"提交即回"的后台任务），
@@ -633,7 +710,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
               }
             >
               <Button icon={<BulbOutlined />} loading={genBusy} onClick={generateSummaries} disabled={!ids.length}>
-                出钩子文案（{ids.length}）
+                出钩子文案（{selectedVideoCount}）
               </Button>
             </Tooltip>
             <Tooltip title="把这一批里还在跑的视频读取结果一次性收回来（不用逐条点）">
@@ -713,7 +790,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         loading={loading}
         columns={columns}
         dataSource={items}
-        scroll={{ x: 1380 }}
+        scroll={{ x: 1470 }}
         rowSelection={
           canProduce
             ? {
@@ -737,7 +814,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
 
       <CostConfirmModal
         open={analyzeOpen}
-        title={`批量读视频详规（${ids.length} 条）`}
+        title={`批量读视频详规（${selectedVideoCount} 条${selectedImageCount ? `，另勾的 ${selectedImageCount} 张图不读、不计费` : ''}）`}
         preview={analyzePreview}
         previewLoading={previewLoading}
         loading={analyzeLoading}

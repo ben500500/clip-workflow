@@ -21,7 +21,7 @@ interface Props {
 }
 
 /**
- * 导入面板：链接批量导入 / 视频文件批量上传 / 批次台账。
+ * 导入面板：链接批量导入 / 视频与图片文件批量上传 / 批次台账。
  *
  * 三个必须在前端讲清楚的口径：
  *  - 导入本身**不扣费**：链接形态只是把地址登记进库，真正花钱的是下一步反推。
@@ -31,6 +31,9 @@ interface Props {
  *  - 超单批上限由服务端**自动拆批**（批次名带「第 i/k 批」），不是打回让人自己数。
  *  - 「整批默认原型」（11-04 拍板①）只是给这一批每条素材起个结构层标记，
  *    可不选、不拦任何后续动作；建好之后逐条改在素材列表那一列上点。
+ *  - 批 G：文件口同时收图片。图片进来是 `media_kind=image` 的**角色卡**，
+ *    四环（读详规/出文案/投产/拼接）对它都不成立，也不计费——所以它的「下一步」
+ *    不是在本面板提交，而是到投产弹窗里被挑走。
  */
 const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
   const [tab, setTab] = useState<'link' | 'file'>('link');
@@ -128,7 +131,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
 
   const submitFiles = async () => {
     if (!rawFiles.current.length) {
-      message.warning('选择要上传的视频文件');
+      message.warning('选择要上传的视频或图片文件');
       return;
     }
     setUploading(true);
@@ -342,7 +345,14 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
               <>
                 <Upload.Dragger
                   multiple
-                  accept="video/*"
+                  /**
+                   * 批 G：这里同时收视频和图片。图片（jpg/jpeg/png/webp）落库后
+                   * `media_kind=image`，**只作投产的角色卡**——不反推、不出文案、不拼接、不抽帧、不计费。
+                   * ⚠️ 只改这一个 accept，不改采集侧那两个全局视频白名单
+                   * （`prompt_service.UPLOAD_ALLOWED_EXTS` / `settings.ALLOWED_VIDEO_EXTENSIONS`）：
+                   * 那两处一放图片，就能把 jpg 喂进 doc/120 视频反推，白扣一次钱。
+                   */
+                  accept="video/*,.jpg,.jpeg,.png,.webp"
                   fileList={fileList}
                   beforeUpload={(file) => {
                     rawFiles.current = [...rawFiles.current, file as unknown as File];
@@ -362,10 +372,14 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                   <p className="ant-upload-drag-icon">
                     <InboxOutlined />
                   </p>
-                  <p className="ant-upload-text">拖入或选择视频文件（可多个）</p>
+                  <p className="ant-upload-text">拖入或选择视频／图片文件（可多个）</p>
                   <p className="ant-upload-hint" style={{ fontSize: 12 }}>
                     文件存到我们自己的存储（MinIO raw-footage/asset/），不借智令的临时桶（那个 6 小时自动删）。
                     单个文件失败不影响整批，失败的可以一键补传到同一批次。
+                    <br />
+                    图片只认 jpg/jpeg/png/webp，进来是<b>投产用的角色卡</b>：不读视频详规、不出文案、
+                    不计费，入库时顺手量好尺寸（长边超了只提醒，不拦）。
+                    上传图片和视频可以混在一次提交里，各自按类型入库。
                   </p>
                 </Upload.Dragger>
                 <Space>
@@ -375,6 +389,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                   {uploading && <Progressish percent={progress} />}
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     读视频详规时文件还要经中转再上传一次，所以文件批次的预估里含每次 0.001 元的上传费
+                    （图片不收这笔：它不进反推）
                   </Text>
                 </Space>
               </>
@@ -454,18 +469,39 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                 showIcon
                 message={lastUpload.message}
                 description={
-                  !!lastUpload.failed?.length && (
-                    <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                      {lastUpload.failed.slice(0, 8).map((f) => (
-                        <Text key={f.file_name} style={{ fontSize: 12 }}>
-                          {f.file_name}：{f.error}
+                  <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                    {!!lastUpload.failed?.length && (
+                      <>
+                        {lastUpload.failed.slice(0, 8).map((f) => (
+                          <Text key={f.file_name} style={{ fontSize: 12 }}>
+                            {f.file_name}：{f.error}
+                          </Text>
+                        ))}
+                        <Button size="small" icon={<ReloadOutlined />} onClick={retryFailed} loading={uploading}>
+                          一键补传这 {lastUpload.failed_files.length} 个（放回同一批次）
+                        </Button>
+                      </>
+                    )}
+                    {/* 批 G：图片尺寸/画幅超限**不拒收**，但必须逐张看见——
+                        角色卡的宽高比决定成片是竖屏还是横屏，看不见这条就会投出一批横屏片 */}
+                    {!!lastUpload.image_notes?.length && (
+                      <div>
+                        <Text type="warning" style={{ fontSize: 12 }}>
+                          {lastUpload.image_notes.length} 张图入库时量出要留意的尺寸/画幅：
                         </Text>
-                      ))}
-                      <Button size="small" icon={<ReloadOutlined />} onClick={retryFailed} loading={uploading}>
-                        一键补传这 {lastUpload.failed_files.length} 个（放回同一批次）
-                      </Button>
-                    </Space>
-                  )
+                        {lastUpload.image_notes.slice(0, 8).map((note, i) => (
+                          <div key={`${note.file_name}-${i}`} style={{ fontSize: 12, color: '#8c8c8c' }}>
+                            {note.file_name || '未命名'}
+                            {note.resolution ? `（${note.resolution}${note.ratio ? ` · ${note.ratio}` : ''}）` : ''}
+                            ：{note.notes.join('；')}
+                          </div>
+                        ))}
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          照样收下了，不改也能用；想竖屏就换竖版卡重传一张。
+                        </Text>
+                      </div>
+                    )}
+                  </Space>
                 }
               />
             )}

@@ -35,7 +35,14 @@ export type AssetStatus =
   | 'composing'
   | 'ready'
   | 'failed'
-  | 'archived';
+  | 'archived'
+  /**
+   * 11-05 批 G：图片素材的**终点态**。图只当生产输入（角色卡），四环（反推/出文案/
+   * 生产/拼接）对它全是 skipped，派生链走不到任何既有态——所以后端单立这一支。
+   * 少了它，每张角色卡都会显示「等读视频」，看着像一堆卡着没人管的活，
+   * 实际正确动作恰恰是**别提交**（提交会白扣一次反推钱）。
+   */
+  | 'image_ready';
 
 /**
  * 生产单状态（PRODUCTION_STATES）。
@@ -62,6 +69,26 @@ export type AssetReviewAction = 'approve' | 'reject' | 'need_rewrite' | 'pass_ed
 
 /** 来源形态：link=分享链接（走 doc/107 解析）/ file=视频文件（落自有桶） */
 export type AssetSourceKind = 'link' | 'file';
+
+/**
+ * 媒体类型（asset_items.media_kind，批 G）。
+ * 业务分流只看这一列，**不许拿扩展名当口径**（后端把这条口径散到六处就是当初的坑）。
+ */
+export type AssetMediaKind = 'video' | 'image';
+
+/**
+ * 图片画幅判读（后端 `_serialize_item.aspect`，只对 media_kind=image 回，视频回 null）。
+ * 口径来自**实测**：成片画幅由角色卡宽高比决定，提示词写 9:16 压不住一张横版卡。
+ * 判据留在后端一处——前端再拼一张比例表，日后口径一改就是两边各说一套。
+ */
+export interface AssetImageAspect {
+  width: number | null;
+  height: number | null;
+  /** '9:16' | '16:9' | '1:1' | '3:4' | '4:3'，量不到尺寸 = null */
+  ratio: string | null;
+  /** 量不到尺寸时也是 null（老数据或探失败，界面要显示「量不到」而不是猜一个） */
+  orientation: 'portrait' | 'landscape' | 'square' | null;
+}
 
 /** 平台标签字面量（asset_service._PLATFORM_BY_HOST 的归一化结果，中文/品牌原名） */
 export type AssetPlatformLabel =
@@ -145,6 +172,14 @@ export interface AssetItem {
   code: string;
   batch_id: string | null;
   source_kind: AssetSourceKind;
+  /**
+   * 批 G：video=走四环流水线的素材；image=**只当角色卡**的图。
+   * 列表/详情按这一列分流（图片显示缩略图、不显示播放器），并据此**隐藏**
+   * 「反推 / 出文案 / 拼接」入口——对图提交任何一个都是白花钱或 400。
+   */
+  media_kind: AssetMediaKind;
+  /** 批 G：图片才有（视频恒 null）；挑卡列表直接显示「这张 9:16 出竖屏」就是它 */
+  aspect?: AssetImageAspect | null;
   source_url: string | null;
   platform: AssetPlatform | null;
   file_name: string | null;
@@ -301,8 +336,14 @@ export interface AssetProduction {
   board_tid: string | null;
   /** 回收组 id，拼 /data<outUrl> 用 */
   board_rgid: string | null;
-  /** 角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡） */
+  /** 角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡）。批 G 后是**历史列**：新单由 card_asset_ids 派生（＝第一张＝主卡），旧单只有这一列 */
   character_card_key: string | null;
+  /**
+   * 批 G：**多卡保序**（asset_items.id 数组，顺序＝板上 picDatas 顺序）。
+   * 一部剧多张定妆照时「谁是第一张」就是主形象——顺序不能由后端 sort 或去重打乱。
+   * 空数组/null = 这单没走新口径，读侧回退 character_card_key（存量单不许因为加列就丢卡）。
+   */
+  card_asset_ids: string[];
   status: ProductionState;
   /** 板上失败行**没有原因字段**：这里只能记我们侧的判读，别当成豆包给的成因 */
   error: string | null;
@@ -740,8 +781,14 @@ export interface AssetProduceRequest {
   board_tag?: string | null;
   /** 五位钩子编号（hook_id.py 取来的，按 n 的顺序对应）；后端不自己编号 */
   hook_codes?: string[] | null;
-  /** 角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡，按剧分组投） */
+  /** 角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡，按剧分组投）。批 G 起只作**兼容入参**：新单子用 card_asset_ids 挑图 */
   character_card_key?: string | null;
+  /**
+   * 批 G：**从素材库挑角色卡**（asset_items.id 数组，顺序＝板上 picDatas 顺序）。
+   * 取代旧的手填 MinIO key——那个框里打错一个字符，后端照样建单，只是静默出无卡任务。
+   * 只收 media_kind=image 的行；传视频 id／已删的 id／桶里没文件的 id，后端在建单**之前**就 400 点名。
+   */
+  card_asset_ids?: string[] | null;
   /** K＝该剧发布号数，决定推荐视频标题条数（1..20，11-02 版：不再固定 5 条） */
   recommended_title_count?: number | null;
   /**
@@ -811,6 +858,11 @@ export interface AssetListParams {
    * ——列表页顶部那句「未分类 N 条」就是拿这个筛选的 `total`，后端不另开口。
    */
   category_id?: string;
+  /**
+   * 批 G：`image` 是投产「挑卡」列表的唯一入口参数（只该看见图）。
+   * 没有它就得让前端把整批拉回来自己按扩展名筛——那等于把 media_kind 的口径散到前端去。
+   */
+  media_kind?: AssetMediaKind;
 }
 
 /** GET /assets/summaries */
@@ -924,6 +976,20 @@ export interface AssetImportBatchResponse {
 export interface AssetUploadFailure {
   file_name: string;
   error: string;
+  /** 批 G：失败项也带分流依据（图片被拒时界面要说「这张图」而不是「这个文件」） */
+  media_kind?: AssetMediaKind;
+}
+
+/**
+ * 批 G：图片入库时的尺寸/画幅提醒（**只列明、不拒收**）。
+ * 每条 notes 是后端写好的人话，例如「长边 4200 超过建议上限 2048」。
+ * 超限照样入库——一线可能就想用大图，但那必须是他看见这条信息之后选的。
+ */
+export interface AssetImageNote {
+  file_name: string | null;
+  resolution: string | null;
+  ratio: string | null;
+  notes: string[];
 }
 
 /** POST /assets/upload/batch 与 POST /assets/upload/retry 同形 */
@@ -936,6 +1002,8 @@ export interface AssetUploadResponse {
   /** 失败文件名清单，供一键走 /assets/upload/retry 补投 */
   failed_files: string[];
   budget: AssetImportBudget | null;
+  /** 批 G：要留意的图片逐张列（没提醒时是空数组，不是 null） */
+  image_notes: AssetImageNote[];
   message: string;
 }
 
@@ -1257,6 +1325,46 @@ export interface AssetProduceTitleWarning {
   limit: number;
 }
 
+/**
+ * 批 G：建单当场回显的逐张卡判读（后端 `_card_shape_notes`）。
+ * 「哪张卡会出横屏」必须在**建单这一屏**看到——投出去以后账上看不出来。
+ * 文案（hint）由后端拼，前端原样显示：口径来自实测（卡决定成片画幅），不是显示偏好。
+ */
+export interface AssetCardShapeNote {
+  asset_id: string;
+  code: string | null;
+  file_name: string | null;
+  width: number | null;
+  height: number | null;
+  ratio: string | null;
+  orientation: 'portrait' | 'landscape' | 'square' | null;
+  hint: string;
+}
+
+/** 批 G：payload 交付单里的逐张卡（读取结果 + 画幅），一张一行，缺哪张点哪张的名 */
+export interface AssetPayloadCard {
+  /** 旧口径单值 key 回退出来的卡没有 asset_id */
+  asset_id: string | null;
+  /** 人话标签：`AS-XXXX（原名）` 或 `旧口径单值 key ...`；读不到时也是它 */
+  label: string;
+  key: string | null;
+  bucket?: string | null;
+  resolution?: string | null;
+  ratio: string | null;
+  orientation: 'portrait' | 'landscape' | 'square' | null;
+  /** true = 走的是历史单值 key（没有 card_asset_ids 的存量单） */
+  legacy: boolean;
+  /** false = 这张卡 base64 没取到 → picDatas 里缺它，投出去就是少一张卡 */
+  loaded: boolean;
+}
+
+/** 批 G：导出侧卡体检汇总（问题逐条在 payloads[].cards / warnings 里，这里只给条数） */
+export interface AssetCardCheck {
+  /** 有卡问题的单条数（缺卡／横版／方向不一都算），0 = 这批卡都没毛病 */
+  rows_with_card_issues: number;
+  note: string;
+}
+
 /** POST /assets/produce */
 export interface AssetProduceResponse {
   created: number;
@@ -1274,6 +1382,13 @@ export interface AssetProduceResponse {
   drifted: AssetProduceDriftItem[];
   /** 推荐标题正文超 18 字的逐条清单（只警示，单子是建成的） */
   title_warnings: AssetProduceTitleWarning[];
+  /**
+   * 批 G：本次投产挂的角色卡逐张判读（**顺序＝picDatas 顺序**）。
+   * D-1 队列化后台跑完才有的结果同样带这一份（job 结果就是本响应原样落库）。
+   */
+  cards: AssetCardShapeNote[];
+  /** 批 G：本次投产实际挂上的卡 id 数组（旧口径单值 key 进来时是空数组） */
+  card_asset_ids: string[];
   /** 缺编号/缺标题/豁免/拦下/缺骨架/漂移等提醒（要逐条显示，别只看 message） */
   warnings: string[];
   message: string;
@@ -1333,6 +1448,8 @@ export interface AssetExportItem {
   board_tag: string | null;
   board_date: string | null;
   character_card_key: string | null;
+  /** 批 G：多卡顺序（＝picDatas 顺序）；空数组＝这单只有旧口径单值 key */
+  card_asset_ids: string[];
   /** R-4：按**当前**违禁词表重扫正文的命中（只有 block 级；没命中就没这个键） */
   risk_hits?: { word: string; level: string }[];
   /** true = 这条被词表点了名，但 admin 带理由放行了（命中信息照实留着） */
@@ -1397,6 +1514,8 @@ export interface AssetBoardPayloadItem {
   payload: AssetBoardPayload;
   /** 缺角色卡 / 缺推荐标题等提醒：逐条点名，不整批失败 */
   warnings: string[];
+  /** 批 G：这条单实际带上板的卡（含 loaded=false 的缺卡，投之前必须处理掉）。逐张点名，必有 */
+  cards: AssetPayloadCard[];
 }
 
 /** format=payload：追加可直接 POST /api-g/aivideo/create 的七键 */
@@ -1408,6 +1527,8 @@ export interface AssetExportPayload extends AssetExportJson {
   payloads: AssetBoardPayloadItem[];
   /** 角色卡未缩放的统一提醒（板侧收到超大 picData 会静默建失败） */
   card_advisory: string;
+  /** 批 G：这批里有几张单卡有问题（缺卡／横版／方向不一），0 = 干净。只 payload 格式有 */
+  card_check: AssetCardCheck;
 }
 
 /** GET /assets/outputs/{id}/download（presigned 一次性外链，同时落 downloaded_at + 审计） */
@@ -1977,7 +2098,7 @@ export const ASSET_STAGE_LABELS: Record<AssetStage, string> = {
   skipped: '跳过',
 };
 
-/** derive_status 的 12 个派生态（值以 models/asset.py 的 AS_* 为准） */
+/** derive_status 的 13 个派生态（值以 models/asset.py 的 AS_* 为准） */
 export const ASSET_STATUS_LABELS: Record<AssetStatus, string> = {
   draft: '草稿',
   importing: '导入中',
@@ -1991,6 +2112,8 @@ export const ASSET_STATUS_LABELS: Record<AssetStatus, string> = {
   ready: '可交付',
   failed: '失败',
   archived: '已归档',
+  /** 批 G：图片素材的终点态——它的「下一步」不是提交，是**被投产挑走** */
+  image_ready: '图片已入库（只当角色卡）',
 };
 
 /**

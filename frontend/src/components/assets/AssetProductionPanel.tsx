@@ -11,7 +11,7 @@ import type {
   AssetDispatchCounts, AssetExportJson, AssetExportPayload, AssetExportTxt, AssetProduction, DispatchReportStatus, ProductionState,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
-import { MonoText, ProductionStateTag } from './AssetBits';
+import { MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
 
 const { Text, Paragraph } = Typography;
 
@@ -563,6 +563,25 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                   </span>
                 }
               />
+              {/*
+                批 G：卡是花钱传上来的生产输入，「建单时挑了卡、导出时图取不到」这种事的代价是
+                板上 picDatas 空着、画中人全靠模型自由发挥，事后看不出来。所以这里把后端算好的
+                缺卡计数照实说一遍（口径在后端 `_card_sources_for`，前端不自己判）。
+              */}
+              {exportData.format === 'payload' &&
+                !!((exportData as AssetExportPayload).card_check?.rows_with_card_issues ?? 0) && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={`${(exportData as AssetExportPayload).card_check!.rows_with_card_issues} 张单在投板前有要先处理的事（缺卡／图取不到／横版／方向不一致／缺推荐标题），逐条点名在「角色卡」这列`}
+                    description={
+                      <Text style={{ fontSize: 12 }}>
+                        {(exportData as AssetExportPayload).card_check!.note ||
+                          '常见三种：素材行已删、桶里没有这个 key、旧单只有手填的单值 key。'}
+                      </Text>
+                    }
+                  />
+                )}
               {!!exportData.blocked?.length && (
                 <div>
                   <Text type="secondary" style={{ fontSize: 12 }}>
@@ -648,6 +667,56 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                   columns={[
                     { title: '编号', dataIndex: 'hook_code', width: 90, render: (v: string | null) => v || '-' },
                     { title: '素材', dataIndex: 'asset_code', width: 100 },
+                    {
+                      // 批 G：板侧按数组顺序认主次，所以这里必须**按顺序**摊开，并说清每张会出什么画幅
+                      // （实测口径：成片画幅由角色卡的宽高比决定，提示词写 9:16 压不住横版卡）。
+                      // 后端逐条算好的 warnings 以前只是躺在响应里没人渲染——投板前最后一屏就该看见它。
+                      title: '角色卡（顺序＝板上的图序）',
+                      key: 'cards',
+                      width: 300,
+                      render: (_, r: AssetExportPayload['payloads'][number]) => (
+                        <Space direction="vertical" size={0} style={{ width: '100%' }}>
+                          {(r.cards || []).length === 0 ? (
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              这单没挑卡
+                            </Text>
+                          ) : (
+                            (r.cards || []).map((c, i) => (
+                              <Space key={`${c.asset_id || c.key}-${i}`} size={4} wrap>
+                                <Text style={{ fontSize: 12 }}>
+                                  {i + 1}. {c.label}
+                                </Text>
+                                {c.loaded === false && <Tag color="red">图取不到</Tag>}
+                                {c.legacy && <Tag>旧口径单值</Tag>}
+                                {!c.legacy && c.loaded !== false && (
+                                  <Tag
+                                    color={
+                                      c.orientation === 'landscape'
+                                        ? 'red'
+                                        : c.orientation
+                                          ? 'default'
+                                          : 'orange'
+                                    }
+                                  >
+                                    {aspectShortText({
+                                      width: null,
+                                      height: null,
+                                      ratio: c.ratio ?? null,
+                                      orientation: c.orientation ?? null,
+                                    })}
+                                  </Tag>
+                                )}
+                              </Space>
+                            ))
+                          )}
+                          {(r.warnings || []).map((w, i) => (
+                            <Text key={`w-${i}`} type="danger" style={{ fontSize: 12 }}>
+                              {w}
+                            </Text>
+                          ))}
+                        </Space>
+                      ),
+                    },
                     {
                       title: '七键',
                       key: 'p',

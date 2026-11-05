@@ -5,6 +5,7 @@ import {
 import { DEFAULT_TIER, RECHECK_CODE_LABELS, assetApi, isAssetJobAck, waitForAssetJob } from '../../api/assets';
 import type { AssetProduceResponse, AssetSummary } from '../../api/assets';
 import { HOOK_CODE_RE, MonoText, parseHookCodes } from './AssetBits';
+import AssetCardPicker from './AssetCardPicker';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
 
 const { Text, Paragraph } = Typography;
@@ -36,7 +37,12 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const [accounts, setAccounts] = useState(1);
   const [titleCount, setTitleCount] = useState<number | undefined>(undefined);
   const [boardTag, setBoardTag] = useState('');
-  const [cardKey, setCardKey] = useState('');
+  /**
+   * 批 G：角色卡改成「从素材库挑」，这里存的是 asset_items.id 数组，
+   * **顺序＝板上 picDatas 顺序**。旧的那个手填 MinIO key 的框已经删掉——
+   * 那个值被后端原样当 key 用，打错一个字符照样建单，只是投出去是一条没卡的片。
+   */
+  const [cardIds, setCardIds] = useState<string[]>([]);
   const [dramaAbbr, setDramaAbbr] = useState('');
   const [codeText, setCodeText] = useState('');
   const [expand, setExpand] = useState(true);
@@ -95,7 +101,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
         accounts,
         recommended_title_count: titleCount,
         board_tag: boardTag || undefined,
-        character_card_key: cardKey || undefined,
+        card_asset_ids: cardIds.length ? cardIds : undefined,
         drama_abbr: dramaAbbr.trim() || undefined,
         hook_codes: codes.length ? codes : undefined,
         expand,
@@ -285,6 +291,25 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               }
             />
           )}
+          {!!result.cards?.length && (
+            <Alert
+              type={result.cards.some((c) => c.orientation === 'landscape') ? 'warning' : 'info'}
+              showIcon
+              message={`这批带上的角色卡 ${result.cards.length} 张（第 1 张＝板上的第 1 张图＝主形象）`}
+              description={
+                <Space direction="vertical" size={2}>
+                  {result.cards.map((c, i) => (
+                    <Text key={`${c.asset_id}-${i}`} style={{ fontSize: 12 }}>
+                      {i + 1}. {c.code || (c.asset_id || '').slice(0, 8)}｜{c.hint}
+                    </Text>
+                  ))}
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    导出 payload 时还会逐张核对能不能读到；画幅不合就现在回去换卡，别等投上板。
+                  </Text>
+                </Space>
+              }
+            />
+          )}
           {!!result.warnings?.length && (
             <Alert
               type="info"
@@ -395,9 +420,6 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
 
           <Space wrap>
             <Input placeholder="板上的归属标记（留空用默认）" style={{ width: 220 }} value={boardTag} onChange={(e) => setBoardTag(e.target.value)} />
-            <Tooltip title="角色卡存在我们自己存储里的编号，建板任务时当图片带上（同一部剧用同一张卡，按剧分组投）">
-              <Input placeholder="角色卡编号（可选）" style={{ width: 260 }} value={cardKey} onChange={(e) => setCardKey(e.target.value)} />
-            </Tooltip>
             <Tooltip title="剧名缩写要用 NAS《剧名缩写表.json》里的，全团队统一、禁止临时造。推荐标题按规范写「剧缩·编号·精简钩子」；留空就降级成「编号·精简钩子」，并在偏差说明里标注缺剧缩（缩写表在容器里读不到，只能由一线带进来）">
               <Input
                 placeholder="剧名缩写（可选，如 救总裁）"
@@ -408,6 +430,8 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               />
             </Tooltip>
           </Space>
+
+          <AssetCardPicker active={open} value={cardIds} onChange={setCardIds} />
 
           <Checkbox checked={expand} onChange={(e) => setExpand(e.target.checked)}>
             让 AI 按标准模板把文案展开成能直接投的提示词

@@ -7,7 +7,7 @@ import {
   PRODUCTION_STATE_LABELS,
   STAGE_FIELDS,
 } from '../../api/assets';
-import type { AssetBudgetGate, AssetBudgetGateInfo, AssetItem, AssetStage, AssetStatus, AuditStatus, ProductionState } from '../../api/assets';
+import type { AssetBudgetGate, AssetBudgetGateInfo, AssetImageAspect, AssetItem, AssetMediaKind, AssetStage, AssetStatus, AuditStatus, ProductionState } from '../../api/assets';
 
 const { Text } = Typography;
 
@@ -77,11 +77,57 @@ const ASSET_STATUS_COLOR: Record<AssetStatus, string> = {
   ready: 'success',
   failed: 'error',
   archived: 'warning',
+  /** 批 G：图片不是流水线的一环，是「躺在库里等人挑」的生产输入——给个跟四环都不同的色，一眼分得开 */
+  image_ready: 'purple',
 };
 
 export const AssetStatusTag: React.FC<{ status: AssetStatus }> = ({ status }) => (
   <Tag color={ASSET_STATUS_COLOR[status] || 'default'}>{ASSET_STATUS_LABELS[status] || status}</Tag>
 );
+
+/**
+ * 批 G：这行素材是不是图片（角色卡）。
+ * 只看 `media_kind` 这一列，**不许拿扩展名判**——后端把扩展名分流收在入库那一次，
+ * 之后所有环节都读这一列；前端再按扩展名判一次就是第七处口径。
+ */
+export const isImageAsset = (
+  a: { media_kind?: AssetMediaKind | null } | null | undefined,
+): boolean => a?.media_kind === 'image';
+
+/**
+ * 画幅短标签（挑卡列表 / 素材行用；投产响应里的整句 hint 后端已经写好，直接用那条）。
+ * `ratio/orientation` 一律取后端算好的值，这里**只做显示措辞**：
+ * 「成片画幅由角色卡宽高比决定」是实测口径，前端另拼一张比例表日后必打架。
+ */
+export const aspectShortText = (aspect?: AssetImageAspect | null): string => {
+  if (!aspect || !aspect.ratio) return '画幅未知';
+  switch (aspect.orientation) {
+    case 'landscape':
+      return `${aspect.ratio} 横版 → 出横屏`;
+    case 'square':
+      return `${aspect.ratio} 方图`;
+    case 'portrait':
+      return `${aspect.ratio} 竖屏`;
+    default:
+      // 后端量不到尺寸时 orientation=null（老数据或探失败）：只报比例，别替它猜方向
+      return aspect.ratio;
+  }
+};
+
+/** 批 G：视频 / 图片（角色卡）标记，列表与详情共用 */
+export const MediaKindTag: React.FC<{ asset: AssetItem }> = ({ asset }) =>
+  isImageAsset(asset) ? (
+    <Tooltip
+      title={
+        `图片素材：只作生产输入（投产时当角色卡带上），不参与读视频、出文案、拼接，也不计费。` +
+        `画幅：${aspectShortText(asset.aspect)}——成片画幅跟卡走，横版的卡会出横屏。`
+      }
+    >
+      <Tag color="purple">角色卡</Tag>
+    </Tooltip>
+  ) : (
+    <Tag>视频</Tag>
+  );
 
 const AUDIT_COLOR: Record<AuditStatus, string> = {
   pending: 'orange',
