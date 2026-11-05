@@ -21,18 +21,25 @@ def _derive(script: Optional[str]):
 class TestDerive:
     def test_primary_theme_section(self):
         s = "### 视频核心主题\n揭露假身份的冲突，涉及被藏匿的亲生妈妈。\n\n### 主要人物设定\n1. 宝宝"
-        assert _derive(s) == "揭露假身份的冲突，涉及被藏匿的亲生妈妈"
+        assert _derive(s) == "揭露假身份的冲突"
 
     def test_fallback_first_prose_line(self):
         assert _derive("这是一篇没有小节标记的详规文本\n第二行") == "这是一篇没有小节标记的详规文本"
 
     def test_strips_markdown_decorations(self):
         assert _derive("### 视频核心主题\n**床车露营看日出，治愈系开场**") == "床车露营看日出，治愈系开场"
-        assert _derive("### 视频核心主题\n### 人物") == "人物"
-        assert _derive("### 视频核心主题\n主题：床车露营") == "床车露营"
+        assert _derive("### 视频核心主题\n### 人物") is None  # 「人物」两字不成标题，宁缺勿滥
+        assert _derive("### 视频核心主题\n主题：床车露营看日出，治愈开场") == "床车露营看日出，治愈开场"
 
-    def test_truncates_to_24(self):
+    def test_truncates_to_24_when_no_punctuation(self):
         assert len(_derive("### 视频核心主题\n" + "很" * 40)) == 24
+
+    def test_timestamp_script_body_used(self):
+        # 分镜体详规：时间轴前缀剥掉后正文当标题
+        assert _derive("00:00-00:03：画面为五人围坐在餐桌前吃饭，其中一位婆婆说话。") == "画面为五人围坐在餐桌前吃饭"
+
+    def test_section_header_lines_never_become_title(self):
+        assert _derive("### 视频拆解总结\n**人物设定**：") is None
 
     def test_empty_returns_none(self):
         assert _derive("") is None

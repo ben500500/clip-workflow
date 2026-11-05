@@ -2861,27 +2861,63 @@ def _derive_asset_title_from_script(script: Optional[str]) -> Optional[str]:
 
     11-06 用户实测实锤：抽屉占位承诺「反推文案成功后才有标题」，但**没有任何代码写过
     asset.title**——链接素材反推成功后标题仍是空，审核台卡片只能靠 AS 号认素材。
-    取「### 视频核心主题」一节第一行；取不到就取第一段像标题的行；再取不到回 None
+
+    详规结构五花八门（「### 视频核心主题」小节 / 「视频拆解总结」整篇时间轴），所以是
+    扫描式不是定位式：剥掉 markdown/时间轴/标签前缀后，找第一条「像标题」的行
+    （≥8 字、不是小节头、不以冒号结尾）；「核心主题」小节内的行优先。取不到回 None
     （绝不硬编、绝不写 AS 号当标题）。
     """
     if not script:
         return None
-    m = re.search(r"#{0,4}\s*视频核心主题\s*\n+(.+)", script)
-    line = (m.group(1) if m else "").strip()
-    line = re.sub(r"^[#\*\-\d\.\s]+", "", line).strip()  # 主路径的行也去 markdown 记号
-    if not line:
-        for raw in (script or "").splitlines():
-            t = raw.strip().lstrip("#").strip()
-            t = re.sub(r"^[\*\-\d\.\s]+", "", t).strip()
-            if t and not t.endswith(("：", ":", "—")) and len(t) >= 4:
-                line = t
-                break
-    if not line:
-        return None
-    line = line.replace("**", "").strip()
-    line = re.sub(r"^(视频)?(核心)?主题[:：]\s*", "", line)
-    line = re.sub(r"^[\*\-\d\.\s]+", "", line).strip().strip("。；;，,")
-    return (line[:24] or None)
+
+    def _clean(t: str) -> str:
+        t = t.strip().lstrip("#").replace("**", "").strip()
+        # 时间轴前缀（00:00-00:03：）先剥——必须在数字剥离之前，否则行首 "00" 被当编号吃掉
+        t = re.sub(r"^\d{1,2}:\d{2}(\s*[-–—]\s*\d{1,2}:\d{2})?[:：]?\s*", "", t)
+        t = re.sub(r"^[\*\-\d\.\s]+", "", t).strip()
+        t = re.sub(r"^(视频)?(核心)?主题[:：]\s*", "", t)
+        return t.strip().strip("。；;，,")
+
+    def _looks_like_title(t: str) -> bool:
+        if len(t) < 8 or t.endswith(("：", ":", "—")):
+            return False
+        if re.match(r"^(视频|音频)?(拆解|概述|总结|内容分析)$", t):
+            return False
+        return True
+
+    lines = [_clean(x) for x in script.splitlines()]
+    # ①「核心主题」小节优先（从标记行到下一个标题行之间）
+    focus: list[str] = []
+    in_focus = False
+    for raw in script.splitlines():
+        stripped = raw.strip()
+        if "核心主题" in stripped and ("#" in stripped or stripped.endswith(("：", ":")) or "**核心主题**" in stripped):
+            in_focus = True
+            # 行内直接带正文的情况（**核心主题**：讲述了……）
+            inline = _clean(stripped.split("：", 1)[-1] if "：" in stripped else "")
+            if _looks_like_title(inline):
+                focus.append(inline)
+            continue
+        if in_focus and stripped.startswith("#"):
+            break
+        if in_focus:
+            focus.append(_clean(stripped))
+    def _cut24(t: str) -> Optional[str]:
+        t = t[:24]
+        # 24 字硬截会拦腰切词（「强势婆」）；24 字内有标点就落在标点上，且保底 ≥8 字
+        for i in range(len(t) - 1, 7, -1):
+            if t[i] in "，。、；：":
+                return t[:i + 1].strip("，。、；：") or None
+        return t or None
+
+    for t in focus:
+        if _looks_like_title(t):
+            return _cut24(t)
+    # ② 全文兜底
+    for t in lines:
+        if _looks_like_title(t):
+            return _cut24(t)
+    return None
 
 
 def _backfill_title_on_prompt_success(asset: AssetItem, script: Optional[str]) -> bool:
