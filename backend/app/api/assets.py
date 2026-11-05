@@ -7702,16 +7702,34 @@ async def download_asset_sources(
         },
     )
     await db.commit()
+
+    # 11-05 易操作性评估 P0-1：链接素材下载成功后**原片已在自有桶里**，却从来没人排抽帧
+    # （上传 1881 行、拼接 7199 行都排，唯独下载这条漏了）——现网 asset_frames 0 行实锤，
+    # 审核台卡片永远「没有预览图」，审核员全程只能凭文字审。这里搭车补排；
+    # 排失败只回 note 不连累下载结果（与 _enqueue_frames 的既有口径一致）。
+    downloaded_ids = [r["asset_id"] for r in results if r.get("ok")]
+    frames: Optional[Dict[str, Any]] = None
+    if downloaded_ids:
+        frames = await _enqueue_frames(
+            db, asset_ids=downloaded_ids, output_ids=[],
+            operator=current_user, why="原片下载完成",
+        )
     return {
         "results": results,
         "skipped": skipped,
         "downloaded": downloaded,
         "charged": charged_total,
         "channels": channels,
+        "frames": frames,
         "message": (
             f"原片下载：成功 {downloaded} 条 / 共 {len(todo)} 条"
             + (f"，解析实扣 {charged_total} 元" if charged_total else "，未产生解析费")
             + (f"；跳过 {len(skipped)} 条已在桶里" if skipped else "")
+            + (
+                "；抽帧已排后台，几分钟内审核卡片就有图"
+                if frames and frames.get("queued")
+                else (f"；{frames.get('note')}" if frames and frames.get("note") else "")
+            )
         ),
     }
 

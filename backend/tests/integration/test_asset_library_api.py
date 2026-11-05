@@ -6657,6 +6657,58 @@ def test_download_endpoint_four_piece_set_charges_paid_channel_and_is_idempotent
     _run(_scenario())
 
 
+def test_download_success_enqueues_frames_for_review_cards():
+    """11-05 易操作性评估 P0-1：链接素材原片下载落桶后**必须**补排抽帧。
+
+    修前现状：上传（导入）和拼接两条路都排抽帧，唯独下载这条漏了——现网
+    asset_frames 0 行实锤，链接素材的审核台卡片永远「没有预览图」，
+    审核员全程只能凭文字审。修后：下载成功即排，失败条不排、不连累下载结果。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        from wechat_download.provider_registry import ProviderParseError
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+
+        parsed = SimpleNamespace(success=True, channel="paid-http", play_url="http://cdn.example/v.mp4",
+                                 duration=None, title="某剧某集", meta={})
+        with patch("app.api.assets.dispatch_parse", AsyncMock(return_value=parsed)), \
+             patch("app.api.assets.get_downloader", lambda: _FakePullDownloader()), \
+             patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+             patch("app.api.assets._probe_duration", AsyncMock(return_value=8.42)), \
+             patch("app.api.assets._enqueue_frames", AsyncMock(
+                 return_value={"queued": True, "job_id": "jf1", "note": None})) as enq:
+            resp = await client.post(
+                "/api/assets/download", json={"asset_ids": [asset_id]}, headers=hm)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["downloaded"] == 1
+        assert body["frames"] == {"queued": True, "job_id": "jf1", "note": None}
+        assert "抽帧已排后台" in body["message"], "回话里要告诉一线卡片几分钟后有图"
+        enq.assert_awaited_once()
+        kw = enq.await_args.kwargs
+        assert kw["asset_ids"] == [asset_id] and kw["output_ids"] == []
+        assert kw["why"] == "原片下载完成"
+
+        # 失败条不排：解析炸了（没落桶）就没什么好抽的，抽帧排程也不该被发起
+        r2 = await _import(client, hm, ["https://www.douyin.com/video/7612222333334667555"])
+        id2 = r2.json()["items"][0]["id"]
+        with patch("app.api.assets.dispatch_parse", AsyncMock(
+                side_effect=ProviderParseError("yuanbao 限流"))), \
+             patch("app.api.assets._enqueue_frames", AsyncMock()) as enq2:
+            resp2 = await client.post(
+                "/api/assets/download", json={"asset_ids": [id2]}, headers=hm)
+        assert resp2.status_code == 200
+        assert resp2.json()["downloaded"] == 0
+        assert resp2.json()["frames"] is None
+        enq2.assert_not_awaited()
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_download_failures_are_per_item_and_fail_soft():
     """解析失败/拉流失败都逐条标 failed 带原因，不连坐整批、解析失败不记账。"""
     _run(_bootstrap())

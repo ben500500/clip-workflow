@@ -266,6 +266,34 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
       const warned = (res.results || []).filter((r) => r.ok && (r.warnings || []).length);
       if (!failed.length && !blocked.length && !warned.length) message.success(res.message);
       else if (!blocked.length) message.warning(res.message, 8);
+      // 11-05 易操作性评估 P0-2：审完的条目会**从当前视图消失**——状态筛选还停在
+      // 「等审核」，卡片一刷新就不见了；过审的还是非推荐条时，「推荐条」范围会把它
+      // 二次藏住（实测要把状态和范围两个筛选都切过才找得回来）。这里只在「当前筛选
+      // 确实会把刚处理的条藏掉」时补一句去哪了，平时不加噪音。
+      const okCount = (res.results || []).filter((r) => r.ok).length;
+      const afterStatus: Record<string, string> = {
+        approve: 'approved',
+        reject: 'rejected',
+        need_rewrite: 'need_rewrite',
+        pass_edited: 'passed_edited',
+      };
+      const target = afterStatus[action];
+      const hints: string[] = [];
+      if (okCount > 0 && target && auditStatus && auditStatus !== target) {
+        hints.push(
+          `这 ${okCount} 条现在已是「${AUDIT_STATUS_LABELS[target] ?? target}」，会被当前状态筛选藏住——状态切到「${AUDIT_STATUS_LABELS[target] ?? target}」能再看到`,
+        );
+      }
+      if (action === 'approve' && scope === 'recommended') {
+        const pool = data?.items || [];
+        const nonRec = pool.filter((i) => targetIds.includes(i.id) && !i.is_recommended).length;
+        if (nonRec) {
+          hints.push(
+            `其中 ${nonRec} 条不是推荐条，「推荐条」范围也会把它们藏住——范围切「全部」才看得到`,
+          );
+        }
+      }
+      if (hints.length) message.info(hints.join('；'), 10);
       setSelected([]);
       fetchList(1, pageSize);
     } catch (e) {
