@@ -585,6 +585,9 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       title: '标题 / 来源',
       dataIndex: 'title',
       ellipsis: true,
+      // 批 J：给个默认宽（没有 numeric width 的列不挂拖拽把手，被别的列拖挤到 50px 时
+      // 用户连拽回来都做不到——截图验收里真发生了）
+      width: 240,
       render: (v: string | null, row) => (
         // 批 J：全文挪进悬浮提示，列里只显示截断的链接（域名+尾巴），拖宽列也看得到全文
         <Tooltip
