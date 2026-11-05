@@ -3,22 +3,23 @@ import {
   Alert, Button, Card, Checkbox, Input, Modal, Popover, Segmented, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
-  CheckCircleOutlined, CloseCircleOutlined, EditOutlined, QuestionCircleOutlined,
+  CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
   ReloadOutlined, SafetyCertificateOutlined, SendOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { AUDIT_STATUS_LABELS, HOOK_STYLE_LABELS, RECHECK_CODE_LABELS, assetApi } from '../../api/assets';
+import { AUDIT_STATUS_LABELS, RECHECK_CODE_LABELS, assetApi } from '../../api/assets';
 import type {
   AssetBatch, AssetReviewAction, AssetReviewResultItem, AssetSummary, AssetSummaryListResult,
 } from '../../api/assets';
-import { AuditStatusTag, RiskTags } from './AssetBits';
 import {
-  CategorySelect, CategoryTag, invalidateAssetCategories, useAssetCategories,
+  CategorySelect, invalidateAssetCategories, useAssetCategories,
 } from './AssetCategoryBits';
+import { useAssetFrames } from './AssetFrameBits';
+import AssetReviewCard from './AssetReviewCard';
 import ProduceOrderModal from './ProduceOrderModal';
 import RiskLexiconDrawer from './RiskLexiconDrawer';
 
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
 /**
  * 一条被拦结果里「可以按类放行」的问题类型。
@@ -56,6 +57,11 @@ interface Props {
  * 撤销过审会连带作废这条文案下**还没投出去**的生产单，所以撤销动作单独走一次确认。
  * 「原型」那一列是结构层人工标记（11-04 拍板①）：出稿时从素材继承，可以就地改、也可以不点，
  * 它不参与过审判定，所以既不在四个互斥范围里，也不做任何拦截。
+ *
+ * **11-05 批 F：一行从"表格列"改成一张卡片**——左＝原片三帧（点开九宫格）、
+ * 中＝素材与文案、右＝徽标（命中违禁词／和原视频对不上／已产 N 条）+ 操作。
+ * 表格外壳留着只是为了 rowSelection 和分页，列定义合成一格。
+ * 帧是纯呈现层：`GET /assets/frames` 拉不到就当没图，审核动作照点。
  */
 const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken }) => {
   const [data, setData] = useState<AssetSummaryListResult | null>(null);
@@ -173,6 +179,13 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
   }, [reloadToken]);
 
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
+
+  /**
+   * 卡片左边的三帧（批 F）：整页素材一次批量取，同素材的 3 条候选共用一份。
+   * 直链 1 小时过期，所以跟着列表走——不缓存翻页前的旧直链。
+   */
+  const itemAssetIds = useMemo(() => items.map((i) => i.asset_id), [items]);
+  const { slots: frameSlots, loading: framesLoading } = useAssetFrames(itemAssetIds);
 
   /** 批次下拉选项：编号 + 名称 + 条数，比让人手填 UUID 强得多。 */
   const batchOptions = useMemo(() => {
@@ -427,172 +440,34 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
 
   const columns: ColumnsType<AssetSummary> = [
     {
-      title: '素材',
-      key: 'asset',
-      width: 180,
+      // 批 F：一行＝一张卡片（左三帧｜中文案｜右徽标+操作）。
+      // 表格列还留着——rowSelection / 分页 / loading 都靠它，只把"列"合成一格。
+      key: 'card',
       render: (_, r) => (
-        <Space direction="vertical" size={0}>
-          <Tag>{r.asset_code || r.asset_id.slice(0, 8)}</Tag>
-          <Text type="secondary" style={{ fontSize: 12 }} ellipsis>
-            {r.asset_title || '（无标题）'}
-          </Text>
-        </Space>
+        <AssetReviewCard
+          row={r}
+          slot={frameSlots[r.asset_id]}
+          framesLoading={framesLoading}
+          canReview={canReview}
+          busy={busy}
+          onApprove={(row) => runReview('approve', { summaryIds: [row.id] })}
+          onEdit={(row) => {
+            setEditing(row);
+            setEditText(row.text);
+            setEditCat(row.category_id || undefined);
+          }}
+          onReject={(row) => {
+            setSelected([row]);
+            askReason('reject');
+          }}
+          onResubmit={(row) => {
+            setResubmitFor(row);
+            setResubmitText(row.text);
+            setResubmitNote('');
+          }}
+        />
       ),
     },
-    {
-      title: '候选',
-      key: 'seq',
-      width: 70,
-      render: (_, r) => (
-        <Space size={2}>
-          <Text>#{r.seq}</Text>
-          {r.is_recommended && <Tag color="green">推荐</Tag>}
-        </Space>
-      ),
-    },
-    {
-      title: '文案',
-      dataIndex: 'text',
-      render: (v: string, r) => (
-        <Space direction="vertical" size={2} style={{ width: '100%' }}>
-          <Paragraph
-            style={{ marginBottom: 0 }}
-            ellipsis={{ rows: 3, expandable: 'collapsible', symbol: (expanded) => (expanded ? '收起' : '展开') }}
-          >
-            {v}
-          </Paragraph>
-          {r.text_before_edit && (
-            <Tooltip title={`改前原文：${r.text_before_edit}`}>
-              <Tag color={r.audit_status === 'passed_edited' ? 'cyan' : 'geekblue'}>
-                {r.audit_status === 'passed_edited'
-                  ? '审核人改后通过'
-                  : r.audit_status === 'approved'
-                    ? '作者重提后过审'
-                    : '改过并重提'}
-              </Tag>
-            </Tooltip>
-          )}
-        </Space>
-      ),
-    },
-    {
-      title: '字数',
-      dataIndex: 'word_count',
-      width: 62,
-      render: (v: number | null) => v ?? '-',
-    },
-    {
-      title: '风格 / 公式',
-      key: 'tags',
-      width: 140,
-      render: (_, r) => (
-        <Space size={2} wrap>
-          {r.style_tag && <Tag>{HOOK_STYLE_LABELS[r.style_tag] || r.style_tag}</Tag>}
-          {r.formula_tag && <Tag color="geekblue">{r.formula_tag}</Tag>}
-        </Space>
-      ),
-    },
-    {
-      title: '原型',
-      key: 'category',
-      width: 76,
-      render: (_, r) => <CategoryTag categoryId={r.category_id} categoryName={r.category_name} />,
-    },
-    {
-      title: '自动检查',
-      key: 'check',
-      width: 150,
-      render: (_, r) => (
-        <Space direction="vertical" size={2}>
-          <RiskTags riskHit={r.risk_hit} />
-          {r.consistency_ok === false ? (
-            <Tooltip title={r.consistency_note || ''}>
-              <Tag color="orange">和原视频对不上</Tag>
-            </Tooltip>
-          ) : r.consistency_ok === true ? (
-            <Tag color="green">和原视频对得上</Tag>
-          ) : (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              还没校验
-            </Text>
-          )}
-        </Space>
-      ),
-    },
-    {
-      title: '状态',
-      dataIndex: 'audit_status',
-      width: 92,
-      render: (v: AssetSummary['audit_status'], r) => (
-        <Tooltip title={r.reject_reason ? `理由：${r.reject_reason}` : undefined}>
-          <span>
-            <AuditStatusTag status={v} />
-          </span>
-        </Tooltip>
-      ),
-    },
-    ...(canReview || items.some((r) => r.can_resubmit)
-      ? [
-          {
-            title: '操作',
-            key: 'op',
-            width: 230,
-            fixed: 'right' as const,
-            render: (_: unknown, r: AssetSummary) => (
-              <Space size={2}>
-                {r.can_resubmit && (
-                  <Tooltip title="把文案改了交回待审队列，等审核人再过一遍（改前改后都留档）">
-                    <Button
-                      size="small"
-                      icon={<SendOutlined />}
-                      loading={busy}
-                      onClick={() => {
-                        setResubmitFor(r);
-                        setResubmitText(r.text);
-                        setResubmitNote('');
-                      }}
-                    >
-                      改后重提
-                    </Button>
-                  </Tooltip>
-                )}
-                {canReview && (
-                  <>
-                    <Tooltip title="写文案的人不能审自己写的文案（管理员除外）">
-                      <Button
-                        size="small"
-                        type="primary"
-                        icon={<CheckCircleOutlined />}
-                        loading={busy}
-                        onClick={() => runReview('approve', { summaryIds: [r.id] })}
-                      >
-                        过
-                      </Button>
-                    </Tooltip>
-                    <Button
-                      size="small"
-                      icon={<EditOutlined />}
-                      onClick={() => {
-                        setEditing(r);
-                        setEditText(r.text);
-                        setEditCat(r.category_id || undefined);
-                      }}
-                    >
-                      改后过
-                    </Button>
-                    <Button size="small" icon={<CloseCircleOutlined />} onClick={() => {
-                      setSelected([r]);
-                      askReason('reject');
-                    }}>
-                      驳
-                    </Button>
-                  </>
-                )}
-              </Space>
-            ),
-          },
-        ]
-      : []),
   ];
 
   const approvedSelected = selected.filter((s) => s.audit_status === 'approved' || s.audit_status === 'passed_edited');
@@ -610,6 +485,10 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                 <p style={{ marginBottom: 6 }}>
                   一条素材出 3 条候选文案，其中 1 条被模型标为推荐。审核台默认只把推荐条摆到你面前——
                   3 条全勾一遍过，等于没审。
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  <strong>卡片左边</strong>是这条原片抽的三帧（第 10%／45%／80%，不取第一帧：开头常是黑边或台标），
+                  点一下看九宫格。图由后台抽帧任务补，<strong>没图不影响审核</strong>，也不参与任何判定。
                 </p>
                 <p style={{ marginBottom: 6 }}>
                   <strong>过审</strong>：这条就是要拿去投放的文案。过审前会先自动查一遍（超字数／命中违禁词／和原视频对不上都会被拦），
@@ -828,7 +707,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         loading={loading}
         columns={columns}
         dataSource={items}
-        scroll={{ x: 1330 }}
+        // 卡片行不需要表头解释自己：一行就是一张卡，列名反而成了噪声（徽标含义在「怎么用」里）
+        showHeader={false}
         rowSelection={
           canReview
             ? { selectedRowKeys: ids, onChange: (_, rows) => setSelected(rows) }

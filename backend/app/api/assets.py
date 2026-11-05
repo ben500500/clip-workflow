@@ -1002,7 +1002,7 @@ def _can_resubmit(summary: AssetSummary, asset: AssetItem, current_user: User) -
 
 def _serialize_summary(
     s: AssetSummary, asset: Optional[AssetItem] = None, *, can_resubmit: bool = False,
-    category_name: Optional[str] = None,
+    category_name: Optional[str] = None, output_count: Optional[int] = None,
 ) -> dict:
     data = {
         "id": str(s.id),
@@ -1034,6 +1034,11 @@ def _serialize_summary(
         data["asset_source_url"] = asset.source_url
         data["asset_platform"] = asset.platform
         data["asset_status"] = asset.status
+    if output_count is not None:
+        # 批 F 卡片右侧「已产 N 条」：只有 list_summaries 会查（整页一次聚合），
+        # 别的调用方不传 = 这个键**不存在**，而不是 0——0 和"没查"是两回事，
+        # 卡片拿 0 会画成「这条还没产出」，那是假信息。
+        data["output_count"] = int(output_count)
     return data
 
 
@@ -3428,12 +3433,34 @@ async def list_summaries(
         )
     ).all()
     cat_names = await _category_name_map(db)
+    # 批 F 卡片右侧「已产 N 条」：`asset_summaries.id → asset_productions.summary_id
+    # → asset_outputs.production_id` 一条 join，整页一次聚合（默认一页 100 条，
+    # 逐行数＝100 次查询）。
+    # 只数**视频**：package（交付包 zip）/copy（文案 txt）是附属文件，算进去会让
+    # 「一条成片配一份 zip」看起来像产了 2 条。拼接产物没挂生产单（production_id
+    # 为空）→ 不计：那是"两段拼的"，不归到某条文案头上。
+    out_counts: Dict[Any, int] = {}
+    sids = [s.id for s, _a in rows]
+    if sids:
+        orows = (
+            await db.execute(
+                select(AssetProduction.summary_id, func.count(AssetOutput.id))
+                .join(AssetOutput, AssetOutput.production_id == AssetProduction.id)
+                .where(
+                    AssetProduction.summary_id.in_(sids),
+                    AssetOutput.kind.notin_(("package", "copy")),
+                )
+                .group_by(AssetProduction.summary_id)
+            )
+        ).all()
+        out_counts = {sid: int(cnt) for sid, cnt in orows}
     return {
         "items": [
             _serialize_summary(
                 s, a,
                 can_resubmit=_can_resubmit(s, a, current_user),
                 category_name=cat_names.get(str(s.category_id)) if s.category_id else None,
+                output_count=out_counts.get(s.id, 0),
             )
             for s, a in rows
         ],

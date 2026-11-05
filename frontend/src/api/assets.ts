@@ -242,6 +242,12 @@ export interface AssetSummary {
   category_name?: string | null;
   /** 这条文案现在能不能「改后重新提审」：被驳回/需改写 且 你是素材负责人或 admin */
   can_resubmit?: boolean;
+  /**
+   * 已产条数（批 F 卡片右侧徽标）：这条文案派生的生产单出了几条视频。
+   * **只有 `listSummaries` 会带这个键**（整页一次聚合）；详情口不带＝"没查"，
+   * 和 0（查了、确实一条没产）是两回事，所以类型是 optional 而不是 number。
+   */
+  output_count?: number;
   created_at: string;
   // ── 仅 list_summaries 回（join 素材行）；getAsset 的 summaries 不带这些键 ──
   asset_code?: string;
@@ -1563,8 +1569,66 @@ export interface AssetOutputPreviewResult {
   expires_in: number;
 }
 
-/** POST /assets/{asset_id}/prompt-refresh：轮询反推任务并收敛阶段态 */
-export interface AssetPromptRefreshResponse {
+/** 帧类型：thumb=素材单帧 / grid=九宫格（点开才看）/ output_thumb=产物首帧 */
+export type AssetFrameKind = 'thumb' | 'grid' | 'output_thumb';
+
+/** 一张抽出来的帧（批 F）。`url` 是**内联** presign，挂了 attachment 卡片就是黑块 */
+export interface AssetFrameItem {
+  id: string;
+  asset_id: string;
+  /** 产物级帧（output_thumb）才有；素材级帧为 null */
+  output_id: string | null;
+  kind: AssetFrameKind;
+  kind_label: string;
+  seq: number;
+  /** 这一帧取自原片第几秒（10%/45%/80%，不取 t=0） */
+  t_offset: number | null;
+  width: number | null;
+  height: number | null;
+  file_size: number | null;
+  url: string | null;
+  expires_in: number | null;
+}
+
+/** 一条素材的卡片图位：三张单帧按 seq 排好，九宫格可空（老数据/坏文件没抽出来） */
+export interface AssetFrameSlot {
+  thumbs: AssetFrameItem[];
+  grid: AssetFrameItem | null;
+}
+
+/** GET /assets/frames：一次最多 50 个对象，所以按 50 一块分批拉（见 useAssetFrames） */
+export interface AssetFramesResult {
+  frames: AssetFrameItem[];
+  by_asset: Record<string, AssetFrameSlot>;
+  /** 封面＝第 1 张单帧的 presign；素材没帧时为 null */
+  cover_url: Record<string, string | null>;
+  /** 一张图都没有的素材 id：卡片画「没有预览图」，不是报错 */
+  missing: string[];
+  note: string;
+}
+
+/** POST /assets/frames/extract：手动重抽（只补图，不改任何业务字段） */
+export interface AssetFramesExtractResult {
+  results: Array<{
+    target: 'asset' | 'output';
+    id: string;
+    code: string | null;
+    result: 'extracted' | 'skipped' | 'failed';
+    frames: number;
+    /** 素材级抽出成功时回封面 key */
+    cover?: string | null;
+    reason: string | null;
+  }>;
+  extracted: number;
+  skipped: number;
+  failed: number;
+  /** 这次真落库的**张数**（一个对象 4 张：3 单帧 + 1 九宫格） */
+  frames: number;
+  note: string;
+  message: string;
+}
+
+/** POST /assets/{asset_id}/prompt-refresh：轮询反推任务并收敛阶段态 */export interface AssetPromptRefreshResponse {
   /** ⚠️ 这一口的 asset **不带** summary_count 等 4 个计数字段 */
   asset: AssetItem;
   prompt_task: AssetPromptTask;
@@ -1805,6 +1869,48 @@ export const assetApi = {
   // 批 E：产物内联预览（验收不合格的也给看——看一眼为什么废，和"能不能投出去"是两件事）
   previewOutput: (outputId: string) =>
     client.get(`/assets/outputs/${outputId}/preview`) as Promise<AssetOutputPreviewResult>,
+
+  // 卡片图（批 F）：按素材/产物**批量**取帧。后端一次最多 50 个对象，
+  // 所以别把整页 id 直接塞进来——用 assetFramesChunked 按 50 切块再合并。
+  frames: (params: { asset_ids?: string[]; output_ids?: string[]; kind?: AssetFrameKind }) =>
+    client.get('/assets/frames', {
+      params: {
+        asset_ids: params.asset_ids?.join(','),
+        output_ids: params.output_ids?.join(','),
+        kind: params.kind,
+      },
+    }) as Promise<AssetFramesResult>,
+
+  /**
+   * 一页素材的卡片图：按 50 个对象一块发（后端硬上限），逐块合并。
+   * 某一块失败就跳过——卡片没图是"这条没预览"，不该把整页审核台变成红叉。
+   */
+  framesForAssets: async (assetIds: string[]): Promise<AssetFramesResult> => {
+    const merged: AssetFramesResult = { frames: [], by_asset: {}, cover_url: {}, missing: [], note: '' };
+    const uniq = Array.from(new Set(assetIds.filter(Boolean)));
+    for (let i = 0; i < uniq.length; i += 50) {
+      const chunk = uniq.slice(i, i + 50);
+      try {
+        // 直接打 client，不绕 `assetApi.frames`：对象字面量里自引用会让 TS 把 assetApi
+        // 推成循环 any（这个文件是全站类型最密的入口，别给它留这个洞）。
+        const res = (await client.get('/assets/frames', {
+          params: { asset_ids: chunk.join(',') },
+        })) as AssetFramesResult;
+        merged.frames.push(...res.frames);
+        Object.assign(merged.by_asset, res.by_asset);
+        Object.assign(merged.cover_url, res.cover_url);
+        merged.missing.push(...res.missing);
+      } catch {
+        // 这块整体失败：当作「这些素材没图」，卡片自己画空位，别把整页审核台搞红
+        merged.missing.push(...chunk);
+      }
+    }
+    return merged;
+  },
+
+  // 手动重抽（只补图）：默认同步跑，超过单批上限后端会 400 提示走 async_mode
+  extractFrames: (data: { asset_ids?: string[]; output_ids?: string[]; force?: boolean; async_mode?: boolean }) =>
+    client.post('/assets/frames/extract', data) as Promise<AssetFramesExtractResult | AssetJobAck>,
 
   // 单条反推状态刷新并收敛阶段态（直链素材在这里顺带探一次时长，探不到仍是 null）
   refreshAssetPrompt: (assetId: string) =>

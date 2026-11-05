@@ -4810,3 +4810,63 @@ def test_frames_extraction_never_breaks_the_upload_that_triggered_it():
 
     _run(_scenario(), with_frames=True)
 
+
+def test_review_list_carries_output_count_for_the_card_badge():
+    """卡片右侧「已产 N 条」：按 `summary → production → output` 一条 join 数给前端。
+
+    三个口径必须钉住，否则徽标就是假信息：
+    1. **只数视频**——交付包 zip（package）/文案 txt（copy）是附属文件，
+       一条成片配个 zip 不能显示成"产了 2 条"；
+    2. **没挂生产单的拼接产物不计**——那是"两段拼的"，不归到某条文案头上；
+    3. 0 和"没查"是两回事：列表口整页聚合后**每条都有这个键**（没产就是 0），
+       素材详情口不查 → 键**不存在**，前端拿 undefined 就不画徽标。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ha = h["material"], h["admin"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        clean = _approvable(items)
+        await client.post("/api/assets/summaries/review",
+                          json={"summary_ids": [clean["id"]], "action": "approve"}, headers=ha)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            await client.post("/api/assets/produce",
+                              json={"summary_ids": [clean["id"]], "n": 1}, headers=ha)
+        prod = (await _rows(AssetProduction))[0]
+
+        async with dbmod.async_session_factory() as s:
+            s.add_all([
+                # ① 真成片：算
+                AssetOutput(id=uuid.uuid4(), production_id=prod.id, asset_id=uuid.UUID(asset_id),
+                            kind="composed", file_key="o/1.mp4", bucket=settings.MINIO_BUCKET_RAW,
+                            file_name="成片.mp4"),
+                # ② 交付包 zip：不算
+                AssetOutput(id=uuid.uuid4(), production_id=prod.id, asset_id=uuid.UUID(asset_id),
+                            kind="package", file_key="o/2.zip", bucket=settings.MINIO_BUCKET_RAW,
+                            file_name="交付包.zip"),
+                # ③ 没挂生产单的拼接：不算（归不到这条文案头上）
+                AssetOutput(id=uuid.uuid4(), production_id=None, asset_id=uuid.UUID(asset_id),
+                            kind="composed", file_key="o/3.mp4", bucket=settings.MINIO_BUCKET_RAW,
+                            file_name="随手拼的.mp4"),
+            ])
+            await s.commit()
+
+        listed = await client.get("/api/assets/summaries", headers=hm)
+        assert listed.status_code == 200, listed.text
+        by_id = {i["id"]: i for i in listed.json()["items"]}
+        assert by_id[clean["id"]]["output_count"] == 1, by_id[clean["id"]]
+        others = [i for iid, i in by_id.items() if iid != clean["id"]]
+        assert others and all("output_count" in i and i["output_count"] == 0 for i in others), \
+            "整页都要带这个键（没产＝0），别留 nil 让前端自己猜"
+
+        # 素材详情口不查这件事 → 键不存在（回 0 会是假信息）
+        detail = await client.get(f"/api/assets/{asset_id}", headers=hm)
+        s0 = detail.json()["summaries"][0]
+        assert "output_count" not in s0, sorted(s0)
+
+        await client.aclose()
+
+    _run(_scenario())
+
