@@ -42,6 +42,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import socket
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -949,8 +950,13 @@ def test_source_download_and_link_duration_backfill():
             probed.append(url)
             return 58.234
 
+        # SSRF 守卫（11-05 安全审计）会真解析域名；测试无网，桩一个公网解析结果
+        def _public_addrinfo(host, *a, **k):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
         with patch("wechat_download.prompt_service.PromptClient", _fake_client), \
-             patch("app.api.assets._ffprobe_duration", _probe):
+             patch("app.api.assets._ffprobe_duration", _probe), \
+             patch("app.services.net_guard.socket.getaddrinfo", _public_addrinfo):
             r1 = await client.post(f"/api/assets/{lid}/prompt-refresh", headers=hm)
         assert r1.status_code == 200, r1.text
         assert r1.json()["asset"]["duration"] == 58.23

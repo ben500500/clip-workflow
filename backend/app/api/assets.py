@@ -53,7 +53,7 @@ from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -134,6 +134,7 @@ from app.services import asset_frame_service as framesvc
 from app.services import asset_service as svc
 from app.services import aivideo_board as board
 from app.services.data_scope import check_project_access_by_episode
+from app.services.net_guard import UnsafeURLError, assert_public_http_url_async
 from app.services.minio_service import (
     download_file,
     download_to_file,
@@ -355,6 +356,17 @@ class ProduceRequest(BaseModel):
     board_tag: Optional[str] = Field(None, description="板上 tag（拥有者标记），缺省用 ASSET_BOARD_TAG；不填=无主任务、按天筛不到")
     hook_codes: Optional[List[str]] = Field(None, description="五位钩子编号（hook_id.py 取来的，按 n 的顺序对应）；后端不自己编号")
     character_card_key: Optional[str] = Field(None, description="角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡，按剧分组投）")
+
+    @field_validator("character_card_key")
+    @classmethod
+    def _card_key_must_be_asset_key(cls, v: Optional[str]) -> Optional[str]:
+        # 客户端可控的对象 key 直接读 raw 桶（审计 S5）。历史 key 形状杂（asset-cards/、
+        # cards/ 等），前缀白名单会误伤存量单——降级为形状校验：禁绝对路径/穿越/反斜杠，
+        # 防 key 逃出预期目录；桶内素材本就对全员可见，跨对象引用风险审计定级低。
+        if v is not None:
+            if v.startswith("/") or v.startswith("\\") or ".." in v or "\\" in v:
+                raise ValueError("character_card_key 不允许绝对路径或 .. 穿越")
+        return v
     card_asset_ids: Optional[List[str]] = Field(
         None,
         description="批 G：从素材库挑的角色卡（asset_items.id 数组，**顺序＝板上 picDatas 顺序**）。"
@@ -1485,8 +1497,16 @@ async def _probe_url_duration(url: str, budget_seconds: float = 8.0) -> Optional
     ffprobe 自带 30s 超时，但那是**线程**的超时，不是请求的：一线点「刷新状态」不该
     被一个远端站点的慢响应挂住 30 秒，所以外面再套一层 `wait_for` 收在 8 秒。
     超时只是**放弃等结果**（那条素材时长留空，下次刷新再探），不会写错数、也不花钱。
+
+    SSRF 防护：url 可能是用户贴的任意地址，先过公网校验（net_guard），内网/环回/非
+    http(s) 一律拒绝且只记 warning——拒绝不花钱也不影响主流程（时长留空下次再探）。
     """
     loop = asyncio.get_running_loop()
+    try:
+        await assert_public_http_url_async(url)
+    except UnsafeURLError as exc:
+        logger.warning("直链未过 SSRF 校验，跳过时长探测 %s: %s", url[:120], exc)
+        return None
     try:
         seconds = await asyncio.wait_for(
             loop.run_in_executor(None, _ffprobe_duration, url), timeout=budget_seconds
@@ -3211,11 +3231,19 @@ async def _run_asset_job(job_id: str, kind: str, params: Dict[str, Any], operato
             await db.commit()
             try:
                 result = await endpoint(model_cls(**params), operator, db)
-                outcome = (
-                    JB_SUCCEEDED,
-                    result if isinstance(result, dict) else {"raw": result},
-                    None,
-                )
+                outcome_detail = None
+                result_dict = result if isinstance(result, dict) else {"raw": result}
+                outcome_status = JB_SUCCEEDED
+                # 抽帧的「接口成功」≠「抽到了」：全败时任务记 FAILED，别让台账绿着骗人
+                if kind == JOB_FRAMES and isinstance(result_dict, dict):
+                    rows = result_dict.get("results") or []
+                    n_fail = sum(1 for r in rows if r.get("result") == "failed")
+                    n_ok = sum(1 for r in rows if r.get("result") == "extracted")
+                    if rows and n_ok == 0 and n_fail > 0:
+                        outcome_status = JB_FAILED
+                        outcome_detail = f"抽帧 {n_fail} 条全部失败（无一条成功）：详见 results 与 worker 日志"
+                        logger.warning("素材库后台任务 %s(frames) 全败：%s", job_id, outcome_detail)
+                outcome = (outcome_status, result_dict, outcome_detail)
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)[:900]
                 logger.warning("素材库后台任务 %s(%s) 被接口拒绝：%s", job_id, kind, detail)
@@ -7610,6 +7638,7 @@ async def download_asset_sources(
             entry["error"] = f"解析分享链接失败：{str(exc)[:200]}（失败不记账）"
             await db.commit()
             continue
+            logger.warning("下载原片解析失败 %s channel未知: %s", a.code, str(exc)[:200])
         except Exception as exc:
             logger.exception("下载原片解析异常 %s", a.code)
             a.download_status = _DL_FAILED
@@ -7633,6 +7662,7 @@ async def download_asset_sources(
             entry["error"] = "解析成功但没拿到可下载的直链（源站没给播放地址）"
             await db.commit()
             continue
+            logger.warning("下载原片失败 %s：解析成功但 play_url 为空（channel=%s）", a.code, channel)
 
         # ② 拉流下载（断点续传在 downloader 里；HLS/直链都归它）
         local_path = os.path.join(tmp_dir, f"{a.code}.mp4")
@@ -7643,11 +7673,13 @@ async def download_asset_sources(
             entry["error"] = f"拉流下载失败：{str(exc)[:200]}（解析费已按渠道记账）"
             await db.commit()
             continue
+            logger.warning("下载原片拉流失败 %s（channel=%s, play_url=%s…）: %s", a.code, channel, play_url[:80], str(exc)[:200])
         if not total:
             a.download_status = _DL_FAILED
             entry["error"] = "下载到 0 字节（直链秒回空响应），没入桶，不假装成功"
             await db.commit()
             continue
+            logger.warning("下载原片失败 %s：0 字节（channel=%s）", a.code, channel)
 
         # ③ 落自有桶：key 风格与抽帧/拼接一致（asset/<用途>/<素材号>/…），按素材号聚得拢
         object_key = f"asset/source/{a.code}/{uuid.uuid4().hex[:16]}.mp4"
@@ -7659,6 +7691,7 @@ async def download_asset_sources(
             entry["error"] = "对象存储入库失败（桶不可达或写入被拒）"
             await db.commit()
             continue
+            logger.warning("下载原片失败 %s：落桶失败 key=%s（桶不可达或写入被拒）", a.code, object_key)
 
         # ④ 回写 + 探真实时长（已有时长的不覆盖——那是 resolve/上传时探过的口径）
         a.file_key = object_key
@@ -8241,8 +8274,9 @@ async def _plan_asset_frames(
         # 判据改为只看 file_key：有文件就抽，没有才跳过（话术区分"还没下载"与"没文件"）。
         if not asset.file_key:
             reason = (
-                "链接素材的原片还没下载到自有桶，抽不了帧；「下载原片」完成后系统会自动补排"
-                "（要看画面也可先在抽屉里「取直链并播放」）"
+                "链接素材的原片还没下载到自有桶，抽不了帧；先在列表/抽屉里点「下载原片」"
+                "（下载成功那次会自动补排抽帧；若下载早已完成却还是没帧，"
+                "在抽帧口带 asset_ids 手动补一次）（要看画面也可先在抽屉里「取直链并播放」）"
                 if asset.source_kind != SOURCE_FILE
                 else "这条没有可用的视频文件，抽不了帧"
             )
@@ -8316,6 +8350,24 @@ async def _plan_output_frames(
     return pending, decided
 
 
+def _log_frames_summary(results: List[Dict[str, Any]]) -> None:
+    """抽帧收尾把失败/跳过原因打成日志——此前这些路径只落 job.result JSON，界面上
+    「没有预览图」却没人知道为什么（审计实锤的静默失败）。"""
+    failed = [r for r in results if r.get("result") == "failed"]
+    skipped = [r for r in results if r.get("result") == "skipped"]
+    extracted = [r for r in results if r.get("result") == "extracted"]
+    if failed:
+        logger.warning(
+            "抽帧失败 %d 条（成功 %d、跳过 %d）：%s",
+            len(failed), len(extracted), len(skipped),
+            "; ".join(f"{r.get('code', r.get('id'))}: {r.get('reason', '')[:120]}" for r in failed[:10]),
+        )
+    elif skipped:
+        logger.info("抽帧跳过 %d 条（成功 %d）：%s",
+                    len(skipped), len(extracted),
+                    "; ".join(f"{r.get('code', r.get('id'))}: {r.get('reason', '')[:80]}" for r in skipped[:10]))
+
+
 async def _run_frames_requests(
     db: AsyncSession, asset_ids: List[str], output_ids: List[str], *, force: bool
 ) -> List[Dict[str, Any]]:
@@ -8325,6 +8377,7 @@ async def _run_frames_requests(
     results = results + output_decided
     pending = asset_pending + output_pending
     if not pending:
+        _log_frames_summary(results)
         return results
     io_results = await asyncio.gather(
         *[_frames_io(t) for t, _a, _o in pending], return_exceptions=True
@@ -8352,6 +8405,7 @@ async def _run_frames_requests(
         results.append({**base, "result": "extracted", "frames": n,
                         "cover": asset.cover_image_key if oid is None else None,
                         "reason": io["reason"]})
+    _log_frames_summary(results)
     return results
 
 
@@ -8561,21 +8615,39 @@ async def _enqueue_frames(
     if operator is None or (not asset_ids and not output_ids):
         return {"queued": False, "note": "没排抽帧（缺提交人或缺对象 id）"}
     try:
-        job = await _start_asset_job(
-            db,
-            kind=JOB_FRAMES,
-            data=FramesExtractRequest(
-                asset_ids=list(asset_ids), output_ids=list(output_ids)
-            ),
-            operator=operator,
-            batch_id=None,
-            planned_units=len(asset_ids) + len(output_ids),
-        )
+        # 按 cap 分片：手动口一次最多 _frames_cap() 个对象（超了整单 400），系统自排
+        # 没人把关，批量下载 21+ 条成功时曾把整批抽帧任务在后台被 cap 拒掉（静默全丢）。
+        cap = _frames_cap()
+        pairs: List[tuple] = []
+        a_list = list(asset_ids)
+        for i in range(0, len(a_list), cap):
+            pairs.append((a_list[i:i + cap], []))
+        o_list = list(output_ids)
+        for i in range(0, len(o_list), cap):
+            pairs.append(([], o_list[i:i + cap]))
+        total_units = 0
+        first_job_id = None
+        for aids, oids in pairs:
+            if not aids and not oids:
+                continue
+            job = await _start_asset_job(
+                db,
+                kind=JOB_FRAMES,
+                data=FramesExtractRequest(asset_ids=aids, output_ids=oids),
+                operator=operator,
+                batch_id=None,
+                planned_units=len(aids) + len(oids),
+            )
+            total_units += len(aids) + len(oids)
+            first_job_id = first_job_id or str(job.id)
+        job_id_out = first_job_id
         return {
             "queued": True,
-            "job_id": str(job.id),
+            "job_id": job_id_out,
             "note": (
-                f"{why}：抽帧已排后台（{job.planned_units} 个对象），几分钟后卡片就有图；"
+                f"{why}：抽帧已排后台（{total_units} 个对象"
+                + (f"，按上限 {cap} 分成了若干批" if total_units > cap else "")
+                + "），几分钟后卡片就有图；"
                 "这类任务不进任务横幅列表（kind=frames 默认不列），要看进度带 include_frames=true"
             ),
         }
@@ -8744,7 +8816,7 @@ async def get_asset(
 @router.post("/assets/{asset_id}/prompt-refresh")
 async def refresh_asset_prompt(
     asset_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles(*_PROD_ROLES)),
     db: AsyncSession = Depends(get_db),
 ):
     """轮询反推任务并把阶段收敛（前端「在跑」列表增量刷新用）。
