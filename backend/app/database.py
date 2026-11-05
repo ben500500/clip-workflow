@@ -371,6 +371,11 @@ async def _apply_compat_migrations():
         # 所以孤儿值风险由接口侧"只允许挑 active 字典项"挡住）。
         ("asset_items", "category_id", "UUID"),
         ("asset_summaries", "category_id", "UUID"),
+        # 图片素材（11-05 批 G，0059_asset_media_kind）：video | image。
+        # NOT NULL + DEFAULT 'video' 是安全的：存量行全是视频，补列时数据库自己填默认值，
+        # 不需要回填脚本。不建索引（两取值 + 99% 是 video，seq scan 更快，
+        # 而且 create_all 不会给已存在的表补索引）。
+        ("asset_items", "media_kind", "VARCHAR(10) NOT NULL DEFAULT 'video'"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

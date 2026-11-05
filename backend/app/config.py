@@ -399,6 +399,16 @@ class Settings(BaseSettings):
     # 超量要么带 async_mode=true 排后台，要么分次点。
     ASSET_FRAME_MAX_PER_CALL: int = 20
 
+    # ── 图片素材（11-04 拍板③  11-05 批 G：图片真收进素材库，但只做生产输入）──
+    # 图片**不进**反推/文案/生产/拼接四环，也不抽帧（它自己就是一张图）。
+    # 上传大小上限（MB）：素材库的上传通道不分片（和 `/api/upload` 那条分片续传是两套），
+    # 角色卡实测 1~3MB，20MB 已经宽到能塞下 4K 三视图；超了当场拒，别把桶塞满。
+    ASSET_IMAGE_MAX_SIZE_MB: int = 20
+    # 短边低于这个像素 → **只提醒不拒收**（放大到 720×1280 的画面会糊，但一线可能就想试试）。
+    ASSET_IMAGE_MIN_EDGE: int = 360
+    # 长边超过这个像素 → 同样只提醒（板侧会缩，白占桶空间和带宽）。
+    ASSET_IMAGE_MAX_EDGE: int = 4096
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

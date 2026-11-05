@@ -4870,3 +4870,438 @@ def test_review_list_carries_output_count_for_the_card_badge():
 
     _run(_scenario())
 
+
+
+# ────────────────  13. 图片入库（11-05 批 G：media_kind ＋ 四环拒图）  ────────────────
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    """纯 stdlib 造一张真能ffprobe出宽高的 PNG（不依赖 PIL，测试侧零新增依赖）。
+
+    为什么非要"真图"：`_ingest_one_image_file` 用 ffprobe 量尺寸，喂它一坨
+    `b"\\x89PNG"` 假头会探不到 → 断言 `resolution` 就变成在测"探不到"这件事。
+    """
+    import struct
+    import zlib
+
+    def _chunk(kind: bytes, payload: bytes) -> bytes:
+        body = kind + payload
+        return struct.pack(">I", len(payload)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    raw = b"".join(b"\x00" + b"\xff\x00\x00" * width for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + _chunk(b"IDAT", zlib.compress(raw, 1))
+        + _chunk(b"IEND", b"")
+    )
+
+
+PNG_PORTRAIT = _png_bytes(720, 1280)   # 9:16 竖版（成片同画幅）
+PNG_LANDSCAPE = _png_bytes(1280, 720)  # 16:9 横版（投出去会出横屏，必须提醒）
+
+
+async def _upload_mixed(client, hm, files):
+    """一次文件入库（桶 mock、视频时长 mock 6s），返回响应体。"""
+    with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+         patch("app.api.assets._ffprobe_duration", lambda p: 6.0):
+        resp = await client.post("/api/assets/upload/batch", files=files, headers=hm)
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def test_upload_accepts_images_but_only_bills_videos():
+    """图片与视频同口入库：图 media_kind=image、四阶段 skipped、状态 image_ready，**预算只数视频**。
+
+    这条是批 G-1 的主干，钉住四件只有走接口才看得见的事：
+    1. 分流按扩展名，图片不碰视频那条白名单（否则采集侧也能收图 → 喂进 doc/120 白扣钱）；
+    2. `content_type` 按图片真实扩展名给（写死 image/jpeg 的话 .png 在桶里挂错标签）；
+    3. 尺寸入库就量并写进 `resolution`，横版只**提醒**不拒收；
+    4. 预估钱按"批内视频条数"算 —— 混进图片数就是把 3 个对象报成 3 条待反推。
+    """
+    if not _HAS_FF:
+        pytest.skip("本机/CI 没装 ffprobe，量不出尺寸就没法断言 resolution")
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        sent = []
+
+        async def _recording_put(bucket, key, path, content_type="application/octet-stream"):
+            with open(path, "rb") as fh:
+                sent.append((key, content_type, fh.read()))
+            return True
+
+        with patch("app.api.assets.upload_file_from_path", _recording_put), \
+             patch("app.api.assets._ffprobe_duration", lambda p: 6.0):
+            resp = await client.post(
+                "/api/assets/upload/batch",
+                files=[
+                    ("files", ("原片.mp4", VIDEO_BYTES, "video/mp4")),
+                    # 扩展名只喂"走哪条 ingest + content type"，ffprobe 认的是文件头，
+                    # 所以这里故意给 .jpg 挂 PNG 字节：证明两条解耦，不是把它当真 jpeg 解
+                    ("files", ("三视图.jpg", PNG_LANDSCAPE, "image/jpeg")),
+                    ("files", ("角色卡.png", PNG_PORTRAIT, "image/png")),
+                ],
+                headers=hm,
+            )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert len(body["items"]) == 3, body
+
+        by_name = {i["file_name"]: i for i in body["items"]}
+        vid = by_name["原片.mp4"]
+        assert vid["media_kind"] == "video" and vid["duration"] == 6.0
+        assert vid["status"] == "waiting_prompt", "视频口径一个字没动（批 G 不许回归这条）"
+
+        card = by_name["角色卡.png"]
+        assert card["media_kind"] == "image"
+        assert card["duration"] is None, "图片没有时长这回事"
+        assert card["resolution"] == "720x1280", card
+        # 四阶段一律 skipped：pending 会被"整批排队"捞进反推队列
+        assert [card[f"stage_{k}"] for k in ("import", "prompt", "summary", "produce", "compose")] == \
+            ["success", "skipped", "skipped", "skipped", "skipped"], card
+        assert card["status"] == "image_ready", card
+        assert card["cover_image_key"] == card["file_key"], "原图就是封面，不等抽帧"
+
+        wide = by_name["三视图.jpg"]
+        assert wide["media_kind"] == "image" and wide["resolution"] == "1280x720"
+
+        # ① content type 跟着扩展名走，且字节真的落盘
+        #    （并发 3 上传，`sent` 的**到达顺序**不保证 → 只能比集合，不能比列表）
+        assert sorted(ct for _k, ct, _b in sent) == sorted(
+            ["video/mp4", "image/jpeg", "image/png"]
+        ), sent
+        assert max(len(b) for _k, _c, b in sent) == len(PNG_PORTRAIT)
+
+        # ② 预算只数视频：3 个对象 → 按 1 条估
+        unit = 0.00054 * 180 + 0.001
+        assert body["budget"]["cost_estimate"] == pytest.approx(unit, abs=1e-4), body["budget"]
+        assert body["budget"]["gate"] == "ok"
+
+        # ③ 横版那张给提醒，竖版那张干净（提醒不等于拒收）
+        notes = {n["file_name"]: n["notes"] for n in body["image_notes"]}
+        assert "三视图.jpg" in notes, body["image_notes"]
+        assert any("横版" in n and "横屏" in n for n in notes["三视图.jpg"]), notes
+        assert "角色卡.png" not in notes, notes
+        assert "画幅" in body["message"], body["message"]
+        assert "图片 2 张" in body["message"] and "不计费" in body["message"], body["message"]
+
+        rows = {r.file_name: r for r in await _rows(AssetItem)}
+        assert rows["角色卡.png"].media_kind == "image"
+        assert rows["角色卡.png"].cost_prompt == 0 and rows["角色卡.png"].cost_parse == 0
+        # 批次实扣按行汇总：图片没进过任何付费环节 → 重算出来仍然是 0
+        batch = (await _rows(AssetBatch))[0]
+        async with dbmod.async_session_factory() as s:
+            await assets_api._recompute_batch_actual_cost(s, {batch.id})
+            await s.commit()
+        assert (await _row_of(AssetBatch, batch.id)).cost_actual == 0
+        assert batch.item_count == 3, "件数记全部对象，钱记视频 —— 两件事分开"
+
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_image_only_batch_is_free_and_asks_for_no_frames_job():
+    """纯图片批次：预估 0 元、闸门绿灯，而且**根本不排**抽帧任务。
+
+    排上去的代价是"让 ffmpeg 去解一张 jpg"—— 白占后台名额，还会让台账里出现
+    一批没人点过的抽帧（横幅默认不列抽帧，但 `include_frames=true` 一查就露）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        body = await _upload_mixed(client, hm, [("files", ("角色卡.png", PNG_PORTRAIT, "image/png"))])
+        assert body["budget"]["cost_estimate"] == 0, body["budget"]
+        assert body["budget"]["gate"] == "ok"
+        assert body["frames"]["queued"] is False
+        assert "图片" in body["frames"]["note"], body["frames"]
+        assert "抽帧已排后台" not in body["message"], body["message"]
+        assert "只进图片" not in body["message"]
+        assert await _count(AssetJob) == 0, "纯图批次不该留下一行抽帧台账"
+        assert await _count(AssetFrame) == 0
+        await client.aclose()
+
+    _run(_scenario(), with_frames=True)
+
+
+def test_images_never_enter_the_paid_queues():
+    """整批排队（反推／出文案）必须跳过图片 —— 这是本批唯一"接口不报错但会烧钱"的坑。
+
+    `_batch_queue_assets` 的 eligible 含 **skipped**，而图片四个阶段就是 skipped：
+    少一条 media_kind 过滤，整批反推会把每张角色卡送去 doc/120，提交一次扣一次，
+    而且永远失败。这里用真实队列断言"取了几条、剩几条"。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        body = await _upload_mixed(client, hm, [
+            ("files", ("原片.mp4", VIDEO_BYTES, "video/mp4")),
+            ("files", ("角色卡A.png", PNG_PORTRAIT, "image/png")),
+            ("files", ("角色卡B.png", PNG_PORTRAIT, "image/png")),
+        ])
+        bid = body["batch_id"]
+
+        # 批次累计口径（熔断用的那把尺）：3 个对象里只有 1 条是"将来要花钱的"
+        batch_uuid = uuid.UUID(bid)
+        async with dbmod.async_session_factory() as s:
+            pending_units = await assets_api._batch_pending_prompt_units(
+                s, batch_ids={batch_uuid}, exclude_ids=[]
+            )
+        assert pending_units == 1, f"图片被算进待反推条数了：{pending_units}"
+
+        created = []
+
+        async def _create(db, **kw):
+            created.append(kw)
+            return _fake_prompt_task()
+
+        with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)), \
+             patch("app.api.assets.download_to_file", _fake_download_writer()), \
+             patch("app.api.assets.create_upload_prompt_task", AsyncMock(side_effect=_create)):
+            r = await client.post(
+                "/api/assets/analyze/batch",
+                json={"batch_id": bid, "limit": 10, "confirmed": True}, headers=hm)
+        assert r.status_code == 200, r.text
+        q = r.json()["queue"]
+        assert q["picked"] == 1, q
+        assert q["remaining"] == 0, f"两张图被算进队列剩余了：{q}"
+        assert len(created) == 1 and len(r.json()["results"]) == 1
+
+        # 出文案侧同一个口径：图片不反推 → 永远没有详规，压根进不了 summary 队列
+        with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)), \
+             patch("app.api.assets.create_upload_prompt_task", AsyncMock(side_effect=_create)):
+            again = await client.post(
+                "/api/assets/analyze/batch",
+                json={"batch_id": bid, "limit": 10, "confirmed": True}, headers=hm)
+        assert again.status_code == 400, again.text
+        assert "没有可提交反推" in again.json()["detail"], again.json()
+
+        gen = await client.post(
+            "/api/assets/summaries/generate",
+            json={"batch_id": bid, "limit": 10}, headers=hm)
+        assert gen.status_code == 400, gen.text
+        assert "没有待出文案" in gen.json()["detail"], gen.json()
+        assert await _count(AssetSummary) == 0
+
+        rows = {r_.file_name: r_ for r_ in await _rows(AssetItem)}
+        assert rows["角色卡A.png"].stage_prompt == "skipped"
+        assert rows["角色卡A.png"].status == "image_ready"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_image_pointed_at_every_paid_gate_is_refused_in_plain_words():
+    """点名形态也要挡图（四个花钱/花钱风险的口各验一次），而且**不 500、不扣费、不留孤儿行**。
+
+    整批队列已经在上一条用例里过滤掉了；这里测的是"人在列表里手滑勾中一张角色卡"。
+    判据是**理由说得清**：`media_kind` 之后图片在库里是合法行，一线看不到任何异常，
+    如果只回一句"不支持"，他的下一动作是换个口再试一遍（每个口都提交一次＝扣四次）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        body = await _upload_mixed(client, hm, [
+            ("files", ("原片.mp4", VIDEO_BYTES, "video/mp4")),
+            ("files", ("角色卡.png", PNG_PORTRAIT, "image/png")),
+        ])
+        img_id = [i["id"] for i in body["items"] if i["media_kind"] == "image"][0]
+        vid_id = [i["id"] for i in body["items"] if i["media_kind"] == "video"][0]
+
+        # ① 反推：200 + skipped（不是 400 —— 全被跳过是"没活干"，不是"你写错了"）
+        created = []
+
+        async def _create(db, **kw):
+            created.append(kw)
+            return _fake_prompt_task()
+
+        with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)), \
+             patch("app.api.assets.create_upload_prompt_task", AsyncMock(side_effect=_create)), \
+             patch("app.api.assets.download_to_file", _fake_download_writer()):
+            r = await client.post(
+                "/api/assets/analyze/batch", json={"asset_ids": [img_id]}, headers=hm)
+        assert r.status_code == 400, r.text
+        assert "都已处理过" in r.json()["detail"], r.json()   # 一条都没得跑 → 走原有的空队列话术
+        assert created == [], "点名图片绝不能发起外呼"
+
+        # 混着点名：图进 skipped、视频正常进 todo（证明挡的是图，不是把整单打死）
+        with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)), \
+             patch("app.api.assets.create_upload_prompt_task", AsyncMock(side_effect=_create)), \
+             patch("app.api.assets.download_to_file", _fake_download_writer()):
+            mixed = await client.post(
+                "/api/assets/analyze/batch",
+                json={"asset_ids": [img_id, vid_id], "confirmed": True}, headers=hm)
+        assert mixed.status_code == 200, mixed.text
+        assert len(created) == 1, created
+        why = mixed.json()["skipped"][0]["reason"]
+        assert "图片" in why and "角色卡" in why and "扣一次钱" in why, why
+
+        # ② 出文案：逐条 error 里点名是图片，且不落任何候选行
+        gen = await client.post(
+            "/api/assets/summaries/generate", json={"asset_ids": [img_id]}, headers=hm)
+        assert gen.status_code == 200, gen.text
+        res = gen.json()["results"][0]
+        assert res["created"] == 0 and "图片" in res["error"], res
+        assert "只吃视频" in res["error"], res
+        assert await _count(AssetSummary) == 0
+
+        # ③ 回源解析：跳过且明确"没发起外呼、没产生费用"
+        resolve = await client.post(
+            "/api/assets/resolve", json={"asset_ids": [img_id]}, headers=hm)
+        assert resolve.status_code == 200, resolve.text
+        rbody = resolve.json()
+        assert rbody["charged"] == 0 and rbody["resolved"] == 0, rbody
+        assert "图片" in rbody["skipped"][0]["reason"], rbody
+
+        # ④ 抽帧：skipped 带人话，且不落帧行（原图就是封面，不用解一遍）
+        fr = await client.post(
+            "/api/assets/frames/extract", json={"asset_ids": [img_id]}, headers=hm)
+        assert fr.status_code == 200, fr.text
+        assert fr.json()["results"][0]["result"] == "skipped", fr.json()
+        assert "本来就是图片" in fr.json()["results"][0]["reason"], fr.json()
+        assert await _count(AssetFrame) == 0
+
+        # ⑤ 拼接：A 段、B 段都要挡（少挡一段，ffmpeg 就在解码那步炸成 502）
+        ca = await client.post(
+            "/api/assets/concat",
+            json={"asset_id": img_id, "second_source": "asset", "second_id": vid_id},
+            headers=hm)
+        assert ca.status_code == 400, ca.text
+        assert "A 段" in ca.json()["detail"] and "图片" in ca.json()["detail"], ca.json()
+        cb = await client.post(
+            "/api/assets/concat",
+            json={"asset_id": vid_id, "second_source": "asset", "second_id": img_id},
+            headers=hm)
+        assert cb.status_code == 400, cb.text
+        assert "B 段" in cb.json()["detail"], cb.json()
+        assert await _count(AssetOutput) == 0
+
+        # 图那条一个成本字段都没被写过、状态也还是 image_ready（拒了不等于动过它）
+        after = await _row_of(AssetItem, img_id)
+        assert (after.cost_prompt, after.cost_parse, after.status) == (0, 0, "image_ready"), after
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_media_kind_filter_and_link_assets_stay_video():
+    """列表按 `media_kind` 筛（前端挑卡靠它），拼错值当场 400；链接导入的行仍是 video。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        body = await _upload_mixed(client, hm, [
+            ("files", ("原片.mp4", VIDEO_BYTES, "video/mp4")),
+            ("files", ("角色卡A.png", PNG_PORTRAIT, "image/png")),
+            ("files", ("角色卡B.png", PNG_PORTRAIT, "image/png")),
+        ])
+        assert all("media_kind" in i for i in body["items"]), body["items"][0]
+
+        only_img = await client.get("/api/assets?media_kind=image", headers=hm)
+        assert only_img.status_code == 200, only_img.text
+        names = sorted(i["file_name"] for i in only_img.json()["items"])
+        assert names == ["角色卡A.png", "角色卡B.png"], names
+
+        only_vid = await client.get("/api/assets?media_kind=video", headers=hm)
+        assert [i["file_name"] for i in only_vid.json()["items"]] == ["原片.mp4"]
+
+        # 拼错值不能筛成空集（"库里没有图"比报错难查得多），也不能当"没这个筛选"放过
+        bad = await client.get("/api/assets?media_kind=iamge", headers=hm)
+        assert bad.status_code == 400, bad.text
+        assert "video" in bad.json()["detail"] and "iamge" in bad.json()["detail"], bad.json()
+
+        # 链接导入没有图片这回事：一行都是 video（默认值不是靠 DB DEFAULT 蒙的）
+        imp = await _import(client, hm, [DOUYIN_3])
+        assert imp.status_code == 201, imp.text
+        assert imp.json()["items"][0]["media_kind"] == "video", imp.json()["items"][0]
+
+        # 详情口同样带这一列（抽屉要按它决定放播放器还是放图）；注意详情把素材包在 `asset` 下
+        aid = only_img.json()["items"][0]["id"]
+        detail = await client.get(f"/api/assets/{aid}", headers=hm)
+        assert detail.json()["asset"]["media_kind"] == "image", sorted(detail.json())
+        assert detail.json()["asset"]["status"] == "image_ready"
+        assert detail.json()["asset"]["summary_count"] == 0
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_image_ingest_guard_fails_before_the_bucket():
+    """图片 ingest 的两道自己的闸：超限与落盘不完整都得**在传桶之前**判失败。
+
+    超限走的是 `max_bytes` 早停（不把 200MB 读进磁盘），落盘不完整是真链路那个
+    "0 字节对象照样 201"的同一条判据在图片侧的复制 —— 图片侧新写的一段，所以
+    必须自己钉一次，不能因为"视频侧有用例"就当它自动成立。
+    """
+    from io import BytesIO
+
+    from fastapi import UploadFile
+
+    from app.api.assets import _ingest_one_image_file
+
+    async def _scenario():
+        # ① 超上限：早停、不入库、不传桶
+        put = AsyncMock(return_value=True)
+        with patch("app.api.assets.upload_file_from_path", put):
+            res = await _ingest_one_image_file(
+                UploadFile(filename="超大卡.png", file=BytesIO(PNG_PORTRAIT * 40)),
+                tmp_dir=str(_TMPDIR), batch_code="AB-TEST",
+                max_bytes=64 * 1024, sem=asyncio.Semaphore(1),
+            )
+        assert res["ok"] is False and "图片过大" in res["error"], res
+        assert res["media_kind"] == "image"
+        put.assert_not_awaited()
+
+        # ② 落盘不完整：当场失败，不把空壳传进桶
+        with patch("app.api.assets.upload_file_from_path", put), \
+             patch("app.api.assets.os.path.getsize", return_value=0):
+            res2 = await _ingest_one_image_file(
+                UploadFile(filename="半张卡.png", file=BytesIO(PNG_PORTRAIT)),
+                tmp_dir=str(_TMPDIR), batch_code="AB-TEST",
+                max_bytes=10 * 1024 * 1024, sem=asyncio.Semaphore(1),
+            )
+        assert res2["ok"] is False and "落盘不完整" in res2["error"], res2
+        put.assert_not_awaited()
+
+        # ③ 正向对照：同一入参在真 getsize 下必须成功并量出 720×1280
+        #    （证明 ② 是"少字节"造成的，不是这条路径本身不通）
+        got = []
+
+        async def _rec(bucket, key, path, content_type="application/octet-stream"):
+            with open(path, "rb") as fh:
+                got.append((fh.read(), content_type))
+            return True
+
+        with patch("app.api.assets.upload_file_from_path", _rec):
+            ok = await _ingest_one_image_file(
+                UploadFile(filename="角色卡.png", file=BytesIO(PNG_PORTRAIT)),
+                tmp_dir=str(_TMPDIR), batch_code="AB-TEST",
+                max_bytes=10 * 1024 * 1024, sem=asyncio.Semaphore(1),
+            )
+        assert ok["ok"] is True, ok
+        assert (ok["width"], ok["height"]) == (720, 1280), ok
+        assert ok["aspect"]["ratio"] == "9:16" and ok["aspect"]["ok"] is True, ok
+        assert ok["notes"] == [], ok["notes"]
+        assert got[0][0] == PNG_PORTRAIT and got[0][1] == "image/png", got
+
+        # ④ 非图片扩展名在这里就出局，压根不落盘（分流在调用方，但这条也得自己挡一遍）
+        with patch("app.api.assets.upload_file_from_path", put):
+            res4 = await _ingest_one_image_file(
+                UploadFile(filename="原片.mp4", file=BytesIO(VIDEO_BYTES)),
+                tmp_dir=str(_TMPDIR), batch_code="AB-TEST",
+                max_bytes=10 * 1024 * 1024, sem=asyncio.Semaphore(1),
+            )
+        assert res4["ok"] is False and "图片类型不支持" in res4["error"], res4
+        put.assert_not_awaited()
+
+    asyncio.run(_scenario())

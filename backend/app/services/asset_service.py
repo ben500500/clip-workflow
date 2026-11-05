@@ -9,6 +9,7 @@
   写法没认出来）也不能"误合"（把两条不同素材认成一条，会静默丢素材）。
 """
 import logging
+import os
 import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -282,12 +283,126 @@ def estimate_production_days(
     }
 
 
+# ─────────────────────────  图片素材入库（11-04 拍板③ / 11-05 批 G）  ─────────────────────────
+# 图片是**生产输入**（角色卡），不是素材链上的"一条待反推的片子"。
+# 白名单**故意不扩** `wechat_download.prompt_service.UPLOAD_ALLOWED_EXTS`：那个白名单
+# 素材库与采集侧共用（`wechat_download/api.py` 也调 `validate_upload_ext`），把 .png 加进去
+# 等于给"视频反推"通道开了个口子——一张图喂进 doc/120 会白扣一次反推费，
+# 而且失败原因（没有视频流）报得像个坏文件，一线根本想不到是自己传了图。
+# 所以这里另起一套，只在素材库的文件入库口生效。
+IMAGE_ALLOWED_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+IMAGE_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+
+
+def file_ext(name: Optional[str]) -> str:
+    return os.path.splitext((name or "").strip().lower())[1]
+
+
+def is_image_file_name(name: Optional[str]) -> bool:
+    """按扩展名判这条是不是图（**只用于路由**：入库走哪个 ingest、content type 给什么）。
+    业务判断一律看 `asset_items.media_kind` 这一列，别拿扩展名当口径。"""
+    return file_ext(name) in IMAGE_ALLOWED_EXTS
+
+
+def validate_asset_image_ext(name: Optional[str]) -> Optional[str]:
+    """图片扩展名校验。给 None = 通过，给字符串 = 白话拒收理由。"""
+    ext = file_ext(name)
+    if ext not in IMAGE_ALLOWED_EXTS:
+        return (
+            f"图片类型不支持（{ext or '无扩展名'}），素材库收图只认 "
+            f"{' '.join(IMAGE_ALLOWED_EXTS)}；视频文件走原来的上传口"
+        )
+    return None
+
+
+def sanitize_asset_file_name(name: Optional[str]) -> str:
+    """文件名消毒：只掐路径穿越，**不吃视频白名单**。
+
+    为什么不直接复用 `upload_service.validate_file_name`：那个函数拿
+    `settings.ALLOWED_VIDEO_EXTENSIONS` 判扩展名，图片必被它拒（11-05 实测：
+    `.png` 回 "unsupported file type: .png"）。而把 .jpg 加进那个**全局设置**
+    等于给整个采集侧开口子 —— 与上面不扩 `UPLOAD_ALLOWED_EXTS` 是同一条理由。
+    消毒本身只有一件事：`basename` 掐掉 `../../etc/passwd.png` 这类路径，
+    因为这个文件名会进对象 key、也会显示在列表里，这一步不能省。
+    """
+    base = os.path.basename((name or "").strip())
+    if not base:
+        raise ValueError("empty file name")
+    return base
+
+
+def validate_asset_image_size(size_bytes: int, *, max_mb: int) -> Optional[str]:
+    """图片大小上限（MB 由调用方从 settings 传，本层不 import config）。"""
+    cap = max(1, int(max_mb))
+    if size_bytes > cap * 1024 * 1024:
+        return (
+            f"图片过大（{size_bytes / 1024 / 1024:.1f}MB），素材库收图上限 {cap}MB："
+            "本接口不分片，先压一遍再传（角色卡 2000px 长边足够）"
+        )
+    return None
+
+
+def image_aspect(width: Optional[int], height: Optional[int]) -> Dict[str, Any]:
+    """宽高比判读（拍板③：画幅由角色卡宽高比决定，提示词写 9:16 也压不住）。
+
+    返回 `{"ratio": "9:16", "orientation": "portrait|landscape|square", "ok": bool}`，
+    `ok=False` 表示**横版**——投出去会出横屏，这是"提醒"不是"拒收"：
+    一线可能就想做横版，但必须让他看见这条信息。
+    """
+    if not width or not height or width <= 0 or height <= 0:
+        return {"ratio": None, "orientation": None, "ok": True}
+    r = float(width) / float(height)
+    table = ((1.0, "1:1"), (9 / 16, "9:16"), (3 / 4, "3:4"), (4 / 3, "4:3"), (16 / 9, "16:9"))
+    ratio = min(table, key=lambda kv: abs(kv[0] - r))[1]
+    if abs(r - 1.0) < 0.04:
+        orientation = "square"
+    elif r < 1.0:
+        orientation = "portrait"
+    else:
+        orientation = "landscape"
+    return {"ratio": ratio, "orientation": orientation, "ok": orientation != "landscape"}
+
+
+def image_shape_notes(
+    width: Optional[int],
+    height: Optional[int],
+    *,
+    min_edge: int,
+    max_edge: int,
+) -> List[str]:
+    """入库时量出来的尺寸**只列明、不拒收**（拍板③：超限提醒，别替人做决定）。"""
+    notes: List[str] = []
+    if not width or not height or width <= 0 or height <= 0:
+        return ["探不到图片尺寸（文件可能已损坏）：投板前自己在生产单里看一眼这张图"]
+    short, long_edge = min(width, height), max(width, height)
+    if short < int(min_edge):
+        notes.append(
+            f"短边只有 {short}px（建议 ≥{min_edge}）：成片是 720×1280，"
+            "这张当角色卡放大后会糊"
+        )
+    if long_edge > int(max_edge):
+        notes.append(f"长边 {long_edge}px 超过 {max_edge}：板侧会缩，白占桶空间和带宽，建议先压一遍")
+    asp = image_aspect(width, height)
+    if asp["orientation"] == "landscape":
+        notes.append(
+            f"这张是横版（{asp['ratio']}，{width}×{height}）：画幅由角色卡宽高比决定，"
+            "提示词写 9:16 也压不住，投出去会是横屏"
+        )
+    return notes
+
+
 # ─────────────────────────  阶段派生  ─────────────────────────
 
-def derive_status(stages: Dict[str, str], has_approved_copy: bool = False) -> str:
+def derive_status(stages: Dict[str, str], has_approved_copy: bool = False, media_kind: str = "video") -> str:
     """由 5 个阶段态算素材派生态（**任一 failed 优先**，其余按"当前所处环节"取最先命中）。
 
     规则表（自上而下 first-match）：
+      media_kind == image             → image_ready（**先于一切**，见下）
       任一 failed                     → failed
       compose success / (produce success + compose skipped) → ready
       compose running                 → composing
@@ -307,6 +422,12 @@ def derive_status(stages: Dict[str, str], has_approved_copy: bool = False) -> st
     哪些是**提交了在等**，两种情况的处置动作完全相反（一个要点提交、一个要等收敛）。
     """
     s = {k: (stages.get(k) or "pending") for k in ("import", "prompt", "summary", "produce", "compose")}
+    # 11-05 批 G：图片**先于一切**返回 image_ready。四环（反推/文案/生产/拼接）对图都不成立，
+    # 它们的阶段态入库时就全置 skipped，走下面的规则表会一路落到 `waiting_prompt`
+    # （"待反推"），列表里每张角色卡都变成"卡着没人管"，而正确动作恰恰是**别提交**。
+    # 唯一保留的判断是 failed：导入本身失败（落盘漏字节、桶写挂）必须还能看见。
+    if media_kind == "image":
+        return "failed" if s["import"] == "failed" else "image_ready"
     if "failed" in s.values():
         return "failed"
     if s["compose"] == "success" or (s["produce"] == "success" and s["compose"] == "skipped"):
@@ -346,7 +467,11 @@ def apply_stage(asset: Any, stage: str, state: str, *, has_approved_copy: Option
     setattr(asset, f"stage_{stage}", state)
     stages = stage_of(asset)
     approved = asset.has_approved_copy if has_approved_copy is None else has_approved_copy
-    asset.status = derive_status(stages, has_approved_copy=bool(approved))
+    # 图片没有"所处环节"可言（四环全 skipped），派生只看 media_kind（批 G）
+    asset.status = derive_status(
+        stages, has_approved_copy=bool(approved),
+        media_kind=getattr(asset, "media_kind", None) or "video",
+    )
     return asset.status
 
 

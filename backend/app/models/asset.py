@@ -78,6 +78,15 @@ SOURCE_LINK = "link"   # 多平台分享链接（30+ 平台，走智令 doc/107 
 SOURCE_FILE = "file"   # 直接视频文件（落自有 MinIO 桶，不借智令 temp 桶——6 小时自删）
 SOURCE_KINDS = (SOURCE_LINK, SOURCE_FILE)
 
+# ─────────────────────────  媒体类型（11-05 批 G）  ─────────────────────────
+# 与 `source_kind` **正交**：source_kind 说"怎么进来的"（链接/文件），media_kind 说
+# "进来的是视频还是图"。链接口只产 video；文件口两种都有。
+# 为什么要单独立一列而不是靠扩展名现判：图片是**生产输入**（角色卡），不参与反推、
+# 出文案、拼接、抽帧任何一环——每一环都得先看这一列，用扩展名判断等于把口径散到六处。
+MEDIA_VIDEO = "video"
+MEDIA_IMAGE = "image"
+MEDIA_KINDS = (MEDIA_VIDEO, MEDIA_IMAGE)
+
 # ─────────────────────────  阶段状态（5 段共用）  ─────────────────────────
 STAGE_PENDING = "pending"
 STAGE_RUNNING = "running"
@@ -105,6 +114,10 @@ AS_COMPOSING = "composing"
 AS_READY = "ready"                          # 产物齐备，可交付下载
 AS_FAILED = "failed"
 AS_ARCHIVED = "archived"                       # P0 无归档写入方；去重查询已按它排除，归档口属 P1
+# 11-05 批 G：图片素材的**终点态**。图不进反推/文案/生产/拼接四环，派生链走不到任何
+# 既有态；若不加这一支，`derive_status` 会一路落到 `waiting_prompt`，列表里每张角色卡
+# 都显示「待反推」，看着像几十条卡着没人管的活，实际它们根本不该被提交。
+AS_IMAGE_READY = "image_ready"
 
 # ─────────────────────────  钩子文案审核态  ─────────────────────────
 RV_PENDING = "pending"
@@ -297,6 +310,12 @@ class AssetItem(Base):
     source_url = Column(String(2000), nullable=True)
     source_url_norm = Column(String(2000), nullable=True, index=True)   # 归一化去重键
     platform = Column(String(40), nullable=True, index=True)            # 归一化识别出的平台
+    # 媒体类型（11-05 批 G）：video | image。**默认 video，存量行不改语义**。
+    # 图片只当生产输入（角色卡），四环闸门都按这一列拒它（见 assets.py `_reject_image`）。
+    # **故意不建索引**：只有两个取值、库里 99% 是 video，Postgres 会直接走 seq scan；
+    # 更要紧的是 `create_all` 不给已存在的表补索引，现网加列只走 database.py 那张
+    # ADD COLUMN 清单，留着 index=True 只会得到一个"以为有索引"的假象。
+    media_kind = Column(String(10), nullable=False, default=MEDIA_VIDEO)
     # 文件形态：落自有桶（raw-footage 的 asset/ 前缀），不借智令 temp 桶
     file_name = Column(String(255), nullable=True)
     file_key = Column(String(500), nullable=True)

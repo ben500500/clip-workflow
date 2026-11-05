@@ -80,6 +80,9 @@ from app.models.asset import (
     JOB_FRAMES,
     JOB_PRODUCE,
     JOB_SUMMARY_GENERATE,
+    MEDIA_IMAGE,
+    MEDIA_KINDS,
+    MEDIA_VIDEO,
     PR_CANCELLED,
     PR_FAILED,
     PR_ORDER_READY,
@@ -871,6 +874,10 @@ async def _batch_pending_prompt_units(
 
     口径：pending/skipped/failed 都算"将来要花钱"，success/running 不算
     （running 已扣过费，重复计入会把余额预估抬高成假警报）。
+
+    ⚠️ 批 G 加了 `media_kind == video`：图片的 `stage_prompt` 就是 **skipped**，
+    按上面那句口径它会被算成"将来要花钱"——但图永远不会去反推（四个口都硬拒），
+    算进来等于每存一张角色卡就把这批的钱估高一点，攒到 50 元闸门前是一个永远打不开的假警报。
     """
     ids = [b for b in batch_ids if b]
     if not ids:
@@ -879,8 +886,25 @@ async def _batch_pending_prompt_units(
         await db.execute(
             select(func.count(AssetItem.id))
             .where(AssetItem.batch_id.in_(ids))
+            .where(AssetItem.media_kind == MEDIA_VIDEO)
             .where(AssetItem.stage_prompt.in_([STAGE_PENDING, STAGE_FAILED, STAGE_SKIPPED]))
             .where(AssetItem.id.notin_(list(exclude_ids)))
+        )
+    ).scalar_one()
+    return int(rows or 0)
+
+
+async def _batch_video_count(db: AsyncSession, batch_id: Any) -> int:
+    """批内**视频**条数（导入侧预算的计费口径，11-05 批 G）。
+
+    只数 video 而不是 `item_count - 图片数`：`item_count` 是历史累计，可能与真实行数已经
+    对不上（导入中途失败、手工补行），预算既然要拿它拦钱就按库里现查的行数算。
+    """
+    rows = (
+        await db.execute(
+            select(func.count(AssetItem.id))
+            .where(AssetItem.batch_id == batch_id)
+            .where(AssetItem.media_kind == MEDIA_VIDEO)
         )
     ).scalar_one()
     return int(rows or 0)
@@ -947,6 +971,9 @@ def _serialize_item(a: AssetItem, agg: Optional[dict] = None) -> dict:
         "code": a.code,
         "batch_id": str(a.batch_id) if a.batch_id else None,
         "source_kind": a.source_kind,
+        # 批 G：前端按这一列分流（图片走"角色卡"卡片、视频走播放器），并据此隐藏
+        # 「反推/出文案/拼接」入口。存量行由 ADD COLUMN 的 DEFAULT 'video' 兜住。
+        "media_kind": getattr(a, "media_kind", None) or MEDIA_VIDEO,
         "source_url": a.source_url,
         "platform": a.platform,
         "file_name": a.file_name,
@@ -1442,7 +1469,144 @@ async def _ingest_one_video_file(
                     "error": "对象存储写入失败。原文件没入库，带 batch_id 走 /assets/upload/retry 补投这一个",
                 }
             return {"ok": True, "file_name": safe_name, "file_key": file_key,
-                    "size": size, "duration": duration}
+                    "size": size, "duration": duration, "media_kind": MEDIA_VIDEO}
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+
+def _ffprobe_image_size(path: str) -> Tuple[Optional[int], Optional[int]]:
+    """ffprobe 量图片宽高，探不到回 (None, None)。
+
+    为什么不用 PIL：本仓库的 ffmpeg/ffprobe 已是既成依赖（抽帧、探时长、拼接都在用），
+    PIL 是新增依赖；口径也和视频侧统一——"探不出"都只提醒、不拒收。
+    """
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as exc:  # noqa: BLE001 — 量不出来不该影响入库
+        logger.info("ffprobe 量图片尺寸失败 %s: %s", path, exc)
+        return None, None
+    parts = [p.strip() for p in (out.stdout or "").split() if p.strip()]
+    if len(parts) < 2:
+        return None, None
+    try:
+        return int(float(parts[0])), int(float(parts[1]))
+    except ValueError:
+        return None, None
+
+
+async def _probe_image_size(path: str) -> Tuple[Optional[int], Optional[int]]:
+    """executor 里跑 `_ffprobe_image_size`，别把事件循环卡在磁盘 I/O 上。"""
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _ffprobe_image_size, path), timeout=45
+        )
+    except asyncio.TimeoutError:
+        logger.info("ffprobe 量图片尺寸超时（45s），尺寸留空只提醒")
+        return None, None
+    except Exception as exc:  # noqa: BLE001
+        logger.info("ffprobe 量图片尺寸异常：%s", exc)
+        return None, None
+
+
+async def _ingest_one_image_file(
+    f: UploadFile,
+    *,
+    tmp_dir: str,
+    batch_code: str,
+    max_bytes: int,
+    sem: "asyncio.Semaphore",
+) -> dict:
+    """图片入库（11-05 批 G）：落盘 → 量尺寸 → 传自有桶。**不碰 db**，与视频口同一个并发约束。
+
+    为什么单独一条 ingest、不复用 `_ingest_one_video_file`：
+    1. **白名单不能共用**。`wechat_download/prompt_service.py` 的 `UPLOAD_ALLOWED_EXTS`
+       是素材库与采集侧**共用**的（`wechat_download/api.py` 也调 `validate_upload_ext`）。
+       往那里加图片，等于让图片能喂进 doc/120 视频反推 —— 白扣一次钱，还得等超时才失败。
+       所以图片走 `svc.validate_asset_image_ext`（素材库侧独立口径），视频侧一行不动。
+    2. 视频探 `duration`，图片探 `width/height`：两套判读，混在一个函数里只会变成 if 套 if。
+
+    尺寸超限**不拒收**（拍板③）：原因放进 `notes` 回给前端显示，入库照常。
+    """
+    name = (f.filename or "").strip()
+    ext_err = svc.validate_asset_image_ext(name)
+    if ext_err:
+        return {"ok": False, "file_name": name, "error": ext_err, "media_kind": MEDIA_IMAGE}
+    try:
+        # 不用 `validate_file_name`：它按 ALLOWED_VIDEO_EXTENSIONS 判扩展名，图片必被拒。
+        # 消毒的那一半（掐路径穿越）由 `sanitize_asset_file_name` 原样保留。
+        safe_name = svc.sanitize_asset_file_name(name)
+    except ValueError:
+        return {"ok": False, "file_name": name, "error": "文件名为空或不是合法文件名，无法入库",
+                "media_kind": MEDIA_IMAGE}
+
+    async with sem:
+        tmp_path = os.path.join(tmp_dir, f"{uuid.uuid4().hex}.part")
+        size = 0
+        try:
+            with open(tmp_path, "wb") as out:
+                while True:
+                    chunk = await f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    size += len(chunk)
+                    if size > max_bytes:
+                        return {
+                            "ok": False, "file_name": safe_name, "media_kind": MEDIA_IMAGE,
+                            "error": (
+                                f"图片过大（{size / 1024 / 1024:.1f}MB），上限 "
+                                f"{max_bytes // 1024 // 1024}MB（ASSET_IMAGE_MAX_SIZE_MB）："
+                                "角色卡不用原图那么大，先压到 2000px 以内再传"
+                            ),
+                        }
+            # 与视频口同一条硬规矩：只数长度不落盘 = 桶里躺一个 0 字节对象、接口照样 201
+            written = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+            if written != size:
+                return {
+                    "ok": False, "file_name": safe_name, "media_kind": MEDIA_IMAGE,
+                    "error": f"落盘不完整（读到 {size} 字节、磁盘只有 {written} 字节），本个文件未入库",
+                }
+            size_err = svc.validate_asset_image_size(
+                size, max_mb=settings.ASSET_IMAGE_MAX_SIZE_MB
+            )
+            if size_err:
+                return {"ok": False, "file_name": safe_name, "error": size_err,
+                        "media_kind": MEDIA_IMAGE}
+            width, height = await _probe_image_size(tmp_path)
+            ext = svc.file_ext(safe_name)
+            file_key = f"asset/{batch_code}/{uuid.uuid4().hex}_{safe_name}"
+            ok = await upload_file_from_path(
+                settings.MINIO_BUCKET_RAW,
+                file_key,
+                tmp_path,
+                # content type 按真实扩展名给：写死 image/jpeg 的话 .png/.webp 在桶里是错标签，
+                # 浏览器 presigned 直连会按 jpeg 解（挑卡预览会花屏）
+                content_type=svc.IMAGE_CONTENT_TYPES.get(ext, "application/octet-stream"),
+            )
+            if not ok:
+                return {
+                    "ok": False, "file_name": safe_name, "media_kind": MEDIA_IMAGE,
+                    "error": "对象存储写入失败。原图没入库，带 batch_id 走 /assets/upload/retry 补投这一张",
+                }
+            return {
+                "ok": True, "file_name": safe_name, "file_key": file_key, "size": size,
+                "media_kind": MEDIA_IMAGE,
+                "width": width, "height": height,
+                "aspect": svc.image_aspect(width, height),
+                "notes": svc.image_shape_notes(
+                    width, height,
+                    min_edge=settings.ASSET_IMAGE_MIN_EDGE,
+                    max_edge=settings.ASSET_IMAGE_MAX_EDGE,
+                ),
+            }
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -1474,13 +1638,23 @@ async def _upload_into_batch(
     # 改成走 `_tier_or_400`：没配就取默认档，配了个非白名单档位则**当场 400 说清楚**，
     # 不拿脏档位去算钱（与链接导入 `:495` 同一个口径）。
     tier = _tier_or_400(batch.prompt_max_duration)
+    # 图片上限独立于视频（`upload_max_bytes()` 是视频那套），先按 MB 折成字节
+    image_max_bytes = max(1, int(settings.ASSET_IMAGE_MAX_SIZE_MB)) * 1024 * 1024
     sem = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
     tmp_dir = os.path.join(tempfile.gettempdir(), f"asset_upload_{uuid.uuid4().hex}")
     os.makedirs(tmp_dir, exist_ok=True)
     try:
         results = await asyncio.gather(*[
-            _ingest_one_video_file(
-                f, tmp_dir=tmp_dir, batch_code=batch.code, max_bytes=max_bytes, sem=sem
+            (
+                _ingest_one_image_file(
+                    f, tmp_dir=tmp_dir, batch_code=batch.code,
+                    max_bytes=image_max_bytes, sem=sem,
+                )
+                # 按扩展名分流**只在这里用一次**：入库之后所有环节看 media_kind 这一列
+                if svc.is_image_file_name(f.filename)
+                else _ingest_one_video_file(
+                    f, tmp_dir=tmp_dir, batch_code=batch.code, max_bytes=max_bytes, sem=sem
+                )
             )
             for f in files
         ])
@@ -1489,29 +1663,57 @@ async def _upload_into_batch(
 
     created: List[AssetItem] = []
     failed: List[dict] = []
+    image_notes: List[dict] = []
     for res in results:
         if not res["ok"]:
             failed.append({"file_name": res["file_name"], "error": res["error"]})
             continue
+        is_image = res.get("media_kind") == MEDIA_IMAGE
         asset = AssetItem(
             code=gen_asset_code(),
             batch_id=batch.id,
             source_kind=SOURCE_FILE,
+            # 11-05 批 G：链接口只产 video，文件口两种都有。这一列是后面四环闸门的**唯一判据**
+            media_kind=MEDIA_IMAGE if is_image else MEDIA_VIDEO,
             file_name=res["file_name"][:255],
             file_key=res["file_key"],
             bucket=settings.MINIO_BUCKET_RAW,
             file_size=res["size"],
-            duration=res["duration"],          # A4-4：上传时就回写，列表「时长」列不再空转
+            duration=res.get("duration"),      # A4-4：上传时就回写，列表「时长」列不再空转（图没有时长）
             title=res["file_name"],
             project_id=project_uuid,
             # 11-04 拍板①：文件导入同样吃"整批默认原型"（留空＝未分类，日后逐条点）
             category_id=category_uuid,
             stage_import=STAGE_SUCCESS,
-            status=svc.derive_status({"import": STAGE_SUCCESS}),
             created_by=current_user.id,
+        )
+        if is_image:
+            # 图片四阶段一律 skipped（拍板③：图是**生产输入**，不参与反推/文案/投产/拼接）。
+            # 不显式写 skipped 的话它们会停在 pending —— 于是既在「待反推」计数里碍事，
+            # 又会被 `_batch_queue_assets` 的 `stage in (pending, skipped)` 捞进反推队列＝白扣钱。
+            asset.stage_prompt = STAGE_SKIPPED
+            asset.stage_summary = STAGE_SKIPPED
+            asset.stage_produce = STAGE_SKIPPED
+            asset.stage_compose = STAGE_SKIPPED
+            asset.resolution = (
+                f"{res['width']}x{res['height']}" if res.get("width") and res.get("height") else None
+            )
+            # 抽帧对图没有意义（原图本身就是封面），直接把 file_key 当封面
+            asset.cover_image_key = res["file_key"]
+        # 派生态必须带 media_kind：不带的话图会一路落到 `waiting_prompt`（"待反推"），
+        # 列表里每张角色卡都变成"卡着没人管"，而正确动作恰恰是**别提交**（批 G 立这一支的原因）
+        asset.status = svc.derive_status(
+            {"import": STAGE_SUCCESS}, media_kind=asset.media_kind
         )
         db.add(asset)
         created.append(asset)
+        if is_image and res.get("notes"):
+            image_notes.append({
+                "file_name": res["file_name"],
+                "resolution": asset.resolution,
+                "ratio": (res.get("aspect") or {}).get("ratio"),
+                "notes": res["notes"],
+            })
 
     if not created:
         # 一个都没成功：本次新建的批次回滚不留孤儿行；往已有批次追加（batch_id / retry）
@@ -1525,6 +1727,7 @@ async def _upload_into_batch(
             "failed": failed,
             "failed_files": [x["file_name"] for x in failed],
             "budget": None,
+            "image_notes": [],
             "message": (
                 f"上传失败 {len(failed)} 个，没有成功入库的文件"
                 + ("（批次未创建，修正后可直接重投）" if batch_is_new
@@ -1533,10 +1736,19 @@ async def _upload_into_batch(
         }
 
     batch.item_count = (batch.item_count or 0) + len(created)
+    # ⚠️ `video_ids` 必须算在 flush **之后**：SQLAlchemy 的客户端默认值（`id=uuid.uuid4`）
+    # 是 INSERT 时才赋的，add() 之后 `a.id` 还是 None —— 早一步就得到一串 "None" 的
+    # asset_ids，抽帧台账带着它去 `uuid.UUID("None")` 当场炸（11-05 加这一行时就踩在
+    # flush 前面，批 F 的抽帧用例直接红了）。
+    await db.flush()
+    image_count = sum(1 for a in created if a.media_kind == MEDIA_IMAGE)
+    video_ids = [str(a.id) for a in created if a.media_kind == MEDIA_VIDEO]
+    # 图不计费（拍板③）：`count` 里混进图片，预估会把"永远不需要反推"的张数也算成钱，
+    # 一线看到的"超单批预算"是假警报，而假警报喊多了人就真不看闸门了。
+    billable_videos = await _batch_video_count(db, batch.id)
     # A1-4：文件形态反推要把自有桶对象经 doc/125 中转上传一次，故 need_upload=True。
     # 预算按**批次全量**重算（retry 追加后不能还挂着首次那批的旧数）
-    budget = _apply_import_budget(batch, count=batch.item_count, tier=tier, need_upload=True)
-    await db.flush()
+    budget = _apply_import_budget(batch, count=billable_videos, tier=tier, need_upload=True)
     await _write_audit(
         db,
         action=action,
@@ -1549,6 +1761,9 @@ async def _upload_into_batch(
             "failed": len(failed),
             "tier": tier,
             "item_count": batch.item_count,
+            # 批 G：留痕分媒体类型，对账时能说清"这批的钱是按几条视频估的"
+            "images": image_count,
+            "billable_videos": billable_videos,
             "concurrency": _UPLOAD_CONCURRENCY,
             "cost_estimate": batch.cost_estimate,
             "budget_gate": batch.budget_gate,
@@ -1557,12 +1772,21 @@ async def _upload_into_batch(
     await db.commit()
 
     # 批 F：入库成功 = 系统自动排抽帧（只有文件形态抽得了帧，链接素材桶里没原片）。
-    frames = await _enqueue_frames(
-        db,
-        asset_ids=[str(a.id) for a in created],
-        output_ids=[],
-        operator=current_user,
-        why=f"文件入库 {len(created)} 个",
+    # 批 G：图片**不排**抽帧 —— 原图本身就是封面（上面已直接写 cover_image_key），
+    # 排进去只是让 ffmpeg 去解一张 jpg，白占后台名额。
+    frames = (
+        await _enqueue_frames(
+            db,
+            asset_ids=video_ids,
+            output_ids=[],
+            operator=current_user,
+            why=f"文件入库 {len(video_ids)} 个",
+        )
+        if video_ids
+        else {
+            "queued": False,
+            "note": "这批只进图片，不抽帧（原图就是封面）",
+        }
     )
 
     return {
@@ -1573,13 +1797,19 @@ async def _upload_into_batch(
         "failed_files": [x["file_name"] for x in failed],
         "budget": budget,
         "frames": frames,
+        # 尺寸提醒原样回传（超限**不拒收**，但必须让人看见）：前端在上传结果里逐张列
+        "image_notes": image_notes,
         "message": (
             f"上传入库 {len(created)} 个"
+            + (f"（其中图片 {image_count} 张：只作生产输入，不反推、不出文案、不计费）"
+               if image_count else "")
             + (f"，失败 {len(failed)} 个（带 batch_id 走 /assets/upload/retry 只补投这几个）" if failed else "")
             + (f"；{'抽帧已排后台，卡片稍后出图' if frames['queued'] else '卡片图这次没排上'}"
-               if created else "")
+               if video_ids else "")
+            + (f"；有 {len(image_notes)} 张图尺寸/画幅要留意，明细在 image_notes"
+               if image_notes else "")
             + (
-                f"；这批 {batch.item_count} 个若全按 {tier}s 档反推预估 {budget['cost_estimate']} 元，"
+                f"；这批 {billable_videos} 条视频若全按 {tier}s 档反推预估 {budget['cost_estimate']} 元，"
                 f"超单批上限 {budget['cap']} 元，反推时需管理员放批或拆批"
                 if budget["gate"] != "ok" else ""
             )
@@ -1589,7 +1819,7 @@ async def _upload_into_batch(
 
 @router.post("/assets/upload/batch", status_code=201)
 async def upload_files_batch(
-    files: List[UploadFile] = File(..., description="视频文件（可多个）"),
+    files: List[UploadFile] = File(..., description="视频或图片文件（可多个，按扩展名自动分流）"),
     name: Optional[str] = Form(None, description="批次名"),
     project_id: Optional[str] = Form(None, description="归属项目（可选）"),
     max_duration: Optional[int] = Form(None, description="本批反推计时上限档位（秒）"),
@@ -1598,7 +1828,12 @@ async def upload_files_batch(
     current_user: User = Depends(require_roles(*_PROD_ROLES)),
     db: AsyncSession = Depends(get_db),
 ):
-    """视频文件批量上传 → 落自有 MinIO（raw-footage 的 asset/ 前缀）。
+    """视频/图片文件批量上传 → 落自有 MinIO（raw-footage 的 asset/ 前缀）。
+
+    11-05 批 G：同一口收图片（拍板③——图片是**真收进素材库的生产输入**，不是附件）。
+    按扩展名自动分流：`.jpg/.jpeg/.png/.webp` 走 `_ingest_one_image_file`（独立白名单与
+    尺寸上限），其余仍走视频那条。图片入库即 `media_kind=image`、四阶段 `skipped`、
+    不计费、不抽帧（原图就是封面）、`status=image_ready`。
 
     为什么自有桶而不是智令 temp 桶：doc/125 的 S3 临时对象 6 小时后自删，
     素材库要的是「资产」不是「中转」；反推时再把对象取回走 doc/125 上传（见 analyze）。
@@ -1712,6 +1947,9 @@ async def list_assets(
     batch_id: Optional[str] = None,
     platform: Optional[str] = None,
     source_kind: Optional[str] = None,
+    # 批 G：`media_kind=image` 是前端「挑卡」列表的入口（投产时只该看见图），
+    # 没有它就得让前端把整批拉回来自己按扩展名筛——那等于把 media_kind 的口径散到前端去。
+    media_kind: Optional[str] = None,
     has_approved_copy: Optional[bool] = None,
     keyword: Optional[str] = None,
     created_by: Optional[str] = None,
@@ -1753,6 +1991,15 @@ async def list_assets(
         conds.append(AssetItem.platform == platform)
     if source_kind:
         conds.append(AssetItem.source_kind == source_kind)
+    if media_kind:
+        # 非法值当场 400 而不是默默筛成空集：拼错 `iamge` 时前端会显示"库里没有图"，
+        # 那比报错更难查（同一类坑，11-04 风险词库级别键就是靠这条改的）
+        if media_kind not in MEDIA_KINDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"media_kind 只能是 {' 或 '.join(MEDIA_KINDS)}，收到 {media_kind}",
+            )
+        conds.append(AssetItem.media_kind == media_kind)
     if has_approved_copy is not None:
         conds.append(AssetItem.has_approved_copy.is_(bool(has_approved_copy)))
     # 11-04 拍板①：按钩子原型筛；`none`＝只看未分类（一线用它清欠账）
@@ -1941,7 +2188,14 @@ async def _batch_queue_assets(
     eligible = [stage_col.in_([STAGE_PENDING, STAGE_SKIPPED])]
     if include_failed:
         eligible.append(stage_col == STAGE_FAILED)
-    where = [AssetItem.batch_id == _as_uuid(batch_id, "batch_id"), or_(*eligible)]
+    where = [
+        AssetItem.batch_id == _as_uuid(batch_id, "batch_id"),
+        # ⚠️ 批 G 这条不能删：eligible 里含 STAGE_SKIPPED，而图片的四个阶段**就是** skipped
+        # （入库时显式写成 skipped）。少这一行，"整批排队"会把每张角色卡捞进反推队列，
+        # 一条条送进 doc/120 —— 图片反推不会成功，但钱是按提交计的，等于白扣。
+        AssetItem.media_kind == MEDIA_VIDEO,
+        or_(*eligible),
+    ]
     # 上游前置条件是 **AND**，不能塞进上面那个 or 组里：写进 or 就等于
     # 「本阶段没跑 或 上游已成功」，后者会把已成功一整段的素材全捞出来重跑一遍
     if require_prompt_success:
@@ -1991,6 +2245,20 @@ def _queue_or_ids(data: Any, cap: int, *, what: str) -> Tuple[Optional[str], int
             detail=f"单次最多{what} {cap} 条（同步等外部接口，多了会超时），当前 {len(data.asset_ids)} 条请分次提交",
         )
     return (data.batch_id if has_batch else None), limit, (data.asset_ids or [])
+
+
+def _image_block_reason(asset: AssetItem, what: str) -> str:
+    """图片进错口时的白话理由（反推/出文案/拼接三处共用，口径只有一套）。
+
+    为什么单独写一句而不是直接 500：`media_kind` 之后图片在库里是合法行，一线完全可能
+    在列表里勾中一张角色卡一起提交。这时给人看"internal error"没有任何信息量，
+    而这句话要回答的是**"图能入库为什么不能用"**——答案是它是生产输入，不是内容源。
+    """
+    return (
+        f"{asset.code}（{asset.file_name or '未命名'}）是图片，{what}只吃视频。"
+        "图片收进素材库是给投产当角色卡/参考图用的，不参与反推、出文案和拼接——"
+        "对一张静态图跑视频反推不会成功，但提交一次扣一次钱"
+    )
 
 
 @router.post("/assets/analyze/batch")
@@ -2047,6 +2315,12 @@ async def analyze_batch(
     todo: List[AssetItem] = []
     skipped: List[dict] = []
     for a in assets:
+        # 批 G：点名形态也要挡图片（整批形态已在 `_batch_queue_assets` 里过滤掉了）。
+        # 放在 `stage_prompt` 判断**之前**：图片的阶段态是 skipped，按下面第一条规则
+        # 它会被写成"反推已是 skipped"这种半句话，一线看不懂为什么。
+        if a.media_kind == MEDIA_IMAGE:
+            skipped.append({"code": a.code, "reason": _image_block_reason(a, "反推")})
+            continue
         if a.stage_prompt in (STAGE_SUCCESS, STAGE_RUNNING):
             skipped.append({"code": a.code, "reason": f"反推已是 {a.stage_prompt}，不重复提交（重复＝重复扣费）"})
             continue
@@ -3058,6 +3332,14 @@ async def generate_summaries(
             targets.append((asset, await _prompt_script_of(db, asset)))
     for asset, script in targets:
         aid = str(asset.id)
+        # 批 G：图片没有详规、也不该有 —— 出文案要读 doc/120 的脚本，喂一张 jpg 进去
+        # 只会拿回一条"脚本尚未就绪"，让人以为反推坏了。这里直接说清它是图片。
+        if asset.media_kind == MEDIA_IMAGE:
+            results.append({
+                "asset_id": aid, "code": asset.code, "created": 0,
+                "error": _image_block_reason(asset, "出文案"),
+            })
+            continue
         if not script:
             results.append({
                 "asset_id": str(asset.id), "code": asset.code, "created": 0,
@@ -5270,6 +5552,12 @@ async def _resolve_concat_input(
     """把「哪一段」翻成 {bucket, file_key, file_name, label}，取不到就 4xx，绝不带着空往下走。"""
     if source == compose.SOURCE_ASSET:
         asset = await _get_asset_or_404(db, value)
+        # 批 G：图片不能当拼接的一段（两段里哪一段是图都会让 ffmpeg 在解码时炸）。
+        # 在这里挡 = A/B 两段同一个口径，不用调用方各写一遍。
+        if asset.media_kind == MEDIA_IMAGE:
+            raise HTTPException(
+                status_code=400, detail=f"{label}：{_image_block_reason(asset, '拼接')}"
+            )
         if not asset.file_key:
             raise HTTPException(
                 status_code=400,
@@ -5500,13 +5788,17 @@ async def _recompute_batch_actual_cost(db: AsyncSession, batch_ids) -> None:
 
     重算而不是累加：同一批可能被反复点名，累加会越记越大；按行汇总则天然幂等，
     也自动把「解析失败不记账」的条目排除在外（它们的 cost_parse 还是 0）。
+
+    批 G 加了 `media_kind != image`：图片的 cost_* 恒为 0（四个花钱环节都不走它），
+    加这一条**不改数**，是把"图不计费"写成断言——将来谁要是给图片写了成本，
+    这条过滤会让它不进批次账，而不是悄悄混进对账单。
     """
     for bid in {b for b in batch_ids if b}:
         charged = (
             await db.execute(
                 select(func.coalesce(func.sum(AssetItem.cost_prompt + AssetItem.cost_parse), 0.0)).where(
                     AssetItem.batch_id == bid
-                )
+                ).where(AssetItem.media_kind != MEDIA_IMAGE)
             )
         ).scalar_one()
         batch = await db.get(AssetBatch, bid)
@@ -5577,6 +5869,13 @@ async def resolve_link_assets(
     todo: List[AssetItem] = []
     skipped: List[dict] = []
     for a in assets:
+        if a.media_kind == MEDIA_IMAGE:
+            # 批 G：图片没有"时长"这回事，回源解析对它既无意义又收费（0.01 元/条）
+            skipped.append({
+                "code": a.code,
+                "reason": "图片不用回源解析（静态图没有时长），它是投产用的角色卡",
+            })
+            continue
         if a.source_kind != SOURCE_LINK:
             skipped.append({"code": a.code, "reason": "文件素材的时长在上传时就由 ffprobe 回写，不需要回源"})
             continue
@@ -6096,6 +6395,12 @@ async def _plan_asset_frames(
             decided.append({**base, "result": "failed", "frames": 0, "reason": "素材不存在"})
             continue
         base["code"] = asset.code
+        if asset.media_kind == MEDIA_IMAGE:
+            # 批 G：图不用抽帧 —— 入库时已把原图直接当封面（cover_image_key = file_key），
+            # 再跑一遍 ffmpeg 只是把同一张 jpg 解码成 jpg，白占后台名额
+            decided.append({**base, "result": "skipped", "frames": 0,
+                            "reason": "这张本来就是图片，卡片直接用原图，不用抽帧"})
+            continue
         existing = list(
             (
                 await db.execute(

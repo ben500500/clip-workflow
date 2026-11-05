@@ -209,6 +209,103 @@ def test_apply_stage_recomputes_and_validates():
         svc.apply_stage(asset, "summary", "half-done")
 
 
+# ─────────────────────────  3b. 图片入库口径（11-05 批 G）  ─────────────────────────
+
+
+def test_image_status_short_circuits_the_video_chain():
+    """图片的派生态是 `image_ready`，不是 `waiting_prompt`。
+
+    这一条是批 G 立 `media_kind` 分支的全部理由：图的四阶段入库即 skipped，按视频那张
+    规则表会一路落到 `waiting_prompt`（"待反推"）—— 列表里每张角色卡都显示"卡着没人管"，
+    而正确动作恰恰是**别提交**（提交一次白扣一次钱）。
+    """
+    img = _stages(**{"import": "success", "prompt": "skipped", "summary": "skipped",
+                     "produce": "skipped", "compose": "skipped"})
+    assert svc.derive_status(img, media_kind="image") == "image_ready"
+    # 同一个 stage 字典不带 media_kind（＝视频口径）确实会落成"待反推"：证明分支真的在起作用
+    assert svc.derive_status(img) == "waiting_prompt"
+    # 唯一保留的判断是 failed：导入本身炸了（落盘漏字节、桶写挂）必须还看得见
+    assert svc.derive_status(_stages(**{"import": "failed"}), media_kind="image") == "failed"
+
+
+def test_apply_stage_passes_media_kind_through():
+    """`apply_stage` 重算状态时必须带上 media_kind，否则一次阶段回写就把图打回"待反推"。"""
+    asset = types.SimpleNamespace(
+        stage_import="success", stage_prompt="skipped", stage_summary="skipped",
+        stage_produce="skipped", stage_compose="skipped", status="image_ready",
+        has_approved_copy=False, media_kind="image",
+    )
+    assert svc.apply_stage(asset, "prompt", "skipped") == "image_ready"
+    # 老调用方（SimpleNamespace 没这列 / 视频行）不受影响
+    legacy = types.SimpleNamespace(
+        stage_import="success", stage_prompt="pending", stage_summary="pending",
+        stage_produce="pending", stage_compose="pending", status="draft",
+        has_approved_copy=False,
+    )
+    assert svc.apply_stage(legacy, "prompt", "success") == "summarizing"
+
+
+def test_shared_video_whitelist_still_rejects_images():
+    """图片白名单**绝不能并进** `wechat_download` 那个共用扩展名表（批 G 的硬约束）。
+
+    `prompt_service.UPLOAD_ALLOWED_EXTS` 同时被采集侧（`wechat_download/api.py`）用着，
+    它服务的是"喂进 doc/120 做视频反推"。往那儿加 `.jpg` 就等于让角色卡能被提交去反推 ——
+    不会成功，但**提交按次计费**。所以素材库侧另立一套，本条钉住两边不串门。
+    """
+    from app.config import settings as _settings
+    from wechat_download.prompt_service import UPLOAD_ALLOWED_EXTS, validate_upload_ext
+
+    assert ".jpg" not in UPLOAD_ALLOWED_EXTS and ".png" not in UPLOAD_ALLOWED_EXTS
+    # 第二道同源白名单：`validate_file_name` 用的全局设置里同样不能有图片扩展名，
+    # 否则"图片走自己的消毒函数"这件事会变成一句没有依据的偏好
+    assert ".png" not in _settings.ALLOWED_VIDEO_EXTENSIONS
+    assert validate_upload_ext("角色卡.jpg") is not None, "视频口收到图片必须拒"
+    # 反向也要成立：素材库的图片校验不认视频文件
+    assert svc.validate_asset_image_ext("原片.mp4") is not None
+    assert svc.validate_asset_image_ext("无扩展名") is not None
+    for name in ("角色卡.jpg", "角色卡.JPEG", "参考图.png", "参考图.webp"):
+        assert svc.validate_asset_image_ext(name) is None, name
+        assert svc.is_image_file_name(name) is True
+    assert svc.is_image_file_name("原片.mp4") is False
+    assert svc.IMAGE_CONTENT_TYPES[".png"] == "image/png"
+
+
+def test_image_size_limit_is_reminder_only_on_ingest():
+    """上限按 MB 判（配置由调用方传，本层不 import config）。"""
+    assert svc.validate_asset_image_size(3 * 1024 * 1024, max_mb=20) is None
+    err = svc.validate_asset_image_size(21 * 1024 * 1024, max_mb=20)
+    assert err and "20MB" in err
+
+
+def test_image_file_name_sanitizer_keeps_the_path_guard():
+    """图片侧的文件名消毒：留 `basename`（防路径穿越），去视频白名单（11-05 实测 `.png` 会被拒）。"""
+    assert svc.sanitize_asset_file_name("角色卡.png") == "角色卡.png"
+    assert svc.sanitize_asset_file_name("a/b/角色卡.png") == "角色卡.png"
+    assert svc.sanitize_asset_file_name("/../../etc/passwd.jpg") == "passwd.jpg"
+    with pytest.raises(ValueError):
+        svc.sanitize_asset_file_name("   ")
+
+
+def test_image_aspect_and_shape_notes():
+    """画幅判读：竖版放行、横版**只提醒不拒收**（拍板③：别替人做决定，但要让他看见）。"""
+    portrait = svc.image_aspect(720, 1280)
+    assert portrait == {"ratio": "9:16", "orientation": "portrait", "ok": True}
+    landscape = svc.image_aspect(1280, 720)
+    assert landscape["orientation"] == "landscape" and landscape["ok"] is False
+
+    assert svc.image_shape_notes(720, 1280, min_edge=360, max_edge=4096) == []
+    notes = svc.image_shape_notes(1280, 720, min_edge=360, max_edge=4096)
+    assert any("横版" in n and "横屏" in n for n in notes), notes
+    # 短边太小 = 当角色卡放大后会糊；长边超限 = 白占桶空间。两条都只是提醒
+    small = svc.image_shape_notes(200, 300, min_edge=360, max_edge=4096)
+    assert any("短边" in n for n in small), small
+    huge = svc.image_shape_notes(3000, 5000, min_edge=360, max_edge=4096)
+    assert any("长边" in n for n in huge), huge
+    # 探不到尺寸（文件坏了）也要说人话，而不是显示"这张 0×0"
+    assert svc.image_shape_notes(None, None, min_edge=360, max_edge=4096)
+    assert svc.image_aspect(0, 0) == {"ratio": None, "orientation": None, "ok": True}
+
+
 # ─────────────────────────  4. 审核：状态机 + 文案校验  ─────────────────────────
 
 
