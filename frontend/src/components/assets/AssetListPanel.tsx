@@ -340,9 +340,36 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       );
       return;
     }
+    // 11-06 承诺审计②：后端 note 说「重生成请勾选 overwrite」，但界面上从没有这个
+    // 勾选框——承诺了一个无法执行的动作。现在勾了已有候选的素材时会真问一句。
+    const hasCopies = ok.filter((id) => (freshById.get(id)?.summary_count ?? 0) > 0);
+    if (hasCopies.length) {
+      const run = (ids2: string[], overwrite: boolean) => doGenerateSummaries(ids2, overwrite);
+      Modal.confirm({
+        title: `选中的素材里 ${hasCopies.length} 条已经有候选文案`,
+        content: (
+          <div>
+            <p style={{ marginBottom: 6 }}>「覆盖重出」会把这些旧候选删掉重新生成（已过审的会拦下，必须先撤审）；旧的留档按「只补」。</p>
+          </div>
+        ),
+        okText: `覆盖重出（${hasCopies.length} 条旧的删掉）`,
+        cancelText: '只补还没有文案的',
+        onOk: () => run(ok, true),
+        onCancel: () => {
+          const onlyNew = ok.filter((id) => !hasCopies.includes(id));
+          if (onlyNew.length) run(onlyNew, false);
+          else message.info('选中的都有候选了，没有要补的');
+        },
+      });
+      return;
+    }
+    await doGenerateSummaries(ok, false);
+  };
+
+  const doGenerateSummaries = async (ok: string[], overwrite: boolean) => {
     setGenBusy(true);
     try {
-      const res = await assetApi.generateSummaries({ asset_ids: ok, async_mode: true });
+      const res = await assetApi.generateSummaries({ asset_ids: ok, async_mode: true, overwrite });
       if (isAssetJobAck(res)) {
         // 回执里没结果，只有任务号：告诉人去哪儿看，别在这里猜跑没跑完
         // （busy 由下面的 finally 收，这里不重复置位）
@@ -600,12 +627,12 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
           }
         >
           <Space direction="vertical" size={0}>
-            {/* 链接素材永远没有标题（title 只有文件上传时取文件名），
-                旧文案写死「未反推」会和环节标签里绿色的「读」自相矛盾，11-03 验收截图上就是这样 */}
+            {/* 11-06 承诺审计①：88a7f67 后反推成功会自动回填标题，旧话术
+                「链接素材：无标题，只有来源地址」与修复后的行为自相矛盾 */}
             <Text strong={!!v}>
               {v || (
                 <Text type="secondary">
-                  {row.source_url ? '（链接素材：无标题，只有来源地址）' : '（未取到标题）'}
+                  {row.source_url ? '（还没有标题：反推成功后自动起，取不到就留空）' : '（未取到标题）'}
                 </Text>
               )}
             </Text>
@@ -691,7 +718,13 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
           // 「未知」在这里的含义是"链接素材还没回源查"，会让人以为点查时长能查出来
           <Text type="secondary">—</Text>
         ) : v === null || v === undefined ? (
-          <Tooltip title="链接素材库里没存原片，反推文案也只回文字提示词。要看时长点「查时长」（0.01 元/次）">
+          <Tooltip
+            title={
+              row.source_kind === 'link'
+                ? '链接素材库里没存原片，反推文案也只回文字提示词。要看时长点「查时长」（0.01 元/次）'
+                : '文件素材上传时本地探查没拿到时长（文件损坏或格式不识别）；本地重探不花钱，重传一次即可'
+            }
+          >
             <Text type="warning">未知</Text>
           </Tooltip>
         ) : (

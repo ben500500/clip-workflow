@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Button, Card, Space, Tabs, Tag, Typography, message } from 'antd';
+import { Button, Card, Modal, Space, Tabs, Tag, Typography, message } from 'antd';
 import { ApartmentOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import AssetListPanel from '../components/assets/AssetListPanel';
@@ -43,12 +43,40 @@ const AssetLibrary: React.FC = () => {
 
   const onJobSettled = useCallback((job: AssetJobInfo) => {
     setReloadToken((t) => t + 1);
+    // 11-06 承诺审计③：后端把逐条 note/error 都备在 job.result.results 里，此前前端
+    // 从不读——「逐条成败看 result.results」是空头承诺。这里把它摆出来（截前 6 条）。
+    const rows: Array<{ code?: string; error?: string; note?: string }> =
+      ((job.result as { results?: unknown[] } | null)?.results as
+        | Array<{ code?: string; error?: string; note?: string }>
+        | undefined) ?? [];
+    const bad = rows.filter((r) => r.error || r.note);
     if (job.status === 'succeeded') {
-      message.success(`「${job.kind_label}」后台跑完了，列表已刷新（任务号 ${job.id.slice(0, 8)}）`, 6);
+      if (bad.length) {
+        Modal.warning({
+          title: `「${job.kind_label}」跑完了，但有 ${bad.length} 条要留意`,
+          width: 560,
+          content: (
+            <div style={{ maxHeight: 300, overflow: 'auto' }}>
+              {bad.slice(0, 8).map((r, i) => (
+                <div key={i} style={{ marginBottom: 4 }}>
+                  {r.code ? `${r.code}：` : ''}
+                  {r.error || r.note}
+                </div>
+              ))}
+              {bad.length > 8 && <div style={{ color: '#999' }}>…其余 {bad.length - 8} 条类似</div>}
+            </div>
+          ),
+        });
+      } else {
+        message.success(`「${job.kind_label}」后台跑完了，列表已刷新（任务号 ${job.id.slice(0, 8)}）`, 6);
+      }
     } else if (job.status === 'interrupted') {
       message.warning(`「${job.kind_label}」被服务重启打断，结果不可信，需要重新提交`, 8);
     } else {
-      message.error(`「${job.kind_label}」没跑成：${job.error || '原因见「后台任务」列表'}（任务号 ${job.id.slice(0, 8)}）`, 8);
+      message.error(
+        `「${job.kind_label}」没跑成：${job.error || '逐条原因看素材行上的阶段标签（红＝失败，可重试）'}（任务号 ${job.id.slice(0, 8)}）`,
+        8,
+      );
     }
   }, []);
 

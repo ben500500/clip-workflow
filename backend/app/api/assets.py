@@ -3688,7 +3688,7 @@ async def generate_summaries(
                 results.append({
                     "asset_id": str(asset.id), "code": asset.code,
                     "created": 0, "kept": len(existing),
-                    "note": "已有候选（含已审条目），如需重生成请勾选 overwrite",
+                    "note": "已有候选（含已审条目），覆盖重出请在列表勾选后点「出钩子文案」、确认框里选「覆盖重出」（已过审的必须先撤审）",
                 })
                 continue
             blocked = await _assert_deletable_summaries(db, existing)
