@@ -315,6 +315,12 @@ class ProduceRequest(BaseModel):
     board_tag: Optional[str] = Field(None, description="板上 tag（拥有者标记），缺省用 ASSET_BOARD_TAG；不填=无主任务、按天筛不到")
     hook_codes: Optional[List[str]] = Field(None, description="五位钩子编号（hook_id.py 取来的，按 n 的顺序对应）；后端不自己编号")
     character_card_key: Optional[str] = Field(None, description="角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡，按剧分组投）")
+    card_asset_ids: Optional[List[str]] = Field(
+        None,
+        description="批 G：从素材库挑的角色卡（asset_items.id 数组，**顺序＝板上 picDatas 顺序**）。"
+        "传了它就以它为准，`character_card_key` 只作旧前端的兼容路径。"
+        "只收图片素材：视频当卡用＝投一张会动的图，板侧不认且没人看得出问题",
+    )
     recommended_title_count: Optional[int] = Field(None, description="K＝该剧发布号数，决定推荐视频标题条数（11-02 版：不再固定 5 条）")
     drama_abbr: Optional[str] = Field(
         None,
@@ -974,6 +980,14 @@ def _serialize_item(a: AssetItem, agg: Optional[dict] = None) -> dict:
         # 批 G：前端按这一列分流（图片走"角色卡"卡片、视频走播放器），并据此隐藏
         # 「反推/出文案/拼接」入口。存量行由 ADD COLUMN 的 DEFAULT 'video' 兜住。
         "media_kind": getattr(a, "media_kind", None) or MEDIA_VIDEO,
+        # 批 G：图片在"挑卡"列表里要直接说画幅（这张 9:16 出竖屏 / 这张横版出横屏）。
+        # 判据留在后端一处：前端自己另拼一张宽高比表，日后口径一改就是两边各说一套
+        # ——而这条口径的来源是实测（卡决定成片画幅），不是显示偏好。
+        "aspect": (
+            _card_ratio_fields(a.resolution)
+            if (getattr(a, "media_kind", None) or MEDIA_VIDEO) == MEDIA_IMAGE
+            else None
+        ),
         "source_url": a.source_url,
         "platform": a.platform,
         "file_name": a.file_name,
@@ -1095,6 +1109,9 @@ def _serialize_production(p: AssetProduction) -> dict:
         "board_tid": p.board_tid,
         "board_rgid": p.board_rgid,
         "character_card_key": p.character_card_key,
+        # 批 G：多卡数组（顺序＝板上 picDatas 顺序）。旧单这里是 []——
+        # 读侧要区分"没挂卡"和"挂了一张旧 key"，看 character_card_key 那一列。
+        "card_asset_ids": [str(x) for x in (p.card_asset_ids or []) if str(x or "").strip()],
         "status": p.status,
         "error": p.error,
         # 投递台账（11-03 第 4 条）：一线要知道「这条投了几次、什么时候投的、什么时候出片」
@@ -4109,6 +4126,215 @@ async def resubmit_summaries(
 # 生产单（过审文案 × N 条差异化提示词）
 # ──────────────────────────────────────────────
 
+# ── 角色卡（批 G，11-04 拍板③ / 11-05 做完）：多卡保序 + 逐项取图 ──────────────────
+# 旧形状只有一个 `character_card_key`：值由前端**手填**（ProduceOrderModal 那个
+# 「角色卡编号」输入框），后端直接当 MinIO key 用。填错一个字符的后果是：任务照建、
+# picDatas 是空的、画中人全靠模型自由发挥，而台账上一切正常——「上下集换装」历史上
+# 就是这么来的。这批把"手填 key"换成"从素材库挑图"，并且支持一部剧多张卡
+# （男女主各一张），板侧按数组顺序理解主次，所以**顺序是数据的一部分**，不是显示细节。
+
+
+def _resolution_wh(resolution: Optional[str]) -> Tuple[Optional[int], Optional[int]]:
+    """`asset_items.resolution`（入库时 ffprobe 量出来的 "720x1280"）→ (宽, 高)。
+    量不到 / 老数据没这格式 → (None, None)，调用方按"不知道画幅"处理，**不许猜**。
+    """
+    s = (resolution or "").strip().lower().replace("×", "x")
+    m = re.match(r"^(\d+)\s*x\s*(\d+)$", s)
+    if not m:
+        return None, None
+    return int(m.group(1)), int(m.group(2))
+
+
+def _card_ratio_fields(resolution: Optional[str]) -> Dict[str, Any]:
+    """给一张卡补上画幅三字段（ratio / orientation / 人话 hint）。缺了它，
+    导出侧只能显示"有一张卡"，显示不出"这张会把成片压成横屏"。
+    """
+    w, h = _resolution_wh(resolution)
+    asp = svc.image_aspect(w, h)
+    return {"width": w, "height": h, "ratio": asp["ratio"], "orientation": asp["orientation"]}
+
+
+async def _resolve_card_assets(
+    db: AsyncSession, raw_ids: Optional[List[str]]
+) -> List[AssetItem]:
+    """挑卡入参 → 素材行，**顺序原样保留**（同 id 重复出现只留第一次）。
+
+    三类脏输入当场 400 白话拒收，绝不允许静默变成"少一张卡"——少一张卡的任务
+    照样投得出去，烧的是号池额度，而且没人知道：
+      · id 不存在（含被删的素材）；
+      · 那条不是图片：视频当角色卡＝投一张会动的图，板侧 picDatas 只收图片，
+        失败报起来像坏文件，事后从生产单上看不出挂错了东西；
+      · 图片没落进桶（`file_key` 为空＝链接形态或上传失败行）。
+    """
+    wanted: List[str] = []
+    for raw in raw_ids or []:
+        aid = str(raw or "").strip()
+        if aid and aid not in wanted:
+            wanted.append(aid)
+    if not wanted:
+        return []
+    rows = list(
+        (
+            await db.execute(
+                select(AssetItem).where(AssetItem.id.in_([uuid.UUID(x) for x in wanted]))
+            )
+        ).scalars().all()
+    )
+    by_id = {str(r.id): r for r in rows}
+    cards: List[AssetItem] = []
+    missing: List[str] = []
+    for aid in wanted:
+        a = by_id.get(aid)
+        if a is None:
+            missing.append(aid[:8])
+            continue
+        if (getattr(a, "media_kind", None) or MEDIA_VIDEO) != MEDIA_IMAGE:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{a.code}（{a.file_name or '未命名'}）是视频，不能当角色卡：picDatas 只收图片。"
+                    "要当卡用的话先把定妆照当图片传进素材库（导入口支持 .jpg/.jpeg/.png/.webp）"
+                ),
+            )
+        if not a.file_key:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{a.code}（{a.file_name or '未命名'}）桶里没有文件（上传没成功或本来就是链接形态），"
+                    "挑它当卡＝投一张读不到的图，先重新入库再投产"
+                ),
+            )
+        cards.append(a)
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"这些角色卡在素材库里找不到（id 前 8 位：{'、'.join(missing)}）："
+                "多半是那条素材已被删除。刷新挑图列表重选，别拿旧弹窗里的快照投产"
+            ),
+        )
+    return cards
+
+
+def _card_shape_notes(cards: List[AssetItem]) -> List[dict]:
+    """逐张卡的画幅判读（拍板③依据的是既有实测：**画幅由角色卡宽高比决定**，
+    提示词里写 9:16 压不住一张横版三视图卡）。给挑卡处和投产响应显示，
+    **只提醒不拦**——一线可能就想做横版，但那必须是他看见这条信息之后选的。
+    """
+    out: List[dict] = []
+    for a in cards:
+        fields = _card_ratio_fields(a.resolution)
+        w, h = fields["width"], fields["height"]
+        orientation, ratio = fields["orientation"], fields["ratio"]
+        if orientation == "portrait":
+            hint = f"这张 {ratio}（{w}×{h}）出竖屏"
+        elif orientation == "landscape":
+            hint = (
+                f"这张是横版 {ratio}（{w}×{h}）：画幅由角色卡宽高比决定，"
+                "提示词写 9:16 也压不住，投出去会是横屏"
+            )
+        elif orientation == "square":
+            hint = f"这张是方图 {ratio}（{w}×{h}）：成片 720×1280 上下会留边"
+        else:
+            hint = "这张量不到尺寸（老数据或探失败）：画幅按模型默认走，投产前自己看一眼原图"
+        out.append({
+            "asset_id": str(a.id),
+            "code": a.code,
+            "file_name": a.file_name,
+            "width": w,
+            "height": h,
+            "ratio": ratio,
+            "orientation": orientation,
+            "hint": hint,
+        })
+    return out
+
+
+def _card_mixed_orientation_note(notes: List[dict]) -> Optional[str]:
+    """多卡方向不一致 → 一句话点名。混着挂的后果不是"哪张算数"说不清，
+    而是模型会在同一支片里换画幅，成片既不是竖屏也不是横屏。
+    """
+    kinds = [n["orientation"] for n in notes if n.get("orientation")]
+    if len(set(kinds)) > 1:
+        bad = "、".join(f"{n['code']}（{n['ratio']}）" for n in notes if n.get("orientation") == "landscape")
+        return (
+            f"这批卡方向不一致（{'、'.join(sorted(set(kinds)))}）：同一支片里换画幅，"
+            f"成片会既不是竖屏也不是横屏。横版的那张：{bad or '见逐张提示'}"
+        )
+    return None
+
+
+async def _card_sources_for(
+    db: AsyncSession, rows: List[AssetProduction]
+) -> Dict[str, List[Dict[str, Any]]]:
+    """生产单 → **有序**取图清单（导出 N 张单只查一次 asset_items）。
+
+    每条 `{"asset_id", "key", "bucket", "label", "legacy"}`。三种"取不到"分开列，
+    为的是让导出侧能**点名**而不是给个空 picDatas：
+      - 素材行没了（`asset_id` 有、查不到行）；
+      - 素材行在但桶里没有 key；
+      - 旧单只有 `character_card_key`（回退路径，key 直接可取）。
+    """
+    ids: set = set()
+    for p in rows:
+        for x in (p.card_asset_ids or []):
+            if str(x or "").strip():
+                ids.add(str(x).strip())
+    by_id: Dict[str, AssetItem] = {}
+    if ids:
+        uuids = []
+        for x in ids:
+            try:
+                uuids.append(uuid.UUID(x))
+            except (ValueError, TypeError):
+                continue  # 脏值留到下面按"取不到"点名，这里别炸整批导出
+        if uuids:
+            found = (
+                await db.execute(select(AssetItem).where(AssetItem.id.in_(uuids)))
+            ).scalars().all()
+            by_id = {str(a.id): a for a in found}
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for p in rows:
+        refs: List[Dict[str, Any]] = []
+        seen: set = set()
+        for x in (p.card_asset_ids or []):
+            aid = str(x or "").strip()
+            if not aid or aid in seen:
+                continue
+            seen.add(aid)
+            a = by_id.get(aid)
+            if a is None:
+                refs.append({
+                    "asset_id": aid, "key": None, "bucket": None,
+                    "label": f"素材 {aid[:8]}（行已不在库里，卡取不到）",
+                })
+                continue
+            if not a.file_key:
+                refs.append({
+                    "asset_id": aid, "key": None, "bucket": None,
+                    "label": f"{a.code}（{a.file_name or '未命名'}）桶里没有文件",
+                })
+                continue
+            refs.append({
+                "asset_id": aid, "key": a.file_key,
+                "bucket": a.bucket or settings.MINIO_BUCKET_RAW,
+                "label": f"{a.code}（{a.file_name or '未命名'}）",
+                "resolution": a.resolution,
+                **_card_ratio_fields(a.resolution),
+            })
+        if not refs and p.character_card_key:
+            # ⚠️ 回退只认"数组为空"这一种情况。卡片数组非空但里面有坏项时**不回退**：
+            # 那种单是新前端建的，作者看到的是一张挑坏了的卡，偷偷把旧 key 塞回去
+            # 等于替他改了输入。
+            refs.append({
+                "asset_id": None, "key": p.character_card_key,
+                "bucket": settings.MINIO_BUCKET_RAW,
+                "label": f"旧口径单值 key `{p.character_card_key}`",
+                "legacy": True,
+            })
+        out[str(p.id)] = refs
+    return out
+
 
 @router.post("/assets/produce")
 async def create_productions(
@@ -4203,6 +4429,16 @@ async def create_productions(
     title_count = data.recommended_title_count
     if title_count is not None and not 1 <= int(title_count) <= 20:
         raise HTTPException(status_code=400, detail="K（推荐标题条数=该剧发布号数）只支持 1..20")
+
+    # 批 G：角色卡在**排后台任务之前**就判完。脏卡 id 必须当场 400——不能让用户点了
+    # 「投产」收到一个"已受理"，几分钟后才在任务详情里看到"卡取不到"，那时候
+    # 钩子编号已经发出去了。
+    cards = await _resolve_card_assets(db, data.card_asset_ids)
+    card_ids = [str(a.id) for a in cards]
+    card_notes = _card_shape_notes(cards)
+    # 兼容写：单值列继续有值（旧前端、旧导出、任何只看 `character_card_key` 的读侧都不许
+    # 因为新前端改传数组就读不到卡）。多卡时写第一张——它就是 picDatas 的第一项，语义上是主卡。
+    card_key = (cards[0].file_key if cards else None) or data.character_card_key or None
 
     if data.async_mode:
         # D-1：展开提示词要调模型（实测一次 9 分钟），同步等会一路撞上
@@ -4350,7 +4586,7 @@ async def create_productions(
                                 "duration": duration,
                                 "recommended_title_count": title_count,
                                 "hook_code": next_hook_code,
-                                "has_character_card": bool(data.character_card_key),
+                                "has_character_card": bool(card_ids or data.character_card_key),
                                 "compliance": "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
                             },
                         },
@@ -4458,7 +4694,10 @@ async def create_productions(
                     # B-5：板上 name = 推荐视频标题第 1 条（剥非法字符、≤60 码点）
                     board_name=svc.sanitize_board_name(row["video_titles"][0])
                     if row["video_titles"] else None,
-                    character_card_key=data.character_card_key,
+                    character_card_key=card_key,
+                    # 批 G：新前端挑的卡（顺序＝picDatas 顺序）。空数组给 None 而不是 []，
+                    # 让"这批没挂卡"在读侧只有一种表示，回退判据不用同时防两种空值。
+                    card_asset_ids=card_ids or None,
                     status=PR_ORDER_READY,
                     prompt_snapshot=summary.text,
                     idempotency_key=f"{summary.id}:{row['seq']}",
@@ -4560,7 +4799,14 @@ async def create_productions(
             "duration": duration,
             "accounts": data.accounts,
             "recommended_title_count": title_count,
-            "character_card_key": data.character_card_key,
+            "character_card_key": card_key,
+            # 批 G：卡按 id 数组留痕（顺序也留）——事后对账要能回答"当时挂的是哪几张、
+            # 谁排第一"。只留一个 key 的话，多卡批次里被换掉的那张根本查不出来。
+            "card_asset_ids": card_ids or None,
+            "card_shapes": [
+                {"code": n["code"], "ratio": n["ratio"], "orientation": n["orientation"]}
+                for n in card_notes
+            ] or None,
             "hook_codes": hook_codes or None,
             "capacity": capacity,
             # 复核结果全部入审计：豁免的每一条都能被 admin 抽检回溯（A2-1）
@@ -4623,6 +4869,30 @@ async def create_productions(
             "常见是缺剧名→提示词里写成《剧名待定》、没挂角色卡→成片画幅不受文字控制、"
             "K 未给→标题按 5 条兜底。这类单子投出去对不上账，先补输入再重展"
         )
+    # 批 G：画的画幅在建单当场说清（画幅由卡宽高比决定，等导出时才发现要重投一批）
+    if card_notes:
+        landscape = [n for n in card_notes if n["orientation"] == "landscape"]
+        if landscape:
+            warnings.append(
+                f"{len(landscape)} 张角色卡是横版（{'、'.join(n['code'] for n in landscape)}）："
+                "成片画幅跟着卡走，这批会出横屏——想竖屏就换竖版卡，别指望提示词里写 9:16 压得住"
+            )
+        mixed = _card_mixed_orientation_note(card_notes)
+        if mixed:
+            warnings.append(mixed)
+        unknown = [n for n in card_notes if not n["orientation"]]
+        if unknown:
+            warnings.append(
+                f"{len(unknown)} 张卡量不到画幅（{'、'.join(n['code'] for n in unknown)}）："
+                "入库时 ffprobe 没探出尺寸，投产前自己点开看一眼，画幅是这张卡说了算"
+            )
+    elif data.card_asset_ids:
+        warnings.append("挑的角色卡一张都没落上（本该在参数校验时就报 400，这条属于内部口径漂移）")
+    elif not card_key:
+        warnings.append(
+            "本批没挂角色卡 → picDatas 为空，画中人全靠模型自由发挥（历史上「上下集换装」就是这么来的）。"
+            "定妆照先在素材库当图片传上来，投产时挑它"
+        )
     # 当日号池真实消耗 + 本批投递分布（11-03 第 4 条：不硬限，只报数）
     batch_ids = sorted({str(p.batch_id) for p in productions if p.batch_id})
     scope = (
@@ -4651,6 +4921,10 @@ async def create_productions(
         "recheck_waived": waived_rows,
         "prompt_skeleton_gaps": skeleton_gaps,
         "drifted": drifted,
+        # 批 G：本次投产挂的角色卡（顺序＝picDatas 顺序）+ 逐张画幅判读，
+        # 前端把这几行原样显示即可——"哪张卡会出横屏"必须在建单这一屏看到。
+        "cards": card_notes,
+        "card_asset_ids": card_ids,
         # P1 #19：推荐标题正文超 18 字的逐条清单（软校验，单子照常建、状态照常走）
         "title_warnings": title_warnings,
         # 模板自报偏差：同内容也已并进各单 dispatch_note（导出 txt 里人眼能看到的那份）
@@ -5105,35 +5379,67 @@ async def _build_delivery(
         out["export_text"] = "\n\n".join(blocks + ([manifest] if manifest else []))
         return out
 
-    # payload：逐条给出可直接 POST 的七键。角色卡按 key 去重取一次（一部剧一张卡是常态），
-    # 但每条 payload 里都完整带上——七键必须能直接投，不做"引用第 0 条"那种花活。
-    cards: Dict[str, List[str]] = {}
+    # payload：逐条给出可直接 POST 的七键。
+    # 批 G（11-05）改 here：旧写法是"按 key 去重、只装 1 项"——一部剧一张卡是常态，
+    # 但多卡（男女主各一张）时那套会把第 2、3 张**静默丢掉**，而 picDatas 少一张
+    # 照样投得出去，只是画中人不对。现在**逐张取、逐张装**，顺序＝`card_asset_ids`
+    # 顺序＝板上 picDatas 顺序；同 key 被两张卡共用时仍只读一次对象存储（缓存按 key）。
+    # 单张取不到**点名到是哪一张**，不静默给一个短了的数组。
+    b64_by_key: Dict[str, List[str]] = {}
     card_errors: Dict[str, str] = {}
+    sources = await _card_sources_for(db, ready)
     payloads = []
+    card_problem_rows = 0
     for p in ready:
         warns: List[str] = []
-        key = p.character_card_key
+        refs = sources.get(str(p.id)) or []
         pics: List[str] = []
-        if key:
-            if key not in cards and key not in card_errors:
+        for ref in refs:
+            key = ref.get("key")
+            if not key:
+                warns.append(f"角色卡 {ref['label']} 取不到 → picDatas 缺这一张")
+                continue
+            if key not in b64_by_key and key not in card_errors:
                 # 两层都要防：minio_service.download_file 把 S3Error **吞成 None**（不判这层
                 # 就等于"读不到卡"静默成空 picDatas，投放时才在板面上炸），而 executor
                 # 之外的任何异常都不该把整批导出变成 500——逐条点名比整批失败有用。
                 try:
-                    raw = await download_file(settings.MINIO_BUCKET_RAW, key)
+                    raw = await download_file(ref["bucket"] or settings.MINIO_BUCKET_RAW, key)
                 except Exception as exc:
                     logger.warning("角色卡读取异常 %s: %s", key, exc)
                     raw = None
                 if raw:
-                    cards[key] = [svc.card_b64_from_bytes(raw)]
+                    b64_by_key[key] = [svc.card_b64_from_bytes(raw)]
                 else:
                     card_errors[key] = "对象存储里没有这个 key，或读取失败（自有 raw 桶）"
-            if key in cards:
-                pics = cards[key]
+            if key in b64_by_key:
+                pics.extend(b64_by_key[key])
             else:
-                warns.append(f"角色卡读取失败（{card_errors[key]}）→ picDatas 为空")
-        else:
+                warns.append(
+                    f"角色卡 {ref['label']} 读取失败（{card_errors[key]}）→ picDatas 缺这一张"
+                )
+        if not refs:
             warns.append("本单没挂角色卡 → picDatas 为空：画中人全靠模型自由发挥（历史上「上下集换装」就是这么来的）")
+        elif len(pics) != len(refs):
+            # 逐张已经点名了，这里再给一条**总数**：多卡单最容易漏的就是"以为挂齐了"
+            warns.append(f"挂了 {len(refs)} 张卡、只取到 {len(pics)} 张：先补齐再投，别少一张就发车")
+        # 导出前再卡一道（批 G）：画幅由卡宽高比决定，这一屏是钱花出去前最后一次看见它
+        landscape = [
+            r for r in refs
+            if r.get("orientation") == "landscape"
+        ]
+        if landscape:
+            warns.append(
+                f"{len(landscape)} 张卡是横版（{'、'.join(str(r.get('ratio') or '?') for r in landscape)}）："
+                "成片画幅跟卡走，这支会出横屏"
+            )
+        orientations = {r.get("orientation") for r in refs if r.get("orientation")}
+        if len(orientations) > 1:
+            warns.append(
+                f"卡的方向不一致（{'、'.join(sorted(orientations))}）：同一支片里换画幅，成片两头不靠"
+            )
+        if warns:
+            card_problem_rows += 1
         if not p.board_name:
             warns.append("缺推荐标题 → 板上 name 为空，投放后无法按标题回收，先补 expand 再投")
         payloads.append({
@@ -5141,6 +5447,15 @@ async def _build_delivery(
             "seq": p.seq,
             "hook_code": p.hook_code,
             "asset_code": codes.get(str(p.asset_id)),
+            "cards": [
+                {
+                    "asset_id": r.get("asset_id"), "label": r.get("label"),
+                    "key": r.get("key"), "ratio": r.get("ratio"),
+                    "orientation": r.get("orientation"), "legacy": bool(r.get("legacy")),
+                    "loaded": bool(r.get("key")) and (r.get("key") in b64_by_key),
+                }
+                for r in refs
+            ],
             "payload": svc.build_board_payload(
                 production_id=p.id, board_tag=p.board_tag, board_total=p.board_total,
                 board_date=p.board_date, prompt_text=p.prompt_text,
@@ -5149,6 +5464,14 @@ async def _build_delivery(
             "warnings": warns,
         })
     out["payloads"] = payloads
+    out["card_check"] = {
+        "rows_with_card_issues": card_problem_rows,
+        "note": (
+            "逐张卡的读取与画幅都在这张单上（payloads[].cards / warnings）："
+            "缺卡、横版、方向不一，任何一条都要在投板前处理掉——"
+            "picDatas 少一张或画幅错了，投出去照样成功，账上看不出来"
+        ),
+    }
     out["card_advisory"] = (
         "picDatas 为**未缩放的原始字节** base64（后端没有 Pillow）。权威口径要求长边≤1024 的 JPEG q80："
         "卡是原图传上来的请先压一遍，板侧收到超大 picData 会静默建失败、事后查不到成因"
@@ -5280,6 +5603,8 @@ async def export_productions(
             "board_tag": p.board_tag,
             "board_date": utc_iso(p.board_date) if p.board_date else None,
             "character_card_key": p.character_card_key,
+            # 批 G：json 形态也要能看到挂了几张卡（payload 形态的逐张明细在 payloads[].cards）
+            "card_asset_ids": [str(x) for x in (p.card_asset_ids or []) if str(x or "").strip()],
         }
         # 命中信息**放行与否都回显**：一线要看得见「哪张被新词表点了名、放行的是哪几张」，
         # 别做成"放行就当没发生过"

@@ -485,6 +485,14 @@ class AssetProduction(Base):
     board_tid = Column(String(60), nullable=True, index=True)  # 回读主键（info?date= 返回）
     board_rgid = Column(String(60), nullable=True)             # 回收组 id，拼 /data<outUrl> 用
     character_card_key = Column(String(500), nullable=True)    # 角色卡（自有桶 key）→ 板上 picDatas 的来源，数组顺序＝上传顺序
+    # 批 G（11-05 拍板③）：**多卡保序**。存 asset_items.id 字符串数组，
+    # 顺序＝板上 `picDatas` 数组顺序（一部剧多张定妆照时，谁是第一张谁就是主形象）。
+    # 与上一列的分工：这一列是**正路**（挑图口写它，能按 id 回溯到素材行、量过尺寸），
+    # `character_card_key` 是**历史**（旧前端手填 MinIO key 那条野路子的唯一存证）。
+    # 读侧永远「有数组用数组、没数组回退单值」——存量单不许因为加了新列就丢卡，
+    # 那条卡是花钱传上来的（见 `_card_refs`）。JSON 而非 UUID[]：sqlite 也认，
+    # 且这里从不按卡 id 反查生产单（要反查得走 jsonb 包含算子，PG 才有），没索引可谈。
+    card_asset_ids = Column(JSON, nullable=True)
 
     status = Column(String(30), nullable=False, default=PR_ORDER_READY, index=True)
     provider_task_id = Column(String(100), nullable=True)

@@ -376,6 +376,10 @@ async def _apply_compat_migrations():
         # 不需要回填脚本。不建索引（两取值 + 99% 是 video，seq scan 更快，
         # 而且 create_all 不会给已存在的表补索引）。
         ("asset_items", "media_kind", "VARCHAR(10) NOT NULL DEFAULT 'video'"),
+        # 多卡保序（11-05 批 G，0060_asset_card_asset_ids）：角色卡从「手填一个 MinIO key」
+        # 改成「从素材库挑图」，挑出来的顺序就是板上 picDatas 的顺序，所以存 id 数组。
+        # 可空、不回填：存量单继续读 character_card_key（读侧有数组用数组、没数组回退单值）。
+        ("asset_productions", "card_asset_ids", "JSON"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

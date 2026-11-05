@@ -5305,3 +5305,335 @@ def test_image_ingest_guard_fails_before_the_bucket():
         put.assert_not_awaited()
 
     asyncio.run(_scenario())
+
+
+# ─────────────  14. 多卡保序与逐张取图（11-05 批 G-2：card_asset_ids）  ─────────────
+
+
+async def _approved_copy(client, h):
+    """造一条**已过审**的文案（投产入组条件），回 (素材 id, 文案 id, 过审正文)。"""
+    hm, ho = h["material"], h["operator"]
+    asset_id, _ = await _make_ready_asset(client, hm)
+    items, _ = await _gen_and_list(asset_id, hm, client)
+    good = _approvable(items)
+    await client.post(
+        "/api/assets/summaries/review",
+        json={"summary_ids": [good["id"]], "action": "approve"}, headers=ho)
+    return asset_id, good["id"], good["text"]
+
+
+def test_cards_keep_the_picked_order_and_every_one_is_read():
+    """多张卡：`card_asset_ids` 的顺序就是板上 picDatas 的顺序，逐张真取字节。
+
+    批 G-2 的主干。旧写法"按 key 去重只装 1 项"在多卡时会把第 2、3 张**静默丢掉**
+    ——picDatas 少一张照样投得出去，只是画中人不对，事后从台账上看不出来。
+    所以这里故意**倒序**挑两张（B 在前），断言三层都是这个序：
+    响应 cards、库里的数组、payload 的 picDatas。
+    顺带钉两件兼容事：单值列继续有值（＝主卡 key），同 key 跨单只取一次（不重复读桶）。
+    """
+    import base64 as b64mod
+
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        body = await _upload_mixed(client, hm, [
+            ("files", ("男主卡.png", PNG_PORTRAIT, "image/png")),
+            ("files", ("女主卡.png", PNG_PORTRAIT, "image/png")),
+        ])
+        male = next(i for i in body["items"] if i["file_name"] == "男主卡.png")
+        female = next(i for i in body["items"] if i["file_name"] == "女主卡.png")
+        asset_id, sid, _copy = await _approved_copy(client, h)
+
+        # 倒序挑：女主在前。谁排第一谁是 picDatas 的第一项＝模型眼里的"主形象"
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            made = await client.post("/api/assets/produce", json={
+                "summary_ids": [sid], "n": 2, "board_tag": "ben",
+                "card_asset_ids": [female["id"], male["id"]],
+            }, headers=ho)
+        assert made.status_code == 200, made.text
+        resp = made.json()
+        assert resp["created"] == 2
+        assert [c["asset_id"] for c in resp["cards"]] == [female["id"], male["id"]], resp["cards"]
+
+        rows = await _rows(AssetProduction)
+        assert len(rows) == 2
+        for p in rows:
+            assert p.card_asset_ids == [female["id"], male["id"]], p.card_asset_ids
+            # 兼容写：旧读侧（只看 character_card_key 的一切）拿到的是主卡＝数组第一张
+            assert p.character_card_key == female["file_key"], p.character_card_key
+        audit = (await _rows(AuditLog, AuditLog.action == "asset.produce_order"))[-1]
+        assert audit.after["card_asset_ids"] == [female["id"], male["id"]], audit.after
+        assert audit.after["card_shapes"] and audit.after["card_shapes"][0]["orientation"] == "portrait"
+
+        CARDS = {male["file_key"]: b"MALE-BYTES", female["file_key"]: b"FEMALE-BYTES"}
+        seen = []
+
+        async def _dl(bucket, key):
+            seen.append((bucket, key))
+            return CARDS.get(key)
+
+        base = f"/api/assets/productions/export?asset_id={asset_id}&format=payload&accounts=1"
+        with patch("app.api.assets.download_file", _dl):
+            pay = (await client.get(base, headers=ho)).json()
+
+        assert len(pay["payloads"]) == 2
+        want = [
+            b64mod.b64encode(CARDS[female["file_key"]]).decode(),
+            b64mod.b64encode(CARDS[male["file_key"]]).decode(),
+        ]
+        for pl in pay["payloads"]:
+            assert pl["payload"]["picDatas"] == want, "两张都在，且顺序＝挑卡顺序"
+            assert [c["label"].split("（")[0] for c in pl["cards"]] == ["女主卡.png", "男主卡.png"] or \
+                   [c["asset_id"] for c in pl["cards"]] == [female["id"], male["id"]], pl["cards"]
+            assert all(c["loaded"] for c in pl["cards"]), pl["cards"]
+            assert pl["warnings"] == [], pl["warnings"]
+        # 同一批两张单共用同两张卡 → 每张只读一次桶（2 张 × 2 单如果逐单重读就是 4 次）
+        assert len(seen) == 2, seen
+        assert sorted(k for _b, k in seen) == sorted([male["file_key"], female["file_key"]])
+        assert pay["card_check"]["rows_with_card_issues"] == 0, pay["card_check"]
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_broken_card_is_named_and_the_others_still_deliver():
+    """一张取不到 → 点名是哪一张、picDatas 少一张、并明确"挂了 2 张只取到 1 张"。
+
+    旧口径只在单卡时报"读取失败"，多卡后**最坏的情况是静默少一张**（数组非空、
+    看起来一切正常）。所以这里除了点名，还要断那条总数对不上的话。
+    """
+    import base64 as b64mod
+
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        body = await _upload_mixed(client, hm, [
+            ("files", ("好的卡.png", PNG_PORTRAIT, "image/png")),
+            ("files", ("坏掉的卡.png", PNG_PORTRAIT, "image/png")),
+        ])
+        good = next(i for i in body["items"] if i["file_name"] == "好的卡.png")
+        bad = next(i for i in body["items"] if i["file_name"] == "坏掉的卡.png")
+        asset_id, sid, _copy = await _approved_copy(client, h)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            await client.post("/api/assets/produce", json={
+                "summary_ids": [sid], "n": 1,
+                "card_asset_ids": [bad["id"], good["id"]],
+            }, headers=ho)
+
+        async def _dl(bucket, key):
+            # 坏的那张：桶里没有对象（download_file 把 S3Error 吞成 None，正是真链路会遇到的形状）
+            return b"GOOD" if key == good["file_key"] else None
+
+        base = f"/api/assets/productions/export?asset_id={asset_id}&format=payload&accounts=1"
+        with patch("app.api.assets.download_file", _dl):
+            pay = (await client.get(base, headers=ho)).json()
+        pl = pay["payloads"][0]
+        assert pl["payload"]["picDatas"] == [b64mod.b64encode(b"GOOD").decode()], pl["payload"]["picDatas"]
+        text = "；".join(pl["warnings"])
+        assert "坏掉的卡.png" in text, pl["warnings"]
+        assert "挂了 2 张卡、只取到 1 张" in text, pl["warnings"]
+        assert [c["loaded"] for c in pl["cards"]] == [False, True], pl["cards"]
+        assert pay["card_check"]["rows_with_card_issues"] == 1
+
+        # 桶彻底读不到（两张全失败）：七键结构不能缺，picDatas 给空数组
+        with patch("app.api.assets.download_file", AsyncMock(side_effect=RuntimeError("MinIO 503"))):
+            pay2 = (await client.get(base, headers=ho)).json()
+        assert pay2["payloads"][0]["payload"]["picDatas"] == []
+        assert tuple(pay2["payloads"][0]["payload"].keys()) == svc.BOARD_PAYLOAD_KEYS
+        assert "读取失败" in "；".join(pay2["payloads"][0]["warnings"])
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_non_image_or_gone_card_is_refused_before_the_order_is_made():
+    """挑卡脏输入当场 400（三种各一次），而且**一条单都不许落库**。
+
+    "静默少一张卡"和"投出去才发现卡不对"都太贵：投产要调模型（实测一次 90~150s），
+    号池额度也在这一刻开始被占。所以判据是**先拒后做**，拒的理由还得让人知道下一步：
+    视频→换成图；找不到→刷新重挑；桶里没文件→重新入库。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        body = await _upload_mixed(client, hm, [
+            ("files", ("原片.mp4", VIDEO_BYTES, "video/mp4")),
+            ("files", ("角色卡.png", PNG_PORTRAIT, "image/png")),
+        ])
+        vid = next(i for i in body["items"] if i["media_kind"] == "video")
+        img = next(i for i in body["items"] if i["media_kind"] == "image")
+        _asset_id, sid, _copy = await _approved_copy(client, h)
+
+        # ① 视频当卡
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()) as clip:
+            r1 = await client.post("/api/assets/produce",
+                                   json={"summary_ids": [sid], "n": 1,
+                                         "card_asset_ids": [vid["id"]]}, headers=ho)
+        assert r1.status_code == 400, r1.text
+        assert "是视频，不能当角色卡" in r1.json()["detail"], r1.json()
+        assert "picDatas 只收图片" in r1.json()["detail"], r1.json()
+        clip.assert_not_awaited()  # 参数没过就不该调模型（一调就是几十秒和一笔额度）
+
+        # ② 素材行不存在（多半已被删除）
+        r2 = await client.post("/api/assets/produce", json={
+            "summary_ids": [sid], "n": 1, "card_asset_ids": [str(uuid.uuid4())]}, headers=ho)
+        assert r2.status_code == 400, r2.text
+        assert "找不到" in r2.json()["detail"] and "刷新" in r2.json()["detail"], r2.json()
+
+        # ③ 图在库、桶里没文件（上传失败行 / 链接形态）
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetItem, uuid.UUID(img["id"]))
+            row.file_key = None
+            await s.commit()
+        r3 = await client.post("/api/assets/produce", json={
+            "summary_ids": [sid], "n": 1, "card_asset_ids": [img["id"]]}, headers=ho)
+        assert r3.status_code == 400, r3.text
+        assert "桶里没有文件" in r3.json()["detail"], r3.json()
+
+        assert await _count(AssetProduction) == 0, "三种脏输入都没资格留下生产单"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_card_aspect_is_said_at_produce_time_not_discovered_after():
+    """画幅提示：横版卡、方向不一致都在**建单当场**说（拍板③：卡宽高比决定成片画幅）。
+
+    这条只在真链路上吃过亏：横版三视图卡喂进去，提示词写 9:16 也压不住，
+    出片是横屏 —— 而"发现"的时刻往往是投放之后。所以这里断三处都说话：
+    响应逐张 hint、warnings 点名横版、导出侧再卡一道。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        body = await _upload_mixed(client, hm, [
+            ("files", ("竖版卡.png", PNG_PORTRAIT, "image/png")),
+            ("files", ("横版卡.png", PNG_LANDSCAPE, "image/png")),
+        ])
+        port = next(i for i in body["items"] if i["file_name"] == "竖版卡.png")
+        wide = next(i for i in body["items"] if i["file_name"] == "横版卡.png")
+        assert port["resolution"] == "720x1280" and wide["resolution"] == "1280x720"
+        # 挑卡列表侧就带画幅判据（前端不许自己再拼一张比例表，口径只能有一套）
+        listed = await client.get("/api/assets?media_kind=image&page_size=20", headers=hm)
+        asp = {i["file_name"]: i["aspect"] for i in listed.json()["items"]}
+        assert (asp["竖版卡.png"]["ratio"], asp["竖版卡.png"]["orientation"]) == ("9:16", "portrait")
+        assert asp["横版卡.png"]["orientation"] == "landscape", asp
+        assert asp["竖版卡.png"]["width"] == 720 and asp["竖版卡.png"]["height"] == 1280
+        asset_id, sid, _copy = await _approved_copy(client, h)
+
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            made = await client.post("/api/assets/produce", json={
+                "summary_ids": [sid], "n": 1,
+                "card_asset_ids": [port["id"], wide["id"]],
+            }, headers=ho)
+        assert made.status_code == 200, made.text
+        resp = made.json()
+        by_id = {c["asset_id"]: c for c in resp["cards"]}
+        assert by_id[port["id"]]["hint"] == "这张 9:16（720×1280）出竖屏", by_id[port["id"]]
+        assert "横屏" in by_id[wide["id"]]["hint"] and by_id[wide["id"]]["orientation"] == "landscape"
+        text = "；".join(resp["warnings"])
+        assert "横版" in text and "别指望提示词里写 9:16" in text, resp["warnings"]
+        assert "方向不一致" in text, resp["warnings"]
+
+        # 导出侧再卡一道：同一张单在 payload 的 warnings 里也要看见画幅（导出是最后一道闸）
+        with patch("app.api.assets.download_file", AsyncMock(return_value=b"X")):
+            pay = (await client.get(
+                f"/api/assets/productions/export?asset_id={asset_id}&format=payload",
+                headers=ho)).json()
+        warns = "；".join(pay["payloads"][0]["warnings"])
+        assert "1 张卡是横版" in warns, pay["payloads"][0]["warnings"]
+        assert "卡的方向不一致" in warns, pay["payloads"][0]["warnings"]
+        assert pay["card_check"]["rows_with_card_issues"] == 1, pay["card_check"]
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_legacy_key_still_delivers_but_never_backfills_a_broken_array():
+    """旧单（只有 `character_card_key`）继续出片；新单数组坏掉时**不许**偷偷回退旧 key。
+
+    两条方向相反的判据，缺一条都会出事：
+    - 只加新列、不回退 → 昨天建的单今天导出没卡，而那批号池额度已经烧了；
+    - 回退写得太宽（"数组取不到就用 key"）→ 新前端挂了一张挑坏的卡，
+      后端替他把旧 key 塞回去，出片和他在界面上选的**不是同一张图**，还查不出来。
+    所以判据是"数组为空才回退"，不是"数组里没一项能用才回退"。
+    """
+    import base64 as b64mod
+
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        asset_id, sid, _copy = await _approved_copy(client, h)
+        legacy_key = "asset/2026/11/05/旧角色卡.jpg"
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            await client.post("/api/assets/produce", json={
+                "summary_ids": [sid], "n": 1, "character_card_key": legacy_key,
+            }, headers=ho)
+        p = (await _rows(AssetProduction))[0]
+        assert p.card_asset_ids in (None, []), p.card_asset_ids
+        assert p.character_card_key == legacy_key
+
+        base = f"/api/assets/productions/export?asset_id={asset_id}&format=payload&accounts=1"
+        with patch("app.api.assets.download_file", AsyncMock(return_value=b"OLD-CARD")) as dl:
+            pay = (await client.get(base, headers=ho)).json()
+        assert pay["payloads"][0]["payload"]["picDatas"] == \
+            [b64mod.b64encode(b"OLD-CARD").decode()], "存量单不许因为加了新列就没卡"
+        assert pay["payloads"][0]["cards"][0]["legacy"] is True, pay["payloads"][0]["cards"]
+        assert dl.await_args.args == (settings.MINIO_BUCKET_RAW, legacy_key), dl.await_args
+
+        # 现在把这张单的卡数组写成"一条已删除的素材"，旧 key 还留在列上 → 不许回退
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetProduction, p.id)
+            row.card_asset_ids = [str(uuid.uuid4())]
+            await s.commit()
+        with patch("app.api.assets.download_file", AsyncMock(return_value=b"OLD-CARD")) as dl2:
+            pay2 = (await client.get(base, headers=ho)).json()
+        pl = pay2["payloads"][0]
+        assert pl["payload"]["picDatas"] == [], "数组非空就不回退：偷塞旧 key＝替人改了输入"
+        dl2.assert_not_awaited()
+        assert "行已不在库里" in "；".join(pl["warnings"]), pl["warnings"]
+        assert pl["cards"][0]["asset_id"] and pl["cards"][0]["key"] is None, pl["cards"]
+
+        # 反向对照：数组清空（真·旧单形状）时同一条 key 又该被读到
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetProduction, p.id)
+            row.card_asset_ids = None
+            await s.commit()
+        with patch("app.api.assets.download_file", AsyncMock(return_value=b"OLD-CARD")):
+            pay3 = (await client.get(base, headers=ho)).json()
+        assert pay3["payloads"][0]["payload"]["picDatas"] == [b64mod.b64encode(b"OLD-CARD").decode()]
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_resolution_string_is_parsed_defensively():
+    """`resolution` 那列是给人看的字符串，量画幅前必须先证明解析不吃亏。
+
+    历史值有 `720x1280`、`1080×1920`（全角乘号）、空串、`unknown` 四种形状。
+    猜错方向的代价是**报反**：把横版报成"出竖屏"，一线就照着这句去投了。
+    """
+    from app.api.assets import _card_ratio_fields, _resolution_wh
+
+    assert _resolution_wh("720x1280") == (720, 1280)
+    assert _resolution_wh("1080×1920") == (1080, 1920), "全角乘号（人手填过的那批）"
+    assert _resolution_wh(" 1280 X 720 ") == (1280, 720)
+    for junk in (None, "", "unknown", "720", "720x", "0x0"):
+        assert _resolution_wh(junk) in ((None, None), (0, 0)), junk
+    f = _card_ratio_fields("720x1280")
+    assert (f["ratio"], f["orientation"]) == ("9:16", "portrait")
+    assert _card_ratio_fields("1280x720")["orientation"] == "landscape"
+    # 探不到尺寸 → 三个字段全空，且**不许给一个猜测方向**
+    empty = _card_ratio_fields("unknown")
+    assert empty["ratio"] is None and empty["orientation"] is None, empty
+
