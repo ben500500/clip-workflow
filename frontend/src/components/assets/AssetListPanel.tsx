@@ -9,7 +9,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import {
-  ASSET_STAGE_LABELS, ASSET_STATUS_LABELS, DEFAULT_TIER, DURATION_TIERS, assetApi, isAssetJobAck,
+  ASSET_STAGE_LABELS, ASSET_STATUS_LABELS, AssetJobAck, DEFAULT_TIER, DURATION_TIERS, assetApi, isAssetJobAck,
 } from '../../api/assets';
 import type {
   AssetItem, AssetAnalyzeResponse, AssetCostEstimateResponse, AssetMediaKind, AssetResolveResponse,
@@ -301,7 +301,7 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const submitAnalyze = async () => {
     setAnalyzeLoading(true);
     try {
-      const res: AssetAnalyzeResponse | undefined = await withCrossPersonConfirm((c) =>
+      const res: AssetAnalyzeResponse | AssetJobAck | undefined = await withCrossPersonConfirm((c) =>
         assetApi.analyzeBatch({
           asset_ids: selectedVideoIds,
           max_duration: tier,
@@ -310,14 +310,21 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
           retry_failed: retryFailed,
           download: withDownload,
           cross_person_confirm: c,
+          // 11-06：提交即回任务号，提交＋收敛都在后台跑——页面关了也照收（任务条会报进度）
+          async_mode: true,
         }),
       );
       if (!res) return; // 用户在「替他人批次」确认窗点了取消：什么都没动，留在弹窗里
-      Modal.info({
-        title: '反推文案已提交',
-        width: 520,
-        content: <Text>{res.message}</Text>,
-      });
+      if (isAssetJobAck(res)) {
+        message.success(res.message || '反推文案已排到后台，跑完顶部任务条会报', 8);
+        nudgeAssetJobBanner();
+      } else {
+        Modal.info({
+          title: '反推文案已提交',
+          width: 520,
+          content: <Text>{res.message}</Text>,
+        });
+      }
       setAnalyzeOpen(false);
       setSelected([]);
       fetchList();
@@ -555,18 +562,24 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       onOk: async () => {
         setRetryingId(row.id);
         try {
-          const res: AssetAnalyzeResponse | undefined = await withCrossPersonConfirm((c) =>
+          const res: AssetAnalyzeResponse | AssetJobAck | undefined = await withCrossPersonConfirm((c) =>
             assetApi.analyzeBatch({
               asset_ids: [row.id],
               max_duration: DEFAULT_TIER,
               confirmed: true,
               retry_failed: true,
               cross_person_confirm: c,
+              // 行级重试也走后台：收敛不靠这条页面的轮询，关了页面照样收到终态
+              async_mode: true,
             }),
           );
           if (!res) return; // 取消了「替他人批次」确认
-          if (isAssetJobAck(res)) nudgeAssetJobBanner();
-          message.success(res.message || '反推文案已重新提交', 8);
+          if (isAssetJobAck(res)) {
+            message.success(res.message || '反推文案已重新提交（后台跑，跑完列表自己刷新）', 8);
+            nudgeAssetJobBanner();
+          } else {
+            message.success(res.message || '反推文案已重新提交', 8);
+          }
           fetchList();
         } catch (e) {
           message.error((e as Error).message || '重试提交失败');

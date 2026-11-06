@@ -81,6 +81,7 @@ from app.models.asset import (
     JB_QUEUED,
     JB_RUNNING,
     JB_SUCCEEDED,
+    JOB_ANALYZE,
     JOB_DISPATCH,
     JOB_DOWNLOAD,
     JOB_FRAMES,
@@ -237,6 +238,17 @@ class AnalyzeRequest(BaseModel):
         False,
         description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）；"
         "自己的批次不用管这个字段",
+    )
+    async_mode: bool = Field(
+        False,
+        description="D-1：true＝闸门与成本确认全过之后当场回任务号，提交＋收敛在后台跑"
+        "（页面按钮走 true）；false＝同步等提交跑完（收敛仍靠前端轮询）。"
+        "行级单条重试保持 false——一条几秒就提交完，没必要过任务台账",
+    )
+    wait_converge: bool = Field(
+        False,
+        description="系统内部：后台任务（JOB_ANALYZE）提交完原地等智令收敛（含快速失败自动重试"
+        "一次）。前端不要传这个字段——页面路径 async_mode=true 时由接口自己置上",
     )
 
 
@@ -2529,6 +2541,217 @@ def _image_block_reason(asset: AssetItem, what: str) -> str:
     )
 
 
+async def _create_prompt_task_for_asset(
+    db: AsyncSession, asset: AssetItem, *, operator: User, tier: int
+):
+    """给一条素材提交智令反推任务（页面批量提交与后台快速失败自动重试共用，口径只有一套）。
+
+    R-6 的教训：闸门/口径分叉过一次就再没干净过。文件形态要「取回本地 → doc/125 中转
+    上传」，链接形态直接 doc/120——这段两头都要走，抽成一个函数，重试时才不会出现
+    「页面提交一套、自动重试另一套」。
+    """
+    if asset.source_kind == SOURCE_FILE:
+        if not asset.file_key:
+            raise ValueError("素材缺少文件对象，无法反推")
+        # 自有桶在局域网内，智令拉不到 → 必须取回本地再走 doc/125 中转上传
+        tmp_dir = os.path.join(tempfile.gettempdir(), f"asset_prompt_{uuid.uuid4().hex}")
+        os.makedirs(tmp_dir, exist_ok=True)
+        try:
+            local_path = os.path.join(tmp_dir, f"{asset.code}.mp4")
+            ok = await download_to_file(asset.bucket or settings.MINIO_BUCKET_RAW, asset.file_key, local_path)
+            if not ok:
+                raise RuntimeError("从对象存储取文件失败")
+            size_err = validate_upload_size(os.path.getsize(local_path))
+            if size_err:
+                raise ValueError(size_err)
+            with open(local_path, "rb") as fh:
+                return await create_upload_prompt_task(
+                    db,
+                    created_by=operator.id,
+                    file_obj=fh,
+                    file_name=asset.file_name or f"{asset.code}.mp4",
+                    size_bytes=os.path.getsize(local_path),
+                    max_duration=tier,
+                )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    if not asset.source_url:
+        raise ValueError("素材缺少原始链接，无法反推")
+    return await create_prompt_task(
+        db,
+        created_by=operator.id,
+        source_url=asset.source_url,
+        max_duration=tier,
+    )
+
+
+async def _converge_prompt_asset(db: AsyncSession, asset: AssetItem) -> Tuple[dict, Any]:
+    """单条反推收敛核心（`refresh-batch` 接口与后台反推任务共用，口径只有一套）。
+
+    返回 (JSON 安全的逐条结果, 智令任务对象或 None)。任务对象单独给：后台任务要按它
+    判断「快速失败自动重试」，而 refresh-batch 的 HTTP 响应里绝不能混进 ORM 对象。
+    阶段收敛（success/failed）只改内存里的行，落库由调用方的 commit 带上。
+    """
+    entry = {
+        "asset_id": str(asset.id),
+        "code": asset.code,
+        "stage_prompt": asset.stage_prompt,
+        "status": asset.status,
+        "prompt_task_status": None,
+        "error": None,
+    }
+    task = await get_prompt_task(db, asset.prompt_task_id) if asset.prompt_task_id else None
+    if task is None:
+        # 在跑却查不到任务行：等不出结果，判 failed 让一线能决定重跑
+        svc.apply_stage(asset, "prompt", STAGE_FAILED)
+        asset.note = (
+            (asset.note or "")
+            + "\n反推任务行缺失（提交后进程中断的残留），已判失败；重跑请带 retry_failed=true"
+        )[:1000]
+        entry.update(stage_prompt=asset.stage_prompt, status=asset.status,
+                    error="任务行缺失，已判 failed", )
+        return entry, None
+    try:
+        task = await refresh_prompt_task(db, task)
+    except Exception as exc:  # 外呼抖动：保持 running，下轮再来
+        entry["error"] = f"轮询失败，保持 running：{str(exc)[:200]}"
+        return entry, task
+    entry["prompt_task_status"] = task.status
+    if task.status == PT_SUCCESS:
+        svc.apply_stage(asset, "prompt", STAGE_SUCCESS)
+        _backfill_title_on_prompt_success(asset, task.content)
+    elif task.status == PT_FAILED:
+        svc.apply_stage(asset, "prompt", STAGE_FAILED)
+        asset.note = ((asset.note or "") + f"\n反推失败：{task.error}")[:1000]
+        entry["error"] = task.error
+    entry.update(stage_prompt=asset.stage_prompt, status=asset.status)
+    return entry, task
+
+
+async def _wait_prompt_convergence(
+    db: AsyncSession,
+    todo: List[AssetItem],
+    *,
+    operator: User,
+    tier: int,
+) -> dict:
+    """后台反推任务的「原地等收敛」：轮询 + 快速失败自动重试一次（11-06 三连投诉的根治）。
+
+    为什么必须在这里等：收敛原先**只靠前端轮询**（页面一关就没人收），搭车的
+    「下载原片→抽帧」也跟着没人排——这就是「状态一直在反推中」的根因。
+    到期没等完的行**不判失败**（智令还在跑，判死会让一线重跑重复扣费），留在 running
+    交给「收取在跑结果」按钮。每轮 commit：中途崩了已收敛的行也不白跑。
+
+    自动重试的口径：任务提交后 `ASSET_ANALYZE_FAST_FAIL_RETRY_SECONDS` 秒内就 failed
+    才重试（实测「第一次总是出错」＝6 秒速死，重试一次就好）；跑了一阵才死的不是
+    抖动，重试就是重复扣费。每条素材每次任务最多一次，逐条留审计。
+    """
+    poll = max(1.0, float(settings.ASSET_ANALYZE_JOB_POLL_SECONDS))
+    deadline = time.monotonic() + max(60.0, float(settings.ASSET_ANALYZE_JOB_TIMEOUT_MINUTES) * 60.0)
+    fast_window = max(5.0, float(settings.ASSET_ANALYZE_FAST_FAIL_RETRY_SECONDS))
+    started = datetime.utcnow()
+    retried: set = set()
+    tally = {"success": 0, "failed": 0, "auto_retry": 0, "poll_error": 0}
+    pending = [a for a in todo if a.stage_prompt == STAGE_RUNNING]
+    deadline_hit = False
+    try:
+        while pending:
+            still: List[AssetItem] = []
+            for asset in pending:
+                entry, task = await _converge_prompt_asset(db, asset)
+                if (
+                    entry["error"]
+                    and entry["prompt_task_status"] is None
+                    and "轮询失败" in entry["error"]
+                ):
+                    # 外呼抖动：保持 running，下一轮再来（任务行缺失的已判 failed，走下面终态分支）
+                    tally["poll_error"] += 1
+                    still.append(asset)
+                    continue
+                if entry["stage_prompt"] == STAGE_SUCCESS:
+                    tally["success"] += 1
+                    # 直链素材顺手探一次时长（与单条 /prompt-refresh 同口径；分享页探不出就留空）
+                    if (
+                        asset.duration is None
+                        and asset.source_kind == SOURCE_LINK
+                        and svc.looks_like_direct_url(asset.source_url)
+                    ):
+                        try:
+                            probed = await _probe_url_duration(asset.source_url)
+                            if probed is not None:
+                                asset.duration = probed
+                        except Exception:  # noqa: BLE001 — 探时长是搭车，别连累收敛
+                            logger.info("反推收敛探直链时长失败 asset=%s", asset.code, exc_info=True)
+                    continue
+                if entry["stage_prompt"] == STAGE_FAILED:
+                    fast = False
+                    if task is not None:
+                        try:
+                            created = task.created_at
+                            fast = (
+                                datetime.utcnow() - created
+                            ).total_seconds() <= fast_window if created else False
+                        except Exception:  # noqa: BLE001
+                            fast = False
+                    if fast and str(asset.id) not in retried:
+                        retried.add(str(asset.id))
+                        tally["auto_retry"] += 1
+                        try:
+                            new_task = await _create_prompt_task_for_asset(
+                                db, asset, operator=operator, tier=tier
+                            )
+                            asset.prompt_task_id = new_task.id
+                            asset.prompt_max_duration = tier
+                            retry_failed = new_task.status == PT_FAILED
+                            svc.apply_stage(asset, "prompt", STAGE_FAILED if retry_failed else STAGE_RUNNING)
+                            if not retry_failed:
+                                asset.cost_prompt = round((asset.cost_prompt or 0) + svc.estimate_unit_cost(
+                                    tier, need_upload=(asset.source_kind == SOURCE_FILE)
+                                ), 4)
+                                still.append(asset)
+                            else:
+                                tally["failed"] += 1
+                            await _write_audit(
+                                db,
+                                action="asset.analyze.auto_retry",
+                                operator=operator,
+                                target_type="asset_item",
+                                target_id=asset.id,
+                                after={
+                                    "asset_code": asset.code,
+                                    "first_task_id": str(task.id),
+                                    "first_error": (task.error or "")[:300],
+                                    "retry_task_id": str(new_task.id),
+                                    "retry_status": new_task.status,
+                                    "tier": tier,
+                                },
+                            )
+                        except Exception as exc:  # noqa: BLE001 — 重试失败按原失败落定
+                            logger.exception("反推自动重试失败 asset=%s", asset.code)
+                            tally["failed"] += 1
+                            asset.note = ((asset.note or "") + f"\n自动重试也没提交上：{exc}")[:1000]
+                        continue
+                    tally["failed"] += 1
+                    continue
+                still.append(asset)
+            await db.commit()
+            pending = still
+            if pending and time.monotonic() >= deadline:
+                deadline_hit = True
+                break
+            if pending:
+                await asyncio.sleep(poll)
+    except Exception:  # noqa: BLE001 — 收敛循环炸了不能把已提交的活拖成无主，如实上报
+        logger.exception("反推收敛循环异常（任务侧）")
+        await db.rollback()
+        raise
+    tally["watched"] = len(todo)
+    tally["left_running"] = len(pending)
+    tally["deadline_hit"] = deadline_hit
+    tally["seconds"] = round((datetime.utcnow() - started).total_seconds(), 1)
+    return tally
+
+
 @router.post("/assets/analyze/batch")
 async def analyze_batch(
     data: AnalyzeRequest,
@@ -2599,9 +2822,18 @@ async def analyze_batch(
 
     if not todo:
         if queue is None:
+            # 11-06：这句话是「重试的机制也不清楚」投诉的一半源头——把它改成能照着做的指引
+            n_run = sum(1 for a in assets if a.stage_prompt == STAGE_RUNNING)
+            n_ok = sum(1 for a in assets if a.stage_prompt == STAGE_SUCCESS)
+            n_fail = len(assets) - n_run - n_ok
             raise HTTPException(
                 status_code=400,
-                detail="所选素材都已处理过（成功/在跑/失败待重试）。确认要重跑请勾选重试失败项，或改选别的素材",
+                detail=(
+                    f"所选 {len(assets)} 条里没有能新提交反推的："
+                    f"在跑 {n_run} 条（后台任务会自己收，不用再点）、"
+                    f"已成功 {n_ok} 条（不用再跑）、"
+                    f"失败 {n_fail} 条（要重跑就勾上「重试失败项」再提交，重跑＝重新扣费）"
+                ),
             )
         raise HTTPException(
             status_code=400,
@@ -2689,8 +2921,23 @@ async def analyze_batch(
                     },
                 )
 
+    # 11-06：反推升级为正式后台任务（JOB_ANALYZE）。闸门与成本确认**必须**在排任务之前
+    # 全过完——异步的任务号一发出智令就开始扣费，不能等后台跑起来才发现该拦。
+    # params 里只把 wait_converge 置上（台账存的是**原请求体**，追溯口径与其他任务一致；
+    # async_mode 由 `_run_asset_job` 重放时自己摘掉，这里不动它）。
+    if data.async_mode:
+        job = await _start_asset_job(
+            db,
+            kind=JOB_ANALYZE,
+            data=data.model_copy(update={"wait_converge": True}),
+            operator=current_user,
+            batch_id=queue_batch_id,
+            planned_units=len(todo),
+            cross_person=crosses,
+        )
+        return _job_accepted(job, "反推文案")
+
     results: List[dict] = []
-    tmp_dir = None
     # A1-2：下面**逐条 commit**，所以关掉 expire_on_commit —— 否则 commit 后对象全部失效，
     # 下一轮读 asset.source_kind 会触发惰性刷新，异步下直接 MissingGreenlet。
     db.sync_session.expire_on_commit = False
@@ -2705,42 +2952,8 @@ async def analyze_batch(
         }
         results.append(entry)
         try:
-            if asset.source_kind == SOURCE_FILE:
-                if not asset.file_key:
-                    raise ValueError("素材缺少文件对象，无法反推")
-                # 自有桶在局域网内，智令拉不到 → 必须取回本地再走 doc/125 中转上传
-                if tmp_dir is None:
-                    tmp_dir = os.path.join(tempfile.gettempdir(), f"asset_prompt_{uuid.uuid4().hex}")
-                    os.makedirs(tmp_dir, exist_ok=True)
-                local_path = os.path.join(tmp_dir, f"{asset.code}.mp4")
-                ok = await download_to_file(asset.bucket or settings.MINIO_BUCKET_RAW, asset.file_key, local_path)
-                if not ok:
-                    raise RuntimeError("从对象存储取文件失败")
-                size_err = validate_upload_size(os.path.getsize(local_path))
-                if size_err:
-                    raise ValueError(size_err)
-                with open(local_path, "rb") as fh:
-                    task = await create_upload_prompt_task(
-                        db,
-                        created_by=current_user.id,
-                        file_obj=fh,
-                        file_name=asset.file_name or f"{asset.code}.mp4",
-                        size_bytes=os.path.getsize(local_path),
-                        max_duration=tier,
-                    )
-                try:
-                    os.remove(local_path)
-                except OSError:
-                    pass
-            else:
-                if not asset.source_url:
-                    raise ValueError("素材缺少原始链接，无法反推")
-                task = await create_prompt_task(
-                    db,
-                    created_by=current_user.id,
-                    source_url=asset.source_url,
-                    max_duration=tier,
-                )
+            # 提交动作抽成共用函数：后台快速失败自动重试走的是同一段（口径只有一套）
+            task = await _create_prompt_task_for_asset(db, asset, operator=current_user, tier=tier)
 
             asset.prompt_task_id = task.id
             asset.prompt_max_duration = tier
@@ -2775,9 +2988,6 @@ async def analyze_batch(
                 if entry["prompt_task_id"]
                 else "失败标记未落库（这条没扣费，重试安全），下批会再试："
             ) + str(e)[:200]
-
-    if tmp_dir:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # 批次成本：**由批内素材行重算，不做 +=**——+= 会把重试条目的历史值重复累加，
     # 对账页上就会出现"账单 3 元、系统 6 元"的虚高（智令不逐单回传金额，这里全是推算额度）。
@@ -2841,6 +3051,21 @@ async def analyze_batch(
                 batch_id=str(next(iter(batch_ids))) if len(batch_ids) == 1 else None,
             )
 
+    # 11-06：后台任务（JOB_ANALYZE 的重放）提交完**原地等收敛**——不再指望前端轮询，
+    # 页面关了也一样收到终态、排上搭车下载。同步路径（脚本/行级重试）不等，行为不变。
+    converge: Optional[dict] = None
+    if data.wait_converge:
+        converge = await _wait_prompt_convergence(db, todo, operator=current_user, tier=tier)
+        await _write_audit(
+            db,
+            action="asset.analyze.converge",
+            operator=current_user,
+            target_type="asset_batch",
+            target_id=None,
+            after=converge,
+        )
+        await db.commit()
+
     return {
         "estimate": estimate,
         "cumulative_cost": cumulative_cost,
@@ -2851,6 +3076,7 @@ async def analyze_batch(
         "skipped": skipped,
         "queue": queue,
         "download": download_kick,
+        "converge": converge,
         "message": f"已提交 {len(todo)} 条反推（档位 {tier}s，本批预估 {estimate['total_cost']} 元）"
         + (f"，同批未推 {cumulative_units} 条 → 批次累计 {cumulative_cost} 元" if cumulative_units else "")
         + (f"，跳过 {len(skipped)} 条已处理" if skipped else "")
@@ -2859,7 +3085,14 @@ async def analyze_batch(
             f"；{download_kick['queued']} 条原片正在后台下载（完事列表上会显示下载标记）"
             if download_kick and download_kick["queued"] else ""
         )
-        + (f"；{download_kick['note']}" if download_kick and download_kick.get("note") else ""),
+        + (f"；{download_kick['note']}" if download_kick and download_kick.get("note") else "")
+        + (
+            f"；后台已收齐：成功 {converge['success']}、失败 {converge['failed']}"
+            + (f"（自动重试过 {converge['auto_retry']} 条）" if converge["auto_retry"] else "")
+            + (f"、{converge['left_running']} 条到点没等完（仍标在跑，可点「收取在跑结果」）"
+               if converge.get("left_running") else "")
+            if converge else ""
+        ),
     }
 
 
@@ -2923,46 +3156,21 @@ async def refresh_analyze_batch(
     results: List[dict] = []
     tally = {"success": 0, "failed": 0, "running": 0, "stuck": 0, "poll_error": 0}
     for asset in assets:
-        entry = {
-            "asset_id": str(asset.id),
-            "code": asset.code,
-            "stage_prompt": asset.stage_prompt,
-            "status": asset.status,
-            "prompt_task_status": None,
-            "error": None,
-        }
+        # 收敛核心与后台反推任务（JOB_ANALYZE）共用一个函数：两处口径分叉过一次就再没干净过
+        entry, _task = await _converge_prompt_asset(db, asset)
         results.append(entry)
-        task = await get_prompt_task(db, asset.prompt_task_id) if asset.prompt_task_id else None
-        if task is None:
-            # 在跑却查不到任务行：等不出结果，判 failed 让一线能决定重跑
-            svc.apply_stage(asset, "prompt", STAGE_FAILED)
-            asset.note = (
-                (asset.note or "")
-                + "\n反推任务行缺失（提交后进程中断的残留），已判失败；重跑请带 retry_failed=true"
-            )[:1000]
-            entry.update(stage_prompt=asset.stage_prompt, status=asset.status,
-                        error="任务行缺失，已判 failed", )
-            tally["stuck"] += 1
-            continue
-        try:
-            task = await refresh_prompt_task(db, task)
-        except Exception as exc:  # 外呼抖动：保持 running，下轮再来
-            entry["error"] = f"轮询失败，保持 running：{str(exc)[:200]}"
+        if entry["error"] and entry["prompt_task_status"] is None and "轮询失败" in entry["error"]:
             tally["poll_error"] += 1
             continue
-        entry["prompt_task_status"] = task.status
-        if task.status == PT_SUCCESS:
-            svc.apply_stage(asset, "prompt", STAGE_SUCCESS)
-            _backfill_title_on_prompt_success(asset, task.content)
+        if entry["stage_prompt"] == STAGE_SUCCESS:
             tally["success"] += 1
-        elif task.status == PT_FAILED:
-            svc.apply_stage(asset, "prompt", STAGE_FAILED)
-            asset.note = ((asset.note or "") + f"\n反推失败：{task.error}")[:1000]
-            entry["error"] = task.error
+        elif entry["stage_prompt"] == STAGE_FAILED and entry["prompt_task_status"] is None:
+            # 任务行缺失（提交后进程中断的残留），核心里已判 failed
+            tally["stuck"] += 1
+        elif entry["stage_prompt"] == STAGE_FAILED:
             tally["failed"] += 1
         else:
             tally["running"] += 1
-        entry.update(stage_prompt=asset.stage_prompt, status=asset.status)
 
     await _write_audit(
         db,
@@ -3268,6 +3476,11 @@ def _job_endpoint(kind: str) -> Tuple[Any, Any, str]:
     `/productions/dispatch` 这些接口原样再调一次（自己开会话、自己收尾）。写两套必然分叉——
     审核/投产/导出三个入口刚刚才因为口径分叉被点名（R-6），这里绝不再造一个。
     """
+    if kind == JOB_ANALYZE:
+        # 11-06：反推正式进台账。跑的仍是 `/assets/analyze/batch` 这一个口（闸门/成本确认/
+        # 逐条扣费全在里面），后台重放会原地等收敛＋快速失败自动重试——收敛口径和
+        # 「收取在跑结果」按钮共用一个核心函数，不会出现"机器收的一套、人收的另一套"。
+        return AnalyzeRequest, analyze_batch, "反推文案"
     if kind == JOB_SUMMARY_GENERATE:
         return SummaryGenerateRequest, generate_summaries, "出钩子文案"
     if kind == JOB_PRODUCE:
@@ -3312,6 +3525,9 @@ def _job_scope_ids(kind: str, params: Dict[str, Any]) -> List[str]:
         return [str(x) for x in ((params or {}).get("ids") or []) if str(x)]
     if kind == JOB_DOWNLOAD:
         # 批 J：下载圈的是素材 id（与出文案同一类），不复用默认分支的 summary_ids 键
+        return [str(x) for x in ((params or {}).get("asset_ids") or []) if str(x)]
+    if kind == JOB_ANALYZE:
+        # 11-06：反推圈的是素材 id。整批排队形态没有 asset_ids → 走下面 batch_id 档判重
         return [str(x) for x in ((params or {}).get("asset_ids") or []) if str(x)]
     if kind == JOB_PROMPT_PREVIEW:
         # 批 J：备提示词圈的是文案 id（与投产同类）
@@ -3486,6 +3702,18 @@ async def _run_asset_job(job_id: str, kind: str, params: Dict[str, Any], operato
                         outcome_status = JB_FAILED
                         outcome_detail = f"抽帧 {n_fail} 条全部失败（无一条成功）：详见 results 与 worker 日志"
                         logger.warning("素材库后台任务 %s(frames) 全败：%s", job_id, outcome_detail)
+                # 反推的「接口成功」≠「收到结果」：后台等完收敛后一条都没成、还都是终态失败
+                # （含自动重试仍失败）→ 任务记 FAILED，别让台账绿着让人以为文案马上就有
+                if kind == JOB_ANALYZE and isinstance(result_dict, dict):
+                    conv = result_dict.get("converge") or {}
+                    n_ok = int(conv.get("success") or 0)
+                    n_fail = int(conv.get("failed") or 0)
+                    if (n_ok + n_fail) > 0 and n_ok == 0 and not conv.get("deadline_hit"):
+                        outcome_status = JB_FAILED
+                        outcome_detail = (
+                            f"反推 {n_fail} 条全部失败（含自动重试仍失败）：逐条原因看素材列表的失败标记"
+                        )
+                        logger.warning("素材库后台任务 %s(analyze) 全败：%s", job_id, outcome_detail)
                 outcome = (outcome_status, result_dict, outcome_detail)
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)[:900]
@@ -3511,7 +3739,8 @@ async def _job_progress(db: AsyncSession, job: AssetJob) -> Dict[str, Any]:
     done: Optional[int] = None
     note = "进度按台账现算；逐条状态看素材列表/生产单列表"
     ids = _job_scope_ids(job.kind, job.params or {})
-    if job.kind == JOB_SUMMARY_GENERATE:
+    if job.kind in (JOB_SUMMARY_GENERATE, JOB_ANALYZE):
+        stage_col = AssetItem.stage_summary if job.kind == JOB_SUMMARY_GENERATE else AssetItem.stage_prompt
         conds = []
         if ids:
             conds.append(AssetItem.id.in_([uuid.UUID(x) for x in ids]))
@@ -3523,14 +3752,14 @@ async def _job_progress(db: AsyncSession, job: AssetJob) -> Dict[str, Any]:
                 (
                     await db.execute(
                         select(func.count(AssetItem.id)).where(
-                            and_(*conds, AssetItem.stage_summary.in_((STAGE_SUCCESS, STAGE_FAILED)))
+                            and_(*conds, stage_col.in_((STAGE_SUCCESS, STAGE_FAILED)))
                         )
                     )
                 ).scalar()
                 or 0
             )
             if job.batch_id and not ids:
-                note = "整批排队：进度＝本批已出完文案的条数（含上次就跑好的），剩余条数看队列"
+                note = "整批排队：进度＝本批已出完文案的条数（含上次就跑好的），剩余条数看队列" if job.kind == JOB_SUMMARY_GENERATE else "整批排队：进度＝本批已收完反推的条数（含上次就跑好的），剩余条数看队列"
     elif job.kind == JOB_PRODUCE and ids and job.started_at:
         done = int(
             (

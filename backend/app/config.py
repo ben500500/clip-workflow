@@ -349,6 +349,17 @@ class Settings(BaseSettings):
     ASSET_ANALYZE_MAX_PER_CALL: int = 20
     ASSET_SUMMARY_MAX_PER_CALL: int = 10
 
+    # ── 素材库 · 反推后台任务（11-06 三连投诉：不进任务条／首投必错／卡「反推中」）──
+    # JOB_ANALYZE 的轮询节奏与总时长：智令一条反推实测 1~2 分钟出结果，30 分钟是
+    # 按 600s 档 × 排队波动给的宽裕上限；到期**不判失败**——行留在 running，
+    # 「收取在跑结果」按钮和单条 ⟳ 仍然收得到，只是任务台账如实记「到点没等完」。
+    ASSET_ANALYZE_JOB_POLL_SECONDS: float = 10.0
+    ASSET_ANALYZE_JOB_TIMEOUT_MINUTES: float = 30.0
+    # 智令侧快速失败自动重试：实测「第一次总是出错」＝提交后几秒就 failed（6s 实锤），
+    # 重试一次就好。只认**提交后很短时间内**的失败（真跑了一半才死的不是抖动，重试
+    # 就是重复扣费）；每条素材每次任务最多自动重试一次，留审计。
+    ASSET_ANALYZE_FAST_FAIL_RETRY_SECONDS: float = 120.0
+
     # 素材库 · 时效直链缓存（11-06 播放直链修复）：resolve 取到的 play_url 落库，
     # 这个窗口内 source-preview/resolve 免费回放；过期不作数、retake 重取自愈。
     # 6 小时与源站时效直链的有效期口径一致（界面上就写着「约 6 小时内有效」）。

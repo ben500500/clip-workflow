@@ -1237,7 +1237,7 @@ def test_analyze_never_resubmits_success_and_skips_failed_without_retry():
         blocked = await client.post(
             "/api/assets/analyze/batch", json={"asset_ids": [asset_id]}, headers=hm)
         assert blocked.status_code == 400, blocked.text
-        assert "都已处理过" in blocked.json()["detail"]
+        assert "没有能新提交反推的" in blocked.json()["detail"]
 
         async with dbmod.async_session_factory() as s:
             a = await s.get(AssetItem, uuid.UUID(asset_id))
@@ -5278,7 +5278,7 @@ def test_image_pointed_at_every_paid_gate_is_refused_in_plain_words():
             r = await client.post(
                 "/api/assets/analyze/batch", json={"asset_ids": [img_id]}, headers=hm)
         assert r.status_code == 400, r.text
-        assert "都已处理过" in r.json()["detail"], r.json()   # 一条都没得跑 → 走原有的空队列话术
+        assert "没有能新提交反推的" in r.json()["detail"], r.json()   # 一条都没得跑 → 空队列话术（11-06 改成逐档说清）
         assert created == [], "点名图片绝不能发起外呼"
 
         # 混着点名：图进 skipped、视频正常进 todo（证明挡的是图，不是把整单打死）
@@ -7742,6 +7742,116 @@ def test_dispatch_prompt_override_changes_only_outgoing_copy():
         assert all(c["prompt"] == listed3[0]["prompt_text"] for c in fb2.creates), "空白改稿照原稿投"
         logs2 = await _rows(AuditLog, AuditLog.action == "asset.production.dispatch_override")
         assert len(logs2) == 1, "空白改稿不留痕"
+
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_analyze_async_job_converges_and_auto_retries_fast_fail():
+    """11-06 三连投诉的根治验收：反推进任务条（不再隐形）、后台自己收终态（页面关了也收）、
+    「第一次总是出错」＝快速失败自动重试一次。
+
+    三个投诉一句话：以前反推提交完就没人管了——收敛只靠前端轮询，页面一关状态就永远
+    卡在「反推中」；任务条里也找不到它；智令 6 秒速死那种失败还得人肉点重试。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        from wechat_download.models import PT_PROCESSING, WechatDlPromptTask
+        from wechat_download.prompt_client import PromptStatus
+
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        third = "https://www.douyin.com/video/7400000000000000002"
+        imp = await _import(client, hm, [DOUYIN_1, third])
+        assert imp.status_code == 201, imp.text
+        ids = [i["id"] for i in imp.json()["items"]]
+
+        old_poll = settings.ASSET_ANALYZE_JOB_POLL_SECONDS
+        settings.ASSET_ANALYZE_JOB_POLL_SECONDS = 0.05  # 测试把轮询间隔压到毫秒级
+        try:
+            # 假 create_prompt_task 要**真落任务行**（processing）：后台收敛靠 get_prompt_task
+            # 读库，替身只回 SimpleNamespace 的话每条都会被判「任务行缺失」
+            async def _mk_task(db, **kw):
+                tid = uuid.uuid4()
+                db.add(WechatDlPromptTask(
+                    id=tid, source_type="url", source_url=kw.get("source_url"),
+                    provider_task_id=f"p-{tid.hex[:6]}", status=PT_PROCESSING,
+                    max_duration=kw.get("max_duration") or 60))
+                await db.flush()
+                return SimpleNamespace(id=tid, status="processing", error=None)
+
+            # 收敛侧替身按序回：第 1 条成功、第 2 条快速失败（触发自动重试）、重试后成功
+            fake = SimpleNamespace(
+                query=AsyncMock(side_effect=[
+                    PromptStatus(status="success", content=SCRIPT, schedule="SUCCESS"),
+                    PromptStatus(status="failed", error="任务处理失败", schedule="FAIL"),
+                    PromptStatus(status="success", content=SCRIPT, schedule="SUCCESS"),
+                ]),
+                close=AsyncMock(),
+            )
+            with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)), \
+                 patch("app.api.assets.create_prompt_task", AsyncMock(side_effect=_mk_task)) as cpt, \
+                 patch("wechat_download.prompt_service.PromptClient", lambda: fake):
+                # ① 提交即回任务号，不是同步那套 {results:[...]}
+                sub = await client.post(
+                    "/api/assets/analyze/batch",
+                    json={"asset_ids": ids, "max_duration": 60, "confirmed": True,
+                          "download": False, "async_mode": True},
+                    headers=hm,
+                )
+                assert sub.status_code == 200, sub.text
+                ack = sub.json()
+                assert ack["queued"] is True and ack["job_id"]
+                assert ack["planned_units"] == 2
+                assert "results" not in ack, "异步回执不能长得像同步结果"
+                done = await _wait_job(client, h["admin"], ack["job_id"], timeout=20.0)
+
+            # ② 后台自己收完了：一成、自动重试一次后又一成，没有留在跑的
+            assert done["status"] == "succeeded", done
+            conv = done["result"]["converge"]
+            assert conv["success"] == 2 and conv["failed"] == 0, conv
+            assert conv["auto_retry"] == 1, "6 秒速死那种失败要自动重试一次"
+            assert conv["left_running"] == 0 and conv["deadline_hit"] is False
+            assert done["progress"]["done"] == 2 and done["progress"]["total"] == 2
+
+            # ③ 提交 2 次 + 自动重试 1 次 = create_prompt_task 共 3 次
+            assert cpt.await_count == 3, cpt.await_count
+
+            # ④ 业务表才是真相：两条都收敛到成功（不是台账绿了业务表还挂着 running）
+            rows = await _rows(AssetItem, AssetItem.id.in_([uuid.UUID(x) for x in ids]))
+            assert all(r.stage_prompt == "success" for r in rows), \
+                [(r.code, r.stage_prompt) for r in rows]
+
+            # ⑤ 自动重试与收敛都留了审计
+            retries = await _rows(AuditLog, AuditLog.action == "asset.analyze.auto_retry")
+            assert len(retries) == 1 and retries[0].after["retry_status"] == "processing"
+            convs = await _rows(AuditLog, AuditLog.action == "asset.analyze.converge")
+            assert len(convs) == 1 and convs[0].after["auto_retry"] == 1
+
+            # ⑥ 任务条默认能列到反推任务（「后台任务中不会显示」的验收点）
+            listed = await client.get("/api/assets/jobs", headers=hm)
+            kinds = {i["kind"] for i in listed.json()["items"]}
+            assert "analyze" in kinds, kinds
+
+            # ⑦ 收敛完再点同样的两条：400 说清每档多少条、怎么重试，不再是没头没尾的「都已处理过」
+            again = await client.post(
+                "/api/assets/analyze/batch",
+                json={"asset_ids": ids, "max_duration": 60, "confirmed": True, "download": False},
+                headers=hm,
+            )
+            assert again.status_code == 400, again.text
+            detail = again.json()["detail"]
+            assert "没有能新提交反推的" in detail and "已成功 2 条" in detail and "重试失败项" in detail, detail
+
+            # ⑧ 台账里 params 存的是原请求体（含 wait_converge，追溯口径不变）
+            jobs = await _rows(AssetJob)
+            mine = [j for j in jobs if j.kind == "analyze"]
+            assert len(mine) == 1 and mine[0].params["wait_converge"] is True
+            assert mine[0].params["async_mode"] is True, "params 存的是原请求体（追溯用）"
+        finally:
+            settings.ASSET_ANALYZE_JOB_POLL_SECONDS = old_poll
 
         await client.aclose()
 

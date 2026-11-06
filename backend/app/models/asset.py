@@ -677,7 +677,11 @@ JOB_DISPATCH = "dispatch"
 # 两者都复用 D-1 同一套台账/防重复/进度口径，不另造机制。
 JOB_DOWNLOAD = "download"
 JOB_PROMPT_PREVIEW = "prompt_preview"
-ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE, JOB_FRAMES, JOB_DISPATCH, JOB_DOWNLOAD, JOB_PROMPT_PREVIEW)
+# 11-06 用户三连投诉后升级为正式任务：反推提交后**收敛只靠前端轮询**（页面一关就没人收，
+# 状态永远「反推中」、失败看不见也没法重试）。JOB_ANALYZE = 提交 + 后台原地等收敛 +
+# 快速失败自动重试一次，与出文案同一套台账/防重复/进度口径，不另造机制。
+JOB_ANALYZE = "analyze"
+ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE, JOB_FRAMES, JOB_DISPATCH, JOB_DOWNLOAD, JOB_PROMPT_PREVIEW, JOB_ANALYZE)
 
 JB_QUEUED = "queued"          # 已落库、协程已排上，还没开跑
 JB_RUNNING = "running"        # 正在逐条调模型（开始跑时落一次 started_at，跑中间不回报心跳）

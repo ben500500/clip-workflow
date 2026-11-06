@@ -748,6 +748,11 @@ export interface AssetAnalyzeRequest {
   limit?: number | null;
   /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
   cross_person_confirm?: boolean;
+  /**
+   * D-1：true＝闸门与成本确认全过之后当场回任务号（AssetJobAck），提交＋收敛在后台跑，
+   * 页面关闭不影响（11-06 前收敛只靠前端轮询，页面一关就卡「反推中」）。页面按钮走 true。
+   */
+  async_mode?: boolean;
 }
 
 /** SummaryGenerateRequest */
@@ -2099,9 +2104,12 @@ export const assetApi = {
     need_parse?: boolean;
   }) => client.get('/assets/cost/estimate', { params }) as Promise<AssetCostEstimateResponse>,
 
-  // 批量反推提示词（智令 doc/120）：按计时上限扣费，≥2 条必须 confirmed=true，否则 409 回确认单
+  // 批量反推提示词（智令 doc/120）：按计时上限扣费，≥2 条必须 confirmed=true，否则 409 回确认单。
+  // 带 async_mode:true 时当场回任务号（AssetJobAck），收敛在后台跑，结果去 getAssetJob / 列表阶段标签看
   analyzeBatch: (data: AssetAnalyzeRequest) =>
-    client.post('/assets/analyze/batch', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetAnalyzeResponse>,
+    client.post('/assets/analyze/batch', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<
+      AssetAnalyzeResponse | AssetJobAck
+    >,
 
   // 一次收敛整批在跑的反推任务（读操作、不扣费；200 条不该发 200 次单条请求）
   refreshAnalyzeBatch: (data: AssetRefreshBatchRequest) =>
