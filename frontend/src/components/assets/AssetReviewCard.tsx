@@ -44,7 +44,7 @@ const AssetReviewCard: React.FC<Props> = ({
 }) => (
   <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
     {/* 左：三帧横排，点开九宫格 */}
-    <FrameStrip slot={slot} loading={framesLoading} />
+    <FrameStrip slot={slot} loading={framesLoading} assetId={row.asset_id} />
 
     {/* 中：素材行 + 文案正文 */}
     <div style={{ flex: 1, minWidth: 0 }}>
