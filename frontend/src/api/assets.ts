@@ -1197,6 +1197,9 @@ export interface AssetReviewResultItem {
   audit_status?: AuditStatus;
   /** 仅成功条目回；true = 管理员豁免放行（已入审计） */
   waived?: boolean;
+  /** 仅成功条目回：这条文案是不是推荐条（模型标注）。藏卡提示的「非推荐」统计吃这里，
+   *  不吃当前页 items——豁免重放/跨页勾选时目标行不在当前页，数当前页会漏报。 */
+  is_recommended?: boolean;
   /** 仅成功条目回：撤销过审时连带作废的未投递生产单张数 */
   superseded_productions?: number;
   error_code?: string;

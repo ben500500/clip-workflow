@@ -4292,6 +4292,10 @@ async def review_summaries(
         results.append({
             "summary_id": str(uuid_s), "ok": True, "code": asset.code, "audit_status": to_state,
             "waived": bool(waived),
+            # 11-06 P2：推荐与否是**这条文案自己的属性**，逐条带回真话——前端藏卡提示
+            # 的「非推荐」统计改吃这里（原来只数当前页 items，豁免重放/跨页勾选时
+            # 目标行不在当前页就漏报「其实会被藏住」）。失败条不回（提示只数 ok 条）。
+            "is_recommended": bool(summary.is_recommended),
             # R-6：一致性这类**预警**不拦人，但必须让审核人看到「过了、只是有预警」，
             # 否则留痕列 consistency_ok=false 就成了没人解释的红灯。
             "warnings": recheck_warnings,

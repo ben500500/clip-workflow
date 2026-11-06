@@ -6940,6 +6940,49 @@ def test_review_approve_enqueues_preview_and_unapprove_invalidates_it():
     _run(_scenario())
 
 
+def test_review_response_carries_is_recommended_per_result():
+    """11-06 P2：审核响应逐条带回 is_recommended（后端真话）。
+
+    前端藏卡提示的「非推荐」统计吃这个字段——豁免重放/跨页勾选时目标行不在当前页，
+    按当前页 items 数会漏报「其实会被藏住」。这条用例钉住：推荐条回 True、
+    非推荐条回 False，且与库里实际值一致。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        good = _approvable(items)
+        other_id = next(i["id"] for i in items if i["id"] != good["id"])
+
+        # 人为把另一条改成非推荐；文案换成 good 的（生成侧不保证每条都过复核闸，
+        # 这里只测「响应逐条回 is_recommended」，所以两条用同一段能过闸的文字）
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetSummary, uuid.UUID(other_id))
+            row.is_recommended = False
+            row.text = good["text"]
+            row.word_count = len(row.text)
+            await s.commit()
+
+        ok = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [good["id"], other_id], "action": "approve"}, headers=ho)
+        assert ok.status_code == 200, ok.text
+        by_sid = {r["summary_id"]: r for r in ok.json()["results"]}
+        assert by_sid[good["id"]]["ok"] is True and by_sid[other_id]["ok"] is True
+        assert by_sid[good["id"]]["is_recommended"] is True, "推荐条必须如实回 True"
+        assert by_sid[other_id]["is_recommended"] is False, "非推荐条必须如实回 False——前端靠它数「会被藏住几条」"
+        # 与库里实际值对账，防「响应回一套、库里存一套」
+        row_rec = await _row_of(AssetSummary, good["id"])
+        row_non = await _row_of(AssetSummary, other_id)
+        assert row_rec.is_recommended is True and row_non.is_recommended is False
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_preview_prompt_endpoint_gates_idempotent_and_fails_soft():
     """预览口：没过审不备；备过复用不重复等模型；模型挂了逐条说清且不拦投产。"""
     _run(_bootstrap())

@@ -289,8 +289,12 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         );
       }
       if (action === 'approve' && scope === 'recommended') {
-        const pool = data?.items || [];
-        const nonRec = pool.filter((i) => targetIds.includes(i.id) && !i.is_recommended).length;
+        // 11-06 P2：非推荐统计改吃**审核响应逐条带回的 is_recommended**（后端真话），
+        // 不再数当前页 items——豁免重放时目标行可能已经不在当前页（fetchList 回第 1 页
+        // 或状态筛选藏掉），按当前页数会漏报「其实会被藏住」。
+        const nonRec = (res.results || []).filter(
+          (r) => r.ok && r.is_recommended === false,
+        ).length;
         if (nonRec) {
           hints.push(
             `其中 ${nonRec} 条不是推荐条，「推荐条」范围也会把它们藏住——范围切「全部」才看得到`,
