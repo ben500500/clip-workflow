@@ -7340,3 +7340,65 @@ def test_cross_person_charge_actions_need_confirm_and_are_annotated():
     _run(_scenario())
 
 
+def test_hook_code_uniqueness_blocks_reuse_and_used_endpoint_reports_it():
+    """11-06 拍板③：钩子编号一发就烧掉——作废单也不复用，后端不代取号。
+
+    钉四件事：
+    1. 带号建单 200，`GET /assets/hook-codes/used` 把钉过的号找回来
+       （带素材 code + 第几张单——只回 seq 不回素材，一线没法对）；
+    2. 同号再建单 → 400，白话点名「已钉在素材 X 的第 N 张单上」，
+       且模型一次都不调（拦在展开之前）；
+    3. 新号照常建单成功，used 口随即多一行；
+    4. 没被任何单用过的号在 used 口查不到。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+
+        _aid, _sid, listed = await _order_ready_production(
+            client, h, url="https://example.com/v/hook-dup-a.mp4", n=1, hook_codes=["7C0A1"])
+        assert listed[0]["hook_code"] == "7C0A1", listed[0]
+
+        # ④+① 回显口：只报钉过的；没钉的（7C0A2）不出现
+        used = await client.get(
+            "/api/assets/hook-codes/used", params={"codes": "7C0A1,7C0A2"}, headers=ho)
+        assert used.status_code == 200, used.text
+        rows = used.json()["used"]
+        assert len(rows) == 1, rows
+        assert rows[0]["code"] == "7C0A1"
+        assert rows[0]["seq"] == 1
+        assert rows[0]["asset_code"], "素材 code 必须带，一线要靠它去库里对单"
+        assert rows[0]["status"], "单子状态也要带（作废与否一线自己判断）"
+
+        # 准备第二条过审文案，拿同号再投产
+        _aid2, _sid2, _ = await _order_ready_production(
+            client, h, url="https://example.com/v/hook-dup-b.mp4", n=1)
+        with patch("app.api.assets._call_autoclip",
+                   AsyncMock(side_effect=AssertionError("拦在展开之前，不该花一分钱"))):
+            dup = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [_sid2], "n": 1, "board_total": 1,
+                      "recommended_title_count": 1, "hook_codes": ["7C0A1"]},
+                headers=ho)
+        assert dup.status_code == 400, dup.text
+        detail = dup.json()["detail"]
+        assert "已经被用掉" in detail
+        assert "7C0A1" in detail and "第 1 张单" in detail
+
+        # 新号照常建单；建完 used 口多一行
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            fresh = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [_sid2], "n": 1, "board_total": 1,
+                      "recommended_title_count": 1, "hook_codes": ["7C0A2"]},
+                headers=ho)
+        assert fresh.status_code == 200, fresh.text
+        used2 = await client.get(
+            "/api/assets/hook-codes/used", params={"codes": "7C0A1,7C0A2"}, headers=ho)
+        rows2 = used2.json()["used"]
+        assert {r["code"] for r in rows2} == {"7C0A1", "7C0A2"}
+        await client.aclose()
+
+    _run(_scenario())

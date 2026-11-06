@@ -2153,6 +2153,13 @@ export const assetApi = {
       AssetProduceResponse | AssetJobAck
     >,
 
+  // 11-06 拍板③ 回显口：查一批钩子编号哪些已经被钉在生产单上（≤100 个）。
+  // 只做回显，不代取号——取号仍走 hook_id.py，后端不预占不代发。
+  hookCodesUsed: (codes: string[]) =>
+    client.get('/assets/hook-codes/used', { params: { codes: codes.join(',') } }) as Promise<{
+      used: { code: string; asset_code: string; seq: number; status: string }[];
+    }>,
+
   // 后台任务台账：刷新页面/换浏览器后靠这两个口找回「我刚才点的那批还在不在跑」
   listAssetJobs: (params?: {
     kind?: AssetJobKind;

@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Button, Checkbox, Descriptions, Input, Modal, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
@@ -46,6 +46,15 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const [cardIds, setCardIds] = useState<string[]>([]);
   const [dramaAbbr, setDramaAbbr] = useState('');
   const [codeText, setCodeText] = useState('');
+  /**
+   * 11-06 拍板③：填了号就查哪些已经被钉在生产单上（GET /assets/hook-codes/used）。
+   * 回显是软提醒（打字过程中尽力而为），提交时后端还有一道硬查重兜底——
+   * 号一发就烧掉，作废单也不复用，所以这里查到的直接拦提交。
+   */
+  const [usedCodes, setUsedCodes] = useState<
+    { code: string; asset_code: string; seq: number; status: string }[]
+  >([]);
+  const usedReqRef = useRef(0);
   const [expand, setExpand] = useState(true);
   const [waiveReason, setWaiveReason] = useState('');
   /**
@@ -119,6 +128,25 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const dupCodes = codes.length !== new Set(codes).size;
   const plannedRows = summaries.length * n * boardTotal;
 
+  // 11-06 拍板③：500ms 防抖查已用号（不逐键打接口）；请求序号防乱序回包。
+  // 回显失败静默——提交时后端硬查重还在，别因为一个回显口把填单卡死。
+  useEffect(() => {
+    if (!open || !codes.length) {
+      setUsedCodes([]);
+      return;
+    }
+    const reqId = ++usedReqRef.current;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await assetApi.hookCodesUsed(codes);
+        if (usedReqRef.current === reqId) setUsedCodes(res.used);
+      } catch {
+        /* 尽力而为 */
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [open, codes]);
+
   /** 自动检查拦下的问题类型回填到表单，回到表单就能按类只放行一部分（R-6 分粒度） */
   const collectRecheckCodes = (res: AssetProduceResponse) => {
     const seen: string[] = [];
@@ -139,6 +167,13 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
     }
     if (dupCodes) {
       message.error('钩子编号重复：一个编号只能用在一条上');
+      return;
+    }
+    if (usedCodes.length) {
+      message.error(
+        `这些编号已经被用掉了：${usedCodes.slice(0, 3).map((u) => u.code).join('、')}（一钩一号，回 hook_id.py 重新取号）`,
+        8,
+      );
       return;
     }
     setBusy(true);
@@ -477,7 +512,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             <Space style={{ marginBottom: 4 }}>
               <Text>钩子编号（要填 {needCodes} 个，从取号工具 hook_id.py 拿）：</Text>
               {codes.length > 0 && (
-                <Tag color={codes.length === needCodes && !badCodes.length && !dupCodes ? 'green' : 'orange'}>
+                <Tag color={codes.length === needCodes && !badCodes.length && !dupCodes && !usedCodes.length ? 'green' : 'orange'}>
                   已填 {codes.length}/{needCodes}
                 </Tag>
               )}
@@ -497,6 +532,23 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               <Text type="warning" style={{ fontSize: 12 }}>
                 还差 {needCodes - codes.length} 个：缺的照样能建单，但单上没编号，导出 txt 时段头和推荐标题就带不上编号。
               </Text>
+            )}
+            {!!usedCodes.length && (
+              <Alert
+                type="error"
+                showIcon
+                style={{ marginTop: 6 }}
+                message={`${usedCodes.length} 个编号已经被用掉了，提交会被拦`}
+                description={
+                  <div style={{ fontSize: 12 }}>
+                    {usedCodes.slice(0, 8).map((u) => (
+                      <div key={u.code}>{u.code}（已钉在素材 {u.asset_code} 的第 {u.seq} 张单上）</div>
+                    ))}
+                    {usedCodes.length > 8 && <div>另有 {usedCodes.length - 8} 个没列出</div>}
+                    <div>一钩一号：号一发就烧掉，作废的单也不复用，回 hook_id.py 重新取号再投产。</div>
+                  </div>
+                }
+              />
             )}
           </div>
 

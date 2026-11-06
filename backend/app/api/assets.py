@@ -4825,6 +4825,36 @@ async def _card_sources_for(
     return out
 
 
+@router.get("/assets/hook-codes/used")
+async def hook_codes_used(
+    codes: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+):
+    """11-06 拍板③：生产单弹窗回显「这些编号里哪些已经被用掉」。
+
+    `codes` 逗号分隔的五位编号；只读、0 元。`used` 每项带它钉在哪条素材的
+    哪张单上（含单子状态），前端在输入框下当场亮红——比提交后才 400 顺手。
+    取号本身仍走共享盘的 hook_id.py，本口不代取、不预占任何号。
+    """
+    wanted = [c.strip().upper() for c in (codes or "").split(",") if c.strip()][:100]
+    if not wanted:
+        return {"used": []}
+    rows = list(
+        await db.execute(
+            select(AssetProduction.hook_code, AssetProduction.seq, AssetProduction.status, AssetItem.code)
+            .join(AssetItem, AssetItem.id == AssetProduction.asset_id)
+            .where(AssetProduction.hook_code.in_(wanted))
+        )
+    )
+    return {
+        "used": [
+            {"code": c, "asset_code": ac, "seq": seq, "status": st}
+            for c, seq, st, ac in rows
+        ]
+    }
+
+
 @router.post("/assets/produce")
 async def create_productions(
     data: ProduceRequest,
@@ -4911,6 +4941,25 @@ async def create_productions(
             hook_codes.append(code)
         if len(set(hook_codes)) != len(hook_codes):
             raise HTTPException(status_code=400, detail="钩子编号重复，一钩一号")
+
+        # 11-06 拍板③：已用号当场拦。号是共享盘 hook_id.py 发出去的，一发就烧掉——
+        # 哪怕挂着号的那张单后来作废了，重用同一个号也可能让板面出现两条同名任务、
+        # 回收时对不上账。在这里点名「这个号已经钉在哪条素材的哪张单上」，
+        # 比等导出/投板时才发现对不上账再返工便宜得多。取号仍走 hook_id.py，后端不代取。
+        used = list(
+            await db.execute(
+                select(AssetProduction.hook_code, AssetProduction.seq, AssetItem.code)
+                .join(AssetItem, AssetItem.id == AssetProduction.asset_id)
+                .where(AssetProduction.hook_code.in_(hook_codes))
+            )
+        )
+        if used:
+            shown = "；".join(f"{c}（已钉在素材 {ac} 的第 {seq} 张单上）" for c, seq, ac in used[:8])
+            more = f"；另有 {len(used) - 8} 张没列出" if len(used) > 8 else ""
+            raise HTTPException(
+                status_code=400,
+                detail=f"这些钩子编号已经被用掉了：{shown}{more}。一钩一号，回 hook_id.py 重新取号再投产",
+            )
 
     board_tag = (data.board_tag or settings.ASSET_BOARD_TAG).strip()[:60]
     # B-2：date 由后端生成（绝不用前端传的日期），并折算成板面本地时间
