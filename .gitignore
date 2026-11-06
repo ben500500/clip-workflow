@@ -131,3 +131,9 @@ slice-worker/temp/
 graft/.cache/
 graft/.graph/
 .sshKey
+
+# 批 M（评审一·P2）：前端构建副产物（vite.config.ts 会被 tsc -b 编译出 js/d.ts，
+# tsbuildinfo 是增量缓存）——常年在 git status 里挂未跟踪，收进 ignore
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
