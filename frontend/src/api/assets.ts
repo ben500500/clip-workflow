@@ -2146,6 +2146,7 @@ export const assetApi = {
     status?: AssetJobStatus;
     batch_id?: string;
     only_open?: boolean;
+    include_frames?: boolean;
     limit?: number;
   }) => client.get('/assets/jobs', { params }) as Promise<AssetJobListResult>,
 

@@ -3,6 +3,7 @@ import { Button, Card, Modal, Space, Tabs, Tag, Typography, message } from 'antd
 import { ApartmentOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import AssetListPanel from '../components/assets/AssetListPanel';
+import AssetJobsPanel from '../components/assets/AssetJobsPanel';
 import AssetImportPanel from '../components/assets/AssetImportPanel';
 import AssetReviewPanel from '../components/assets/AssetReviewPanel';
 import AssetProductionPanel from '../components/assets/AssetProductionPanel';
@@ -123,6 +124,11 @@ const AssetLibrary: React.FC = () => {
           reloadToken={reloadToken}
         />
       ),
+    },
+    {
+      key: 'jobs',
+      label: '后台任务',
+      children: <AssetJobsPanel />,
     },
     {
       key: 'production',
