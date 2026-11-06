@@ -2238,6 +2238,13 @@ export const assetApi = {
   previewAssetSource: (assetId: string) =>
     client.get(`/assets/${assetId}/source-preview`) as Promise<AssetSourcePreviewResult>,
 
+  // 11-06 素材删除：本人删自己的、admin 删任意；挂着文案/生产单/产物默认 409，
+  // admin 带 force+reason 连坐强删（理由进审计）。
+  deleteAsset: (assetId: string, opts?: { force?: boolean; reason?: string }) =>
+    client.delete(`/assets/${assetId}`, {
+      params: { force: opts?.force || undefined, reason: opts?.reason || undefined },
+    }) as Promise<{ deleted: string; force: boolean; removed_outputs: number; removed_frames: number; removed_objects: number; message: string }>,
+
   // 批 E：产物内联预览（验收不合格的也给看——看一眼为什么废，和"能不能投出去"是两件事）
   previewOutput: (outputId: string) =>
     client.get(`/assets/outputs/${outputId}/preview`) as Promise<AssetOutputPreviewResult>,

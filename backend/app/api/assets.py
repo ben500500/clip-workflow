@@ -52,7 +52,7 @@ from datetime import datetime, timedelta
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -136,6 +136,7 @@ from app.services import aivideo_board as board
 from app.services.data_scope import check_project_access_by_episode
 from app.services.net_guard import UnsafeURLError, assert_public_http_url_async
 from app.services.minio_service import (
+    delete_file,
     download_file,
     download_to_file,
     get_presigned_url,
@@ -9280,6 +9281,185 @@ async def get_asset(
         "productions": [_serialize_production(p) for p in prods],
         "prompt_task": prompt_task,
         "prompt_script": script,
+    }
+
+
+@router.delete("/assets/{asset_id}")
+async def delete_asset(
+    asset_id: str,
+    force: bool = Query(False, description="admin 连坐强删：连文案/生产单/产物一起带走，必须带 reason"),
+    reason: str = Query("", description="force 删除的理由（进审计），不带理由的强删直接拒"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除一条素材（11-06 用户拍板：列表要有删除功能）。
+
+    权限：**本人删自己的**（任何角色都行——素材是谁导的谁最有资格说它没用了），
+    删别人的只有 admin。与「改后重提」的门槛同一口径。
+
+    护栏（默认路径，不带 force）：
+    - 挂着文案 / 生产单 / 产物 → 409 拒删。这三类是审核与投放的**交付台账**
+      （A2-2 的同一条铁律：静默连坐删掉它们，对账就无从下手），删素材前必须先处理。
+    - 有同一批 asset_jobs 还在跑（圈住了这条素材）→ 409 拒删，等跑完再说——
+      否则下载/出文案跑一半底下的素材行没了，任务回填时必然报错。
+
+    force（仅 admin + 必填 reason）：连坐删文案、生产单、产物、帧，桶里的对象尽力删
+    （删不掉只留日志，不拦 DB 删除——桶不设过期，宁可多留一份孤儿对象也别让
+    "删素材"卡死在 MinIO 抖动上）。force 走 strict 审计（拍板①：force 类动作
+    审计失败即拒绝）。产物/文案/素材三张表对 asset_items 的 FK 都是
+    ON DELETE CASCADE，但这里**显式逐表删**：SQLite 测试引擎不强制外键，
+    靠 DB 级联在测试里就是"看起来删了"，换个库行为就分叉。
+    """
+    asset = await _get_asset_or_404(db, asset_id)
+
+    is_admin = current_user.role == UserRole.admin
+    is_owner = asset.created_by is not None and str(asset.created_by) == str(current_user.id)
+    if not (is_admin or is_owner):
+        raise HTTPException(
+            status_code=403,
+            detail="只能删除自己导入的素材；删别人导入的要管理员",
+        )
+
+    # ── 护栏 1：还在跑的任务圈住了这条素材 ──
+    str_id = str(asset.id)
+    open_jobs = (
+        await db.execute(select(AssetJob).where(AssetJob.status.in_(JOB_OPEN_STATES)))
+    ).scalars().all()
+    for job in open_jobs:
+        if str_id in _job_scope_ids(job.kind, job.params or {}):
+            raise HTTPException(
+                status_code=409,
+                detail=f"这条素材还有正在跑的后台任务（{job.kind}，任务 {job.id}），等任务跑完再删",
+            )
+
+    # ── 护栏 2：交付台账挂着就默认拒删 ──
+    n_summaries = int(
+        (await db.execute(
+            select(func.count(AssetSummary.id)).where(AssetSummary.asset_id == asset.id)
+        )).scalar_one()
+    )
+    n_prods = int(
+        (await db.execute(
+            select(func.count(AssetProduction.id)).where(AssetProduction.asset_id == asset.id)
+        )).scalar_one()
+    )
+    n_outputs = int(
+        (await db.execute(
+            select(func.count(AssetOutput.id)).where(AssetOutput.asset_id == asset.id)
+        )).scalar_one()
+    )
+    attached = [
+        name for name, n in (("文案", n_summaries), ("生产单", n_prods), ("产物", n_outputs)) if n
+    ]
+    if attached and not force:
+        tip = (
+            "；确实要连历史一起删，让管理员用「强制删除」并留理由"
+            if not is_admin else
+            "；管理员可加 force=true 并带 reason 强制连坐删除"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"这条素材已挂 {'、'.join(attached)}，删除会把审核与投放历史一起带走" + tip,
+        )
+    if attached and force and not is_admin:
+        raise HTTPException(status_code=403, detail="强制删除挂有文案/生产单/产物的素材只有管理员能做")
+    if force and not reason.strip():
+        raise HTTPException(status_code=400, detail="强制删除必须带理由（reason），进审计留痕")
+
+    # ── 收集桶对象（尽力删）──
+    frames = (
+        await db.execute(select(AssetFrame).where(AssetFrame.asset_id == asset.id))
+    ).scalars().all()
+    outputs = (
+        await db.execute(select(AssetOutput).where(AssetOutput.asset_id == asset.id))
+    ).scalars().all()
+    candidates: List[Tuple[str, str, str]] = []  # (bucket, key, 归属说明)
+    if asset.file_key:
+        candidates.append((asset.bucket or settings.MINIO_BUCKET_RAW, asset.file_key, "原片"))
+    if asset.cover_image_key:
+        candidates.append((asset.bucket or settings.MINIO_BUCKET_RAW, asset.cover_image_key, "封面图"))
+    for f in frames:
+        if f.file_key:
+            candidates.append((f.bucket or settings.MINIO_BUCKET_RAW, f.file_key, "抽帧图"))
+    for o in outputs:
+        if o.file_key:
+            candidates.append((o.bucket or settings.MINIO_BUCKET_SLICED, o.file_key, "产物"))
+
+    # ── 删行（顺序：产物 → 帧 → 文案 → 生产单 → 素材；frames.output_id 的 FK 指产物）──
+    for o in outputs:
+        await db.delete(o)
+    for f in frames:
+        await db.delete(f)
+    if n_summaries:
+        await db.execute(delete(AssetSummary).where(AssetSummary.asset_id == asset.id))
+    if n_prods:
+        await db.execute(delete(AssetProduction).where(AssetProduction.asset_id == asset.id))
+    await _write_audit(
+        db,
+        action="asset.asset.delete",
+        operator=current_user,
+        target_type="asset_item",
+        target_id=asset.id,
+        before={
+            "code": asset.code,
+            "title": asset.title,
+            "platform": asset.platform,
+            "source_kind": asset.source_kind,
+            "media_kind": asset.media_kind,
+            "status": asset.status,
+            "file_key": asset.file_key,
+            "cost_prompt": asset.cost_prompt,
+            "cost_parse": asset.cost_parse,
+            "cost_produce": asset.cost_produce,
+            "batch_id": str(asset.batch_id) if asset.batch_id else None,
+        },
+        after={
+            "deleted": True,
+            "force": bool(force and attached),
+            "reason": reason.strip() or None,
+            "removed_outputs": len(outputs),
+            "removed_frames": len(frames),
+            "removed_summaries": n_summaries,
+            "removed_productions": n_prods,
+        },
+        strict=bool(force and attached),
+    )
+    batch = None
+    if asset.batch_id:
+        batch = (
+            await db.execute(select(AssetBatch).where(AssetBatch.id == asset.batch_id))
+        ).scalar_one_or_none()
+    await db.delete(asset)
+    await db.flush()
+    if batch is not None:
+        batch.item_count = max(0, (batch.item_count or 0) - 1)
+    await db.commit()
+
+    # ── 桶对象最后删（DB 已落定，MinIO 抖动不影响删除结果）──
+    removed_objects = 0
+    for bucket, key, what in candidates:
+        try:
+            if await delete_file(bucket, key):
+                removed_objects += 1
+        except Exception:
+            logger.warning("删除素材 %s 的%s对象失败 %s/%s", asset.code, what, bucket, key, exc_info=True)
+
+    logger.info(
+        "素材已删除 code=%s by=%s force=%s outputs=%s frames=%s objects=%s",
+        asset.code, current_user.username, bool(force and attached),
+        len(outputs), len(frames), removed_objects,
+    )
+    return {
+        "deleted": asset.code,
+        "force": bool(force and attached),
+        "removed_outputs": len(outputs),
+        "removed_frames": len(frames),
+        "removed_objects": removed_objects,
+        "message": (
+            f"已删除素材 {asset.code}（连坐删除文案 {n_summaries} 条、生产单 {n_prods} 张、产物 {len(outputs)} 份；理由已进审计）"
+            if (force and attached) else
+            f"已删除素材 {asset.code}"
+        ),
     }
 
 

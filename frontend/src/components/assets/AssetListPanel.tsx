@@ -3,7 +3,7 @@ import {
   Alert, Button, Card, Checkbox, DatePicker, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
-  BulbOutlined, CloudDownloadOutlined, DownloadOutlined, FileTextOutlined, LoadingOutlined,
+  BulbOutlined, CloudDownloadOutlined, DeleteOutlined, DownloadOutlined, FileTextOutlined, LoadingOutlined,
   MergeCellsOutlined, QuestionCircleOutlined, ReloadOutlined, SearchOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -616,6 +616,48 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     }
   };
 
+  // ── 删除（11-06）：行级垃圾桶 + 勾选后批量删。挂在谁头上谁确认，
+  //    有文案/生产单/产物的后端会拒（409 的话术直接透出来），不在这里猜。
+  const [delBusy, setDelBusy] = useState(false);
+  const deleteRows = (rows: AssetItem[]) => {
+    if (!rows.length || delBusy) return;
+    Modal.confirm({
+      title: `删除 ${rows.length} 条素材？`,
+      content: (
+        <div>
+          <p style={{ marginBottom: 6 }}>
+            删除后素材行和桶里的原片/抽帧图一起没了，<strong>恢复不了</strong>。
+          </p>
+          <p style={{ marginBottom: 0 }}>
+            已经出过文案、建过生产单或拼过产物的会被拦下不让删（历史要留档）；
+            确实要连历史一起删的得找管理员。
+          </p>
+        </div>
+      ),
+      okText: `删除（${rows.length} 条）`,
+      okType: 'danger',
+      cancelText: '先不删',
+      onOk: async () => {
+        setDelBusy(true);
+        const failed: string[] = [];
+        let done = 0;
+        for (const row of rows) {
+          try {
+            await assetApi.deleteAsset(row.id);
+            done += 1;
+          } catch (e) {
+            failed.push(`${row.code}：${(e as Error).message}`);
+          }
+        }
+        setDelBusy(false);
+        if (done) message.success(`已删除 ${done} 条`);
+        failed.forEach((m) => message.error(m, 6));
+        setSelected([]);
+        fetchList();
+      },
+    });
+  };
+
   const columns: ColumnsType<AssetItem> = [
     {
       title: '编号',
@@ -855,6 +897,10 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
               <Tag color="purple" style={{ marginLeft: 2 }}>当角色卡用</Tag>
             </Tooltip>
           )}
+          {/* 11-06 删除：本人删自己的、admin 删任意；拦不拦得动由后端裁决（409 话术透传） */}
+          <Tooltip title="删除这条素材（有文案/生产单/产物挂着的会被拦；误删恢复不了，删前会再确认一次）">
+            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => deleteRows([row])} />
+          </Tooltip>
         </Space>
       ),
     },
@@ -1033,6 +1079,11 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             <Tooltip title="去原链接查视频时长：每次 0.01 元，计入批次成本；只适用于链接素材">
               <Button icon={<CloudDownloadOutlined />} onClick={openResolve} disabled={!ids.length}>
                 查时长（{ids.length}）
+              </Button>
+            </Tooltip>
+            <Tooltip title="删掉勾选的素材（含桶里的原片与抽帧图）；有文案/生产单/产物挂着的会被后端拦下">
+              <Button danger icon={<DeleteOutlined />} loading={delBusy} onClick={() => deleteRows(selected)} disabled={!ids.length}>
+                删除（{ids.length}）
               </Button>
             </Tooltip>
           </Space>

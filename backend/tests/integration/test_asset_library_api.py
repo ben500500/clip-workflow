@@ -7568,3 +7568,96 @@ def test_import_links_auto_downloads_immediately():
         await client.aclose()
 
     _run(_scenario())
+
+
+def test_delete_asset_guards_owner_and_force():
+    """11-06 素材列表删除功能，钉六件事：
+
+    1. 本人在跑任务挡道（asset_jobs open 圈住这条素材）→ 409；
+    2. 本人删自己导入的、没挂任何下游 → 200，行没了、批次 item_count 递减、审计留痕；
+    3. 删别人导入的（非 admin）→ 403；
+    4. 挂着文案 → 409 拒删（交付台账不连坐），话术点名「文案」；
+    5. admin 强删不带理由 → 400；带理由 force → 200 且文案连坐删干净；
+    6. 删不存在的 → 404。
+    """
+    _run(_bootstrap())
+
+    A1 = "https://www.douyin.com/video/7499000000000000101/"
+    A2 = "https://www.douyin.com/video/7499000000000000102/"
+    A3 = "https://www.douyin.com/video/7499000000000000103/"
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ha, ho = h["material"], h["admin"], h["operator"]
+
+        r1 = await _import(client, hm, [A1])
+        r2 = await _import(client, hm, [A2])
+        r3 = await _import(client, hm, [A3])
+        a1 = r1.json()["items"][0]["id"]
+        a2 = r2.json()["items"][0]["id"]
+        a3 = r3.json()["items"][0]["id"]
+        batch1 = str((await _row_of(AssetItem, a1)).batch_id)
+
+        # ① 在跑任务圈住 a1 → 拒删
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetJob(
+                kind=JOB_SUMMARY_GENERATE, status=JB_RUNNING,
+                params={"asset_ids": [a1]},
+            ))
+            await s.commit()
+        busy = await client.delete(f"/api/assets/{a1}", headers=hm)
+        assert busy.status_code == 409, busy.text
+        assert "正在跑" in busy.json()["detail"]
+        # 任务收尾（标成终态）后不再挡道
+        async with dbmod.async_session_factory() as s:
+            from sqlalchemy import delete as sa_delete
+            await s.execute(sa_delete(AssetJob))
+            await s.commit()
+
+        # ② 本人删自己没挂下游的素材 → 200，批次计数递减 + 审计
+        ok = await client.delete(f"/api/assets/{a1}", headers=hm)
+        assert ok.status_code == 200, ok.text
+        body = ok.json()
+        assert body["deleted"].startswith("AS-") and body["force"] is False
+        assert await _count(AssetItem) == 2
+        b = await _row_of(AssetBatch, uuid.UUID(batch1))
+        assert b.item_count == 0, "删一条要减一条，批次计数不能虚高"
+        logs = await _rows(AuditLog, AuditLog.action == "asset.asset.delete")
+        assert len(logs) == 1 and logs[0].before.get("code") == body["deleted"]
+
+        # ③ 删别人导入的（operator 非 admin 非本人）→ 403
+        deny = await client.delete(f"/api/assets/{a2}", headers=ho)
+        assert deny.status_code == 403, deny.text
+
+        # ④ 挂着文案 → 409，话术点名「文案」
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetSummary(asset_id=uuid.UUID(a2), seq=1, text="钩一下"))
+            await s.commit()
+        blocked = await client.delete(f"/api/assets/{a2}", headers=hm)
+        assert blocked.status_code == 409, blocked.text
+        assert "文案" in blocked.json()["detail"]
+
+        # ⑤ admin 强删：不带理由 400；带理由 200 连坐删
+        no_reason = await client.delete(
+            f"/api/assets/{a2}?force=true", headers=ha)
+        assert no_reason.status_code == 400, no_reason.text
+        forced = await client.delete(
+            f"/api/assets/{a2}?force=true&reason=测试数据清理", headers=ha)
+        assert forced.status_code == 200, forced.text
+        assert forced.json()["force"] is True
+        assert await _count(AssetSummary) == 0, "force 连坐要带走文案"
+        logs = await _rows(AuditLog, AuditLog.action == "asset.asset.delete")
+        assert len(logs) == 2 and logs[-1].after.get("reason") == "测试数据清理"
+
+        # ⑥ 不存在 → 404
+        gone = await client.delete(f"/api/assets/{uuid.uuid4()}", headers=ha)
+        assert gone.status_code == 404, gone.text
+
+        # 收尾：a3 删掉，两表归零
+        last = await client.delete(f"/api/assets/{a3}", headers=hm)
+        assert last.status_code == 200
+        assert await _count(AssetItem) == 0
+
+        await client.aclose()
+
+    _run(_scenario())
