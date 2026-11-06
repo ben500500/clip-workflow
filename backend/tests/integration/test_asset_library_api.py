@@ -7522,3 +7522,49 @@ def test_play_url_cache_replay_expiry_and_retake():
         await client.aclose()
 
     _run(_scenario())
+
+
+# ─────────────────  3e. 导入即自动下载原片（11-06 用户拍板：不用考虑费用）  ─────────────────
+
+
+def test_import_links_auto_downloads_immediately():
+    """11-06 用户拍板：链接任务添加后就直接下载原片，不用等反推、不用任何人确认解析费。
+
+    钉三件事：
+    1. 导入成功后 `_enqueue_download` 被排上：圈的是**这次新建**的素材 id、批次对得上；
+    2. 响应 message 用白话说「已自动开始下载（0.01 元/条照记账）」；审计记 auto_download；
+    3. 跑的仍是 `/assets/download` 那一个口（_job_endpoint 钉过），这里只验排队侧——
+       下载本体的幂等/记账已有专门用例，不重复。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        enq = AsyncMock(return_value={"queued": True, "job_id": "j-1", "queued_count": 2, "note": None})
+        with patch("app.api.assets._enqueue_download", enq):
+            res = await _import(client, hm, [DOUYIN_1, DOUYIN_2])
+        assert res.status_code == 201, res.text
+        body = res.json()
+        assert enq.await_count == 1, "一个批次排一份下载任务"
+        kwargs = enq.await_args.kwargs
+        assert kwargs["batch_id"] == body["batch"]["id"]
+        assert sorted(kwargs["asset_ids"]) == sorted(i["id"] for i in body["items"])
+        assert kwargs["operator"] is not None
+
+        assert "自动开始下载" in body["message"]
+        assert body["download"] and body["download"][0]["queued"] is True
+
+        logs = await _rows(AuditLog, AuditLog.action == "asset.import_links")
+        assert logs[-1].after["auto_download"] is True, "自动下载是用户拍板的默认口径，审计要留痕"
+
+        # 关掉开关（测试/脚本用）：完全不排下载
+        enq2 = AsyncMock(return_value={"queued": False, "job_id": None, "queued_count": 0, "note": None})
+        with patch("app.api.assets._enqueue_download", enq2):
+            res2 = await _import(client, hm, [DOUYIN_3], auto_download=False)
+        assert res2.status_code == 201, res2.text
+        assert enq2.await_count == 0 and res2.json()["download"] is None
+        assert "自动开始下载" not in res2.json()["message"]
+        await client.aclose()
+
+    _run(_scenario())

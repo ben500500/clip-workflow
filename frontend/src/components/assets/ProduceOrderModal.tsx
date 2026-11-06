@@ -510,7 +510,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
 
           <div>
             <Space style={{ marginBottom: 4 }}>
-              <Text>钩子编号（要填 {needCodes} 个，从取号工具 hook_id.py 拿）：</Text>
+              <Text>钩子编号（要填 {needCodes} 个）：</Text>
               {codes.length > 0 && (
                 <Tag color={codes.length === needCodes && !badCodes.length && !dupCodes && !usedCodes.length ? 'green' : 'orange'}>
                   已填 {codes.length}/{needCodes}
@@ -519,18 +519,18 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             </Space>
             <div style={{ marginBottom: 4 }}>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                取号：在服务器跑 scripts 下的 hook_id.py 取一个五位编号（投放和回收都靠它对上）；取号工具后续会做进系统。
+                取号：在服务器跑 hook_id.py 取五位编号（投放和回收靠它对上）。
               </Text>
             </div>
             <Input.TextArea
               rows={2}
-              placeholder="空格/逗号/换行分隔，例如：7C0B1 7C0B2 7C0B3 …（五位编号，投放和回收都靠它对上；系统不给编号，也不能自己编）"
+              placeholder="空格/逗号/换行分隔，如：7C0B1 7C0B2（五位编号，不能自己编）"
               value={codeText}
               onChange={(e) => setCodeText(e.target.value)}
             />
             {codes.length && codes.length < needCodes && (
               <Text type="warning" style={{ fontSize: 12 }}>
-                还差 {needCodes - codes.length} 个：缺的照样能建单，但单上没编号，导出 txt 时段头和推荐标题就带不上编号。
+                还差 {needCodes - codes.length} 个：缺了照样能建单，但导出内容带不上编号。
               </Text>
             )}
             {!!usedCodes.length && (
@@ -554,7 +554,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
 
           <Space wrap>
             <Input placeholder="板上的归属标记（留空用默认）" style={{ width: 220 }} value={boardTag} onChange={(e) => setBoardTag(e.target.value)} />
-            <Tooltip title="剧名缩写要用 NAS《剧名缩写表.json》里的，全团队统一、禁止临时造。推荐标题按规范写「剧缩·编号·精简钩子」；留空就降级成「编号·精简钩子」，并在偏差说明里标注缺剧缩（缩写表在容器里读不到，只能由一线带进来）">
+            <Tooltip title="剧名缩写要用 NAS《剧名缩写表.json》里的，禁止临时造；留空标题降级为「编号·精简钩子」，偏差说明记缺剧缩。">
               <Input
                 placeholder="剧名缩写（可选，如 救总裁）"
                 style={{ width: 200 }}

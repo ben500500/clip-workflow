@@ -10,6 +10,7 @@ import type { AssetBatch, AssetImportBatchResponse, AssetImportDuplicate, AssetU
 import { parseServerTime } from '../../utils/format';
 import { MonoText, yuan } from './AssetBits';
 import { CategorySelect, useAssetCategories } from './AssetCategoryBits';
+import { nudgeAssetJobBanner } from './AssetJobBanner';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -101,6 +102,8 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
       setLastImport(res);
       message.success(res.message);
       fetchBatches();
+      // 11-06 用户拍板：导入即自动下载原片——下载是后台任务，nudge 让任务条立刻亮出来
+      if ((res.items || []).length) nudgeAssetJobBanner();
       // 原来只在「没有重复且不是放行请求」时清空输入框，于是**这一次真建出来的那几条还留在框里**：
       // 下次再点（或点某条的放行）它们就全被判成跨批次重复，一线看到的是"怎么全是重复"。
       // 改成按返回的 items 精确摘掉已入库的那几行，只留下这次没建成的（重复/被跳过）继续在框里等处理。
@@ -310,6 +313,9 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
 
             <Space wrap align="center">
               <Text>整批默认原型</Text>
+              <Tooltip title="给这一批每条素材起个开头套路的标记（A–G，照《钩子模版换皮参数设定.docx》）；不选照样导入和反推，之后在素材列表「原型」那列逐条改">
+                <Text type="secondary" style={{ fontSize: 12 }}>可不选，鼠标放这看说明</Text>
+              </Tooltip>
               <CategorySelect
                 items={cats.activeItems}
                 value={category}
@@ -318,10 +324,6 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                 loading={cats.loading}
                 placeholder="可不选（这批全标未分类）"
               />
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                只给这一批每条素材起个开头套路的标记（A–G，照《钩子模版换皮参数设定.docx》）；不选照样导入、
-                照样反推文案出文案，之后在素材列表「原型」那列逐条改。
-              </Text>
             </Space>
 
             {tab === 'link' ? (
@@ -336,9 +338,9 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                   <Button type="primary" loading={importing} onClick={() => submitLinks()}>
                     导入 {parsedLinks.length} 条链接
                   </Button>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    导入不扣费：这一步只是登记地址，视频时长上限和费用在「反推文案」那一步才生效
-                  </Text>
+                  <Tooltip title="导入后系统自动下载原片（解析 0.01 元/条照记账，进批次成本）；不想要这批的片就别导入。进度看页面顶上的任务条">
+                    <Text type="secondary" style={{ fontSize: 12 }}>导入后自动下载原片</Text>
+                  </Tooltip>
                 </Space>
               </>
             ) : (
@@ -374,12 +376,8 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                   </p>
                   <p className="ant-upload-text">拖入或选择视频／图片文件（可多个）</p>
                   <p className="ant-upload-hint" style={{ fontSize: 12 }}>
-                    文件存到我们自己的存储（MinIO raw-footage/asset/），不借智令的临时桶（那个 6 小时自动删）。
-                    单个文件失败不影响整批，失败的可以一键补传到同一批次。
-                    <br />
-                    图片只认 jpg/jpeg/png/webp，进来是<b>投产用的角色卡</b>：不反推文案、不出文案、
-                    不计费，入库时顺手量好尺寸（长边超了只提醒，不拦）。
-                    上传图片和视频可以混在一次提交里，各自按类型入库。
+                    视频直接落到我们自己的存储；单文件失败不影响整批，可一键补传。
+                    图片是<b>投产用的角色卡</b>（不反推、不计费），长边超了只提醒不拦。
                   </p>
                 </Upload.Dragger>
                 <Space>
@@ -387,10 +385,9 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                     上传 {rawFiles.current.length} 个文件
                   </Button>
                   {uploading && <Progressish percent={progress} />}
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    反推文案时文件还要经中转再上传一次，所以文件批次的预估里含每次 0.001 元的上传费
-                    （图片不收这笔：它不进反推）
-                  </Text>
+                  <Tooltip title="反推文案时文件还要经中转再上传一次，所以文件批次的预估里含每次 0.001 元的上传费（图片不进反推，不收这笔）">
+                    <Text type="secondary" style={{ fontSize: 12 }}>文件批次预估含 0.001 元/条中转上传费</Text>
+                  </Tooltip>
                 </Space>
               </>
             )}

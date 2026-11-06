@@ -720,6 +720,8 @@ export interface AssetImportBatchRequest {
    * 留空＝未分类（**不设为必填**）；入库后每条仍可单独改，改后出稿的文案跟着这一列走。
    */
   category_id?: string | null;
+  /** 11-06 用户拍板：默认 true＝导入后自动下载原片（解析 0.01 元/条照记账）；不用管 */
+  auto_download?: boolean;
 }
 
 /** AnalyzeRequest（真金白银的一步，必须带成本确认） */
@@ -1077,6 +1079,8 @@ export interface AssetImportBatchResponse {
   skipped: string[];
   budget: AssetImportBudgetSummary;
   budgets: AssetBatchBudget[];
+  /** 11-06：导入后自动下载的排队回执（每拆批一条）；没排上时为 null */
+  download?: { queued: boolean; job_id: string | null; queued_count: number; note?: string | null }[] | null;
   message: string;
 }
 

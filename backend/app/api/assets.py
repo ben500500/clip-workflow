@@ -204,6 +204,13 @@ class ImportBatchRequest(BaseModel):
         description="11-04 拍板①：本批**整批默认钩子原型**（导入抽屉那个下拉）。"
         "可留空（不设为必填），入库后每条仍可单独改；文案出稿时默认继承所属素材的这一列",
     )
+    auto_download: bool = Field(
+        True,
+        description=(
+            "11-06 用户拍板：链接任务添加后就直接下载原片，不用等反推、也不管解析费"
+            "（0.01 元/条照记账，不再人工确认）。False 只留给测试/特殊脚本"
+        ),
+    )
 
 
 class AnalyzeRequest(BaseModel):
@@ -1455,6 +1462,8 @@ async def import_links_batch(
     batches: List[AssetBatch] = []
     budgets: List[dict] = []
     created: List[AssetItem] = []
+    # 每个拆批各自圈住自己那几条素材 id：自动下载按批次排任务，台账上批次对得上号
+    batch_asset_ids: List[List[str]] = []
     duplicates: List[dict] = []
 
     for idx, shard in enumerate(shards, start=1):
@@ -1523,14 +1532,27 @@ async def import_links_batch(
                 "shards_total": len(shards),
                 "force_duplicates": data.force_duplicates,
                 "force_urls": len(force_norm) or None,
+                "auto_download": data.auto_download,
             },
         )
         batches.append(batch)
         budgets.append({**budget, "batch_id": str(batch.id), "batch_code": batch.code})
         created.extend(shard_created)
+        batch_asset_ids.append([str(a.id) for a in shard_created])
         duplicates.extend(shard_dupes)
 
     await db.commit()
+
+    # 11-06 用户拍板：链接任务**导入即下载原片**，不用等反推、也不用任何人确认解析费
+    # （0.01 元/条照记账进批次成本）。放在 commit 之后——排程函数要自己 commit，
+    # 且后台协程只读得到已提交的行。排不上只回 note，绝不连累导入结果（与反推搭车同口径）。
+    download_kicks: List[dict] = []
+    if data.auto_download and created:
+        for b, ids in zip(batches, batch_asset_ids):
+            if ids:
+                download_kicks.append(
+                    await _enqueue_download(db, asset_ids=ids, operator=current_user, batch_id=str(b.id))
+                )
 
     worst = max(budgets, key=lambda b: ["ok", "need_approval", "blocked"].index(b["gate"]))
     budget = {**worst, "batches": len(batches),
@@ -1552,11 +1574,13 @@ async def import_links_batch(
         "skipped": skipped,
         "budget": budget,
         "budgets": budgets,
+        "download": download_kicks or None,
         "message": (
             f"导入 {len(created)} 条"
             + (f"（拆成 {len(shards)} 批）" if len(shards) > 1 else "")
             + (f"，跳过重复 {len(duplicates)} 条" if duplicates else "")
             + (f"，{len(skipped)} 条提示" if skipped else "")
+            + _auto_download_phrase(download_kicks, len(created))
             + (
                 f"；这批若全按 {tier}s 档反推预估 {budget['cost_estimate']} 元，"
                 f"超单批上限 {budget['cap']} 元，反推时需管理员放批或拆批"
@@ -1564,6 +1588,17 @@ async def import_links_batch(
             )
         ),
     }
+
+
+def _auto_download_phrase(kicks: List[dict], total: int) -> str:
+    """导入后自动下载的一句白话：排上了说几条在跑，没排上说为什么（不吓人也不装没事）。"""
+    if not kicks:
+        return ""
+    queued = sum(1 for k in kicks if k.get("queued"))
+    if queued:
+        return f"；原片已自动开始下载（{sum(k.get('queued_count') or 0 for k in kicks)} 条，解析 0.01 元/条照记账），进度看任务条"
+    note = next((k.get("note") for k in kicks if k.get("note")), None)
+    return f"；原片下载没自动排上：{str(note)[:120]}（可在列表勾选后手工点下载）" if note else ""
 
 
 _UPLOAD_CONCURRENCY = 3

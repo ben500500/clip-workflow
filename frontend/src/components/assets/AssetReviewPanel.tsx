@@ -609,7 +609,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
               要求改写（{ids.length}）
             </Button>
             {canReview && (
-              <Tooltip title="生成生产单：把过审文案变成要投出去的一条条提示词，一条派生几条不同写法（开单和审核在同一侧：素材专员不能开单）。括号里的数字只算勾选里已过审/改后通过的那些，等审核的不算。">
+              <Tooltip title="把过审文案变成一条条要投的提示词（括号只算已过审的）；素材专员不能开单。">
                 <Button
                   icon={<ThunderboltOutlined />}
                   disabled={!approvedSelected.length}
@@ -632,7 +632,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
     >
       {/* 第二工具行：低频滤器和工具从标题行挪到这里——标题行只剩「怎么用+状态+范围」，不再挤成两行 */}
       <Space wrap size={8} style={{ marginBottom: 12 }}>
-        <Tooltip title="只看轮到我改的：被驳回 / 要求改写、且是我负责的素材。开启后会清掉「审核状态」筛选（否则两边互相打架）。点行上的「改后重提」把文案改了交回待审队列。">
+        <Tooltip title="被驳回/要求改写且我负责的素材；开启会清掉「审核状态」筛选。">
           <span>
             <Button
               size="small"

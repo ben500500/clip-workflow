@@ -676,7 +676,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
               showIcon
               style={{ marginTop: 16 }}
               message="这张图只当角色卡，不走反推文案 → 出文案 → 审核 → 生产单那四步"
-              description="它不反推文案、不出钩子文案、不生成生产单、也没有拼接产物（这四页对图片永远是空的，所以这里不摆出来）。真正用它的地方在「生成生产单」弹窗：把要用的卡按顺序挑进来，第 1 张就是板上的主形象；成片挂在被投产的那条视频素材名下，不在这里。"
+              description="在「生成生产单」弹窗里把卡按顺序挑进来（第 1 张是主形象）；成片挂在被投产的那条视频素材名下。"
             />
           ) : (
           <Tabs
@@ -696,8 +696,8 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                       type="warning"
                       showIcon
                       style={{ marginBottom: 8 }}
-                      message="这段是 AI 看片子写出来的，没经过人工核对；下面的钩子文案就是照它写的。"
-                      description="觉得它读歪了（人物认错、情节说反、台词串了），直接驳回对应文案，或回列表对这条重做一遍反推文案再出文案。这一行只提醒、不拦任何步骤。"
+                      message="这段是 AI 看片子写出来的，没经过人工核对。"
+                      description="觉得读歪了（人物认错、情节说反）就驳回对应文案，或回列表重做反推；只提醒、不拦步骤。"
                     />
                     <Space style={{ marginBottom: 8 }}>
                       <Button
@@ -906,10 +906,8 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
           <Divider style={{ margin: '12px 0' }} />
           <Text type="secondary" style={{ fontSize: 12 }}>
             {isImageAsset(asset)
-              ? '图片的链路：导入（拖进上传面板）→ 量尺寸定画幅 → 入库（图片已入库）→ 在「生成生产单」里被挑成角色卡 → 随那条视频一起出片。画幅由这张卡的宽高比决定，提示词写 9:16 也压不住横版卡。'
-              : '链路：导入 → 把视频反推成文案稿 → 出钩子文案 → 人工审核 → 生成生产单（把过审文案变成要投出去的一条条提示词）' +
-                ' → 导出提示词 txt 或建板参数（七项）→（人把提示词放进企微后台任务板后，回来登记投放结果）→ 拼接产物（两段直拼，0 元）。' +
-                '钩子编号是五位编号，投放和回收都靠它对上。'}
+              ? '图片链路：导入 → 入库 → 投产时被挑成角色卡（画幅由卡的宽高比决定）。'
+              : '链路：导入 → 反推文案稿 → 出钩子文案 → 审核 → 生产单 → 导出/投板 → 登记投放结果 → 拼接产物。'}
           </Text>
           <AssetComposeModal
             open={composeOpen}
