@@ -46,6 +46,10 @@ from app.services.seedance_prompt_generator import (  # noqa: E402
     generate_seedance_prompt,
 )
 from app.services.publish_material_generator import generate_publish_material  # noqa: E402
+from app.services.hook_copy_generator import (  # noqa: E402
+    expand_hook_copy,
+    generate_hook_candidates,
+)
 from app.services.script_optimizer import optimize_script_text  # noqa: E402
 from app.core.llm_manager import get_llm_manager  # noqa: E402
 
@@ -684,6 +688,22 @@ class ScriptOptimizeRequest(BaseModel):
     max_retries: int = 3
 
 
+class HookCopyGenerateRequest(BaseModel):
+    script: str = ""                # 视频反推详规（唯一事实来源，必填）
+    count: int = 3                  # 候选条数（1~6）
+    params: dict = {}               # 可选：title/platform/extra_requirements/compliance
+    max_retries: int = 3
+
+
+class HookCopyExpandRequest(BaseModel):
+    hook_copy: str = ""             # 已过审的钩子文案（必须原样出现在产物里）
+    seq: int = 1                    # 本条在同批 N 条里的序号
+    total: int = 1
+    variant_basis: str = ""         # 与同批其它条的唯一差异来源
+    params: dict = {}               # 可选：asset_code/platform/duration/compliance
+    max_retries: int = 3
+
+
 @app.post("/api/v1/script/optimize")
 async def optimize_script(data: ScriptOptimizeRequest):
     """短剧文案 AI 优化：调用 autoclip 配置的大模型改写文案。
@@ -731,6 +751,70 @@ async def generate_material(data: PublishMaterialRequest):
         raise HTTPException(status_code=500, detail=f"发布素材生成失败: {e}")
     return {
         "material": material,
+        "model": _current_llm_model(),
+    }
+
+
+@app.post("/api/v1/hook-copy/generate")
+async def generate_hook_copy(data: HookCopyGenerateRequest):
+    """反推详规 → N 条钩子文案候选（素材库概要文案）。
+
+    机制在本服务，**文案规则在 app/prompt/hook_copy.txt**（权威口径 = NAS
+    《豆包文案生成模板与规则.md》，该模板由 CodeBuddy 维护）。
+    形态/风险/一致性校验由后端 asset_service 做，这里不重复判。
+    """
+    if not data.script or not data.script.strip():
+        raise HTTPException(status_code=400, detail="缺少反推详规，无法生成钩子文案")
+    count = min(max(1, int(data.count or 3)), 6)
+    try:
+        result = await asyncio.to_thread(
+            generate_hook_candidates,
+            data.script.strip(),
+            count,
+            data.params or {},
+            data.max_retries,
+        )
+    except Exception as e:
+        logger.error("Hook copy generation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"钩子文案生成失败: {e}")
+    return {
+        "candidates": result.get("candidates") or [],
+        "raw": result.get("raw"),
+        "model": _current_llm_model(),
+    }
+
+
+@app.post("/api/v1/hook-copy/expand")
+async def expand_hook_copy_route(data: HookCopyExpandRequest):
+    """过审钩子文案 → 一条可投豆包的完整提示词（N 的差异化由 variant_basis 指定）。
+
+    铁律：钩子文案必须原样出现在 prompt_text 里；做不到就返回
+    hook_copy_kept_verbatim=false + deviation_note，绝不静默改词。
+    """
+    if not data.hook_copy or not data.hook_copy.strip():
+        raise HTTPException(status_code=400, detail="缺少过审钩子文案")
+    try:
+        result = await asyncio.to_thread(
+            expand_hook_copy,
+            data.hook_copy.strip(),
+            int(data.seq or 1),
+            int(data.total or 1),
+            data.variant_basis or "",
+            data.params or {},
+            data.max_retries,
+        )
+    except Exception as e:
+        logger.error("Hook copy expand failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"豆包提示词展开失败: {e}")
+    kept = bool(data.hook_copy.strip().replace(" ", "") in (result.get("prompt_text") or "").replace(" ", ""))
+    return {
+        "project_title": result.get("project_title"),
+        "prompt_text": result.get("prompt_text"),
+        "video_titles": result.get("video_titles") or [],
+        # B-9：投放要求单独返回，后端落 dispatch_note 列、不进板面 payload
+        "dispatch_note": result.get("dispatch_note"),
+        "hook_copy_kept_verbatim": kept,
+        "deviation_note": result.get("deviation_note") or result.get("note"),
         "model": _current_llm_model(),
     }
 

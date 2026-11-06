@@ -57,6 +57,8 @@ async def init_db():
     await _ensure_autoclip_runs_table()
     await _backfill_data_scope()
     await _backfill_drama_theaters()
+    # 钩子原型字典（11-04 拍板①）：新表 asset_categories 由 create_all 建，初始 7 行在这里种
+    await _seed_asset_categories()
     # wechat_download 独立包（并入形态）：确保其独立表存在（幂等）
     await _ensure_wechat_download_tables()
     # P1 防御：空闲事务超时自动回滚（防事务泄漏占锁 autoclip_runs）
@@ -152,6 +154,51 @@ async def _backfill_drama_theaters():
             )
     except Exception as e:
         logging.getLogger(__name__).warning("backfill drama_theaters 失败（降级）: %s", e)
+
+
+async def ensure_default_asset_categories(session: AsyncSession) -> int:
+    """钩子原型字典种入（11-04 拍板①）：**按 name 幂等补插缺失项**。
+
+    为什么不硬灌：字典是运营可改的（admin 能改 sort/说明、能下线），启动时若无脑
+    覆盖会把他们改的东西冲掉。所以只补"名字还不存在"的行，已存在的绝不碰。
+
+    为什么走 ORM 不走裸 SQL：本仓库部署只 `create_all` + `stamp`，但集成测试跑的是
+    SQLite 临时库并直接调本函数；`gen_random_uuid()` 那种 PG 专有写法在测试里会炸。
+
+    返回补插的行数（0＝字典已齐）。调用方：`init_db()` 启动种入 ＋
+    `GET /assets/categories` 读到空表时兜底（老库刚建完表、还没重启过的窗口）。
+    """
+    from app.models.asset import AssetCategory, DEFAULT_ASSET_CATEGORIES
+
+    existing = set((await session.execute(sqlalchemy.select(AssetCategory.name))).scalars().all())
+    added = 0
+    for item in DEFAULT_ASSET_CATEGORIES:
+        name = str(item.get("name") or "").strip()
+        if not name or name in existing:
+            continue
+        session.add(
+            AssetCategory(
+                name=name,
+                sort=int(item.get("sort") or 0),
+                note=item.get("note"),
+                active=True,
+            )
+        )
+        added += 1
+    if added:
+        await session.flush()
+        logger.info("Seeded %d asset_categories rows", added)
+    return added
+
+
+async def _seed_asset_categories():
+    """`init_db()` 用的独立会话包装：失败只告警，不阻断服务启动（照本文件其它兜底口）。"""
+    try:
+        async with async_session_factory() as session:
+            await ensure_default_asset_categories(session)
+            await session.commit()
+    except Exception as e:
+        logger.warning("seed asset_categories 失败（降级）: %s", e)
 
 
 async def _ensure_autoclip_runs_table():
@@ -304,6 +351,42 @@ async def _apply_compat_migrations():
         ("video_metrics", "avg_play_time", "DOUBLE PRECISION"),
         ("video_metrics", "drama_name", "VARCHAR(200)"),
         ("video_metrics", "source", "VARCHAR(20) NOT NULL DEFAULT 'import'"),
+        # 素材库（0055_asset_library）：开发/测试库可能已按早期形状建过 asset_* 表，
+        # create_all 不给已存在的表加列，所以 board_* 新列在这里补一遍兜底。
+        ("asset_productions", "hook_code", "VARCHAR(10)"),
+        ("asset_productions", "dispatch_note", "TEXT"),
+        ("asset_productions", "board_total", "INTEGER NOT NULL DEFAULT 1"),
+        ("asset_productions", "board_tag", "VARCHAR(60)"),
+        ("asset_productions", "board_date", "TIMESTAMP"),
+        ("asset_productions", "board_name", "VARCHAR(200)"),
+        ("asset_productions", "board_tid", "VARCHAR(60)"),
+        ("asset_productions", "board_rgid", "VARCHAR(60)"),
+        ("asset_productions", "character_card_key", "VARCHAR(500)"),
+        ("asset_productions", "drift_reason", "VARCHAR(500)"),
+        ("asset_outputs", "board_out_url", "VARCHAR(500)"),
+        # D-5（11-03 拍板解析费计入成本）：开发库早先已建过 asset_items，新列靠这里兜底
+        ("asset_items", "cost_parse", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
+        # 钩子原型分类（11-04 拍板①）：老库已建的 asset_items/asset_summaries 补 category_id。
+        # 只补列、不补 FK 约束（ADD COLUMN 加约束在老数据上不安全；软下线不硬删，
+        # 所以孤儿值风险由接口侧"只允许挑 active 字典项"挡住）。
+        ("asset_items", "category_id", "UUID"),
+        ("asset_summaries", "category_id", "UUID"),
+        # 图片素材（11-05 批 G，0059_asset_media_kind）：video | image。
+        # NOT NULL + DEFAULT 'video' 是安全的：存量行全是视频，补列时数据库自己填默认值，
+        # 不需要回填脚本。不建索引（两取值 + 99% 是 video，seq scan 更快，
+        # 而且 create_all 不会给已存在的表补索引）。
+        ("asset_items", "media_kind", "VARCHAR(10) NOT NULL DEFAULT 'video'"),
+        # 多卡保序（11-05 批 G，0060_asset_card_asset_ids）：角色卡从「手填一个 MinIO key」
+        # 改成「从素材库挑图」，挑出来的顺序就是板上 picDatas 的顺序，所以存 id 数组。
+        # 可空、不回填：存量单继续读 character_card_key（读侧有数组用数组、没数组回退单值）。
+        ("asset_productions", "card_asset_ids", "JSON"),
+        # 反推顺带下载原片（11-05 批 J，0061）：下载动作自己的状态，不进五阶段
+        ("asset_items", "download_status", "VARCHAR(10)"),
+        # 过审顺手备豆包提示词预览（11-05 批 J，0061）：预览是「看」的，投产仍重新展开；
+        # cost_preview 与投产展开同口径不单记钱，列先立着防将来对账没地方写
+        ("asset_summaries", "prompt_preview", "TEXT"),
+        ("asset_summaries", "prompt_preview_at", "TIMESTAMP"),
+        ("asset_summaries", "cost_preview", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

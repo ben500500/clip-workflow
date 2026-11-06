@@ -4,6 +4,7 @@ import os
 import secrets
 import stat
 from pathlib import Path
+from typing import Optional
 
 
 DEFAULT_JWT_PLACEHOLDERS = {
@@ -214,6 +215,11 @@ class Settings(BaseSettings):
     WECHAT_DL_PROMPT_TIMEOUT: int = 15
     # 计时上限（秒）：默认 600，官方最大 600；按此上限计费（约 0.00054 元/秒）
     WECHAT_DL_PROMPT_MAX_DURATION: int = 600
+    # 反推轮询「查询不通」的容忍时长（秒，默认 3600＝1 小时）：
+    # 智令网关自己转发超时（code=500 转发请求失败）时不再当场判死，保持 processing 继续轮；
+    # 但连续不通超过本时长就判 failed 收口，避免任务永远挂在「处理中」。与下载侧
+    # WECHAT_DL_STALE_TIMEOUT_SECONDS 同一量纲、同一默认值，运维只需记一个数。
+    WECHAT_DL_PROMPT_POLL_GIVEUP_SECONDS: int = 3600
     # 本地视频上传反推（智令 doc/125 签名 + S3 POST，ISSUE #363）：
     # 签名接口路径（GET ?key=&fileName=&contentType=&expiresIn=）
     WECHAT_DL_ZHILING_UPLOAD_SIGN_PATH: str = "/api/upload/signature"
@@ -308,6 +314,116 @@ class Settings(BaseSettings):
     REMOTION_STALE_INTERVAL_SECONDS: int = 300
     # Remotion 渲染任务超时阈值（秒）：超过该时长仍 rendering 视为卡死，守护任务回写 failed
     REMOTION_RENDER_TIMEOUT_SECONDS: int = 3600
+
+    # ── 素材库（asset_library，设计方案 20261103 P0）──
+    # 单批导入上限（条）：超过必须拆批，防一次粘 500 条链接把解析打爆。
+    # 与 asset_service.normalize_source_list 的 limit 参数默认值保持一致。
+    ASSET_IMPORT_BATCH_MAX: int = 100
+    # 单批反推预算上限（元）：批量反推按**计时上限**扣费，这是最大的烧钱杠杆；
+    # 预估超过该值时 budget_gate 判 need_approval，必须前端二次确认后才放行。
+    ASSET_BATCH_BUDGET_CAP: float = 50.0
+    # 余额安全系数：预估成本 × 该系数 仍 ≤ 账户余额 才算 ok（余额接口有抖动，留余量）
+    ASSET_BALANCE_SAFETY_RATIO: float = 1.2
+    # 反推计时上限默认档位（秒）：可选 60/180/300/600。
+    # 默认 180 而不是现有反推链路的 600 —— 素材库是「批量」场景，
+    # 600 档一条就是 0.324 元，100 条 32 元；180 档一条 0.097 元，够出钩子文案。
+    ASSET_PROMPT_MAX_DURATION: int = 180
+    # 每条素材生成的钩子文案候选数（多候选单审，三选一比生成一条直接过的返工率低）
+    ASSET_HOOK_CANDIDATE_COUNT: int = 3
+    # 风险词表（system_config.asset_risk_lexicon）的现读缓存时长（秒）：
+    # 审核/投产/导出都要扫词，逐条查库太碎；运维改词表后最多等一个 TTL 生效，设 0 = 每次都查。
+    ASSET_RISK_LEXICON_TTL_SECONDS: int = 300
+    # 单条过审文案默认生产份数（N 的语义=同一文案派生 N 条**差异化**提示词，非重复投喂）
+    ASSET_PRODUCE_DEFAULT_N: int = 3
+    # 单条过审文案最大生产份数（硬上限，防误填 999 把号池额度一天烧光）
+    ASSET_PRODUCE_MAX_N: int = 20
+    # 豆包单号每日可出片数（口径来自 short-drama-hook-writer：实测 2~4 条/号/日，按 3 排产）
+    # 注意：这是**额度墙**不是**时长墙**，排产天数用它算，别拿 8 小时工时反推产能。
+    ASSET_DOUBAO_PER_ACCOUNT_PER_DAY: int = 3
+    # 交付包（packages/）相关的 ASSET_PACKAGE_PREFIX / _KEEP_DAYS 曾在 P0 定义里挂空：
+    # 全仓零引用、P2 才做交付包，届时连同桶 lifecycle Expiration 规则一起接线（B 组死配置清理）。
+
+    # ── 素材库 · 单次请求条数上限（原直接 os.getenv，收进 Settings 供运维调）──
+    # 反推/出文案都是**同步等外部接口**的，100 条串跑会把请求挂到网关超时；
+    # P1 上队列后这两个上限交给队列，不由 HTTP 层扛。
+    ASSET_ANALYZE_MAX_PER_CALL: int = 20
+    ASSET_SUMMARY_MAX_PER_CALL: int = 10
+
+    # ── 素材库 · 企微自动化后台「创建 AI 视频」任务板（生产通道 wework_aivideo）──
+    # 权威口径：NAS《每日解压视频-操作手册-20261022.md》+ Drama/共享配置/skill/relax-video-pipeline。
+    # 这条通道**不扣现金**、payload 只有七键（tag/reqID/total/date/prompt/name/picDatas）、
+    # **没有时长与分辨率参数**：成片恒 10.08s / 720×1280。
+    # ⚠️ 11-04 第二轮审核（D-3）时这里是两个**零读取**的假旋钮（那版 P0 是人工投板，
+    # 后端从不连板），当时删掉了。11-05 批 H 做「自动投板」，随投递客户端
+    # `app/services/aivideo_board.py` 一起**重新接线**——现在真的有人读了。
+    # 凭据只走环境变量，仓库不写明文；现网由用户本人填进 `.env`（我们不碰那一行）。
+    # `AIVIDEO_AUTH` 留空＝自动投板没启用，投递口当场白话拒绝，人工投板不受影响。
+    ASSET_BOARD_BASE_URL: str = "http://mp.miwan.synology.me:8500"
+    AIVIDEO_AUTH: str = ""                       # "user:pass"（客户端自己 base64）；空＝不启用
+    # 三步各自的超时：建任务要等板子排队收单（权威脚本给 90s），回读是一次列表查询，
+    # 下载是拉一整支 mp4。三个数分开是因为**失败成因完全不同**：90s 到＝没投出去，
+    # 60s 到＝只是查不到（不许判死），180s 到＝片子取不回（单子仍算投过）。
+    ASSET_BOARD_CREATE_TIMEOUT: float = 90.0
+    ASSET_BOARD_READ_TIMEOUT: float = 60.0
+    ASSET_BOARD_DOWNLOAD_TIMEOUT: float = 180.0
+    # 投板后台任务的轮询节奏：45s 一轮、最多等 45 分钟（实测单条 45s 一轮、25 分钟出片；
+    # 整批排队更久）。到期还没终态**不判失败**——留在 queued/running，由人回写或再点回收。
+    ASSET_BOARD_POLL_INTERVAL: float = 45.0
+    ASSET_BOARD_POLL_MAX_MINUTES: float = 45.0
+    # 单次投递请求的条数上限（与反推/出文案同一类"别让一次点击干太多"的闸）。
+    # 20 是拍板值：一次投 20 张＝号池当天 ≈20 条（每张 board_total=1），再大就该分批看结果。
+    ASSET_DISPATCH_MAX_PER_CALL: int = 20
+    # 板上 tag＝拥有者标记：不填就建成**无主任务**，按天筛不到（回收必然漏）
+    ASSET_BOARD_TAG: str = "suanku"
+    # 板上 total＝同一条 prompt 出几版（1..20）。与「N 份差异化提示词」是两个量，别混用。
+    ASSET_BOARD_TOTAL_MAX: int = 20
+    ASSET_BOARD_DEFAULT_TOTAL: int = 1
+    # 号池实测 ≈120 条/日：1023 叠两份量（240）其中一批 10 分钟内 115/120 全 fail；
+    # 1028 投 230 只到手 162（70%），"超出 120 的那部分基本是白投"。
+    # 用户口径「产能不限」→ **不做硬限**，只在 /produce 返回里给软提示；设 0 关闭提示。
+    ASSET_BOARD_DAILY_SOFT_CAP: int = 120
+    # 板上排日按本地时区（NAS 在 CST），后端存 UTC —— 16:00~24:00 之间会错一天，
+    # 而 date 写错＝额度白烧且成片永久取不回（1021 实测 120 条）。
+    ASSET_BOARD_TZ_OFFSET_HOURS: int = 8
+    # 出片实测锁死的规格（用于把 duration/resolution 标成"意图"而不是"承诺"）
+    ASSET_BOARD_OUTPUT_SECONDS: float = 10.08
+    ASSET_BOARD_OUTPUT_RESOLUTION: str = "720x1280"
+
+    # ── 抽帧（11-04 批 F：审核台卡片图，纯呈现层，不参与任何业务判定）──
+    # 每条素材抽几张单帧（卡片左侧横排）。3 张是拍板值：1 张看不出节奏，5 张以上
+    # 一行卡片放不下，一线也懒得看。
+    ASSET_FRAME_THUMB_COUNT: int = 3
+    # 九宫格一张图里几帧（tile=3x3）：给「这条片子整段在讲什么」用，点开才生成大图。
+    # 改非平方数要同步改 asset_frame_service.GRID_COLS，不然拼图会缺一角。
+    ASSET_FRAME_GRID_TILES: int = 9
+    # 缩略帧宽（px）：卡片上显示宽度约 120，2x 屏留点余量；再大就是白占桶空间
+    ASSET_FRAME_THUMB_WIDTH: int = 360
+    # 九宫格整图宽（px）：3 格 × 360 ≈ 1080，点开看图能看清字幕但不至于拖慢页面
+    ASSET_FRAME_GRID_WIDTH: int = 1080
+    # 超过这个时长（秒）的原片**不抽帧**：一次抽帧＝把整个文件从桶里拉回本地再解码，
+    # 十几分钟的整集片会把 worker 钉在 ffmpeg 上。素材库口径本来只要一分钟以内，
+    # 这条是兜底；设 0 = 全部跳过（关掉抽帧）。
+    ASSET_FRAME_MAX_SOURCE_SECONDS: float = 900.0
+    # 单条 ffmpeg 命令超时（秒）：抽帧是 ffmpeg -ss 精确定位，正常 2~5s；
+    # 卡住的通常是坏文件，等下去没有意义，记一笔失败就放人。
+    ASSET_FRAME_TIMEOUT_SECONDS: int = 120
+    # 同时在跑的抽帧协程数：导入一批 100 个文件会一次排 100 个任务，
+    # 不限流就是 100 个 ffmpeg 抢同一台机的 CPU，把反推/拼接一起拖死。
+    ASSET_FRAME_CONCURRENCY: int = 2
+    # 手动重抽（POST /assets/frames/extract）单次条数上限。抽帧不花钱但**占 CPU**，
+    # 同步等 100 条＝必挂到网关超时（和反推同一个坑），所以这里也设一道：
+    # 超量要么带 async_mode=true 排后台，要么分次点。
+    ASSET_FRAME_MAX_PER_CALL: int = 20
+
+    # ── 图片素材（11-04 拍板③  11-05 批 G：图片真收进素材库，但只做生产输入）──
+    # 图片**不进**反推/文案/生产/拼接四环，也不抽帧（它自己就是一张图）。
+    # 上传大小上限（MB）：素材库的上传通道不分片（和 `/api/upload` 那条分片续传是两套），
+    # 角色卡实测 1~3MB，20MB 已经宽到能塞下 4K 三视图；超了当场拒，别把桶塞满。
+    ASSET_IMAGE_MAX_SIZE_MB: int = 20
+    # 短边低于这个像素 → **只提醒不拒收**（放大到 720×1280 的画面会糊，但一线可能就想试试）。
+    ASSET_IMAGE_MIN_EDGE: int = 360
+    # 长边超过这个像素 → 同样只提醒（板侧会缩，白占桶空间和带宽）。
+    ASSET_IMAGE_MAX_EDGE: int = 4096
 
     model_config = {
         "env_file": ".env",

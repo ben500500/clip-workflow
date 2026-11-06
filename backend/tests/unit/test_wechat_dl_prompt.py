@@ -13,6 +13,7 @@
 
 import sys
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -160,20 +161,61 @@ async def test_query_business_error_code_minus_one_is_failed():
 
 @pytest.mark.asyncio
 async def test_query_never_raises_on_network_error():
-    """fail-soft：轮询网络异常返回 failed 而不是抛异常给 API 层。"""
+    """fail-soft：轮询网络异常不抛异常给 API 层，且**不判失败**（问不通≠做不出来）。"""
     import httpx
 
     c = _client_with(_Resp(200, {"code": 200, "data": {}}))
     c._client.get = AsyncMock(side_effect=httpx.ReadTimeout("timeout"))
     st = await c.query("task-abc")
-    assert st.status == PT_FAILED
+    assert st.status == PT_PROCESSING
+    assert st.transient is True
     assert "查询反推状态失败" in st.error
 
 
 @pytest.mark.asyncio
-async def test_query_unknown_schedule_not_treated_as_terminal():
+async def test_gateway_forward_timeout_is_transient_not_terminal():
+    """11-03 现网冒烟踩到的坑：智令网关自己转发超时回 code=500，旧逻辑当场判死，
+
+    结果反推费已扣、素材却 failed，一线只能 retry_failed 重跑再扣一次（0.097 元/条）。
+    现在这类保持 processing，下一轮再问。
+    """
+    body = {
+        "code": 500,
+        "msg": "转发请求失败: CURL请求失败: Operation timed out after 10001 milliseconds "
+               "with 0 bytes received",
+    }
+    st = await _client_with(_Resp(200, body)).query("task-abc")
+    assert st.status == PT_PROCESSING
+    assert st.transient is True
+    assert "转发请求失败" in st.error
+
+
+@pytest.mark.asyncio
+async def test_http_5xx_and_non_json_are_transient():
+    st = await _client_with(_Resp(503, None, text="Service Unavailable")).query("t")
+    assert st.status == PT_PROCESSING and st.transient is True
+
+    # 200 但响应不是 JSON（多半被网关截成错误页）同样算抖动
+    st2 = await _client_with(_Resp(200, None, text="<html>502 Bad Gateway</html>")).query("t")
+    assert st2.status == PT_PROCESSING
+    assert st2.transient is True
+    assert "查询反推状态失败" in st2.error
+
+
+@pytest.mark.asyncio
+async def test_http_404_task_not_found_is_terminal_failure():
+    """非抖动的 4xx（任务查无此条）仍是终态失败，别让它无限轮。"""
+    st = await _client_with(_Resp(404, None, text="not found")).query("t")
+    assert st.status == PT_FAILED
+    assert st.transient is False
+
+
+@pytest.mark.asyncio
+async def test_unknown_schedule_not_treated_as_terminal():
     c = _client_with(_Resp(200, {"code": 200, "data": {"schedule": "WHATEVER"}}))
-    assert (await c.query("task-abc")).status == PT_PROCESSING
+    st = await c.query("task-abc")
+    assert st.status == PT_PROCESSING
+    assert st.transient is False
 
 
 # ─────────────────────────────────────────────────────────────
@@ -190,6 +232,8 @@ def _task(**kw):
     t.content = kw.get("content")
     t.error = kw.get("error")
     t.max_duration = kw.get("max_duration")
+    # 轮询容忍时长按 created_at（提交时刻）算，mock 必须给一个真 datetime
+    t.created_at = kw.get("created_at", datetime.utcnow())
     return t
 
 
@@ -278,6 +322,74 @@ async def test_refresh_processing_keeps_task_open(monkeypatch):
     out = await ps.refresh_prompt_task(_db(), task)
     assert out.status == PT_PROCESSING
     assert out.content is None
+    assert out.error is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_transient_error_within_window_keeps_processing(monkeypatch):
+    """抖动窗口内：保持 processing，不写 error，让下一轮继续收（不重复扣费）。"""
+    fake = MagicMock()
+    fake.query = AsyncMock(return_value=pc.PromptStatus(
+        status=PT_PROCESSING, transient=True, error="查询反推状态不通（code=500）: 转发请求失败",
+    ))
+    fake.close = AsyncMock()
+    monkeypatch.setattr(ps, "PromptClient", lambda: fake)
+
+    task = _task(provider_task_id="t-1", status=PT_PROCESSING)
+    out = await ps.refresh_prompt_task(_db(), task)
+    assert out.status == PT_PROCESSING
+    assert out.error is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_transient_error_beyond_giveup_closes_as_failed(monkeypatch):
+    """连续不通超过容忍时长（默认 1 小时）→ 收口 failed，并把原因写进 error。"""
+    monkeypatch.setattr(ps.settings, "WECHAT_DL_PROMPT_POLL_GIVEUP_SECONDS", 3600)
+    fake = MagicMock()
+    fake.query = AsyncMock(return_value=pc.PromptStatus(
+        status=PT_PROCESSING, transient=True, error="查询反推状态不通（code=500）: 转发请求失败",
+    ))
+    fake.close = AsyncMock()
+    monkeypatch.setattr(ps, "PromptClient", lambda: fake)
+
+    task = _task(
+        provider_task_id="t-1",
+        status=PT_PROCESSING,
+        created_at=datetime.utcnow() - timedelta(minutes=61),
+    )
+    out = await ps.refresh_prompt_task(_db(), task)
+    assert out.status == PT_FAILED
+    assert "60 分钟" in out.error and "retry_failed" in out.error
+    assert "转发请求失败" in out.error
+
+
+@pytest.mark.asyncio
+async def test_refresh_giveup_counts_from_created_at_not_updated_at(monkeypatch):
+    """必须按提交时刻算：抖动那轮也会刷 updated_at，按 updated_at 算永远不满阈值。"""
+    monkeypatch.setattr(ps.settings, "WECHAT_DL_PROMPT_POLL_GIVEUP_SECONDS", 3600)
+    fake = MagicMock()
+    fake.query = AsyncMock(return_value=pc.PromptStatus(status=PT_PROCESSING, transient=True, error="x"))
+    fake.close = AsyncMock()
+    monkeypatch.setattr(ps, "PromptClient", lambda: fake)
+
+    task = _task(provider_task_id="t-1", status=PT_PROCESSING, created_at=datetime.utcnow() - timedelta(hours=2))
+    task.updated_at = datetime.utcnow()  # 刚刚才刷过
+    out = await ps.refresh_prompt_task(_db(), task)
+    assert out.status == PT_FAILED
+
+
+@pytest.mark.asyncio
+async def test_refresh_normal_processing_never_gives_up(monkeypatch):
+    """任务真的在跑（schedule=PROCESSING，无抖动）：超过 1 小时也继续等，不自造失败。"""
+    monkeypatch.setattr(ps.settings, "WECHAT_DL_PROMPT_POLL_GIVEUP_SECONDS", 3600)
+    fake = MagicMock()
+    fake.query = AsyncMock(return_value=pc.PromptStatus(status=PT_PROCESSING, schedule="PROCESSING"))
+    fake.close = AsyncMock()
+    monkeypatch.setattr(ps, "PromptClient", lambda: fake)
+
+    task = _task(provider_task_id="t-1", status=PT_PROCESSING, created_at=datetime.utcnow() - timedelta(hours=3))
+    out = await ps.refresh_prompt_task(_db(), task)
+    assert out.status == PT_PROCESSING
     assert out.error is None
 
 

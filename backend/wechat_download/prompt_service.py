@@ -2,8 +2,9 @@
 
 职责边界：
 - 只读写本包独立表 `wechat_dl_prompt_tasks`，不碰主系统表；
-- 外部调用 fail-soft：提交被拒/轮询网络异常一律写库 `failed` + `error`，
-  由 API 层返回任务本体（不抛 500），保证「一次外部抖动不产生 5xx」。
+- 外部调用 fail-soft：提交被拒一律写库 `failed` + `error`，由 API 层返回任务本体
+  （不抛 500），保证「一次外部抖动不产生 5xx」；**轮询链路抖动不判失败**，
+  保持 processing 继续问，超过容忍时长才收口（见 refresh_prompt_task）。
 
 竞态教训（沿用 create_import_task 的既有注释约定）：提交前先 commit 落行，
 再调外部接口，避免持有事务跨网络 IO 导致连接池被长时间占用。
@@ -131,10 +132,35 @@ async def get_prompt_task(db: AsyncSession, task_id: uuid.UUID) -> Optional[Wech
     return result.scalar_one_or_none()
 
 
+def _poll_giveup_seconds() -> int:
+    """轮询不通的容忍时长（秒），每次现读 settings 便于测试/运维改 env 即时生效。"""
+    return max(60, int(settings.WECHAT_DL_PROMPT_POLL_GIVEUP_SECONDS or 3600))
+
+
+def _poll_giveup_exceeded(task: WechatDlPromptTask, now: Optional[datetime] = None) -> bool:
+    """任务从**提交**起算是否已超过容忍时长。
+
+    基准只能用 created_at 不能用 updated_at：抖动那一轮也会刷 updated_at，
+    按 updated_at 算的话「一直在问、一直问不通」会永远不满阈值。
+    """
+    ref = task.created_at
+    if ref is None:
+        return False
+    if ref.tzinfo is not None:
+        ref = ref.replace(tzinfo=None)
+    return ((now or datetime.utcnow()) - ref).total_seconds() > _poll_giveup_seconds()
+
+
 async def refresh_prompt_task(db: AsyncSession, task: WechatDlPromptTask) -> WechatDlPromptTask:
     """仍在 processing 时向智令查询一次并按 schedule 更新状态/内容。
 
     只在 `processing` 且已有 provider_task_id 时才发起外部查询，终态任务不重复扣费/请求。
+
+    「查询不通」的处理口径（11-03 在 163 现网实测后改的）：智令网关自己转发超时
+    （code=500 转发请求失败）时**保持 processing** 继续轮，不当终态失败——旧写法会
+    把已扣费的反推判死，一线只能 retry_failed 重跑、同一条再扣一次钱。为避免永远
+    挂在处理中，连续不通满 `WECHAT_DL_PROMPT_POLL_GIVEUP_SECONDS`（默认 1 小时）
+    才收口判 failed，并把最后一次不通的原因写进 error。
     """
     if task.status != PT_PROCESSING or not task.provider_task_id:
         return task
@@ -152,8 +178,17 @@ async def refresh_prompt_task(db: AsyncSession, task: WechatDlPromptTask) -> Wec
     elif st.status == PT_FAILED:
         task.status = PT_FAILED
         task.error = (st.error or "任务处理失败")[:500]
+    elif st.transient and _poll_giveup_exceeded(task):
+        # 抖动持续超过容忍时长：收口，别让它无限「处理中」骗一线一直点刷新
+        giveup_min = int(_poll_giveup_seconds() // 60)
+        task.status = PT_FAILED
+        task.error = (
+            f"反推查询连续 {giveup_min} 分钟以上不通，已判失败（最后一次：{st.error}）；"
+            "重跑请带 retry_failed=true"
+        )[:500]
+        logger.warning("反推任务 %s 轮询超时收口 failed：%s", task.id, task.error)
     else:
-        # 处理中：仅刷新 updated_at，保持轮询可继续
+        # 处理中（含链路抖动）：仅刷新 updated_at，保持轮询可继续
         task.updated_at = datetime.utcnow()
         await db.commit()
         await db.refresh(task)

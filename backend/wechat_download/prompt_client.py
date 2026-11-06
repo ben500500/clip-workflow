@@ -41,6 +41,45 @@ class PromptError(Exception):
     """反推提示词外部调用失败（网络/业务异常），供上层记 failed 而不抬 500。"""
 
 
+# 「查询没查到，但不代表任务死了」的信号（11-03 接 163 现网实测踩到的坑）：
+# 智令自己的网关转发上游超时时会回 code=500 + msg="转发请求失败: CURL请求失败:
+# Operation timed out after 10001 milliseconds with 0 bytes received"。
+# 这是**它的查询链路**抖动，任务侧大概率还在跑——旧逻辑把它当终态失败，
+# 结果：钱已经扣了（提交时按 maxDuration 计费），素材却判死，一线只能带
+# retry_failed=true 重跑，同一条视频再扣一次 0.097 元。所以这类一律归为
+# 「仍在处理中」，让下一轮轮询去收；真正的终态失败只认 schedule=FAIL
+# 和明确的业务 code（如 -1 额度耗尽）。
+TRANSIENT_MSG_MARKERS = (
+    "转发请求失败",
+    "curl请求失败",
+    "operation timed out",
+    "timed out",
+    "timeout",
+    "connection refused",
+    "connection reset",
+    "temporarily unavailable",
+    "try again later",
+    "upstream",
+    "bad gateway",
+    "gateway timeout",
+    "service unavailable",
+)
+# 这些 HTTP 状态是网关/服务端抖动，不是「任务失败」
+TRANSIENT_HTTP_CODES = (408, 429, 500, 502, 503, 504)
+
+
+def _looks_transient(code: object, msg: Optional[str]) -> bool:
+    """判断一次 code!=200 的查询是「链路抖动」还是「业务终态失败」。"""
+    try:
+        code_int = int(code)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        code_int = None
+    if code_int in TRANSIENT_HTTP_CODES:
+        return True
+    text = (msg or "").strip().lower()
+    return any(marker in text for marker in TRANSIENT_MSG_MARKERS)
+
+
 @dataclass
 class PromptStatus:
     """一次轮询的归一化结果。"""
@@ -49,6 +88,9 @@ class PromptStatus:
     content: Optional[str] = None
     error: Optional[str] = None
     schedule: Optional[str] = None
+    # True＝这一轮查询链路不通（不是任务失败），status 会保持 processing；
+    # 上层据此决定「继续等」还是「等够了再收口」，见 prompt_service.refresh_prompt_task
+    transient: bool = False
     raw: Optional[dict] = None
 
 
@@ -125,7 +167,10 @@ class PromptClient:
     async def query(self, task_id: str) -> PromptStatus:
         """查询一次任务状态（doc/119）。
 
-        免费接口；网络/解析异常按 failed 返回（由上层落库 error），不抛错给 API 层。
+        免费接口。**链路抖动不等于任务失败**：本地超时／非 JSON／智令网关自己转发失败
+        （code=500「转发请求失败」）一律归为 processing + `transient=True`，由上层
+        按容忍时长决定何时收口；只有 schedule=FAIL 与明确业务异常（如 -1 额度耗尽）
+        才判 failed。不抛错给 API 层。
         """
         if not self.key:
             return PromptStatus(status=STATUS_FAILED, error="未配置 WECHAT_DL_ZHILING_KEY")
@@ -136,17 +181,38 @@ class PromptClient:
         try:
             resp = await self._client.get(self._url(self.status_path), params=params)
             if resp.status_code != 200:
+                if resp.status_code in TRANSIENT_HTTP_CODES:
+                    return PromptStatus(
+                        status=STATUS_PROCESSING,
+                        error=(
+                            f"查询反推状态 http {resp.status_code}（链路抖动，保持处理中）: "
+                            f"{_truncate(resp.text, 200)}"
+                        ),
+                        transient=True,
+                    )
                 return PromptStatus(
                     status=STATUS_FAILED,
                     error=f"查询反推状态 http {resp.status_code}: {_truncate(resp.text, 200)}",
                 )
             body = resp.json()
         except (httpx.HTTPError, ValueError) as e:
-            return PromptStatus(status=STATUS_FAILED, error=f"查询反推状态失败: {e}")
+            # 本地网络超时／被网关截成错误页：问不通 ≠ 做不出来，保持处理中
+            return PromptStatus(
+                status=STATUS_PROCESSING,
+                error=f"查询反推状态失败: {e}",
+                transient=True,
+            )
 
         code = body.get("code")
         if code != 200:
             # code=-1 为业务异常（含额度耗尽），msg 给出原因
+            if _looks_transient(code, body.get("msg")):
+                return PromptStatus(
+                    status=STATUS_PROCESSING,
+                    error=f"查询反推状态不通（code={code}）: {body.get('msg') or '未知原因'}",
+                    transient=True,
+                    raw=body,
+                )
             return PromptStatus(
                 status=STATUS_FAILED,
                 error=f"查询反推状态异常（code={code}）: {body.get('msg') or '未知原因'}",

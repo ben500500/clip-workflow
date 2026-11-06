@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.config import settings, cors_origins
 from app.database import init_db, close_db, async_session_factory
-from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers, monitor, maintenance, watermark, shortdrama, publish_material, batch_slice, channel_accounts, variants, dramas, dedupe, theaters, remotion
+from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers, monitor, maintenance, watermark, shortdrama, publish_material, batch_slice, channel_accounts, variants, dramas, dedupe, theaters, remotion, assets
 from app.auth import get_password_hash, get_current_user
 from app.models.models import User, UserRole, PlatformProfile
 from app.api.config import DEFAULT_PLATFORM_PROFILES
@@ -106,6 +106,17 @@ async def _create_seed_alert_rules():
     await ensure_default_alert_rules()
 
 
+async def _sweep_asset_jobs_at_startup():
+    """素材库后台任务（D-1）的启动清扫，放在 init_db 之后。
+
+    延迟 import：`app.api.assets` 依赖一整套 models/services，模块加载期拉它没必要，
+    而且表是 `init_db()` 的 create_all 刚建的（本仓库不跑 alembic upgrade）。
+    """
+    from app.api.assets import sweep_interrupted_asset_jobs
+
+    await sweep_interrupted_asset_jobs()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle: startup and shutdown."""
@@ -118,6 +129,8 @@ async def lifespan(app: FastAPI):
     logger.info("Seed platform profiles initialized.")
     await _create_seed_alert_rules()
     logger.info("Seed alert rules initialized.")
+    await _sweep_asset_jobs_at_startup()
+    logger.info("Asset background jobs swept.")
     yield
     logger.info("Shutting down...")
     await close_db()
@@ -241,6 +254,7 @@ _protected_routers = [
     dedupe,
     theaters,
     remotion,
+    assets,
 ]
 for _r in _protected_routers:
     app.include_router(_r.router, prefix="/api", dependencies=[Depends(get_current_user)])
