@@ -7127,3 +7127,113 @@ def test_download_and_preview_kinds_are_in_job_ledger():
     assert assets_api._job_endpoint(assets_api.JOB_PROMPT_PREVIEW)[2] == "备豆包提示词"
     assert "解析费" in assets_api._twin_cost_phrase(assets_api.JOB_DOWNLOAD)
     assert "自动跳过" in assets_api._twin_cost_phrase(assets_api.JOB_PROMPT_PREVIEW)
+def test_strict_audit_rejects_force_and_waive_when_audit_write_fails():
+    """11-06 拍板①：force/waive 类动作审计写失败＝操作被拒；普通动作照旧 fail-soft。
+
+    钉四件事：
+    1. admin 豁免过审（waive）时审计落不下去 → 500、过审整体回滚、文案留在待审
+       ——绝不出现「豁免了却查无此事」；
+    2. admin 强制投板（force_risk）时**预审计**落不下去 → 500、板子一个字没碰、
+       单还是 order_ready（预审计在动板子之前，这是它存在的意义）；
+    3. 普通动作（不带豁免的过审）在同一个审计替身底下照常成功——fail-soft 没被顺手升级；
+    4. 普通投板（不带 force）同样照常走完——预审计只在真 force 时才拦。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        # 审计替身：strict 的写一律炸（模拟审计库挂了），普通写照常放行
+        real_write = assets_api._write_audit
+
+        async def audit_down(*args, **kw):
+            if kw.get("strict"):
+                raise RuntimeError("audit db down")
+            return await real_write(*args, **kw)
+
+        # 本仓 httpx 的 ASGITransport 不认 raise_server_exceptions——500 会以异常冒出，
+        # 用 try/except 折成状态码断言
+        async def post_quiet(cl, *args, **kw):
+            try:
+                r = await cl.post(*args, **kw)
+                return r.status_code, r
+            except Exception:
+                return 500, None
+
+        # 500 也要能继续往下断言，所以严格路径全部走 post_quiet
+        asset_id, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        risky = _risky(items)
+        good = _approvable(items)
+
+        # 先证明确实被复核闸拦（有拦点才有豁免可言）
+        refused = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [risky["id"]], "action": "approve"}, headers=ho)
+        assert refused.json()["results"][0]["ok"] is False
+        assert refused.json()["results"][0]["error_code"] == "ASSET_RECHECK_FAILED"
+
+        # ① waive + 审计挂 → 操作被拒、整体回滚
+        with patch.object(assets_api, "_write_audit", audit_down):
+            st, waived = await post_quiet(
+                client, "/api/assets/summaries/review",
+                json={"summary_ids": [risky["id"]], "action": "approve",
+                      "waive_reason": "语境需要，已与运营确认"}, headers=ha)
+        assert st == 500, st
+        row = await _row_of(AssetSummary, risky["id"])
+        assert row.audit_status == RV_PENDING, "豁免没记上账就绝不能过审——整请求回滚"
+
+        # ③ 普通过审在同一个替身底下照常成功（fail-soft 只对普通动作让路）
+        with patch.object(assets_api, "_write_audit", audit_down):
+            normal = await client.post(
+                "/api/assets/summaries/review",
+                json={"summary_ids": [good["id"]], "action": "approve"}, headers=ho)
+        assert normal.status_code == 200, normal.text
+        assert normal.json()["results"][0]["ok"] is True
+
+        # ② 强制投板 + 审计挂 → 预审计拦下，板子一个字没碰
+        asset_id2, _sid2, listed = await _order_ready_production(
+            client, h, url="https://example.com/v/strict-audit-dispatch.mp4",
+            hook_codes=["7C0E1"])
+        prod = await client.get(f"/api/assets/productions?asset_id={asset_id2}", headers=ho)
+        ptext = prod.json()["items"][0]["prompt_text"]
+        assert ptext, "展开单才有正文，正文里挑个词钉成 block 才能造出 forced_ids"
+        block_word = ptext[:2]
+        put = await client.put("/api/assets/risk-lexicon",
+                               json={"block": [block_word], "inherit": True}, headers=ha)
+        assert put.status_code == 200, put.text
+
+        with patch.object(assets_api, "_write_audit", audit_down):
+            fb = _FakeBoard()
+            with _board_off(fb):
+                st2, forced = await post_quiet(
+                    client, "/api/assets/productions/dispatch",
+                    json={"ids": [listed[0]["id"]], "confirm": True, "async_mode": False,
+                          "force_risk": True, "force_reason": "语境需要，已确认"},
+                    headers=ha)
+        assert st2 == 500, st2
+        assert fb.creates == [], "预审计没落下去就绝不能动板子"
+        prow = await _row_of(AssetProduction, listed[0]["id"])
+        assert prow.status == PR_ORDER_READY, prow.status
+        assert prow.board_tid is None
+
+        # ④ 普通投板（不 force）在同一个替身底下照常走完——先把试验用的 block 词撤掉
+        restore = await client.put("/api/assets/risk-lexicon",
+                                   json={"block": [], "inherit": True}, headers=ha)
+        assert restore.status_code == 200, restore.text
+        with patch.object(assets_api, "_write_audit", audit_down):
+            fb2 = _FakeBoard()
+            with _board_off(fb2):
+                plain = await client.post(
+                    "/api/assets/productions/dispatch",
+                    json={"ids": [listed[0]["id"]], "confirm": True, "async_mode": False,
+                          "cross_person_confirm": True},
+                    headers=ho)
+        assert plain.status_code == 200, plain.text
+        assert plain.json()["dispatched"] == 1 and len(fb2.creates) == 1
+
+        await client.aclose()
+
+    _run(_scenario())
+
+

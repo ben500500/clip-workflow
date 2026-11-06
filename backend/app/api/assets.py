@@ -498,10 +498,15 @@ async def _write_audit(
     target_id: Optional[str],
     before: Optional[dict] = None,
     after: Optional[dict] = None,
+    strict: bool = False,
 ) -> None:
-    """写一条审计（与 api/auth.py 的 _write_audit 同形，fail-soft）。
+    """写一条审计（与 api/auth.py 的 _write_audit 同形，默认 fail-soft）。
 
-    审计写失败绝不拖垮主流程——批量操作里一条审计异常把整批回滚是更严重的事故。
+    默认 fail-soft：审计写失败绝不拖垮主流程——批量操作里一条审计异常把整批回滚
+    是更严重的事故。
+    `strict=True`（11-06 拍板①）只给 **force/waive 类**动作用：这类动作恰恰是最
+    必须留痕的（绕过闸门/豁免复核），审计写失败就拒绝整个操作——宁可让人重做一次，
+    也不能留下「绕过了闸门却查无此事」的记录。普通动作一律不要开 strict。
     """
     try:
         db.add(
@@ -517,6 +522,8 @@ async def _write_audit(
         )
         await db.flush()
     except Exception:
+        if strict:
+            raise
         logger.exception("素材库审计写入失败 action=%s target=%s", action, target_type)
 
 
@@ -4288,6 +4295,9 @@ async def review_summaries(
                 "waived": waived,
                 "superseded_productions": superseded,
             },
+            # 11-06 拍板①：豁免过审是最必须留痕的动作——审计写失败就拒绝这条过审
+            # （整请求回滚），绝不出现「豁免了却查无此事」。
+            strict=bool(waived),
         )
         results.append({
             "summary_id": str(uuid_s), "ok": True, "code": asset.code, "audit_status": to_state,
@@ -6055,6 +6065,9 @@ async def export_productions(
                 "forced_reason": (force_reason or "").strip()[:500] or None,
             } if risk_hits else None,
         },
+        # 11-06 拍板①：强制导出（绕过风险词闸）审计写失败就拒绝这次导出——
+        # 数据还没交付给调用方，500 掉就是「操作被拒」，不会有绕闸记录缺席。
+        strict=bool(force_risk),
     )
     await db.commit()
 
@@ -6193,6 +6206,25 @@ async def _dispatch_gate(
     risk_hits = _risk_recheck_map(rows, book, exemptions)
     risk_blocked = {pid for pid in risk_hits if not force_risk}
     forced_ids = sorted(risk_hits) if (force_risk and risk_hits) else []
+
+    if forced_ids:
+        # 11-06 拍板①：强制投板是**不可逆烧号池额度**的动作，审计必须在动板子
+        # **之前**落定（strict）——审计写失败＝这次强制投板根本不开始，而不是
+        # 「投出去了、账没记上」。后面那笔常规审计照旧 fail-soft。
+        await _write_audit(
+            db,
+            action="asset.production.dispatch",
+            operator=operator,
+            target_type="asset_production",
+            target_id=None,
+            strict=True,
+            after={
+                "phase": "forced_pre",
+                "forced_ids": forced_ids,
+                "force_reason": (force_reason or "").strip()[:500],
+            },
+        )
+        await db.commit()
 
     to_create: List[AssetProduction] = []
     to_recover: List[AssetProduction] = []
