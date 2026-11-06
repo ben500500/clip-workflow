@@ -1567,7 +1567,7 @@ def test_summaries_require_reverse_prompt_content():
 
 
 def test_summaries_generate_three_candidates_with_checks():
-    """三条候选落库：字数、高风险词、一致性校验各归各位，且带一个推荐条。"""
+    """三条候选落库（count 显式传 3）：字数、高风险词、一致性校验各归各位，且带一个推荐条。"""
     _run(_bootstrap())
 
     async def _scenario():
@@ -1578,7 +1578,7 @@ def test_summaries_generate_three_candidates_with_checks():
         with patch("app.api.assets._call_autoclip", _fake_autoclip()) as call:
             gen = await client.post(
                 "/api/assets/summaries/generate",
-                json={"asset_ids": [asset_id], "extra_requirements": "突出医院门口"},
+                json={"asset_ids": [asset_id], "count": 3, "extra_requirements": "突出医院门口"},
                 headers=hm,
             )
         assert gen.status_code == 200, gen.text
@@ -1621,6 +1621,33 @@ def test_summaries_generate_three_candidates_with_checks():
     _run(_scenario())
 
 
+def test_summary_generate_default_count_is_one(monkeypatch):
+    """11-06 用户拍板：不传 count 默认只出 1 条（省一半模型钱；要对照用 count 显式覆盖）。
+
+    conftest 的测试基线把候选数钉在 3（供三候选机制用例复用），这里单独改回 1 验默认值。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.config import settings
+
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        monkeypatch.setattr(settings, "ASSET_HOOK_CANDIDATE_COUNT", 1, raising=True)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()) as call:
+            gen = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+        assert gen.status_code == 200, gen.text
+        assert gen.json()["results"][0]["created"] == 1
+        assert call.await_args_list[0].args[1]["count"] == 1
+        rows = await _rows(AssetSummary)
+        assert [r.seq for r in rows] == [1]
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_overwrite_refuses_when_a_copy_already_approved():
     """过审文案已挂生产单 → overwrite 拒绝（删了会让 summary 外键悬空）。"""
     _run(_bootstrap())
@@ -1630,7 +1657,9 @@ def test_overwrite_refuses_when_a_copy_already_approved():
         hm, ho = h["material"], h["operator"]
         asset_id, _ = await _make_ready_asset(client, hm)
         with patch("app.api.assets._call_autoclip", _fake_autoclip()):
-            await client.post("/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+            await client.post(
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset_id], "count": 3}, headers=hm)
         summaries = await _rows(AssetSummary)
         sid = str(summaries[0].id)
         await client.post("/api/assets/summaries/review",
@@ -1665,7 +1694,8 @@ def test_summary_generate_failure_keeps_old_candidates_and_marks_failed():
         asset_id, _ = await _make_ready_asset(client, hm)
         with patch("app.api.assets._call_autoclip", _fake_autoclip()):
             first = await client.post(
-                "/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset_id], "count": 3}, headers=hm)
         assert first.status_code == 200, first.text
         assert first.json()["results"][0]["created"] == 3
 
@@ -7897,11 +7927,12 @@ def test_summary_generate_also_fills_doubao_web_prompts():
         client, h = await _client_and_headers()
         hm = h["material"]
 
-        # ① 正常：候选落库 + doubao_prompt 全填
+        # ① 正常：候选落库 + doubao_prompt 全填（count 显式 3，测三候选并行展开的机制）
         asset_id, _ = await _make_ready_asset(client, hm)
         with patch("app.api.assets._call_autoclip", _fake_autoclip()) as call:
             gen = await client.post(
-                "/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset_id], "count": 3}, headers=hm)
         assert gen.status_code == 200, gen.text
         body = gen.json()
         first = body["results"][0]
@@ -7928,7 +7959,8 @@ def test_summary_generate_also_fills_doubao_web_prompts():
         asset2, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
         with patch("app.api.assets._call_autoclip", _fake_autoclip(web_error="网关卡流")):
             gen2 = await client.post(
-                "/api/assets/summaries/generate", json={"asset_ids": [asset2]}, headers=hm)
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset2], "count": 3}, headers=hm)
         assert gen2.status_code == 200, gen2.text
         body2 = gen2.json()
         assert body2["results"][0]["created"] == 3

@@ -254,7 +254,7 @@ class AnalyzeRequest(BaseModel):
 
 class SummaryGenerateRequest(BaseModel):
     asset_ids: List[str] = Field(default_factory=list)
-    count: Optional[int] = Field(None, description="每条候选数，默认 ASSET_HOOK_CANDIDATE_COUNT=3")
+    count: Optional[int] = Field(None, description="每条候选数，默认 ASSET_HOOK_CANDIDATE_COUNT=1（11-06 起）")
     extra_requirements: Optional[str] = Field(None, description="给模型的补充要求（如题材/口吻）")
     overwrite: bool = Field(False, description="已有文案时是否重生成（默认保留历史候选，只补差额）")
     batch_id: Optional[str] = Field(

@@ -49,7 +49,7 @@ interface Props {
 /**
  * 文案审核台。
  *
- * 默认勾「只看推荐条」是方案 §七 的防橡皮章设计：三条候选里通常只有一条能钩人，
+ * 默认勾「只看推荐条」是方案 §七 的防橡皮章设计：出了多条候选时通常只有一条能钩人，
  * 全勾一遍＝把审核变成点按钮。复核真正拦人的只有两件事：**字数/断句超限**和**违禁词**；
  * 「和原视频对不上」是预警（列里标红给你看，但不卡你过审）。
  * admin 可以带 `waive_reason` 豁免拦点，还能用 `waive_codes` 只放其中一类——
@@ -181,7 +181,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
 
   /**
-   * 卡片左边的三帧（批 F）：整页素材一次批量取，同素材的 3 条候选共用一份。
+   * 卡片左边的三帧（批 F）：整页素材一次批量取，同素材的多条候选共用一份。
    * 直链 1 小时过期，所以跟着列表走——不缓存翻页前的旧直链。
    */
   const itemAssetIds = useMemo(() => items.map((i) => i.asset_id), [items]);
@@ -524,8 +524,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           content={
             <div style={{ maxWidth: 380 }}>
               <p style={{ marginBottom: 6 }}>
-                一条素材出 3 条候选文案，其中 1 条被模型标为推荐。审核台默认只把推荐条摆到你面前——
-                3 条全勾一遍过，等于没审。
+                一条素材默认只出 <strong>1 条</strong>候选文案（浓缩一句话）。出多条时模型会标 1 条推荐，
+                审核台默认只把推荐条摆到你面前——多条全勾一遍过，等于没审。
               </p>
               <p style={{ marginBottom: 6 }}>
                 <strong>卡片左边</strong>是这条原片抽的三帧（第 10%／45%／80%，不取第一帧：开头常是黑边或台标），
@@ -570,10 +570,10 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         <Tooltip
           title={
             <div style={{ maxWidth: 340 }}>
-              <div><strong>推荐条</strong>：每条素材出 3 条候选，模型标 1 条推荐。默认只看它，是为了防止 3 条全勾一遍走过场。</div>
+              <div><strong>推荐条</strong>：出了多条候选时，模型标 1 条推荐。默认只看它，是为了防止全部勾一遍走过场。</div>
               <div><strong>命中违禁词</strong>：命中违禁词的候选。红色「不许用」＝过不了审、也出不了生产单；橙色「要注意」＝只留个提醒。</div>
               <div><strong>和原视频对不上</strong>：文案里的人物/场景/事件在反推文案稿里找不到的候选，通常要人工改或重新出。</div>
-              <div><strong>全部</strong>：3 条候选都列出来，用来看对照。</div>
+              <div><strong>全部</strong>：所有候选都列出来，用来看对照。</div>
               <div style={{ marginTop: 4 }}>这四个是互斥的：一次只看一类。</div>
             </div>
           }
@@ -711,7 +711,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           showIcon
           style={{ marginBottom: 8 }}
           message="默认只列每条素材的推荐候选"
-          description="三条候选里通常只有一条能钩人，全勾一遍等于没审。要看对照请把筛选切到「全部」。"
+          description="一条素材默认只出 1 条候选；出了多条时通常只有一条能钩人，全勾一遍等于没审。要看对照请把筛选切到「全部」。"
         />
       )}
       {/* 同素材列表：批量点原型放表头上方，别挤 Card 的 extra，否则那一排筛选会换行 */}

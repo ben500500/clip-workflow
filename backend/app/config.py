@@ -328,8 +328,9 @@ class Settings(BaseSettings):
     # 默认 180 而不是现有反推链路的 600 —— 素材库是「批量」场景，
     # 600 档一条就是 0.324 元，100 条 32 元；180 档一条 0.097 元，够出钩子文案。
     ASSET_PROMPT_MAX_DURATION: int = 180
-    # 每条素材生成的钩子文案候选数（多候选单审，三选一比生成一条直接过的返工率低）
-    ASSET_HOOK_CANDIDATE_COUNT: int = 3
+    # 每条素材生成的钩子文案候选数。11-06 用户拍板：默认只出 1 条（浓缩一句话，
+    # 单审单过，也省一半模型钱）；要对照再多出几条的场合，前端按批显式传 count 覆盖。
+    ASSET_HOOK_CANDIDATE_COUNT: int = 1
     # 风险词表（system_config.asset_risk_lexicon）的现读缓存时长（秒）：
     # 审核/投产/导出都要扫词，逐条查库太碎；运维改词表后最多等一个 TTL 生效，设 0 = 每次都查。
     ASSET_RISK_LEXICON_TTL_SECONDS: int = 300
