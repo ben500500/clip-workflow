@@ -95,6 +95,11 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const [dispatchForceRisk, setDispatchForceRisk] = useState(false);
   const [dispatchForceReason, setDispatchForceReason] = useState('');
   const [dispatchBusy, setDispatchBusy] = useState(false);
+  // 11-06 拍板：投递稿可改。只改**这一次投出去**的正文——生产单行的 prompt_text、
+  // 过审文案、漂移判定都不动，下一次再投仍是原稿；后端会对改稿重扫风险词并逐条留审计。
+  const [promptOverrides, setPromptOverrides] = useState<Record<string, string>>({});
+  const [editPromptFor, setEditPromptFor] = useState<AssetProduction | null>(null);
+  const [editPromptDraft, setEditPromptDraft] = useState('');
 
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
 
@@ -344,6 +349,11 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     }
     setDispatchBusy(true);
     try {
+      // 11-06：改过投递稿的带上去；只带非空的（空白＝照原稿投）
+      const overrides: Record<string, string> = {};
+      Object.entries(promptOverrides).forEach(([id, v]) => {
+        if ((v || '').trim()) overrides[id] = v;
+      });
       const res = await withCrossPersonConfirm((c) =>
         assetApi.dispatchProductions({
           ids,
@@ -353,6 +363,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           force_reason: dispatchForceRisk ? dispatchForceReason.trim() : undefined,
           async_mode: true,
           cross_person_confirm: c,
+          prompt_overrides: Object.keys(overrides).length ? overrides : undefined,
         }),
       );
       if (!res) return; // 取消了「替他人批次」确认：什么都不做，弹窗留着
@@ -361,6 +372,8 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
       setDispatchRecoverOnly(false);
       setDispatchForceRisk(false);
       setDispatchForceReason('');
+      setPromptOverrides({});
+      setEditPromptFor(null);
       setSelected([]);
       nudgeAssetJobBanner();
       fetchList(page, pageSize);
@@ -377,6 +390,11 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 <Text strong>{pre.will_recover}</Text> 张；号池按条数记，本批加{' '}
                 <Text strong>{pre.planned_board_rows}</Text> 条（不是一张一条，Σ board_total）。
               </Text>
+              {!!pre.prompt_overrides?.length && (
+                <Text type="warning" style={{ fontSize: 12 }}>
+                  其中 {pre.prompt_overrides.length} 张投的是改过的投递稿（库里的原稿不动，改前改后进了审计）。
+                </Text>
+              )}
               {!!pre.capacity?.advisory && (
                 <Alert type="warning" showIcon message="号池余量（只提示不拦）"
                   description={<Text style={{ fontSize: 12 }}>{pre.capacity.advisory}</Text>} />
@@ -698,6 +716,8 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 setDispatchConfirm(false);
                 setDispatchForceRisk(false);
                 setDispatchForceReason('');
+                setPromptOverrides({});
+                setEditPromptFor(null);
                 setDispatchOpen(true);
               }}
             >
@@ -927,6 +947,42 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
               我已逐批确认这批要投出去（{dispatchPlan.willCreate} 张新建 · ≈{dispatchPlan.rows} 条额度）
             </Checkbox>
           )}
+          {/* 11-06 拍板：投递稿可改。只改这次投出去的；改稿在后端照走风险词重扫并留审计 */}
+          {!dispatchRecoverOnly && dispatchPlan.willCreate > 0 && (
+            <div>
+              <Space size={8} align="center">
+                <Text strong style={{ fontSize: 12 }}>投递稿（要改哪张点哪张）</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  只改这一次投出去的正文，库里的提示词不动；改稿会照过一遍高风险词
+                </Text>
+              </Space>
+              <div style={{ marginTop: 4, maxHeight: 180, overflowY: 'auto' }}>
+                {selected.filter(canCreateLocally).map((p) => (
+                  <div
+                    key={p.id}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}
+                  >
+                    <MonoText>{p.hook_code || p.id.slice(0, 8)}</MonoText>
+                    <Text type="secondary" style={{ fontSize: 12 }} ellipsis>
+                      {p.board_name || '（无推荐标题）'}
+                    </Text>
+                    {promptOverrides[p.id]?.trim() && <Tag color="orange">已改</Tag>}
+                    <Button
+                      size="small"
+                      type="link"
+                      style={{ marginLeft: 'auto', flexShrink: 0 }}
+                      onClick={() => {
+                        setEditPromptFor(p);
+                        setEditPromptDraft(promptOverrides[p.id] ?? p.prompt_text ?? '');
+                      }}
+                    >
+                      编辑投递稿
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {isAdmin && !dispatchRecoverOnly && (
             <>
               <Checkbox checked={dispatchForceRisk} onChange={(e) => setDispatchForceRisk(e.target.checked)}>
@@ -955,6 +1011,57 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
               这批不想机器投？导出任务文件，自己去企微后台手工投（投完回来「补记手工投板结果」）
             </Button>
           )}
+        </Space>
+      </Modal>
+
+      {/* 11-06：单张投递稿编辑。预填当前正文（改过的预填改后的）；「还原」丢掉改稿照原稿投 */}
+      <Modal
+        open={!!editPromptFor}
+        title={`编辑投递稿（${editPromptFor?.hook_code || editPromptFor?.id.slice(0, 8) || ''}）`}
+        width={760}
+        onCancel={() => setEditPromptFor(null)}
+        onOk={() => {
+          if (editPromptFor) {
+            setPromptOverrides((m) => ({ ...m, [editPromptFor.id]: editPromptDraft }));
+          }
+          setEditPromptFor(null);
+        }}
+        okText="用这份投"
+        cancelText="算了不改"
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            message="只改这一次投出去的正文"
+            description={
+              <span style={{ fontSize: 12 }}>
+                库里的提示词、过审文案、漂移判定都不动，下一次再投仍是原稿。
+                改后的稿子会照过一遍高风险词（命中会被拦，admin 可带理由放行）；改了哪张、改前是什么，进审计。
+              </span>
+            }
+          />
+          <Input.TextArea
+            rows={14}
+            value={editPromptDraft}
+            onChange={(e) => setEditPromptDraft(e.target.value)}
+            placeholder="这一次投出去的提示词正文（留空＝照原稿投）"
+          />
+          <Button
+            size="small"
+            onClick={() => {
+              if (editPromptFor) {
+                setEditPromptDraft(editPromptFor.prompt_text ?? '');
+                setPromptOverrides((m) => {
+                  const next = { ...m };
+                  delete next[editPromptFor.id];
+                  return next;
+                });
+              }
+            }}
+          >
+            还原成原稿
+          </Button>
         </Space>
       </Modal>
 

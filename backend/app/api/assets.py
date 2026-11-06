@@ -488,6 +488,19 @@ class DispatchRequest(BaseModel):
         False,
         description="11-06 拍板②：新建板任务涉及别人导入的批次时必须为 true（回收已投的单不花钱，不用这个字段）",
     )
+    prompt_overrides: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "11-06 拍板：投递稿可改。生产单 id → **这一次投出去**的提示词正文。"
+            "只改投出去的那一份：库里的 prompt_text／过审文案一字不动，漂移判定不受影响，"
+            "下一次再投仍用原稿。改后的正文照走 block 级风险词重扫（命中照样拦，"
+            "或 admin 带 force_risk+理由放行——与原稿同一道闸），逐条留审计"
+        ),
+    )
+
+
+# 投递稿改后的长度上限（板上 prompt 字段没有硬上限，这里是防呆：把整篇文档粘进来）
+_PROMPT_OVERRIDE_MAX_LEN = 8000
 
 
 class CategoryUpsertItem(BaseModel):
@@ -6665,6 +6678,64 @@ async def dispatch_productions(
     )
     to_create, to_recover, blocked = gate["to_create"], gate["to_recover"], gate["blocked"]
 
+    # ── 投递稿 override（11-06 拍板：只改投出去的那一份，库里不动）──
+    overrides: Dict[str, str] = {
+        str(k).strip(): (v or "").strip()
+        for k, v in (data.prompt_overrides or {}).items()
+        if (v or "").strip()
+    }
+    if overrides:
+        creatable = {str(p.id): p for p in to_create}
+        unknown = sorted(k for k in overrides if k not in creatable)
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "投递稿只能改这次要新建的单（回收的单投的是原稿，改了也不生效）："
+                    f"这些 id 不在新建堆里：{', '.join(unknown[:5])}"
+                ),
+            )
+        too_long = sorted(k for k, v in overrides.items() if len(v) > _PROMPT_OVERRIDE_MAX_LEN)
+        if too_long:
+            raise HTTPException(
+                status_code=400,
+                detail=f"改后的投递稿单条最长 {_PROMPT_OVERRIDE_MAX_LEN} 字：{', '.join(too_long[:5])}",
+            )
+        if not data.force_risk:
+            book, exemptions = await _risk_lexicon(db)
+            bad = {
+                pid: svc.risk_block_hits(svc.scan_risk(text, lexicon=book, exemptions=exemptions))
+                for pid, text in overrides.items()
+            }
+            bad = {k: v for k, v in bad.items() if v}
+            if bad:
+                parts = [
+                    f"{creatable[pid].hook_code or pid[:8]}：{'、'.join(w for w, _ in hits[:3])}"
+                    for pid, hits in list(bad.items())[:5]
+                ]
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "改后的投递稿命中了 block 级高风险词（改稿不等于豁免，跟原稿同一道闸）："
+                        + "；".join(parts)
+                        + "。确要投请 admin 勾「带高风险词强行投板」并写理由"
+                    ),
+                )
+        # 逐条留痕（fail-soft）：改前原文、改后正文（截断存）、是否踩着 force 投的。
+        # 库里的 prompt_text 一字不改——投递稿只活在这一次请求（与任务台账 params 一起存档）。
+        for pid, text in overrides.items():
+            p = creatable[pid]
+            await _write_audit(
+                db,
+                action="asset.production.dispatch_override",
+                operator=current_user,
+                target_type="asset_production",
+                target_id=p.id,
+                before={"hook_code": p.hook_code, "prompt_text": (p.prompt_text or "")[:800]},
+                after={"override": text[:800], "risk_forced": bool(data.force_risk)},
+            )
+
+
     if to_create and not data.confirm:
         # P0 的人工确认位：不带 confirm=true 就当没确认过。放在这里而不是让前端拦，
         # 是因为这条线**任何**调用方都该被拦——脚本、按钮、将来的定时任务都得先过人这一关。
@@ -6716,6 +6787,12 @@ async def dispatch_productions(
     # 顺序＝板上 picDatas 顺序、缺一张就点名。这里多花一次 MinIO 读是值当的——
     # 它是"投出去画中人不对"这类事故在烧钱前唯一还能看见它的地方。
     delivery = await _build_delivery(db, to_create, "payload") if to_create else {"payloads": []}
+    # 投递稿 override 在这里落地：只改 `payload["prompt"]` 这一个键——生产单行的
+    # prompt_text / 审计快照 / 漂移判定全都不碰，下一次再投仍是原稿。
+    for x in delivery.get("payloads", []):
+        if overrides.get(x["id"]):
+            x["payload"]["prompt"] = overrides[x["id"]]
+            x["prompt_overridden"] = True
     await db.commit()  # ⚠️ 建任务前必须收掉事务：板子一次 POST 最长 90s，趴着等会撞 60s 掐断
     payloads_by_id = {x["id"]: x for x in delivery.get("payloads", [])}
     card_warnings = [
@@ -6759,9 +6836,11 @@ async def dispatch_productions(
                 "card_warnings": card_warnings,
                 "capacity": capacity,
                 "cross_person": crosses or None,
+                "prompt_overrides": sorted(overrides),
                 "note": (
                     "预检已过：闸门按导出/回写同一套判据，payload 与导出同一个函数。"
                     "后台会建任务、轮询出片、把成片落进产物；跑完整份结果在任务台账里"
+                    + (f"；其中 {len(overrides)} 张投的是改过的投递稿（库里原稿不动）" if overrides else "")
                 ),
             },
         }

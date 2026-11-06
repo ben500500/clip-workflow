@@ -1563,6 +1563,12 @@ export interface AssetDispatchRequest {
   async_mode?: boolean;
   /** 11-06 拍板②：新建板任务涉及别人导入的批次时必须 true（回收已投的单不花钱，不用这个字段） */
   cross_person_confirm?: boolean;
+  /**
+   * 11-06 拍板：投递稿可改。生产单 id → 这一次投出去的提示词正文。
+   * 只改投出去的那份：库里的 prompt_text／过审文案不动，漂移判定不受影响；
+   * 改后的正文照走 block 级风险词重扫（命中 400，或 admin force+理由）。
+   */
+  prompt_overrides?: Record<string, string>;
 }
 
 /** 闸门挡下/拒投的逐条说明（三堆里除"要投的"以外都是这个形状） */
@@ -1591,6 +1597,8 @@ export interface AssetDispatchPrecheck {
   blocked: AssetDispatchBlockedItem[];
   card_warnings: { id: string; hook_code: string | null; warnings: string[] }[];
   capacity: AssetBoardCapacity;
+  /** 11-06 拍板：投递稿可改——这次真的带着改稿投出去的生产单 id 列表 */
+  prompt_overrides?: string[];
   note: string;
 }
 

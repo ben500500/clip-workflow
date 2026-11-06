@@ -7661,3 +7661,88 @@ def test_delete_asset_guards_owner_and_force():
         await client.aclose()
 
     _run(_scenario())
+
+
+def test_dispatch_prompt_override_changes_only_outgoing_copy():
+    """11-06 拍板「投放前投递稿可改」，钉五件事：
+
+    1. override 只对**这次要新建**的单生效：不在新建堆里的 id → 400（回收的单投的是原稿）；
+    2. 改后的正文照走 block 级风险词重扫：命中 → 400，话术点名「改稿不等于豁免」；
+    3. operator 带 force_risk → 403（闸门只有 admin 能踩，改稿不另开豁免口）；
+    4. admin force 投出去：板收到的 prompt 是**改后**的，库里的 prompt_text
+       一字不动（下次再投仍是原稿），没改的那张也仍是原稿；
+    5. 改稿逐条留审计（asset.production.dispatch_override，含改后正文与 risk_forced）；
+    6. 空白 override ＝没改：照原稿投。
+    """
+    from app.services import asset_service as _svc
+
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ha, ho = h["admin"], h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(
+            client, h, n=2, hook_codes=["7C0E1", "7C0E2"])
+        ids = [p["id"] for p in listed]
+        orig_prompt = listed[0]["prompt_text"]
+        orig_prompt2 = listed[1]["prompt_text"]
+        assert orig_prompt and orig_prompt2, "fixture 出来的单必须有正文"
+
+        # ① 不在新建堆里的 id → 400（is_configured 的守卫在闸门之前，探针都要在"凭据已配"的环境里发）
+        with _board_off(_FakeBoard()):
+            r = await _dispatch(client, ho, ids,
+                                prompt_overrides={str(uuid.uuid4()): "随便改改"})
+        assert r.status_code == 400 and "不在新建堆里" in r.json()["detail"], r.text
+
+        # ② 改稿命中 block 级风险词 → 400
+        await client.put("/api/assets/risk-lexicon",
+                         json={"block": ["测试雷"], "inherit": True}, headers=ha)
+        with _board_off(_FakeBoard()):
+            r2 = await _dispatch(client, ho, ids, prompt_overrides={ids[0]: "开头就放测试雷"})
+        assert r2.status_code == 400 and "高风险词" in r2.json()["detail"], r2.text
+        assert "改稿不等于豁免" in r2.json()["detail"]
+
+        # ③ operator 踩 force 闸 → 403（闸只认 admin）
+        with _board_off(_FakeBoard()):
+            r3 = await _dispatch(client, ho, ids, prompt_overrides={ids[0]: "开头就放测试雷"},
+                                 force_risk=True, force_reason="语境需要")
+        assert r3.status_code == 403, r3.text
+
+        # ④ admin force：改稿照投，板收到的是改后的，库里一字不动
+        override_text = "开头就放测试雷\n" + orig_prompt
+        fb = _FakeBoard()
+        with _board_off(fb):
+            ok = await _dispatch(client, ha, ids,
+                                 prompt_overrides={ids[0]: override_text},
+                                 force_risk=True, force_reason="改稿语境需要")
+        assert ok.status_code == 200, ok.text
+        by_req = {c["reqID"]: c["prompt"] for c in fb.creates}
+        assert by_req[_svc.board_req_id(ids[0])] == override_text, "改过的那张投出去必须是改后正文"
+        assert by_req[_svc.board_req_id(ids[1])] == orig_prompt2, "没改的那张仍投原稿"
+        rows = await _rows(AssetProduction)
+        row0 = next(r for r in rows if str(r.id) == ids[0])
+        assert row0.prompt_text == orig_prompt, "库里的提示词一字不动"
+
+        # ⑤ 改稿留痕
+        logs = await _rows(AuditLog, AuditLog.action == "asset.production.dispatch_override")
+        assert len(logs) == 1, len(logs)
+        assert logs[0].after["override"] == override_text[:800]
+        assert logs[0].after["risk_forced"] is True
+        assert logs[0].before["prompt_text"] == orig_prompt[:800]
+
+        # ⑥ 空白 override ＝没改（第一轮投完两张单已 success，单开一张新单来验）
+        _a3, _s3, listed3 = await _order_ready_production(
+            client, h, url="https://www.douyin.com/video/7499000000000000104/",
+            n=1, hook_codes=["7C0E3"])
+        id3 = listed3[0]["id"]
+        fb2 = _FakeBoard()
+        with _board_off(fb2):
+            ok2 = await _dispatch(client, ha, [id3], prompt_overrides={id3: "   "})
+        assert ok2.status_code == 200, ok2.text
+        assert all(c["prompt"] == listed3[0]["prompt_text"] for c in fb2.creates), "空白改稿照原稿投"
+        logs2 = await _rows(AuditLog, AuditLog.action == "asset.production.dispatch_override")
+        assert len(logs2) == 1, "空白改稿不留痕"
+
+        await client.aclose()
+
+    _run(_scenario())
