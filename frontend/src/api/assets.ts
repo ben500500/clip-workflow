@@ -399,6 +399,13 @@ export interface AssetOutput {
   qc_status: AssetQcStatus | null;
   qc_note: string | null;
   created_at: string;
+  /** null = 还没人在素材库下过（板侧交付不算） */
+  downloaded_at: string | null;
+  /** 批 K（素材墙）：归属素材编号 / 生产单钩子号，卡片标注用 */
+  asset_code: string | null;
+  hook_code: string | null;
+  /** 产物首帧直链（1 小时过期）；没帧 = null，卡片画「没有预览图」占位 */
+  thumb_url: string | null;
 }
 
 /** 反推提示词任务（wechat_download.serialize_prompt_task，详情口透出） */
@@ -700,8 +707,9 @@ export interface AssetProductionListResult {
   dispatch: AssetDispatchCounts;
 }
 
-/** GET /assets/outputs —— 只有 items，没有 total */
+/** GET /assets/outputs —— 批 K 起带 total（墙要计数翻页） */
 export interface AssetOutputListResult {
+  total: number;
   items: AssetOutput[];
 }
 
@@ -1040,9 +1048,13 @@ export interface AssetExportParams {
 export interface AssetOutputListParams {
   asset_id?: string;
   production_id?: string;
+  /** 批 K：按素材的导入批次收敛（走 asset_items 侧，拼接产物也查得到） */
+  batch_id?: string;
   kind?: AssetOutputKind | string;
   /** 默认 100，后端封顶 300 */
   limit?: number;
+  /** 批 K：翻页偏移，配 total 用 */
+  offset?: number;
 }
 
 // ──────────────────────────────────────────────

@@ -5987,11 +5987,14 @@ class _FakeBoard:
 
 
 def _patch_board(fb: _FakeBoard):
-    """把五个"会出网/碰盘"的调用换成替身（板子三个 + 落桶 + ffprobe）。
+    """把"会出网/碰盘/排后台真跑 ffmpeg"的调用换成替身（板子三个 + 落桶 + ffprobe + 抽帧排程）。
 
     ⚠️ 落桶与 ffprobe 必须在同一个替身组里：投板协程回收成功条时会真去
     `upload_file_from_path`（本机 MinIO:9000 没起 → 整批用例挂在 ConnectionRefused），
     分开打桩就会有用例漏一个、把"闸门没过"测成"连不上 MinIO"。
+    ⚠️ `_enqueue_frames` 也在这里钉：批 K 起回收落库会自动排产物首帧任务——不钉的话
+    `asyncio.create_task` 会把真抽帧协程甩进测试事件循环里跑 ffmpeg。要看排程参数的
+    用例（如回收 e2e）在 with 内层再补一层自己的 patch，内层的赢。
     """
     return (
         patch("app.services.aivideo_board.create_task", fb.create_task),
@@ -5999,6 +6002,10 @@ def _patch_board(fb: _FakeBoard):
         patch("app.services.aivideo_board.download_output", fb.download_output),
         patch("app.api.assets.upload_file_from_path", fb.upload),
         patch("app.services.asset_compose_service.probe_media", fb.probe),
+        patch(
+            "app.api.assets._enqueue_frames",
+            AsyncMock(return_value={"queued": True, "job_id": "jf", "note": None}),
+        ),
     )
 
 
@@ -6110,7 +6117,9 @@ def test_dispatch_creates_tasks_and_collects_outputs_end_to_end():
                 await s.commit()
 
         fb = _FakeBoard(pre_existing=[("OLD999999", "别人昨天的任务")])
-        with _board_off(fb):
+        with _board_off(fb), \
+             patch("app.api.assets._enqueue_frames", AsyncMock(
+                 return_value={"queued": True, "job_id": "jf1", "note": "抽帧已排后台"})) as enq_frames:
             resp = await _dispatch(client, ho, ids)
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -6164,6 +6173,89 @@ def test_dispatch_creates_tasks_and_collects_outputs_end_to_end():
         assert body["dispatch"]["today"]["board_rows"] == 2, body["dispatch"]["today"]
         assert body["capacity"]["planned"] == 2 and body["capacity"]["over_cap"] == 0
         assert "解压线" in body["capacity"]["note"], "余量偏乐观这句要给一线看到，不能只写在注释里"
+
+        # ⑦ 批 K：这次真落库的两条产物**自动排了首帧任务**（素材墙的缩略图从这来）。
+        # 排程必须 fail-soft（帧没排上不连累回收），所以这里只断"排了、点名排的是产物"。
+        enq_frames.assert_awaited_once()
+        kwf = enq_frames.await_args.kwargs
+        assert kwf["asset_ids"] == [] and len(kwf["output_ids"]) == 2, kwf
+        assert kwf["why"].startswith("豆包成片回收落库"), kwf["why"]
+        assert {o[:8] for o in kwf["output_ids"]} <= {str(o.id)[:8] for o in outs}
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_outputs_wall_fields_batch_filter_and_total():
+    """批 K 素材墙数据口：批次过滤走素材侧、total 计数、卡片带素材码/首帧直链。
+
+    钉三件不能错的：
+    - `batch_id` 收敛走 `asset_items` 侧——拼接产物不挂生产单（production_id 可空），
+      按生产单查会漏，按素材查永远查得到；
+    - 没帧的产物 `thumb_url` 必须是**显式 null 不是缺键**（前端靠 null 画「没有预览图」）；
+    - `limit/offset` 分页配 `total`，墙要翻页要计数。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+
+        code = None
+        async with dbmod.async_session_factory() as s:
+            asset = await s.get(AssetItem, uuid.UUID(asset_id))
+            batch_id = str(asset.batch_id)
+            code = asset.code
+            out1 = AssetOutput(
+                asset_id=asset.id, kind="doubao_raw",
+                file_key="asset/board/x/v1.mp4", bucket=settings.MINIO_BUCKET_RAW,
+                file_name="v1.mp4", duration=10.08, file_size=2048, resolution="720x1280",
+            )
+            s.add(out1)
+            await s.flush()
+            s.add(AssetFrame(
+                asset_id=asset.id, output_id=out1.id,
+                kind=FRAME_OUTPUT_THUMB, seq=0,
+                file_key="asset/board/x/v1.jpg", bucket=settings.MINIO_BUCKET_RAW,
+            ))
+            out2 = AssetOutput(
+                asset_id=asset.id, kind="composed",
+                file_key="asset/composed/v2.mp4", bucket=settings.MINIO_BUCKET_RAW,
+                file_name="v2.mp4", duration=6.0,
+            )
+            s.add(out2)
+            await s.commit()
+            oid1, oid2 = str(out1.id), str(out2.id)
+
+        with patch("app.api.assets.get_presigned_url",
+                   AsyncMock(return_value="http://signed/thumb.jpg")):
+            r = await client.get("/api/assets/outputs", params={"batch_id": batch_id}, headers=hm)
+        assert r.status_code == 200, r.text
+        b = r.json()
+        assert b["total"] == 2, b
+        rows = {x["id"]: x for x in b["items"]}
+        assert rows[oid1]["asset_code"] == code, rows[oid1]
+        assert rows[oid1]["thumb_url"] == "http://signed/thumb.jpg"
+        assert rows[oid1]["downloaded_at"] is None and rows[oid1]["hook_code"] is None
+        assert rows[oid2]["thumb_url"] is None, "没帧的产物必须显式回 null，前端好画「没有预览图」"
+        assert rows[oid2]["kind"] == "composed"
+
+        # kind 过滤 + 分页各走一遍
+        with patch("app.api.assets.get_presigned_url",
+                   AsyncMock(return_value="http://signed/t.jpg")):
+            r2 = await client.get(
+                "/api/assets/outputs", params={"batch_id": batch_id, "kind": "doubao_raw"}, headers=hm)
+            assert r2.json()["total"] == 1
+            r3 = await client.get(
+                "/api/assets/outputs", params={"batch_id": batch_id, "limit": 1, "offset": 1}, headers=hm)
+            b3 = r3.json()
+            assert b3["total"] == 2 and len(b3["items"]) == 1, b3
+
+        # 别的批次一条都查不到
+        r4 = await client.get(
+            "/api/assets/outputs", params={"batch_id": str(uuid.uuid4())}, headers=hm)
+        assert r4.json()["total"] == 0
         await client.aclose()
 
     _run(_scenario())

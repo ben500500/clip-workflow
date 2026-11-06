@@ -7,6 +7,7 @@ import AssetJobsPanel from '../components/assets/AssetJobsPanel';
 import AssetImportPanel from '../components/assets/AssetImportPanel';
 import AssetReviewPanel from '../components/assets/AssetReviewPanel';
 import AssetProductionPanel from '../components/assets/AssetProductionPanel';
+import AssetOutputWall from '../components/assets/AssetOutputWall';
 import AssetJobBanner from '../components/assets/AssetJobBanner';
 import AssetCategoryDrawer from '../components/assets/AssetCategoryDrawer';
 import type { AssetJobInfo } from '../api/assets';
@@ -143,6 +144,15 @@ const AssetLibrary: React.FC = () => {
         />
       ),
     },
+    {
+      // 批 K（成片素材墙）：链路终点。回收回来的片子按缩略图一面墙摆开，
+      // 点开就播、勾选多选下载——最终用户「挑片子」就在这一屏，不用去生产单行里翻。
+      key: 'outputs',
+      label: '成片素材墙',
+      children: (
+        <AssetOutputWall key={`outputs-${batchId ?? 'all'}`} batchId={batchId} reloadToken={reloadToken} />
+      ),
+    },
   ];
 
   return (
@@ -155,6 +165,7 @@ const AssetLibrary: React.FC = () => {
           <Text strong>投去 AI 出片</Text>
           ：机器去企微后台「创建AI视频」任务板建任务、等出片、把成片自动收进各单的「成片」列
           （逐批人工确认后才投；想自己投就导出任务文件手工投完，回来「补记手工投板结果」记账）。
+          收回来的片子到「<Text strong>成片素材墙</Text>」挑：缩略图一眼扫、点开就播、勾选多条一起下载。
         </Paragraph>
         <Space size={8} wrap>
           {roleHint}

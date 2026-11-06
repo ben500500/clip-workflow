@@ -7420,6 +7420,25 @@ async def _execute_dispatch(
     # ── ③ 轮询回收 ──
     outcome = await _poll_and_collect(db, tracked, recover_only=recover_only)
 
+    # ── ③b 这次真落库的产物补排 1 张首帧（批 K：素材墙靠它当缩略图）──
+    # 批 F 留的「豆包成片是 output_thumb 第二个写入方」就在这里接上。放在阶段收敛
+    # commit 之后单独调：_start_asset_job 自己 commit、失败路径会 rollback，
+    # 早调会把没提交的收敛一起卷进去。fail-soft 口径与导入/拼接侧一致——
+    # 帧没排上只是墙上一时没图，片子已经真金白银回收了，不连累回收结果。
+    _new_output_ids = [
+        rec["_output_id"] for rec in outcome["outputs"]
+        if rec.get("_inserted") and rec.get("_output_id")
+    ]
+    if _new_output_ids:
+        _frames_note = await _enqueue_frames(
+            db,
+            asset_ids=[],
+            output_ids=_new_output_ids,
+            operator=operator,
+            why=f"豆包成片回收落库（{_new_output_ids[0][:8]} 等 {len(_new_output_ids)} 条）",
+        )
+        outcome["frames_note"] = _frames_note.get("note")
+
     # ── ④ 阶段收敛 + 审计 + 计数 ──
     stage_by_asset = await _converge_produce_stage(db, {t["prod"].asset_id for t in tracked.values()})
     await db.commit()
@@ -7678,7 +7697,7 @@ async def _poll_and_collect(
                 if rec.get("_inserted"):
                     continue
                 prod = tracked[rec["production_id"]]["prod"]
-                db.add(AssetOutput(
+                new_out = AssetOutput(
                     production_id=prod.id,
                     asset_id=prod.asset_id,
                     **{
@@ -7686,7 +7705,11 @@ async def _poll_and_collect(
                         for k, v in rec.items()
                         if k not in ("production_id", "tid", "rgid", "doubao_account", "_inserted")
                     },
-                ))
+                )
+                db.add(new_out)
+                # 批 K：把生成的产物 id 留在 rec 里——轮询结束后要按它排首帧任务
+                await db.flush()
+                rec["_output_id"] = str(new_out.id)
                 rec["_inserted"] = True
             changed = True
         if changed:
@@ -7720,24 +7743,86 @@ def _mark_dispatch_failed(p: AssetProduction, s: Dict[str, Any], reason: str) ->
 async def list_outputs(
     asset_id: Optional[str] = None,
     production_id: Optional[str] = None,
+    batch_id: Optional[str] = None,
     kind: Optional[str] = None,
     limit: int = 100,
+    offset: int = 0,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """产物列表。11-04 起 `kind=composed`（简单拼接）有写入方，其余仍等 P1。"""
+    """产物列表。11-04 起 `kind=composed`（简单拼接）有写入方，其余仍等 P1。
+
+    批 K（成片素材墙）：加 `batch_id`（按素材的批次收敛，拼接产物不挂生产单也查得到）、
+    `offset` + `total`（墙要翻页要计数）、每行带 `asset_code`（卡片上认得出是哪条素材）
+    和 `thumb_url`（产物首帧 presign，墙当缩略图；没帧就 null，前端画「没有预览图」）。
+    """
     conds = []
     if asset_id:
         conds.append(AssetOutput.asset_id == _as_uuid(asset_id, "asset_id"))
     if production_id:
         conds.append(AssetOutput.production_id == _as_uuid(production_id, "production_id"))
+    if batch_id:
+        # 走素材侧收敛而不是生产单侧：拼接产物 production_id 可空，但 asset_id 永远在
+        conds.append(
+            AssetOutput.asset_id.in_(
+                select(AssetItem.id).where(AssetItem.batch_id == _as_uuid(batch_id, "batch_id"))
+            )
+        )
     if kind:
         conds.append(AssetOutput.kind == kind)
-    stmt = select(AssetOutput).where(and_(*conds)) if conds else select(AssetOutput)
-    rows = (
-        await db.execute(stmt.order_by(AssetOutput.created_at.desc()).limit(min(max(1, limit), 300)))
-    ).scalars().all()
+    base = select(AssetOutput).where(and_(*conds)) if conds else select(AssetOutput)
+    total = int(
+        (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
+    )
+    rows = list(
+        (
+            await db.execute(
+                base.order_by(AssetOutput.created_at.desc())
+                .offset(max(0, offset))
+                .limit(min(max(1, limit), 300))
+            )
+        ).scalars().all()
+    )
+
+    # 卡片要认素材码 / 生产单号：两把小映射，别在循环里逐行查
+    codes: Dict[uuid.UUID, str] = {}
+    prod_names: Dict[uuid.UUID, str] = {}
+    if rows:
+        asset_rows = (
+            await db.execute(
+                select(AssetItem.id, AssetItem.code).where(AssetItem.id.in_({o.asset_id for o in rows}))
+            )
+        ).all()
+        codes = {r[0]: r[1] for r in asset_rows}
+        prod_rows = (
+            await db.execute(
+                select(AssetProduction.id, AssetProduction.hook_code).where(
+                    AssetProduction.id.in_({o.production_id for o in rows if o.production_id})
+                )
+            )
+        ).all()
+        prod_names = {r[0]: r[1] for r in prod_rows}
+        # 首帧：每个产物最多 1 张 output_thumb（部分唯一索引保证）
+        frame_rows = (
+            await db.execute(
+                select(AssetFrame).where(
+                    AssetFrame.output_id.in_([o.id for o in rows]),
+                    AssetFrame.kind == FRAME_OUTPUT_THUMB,
+                )
+            )
+        ).scalars().all()
+        thumb_urls: Dict[uuid.UUID, Optional[str]] = {}
+        for f in frame_rows:
+            thumb_urls[f.output_id] = await get_presigned_url(
+                f.bucket or settings.MINIO_BUCKET_RAW,
+                f.file_key,
+                expires_seconds=_FRAME_URL_TTL_SECONDS,
+            )
+    else:
+        thumb_urls = {}
+
     return {
+        "total": total,
         "items": [
             {
                 "id": str(o.id),
@@ -7755,6 +7840,11 @@ async def list_outputs(
                 "qc_status": o.qc_status,
                 "qc_note": o.qc_note,
                 "created_at": utc_iso(o.created_at),
+                "downloaded_at": utc_iso(o.downloaded_at) if o.downloaded_at else None,
+                # 批 K：卡片标注 + 缩略图（没帧 = null，前端画占位不报错）
+                "asset_code": codes.get(o.asset_id),
+                "hook_code": prod_names.get(o.production_id) if o.production_id else None,
+                "thumb_url": thumb_urls.get(o.id),
             }
             for o in rows
         ]
