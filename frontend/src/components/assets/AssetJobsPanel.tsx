@@ -12,6 +12,9 @@ import type { ColumnsType } from 'antd/es/table';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { AssetJobInfo, AssetJobKind, AssetJobStatus } from '../../api/assets';
 import { assetApi } from '../../api/assets';
+// 任务表里存的是 UTC 裸时间（datetime.utcnow），必须按 UTC 解析再转本地显示——
+// 直接 slice 字符串会把「17:19 提交」显示成「09:19」（差 8 小时的根子）
+import { parseServerTime } from '../../utils/format';
 
 const { Text } = Typography;
 
@@ -61,7 +64,10 @@ const summarize = (job: AssetJobInfo): string => {
   return '';
 };
 
-const fmtTime = (iso: string | null): string => (iso ? iso.slice(5, 16).replace('T', ' ') : '—');
+const fmtTime = (iso: string | null): string => {
+  const d = iso ? parseServerTime(iso) : null;
+  return d ? d.format('MM-DD HH:mm') : '—';
+};
 
 const AssetJobsPanel: React.FC = () => {
   const [items, setItems] = useState<AssetJobInfo[]>([]);

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Col, Dropdown, Input, Modal, Radio, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, Col, Collapse, Dropdown, Input, Modal, Radio, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   CloudUploadOutlined, CopyOutlined, DownloadOutlined, ExportOutlined, MoreOutlined, PlayCircleOutlined, ReloadOutlined, VideoCameraOutlined,
@@ -660,19 +660,49 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
       </Row>
 
       {today && (
-        <Alert
-          type={today.over_cap > 0 ? 'error' : today.board_rows > today.soft_cap * 0.8 ? 'warning' : 'info'}
-          showIcon
+        /*
+          #110 排版整理：号池的一大段口径说明默认收起——统计行已经把关键数摆出来了，
+          长解释只在点开时看；超线（error 档）时默认展开，别把要紧事也藏掉。
+        */
+        <Collapse
+          size="small"
           style={{ marginBottom: 12 }}
-          message={`${today.day} 号池：今天已投出去 ${today.board_rows} 条（按板上任务条数合计，不是行数）／软提示线 ${today.soft_cap} 条（只提示不拦）／板上任务 ${today.tasks} 行；成功 ${today.succeeded}、失败 ${today.failed}${today.over_cap > 0 ? `；超线 ${today.over_cap} 条` : ''}。只算今天板上的任务，还没投的单不在里面；此数只含素材库自己投的，与每日解压线共用同一个池，真实余量比它小。投上板后又被撤审作废的单也算已投（号池那天真被吃了）。`}
-          description={
-            <Space direction="vertical" size={2}>
-              {today.note && <Text style={{ fontSize: 12 }}>{today.note}</Text>}
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {dispatch?.scope_note}｜产能不做硬限（11-03 拍板），这里只把数报清楚。
-              </Text>
-            </Space>
-          }
+          defaultActiveKey={today.over_cap > 0 ? ['pool'] : []}
+          items={[
+            {
+              key: 'pool',
+              label: (
+                <Space size={6} wrap>
+                  {today.over_cap > 0 ? (
+                    <Tag color="red">今天已超线 {today.over_cap} 条</Tag>
+                  ) : (
+                    <Tag color={today.board_rows > today.soft_cap * 0.8 ? 'orange' : 'blue'}>号池</Tag>
+                  )}
+                  <Text>
+                    今天已投 {today.board_rows}／软提示线 {today.soft_cap}（只提示不拦）
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    点开看完整口径
+                  </Text>
+                </Space>
+              ),
+              children: (
+                <Alert
+                  type={today.over_cap > 0 ? 'error' : today.board_rows > today.soft_cap * 0.8 ? 'warning' : 'info'}
+                  showIcon
+                  message={`${today.day} 号池：今天已投出去 ${today.board_rows} 条（按板上任务条数合计，不是行数）／软提示线 ${today.soft_cap} 条（只提示不拦）／板上任务 ${today.tasks} 行；成功 ${today.succeeded}、失败 ${today.failed}${today.over_cap > 0 ? `；超线 ${today.over_cap} 条` : ''}。只算今天板上的任务，还没投的单不在里面；此数只含素材库自己投的，与每日解压线共用同一个池，真实余量比它小。投上板后又被撤审作废的单也算已投（号池那天真被吃了）。`}
+                  description={
+                    <Space direction="vertical" size={2}>
+                      {today.note && <Text style={{ fontSize: 12 }}>{today.note}</Text>}
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {dispatch?.scope_note}｜产能不做硬限（11-03 拍板），这里只把数报清楚。
+                      </Text>
+                    </Space>
+                  }
+                />
+              ),
+            },
+          ]}
         />
       )}
 
