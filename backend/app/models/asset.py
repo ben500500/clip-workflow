@@ -344,6 +344,12 @@ class AssetItem(Base):
     cover_image_key = Column(String(500), nullable=True)
     duration = Column(Float, nullable=True)
     resolution = Column(String(50), nullable=True)
+    # 时效直链缓存（11-06）：resolve 解析成功后把 play_url + 取链时间落库。
+    # 直链是源站的时效链接（约 6 小时），缓存只在 ASSET_PLAY_URL_TTL_HOURS 内免费回放，
+    # 过期不作数——resolve 会重新解析（该扣 0.01 扣 0.01），这是「直链失效后自愈」的出口。
+    # 之前 play_url 只活在当次响应里，用户付了钱取到的直链一关抽屉就没了，再点也拿不回来。
+    play_url = Column(Text, nullable=True)
+    play_url_at = Column(DateTime, nullable=True)
     # 反推计时上限（本条实际使用的档位；NULL=未反推）
     prompt_max_duration = Column(Integer, nullable=True)
     # 钩子原型分类（11-04 拍板①）：单层字典、**纯人工点选**、可不填（不设为必填，

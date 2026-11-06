@@ -130,8 +130,9 @@ export type AssetHookStyle = 'question' | 'statement' | 'dialogue';
  */
 export type AssetPromptTaskStatus = 'processing' | 'success' | 'failed' | 'persist_failed';
 
-/** 原文件下载口返回形态：stored=自有桶 presigned / external=只有分享链接 */
-export type AssetSourceDownloadMode = 'stored' | 'external';
+/** 原文件下载口返回形态：stored=自有桶 presigned / external=只有分享链接；
+ * cached=11-06 播放直链修复：source-preview 回的是上次取的时效直链（缓存期内免费回放） */
+export type AssetSourceDownloadMode = 'stored' | 'external' | 'cached';
 
 /** 导出形态：json=只 items[]；txt=追加 export_text；payload=追加可直接 POST 的七键 */
 export type AssetExportFormat = 'json' | 'txt' | 'payload';
@@ -789,6 +790,8 @@ export interface AssetResolveRequest {
   confirmed?: boolean;
   /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
   cross_person_confirm?: boolean;
+  /** 11-06 播放直链修复：缓存直链过期后强制重新解析（0.01 元/次）——直链打不开时的自愈出口 */
+  retake?: boolean;
 }
 
 /** 批 J：链接素材原片下载（反推默认顺带排上；这里也开放手工批量/失败行重试） */
@@ -1879,6 +1882,10 @@ export interface AssetSourcePreviewResult {
   resolution: string | null;
   expires_in: number | null;
   source_url: string | null;
+  /** 11-06 播放直链修复：true＝url 是上次取的时效直链（缓存回放，非桶内文件） */
+  cached?: boolean;
+  /** 上次取直链的时间（仅 cached 时有） */
+  play_url_taken_at?: string | null;
   note: string | null;
 }
 

@@ -1068,13 +1068,18 @@ def test_resolve_charges_only_paid_channels_and_never_double_pays():
         batch = (await _rows(AssetBatch, AssetBatch.id == uuid.UUID(batch_id)))[0]
         assert batch.cost_actual == pytest.approx(0.02, abs=1e-9), "解析费进批次实扣（D-5 拍板）"
 
-        # 再点名同一条：已有时长就跳过，绝不替人再花一次
+        # 再点名同一条：缓存直链还在 TTL 内 → **免费回放**（channel=cache、0 元、
+        # 不发解析接口）。11-06 播放直链修复前这里回空 results——用户付钱取的
+        # 直链关抽屉就没了，再点还撞上「已有时长不重复付费」，死锁在播不了。
         calls.clear()
         again = await client.post(
             "/api/assets/resolve", json={"asset_ids": [by_url[SHARE_1]]}, headers=hm)
         assert again.status_code == 200, again.text
-        assert again.json()["results"] == [] and again.json()["skipped"][0]["reason"].startswith("已有时长")
-        assert calls == []
+        cached = again.json()["results"][0]
+        assert cached["channel"] == "cache" and cached["charged"] == 0.0
+        assert cached["play_url"] == "https://c.d/b.mp4", "回放的必须是落库的那条直链"
+        assert "免费" in cached["note"]
+        assert calls == [], "缓存回放不该再调解析接口"
 
         # 整批排队：只剩「没花过钱且没时长」的那条（失败的 SHARE_3）；
         # SHARE_4 付过 0.01 但没时长 —— 它必须**离开**队列，否则每次排队都重扣一遍
@@ -2417,7 +2422,8 @@ def test_inline_preview_never_forces_download():
         assert ext.status_code == 200, ext.text
         assert ext.json()["mode"] == "external" and ext.json()["url"] is None
         assert ext.json()["source_url"] == DOUYIN_1 and ps.await_count == 0
-        assert "解析" in ext.json()["note"]
+        # 11-06 播放直链修复：external 的出口话术从「查时长/回源解析」统一成「取直链并播放」
+        assert "取直链并播放" in ext.json()["note"]
 
         # ──  产物预览：废片也能看，且不点亮 downloaded_at ──
         asset_id, _ = await _make_ready_asset(client, hm)
@@ -7399,6 +7405,120 @@ def test_hook_code_uniqueness_blocks_reuse_and_used_endpoint_reports_it():
             "/api/assets/hook-codes/used", params={"codes": "7C0A1,7C0A2"}, headers=ho)
         rows2 = used2.json()["used"]
         assert {r["code"] for r in rows2} == {"7C0A1", "7C0A2"}
+        await client.aclose()
+
+    _run(_scenario())
+
+
+# ─────────────────  3d. 播放直链缓存（11-06 修复：取过的直链要能免费拿回来）  ─────────────────
+
+
+def test_play_url_cache_replay_expiry_and_retake():
+    """11-06 播放直链修复，钉五件事：
+
+    1. resolve 成功后 `play_url`/`play_url_at` **落库**（以前只回响应，关抽屉就没了）；
+    2. 再 resolve：缓存期内 → channel=cache、0 元、一次解析接口都不发；
+    3. 缓存过期（把取链时间拨回 TTL 之外）→ skipped，理由点名「已过期」和 retake=true；
+    4. retake=true → 真重新解析并按渠道记账 0.01（过期直链的唯一自愈出口）；
+    5. source-preview：缓存期内回 mode=cached + 直链（开抽屉免费续播）；过期回 external，
+       note 提示重取。
+    """
+    _run(_bootstrap())
+
+    SHARE = "https://www.douyin.com/video/7499000000000000091/"
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        imp = await _import(client, hm, [SHARE])
+        assert imp.status_code == 201, imp.text
+        asset_id = imp.json()["items"][0]["id"]
+
+        calls: list = []
+
+        async def _parse(url):
+            calls.append(url)
+            return SimpleNamespace(channel="zhiling", play_url="https://c.d/live.mp4",
+                                   duration=36.6, title=None)
+
+        with patch("app.api.assets.dispatch_parse", AsyncMock(side_effect=_parse)), \
+             patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)):
+            first = await client.post(
+                "/api/assets/resolve", json={"asset_ids": [asset_id]}, headers=hm)
+        assert first.status_code == 200, first.text
+        r = first.json()["results"][0]
+        assert r["ok"] and r["play_url"] == "https://c.d/live.mp4"
+        assert r["charged"] == pytest.approx(0.01, abs=1e-9)
+
+        rows = {str(a.id): a for a in await _rows(AssetItem)}
+        a = rows[asset_id]
+        assert a.play_url == "https://c.d/live.mp4", "直链必须落库（修复的主体）"
+        assert a.play_url_at is not None
+
+        # ② 缓存期内再取：免费回放，一次外呼都不发
+        calls.clear()
+        replay = await client.post(
+            "/api/assets/resolve", json={"asset_ids": [asset_id]}, headers=hm)
+        assert replay.status_code == 200, replay.text
+        body = replay.json()
+        assert body["results"][0]["channel"] == "cache"
+        assert body["results"][0]["play_url"] == "https://c.d/live.mp4"
+        assert body["results"][0]["charged"] == 0.0
+        assert body["charged"] == 0.0 and calls == [], "缓存回放 0 元且不调解析接口"
+        assert "0 元" in body["message"]
+
+        # ⑤a source-preview：缓存期内回 mode=cached（开抽屉免费续播）
+        prev = await client.get(f"/api/assets/{asset_id}/source-preview", headers=hm)
+        assert prev.status_code == 200, prev.text
+        pj = prev.json()
+        assert pj["mode"] == "cached" and pj["url"] == "https://c.d/live.mp4"
+        assert pj["cached"] is True and pj["play_url_taken_at"]
+        assert "缓存" in pj["note"]
+
+        # ③ 把取链时间拨回 7 小时前（TTL 默认 6 小时）：缓存过期
+        async with dbmod.async_session_factory() as s:
+            stale = await s.get(AssetItem, uuid.UUID(asset_id))
+            stale.play_url_at = datetime.utcnow() - timedelta(hours=7)
+            await s.commit()
+
+        calls.clear()
+        expired = await client.post(
+            "/api/assets/resolve", json={"asset_ids": [asset_id]}, headers=hm)
+        assert expired.status_code == 200, expired.text
+        eb = expired.json()
+        assert eb["results"] == [] and calls == [], "过期被跳过，不许自作主张重新花钱"
+        reason = eb["skipped"][0]["reason"]
+        assert "已过期" in reason and "retake=true" in reason, "跳过理由要告诉人自愈出口在哪"
+
+        # ⑤b source-preview：过期回 external，note 提示重取
+        prev2 = await client.get(f"/api/assets/{asset_id}/source-preview", headers=hm)
+        assert prev2.status_code == 200, prev2.text
+        pj2 = prev2.json()
+        assert pj2["mode"] == "external" and pj2["url"] is None
+        assert "已过期" in pj2["note"] and "重取" in pj2["note"]
+
+        # ④ retake=true：真重新解析、按渠道记账（自愈出口必须通）
+        with patch("app.api.assets.dispatch_parse", AsyncMock(side_effect=_parse)), \
+             patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)):
+            retaken = await client.post(
+                "/api/assets/resolve", json={"asset_ids": [asset_id], "retake": True}, headers=hm)
+        assert retaken.status_code == 200, retaken.text
+        rb = retaken.json()
+        assert calls == [SHARE], "retake 必须真的重新发起解析"
+        assert rb["results"][0]["channel"] == "zhiling"
+        assert rb["results"][0]["charged"] == pytest.approx(0.01, abs=1e-9)
+        assert rb["results"][0]["duration"] == 36.6
+        rows2 = {str(a2.id): a2 for a2 in await _rows(AssetItem)}
+        assert rows2[asset_id].cost_parse == pytest.approx(0.02, abs=1e-9), "两次解析各记一笔"
+        assert rows2[asset_id].play_url_at is not None
+        assert rows2[asset_id].play_url_at > stale.play_url_at, "取链时间要刷新成这一次的"
+
+        # retake 后缓存又活了：免费回放照旧
+        calls.clear()
+        replay2 = await client.post(
+            "/api/assets/resolve", json={"asset_ids": [asset_id]}, headers=hm)
+        assert replay2.status_code == 200, replay2.text
+        assert replay2.json()["results"][0]["channel"] == "cache" and calls == []
         await client.aclose()
 
     _run(_scenario())

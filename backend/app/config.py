@@ -349,6 +349,11 @@ class Settings(BaseSettings):
     ASSET_ANALYZE_MAX_PER_CALL: int = 20
     ASSET_SUMMARY_MAX_PER_CALL: int = 10
 
+    # 素材库 · 时效直链缓存（11-06 播放直链修复）：resolve 取到的 play_url 落库，
+    # 这个窗口内 source-preview/resolve 免费回放；过期不作数、retake 重取自愈。
+    # 6 小时与源站时效直链的有效期口径一致（界面上就写着「约 6 小时内有效」）。
+    ASSET_PLAY_URL_TTL_HOURS: float = 6.0
+
     # ── 素材库 · 企微自动化后台「创建 AI 视频」任务板（生产通道 wework_aivideo）──
     # 权威口径：NAS《每日解压视频-操作手册-20261022.md》+ Drama/共享配置/skill/relax-video-pipeline。
     # 这条通道**不扣现金**、payload 只有七键（tag/reqID/total/date/prompt/name/picDatas）、

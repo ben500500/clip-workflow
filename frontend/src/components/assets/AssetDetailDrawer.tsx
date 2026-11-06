@@ -97,18 +97,24 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
     setPlayerErr(null);
     try {
       const res = await assetApi.previewAssetSource(id);
-      // 链接素材没有内联源：不报错，交给下面的占位区说明怎么办
+      // 链接素材：mode=cached＝上次取的时效直链还在缓存期（开抽屉免费回放，这是
+      // 11-06 播放直链修复的主体——以前付钱取的直链只活在当次响应里，关抽屉就没了）；
+      // mode=external＝没有缓存/已过期，不报错，交给下面的占位区说明怎么办
       setPlayer(
         res.url
           ? {
               url: res.url,
-              label: res.file_name || res.asset_code,
+              label:
+                res.mode === 'cached'
+                  ? `上次取的直链（缓存回放，约 6 小时内有效）`
+                  : res.file_name || res.asset_code,
               duration: res.duration,
               resolution: res.resolution,
               platform: res.platform,
             }
           : null,
       );
+      if (res.mode === 'cached' && res.note) message.info(res.note);
     } catch (e) {
       setPlayerErr((e as Error).message || '取预览地址失败');
     } finally {
@@ -137,24 +143,47 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
   };
 
   /**
-   * 链接素材想播只能现取时效直链：走 `POST /assets/resolve`，**0.01 元/次**、计入批次
-   * 成本，所以这是人手点的动作，绝不在打开抽屉时自动发起（取片和取时长是两笔钱）。
+   * 链接素材想播就取时效直链：走 `POST /assets/resolve`。两条来路：
+   * - 缓存期内（默认 retake=false）→ 后端直接回放缓存直链，**0 元**、不发起外呼；
+   * - 缓存过期/没有缓存但已有时长 → 被跳过，弹确认问一声后带 `retake=true` 重取
+   *   （**0.01 元/次**、计入批次成本，这是直链失效后的唯一自愈出口）。
    */
-  const playLinkSource = async () => {
+  const playLinkSource = async (retake = false) => {
     if (!assetId) return;
     setPlayerBusy(true);
     setPlayerErr(null);
     try {
       const res = await withCrossPersonConfirm((c) =>
-        assetApi.resolveAssets({ asset_ids: [assetId], cross_person_confirm: c }),
+        assetApi.resolveAssets({ asset_ids: [assetId], cross_person_confirm: c, retake }),
       );
       if (!res) return; // 取消了「替他人批次」确认：什么都不做
       const item = res.results?.[0];
       if (item?.ok && item.play_url) {
-        setPlayer({ url: item.play_url, label: '原站时效直链（约 6 小时内有效）', duration: item.duration });
-        message.success(`已取到直链播放（本条实扣 ${yuan(item.charged)}，计入批次成本）`);
+        const fromCache = item.channel === 'cache';
+        setPlayer({
+          url: item.play_url,
+          label: fromCache ? '上次取的直链（缓存回放，0 元）' : '原站时效直链（约 6 小时内有效）',
+          duration: item.duration,
+        });
+        message.success(
+          fromCache
+            ? '回放上次取的直链（缓存期内免费，没有调解析接口）'
+            : `已取到直链播放（本条实扣 ${yuan(item.charged)}，计入批次成本）`,
+        );
       } else {
-        setPlayerErr(item?.error || item?.note || res.message || '没取到直链，这条暂时播不了');
+        const reason = item?.error || res.skipped?.[0]?.reason || item?.note || res.message || '没取到直链，这条暂时播不了';
+        // 缓存直链过期被跳过：先问一声再花 0.01 重解析（人签字的钱才是能记进成本的）
+        if (!retake && (reason.includes('已过期') || reason.includes('retake=true'))) {
+          Modal.confirm({
+            title: '上次取的直链已过期',
+            content: `${reason}。要现在重取吗？重取会重新解析这条链接（0.01 元/次，计入批次成本）。`,
+            okText: '重取（0.01 元）',
+            cancelText: '先不取',
+            onOk: () => playLinkSource(true),
+          });
+          return;
+        }
+        setPlayerErr(reason);
       }
       await fetchDetail(assetId);
       onChanged?.();
@@ -507,7 +536,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                         ghost
                         loading={playerBusy}
                         disabled={!canProduce}
-                        onClick={playLinkSource}
+                        onClick={() => playLinkSource()}
                       >
                         取直链并播放（0.01 元）
                       </Button>

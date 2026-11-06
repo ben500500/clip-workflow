@@ -280,6 +280,14 @@ class ResolveRequest(BaseModel):
     )
     offset: int = Field(0, ge=0, description="游标：跳过队列头部 N 条，默认 0")
     limit: Optional[int] = Field(None, description="本段条数，默认/上限 = ASSET_ANALYZE_MAX_PER_CALL")
+    retake: bool = Field(
+        False,
+        description=(
+            "11-06 播放直链修复：缓存直链过期后的唯一自愈出口。"
+            "默认 False——有时长的条目走缓存回放（免费）或被跳过；"
+            "True＝无视缓存强制重新解析（按渠道记账 0.01 元/次），给「直链打不开」的人重取用"
+        ),
+    )
     confirmed: bool = Field(False, description="≥2 条时必须为 true（成本确认弹窗已确认）")
     cross_person_confirm: bool = Field(
         False,
@@ -7604,6 +7612,20 @@ async def _recompute_batch_actual_cost(db: AsyncSession, batch_ids) -> None:
             batch.cost_actual = round(float(charged), 4)
 
 
+def _cached_play_url(asset: AssetItem) -> tuple[Optional[str], float]:
+    """时效直链缓存（11-06 播放直链修复）：返回 (缓存直链, 距取链小时数)。
+
+    缓存只在 `ASSET_PLAY_URL_TTL_HOURS`（默认 6，与源站时效直链「约 6 小时有效」
+    同口径）内算数；过期返回 (None, age)。取链时间缺失/直链为空＝没有缓存。
+    """
+    if not asset.play_url or asset.play_url_at is None:
+        return None, 0.0
+    age_h = (datetime.utcnow() - asset.play_url_at).total_seconds() / 3600.0
+    if age_h > float(settings.ASSET_PLAY_URL_TTL_HOURS):
+        return None, age_h
+    return asset.play_url, age_h
+
+
 @router.post("/assets/resolve")
 async def resolve_link_assets(
     data: ResolveRequest,
@@ -7617,11 +7639,16 @@ async def resolve_link_assets(
     前端先调 `/assets/cost/estimate?need_parse=true` 拿预估，≥2 条要带 `confirmed=true`，
     闸门（余额 blocked / 超预算 need_approval）与反推同一套，blocked **没有 force 后门**。
 
-    三条「不重复花钱」的硬规矩：
-    - 已有 `duration` 的**跳过**，点名也一样跳（真要重探是人的决定，不是系统顺手）；
+    三条「不重复花钱」的硬规矩（11-06 播放直链修复后，跳过分两种）：
+    - 已有 `duration` 的**不进 todo**：缓存直链还在 TTL 内 → 免费**回放**（channel=cache，
+      0 元、不调解析接口，results 里带 play_url）；缓存过期 → 跳过并提示带 `retake=true`
+      重取（唯一自愈出口：强制重解析、按渠道记账 0.01 元/次）；
     - 整批排队只取 `duration IS NULL 且 cost_parse=0` 的：解析过但源站不给时长的**不再自动重排**，
       免得同一条被反复扣 0.01；确实要再试就点名 asset_ids；
     - 直链素材走 ffprobe 本地探测，**不发**解析接口（0 元）。
+
+    解析成功后把直链 + 取链时间**落库**（`play_url`/`play_url_at`），source-preview 与
+    下一次 resolve 靠它免费回放——「取了直链再进来直链就没了」的根因就是以前只回响应不落库。
 
     记账口径：**发出去就记**，与拿不拿得到时长无关——付费渠道收了钱不会因为我们不读
     duration 就退钱。逐条 fail-soft，一条失败不连坐整批，失败的不记账。
@@ -7666,6 +7693,11 @@ async def resolve_link_assets(
 
     todo: List[AssetItem] = []
     skipped: List[dict] = []
+    # 11-06 播放直链修复：已解析过的素材如果缓存直链还在时效内，免费回放（0 元、
+    # 不调解析接口）。之前 play_url 只活在当次响应里，用户付了钱取的直链一关抽屉
+    # 就没了，再点按钮还会撞上「已有时长不重复付费」的 skip——链接既拿不回来、
+    # 也不会再扣钱，死锁在播不了。
+    cached_entries: List[dict] = []
     for a in assets:
         if a.media_kind == MEDIA_IMAGE:
             # 批 G：图片没有"时长"这回事，回源解析对它既无意义又收费（0.01 元/条）
@@ -7677,8 +7709,26 @@ async def resolve_link_assets(
         if a.source_kind != SOURCE_LINK:
             skipped.append({"code": a.code, "reason": "文件素材的时长在上传时就由 ffprobe 回写，不需要回源"})
             continue
-        if a.duration:
-            skipped.append({"code": a.code, "reason": f"已有时长 {a.duration}s，不重复付费解析"})
+        if a.duration and not data.retake:
+            cached, age_h = _cached_play_url(a)
+            if cached:
+                ttl = settings.ASSET_PLAY_URL_TTL_HOURS
+                age_txt = f"{age_h:.1f}" if age_h >= 0.1 else "刚刚"
+                cached_entries.append({
+                    "asset_id": str(a.id), "code": a.code, "duration": a.duration,
+                    "charged": 0.0, "channel": "cache", "ok": True,
+                    "play_url": cached,
+                    "note": f"回放 {age_txt} 小时前取的直链（{ttl:g} 小时内免费），没调解析接口；打不开就点重取",
+                })
+                continue
+            skipped.append({
+                "code": a.code,
+                "reason": (
+                    f"已有时长 {a.duration}s，不重复付费解析；上次取的直链已过期"
+                    f"（超过 {settings.ASSET_PLAY_URL_TTL_HOURS:g} 小时），要重取带 retake=true"
+                    "（重新解析，0.01 元/次）"
+                ),
+            })
             continue
         todo.append(a)
 
@@ -7686,6 +7736,21 @@ async def resolve_link_assets(
         # 没活可干不是错误：点名的那条已有时长/整批都付过一次费，返回 200 + skipped 让前端
         # 把「为什么没花钱」逐条讲出来。走 400 的话，排队轮询到队尾会被当成接口故障。
         # 唯一保留的入参错误是 `_queue_or_ids` 里的「二选一/都为空」，那是调用方写错了。
+        # 11-06：缓存直链回放不是「没活」——results 里要带回 play_url，前端靠它免重取播放。
+        if cached_entries:
+            return {
+                "results": cached_entries,
+                "skipped": skipped,
+                "resolved": len(cached_entries),
+                "charged": 0.0,
+                "channels": {},
+                "queue": queue,
+                "estimate": None,
+                "message": (
+                    f"{len(cached_entries)} 条直接回放缓存直链（0 元，未发起外呼）"
+                    + (f"；{len(skipped)} 条被跳过" if skipped else "")
+                ),
+            }
         return {
             "results": [],
             "skipped": skipped,
@@ -7770,7 +7835,7 @@ async def resolve_link_assets(
                 },
             )
 
-    results: List[dict] = []
+    results: List[dict] = list(cached_entries)
     touched_batches: List[Any] = []
     charged_total = 0.0
     channels: Dict[str, int] = {}
@@ -7827,6 +7892,11 @@ async def resolve_link_assets(
         else:
             entry.update(ok=True, play_url=play_url,
                          note="解析成功但源站没给时长；已按渠道记账，时长仍为空（前端显示「未知」）")
+        # 11-06 播放直链修复：直链落库（+取链时间）。哪怕源站没给时长，直链也能播，
+        # 缓存期内免费回放；过由 _cached_play_url 的 TTL 判，不在这里猜。
+        if play_url:
+            a.play_url = play_url
+            a.play_url_at = datetime.utcnow()
         title = getattr(parsed, "title", None)
         if title:
             entry["title"] = title[:200]
@@ -7846,6 +7916,8 @@ async def resolve_link_assets(
             "charged": charged_total,
             "channels": channels,
             "skipped": [s["code"] for s in skipped],
+            "cache_hits": [c["code"] for c in cached_entries],
+            "retake": bool(data.retake),
             "estimate": estimate["total_cost"],
             "balance": balance,
             "queue": queue,
@@ -8357,9 +8429,13 @@ async def preview_asset_source(
     频率和下载不是一个量级，记进审计台账会把真正的交付动作淹掉；
     `downloaded_at` 的语义是"这条产物已交付出去过"，看一眼不能把它点亮。
 
-    链接形态素材桶里没有文件，回 `mode=external`：`url` 为 null，
-    前端据此显示"这条还没回源，点解析"——时效直链要 `POST /assets/resolve`（0.01 元/次）
-    现拿现用，不在这口里自动发起（取片和取时长是两笔钱、两件事）。
+    链接形态素材桶里没有文件：
+    - **缓存直链还在有效期**（11-06 播放直链修复）→ 回 `mode=cached`，`url`＝上次取的
+      时效直链。前端开抽屉直接把播放器架起来，0 元、不发起任何外呼——「取了直链再进来
+      直链就没了」的根因就是这条路径以前不存在（resolve 只存时长不存直链）。
+    - 缓存没有/已过期 → 回 `mode=external`：`url` 为 null，前端显示"这条还没回源，点解析"
+      ——时效直链要 `POST /assets/resolve`（0.01 元/次）现拿现用；缓存过期的会提示带
+      `retake=true` 重取。
     """
     asset = await _get_asset_or_404(db, asset_id)
 
@@ -8377,8 +8453,13 @@ async def preview_asset_source(
     elif asset.source_kind == SOURCE_FILE:
         raise HTTPException(status_code=404, detail="该素材没有可预览的原文件（上传未成功）")
     else:
-        url = None
-        mode = "external"
+        cached, age_h = _cached_play_url(asset)
+        if cached:
+            url = cached
+            mode = "cached"
+        else:
+            url = None
+            mode = "external"
 
     return {
         "mode": mode,
@@ -8392,11 +8473,24 @@ async def preview_asset_source(
         "resolution": asset.resolution,
         "expires_in": 3600 if url else None,
         "source_url": asset.source_url if mode == "external" else None,
+        "cached": mode == "cached",
+        "play_url_taken_at": (
+            asset.play_url_at.isoformat() + "Z" if mode == "cached" and asset.play_url_at else None
+        ),
         "note": (
             None
-            if url
-            else "链接素材桶里没有文件，不能内联播放；点「查时长/回源解析」拿时效直链（0.01 元/次）后再播，"
-            "那条直链有时效，过期要重新解析"
+            if mode == "stored"
+            else (
+                f"回放 {age_h:.1f} 小时前取的直链（缓存，{settings.ASSET_PLAY_URL_TTL_HOURS:g} 小时内免费）；"
+                "打不开或已过期就点「取直链并播放」重取（0.01 元/次）"
+                if mode == "cached"
+                else (
+                    # external 只会是链接素材（SOURCE_FILE 没文件在上面就 404 了）
+                    "上次取的直链已过期（时效直链源站会撤链）；点「取直链并播放」重取（0.01 元/次）"
+                    if asset.duration
+                    else "链接素材桶里没有文件，不能内联播放；点「取直链并播放」拿时效直链（0.01 元/次）后再播"
+                )
+            )
         ),
     }
 

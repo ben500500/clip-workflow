@@ -387,6 +387,10 @@ async def _apply_compat_migrations():
         ("asset_summaries", "prompt_preview", "TEXT"),
         ("asset_summaries", "prompt_preview_at", "TIMESTAMP"),
         ("asset_summaries", "cost_preview", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
+        # 时效直链缓存（11-06 播放直链修复）：resolve 成功后存 play_url + 取链时间，
+        # 有效期内 source-preview/resolve 免费回放；过期作数、重取自愈。全部可空不回填。
+        ("asset_items", "play_url", "TEXT"),
+        ("asset_items", "play_url_at", "TIMESTAMP"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
