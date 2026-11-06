@@ -440,6 +440,13 @@ class AssetSummary(Base):
     # 列先立着，将来要对账时不用再动表。
     cost_preview = Column(Float, nullable=False, default=0.0)
 
+    # 11-06 双产出：出文案时每条候选同步带一份**豆包网页版**完整提示词（NAS 模板网页版
+    # 裁剪：无段头编号/推荐标题/发布标签，10s/15s 按文案逐条判断）。与 prompt_preview 的
+    # 分工：那列是任务板通道的过审后预览（恒 10s、无执行要求行），这列是网页版正文，
+    # 出文案时就生成、复制整段进 doubao.com 对话框直接用。NULL=生成失败/未生成
+    # （文案本身不受影响），用 POST /assets/summaries/prompt-web 单独补。
+    doubao_prompt = Column(Text, nullable=True)
+
     source_prompt_task_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

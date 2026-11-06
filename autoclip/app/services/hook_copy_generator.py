@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 APP_DIR = Path(__file__).parent.parent
 HOOK_COPY_FILE = APP_DIR / "prompt" / "hook_copy.txt"
 HOOK_EXPAND_FILE = APP_DIR / "prompt" / "hook_expand.txt"
+# 11-06 双产出：出钩子文案时每条候选同步带一份**豆包网页版**完整提示词
+# （NAS 模板的网页版裁剪：无段头编号/推荐标题/发布标签，10s/15s 按文案逐条判断）
+HOOK_PROMPT_WEB_FILE = APP_DIR / "prompt" / "hook_prompt_web.txt"
 
 # 候选风格（与后端 asset_models.HOOK_STYLES 同一套取值）
 STYLE_QUESTION = "question"
@@ -50,6 +53,11 @@ def load_hook_copy_template() -> str:
 def load_hook_expand_template() -> str:
     """钩子文案 → 可投豆包完整提示词的展开模板。"""
     return _load(HOOK_EXPAND_FILE)
+
+
+def load_hook_prompt_web_template() -> str:
+    """候选钩子文案 → 豆包网页版完整提示词（每候选一段）模板。"""
+    return _load(HOOK_PROMPT_WEB_FILE)
 
 
 def _build_generate_input(script: str, count: int, params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -91,6 +99,91 @@ def generate_hook_candidates(
     if not raw:
         raise RuntimeError("大模型返回空响应，生成钩子文案失败")
     return _parse_candidates(raw, count)
+
+
+def generate_web_prompts(
+    script: str,
+    candidates: List[Dict[str, Any]],
+    params: Optional[Dict[str, Any]] = None,
+    max_retries: int = 3,
+) -> Dict[str, Any]:
+    """候选钩子文案（列表）→ 每条一段豆包网页版完整提示词。
+
+    规则在 `app/prompt/hook_prompt_web.txt`（NAS 模板的网页版裁剪，2026-11-06
+    用户口径：无段头编号/推荐标题/发布标签；10s/15s 模型逐条按文案丰满程度判断）。
+    本函数只透传模板点名的输入：详规、候选（seq/text/formula_tag）、剧名全称（可空）。
+    """
+    template = load_hook_prompt_web_template()
+    if not template:
+        raise RuntimeError("网页版提示词模板未找到，请检查 autoclip/app/prompt/hook_prompt_web.txt")
+    cand_list = []
+    for c in candidates or []:
+        seq = int((c or {}).get("seq") or 0)
+        text = str((c or {}).get("text") or "").strip()
+        if not text:
+            continue
+        cand_list.append({
+            "seq": seq,
+            "text": text,
+            "formula_tag": str((c or {}).get("formula_tag") or "").strip(),
+        })
+    if not cand_list:
+        raise ValueError("候选文案列表为空，无法生成网页版提示词")
+    p = params or {}
+    input_data = {
+        "反推详规（视频脚本，唯一事实来源）": script,
+        "候选文案列表": json.dumps(cand_list, ensure_ascii=False),
+        # 模板第①行「参考《剧名》剧情」唯一来源；取不到传空，模板自己写《剧名待定》
+        "剧名全称": p.get("drama_title") or "",
+        "补充要求": p.get("extra_requirements") or "",
+        "合规要求": p.get("compliance")
+        or "不得出现真实人名、地名、机构名、品牌名，一律使用代称；不涉及真实人物、真实事件与敏感内容。",
+    }
+    manager = get_llm_manager()
+    raw = manager.call_with_retry(template, input_data, max_retries=max_retries)
+    if not raw:
+        raise RuntimeError("大模型返回空响应，生成网页版提示词失败")
+    return _parse_web_prompts(raw)
+
+
+def _parse_web_prompts(raw: str) -> Dict[str, Any]:
+    """解析网页版提示词列表。兼容 {"prompts":[...]} / {"提示词":[...]}；无候选视为失败由调用方兜。"""
+    stripped = _strip_fence(raw.strip())
+    data = _loads_object(stripped)
+    items: List[Any] = []
+    if data:
+        for key in ("prompts", "提示词", "提示词列表", "items", "list"):
+            value = data.get(key)
+            if isinstance(value, list):
+                items = value
+                break
+    if not items and stripped.lstrip().startswith("["):
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                items = parsed
+        except (json.JSONDecodeError, ValueError):
+            items = []
+
+    prompts: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        prompt_text = str(
+            item.get("prompt_text") or item.get("提示词") or item.get("text") or ""
+        ).strip()
+        if not prompt_text:
+            continue
+        try:
+            duration = int(item.get("duration") or item.get("时长") or 10)
+        except (TypeError, ValueError):
+            duration = 10
+        prompts.append({
+            "seq": int(item.get("seq") or item.get("序号") or 0),
+            "duration": 15 if duration >= 15 else 10,   # 只认 10/15 两档，别的口径一律压回 10
+            "prompt_text": prompt_text,
+        })
+    return {"prompts": prompts, "raw": None if data and prompts else stripped}
 
 
 def expand_hook_copy(

@@ -302,6 +302,13 @@ export interface AssetSummary {
   prompt_preview_at: string | null;
   /** 备预览的实扣（元）。当前口径预览不单独计费，恒 0；保留列是为了对账 */
   cost_preview: number;
+  /**
+   * 11-06 双产出：出文案时同步生成的**豆包网页版**完整提示词（NAS 模板网页版裁剪，
+   * 无段头编号/推荐标题/发布标签，复制整段进 doubao.com 对话框直接用）。
+   * null=生成失败/没生成——文案不受影响，用 promptWebSummaries 单独补。
+   * 与 prompt_preview 的分工：那列是任务板通道（恒 10s）的过审后预览。
+   */
+  doubao_prompt: string | null;
   created_at: string;
   // ── 仅 list_summaries 回（join 素材行）；getAsset 的 summaries 不带这些键 ──
   asset_code?: string;
@@ -2152,6 +2159,10 @@ export const assetApi = {
   // 改后重新提审：驳回后文案作者改完交回待审队列（素材负责人或 admin）
   resubmitSummaries: (data: AssetResubmitRequest) =>
     client.post('/assets/summaries/resubmit', data) as Promise<AssetReviewResponse>,
+
+  // 11-06 双产出补口：给缺网页版提示词的候选单独补/重出（一次最多 10 条，同步等模型）
+  promptWebSummaries: (data: { summary_ids: string[]; force?: boolean }) =>
+    client.post('/assets/summaries/prompt-web', data) as Promise<{ results: Array<{ summary_id: string; code?: string | null; seq?: number; ok?: boolean; note?: string; error?: string }>; filled: number; message: string }>,
 
   // 风险词库：读当前生效词表（block=拦 / warn=警 / exempt=豁免正则），admin 可改
   getRiskLexicon: () =>

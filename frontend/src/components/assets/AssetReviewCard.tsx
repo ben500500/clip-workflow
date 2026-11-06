@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, Popover, Space, Tag, Tooltip, Typography } from 'antd';
+import { Button, Popover, Space, Tag, Tooltip, Typography, message } from 'antd';
 import { CheckCircleOutlined, CloseCircleOutlined, EditOutlined, SendOutlined } from '@ant-design/icons';
 import { HOOK_STYLE_LABELS, type AssetFrameSlot, type AssetSummary } from '../../api/assets';
 import { AuditStatusTag, RiskTags } from './AssetBits';
@@ -113,6 +113,43 @@ const AssetReviewCard: React.FC<Props> = ({
             }
           >
             <a style={{ fontSize: 12 }}>提示词已备好·查看</a>
+          </Popover>
+        )}
+        {/* 11-06 双产出：出文案时同步生成的豆包网页版完整提示词（复制整段去
+            doubao.com 对话框直接生成，与上面任务板预览是两条通道）。 */}
+        {row.doubao_prompt && (
+          <Popover
+            trigger="click"
+            title="豆包网页版提示词（复制整段去豆包对话框直接生成）"
+            content={
+              <div style={{ maxWidth: 480 }}>
+                <div style={{ textAlign: 'right', marginBottom: 8 }}>
+                  <Button
+                    size="small"
+                    type="primary"
+                    onClick={() => {
+                      navigator.clipboard.writeText(row.doubao_prompt || '');
+                      message.success('已复制网页版提示词，去豆包对话框粘贴即可');
+                    }}
+                  >
+                    复制
+                  </Button>
+                </div>
+                <div
+                  style={{
+                    maxHeight: 360,
+                    overflow: 'auto',
+                    whiteSpace: 'pre-wrap',
+                    fontSize: 12,
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {row.doubao_prompt}
+                </div>
+              </div>
+            }
+          >
+            <a style={{ fontSize: 12 }}>网页版提示词·复制</a>
           </Popover>
         )}
       </Space>

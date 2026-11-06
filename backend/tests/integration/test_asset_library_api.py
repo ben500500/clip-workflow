@@ -310,7 +310,7 @@ async def _make_ready_asset(client, h, url=DOUYIN_2, *, script=SCRIPT, category_
 
 
 def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, generate_error=None,
-                   expand_deviation=None):
+                   expand_deviation=None, web_error=None, web_prompts=None):
     """autoclip 文案服务替身：按 path 分发，expand 默认把过审钩子**原样**包进提示词。"""
 
     async def _call(path, payload, timeout=180.0):
@@ -342,6 +342,32 @@ def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, ge
             if expand_deviation:
                 out["deviation_note"] = expand_deviation
             return out
+        if path.endswith("hook-copy/prompt-web"):
+            # 11-06 双产出第二跳：按候选 seq 逐条回一段网页版提示词
+            if web_error:
+                raise HTTPException(status_code=502, detail=web_error)
+            cands = payload.get("candidates") or []
+            if web_prompts is not None:
+                return {"prompts": web_prompts, "model": "fake-llm", "raw": None}
+            return {
+                "prompts": [
+                    {
+                        "seq": int(c.get("seq") or 0),
+                        "duration": 10,
+                        "prompt_text": (
+                            f"生成【现言豪门】仿真人写实短剧，参考【《剧名待定》】剧情。\n"
+                            f"时长 10 秒，9:16 竖屏。\n剧情：{c.get('text')}；本条为「起因—冲突—收束」完整的微故事。\n"
+                            "结构锁定：单段式，全片按剧情行完整演绎\n"
+                            "画面变化：同一项目多次生成时……\n"
+                            "负面约束：禁止五官崩坏变脸…… 9:16，10s\n"
+                            "执行要求：跳过任何二次确认与追问；一次性并行生成 2 个视频"
+                        ),
+                    }
+                    for c in cands
+                ],
+                "model": "fake-llm",
+                "raw": None,
+            }
         raise AssertionError(f"未预期的 autoclip 调用：{path}")
 
     return AsyncMock(side_effect=_call)
@@ -1557,7 +1583,8 @@ def test_summaries_generate_three_candidates_with_checks():
             )
         assert gen.status_code == 200, gen.text
         assert gen.json()["results"][0]["created"] == 3
-        payload = call.await_args.args[1]
+        # 双产出后这里其实发了两次调用（先 hook-copy/generate 再 hook-copy/prompt-web），断言取第一次
+        payload = call.await_args_list[0].args[1]
         assert payload["script"] == SCRIPT and payload["count"] == 3
         assert "医院门口" in payload["params"]["extra_requirements"]
 
@@ -7853,6 +7880,96 @@ def test_analyze_async_job_converges_and_auto_retries_fast_fail():
         finally:
             settings.ASSET_ANALYZE_JOB_POLL_SECONDS = old_poll
 
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_summary_generate_also_fills_doubao_web_prompts():
+    """11-06 双产出：出文案时第二跳把每条候选的豆包网页版提示词按 seq 填进 doubao_prompt。
+
+    三段：①正常路径（第二跳成功，逐条对号）；②第二跳失败不拖累文案（doubao_prompt 留
+    NULL、可单独补）；③补口（只补缺的、force 重出、超上限 400）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+
+        # ① 正常：候选落库 + doubao_prompt 全填
+        asset_id, _ = await _make_ready_asset(client, hm)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()) as call:
+            gen = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+        assert gen.status_code == 200, gen.text
+        body = gen.json()
+        first = body["results"][0]
+        assert first["created"] == 3
+        assert first["doubao_prompt_filled"] == 3 and first["doubao_prompt_total"] == 3, first
+        assert "网页版提示词已同步生成" in body["message"]
+        # 两次调用：一次出文案、一次网页版提示词；第二跳按 seq 带全候选与剧名参数
+        paths = [c.args[0] for c in call.await_args_list]
+        assert sum(1 for p in paths if p.endswith("hook-copy/prompt-web")) == 1
+        web_payload = [c.args[1] for c in call.await_args_list if c.args[0].endswith("hook-copy/prompt-web")][0]
+        assert [c["seq"] for c in web_payload["candidates"]] == [1, 2, 3]
+        assert web_payload["candidates"][0]["text"] == CANDIDATES[0]["text"]
+        assert "drama_title" in web_payload["params"]
+        rows = await _rows(AssetSummary, AssetSummary.asset_id == uuid.UUID(asset_id))
+        assert all((r.doubao_prompt or "").strip() for r in rows)
+        assert all("9:16，10s" in r.doubao_prompt for r in rows)
+        # 序列化口带 doubao_prompt
+        detail = await client.get(f"/api/assets/{asset_id}", headers=hm)
+        assert detail.status_code == 200
+        assert all(s["doubao_prompt"] for s in detail.json()["summaries"])
+
+        # ② 第二跳失败：文案照常落库（created=3），doubao_prompt 全空，results 记可补
+        # （同测试里第二次导入必须换 URL，同链接默认被导入去重拦下）
+        asset2, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(web_error="网关卡流")):
+            gen2 = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset2]}, headers=hm)
+        assert gen2.status_code == 200, gen2.text
+        body2 = gen2.json()
+        assert body2["results"][0]["created"] == 3
+        assert body2["results"][0]["doubao_prompt_filled"] == 0
+        assert "可单独补" in body2["results"][0]["web_note"]
+        assert "没生成全" in body2["message"]
+        rows2 = await _rows(AssetSummary, AssetSummary.asset_id == uuid.UUID(asset2))
+        assert all(r.doubao_prompt is None for r in rows2)
+        assert all(r.text for r in rows2), "文案不受第二跳失败影响"
+
+        # ③ 补口：先缺后补
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            backfill = await client.post(
+                "/api/assets/summaries/prompt-web",
+                json={"summary_ids": [str(r.id) for r in rows2]},
+                headers=hm,
+            )
+        assert backfill.status_code == 200, backfill.text
+        assert backfill.json()["filled"] == 3, backfill.text
+        rows2 = await _rows(AssetSummary, AssetSummary.asset_id == uuid.UUID(asset2))
+        assert all((r.doubao_prompt or "").strip() for r in rows2)
+        # 已有的不重出（不带 force）
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()) as call3:
+            again = await client.post(
+                "/api/assets/summaries/prompt-web",
+                json={"summary_ids": [str(rows2[0].id)]}, headers=hm)
+        assert again.status_code == 200 and again.json()["filled"] == 0
+        assert "force" in again.json()["results"][0]["note"]
+        call3.assert_not_awaited()
+        # force 才重出
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()) as call4:
+            forced = await client.post(
+                "/api/assets/summaries/prompt-web",
+                json={"summary_ids": [str(rows2[0].id)], "force": True}, headers=hm)
+        assert forced.status_code == 200 and forced.json()["filled"] == 1
+        assert call4.await_count == 1
+        # 超上限 400
+        too_many = await client.post(
+            "/api/assets/summaries/prompt-web",
+            json={"summary_ids": [str(uuid.uuid4())] * 11}, headers=hm)
+        assert too_many.status_code == 400 and "一次最多补" in too_many.json()["detail"]
         await client.aclose()
 
     _run(_scenario())

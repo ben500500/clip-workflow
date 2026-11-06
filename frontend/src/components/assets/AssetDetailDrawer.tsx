@@ -68,6 +68,8 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
   /** 钩子原型（11-04 拍板①）：抽屉里就地改，改完把新值并回本地 data，不整块重拉 */
   const cats = useAssetCategories();
   const [catBusy, setCatBusy] = useState(false);
+  // 11-06 双产出：正在补网页版提示词的那条候选（loading 只挂这一个按钮）
+  const [promptWebPendingId, setPromptWebPendingId] = useState<string | null>(null);
 
   /**
    * 上栏播放器（批 E）：一条素材一个播放器，原片和拼接产物都往这里换源。
@@ -796,6 +798,62 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                               提示词预览还没生成出来（过审后系统自动备，备不出来不影响投产——投产时会重新展开）
                             </Text>
                           ) : null}
+                          {/* 11-06 双产出：出文案时同步生成的豆包网页版完整提示词。
+                              与上面预览的分工：这份是网页版正文（无编号/标题），复制整段
+                              进 doubao.com 对话框直接用；缺了可单独补，不跟着文案重出。 */}
+                          {s.doubao_prompt ? (
+                            <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                              <Space wrap size={4}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  豆包网页版提示词（复制整段去豆包对话框直接生成）：
+                                </Text>
+                                <Button
+                                  type="link"
+                                  size="small"
+                                  icon={<CopyOutlined />}
+                                  style={{ padding: 0, fontSize: 12 }}
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(s.doubao_prompt || '');
+                                    message.success('已复制网页版提示词，去豆包对话框粘贴即可');
+                                  }}
+                                >
+                                  复制
+                                </Button>
+                              </Space>
+                              <Paragraph
+                                style={{ marginBottom: 0, fontSize: 12, background: '#f6ffed', padding: 8, borderRadius: 4 }}
+                                ellipsis={{ rows: 6, expandable: 'collapsible', symbol: (expanded) => (expanded ? '收起' : '展开') }}
+                              >
+                                {s.doubao_prompt}
+                              </Paragraph>
+                            </Space>
+                          ) : (
+                            <Space wrap size={4}>
+                              <Text type="secondary" style={{ fontSize: 12 }}>网页版提示词没生成出来</Text>
+                              <Button
+                                type="link"
+                                size="small"
+                                style={{ padding: 0, fontSize: 12 }}
+                                loading={promptWebPendingId === s.id}
+                                onClick={async () => {
+                                  if (!assetId) return;
+                                  setPromptWebPendingId(s.id);
+                                  try {
+                                    const res = await assetApi.promptWebSummaries({ summary_ids: [s.id] });
+                                    if (res.filled > 0) message.success(res.message || '已补上');
+                                    else message.warning(res.results?.[0]?.error || res.message || '没补成，看明细');
+                                    await fetchDetail(assetId);
+                                  } catch (e) {
+                                    message.error((e as Error).message || '补提示词失败');
+                                  } finally {
+                                    setPromptWebPendingId(null);
+                                  }
+                                }}
+                              >
+                                补提示词
+                              </Button>
+                            </Space>
+                          )}
                         </Space>
                       </List.Item>
                     )}

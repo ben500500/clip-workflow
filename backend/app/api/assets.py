@@ -1289,6 +1289,8 @@ def _serialize_summary(
         "prompt_preview": s.prompt_preview,
         "prompt_preview_at": utc_iso(s.prompt_preview_at) if s.prompt_preview_at else None,
         "cost_preview": float(s.cost_preview or 0.0),
+        # 11-06 双产出：出文案时同步生成的豆包网页版完整提示词（NULL=失败/未生成，可单独补）
+        "doubao_prompt": s.doubao_prompt,
         "created_at": utc_iso(s.created_at),
         # 「改后重提」按钮要不要亮：前端不猜权限，按后端给的行级判定画
         "can_resubmit": bool(can_resubmit),
@@ -4079,6 +4081,10 @@ async def generate_summaries(
         for aid in asset_ids:
             asset = await _get_asset_or_404(db, aid)
             targets.append((asset, await _prompt_script_of(db, asset)))
+    # 11-06 双产出：本批新落库的候选收集起来，等主循环收尾提交后再统一调
+    # hook-copy/prompt-web 生成豆包网页版提示词（第二跳）。收集在循环里、
+    # 调用在提交后——外部模型调用前事务必须干净（idle_in_transaction 60s 掐连接）。
+    web_jobs: List[dict] = []
     for asset, script in targets:
         aid = str(asset.id)
         # 批 G：图片没有详规、也不该有 —— 出文案要读 doc/120 的脚本，喂一张 jpg 进去
@@ -4195,6 +4201,7 @@ async def generate_summaries(
 
         seq = len(existing)
         created = 0
+        created_rows: List[AssetSummary] = []
         for cand in candidates[:count]:
             text = str((cand or {}).get("text") or "").strip()
             if not text:
@@ -4224,6 +4231,7 @@ async def generate_summaries(
                 source_prompt_task_id=asset.prompt_task_id,
             )
             db.add(summary)
+            created_rows.append(summary)
             created += 1
         await db.flush()
 
@@ -4243,6 +4251,8 @@ async def generate_summaries(
             entry["candidates_short"] = count - created
             entry["note"] = f"候选不齐：要 {count} 条只出 {created} 条，审核缺横向对照，建议重生成"
         results.append(entry)
+        if created_rows:
+            web_jobs.append({"asset": asset, "script": script, "summaries": created_rows})
 
     await _write_audit(
         db,
@@ -4260,10 +4270,82 @@ async def generate_summaries(
         },
     )
     await db.commit()
+
+    # ── 11-06 双产出第二跳：豆包网页版提示词 ──
+    # 候选已在上面随审计一起提交，此刻事务干净，可以安心等模型（同一条铁律：
+    # 外部调用前必须结束事务，idle_in_transaction 60s 会掐连接）。
+    # 失败只记条目不回滚文案——一句话文案是真金白银换来的，提示词丢了用
+    # 补口（POST /assets/summaries/prompt-web）单独补，别让两条产出绑死一条命。
+    web_ok_assets = 0
+    web_fail_assets = 0
+    web_filled = 0
+    # 字段并回主循环里那条结果（前端按 asset_id 一行一素材展示，别出两行）
+    entry_by_asset = {r["asset_id"]: r for r in results if r.get("asset_id")}
+    for job in web_jobs:
+        asset = job["asset"]
+        rows = job["summaries"]
+        drama_title = await _drama_title_of(db, asset)
+        payload = {
+            "script": job["script"],
+            "candidates": [
+                {"seq": s.seq, "text": s.text, "formula_tag": s.formula_tag or ""}
+                for s in rows
+            ],
+            # 内部重试压到 1 次：与出文案同口径（外层 900s，默认 3 次最坏 12 分钟必顶穿）
+            "max_retries": 1,
+            "params": {
+                "drama_title": drama_title,
+                "compliance": "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
+            },
+        }
+        entry = entry_by_asset.get(str(asset.id), {
+            "asset_id": str(asset.id), "code": asset.code,
+        })
+        try:
+            web = await _call_autoclip("hook-copy/prompt-web", payload)
+        except HTTPException as exc:
+            web_fail_assets += 1
+            entry["doubao_prompt_filled"] = 0
+            entry["doubao_prompt_total"] = len(rows)
+            entry["web_note"] = f"豆包网页版提示词生成失败（文案不受影响，可单独补）：{str(exc.detail)[:200]}"
+            continue
+        by_seq: Dict[int, dict] = {}
+        for p in web.get("prompts") or []:
+            try:
+                by_seq[int(p.get("seq") or 0)] = p
+            except (TypeError, ValueError):
+                continue
+        filled = 0
+        for s in rows:
+            p = by_seq.get(int(s.seq))
+            text = str((p or {}).get("prompt_text") or "").strip()
+            if text:
+                s.doubao_prompt = text
+                filled += 1
+        web_filled += filled
+        if filled == len(rows) and rows:
+            web_ok_assets += 1
+        else:
+            web_fail_assets += 1
+        entry["doubao_prompt_filled"] = filled
+        entry["doubao_prompt_total"] = len(rows)
+        if filled != len(rows):
+            entry["web_note"] = f"豆包网页版提示词只补上 {filled}/{len(rows)} 条（模型漏段），缺的在详情里点「补提示词」"
+        # 逐素材提交：一条崩了不拖死已经填好的
+        await db.commit()
+
     return {
         "results": results,
         "queue": queue,
-        "message": f"已为 {sum(1 for r in results if r['created'])} 条素材出文案"
+        "message": f"已为 {sum(1 for r in results if r.get('created'))} 条素材出文案"
+        + (
+            f"；{web_ok_assets} 条素材的豆包网页版提示词已同步生成（共 {web_filled} 段）"
+            if web_filled else ""
+        )
+        + (
+            f"；{web_fail_assets} 条素材的网页版提示词没生成全，详情里可单独补"
+            if web_fail_assets else ""
+        )
         + (f"；队列还剩 {queue['remaining']} 条，下一次接着排" if queue and queue["remaining"] else ""),
     }
 
@@ -4740,6 +4822,126 @@ async def review_summaries(
             )
             + (f"；{preview_note}" if preview_note else "")
         ),
+    }
+
+
+class SummaryPromptWebRequest(BaseModel):
+    """11-06 双产出补口：给 doubao_prompt 缺失（或要求重出）的候选补网页版提示词。"""
+    summary_ids: List[str] = Field(default_factory=list)
+    force: bool = Field(False, description="true=已有提示词的也重出（默认只补缺的）")
+
+
+@router.post("/assets/summaries/prompt-web")
+async def prompt_web_summaries(
+    data: SummaryPromptWebRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """单独补/重出某几条候选的豆包网页版完整提示词。
+
+    出文案时第二跳失败只记条目不回滚（文案是真金白银换来的，别跟提示词绑死一条命），
+    缺的就用这个口补。单次上限 = ASSET_SUMMARY_MAX_PER_CALL（与出文案同一类
+    「别让一次点击干太多」的闸）；每条一次模型调用，同步等。
+    """
+    if not data.summary_ids:
+        raise HTTPException(status_code=400, detail="请点名要补提示词的文案（summary_ids）")
+    cap = max(1, int(settings.ASSET_SUMMARY_MAX_PER_CALL))
+    if len(data.summary_ids) > cap:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一次最多补 {cap} 条（每条都是一次真模型调用），分几批来",
+        )
+    uuids: List[uuid.UUID] = []
+    for raw_id in data.summary_ids:
+        try:
+            uuids.append(uuid.UUID(str(raw_id)))
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=400, detail=f"文案 id 不合法：{raw_id}")
+    rows = (
+        await db.execute(
+            select(AssetSummary).where(AssetSummary.id.in_(uuids)).order_by(AssetSummary.asset_id, AssetSummary.seq)
+        )
+    ).scalars().all()
+    found = {str(s.id) for s in rows}
+    results: List[dict] = []
+    skipped_missing = [str(x) for x in data.summary_ids if str(x) not in found]
+    if skipped_missing:
+        results.append({"summary_id": skipped_missing[0], "error": f"找不到这条文案（共 {len(skipped_missing)} 条 id 无效）"})
+
+    filled = 0
+    for s in rows:
+        asset = (
+            await db.execute(select(AssetItem).where(AssetItem.id == s.asset_id))
+        ).scalar_one_or_none()
+        entry: dict = {"summary_id": str(s.id), "code": asset.code if asset else None, "seq": s.seq}
+        if asset is None:
+            entry["error"] = "所属素材已删除，没法补"
+            results.append(entry)
+            continue
+        if (s.doubao_prompt or "").strip() and not data.force:
+            entry["note"] = "已有网页版提示词，未重出（要重出请带 force=true）"
+            results.append(entry)
+            continue
+        if asset.media_kind == MEDIA_IMAGE:
+            entry["error"] = _image_block_reason(asset, "补提示词")
+            results.append(entry)
+            continue
+        script = await _prompt_script_of(db, asset)
+        if not script:
+            entry["error"] = "反推脚本尚未就绪，没法展开提示词"
+            results.append(entry)
+            continue
+        # 外部调用前结束事务（idle_in_transaction 60s 铁律）
+        await db.commit()
+        try:
+            web = await _call_autoclip(
+                "hook-copy/prompt-web",
+                {
+                    "script": script,
+                    "candidates": [{"seq": s.seq, "text": s.text, "formula_tag": s.formula_tag or ""}],
+                    "max_retries": 1,
+                    "params": {
+                        "drama_title": await _drama_title_of(db, asset),
+                        "compliance": "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
+                    },
+                },
+            )
+        except HTTPException as exc:
+            entry["error"] = f"网页版提示词生成失败：{str(exc.detail)[:200]}"
+            results.append(entry)
+            continue
+        prompt_text = ""
+        for p in web.get("prompts") or []:
+            if int(p.get("seq") or 0) == int(s.seq) or not prompt_text:
+                t = str(p.get("prompt_text") or "").strip()
+                if t:
+                    prompt_text = t
+                if int(p.get("seq") or 0) == int(s.seq):
+                    break
+        if not prompt_text:
+            entry["error"] = "模型没返回可用段落，重试一次或换批再补"
+            results.append(entry)
+            continue
+        s.doubao_prompt = prompt_text
+        filled += 1
+        entry["ok"] = True
+        results.append(entry)
+
+    if filled:
+        await _write_audit(
+            db,
+            action="asset.summary_prompt_web",
+            operator=current_user,
+            target_type="asset_summary",
+            target_id=None,
+            after={"requested": len(data.summary_ids), "filled": filled, "force": data.force},
+        )
+        await db.commit()
+    return {
+        "results": results,
+        "filled": filled,
+        "message": f"补上 {filled} 条豆包网页版提示词"
+        + (f"，{len(results) - filled} 条没补成（原因见明细）" if len(results) > filled else ""),
     }
 
 

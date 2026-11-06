@@ -391,6 +391,9 @@ async def _apply_compat_migrations():
         # 有效期内 source-preview/resolve 免费回放；过期作数、重取自愈。全部可空不回填。
         ("asset_items", "play_url", "TEXT"),
         ("asset_items", "play_url_at", "TIMESTAMP"),
+        # 11-06 双产出：出文案时每条候选同步带的豆包网页版完整提示词（可空不回填，
+        # NULL=生成失败/未生成，单独补口 POST /assets/summaries/prompt-web）
+        ("asset_summaries", "doubao_prompt", "TEXT"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
