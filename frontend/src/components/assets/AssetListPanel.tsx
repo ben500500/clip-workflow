@@ -954,157 +954,160 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   });
 
   return (
-    <Card
-      size="small"
-      styles={{ body: { paddingTop: 12 } }}
-      title={
-        <Space wrap>
-          <Input
-            placeholder="搜编号/标题/链接"
-            allowClear
-            prefix={<SearchOutlined />}
-            style={{ width: 200 }}
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            onPressEnter={() => fetchList(1, pageSize)}
-          />
-          <Select
-            placeholder="状态"
-            allowClear
-            style={{ width: 120 }}
-            value={status}
-            onChange={setStatus}
-            options={Object.entries(ASSET_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
-          />
-          <Select
-            placeholder="来路"
-            allowClear
-            style={{ width: 100 }}
-            value={sourceKind}
-            onChange={setSourceKind}
-            options={[
-              { value: 'link', label: '链接' },
-              { value: 'file', label: '文件' },
-            ]}
-          />
-          <Select<AssetMediaKind>
-            placeholder="类型"
-            allowClear
-            style={{ width: 120 }}
-            value={mediaKind}
-            onChange={setMediaKind}
-            options={[
-              { value: 'video', label: '视频素材' },
-              { value: 'image', label: '图片（角色卡）' },
-            ]}
-          />
-          <Select
-            placeholder="反推文案环节"
-            allowClear
-            style={{ width: 120 }}
-            value={stagePrompt}
-            onChange={setStagePrompt}
-            options={Object.entries(ASSET_STAGE_LABELS).map(([value, label]) => ({ value, label }))}
-          />
+    /*
+      排版口径（#110）：筛选器和批量按钮**都放卡片体里全宽分行**，
+      不再塞 Card 的 title/extra——卡片头是同行 flex，title 被右边的按钮列挤窄后
+      Space.wrap 会把每个筛选器逐行堆叠（「长的长短的短」的根源）。
+      行序固定：① 筛选行 ② 批量动作行 ③ 欠账提示 ④ 点原型行 ⑤ 表格。
+    */
+    <Card size="small" styles={{ body: { paddingTop: 12 } }}>
+      {/* ① 筛选行：全部筛器 + 刷新，一行放不下就整行顺延换行，不再竖排堆叠 */}
+      <Space wrap size={8} style={{ marginBottom: 12 }}>
+        <Input
+          placeholder="搜编号/标题/链接"
+          allowClear
+          prefix={<SearchOutlined />}
+          style={{ width: 200 }}
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          onPressEnter={() => fetchList(1, pageSize)}
+        />
+        <Select
+          placeholder="状态"
+          allowClear
+          style={{ width: 120 }}
+          value={status}
+          onChange={setStatus}
+          options={Object.entries(ASSET_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
+        />
+        <Select
+          placeholder="来路"
+          allowClear
+          style={{ width: 100 }}
+          value={sourceKind}
+          onChange={setSourceKind}
+          options={[
+            { value: 'link', label: '链接' },
+            { value: 'file', label: '文件' },
+          ]}
+        />
+        <Select<AssetMediaKind>
+          placeholder="类型"
+          allowClear
+          style={{ width: 120 }}
+          value={mediaKind}
+          onChange={setMediaKind}
+          options={[
+            { value: 'video', label: '视频素材' },
+            { value: 'image', label: '图片（角色卡）' },
+          ]}
+        />
+        <Select
+          placeholder="反推文案环节"
+          allowClear
+          style={{ width: 120 }}
+          value={stagePrompt}
+          onChange={setStagePrompt}
+          options={Object.entries(ASSET_STAGE_LABELS).map(([value, label]) => ({ value, label }))}
+        />
+        <Tooltip
+          title={
+            <div style={{ maxWidth: 340 }}>
+              <div>
+                钩子原型＝这条片子的<strong>开头套路</strong>（A–G，名字照《钩子模版换皮参数设定.docx》），
+                和句式标签、公式标签是三回事。
+              </div>
+              <div style={{ marginTop: 4 }}>
+                原型是<strong>人工点的，也可以不点</strong>——不点照常反推文案、出文案、投产。
+              </div>
+              <div style={{ marginTop: 4 }}>
+                「未分类」是给清欠账用的：现在库里 {cats.unclassified.asset_count} 条素材没点原型，
+                筛出来一条条补。
+              </div>
+            </div>
+          }
+        >
+          <span>
+            <CategorySelect
+              items={cats.items}
+              value={categoryFilter}
+              onChange={setCategoryFilter}
+              withUnclassified
+              width={150}
+              loading={cats.loading}
+              placeholder="钩子原型"
+            />
+            <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+          </span>
+        </Tooltip>
+        <Input
+          placeholder="批次 ID"
+          allowClear
+          style={{ width: 150 }}
+          value={batchFilter}
+          onChange={(e) => setBatchFilter(e.target.value || undefined)}
+          onPressEnter={() => fetchList(1, pageSize)}
+        />
+        <RangePicker
+          value={dates as any}
+          onChange={(v) => setDates(v as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null)}
+        />
+        <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
+          刷新
+        </Button>
+      </Space>
+      {/* ② 批量动作行：勾选后要花的钱都在这一行，按钮永远在同一个位置不会跳 */}
+      {canProduce ? (
+        <Space wrap size={8} style={{ marginBottom: 12 }}>
+          {/* 批 G：图片混在勾选里时先把它摘出来说一句——下面几个按钮只对视频成立 */}
+          {!!selectedImageCount && (
+            <Tooltip title="图片（角色卡）不反推文案、不出文案、不查时长：提交进去也只会逐条回「这是图片」。这几个按钮只动勾到的视频。">
+              <Tag color="purple">另勾了 {selectedImageCount} 张图，不参与这几步</Tag>
+            </Tooltip>
+          )}
+          <Button type="primary" icon={<FileTextOutlined />} onClick={openAnalyze} disabled={!ids.length}>
+            反推文案（{selectedVideoCount}）
+          </Button>
+          {/*
+            拍板②（11-04）：出文案没有确认弹窗（D-1 后是"提交即回"的后台任务），
+            所以这句软提示挂在按钮悬浮上——正好在花钱那一下看得见，但不拦人。
+          */}
           <Tooltip
             title={
-              <div style={{ maxWidth: 340 }}>
-                <div>
-                  钩子原型＝这条片子的<strong>开头套路</strong>（A–G，名字照《钩子模版换皮参数设定.docx》），
-                  和句式标签、公式标签是三回事。
-                </div>
+              <div style={{ maxWidth: 320 }}>
+                <div>文案是从「反推文案稿」里出的，而那段是 AI 看片子自己写的、没经过人工核对。</div>
                 <div style={{ marginTop: 4 }}>
-                  原型是<strong>人工点的，也可以不点</strong>——不点照常反推文案、出文案、投产。
-                </div>
-                <div style={{ marginTop: 4 }}>
-                  「未分类」是给清欠账用的：现在库里 {cats.unclassified.asset_count} 条素材没点原型，
-                  筛出来一条条补。
+                  它读歪了，文案会照着歪着写，一致性检查也判不出来（两边都歪就对得上）。
+                  <strong>这一行只提醒、不拦步骤</strong>：觉得歪了就在详情抽屉里驳回文案或重做反推文案。
                 </div>
               </div>
             }
           >
-            <span>
-              <CategorySelect
-                items={cats.items}
-                value={categoryFilter}
-                onChange={setCategoryFilter}
-                withUnclassified
-                width={150}
-                loading={cats.loading}
-                placeholder="钩子原型"
-              />
-              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
-            </span>
-          </Tooltip>
-          <Input
-            placeholder="批次 ID"
-            allowClear
-            style={{ width: 150 }}
-            value={batchFilter}
-            onChange={(e) => setBatchFilter(e.target.value || undefined)}
-            onPressEnter={() => fetchList(1, pageSize)}
-          />
-          <RangePicker
-            value={dates as any}
-            onChange={(v) => setDates(v as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null)}
-          />
-          <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
-            刷新
-          </Button>
-        </Space>
-      }
-      extra={
-        canProduce ? (
-          <Space wrap>
-            {/* 批 G：图片混在勾选里时先把它摘出来说一句——下面几个按钮只对视频成立 */}
-            {!!selectedImageCount && (
-              <Tooltip title="图片（角色卡）不反推文案、不出文案、不查时长：提交进去也只会逐条回「这是图片」。这几个按钮只动勾到的视频。">
-                <Tag color="purple">另勾了 {selectedImageCount} 张图，不参与这几步</Tag>
-              </Tooltip>
-            )}
-            <Button type="primary" icon={<FileTextOutlined />} onClick={openAnalyze} disabled={!ids.length}>
-              反推文案（{selectedVideoCount}）
+            <Button icon={<BulbOutlined />} loading={genBusy} onClick={generateSummaries} disabled={!ids.length}>
+              出钩子文案（{selectedVideoCount}）
             </Button>
-            {/*
-              拍板②（11-04）：出文案没有确认弹窗（D-1 后是"提交即回"的后台任务），
-              所以这句软提示挂在按钮悬浮上——正好在花钱那一下看得见，但不拦人。
-            */}
-            <Tooltip
-              title={
-                <div style={{ maxWidth: 320 }}>
-                  <div>文案是从「反推文案稿」里出的，而那段是 AI 看片子自己写的、没经过人工核对。</div>
-                  <div style={{ marginTop: 4 }}>
-                    它读歪了，文案会照着歪着写，一致性检查也判不出来（两边都歪就对得上）。
-                    <strong>这一行只提醒、不拦步骤</strong>：觉得歪了就在详情抽屉里驳回文案或重做反推文案。
-                  </div>
-                </div>
-              }
-            >
-              <Button icon={<BulbOutlined />} loading={genBusy} onClick={generateSummaries} disabled={!ids.length}>
-                出钩子文案（{selectedVideoCount}）
-              </Button>
-            </Tooltip>
-            <Tooltip title="把这一批里还在跑的视频读取结果一次性收回来（不用逐条点）">
-              <Button icon={<ReloadOutlined />} loading={refreshBusy} onClick={refreshRunning}>
-                收取在跑结果（本页 {runningCount}）
-              </Button>
-            </Tooltip>
-            <Tooltip title="去原链接查视频时长：每次 0.01 元，计入批次成本；只适用于链接素材">
-              <Button icon={<CloudDownloadOutlined />} onClick={openResolve} disabled={!ids.length}>
-                查时长（{ids.length}）
-              </Button>
-            </Tooltip>
-            <Tooltip title="删掉勾选的素材（含桶里的原片与抽帧图）；有文案/生产单/产物挂着的会被后端拦下">
-              <Button danger icon={<DeleteOutlined />} loading={delBusy} onClick={() => deleteRows(selected)} disabled={!ids.length}>
-                删除（{ids.length}）
-              </Button>
-            </Tooltip>
-          </Space>
-        ) : (
-          <Text type="secondary">当前角色只读：导入、反推文案、出文案由素材专员或运营来做</Text>
-        )
-      }
-    >
+          </Tooltip>
+          <Tooltip title="把这一批里还在跑的视频读取结果一次性收回来（不用逐条点）">
+            <Button icon={<ReloadOutlined />} loading={refreshBusy} onClick={refreshRunning}>
+              收取在跑结果（本页 {runningCount}）
+            </Button>
+          </Tooltip>
+          <Tooltip title="去原链接查视频时长：每次 0.01 元，计入批次成本；只适用于链接素材">
+            <Button icon={<CloudDownloadOutlined />} onClick={openResolve} disabled={!ids.length}>
+              查时长（{ids.length}）
+            </Button>
+          </Tooltip>
+          <Tooltip title="删掉勾选的素材（含桶里的原片与抽帧图）；有文案/生产单/产物挂着的会被后端拦下">
+            <Button danger icon={<DeleteOutlined />} loading={delBusy} onClick={() => deleteRows(selected)} disabled={!ids.length}>
+              删除（{ids.length}）
+            </Button>
+          </Tooltip>
+        </Space>
+      ) : (
+        <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+          当前角色只读：导入、反推文案、出文案由素材专员或运营来做
+        </Text>
+      )}
       {canProduce && cats.unclassified.asset_count > 0 && categoryFilter !== UNCLASSIFIED && (
         <Alert
           type="info"

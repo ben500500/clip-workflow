@@ -509,129 +509,90 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
   const approvedSelected = selected.filter((s) => s.audit_status === 'approved' || s.audit_status === 'passed_edited');
 
   return (
-    <Card
-      size="small"
-      title={
-        <Space wrap>
-          <Popover
-            placement="bottomLeft"
-            title="审核台怎么用"
-            content={
-              <div style={{ maxWidth: 380 }}>
-                <p style={{ marginBottom: 6 }}>
-                  一条素材出 3 条候选文案，其中 1 条被模型标为推荐。审核台默认只把推荐条摆到你面前——
-                  3 条全勾一遍过，等于没审。
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <strong>卡片左边</strong>是这条原片抽的三帧（第 10%／45%／80%，不取第一帧：开头常是黑边或台标），
-                  点一下看九宫格。图由后台抽帧任务补，<strong>没图不影响审核</strong>，也不参与任何判定。
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <strong>过审</strong>：这条就是要拿去投放的文案。过审前会先自动查一遍（超字数／命中违禁词／和原视频对不上都会被拦），
-                  拦下时可让管理员带理由放行，放行记录会留档。
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <strong>驳回／要求改写</strong>：必须写理由，理由会显示给写文案的人。
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <strong>驳回之后怎么办</strong>：写文案的人（这条素材的负责人）在行上点
-                  <strong>「改后重提」</strong>，把文案改了交回待审队列，审核人再过一遍——
-                  改前改后都留档。审核人也可以自己点<strong>「改后过」</strong>直接改直接过（一步到位）。
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <strong>生成生产单</strong>：只认已过审的文案，把过审文案变成要投出去的一条条提示词，一条派生几条不同写法。
-                </p>
-                <p style={{ marginBottom: 0 }}>各筛选项的说明在它们右边的问号里。</p>
-              </div>
-            }
-          >
-            <Button type="link" size="small" style={{ padding: 0 }}>
-              怎么用 <QuestionCircleOutlined />
-            </Button>
-          </Popover>
-          <Tooltip title="按审核状态筛：等审核／已过审／已驳回／要求改写／改后通过。清空＝所有状态都列出来。">
-            <span>
-              <Select
-                style={{ width: 130 }}
-                placeholder="审核状态"
-                allowClear
-                value={auditStatus}
-                onChange={setAuditStatus}
-                options={Object.entries(AUDIT_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
-              />
-              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
-            </span>
-          </Tooltip>
-          <Tooltip
-            title={
-              <div style={{ maxWidth: 340 }}>
-                <div><strong>推荐条</strong>：每条素材出 3 条候选，模型标 1 条推荐。默认只看它，是为了防止 3 条全勾一遍走过场。</div>
-                <div><strong>命中违禁词</strong>：命中违禁词的候选。红色「不许用」＝过不了审、也出不了生产单；橙色「要注意」＝只留个提醒。</div>
-                <div><strong>和原视频对不上</strong>：文案里的人物/场景/事件在反推文案稿里找不到的候选，通常要人工改或重新出。</div>
-                <div><strong>全部</strong>：3 条候选都列出来，用来看对照。</div>
-                <div style={{ marginTop: 4 }}>这四个是互斥的：一次只看一类。</div>
-              </div>
-            }
-          >
-            <span>
-              <Segmented
-                size="small"
-                value={scope}
-                onChange={(v) => setScope(v as typeof scope)}
-                options={[
-                  { label: '推荐条', value: 'recommended' },
-                  { label: '命中违禁词', value: 'risk' },
-                  { label: '和原视频对不上', value: 'inconsistent' },
-                  { label: '全部', value: 'all' },
-                ]}
-              />
-              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
-            </span>
-          </Tooltip>
-        </Space>
-      }
-      extra={
-        canReview ? (
-          <Space wrap>
-            <Button
-              type="primary"
-              icon={<CheckCircleOutlined />}
-              loading={busy}
-              disabled={!ids.length}
-              onClick={() => runReview('approve')}
-            >
-              批量通过（{ids.length}）
-            </Button>
-            <Button icon={<CloseCircleOutlined />} disabled={!ids.length} onClick={() => askReason('reject')}>
-              驳回（{ids.length}）
-            </Button>
-            <Button disabled={!ids.length} onClick={() => askReason('need_rewrite')}>
-              要求改写（{ids.length}）
-            </Button>
-            {canReview && (
-              <Tooltip title="把过审文案变成一条条要投的提示词（括号只算已过审的）；素材专员不能开单。">
-                <Button
-                  icon={<ThunderboltOutlined />}
-                  disabled={!approvedSelected.length}
-                  onClick={() => setProduceOpen(true)}
-                >
-                  生成生产单（{approvedSelected.length}）· 即投产
-                </Button>
-              </Tooltip>
-            )}
-            {canReview && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                N 只数已过审/改后通过的条；勾了待审核的数字不变
-              </Text>
-            )}
-          </Space>
-        ) : (
-          <Text type="secondary">当前角色只读：审核与生成生产单需要运营或管理员</Text>
-        )
-      }
-    >
-      {/* 第二工具行：低频滤器和工具从标题行挪到这里——标题行只剩「怎么用+状态+范围」，不再挤成两行 */}
+    /*
+      排版口径（#110）：筛选行与批量按钮行**都放卡片体里全宽分行**，
+      不再塞 Card 的 title/extra——卡片头是同行 flex，title 被按钮列挤窄后
+      Segmented 会折到「怎么用」底下重叠。行序固定：
+      ① 筛选行（怎么用＋全部筛器） ② 批量动作行 ③ 欠账提示 ④ 点原型行 ⑤ 卡片列表。
+    */
+    <Card size="small">
+      {/* ① 筛选行：高频与低频筛器合一整行，放不下整行顺延换行 */}
       <Space wrap size={8} style={{ marginBottom: 12 }}>
+        <Popover
+          placement="bottomLeft"
+          title="审核台怎么用"
+          content={
+            <div style={{ maxWidth: 380 }}>
+              <p style={{ marginBottom: 6 }}>
+                一条素材出 3 条候选文案，其中 1 条被模型标为推荐。审核台默认只把推荐条摆到你面前——
+                3 条全勾一遍过，等于没审。
+              </p>
+              <p style={{ marginBottom: 6 }}>
+                <strong>卡片左边</strong>是这条原片抽的三帧（第 10%／45%／80%，不取第一帧：开头常是黑边或台标），
+                点一下看九宫格。图由后台抽帧任务补，<strong>没图不影响审核</strong>，也不参与任何判定。
+              </p>
+              <p style={{ marginBottom: 6 }}>
+                <strong>过审</strong>：这条就是要拿去投放的文案。过审前会先自动查一遍（超字数／命中违禁词／和原视频对不上都会被拦），
+                拦下时可让管理员带理由放行，放行记录会留档。
+              </p>
+              <p style={{ marginBottom: 6 }}>
+                <strong>驳回／要求改写</strong>：必须写理由，理由会显示给写文案的人。
+              </p>
+              <p style={{ marginBottom: 6 }}>
+                <strong>驳回之后怎么办</strong>：写文案的人（这条素材的负责人）在行上点
+                <strong>「改后重提」</strong>，把文案改了交回待审队列，审核人再过一遍——
+                改前改后都留档。审核人也可以自己点<strong>「改后过」</strong>直接改直接过（一步到位）。
+              </p>
+              <p style={{ marginBottom: 6 }}>
+                <strong>生成生产单</strong>：只认已过审的文案，把过审文案变成要投出去的一条条提示词，一条派生几条不同写法。
+              </p>
+              <p style={{ marginBottom: 0 }}>各筛选项的说明在它们右边的问号里。</p>
+            </div>
+          }
+        >
+          <Button type="link" size="small" style={{ padding: 0 }}>
+            怎么用 <QuestionCircleOutlined />
+          </Button>
+        </Popover>
+        <Tooltip title="按审核状态筛：等审核／已过审／已驳回／要求改写／改后通过。清空＝所有状态都列出来。">
+          <span>
+            <Select
+              style={{ width: 130 }}
+              placeholder="审核状态"
+              allowClear
+              value={auditStatus}
+              onChange={setAuditStatus}
+              options={Object.entries(AUDIT_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
+            />
+            <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+          </span>
+        </Tooltip>
+        <Tooltip
+          title={
+            <div style={{ maxWidth: 340 }}>
+              <div><strong>推荐条</strong>：每条素材出 3 条候选，模型标 1 条推荐。默认只看它，是为了防止 3 条全勾一遍走过场。</div>
+              <div><strong>命中违禁词</strong>：命中违禁词的候选。红色「不许用」＝过不了审、也出不了生产单；橙色「要注意」＝只留个提醒。</div>
+              <div><strong>和原视频对不上</strong>：文案里的人物/场景/事件在反推文案稿里找不到的候选，通常要人工改或重新出。</div>
+              <div><strong>全部</strong>：3 条候选都列出来，用来看对照。</div>
+              <div style={{ marginTop: 4 }}>这四个是互斥的：一次只看一类。</div>
+            </div>
+          }
+        >
+          <span>
+            <Segmented
+              size="small"
+              value={scope}
+              onChange={(v) => setScope(v as typeof scope)}
+              options={[
+                { label: '推荐条', value: 'recommended' },
+                { label: '命中违禁词', value: 'risk' },
+                { label: '和原视频对不上', value: 'inconsistent' },
+                { label: '全部', value: 'all' },
+              ]}
+            />
+            <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+          </span>
+        </Tooltip>
         <Tooltip title="被驳回/要求改写且我负责的素材；开启会清掉「审核状态」筛选。">
           <span>
             <Button
@@ -672,7 +633,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                 出稿时从素材继承，之后素材重新归类<strong>不会回写</strong>已出的候选。
               </div>
               <div style={{ marginTop: 4 }}>
-                它和右上那四个范围（推荐条／命中违禁词／和原视频对不上／全部）是两个轴，可以叠加：
+                它和上面那四个范围（推荐条／命中违禁词／和原视频对不上／全部）是两个轴，可以叠加：
                 比如「推荐条 + 原型 A」。
               </div>
               <div style={{ marginTop: 4 }}>
@@ -704,6 +665,46 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           刷新
         </Button>
       </Space>
+      {/* ② 批量动作行：勾选后的审核动作都在这一行，位置固定不随筛选换行跳动 */}
+      {canReview ? (
+        <Space wrap size={8} style={{ marginBottom: 12 }}>
+          <Button
+            type="primary"
+            icon={<CheckCircleOutlined />}
+            loading={busy}
+            disabled={!ids.length}
+            onClick={() => runReview('approve')}
+          >
+            批量通过（{ids.length}）
+          </Button>
+          <Button icon={<CloseCircleOutlined />} disabled={!ids.length} onClick={() => askReason('reject')}>
+            驳回（{ids.length}）
+          </Button>
+          <Button disabled={!ids.length} onClick={() => askReason('need_rewrite')}>
+            要求改写（{ids.length}）
+          </Button>
+          {canReview && (
+            <Tooltip title="把过审文案变成一条条要投的提示词（括号只算已过审的）；素材专员不能开单。">
+              <Button
+                icon={<ThunderboltOutlined />}
+                disabled={!approvedSelected.length}
+                onClick={() => setProduceOpen(true)}
+              >
+                生成生产单（{approvedSelected.length}）· 即投产
+              </Button>
+            </Tooltip>
+          )}
+          {canReview && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              N 只数已过审/改后通过的条；勾了待审核的数字不变
+            </Text>
+          )}
+        </Space>
+      ) : (
+        <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+          当前角色只读：审核与生成生产单需要运营或管理员
+        </Text>
+      )}
       {!!data && recommendedOnly && auditStatus === 'pending' && (
         <Alert
           type="info"
