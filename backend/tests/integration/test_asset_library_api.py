@@ -6181,6 +6181,17 @@ def test_dispatch_creates_tasks_and_collects_outputs_end_to_end():
         assert kwf["asset_ids"] == [] and len(kwf["output_ids"]) == 2, kwf
         assert kwf["why"].startswith("豆包成片回收落库"), kwf["why"]
         assert {o[:8] for o in kwf["output_ids"]} <= {str(o.id)[:8] for o in outs}
+
+        # ⑧ 批 L：板子侧状态写回。认领 tid 那一刻钉「已投板」，轮询每轮回读后
+        # 覆盖成板面真实行状态（假板默认直接 succ）＋检查时间；列表口必须带出，
+        # 不然前端「板子：出片中·上轮检查 …」这条进度线没有数据源。
+        listed2 = await client.get("/api/assets/productions", params={
+            "asset_id": asset_id}, headers=ho)
+        rows2 = listed2.json()["items"]
+        assert len(rows2) == 2
+        for r2 in rows2:
+            assert r2["board_last_status"] == "succ", r2["board_last_status"]
+            assert r2["board_last_check_at"], "检查时间必须随写回落库"
         await client.aclose()
 
     _run(_scenario())

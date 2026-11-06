@@ -394,6 +394,10 @@ async def _apply_compat_migrations():
         # 11-06 双产出：出文案时每条候选同步带的豆包网页版完整提示词（可空不回填，
         # NULL=生成失败/未生成，单独补口 POST /assets/summaries/prompt-web）
         ("asset_summaries", "doubao_prompt", "TEXT"),
+        # 批 L（11-06 投放进度可视化）：板子侧状态写回。轮询每轮把板面看到的行状态
+        # ＋检查时间钉在生产单行上；可空不回填，NULL=没投过板/没有板侧信息。
+        ("asset_productions", "board_last_status", "VARCHAR(60)"),
+        ("asset_productions", "board_last_check_at", "TIMESTAMP"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

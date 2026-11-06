@@ -1334,6 +1334,10 @@ def _serialize_production(p: AssetProduction, output_count: int = 0) -> dict:
         "board_name": p.board_name,
         "board_tid": p.board_tid,
         "board_rgid": p.board_rgid,
+        # 批 L（投放进度可视化）：板子侧最后看到的行状态＋检查时间。null=没投过板
+        # /回收动作没走到轮询（人工回写、刚建未投）。前端拿它显示「板子：出片中·上轮检查 …」。
+        "board_last_status": p.board_last_status,
+        "board_last_check_at": utc_iso(p.board_last_check_at) if p.board_last_check_at else None,
         "character_card_key": p.character_card_key,
         # 批 G：多卡数组（顺序＝板上 picDatas 顺序）。旧单这里是 []——
         # 读侧要区分"没挂卡"和"挂了一张旧 key"，看 character_card_key 那一列。
@@ -7525,6 +7529,10 @@ def _adopt_tids(p: AssetProduction, board_rows: Dict[str, Dict[str, Any]], new_t
         p.started_at = datetime.utcnow()
     p.completed_at = None
     p.error = None
+    # 批 L：认领瞬间先钉一个初始板侧状态——从这一刻到轮询第一轮回读之间
+    # （最长一个轮询间隔），界面上有「已投板」可看，而不是干等列全空。
+    p.board_last_status = "已投板"
+    p.board_last_check_at = datetime.utcnow()
 
 
 async def _poll_and_collect(
@@ -7631,6 +7639,12 @@ async def _poll_and_collect(
                 # 也可能是板子把行挪走了。两种都不判死，下一轮再说。
                 continue
             s["board_status"] = "/".join(sorted({str(r.get("status") or "").lower() for r in mine}))
+            # 批 L（投放进度可视化）：板侧状态写回生产单行。就算这轮没有任何状态迁移
+            # （还在跑），也让「板子还活着、上轮检查是什么时候」落到库上——所以写回
+            # 本身计 changed，走本轮末尾那次短事务 commit（出网都在事务外，不冲突）。
+            t["prod"].board_last_status = s["board_status"][:60]
+            t["prod"].board_last_check_at = datetime.utcnow()
+            changed = True
             got = [r for r in mine if board.state_after_board(r.get("status")) == "success"]
             bad = [r for r in mine if str(r.get("status") or "").strip().lower() == board.STATE_FAIL]
             if got and len(got) == len(mine):
@@ -7671,6 +7685,7 @@ async def _poll_and_collect(
                     s["board_status"] = None
                     s.pop("last_read_error", None)
                     changed = True
+                    # 批 L：重启后旧板侧状态已不属于新任务，_adopt_tids 已重钉「已投板」。
                 else:
                     _mark_dispatch_failed(
                         t["prod"], s,

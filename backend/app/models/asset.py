@@ -518,6 +518,12 @@ class AssetProduction(Base):
     board_name = Column(String(200), nullable=True)            # 板上 name = 推荐视频标题第 1 条（剥非法字符、≤60 码点）
     board_tid = Column(String(60), nullable=True, index=True)  # 回读主键（info?date= 返回）
     board_rgid = Column(String(60), nullable=True)             # 回收组 id，拼 /data<outUrl> 用
+    # 批 L（11-06 投放进度可视化）：板子侧状态写回。自动投板的后台协程每 45s 回读一轮
+    # 板面，把看到的行状态（waiting/running/succ…）连同检查时间钉在生产单行上——
+    # 不写回的话投放后界面只能停在「投放中」干等，看不出板子在排队还是真在出片。
+    # 全部可空不回填：没投过板的单/老单＝NULL，语义就是「没有板侧信息」。
+    board_last_status = Column(String(60), nullable=True)
+    board_last_check_at = Column(DateTime, nullable=True)
     character_card_key = Column(String(500), nullable=True)    # 旧：单张卡的 MinIO key（前端手填那条野路子的存证）→ 板上 picDatas 的回退来源
     # 批 G（11-05 拍板③）：**多卡保序**。存 asset_items.id 字符串数组，
     # 顺序＝板上 `picDatas` 数组顺序（一部剧多张定妆照时，谁是第一张谁就是主形象）。

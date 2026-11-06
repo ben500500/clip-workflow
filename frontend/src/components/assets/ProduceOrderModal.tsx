@@ -20,6 +20,11 @@ interface Props {
   /** 建单成功后回主面板（切到生产单页签）。produce 的响应里**没有**新单 id 列表
    *  （只有 created/results），所以只能让父面板自己去列表。 */
   onDone: () => void;
+  /**
+   * 批 L：就地上传角色卡挂的批次（=被投产素材所在批次）。可选——
+   * 生产单页「全部」视图开单时拿不到，就由上传口新建小批次。
+   */
+  batchId?: string;
 }
 
 /**
@@ -32,7 +37,7 @@ interface Props {
  * 号池实测 ≈120 条/日，产能不做硬限（11-03 拍板），但建单当场就把「今天已经吃掉多少」摆出来。
  * 钩子编号只能从 hook_id.py 取号带进来，前端不生成、后端不编号。
  */
-const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose, onDone }) => {
+const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose, onDone, batchId }) => {
   const [n, setN] = useState(3);
   const [boardTotal, setBoardTotal] = useState(1);
   const [accounts, setAccounts] = useState(1);
@@ -565,7 +570,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             </Tooltip>
           </Space>
 
-          <AssetCardPicker active={open} value={cardIds} onChange={setCardIds} />
+          <AssetCardPicker active={open} value={cardIds} onChange={setCardIds} batchId={batchId} />
 
           <Checkbox checked={expand} onChange={(e) => setExpand(e.target.checked)}>
             让 AI 按标准模板把文案展开成能直接投的提示词

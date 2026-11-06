@@ -362,6 +362,14 @@ export interface AssetProduction {
   board_tid: string | null;
   /** 回收组 id，拼 /data<outUrl> 用 */
   board_rgid: string | null;
+  /**
+   * 批 L（投放进度可视化）：板子侧最后看到的行状态（waiting/running/succ…，
+   * 多版单可能是「waiting/running」这种拼串；刚认领时是「已投板」）。
+   * null = 没投过板 / 人工回写没走到轮询。
+   */
+  board_last_status: string | null;
+  /** 上次板面检查时间（自动投板协程每 45s 一轮）；判断「轮询还活着吗」就看它新不新 */
+  board_last_check_at: string | null;
   /** 角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡）。批 G 后是**历史列**：新单由 card_asset_ids 派生（＝第一张＝主卡），旧单只有这一列 */
   character_card_key: string | null;
   /**

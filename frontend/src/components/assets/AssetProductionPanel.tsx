@@ -3,7 +3,7 @@ import {
   Alert, Button, Card, Checkbox, Col, Collapse, Dropdown, Input, Modal, Radio, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
-  CloudUploadOutlined, CopyOutlined, DownloadOutlined, ExportOutlined, MoreOutlined, PlayCircleOutlined, ReloadOutlined, VideoCameraOutlined,
+  CloudUploadOutlined, CopyOutlined, DownloadOutlined, ExportOutlined, MoreOutlined, PlayCircleOutlined, ReloadOutlined, ThunderboltOutlined, VideoCameraOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import {
@@ -11,11 +11,12 @@ import {
 } from '../../api/assets';
 import type {
   AssetDispatchAck, AssetDispatchResponse, AssetDispatchCounts, AssetExportJson, AssetExportPayload, AssetExportTxt,
-  AssetOutput, AssetOutputPreviewResult, AssetProduction, DispatchReportStatus, ProductionState,
+  AssetOutput, AssetOutputPreviewResult, AssetProduction, AssetSummary, DispatchReportStatus, ProductionState,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
 import { withCrossPersonConfirm } from './crossPerson';
+import ProduceOrderModal from './ProduceOrderModal';
 import { MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
 
 const { Text, Paragraph } = Typography;
@@ -32,6 +33,21 @@ interface Props {
 
 const rate = (v: number | null | undefined) =>
   v === null || v === undefined ? '—（还没有终态样本）' : `${Math.round(v * 100)}%`;
+
+/** 批 L：板面行状态 → 人话（board.readback 的 status 词直接透传，多版单会拼成「waiting/running」串） */
+const BOARD_ROW_STATUS_TEXT: Record<string, string> = {
+  waiting: '排队中',
+  running: '出片中',
+  succ: '已出片',
+  fail: '板面失败',
+};
+const boardStatusText = (raw: string | null): string | null => {
+  if (!raw) return null;
+  return raw
+    .split('/')
+    .map((s) => BOARD_ROW_STATUS_TEXT[s.trim()] || s.trim())
+    .join('·');
+};
 
 /**
  * 生产单面板：台账 + 投递计数 + 导出任务文件 + **自动投板（投去 AI 出片）** + 人工补账。
@@ -101,6 +117,14 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const [editPromptFor, setEditPromptFor] = useState<AssetProduction | null>(null);
   const [editPromptDraft, setEditPromptDraft] = useState('');
 
+  // 批 L：生产单页自己开单——「从过审文案开单」。审核台是审核人员的地盘，
+  // 投产这步不必绕回那边；审核台原入口保留（审完顺手投的快捷路径）。
+  const [approvedOpen, setApprovedOpen] = useState(false);
+  const [approvedRows, setApprovedRows] = useState<AssetSummary[]>([]);
+  const [approvedLoading, setApprovedLoading] = useState(false);
+  const [approvedSel, setApprovedSel] = useState<AssetSummary[]>([]);
+  const [produceOpen, setProduceOpen] = useState(false);
+
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
 
   /**
@@ -143,8 +167,9 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   }, [selected]);
 
   const fetchList = useCallback(
-    async (p: number = page, ps: number = pageSize) => {
-      setLoading(true);
+    // 批 L：silent=true＝进度轮询专用——不点 loading 灯，10 秒一刷不闪表格
+    async (p: number = page, ps: number = pageSize, silent: boolean = false) => {
+      if (!silent) setLoading(true);
       try {
         const res = await assetApi.listProductions({
           page: p,
@@ -178,8 +203,42 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken]);
 
+  // 批 L（投放进度可视化）：有「排队中/出片中」的单时每 10 秒静默刷新——
+  // 投完板界面自己动起来，不用人手勤快去点刷新才能看到片子回来了没有。
+  // 页面切到后台时暂停（document.hidden），回前台下一轮立即补上。
+  useEffect(() => {
+    const live = items.some((p) => p.status === 'queued' || p.status === 'running');
+    if (!live) return;
+    const t = window.setInterval(() => {
+      if (!document.hidden) fetchList(page, pageSize, true);
+    }, 10000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, page, pageSize]);
+
   // 批 I：补账对象＝行级入口点的那一行；顶部批量入口没指定就还是整页勾选
   const writeRows = writeTarget ?? selected;
+
+  /** 批 L：拉全部过审文案（approved + passed_edited 两态合并，按过审时间倒序） */
+  const openApprovedPicker = async () => {
+    setApprovedOpen(true);
+    setApprovedLoading(true);
+    setApprovedSel([]);
+    try {
+      const [a, b] = await Promise.all([
+        assetApi.listSummaries({ audit_status: 'approved', page_size: 300 }),
+        assetApi.listSummaries({ audit_status: 'passed_edited', page_size: 300 }),
+      ]);
+      const merged = [...(a.items || []), ...(b.items || [])].sort((x, y) =>
+        (y.reviewed_at || '').localeCompare(x.reviewed_at || ''),
+      );
+      setApprovedRows(merged);
+    } catch (e) {
+      message.error((e as Error).message || '过审文案列表拉不到');
+    } finally {
+      setApprovedLoading(false);
+    }
+  };
 
   const submitWriteBack = async () => {
     const rows = writeRows;
@@ -530,8 +589,22 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     {
       title: '状态',
       dataIndex: 'status',
-      width: 108,
-      render: (v: ProductionState) => <ProductionStateTag status={v} />,
+      width: 130,
+      render: (v: ProductionState, r) => (
+        <Space direction="vertical" size={0}>
+          <ProductionStateTag status={v} />
+          {/* 批 L（投放进度可视化）：投放中的单子把板侧进度带出来——「排队中/出片中」
+              是板面行状态的人话，检查时间是轮询活着的证据。终态后这两行自动消失。 */}
+          {(v === 'queued' || v === 'running') && r.board_last_status && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {boardStatusText(r.board_last_status)}
+              {r.board_last_check_at
+                ? `·${parseServerTime(r.board_last_check_at)?.format('HH:mm')}查`
+                : ''}
+            </Text>
+          )}
+        </Space>
+      ),
     },
     {
       title: '投递',
@@ -734,6 +807,18 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         </Button>
         {/* 批 I（链路收敛）：主按钮只留一个「投」——导出和补账降成次要动作，
             别再让三个像"投"的按钮并排抢主位。 */}
+        {/* 批 L：开单入口收编到生产单页——审核台只管审核，投产不必绕回那边 */}
+        {canWriteBack && (
+          <Tooltip title="列出全部已过审的文案，勾选后生成生产单（一条文案派生 N 条差异化提示词）。审核台里的同名入口保留，两边走的是同一个投产弹窗。">
+            <Button
+              type="primary"
+              icon={<ThunderboltOutlined />}
+              onClick={openApprovedPicker}
+            >
+              从过审文案开单
+            </Button>
+          </Tooltip>
+        )}
         {canWriteBack && (
           <Tooltip title="机器去企微后台建任务 → 等出片 → 成片自动回到每张单的「成片」列。一次最多 20 张，逐批人工确认。">
             <Button
@@ -1374,6 +1459,76 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           )}
         </Space>
       </Modal>
+
+      {/* 批 L：过审文案挑选弹窗——勾好进投产弹窗（与审核台同一个） */}
+      <Modal
+        open={approvedOpen}
+        title="从过审文案开单"
+        width={760}
+        onCancel={() => setApprovedOpen(false)}
+        footer={
+          <Space>
+            <Button onClick={() => setApprovedOpen(false)}>取消</Button>
+            <Button
+              type="primary"
+              disabled={!approvedSel.length}
+              onClick={() => {
+                setApprovedOpen(false);
+                setProduceOpen(true);
+              }}
+            >
+              去生成生产单（{approvedSel.length}）
+            </Button>
+          </Space>
+        }
+      >
+        <Table<AssetSummary>
+          rowKey="id"
+          size="small"
+          loading={approvedLoading}
+          dataSource={approvedRows}
+          pagination={{ pageSize: 8, showSizeChanger: false }}
+          rowSelection={{
+            selectedRowKeys: approvedSel.map((s) => s.id),
+            onChange: (_, rows) => setApprovedSel(rows),
+          }}
+          columns={[
+            {
+              title: '文案',
+              dataIndex: 'text',
+              ellipsis: true,
+              render: (v: string) => <Text style={{ fontSize: 12 }}>{v}</Text>,
+            },
+            { title: '字数', dataIndex: 'word_count', width: 56 },
+            {
+              title: '素材',
+              dataIndex: 'asset_id',
+              width: 100,
+              render: (v: string) => <MonoText>{v.slice(0, 8)}</MonoText>,
+            },
+            {
+              title: '过审时间',
+              dataIndex: 'reviewed_at',
+              width: 120,
+              render: (v: string | null) =>
+                v ? parseServerTime(v)?.format('MM-DD HH:mm') : '—',
+            },
+          ]}
+        />
+      </Modal>
+
+      <ProduceOrderModal
+        open={produceOpen}
+        summaries={approvedSel}
+        isAdmin={isAdmin}
+        batchId={batchFilter || batchId}
+        onClose={() => setProduceOpen(false)}
+        onDone={() => {
+          setProduceOpen(false);
+          setApprovedSel([]);
+          fetchList(page, pageSize);
+        }}
+      />
     </Card>
   );
 };
