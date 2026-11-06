@@ -225,6 +225,11 @@ class AnalyzeRequest(BaseModel):
     )
     offset: int = Field(0, ge=0, description="游标：跳过队列头部 N 条。默认 0——提交成功的条会自己离开队列")
     limit: Optional[int] = Field(None, description="本段条数，默认取 ASSET_ANALYZE_MAX_PER_CALL，上限同它")
+    cross_person_confirm: bool = Field(
+        False,
+        description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）；"
+        "自己的批次不用管这个字段",
+    )
 
 
 class SummaryGenerateRequest(BaseModel):
@@ -246,6 +251,10 @@ class SummaryGenerateRequest(BaseModel):
         description="D-1：true＝立即回一个任务号（后台继续跑，前端轮询 /assets/jobs/任务号），"
         "false＝同步等到模型跑完（等几十秒到十几分钟，浏览器/nginx 都可能先掐）。"
         "页面按钮走 true；脚本/回归用例保持默认",
+    )
+    cross_person_confirm: bool = Field(
+        False,
+        description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）",
     )
 
 
@@ -272,6 +281,10 @@ class ResolveRequest(BaseModel):
     offset: int = Field(0, ge=0, description="游标：跳过队列头部 N 条，默认 0")
     limit: Optional[int] = Field(None, description="本段条数，默认/上限 = ASSET_ANALYZE_MAX_PER_CALL")
     confirmed: bool = Field(False, description="≥2 条时必须为 true（成本确认弹窗已确认）")
+    cross_person_confirm: bool = Field(
+        False,
+        description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）",
+    )
 
 
 class AssetDownloadRequest(BaseModel):
@@ -284,6 +297,10 @@ class AssetDownloadRequest(BaseModel):
     async_mode: bool = Field(
         False,
         description="D-1：页面走 true 提交即回任务号；后台复跑时运行器会把它摘掉，防止无限套娃",
+    )
+    cross_person_confirm: bool = Field(
+        False,
+        description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）",
     )
 
 
@@ -451,6 +468,10 @@ class DispatchRequest(BaseModel):
         description="默认 true：投板＝建任务＋轮询出片＋下载落桶，整段几十分钟，"
         "同步等必然顶穿超时链（前端 960s / 后端 900s）。false 只留给后台协程与回归用例",
     )
+    cross_person_confirm: bool = Field(
+        False,
+        description="11-06 拍板②：新建板任务涉及别人导入的批次时必须为 true（回收已投的单不花钱，不用这个字段）",
+    )
 
 
 class CategoryUpsertItem(BaseModel):
@@ -525,6 +546,66 @@ async def _write_audit(
         if strict:
             raise
         logger.exception("素材库审计写入失败 action=%s target=%s", action, target_type)
+
+
+_CROSS_MARKER = "替他人批次花钱"
+
+
+async def _cross_person_gate(
+    db: AsyncSession,
+    *,
+    operator: Optional[User],
+    batch_ids: List[Any],
+    action_label: str,
+    confirmed: bool,
+) -> List[dict]:
+    """11-06 拍板②：跨人批次的花钱动作先拦一道，确认后再放行并留痕。
+
+    「跨人」＝这批素材的导入人（`asset_batches.created_by`）不是本次操作者。
+    内容全量可见（11-03 拍板）不受影响——看、审、导 payload 都照旧零门槛；只有
+    **会花钱/占号池**的动作才走这里：费用记到批次成本上，替别人批次花了钱，
+    事后对账会找不到是谁的手笔。所以要么当场拦下来让人确认（400，前端弹窗），
+    要么确认后把「发起人≠批次主人」原样写进审计。批次归属未知（created_by 为空、
+    老数据）不拦——没有凭据说它跨人，就不预判。
+    """
+    ids = {b for b in batch_ids if b}
+    if not ids or operator is None:
+        return []
+    rows = list((await db.execute(select(AssetBatch).where(AssetBatch.id.in_(ids)))).scalars().all())
+    if not rows:
+        return []
+    owner_uids = {r.created_by for r in rows if r.created_by}
+    names: Dict[str, str] = {}
+    if owner_uids:
+        for uid, dn, un in (
+            await db.execute(select(User.id, User.display_name, User.username).where(User.id.in_(owner_uids)))
+        ).all():
+            names[str(uid)] = (dn or un) or "未知（账号已删）"
+    op_key = str(operator.id)
+    crosses: List[dict] = []
+    for r in rows:
+        if r.created_by is None or str(r.created_by) == op_key:
+            continue
+        crosses.append({
+            "batch_id": str(r.id),
+            "batch_code": r.code,
+            "batch_owner_id": str(r.created_by),
+            "batch_owner": names.get(str(r.created_by), "未知（账号已删）"),
+            "operator_id": op_key,
+            "operator": operator.username,
+        })
+    if crosses and not confirmed:
+        shown = "；".join(f"{c['batch_code']}（导入人 {c['batch_owner']}）" for c in crosses[:5])
+        more = f"（另有 {len(crosses) - 5} 批，本条只列前 5 批）" if len(crosses) > 5 else ""
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{action_label}涉及{_CROSS_MARKER}：{shown}{more}。费用会记到批次成本上，"
+                "请先确认你确实是替这位同事操作（补单/代班）；界面弹窗里点「确认替他人批次操作」"
+                "后再发一次（带 cross_person_confirm=true），这一次没有动账。"
+            ),
+        )
+    return crosses
 
 
 def _as_uuid(value: Any, field: str = "id") -> uuid.UUID:
@@ -2474,6 +2555,15 @@ async def analyze_batch(
             ),
         )
 
+    # 11-06 拍板②：反推是真金白银的动作，替别人批次提交前先让人确认，确认后审计留痕
+    crosses = await _cross_person_gate(
+        db,
+        operator=current_user,
+        batch_ids=[a.batch_id for a in todo],
+        action_label="反推提示词",
+        confirmed=data.cross_person_confirm,
+    )
+
     need_upload = any(a.source_kind == SOURCE_FILE for a in todo)
     estimate = svc.estimate_batch_cost(len(todo), max_duration=tier, need_upload=need_upload)
     balance_detail = await _query_zhiling_balance_detail()
@@ -2677,6 +2767,7 @@ async def analyze_batch(
             "gate": gate["level"],
             "confirmed": data.confirmed,
             "force": data.force,
+            "cross_person": crosses or None,
         },
     )
     await db.commit()
@@ -3239,11 +3330,14 @@ async def _start_asset_job(
     operator: User,
     batch_id: Optional[str],
     planned_units: Optional[int],
+    cross_person: Optional[List[dict]] = None,
 ) -> AssetJob:
     """落一行 queued 台账并排上后台协程。
 
     ⚠️ 必须先 `commit` 再调度：后台协程用的是**另一个会话**，读不到本会话未提交的行；
     反过来也不能等本会话的 response 结束——那正是本口要避免的"人得干等着"。
+    `cross_person`（11-06 拍板②）：跨人批次闸门确认后的清单，原样进 submit 审计，
+    让「发起人≠批次主人」这件事在台账动作里也查得到。
     """
     params = data.model_dump(mode="json")
     await _assert_no_running_twin(db, kind=kind, params=params, batch_id=batch_id)
@@ -3263,7 +3357,12 @@ async def _start_asset_job(
         operator=operator,
         target_type="asset_job",
         target_id=job.id,
-        after={"batch_id": batch_id, "planned_units": planned_units, "params": params},
+        after={
+            "batch_id": batch_id,
+            "planned_units": planned_units,
+            "params": params,
+            "cross_person": cross_person or None,
+        },
     )
     await db.commit()
     _schedule_asset_job(str(job.id), kind, params, str(operator.id))
@@ -3658,6 +3757,18 @@ async def generate_summaries(
     if not 1 <= count <= 6:
         raise HTTPException(status_code=400, detail="候选数只支持 1~6 条")
 
+    # 11-06 拍板②：跨人批次闸门要放在**排任务之前**——异步的任务号一发出模型就开始烧钱，
+    # 不能等后台跑起来才发现该拦。点名形态此时素材还没读，先读一遍（同步档下面会再读，
+    # 同一事务里同主键拿回同一对象，不浪费）。
+    gate_assets = picked if queue_batch_id else [await _get_asset_or_404(db, aid) for aid in asset_ids]
+    crosses = await _cross_person_gate(
+        db,
+        operator=current_user,
+        batch_ids=[a.batch_id for a in gate_assets],
+        action_label="出钩子文案",
+        confirmed=data.cross_person_confirm,
+    )
+
     if data.async_mode:
         job = await _start_asset_job(
             db,
@@ -3666,6 +3777,7 @@ async def generate_summaries(
             operator=current_user,
             batch_id=queue_batch_id,
             planned_units=(len(picked) if queue is not None else len(asset_ids)),
+            cross_person=crosses,
         )
         return _job_accepted(job, "出钩子文案")
 
@@ -3858,6 +3970,7 @@ async def generate_summaries(
             "overwrite": data.overwrite,
             # A4-6：整批排队时审计要能回显"这批的哪一段"，否则事后查不到是谁点了第几排
             "queue": queue,
+            "cross_person": crosses or None,
         },
     )
     await db.commit()
@@ -6487,6 +6600,21 @@ async def dispatch_productions(
             detail += f"（另有 {len(blocked) - 5} 张被挡，本条只列前 5 张）"
         raise HTTPException(status_code=400, detail=detail)
 
+    # 11-06 拍板②：新建板任务吃号池额度，替别人批次投之前先让人确认；回收已投的单
+    # 一分钱不花（`to_recover` 不过内容闸门的同一口径），不走这道闸。
+    crosses = (
+        await _cross_person_gate(
+            db,
+            operator=current_user,
+            batch_ids=[p.batch_id for p in to_create],
+            action_label="投板",
+            confirmed=data.cross_person_confirm,
+        )
+        if to_create
+        else []
+    )
+    gate["cross_person"] = crosses or None
+
     # 拍板②：新建的这批按**投递时刻**重新排日（人工投板用不到这条，见函数头说明）
     for p in to_create:
         _refresh_board_date(p)
@@ -6526,6 +6654,7 @@ async def dispatch_productions(
             operator=current_user,
             batch_id=None,
             planned_units=len(to_create) + len(to_recover),
+            cross_person=crosses,
         )
         return {
             **_job_accepted(job, "投板"),
@@ -6536,6 +6665,7 @@ async def dispatch_productions(
                 "blocked": blocked,
                 "card_warnings": card_warnings,
                 "capacity": capacity,
+                "cross_person": crosses or None,
                 "note": (
                     "预检已过：闸门按导出/回写同一套判据，payload 与导出同一个函数。"
                     "后台会建任务、轮询出片、把成片落进产物；跑完整份结果在任务台账里"
@@ -6662,6 +6792,7 @@ async def _execute_dispatch(
                 "errors": errors,
                 "uncertain": uncertain,
                 "recover_only": recover_only,
+                "cross_person": gate.get("cross_person"),
             },
         )
         await db.commit()
@@ -6711,6 +6842,7 @@ async def _execute_dispatch(
             "asset_status": stage_by_asset,
             "capacity": capacity,
             "forced_risk": {"ids": gate["forced_ids"], "reason": gate["forced_reason"]} if gate["forced_ids"] else None,
+            "cross_person": gate.get("cross_person"),
             "payload_keys": list(svc.BOARD_PAYLOAD_KEYS),
         },
     )
@@ -7522,6 +7654,15 @@ async def resolve_link_assets(
             ),
         }
 
+    # 11-06 拍板②：解析费虽小（0.01/条）但是真实支出，替别人批次花之前先确认，确认后留痕
+    crosses = await _cross_person_gate(
+        db,
+        operator=current_user,
+        batch_ids=[a.batch_id for a in todo],
+        action_label="回源解析",
+        confirmed=data.cross_person_confirm,
+    )
+
     # max_duration=0：只算解析这一条腿，别把反推的档位钱混进来（反推有它自己的确认单）
     estimate = svc.estimate_batch_cost(len(todo), max_duration=0, need_parse=True)
     balance_detail = await _query_zhiling_balance_detail()
@@ -7659,6 +7800,7 @@ async def resolve_link_assets(
             "estimate": estimate["total_cost"],
             "balance": balance,
             "queue": queue,
+            "cross_person": crosses or None,
         },
     )
     await db.commit()
@@ -7747,6 +7889,15 @@ async def download_asset_sources(
             "message": "没有一条需要下载（原片都已在自有桶里），未发起任何外呼"
             + (f"；{len(skipped)} 条被跳过" if skipped else ""),
         }
+
+    # 11-06 拍板②：下载会按解析渠道计 0.01/条，替别人批次跑之前先确认，确认后留痕
+    crosses = await _cross_person_gate(
+        db,
+        operator=current_user,
+        batch_ids=[a.batch_id for a in todo],
+        action_label="下载原片",
+        confirmed=data.cross_person_confirm,
+    )
 
     results: List[dict] = []
     tmp_dir = os.path.join(tempfile.gettempdir(), f"asset_download_{uuid.uuid4().hex}")
@@ -7872,6 +8023,7 @@ async def download_asset_sources(
                 {k: r.get(k) for k in ("asset_id", "code", "ok", "charged", "error") if k in r}
                 for r in results
             ],
+            "cross_person": crosses or None,
         },
     )
     await db.commit()

@@ -15,6 +15,7 @@ import type {
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
+import { withCrossPersonConfirm } from './crossPerson';
 import { MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
 
 const { Text, Paragraph } = Typography;
@@ -343,14 +344,18 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     }
     setDispatchBusy(true);
     try {
-      const res = await assetApi.dispatchProductions({
-        ids,
-        confirm: true,
-        recover_only: dispatchRecoverOnly || undefined,
-        force_risk: dispatchForceRisk || undefined,
-        force_reason: dispatchForceRisk ? dispatchForceReason.trim() : undefined,
-        async_mode: true,
-      });
+      const res = await withCrossPersonConfirm((c) =>
+        assetApi.dispatchProductions({
+          ids,
+          confirm: true,
+          recover_only: dispatchRecoverOnly || undefined,
+          force_risk: dispatchForceRisk || undefined,
+          force_reason: dispatchForceRisk ? dispatchForceReason.trim() : undefined,
+          async_mode: true,
+          cross_person_confirm: c,
+        }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认：什么都不做，弹窗留着
       setDispatchOpen(false);
       setDispatchConfirm(false);
       setDispatchRecoverOnly(false);

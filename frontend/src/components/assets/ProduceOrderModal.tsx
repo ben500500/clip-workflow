@@ -7,6 +7,7 @@ import type { AssetProduceResponse, AssetSummary } from '../../api/assets';
 import { HOOK_CODE_RE, MonoText, parseHookCodes } from './AssetBits';
 import AssetCardPicker from './AssetCardPicker';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
+import { withCrossPersonConfirm } from './crossPerson';
 
 const { Text, Paragraph } = Typography;
 
@@ -77,11 +78,15 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
     }
     setFollowupBusy(true);
     try {
-      const res = await assetApi.dispatchProductions({
-        ids,
-        confirm: true,
-        async_mode: true,
-      });
+      const res = await withCrossPersonConfirm((c) =>
+        assetApi.dispatchProductions({
+          ids,
+          confirm: true,
+          async_mode: true,
+          cross_person_confirm: c,
+        }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认：什么都不做
       nudgeAssetJobBanner();
       if (isAssetJobAck(res)) {
         const pre = (res as { precheck?: { will_create: number; will_recover: number; blocked?: unknown[]; planned_board_rows: number } }).precheck;

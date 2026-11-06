@@ -23,6 +23,7 @@ import CostConfirmModal from './CostConfirmModal';
 import AssetDetailDrawer from './AssetDetailDrawer';
 import AssetComposeModal from './AssetComposeModal';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
+import { withCrossPersonConfirm } from './crossPerson';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -300,14 +301,18 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const submitAnalyze = async () => {
     setAnalyzeLoading(true);
     try {
-      const res: AssetAnalyzeResponse = await assetApi.analyzeBatch({
-        asset_ids: selectedVideoIds,
-        max_duration: tier,
-        confirmed: true,
-        force,
-        retry_failed: retryFailed,
-        download: withDownload,
-      });
+      const res: AssetAnalyzeResponse | undefined = await withCrossPersonConfirm((c) =>
+        assetApi.analyzeBatch({
+          asset_ids: selectedVideoIds,
+          max_duration: tier,
+          confirmed: true,
+          force,
+          retry_failed: retryFailed,
+          download: withDownload,
+          cross_person_confirm: c,
+        }),
+      );
+      if (!res) return; // 用户在「替他人批次」确认窗点了取消：什么都没动，留在弹窗里
       Modal.info({
         title: '反推文案已提交',
         width: 520,
@@ -369,7 +374,10 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const doGenerateSummaries = async (ok: string[], overwrite: boolean) => {
     setGenBusy(true);
     try {
-      const res = await assetApi.generateSummaries({ asset_ids: ok, async_mode: true, overwrite });
+      const res = await withCrossPersonConfirm((c) =>
+        assetApi.generateSummaries({ asset_ids: ok, async_mode: true, overwrite, cross_person_confirm: c }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认：什么都不做
       if (isAssetJobAck(res)) {
         // 回执里没结果，只有任务号：告诉人去哪儿看，别在这里猜跑没跑完
         // （busy 由下面的 finally 收，这里不重复置位）
@@ -416,10 +424,14 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     setResolveBusy(true);
     try {
       const linkIds = selected.filter((s) => s.source_kind === 'link').map((s) => s.id);
-      const res: AssetResolveResponse = await assetApi.resolveAssets({
-        asset_ids: linkIds,
-        confirmed: linkIds.length >= 2,
-      });
+      const res: AssetResolveResponse | undefined = await withCrossPersonConfirm((c) =>
+        assetApi.resolveAssets({
+          asset_ids: linkIds,
+          confirmed: linkIds.length >= 2,
+          cross_person_confirm: c,
+        }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认：什么都不做
       const notes = (res.results || []).filter((r) => r.note && !r.ok);
       Modal.info({
         title: `查时长：拿到 ${res.resolved} 条，实扣 ${yuan(res.charged)}`,
@@ -543,12 +555,16 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       onOk: async () => {
         setRetryingId(row.id);
         try {
-          const res: AssetAnalyzeResponse = await assetApi.analyzeBatch({
-            asset_ids: [row.id],
-            max_duration: DEFAULT_TIER,
-            confirmed: true,
-            retry_failed: true,
-          });
+          const res: AssetAnalyzeResponse | undefined = await withCrossPersonConfirm((c) =>
+            assetApi.analyzeBatch({
+              asset_ids: [row.id],
+              max_duration: DEFAULT_TIER,
+              confirmed: true,
+              retry_failed: true,
+              cross_person_confirm: c,
+            }),
+          );
+          if (!res) return; // 取消了「替他人批次」确认
           if (isAssetJobAck(res)) nudgeAssetJobBanner();
           message.success(res.message || '反推文案已重新提交', 8);
           fetchList();
@@ -569,7 +585,10 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const retryDownload = async (row: AssetItem) => {
     setRetryDlId(row.id);
     try {
-      const res = await assetApi.downloadSources({ asset_ids: [row.id], async_mode: true });
+      const res = await withCrossPersonConfirm((c) =>
+        assetApi.downloadSources({ asset_ids: [row.id], async_mode: true, cross_person_confirm: c }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认
       if (isAssetJobAck(res)) {
         message.success(res.message || '已排上下载，跑完这行会变绿色', 6);
         nudgeAssetJobBanner();

@@ -1093,7 +1093,8 @@ def test_resolve_charges_only_paid_channels_and_never_double_pays():
         with patch("app.api.assets.dispatch_parse", AsyncMock(side_effect=_parse)), \
              patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(0.0)):
             blocked = await client.post(
-                "/api/assets/resolve", json={"asset_ids": [by_url[SHARE_3]]}, headers=ha)
+                "/api/assets/resolve",
+                json={"asset_ids": [by_url[SHARE_3]], "cross_person_confirm": True}, headers=ha)
         assert blocked.status_code == 409, blocked.text
         assert blocked.json()["detail"]["code"] == "ASSET_BALANCE_BLOCKED"
         assert calls == [SHARE_3], "挡下了就不该再发外呼"
@@ -1135,9 +1136,16 @@ def test_analyze_blocked_requires_admin_force():
         payload = {"asset_ids": [asset_id], "max_duration": 180}
         with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(0.01)), \
              patch("app.api.assets.create_prompt_task", AsyncMock(return_value=_fake_prompt_task())) as cpt:
-            # 11-03 取消隔离：operator 也能对素材专员的素材发起反推（旧口径这里 404），
+            # 11-03 取消隔离：operator 也能对素材专员的素材发起反推（旧口径这里 404）；
+            # 11-06 拍板②后跨人扣费多一道确认闸——不带确认 400 白话点名，带上才继续走钱闸
+            unconfirmed_cross = await client.post(
+                "/api/assets/analyze/batch", json=payload, headers=h["operator"])
+            assert unconfirmed_cross.status_code == 400, unconfirmed_cross.text
+            assert "替他人批次花钱" in unconfirmed_cross.json()["detail"]
             # 但**钱**的闸门不分人 —— 余额不足照样 409，一次外部提交都不发
-            cross = await client.post("/api/assets/analyze/batch", json=payload, headers=h["operator"])
+            cross = await client.post(
+                "/api/assets/analyze/batch",
+                json={**payload, "cross_person_confirm": True}, headers=h["operator"])
             assert cross.status_code == 409, cross.text
             assert cross.json()["detail"]["code"] == "ASSET_BALANCE_BLOCKED"
             cpt.assert_not_awaited()
@@ -1150,12 +1158,14 @@ def test_analyze_blocked_requires_admin_force():
             cpt.assert_not_awaited()
 
             admin_no_force = await client.post(
-                "/api/assets/analyze/batch", json=payload, headers=h["admin"])
+                "/api/assets/analyze/batch",
+                json={**payload, "cross_person_confirm": True}, headers=h["admin"])
             assert admin_no_force.status_code == 409, "admin 不表决心也不放行"
             assert cpt.await_count == 0
 
             admin_force = await client.post(
-                "/api/assets/analyze/batch", json={**payload, "force": True}, headers=h["admin"])
+                "/api/assets/analyze/batch",
+                json={**payload, "force": True, "cross_person_confirm": True}, headers=h["admin"])
             assert admin_force.status_code == 200, admin_force.text
             assert admin_force.json()["gate"]["level"] == "blocked"
             assert len(admin_force.json()["results"]) == 1
@@ -1193,11 +1203,14 @@ def test_analyze_need_approval_only_admin_with_confirmation():
                 "素材专员点了确认也不算放批：这条权力只在 admin"
 
             admin_unconfirmed = await client.post(
-                "/api/assets/analyze/batch", json=payload, headers=h["admin"])
+                "/api/assets/analyze/batch",
+                json={**payload, "cross_person_confirm": True}, headers=h["admin"])
             assert admin_unconfirmed.status_code == 409, "admin 也要先确认成本"
 
             ok = await client.post(
-                "/api/assets/analyze/batch", json={**payload, "confirmed": True}, headers=h["admin"])
+                "/api/assets/analyze/batch",
+                json={**payload, "confirmed": True, "cross_person_confirm": True},
+                headers=h["admin"])
             assert ok.status_code == 200, ok.text
             assert cpt.await_count == 1
 
@@ -2723,7 +2736,8 @@ def test_revoking_approval_supersedes_orders_and_bans_export():
 
         # 覆盖重生成：候选挂着生产单（含作废单）→ 必须拒绝，不能 FK CASCADE 静默删单
         boom = await client.post(
-            "/api/assets/summaries/generate", json={"asset_ids": [asset_id], "overwrite": True}, headers=ha)
+            "/api/assets/summaries/generate",
+            json={"asset_ids": [asset_id], "overwrite": True, "cross_person_confirm": True}, headers=ha)
         assert boom.status_code == 200
         refused_row = boom.json()["results"][0]
         assert refused_row["created"] == 0 and "连坐删单" in refused_row["error"]
@@ -2736,7 +2750,9 @@ def test_revoking_approval_supersedes_orders_and_bans_export():
             await s.commit()
         with patch("app.api.assets._call_autoclip", _fake_autoclip()):
             again = await client.post(
-                "/api/assets/summaries/generate", json={"asset_ids": [asset_id], "overwrite": True}, headers=ha)
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset_id], "overwrite": True, "cross_person_confirm": True},
+                headers=ha)
         assert again.status_code == 200, again.text
         deletes = await _rows(AuditLog, AuditLog.action == "asset.summary.delete")
         assert len(deletes) == 3, "三条旧候选都要有删除留痕"
@@ -5986,10 +6002,16 @@ async def _order_ready_production(client, h, *, url=None, n=1, board_total=1,
 
 
 def _dispatch(client, headers, ids, **extra):
-    """投板口的统一调用形状（默认同步档，用例里按需改 async_mode）。"""
+    """投板口的统一调用形状（默认同步档，用例里按需改 async_mode）。
+
+    `cross_person_confirm: True`：用例的生产单全部挂在素材专员的批次下、
+    操作者是 operator/admin——11-06 拍板②起跨人扣费要确认，用例统一按
+    「已知会」带入（跨人闸门本身由专项用例钉）。
+    """
     return client.post(
         "/api/assets/productions/dispatch",
-        json={"ids": [str(i) for i in ids], "confirm": True, "async_mode": False, **extra},
+        json={"ids": [str(i) for i in ids], "confirm": True, "async_mode": False,
+              "cross_person_confirm": True, **extra},
         headers=headers,
     )
 
@@ -6636,7 +6658,8 @@ def test_dispatch_job_twin_names_the_pool_not_the_model():
         with _board_off(fb):
             dup = await client.post(
                 "/api/assets/productions/dispatch",
-                json={"ids": [pid], "confirm": True, "async_mode": True}, headers=ho,
+                json={"ids": [pid], "confirm": True, "async_mode": True,
+                      "cross_person_confirm": True}, headers=ho,
             )
         assert dup.status_code == 409, dup.text
         detail = dup.json()["detail"]
@@ -7127,6 +7150,8 @@ def test_download_and_preview_kinds_are_in_job_ledger():
     assert assets_api._job_endpoint(assets_api.JOB_PROMPT_PREVIEW)[2] == "备豆包提示词"
     assert "解析费" in assets_api._twin_cost_phrase(assets_api.JOB_DOWNLOAD)
     assert "自动跳过" in assets_api._twin_cost_phrase(assets_api.JOB_PROMPT_PREVIEW)
+
+
 def test_strict_audit_rejects_force_and_waive_when_audit_write_fails():
     """11-06 拍板①：force/waive 类动作审计写失败＝操作被拒；普通动作照旧 fail-soft。
 
@@ -7232,6 +7257,84 @@ def test_strict_audit_rejects_force_and_waive_when_audit_write_fails():
         assert plain.status_code == 200, plain.text
         assert plain.json()["dispatched"] == 1 and len(fb2.creates) == 1
 
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_cross_person_charge_actions_need_confirm_and_are_annotated():
+    """11-06 拍板②：跨人批次的扣费动作先 400 白话点名「替他人批次花钱」，
+    带确认重发后放行，审计里永久记「发起人≠批次主人」。
+
+    钉四件事：
+    1. operator 对素材专员导入的批次发起反推：不带 cross_person_confirm → 400，
+       白话里念出批次导入人（素材专员）；
+    2. 带上确认 → 放行，且 asset.analyze_batch 审计 after 里有 cross_person 清单；
+    3. 自己批次的动作（material 对自己的批次）完全不受影响——不弹确认、
+       审计里 cross_person 为 None；
+    4. 下载（download）同样吃这道闸：跨人 400、确认后放行且审计留痕。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+
+        # 素材专员导入一条链接（批次主人＝素材专员），清掉伪 success 走真实提交分支
+        asset_id, _ = await _make_ready_asset(client, hm)
+        async with dbmod.async_session_factory() as s:
+            a = await s.get(AssetItem, uuid.UUID(asset_id))
+            a.prompt_task_id, a.stage_prompt, a.status = None, "pending", "waiting_prompt"
+            batch_id = a.batch_id
+            await s.commit()
+
+        with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)), \
+             patch("app.api.assets.create_prompt_task", AsyncMock(return_value=_fake_prompt_task())) as cpt:
+            blocked = await client.post(
+                "/api/assets/analyze/batch",
+                json={"asset_ids": [asset_id], "max_duration": 180}, headers=ho)
+            assert blocked.status_code == 400, blocked.text
+            assert "替他人批次花钱" in blocked.json()["detail"]
+            assert "素材专员" in blocked.json()["detail"], "白话必须念出批次导入人，只给批次号让人猜是不行的"
+            assert cpt.await_count == 0, "确认之前一次模型提交都不发"
+
+            ok = await client.post(
+                "/api/assets/analyze/batch",
+                json={"asset_ids": [asset_id], "max_duration": 180, "cross_person_confirm": True},
+                headers=ho)
+        assert ok.status_code == 200, ok.text
+        assert cpt.await_count == 1
+        logs = await _rows(AuditLog, AuditLog.action == "asset.analyze_batch")
+        cross = logs[-1].after["cross_person"]
+        assert len(cross) == 1
+        assert cross[0]["batch_owner"] == "素材专员"
+        assert cross[0]["operator"] == OPERATOR_USER
+        assert cross[0]["batch_id"] == str(batch_id)
+
+        # 自己批次不受影响：material 对自己的批次再反推（重置阶段态），无确认也无 400
+        asset_id3, _ = await _make_ready_asset(client, hm, url="https://example.com/v/cross-own.mp4")
+        async with dbmod.async_session_factory() as s:
+            a3 = await s.get(AssetItem, uuid.UUID(asset_id3))
+            a3.prompt_task_id, a3.stage_prompt, a3.status = None, "pending", "waiting_prompt"
+            await s.commit()
+        with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)), \
+             patch("app.api.assets.create_prompt_task", AsyncMock(return_value=_fake_prompt_task())):
+            own = await client.post(
+                "/api/assets/analyze/batch",
+                json={"asset_ids": [asset_id3], "max_duration": 180}, headers=hm)
+        assert own.status_code == 200, own.text
+        own_logs = await _rows(AuditLog, AuditLog.action == "asset.analyze_batch")
+        assert own_logs[-1].after["cross_person"] is None
+
+        # 下载同样吃这道闸（解析落到付费渠道按 0.01 记账）
+        asset_id2, _ = await _make_ready_asset(client, hm, url="https://example.com/v/cross-dl.mp4")
+        with patch("app.api.assets.dispatch_parse", AsyncMock(side_effect=AssertionError("不该发起解析"))), \
+             patch("app.api.assets.get_downloader") as gd:
+            dl_blocked = await client.post(
+                "/api/assets/download", json={"asset_ids": [asset_id2]}, headers=ho)
+            assert dl_blocked.status_code == 400, dl_blocked.text
+            assert "替他人批次花钱" in dl_blocked.json()["detail"]
+            gd.assert_not_called(), "确认之前连下载器都不该碰"
         await client.aclose()
 
     _run(_scenario())

@@ -11,6 +11,7 @@ import {
   aspectShortText, durationText, isImageAsset, yuan,
 } from './AssetBits';
 import AssetComposeModal from './AssetComposeModal';
+import { withCrossPersonConfirm } from './crossPerson';
 import {
   CategorySelect, CategoryTag, invalidateAssetCategories, useAssetCategories,
 } from './AssetCategoryBits';
@@ -144,7 +145,10 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
     setPlayerBusy(true);
     setPlayerErr(null);
     try {
-      const res = await assetApi.resolveAssets({ asset_ids: [assetId] });
+      const res = await withCrossPersonConfirm((c) =>
+        assetApi.resolveAssets({ asset_ids: [assetId], cross_person_confirm: c }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认：什么都不做
       const item = res.results?.[0];
       if (item?.ok && item.play_url) {
         setPlayer({ url: item.play_url, label: '原站时效直链（约 6 小时内有效）', duration: item.duration });
@@ -252,7 +256,10 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
     if (!assetId) return;
     setResolveBusy(true);
     try {
-      const res = await assetApi.resolveAssets({ asset_ids: [assetId] });
+      const res = await withCrossPersonConfirm((c) =>
+        assetApi.resolveAssets({ asset_ids: [assetId], cross_person_confirm: c }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认：什么都不做
       const item = res.results?.[0];
       if (!item) {
         message.info(res.message);

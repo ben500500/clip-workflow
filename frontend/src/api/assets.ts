@@ -743,6 +743,8 @@ export interface AssetAnalyzeRequest {
   offset?: number;
   /** 本段条数，默认/上限 = ASSET_ANALYZE_MAX_PER_CALL */
   limit?: number | null;
+  /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
+  cross_person_confirm?: boolean;
 }
 
 /** SummaryGenerateRequest */
@@ -763,6 +765,8 @@ export interface AssetSummaryGenerateRequest {
   retry_failed?: boolean;
   /** D-1：true＝提交即回任务号（后台跑，轮询取结果）。页面按钮一律走 true */
   async_mode?: boolean;
+  /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
+  cross_person_confirm?: boolean;
 }
 
 /** RefreshBatchRequest（一次收敛整批在跑的反推任务） */
@@ -783,6 +787,8 @@ export interface AssetResolveRequest {
   limit?: number | null;
   /** ≥2 条时必须为 true */
   confirmed?: boolean;
+  /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
+  cross_person_confirm?: boolean;
 }
 
 /** 批 J：链接素材原片下载（反推默认顺带排上；这里也开放手工批量/失败行重试） */
@@ -790,6 +796,8 @@ export interface AssetDownloadRequest {
   asset_ids?: string[];
   /** D-1：true＝提交即回任务号（AssetJobAck）。页面按钮一律走 true */
   async_mode?: boolean;
+  /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
+  cross_person_confirm?: boolean;
 }
 
 /** 下载逐条明细：失败原因/error 里写了「失败不记账」还是「已按渠道记账」 */
@@ -1546,6 +1554,8 @@ export interface AssetDispatchRequest {
   recover_only?: boolean;
   /** 默认 true（几十分钟的活，页面按钮一律走后台任务）；false 只给脚本与用例 */
   async_mode?: boolean;
+  /** 11-06 拍板②：新建板任务涉及别人导入的批次时必须 true（回收已投的单不花钱，不用这个字段） */
+  cross_person_confirm?: boolean;
 }
 
 /** 闸门挡下/拒投的逐条说明（三堆里除"要投的"以外都是这个形状） */
