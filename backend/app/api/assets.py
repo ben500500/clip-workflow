@@ -3515,7 +3515,15 @@ async def sweep_interrupted_asset_jobs() -> int:
     台账却还挂着 queued/running——一线看到"正在跑"就一直等，等一个永远不会来的结果。
     判 interrupted 而不是失败：这不是业务失败（模型没拒绝、闸门没过），是**我们没跑完**，
     结果不可信，绝不能让前端把这种任务的 result 当数据用。
+
+    例外（11-06 P2）：`kind=frames` 的任务**原行重排**不判死——抽帧免费、幂等
+    （已有帧默认跳过，force 才重抽），重启把它打死纯属运气不好；判成 interrupted
+    反而留下"要人手工补"的假终态。做法：状态拨回 queued、清 error/finished_at，
+    commit 后按原 params 重新调度（`_run_asset_job` 自己会摘掉 async_mode 防套娃，
+    params 里的原请求体就是重放口径）。提交人已删的 frames 任务还是判 interrupted，
+    否则会在后台空转一圈记 failed，一线更看不懂。返回值只数**判死**的，重排的不算。
     """
+    requeue: List[Tuple[str, str, Dict[str, Any], str]] = []
     async with _database.async_session_factory() as db:
         rows = list(
             (
@@ -3523,13 +3531,25 @@ async def sweep_interrupted_asset_jobs() -> int:
             ).scalars().all()
         )
         for job in rows:
+            if job.kind == JOB_FRAMES and job.created_by is not None:
+                # 属性要在 commit 前取走：session 默认 expire_on_commit，分离后读属性会炸
+                requeue.append((str(job.id), job.kind, dict(job.params or {}), str(job.created_by)))
+                job.status = JB_QUEUED
+                job.error = None
+                job.finished_at = None
+                continue
             job.status = JB_INTERRUPTED
             job.error = "服务重启，任务没能跑完，结果不可信——需要重做请重新提交"
             job.finished_at = datetime.utcnow()
         await db.commit()
         if rows:
-            logger.warning("素材库启动清扫：%d 个在跑/排队的后台任务已标记中断", len(rows))
-        return len(rows)
+            logger.warning(
+                "素材库启动清扫：%d 个在跑/排队的后台任务已标记中断（frames 原行重排 %d 个）",
+                len(rows) - len(requeue), len(requeue),
+            )
+    for job_id, kind, params, operator_id in requeue:
+        _schedule_asset_job(job_id, kind, params, operator_id)
+    return len(rows) - len(requeue)
 
 
 @router.get("/assets/jobs")

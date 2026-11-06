@@ -4071,6 +4071,59 @@ def test_startup_sweep_marks_open_jobs_interrupted():
     _run(_scenario())
 
 
+def test_startup_sweep_requeues_frames_jobs_and_interrupts_the_rest():
+    """P2-1（11-06）：进程重启打死的 frames 任务**原行重排**，不留下假终态。
+
+    frames 免费＋幂等（已有帧默认跳过），重启被打断纯属运气不好，判 interrupted
+    等于让人手工补一单；其它 kind（出文案/投产要花钱、有闸门口径）必须保持判死——
+    启动清扫绝不能把带豁免理由、带成本确认的提交偷偷重放一遍。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        admin_uid = (await _rows(User, User.username == ADMIN_USER))[0].id
+        async with dbmod.async_session_factory() as s:
+            s.add_all([
+                AssetJob(kind=JOB_FRAMES, status=JB_RUNNING,
+                         params={"asset_ids": ["aa"], "output_ids": [], "async_mode": True},
+                         created_by=admin_uid),
+                AssetJob(kind=JOB_FRAMES, status=JB_QUEUED,
+                         params={"asset_ids": [], "output_ids": ["bb"], "async_mode": True},
+                         created_by=admin_uid),
+                AssetJob(kind=JOB_FRAMES, status=JB_QUEUED, params={"asset_ids": []}, created_by=None),
+                AssetJob(kind=JOB_SUMMARY_GENERATE, status=JB_RUNNING,
+                         params={"asset_ids": [str(admin_uid)]}, created_by=admin_uid),
+            ])
+            await s.commit()
+
+        scheduled: list = []
+        with patch.object(assets_api, "_schedule_asset_job", lambda *a: scheduled.append(a)):
+            swept = await assets_api.sweep_interrupted_asset_jobs()
+        # 只有「非 frames」的 2 条判死（出文案 ＋ 没提交人的 frames）；frames 两条重排不计入
+        assert swept == 2, swept
+        interrupted = await _rows(AssetJob, AssetJob.status == JB_INTERRUPTED)
+        assert {j.kind for j in interrupted} == {JOB_SUMMARY_GENERATE, JOB_FRAMES}
+        assert all("重启" in j.error for j in interrupted)
+
+        requeued = await _rows(AssetJob, AssetJob.status == JB_QUEUED)
+        assert len(requeued) == 2 and all(j.kind == JOB_FRAMES for j in requeued)
+        assert all(j.error is None and j.finished_at is None for j in requeued), "重排要清掉终态痕迹"
+        assert all(j.params.get("async_mode") is True for j in requeued), "params 原样保留（重放口径不变）"
+
+        # 重排走的是**原行**调度，不是新开一行：台账里没有多出任何新任务
+        assert len(scheduled) == 2
+        assert {a[0] for a in scheduled} == {str(j.id) for j in requeued}
+        assert all(a[1] == JOB_FRAMES for a in scheduled)
+        total = await _count(AssetJob)
+        assert total == 4, f"重排不该新建台账行，现在 {total} 行"
+
+        await client.aclose()
+
+    _run(_scenario())
+
+
 # ─────────────────────────────────────────────────────────────
 # 11-04 拍板①：钩子原型字典（asset_categories ＋ 素材/文案 category_id）
 # ─────────────────────────────────────────────────────────────
