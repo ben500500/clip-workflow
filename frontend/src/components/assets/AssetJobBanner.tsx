@@ -11,6 +11,17 @@ const { Text } = Typography;
 const POLL_MS = 8000;
 
 /**
+ * 批 N（评审二·P1-6）：interrupted 的重提出口。台账里存着提交时的原请求体（params），
+ * 但「一键原样重提」对 dispatch 这类烧号池的动作等于绕过逐批人工确认——不做。
+ * 给的是**跳原入口**：去对应页签重新点一次（那一步本来就该由人点）。
+ */
+export const RESUBMIT_TARGET: Record<string, { tab: string; label: string }> = {
+  summary_generate: { tab: 'assets', label: '去素材列表重出文案' },
+  produce: { tab: 'production', label: '去生产单页重新开单' },
+  dispatch: { tab: 'production', label: '去生产单页重新投板' },
+};
+
+/**
  * 挂着的横幅（页面里只有一枚，但用 Set 以防哪天多处复用）。
  *
  * 为什么要这个口子：**只靠 8 秒定轮的话，刚点完"出文案/生成生产单"最长有 8 秒界面一片安静**，
@@ -40,7 +51,12 @@ export const nudgeAssetJobBanner = () => {
  *  - **刚提交完立刻补查**（`nudgeAssetJobBanner`）：不然提交后最长 8 秒没人知道自己点了什么；
  *  - 「已中断」不当成功也不当失败，是**我们没跑完**：结果不可信，必须让人重新提交。
  */
-const AssetJobBanner: React.FC<{ onSettled?: (job: AssetJobInfo) => void }> = ({ onSettled }) => {
+/** 后台任务横幅（D-1）。 */
+const AssetJobBanner: React.FC<{
+  onSettled?: (job: AssetJobInfo) => void;
+  /** 批 N（评审二 P1-6）：interrupted 的一键「去重提」——由页面层切到对应页签 */
+  onGoToTab?: (key: string) => void;
+}> = ({ onSettled, onGoToTab }) => {
   const [jobs, setJobs] = useState<AssetJobInfo[]>([]);
   const [collapsed, setCollapsed] = useState(false);
   // 上一轮还在跑的 job id：这一轮少了哪个，就说明它终态了，去把它捞出来回调一次
@@ -73,7 +89,12 @@ const AssetJobBanner: React.FC<{ onSettled?: (job: AssetJobInfo) => void }> = ({
 
   useEffect(() => {
     void tick();
-    const timer = setInterval(() => void tick(), POLL_MS);
+    const timer = setInterval(() => {
+      // 批 M（评审二·P2）：页面在后台时暂停轮询（与生产单页 10s 刷新同一口径）——
+      // 8 秒一次的后台轮询既费接口也不会有人看。回前台下一轮立即补上。
+      if (document.hidden) return;
+      void tick();
+    }, POLL_MS);
     return () => clearInterval(timer);
   }, [tick]);
 
@@ -102,13 +123,28 @@ const AssetJobBanner: React.FC<{ onSettled?: (job: AssetJobInfo) => void }> = ({
               const done = j.progress?.done ?? null;
               const totalUnits = j.planned_units ?? j.progress?.total ?? null;
               const started = j.created_at ? parseServerTime(j.created_at)?.format('HH:mm:ss') : '';
+              const resubmit = j.status === 'interrupted' ? RESUBMIT_TARGET[j.kind] : undefined;
               return (
-                <Text key={j.id} style={{ fontSize: 12 }}>
-                  「{j.kind_label}」{j.status_label}
-                  {done !== null && totalUnits !== null ? `（已收敛 ${done}/${totalUnits} 条）` : ''}
-                  {started ? ` · ${started} 提交` : ''}
-                  {j.status === 'interrupted' ? ' · 这条的结果不可信，需要重新提交' : ''}
-                </Text>
+                <div key={j.id}>
+                  <Text style={{ fontSize: 12 }}>
+                    「{j.kind_label}」{j.status_label}
+                    {done !== null && totalUnits !== null ? `（已收敛 ${done}/${totalUnits} 条）` : ''}
+                    {started ? ` · ${started} 提交` : ''}
+                    {j.status === 'interrupted' ? ' · 这条的结果不可信，需要重新提交' : ''}
+                  </Text>
+                  {resubmit && onGoToTab && (
+                    // interrupted 不是失败也不是成功：是我们没跑完。指到原入口让人重新点，
+                    // 别只留一句"结果不可信"没有下一步。
+                    <Button
+                      size="small"
+                      type="link"
+                      style={{ padding: '0 0 0 6px', fontSize: 12 }}
+                      onClick={() => onGoToTab(resubmit.tab)}
+                    >
+                      {resubmit.label} →
+                    </Button>
+                  )}
+                </div>
               );
             })}
         </Space>

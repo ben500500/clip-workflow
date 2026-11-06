@@ -196,7 +196,8 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
         </a>
       ),
     },
-    { title: '名称', dataIndex: 'name', ellipsis: true, render: (v: string | null) => v || '-' },
+    // 批 N（评审二·P2）：给名称定宽＋ellipsis——原来不定宽，被其它列挤压后整列只剩两三个字
+    { title: '名称', dataIndex: 'name', width: 150, ellipsis: true, render: (v: string | null) => v || '-' },
     {
       title: '来路',
       dataIndex: 'source_kind',
@@ -205,9 +206,10 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
     },
     { title: '条数', dataIndex: 'item_count', width: 66 },
     {
+      // 批 N（评审二·P2）：width 70 装不下四个字的表头（折行成两行）
       title: '时长上限',
       dataIndex: 'prompt_max_duration',
-      width: 70,
+      width: 88,
       render: (v: number | null) => (v ? `${v}s` : '未定'),
     },
     {

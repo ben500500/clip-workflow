@@ -33,7 +33,7 @@ const uniq = (arr: string[]): string[] => Array.from(new Set(arr));
  *
  * 这份词表就是审核台「自动检查」列那两行标签的来源：block 命中即不许过审、也导不出去，
  * warn 只提醒。词表存在 system_config（`asset_risk_lexicon`），
- * **改词不用发版**，但只有 admin 能改——它等于投放闸门，运营加词是加严，
+ * **改词不用发版**，但只有 admin 能改——它等于投板闸门，运营加词是加严，
  * 写错一个词会把一线正常文案全拦死。
  *
  * 三层要分清：

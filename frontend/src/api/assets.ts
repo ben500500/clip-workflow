@@ -1025,6 +1025,8 @@ export interface AssetSummaryListParams {
    * 传 `'none'` ＝只看未分类。
    */
   category_id?: string;
+  /** 批 N（评审二 P1）：关键词搜索——正文/素材码模糊匹配（后端 ILIKE，已转义 %/_） */
+  q?: string;
 }
 
 /** GET /assets/productions（注意：dispatch.by_status 不受 status= 影响） */
@@ -2445,7 +2447,7 @@ export const PRODUCTION_STATE_LABELS: Record<ProductionState, string> = {
   running: '正在出片',
   awaiting_rewrite: '要求改写',
   success: '出片成功',
-  failed: '投放失败',
+  failed: '投板失败',
   cancelled: '已取消',
   skipped: '已跳过',
   superseded: '已作废',

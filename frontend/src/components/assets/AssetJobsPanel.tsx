@@ -10,6 +10,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Card, Checkbox, Drawer, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ReloadOutlined } from '@ant-design/icons';
+import { RESUBMIT_TARGET } from './AssetJobBanner';
 import type { AssetJobInfo, AssetJobKind, AssetJobStatus } from '../../api/assets';
 import { assetApi } from '../../api/assets';
 // 任务表里存的是 UTC 裸时间（datetime.utcnow），必须按 UTC 解析再转本地显示——
@@ -69,7 +70,8 @@ const fmtTime = (iso: string | null): string => {
   return d ? d.format('MM-DD HH:mm') : '—';
 };
 
-const AssetJobsPanel: React.FC = () => {
+/** 批 N（评审二 P1-6）：interrupted 行的「回哪儿重提」由页面层切页签（与横幅同一张跳转表） */
+const AssetJobsPanel: React.FC<{ onGoToTab?: (key: string) => void }> = ({ onGoToTab }) => {
   const [items, setItems] = useState<AssetJobInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [kind, setKind] = useState<AssetJobKind | undefined>();
@@ -157,10 +159,20 @@ const AssetJobsPanel: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 80,
-      render: (_, row: AssetJobInfo) => (
-        <a onClick={() => setDetail(row)}>{resultRowsVisible(row) ? '明细' : '详情'}</a>
-      ),
+      width: 150,
+      render: (_, row: AssetJobInfo) => {
+        const resubmit = row.status === 'interrupted' ? RESUBMIT_TARGET[row.kind] : undefined;
+        return (
+          <Space size={8}>
+            <a onClick={() => setDetail(row)}>{resultRowsVisible(row) ? '明细' : '详情'}</a>
+            {resubmit && onGoToTab && (
+              // interrupted＝我们没跑完，结果不可信。重放请求等于绕过逐批人工确认
+              // （尤其 dispatch），所以只指路不代点：去原页签重新由人点一次。
+              <a onClick={() => onGoToTab(resubmit.tab)}>{resubmit.label} →</a>
+            )}
+          </Space>
+        );
+      },
     },
   ];
 

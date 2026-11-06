@@ -43,6 +43,9 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
   // 批 L：就地上传。串行链防并发建批——第一张没建上批次第二张就发出，会裂成两个批次
   const [uploading, setUploading] = useState(false);
   const chainRef = useRef<Promise<unknown>>(Promise.resolve());
+  // 批 M（评审二·P2）：排队的上传张数。原来每段 .finally 都 setUploading(false)——
+  // 第二张还在传时第一张完成就把 loading 灯提前熄了，看起来像传完其实没有。
+  const pendingUploads = useRef(0);
   const valueRef = useRef(value);
   valueRef.current = value;
   const [reloadTick, setReloadTick] = useState(0);
@@ -140,6 +143,7 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
   /** 批 L：就地上传角色卡。逐张串行（没有 batch_id 时第一张要先建上批次，
    *  并发第二张会裂成两个批次）；成功即入库＋自动排进已选卡末尾＋刷新列表。 */
   const uploadCard = (file: File) => {
+    pendingUploads.current += 1;
     setUploading(true);
     chainRef.current = chainRef.current
       .then(() =>
@@ -167,7 +171,14 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
         (res.failed || []).forEach((f) => message.error(`${f.file_name} 没传上：${f.error}`));
       })
       .catch((e) => message.error((e as Error).message || '角色卡上传失败'))
-      .finally(() => setUploading(false));
+      .finally(() => {
+        // 只有整条链都排空了才熄灯（评审二·P2：否则排队中的第二张会没灯）
+        pendingUploads.current -= 1;
+        if (pendingUploads.current <= 0) {
+          pendingUploads.current = 0;
+          setUploading(false);
+        }
+      });
   };
 
   return (

@@ -38,6 +38,11 @@ const AssetLibrary: React.FC = () => {
    */
   const [reloadToken, setReloadToken] = useState(0);
   /**
+   * 批 N（评审二·P0-2）：页签受控。投产成功后「去生产单列表」按钮承诺了带人过去，
+   * 就得真能切过去——审核台的投产弹窗 onDone 会调 onGoToProduction 切到本页签。
+   */
+  const [activeTab, setActiveTab] = useState<string>('assets');
+  /**
    * 钩子原型字典抽屉：入口只在这张顶部卡片放**一处**（四个页签都看得到），
    * 面板里只做筛选和点原型，不再各挂一份抽屉——两处入口迟早变成一个新版本一个旧版本。
    */
@@ -73,7 +78,14 @@ const AssetLibrary: React.FC = () => {
         message.success(`「${job.kind_label}」后台跑完了，列表已刷新（任务号 ${job.id.slice(0, 8)}）`, 6);
       }
     } else if (job.status === 'interrupted') {
-      message.warning(`「${job.kind_label}」被服务重启打断，结果不可信，需要重新提交`, 8);
+      // 批 N（评审二 P1-6）：不只说"需要重新提交"，把去哪重提说清（横幅行上也有跳转按钮）
+      const tabHint =
+        job.kind === 'summary_generate'
+          ? '去「素材列表」重新出'
+          : job.kind === 'produce' || job.kind === 'dispatch'
+            ? '去「生产单与投板」页签重新点'
+            : '去对应页签重新提交';
+      message.warning(`「${job.kind_label}」被服务重启打断，结果不可信——${tabHint}（任务号 ${job.id.slice(0, 8)}）`, 10);
     } else {
       message.error(
         `「${job.kind_label}」没跑成：${job.error || '逐条原因看素材行上的阶段标签（红＝失败，可重试）'}（任务号 ${job.id.slice(0, 8)}）`,
@@ -90,7 +102,7 @@ const AssetLibrary: React.FC = () => {
   const roleHint = useMemo(() => {
     if (!role) return null;
     if (isAdmin) return <Tag color="red">管理员：全部操作都能做，包括余额不够时强行提交、检查不过时带理由放行</Tag>;
-    if (role === 'operator') return <Tag color="orange">运营：可导入、可反推文案、可审核过审、可出生产单与登记投放结果</Tag>;
+    if (role === 'operator') return <Tag color="orange">运营：可导入、可反推文案、可审核过审、可出生产单与登记投板结果</Tag>;
     return <Tag color="blue">素材专员：可导入/读视频/出文案，不能审自己写的文案、不能出生产单（审核台与生产单只读）</Tag>;
   }, [isAdmin, role]);
 
@@ -123,17 +135,18 @@ const AssetLibrary: React.FC = () => {
           isAdmin={isAdmin}
           batchId={batchId}
           reloadToken={reloadToken}
+          onGoToProduction={() => setActiveTab('production')}
         />
       ),
     },
     {
       key: 'jobs',
       label: '后台任务',
-      children: <AssetJobsPanel />,
+      children: <AssetJobsPanel onGoToTab={setActiveTab} />,
     },
     {
       key: 'production',
-      label: '生产单与投放',
+      label: '生产单与投板',
       children: (
         <AssetProductionPanel
           key={`prod-${batchId ?? 'all'}`}
@@ -183,9 +196,9 @@ const AssetLibrary: React.FC = () => {
         </Space>
       </Card>
 
-      <AssetJobBanner onSettled={onJobSettled} />
+      <AssetJobBanner onSettled={onJobSettled} onGoToTab={setActiveTab} />
 
-      <Tabs items={items} />
+      <Tabs items={items} activeKey={activeTab} onChange={setActiveTab} />
 
       <AssetCategoryDrawer open={catOpen} onClose={() => setCatOpen(false)} />
     </Space>

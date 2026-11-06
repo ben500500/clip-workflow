@@ -7,10 +7,10 @@ import {
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import {
-  DISPATCH_REPORT_STATUSES, PRODUCTION_STATE_LABELS, assetApi, isAssetJobAck,
+  AUDIT_STATUS_LABELS, DISPATCH_REPORT_STATUSES, PRODUCTION_STATE_LABELS, assetApi, isAssetJobAck,
 } from '../../api/assets';
 import type {
-  AssetDispatchAck, AssetDispatchResponse, AssetDispatchCounts, AssetExportJson, AssetExportPayload, AssetExportTxt,
+  AssetBatch, AssetDispatchAck, AssetDispatchResponse, AssetDispatchCounts, AssetExportJson, AssetExportPayload, AssetExportTxt,
   AssetOutput, AssetOutputPreviewResult, AssetProduction, AssetSummary, DispatchReportStatus, ProductionState,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
@@ -22,7 +22,7 @@ import { MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
 const { Text, Paragraph } = Typography;
 
 interface Props {
-  /** 投放结果登记与投产同侧：operator + admin */
+  /** 投板结果登记与投产同侧：operator + admin */
   canWriteBack: boolean;
   /** 「带违禁词强行导出」只有 admin 能做（后端同一道闸，前端只决定按钮给不给） */
   isAdmin: boolean;
@@ -33,6 +33,13 @@ interface Props {
 
 const rate = (v: number | null | undefined) =>
   v === null || v === undefined ? '—（还没有终态样本）' : `${Math.round(v * 100)}%`;
+
+/**
+ * 批 M（评审一·P1-3）：fetchList 的请求序号守卫（模块级，两个面板同一套）。
+ * 筛选变更和 10s 静默轮询并发时，慢的新筛选回包可能被旧的覆盖——表格与筛选条件
+ * 持续对不上。同文件 hookCodesUsed 已经用 reqId 防乱序（本仓现成模式），fetchList 没跟上。
+ */
+let listReqSeq = 0;
 
 /** 批 L：板面行状态 → 人话（board.readback 的 status 词直接透传，多版单会拼成「waiting/running」串） */
 const BOARD_ROW_STATUS_TEXT: Record<string, string> = {
@@ -124,6 +131,44 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const [approvedLoading, setApprovedLoading] = useState(false);
   const [approvedSel, setApprovedSel] = useState<AssetSummary[]>([]);
   const [produceOpen, setProduceOpen] = useState(false);
+  // 批 N（评审二·P1-2）：挑选器加批次筛选＋截断提示——原来只拉 approved/passed_edited
+  // 各 300 条无翻页无提示，量大时找文案像翻相册。
+  const [approvedBatch, setApprovedBatch] = useState<string | undefined>();
+  const [approvedTotal, setApprovedTotal] = useState(0);
+  const [approvedTruncated, setApprovedTruncated] = useState(false);
+  const [batches, setBatches] = useState<AssetBatch[]>([]);
+
+  useEffect(() => {
+    // 批次下拉拿不到不影响开单，静默
+    assetApi.listBatches({ limit: 100 }).then((r) => setBatches(r.items || [])).catch(() => {});
+  }, []);
+
+  const fetchApproved = useCallback(async (batch?: string) => {
+    setApprovedLoading(true);
+    try {
+      const [a, b] = await Promise.all([
+        assetApi.listSummaries({ audit_status: 'approved', page_size: 300, batch_id: batch }),
+        assetApi.listSummaries({ audit_status: 'passed_edited', page_size: 300, batch_id: batch }),
+      ]);
+      const merged = [...(a.items || []), ...(b.items || [])].sort((x, y) =>
+        (y.reviewed_at || '').localeCompare(x.reviewed_at || ''),
+      );
+      setApprovedRows(merged);
+      setApprovedTotal((a.total || 0) + (b.total || 0));
+      setApprovedTruncated(
+        (a.total || 0) > (a.items?.length || 0) || (b.total || 0) > (b.items?.length || 0),
+      );
+    } catch (e) {
+      message.error((e as Error).message || '过审文案列表拉不到');
+    } finally {
+      setApprovedLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!approvedOpen) return;
+    void fetchApproved(approvedBatch);
+  }, [approvedOpen, approvedBatch, fetchApproved]);
 
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
 
@@ -169,6 +214,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const fetchList = useCallback(
     // 批 L：silent=true＝进度轮询专用——不点 loading 灯，10 秒一刷不闪表格
     async (p: number = page, ps: number = pageSize, silent: boolean = false) => {
+      const reqId = ++listReqSeq;
       if (!silent) setLoading(true);
       try {
         const res = await assetApi.listProductions({
@@ -178,14 +224,15 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           batch_id: batchFilter,
           asset_id: assetFilter,
         });
+        if (reqId !== listReqSeq) return; // 已有更新的请求在途，旧回包作废（评审一·P1-3）
         setItems(res.items || []);
         setTotal(res.total || 0);
         setPage(res.page || p);
         setDispatch(res.dispatch || null);
       } catch (e) {
-        message.error((e as Error).message || '加载生产单失败');
+        if (reqId === listReqSeq) message.error((e as Error).message || '加载生产单失败');
       } finally {
-        setLoading(false);
+        if (reqId === listReqSeq) setLoading(false);
       }
     },
     [status, batchFilter, assetFilter, page, pageSize],
@@ -219,24 +266,40 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   // 批 I：补账对象＝行级入口点的那一行；顶部批量入口没指定就还是整页勾选
   const writeRows = writeTarget ?? selected;
 
-  /** 批 L：拉全部过审文案（approved + passed_edited 两态合并，按过审时间倒序） */
-  const openApprovedPicker = async () => {
+  /**
+   * 批 L：拉全部过审文案（approved + passed_edited 两态合并，按过审时间倒序）。
+   * 批 N（评审二·P1-2）：拉取挪进 effect（随批次筛选重拉），这里只负责开窗。
+   */
+  const openApprovedPicker = () => {
     setApprovedOpen(true);
-    setApprovedLoading(true);
     setApprovedSel([]);
+    setApprovedBatch(undefined);
+  };
+
+  /**
+   * 批 N（评审二·P0-1）：失败单的活路——按同文案重开单。
+   * 投板闸门拦 failed 是对的（重投与否要人判读，写进闸门的纪律），要修的是
+   * 「失败行上没有任何指向」。失败单本身留档不动；文案已被撤审/驳回时如实拦下。
+   */
+  const reopenFromFailed = async (r: AssetProduction) => {
     try {
-      const [a, b] = await Promise.all([
-        assetApi.listSummaries({ audit_status: 'approved', page_size: 300 }),
-        assetApi.listSummaries({ audit_status: 'passed_edited', page_size: 300 }),
-      ]);
-      const merged = [...(a.items || []), ...(b.items || [])].sort((x, y) =>
-        (y.reviewed_at || '').localeCompare(x.reviewed_at || ''),
-      );
-      setApprovedRows(merged);
+      const res = await assetApi.listSummaries({ asset_id: r.asset_id, page_size: 200 });
+      const hit = (res.items || []).find((s) => s.id === r.summary_id);
+      if (!hit) {
+        message.warning('这条单的过审文案在库里找不到了（可能随素材删除），开不了单');
+        return;
+      }
+      if (hit.audit_status !== 'approved' && hit.audit_status !== 'passed_edited') {
+        message.warning(
+          `这条文案现在是「${AUDIT_STATUS_LABELS[hit.audit_status]}」，不是过审态——先回审核台把它重新过审，再从这里开单`,
+          8,
+        );
+        return;
+      }
+      setApprovedSel([hit]);
+      setProduceOpen(true);
     } catch (e) {
-      message.error((e as Error).message || '过审文案列表拉不到');
-    } finally {
-      setApprovedLoading(false);
+      message.error((e as Error).message || '取原过审文案失败');
     }
   };
 
@@ -284,7 +347,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                       </Text>
                     ))}
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      允许的迁移：待投放→任意；已投→出片中/成功/失败；出片中→成功/失败；失败→重投或改判成功；成功→只允许改判失败（成片回收后发现不可用，必须写成因）。
+                      允许的迁移：还没投→任意；已投→出片中/成功/失败；出片中→成功/失败；失败→重投或改判成功；成功→只允许改判失败（成片回收后发现不可用，必须写成因）。
                     </Text>
                   </Space>
                 }
@@ -294,8 +357,15 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         ),
       });
       setWriteOpen(false);
-      setWriteTarget(null);
-      setSelected([]);
+      // 批 M（评审一·P1-2）：成功后只清本次补账相关的勾选——行级补账（writeTarget）
+      // 不该把整页勾选一并端掉；批量补账（没指定行）才清全部。
+      if (writeTarget) {
+        const target = writeTarget;
+        setSelected((prev) => prev.filter((p) => !target.some((t) => t.id === p.id)));
+        setWriteTarget(null);
+      } else {
+        setSelected([]);
+      }
       fetchList(page, pageSize);
     } catch (e) {
       message.error((e as Error).message || '补记失败');
@@ -538,8 +608,14 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     }
   };
 
-  const copyText = (text: string, label: string) => {    navigator.clipboard.writeText(text);
-    message.success(`${label}已复制到剪贴板`);
+  const copyText = async (text: string, label: string) => {
+    // 批 M（评审二·P2）：原来不 await 也没 catch——失败照样喊「已复制」。
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success(`${label}已复制到剪贴板`);
+    } catch {
+      message.error(`${label}复制失败：浏览器没给剪贴板权限，请手动选择复制`);
+    }
   };
 
   const download = (name: string, text: string) => {
@@ -593,7 +669,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
       render: (v: ProductionState, r) => (
         <Space direction="vertical" size={0}>
           <ProductionStateTag status={v} />
-          {/* 批 L（投放进度可视化）：投放中的单子把板侧进度带出来——「排队中/出片中」
+          {/* 批 L（投放进度可视化）：投板在跑的单子把板侧进度带出来——「排队中/出片中」
               是板面行状态的人话，检查时间是轮询活着的证据。终态后这两行自动消失。 */}
           {(v === 'queued' || v === 'running') && r.board_last_status && (
             <Text type="secondary" style={{ fontSize: 12 }}>
@@ -691,6 +767,16 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
               <Dropdown
                 menu={{
                   items: [
+                    // 批 N（评审二·P0-1）：失败行的出路——同文案重开单（原单留档不动）
+                    ...(r.status === 'failed'
+                      ? [
+                          {
+                            key: 'reopen',
+                            label: '按同文案重开单（原单留档不动）',
+                            onClick: () => void reopenFromFailed(r),
+                          },
+                        ]
+                      : []),
                     {
                       key: 'wb',
                       label: '补记手工投板结果',
@@ -716,7 +802,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           <Statistic title="生产单" value={dispatch?.total ?? 0} />
         </Col>
         <Col span={4}>
-          <Statistic title="待投放" value={dispatch?.order_ready ?? 0} />
+          <Statistic title="还没投" value={dispatch?.order_ready ?? 0} />
         </Col>
         <Col span={4}>
           <Statistic title="已投" value={dispatch?.dispatched ?? 0} />
@@ -867,7 +953,9 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         loading={loading}
         columns={columns}
         dataSource={items}
-        scroll={{ x: 1250 }}
+        // 批 N（评审二·P2）：1440 宽下「成片」列被视口截半——横向滚动给足，
+        // 别让最后一列（成片/操作）永远探不进去。
+        scroll={{ x: 1500 }}
         rowSelection={
           canWriteBack
             ? {
@@ -921,7 +1009,9 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           <Input
             placeholder="board_tid（回读主键，多条时留空）"
             value={writeTid}
-            disabled={ids.length > 1}
+            // 批 M（评审一·P1-2）：禁用条件原来判整页勾选数（ids.length），而本弹窗
+            // 的对象是 writeRows——勾了多行再走行级补账，单行补账的 tid 输入被错误禁用。
+            disabled={writeRows.length > 1}
             onChange={(e) => setWriteTid(e.target.value)}
           />
           <Alert
@@ -1053,7 +1143,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
               <span style={{ fontSize: 12 }}>
                 {dispatchRecoverOnly
                   ? '进程重启把在等的任务带走后，用它把片子取回来；同一条 outUrl 不重复落产物。'
-                  : '闸门与导出同一套：待投放、提示词与过审文案同一条、高风险词重扫（admin 可带理由放行）；已投的单只回读不重建。'}
+                  : '闸门与导出同一套：还没投（order_ready）、提示词与过审文案同一条、高风险词重扫（admin 可带理由放行）；已投的单只回读不重建。'}
               </span>
             }
           />
@@ -1353,7 +1443,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                       )}
                       {!isAdmin && (exportData as AssetExportJson).risk_recheck!.blocked.length > 0 && (
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          要放行得找管理员（谁能导、谁不能导是审核口径定的，不是投放这边自己判）；
+                          要放行得找管理员（谁能导、谁不能导是审核口径定的，不是投板这边自己判）；
                           或者回去改文案、重新投产。
                         </Text>
                       )}
@@ -1482,6 +1572,36 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           </Space>
         }
       >
+        <Space direction="vertical" size={8} style={{ width: '100%', marginBottom: 8 }}>
+          {/* 批 N（评审二·P1-2）：加批次筛选——量大时找文案不能靠翻相册 */}
+          <Space wrap size={8}>
+            <Select
+              style={{ width: 260 }}
+              placeholder="按批次筛选（可选）"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              value={approvedBatch}
+              onChange={setApprovedBatch}
+              loading={approvedLoading}
+              options={batches.map((b) => ({
+                value: b.id,
+                label: `${b.code} · ${b.name || '未命名'}（${b.item_count ?? 0} 条）`,
+              }))}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              共 {approvedTotal} 条过审文案
+            </Text>
+          </Space>
+          {approvedTruncated && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 0 }}
+              message="过审文案太多，这里只列最近的一部分（两态各 300 条）——用上面的批次筛选缩小范围，或回生产单页带批次条件开单"
+            />
+          )}
+        </Space>
         <Table<AssetSummary>
           rowKey="id"
           size="small"

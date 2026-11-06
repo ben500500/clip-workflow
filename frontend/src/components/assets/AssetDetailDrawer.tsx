@@ -887,7 +887,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                             style={{ marginBottom: 0, fontSize: 12 }}
                             ellipsis={{ rows: 2, expandable: 'collapsible', symbol: (expanded) => (expanded ? '收起' : '展开') }}
                           >
-                            {p.prompt_text || '（正文为空：已作废或投放失败的单，不提供正文）'}
+                            {p.prompt_text || '（正文为空：已作废或投板失败的单，不提供正文）'}
                           </Paragraph>
                           {p.dispatch_note && (
                             // 不再自己加「投放要求：」前缀——存进来的正文第一句本就是
@@ -965,7 +965,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
           <Text type="secondary" style={{ fontSize: 12 }}>
             {isImageAsset(asset)
               ? '图片链路：导入 → 入库 → 投产时被挑成角色卡（画幅由卡的宽高比决定）。'
-              : '链路：导入 → 反推文案稿 → 出钩子文案 → 审核 → 生产单 → 导出/投板 → 登记投放结果 → 拼接产物。'}
+              : '链路：导入 → 反推文案稿 → 出钩子文案 → 审核 → 生产单 → 导出/投板 → 登记投板结果 → 拼接产物。'}
           </Text>
           <AssetComposeModal
             open={composeOpen}

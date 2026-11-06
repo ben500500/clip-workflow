@@ -286,8 +286,8 @@ const AssetOutputWall: React.FC<Props> = ({ batchId, reloadToken }) => {
         <Empty
           description={
             qcFilter || batchFilter
-              ? '这个筛选条件下没有成片。清掉筛选试试，或者先去「生产单与投放」投板回收。'
-              : '还没有成片。去「生产单与投放」投板，片子回收回来就摆在这里。'
+              ? '这个筛选条件下没有成片。清掉筛选试试，或者先去「生产单与投板」投板回收。'
+              : '还没有成片。去「生产单与投板」投板，片子回收回来就摆在这里。'
           }
         />
       ) : (

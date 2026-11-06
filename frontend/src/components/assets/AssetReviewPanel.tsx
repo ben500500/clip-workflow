@@ -44,6 +44,11 @@ interface Props {
   batchId?: string;
   /** 后台出文案任务收敛后自增（D-1）：新候选是后端落库的，只能重新拉一次才看得到 */
   reloadToken?: number;
+  /**
+   * 批 N（评审二·P0-2）：投产成功后「去生产单列表」要真能带人过去——
+   * 由页面层（AssetLibrary）传页签切换回调进来。
+   */
+  onGoToProduction?: () => void;
 }
 
 /**
@@ -63,7 +68,7 @@ interface Props {
  * 表格外壳留着只是为了 rowSelection 和分页，列定义合成一格。
  * 帧是纯呈现层：`GET /assets/frames` 拉不到就当没图，审核动作照点。
  */
-const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken }) => {
+const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken, onGoToProduction }) => {
   const [data, setData] = useState<AssetSummaryListResult | null>(null);
   const [items, setItems] = useState<AssetSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -73,6 +78,10 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
   const [busy, setBusy] = useState(false);
 
   const [auditStatus, setAuditStatus] = useState<string | undefined>('pending');
+  /**
+   * 批 N（评审二 P1）：关键词搜索（正文/素材码，后端 ILIKE）。与其它筛选叠加。
+   */
+  const [keyword, setKeyword] = useState('');
   /**
    * 三个筛选项**互斥**（11-04 用户纠正）：一次只看一类。
    * 之前是三个独立勾选框，能同时勾，勾出来的是「推荐条 且 命中违禁词 且 和原视频对不上」
@@ -138,8 +147,12 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
     loadBatches();
   }, [loadBatches]);
 
+  // 批 M（评审一·P1-3）：fetchList 请求序号守卫——筛选变更与 reloadToken 重拉并发时，
+  // 慢的新筛选回包可能被旧的覆盖。与生产单面板同一套模式（模块级自增序号）。
+  const listReqRef = React.useRef(0);
   const fetchList = useCallback(
     async (p: number = page, ps: number = pageSize) => {
+      const reqId = ++listReqRef.current;
       setLoading(true);
       try {
         const res = await assetApi.listSummaries({
@@ -152,24 +165,26 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           only_resubmittable: onlyMine,
           batch_id: batchFilter,
           category_id: categoryFilter,
+          q: keyword.trim() || undefined,
         });
+        if (reqId !== listReqRef.current) return; // 已有更新的请求在途，旧回包作废
         setData(res);
         setItems(res.items || []);
         setTotal(res.total || 0);
         setPage(res.page || p);
       } catch (e) {
-        message.error((e as Error).message || '加载审核队列失败');
+        if (reqId === listReqRef.current) message.error((e as Error).message || '加载审核队列失败');
       } finally {
-        setLoading(false);
+        if (reqId === listReqRef.current) setLoading(false);
       }
     },
-    [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter, page, pageSize],
+    [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter, keyword, page, pageSize],
   );
 
   useEffect(() => {
     fetchList(1, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter]);
+  }, [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter, keyword]);
 
   // 后台出文案任务跑完（D-1）：新候选不在前端内存里，只能重新拉
   useEffect(() => {
@@ -357,14 +372,23 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
     }
   };
 
-  const askReason = (action: 'reject' | 'need_rewrite') => {
-    if (!ids.length) {
+  /**
+   * 批 N（评审二 P2）：单卡驳回不再悄悄清空批量勾选——原来先 setSelected([row])
+   * 再走批量通道，用户勾好的一批被静默替换掉。这里把目标行**显式传参**，勾选不动。
+   */
+  const askReason = (action: 'reject' | 'need_rewrite', rows?: AssetSummary[]) => {
+    const target = rows ?? selected;
+    const targetIds = target.map((s) => s.id);
+    if (!targetIds.length) {
       message.warning('先勾选要处理的文案');
       return;
     }
     let reason = '';
     Modal.confirm({
-      title: action === 'reject' ? `驳回 ${ids.length} 条（必填理由）` : `标记 ${ids.length} 条要求改写（必填理由）`,
+      title:
+        action === 'reject'
+          ? `驳回 ${targetIds.length} 条（必填理由）`
+          : `标记 ${targetIds.length} 条要求改写（必填理由）`,
       width: 520,
       content: (
         <Input.TextArea
@@ -381,7 +405,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           message.warning('理由不能为空');
           return Promise.reject();
         }
-        return runReview(action, { reason: reason.trim() });
+        return runReview(action, { reason: reason.trim(), summaryIds: targetIds });
       },
     });
   };
@@ -493,8 +517,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
             setEditCat(row.category_id || undefined);
           }}
           onReject={(row) => {
-            setSelected([row]);
-            askReason('reject');
+            // 批 N（评审二 P2）：显式传行，不动批量勾选（原实现会 setSelected([row]) 清掉整批）
+            askReason('reject', [row]);
           }}
           onResubmit={(row) => {
             setResubmitFor(row);
@@ -532,7 +556,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                 点一下看九宫格。图由后台抽帧任务补，<strong>没图不影响审核</strong>，也不参与任何判定。
               </p>
               <p style={{ marginBottom: 6 }}>
-                <strong>过审</strong>：这条就是要拿去投放的文案。过审前会先自动查一遍（超字数／命中违禁词／和原视频对不上都会被拦），
+                <strong>过审</strong>：这条就是要拿去投板的文案。过审前会先自动查一遍（超字数／命中违禁词／和原视频对不上都会被拦），
                 拦下时可让管理员带理由放行，放行记录会留档。
               </p>
               <p style={{ marginBottom: 6 }}>
@@ -661,6 +685,16 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
             违禁词表
           </Button>
         </Tooltip>
+        {/* 批 N（评审二 P1）：关键词搜索（正文/素材码）——筛出空集时有自己找回目标的正路 */}
+        <Tooltip title="按正文或素材码搜（子串匹配，与其它筛选叠加）。清空＝不限。">
+          <Input.Search
+            placeholder="搜正文/素材码"
+            allowClear
+            style={{ width: 190 }}
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+          />
+        </Tooltip>
         <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
           刷新
         </Button>
@@ -673,7 +707,29 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
             icon={<CheckCircleOutlined />}
             loading={busy}
             disabled={!ids.length}
-            onClick={() => runReview('approve')}
+            onClick={() => {
+              // 批 N（评审二·P1-3）：批量过审加确认预告——几十条一把过、误触即成事实，
+              // 撤销过审还要连带作废未投的生产单。单卡的「过」保持一步到位不设卡。
+              if (ids.length > 1) {
+                Modal.confirm({
+                  title: `批量通过 ${ids.length} 条？`,
+                  width: 520,
+                  content: (
+                    <Space direction="vertical" size={4}>
+                      <Text>提交后会先过一遍自动检查：超字数、命中违禁词、与原视频对不上的会被当场拦下（拦下的逐条点名，可由管理员放行）。</Text>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        过审之后要撤销，会连带作废这条文案下还没投出去的生产单——所以这里停一下，确认这批真的都要过。
+                      </Text>
+                    </Space>
+                  ),
+                  okText: `通过这 ${ids.length} 条`,
+                  cancelText: '再看看',
+                  onOk: () => runReview('approve'),
+                });
+              } else {
+                runReview('approve');
+              }
+            }}
           >
             批量通过（{ids.length}）
           </Button>
@@ -752,6 +808,24 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         loading={loading}
         columns={columns}
         dataSource={items}
+        // 批 N（评审二 P1）：空集必须给指路——原来只画「暂无数据」，一线只能对着空表
+        // 猜是筛选配错了还是真没活。
+        locale={{
+          emptyText: (
+            <div style={{ padding: '24px 0', textAlign: 'center' }}>
+              <Text type="secondary">
+                这里没有要看的候选——通常是三件事之一：
+              </Text>
+              <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                <div>① 筛得太窄：清一清上面的「审核状态／范围／批次／关键词」，或把范围切到「全部」；</div>
+                <div>② 还没出文案：回「素材列表」勾素材点「出钩子文案」，跑完候选自动出现在这里；</div>
+                <div style={{ marginTop: 4 }}>
+                  搜的关键词没命中也在这里——素材码是导入时生成的编号，正文按文案原句搜。
+                </div>
+              </div>
+            </div>
+          ),
+        }}
         // 卡片行不需要表头解释自己：一行就是一张卡，列名反而成了噪声（徽标含义在「怎么用」里）
         showHeader={false}
         rowSelection={
@@ -921,6 +995,9 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           setProduceOpen(false);
           setSelected([]);
           fetchList(page, pageSize);
+          // 批 N（评审二·P0-2）：按钮叫「去生产单列表」就得真带人过去——
+          // 原来只关弹窗刷自己，新单在哪要用户自己猜。
+          onGoToProduction?.();
         }}
       />
 

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Button, Checkbox, Descriptions, Input, Modal, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
+import { CopyOutlined } from '@ant-design/icons';
 import { DEFAULT_TIER, RECHECK_CODE_LABELS, assetApi, isAssetJobAck, waitForAssetJob } from '../../api/assets';
 import type { AssetProduceResponse, AssetSummary } from '../../api/assets';
 import { HOOK_CODE_RE, MonoText, parseHookCodes } from './AssetBits';
@@ -33,7 +34,7 @@ interface Props {
  * 三个量必须分开，混了就白烧号池：
  *  - `n`：一条文案派生几份**差异化**提示词（＝几个任务）；
  *  - `board_total`：板上 total＝同一条提示词出几版；
- *  - 真实投放量 = 文案数 × n × board_total。
+ *  - 真实投板量 = 文案数 × n × board_total。
  * 号池实测 ≈120 条/日，产能不做硬限（11-03 拍板），但建单当场就把「今天已经吃掉多少」摆出来。
  * 钩子编号只能从 hook_id.py 取号带进来，前端不生成、后端不编号。
  */
@@ -82,6 +83,26 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   // 逐批人工确认的口径不放松：这里也要勾一下确认才投得出去。
   const [followupConfirm, setFollowupConfirm] = useState(false);
   const [followupBusy, setFollowupBusy] = useState(false);
+
+  // 批 M（评审二·P1-4）：Modal destroyOnClose 只销毁子树，本组件的 state 跨开合残留——
+  // 上一单勾过的「投去出片」确认会带进下一单，「逐批人工确认」的闸门被残留状态绕过一半；
+  // cardIds/codeText 同理（上一单挑的卡和取的号 silently 落到下一单上）。
+  // 打开时统一归零；n/boardTotal/accounts 这类"上一批怎么配的"保留——批量开单时是顺手的好默认。
+  useEffect(() => {
+    if (!open) return;
+    setFollowupConfirm(false);
+    setFollowupBusy(false);
+    setResult(null);
+    setJobHint(null);
+    giveUpRef.current = false;
+    setCardIds([]);
+    setCodeText('');
+    setUsedCodes([]);
+    setBoardTag('');
+    setDramaAbbr('');
+    setWaiveReason('');
+    setWaiveCodes([]);
+  }, [open]);
 
   const dispatchFollowup = async () => {
     const ids = (result?.production_ids || []).filter(Boolean);
@@ -280,7 +301,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             description={result.message}
           />
           <Descriptions size="small" column={2} bordered>
-            <Descriptions.Item label="投放渠道">
+            <Descriptions.Item label="投板渠道">
               {result.board.channel === 'wework_aivideo' ? '企微后台「创建AI视频」任务板' : result.board.channel}
             </Descriptions.Item>
             <Descriptions.Item label="板上的归属标记">{result.board.tag}</Descriptions.Item>
@@ -289,11 +310,11 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             <Descriptions.Item label="预计要跑几天">
               {result.capacity_hint.days} 天（{result.capacity_hint.account_count} 个号 × 每号每日 {result.capacity_hint.per_account_per_day} 条）
             </Descriptions.Item>
-            <Descriptions.Item label="当日投放量">
+            <Descriptions.Item label="当日投板量">
               今天已排 {result.dispatch.today.board_rows} 条 / 提示线 {result.dispatch.today.soft_cap}
               {result.dispatch.today.over_cap > 0 && <Tag color="red" style={{ marginLeft: 6 }}>超出 {result.dispatch.today.over_cap} 条</Tag>}
             </Descriptions.Item>
-            <Descriptions.Item label="今天投放情况" span={2}>
+            <Descriptions.Item label="今天投板情况" span={2}>
               已投出 {result.dispatch.today.dispatched} 条｜成功 {result.dispatch.today.succeeded} 条｜失败 {result.dispatch.today.failed} 条
               {result.dispatch.today.note && (
                 <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
@@ -508,7 +529,16 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             <Tooltip title="K＝这部剧发布账号的数量，决定推荐视频标题给几条（现在不再固定 5 条）">
               <span>
                 <Text>推荐标题条数（K）：</Text>
-                <Input type="number" min={1} max={20} style={{ width: 80, marginLeft: 6 }} value={titleCount} onChange={(e) => setTitleCount(e.target.value ? Number(e.target.value) : undefined)} />
+                {/* 批 N（评审二·P2）：留空行为不说明＝每单都要人肉猜一次；placeholder 写明白 */}
+                <Input
+                  type="number"
+                  min={1}
+                  max={20}
+                  style={{ width: 80, marginLeft: 6 }}
+                  value={titleCount}
+                  placeholder="留空＝按模板默认"
+                  onChange={(e) => setTitleCount(e.target.value ? Number(e.target.value) : undefined)}
+                />
               </span>
             </Tooltip>
           </Space>
@@ -523,9 +553,29 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               )}
             </Space>
             <div style={{ marginBottom: 4 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                取号：在服务器跑 hook_id.py 取五位编号（投放和回收靠它对上）。
-              </Text>
+              <Space size={8} wrap>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  取号：在服务器跑 hook_id.py 取五位编号（投板和回收靠它对上）。
+                </Text>
+                {/* 批 N-4 最小版（评审二·P1-1）：每单 SSH 跑脚本最大的摩擦是"到底要取几个号"
+                    还得现算现抄。清单一键复制，到服务器照着跑；界面内直连取号仍待拍板。 */}
+                <Button
+                  size="small"
+                  icon={<CopyOutlined />}
+                  onClick={() => {
+                    const lines = [
+                      `本单待取号 ${needCodes} 个（${summaries.length} 条文案 × 每条 ${n} 份）`,
+                      ...summaries.map((s) => `${s.asset_code || s.id.slice(0, 8)}｜${(s.text || '').slice(0, 40)}`),
+                    ];
+                    navigator.clipboard
+                      .writeText(lines.join('\n'))
+                      .then(() => message.success(`待取号清单已复制（${needCodes} 个号），去服务器照着跑 hook_id.py`))
+                      .catch(() => message.error('复制失败：浏览器没给剪贴板权限，请手动抄'));
+                  }}
+                >
+                  复制待取号清单（{needCodes} 个）
+                </Button>
+              </Space>
             </div>
             <Input.TextArea
               rows={2}
@@ -533,7 +583,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               value={codeText}
               onChange={(e) => setCodeText(e.target.value)}
             />
-            {codes.length && codes.length < needCodes && (
+            {codes.length > 0 && codes.length < needCodes && (
               <Text type="warning" style={{ fontSize: 12 }}>
                 还差 {needCodes - codes.length} 个：缺了照样能建单，但导出内容带不上编号。
               </Text>
@@ -576,7 +626,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             让 AI 按标准模板把文案展开成能直接投的提示词
           </Checkbox>
           {!expand && (
-            <Alert type="warning" showIcon message="不展开就是没正文的单：上面只有过审文案本身，不能投放，导出也不带正文" />
+            <Alert type="warning" showIcon message="不展开就是没正文的单：上面只有过审文案本身，不能投板，导出也不带正文" />
           )}
 
           {isAdmin && (
@@ -607,7 +657,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             description={
               <span style={{ fontSize: 12 }}>
                 所以这里不填时长：内容更长只能拆成上/下集两条各 10 秒。
-                本批 {plannedRows} 条会算进当日投放量 {plannedRows} 条（实测约 120 条/日，不做硬限，只报数）。
+                本批 {plannedRows} 条会算进当日投板量 {plannedRows} 条（实测约 120 条/日，不做硬限，只报数）。
                 视频时长上限 {DEFAULT_TIER}s 只影响反推文案的成本，跟任务板无关。
               </span>
             }

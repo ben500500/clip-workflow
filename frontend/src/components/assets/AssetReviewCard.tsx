@@ -5,8 +5,40 @@ import { HOOK_STYLE_LABELS, type AssetFrameSlot, type AssetSummary } from '../..
 import { AuditStatusTag, RiskTags } from './AssetBits';
 import { CategoryTag } from './AssetCategoryBits';
 import { FrameStrip } from './AssetFrameBits';
+import { parseServerTime } from '../../utils/format';
 
 const { Paragraph, Text } = Typography;
+
+/**
+ * 批 N（评审二·P1-4）：风险词落在正文里。原来命中词只在右列标签堆、正文纯文本，
+ * 人要自己在句子里把那个词找出来。这里把命中的词就地高亮（红底加重），
+ * 与右列 RiskTags 同一份 risk_hit（word|level 逗号串），长词优先避免被短词拆碎。
+ */
+const highlightRisk = (text: string, riskHit: string | null | undefined): React.ReactNode => {
+  const words = Array.from(
+    new Set(
+      (riskHit || '')
+        .split(',')
+        .map((s) => s.trim().split('|')[0])
+        .filter(Boolean),
+    ),
+  ).sort((a, b) => b.length - a.length);
+  if (!words.length) return text;
+  const re = new RegExp(
+    `(${words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`,
+    'gi',
+  );
+  return text.split(re).map((seg, i) => {
+    const hit = words.some((w) => seg.toLowerCase() === w.toLowerCase());
+    return hit ? (
+      <Text key={i} type="danger" strong style={{ background: '#fff1f0' }}>
+        {seg}
+      </Text>
+    ) : (
+      <React.Fragment key={i}>{seg}</React.Fragment>
+    );
+  });
+};
 
 interface Props {
   row: AssetSummary;
@@ -74,13 +106,23 @@ const AssetReviewCard: React.FC<Props> = ({
         style={{ fontSize: 16, fontWeight: 500, lineHeight: 1.6, margin: '0 0 8px' }}
         ellipsis={{ rows: 3, expandable: 'collapsible', symbol: (expanded) => (expanded ? '收起' : '展开') }}
       >
-        {row.text}
+        {highlightRisk(row.text, row.risk_hit)}
       </Paragraph>
 
       <Space size={6} wrap>
         <Text type="secondary" style={{ fontSize: 12 }}>
           {row.word_count ?? '-'} 字
         </Text>
+        {/* 批 N（评审二·P1-4）：一致性判读取前 20 字平铺——原来整条藏在 Tooltip 里，
+            不悬停根本看不见。全量判读仍在右列徽标的悬停里。 */}
+        {row.consistency_ok === false && (row.consistency_note || '').trim() && (
+          <Tooltip title={`完整判读：${row.consistency_note}`}>
+            <Text type="warning" style={{ fontSize: 12 }}>
+              判读：{row.consistency_note!.slice(0, 20)}
+              {(row.consistency_note || '').length > 20 ? '…' : ''}
+            </Text>
+          </Tooltip>
+        )}
         {row.style_tag && <Tag>{HOOK_STYLE_LABELS[row.style_tag] || row.style_tag}</Tag>}
         {row.formula_tag && <Tag color="geekblue">{row.formula_tag}</Tag>}
         <CategoryTag categoryId={row.category_id} categoryName={row.category_name} />
@@ -200,7 +242,7 @@ const AssetReviewCard: React.FC<Props> = ({
             </Button>
           </Tooltip>
         )}
-        {canReview && (
+        {canReview && row.audit_status !== 'approved' && row.audit_status !== 'passed_edited' && (
           <>
             <Tooltip title="写文案的人不能审自己写的文案（管理员除外）">
               <Button
@@ -220,6 +262,15 @@ const AssetReviewCard: React.FC<Props> = ({
               驳
             </Button>
           </>
+        )}
+        {/* 批 N（评审二·P1-5）：终态卡（已过审/改后通过）不再挂可点的「过/改后过/驳」——
+            误点只会换来后端 400 报错噪音（迁移校验兜底）。按钮收起来，留判定时间。 */}
+        {canReview && (row.audit_status === 'approved' || row.audit_status === 'passed_edited') && (
+          <Tooltip title="这条已经是终态：要回炉先撤销过审（会连带作废未投的生产单）。不挂动作按钮就是防误点。">
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {row.reviewed_at ? `${parseServerTime(row.reviewed_at)?.format('MM-DD HH:mm')} 判定` : '已判定'}
+            </Text>
+          </Tooltip>
         )}
       </Space>
     </div>

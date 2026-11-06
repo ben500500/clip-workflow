@@ -1169,6 +1169,23 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         loading={loading}
         columns={resizableColumns}
         dataSource={items}
+        // 批 N（评审二·P2）：空库给指路——原来只画「暂无数据」，一线不知道第一步去哪
+        locale={{
+          emptyText: (
+            <div style={{ padding: '24px 0', textAlign: 'center', color: '#666', fontSize: 12 }}>
+              <div style={{ fontSize: 14, color: '#333', marginBottom: 8 }}>还没有素材</div>
+              <div>第一步去「<b>导入与批次</b>」页签：粘贴分享链接（或传视频文件）批量导入；</div>
+              <div style={{ marginTop: 4 }}>
+                导完回这里「读视频 → 反推文案 → 出钩子文案」，出完候选到「文案审核台」审。
+              </div>
+              {batchId && (
+                <div style={{ marginTop: 8, color: '#999' }}>
+                  当前筛着批次 {batchId.slice(0, 8)}…——这个批次还没有素材行；点顶部「当前批次筛选」的 × 清掉再看全部。
+                </div>
+              )}
+            </div>
+          ),
+        }}
         scroll={{ x: 1470 }}
         components={{ header: { cell: ResizableHeaderCell } }}
         rowSelection={
