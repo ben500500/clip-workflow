@@ -1,7 +1,7 @@
 """投放进度可视化（11-06 批 L）：板子侧状态写回生产单行
 
 Revision ID: 0063_board_progress
-Revises: 0062_asset_play_url_cache
+Revises: 0063_asset_summary_doubao_prompt
 Create Date: 2026-11-06
 
 用户报的洞：投板之后界面上看不到进度——生产单列表不会自动刷新，状态列停在
@@ -25,7 +25,10 @@ import sqlalchemy as sa
 
 
 revision: str = "0063_board_progress"
-down_revision: Union[str, None] = "0062_asset_play_url_cache"
+# 批 L 加本迁移时没查到已有 0063_asset_summary_doubao_prompt，两个 0063 都指向
+# 0062 形成双头，`alembic upgrade head` 必报 multiple heads（评审报告一·P0-1）。
+# 线性化：本迁移挂在同号迁移之后（同号串联合法，仅命名易误读，见 0035 先例）。
+down_revision: Union[str, None] = "0063_asset_summary_doubao_prompt"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

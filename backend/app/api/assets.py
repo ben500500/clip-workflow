@@ -4489,6 +4489,7 @@ async def list_summaries(
     recommended_only: bool = False,
     only_resubmittable: bool = False,
     category_id: Optional[str] = None,
+    q: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
     current_user: User = Depends(get_current_user),
@@ -4500,6 +4501,9 @@ async def list_summaries(
     后端提供口径（B 组：原先只有列、没有参数）。
 
     `only_resubmittable`：只看「轮到我改」的（被驳回/需改写，且是我负责的素材；admin 看全部）。
+
+    `q`（批 N·评审二 P1）：关键词搜索，正文/素材码模糊匹配——筛出空集时给人一条
+    自己找回目标的正路，而不是对着空表猜筛选哪里配错了。
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 300)
@@ -4524,6 +4528,12 @@ async def list_summaries(
         conds.append(AssetSummary.audit_status.in_((RV_REJECTED, RV_NEED_REWRITE)))
         if current_user.role != UserRole.admin.value:
             conds.append(AssetItem.created_by == current_user.id)
+    if q and q.strip():
+        # 批 N（评审二 P1）：正文/素材码子串匹配（大小写不敏感）。LIKE 转义掉
+        # 用户手滑输入的 %/_，别让搜索框变成全表扫。
+        kw = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{kw}%"
+        conds.append(or_(AssetSummary.text.ilike(like), AssetItem.code.ilike(like)))
     # 11-04 拍板①：按**文案自己的**原型筛（继承来的也算它自己的，改过就按改后的），
     # `none`＝未分类。为什么不用素材那列筛：审核台上"这条文案属于哪个原型"才是审的东西，
     # 素材被重新归过类不该把已经定性的文案一起带走。
@@ -6898,8 +6908,11 @@ async def _dispatch_gate(
         if p.status == PR_FAILED:
             _block(
                 p,
-                "失败单不在这里自动重投：板上失败行没有原因字段，重投与否要人判读"
-                "（判读后要么走投递状态回写口把它带回 queued，要么重新投产生成新单）",
+                "失败单不在这里自动重投：板上失败行没有原因字段，重投与否要人判读——"
+                "要重投就在生产单列表对这行点「按同文案重开单」（用同一句过审文案重新投产，"
+                "失败单本身留档不动）；不用重投就补记手工投板结果留档"
+                # 批 N（评审二·P0-1）：旧话术建议「走回写口把它带回 queued」再投——但投递口
+                # 只接 order_ready，带回 queued 的路自己就走不通，一线照着指走必撞墙。
             )
             continue
         if p.board_tid:
@@ -7584,6 +7597,9 @@ async def _poll_and_collect(
         for pid, t in tracked.items()
     }
     outputs: List[dict] = []
+    # 批 M（评审一·P1-1）：prod 引用一开始就钉死。人工让位的行会从 tracked 摘除，
+    # 但已回读到手的产物仍要按它落库（引用还在 prod_refs 里，不会 KeyError）。
+    prod_refs: Dict[str, AssetProduction] = {pid: t["prod"] for pid, t in tracked.items()}
 
     async def _take_outputs(pid: str, t: Dict[str, Any], rows: List[Dict[str, Any]], s: Dict[str, Any]) -> None:
         """把这几条 succ 任务下载→落桶，攒进 outputs（**不碰数据库**，写库统一在轮询外）。"""
@@ -7605,6 +7621,42 @@ async def _poll_and_collect(
     deadline = time.monotonic() + _board_poll_max_minutes() * 60
     rounds = 0
     read_fail_rounds = 0
+    # 批 M（评审一·P1-1）：人工回写 vs 轮询写回的并发防护。
+    # 轮询持有的是 dispatch 时加载的 ORM 对象（expire_on_commit=False，整轮不重读库），
+    # 期间人工经投递状态回写口改状态（failed→queued 重投是迁移表明确放行的路）：
+    # 按旧快照直接写回就是 lost update；更糟的是人工改回 queued 后板面 fail 还会按
+    # 旧快照再自动重启一次——同一条烧两遍号池。
+    # 规矩：库里 status ≠ 本轮快照（或行没了）＝所有权已交还人工——这一行**整行让位**：
+    # 恢复轮前快照（撤销本轮全部改动）、状态/心跳一律不写、从 tracked 摘除不再跟踪，
+    # summary 里留 note 点名。已下载到手的产物照插：那是板侧已发生的事实（本单 tid
+    # 出的片子），与状态互不覆盖。
+    # 每轮查两次：开工时一次（防按旧快照重启烧号池），写回前一次 SELECT ... FOR UPDATE
+    # （行锁把「轮询 commit vs 人工回写 UPDATE」串行化，写回窗口从整轮几分钟缩到毫秒级）。
+    # 两次都裹在 no_autoflush 里：本轮的改动此刻还只在内存里，绝不能被 autoflush 先冲下去，
+    # 否则重读读到的是自己的旧快照、判「没人动过」就白防了。
+    _POLLER_OWNED_COLS = (
+        "status", "error", "completed_at", "board_tid", "board_rgid",
+        "attempts", "started_at", "board_last_status", "board_last_check_at",
+    )
+
+    def _reown(pid: str, db_status: Optional[str], when: str) -> None:
+        """人工已接管的行整行让位：摘出跟踪、恢复轮前快照、summary 里点名。"""
+        t = tracked.pop(pid, None)
+        pending.pop(pid, None)
+        if t is not None:
+            for k, v in pre_round_attrs[pid].items():
+                setattr(t["prod"], k, v)
+        s = summary[pid]
+        if db_status:
+            s["status"] = db_status
+            s["note"] = (
+                f"{when}人工已把状态改成 {db_status}（轮询按快照记的还是 {pre_round_status[pid]}）："
+                "这行交还人工——轮询不再跟踪、本轮状态与板侧心跳都没有写回"
+                + ("；已回读到的产物照常落库" if when == "写回前" else "")
+            )
+        else:
+            s["note"] = f"{when}这张生产单已不存在（人工删除？）：整行让位，轮询不再跟踪、不写回"
+
     while True:
         pending = {pid: t for pid, t in tracked.items() if summary[pid]["status"] not in (PR_SUCCESS, PR_FAILED)}
         if not pending:
@@ -7616,6 +7668,31 @@ async def _poll_and_collect(
                     "单子留在现在这个态不判失败；稍后带 recover_only=true 再回收一次即可"
                 )
             break
+        pre_round_status = {pid: str(summary[pid]["status"]) for pid in pending}
+        pre_round_attrs = {
+            pid: {k: getattr(t["prod"], k) for k in _POLLER_OWNED_COLS}
+            for pid, t in pending.items()
+        }
+        # ① 开工重读：上一轮 commit 之后人工可能已改状态。改走的行当场摘除——
+        #    尤其不能让它在下面的板面 fail 分支里按旧快照再自动重启一次（烧两遍号池）。
+        stale_start: Dict[str, Optional[str]] = {}
+        with db.sync_session.no_autoflush:
+            for pid in list(pending):
+                db_status = (
+                    await db.execute(
+                        select(AssetProduction.status).where(AssetProduction.id == uuid.UUID(pid))
+                    )
+                ).scalar_one_or_none()
+                if db_status is None or db_status != pre_round_status[pid]:
+                    stale_start[pid] = db_status
+        if stale_start:
+            for pid, db_status in stale_start.items():
+                _reown(pid, db_status, "轮询开工重读：")
+        # ⚠️ 无论有没有人让位都要收掉这个事务：开工重读的 SELECT 已经把事务打开了，
+        # 不收的话它会一直开着度过整轮出网（回读/下载几分钟），撞上现网 60s 的
+        # idle_in_transaction_session_timeout 把连接掐死（见 _dispatch_board 头注释）。
+        # 此刻本轮还没有任何改动，commit 是干净的收尾。
+        await db.commit()
         rounds += 1
         # 按 tag 分组回读（不同 tag 是不同拥有者的账，合一次查询会把别人的任务读进来）
         snapshots: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -7630,7 +7707,9 @@ async def _poll_and_collect(
                     if t["tag"] == tag:
                         summary[pid]["last_read_error"] = str(e)[:200]
         changed = False
-        for pid, t in pending.items():
+        # ⚠️ 对快照迭代：重启前重读若发现行被人工改走，_reown 会当场把行从 pending
+        # 摘掉（整行让位），直接迭代 .items() 会撞 dictionary changed size。
+        for pid, t in list(pending.items()):
             rows = snapshots.get(t["tag"], {})
             mine = [rows[tid] for tid in t["tids"] if tid in rows]
             s = summary[pid]
@@ -7658,6 +7737,22 @@ async def _poll_and_collect(
                 changed = True
             elif bad and not got:
                 if t["payload"] and not t["restart_used"] and not recover_only:
+                    # 批 M（评审一·P1-1）：重启是**第二次烧号池**的动作，动手前用独立短会话
+                    # 再读一眼库里的真实状态。主会话此刻不能开事务（下面紧跟出网，开着事务
+                    # 等网络会撞 60s idle 掐断），也不能 commit（会把其他行本轮还没重读过的
+                    # 改动先写下去）——所以借 _database 的模块属性开一次性会话（测试替身
+                    # 重新指 factory 时这里自动跟着走）。人工若已把状态改走（判读后改回
+                    # queued 准备自己重投是最典型形状），这行当场让位：绝不按旧快照再重启。
+                    async with _database.async_session_factory() as probe:
+                        live_status = (
+                            await probe.execute(
+                                select(AssetProduction.status).where(AssetProduction.id == uuid.UUID(pid))
+                            )
+                        ).scalar_one_or_none()
+                    if live_status is None or live_status != pre_round_status[pid]:
+                        _reown(pid, live_status, "重启前重读，")
+                        changed = True
+                        continue
                     # 失败**只重启一次**（拍板口径）：同一条 payload 再建一次任务、重新认领 tid
                     t["restart_used"] = True
                     days = board.days_to_query([t["prod"].board_date])
@@ -7706,12 +7801,29 @@ async def _poll_and_collect(
                     t["prod"].status = PR_RUNNING
                     s["status"] = PR_RUNNING
                     changed = True
-        if outputs and any(not o.get("_inserted") for o in outputs):
+        if changed:
+            # ② 写回前重读（FOR UPDATE）：此刻本轮改动还只在内存里、本短事务还没发过
+            #    任何语句，no_autoflush 保证这次 SELECT 读到的是最后一次提交的真值——
+            #    状态已被人工改走的行整行让位（恢复快照＋摘除＋note），剩下的照常写回。
+            stale_end: Dict[str, Optional[str]] = {}
+            with db.sync_session.no_autoflush:
+                for pid in list(pending):
+                    db_status = (
+                        await db.execute(
+                            select(AssetProduction.status)
+                            .where(AssetProduction.id == uuid.UUID(pid))
+                            .with_for_update()
+                        )
+                    ).scalar_one_or_none()
+                    if db_status is None or db_status != pre_round_status[pid]:
+                        stale_end[pid] = db_status
+            for pid, db_status in stale_end.items():
+                _reown(pid, db_status, "写回前，")
             # 短事务：只在真的多了产物/改了状态时开一次，写完立刻 commit（出网都在事务外）
             for rec in outputs:
                 if rec.get("_inserted"):
                     continue
-                prod = tracked[rec["production_id"]]["prod"]
+                prod = prod_refs[rec["production_id"]]
                 new_out = AssetOutput(
                     production_id=prod.id,
                     asset_id=prod.asset_id,
@@ -7726,8 +7838,6 @@ async def _poll_and_collect(
                 await db.flush()
                 rec["_output_id"] = str(new_out.id)
                 rec["_inserted"] = True
-            changed = True
-        if changed:
             await db.commit()
         else:
             await asyncio.sleep(_board_poll_interval_seconds())

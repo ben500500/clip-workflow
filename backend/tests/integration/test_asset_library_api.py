@@ -8108,3 +8108,136 @@ def test_summary_generate_also_fills_doubao_web_prompts():
         await client.aclose()
 
     _run(_scenario())
+
+
+
+
+# ────────────────────────  批 M（评审一·P1-1）：人工回写 vs 轮询写回并发  ────────────────────────
+
+
+class _WritebackHookBoard(_FakeBoard):
+    """在指定第 N 次回读的**当口**，以「人工」身份调一次投递状态回写口。
+
+    轮询与人工的交叠点只能在替身钩子里造：回读是轮询协程让出事件循环的地方，
+    此刻轮询的事务是收掉的（出网在事务外），人工请求拿独立 session 进来写库
+    不会互相卡。hook 在 super().readback() 之前落笔，保证「写完之后轮询才看到板面」，
+    时序是确定的，不靠 sleep 撞运气。
+    """
+
+    def __init__(self, *, hook_read_index, writeback, **kw):
+        super().__init__(**kw)
+        self._hook_read_index = hook_read_index
+        self._writeback = writeback          # 无参 async callable，只钩一次
+        self.writeback_status: list = []
+
+    async def readback(self, days, tag):
+        if self._writeback is not None and len(self.reads) + 1 == self._hook_read_index:
+            wb, self._writeback = self._writeback, None
+            resp = await wb()
+            self.writeback_status.append(resp.status_code)
+        return await super().readback(days, tag)
+
+
+def test_dispatch_poll_reown_skips_restart_when_human_rewrote_status():
+    """批 M（评审一·P1-1）重启前重读：人工改走的状态，轮询绝不按旧快照再重启一次。
+
+    真实形状：轮询持有 dispatch 时加载的 ORM 对象、整轮不重读库，第 1 轮板面
+    waiting 会把单子从 queued 推进到 running；人工在第 2 轮回读的当口经「投递状态
+    回写口」判 failed（板上失败行没有原因字段，我们记的是自己的判读），同一轮
+    板面正好报 fail——修法前轮询会按旧快照自动重启（payload 还在手），同一条
+    **烧两遍号池**。修法后重启前用独立短会话重读一眼，状态被改走的行整行让位：
+    不重启、不写回、summary 点名。
+
+    时序账（替身 readback 计数）：#1 投前快照、#2 建任务认领（行面 waiting）、
+    #3 轮询第 1 轮（waiting→轮询自己推进 running）、#4 轮询第 2 轮＝钩子先落笔
+    人工判 failed，再返回板面 fail。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, hook_codes=["7C0M1"])
+        pid = listed[0]["id"]
+
+        async def _human_writeback():
+            # running → failed 是迁移表放行的路（人工判读失败必须带成因）
+            return await client.post(
+                "/api/assets/productions/status",
+                json={"ids": [pid], "status": "failed",
+                      "error": "人工判读：这条在板上没出来，别自动重投，等我确认"},
+                headers=ho)
+
+        # 板面：行面第 1、2 次被读到是 waiting，第 3 次（＝轮询第 2 轮，正好人工
+        # 落笔的那轮）起 fail——若让位机制没生效，本轮就会触发自动重启
+        # （creates 变 2），在这里红。
+        fb = _WritebackHookBoard(
+            hook_read_index=4, writeback=_human_writeback,
+            status_fn=lambda created_index, read_round: "waiting" if read_round <= 2 else "fail",
+        )
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, [pid])
+        assert fb.writeback_status == [200], fb.writeback_status
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        # ① 重启没发生：板上只建过投第一次那一条（号池只烧一遍）
+        assert len(fb.creates) == 1, fb.creates
+        # ② 人工的 failed 原样保留，轮询没有按旧快照把 running/queued 写回去
+        row = await _row_of(AssetProduction, pid)
+        assert row.status == "failed", row.status
+        assert row.attempts == 1, "让位的行不许再走 _adopt_tids（attempts 会 +1）"
+        assert row.board_tid, "tid 还在（第一次投板认领的），让位不抹历史"
+        assert "人工判读" in (row.error or ""), "成因是人工写的，不是轮询的模板话术"
+        # ③ summary 点名交还人工
+        res = body["results"][pid]
+        assert res["status"] == "failed" and "交还人工" in (res.get("note") or ""), res
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_poll_reown_preserves_manual_status_at_writeback():
+    """批 M（评审一·P1-1）写回前重读：轮询写回前发现状态被人工改走就整行让位。
+
+    人工在轮询第 2 轮回读的当口把单子判 failed（板面这轮还是 waiting，轮询照常
+    走完心跳）；修法前写回阶段会按旧快照 commit（lost update：人工的 failed 被
+    覆盖回轮询的 running 口径）。专验「写回前重读」这一道，不掺重启分支。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, hook_codes=["7C0M2"])
+        pid = listed[0]["id"]
+
+        async def _human_writeback():
+            return await client.post(
+                "/api/assets/productions/status",
+                json={"ids": [pid], "status": "failed",
+                      "error": "人工判读：这条别再等了"},
+                headers=ho)
+
+        # 板面一直 waiting：轮询到期限为止只写心跳与 running 推进，不会进重启分支。
+        fb = _WritebackHookBoard(
+            hook_read_index=4, writeback=_human_writeback,
+            status_fn=lambda created_index, read_round: "waiting",
+        )
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, [pid])
+        assert fb.writeback_status == [200], fb.writeback_status
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        row = await _row_of(AssetProduction, pid)
+        assert row.status == "failed", "人工的 failed 必须原样保留（写回前重读让位）"
+        assert row.attempts == 1
+        # 第 1 轮的心跳已照常落库（心跳是轮询自己的口径，人工不写这两个字段），
+        # 第 2 轮整行让位后心跳停在第 1 轮的值——有值即说明第 1 轮写回没被误伤。
+        assert row.board_last_status == "waiting" and row.board_last_check_at is not None
+        res = body["results"][pid]
+        assert res["status"] == "failed" and "交还人工" in (res.get("note") or ""), res
+        await client.aclose()
+
+    _run(_scenario())
