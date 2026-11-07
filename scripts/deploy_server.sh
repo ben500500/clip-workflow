@@ -79,7 +79,8 @@ sync_dir() {
     --exclude='node_modules' --exclude='dist' --exclude='build' \
     --exclude='__pycache__' --exclude='*.pyc' --exclude='.pytest_cache' \
     --exclude='.git' \
-    --exclude='._*' --exclude='.DS_Store' \
+    --exclude='._*' --exclude='*/._*' \
+    --exclude='.DS_Store' --exclude='*/.DS_Store' \
     --exclude='*.tsbuildinfo' \
     --exclude='slice-worker/engines' \
     --exclude='slice-worker/ubuntu' --exclude='slice-worker/macos' --exclude='slice-worker/windows' \
