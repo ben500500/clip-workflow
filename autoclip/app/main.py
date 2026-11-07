@@ -788,6 +788,7 @@ async def generate_hook_copy(data: HookCopyGenerateRequest):
         raise HTTPException(status_code=500, detail=f"钩子文案生成失败: {e}")
     return {
         "candidates": result.get("candidates") or [],
+        "title": result.get("title") or "",
         "raw": result.get("raw"),
         "model": _current_llm_model(),
     }

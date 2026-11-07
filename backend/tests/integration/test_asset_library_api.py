@@ -310,7 +310,7 @@ async def _make_ready_asset(client, h, url=DOUYIN_2, *, script=SCRIPT, category_
 
 
 def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, generate_error=None,
-                   expand_deviation=None, web_error=None, web_prompts=None):
+                   expand_deviation=None, web_error=None, web_prompts=None, gen_title=None):
     """autoclip 文案服务替身：按 path 分发，expand 默认把过审钩子**原样**包进提示词。"""
 
     async def _call(path, payload, timeout=180.0):
@@ -318,7 +318,11 @@ def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, ge
             if generate_error:
                 raise HTTPException(status_code=502, detail=generate_error)
             count = int(payload.get("count") or 3)
-            return {"candidates": (candidates or CANDIDATES)[:count], "model": "fake-llm", "raw": {}}
+            out = {"candidates": (candidates or CANDIDATES)[:count], "model": "fake-llm", "raw": {}}
+            if gen_title is not None:
+                # 2026-11-07：出文案同步产浓缩标题（真实服务由 hook_copy.txt 模板约束）
+                out["title"] = gen_title
+            return out
         if path.endswith("hook-copy/expand"):
             if expand_error:
                 raise HTTPException(status_code=502, detail=expand_error)
@@ -8409,6 +8413,43 @@ def test_output_groups_aggregate_by_asset_and_batch():
         # 非法 group_by 400
         bad = await client.get("/api/assets/outputs/groups?group_by=hook", headers=hm)
         assert bad.status_code == 400
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_summary_generate_sets_condensed_title_as_asset_name():
+    """2026-11-07 用户口径：出文案同步产浓缩标题，直接当素材名称（不用 AS 编号）。
+
+    服务给了 title（2~30 字）→ asset.title 被覆盖（反推扫描的长标题也让位）；
+    没给 title → 标题维持原状，绝不硬写。规则本体在 autoclip hook_copy.txt
+    （6~14 字、人设＋事件、不编号不带平台词），这里钉的是后端的接法。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        old_title = (await _row_of(AssetItem, asset_id)).title
+
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(gen_title="顶替姐姐的新娘")):
+            resp = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+        assert resp.status_code == 200, resp.text
+        assert (await _row_of(AssetItem, asset_id)).title == "顶替姐姐的新娘"
+
+        # 服务没给 title：已有标题不被覆盖（空标题仍走既有的反推兜底，那是另一条路）
+        asset2, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+        async with dbmod.async_session_factory() as s:
+            row2 = await s.get(AssetItem, uuid.UUID(asset2))
+            row2.title = "陈天强素材原标题"
+            await s.commit()
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            resp2 = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset2]}, headers=hm)
+        assert resp2.status_code == 200, resp2.text
+        assert (await _row_of(AssetItem, asset2)).title == "陈天强素材原标题" 
         await client.aclose()
 
     _run(_scenario())

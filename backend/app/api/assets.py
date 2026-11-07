@@ -4212,6 +4212,15 @@ async def generate_summaries(
             })
             continue
 
+        # 2026-11-07 用户口径：出文案同步产「浓缩标题」（6~14 字），直接当素材名称——
+        # 反推扫描出的标题不够浓缩，拿不到标题的素材在列表里更是只剩 AS 号看不懂
+        # （陈天强那批就是这样）。给了就覆盖（原链接信息在 source_url 不丢）；
+        # 没给或长度不像标题就维持原状，绝不硬写。
+        gen_title = str((result or {}).get("title") or "").strip()
+        if 2 <= len(gen_title) <= 30:
+            asset.title = gen_title
+            logger.info("素材 %s 出文案同步起浓缩标题：%s", asset.code, gen_title)
+
         # 旧候选现在才真删：新候选已经在手，删了不会落空。与下面的 INSERT 同批提交，
         # 中途任何异常仍然整体回滚，旧文案原样留着。
         if to_delete:

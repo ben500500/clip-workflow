@@ -314,7 +314,12 @@ def _parse_candidates(raw: str, count: int) -> Dict[str, Any]:
 
     if not any(c["is_recommended"] for c in candidates) and candidates:
         candidates[0]["is_recommended"] = True
-    return {"candidates": candidates, "raw": stripped if not data else None}
+    # 2026-11-07 用户口径：出文案同步产一个「浓缩标题」（6~14 字），后端拿它当
+    # 素材名称——反推扫描出的长标题不够浓缩，空标题更是只剩 AS 号看不懂。
+    gen_title = ""
+    if data:
+        gen_title = str(data.get("title") or data.get("浓缩标题") or data.get("素材标题") or "").strip()
+    return {"candidates": candidates, "title": gen_title, "raw": stripped if not data else None}
 
 
 def _parse_expand(raw: str, hook_copy: str) -> Dict[str, Any]:
