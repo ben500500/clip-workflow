@@ -19,6 +19,8 @@ interface Props {
   canProduce: boolean;
   /** 点了批次行就把素材列表按这个批次筛 */
   onSelectBatch?: (batchId: string) => void;
+  /** A′ UX：页签切回来自动刷新 */
+  active?: boolean;
 }
 
 /**
@@ -36,7 +38,7 @@ interface Props {
  *    四环（反推文案/出文案/投产/拼接）对它都不成立，也不计费——所以它的「下一步」
  *    不是在本面板提交，而是到投产弹窗里被挑走。
  */
-const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
+const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active = true }) => {
   const [tab, setTab] = useState<'link' | 'file'>('link');
 
   // ── 链接导入 ──
@@ -75,6 +77,13 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
   useEffect(() => {
     fetchBatches();
   }, [fetchBatches]);
+
+  // A′ UX：切走再切回页签时自动刷新批次台账
+  const wasActive = React.useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) fetchBatches();
+    wasActive.current = active;
+  }, [active, fetchBatches]);
 
   const parsedLinks = links
     .split(/[\r\n]+/)

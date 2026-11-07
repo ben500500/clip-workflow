@@ -9,7 +9,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Card, Checkbox, Drawer, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { ReloadOutlined } from '@ant-design/icons';
+import { DownOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons';
 import { RESUBMIT_TARGET } from './AssetJobBanner';
 import type { AssetJobInfo, AssetJobKind, AssetJobStatus } from '../../api/assets';
 import { assetApi } from '../../api/assets';
@@ -71,7 +71,7 @@ const fmtTime = (iso: string | null): string => {
 };
 
 /** 批 N（评审二 P1-6）：interrupted 行的「回哪儿重提」由页面层切页签（与横幅同一张跳转表） */
-const AssetJobsPanel: React.FC<{ onGoToTab?: (key: string) => void }> = ({ onGoToTab }) => {
+const AssetJobsPanel: React.FC<{ onGoToTab?: (key: string) => void; active?: boolean }> = ({ onGoToTab, active = true }) => {
   const [items, setItems] = useState<AssetJobInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [kind, setKind] = useState<AssetJobKind | undefined>();
@@ -99,6 +99,13 @@ const AssetJobsPanel: React.FC<{ onGoToTab?: (key: string) => void }> = ({ onGoT
   useEffect(() => {
     fetchList();
   }, [fetchList]);
+
+  // A′ UX（2026-11-07）：切走再切回页签时自动刷新（antd Tabs 挂载不卸载，不拉就是旧数据）
+  const wasActive = React.useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) fetchList();
+    wasActive.current = active;
+  }, [active, fetchList]);
 
   // 还有在跑/排队的就 8 秒自刷，全部终态就停（和横幅同一口径）
   const hasOpen = useMemo(() => items.some((j) => j.status === 'queued' || j.status === 'running'), [items]);
@@ -181,6 +188,36 @@ const AssetJobsPanel: React.FC<{ onGoToTab?: (key: string) => void }> = ({ onGoT
     return rows.length > 0;
   }
 
+  // 按任务类型分组（用户口径：每条平铺太杂乱）。默认收起；组里有在跑/排队的自动展开。
+  const groups = useMemo(() => {
+    const byKind = new Map<string, AssetJobInfo[]>();
+    for (const j of items) {
+      const k = j.kind;
+      if (!byKind.has(k)) byKind.set(k, []);
+      byKind.get(k)!.push(j);
+    }
+    return [...byKind.entries()].map(([k, jobs]) => {
+      const label = KIND_OPTIONS.find((o) => o.value === k)?.label || jobs[0].kind_label || k;
+      const open = jobs.filter((j) => j.status === 'queued' || j.status === 'running').length;
+      const failed = jobs.filter((j) => j.status === 'failed').length;
+      const interrupted = jobs.filter((j) => j.status === 'interrupted').length;
+      const succeeded = jobs.filter((j) => j.status === 'succeeded').length;
+      const latest = jobs[0]?.finished_at || jobs[0]?.started_at || jobs[0]?.created_at || null;
+      return { kind: k, label, jobs, total: jobs.length, open, failed, interrupted, succeeded, latest };
+    });
+  }, [items]);
+
+  const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
+  const isGroupOpen = (g: { kind: string; open: number }) =>
+    g.open > 0 || !collapsedKinds.has(g.kind);
+  const toggleGroup = (kind: string) =>
+    setCollapsedKinds((prev) => {
+      const next = new Set(prev);
+      if (next.has(kind)) next.delete(kind);
+      else next.add(kind);
+      return next;
+    });
+
   return (
     <Card
       size="small"
@@ -214,18 +251,48 @@ const AssetJobsPanel: React.FC<{ onGoToTab?: (key: string) => void }> = ({ onGoT
     >
       <div style={{ marginBottom: 8 }}>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          顶部横幅只挂着「还在跑」的；任务一收敛就从横幅消失——要回看终态、看逐条成败，都在这一页。
+          顶部横幅只挂着「还在跑」的；这里按任务类型分组回看（点组名展开逐条）。抽帧是系统自排的，勾选才列出。
           {hasOpen && '（有在跑的任务，8 秒自刷）'}
         </Text>
       </div>
-      <Table
-        size="small"
-        rowKey="id"
-        loading={loading}
-        columns={columns}
-        dataSource={items}
-        pagination={{ pageSize: 15, hideOnSinglePage: true, showSizeChanger: false }}
-      />
+      {loading && !groups.length && <Table size="small" loading columns={[]} dataSource={[]} />}
+      {!loading && !groups.length && (
+        <Text type="secondary" style={{ display: 'block', padding: '12px 0' }}>
+          这里还没有任务记录。出文案／开单／投板／抽帧排到后台的活，台账都在这一页回看。
+        </Text>
+      )}
+      {groups.map((g) => {
+        const expanded = isGroupOpen(g);
+        return (
+          <div key={g.kind} style={{ border: '1px solid #f0f0f0', borderRadius: 8, marginBottom: 8, overflow: 'hidden' }}>
+            <div
+              role="button"
+              onClick={() => toggleGroup(g.kind)}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', cursor: 'pointer', background: expanded ? '#fafafa' : '#fff' }}
+            >
+              {expanded ? <DownOutlined style={{ color: '#999' }} /> : <RightOutlined style={{ color: '#999' }} />}
+              <Text strong>{g.label}</Text>
+              <Tag>{g.total} 条</Tag>
+              {g.open > 0 && <Tag color="processing">跑中 {g.open}</Tag>}
+              {g.succeeded > 0 && <Tag color="success">成功 {g.succeeded}</Tag>}
+              {g.failed > 0 && <Tag color="error">失败 {g.failed}</Tag>}
+              {g.interrupted > 0 && <Tag color="warning">打断 {g.interrupted}</Tag>}
+              <Text type="secondary" style={{ fontSize: 12, marginLeft: 'auto' }}>
+                最近 {fmtTime(g.latest)}
+              </Text>
+            </div>
+            {expanded && (
+              <Table
+                size="small"
+                rowKey="id"
+                columns={columns}
+                dataSource={g.jobs}
+                pagination={g.jobs.length > 10 ? { pageSize: 10, hideOnSinglePage: true, showSizeChanger: false } : false}
+              />
+            )}
+          </div>
+        );
+      })}
       <Drawer
         title={detail ? `任务 ${detail.id.slice(0, 8)} · ${detail.kind_label}` : ''}
         width={640}

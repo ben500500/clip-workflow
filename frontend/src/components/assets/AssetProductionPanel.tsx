@@ -30,6 +30,8 @@ interface Props {
   batchId?: string;
   /** 后台投产任务收敛后自增（D-1）：生产单是后端建行的，只能重新拉才看得到 */
   reloadToken?: number;
+  /** A′ UX：页签切回来自动刷新 */
+  active?: boolean;
 }
 
 const rate = (v: number | null | undefined) =>
@@ -73,7 +75,7 @@ const boardStatusText = (raw: string | null): string | null => {
  *    没配板子凭据时后端会当场白话拒绝自动投板，这条就是唯一走法。
  * 两条路的闸门、payload、状态迁移共用后端同一套判据，前端不要自己复述规则数字。
  */
-const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId, reloadToken }) => {
+const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId, reloadToken, active = true }) => {
   const [items, setItems] = useState<AssetProduction[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -260,6 +262,14 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     fetchList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken]);
+
+  // A′ UX：切走再切回页签时自动刷新
+  const wasActive = React.useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) fetchList(page, pageSize);
+    wasActive.current = active;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   // 批 L（投放进度可视化）：有「排队中/出片中」的单时每 10 秒静默刷新——
   // 投完板界面自己动起来，不用人手勤快去点刷新才能看到片子回来了没有。

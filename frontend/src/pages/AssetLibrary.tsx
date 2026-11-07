@@ -117,13 +117,16 @@ const AssetLibrary: React.FC = () => {
           isAdmin={isAdmin}
           batchId={batchId}
           reloadToken={reloadToken}
+          active={activeTab === 'assets'}
         />
       ),
     },
     {
       key: 'import',
       label: '导入与批次',
-      children: <AssetImportPanel canProduce={canProduce} onSelectBatch={setBatchId} />,
+      children: (
+        <AssetImportPanel canProduce={canProduce} onSelectBatch={setBatchId} active={activeTab === 'import'} />
+      ),
     },
     {
       key: 'review',
@@ -136,13 +139,14 @@ const AssetLibrary: React.FC = () => {
           batchId={batchId}
           reloadToken={reloadToken}
           onGoToProduction={() => setActiveTab('production')}
+          active={activeTab === 'review'}
         />
       ),
     },
     {
       key: 'jobs',
       label: '后台任务',
-      children: <AssetJobsPanel onGoToTab={setActiveTab} />,
+      children: <AssetJobsPanel onGoToTab={setActiveTab} active={activeTab === 'jobs'} />,
     },
     {
       key: 'production',
@@ -154,6 +158,7 @@ const AssetLibrary: React.FC = () => {
           isAdmin={isAdmin}
           batchId={batchId}
           reloadToken={reloadToken}
+          active={activeTab === 'production'}
         />
       ),
     },
@@ -169,6 +174,7 @@ const AssetLibrary: React.FC = () => {
           reloadToken={reloadToken}
           ownerDefault={canReview && !isAdmin ? 'me' : 'all'}
           ownerSwitchable={canReview}
+          active={activeTab === 'outputs'}
         />
       ),
     },

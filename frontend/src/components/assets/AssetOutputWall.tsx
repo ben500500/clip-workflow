@@ -63,8 +63,9 @@ const OutputGrid: React.FC<{
   kind?: string;
   qc?: string;
   owner?: 'me' | 'all';
+  active?: boolean;
   reloadToken?: number;
-}> = ({ assetId, batchId, kind, qc, owner, reloadToken }) => {
+}> = ({ assetId, batchId, kind, qc, owner, active = true, reloadToken }) => {
   const [items, setItems] = useState<AssetOutput[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -99,6 +100,14 @@ const OutputGrid: React.FC<{
     },
     [assetId, batchId, kind, qc, owner],
   );
+
+  // A′ UX：页签切回来自动刷新（网格跟着组层一起）
+  const wasActiveG = React.useRef(active);
+  useEffect(() => {
+    if (active && !wasActiveG.current) fetchList(page);
+    wasActiveG.current = active;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   useEffect(() => {
     fetchList(1);
@@ -373,7 +382,9 @@ const AssetOutputWall: React.FC<{
   ownerDefault?: 'me' | 'all';
   /** 是否给「我的｜全部」开关（可审角色才有归属概念） */
   ownerSwitchable?: boolean;
-}> = ({ batchId, reloadToken, ownerDefault = 'all', ownerSwitchable = false }) => {
+  /** A′ UX：页签切回来自动刷新 */
+  active?: boolean;
+}> = ({ batchId, reloadToken, ownerDefault = 'all', ownerSwitchable = false, active = true }) => {
   const [viewMode, setViewMode] = useState<'asset' | 'batch'>('asset');
   const [ownerView, setOwnerView] = useState<'me' | 'all'>(ownerDefault);
   const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
@@ -417,6 +428,13 @@ const AssetOutputWall: React.FC<{
   useEffect(() => {
     fetchGroups();
   }, [fetchGroups]);
+
+  // A′ UX：切走再切回页签时自动刷新（展开中的组内网格也带同一 active）
+  const wasActive = React.useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) fetchGroups();
+    wasActive.current = active;
+  }, [active, fetchGroups]);
 
   useEffect(() => {
     if (reloadToken) fetchGroups();
@@ -577,6 +595,7 @@ const AssetOutputWall: React.FC<{
                     kind={kindFilter}
                     qc={qcFilter}
                     owner={ownerView}
+                    active={active}
                     reloadToken={reloadToken}
                   />
                 )}

@@ -44,6 +44,8 @@ interface Props {
   batchId?: string;
   /** 后台出文案任务收敛后自增（D-1）：新候选是后端落库的，只能重新拉一次才看得到 */
   reloadToken?: number;
+  /** A′ UX：页签切回来自动刷新 */
+  active?: boolean;
   /**
    * 批 N（评审二·P0-2）：投产成功后「去生产单列表」要真能带人过去——
    * 由页面层（AssetLibrary）传页签切换回调进来。
@@ -68,7 +70,7 @@ interface Props {
  * 表格外壳留着只是为了 rowSelection 和分页，列定义合成一格。
  * 帧是纯呈现层：`GET /assets/frames` 拉不到就当没图，审核动作照点。
  */
-const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken, onGoToProduction }) => {
+const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken, onGoToProduction, active = true }) => {
   const [data, setData] = useState<AssetSummaryListResult | null>(null);
   const [items, setItems] = useState<AssetSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -198,6 +200,14 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
     fetchList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken]);
+
+  // A′ UX：切走再切回页签时自动刷新
+  const wasActive = React.useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) fetchList(page, pageSize);
+    wasActive.current = active;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
 

@@ -110,6 +110,8 @@ interface Props {
    * 但不能靠定时器猜"差不多该刷了"——只有横幅确认任务终态时才 +1。
    */
   reloadToken?: number;
+  /** A′ UX：页签切回来自动刷新（antd Tabs 挂载不卸载） */
+  active?: boolean;
 }
 
 /**
@@ -126,7 +128,7 @@ interface Props {
  * 「原型」那一列（11-04 拍板①）是**结构层人工标记**：不点也能走完全链，所以既不必填也不拦人；
  * 点原型 0 元、不等模型，因此不走成本确认单，直接批量提交。
  */
-const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadToken }) => {
+const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadToken, active = true }) => {
   const [items, setItems] = useState<AssetItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -240,6 +242,14 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     fetchList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken]);
+
+  // A′ UX：切走再切回页签时自动刷新（挂载不卸载，不拉就是旧数据）
+  const wasActive = React.useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) fetchList(page, pageSize);
+    wasActive.current = active;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
   const runningCount = useMemo(() => items.filter((i) => i.stage_prompt === 'running').length, [items]);
