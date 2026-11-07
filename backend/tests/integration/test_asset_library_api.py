@@ -8334,3 +8334,81 @@ def test_summary_generate_passes_original_duration_for_first_candidate():
         await client.aclose()
 
     _run(_scenario())
+
+
+def test_output_groups_aggregate_by_asset_and_batch():
+    """成片墙两级视图第一级（2026-11-07 用户口径）：按素材（钩子）/按批次聚合成清单。
+
+    钉五件事：①按素材分组带成片数＋钩子号（挂在生产单上的，汇总去重）；②按批次
+    分组带批次码；③batch_id 筛选两级一致（素材侧收敛）；④qc 筛选真正生效
+    （qc_status=None 的不算进 passed 组，也不出现在 passed 清单）；⑤每组带
+    最新一条时间；没有首帧的组 thumb_url 显式 null（前端画占位不报错）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, hadm = h["material"], h["admin"]
+
+        async def _asset_with_outputs(url, hook_code, qc):
+            """一条素材：出文案→过审→投产（带钩子号）→直接插 N 条产物。"""
+            asset_id, _ = await _make_ready_asset(client, hm, url=url)
+            items, _ = await _gen_and_list(asset_id, hm, client)
+            sid = _approvable(items)["id"]
+            await client.post("/api/assets/summaries/review",
+                              json={"summary_ids": [sid], "action": "approve"}, headers=hadm)
+            with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+                await client.post("/api/assets/produce",
+                                  json={"summary_ids": [sid], "n": 1, "hook_codes": [hook_code]}, headers=hadm)
+            prod = (await _rows(AssetProduction, AssetProduction.asset_id == uuid.UUID(asset_id)))[0]
+            oid = uuid.uuid4()
+            async with dbmod.async_session_factory() as s:
+                s.add(AssetOutput(
+                    id=oid, production_id=prod.id, asset_id=uuid.UUID(asset_id),
+                    kind="doubao_raw", file_key=f"asset-out/{oid}.mp4",
+                    bucket=settings.MINIO_BUCKET_SLICED, file_name="成片.mp4",
+                    qc_status=qc,
+                ))
+                await s.commit()
+            return asset_id
+
+        a1 = await _asset_with_outputs(DOUYIN_2, "7C0G1", "passed")
+        a2 = await _asset_with_outputs(DOUYIN_3, "7C0G2", None)
+
+        # ① 按素材：两行、各自成片数与钩子号
+        g = await client.get("/api/assets/outputs/groups?group_by=asset", headers=hm)
+        assert g.status_code == 200, g.text
+        rows = {r["key"]: r for r in g.json()["groups"]}
+        assert set(rows) == {a1, a2}
+        assert rows[a1]["count"] == 1 and rows[a2]["count"] == 1
+        assert "7C0G1" in (rows[a1]["sub"] or "")
+        assert rows[a1]["latest_at"] and rows[a1]["thumb_url"] is None
+        assert g.json()["group_by"] == "asset"
+
+        # ② 按批次：两行，标签带批次码
+        gb = await client.get("/api/assets/outputs/groups?group_by=batch", headers=hm)
+        assert gb.status_code == 200, gb.text
+        b_rows = gb.json()["groups"]
+        assert len(b_rows) == 2
+        assert all("·" in r["label"] or r["label"] == "未挂批次" for r in b_rows)
+
+        # ③ batch_id 筛选（素材侧收敛）：只剩该批次下的素材组（asset 模式的 key 是素材 id）
+        a1_item = (await _rows(AssetItem, AssetItem.id == uuid.UUID(a1)))[0]
+        assert a1_item.batch_id is not None
+        gf = await client.get(
+            f"/api/assets/outputs/groups?group_by=asset&batch_id={a1_item.batch_id}", headers=hm)
+        assert gf.status_code == 200, gf.text
+        f_rows = gf.json()["groups"]
+        assert len(f_rows) == 1 and f_rows[0]["key"] == a1 and "7C0G1" in (f_rows[0]["sub"] or "")
+
+        # ④ qc=passed：qc=None 的素材2整组消失（组内计数与组级清单同一套过滤）
+        gq = await client.get("/api/assets/outputs/groups?group_by=asset&qc_status=passed", headers=hm)
+        assert gq.status_code == 200, gq.text
+        assert [r["key"] for r in gq.json()["groups"]] == [a1]
+
+        # 非法 group_by 400
+        bad = await client.get("/api/assets/outputs/groups?group_by=hook", headers=hm)
+        assert bad.status_code == 400
+        await client.aclose()
+
+    _run(_scenario())

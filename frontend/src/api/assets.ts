@@ -721,6 +721,20 @@ export interface AssetOutputListResult {
   items: AssetOutput[];
 }
 
+/** 成片墙分组清单的一行（两级视图第一级，2026-11-07 用户口径） */
+export interface AssetOutputGroup {
+  /** asset 模式＝素材 id；batch 模式＝批次 id（未挂批次＝"none"） */
+  key: string;
+  /** asset：素材码｜标题；batch：编号 · 名称（未挂批次行=「未挂批次」） */
+  label: string;
+  /** asset 模式带该素材的钩子号（「钩子 7C0N1、7C0N2」） */
+  sub: string | null;
+  count: number;
+  latest_at: string | null;
+  /** 该组最新一条的首帧 presign（1h TTL），没帧＝null */
+  thumb_url: string | null;
+}
+
 // ──────────────────────────────────────────────
 // 请求体（字段名与后端 Pydantic 模型逐字一致，snake_case 保留）
 // ──────────────────────────────────────────────
@@ -1065,6 +1079,8 @@ export interface AssetOutputListParams {
   limit?: number;
   /** 批 K：翻页偏移，配 total 用 */
   offset?: number;
+  /** 验收筛选：passed/warn/failed；不传＝不限（2026-11-07 起真正生效，此前前端筛了没传参） */
+  qc_status?: string;
 }
 
 // ──────────────────────────────────────────────
@@ -2269,6 +2285,10 @@ export const assetApi = {
   // 产物列表（P0 通常为空；豆包成片 / 合成成片由 P1/P2 写入）
   listOutputs: (params?: AssetOutputListParams) =>
     client.get('/assets/outputs', { params }) as Promise<AssetOutputListResult>,
+
+  // 成片墙两级视图第一级：按素材（钩子）或按批次聚合的组清单（每组带成片数/最近回收/最新缩略图）
+  listOutputGroups: (params?: { group_by?: 'asset' | 'batch'; batch_id?: string; kind?: string; qc_status?: string; limit?: number }) =>
+    client.get('/assets/outputs/groups', { params }) as Promise<{ group_by: string; groups: AssetOutputGroup[] }>,
 
   // 产物下载：presigned 外链（验收 failed 的会被 409 挡住，不静默交付）
   downloadOutput: (outputId: string) =>

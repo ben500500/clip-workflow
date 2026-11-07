@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Button,
   Checkbox,
   Empty,
   Modal,
   Pagination,
+  Segmented,
   Select,
   Space,
   Tag,
@@ -13,21 +14,16 @@ import {
   message,
 } from 'antd';
 import {
+  DownOutlined,
   DownloadOutlined,
   PlayCircleOutlined,
   QuestionCircleOutlined,
   ReloadOutlined,
+  RightOutlined,
 } from '@ant-design/icons';
-import { assetApi, type AssetBatch, type AssetOutput } from '../../api/assets';
+import { assetApi, type AssetBatch, type AssetOutput, type AssetOutputGroup } from '../../api/assets';
 
 const { Text } = Typography;
-
-interface Props {
-  /** 从别的页签带进来的批次初值（点批次跳转），只作初值 */
-  batchId?: string;
-  /** 后台任务跑完（横幅收敛）触发重拉 */
-  reloadToken?: number;
-}
 
 const PAGE_SIZE = 60;
 
@@ -55,56 +51,38 @@ function fmtDuration(n: number | null): string {
   return `${n.toFixed(1)}s`;
 }
 
+const qcOf = (s: string | null) => (s ? QC_LABELS[s] : undefined);
+
 /**
- * 成片素材墙（批 K）：回收回来的豆包成片不再藏在生产单行里，一面缩略图墙摆开——
- *
- * - **缩略图**＝产物首帧（output_thumb）。回收落库时后端自动排抽帧（批 K 接上了
- *   批 F 留的第二个写入方）；抽帧是后台任务，刚回收完的几条要等一两分钟才有图，
- *   没图的卡片画占位不报错，右上角「刷新」重拉直链（直链 1 小时过期也靠它续）。
- * - **预览**＝点卡片开播放器（内联 presign，不落盘）；验收不合格的也给看，
- *   播放器上方标红——看一眼为什么废和能不能投出去是两件事。
- * - **多选下载**＝勾选后串行走 `/outputs/{id}/download`（presigned attachment），
- *   每条都落 `downloaded_at` + 审计，跟单条下载同一套账。浏览器对连续多文件下载
- *   可能弹一次「允许下载多个文件」，允许即可；文件名后端已带素材名防重名。
- *
- * 筛选按**素材的导入批次**收敛（走 asset_items 侧）：拼接产物不挂生产单，
- * 按生产单查会漏，按素材查永远查得到。
+ * 组内成片墙（两级视图第二级）：一个素材/批次的片子，勾选下载、预览、翻页都在这一层。
+ * 勾选集是组件自己的：收起即卸载、勾选清空（列表层不做跨组汇总，挑片子就在一组里挑）。
  */
-const AssetOutputWall: React.FC<Props> = ({ batchId, reloadToken }) => {
-  const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
-  const [kindFilter, setKindFilter] = useState<string | undefined>('doubao_raw');
-  const [qcFilter, setQcFilter] = useState<string | undefined>();
+const OutputGrid: React.FC<{
+  assetId?: string;
+  batchId?: string;
+  kind?: string;
+  qc?: string;
+  reloadToken?: number;
+}> = ({ assetId, batchId, kind, qc, reloadToken }) => {
   const [items, setItems] = useState<AssetOutput[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
-  /** 勾选放 Set：翻页保留（墙是「挑片子」不是「勾表格」，翻页不该清空已挑的） */
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
   const [downProgress, setDownProgress] = useState('');
-
-  // 预览：点卡片 → 内联播放口拿直链
   const [preview, setPreview] = useState<{ output: AssetOutput; url: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-
-  // 批次下拉（与审核台同款：编号 + 名称 + 条数，免手填 UUID）
-  const [batches, setBatches] = useState<AssetBatch[]>([]);
-  useEffect(() => {
-    assetApi
-      .listBatches({ limit: 100 })
-      .then((res) => setBatches(res.items || []))
-      .catch(() => {
-        /* 批次下拉拿不到不影响墙 */
-      });
-  }, []);
 
   const fetchList = useCallback(
     async (p: number = 1) => {
       setLoading(true);
       try {
         const res = await assetApi.listOutputs({
-          batch_id: batchFilter,
-          kind: kindFilter,
+          asset_id: assetId,
+          batch_id: batchId,
+          kind,
+          qc_status: qc || undefined,
           limit: PAGE_SIZE,
           offset: (p - 1) * PAGE_SIZE,
         });
@@ -112,45 +90,24 @@ const AssetOutputWall: React.FC<Props> = ({ batchId, reloadToken }) => {
         setTotal(res.total || 0);
         setPage(p);
       } catch (e) {
-        message.error((e as Error).message || '加载成片列表失败');
+        message.error((e as Error).message || '加载成片失败');
       } finally {
         setLoading(false);
       }
     },
-    [batchFilter, kindFilter],
+    [assetId, batchId, kind, qc],
   );
 
   useEffect(() => {
     fetchList(1);
-  }, [batchFilter, kindFilter, fetchList]);
+  }, [fetchList]);
 
-  // 后台抽帧/回收任务收敛后重拉（新片就有图了）；qc 筛选变化也在这里一起走
   useEffect(() => {
-    fetchList(page);
+    if (reloadToken) fetchList(page);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qcFilter, reloadToken]);
+  }, [reloadToken]);
 
-  const batchOptions = useMemo(() => {
-    const opts = batches.map((b) => ({
-      value: b.id,
-      label: `${b.code} · ${b.name || '未命名'}（${b.item_count ?? 0} 条）`,
-    }));
-    if (batchFilter && !opts.some((o) => o.value === batchFilter)) {
-      opts.unshift({ value: batchFilter, label: `当前批次 ${batchFilter.slice(0, 8)}…` });
-    }
-    return opts;
-  }, [batches, batchFilter]);
-
-  const toggle = (id: string, checked: boolean) => {
-    setPicked((prev) => {
-      const next = new Set(prev);
-      if (checked) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-  };
-
-  const pickedItems = useMemo(() => items.filter((i) => picked.has(i.id)), [items, picked]);
+  const pickedItems = items.filter((i) => picked.has(i.id));
 
   const openPreview = async (o: AssetOutput) => {
     setPreviewLoading(true);
@@ -164,11 +121,7 @@ const AssetOutputWall: React.FC<Props> = ({ batchId, reloadToken }) => {
     }
   };
 
-  /**
-   * 多选下载：串行一条条来。并行全开会被浏览器当弹窗攻击拦掉一部分，
-   * 串行每条间隔 400ms，最多弹一次「允许多文件下载」确认。
-   * 每条都走 `/download` 口：downloaded_at + 审计自动落，跟单条下载同一套账。
-   */
+  /** 多选下载：串行一条条来（并行全开会被浏览器拦一部分），每条走 /download 口落账。 */
   const downloadPicked = async () => {
     if (!pickedItems.length || downloading) return;
     setDownloading(true);
@@ -199,65 +152,12 @@ const AssetOutputWall: React.FC<Props> = ({ batchId, reloadToken }) => {
     fetchList(page);
   };
 
-  const qc = (s: string | null) => (s ? QC_LABELS[s] : undefined);
-
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
-      {/* ── 筛选 + 动作行 ── */}
-      <Space size={8} wrap>
-        <Select
-          style={{ width: 240 }}
-          placeholder="批次（可选）"
-          allowClear
-          showSearch
-          optionFilterProp="label"
-          value={batchFilter}
-          onChange={(v) => {
-            setBatchFilter(v);
-            setPicked(new Set());
-          }}
-          options={batchOptions}
-        />
-        <Select
-          style={{ width: 140 }}
-          value={kindFilter}
-          onChange={(v) => {
-            setKindFilter(v);
-            setPicked(new Set());
-          }}
-          options={KIND_OPTIONS.map((k) => ({ value: k.value, label: k.label }))}
-        />
-        <Tooltip title="验收结论：passed=过、warn=有提醒、failed=不合格（不合格的仍可预览，但下载口会拦）。">
-          <span>
-            <Select
-              style={{ width: 130 }}
-              placeholder="验收（可选）"
-              allowClear
-              value={qcFilter}
-              onChange={setQcFilter}
-              options={[
-                { value: 'passed', label: '验收过' },
-                { value: 'warn', label: '有提醒' },
-                { value: 'failed', label: '不合格' },
-              ]}
-            />
-            <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
-          </span>
-        </Tooltip>
-        <Button icon={<ReloadOutlined />} loading={loading} onClick={() => fetchList(page)}>
-          刷新
-        </Button>
-        <Tooltip title="首帧是后台抽的：刚回收完的片子要等一两分钟才有图；直链 1 小时过期，过期了点刷新续。">
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            <QuestionCircleOutlined /> 共 {total} 条
-          </Text>
-        </Tooltip>
-      </Space>
-
-      {/* ── 勾选动作行 ── */}
-      <Space size={8} wrap>
+    <div style={{ padding: '4px 0 8px 8px' }}>
+      <Space size={8} wrap style={{ marginBottom: 8 }}>
         <Button
           type="primary"
+          size="small"
           icon={<DownloadOutlined />}
           disabled={!pickedItems.length}
           loading={downloading}
@@ -265,30 +165,21 @@ const AssetOutputWall: React.FC<Props> = ({ batchId, reloadToken }) => {
         >
           {downloading ? `下载中${downProgress}` : `下载勾选的 ${pickedItems.length} 条`}
         </Button>
-        <Button
-          disabled={!items.length}
-          onClick={() => setPicked(new Set(items.map((i) => i.id)))}
-        >
+        <Button size="small" disabled={!items.length} onClick={() => setPicked(new Set(items.map((i) => i.id)))}>
           本页全选
         </Button>
-        <Button disabled={!picked.size} onClick={() => setPicked(new Set())}>
-          清空勾选
+        <Button size="small" disabled={!picked.size} onClick={() => setPicked(new Set())}>
+          清空
         </Button>
-        {picked.size > items.length && (
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            另有 {picked.size - items.length} 条在别的页勾着，翻回去下载
-          </Text>
-        )}
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {loading ? '加载中…' : `共 ${total} 条`}
+        </Text>
       </Space>
 
-      {/* ── 墙 ── */}
       {!loading && !items.length ? (
         <Empty
-          description={
-            qcFilter || batchFilter
-              ? '这个筛选条件下没有成片。清掉筛选试试，或者先去「生产单与投板」投板回收。'
-              : '还没有成片。去「生产单与投板」投板，片子回收回来就摆在这里。'
-          }
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description={qc ? '这个验收条件下没有成片，清掉验收筛选试试。' : '这一组还没有成片。'}
         />
       ) : (
         <div
@@ -299,35 +190,18 @@ const AssetOutputWall: React.FC<Props> = ({ batchId, reloadToken }) => {
           }}
         >
           {items.map((o) => {
-            const q = qc(o.qc_status);
+            const q = qcOf(o.qc_status);
             return (
               <div
                 key={o.id}
-                style={{
-                  border: '1px solid #f0f0f0',
-                  borderRadius: 8,
-                  overflow: 'hidden',
-                  background: '#fff',
-                }}
+                style={{ border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}
               >
-                {/* 缩略图：竖屏成片 9:16，objectFit cover 裁齐 */}
-                <div
-                  style={{ position: 'relative', paddingTop: '133%', background: '#fafafa' }}
-                  onClick={() => openPreview(o)}
-                  role="button"
-                >
+                <div style={{ position: 'relative', paddingTop: '133%', background: '#fafafa' }} onClick={() => openPreview(o)} role="button">
                   {o.thumb_url ? (
                     <img
                       src={o.thumb_url}
                       alt={o.file_name || ''}
-                      style={{
-                        position: 'absolute',
-                        inset: 0,
-                        width: '100%',
-                        height: '100%',
-                        objectFit: 'cover',
-                        cursor: 'pointer',
-                      }}
+                      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer' }}
                       onError={(e) => {
                         (e.target as HTMLImageElement).style.display = 'none';
                       }}
@@ -350,7 +224,6 @@ const AssetOutputWall: React.FC<Props> = ({ batchId, reloadToken }) => {
                       没有预览图
                     </div>
                   )}
-                  {/* 播放角标 + 时长 */}
                   <div
                     style={{
                       position: 'absolute',
@@ -365,15 +238,20 @@ const AssetOutputWall: React.FC<Props> = ({ batchId, reloadToken }) => {
                   >
                     {fmtDuration(o.duration) || '—'}
                   </div>
-                  {/* 勾选框：压在图左上角 */}
                   <Checkbox
                     checked={picked.has(o.id)}
                     onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => toggle(o.id, e.target.checked)}
+                    onChange={(e) =>
+                      setPicked((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(o.id);
+                        else next.delete(o.id);
+                        return next;
+                      })
+                    }
                     style={{ position: 'absolute', left: 6, top: 6 }}
                   />
                 </div>
-                {/* 标注：素材码 + 钩子号 + 验收 + 已下载 */}
                 <div style={{ padding: '6px 8px 8px' }}>
                   <div style={{ marginBottom: 2 }}>
                     <Text strong style={{ fontSize: 12 }} ellipsis>
@@ -416,17 +294,15 @@ const AssetOutputWall: React.FC<Props> = ({ batchId, reloadToken }) => {
           total={total}
           showSizeChanger={false}
           onChange={(p) => fetchList(p)}
+          style={{ marginTop: 12 }}
         />
       )}
 
-      {/* ── 预览播放器 ── */}
       <Modal
         open={!!preview}
         title={
           preview
-            ? `${preview.output.file_name || preview.output.id.slice(0, 8)}${
-                preview.output.hook_code ? `（${preview.output.hook_code}）` : ''
-              }`
+            ? `${preview.output.file_name || preview.output.id.slice(0, 8)}${preview.output.hook_code ? `（${preview.output.hook_code}）` : ''}`
             : ''
         }
         width={560}
@@ -465,24 +341,226 @@ const AssetOutputWall: React.FC<Props> = ({ batchId, reloadToken }) => {
             {preview.output.qc_status === 'failed' && (
               <Tag color="red">验收不合格：{preview.output.qc_note || '见验收记录'}——下载口会拦，先看清为什么废</Tag>
             )}
-            <video
-              src={preview.url}
-              controls
-              autoPlay
-              style={{ width: '100%', maxHeight: 480, background: '#000' }}
-            />
+            <video src={preview.url} controls autoPlay style={{ width: '100%', maxHeight: 480, background: '#000' }} />
             <Text type="secondary" style={{ fontSize: 12 }}>
-              {[
-                fmtDuration(preview.output.duration),
-                fmtSize(preview.output.file_size),
-                preview.output.resolution,
-              ]
+              {[fmtDuration(preview.output.duration), fmtSize(preview.output.file_size), preview.output.resolution]
                 .filter(Boolean)
                 .join(' · ')}
             </Text>
           </Space>
         )}
       </Modal>
+    </div>
+  );
+};
+
+/**
+ * 成片素材墙（批 K 建，2026-11-07 改两级）：
+ *
+ * 第一级＝按素材（钩子）/按批次的组清单（每组：最新缩略图＋成片数＋最近回收时间），
+ * 点一行展开第二级＝这组的墙（缩略图点开预览、勾选串行下载、翻页）。
+ * 聚合走 `/assets/outputs/groups`（batch_id 走素材侧收敛，拼接产物也归组）；
+ * 类型/验收筛选在两级都生效。首帧是后台抽的，刚回收完要等一两分钟才有图，
+ * 没图的画占位；直链 1 小时过期，「刷新」重拉。
+ */
+const AssetOutputWall: React.FC<{ batchId?: string; reloadToken?: number }> = ({ batchId, reloadToken }) => {
+  const [viewMode, setViewMode] = useState<'asset' | 'batch'>('asset');
+  const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
+  const [kindFilter, setKindFilter] = useState<string | undefined>('doubao_raw');
+  const [qcFilter, setQcFilter] = useState<string | undefined>();
+  const [groups, setGroups] = useState<AssetOutputGroup[]>([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  /** 当前展开的组（单开：点另一行切换，再点收起） */
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+
+  // 批次下拉（按素材模式筛组用）
+  const [batches, setBatches] = useState<AssetBatch[]>([]);
+  useEffect(() => {
+    assetApi
+      .listBatches({ limit: 100 })
+      .then((res) => setBatches(res.items || []))
+      .catch(() => {
+        /* 批次下拉拿不到不影响墙 */
+      });
+  }, []);
+
+  const fetchGroups = useCallback(async () => {
+    setGroupsLoading(true);
+    try {
+      const res = await assetApi.listOutputGroups({
+        group_by: viewMode,
+        batch_id: viewMode === 'asset' ? batchFilter : undefined,
+        kind: kindFilter,
+        qc_status: qcFilter || undefined,
+      });
+      setGroups(res.groups || []);
+      setExpandedKey(null);
+    } catch (e) {
+      message.error((e as Error).message || '加载成片分组失败');
+    } finally {
+      setGroupsLoading(false);
+    }
+  }, [viewMode, batchFilter, kindFilter, qcFilter]);
+
+  useEffect(() => {
+    fetchGroups();
+  }, [fetchGroups]);
+
+  useEffect(() => {
+    if (reloadToken) fetchGroups();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadToken]);
+
+  const batchOptions = batches.map((b) => ({
+    value: b.id,
+    label: `${b.code} · ${b.name || '未命名'}（${b.item_count ?? 0} 条）`,
+  }));
+
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      {/* ── 筛选行：视图切换＋两级共用的筛选 ── */}
+      <Space size={8} wrap>
+        <Segmented
+          value={viewMode}
+          onChange={(v) => setViewMode(v as 'asset' | 'batch')}
+          options={[
+            { label: '按素材（钩子）', value: 'asset' },
+            { label: '按批次', value: 'batch' },
+          ]}
+        />
+        {viewMode === 'asset' && (
+          <Select
+            style={{ width: 240 }}
+            placeholder="批次（可选）"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            value={batchFilter}
+            onChange={setBatchFilter}
+            options={batchOptions}
+          />
+        )}
+        <Select
+          style={{ width: 140 }}
+          value={kindFilter}
+          onChange={setKindFilter}
+          options={KIND_OPTIONS.map((k) => ({ value: k.value, label: k.label }))}
+        />
+        <Tooltip title="验收结论：passed=过、warn=有提醒、failed=不合格（不合格的仍可预览，下载口会拦）。">
+          <span>
+            <Select
+              style={{ width: 130 }}
+              placeholder="验收（可选）"
+              allowClear
+              value={qcFilter}
+              onChange={setQcFilter}
+              options={[
+                { value: 'passed', label: '验收过' },
+                { value: 'warn', label: '有提醒' },
+                { value: 'failed', label: '不合格' },
+              ]}
+            />
+            <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+          </span>
+        </Tooltip>
+        <Button icon={<ReloadOutlined />} loading={groupsLoading} onClick={() => fetchGroups()}>
+          刷新
+        </Button>
+        <Tooltip title="首帧是后台抽的：刚回收完要等一两分钟才有图；直链 1 小时过期，过期了点刷新续。">
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            共 {groups.length} 组
+          </Text>
+        </Tooltip>
+      </Space>
+
+      {/* ── 第一级：组清单 ── */}
+      {!groupsLoading && !groups.length ? (
+        <Empty
+          description={
+            kindFilter || qcFilter || batchFilter
+              ? '这个筛选条件下没有成片。清掉筛选试试，或者先去「生产单与投板」投板回收。'
+              : '还没有成片。去「生产单与投板」投板，片子回收回来就摆在这里。'
+          }
+        />
+      ) : (
+        <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden' }}>
+          {groups.map((g) => {
+            const open = expandedKey === g.key;
+            return (
+              <div key={g.key} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <div
+                  role="button"
+                  onClick={() => setExpandedKey(open ? null : g.key)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '8px 12px',
+                    cursor: 'pointer',
+                    background: open ? '#fafafa' : '#fff',
+                  }}
+                >
+                  {g.thumb_url ? (
+                    <img
+                      src={g.thumb_url}
+                      alt=""
+                      style={{ width: 32, height: 44, objectFit: 'cover', borderRadius: 4, flexShrink: 0 }}
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        width: 32,
+                        height: 44,
+                        borderRadius: 4,
+                        background: '#f5f5f5',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#ccc',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <PlayCircleOutlined />
+                    </div>
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <Text strong style={{ fontSize: 13 }} ellipsis>
+                      {g.label}
+                    </Text>
+                    {g.sub && (
+                      <div>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {g.sub}
+                        </Text>
+                      </div>
+                    )}
+                  </div>
+                  <Tag color="blue">{g.count} 条</Tag>
+                  {g.latest_at && (
+                    <Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>
+                      最近 {g.latest_at.slice(5, 16).replace('T', ' ')}
+                    </Text>
+                  )}
+                  {open ? <DownOutlined style={{ color: '#999' }} /> : <RightOutlined style={{ color: '#999' }} />}
+                </div>
+                {/* 第二级：该组的墙。单开即卸载，勾选随收起清空（挑片子就在一组里挑） */}
+                {open && (
+                  <OutputGrid
+                    assetId={viewMode === 'asset' ? g.key : undefined}
+                    batchId={viewMode === 'batch' ? (g.key === 'none' ? undefined : g.key) : undefined}
+                    kind={kindFilter}
+                    qc={qcFilter}
+                    reloadToken={reloadToken}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </Space>
   );
 };

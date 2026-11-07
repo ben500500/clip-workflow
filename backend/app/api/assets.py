@@ -7908,6 +7908,7 @@ async def list_outputs(
     production_id: Optional[str] = None,
     batch_id: Optional[str] = None,
     kind: Optional[str] = None,
+    qc_status: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
@@ -7918,6 +7919,7 @@ async def list_outputs(
     批 K（成片素材墙）：加 `batch_id`（按素材的批次收敛，拼接产物不挂生产单也查得到）、
     `offset` + `total`（墙要翻页要计数）、每行带 `asset_code`（卡片上认得出是哪条素材）
     和 `thumb_url`（产物首帧 presign，墙当缩略图；没帧就 null，前端画「没有预览图」）。
+    `qc_status`（2026-11-07）：墙上验收筛选真正生效——此前前端筛了但没传参，纯摆设。
     """
     conds = []
     if asset_id:
@@ -7925,14 +7927,22 @@ async def list_outputs(
     if production_id:
         conds.append(AssetOutput.production_id == _as_uuid(production_id, "production_id"))
     if batch_id:
-        # 走素材侧收敛而不是生产单侧：拼接产物 production_id 可空，但 asset_id 永远在
-        conds.append(
-            AssetOutput.asset_id.in_(
-                select(AssetItem.id).where(AssetItem.batch_id == _as_uuid(batch_id, "batch_id"))
+        # 走素材侧收敛而不是生产单侧：拼接产物 production_id 可空，但 asset_id 永远在。
+        # "none" 是哨兵＝未挂批次的素材（分组清单里「未挂批次」那组展开时用）。
+        if batch_id == "none":
+            conds.append(
+                AssetOutput.asset_id.in_(select(AssetItem.id).where(AssetItem.batch_id.is_(None)))
             )
-        )
+        else:
+            conds.append(
+                AssetOutput.asset_id.in_(
+                    select(AssetItem.id).where(AssetItem.batch_id == _as_uuid(batch_id, "batch_id"))
+                )
+            )
     if kind:
         conds.append(AssetOutput.kind == kind)
+    if qc_status:
+        conds.append(AssetOutput.qc_status == qc_status)
     base = select(AssetOutput).where(and_(*conds)) if conds else select(AssetOutput)
     total = int(
         (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
@@ -8012,6 +8022,205 @@ async def list_outputs(
             for o in rows
         ]
     }
+
+
+@router.get("/assets/outputs/groups")
+async def list_output_groups(
+    group_by: str = "asset",
+    batch_id: Optional[str] = None,
+    kind: Optional[str] = None,
+    qc_status: Optional[str] = None,
+    limit: int = 100,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """成片墙两级视图的第一级：按素材（钩子）或按批次聚合一层清单。
+
+    2026-11-07 用户口径：墙不再一屏摊开所有片子——先按批次/钩子列一层清单
+    （每组带成片数＋最近回收时间＋最新一条的缩略图），点开一层再看这组的墙。
+    聚合口径与 /assets/outputs 同一套（batch_id 走素材侧收敛；kind/qc 同参数）；
+    缩略图取该组最新一条的首帧 presign（1h TTL，与列表口同款）。
+    """
+    if group_by not in ("asset", "batch"):
+        raise HTTPException(status_code=400, detail="group_by 只支持 asset（按素材/钩子）或 batch（按批次）")
+    conds = []
+    if kind:
+        conds.append(AssetOutput.kind == kind)
+    if qc_status:
+        conds.append(AssetOutput.qc_status == qc_status)
+    if batch_id:
+        conds.append(
+            AssetOutput.asset_id.in_(
+                select(AssetItem.id).where(AssetItem.batch_id == _as_uuid(batch_id, "batch_id"))
+            )
+        )
+    cap = min(max(1, limit), 200)
+
+    if group_by == "asset":
+        rows = list(
+            (
+                await db.execute(
+                    select(
+                        AssetOutput.asset_id,
+                        func.count().label("cnt"),
+                        func.max(AssetOutput.created_at).label("latest"),
+                    )
+                    .where(and_(*conds))
+                    .group_by(AssetOutput.asset_id)
+                    .order_by(func.max(AssetOutput.created_at).desc())
+                    .limit(cap)
+                )
+            ).all()
+        )
+        keys = [r[0] for r in rows]
+        items_meta: Dict[uuid.UUID, dict] = {}
+        hook_map: Dict[uuid.UUID, List[str]] = {}
+        if keys:
+            for r in (
+                await db.execute(
+                    select(AssetItem.id, AssetItem.code, AssetItem.title, AssetItem.batch_id).where(
+                        AssetItem.id.in_(keys)
+                    )
+                )
+            ).all():
+                items_meta[r[0]] = {"code": r[1], "title": r[2], "batch_id": r[3]}
+            # 钩子号挂在生产单上：按素材汇总去重，让人在列表层就能认出「这是哪条钩子」
+            prods = (
+                await db.execute(
+                    select(AssetProduction.asset_id, AssetProduction.hook_code).where(
+                        AssetProduction.asset_id.in_(keys),
+                        AssetProduction.hook_code.is_not(None),
+                    )
+                )
+            ).all()
+            for aid, hc in prods:
+                bucket = hook_map.setdefault(aid, [])
+                if hc not in bucket:
+                    bucket.append(hc)
+        groups = [
+            {
+                "key": str(aid),
+                "label": (items_meta.get(aid, {}).get("code") or str(aid)[:8])
+                + (
+                    f"｜{items_meta[aid]['title']}"
+                    if items_meta.get(aid, {}).get("title")
+                    else ""
+                ),
+                "sub": "钩子 " + "、".join(hook_map.get(aid, [])) if hook_map.get(aid) else None,
+                "count": int(cnt),
+                "latest_at": utc_iso(latest) if latest else None,
+                "_latest": latest,
+            }
+            for aid, cnt, latest in rows
+        ]
+    else:
+        rows = list(
+            (
+                await db.execute(
+                    select(
+                        AssetItem.batch_id,
+                        func.count().label("cnt"),
+                        func.max(AssetOutput.created_at).label("latest"),
+                    )
+                    .join(AssetItem, AssetItem.id == AssetOutput.asset_id)
+                    .where(and_(*conds))
+                    .group_by(AssetItem.batch_id)
+                    .order_by(func.max(AssetOutput.created_at).desc())
+                    .limit(cap)
+                )
+            ).all()
+        )
+        batch_ids = [r[0] for r in rows if r[0] is not None]
+        batch_meta: Dict[uuid.UUID, dict] = {}
+        if batch_ids:
+            for b in (
+                await db.execute(
+                    select(AssetBatch.id, AssetBatch.code, AssetBatch.name).where(AssetBatch.id.in_(batch_ids))
+                )
+            ).all():
+                batch_meta[b[0]] = {"code": b[1], "name": b[2]}
+        groups = [
+            {
+                "key": str(bid) if bid is not None else "none",
+                "label": (
+                    f"{batch_meta[bid]['code']} · {batch_meta[bid]['name'] or '未命名'}"
+                    if bid is not None and bid in batch_meta
+                    else "未挂批次"
+                ),
+                "sub": None,
+                "count": int(cnt),
+                "latest_at": utc_iso(latest) if latest else None,
+                "_latest": latest,
+            }
+            for bid, cnt, latest in rows
+        ]
+
+    # 每组最新一条的首帧缩略图：按时间倒序扫一遍候选，每组取第一遇到的（400 条有界，
+    # 超界的组没图只是少张缩略图，不报错）
+    if groups:
+        group_keys = {g["key"] for g in groups}
+        latest_rows: Dict[str, AssetOutput] = {}
+        if group_by == "asset":
+            scan_rows = list(
+                (
+                    await db.execute(
+                        select(AssetOutput)
+                        .where(and_(*conds))
+                        .order_by(AssetOutput.created_at.desc())
+                        .limit(400)
+                    )
+                ).scalars()
+            )
+            for o in scan_rows:
+                gkey = str(o.asset_id)
+                if gkey in group_keys and gkey not in latest_rows:
+                    latest_rows[gkey] = o
+        else:
+            # batch 模式的组键＝该输出所属素材的批次（未挂批次的素材归入 "none" 组）
+            scan_rows = list(
+                (
+                    await db.execute(
+                        select(AssetOutput, AssetItem.batch_id)
+                        .join(AssetItem, AssetItem.id == AssetOutput.asset_id)
+                        .where(and_(*conds))
+                        .order_by(AssetOutput.created_at.desc())
+                        .limit(400)
+                    )
+                ).all()
+            )
+            for o, bid in scan_rows:
+                gkey = str(bid) if bid is not None else "none"
+                if gkey in group_keys and gkey not in latest_rows:
+                    latest_rows[gkey] = o
+        thumb_urls: Dict[str, Optional[str]] = {}
+        if latest_rows:
+            frame_rows = (
+                await db.execute(
+                    select(AssetFrame).where(
+                        AssetFrame.output_id.in_([o.id for o in latest_rows.values()]),
+                        AssetFrame.kind == FRAME_OUTPUT_THUMB,
+                    )
+                )
+            ).scalars().all()
+            frames_by_output = {f.output_id: f for f in frame_rows}
+            for gkey, o in latest_rows.items():
+                f = frames_by_output.get(o.id)
+                thumb_urls[gkey] = (
+                    await get_presigned_url(
+                        f.bucket or settings.MINIO_BUCKET_RAW,
+                        f.file_key,
+                        expires_seconds=_FRAME_URL_TTL_SECONDS,
+                    )
+                    if f
+                    else None
+                )
+        for g in groups:
+            g["thumb_url"] = thumb_urls.get(g["key"])
+    else:
+        for g in groups:
+            g["thumb_url"] = None
+
+    return {"group_by": group_by, "groups": groups}
 
 
 @router.get("/assets/outputs/{output_id}/download")
