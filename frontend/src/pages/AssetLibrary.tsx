@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Button, Card, Modal, Space, Tabs, Tag, Typography, message } from 'antd';
-import { ApartmentOutlined } from '@ant-design/icons';
+import { Button, Card, Modal, Popover, Space, Tabs, Tag, Typography, message } from 'antd';
+import { ApartmentOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import AssetListPanel from '../components/assets/AssetListPanel';
 import AssetJobsPanel from '../components/assets/AssetJobsPanel';
@@ -171,28 +171,44 @@ const AssetLibrary: React.FC = () => {
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       <Card size="small">
-        <Paragraph style={{ marginBottom: 6 }}>
-          <Text strong>素材库 P0</Text>
-          ：批量导入（分享链接 / 视频文件）→ 反推文案 → AI 出钩子文案候选 → 人工审核 →
-          生成生产单（把过审文案变成要投出去的一条条提示词）→{' '}
-          <Text strong>投去 AI 出片</Text>
-          ：机器去企微后台「创建AI视频」任务板建任务、等出片、把成片自动收进各单的「成片」列
-          （逐批人工确认后才投；想自己投就导出任务文件手工投完，回来「补记手工投板结果」记账）。
-          收回来的片子到「<Text strong>成片素材墙</Text>」挑：缩略图一眼扫、点开就播、勾选多条一起下载。
-        </Paragraph>
         <Space size={8} wrap>
+          <Text strong>素材库</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            导入 → 出文案 → 审核 → 开单 → 投板出片 → 成片墙挑片
+          </Text>
+          <Popover
+            placement="bottomLeft"
+            title="素材库怎么用"
+            content={
+              <div style={{ maxWidth: 420, fontSize: 12 }}>
+                <p style={{ marginBottom: 6 }}>
+                  链路：批量导入（分享链接/视频文件）→ 反推文案 → AI 出钩子文案候选 → 人工审核 →
+                  生成生产单（过审文案变成一条条要投的提示词）→ <b>投去 AI 出片</b>
+                  （机器去企微后台任务板建任务，成片自动收进各单「成片」列，逐批人工确认后才投）。
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  想自己投就导出任务文件手工投完，回来「补记手工投板结果」记账；
+                  收回来的片子到「成片素材墙」挑：缩略图扫、点开播、多选下载。
+                </p>
+                <p style={{ marginBottom: 0 }}>
+                  钩子原型（A–G）＝开头套路的标记：全员可看、管理员可改；不点也能走完全链。
+                </p>
+              </div>
+            }
+          >
+            <Button type="link" size="small" style={{ padding: 0 }}>
+              怎么用 <QuestionCircleOutlined />
+            </Button>
+          </Popover>
           {roleHint}
           {batchId && (
             <Tag closable onClose={() => setBatchId(undefined)} color="geekblue">
-              当前批次筛选：{batchId.slice(0, 8)}
+              批次：{batchId.slice(0, 8)}
             </Tag>
           )}
           <Button size="small" icon={<ApartmentOutlined />} onClick={() => setCatOpen(true)}>
             钩子原型字典
           </Button>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            原型（A–G）＝开头套路的标记：全员可看、管理员可改；不点也能走完全链，过审与投产都不看它。
-          </Text>
         </Space>
       </Card>
 

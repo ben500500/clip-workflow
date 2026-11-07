@@ -714,14 +714,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                 Modal.confirm({
                   title: `批量通过 ${ids.length} 条？`,
                   width: 520,
-                  content: (
-                    <Space direction="vertical" size={4}>
-                      <Text>提交后会先过一遍自动检查：超字数、命中违禁词、与原视频对不上的会被当场拦下（拦下的逐条点名，可由管理员放行）。</Text>
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        过审之后要撤销，会连带作废这条文案下还没投出去的生产单——所以这里停一下，确认这批真的都要过。
-                      </Text>
-                    </Space>
-                  ),
+                  content: '自动检查会先拦一道（超字数/违禁词/对不上）；过审后要撤销会连带作废未投的生产单。',
+                  
                   okText: `通过这 ${ids.length} 条`,
                   cancelText: '再看看',
                   onOk: () => runReview('approve'),
@@ -740,7 +734,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
             要求改写（{ids.length}）
           </Button>
           {canReview && (
-            <Tooltip title="把过审文案变成一条条要投的提示词（括号只算已过审的）；素材专员不能开单。">
+            <Tooltip title="把过审文案变成一条条要投的提示词；括号只算已过审/改后通过的条，勾了待审核数字不变；素材专员不能开单。">
               <Button
                 icon={<ThunderboltOutlined />}
                 disabled={!approvedSelected.length}
@@ -749,11 +743,6 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                 生成生产单（{approvedSelected.length}）· 即投产
               </Button>
             </Tooltip>
-          )}
-          {canReview && (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              N 只数已过审/改后通过的条；勾了待审核的数字不变
-            </Text>
           )}
         </Space>
       ) : (
@@ -766,8 +755,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           type="info"
           showIcon
           style={{ marginBottom: 8 }}
-          message="默认只列每条素材的推荐候选"
-          description="一条素材默认只出 1 条候选；出了多条时通常只有一条能钩人，全勾一遍等于没审。要看对照请把筛选切到「全部」。"
+          message="默认只列推荐条——全勾一遍等于没审；要看对照切「全部」"
         />
       )}
       {/* 同素材列表：批量点原型放表头上方，别挤 Card 的 extra，否则那一排筛选会换行 */}
@@ -797,9 +785,11 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
               </Button>
             </Space.Compact>
           </Tooltip>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            文案侧还有 {cats.unclassified.copy_count} 条没点原型；出稿时本来会从素材继承，这里只补漏。
-          </Text>
+          {cats.unclassified.copy_count > 0 && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {cats.unclassified.copy_count} 条未点原型
+            </Text>
+          )}
         </Space>
       )}
       <Table<AssetSummary>
@@ -812,17 +802,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         // 猜是筛选配错了还是真没活。
         locale={{
           emptyText: (
-            <div style={{ padding: '24px 0', textAlign: 'center' }}>
-              <Text type="secondary">
-                这里没有要看的候选——通常是三件事之一：
-              </Text>
-              <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
-                <div>① 筛得太窄：清一清上面的「审核状态／范围／批次／关键词」，或把范围切到「全部」；</div>
-                <div>② 还没出文案：回「素材列表」勾素材点「出钩子文案」，跑完候选自动出现在这里；</div>
-                <div style={{ marginTop: 4 }}>
-                  搜的关键词没命中也在这里——素材码是导入时生成的编号，正文按文案原句搜。
-                </div>
-              </div>
+            <div style={{ padding: '24px 0', textAlign: 'center', color: '#666', fontSize: 12 }}>
+              筛得太窄就清一清上面的筛器（或切「全部」）；还没出文案就回「素材列表」点「出钩子文案」。
             </div>
           ),
         }}

@@ -183,10 +183,9 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
 
   return (
     <Space direction="vertical" size={6} style={{ width: '100%' }}>
-      <Text style={{ fontSize: 12 }}>
-        角色卡（可选，可多张；<Text strong>顺序＝板上的图片顺序，第 1 张＝主形象</Text>。
-        同一部剧请用同一批卡——历史上「上下集换装」就是卡没锁住导致的）
-      </Text>
+      <Tooltip title="顺序＝板上的图片顺序，第 1 张＝主形象；同一部剧请用同一批卡（「上下集换装」就是卡没锁住导致的）">
+        <Text style={{ fontSize: 12 }}>人物卡（三视图等，可多张）</Text>
+      </Tooltip>
 
       {/* 批 L：就地上传——不用先去导入面板绕一圈再回来挑 */}
       <Space size={8} wrap>

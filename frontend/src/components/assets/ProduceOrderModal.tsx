@@ -3,7 +3,7 @@ import {
   Alert, Button, Checkbox, Descriptions, Input, Modal, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import { CopyOutlined } from '@ant-design/icons';
-import { DEFAULT_TIER, RECHECK_CODE_LABELS, assetApi, isAssetJobAck, waitForAssetJob } from '../../api/assets';
+import { RECHECK_CODE_LABELS, assetApi, isAssetJobAck, waitForAssetJob } from '../../api/assets';
 import type { AssetProduceResponse, AssetSummary } from '../../api/assets';
 import { HOOK_CODE_RE, MonoText, parseHookCodes } from './AssetBits';
 import AssetCardPicker from './AssetCardPicker';
@@ -496,21 +496,11 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               message={jobHint}
               description={
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  这一步慢是在等模型逐条展开提示词（一条几十秒），不是在卡住；
-                  重复点「生成」不会跑得更快，只会白烧一次模型费用。
+                  在等模型逐条展开（一条几十秒）；重复点不会更快，关窗不取消任务。
                 </Text>
               }
             />
           )}
-          <Descriptions size="small" column={4} bordered>
-            <Descriptions.Item label="文案">{summaries.length}</Descriptions.Item>
-            <Descriptions.Item label="每条出几份不同写法（N）">{n}</Descriptions.Item>
-            <Descriptions.Item label="每份出几版">{boardTotal}</Descriptions.Item>
-            <Descriptions.Item label="要投多少条">
-              <Text strong>{plannedRows} 条</Text>
-            </Descriptions.Item>
-          </Descriptions>
-
           <Space wrap size={16}>
             <span>
               <Text>N 每条文案派生份数：</Text>
@@ -555,7 +545,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             <div style={{ marginBottom: 4 }}>
               <Space size={8} wrap>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  取号：在服务器跑 hook_id.py 取五位编号（投板和回收靠它对上）。
+                  服务器跑 hook_id.py 取号（复制清单照着跑）：
                 </Text>
                 {/* 批 N-4 最小版（评审二·P1-1）：每单 SSH 跑脚本最大的摩擦是"到底要取几个号"
                     还得现算现抄。清单一键复制，到服务器照着跑；界面内直连取号仍待拍板。 */}
@@ -650,18 +640,13 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             </Space>
           )}
 
-          <Alert
-            type="info"
-            showIcon
-            message="出片恒 10.08s / 720×1280，任务板上没有时长与分辨率开关"
-            description={
-              <span style={{ fontSize: 12 }}>
-                所以这里不填时长：内容更长只能拆成上/下集两条各 10 秒。
-                本批 {plannedRows} 条会算进当日投板量 {plannedRows} 条（实测约 120 条/日，不做硬限，只报数）。
-                视频时长上限 {DEFAULT_TIER}s 只影响反推文案的成本，跟任务板无关。
-              </span>
-            }
-          />
+          <Tooltip title="内容更长只能拆上/下集；视频时长上限只影响反推文案成本，与任务板无关">
+            <Alert
+              type="info"
+              showIcon
+              message={`出片恒 10.08s / 720×1280；本批 ${plannedRows} 条计入当日额度（≈120 条/日，只报数不拦）`}
+            />
+          </Tooltip>
           <MonoText>{summaries.map((s) => s.asset_code || s.id.slice(0, 8)).join(' · ')}</MonoText>
         </Space>
       )}

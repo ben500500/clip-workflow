@@ -1158,9 +1158,6 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
               </Button>
             </Space.Compact>
           </Tooltip>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            先勾行再点原型；原型只是开头套路的标记，不填照样走完全链。
-          </Text>
         </Space>
       )}
       <Table<AssetItem>
@@ -1173,16 +1170,8 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         locale={{
           emptyText: (
             <div style={{ padding: '24px 0', textAlign: 'center', color: '#666', fontSize: 12 }}>
-              <div style={{ fontSize: 14, color: '#333', marginBottom: 8 }}>还没有素材</div>
-              <div>第一步去「<b>导入与批次</b>」页签：粘贴分享链接（或传视频文件）批量导入；</div>
-              <div style={{ marginTop: 4 }}>
-                导完回这里「读视频 → 反推文案 → 出钩子文案」，出完候选到「文案审核台」审。
-              </div>
-              {batchId && (
-                <div style={{ marginTop: 8, color: '#999' }}>
-                  当前筛着批次 {batchId.slice(0, 8)}…——这个批次还没有素材行；点顶部「当前批次筛选」的 × 清掉再看全部。
-                </div>
-              )}
+              还没有素材：先去「导入与批次」页签导入（分享链接/视频文件）。
+              {batchId ? '当前筛着某个批次，点顶部批次标签的 × 看全部。' : ''}
             </div>
           ),
         }}
@@ -1237,20 +1226,14 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             <Alert
               type="info"
               showIcon
-              message="反推文案按你选的时长上限扣费，不按视频实际时长"
-              description={
-                <span style={{ fontSize: 12 }}>
-                  0.00054 元/秒 × 时长上限。600 秒档一条 0.324 元，180 秒档一条 0.0972 元——上限选大了，批次成本直接翻倍。
-                  系统里记的是按时长上限推算的估算金额（对方服务不逐单回传金额），用来对账，别当精确值。
-                </span>
-              }
+              message="按所选时长上限扣费（600s 档 0.324 元/条、180s 档 0.0972 元/条），不按实际时长；账面是对账估算值"
+              description={undefined}
             />
             <Checkbox checked={withDownload} onChange={(e) => setWithDownload(e.target.checked)}>
               <Text style={{ fontSize: 12 }}>顺带把链接素材的原片下载到我们自己的存储（默认勾上）</Text>
             </Checkbox>
             <Text type="secondary" style={{ fontSize: 11 }}>
-              下载好以后回看、拼接、做合成都不用再蹲原平台的临时链接。走付费渠道时一条加 0.01 元解析费；
-              上传的文件和图片本来就在自己存储里，会自动跳过。原片会一直占存储，目前不自动清理。
+              付费渠道 +0.01 元/条解析费；上传文件自动跳过。原片占存储，暂不自动清理。
             </Text>
             <Checkbox checked={retryFailed} onChange={(e) => setRetryFailed(e.target.checked)}>
               <Text style={{ fontSize: 12 }}>同时重跑反推文案失败的素材（默认跳过已跑过的）</Text>
