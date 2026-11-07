@@ -1095,14 +1095,22 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
       >
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
           <Row gutter={12}>
-            <Col span={8}>
+            <Col span={6}>
               <Statistic title="会新建板任务" value={dispatchPlan.willCreate} suffix="张" />
             </Col>
-            <Col span={8}>
+            <Col span={6}>
               <Statistic title="只回收（已有 tid）" value={dispatchPlan.willRecover} suffix="张" />
             </Col>
-            <Col span={8}>
+            <Col span={6}>
               <Statistic title="点了也不投（会被挡）" value={dispatchPlan.other} suffix="张" />
+            </Col>
+            <Col span={6}>
+              <Statistic
+                title="新建里缺卡"
+                value={selected.filter((p) => canCreateLocally(p) && !(p.card_asset_ids?.length ?? 0)).length}
+                suffix="张"
+                valueStyle={(dispatchPlan.willCreate ?? 0) > 0 && selected.some((p) => canCreateLocally(p) && !(p.card_asset_ids?.length ?? 0)) ? { color: '#d46b08' } : undefined}
+              />
             </Col>
           </Row>
           <Tooltip title="出好的片子自动回「成片」列，可关页面去干别的；额度按条数算（Σ各单板上条数），只含素材库自己投的，与每日解压线共用同一个池">
@@ -1126,14 +1134,10 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 : '真占当天号池额度，一条 25 分钟起；闸门与导出同一套（状态/正文/风险词）'
             }
           />
-          {!dispatchRecoverOnly && (
-            <Checkbox checked={dispatchConfirm} onChange={(e) => setDispatchConfirm(e.target.checked)}>
-              我已逐批确认这批要投出去（{dispatchPlan.willCreate} 张新建 · ≈{dispatchPlan.rows} 条额度）
-            </Checkbox>
-          )}
-          {/* 人物卡（三视图）：投板前统一挑/传。给则覆盖本批新单已带的卡；不选＝沿用 */}
+          {/* 人物卡（三视图）：投板前统一挑/传，开窗第一屏就给它——缺卡的单在这里补上再走 */}
           {!dispatchRecoverOnly && dispatchPlan.willCreate > 0 && (
             <div>
+              <Text strong style={{ fontSize: 12 }}>人物卡（三视图）</Text>
               <AssetCardPicker
                 active={dispatchOpen}
                 value={dispatchCardIds}
@@ -1141,9 +1145,14 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 batchId={batchFilter || batchId}
               />
               <Text type="secondary" style={{ fontSize: 12 }}>
-                这里选了卡会<b>覆盖</b>本批每张新单已带的卡；不选＝沿用各单自己的。
+                选了会<b>覆盖</b>本批每张新单已带的卡；不选＝沿用各单自己的。
               </Text>
             </div>
+          )}
+          {!dispatchRecoverOnly && (
+            <Checkbox checked={dispatchConfirm} onChange={(e) => setDispatchConfirm(e.target.checked)}>
+              我已逐批确认这批要投出去（{dispatchPlan.willCreate} 张新建 · ≈{dispatchPlan.rows} 条额度）
+            </Checkbox>
           )}
           {/* 11-06 拍板：投递稿可改。只改这次投出去的；改稿在后端照走风险词重扫并留审计 */}
           {!dispatchRecoverOnly && dispatchPlan.willCreate > 0 && (
