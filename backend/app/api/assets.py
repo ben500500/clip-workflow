@@ -500,6 +500,16 @@ class DispatchRequest(BaseModel):
         False,
         description="11-06 拍板②：新建板任务涉及别人导入的批次时必须为 true（回收已投的单不花钱，不用这个字段）",
     )
+    card_asset_ids: Optional[List[str]] = Field(
+        None,
+        description=(
+            "投板前统一挂卡（人物三视图）。给出时（含空数组＝清卡）对**本次要新建**的每张单"
+            "覆盖写入 card_asset_ids／兼容单值列（与 produce 同一套写法，第 1 张＝板上主形象），"
+            "并走 _resolve_card_assets 同一道校验（脏 id 当场 400）。单行从此带这张卡——"
+            "卡是生产输入，改的就是单本身；回收档（已有 tid）不动。"
+            "不传＝各单沿用自己已带的卡。"
+        ),
+    )
     prompt_overrides: Dict[str, str] = Field(
         default_factory=dict,
         description=(
@@ -7231,6 +7241,25 @@ async def dispatch_productions(
     for p in to_create:
         _refresh_board_date(p)
 
+    # 投板前统一挂卡：给出时对要新建的单逐张覆盖写（数组列＋兼容单值列，与 produce
+    # 同一套写法），放在 _build_delivery **之前**——它逐张取卡装 payload，读的就是
+    # 覆盖后的值。卡是生产输入，改的是单本身，随下面那次 commit 一起落库；
+    # 回收档不动（已在板上，再挂卡也不会重建任务）。
+    card_override_applied: List[str] = []
+    if data.card_asset_ids is not None and to_create:
+        cards = await _resolve_card_assets(db, data.card_asset_ids)
+        override_card_ids = [str(a.id) for a in cards]
+        override_card_key = cards[0].file_key if cards else None
+        for p in to_create:
+            p.card_asset_ids = override_card_ids or None
+            p.character_card_key = override_card_key
+        card_override_applied = [str(p.id) for p in to_create]
+    card_override = (
+        {"applied_to": card_override_applied, "card_asset_ids": [str(x) for x in (data.card_asset_ids or [])]}
+        if card_override_applied
+        else None
+    )
+
     # payload 与导出**同一个函数**（`_build_delivery`）：逐张取卡、保持 `card_asset_ids`
     # 顺序＝板上 picDatas 顺序、缺一张就点名。这里多花一次 MinIO 读是值当的——
     # 它是"投出去画中人不对"这类事故在烧钱前唯一还能看见它的地方。
@@ -7304,6 +7333,7 @@ async def dispatch_productions(
         capacity=capacity,
         card_warnings=card_warnings,
         recover_only=data.recover_only,
+        card_override=card_override,
     )
 
 
@@ -7319,6 +7349,7 @@ async def _execute_dispatch(
     capacity: Dict[str, Any],
     card_warnings: List[dict],
     recover_only: bool,
+    card_override: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """投板执行体（后台协程走的就是这里）：建任务 → 钉 tid → 轮询 → 回收 → 落库。
 
@@ -7473,6 +7504,7 @@ async def _execute_dispatch(
         after={
             "recover_only": recover_only,
             "created": created,
+            "card_override": card_override,
             "outcome": outcome["summary"],
             "outputs": outcome["outputs"],
             "uncertain": uncertain,

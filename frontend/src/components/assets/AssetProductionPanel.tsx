@@ -17,6 +17,7 @@ import { parseServerTime } from '../../utils/format';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
 import { withCrossPersonConfirm } from './crossPerson';
 import ProduceOrderModal from './ProduceOrderModal';
+import AssetCardPicker from './AssetCardPicker';
 import { MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
 
 const { Text, Paragraph } = Typography;
@@ -121,6 +122,8 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   // 11-06 拍板：投递稿可改。只改**这一次投出去**的正文——生产单行的 prompt_text、
   // 过审文案、漂移判定都不动，下一次再投仍是原稿；后端会对改稿重扫风险词并逐条留审计。
   const [promptOverrides, setPromptOverrides] = useState<Record<string, string>>({});
+  // 投板前统一挂卡（人物三视图）：给则覆盖本批要新建的单，空＝沿用各单已带的
+  const [dispatchCardIds, setDispatchCardIds] = useState<string[]>([]);
   const [editPromptFor, setEditPromptFor] = useState<AssetProduction | null>(null);
   const [editPromptDraft, setEditPromptDraft] = useState('');
 
@@ -493,6 +496,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           async_mode: true,
           cross_person_confirm: c,
           prompt_overrides: Object.keys(overrides).length ? overrides : undefined,
+          card_asset_ids: dispatchCardIds.length ? dispatchCardIds : undefined,
         }),
       );
       if (!res) return; // 取消了「替他人批次」确认：什么都不做，弹窗留着
@@ -919,6 +923,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 setDispatchForceReason('');
                 setPromptOverrides({});
                 setEditPromptFor(null);
+                setDispatchCardIds([]);
                 setDispatchOpen(true);
               }}
             >
@@ -1014,19 +1019,13 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
             disabled={writeRows.length > 1}
             onChange={(e) => setWriteTid(e.target.value)}
           />
-          <Alert
-            type="info"
-            showIcon
-            message="这里是「人工投板之后补账」：导出任务文件 → 人自己在企微后台建任务 → 回这里报结果"
-            description={
-              <span style={{ fontSize: 12 }}>
-                同态重报幂等跳过；queued 每报一次 attempts +1（重投也计）。
-                superseded/cancelled/skipped 是系统态，写不进来。
-                11-05 起另一条入口是「投去 AI 出片」（机器自己连板、自动收成片），
-                <b>两条路的闸门与状态迁移是同一套判据</b>，别在这里把机器投的结果再报一遍。
-              </span>
-            }
-          />
+          <Tooltip title="人工投的回来记账；机器投的别在这里重复报（两条路同一套判据）。同态重报幂等跳过；queued 每报一次 attempts +1">
+            <Alert
+              type="info"
+              showIcon
+              message="人工投的回来记账；机器投的别重复报"
+            />
+          </Tooltip>
         </Space>
       </Modal>
 
@@ -1095,36 +1094,23 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         }}
       >
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
-          <Alert
-            type="info"
-            showIcon
-            message="点了之后会发生什么"
-            description={
-              <span style={{ fontSize: 12 }}>
-                机器去企微后台「AI 视频」任务板建任务 → 排队出片（一条 25 分钟起，整批排队更久）
-                → 出好的片子<b>自动回到本页每张单的「成片」列</b>，点开就能看、能下。
-                可以关掉页面去干别的，回来点「刷新」或看顶部任务横幅。
-              </span>
-            }
-          />
           <Row gutter={12}>
             <Col span={8}>
               <Statistic title="会新建板任务" value={dispatchPlan.willCreate} suffix="张" />
             </Col>
             <Col span={8}>
-              <Statistic title="只回读回收（已有 tid）" value={dispatchPlan.willRecover} suffix="张" />
+              <Statistic title="只回收（已有 tid）" value={dispatchPlan.willRecover} suffix="张" />
             </Col>
             <Col span={8}>
-              <Statistic title="点了也不会投（会被挡）" value={dispatchPlan.other} suffix="张" />
+              <Statistic title="点了也不投（会被挡）" value={dispatchPlan.other} suffix="张" />
             </Col>
           </Row>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            号池额度按<b>条数</b>算不按张数：本批要投 ≈<Text strong>{dispatchPlan.rows}</Text>{' '}
-            条（各单板上条数相加）；今天板上已经吃掉{' '}
-            <Text strong>{dispatch?.today?.board_rows ?? 0}</Text> 条（软提示线 ≈
-            {dispatch?.today?.soft_cap ?? '—'}，<b>只提示不拦</b>）。
-            这个数只含素材库自己投的，与每日解压线共用同一个池，真实余量比它小。
-          </Text>
+          <Tooltip title="出好的片子自动回「成片」列，可关页面去干别的；额度按条数算（Σ各单板上条数），只含素材库自己投的，与每日解压线共用同一个池">
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              本批 ≈{dispatchPlan.rows} 条额度｜今天已 {dispatch?.today?.board_rows ?? 0}／提示线{' '}
+              {dispatch?.today?.soft_cap ?? '—'}（只提示不拦）
+            </Text>
+          </Tooltip>
           <Checkbox
             checked={dispatchRecoverOnly}
             onChange={(e) => setDispatchRecoverOnly(e.target.checked)}
@@ -1136,15 +1122,8 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
             showIcon
             message={
               dispatchRecoverOnly
-                ? '回收档不烧额度：只回读板面、把已经出好的成片取回来，所以不需要人工确认'
-                : '这一步真占当天号池额度：一条投出去要 25 分钟起，失败行板上没有原因字段'
-            }
-            description={
-              <span style={{ fontSize: 12 }}>
-                {dispatchRecoverOnly
-                  ? '进程重启把在等的任务带走后，用它把片子取回来；同一条 outUrl 不重复落产物。'
-                  : '闸门与导出同一套：还没投（order_ready）、提示词与过审文案同一条、高风险词重扫（admin 可带理由放行）；已投的单只回读不重建。'}
-              </span>
+                ? '回收档不烧额度，不需要人工确认；进程重启后靠它把片子取回来'
+                : '真占当天号池额度，一条 25 分钟起；闸门与导出同一套（状态/正文/风险词）'
             }
           />
           {!dispatchRecoverOnly && (
@@ -1152,16 +1131,27 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
               我已逐批确认这批要投出去（{dispatchPlan.willCreate} 张新建 · ≈{dispatchPlan.rows} 条额度）
             </Checkbox>
           )}
+          {/* 人物卡（三视图）：投板前统一挑/传。给则覆盖本批新单已带的卡；不选＝沿用 */}
+          {!dispatchRecoverOnly && dispatchPlan.willCreate > 0 && (
+            <div>
+              <AssetCardPicker
+                active={dispatchOpen}
+                value={dispatchCardIds}
+                onChange={setDispatchCardIds}
+                batchId={batchFilter || batchId}
+              />
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                这里选了卡会<b>覆盖</b>本批每张新单已带的卡；不选＝沿用各单自己的。
+              </Text>
+            </div>
+          )}
           {/* 11-06 拍板：投递稿可改。只改这次投出去的；改稿在后端照走风险词重扫并留审计 */}
           {!dispatchRecoverOnly && dispatchPlan.willCreate > 0 && (
             <div>
-              <Space size={8} align="center">
-                <Text strong style={{ fontSize: 12 }}>投递稿（要改哪张点哪张）</Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  只改这一次投出去的正文，库里的提示词不动；改稿会照过一遍高风险词
-                </Text>
-              </Space>
-              <div style={{ marginTop: 4, maxHeight: 180, overflowY: 'auto' }}>
+              <Tooltip title="只改这一次投出去的正文，库里的提示词不动；改稿会照过一遍高风险词">
+                <Text strong style={{ fontSize: 12 }}>投递稿</Text>
+              </Tooltip>
+              <div style={{ marginTop: 4, maxHeight: 160, overflowY: 'auto' }}>
                 {selected.filter(canCreateLocally).map((p) => (
                   <div
                     key={p.id}
@@ -1171,6 +1161,11 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                     <Text type="secondary" style={{ fontSize: 12 }} ellipsis>
                       {p.board_name || '（无推荐标题）'}
                     </Text>
+                    {(p.card_asset_ids?.length ?? 0) > 0 ? (
+                      <Tag style={{ fontSize: 11 }}>卡 {p.card_asset_ids!.length}</Tag>
+                    ) : (
+                      <Tag color="orange" style={{ fontSize: 11 }}>缺卡</Tag>
+                    )}
                     {promptOverrides[p.id]?.trim() && <Tag color="orange">已改</Tag>}
                     <Button
                       size="small"
@@ -1181,7 +1176,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                         setEditPromptDraft(promptOverrides[p.id] ?? p.prompt_text ?? '');
                       }}
                     >
-                      编辑投递稿
+                      改稿
                     </Button>
                   </div>
                 ))}
@@ -1213,7 +1208,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 setExportOpen(true);
               }}
             >
-              这批不想机器投？导出任务文件，自己去企微后台手工投（投完回来「补记手工投板结果」）
+              不想机器投？导出任务文件手工投，投完回来补记结果
             </Button>
           )}
         </Space>

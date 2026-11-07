@@ -1603,6 +1603,11 @@ export interface AssetDispatchRequest {
    * 改后的正文照走 block 级风险词重扫（命中 400，或 admin force+理由）。
    */
   prompt_overrides?: Record<string, string>;
+  /**
+   * 投板前统一挂卡（人物三视图）：给出时对本次要新建的每张单覆盖写入
+   * （第 1 张＝板上主形象），脏 id 后端 400；不传＝各单沿用已带的卡。
+   */
+  card_asset_ids?: string[];
 }
 
 /** 闸门挡下/拒投的逐条说明（三堆里除"要投的"以外都是这个形状） */

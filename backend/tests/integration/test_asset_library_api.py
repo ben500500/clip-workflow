@@ -8241,3 +8241,50 @@ def test_dispatch_poll_reown_preserves_manual_status_at_writeback():
         await client.aclose()
 
     _run(_scenario())
+
+
+def test_dispatch_card_override_pins_rows_and_rejects_dirty_ids():
+    """投板前统一挂卡：给 card_asset_ids 时覆盖本批**要新建**的单，脏 id 当场 400。
+
+    用户拍板的形状：卡（人物三视图）不只在「生成生产单」那一步挂——投板确认弹窗里
+    也能统一挑/传。后端口径：给出的数组对 to_create 逐张覆盖写（card_asset_ids 数组
+    ＋兼容单值列写第一张，与 produce 同一套写法），随建任务前的 commit 落库，
+    _build_delivery 读到的就是新卡；回收档（已有 tid）不适用。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, n=2, hook_codes=["7C0N1", "7C0N2"])
+        ids = [p["id"] for p in listed]
+
+        # 直接种一张合法的图片素材行当角色卡（_resolve_card_assets 三条硬校验：存在/是图/在桶里）
+        card_id = uuid.uuid4()
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetItem(
+                id=card_id, media_kind="image", source_kind="file",
+                file_name="女主三视图.png", file_key="asset/cards/santi.png",
+                bucket=settings.MINIO_BUCKET_RAW, created_by=None,
+            ))
+            await s.commit()
+
+        # 脏 id（不存在的卡）当场 400，一张都不投（排在真投之前：投过就成终态，进不了闸门了）
+        fb_dirty = _FakeBoard()
+        with _board_off(fb_dirty):
+            bad = await _dispatch(client, ho, [ids[0]], card_asset_ids=[str(uuid.uuid4())])
+        assert bad.status_code == 400 and "卡" in bad.json()["detail"], bad.text
+        assert len(fb_dirty.creates) == 0, "脏卡必须在建任务之前拦下，一个号池额度都不许烧"
+
+        fb = _FakeBoard()
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, ids, card_asset_ids=[str(card_id)])
+        assert resp.status_code == 200, resp.text
+
+        # 两张单都被钉上这张卡（顺序数组＋兼容单值列＝第一张）
+        rows = await _rows(AssetProduction, AssetProduction.asset_id == uuid.UUID(asset_id))
+        assert {str(r.card_asset_ids[0]) for r in rows if r.card_asset_ids} == {str(card_id)}
+        assert all(r.character_card_key == "asset/cards/santi.png" for r in rows)
+        await client.aclose()
+
+    _run(_scenario())
