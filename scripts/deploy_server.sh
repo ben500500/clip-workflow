@@ -268,6 +268,14 @@ else
   done
   log "全部目录 + 根文件同步完成"
 
+  # 3.1.5 服务器侧清 macOS 垃圾（._* AppleDouble / .DS_Store）。来源存疑（本地 tar 已
+  # 双模式排除、本地仓库恒为 0，但 163 树上会再生——疑似 SMB 侧 macOS 写入），根治办法
+  # 就是每次部署同步后兜底清一遍：alembic 会把 ._0063 当迁移模块加载（null bytes 报错、
+  # stamp 失败），这 200 字节的保险比排查来源便宜。
+  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" \
+    "find '$REMOTE_DIR' -name '._*' -type f -delete; find '$REMOTE_DIR' -name '.DS_Store' -type f -delete" \
+    || log "WARN: 服务器侧垃圾清理失败（不影响本次已构建的镜像，下次部署重试）"
+
   # 3.2 同步后硬校验：必须逐字节一致 + compose 语法可解析。这两条是「配置漂移」的
   #     最后一道闸 —— 漂移的表现是「代码改了但容器行为没变」，极难排查。宁可中止部署。
   _lmd5="$(file_md5 "$LOCAL_DIR/docker-compose.yml")"
