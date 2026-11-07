@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Col, Collapse, Dropdown, Input, Modal, Radio, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, Col, Collapse, Dropdown, Input, Modal, Radio, Row, Segmented, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   CloudUploadOutlined, CopyOutlined, DownloadOutlined, ExportOutlined, MoreOutlined, PlayCircleOutlined, ReloadOutlined, ThunderboltOutlined, VideoCameraOutlined,
@@ -80,10 +80,16 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const [pageSize, setPageSize] = useState(100);
   const [loading, setLoading] = useState(false);
   const [dispatch, setDispatch] = useState<AssetDispatchCounts | null>(null);
+  const [dispatch_all_, setDispatchAll] = useState<AssetDispatchCounts | null>(null);
 
   const [status, setStatus] = useState<string | undefined>();
   const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
   const [assetFilter, setAssetFilter] = useState<string | undefined>();
+  /**
+   * A′ 按运营隔离（2026-11-07）：owner=me 只看自己投产的单（查询偏好）。
+   * 默认矩阵：operator=我的、admin=全部；统计两行并排（我的／全站），号池一本账。
+   */
+  const [ownerView, setOwnerView] = useState<'me' | 'all'>(isAdmin ? 'all' : 'me');
 
   const [selected, setSelected] = useState<AssetProduction[]>([]);
   const [writeOpen, setWriteOpen] = useState(false);
@@ -226,25 +232,27 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           status,
           batch_id: batchFilter,
           asset_id: assetFilter,
+          owner: ownerView,
         });
         if (reqId !== listReqSeq) return; // 已有更新的请求在途，旧回包作废（评审一·P1-3）
         setItems(res.items || []);
         setTotal(res.total || 0);
         setPage(res.page || p);
         setDispatch(res.dispatch || null);
+        setDispatchAll(res.dispatch_all ?? null);
       } catch (e) {
         if (reqId === listReqSeq) message.error((e as Error).message || '加载生产单失败');
       } finally {
         if (reqId === listReqSeq) setLoading(false);
       }
     },
-    [status, batchFilter, assetFilter, page, pageSize],
+    [status, batchFilter, assetFilter, ownerView, page, pageSize],
   );
 
   useEffect(() => {
     fetchList(1, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, batchFilter, assetFilter]);
+  }, [status, batchFilter, assetFilter, ownerView]);
 
   // 后台投产任务跑完（D-1）：生产单行是后端建的，只能重新拉
   useEffect(() => {
@@ -648,7 +656,9 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         <Space direction="vertical" size={0}>
           <Text>{r.board_name || '（无推荐标题）'}</Text>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            {r.asset_id.slice(0, 8)}｜变体：{r.variant_basis || '-'}
+            {r.asset_id.slice(0, 8)}
+            {r.owner_name ? `｜投：${r.owner_name}` : ''}
+            ｜变体：{r.variant_basis || '-'}
           </Text>
         </Space>
       ),
@@ -797,6 +807,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
       : []),
   ];
 
+  const dispatch_all = dispatch_all_ ?? null;
   const today = dispatch?.today;
 
   return (
@@ -822,6 +833,12 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         </Col>
       </Row>
 
+      {ownerView === 'me' && dispatch_all && (
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+          全站：成功 {dispatch_all.succeeded ?? 0} · 失败 {dispatch_all.failed ?? 0} · 已投{' '}
+          {dispatch_all.dispatched ?? 0}（号池一本账，不分人）
+        </Text>
+      )}
       {today && (
         /*
           #110 排版整理：号池的一大段口径说明默认收起——统计行已经把关键数摆出来了，
@@ -870,6 +887,16 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
       )}
 
       <Space wrap style={{ marginBottom: 12 }}>
+        {/* A′ 按运营隔离：纯查询偏好，me=只看自己投产的单 */}
+        <Segmented
+          size="small"
+          value={ownerView}
+          onChange={(v) => setOwnerView(v as 'me' | 'all')}
+          options={[
+            { label: '我的', value: 'me' },
+            { label: '全部', value: 'all' },
+          ]}
+        />
         <Select
           placeholder="状态"
           allowClear

@@ -870,7 +870,12 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       ),
     },
     {
-      title: '状态',
+      // A′：阶段是全站口径（本素材所有生产单合并计算）——个人结果看生产单/成片墙
+      title: (
+        <Tooltip title="阶段为全站口径：按本素材所有生产单合并计算，不分人；个人出片结果看「生产单与投板」「成片素材墙」的「我的」视图">
+          <span>状态 ⓘ</span>
+        </Tooltip>
+      ),
       dataIndex: 'status',
       width: 96,
       render: (v: AssetItem['status']) => <AssetStatusTag status={v} />,

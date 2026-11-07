@@ -163,7 +163,13 @@ const AssetLibrary: React.FC = () => {
       key: 'outputs',
       label: '成片素材墙',
       children: (
-        <AssetOutputWall key={`outputs-${batchId ?? 'all'}`} batchId={batchId} reloadToken={reloadToken} />
+        <AssetOutputWall
+          key={`outputs-${batchId ?? 'all'}`}
+          batchId={batchId}
+          reloadToken={reloadToken}
+          ownerDefault={canReview && !isAdmin ? 'me' : 'all'}
+          ownerSwitchable={canReview}
+        />
       ),
     },
   ];

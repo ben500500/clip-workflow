@@ -83,6 +83,11 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
    */
   const [keyword, setKeyword] = useState('');
   /**
+   * A′ 按运营隔离（2026-11-07）：owner=me 已过审区只显自己过审的，pending 共享。
+   * 默认矩阵：operator=我的、admin=全部；纯查询偏好，「全部」是只读全量。
+   */
+  const [ownerView, setOwnerView] = useState<'me' | 'all'>(isAdmin ? 'all' : 'me');
+  /**
    * 三个筛选项**互斥**（11-04 用户纠正）：一次只看一类。
    * 之前是三个独立勾选框，能同时勾，勾出来的是「推荐条 且 命中违禁词 且 和原视频对不上」
    * 的交集——又窄又没人看得懂。现在用单选：
@@ -166,6 +171,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           batch_id: batchFilter,
           category_id: categoryFilter,
           q: keyword.trim() || undefined,
+          owner: ownerView,
         });
         if (reqId !== listReqRef.current) return; // 已有更新的请求在途，旧回包作废
         setData(res);
@@ -178,13 +184,13 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         if (reqId === listReqRef.current) setLoading(false);
       }
     },
-    [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter, keyword, page, pageSize],
+    [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter, keyword, ownerView, page, pageSize],
   );
 
   useEffect(() => {
     fetchList(1, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter, keyword]);
+  }, [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter, keyword, ownerView]);
 
   // 后台出文案任务跑完（D-1）：新候选不在前端内存里，只能重新拉
   useEffect(() => {
@@ -270,7 +276,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                 </Text>
               ))}
               <Text type="secondary" style={{ fontSize: 12 }}>
-                常见原因：写文案的人不能审自己写的文案（管理员除外）、同一批被别人抢先处理了、素材已归档。
+                常见原因：写文案的人不能审自己写的文案（管理员除外）、这条已被别人过审（要同素材请重出文案）、素材已归档。
               </Text>
             </Space>
           ),
@@ -685,6 +691,18 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
             违禁词表
           </Button>
         </Tooltip>
+        {/* A′ 按运营隔离：纯查询偏好——me=已过审区只显自己过审的，pending 照旧共享 */}
+        {canReview && (
+          <Segmented
+            size="small"
+            value={ownerView}
+            onChange={(v) => setOwnerView(v as 'me' | 'all')}
+            options={[
+              { label: '我的', value: 'me' },
+              { label: '全部', value: 'all' },
+            ]}
+          />
+        )}
         {/* 批 N（评审二 P1）：关键词搜索（正文/素材码）——筛出空集时有自己找回目标的正路 */}
         <Tooltip title="按正文或素材码搜（子串匹配，与其它筛选叠加）。清空＝不限。">
           <Input.Search

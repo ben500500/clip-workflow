@@ -8453,3 +8453,179 @@ def test_summary_generate_sets_condensed_title_as_asset_name():
         await client.aclose()
 
     _run(_scenario())
+
+
+# ─────────────────────  A′ 按运营隔离（2026-11-07，评审团定稿方案）  ─────────────────────
+
+
+def test_isolation_owner_views_cross_produce_gate_and_public_outputs():
+    """A′ 按运营隔离（评审团两轮定稿）：过审即归属，owner 只进 GET 读口。
+
+    钉六件事：
+    ① 已过审区按过审人隔离（owner=me 不含别人的、也不含 reviewed_by NULL 的无主公共历史），
+       pending 队列全量共享（挑文案是大家的事）；
+    ② 投别人过审的候选：不带 cross_person_confirm 400（点名过审人），带了 200 且
+       production.created_by 记实际投产人（谁投账算谁）、审计带 owner_cross；
+       reviewed_by NULL 的存量过审行＝无主公共，不拦（与钱闸「归属未知不预判」同口径）；
+    ③ 同态重报已过审候选不改归属（B 重按 A 过审过的「过」，reviewed_by 保持 A＋note）；
+    ④ 成片 owner：owner=me 含自己的＋拼接公共产物（production_id NULL），不含别人的；
+       groups 组层与片层同一套口径（IN 半连接不丢行）；
+    ⑤ _dispatch_counts owner 只进 scope 聚合：A 的「我的」succeeded=1，today 号池口径
+       全站（A+B 两人的都算），dispatch_all 给全站 scope；
+    ⑥ 写口零放松回归：写请求带 owner 参数行为不变（owner 是 GET 查询偏好，不进写路径）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ha = h["material"], h["admin"]
+        # 造第二个 operator（隔离矩阵需要 A/B 两个运营）
+        async with dbmod.async_session_factory() as s:
+            op_b = (await s.execute(select(User).where(User.username == "asset_op_b"))).scalar_one_or_none()
+            if op_b is None:
+                op_b = User(id=uuid.uuid4(), username="asset_op_b",
+                            password_hash=get_password_hash(PASSWORD),
+                            display_name="运营B", role="operator", data_scope="own", is_active=True)
+                s.add(op_b)
+                await s.commit()
+                op_b = await s.get(User, op_b.id)
+        hb = {"Authorization": "Bearer " + (
+            await client.post("/api/auth/login", json={"username": "asset_op_b", "password": PASSWORD})
+        ).json()["access_token"]}
+        ho = h["operator"]  # 运营 A
+
+        async def _approved_summary(url, approver_headers):
+            """导入→出文案→指定运营过审，返回 (asset_id, summary_id)。"""
+            aid, _ = await _make_ready_asset(client, hm, url=url)
+            items, _ = await _gen_and_list(aid, hm, client)
+            sid = _approvable(items)["id"]
+            r = await client.post("/api/assets/summaries/review",
+                                  json={"summary_ids": [sid], "action": "approve"},
+                                  headers=approver_headers)
+            assert r.status_code == 200 and r.json()["results"][0]["ok"] is True, r.text
+            return aid, sid
+
+        async def _produce(headers, sid, **extra):
+            with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+                return await client.post(
+                    "/api/assets/produce",
+                    json={"summary_ids": [sid], "n": 1, "async_mode": False, **extra},
+                    headers=headers)
+
+        a1, s1 = await _approved_summary(DOUYIN_2, ho)        # A 过审
+        a2, s2 = await _approved_summary(DOUYIN_3, ho)        # A 过审
+        a3, s3 = await _approved_summary("https://www.douyin.com/video/7599000000000000001", ho)  # A 过审
+        a4, s4 = await _approved_summary("https://www.douyin.com/video/7599000000000000002", ho)  # A 过审
+
+        # ① 已过审区隔离：B 的 owner=me 看不到 A 过审的；owner=all 全量；pending 全量共享
+        me_q = await client.get("/api/assets/summaries?owner=me&audit_status=approved", headers=hb)
+        assert me_q.status_code == 200 and me_q.json()["total"] == 0, me_q.text
+        all_q = await client.get("/api/assets/summaries?owner=all&audit_status=approved", headers=hb)
+        assert all_q.json()["total"] == 4
+        pd = await client.get("/api/assets/summaries?owner=me&audit_status=pending", headers=hb)
+        assert pd.status_code == 200 and pd.json()["total"] >= 4, "pending 候选池全量共享（owner=me 也要看得见）"
+        # pending 共享：再造一条 pending（只出文案不过审）
+        a5, _ = await _make_ready_asset(client, hm, url="https://www.douyin.com/video/7599000000000000003")
+        await _gen_and_list(a5, hm, client)
+        pd2 = await client.get("/api/assets/summaries?owner=me&audit_status=pending", headers=hb)
+        assert pd2.json()["total"] >= 4 + 1, "新素材的 pending 同样全量共享"
+        # A 的 owner=me：已过审区四条全是自己的，带显示名
+        me_a = await client.get("/api/assets/summaries?owner=me&audit_status=approved", headers=ho)
+        assert me_a.json()["total"] == 4
+        assert me_a.json()["items"][0]["reviewed_by_name"], "过审人灰字名随行返回"
+
+        # ② 投别人过审的候选：无确认 400（点名过审人），带确认 200 且归实际投产人
+        deny = await _produce(hb, s1)
+        assert deny.status_code == 400 and "替他人过审候选投产" in deny.json()["detail"], deny.text
+        assert "过审人 运营专员" in deny.json()["detail"], deny.text
+        ok = await _produce(hb, s1, cross_person_confirm=True)
+        assert ok.status_code == 200, ok.text
+        prodB = (await _rows(AssetProduction, AssetProduction.asset_id == uuid.UUID(a1)))[0]
+        assert prodB.created_by == op_b.id, "谁投账算谁：created_by 记实际投产人"
+        # 审计带 owner_cross（候选过审人留痕）
+        audits = await _rows(AuditLog, AuditLog.action == "asset.produce_order")
+        assert audits and any(a.after and "owner_cross" in (a.after or {}) for a in audits), \
+            "produce_order 审计要带 owner_cross（候选过审人留痕）"
+        # reviewed_by NULL 的存量过审行＝无主公共，不拦
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetSummary, uuid.UUID(s4))
+            row.reviewed_by = None
+            await s.commit()
+        legacy = await _produce(hb, s4)
+        assert legacy.status_code == 200, f"无主公共候选不拦：{legacy.text[:200]}"
+
+        # ③ 同态重报不改归属：B 重按 A 过审过的 s2，reviewed_by 保持 A＋note
+        again = await client.post("/api/assets/summaries/review",
+                                  json={"summary_ids": [s2], "action": "approve"}, headers=hb)
+        assert again.status_code == 200, again.text
+        res0 = again.json()["results"][0]
+        assert res0["ok"] is True and "保持原归属" in (res0.get("note") or ""), res0
+        s2row = await _row_of(AssetSummary, s2)
+        op_a_row = (await _rows(User, User.username == OPERATOR_USER))[0]
+        assert s2row.reviewed_by == op_a_row.id, "同态重报绝不偷换 reviewed_by"
+
+        # ②b async_mode=true（前端唯一真实路径）首呼必须当场 400——闸若被 async 分支
+        #    短路，前端确认弹窗协议就断了（后台重放才 400＝一线只看到任务失败）
+        r = await client.post(
+            "/api/assets/produce",
+            json={"summary_ids": [s3], "n": 1, "async_mode": True}, headers=hb)
+        assert r.status_code == 400 and "替他人过审候选投产" in r.json()["detail"], r.text
+
+        # ④ 成片 owner：A 投自己的（无闸）＋直接插产物（A 的单、B 的单、拼接公共）
+        own = await _produce(ho, s2)
+        assert own.status_code == 200, own.text[:300]
+        prodA = (await _rows(AssetProduction, AssetProduction.asset_id == uuid.UUID(a2)))[0]
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetOutput(id=uuid.uuid4(), production_id=prodA.id, asset_id=uuid.UUID(a2),
+                              kind="doubao_raw", file_key="o/a.mp4", bucket=settings.MINIO_BUCKET_SLICED))
+            s.add(AssetOutput(id=uuid.uuid4(), production_id=prodB.id, asset_id=uuid.UUID(a1),
+                              kind="doubao_raw", file_key="o/b.mp4", bucket=settings.MINIO_BUCKET_SLICED))
+            s.add(AssetOutput(id=uuid.uuid4(), production_id=None, asset_id=uuid.UUID(a2),
+                              kind="composed", file_key="o/pub.mp4", bucket=settings.MINIO_BUCKET_SLICED))
+            await s.commit()
+        oa = await client.get("/api/assets/outputs?owner=me", headers=ho)
+        keys = {i["file_key"] for i in oa.json()["items"]}
+        assert "o/a.mp4" in keys and "o/pub.mp4" in keys and "o/b.mp4" not in keys, keys
+        ob = await client.get("/api/assets/outputs?owner=me", headers=hb)
+        keys_b = {i["file_key"] for i in ob.json()["items"]}
+        assert "o/b.mp4" in keys_b and "o/pub.mp4" in keys_b and "o/a.mp4" not in keys_b, keys_b
+        ga = await client.get("/api/assets/outputs/groups?group_by=asset&owner=me", headers=ho)
+        gkeys = {g["key"] for g in ga.json()["groups"]}
+        assert a2 in gkeys and a1 not in gkeys, f"组层与片层同一套 owner 口径：{gkeys}"
+        # owner=all 全量
+        al = await client.get("/api/assets/outputs?owner=all", headers=ho)
+        assert len(al.json()["items"]) == 3
+
+        # ⑤ dispatch counts：owner 只进 scope，today 号池全站
+        today = datetime.utcnow() + timedelta(hours=int(settings.ASSET_BOARD_TZ_OFFSET_HOURS or 0))
+        async with dbmod.async_session_factory() as s:
+            for pr in (prodA, prodB):
+                p = await s.get(AssetProduction, pr.id)
+                p.status = "success"
+                p.started_at = datetime.utcnow()
+                p.board_date = svc.board_timestamp(tz_offset_hours=int(settings.ASSET_BOARD_TZ_OFFSET_HOURS or 0))
+                p.board_total = 1
+            await s.commit()
+        ca = await client.get("/api/assets/productions?owner=me", headers=ho)
+        body = ca.json()
+        _dbg = await _rows(AssetProduction)
+        _codes = {str(a.id): a.code for a in await _rows(AssetItem)}
+        _unames = {str(u.id): u.username for u in await _rows(User)}
+        print("DBG prods:", [( _codes.get(str(r.asset_id), "?"), r.status, _unames.get(str(r.created_by), "?")) for r in _dbg])
+        print("DBG assets:", [(a.code, str(a.id)[:8]) for a in await _rows(AssetItem)])
+        print("DBG dispatch:", body["dispatch"]["by_status"], "| all:", body["dispatch_all"]["by_status"])
+        assert body["dispatch"]["succeeded"] == 1, "我的 scope 只算我的"
+        assert body["dispatch_all"]["succeeded"] == 2, "dispatch_all 给全站 scope"
+        assert body["dispatch"]["today"]["dispatched"] == 2, "today 号池口径全站（A+B 都算）"
+        assert body["items"][0]["owner_name"], "投产人灰字随行返回"
+
+        # ⑥ 写口零放松：写请求带 owner 参数行为不变（owner 是 GET 查询偏好，不进写路径）
+        wb = await client.post("/api/assets/summaries/review?owner=me",
+                               json={"summary_ids": [s3], "action": "approve"}, headers=hb)
+        assert wb.status_code == 200 and wb.json()["results"][0]["ok"] is True, wb.text
+        # 非法 owner 值在读口 400
+        bad = await client.get("/api/assets/summaries?owner=someone", headers=ho)
+        assert bad.status_code == 400
+        await client.aclose()
+
+    _run(_scenario())

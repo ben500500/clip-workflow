@@ -62,8 +62,9 @@ const OutputGrid: React.FC<{
   batchId?: string;
   kind?: string;
   qc?: string;
+  owner?: 'me' | 'all';
   reloadToken?: number;
-}> = ({ assetId, batchId, kind, qc, reloadToken }) => {
+}> = ({ assetId, batchId, kind, qc, owner, reloadToken }) => {
   const [items, setItems] = useState<AssetOutput[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -83,6 +84,7 @@ const OutputGrid: React.FC<{
           batch_id: batchId,
           kind,
           qc_status: qc || undefined,
+          owner,
           limit: PAGE_SIZE,
           offset: (p - 1) * PAGE_SIZE,
         });
@@ -95,7 +97,7 @@ const OutputGrid: React.FC<{
         setLoading(false);
       }
     },
-    [assetId, batchId, kind, qc],
+    [assetId, batchId, kind, qc, owner],
   );
 
   useEffect(() => {
@@ -257,6 +259,7 @@ const OutputGrid: React.FC<{
                     <Text strong style={{ fontSize: 12 }} ellipsis>
                       {o.asset_code || o.asset_id.slice(0, 8)}
                       {o.hook_code ? `｜${o.hook_code}` : ''}
+                      {o.owner_name ? `｜投：${o.owner_name}` : o.production_id ? '' : '｜公共'}
                     </Text>
                   </div>
                   <Space size={4} wrap>
@@ -363,8 +366,16 @@ const OutputGrid: React.FC<{
  * 类型/验收筛选在两级都生效。首帧是后台抽的，刚回收完要等一两分钟才有图，
  * 没图的画占位；直链 1 小时过期，「刷新」重拉。
  */
-const AssetOutputWall: React.FC<{ batchId?: string; reloadToken?: number }> = ({ batchId, reloadToken }) => {
+const AssetOutputWall: React.FC<{
+  batchId?: string;
+  reloadToken?: number;
+  /** A′ 默认视图矩阵：operator=me、admin/material=all（页面层按角色传） */
+  ownerDefault?: 'me' | 'all';
+  /** 是否给「我的｜全部」开关（可审角色才有归属概念） */
+  ownerSwitchable?: boolean;
+}> = ({ batchId, reloadToken, ownerDefault = 'all', ownerSwitchable = false }) => {
   const [viewMode, setViewMode] = useState<'asset' | 'batch'>('asset');
+  const [ownerView, setOwnerView] = useState<'me' | 'all'>(ownerDefault);
   const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
   const [kindFilter, setKindFilter] = useState<string | undefined>('doubao_raw');
   const [qcFilter, setQcFilter] = useState<string | undefined>();
@@ -392,6 +403,7 @@ const AssetOutputWall: React.FC<{ batchId?: string; reloadToken?: number }> = ({
         batch_id: viewMode === 'asset' ? batchFilter : undefined,
         kind: kindFilter,
         qc_status: qcFilter || undefined,
+        owner: ownerView,
       });
       setGroups(res.groups || []);
       setExpandedKey(null);
@@ -400,7 +412,7 @@ const AssetOutputWall: React.FC<{ batchId?: string; reloadToken?: number }> = ({
     } finally {
       setGroupsLoading(false);
     }
-  }, [viewMode, batchFilter, kindFilter, qcFilter]);
+  }, [viewMode, batchFilter, kindFilter, qcFilter, ownerView]);
 
   useEffect(() => {
     fetchGroups();
@@ -420,6 +432,17 @@ const AssetOutputWall: React.FC<{ batchId?: string; reloadToken?: number }> = ({
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       {/* ── 筛选行：视图切换＋两级共用的筛选 ── */}
       <Space size={8} wrap>
+        {ownerSwitchable && (
+          <Segmented
+            size="small"
+            value={ownerView}
+            onChange={(v) => setOwnerView(v as 'me' | 'all')}
+            options={[
+              { label: '我的', value: 'me' },
+              { label: '全部', value: 'all' },
+            ]}
+          />
+        )}
         <Segmented
           value={viewMode}
           onChange={(v) => setViewMode(v as 'asset' | 'batch')}
@@ -553,6 +576,7 @@ const AssetOutputWall: React.FC<{ batchId?: string; reloadToken?: number }> = ({
                     batchId={viewMode === 'batch' ? (g.key === 'none' ? undefined : g.key) : undefined}
                     kind={kindFilter}
                     qc={qcFilter}
+                    owner={ownerView}
                     reloadToken={reloadToken}
                   />
                 )}

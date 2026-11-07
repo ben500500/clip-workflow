@@ -401,6 +401,10 @@ class ProduceRequest(BaseModel):
     board_tag: Optional[str] = Field(None, description="板上 tag（拥有者标记），缺省用 ASSET_BOARD_TAG；不填=无主任务、按天筛不到")
     hook_codes: Optional[List[str]] = Field(None, description="五位钩子编号（hook_id.py 取来的，按 n 的顺序对应）；后端不自己编号")
     character_card_key: Optional[str] = Field(None, description="角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡，按剧分组投）")
+    cross_person_confirm: bool = Field(
+        False,
+        description="A′ 归属跨人确认：投**别人过审**的候选（reviewed_by≠操作者）必须 true——谁投账算谁，候选过审人进审计；投自己过审的或无主公共候选不用带",
+    )
 
     @field_validator("character_card_key")
     @classmethod
@@ -600,6 +604,25 @@ async def _write_audit(
 
 
 _CROSS_MARKER = "替他人批次花钱"
+# A′：归属跨人（投别人过审的候选）的固定点名短语，前端 withCrossOwnerConfirm 靠它识别
+_CROSS_OWNER_MARKER = "替他人过审候选投产"
+
+
+async def _user_names(db: AsyncSession, uids: set) -> Dict[str, str]:
+    """id → 显示名（display_name 优先，退 username）。
+
+    A′（2026-11-07 按运营隔离）：序列化层**一次聚合**用——三读口的归属人灰字
+    全走这里，绝不在行循环里逐行查用户表（先例：_cross_person_gate 的 names 段）。
+    """
+    ids = {u for u in uids if u}
+    if not ids:
+        return {}
+    return {
+        str(uid): (dn or un) or "未知（账号已删）"
+        for uid, dn, un in (
+            await db.execute(select(User.id, User.display_name, User.username).where(User.id.in_(ids)))
+        ).all()
+    }
 
 
 async def _cross_person_gate(
@@ -1274,6 +1297,7 @@ def _can_resubmit(summary: AssetSummary, asset: AssetItem, current_user: User) -
 def _serialize_summary(
     s: AssetSummary, asset: Optional[AssetItem] = None, *, can_resubmit: bool = False,
     category_name: Optional[str] = None, output_count: Optional[int] = None,
+    reviewer_name: Optional[str] = None,
 ) -> dict:
     data = {
         "id": str(s.id),
@@ -1292,6 +1316,8 @@ def _serialize_summary(
         "risk_hit": s.risk_hit,
         "audit_status": s.audit_status,
         "reviewed_by": str(s.reviewed_by) if s.reviewed_by else None,
+        # A′：过审人显示名（12px 灰字标注用）；None=调用方没聚合（详情口）或无主
+        "reviewed_by_name": reviewer_name,
         "reviewed_at": utc_iso(s.reviewed_at) if s.reviewed_at else None,
         "reject_reason": s.reject_reason,
         "text_before_edit": s.text_before_edit,
@@ -1319,12 +1345,14 @@ def _serialize_summary(
     return data
 
 
-def _serialize_production(p: AssetProduction, output_count: int = 0) -> dict:
+def _serialize_production(p: AssetProduction, output_count: int = 0, owner_name: Optional[str] = None) -> dict:
     return {
         "id": str(p.id),
         "asset_id": str(p.asset_id),
         "summary_id": str(p.summary_id),
         "batch_id": str(p.batch_id) if p.batch_id else None,
+        # A′：投产人显示名（谁投账算谁的灰字标注）；None=调用方没聚合
+        "owner_name": owner_name,
         "seq": p.seq,
         "hook_code": p.hook_code,
         "project_title": p.project_title,  # 废弃：11-02 版取消项目标题行，只读历史
@@ -4514,6 +4542,7 @@ async def list_summaries(
     only_resubmittable: bool = False,
     category_id: Optional[str] = None,
     q: Optional[str] = None,
+    owner: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
     current_user: User = Depends(get_current_user),
@@ -4528,6 +4557,12 @@ async def list_summaries(
 
     `q`（批 N·评审二 P1）：关键词搜索，正文/素材码模糊匹配——筛出空集时给人一条
     自己找回目标的正路，而不是对着空表猜筛选哪里配错了。
+
+    `owner`（A′ 按运营隔离，2026-11-07）：**GET 读口的查询偏好**，写口权限不受它影响。
+    owner=me → pending/驳回/需改写全量共享（挑文案是大家的事），**已过审区只显自己
+    过审的**；owner=all 或缺省 → 全量。reviewed_by IS NULL 的存量过审行＝无主公共
+    历史，owner=me 不含（三读口一致口径）。11-03「读口不分可见范围」的口径在本
+    参数上被推翻（前端「我的」默认视图），推翻记录见 docs/素材库按运营隔离-设计方案-20261107.md。
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 300)
@@ -4552,6 +4587,17 @@ async def list_summaries(
         conds.append(AssetSummary.audit_status.in_((RV_REJECTED, RV_NEED_REWRITE)))
         if current_user.role != UserRole.admin.value:
             conds.append(AssetItem.created_by == current_user.id)
+    if owner not in (None, "", "me", "all"):
+        raise HTTPException(status_code=400, detail="owner 只支持 me（我的链路）或 all（全量），缺省=all")
+    if owner == "me":
+        # A′：已过审区按过审人隔离；pending/驳回/需改写全量共享；无主公共历史（NULL）不含
+        conds.append(or_(
+            AssetSummary.audit_status.notin_((RV_APPROVED, RV_PASSED_EDITED)),
+            and_(
+                AssetSummary.audit_status.in_((RV_APPROVED, RV_PASSED_EDITED)),
+                AssetSummary.reviewed_by == current_user.id,
+            ),
+        ))
     if q and q.strip():
         # 批 N（评审二 P1）：正文/素材码子串匹配（大小写不敏感）。LIKE 转义掉
         # 用户手滑输入的 %/_，别让搜索框变成全表扫。
@@ -4610,6 +4656,8 @@ async def list_summaries(
             )
         ).all()
         out_counts = {sid: int(cnt) for sid, cnt in orows}
+    # A′：过审人显示名一次聚合
+    reviewer_names = await _user_names(db, {s.reviewed_by for s, _a in rows})
     return {
         "items": [
             _serialize_summary(
@@ -4617,6 +4665,7 @@ async def list_summaries(
                 can_resubmit=_can_resubmit(s, a, current_user),
                 category_name=cat_names.get(str(s.category_id)) if s.category_id else None,
                 output_count=out_counts.get(s.id, 0),
+                reviewer_name=reviewer_names.get(str(s.reviewed_by)) if s.reviewed_by else None,
             )
             for s, a in rows
         ],
@@ -4761,6 +4810,21 @@ async def review_summaries(
                     else (consist.get("note") or f"实体未命中：{'、'.join(consist['missing'])}")[:300]
                 )
 
+        # A′（2026-11-07 按运营隔离）：同态重报**已过审**候选不改归属——B 重按一遍
+        # A 过审过的「过」，reviewed_by 保持 A，绝不偷换成 B；回报里带 note 说清。
+        # 撤审（approved→rejected）不算同态，走原路（reviewed_by 记撤审人，名下活跃单作废）。
+        if to_state == before["audit_status"] and to_state in REVIEW_PASSED_STATES \
+                and summary.reviewed_by not in (None, current_user.id):
+            owner_name = (await _user_names(db, {summary.reviewed_by})).get(
+                str(summary.reviewed_by), "未知"
+            )
+            results.append({
+                "summary_id": str(uuid_s), "ok": True, "code": asset.code,
+                "audit_status": to_state, "is_recommended": bool(summary.is_recommended),
+                "warnings": [],
+                "note": f"已由 {owner_name} 过审，保持原归属（未重复处理、归属未变）",
+            })
+            continue
         summary.audit_status = to_state
         summary.reviewed_by = current_user.id
         summary.reviewed_at = datetime.utcnow()
@@ -5506,6 +5570,48 @@ async def create_productions(
     # 因为新前端改传数组就读不到卡）。多卡时写第一张——它就是 picDatas 的第一项，语义上是主卡。
     card_key = (cards[0].file_key if cards else None) or data.character_card_key or None
 
+    # A′（2026-11-07 按运营隔离）：归属跨人确认闸——投**别人过审**的候选要知情确认。
+    # ⚠️ 必须在 async_mode 分支**之前**判：前端唯一真实路径是 async_mode=true（提交即回
+    # 任务号），闸若放在分支之后，首呼会拿到 job ack、确认弹窗协议就断了（后台重放才
+    # 撞 400，一线只看到任务失败）。与卡校验同一条先例：烧钱前当场判完。
+    # 谁投账算谁（production.created_by 记实际投产人），候选过审人进审计；
+    # 无主公共历史（reviewed_by IS NULL 的存量行）不拦——与钱闸「归属未知不预判」同口径。
+    _pre_summaries: Dict[Any, Optional[AssetSummary]] = {}
+    for sid in data.summary_ids:
+        _u = _as_uuid(sid, "summary_id")
+        _pre_summaries[_u] = (
+            await db.execute(select(AssetSummary).where(AssetSummary.id == _u))
+        ).scalar_one_or_none()
+    cross_summaries = [
+        s for s in _pre_summaries.values()
+        if s is not None and s.audit_status in REVIEW_PASSED_STATES
+        and s.reviewed_by is not None and str(s.reviewed_by) != str(current_user.id)
+    ]
+    if cross_summaries and not data.cross_person_confirm:
+        name_map = await _user_names(db, {s.reviewed_by for s in cross_summaries})
+        code_map = dict(
+            (
+                await db.execute(
+                    select(AssetItem.id, AssetItem.code).where(
+                        AssetItem.id.in_({s.asset_id for s in cross_summaries})
+                    )
+                )
+            ).all()
+        )
+        shown = "；".join(
+            f"{code_map.get(s.asset_id, str(s.asset_id)[:8])}#{s.seq}（过审人 {name_map.get(str(s.reviewed_by), '未知')}）"
+            for s in cross_summaries[:5]
+        )
+        more = f"（另有 {len(cross_summaries) - 5} 条，本条只列前 5 条）" if len(cross_summaries) > 5 else ""
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"投产涉及{_CROSS_OWNER_MARKER}：{shown}{more}。"
+                "谁投账算谁（生产单记你名下、候选过审人留审计）——请确认确实是替同事补单/代班："
+                "界面弹窗点「确认替他人投产」后再发一次（带 cross_person_confirm=true），这一次没有建单。"
+            ),
+        )
+
     if data.async_mode:
         # D-1：展开提示词要调模型（实测一次 9 分钟），同步等会一路撞上
         # 浏览器 960s / 后端 900s / nginx 的超时链，参数校验已经全过完了才排后台，
@@ -5550,9 +5656,7 @@ async def create_productions(
 
     for sid in data.summary_ids:
         uuid_s = _as_uuid(sid, "summary_id")
-        summary = (
-            await db.execute(select(AssetSummary).where(AssetSummary.id == uuid_s))
-        ).scalar_one_or_none()
+        summary = _pre_summaries.get(uuid_s)
         if summary is None:
             results.append({"summary_id": str(uuid_s), "created": 0, "error": "文案不存在"})
             continue
@@ -5845,6 +5949,7 @@ async def create_productions(
     )
     missing_codes = sum(1 for p in productions if not p.hook_code)
     missing_names = sum(1 for p in productions if not p.board_name)
+    _cross_owner_names = await _user_names(db, {s.reviewed_by for s in cross_summaries}) if cross_summaries else {}
     await _write_audit(
         db,
         action="asset.produce_order",
@@ -5873,6 +5978,21 @@ async def create_productions(
                 {"code": n["code"], "ratio": n["ratio"], "orientation": n["orientation"]}
                 for n in card_notes
             ] or None,
+            # A′：归属留痕——候选过审人是谁、有没有跨人投产，事后要能回答"谁替谁投"
+            "owner_cross": (
+                {
+                    "summaries": [
+                        {
+                            "summary_id": str(s.id),
+                            "reviewed_by": str(s.reviewed_by) if s.reviewed_by else None,
+                            "reviewed_by_name": _cross_owner_names.get(str(s.reviewed_by)),
+                        }
+                        for s in cross_summaries
+                    ]
+                }
+                if cross_summaries
+                else None
+            ),
             "hook_codes": hook_codes or None,
             "capacity": capacity,
             # 复核结果全部入审计：豁免的每一条都能被 admin 抽检回溯（A2-1）
@@ -6086,7 +6206,7 @@ async def _converge_produce_stage(db: AsyncSession, asset_ids: set) -> Dict[str,
 
 
 async def _dispatch_counts(
-    db: AsyncSession, *conds, soft_cap: Optional[int] = None
+    db: AsyncSession, *conds, soft_cap: Optional[int] = None, owner_uid: Optional[Any] = None
 ) -> dict:
     """生产单投递计数。`by_status` 是全量分布（含未投的 order_ready），`today` 是号池当日事实。
 
@@ -6095,11 +6215,16 @@ async def _dispatch_counts(
     - **today 计数**不受 scope 约束——「今天号池吃进去多少、到手多少」是全队事实
       （实测 ≈120 条/日那条线），按批次过滤后就变成「这批占今天多少」，
       回答不了「今天还能不能再投」。
+    `owner_uid`（A′ 按运营隔离）：只进 **scope 聚合**（「我的链路投得怎么样」），
+    **today 号池口径绝不受它影响**——号池是全站一本账，按人切了就是「我占今天多少」，
+    与「今天还能不能再投」是两个问题。注释与测试双钉（test_output_groups……隔离矩阵）。
     `success_rate` 分母只算**已终态**（success+failed），在投/出片中不进分母；
     没有终态时回 None，不是 0——0 会被读成「一条都没成」。
     `dispatched` 含**投过后被作废**的单（见 `_VOIDED_BUT_SENT`）：作废是审核侧的追溯动作，
     不改变「号池那天已经被吃掉」这个事实；`voided_after_dispatch` 单列出来给前端说明用。
     """
+    if owner_uid is not None:
+        conds = [*conds, AssetProduction.created_by == owner_uid]
     stmt = select(AssetProduction.status, func.count()).group_by(AssetProduction.status)
     if conds:
         stmt = stmt.where(and_(*conds))
@@ -6371,6 +6496,7 @@ async def list_productions(
     status: Optional[str] = None,
     batch_id: Optional[str] = None,
     asset_id: Optional[str] = None,
+    owner: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
     current_user: User = Depends(get_current_user),
@@ -6381,6 +6507,11 @@ async def list_productions(
     `dispatch.by_status` 走的是**过滤前的口径**：只跟着 batch_id/asset_id 走，不受
     `status=` 影响。前端筛「失败」时如果 by_status 也跟着筛，列表就变成
     「failed: 12」自己报自己，成功几条这个关键数消失了——那正是今天要对账的东西。
+
+    `owner`（A′ 按运营隔离，2026-11-07）：GET 读口的查询偏好。owner=me → 按
+    `created_by=me` 过滤（谁投账算谁）；scope 聚合同步带 owner，`today` 号池口径
+    保持全站；响应另带 `dispatch_all`（同 scope 的全站口径），前端「我的/全站」
+    两行并排。写口权限不受 owner 影响。
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 300)
@@ -6394,12 +6525,25 @@ async def list_productions(
     if asset_id:
         conds.append(AssetProduction.asset_id == _as_uuid(asset_id, "asset_id"))
         scope.append(AssetProduction.asset_id == _as_uuid(asset_id, "asset_id"))
+    if owner not in (None, "", "me", "all"):
+        raise HTTPException(status_code=400, detail="owner 只支持 me（我的链路）或 all（全量），缺省=all")
+    if owner == "me":
+        # ⚠️ owner 只进 conds 与 _dispatch_counts 的 owner_uid 参数，**不进 scope**——
+        # dispatch_all（全站口径一行）要用不带 owner 的 scope 重算。
+        conds.append(AssetProduction.created_by == current_user.id)
     stmt = select(AssetProduction).where(and_(*conds)) if conds else select(AssetProduction)
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (
         await db.execute(stmt.order_by(AssetProduction.created_at.desc()).offset((page - 1) * page_size).limit(page_size))
     ).scalars().all()
-    dispatch = await _dispatch_counts(db, *scope)
+    dispatch = await _dispatch_counts(db, *scope, owner_uid=current_user.id if owner == "me" else None)
+    # A′：「我的」视图附全站口径一行（today 本就全站；scope 的全站版给前端两行并排）
+    dispatch_all = (
+        await _dispatch_counts(db, *scope)
+        if owner == "me"
+        else None
+    )
+
     # 批 I：整页一次聚合每单的成片数（与上面 summaries 的 out_counts 同一个套路——
     # 逐行数＝100 次查询）。排除 package/copy 附属文件，只数片。
     out_counts: Dict[Any, int] = {}
@@ -6416,12 +6560,23 @@ async def list_productions(
             )
         ).all()
         out_counts = {pid: int(cnt) for pid, cnt in orows}
+    # A′：投产人显示名一次聚合
+    owner_names = await _user_names(db, {p.created_by for p in rows})
     return {
-        "items": [_serialize_production(p, output_count=out_counts.get(p.id, 0)) for p in rows],
+        "items": [
+            _serialize_production(
+                p,
+                output_count=out_counts.get(p.id, 0),
+                owner_name=owner_names.get(str(p.created_by)) if p.created_by else None,
+            )
+            for p in rows
+        ],
         "total": total,
         "page": page,
         "page_size": page_size,
         "dispatch": dispatch,
+        "dispatch_all": dispatch_all,
+        "owner": owner or "all",
     }
 
 
@@ -7918,6 +8073,7 @@ async def list_outputs(
     batch_id: Optional[str] = None,
     kind: Optional[str] = None,
     qc_status: Optional[str] = None,
+    owner: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
@@ -7952,6 +8108,17 @@ async def list_outputs(
         conds.append(AssetOutput.kind == kind)
     if qc_status:
         conds.append(AssetOutput.qc_status == qc_status)
+    if owner not in (None, "", "me", "all"):
+        raise HTTPException(status_code=400, detail="owner 只支持 me（我的链路）或 all（全量），缺省=all")
+    if owner == "me":
+        # A′：成片按投产人隔离（IN 半连接，不是 INNER JOIN——不丢行）。
+        # 拼接产物（production_id NULL，不挂生产单）＝公共，所有视图可见。
+        conds.append(or_(
+            AssetOutput.production_id.is_(None),
+            AssetOutput.production_id.in_(
+                select(AssetProduction.id).where(AssetProduction.created_by == current_user.id)
+            ),
+        ))
     base = select(AssetOutput).where(and_(*conds)) if conds else select(AssetOutput)
     total = int(
         (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
@@ -7978,12 +8145,14 @@ async def list_outputs(
         codes = {r[0]: r[1] for r in asset_rows}
         prod_rows = (
             await db.execute(
-                select(AssetProduction.id, AssetProduction.hook_code).where(
+                select(AssetProduction.id, AssetProduction.hook_code, AssetProduction.created_by).where(
                     AssetProduction.id.in_({o.production_id for o in rows if o.production_id})
                 )
             )
         ).all()
         prod_names = {r[0]: r[1] for r in prod_rows}
+        # A′：投产人显示名（片层灰字标注；拼接产物 production_id NULL＝公共，前端标注）
+        prod_owner_names = await _user_names(db, {r[2] for r in prod_rows if r[2]})
         # 首帧：每个产物最多 1 张 output_thumb（部分唯一索引保证）
         frame_rows = (
             await db.execute(
@@ -8026,6 +8195,7 @@ async def list_outputs(
                 # 批 K：卡片标注 + 缩略图（没帧 = null，前端画占位不报错）
                 "asset_code": codes.get(o.asset_id),
                 "hook_code": prod_names.get(o.production_id) if o.production_id else None,
+                "owner_name": prod_owner_names.get(o.production_id) if o.production_id else None,
                 "thumb_url": thumb_urls.get(o.id),
             }
             for o in rows
@@ -8039,6 +8209,7 @@ async def list_output_groups(
     batch_id: Optional[str] = None,
     kind: Optional[str] = None,
     qc_status: Optional[str] = None,
+    owner: Optional[str] = None,
     limit: int = 100,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -8052,11 +8223,21 @@ async def list_output_groups(
     """
     if group_by not in ("asset", "batch"):
         raise HTTPException(status_code=400, detail="group_by 只支持 asset（按素材/钩子）或 batch（按批次）")
+    if owner not in (None, "", "me", "all"):
+        raise HTTPException(status_code=400, detail="owner 只支持 me（我的链路）或 all（全量），缺省=all")
     conds = []
     if kind:
         conds.append(AssetOutput.kind == kind)
     if qc_status:
         conds.append(AssetOutput.qc_status == qc_status)
+    if owner == "me":
+        # A′：组层计数与片层同一套 owner 口径（IN 半连接；拼接产物＝公共，各组都可见）
+        conds.append(or_(
+            AssetOutput.production_id.is_(None),
+            AssetOutput.production_id.in_(
+                select(AssetProduction.id).where(AssetProduction.created_by == current_user.id)
+            ),
+        ))
     if batch_id:
         conds.append(
             AssetOutput.asset_id.in_(
@@ -8229,7 +8410,7 @@ async def list_output_groups(
         for g in groups:
             g["thumb_url"] = None
 
-    return {"group_by": group_by, "groups": groups}
+    return {"group_by": group_by, "owner": owner or "all", "groups": groups}
 
 
 @router.get("/assets/outputs/{output_id}/download")

@@ -267,6 +267,8 @@ export interface AssetSummary {
   risk_hit: string | null;
   audit_status: AuditStatus;
   reviewed_by: string | null;
+  /** A′：过审人显示名（12px 灰字标注；列表口聚合返回，详情口可能为 null） */
+  reviewed_by_name?: string | null;
   reviewed_at: string | null;
   /** 驳回/需改写的理由（必填才允许进这两个态） */
   reject_reason: string | null;
@@ -327,6 +329,8 @@ export interface AssetProduction {
   asset_id: string;
   summary_id: string;
   batch_id: string | null;
+  /** A′：投产人显示名（谁投账算谁的灰字标注；列表口聚合返回） */
+  owner_name?: string | null;
   seq: number;
   /** 五位钩子编号（只能来自 hook_id.py 取号，后端绝不编号） */
   hook_code: string | null;
@@ -411,6 +415,8 @@ export interface AssetOutput {
   downloaded_at: string | null;
   /** 批 K（素材墙）：归属素材编号 / 生产单钩子号，卡片标注用 */
   asset_code: string | null;
+  /** A′：投产人显示名（拼接产物 production_id NULL＝公共） */
+  owner_name?: string | null;
   hook_code: string | null;
   /** 产物首帧直链（1 小时过期）；没帧 = null，卡片画「没有预览图」占位 */
   thumb_url: string | null;
@@ -713,6 +719,9 @@ export interface AssetProductionListResult {
   page: number;
   page_size: number;
   dispatch: AssetDispatchCounts;
+  /** A′：owner=me 时附同 scope 的全站口径（统计两行并排）；其余为 null */
+  dispatch_all?: AssetDispatchCounts | null;
+  owner?: string;
 }
 
 /** GET /assets/outputs —— 批 K 起带 total（墙要计数翻页） */
@@ -954,8 +963,10 @@ export interface AssetProduceRequest {
   /** 仅 admin：只豁免这几类拦点（留空＝整条全放过），与审核台同一口径 */
   waive_codes?: string[] | null;
   /** D-1：true＝提交即回任务号（展开提示词要等模型，后台跑完再轮询取结果） */
-  async_mode?: boolean;
+  async_mode?: boolean;  /** A′ 归属跨人确认：投别人过审的候选（reviewed_by≠操作者）必须 true——谁投账算谁 */
+  cross_person_confirm?: boolean;
 }
+
 
 /** ProductionStatusRequest（投递状态回写：只改状态、补 board_tid、记审计） */
 export interface AssetProductionStatusRequest {
@@ -1041,6 +1052,8 @@ export interface AssetSummaryListParams {
   category_id?: string;
   /** 批 N（评审二 P1）：关键词搜索——正文/素材码模糊匹配（后端 ILIKE，已转义 %/_） */
   q?: string;
+  /** A′ 按运营隔离：owner=me 已过审区只显自己过审的，pending 共享；all/缺省＝全量 */
+  owner?: "me" | "all";
 }
 
 /** GET /assets/productions（注意：dispatch.by_status 不受 status= 影响） */
@@ -1050,8 +1063,10 @@ export interface AssetProductionListParams {
   asset_id?: string;
   page?: number;
   /** 默认 100，后端封顶 300 */
-  page_size?: number;
+  page_size?: number;  /** A′：owner=me 只看自己投产的单（查询偏好）；all/缺省＝全量 */
+  owner?: "me" | "all";
 }
+
 
 /** GET /assets/productions/export */
 export interface AssetExportParams {
@@ -1081,6 +1096,8 @@ export interface AssetOutputListParams {
   offset?: number;
   /** 验收筛选：passed/warn/failed；不传＝不限（2026-11-07 起真正生效，此前前端筛了没传参） */
   qc_status?: string;
+  /** A′：owner=me 只看自己的链路（查询偏好，写口不受影响）；all/缺省＝全量 */
+  owner?: "me" | "all";
 }
 
 // ──────────────────────────────────────────────
@@ -2287,7 +2304,7 @@ export const assetApi = {
     client.get('/assets/outputs', { params }) as Promise<AssetOutputListResult>,
 
   // 成片墙两级视图第一级：按素材（钩子）或按批次聚合的组清单（每组带成片数/最近回收/最新缩略图）
-  listOutputGroups: (params?: { group_by?: 'asset' | 'batch'; batch_id?: string; kind?: string; qc_status?: string; limit?: number }) =>
+  listOutputGroups: (params?: { group_by?: 'asset' | 'batch'; batch_id?: string; kind?: string; qc_status?: string; owner?: 'me' | 'all'; limit?: number }) =>
     client.get('/assets/outputs/groups', { params }) as Promise<{ group_by: string; groups: AssetOutputGroup[] }>,
 
   // 产物下载：presigned 外链（验收 failed 的会被 409 挡住，不静默交付）

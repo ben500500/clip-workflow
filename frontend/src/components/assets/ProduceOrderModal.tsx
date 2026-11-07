@@ -8,7 +8,7 @@ import type { AssetProduceResponse, AssetSummary } from '../../api/assets';
 import { HOOK_CODE_RE, MonoText, parseHookCodes } from './AssetBits';
 import AssetCardPicker from './AssetCardPicker';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
-import { withCrossPersonConfirm } from './crossPerson';
+import { withCrossPersonConfirm, withCrossOwnerConfirm } from './crossPerson';
 
 const { Text, Paragraph } = Typography;
 
@@ -205,21 +205,26 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
     setBusy(true);
     giveUpRef.current = false;
     try {
-      const res = await assetApi.produce({
-        summary_ids: summaries.map((s) => s.id),
-        n,
-        board_total: boardTotal,
-        accounts,
-        recommended_title_count: titleCount,
-        board_tag: boardTag || undefined,
-        card_asset_ids: cardIds.length ? cardIds : undefined,
-        drama_abbr: dramaAbbr.trim() || undefined,
-        hook_codes: codes.length ? codes : undefined,
-        expand,
-        waive_reason: waiveReason || undefined,
-        waive_codes: waiveCodes.length ? waiveCodes : undefined,
-        async_mode: true,
-      });
+      // A′：投别人过审的候选先经归属确认（谁投账算谁；候选过审人进审计）
+      const res = (await withCrossOwnerConfirm((confirmed) =>
+        assetApi.produce({
+          summary_ids: summaries.map((s) => s.id),
+          n,
+          board_total: boardTotal,
+          accounts,
+          recommended_title_count: titleCount,
+          board_tag: boardTag || undefined,
+          card_asset_ids: cardIds.length ? cardIds : undefined,
+          drama_abbr: dramaAbbr.trim() || undefined,
+          hook_codes: codes.length ? codes : undefined,
+          expand,
+          waive_reason: waiveReason || undefined,
+          waive_codes: waiveCodes.length ? waiveCodes : undefined,
+          async_mode: true,
+          cross_person_confirm: confirmed || undefined,
+        }),
+      )) as AssetProduceResponse;
+      if (!res) return; // 取消了「替他人投产」确认：什么都不做
       if (isAssetJobAck(res)) {
         // 叫一声让顶部横幅立刻登记这条活：人中途关窗后由横幅接住结果
         nudgeAssetJobBanner();
