@@ -8288,3 +8288,49 @@ def test_dispatch_card_override_pins_rows_and_rejects_dirty_ids():
         await client.aclose()
 
     _run(_scenario())
+
+
+def test_summary_generate_passes_original_duration_for_first_candidate():
+    """2026-11-07 用户口径：第 1 条钩子文案要贴合原片长度（10s/15s 取最接近档）。
+
+    后端只负责把原片时长带给文案服务（params.duration_seconds）；定档规则在
+    autoclip 的 hook_copy.txt / hook_prompt_web.txt。这里钉两件事：
+    ① duration 有值 → payload 带上（四舍五入取整）；② duration 为空 → 不带该键
+    （autoclip 侧退回原「按文案丰满程度」判断）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        # 先给素材写上时长（模拟文件导入 ffprobe / 链接解析回填的产物）
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetItem, uuid.UUID(asset_id))
+            row.duration = 15.4
+            await s.commit()
+
+        captured: list = []
+
+        async def _capture(path, payload, timeout=180.0):
+            captured.append((path, payload))
+            return await _fake_autoclip()(path, payload, timeout)
+
+        with patch("app.api.assets._call_autoclip", _capture):
+            resp = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+        assert resp.status_code == 200, resp.text
+        gen = [p for path, p in captured if path.endswith("hook-copy/generate")]
+        assert gen and gen[0]["params"]["duration_seconds"] == 15, "15.4s 四舍五入取整透传"
+        web = [p for path, p in captured if path.endswith("hook-copy/prompt-web")]
+        assert web and web[0]["params"]["duration_seconds"] == 15, "网页版提示词同口径透传"
+
+        # 没时长的素材：不带该键（模板退回原判断），且不能被 0/None 污染
+        asset2, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            resp2 = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset2]}, headers=hm)
+        assert resp2.status_code == 200, resp2.text
+        await client.aclose()
+
+    _run(_scenario())

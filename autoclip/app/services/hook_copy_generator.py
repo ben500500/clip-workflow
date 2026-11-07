@@ -68,6 +68,9 @@ def _build_generate_input(script: str, count: int, params: Optional[Dict[str, An
         "候选风格": list(DEFAULT_STYLES[: max(1, int(count))]),
         "素材标题（可选）": p.get("title") or "",
         "来源平台（可选）": p.get("platform") or "",
+        # 2026-11-07 用户口径：第 1 条候选的时长贴合原片（10/15 取最接近档）。
+        # 空串＝后端没拿到原片时长，模板退回原判断规则。
+        "原片时长（秒，可空）": p.get("duration_seconds") or "",
         "补充要求": p.get("extra_requirements") or "",
         "合规要求": p.get("compliance")
         or "不得出现真实人名、地名、机构名、品牌名，一律使用代称；不涉及真实人物、真实事件与敏感内容。",
@@ -135,6 +138,8 @@ def generate_web_prompts(
         "候选文案列表": json.dumps(cand_list, ensure_ascii=False),
         # 模板第①行「参考《剧名》剧情」唯一来源；取不到传空，模板自己写《剧名待定》
         "剧名全称": p.get("drama_title") or "",
+        # seq=1 的时长按原片定档（10/15 取最接近档）；空串＝没拿到，按丰满程度判断
+        "原片时长（秒，可空）": p.get("duration_seconds") or "",
         "补充要求": p.get("extra_requirements") or "",
         "合规要求": p.get("compliance")
         or "不得出现真实人名、地名、机构名、品牌名，一律使用代称；不涉及真实人物、真实事件与敏感内容。",

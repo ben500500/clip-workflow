@@ -4173,6 +4173,10 @@ async def generate_summaries(
                 "platform": asset.platform or "",
                 "extra_requirements": data.extra_requirements or "",
                 "compliance": "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
+                # 2026-11-07 用户口径：第 1 条候选要贴合原片长度（10s/15s 取最接近档）。
+                # 时长在各导入/解析路已有落库（文件导入 ffprobe、链接解析后回填）；
+                # 拿不到就不带，autoclip 侧退回原「按文案丰满程度」判断。
+                **({"duration_seconds": int(round(asset.duration))} if asset.duration else {}),
             },
         }
         # ⚠️ 调外部模型之前必须**结束事务**，flush 不够（还在同一个事务里）：
@@ -4310,6 +4314,7 @@ async def generate_summaries(
             "params": {
                 "drama_title": drama_title,
                 "compliance": "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
+                **({"duration_seconds": int(round(asset.duration))} if asset.duration else {}),
             },
         }
         entry = entry_by_asset.get(str(asset.id), {
@@ -4927,6 +4932,7 @@ async def prompt_web_summaries(
                     "params": {
                         "drama_title": await _drama_title_of(db, asset),
                         "compliance": "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
+                        **({"duration_seconds": int(round(asset.duration))} if asset.duration else {}),
                     },
                 },
             )
