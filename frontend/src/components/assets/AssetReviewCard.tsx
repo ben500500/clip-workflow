@@ -126,10 +126,10 @@ const AssetReviewCard: React.FC<Props> = ({
         {row.style_tag && <Tag>{HOOK_STYLE_LABELS[row.style_tag] || row.style_tag}</Tag>}
         {row.formula_tag && <Tag color="geekblue">{row.formula_tag}</Tag>}
         <CategoryTag categoryId={row.category_id} categoryName={row.category_name} />
-        {/* A′：过审人灰字（"这条谁挑的"）；只在已过审态显示 */}
+        {/* A′（2026-11-08 定稿）：过审＝质检记录（灰字）；挑选与生产归属在投产人（生产单/成片墙"投：X"） */}
         {row.audit_status !== 'pending' && row.reviewed_by_name && (
           <Text type="secondary" style={{ fontSize: 12 }}>
-            审：{row.reviewed_by_name}
+            质检：{row.reviewed_by_name}
           </Text>
         )}
         {row.text_before_edit && (

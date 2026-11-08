@@ -398,6 +398,10 @@ async def _apply_compat_migrations():
         # ＋检查时间钉在生产单行上；可空不回填，NULL=没投过板/没有板侧信息。
         ("asset_productions", "board_last_status", "VARCHAR(60)"),
         ("asset_productions", "board_last_check_at", "TIMESTAMP"),
+        # 0064（A′ 按运营隔离）：职能开关默认双开、重提说明可空，均不回填
+        ("users", "can_review", "BOOLEAN DEFAULT TRUE"),
+        ("users", "can_produce", "BOOLEAN DEFAULT TRUE"),
+        ("asset_summaries", "resubmit_note", "TEXT"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

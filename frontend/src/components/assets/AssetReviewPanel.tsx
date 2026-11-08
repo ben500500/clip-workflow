@@ -708,7 +708,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
             value={ownerView}
             onChange={(v) => setOwnerView(v as 'me' | 'all')}
             options={[
-              { label: '我的', value: 'me' },
+              { label: '我质检的', value: 'me' },
               { label: '全部', value: 'all' },
             ]}
           />

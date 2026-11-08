@@ -385,6 +385,19 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       });
       return;
     }
+    // A′（2026-11-08 定稿）：出文案确认单**阈值触发**——≤4 条保持单击直发（不伤日常手速）；
+    // ≥5 条才弹一张轻量单（条数＋预计耗时＝条数×95s，系统本来就知道；LLM 费用逐条计价
+    // 尚无单价表，不编金额）。确认后仍是提交即回后台（D-1），不引入同步等待。
+    if (ok.length >= 5) {
+      Modal.confirm({
+        title: `出钩子文案 ${ok.length} 条？`,
+        content: `预计 ${Math.round((ok.length * 95) / 60)} 分钟左右（单条约 95 秒，后台跑、可关页面）。LLM 费用逐条计价，账面以台账汇总为准。`,
+        okText: `出这 ${ok.length} 条`,
+        cancelText: '再看看',
+        onOk: () => doGenerateSummaries(ok, false),
+      });
+      return;
+    }
     await doGenerateSummaries(ok, false);
   };
 

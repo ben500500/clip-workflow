@@ -399,6 +399,9 @@ class Settings(BaseSettings):
     # 1028 投 230 只到手 162（70%），"超出 120 的那部分基本是白投"。
     # 用户口径「产能不限」→ **不做硬限**，只在 /produce 返回里给软提示；设 0 关闭提示。
     ASSET_BOARD_DAILY_SOFT_CAP: int = 120
+    # A′（2026-11-08 评审定稿）：自审自投硬闸——自己过审的候选自己投产默认拦；
+    # 小团队/应急需一人包干时显式设 true（每次自审自投仍逐条写豁免审计）。
+    ASSET_SELF_PRODUCE_ALLOWED: bool = False
     # 板上排日按本地时区（NAS 在 CST），后端存 UTC —— 16:00~24:00 之间会错一天，
     # 而 date 写错＝额度白烧且成片永久取不回（1021 实测 120 条）。
     ASSET_BOARD_TZ_OFFSET_HOURS: int = 8

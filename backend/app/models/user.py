@@ -80,6 +80,11 @@ class User(Base):
     # 豆包账户类型（短片制作「一键豆包生成」）：free=免费（时长上限 10s）；pro=包月会员（时长上限 30s）
     # 用户手动选择后即作为当前登录用户的默认值
     doubao_account_type = Column(String(20), default="free", nullable=False)
+    # A′ 按运营隔离（2026-11-08 评审定稿）：职能开关——审核（质检）与投产（挑选/投板）
+    # 拆岗位不拆账号，默认双开=兼容现状；管理员按人关闭即实现岗位隔离。
+    # 判定收在 require_roles 的使用点（assets.py review/produce/dispatch 三口），勿散落。
+    can_review = Column(Boolean, nullable=False, server_default="true")
+    can_produce = Column(Boolean, nullable=False, server_default="true")
     # 提示词生成默认时长（秒）：用户选择时长后即作为当前登录用户的默认值（10/15/20/25/30 或自定义）
     prompt_default_duration = Column(Integer, nullable=True)
     is_active = Column(Boolean, default=True)

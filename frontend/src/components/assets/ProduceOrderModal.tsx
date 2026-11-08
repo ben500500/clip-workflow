@@ -9,6 +9,7 @@ import { HOOK_CODE_RE, MonoText, parseHookCodes } from './AssetBits';
 import AssetCardPicker from './AssetCardPicker';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
 import { withCrossPersonConfirm, withCrossOwnerConfirm } from './crossPerson';
+import { useAuth } from '../../contexts/AuthContext';
 
 const { Text, Paragraph } = Typography;
 
@@ -39,6 +40,8 @@ interface Props {
  * 钩子编号只能从 hook_id.py 取号带进来，前端不生成、后端不编号。
  */
 const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose, onDone, batchId }) => {
+  const { user } = useAuth();
+  const currentUserId = user?.id;
   const [n, setN] = useState(3);
   const [boardTotal, setBoardTotal] = useState(1);
   const [accounts, setAccounts] = useState(1);
@@ -205,8 +208,16 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
     setBusy(true);
     giveUpRef.current = false;
     try {
-      // A′：投别人过审的候选先经归属确认（谁投账算谁；候选过审人进审计）
-      const res = (await withCrossOwnerConfirm((confirmed) =>
+      // A′（2026-11-08 定稿）：跨人确认改**会话级一次性**——同一条候选本会话确认过一次
+      // （sessionStorage 记账）就不再弹；换会话/新候选仍会问那一句（知情不能省）。
+      // 谁投账算谁（生产单记实际投产人，候选过审人进 strict 审计）。
+      const crossIds = summaries
+        .filter((s) => s.reviewed_by && s.reviewed_by !== currentUserId)
+        .map((s) => s.id);
+      const allRemembered =
+        crossIds.length > 0 && crossIds.every((id) => sessionStorage.getItem(`xowner:${id}`) === '1');
+      const markRemembered = () => crossIds.forEach((id) => sessionStorage.setItem(`xowner:${id}`, '1'));
+      const doProduce = (confirmed: boolean) =>
         assetApi.produce({
           summary_ids: summaries.map((s) => s.id),
           n,
@@ -221,9 +232,15 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
           waive_reason: waiveReason || undefined,
           waive_codes: waiveCodes.length ? waiveCodes : undefined,
           async_mode: true,
-          cross_person_confirm: confirmed || undefined,
-        }),
-      )) as AssetProduceResponse;
+          cross_person_confirm: confirmed || allRemembered || undefined,
+        });
+      const res = (allRemembered
+        ? await doProduce(true)
+        : await withCrossOwnerConfirm(async (confirmed) => {
+            const r = await doProduce(confirmed);
+            if (r && confirmed) markRemembered();
+            return r;
+          })) as AssetProduceResponse;
       if (!res) return; // 取消了「替他人投产」确认：什么都不做
       if (isAssetJobAck(res)) {
         // 叫一声让顶部横幅立刻登记这条活：人中途关窗后由横幅接住结果

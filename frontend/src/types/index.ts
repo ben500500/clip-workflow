@@ -765,6 +765,9 @@ export interface User {
   data_scope?: string;
   menus?: string[];
   is_active: boolean;
+  /** A′ 职能开关：审核（质检）/投产（挑选、投板）按人启用（缺省 true=兼容现状） */
+  can_review?: boolean;
+  can_produce?: boolean;
   created_at?: string;
   updated_at?: string;
 }

@@ -18,3 +18,7 @@ def _three_candidate_baseline(monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "ASSET_HOOK_CANDIDATE_COUNT", 3, raising=True)
+    # A′（2026-11-08）：自审自投硬闸生产默认拦（ASSET_SELF_PRODUCE_ALLOWED=false）。
+    # 存量用例的标准流程就是「运营过审→同一运营投产」，基线钉 true 保它们绿；
+    # 闸门本身由专项用例（隔离矩阵）把值改回 false 验证。
+    monkeypatch.setattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", True, raising=True)

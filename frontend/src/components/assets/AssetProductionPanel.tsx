@@ -154,6 +154,17 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     assetApi.listBatches({ limit: 100 }).then((r) => setBatches(r.items || [])).catch(() => {});
   }, []);
 
+  const batchOptions = useMemo(() => {
+    const opts = batches.map((b) => ({
+      value: b.id,
+      label: `${b.code} · ${b.name || '未命名'}（${b.item_count ?? 0} 条）`,
+    }));
+    if (batchFilter && !opts.some((o) => o.value === batchFilter)) {
+      opts.unshift({ value: batchFilter, label: `当前批次 ${batchFilter.slice(0, 8)}…` });
+    }
+    return opts;
+  }, [batches, batchFilter]);
+
   const fetchApproved = useCallback(async (batch?: string) => {
     setApprovedLoading(true);
     try {
@@ -896,8 +907,8 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         />
       )}
 
-      <Space wrap style={{ marginBottom: 12 }}>
-        {/* A′ 按运营隔离：纯查询偏好，me=只看自己投产的单 */}
+      {/* A′（2026-11-08 定稿）：排版对齐 #110——①筛选行 ②动作行，不再混排 */}
+      <Space wrap size={8} style={{ marginBottom: 8 }}>
         <Segmented
           size="small"
           value={ownerView}
@@ -915,13 +926,18 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           onChange={setStatus}
           options={Object.entries(PRODUCTION_STATE_LABELS).map(([value, label]) => ({ value, label }))}
         />
-        <Input
-          placeholder="批次 ID"
-          allowClear
-          style={{ width: 170 }}
-          value={batchFilter}
-          onChange={(e) => setBatchFilter(e.target.value || undefined)}
-        />
+        <Tooltip title="按批次筛：下拉选（编号·名称·条数），也可直接粘贴批次 ID 原值回车">
+          <Select
+            showSearch
+            allowClear
+            style={{ width: 220 }}
+            placeholder="批次（可选/可贴 ID）"
+            value={batchFilter}
+            onChange={setBatchFilter}
+            options={batchOptions}
+            optionFilterProp="label"
+          />
+        </Tooltip>
         <Input
           placeholder="素材 ID"
           allowClear
@@ -932,9 +948,9 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
           刷新
         </Button>
-        {/* 批 I（链路收敛）：主按钮只留一个「投」——导出和补账降成次要动作，
-            别再让三个像"投"的按钮并排抢主位。 */}
-        {/* 批 L：开单入口收编到生产单页——审核台只管审核，投产不必绕回那边 */}
+      </Space>
+      <Space wrap size={8} style={{ marginBottom: 12 }}>
+        {/* 批 L：开单入口收编到生产单页——审核台只管质检，投产不必绕回那边 */}
         {canWriteBack && (
           <Tooltip title="列出全部已过审的文案，勾选后生成生产单（一条文案派生 N 条差异化提示词）。审核台里的同名入口保留，两边走的是同一个投产弹窗。">
             <Button

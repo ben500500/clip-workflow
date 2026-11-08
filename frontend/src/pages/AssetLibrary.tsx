@@ -1,5 +1,5 @@
-import React, { useCallback, useMemo, useState } from 'react';
-import { Button, Card, Modal, Popover, Space, Tabs, Tag, Typography, message } from 'antd';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Badge, Button, Card, Modal, Popover, Space, Tabs, Tag, Typography, message } from 'antd';
 import { ApartmentOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import AssetListPanel from '../components/assets/AssetListPanel';
@@ -41,7 +41,21 @@ const AssetLibrary: React.FC = () => {
    * 批 N（评审二·P0-2）：页签受控。投产成功后「去生产单列表」按钮承诺了带人过去，
    * 就得真能切过去——审核台的投产弹窗 onDone 会调 onGoToProduction 切到本页签。
    */
-  const [activeTab, setActiveTab] = useState<string>('assets');
+  // A′（2026-11-08 定稿）：页签角色化默认着陆（material→导入、operator→审核台、admin→素材列表）
+  // ＋记住上次页签（首次访问按角色、之后 localStorage 记忆）。
+  const defaultTab = useMemo(() => {
+    const saved = localStorage.getItem('asset-library-tab');
+    if (saved) return saved;
+    if (role === 'material') return 'import';
+    if (role === 'operator') return 'review';
+    return 'assets';
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const [activeTab, setActiveTabState] = useState<string>(defaultTab);
+  const setActiveTab = useCallback((k: string) => {
+    setActiveTabState(k);
+    localStorage.setItem('asset-library-tab', k);
+  }, []);
   /**
    * 钩子原型字典抽屉：入口只在这张顶部卡片放**一处**（四个页签都看得到），
    * 面板里只做筛选和点原型，不再各挂一份抽屉——两处入口迟早变成一个新版本一个旧版本。
@@ -95,6 +109,29 @@ const AssetLibrary: React.FC = () => {
   }, []);
 
   const role = user?.role;
+  // A′：页签待办计数（轻量 total 探针；40s 一轮，够跟手不刷爆）
+  const [badges, setBadges] = useState<{ review?: number; ready?: number }>({});
+  useEffect(() => {
+    let alive = true;
+    const pull = async () => {
+      try {
+        const H = { Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` };
+        const [r1, r2] = await Promise.all([
+          fetch('/api/assets/summaries?audit_status=pending&page_size=1', { headers: H }).then((r) => r.json()),
+          fetch(`/api/assets/productions?status=order_ready&owner=${role === 'operator' ? 'me' : 'all'}&page_size=1`, { headers: H }).then((r) => r.json()),
+        ]);
+        if (alive) setBadges({ review: r1.total ?? 0, ready: r2.total ?? 0 });
+      } catch {
+        /* 计数失败静默 */
+      }
+    };
+    void pull();
+    const t = setInterval(pull, 40000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [role, reloadToken]);
   const isAdmin = role === 'admin';
   const canProduce = role === 'admin' || role === 'operator' || role === 'material';
   const canReview = role === 'admin' || role === 'operator';
@@ -125,12 +162,24 @@ const AssetLibrary: React.FC = () => {
       key: 'import',
       label: '导入与批次',
       children: (
-        <AssetImportPanel canProduce={canProduce} onSelectBatch={setBatchId} active={activeTab === 'import'} />
+        <AssetImportPanel
+          canProduce={canProduce}
+          onSelectBatch={(bid) => {
+            setBatchId(bid);
+            setActiveTab('assets'); // A′：批次码一键跳转到素材列表（带批次筛选）
+          }}
+          active={activeTab === 'import'}
+        />
       ),
     },
     {
       key: 'review',
-      label: '文案审核台',
+      label: (
+        <Space size={6}>
+          文案审核台
+          {!!badges.review && <Badge count={badges.review} color="orange" title="等审核的候选数（共享池）" />}
+        </Space>
+      ),
       children: (
         <AssetReviewPanel
           key={`review-${batchId ?? 'all'}`}
@@ -150,7 +199,12 @@ const AssetLibrary: React.FC = () => {
     },
     {
       key: 'production',
-      label: '生产单与投板',
+      label: (
+        <Space size={6}>
+          生产单与投板
+          {!!badges.ready && <Badge count={badges.ready} color="blue" title="还没投的生产单数" />}
+        </Space>
+      ),
       children: (
         <AssetProductionPanel
           key={`prod-${batchId ?? 'all'}`}

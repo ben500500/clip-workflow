@@ -24,6 +24,10 @@ export const authApi = {
   updateUserDataScope: (id: string, dataScope: string) =>
     client.put(`/auth/users/${id}/data-scope`, { data_scope: dataScope }) as Promise<User>,
 
+  /** A′ 职能开关：审核（质检）/投产（挑选、投板）按人启用（仅 admin） */
+  updateUserFunctions: (id: string, canReview: boolean, canProduce: boolean) =>
+    client.put(`/auth/users/${id}/functions`, { can_review: canReview, can_produce: canProduce }) as Promise<User>,
+
   toggleUserActive: (id: string) =>
     client.put(`/auth/users/${id}/toggle`) as Promise<User>,
 

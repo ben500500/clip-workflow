@@ -173,6 +173,33 @@ _PROD_ROLES = (UserRole.material, UserRole.operator, UserRole.admin)
 # 审核与放批：运营 + 管理员（素材专员不能审自己产的东西）
 _REVIEW_ROLES = (UserRole.operator, UserRole.admin)
 
+
+def require_functions(*funcs: str):
+    """A′（2026-11-08 评审定稿）：职能开关判定**单点**——审核（质检）/投产（挑选、投板）
+    两个岗位拆职能不拆账号（users.can_review / users.can_produce，默认双开兼容现状），
+    需要岗位隔离的组由管理员在用户管理里按人关闭。角色闸（require_roles）之外再拦一道，
+    admin 恒过。⚠️ 职能判定只许走这里，禁止各端点散落 if（重造第二套口径的前车之鉴：
+    assets.py 曾同时存在 data_scope 与跨人两套口径）。"""
+    from fastapi import Depends as _Depends
+
+    async def _dep(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.role == UserRole.admin.value:
+            return current_user
+        fn_map = {
+            "review": bool(getattr(current_user, "can_review", True)),
+            "produce": bool(getattr(current_user, "can_produce", True)),
+        }
+        for f in funcs:
+            if not fn_map.get(f, True):
+                label = "审核（质检）" if f == "review" else "投产（挑选、投板）"
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"你的账号未启用「{label}」职能——管理员可在用户管理里按人开启",
+                )
+        return current_user
+
+    return _dep
+
 # 单次请求最多处理多少条 —— 反推/出文案都是**同步等外部接口**的，
 # 100 条串跑会把请求挂到网关超时。P1 上队列后这个上限交给队列，不由 HTTP 层扛。
 # 取值走 Settings（原直接 os.getenv 会让运维只能在代码里硬调，且 .env.example 无从登记）。
@@ -4695,8 +4722,9 @@ def _split_waived(
 @router.post("/assets/summaries/review")
 async def review_summaries(
     data: ReviewRequest,
-    current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
+    current_user: Annotated[User, Depends(require_functions("review"))],
     db: AsyncSession = Depends(get_db),
+    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
 ):
     """批量审核钩子文案：通过 / 驳回 / 需改写 / 改后通过。
 
@@ -5449,8 +5477,9 @@ async def hook_codes_used(
 @router.post("/assets/produce")
 async def create_productions(
     data: ProduceRequest,
-    current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
+    current_user: Annotated[User, Depends(require_functions("produce"))],
     db: AsyncSession = Depends(get_db),
+    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
 ):
     """过审文案 → N 条生产单（本口**只建 order_ready 单**，一毛不花也不占号池；
     往板上投是下一步：批 H 起有 `POST /assets/productions/dispatch`（机器连板、逐批人工确认），
@@ -5587,6 +5616,11 @@ async def create_productions(
         if s is not None and s.audit_status in REVIEW_PASSED_STATES
         and s.reviewed_by is not None and str(s.reviewed_by) != str(current_user.id)
     ]
+    self_summaries = [
+        s for s in _pre_summaries.values()
+        if s is not None and s.audit_status in REVIEW_PASSED_STATES
+        and s.reviewed_by == current_user.id
+    ]
     if cross_summaries and not data.cross_person_confirm:
         name_map = await _user_names(db, {s.reviewed_by for s in cross_summaries})
         code_map = dict(
@@ -5653,6 +5687,22 @@ async def create_productions(
     # 只在 PG 上做：单测/集成跑 sqlite，没有这个 GUC（`SET` 直接语法错）。
     if db.get_bind().dialect.name == "postgresql":
         await db.execute(text("SET LOCAL idle_in_transaction_session_timeout = 0"))
+
+    # A′（2026-11-08 评审定稿）：自审自投硬闸**默认开**——自己过审的候选自己投产默认拦。
+    # 放开=admin 把 ASSET_SELF_PRODUCE_ALLOWED 设 true（显式关闸），且每次自审自投
+    # 逐条写豁免审计（owner_cross 带 self 标记）——质检关不能沦为可静默绕过的橡皮章。
+    self_produce_allowed = bool(getattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", False))
+    self_cross = self_summaries
+    if self_cross and not self_produce_allowed:
+        shown = "；".join(f"#{s.seq}" for s in self_cross[:5])
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"自审自投默认拦：这 {len(self_cross)} 条是你自己质检过审的（{'、'.join(_user_codes(db, self_cross)) if False else '逐条见下'}{shown}）。"
+                "质检与投产分离是三角色模型的纪律——确需一人包干（小团队/应急），"
+                "由管理员把 ASSET_SELF_PRODUCE_ALLOWED 设为 true 后重发（每次都会留豁免审计）。"
+            ),
+        )
 
     for sid in data.summary_ids:
         uuid_s = _as_uuid(sid, "summary_id")
@@ -5949,7 +5999,9 @@ async def create_productions(
     )
     missing_codes = sum(1 for p in productions if not p.hook_code)
     missing_names = sum(1 for p in productions if not p.board_name)
-    _cross_owner_names = await _user_names(db, {s.reviewed_by for s in cross_summaries}) if cross_summaries else {}
+    _owner_names_all = await _user_names(
+        db, {s.reviewed_by for s in (*cross_summaries, *self_summaries) if s.reviewed_by}
+    ) if (cross_summaries or self_summaries) else {}
     await _write_audit(
         db,
         action="asset.produce_order",
@@ -5985,12 +6037,14 @@ async def create_productions(
                         {
                             "summary_id": str(s.id),
                             "reviewed_by": str(s.reviewed_by) if s.reviewed_by else None,
-                            "reviewed_by_name": _cross_owner_names.get(str(s.reviewed_by)),
+                            "reviewed_by_name": _owner_names_all.get(str(s.reviewed_by)),
+                            # A′：self=自审自投（ASSET_SELF_PRODUCE_ALLOWED 开闸时的逐条豁免留痕）
+                            "self": s.reviewed_by == current_user.id,
                         }
-                        for s in cross_summaries
+                        for s in (*cross_summaries, *self_summaries)
                     ]
                 }
-                if cross_summaries
+                if cross_summaries or self_summaries
                 else None
             ),
             "hook_codes": hook_codes or None,
@@ -7239,8 +7293,9 @@ async def _fetch_board_output(
 @router.post("/assets/productions/dispatch")
 async def dispatch_productions(
     data: DispatchRequest,
-    current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
+    current_user: Annotated[User, Depends(require_functions("produce"))],
     db: AsyncSession = Depends(get_db),
+    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
 ):
     """把点名的生产单**真投上企微后台任务板**，轮询出片并回收成片（11-05 批 H）。
 
