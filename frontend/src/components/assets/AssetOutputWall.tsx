@@ -65,7 +65,9 @@ const OutputGrid: React.FC<{
   owner?: 'me' | 'all';
   active?: boolean;
   reloadToken?: number;
-}> = ({ assetId, batchId, kind, qc, owner, active = true, reloadToken }) => {
+  /** P1：勾选上报到跨组篮子（output_id, checked) */
+  onBasketChange?: (outputId: string, checked: boolean) => void;
+}> = ({ assetId, batchId, kind, qc, owner, active = true, reloadToken, onBasketChange }) => {
   const [items, setItems] = useState<AssetOutput[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -252,14 +254,16 @@ const OutputGrid: React.FC<{
                   <Checkbox
                     checked={picked.has(o.id)}
                     onClick={(e) => e.stopPropagation()}
-                    onChange={(e) =>
+                    onChange={(e) => {
                       setPicked((prev) => {
                         const next = new Set(prev);
                         if (e.target.checked) next.add(o.id);
                         else next.delete(o.id);
                         return next;
-                      })
-                    }
+                      });
+                      // P1：勾选同步到跨组篮子（收起不清——跨组挑片）
+                      onBasketChange?.(o.id, e.target.checked);
+                    }}
                     style={{ position: 'absolute', left: 6, top: 6 }}
                   />
                 </div>
@@ -384,9 +388,28 @@ const AssetOutputWall: React.FC<{
   ownerSwitchable?: boolean;
   /** A′ UX：页签切回来自动刷新 */
   active?: boolean;
-}> = ({ batchId, reloadToken, ownerDefault = 'all', ownerSwitchable = false, active = true }) => {
+}> = ({
+  batchId,
+  reloadToken,
+  ownerDefault = 'all',
+  ownerSwitchable = false,
+  active = true,
+}) => {
   const [viewMode, setViewMode] = useState<'asset' | 'batch'>('asset');
   const [ownerView, setOwnerView] = useState<'me' | 'all'>(ownerDefault);
+  const [packaging, setPackaging] = useState(false);
+  // P1（评审定稿⑧）：跨组投放篮子——勾选跨组/跨页/刷新持久（sessionStorage）
+  const [basket, setBasket] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(sessionStorage.getItem('asset-output-basket') ?? '[]'));
+    } catch {
+      return new Set();
+    }
+  });
+  const persistBasket = (b: Set<string>) => {
+    setBasket(b);
+    sessionStorage.setItem('asset-output-basket', JSON.stringify([...b]));
+  };
   const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
   const [kindFilter, setKindFilter] = useState<string | undefined>('doubao_raw');
   const [qcFilter, setQcFilter] = useState<string | undefined>();
@@ -440,6 +463,39 @@ const AssetOutputWall: React.FC<{
     if (reloadToken) fetchGroups();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken]);
+
+  // P1（评审定稿⑧）：跨组篮子打包下载——后端 zip＋manifest（发布侧"下载即落位"）
+  const downloadBasket = async () => {
+    if (!basket.size || packaging) return;
+    setPackaging(true);
+    try {
+      const blob = await assetApi.packageOutputs([...basket]);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'delivery-package.zip';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      message.success(`已发起 ${basket.size} 条打包下载，浏览器右上角看进度`);
+      persistBasket(new Set());
+    } catch (e) {
+      const msg = (e as Error).message || '打包失败';
+      if (msg.includes('验收')) message.error(msg, 8);
+      else message.error(msg.slice(0, 200), 8);
+    } finally {
+      setPackaging(false);
+    }
+  };
+
+  // P1：跨组篮子的勾选回调（grid 勾选时调用）
+  const handleBasketChange = (outputId: string, checked: boolean) => {
+    const next = new Set(basket);
+    if (checked) next.add(outputId);
+    else next.delete(outputId);
+    persistBasket(next);
+  };
 
   const batchOptions = batches.map((b) => ({
     value: b.id,
@@ -507,6 +563,22 @@ const AssetOutputWall: React.FC<{
         <Button icon={<ReloadOutlined />} loading={groupsLoading} onClick={() => fetchGroups()}>
           刷新
         </Button>
+        {basket.size > 0 && (
+          <Button
+            type="primary"
+            size="small"
+            icon={<DownloadOutlined />}
+            loading={packaging}
+            onClick={downloadBasket}
+          >
+            打包下载（{basket.size} 条）
+          </Button>
+        )}
+        {basket.size > 0 && (
+          <Button size="small" onClick={() => persistBasket(new Set())}>
+            清空篮子
+          </Button>
+        )}
         <Tooltip title="首帧是后台抽的：刚回收完要等一两分钟才有图；直链 1 小时过期，过期了点刷新续。">
           <Text type="secondary" style={{ fontSize: 12 }}>
             共 {groups.length} 组
@@ -597,6 +669,7 @@ const AssetOutputWall: React.FC<{
                     owner={ownerView}
                     active={active}
                     reloadToken={reloadToken}
+                    onBasketChange={handleBasketChange}
                   />
                 )}
               </div>
