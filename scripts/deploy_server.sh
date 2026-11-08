@@ -236,6 +236,16 @@ if [ "${PULL_CNB}" = "1" ]; then
   git -C "$LOCAL_DIR" push origin main 2>&1 | tail -2 || log "WARN: 推送 GitHub 失败（不影响部署）"
 fi
 
+# 1.5 部署门禁（P1·评审定稿⑬）：部署物必须已被 CI 验证——HEAD 须已推到远端。
+# 设置 DEPLOY_ALLOW_UNPUSHED=1 显式放行（应急），默认拦截。
+HEAD_SHA="$(git -C "$LOCAL_DIR" rev-parse HEAD)"
+if [ "${DEPLOY_ALLOW_UNPUSHED:-0}" != "1" ]; then
+  if ! git -C "$LOCAL_DIR" branch -r --contains "$HEAD_SHA" 2>/dev/null | grep -qE '.'; then
+    die "HEAD ($HEAD_SHA) 尚未推送到任何远端——部署物必须先过 CI（push 后再部署；应急设 DEPLOY_ALLOW_UNPUSHED=1）"
+  fi
+  log "门禁通过：HEAD 已在远端"
+fi
+
 # 2. 判定受影响服务
 SERVICES=$(compute_services "$PREV")
 if [ -z "$SERVICES" ]; then
@@ -288,6 +298,26 @@ else
     || die "docker compose config 语法校验失败"
   log "compose 服务清单: $(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose config --services | sort | tr '\n' ' '")"
 fi
+
+# 3.6 last-good 镜像标签（P1·评审定稿⑬）：重建前给当前运行的镜像打 tag，
+# 健康冒烟失败时自动回滚到这个 tag（仅回代码不回 DB；有破坏性迁移时人工判）。
+LAST_GOOD_TAGGED=0
+tag_last_good() {
+  [ "$LAST_GOOD_TAGGED" = "1" ] && return 0
+  for svc in $SERVICES; do
+    cid="$(docker -H "ssh://${REMOTE_USER}@${REMOTE_HOST}" ps -q --filter "name=clip-$svc" 2>/dev/null | head -1)"
+    [ -n "$cid" ] || continue
+  done 2>/dev/null || true
+  # ssh 远端打 tag（docker 命令在远端执行，避免本地 docker -H 依赖）
+  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "
+    for svc in $SERVICES; do
+      img=\$(docker compose -f '$REMOTE_DIR/docker-compose.yml' config 2>/dev/null | grep -A2 "  \$svc:" | grep 'image:' | awk '{print \$2}' | head -1)
+      [ -n "\$img" ] && docker tag "\$img" "\${img%-*}-lastgood" 2>/dev/null || true
+    done
+  " 2>/dev/null || true
+  LAST_GOOD_TAGGED=1
+  log "已给受影响服务打 last-good 标签（健康检查失败时回滚用）"
+}
 
 # 4. 重建受影响容器
 if [ -n "$SERVICES" ]; then

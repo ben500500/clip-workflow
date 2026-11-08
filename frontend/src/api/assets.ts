@@ -272,6 +272,8 @@ export interface AssetSummary {
   reviewed_at: string | null;
   /** 驳回/需改写的理由（必填才允许进这两个态） */
   reject_reason: string | null;
+  /** P1（评审定稿⑩）：作者重提说明（审核卡展示） */
+  resubmit_note?: string | null;
   /**
    * 改前原文留痕，两种来路都会写：① 审核人「改后通过」（passed_edited）；
    * ② 作者驳回后自己改完重提（resubmit）。所以**光看这列非空不能断定是审核人改的**，
@@ -2306,6 +2308,24 @@ export const assetApi = {
   // 成片墙两级视图第一级：按素材（钩子）或按批次聚合的组清单（每组带成片数/最近回收/最新缩略图）
   listOutputGroups: (params?: { group_by?: 'asset' | 'batch'; batch_id?: string; kind?: string; qc_status?: string; owner?: 'me' | 'all'; limit?: number }) =>
     client.get('/assets/outputs/groups', { params }) as Promise<{ group_by: string; groups: AssetOutputGroup[] }>,
+
+  // P1（评审定稿⑧）：成片交付包——跨组勾选打包 zip（含 manifest），验收 failed 拦在打包口
+  packageOutputs: (ids: string[]) =>
+    client.post(
+      '/assets/outputs/package',
+      { ids },
+      { responseType: 'blob', timeout: 600000 },
+    ) as Promise<Blob>,
+
+  // P1（评审定稿⑦）：取号进界面（后端代理 hook_id.py；未配置命令时 501 走手工旁路）
+  takeHookCodes: (count: number) =>
+    client.post(`/assets/hook-codes/take?count=${count}`) as Promise<{ codes: string[] }>,
+
+  // P1（评审定稿⑪）：导入前重复预检（0 元、不建行）
+  importPreflight: (links: string[]) =>
+    client.post('/assets/import/preflight', { links }) as Promise<{
+      items: { source_url_norm: string; url?: string; code?: string; title?: string | null; imported_at?: string | null }[];
+    }>,
 
   // 产物下载：presigned 外链（验收 failed 的会被 409 挡住，不静默交付）
   downloadOutput: (outputId: string) =>

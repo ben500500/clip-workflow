@@ -51,8 +51,10 @@ import weakref
 from datetime import datetime, timedelta
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
+import json
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -1325,6 +1327,7 @@ def _serialize_summary(
     s: AssetSummary, asset: Optional[AssetItem] = None, *, can_resubmit: bool = False,
     category_name: Optional[str] = None, output_count: Optional[int] = None,
     reviewer_name: Optional[str] = None,
+    production_count: Optional[int] = None,
 ) -> dict:
     data = {
         "id": str(s.id),
@@ -1341,12 +1344,16 @@ def _serialize_summary(
         "consistency_ok": s.consistency_ok,
         "consistency_note": s.consistency_note,
         "risk_hit": s.risk_hit,
+        # P1（评审定稿⑯）：已开过几张生产单（挑选器防重复开单白烧号池）
+        "production_count": production_count,
         "audit_status": s.audit_status,
         "reviewed_by": str(s.reviewed_by) if s.reviewed_by else None,
         # A′：过审人显示名（12px 灰字标注用）；None=调用方没聚合（详情口）或无主
         "reviewed_by_name": reviewer_name,
         "reviewed_at": utc_iso(s.reviewed_at) if s.reviewed_at else None,
         "reject_reason": s.reject_reason,
+        # P1（评审定稿⑩）：作者重提说明（改后重提时写，审核卡展示）
+        "resubmit_note": s.resubmit_note,
         "text_before_edit": s.text_before_edit,
         # 批 J：过审后备好的豆包提示词预览（NULL=还没备好/没排上；备好了审核台直接能看）
         "prompt_preview": s.prompt_preview,
@@ -1461,9 +1468,130 @@ async def estimate_cost(
     }
 
 
+# ── P1（评审定稿⑫）：审计读口——此前 30+ 处 asset.* 审计只写不读，对账回查没有入口。
+# 仅 admin；action/operator_id/created_at 都有索引，分页走 offset。明细（before/after
+# 含完整文案与豁免理由）不下放非 admin。 ──
+@router.get("/assets/audit-logs")
+async def list_asset_audit_logs(
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+    db: AsyncSession = Depends(get_db),
+    action: Optional[str] = None,
+    operator_id: Optional[str] = None,
+    target_id: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    conds = []
+    if action:
+        conds.append(AuditLog.action == action)
+    if operator_id:
+        conds.append(AuditLog.operator_id == _as_uuid(operator_id, "operator_id"))
+    if target_id:
+        conds.append(AuditLog.target_id == target_id)
+    base = select(AuditLog).where(and_(*conds)) if conds else select(AuditLog)
+    total = int(
+        (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
+    )
+    rows = (
+        await db.execute(
+            base.order_by(AuditLog.created_at.desc())
+            .offset(max(0, offset))
+            .limit(min(max(1, limit), 200))
+        )
+    ).scalars().all()
+    names = await _user_names(db, {r.operator_id for r in rows if r.operator_id})
+    return {
+        "total": total,
+        "items": [
+            {
+                "id": str(r.id),
+                "action": r.action,
+                "operator": names.get(str(r.operator_id), "未知"),
+                "target_type": r.target_type,
+                "target_id": r.target_id,
+                "before": r.before,
+                "after": r.after,
+                "created_at": utc_iso(r.created_at),
+            }
+            for r in rows
+        ],
+    }
+
+
 # ──────────────────────────────────────────────
 # 导入：链接 / 文件
 # ──────────────────────────────────────────────
+
+
+# ── P1（评审定稿⑦）：取号进界面——后端代理 hook_id.py（服务器脚本），保留手工旁路。
+# ASSET_HOOK_ID_CMD 未配置时 501（前端提示走手工粘贴）。命令须输出每行一个五位编号；
+# 一钩一号「发了即烧」的铁律不变：代取的号也走既有硬查重＋白名单校验。 ──
+@router.post("/assets/hook-codes/take")
+async def take_hook_codes(
+    current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
+    count: int = Query(..., ge=1, le=50, description="要取几个号"),
+):
+    cmd = (getattr(settings, "ASSET_HOOK_ID_CMD", "") or "").strip()
+    if not cmd:
+        raise HTTPException(
+            status_code=501,
+            detail="未配置自动取号命令（ASSET_HOOK_ID_CMD）——请按原流程在服务器跑 hook_id.py 取号后手工粘贴",
+        )
+    proc = await asyncio.create_subprocess_shell(
+        f"{cmd} {int(count)}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+    codes = [c for c in re.findall(r"[0-9A-Z]{5}", (out or b"").decode("utf-8", "ignore")) if HOOK_CODE_RE.match(c)]
+    if proc.returncode != 0 or len(codes) < int(count):
+        raise HTTPException(
+            status_code=502,
+            detail=f"取号脚本没返回足够的编号（要 {count}、得 {len(codes)}）：{(err or b'').decode('utf-8', 'ignore')[:200]}",
+        )
+    return {"codes": codes[: int(count)]}
+
+
+@router.post("/assets/import/preflight")
+async def import_preflight(
+    data: ImportBatchRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """导入前重复预检（P1·评审定稿⑪，**0 元、不建任何行**）：粘贴完就地知道哪些已
+    入库（几月几日 谁 导入 AS-XXXX），不用先发一次导入再逐条点「仍要入库」。
+    归一化口径与正式导入同一套（svc.normalize_source_url 的 source_url_norm）。"""
+    urls, _skipped = svc.normalize_source_list(data.links)
+    if not urls:
+        return {"items": []}
+    norms = {}
+    for u in urls:
+        n, _platform = svc.normalize_source_url(u)
+        if n:
+            norms[n] = u
+    if not norms:
+        return {"items": []}
+    rows = (
+        await db.execute(
+            select(
+                AssetItem.source_url_norm,
+                AssetItem.code,
+                AssetItem.created_at,
+                AssetItem.title,
+            ).where(AssetItem.source_url_norm.in_(list(norms)))
+        )
+    ).all()
+    out = [
+        {
+            "source_url_norm": r[0],
+            "url": norms.get(r[0]),
+            "code": r[1],
+            "title": r[3],
+            "imported_at": utc_iso(r[2]) if r[2] else None,
+        }
+        for r in rows
+    ]
+    return {"items": out}
 
 
 @router.post("/assets/import/batch", status_code=201)
@@ -4685,6 +4813,18 @@ async def list_summaries(
         out_counts = {sid: int(cnt) for sid, cnt in orows}
     # A′：过审人显示名一次聚合
     reviewer_names = await _user_names(db, {s.reviewed_by for s, _a in rows})
+    # P1（评审定稿⑯）：每条候选已开过几张生产单——防重复开单白烧号池
+    prod_counts: Dict[Any, int] = {}
+    if rows:
+        prows = (
+            await db.execute(
+                select(AssetSummary.id, func.count(AssetProduction.id))
+                .join(AssetProduction, AssetProduction.summary_id == AssetSummary.id)
+                .where(AssetSummary.id.in_([s.id for s, _a in rows]))
+                .group_by(AssetSummary.id)
+            )
+        ).all()
+        prod_counts = {r[0]: int(r[1]) for r in prows}
     return {
         "items": [
             _serialize_summary(
@@ -4692,6 +4832,7 @@ async def list_summaries(
                 can_resubmit=_can_resubmit(s, a, current_user),
                 category_name=cat_names.get(str(s.category_id)) if s.category_id else None,
                 output_count=out_counts.get(s.id, 0),
+                production_count=prod_counts.get(s.id, 0),
                 reviewer_name=reviewer_names.get(str(s.reviewed_by)) if s.reviewed_by else None,
             )
             for s, a in rows
@@ -5179,6 +5320,8 @@ async def resubmit_summaries(
         summary.reviewed_by = None
         summary.reviewed_at = None
         summary.reject_reason = None
+        # P1（评审定稿⑩）：作者写给审核人的说明落列持久化——此前只进审计，审核人看不见
+        summary.resubmit_note = (data.note or "").strip() or None
         summary.updated_at = datetime.utcnow()
 
         # 素材概要态回写：这条退回待审了，本素材是否还有过审文案要重新数一遍
@@ -6822,7 +6965,8 @@ async def export_productions(
     format: str = "json",
     force_risk: bool = False,
     force_reason: Optional[str] = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_functions("produce")),
+    _export_role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
     db: AsyncSession = Depends(get_db),
 ):
     """导出提示词（每行一条可直接粘进豆包的完整提示词）。
@@ -8466,6 +8610,159 @@ async def list_output_groups(
             g["thumb_url"] = None
 
     return {"group_by": group_by, "owner": owner or "all", "groups": groups}
+
+
+@router.post("/assets/outputs/package")
+async def package_outputs(
+    ids: List[str] = Body(..., description="要打包的产物 id"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """成片交付包（P1·评审定稿⑧，impact 9）：勾选跨组汇总 → 服务端 zip 打包下载。
+
+    - 验收 failed 的照旧在打包口拦（与单条下载同一道闸，assets.py 下载口同款）；
+    - 包内附 manifest.json：钩子号、推荐标题、剧缩、验收结论、production_id、
+      reviewed_by/created_by 归属——发布侧交接「下载即落位」，不必人肉改名贴标题；
+    - 文件名按板侧命名＋序号，重名自动加 (2)。
+    """
+    import io
+    import zipfile
+
+    uids = [_as_uuid(i, "output_id") for i in ids]
+    rows = (
+        await db.execute(
+            select(AssetOutput).where(
+                AssetOutput.id.in_(uids), AssetOutput.kind.notin_(("package", "copy"))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="没有可打包的产物")
+    blocked = [o for o in rows if o.qc_status == "failed"]
+    if blocked:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{len(blocked)} 条验收不合格被拦（先看清为什么废）："
+            + "、".join((b.file_name or b.id)[:24] for b in blocked[:5]),
+        )
+
+    # 归属与标题一次聚合
+    prod_ids = {o.production_id for o in rows if o.production_id}
+    asset_ids = {o.asset_id for o in rows}
+    prod_meta: Dict[Any, dict] = {}
+    if prod_ids:
+        for pid, hc, titles, cb, rb in (
+            await db.execute(
+                select(
+                    AssetProduction.id,
+                    AssetProduction.hook_code,
+                    AssetProduction.video_titles,
+                    AssetProduction.created_by,
+                    AssetSummary.reviewed_by,
+                )
+                .join(AssetSummary, AssetSummary.id == AssetProduction.summary_id)
+                .where(AssetProduction.id.in_(prod_ids))
+            )
+        ).all():
+            prod_meta[pid] = {
+                "hook_code": hc,
+                "titles": titles or [],
+                "created_by": str(cb) if cb else None,
+                "reviewed_by": str(rb) if rb else None,
+            }
+    asset_codes: Dict[Any, str] = {}
+    if asset_ids:
+        for aid, code in (
+            await db.execute(select(AssetItem.id, AssetItem.code).where(AssetItem.id.in_(asset_ids)))
+        ).all():
+            asset_codes[aid] = code
+    names = await _user_names(db, {m.get("created_by") for m in prod_meta.values() if m.get("created_by")})
+
+    # 首帧（无帧缩略不打包，manifest 照记）
+    frame_rows = (
+        await db.execute(
+            select(AssetFrame).where(
+                AssetFrame.output_id.in_([o.id for o in rows]),
+                AssetFrame.kind == FRAME_OUTPUT_THUMB,
+            )
+        )
+    ).scalars().all()
+    frames_by_output = {f.output_id: f for f in frame_rows}
+
+    manifest_entries = []
+    used_names: Dict[str, int] = {}
+    import asyncio as _aio
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for o in rows:
+            meta = prod_meta.get(o.production_id) or {}
+            base = (o.file_name or f"{o.id}").rsplit(".", 1)[0][:80] or "clip"
+            ext = (o.file_name or "clip.mp4").rsplit(".", 1)[-1] or "mp4"
+            name = f"{base}.{ext}"
+            n = used_names.get(name, 0)
+            if n:
+                name = f"{base}({n + 1}).{ext}"
+            used_names[name] = n + 1
+            url = await get_presigned_url(
+                o.bucket or settings.MINIO_BUCKET_RAW, o.file_key, expires_seconds=600
+            )
+            async with httpx.AsyncClient(timeout=300) as cl:
+                resp = await cl.get(url)
+                resp.raise_for_status()
+            zf.writestr(name, resp.content)
+            fr = frames_by_output.get(o.id)
+            manifest_entries.append(
+                {
+                    "file": name,
+                    "asset_code": asset_codes.get(o.asset_id),
+                    "hook_code": meta.get("hook_code"),
+                    "recommended_title": (meta.get("titles") or [""])[0],
+                    "qc_status": o.qc_status,
+                    "duration": o.duration,
+                    "resolution": o.resolution,
+                    "produced_by": names.get(meta.get("created_by") or ""),
+                    "reviewed_by": names.get(meta.get("reviewed_by") or ""),
+                    "thumb_url": (
+                        await get_presigned_url(
+                            fr.bucket or settings.MINIO_BUCKET_RAW,
+                            fr.file_key,
+                            expires_seconds=_FRAME_URL_TTL_SECONDS,
+                        )
+                        if fr
+                        else None
+                    ),
+                }
+            )
+        zf.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "exported_at": utc_iso(datetime.utcnow()),
+                    "exported_by": current_user.username,
+                    "items": manifest_entries,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+    buf.seek(0)
+    await _write_audit(
+        db,
+        action="asset.outputs_package",
+        operator=current_user,
+        target_type="asset_output",
+        target_id=None,
+        after={"count": len(rows), "ids": [str(o.id) for o in rows[:20]]},
+    )
+    await db.commit()
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="delivery-package.zip"'},
+    )
 
 
 @router.get("/assets/outputs/{output_id}/download")
@@ -10719,6 +11016,15 @@ async def refresh_asset_prompt(
         svc.apply_stage(asset, "prompt", STAGE_FAILED)
         asset.note = ((asset.note or "") + f"\n反推失败：{task.error}")[:1000]
     await db.commit()
+    # P1（评审定稿⑫）：手动刷新反推状态留痕（此前该口无审计）
+    await _write_audit(
+        db,
+        action="asset.prompt_refresh",
+        operator=current_user,
+        target_type="asset_item",
+        target_id=str(asset.id),
+        after={"code": asset.code, "stage_prompt": asset.stage_prompt},
+    )
     result = {"asset": _serialize_item(asset), "prompt_task": serialize_prompt_task(task)}
     if asset.source_kind == SOURCE_LINK and asset.duration is None:
         result["duration_note"] = (

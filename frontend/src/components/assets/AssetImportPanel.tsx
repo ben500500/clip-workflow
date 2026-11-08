@@ -43,6 +43,26 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
 
   // ── 链接导入 ──
   const [links, setLinks] = useState('');
+  // P1（评审定稿⑪）：导入前重复预检（0 元、不建行）——粘贴完就地知道哪些已入库
+  const [duplicates, setDuplicates] = useState<Map<string, { code?: string; imported_at?: string | null }>>(new Map());
+  useEffect(() => {
+    const urls = links.split(/[\r\n]+/).map((s) => s.trim()).filter(Boolean);
+    if (!urls.length) {
+      setDuplicates(new Map());
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const res = await assetApi.importPreflight(urls);
+        const map = new Map<string, { code?: string; imported_at?: string | null }>();
+        (res.items || []).forEach((d) => d.source_url_norm && map.set(d.source_url_norm, d));
+        setDuplicates(map);
+      } catch {
+        /* 预检失败静默（提交时后端硬拦还在） */
+      }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [links]);
   const [batchName, setBatchName] = useState('');
   const [tier, setTier] = useState<number>(DEFAULT_TIER);
   /** 整批默认钩子原型：链接导入和文件上传共用这一个选择（不选＝整批未分类） */
@@ -345,6 +365,14 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
                   onChange={(e) => setLinks(e.target.value)}
                   placeholder={'一行一条分享链接（可以整段粘含中文的分享文案，后端自己提 http token）\n例如：https://v.douyin.com/xxxx/ 这剧太上头了'}
                 />
+            {duplicates.size > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginTop: 6 }}
+                message={`${duplicates.size} 条已导入过（提交会被拦，逐条放行或删除）——${[...duplicates.values()].slice(0, 3).map((d) => d.code).join('、')}${duplicates.size > 3 ? '…' : ''}`}
+              />
+            )}
                 <Space>
                   <Button type="primary" loading={importing} onClick={() => submitLinks()}>
                     导入 {parsedLinks.length} 条链接

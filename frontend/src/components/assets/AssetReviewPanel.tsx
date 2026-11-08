@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Input, Modal, Popover, Segmented, Select, Space, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, Drawer, Input, Modal, Popover, Segmented, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
@@ -9,7 +9,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { AUDIT_STATUS_LABELS, RECHECK_CODE_LABELS, assetApi } from '../../api/assets';
 import type {
-  AssetBatch, AssetReviewAction, AssetReviewResultItem, AssetSummary, AssetSummaryListResult,
+  AssetBatch, AssetDetailResponse, AssetReviewAction, AssetReviewResultItem, AssetSummary, AssetSummaryListResult,
 } from '../../api/assets';
 import {
   CategorySelect, invalidateAssetCategories, useAssetCategories,
@@ -19,7 +19,7 @@ import AssetReviewCard from './AssetReviewCard';
 import ProduceOrderModal from './ProduceOrderModal';
 import RiskLexiconDrawer from './RiskLexiconDrawer';
 
-const { Text } = Typography;
+const { Text, Paragraph } = Typography;
 
 /**
  * 一条被拦结果里「可以按类放行」的问题类型。
@@ -135,6 +135,18 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
 
   // 投产弹窗
   const [produceOpen, setProduceOpen] = useState(false);
+  // P1（评审定稿⑨）：一致性核验抽屉（原片播放＋反推脚本全文）
+  const [inspecting, setInspecting] = useState<AssetSummary | null>(null);
+  const [inspectData, setInspectData] = useState<AssetDetailResponse | null>(null);
+  const openInspect = async (row: AssetSummary) => {
+    setInspecting(row);
+    setInspectData(null);
+    try {
+      setInspectData(await assetApi.getAsset(row.asset_id));
+    } catch (e) {
+      message.error((e as Error).message || '取素材详情失败');
+    }
+  };
 
   // 批次下拉：原来只有一个「批次 ID」输入框，要手填 UUID，填 AB- 编号会一条都查不到
   const [batches, setBatches] = useState<AssetBatch[]>([]);
@@ -541,6 +553,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
             setResubmitText(row.text);
             setResubmitNote('');
           }}
+          onInspect={setInspecting}
         />
       ),
     },
@@ -1010,6 +1023,36 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         }}
       />
 
+      {/* P1（评审定稿⑨）：一致性核验抽屉——签字依据给足：原片播放＋反推脚本全文 */}
+      <Drawer
+        title={inspecting ? `核验：${inspecting.asset_code || inspecting.asset_id.slice(0, 8)}` : ''}
+        width={720}
+        open={!!inspecting}
+        onClose={() => setInspecting(null)}
+      >
+        {inspecting && (
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            {inspectData?.asset?.source_url && (
+              <video
+                src={inspectData.asset.source_url}
+                controls
+                style={{ width: '100%', maxHeight: 380, background: '#000', borderRadius: 8 }}
+              />
+            )}
+            {inspectData?.prompt_script ? (
+              <Card size="small" title="反推文案稿（一致性比对的事实来源）">
+                <Paragraph
+                  style={{ marginBottom: 0, fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 360, overflow: 'auto' }}
+                >
+                  {inspectData.prompt_script}
+                </Paragraph>
+              </Card>
+            ) : (
+              <Text type="secondary">还没有反推文案稿。</Text>
+            )}
+          </Space>
+        )}
+      </Drawer>
       <RiskLexiconDrawer open={lexiconOpen} onClose={() => setLexiconOpen(false)} />
     </Card>
   );

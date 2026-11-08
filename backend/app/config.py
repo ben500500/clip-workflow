@@ -402,6 +402,9 @@ class Settings(BaseSettings):
     # A′（2026-11-08 评审定稿）：自审自投硬闸——自己过审的候选自己投产默认拦；
     # 小团队/应急需一人包干时显式设 true（每次自审自投仍逐条写豁免审计）。
     ASSET_SELF_PRODUCE_ALLOWED: bool = False
+    # P1（评审定稿⑦）：取号进界面——后端代理的取号命令（参数为数量、stdout 每行一个
+    # 五位编号）。留空＝功能关闭（前端走手工粘贴）。
+    ASSET_HOOK_ID_CMD: str = ""
     # 板上排日按本地时区（NAS 在 CST），后端存 UTC —— 16:00~24:00 之间会错一天，
     # 而 date 写错＝额度白烧且成片永久取不回（1021 实测 120 条）。
     ASSET_BOARD_TZ_OFFSET_HOURS: int = 8

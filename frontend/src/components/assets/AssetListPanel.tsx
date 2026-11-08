@@ -138,6 +138,27 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
 
   // 筛选
   const [keyword, setKeyword] = useState('');
+  // P1（评审定稿⑪）：选档帮手——只用已落库时长（文件 ffprobe/链接解析回填），不现场探
+  const durationHint = useMemo(() => {
+    const ds = selected
+      .filter((s) => s.media_kind !== 'image')
+      .map((s) => s.duration)
+      .filter((d): d is number => typeof d === 'number' && d > 0);
+    if (!ds.length) return '';
+    const known = ds.length;
+    const buckets = { 60: 0, 180: 0, 300: 0, 600: 0 } as Record<number, number>;
+    let unknown = selected.filter((s) => s.media_kind !== 'image').length - known;
+    ds.forEach((d) => {
+      const cap = d <= 60 ? 60 : d <= 180 ? 180 : d <= 300 ? 300 : 600;
+      buckets[cap] += 1;
+    });
+    const suggest = (Object.entries(buckets).find(([, c]) => c >= known / 2) || [null])[0];
+    const parts = Object.entries(buckets)
+      .filter(([, c]) => c)
+      .map(([t, c]) => `${c} 条≤${t}s`)
+      .concat(unknown > 0 ? [`${unknown} 条时长未知`] : []);
+    return `${parts.join('、')}${suggest ? `——建议 ${suggest}s 档` : ''}`;
+  }, [selected]);
   const [status, setStatus] = useState<string | undefined>();
   const [sourceKind, setSourceKind] = useState<string | undefined>();
   /**
@@ -1255,7 +1276,11 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
               type="info"
               showIcon
               message="按所选时长上限扣费（600s 档 0.324 元/条、180s 档 0.0972 元/条），不按实际时长；账面是对账估算值"
-              description={undefined}
+              description={
+                durationHint ? (
+                  <span style={{ fontSize: 12 }}>本批时长分布：{durationHint}——据此选档，别按上限白烧钱。</span>
+                ) : undefined
+              }
             />
             <Checkbox checked={withDownload} onChange={(e) => setWithDownload(e.target.checked)}>
               <Text style={{ fontSize: 12 }}>顺带把链接素材的原片下载到我们自己的存储（默认勾上）</Text>

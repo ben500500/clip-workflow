@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Button, Checkbox, Descriptions, Input, Modal, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
-import { CopyOutlined } from '@ant-design/icons';
+import { CopyOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { RECHECK_CODE_LABELS, assetApi, isAssetJobAck, waitForAssetJob } from '../../api/assets';
 import type { AssetProduceResponse, AssetSummary } from '../../api/assets';
 import { HOOK_CODE_RE, MonoText, parseHookCodes } from './AssetBits';
@@ -81,6 +81,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
    */
   const [jobHint, setJobHint] = useState<string | null>(null);
   const giveUpRef = useRef(false);
+  const [takingCodes, setTakingCodes] = useState(false);
 
   // 批 I（链路收敛）：投产成功后顺势投板——不用再回生产单列表勾一遍。
   // 逐批人工确认的口径不放松：这里也要勾一下确认才投得出去。
@@ -571,6 +572,22 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
                 </Text>
                 {/* 批 N-4 最小版（评审二·P1-1）：每单 SSH 跑脚本最大的摩擦是"到底要取几个号"
                     还得现算现抄。清单一键复制，到服务器照着跑；界面内直连取号仍待拍板。 */}
+                <Button
+                  size="small"
+                  icon={<ThunderboltOutlined />}
+                  loading={takingCodes}
+                  onClick={async () => {
+                    try {
+                      const r = await assetApi.takeHookCodes(needCodes);
+                      setCodeText((t) => (t ? t + ' ' : '') + r.codes.join(' '));
+                      message.success(`已代取 ${r.codes.length} 个号（一发即烧，取消开单号就作废）`);
+                    } catch (e) {
+                      message.warning((e as Error).message || '代取号未启用，走手工粘贴', 6);
+                    }
+                  }}
+                >
+                  代取 {needCodes} 个号
+                </Button>
                 <Button
                   size="small"
                   icon={<CopyOutlined />}

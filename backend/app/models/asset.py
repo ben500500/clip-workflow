@@ -427,6 +427,9 @@ class AssetSummary(Base):
     reviewed_by = Column(UUID(as_uuid=True), nullable=True, index=True)
     reviewed_at = Column(DateTime, nullable=True)
     reject_reason = Column(String(500), nullable=True)     # 驳回必填
+    # P1（评审定稿⑩）：改后重提时作者写给审核人的说明（resubmit 口落列，审核卡展示；
+    # 此前只进 AuditLog，复审时对不上话）
+    resubmit_note = Column(Text, nullable=True)
     # 改后通过的原文留痕（配合 AuditLog 的 before/after，admin 抽检用）
     text_before_edit = Column(Text, nullable=True)
 

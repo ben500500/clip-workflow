@@ -51,6 +51,8 @@ interface Props {
   onEdit: (row: AssetSummary) => void;
   onReject: (row: AssetSummary) => void;
   onResubmit: (row: AssetSummary) => void;
+  /** P1（评审定稿⑨）：一致性核验入口——弹出原片播放+反推脚本全文 */
+  onInspect?: (row: AssetSummary) => void;
 }
 
 /**
@@ -78,6 +80,7 @@ const AssetReviewCard: React.FC<Props> = ({
   onEdit,
   onReject,
   onResubmit,
+  onInspect,
 }) => (
   <div style={{ display: 'flex', gap: 16, alignItems: 'stretch' }}>
     {/* 左：三帧横排，点开九宫格 */}
@@ -123,6 +126,18 @@ const AssetReviewCard: React.FC<Props> = ({
             </Text>
           </Tooltip>
         )}
+        {/* P1（评审定稿⑨）：一致性核验入口——签字依据给足：原片播放＋反推脚本全文 */}
+        {onInspect && (
+          <a
+            style={{ fontSize: 12 }}
+            onClick={(e) => {
+              e.preventDefault();
+              onInspect(row);
+            }}
+          >
+            核验原片/脚本
+          </a>
+        )}
         {row.style_tag && <Tag>{HOOK_STYLE_LABELS[row.style_tag] || row.style_tag}</Tag>}
         {row.formula_tag && <Tag color="geekblue">{row.formula_tag}</Tag>}
         <CategoryTag categoryId={row.category_id} categoryName={row.category_name} />
@@ -133,7 +148,14 @@ const AssetReviewCard: React.FC<Props> = ({
           </Text>
         )}
         {row.text_before_edit && (
-          <Tooltip title={`改前原文：${row.text_before_edit}`}>
+          <Tooltip
+            title={
+              '改前原文：' + (row.text_before_edit || '')
+              + (row.resubmit_note ? `
+
+作者说明：${row.resubmit_note}` : '')
+            }
+          >
             <Tag color={row.audit_status === 'passed_edited' ? 'cyan' : 'geekblue'}>
               {row.audit_status === 'passed_edited'
                 ? '审核人改后通过'
