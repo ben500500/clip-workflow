@@ -46,8 +46,9 @@ const AssetLibrary: React.FC = () => {
   const defaultTab = useMemo(() => {
     const saved = localStorage.getItem('asset-library-tab');
     if (saved) return saved;
-    if (role === 'material') return 'import';
-    if (role === 'operator') return 'review';
+    const r = user?.role;
+    if (r === 'material') return 'import';
+    if (r === 'operator') return 'review';
     return 'assets';
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
