@@ -115,6 +115,41 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
     }
   };
 
+  // 上传文件即导入：txt/csv 读文本 → 按空行分段（无空行则按行分段）→ 直接调导入接口
+  const importCopyFromFile = async (file: File) => {
+    try {
+      const text = await file.text();
+      // 优先空行分段（多段式）；整段没有空行时退化为按行分段（一列一条）
+      let segs = text.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+      if (segs.length <= 1) {
+        segs = text.split(/[\r\n]+/).map((s) => s.trim()).filter(Boolean);
+      }
+      if (!segs.length) {
+        message.warning(`文件 ${file.name} 里没有可导入的文案`);
+        return false;
+      }
+      setCopyBusy(true);
+      const res = await assetApi.importCopySummaries(
+        copyBatchName || `文件导入-${file.name}`,
+        segs,
+      );
+      message.success(res.message, 6);
+      if (res.skipped.length) {
+        message.warning(`${res.skipped.length} 条形态不合格被跳过（超字数等）`, 8);
+        console.warn('文件导入被跳过的条目', res.skipped);
+      }
+      setCopyText('');
+      setCopyBatchName('');
+      fetchBatches();
+      onSelectBatch?.(res.batch_id);
+    } catch (e) {
+      message.error((e as Error).message || `文件 ${file.name} 导入失败`);
+    } finally {
+      setCopyBusy(false);
+    }
+    return false; // 阻止 antd 默认上传
+  };
+
   const fetchBatches = useCallback(async () => {
     setBatchLoading(true);
     try {
@@ -370,15 +405,27 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
                   value={copyText}
                   onChange={(e) => setCopyText(e.target.value)}
                 />
-                <Button
-                  type="primary"
-                  size="small"
-                  loading={copyBusy}
-                  disabled={!copyText.trim()}
-                  onClick={submitCopyImport}
-                >
-                  导入进审核队列
-                </Button>
+                <Space size={8} wrap>
+                  <Button
+                    type="primary"
+                    size="small"
+                    loading={copyBusy}
+                    disabled={!copyText.trim()}
+                    onClick={submitCopyImport}
+                  >
+                    导入进审核队列
+                  </Button>
+                  <Upload
+                    accept=".txt,.csv,.text"
+                    showUploadList={false}
+                    beforeUpload={importCopyFromFile}
+                    disabled={copyBusy}
+                  >
+                    <Button size="small" icon={<InboxOutlined />} loading={copyBusy} disabled={copyBusy}>
+                      上传文件导入（.txt/.csv，空行或换行分条）
+                    </Button>
+                  </Upload>
+                </Space>
               </Space>
             ),
           }]}
