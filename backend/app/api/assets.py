@@ -1552,6 +1552,94 @@ async def take_hook_codes(
     return {"codes": codes[: int(count)]}
 
 
+# ── P1 新增（用户需求 2026-11-08）：直接贴文案导入——已有外部生成好的钩子文案，
+# 跳过"收集链接→反推"直接进审核队列。建一批无视频素材壳（stage_prompt=skipped），
+# 直挂 AssetSummary 候选。一致性校验无脚本时优雅退化（ok=True 跳过比对），
+# 风险词/形态校验照走。后面审核→投产→投板全链路不变。 ──
+@router.post("/assets/summaries/import-copy")
+async def import_copy_summaries(
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+    # 两个都用 Body：两个 body 参数时 FastAPI 自动 embed 成 {"batch_name":…, "texts":[…]}
+    # （单个 body 参数时会期望 body 就是 list——前端发的是对象，必须双参数）
+    batch_name: str = Body("", description="批次名（留空自动「贴文案导入 MMDD」）"),
+    texts: List[str] = Body(..., description="钩子文案列表（一条一个元素；前端可按空行/换行拆）"),
+):
+    """直接贴文案导入：跳过"收集链接→反推"全流程，文案直挂候选进审核队列。
+
+    适用场景：外部 LLM / 人工写好的一批钩子文案，不想再从链接反推一遍。
+    - 建一个批次（AssetBatch）＋每条文案一个素材壳（AssetItem，stage_prompt=skipped，
+      无视频无链接——纯文本容器）；
+    - 每条文案建一条 AssetSummary（pending，推荐=第一条）；
+    - 后续审核（形态/风险词/豁免）→ 投产（expand=True 展开提示词）→ 投板全链路照走。
+    形态校验（≤80 字/首句≤25 字/不以逗号结尾）在这里**只提示不拦**——跟出文案口的
+    做法一致（硬拦在审核口的 recheck 里做，这里拦了用户就得回文本编辑器改）。
+    """
+    if not texts or not [t for t in texts if (t or "").strip()]:
+        raise HTTPException(status_code=400, detail="没有可导入的文案")
+
+    from datetime import timedelta as _td
+
+    batch = AssetBatch(
+        name=batch_name.strip() or f"贴文案导入 {time.strftime('%m%d')}",
+        source_kind=SOURCE_LINK,
+        created_by=current_user.id,
+    )
+    db.add(batch)
+    await db.flush()
+
+    created = []
+    skipped: List[dict] = []
+    seq_offset = 0
+    for i, raw in enumerate(texts):
+        text = (raw or "").strip()
+        if not text:
+            continue
+        # 形态提示（只提示不拦——硬拦在审核口 recheck）
+        shape = svc.check_copy_shape(text)
+        if not shape["ok"]:
+            skipped.append({"index": i + 1, "problems": shape["problems"], "text": text[:60]})
+            continue
+
+        seq_offset += 1
+        asset = AssetItem(
+            batch_id=batch.id,
+            source_kind=SOURCE_LINK,
+            source_url=None,
+            media_kind=MEDIA_VIDEO,
+            stage_import=STAGE_SKIPPED,
+            stage_prompt=STAGE_SKIPPED,
+            title=text[:40],
+        )
+        db.add(asset)
+        await db.flush()
+
+        summary = AssetSummary(
+            asset_id=asset.id,
+            seq=1,
+            text=text,
+            is_recommended=seq_offset == 1,
+            audit_status=RV_PENDING,
+        )
+        db.add(summary)
+        created.append({
+            "asset_id": str(asset.id),
+            "summary_id": str(summary.id),
+            "text": text[:60],
+        })
+
+    await db.commit()
+    return {
+        "batch_id": str(batch.id),
+        "batch_code": batch.code,
+        "created": len(created),
+        "skipped": skipped,
+        "items": created,
+        "message": f"已导入 {len(created)} 条文案进审核队列（{batch.code}）"
+        + (f"；{len(skipped)} 条形态不合格被跳过" if skipped else ""),
+    }
+
+
 @router.post("/assets/import/preflight")
 async def import_preflight(
     data: ImportBatchRequest,

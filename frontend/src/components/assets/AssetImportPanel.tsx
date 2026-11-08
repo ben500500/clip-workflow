@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Alert, Button, Card, Col, Input, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography, Upload, message,
+  Alert, Button, Card, Collapse, Col, Input, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography, Upload, message,
 } from 'antd';
 import { CloudUploadOutlined, InboxOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -43,6 +43,10 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
 
   // ── 链接导入 ──
   const [links, setLinks] = useState('');
+  // 直接贴文案导入
+  const [copyText, setCopyText] = useState('');
+  const [copyBatchName, setCopyBatchName] = useState('');
+  const [copyBusy, setCopyBusy] = useState(false);
   // P1（评审定稿⑪）：导入前重复预检（0 元、不建行）——粘贴完就地知道哪些已入库
   const [duplicates, setDuplicates] = useState<Map<string, { code?: string; imported_at?: string | null }>>(new Map());
   useEffect(() => {
@@ -81,6 +85,35 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
   // ── 批次台账 ──
   const [batches, setBatches] = useState<AssetBatch[]>([]);
   const [batchLoading, setBatchLoading] = useState(false);
+
+  // 直接贴文案提交：按空行分段，一段=一条候选
+  const submitCopyImport = async () => {
+    const texts = copyText
+      .split(/\n{2,}/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!texts.length) {
+      message.warning('没有可导入的文案（按空行分隔，一条一段）');
+      return;
+    }
+    setCopyBusy(true);
+    try {
+      const res = await assetApi.importCopySummaries(copyBatchName, texts);
+      message.success(res.message, 6);
+      if (res.skipped.length) {
+        message.warning(`${res.skipped.length} 条形态不合格被跳过（超字数等），明细看控制台`, 8);
+        console.warn('贴文案导入被跳过的条目', res.skipped);
+      }
+      setCopyText('');
+      setCopyBatchName('');
+      fetchBatches();
+      onSelectBatch?.(res.batch_id);
+    } catch (e) {
+      message.error((e as Error).message || '贴文案导入失败');
+    } finally {
+      setCopyBusy(false);
+    }
+  };
 
   const fetchBatches = useCallback(async () => {
     setBatchLoading(true);
@@ -312,6 +345,45 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
 
   return (
     <Row gutter={12}>
+      {/* P1 新增：直接贴文案——跳过链接/反推，直挂候选进审核队列 */}
+      <Col span={24} style={{ marginBottom: 12 }}>
+        <Collapse
+          size="small"
+          items={[{
+            key: 'paste-copy',
+            label: <Text strong style={{ fontSize: 12 }}>直接贴文案（跳过链接/反推，直进审核队列）</Text>,
+            children: (
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  已有外部生成好的钩子文案？按空行分段粘贴（一段=一条候选），提交后直进审核队列——后面质检、投产、投板照走。
+                </Text>
+                <Input
+                  placeholder="批次名（可选，留空自动命名）"
+                  value={copyBatchName}
+                  onChange={(e) => setCopyBatchName(e.target.value)}
+                  style={{ width: 260 }}
+                  size="small"
+                />
+                <Input.TextArea
+                  rows={6}
+                  placeholder={'一条文案一段（空行分隔），例：\n\n她替姐姐嫁的第二天，新郎出现在她姐的婚礼上\n\n总裁摘下手表坐在塑料凳上吃泡面，秘书问他为什么'}
+                  value={copyText}
+                  onChange={(e) => setCopyText(e.target.value)}
+                />
+                <Button
+                  type="primary"
+                  size="small"
+                  loading={copyBusy}
+                  disabled={!copyText.trim()}
+                  onClick={submitCopyImport}
+                >
+                  导入进审核队列
+                </Button>
+              </Space>
+            ),
+          }]}
+        />
+      </Col>
       <Col span={14}>
         <Card
           size="small"

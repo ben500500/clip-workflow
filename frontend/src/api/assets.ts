@@ -2321,6 +2321,17 @@ export const assetApi = {
   takeHookCodes: (count: number) =>
     client.post(`/assets/hook-codes/take?count=${count}`) as Promise<{ codes: string[] }>,
 
+  // 直接贴文案导入（跳过反推，直挂候选进审核队列）
+  importCopySummaries: (batchName: string, texts: string[]) =>
+    client.post('/assets/summaries/import-copy', { batch_name: batchName, texts }) as Promise<{
+      batch_id: string;
+      batch_code: string;
+      created: number;
+      skipped: { index: number; problems: string[]; text: string }[];
+      items: { asset_id: string; summary_id: string; text: string }[];
+      message: string;
+    }>,
+
   // P1（评审定稿⑪）：导入前重复预检（0 元、不建行）
   importPreflight: (links: string[]) =>
     client.post('/assets/import/preflight', { links }) as Promise<{

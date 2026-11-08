@@ -8629,3 +8629,59 @@ def test_isolation_owner_views_cross_produce_gate_and_public_outputs():
         await client.aclose()
 
     _run(_scenario())
+
+
+def test_import_copy_summaries_direct_to_review_queue():
+    """直接贴文案导入（2026-11-08 用户需求）：跳过链接/反推，文案直挂候选进审核队列。
+
+    钉四件事：①建批次＋素材壳＋pending 候选（推荐=第一条）；②形态不合格的条目
+    被跳过并点名（只提示不拦在导入口的形态校验）；③无视频无脚本的候选能正常过审
+    （recheck 无脚本时一致性优雅退化 ok=True）；④审核→投产全链路照走（expand 展开）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+
+        good1 = "她替姐姐嫁的第二天，新郎出现在她姐的婚礼上，当着两家长辈问这婚到底算谁的"
+        good2 = "总裁摘下手表坐在塑料凳上吃泡面，秘书问他为什么放着办公室的沙发不坐"
+        bad = "这个太长了，" * 30  # 超 80 字 → 形态不合格被跳过
+
+        r = await client.post(
+            "/api/assets/summaries/import-copy",
+            json={"batch_name": "e2e-贴文案", "texts": [good1, bad, good2]},
+            headers=hm,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["created"] == 2 and len(body["skipped"]) == 1, body
+        assert body["skipped"][0]["index"] == 2, body["skipped"]
+        assert body["batch_code"], body
+
+        # 候选：pending、第一条推荐、无脚本
+        listed = (await client.get(
+            f"/api/assets/summaries?audit_status=pending&batch_id={body['batch_id']}", headers=ho)).json()
+        assert listed["total"] == 2, listed
+        rec = [i for i in listed["items"] if i["is_recommended"]]
+        assert len(rec) == 1, f"恰好一条推荐：{[i['is_recommended'] for i in listed['items']]}"
+        assert rec[0]["text"].startswith("她替姐姐嫁"), rec[0]["text"][:30]
+
+        # 无脚本过审：一致性优雅退化（ok=True），风险词/形态照校验
+        sids = [i["id"] for i in listed["items"]]
+        ok = await client.post("/api/assets/summaries/review",
+                               json={"summary_ids": sids, "action": "approve"}, headers=ho)
+        assert ok.status_code == 200, ok.text
+        assert all(x["ok"] for x in ok.json()["results"]), ok.json()
+
+        # 投产照走（expand 展开提示词）
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            made = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [sids[0]], "n": 1, "async_mode": False},
+                headers=ho)
+        assert made.status_code == 200, made.text[:300]
+        assert made.json()["created"] >= 1, made.json()
+        await client.aclose()
+
+    _run(_scenario())
