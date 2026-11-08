@@ -3,13 +3,13 @@ import {
   Alert, Button, Card, Checkbox, DatePicker, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
-  BulbOutlined, CloudDownloadOutlined, DownloadOutlined, FileTextOutlined, LoadingOutlined,
+  BulbOutlined, CloudDownloadOutlined, DeleteOutlined, DownloadOutlined, FileTextOutlined, LoadingOutlined,
   MergeCellsOutlined, QuestionCircleOutlined, ReloadOutlined, SearchOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import {
-  ASSET_STAGE_LABELS, ASSET_STATUS_LABELS, DEFAULT_TIER, DURATION_TIERS, assetApi, isAssetJobAck,
+  ASSET_STAGE_LABELS, ASSET_STATUS_LABELS, AssetJobAck, DEFAULT_TIER, DURATION_TIERS, assetApi, isAssetJobAck,
 } from '../../api/assets';
 import type {
   AssetItem, AssetAnalyzeResponse, AssetCostEstimateResponse, AssetMediaKind, AssetResolveResponse,
@@ -23,6 +23,7 @@ import CostConfirmModal from './CostConfirmModal';
 import AssetDetailDrawer from './AssetDetailDrawer';
 import AssetComposeModal from './AssetComposeModal';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
+import { withCrossPersonConfirm } from './crossPerson';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -109,6 +110,8 @@ interface Props {
    * 但不能靠定时器猜"差不多该刷了"——只有横幅确认任务终态时才 +1。
    */
   reloadToken?: number;
+  /** A′ UX：页签切回来自动刷新（antd Tabs 挂载不卸载） */
+  active?: boolean;
 }
 
 /**
@@ -125,7 +128,7 @@ interface Props {
  * 「原型」那一列（11-04 拍板①）是**结构层人工标记**：不点也能走完全链，所以既不必填也不拦人；
  * 点原型 0 元、不等模型，因此不走成本确认单，直接批量提交。
  */
-const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadToken }) => {
+const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadToken, active = true }) => {
   const [items, setItems] = useState<AssetItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -135,6 +138,27 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
 
   // 筛选
   const [keyword, setKeyword] = useState('');
+  // P1（评审定稿⑪）：选档帮手——只用已落库时长（文件 ffprobe/链接解析回填），不现场探
+  const durationHint = useMemo(() => {
+    const ds = selected
+      .filter((s) => s.media_kind !== 'image')
+      .map((s) => s.duration)
+      .filter((d): d is number => typeof d === 'number' && d > 0);
+    if (!ds.length) return '';
+    const known = ds.length;
+    const buckets = { 60: 0, 180: 0, 300: 0, 600: 0 } as Record<number, number>;
+    let unknown = selected.filter((s) => s.media_kind !== 'image').length - known;
+    ds.forEach((d) => {
+      const cap = d <= 60 ? 60 : d <= 180 ? 180 : d <= 300 ? 300 : 600;
+      buckets[cap] += 1;
+    });
+    const suggest = (Object.entries(buckets).find(([, c]) => c >= known / 2) || [null])[0];
+    const parts = Object.entries(buckets)
+      .filter(([, c]) => c)
+      .map(([t, c]) => `${c} 条≤${t}s`)
+      .concat(unknown > 0 ? [`${unknown} 条时长未知`] : []);
+    return `${parts.join('、')}${suggest ? `——建议 ${suggest}s 档` : ''}`;
+  }, [selected]);
   const [status, setStatus] = useState<string | undefined>();
   const [sourceKind, setSourceKind] = useState<string | undefined>();
   /**
@@ -240,6 +264,14 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken]);
 
+  // A′ UX：切走再切回页签时自动刷新（挂载不卸载，不拉就是旧数据）
+  const wasActive = React.useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) fetchList(page, pageSize);
+    wasActive.current = active;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
   const runningCount = useMemo(() => items.filter((i) => i.stage_prompt === 'running').length, [items]);
   /**
@@ -300,19 +332,30 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const submitAnalyze = async () => {
     setAnalyzeLoading(true);
     try {
-      const res: AssetAnalyzeResponse = await assetApi.analyzeBatch({
-        asset_ids: selectedVideoIds,
-        max_duration: tier,
-        confirmed: true,
-        force,
-        retry_failed: retryFailed,
-        download: withDownload,
-      });
-      Modal.info({
-        title: '反推文案已提交',
-        width: 520,
-        content: <Text>{res.message}</Text>,
-      });
+      const res: AssetAnalyzeResponse | AssetJobAck | undefined = await withCrossPersonConfirm((c) =>
+        assetApi.analyzeBatch({
+          asset_ids: selectedVideoIds,
+          max_duration: tier,
+          confirmed: true,
+          force,
+          retry_failed: retryFailed,
+          download: withDownload,
+          cross_person_confirm: c,
+          // 11-06：提交即回任务号，提交＋收敛都在后台跑——页面关了也照收（任务条会报进度）
+          async_mode: true,
+        }),
+      );
+      if (!res) return; // 用户在「替他人批次」确认窗点了取消：什么都没动，留在弹窗里
+      if (isAssetJobAck(res)) {
+        message.success(res.message || '反推文案已排到后台，跑完顶部任务条会报', 8);
+        nudgeAssetJobBanner();
+      } else {
+        Modal.info({
+          title: '反推文案已提交',
+          width: 520,
+          content: <Text>{res.message}</Text>,
+        });
+      }
       setAnalyzeOpen(false);
       setSelected([]);
       fetchList();
@@ -363,13 +406,29 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       });
       return;
     }
+    // A′（2026-11-08 定稿）：出文案确认单**阈值触发**——≤4 条保持单击直发（不伤日常手速）；
+    // ≥5 条才弹一张轻量单（条数＋预计耗时＝条数×95s，系统本来就知道；LLM 费用逐条计价
+    // 尚无单价表，不编金额）。确认后仍是提交即回后台（D-1），不引入同步等待。
+    if (ok.length >= 5) {
+      Modal.confirm({
+        title: `出钩子文案 ${ok.length} 条？`,
+        content: `预计 ${Math.round((ok.length * 95) / 60)} 分钟左右（单条约 95 秒，后台跑、可关页面）。LLM 费用逐条计价，账面以台账汇总为准。`,
+        okText: `出这 ${ok.length} 条`,
+        cancelText: '再看看',
+        onOk: () => doGenerateSummaries(ok, false),
+      });
+      return;
+    }
     await doGenerateSummaries(ok, false);
   };
 
   const doGenerateSummaries = async (ok: string[], overwrite: boolean) => {
     setGenBusy(true);
     try {
-      const res = await assetApi.generateSummaries({ asset_ids: ok, async_mode: true, overwrite });
+      const res = await withCrossPersonConfirm((c) =>
+        assetApi.generateSummaries({ asset_ids: ok, async_mode: true, overwrite, cross_person_confirm: c }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认：什么都不做
       if (isAssetJobAck(res)) {
         // 回执里没结果，只有任务号：告诉人去哪儿看，别在这里猜跑没跑完
         // （busy 由下面的 finally 收，这里不重复置位）
@@ -416,10 +475,14 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     setResolveBusy(true);
     try {
       const linkIds = selected.filter((s) => s.source_kind === 'link').map((s) => s.id);
-      const res: AssetResolveResponse = await assetApi.resolveAssets({
-        asset_ids: linkIds,
-        confirmed: linkIds.length >= 2,
-      });
+      const res: AssetResolveResponse | undefined = await withCrossPersonConfirm((c) =>
+        assetApi.resolveAssets({
+          asset_ids: linkIds,
+          confirmed: linkIds.length >= 2,
+          cross_person_confirm: c,
+        }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认：什么都不做
       const notes = (res.results || []).filter((r) => r.note && !r.ok);
       Modal.info({
         title: `查时长：拿到 ${res.resolved} 条，实扣 ${yuan(res.charged)}`,
@@ -543,14 +606,24 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       onOk: async () => {
         setRetryingId(row.id);
         try {
-          const res: AssetAnalyzeResponse = await assetApi.analyzeBatch({
-            asset_ids: [row.id],
-            max_duration: DEFAULT_TIER,
-            confirmed: true,
-            retry_failed: true,
-          });
-          if (isAssetJobAck(res)) nudgeAssetJobBanner();
-          message.success(res.message || '反推文案已重新提交', 8);
+          const res: AssetAnalyzeResponse | AssetJobAck | undefined = await withCrossPersonConfirm((c) =>
+            assetApi.analyzeBatch({
+              asset_ids: [row.id],
+              max_duration: DEFAULT_TIER,
+              confirmed: true,
+              retry_failed: true,
+              cross_person_confirm: c,
+              // 行级重试也走后台：收敛不靠这条页面的轮询，关了页面照样收到终态
+              async_mode: true,
+            }),
+          );
+          if (!res) return; // 取消了「替他人批次」确认
+          if (isAssetJobAck(res)) {
+            message.success(res.message || '反推文案已重新提交（后台跑，跑完列表自己刷新）', 8);
+            nudgeAssetJobBanner();
+          } else {
+            message.success(res.message || '反推文案已重新提交', 8);
+          }
           fetchList();
         } catch (e) {
           message.error((e as Error).message || '重试提交失败');
@@ -569,7 +642,10 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const retryDownload = async (row: AssetItem) => {
     setRetryDlId(row.id);
     try {
-      const res = await assetApi.downloadSources({ asset_ids: [row.id], async_mode: true });
+      const res = await withCrossPersonConfirm((c) =>
+        assetApi.downloadSources({ asset_ids: [row.id], async_mode: true, cross_person_confirm: c }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认
       if (isAssetJobAck(res)) {
         message.success(res.message || '已排上下载，跑完这行会变绿色', 6);
         nudgeAssetJobBanner();
@@ -595,6 +671,48 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     } catch (e) {
       message.error((e as Error).message || '取原片失败');
     }
+  };
+
+  // ── 删除（11-06）：行级垃圾桶 + 勾选后批量删。挂在谁头上谁确认，
+  //    有文案/生产单/产物的后端会拒（409 的话术直接透出来），不在这里猜。
+  const [delBusy, setDelBusy] = useState(false);
+  const deleteRows = (rows: AssetItem[]) => {
+    if (!rows.length || delBusy) return;
+    Modal.confirm({
+      title: `删除 ${rows.length} 条素材？`,
+      content: (
+        <div>
+          <p style={{ marginBottom: 6 }}>
+            删除后素材行和桶里的原片/抽帧图一起没了，<strong>恢复不了</strong>。
+          </p>
+          <p style={{ marginBottom: 0 }}>
+            已经出过文案、建过生产单或拼过产物的会被拦下不让删（历史要留档）；
+            确实要连历史一起删的得找管理员。
+          </p>
+        </div>
+      ),
+      okText: `删除（${rows.length} 条）`,
+      okType: 'danger',
+      cancelText: '先不删',
+      onOk: async () => {
+        setDelBusy(true);
+        const failed: string[] = [];
+        let done = 0;
+        for (const row of rows) {
+          try {
+            await assetApi.deleteAsset(row.id);
+            done += 1;
+          } catch (e) {
+            failed.push(`${row.code}：${(e as Error).message}`);
+          }
+        }
+        setDelBusy(false);
+        if (done) message.success(`已删除 ${done} 条`);
+        failed.forEach((m) => message.error(m, 6));
+        setSelected([]);
+        fetchList();
+      },
+    });
   };
 
   const columns: ColumnsType<AssetItem> = [
@@ -796,7 +914,12 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       ),
     },
     {
-      title: '状态',
+      // A′：阶段是全站口径（本素材所有生产单合并计算）——个人结果看生产单/成片墙
+      title: (
+        <Tooltip title="阶段为全站口径：按本素材所有生产单合并计算，不分人；个人出片结果看「生产单与投板」「成片素材墙」的「我的」视图">
+          <span>状态 ⓘ</span>
+        </Tooltip>
+      ),
       dataIndex: 'status',
       width: 96,
       render: (v: AssetItem['status']) => <AssetStatusTag status={v} />,
@@ -836,6 +959,10 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
               <Tag color="purple" style={{ marginLeft: 2 }}>当角色卡用</Tag>
             </Tooltip>
           )}
+          {/* 11-06 删除：本人删自己的、admin 删任意；拦不拦得动由后端裁决（409 话术透传） */}
+          <Tooltip title="删除这条素材（有文案/生产单/产物挂着的会被拦；误删恢复不了，删前会再确认一次）">
+            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => deleteRows([row])} />
+          </Tooltip>
         </Space>
       ),
     },
@@ -876,152 +1003,160 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   });
 
   return (
-    <Card
-      size="small"
-      styles={{ body: { paddingTop: 12 } }}
-      title={
-        <Space wrap>
-          <Input
-            placeholder="搜编号/标题/链接"
-            allowClear
-            prefix={<SearchOutlined />}
-            style={{ width: 200 }}
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            onPressEnter={() => fetchList(1, pageSize)}
-          />
-          <Select
-            placeholder="状态"
-            allowClear
-            style={{ width: 120 }}
-            value={status}
-            onChange={setStatus}
-            options={Object.entries(ASSET_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
-          />
-          <Select
-            placeholder="来路"
-            allowClear
-            style={{ width: 100 }}
-            value={sourceKind}
-            onChange={setSourceKind}
-            options={[
-              { value: 'link', label: '链接' },
-              { value: 'file', label: '文件' },
-            ]}
-          />
-          <Select<AssetMediaKind>
-            placeholder="类型"
-            allowClear
-            style={{ width: 120 }}
-            value={mediaKind}
-            onChange={setMediaKind}
-            options={[
-              { value: 'video', label: '视频素材' },
-              { value: 'image', label: '图片（角色卡）' },
-            ]}
-          />
-          <Select
-            placeholder="反推文案环节"
-            allowClear
-            style={{ width: 120 }}
-            value={stagePrompt}
-            onChange={setStagePrompt}
-            options={Object.entries(ASSET_STAGE_LABELS).map(([value, label]) => ({ value, label }))}
-          />
+    /*
+      排版口径（#110）：筛选器和批量按钮**都放卡片体里全宽分行**，
+      不再塞 Card 的 title/extra——卡片头是同行 flex，title 被右边的按钮列挤窄后
+      Space.wrap 会把每个筛选器逐行堆叠（「长的长短的短」的根源）。
+      行序固定：① 筛选行 ② 批量动作行 ③ 欠账提示 ④ 点原型行 ⑤ 表格。
+    */
+    <Card size="small" styles={{ body: { paddingTop: 12 } }}>
+      {/* ① 筛选行：全部筛器 + 刷新，一行放不下就整行顺延换行，不再竖排堆叠 */}
+      <Space wrap size={8} style={{ marginBottom: 12 }}>
+        <Input
+          placeholder="搜编号/标题/链接"
+          allowClear
+          prefix={<SearchOutlined />}
+          style={{ width: 200 }}
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          onPressEnter={() => fetchList(1, pageSize)}
+        />
+        <Select
+          placeholder="状态"
+          allowClear
+          style={{ width: 120 }}
+          value={status}
+          onChange={setStatus}
+          options={Object.entries(ASSET_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
+        />
+        <Select
+          placeholder="来路"
+          allowClear
+          style={{ width: 100 }}
+          value={sourceKind}
+          onChange={setSourceKind}
+          options={[
+            { value: 'link', label: '链接' },
+            { value: 'file', label: '文件' },
+          ]}
+        />
+        <Select<AssetMediaKind>
+          placeholder="类型"
+          allowClear
+          style={{ width: 120 }}
+          value={mediaKind}
+          onChange={setMediaKind}
+          options={[
+            { value: 'video', label: '视频素材' },
+            { value: 'image', label: '图片（角色卡）' },
+          ]}
+        />
+        <Select
+          placeholder="反推文案环节"
+          allowClear
+          style={{ width: 120 }}
+          value={stagePrompt}
+          onChange={setStagePrompt}
+          options={Object.entries(ASSET_STAGE_LABELS).map(([value, label]) => ({ value, label }))}
+        />
+        <Tooltip
+          title={
+            <div style={{ maxWidth: 340 }}>
+              <div>
+                钩子原型＝这条片子的<strong>开头套路</strong>（A–G，名字照《钩子模版换皮参数设定.docx》），
+                和句式标签、公式标签是三回事。
+              </div>
+              <div style={{ marginTop: 4 }}>
+                原型是<strong>人工点的，也可以不点</strong>——不点照常反推文案、出文案、投产。
+              </div>
+              <div style={{ marginTop: 4 }}>
+                「未分类」是给清欠账用的：现在库里 {cats.unclassified.asset_count} 条素材没点原型，
+                筛出来一条条补。
+              </div>
+            </div>
+          }
+        >
+          <span>
+            <CategorySelect
+              items={cats.items}
+              value={categoryFilter}
+              onChange={setCategoryFilter}
+              withUnclassified
+              width={150}
+              loading={cats.loading}
+              placeholder="钩子原型"
+            />
+            <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+          </span>
+        </Tooltip>
+        <Input
+          placeholder="批次 ID"
+          allowClear
+          style={{ width: 150 }}
+          value={batchFilter}
+          onChange={(e) => setBatchFilter(e.target.value || undefined)}
+          onPressEnter={() => fetchList(1, pageSize)}
+        />
+        <RangePicker
+          value={dates as any}
+          onChange={(v) => setDates(v as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null)}
+        />
+        <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
+          刷新
+        </Button>
+      </Space>
+      {/* ② 批量动作行：勾选后要花的钱都在这一行，按钮永远在同一个位置不会跳 */}
+      {canProduce ? (
+        <Space wrap size={8} style={{ marginBottom: 12 }}>
+          {/* 批 G：图片混在勾选里时先把它摘出来说一句——下面几个按钮只对视频成立 */}
+          {!!selectedImageCount && (
+            <Tooltip title="图片（角色卡）不反推文案、不出文案、不查时长：提交进去也只会逐条回「这是图片」。这几个按钮只动勾到的视频。">
+              <Tag color="purple">另勾了 {selectedImageCount} 张图，不参与这几步</Tag>
+            </Tooltip>
+          )}
+          <Button type="primary" icon={<FileTextOutlined />} onClick={openAnalyze} disabled={!ids.length}>
+            反推文案（{selectedVideoCount}）
+          </Button>
+          {/*
+            拍板②（11-04）：出文案没有确认弹窗（D-1 后是"提交即回"的后台任务），
+            所以这句软提示挂在按钮悬浮上——正好在花钱那一下看得见，但不拦人。
+          */}
           <Tooltip
             title={
-              <div style={{ maxWidth: 340 }}>
-                <div>
-                  钩子原型＝这条片子的<strong>开头套路</strong>（A–G，名字照《钩子模版换皮参数设定.docx》），
-                  和句式标签、公式标签是三回事。
-                </div>
+              <div style={{ maxWidth: 320 }}>
+                <div>文案是从「反推文案稿」里出的，而那段是 AI 看片子自己写的、没经过人工核对。</div>
                 <div style={{ marginTop: 4 }}>
-                  原型是<strong>人工点的，也可以不点</strong>——不点照常反推文案、出文案、投产。
-                </div>
-                <div style={{ marginTop: 4 }}>
-                  「未分类」是给清欠账用的：现在库里 {cats.unclassified.asset_count} 条素材没点原型，
-                  筛出来一条条补。
+                  它读歪了，文案会照着歪着写，一致性检查也判不出来（两边都歪就对得上）。
+                  <strong>这一行只提醒、不拦步骤</strong>：觉得歪了就在详情抽屉里驳回文案或重做反推文案。
                 </div>
               </div>
             }
           >
-            <span>
-              <CategorySelect
-                items={cats.items}
-                value={categoryFilter}
-                onChange={setCategoryFilter}
-                withUnclassified
-                width={150}
-                loading={cats.loading}
-                placeholder="钩子原型"
-              />
-              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
-            </span>
-          </Tooltip>
-          <Input
-            placeholder="批次 ID"
-            allowClear
-            style={{ width: 150 }}
-            value={batchFilter}
-            onChange={(e) => setBatchFilter(e.target.value || undefined)}
-            onPressEnter={() => fetchList(1, pageSize)}
-          />
-          <RangePicker
-            value={dates as any}
-            onChange={(v) => setDates(v as [dayjs.Dayjs | null, dayjs.Dayjs | null] | null)}
-          />
-          <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
-            刷新
-          </Button>
-        </Space>
-      }
-      extra={
-        canProduce ? (
-          <Space wrap>
-            {/* 批 G：图片混在勾选里时先把它摘出来说一句——下面几个按钮只对视频成立 */}
-            {!!selectedImageCount && (
-              <Tooltip title="图片（角色卡）不反推文案、不出文案、不查时长：提交进去也只会逐条回「这是图片」。这几个按钮只动勾到的视频。">
-                <Tag color="purple">另勾了 {selectedImageCount} 张图，不参与这几步</Tag>
-              </Tooltip>
-            )}
-            <Button type="primary" icon={<FileTextOutlined />} onClick={openAnalyze} disabled={!ids.length}>
-              反推文案（{selectedVideoCount}）
+            <Button icon={<BulbOutlined />} loading={genBusy} onClick={generateSummaries} disabled={!ids.length}>
+              出钩子文案（{selectedVideoCount}）
             </Button>
-            {/*
-              拍板②（11-04）：出文案没有确认弹窗（D-1 后是"提交即回"的后台任务），
-              所以这句软提示挂在按钮悬浮上——正好在花钱那一下看得见，但不拦人。
-            */}
-            <Tooltip
-              title={
-                <div style={{ maxWidth: 320 }}>
-                  <div>文案是从「反推文案稿」里出的，而那段是 AI 看片子自己写的、没经过人工核对。</div>
-                  <div style={{ marginTop: 4 }}>
-                    它读歪了，文案会照着歪着写，一致性检查也判不出来（两边都歪就对得上）。
-                    <strong>这一行只提醒、不拦步骤</strong>：觉得歪了就在详情抽屉里驳回文案或重做反推文案。
-                  </div>
-                </div>
-              }
-            >
-              <Button icon={<BulbOutlined />} loading={genBusy} onClick={generateSummaries} disabled={!ids.length}>
-                出钩子文案（{selectedVideoCount}）
-              </Button>
-            </Tooltip>
-            <Tooltip title="把这一批里还在跑的视频读取结果一次性收回来（不用逐条点）">
-              <Button icon={<ReloadOutlined />} loading={refreshBusy} onClick={refreshRunning}>
-                收取在跑结果（本页 {runningCount}）
-              </Button>
-            </Tooltip>
-            <Tooltip title="去原链接查视频时长：每次 0.01 元，计入批次成本；只适用于链接素材">
-              <Button icon={<CloudDownloadOutlined />} onClick={openResolve} disabled={!ids.length}>
-                查时长（{ids.length}）
-              </Button>
-            </Tooltip>
-          </Space>
-        ) : (
-          <Text type="secondary">当前角色只读：导入、反推文案、出文案由素材专员或运营来做</Text>
-        )
-      }
-    >
+          </Tooltip>
+          <Tooltip title="把这一批里还在跑的视频读取结果一次性收回来（不用逐条点）">
+            <Button icon={<ReloadOutlined />} loading={refreshBusy} onClick={refreshRunning}>
+              收取在跑结果（本页 {runningCount}）
+            </Button>
+          </Tooltip>
+          <Tooltip title="去原链接查视频时长：每次 0.01 元，计入批次成本；只适用于链接素材">
+            <Button icon={<CloudDownloadOutlined />} onClick={openResolve} disabled={!ids.length}>
+              查时长（{ids.length}）
+            </Button>
+          </Tooltip>
+          <Tooltip title="删掉勾选的素材（含桶里的原片与抽帧图）；有文案/生产单/产物挂着的会被后端拦下">
+            <Button danger icon={<DeleteOutlined />} loading={delBusy} onClick={() => deleteRows(selected)} disabled={!ids.length}>
+              删除（{ids.length}）
+            </Button>
+          </Tooltip>
+        </Space>
+      ) : (
+        <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+          当前角色只读：导入、反推文案、出文案由素材专员或运营来做
+        </Text>
+      )}
       {canProduce && cats.unclassified.asset_count > 0 && categoryFilter !== UNCLASSIFIED && (
         <Alert
           type="info"
@@ -1072,9 +1207,6 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
               </Button>
             </Space.Compact>
           </Tooltip>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            先勾行再点原型；原型只是开头套路的标记，不填照样走完全链。
-          </Text>
         </Space>
       )}
       <Table<AssetItem>
@@ -1083,6 +1215,15 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         loading={loading}
         columns={resizableColumns}
         dataSource={items}
+        // 批 N（评审二·P2）：空库给指路——原来只画「暂无数据」，一线不知道第一步去哪
+        locale={{
+          emptyText: (
+            <div style={{ padding: '24px 0', textAlign: 'center', color: '#666', fontSize: 12 }}>
+              还没有素材：先去「导入与批次」页签导入（分享链接/视频文件）。
+              {batchId ? '当前筛着某个批次，点顶部批次标签的 × 看全部。' : ''}
+            </div>
+          ),
+        }}
         scroll={{ x: 1470 }}
         components={{ header: { cell: ResizableHeaderCell } }}
         rowSelection={
@@ -1134,20 +1275,18 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             <Alert
               type="info"
               showIcon
-              message="反推文案按你选的时长上限扣费，不按视频实际时长"
+              message="按所选时长上限扣费（600s 档 0.324 元/条、180s 档 0.0972 元/条），不按实际时长；账面是对账估算值"
               description={
-                <span style={{ fontSize: 12 }}>
-                  0.00054 元/秒 × 时长上限。600 秒档一条 0.324 元，180 秒档一条 0.0972 元——上限选大了，批次成本直接翻倍。
-                  系统里记的是按时长上限推算的估算金额（对方服务不逐单回传金额），用来对账，别当精确值。
-                </span>
+                durationHint ? (
+                  <span style={{ fontSize: 12 }}>本批时长分布：{durationHint}——据此选档，别按上限白烧钱。</span>
+                ) : undefined
               }
             />
             <Checkbox checked={withDownload} onChange={(e) => setWithDownload(e.target.checked)}>
               <Text style={{ fontSize: 12 }}>顺带把链接素材的原片下载到我们自己的存储（默认勾上）</Text>
             </Checkbox>
             <Text type="secondary" style={{ fontSize: 11 }}>
-              下载好以后回看、拼接、做合成都不用再蹲原平台的临时链接。走付费渠道时一条加 0.01 元解析费；
-              上传的文件和图片本来就在自己存储里，会自动跳过。原片会一直占存储，目前不自动清理。
+              付费渠道 +0.01 元/条解析费；上传文件自动跳过。原片占存储，暂不自动清理。
             </Text>
             <Checkbox checked={retryFailed} onChange={(e) => setRetryFailed(e.target.checked)}>
               <Text style={{ fontSize: 12 }}>同时重跑反推文案失败的素材（默认跳过已跑过的）</Text>

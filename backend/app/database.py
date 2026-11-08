@@ -387,6 +387,21 @@ async def _apply_compat_migrations():
         ("asset_summaries", "prompt_preview", "TEXT"),
         ("asset_summaries", "prompt_preview_at", "TIMESTAMP"),
         ("asset_summaries", "cost_preview", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
+        # 时效直链缓存（11-06 播放直链修复）：resolve 成功后存 play_url + 取链时间，
+        # 有效期内 source-preview/resolve 免费回放；过期作数、重取自愈。全部可空不回填。
+        ("asset_items", "play_url", "TEXT"),
+        ("asset_items", "play_url_at", "TIMESTAMP"),
+        # 11-06 双产出：出文案时每条候选同步带的豆包网页版完整提示词（可空不回填，
+        # NULL=生成失败/未生成，单独补口 POST /assets/summaries/prompt-web）
+        ("asset_summaries", "doubao_prompt", "TEXT"),
+        # 批 L（11-06 投放进度可视化）：板子侧状态写回。轮询每轮把板面看到的行状态
+        # ＋检查时间钉在生产单行上；可空不回填，NULL=没投过板/没有板侧信息。
+        ("asset_productions", "board_last_status", "VARCHAR(60)"),
+        ("asset_productions", "board_last_check_at", "TIMESTAMP"),
+        # 0064（A′ 按运营隔离）：职能开关默认双开、重提说明可空，均不回填
+        ("users", "can_review", "BOOLEAN DEFAULT TRUE"),
+        ("users", "can_produce", "BOOLEAN DEFAULT TRUE"),
+        ("asset_summaries", "resubmit_note", "TEXT"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

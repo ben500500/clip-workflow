@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Input, Modal, Popover, Segmented, Select, Space, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, Drawer, Input, Modal, Popover, Segmented, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
@@ -9,7 +9,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { AUDIT_STATUS_LABELS, RECHECK_CODE_LABELS, assetApi } from '../../api/assets';
 import type {
-  AssetBatch, AssetReviewAction, AssetReviewResultItem, AssetSummary, AssetSummaryListResult,
+  AssetBatch, AssetDetailResponse, AssetReviewAction, AssetReviewResultItem, AssetSummary, AssetSummaryListResult,
 } from '../../api/assets';
 import {
   CategorySelect, invalidateAssetCategories, useAssetCategories,
@@ -19,7 +19,7 @@ import AssetReviewCard from './AssetReviewCard';
 import ProduceOrderModal from './ProduceOrderModal';
 import RiskLexiconDrawer from './RiskLexiconDrawer';
 
-const { Text } = Typography;
+const { Text, Paragraph } = Typography;
 
 /**
  * 一条被拦结果里「可以按类放行」的问题类型。
@@ -44,12 +44,19 @@ interface Props {
   batchId?: string;
   /** 后台出文案任务收敛后自增（D-1）：新候选是后端落库的，只能重新拉一次才看得到 */
   reloadToken?: number;
+  /** A′ UX：页签切回来自动刷新 */
+  active?: boolean;
+  /**
+   * 批 N（评审二·P0-2）：投产成功后「去生产单列表」要真能带人过去——
+   * 由页面层（AssetLibrary）传页签切换回调进来。
+   */
+  onGoToProduction?: () => void;
 }
 
 /**
  * 文案审核台。
  *
- * 默认勾「只看推荐条」是方案 §七 的防橡皮章设计：三条候选里通常只有一条能钩人，
+ * 默认勾「只看推荐条」是方案 §七 的防橡皮章设计：出了多条候选时通常只有一条能钩人，
  * 全勾一遍＝把审核变成点按钮。复核真正拦人的只有两件事：**字数/断句超限**和**违禁词**；
  * 「和原视频对不上」是预警（列里标红给你看，但不卡你过审）。
  * admin 可以带 `waive_reason` 豁免拦点，还能用 `waive_codes` 只放其中一类——
@@ -63,7 +70,7 @@ interface Props {
  * 表格外壳留着只是为了 rowSelection 和分页，列定义合成一格。
  * 帧是纯呈现层：`GET /assets/frames` 拉不到就当没图，审核动作照点。
  */
-const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken }) => {
+const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken, onGoToProduction, active = true }) => {
   const [data, setData] = useState<AssetSummaryListResult | null>(null);
   const [items, setItems] = useState<AssetSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -73,6 +80,15 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
   const [busy, setBusy] = useState(false);
 
   const [auditStatus, setAuditStatus] = useState<string | undefined>('pending');
+  /**
+   * 批 N（评审二 P1）：关键词搜索（正文/素材码，后端 ILIKE）。与其它筛选叠加。
+   */
+  const [keyword, setKeyword] = useState('');
+  /**
+   * A′ 按运营隔离（2026-11-07）：owner=me 已过审区只显自己过审的，pending 共享。
+   * 默认矩阵：operator=我的、admin=全部；纯查询偏好，「全部」是只读全量。
+   */
+  const [ownerView, setOwnerView] = useState<'me' | 'all'>(isAdmin ? 'all' : 'me');
   /**
    * 三个筛选项**互斥**（11-04 用户纠正）：一次只看一类。
    * 之前是三个独立勾选框，能同时勾，勾出来的是「推荐条 且 命中违禁词 且 和原视频对不上」
@@ -119,6 +135,18 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
 
   // 投产弹窗
   const [produceOpen, setProduceOpen] = useState(false);
+  // P1（评审定稿⑨）：一致性核验抽屉（原片播放＋反推脚本全文）
+  const [inspecting, setInspecting] = useState<AssetSummary | null>(null);
+  const [inspectData, setInspectData] = useState<AssetDetailResponse | null>(null);
+  const openInspect = async (row: AssetSummary) => {
+    setInspecting(row);
+    setInspectData(null);
+    try {
+      setInspectData(await assetApi.getAsset(row.asset_id));
+    } catch (e) {
+      message.error((e as Error).message || '取素材详情失败');
+    }
+  };
 
   // 批次下拉：原来只有一个「批次 ID」输入框，要手填 UUID，填 AB- 编号会一条都查不到
   const [batches, setBatches] = useState<AssetBatch[]>([]);
@@ -138,8 +166,12 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
     loadBatches();
   }, [loadBatches]);
 
+  // 批 M（评审一·P1-3）：fetchList 请求序号守卫——筛选变更与 reloadToken 重拉并发时，
+  // 慢的新筛选回包可能被旧的覆盖。与生产单面板同一套模式（模块级自增序号）。
+  const listReqRef = React.useRef(0);
   const fetchList = useCallback(
     async (p: number = page, ps: number = pageSize) => {
+      const reqId = ++listReqRef.current;
       setLoading(true);
       try {
         const res = await assetApi.listSummaries({
@@ -152,24 +184,27 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           only_resubmittable: onlyMine,
           batch_id: batchFilter,
           category_id: categoryFilter,
+          q: keyword.trim() || undefined,
+          owner: ownerView,
         });
+        if (reqId !== listReqRef.current) return; // 已有更新的请求在途，旧回包作废
         setData(res);
         setItems(res.items || []);
         setTotal(res.total || 0);
         setPage(res.page || p);
       } catch (e) {
-        message.error((e as Error).message || '加载审核队列失败');
+        if (reqId === listReqRef.current) message.error((e as Error).message || '加载审核队列失败');
       } finally {
-        setLoading(false);
+        if (reqId === listReqRef.current) setLoading(false);
       }
     },
-    [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter, page, pageSize],
+    [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter, keyword, ownerView, page, pageSize],
   );
 
   useEffect(() => {
     fetchList(1, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter]);
+  }, [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter, keyword, ownerView]);
 
   // 后台出文案任务跑完（D-1）：新候选不在前端内存里，只能重新拉
   useEffect(() => {
@@ -178,10 +213,18 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken]);
 
+  // A′ UX：切走再切回页签时自动刷新
+  const wasActive = React.useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) fetchList(page, pageSize);
+    wasActive.current = active;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
 
   /**
-   * 卡片左边的三帧（批 F）：整页素材一次批量取，同素材的 3 条候选共用一份。
+   * 卡片左边的三帧（批 F）：整页素材一次批量取，同素材的多条候选共用一份。
    * 直链 1 小时过期，所以跟着列表走——不缓存翻页前的旧直链。
    */
   const itemAssetIds = useMemo(() => items.map((i) => i.asset_id), [items]);
@@ -255,7 +298,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                 </Text>
               ))}
               <Text type="secondary" style={{ fontSize: 12 }}>
-                常见原因：写文案的人不能审自己写的文案（管理员除外）、同一批被别人抢先处理了、素材已归档。
+                常见原因：写文案的人不能审自己写的文案（管理员除外）、这条已被别人过审（要同素材请重出文案）、素材已归档。
               </Text>
             </Space>
           ),
@@ -289,8 +332,12 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         );
       }
       if (action === 'approve' && scope === 'recommended') {
-        const pool = data?.items || [];
-        const nonRec = pool.filter((i) => targetIds.includes(i.id) && !i.is_recommended).length;
+        // 11-06 P2：非推荐统计改吃**审核响应逐条带回的 is_recommended**（后端真话），
+        // 不再数当前页 items——豁免重放时目标行可能已经不在当前页（fetchList 回第 1 页
+        // 或状态筛选藏掉），按当前页数会漏报「其实会被藏住」。
+        const nonRec = (res.results || []).filter(
+          (r) => r.ok && r.is_recommended === false,
+        ).length;
         if (nonRec) {
           hints.push(
             `其中 ${nonRec} 条不是推荐条，「推荐条」范围也会把它们藏住——范围切「全部」才看得到`,
@@ -353,14 +400,23 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
     }
   };
 
-  const askReason = (action: 'reject' | 'need_rewrite') => {
-    if (!ids.length) {
+  /**
+   * 批 N（评审二 P2）：单卡驳回不再悄悄清空批量勾选——原来先 setSelected([row])
+   * 再走批量通道，用户勾好的一批被静默替换掉。这里把目标行**显式传参**，勾选不动。
+   */
+  const askReason = (action: 'reject' | 'need_rewrite', rows?: AssetSummary[]) => {
+    const target = rows ?? selected;
+    const targetIds = target.map((s) => s.id);
+    if (!targetIds.length) {
       message.warning('先勾选要处理的文案');
       return;
     }
     let reason = '';
     Modal.confirm({
-      title: action === 'reject' ? `驳回 ${ids.length} 条（必填理由）` : `标记 ${ids.length} 条要求改写（必填理由）`,
+      title:
+        action === 'reject'
+          ? `驳回 ${targetIds.length} 条（必填理由）`
+          : `标记 ${targetIds.length} 条要求改写（必填理由）`,
       width: 520,
       content: (
         <Input.TextArea
@@ -377,7 +433,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           message.warning('理由不能为空');
           return Promise.reject();
         }
-        return runReview(action, { reason: reason.trim() });
+        return runReview(action, { reason: reason.trim(), summaryIds: targetIds });
       },
     });
   };
@@ -489,14 +545,15 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
             setEditCat(row.category_id || undefined);
           }}
           onReject={(row) => {
-            setSelected([row]);
-            askReason('reject');
+            // 批 N（评审二 P2）：显式传行，不动批量勾选（原实现会 setSelected([row]) 清掉整批）
+            askReason('reject', [row]);
           }}
           onResubmit={(row) => {
             setResubmitFor(row);
             setResubmitText(row.text);
             setResubmitNote('');
           }}
+          onInspect={setInspecting}
         />
       ),
     },
@@ -505,130 +562,91 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
   const approvedSelected = selected.filter((s) => s.audit_status === 'approved' || s.audit_status === 'passed_edited');
 
   return (
-    <Card
-      size="small"
-      title={
-        <Space wrap>
-          <Popover
-            placement="bottomLeft"
-            title="审核台怎么用"
-            content={
-              <div style={{ maxWidth: 380 }}>
-                <p style={{ marginBottom: 6 }}>
-                  一条素材出 3 条候选文案，其中 1 条被模型标为推荐。审核台默认只把推荐条摆到你面前——
-                  3 条全勾一遍过，等于没审。
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <strong>卡片左边</strong>是这条原片抽的三帧（第 10%／45%／80%，不取第一帧：开头常是黑边或台标），
-                  点一下看九宫格。图由后台抽帧任务补，<strong>没图不影响审核</strong>，也不参与任何判定。
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <strong>过审</strong>：这条就是要拿去投放的文案。过审前会先自动查一遍（超字数／命中违禁词／和原视频对不上都会被拦），
-                  拦下时可让管理员带理由放行，放行记录会留档。
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <strong>驳回／要求改写</strong>：必须写理由，理由会显示给写文案的人。
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <strong>驳回之后怎么办</strong>：写文案的人（这条素材的负责人）在行上点
-                  <strong>「改后重提」</strong>，把文案改了交回待审队列，审核人再过一遍——
-                  改前改后都留档。审核人也可以自己点<strong>「改后过」</strong>直接改直接过（一步到位）。
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <strong>生成生产单</strong>：只认已过审的文案，把过审文案变成要投出去的一条条提示词，一条派生几条不同写法。
-                </p>
-                <p style={{ marginBottom: 0 }}>各筛选项的说明在它们右边的问号里。</p>
-              </div>
-            }
-          >
-            <Button type="link" size="small" style={{ padding: 0 }}>
-              怎么用 <QuestionCircleOutlined />
-            </Button>
-          </Popover>
-          <Tooltip title="按审核状态筛：等审核／已过审／已驳回／要求改写／改后通过。清空＝所有状态都列出来。">
-            <span>
-              <Select
-                style={{ width: 130 }}
-                placeholder="审核状态"
-                allowClear
-                value={auditStatus}
-                onChange={setAuditStatus}
-                options={Object.entries(AUDIT_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
-              />
-              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
-            </span>
-          </Tooltip>
-          <Tooltip
-            title={
-              <div style={{ maxWidth: 340 }}>
-                <div><strong>推荐条</strong>：每条素材出 3 条候选，模型标 1 条推荐。默认只看它，是为了防止 3 条全勾一遍走过场。</div>
-                <div><strong>命中违禁词</strong>：命中违禁词的候选。红色「不许用」＝过不了审、也出不了生产单；橙色「要注意」＝只留个提醒。</div>
-                <div><strong>和原视频对不上</strong>：文案里的人物/场景/事件在反推文案稿里找不到的候选，通常要人工改或重新出。</div>
-                <div><strong>全部</strong>：3 条候选都列出来，用来看对照。</div>
-                <div style={{ marginTop: 4 }}>这四个是互斥的：一次只看一类。</div>
-              </div>
-            }
-          >
-            <span>
-              <Segmented
-                size="small"
-                value={scope}
-                onChange={(v) => setScope(v as typeof scope)}
-                options={[
-                  { label: '推荐条', value: 'recommended' },
-                  { label: '命中违禁词', value: 'risk' },
-                  { label: '和原视频对不上', value: 'inconsistent' },
-                  { label: '全部', value: 'all' },
-                ]}
-              />
-              <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
-            </span>
-          </Tooltip>
-        </Space>
-      }
-      extra={
-        canReview ? (
-          <Space wrap>
-            <Button
-              type="primary"
-              icon={<CheckCircleOutlined />}
-              loading={busy}
-              disabled={!ids.length}
-              onClick={() => runReview('approve')}
-            >
-              批量通过（{ids.length}）
-            </Button>
-            <Button icon={<CloseCircleOutlined />} disabled={!ids.length} onClick={() => askReason('reject')}>
-              驳回（{ids.length}）
-            </Button>
-            <Button disabled={!ids.length} onClick={() => askReason('need_rewrite')}>
-              要求改写（{ids.length}）
-            </Button>
-            {canReview && (
-              <Tooltip title="生成生产单：把过审文案变成要投出去的一条条提示词，一条派生几条不同写法（开单和审核在同一侧：素材专员不能开单）。括号里的数字只算勾选里已过审/改后通过的那些，等审核的不算。">
-                <Button
-                  icon={<ThunderboltOutlined />}
-                  disabled={!approvedSelected.length}
-                  onClick={() => setProduceOpen(true)}
-                >
-                  生成生产单（{approvedSelected.length}）· 即投产
-                </Button>
-              </Tooltip>
-            )}
-            {canReview && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                N 只数已过审/改后通过的条；勾了待审核的数字不变
-              </Text>
-            )}
-          </Space>
-        ) : (
-          <Text type="secondary">当前角色只读：审核与生成生产单需要运营或管理员</Text>
-        )
-      }
-    >
-      {/* 第二工具行：低频滤器和工具从标题行挪到这里——标题行只剩「怎么用+状态+范围」，不再挤成两行 */}
+    /*
+      排版口径（#110）：筛选行与批量按钮行**都放卡片体里全宽分行**，
+      不再塞 Card 的 title/extra——卡片头是同行 flex，title 被按钮列挤窄后
+      Segmented 会折到「怎么用」底下重叠。行序固定：
+      ① 筛选行（怎么用＋全部筛器） ② 批量动作行 ③ 欠账提示 ④ 点原型行 ⑤ 卡片列表。
+    */
+    <Card size="small">
+      {/* ① 筛选行：高频与低频筛器合一整行，放不下整行顺延换行 */}
       <Space wrap size={8} style={{ marginBottom: 12 }}>
-        <Tooltip title="只看轮到我改的：被驳回 / 要求改写、且是我负责的素材。开启后会清掉「审核状态」筛选（否则两边互相打架）。点行上的「改后重提」把文案改了交回待审队列。">
+        <Popover
+          placement="bottomLeft"
+          title="审核台怎么用"
+          content={
+            <div style={{ maxWidth: 380 }}>
+              <p style={{ marginBottom: 6 }}>
+                一条素材默认只出 <strong>1 条</strong>候选文案（浓缩一句话）。出多条时模型会标 1 条推荐，
+                审核台默认只把推荐条摆到你面前——多条全勾一遍过，等于没审。
+              </p>
+              <p style={{ marginBottom: 6 }}>
+                <strong>卡片左边</strong>是这条原片抽的三帧（第 10%／45%／80%，不取第一帧：开头常是黑边或台标），
+                点一下看九宫格。图由后台抽帧任务补，<strong>没图不影响审核</strong>，也不参与任何判定。
+              </p>
+              <p style={{ marginBottom: 6 }}>
+                <strong>过审</strong>：这条就是要拿去投板的文案。过审前会先自动查一遍（超字数／命中违禁词／和原视频对不上都会被拦），
+                拦下时可让管理员带理由放行，放行记录会留档。
+              </p>
+              <p style={{ marginBottom: 6 }}>
+                <strong>驳回／要求改写</strong>：必须写理由，理由会显示给写文案的人。
+              </p>
+              <p style={{ marginBottom: 6 }}>
+                <strong>驳回之后怎么办</strong>：写文案的人（这条素材的负责人）在行上点
+                <strong>「改后重提」</strong>，把文案改了交回待审队列，审核人再过一遍——
+                改前改后都留档。审核人也可以自己点<strong>「改后过」</strong>直接改直接过（一步到位）。
+              </p>
+              <p style={{ marginBottom: 6 }}>
+                <strong>生成生产单</strong>：只认已过审的文案，把过审文案变成要投出去的一条条提示词，一条派生几条不同写法。
+              </p>
+              <p style={{ marginBottom: 0 }}>各筛选项的说明在它们右边的问号里。</p>
+            </div>
+          }
+        >
+          <Button type="link" size="small" style={{ padding: 0 }}>
+            怎么用 <QuestionCircleOutlined />
+          </Button>
+        </Popover>
+        <Tooltip title="按审核状态筛：等审核／已过审／已驳回／要求改写／改后通过。清空＝所有状态都列出来。">
+          <span>
+            <Select
+              style={{ width: 130 }}
+              placeholder="审核状态"
+              allowClear
+              value={auditStatus}
+              onChange={setAuditStatus}
+              options={Object.entries(AUDIT_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
+            />
+            <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+          </span>
+        </Tooltip>
+        <Tooltip
+          title={
+            <div style={{ maxWidth: 340 }}>
+              <div><strong>推荐条</strong>：出了多条候选时，模型标 1 条推荐。默认只看它，是为了防止全部勾一遍走过场。</div>
+              <div><strong>命中违禁词</strong>：命中违禁词的候选。红色「不许用」＝过不了审、也出不了生产单；橙色「要注意」＝只留个提醒。</div>
+              <div><strong>和原视频对不上</strong>：文案里的人物/场景/事件在反推文案稿里找不到的候选，通常要人工改或重新出。</div>
+              <div><strong>全部</strong>：所有候选都列出来，用来看对照。</div>
+              <div style={{ marginTop: 4 }}>这四个是互斥的：一次只看一类。</div>
+            </div>
+          }
+        >
+          <span>
+            <Segmented
+              size="small"
+              value={scope}
+              onChange={(v) => setScope(v as typeof scope)}
+              options={[
+                { label: '推荐条', value: 'recommended' },
+                { label: '命中违禁词', value: 'risk' },
+                { label: '和原视频对不上', value: 'inconsistent' },
+                { label: '全部', value: 'all' },
+              ]}
+            />
+            <QuestionCircleOutlined style={{ marginLeft: 2, color: '#999' }} />
+          </span>
+        </Tooltip>
+        <Tooltip title="被驳回/要求改写且我负责的素材；开启会清掉「审核状态」筛选。">
           <span>
             <Button
               size="small"
@@ -668,7 +686,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                 出稿时从素材继承，之后素材重新归类<strong>不会回写</strong>已出的候选。
               </div>
               <div style={{ marginTop: 4 }}>
-                它和右上那四个范围（推荐条／命中违禁词／和原视频对不上／全部）是两个轴，可以叠加：
+                它和上面那四个范围（推荐条／命中违禁词／和原视频对不上／全部）是两个轴，可以叠加：
                 比如「推荐条 + 原型 A」。
               </div>
               <div style={{ marginTop: 4 }}>
@@ -696,17 +714,89 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
             违禁词表
           </Button>
         </Tooltip>
+        {/* A′ 按运营隔离：纯查询偏好——me=已过审区只显自己过审的，pending 照旧共享 */}
+        {canReview && (
+          <Segmented
+            size="small"
+            value={ownerView}
+            onChange={(v) => setOwnerView(v as 'me' | 'all')}
+            options={[
+              { label: '我质检的', value: 'me' },
+              { label: '全部', value: 'all' },
+            ]}
+          />
+        )}
+        {/* 批 N（评审二 P1）：关键词搜索（正文/素材码）——筛出空集时有自己找回目标的正路 */}
+        <Tooltip title="按正文或素材码搜（子串匹配，与其它筛选叠加）。清空＝不限。">
+          <Input.Search
+            placeholder="搜正文/素材码"
+            allowClear
+            style={{ width: 190 }}
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+          />
+        </Tooltip>
         <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
           刷新
         </Button>
       </Space>
+      {/* ② 批量动作行：勾选后的审核动作都在这一行，位置固定不随筛选换行跳动 */}
+      {canReview ? (
+        <Space wrap size={8} style={{ marginBottom: 12 }}>
+          <Button
+            type="primary"
+            icon={<CheckCircleOutlined />}
+            loading={busy}
+            disabled={!ids.length}
+            onClick={() => {
+              // 批 N（评审二·P1-3）：批量过审加确认预告——几十条一把过、误触即成事实，
+              // 撤销过审还要连带作废未投的生产单。单卡的「过」保持一步到位不设卡。
+              if (ids.length > 1) {
+                Modal.confirm({
+                  title: `批量通过 ${ids.length} 条？`,
+                  width: 520,
+                  content: '自动检查会先拦一道（超字数/违禁词/对不上）；过审后要撤销会连带作废未投的生产单。',
+                  
+                  okText: `通过这 ${ids.length} 条`,
+                  cancelText: '再看看',
+                  onOk: () => runReview('approve'),
+                });
+              } else {
+                runReview('approve');
+              }
+            }}
+          >
+            批量通过（{ids.length}）
+          </Button>
+          <Button icon={<CloseCircleOutlined />} disabled={!ids.length} onClick={() => askReason('reject')}>
+            驳回（{ids.length}）
+          </Button>
+          <Button disabled={!ids.length} onClick={() => askReason('need_rewrite')}>
+            要求改写（{ids.length}）
+          </Button>
+          {canReview && (
+            <Tooltip title="把过审文案变成一条条要投的提示词；括号只算已过审/改后通过的条，勾了待审核数字不变；素材专员不能开单。">
+              <Button
+                icon={<ThunderboltOutlined />}
+                disabled={!approvedSelected.length}
+                onClick={() => setProduceOpen(true)}
+              >
+                生成生产单（{approvedSelected.length}）· 即投产
+              </Button>
+            </Tooltip>
+          )}
+        </Space>
+      ) : (
+        <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
+          当前角色只读：审核与生成生产单需要运营或管理员
+        </Text>
+      )}
       {!!data && recommendedOnly && auditStatus === 'pending' && (
         <Alert
           type="info"
           showIcon
           style={{ marginBottom: 8 }}
-          message="默认只列每条素材的推荐候选"
-          description="三条候选里通常只有一条能钩人，全勾一遍等于没审。要看对照请把筛选切到「全部」。"
+          message="默认只列推荐条——全勾一遍等于没审；要看对照切「全部」"
         />
       )}
       {/* 同素材列表：批量点原型放表头上方，别挤 Card 的 extra，否则那一排筛选会换行 */}
@@ -736,9 +826,11 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
               </Button>
             </Space.Compact>
           </Tooltip>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            文案侧还有 {cats.unclassified.copy_count} 条没点原型；出稿时本来会从素材继承，这里只补漏。
-          </Text>
+          {cats.unclassified.copy_count > 0 && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {cats.unclassified.copy_count} 条未点原型
+            </Text>
+          )}
         </Space>
       )}
       <Table<AssetSummary>
@@ -747,6 +839,15 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         loading={loading}
         columns={columns}
         dataSource={items}
+        // 批 N（评审二 P1）：空集必须给指路——原来只画「暂无数据」，一线只能对着空表
+        // 猜是筛选配错了还是真没活。
+        locale={{
+          emptyText: (
+            <div style={{ padding: '24px 0', textAlign: 'center', color: '#666', fontSize: 12 }}>
+              筛得太窄就清一清上面的筛器（或切「全部」）；还没出文案就回「素材列表」点「出钩子文案」。
+            </div>
+          ),
+        }}
         // 卡片行不需要表头解释自己：一行就是一张卡，列名反而成了噪声（徽标含义在「怎么用」里）
         showHeader={false}
         rowSelection={
@@ -911,13 +1012,47 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         summaries={approvedSelected}
         onClose={() => setProduceOpen(false)}
         isAdmin={isAdmin}
+        batchId={batchId}
         onDone={() => {
           setProduceOpen(false);
           setSelected([]);
           fetchList(page, pageSize);
+          // 批 N（评审二·P0-2）：按钮叫「去生产单列表」就得真带人过去——
+          // 原来只关弹窗刷自己，新单在哪要用户自己猜。
+          onGoToProduction?.();
         }}
       />
 
+      {/* P1（评审定稿⑨）：一致性核验抽屉——签字依据给足：原片播放＋反推脚本全文 */}
+      <Drawer
+        title={inspecting ? `核验：${inspecting.asset_code || inspecting.asset_id.slice(0, 8)}` : ''}
+        width={720}
+        open={!!inspecting}
+        onClose={() => setInspecting(null)}
+      >
+        {inspecting && (
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            {inspectData?.asset?.source_url && (
+              <video
+                src={inspectData.asset.source_url}
+                controls
+                style={{ width: '100%', maxHeight: 380, background: '#000', borderRadius: 8 }}
+              />
+            )}
+            {inspectData?.prompt_script ? (
+              <Card size="small" title="反推文案稿（一致性比对的事实来源）">
+                <Paragraph
+                  style={{ marginBottom: 0, fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 360, overflow: 'auto' }}
+                >
+                  {inspectData.prompt_script}
+                </Paragraph>
+              </Card>
+            ) : (
+              <Text type="secondary">还没有反推文案稿。</Text>
+            )}
+          </Space>
+        )}
+      </Drawer>
       <RiskLexiconDrawer open={lexiconOpen} onClose={() => setLexiconOpen(false)} />
     </Card>
   );

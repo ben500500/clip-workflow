@@ -51,8 +51,10 @@ import weakref
 from datetime import datetime, timedelta
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
+import json
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -81,6 +83,7 @@ from app.models.asset import (
     JB_QUEUED,
     JB_RUNNING,
     JB_SUCCEEDED,
+    JOB_ANALYZE,
     JOB_DISPATCH,
     JOB_DOWNLOAD,
     JOB_FRAMES,
@@ -136,6 +139,7 @@ from app.services import aivideo_board as board
 from app.services.data_scope import check_project_access_by_episode
 from app.services.net_guard import UnsafeURLError, assert_public_http_url_async
 from app.services.minio_service import (
+    delete_file,
     download_file,
     download_to_file,
     get_presigned_url,
@@ -171,6 +175,33 @@ _PROD_ROLES = (UserRole.material, UserRole.operator, UserRole.admin)
 # 审核与放批：运营 + 管理员（素材专员不能审自己产的东西）
 _REVIEW_ROLES = (UserRole.operator, UserRole.admin)
 
+
+def require_functions(*funcs: str):
+    """A′（2026-11-08 评审定稿）：职能开关判定**单点**——审核（质检）/投产（挑选、投板）
+    两个岗位拆职能不拆账号（users.can_review / users.can_produce，默认双开兼容现状），
+    需要岗位隔离的组由管理员在用户管理里按人关闭。角色闸（require_roles）之外再拦一道，
+    admin 恒过。⚠️ 职能判定只许走这里，禁止各端点散落 if（重造第二套口径的前车之鉴：
+    assets.py 曾同时存在 data_scope 与跨人两套口径）。"""
+    from fastapi import Depends as _Depends
+
+    async def _dep(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.role == UserRole.admin.value:
+            return current_user
+        fn_map = {
+            "review": bool(getattr(current_user, "can_review", True)),
+            "produce": bool(getattr(current_user, "can_produce", True)),
+        }
+        for f in funcs:
+            if not fn_map.get(f, True):
+                label = "审核（质检）" if f == "review" else "投产（挑选、投板）"
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"你的账号未启用「{label}」职能——管理员可在用户管理里按人开启",
+                )
+        return current_user
+
+    return _dep
+
 # 单次请求最多处理多少条 —— 反推/出文案都是**同步等外部接口**的，
 # 100 条串跑会把请求挂到网关超时。P1 上队列后这个上限交给队列，不由 HTTP 层扛。
 # 取值走 Settings（原直接 os.getenv 会让运维只能在代码里硬调，且 .env.example 无从登记）。
@@ -204,6 +235,13 @@ class ImportBatchRequest(BaseModel):
         description="11-04 拍板①：本批**整批默认钩子原型**（导入抽屉那个下拉）。"
         "可留空（不设为必填），入库后每条仍可单独改；文案出稿时默认继承所属素材的这一列",
     )
+    auto_download: bool = Field(
+        True,
+        description=(
+            "11-06 用户拍板：链接任务添加后就直接下载原片，不用等反推、也不管解析费"
+            "（0.01 元/条照记账，不再人工确认）。False 只留给测试/特殊脚本"
+        ),
+    )
 
 
 class AnalyzeRequest(BaseModel):
@@ -225,11 +263,27 @@ class AnalyzeRequest(BaseModel):
     )
     offset: int = Field(0, ge=0, description="游标：跳过队列头部 N 条。默认 0——提交成功的条会自己离开队列")
     limit: Optional[int] = Field(None, description="本段条数，默认取 ASSET_ANALYZE_MAX_PER_CALL，上限同它")
+    cross_person_confirm: bool = Field(
+        False,
+        description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）；"
+        "自己的批次不用管这个字段",
+    )
+    async_mode: bool = Field(
+        False,
+        description="D-1：true＝闸门与成本确认全过之后当场回任务号，提交＋收敛在后台跑"
+        "（页面按钮走 true）；false＝同步等提交跑完（收敛仍靠前端轮询）。"
+        "行级单条重试保持 false——一条几秒就提交完，没必要过任务台账",
+    )
+    wait_converge: bool = Field(
+        False,
+        description="系统内部：后台任务（JOB_ANALYZE）提交完原地等智令收敛（含快速失败自动重试"
+        "一次）。前端不要传这个字段——页面路径 async_mode=true 时由接口自己置上",
+    )
 
 
 class SummaryGenerateRequest(BaseModel):
     asset_ids: List[str] = Field(default_factory=list)
-    count: Optional[int] = Field(None, description="每条候选数，默认 ASSET_HOOK_CANDIDATE_COUNT=3")
+    count: Optional[int] = Field(None, description="每条候选数，默认 ASSET_HOOK_CANDIDATE_COUNT=1（11-06 起）")
     extra_requirements: Optional[str] = Field(None, description="给模型的补充要求（如题材/口吻）")
     overwrite: bool = Field(False, description="已有文案时是否重生成（默认保留历史候选，只补差额）")
     batch_id: Optional[str] = Field(
@@ -246,6 +300,10 @@ class SummaryGenerateRequest(BaseModel):
         description="D-1：true＝立即回一个任务号（后台继续跑，前端轮询 /assets/jobs/任务号），"
         "false＝同步等到模型跑完（等几十秒到十几分钟，浏览器/nginx 都可能先掐）。"
         "页面按钮走 true；脚本/回归用例保持默认",
+    )
+    cross_person_confirm: bool = Field(
+        False,
+        description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）",
     )
 
 
@@ -271,7 +329,19 @@ class ResolveRequest(BaseModel):
     )
     offset: int = Field(0, ge=0, description="游标：跳过队列头部 N 条，默认 0")
     limit: Optional[int] = Field(None, description="本段条数，默认/上限 = ASSET_ANALYZE_MAX_PER_CALL")
+    retake: bool = Field(
+        False,
+        description=(
+            "11-06 播放直链修复：缓存直链过期后的唯一自愈出口。"
+            "默认 False——有时长的条目走缓存回放（免费）或被跳过；"
+            "True＝无视缓存强制重新解析（按渠道记账 0.01 元/次），给「直链打不开」的人重取用"
+        ),
+    )
     confirmed: bool = Field(False, description="≥2 条时必须为 true（成本确认弹窗已确认）")
+    cross_person_confirm: bool = Field(
+        False,
+        description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）",
+    )
 
 
 class AssetDownloadRequest(BaseModel):
@@ -284,6 +354,10 @@ class AssetDownloadRequest(BaseModel):
     async_mode: bool = Field(
         False,
         description="D-1：页面走 true 提交即回任务号；后台复跑时运行器会把它摘掉，防止无限套娃",
+    )
+    cross_person_confirm: bool = Field(
+        False,
+        description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）",
     )
 
 
@@ -356,6 +430,10 @@ class ProduceRequest(BaseModel):
     board_tag: Optional[str] = Field(None, description="板上 tag（拥有者标记），缺省用 ASSET_BOARD_TAG；不填=无主任务、按天筛不到")
     hook_codes: Optional[List[str]] = Field(None, description="五位钩子编号（hook_id.py 取来的，按 n 的顺序对应）；后端不自己编号")
     character_card_key: Optional[str] = Field(None, description="角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡，按剧分组投）")
+    cross_person_confirm: bool = Field(
+        False,
+        description="A′ 归属跨人确认：投**别人过审**的候选（reviewed_by≠操作者）必须 true——谁投账算谁，候选过审人进审计；投自己过审的或无主公共候选不用带",
+    )
 
     @field_validator("character_card_key")
     @classmethod
@@ -451,6 +529,33 @@ class DispatchRequest(BaseModel):
         description="默认 true：投板＝建任务＋轮询出片＋下载落桶，整段几十分钟，"
         "同步等必然顶穿超时链（前端 960s / 后端 900s）。false 只留给后台协程与回归用例",
     )
+    cross_person_confirm: bool = Field(
+        False,
+        description="11-06 拍板②：新建板任务涉及别人导入的批次时必须为 true（回收已投的单不花钱，不用这个字段）",
+    )
+    card_asset_ids: Optional[List[str]] = Field(
+        None,
+        description=(
+            "投板前统一挂卡（人物三视图）。给出时（含空数组＝清卡）对**本次要新建**的每张单"
+            "覆盖写入 card_asset_ids／兼容单值列（与 produce 同一套写法，第 1 张＝板上主形象），"
+            "并走 _resolve_card_assets 同一道校验（脏 id 当场 400）。单行从此带这张卡——"
+            "卡是生产输入，改的就是单本身；回收档（已有 tid）不动。"
+            "不传＝各单沿用自己已带的卡。"
+        ),
+    )
+    prompt_overrides: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "11-06 拍板：投递稿可改。生产单 id → **这一次投出去**的提示词正文。"
+            "只改投出去的那一份：库里的 prompt_text／过审文案一字不动，漂移判定不受影响，"
+            "下一次再投仍用原稿。改后的正文照走 block 级风险词重扫（命中照样拦，"
+            "或 admin 带 force_risk+理由放行——与原稿同一道闸），逐条留审计"
+        ),
+    )
+
+
+# 投递稿改后的长度上限（板上 prompt 字段没有硬上限，这里是防呆：把整篇文档粘进来）
+_PROMPT_OVERRIDE_MAX_LEN = 8000
 
 
 class CategoryUpsertItem(BaseModel):
@@ -498,10 +603,15 @@ async def _write_audit(
     target_id: Optional[str],
     before: Optional[dict] = None,
     after: Optional[dict] = None,
+    strict: bool = False,
 ) -> None:
-    """写一条审计（与 api/auth.py 的 _write_audit 同形，fail-soft）。
+    """写一条审计（与 api/auth.py 的 _write_audit 同形，默认 fail-soft）。
 
-    审计写失败绝不拖垮主流程——批量操作里一条审计异常把整批回滚是更严重的事故。
+    默认 fail-soft：审计写失败绝不拖垮主流程——批量操作里一条审计异常把整批回滚
+    是更严重的事故。
+    `strict=True`（11-06 拍板①）只给 **force/waive 类**动作用：这类动作恰恰是最
+    必须留痕的（绕过闸门/豁免复核），审计写失败就拒绝整个操作——宁可让人重做一次，
+    也不能留下「绕过了闸门却查无此事」的记录。普通动作一律不要开 strict。
     """
     try:
         db.add(
@@ -517,7 +627,88 @@ async def _write_audit(
         )
         await db.flush()
     except Exception:
+        if strict:
+            raise
         logger.exception("素材库审计写入失败 action=%s target=%s", action, target_type)
+
+
+_CROSS_MARKER = "替他人批次花钱"
+# A′：归属跨人（投别人过审的候选）的固定点名短语，前端 withCrossOwnerConfirm 靠它识别
+_CROSS_OWNER_MARKER = "替他人过审候选投产"
+
+
+async def _user_names(db: AsyncSession, uids: set) -> Dict[str, str]:
+    """id → 显示名（display_name 优先，退 username）。
+
+    A′（2026-11-07 按运营隔离）：序列化层**一次聚合**用——三读口的归属人灰字
+    全走这里，绝不在行循环里逐行查用户表（先例：_cross_person_gate 的 names 段）。
+    """
+    ids = {u for u in uids if u}
+    if not ids:
+        return {}
+    return {
+        str(uid): (dn or un) or "未知（账号已删）"
+        for uid, dn, un in (
+            await db.execute(select(User.id, User.display_name, User.username).where(User.id.in_(ids)))
+        ).all()
+    }
+
+
+async def _cross_person_gate(
+    db: AsyncSession,
+    *,
+    operator: Optional[User],
+    batch_ids: List[Any],
+    action_label: str,
+    confirmed: bool,
+) -> List[dict]:
+    """11-06 拍板②：跨人批次的花钱动作先拦一道，确认后再放行并留痕。
+
+    「跨人」＝这批素材的导入人（`asset_batches.created_by`）不是本次操作者。
+    内容全量可见（11-03 拍板）不受影响——看、审、导 payload 都照旧零门槛；只有
+    **会花钱/占号池**的动作才走这里：费用记到批次成本上，替别人批次花了钱，
+    事后对账会找不到是谁的手笔。所以要么当场拦下来让人确认（400，前端弹窗），
+    要么确认后把「发起人≠批次主人」原样写进审计。批次归属未知（created_by 为空、
+    老数据）不拦——没有凭据说它跨人，就不预判。
+    """
+    ids = {b for b in batch_ids if b}
+    if not ids or operator is None:
+        return []
+    rows = list((await db.execute(select(AssetBatch).where(AssetBatch.id.in_(ids)))).scalars().all())
+    if not rows:
+        return []
+    owner_uids = {r.created_by for r in rows if r.created_by}
+    names: Dict[str, str] = {}
+    if owner_uids:
+        for uid, dn, un in (
+            await db.execute(select(User.id, User.display_name, User.username).where(User.id.in_(owner_uids)))
+        ).all():
+            names[str(uid)] = (dn or un) or "未知（账号已删）"
+    op_key = str(operator.id)
+    crosses: List[dict] = []
+    for r in rows:
+        if r.created_by is None or str(r.created_by) == op_key:
+            continue
+        crosses.append({
+            "batch_id": str(r.id),
+            "batch_code": r.code,
+            "batch_owner_id": str(r.created_by),
+            "batch_owner": names.get(str(r.created_by), "未知（账号已删）"),
+            "operator_id": op_key,
+            "operator": operator.username,
+        })
+    if crosses and not confirmed:
+        shown = "；".join(f"{c['batch_code']}（导入人 {c['batch_owner']}）" for c in crosses[:5])
+        more = f"（另有 {len(crosses) - 5} 批，本条只列前 5 批）" if len(crosses) > 5 else ""
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{action_label}涉及{_CROSS_MARKER}：{shown}{more}。费用会记到批次成本上，"
+                "请先确认你确实是替这位同事操作（补单/代班）；界面弹窗里点「确认替他人批次操作」"
+                "后再发一次（带 cross_person_confirm=true），这一次没有动账。"
+            ),
+        )
+    return crosses
 
 
 def _as_uuid(value: Any, field: str = "id") -> uuid.UUID:
@@ -1135,6 +1326,8 @@ def _can_resubmit(summary: AssetSummary, asset: AssetItem, current_user: User) -
 def _serialize_summary(
     s: AssetSummary, asset: Optional[AssetItem] = None, *, can_resubmit: bool = False,
     category_name: Optional[str] = None, output_count: Optional[int] = None,
+    reviewer_name: Optional[str] = None,
+    production_count: Optional[int] = None,
 ) -> dict:
     data = {
         "id": str(s.id),
@@ -1151,15 +1344,23 @@ def _serialize_summary(
         "consistency_ok": s.consistency_ok,
         "consistency_note": s.consistency_note,
         "risk_hit": s.risk_hit,
+        # P1（评审定稿⑯）：已开过几张生产单（挑选器防重复开单白烧号池）
+        "production_count": production_count,
         "audit_status": s.audit_status,
         "reviewed_by": str(s.reviewed_by) if s.reviewed_by else None,
+        # A′：过审人显示名（12px 灰字标注用）；None=调用方没聚合（详情口）或无主
+        "reviewed_by_name": reviewer_name,
         "reviewed_at": utc_iso(s.reviewed_at) if s.reviewed_at else None,
         "reject_reason": s.reject_reason,
+        # P1（评审定稿⑩）：作者重提说明（改后重提时写，审核卡展示）
+        "resubmit_note": s.resubmit_note,
         "text_before_edit": s.text_before_edit,
         # 批 J：过审后备好的豆包提示词预览（NULL=还没备好/没排上；备好了审核台直接能看）
         "prompt_preview": s.prompt_preview,
         "prompt_preview_at": utc_iso(s.prompt_preview_at) if s.prompt_preview_at else None,
         "cost_preview": float(s.cost_preview or 0.0),
+        # 11-06 双产出：出文案时同步生成的豆包网页版完整提示词（NULL=失败/未生成，可单独补）
+        "doubao_prompt": s.doubao_prompt,
         "created_at": utc_iso(s.created_at),
         # 「改后重提」按钮要不要亮：前端不猜权限，按后端给的行级判定画
         "can_resubmit": bool(can_resubmit),
@@ -1178,12 +1379,14 @@ def _serialize_summary(
     return data
 
 
-def _serialize_production(p: AssetProduction, output_count: int = 0) -> dict:
+def _serialize_production(p: AssetProduction, output_count: int = 0, owner_name: Optional[str] = None) -> dict:
     return {
         "id": str(p.id),
         "asset_id": str(p.asset_id),
         "summary_id": str(p.summary_id),
         "batch_id": str(p.batch_id) if p.batch_id else None,
+        # A′：投产人显示名（谁投账算谁的灰字标注）；None=调用方没聚合
+        "owner_name": owner_name,
         "seq": p.seq,
         "hook_code": p.hook_code,
         "project_title": p.project_title,  # 废弃：11-02 版取消项目标题行，只读历史
@@ -1203,6 +1406,10 @@ def _serialize_production(p: AssetProduction, output_count: int = 0) -> dict:
         "board_name": p.board_name,
         "board_tid": p.board_tid,
         "board_rgid": p.board_rgid,
+        # 批 L（投放进度可视化）：板子侧最后看到的行状态＋检查时间。null=没投过板
+        # /回收动作没走到轮询（人工回写、刚建未投）。前端拿它显示「板子：出片中·上轮检查 …」。
+        "board_last_status": p.board_last_status,
+        "board_last_check_at": utc_iso(p.board_last_check_at) if p.board_last_check_at else None,
         "character_card_key": p.character_card_key,
         # 批 G：多卡数组（顺序＝板上 picDatas 顺序）。旧单这里是 []——
         # 读侧要区分"没挂卡"和"挂了一张旧 key"，看 character_card_key 那一列。
@@ -1261,9 +1468,218 @@ async def estimate_cost(
     }
 
 
+# ── P1（评审定稿⑫）：审计读口——此前 30+ 处 asset.* 审计只写不读，对账回查没有入口。
+# 仅 admin；action/operator_id/created_at 都有索引，分页走 offset。明细（before/after
+# 含完整文案与豁免理由）不下放非 admin。 ──
+@router.get("/assets/audit-logs")
+async def list_asset_audit_logs(
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+    db: AsyncSession = Depends(get_db),
+    action: Optional[str] = None,
+    operator_id: Optional[str] = None,
+    target_id: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    conds = []
+    if action:
+        conds.append(AuditLog.action == action)
+    if operator_id:
+        conds.append(AuditLog.operator_id == _as_uuid(operator_id, "operator_id"))
+    if target_id:
+        conds.append(AuditLog.target_id == target_id)
+    base = select(AuditLog).where(and_(*conds)) if conds else select(AuditLog)
+    total = int(
+        (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
+    )
+    rows = (
+        await db.execute(
+            base.order_by(AuditLog.created_at.desc())
+            .offset(max(0, offset))
+            .limit(min(max(1, limit), 200))
+        )
+    ).scalars().all()
+    names = await _user_names(db, {r.operator_id for r in rows if r.operator_id})
+    return {
+        "total": total,
+        "items": [
+            {
+                "id": str(r.id),
+                "action": r.action,
+                "operator": names.get(str(r.operator_id), "未知"),
+                "target_type": r.target_type,
+                "target_id": r.target_id,
+                "before": r.before,
+                "after": r.after,
+                "created_at": utc_iso(r.created_at),
+            }
+            for r in rows
+        ],
+    }
+
+
 # ──────────────────────────────────────────────
 # 导入：链接 / 文件
 # ──────────────────────────────────────────────
+
+
+# ── P1（评审定稿⑦）：取号进界面——后端代理 hook_id.py（服务器脚本），保留手工旁路。
+# ASSET_HOOK_ID_CMD 未配置时 501（前端提示走手工粘贴）。命令须输出每行一个五位编号；
+# 一钩一号「发了即烧」的铁律不变：代取的号也走既有硬查重＋白名单校验。 ──
+@router.post("/assets/hook-codes/take")
+async def take_hook_codes(
+    current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
+    count: int = Query(..., ge=1, le=50, description="要取几个号"),
+):
+    cmd = (getattr(settings, "ASSET_HOOK_ID_CMD", "") or "").strip()
+    if not cmd:
+        raise HTTPException(
+            status_code=501,
+            detail="未配置自动取号命令（ASSET_HOOK_ID_CMD）——请按原流程在服务器跑 hook_id.py 取号后手工粘贴",
+        )
+    proc = await asyncio.create_subprocess_shell(
+        f"{cmd} {int(count)}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+    codes = [c for c in re.findall(r"[0-9A-Z]{5}", (out or b"").decode("utf-8", "ignore")) if HOOK_CODE_RE.match(c)]
+    if proc.returncode != 0 or len(codes) < int(count):
+        raise HTTPException(
+            status_code=502,
+            detail=f"取号脚本没返回足够的编号（要 {count}、得 {len(codes)}）：{(err or b'').decode('utf-8', 'ignore')[:200]}",
+        )
+    return {"codes": codes[: int(count)]}
+
+
+# ── P1 新增（用户需求 2026-11-08）：直接贴文案导入——已有外部生成好的钩子文案，
+# 跳过"收集链接→反推"直接进审核队列。建一批无视频素材壳（stage_prompt=skipped），
+# 直挂 AssetSummary 候选。一致性校验无脚本时优雅退化（ok=True 跳过比对），
+# 风险词/形态校验照走。后面审核→投产→投板全链路不变。 ──
+@router.post("/assets/summaries/import-copy")
+async def import_copy_summaries(
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+    # 两个都用 Body：两个 body 参数时 FastAPI 自动 embed 成 {"batch_name":…, "texts":[…]}
+    # （单个 body 参数时会期望 body 就是 list——前端发的是对象，必须双参数）
+    batch_name: str = Body("", description="批次名（留空自动「贴文案导入 MMDD」）"),
+    texts: List[str] = Body(..., description="钩子文案列表（一条一个元素；前端可按空行/换行拆）"),
+):
+    """直接贴文案导入：跳过"收集链接→反推"全流程，文案直挂候选进审核队列。
+
+    适用场景：外部 LLM / 人工写好的一批钩子文案，不想再从链接反推一遍。
+    - 建一个批次（AssetBatch）＋每条文案一个素材壳（AssetItem，stage_prompt=skipped，
+      无视频无链接——纯文本容器）；
+    - 每条文案建一条 AssetSummary（pending，推荐=第一条）；
+    - 后续审核（形态/风险词/豁免）→ 投产（expand=True 展开提示词）→ 投板全链路照走。
+    形态校验（≤80 字/首句≤25 字/不以逗号结尾）在这里**只提示不拦**——跟出文案口的
+    做法一致（硬拦在审核口的 recheck 里做，这里拦了用户就得回文本编辑器改）。
+    """
+    if not texts or not [t for t in texts if (t or "").strip()]:
+        raise HTTPException(status_code=400, detail="没有可导入的文案")
+
+    from datetime import timedelta as _td
+
+    batch = AssetBatch(
+        name=batch_name.strip() or f"贴文案导入 {time.strftime('%m%d')}",
+        source_kind=SOURCE_LINK,
+        created_by=current_user.id,
+    )
+    db.add(batch)
+    await db.flush()
+
+    created = []
+    skipped: List[dict] = []
+    seq_offset = 0
+    for i, raw in enumerate(texts):
+        text = (raw or "").strip()
+        if not text:
+            continue
+        # 形态提示（只提示不拦——硬拦在审核口 recheck）
+        shape = svc.check_copy_shape(text)
+        if not shape["ok"]:
+            skipped.append({"index": i + 1, "problems": shape["problems"], "text": text[:60]})
+            continue
+
+        seq_offset += 1
+        asset = AssetItem(
+            batch_id=batch.id,
+            source_kind=SOURCE_LINK,
+            source_url=None,
+            media_kind=MEDIA_VIDEO,
+            stage_import=STAGE_SKIPPED,
+            stage_prompt=STAGE_SKIPPED,
+            title=text[:40],
+        )
+        db.add(asset)
+        await db.flush()
+
+        summary = AssetSummary(
+            asset_id=asset.id,
+            seq=1,
+            text=text,
+            is_recommended=seq_offset == 1,
+            audit_status=RV_PENDING,
+        )
+        db.add(summary)
+        created.append({
+            "asset_id": str(asset.id),
+            "summary_id": str(summary.id),
+            "text": text[:60],
+        })
+
+    await db.commit()
+    return {
+        "batch_id": str(batch.id),
+        "batch_code": batch.code,
+        "created": len(created),
+        "skipped": skipped,
+        "items": created,
+        "message": f"已导入 {len(created)} 条文案进审核队列（{batch.code}）"
+        + (f"；{len(skipped)} 条形态不合格被跳过" if skipped else ""),
+    }
+
+
+@router.post("/assets/import/preflight")
+async def import_preflight(
+    data: ImportBatchRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """导入前重复预检（P1·评审定稿⑪，**0 元、不建任何行**）：粘贴完就地知道哪些已
+    入库（几月几日 谁 导入 AS-XXXX），不用先发一次导入再逐条点「仍要入库」。
+    归一化口径与正式导入同一套（svc.normalize_source_url 的 source_url_norm）。"""
+    urls, _skipped = svc.normalize_source_list(data.links)
+    if not urls:
+        return {"items": []}
+    norms = {}
+    for u in urls:
+        n, _platform = svc.normalize_source_url(u)
+        if n:
+            norms[n] = u
+    if not norms:
+        return {"items": []}
+    rows = (
+        await db.execute(
+            select(
+                AssetItem.source_url_norm,
+                AssetItem.code,
+                AssetItem.created_at,
+                AssetItem.title,
+            ).where(AssetItem.source_url_norm.in_(list(norms)))
+        )
+    ).all()
+    out = [
+        {
+            "source_url_norm": r[0],
+            "url": norms.get(r[0]),
+            "code": r[1],
+            "title": r[3],
+            "imported_at": utc_iso(r[2]) if r[2] else None,
+        }
+        for r in rows
+    ]
+    return {"items": out}
 
 
 @router.post("/assets/import/batch", status_code=201)
@@ -1359,6 +1775,8 @@ async def import_links_batch(
     batches: List[AssetBatch] = []
     budgets: List[dict] = []
     created: List[AssetItem] = []
+    # 每个拆批各自圈住自己那几条素材 id：自动下载按批次排任务，台账上批次对得上号
+    batch_asset_ids: List[List[str]] = []
     duplicates: List[dict] = []
 
     for idx, shard in enumerate(shards, start=1):
@@ -1427,14 +1845,27 @@ async def import_links_batch(
                 "shards_total": len(shards),
                 "force_duplicates": data.force_duplicates,
                 "force_urls": len(force_norm) or None,
+                "auto_download": data.auto_download,
             },
         )
         batches.append(batch)
         budgets.append({**budget, "batch_id": str(batch.id), "batch_code": batch.code})
         created.extend(shard_created)
+        batch_asset_ids.append([str(a.id) for a in shard_created])
         duplicates.extend(shard_dupes)
 
     await db.commit()
+
+    # 11-06 用户拍板：链接任务**导入即下载原片**，不用等反推、也不用任何人确认解析费
+    # （0.01 元/条照记账进批次成本）。放在 commit 之后——排程函数要自己 commit，
+    # 且后台协程只读得到已提交的行。排不上只回 note，绝不连累导入结果（与反推搭车同口径）。
+    download_kicks: List[dict] = []
+    if data.auto_download and created:
+        for b, ids in zip(batches, batch_asset_ids):
+            if ids:
+                download_kicks.append(
+                    await _enqueue_download(db, asset_ids=ids, operator=current_user, batch_id=str(b.id))
+                )
 
     worst = max(budgets, key=lambda b: ["ok", "need_approval", "blocked"].index(b["gate"]))
     budget = {**worst, "batches": len(batches),
@@ -1456,11 +1887,13 @@ async def import_links_batch(
         "skipped": skipped,
         "budget": budget,
         "budgets": budgets,
+        "download": download_kicks or None,
         "message": (
             f"导入 {len(created)} 条"
             + (f"（拆成 {len(shards)} 批）" if len(shards) > 1 else "")
             + (f"，跳过重复 {len(duplicates)} 条" if duplicates else "")
             + (f"，{len(skipped)} 条提示" if skipped else "")
+            + _auto_download_phrase(download_kicks, len(created))
             + (
                 f"；这批若全按 {tier}s 档反推预估 {budget['cost_estimate']} 元，"
                 f"超单批上限 {budget['cap']} 元，反推时需管理员放批或拆批"
@@ -1468,6 +1901,17 @@ async def import_links_batch(
             )
         ),
     }
+
+
+def _auto_download_phrase(kicks: List[dict], total: int) -> str:
+    """导入后自动下载的一句白话：排上了说几条在跑，没排上说为什么（不吓人也不装没事）。"""
+    if not kicks:
+        return ""
+    queued = sum(1 for k in kicks if k.get("queued"))
+    if queued:
+        return f"；原片已自动开始下载（{sum(k.get('queued_count') or 0 for k in kicks)} 条，解析 0.01 元/条照记账），进度看任务条"
+    note = next((k.get("note") for k in kicks if k.get("note")), None)
+    return f"；原片下载没自动排上：{str(note)[:120]}（可在列表勾选后手工点下载）" if note else ""
 
 
 _UPLOAD_CONCURRENCY = 3
@@ -2384,6 +2828,217 @@ def _image_block_reason(asset: AssetItem, what: str) -> str:
     )
 
 
+async def _create_prompt_task_for_asset(
+    db: AsyncSession, asset: AssetItem, *, operator: User, tier: int
+):
+    """给一条素材提交智令反推任务（页面批量提交与后台快速失败自动重试共用，口径只有一套）。
+
+    R-6 的教训：闸门/口径分叉过一次就再没干净过。文件形态要「取回本地 → doc/125 中转
+    上传」，链接形态直接 doc/120——这段两头都要走，抽成一个函数，重试时才不会出现
+    「页面提交一套、自动重试另一套」。
+    """
+    if asset.source_kind == SOURCE_FILE:
+        if not asset.file_key:
+            raise ValueError("素材缺少文件对象，无法反推")
+        # 自有桶在局域网内，智令拉不到 → 必须取回本地再走 doc/125 中转上传
+        tmp_dir = os.path.join(tempfile.gettempdir(), f"asset_prompt_{uuid.uuid4().hex}")
+        os.makedirs(tmp_dir, exist_ok=True)
+        try:
+            local_path = os.path.join(tmp_dir, f"{asset.code}.mp4")
+            ok = await download_to_file(asset.bucket or settings.MINIO_BUCKET_RAW, asset.file_key, local_path)
+            if not ok:
+                raise RuntimeError("从对象存储取文件失败")
+            size_err = validate_upload_size(os.path.getsize(local_path))
+            if size_err:
+                raise ValueError(size_err)
+            with open(local_path, "rb") as fh:
+                return await create_upload_prompt_task(
+                    db,
+                    created_by=operator.id,
+                    file_obj=fh,
+                    file_name=asset.file_name or f"{asset.code}.mp4",
+                    size_bytes=os.path.getsize(local_path),
+                    max_duration=tier,
+                )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    if not asset.source_url:
+        raise ValueError("素材缺少原始链接，无法反推")
+    return await create_prompt_task(
+        db,
+        created_by=operator.id,
+        source_url=asset.source_url,
+        max_duration=tier,
+    )
+
+
+async def _converge_prompt_asset(db: AsyncSession, asset: AssetItem) -> Tuple[dict, Any]:
+    """单条反推收敛核心（`refresh-batch` 接口与后台反推任务共用，口径只有一套）。
+
+    返回 (JSON 安全的逐条结果, 智令任务对象或 None)。任务对象单独给：后台任务要按它
+    判断「快速失败自动重试」，而 refresh-batch 的 HTTP 响应里绝不能混进 ORM 对象。
+    阶段收敛（success/failed）只改内存里的行，落库由调用方的 commit 带上。
+    """
+    entry = {
+        "asset_id": str(asset.id),
+        "code": asset.code,
+        "stage_prompt": asset.stage_prompt,
+        "status": asset.status,
+        "prompt_task_status": None,
+        "error": None,
+    }
+    task = await get_prompt_task(db, asset.prompt_task_id) if asset.prompt_task_id else None
+    if task is None:
+        # 在跑却查不到任务行：等不出结果，判 failed 让一线能决定重跑
+        svc.apply_stage(asset, "prompt", STAGE_FAILED)
+        asset.note = (
+            (asset.note or "")
+            + "\n反推任务行缺失（提交后进程中断的残留），已判失败；重跑请带 retry_failed=true"
+        )[:1000]
+        entry.update(stage_prompt=asset.stage_prompt, status=asset.status,
+                    error="任务行缺失，已判 failed", )
+        return entry, None
+    try:
+        task = await refresh_prompt_task(db, task)
+    except Exception as exc:  # 外呼抖动：保持 running，下轮再来
+        entry["error"] = f"轮询失败，保持 running：{str(exc)[:200]}"
+        return entry, task
+    entry["prompt_task_status"] = task.status
+    if task.status == PT_SUCCESS:
+        svc.apply_stage(asset, "prompt", STAGE_SUCCESS)
+        _backfill_title_on_prompt_success(asset, task.content)
+    elif task.status == PT_FAILED:
+        svc.apply_stage(asset, "prompt", STAGE_FAILED)
+        asset.note = ((asset.note or "") + f"\n反推失败：{task.error}")[:1000]
+        entry["error"] = task.error
+    entry.update(stage_prompt=asset.stage_prompt, status=asset.status)
+    return entry, task
+
+
+async def _wait_prompt_convergence(
+    db: AsyncSession,
+    todo: List[AssetItem],
+    *,
+    operator: User,
+    tier: int,
+) -> dict:
+    """后台反推任务的「原地等收敛」：轮询 + 快速失败自动重试一次（11-06 三连投诉的根治）。
+
+    为什么必须在这里等：收敛原先**只靠前端轮询**（页面一关就没人收），搭车的
+    「下载原片→抽帧」也跟着没人排——这就是「状态一直在反推中」的根因。
+    到期没等完的行**不判失败**（智令还在跑，判死会让一线重跑重复扣费），留在 running
+    交给「收取在跑结果」按钮。每轮 commit：中途崩了已收敛的行也不白跑。
+
+    自动重试的口径：任务提交后 `ASSET_ANALYZE_FAST_FAIL_RETRY_SECONDS` 秒内就 failed
+    才重试（实测「第一次总是出错」＝6 秒速死，重试一次就好）；跑了一阵才死的不是
+    抖动，重试就是重复扣费。每条素材每次任务最多一次，逐条留审计。
+    """
+    poll = max(1.0, float(settings.ASSET_ANALYZE_JOB_POLL_SECONDS))
+    deadline = time.monotonic() + max(60.0, float(settings.ASSET_ANALYZE_JOB_TIMEOUT_MINUTES) * 60.0)
+    fast_window = max(5.0, float(settings.ASSET_ANALYZE_FAST_FAIL_RETRY_SECONDS))
+    started = datetime.utcnow()
+    retried: set = set()
+    tally = {"success": 0, "failed": 0, "auto_retry": 0, "poll_error": 0}
+    pending = [a for a in todo if a.stage_prompt == STAGE_RUNNING]
+    deadline_hit = False
+    try:
+        while pending:
+            still: List[AssetItem] = []
+            for asset in pending:
+                entry, task = await _converge_prompt_asset(db, asset)
+                if (
+                    entry["error"]
+                    and entry["prompt_task_status"] is None
+                    and "轮询失败" in entry["error"]
+                ):
+                    # 外呼抖动：保持 running，下一轮再来（任务行缺失的已判 failed，走下面终态分支）
+                    tally["poll_error"] += 1
+                    still.append(asset)
+                    continue
+                if entry["stage_prompt"] == STAGE_SUCCESS:
+                    tally["success"] += 1
+                    # 直链素材顺手探一次时长（与单条 /prompt-refresh 同口径；分享页探不出就留空）
+                    if (
+                        asset.duration is None
+                        and asset.source_kind == SOURCE_LINK
+                        and svc.looks_like_direct_url(asset.source_url)
+                    ):
+                        try:
+                            probed = await _probe_url_duration(asset.source_url)
+                            if probed is not None:
+                                asset.duration = probed
+                        except Exception:  # noqa: BLE001 — 探时长是搭车，别连累收敛
+                            logger.info("反推收敛探直链时长失败 asset=%s", asset.code, exc_info=True)
+                    continue
+                if entry["stage_prompt"] == STAGE_FAILED:
+                    fast = False
+                    if task is not None:
+                        try:
+                            created = task.created_at
+                            fast = (
+                                datetime.utcnow() - created
+                            ).total_seconds() <= fast_window if created else False
+                        except Exception:  # noqa: BLE001
+                            fast = False
+                    if fast and str(asset.id) not in retried:
+                        retried.add(str(asset.id))
+                        tally["auto_retry"] += 1
+                        try:
+                            new_task = await _create_prompt_task_for_asset(
+                                db, asset, operator=operator, tier=tier
+                            )
+                            asset.prompt_task_id = new_task.id
+                            asset.prompt_max_duration = tier
+                            retry_failed = new_task.status == PT_FAILED
+                            svc.apply_stage(asset, "prompt", STAGE_FAILED if retry_failed else STAGE_RUNNING)
+                            if not retry_failed:
+                                asset.cost_prompt = round((asset.cost_prompt or 0) + svc.estimate_unit_cost(
+                                    tier, need_upload=(asset.source_kind == SOURCE_FILE)
+                                ), 4)
+                                still.append(asset)
+                            else:
+                                tally["failed"] += 1
+                            await _write_audit(
+                                db,
+                                action="asset.analyze.auto_retry",
+                                operator=operator,
+                                target_type="asset_item",
+                                target_id=asset.id,
+                                after={
+                                    "asset_code": asset.code,
+                                    "first_task_id": str(task.id),
+                                    "first_error": (task.error or "")[:300],
+                                    "retry_task_id": str(new_task.id),
+                                    "retry_status": new_task.status,
+                                    "tier": tier,
+                                },
+                            )
+                        except Exception as exc:  # noqa: BLE001 — 重试失败按原失败落定
+                            logger.exception("反推自动重试失败 asset=%s", asset.code)
+                            tally["failed"] += 1
+                            asset.note = ((asset.note or "") + f"\n自动重试也没提交上：{exc}")[:1000]
+                        continue
+                    tally["failed"] += 1
+                    continue
+                still.append(asset)
+            await db.commit()
+            pending = still
+            if pending and time.monotonic() >= deadline:
+                deadline_hit = True
+                break
+            if pending:
+                await asyncio.sleep(poll)
+    except Exception:  # noqa: BLE001 — 收敛循环炸了不能把已提交的活拖成无主，如实上报
+        logger.exception("反推收敛循环异常（任务侧）")
+        await db.rollback()
+        raise
+    tally["watched"] = len(todo)
+    tally["left_running"] = len(pending)
+    tally["deadline_hit"] = deadline_hit
+    tally["seconds"] = round((datetime.utcnow() - started).total_seconds(), 1)
+    return tally
+
+
 @router.post("/assets/analyze/batch")
 async def analyze_batch(
     data: AnalyzeRequest,
@@ -2454,9 +3109,18 @@ async def analyze_batch(
 
     if not todo:
         if queue is None:
+            # 11-06：这句话是「重试的机制也不清楚」投诉的一半源头——把它改成能照着做的指引
+            n_run = sum(1 for a in assets if a.stage_prompt == STAGE_RUNNING)
+            n_ok = sum(1 for a in assets if a.stage_prompt == STAGE_SUCCESS)
+            n_fail = len(assets) - n_run - n_ok
             raise HTTPException(
                 status_code=400,
-                detail="所选素材都已处理过（成功/在跑/失败待重试）。确认要重跑请勾选重试失败项，或改选别的素材",
+                detail=(
+                    f"所选 {len(assets)} 条里没有能新提交反推的："
+                    f"在跑 {n_run} 条（后台任务会自己收，不用再点）、"
+                    f"已成功 {n_ok} 条（不用再跑）、"
+                    f"失败 {n_fail} 条（要重跑就勾上「重试失败项」再提交，重跑＝重新扣费）"
+                ),
             )
         raise HTTPException(
             status_code=400,
@@ -2466,6 +3130,15 @@ async def analyze_batch(
                 "重复提交＝重复扣费"
             ),
         )
+
+    # 11-06 拍板②：反推是真金白银的动作，替别人批次提交前先让人确认，确认后审计留痕
+    crosses = await _cross_person_gate(
+        db,
+        operator=current_user,
+        batch_ids=[a.batch_id for a in todo],
+        action_label="反推提示词",
+        confirmed=data.cross_person_confirm,
+    )
 
     need_upload = any(a.source_kind == SOURCE_FILE for a in todo)
     estimate = svc.estimate_batch_cost(len(todo), max_duration=tier, need_upload=need_upload)
@@ -2535,8 +3208,23 @@ async def analyze_batch(
                     },
                 )
 
+    # 11-06：反推升级为正式后台任务（JOB_ANALYZE）。闸门与成本确认**必须**在排任务之前
+    # 全过完——异步的任务号一发出智令就开始扣费，不能等后台跑起来才发现该拦。
+    # params 里只把 wait_converge 置上（台账存的是**原请求体**，追溯口径与其他任务一致；
+    # async_mode 由 `_run_asset_job` 重放时自己摘掉，这里不动它）。
+    if data.async_mode:
+        job = await _start_asset_job(
+            db,
+            kind=JOB_ANALYZE,
+            data=data.model_copy(update={"wait_converge": True}),
+            operator=current_user,
+            batch_id=queue_batch_id,
+            planned_units=len(todo),
+            cross_person=crosses,
+        )
+        return _job_accepted(job, "反推文案")
+
     results: List[dict] = []
-    tmp_dir = None
     # A1-2：下面**逐条 commit**，所以关掉 expire_on_commit —— 否则 commit 后对象全部失效，
     # 下一轮读 asset.source_kind 会触发惰性刷新，异步下直接 MissingGreenlet。
     db.sync_session.expire_on_commit = False
@@ -2551,42 +3239,8 @@ async def analyze_batch(
         }
         results.append(entry)
         try:
-            if asset.source_kind == SOURCE_FILE:
-                if not asset.file_key:
-                    raise ValueError("素材缺少文件对象，无法反推")
-                # 自有桶在局域网内，智令拉不到 → 必须取回本地再走 doc/125 中转上传
-                if tmp_dir is None:
-                    tmp_dir = os.path.join(tempfile.gettempdir(), f"asset_prompt_{uuid.uuid4().hex}")
-                    os.makedirs(tmp_dir, exist_ok=True)
-                local_path = os.path.join(tmp_dir, f"{asset.code}.mp4")
-                ok = await download_to_file(asset.bucket or settings.MINIO_BUCKET_RAW, asset.file_key, local_path)
-                if not ok:
-                    raise RuntimeError("从对象存储取文件失败")
-                size_err = validate_upload_size(os.path.getsize(local_path))
-                if size_err:
-                    raise ValueError(size_err)
-                with open(local_path, "rb") as fh:
-                    task = await create_upload_prompt_task(
-                        db,
-                        created_by=current_user.id,
-                        file_obj=fh,
-                        file_name=asset.file_name or f"{asset.code}.mp4",
-                        size_bytes=os.path.getsize(local_path),
-                        max_duration=tier,
-                    )
-                try:
-                    os.remove(local_path)
-                except OSError:
-                    pass
-            else:
-                if not asset.source_url:
-                    raise ValueError("素材缺少原始链接，无法反推")
-                task = await create_prompt_task(
-                    db,
-                    created_by=current_user.id,
-                    source_url=asset.source_url,
-                    max_duration=tier,
-                )
+            # 提交动作抽成共用函数：后台快速失败自动重试走的是同一段（口径只有一套）
+            task = await _create_prompt_task_for_asset(db, asset, operator=current_user, tier=tier)
 
             asset.prompt_task_id = task.id
             asset.prompt_max_duration = tier
@@ -2621,9 +3275,6 @@ async def analyze_batch(
                 if entry["prompt_task_id"]
                 else "失败标记未落库（这条没扣费，重试安全），下批会再试："
             ) + str(e)[:200]
-
-    if tmp_dir:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # 批次成本：**由批内素材行重算，不做 +=**——+= 会把重试条目的历史值重复累加，
     # 对账页上就会出现"账单 3 元、系统 6 元"的虚高（智令不逐单回传金额，这里全是推算额度）。
@@ -2670,6 +3321,7 @@ async def analyze_batch(
             "gate": gate["level"],
             "confirmed": data.confirmed,
             "force": data.force,
+            "cross_person": crosses or None,
         },
     )
     await db.commit()
@@ -2686,6 +3338,21 @@ async def analyze_batch(
                 batch_id=str(next(iter(batch_ids))) if len(batch_ids) == 1 else None,
             )
 
+    # 11-06：后台任务（JOB_ANALYZE 的重放）提交完**原地等收敛**——不再指望前端轮询，
+    # 页面关了也一样收到终态、排上搭车下载。同步路径（脚本/行级重试）不等，行为不变。
+    converge: Optional[dict] = None
+    if data.wait_converge:
+        converge = await _wait_prompt_convergence(db, todo, operator=current_user, tier=tier)
+        await _write_audit(
+            db,
+            action="asset.analyze.converge",
+            operator=current_user,
+            target_type="asset_batch",
+            target_id=None,
+            after=converge,
+        )
+        await db.commit()
+
     return {
         "estimate": estimate,
         "cumulative_cost": cumulative_cost,
@@ -2696,6 +3363,7 @@ async def analyze_batch(
         "skipped": skipped,
         "queue": queue,
         "download": download_kick,
+        "converge": converge,
         "message": f"已提交 {len(todo)} 条反推（档位 {tier}s，本批预估 {estimate['total_cost']} 元）"
         + (f"，同批未推 {cumulative_units} 条 → 批次累计 {cumulative_cost} 元" if cumulative_units else "")
         + (f"，跳过 {len(skipped)} 条已处理" if skipped else "")
@@ -2704,7 +3372,14 @@ async def analyze_batch(
             f"；{download_kick['queued']} 条原片正在后台下载（完事列表上会显示下载标记）"
             if download_kick and download_kick["queued"] else ""
         )
-        + (f"；{download_kick['note']}" if download_kick and download_kick.get("note") else ""),
+        + (f"；{download_kick['note']}" if download_kick and download_kick.get("note") else "")
+        + (
+            f"；后台已收齐：成功 {converge['success']}、失败 {converge['failed']}"
+            + (f"（自动重试过 {converge['auto_retry']} 条）" if converge["auto_retry"] else "")
+            + (f"、{converge['left_running']} 条到点没等完（仍标在跑，可点「收取在跑结果」）"
+               if converge.get("left_running") else "")
+            if converge else ""
+        ),
     }
 
 
@@ -2768,46 +3443,21 @@ async def refresh_analyze_batch(
     results: List[dict] = []
     tally = {"success": 0, "failed": 0, "running": 0, "stuck": 0, "poll_error": 0}
     for asset in assets:
-        entry = {
-            "asset_id": str(asset.id),
-            "code": asset.code,
-            "stage_prompt": asset.stage_prompt,
-            "status": asset.status,
-            "prompt_task_status": None,
-            "error": None,
-        }
+        # 收敛核心与后台反推任务（JOB_ANALYZE）共用一个函数：两处口径分叉过一次就再没干净过
+        entry, _task = await _converge_prompt_asset(db, asset)
         results.append(entry)
-        task = await get_prompt_task(db, asset.prompt_task_id) if asset.prompt_task_id else None
-        if task is None:
-            # 在跑却查不到任务行：等不出结果，判 failed 让一线能决定重跑
-            svc.apply_stage(asset, "prompt", STAGE_FAILED)
-            asset.note = (
-                (asset.note or "")
-                + "\n反推任务行缺失（提交后进程中断的残留），已判失败；重跑请带 retry_failed=true"
-            )[:1000]
-            entry.update(stage_prompt=asset.stage_prompt, status=asset.status,
-                        error="任务行缺失，已判 failed", )
-            tally["stuck"] += 1
-            continue
-        try:
-            task = await refresh_prompt_task(db, task)
-        except Exception as exc:  # 外呼抖动：保持 running，下轮再来
-            entry["error"] = f"轮询失败，保持 running：{str(exc)[:200]}"
+        if entry["error"] and entry["prompt_task_status"] is None and "轮询失败" in entry["error"]:
             tally["poll_error"] += 1
             continue
-        entry["prompt_task_status"] = task.status
-        if task.status == PT_SUCCESS:
-            svc.apply_stage(asset, "prompt", STAGE_SUCCESS)
-            _backfill_title_on_prompt_success(asset, task.content)
+        if entry["stage_prompt"] == STAGE_SUCCESS:
             tally["success"] += 1
-        elif task.status == PT_FAILED:
-            svc.apply_stage(asset, "prompt", STAGE_FAILED)
-            asset.note = ((asset.note or "") + f"\n反推失败：{task.error}")[:1000]
-            entry["error"] = task.error
+        elif entry["stage_prompt"] == STAGE_FAILED and entry["prompt_task_status"] is None:
+            # 任务行缺失（提交后进程中断的残留），核心里已判 failed
+            tally["stuck"] += 1
+        elif entry["stage_prompt"] == STAGE_FAILED:
             tally["failed"] += 1
         else:
             tally["running"] += 1
-        entry.update(stage_prompt=asset.stage_prompt, status=asset.status)
 
     await _write_audit(
         db,
@@ -3113,6 +3763,11 @@ def _job_endpoint(kind: str) -> Tuple[Any, Any, str]:
     `/productions/dispatch` 这些接口原样再调一次（自己开会话、自己收尾）。写两套必然分叉——
     审核/投产/导出三个入口刚刚才因为口径分叉被点名（R-6），这里绝不再造一个。
     """
+    if kind == JOB_ANALYZE:
+        # 11-06：反推正式进台账。跑的仍是 `/assets/analyze/batch` 这一个口（闸门/成本确认/
+        # 逐条扣费全在里面），后台重放会原地等收敛＋快速失败自动重试——收敛口径和
+        # 「收取在跑结果」按钮共用一个核心函数，不会出现"机器收的一套、人收的另一套"。
+        return AnalyzeRequest, analyze_batch, "反推文案"
     if kind == JOB_SUMMARY_GENERATE:
         return SummaryGenerateRequest, generate_summaries, "出钩子文案"
     if kind == JOB_PRODUCE:
@@ -3157,6 +3812,9 @@ def _job_scope_ids(kind: str, params: Dict[str, Any]) -> List[str]:
         return [str(x) for x in ((params or {}).get("ids") or []) if str(x)]
     if kind == JOB_DOWNLOAD:
         # 批 J：下载圈的是素材 id（与出文案同一类），不复用默认分支的 summary_ids 键
+        return [str(x) for x in ((params or {}).get("asset_ids") or []) if str(x)]
+    if kind == JOB_ANALYZE:
+        # 11-06：反推圈的是素材 id。整批排队形态没有 asset_ids → 走下面 batch_id 档判重
         return [str(x) for x in ((params or {}).get("asset_ids") or []) if str(x)]
     if kind == JOB_PROMPT_PREVIEW:
         # 批 J：备提示词圈的是文案 id（与投产同类）
@@ -3232,11 +3890,14 @@ async def _start_asset_job(
     operator: User,
     batch_id: Optional[str],
     planned_units: Optional[int],
+    cross_person: Optional[List[dict]] = None,
 ) -> AssetJob:
     """落一行 queued 台账并排上后台协程。
 
     ⚠️ 必须先 `commit` 再调度：后台协程用的是**另一个会话**，读不到本会话未提交的行；
     反过来也不能等本会话的 response 结束——那正是本口要避免的"人得干等着"。
+    `cross_person`（11-06 拍板②）：跨人批次闸门确认后的清单，原样进 submit 审计，
+    让「发起人≠批次主人」这件事在台账动作里也查得到。
     """
     params = data.model_dump(mode="json")
     await _assert_no_running_twin(db, kind=kind, params=params, batch_id=batch_id)
@@ -3256,7 +3917,12 @@ async def _start_asset_job(
         operator=operator,
         target_type="asset_job",
         target_id=job.id,
-        after={"batch_id": batch_id, "planned_units": planned_units, "params": params},
+        after={
+            "batch_id": batch_id,
+            "planned_units": planned_units,
+            "params": params,
+            "cross_person": cross_person or None,
+        },
     )
     await db.commit()
     _schedule_asset_job(str(job.id), kind, params, str(operator.id))
@@ -3323,6 +3989,18 @@ async def _run_asset_job(job_id: str, kind: str, params: Dict[str, Any], operato
                         outcome_status = JB_FAILED
                         outcome_detail = f"抽帧 {n_fail} 条全部失败（无一条成功）：详见 results 与 worker 日志"
                         logger.warning("素材库后台任务 %s(frames) 全败：%s", job_id, outcome_detail)
+                # 反推的「接口成功」≠「收到结果」：后台等完收敛后一条都没成、还都是终态失败
+                # （含自动重试仍失败）→ 任务记 FAILED，别让台账绿着让人以为文案马上就有
+                if kind == JOB_ANALYZE and isinstance(result_dict, dict):
+                    conv = result_dict.get("converge") or {}
+                    n_ok = int(conv.get("success") or 0)
+                    n_fail = int(conv.get("failed") or 0)
+                    if (n_ok + n_fail) > 0 and n_ok == 0 and not conv.get("deadline_hit"):
+                        outcome_status = JB_FAILED
+                        outcome_detail = (
+                            f"反推 {n_fail} 条全部失败（含自动重试仍失败）：逐条原因看素材列表的失败标记"
+                        )
+                        logger.warning("素材库后台任务 %s(analyze) 全败：%s", job_id, outcome_detail)
                 outcome = (outcome_status, result_dict, outcome_detail)
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)[:900]
@@ -3348,7 +4026,8 @@ async def _job_progress(db: AsyncSession, job: AssetJob) -> Dict[str, Any]:
     done: Optional[int] = None
     note = "进度按台账现算；逐条状态看素材列表/生产单列表"
     ids = _job_scope_ids(job.kind, job.params or {})
-    if job.kind == JOB_SUMMARY_GENERATE:
+    if job.kind in (JOB_SUMMARY_GENERATE, JOB_ANALYZE):
+        stage_col = AssetItem.stage_summary if job.kind == JOB_SUMMARY_GENERATE else AssetItem.stage_prompt
         conds = []
         if ids:
             conds.append(AssetItem.id.in_([uuid.UUID(x) for x in ids]))
@@ -3360,14 +4039,14 @@ async def _job_progress(db: AsyncSession, job: AssetJob) -> Dict[str, Any]:
                 (
                     await db.execute(
                         select(func.count(AssetItem.id)).where(
-                            and_(*conds, AssetItem.stage_summary.in_((STAGE_SUCCESS, STAGE_FAILED)))
+                            and_(*conds, stage_col.in_((STAGE_SUCCESS, STAGE_FAILED)))
                         )
                     )
                 ).scalar()
                 or 0
             )
             if job.batch_id and not ids:
-                note = "整批排队：进度＝本批已出完文案的条数（含上次就跑好的），剩余条数看队列"
+                note = "整批排队：进度＝本批已出完文案的条数（含上次就跑好的），剩余条数看队列" if job.kind == JOB_SUMMARY_GENERATE else "整批排队：进度＝本批已收完反推的条数（含上次就跑好的），剩余条数看队列"
     elif job.kind == JOB_PRODUCE and ids and job.started_at:
         done = int(
             (
@@ -3515,7 +4194,15 @@ async def sweep_interrupted_asset_jobs() -> int:
     台账却还挂着 queued/running——一线看到"正在跑"就一直等，等一个永远不会来的结果。
     判 interrupted 而不是失败：这不是业务失败（模型没拒绝、闸门没过），是**我们没跑完**，
     结果不可信，绝不能让前端把这种任务的 result 当数据用。
+
+    例外（11-06 P2）：`kind=frames` 的任务**原行重排**不判死——抽帧免费、幂等
+    （已有帧默认跳过，force 才重抽），重启把它打死纯属运气不好；判成 interrupted
+    反而留下"要人手工补"的假终态。做法：状态拨回 queued、清 error/finished_at，
+    commit 后按原 params 重新调度（`_run_asset_job` 自己会摘掉 async_mode 防套娃，
+    params 里的原请求体就是重放口径）。提交人已删的 frames 任务还是判 interrupted，
+    否则会在后台空转一圈记 failed，一线更看不懂。返回值只数**判死**的，重排的不算。
     """
+    requeue: List[Tuple[str, str, Dict[str, Any], str]] = []
     async with _database.async_session_factory() as db:
         rows = list(
             (
@@ -3523,13 +4210,25 @@ async def sweep_interrupted_asset_jobs() -> int:
             ).scalars().all()
         )
         for job in rows:
+            if job.kind == JOB_FRAMES and job.created_by is not None:
+                # 属性要在 commit 前取走：session 默认 expire_on_commit，分离后读属性会炸
+                requeue.append((str(job.id), job.kind, dict(job.params or {}), str(job.created_by)))
+                job.status = JB_QUEUED
+                job.error = None
+                job.finished_at = None
+                continue
             job.status = JB_INTERRUPTED
             job.error = "服务重启，任务没能跑完，结果不可信——需要重做请重新提交"
             job.finished_at = datetime.utcnow()
         await db.commit()
         if rows:
-            logger.warning("素材库启动清扫：%d 个在跑/排队的后台任务已标记中断", len(rows))
-        return len(rows)
+            logger.warning(
+                "素材库启动清扫：%d 个在跑/排队的后台任务已标记中断（frames 原行重排 %d 个）",
+                len(rows) - len(requeue), len(requeue),
+            )
+    for job_id, kind, params, operator_id in requeue:
+        _schedule_asset_job(job_id, kind, params, operator_id)
+    return len(rows) - len(requeue)
 
 
 @router.get("/assets/jobs")
@@ -3631,6 +4330,18 @@ async def generate_summaries(
     if not 1 <= count <= 6:
         raise HTTPException(status_code=400, detail="候选数只支持 1~6 条")
 
+    # 11-06 拍板②：跨人批次闸门要放在**排任务之前**——异步的任务号一发出模型就开始烧钱，
+    # 不能等后台跑起来才发现该拦。点名形态此时素材还没读，先读一遍（同步档下面会再读，
+    # 同一事务里同主键拿回同一对象，不浪费）。
+    gate_assets = picked if queue_batch_id else [await _get_asset_or_404(db, aid) for aid in asset_ids]
+    crosses = await _cross_person_gate(
+        db,
+        operator=current_user,
+        batch_ids=[a.batch_id for a in gate_assets],
+        action_label="出钩子文案",
+        confirmed=data.cross_person_confirm,
+    )
+
     if data.async_mode:
         job = await _start_asset_job(
             db,
@@ -3639,6 +4350,7 @@ async def generate_summaries(
             operator=current_user,
             batch_id=queue_batch_id,
             planned_units=(len(picked) if queue is not None else len(asset_ids)),
+            cross_person=crosses,
         )
         return _job_accepted(job, "出钩子文案")
 
@@ -3654,6 +4366,10 @@ async def generate_summaries(
         for aid in asset_ids:
             asset = await _get_asset_or_404(db, aid)
             targets.append((asset, await _prompt_script_of(db, asset)))
+    # 11-06 双产出：本批新落库的候选收集起来，等主循环收尾提交后再统一调
+    # hook-copy/prompt-web 生成豆包网页版提示词（第二跳）。收集在循环里、
+    # 调用在提交后——外部模型调用前事务必须干净（idle_in_transaction 60s 掐连接）。
+    web_jobs: List[dict] = []
     for asset, script in targets:
         aid = str(asset.id)
         # 批 G：图片没有详规、也不该有 —— 出文案要读 doc/120 的脚本，喂一张 jpg 进去
@@ -3728,6 +4444,10 @@ async def generate_summaries(
                 "platform": asset.platform or "",
                 "extra_requirements": data.extra_requirements or "",
                 "compliance": "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
+                # 2026-11-07 用户口径：第 1 条候选要贴合原片长度（10s/15s 取最接近档）。
+                # 时长在各导入/解析路已有落库（文件导入 ffprobe、链接解析后回填）；
+                # 拿不到就不带，autoclip 侧退回原「按文案丰满程度」判断。
+                **({"duration_seconds": int(round(asset.duration))} if asset.duration else {}),
             },
         }
         # ⚠️ 调外部模型之前必须**结束事务**，flush 不够（还在同一个事务里）：
@@ -3763,6 +4483,15 @@ async def generate_summaries(
             })
             continue
 
+        # 2026-11-07 用户口径：出文案同步产「浓缩标题」（6~14 字），直接当素材名称——
+        # 反推扫描出的标题不够浓缩，拿不到标题的素材在列表里更是只剩 AS 号看不懂
+        # （陈天强那批就是这样）。给了就覆盖（原链接信息在 source_url 不丢）；
+        # 没给或长度不像标题就维持原状，绝不硬写。
+        gen_title = str((result or {}).get("title") or "").strip()
+        if 2 <= len(gen_title) <= 30:
+            asset.title = gen_title
+            logger.info("素材 %s 出文案同步起浓缩标题：%s", asset.code, gen_title)
+
         # 旧候选现在才真删：新候选已经在手，删了不会落空。与下面的 INSERT 同批提交，
         # 中途任何异常仍然整体回滚，旧文案原样留着。
         if to_delete:
@@ -3770,6 +4499,7 @@ async def generate_summaries(
 
         seq = len(existing)
         created = 0
+        created_rows: List[AssetSummary] = []
         for cand in candidates[:count]:
             text = str((cand or {}).get("text") or "").strip()
             if not text:
@@ -3799,6 +4529,7 @@ async def generate_summaries(
                 source_prompt_task_id=asset.prompt_task_id,
             )
             db.add(summary)
+            created_rows.append(summary)
             created += 1
         await db.flush()
 
@@ -3818,6 +4549,8 @@ async def generate_summaries(
             entry["candidates_short"] = count - created
             entry["note"] = f"候选不齐：要 {count} 条只出 {created} 条，审核缺横向对照，建议重生成"
         results.append(entry)
+        if created_rows:
+            web_jobs.append({"asset": asset, "script": script, "summaries": created_rows})
 
     await _write_audit(
         db,
@@ -3831,13 +4564,87 @@ async def generate_summaries(
             "overwrite": data.overwrite,
             # A4-6：整批排队时审计要能回显"这批的哪一段"，否则事后查不到是谁点了第几排
             "queue": queue,
+            "cross_person": crosses or None,
         },
     )
     await db.commit()
+
+    # ── 11-06 双产出第二跳：豆包网页版提示词 ──
+    # 候选已在上面随审计一起提交，此刻事务干净，可以安心等模型（同一条铁律：
+    # 外部调用前必须结束事务，idle_in_transaction 60s 会掐连接）。
+    # 失败只记条目不回滚文案——一句话文案是真金白银换来的，提示词丢了用
+    # 补口（POST /assets/summaries/prompt-web）单独补，别让两条产出绑死一条命。
+    web_ok_assets = 0
+    web_fail_assets = 0
+    web_filled = 0
+    # 字段并回主循环里那条结果（前端按 asset_id 一行一素材展示，别出两行）
+    entry_by_asset = {r["asset_id"]: r for r in results if r.get("asset_id")}
+    for job in web_jobs:
+        asset = job["asset"]
+        rows = job["summaries"]
+        drama_title = await _drama_title_of(db, asset)
+        payload = {
+            "script": job["script"],
+            "candidates": [
+                {"seq": s.seq, "text": s.text, "formula_tag": s.formula_tag or ""}
+                for s in rows
+            ],
+            # 内部重试压到 1 次：与出文案同口径（外层 900s，默认 3 次最坏 12 分钟必顶穿）
+            "max_retries": 1,
+            "params": {
+                "drama_title": drama_title,
+                "compliance": "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
+                **({"duration_seconds": int(round(asset.duration))} if asset.duration else {}),
+            },
+        }
+        entry = entry_by_asset.get(str(asset.id), {
+            "asset_id": str(asset.id), "code": asset.code,
+        })
+        try:
+            web = await _call_autoclip("hook-copy/prompt-web", payload)
+        except HTTPException as exc:
+            web_fail_assets += 1
+            entry["doubao_prompt_filled"] = 0
+            entry["doubao_prompt_total"] = len(rows)
+            entry["web_note"] = f"豆包网页版提示词生成失败（文案不受影响，可单独补）：{str(exc.detail)[:200]}"
+            continue
+        by_seq: Dict[int, dict] = {}
+        for p in web.get("prompts") or []:
+            try:
+                by_seq[int(p.get("seq") or 0)] = p
+            except (TypeError, ValueError):
+                continue
+        filled = 0
+        for s in rows:
+            p = by_seq.get(int(s.seq))
+            text = str((p or {}).get("prompt_text") or "").strip()
+            if text:
+                s.doubao_prompt = text
+                filled += 1
+        web_filled += filled
+        if filled == len(rows) and rows:
+            web_ok_assets += 1
+        else:
+            web_fail_assets += 1
+        entry["doubao_prompt_filled"] = filled
+        entry["doubao_prompt_total"] = len(rows)
+        if filled != len(rows):
+            entry["web_note"] = f"豆包网页版提示词只补上 {filled}/{len(rows)} 条（模型漏段），缺的在详情里点「补提示词」"
+        # 逐素材提交：一条崩了不拖死已经填好的
+        await db.commit()
+
     return {
         "results": results,
         "queue": queue,
-        "message": f"已为 {sum(1 for r in results if r['created'])} 条素材出文案"
+        "message": f"已为 {sum(1 for r in results if r.get('created'))} 条素材出文案"
+        + (
+            f"；{web_ok_assets} 条素材的豆包网页版提示词已同步生成（共 {web_filled} 段）"
+            if web_filled else ""
+        )
+        + (
+            f"；{web_fail_assets} 条素材的网页版提示词没生成全，详情里可单独补"
+            if web_fail_assets else ""
+        )
         + (f"；队列还剩 {queue['remaining']} 条，下一次接着排" if queue and queue["remaining"] else ""),
     }
 
@@ -3977,6 +4784,8 @@ async def list_summaries(
     recommended_only: bool = False,
     only_resubmittable: bool = False,
     category_id: Optional[str] = None,
+    q: Optional[str] = None,
+    owner: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
     current_user: User = Depends(get_current_user),
@@ -3988,6 +4797,15 @@ async def list_summaries(
     后端提供口径（B 组：原先只有列、没有参数）。
 
     `only_resubmittable`：只看「轮到我改」的（被驳回/需改写，且是我负责的素材；admin 看全部）。
+
+    `q`（批 N·评审二 P1）：关键词搜索，正文/素材码模糊匹配——筛出空集时给人一条
+    自己找回目标的正路，而不是对着空表猜筛选哪里配错了。
+
+    `owner`（A′ 按运营隔离，2026-11-07）：**GET 读口的查询偏好**，写口权限不受它影响。
+    owner=me → pending/驳回/需改写全量共享（挑文案是大家的事），**已过审区只显自己
+    过审的**；owner=all 或缺省 → 全量。reviewed_by IS NULL 的存量过审行＝无主公共
+    历史，owner=me 不含（三读口一致口径）。11-03「读口不分可见范围」的口径在本
+    参数上被推翻（前端「我的」默认视图），推翻记录见 docs/素材库按运营隔离-设计方案-20261107.md。
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 300)
@@ -4012,6 +4830,23 @@ async def list_summaries(
         conds.append(AssetSummary.audit_status.in_((RV_REJECTED, RV_NEED_REWRITE)))
         if current_user.role != UserRole.admin.value:
             conds.append(AssetItem.created_by == current_user.id)
+    if owner not in (None, "", "me", "all"):
+        raise HTTPException(status_code=400, detail="owner 只支持 me（我的链路）或 all（全量），缺省=all")
+    if owner == "me":
+        # A′：已过审区按过审人隔离；pending/驳回/需改写全量共享；无主公共历史（NULL）不含
+        conds.append(or_(
+            AssetSummary.audit_status.notin_((RV_APPROVED, RV_PASSED_EDITED)),
+            and_(
+                AssetSummary.audit_status.in_((RV_APPROVED, RV_PASSED_EDITED)),
+                AssetSummary.reviewed_by == current_user.id,
+            ),
+        ))
+    if q and q.strip():
+        # 批 N（评审二 P1）：正文/素材码子串匹配（大小写不敏感）。LIKE 转义掉
+        # 用户手滑输入的 %/_，别让搜索框变成全表扫。
+        kw = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{kw}%"
+        conds.append(or_(AssetSummary.text.ilike(like), AssetItem.code.ilike(like)))
     # 11-04 拍板①：按**文案自己的**原型筛（继承来的也算它自己的，改过就按改后的），
     # `none`＝未分类。为什么不用素材那列筛：审核台上"这条文案属于哪个原型"才是审的东西，
     # 素材被重新归过类不该把已经定性的文案一起带走。
@@ -4064,6 +4899,20 @@ async def list_summaries(
             )
         ).all()
         out_counts = {sid: int(cnt) for sid, cnt in orows}
+    # A′：过审人显示名一次聚合
+    reviewer_names = await _user_names(db, {s.reviewed_by for s, _a in rows})
+    # P1（评审定稿⑯）：每条候选已开过几张生产单——防重复开单白烧号池
+    prod_counts: Dict[Any, int] = {}
+    if rows:
+        prows = (
+            await db.execute(
+                select(AssetSummary.id, func.count(AssetProduction.id))
+                .join(AssetProduction, AssetProduction.summary_id == AssetSummary.id)
+                .where(AssetSummary.id.in_([s.id for s, _a in rows]))
+                .group_by(AssetSummary.id)
+            )
+        ).all()
+        prod_counts = {r[0]: int(r[1]) for r in prows}
     return {
         "items": [
             _serialize_summary(
@@ -4071,6 +4920,8 @@ async def list_summaries(
                 can_resubmit=_can_resubmit(s, a, current_user),
                 category_name=cat_names.get(str(s.category_id)) if s.category_id else None,
                 output_count=out_counts.get(s.id, 0),
+                production_count=prod_counts.get(s.id, 0),
+                reviewer_name=reviewer_names.get(str(s.reviewed_by)) if s.reviewed_by else None,
             )
             for s, a in rows
         ],
@@ -4100,8 +4951,9 @@ def _split_waived(
 @router.post("/assets/summaries/review")
 async def review_summaries(
     data: ReviewRequest,
-    current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
+    current_user: Annotated[User, Depends(require_functions("review"))],
     db: AsyncSession = Depends(get_db),
+    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
 ):
     """批量审核钩子文案：通过 / 驳回 / 需改写 / 改后通过。
 
@@ -4215,6 +5067,21 @@ async def review_summaries(
                     else (consist.get("note") or f"实体未命中：{'、'.join(consist['missing'])}")[:300]
                 )
 
+        # A′（2026-11-07 按运营隔离）：同态重报**已过审**候选不改归属——B 重按一遍
+        # A 过审过的「过」，reviewed_by 保持 A，绝不偷换成 B；回报里带 note 说清。
+        # 撤审（approved→rejected）不算同态，走原路（reviewed_by 记撤审人，名下活跃单作废）。
+        if to_state == before["audit_status"] and to_state in REVIEW_PASSED_STATES \
+                and summary.reviewed_by not in (None, current_user.id):
+            owner_name = (await _user_names(db, {summary.reviewed_by})).get(
+                str(summary.reviewed_by), "未知"
+            )
+            results.append({
+                "summary_id": str(uuid_s), "ok": True, "code": asset.code,
+                "audit_status": to_state, "is_recommended": bool(summary.is_recommended),
+                "warnings": [],
+                "note": f"已由 {owner_name} 过审，保持原归属（未重复处理、归属未变）",
+            })
+            continue
         summary.audit_status = to_state
         summary.reviewed_by = current_user.id
         summary.reviewed_at = datetime.utcnow()
@@ -4268,10 +5135,17 @@ async def review_summaries(
                 "waived": waived,
                 "superseded_productions": superseded,
             },
+            # 11-06 拍板①：豁免过审是最必须留痕的动作——审计写失败就拒绝这条过审
+            # （整请求回滚），绝不出现「豁免了却查无此事」。
+            strict=bool(waived),
         )
         results.append({
             "summary_id": str(uuid_s), "ok": True, "code": asset.code, "audit_status": to_state,
             "waived": bool(waived),
+            # 11-06 P2：推荐与否是**这条文案自己的属性**，逐条带回真话——前端藏卡提示
+            # 的「非推荐」统计改吃这里（原来只数当前页 items，豁免重放/跨页勾选时
+            # 目标行不在当前页就漏报「其实会被藏住」）。失败条不回（提示只数 ok 条）。
+            "is_recommended": bool(summary.is_recommended),
             # R-6：一致性这类**预警**不拦人，但必须让审核人看到「过了、只是有预警」，
             # 否则留痕列 consistency_ok=false 就成了没人解释的红灯。
             "warnings": recheck_warnings,
@@ -4307,6 +5181,127 @@ async def review_summaries(
             )
             + (f"；{preview_note}" if preview_note else "")
         ),
+    }
+
+
+class SummaryPromptWebRequest(BaseModel):
+    """11-06 双产出补口：给 doubao_prompt 缺失（或要求重出）的候选补网页版提示词。"""
+    summary_ids: List[str] = Field(default_factory=list)
+    force: bool = Field(False, description="true=已有提示词的也重出（默认只补缺的）")
+
+
+@router.post("/assets/summaries/prompt-web")
+async def prompt_web_summaries(
+    data: SummaryPromptWebRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """单独补/重出某几条候选的豆包网页版完整提示词。
+
+    出文案时第二跳失败只记条目不回滚（文案是真金白银换来的，别跟提示词绑死一条命），
+    缺的就用这个口补。单次上限 = ASSET_SUMMARY_MAX_PER_CALL（与出文案同一类
+    「别让一次点击干太多」的闸）；每条一次模型调用，同步等。
+    """
+    if not data.summary_ids:
+        raise HTTPException(status_code=400, detail="请点名要补提示词的文案（summary_ids）")
+    cap = max(1, int(settings.ASSET_SUMMARY_MAX_PER_CALL))
+    if len(data.summary_ids) > cap:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一次最多补 {cap} 条（每条都是一次真模型调用），分几批来",
+        )
+    uuids: List[uuid.UUID] = []
+    for raw_id in data.summary_ids:
+        try:
+            uuids.append(uuid.UUID(str(raw_id)))
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=400, detail=f"文案 id 不合法：{raw_id}")
+    rows = (
+        await db.execute(
+            select(AssetSummary).where(AssetSummary.id.in_(uuids)).order_by(AssetSummary.asset_id, AssetSummary.seq)
+        )
+    ).scalars().all()
+    found = {str(s.id) for s in rows}
+    results: List[dict] = []
+    skipped_missing = [str(x) for x in data.summary_ids if str(x) not in found]
+    if skipped_missing:
+        results.append({"summary_id": skipped_missing[0], "error": f"找不到这条文案（共 {len(skipped_missing)} 条 id 无效）"})
+
+    filled = 0
+    for s in rows:
+        asset = (
+            await db.execute(select(AssetItem).where(AssetItem.id == s.asset_id))
+        ).scalar_one_or_none()
+        entry: dict = {"summary_id": str(s.id), "code": asset.code if asset else None, "seq": s.seq}
+        if asset is None:
+            entry["error"] = "所属素材已删除，没法补"
+            results.append(entry)
+            continue
+        if (s.doubao_prompt or "").strip() and not data.force:
+            entry["note"] = "已有网页版提示词，未重出（要重出请带 force=true）"
+            results.append(entry)
+            continue
+        if asset.media_kind == MEDIA_IMAGE:
+            entry["error"] = _image_block_reason(asset, "补提示词")
+            results.append(entry)
+            continue
+        script = await _prompt_script_of(db, asset)
+        if not script:
+            entry["error"] = "反推脚本尚未就绪，没法展开提示词"
+            results.append(entry)
+            continue
+        # 外部调用前结束事务（idle_in_transaction 60s 铁律）
+        await db.commit()
+        try:
+            web = await _call_autoclip(
+                "hook-copy/prompt-web",
+                {
+                    "script": script,
+                    "candidates": [{"seq": s.seq, "text": s.text, "formula_tag": s.formula_tag or ""}],
+                    "max_retries": 1,
+                    "params": {
+                        "drama_title": await _drama_title_of(db, asset),
+                        "compliance": "不得出现真实人名、地名、机构名、品牌名，一律使用代称。",
+                        **({"duration_seconds": int(round(asset.duration))} if asset.duration else {}),
+                    },
+                },
+            )
+        except HTTPException as exc:
+            entry["error"] = f"网页版提示词生成失败：{str(exc.detail)[:200]}"
+            results.append(entry)
+            continue
+        prompt_text = ""
+        for p in web.get("prompts") or []:
+            if int(p.get("seq") or 0) == int(s.seq) or not prompt_text:
+                t = str(p.get("prompt_text") or "").strip()
+                if t:
+                    prompt_text = t
+                if int(p.get("seq") or 0) == int(s.seq):
+                    break
+        if not prompt_text:
+            entry["error"] = "模型没返回可用段落，重试一次或换批再补"
+            results.append(entry)
+            continue
+        s.doubao_prompt = prompt_text
+        filled += 1
+        entry["ok"] = True
+        results.append(entry)
+
+    if filled:
+        await _write_audit(
+            db,
+            action="asset.summary_prompt_web",
+            operator=current_user,
+            target_type="asset_summary",
+            target_id=None,
+            after={"requested": len(data.summary_ids), "filled": filled, "force": data.force},
+        )
+        await db.commit()
+    return {
+        "results": results,
+        "filled": filled,
+        "message": f"补上 {filled} 条豆包网页版提示词"
+        + (f"，{len(results) - filled} 条没补成（原因见明细）" if len(results) > filled else ""),
     }
 
 
@@ -4413,6 +5408,8 @@ async def resubmit_summaries(
         summary.reviewed_by = None
         summary.reviewed_at = None
         summary.reject_reason = None
+        # P1（评审定稿⑩）：作者写给审核人的说明落列持久化——此前只进审计，审核人看不见
+        summary.resubmit_note = (data.note or "").strip() or None
         summary.updated_at = datetime.utcnow()
 
         # 素材概要态回写：这条退回待审了，本素材是否还有过审文案要重新数一遍
@@ -4678,11 +5675,42 @@ async def _card_sources_for(
     return out
 
 
+@router.get("/assets/hook-codes/used")
+async def hook_codes_used(
+    codes: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+):
+    """11-06 拍板③：生产单弹窗回显「这些编号里哪些已经被用掉」。
+
+    `codes` 逗号分隔的五位编号；只读、0 元。`used` 每项带它钉在哪条素材的
+    哪张单上（含单子状态），前端在输入框下当场亮红——比提交后才 400 顺手。
+    取号本身仍走共享盘的 hook_id.py，本口不代取、不预占任何号。
+    """
+    wanted = [c.strip().upper() for c in (codes or "").split(",") if c.strip()][:100]
+    if not wanted:
+        return {"used": []}
+    rows = list(
+        await db.execute(
+            select(AssetProduction.hook_code, AssetProduction.seq, AssetProduction.status, AssetItem.code)
+            .join(AssetItem, AssetItem.id == AssetProduction.asset_id)
+            .where(AssetProduction.hook_code.in_(wanted))
+        )
+    )
+    return {
+        "used": [
+            {"code": c, "asset_code": ac, "seq": seq, "status": st}
+            for c, seq, st, ac in rows
+        ]
+    }
+
+
 @router.post("/assets/produce")
 async def create_productions(
     data: ProduceRequest,
-    current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
+    current_user: Annotated[User, Depends(require_functions("produce"))],
     db: AsyncSession = Depends(get_db),
+    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
 ):
     """过审文案 → N 条生产单（本口**只建 order_ready 单**，一毛不花也不占号池；
     往板上投是下一步：批 H 起有 `POST /assets/productions/dispatch`（机器连板、逐批人工确认），
@@ -4765,6 +5793,25 @@ async def create_productions(
         if len(set(hook_codes)) != len(hook_codes):
             raise HTTPException(status_code=400, detail="钩子编号重复，一钩一号")
 
+        # 11-06 拍板③：已用号当场拦。号是共享盘 hook_id.py 发出去的，一发就烧掉——
+        # 哪怕挂着号的那张单后来作废了，重用同一个号也可能让板面出现两条同名任务、
+        # 回收时对不上账。在这里点名「这个号已经钉在哪条素材的哪张单上」，
+        # 比等导出/投板时才发现对不上账再返工便宜得多。取号仍走 hook_id.py，后端不代取。
+        used = list(
+            await db.execute(
+                select(AssetProduction.hook_code, AssetProduction.seq, AssetItem.code)
+                .join(AssetItem, AssetItem.id == AssetProduction.asset_id)
+                .where(AssetProduction.hook_code.in_(hook_codes))
+            )
+        )
+        if used:
+            shown = "；".join(f"{c}（已钉在素材 {ac} 的第 {seq} 张单上）" for c, seq, ac in used[:8])
+            more = f"；另有 {len(used) - 8} 张没列出" if len(used) > 8 else ""
+            raise HTTPException(
+                status_code=400,
+                detail=f"这些钩子编号已经被用掉了：{shown}{more}。一钩一号，回 hook_id.py 重新取号再投产",
+            )
+
     board_tag = (data.board_tag or settings.ASSET_BOARD_TAG).strip()[:60]
     # B-2：date 由后端生成（绝不用前端传的日期），并折算成板面本地时间
     board_date = svc.board_timestamp(tz_offset_hours=settings.ASSET_BOARD_TZ_OFFSET_HOURS)
@@ -4782,6 +5829,53 @@ async def create_productions(
     # 兼容写：单值列继续有值（旧前端、旧导出、任何只看 `character_card_key` 的读侧都不许
     # 因为新前端改传数组就读不到卡）。多卡时写第一张——它就是 picDatas 的第一项，语义上是主卡。
     card_key = (cards[0].file_key if cards else None) or data.character_card_key or None
+
+    # A′（2026-11-07 按运营隔离）：归属跨人确认闸——投**别人过审**的候选要知情确认。
+    # ⚠️ 必须在 async_mode 分支**之前**判：前端唯一真实路径是 async_mode=true（提交即回
+    # 任务号），闸若放在分支之后，首呼会拿到 job ack、确认弹窗协议就断了（后台重放才
+    # 撞 400，一线只看到任务失败）。与卡校验同一条先例：烧钱前当场判完。
+    # 谁投账算谁（production.created_by 记实际投产人），候选过审人进审计；
+    # 无主公共历史（reviewed_by IS NULL 的存量行）不拦——与钱闸「归属未知不预判」同口径。
+    _pre_summaries: Dict[Any, Optional[AssetSummary]] = {}
+    for sid in data.summary_ids:
+        _u = _as_uuid(sid, "summary_id")
+        _pre_summaries[_u] = (
+            await db.execute(select(AssetSummary).where(AssetSummary.id == _u))
+        ).scalar_one_or_none()
+    cross_summaries = [
+        s for s in _pre_summaries.values()
+        if s is not None and s.audit_status in REVIEW_PASSED_STATES
+        and s.reviewed_by is not None and str(s.reviewed_by) != str(current_user.id)
+    ]
+    self_summaries = [
+        s for s in _pre_summaries.values()
+        if s is not None and s.audit_status in REVIEW_PASSED_STATES
+        and s.reviewed_by == current_user.id
+    ]
+    if cross_summaries and not data.cross_person_confirm:
+        name_map = await _user_names(db, {s.reviewed_by for s in cross_summaries})
+        code_map = dict(
+            (
+                await db.execute(
+                    select(AssetItem.id, AssetItem.code).where(
+                        AssetItem.id.in_({s.asset_id for s in cross_summaries})
+                    )
+                )
+            ).all()
+        )
+        shown = "；".join(
+            f"{code_map.get(s.asset_id, str(s.asset_id)[:8])}#{s.seq}（过审人 {name_map.get(str(s.reviewed_by), '未知')}）"
+            for s in cross_summaries[:5]
+        )
+        more = f"（另有 {len(cross_summaries) - 5} 条，本条只列前 5 条）" if len(cross_summaries) > 5 else ""
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"投产涉及{_CROSS_OWNER_MARKER}：{shown}{more}。"
+                "谁投账算谁（生产单记你名下、候选过审人留审计）——请确认确实是替同事补单/代班："
+                "界面弹窗点「确认替他人投产」后再发一次（带 cross_person_confirm=true），这一次没有建单。"
+            ),
+        )
 
     if data.async_mode:
         # D-1：展开提示词要调模型（实测一次 9 分钟），同步等会一路撞上
@@ -4825,11 +5919,25 @@ async def create_productions(
     if db.get_bind().dialect.name == "postgresql":
         await db.execute(text("SET LOCAL idle_in_transaction_session_timeout = 0"))
 
+    # A′（2026-11-08 评审定稿）：自审自投硬闸**默认开**——自己过审的候选自己投产默认拦。
+    # 放开=admin 把 ASSET_SELF_PRODUCE_ALLOWED 设 true（显式关闸），且每次自审自投
+    # 逐条写豁免审计（owner_cross 带 self 标记）——质检关不能沦为可静默绕过的橡皮章。
+    self_produce_allowed = bool(getattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", False))
+    self_cross = self_summaries
+    if self_cross and not self_produce_allowed:
+        shown = "；".join(f"#{s.seq}" for s in self_cross[:5])
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"自审自投默认拦：这 {len(self_cross)} 条是你自己质检过审的（{'、'.join(_user_codes(db, self_cross)) if False else '逐条见下'}{shown}）。"
+                "质检与投产分离是三角色模型的纪律——确需一人包干（小团队/应急），"
+                "由管理员把 ASSET_SELF_PRODUCE_ALLOWED 设为 true 后重发（每次都会留豁免审计）。"
+            ),
+        )
+
     for sid in data.summary_ids:
         uuid_s = _as_uuid(sid, "summary_id")
-        summary = (
-            await db.execute(select(AssetSummary).where(AssetSummary.id == uuid_s))
-        ).scalar_one_or_none()
+        summary = _pre_summaries.get(uuid_s)
         if summary is None:
             results.append({"summary_id": str(uuid_s), "created": 0, "error": "文案不存在"})
             continue
@@ -5122,6 +6230,9 @@ async def create_productions(
     )
     missing_codes = sum(1 for p in productions if not p.hook_code)
     missing_names = sum(1 for p in productions if not p.board_name)
+    _owner_names_all = await _user_names(
+        db, {s.reviewed_by for s in (*cross_summaries, *self_summaries) if s.reviewed_by}
+    ) if (cross_summaries or self_summaries) else {}
     await _write_audit(
         db,
         action="asset.produce_order",
@@ -5150,6 +6261,23 @@ async def create_productions(
                 {"code": n["code"], "ratio": n["ratio"], "orientation": n["orientation"]}
                 for n in card_notes
             ] or None,
+            # A′：归属留痕——候选过审人是谁、有没有跨人投产，事后要能回答"谁替谁投"
+            "owner_cross": (
+                {
+                    "summaries": [
+                        {
+                            "summary_id": str(s.id),
+                            "reviewed_by": str(s.reviewed_by) if s.reviewed_by else None,
+                            "reviewed_by_name": _owner_names_all.get(str(s.reviewed_by)),
+                            # A′：self=自审自投（ASSET_SELF_PRODUCE_ALLOWED 开闸时的逐条豁免留痕）
+                            "self": s.reviewed_by == current_user.id,
+                        }
+                        for s in (*cross_summaries, *self_summaries)
+                    ]
+                }
+                if cross_summaries or self_summaries
+                else None
+            ),
             "hook_codes": hook_codes or None,
             "capacity": capacity,
             # 复核结果全部入审计：豁免的每一条都能被 admin 抽检回溯（A2-1）
@@ -5363,7 +6491,7 @@ async def _converge_produce_stage(db: AsyncSession, asset_ids: set) -> Dict[str,
 
 
 async def _dispatch_counts(
-    db: AsyncSession, *conds, soft_cap: Optional[int] = None
+    db: AsyncSession, *conds, soft_cap: Optional[int] = None, owner_uid: Optional[Any] = None
 ) -> dict:
     """生产单投递计数。`by_status` 是全量分布（含未投的 order_ready），`today` 是号池当日事实。
 
@@ -5372,11 +6500,16 @@ async def _dispatch_counts(
     - **today 计数**不受 scope 约束——「今天号池吃进去多少、到手多少」是全队事实
       （实测 ≈120 条/日那条线），按批次过滤后就变成「这批占今天多少」，
       回答不了「今天还能不能再投」。
+    `owner_uid`（A′ 按运营隔离）：只进 **scope 聚合**（「我的链路投得怎么样」），
+    **today 号池口径绝不受它影响**——号池是全站一本账，按人切了就是「我占今天多少」，
+    与「今天还能不能再投」是两个问题。注释与测试双钉（test_output_groups……隔离矩阵）。
     `success_rate` 分母只算**已终态**（success+failed），在投/出片中不进分母；
     没有终态时回 None，不是 0——0 会被读成「一条都没成」。
     `dispatched` 含**投过后被作废**的单（见 `_VOIDED_BUT_SENT`）：作废是审核侧的追溯动作，
     不改变「号池那天已经被吃掉」这个事实；`voided_after_dispatch` 单列出来给前端说明用。
     """
+    if owner_uid is not None:
+        conds = [*conds, AssetProduction.created_by == owner_uid]
     stmt = select(AssetProduction.status, func.count()).group_by(AssetProduction.status)
     if conds:
         stmt = stmt.where(and_(*conds))
@@ -5648,6 +6781,7 @@ async def list_productions(
     status: Optional[str] = None,
     batch_id: Optional[str] = None,
     asset_id: Optional[str] = None,
+    owner: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
     current_user: User = Depends(get_current_user),
@@ -5658,6 +6792,11 @@ async def list_productions(
     `dispatch.by_status` 走的是**过滤前的口径**：只跟着 batch_id/asset_id 走，不受
     `status=` 影响。前端筛「失败」时如果 by_status 也跟着筛，列表就变成
     「failed: 12」自己报自己，成功几条这个关键数消失了——那正是今天要对账的东西。
+
+    `owner`（A′ 按运营隔离，2026-11-07）：GET 读口的查询偏好。owner=me → 按
+    `created_by=me` 过滤（谁投账算谁）；scope 聚合同步带 owner，`today` 号池口径
+    保持全站；响应另带 `dispatch_all`（同 scope 的全站口径），前端「我的/全站」
+    两行并排。写口权限不受 owner 影响。
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 300)
@@ -5671,12 +6810,25 @@ async def list_productions(
     if asset_id:
         conds.append(AssetProduction.asset_id == _as_uuid(asset_id, "asset_id"))
         scope.append(AssetProduction.asset_id == _as_uuid(asset_id, "asset_id"))
+    if owner not in (None, "", "me", "all"):
+        raise HTTPException(status_code=400, detail="owner 只支持 me（我的链路）或 all（全量），缺省=all")
+    if owner == "me":
+        # ⚠️ owner 只进 conds 与 _dispatch_counts 的 owner_uid 参数，**不进 scope**——
+        # dispatch_all（全站口径一行）要用不带 owner 的 scope 重算。
+        conds.append(AssetProduction.created_by == current_user.id)
     stmt = select(AssetProduction).where(and_(*conds)) if conds else select(AssetProduction)
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     rows = (
         await db.execute(stmt.order_by(AssetProduction.created_at.desc()).offset((page - 1) * page_size).limit(page_size))
     ).scalars().all()
-    dispatch = await _dispatch_counts(db, *scope)
+    dispatch = await _dispatch_counts(db, *scope, owner_uid=current_user.id if owner == "me" else None)
+    # A′：「我的」视图附全站口径一行（today 本就全站；scope 的全站版给前端两行并排）
+    dispatch_all = (
+        await _dispatch_counts(db, *scope)
+        if owner == "me"
+        else None
+    )
+
     # 批 I：整页一次聚合每单的成片数（与上面 summaries 的 out_counts 同一个套路——
     # 逐行数＝100 次查询）。排除 package/copy 附属文件，只数片。
     out_counts: Dict[Any, int] = {}
@@ -5693,12 +6845,23 @@ async def list_productions(
             )
         ).all()
         out_counts = {pid: int(cnt) for pid, cnt in orows}
+    # A′：投产人显示名一次聚合
+    owner_names = await _user_names(db, {p.created_by for p in rows})
     return {
-        "items": [_serialize_production(p, output_count=out_counts.get(p.id, 0)) for p in rows],
+        "items": [
+            _serialize_production(
+                p,
+                output_count=out_counts.get(p.id, 0),
+                owner_name=owner_names.get(str(p.created_by)) if p.created_by else None,
+            )
+            for p in rows
+        ],
         "total": total,
         "page": page,
         "page_size": page_size,
         "dispatch": dispatch,
+        "dispatch_all": dispatch_all,
+        "owner": owner or "all",
     }
 
 
@@ -5890,7 +7053,8 @@ async def export_productions(
     format: str = "json",
     force_risk: bool = False,
     force_reason: Optional[str] = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_functions("produce")),
+    _export_role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
     db: AsyncSession = Depends(get_db),
 ):
     """导出提示词（每行一条可直接粘进豆包的完整提示词）。
@@ -6031,6 +7195,9 @@ async def export_productions(
                 "forced_reason": (force_reason or "").strip()[:500] or None,
             } if risk_hits else None,
         },
+        # 11-06 拍板①：强制导出（绕过风险词闸）审计写失败就拒绝这次导出——
+        # 数据还没交付给调用方，500 掉就是「操作被拒」，不会有绕闸记录缺席。
+        strict=bool(force_risk),
     )
     await db.commit()
 
@@ -6170,6 +7337,25 @@ async def _dispatch_gate(
     risk_blocked = {pid for pid in risk_hits if not force_risk}
     forced_ids = sorted(risk_hits) if (force_risk and risk_hits) else []
 
+    if forced_ids:
+        # 11-06 拍板①：强制投板是**不可逆烧号池额度**的动作，审计必须在动板子
+        # **之前**落定（strict）——审计写失败＝这次强制投板根本不开始，而不是
+        # 「投出去了、账没记上」。后面那笔常规审计照旧 fail-soft。
+        await _write_audit(
+            db,
+            action="asset.production.dispatch",
+            operator=operator,
+            target_type="asset_production",
+            target_id=None,
+            strict=True,
+            after={
+                "phase": "forced_pre",
+                "forced_ids": forced_ids,
+                "force_reason": (force_reason or "").strip()[:500],
+            },
+        )
+        await db.commit()
+
     to_create: List[AssetProduction] = []
     to_recover: List[AssetProduction] = []
     blocked: List[dict] = []
@@ -6188,8 +7374,11 @@ async def _dispatch_gate(
         if p.status == PR_FAILED:
             _block(
                 p,
-                "失败单不在这里自动重投：板上失败行没有原因字段，重投与否要人判读"
-                "（判读后要么走投递状态回写口把它带回 queued，要么重新投产生成新单）",
+                "失败单不在这里自动重投：板上失败行没有原因字段，重投与否要人判读——"
+                "要重投就在生产单列表对这行点「按同文案重开单」（用同一句过审文案重新投产，"
+                "失败单本身留档不动）；不用重投就补记手工投板结果留档"
+                # 批 N（评审二·P0-1）：旧话术建议「走回写口把它带回 queued」再投——但投递口
+                # 只接 order_ready，带回 queued 的路自己就走不通，一线照着指走必撞墙。
             )
             continue
         if p.board_tid:
@@ -6336,8 +7525,9 @@ async def _fetch_board_output(
 @router.post("/assets/productions/dispatch")
 async def dispatch_productions(
     data: DispatchRequest,
-    current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
+    current_user: Annotated[User, Depends(require_functions("produce"))],
     db: AsyncSession = Depends(get_db),
+    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
 ):
     """把点名的生产单**真投上企微后台任务板**，轮询出片并回收成片（11-05 批 H）。
 
@@ -6403,6 +7593,64 @@ async def dispatch_productions(
     )
     to_create, to_recover, blocked = gate["to_create"], gate["to_recover"], gate["blocked"]
 
+    # ── 投递稿 override（11-06 拍板：只改投出去的那一份，库里不动）──
+    overrides: Dict[str, str] = {
+        str(k).strip(): (v or "").strip()
+        for k, v in (data.prompt_overrides or {}).items()
+        if (v or "").strip()
+    }
+    if overrides:
+        creatable = {str(p.id): p for p in to_create}
+        unknown = sorted(k for k in overrides if k not in creatable)
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "投递稿只能改这次要新建的单（回收的单投的是原稿，改了也不生效）："
+                    f"这些 id 不在新建堆里：{', '.join(unknown[:5])}"
+                ),
+            )
+        too_long = sorted(k for k, v in overrides.items() if len(v) > _PROMPT_OVERRIDE_MAX_LEN)
+        if too_long:
+            raise HTTPException(
+                status_code=400,
+                detail=f"改后的投递稿单条最长 {_PROMPT_OVERRIDE_MAX_LEN} 字：{', '.join(too_long[:5])}",
+            )
+        if not data.force_risk:
+            book, exemptions = await _risk_lexicon(db)
+            bad = {
+                pid: svc.risk_block_hits(svc.scan_risk(text, lexicon=book, exemptions=exemptions))
+                for pid, text in overrides.items()
+            }
+            bad = {k: v for k, v in bad.items() if v}
+            if bad:
+                parts = [
+                    f"{creatable[pid].hook_code or pid[:8]}：{'、'.join(w for w, _ in hits[:3])}"
+                    for pid, hits in list(bad.items())[:5]
+                ]
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "改后的投递稿命中了 block 级高风险词（改稿不等于豁免，跟原稿同一道闸）："
+                        + "；".join(parts)
+                        + "。确要投请 admin 勾「带高风险词强行投板」并写理由"
+                    ),
+                )
+        # 逐条留痕（fail-soft）：改前原文、改后正文（截断存）、是否踩着 force 投的。
+        # 库里的 prompt_text 一字不改——投递稿只活在这一次请求（与任务台账 params 一起存档）。
+        for pid, text in overrides.items():
+            p = creatable[pid]
+            await _write_audit(
+                db,
+                action="asset.production.dispatch_override",
+                operator=current_user,
+                target_type="asset_production",
+                target_id=p.id,
+                before={"hook_code": p.hook_code, "prompt_text": (p.prompt_text or "")[:800]},
+                after={"override": text[:800], "risk_forced": bool(data.force_risk)},
+            )
+
+
     if to_create and not data.confirm:
         # P0 的人工确认位：不带 confirm=true 就当没确认过。放在这里而不是让前端拦，
         # 是因为这条线**任何**调用方都该被拦——脚本、按钮、将来的定时任务都得先过人这一关。
@@ -6431,14 +7679,54 @@ async def dispatch_productions(
             detail += f"（另有 {len(blocked) - 5} 张被挡，本条只列前 5 张）"
         raise HTTPException(status_code=400, detail=detail)
 
+    # 11-06 拍板②：新建板任务吃号池额度，替别人批次投之前先让人确认；回收已投的单
+    # 一分钱不花（`to_recover` 不过内容闸门的同一口径），不走这道闸。
+    crosses = (
+        await _cross_person_gate(
+            db,
+            operator=current_user,
+            batch_ids=[p.batch_id for p in to_create],
+            action_label="投板",
+            confirmed=data.cross_person_confirm,
+        )
+        if to_create
+        else []
+    )
+    gate["cross_person"] = crosses or None
+
     # 拍板②：新建的这批按**投递时刻**重新排日（人工投板用不到这条，见函数头说明）
     for p in to_create:
         _refresh_board_date(p)
+
+    # 投板前统一挂卡：给出时对要新建的单逐张覆盖写（数组列＋兼容单值列，与 produce
+    # 同一套写法），放在 _build_delivery **之前**——它逐张取卡装 payload，读的就是
+    # 覆盖后的值。卡是生产输入，改的是单本身，随下面那次 commit 一起落库；
+    # 回收档不动（已在板上，再挂卡也不会重建任务）。
+    card_override_applied: List[str] = []
+    if data.card_asset_ids is not None and to_create:
+        cards = await _resolve_card_assets(db, data.card_asset_ids)
+        override_card_ids = [str(a.id) for a in cards]
+        override_card_key = cards[0].file_key if cards else None
+        for p in to_create:
+            p.card_asset_ids = override_card_ids or None
+            p.character_card_key = override_card_key
+        card_override_applied = [str(p.id) for p in to_create]
+    card_override = (
+        {"applied_to": card_override_applied, "card_asset_ids": [str(x) for x in (data.card_asset_ids or [])]}
+        if card_override_applied
+        else None
+    )
 
     # payload 与导出**同一个函数**（`_build_delivery`）：逐张取卡、保持 `card_asset_ids`
     # 顺序＝板上 picDatas 顺序、缺一张就点名。这里多花一次 MinIO 读是值当的——
     # 它是"投出去画中人不对"这类事故在烧钱前唯一还能看见它的地方。
     delivery = await _build_delivery(db, to_create, "payload") if to_create else {"payloads": []}
+    # 投递稿 override 在这里落地：只改 `payload["prompt"]` 这一个键——生产单行的
+    # prompt_text / 审计快照 / 漂移判定全都不碰，下一次再投仍是原稿。
+    for x in delivery.get("payloads", []):
+        if overrides.get(x["id"]):
+            x["payload"]["prompt"] = overrides[x["id"]]
+            x["prompt_overridden"] = True
     await db.commit()  # ⚠️ 建任务前必须收掉事务：板子一次 POST 最长 90s，趴着等会撞 60s 掐断
     payloads_by_id = {x["id"]: x for x in delivery.get("payloads", [])}
     card_warnings = [
@@ -6470,6 +7758,7 @@ async def dispatch_productions(
             operator=current_user,
             batch_id=None,
             planned_units=len(to_create) + len(to_recover),
+            cross_person=crosses,
         )
         return {
             **_job_accepted(job, "投板"),
@@ -6480,9 +7769,12 @@ async def dispatch_productions(
                 "blocked": blocked,
                 "card_warnings": card_warnings,
                 "capacity": capacity,
+                "cross_person": crosses or None,
+                "prompt_overrides": sorted(overrides),
                 "note": (
                     "预检已过：闸门按导出/回写同一套判据，payload 与导出同一个函数。"
                     "后台会建任务、轮询出片、把成片落进产物；跑完整份结果在任务台账里"
+                    + (f"；其中 {len(overrides)} 张投的是改过的投递稿（库里原稿不动）" if overrides else "")
                 ),
             },
         }
@@ -6498,6 +7790,7 @@ async def dispatch_productions(
         capacity=capacity,
         card_warnings=card_warnings,
         recover_only=data.recover_only,
+        card_override=card_override,
     )
 
 
@@ -6513,6 +7806,7 @@ async def _execute_dispatch(
     capacity: Dict[str, Any],
     card_warnings: List[dict],
     recover_only: bool,
+    card_override: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """投板执行体（后台协程走的就是这里）：建任务 → 钉 tid → 轮询 → 回收 → 落库。
 
@@ -6606,6 +7900,7 @@ async def _execute_dispatch(
                 "errors": errors,
                 "uncertain": uncertain,
                 "recover_only": recover_only,
+                "cross_person": gate.get("cross_person"),
             },
         )
         await db.commit()
@@ -6630,6 +7925,25 @@ async def _execute_dispatch(
     # ── ③ 轮询回收 ──
     outcome = await _poll_and_collect(db, tracked, recover_only=recover_only)
 
+    # ── ③b 这次真落库的产物补排 1 张首帧（批 K：素材墙靠它当缩略图）──
+    # 批 F 留的「豆包成片是 output_thumb 第二个写入方」就在这里接上。放在阶段收敛
+    # commit 之后单独调：_start_asset_job 自己 commit、失败路径会 rollback，
+    # 早调会把没提交的收敛一起卷进去。fail-soft 口径与导入/拼接侧一致——
+    # 帧没排上只是墙上一时没图，片子已经真金白银回收了，不连累回收结果。
+    _new_output_ids = [
+        rec["_output_id"] for rec in outcome["outputs"]
+        if rec.get("_inserted") and rec.get("_output_id")
+    ]
+    if _new_output_ids:
+        _frames_note = await _enqueue_frames(
+            db,
+            asset_ids=[],
+            output_ids=_new_output_ids,
+            operator=operator,
+            why=f"豆包成片回收落库（{_new_output_ids[0][:8]} 等 {len(_new_output_ids)} 条）",
+        )
+        outcome["frames_note"] = _frames_note.get("note")
+
     # ── ④ 阶段收敛 + 审计 + 计数 ──
     stage_by_asset = await _converge_produce_stage(db, {t["prod"].asset_id for t in tracked.values()})
     await db.commit()
@@ -6647,6 +7961,7 @@ async def _execute_dispatch(
         after={
             "recover_only": recover_only,
             "created": created,
+            "card_override": card_override,
             "outcome": outcome["summary"],
             "outputs": outcome["outputs"],
             "uncertain": uncertain,
@@ -6655,6 +7970,7 @@ async def _execute_dispatch(
             "asset_status": stage_by_asset,
             "capacity": capacity,
             "forced_risk": {"ids": gate["forced_ids"], "reason": gate["forced_reason"]} if gate["forced_ids"] else None,
+            "cross_person": gate.get("cross_person"),
             "payload_keys": list(svc.BOARD_PAYLOAD_KEYS),
         },
     )
@@ -6715,6 +8031,10 @@ def _adopt_tids(p: AssetProduction, board_rows: Dict[str, Dict[str, Any]], new_t
         p.started_at = datetime.utcnow()
     p.completed_at = None
     p.error = None
+    # 批 L：认领瞬间先钉一个初始板侧状态——从这一刻到轮询第一轮回读之间
+    # （最长一个轮询间隔），界面上有「已投板」可看，而不是干等列全空。
+    p.board_last_status = "已投板"
+    p.board_last_check_at = datetime.utcnow()
 
 
 async def _poll_and_collect(
@@ -6766,6 +8086,9 @@ async def _poll_and_collect(
         for pid, t in tracked.items()
     }
     outputs: List[dict] = []
+    # 批 M（评审一·P1-1）：prod 引用一开始就钉死。人工让位的行会从 tracked 摘除，
+    # 但已回读到手的产物仍要按它落库（引用还在 prod_refs 里，不会 KeyError）。
+    prod_refs: Dict[str, AssetProduction] = {pid: t["prod"] for pid, t in tracked.items()}
 
     async def _take_outputs(pid: str, t: Dict[str, Any], rows: List[Dict[str, Any]], s: Dict[str, Any]) -> None:
         """把这几条 succ 任务下载→落桶，攒进 outputs（**不碰数据库**，写库统一在轮询外）。"""
@@ -6787,6 +8110,42 @@ async def _poll_and_collect(
     deadline = time.monotonic() + _board_poll_max_minutes() * 60
     rounds = 0
     read_fail_rounds = 0
+    # 批 M（评审一·P1-1）：人工回写 vs 轮询写回的并发防护。
+    # 轮询持有的是 dispatch 时加载的 ORM 对象（expire_on_commit=False，整轮不重读库），
+    # 期间人工经投递状态回写口改状态（failed→queued 重投是迁移表明确放行的路）：
+    # 按旧快照直接写回就是 lost update；更糟的是人工改回 queued 后板面 fail 还会按
+    # 旧快照再自动重启一次——同一条烧两遍号池。
+    # 规矩：库里 status ≠ 本轮快照（或行没了）＝所有权已交还人工——这一行**整行让位**：
+    # 恢复轮前快照（撤销本轮全部改动）、状态/心跳一律不写、从 tracked 摘除不再跟踪，
+    # summary 里留 note 点名。已下载到手的产物照插：那是板侧已发生的事实（本单 tid
+    # 出的片子），与状态互不覆盖。
+    # 每轮查两次：开工时一次（防按旧快照重启烧号池），写回前一次 SELECT ... FOR UPDATE
+    # （行锁把「轮询 commit vs 人工回写 UPDATE」串行化，写回窗口从整轮几分钟缩到毫秒级）。
+    # 两次都裹在 no_autoflush 里：本轮的改动此刻还只在内存里，绝不能被 autoflush 先冲下去，
+    # 否则重读读到的是自己的旧快照、判「没人动过」就白防了。
+    _POLLER_OWNED_COLS = (
+        "status", "error", "completed_at", "board_tid", "board_rgid",
+        "attempts", "started_at", "board_last_status", "board_last_check_at",
+    )
+
+    def _reown(pid: str, db_status: Optional[str], when: str) -> None:
+        """人工已接管的行整行让位：摘出跟踪、恢复轮前快照、summary 里点名。"""
+        t = tracked.pop(pid, None)
+        pending.pop(pid, None)
+        if t is not None:
+            for k, v in pre_round_attrs[pid].items():
+                setattr(t["prod"], k, v)
+        s = summary[pid]
+        if db_status:
+            s["status"] = db_status
+            s["note"] = (
+                f"{when}人工已把状态改成 {db_status}（轮询按快照记的还是 {pre_round_status[pid]}）："
+                "这行交还人工——轮询不再跟踪、本轮状态与板侧心跳都没有写回"
+                + ("；已回读到的产物照常落库" if when == "写回前" else "")
+            )
+        else:
+            s["note"] = f"{when}这张生产单已不存在（人工删除？）：整行让位，轮询不再跟踪、不写回"
+
     while True:
         pending = {pid: t for pid, t in tracked.items() if summary[pid]["status"] not in (PR_SUCCESS, PR_FAILED)}
         if not pending:
@@ -6798,6 +8157,31 @@ async def _poll_and_collect(
                     "单子留在现在这个态不判失败；稍后带 recover_only=true 再回收一次即可"
                 )
             break
+        pre_round_status = {pid: str(summary[pid]["status"]) for pid in pending}
+        pre_round_attrs = {
+            pid: {k: getattr(t["prod"], k) for k in _POLLER_OWNED_COLS}
+            for pid, t in pending.items()
+        }
+        # ① 开工重读：上一轮 commit 之后人工可能已改状态。改走的行当场摘除——
+        #    尤其不能让它在下面的板面 fail 分支里按旧快照再自动重启一次（烧两遍号池）。
+        stale_start: Dict[str, Optional[str]] = {}
+        with db.sync_session.no_autoflush:
+            for pid in list(pending):
+                db_status = (
+                    await db.execute(
+                        select(AssetProduction.status).where(AssetProduction.id == uuid.UUID(pid))
+                    )
+                ).scalar_one_or_none()
+                if db_status is None or db_status != pre_round_status[pid]:
+                    stale_start[pid] = db_status
+        if stale_start:
+            for pid, db_status in stale_start.items():
+                _reown(pid, db_status, "轮询开工重读：")
+        # ⚠️ 无论有没有人让位都要收掉这个事务：开工重读的 SELECT 已经把事务打开了，
+        # 不收的话它会一直开着度过整轮出网（回读/下载几分钟），撞上现网 60s 的
+        # idle_in_transaction_session_timeout 把连接掐死（见 _dispatch_board 头注释）。
+        # 此刻本轮还没有任何改动，commit 是干净的收尾。
+        await db.commit()
         rounds += 1
         # 按 tag 分组回读（不同 tag 是不同拥有者的账，合一次查询会把别人的任务读进来）
         snapshots: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -6812,7 +8196,9 @@ async def _poll_and_collect(
                     if t["tag"] == tag:
                         summary[pid]["last_read_error"] = str(e)[:200]
         changed = False
-        for pid, t in pending.items():
+        # ⚠️ 对快照迭代：重启前重读若发现行被人工改走，_reown 会当场把行从 pending
+        # 摘掉（整行让位），直接迭代 .items() 会撞 dictionary changed size。
+        for pid, t in list(pending.items()):
             rows = snapshots.get(t["tag"], {})
             mine = [rows[tid] for tid in t["tids"] if tid in rows]
             s = summary[pid]
@@ -6821,6 +8207,12 @@ async def _poll_and_collect(
                 # 也可能是板子把行挪走了。两种都不判死，下一轮再说。
                 continue
             s["board_status"] = "/".join(sorted({str(r.get("status") or "").lower() for r in mine}))
+            # 批 L（投放进度可视化）：板侧状态写回生产单行。就算这轮没有任何状态迁移
+            # （还在跑），也让「板子还活着、上轮检查是什么时候」落到库上——所以写回
+            # 本身计 changed，走本轮末尾那次短事务 commit（出网都在事务外，不冲突）。
+            t["prod"].board_last_status = s["board_status"][:60]
+            t["prod"].board_last_check_at = datetime.utcnow()
+            changed = True
             got = [r for r in mine if board.state_after_board(r.get("status")) == "success"]
             bad = [r for r in mine if str(r.get("status") or "").strip().lower() == board.STATE_FAIL]
             if got and len(got) == len(mine):
@@ -6834,6 +8226,22 @@ async def _poll_and_collect(
                 changed = True
             elif bad and not got:
                 if t["payload"] and not t["restart_used"] and not recover_only:
+                    # 批 M（评审一·P1-1）：重启是**第二次烧号池**的动作，动手前用独立短会话
+                    # 再读一眼库里的真实状态。主会话此刻不能开事务（下面紧跟出网，开着事务
+                    # 等网络会撞 60s idle 掐断），也不能 commit（会把其他行本轮还没重读过的
+                    # 改动先写下去）——所以借 _database 的模块属性开一次性会话（测试替身
+                    # 重新指 factory 时这里自动跟着走）。人工若已把状态改走（判读后改回
+                    # queued 准备自己重投是最典型形状），这行当场让位：绝不按旧快照再重启。
+                    async with _database.async_session_factory() as probe:
+                        live_status = (
+                            await probe.execute(
+                                select(AssetProduction.status).where(AssetProduction.id == uuid.UUID(pid))
+                            )
+                        ).scalar_one_or_none()
+                    if live_status is None or live_status != pre_round_status[pid]:
+                        _reown(pid, live_status, "重启前重读，")
+                        changed = True
+                        continue
                     # 失败**只重启一次**（拍板口径）：同一条 payload 再建一次任务、重新认领 tid
                     t["restart_used"] = True
                     days = board.days_to_query([t["prod"].board_date])
@@ -6861,6 +8269,7 @@ async def _poll_and_collect(
                     s["board_status"] = None
                     s.pop("last_read_error", None)
                     changed = True
+                    # 批 L：重启后旧板侧状态已不属于新任务，_adopt_tids 已重钉「已投板」。
                 else:
                     _mark_dispatch_failed(
                         t["prod"], s,
@@ -6881,13 +8290,30 @@ async def _poll_and_collect(
                     t["prod"].status = PR_RUNNING
                     s["status"] = PR_RUNNING
                     changed = True
-        if outputs and any(not o.get("_inserted") for o in outputs):
+        if changed:
+            # ② 写回前重读（FOR UPDATE）：此刻本轮改动还只在内存里、本短事务还没发过
+            #    任何语句，no_autoflush 保证这次 SELECT 读到的是最后一次提交的真值——
+            #    状态已被人工改走的行整行让位（恢复快照＋摘除＋note），剩下的照常写回。
+            stale_end: Dict[str, Optional[str]] = {}
+            with db.sync_session.no_autoflush:
+                for pid in list(pending):
+                    db_status = (
+                        await db.execute(
+                            select(AssetProduction.status)
+                            .where(AssetProduction.id == uuid.UUID(pid))
+                            .with_for_update()
+                        )
+                    ).scalar_one_or_none()
+                    if db_status is None or db_status != pre_round_status[pid]:
+                        stale_end[pid] = db_status
+            for pid, db_status in stale_end.items():
+                _reown(pid, db_status, "写回前，")
             # 短事务：只在真的多了产物/改了状态时开一次，写完立刻 commit（出网都在事务外）
             for rec in outputs:
                 if rec.get("_inserted"):
                     continue
-                prod = tracked[rec["production_id"]]["prod"]
-                db.add(AssetOutput(
+                prod = prod_refs[rec["production_id"]]
+                new_out = AssetOutput(
                     production_id=prod.id,
                     asset_id=prod.asset_id,
                     **{
@@ -6895,10 +8321,12 @@ async def _poll_and_collect(
                         for k, v in rec.items()
                         if k not in ("production_id", "tid", "rgid", "doubao_account", "_inserted")
                     },
-                ))
+                )
+                db.add(new_out)
+                # 批 K：把生成的产物 id 留在 rec 里——轮询结束后要按它排首帧任务
+                await db.flush()
+                rec["_output_id"] = str(new_out.id)
                 rec["_inserted"] = True
-            changed = True
-        if changed:
             await db.commit()
         else:
             await asyncio.sleep(_board_poll_interval_seconds())
@@ -6929,24 +8357,110 @@ def _mark_dispatch_failed(p: AssetProduction, s: Dict[str, Any], reason: str) ->
 async def list_outputs(
     asset_id: Optional[str] = None,
     production_id: Optional[str] = None,
+    batch_id: Optional[str] = None,
     kind: Optional[str] = None,
+    qc_status: Optional[str] = None,
+    owner: Optional[str] = None,
     limit: int = 100,
+    offset: int = 0,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """产物列表。11-04 起 `kind=composed`（简单拼接）有写入方，其余仍等 P1。"""
+    """产物列表。11-04 起 `kind=composed`（简单拼接）有写入方，其余仍等 P1。
+
+    批 K（成片素材墙）：加 `batch_id`（按素材的批次收敛，拼接产物不挂生产单也查得到）、
+    `offset` + `total`（墙要翻页要计数）、每行带 `asset_code`（卡片上认得出是哪条素材）
+    和 `thumb_url`（产物首帧 presign，墙当缩略图；没帧就 null，前端画「没有预览图」）。
+    `qc_status`（2026-11-07）：墙上验收筛选真正生效——此前前端筛了但没传参，纯摆设。
+    """
     conds = []
     if asset_id:
         conds.append(AssetOutput.asset_id == _as_uuid(asset_id, "asset_id"))
     if production_id:
         conds.append(AssetOutput.production_id == _as_uuid(production_id, "production_id"))
+    if batch_id:
+        # 走素材侧收敛而不是生产单侧：拼接产物 production_id 可空，但 asset_id 永远在。
+        # "none" 是哨兵＝未挂批次的素材（分组清单里「未挂批次」那组展开时用）。
+        if batch_id == "none":
+            conds.append(
+                AssetOutput.asset_id.in_(select(AssetItem.id).where(AssetItem.batch_id.is_(None)))
+            )
+        else:
+            conds.append(
+                AssetOutput.asset_id.in_(
+                    select(AssetItem.id).where(AssetItem.batch_id == _as_uuid(batch_id, "batch_id"))
+                )
+            )
     if kind:
         conds.append(AssetOutput.kind == kind)
-    stmt = select(AssetOutput).where(and_(*conds)) if conds else select(AssetOutput)
-    rows = (
-        await db.execute(stmt.order_by(AssetOutput.created_at.desc()).limit(min(max(1, limit), 300)))
-    ).scalars().all()
+    if qc_status:
+        conds.append(AssetOutput.qc_status == qc_status)
+    if owner not in (None, "", "me", "all"):
+        raise HTTPException(status_code=400, detail="owner 只支持 me（我的链路）或 all（全量），缺省=all")
+    if owner == "me":
+        # A′：成片按投产人隔离（IN 半连接，不是 INNER JOIN——不丢行）。
+        # 拼接产物（production_id NULL，不挂生产单）＝公共，所有视图可见。
+        conds.append(or_(
+            AssetOutput.production_id.is_(None),
+            AssetOutput.production_id.in_(
+                select(AssetProduction.id).where(AssetProduction.created_by == current_user.id)
+            ),
+        ))
+    base = select(AssetOutput).where(and_(*conds)) if conds else select(AssetOutput)
+    total = int(
+        (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
+    )
+    rows = list(
+        (
+            await db.execute(
+                base.order_by(AssetOutput.created_at.desc())
+                .offset(max(0, offset))
+                .limit(min(max(1, limit), 300))
+            )
+        ).scalars().all()
+    )
+
+    # 卡片要认素材码 / 生产单号：两把小映射，别在循环里逐行查
+    codes: Dict[uuid.UUID, str] = {}
+    prod_names: Dict[uuid.UUID, str] = {}
+    if rows:
+        asset_rows = (
+            await db.execute(
+                select(AssetItem.id, AssetItem.code).where(AssetItem.id.in_({o.asset_id for o in rows}))
+            )
+        ).all()
+        codes = {r[0]: r[1] for r in asset_rows}
+        prod_rows = (
+            await db.execute(
+                select(AssetProduction.id, AssetProduction.hook_code, AssetProduction.created_by).where(
+                    AssetProduction.id.in_({o.production_id for o in rows if o.production_id})
+                )
+            )
+        ).all()
+        prod_names = {r[0]: r[1] for r in prod_rows}
+        # A′：投产人显示名（片层灰字标注；拼接产物 production_id NULL＝公共，前端标注）
+        prod_owner_names = await _user_names(db, {r[2] for r in prod_rows if r[2]})
+        # 首帧：每个产物最多 1 张 output_thumb（部分唯一索引保证）
+        frame_rows = (
+            await db.execute(
+                select(AssetFrame).where(
+                    AssetFrame.output_id.in_([o.id for o in rows]),
+                    AssetFrame.kind == FRAME_OUTPUT_THUMB,
+                )
+            )
+        ).scalars().all()
+        thumb_urls: Dict[uuid.UUID, Optional[str]] = {}
+        for f in frame_rows:
+            thumb_urls[f.output_id] = await get_presigned_url(
+                f.bucket or settings.MINIO_BUCKET_RAW,
+                f.file_key,
+                expires_seconds=_FRAME_URL_TTL_SECONDS,
+            )
+    else:
+        thumb_urls = {}
+
     return {
+        "total": total,
         "items": [
             {
                 "id": str(o.id),
@@ -6964,10 +8478,379 @@ async def list_outputs(
                 "qc_status": o.qc_status,
                 "qc_note": o.qc_note,
                 "created_at": utc_iso(o.created_at),
+                "downloaded_at": utc_iso(o.downloaded_at) if o.downloaded_at else None,
+                # 批 K：卡片标注 + 缩略图（没帧 = null，前端画占位不报错）
+                "asset_code": codes.get(o.asset_id),
+                "hook_code": prod_names.get(o.production_id) if o.production_id else None,
+                "owner_name": prod_owner_names.get(o.production_id) if o.production_id else None,
+                "thumb_url": thumb_urls.get(o.id),
             }
             for o in rows
         ]
     }
+
+
+@router.get("/assets/outputs/groups")
+async def list_output_groups(
+    group_by: str = "asset",
+    batch_id: Optional[str] = None,
+    kind: Optional[str] = None,
+    qc_status: Optional[str] = None,
+    owner: Optional[str] = None,
+    limit: int = 100,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """成片墙两级视图的第一级：按素材（钩子）或按批次聚合一层清单。
+
+    2026-11-07 用户口径：墙不再一屏摊开所有片子——先按批次/钩子列一层清单
+    （每组带成片数＋最近回收时间＋最新一条的缩略图），点开一层再看这组的墙。
+    聚合口径与 /assets/outputs 同一套（batch_id 走素材侧收敛；kind/qc 同参数）；
+    缩略图取该组最新一条的首帧 presign（1h TTL，与列表口同款）。
+    """
+    if group_by not in ("asset", "batch"):
+        raise HTTPException(status_code=400, detail="group_by 只支持 asset（按素材/钩子）或 batch（按批次）")
+    if owner not in (None, "", "me", "all"):
+        raise HTTPException(status_code=400, detail="owner 只支持 me（我的链路）或 all（全量），缺省=all")
+    conds = []
+    if kind:
+        conds.append(AssetOutput.kind == kind)
+    if qc_status:
+        conds.append(AssetOutput.qc_status == qc_status)
+    if owner == "me":
+        # A′：组层计数与片层同一套 owner 口径（IN 半连接；拼接产物＝公共，各组都可见）
+        conds.append(or_(
+            AssetOutput.production_id.is_(None),
+            AssetOutput.production_id.in_(
+                select(AssetProduction.id).where(AssetProduction.created_by == current_user.id)
+            ),
+        ))
+    if batch_id:
+        conds.append(
+            AssetOutput.asset_id.in_(
+                select(AssetItem.id).where(AssetItem.batch_id == _as_uuid(batch_id, "batch_id"))
+            )
+        )
+    cap = min(max(1, limit), 200)
+
+    if group_by == "asset":
+        rows = list(
+            (
+                await db.execute(
+                    select(
+                        AssetOutput.asset_id,
+                        func.count().label("cnt"),
+                        func.max(AssetOutput.created_at).label("latest"),
+                    )
+                    .where(and_(*conds))
+                    .group_by(AssetOutput.asset_id)
+                    .order_by(func.max(AssetOutput.created_at).desc())
+                    .limit(cap)
+                )
+            ).all()
+        )
+        keys = [r[0] for r in rows]
+        items_meta: Dict[uuid.UUID, dict] = {}
+        hook_map: Dict[uuid.UUID, List[str]] = {}
+        if keys:
+            for r in (
+                await db.execute(
+                    select(AssetItem.id, AssetItem.code, AssetItem.title, AssetItem.batch_id).where(
+                        AssetItem.id.in_(keys)
+                    )
+                )
+            ).all():
+                items_meta[r[0]] = {"code": r[1], "title": r[2], "batch_id": r[3]}
+            # 钩子号挂在生产单上：按素材汇总去重，让人在列表层就能认出「这是哪条钩子」
+            prods = (
+                await db.execute(
+                    select(AssetProduction.asset_id, AssetProduction.hook_code).where(
+                        AssetProduction.asset_id.in_(keys),
+                        AssetProduction.hook_code.is_not(None),
+                    )
+                )
+            ).all()
+            for aid, hc in prods:
+                bucket = hook_map.setdefault(aid, [])
+                if hc not in bucket:
+                    bucket.append(hc)
+        groups = [
+            {
+                "key": str(aid),
+                "label": (items_meta.get(aid, {}).get("code") or str(aid)[:8])
+                + (
+                    f"｜{items_meta[aid]['title']}"
+                    if items_meta.get(aid, {}).get("title")
+                    else ""
+                ),
+                "sub": "钩子 " + "、".join(hook_map.get(aid, [])) if hook_map.get(aid) else None,
+                "count": int(cnt),
+                "latest_at": utc_iso(latest) if latest else None,
+                "_latest": latest,
+            }
+            for aid, cnt, latest in rows
+        ]
+    else:
+        rows = list(
+            (
+                await db.execute(
+                    select(
+                        AssetItem.batch_id,
+                        func.count().label("cnt"),
+                        func.max(AssetOutput.created_at).label("latest"),
+                    )
+                    .join(AssetItem, AssetItem.id == AssetOutput.asset_id)
+                    .where(and_(*conds))
+                    .group_by(AssetItem.batch_id)
+                    .order_by(func.max(AssetOutput.created_at).desc())
+                    .limit(cap)
+                )
+            ).all()
+        )
+        batch_ids = [r[0] for r in rows if r[0] is not None]
+        batch_meta: Dict[uuid.UUID, dict] = {}
+        if batch_ids:
+            for b in (
+                await db.execute(
+                    select(AssetBatch.id, AssetBatch.code, AssetBatch.name).where(AssetBatch.id.in_(batch_ids))
+                )
+            ).all():
+                batch_meta[b[0]] = {"code": b[1], "name": b[2]}
+        groups = [
+            {
+                "key": str(bid) if bid is not None else "none",
+                "label": (
+                    f"{batch_meta[bid]['code']} · {batch_meta[bid]['name'] or '未命名'}"
+                    if bid is not None and bid in batch_meta
+                    else "未挂批次"
+                ),
+                "sub": None,
+                "count": int(cnt),
+                "latest_at": utc_iso(latest) if latest else None,
+                "_latest": latest,
+            }
+            for bid, cnt, latest in rows
+        ]
+
+    # 每组最新一条的首帧缩略图：按时间倒序扫一遍候选，每组取第一遇到的（400 条有界，
+    # 超界的组没图只是少张缩略图，不报错）
+    if groups:
+        group_keys = {g["key"] for g in groups}
+        latest_rows: Dict[str, AssetOutput] = {}
+        if group_by == "asset":
+            scan_rows = list(
+                (
+                    await db.execute(
+                        select(AssetOutput)
+                        .where(and_(*conds))
+                        .order_by(AssetOutput.created_at.desc())
+                        .limit(400)
+                    )
+                ).scalars()
+            )
+            for o in scan_rows:
+                gkey = str(o.asset_id)
+                if gkey in group_keys and gkey not in latest_rows:
+                    latest_rows[gkey] = o
+        else:
+            # batch 模式的组键＝该输出所属素材的批次（未挂批次的素材归入 "none" 组）
+            scan_rows = list(
+                (
+                    await db.execute(
+                        select(AssetOutput, AssetItem.batch_id)
+                        .join(AssetItem, AssetItem.id == AssetOutput.asset_id)
+                        .where(and_(*conds))
+                        .order_by(AssetOutput.created_at.desc())
+                        .limit(400)
+                    )
+                ).all()
+            )
+            for o, bid in scan_rows:
+                gkey = str(bid) if bid is not None else "none"
+                if gkey in group_keys and gkey not in latest_rows:
+                    latest_rows[gkey] = o
+        thumb_urls: Dict[str, Optional[str]] = {}
+        if latest_rows:
+            frame_rows = (
+                await db.execute(
+                    select(AssetFrame).where(
+                        AssetFrame.output_id.in_([o.id for o in latest_rows.values()]),
+                        AssetFrame.kind == FRAME_OUTPUT_THUMB,
+                    )
+                )
+            ).scalars().all()
+            frames_by_output = {f.output_id: f for f in frame_rows}
+            for gkey, o in latest_rows.items():
+                f = frames_by_output.get(o.id)
+                thumb_urls[gkey] = (
+                    await get_presigned_url(
+                        f.bucket or settings.MINIO_BUCKET_RAW,
+                        f.file_key,
+                        expires_seconds=_FRAME_URL_TTL_SECONDS,
+                    )
+                    if f
+                    else None
+                )
+        for g in groups:
+            g["thumb_url"] = thumb_urls.get(g["key"])
+    else:
+        for g in groups:
+            g["thumb_url"] = None
+
+    return {"group_by": group_by, "owner": owner or "all", "groups": groups}
+
+
+@router.post("/assets/outputs/package")
+async def package_outputs(
+    ids: List[str] = Body(..., description="要打包的产物 id"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """成片交付包（P1·评审定稿⑧，impact 9）：勾选跨组汇总 → 服务端 zip 打包下载。
+
+    - 验收 failed 的照旧在打包口拦（与单条下载同一道闸，assets.py 下载口同款）；
+    - 包内附 manifest.json：钩子号、推荐标题、剧缩、验收结论、production_id、
+      reviewed_by/created_by 归属——发布侧交接「下载即落位」，不必人肉改名贴标题；
+    - 文件名按板侧命名＋序号，重名自动加 (2)。
+    """
+    import io
+    import zipfile
+
+    uids = [_as_uuid(i, "output_id") for i in ids]
+    rows = (
+        await db.execute(
+            select(AssetOutput).where(
+                AssetOutput.id.in_(uids), AssetOutput.kind.notin_(("package", "copy"))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="没有可打包的产物")
+    blocked = [o for o in rows if o.qc_status == "failed"]
+    if blocked:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{len(blocked)} 条验收不合格被拦（先看清为什么废）："
+            + "、".join((b.file_name or b.id)[:24] for b in blocked[:5]),
+        )
+
+    # 归属与标题一次聚合
+    prod_ids = {o.production_id for o in rows if o.production_id}
+    asset_ids = {o.asset_id for o in rows}
+    prod_meta: Dict[Any, dict] = {}
+    if prod_ids:
+        for pid, hc, titles, cb, rb in (
+            await db.execute(
+                select(
+                    AssetProduction.id,
+                    AssetProduction.hook_code,
+                    AssetProduction.video_titles,
+                    AssetProduction.created_by,
+                    AssetSummary.reviewed_by,
+                )
+                .join(AssetSummary, AssetSummary.id == AssetProduction.summary_id)
+                .where(AssetProduction.id.in_(prod_ids))
+            )
+        ).all():
+            prod_meta[pid] = {
+                "hook_code": hc,
+                "titles": titles or [],
+                "created_by": str(cb) if cb else None,
+                "reviewed_by": str(rb) if rb else None,
+            }
+    asset_codes: Dict[Any, str] = {}
+    if asset_ids:
+        for aid, code in (
+            await db.execute(select(AssetItem.id, AssetItem.code).where(AssetItem.id.in_(asset_ids)))
+        ).all():
+            asset_codes[aid] = code
+    names = await _user_names(db, {m.get("created_by") for m in prod_meta.values() if m.get("created_by")})
+
+    # 首帧（无帧缩略不打包，manifest 照记）
+    frame_rows = (
+        await db.execute(
+            select(AssetFrame).where(
+                AssetFrame.output_id.in_([o.id for o in rows]),
+                AssetFrame.kind == FRAME_OUTPUT_THUMB,
+            )
+        )
+    ).scalars().all()
+    frames_by_output = {f.output_id: f for f in frame_rows}
+
+    manifest_entries = []
+    used_names: Dict[str, int] = {}
+    import asyncio as _aio
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        for o in rows:
+            meta = prod_meta.get(o.production_id) or {}
+            base = (o.file_name or f"{o.id}").rsplit(".", 1)[0][:80] or "clip"
+            ext = (o.file_name or "clip.mp4").rsplit(".", 1)[-1] or "mp4"
+            name = f"{base}.{ext}"
+            n = used_names.get(name, 0)
+            if n:
+                name = f"{base}({n + 1}).{ext}"
+            used_names[name] = n + 1
+            url = await get_presigned_url(
+                o.bucket or settings.MINIO_BUCKET_RAW, o.file_key, expires_seconds=600
+            )
+            async with httpx.AsyncClient(timeout=300) as cl:
+                resp = await cl.get(url)
+                resp.raise_for_status()
+            zf.writestr(name, resp.content)
+            fr = frames_by_output.get(o.id)
+            manifest_entries.append(
+                {
+                    "file": name,
+                    "asset_code": asset_codes.get(o.asset_id),
+                    "hook_code": meta.get("hook_code"),
+                    "recommended_title": (meta.get("titles") or [""])[0],
+                    "qc_status": o.qc_status,
+                    "duration": o.duration,
+                    "resolution": o.resolution,
+                    "produced_by": names.get(meta.get("created_by") or ""),
+                    "reviewed_by": names.get(meta.get("reviewed_by") or ""),
+                    "thumb_url": (
+                        await get_presigned_url(
+                            fr.bucket or settings.MINIO_BUCKET_RAW,
+                            fr.file_key,
+                            expires_seconds=_FRAME_URL_TTL_SECONDS,
+                        )
+                        if fr
+                        else None
+                    ),
+                }
+            )
+        zf.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "exported_at": utc_iso(datetime.utcnow()),
+                    "exported_by": current_user.username,
+                    "items": manifest_entries,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+    buf.seek(0)
+    await _write_audit(
+        db,
+        action="asset.outputs_package",
+        operator=current_user,
+        target_type="asset_output",
+        target_id=None,
+        after={"count": len(rows), "ids": [str(o.id) for o in rows[:20]]},
+    )
+    await db.commit()
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="delivery-package.zip"'},
+    )
 
 
 @router.get("/assets/outputs/{output_id}/download")
@@ -7367,6 +9250,20 @@ async def _recompute_batch_actual_cost(db: AsyncSession, batch_ids) -> None:
             batch.cost_actual = round(float(charged), 4)
 
 
+def _cached_play_url(asset: AssetItem) -> tuple[Optional[str], float]:
+    """时效直链缓存（11-06 播放直链修复）：返回 (缓存直链, 距取链小时数)。
+
+    缓存只在 `ASSET_PLAY_URL_TTL_HOURS`（默认 6，与源站时效直链「约 6 小时有效」
+    同口径）内算数；过期返回 (None, age)。取链时间缺失/直链为空＝没有缓存。
+    """
+    if not asset.play_url or asset.play_url_at is None:
+        return None, 0.0
+    age_h = (datetime.utcnow() - asset.play_url_at).total_seconds() / 3600.0
+    if age_h > float(settings.ASSET_PLAY_URL_TTL_HOURS):
+        return None, age_h
+    return asset.play_url, age_h
+
+
 @router.post("/assets/resolve")
 async def resolve_link_assets(
     data: ResolveRequest,
@@ -7380,11 +9277,16 @@ async def resolve_link_assets(
     前端先调 `/assets/cost/estimate?need_parse=true` 拿预估，≥2 条要带 `confirmed=true`，
     闸门（余额 blocked / 超预算 need_approval）与反推同一套，blocked **没有 force 后门**。
 
-    三条「不重复花钱」的硬规矩：
-    - 已有 `duration` 的**跳过**，点名也一样跳（真要重探是人的决定，不是系统顺手）；
+    三条「不重复花钱」的硬规矩（11-06 播放直链修复后，跳过分两种）：
+    - 已有 `duration` 的**不进 todo**：缓存直链还在 TTL 内 → 免费**回放**（channel=cache，
+      0 元、不调解析接口，results 里带 play_url）；缓存过期 → 跳过并提示带 `retake=true`
+      重取（唯一自愈出口：强制重解析、按渠道记账 0.01 元/次）；
     - 整批排队只取 `duration IS NULL 且 cost_parse=0` 的：解析过但源站不给时长的**不再自动重排**，
       免得同一条被反复扣 0.01；确实要再试就点名 asset_ids；
     - 直链素材走 ffprobe 本地探测，**不发**解析接口（0 元）。
+
+    解析成功后把直链 + 取链时间**落库**（`play_url`/`play_url_at`），source-preview 与
+    下一次 resolve 靠它免费回放——「取了直链再进来直链就没了」的根因就是以前只回响应不落库。
 
     记账口径：**发出去就记**，与拿不拿得到时长无关——付费渠道收了钱不会因为我们不读
     duration 就退钱。逐条 fail-soft，一条失败不连坐整批，失败的不记账。
@@ -7429,6 +9331,11 @@ async def resolve_link_assets(
 
     todo: List[AssetItem] = []
     skipped: List[dict] = []
+    # 11-06 播放直链修复：已解析过的素材如果缓存直链还在时效内，免费回放（0 元、
+    # 不调解析接口）。之前 play_url 只活在当次响应里，用户付了钱取的直链一关抽屉
+    # 就没了，再点按钮还会撞上「已有时长不重复付费」的 skip——链接既拿不回来、
+    # 也不会再扣钱，死锁在播不了。
+    cached_entries: List[dict] = []
     for a in assets:
         if a.media_kind == MEDIA_IMAGE:
             # 批 G：图片没有"时长"这回事，回源解析对它既无意义又收费（0.01 元/条）
@@ -7440,8 +9347,26 @@ async def resolve_link_assets(
         if a.source_kind != SOURCE_LINK:
             skipped.append({"code": a.code, "reason": "文件素材的时长在上传时就由 ffprobe 回写，不需要回源"})
             continue
-        if a.duration:
-            skipped.append({"code": a.code, "reason": f"已有时长 {a.duration}s，不重复付费解析"})
+        if a.duration and not data.retake:
+            cached, age_h = _cached_play_url(a)
+            if cached:
+                ttl = settings.ASSET_PLAY_URL_TTL_HOURS
+                age_txt = f"{age_h:.1f}" if age_h >= 0.1 else "刚刚"
+                cached_entries.append({
+                    "asset_id": str(a.id), "code": a.code, "duration": a.duration,
+                    "charged": 0.0, "channel": "cache", "ok": True,
+                    "play_url": cached,
+                    "note": f"回放 {age_txt} 小时前取的直链（{ttl:g} 小时内免费），没调解析接口；打不开就点重取",
+                })
+                continue
+            skipped.append({
+                "code": a.code,
+                "reason": (
+                    f"已有时长 {a.duration}s，不重复付费解析；上次取的直链已过期"
+                    f"（超过 {settings.ASSET_PLAY_URL_TTL_HOURS:g} 小时），要重取带 retake=true"
+                    "（重新解析，0.01 元/次）"
+                ),
+            })
             continue
         todo.append(a)
 
@@ -7449,6 +9374,21 @@ async def resolve_link_assets(
         # 没活可干不是错误：点名的那条已有时长/整批都付过一次费，返回 200 + skipped 让前端
         # 把「为什么没花钱」逐条讲出来。走 400 的话，排队轮询到队尾会被当成接口故障。
         # 唯一保留的入参错误是 `_queue_or_ids` 里的「二选一/都为空」，那是调用方写错了。
+        # 11-06：缓存直链回放不是「没活」——results 里要带回 play_url，前端靠它免重取播放。
+        if cached_entries:
+            return {
+                "results": cached_entries,
+                "skipped": skipped,
+                "resolved": len(cached_entries),
+                "charged": 0.0,
+                "channels": {},
+                "queue": queue,
+                "estimate": None,
+                "message": (
+                    f"{len(cached_entries)} 条直接回放缓存直链（0 元，未发起外呼）"
+                    + (f"；{len(skipped)} 条被跳过" if skipped else "")
+                ),
+            }
         return {
             "results": [],
             "skipped": skipped,
@@ -7465,6 +9405,15 @@ async def resolve_link_assets(
                 )
             ),
         }
+
+    # 11-06 拍板②：解析费虽小（0.01/条）但是真实支出，替别人批次花之前先确认，确认后留痕
+    crosses = await _cross_person_gate(
+        db,
+        operator=current_user,
+        batch_ids=[a.batch_id for a in todo],
+        action_label="回源解析",
+        confirmed=data.cross_person_confirm,
+    )
 
     # max_duration=0：只算解析这一条腿，别把反推的档位钱混进来（反推有它自己的确认单）
     estimate = svc.estimate_batch_cost(len(todo), max_duration=0, need_parse=True)
@@ -7524,7 +9473,7 @@ async def resolve_link_assets(
                 },
             )
 
-    results: List[dict] = []
+    results: List[dict] = list(cached_entries)
     touched_batches: List[Any] = []
     charged_total = 0.0
     channels: Dict[str, int] = {}
@@ -7581,6 +9530,11 @@ async def resolve_link_assets(
         else:
             entry.update(ok=True, play_url=play_url,
                          note="解析成功但源站没给时长；已按渠道记账，时长仍为空（前端显示「未知」）")
+        # 11-06 播放直链修复：直链落库（+取链时间）。哪怕源站没给时长，直链也能播，
+        # 缓存期内免费回放；过由 _cached_play_url 的 TTL 判，不在这里猜。
+        if play_url:
+            a.play_url = play_url
+            a.play_url_at = datetime.utcnow()
         title = getattr(parsed, "title", None)
         if title:
             entry["title"] = title[:200]
@@ -7600,9 +9554,12 @@ async def resolve_link_assets(
             "charged": charged_total,
             "channels": channels,
             "skipped": [s["code"] for s in skipped],
+            "cache_hits": [c["code"] for c in cached_entries],
+            "retake": bool(data.retake),
             "estimate": estimate["total_cost"],
             "balance": balance,
             "queue": queue,
+            "cross_person": crosses or None,
         },
     )
     await db.commit()
@@ -7691,6 +9648,15 @@ async def download_asset_sources(
             "message": "没有一条需要下载（原片都已在自有桶里），未发起任何外呼"
             + (f"；{len(skipped)} 条被跳过" if skipped else ""),
         }
+
+    # 11-06 拍板②：下载会按解析渠道计 0.01/条，替别人批次跑之前先确认，确认后留痕
+    crosses = await _cross_person_gate(
+        db,
+        operator=current_user,
+        batch_ids=[a.batch_id for a in todo],
+        action_label="下载原片",
+        confirmed=data.cross_person_confirm,
+    )
 
     results: List[dict] = []
     tmp_dir = os.path.join(tempfile.gettempdir(), f"asset_download_{uuid.uuid4().hex}")
@@ -7816,6 +9782,7 @@ async def download_asset_sources(
                 {k: r.get(k) for k in ("asset_id", "code", "ok", "charged", "error") if k in r}
                 for r in results
             ],
+            "cross_person": crosses or None,
         },
     )
     await db.commit()
@@ -8100,9 +10067,13 @@ async def preview_asset_source(
     频率和下载不是一个量级，记进审计台账会把真正的交付动作淹掉；
     `downloaded_at` 的语义是"这条产物已交付出去过"，看一眼不能把它点亮。
 
-    链接形态素材桶里没有文件，回 `mode=external`：`url` 为 null，
-    前端据此显示"这条还没回源，点解析"——时效直链要 `POST /assets/resolve`（0.01 元/次）
-    现拿现用，不在这口里自动发起（取片和取时长是两笔钱、两件事）。
+    链接形态素材桶里没有文件：
+    - **缓存直链还在有效期**（11-06 播放直链修复）→ 回 `mode=cached`，`url`＝上次取的
+      时效直链。前端开抽屉直接把播放器架起来，0 元、不发起任何外呼——「取了直链再进来
+      直链就没了」的根因就是这条路径以前不存在（resolve 只存时长不存直链）。
+    - 缓存没有/已过期 → 回 `mode=external`：`url` 为 null，前端显示"这条还没回源，点解析"
+      ——时效直链要 `POST /assets/resolve`（0.01 元/次）现拿现用；缓存过期的会提示带
+      `retake=true` 重取。
     """
     asset = await _get_asset_or_404(db, asset_id)
 
@@ -8120,8 +10091,13 @@ async def preview_asset_source(
     elif asset.source_kind == SOURCE_FILE:
         raise HTTPException(status_code=404, detail="该素材没有可预览的原文件（上传未成功）")
     else:
-        url = None
-        mode = "external"
+        cached, age_h = _cached_play_url(asset)
+        if cached:
+            url = cached
+            mode = "cached"
+        else:
+            url = None
+            mode = "external"
 
     return {
         "mode": mode,
@@ -8135,11 +10111,24 @@ async def preview_asset_source(
         "resolution": asset.resolution,
         "expires_in": 3600 if url else None,
         "source_url": asset.source_url if mode == "external" else None,
+        "cached": mode == "cached",
+        "play_url_taken_at": (
+            asset.play_url_at.isoformat() + "Z" if mode == "cached" and asset.play_url_at else None
+        ),
         "note": (
             None
-            if url
-            else "链接素材桶里没有文件，不能内联播放；点「查时长/回源解析」拿时效直链（0.01 元/次）后再播，"
-            "那条直链有时效，过期要重新解析"
+            if mode == "stored"
+            else (
+                f"回放 {age_h:.1f} 小时前取的直链（缓存，{settings.ASSET_PLAY_URL_TTL_HOURS:g} 小时内免费）；"
+                "打不开或已过期就点「取直链并播放」重取（0.01 元/次）"
+                if mode == "cached"
+                else (
+                    # external 只会是链接素材（SOURCE_FILE 没文件在上面就 404 了）
+                    "上次取的直链已过期（时效直链源站会撤链）；点「取直链并播放」重取（0.01 元/次）"
+                    if asset.duration
+                    else "链接素材桶里没有文件，不能内联播放；点「取直链并播放」拿时效直链（0.01 元/次）后再播"
+                )
+            )
         ),
     }
 
@@ -8897,6 +10886,185 @@ async def get_asset(
     }
 
 
+@router.delete("/assets/{asset_id}")
+async def delete_asset(
+    asset_id: str,
+    force: bool = Query(False, description="admin 连坐强删：连文案/生产单/产物一起带走，必须带 reason"),
+    reason: str = Query("", description="force 删除的理由（进审计），不带理由的强删直接拒"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除一条素材（11-06 用户拍板：列表要有删除功能）。
+
+    权限：**本人删自己的**（任何角色都行——素材是谁导的谁最有资格说它没用了），
+    删别人的只有 admin。与「改后重提」的门槛同一口径。
+
+    护栏（默认路径，不带 force）：
+    - 挂着文案 / 生产单 / 产物 → 409 拒删。这三类是审核与投放的**交付台账**
+      （A2-2 的同一条铁律：静默连坐删掉它们，对账就无从下手），删素材前必须先处理。
+    - 有同一批 asset_jobs 还在跑（圈住了这条素材）→ 409 拒删，等跑完再说——
+      否则下载/出文案跑一半底下的素材行没了，任务回填时必然报错。
+
+    force（仅 admin + 必填 reason）：连坐删文案、生产单、产物、帧，桶里的对象尽力删
+    （删不掉只留日志，不拦 DB 删除——桶不设过期，宁可多留一份孤儿对象也别让
+    "删素材"卡死在 MinIO 抖动上）。force 走 strict 审计（拍板①：force 类动作
+    审计失败即拒绝）。产物/文案/素材三张表对 asset_items 的 FK 都是
+    ON DELETE CASCADE，但这里**显式逐表删**：SQLite 测试引擎不强制外键，
+    靠 DB 级联在测试里就是"看起来删了"，换个库行为就分叉。
+    """
+    asset = await _get_asset_or_404(db, asset_id)
+
+    is_admin = current_user.role == UserRole.admin
+    is_owner = asset.created_by is not None and str(asset.created_by) == str(current_user.id)
+    if not (is_admin or is_owner):
+        raise HTTPException(
+            status_code=403,
+            detail="只能删除自己导入的素材；删别人导入的要管理员",
+        )
+
+    # ── 护栏 1：还在跑的任务圈住了这条素材 ──
+    str_id = str(asset.id)
+    open_jobs = (
+        await db.execute(select(AssetJob).where(AssetJob.status.in_(JOB_OPEN_STATES)))
+    ).scalars().all()
+    for job in open_jobs:
+        if str_id in _job_scope_ids(job.kind, job.params or {}):
+            raise HTTPException(
+                status_code=409,
+                detail=f"这条素材还有正在跑的后台任务（{job.kind}，任务 {job.id}），等任务跑完再删",
+            )
+
+    # ── 护栏 2：交付台账挂着就默认拒删 ──
+    n_summaries = int(
+        (await db.execute(
+            select(func.count(AssetSummary.id)).where(AssetSummary.asset_id == asset.id)
+        )).scalar_one()
+    )
+    n_prods = int(
+        (await db.execute(
+            select(func.count(AssetProduction.id)).where(AssetProduction.asset_id == asset.id)
+        )).scalar_one()
+    )
+    n_outputs = int(
+        (await db.execute(
+            select(func.count(AssetOutput.id)).where(AssetOutput.asset_id == asset.id)
+        )).scalar_one()
+    )
+    attached = [
+        name for name, n in (("文案", n_summaries), ("生产单", n_prods), ("产物", n_outputs)) if n
+    ]
+    if attached and not force:
+        tip = (
+            "；确实要连历史一起删，让管理员用「强制删除」并留理由"
+            if not is_admin else
+            "；管理员可加 force=true 并带 reason 强制连坐删除"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"这条素材已挂 {'、'.join(attached)}，删除会把审核与投放历史一起带走" + tip,
+        )
+    if attached and force and not is_admin:
+        raise HTTPException(status_code=403, detail="强制删除挂有文案/生产单/产物的素材只有管理员能做")
+    if force and not reason.strip():
+        raise HTTPException(status_code=400, detail="强制删除必须带理由（reason），进审计留痕")
+
+    # ── 收集桶对象（尽力删）──
+    frames = (
+        await db.execute(select(AssetFrame).where(AssetFrame.asset_id == asset.id))
+    ).scalars().all()
+    outputs = (
+        await db.execute(select(AssetOutput).where(AssetOutput.asset_id == asset.id))
+    ).scalars().all()
+    candidates: List[Tuple[str, str, str]] = []  # (bucket, key, 归属说明)
+    if asset.file_key:
+        candidates.append((asset.bucket or settings.MINIO_BUCKET_RAW, asset.file_key, "原片"))
+    if asset.cover_image_key:
+        candidates.append((asset.bucket or settings.MINIO_BUCKET_RAW, asset.cover_image_key, "封面图"))
+    for f in frames:
+        if f.file_key:
+            candidates.append((f.bucket or settings.MINIO_BUCKET_RAW, f.file_key, "抽帧图"))
+    for o in outputs:
+        if o.file_key:
+            candidates.append((o.bucket or settings.MINIO_BUCKET_SLICED, o.file_key, "产物"))
+
+    # ── 删行（顺序：产物 → 帧 → 文案 → 生产单 → 素材；frames.output_id 的 FK 指产物）──
+    for o in outputs:
+        await db.delete(o)
+    for f in frames:
+        await db.delete(f)
+    if n_summaries:
+        await db.execute(delete(AssetSummary).where(AssetSummary.asset_id == asset.id))
+    if n_prods:
+        await db.execute(delete(AssetProduction).where(AssetProduction.asset_id == asset.id))
+    await _write_audit(
+        db,
+        action="asset.asset.delete",
+        operator=current_user,
+        target_type="asset_item",
+        target_id=asset.id,
+        before={
+            "code": asset.code,
+            "title": asset.title,
+            "platform": asset.platform,
+            "source_kind": asset.source_kind,
+            "media_kind": asset.media_kind,
+            "status": asset.status,
+            "file_key": asset.file_key,
+            "cost_prompt": asset.cost_prompt,
+            "cost_parse": asset.cost_parse,
+            "cost_produce": asset.cost_produce,
+            "batch_id": str(asset.batch_id) if asset.batch_id else None,
+        },
+        after={
+            "deleted": True,
+            "force": bool(force and attached),
+            "reason": reason.strip() or None,
+            "removed_outputs": len(outputs),
+            "removed_frames": len(frames),
+            "removed_summaries": n_summaries,
+            "removed_productions": n_prods,
+        },
+        strict=bool(force and attached),
+    )
+    batch = None
+    if asset.batch_id:
+        batch = (
+            await db.execute(select(AssetBatch).where(AssetBatch.id == asset.batch_id))
+        ).scalar_one_or_none()
+    await db.delete(asset)
+    await db.flush()
+    if batch is not None:
+        batch.item_count = max(0, (batch.item_count or 0) - 1)
+    await db.commit()
+
+    # ── 桶对象最后删（DB 已落定，MinIO 抖动不影响删除结果）──
+    removed_objects = 0
+    for bucket, key, what in candidates:
+        try:
+            if await delete_file(bucket, key):
+                removed_objects += 1
+        except Exception:
+            logger.warning("删除素材 %s 的%s对象失败 %s/%s", asset.code, what, bucket, key, exc_info=True)
+
+    logger.info(
+        "素材已删除 code=%s by=%s force=%s outputs=%s frames=%s objects=%s",
+        asset.code, current_user.username, bool(force and attached),
+        len(outputs), len(frames), removed_objects,
+    )
+    return {
+        "deleted": asset.code,
+        "force": bool(force and attached),
+        "removed_outputs": len(outputs),
+        "removed_frames": len(frames),
+        "removed_objects": removed_objects,
+        "message": (
+            f"已删除素材 {asset.code}（连坐删除文案 {n_summaries} 条、生产单 {n_prods} 张、产物 {len(outputs)} 份；理由已进审计）"
+            if (force and attached) else
+            f"已删除素材 {asset.code}"
+        ),
+    }
+
+
 @router.post("/assets/{asset_id}/prompt-refresh")
 async def refresh_asset_prompt(
     asset_id: str,
@@ -8936,6 +11104,15 @@ async def refresh_asset_prompt(
         svc.apply_stage(asset, "prompt", STAGE_FAILED)
         asset.note = ((asset.note or "") + f"\n反推失败：{task.error}")[:1000]
     await db.commit()
+    # P1（评审定稿⑫）：手动刷新反推状态留痕（此前该口无审计）
+    await _write_audit(
+        db,
+        action="asset.prompt_refresh",
+        operator=current_user,
+        target_type="asset_item",
+        target_id=str(asset.id),
+        after={"code": asset.code, "stage_prompt": asset.stage_prompt},
+    )
     result = {"asset": _serialize_item(asset), "prompt_task": serialize_prompt_task(task)}
     if asset.source_kind == SOURCE_LINK and asset.duration is None:
         result["duration_note"] = (

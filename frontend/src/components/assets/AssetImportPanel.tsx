@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Alert, Button, Card, Col, Input, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography, Upload, message,
+  Alert, Button, Card, Collapse, Col, Input, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography, Upload, message,
 } from 'antd';
 import { CloudUploadOutlined, InboxOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -10,6 +10,7 @@ import type { AssetBatch, AssetImportBatchResponse, AssetImportDuplicate, AssetU
 import { parseServerTime } from '../../utils/format';
 import { MonoText, yuan } from './AssetBits';
 import { CategorySelect, useAssetCategories } from './AssetCategoryBits';
+import { nudgeAssetJobBanner } from './AssetJobBanner';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -18,6 +19,8 @@ interface Props {
   canProduce: boolean;
   /** 点了批次行就把素材列表按这个批次筛 */
   onSelectBatch?: (batchId: string) => void;
+  /** A′ UX：页签切回来自动刷新 */
+  active?: boolean;
 }
 
 /**
@@ -35,11 +38,35 @@ interface Props {
  *    四环（反推文案/出文案/投产/拼接）对它都不成立，也不计费——所以它的「下一步」
  *    不是在本面板提交，而是到投产弹窗里被挑走。
  */
-const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
+const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active = true }) => {
   const [tab, setTab] = useState<'link' | 'file'>('link');
 
   // ── 链接导入 ──
   const [links, setLinks] = useState('');
+  // 直接贴文案导入
+  const [copyText, setCopyText] = useState('');
+  const [copyBatchName, setCopyBatchName] = useState('');
+  const [copyBusy, setCopyBusy] = useState(false);
+  // P1（评审定稿⑪）：导入前重复预检（0 元、不建行）——粘贴完就地知道哪些已入库
+  const [duplicates, setDuplicates] = useState<Map<string, { code?: string; imported_at?: string | null }>>(new Map());
+  useEffect(() => {
+    const urls = links.split(/[\r\n]+/).map((s) => s.trim()).filter(Boolean);
+    if (!urls.length) {
+      setDuplicates(new Map());
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const res = await assetApi.importPreflight(urls);
+        const map = new Map<string, { code?: string; imported_at?: string | null }>();
+        (res.items || []).forEach((d) => d.source_url_norm && map.set(d.source_url_norm, d));
+        setDuplicates(map);
+      } catch {
+        /* 预检失败静默（提交时后端硬拦还在） */
+      }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [links]);
   const [batchName, setBatchName] = useState('');
   const [tier, setTier] = useState<number>(DEFAULT_TIER);
   /** 整批默认钩子原型：链接导入和文件上传共用这一个选择（不选＝整批未分类） */
@@ -59,6 +86,70 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
   const [batches, setBatches] = useState<AssetBatch[]>([]);
   const [batchLoading, setBatchLoading] = useState(false);
 
+  // 直接贴文案提交：按空行分段，一段=一条候选
+  const submitCopyImport = async () => {
+    const texts = copyText
+      .split(/\n{2,}/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!texts.length) {
+      message.warning('没有可导入的文案（按空行分隔，一条一段）');
+      return;
+    }
+    setCopyBusy(true);
+    try {
+      const res = await assetApi.importCopySummaries(copyBatchName, texts);
+      message.success(res.message, 6);
+      if (res.skipped.length) {
+        message.warning(`${res.skipped.length} 条形态不合格被跳过（超字数等），明细看控制台`, 8);
+        console.warn('贴文案导入被跳过的条目', res.skipped);
+      }
+      setCopyText('');
+      setCopyBatchName('');
+      fetchBatches();
+      onSelectBatch?.(res.batch_id);
+    } catch (e) {
+      message.error((e as Error).message || '贴文案导入失败');
+    } finally {
+      setCopyBusy(false);
+    }
+  };
+
+  // 上传文件即导入：txt/csv 读文本 → 按空行分段（无空行则按行分段）→ 直接调导入接口
+  const importCopyFromFile = async (file: File) => {
+    try {
+      const text = await file.text();
+      // 优先空行分段（多段式）；整段没有空行时退化为按行分段（一列一条）
+      let segs = text.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+      if (segs.length <= 1) {
+        segs = text.split(/[\r\n]+/).map((s) => s.trim()).filter(Boolean);
+      }
+      if (!segs.length) {
+        message.warning(`文件 ${file.name} 里没有可导入的文案`);
+        return false;
+      }
+      setCopyBusy(true);
+      const res = await assetApi.importCopySummaries(
+        copyBatchName || `文件导入-${file.name}`,
+        segs,
+      );
+      message.success(res.message, 6);
+      if (res.skipped.length) {
+        message.warning(`${res.skipped.length} 条形态不合格被跳过（超字数等）`, 8);
+        console.warn('文件导入被跳过的条目', res.skipped);
+      }
+      setCopyText('');
+      setCopyBatchName('');
+      fetchBatches();
+      onSelectBatch?.(res.batch_id);
+    } catch (e) {
+      message.error((e as Error).message || `文件 ${file.name} 导入失败`);
+    } finally {
+      setCopyBusy(false);
+    }
+    return false; // 阻止 antd 默认上传
+  };
+
   const fetchBatches = useCallback(async () => {
     setBatchLoading(true);
     try {
@@ -74,6 +165,13 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
   useEffect(() => {
     fetchBatches();
   }, [fetchBatches]);
+
+  // A′ UX：切走再切回页签时自动刷新批次台账
+  const wasActive = React.useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) fetchBatches();
+    wasActive.current = active;
+  }, [active, fetchBatches]);
 
   const parsedLinks = links
     .split(/[\r\n]+/)
@@ -101,6 +199,8 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
       setLastImport(res);
       message.success(res.message);
       fetchBatches();
+      // 11-06 用户拍板：导入即自动下载原片——下载是后台任务，nudge 让任务条立刻亮出来
+      if ((res.items || []).length) nudgeAssetJobBanner();
       // 原来只在「没有重复且不是放行请求」时清空输入框，于是**这一次真建出来的那几条还留在框里**：
       // 下次再点（或点某条的放行）它们就全被判成跨批次重复，一线看到的是"怎么全是重复"。
       // 改成按返回的 items 精确摘掉已入库的那几行，只留下这次没建成的（重复/被跳过）继续在框里等处理。
@@ -193,7 +293,8 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
         </a>
       ),
     },
-    { title: '名称', dataIndex: 'name', ellipsis: true, render: (v: string | null) => v || '-' },
+    // 批 N（评审二·P2）：给名称定宽＋ellipsis——原来不定宽，被其它列挤压后整列只剩两三个字
+    { title: '名称', dataIndex: 'name', width: 150, ellipsis: true, render: (v: string | null) => v || '-' },
     {
       title: '来路',
       dataIndex: 'source_kind',
@@ -202,9 +303,10 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
     },
     { title: '条数', dataIndex: 'item_count', width: 66 },
     {
+      // 批 N（评审二·P2）：width 70 装不下四个字的表头（折行成两行）
       title: '时长上限',
       dataIndex: 'prompt_max_duration',
-      width: 70,
+      width: 88,
       render: (v: number | null) => (v ? `${v}s` : '未定'),
     },
     {
@@ -278,6 +380,57 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
 
   return (
     <Row gutter={12}>
+      {/* P1 新增：直接贴文案——跳过链接/反推，直挂候选进审核队列 */}
+      <Col span={24} style={{ marginBottom: 12 }}>
+        <Collapse
+          size="small"
+          items={[{
+            key: 'paste-copy',
+            label: <Text strong style={{ fontSize: 12 }}>直接贴文案（跳过链接/反推，直进审核队列）</Text>,
+            children: (
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  已有外部生成好的钩子文案？按空行分段粘贴（一段=一条候选），提交后直进审核队列——后面质检、投产、投板照走。
+                </Text>
+                <Input
+                  placeholder="批次名（可选，留空自动命名）"
+                  value={copyBatchName}
+                  onChange={(e) => setCopyBatchName(e.target.value)}
+                  style={{ width: 260 }}
+                  size="small"
+                />
+                <Input.TextArea
+                  rows={6}
+                  placeholder={'一条文案一段（空行分隔），例：\n\n她替姐姐嫁的第二天，新郎出现在她姐的婚礼上\n\n总裁摘下手表坐在塑料凳上吃泡面，秘书问他为什么'}
+                  value={copyText}
+                  onChange={(e) => setCopyText(e.target.value)}
+                />
+                <Space size={8} wrap>
+                  <Button
+                    type="primary"
+                    size="small"
+                    loading={copyBusy}
+                    disabled={!copyText.trim()}
+                    onClick={submitCopyImport}
+                  >
+                    导入进审核队列
+                  </Button>
+                  <Upload
+                    accept=".txt,.csv,.text"
+                    showUploadList={false}
+                    beforeUpload={importCopyFromFile}
+                    disabled={copyBusy}
+                  >
+                    <Button size="small" icon={<InboxOutlined />} loading={copyBusy} disabled={copyBusy}>
+                      上传文件导入（.txt/.csv，空行或换行分条）
+                    </Button>
+                  </Upload>
+                </Space>
+              </Space>
+            ),
+          }]}
+        />
+      </Col>
       <Col span={14}>
         <Card
           size="small"
@@ -310,6 +463,9 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
 
             <Space wrap align="center">
               <Text>整批默认原型</Text>
+              <Tooltip title="给这一批每条素材起个开头套路的标记（A–G，照《钩子模版换皮参数设定.docx》）；不选照样导入和反推，之后在素材列表「原型」那列逐条改">
+                <Text type="secondary" style={{ fontSize: 12 }}>可不选，鼠标放这看说明</Text>
+              </Tooltip>
               <CategorySelect
                 items={cats.activeItems}
                 value={category}
@@ -318,10 +474,6 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                 loading={cats.loading}
                 placeholder="可不选（这批全标未分类）"
               />
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                只给这一批每条素材起个开头套路的标记（A–G，照《钩子模版换皮参数设定.docx》）；不选照样导入、
-                照样反推文案出文案，之后在素材列表「原型」那列逐条改。
-              </Text>
             </Space>
 
             {tab === 'link' ? (
@@ -332,13 +484,21 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                   onChange={(e) => setLinks(e.target.value)}
                   placeholder={'一行一条分享链接（可以整段粘含中文的分享文案，后端自己提 http token）\n例如：https://v.douyin.com/xxxx/ 这剧太上头了'}
                 />
+            {duplicates.size > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginTop: 6 }}
+                message={`${duplicates.size} 条已导入过（提交会被拦，逐条放行或删除）——${[...duplicates.values()].slice(0, 3).map((d) => d.code).join('、')}${duplicates.size > 3 ? '…' : ''}`}
+              />
+            )}
                 <Space>
                   <Button type="primary" loading={importing} onClick={() => submitLinks()}>
                     导入 {parsedLinks.length} 条链接
                   </Button>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    导入不扣费：这一步只是登记地址，视频时长上限和费用在「反推文案」那一步才生效
-                  </Text>
+                  <Tooltip title="导入后系统自动下载原片（解析 0.01 元/条照记账，进批次成本）；不想要这批的片就别导入。进度看页面顶上的任务条">
+                    <Text type="secondary" style={{ fontSize: 12 }}>导入后自动下载原片</Text>
+                  </Tooltip>
                 </Space>
               </>
             ) : (
@@ -374,12 +534,8 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                   </p>
                   <p className="ant-upload-text">拖入或选择视频／图片文件（可多个）</p>
                   <p className="ant-upload-hint" style={{ fontSize: 12 }}>
-                    文件存到我们自己的存储（MinIO raw-footage/asset/），不借智令的临时桶（那个 6 小时自动删）。
-                    单个文件失败不影响整批，失败的可以一键补传到同一批次。
-                    <br />
-                    图片只认 jpg/jpeg/png/webp，进来是<b>投产用的角色卡</b>：不反推文案、不出文案、
-                    不计费，入库时顺手量好尺寸（长边超了只提醒，不拦）。
-                    上传图片和视频可以混在一次提交里，各自按类型入库。
+                    视频直接落到我们自己的存储；单文件失败不影响整批，可一键补传。
+                    图片是<b>投产用的角色卡</b>（不反推、不计费），长边超了只提醒不拦。
                   </p>
                 </Upload.Dragger>
                 <Space>
@@ -387,10 +543,9 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch }) => {
                     上传 {rawFiles.current.length} 个文件
                   </Button>
                   {uploading && <Progressish percent={progress} />}
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    反推文案时文件还要经中转再上传一次，所以文件批次的预估里含每次 0.001 元的上传费
-                    （图片不收这笔：它不进反推）
-                  </Text>
+                  <Tooltip title="反推文案时文件还要经中转再上传一次，所以文件批次的预估里含每次 0.001 元的上传费（图片不进反推，不收这笔）">
+                    <Text type="secondary" style={{ fontSize: 12 }}>文件批次预估含 0.001 元/条中转上传费</Text>
+                  </Tooltip>
                 </Space>
               </>
             )}

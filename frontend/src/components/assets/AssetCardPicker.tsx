@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Button, Select, Space, Spin, Tag, Tooltip, Typography, Upload, message } from 'antd';
+import { UploadOutlined } from '@ant-design/icons';
 import { assetApi } from '../../api/assets';
 import type { AssetItem } from '../../api/assets';
 import { aspectShortText } from './AssetBits';
@@ -15,6 +16,11 @@ interface Props {
   onChange: (ids: string[]) => void;
   /** 弹窗开着才拉：库里的图随时有人在传，进页面缓存一次会让新卡看不见 */
   active: boolean;
+  /**
+   * 批 L：就地上传的卡挂到这个批次名下（=被投产素材所在批次，账面干净）。
+   * 不传（生产单页「全部」视图开单）就新建一个独立小批次，名字自动带「角色卡」。
+   */
+  batchId?: string;
 }
 
 /**
@@ -28,12 +34,21 @@ interface Props {
  * 画幅提醒为什么放在挑卡这一屏：**画幅由角色卡宽高比决定**（实测口径，
  * 提示词写 9:16 压不住一张横版三视图卡）。投产后再说「这支出横屏了」已经花过钱了。
  */
-const AssetCardPicker: React.FC<Props> = ({ value, onChange, active }) => {
+const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) => {
   const [cards, setCards] = useState<AssetItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [covers, setCovers] = useState<Record<string, string | null>>({});
+  // 批 L：就地上传。串行链防并发建批——第一张没建上批次第二张就发出，会裂成两个批次
+  const [uploading, setUploading] = useState(false);
+  const chainRef = useRef<Promise<unknown>>(Promise.resolve());
+  // 批 M（评审二·P2）：排队的上传张数。原来每段 .finally 都 setUploading(false)——
+  // 第二张还在传时第一张完成就把 loading 灯提前熄了，看起来像传完其实没有。
+  const pendingUploads = useRef(0);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     if (!active) return;
@@ -71,7 +86,7 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active }) => {
     return () => {
       cancelled = true;
     };
-  }, [active]);
+  }, [active, reloadTick]);
 
   const byId = useMemo(() => {
     const m: Record<string, AssetItem> = {};
@@ -125,12 +140,73 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active }) => {
   const landscape = selected.filter((a) => a.aspect?.orientation === 'landscape');
   const unknownSize = selected.filter((a) => !a.aspect?.ratio);
 
+  /** 批 L：就地上传角色卡。逐张串行（没有 batch_id 时第一张要先建上批次，
+   *  并发第二张会裂成两个批次）；成功即入库＋自动排进已选卡末尾＋刷新列表。 */
+  const uploadCard = (file: File) => {
+    pendingUploads.current += 1;
+    setUploading(true);
+    chainRef.current = chainRef.current
+      .then(() =>
+        assetApi.uploadBatch({
+          files: [file],
+          batch_id: batchId,
+          name: batchId ? undefined : '角色卡（投产时就地传）',
+        }),
+      )
+      .then((res) => {
+        const ok = res.items || [];
+        if (ok.length) {
+          onChange([...valueRef.current, ...ok.map((a) => a.id)]);
+          setReloadTick((t) => t + 1);
+          message.success(`已入库并选上：${ok.map((a) => a.file_name || a.code).join('、')}`);
+          // 画幅提醒跟着走：横版卡会出横屏片（提示词写 9:16 压不住），必须传完当场说
+          const warns = (res.image_notes || []).filter((n) => n.notes?.length);
+          if (warns.length) {
+            message.warning(
+              warns.map((n) => `${n.file_name || '图片'}：${n.notes.join('；')}`).join(' ｜ '),
+              8,
+            );
+          }
+        }
+        (res.failed || []).forEach((f) => message.error(`${f.file_name} 没传上：${f.error}`));
+      })
+      .catch((e) => message.error((e as Error).message || '角色卡上传失败'))
+      .finally(() => {
+        // 只有整条链都排空了才熄灯（评审二·P2：否则排队中的第二张会没灯）
+        pendingUploads.current -= 1;
+        if (pendingUploads.current <= 0) {
+          pendingUploads.current = 0;
+          setUploading(false);
+        }
+      });
+  };
+
   return (
     <Space direction="vertical" size={6} style={{ width: '100%' }}>
-      <Text style={{ fontSize: 12 }}>
-        角色卡（可选，可多张；<Text strong>顺序＝板上的图片顺序，第 1 张＝主形象</Text>。
-        同一部剧请用同一批卡——历史上「上下集换装」就是卡没锁住导致的）
-      </Text>
+      <Tooltip title="顺序＝板上的图片顺序，第 1 张＝主形象；同一部剧请用同一批卡（「上下集换装」就是卡没锁住导致的）">
+        <Text style={{ fontSize: 12 }}>人物卡（三视图等，可多张）</Text>
+      </Tooltip>
+
+      {/* 批 L：就地上传——不用先去导入面板绕一圈再回来挑 */}
+      <Space size={8} wrap>
+        <Upload
+          accept="image/jpeg,image/png,image/webp"
+          multiple
+          showUploadList={false}
+          disabled={!active || uploading}
+          beforeUpload={(f) => {
+            uploadCard(f as unknown as File);
+            return false;
+          }}
+        >
+          <Button size="small" icon={<UploadOutlined />} loading={uploading}>
+            上传新卡（jpg/png，传完自动选上）
+          </Button>
+        </Upload>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {batchId ? '传的卡挂在当前批次名下' : '当前没锁批次：传的卡会单独建一个小批次'}
+        </Text>
+      </Space>
 
       {loading && !cards.length ? (
         <Spin size="small" />
@@ -143,8 +219,8 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active }) => {
           message="素材库里还没有图片素材"
           description={
             <Text type="secondary" style={{ fontSize: 12 }}>
-              到「素材导入 → 文件上传」把定妆照/三视图 jpg·png 传上来（图片只作生产输入，
-              不参与读视频、出文案、拼接，也不计费），传完回到这里就能挑。
+              点上面的「上传新卡」直接传定妆照/三视图 jpg·png（图片只作生产输入，
+              不参与读视频、出文案、拼接，也不计费），传完自动选上。
               不挂卡也能建单，只是成片人物形象由模型自己发挥。
             </Text>
           }

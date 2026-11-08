@@ -11,6 +11,7 @@
 运行：cd backend && python -m pytest tests/unit/test_wechat_dl_prompt.py -v
 """
 
+import os
 import sys
 import uuid
 from datetime import datetime, timedelta
@@ -21,7 +22,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from wechat_download import prompt_client as pc
+# app.config 是模块级单例，导入即校验必填项 —— 与 test_wechat_dl_upload.py 同模式，
+# 必须在 import 业务模块前置好测试 env（本机没有 backend/.env 也不能挂）
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:////tmp/_unit_prompt.db")
+os.environ.setdefault("JWT_SECRET", "u" * 64)
+os.environ.setdefault("MINIO_ACCESS_KEY", "test")
+os.environ.setdefault("MINIO_SECRET_KEY", "testtest")
+
+from wechat_download import prompt_client as pc  # noqa: E402
 from wechat_download import prompt_service as ps
 from wechat_download.models import PT_FAILED, PT_PROCESSING, PT_SUCCESS
 

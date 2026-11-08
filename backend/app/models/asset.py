@@ -344,6 +344,12 @@ class AssetItem(Base):
     cover_image_key = Column(String(500), nullable=True)
     duration = Column(Float, nullable=True)
     resolution = Column(String(50), nullable=True)
+    # 时效直链缓存（11-06）：resolve 解析成功后把 play_url + 取链时间落库。
+    # 直链是源站的时效链接（约 6 小时），缓存只在 ASSET_PLAY_URL_TTL_HOURS 内免费回放，
+    # 过期不作数——resolve 会重新解析（该扣 0.01 扣 0.01），这是「直链失效后自愈」的出口。
+    # 之前 play_url 只活在当次响应里，用户付了钱取到的直链一关抽屉就没了，再点也拿不回来。
+    play_url = Column(Text, nullable=True)
+    play_url_at = Column(DateTime, nullable=True)
     # 反推计时上限（本条实际使用的档位；NULL=未反推）
     prompt_max_duration = Column(Integer, nullable=True)
     # 钩子原型分类（11-04 拍板①）：单层字典、**纯人工点选**、可不填（不设为必填，
@@ -421,6 +427,9 @@ class AssetSummary(Base):
     reviewed_by = Column(UUID(as_uuid=True), nullable=True, index=True)
     reviewed_at = Column(DateTime, nullable=True)
     reject_reason = Column(String(500), nullable=True)     # 驳回必填
+    # P1（评审定稿⑩）：改后重提时作者写给审核人的说明（resubmit 口落列，审核卡展示；
+    # 此前只进 AuditLog，复审时对不上话）
+    resubmit_note = Column(Text, nullable=True)
     # 改后通过的原文留痕（配合 AuditLog 的 before/after，admin 抽检用）
     text_before_edit = Column(Text, nullable=True)
 
@@ -433,6 +442,13 @@ class AssetSummary(Base):
     # 展开预览与投产同一模型同一模板，P0 **不单记钱**（投产展开也不单记，口径一致）；
     # 列先立着，将来要对账时不用再动表。
     cost_preview = Column(Float, nullable=False, default=0.0)
+
+    # 11-06 双产出：出文案时每条候选同步带一份**豆包网页版**完整提示词（NAS 模板网页版
+    # 裁剪：无段头编号/推荐标题/发布标签，10s/15s 按文案逐条判断）。与 prompt_preview 的
+    # 分工：那列是任务板通道的过审后预览（恒 10s、无执行要求行），这列是网页版正文，
+    # 出文案时就生成、复制整段进 doubao.com 对话框直接用。NULL=生成失败/未生成
+    # （文案本身不受影响），用 POST /assets/summaries/prompt-web 单独补。
+    doubao_prompt = Column(Text, nullable=True)
 
     source_prompt_task_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -505,6 +521,12 @@ class AssetProduction(Base):
     board_name = Column(String(200), nullable=True)            # 板上 name = 推荐视频标题第 1 条（剥非法字符、≤60 码点）
     board_tid = Column(String(60), nullable=True, index=True)  # 回读主键（info?date= 返回）
     board_rgid = Column(String(60), nullable=True)             # 回收组 id，拼 /data<outUrl> 用
+    # 批 L（11-06 投放进度可视化）：板子侧状态写回。自动投板的后台协程每 45s 回读一轮
+    # 板面，把看到的行状态（waiting/running/succ…）连同检查时间钉在生产单行上——
+    # 不写回的话投放后界面只能停在「投放中」干等，看不出板子在排队还是真在出片。
+    # 全部可空不回填：没投过板的单/老单＝NULL，语义就是「没有板侧信息」。
+    board_last_status = Column(String(60), nullable=True)
+    board_last_check_at = Column(DateTime, nullable=True)
     character_card_key = Column(String(500), nullable=True)    # 旧：单张卡的 MinIO key（前端手填那条野路子的存证）→ 板上 picDatas 的回退来源
     # 批 G（11-05 拍板③）：**多卡保序**。存 asset_items.id 字符串数组，
     # 顺序＝板上 `picDatas` 数组顺序（一部剧多张定妆照时，谁是第一张谁就是主形象）。
@@ -671,7 +693,11 @@ JOB_DISPATCH = "dispatch"
 # 两者都复用 D-1 同一套台账/防重复/进度口径，不另造机制。
 JOB_DOWNLOAD = "download"
 JOB_PROMPT_PREVIEW = "prompt_preview"
-ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE, JOB_FRAMES, JOB_DISPATCH, JOB_DOWNLOAD, JOB_PROMPT_PREVIEW)
+# 11-06 用户三连投诉后升级为正式任务：反推提交后**收敛只靠前端轮询**（页面一关就没人收，
+# 状态永远「反推中」、失败看不见也没法重试）。JOB_ANALYZE = 提交 + 后台原地等收敛 +
+# 快速失败自动重试一次，与出文案同一套台账/防重复/进度口径，不另造机制。
+JOB_ANALYZE = "analyze"
+ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE, JOB_FRAMES, JOB_DISPATCH, JOB_DOWNLOAD, JOB_PROMPT_PREVIEW, JOB_ANALYZE)
 
 JB_QUEUED = "queued"          # 已落库、协程已排上，还没开跑
 JB_RUNNING = "running"        # 正在逐条调模型（开始跑时落一次 started_at，跑中间不回报心跳）

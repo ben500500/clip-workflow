@@ -328,8 +328,9 @@ class Settings(BaseSettings):
     # 默认 180 而不是现有反推链路的 600 —— 素材库是「批量」场景，
     # 600 档一条就是 0.324 元，100 条 32 元；180 档一条 0.097 元，够出钩子文案。
     ASSET_PROMPT_MAX_DURATION: int = 180
-    # 每条素材生成的钩子文案候选数（多候选单审，三选一比生成一条直接过的返工率低）
-    ASSET_HOOK_CANDIDATE_COUNT: int = 3
+    # 每条素材生成的钩子文案候选数。11-06 用户拍板：默认只出 1 条（浓缩一句话，
+    # 单审单过，也省一半模型钱）；要对照再多出几条的场合，前端按批显式传 count 覆盖。
+    ASSET_HOOK_CANDIDATE_COUNT: int = 1
     # 风险词表（system_config.asset_risk_lexicon）的现读缓存时长（秒）：
     # 审核/投产/导出都要扫词，逐条查库太碎；运维改词表后最多等一个 TTL 生效，设 0 = 每次都查。
     ASSET_RISK_LEXICON_TTL_SECONDS: int = 300
@@ -348,6 +349,22 @@ class Settings(BaseSettings):
     # P1 上队列后这两个上限交给队列，不由 HTTP 层扛。
     ASSET_ANALYZE_MAX_PER_CALL: int = 20
     ASSET_SUMMARY_MAX_PER_CALL: int = 10
+
+    # ── 素材库 · 反推后台任务（11-06 三连投诉：不进任务条／首投必错／卡「反推中」）──
+    # JOB_ANALYZE 的轮询节奏与总时长：智令一条反推实测 1~2 分钟出结果，30 分钟是
+    # 按 600s 档 × 排队波动给的宽裕上限；到期**不判失败**——行留在 running，
+    # 「收取在跑结果」按钮和单条 ⟳ 仍然收得到，只是任务台账如实记「到点没等完」。
+    ASSET_ANALYZE_JOB_POLL_SECONDS: float = 10.0
+    ASSET_ANALYZE_JOB_TIMEOUT_MINUTES: float = 30.0
+    # 智令侧快速失败自动重试：实测「第一次总是出错」＝提交后几秒就 failed（6s 实锤），
+    # 重试一次就好。只认**提交后很短时间内**的失败（真跑了一半才死的不是抖动，重试
+    # 就是重复扣费）；每条素材每次任务最多自动重试一次，留审计。
+    ASSET_ANALYZE_FAST_FAIL_RETRY_SECONDS: float = 120.0
+
+    # 素材库 · 时效直链缓存（11-06 播放直链修复）：resolve 取到的 play_url 落库，
+    # 这个窗口内 source-preview/resolve 免费回放；过期不作数、retake 重取自愈。
+    # 6 小时与源站时效直链的有效期口径一致（界面上就写着「约 6 小时内有效」）。
+    ASSET_PLAY_URL_TTL_HOURS: float = 6.0
 
     # ── 素材库 · 企微自动化后台「创建 AI 视频」任务板（生产通道 wework_aivideo）──
     # 权威口径：NAS《每日解压视频-操作手册-20261022.md》+ Drama/共享配置/skill/relax-video-pipeline。
@@ -382,6 +399,12 @@ class Settings(BaseSettings):
     # 1028 投 230 只到手 162（70%），"超出 120 的那部分基本是白投"。
     # 用户口径「产能不限」→ **不做硬限**，只在 /produce 返回里给软提示；设 0 关闭提示。
     ASSET_BOARD_DAILY_SOFT_CAP: int = 120
+    # A′（2026-11-08 评审定稿）：自审自投硬闸——自己过审的候选自己投产默认拦；
+    # 小团队/应急需一人包干时显式设 true（每次自审自投仍逐条写豁免审计）。
+    ASSET_SELF_PRODUCE_ALLOWED: bool = False
+    # P1（评审定稿⑦）：取号进界面——后端代理的取号命令（参数为数量、stdout 每行一个
+    # 五位编号）。留空＝功能关闭（前端走手工粘贴）。
+    ASSET_HOOK_ID_CMD: str = ""
     # 板上排日按本地时区（NAS 在 CST），后端存 UTC —— 16:00~24:00 之间会错一天，
     # 而 date 写错＝额度白烧且成片永久取不回（1021 实测 120 条）。
     ASSET_BOARD_TZ_OFFSET_HOURS: int = 8

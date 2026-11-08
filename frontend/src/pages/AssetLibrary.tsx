@@ -1,12 +1,13 @@
-import React, { useCallback, useMemo, useState } from 'react';
-import { Button, Card, Modal, Space, Tabs, Tag, Typography, message } from 'antd';
-import { ApartmentOutlined } from '@ant-design/icons';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Badge, Button, Card, Modal, Popover, Space, Tabs, Tag, Typography, message } from 'antd';
+import { ApartmentOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import AssetListPanel from '../components/assets/AssetListPanel';
 import AssetJobsPanel from '../components/assets/AssetJobsPanel';
 import AssetImportPanel from '../components/assets/AssetImportPanel';
 import AssetReviewPanel from '../components/assets/AssetReviewPanel';
 import AssetProductionPanel from '../components/assets/AssetProductionPanel';
+import AssetOutputWall from '../components/assets/AssetOutputWall';
 import AssetJobBanner from '../components/assets/AssetJobBanner';
 import AssetCategoryDrawer from '../components/assets/AssetCategoryDrawer';
 import type { AssetJobInfo } from '../api/assets';
@@ -36,6 +37,26 @@ const AssetLibrary: React.FC = () => {
    * 不用定时器猜"跑了三分钟应该好了"，只有横幅确认任务真到终态才刷。
    */
   const [reloadToken, setReloadToken] = useState(0);
+  /**
+   * 批 N（评审二·P0-2）：页签受控。投产成功后「去生产单列表」按钮承诺了带人过去，
+   * 就得真能切过去——审核台的投产弹窗 onDone 会调 onGoToProduction 切到本页签。
+   */
+  // A′（2026-11-08 定稿）：页签角色化默认着陆（material→导入、operator→审核台、admin→素材列表）
+  // ＋记住上次页签（首次访问按角色、之后 localStorage 记忆）。
+  const defaultTab = useMemo(() => {
+    const saved = localStorage.getItem('asset-library-tab');
+    if (saved) return saved;
+    const r = user?.role;
+    if (r === 'material') return 'import';
+    if (r === 'operator') return 'review';
+    return 'assets';
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const [activeTab, setActiveTabState] = useState<string>(defaultTab);
+  const setActiveTab = useCallback((k: string) => {
+    setActiveTabState(k);
+    localStorage.setItem('asset-library-tab', k);
+  }, []);
   /**
    * 钩子原型字典抽屉：入口只在这张顶部卡片放**一处**（四个页签都看得到），
    * 面板里只做筛选和点原型，不再各挂一份抽屉——两处入口迟早变成一个新版本一个旧版本。
@@ -72,7 +93,14 @@ const AssetLibrary: React.FC = () => {
         message.success(`「${job.kind_label}」后台跑完了，列表已刷新（任务号 ${job.id.slice(0, 8)}）`, 6);
       }
     } else if (job.status === 'interrupted') {
-      message.warning(`「${job.kind_label}」被服务重启打断，结果不可信，需要重新提交`, 8);
+      // 批 N（评审二 P1-6）：不只说"需要重新提交"，把去哪重提说清（横幅行上也有跳转按钮）
+      const tabHint =
+        job.kind === 'summary_generate'
+          ? '去「素材列表」重新出'
+          : job.kind === 'produce' || job.kind === 'dispatch'
+            ? '去「生产单与投板」页签重新点'
+            : '去对应页签重新提交';
+      message.warning(`「${job.kind_label}」被服务重启打断，结果不可信——${tabHint}（任务号 ${job.id.slice(0, 8)}）`, 10);
     } else {
       message.error(
         `「${job.kind_label}」没跑成：${job.error || '逐条原因看素材行上的阶段标签（红＝失败，可重试）'}（任务号 ${job.id.slice(0, 8)}）`,
@@ -82,6 +110,29 @@ const AssetLibrary: React.FC = () => {
   }, []);
 
   const role = user?.role;
+  // A′：页签待办计数（轻量 total 探针；40s 一轮，够跟手不刷爆）
+  const [badges, setBadges] = useState<{ review?: number; ready?: number }>({});
+  useEffect(() => {
+    let alive = true;
+    const pull = async () => {
+      try {
+        const H = { Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` };
+        const [r1, r2] = await Promise.all([
+          fetch('/api/assets/summaries?audit_status=pending&page_size=1', { headers: H }).then((r) => r.json()),
+          fetch(`/api/assets/productions?status=order_ready&owner=${role === 'operator' ? 'me' : 'all'}&page_size=1`, { headers: H }).then((r) => r.json()),
+        ]);
+        if (alive) setBadges({ review: r1.total ?? 0, ready: r2.total ?? 0 });
+      } catch {
+        /* 计数失败静默 */
+      }
+    };
+    void pull();
+    const t = setInterval(pull, 40000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [role, reloadToken]);
   const isAdmin = role === 'admin';
   const canProduce = role === 'admin' || role === 'operator' || role === 'material';
   const canReview = role === 'admin' || role === 'operator';
@@ -89,7 +140,7 @@ const AssetLibrary: React.FC = () => {
   const roleHint = useMemo(() => {
     if (!role) return null;
     if (isAdmin) return <Tag color="red">管理员：全部操作都能做，包括余额不够时强行提交、检查不过时带理由放行</Tag>;
-    if (role === 'operator') return <Tag color="orange">运营：可导入、可反推文案、可审核过审、可出生产单与登记投放结果</Tag>;
+    if (role === 'operator') return <Tag color="orange">运营：可导入、可反推文案、可审核过审、可出生产单与登记投板结果</Tag>;
     return <Tag color="blue">素材专员：可导入/读视频/出文案，不能审自己写的文案、不能出生产单（审核台与生产单只读）</Tag>;
   }, [isAdmin, role]);
 
@@ -104,17 +155,32 @@ const AssetLibrary: React.FC = () => {
           isAdmin={isAdmin}
           batchId={batchId}
           reloadToken={reloadToken}
+          active={activeTab === 'assets'}
         />
       ),
     },
     {
       key: 'import',
       label: '导入与批次',
-      children: <AssetImportPanel canProduce={canProduce} onSelectBatch={setBatchId} />,
+      children: (
+        <AssetImportPanel
+          canProduce={canProduce}
+          onSelectBatch={(bid) => {
+            setBatchId(bid);
+            setActiveTab('assets'); // A′：批次码一键跳转到素材列表（带批次筛选）
+          }}
+          active={activeTab === 'import'}
+        />
+      ),
     },
     {
       key: 'review',
-      label: '文案审核台',
+      label: (
+        <Space size={6}>
+          文案审核台
+          {!!badges.review && <Badge count={badges.review} color="orange" title="等审核的候选数（共享池）" />}
+        </Space>
+      ),
       children: (
         <AssetReviewPanel
           key={`review-${batchId ?? 'all'}`}
@@ -122,17 +188,24 @@ const AssetLibrary: React.FC = () => {
           isAdmin={isAdmin}
           batchId={batchId}
           reloadToken={reloadToken}
+          onGoToProduction={() => setActiveTab('production')}
+          active={activeTab === 'review'}
         />
       ),
     },
     {
       key: 'jobs',
       label: '后台任务',
-      children: <AssetJobsPanel />,
+      children: <AssetJobsPanel onGoToTab={setActiveTab} active={activeTab === 'jobs'} />,
     },
     {
       key: 'production',
-      label: '生产单与投放',
+      label: (
+        <Space size={6}>
+          生产单与投板
+          {!!badges.ready && <Badge count={badges.ready} color="blue" title="还没投的生产单数" />}
+        </Space>
+      ),
       children: (
         <AssetProductionPanel
           key={`prod-${batchId ?? 'all'}`}
@@ -140,6 +213,23 @@ const AssetLibrary: React.FC = () => {
           isAdmin={isAdmin}
           batchId={batchId}
           reloadToken={reloadToken}
+          active={activeTab === 'production'}
+        />
+      ),
+    },
+    {
+      // 批 K（成片素材墙）：链路终点。回收回来的片子按缩略图一面墙摆开，
+      // 点开就播、勾选多选下载——最终用户「挑片子」就在这一屏，不用去生产单行里翻。
+      key: 'outputs',
+      label: '成片素材墙',
+      children: (
+        <AssetOutputWall
+          key={`outputs-${batchId ?? 'all'}`}
+          batchId={batchId}
+          reloadToken={reloadToken}
+          ownerDefault={canReview && !isAdmin ? 'me' : 'all'}
+          ownerSwitchable={canReview}
+          active={activeTab === 'outputs'}
         />
       ),
     },
@@ -148,33 +238,50 @@ const AssetLibrary: React.FC = () => {
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       <Card size="small">
-        <Paragraph style={{ marginBottom: 6 }}>
-          <Text strong>素材库 P0</Text>
-          ：批量导入（分享链接 / 视频文件）→ 反推文案 → AI 出钩子文案候选 → 人工审核 →
-          生成生产单（把过审文案变成要投出去的一条条提示词）→{' '}
-          <Text strong>投去 AI 出片</Text>
-          ：机器去企微后台「创建AI视频」任务板建任务、等出片、把成片自动收进各单的「成片」列
-          （逐批人工确认后才投；想自己投就导出任务文件手工投完，回来「补记手工投板结果」记账）。
-        </Paragraph>
         <Space size={8} wrap>
+          <Text strong>素材库</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            导入 → 出文案 → 审核 → 开单 → 投板出片 → 成片墙挑片
+          </Text>
+          <Popover
+            placement="bottomLeft"
+            title="素材库怎么用"
+            content={
+              <div style={{ maxWidth: 420, fontSize: 12 }}>
+                <p style={{ marginBottom: 6 }}>
+                  链路：批量导入（分享链接/视频文件）→ 反推文案 → AI 出钩子文案候选 → 人工审核 →
+                  生成生产单（过审文案变成一条条要投的提示词）→ <b>投去 AI 出片</b>
+                  （机器去企微后台任务板建任务，成片自动收进各单「成片」列，逐批人工确认后才投）。
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  想自己投就导出任务文件手工投完，回来「补记手工投板结果」记账；
+                  收回来的片子到「成片素材墙」挑：缩略图扫、点开播、多选下载。
+                </p>
+                <p style={{ marginBottom: 0 }}>
+                  钩子原型（A–G）＝开头套路的标记：全员可看、管理员可改；不点也能走完全链。
+                </p>
+              </div>
+            }
+          >
+            <Button type="link" size="small" style={{ padding: 0 }}>
+              怎么用 <QuestionCircleOutlined />
+            </Button>
+          </Popover>
           {roleHint}
           {batchId && (
             <Tag closable onClose={() => setBatchId(undefined)} color="geekblue">
-              当前批次筛选：{batchId.slice(0, 8)}
+              批次：{batchId.slice(0, 8)}
             </Tag>
           )}
           <Button size="small" icon={<ApartmentOutlined />} onClick={() => setCatOpen(true)}>
             钩子原型字典
           </Button>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            原型（A–G）＝开头套路的标记：全员可看、管理员可改；不点也能走完全链，过审与投产都不看它。
-          </Text>
         </Space>
       </Card>
 
-      <AssetJobBanner onSettled={onJobSettled} />
+      <AssetJobBanner onSettled={onJobSettled} onGoToTab={setActiveTab} />
 
-      <Tabs items={items} />
+      <Tabs items={items} activeKey={activeTab} onChange={setActiveTab} />
 
       <AssetCategoryDrawer open={catOpen} onClose={() => setCatOpen(false)} />
     </Space>

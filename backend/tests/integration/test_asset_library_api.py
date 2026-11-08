@@ -310,7 +310,7 @@ async def _make_ready_asset(client, h, url=DOUYIN_2, *, script=SCRIPT, category_
 
 
 def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, generate_error=None,
-                   expand_deviation=None):
+                   expand_deviation=None, web_error=None, web_prompts=None, gen_title=None):
     """autoclip 文案服务替身：按 path 分发，expand 默认把过审钩子**原样**包进提示词。"""
 
     async def _call(path, payload, timeout=180.0):
@@ -318,7 +318,11 @@ def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, ge
             if generate_error:
                 raise HTTPException(status_code=502, detail=generate_error)
             count = int(payload.get("count") or 3)
-            return {"candidates": (candidates or CANDIDATES)[:count], "model": "fake-llm", "raw": {}}
+            out = {"candidates": (candidates or CANDIDATES)[:count], "model": "fake-llm", "raw": {}}
+            if gen_title is not None:
+                # 2026-11-07：出文案同步产浓缩标题（真实服务由 hook_copy.txt 模板约束）
+                out["title"] = gen_title
+            return out
         if path.endswith("hook-copy/expand"):
             if expand_error:
                 raise HTTPException(status_code=502, detail=expand_error)
@@ -342,6 +346,32 @@ def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, ge
             if expand_deviation:
                 out["deviation_note"] = expand_deviation
             return out
+        if path.endswith("hook-copy/prompt-web"):
+            # 11-06 双产出第二跳：按候选 seq 逐条回一段网页版提示词
+            if web_error:
+                raise HTTPException(status_code=502, detail=web_error)
+            cands = payload.get("candidates") or []
+            if web_prompts is not None:
+                return {"prompts": web_prompts, "model": "fake-llm", "raw": None}
+            return {
+                "prompts": [
+                    {
+                        "seq": int(c.get("seq") or 0),
+                        "duration": 10,
+                        "prompt_text": (
+                            f"生成【现言豪门】仿真人写实短剧，参考【《剧名待定》】剧情。\n"
+                            f"时长 10 秒，9:16 竖屏。\n剧情：{c.get('text')}；本条为「起因—冲突—收束」完整的微故事。\n"
+                            "结构锁定：单段式，全片按剧情行完整演绎\n"
+                            "画面变化：同一项目多次生成时……\n"
+                            "负面约束：禁止五官崩坏变脸…… 9:16，10s\n"
+                            "执行要求：跳过任何二次确认与追问；一次性并行生成 2 个视频"
+                        ),
+                    }
+                    for c in cands
+                ],
+                "model": "fake-llm",
+                "raw": None,
+            }
         raise AssertionError(f"未预期的 autoclip 调用：{path}")
 
     return AsyncMock(side_effect=_call)
@@ -1068,13 +1098,18 @@ def test_resolve_charges_only_paid_channels_and_never_double_pays():
         batch = (await _rows(AssetBatch, AssetBatch.id == uuid.UUID(batch_id)))[0]
         assert batch.cost_actual == pytest.approx(0.02, abs=1e-9), "解析费进批次实扣（D-5 拍板）"
 
-        # 再点名同一条：已有时长就跳过，绝不替人再花一次
+        # 再点名同一条：缓存直链还在 TTL 内 → **免费回放**（channel=cache、0 元、
+        # 不发解析接口）。11-06 播放直链修复前这里回空 results——用户付钱取的
+        # 直链关抽屉就没了，再点还撞上「已有时长不重复付费」，死锁在播不了。
         calls.clear()
         again = await client.post(
             "/api/assets/resolve", json={"asset_ids": [by_url[SHARE_1]]}, headers=hm)
         assert again.status_code == 200, again.text
-        assert again.json()["results"] == [] and again.json()["skipped"][0]["reason"].startswith("已有时长")
-        assert calls == []
+        cached = again.json()["results"][0]
+        assert cached["channel"] == "cache" and cached["charged"] == 0.0
+        assert cached["play_url"] == "https://c.d/b.mp4", "回放的必须是落库的那条直链"
+        assert "免费" in cached["note"]
+        assert calls == [], "缓存回放不该再调解析接口"
 
         # 整批排队：只剩「没花过钱且没时长」的那条（失败的 SHARE_3）；
         # SHARE_4 付过 0.01 但没时长 —— 它必须**离开**队列，否则每次排队都重扣一遍
@@ -1093,7 +1128,8 @@ def test_resolve_charges_only_paid_channels_and_never_double_pays():
         with patch("app.api.assets.dispatch_parse", AsyncMock(side_effect=_parse)), \
              patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(0.0)):
             blocked = await client.post(
-                "/api/assets/resolve", json={"asset_ids": [by_url[SHARE_3]]}, headers=ha)
+                "/api/assets/resolve",
+                json={"asset_ids": [by_url[SHARE_3]], "cross_person_confirm": True}, headers=ha)
         assert blocked.status_code == 409, blocked.text
         assert blocked.json()["detail"]["code"] == "ASSET_BALANCE_BLOCKED"
         assert calls == [SHARE_3], "挡下了就不该再发外呼"
@@ -1135,9 +1171,16 @@ def test_analyze_blocked_requires_admin_force():
         payload = {"asset_ids": [asset_id], "max_duration": 180}
         with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(0.01)), \
              patch("app.api.assets.create_prompt_task", AsyncMock(return_value=_fake_prompt_task())) as cpt:
-            # 11-03 取消隔离：operator 也能对素材专员的素材发起反推（旧口径这里 404），
+            # 11-03 取消隔离：operator 也能对素材专员的素材发起反推（旧口径这里 404）；
+            # 11-06 拍板②后跨人扣费多一道确认闸——不带确认 400 白话点名，带上才继续走钱闸
+            unconfirmed_cross = await client.post(
+                "/api/assets/analyze/batch", json=payload, headers=h["operator"])
+            assert unconfirmed_cross.status_code == 400, unconfirmed_cross.text
+            assert "替他人批次花钱" in unconfirmed_cross.json()["detail"]
             # 但**钱**的闸门不分人 —— 余额不足照样 409，一次外部提交都不发
-            cross = await client.post("/api/assets/analyze/batch", json=payload, headers=h["operator"])
+            cross = await client.post(
+                "/api/assets/analyze/batch",
+                json={**payload, "cross_person_confirm": True}, headers=h["operator"])
             assert cross.status_code == 409, cross.text
             assert cross.json()["detail"]["code"] == "ASSET_BALANCE_BLOCKED"
             cpt.assert_not_awaited()
@@ -1150,12 +1193,14 @@ def test_analyze_blocked_requires_admin_force():
             cpt.assert_not_awaited()
 
             admin_no_force = await client.post(
-                "/api/assets/analyze/batch", json=payload, headers=h["admin"])
+                "/api/assets/analyze/batch",
+                json={**payload, "cross_person_confirm": True}, headers=h["admin"])
             assert admin_no_force.status_code == 409, "admin 不表决心也不放行"
             assert cpt.await_count == 0
 
             admin_force = await client.post(
-                "/api/assets/analyze/batch", json={**payload, "force": True}, headers=h["admin"])
+                "/api/assets/analyze/batch",
+                json={**payload, "force": True, "cross_person_confirm": True}, headers=h["admin"])
             assert admin_force.status_code == 200, admin_force.text
             assert admin_force.json()["gate"]["level"] == "blocked"
             assert len(admin_force.json()["results"]) == 1
@@ -1193,11 +1238,14 @@ def test_analyze_need_approval_only_admin_with_confirmation():
                 "素材专员点了确认也不算放批：这条权力只在 admin"
 
             admin_unconfirmed = await client.post(
-                "/api/assets/analyze/batch", json=payload, headers=h["admin"])
+                "/api/assets/analyze/batch",
+                json={**payload, "cross_person_confirm": True}, headers=h["admin"])
             assert admin_unconfirmed.status_code == 409, "admin 也要先确认成本"
 
             ok = await client.post(
-                "/api/assets/analyze/batch", json={**payload, "confirmed": True}, headers=h["admin"])
+                "/api/assets/analyze/batch",
+                json={**payload, "confirmed": True, "cross_person_confirm": True},
+                headers=h["admin"])
             assert ok.status_code == 200, ok.text
             assert cpt.await_count == 1
 
@@ -1219,7 +1267,7 @@ def test_analyze_never_resubmits_success_and_skips_failed_without_retry():
         blocked = await client.post(
             "/api/assets/analyze/batch", json={"asset_ids": [asset_id]}, headers=hm)
         assert blocked.status_code == 400, blocked.text
-        assert "都已处理过" in blocked.json()["detail"]
+        assert "没有能新提交反推的" in blocked.json()["detail"]
 
         async with dbmod.async_session_factory() as s:
             a = await s.get(AssetItem, uuid.UUID(asset_id))
@@ -1523,7 +1571,7 @@ def test_summaries_require_reverse_prompt_content():
 
 
 def test_summaries_generate_three_candidates_with_checks():
-    """三条候选落库：字数、高风险词、一致性校验各归各位，且带一个推荐条。"""
+    """三条候选落库（count 显式传 3）：字数、高风险词、一致性校验各归各位，且带一个推荐条。"""
     _run(_bootstrap())
 
     async def _scenario():
@@ -1534,12 +1582,13 @@ def test_summaries_generate_three_candidates_with_checks():
         with patch("app.api.assets._call_autoclip", _fake_autoclip()) as call:
             gen = await client.post(
                 "/api/assets/summaries/generate",
-                json={"asset_ids": [asset_id], "extra_requirements": "突出医院门口"},
+                json={"asset_ids": [asset_id], "count": 3, "extra_requirements": "突出医院门口"},
                 headers=hm,
             )
         assert gen.status_code == 200, gen.text
         assert gen.json()["results"][0]["created"] == 3
-        payload = call.await_args.args[1]
+        # 双产出后这里其实发了两次调用（先 hook-copy/generate 再 hook-copy/prompt-web），断言取第一次
+        payload = call.await_args_list[0].args[1]
         assert payload["script"] == SCRIPT and payload["count"] == 3
         assert "医院门口" in payload["params"]["extra_requirements"]
 
@@ -1576,6 +1625,33 @@ def test_summaries_generate_three_candidates_with_checks():
     _run(_scenario())
 
 
+def test_summary_generate_default_count_is_one(monkeypatch):
+    """11-06 用户拍板：不传 count 默认只出 1 条（省一半模型钱；要对照用 count 显式覆盖）。
+
+    conftest 的测试基线把候选数钉在 3（供三候选机制用例复用），这里单独改回 1 验默认值。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.config import settings
+
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        monkeypatch.setattr(settings, "ASSET_HOOK_CANDIDATE_COUNT", 1, raising=True)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()) as call:
+            gen = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+        assert gen.status_code == 200, gen.text
+        assert gen.json()["results"][0]["created"] == 1
+        assert call.await_args_list[0].args[1]["count"] == 1
+        rows = await _rows(AssetSummary)
+        assert [r.seq for r in rows] == [1]
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_overwrite_refuses_when_a_copy_already_approved():
     """过审文案已挂生产单 → overwrite 拒绝（删了会让 summary 外键悬空）。"""
     _run(_bootstrap())
@@ -1585,7 +1661,9 @@ def test_overwrite_refuses_when_a_copy_already_approved():
         hm, ho = h["material"], h["operator"]
         asset_id, _ = await _make_ready_asset(client, hm)
         with patch("app.api.assets._call_autoclip", _fake_autoclip()):
-            await client.post("/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+            await client.post(
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset_id], "count": 3}, headers=hm)
         summaries = await _rows(AssetSummary)
         sid = str(summaries[0].id)
         await client.post("/api/assets/summaries/review",
@@ -1620,7 +1698,8 @@ def test_summary_generate_failure_keeps_old_candidates_and_marks_failed():
         asset_id, _ = await _make_ready_asset(client, hm)
         with patch("app.api.assets._call_autoclip", _fake_autoclip()):
             first = await client.post(
-                "/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset_id], "count": 3}, headers=hm)
         assert first.status_code == 200, first.text
         assert first.json()["results"][0]["created"] == 3
 
@@ -2404,7 +2483,8 @@ def test_inline_preview_never_forces_download():
         assert ext.status_code == 200, ext.text
         assert ext.json()["mode"] == "external" and ext.json()["url"] is None
         assert ext.json()["source_url"] == DOUYIN_1 and ps.await_count == 0
-        assert "解析" in ext.json()["note"]
+        # 11-06 播放直链修复：external 的出口话术从「查时长/回源解析」统一成「取直链并播放」
+        assert "取直链并播放" in ext.json()["note"]
 
         # ──  产物预览：废片也能看，且不点亮 downloaded_at ──
         asset_id, _ = await _make_ready_asset(client, hm)
@@ -2723,7 +2803,8 @@ def test_revoking_approval_supersedes_orders_and_bans_export():
 
         # 覆盖重生成：候选挂着生产单（含作废单）→ 必须拒绝，不能 FK CASCADE 静默删单
         boom = await client.post(
-            "/api/assets/summaries/generate", json={"asset_ids": [asset_id], "overwrite": True}, headers=ha)
+            "/api/assets/summaries/generate",
+            json={"asset_ids": [asset_id], "overwrite": True, "cross_person_confirm": True}, headers=ha)
         assert boom.status_code == 200
         refused_row = boom.json()["results"][0]
         assert refused_row["created"] == 0 and "连坐删单" in refused_row["error"]
@@ -2736,7 +2817,9 @@ def test_revoking_approval_supersedes_orders_and_bans_export():
             await s.commit()
         with patch("app.api.assets._call_autoclip", _fake_autoclip()):
             again = await client.post(
-                "/api/assets/summaries/generate", json={"asset_ids": [asset_id], "overwrite": True}, headers=ha)
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset_id], "overwrite": True, "cross_person_confirm": True},
+                headers=ha)
         assert again.status_code == 200, again.text
         deletes = await _rows(AuditLog, AuditLog.action == "asset.summary.delete")
         assert len(deletes) == 3, "三条旧候选都要有删除留痕"
@@ -4071,6 +4154,59 @@ def test_startup_sweep_marks_open_jobs_interrupted():
     _run(_scenario())
 
 
+def test_startup_sweep_requeues_frames_jobs_and_interrupts_the_rest():
+    """P2-1（11-06）：进程重启打死的 frames 任务**原行重排**，不留下假终态。
+
+    frames 免费＋幂等（已有帧默认跳过），重启被打断纯属运气不好，判 interrupted
+    等于让人手工补一单；其它 kind（出文案/投产要花钱、有闸门口径）必须保持判死——
+    启动清扫绝不能把带豁免理由、带成本确认的提交偷偷重放一遍。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        admin_uid = (await _rows(User, User.username == ADMIN_USER))[0].id
+        async with dbmod.async_session_factory() as s:
+            s.add_all([
+                AssetJob(kind=JOB_FRAMES, status=JB_RUNNING,
+                         params={"asset_ids": ["aa"], "output_ids": [], "async_mode": True},
+                         created_by=admin_uid),
+                AssetJob(kind=JOB_FRAMES, status=JB_QUEUED,
+                         params={"asset_ids": [], "output_ids": ["bb"], "async_mode": True},
+                         created_by=admin_uid),
+                AssetJob(kind=JOB_FRAMES, status=JB_QUEUED, params={"asset_ids": []}, created_by=None),
+                AssetJob(kind=JOB_SUMMARY_GENERATE, status=JB_RUNNING,
+                         params={"asset_ids": [str(admin_uid)]}, created_by=admin_uid),
+            ])
+            await s.commit()
+
+        scheduled: list = []
+        with patch.object(assets_api, "_schedule_asset_job", lambda *a: scheduled.append(a)):
+            swept = await assets_api.sweep_interrupted_asset_jobs()
+        # 只有「非 frames」的 2 条判死（出文案 ＋ 没提交人的 frames）；frames 两条重排不计入
+        assert swept == 2, swept
+        interrupted = await _rows(AssetJob, AssetJob.status == JB_INTERRUPTED)
+        assert {j.kind for j in interrupted} == {JOB_SUMMARY_GENERATE, JOB_FRAMES}
+        assert all("重启" in j.error for j in interrupted)
+
+        requeued = await _rows(AssetJob, AssetJob.status == JB_QUEUED)
+        assert len(requeued) == 2 and all(j.kind == JOB_FRAMES for j in requeued)
+        assert all(j.error is None and j.finished_at is None for j in requeued), "重排要清掉终态痕迹"
+        assert all(j.params.get("async_mode") is True for j in requeued), "params 原样保留（重放口径不变）"
+
+        # 重排走的是**原行**调度，不是新开一行：台账里没有多出任何新任务
+        assert len(scheduled) == 2
+        assert {a[0] for a in scheduled} == {str(j.id) for j in requeued}
+        assert all(a[1] == JOB_FRAMES for a in scheduled)
+        total = await _count(AssetJob)
+        assert total == 4, f"重排不该新建台账行，现在 {total} 行"
+
+        await client.aclose()
+
+    _run(_scenario())
+
+
 # ─────────────────────────────────────────────────────────────
 # 11-04 拍板①：钩子原型字典（asset_categories ＋ 素材/文案 category_id）
 # ─────────────────────────────────────────────────────────────
@@ -5203,7 +5339,7 @@ def test_image_pointed_at_every_paid_gate_is_refused_in_plain_words():
             r = await client.post(
                 "/api/assets/analyze/batch", json={"asset_ids": [img_id]}, headers=hm)
         assert r.status_code == 400, r.text
-        assert "都已处理过" in r.json()["detail"], r.json()   # 一条都没得跑 → 走原有的空队列话术
+        assert "没有能新提交反推的" in r.json()["detail"], r.json()   # 一条都没得跑 → 空队列话术（11-06 改成逐档说清）
         assert created == [], "点名图片绝不能发起外呼"
 
         # 混着点名：图进 skipped、视频正常进 todo（证明挡的是图，不是把整单打死）
@@ -5855,11 +5991,14 @@ class _FakeBoard:
 
 
 def _patch_board(fb: _FakeBoard):
-    """把五个"会出网/碰盘"的调用换成替身（板子三个 + 落桶 + ffprobe）。
+    """把"会出网/碰盘/排后台真跑 ffmpeg"的调用换成替身（板子三个 + 落桶 + ffprobe + 抽帧排程）。
 
     ⚠️ 落桶与 ffprobe 必须在同一个替身组里：投板协程回收成功条时会真去
     `upload_file_from_path`（本机 MinIO:9000 没起 → 整批用例挂在 ConnectionRefused），
     分开打桩就会有用例漏一个、把"闸门没过"测成"连不上 MinIO"。
+    ⚠️ `_enqueue_frames` 也在这里钉：批 K 起回收落库会自动排产物首帧任务——不钉的话
+    `asyncio.create_task` 会把真抽帧协程甩进测试事件循环里跑 ffmpeg。要看排程参数的
+    用例（如回收 e2e）在 with 内层再补一层自己的 patch，内层的赢。
     """
     return (
         patch("app.services.aivideo_board.create_task", fb.create_task),
@@ -5867,6 +6006,10 @@ def _patch_board(fb: _FakeBoard):
         patch("app.services.aivideo_board.download_output", fb.download_output),
         patch("app.api.assets.upload_file_from_path", fb.upload),
         patch("app.services.asset_compose_service.probe_media", fb.probe),
+        patch(
+            "app.api.assets._enqueue_frames",
+            AsyncMock(return_value={"queued": True, "job_id": "jf", "note": None}),
+        ),
     )
 
 
@@ -5933,10 +6076,16 @@ async def _order_ready_production(client, h, *, url=None, n=1, board_total=1,
 
 
 def _dispatch(client, headers, ids, **extra):
-    """投板口的统一调用形状（默认同步档，用例里按需改 async_mode）。"""
+    """投板口的统一调用形状（默认同步档，用例里按需改 async_mode）。
+
+    `cross_person_confirm: True`：用例的生产单全部挂在素材专员的批次下、
+    操作者是 operator/admin——11-06 拍板②起跨人扣费要确认，用例统一按
+    「已知会」带入（跨人闸门本身由专项用例钉）。
+    """
     return client.post(
         "/api/assets/productions/dispatch",
-        json={"ids": [str(i) for i in ids], "confirm": True, "async_mode": False, **extra},
+        json={"ids": [str(i) for i in ids], "confirm": True, "async_mode": False,
+              "cross_person_confirm": True, **extra},
         headers=headers,
     )
 
@@ -5972,7 +6121,9 @@ def test_dispatch_creates_tasks_and_collects_outputs_end_to_end():
                 await s.commit()
 
         fb = _FakeBoard(pre_existing=[("OLD999999", "别人昨天的任务")])
-        with _board_off(fb):
+        with _board_off(fb), \
+             patch("app.api.assets._enqueue_frames", AsyncMock(
+                 return_value={"queued": True, "job_id": "jf1", "note": "抽帧已排后台"})) as enq_frames:
             resp = await _dispatch(client, ho, ids)
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -6026,6 +6177,100 @@ def test_dispatch_creates_tasks_and_collects_outputs_end_to_end():
         assert body["dispatch"]["today"]["board_rows"] == 2, body["dispatch"]["today"]
         assert body["capacity"]["planned"] == 2 and body["capacity"]["over_cap"] == 0
         assert "解压线" in body["capacity"]["note"], "余量偏乐观这句要给一线看到，不能只写在注释里"
+
+        # ⑦ 批 K：这次真落库的两条产物**自动排了首帧任务**（素材墙的缩略图从这来）。
+        # 排程必须 fail-soft（帧没排上不连累回收），所以这里只断"排了、点名排的是产物"。
+        enq_frames.assert_awaited_once()
+        kwf = enq_frames.await_args.kwargs
+        assert kwf["asset_ids"] == [] and len(kwf["output_ids"]) == 2, kwf
+        assert kwf["why"].startswith("豆包成片回收落库"), kwf["why"]
+        assert {o[:8] for o in kwf["output_ids"]} <= {str(o.id)[:8] for o in outs}
+
+        # ⑧ 批 L：板子侧状态写回。认领 tid 那一刻钉「已投板」，轮询每轮回读后
+        # 覆盖成板面真实行状态（假板默认直接 succ）＋检查时间；列表口必须带出，
+        # 不然前端「板子：出片中·上轮检查 …」这条进度线没有数据源。
+        listed2 = await client.get("/api/assets/productions", params={
+            "asset_id": asset_id}, headers=ho)
+        rows2 = listed2.json()["items"]
+        assert len(rows2) == 2
+        for r2 in rows2:
+            assert r2["board_last_status"] == "succ", r2["board_last_status"]
+            assert r2["board_last_check_at"], "检查时间必须随写回落库"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_outputs_wall_fields_batch_filter_and_total():
+    """批 K 素材墙数据口：批次过滤走素材侧、total 计数、卡片带素材码/首帧直链。
+
+    钉三件不能错的：
+    - `batch_id` 收敛走 `asset_items` 侧——拼接产物不挂生产单（production_id 可空），
+      按生产单查会漏，按素材查永远查得到；
+    - 没帧的产物 `thumb_url` 必须是**显式 null 不是缺键**（前端靠 null 画「没有预览图」）；
+    - `limit/offset` 分页配 `total`，墙要翻页要计数。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+
+        code = None
+        async with dbmod.async_session_factory() as s:
+            asset = await s.get(AssetItem, uuid.UUID(asset_id))
+            batch_id = str(asset.batch_id)
+            code = asset.code
+            out1 = AssetOutput(
+                asset_id=asset.id, kind="doubao_raw",
+                file_key="asset/board/x/v1.mp4", bucket=settings.MINIO_BUCKET_RAW,
+                file_name="v1.mp4", duration=10.08, file_size=2048, resolution="720x1280",
+            )
+            s.add(out1)
+            await s.flush()
+            s.add(AssetFrame(
+                asset_id=asset.id, output_id=out1.id,
+                kind=FRAME_OUTPUT_THUMB, seq=0,
+                file_key="asset/board/x/v1.jpg", bucket=settings.MINIO_BUCKET_RAW,
+            ))
+            out2 = AssetOutput(
+                asset_id=asset.id, kind="composed",
+                file_key="asset/composed/v2.mp4", bucket=settings.MINIO_BUCKET_RAW,
+                file_name="v2.mp4", duration=6.0,
+            )
+            s.add(out2)
+            await s.commit()
+            oid1, oid2 = str(out1.id), str(out2.id)
+
+        with patch("app.api.assets.get_presigned_url",
+                   AsyncMock(return_value="http://signed/thumb.jpg")):
+            r = await client.get("/api/assets/outputs", params={"batch_id": batch_id}, headers=hm)
+        assert r.status_code == 200, r.text
+        b = r.json()
+        assert b["total"] == 2, b
+        rows = {x["id"]: x for x in b["items"]}
+        assert rows[oid1]["asset_code"] == code, rows[oid1]
+        assert rows[oid1]["thumb_url"] == "http://signed/thumb.jpg"
+        assert rows[oid1]["downloaded_at"] is None and rows[oid1]["hook_code"] is None
+        assert rows[oid2]["thumb_url"] is None, "没帧的产物必须显式回 null，前端好画「没有预览图」"
+        assert rows[oid2]["kind"] == "composed"
+
+        # kind 过滤 + 分页各走一遍
+        with patch("app.api.assets.get_presigned_url",
+                   AsyncMock(return_value="http://signed/t.jpg")):
+            r2 = await client.get(
+                "/api/assets/outputs", params={"batch_id": batch_id, "kind": "doubao_raw"}, headers=hm)
+            assert r2.json()["total"] == 1
+            r3 = await client.get(
+                "/api/assets/outputs", params={"batch_id": batch_id, "limit": 1, "offset": 1}, headers=hm)
+            b3 = r3.json()
+            assert b3["total"] == 2 and len(b3["items"]) == 1, b3
+
+        # 别的批次一条都查不到
+        r4 = await client.get(
+            "/api/assets/outputs", params={"batch_id": str(uuid.uuid4())}, headers=hm)
+        assert r4.json()["total"] == 0
         await client.aclose()
 
     _run(_scenario())
@@ -6583,7 +6828,8 @@ def test_dispatch_job_twin_names_the_pool_not_the_model():
         with _board_off(fb):
             dup = await client.post(
                 "/api/assets/productions/dispatch",
-                json={"ids": [pid], "confirm": True, "async_mode": True}, headers=ho,
+                json={"ids": [pid], "confirm": True, "async_mode": True,
+                      "cross_person_confirm": True}, headers=ho,
             )
         assert dup.status_code == 409, dup.text
         detail = dup.json()["detail"]
@@ -6887,6 +7133,49 @@ def test_review_approve_enqueues_preview_and_unapprove_invalidates_it():
     _run(_scenario())
 
 
+def test_review_response_carries_is_recommended_per_result():
+    """11-06 P2：审核响应逐条带回 is_recommended（后端真话）。
+
+    前端藏卡提示的「非推荐」统计吃这个字段——豁免重放/跨页勾选时目标行不在当前页，
+    按当前页 items 数会漏报「其实会被藏住」。这条用例钉住：推荐条回 True、
+    非推荐条回 False，且与库里实际值一致。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        good = _approvable(items)
+        other_id = next(i["id"] for i in items if i["id"] != good["id"])
+
+        # 人为把另一条改成非推荐；文案换成 good 的（生成侧不保证每条都过复核闸，
+        # 这里只测「响应逐条回 is_recommended」，所以两条用同一段能过闸的文字）
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetSummary, uuid.UUID(other_id))
+            row.is_recommended = False
+            row.text = good["text"]
+            row.word_count = len(row.text)
+            await s.commit()
+
+        ok = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [good["id"], other_id], "action": "approve"}, headers=ho)
+        assert ok.status_code == 200, ok.text
+        by_sid = {r["summary_id"]: r for r in ok.json()["results"]}
+        assert by_sid[good["id"]]["ok"] is True and by_sid[other_id]["ok"] is True
+        assert by_sid[good["id"]]["is_recommended"] is True, "推荐条必须如实回 True"
+        assert by_sid[other_id]["is_recommended"] is False, "非推荐条必须如实回 False——前端靠它数「会被藏住几条」"
+        # 与库里实际值对账，防「响应回一套、库里存一套」
+        row_rec = await _row_of(AssetSummary, good["id"])
+        row_non = await _row_of(AssetSummary, other_id)
+        assert row_rec.is_recommended is True and row_non.is_recommended is False
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_preview_prompt_endpoint_gates_idempotent_and_fails_soft():
     """预览口：没过审不备；备过复用不重复等模型；模型挂了逐条说清且不拦投产。"""
     _run(_bootstrap())
@@ -7031,3 +7320,1368 @@ def test_download_and_preview_kinds_are_in_job_ledger():
     assert assets_api._job_endpoint(assets_api.JOB_PROMPT_PREVIEW)[2] == "备豆包提示词"
     assert "解析费" in assets_api._twin_cost_phrase(assets_api.JOB_DOWNLOAD)
     assert "自动跳过" in assets_api._twin_cost_phrase(assets_api.JOB_PROMPT_PREVIEW)
+
+
+def test_strict_audit_rejects_force_and_waive_when_audit_write_fails():
+    """11-06 拍板①：force/waive 类动作审计写失败＝操作被拒；普通动作照旧 fail-soft。
+
+    钉四件事：
+    1. admin 豁免过审（waive）时审计落不下去 → 500、过审整体回滚、文案留在待审
+       ——绝不出现「豁免了却查无此事」；
+    2. admin 强制投板（force_risk）时**预审计**落不下去 → 500、板子一个字没碰、
+       单还是 order_ready（预审计在动板子之前，这是它存在的意义）；
+    3. 普通动作（不带豁免的过审）在同一个审计替身底下照常成功——fail-soft 没被顺手升级；
+    4. 普通投板（不带 force）同样照常走完——预审计只在真 force 时才拦。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        # 审计替身：strict 的写一律炸（模拟审计库挂了），普通写照常放行
+        real_write = assets_api._write_audit
+
+        async def audit_down(*args, **kw):
+            if kw.get("strict"):
+                raise RuntimeError("audit db down")
+            return await real_write(*args, **kw)
+
+        # 本仓 httpx 的 ASGITransport 不认 raise_server_exceptions——500 会以异常冒出，
+        # 用 try/except 折成状态码断言
+        async def post_quiet(cl, *args, **kw):
+            try:
+                r = await cl.post(*args, **kw)
+                return r.status_code, r
+            except Exception:
+                return 500, None
+
+        # 500 也要能继续往下断言，所以严格路径全部走 post_quiet
+        asset_id, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        risky = _risky(items)
+        good = _approvable(items)
+
+        # 先证明确实被复核闸拦（有拦点才有豁免可言）
+        refused = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [risky["id"]], "action": "approve"}, headers=ho)
+        assert refused.json()["results"][0]["ok"] is False
+        assert refused.json()["results"][0]["error_code"] == "ASSET_RECHECK_FAILED"
+
+        # ① waive + 审计挂 → 操作被拒、整体回滚
+        with patch.object(assets_api, "_write_audit", audit_down):
+            st, waived = await post_quiet(
+                client, "/api/assets/summaries/review",
+                json={"summary_ids": [risky["id"]], "action": "approve",
+                      "waive_reason": "语境需要，已与运营确认"}, headers=ha)
+        assert st == 500, st
+        row = await _row_of(AssetSummary, risky["id"])
+        assert row.audit_status == RV_PENDING, "豁免没记上账就绝不能过审——整请求回滚"
+
+        # ③ 普通过审在同一个替身底下照常成功（fail-soft 只对普通动作让路）
+        with patch.object(assets_api, "_write_audit", audit_down):
+            normal = await client.post(
+                "/api/assets/summaries/review",
+                json={"summary_ids": [good["id"]], "action": "approve"}, headers=ho)
+        assert normal.status_code == 200, normal.text
+        assert normal.json()["results"][0]["ok"] is True
+
+        # ② 强制投板 + 审计挂 → 预审计拦下，板子一个字没碰
+        asset_id2, _sid2, listed = await _order_ready_production(
+            client, h, url="https://example.com/v/strict-audit-dispatch.mp4",
+            hook_codes=["7C0E1"])
+        prod = await client.get(f"/api/assets/productions?asset_id={asset_id2}", headers=ho)
+        ptext = prod.json()["items"][0]["prompt_text"]
+        assert ptext, "展开单才有正文，正文里挑个词钉成 block 才能造出 forced_ids"
+        block_word = ptext[:2]
+        put = await client.put("/api/assets/risk-lexicon",
+                               json={"block": [block_word], "inherit": True}, headers=ha)
+        assert put.status_code == 200, put.text
+
+        with patch.object(assets_api, "_write_audit", audit_down):
+            fb = _FakeBoard()
+            with _board_off(fb):
+                st2, forced = await post_quiet(
+                    client, "/api/assets/productions/dispatch",
+                    json={"ids": [listed[0]["id"]], "confirm": True, "async_mode": False,
+                          "force_risk": True, "force_reason": "语境需要，已确认"},
+                    headers=ha)
+        assert st2 == 500, st2
+        assert fb.creates == [], "预审计没落下去就绝不能动板子"
+        prow = await _row_of(AssetProduction, listed[0]["id"])
+        assert prow.status == PR_ORDER_READY, prow.status
+        assert prow.board_tid is None
+
+        # ④ 普通投板（不 force）在同一个替身底下照常走完——先把试验用的 block 词撤掉
+        restore = await client.put("/api/assets/risk-lexicon",
+                                   json={"block": [], "inherit": True}, headers=ha)
+        assert restore.status_code == 200, restore.text
+        with patch.object(assets_api, "_write_audit", audit_down):
+            fb2 = _FakeBoard()
+            with _board_off(fb2):
+                plain = await client.post(
+                    "/api/assets/productions/dispatch",
+                    json={"ids": [listed[0]["id"]], "confirm": True, "async_mode": False,
+                          "cross_person_confirm": True},
+                    headers=ho)
+        assert plain.status_code == 200, plain.text
+        assert plain.json()["dispatched"] == 1 and len(fb2.creates) == 1
+
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_cross_person_charge_actions_need_confirm_and_are_annotated():
+    """11-06 拍板②：跨人批次的扣费动作先 400 白话点名「替他人批次花钱」，
+    带确认重发后放行，审计里永久记「发起人≠批次主人」。
+
+    钉四件事：
+    1. operator 对素材专员导入的批次发起反推：不带 cross_person_confirm → 400，
+       白话里念出批次导入人（素材专员）；
+    2. 带上确认 → 放行，且 asset.analyze_batch 审计 after 里有 cross_person 清单；
+    3. 自己批次的动作（material 对自己的批次）完全不受影响——不弹确认、
+       审计里 cross_person 为 None；
+    4. 下载（download）同样吃这道闸：跨人 400、确认后放行且审计留痕。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+
+        # 素材专员导入一条链接（批次主人＝素材专员），清掉伪 success 走真实提交分支
+        asset_id, _ = await _make_ready_asset(client, hm)
+        async with dbmod.async_session_factory() as s:
+            a = await s.get(AssetItem, uuid.UUID(asset_id))
+            a.prompt_task_id, a.stage_prompt, a.status = None, "pending", "waiting_prompt"
+            batch_id = a.batch_id
+            await s.commit()
+
+        with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)), \
+             patch("app.api.assets.create_prompt_task", AsyncMock(return_value=_fake_prompt_task())) as cpt:
+            blocked = await client.post(
+                "/api/assets/analyze/batch",
+                json={"asset_ids": [asset_id], "max_duration": 180}, headers=ho)
+            assert blocked.status_code == 400, blocked.text
+            assert "替他人批次花钱" in blocked.json()["detail"]
+            assert "素材专员" in blocked.json()["detail"], "白话必须念出批次导入人，只给批次号让人猜是不行的"
+            assert cpt.await_count == 0, "确认之前一次模型提交都不发"
+
+            ok = await client.post(
+                "/api/assets/analyze/batch",
+                json={"asset_ids": [asset_id], "max_duration": 180, "cross_person_confirm": True},
+                headers=ho)
+        assert ok.status_code == 200, ok.text
+        assert cpt.await_count == 1
+        logs = await _rows(AuditLog, AuditLog.action == "asset.analyze_batch")
+        cross = logs[-1].after["cross_person"]
+        assert len(cross) == 1
+        assert cross[0]["batch_owner"] == "素材专员"
+        assert cross[0]["operator"] == OPERATOR_USER
+        assert cross[0]["batch_id"] == str(batch_id)
+
+        # 自己批次不受影响：material 对自己的批次再反推（重置阶段态），无确认也无 400
+        asset_id3, _ = await _make_ready_asset(client, hm, url="https://example.com/v/cross-own.mp4")
+        async with dbmod.async_session_factory() as s:
+            a3 = await s.get(AssetItem, uuid.UUID(asset_id3))
+            a3.prompt_task_id, a3.stage_prompt, a3.status = None, "pending", "waiting_prompt"
+            await s.commit()
+        with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)), \
+             patch("app.api.assets.create_prompt_task", AsyncMock(return_value=_fake_prompt_task())):
+            own = await client.post(
+                "/api/assets/analyze/batch",
+                json={"asset_ids": [asset_id3], "max_duration": 180}, headers=hm)
+        assert own.status_code == 200, own.text
+        own_logs = await _rows(AuditLog, AuditLog.action == "asset.analyze_batch")
+        assert own_logs[-1].after["cross_person"] is None
+
+        # 下载同样吃这道闸（解析落到付费渠道按 0.01 记账）
+        asset_id2, _ = await _make_ready_asset(client, hm, url="https://example.com/v/cross-dl.mp4")
+        with patch("app.api.assets.dispatch_parse", AsyncMock(side_effect=AssertionError("不该发起解析"))), \
+             patch("app.api.assets.get_downloader") as gd:
+            dl_blocked = await client.post(
+                "/api/assets/download", json={"asset_ids": [asset_id2]}, headers=ho)
+            assert dl_blocked.status_code == 400, dl_blocked.text
+            assert "替他人批次花钱" in dl_blocked.json()["detail"]
+            gd.assert_not_called(), "确认之前连下载器都不该碰"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_hook_code_uniqueness_blocks_reuse_and_used_endpoint_reports_it():
+    """11-06 拍板③：钩子编号一发就烧掉——作废单也不复用，后端不代取号。
+
+    钉四件事：
+    1. 带号建单 200，`GET /assets/hook-codes/used` 把钉过的号找回来
+       （带素材 code + 第几张单——只回 seq 不回素材，一线没法对）；
+    2. 同号再建单 → 400，白话点名「已钉在素材 X 的第 N 张单上」，
+       且模型一次都不调（拦在展开之前）；
+    3. 新号照常建单成功，used 口随即多一行；
+    4. 没被任何单用过的号在 used 口查不到。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+
+        _aid, _sid, listed = await _order_ready_production(
+            client, h, url="https://example.com/v/hook-dup-a.mp4", n=1, hook_codes=["7C0A1"])
+        assert listed[0]["hook_code"] == "7C0A1", listed[0]
+
+        # ④+① 回显口：只报钉过的；没钉的（7C0A2）不出现
+        used = await client.get(
+            "/api/assets/hook-codes/used", params={"codes": "7C0A1,7C0A2"}, headers=ho)
+        assert used.status_code == 200, used.text
+        rows = used.json()["used"]
+        assert len(rows) == 1, rows
+        assert rows[0]["code"] == "7C0A1"
+        assert rows[0]["seq"] == 1
+        assert rows[0]["asset_code"], "素材 code 必须带，一线要靠它去库里对单"
+        assert rows[0]["status"], "单子状态也要带（作废与否一线自己判断）"
+
+        # 准备第二条过审文案，拿同号再投产
+        _aid2, _sid2, _ = await _order_ready_production(
+            client, h, url="https://example.com/v/hook-dup-b.mp4", n=1)
+        with patch("app.api.assets._call_autoclip",
+                   AsyncMock(side_effect=AssertionError("拦在展开之前，不该花一分钱"))):
+            dup = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [_sid2], "n": 1, "board_total": 1,
+                      "recommended_title_count": 1, "hook_codes": ["7C0A1"]},
+                headers=ho)
+        assert dup.status_code == 400, dup.text
+        detail = dup.json()["detail"]
+        assert "已经被用掉" in detail
+        assert "7C0A1" in detail and "第 1 张单" in detail
+
+        # 新号照常建单；建完 used 口多一行
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            fresh = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [_sid2], "n": 1, "board_total": 1,
+                      "recommended_title_count": 1, "hook_codes": ["7C0A2"]},
+                headers=ho)
+        assert fresh.status_code == 200, fresh.text
+        used2 = await client.get(
+            "/api/assets/hook-codes/used", params={"codes": "7C0A1,7C0A2"}, headers=ho)
+        rows2 = used2.json()["used"]
+        assert {r["code"] for r in rows2} == {"7C0A1", "7C0A2"}
+        await client.aclose()
+
+    _run(_scenario())
+
+
+# ─────────────────  3d. 播放直链缓存（11-06 修复：取过的直链要能免费拿回来）  ─────────────────
+
+
+def test_play_url_cache_replay_expiry_and_retake():
+    """11-06 播放直链修复，钉五件事：
+
+    1. resolve 成功后 `play_url`/`play_url_at` **落库**（以前只回响应，关抽屉就没了）；
+    2. 再 resolve：缓存期内 → channel=cache、0 元、一次解析接口都不发；
+    3. 缓存过期（把取链时间拨回 TTL 之外）→ skipped，理由点名「已过期」和 retake=true；
+    4. retake=true → 真重新解析并按渠道记账 0.01（过期直链的唯一自愈出口）；
+    5. source-preview：缓存期内回 mode=cached + 直链（开抽屉免费续播）；过期回 external，
+       note 提示重取。
+    """
+    _run(_bootstrap())
+
+    SHARE = "https://www.douyin.com/video/7499000000000000091/"
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        imp = await _import(client, hm, [SHARE])
+        assert imp.status_code == 201, imp.text
+        asset_id = imp.json()["items"][0]["id"]
+
+        calls: list = []
+
+        async def _parse(url):
+            calls.append(url)
+            return SimpleNamespace(channel="zhiling", play_url="https://c.d/live.mp4",
+                                   duration=36.6, title=None)
+
+        with patch("app.api.assets.dispatch_parse", AsyncMock(side_effect=_parse)), \
+             patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)):
+            first = await client.post(
+                "/api/assets/resolve", json={"asset_ids": [asset_id]}, headers=hm)
+        assert first.status_code == 200, first.text
+        r = first.json()["results"][0]
+        assert r["ok"] and r["play_url"] == "https://c.d/live.mp4"
+        assert r["charged"] == pytest.approx(0.01, abs=1e-9)
+
+        rows = {str(a.id): a for a in await _rows(AssetItem)}
+        a = rows[asset_id]
+        assert a.play_url == "https://c.d/live.mp4", "直链必须落库（修复的主体）"
+        assert a.play_url_at is not None
+
+        # ② 缓存期内再取：免费回放，一次外呼都不发
+        calls.clear()
+        replay = await client.post(
+            "/api/assets/resolve", json={"asset_ids": [asset_id]}, headers=hm)
+        assert replay.status_code == 200, replay.text
+        body = replay.json()
+        assert body["results"][0]["channel"] == "cache"
+        assert body["results"][0]["play_url"] == "https://c.d/live.mp4"
+        assert body["results"][0]["charged"] == 0.0
+        assert body["charged"] == 0.0 and calls == [], "缓存回放 0 元且不调解析接口"
+        assert "0 元" in body["message"]
+
+        # ⑤a source-preview：缓存期内回 mode=cached（开抽屉免费续播）
+        prev = await client.get(f"/api/assets/{asset_id}/source-preview", headers=hm)
+        assert prev.status_code == 200, prev.text
+        pj = prev.json()
+        assert pj["mode"] == "cached" and pj["url"] == "https://c.d/live.mp4"
+        assert pj["cached"] is True and pj["play_url_taken_at"]
+        assert "缓存" in pj["note"]
+
+        # ③ 把取链时间拨回 7 小时前（TTL 默认 6 小时）：缓存过期
+        async with dbmod.async_session_factory() as s:
+            stale = await s.get(AssetItem, uuid.UUID(asset_id))
+            stale.play_url_at = datetime.utcnow() - timedelta(hours=7)
+            await s.commit()
+
+        calls.clear()
+        expired = await client.post(
+            "/api/assets/resolve", json={"asset_ids": [asset_id]}, headers=hm)
+        assert expired.status_code == 200, expired.text
+        eb = expired.json()
+        assert eb["results"] == [] and calls == [], "过期被跳过，不许自作主张重新花钱"
+        reason = eb["skipped"][0]["reason"]
+        assert "已过期" in reason and "retake=true" in reason, "跳过理由要告诉人自愈出口在哪"
+
+        # ⑤b source-preview：过期回 external，note 提示重取
+        prev2 = await client.get(f"/api/assets/{asset_id}/source-preview", headers=hm)
+        assert prev2.status_code == 200, prev2.text
+        pj2 = prev2.json()
+        assert pj2["mode"] == "external" and pj2["url"] is None
+        assert "已过期" in pj2["note"] and "重取" in pj2["note"]
+
+        # ④ retake=true：真重新解析、按渠道记账（自愈出口必须通）
+        with patch("app.api.assets.dispatch_parse", AsyncMock(side_effect=_parse)), \
+             patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)):
+            retaken = await client.post(
+                "/api/assets/resolve", json={"asset_ids": [asset_id], "retake": True}, headers=hm)
+        assert retaken.status_code == 200, retaken.text
+        rb = retaken.json()
+        assert calls == [SHARE], "retake 必须真的重新发起解析"
+        assert rb["results"][0]["channel"] == "zhiling"
+        assert rb["results"][0]["charged"] == pytest.approx(0.01, abs=1e-9)
+        assert rb["results"][0]["duration"] == 36.6
+        rows2 = {str(a2.id): a2 for a2 in await _rows(AssetItem)}
+        assert rows2[asset_id].cost_parse == pytest.approx(0.02, abs=1e-9), "两次解析各记一笔"
+        assert rows2[asset_id].play_url_at is not None
+        assert rows2[asset_id].play_url_at > stale.play_url_at, "取链时间要刷新成这一次的"
+
+        # retake 后缓存又活了：免费回放照旧
+        calls.clear()
+        replay2 = await client.post(
+            "/api/assets/resolve", json={"asset_ids": [asset_id]}, headers=hm)
+        assert replay2.status_code == 200, replay2.text
+        assert replay2.json()["results"][0]["channel"] == "cache" and calls == []
+        await client.aclose()
+
+    _run(_scenario())
+
+
+# ─────────────────  3e. 导入即自动下载原片（11-06 用户拍板：不用考虑费用）  ─────────────────
+
+
+def test_import_links_auto_downloads_immediately():
+    """11-06 用户拍板：链接任务添加后就直接下载原片，不用等反推、不用任何人确认解析费。
+
+    钉三件事：
+    1. 导入成功后 `_enqueue_download` 被排上：圈的是**这次新建**的素材 id、批次对得上；
+    2. 响应 message 用白话说「已自动开始下载（0.01 元/条照记账）」；审计记 auto_download；
+    3. 跑的仍是 `/assets/download` 那一个口（_job_endpoint 钉过），这里只验排队侧——
+       下载本体的幂等/记账已有专门用例，不重复。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        enq = AsyncMock(return_value={"queued": True, "job_id": "j-1", "queued_count": 2, "note": None})
+        with patch("app.api.assets._enqueue_download", enq):
+            res = await _import(client, hm, [DOUYIN_1, DOUYIN_2])
+        assert res.status_code == 201, res.text
+        body = res.json()
+        assert enq.await_count == 1, "一个批次排一份下载任务"
+        kwargs = enq.await_args.kwargs
+        assert kwargs["batch_id"] == body["batch"]["id"]
+        assert sorted(kwargs["asset_ids"]) == sorted(i["id"] for i in body["items"])
+        assert kwargs["operator"] is not None
+
+        assert "自动开始下载" in body["message"]
+        assert body["download"] and body["download"][0]["queued"] is True
+
+        logs = await _rows(AuditLog, AuditLog.action == "asset.import_links")
+        assert logs[-1].after["auto_download"] is True, "自动下载是用户拍板的默认口径，审计要留痕"
+
+        # 关掉开关（测试/脚本用）：完全不排下载
+        enq2 = AsyncMock(return_value={"queued": False, "job_id": None, "queued_count": 0, "note": None})
+        with patch("app.api.assets._enqueue_download", enq2):
+            res2 = await _import(client, hm, [DOUYIN_3], auto_download=False)
+        assert res2.status_code == 201, res2.text
+        assert enq2.await_count == 0 and res2.json()["download"] is None
+        assert "自动开始下载" not in res2.json()["message"]
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_delete_asset_guards_owner_and_force():
+    """11-06 素材列表删除功能，钉六件事：
+
+    1. 本人在跑任务挡道（asset_jobs open 圈住这条素材）→ 409；
+    2. 本人删自己导入的、没挂任何下游 → 200，行没了、批次 item_count 递减、审计留痕；
+    3. 删别人导入的（非 admin）→ 403；
+    4. 挂着文案 → 409 拒删（交付台账不连坐），话术点名「文案」；
+    5. admin 强删不带理由 → 400；带理由 force → 200 且文案连坐删干净；
+    6. 删不存在的 → 404。
+    """
+    _run(_bootstrap())
+
+    A1 = "https://www.douyin.com/video/7499000000000000101/"
+    A2 = "https://www.douyin.com/video/7499000000000000102/"
+    A3 = "https://www.douyin.com/video/7499000000000000103/"
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ha, ho = h["material"], h["admin"], h["operator"]
+
+        r1 = await _import(client, hm, [A1])
+        r2 = await _import(client, hm, [A2])
+        r3 = await _import(client, hm, [A3])
+        a1 = r1.json()["items"][0]["id"]
+        a2 = r2.json()["items"][0]["id"]
+        a3 = r3.json()["items"][0]["id"]
+        batch1 = str((await _row_of(AssetItem, a1)).batch_id)
+
+        # ① 在跑任务圈住 a1 → 拒删
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetJob(
+                kind=JOB_SUMMARY_GENERATE, status=JB_RUNNING,
+                params={"asset_ids": [a1]},
+            ))
+            await s.commit()
+        busy = await client.delete(f"/api/assets/{a1}", headers=hm)
+        assert busy.status_code == 409, busy.text
+        assert "正在跑" in busy.json()["detail"]
+        # 任务收尾（标成终态）后不再挡道
+        async with dbmod.async_session_factory() as s:
+            from sqlalchemy import delete as sa_delete
+            await s.execute(sa_delete(AssetJob))
+            await s.commit()
+
+        # ② 本人删自己没挂下游的素材 → 200，批次计数递减 + 审计
+        ok = await client.delete(f"/api/assets/{a1}", headers=hm)
+        assert ok.status_code == 200, ok.text
+        body = ok.json()
+        assert body["deleted"].startswith("AS-") and body["force"] is False
+        assert await _count(AssetItem) == 2
+        b = await _row_of(AssetBatch, uuid.UUID(batch1))
+        assert b.item_count == 0, "删一条要减一条，批次计数不能虚高"
+        logs = await _rows(AuditLog, AuditLog.action == "asset.asset.delete")
+        assert len(logs) == 1 and logs[0].before.get("code") == body["deleted"]
+
+        # ③ 删别人导入的（operator 非 admin 非本人）→ 403
+        deny = await client.delete(f"/api/assets/{a2}", headers=ho)
+        assert deny.status_code == 403, deny.text
+
+        # ④ 挂着文案 → 409，话术点名「文案」
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetSummary(asset_id=uuid.UUID(a2), seq=1, text="钩一下"))
+            await s.commit()
+        blocked = await client.delete(f"/api/assets/{a2}", headers=hm)
+        assert blocked.status_code == 409, blocked.text
+        assert "文案" in blocked.json()["detail"]
+
+        # ⑤ admin 强删：不带理由 400；带理由 200 连坐删
+        no_reason = await client.delete(
+            f"/api/assets/{a2}?force=true", headers=ha)
+        assert no_reason.status_code == 400, no_reason.text
+        forced = await client.delete(
+            f"/api/assets/{a2}?force=true&reason=测试数据清理", headers=ha)
+        assert forced.status_code == 200, forced.text
+        assert forced.json()["force"] is True
+        assert await _count(AssetSummary) == 0, "force 连坐要带走文案"
+        logs = await _rows(AuditLog, AuditLog.action == "asset.asset.delete")
+        assert len(logs) == 2 and logs[-1].after.get("reason") == "测试数据清理"
+
+        # ⑥ 不存在 → 404
+        gone = await client.delete(f"/api/assets/{uuid.uuid4()}", headers=ha)
+        assert gone.status_code == 404, gone.text
+
+        # 收尾：a3 删掉，两表归零
+        last = await client.delete(f"/api/assets/{a3}", headers=hm)
+        assert last.status_code == 200
+        assert await _count(AssetItem) == 0
+
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_prompt_override_changes_only_outgoing_copy():
+    """11-06 拍板「投放前投递稿可改」，钉五件事：
+
+    1. override 只对**这次要新建**的单生效：不在新建堆里的 id → 400（回收的单投的是原稿）；
+    2. 改后的正文照走 block 级风险词重扫：命中 → 400，话术点名「改稿不等于豁免」；
+    3. operator 带 force_risk → 403（闸门只有 admin 能踩，改稿不另开豁免口）；
+    4. admin force 投出去：板收到的 prompt 是**改后**的，库里的 prompt_text
+       一字不动（下次再投仍是原稿），没改的那张也仍是原稿；
+    5. 改稿逐条留审计（asset.production.dispatch_override，含改后正文与 risk_forced）；
+    6. 空白 override ＝没改：照原稿投。
+    """
+    from app.services import asset_service as _svc
+
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ha, ho = h["admin"], h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(
+            client, h, n=2, hook_codes=["7C0E1", "7C0E2"])
+        ids = [p["id"] for p in listed]
+        orig_prompt = listed[0]["prompt_text"]
+        orig_prompt2 = listed[1]["prompt_text"]
+        assert orig_prompt and orig_prompt2, "fixture 出来的单必须有正文"
+
+        # ① 不在新建堆里的 id → 400（is_configured 的守卫在闸门之前，探针都要在"凭据已配"的环境里发）
+        with _board_off(_FakeBoard()):
+            r = await _dispatch(client, ho, ids,
+                                prompt_overrides={str(uuid.uuid4()): "随便改改"})
+        assert r.status_code == 400 and "不在新建堆里" in r.json()["detail"], r.text
+
+        # ② 改稿命中 block 级风险词 → 400
+        await client.put("/api/assets/risk-lexicon",
+                         json={"block": ["测试雷"], "inherit": True}, headers=ha)
+        with _board_off(_FakeBoard()):
+            r2 = await _dispatch(client, ho, ids, prompt_overrides={ids[0]: "开头就放测试雷"})
+        assert r2.status_code == 400 and "高风险词" in r2.json()["detail"], r2.text
+        assert "改稿不等于豁免" in r2.json()["detail"]
+
+        # ③ operator 踩 force 闸 → 403（闸只认 admin）
+        with _board_off(_FakeBoard()):
+            r3 = await _dispatch(client, ho, ids, prompt_overrides={ids[0]: "开头就放测试雷"},
+                                 force_risk=True, force_reason="语境需要")
+        assert r3.status_code == 403, r3.text
+
+        # ④ admin force：改稿照投，板收到的是改后的，库里一字不动
+        override_text = "开头就放测试雷\n" + orig_prompt
+        fb = _FakeBoard()
+        with _board_off(fb):
+            ok = await _dispatch(client, ha, ids,
+                                 prompt_overrides={ids[0]: override_text},
+                                 force_risk=True, force_reason="改稿语境需要")
+        assert ok.status_code == 200, ok.text
+        by_req = {c["reqID"]: c["prompt"] for c in fb.creates}
+        assert by_req[_svc.board_req_id(ids[0])] == override_text, "改过的那张投出去必须是改后正文"
+        assert by_req[_svc.board_req_id(ids[1])] == orig_prompt2, "没改的那张仍投原稿"
+        rows = await _rows(AssetProduction)
+        row0 = next(r for r in rows if str(r.id) == ids[0])
+        assert row0.prompt_text == orig_prompt, "库里的提示词一字不动"
+
+        # ⑤ 改稿留痕
+        logs = await _rows(AuditLog, AuditLog.action == "asset.production.dispatch_override")
+        assert len(logs) == 1, len(logs)
+        assert logs[0].after["override"] == override_text[:800]
+        assert logs[0].after["risk_forced"] is True
+        assert logs[0].before["prompt_text"] == orig_prompt[:800]
+
+        # ⑥ 空白 override ＝没改（第一轮投完两张单已 success，单开一张新单来验）
+        _a3, _s3, listed3 = await _order_ready_production(
+            client, h, url="https://www.douyin.com/video/7499000000000000104/",
+            n=1, hook_codes=["7C0E3"])
+        id3 = listed3[0]["id"]
+        fb2 = _FakeBoard()
+        with _board_off(fb2):
+            ok2 = await _dispatch(client, ha, [id3], prompt_overrides={id3: "   "})
+        assert ok2.status_code == 200, ok2.text
+        assert all(c["prompt"] == listed3[0]["prompt_text"] for c in fb2.creates), "空白改稿照原稿投"
+        logs2 = await _rows(AuditLog, AuditLog.action == "asset.production.dispatch_override")
+        assert len(logs2) == 1, "空白改稿不留痕"
+
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_analyze_async_job_converges_and_auto_retries_fast_fail():
+    """11-06 三连投诉的根治验收：反推进任务条（不再隐形）、后台自己收终态（页面关了也收）、
+    「第一次总是出错」＝快速失败自动重试一次。
+
+    三个投诉一句话：以前反推提交完就没人管了——收敛只靠前端轮询，页面一关状态就永远
+    卡在「反推中」；任务条里也找不到它；智令 6 秒速死那种失败还得人肉点重试。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        from wechat_download.models import PT_PROCESSING, WechatDlPromptTask
+        from wechat_download.prompt_client import PromptStatus
+
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        third = "https://www.douyin.com/video/7400000000000000002"
+        imp = await _import(client, hm, [DOUYIN_1, third])
+        assert imp.status_code == 201, imp.text
+        ids = [i["id"] for i in imp.json()["items"]]
+
+        old_poll = settings.ASSET_ANALYZE_JOB_POLL_SECONDS
+        settings.ASSET_ANALYZE_JOB_POLL_SECONDS = 0.05  # 测试把轮询间隔压到毫秒级
+        try:
+            # 假 create_prompt_task 要**真落任务行**（processing）：后台收敛靠 get_prompt_task
+            # 读库，替身只回 SimpleNamespace 的话每条都会被判「任务行缺失」
+            async def _mk_task(db, **kw):
+                tid = uuid.uuid4()
+                db.add(WechatDlPromptTask(
+                    id=tid, source_type="url", source_url=kw.get("source_url"),
+                    provider_task_id=f"p-{tid.hex[:6]}", status=PT_PROCESSING,
+                    max_duration=kw.get("max_duration") or 60))
+                await db.flush()
+                return SimpleNamespace(id=tid, status="processing", error=None)
+
+            # 收敛侧替身按序回：第 1 条成功、第 2 条快速失败（触发自动重试）、重试后成功
+            fake = SimpleNamespace(
+                query=AsyncMock(side_effect=[
+                    PromptStatus(status="success", content=SCRIPT, schedule="SUCCESS"),
+                    PromptStatus(status="failed", error="任务处理失败", schedule="FAIL"),
+                    PromptStatus(status="success", content=SCRIPT, schedule="SUCCESS"),
+                ]),
+                close=AsyncMock(),
+            )
+            with patch("app.api.assets._query_zhiling_balance_detail", _fake_balance(100.0)), \
+                 patch("app.api.assets.create_prompt_task", AsyncMock(side_effect=_mk_task)) as cpt, \
+                 patch("wechat_download.prompt_service.PromptClient", lambda: fake):
+                # ① 提交即回任务号，不是同步那套 {results:[...]}
+                sub = await client.post(
+                    "/api/assets/analyze/batch",
+                    json={"asset_ids": ids, "max_duration": 60, "confirmed": True,
+                          "download": False, "async_mode": True},
+                    headers=hm,
+                )
+                assert sub.status_code == 200, sub.text
+                ack = sub.json()
+                assert ack["queued"] is True and ack["job_id"]
+                assert ack["planned_units"] == 2
+                assert "results" not in ack, "异步回执不能长得像同步结果"
+                done = await _wait_job(client, h["admin"], ack["job_id"], timeout=20.0)
+
+            # ② 后台自己收完了：一成、自动重试一次后又一成，没有留在跑的
+            assert done["status"] == "succeeded", done
+            conv = done["result"]["converge"]
+            assert conv["success"] == 2 and conv["failed"] == 0, conv
+            assert conv["auto_retry"] == 1, "6 秒速死那种失败要自动重试一次"
+            assert conv["left_running"] == 0 and conv["deadline_hit"] is False
+            assert done["progress"]["done"] == 2 and done["progress"]["total"] == 2
+
+            # ③ 提交 2 次 + 自动重试 1 次 = create_prompt_task 共 3 次
+            assert cpt.await_count == 3, cpt.await_count
+
+            # ④ 业务表才是真相：两条都收敛到成功（不是台账绿了业务表还挂着 running）
+            rows = await _rows(AssetItem, AssetItem.id.in_([uuid.UUID(x) for x in ids]))
+            assert all(r.stage_prompt == "success" for r in rows), \
+                [(r.code, r.stage_prompt) for r in rows]
+
+            # ⑤ 自动重试与收敛都留了审计
+            retries = await _rows(AuditLog, AuditLog.action == "asset.analyze.auto_retry")
+            assert len(retries) == 1 and retries[0].after["retry_status"] == "processing"
+            convs = await _rows(AuditLog, AuditLog.action == "asset.analyze.converge")
+            assert len(convs) == 1 and convs[0].after["auto_retry"] == 1
+
+            # ⑥ 任务条默认能列到反推任务（「后台任务中不会显示」的验收点）
+            listed = await client.get("/api/assets/jobs", headers=hm)
+            kinds = {i["kind"] for i in listed.json()["items"]}
+            assert "analyze" in kinds, kinds
+
+            # ⑦ 收敛完再点同样的两条：400 说清每档多少条、怎么重试，不再是没头没尾的「都已处理过」
+            again = await client.post(
+                "/api/assets/analyze/batch",
+                json={"asset_ids": ids, "max_duration": 60, "confirmed": True, "download": False},
+                headers=hm,
+            )
+            assert again.status_code == 400, again.text
+            detail = again.json()["detail"]
+            assert "没有能新提交反推的" in detail and "已成功 2 条" in detail and "重试失败项" in detail, detail
+
+            # ⑧ 台账里 params 存的是原请求体（含 wait_converge，追溯口径不变）
+            jobs = await _rows(AssetJob)
+            mine = [j for j in jobs if j.kind == "analyze"]
+            assert len(mine) == 1 and mine[0].params["wait_converge"] is True
+            assert mine[0].params["async_mode"] is True, "params 存的是原请求体（追溯用）"
+        finally:
+            settings.ASSET_ANALYZE_JOB_POLL_SECONDS = old_poll
+
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_summary_generate_also_fills_doubao_web_prompts():
+    """11-06 双产出：出文案时第二跳把每条候选的豆包网页版提示词按 seq 填进 doubao_prompt。
+
+    三段：①正常路径（第二跳成功，逐条对号）；②第二跳失败不拖累文案（doubao_prompt 留
+    NULL、可单独补）；③补口（只补缺的、force 重出、超上限 400）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+
+        # ① 正常：候选落库 + doubao_prompt 全填（count 显式 3，测三候选并行展开的机制）
+        asset_id, _ = await _make_ready_asset(client, hm)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()) as call:
+            gen = await client.post(
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset_id], "count": 3}, headers=hm)
+        assert gen.status_code == 200, gen.text
+        body = gen.json()
+        first = body["results"][0]
+        assert first["created"] == 3
+        assert first["doubao_prompt_filled"] == 3 and first["doubao_prompt_total"] == 3, first
+        assert "网页版提示词已同步生成" in body["message"]
+        # 两次调用：一次出文案、一次网页版提示词；第二跳按 seq 带全候选与剧名参数
+        paths = [c.args[0] for c in call.await_args_list]
+        assert sum(1 for p in paths if p.endswith("hook-copy/prompt-web")) == 1
+        web_payload = [c.args[1] for c in call.await_args_list if c.args[0].endswith("hook-copy/prompt-web")][0]
+        assert [c["seq"] for c in web_payload["candidates"]] == [1, 2, 3]
+        assert web_payload["candidates"][0]["text"] == CANDIDATES[0]["text"]
+        assert "drama_title" in web_payload["params"]
+        rows = await _rows(AssetSummary, AssetSummary.asset_id == uuid.UUID(asset_id))
+        assert all((r.doubao_prompt or "").strip() for r in rows)
+        assert all("9:16，10s" in r.doubao_prompt for r in rows)
+        # 序列化口带 doubao_prompt
+        detail = await client.get(f"/api/assets/{asset_id}", headers=hm)
+        assert detail.status_code == 200
+        assert all(s["doubao_prompt"] for s in detail.json()["summaries"])
+
+        # ② 第二跳失败：文案照常落库（created=3），doubao_prompt 全空，results 记可补
+        # （同测试里第二次导入必须换 URL，同链接默认被导入去重拦下）
+        asset2, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(web_error="网关卡流")):
+            gen2 = await client.post(
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset2], "count": 3}, headers=hm)
+        assert gen2.status_code == 200, gen2.text
+        body2 = gen2.json()
+        assert body2["results"][0]["created"] == 3
+        assert body2["results"][0]["doubao_prompt_filled"] == 0
+        assert "可单独补" in body2["results"][0]["web_note"]
+        assert "没生成全" in body2["message"]
+        rows2 = await _rows(AssetSummary, AssetSummary.asset_id == uuid.UUID(asset2))
+        assert all(r.doubao_prompt is None for r in rows2)
+        assert all(r.text for r in rows2), "文案不受第二跳失败影响"
+
+        # ③ 补口：先缺后补
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            backfill = await client.post(
+                "/api/assets/summaries/prompt-web",
+                json={"summary_ids": [str(r.id) for r in rows2]},
+                headers=hm,
+            )
+        assert backfill.status_code == 200, backfill.text
+        assert backfill.json()["filled"] == 3, backfill.text
+        rows2 = await _rows(AssetSummary, AssetSummary.asset_id == uuid.UUID(asset2))
+        assert all((r.doubao_prompt or "").strip() for r in rows2)
+        # 已有的不重出（不带 force）
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()) as call3:
+            again = await client.post(
+                "/api/assets/summaries/prompt-web",
+                json={"summary_ids": [str(rows2[0].id)]}, headers=hm)
+        assert again.status_code == 200 and again.json()["filled"] == 0
+        assert "force" in again.json()["results"][0]["note"]
+        call3.assert_not_awaited()
+        # force 才重出
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()) as call4:
+            forced = await client.post(
+                "/api/assets/summaries/prompt-web",
+                json={"summary_ids": [str(rows2[0].id)], "force": True}, headers=hm)
+        assert forced.status_code == 200 and forced.json()["filled"] == 1
+        assert call4.await_count == 1
+        # 超上限 400
+        too_many = await client.post(
+            "/api/assets/summaries/prompt-web",
+            json={"summary_ids": [str(uuid.uuid4())] * 11}, headers=hm)
+        assert too_many.status_code == 400 and "一次最多补" in too_many.json()["detail"]
+        await client.aclose()
+
+    _run(_scenario())
+
+
+
+
+# ────────────────────────  批 M（评审一·P1-1）：人工回写 vs 轮询写回并发  ────────────────────────
+
+
+class _WritebackHookBoard(_FakeBoard):
+    """在指定第 N 次回读的**当口**，以「人工」身份调一次投递状态回写口。
+
+    轮询与人工的交叠点只能在替身钩子里造：回读是轮询协程让出事件循环的地方，
+    此刻轮询的事务是收掉的（出网在事务外），人工请求拿独立 session 进来写库
+    不会互相卡。hook 在 super().readback() 之前落笔，保证「写完之后轮询才看到板面」，
+    时序是确定的，不靠 sleep 撞运气。
+    """
+
+    def __init__(self, *, hook_read_index, writeback, **kw):
+        super().__init__(**kw)
+        self._hook_read_index = hook_read_index
+        self._writeback = writeback          # 无参 async callable，只钩一次
+        self.writeback_status: list = []
+
+    async def readback(self, days, tag):
+        if self._writeback is not None and len(self.reads) + 1 == self._hook_read_index:
+            wb, self._writeback = self._writeback, None
+            resp = await wb()
+            self.writeback_status.append(resp.status_code)
+        return await super().readback(days, tag)
+
+
+def test_dispatch_poll_reown_skips_restart_when_human_rewrote_status():
+    """批 M（评审一·P1-1）重启前重读：人工改走的状态，轮询绝不按旧快照再重启一次。
+
+    真实形状：轮询持有 dispatch 时加载的 ORM 对象、整轮不重读库，第 1 轮板面
+    waiting 会把单子从 queued 推进到 running；人工在第 2 轮回读的当口经「投递状态
+    回写口」判 failed（板上失败行没有原因字段，我们记的是自己的判读），同一轮
+    板面正好报 fail——修法前轮询会按旧快照自动重启（payload 还在手），同一条
+    **烧两遍号池**。修法后重启前用独立短会话重读一眼，状态被改走的行整行让位：
+    不重启、不写回、summary 点名。
+
+    时序账（替身 readback 计数）：#1 投前快照、#2 建任务认领（行面 waiting）、
+    #3 轮询第 1 轮（waiting→轮询自己推进 running）、#4 轮询第 2 轮＝钩子先落笔
+    人工判 failed，再返回板面 fail。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, hook_codes=["7C0M1"])
+        pid = listed[0]["id"]
+
+        async def _human_writeback():
+            # running → failed 是迁移表放行的路（人工判读失败必须带成因）
+            return await client.post(
+                "/api/assets/productions/status",
+                json={"ids": [pid], "status": "failed",
+                      "error": "人工判读：这条在板上没出来，别自动重投，等我确认"},
+                headers=ho)
+
+        # 板面：行面第 1、2 次被读到是 waiting，第 3 次（＝轮询第 2 轮，正好人工
+        # 落笔的那轮）起 fail——若让位机制没生效，本轮就会触发自动重启
+        # （creates 变 2），在这里红。
+        fb = _WritebackHookBoard(
+            hook_read_index=4, writeback=_human_writeback,
+            status_fn=lambda created_index, read_round: "waiting" if read_round <= 2 else "fail",
+        )
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, [pid])
+        assert fb.writeback_status == [200], fb.writeback_status
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        # ① 重启没发生：板上只建过投第一次那一条（号池只烧一遍）
+        assert len(fb.creates) == 1, fb.creates
+        # ② 人工的 failed 原样保留，轮询没有按旧快照把 running/queued 写回去
+        row = await _row_of(AssetProduction, pid)
+        assert row.status == "failed", row.status
+        assert row.attempts == 1, "让位的行不许再走 _adopt_tids（attempts 会 +1）"
+        assert row.board_tid, "tid 还在（第一次投板认领的），让位不抹历史"
+        assert "人工判读" in (row.error or ""), "成因是人工写的，不是轮询的模板话术"
+        # ③ summary 点名交还人工
+        res = body["results"][pid]
+        assert res["status"] == "failed" and "交还人工" in (res.get("note") or ""), res
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_poll_reown_preserves_manual_status_at_writeback():
+    """批 M（评审一·P1-1）写回前重读：轮询写回前发现状态被人工改走就整行让位。
+
+    人工在轮询第 2 轮回读的当口把单子判 failed（板面这轮还是 waiting，轮询照常
+    走完心跳）；修法前写回阶段会按旧快照 commit（lost update：人工的 failed 被
+    覆盖回轮询的 running 口径）。专验「写回前重读」这一道，不掺重启分支。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, hook_codes=["7C0M2"])
+        pid = listed[0]["id"]
+
+        async def _human_writeback():
+            return await client.post(
+                "/api/assets/productions/status",
+                json={"ids": [pid], "status": "failed",
+                      "error": "人工判读：这条别再等了"},
+                headers=ho)
+
+        # 板面一直 waiting：轮询到期限为止只写心跳与 running 推进，不会进重启分支。
+        fb = _WritebackHookBoard(
+            hook_read_index=4, writeback=_human_writeback,
+            status_fn=lambda created_index, read_round: "waiting",
+        )
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, [pid])
+        assert fb.writeback_status == [200], fb.writeback_status
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        row = await _row_of(AssetProduction, pid)
+        assert row.status == "failed", "人工的 failed 必须原样保留（写回前重读让位）"
+        assert row.attempts == 1
+        # 第 1 轮的心跳已照常落库（心跳是轮询自己的口径，人工不写这两个字段），
+        # 第 2 轮整行让位后心跳停在第 1 轮的值——有值即说明第 1 轮写回没被误伤。
+        assert row.board_last_status == "waiting" and row.board_last_check_at is not None
+        res = body["results"][pid]
+        assert res["status"] == "failed" and "交还人工" in (res.get("note") or ""), res
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_card_override_pins_rows_and_rejects_dirty_ids():
+    """投板前统一挂卡：给 card_asset_ids 时覆盖本批**要新建**的单，脏 id 当场 400。
+
+    用户拍板的形状：卡（人物三视图）不只在「生成生产单」那一步挂——投板确认弹窗里
+    也能统一挑/传。后端口径：给出的数组对 to_create 逐张覆盖写（card_asset_ids 数组
+    ＋兼容单值列写第一张，与 produce 同一套写法），随建任务前的 commit 落库，
+    _build_delivery 读到的就是新卡；回收档（已有 tid）不适用。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, n=2, hook_codes=["7C0N1", "7C0N2"])
+        ids = [p["id"] for p in listed]
+
+        # 直接种一张合法的图片素材行当角色卡（_resolve_card_assets 三条硬校验：存在/是图/在桶里）
+        card_id = uuid.uuid4()
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetItem(
+                id=card_id, media_kind="image", source_kind="file",
+                file_name="女主三视图.png", file_key="asset/cards/santi.png",
+                bucket=settings.MINIO_BUCKET_RAW, created_by=None,
+            ))
+            await s.commit()
+
+        # 脏 id（不存在的卡）当场 400，一张都不投（排在真投之前：投过就成终态，进不了闸门了）
+        fb_dirty = _FakeBoard()
+        with _board_off(fb_dirty):
+            bad = await _dispatch(client, ho, [ids[0]], card_asset_ids=[str(uuid.uuid4())])
+        assert bad.status_code == 400 and "卡" in bad.json()["detail"], bad.text
+        assert len(fb_dirty.creates) == 0, "脏卡必须在建任务之前拦下，一个号池额度都不许烧"
+
+        fb = _FakeBoard()
+        with _board_off(fb):
+            resp = await _dispatch(client, ho, ids, card_asset_ids=[str(card_id)])
+        assert resp.status_code == 200, resp.text
+
+        # 两张单都被钉上这张卡（顺序数组＋兼容单值列＝第一张）
+        rows = await _rows(AssetProduction, AssetProduction.asset_id == uuid.UUID(asset_id))
+        assert {str(r.card_asset_ids[0]) for r in rows if r.card_asset_ids} == {str(card_id)}
+        assert all(r.character_card_key == "asset/cards/santi.png" for r in rows)
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_summary_generate_passes_original_duration_for_first_candidate():
+    """2026-11-07 用户口径：第 1 条钩子文案要贴合原片长度（10s/15s 取最接近档）。
+
+    后端只负责把原片时长带给文案服务（params.duration_seconds）；定档规则在
+    autoclip 的 hook_copy.txt / hook_prompt_web.txt。这里钉两件事：
+    ① duration 有值 → payload 带上（四舍五入取整）；② duration 为空 → 不带该键
+    （autoclip 侧退回原「按文案丰满程度」判断）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        # 先给素材写上时长（模拟文件导入 ffprobe / 链接解析回填的产物）
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetItem, uuid.UUID(asset_id))
+            row.duration = 15.4
+            await s.commit()
+
+        captured: list = []
+
+        async def _capture(path, payload, timeout=180.0):
+            captured.append((path, payload))
+            return await _fake_autoclip()(path, payload, timeout)
+
+        with patch("app.api.assets._call_autoclip", _capture):
+            resp = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+        assert resp.status_code == 200, resp.text
+        gen = [p for path, p in captured if path.endswith("hook-copy/generate")]
+        assert gen and gen[0]["params"]["duration_seconds"] == 15, "15.4s 四舍五入取整透传"
+        web = [p for path, p in captured if path.endswith("hook-copy/prompt-web")]
+        assert web and web[0]["params"]["duration_seconds"] == 15, "网页版提示词同口径透传"
+
+        # 没时长的素材：不带该键（模板退回原判断），且不能被 0/None 污染
+        asset2, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            resp2 = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset2]}, headers=hm)
+        assert resp2.status_code == 200, resp2.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_output_groups_aggregate_by_asset_and_batch():
+    """成片墙两级视图第一级（2026-11-07 用户口径）：按素材（钩子）/按批次聚合成清单。
+
+    钉五件事：①按素材分组带成片数＋钩子号（挂在生产单上的，汇总去重）；②按批次
+    分组带批次码；③batch_id 筛选两级一致（素材侧收敛）；④qc 筛选真正生效
+    （qc_status=None 的不算进 passed 组，也不出现在 passed 清单）；⑤每组带
+    最新一条时间；没有首帧的组 thumb_url 显式 null（前端画占位不报错）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, hadm = h["material"], h["admin"]
+
+        async def _asset_with_outputs(url, hook_code, qc):
+            """一条素材：出文案→过审→投产（带钩子号）→直接插 N 条产物。"""
+            asset_id, _ = await _make_ready_asset(client, hm, url=url)
+            items, _ = await _gen_and_list(asset_id, hm, client)
+            sid = _approvable(items)["id"]
+            await client.post("/api/assets/summaries/review",
+                              json={"summary_ids": [sid], "action": "approve"}, headers=hadm)
+            with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+                await client.post("/api/assets/produce",
+                                  json={"summary_ids": [sid], "n": 1, "hook_codes": [hook_code]}, headers=hadm)
+            prod = (await _rows(AssetProduction, AssetProduction.asset_id == uuid.UUID(asset_id)))[0]
+            oid = uuid.uuid4()
+            async with dbmod.async_session_factory() as s:
+                s.add(AssetOutput(
+                    id=oid, production_id=prod.id, asset_id=uuid.UUID(asset_id),
+                    kind="doubao_raw", file_key=f"asset-out/{oid}.mp4",
+                    bucket=settings.MINIO_BUCKET_SLICED, file_name="成片.mp4",
+                    qc_status=qc,
+                ))
+                await s.commit()
+            return asset_id
+
+        a1 = await _asset_with_outputs(DOUYIN_2, "7C0G1", "passed")
+        a2 = await _asset_with_outputs(DOUYIN_3, "7C0G2", None)
+
+        # ① 按素材：两行、各自成片数与钩子号
+        g = await client.get("/api/assets/outputs/groups?group_by=asset", headers=hm)
+        assert g.status_code == 200, g.text
+        rows = {r["key"]: r for r in g.json()["groups"]}
+        assert set(rows) == {a1, a2}
+        assert rows[a1]["count"] == 1 and rows[a2]["count"] == 1
+        assert "7C0G1" in (rows[a1]["sub"] or "")
+        assert rows[a1]["latest_at"] and rows[a1]["thumb_url"] is None
+        assert g.json()["group_by"] == "asset"
+
+        # ② 按批次：两行，标签带批次码
+        gb = await client.get("/api/assets/outputs/groups?group_by=batch", headers=hm)
+        assert gb.status_code == 200, gb.text
+        b_rows = gb.json()["groups"]
+        assert len(b_rows) == 2
+        assert all("·" in r["label"] or r["label"] == "未挂批次" for r in b_rows)
+
+        # ③ batch_id 筛选（素材侧收敛）：只剩该批次下的素材组（asset 模式的 key 是素材 id）
+        a1_item = (await _rows(AssetItem, AssetItem.id == uuid.UUID(a1)))[0]
+        assert a1_item.batch_id is not None
+        gf = await client.get(
+            f"/api/assets/outputs/groups?group_by=asset&batch_id={a1_item.batch_id}", headers=hm)
+        assert gf.status_code == 200, gf.text
+        f_rows = gf.json()["groups"]
+        assert len(f_rows) == 1 and f_rows[0]["key"] == a1 and "7C0G1" in (f_rows[0]["sub"] or "")
+
+        # ④ qc=passed：qc=None 的素材2整组消失（组内计数与组级清单同一套过滤）
+        gq = await client.get("/api/assets/outputs/groups?group_by=asset&qc_status=passed", headers=hm)
+        assert gq.status_code == 200, gq.text
+        assert [r["key"] for r in gq.json()["groups"]] == [a1]
+
+        # 非法 group_by 400
+        bad = await client.get("/api/assets/outputs/groups?group_by=hook", headers=hm)
+        assert bad.status_code == 400
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_summary_generate_sets_condensed_title_as_asset_name():
+    """2026-11-07 用户口径：出文案同步产浓缩标题，直接当素材名称（不用 AS 编号）。
+
+    服务给了 title（2~30 字）→ asset.title 被覆盖（反推扫描的长标题也让位）；
+    没给 title → 标题维持原状，绝不硬写。规则本体在 autoclip hook_copy.txt
+    （6~14 字、人设＋事件、不编号不带平台词），这里钉的是后端的接法。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        old_title = (await _row_of(AssetItem, asset_id)).title
+
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(gen_title="顶替姐姐的新娘")):
+            resp = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset_id]}, headers=hm)
+        assert resp.status_code == 200, resp.text
+        assert (await _row_of(AssetItem, asset_id)).title == "顶替姐姐的新娘"
+
+        # 服务没给 title：已有标题不被覆盖（空标题仍走既有的反推兜底，那是另一条路）
+        asset2, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+        async with dbmod.async_session_factory() as s:
+            row2 = await s.get(AssetItem, uuid.UUID(asset2))
+            row2.title = "陈天强素材原标题"
+            await s.commit()
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            resp2 = await client.post(
+                "/api/assets/summaries/generate", json={"asset_ids": [asset2]}, headers=hm)
+        assert resp2.status_code == 200, resp2.text
+        assert (await _row_of(AssetItem, asset2)).title == "陈天强素材原标题" 
+        await client.aclose()
+
+    _run(_scenario())
+
+
+# ─────────────────────  A′ 按运营隔离（2026-11-07，评审团定稿方案）  ─────────────────────
+
+
+def test_isolation_owner_views_cross_produce_gate_and_public_outputs():
+    """A′ 按运营隔离（评审团两轮定稿）：过审即归属，owner 只进 GET 读口。
+
+    钉六件事：
+    ① 已过审区按过审人隔离（owner=me 不含别人的、也不含 reviewed_by NULL 的无主公共历史），
+       pending 队列全量共享（挑文案是大家的事）；
+    ② 投别人过审的候选：不带 cross_person_confirm 400（点名过审人），带了 200 且
+       production.created_by 记实际投产人（谁投账算谁）、审计带 owner_cross；
+       reviewed_by NULL 的存量过审行＝无主公共，不拦（与钱闸「归属未知不预判」同口径）；
+    ③ 同态重报已过审候选不改归属（B 重按 A 过审过的「过」，reviewed_by 保持 A＋note）；
+    ④ 成片 owner：owner=me 含自己的＋拼接公共产物（production_id NULL），不含别人的；
+       groups 组层与片层同一套口径（IN 半连接不丢行）；
+    ⑤ _dispatch_counts owner 只进 scope 聚合：A 的「我的」succeeded=1，today 号池口径
+       全站（A+B 两人的都算），dispatch_all 给全站 scope；
+    ⑥ 写口零放松回归：写请求带 owner 参数行为不变（owner 是 GET 查询偏好，不进写路径）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ha = h["material"], h["admin"]
+        # 造第二个 operator（隔离矩阵需要 A/B 两个运营）
+        async with dbmod.async_session_factory() as s:
+            op_b = (await s.execute(select(User).where(User.username == "asset_op_b"))).scalar_one_or_none()
+            if op_b is None:
+                op_b = User(id=uuid.uuid4(), username="asset_op_b",
+                            password_hash=get_password_hash(PASSWORD),
+                            display_name="运营B", role="operator", data_scope="own", is_active=True)
+                s.add(op_b)
+                await s.commit()
+                op_b = await s.get(User, op_b.id)
+        hb = {"Authorization": "Bearer " + (
+            await client.post("/api/auth/login", json={"username": "asset_op_b", "password": PASSWORD})
+        ).json()["access_token"]}
+        ho = h["operator"]  # 运营 A
+
+        async def _approved_summary(url, approver_headers):
+            """导入→出文案→指定运营过审，返回 (asset_id, summary_id)。"""
+            aid, _ = await _make_ready_asset(client, hm, url=url)
+            items, _ = await _gen_and_list(aid, hm, client)
+            sid = _approvable(items)["id"]
+            r = await client.post("/api/assets/summaries/review",
+                                  json={"summary_ids": [sid], "action": "approve"},
+                                  headers=approver_headers)
+            assert r.status_code == 200 and r.json()["results"][0]["ok"] is True, r.text
+            return aid, sid
+
+        async def _produce(headers, sid, **extra):
+            with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+                return await client.post(
+                    "/api/assets/produce",
+                    json={"summary_ids": [sid], "n": 1, "async_mode": False, **extra},
+                    headers=headers)
+
+        a1, s1 = await _approved_summary(DOUYIN_2, ho)        # A 过审
+        a2, s2 = await _approved_summary(DOUYIN_3, ho)        # A 过审
+        a3, s3 = await _approved_summary("https://www.douyin.com/video/7599000000000000001", ho)  # A 过审
+        a4, s4 = await _approved_summary("https://www.douyin.com/video/7599000000000000002", ho)  # A 过审
+
+        # ① 已过审区隔离：B 的 owner=me 看不到 A 过审的；owner=all 全量；pending 全量共享
+        me_q = await client.get("/api/assets/summaries?owner=me&audit_status=approved", headers=hb)
+        assert me_q.status_code == 200 and me_q.json()["total"] == 0, me_q.text
+        all_q = await client.get("/api/assets/summaries?owner=all&audit_status=approved", headers=hb)
+        assert all_q.json()["total"] == 4
+        pd = await client.get("/api/assets/summaries?owner=me&audit_status=pending", headers=hb)
+        assert pd.status_code == 200 and pd.json()["total"] >= 4, "pending 候选池全量共享（owner=me 也要看得见）"
+        # pending 共享：再造一条 pending（只出文案不过审）
+        a5, _ = await _make_ready_asset(client, hm, url="https://www.douyin.com/video/7599000000000000003")
+        await _gen_and_list(a5, hm, client)
+        pd2 = await client.get("/api/assets/summaries?owner=me&audit_status=pending", headers=hb)
+        assert pd2.json()["total"] >= 4 + 1, "新素材的 pending 同样全量共享"
+        # A 的 owner=me：已过审区四条全是自己的，带显示名
+        me_a = await client.get("/api/assets/summaries?owner=me&audit_status=approved", headers=ho)
+        assert me_a.json()["total"] == 4
+        assert me_a.json()["items"][0]["reviewed_by_name"], "过审人灰字名随行返回"
+
+        # ② 投别人过审的候选：无确认 400（点名过审人），带确认 200 且归实际投产人
+        deny = await _produce(hb, s1)
+        assert deny.status_code == 400 and "替他人过审候选投产" in deny.json()["detail"], deny.text
+        assert "过审人 运营专员" in deny.json()["detail"], deny.text
+        ok = await _produce(hb, s1, cross_person_confirm=True)
+        assert ok.status_code == 200, ok.text
+        prodB = (await _rows(AssetProduction, AssetProduction.asset_id == uuid.UUID(a1)))[0]
+        assert prodB.created_by == op_b.id, "谁投账算谁：created_by 记实际投产人"
+        # 审计带 owner_cross（候选过审人留痕）
+        audits = await _rows(AuditLog, AuditLog.action == "asset.produce_order")
+        assert audits and any(a.after and "owner_cross" in (a.after or {}) for a in audits), \
+            "produce_order 审计要带 owner_cross（候选过审人留痕）"
+        # reviewed_by NULL 的存量过审行＝无主公共，不拦
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetSummary, uuid.UUID(s4))
+            row.reviewed_by = None
+            await s.commit()
+        legacy = await _produce(hb, s4)
+        assert legacy.status_code == 200, f"无主公共候选不拦：{legacy.text[:200]}"
+
+        # ③ 同态重报不改归属：B 重按 A 过审过的 s2，reviewed_by 保持 A＋note
+        again = await client.post("/api/assets/summaries/review",
+                                  json={"summary_ids": [s2], "action": "approve"}, headers=hb)
+        assert again.status_code == 200, again.text
+        res0 = again.json()["results"][0]
+        assert res0["ok"] is True and "保持原归属" in (res0.get("note") or ""), res0
+        s2row = await _row_of(AssetSummary, s2)
+        op_a_row = (await _rows(User, User.username == OPERATOR_USER))[0]
+        assert s2row.reviewed_by == op_a_row.id, "同态重报绝不偷换 reviewed_by"
+
+        # ②b async_mode=true（前端唯一真实路径）首呼必须当场 400——闸若被 async 分支
+        #    短路，前端确认弹窗协议就断了（后台重放才 400＝一线只看到任务失败）
+        r = await client.post(
+            "/api/assets/produce",
+            json={"summary_ids": [s3], "n": 1, "async_mode": True}, headers=hb)
+        assert r.status_code == 400 and "替他人过审候选投产" in r.json()["detail"], r.text
+
+        # ④ 成片 owner：A 投自己的（无闸）＋直接插产物（A 的单、B 的单、拼接公共）
+        own = await _produce(ho, s2)
+        assert own.status_code == 200, own.text[:300]
+        prodA = (await _rows(AssetProduction, AssetProduction.asset_id == uuid.UUID(a2)))[0]
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetOutput(id=uuid.uuid4(), production_id=prodA.id, asset_id=uuid.UUID(a2),
+                              kind="doubao_raw", file_key="o/a.mp4", bucket=settings.MINIO_BUCKET_SLICED))
+            s.add(AssetOutput(id=uuid.uuid4(), production_id=prodB.id, asset_id=uuid.UUID(a1),
+                              kind="doubao_raw", file_key="o/b.mp4", bucket=settings.MINIO_BUCKET_SLICED))
+            s.add(AssetOutput(id=uuid.uuid4(), production_id=None, asset_id=uuid.UUID(a2),
+                              kind="composed", file_key="o/pub.mp4", bucket=settings.MINIO_BUCKET_SLICED))
+            await s.commit()
+        oa = await client.get("/api/assets/outputs?owner=me", headers=ho)
+        keys = {i["file_key"] for i in oa.json()["items"]}
+        assert "o/a.mp4" in keys and "o/pub.mp4" in keys and "o/b.mp4" not in keys, keys
+        ob = await client.get("/api/assets/outputs?owner=me", headers=hb)
+        keys_b = {i["file_key"] for i in ob.json()["items"]}
+        assert "o/b.mp4" in keys_b and "o/pub.mp4" in keys_b and "o/a.mp4" not in keys_b, keys_b
+        ga = await client.get("/api/assets/outputs/groups?group_by=asset&owner=me", headers=ho)
+        gkeys = {g["key"] for g in ga.json()["groups"]}
+        assert a2 in gkeys and a1 not in gkeys, f"组层与片层同一套 owner 口径：{gkeys}"
+        # owner=all 全量
+        al = await client.get("/api/assets/outputs?owner=all", headers=ho)
+        assert len(al.json()["items"]) == 3
+
+        # ⑤ dispatch counts：owner 只进 scope，today 号池全站
+        today = datetime.utcnow() + timedelta(hours=int(settings.ASSET_BOARD_TZ_OFFSET_HOURS or 0))
+        async with dbmod.async_session_factory() as s:
+            for pr in (prodA, prodB):
+                p = await s.get(AssetProduction, pr.id)
+                p.status = "success"
+                p.started_at = datetime.utcnow()
+                p.board_date = svc.board_timestamp(tz_offset_hours=int(settings.ASSET_BOARD_TZ_OFFSET_HOURS or 0))
+                p.board_total = 1
+            await s.commit()
+        ca = await client.get("/api/assets/productions?owner=me", headers=ho)
+        body = ca.json()
+        _dbg = await _rows(AssetProduction)
+        _codes = {str(a.id): a.code for a in await _rows(AssetItem)}
+        _unames = {str(u.id): u.username for u in await _rows(User)}
+        print("DBG prods:", [( _codes.get(str(r.asset_id), "?"), r.status, _unames.get(str(r.created_by), "?")) for r in _dbg])
+        print("DBG assets:", [(a.code, str(a.id)[:8]) for a in await _rows(AssetItem)])
+        print("DBG dispatch:", body["dispatch"]["by_status"], "| all:", body["dispatch_all"]["by_status"])
+        assert body["dispatch"]["succeeded"] == 1, "我的 scope 只算我的"
+        assert body["dispatch_all"]["succeeded"] == 2, "dispatch_all 给全站 scope"
+        assert body["dispatch"]["today"]["dispatched"] == 2, "today 号池口径全站（A+B 都算）"
+        assert body["items"][0]["owner_name"], "投产人灰字随行返回"
+
+        # ⑥ 写口零放松：写请求带 owner 参数行为不变（owner 是 GET 查询偏好，不进写路径）
+        wb = await client.post("/api/assets/summaries/review?owner=me",
+                               json={"summary_ids": [s3], "action": "approve"}, headers=hb)
+        assert wb.status_code == 200 and wb.json()["results"][0]["ok"] is True, wb.text
+        # 非法 owner 值在读口 400
+        bad = await client.get("/api/assets/summaries?owner=someone", headers=ho)
+        assert bad.status_code == 400
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_import_copy_summaries_direct_to_review_queue():
+    """直接贴文案导入（2026-11-08 用户需求）：跳过链接/反推，文案直挂候选进审核队列。
+
+    钉四件事：①建批次＋素材壳＋pending 候选（推荐=第一条）；②形态不合格的条目
+    被跳过并点名（只提示不拦在导入口的形态校验）；③无视频无脚本的候选能正常过审
+    （recheck 无脚本时一致性优雅退化 ok=True）；④审核→投产全链路照走（expand 展开）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+
+        good1 = "她替姐姐嫁的第二天，新郎出现在她姐的婚礼上，当着两家长辈问这婚到底算谁的"
+        good2 = "总裁摘下手表坐在塑料凳上吃泡面，秘书问他为什么放着办公室的沙发不坐"
+        bad = "这个太长了，" * 30  # 超 80 字 → 形态不合格被跳过
+
+        r = await client.post(
+            "/api/assets/summaries/import-copy",
+            json={"batch_name": "e2e-贴文案", "texts": [good1, bad, good2]},
+            headers=hm,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["created"] == 2 and len(body["skipped"]) == 1, body
+        assert body["skipped"][0]["index"] == 2, body["skipped"]
+        assert body["batch_code"], body
+
+        # 候选：pending、第一条推荐、无脚本
+        listed = (await client.get(
+            f"/api/assets/summaries?audit_status=pending&batch_id={body['batch_id']}", headers=ho)).json()
+        assert listed["total"] == 2, listed
+        rec = [i for i in listed["items"] if i["is_recommended"]]
+        assert len(rec) == 1, f"恰好一条推荐：{[i['is_recommended'] for i in listed['items']]}"
+        assert rec[0]["text"].startswith("她替姐姐嫁"), rec[0]["text"][:30]
+
+        # 无脚本过审：一致性优雅退化（ok=True），风险词/形态照校验
+        sids = [i["id"] for i in listed["items"]]
+        ok = await client.post("/api/assets/summaries/review",
+                               json={"summary_ids": sids, "action": "approve"}, headers=ho)
+        assert ok.status_code == 200, ok.text
+        assert all(x["ok"] for x in ok.json()["results"]), ok.json()
+
+        # 投产照走（expand 展开提示词）
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            made = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [sids[0]], "n": 1, "async_mode": False},
+                headers=ho)
+        assert made.status_code == 200, made.text[:300]
+        assert made.json()["created"] >= 1, made.json()
+        await client.aclose()
+
+    _run(_scenario())

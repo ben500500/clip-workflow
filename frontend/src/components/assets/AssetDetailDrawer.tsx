@@ -11,6 +11,7 @@ import {
   aspectShortText, durationText, isImageAsset, yuan,
 } from './AssetBits';
 import AssetComposeModal from './AssetComposeModal';
+import { withCrossPersonConfirm } from './crossPerson';
 import {
   CategorySelect, CategoryTag, invalidateAssetCategories, useAssetCategories,
 } from './AssetCategoryBits';
@@ -67,6 +68,8 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
   /** 钩子原型（11-04 拍板①）：抽屉里就地改，改完把新值并回本地 data，不整块重拉 */
   const cats = useAssetCategories();
   const [catBusy, setCatBusy] = useState(false);
+  // 11-06 双产出：正在补网页版提示词的那条候选（loading 只挂这一个按钮）
+  const [promptWebPendingId, setPromptWebPendingId] = useState<string | null>(null);
 
   /**
    * 上栏播放器（批 E）：一条素材一个播放器，原片和拼接产物都往这里换源。
@@ -96,18 +99,24 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
     setPlayerErr(null);
     try {
       const res = await assetApi.previewAssetSource(id);
-      // 链接素材没有内联源：不报错，交给下面的占位区说明怎么办
+      // 链接素材：mode=cached＝上次取的时效直链还在缓存期（开抽屉免费回放，这是
+      // 11-06 播放直链修复的主体——以前付钱取的直链只活在当次响应里，关抽屉就没了）；
+      // mode=external＝没有缓存/已过期，不报错，交给下面的占位区说明怎么办
       setPlayer(
         res.url
           ? {
               url: res.url,
-              label: res.file_name || res.asset_code,
+              label:
+                res.mode === 'cached'
+                  ? `上次取的直链（缓存回放，约 6 小时内有效）`
+                  : res.file_name || res.asset_code,
               duration: res.duration,
               resolution: res.resolution,
               platform: res.platform,
             }
           : null,
       );
+      if (res.mode === 'cached' && res.note) message.info(res.note);
     } catch (e) {
       setPlayerErr((e as Error).message || '取预览地址失败');
     } finally {
@@ -136,21 +145,47 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
   };
 
   /**
-   * 链接素材想播只能现取时效直链：走 `POST /assets/resolve`，**0.01 元/次**、计入批次
-   * 成本，所以这是人手点的动作，绝不在打开抽屉时自动发起（取片和取时长是两笔钱）。
+   * 链接素材想播就取时效直链：走 `POST /assets/resolve`。两条来路：
+   * - 缓存期内（默认 retake=false）→ 后端直接回放缓存直链，**0 元**、不发起外呼；
+   * - 缓存过期/没有缓存但已有时长 → 被跳过，弹确认问一声后带 `retake=true` 重取
+   *   （**0.01 元/次**、计入批次成本，这是直链失效后的唯一自愈出口）。
    */
-  const playLinkSource = async () => {
+  const playLinkSource = async (retake = false) => {
     if (!assetId) return;
     setPlayerBusy(true);
     setPlayerErr(null);
     try {
-      const res = await assetApi.resolveAssets({ asset_ids: [assetId] });
+      const res = await withCrossPersonConfirm((c) =>
+        assetApi.resolveAssets({ asset_ids: [assetId], cross_person_confirm: c, retake }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认：什么都不做
       const item = res.results?.[0];
       if (item?.ok && item.play_url) {
-        setPlayer({ url: item.play_url, label: '原站时效直链（约 6 小时内有效）', duration: item.duration });
-        message.success(`已取到直链播放（本条实扣 ${yuan(item.charged)}，计入批次成本）`);
+        const fromCache = item.channel === 'cache';
+        setPlayer({
+          url: item.play_url,
+          label: fromCache ? '上次取的直链（缓存回放，0 元）' : '原站时效直链（约 6 小时内有效）',
+          duration: item.duration,
+        });
+        message.success(
+          fromCache
+            ? '回放上次取的直链（缓存期内免费，没有调解析接口）'
+            : `已取到直链播放（本条实扣 ${yuan(item.charged)}，计入批次成本）`,
+        );
       } else {
-        setPlayerErr(item?.error || item?.note || res.message || '没取到直链，这条暂时播不了');
+        const reason = item?.error || res.skipped?.[0]?.reason || item?.note || res.message || '没取到直链，这条暂时播不了';
+        // 缓存直链过期被跳过：先问一声再花 0.01 重解析（人签字的钱才是能记进成本的）
+        if (!retake && (reason.includes('已过期') || reason.includes('retake=true'))) {
+          Modal.confirm({
+            title: '上次取的直链已过期',
+            content: `${reason}。要现在重取吗？重取会重新解析这条链接（0.01 元/次，计入批次成本）。`,
+            okText: '重取（0.01 元）',
+            cancelText: '先不取',
+            onOk: () => playLinkSource(true),
+          });
+          return;
+        }
+        setPlayerErr(reason);
       }
       await fetchDetail(assetId);
       onChanged?.();
@@ -252,7 +287,10 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
     if (!assetId) return;
     setResolveBusy(true);
     try {
-      const res = await assetApi.resolveAssets({ asset_ids: [assetId] });
+      const res = await withCrossPersonConfirm((c) =>
+        assetApi.resolveAssets({ asset_ids: [assetId], cross_person_confirm: c }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认：什么都不做
       const item = res.results?.[0];
       if (!item) {
         message.info(res.message);
@@ -500,7 +538,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                         ghost
                         loading={playerBusy}
                         disabled={!canProduce}
-                        onClick={playLinkSource}
+                        onClick={() => playLinkSource()}
                       >
                         取直链并播放（0.01 元）
                       </Button>
@@ -640,7 +678,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
               showIcon
               style={{ marginTop: 16 }}
               message="这张图只当角色卡，不走反推文案 → 出文案 → 审核 → 生产单那四步"
-              description="它不反推文案、不出钩子文案、不生成生产单、也没有拼接产物（这四页对图片永远是空的，所以这里不摆出来）。真正用它的地方在「生成生产单」弹窗：把要用的卡按顺序挑进来，第 1 张就是板上的主形象；成片挂在被投产的那条视频素材名下，不在这里。"
+              description="在「生成生产单」弹窗里把卡按顺序挑进来（第 1 张是主形象）；成片挂在被投产的那条视频素材名下。"
             />
           ) : (
           <Tabs
@@ -660,8 +698,8 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                       type="warning"
                       showIcon
                       style={{ marginBottom: 8 }}
-                      message="这段是 AI 看片子写出来的，没经过人工核对；下面的钩子文案就是照它写的。"
-                      description="觉得它读歪了（人物认错、情节说反、台词串了），直接驳回对应文案，或回列表对这条重做一遍反推文案再出文案。这一行只提醒、不拦任何步骤。"
+                      message="这段是 AI 看片子写出来的，没经过人工核对。"
+                      description="觉得读歪了（人物认错、情节说反）就驳回对应文案，或回列表重做反推；只提醒、不拦步骤。"
                     />
                     <Space style={{ marginBottom: 8 }}>
                       <Button
@@ -760,6 +798,62 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                               提示词预览还没生成出来（过审后系统自动备，备不出来不影响投产——投产时会重新展开）
                             </Text>
                           ) : null}
+                          {/* 11-06 双产出：出文案时同步生成的豆包网页版完整提示词。
+                              与上面预览的分工：这份是网页版正文（无编号/标题），复制整段
+                              进 doubao.com 对话框直接用；缺了可单独补，不跟着文案重出。 */}
+                          {s.doubao_prompt ? (
+                            <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                              <Space wrap size={4}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  豆包网页版提示词（复制整段去豆包对话框直接生成）：
+                                </Text>
+                                <Button
+                                  type="link"
+                                  size="small"
+                                  icon={<CopyOutlined />}
+                                  style={{ padding: 0, fontSize: 12 }}
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(s.doubao_prompt || '');
+                                    message.success('已复制网页版提示词，去豆包对话框粘贴即可');
+                                  }}
+                                >
+                                  复制
+                                </Button>
+                              </Space>
+                              <Paragraph
+                                style={{ marginBottom: 0, fontSize: 12, background: '#f6ffed', padding: 8, borderRadius: 4 }}
+                                ellipsis={{ rows: 6, expandable: 'collapsible', symbol: (expanded) => (expanded ? '收起' : '展开') }}
+                              >
+                                {s.doubao_prompt}
+                              </Paragraph>
+                            </Space>
+                          ) : (
+                            <Space wrap size={4}>
+                              <Text type="secondary" style={{ fontSize: 12 }}>网页版提示词没生成出来</Text>
+                              <Button
+                                type="link"
+                                size="small"
+                                style={{ padding: 0, fontSize: 12 }}
+                                loading={promptWebPendingId === s.id}
+                                onClick={async () => {
+                                  if (!assetId) return;
+                                  setPromptWebPendingId(s.id);
+                                  try {
+                                    const res = await assetApi.promptWebSummaries({ summary_ids: [s.id] });
+                                    if (res.filled > 0) message.success(res.message || '已补上');
+                                    else message.warning(res.results?.[0]?.error || res.message || '没补成，看明细');
+                                    await fetchDetail(assetId);
+                                  } catch (e) {
+                                    message.error((e as Error).message || '补提示词失败');
+                                  } finally {
+                                    setPromptWebPendingId(null);
+                                  }
+                                }}
+                              >
+                                补提示词
+                              </Button>
+                            </Space>
+                          )}
                         </Space>
                       </List.Item>
                     )}
@@ -793,7 +887,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                             style={{ marginBottom: 0, fontSize: 12 }}
                             ellipsis={{ rows: 2, expandable: 'collapsible', symbol: (expanded) => (expanded ? '收起' : '展开') }}
                           >
-                            {p.prompt_text || '（正文为空：已作废或投放失败的单，不提供正文）'}
+                            {p.prompt_text || '（正文为空：已作废或投板失败的单，不提供正文）'}
                           </Paragraph>
                           {p.dispatch_note && (
                             // 不再自己加「投放要求：」前缀——存进来的正文第一句本就是
@@ -870,10 +964,8 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
           <Divider style={{ margin: '12px 0' }} />
           <Text type="secondary" style={{ fontSize: 12 }}>
             {isImageAsset(asset)
-              ? '图片的链路：导入（拖进上传面板）→ 量尺寸定画幅 → 入库（图片已入库）→ 在「生成生产单」里被挑成角色卡 → 随那条视频一起出片。画幅由这张卡的宽高比决定，提示词写 9:16 也压不住横版卡。'
-              : '链路：导入 → 把视频反推成文案稿 → 出钩子文案 → 人工审核 → 生成生产单（把过审文案变成要投出去的一条条提示词）' +
-                ' → 导出提示词 txt 或建板参数（七项）→（人把提示词放进企微后台任务板后，回来登记投放结果）→ 拼接产物（两段直拼，0 元）。' +
-                '钩子编号是五位编号，投放和回收都靠它对上。'}
+              ? '图片链路：导入 → 入库 → 投产时被挑成角色卡（画幅由卡的宽高比决定）。'
+              : '链路：导入 → 反推文案稿 → 出钩子文案 → 审核 → 生产单 → 导出/投板 → 登记投板结果 → 拼接产物。'}
           </Text>
           <AssetComposeModal
             open={composeOpen}

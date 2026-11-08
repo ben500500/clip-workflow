@@ -130,8 +130,9 @@ export type AssetHookStyle = 'question' | 'statement' | 'dialogue';
  */
 export type AssetPromptTaskStatus = 'processing' | 'success' | 'failed' | 'persist_failed';
 
-/** 原文件下载口返回形态：stored=自有桶 presigned / external=只有分享链接 */
-export type AssetSourceDownloadMode = 'stored' | 'external';
+/** 原文件下载口返回形态：stored=自有桶 presigned / external=只有分享链接；
+ * cached=11-06 播放直链修复：source-preview 回的是上次取的时效直链（缓存期内免费回放） */
+export type AssetSourceDownloadMode = 'stored' | 'external' | 'cached';
 
 /** 导出形态：json=只 items[]；txt=追加 export_text；payload=追加可直接 POST 的七键 */
 export type AssetExportFormat = 'json' | 'txt' | 'payload';
@@ -266,9 +267,13 @@ export interface AssetSummary {
   risk_hit: string | null;
   audit_status: AuditStatus;
   reviewed_by: string | null;
+  /** A′：过审人显示名（12px 灰字标注；列表口聚合返回，详情口可能为 null） */
+  reviewed_by_name?: string | null;
   reviewed_at: string | null;
   /** 驳回/需改写的理由（必填才允许进这两个态） */
   reject_reason: string | null;
+  /** P1（评审定稿⑩）：作者重提说明（审核卡展示） */
+  resubmit_note?: string | null;
   /**
    * 改前原文留痕，两种来路都会写：① 审核人「改后通过」（passed_edited）；
    * ② 作者驳回后自己改完重提（resubmit）。所以**光看这列非空不能断定是审核人改的**，
@@ -301,6 +306,13 @@ export interface AssetSummary {
   prompt_preview_at: string | null;
   /** 备预览的实扣（元）。当前口径预览不单独计费，恒 0；保留列是为了对账 */
   cost_preview: number;
+  /**
+   * 11-06 双产出：出文案时同步生成的**豆包网页版**完整提示词（NAS 模板网页版裁剪，
+   * 无段头编号/推荐标题/发布标签，复制整段进 doubao.com 对话框直接用）。
+   * null=生成失败/没生成——文案不受影响，用 promptWebSummaries 单独补。
+   * 与 prompt_preview 的分工：那列是任务板通道（恒 10s）的过审后预览。
+   */
+  doubao_prompt: string | null;
   created_at: string;
   // ── 仅 list_summaries 回（join 素材行）；getAsset 的 summaries 不带这些键 ──
   asset_code?: string;
@@ -319,6 +331,8 @@ export interface AssetProduction {
   asset_id: string;
   summary_id: string;
   batch_id: string | null;
+  /** A′：投产人显示名（谁投账算谁的灰字标注；列表口聚合返回） */
+  owner_name?: string | null;
   seq: number;
   /** 五位钩子编号（只能来自 hook_id.py 取号，后端绝不编号） */
   hook_code: string | null;
@@ -354,6 +368,14 @@ export interface AssetProduction {
   board_tid: string | null;
   /** 回收组 id，拼 /data<outUrl> 用 */
   board_rgid: string | null;
+  /**
+   * 批 L（投放进度可视化）：板子侧最后看到的行状态（waiting/running/succ…，
+   * 多版单可能是「waiting/running」这种拼串；刚认领时是「已投板」）。
+   * null = 没投过板 / 人工回写没走到轮询。
+   */
+  board_last_status: string | null;
+  /** 上次板面检查时间（自动投板协程每 45s 一轮）；判断「轮询还活着吗」就看它新不新 */
+  board_last_check_at: string | null;
   /** 角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡）。批 G 后是**历史列**：新单由 card_asset_ids 派生（＝第一张＝主卡），旧单只有这一列 */
   character_card_key: string | null;
   /**
@@ -391,6 +413,15 @@ export interface AssetOutput {
   qc_status: AssetQcStatus | null;
   qc_note: string | null;
   created_at: string;
+  /** null = 还没人在素材库下过（板侧交付不算） */
+  downloaded_at: string | null;
+  /** 批 K（素材墙）：归属素材编号 / 生产单钩子号，卡片标注用 */
+  asset_code: string | null;
+  /** A′：投产人显示名（拼接产物 production_id NULL＝公共） */
+  owner_name?: string | null;
+  hook_code: string | null;
+  /** 产物首帧直链（1 小时过期）；没帧 = null，卡片画「没有预览图」占位 */
+  thumb_url: string | null;
 }
 
 /** 反推提示词任务（wechat_download.serialize_prompt_task，详情口透出） */
@@ -690,11 +721,29 @@ export interface AssetProductionListResult {
   page: number;
   page_size: number;
   dispatch: AssetDispatchCounts;
+  /** A′：owner=me 时附同 scope 的全站口径（统计两行并排）；其余为 null */
+  dispatch_all?: AssetDispatchCounts | null;
+  owner?: string;
 }
 
-/** GET /assets/outputs —— 只有 items，没有 total */
+/** GET /assets/outputs —— 批 K 起带 total（墙要计数翻页） */
 export interface AssetOutputListResult {
+  total: number;
   items: AssetOutput[];
+}
+
+/** 成片墙分组清单的一行（两级视图第一级，2026-11-07 用户口径） */
+export interface AssetOutputGroup {
+  /** asset 模式＝素材 id；batch 模式＝批次 id（未挂批次＝"none"） */
+  key: string;
+  /** asset：素材码｜标题；batch：编号 · 名称（未挂批次行=「未挂批次」） */
+  label: string;
+  /** asset 模式带该素材的钩子号（「钩子 7C0N1、7C0N2」） */
+  sub: string | null;
+  count: number;
+  latest_at: string | null;
+  /** 该组最新一条的首帧 presign（1h TTL），没帧＝null */
+  thumb_url: string | null;
 }
 
 // ──────────────────────────────────────────────
@@ -719,6 +768,8 @@ export interface AssetImportBatchRequest {
    * 留空＝未分类（**不设为必填**）；入库后每条仍可单独改，改后出稿的文案跟着这一列走。
    */
   category_id?: string | null;
+  /** 11-06 用户拍板：默认 true＝导入后自动下载原片（解析 0.01 元/条照记账）；不用管 */
+  auto_download?: boolean;
 }
 
 /** AnalyzeRequest（真金白银的一步，必须带成本确认） */
@@ -743,6 +794,13 @@ export interface AssetAnalyzeRequest {
   offset?: number;
   /** 本段条数，默认/上限 = ASSET_ANALYZE_MAX_PER_CALL */
   limit?: number | null;
+  /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
+  cross_person_confirm?: boolean;
+  /**
+   * D-1：true＝闸门与成本确认全过之后当场回任务号（AssetJobAck），提交＋收敛在后台跑，
+   * 页面关闭不影响（11-06 前收敛只靠前端轮询，页面一关就卡「反推中」）。页面按钮走 true。
+   */
+  async_mode?: boolean;
 }
 
 /** SummaryGenerateRequest */
@@ -763,6 +821,8 @@ export interface AssetSummaryGenerateRequest {
   retry_failed?: boolean;
   /** D-1：true＝提交即回任务号（后台跑，轮询取结果）。页面按钮一律走 true */
   async_mode?: boolean;
+  /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
+  cross_person_confirm?: boolean;
 }
 
 /** RefreshBatchRequest（一次收敛整批在跑的反推任务） */
@@ -783,6 +843,10 @@ export interface AssetResolveRequest {
   limit?: number | null;
   /** ≥2 条时必须为 true */
   confirmed?: boolean;
+  /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
+  cross_person_confirm?: boolean;
+  /** 11-06 播放直链修复：缓存直链过期后强制重新解析（0.01 元/次）——直链打不开时的自愈出口 */
+  retake?: boolean;
 }
 
 /** 批 J：链接素材原片下载（反推默认顺带排上；这里也开放手工批量/失败行重试） */
@@ -790,6 +854,8 @@ export interface AssetDownloadRequest {
   asset_ids?: string[];
   /** D-1：true＝提交即回任务号（AssetJobAck）。页面按钮一律走 true */
   async_mode?: boolean;
+  /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
+  cross_person_confirm?: boolean;
 }
 
 /** 下载逐条明细：失败原因/error 里写了「失败不记账」还是「已按渠道记账」 */
@@ -899,8 +965,10 @@ export interface AssetProduceRequest {
   /** 仅 admin：只豁免这几类拦点（留空＝整条全放过），与审核台同一口径 */
   waive_codes?: string[] | null;
   /** D-1：true＝提交即回任务号（展开提示词要等模型，后台跑完再轮询取结果） */
-  async_mode?: boolean;
+  async_mode?: boolean;  /** A′ 归属跨人确认：投别人过审的候选（reviewed_by≠操作者）必须 true——谁投账算谁 */
+  cross_person_confirm?: boolean;
 }
+
 
 /** ProductionStatusRequest（投递状态回写：只改状态、补 board_tid、记审计） */
 export interface AssetProductionStatusRequest {
@@ -984,6 +1052,10 @@ export interface AssetSummaryListParams {
    * 传 `'none'` ＝只看未分类。
    */
   category_id?: string;
+  /** 批 N（评审二 P1）：关键词搜索——正文/素材码模糊匹配（后端 ILIKE，已转义 %/_） */
+  q?: string;
+  /** A′ 按运营隔离：owner=me 已过审区只显自己过审的，pending 共享；all/缺省＝全量 */
+  owner?: "me" | "all";
 }
 
 /** GET /assets/productions（注意：dispatch.by_status 不受 status= 影响） */
@@ -993,8 +1065,10 @@ export interface AssetProductionListParams {
   asset_id?: string;
   page?: number;
   /** 默认 100，后端封顶 300 */
-  page_size?: number;
+  page_size?: number;  /** A′：owner=me 只看自己投产的单（查询偏好）；all/缺省＝全量 */
+  owner?: "me" | "all";
 }
+
 
 /** GET /assets/productions/export */
 export interface AssetExportParams {
@@ -1015,9 +1089,17 @@ export interface AssetExportParams {
 export interface AssetOutputListParams {
   asset_id?: string;
   production_id?: string;
+  /** 批 K：按素材的导入批次收敛（走 asset_items 侧，拼接产物也查得到） */
+  batch_id?: string;
   kind?: AssetOutputKind | string;
   /** 默认 100，后端封顶 300 */
   limit?: number;
+  /** 批 K：翻页偏移，配 total 用 */
+  offset?: number;
+  /** 验收筛选：passed/warn/failed；不传＝不限（2026-11-07 起真正生效，此前前端筛了没传参） */
+  qc_status?: string;
+  /** A′：owner=me 只看自己的链路（查询偏好，写口不受影响）；all/缺省＝全量 */
+  owner?: "me" | "all";
 }
 
 // ──────────────────────────────────────────────
@@ -1066,6 +1148,8 @@ export interface AssetImportBatchResponse {
   skipped: string[];
   budget: AssetImportBudgetSummary;
   budgets: AssetBatchBudget[];
+  /** 11-06：导入后自动下载的排队回执（每拆批一条）；没排上时为 null */
+  download?: { queued: boolean; job_id: string | null; queued_count: number; note?: string | null }[] | null;
   message: string;
 }
 
@@ -1197,6 +1281,9 @@ export interface AssetReviewResultItem {
   audit_status?: AuditStatus;
   /** 仅成功条目回；true = 管理员豁免放行（已入审计） */
   waived?: boolean;
+  /** 仅成功条目回：这条文案是不是推荐条（模型标注）。藏卡提示的「非推荐」统计吃这里，
+   *  不吃当前页 items——豁免重放/跨页勾选时目标行不在当前页，数当前页会漏报。 */
+  is_recommended?: boolean;
   /** 仅成功条目回：撤销过审时连带作废的未投递生产单张数 */
   superseded_productions?: number;
   error_code?: string;
@@ -1543,6 +1630,19 @@ export interface AssetDispatchRequest {
   recover_only?: boolean;
   /** 默认 true（几十分钟的活，页面按钮一律走后台任务）；false 只给脚本与用例 */
   async_mode?: boolean;
+  /** 11-06 拍板②：新建板任务涉及别人导入的批次时必须 true（回收已投的单不花钱，不用这个字段） */
+  cross_person_confirm?: boolean;
+  /**
+   * 11-06 拍板：投递稿可改。生产单 id → 这一次投出去的提示词正文。
+   * 只改投出去的那份：库里的 prompt_text／过审文案不动，漂移判定不受影响；
+   * 改后的正文照走 block 级风险词重扫（命中 400，或 admin force+理由）。
+   */
+  prompt_overrides?: Record<string, string>;
+  /**
+   * 投板前统一挂卡（人物三视图）：给出时对本次要新建的每张单覆盖写入
+   * （第 1 张＝板上主形象），脏 id 后端 400；不传＝各单沿用已带的卡。
+   */
+  card_asset_ids?: string[];
 }
 
 /** 闸门挡下/拒投的逐条说明（三堆里除"要投的"以外都是这个形状） */
@@ -1571,6 +1671,8 @@ export interface AssetDispatchPrecheck {
   blocked: AssetDispatchBlockedItem[];
   card_warnings: { id: string; hook_code: string | null; warnings: string[] }[];
   capacity: AssetBoardCapacity;
+  /** 11-06 拍板：投递稿可改——这次真的带着改稿投出去的生产单 id 列表 */
+  prompt_overrides?: string[];
   note: string;
 }
 
@@ -1866,6 +1968,10 @@ export interface AssetSourcePreviewResult {
   resolution: string | null;
   expires_in: number | null;
   source_url: string | null;
+  /** 11-06 播放直链修复：true＝url 是上次取的时效直链（缓存回放，非桶内文件） */
+  cached?: boolean;
+  /** 上次取直链的时间（仅 cached 时有） */
+  play_url_taken_at?: string | null;
   note: string | null;
 }
 
@@ -2067,9 +2173,12 @@ export const assetApi = {
     need_parse?: boolean;
   }) => client.get('/assets/cost/estimate', { params }) as Promise<AssetCostEstimateResponse>,
 
-  // 批量反推提示词（智令 doc/120）：按计时上限扣费，≥2 条必须 confirmed=true，否则 409 回确认单
+  // 批量反推提示词（智令 doc/120）：按计时上限扣费，≥2 条必须 confirmed=true，否则 409 回确认单。
+  // 带 async_mode:true 时当场回任务号（AssetJobAck），收敛在后台跑，结果去 getAssetJob / 列表阶段标签看
   analyzeBatch: (data: AssetAnalyzeRequest) =>
-    client.post('/assets/analyze/batch', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetAnalyzeResponse>,
+    client.post('/assets/analyze/batch', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<
+      AssetAnalyzeResponse | AssetJobAck
+    >,
 
   // 一次收敛整批在跑的反推任务（读操作、不扣费；200 条不该发 200 次单条请求）
   refreshAnalyzeBatch: (data: AssetRefreshBatchRequest) =>
@@ -2113,6 +2222,10 @@ export const assetApi = {
   resubmitSummaries: (data: AssetResubmitRequest) =>
     client.post('/assets/summaries/resubmit', data) as Promise<AssetReviewResponse>,
 
+  // 11-06 双产出补口：给缺网页版提示词的候选单独补/重出（一次最多 10 条，同步等模型）
+  promptWebSummaries: (data: { summary_ids: string[]; force?: boolean }) =>
+    client.post('/assets/summaries/prompt-web', data) as Promise<{ results: Array<{ summary_id: string; code?: string | null; seq?: number; ok?: boolean; note?: string; error?: string }>; filled: number; message: string }>,
+
   // 风险词库：读当前生效词表（block=拦 / warn=警 / exempt=豁免正则），admin 可改
   getRiskLexicon: () =>
     client.get('/assets/risk-lexicon') as Promise<AssetRiskLexicon>,
@@ -2139,6 +2252,13 @@ export const assetApi = {
     client.post('/assets/produce', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<
       AssetProduceResponse | AssetJobAck
     >,
+
+  // 11-06 拍板③ 回显口：查一批钩子编号哪些已经被钉在生产单上（≤100 个）。
+  // 只做回显，不代取号——取号仍走 hook_id.py，后端不预占不代发。
+  hookCodesUsed: (codes: string[]) =>
+    client.get('/assets/hook-codes/used', { params: { codes: codes.join(',') } }) as Promise<{
+      used: { code: string; asset_code: string; seq: number; status: string }[];
+    }>,
 
   // 后台任务台账：刷新页面/换浏览器后靠这两个口找回「我刚才点的那批还在不在跑」
   listAssetJobs: (params?: {
@@ -2185,6 +2305,39 @@ export const assetApi = {
   listOutputs: (params?: AssetOutputListParams) =>
     client.get('/assets/outputs', { params }) as Promise<AssetOutputListResult>,
 
+  // 成片墙两级视图第一级：按素材（钩子）或按批次聚合的组清单（每组带成片数/最近回收/最新缩略图）
+  listOutputGroups: (params?: { group_by?: 'asset' | 'batch'; batch_id?: string; kind?: string; qc_status?: string; owner?: 'me' | 'all'; limit?: number }) =>
+    client.get('/assets/outputs/groups', { params }) as Promise<{ group_by: string; groups: AssetOutputGroup[] }>,
+
+  // P1（评审定稿⑧）：成片交付包——跨组勾选打包 zip（含 manifest），验收 failed 拦在打包口
+  packageOutputs: (ids: string[]) =>
+    client.post(
+      '/assets/outputs/package',
+      { ids },
+      { responseType: 'blob', timeout: 600000 },
+    ) as Promise<Blob>,
+
+  // P1（评审定稿⑦）：取号进界面（后端代理 hook_id.py；未配置命令时 501 走手工旁路）
+  takeHookCodes: (count: number) =>
+    client.post(`/assets/hook-codes/take?count=${count}`) as Promise<{ codes: string[] }>,
+
+  // 直接贴文案导入（跳过反推，直挂候选进审核队列）
+  importCopySummaries: (batchName: string, texts: string[]) =>
+    client.post('/assets/summaries/import-copy', { batch_name: batchName, texts }) as Promise<{
+      batch_id: string;
+      batch_code: string;
+      created: number;
+      skipped: { index: number; problems: string[]; text: string }[];
+      items: { asset_id: string; summary_id: string; text: string }[];
+      message: string;
+    }>,
+
+  // P1（评审定稿⑪）：导入前重复预检（0 元、不建行）
+  importPreflight: (links: string[]) =>
+    client.post('/assets/import/preflight', { links }) as Promise<{
+      items: { source_url_norm: string; url?: string; code?: string; title?: string | null; imported_at?: string | null }[];
+    }>,
+
   // 产物下载：presigned 外链（验收 failed 的会被 409 挡住，不静默交付）
   downloadOutput: (outputId: string) =>
     client.get(`/assets/outputs/${outputId}/download`) as Promise<AssetOutputDownloadResult>,
@@ -2206,6 +2359,13 @@ export const assetApi = {
   // 批 E：抽屉里直接播原片（内联，不存盘）
   previewAssetSource: (assetId: string) =>
     client.get(`/assets/${assetId}/source-preview`) as Promise<AssetSourcePreviewResult>,
+
+  // 11-06 素材删除：本人删自己的、admin 删任意；挂着文案/生产单/产物默认 409，
+  // admin 带 force+reason 连坐强删（理由进审计）。
+  deleteAsset: (assetId: string, opts?: { force?: boolean; reason?: string }) =>
+    client.delete(`/assets/${assetId}`, {
+      params: { force: opts?.force || undefined, reason: opts?.reason || undefined },
+    }) as Promise<{ deleted: string; force: boolean; removed_outputs: number; removed_frames: number; removed_objects: number; message: string }>,
 
   // 批 E：产物内联预览（验收不合格的也给看——看一眼为什么废，和"能不能投出去"是两件事）
   previewOutput: (outputId: string) =>
@@ -2360,7 +2520,7 @@ export const PRODUCTION_STATE_LABELS: Record<ProductionState, string> = {
   running: '正在出片',
   awaiting_rewrite: '要求改写',
   success: '出片成功',
-  failed: '投放失败',
+  failed: '投板失败',
   cancelled: '已取消',
   skipped: '已跳过',
   superseded: '已作废',

@@ -49,6 +49,7 @@ from app.services.publish_material_generator import generate_publish_material  #
 from app.services.hook_copy_generator import (  # noqa: E402
     expand_hook_copy,
     generate_hook_candidates,
+    generate_web_prompts,
 )
 from app.services.script_optimizer import optimize_script_text  # noqa: E402
 from app.core.llm_manager import get_llm_manager  # noqa: E402
@@ -704,6 +705,14 @@ class HookCopyExpandRequest(BaseModel):
     max_retries: int = 3
 
 
+class HookPromptWebRequest(BaseModel):
+    """11-06 双产出：候选钩子文案（列表）→ 每条一段豆包网页版完整提示词。"""
+    script: str = ""                # 视频反推详规（唯一事实来源）
+    candidates: list = []           # [{"seq":1,"text":"...","formula_tag":"穿帮泄密开场"}]
+    params: dict = {}               # 可选：drama_title/extra_requirements/compliance
+    max_retries: int = 3
+
+
 @app.post("/api/v1/script/optimize")
 async def optimize_script(data: ScriptOptimizeRequest):
     """短剧文案 AI 优化：调用 autoclip 配置的大模型改写文案。
@@ -779,6 +788,7 @@ async def generate_hook_copy(data: HookCopyGenerateRequest):
         raise HTTPException(status_code=500, detail=f"钩子文案生成失败: {e}")
     return {
         "candidates": result.get("candidates") or [],
+        "title": result.get("title") or "",
         "raw": result.get("raw"),
         "model": _current_llm_model(),
     }
@@ -815,6 +825,36 @@ async def expand_hook_copy_route(data: HookCopyExpandRequest):
         "dispatch_note": result.get("dispatch_note"),
         "hook_copy_kept_verbatim": kept,
         "deviation_note": result.get("deviation_note") or result.get("note"),
+        "model": _current_llm_model(),
+    }
+
+
+@app.post("/api/v1/hook-copy/prompt-web")
+async def hook_prompt_web_route(data: HookPromptWebRequest):
+    """11-06 双产出：候选钩子文案 → 每条一段豆包网页版完整提示词。
+
+    机制在本服务，规则在 app/prompt/hook_prompt_web.txt（NAS 模板的网页版裁剪：
+    无段头编号/推荐标题/发布标签；10s/15s 模型逐条判断）。形态校验不在这里做——
+    候选在出文案侧已过 check_copy_shape，提示词正文不判漂移（网页版没有原句存活要求）。
+    """
+    if not data.script or not data.script.strip():
+        raise HTTPException(status_code=400, detail="缺少反推详规，无法生成网页版提示词")
+    if not data.candidates:
+        raise HTTPException(status_code=400, detail="缺少候选文案列表")
+    try:
+        result = await asyncio.to_thread(
+            generate_web_prompts,
+            data.script.strip(),
+            data.candidates or [],
+            data.params or {},
+            data.max_retries,
+        )
+    except Exception as e:
+        logger.error("Hook prompt-web generation failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"网页版提示词生成失败: {e}")
+    return {
+        "prompts": result.get("prompts") or [],
+        "raw": result.get("raw"),
         "model": _current_llm_model(),
     }
 

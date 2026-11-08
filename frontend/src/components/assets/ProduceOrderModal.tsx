@@ -1,12 +1,15 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Button, Checkbox, Descriptions, Input, Modal, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
-import { DEFAULT_TIER, RECHECK_CODE_LABELS, assetApi, isAssetJobAck, waitForAssetJob } from '../../api/assets';
+import { CopyOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { RECHECK_CODE_LABELS, assetApi, isAssetJobAck, waitForAssetJob } from '../../api/assets';
 import type { AssetProduceResponse, AssetSummary } from '../../api/assets';
 import { HOOK_CODE_RE, MonoText, parseHookCodes } from './AssetBits';
 import AssetCardPicker from './AssetCardPicker';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
+import { withCrossPersonConfirm, withCrossOwnerConfirm } from './crossPerson';
+import { useAuth } from '../../contexts/AuthContext';
 
 const { Text, Paragraph } = Typography;
 
@@ -19,6 +22,11 @@ interface Props {
   /** 建单成功后回主面板（切到生产单页签）。produce 的响应里**没有**新单 id 列表
    *  （只有 created/results），所以只能让父面板自己去列表。 */
   onDone: () => void;
+  /**
+   * 批 L：就地上传角色卡挂的批次（=被投产素材所在批次）。可选——
+   * 生产单页「全部」视图开单时拿不到，就由上传口新建小批次。
+   */
+  batchId?: string;
 }
 
 /**
@@ -27,11 +35,13 @@ interface Props {
  * 三个量必须分开，混了就白烧号池：
  *  - `n`：一条文案派生几份**差异化**提示词（＝几个任务）；
  *  - `board_total`：板上 total＝同一条提示词出几版；
- *  - 真实投放量 = 文案数 × n × board_total。
+ *  - 真实投板量 = 文案数 × n × board_total。
  * 号池实测 ≈120 条/日，产能不做硬限（11-03 拍板），但建单当场就把「今天已经吃掉多少」摆出来。
  * 钩子编号只能从 hook_id.py 取号带进来，前端不生成、后端不编号。
  */
-const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose, onDone }) => {
+const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose, onDone, batchId }) => {
+  const { user } = useAuth();
+  const currentUserId = user?.id;
   const [n, setN] = useState(3);
   const [boardTotal, setBoardTotal] = useState(1);
   const [accounts, setAccounts] = useState(1);
@@ -45,6 +55,15 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const [cardIds, setCardIds] = useState<string[]>([]);
   const [dramaAbbr, setDramaAbbr] = useState('');
   const [codeText, setCodeText] = useState('');
+  /**
+   * 11-06 拍板③：填了号就查哪些已经被钉在生产单上（GET /assets/hook-codes/used）。
+   * 回显是软提醒（打字过程中尽力而为），提交时后端还有一道硬查重兜底——
+   * 号一发就烧掉，作废单也不复用，所以这里查到的直接拦提交。
+   */
+  const [usedCodes, setUsedCodes] = useState<
+    { code: string; asset_code: string; seq: number; status: string }[]
+  >([]);
+  const usedReqRef = useRef(0);
   const [expand, setExpand] = useState(true);
   const [waiveReason, setWaiveReason] = useState('');
   /**
@@ -62,11 +81,32 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
    */
   const [jobHint, setJobHint] = useState<string | null>(null);
   const giveUpRef = useRef(false);
+  const [takingCodes, setTakingCodes] = useState(false);
 
   // 批 I（链路收敛）：投产成功后顺势投板——不用再回生产单列表勾一遍。
   // 逐批人工确认的口径不放松：这里也要勾一下确认才投得出去。
   const [followupConfirm, setFollowupConfirm] = useState(false);
   const [followupBusy, setFollowupBusy] = useState(false);
+
+  // 批 M（评审二·P1-4）：Modal destroyOnClose 只销毁子树，本组件的 state 跨开合残留——
+  // 上一单勾过的「投去出片」确认会带进下一单，「逐批人工确认」的闸门被残留状态绕过一半；
+  // cardIds/codeText 同理（上一单挑的卡和取的号 silently 落到下一单上）。
+  // 打开时统一归零；n/boardTotal/accounts 这类"上一批怎么配的"保留——批量开单时是顺手的好默认。
+  useEffect(() => {
+    if (!open) return;
+    setFollowupConfirm(false);
+    setFollowupBusy(false);
+    setResult(null);
+    setJobHint(null);
+    giveUpRef.current = false;
+    setCardIds([]);
+    setCodeText('');
+    setUsedCodes([]);
+    setBoardTag('');
+    setDramaAbbr('');
+    setWaiveReason('');
+    setWaiveCodes([]);
+  }, [open]);
 
   const dispatchFollowup = async () => {
     const ids = (result?.production_ids || []).filter(Boolean);
@@ -77,11 +117,15 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
     }
     setFollowupBusy(true);
     try {
-      const res = await assetApi.dispatchProductions({
-        ids,
-        confirm: true,
-        async_mode: true,
-      });
+      const res = await withCrossPersonConfirm((c) =>
+        assetApi.dispatchProductions({
+          ids,
+          confirm: true,
+          async_mode: true,
+          cross_person_confirm: c,
+        }),
+      );
+      if (!res) return; // 取消了「替他人批次」确认：什么都不做
       nudgeAssetJobBanner();
       if (isAssetJobAck(res)) {
         const pre = (res as { precheck?: { will_create: number; will_recover: number; blocked?: unknown[]; planned_board_rows: number } }).precheck;
@@ -114,6 +158,25 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const dupCodes = codes.length !== new Set(codes).size;
   const plannedRows = summaries.length * n * boardTotal;
 
+  // 11-06 拍板③：500ms 防抖查已用号（不逐键打接口）；请求序号防乱序回包。
+  // 回显失败静默——提交时后端硬查重还在，别因为一个回显口把填单卡死。
+  useEffect(() => {
+    if (!open || !codes.length) {
+      setUsedCodes([]);
+      return;
+    }
+    const reqId = ++usedReqRef.current;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await assetApi.hookCodesUsed(codes);
+        if (usedReqRef.current === reqId) setUsedCodes(res.used);
+      } catch {
+        /* 尽力而为 */
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [open, codes]);
+
   /** 自动检查拦下的问题类型回填到表单，回到表单就能按类只放行一部分（R-6 分粒度） */
   const collectRecheckCodes = (res: AssetProduceResponse) => {
     const seen: string[] = [];
@@ -136,24 +199,50 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
       message.error('钩子编号重复：一个编号只能用在一条上');
       return;
     }
+    if (usedCodes.length) {
+      message.error(
+        `这些编号已经被用掉了：${usedCodes.slice(0, 3).map((u) => u.code).join('、')}（一钩一号，回 hook_id.py 重新取号）`,
+        8,
+      );
+      return;
+    }
     setBusy(true);
     giveUpRef.current = false;
     try {
-      const res = await assetApi.produce({
-        summary_ids: summaries.map((s) => s.id),
-        n,
-        board_total: boardTotal,
-        accounts,
-        recommended_title_count: titleCount,
-        board_tag: boardTag || undefined,
-        card_asset_ids: cardIds.length ? cardIds : undefined,
-        drama_abbr: dramaAbbr.trim() || undefined,
-        hook_codes: codes.length ? codes : undefined,
-        expand,
-        waive_reason: waiveReason || undefined,
-        waive_codes: waiveCodes.length ? waiveCodes : undefined,
-        async_mode: true,
-      });
+      // A′（2026-11-08 定稿）：跨人确认改**会话级一次性**——同一条候选本会话确认过一次
+      // （sessionStorage 记账）就不再弹；换会话/新候选仍会问那一句（知情不能省）。
+      // 谁投账算谁（生产单记实际投产人，候选过审人进 strict 审计）。
+      const crossIds = summaries
+        .filter((s) => s.reviewed_by && s.reviewed_by !== currentUserId)
+        .map((s) => s.id);
+      const allRemembered =
+        crossIds.length > 0 && crossIds.every((id) => sessionStorage.getItem(`xowner:${id}`) === '1');
+      const markRemembered = () => crossIds.forEach((id) => sessionStorage.setItem(`xowner:${id}`, '1'));
+      const doProduce = (confirmed: boolean) =>
+        assetApi.produce({
+          summary_ids: summaries.map((s) => s.id),
+          n,
+          board_total: boardTotal,
+          accounts,
+          recommended_title_count: titleCount,
+          board_tag: boardTag || undefined,
+          card_asset_ids: cardIds.length ? cardIds : undefined,
+          drama_abbr: dramaAbbr.trim() || undefined,
+          hook_codes: codes.length ? codes : undefined,
+          expand,
+          waive_reason: waiveReason || undefined,
+          waive_codes: waiveCodes.length ? waiveCodes : undefined,
+          async_mode: true,
+          cross_person_confirm: confirmed || allRemembered || undefined,
+        });
+      const res = (allRemembered
+        ? await doProduce(true)
+        : await withCrossOwnerConfirm(async (confirmed) => {
+            const r = await doProduce(confirmed);
+            if (r && confirmed) markRemembered();
+            return r;
+          })) as AssetProduceResponse;
+      if (!res) return; // 取消了「替他人投产」确认：什么都不做
       if (isAssetJobAck(res)) {
         // 叫一声让顶部横幅立刻登记这条活：人中途关窗后由横幅接住结果
         nudgeAssetJobBanner();
@@ -235,7 +324,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             description={result.message}
           />
           <Descriptions size="small" column={2} bordered>
-            <Descriptions.Item label="投放渠道">
+            <Descriptions.Item label="投板渠道">
               {result.board.channel === 'wework_aivideo' ? '企微后台「创建AI视频」任务板' : result.board.channel}
             </Descriptions.Item>
             <Descriptions.Item label="板上的归属标记">{result.board.tag}</Descriptions.Item>
@@ -244,11 +333,11 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             <Descriptions.Item label="预计要跑几天">
               {result.capacity_hint.days} 天（{result.capacity_hint.account_count} 个号 × 每号每日 {result.capacity_hint.per_account_per_day} 条）
             </Descriptions.Item>
-            <Descriptions.Item label="当日投放量">
+            <Descriptions.Item label="当日投板量">
               今天已排 {result.dispatch.today.board_rows} 条 / 提示线 {result.dispatch.today.soft_cap}
               {result.dispatch.today.over_cap > 0 && <Tag color="red" style={{ marginLeft: 6 }}>超出 {result.dispatch.today.over_cap} 条</Tag>}
             </Descriptions.Item>
-            <Descriptions.Item label="今天投放情况" span={2}>
+            <Descriptions.Item label="今天投板情况" span={2}>
               已投出 {result.dispatch.today.dispatched} 条｜成功 {result.dispatch.today.succeeded} 条｜失败 {result.dispatch.today.failed} 条
               {result.dispatch.today.note && (
                 <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
@@ -430,21 +519,11 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               message={jobHint}
               description={
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  这一步慢是在等模型逐条展开提示词（一条几十秒），不是在卡住；
-                  重复点「生成」不会跑得更快，只会白烧一次模型费用。
+                  在等模型逐条展开（一条几十秒）；重复点不会更快，关窗不取消任务。
                 </Text>
               }
             />
           )}
-          <Descriptions size="small" column={4} bordered>
-            <Descriptions.Item label="文案">{summaries.length}</Descriptions.Item>
-            <Descriptions.Item label="每条出几份不同写法（N）">{n}</Descriptions.Item>
-            <Descriptions.Item label="每份出几版">{boardTotal}</Descriptions.Item>
-            <Descriptions.Item label="要投多少条">
-              <Text strong>{plannedRows} 条</Text>
-            </Descriptions.Item>
-          </Descriptions>
-
           <Space wrap size={16}>
             <span>
               <Text>N 每条文案派生份数：</Text>
@@ -463,41 +542,103 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             <Tooltip title="K＝这部剧发布账号的数量，决定推荐视频标题给几条（现在不再固定 5 条）">
               <span>
                 <Text>推荐标题条数（K）：</Text>
-                <Input type="number" min={1} max={20} style={{ width: 80, marginLeft: 6 }} value={titleCount} onChange={(e) => setTitleCount(e.target.value ? Number(e.target.value) : undefined)} />
+                {/* 批 N（评审二·P2）：留空行为不说明＝每单都要人肉猜一次；placeholder 写明白 */}
+                <Input
+                  type="number"
+                  min={1}
+                  max={20}
+                  style={{ width: 80, marginLeft: 6 }}
+                  value={titleCount}
+                  placeholder="留空＝按模板默认"
+                  onChange={(e) => setTitleCount(e.target.value ? Number(e.target.value) : undefined)}
+                />
               </span>
             </Tooltip>
           </Space>
 
           <div>
             <Space style={{ marginBottom: 4 }}>
-              <Text>钩子编号（要填 {needCodes} 个，从取号工具 hook_id.py 拿）：</Text>
+              <Text>钩子编号（要填 {needCodes} 个）：</Text>
               {codes.length > 0 && (
-                <Tag color={codes.length === needCodes && !badCodes.length && !dupCodes ? 'green' : 'orange'}>
+                <Tag color={codes.length === needCodes && !badCodes.length && !dupCodes && !usedCodes.length ? 'green' : 'orange'}>
                   已填 {codes.length}/{needCodes}
                 </Tag>
               )}
             </Space>
             <div style={{ marginBottom: 4 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                取号：在服务器跑 scripts 下的 hook_id.py 取一个五位编号（投放和回收都靠它对上）；取号工具后续会做进系统。
-              </Text>
+              <Space size={8} wrap>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  服务器跑 hook_id.py 取号（复制清单照着跑）：
+                </Text>
+                {/* 批 N-4 最小版（评审二·P1-1）：每单 SSH 跑脚本最大的摩擦是"到底要取几个号"
+                    还得现算现抄。清单一键复制，到服务器照着跑；界面内直连取号仍待拍板。 */}
+                <Button
+                  size="small"
+                  icon={<ThunderboltOutlined />}
+                  loading={takingCodes}
+                  onClick={async () => {
+                    try {
+                      const r = await assetApi.takeHookCodes(needCodes);
+                      setCodeText((t) => (t ? t + ' ' : '') + r.codes.join(' '));
+                      message.success(`已代取 ${r.codes.length} 个号（一发即烧，取消开单号就作废）`);
+                    } catch (e) {
+                      message.warning((e as Error).message || '代取号未启用，走手工粘贴', 6);
+                    }
+                  }}
+                >
+                  代取 {needCodes} 个号
+                </Button>
+                <Button
+                  size="small"
+                  icon={<CopyOutlined />}
+                  onClick={() => {
+                    const lines = [
+                      `本单待取号 ${needCodes} 个（${summaries.length} 条文案 × 每条 ${n} 份）`,
+                      ...summaries.map((s) => `${s.asset_code || s.id.slice(0, 8)}｜${(s.text || '').slice(0, 40)}`),
+                    ];
+                    navigator.clipboard
+                      .writeText(lines.join('\n'))
+                      .then(() => message.success(`待取号清单已复制（${needCodes} 个号），去服务器照着跑 hook_id.py`))
+                      .catch(() => message.error('复制失败：浏览器没给剪贴板权限，请手动抄'));
+                  }}
+                >
+                  复制待取号清单（{needCodes} 个）
+                </Button>
+              </Space>
             </div>
             <Input.TextArea
               rows={2}
-              placeholder="空格/逗号/换行分隔，例如：7C0B1 7C0B2 7C0B3 …（五位编号，投放和回收都靠它对上；系统不给编号，也不能自己编）"
+              placeholder="空格/逗号/换行分隔，如：7C0B1 7C0B2（五位编号，不能自己编）"
               value={codeText}
               onChange={(e) => setCodeText(e.target.value)}
             />
-            {codes.length && codes.length < needCodes && (
+            {codes.length > 0 && codes.length < needCodes && (
               <Text type="warning" style={{ fontSize: 12 }}>
-                还差 {needCodes - codes.length} 个：缺的照样能建单，但单上没编号，导出 txt 时段头和推荐标题就带不上编号。
+                还差 {needCodes - codes.length} 个：缺了照样能建单，但导出内容带不上编号。
               </Text>
+            )}
+            {!!usedCodes.length && (
+              <Alert
+                type="error"
+                showIcon
+                style={{ marginTop: 6 }}
+                message={`${usedCodes.length} 个编号已经被用掉了，提交会被拦`}
+                description={
+                  <div style={{ fontSize: 12 }}>
+                    {usedCodes.slice(0, 8).map((u) => (
+                      <div key={u.code}>{u.code}（已钉在素材 {u.asset_code} 的第 {u.seq} 张单上）</div>
+                    ))}
+                    {usedCodes.length > 8 && <div>另有 {usedCodes.length - 8} 个没列出</div>}
+                    <div>一钩一号：号一发就烧掉，作废的单也不复用，回 hook_id.py 重新取号再投产。</div>
+                  </div>
+                }
+              />
             )}
           </div>
 
           <Space wrap>
             <Input placeholder="板上的归属标记（留空用默认）" style={{ width: 220 }} value={boardTag} onChange={(e) => setBoardTag(e.target.value)} />
-            <Tooltip title="剧名缩写要用 NAS《剧名缩写表.json》里的，全团队统一、禁止临时造。推荐标题按规范写「剧缩·编号·精简钩子」；留空就降级成「编号·精简钩子」，并在偏差说明里标注缺剧缩（缩写表在容器里读不到，只能由一线带进来）">
+            <Tooltip title="剧名缩写要用 NAS《剧名缩写表.json》里的，禁止临时造；留空标题降级为「编号·精简钩子」，偏差说明记缺剧缩。">
               <Input
                 placeholder="剧名缩写（可选，如 救总裁）"
                 style={{ width: 200 }}
@@ -508,13 +649,13 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             </Tooltip>
           </Space>
 
-          <AssetCardPicker active={open} value={cardIds} onChange={setCardIds} />
+          <AssetCardPicker active={open} value={cardIds} onChange={setCardIds} batchId={batchId} />
 
           <Checkbox checked={expand} onChange={(e) => setExpand(e.target.checked)}>
             让 AI 按标准模板把文案展开成能直接投的提示词
           </Checkbox>
           {!expand && (
-            <Alert type="warning" showIcon message="不展开就是没正文的单：上面只有过审文案本身，不能投放，导出也不带正文" />
+            <Alert type="warning" showIcon message="不展开就是没正文的单：上面只有过审文案本身，不能投板，导出也不带正文" />
           )}
 
           {isAdmin && (
@@ -538,18 +679,13 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             </Space>
           )}
 
-          <Alert
-            type="info"
-            showIcon
-            message="出片恒 10.08s / 720×1280，任务板上没有时长与分辨率开关"
-            description={
-              <span style={{ fontSize: 12 }}>
-                所以这里不填时长：内容更长只能拆成上/下集两条各 10 秒。
-                本批 {plannedRows} 条会算进当日投放量 {plannedRows} 条（实测约 120 条/日，不做硬限，只报数）。
-                视频时长上限 {DEFAULT_TIER}s 只影响反推文案的成本，跟任务板无关。
-              </span>
-            }
-          />
+          <Tooltip title="内容更长只能拆上/下集；视频时长上限只影响反推文案成本，与任务板无关">
+            <Alert
+              type="info"
+              showIcon
+              message={`出片恒 10.08s / 720×1280；本批 ${plannedRows} 条计入当日额度（≈120 条/日，只报数不拦）`}
+            />
+          </Tooltip>
           <MonoText>{summaries.map((s) => s.asset_code || s.id.slice(0, 8)).join(' · ')}</MonoText>
         </Space>
       )}

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Modal, Spin, Typography } from 'antd';
+import { Button, Modal, Spin, Typography, message } from 'antd';
 import type { AssetFrameItem, AssetFrameSlot } from '../../api/assets';
-import { assetApi } from '../../api/assets';
+import { assetApi, isAssetJobAck } from '../../api/assets';
 
 const { Text } = Typography;
 
@@ -101,11 +101,46 @@ export const FrameStrip: React.FC<{
   loading?: boolean;
   /** 窄卡片里用 78，详情抽屉里可以放大 */
   height?: number;
-}> = ({ slot, loading, height = 78 }) => {
+  /**
+   * 「没有预览图」占位里的**一键补抽**入口（11-06 P2）：给了 assetId 就把占位
+   * 从纯提示升级成可动作——「下载成功但 0 帧」（抽帧任务被打断/超上限/老数据）
+   * 不用再拼 JSON 走手动口。原片没下载时点了后端会 skip 并把原因原样带回来，
+   * 前端不预判、后端说真话。
+   */
+  assetId?: string;
+}> = ({ slot, loading, height = 78, assetId }) => {
   const [gridOpen, setGridOpen] = useState(false);
-  const thumbs = slot?.thumbs || [];
-  const grid = slot?.grid || null;
+  /** 补抽成功后本素材的新图（优先于父层传下来的 slot，父层下次轮询会自然对齐） */
+  const [localSlot, setLocalSlot] = useState<AssetFrameSlot | undefined>();
+  const [extracting, setExtracting] = useState(false);
+  const thumbs = (localSlot ?? slot)?.thumbs || [];
+  const grid = (localSlot ?? slot)?.grid || null;
   const boxWidth = Math.round(height * 0.5625) * 3 + 4;
+
+  const runExtract = async () => {
+    if (!assetId || extracting) return;
+    setExtracting(true);
+    try {
+      const res = await assetApi.extractFrames({ asset_ids: [assetId] });
+      if (isAssetJobAck(res)) {
+        message.info(res.message || '补抽已排后台，几分钟内卡片就有图');
+      } else {
+        const r = res.results?.[0];
+        if (res.extracted > 0) {
+          message.success(res.message || `补抽成功：${res.frames} 张帧`);
+        } else {
+          message.warning(r?.reason || res.message || '这次没抽出帧（原因见后台任务）');
+        }
+      }
+      // 无论同步抽成还是后台排队，都试着刷一次这张卡的图；拿不到就还画占位
+      const fresh = await assetApi.framesForAssets([assetId]).catch(() => null);
+      if (fresh?.by_asset?.[assetId]) setLocalSlot(fresh.by_asset[assetId]);
+    } catch (e) {
+      message.error((e as Error).message || '补抽请求失败');
+    } finally {
+      setExtracting(false);
+    }
+  };
 
   if (loading && !thumbs.length) {
     return (
@@ -141,10 +176,16 @@ export const FrameStrip: React.FC<{
           textAlign: 'center',
           padding: 4,
         }}
-        title="这里没有图，是因为这条素材的原片还没下载到我们自己的桶里。在列表或抽屉里点「下载原片」，下载成功后系统会自动抽帧补上图；没图不影响审核与投产。"
+        title="原片还没下载到桶里（下载成功后自动抽帧），或抽帧没跑成——点「补抽帧」重试；不影响审核与投产。"
       >
         <span>没有预览图</span>
-        <span style={{ color: '#8c8c8c' }}>下载原片后自动补</span>
+        {assetId ? (
+          <Button size="small" type="link" loading={extracting} onClick={runExtract} style={{ padding: 0, height: 18 }}>
+            补抽帧
+          </Button>
+        ) : (
+          <span style={{ color: '#8c8c8c' }}>下载原片后自动补</span>
+        )}
       </div>
     );
   }

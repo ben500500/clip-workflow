@@ -81,7 +81,9 @@ class UserResponse(BaseModel):
     role: str
     role_display: str
     # 数据隔离：数据可见范围（all=全部素材，own=仅自己创建）
-    data_scope: str = "own"
+    data_scope: str
+    can_review: bool = True
+    can_produce: bool = True
     is_active: bool
     menus: list[str] = []
     created_at: str | None = None
@@ -99,6 +101,13 @@ class RegisterRequest(BaseModel):
 
 class UpdateRoleRequest(BaseModel):
     role: str
+
+
+
+class UpdateFunctionsRequest(BaseModel):
+    """A′ 职能开关：审核（质检）与投产（挑选/投板）按人启用。"""
+    can_review: bool = True
+    can_produce: bool = True
 
 
 class UpdateDataScopeRequest(BaseModel):
@@ -125,6 +134,8 @@ def _user_to_response(user: User) -> UserResponse:
         role=user.role,
         role_display=ROLE_DISPLAY_NAMES.get(UserRole(user.role), user.role),
         data_scope=getattr(user, "data_scope", None) or default_data_scope_for_role(user.role),
+        can_review=bool(getattr(user, "can_review", True)),
+        can_produce=bool(getattr(user, "can_produce", True)),
         is_active=user.is_active,
         menus=get_role_menus(user.role),
         created_at=utc_iso(user.created_at) if user.created_at else None,
@@ -501,6 +512,32 @@ async def update_user_data_scope(
     await _write_audit(
         db, "user.data_scope.update", current_user, "user", str(user.id),
         before=before, after={"data_scope": user.data_scope},
+    )
+    await db.refresh(user)
+    return _user_to_response(user)
+
+
+@router.put("/users/{user_id}/functions", response_model=UserResponse)
+async def update_user_functions(
+    user_id: str,
+    req: UpdateFunctionsRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+):
+    """A′ 职能开关（2026-11-08 评审定稿）：审核（质检）/投产（挑选、投板）两岗位
+    拆职能不拆账号——默认双开兼容现状；需要岗位隔离的组按人关闭。改动走审计
+    （user.functions.update），「收回→自审自投→开回」全程可查。"""
+    from uuid import UUID
+    user = (await db.execute(select(User).where(User.id == UUID(user_id)))).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    before = {"can_review": bool(user.can_review), "can_produce": bool(user.can_produce)}
+    user.can_review = bool(req.can_review)
+    user.can_produce = bool(req.can_produce)
+    await db.flush()
+    await _write_audit(
+        db, "user.functions.update", current_user, "user", str(user.id),
+        before=before, after={"can_review": user.can_review, "can_produce": user.can_produce},
     )
     await db.refresh(user)
     return _user_to_response(user)

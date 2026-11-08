@@ -51,6 +51,50 @@
 # graft 代码审查通用 stage 锚点（手动 @NPC 评审 与 PR 创建自动评审 复用，改一处两处生效）
 # 流程：装 graft → 现场重建代码地图（标准版零 LLM/零费用）→ 预生成 review-context.md（改动符号的 graft 调用链）
 # → npc:go 按 AGENTS.md 先查 graft 再审 diff。角色定义见 .cnb/settings.yml。
+# 批 M（评审一·P1-6）：后端 pytest 门。此前 499 条用例只活在本机（.cnb.yml 只跑
+# engines 打码/SAR 回归），后端回归没有任何 CI 兜底。这里用 backend 镜像本身跑
+# 整套 pytest——测试自建 sqlite（conftest/test harness），不依赖外部 PG/MinIO。
+# `env -u NO_PROXY`：CNB runner 环境里的 NO_PROXY 会让 httpx 的 ASGITransport
+# localhost 请求绕错代理，测试侧统一摘掉。
+.pytest-gate:
+  &pytest-gate
+  name: backend-pytest
+  runner:
+    cpus: 4
+  docker:
+    build:
+      dockerfile: ./backend/Dockerfile
+      by:
+        - backend/Dockerfile
+        - backend/requirements.txt
+        - backend/pytest.ini
+        - backend/app
+        - backend/tests
+        - backend/wechat_download
+        - backend/scripts
+        - backend/dupload
+        - backend/lan_source
+  stages:
+    - name: run backend tests
+      script: cd /app && env -u NO_PROXY python -m pytest tests/ -q
+
+# 批 M（评审一·P1-6）：前端 tsc 门。前端零 lint/零 test 至少把类型检查钉在 CI 里——
+# 类型层是本仓前端的主防线（全目录仅 2 处 any 的那一层），漂移必须当场红。
+.tsc-gate:
+  &tsc-gate
+  name: frontend-tsc
+  runner:
+    cpus: 2
+  docker:
+    image: node:20-bookworm-slim
+  stages:
+    - name: type check
+      script: |
+        cd frontend
+        npm ci --no-audit --no-fund --registry=https://registry.npmmirror.com 2>&1 | tail -1
+        npx tsc -b --force
+        echo "tsc: 0 errors"
+
 .graft-review-stage:
   &graft-review-stage
   name: 准备 graft 代码地图
@@ -142,9 +186,13 @@ main:
   push:
     - *subtitle-mask-test
     - *vert2horiz-sar-test
+    - *pytest-gate
+    - *tsc-gate
   pull_request:
     - *subtitle-mask-test
     - *vert2horiz-sar-test
+    - *pytest-gate
+    - *tsc-gate
 
   # 功能3：PR 创建时自动跑一次 graft 代码审查（无需手动 @NPC）。
   # 事件用 pull_request.target（可信事件，配置取目标分支 main；审查需读代码+发评论，用可信事件符合

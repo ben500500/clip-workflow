@@ -1,14 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, Popconfirm, Tooltip,
+  ApartmentOutlined,
+  PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, SafetyOutlined,
+} from '@ant-design/icons';
+import {
+  Card, Checkbox, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, Popconfirm, Tooltip,
 } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, SafetyOutlined } from '@ant-design/icons';
 import { authApi } from '../api/auth';
 import { ROLE_OPTIONS, DATA_SCOPE_OPTIONS } from '../types';
 import type { User, Role } from '../types';
 import { formatDateTime } from '../utils/format';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 const UserManagement: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
@@ -16,6 +19,20 @@ const UserManagement: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [scopeModalOpen, setScopeModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  // A′ 职能编辑
+  const [fnUser, setFnUser] = useState<User | null>(null);
+  const [fnState, setFnState] = useState({ can_review: true, can_produce: true });
+  const handleFunctionsEdit = (u: User) => {
+    setFnUser(u);
+    setFnState({ can_review: u.can_review !== false, can_produce: u.can_produce !== false });
+  };
+  const saveFunctions = async () => {
+    if (!fnUser) return;
+    const updated = await authApi.updateUserFunctions(fnUser.id, fnState.can_review, fnState.can_produce);
+    setUsers((list) => list.map((u) => (u.id === updated.id ? { ...u, ...updated } : u)));
+    message.success('职能已更新');
+    setFnUser(null);
+  };
   const [form] = Form.useForm();
   const [scopeForm] = Form.useForm();
 
@@ -106,6 +123,22 @@ const UserManagement: React.FC = () => {
         const color = role === 'admin' ? 'red' : role === 'operator' ? 'blue' : role === 'publisher' ? 'green' : 'orange';
         return <Tag color={color}>{opt?.label || role}</Tag>;
       },
+    },
+    {
+      // A′ 职能开关：审核（质检）/投产（挑选、投板）按人启用
+      title: '职能',
+      key: 'functions',
+      width: 150,
+      render: (_: unknown, record: User) => (
+        <Space size={4} wrap>
+          <Tag color={record.can_review !== false ? 'blue' : 'default'}>
+            {record.can_review !== false ? '可质检' : '无质检'}
+          </Tag>
+          <Tag color={record.can_produce !== false ? 'geekblue' : 'default'}>
+            {record.can_produce !== false ? '可投产' : '无投产'}
+          </Tag>
+        </Space>
+      ),
     },
     {
       title: '数据范围',
@@ -208,6 +241,31 @@ const UserManagement: React.FC = () => {
             <Select options={ROLE_OPTIONS.map((r) => ({ value: r.value, label: r.label }))} />
           </Form.Item>
         </Form>
+      </Modal>
+      <Modal
+        open={!!fnUser}
+        title={fnUser ? `职能：${fnUser.username}` : ''}
+        onCancel={() => setFnUser(null)}
+        onOk={saveFunctions}
+        okText="保存"
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={8}>
+          <Checkbox
+            checked={fnState.can_review}
+            onChange={(e) => setFnState((s) => ({ ...s, can_review: e.target.checked }))}
+          >
+            审核（质检）——文案/提示词的质检关卡
+          </Checkbox>
+          <Checkbox
+            checked={fnState.can_produce}
+            onChange={(e) => setFnState((s) => ({ ...s, can_produce: e.target.checked }))}
+          >
+            投产（挑选、投板）——挑文案开单、投去出片
+          </Checkbox>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            岗位隔离用：把审核与投产关给不同的人（默认双开=一人多岗）。改动留审计。
+          </Text>
+        </Space>
       </Modal>
     </div>
   );

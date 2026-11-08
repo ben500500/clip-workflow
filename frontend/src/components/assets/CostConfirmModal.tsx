@@ -78,8 +78,26 @@ const CostConfirmModal: React.FC<Props> = ({
             <Descriptions.Item label="条数">{preview.count}</Descriptions.Item>
             <Descriptions.Item label="计时上限档位">{preview.prompt_max_duration}s</Descriptions.Item>
             <Descriptions.Item label="单条预估">{yuan(preview.unit_cost)}</Descriptions.Item>
-            <Descriptions.Item label="本批预估">
+            <Descriptions.Item label="本批预估（=分项合计）">
+              {/* 批 N（评审二·P1-7）：总额口径摆明——后端单条预估就是分项逐条相加
+                  （estimate_unit_cost），把等式写在总额旁边，「0.58 vs 0.58+0.04」
+                  那种数字自相矛盾的观感不再出现。 */}
               <Text strong>{yuan(preview.total_cost)}</Text>
+              {!!preview.breakdown && (
+                <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
+                  ＝{(
+                    [
+                      ['反推', preview.breakdown.prompt],
+                      ['回源解析', preview.breakdown.parse],
+                      ['拷贝提取', preview.breakdown.copy_extract],
+                      ['上传', preview.breakdown.upload],
+                    ] as Array<[string, number]>
+                  )
+                    .filter(([, v]) => v > 0)
+                    .map(([k, v]) => `${k} ${yuan(v)}`)
+                    .join(' ＋ ') || '（无分项）'}
+                </Text>
+              )}
             </Descriptions.Item>
             <Descriptions.Item label="反推">
               {yuan(preview.breakdown.prompt)}

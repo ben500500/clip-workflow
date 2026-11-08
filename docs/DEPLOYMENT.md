@@ -155,3 +155,87 @@ nvidia-smi | grep clip-ollama
 - **删除剧集**：后端会自动清理 MinIO（源素材/切片成品）+ media 卷（源副本/选点产物/ASR 缓存/帧缓存）+ 孤儿兜底清扫，无需手动
 - **批量切片**：源视频 rsync 到 `/home/<用户名>/videos/<剧名拼音>/`，JSON 的 `path` 填对应路径；`auto_delete_source: true` 处理完自动删源
 - **磁盘告警**：关注 `docker system df`；MinIO 与 media 卷是空间大头
+
+## 八、备份与回滚（批 M·评审一 P1-5 落地）
+
+### 8.1 备份（一键）
+
+`scripts/backup_server.sh` 在服务器本机跑：pg_dump 整库（custom 格式）＋ `.env` 快照
+（chmod 600）＋ `pg_restore --list` 完整性自检＋保留期清理（默认 14 天）。
+
+```bash
+# 手动跑一次
+bash scripts/backup_server.sh
+# 自定义目录/保留期
+BACKUP_DIR=/data/backup KEEP_DAYS=30 bash scripts/backup_server.sh
+```
+
+挂 cron（每日 03:40，错开整点高峰）：
+
+```cron
+40 3 * * * cd /home/cc12703/clip-workflow && bash scripts/backup_server.sh >> logs/backup.log 2>&1
+```
+
+⚠️ 本脚本只管**数据库＋部署变量**。MinIO 媒体卷（raw-footage/sliced/previews 等桶）
+与 media 卷体积大、再生成本各不相同，不在本脚本范围——按卷快照另行处理
+（丢失后果见下表，先想清楚再决定快照频率）。
+
+| 数据 | 位置 | 丢了的后果 | 兜底 |
+|---|---|---|---|
+| 业务库 | pg_dump（本脚本） | 台账/审计/文案全没了 | 每日备份 |
+| 部署变量 | .env 快照（本脚本） | 全站失联 | 每日备份 |
+| 媒体文件 | MinIO 卷 | 成片/素材没了，库里的键悬空 | 按卷快照（另行） |
+| 缓存/中间产物 | media 卷 | 可再生（抽帧/ASR/预览重跑） | 可不备 |
+
+### 8.2 回滚步骤（按事故类型对号入座）
+
+**A. 只回代码（发版翻车，库没动）**
+
+```bash
+cd /home/cc12703/clip-workflow
+git log --oneline -5                 # 找上一个已知好的 commit
+git checkout <good-sha>              # 或者 git revert 坏提交
+bash scripts/deploy_server.sh        # 或手动 docker compose up -d --build 受影响服务
+docker compose ps && docker compose logs --since 2m backend | grep -iE 'error|traceback'
+```
+
+注意：alembic 迁移**不做 downgrade**（163 部署链路走 stamp＋database.py 补列，
+见 alembic/versions 各文件头说明）。回退代码前先确认旧代码与新库结构兼容——
+本仓迁移全部「可空加列」，旧代码读新库是安全的；反向（新代码读旧库）由
+database.py 的 ADD COLUMN 清单兜底。
+
+**B. 库坏了（误删/迁移事故），从备份恢复**
+
+```bash
+# 1) 停写入方（backend/celery workers/beat），只留 postgres
+docker compose stop backend worker-beat worker-fast worker-remotion worker-wechat-dl clip-backend 2>/dev/null
+
+# 2) 恢复（覆盖式：先 drop 再建，确认库名！）
+docker compose exec -T postgres pg_restore -U clipworkflow -d clipworkflow \
+  --clean --if-exists < /home/cc12703/clip-backups/clip-db-<stamp>.dump
+
+# 3) 起回来 + 冒烟
+docker compose up -d
+docker compose exec -T backend curl -sf http://localhost:8080/api/health && echo OK
+```
+
+⚠️ `--clean` 会先删现有对象再建——**先备份当前这份坏库**（万一只是部分坏，
+drop 之后没有回头路），再执行恢复。
+
+**C. .env 事故（变量丢失/写错）**
+
+```bash
+# 找最近一份快照，diff 出差异再整份还原（别盲抄——快照里的旧密码可能已轮换过）
+ls -t /home/cc12703/clip-backups/env-*.snapshot | head -3
+diff /home/cc12703/clip-backups/env-<stamp>.snapshot /home/cc12703/clip-workflow/.env
+cp /home/cc12703/clip-backups/env-<stamp>.snapshot /home/cc12703/clip-workflow/.env
+docker compose up -d --force-recreate   # env 变了必须重建容器
+```
+
+### 8.3 纪律
+
+- **先备份再动库**：任何手工 SQL、迁移演练、大批量删改之前，先跑一次备份脚本。
+- **备份要演练**：每季度拿最新 dump 在本机起个一次性 postgres 跑一遍 8.2-B，
+  备份没被恢复过的＝没有备份。
+- 服务器上的备份目录别和被备份物同盘（`BACKUP_DIR` 默认在 home 下，机器挂了就一起没了——
+  有条件就再 rsync 一份到 NAS/另一台机）。
