@@ -176,7 +176,8 @@ def _stages(**kw):
     (_stages(**{"import": "success"}), False, "waiting_prompt"),
     (_stages(**{"import": "success", "prompt": "running"}), False, "analyzing"),
     (_stages(**{"import": "success", "prompt": "skipped"}), False, "waiting_prompt"),
-    (_stages(**{"prompt": "success"}), False, "summarizing"),
+    # 11-09：稿到了但出文案没提交＝waiting_summary，不能再报「出文案中」
+    (_stages(**{"prompt": "success"}), False, "waiting_summary"),
     (_stages(**{"prompt": "success", "summary": "running"}), False, "summarizing"),
     (_stages(**{"prompt": "success", "summary": "success"}), False, "awaiting_review"),
     (_stages(**{"prompt": "success", "summary": "success"}), True, "ready_to_produce"),
@@ -242,7 +243,7 @@ def test_apply_stage_passes_media_kind_through():
         stage_produce="pending", stage_compose="pending", status="draft",
         has_approved_copy=False,
     )
-    assert svc.apply_stage(legacy, "prompt", "success") == "summarizing"
+    assert svc.apply_stage(legacy, "prompt", "success") == "waiting_summary"
 
 
 def test_shared_video_whitelist_still_rejects_images():

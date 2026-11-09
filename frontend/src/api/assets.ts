@@ -28,6 +28,7 @@ export type AssetStatus =
   | 'importing'
   | 'analyzing'
   | 'waiting_prompt'
+  | 'waiting_summary'
   | 'summarizing'
   | 'awaiting_review'
   | 'ready_to_produce'
@@ -2589,12 +2590,18 @@ export const ASSET_STAGE_LABELS: Record<AssetStage, string> = {
   skipped: '跳过',
 };
 
-/** derive_status 的 13 个派生态（值以 models/asset.py 的 AS_* 为准） */
+/** derive_status 的 14 个派生态（值以 models/asset.py 的 AS_* 为准） */
 export const ASSET_STATUS_LABELS: Record<AssetStatus, string> = {
   draft: '草稿',
   importing: '导入中',
   waiting_prompt: '等读视频',
   analyzing: '读视频中',
+  /**
+   * 11-09 成稿导入：稿已就位、**但出文案这一步还没人提交**。
+   * 以前这种状态也叫「出文案中」，86 条成稿一次进来就是几十条假「在跑」，
+   * 一线分不清该点一下还是该等——和「等读视频／读视频中」分开是同一个道理。
+   */
+  waiting_summary: '等出文案',
   summarizing: '出文案中',
   awaiting_review: '等审核',
   ready_to_produce: '可以出生产单',

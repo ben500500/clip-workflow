@@ -305,7 +305,8 @@ async def _make_ready_asset(client, h, url=DOUYIN_2, *, script=SCRIPT, category_
         asset = await s.get(AssetItem, uuid.UUID(asset_id))
         asset.prompt_task_id = task_id
         asset.stage_prompt = "success"
-        asset.status = "summarizing"
+        # 11-09 拆态：这一步只是稿就位，出文案还没提交
+        asset.status = "waiting_summary"
         await s.commit()
     return asset_id, task_id
 
@@ -1398,7 +1399,8 @@ def test_prompt_refresh_converges_stage_from_provider():
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["asset"]["stage_prompt"] == "success"
-        assert body["asset"]["status"] == "summarizing"
+        # 稿刚回来，出文案还没点——报「等出文案」，不是「出文案中」
+        assert body["asset"]["status"] == "waiting_summary"
         assert body["prompt_task"]["status"] == "success"
         assert body["prompt_task"]["content"] == SCRIPT
         fake.query.assert_awaited_once_with("prov-9")
@@ -8783,7 +8785,7 @@ def test_import_paired_lands_four_slots_and_costs_nothing():
         assert str(full.category_id) == str(cat_id), "清单吃的是原型**名字**，要钉到字典那一行"
         script_only = by_title["下水道口"]
         assert (script_only.stage_prompt, script_only.stage_summary) == ("success", "pending")
-        assert script_only.status == "summarizing", script_only.status
+        assert script_only.status == "waiting_summary", script_only.status
         assert script_only.category_id is None, "字典里没有的名字→未分类，不替人建字典行"
         assert assets[body["need_copy"][0]].title == "下水道口", body["need_copy"]
         copy_only = by_title["会议室"]

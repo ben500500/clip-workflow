@@ -107,6 +107,12 @@ AS_IMPORTING = "importing"
 AS_ANALYZING = "analyzing"
 AS_WAITING_PROMPT = "waiting_prompt"
 AS_SUMMARIZING = "summarizing"
+# 11-09 成稿导入暴露的同一条坑（照 A4-6 的手法再拆一次）：`prompt success + summary pending`
+# 以前也派生成 summarizing（界面「出文案中」），但那一步**根本没人提交**。
+# 86 条成稿一次进来，队列里几十条写着「出文案中」而实际一条都没跑——和 A4-6 修之前
+# 「分不清谁在跑、谁卡着没人管」是同一个病，只是搬到了文案这一环。
+# 拆开后：`waiting_summary`＝稿已就位、等你点「出文案」（免费）；`summarizing`＝任务真在跑。
+AS_WAITING_SUMMARY = "waiting_summary"
 AS_AWAITING_REVIEW = "awaiting_review"
 AS_READY_TO_PRODUCE = "ready_to_produce"   # 有过审文案，可开生产单
 AS_PRODUCING = "producing"

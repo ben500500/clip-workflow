@@ -69,6 +69,8 @@ const ASSET_STATUS_COLOR: Record<AssetStatus, string> = {
   importing: 'processing',
   waiting_prompt: 'default',
   analyzing: 'processing',
+  /** 等出文案＝没人提交，给「灰」而不是「蓝（在跑）」，与等读视频同一档 */
+  waiting_summary: 'default',
   summarizing: 'processing',
   awaiting_review: 'orange',
   ready_to_produce: 'green',
