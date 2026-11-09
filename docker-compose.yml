@@ -34,9 +34,6 @@ x-celery-worker: &celery-worker-base
     # 浏览器可访问的 MinIO 地址（presigned URL 用该地址替换容器内 host，修复预览/下载拒绝连接）
     # HTTPS 后应配 https://<host>:9443 —— SDK 会用该地址探测 region，自签证书需下面这项信任
     MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-localhost:9000}
-    # 自签证书信任（2026-11-09）：presign 前 SDK 会 HTTPS 探测 bucket region，
-    # 不信任自签证书会报 CERTIFICATE_VERIFY_FAILED（requests 读这个环境变量）
-    REQUESTS_CA_BUNDLE: /app/certs/clip.crt
     CHROME_DEBUG_PORT: 9222
     CHROME_DEBUG_HOST: rpa_worker
     # Seedance 官方 API 直连出片（默认关闭；worker 需同步注入配置，供 Celery 任务消费）
@@ -321,7 +318,11 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
       # 浏览器可访问的 MinIO 地址（presigned URL 用该地址替换容器内 host，修复预览/下载拒绝连接）
+      # HTTPS 后应配 https://<host>:9443 —— presign 前 SDK 会用该地址探测 bucket region
       MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-localhost:9000}
+      # 自签证书信任（2026-11-09 HTTPS）：minio-py 用 urllib3+certifi 不认这个名字的原意，
+      # 代码里把它当「额外 CA 证书路径」拼进 CA bundle（services/minio_service.py）
+      REQUESTS_CA_BUNDLE: /app/certs/clip.crt
       CHROME_DEBUG_PORT: 9222
       CHROME_DEBUG_HOST: rpa_worker
       RPA_REQUIRE_MANUAL_CONFIRM: "true"
