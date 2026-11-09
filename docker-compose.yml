@@ -621,10 +621,15 @@ services:
       - clip-network
     ports:
       - "${NGINX_PORT:-80}:80"
+      # HTTPS（自签，2026-11-09）：桌面通知要安全上下文；9443 是 MinIO 预签名直链的 TLS 反代
+      - "${NGINX_HTTPS_PORT:-443}:443"
+      - "${MINIO_HTTPS_PORT:-9443}:9443"
     environment:
       <<: *common-env
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # 自签证书（服务器上生成，不入库）：scripts/gen_selfsigned_cert.sh
+      - ./certs:/etc/nginx/certs:ro
     depends_on:
       frontend:
         condition: service_started
