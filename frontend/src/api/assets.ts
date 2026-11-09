@@ -1280,6 +1280,8 @@ export interface AssetPairedResponse {
   leftover_files: string[];
   audit_rows: number;
   frames: { enqueued: number; note?: string | null };
+  /** 11-09 批 O：本批新建候选的自动预取编号统计 */
+  hook_codes?: AssetHookParkStat;
   message: string;
 }
 
@@ -1365,7 +1367,21 @@ export interface AssetSummaryGenerateResultItem {
 export interface AssetSummaryGenerateResponse {
   results: AssetSummaryGenerateResultItem[];
   queue: AssetQueueSegment | null;
+  /** 11-09 批 O：本批新候选的自动预取编号统计（没开旋钮/没建候选时 attempted=0） */
+  hook_codes?: AssetHookParkStat;
   message: string;
+}
+
+/** 新文案自动预取编号的回包（导入/配对导入/出文案三个入口同一个形状）。
+ *
+ *  `collisions` 一定要看：报「没全配上」时得知道是哪几个号撞了库里的单，
+ *  否则一线只会反复点同一个按钮。 */
+export interface AssetHookParkStat {
+  attempted: number;
+  parked: number;
+  codes: string[];
+  collisions: string[];
+  reason: string | null;
 }
 
 /** POST /assets/summaries/review 的逐条结果 */
@@ -2459,6 +2475,8 @@ export const assetApi = {
       created: number;
       skipped: { index: number; problems: string[]; text: string }[];
       items: { asset_id: string; summary_id: string; text: string }[];
+      /** 11-09 批 O：这批文案的自动预取编号统计（关旋钮/取不到号只提示，不拦导入） */
+      hook_codes?: AssetHookParkStat;
       message: string;
     }>,
 

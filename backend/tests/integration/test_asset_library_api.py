@@ -6787,9 +6787,13 @@ def test_dispatch_restarts_a_failed_task_exactly_once():
 
 
 def test_dispatch_over_capacity_is_a_hint_and_never_a_block():
-    """号池余量**只提示不拦**（11-04 拍板④）：一天叠到 260 条（>240）也必须放行。
+    """号池**不做限制**（11-09 深夜用户口径「那个号池不要做限制了。现在耗池，先不用做限制」）。
 
-    这条是防回归的钉子：谁哪天把软提示改成熔断，这里就会红。
+    这条钉子钉两层，缺一不可：
+    ① 默认旋钮 `ASSET_BOARD_DAILY_SOFT_CAP=0` → 一天叠到 260 条（>240）照放、
+       连软提示都不给（`advisory is None`、`over_cap==0`），界面只报真实条数；
+    ② 把旋钮填回 120 → 提示原样回来（"先不用做限制"不是"把代码删了"，
+       哪天号池又紧张了，改一行 env 就能恢复）。
     同时钉批量数学——260 条额度是 13 张单 × total 20，`today.board_rows` 按**板上条数**算，
     按行数算会少看 20 倍。
     """
@@ -6803,6 +6807,9 @@ def test_dispatch_over_capacity_is_a_hint_and_never_a_block():
         assert len(listed) == 13
         ids = [p["id"] for p in listed]
 
+        # 11-09 批 O 的新默认：0＝连提示都不给（改默认要连着这里一起改，别留个假旋钮）
+        assert settings.ASSET_BOARD_DAILY_SOFT_CAP == 0, "号池不做限制＝默认软提示线归零"
+
         # 一直 waiting：既不下载也不会被判失败，只测"闸门不拦"这一件事
         fb = _FakeBoard(status_fn=lambda created_index, read_round: "waiting")
         with _board_off(fb):
@@ -6812,12 +6819,22 @@ def test_dispatch_over_capacity_is_a_hint_and_never_a_block():
         assert len(fb.creates) == 13 and all(p["total"] == 20 for p in fb.creates)
         cap = body["capacity"]
         assert cap["planned"] == 260 and cap["soft_cap"] == settings.ASSET_BOARD_DAILY_SOFT_CAP
-        assert cap["total_today"] >= 260 and cap["over_cap"] > 0, cap
-        assert cap["advisory"] and "分日" in cap["advisory"]
-        assert "解压线" in cap["note"] and "共用池" in cap["note"]
+        assert cap["total_today"] >= 260, cap
+        assert cap["over_cap"] == 0, "软提示线归零后不许还算出超出量"
+        assert cap["advisory"] is None, "不做限制＝连『号池余量』那句话都不该弹"
+        assert "解压线" in cap["note"] and "共用池" in cap["note"], "只报数那句仍要说清口径"
         assert body["dispatch"]["today"]["board_rows"] == 260, body["dispatch"]["today"]
         assert body["dispatch"]["dispatched"] == 13, "台账 13 行 ≠ 号池 260 条"
         assert body["failed"] == 0
+
+        # 旋钮填回 120：提示层原样复活（恢复只改配置，不用改代码）
+        old_cap = settings.ASSET_BOARD_DAILY_SOFT_CAP
+        settings.ASSET_BOARD_DAILY_SOFT_CAP = 120
+        try:
+            hint = svc.board_capacity_hint(260, 0, int(settings.ASSET_BOARD_DAILY_SOFT_CAP))
+            assert hint["over_cap"] == 140 and hint["advisory"] and "分日" in hint["advisory"]
+        finally:
+            settings.ASSET_BOARD_DAILY_SOFT_CAP = old_cap
         await client.aclose()
 
     _run(_scenario())
@@ -9449,6 +9466,358 @@ def test_produce_refuses_when_parked_code_is_already_on_a_production():
         assert "预取的钩子编号已经被用掉了" in made.text and "7C0F1" in made.text, made.text
         # 拦下来之后预取位**不许被顺手清掉**：清了就等于把脏数据藏起来，下次还是撞
         assert (await _row_of(AssetSummary, sid)).hook_code == "7C0F1"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+# ────────────────────────────────────────────────────────────────────
+# 批 O（11-09 深夜）：新文案自动预取编号（用户口径「以后的新文案也自动预取吧」）
+#   ＋ 号池不做限制（「那个号池不要做限制了。现在耗池，先不用做限制」）
+# ────────────────────────────────────────────────────────────────────
+
+_TAKE_STUB = '''
+import pathlib
+import sys
+
+path, n = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+if n > 50:  # 与 hook_id.py 的 TAKE_MAX=50 同一道墙：超了整枪失败、一个号都不发
+    print("一次最多发 50 个号", file=sys.stderr)
+    sys.exit(2)
+seen = int(path.read_text()) if path.exists() else 0
+if FAIL_AFTER and seen >= 50:  # 第二枪模拟"号池当天发完了"
+    print("号池今天发完了", file=sys.stderr)
+    sys.exit(3)
+path.write_text(str(seen + n))
+for i in range(seen, seen + n):
+    print(f"8P{i:03X}")
+'''
+
+
+def _fake_take_script(fail_after=None):
+    """把取号脚本换成真子进程替身：每枪最多发 50 个、按台账文件递增、可指定第二枪起失败。
+
+    为什么要真跑 subprocess 而不是 mock 函数：要钉的是**分块**这件事——
+    `hook_id.py` 一次最多发 50 个（现网 88 个号就是分 50＋38 两枪取的），
+    mock 掉取号函数就等于把要验的那段代码一起 mock 掉了。
+    """
+    dirpath = Path(tempfile.mkdtemp(prefix="take-stub-"))
+    atexit.register(shutil.rmtree, dirpath, ignore_errors=True)
+    ledger = dirpath / "ledger"
+    script = dirpath / "stub_take.py"
+    script.write_text(
+        _TAKE_STUB.replace("FAIL_AFTER", repr(bool(fail_after))), encoding="utf-8"
+    )
+    return f"{sys.executable} {script} {ledger}", ledger
+
+
+def _take_stub(codes, err=None):
+    """取号底层替身（只测调用次数与结果，不真跑脚本）。"""
+    calls = []
+
+    async def _fake(count):
+        calls.append(int(count))
+        return list(codes)[: int(count)], err
+
+    return _fake, calls
+
+
+def test_auto_park_hook_codes_on_import_copy():
+    """贴文案导入的当场自动挂预取编号：一条一枪不现实，整批只跑一次取号。
+
+    钉四件事：①号挂在新建的 `asset_summaries.hook_code` 上（开单时自动顶进缺号槽位，
+    批 N 那套消费逻辑不用改一行）；②整批只调一次取号（86 条各调一次＝86 倍失败面）；
+    ③留痕与手工钉号同一动作名、靠 `source` 分得开；④响应里说清预取了几个。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        fake, calls = _take_stub(["8PZZ1", "8PZZ2", "8PZZ3"])
+        good1 = "她替姐姐嫁的第二天，新郎出现在她姐的婚礼上，当着两家长辈问这婚到底算谁的"
+        good2 = "总裁摘下手表坐在塑料凳上吃泡面，秘书问他为什么放着办公室的沙发不坐"
+        good3 = "婆婆把房产证摔在饭桌上，儿媳妇当场没说话，第二天带着孩子回了娘家"
+        with patch("app.api.assets._take_hook_codes", fake):
+            r = await client.post(
+                "/api/assets/summaries/import-copy",
+                json={"batch_name": "批 O 自动预取", "texts": [good1, good2, good3]},
+                headers=hm,
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["created"] == 3, body
+        assert calls == [3], f"整批一次取号，不在逐条循环里取：{calls}"
+        assert body["hook_codes"]["parked"] == 3, body["hook_codes"]
+        assert "已自动预取 3 个编号" in body["message"], body["message"]
+
+        rows = {str(x.id): x for x in await _rows(AssetSummary)}
+        assert {x.hook_code for x in rows.values()} == {"8PZZ1", "8PZZ2", "8PZZ3"}, rows
+        # ③ 审计：与手工钉号同动作名，source 分得开（查账要能认出"这是系统自动挂的"）
+        logs = await _rows(AuditLog, AuditLog.action == "asset.hook_code.park")
+        assert len(logs) == 1, logs
+        assert logs[0].after["source"] == "auto_park:import_copy", logs[0].after
+        assert len(logs[0].after["summaries"]) == 3, logs[0].after
+
+        # ④ 预取号在文案列表口可见（审核台那个紫色「已备号」用的就是这一列）
+        listed = (await client.get(
+            f"/api/assets/summaries?batch_id={body['batch_id']}", headers=h["operator"])).json()
+        assert {i["hook_code"] for i in listed["items"]} == {"8PZZ1", "8PZZ2", "8PZZ3"}, listed["items"]
+
+        # 消费闭环：开单不传号也带上号（批 N 的 parked_code 那套），预取位当场清空
+        sid = listed["items"][0]["id"]
+        asset_id = listed["items"][0]["asset_id"]
+        await client.post("/api/assets/summaries/review",
+                          json={"summary_ids": [sid], "action": "approve"}, headers=h["operator"])
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            made = await client.post("/api/assets/produce",
+                                     json={"summary_ids": [sid], "n": 1, "async_mode": False},
+                                     headers=h["operator"])
+        assert made.status_code == 200, made.text
+        prod = (await client.get(f"/api/assets/productions?asset_id={asset_id}",
+                                 headers=h["operator"])).json()["items"]
+        parked_code = listed["items"][0]["hook_code"]
+        assert [p["hook_code"] for p in prod] == [parked_code], prod
+        assert (await _row_of(AssetSummary, sid)).hook_code is None, "顶上即清空"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_auto_park_is_fail_soft_and_never_blocks_the_import():
+    """取不到号**不许**把导入带崩：号是外部动作（脚本没配、台账锁不上），稿是人写的。
+
+    这条钉子防的是"自动预取"变成"自动前置条件"——那等于把没配取号命令的机器上的
+    导入功能整体下线。同时钉反面：真一个号都没挂上时**不写审计**（同批 N 的判据，
+    审计的价值在变化点，不在调用点）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        before_audit = await _count(AuditLog)
+        fake, calls = _take_stub([], err="未配置自动取号命令（ASSET_HOOK_ID_CMD）")
+        good1 = "她替姐姐嫁的第二天，新郎出现在她姐的婚礼上，当着两家长辈问这婚到底算谁的"
+        with patch("app.api.assets._take_hook_codes", fake):
+            r = await client.post(
+                "/api/assets/summaries/import-copy",
+                json={"batch_name": "取号坏了也要进", "texts": [good1]}, headers=hm,
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["created"] == 1, body
+        assert calls == [1]
+        assert body["hook_codes"]["parked"] == 0, body["hook_codes"]
+        assert body["hook_codes"]["reason"] == "未配置自动取号命令（ASSET_HOOK_ID_CMD）", body
+        assert "没预取到编号" in body["message"] and "手工填" in body["message"], body["message"]
+        assert (await _rows(AssetSummary))[0].hook_code is None
+        assert await _count(AuditLog) == before_audit, "一个号没挂上就不该留钉号审计"
+
+        # 旋钮关掉：连脚本都不该碰（现网想停掉自动预取时改一行 env 就够）
+        old = settings.ASSET_AUTO_PARK_HOOK_CODES
+        settings.ASSET_AUTO_PARK_HOOK_CODES = False
+        try:
+            fake2, calls2 = _take_stub(["8PZZ9"])
+            with patch("app.api.assets._take_hook_codes", fake2):
+                off = await client.post(
+                    "/api/assets/summaries/import-copy",
+                    json={"batch_name": "关掉自动预取", "texts": [good1]}, headers=hm)
+            assert off.status_code == 200, off.text
+            assert calls2 == [], "旋钮关了还去跑脚本＝假旋钮"
+            assert off.json()["hook_codes"]["attempted"] == 0, off.json()["hook_codes"]
+            assert (await _rows(AssetSummary, AssetSummary.text == good1))[0].hook_code is None
+        finally:
+            settings.ASSET_AUTO_PARK_HOOK_CODES = old
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_auto_park_on_paired_import_parks_the_batch_and_reports_it():
+    """成稿配对导入（86 条那种大批）也自动预取：一次导入一枪脚本，响应里点名预取了几个。
+
+    这批正是自动预取最该管住的入口——一线就是从 NAS 成稿目录这么进的。
+    同时钉「只给缺号的行取号」：`hook_copy` 缺项不建候选，也就不该为它烧号。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        manifest = {
+            "batch_name": "批 O 配对",
+            "items": [
+                {"video": "A.mp4", "hook_copy": CANDIDATES[0]["text"]},
+                {"video": "B.mp4", "hook_copy": CANDIDATES[1]["text"]},
+                {"video": "C.mp4"},  # 没文案 → 不建候选 → 不该为它取号
+            ],
+        }
+        fake, calls = _take_stub(["8PZZ1", "8PZZ2"])
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+             patch("app.api.assets._probe_duration", AsyncMock(return_value=9.0)), \
+             patch("app.api.assets._probe_image_size", AsyncMock(return_value=(720, 1280))), \
+             patch("app.api.assets._take_hook_codes", fake):
+            r = await client.post(
+                "/api/assets/import/paired",
+                files=_paired_files([(x["video"], VIDEO_BYTES, "video/mp4") for x in manifest["items"]]),
+                data={"manifest": json.dumps(manifest, ensure_ascii=False)}, headers=hm,
+            )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["created"] == 3, body
+        assert calls == [2], f"两条候选取两个号，第三条没文案不该占号：{calls}"
+        assert body["hook_codes"]["parked"] == 2, body["hook_codes"]
+        assert "已自动预取 2 个编号" in body["message"], body["message"]
+        sums = await _rows(AssetSummary)
+        assert len(sums) == 2 and {x.hook_code for x in sums} == {"8PZZ1", "8PZZ2"}, sums
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_auto_park_on_generate_only_parks_recommended_and_never_reburns():
+    """出文案口：多候选只给**推荐条**挂号；已有候选的批次重出不许再烧号。
+
+    两条判据各自的理由：
+    - 一钩一号、发了即烧：三条候选各挂一个号＝一条文案烧掉三个号，280/日的号池当废纸烧；
+    - 「已有候选」是早退路径（不建新行），为它跑一枪脚本等于凭空发号、白占台账。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm)
+        fake, calls = _take_stub(["8PZZ1", "8PZZ2", "8PZZ3"])
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()), \
+             patch("app.api.assets._take_hook_codes", fake):
+            first = await client.post(
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset_id], "count": 2, "async_mode": False}, headers=hm)
+        assert first.status_code == 200, first.text
+        assert first.json()["hook_codes"]["parked"] == 1, first.json()["hook_codes"]
+        assert calls == [1], f"整批一次取号、只要推荐条那一个：{calls}"
+        rows = await _rows(AssetSummary)
+        assert len(rows) == 2, rows
+        rec = [x for x in rows if x.is_recommended]
+        assert len(rec) == 1 and rec[0].hook_code == "8PZZ1", \
+            [(x.is_recommended, x.hook_code) for x in rows]
+        assert [x.hook_code for x in rows if not x.is_recommended] == [None], rows
+
+        # 同素材同条数再点一次「出钩子文案」：早退（不建新行）→ 一枪都不该打
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()), \
+             patch("app.api.assets._take_hook_codes", fake):
+            again = await client.post(
+                "/api/assets/summaries/generate",
+                json={"asset_ids": [asset_id], "count": 2, "async_mode": False}, headers=hm)
+        assert again.status_code == 200, again.text
+        assert again.json()["results"][0]["created"] == 0, again.json()["results"]
+        assert again.json()["hook_codes"]["attempted"] == 0, again.json()["hook_codes"]
+        assert calls == [1], f"没建新行就不该再烧号：{calls}"
+        after = {str(x.id): x.hook_code for x in await _rows(AssetSummary)}
+        assert after == {str(x.id): x.hook_code for x in rows}, "重出不许顶掉已有的预取位"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_take_hook_codes_chunks_past_the_script_max_and_keeps_issued_numbers():
+    """取号按 50 一块分枪，且**发了即烧**：后面一枪坏了也不把已经到手的号扔掉。
+
+    `hook_id.py` 有 TAKE_MAX=50（现网 88 个号就是分 50＋38 两枪取的）。两种错法都要防：
+    - 整批一口要 85 个 → 脚本 rc=2，一个号都拿不到（这就是当初界面「代取」502 的真相）；
+    - 分块了但把"第一块已发出去的号"随异常丢掉 → 台账上号已被记走，白白作废。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        cmd, ledger = _fake_take_script()
+        old = settings.ASSET_HOOK_ID_CMD
+        settings.ASSET_HOOK_ID_CMD = cmd
+        try:
+            codes, err = await assets_api._take_hook_codes(85)
+            assert err is None, err
+            assert len(codes) == 85 and len(set(codes)) == 85, codes[:5]
+            assert ledger.read_text() == "85", "两块分别真跑了 50＋35 枪"
+        finally:
+            settings.ASSET_HOOK_ID_CMD = old
+
+        # 第二枪起失败：第一枪的 50 个号必须照原样交回去（发了即烧，扔掉等于白烧）
+        bad, ledger2 = _fake_take_script(fail_after=True)
+        settings.ASSET_HOOK_ID_CMD = bad
+        try:
+            codes, err = await assets_api._take_hook_codes(80)
+            assert len(codes) == 50, codes
+            assert err and "第 2 枪" in err, err
+            assert ledger2.read_text() == "50", ledger2.read_text()
+        finally:
+            settings.ASSET_HOOK_ID_CMD = old
+
+        # 界面口现在能一次要 80 个（原来 le=50 会把 85 条那种批次挡在门外）
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        cmd3, _ = _fake_take_script()
+        settings.ASSET_HOOK_ID_CMD = cmd3
+        try:
+            r = await client.post("/api/assets/hook-codes/take?count=80", headers=ho)
+            assert r.status_code == 200, r.text
+            assert len(r.json()["codes"]) == 80, r.json()
+        finally:
+            settings.ASSET_HOOK_ID_CMD = old
+        # 没配命令：仍回 501 那句原话（前端提示走手工粘贴）——别被本机 env 里的真命令带跑
+        settings.ASSET_HOOK_ID_CMD = ""
+        try:
+            empty = await client.post("/api/assets/hook-codes/take?count=3", headers=ho)
+            assert empty.status_code == 501 and "手工粘贴" in empty.json()["detail"], empty.json()
+        finally:
+            settings.ASSET_HOOK_ID_CMD = old
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_auto_park_never_double_books_a_code_already_used():
+    """取回来的号若已被库里的单/别的预取位占着 → 不钉，并如实报数（一钩一号）。
+
+    正常路径走不出这个状态（脚本自己不发重复号），所以脚本替身故意把「已经在单上的号」
+    混进返回值：判据是「宁可这条文案没号，也不能让同一个号被两张单投出去」。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        _aid, _sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["8PZZ1"])
+        assert listed[0]["hook_code"] == "8PZZ1", listed
+
+        good1 = "她替姐姐嫁的第二天，新郎出现在她姐的婚礼上，当着两家长辈问这婚到底算谁的"
+        good2 = "总裁摘下手表坐在塑料凳上吃泡面，秘书问他为什么放着办公室的沙发不坐"
+        fake, _calls = _take_stub(["8PZZ1", "8PZZ2"])
+        with patch("app.api.assets._take_hook_codes", fake):
+            r = await client.post(
+                "/api/assets/summaries/import-copy",
+                json={"batch_name": "撞号", "texts": [good1, good2]}, headers=hm)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["hook_codes"]["parked"] == 1, body["hook_codes"]
+        assert body["hook_codes"]["codes"] == ["8PZZ2"], body["hook_codes"]
+        assert "8PZZ1" in body["hook_codes"]["collisions"], body["hook_codes"]
+        assert "没全配上" in body["message"], body["message"]
+        parked = sorted(x.hook_code for x in await _rows(AssetSummary, AssetSummary.hook_code.isnot(None)))
+        assert parked == ["8PZZ2"], parked
+        # 撞号来源还在原位：8PZZ1 已经烧在那张单上（预取不许把已开单的号抢回来）
+        assert [p.hook_code for p in await _rows(AssetProduction)] == ["8PZZ1"]
+        # 没挂上号那条照常能开单：手工填或界面代取是既有旁路，预取只是省事不是门槛
+        sid = next(str(x.id) for x in await _rows(AssetSummary) if not x.hook_code)
+        await client.post("/api/assets/summaries/review",
+                          json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            made = await client.post("/api/assets/produce",
+                                     json={"summary_ids": [sid], "n": 1, "async_mode": False},
+                                     headers=ho)
+        assert made.status_code == 200, made.text
+        assert made.json()["created"] == 1, made.json()
         await client.aclose()
 
     _run(_scenario())

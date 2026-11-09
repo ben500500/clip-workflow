@@ -1543,28 +1543,229 @@ async def list_asset_audit_logs(
 # ── P1（评审定稿⑦）：取号进界面——后端代理 hook_id.py（服务器脚本），保留手工旁路。
 # ASSET_HOOK_ID_CMD 未配置时 501（前端提示走手工粘贴）。命令须输出每行一个五位编号；
 # 一钩一号「发了即烧」的铁律不变：代取的号也走既有硬查重＋白名单校验。 ──
+
+# 11-09 批 O：把「取号」下沉成界面代取与新文案自动预取共用的底层，两个坑在这里一起解决：
+#   ① `hook_id.py` 有 TAKE_MAX=50（一次最多发 50 个号），整批 85 条一口要过去 → 脚本 rc=2、
+#      一个号都拿不到（现网第一次钉 88 个号就是在服务器上分 50＋38 两枪取的）。所以分块取。
+#   ② 「发了即烧」是硬铁律：号一旦发出就记在共享台账上，后面一块失败也**不能把前面已经
+#      拿到手的号扔掉重来**——扔掉等于白烧。所以本函数返回 (已拿到的号, 失败说明)，
+#      而不是抛异常。调用方自己决定「够不够」。
+_HOOK_TAKE_CHUNK = 50  # 与 hook_id.py 的 TAKE_MAX 对齐；放宽只会让脚本 rc=2，改这里没用
+_HOOK_TAKE_TIMEOUT_SECONDS = 30
+
+
+async def _take_hook_codes(count: int) -> Tuple[List[str], Optional[str]]:
+    """跑 `ASSET_HOOK_ID_CMD` 取 `count` 个钩子编号，返回 (编号列表, 错误说明或 None)。
+
+    **永不抛异常**（除非调用方自己没接住 `asyncio` 取消）：自动预取那条路上取不到号
+    不该把导入整体拒掉，界面代取那条路则把 `error` 原文转成白话 502/501。
+    """
+    want = max(0, int(count))
+    if want == 0:
+        return [], None
+    cmd = (getattr(settings, "ASSET_HOOK_ID_CMD", "") or "").strip()
+    if not cmd:
+        return [], "未配置自动取号命令（ASSET_HOOK_ID_CMD）"
+    got: List[str] = []
+    blocks = 0
+    while len(got) < want:
+        need = min(want - len(got), _HOOK_TAKE_CHUNK)
+        blocks += 1
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                f"{cmd} {need}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await asyncio.wait_for(
+                proc.communicate(), timeout=_HOOK_TAKE_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            return got, (
+                f"取号脚本第 {blocks} 枪超过 {_HOOK_TAKE_TIMEOUT_SECONDS} 秒没回话（要 {need} 个）"
+            )
+        except Exception as exc:  # noqa: BLE001 — 命令不存在/权限问题都要回人话，不是回栈
+            return got, f"取号脚本没能跑起来：{type(exc).__name__}: {exc}"
+        raw_err = (err or b"").decode("utf-8", "ignore").strip()
+        # 脚本可能把说明打在 stdout（"已取 N 个"），只认五位 0-9A-Z，且同一次不许重号
+        codes = [
+            c for c in re.findall(r"[0-9A-Z]{5}", (out or b"").decode("utf-8", "ignore"))
+            if svc.HOOK_CODE_RE.match(c)
+        ]
+        gained = 0
+        for c in codes:
+            if c not in got:
+                got.append(c)
+                gained += 1
+        if gained == 0:
+            rc = proc.returncode
+            return got, (
+                f"取号脚本第 {blocks} 枪没发新号（要 {need} 个、得 {len(codes)} 个，退出码 {rc}）："
+                f"{raw_err[:200] or '脚本没给原因'}"
+            )
+    return got, None
+
+
+async def _auto_park_hook_codes(
+    db: AsyncSession,
+    rows: List[AssetSummary],
+    *,
+    operator: Optional[User],
+    source: str,
+) -> Dict[str, Any]:
+    """新建的文案**当场**挂上预取编号（11-09 批 O，用户口径「以后的新文案也自动预取吧」）。
+
+    为什么要自动化：一钩一号，开单那一屏现取现贴每次都把人挡在服务器上跑一次
+    `hook_id.py`；11-09 那批 85 条就是手工钉的（见 8-9）。号先挂在 `asset_summaries.hook_code`
+    上等着，开单时后端自动顶到缺号的槽位、顶上即清空（`create_productions` 的 parked_code）。
+
+    三条设计约束：
+    - **fail-soft**：号是外部动作（脚本没配、台账锁不上、当天池子用光），任何一种都不能
+      把「文案已经建好」这件事回滚掉——稿是人写的，比号金贵。所以本函数不抛 HTTPException，
+      只回统计；哪条没挂上号，开单时照旧手工填或点「代取」。
+    - **不重复发号**：只给 `hook_code` 还是空的行取号（重投同一批、或已经挂过号的行不再烧号）。
+    - **一钩一号**：拿回来的号先对着库里两张表（`asset_productions.hook_code` /
+      `asset_summaries.hook_code`）扫一遍，撞上的号不钉（号已烧掉，界面如实报出来）。
+
+    留痕与手工钉号口共用同一套动作名 `asset.hook_code.park`，靠 `after.source` 区分
+    「自动预取」和「人工钉」；只在真钉上号时写审计，取不到号不写（同 8-9 的判据：
+    审计的价值在变化点，不在调用点）。**不 commit**，由调用方那一枪一起提交。
+    """
+    targets = [r for r in rows if not str(r.hook_code or "").strip()]
+    result: Dict[str, Any] = {
+        "attempted": len(targets),
+        "parked": 0,
+        "codes": [],
+        "collisions": [],
+        "reason": None,
+    }
+    if not targets:
+        return result
+    if not bool(getattr(settings, "ASSET_AUTO_PARK_HOOK_CODES", True)):
+        # attempted 归零：旋钮关了不是「这批没配上号」，是「本批不打算配号」——
+        # 前者要在导入回话里提醒人去补，后者提醒了只会让一线以为坏了。
+        result["attempted"] = 0
+        result["reason"] = "自动预取未开启（ASSET_AUTO_PARK_HOOK_CODES=false）"
+        return result
+    try:
+        codes, err = await _take_hook_codes(len(targets))
+        if not codes:
+            result["reason"] = err or "取号脚本没返回编号"
+            return result
+        wanted = list(dict.fromkeys(codes))[: len(targets)]  # 脚本多给了也不多吃号：一条文案一个位
+        used = {
+            str(c)
+            for (c,) in (
+                await db.execute(
+                    select(AssetProduction.hook_code).where(
+                        AssetProduction.hook_code.in_(wanted)
+                    )
+                )
+            ).all()
+            if c
+        }
+        parked = {
+            str(c)
+            for (c,) in (
+                await db.execute(
+                    select(AssetSummary.hook_code).where(
+                        AssetSummary.hook_code.in_(wanted)
+                    )
+                )
+            ).all()
+            if c
+        }
+        collisions = sorted(used | parked)
+        free = [c for c in wanted if c not in used and c not in parked]
+        changed: List[dict] = []
+        for row, code in zip(targets, free):
+            row.hook_code = code
+            changed.append({"id": str(row.id), "before": None, "after": code})
+        result["collisions"] = collisions
+        if changed:
+            await db.flush()
+            result["parked"] = len(changed)
+            result["codes"] = [c["after"] for c in changed]
+            if len(changed) < len(targets):
+                result["reason"] = err or (
+                    f"可用号只有 {len(free)} 个（{len(collisions)} 个撞了库里已占的号）"
+                    if collisions else f"取号脚本只给到 {len(free)} 个号"
+                )
+            await _write_audit(
+                db,
+                action="asset.hook_code.park",
+                operator=operator,
+                target_type="asset_hook_code",
+                target_id="asset_hook_code",
+                before={"summaries": [{"id": c["id"], "hook_code": None} for c in changed]},
+                after={
+                    "summaries": [{"id": c["id"], "hook_code": c["after"]} for c in changed],
+                    "productions": [],
+                    "source": f"auto_park:{source}",
+                    "collisions": collisions,
+                },
+            )
+        elif err:
+            result["reason"] = err
+        else:
+            result["reason"] = "取到的号在库里全都占着了（异常，请手工取号）"
+    except Exception as exc:  # noqa: BLE001 — 预取是便利，不是前置条件；任何意外都不拦导入
+        logger.warning("新文案自动预取编号失败（source=%s）：%s", source, exc)
+        result["reason"] = result["reason"] or f"自动预取异常：{type(exc).__name__}: {exc}"
+    return result
+
+
+def _park_payload(park: Dict[str, Any]) -> Dict[str, Any]:
+    """自动预取统计的回包形状（三个建文案入口共用，别各写一套漏字段）。
+
+    `collisions` 必须在：界面报「没全配上」时，一线要能看见是哪几个号撞了库，
+    不然只会反复点同一个入口。
+    """
+    return {
+        "attempted": park["attempted"],
+        "parked": park["parked"],
+        "codes": park["codes"],
+        "collisions": park["collisions"],
+        "reason": park["reason"],
+    }
+
+
+def _park_note(park: Dict[str, Any]) -> str:
+    """把自动预取的统计说成一句人话，塞进导入响应的 message（空串＝没什么要说）。"""
+    if not park.get("attempted"):
+        return ""
+    parked = int(park.get("parked") or 0)
+    if parked:
+        tail = ""
+        if park.get("collisions"):
+            tail = f"；{len(park['collisions'])} 个号库里已占用，已跳过"
+        if parked < park["attempted"]:
+            return (
+                f"已自动预取 {parked} 个编号（本批 {park['attempted']} 条没全配上："
+                f"{park.get('reason') or '取号脚本给的号不够'}）{tail}"
+            )
+        return f"已自动预取 {parked} 个编号，开单时自动带上{tail}"
+    return (
+        f"本批 {park['attempted']} 条没预取到编号（{park.get('reason') or '原因未知'}）——"
+        "不影响导入，开单时手工填或点「代取」即可"
+    )
+
+
 @router.post("/assets/hook-codes/take")
 async def take_hook_codes(
     current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
-    count: int = Query(..., ge=1, le=50, description="要取几个号"),
+    count: int = Query(..., ge=1, le=500, description="要取几个号"),
 ):
-    cmd = (getattr(settings, "ASSET_HOOK_ID_CMD", "") or "").strip()
-    if not cmd:
-        raise HTTPException(
-            status_code=501,
-            detail="未配置自动取号命令（ASSET_HOOK_ID_CMD）——请按原流程在服务器跑 hook_id.py 取号后手工粘贴",
-        )
-    proc = await asyncio.create_subprocess_shell(
-        f"{cmd} {int(count)}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
-    codes = [c for c in re.findall(r"[0-9A-Z]{5}", (out or b"").decode("utf-8", "ignore")) if HOOK_CODE_RE.match(c)]
-    if proc.returncode != 0 or len(codes) < int(count):
+    codes, err = await _take_hook_codes(count)
+    if len(codes) < count:
+        if (getattr(settings, "ASSET_HOOK_ID_CMD", "") or "").strip() == "" and not codes:
+            raise HTTPException(
+                status_code=501,
+                detail="未配置自动取号命令（ASSET_HOOK_ID_CMD）——请按原流程在服务器跑 hook_id.py 取号后手工粘贴",
+            )
         raise HTTPException(
             status_code=502,
-            detail=f"取号脚本没返回足够的编号（要 {count}、得 {len(codes)}）：{(err or b'').decode('utf-8', 'ignore')[:200]}",
+            detail=f"取号脚本没返回足够的编号（要 {count}、得 {len(codes)}）：{err or '脚本没给原因'}",
         )
     return {"codes": codes[: int(count)]}
 
@@ -1607,6 +1808,7 @@ async def import_copy_summaries(
 
     created = []
     skipped: List[dict] = []
+    summary_rows: List[AssetSummary] = []
     seq_offset = 0
     for i, raw in enumerate(texts):
         text = (raw or "").strip()
@@ -1639,21 +1841,32 @@ async def import_copy_summaries(
             audit_status=RV_PENDING,
         )
         db.add(summary)
+        summary_rows.append(summary)
         created.append({
             "asset_id": str(asset.id),
             "summary_id": str(summary.id),
             "text": text[:60],
         })
 
+    # 11-09 批 O：新建的文案当场自动挂预取编号（用户口径「以后的新文案也自动预取吧」）。
+    # 先 commit 再取号：取号是本机子进程、最坏 30s×块数，而 PG 侧
+    # idle_in_transaction_session_timeout=60s 会把"事务开着等外部调用"的连接直接掐掉
+    # （11-03 预览栈真链路就是这么整口 500 丢候选的）。文案先落库，号随后一枪补上——
+    # 预取是便利不是前置条件，取不到号也不该把这批稿回滚掉。
     await db.commit()
+    park = await _auto_park_hook_codes(db, summary_rows, operator=current_user, source="import_copy")
+    await db.commit()
+    note = _park_note(park)
     return {
         "batch_id": str(batch.id),
         "batch_code": batch.code,
         "created": len(created),
         "skipped": skipped,
         "items": created,
+        "hook_codes": _park_payload(park),
         "message": f"已导入 {len(created)} 条文案进审核队列（{batch.code}）"
-        + (f"；{len(skipped)} 条形态不合格被跳过" if skipped else ""),
+        + (f"；{len(skipped)} 条形态不合格被跳过" if skipped else "")
+        + (f"；{note}" if note else ""),
     }
 
 
@@ -1948,6 +2161,7 @@ async def import_paired_batch(
     need_copy: List[str] = []
     need_prompt: List[str] = []
     shape_warnings: List[dict] = []
+    park_rows: List[AssetSummary] = []  # 11-09 批 O：本轮新建的文案，出料后统一自动预取号
     audit_rows = 0
     for it, res in zip(items, results):
         if not res["ok"]:
@@ -2018,6 +2232,7 @@ async def import_paired_batch(
                 source_prompt_task_id=asset.prompt_task_id,
             )
             db.add(summary)
+            park_rows.append(summary)
             svc.apply_stage(asset, "summary", STAGE_SUCCESS)
             await db.flush()
             summary_id = str(summary.id)
@@ -2095,6 +2310,14 @@ async def import_paired_batch(
 
     await db.commit()
 
+    # 11-09 批 O：真入库了才自动预取编号——放在 `if not created` 那道回滚闸门与首次 commit
+    # 之后：① 全批没入库被回滚时一个号都不该发（号是烧掉的东西）；② 取号是本机子进程、
+    # 最坏 30s×块数，事务开着等它会被 PG 的 idle_in_transaction 60s 掐连接（11-03 预览栈
+    # 真链路实测踩过：模型回来时连接已闭，整口 500、候选一条没落库）。
+    # 一次导入只跑一枪脚本，不在逐条循环里取：86 条各取一次 = 86 次台账锁 + 86 倍失败面。
+    park = await _auto_park_hook_codes(db, park_rows, operator=current_user, source="import_paired")
+    await db.commit()
+
     # 与文件上传口同一套收尾：入库即自动排抽帧（审核台卡片靠它，0 元、纯本机 ffmpeg）。
     # `_enqueue_frames` 自己 fail-soft，排不上只回一条 note，不会把已经落库的导入带崩。
     frames = await _enqueue_frames(
@@ -2125,6 +2348,9 @@ async def import_paired_batch(
             f"抽帧没排上（{frames.get('note') or '原因未知'}）：不影响导入，"
             "审核台卡片暂时没图，可就地补抽"
         )
+    park_note = _park_note(park)
+    if park_note:
+        parts.append(park_note)
 
     return {
         "created": len(created),
@@ -2139,6 +2365,7 @@ async def import_paired_batch(
         "leftover_files": leftover_files,
         "audit_rows": audit_rows,
         "frames": frames,
+        "hook_codes": _park_payload(park),
         "message": "；".join(parts),
     }
 
@@ -4883,6 +5110,7 @@ async def generate_summaries(
     # hook-copy/prompt-web 生成豆包网页版提示词（第二跳）。收集在循环里、
     # 调用在提交后——外部模型调用前事务必须干净（idle_in_transaction 60s 掐连接）。
     web_jobs: List[dict] = []
+    new_copy_rows: List[AssetSummary] = []  # 11-09 批 O：整批新出的候选，出料后一次性自动预取号
     for asset, script in targets:
         aid = str(asset.id)
         # 批 G：图片没有详规、也不该有 —— 出文案要读 doc/120 的脚本，喂一张 jpg 进去
@@ -5063,6 +5291,10 @@ async def generate_summaries(
             entry["note"] = f"候选不齐：要 {count} 条只出 {created} 条，审核缺横向对照，建议重生成"
         results.append(entry)
         if created_rows:
+            # 多候选时只给**推荐条**挂号（没有推荐条就挂第一条）：一钩一号、发了即烧，
+            # 三条候选都挂＝一条文案烧三个号，280/日的号池会被当废纸烧光。
+            # 审核时真挑了非推荐那条，开单屏照旧手工填或点「代取」，跟批 N 之前一样。
+            new_copy_rows.append(next((s for s in created_rows if s.is_recommended), created_rows[0]))
             web_jobs.append({"asset": asset, "script": script, "summaries": created_rows})
 
     await _write_audit(
@@ -5080,6 +5312,14 @@ async def generate_summaries(
             "cross_person": crosses or None,
         },
     )
+    await db.commit()
+
+    # 11-09 批 O：出文案的当场把编号预取好挂上（用户口径「以后的新文案也自动预取吧」）。
+    # 放在 commit 之后、第二跳之前：这一枪上面刚做完模型调用，同一条铁律——
+    # 事务开着等外部调用（取号脚本最坏 30s×块数）会被 idle_in_transaction 60s 掐连接，
+    # 11-03 预览栈实测整口 500、花钱换来的候选一条没落库。候选此刻已经提交，
+    # 取号失败只少个预取位，开单时手工填或点「代取」照旧补得上。
+    park = await _auto_park_hook_codes(db, new_copy_rows, operator=current_user, source="summary_generate")
     await db.commit()
 
     # ── 11-06 双产出第二跳：豆包网页版提示词 ──
@@ -5149,6 +5389,7 @@ async def generate_summaries(
     return {
         "results": results,
         "queue": queue,
+        "hook_codes": _park_payload(park),
         "message": f"已为 {sum(1 for r in results if r.get('created'))} 条素材出文案"
         + (
             f"；{web_ok_assets} 条素材的豆包网页版提示词已同步生成（共 {web_filled} 段）"
@@ -5158,7 +5399,8 @@ async def generate_summaries(
             f"；{web_fail_assets} 条素材的网页版提示词没生成全，详情里可单独补"
             if web_fail_assets else ""
         )
-        + (f"；队列还剩 {queue['remaining']} 条，下一次接着排" if queue and queue["remaining"] else ""),
+        + (f"；队列还剩 {queue['remaining']} 条，下一次接着排" if queue and queue["remaining"] else "")
+        + (f"；{_park_note(park)}" if park.get("attempted") else ""),
     }
 
 
