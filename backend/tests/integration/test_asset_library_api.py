@@ -35,6 +35,7 @@
 """
 
 import asyncio
+import json
 import re
 import atexit
 import os
@@ -8682,6 +8683,334 @@ def test_import_copy_summaries_direct_to_review_queue():
                 headers=ho)
         assert made.status_code == 200, made.text[:300]
         assert made.json()["created"] >= 1, made.json()
+        await client.aclose()
+
+    _run(_scenario())
+
+
+# ───────────────────  12. 成稿配对导入（11-09）  ───────────────────
+
+
+def _paired_files(items_bytes):
+    """[(文件名, 字节, mime)] → httpx 的 files 参数形状。"""
+    return [("files", (name, data, mime)) for name, data, mime in items_bytes]
+
+
+def test_import_paired_lands_four_slots_and_costs_nothing():
+    """成稿配对导入：原片＋人工稿＋一句话文案＋豆包提示词一次进四个槽位，全程 0 元。
+
+    钉五件事（都是这个口存在的理由，任何一条塌了就不如走老路）：
+      ① 素材行带上 file_key/duration/**resolution**（横屏标记的唯一数据源）；
+      ② 反推任务行是 success 且不带 provider_task_id —— 于是 `refresh_prompt_task`
+         永远不会去智令查询（不会把一条人工稿刷成一笔真扣费）；
+      ③ 四种形状各停各的位置，且**只有有稿没文案**那条进得了出文案队列（没稿的当场 400，
+         说明本口没把"没稿"粉饰成"有稿"）；
+      ④ 钱：批次 cost_estimate=0、素材 cost_prompt/cost_parse=0（对账页不能出现没发生的钱）；
+      ⑤ 每条一行审计。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+
+        # 字典里种一条真类别，验证「清单吃人话名字」这条路
+        cat_id = uuid.uuid4()
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetCategory(id=cat_id, name="悬念", sort=900, active=True, note="测试种入"))
+            await s.commit()
+
+        manifest = {
+            "batch_name": "e2e 成稿",
+            "items": [
+                # ① 四件齐全：稿＋文案＋提示词（这批 26 条就是这个形状）
+                {"video": "悬念/已完成/地里捡到小男孩.mp4", "category": "悬念",
+                 "title": "地里捡到小男孩", "script_text": SCRIPT,
+                 "hook_copy": CANDIDATES[0]["text"], "doubao_prompt": "【完整豆包提示词】镜头1…"},
+                # ② 只有稿：字典里没这个名字 → 未分类＋进 need_copy（用户拍板要补文案的那 60 条）
+                {"video": "猎奇/下水道口.mp4", "category": "猎奇脑洞",
+                 "title": "下水道口", "script_text": SCRIPT},
+                # ③ 只有文案：欠的是**稿**，不是文案 → 必须出现在 need_prompt 里
+                {"video": "偷听/会议室.mp4", "category": "悬念",
+                 "title": "会议室", "hook_copy": CANDIDATES[0]["text"]},
+                # ④ 两样都缺：原片先入库，稿和文案都欠着
+                {"video": "预言/老宅半夜.mp4", "title": "老宅半夜"},
+            ],
+        }
+        files = _paired_files([
+            ("地里捡到小男孩.mp4", VIDEO_BYTES, "video/mp4"),
+            ("下水道口.mp4", VIDEO_BYTES, "video/mp4"),
+            ("会议室.mp4", VIDEO_BYTES, "video/mp4"),
+            ("老宅半夜.mp4", VIDEO_BYTES, "video/mp4"),
+        ])
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+             patch("app.api.assets._probe_duration", AsyncMock(return_value=8.85)), \
+             patch("app.api.assets._probe_image_size", AsyncMock(return_value=(1280, 720))):
+            r = await client.post(
+                "/api/assets/import/paired", files=files,
+                data={"manifest": json.dumps(manifest, ensure_ascii=False)}, headers=hm,
+            )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["created"] == 4, body
+        # 悬念 2 条 + 猎奇脑洞 1 条 + 未分类 1 条 = 三个批次（按类别分组，验收与回滚都按类别走）
+        assert len(body["batches"]) == 3, body["batches"]
+        assert body["unknown_categories"] == ["猎奇脑洞"], body["unknown_categories"]
+        assert body["shape_warnings"] == []
+        assert body["errors"] == [] and body["leftover_files"] == [], body
+        # 两条欠账轴分开报：②欠文案、③④欠稿（④两头都欠，归到"缺稿"——不补稿就轮不到文案）
+        assert len(body["need_copy"]) == 1, body["need_copy"]
+        assert len(body["need_prompt"]) == 2, body["need_prompt"]
+        assert "0 模型费" in body["message"], body["message"]
+
+        assets = {a.code: a for a in await _rows(AssetItem)}
+        assert len(assets) == 4
+        by_title = {a.title: a for a in assets.values()}
+        assert len(by_title) == 4, sorted(by_title)
+        for a in assets.values():
+            assert a.media_kind == "video" and a.source_kind == "file"
+            assert a.file_key.startswith("asset/") and a.bucket == settings.MINIO_BUCKET_RAW
+            # ① 画幅入库时就量出来：链接素材是下载后回写，文件素材以前一直没写
+            assert a.resolution == "1280x720", a.resolution
+            assert a.duration == 8.85
+            # ④ 钱：一条都没花
+            assert a.cost_prompt == 0 and a.cost_parse == 0 and a.cost_produce == 0
+
+        # 四种形状各停在哪儿（欠账轴与状态必须一一对上，否则一线看队列就不知道下一步点什么）
+        full = by_title["地里捡到小男孩"]
+        assert (full.stage_prompt, full.stage_summary) == ("success", "success")
+        assert full.status == "awaiting_review" and full.category_id, full
+        assert str(full.category_id) == str(cat_id), "清单吃的是原型**名字**，要钉到字典那一行"
+        script_only = by_title["下水道口"]
+        assert (script_only.stage_prompt, script_only.stage_summary) == ("success", "pending")
+        assert script_only.status == "summarizing", script_only.status
+        assert script_only.category_id is None, "字典里没有的名字→未分类，不替人建字典行"
+        assert assets[body["need_copy"][0]].title == "下水道口", body["need_copy"]
+        copy_only = by_title["会议室"]
+        assert (copy_only.stage_prompt, copy_only.stage_summary) == ("pending", "success")
+        assert copy_only.status == "awaiting_review", copy_only.status
+        both_missing = by_title["老宅半夜"]
+        assert (both_missing.stage_prompt, both_missing.stage_summary) == ("pending", "pending")
+        assert both_missing.status == "waiting_prompt", both_missing.status
+        assert set(body["need_prompt"]) == {copy_only.code, both_missing.code}, body["need_prompt"]
+
+        # ② 反推任务行：只有带稿的两条有；success、content＝人工稿、source_url 是明确不是 URL 的哨兵
+        from wechat_download.models import PT_SUCCESS, WechatDlPromptTask
+        tasks = await _rows(WechatDlPromptTask)
+        assert len(tasks) == 2, len(tasks)
+        for t in tasks:
+            assert t.status == PT_SUCCESS and t.content == SCRIPT
+            assert t.provider_task_id is None, "带 provider_task_id 就会被轮询当真实任务查"
+            assert str(t.source_url).startswith("paired://"), t.source_url
+        assert {str(full.prompt_task_id), str(script_only.prompt_task_id)} == {str(t.id) for t in tasks}
+        assert copy_only.prompt_task_id is None and both_missing.prompt_task_id is None
+        # 人工稿不该被任何一次外部查询改动：`refresh_prompt_task` 对非 processing 原样返回
+        async with dbmod.async_session_factory() as s:
+            from wechat_download.prompt_service import refresh_prompt_task
+            refreshed = await refresh_prompt_task(s, await s.get(WechatDlPromptTask, tasks[0].id))
+            assert refreshed.content == SCRIPT and refreshed.status == PT_SUCCESS
+
+        # ③ 候选：只有带文案的两条，pending、推荐、带豆包网页版提示词
+        sums = await _rows(AssetSummary)
+        assert len(sums) == 2, len(sums)
+        assert all(s.audit_status == RV_PENDING and s.is_recommended for s in sums)
+        assert any(s.doubao_prompt == "【完整豆包提示词】镜头1…" for s in sums)
+        assert all(s.word_count == len(re.findall(r"\S", CANDIDATES[0]["text"])) for s in sums)
+        # 「有文案没稿」那条候选没有来源任务——一致性闸门只能显示"没有稿可对照"，不能假装对照过
+        by_asset = {str(s.asset_id): s for s in sums}
+        assert by_asset[str(copy_only.id)].source_prompt_task_id is None
+        assert str(by_asset[str(full.id)].source_prompt_task_id) == str(full.prompt_task_id)
+
+        # ⑤ 审计
+        logs = await _rows(AuditLog, AuditLog.action == "asset.import_paired")
+        assert len(logs) == 4, len(logs)
+        assert all(x.after["cost"] == 0.0 for x in logs)
+        assert sorted(x.after["has_script"] for x in logs) == [False, False, True, True]
+
+        # 批次侧：0 元不是 None（对账页直接显示数字）
+        for b in await _rows(AssetBatch):
+            assert b.source_kind == "file"
+            assert b.cost_estimate == 0.0 and b.cost_actual == 0.0
+            assert b.budget_gate == "ok" and "0 模型费" in (b.budget_note or "")
+        assert sorted((await _rows(AssetBatch)), key=lambda b: b.item_count)[-1].item_count == 2
+
+        # ③ 续：出文案口**直接吃这条**（有稿没文案，整批排队只认「反推已成功且没出文案」的）
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            gen = await client.post(
+                "/api/assets/summaries/generate",
+                json={"batch_id": str(script_only.batch_id), "async_mode": False}, headers=hm)
+        assert gen.status_code == 200, gen.text
+        assert gen.json()["results"][0]["created"] >= 1, gen.json()
+        # 反向半边：没稿的那批**排不进**出文案队列（证明本口没把"没稿"粉饰成"有稿"）
+        empty = await client.post(
+            "/api/assets/summaries/generate",
+            json={"batch_id": str(both_missing.batch_id), "async_mode": False}, headers=hm)
+        assert empty.status_code == 400 and "没有待出文案的素材" in empty.text, empty.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_import_paired_refuses_ambiguous_names_and_loudly():
+    """同名原片绝不猜：清单里重名、或请求里多传了一份同名文件，都单独点名拒掉。
+
+    这一支是"配对"这件事的全部风险所在：`validate_file_name` 只留 basename，
+    A 目录和 B 目录的两支同名 mp4（实测 11.07s / 10.87s 是两个版本）落到素材表上是
+    同一个名字。猜错的表现不是报错，而是**画面配错稿**——后面每一环都只看数据库里的
+    file_key 和 content，没有任何一处能发现它俩不是一对。所以宁可当场拒。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+
+        # ① 清单里两条同名
+        m1 = {"items": [
+            {"video": "已完成/遇贵人.mp4", "script_text": SCRIPT},
+            {"video": "已完成/提示词/遇贵人.mp4", "script_text": SCRIPT},
+        ]}
+        files = _paired_files([
+            ("遇贵人.mp4", VIDEO_BYTES, "video/mp4"),
+            ("遇贵人.mp4", b"\x00" * 8000, "video/mp4"),
+        ])
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)):
+            r = await client.post("/api/assets/import/paired", files=files,
+                                  data={"manifest": json.dumps(m1, ensure_ascii=False)}, headers=hm)
+        assert r.status_code == 400, r.text
+        assert "同名原片" in r.text, r.text
+        assert await _count(AssetItem) == 0, "配不上一对就不该留下半批数据"
+        assert await _count(AssetBatch) == 0
+
+        # ② 清单 1 条、请求里传了两份同名 → 同样拒（调用方应只投清单引用的那些文件）
+        m2 = {"items": [{"video": "遇贵人.mp4", "script_text": SCRIPT}]}
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)):
+            r2 = await client.post("/api/assets/import/paired", files=files,
+                                   data={"manifest": json.dumps(m2, ensure_ascii=False)}, headers=hm)
+        assert r2.status_code == 400, r2.text
+        assert "无法判断配哪一个" in r2.text, r2.text
+
+        # ③ 清单引用了请求里没有的文件 → 该条单独失败，其余照常入库（fail-soft）
+        m3 = {"items": [
+            {"video": "遇贵人.mp4", "title": "遇贵人", "script_text": SCRIPT},
+            {"video": "根本不存在.mp4", "title": "不存在", "script_text": SCRIPT},
+        ]}
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+             patch("app.api.assets._probe_image_size", AsyncMock(return_value=(720, 1280))):
+            r3 = await client.post("/api/assets/import/paired",
+                                   files=_paired_files([("遇贵人.mp4", VIDEO_BYTES, "video/mp4")]),
+                                   data={"manifest": json.dumps(m3, ensure_ascii=False)}, headers=hm)
+        assert r3.status_code == 201, r3.text
+        b3 = r3.json()
+        assert b3["created"] == 1 and len(b3["errors"]) == 1, b3
+        assert "没收到这个文件" in b3["errors"][0]["error"], b3["errors"]
+        assert await _count(AssetItem) == 1
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_import_paired_dirty_manifest_shape_bad_copy_and_reimport():
+    """脏清单当场 400；形态不合格的人工文案**照样入库**；同批重投默认跳过、force 才放行。
+
+    ③ 是本口与 `/assets/summaries/import-copy` 唯一的行为差异，也是刻意的：
+    贴文案导入跳过不合格条目（那是模型产的字，扔了不心疼），而这里被扔掉的会是
+    **一线手工写好的一版稿**——扔掉等于让ta白干，还会让这条素材被误判成"没文案"，
+    下一步出文案就把这版稿覆盖掉。所以照样收、只在响应里点名，硬拦留给审核口 recheck。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+
+        # ① 脏清单：不是 JSON / 没有 items / 空 items
+        for bad in ["不是JSON{", '{"items": []}', '{"items": "x"}', '[1, 2]']:
+            r = await client.post("/api/assets/import/paired",
+                                  files=_paired_files([("a.mp4", VIDEO_BYTES, "video/mp4")]),
+                                  data={"manifest": bad}, headers=hm)
+            assert r.status_code == 400, (bad, r.text)
+            assert "清单" in r.text, (bad, r.text)
+        assert await _count(AssetBatch) == 0, "400 的这几次一条都不该留下"
+
+        # ② 形态不合格（超 80 字）照样入库 + 点名
+        too_long = "这个太长了，" * 30
+        manifest = {"items": [{"video": "长文案.mp4", "title": "长文案",
+                               "script_text": SCRIPT, "hook_copy": too_long}]}
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+             patch("app.api.assets._probe_duration", AsyncMock(return_value=11.07)), \
+             patch("app.api.assets._probe_image_size", AsyncMock(return_value=(1920, 1080))):
+            r2 = await client.post("/api/assets/import/paired", files=_paired_files(
+                [("长文案.mp4", VIDEO_BYTES, "video/mp4")]),
+                data={"manifest": json.dumps(manifest, ensure_ascii=False)}, headers=hm)
+            assert r2.status_code == 201, r2.text
+            body = r2.json()
+            assert body["created"] == 1 and len(body["shape_warnings"]) == 1, body
+            assert "超字数" in "".join(body["shape_warnings"][0]["problems"]), body["shape_warnings"]
+            assert "形态不合格" in body["message"], body["message"]
+            # 横屏原片：画幅当场量出来（这批里有横屏件，界面要标出来靠的就是这一列）
+            assert (await _rows(AssetItem))[0].resolution == "1920x1080"
+        s = (await _rows(AssetSummary))[0]
+        assert s.text == too_long and s.audit_status == RV_PENDING, s.text[:30]
+        # 入库 ≠ 能过审：审核口那道形态闸门照旧拦（这条才叫"只提示不拦"落在正确的层）
+        rev = await client.post("/api/assets/summaries/review",
+                                json={"summary_ids": [str(s.id)], "action": "approve"},
+                                headers=h["operator"])
+        assert rev.status_code == 200 and rev.json()["results"][0]["ok"] is False, rev.json()
+
+        # ③ 同批重投：默认不收（点名是哪一条），force 才放行
+        again = await client.post("/api/assets/import/paired", files=_paired_files(
+            [("长文案.mp4", VIDEO_BYTES, "video/mp4")]),
+            data={"manifest": json.dumps(manifest, ensure_ascii=False)}, headers=hm)
+        assert again.status_code == 400, again.text
+        assert "库里已有同名素材" in again.text, again.text
+        assert await _count(AssetItem) == 1, "重投默认不收，一条都不许多"
+        before_audit = await _count(AuditLog)
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+             patch("app.api.assets._probe_duration", AsyncMock(return_value=11.07)), \
+             patch("app.api.assets._probe_image_size", AsyncMock(return_value=(1920, 1080))):
+            forced = await client.post("/api/assets/import/paired", files=_paired_files(
+                [("长文案.mp4", VIDEO_BYTES, "video/mp4")]),
+                data={"manifest": json.dumps(manifest, ensure_ascii=False),
+                      "force_duplicates": "true"}, headers=hm)
+        assert forced.status_code == 201, forced.text
+        assert forced.json()["created"] == 1
+        assert await _count(AssetItem) == 2
+        assert await _count(AuditLog) == before_audit + 1
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_upload_batch_records_resolution_for_videos():
+    """文件上传口从此也给**视频**写 resolution（以前只有图片写）——横屏标记的数据源。
+
+    11-09 用户拍板"横屏原片全部收进来、界面上要标横屏"。判据只能落在 `resolution`
+    （宽>高）上，而这一列只有入库那一刻能免费量到：链接素材是下载后回写，文件素材
+    此前压根没写，列表和投产口只能显示"画幅未知"，横屏素材就这样混进竖屏投产里
+    （成片画幅由角色卡宽高比决定，提示词写 9:16 压不住——这是实测过的坑）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+             patch("app.api.assets._probe_duration", AsyncMock(return_value=9.2)), \
+             patch("app.api.assets._probe_image_size", AsyncMock(return_value=(1920, 1080))):
+            r = await client.post("/api/assets/upload/batch",
+                                  files=_paired_files([("横版原片.mp4", VIDEO_BYTES, "video/mp4")]),
+                                  headers=hm)
+        assert r.status_code == 201, r.text
+        a = (await _rows(AssetItem))[0]
+        assert a.media_kind == "video"
+        assert a.resolution == "1920x1080", a.resolution
+        assert a.duration == 9.2
+        # 序列化侧口径：宽>高要能被前端认出"横屏"（后端只给 aspect，判词留一处）
+        listed = await client.get("/api/assets?limit=20", headers=hm)
+        item = [i for i in listed.json()["items"] if i["id"] == str(a.id)][0]
+        assert item["resolution"] == "1920x1080", item
+        assert item["aspect"]["orientation"] == "landscape", item["aspect"]
         await client.aclose()
 
     _run(_scenario())
