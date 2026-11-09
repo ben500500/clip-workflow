@@ -382,6 +382,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
   }
 
   return (
+    <>
     <Row gutter={12}>
       {/* P1 新增：直接贴文案——跳过链接/反推，直挂候选进审核队列 */}
       <Col span={24} style={{ marginBottom: 12 }}>
@@ -434,7 +435,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
           }]}
         />
       </Col>
-      <Col span={14}>
+      <Col span={24}>
         <Card
           size="small"
           title={
@@ -667,17 +668,29 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
         </Card>
       </Col>
 
-      <Col span={10}>
-        {/* 用户口径 2026-09：账目统计块删除、钱的列收进行展开——合计只留分页一行 */}
-        <Card
-          size="small"
-          title="批次台账（点行展开看账目）"
-          extra={
-            <Button size="small" icon={<ReloadOutlined />} onClick={fetchBatches}>
-              刷新
-            </Button>
-          }
-        >
+    </Row>
+    {/* 用户口径 2026-11-09：整个批次台账不占主区——收进下方折叠块（默认收起），
+        标题带上概览数字（批次数/素材/实扣合计），要用再点开；行可展开看单批账目 */}
+    <Collapse
+      size="small"
+      style={{ marginTop: 12 }}
+      items={[{
+        key: 'batch-ledger',
+        label: (
+          <Space size={8} wrap>
+            <Text strong style={{ fontSize: 12 }}>批次台账</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {batches.length} 批 · 素材 {batches.reduce((a, b) => a + (b.item_count || 0), 0)} 条 · 实扣合计{' '}
+              {yuan(batches.reduce((a, b) => a + (b.cost_actual || 0), 0))}（点开看每批，行内可展开账目）
+            </Text>
+          </Space>
+        ),
+        extra: (
+          <Button size="small" icon={<ReloadOutlined />} onClick={(e) => { e.stopPropagation(); fetchBatches(); }}>
+            刷新
+          </Button>
+        ),
+        children: (
           <Table<AssetBatch>
             rowKey="id"
             size="small"
@@ -691,9 +704,10 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
                 `共 ${t} 批 · 素材 ${batches.reduce((a, b) => a + (b.item_count || 0), 0)} 条 · 实扣合计 ${yuan(batches.reduce((a, b) => a + (b.cost_actual || 0), 0))}`,
             }}
           />
-        </Card>
-      </Col>
-    </Row>
+        ),
+      }]}
+    />
+    </>
   );
 };
 
