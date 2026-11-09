@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Drawer, Input, Modal, Popover, Segmented, Select, Space, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, Drawer, Input, Modal, Popover, Segmented, Select, Space, Spin, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
@@ -138,13 +138,17 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
   // P1（评审定稿⑨）：一致性核验抽屉（原片播放＋反推脚本全文）
   const [inspecting, setInspecting] = useState<AssetSummary | null>(null);
   const [inspectData, setInspectData] = useState<AssetDetailResponse | null>(null);
+  const [inspectLoading, setInspectLoading] = useState(false);
   const openInspect = async (row: AssetSummary) => {
     setInspecting(row);
     setInspectData(null);
+    setInspectLoading(true);
     try {
       setInspectData(await assetApi.getAsset(row.asset_id));
     } catch (e) {
       message.error((e as Error).message || '取素材详情失败');
+    } finally {
+      setInspectLoading(false);
     }
   };
 
@@ -553,7 +557,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
             setResubmitText(row.text);
             setResubmitNote('');
           }}
-          onInspect={setInspecting}
+          onInspect={(row) => void openInspect(row)}
         />
       ),
     },
@@ -1039,7 +1043,16 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                 style={{ width: '100%', maxHeight: 380, background: '#000', borderRadius: 8 }}
               />
             )}
-            {inspectData?.prompt_script ? (
+            {inspectLoading ? (
+              <div style={{ padding: 24, textAlign: 'center' }}>
+                <Spin />
+                <div style={{ marginTop: 8 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    正在取反推文案稿…
+                  </Text>
+                </div>
+              </div>
+            ) : inspectData?.prompt_script ? (
               <Card size="small" title="反推文案稿（一致性比对的事实来源）">
                 <Paragraph
                   style={{ marginBottom: 0, fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 360, overflow: 'auto' }}
