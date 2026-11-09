@@ -341,6 +341,11 @@ services:
       HF_HUB_OFFLINE: "1"
       # 看板指标自动导入（ISSUE #366）：board_data.json 容器内路径
       BOARD_DATA_JSON_PATH: ${BOARD_DATA_JSON_PATH:-/data/board/board_data.json}
+      # 钩子编号台账（11-09 批 O）：容器内跑 hook_id.py 必须把它指到挂载进来的共享台账，
+      # 否则脚本按 $HOME 找 ~/hook-ledger（容器里是 /root/…）＝记在容器文件系统里，
+      # 与服务器上手工取号那本台账分家 → 同一个号可能被发两次，「一钩一号」当场破。
+      # 本机（仓库开发机）没这个目录也无妨：ASSET_HOOK_ID_CMD 没配，取号口直接回 501。
+      HOOK_ID_LEDGER: ${HOOK_ID_LEDGER:-/home/cc12703/hook-ledger/occupancy.json}
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8001}:8080"
@@ -358,6 +363,14 @@ services:
       - dedupe_upload_data:/tmp/dedupe_upload
       # 看板指标自动导入（ISSUE #366）：backend 侧手动触发端点同样要读 board_data.json
       - /home/cc12703/data-update/data/dashboard:/data/board:ro
+      # 取号脚本＋共享台账（11-09 批 O）：界面「代取 N 个号」与新文案自动预取都在 backend
+      # 容器里跑 hook_id.py（ASSET_HOOK_ID_CMD）。脚本只读；台账目录必须**读写**——
+      # 脚本用 flock 在 <台账>.lock 上抢锁、原子改写 occupancy.json，
+      # 只挂脚本不挂台账＝容器写到自己 /root 下，与服务器手工取号分家（重号风险）。
+      # 开发机（macOS）没有这两个路径：Docker 会建空目录挂上，取号口因 ASSET_HOOK_ID_CMD
+      # 未配置直接回 501，不影响任何功能。
+      - /home/cc12703/hook_id.py:/home/cc12703/hook_id.py:ro
+      - /home/cc12703/hook-ledger:/home/cc12703/hook-ledger
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 15s
