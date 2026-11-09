@@ -5276,6 +5276,7 @@ async def update_risk_lexicon(
 async def list_summaries(
     audit_status: Optional[str] = None,
     asset_id: Optional[str] = None,
+    asset_ids: Optional[str] = None,
     batch_id: Optional[str] = None,
     only_risk: bool = False,
     only_inconsistent: bool = False,
@@ -5290,6 +5291,10 @@ async def list_summaries(
     db: AsyncSession = Depends(get_db),
 ):
     """文案审核队列（列表形式 + 审核态），素材列表点「文案」也走这里。
+
+    11-09 加的两个入参（给「② 素材与文案 → 投去 AI 生成」用，读口径不变）：
+      - `audit_status` 可传逗号多值（如 `approved,passed_edited`），单值行为照旧；
+      - `asset_ids` 逗号分隔的素材 id（≤300 个），与 `asset_id` 是两套筛选、可叠加。
 
     `recommended_only`：只出推荐条。方案 §七「默认只过推荐条」防橡皮章——前端默认勾它，
     后端提供口径（B 组：原先只有列、没有参数）。
@@ -5310,10 +5315,33 @@ async def list_summaries(
 
     conds = []
     # 11-03 口径：审核队列与全部读口一样**不分可见范围**，全量进队列（谁能审仍看角色）
-    if audit_status:
-        conds.append(AssetSummary.audit_status == audit_status)
+    # 11-09：`audit_status` 支持逗号多值（② 素材与文案「投去 AI 生成」要一次把
+    # approved + passed_edited 一起取回）。拆成两次请求拼不出可信 total，也不该让人
+    # 猜「这条素材的过审文案到底在哪个请求里」。非法值当场 400 说清认哪几个——
+    # 与 GET /assets 的 audit_status 同一口径，别让手滑变成一个查不到东西的空页签。
+    status_list = [s.strip() for s in (audit_status or "").split(",") if s.strip()]
+    bad_status = [s for s in status_list if s not in REVIEW_STATES]
+    if bad_status:
+        raise HTTPException(
+            status_code=400,
+            detail=f"audit_status 里有不认的值：{'、'.join(bad_status)}（只认 {'/'.join(REVIEW_STATES)}）",
+        )
+    if len(status_list) == 1:
+        conds.append(AssetSummary.audit_status == status_list[0])
+    elif len(status_list) > 1:
+        conds.append(AssetSummary.audit_status.in_(status_list))
     if asset_id:
         conds.append(AssetSummary.asset_id == _as_uuid(asset_id, "asset_id"))
+    # 11-09 新增：按**一批素材**取文案（素材列表勾选后直达投产要用）。上限 300＝一页
+    # 勾选的实际上限，再多就是拿 IN 子句当遍历全表用，那种活该走 batch_id。
+    if asset_ids:
+        wanted_assets = _split_ids(asset_ids, "asset_ids")
+        if len(wanted_assets) > 300:
+            raise HTTPException(
+                status_code=400,
+                detail=f"asset_ids 一次最多 300 个（当前 {len(wanted_assets)} 个）；按整批取请改用 batch_id",
+            )
+        conds.append(AssetSummary.asset_id.in_([uuid.UUID(x) for x in wanted_assets]))
     if batch_id:
         conds.append(AssetItem.batch_id == _as_uuid(batch_id, "batch_id"))
     if only_risk:
@@ -6417,19 +6445,22 @@ async def create_productions(
     if db.get_bind().dialect.name == "postgresql":
         await db.execute(text("SET LOCAL idle_in_transaction_session_timeout = 0"))
 
-    # A′（2026-11-08 评审定稿）：自审自投硬闸**默认开**——自己过审的候选自己投产默认拦。
-    # 放开=admin 把 ASSET_SELF_PRODUCE_ALLOWED 设 true（显式关闸），且每次自审自投
-    # 逐条写豁免审计（owner_cross 带 self 标记）——质检关不能沦为可静默绕过的橡皮章。
-    self_produce_allowed = bool(getattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", False))
+    # A′（2026-11-08 评审定稿）：自审自投闸门——自己过审的候选自己投产要不要拦。
+    # 11-09 用户口径：一人多角是常态，**默认放开**（config 里 ASSET_SELF_PRODUCE_ALLOWED=True）。
+    # 放开不等于无痕：每次自审自投仍逐条写豁免审计（owner_cross 带 self 标记），
+    # 质检关不会沦为静默绕过的橡皮章；确需纪律（外包/新人）显式设 false 就恢复拦。
+    # getattr 的兜底值跟 config 默认保持一致——别出现「字段没读到反而变严」的分裂口径。
+    self_produce_allowed = bool(getattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", True))
     self_cross = self_summaries
     if self_cross and not self_produce_allowed:
         shown = "；".join(f"#{s.seq}" for s in self_cross[:5])
         raise HTTPException(
             status_code=400,
             detail=(
-                f"自审自投默认拦：这 {len(self_cross)} 条是你自己质检过审的（{'、'.join(_user_codes(db, self_cross)) if False else '逐条见下'}{shown}）。"
+                f"这 {len(self_cross)} 条是你自己质检过审的（候选序号 {shown}），"
+                "而自审自投闸门当前是关着的（ASSET_SELF_PRODUCE_ALLOWED=false）。"
                 "质检与投产分离是三角色模型的纪律——确需一人包干（小团队/应急），"
-                "由管理员把 ASSET_SELF_PRODUCE_ALLOWED 设为 true 后重发（每次都会留豁免审计）。"
+                "由管理员把该旋钮设为 true 后重发（每次自审自投都会逐条留豁免审计）。"
             ),
         )
 

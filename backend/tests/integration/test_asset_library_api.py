@@ -1959,6 +1959,142 @@ def test_everything_is_visible_across_people_and_review_is_still_cross_person():
     _run(_scenario())
 
 
+def test_summaries_list_supports_asset_ids_and_multi_status():
+    """11-09 为「② 素材与文案 → 投去 AI 生成」加的两个只读筛选。
+
+    要点不是"能过滤"，而是**一次请求就能把两条素材的过审文案全取回**：
+    approved + passed_edited 拆成两次请求拼出来的 total 不可信（前端只能猜），
+    而投产闸门要的就是这一份完整清单——少一条就是少投一条，多一条是把已撤审的投出去。
+    脏入参一律当场 400 点名，别让人对着空列表猜自己哪儿筛错了（与 GET /assets 同口径）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+
+        # A 素材：一条 approved；B 素材：一条 passed_edited；C 素材：只有 pending（不该被捞进来）
+        id_a, _ = await _make_ready_asset(client, hm, DOUYIN_2)
+        id_b, _ = await _make_ready_asset(client, hm, DOUYIN_3)
+        id_c, _ = await _make_ready_asset(client, hm, DOUYIN_1)
+        items_a, _ = await _gen_and_list(id_a, hm, client)
+        items_b, _ = await _gen_and_list(id_b, hm, client)
+        await _gen_and_list(id_c, hm, client)
+
+        ok_a = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [_approvable(items_a)["id"]], "action": "approve"}, headers=ho)
+        assert ok_a.status_code == 200 and ok_a.json()["results"][0]["ok"] is True, ok_a.text
+
+        b_good = _approvable(items_b)
+        edited = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [b_good["id"]], "action": "pass_edited",
+                  "new_text": f"{b_good['text']}，这方案百分百能成"}, headers=ho)
+        assert edited.status_code == 200 and edited.json()["results"][0]["ok"] is True, edited.text
+
+        # ① 多状态 + asset_ids：A、B 各一条，C 的三条 pending 一条不带
+        both = await client.get(
+            f"/api/assets/summaries?asset_ids={id_a},{id_b}"
+            f"&audit_status=approved,passed_edited", headers=ha)
+        assert both.status_code == 200, both.text
+        body = both.json()
+        assert body["total"] == 2, body
+        assert {i["asset_id"] for i in body["items"]} == {id_a, id_b}
+        assert {i["audit_status"] for i in body["items"]} == {"approved", "passed_edited"}
+
+        # ② 只点一条素材：另一条即使已过审也不能混进来（投产弹窗按勾选取范围）
+        only_a = await client.get(
+            f"/api/assets/summaries?asset_ids={id_a}&audit_status=approved,passed_edited", headers=ha)
+        assert only_a.json()["total"] == 1, only_a.text
+        assert only_a.json()["items"][0]["asset_id"] == id_a
+
+        # ③ 单状态行为不回归（老调用方全是单值）
+        single = await client.get(
+            f"/api/assets/summaries?asset_ids={id_a},{id_b},{id_c}&audit_status=approved", headers=ha)
+        assert single.json()["total"] == 1, single.text
+
+        # ④ 逗号里带空段/重复 id：去空去重后照查，不把「a,,b」判成脏输入
+        sloppy = await client.get(
+            f"/api/assets/summaries?asset_ids={id_a},,{id_b},{id_a}"
+            "&audit_status=approved, passed_edited", headers=ha)
+        assert sloppy.status_code == 200 and sloppy.json()["total"] == 2, sloppy.text
+
+        # ⑤ 脏入参当场 400：状态拼错、id 不是 id、一次塞太多
+        bad_status = await client.get(
+            "/api/assets/summaries?audit_status=approved,nope", headers=ha)
+        assert bad_status.status_code == 400, bad_status.text
+        assert "只认" in bad_status.json()["detail"] and "pending" in bad_status.json()["detail"]
+
+        bad_ids = await client.get("/api/assets/summaries?asset_ids=abc123", headers=ha)
+        assert bad_ids.status_code == 400 and "asset_ids" in bad_ids.json()["detail"], bad_ids.text
+
+        too_many = ",".join(str(uuid.uuid4()) for _ in range(301))
+        over = await client.get(f"/api/assets/summaries?asset_ids={too_many}", headers=ha)
+        assert over.status_code == 400 and "300" in over.json()["detail"], over.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_self_produce_gate_is_open_by_default_and_blocks_only_when_closed():
+    """11-09 用户口径：自审自投**默认放开**（ASSET_SELF_PRODUCE_ALLOWED=true）。
+
+    翻一个默认值必须有测试钉住，否则「放开」只是注释里的白话。三件事缺一不可：
+    ① 默认放开时「同一人过审 → 同一人投产」200，且审计 owner_cross 把这条标成
+       `self=true`——放开不等于无痕，事后仍查得到谁自己审自己投；
+    ② 只有显式设 false 才 400，而且文案说的是「闸门当前关着＋怎么打开」，
+       不能再写「默认拦」这种跟现状相反的话（写了会把人引去翻一个已经打开的闸）；
+    ③ 被拦那一次**一条生产单都没落**：闸门在建单/扣费之前。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        aid, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(aid, hm, client)
+        sid = _approvable(items)["id"]
+
+        # 过审人＝后面投产的同一人（自审自投的形状）
+        ok_rev = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+        assert ok_rev.status_code == 200 and ok_rev.json()["results"][0]["ok"] is True, ok_rev.text
+
+        async def _produce_self():
+            with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+                return await client.post(
+                    "/api/assets/produce",
+                    json={"summary_ids": [sid], "n": 1, "async_mode": False}, headers=ho)
+
+        # ② 先测「显式关闸」——conftest 把基线钉成 true，这里用 patch.object 临时改回 false
+        orders_before = await _count(AssetProduction)
+        with patch.object(settings, "ASSET_SELF_PRODUCE_ALLOWED", False):
+            blocked = await _produce_self()
+            assert blocked.status_code == 400, blocked.text
+            msg = blocked.json()["detail"]
+            assert "闸门当前是关着的" in msg, msg
+            assert "默认拦" not in msg, "默认已经是放开，别再写「默认拦」把人引去翻一个开着的闸"
+            assert "ASSET_SELF_PRODUCE_ALLOWED" in msg and "留豁免审计" in msg, msg
+            assert await _count(AssetProduction) == orders_before, "拦在建单之前：一条都没多落"
+
+        # ① 默认（true）同一个人过审→投产：200，且审计逐条标 self
+        done = await _produce_self()
+        assert done.status_code == 200, done.text
+        rows = await _rows(AssetProduction, AssetProduction.asset_id == uuid.UUID(aid))
+        assert len(rows) == 1, "闸门放开后同一人自审自投要真建出单"
+        audits = await _rows(AuditLog, AuditLog.action == "asset.produce_order")
+        cross = [a.after["owner_cross"] for a in audits
+                 if a.after and a.after.get("owner_cross")]
+        assert cross, "自审自投也要在审计里留痕（放开≠无痕）"
+        marked = [s for c in cross for s in c["summaries"] if s["summary_id"] == sid]
+        assert marked and marked[-1]["self"] is True, marked
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_asset_list_filters_and_failed_first_sort():
     """A4-3 的四个筛选 + failed 优先：昨天那 200 条里谁卡住、卡在哪一步，不能靠翻页。"""
     _run(_bootstrap())
