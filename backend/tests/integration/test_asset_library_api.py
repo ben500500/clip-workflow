@@ -9550,8 +9550,15 @@ def test_auto_park_hook_codes_on_import_copy():
         assert calls == [3], f"整批一次取号，不在逐条循环里取：{calls}"
         assert body["hook_codes"]["parked"] == 3, body["hook_codes"]
         assert "已自动预取 3 个编号" in body["message"], body["message"]
+        # 回体里的 summary_id 是**给人拿去查库的主键**：`summary.id` 由 SQLAlchemy 在
+        # INSERT 那一刻才生成，循环最后一条后面再没有 flush 点 → 不显式 flush 就是
+        # 字符串 "None"（11-09 现网冒烟实测到，界面今天没读这个字段所以没炸）。
+        got_ids = [it["summary_id"] for it in body["items"]]
+        assert all(len(u or "") == 36 for u in got_ids), body["items"]
+        assert len(set(got_ids)) == 3, got_ids
 
         rows = {str(x.id): x for x in await _rows(AssetSummary)}
+        assert set(got_ids) <= set(rows), "回体报的 id 必须真在库里（不是 None 的字符串形式）"
         assert {x.hook_code for x in rows.values()} == {"8PZZ1", "8PZZ2", "8PZZ3"}, rows
         # ③ 审计：与手工钉号同动作名，source 分得开（查账要能认出"这是系统自动挂的"）
         logs = await _rows(AuditLog, AuditLog.action == "asset.hook_code.park")

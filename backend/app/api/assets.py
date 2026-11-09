@@ -1841,6 +1841,12 @@ async def import_copy_summaries(
             audit_status=RV_PENDING,
         )
         db.add(summary)
+        # 必须在这里 flush：`summary.id` 是 SQLAlchemy 的 Python 端默认值，
+        # **到 INSERT 那一刻才生成**。不 flush 就取 `str(summary.id)`，最后一条
+        # （循环里再没有别的 flush 触发点）会拿到 None，接口回体里就成了字符串
+        # "None"——11-09 现网冒烟实测到的，前端今天没读这个字段所以没炸，
+        # 但它是个谎报的主键，下一句「点这条进投产」就会拿它去查库查无此人。
+        await db.flush()
         summary_rows.append(summary)
         created.append({
             "asset_id": str(asset.id),
