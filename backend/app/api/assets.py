@@ -10118,6 +10118,68 @@ async def resolve_link_assets(
 # 下载动作自己的状态字（models 侧不设常量：三取值只在这一个口里写，别处只读）
 _DL_RUNNING, _DL_SUCCESS, _DL_FAILED = "running", "success", "failed"
 
+# 视频容器魔数（闸门第一层）。只认「开头就摆明自己是视频」的几种，认不出交给 ffprobe 兜底。
+_VIDEO_BOX_KEYS = (b"ftyp", b"styp", b"free", b"mdat", b"skip")  # ISO BMFF 族：4~8 字节是 box 类型
+
+
+def _sniff_video_container(head: bytes) -> Optional[str]:
+    """文件头若干字节 → 容器名；认不出回 None（不代表不是视频，交给 ffprobe 实探）。"""
+    if len(head) >= 12 and head[4:8] in _VIDEO_BOX_KEYS:
+        return "mp4/mov"
+    if head[:4] == b"\x1a\x45\xdf\xa3":
+        return "mkv/webm"
+    if head[:4] in (b"\x00\x00\x01\xb3", b"\x00\x00\x01\xba"):
+        return "mpeg"
+    if len(head) >= 189 and head[0] == 0x47 and head[188] == 0x47:
+        return "mpeg-ts"  # TS 包长 188：第一包同步字节后面，第二包开头还得是 0x47（不足 189 字节别硬认，交给 ffprobe）
+    if head[:4] == b"RIFF" and head[8:12] == b"AVI ":
+        return "avi"
+    if head[:3] == b"FLV":
+        return "flv"
+    return None
+
+
+def _describe_not_video(head: bytes) -> str:
+    """闸门挡下时给一线看的白话原因：说清拉回来的**到底是**什么，别只说"不是视频"。"""
+    text = head.decode("utf-8", "ignore").lstrip("﻿ \r\n\t")
+    low = text[:2048].lower()
+    if low.startswith("<!doctype html") or low.startswith("<html") or "<head" in low[:600]:
+        title = re.search(r"<title[^>]*>(.*?)</title>", text[:4096], re.S | re.I)
+        name = (title.group(1).strip()[:40] if title else "")
+        return ("一个网页（源站/解析方给的中转引导页，不是视频流）"
+                + (f"，页面标题「{name}」" if name else ""))
+    sample = text[:200]
+    if sample and sample.isascii() and all(c.isprintable() or c in " \t\r\n" for c in sample):
+        # isprintable() 把换行算作"不可打印"，而 m3u8 / JSON 报错体都是带换行的纯文本
+        return f"一段纯文本（开头是「{text[:60].strip()}」），不是视频流"
+    return "认不出的字节（既不是已知视频容器，也不是文本）"
+
+
+async def _video_content_gate(path: str) -> Tuple[Optional[str], Optional[float]]:
+    """下载内容闸门：`返回 (挡下的原因, 顺手探到的时长)`。
+
+    为什么必须有这道闸（2026-11-09 现网事故 `AS-BB8563FD`）：旧代码只挡 0 字节、异常和
+    落桶失败，智令对一条视频号链接回的是一个 10.8KB 的 HTML 中转页——**多大都算过**，
+    于是网页带着 `video/mp4` 的 content-type 进了自有桶、`download_status=success`、
+    `stage_import=success`、照记 0.01 元解析费、还排了抽帧（必然 0 帧）。列表和抽屉里
+    看着"下载成功"，实际点开是坏的。
+
+    两层判据：① 容器魔数——认得出 mp4/mkv/ts/avi/flv 就直接放行，不额外花 ffprobe；
+    ② 魔数认不出再实探一次时长（探得出就放行并把时长带回，别把没见过的合法容器挡死；
+    探不出才判"不是视频"）。挡下的东西**不入桶、不标成功**，原因写成一线能照着换路子的大白话。
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8192)
+    except OSError as exc:  # pragma: no cover - 拉流声称成功但文件没落盘
+        return f"下载器报了字节数但临时文件读不到（{type(exc).__name__}）", None
+    if _sniff_video_container(head):
+        return None, None
+    probed = await _probe_duration(path)
+    if probed:
+        return None, probed
+    return _describe_not_video(head), None
+
 
 @router.post("/assets/download")
 async def download_asset_sources(
@@ -10141,6 +10203,9 @@ async def download_asset_sources(
     幂等：`file_key` 已非空的原样跳过（不重复下载、不重复占桶）；每条
     running→终态**逐条落库**（同 analyze 口径：一条几分钟，中途崩不能整批白跑）。
     `download_status` 是下载自己的状态，不进五阶段、不影响任何闸门。
+
+    11-09 补第五步＝**内容闸门**（`_video_content_gate`）：字节数不为 0 不代表拿到的是视频，
+    验完容器才入桶标 success；挡下的条标 failed 带白话原因、不抽帧（详见该函数注释的事故记录）。
     """
     if not data.asset_ids:
         raise HTTPException(
@@ -10213,11 +10278,11 @@ async def download_asset_sources(
         try:
             parsed = await dispatch_parse(a.source_url)
         except ProviderParseError as exc:
+            logger.warning("下载原片解析失败 %s channel未知: %s", a.code, str(exc)[:200])
             a.download_status = _DL_FAILED
             entry["error"] = f"解析分享链接失败：{str(exc)[:200]}（失败不记账）"
             await db.commit()
             continue
-            logger.warning("下载原片解析失败 %s channel未知: %s", a.code, str(exc)[:200])
         except Exception as exc:
             logger.exception("下载原片解析异常 %s", a.code)
             a.download_status = _DL_FAILED
@@ -10237,28 +10302,40 @@ async def download_asset_sources(
 
         play_url = getattr(parsed, "play_url", None)
         if not play_url:
+            logger.warning("下载原片失败 %s：解析成功但 play_url 为空（channel=%s）", a.code, channel)
             a.download_status = _DL_FAILED
             entry["error"] = "解析成功但没拿到可下载的直链（源站没给播放地址）"
             await db.commit()
             continue
-            logger.warning("下载原片失败 %s：解析成功但 play_url 为空（channel=%s）", a.code, channel)
 
         # ② 拉流下载（断点续传在 downloader 里；HLS/直链都归它）
         local_path = os.path.join(tmp_dir, f"{a.code}.mp4")
         try:
             total = await get_downloader().download_to_file(play_url, local_path)
         except Exception as exc:
+            logger.warning("下载原片拉流失败 %s（channel=%s, play_url=%s…）: %s",
+                           a.code, channel, str(play_url)[:80], str(exc)[:200])
             a.download_status = _DL_FAILED
             entry["error"] = f"拉流下载失败：{str(exc)[:200]}（解析费已按渠道记账）"
             await db.commit()
             continue
-            logger.warning("下载原片拉流失败 %s（channel=%s, play_url=%s…）: %s", a.code, channel, play_url[:80], str(exc)[:200])
         if not total:
+            logger.warning("下载原片失败 %s：0 字节（channel=%s）", a.code, channel)
             a.download_status = _DL_FAILED
             entry["error"] = "下载到 0 字节（直链秒回空响应），没入桶，不假装成功"
             await db.commit()
             continue
-            logger.warning("下载原片失败 %s：0 字节（channel=%s）", a.code, channel)
+
+        # ②' 内容闸门（11-09 事故补的）：字节数不为 0 ≠ 拿到的是视频，先验容器再入桶
+        gate_reason, gated_duration = await _video_content_gate(local_path)
+        if gate_reason:
+            logger.warning("下载原片被内容闸门挡下 %s（channel=%s, size=%s）：%s",
+                           a.code, channel, total, gate_reason)
+            a.download_status = _DL_FAILED
+            entry["error"] = (f"拉回来的不是视频：{gate_reason}。没入桶、不标成功，"
+                              f"这条请换渠道/换链接重试或走人工下载（解析费已按渠道记账）")
+            await db.commit()
+            continue
 
         # ③ 落自有桶：key 风格与抽帧/拼接一致（asset/<用途>/<素材号>/…），按素材号聚得拢
         object_key = f"asset/source/{a.code}/{uuid.uuid4().hex[:16]}.mp4"
@@ -10266,11 +10343,11 @@ async def download_asset_sources(
             settings.MINIO_BUCKET_RAW, object_key, local_path, "video/mp4"
         )
         if not ok:
+            logger.warning("下载原片失败 %s：落桶失败 key=%s（桶不可达或写入被拒）", a.code, object_key)
             a.download_status = _DL_FAILED
             entry["error"] = "对象存储入库失败（桶不可达或写入被拒）"
             await db.commit()
             continue
-            logger.warning("下载原片失败 %s：落桶失败 key=%s（桶不可达或写入被拒）", a.code, object_key)
 
         # ④ 回写 + 探真实时长（已有时长的不覆盖——那是 resolve/上传时探过的口径）
         a.file_key = object_key
@@ -10278,7 +10355,7 @@ async def download_asset_sources(
         a.file_size = total
         a.file_name = a.file_name or f"{a.code}.mp4"
         if not a.duration:
-            a.duration = await _probe_duration(local_path)
+            a.duration = gated_duration or await _probe_duration(local_path)
         a.download_status = _DL_SUCCESS
         entry.update(ok=True, file_key=object_key, size=total,
                      note="原片已落到自有桶，列表/抽屉里可直接预览和下载")

@@ -6992,10 +6992,11 @@ def test_dispatch_job_twin_names_the_pool_not_the_model():
 class _FakePullDownloader:
     """拉流下载替身：往 local_path 写真字节（后面 upload/ffprobe 都按真文件走）。"""
 
-    def __init__(self, *, total=None, fail=False, empty=False):
-        self.total = total if total is not None else len(VIDEO_BYTES)
+    def __init__(self, *, total=None, fail=False, empty=False, payload=VIDEO_BYTES):
+        self.total = total if total is not None else len(payload)
         self.fail = fail
         self.empty = empty
+        self.payload = payload
         self.calls: list = []
 
     async def download_to_file(self, play_url, local_path):
@@ -7005,7 +7006,7 @@ class _FakePullDownloader:
         if self.empty:
             return 0
         with open(local_path, "wb") as f:
-            f.write(VIDEO_BYTES)
+            f.write(self.payload)
         return self.total
 
 
@@ -7202,6 +7203,90 @@ def test_download_failures_are_per_item_and_fail_soft():
         await client.aclose()
 
     _run(_scenario())
+
+
+def test_download_content_gate_rejects_html_and_keeps_the_books():
+    """11-09 现网事故（AS-BB8563FD）补的第五步：拉回来的是网页就判失败，绝不入桶标成功。
+
+    旧代码只挡 0 字节／异常／落桶失败——智令对一条视频号链接回了一个 10.8KB 的 HTML
+    中转页（标题「左下角剧名一口气免费看完大结局」），多大都算过：网页带着 video/mp4
+    进了自有桶、download_status=success、stage_import=success、照记 0.01 元解析费、
+    还排了抽帧（必然 0 帧）。修后：闸门按容器魔数认，认不出再用 ffprobe 兜底，
+    两样都不过关就标 failed ＋ 白话原因（说清拿到的是**什么**），不入桶、不抽帧，
+    但解析费如实记——钱是真花了。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        asset_id, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+
+        html = (
+            '<!DOCTYPE html><html><head><title>左下角剧名一口气免费看完大结局</title></head>'
+            '<body>const videoUrl = "https://finder.video.qq.com/251/stodownload";</body></html>'
+        ).encode("utf-8")
+        parsed = SimpleNamespace(success=True, channel="zhiling", play_url="https://vnd.example/page",
+                                 duration=None, title=None, meta={})
+        upload = AsyncMock(return_value=True)
+        with patch("app.api.assets.dispatch_parse", AsyncMock(return_value=parsed)), \
+             patch("app.api.assets.get_downloader",
+                   lambda: _FakePullDownloader(payload=html, total=len(html))), \
+             patch("app.api.assets.upload_file_from_path", upload), \
+             patch("app.api.assets._probe_duration", AsyncMock(return_value=None)), \
+             patch("app.api.assets._enqueue_frames", AsyncMock()) as enq:
+            resp = await client.post(
+                "/api/assets/download", json={"asset_ids": [asset_id]}, headers=hm)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["downloaded"] == 0
+        err = body["results"][0]["error"]
+        assert "不是视频" in err and "网页" in err, err
+        assert "免费看完大结局" in err, "原因要说出拉回来的到底是什么，一线照着才知道换路子"
+        assert body["charged"] == pytest.approx(0.01, abs=1e-4), "解析真花了钱，失败也如实记账"
+        assert body["frames"] is None and enq.await_count == 0, "挡下的条不排抽帧（旧行为＝抽 0 帧）"
+        upload.assert_not_awaited(), "网页绝不入桶"
+        row = await _row_of(AssetItem, asset_id)
+        assert row.download_status == "failed" and row.file_key is None, "不能留个 success 的空壳"
+        assert row.cost_parse == pytest.approx(0.01, abs=1e-4)
+
+        # 反面对照：真 mp4 容器（ffmpeg 都省了）照样成功，闸门不是把这条线整体收紧
+        with patch("app.api.assets.dispatch_parse", AsyncMock(return_value=parsed)), \
+             patch("app.api.assets.get_downloader", lambda: _FakePullDownloader()), \
+             patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+             patch("app.api.assets._probe_duration", AsyncMock(return_value=8.42)), \
+             patch("app.api.assets._enqueue_frames", AsyncMock(
+                 return_value={"queued": True, "job_id": "j2", "note": None})):
+            resp2 = await client.post(
+                "/api/assets/download", json={"asset_ids": [asset_id]}, headers=hm)
+        assert resp2.status_code == 200 and resp2.json()["downloaded"] == 1, resp2.text
+        row2 = await _row_of(AssetItem, asset_id)
+        assert row2.download_status == "success" and row2.file_key
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_video_container_sniff_and_plain_reason():
+    """闸门第一层单独问一遍：真容器要认出，网页/文本/乱码要各给一句人话。
+
+    为什么要有这条：`_video_content_gate` 在集成用例里只走"mp4 放行 / 网页挡下"两端，
+    中间那层判据（TS 只凭一个 0x47 就放行 = 会误放；m3u8 是文本 = 要挡）只有直接打
+    函数才量得准。判据一旦改错，线上表现是"好链接被挡"或"网页又混进去"，都很难归因。
+    """
+    from app.api.assets import _describe_not_video, _sniff_video_container
+
+    assert _sniff_video_container(bytes.fromhex("00000018") + b"ftypmp42" + b"\x00" * 64) == "mp4/mov"
+    assert _sniff_video_container(b"\x1a\x45\xdf\xa3" + b"\x00" * 300) == "mkv/webm"
+    assert _sniff_video_container(b"\x00\x00\x01\xba" + b"\x00" * 64) == "mpeg"
+    assert _sniff_video_container(b"\x47" + b"\x11" * 187 + b"\x47" + b"\x22" * 187) == "mpeg-ts"
+    assert _sniff_video_container(b"G" + b"\x00" * 50) is None, "不足一个 TS 包长就别硬认 TS"
+    assert _sniff_video_container(b"") is None
+
+    html = "<!DOCTYPE html><html><head><title>测试页</title></head></html>".encode("utf-8")
+    assert "网页" in _describe_not_video(html) and "测试页" in _describe_not_video(html)
+    assert "纯文本" in _describe_not_video(b"#EXTM3U\n#EXT-X-TARGETDURATION:10\n")
+    assert "认不出" in _describe_not_video(b"\x00\x01\x02\xff" * 32)
 
 
 def test_source_preview_and_download_read_file_key_first():
