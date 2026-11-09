@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Alert, Button, Card, Collapse, Col, Input, Row, Select, Space, Statistic, Table, Tag, Tooltip, Typography, Upload, message,
+  Alert, Button, Card, Collapse, Col, Input, Row, Select, Space, Table, Tag, Tooltip, Typography, Upload, message,
 } from 'antd';
-import { CloudUploadOutlined, InboxOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons';
+import { CloudUploadOutlined, InboxOutlined, LinkOutlined, QuestionCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd/es/upload/interface';
 import { DEFAULT_TIER, DURATION_TIERS, assetApi } from '../../api/assets';
@@ -310,41 +310,6 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
       render: (v: number | null) => (v ? `${v}s` : '未定'),
     },
     {
-      title: '预估',
-      dataIndex: 'cost_estimate',
-      width: 90,
-      render: (v: number | null) => yuan(v),
-    },
-    {
-      title: '实扣',
-      dataIndex: 'cost_actual',
-      width: 90,
-      render: (v: number | null, row) => (
-        <Tooltip title="实扣是按（反推文案 + 查时长）重新汇总的，不是逐条累加；反推文案记的是按时长上限推算的额度，对账用，别当精确值">
-          <span>{yuan(v)}</span>
-          {row.cost_actual != null && row.cost_estimate != null && row.cost_actual > row.cost_estimate && (
-            <Tag color="warning" style={{ marginLeft: 4 }}>
-              超预估
-            </Tag>
-          )}
-        </Tooltip>
-      ),
-    },
-    {
-      title: '预算检查',
-      dataIndex: 'budget_gate',
-      width: 110,
-      render: (v: string | null, row) => {
-        if (!v) return '-';
-        const color = v === 'blocked' ? 'red' : v === 'need_approval' ? 'orange' : 'green';
-        return (
-          <Tooltip title={row.budget_note || undefined}>
-            <Tag color={color}>{v === 'blocked' ? '已拦下' : v === 'need_approval' ? '要审批' : '正常'}</Tag>
-          </Tooltip>
-        );
-      },
-    },
-    {
       title: '创建',
       dataIndex: 'created_at',
       width: 120,
@@ -355,6 +320,43 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
       ),
     },
   ];
+
+  // 用户口径 2026-09：批次账目不再占大块空间——钱的明细收进行展开，看哪行点哪行
+  const batchExpand = (row: AssetBatch) => (
+    <div style={{ padding: '4px 12px', fontSize: 12 }}>
+      <Space size={16} wrap>
+        <span>
+          预估 <b>{yuan(row.cost_estimate)}</b>
+        </span>
+        <span>
+          实扣 <b>{yuan(row.cost_actual)}</b>
+          {row.cost_actual != null && row.cost_estimate != null && row.cost_actual > row.cost_estimate && (
+            <Tag color="warning" style={{ marginLeft: 4 }}>
+              超预估
+            </Tag>
+          )}
+          <Tooltip title="实扣是按（反推文案 + 查时长）重新汇总的，不是逐条累加；反推文案记的是按时长上限推算的额度，对账用，别当精确值">
+            <QuestionCircleOutlined style={{ marginLeft: 4, color: '#999' }} />
+          </Tooltip>
+        </span>
+        <span>预算上限 {row.budget_cap != null ? yuan(row.budget_cap) : '全局默认'}</span>
+        <span>
+          预算检查{' '}
+          {row.budget_gate ? (
+            <Tag color={row.budget_gate === 'blocked' ? 'red' : row.budget_gate === 'need_approval' ? 'orange' : 'green'}>
+              {row.budget_gate === 'blocked' ? '已拦下' : row.budget_gate === 'need_approval' ? '要审批' : '正常'}
+            </Tag>
+          ) : (
+            '-'
+          )}
+        </span>
+        <span>档位 {row.prompt_max_duration ? `${row.prompt_max_duration}s` : '未定'}</span>
+      </Space>
+      {row.budget_note && (
+        <div style={{ color: '#888', marginTop: 4 }}>预算说明：{row.budget_note}</div>
+      )}
+    </div>
+  );
 
   if (!canProduce) {
     return (
@@ -372,6 +374,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
           loading={batchLoading}
           columns={batchCols}
           dataSource={batches}
+          expandable={{ expandedRowRender: batchExpand, rowExpandable: () => true }}
           pagination={{ pageSize: 10, showTotal: (t) => `共 ${t} 批` }}
         />
       </Card>
@@ -665,39 +668,28 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
       </Col>
 
       <Col span={10}>
+        {/* 用户口径 2026-09：账目统计块删除、钱的列收进行展开——合计只留分页一行 */}
         <Card
           size="small"
-          title="批次账目（每批花了多少钱，对账用）"
+          title="批次台账（点行展开看账目）"
           extra={
             <Button size="small" icon={<ReloadOutlined />} onClick={fetchBatches}>
               刷新
             </Button>
           }
         >
-          <Row gutter={8} style={{ marginBottom: 12 }}>
-            <Col span={8}>
-              <Statistic title="批次数" value={batches.length} />
-            </Col>
-            <Col span={8}>
-              <Statistic title="素材条数" value={batches.reduce((a, b) => a + (b.item_count || 0), 0)} />
-            </Col>
-            <Col span={8}>
-              <Statistic
-                title="实扣合计"
-                value={batches.reduce((a, b) => a + (b.cost_actual || 0), 0)}
-                precision={2}
-                suffix="元"
-              />
-            </Col>
-          </Row>
           <Table<AssetBatch>
             rowKey="id"
             size="small"
             loading={batchLoading}
             columns={batchCols}
             dataSource={batches}
-            scroll={{ x: 760 }}
-            pagination={{ pageSize: 12, showTotal: (t) => `共 ${t} 批` }}
+            expandable={{ expandedRowRender: batchExpand, rowExpandable: () => true }}
+            pagination={{
+              pageSize: 12,
+              showTotal: (t) =>
+                `共 ${t} 批 · 素材 ${batches.reduce((a, b) => a + (b.item_count || 0), 0)} 条 · 实扣合计 ${yuan(batches.reduce((a, b) => a + (b.cost_actual || 0), 0))}`,
+            }}
           />
         </Card>
       </Col>
