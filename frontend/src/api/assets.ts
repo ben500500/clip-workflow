@@ -320,6 +320,11 @@ export interface AssetSummary {
   created_at: string;
   // ── 仅 list_summaries 回（join 素材行）；getAsset 的 summaries 不带这些键 ──
   asset_code?: string;
+  /**
+   * 这条文案之前开过几张生产单（批 M 起列表口给，挑选弹窗拿来防重复投）。
+   * optional 的理由同 `output_count`：详情口不带＝"没查"，不是 0。
+   */
+  production_count?: number;
   asset_title?: string | null;
   asset_source_url?: string | null;
   asset_platform?: AssetPlatform | null;

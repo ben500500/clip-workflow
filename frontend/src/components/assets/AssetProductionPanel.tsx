@@ -17,6 +17,7 @@ import { parseServerTime } from '../../utils/format';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
 import { withCrossPersonConfirm } from './crossPerson';
 import ProduceOrderModal from './ProduceOrderModal';
+import ApprovedSummaryPickerModal from './ApprovedSummaryPickerModal';
 import AssetCardPicker from './AssetCardPicker';
 import { MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
 
@@ -137,16 +138,11 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
 
   // 批 L：生产单页自己开单——「从过审文案开单」。审核台是审核人员的地盘，
   // 投产这步不必绕回那边；审核台原入口保留（审完顺手投的快捷路径）。
+  // 批 N（11-09 收「两套入口」）：挑选那一屏抽成 ②④ 共用组件 ApprovedSummaryPickerModal，
+  // 拉数、批次筛选、截断提示都在那边，这里只留「开弹窗」＋「选完接投产弹窗」两根线。
   const [approvedOpen, setApprovedOpen] = useState(false);
-  const [approvedRows, setApprovedRows] = useState<AssetSummary[]>([]);
-  const [approvedLoading, setApprovedLoading] = useState(false);
-  const [approvedSel, setApprovedSel] = useState<AssetSummary[]>([]);
+  const [pickedSummaries, setPickedSummaries] = useState<AssetSummary[]>([]);
   const [produceOpen, setProduceOpen] = useState(false);
-  // 批 N（评审二·P1-2）：挑选器加批次筛选＋截断提示——原来只拉 approved/passed_edited
-  // 各 300 条无翻页无提示，量大时找文案像翻相册。
-  const [approvedBatch, setApprovedBatch] = useState<string | undefined>();
-  const [approvedTotal, setApprovedTotal] = useState(0);
-  const [approvedTruncated, setApprovedTruncated] = useState(false);
   const [batches, setBatches] = useState<AssetBatch[]>([]);
 
   useEffect(() => {
@@ -164,33 +160,6 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     }
     return opts;
   }, [batches, batchFilter]);
-
-  const fetchApproved = useCallback(async (batch?: string) => {
-    setApprovedLoading(true);
-    try {
-      const [a, b] = await Promise.all([
-        assetApi.listSummaries({ audit_status: 'approved', page_size: 300, batch_id: batch }),
-        assetApi.listSummaries({ audit_status: 'passed_edited', page_size: 300, batch_id: batch }),
-      ]);
-      const merged = [...(a.items || []), ...(b.items || [])].sort((x, y) =>
-        (y.reviewed_at || '').localeCompare(x.reviewed_at || ''),
-      );
-      setApprovedRows(merged);
-      setApprovedTotal((a.total || 0) + (b.total || 0));
-      setApprovedTruncated(
-        (a.total || 0) > (a.items?.length || 0) || (b.total || 0) > (b.items?.length || 0),
-      );
-    } catch (e) {
-      message.error((e as Error).message || '过审文案列表拉不到');
-    } finally {
-      setApprovedLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!approvedOpen) return;
-    void fetchApproved(approvedBatch);
-  }, [approvedOpen, approvedBatch, fetchApproved]);
 
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
 
@@ -299,14 +268,10 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const writeRows = writeTarget ?? selected;
 
   /**
-   * 批 L：拉全部过审文案（approved + passed_edited 两态合并，按过审时间倒序）。
-   * 批 N（评审二·P1-2）：拉取挪进 effect（随批次筛选重拉），这里只负责开窗。
+   * 批 L：从这里只负责开窗。拉数（approved + passed_edited 两态一次取全）、
+   * 批次筛选、截断提示都在 ②④ 共用的挑选弹窗里，不再在本页维护第二套状态。
    */
-  const openApprovedPicker = () => {
-    setApprovedOpen(true);
-    setApprovedSel([]);
-    setApprovedBatch(undefined);
-  };
+  const openApprovedPicker = () => setApprovedOpen(true);
 
   /**
    * 批 N（评审二·P0-1）：失败单的活路——按同文案重开单。
@@ -328,7 +293,8 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         );
         return;
       }
-      setApprovedSel([hit]);
+      // 不经过挑选弹窗：直接把这一条文案送进投产弹窗（挑选弹窗自己会清空重选）
+      setPickedSummaries([hit]);
       setProduceOpen(true);
     } catch (e) {
       message.error((e as Error).message || '取原过审文案失败');
@@ -1568,102 +1534,28 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         </Space>
       </Modal>
 
-      {/* 批 L：过审文案挑选弹窗——勾好进投产弹窗（与审核台同一个） */}
-      <Modal
+      {/* 批 L：过审文案挑选弹窗；批 N 起与 ② 素材页共用同一个组件（同一套拉法、同一套话术） */}
+      <ApprovedSummaryPickerModal
         open={approvedOpen}
         title="从过审文案开单"
-        width={760}
+        batchOptions={batchOptions}
         onCancel={() => setApprovedOpen(false)}
-        footer={
-          <Space>
-            <Button onClick={() => setApprovedOpen(false)}>取消</Button>
-            <Button
-              type="primary"
-              disabled={!approvedSel.length}
-              onClick={() => {
-                setApprovedOpen(false);
-                setProduceOpen(true);
-              }}
-            >
-              去生成生产单（{approvedSel.length}）
-            </Button>
-          </Space>
-        }
-      >
-        <Space direction="vertical" size={8} style={{ width: '100%', marginBottom: 8 }}>
-          {/* 批 N（评审二·P1-2）：加批次筛选——量大时找文案不能靠翻相册 */}
-          <Space wrap size={8}>
-            <Select
-              style={{ width: 260 }}
-              placeholder="按批次筛选（可选）"
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              value={approvedBatch}
-              onChange={setApprovedBatch}
-              loading={approvedLoading}
-              options={batches.map((b) => ({
-                value: b.id,
-                label: `${b.code} · ${b.name || '未命名'}（${b.item_count ?? 0} 条）`,
-              }))}
-            />
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              共 {approvedTotal} 条过审文案
-            </Text>
-          </Space>
-          {approvedTruncated && (
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 0 }}
-              message="过审文案太多，这里只列最近的一部分（两态各 300 条）——用上面的批次筛选缩小范围，或回生产单页带批次条件开单"
-            />
-          )}
-        </Space>
-        <Table<AssetSummary>
-          rowKey="id"
-          size="small"
-          loading={approvedLoading}
-          dataSource={approvedRows}
-          pagination={{ pageSize: 8, showSizeChanger: false }}
-          rowSelection={{
-            selectedRowKeys: approvedSel.map((s) => s.id),
-            onChange: (_, rows) => setApprovedSel(rows),
-          }}
-          columns={[
-            {
-              title: '文案',
-              dataIndex: 'text',
-              ellipsis: true,
-              render: (v: string) => <Text style={{ fontSize: 12 }}>{v}</Text>,
-            },
-            { title: '字数', dataIndex: 'word_count', width: 56 },
-            {
-              title: '素材',
-              dataIndex: 'asset_id',
-              width: 100,
-              render: (v: string) => <MonoText>{v.slice(0, 8)}</MonoText>,
-            },
-            {
-              title: '过审时间',
-              dataIndex: 'reviewed_at',
-              width: 120,
-              render: (v: string | null) =>
-                v ? parseServerTime(v)?.format('MM-DD HH:mm') : '—',
-            },
-          ]}
-        />
-      </Modal>
+        onConfirm={(rows) => {
+          setPickedSummaries(rows);
+          setApprovedOpen(false);
+          setProduceOpen(true);
+        }}
+      />
 
       <ProduceOrderModal
         open={produceOpen}
-        summaries={approvedSel}
+        summaries={pickedSummaries}
         isAdmin={isAdmin}
         batchId={batchFilter || batchId}
         onClose={() => setProduceOpen(false)}
         onDone={() => {
           setProduceOpen(false);
-          setApprovedSel([]);
+          setPickedSummaries([]);
           fetchList(page, pageSize);
         }}
       />

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, DatePicker, Input, Modal, Select, Space, Spin, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, DatePicker, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   BulbOutlined, CloudDownloadOutlined, DeleteOutlined, DownloadOutlined, FileTextOutlined, LoadingOutlined,
@@ -17,7 +17,7 @@ import type {
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import {
-  AssetStatusTag, AuditStatusTag, LandscapeTag, MediaKindTag, MonoText, StageTags,
+  AssetStatusTag, LandscapeTag, MediaKindTag, StageTags,
   aspectShortText, durationText, isImageAsset, yuan,
 } from './AssetBits';
 import {
@@ -26,6 +26,7 @@ import {
 import CostConfirmModal from './CostConfirmModal';
 import AssetDetailDrawer from './AssetDetailDrawer';
 import AssetComposeModal from './AssetComposeModal';
+import ApprovedSummaryPickerModal from './ApprovedSummaryPickerModal';
 import ProduceOrderModal from './ProduceOrderModal';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
 import { withCrossPersonConfirm } from './crossPerson';
@@ -41,8 +42,6 @@ const COL_WIDTH_KEY = 'asset-list-col-widths-v1';
  * 在这里拦是为了不让人点完才吃一个 400；后端那道仍在，是防直连调用的。
  */
 const PRODUCE_FROM_ASSET_MAX = 300;
-/** 文案列表口后端 `page_size` 封顶就是 300，一次取满，别让弹窗只回第一页还不说 */
-const PRODUCE_SUMMARY_PAGE_SIZE = 300;
 
 /** 来源链接太长截断成「域名+尾巴」，全文放 Tooltip（批 J：超长链接把列撑爆） */
 const shortUrl = (u: string) => {
@@ -228,15 +227,10 @@ const AssetListPanel: React.FC<Props> = ({
   // 批 M（11-09 用户口径）：② 页直达投产——勾素材 → 看它们名下已过审的文案 → 投产弹窗。
   // 原来这条路的入口在生产单页（从整批过审文案里翻）和审核台（审完顺手投），
   // 但一线手上拿着的是「素材」，最自然的动作就是在素材这一行点下去。
+  // 批 N（11-09 收「两套入口」）：挑选那一屏换成 ②④ 共用的 ApprovedSummaryPickerModal，
+  // 这里只留「开不开」和「选中了哪几条」，取数/截断/缺文案点名都在组件里。
   const [aiOpen, setAiOpen] = useState(false);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiRows, setAiRows] = useState<AssetSummary[]>([]);
-  const [aiSel, setAiSel] = useState<AssetSummary[]>([]);
-  const [aiTotal, setAiTotal] = useState(0);
-  /** 后端一页封顶 300 条：勾的素材多且每条过审好几版时会截断，必须说，不能让人以为看全了 */
-  const [aiTruncated, setAiTruncated] = useState(false);
-  /** 勾了、但一条「已过审」文案都没有的素材码——直接点名，别让人挨个开抽屉查 */
-  const [aiMissing, setAiMissing] = useState<string[]>([]);
+  const [pickedSummaries, setPickedSummaries] = useState<AssetSummary[]>([]);
   const [produceOpen, setProduceOpen] = useState(false);
 
   const [genBusy, setGenBusy] = useState(false);
@@ -327,6 +321,17 @@ const AssetListPanel: React.FC<Props> = ({
     [selected],
   );
   const selectedVideoCount = selectedVideoIds.length;
+  /**
+   * 共用挑选弹窗要的「范围」：id 拿去按 `asset_ids` 捞文案，code 用来点名哪几条
+   * 排在外面（只有过审文案的素材才进得来）。图片不在这里——图没有文案。
+   */
+  const selectedVideoAssets = useMemo(
+    () =>
+      selected
+        .filter((s) => !isImageAsset(s))
+        .map((s) => ({ id: s.id, code: s.code })),
+    [selected],
+  );
 
   // ── 反推文案（原「反推」）──
   const openAnalyze = async () => {
@@ -487,7 +492,9 @@ const AssetListPanel: React.FC<Props> = ({
   };
 
   // ── 投去 AI 生成（② 页直达投产，批 M 11-09）──
-  const openProduceFromAssets = async () => {
+  // 取数与展示都在共用挑选弹窗里（ApprovedSummaryPickerModal，11-09 收「两套入口」），
+  // 这里只留两道**开弹窗之前**就能判的拦：没勾视频不拦、超上限不拦会让点完才吃 400。
+  const openProduceFromAssets = () => {
     if (!selectedVideoCount) {
       message.warning('角色卡（图片）没有文案可投：只勾视频素材');
       return;
@@ -499,36 +506,6 @@ const AssetListPanel: React.FC<Props> = ({
       return;
     }
     setAiOpen(true);
-    setAiLoading(true);
-    setAiRows([]);
-    setAiSel([]);
-    setAiTotal(0);
-    setAiTruncated(false);
-    setAiMissing([]);
-    try {
-      // 一次请求拿全「已过审 + 改后通过」：后端 11-09 起支持逗号多状态 + asset_ids，
-      // 所以 total 是准的。原来生产单页那种「两态各拉 300 条再前端拼」在量大时 total
-      // 会把人骗到（拉回来的不是全集），这里不复制那个写法。
-      const res = await assetApi.listSummaries({
-        audit_status: 'approved,passed_edited',
-        asset_ids: selectedVideoIds.join(','),
-        page_size: PRODUCE_SUMMARY_PAGE_SIZE,
-      });
-      const rows = res.items || [];
-      setAiRows(rows);
-      setAiTotal(res.total || 0);
-      setAiTruncated(rows.length < (res.total || 0));
-      const covered = new Set(rows.map((r) => r.asset_id));
-      setAiMissing(
-        selected.filter((s) => !isImageAsset(s) && !covered.has(s.id)).map((s) => s.code),
-      );
-    } catch (e) {
-      // 拉不到就别留一个空壳弹窗：关回去 + 报错，让人重点
-      setAiOpen(false);
-      message.error((e as Error).message || '过审文案拉不到');
-    } finally {
-      setAiLoading(false);
-    }
   };
 
   // ── 查时长（去原链接解析，0.01 元/次）──
@@ -1241,7 +1218,6 @@ const AssetListPanel: React.FC<Props> = ({
           >
             <Button
               icon={<ThunderboltOutlined />}
-              loading={aiLoading}
               onClick={openProduceFromAssets}
               disabled={!ids.length}
             >
@@ -1452,143 +1428,33 @@ const AssetListPanel: React.FC<Props> = ({
       {/*
         批 M（11-09）：② 页「投去 AI 生成」的中间一屏，只回答一个问题——
         「你勾的这几条素材里，哪些文案已经过审、能开单」。
+        批 N（11-09 收「两套入口」）：这屏抽成 ②④ 共用组件 ApprovedSummaryPickerModal，
+        生产单页那版（原来 approved/passed_edited 各拉 300 条再前端拼）一起并进来。
         不做默认全选：一条素材可能好几版都过了审，全勾＝一次投出几倍号池额度，
         而号池是按天算的（≈120 条/日）。
       */}
-      <Modal
+      <ApprovedSummaryPickerModal
         open={aiOpen}
         title={`从勾选素材开生产单（${selectedVideoCount} 条素材）`}
-        width={780}
-        onCancel={() => {
+        assets={selectedVideoAssets}
+        onCancel={() => setAiOpen(false)}
+        onConfirm={(rows) => {
+          setPickedSummaries(rows);
           setAiOpen(false);
-          setAiSel([]);
+          setProduceOpen(true);
         }}
-        footer={
-          <Space>
-            <Button onClick={() => setAiOpen(false)}>取消</Button>
-            <Button
-              type="primary"
-              disabled={!aiSel.length}
-              onClick={() => {
-                setAiOpen(false);
-                setProduceOpen(true);
-              }}
-            >
-              去生成生产单（{aiSel.length}）
-            </Button>
-          </Space>
-        }
-      >
-        <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          {aiLoading && <Spin size="small" />}
-          {!aiLoading && !aiRows.length && (
-            <Alert
-              type="warning"
-              showIcon
-              message={`勾的 ${selectedVideoCount} 条素材名下没有「已过审 / 改后通过」的文案`}
-              description={
-                <span style={{ fontSize: 12 }}>
-                  没出过文案就回上一排点「出钩子文案」；出了文案还没审，去「文案审核」页签过审。
-                  只有过审的文案能开生产单——这道在后端也拦着，绕不过去。
-                </span>
-              }
-            />
-          )}
-          {!aiLoading && !!aiMissing.length && !!aiRows.length && (
-            <Alert
-              type="info"
-              showIcon
-              message={`${aiMissing.length} 条素材没过审文案，已排在外面`}
-              description={
-                <span style={{ fontSize: 12 }}>
-                  {aiMissing.slice(0, 12).join('、')}
-                  {aiMissing.length > 12 ? `…等 ${aiMissing.length} 条` : ''}
-                </span>
-              }
-            />
-          )}
-          {aiTruncated && (
-            <Alert
-              type="warning"
-              showIcon
-              message={`过审文案多于 ${PRODUCE_SUMMARY_PAGE_SIZE} 条，这里只列了一部分`}
-              description={
-                <span style={{ fontSize: 12 }}>
-                  下面列的是最近的 {aiRows.length} 条（共 {aiTotal} 条）。少勾几条素材分批开单，
-                  或去「生产与投板」页签按批次开单。
-                </span>
-              }
-            />
-          )}
-          {!aiLoading && !!aiRows.length && (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              一条文案＝一组生产单。「已开单」是这条之前开过几张，防止同一版重复投。
-            </Text>
-          )}
-          <Table<AssetSummary>
-            rowKey="id"
-            size="small"
-            loading={aiLoading}
-            dataSource={aiRows}
-            pagination={{ pageSize: 8, showSizeChanger: false }}
-            rowSelection={{
-              selectedRowKeys: aiSel.map((s) => s.id),
-              onChange: (_, rows) => setAiSel(rows),
-            }}
-            columns={[
-              {
-                title: '素材',
-                dataIndex: 'asset_code',
-                width: 112,
-                render: (v?: string) => <MonoText>{v ? v.slice(0, 11) : '—'}</MonoText>,
-              },
-              {
-                title: '文案',
-                dataIndex: 'text',
-                ellipsis: true,
-                render: (v: string, row) => (
-                  <span style={{ fontSize: 12 }}>
-                    #{row.seq} {v}
-                  </span>
-                ),
-              },
-              { title: '字数', dataIndex: 'word_count', width: 56 },
-              {
-                title: '状态',
-                dataIndex: 'audit_status',
-                width: 92,
-                render: (v: AssetSummary['audit_status']) => <AuditStatusTag status={v} />,
-              },
-              {
-                title: '已开单',
-                dataIndex: 'production_count',
-                width: 68,
-                render: (v?: number) =>
-                  v ? (
-                    <Tooltip title="这条文案之前开过几张生产单（重复开＝重复占当天号池额度）">
-                      <Tag color="orange">{v}</Tag>
-                    </Tooltip>
-                  ) : (
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      0
-                    </Text>
-                  ),
-              },
-            ]}
-          />
-        </Space>
-      </Modal>
+      />
 
       {/* 与生产单页/审核台同一个投产弹窗：闸门（风险词、一致性、钩子编号、号池、成本）只有一套 */}
       <ProduceOrderModal
         open={produceOpen}
-        summaries={aiSel}
+        summaries={pickedSummaries}
         isAdmin={isAdmin}
         batchId={batchFilter || batchId}
         onClose={() => setProduceOpen(false)}
         onDone={() => {
           setProduceOpen(false);
-          setAiSel([]);
+          setPickedSummaries([]);
           setSelected([]);
           fetchList(page, pageSize);
           // 建完单要真把人带到「生产与投板」——新单在那一屏才看得见
