@@ -15,7 +15,7 @@ import type {
   AssetItem, AssetAnalyzeResponse, AssetCostEstimateResponse, AssetMediaKind, AssetResolveResponse,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
-import { AssetStatusTag, MediaKindTag, StageTags, aspectShortText, durationText, isImageAsset, yuan } from './AssetBits';
+import { AssetStatusTag, LandscapeTag, MediaKindTag, StageTags, aspectShortText, durationText, isImageAsset, yuan } from './AssetBits';
 import {
   CategorySelect, CategoryTag, UNCLASSIFIED, invalidateAssetCategories, useAssetCategories,
 } from './AssetCategoryBits';
@@ -817,7 +817,12 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             </Text>
           </Space>
         ) : (
-          <MediaKindTag asset={row} />
+          // 11-09 用户拍板：横屏原片全部收进来、界面上要标横屏（以前这一列对视频永远空着，
+          // 因为后端 aspect 只喂图片——现在两类都给了，判据仍只在后端一处）
+          <Space size={2}>
+            <MediaKindTag asset={row} />
+            <LandscapeTag aspect={row.aspect} />
+          </Space>
         ),
     },
     {

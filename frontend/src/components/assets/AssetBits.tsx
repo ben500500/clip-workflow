@@ -129,6 +129,31 @@ export const MediaKindTag: React.FC<{ asset: AssetItem }> = ({ asset }) =>
     <Tag>视频</Tag>
   );
 
+/**
+ * 11-09 用户拍板：横屏原片**全部收进来、界面上要标横屏**，而且「豆包生产的时候
+ * 可能也需要进行这种横屏素材的」——所以这个徽标不只出现在素材列表，投产口那侧也要看得见。
+ * 判据只读后端算好的 `aspect.orientation`（口径在 `_card_ratio_fields` 一处），前端不量尺寸；
+ * 竖屏与量不到都不打标（满屏红标会把「横屏」这件事稀释成噪音）。
+ */
+export const LandscapeTag: React.FC<{
+  aspect?: AssetImageAspect | null;
+  /** 措辞：原片/成片用「横屏」，角色卡沿用「横版」（跟 aspectShortText 的口径一致） */
+  label?: string;
+}> = ({ aspect, label = '横屏' }) =>
+  aspect?.orientation === 'landscape' ? (
+    <Tooltip
+      title={
+        `量出来宽>高（${aspect.ratio || '比例未知'}${aspect.width && aspect.height ? ` · ${aspect.width}×${aspect.height}` : ''}）。` +
+        '成片画幅实际由**角色卡**宽高比决定，提示词写 9:16 压不住一张横版卡；' +
+        '这条素材要不要按横屏投产，挑卡/投产那一屏还能再核一次。'
+      }
+    >
+      <Tag color="orange" style={{ fontSize: 11, marginInlineEnd: 0 }}>
+        {label}
+      </Tag>
+    </Tooltip>
+  ) : null;
+
 const AUDIT_COLOR: Record<AuditStatus, string> = {
   pending: 'orange',
   approved: 'green',

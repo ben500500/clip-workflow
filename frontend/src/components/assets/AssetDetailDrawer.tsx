@@ -7,7 +7,7 @@ import { assetApi } from '../../api/assets';
 import type { AssetDetailResponse, AssetOutput, AssetSourceDownloadResult } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import {
-  AssetStatusTag, AuditStatusTag, MediaKindTag, ProductionStateTag, RiskTags, StageTags, MonoText,
+  AssetStatusTag, AuditStatusTag, LandscapeTag, MediaKindTag, ProductionStateTag, RiskTags, StageTags, MonoText,
   aspectShortText, durationText, isImageAsset, yuan,
 } from './AssetBits';
 import AssetComposeModal from './AssetComposeModal';
@@ -479,6 +479,8 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                     <>
                       <Tag>{durationText(player.duration)}</Tag>
                       {player.resolution && <Tag>{player.resolution}</Tag>}
+                      {/* 11-09：横屏原片在预览这一屏也要认得出来（这条线后面要跟竖屏分开排） */}
+                      <LandscapeTag aspect={asset.aspect} />
                       {player.platform && <Tag>{player.platform}</Tag>}
                       {asset.source_kind === 'link' && <Tag color="orange">原站时效直链</Tag>}
                     </>
@@ -606,10 +608,16 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
             </Descriptions.Item>
             <Descriptions.Item label="分辨率">
               {asset.resolution || '-'}
-              {isImageAsset(asset) && (
+              {isImageAsset(asset) ? (
                 <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
                   {aspectShortText(asset.aspect)}
                 </Text>
+              ) : (
+                // 11-09：原片也量得出画幅了（文件上传当场量、链接素材下载后回写），
+                // 横屏的要在这里看得见——判据依旧只在后端一处，这里只念它算好的结论。
+                // 竖屏不另出文字：`aspectShortText` 那句「横版 → 出横屏」是**角色卡**的话术
+                // （成片画幅跟卡走），套在原片上会把因果说反，所以视频只挂横屏徽标。
+                <LandscapeTag aspect={asset.aspect} />
               )}
             </Descriptions.Item>
             <Descriptions.Item label="视频时长上限">

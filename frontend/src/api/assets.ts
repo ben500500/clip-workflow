@@ -77,7 +77,10 @@ export type AssetSourceKind = 'link' | 'file';
 export type AssetMediaKind = 'video' | 'image';
 
 /**
- * 图片画幅判读（后端 `_serialize_item.aspect`，只对 media_kind=image 回，视频回 null）。
+ * 图片/视频画幅判读（后端 `_serialize_item.aspect`）。
+ * 11-09 起**两类都给**（横屏原片要收进库并在界面标「横屏」，而 orientation 只能从
+ * resolution 推）；此前只喂图片，视频那列永远显示「画幅未知」——不是量不到，是那一行
+ * 只吃 media_kind=image。量不到时仍是 null，界面照样显示「量不到」而不是猜一个。
  * 口径来自**实测**：成片画幅由角色卡宽高比决定，提示词写 9:16 压不住一张横版卡。
  * 判据留在后端一处——前端再拼一张比例表，日后口径一改就是两边各说一套。
  */
@@ -1188,6 +1191,79 @@ export interface AssetUploadResponse {
   message: string;
 }
 
+/**
+ * 配对清单的一条（POST /assets/import/paired 的 `manifest.items[i]`）。
+ * `video` 是**文件名**（后端只取 basename），四个槽位缺哪个就留空——缺了不报错，
+ * 只是在响应的 `need_copy` / `need_prompt` 里点名，让一线知道还欠哪一步。
+ */
+export interface AssetPairedManifestItem {
+  video: string;
+  title?: string;
+  /** 钩子原型**名称**（不是 id）；字典里没有这名字会落未分类并出现在 unknown_categories */
+  category?: string;
+  /** 人工反推稿：填了 = 登记一条 success 反推任务行，出文案直接吃它、不再花反推钱 */
+  script_text?: string;
+  /** 一句话钩子文案：填了 = 直接建 pending 候选进审核队列（形态不合格照样入库只点名） */
+  hook_copy?: string;
+  doubao_prompt?: string;
+  note?: string;
+  /** 标 true = 这条清单自己声明不收（如重复素材），理由进 skipped 里回显 */
+  skip?: boolean;
+  skip_reason?: string;
+}
+
+/** POST /assets/import/paired 的 `manifest` 字段（JSON 字符串，见 assetApi.importPaired） */
+export interface AssetPairedManifest {
+  batch_name?: string;
+  items: AssetPairedManifestItem[];
+}
+
+/**
+ * POST /assets/import/paired 的逐条入库结果（11-09 成稿配对导入）。
+ * 一条清单项 = 一条素材；`has_*` 说的是**清单里带了什么**，不是入库后猜的。
+ */
+export interface AssetPairedItem {
+  asset_id: string;
+  code: string;
+  batch_code: string;
+  title: string | null;
+  resolution: string | null;
+  duration: number | null;
+  status: AssetStatus;
+  has_copy: boolean;
+  has_script: boolean;
+}
+
+/** 配对没上、或清单里被标 skip 的逐条原因（都留在响应里，界面要一条条摊开给人看） */
+export interface AssetPairedIssue {
+  index: number;
+  video?: string;
+  error?: string;
+  reason?: string;
+}
+
+/** POST /assets/import/paired */
+export interface AssetPairedResponse {
+  created: number;
+  batches: AssetBatch[];
+  items: AssetPairedItem[];
+  /** 有稿没文案：点一下「出文案」就补上，不吃反推钱 */
+  need_copy: string[];
+  /** 缺反推稿（哪怕它有文案）：要补只能跑反推，那步花钱 */
+  need_prompt: string[];
+  /** 人工写的文案形态不合格——**照样入库了**，这里只是点名 */
+  shape_warnings: Array<{ code: string; video: string; problems: string[]; text: string }>;
+  /** 清单里的原型名不在字典里（导入不替人建字典行） */
+  unknown_categories: string[];
+  skipped: AssetPairedIssue[];
+  errors: AssetPairedIssue[];
+  /** 文件夹里多出来、清单没引用的文件（本口一个都不投） */
+  leftover_files: string[];
+  audit_rows: number;
+  frames: { enqueued: number; note?: string | null };
+  message: string;
+}
+
 /** POST /assets/analyze/batch 的逐条结果 */
 export interface AssetAnalyzeResultItem {
   asset_id: string;
@@ -2161,6 +2237,41 @@ export const assetApi = {
         if (total > 0) onProgress(Math.min(100, Math.round((progressEvent.loaded / total) * 100)));
       },
     }) as Promise<AssetUploadResponse>;
+  },
+
+  // 成稿配对导入（11-09）：原片 + 人工稿 + 钩子文案 + 豆包提示词一次进四个槽位，0 模型费。
+  // ⚠️ `files` 只投清单引用到的那些文件：后端按 basename 一一对应，两边任一侧重名都会
+  // 当场 400（按大小/顺序猜＝把 A 的画面配上 B 的稿，这条链路上没有任何环节会发现）。
+  // 超时沿用 UPLOAD_TIMEOUT=0：86 支原片整包走一次 multipart，60s 默认必掐在半路，
+  // 而那时字节已经落库——界面上会显示「失败」，实际却多了一批素材。
+  importPaired: (
+    data: {
+      files: File[];
+      manifest: AssetPairedManifest;
+      /** 登记用的反推计时上限档位（秒）；本口不产生反推费，只决定档位怎么记 */
+      max_duration?: number;
+      project_id?: string;
+      /** 库里已有同名素材时仍再入一份（默认后端跳过并在 skipped 里点名） */
+      force_duplicates?: boolean;
+    },
+    onProgress?: (percent: number) => void,
+  ) => {
+    const form = new FormData();
+    data.files.forEach((f) => form.append('files', f));
+    // manifest 是**字符串**字段（后端 Form 收 JSON 文本，不是 multipart 的 JSON part）
+    form.append('manifest', JSON.stringify(data.manifest));
+    if (data.max_duration != null) form.append('max_duration', String(data.max_duration));
+    if (data.project_id != null) form.append('project_id', data.project_id);
+    if (data.force_duplicates) form.append('force_duplicates', 'true');
+    return client.post('/assets/import/paired', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: UPLOAD_TIMEOUT,
+      onUploadProgress: (progressEvent) => {
+        if (!onProgress) return;
+        const total = progressEvent.total || 0;
+        if (total > 0) onProgress(Math.min(100, Math.round((progressEvent.loaded / total) * 100)));
+      },
+    }) as Promise<AssetPairedResponse>;
   },
 
   // 成本预览：批量按钮的二次确认单先调这个（不落库，只给预估+余额+闸门结论）
