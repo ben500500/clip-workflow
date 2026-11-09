@@ -207,11 +207,13 @@ const AssetJobsPanel: React.FC<{ onGoToTab?: (key: string) => void; active?: boo
     });
   }, [items]);
 
-  const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
+  // 默认**全部收起**（用户口径 2026-11-09）；在跑/排队的组自动展开；
+  // 点开过的组保持展开（直到用户再点收起）。
+  const [userOpened, setUserOpened] = useState<Set<string>>(new Set());
   const isGroupOpen = (g: { kind: string; open: number }) =>
-    g.open > 0 || !collapsedKinds.has(g.kind);
+    g.open > 0 || userOpened.has(g.kind);
   const toggleGroup = (kind: string) =>
-    setCollapsedKinds((prev) => {
+    setUserOpened((prev) => {
       const next = new Set(prev);
       if (next.has(kind)) next.delete(kind);
       else next.add(kind);

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Col, Collapse, Dropdown, Input, Modal, Radio, Row, Segmented, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, Col, Dropdown, Input, Modal, Radio, Row, Segmented, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   CloudUploadOutlined, CopyOutlined, DownloadOutlined, ExportOutlined, MoreOutlined, PlayCircleOutlined, ReloadOutlined, ThunderboltOutlined, VideoCameraOutlined,
@@ -834,23 +834,42 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   return (
     <Card size="small">
       <Row gutter={12} style={{ marginBottom: 12 }}>
-        <Col span={4}>
+        <Col span={3}>
           <Statistic title="生产单" value={dispatch?.total ?? 0} />
         </Col>
-        <Col span={4}>
+        <Col span={3}>
           <Statistic title="还没投" value={dispatch?.order_ready ?? 0} />
         </Col>
-        <Col span={4}>
+        <Col span={3}>
           <Statistic title="已投" value={dispatch?.dispatched ?? 0} />
         </Col>
-        <Col span={4}>
+        <Col span={3}>
           <Statistic title="成功" value={dispatch?.succeeded ?? 0} valueStyle={{ color: '#3f8600' }} />
         </Col>
-        <Col span={4}>
+        <Col span={3}>
           <Statistic title="失败" value={dispatch?.failed ?? 0} valueStyle={{ color: '#cf1322' }} />
         </Col>
-        <Col span={4}>
-          <Statistic title="成功率（只按终态）" value={rate(dispatch?.success_rate)} />
+        <Col span={3}>
+          <Tooltip title="分母只算已终态（成功+失败），在投/出片中不进分母；没有终态时显示 —">
+            <Statistic title="成功率" value={rate(dispatch?.success_rate)} />
+          </Tooltip>
+        </Col>
+        {/* 用户口径 2026-11-09：号池折叠块删除，只留今日消耗统计 */}
+        <Col span={6}>
+          <Tooltip title="今天板上真吃掉的条数（Σ各单板上条数，不是行数）；与每日解压线共用同一池，只提示不拦。超线标红。">
+            <Statistic
+              title="今日消耗"
+              value={today?.board_rows ?? 0}
+              suffix={today ? `/ ${today.soft_cap}` : ''}
+              valueStyle={
+                today && today.over_cap > 0
+                  ? { color: '#cf1322' }
+                  : today && today.board_rows > today.soft_cap * 0.8
+                    ? { color: '#d46b08' }
+                    : undefined
+              }
+            />
+          </Tooltip>
         </Col>
       </Row>
 
@@ -860,53 +879,6 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           {dispatch_all.dispatched ?? 0}（号池一本账，不分人）
         </Text>
       )}
-      {today && (
-        /*
-          #110 排版整理：号池的一大段口径说明默认收起——统计行已经把关键数摆出来了，
-          长解释只在点开时看；超线（error 档）时默认展开，别把要紧事也藏掉。
-        */
-        <Collapse
-          size="small"
-          style={{ marginBottom: 12 }}
-          defaultActiveKey={today.over_cap > 0 ? ['pool'] : []}
-          items={[
-            {
-              key: 'pool',
-              label: (
-                <Space size={6} wrap>
-                  {today.over_cap > 0 ? (
-                    <Tag color="red">今天已超线 {today.over_cap} 条</Tag>
-                  ) : (
-                    <Tag color={today.board_rows > today.soft_cap * 0.8 ? 'orange' : 'blue'}>号池</Tag>
-                  )}
-                  <Text>
-                    今天已投 {today.board_rows}／软提示线 {today.soft_cap}（只提示不拦）
-                  </Text>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    点开看完整口径
-                  </Text>
-                </Space>
-              ),
-              children: (
-                <Alert
-                  type={today.over_cap > 0 ? 'error' : today.board_rows > today.soft_cap * 0.8 ? 'warning' : 'info'}
-                  showIcon
-                  message={`${today.day} 号池：今天已投出去 ${today.board_rows} 条（按板上任务条数合计，不是行数）／软提示线 ${today.soft_cap} 条（只提示不拦）／板上任务 ${today.tasks} 行；成功 ${today.succeeded}、失败 ${today.failed}${today.over_cap > 0 ? `；超线 ${today.over_cap} 条` : ''}。只算今天板上的任务，还没投的单不在里面；此数只含素材库自己投的，与每日解压线共用同一个池，真实余量比它小。投上板后又被撤审作废的单也算已投（号池那天真被吃了）。`}
-                  description={
-                    <Space direction="vertical" size={2}>
-                      {today.note && <Text style={{ fontSize: 12 }}>{today.note}</Text>}
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        {dispatch?.scope_note}｜产能不做硬限（11-03 拍板），这里只把数报清楚。
-                      </Text>
-                    </Space>
-                  }
-                />
-              ),
-            },
-          ]}
-        />
-      )}
-
       {/* A′（2026-11-08 定稿）：排版对齐 #110——①筛选行 ②动作行，不再混排 */}
       <Space wrap size={8} style={{ marginBottom: 8 }}>
         <Segmented
