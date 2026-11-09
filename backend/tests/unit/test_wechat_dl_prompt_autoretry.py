@@ -189,7 +189,7 @@ def test_explain_prompt_error_changes_once_the_retry_is_spent():
     second = ps.explain_prompt_error(reason, retry_count=1)
     assert "系统会自动补投一次" in first
     assert "自动补投一次" not in second
-    assert "人工点「重投」" in second
+    assert "人工点「重试」" in second
 
     direct_first = ps.explain_prompt_error("视频无法下载", retry_count=0)
     direct_second = ps.explain_prompt_error("视频无法下载", retry_count=1)

@@ -94,13 +94,13 @@ def explain_prompt_error(error: Optional[str], retry_count: int = 0) -> Optional
         return (
             "系统已经自己补投过一次，这一次连投出去都没成"
             + (f"（{inner.group('inner')}）" if inner else "")
-            + "；再投就是人工决定的事了——点列表里的「重投」，或换一条能在浏览器直接播的链接。"
+            + "；再投就是人工决定的事了——点列表里的「重试」，或换一条能在浏览器直接播的链接。"
         )
     if "空结果" in text or "返回空" in text:
         if retried:
             return (
                 "上游还是没读到视频内容，而系统已经为这条链接自动补投过一次（只补一次，不再自己烧钱）。"
-                "现在人工点「重投」或换一条能直接播的链接。"
+                "现在人工点「重试」或换一条能直接播的链接。"
             )
         return (
             "上游这一次没读到视频内容，多数是它拉流的瞬时抖动——系统会自动补投一次，稍等即可；"
@@ -124,7 +124,7 @@ def explain_prompt_error(error: Optional[str], retry_count: int = 0) -> Optional
             "先隔几分钟刷新看看，确实没有再重投。"
         )
     if "没有拿到上游任务号" in text:
-        return "提交那一步没走完（这条没扣费），在列表里点重投或重新发起一次就行。"
+        return "提交那一步没走完（这条没扣费），在列表里点「重试」或重新发起一次就行。"
     return "重投一次试试；连着两次都失败，基本就是这条视频本身的问题，换链接或人工看片写提示词。"
 
 
