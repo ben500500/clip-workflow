@@ -148,7 +148,7 @@ from app.services.minio_service import (
 from app.api.slice_helpers import _ffprobe_duration
 from app.services.upload_service import validate_file_name
 from app.utils.helpers import utc_iso
-from wechat_download.models import PT_FAILED, PT_SUCCESS
+from wechat_download.models import PST_UPLOAD, PT_FAILED, PT_SUCCESS, WechatDlPromptTask
 from wechat_download.provider_registry import ProviderParseError, dispatch_parse
 # 批 J（11-05）：下载原片复用采集侧同一个拉流下载器（断点续传/HLS 都在里面），
 # 不从 service 导——那份还连着采集侧的 session/任务表，借了就会把两条链搅在一起。
@@ -1263,11 +1263,13 @@ def _serialize_item(a: AssetItem, agg: Optional[dict] = None) -> dict:
         # 批 G：图片在"挑卡"列表里要直接说画幅（这张 9:16 出竖屏 / 这张横版出横屏）。
         # 判据留在后端一处：前端自己另拼一张宽高比表，日后口径一改就是两边各说一套
         # ——而这条口径的来源是实测（卡决定成片画幅），不是显示偏好。
-        "aspect": (
-            _card_ratio_fields(a.resolution)
-            if (getattr(a, "media_kind", None) or MEDIA_VIDEO) == MEDIA_IMAGE
-            else None
-        ),
+        #
+        # 11-09 起视频也给：这批横屏原片要收进库并在界面标「横屏」（用户拍板），而
+        # orientation 只能从 resolution 推。此前恒回 null，界面那一列对视频永远显示
+        # 「画幅未知」——不是量不到，是这一行只喂图片。resolution 已补齐（文件上传
+        # 当场量、链接素材下载后回写），所以这里不加新口径，只把已有的一列对两类摊开；
+        # 量不到时仍是 null，界面照样显示「画幅未知」。
+        "aspect": _card_ratio_fields(a.resolution),
         "source_url": a.source_url,
         "platform": a.platform,
         "file_name": a.file_name,
@@ -1637,6 +1639,492 @@ async def import_copy_summaries(
         "items": created,
         "message": f"已导入 {len(created)} 条文案进审核队列（{batch.code}）"
         + (f"；{len(skipped)} 条形态不合格被跳过" if skipped else ""),
+    }
+
+
+def _paired_reason_digest(rows: List[dict], key: str = "error", limit: int = 2) -> str:
+    """把逐条明细里的原因去重拼一句，塞进整体失败时的 `detail`。
+
+    为什么不能只写"明细见 errors"：全拒的那一枪调用方（一线用的是界面弹窗）只会读
+    `detail` 这一句，errors 里的逐条原因埋在响应体第二层没人翻。而"配对失败"最需要的
+    恰恰是**为什么**（重名？没传？库里有同名？）——说不清原因，人就只会反复重投同一份清单。
+    """
+    seen: List[str] = []
+    for r in rows:
+        msg = str(r.get(key) or "").strip()
+        if msg and msg not in seen:
+            seen.append(msg)
+        if len(seen) >= limit:
+            break
+    return "；".join(seen)
+
+
+# ── 11-09 成稿配对导入（外部已经产好稿的一批原片）────────────────────────
+# 为什么不是把两条老路拼起来用：拼不了。
+#   · `/assets/upload/batch` 建出来的素材停在「待反推」，而出文案口硬要求先有反推稿
+#     （`generate_summaries` 的 `require_prompt_success=True` ＋ "反推脚本尚未就绪"），
+#     人工稿在手里也喂不进去；
+#   · `/assets/summaries/import-copy` 建的是**无视频的文本壳**，原片进不去。
+# 走老路等于把 86 条真素材重新反推一遍：0.00054×档位 ≈ 每条 0.03~0.10 元、
+# 86 次智令调用，买的却是一份库里本来就能放下的稿。
+# 落点全部是既有表、**不新增一列**：批次 → 素材（含 resolution，横屏在这一步才量得出来）
+# → `wechat_dl_prompt_tasks` 一行 success（content＝人工稿）→ 候选文案（pending，进审核队列）。
+# 反推任务这一行是唯一的新写法：status 直接给 success、不带 provider_task_id。安全性靠两件事
+# 兜住——① `refresh_prompt_task` 对非 processing 任务是**只读原样返回**（不会去轮询、更不会扣费）；
+# ② `_prompt_script_of` 命中 success 就把 stage_prompt 写成 success 并回填标题（已有标题不覆盖）。
+# 费用三列一律 0 并写进 note：稿是人工产的，对账页不能出现一笔从没发生的钱。
+@router.post("/assets/import/paired", status_code=201)
+async def import_paired_batch(
+    files: List[UploadFile] = File(
+        ..., description="原片视频文件；multipart 里的文件名＝清单项 `video` 的 basename"
+    ),
+    manifest: str = Form(
+        ...,
+        description=(
+            "配对清单 JSON：{batch_name?, items:[{video, title?, category?, script_text?, "
+            "hook_copy?, doubao_prompt?, note?, skip?, skip_reason?}]}"
+        ),
+    ),
+    max_duration: Optional[int] = Form(None, description="登记用的反推计时上限档位（秒）；本口不产生反推费"),
+    project_id: Optional[str] = Form(None, description="归属项目（可选）"),
+    force_duplicates: bool = Form(False, description="库里已有同名素材时仍要再入一份（默认跳过不重复占位）"),
+    current_user: User = Depends(require_roles(*_PROD_ROLES)),
+    db: AsyncSession = Depends(get_db),
+):
+    """成稿配对导入：原片 + 人工反推稿 + 一句话钩子文案 + 豆包提示词，一次进四个槽位，0 模型费。
+
+    一条清单项 = 一条素材。缺哪个槽位就留哪个口子，**不硬编**：
+    - 有 `hook_copy` → 建 pending 候选，直接进审核队列（形态不合格**照样入库**、
+      只在响应里点名——文案是人写的，丢掉等于把稿扔掉；真正的硬拦在审核口 recheck）；
+    - 有 `script_text` → 登记一条 success 的反推任务行（不带 provider_task_id，见上面的
+      安全论证），出文案口能直接吃它，不再花一次反推钱；
+    - 两样各缺一半的，**两条欠账轴分开报**（`need_copy` / `need_prompt`）：有稿没文案＝
+      点一下出文案就补上；没稿（哪怕它有文案）＝要补只能跑反推，那步花钱，不补则过审时
+      没有稿做一致性对照。宁可报多一条，也不能让「有文案没稿」这种在响应里两头都不提。
+    批次按 `category`（钩子原型**名称**）分组，一个原型一批次，方便按类别验收与回滚；
+    字典里没有这个名字的，落未分类并点名——写共享字典是管理员的口子（PUT /assets/categories），
+    导入不替人建字典行。
+    """
+    try:
+        spec = json.loads(manifest or "")
+    except Exception as exc:  # noqa: BLE001 — 脏 JSON 要回人话，不是回一句 JSON decode error
+        raise HTTPException(status_code=400, detail=f"配对清单不是合法 JSON：{exc}")
+    if not isinstance(spec, dict):
+        raise HTTPException(status_code=400, detail="配对清单要是一个对象：{\"items\": [...]}")
+    raw_items = spec.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise HTTPException(status_code=400, detail="配对清单里没有 items")
+
+    items: List[dict] = []
+    dropped: List[dict] = []
+    for i, raw in enumerate(raw_items):
+        if not isinstance(raw, dict):
+            dropped.append({"index": i + 1, "reason": "清单里这一项不是对象"})
+            continue
+        video = str(raw.get("video") or "").strip()
+        if not video:
+            dropped.append({"index": i + 1, "reason": "缺 video 字段（原片文件名）"})
+            continue
+        if raw.get("skip"):
+            dropped.append({
+                "index": i + 1, "video": video,
+                "reason": str(raw.get("skip_reason") or "清单标了 skip，默认不收"),
+            })
+            continue
+        items.append({
+            "index": i + 1,
+            "video": video,
+            "name": os.path.basename(video.replace("\\", "/")),
+            "title": str(raw.get("title") or "").strip(),
+            "category": str(raw.get("category") or "").strip(),
+            "script_text": str(raw.get("script_text") or "").strip(),
+            "hook_copy": str(raw.get("hook_copy") or "").strip(),
+            "doubao_prompt": str(raw.get("doubao_prompt") or "").strip(),
+            "note": str(raw.get("note") or "").strip(),
+            "file_pos": None,
+        })
+
+    if not items:
+        raise HTTPException(
+            status_code=400,
+            detail=f"清单里没有可导入的条目（{len(dropped)} 项被丢弃：{_paired_reason_digest(dropped, 'reason')}）",
+        )
+    if len(items) > int(settings.ASSET_IMPORT_BATCH_MAX):
+        raise HTTPException(
+            status_code=400,
+            detail=f"单请求最多 {settings.ASSET_IMPORT_BATCH_MAX} 条；请按钩子原型分几次投",
+        )
+
+    # ── 配对：清单项 ↔ multipart 文件，**按文件名一一对应，两边都不许重名** ──
+    # 为什么宁可在门口拦也不猜：`validate_file_name` 只留 basename，两个目录里同名的
+    # 两支 mp4 落到素材表上就是同一个名字（本批实测有一对 `260825-小男孩遇贵人.mp4`，
+    # 11.07s 与 10.87s 是两个不同版本）。按大小或顺序去猜，猜错的那条会把 A 的画面配上
+    # B 的稿——这条链路上没有任何后续环节会发现，因为稿和画面对不上是"内容问题"不是"数据问题"。
+    # 所以调用方（前端和脚本）都按同一条规矩准备：**只投清单里非 skip 的那些文件**。
+    by_name: Dict[str, List[int]] = {}
+    for pos, f in enumerate(files):
+        base = os.path.basename((f.filename or "").replace("\\", "/")).strip()
+        if base:
+            by_name.setdefault(base, []).append(pos)
+    errors: List[dict] = []
+    item_names = [it["name"] for it in items]
+    repeated_items = {n for n in item_names if item_names.count(n) > 1}
+    keep: List[dict] = []
+    for it in items:
+        if it["name"] in repeated_items:
+            errors.append({
+                "index": it["index"], "video": it["video"],
+                "error": f"清单里有 {item_names.count(it['name'])} 条同名原片（{it['name']}），"
+                         "按文件名配不出一一对应；同名只留一条，其余标 skip 或改名后重投",
+            })
+            continue
+        cands = by_name.get(it["name"], [])
+        if not cands:
+            errors.append({"index": it["index"], "video": it["video"], "error": "请求里没收到这个文件"})
+            continue
+        if len(cands) > 1:
+            errors.append({
+                "index": it["index"], "video": it["video"],
+                "error": f"请求里有 {len(cands)} 个同名文件但清单只有 1 条，无法判断配哪一个；"
+                         "只投清单引用的那些文件（重名的另一份别一起传）",
+            })
+            continue
+        it["file_pos"] = cands[0]
+        keep.append(it)
+    items = keep
+    matched = {it["file_pos"] for it in items}
+    leftover_files = [
+        os.path.basename((files[p].filename or "").replace("\\", "/"))
+        for p in range(len(files)) if p not in matched
+    ]
+    if not items:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"一条都没配上（{len(errors)} 条）——{_paired_reason_digest(errors)}"
+                + (f"；另有 {len(leftover_files)} 个文件清单没引用" if leftover_files else "")
+            ),
+        )
+
+    # ── 重复预检：库里已有同名素材就不静默再入一份（口径与链接导入一致：提示＋可放行）──
+    if not force_duplicates:
+        names = sorted({it["name"] for it in items})
+        rows = (
+            await db.execute(
+                select(
+                    AssetItem.file_name, AssetItem.code, AssetItem.created_at
+                ).where(
+                    AssetItem.source_kind == SOURCE_FILE,
+                    AssetItem.file_name.in_(names),
+                )
+            )
+        ).all()
+        # 同名只出现过一次才点名到具体是哪条；出现过两次就说"库里已有 N 条同名"，
+        # 报第一个 code 会让人觉得那一条就是它、而实际库里还有另一条。
+        hits_by_name: Dict[str, List[tuple]] = {}
+        for fn, code, created_at in rows:
+            hits_by_name.setdefault(fn, []).append((code, utc_iso(created_at) if created_at else None))
+        keep = []
+        dup_start = len(dropped)  # 只把"重名"这一段喂给 detail，别和清单里 skip 的话术混在一句里
+        for it in items:
+            hits = hits_by_name.get(it["name"])
+            if not hits:
+                keep.append(it)
+                continue
+            who = (
+                f"{hits[0][0]}（{hits[0][1] or '日期未知'} 导入）"
+                if len(hits) == 1 else f"{len(hits)} 条同名"
+            )
+            dropped.append({
+                "index": it["index"], "video": it["video"],
+                "reason": f"库里已有同名素材 {who}，默认不收；确要再入一份带 force_duplicates=true",
+            })
+        items = keep
+        if not items:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{len(dropped) - dup_start} 条全部因库里同名没入库——"
+                    f"{_paired_reason_digest(dropped[dup_start:], 'reason')}"
+                ),
+            )
+
+    tier = _tier_or_400(max_duration)
+    project_uuid = _as_uuid(project_id, "project_id") if project_id else None
+
+    # ── 字典按**名字**解析（清单吃的是人话类别，不是 UUID）──
+    cat_names = sorted({it["category"] for it in items if it["category"]})
+    cat_map: Dict[str, Optional[uuid.UUID]] = {}
+    unknown_cats: List[str] = []
+    if cat_names:
+        rows = (
+            await db.execute(
+                select(AssetCategory.name, AssetCategory.id, AssetCategory.active).where(
+                    AssetCategory.name.in_(cat_names)
+                )
+            )
+        ).all()
+        found = {}
+        for name, cid, active in rows:
+            found[name] = (cid, active)
+        for name in cat_names:
+            cid, active = found.get(name, (None, None))
+            if cid is None:
+                unknown_cats.append(name)
+                cat_map[name] = None
+            elif not active:
+                # 下线行不新建引用（与 `_resolve_category_or_400` 同一口径），但也不拦导入
+                unknown_cats.append(f"{name}（已下线）")
+                cat_map[name] = None
+            else:
+                cat_map[name] = cid
+
+    # ── 一个原型一个批次，先建行（`_ingest_one_video_file` 要用 batch.code 拼 file_key）──
+    prefix = str(spec.get("batch_name") or "").strip()
+    groups: Dict[Optional[str], List[dict]] = {}
+    for it in items:
+        groups.setdefault(it["category"] or None, []).append(it)
+    batches: Dict[Optional[str], AssetBatch] = {}
+    for key, group in groups.items():
+        batch = AssetBatch(
+            code=gen_batch_code(),
+            name=(f"{prefix} " if prefix else "") + (f"成稿导入·{key} {len(group)} 条" if key
+                                                    else f"成稿导入 {len(group)} 条"),
+            source_kind=SOURCE_FILE,
+            prompt_max_duration=tier,
+            # 成稿导入**真不花钱**：稿是人工产的，这里不套 `_apply_import_budget`
+            # （那算的是"这批若全去反推要多少钱"，而这批永远不会去反推，写上去就是一笔
+            #  对账页里凭空多出来的预估）。0 元是事实，不是乐观。
+            cost_estimate=0.0,
+            cost_actual=0.0,
+            budget_cap=settings.ASSET_BATCH_BUDGET_CAP,
+            budget_gate=svc.budget_gate(
+                0.0, None,
+                batch_cap=settings.ASSET_BATCH_BUDGET_CAP,
+                safety_ratio=settings.ASSET_BALANCE_SAFETY_RATIO,
+            )["level"],
+            budget_note="成稿配对导入：原片与稿都是外部已产好的，本口 0 模型费",
+            created_by=current_user.id,
+        )
+        db.add(batch)
+        batches[key] = batch
+    await db.flush()
+
+    # ── I/O 段并发（落盘/探时长量画幅/传桶），建行留给下面串行（AsyncSession 非并发安全，A4-5）──
+    max_bytes = upload_max_bytes()
+    sem = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
+    tmp_dir = os.path.join(tempfile.gettempdir(), f"asset_paired_{uuid.uuid4().hex}")
+    os.makedirs(tmp_dir, exist_ok=True)
+    try:
+        results = await asyncio.gather(*[
+            _ingest_one_video_file(
+                files[it["file_pos"]],
+                tmp_dir=tmp_dir,
+                batch_code=batches[it["category"] or None].code,
+                max_bytes=max_bytes,
+                sem=sem,
+            )
+            for it in items
+        ])
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    created: List[dict] = []
+    need_copy: List[str] = []
+    need_prompt: List[str] = []
+    shape_warnings: List[dict] = []
+    audit_rows = 0
+    for it, res in zip(items, results):
+        if not res["ok"]:
+            errors.append({"index": it["index"], "video": it["video"], "error": res["error"]})
+            continue
+        batch = batches[it["category"] or None]
+        asset = AssetItem(
+            code=gen_asset_code(),
+            batch_id=batch.id,
+            source_kind=SOURCE_FILE,
+            media_kind=MEDIA_VIDEO,
+            file_name=res["file_name"][:255],
+            file_key=res["file_key"],
+            bucket=settings.MINIO_BUCKET_RAW,
+            file_size=res["size"],
+            duration=res.get("duration"),
+            # 画幅在这里量，是「界面上标横屏」的唯一数据源（链接素材是下载后回写，两条路都要有）
+            resolution=(
+                f"{res['width']}x{res['height']}"
+                if res.get("width") and res.get("height") else None
+            ),
+            title=(it["title"] or os.path.splitext(it["name"])[0])[:500],
+            project_id=project_uuid,
+            category_id=cat_map.get(it["category"]) if it["category"] else None,
+            stage_import=STAGE_SUCCESS,
+            prompt_max_duration=tier if it["script_text"] else None,
+            created_by=current_user.id,
+            note=(
+                "11-09 成稿配对导入：反推稿与文案为外部人工产出，未走模型（cost_prompt/cost_parse=0）"
+                + (f"｜{it['note']}" if it["note"] else "")
+            )[:1000],
+        )
+        if it["script_text"]:
+            task = WechatDlPromptTask(
+                created_by=current_user.id,
+                source_type=PST_UPLOAD,
+                # 这一列 NOT NULL，而这条任务从没属于任何链接/直链——用一个**明确不是 URL** 的
+                # 哨兵值，而不是留空串：日后有人按 source_url 去回源，空串会让他以为数据坏了，
+                # `paired://` 一眼就知道这是导入进来的稿，没有源可回。
+                source_url=f"paired://{res['file_name']}"[:1000],
+                file_name=res["file_name"][:255],
+                status=PT_SUCCESS,
+                content=it["script_text"],
+                max_duration=tier,
+            )
+            db.add(task)
+            await db.flush()
+            asset.prompt_task_id = task.id
+            svc.apply_stage(asset, "prompt", STAGE_SUCCESS)
+        else:
+            svc.apply_stage(asset, "prompt", STAGE_PENDING)
+        db.add(asset)
+        await db.flush()
+
+        summary_id = None
+        if it["hook_copy"]:
+            shape = svc.check_copy_shape(it["hook_copy"])
+            summary = AssetSummary(
+                asset_id=asset.id,
+                seq=1,
+                text=it["hook_copy"],
+                word_count=shape["chars"],
+                category_id=cat_map.get(it["category"]) if it["category"] else None,
+                # 外部稿没有"三候选选一"这回事：这条就是唯一候选，默认推荐
+                is_recommended=True,
+                audit_status=RV_PENDING,
+                doubao_prompt=it["doubao_prompt"] or None,
+                source_prompt_task_id=asset.prompt_task_id,
+            )
+            db.add(summary)
+            svc.apply_stage(asset, "summary", STAGE_SUCCESS)
+            await db.flush()
+            summary_id = str(summary.id)
+            if not shape["ok"]:
+                shape_warnings.append({
+                    "code": asset.code, "video": it["video"], "problems": shape["problems"],
+                    "text": it["hook_copy"][:60],
+                })
+        # 两条**独立**的欠账轴各记各的（11-09 实测口径：这批 86 条里四种组合都有）：
+        # - 没稿 → 欠一次反推（那步花钱），不管它有没有文案；
+        # - 有稿没文案 → 欠一次出文案（免费吃稿）。
+        # 以前只在"没文案"那一支里二选一，于是「人工文案＋没稿」这条两头都不报，
+        # 一线看不见它还欠反推稿——而一致性闸门没有对照物，过审时才暴露。
+        if not it["script_text"]:
+            need_prompt.append(asset.code)
+        elif not it["hook_copy"]:
+            need_copy.append(asset.code)
+
+        await _write_audit(
+            db,
+            action="asset.import_paired",
+            operator=current_user,
+            target_type="asset_item",
+            target_id=str(asset.id),
+            before=None,
+            after={
+                "code": asset.code,
+                "batch_code": batch.code,
+                "file_name": asset.file_name,
+                "category": it["category"] or None,
+                "has_script": bool(it["script_text"]),
+                "has_copy": bool(it["hook_copy"]),
+                "has_doubao_prompt": bool(it["doubao_prompt"]),
+                "summary_id": summary_id,
+                "cost": 0.0,
+                "from_manifest_index": it["index"],
+            },
+        )
+        audit_rows += 1
+        created.append({
+            "asset_id": str(asset.id),
+            "code": asset.code,
+            "batch_code": batch.code,
+            "title": asset.title,
+            "resolution": asset.resolution,
+            "duration": asset.duration,
+            "status": asset.status,
+            "has_copy": bool(it["hook_copy"]),
+            "has_script": bool(it["script_text"]),
+        })
+
+    # 空批次不留行：这里的批次全是本请求新建的，一条都没进来就该撤掉，
+    # 否则对账页会出现一个「0 条素材」的批次，一线以为文件丢了
+    # （同 `_upload_into_batch` 里 `batch_is_new` 那条判据）。
+    kept = [b for b in batches.values() if any(c["batch_code"] == b.code for c in created)]
+    if not created:
+        # 桶里可能已经落了对象（落盘传桶成功、建行前失败），那是既有上传口同样的既有行为：
+        # 不留数据库行、孤儿对象由桶生命周期规则兜；宁可回 400 让人重投，也不留半批数据。
+        await db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(errors)} 条全部没入库，批次未创建——{_paired_reason_digest(errors)}"
+                "（修正后可直接重投同一份清单）"
+            ),
+        )
+    for b in batches.values():
+        if b not in kept:
+            await db.delete(b)
+    for b in kept:
+        b.item_count = len([c for c in created if c["batch_code"] == b.code])
+    # 序列化**必须在 commit 之前**：commit 会 expire 所有属性，之后读 `b.name` 触发懒加载，
+    # 而异步会话在非 greenlet 上下文里懒加载直接抛 MissingGreenlet（既有序列化都遵循这个次序）
+    batch_payload = [_serialize_batch(b) for b in kept]
+
+    await db.commit()
+
+    # 与文件上传口同一套收尾：入库即自动排抽帧（审核台卡片靠它，0 元、纯本机 ffmpeg）。
+    # `_enqueue_frames` 自己 fail-soft，排不上只回一条 note，不会把已经落库的导入带崩。
+    frames = await _enqueue_frames(
+        db,
+        asset_ids=[c["asset_id"] for c in created],
+        output_ids=[],
+        operator=current_user,
+        why=f"成稿配对导入 {len(created)} 条",
+    )
+
+    parts = [f"已配对入库 {len(created)} 条（{len(batch_payload)} 个批次），本口 0 模型费"]
+    if need_copy:
+        parts.append(f"{len(need_copy)} 条有稿没文案，可直接点「出文案」（这一步不吃反推钱）")
+    if need_prompt:
+        parts.append(f"{len(need_prompt)} 条没有反推稿（要补只能跑一次反推，那步花钱；不补则过审时没有稿做对照）")
+    if shape_warnings:
+        parts.append(f"{len(shape_warnings)} 条文案形态不合格已照样入库，过审前需按审核口提示改")
+    if unknown_cats:
+        parts.append(f"字典里没有这些原型、已按未分类入库：{'、'.join(unknown_cats)}（要归类请管理员先在字典加行）")
+    if dropped:
+        parts.append(f"{len(dropped)} 条未入库（清单标注/库里重名），明细在 skipped")
+    if errors:
+        parts.append(f"{len(errors)} 条失败，明细在 errors")
+    if leftover_files:
+        parts.append(f"{len(leftover_files)} 个文件清单里没引用，未入库")
+    if not frames.get("queued"):
+        parts.append(
+            f"抽帧没排上（{frames.get('note') or '原因未知'}）：不影响导入，"
+            "审核台卡片暂时没图，可就地补抽"
+        )
+
+    return {
+        "created": len(created),
+        "batches": batch_payload,
+        "items": created,
+        "need_copy": need_copy,
+        "need_prompt": need_prompt,
+        "shape_warnings": shape_warnings,
+        "unknown_categories": unknown_cats,
+        "skipped": dropped,
+        "errors": errors,
+        "leftover_files": leftover_files,
+        "audit_rows": audit_rows,
+        "frames": frames,
+        "message": "；".join(parts),
     }
 
 
@@ -2019,6 +2507,12 @@ async def _ingest_one_video_file(
             if size_err:
                 return {"ok": False, "file_name": safe_name, "error": size_err}
             duration = await _probe_duration(tmp_path)
+            # 宽高同一条 ffprobe `stream=width,height` 查询，视频与图通用（`_probe_image_size`
+            # 名字带 image 只是历史包袱）。为什么视频也要量：画幅是**素材自己的属性**，
+            # 11-09 起横屏原片要在界面标出来（画幅由角色卡宽高比决定，投产前必须看得见），
+            # 而 `resolution` 只有入库这一刻能免费量到——链接素材是下载后回写，文件素材此前
+            # 一直没写，列表与投产口只能显示「画幅未知」。
+            width, height = await _probe_image_size(tmp_path)
             file_key = f"asset/{batch_code}/{uuid.uuid4().hex}_{safe_name}"
             # content type 按真实扩展名给：写死 video/mp4 的话 .mov/.webm 在桶里是错标签，
             # 浏览器 presigned 直连会当 mp4 解（Safari 直接黑屏），下载侧也无法按类型还原
@@ -2036,7 +2530,8 @@ async def _ingest_one_video_file(
                     "error": "对象存储写入失败。原文件没入库，带 batch_id 走 /assets/upload/retry 补投这一个",
                 }
             return {"ok": True, "file_name": safe_name, "file_key": file_key,
-                    "size": size, "duration": duration, "media_kind": MEDIA_VIDEO}
+                    "size": size, "duration": duration, "media_kind": MEDIA_VIDEO,
+                    "width": width, "height": height}
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -2254,6 +2749,12 @@ async def _upload_into_batch(
             stage_import=STAGE_SUCCESS,
             created_by=current_user.id,
         )
+        # 画幅：视频和图片一律入库时就量（11-09 起横屏原片要在界面标出来，
+        # 而 resolution 只有这一刻免费拿得到——链接素材是下载后回写，文件素材此前只给图写，
+        # 视频行一直空着，列表与投产口只能显示「画幅未知」。
+        asset.resolution = (
+            f"{res['width']}x{res['height']}" if res.get("width") and res.get("height") else None
+        )
         if is_image:
             # 图片四阶段一律 skipped（拍板③：图是**生产输入**，不参与反推/文案/投产/拼接）。
             # 不显式写 skipped 的话它们会停在 pending —— 于是既在「待反推」计数里碍事，
@@ -2262,9 +2763,6 @@ async def _upload_into_batch(
             asset.stage_summary = STAGE_SKIPPED
             asset.stage_produce = STAGE_SKIPPED
             asset.stage_compose = STAGE_SKIPPED
-            asset.resolution = (
-                f"{res['width']}x{res['height']}" if res.get("width") and res.get("height") else None
-            )
             # 抽帧对图没有意义（原图本身就是封面），直接把 file_key 当封面
             asset.cover_image_key = res["file_key"]
         # 派生态必须带 media_kind：不带的话图会一路落到 `waiting_prompt`（"待反推"），
