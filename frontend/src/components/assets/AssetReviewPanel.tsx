@@ -139,12 +139,31 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
   const [inspecting, setInspecting] = useState<AssetSummary | null>(null);
   const [inspectData, setInspectData] = useState<AssetDetailResponse | null>(null);
   const [inspectLoading, setInspectLoading] = useState(false);
+  // 原片可播直链：走「素材原文件」口（自有桶 presigned）——share 页链接（weixin.qq.com/sph/…）
+  // 直接喂 <video> 是黑屏，这就是上一版"原片无法播放"的原因
+  const [inspectPlayUrl, setInspectPlayUrl] = useState<string | null>(null);
+  const [inspectPlayNote, setInspectPlayNote] = useState<string | null>(null);
   const openInspect = async (row: AssetSummary) => {
     setInspecting(row);
     setInspectData(null);
+    setInspectPlayUrl(null);
+    setInspectPlayNote(null);
     setInspectLoading(true);
     try {
-      setInspectData(await assetApi.getAsset(row.asset_id));
+      const [detail, src] = await Promise.all([
+        assetApi.getAsset(row.asset_id),
+        assetApi.downloadAssetSource(row.asset_id).catch(() => null),
+      ]);
+      setInspectData(detail);
+      if (src?.url) {
+        setInspectPlayUrl(src.url);
+      } else {
+        setInspectPlayNote(
+          src?.note
+            ? `${src.note}（分享页链接不能直接播放；要看原片请点右上角「原片」下载）`
+            : '这条素材不在自有桶，拿不到可播直链——要看原片请点右上角「原片」下载',
+        );
+      }
     } catch (e) {
       message.error((e as Error).message || '取素材详情失败');
     } finally {
@@ -1036,13 +1055,20 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
       >
         {inspecting && (
           <Space direction="vertical" size={10} style={{ width: '100%' }}>
-            {inspectData?.asset?.source_url && (
+            {inspectPlayUrl ? (
               <video
-                src={inspectData.asset.source_url}
+                src={inspectPlayUrl}
                 controls
+                autoPlay
+                preload="metadata"
                 style={{ width: '100%', maxHeight: 380, background: '#000', borderRadius: 8 }}
+                onError={() =>
+                  setInspectPlayNote('这一段放不出来：直链可能已过期（时效链接约 1 小时），关掉重开即可续期')
+                }
               />
-            )}
+            ) : inspectPlayNote ? (
+              <Alert type="info" showIcon message={inspectPlayNote} />
+            ) : null}
             {inspectLoading ? (
               <div style={{ padding: 24, textAlign: 'center' }}>
                 <Spin />
@@ -1053,7 +1079,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
                 </div>
               </div>
             ) : inspectData?.prompt_script ? (
-              <Card size="small" title="反推文案稿（一致性比对的事实来源）">
+              <Card size="small" title="反推文案稿">
                 <Paragraph
                   style={{ marginBottom: 0, fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 360, overflow: 'auto' }}
                 >

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button, Popover, Space, Tag, Tooltip, Typography, message } from 'antd';
-import { CheckCircleOutlined, CloseCircleOutlined, EditOutlined, SendOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, CloseCircleOutlined, EditOutlined, FileSearchOutlined, SendOutlined } from '@ant-design/icons';
 import { HOOK_STYLE_LABELS, type AssetFrameSlot, type AssetSummary } from '../../api/assets';
 import { AuditStatusTag, RiskTags } from './AssetBits';
 import { CategoryTag } from './AssetCategoryBits';
@@ -126,18 +126,7 @@ const AssetReviewCard: React.FC<Props> = ({
             </Text>
           </Tooltip>
         )}
-        {/* P1（评审定稿⑨）：一致性核验入口——签字依据给足：原片播放＋反推脚本全文 */}
-        {onInspect && (
-          <a
-            style={{ fontSize: 12 }}
-            onClick={(e) => {
-              e.preventDefault();
-              onInspect(row);
-            }}
-          >
-            核验原片/脚本
-          </a>
-        )}
+
         {row.style_tag && <Tag>{HOOK_STYLE_LABELS[row.style_tag] || row.style_tag}</Tag>}
         {row.formula_tag && <Tag color="geekblue">{row.formula_tag}</Tag>}
         <CategoryTag categoryId={row.category_id} categoryName={row.category_name} />
@@ -261,6 +250,20 @@ const AssetReviewCard: React.FC<Props> = ({
           </Tooltip>
         )}
       </Space>
+
+      {/* P1（评审定稿⑨）：核验是一个重要功能——做成独立按钮，放右侧操作区顶部 */}
+      {onInspect && (
+        <Tooltip title="核验签字依据：看原片 + 反推文案稿全文（一致性比对的事实来源）">
+          <Button
+            size="middle"
+            block
+            icon={<FileSearchOutlined />}
+            onClick={() => onInspect(row)}
+          >
+            核验原片/脚本
+          </Button>
+        </Tooltip>
+      )}
 
       <Space size={4}>
         {row.can_resubmit && (
