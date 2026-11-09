@@ -402,6 +402,10 @@ async def _apply_compat_migrations():
         ("users", "can_review", "BOOLEAN DEFAULT TRUE"),
         ("users", "can_produce", "BOOLEAN DEFAULT TRUE"),
         ("asset_summaries", "resubmit_note", "TEXT"),
+        # 0065（11-09 反推提示词自动补投）：终态失败只补投一次的认领标记。
+        # INTEGER + server_default '0'：补列时存量行自动填 0（＝没补投过），不回填脚本。
+        # 真正的防双扣靠 UPDATE ... WHERE retry_count = 0 的原子认领，不靠这个默认值。
+        ("wechat_dl_prompt_tasks", "retry_count", "INTEGER NOT NULL DEFAULT 0"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

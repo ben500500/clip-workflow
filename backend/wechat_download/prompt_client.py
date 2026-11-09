@@ -2,11 +2,15 @@
 
 链路（官方文档 https://api.17zhiling.com/doc/120）：
 1. 提交 `POST /api/video-inference/parse-video-url-time`
-   - form-urlencoded：key / videoUrl / maxDuration（可选，秒，默认 600，最大 600）
+   - form-urlencoded：key / videoUrl / maxDuration（可选，秒，最大 600；
+     本系统默认取 `WECHAT_DL_PROMPT_MAX_DURATION`，11-09 起为 180——**按这个上限
+     计费，失败也扣钱**，所以默认值就是单价，别随手留空按 600 投）
    - 返回 `{code:200, data:"<taskId>", msg, exec_time}`，`data` 即任务 id
 2. 轮询 `GET /api/video-inference/task-status?key=&taskId=`（官方免费，建议 3~5s 一次）
    - `data.schedule`：WAIT_HANDLE / PROCESSING / SUCCESS / FAIL
    - SUCCESS 时 `data.content` 为提示词正文（markdown）
+   - **FAIL 时原因在 `data.errMsg`**（外层 `msg` 此时仍是 "success"，不能当原因用），
+     现网实测常见值「视频理解服务返回空结果」——换时刻重投通常就好了，见 _fail_reason
    - `code=-1` 为业务异常（含额度耗尽），原因看 `msg`
    - 计费 0.00054 元/秒（点数 0.54 点/秒，不足 1 点按 1 点），注册赠 30 次
 
@@ -99,6 +103,24 @@ def _truncate(text: Optional[str], limit: int = 500) -> Optional[str]:
         return None
     text = str(text).strip()
     return text[:limit] if len(text) > limit else text
+
+
+# 终态失败的原因字段：官方 doc/119 在 schedule=FAIL 时把原因放在 **errMsg**，
+# 不是 msg（外层 msg 这时候是 "success"，拿它当原因等于把真因丢了）。
+# 11-09 现网成批 failed 就卡在这：库里只写「任务处理失败」，一线看不见是
+# 「视频理解服务返回空结果」还是「额度耗尽」，两种处置完全不一样。
+# 多个候选键按官方新旧响应形状依次取，第一个非空即用；msg 放最后兜底
+# （个别版本确实把原因写在 msg 里）。
+FAIL_REASON_KEYS = ("errMsg", "error_msg", "errorMsg", "error", "msg")
+
+
+def _fail_reason(data: dict, default: str = "任务处理失败") -> str:
+    """从 FAIL 响应的 data 里捞出人话失败原因（errMsg 优先）。"""
+    for key in FAIL_REASON_KEYS:
+        value = data.get(key)
+        if value and str(value).strip().lower() not in ("success", "ok", "null", "none"):
+            return _truncate(str(value).strip()) or default
+    return default
 
 
 class PromptClient:
@@ -236,7 +258,7 @@ class PromptClient:
         if schedule == SCHEDULE_FAIL:
             return PromptStatus(
                 status=STATUS_FAILED,
-                error=_truncate(data.get("msg") or data.get("error") or "任务处理失败"),
+                error=_fail_reason(data),
                 schedule=schedule, raw=body,
             )
         # WAIT_HANDLE / PROCESSING / 未知 schedule：一律按处理中（不误判终态）

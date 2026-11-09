@@ -454,7 +454,8 @@ class ReversePromptRequest(BaseModel):
     source_url: str = Field(..., description="视频链接（支持 30+ 平台分享链接与视频直链）")
     max_duration: Optional[int] = Field(
         None, ge=1, le=600,
-        description="计时上限（秒，默认 600，最大 600）；决定计费上限",
+        description="计时上限（秒，留空按 WECHAT_DL_PROMPT_MAX_DURATION，默认 180；官方最大 600）。"
+                    "计费按这个上限算、失败也扣钱，所以它是单价而不是保险",
     )
 
 
@@ -505,7 +506,7 @@ def _content_length(headers) -> Optional[int]:
 @router.post("/reverse-prompt/upload", status_code=201)
 async def upload_reverse_prompt_task(
     file: UploadFile = File(..., description="本地视频文件（mp4/mov/webm/avi/mkv/m4v）"),
-    max_duration: Optional[int] = Form(None, description="计时上限（秒），默认 600，最大 600"),
+    max_duration: Optional[int] = Form(None, description="计时上限（秒），留空默认 180，最大 600"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -589,6 +590,9 @@ async def get_reverse_prompt_task(
     """查询反推提示词任务；仍在 processing 时顺带向智令查询一次并更新状态。
 
     前端在 processing 期间每 4s 轮询本接口即可，无需直接访问第三方。
+    顺带承担两件事（都在 refresh_prompt_task 里）：可重试的终态失败自动补投一次
+    （所以这一轮返回可能是 failed，下一轮就变回 processing），以及僵尸 processing 行
+    到期收口。列表接口不轮询、不补投，只有本接口会。
     """
     task = await get_prompt_task(db, task_id)
     if task is None or not can_access_prompt_task(task, current_user):

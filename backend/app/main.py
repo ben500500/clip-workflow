@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from app.config import settings, cors_origins
 from app.database import init_db, close_db, async_session_factory
+from app.logging_setup import install_credential_redaction
 from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers, monitor, maintenance, watermark, shortdrama, publish_material, batch_slice, channel_accounts, variants, dramas, dedupe, theaters, remotion, assets
 from app.auth import get_password_hash, get_current_user
 from app.models.models import User, UserRole, PlatformProfile
@@ -25,6 +26,10 @@ from dupload import api as dupload_api
 
 
 logging.basicConfig(level=logging.INFO)
+# 密钥脱敏（11-09）：智令 doc/119 轮询把 key 放在查询串里，httpx 的 INFO 逐请求行会把它
+# 原样写进 docker logs。抬掉 httpx/httpcore 级别 + 给根 handler 挂打码过滤器，
+# 起因与口径见 app/logging_setup.py。必须在 basicConfig 之后调用才有 handler 可挂。
+install_credential_redaction()
 logger = logging.getLogger(__name__)
 
 

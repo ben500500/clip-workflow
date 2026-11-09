@@ -141,8 +141,11 @@ class WechatDlPromptTask(WechatDownloadBase):
     content = Column(Text, nullable=True)
     # 失败原因（外部接口业务异常 / 网络错误，截断 500 字符）
     error = Column(String(500), nullable=True)
-    # 计时上限（秒，默认 600，最大 600）：决定计费，落库便于对账
+    # 计时上限（秒，默认 180，最大 600）：决定计费，落库便于对账
     max_duration = Column(Integer, nullable=True)
+    # 自动补投次数（0=没补过 / 1=已补投一次）：终态失败只自己烧一次钱的闸门。
+    # 并发防双扣靠 UPDATE ... WHERE retry_count = 0 原子认领，见 prompt_service。
+    retry_count = Column(Integer, nullable=False, default=0, server_default="0")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
