@@ -144,10 +144,27 @@ const AssetLibrary: React.FC = () => {
     return <Tag color="blue">素材专员：可导入/读视频/出文案，不能审自己写的文案、不能出生产单（审核台与生产单只读）</Tag>;
   }, [isAdmin, role]);
 
+  // 用户口径 2026-11-09：页签按**业务流程顺序**排列并加编号——
+  // ① 导入 → ② 素材与文案（反推/出文案）→ ③ 审核 → ④ 生产与投板 → ⑤ 成片墙；
+  // 后台任务是公共辅助（不属流程步骤），放末尾不编号。
   const items = [
     {
+      key: 'import',
+      label: '① 导入',
+      children: (
+        <AssetImportPanel
+          canProduce={canProduce}
+          onSelectBatch={(bid) => {
+            setBatchId(bid);
+            setActiveTab('assets'); // 批次码一键跳转到素材列表（带批次筛选）
+          }}
+          active={activeTab === 'import'}
+        />
+      ),
+    },
+    {
       key: 'assets',
-      label: '素材列表',
+      label: '② 素材与文案',
       children: (
         <AssetListPanel
           key={`assets-${batchId ?? 'all'}`}
@@ -160,24 +177,10 @@ const AssetLibrary: React.FC = () => {
       ),
     },
     {
-      key: 'import',
-      label: '导入与批次',
-      children: (
-        <AssetImportPanel
-          canProduce={canProduce}
-          onSelectBatch={(bid) => {
-            setBatchId(bid);
-            setActiveTab('assets'); // A′：批次码一键跳转到素材列表（带批次筛选）
-          }}
-          active={activeTab === 'import'}
-        />
-      ),
-    },
-    {
       key: 'review',
       label: (
         <Space size={6}>
-          文案审核台
+          ③ 文案审核
           {!!badges.review && <Badge count={badges.review} color="orange" title="等审核的候选数（共享池）" />}
         </Space>
       ),
@@ -194,15 +197,10 @@ const AssetLibrary: React.FC = () => {
       ),
     },
     {
-      key: 'jobs',
-      label: '后台任务',
-      children: <AssetJobsPanel onGoToTab={setActiveTab} active={activeTab === 'jobs'} />,
-    },
-    {
       key: 'production',
       label: (
         <Space size={6}>
-          生产单与投板
+          ④ 生产与投板
           {!!badges.ready && <Badge count={badges.ready} color="blue" title="还没投的生产单数" />}
         </Space>
       ),
@@ -221,7 +219,7 @@ const AssetLibrary: React.FC = () => {
       // 批 K（成片素材墙）：链路终点。回收回来的片子按缩略图一面墙摆开，
       // 点开就播、勾选多选下载——最终用户「挑片子」就在这一屏，不用去生产单行里翻。
       key: 'outputs',
-      label: '成片素材墙',
+      label: '⑤ 成片墙',
       children: (
         <AssetOutputWall
           key={`outputs-${batchId ?? 'all'}`}
@@ -232,6 +230,12 @@ const AssetLibrary: React.FC = () => {
           active={activeTab === 'outputs'}
         />
       ),
+    },
+    {
+      // 公共辅助（不属流程步骤）：所有后台任务的台账回看
+      key: 'jobs',
+      label: '后台任务',
+      children: <AssetJobsPanel onGoToTab={setActiveTab} active={activeTab === 'jobs'} />,
     },
   ];
 
