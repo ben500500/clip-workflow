@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Button, Checkbox, Descriptions, Input, Modal, Space, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Checkbox, Descriptions, Input, Modal, notification, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import { CopyOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { RECHECK_CODE_LABELS, assetApi, isAssetJobAck, waitForAssetJob } from '../../api/assets';
@@ -84,17 +84,16 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const [takingCodes, setTakingCodes] = useState(false);
 
   // 批 I（链路收敛）：投产成功后顺势投板——不用再回生产单列表勾一遍。
-  // 逐批人工确认的口径不放松：这里也要勾一下确认才投得出去。
-  const [followupConfirm, setFollowupConfirm] = useState(false);
+  // 11-09 用户口径「确认步骤太多了」：原来这里还有一枚 `followupConfirm` 勾选，
+  // 不勾「投去出片」就是灰的、点了没反应（现网真有人以为已经投出去了）。
+  // 现在**点「投去出片」这一下本身就是人工确认**，勾去掉了；接口照旧带 confirm=true。
   const [followupBusy, setFollowupBusy] = useState(false);
 
   // 批 M（评审二·P1-4）：Modal destroyOnClose 只销毁子树，本组件的 state 跨开合残留——
-  // 上一单勾过的「投去出片」确认会带进下一单，「逐批人工确认」的闸门被残留状态绕过一半；
-  // cardIds/codeText 同理（上一单挑的卡和取的号 silently 落到下一单上）。
+  // cardIds/codeText 这类"上一单填的"会 silently 落到下一单上。
   // 打开时统一归零；n/boardTotal/accounts 这类"上一批怎么配的"保留——批量开单时是顺手的好默认。
   useEffect(() => {
     if (!open) return;
-    setFollowupConfirm(false);
     setFollowupBusy(false);
     setResult(null);
     setJobHint(null);
@@ -111,10 +110,6 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const dispatchFollowup = async () => {
     const ids = (result?.production_ids || []).filter(Boolean);
     if (!ids.length) return;
-    if (!followupConfirm) {
-      message.warning('勾一下确认：投出去吃的是当天号池额度，这一下只能由人点');
-      return;
-    }
     setFollowupBusy(true);
     try {
       const res = await withCrossPersonConfirm((c) =>
@@ -129,12 +124,20 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
       nudgeAssetJobBanner();
       if (isAssetJobAck(res)) {
         const pre = (res as { precheck?: { will_create: number; will_recover: number; blocked?: unknown[]; planned_board_rows: number } }).precheck;
-        Modal.success({
-          title: '已经排上：机器去企微后台建任务出片',
-          content: (
+        const blocked = !!pre?.blocked?.length;
+        // 11-09 用户口径「确认后窗口就缩掉，让任务在后台跑着」：原来是 Modal.success
+        // ——投都投完了还要人再点一下关闭。改成右上角消息条；**被闸门挡下**的那条不自动关
+        // （duration 0），因为那是「你以为投了其实没投」的唯一现场证据。
+        notification.open({
+          key: 'asset-dispatch-ack',
+          placement: 'topRight',
+          duration: blocked ? 0 : 8,
+          style: { width: 460 },
+          message: '已经排上：机器去企微后台建任务出片',
+          description: (
             <Text style={{ fontSize: 12 }}>
               新建 {pre?.will_create ?? '—'} 张、回收 {pre?.will_recover ?? 0} 张（≈{pre?.planned_board_rows ?? '—'} 条额度）
-              {pre?.blocked?.length ? `；${pre.blocked.length} 张被闸门挡下没投` : ''}。
+              {blocked ? `；${pre!.blocked!.length} 张被闸门挡下没投，原因见 ④ 生产单页行上` : ''}。
               出好的片子自动回到生产单页各单的「成片」列，可以关页面去干别的。
             </Text>
           ),
@@ -348,21 +351,18 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
           </Descriptions>
 
           {/* 批 I（链路收敛）：单子建好了顺势问一句投不投——不用回列表再勾一遍。
-              逐批人工确认不放松：还是要点一下勾，但不用换页面。 */}
+              11-09：「确认把这 N 张投去出片」那枚勾选去掉了，点按钮这一下就是确认；
+              投完窗口当场缩掉，任务在后台跑，进度看顶部横幅。 */}
           {!!result.production_ids?.length && result.board.channel === 'wework_aivideo' && (
             <div>
-              <Checkbox
-                checked={followupConfirm}
-                onChange={(e) => setFollowupConfirm(e.target.checked)}
-              >
-                确认把这 {result.production_ids.length} 张新单投去 AI 出片（≈{result.board.planned_rows} 条额度，一条 25 分钟起）
-              </Checkbox>
+              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+                投出去吃当天号池额度：≈{result.board.planned_rows} 条，一条 25 分钟起。
+              </Text>
               <Space style={{ marginTop: 8 }}>
                 <Button
                   type="primary"
                   danger
                   loading={followupBusy}
-                  disabled={!followupConfirm}
                   onClick={dispatchFollowup}
                 >
                   投去出片

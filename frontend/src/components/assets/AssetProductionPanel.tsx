@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Col, Dropdown, Input, Modal, Radio, Row, Segmented, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, Col, Dropdown, Input, Modal, Radio, Row, Segmented, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message, notification,
 } from 'antd';
 import {
   CloudUploadOutlined, CopyOutlined, DownloadOutlined, ExportOutlined, MoreOutlined, PlayCircleOutlined, ReloadOutlined, ThunderboltOutlined, VideoCameraOutlined,
@@ -121,10 +121,12 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const [exportForceRisk, setExportForceRisk] = useState(false);
   const [exportForceReason, setExportForceReason] = useState('');
 
-  // 批 H：自动投板。同一个抽屉里两种动作——真投（要 confirm）/ 只回收（不花钱，不看 confirm）
+  // 批 H：自动投板。同一个抽屉里两种动作——真投 / 只回收（不花钱）
+  // 11-09 用户口径「确认步骤太多了」：原来这里还有一枚 `dispatchConfirm` 勾选态，
+  // 不勾按钮就 disabled、点了静默无事——现网真有人以为已经投出去了。现在**点「确认投去出片」
+  // 本身就是那一下人工确认**，勾掉了；接口照旧带 confirm=true（后端口径不变，防 API 侧裸投）。
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [dispatchRecoverOnly, setDispatchRecoverOnly] = useState(false);
-  const [dispatchConfirm, setDispatchConfirm] = useState(false);
   const [dispatchForceRisk, setDispatchForceRisk] = useState(false);
   const [dispatchForceReason, setDispatchForceReason] = useState('');
   const [dispatchBusy, setDispatchBusy] = useState(false);
@@ -463,13 +465,12 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
    * ② 回执按 `isAssetJobAck` 分岔，**不要**判 `results`（异步回执里故意没有它）；
    * ③ 闸门挡下的单子在 `precheck.blocked` 里逐条带原因，必须原文列出来——
    *    "投不了"却不告诉人为什么，下一步就是反复点同一个按钮。
+   * 11-09 改：①「我已逐批确认」那枚勾选去掉（用户口径：确认步骤太多）；②结果**不再弹需要点掉的
+   * 成功窗**，改用右上角自动收的消息条，弹窗提交完当场缩掉，任务在后台跑、进度看顶部横幅。
+   * 但 ③ 的"闸门挡下"必须**留着不自动关**（duration 0）——那是"你以为投了其实没投"的唯一现场证据。
    */
   const submitDispatch = async () => {
     if (!ids.length) return;
-    if (!dispatchRecoverOnly && !dispatchConfirm) {
-      message.warning('勾一下「我已逐批确认」：投出去吃的是当天号池额度，这一下只能由人点');
-      return;
-    }
     if (dispatchForceRisk && !dispatchForceReason.trim()) {
       message.warning('带高风险词强行投板要写一句为什么（这句话进审计，事后对账全靠它）');
       return;
@@ -496,7 +497,6 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
       );
       if (!res) return; // 取消了「替他人批次」确认：什么都不做，弹窗留着
       setDispatchOpen(false);
-      setDispatchConfirm(false);
       setDispatchRecoverOnly(false);
       setDispatchForceRisk(false);
       setDispatchForceReason('');
@@ -508,10 +508,17 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
       if (isAssetJobAck(res)) {
         const ack = res as AssetDispatchAck;
         const pre = ack.precheck;
-        Modal.success({
-          title: ack.message,
-          width: 700,
-          content: (
+        // 11-09 用户口径「确认后窗口就缩掉，让任务在后台跑着」：原来这里开的是
+        // `Modal.success`——提交已经成功了，却还要人再点一下"知道了"才能关掉窗口。
+        // 换成右上角消息条：正常回执 8 秒自动收；**只有闸门挡下**的那条不自动关
+        // （duration 0），因为那是「你以为投出去了其实没投」的唯一现场证据。
+        notification.open({
+          key: 'asset-dispatch-ack',
+          message: ack.message,
+          placement: 'topRight',
+          duration: pre.blocked?.length ? 0 : 8,
+          style: { width: 520 },
+          description: (
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Text>
                 本批会新建 <Text strong>{pre.will_create}</Text> 张板任务、接续回收{' '}
@@ -574,10 +581,13 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         });
       } else {
         const r = res as AssetDispatchResponse;
-        Modal.info({
-          title: r.message,
-          width: 700,
-          content: (
+        notification.open({
+          key: 'asset-dispatch-ack',
+          message: r.message,
+          placement: 'topRight',
+          duration: r.uncertain?.length ? 0 : 8,
+          style: { width: 520 },
+          description: (
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
               <Text style={{ fontSize: 12 }}>
                 新建 {r.dispatched} 张、回收 {r.recovered} 张、到手 {r.succeeded ?? 0}／失败 {r.failed ?? 0}／还在板上 {r.still_running ?? 0}。
@@ -891,7 +901,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           </Tooltip>
         )}
         {canWriteBack && (
-          <Tooltip title="机器去企微后台建任务 → 等出片 → 成片自动回到每张单的「成片」列。一次最多 20 张，逐批人工确认。">
+          <Tooltip title="机器去企微后台建任务 → 等出片 → 成片自动回到每张单的「成片」列。一次最多 20 张；点「确认投去出片」那一下就是人工确认，投完窗口当场缩掉，进度看顶部横幅。">
             <Button
               danger
               type="primary"
@@ -899,7 +909,6 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
               disabled={!ids.length}
               onClick={() => {
                 setDispatchRecoverOnly(false);
-                setDispatchConfirm(false);
                 setDispatchForceRisk(false);
                 setDispatchForceReason('');
                 setPromptOverrides({});
@@ -1071,7 +1080,6 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         okText={dispatchRecoverOnly ? '开始回收' : '确认投去出片'}
         okButtonProps={{
           danger: !dispatchRecoverOnly,
-          disabled: !dispatchRecoverOnly && !dispatchConfirm,
         }}
       >
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
@@ -1110,7 +1118,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
             showIcon
             message={
               dispatchRecoverOnly
-                ? '回收档不烧额度，不需要人工确认；进程重启后靠它把片子取回来'
+                ? '回收档不烧额度、一个都不新建；进程重启后靠它把片子取回来'
                 : '真占当天号池额度，一条 25 分钟起；闸门与导出同一套（状态/正文/风险词）'
             }
           />
@@ -1128,11 +1136,6 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 选了会<b>覆盖</b>本批每张新单已带的卡；不选＝沿用各单自己的。
               </Text>
             </div>
-          )}
-          {!dispatchRecoverOnly && (
-            <Checkbox checked={dispatchConfirm} onChange={(e) => setDispatchConfirm(e.target.checked)}>
-              我已逐批确认这批要投出去（{dispatchPlan.willCreate} 张新建 · ≈{dispatchPlan.rows} 条额度）
-            </Checkbox>
           )}
           {/* 11-06 拍板：投递稿可改。只改这次投出去的；改稿在后端照走风险词重扫并留审计 */}
           {!dispatchRecoverOnly && dispatchPlan.willCreate > 0 && (
