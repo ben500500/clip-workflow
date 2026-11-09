@@ -44,7 +44,9 @@ SSH_OPTS="${DEPLOY_SSH_OPTS:--o StrictHostKeyChecking=no -o BatchMode=yes}"
 SYNC_DIRS=(backend slice-worker frontend engines alembic deploy scripts autoclip rpa)
 
 # 根级散落文件同步（不在任何 SYNC_DIRS 里，必须单列，否则会与仓库漂移）
-SYNC_FILES=(docker-compose.yml)
+# nginx.conf 是根级散落文件（不在 SYNC_DIRS 里）——2026-11-09 加 HTTPS 时发现
+# 它一直没被同步：服务器上是手工放的旧文件，仓库改了端口/证书配置也不会生效。
+SYNC_FILES=(docker-compose.yml nginx.conf)
 
 # 是否先拉取 cnb 更新（git fetch + ff-only merge + 推 GitHub）
 PULL_CNB="${DEPLOY_PULL_CNB:-1}"
