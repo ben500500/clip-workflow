@@ -629,7 +629,7 @@ services:
     ports:
       - "${NGINX_PORT:-80}:80"
       # HTTPS（自签，2026-11-09）：桌面通知要安全上下文；9443 是 MinIO 预签名直链的 TLS 反代
-      - "${NGINX_HTTPS_PORT:-9444}:443"
+      - "${NGINX_HTTPS_PORT:-9888}:443"
       - "${MINIO_HTTPS_PORT:-9443}:9443"
     environment:
       <<: *common-env
