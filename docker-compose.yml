@@ -100,8 +100,6 @@ services:
     networks:
       - clip-network
     volumes:
-      # 自签证书（HTTPS 下 presign 探测 region 要信任）
-      - ./certs:/app/certs:ro
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     environment:
@@ -349,6 +347,8 @@ services:
       - media_data:/app/media
       - chrome_profiles:/data/chrome-profiles
       - ./engines:/app/engines:ro
+      # 自签证书（HTTPS 下 presign 探测 region 要信任）
+      - ./certs:/app/certs:ro
       # HuggingFace 模型缓存持久化（LaMa/MI-GAN 去水印 ONNX 模型，离线环境预置）
       - ./hf-cache:/app/.cache
       # 批量切片源视频目录（与 worker 一致）
