@@ -1036,8 +1036,15 @@ export interface AssetListParams {
 
 /** GET /assets/summaries */
 export interface AssetSummaryListParams {
+  /** 逗号分隔的多状态（11-09 起后端支持）：`approved,passed_edited` 一次拿全「能投产的」 */
   audit_status?: AuditStatus | string;
   asset_id?: string;
+  /**
+   * 批 M（11-09）：一次按多条素材取文案（逗号分隔，后端上限 300 个）。
+   * ② 素材页「投去 AI 生成」靠它把「勾的这几条素材」直接翻成「它们名下已过审的文案」，
+   * 不用像生产单页那样先整批拉 300 条再前端筛——那种拉法量大时会截断。
+   */
+  asset_ids?: string;
   batch_id?: string;
   /** 只看风险词命中的 */
   only_risk?: boolean;

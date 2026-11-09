@@ -45,7 +45,8 @@ const AssetLibrary: React.FC = () => {
   const [reloadToken, setReloadToken] = useState(0);
   /**
    * 批 N（评审二·P0-2）：页签受控。投产成功后「去生产单列表」按钮承诺了带人过去，
-   * 就得真能切过去——审核台的投产弹窗 onDone 会调 onGoToProduction 切到本页签。
+   * 就得真能切过去——审核台（批 N）与素材列表（批 M「投去 AI 生成」）的投产弹窗
+   * onDone 都会调 onGoToProduction 切到本页签。
    */
   // A′（2026-11-08 定稿）：页签角色化默认着陆（material→导入、operator→审核台、admin→素材列表）
   // ＋记住上次页签（首次访问按角色、之后 localStorage 记忆）。
@@ -191,6 +192,7 @@ const AssetLibrary: React.FC = () => {
           isAdmin={isAdmin}
           batchId={batchId}
           reloadToken={reloadToken}
+          onGoToProduction={() => setActiveTab('production')}
           active={activeTab === 'assets'}
         />
       ),

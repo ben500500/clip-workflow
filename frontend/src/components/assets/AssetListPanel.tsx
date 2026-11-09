@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, DatePicker, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, DatePicker, Input, Modal, Select, Space, Spin, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   BulbOutlined, CloudDownloadOutlined, DeleteOutlined, DownloadOutlined, FileTextOutlined, LoadingOutlined,
-  MergeCellsOutlined, QuestionCircleOutlined, ReloadOutlined, SearchOutlined,
+  MergeCellsOutlined, QuestionCircleOutlined, ReloadOutlined, SearchOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -13,15 +13,20 @@ import {
 } from '../../api/assets';
 import type {
   AssetItem, AssetAnalyzeResponse, AssetCostEstimateResponse, AssetMediaKind, AssetResolveResponse,
+  AssetSummary,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
-import { AssetStatusTag, LandscapeTag, MediaKindTag, StageTags, aspectShortText, durationText, isImageAsset, yuan } from './AssetBits';
+import {
+  AssetStatusTag, AuditStatusTag, LandscapeTag, MediaKindTag, MonoText, StageTags,
+  aspectShortText, durationText, isImageAsset, yuan,
+} from './AssetBits';
 import {
   CategorySelect, CategoryTag, UNCLASSIFIED, invalidateAssetCategories, useAssetCategories,
 } from './AssetCategoryBits';
 import CostConfirmModal from './CostConfirmModal';
 import AssetDetailDrawer from './AssetDetailDrawer';
 import AssetComposeModal from './AssetComposeModal';
+import ProduceOrderModal from './ProduceOrderModal';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
 import { withCrossPersonConfirm } from './crossPerson';
 
@@ -30,6 +35,14 @@ const { RangePicker } = DatePicker;
 
 /** 列宽拖拽的记忆键（批 J 列表列宽可拖，拖完存本地，下次进来保持） */
 const COL_WIDTH_KEY = 'asset-list-col-widths-v1';
+
+/**
+ * 「投去 AI 生成」一次最多带多少条素材去捞文案：**跟后端 `asset_ids` 的上限对齐（300）**。
+ * 在这里拦是为了不让人点完才吃一个 400；后端那道仍在，是防直连调用的。
+ */
+const PRODUCE_FROM_ASSET_MAX = 300;
+/** 文案列表口后端 `page_size` 封顶就是 300，一次取满，别让弹窗只回第一页还不说 */
+const PRODUCE_SUMMARY_PAGE_SIZE = 300;
 
 /** 来源链接太长截断成「域名+尾巴」，全文放 Tooltip（批 J：超长链接把列撑爆） */
 const shortUrl = (u: string) => {
@@ -112,6 +125,11 @@ interface Props {
   reloadToken?: number;
   /** A′ UX：页签切回来自动刷新（antd Tabs 挂载不卸载） */
   active?: boolean;
+  /**
+   * 批 M（11-09）：② 页直达投产后，建单成功要把人带到「生产与投板」页签——
+   * 按钮说「去生产单」就得真带人过去（同一个坑见评审二 P0-2）。
+   */
+  onGoToProduction?: () => void;
 }
 
 /**
@@ -127,8 +145,14 @@ interface Props {
  *
  * 「原型」那一列（11-04 拍板①）是**结构层人工标记**：不点也能走完全链，所以既不必填也不拦人；
  * 点原型 0 元、不等模型，因此不走成本确认单，直接批量提交。
+ *
+ * 「投去 AI 生成」（11-09）是**只读的一步跳转**：把勾选素材名下已过审的文案捞出来，
+ * 交给生产单页/审核台共用的那个投产弹窗。本按钮自己不算钱、不做校验——闸门只有一套，
+ * 在弹窗里（风险词、一致性、钩子编号、号池），这里再写一套早晚对不上。
  */
-const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadToken, active = true }) => {
+const AssetListPanel: React.FC<Props> = ({
+  canProduce, isAdmin, batchId, reloadToken, onGoToProduction, active = true,
+}) => {
   const [items, setItems] = useState<AssetItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -200,6 +224,20 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const [resolvePreview, setResolvePreview] = useState<AssetCostEstimateResponse | null>(null);
   const [resolveConfirmed, setResolveConfirmed] = useState(false);
   const [resolveBusy, setResolveBusy] = useState(false);
+
+  // 批 M（11-09 用户口径）：② 页直达投产——勾素材 → 看它们名下已过审的文案 → 投产弹窗。
+  // 原来这条路的入口在生产单页（从整批过审文案里翻）和审核台（审完顺手投），
+  // 但一线手上拿着的是「素材」，最自然的动作就是在素材这一行点下去。
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiRows, setAiRows] = useState<AssetSummary[]>([]);
+  const [aiSel, setAiSel] = useState<AssetSummary[]>([]);
+  const [aiTotal, setAiTotal] = useState(0);
+  /** 后端一页封顶 300 条：勾的素材多且每条过审好几版时会截断，必须说，不能让人以为看全了 */
+  const [aiTruncated, setAiTruncated] = useState(false);
+  /** 勾了、但一条「已过审」文案都没有的素材码——直接点名，别让人挨个开抽屉查 */
+  const [aiMissing, setAiMissing] = useState<string[]>([]);
+  const [produceOpen, setProduceOpen] = useState(false);
 
   const [genBusy, setGenBusy] = useState(false);
   const [refreshBusy, setRefreshBusy] = useState(false);
@@ -445,6 +483,51 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
       message.error((e as Error).message || '出文案失败');
     } finally {
       setGenBusy(false);
+    }
+  };
+
+  // ── 投去 AI 生成（② 页直达投产，批 M 11-09）──
+  const openProduceFromAssets = async () => {
+    if (!selectedVideoCount) {
+      message.warning('角色卡（图片）没有文案可投：只勾视频素材');
+      return;
+    }
+    if (selectedVideoIds.length > PRODUCE_FROM_ASSET_MAX) {
+      message.warning(
+        `一次最多带 ${PRODUCE_FROM_ASSET_MAX} 条素材（当前 ${selectedVideoIds.length} 条）——先用上面的批次筛选缩小范围`,
+      );
+      return;
+    }
+    setAiOpen(true);
+    setAiLoading(true);
+    setAiRows([]);
+    setAiSel([]);
+    setAiTotal(0);
+    setAiTruncated(false);
+    setAiMissing([]);
+    try {
+      // 一次请求拿全「已过审 + 改后通过」：后端 11-09 起支持逗号多状态 + asset_ids，
+      // 所以 total 是准的。原来生产单页那种「两态各拉 300 条再前端拼」在量大时 total
+      // 会把人骗到（拉回来的不是全集），这里不复制那个写法。
+      const res = await assetApi.listSummaries({
+        audit_status: 'approved,passed_edited',
+        asset_ids: selectedVideoIds.join(','),
+        page_size: PRODUCE_SUMMARY_PAGE_SIZE,
+      });
+      const rows = res.items || [];
+      setAiRows(rows);
+      setAiTotal(res.total || 0);
+      setAiTruncated(rows.length < (res.total || 0));
+      const covered = new Set(rows.map((r) => r.asset_id));
+      setAiMissing(
+        selected.filter((s) => !isImageAsset(s) && !covered.has(s.id)).map((s) => s.code),
+      );
+    } catch (e) {
+      // 拉不到就别留一个空壳弹窗：关回去 + 报错，让人重点
+      setAiOpen(false);
+      message.error((e as Error).message || '过审文案拉不到');
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -1141,6 +1224,30 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
               出钩子文案（{selectedVideoCount}）
             </Button>
           </Tooltip>
+          {/*
+            批 M（11-09）：直达投产。这一步 0 元、只读（拉已过审文案清单），
+            真花钱的是下一屏投产弹窗里的展开/投板，所以不走这里的成本确认单——
+            闸门在 ProduceOrderModal 里，全站只有那一套。
+          */}
+          <Tooltip
+            title={
+              <div style={{ maxWidth: 300 }}>
+                <div>把勾选素材名下<strong>已过审 / 改后通过</strong>的文案捞出来，进投产弹窗开生产单。</div>
+                <div style={{ marginTop: 4 }}>
+                  风险词、一致性、钩子编号、号池这些检查都在弹窗里，这里不重复一遍。
+                </div>
+              </div>
+            }
+          >
+            <Button
+              icon={<ThunderboltOutlined />}
+              loading={aiLoading}
+              onClick={openProduceFromAssets}
+              disabled={!ids.length}
+            >
+              投去 AI 生成（{selectedVideoCount}）
+            </Button>
+          </Tooltip>
           <Tooltip title="把这一批里还在跑的视频读取结果一次性收回来（不用逐条点）">
             <Button icon={<ReloadOutlined />} loading={refreshBusy} onClick={refreshRunning}>
               收取在跑结果（本页 {runningCount}）
@@ -1340,6 +1447,153 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         asset={composeAsset}
         onClose={() => setComposeAsset(null)}
         onDone={() => fetchList(page, pageSize)}
+      />
+
+      {/*
+        批 M（11-09）：② 页「投去 AI 生成」的中间一屏，只回答一个问题——
+        「你勾的这几条素材里，哪些文案已经过审、能开单」。
+        不做默认全选：一条素材可能好几版都过了审，全勾＝一次投出几倍号池额度，
+        而号池是按天算的（≈120 条/日）。
+      */}
+      <Modal
+        open={aiOpen}
+        title={`从勾选素材开生产单（${selectedVideoCount} 条素材）`}
+        width={780}
+        onCancel={() => {
+          setAiOpen(false);
+          setAiSel([]);
+        }}
+        footer={
+          <Space>
+            <Button onClick={() => setAiOpen(false)}>取消</Button>
+            <Button
+              type="primary"
+              disabled={!aiSel.length}
+              onClick={() => {
+                setAiOpen(false);
+                setProduceOpen(true);
+              }}
+            >
+              去生成生产单（{aiSel.length}）
+            </Button>
+          </Space>
+        }
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          {aiLoading && <Spin size="small" />}
+          {!aiLoading && !aiRows.length && (
+            <Alert
+              type="warning"
+              showIcon
+              message={`勾的 ${selectedVideoCount} 条素材名下没有「已过审 / 改后通过」的文案`}
+              description={
+                <span style={{ fontSize: 12 }}>
+                  没出过文案就回上一排点「出钩子文案」；出了文案还没审，去「文案审核」页签过审。
+                  只有过审的文案能开生产单——这道在后端也拦着，绕不过去。
+                </span>
+              }
+            />
+          )}
+          {!aiLoading && !!aiMissing.length && !!aiRows.length && (
+            <Alert
+              type="info"
+              showIcon
+              message={`${aiMissing.length} 条素材没过审文案，已排在外面`}
+              description={
+                <span style={{ fontSize: 12 }}>
+                  {aiMissing.slice(0, 12).join('、')}
+                  {aiMissing.length > 12 ? `…等 ${aiMissing.length} 条` : ''}
+                </span>
+              }
+            />
+          )}
+          {aiTruncated && (
+            <Alert
+              type="warning"
+              showIcon
+              message={`过审文案多于 ${PRODUCE_SUMMARY_PAGE_SIZE} 条，这里只列了一部分`}
+              description={
+                <span style={{ fontSize: 12 }}>
+                  下面列的是最近的 {aiRows.length} 条（共 {aiTotal} 条）。少勾几条素材分批开单，
+                  或去「生产与投板」页签按批次开单。
+                </span>
+              }
+            />
+          )}
+          {!aiLoading && !!aiRows.length && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              一条文案＝一组生产单。「已开单」是这条之前开过几张，防止同一版重复投。
+            </Text>
+          )}
+          <Table<AssetSummary>
+            rowKey="id"
+            size="small"
+            loading={aiLoading}
+            dataSource={aiRows}
+            pagination={{ pageSize: 8, showSizeChanger: false }}
+            rowSelection={{
+              selectedRowKeys: aiSel.map((s) => s.id),
+              onChange: (_, rows) => setAiSel(rows),
+            }}
+            columns={[
+              {
+                title: '素材',
+                dataIndex: 'asset_code',
+                width: 112,
+                render: (v?: string) => <MonoText>{v ? v.slice(0, 11) : '—'}</MonoText>,
+              },
+              {
+                title: '文案',
+                dataIndex: 'text',
+                ellipsis: true,
+                render: (v: string, row) => (
+                  <span style={{ fontSize: 12 }}>
+                    #{row.seq} {v}
+                  </span>
+                ),
+              },
+              { title: '字数', dataIndex: 'word_count', width: 56 },
+              {
+                title: '状态',
+                dataIndex: 'audit_status',
+                width: 92,
+                render: (v: AssetSummary['audit_status']) => <AuditStatusTag status={v} />,
+              },
+              {
+                title: '已开单',
+                dataIndex: 'production_count',
+                width: 68,
+                render: (v?: number) =>
+                  v ? (
+                    <Tooltip title="这条文案之前开过几张生产单（重复开＝重复占当天号池额度）">
+                      <Tag color="orange">{v}</Tag>
+                    </Tooltip>
+                  ) : (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      0
+                    </Text>
+                  ),
+              },
+            ]}
+          />
+        </Space>
+      </Modal>
+
+      {/* 与生产单页/审核台同一个投产弹窗：闸门（风险词、一致性、钩子编号、号池、成本）只有一套 */}
+      <ProduceOrderModal
+        open={produceOpen}
+        summaries={aiSel}
+        isAdmin={isAdmin}
+        batchId={batchFilter || batchId}
+        onClose={() => setProduceOpen(false)}
+        onDone={() => {
+          setProduceOpen(false);
+          setAiSel([]);
+          setSelected([]);
+          fetchList(page, pageSize);
+          // 建完单要真把人带到「生产与投板」——新单在那一屏才看得见
+          onGoToProduction?.();
+        }}
       />
     </Card>
   );

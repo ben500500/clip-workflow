@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Select, Space, Spin, Tag, Tooltip, Typography, Upload, message } from 'antd';
-import { UploadOutlined } from '@ant-design/icons';
+import { InboxOutlined } from '@ant-design/icons';
 import { assetApi } from '../../api/assets';
 import type { AssetItem } from '../../api/assets';
 import { aspectShortText } from './AssetBits';
@@ -187,26 +187,35 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
         <Text style={{ fontSize: 12 }}>人物卡（三视图等，可多张）</Text>
       </Tooltip>
 
-      {/* 批 L：就地上传——不用先去导入面板绕一圈再回来挑 */}
-      <Space size={8} wrap>
-        <Upload
-          accept="image/jpeg,image/png,image/webp"
-          multiple
-          showUploadList={false}
-          disabled={!active || uploading}
-          beforeUpload={(f) => {
-            uploadCard(f as unknown as File);
-            return false;
-          }}
-        >
-          <Button size="small" icon={<UploadOutlined />} loading={uploading}>
-            上传新卡（jpg/png，传完自动选上）
-          </Button>
-        </Upload>
-        <Text type="secondary" style={{ fontSize: 12 }}>
+      {/*
+        批 M（11-09 用户口径）：就地传卡从「点按钮选文件」升级成**可拖拽区**——
+        手上有三视图的人通常是文件夹里拖一把过来，而不是在文件选择器里翻目录。
+        行为一点没变：仍是 beforeUpload 返回 false 自己接管上传、逐张串行、
+        传完自动选上并刷新列表（并发拆批的坑见 uploadCard 那段注释）。
+      */}
+      <Upload.Dragger
+        accept="image/jpeg,image/png,image/webp"
+        multiple
+        showUploadList={false}
+        disabled={!active || uploading}
+        // 压矮一点：这块是在投产弹窗里，默认 48px 图标 + 16px 内边距会把卡片列表顶出屏
+        style={{ padding: '6px 12px' }}
+        beforeUpload={(f) => {
+          uploadCard(f as unknown as File);
+          return false;
+        }}
+      >
+        <p className="ant-upload-drag-icon" style={{ marginBottom: 2 }}>
+          {/* 尺寸写在内层：antd 的 .ant-upload-drag-icon .anticon{font-size:48px} 会盖掉父级字号 */}
+          <InboxOutlined style={{ fontSize: 22 }} />
+        </p>
+        <p className="ant-upload-text" style={{ fontSize: 13, marginBottom: 2 }}>
+          {uploading ? '正在上传（传完自动选上）…' : '把人物三视图拖进来，或点击选择（jpg/png，可多张）'}
+        </p>
+        <p className="ant-upload-hint" style={{ fontSize: 12, marginBottom: 0 }}>
           {batchId ? '传的卡挂在当前批次名下' : '当前没锁批次：传的卡会单独建一个小批次'}
-        </Text>
-      </Space>
+        </p>
+      </Upload.Dragger>
 
       {loading && !cards.length ? (
         <Spin size="small" />
@@ -219,8 +228,8 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
           message="素材库里还没有图片素材"
           description={
             <Text type="secondary" style={{ fontSize: 12 }}>
-              点上面的「上传新卡」直接传定妆照/三视图 jpg·png（图片只作生产输入，
-              不参与读视频、出文案、拼接，也不计费），传完自动选上。
+              把定妆照/三视图 jpg·png 直接拖进上面那块区域（或点它选文件），传完自动选上。
+              图片只作生产输入，不参与读视频、出文案、拼接，也不计费。
               不挂卡也能建单，只是成片人物形象由模型自己发挥。
             </Text>
           }
