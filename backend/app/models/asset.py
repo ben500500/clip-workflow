@@ -456,6 +456,15 @@ class AssetSummary(Base):
     # （文案本身不受影响），用 POST /assets/summaries/prompt-web 单独补。
     doubao_prompt = Column(Text, nullable=True)
 
+    # 批 N（11-09 用户口径「现有已经导入的那些文案，你都去取一个编号放着吧」）：
+    # **预取**好、还没用掉的钩子编号。为什么要在文案上存一份：取号是「一发即烧」的
+    # 外部动作（hook_id.py 写共享台账），过去只能在开单那一屏现取现贴，一线慢一步
+    # 就得回头再取；批量导入的 85 条更是每条都得手动粘。现在号先钉在文案上等着，
+    # 开单时后端自动顶上去（见 `create_productions` 的 parked_code），顶掉就当场清空
+    # ——不清空就等于允许同一个号被第二次开单复用，而拍板③ 明确禁止（一钩一号，
+    # 已用号在 `asset_productions` 那侧当场 400）。NULL＝没预取 / 已被某张单吃掉。
+    hook_code = Column(String(10), nullable=True)
+
     source_prompt_task_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

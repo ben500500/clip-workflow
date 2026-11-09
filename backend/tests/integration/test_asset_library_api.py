@@ -9237,3 +9237,218 @@ def test_upload_batch_records_resolution_for_videos():
         await client.aclose()
 
     _run(_scenario())
+
+
+# ────────────────────────────────────────────────────────────────────
+# 批 N（11-09）：文案预取钩子编号（用户口径「现有已经导入的那些文案，你都去取一个编号放着吧」）
+# ────────────────────────────────────────────────────────────────────
+
+async def _park(client, headers, items):
+    return await client.post("/api/assets/summaries/hook-codes", json={"items": items}, headers=headers)
+
+
+async def _approve_one(client, h, url=None):
+    """跑到「一条已过审文案」，返回 (asset_id, summary_id)。
+
+    `url`：一个场景里要造第二条素材时必须换链接——同一归一化 URL 第二次导入会进
+    `duplicates`，`items` 是空列表（不是报错），照默认值写死会在 `_make_ready_asset`
+    里 `IndexError`。
+    """
+    hm, ho = h["material"], h["operator"]
+    asset_id, _ = await _make_ready_asset(client, hm, **({"url": url} if url else {}))
+    items, _ = await _gen_and_list(asset_id, hm, client)
+    sid = _approvable(items)["id"]
+    ok = await client.post("/api/assets/summaries/review",
+                           json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+    assert ok.json()["results"][0]["ok"] is True, ok.text
+    return asset_id, sid
+
+
+def test_parked_hook_code_is_consumed_by_produce_and_cleared():
+    """预取号顶进缺号槽位、顶掉当场清空：号一发即烧，留着＝允许第二次开单复用同一个号。
+
+    钉的是三件事：
+    - 开单不传号也能带上号（这就是"放着"的意义，一线不用每次现取现粘）；
+    - 一个号只顶**一个**槽（n=2 时第二张仍是缺号，导出如实标缺，不会一号两投）；
+    - 用完预取位清空（`asset_summaries.hook_code` 为 NULL），列表口回读也是 None——
+      不清空的话下一次开单会被"预取号已被用掉"那条判据拦死，那是自锁。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, sid = await _approve_one(client, h)
+
+        # 预取位初始为空，且列表口就暴露这个键（前端靠它画"这条已有号"）
+        before = (await client.get(f"/api/assets/summaries?asset_id={asset_id}", headers=ho)).json()["items"]
+        assert [x for x in before if x["id"] == sid][0]["hook_code"] is None
+
+        r = await _park(client, ho, [{"summary_id": sid, "hook_code": "7n0k1"}])
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is True and body["summary_parked"] == 1, body
+        after = (await client.get(f"/api/assets/summaries?asset_id={asset_id}", headers=ho)).json()["items"]
+        # 小写进来也要存成大写（与开单口同一把尺，别出现"7n0k1 / 7N0K1"两个写法）
+        assert [x for x in after if x["id"] == sid][0]["hook_code"] == "7N0K1", after
+
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            made = await client.post("/api/assets/produce",
+                                     json={"summary_ids": [sid], "n": 2,
+                                           "recommended_title_count": 1}, headers=ho)
+        assert made.status_code == 200, made.text
+        listed = (await client.get(f"/api/assets/productions?asset_id={asset_id}", headers=ho)).json()["items"]
+        assert [p["hook_code"] for p in sorted(listed, key=lambda x: x["seq"])] == ["7N0K1", None], listed
+
+        srow = await _row_of(AssetSummary, sid)
+        assert srow.hook_code is None, srow.hook_code
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_parked_code_not_double_spent_when_request_already_carries_it():
+    """预取号被手工粘进 hook_codes 时也算用掉：不重复顶槽，但预取位同样要清。
+
+    前端把预取号显示在编号框里（甚至直接带上）是很自然的动作，如果这里只认"顶空槽"
+    那一支，预取位就会留着一个已经在单上的号，下一次开单整批被 stale 判据 400 拦死。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, sid = await _approve_one(client, h)
+        assert (await _park(client, ho, [{"summary_id": sid, "hook_code": "7N0K2"}])).json()["ok"] is True
+
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            made = await client.post("/api/assets/produce",
+                                     json={"summary_ids": [sid], "n": 1, "hook_codes": ["7N0K2"],
+                                           "recommended_title_count": 1}, headers=ho)
+        assert made.status_code == 200, made.text
+        listed = (await client.get(f"/api/assets/productions?asset_id={asset_id}", headers=ho)).json()["items"]
+        assert [p["hook_code"] for p in listed] == ["7N0K2"], listed
+        assert (await _row_of(AssetSummary, sid)).hook_code is None
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_park_hook_code_rejects_bad_input_and_used_codes():
+    """钉号这一口的四种拒绝：脏号／两种 id 都给或都不给／批内重号／号已经在某张单上。
+
+    前三种是 400（请求本身不成立，整批不发），最后一种是 200＋`conflicts` 点名——
+    批量动作里"这一行不行、那几行照钉"比一把回滚友好，但 `ok:false` 必须给出来，
+    不能让调用方以为 85 条全钉上了。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        asset_id, sid = await _approve_one(client, h)
+
+        bad = await _park(client, ho, [{"summary_id": sid, "hook_code": "7c0b"}])
+        assert bad.status_code == 400 and "禁止手编" in bad.text, bad.text
+        shape = await _park(client, ho, [{"hook_code": "7N0K3"}])
+        assert shape.status_code == 400 and "二选一" in shape.text, shape.text
+        both = await _park(client, ho, [{"summary_id": sid, "production_id": sid, "hook_code": "7N0K3"}])
+        assert both.status_code == 400, both.text
+        dup = await _park(client, ho, [{"summary_id": sid, "hook_code": "7N0K4"},
+                                       {"summary_id": sid, "hook_code": "7N0K4"}])
+        assert dup.status_code == 400 and "重号" in dup.text, dup.text
+        empty = await _park(client, ho, [])
+        assert empty.status_code == 400, empty.text
+        # 权限：material 只有导入/出质检，取号是要烧的东西，钉号仍是审核侧的活
+        forb = await _park(client, hm, [{"summary_id": sid, "hook_code": "7N0K5"}])
+        assert forb.status_code == 403, forb.text
+
+        # 号已经被某张单用掉 → conflicts 点名，且**没有**写进预取位
+        _aid2, _sid2, listed = await _order_ready_production(client, h, url=DOUYIN_3,
+                                                              n=1, hook_codes=["7C0D9"])
+        r = await _park(client, ho, [{"summary_id": sid, "hook_code": "7C0D9"}])
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is False and body["summary_parked"] == 0, body
+        assert "已经用在" in body["conflicts"][0]["reason"], body
+        assert (await _row_of(AssetSummary, sid)).hook_code is None
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_hook_code_backfill_on_production_and_refusal_after_board_tid():
+    """补号：没上板的单可以补（段头/标题/产出清单三处编号是导出时现拼的，补了就生效）；
+    已经上了板的**拒绝**——板面任务名与回收对账都按当时的号钉死，这里改一下就对不上账。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, n=1)
+        pid = listed[0]["id"]
+        assert listed[0]["hook_code"] is None, listed
+
+        r = await _park(client, ho, [{"production_id": pid, "hook_code": "7n0k6"}])
+        assert r.status_code == 200 and r.json()["production_filled"] == 1, r.text
+        prow = await _row_of(AssetProduction, pid)
+        assert prow.hook_code == "7N0K6", prow.hook_code
+
+        # 交付文本当场带上了号（补号的意义就在这：导出/投板用的就是这个字段）
+        exp = await client.get(f"/api/assets/productions/export?ids={pid}&format=txt", headers=ho)
+        assert exp.status_code == 200, exp.text
+        assert "=== 7N0K6 ===" in exp.json()["export_text"], exp.json()["export_text"][:200]
+
+        # 同态：再钉一次不报错也不重复写审计
+        same = await _park(client, ho, [{"production_id": pid, "hook_code": "7N0K6"}])
+        assert same.json()["production_filled"] == 0, same.json()
+        assert same.json()["skipped"][0]["reason"].startswith("同态幂等"), same.json()
+
+        # 上板之后（tid 已钉）→ 拒绝改动
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetProduction, uuid.UUID(pid))
+            row.board_tid = "T777"
+            await s.commit()
+        refuse = await _park(client, ho, [{"production_id": pid, "hook_code": "7N0K7"}])
+        assert refuse.json()["ok"] is False, refuse.json()
+        assert "已经投上后台任务板" in refuse.json()["conflicts"][0]["reason"], refuse.json()
+        assert (await _row_of(AssetProduction, pid)).hook_code == "7N0K6"
+
+        # 清空也走同一道闸：上板的号清不得
+        clear = await _park(client, ho, [{"production_id": pid, "hook_code": None}])
+        assert clear.json()["ok"] is False, clear.json()
+        assert (await _row_of(AssetProduction, pid)).hook_code == "7N0K6"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_produce_refuses_when_parked_code_is_already_on_a_production():
+    """预取位里躺着一个已经用过的号（陈旧数据）→ 开单当场点名，不投出去才发现对不上账。
+
+    正常路径走不出这个状态（钉号口自己拦、用完即清），所以这里直接写库造脏数据——
+    判据是"宁可拒开也不带脏号投板"，得有脏数据时才测得到。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        _aid, _sid, _listed = await _order_ready_production(client, h, n=1, hook_codes=["7C0F1"])
+        asset_id, sid = await _approve_one(client, h, url=DOUYIN_3)
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetSummary, uuid.UUID(sid))
+            row.hook_code = "7C0F1"   # 这个号已经在别人那张单上
+            await s.commit()
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            made = await client.post("/api/assets/produce",
+                                     json={"summary_ids": [sid], "n": 1,
+                                           "recommended_title_count": 1}, headers=ho)
+        assert made.status_code == 400, made.text
+        assert "预取的钩子编号已经被用掉了" in made.text and "7C0F1" in made.text, made.text
+        # 拦下来之后预取位**不许被顺手清掉**：清了就等于把脏数据藏起来，下次还是撞
+        assert (await _row_of(AssetSummary, sid)).hook_code == "7C0F1"
+        await client.aclose()
+
+    _run(_scenario())

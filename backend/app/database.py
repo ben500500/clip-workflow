@@ -406,6 +406,9 @@ async def _apply_compat_migrations():
         # INTEGER + server_default '0'：补列时存量行自动填 0（＝没补投过），不回填脚本。
         # 真正的防双扣靠 UPDATE ... WHERE retry_count = 0 的原子认领，不靠这个默认值。
         ("wechat_dl_prompt_tasks", "retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        # 0066（批 N 文案预取钩子编号）：可空不回填，NULL=没预取或已被某张单吃掉。
+        # 开单时后端把这里的号顶到缺号槽位并当场清空，判据见 create_productions。
+        ("asset_summaries", "hook_code", "VARCHAR(10)"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

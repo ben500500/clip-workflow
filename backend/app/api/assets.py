@@ -589,6 +589,17 @@ class CategoryAssignRequest(BaseModel):
     category_id: Optional[str] = Field(None, description="目标原型 id；留空＝清成未分类")
 
 
+class HookCodeParkItem(BaseModel):
+    """一行＝一个号钉在一行上。`summary_id` / `production_id` 二选一。"""
+    summary_id: Optional[str] = Field(None, description="文案 id（预取：号先挂在文案上等开单）")
+    production_id: Optional[str] = Field(None, description="生产单 id（补号：号直接钉在已建好的单上）")
+    hook_code: Optional[str] = Field(None, description="五位编号；留空＝把这一行的预取位/编号清空")
+
+
+class HookCodeParkRequest(BaseModel):
+    items: List[HookCodeParkItem] = Field(default_factory=list, description="逐行点名，一次最多 100 行")
+
+
 # ──────────────────────────────────────────────
 # 通用辅助
 # ──────────────────────────────────────────────
@@ -1363,6 +1374,10 @@ def _serialize_summary(
         "cost_preview": float(s.cost_preview or 0.0),
         # 11-06 双产出：出文案时同步生成的豆包网页版完整提示词（NULL=失败/未生成，可单独补）
         "doubao_prompt": s.doubao_prompt,
+        # 批 N（11-09）：**预取**好、还没用掉的钩子编号（不是已投出去的号——那种号钉在
+        # 生产单行上，看 production 的 hook_code）。开单时后端自动顶到缺号槽位并清空，
+        # 所以这个键有值＝这条文案还欠着一张没开的单、手里有个能用的号。
+        "hook_code": s.hook_code,
         "created_at": utc_iso(s.created_at),
         # 「改后重提」按钮要不要亮：前端不猜权限，按后端给的行级判定画
         "can_resubmit": bool(can_resubmit),
@@ -6231,6 +6246,185 @@ async def hook_codes_used(
     }
 
 
+@router.post("/assets/summaries/hook-codes")
+async def park_hook_codes(
+    data: HookCodeParkRequest,
+    current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """把 hook_id.py 取来的号**提前钉**在文案上（或补钉在已建好的生产单上）。11-09 批 N，
+    用户口径「现有已经导入的那些文案，你都去取一个编号放着吧」。
+
+    为什么要这个口：取号是外部动作（共享台账、一发即烧），过去只能在开单那一屏现取现贴。
+    批量导入的 85 条要每条手动粘一遍，慢一步还得回服务器重取。号先钉在 `asset_summaries.hook_code`
+    上等着，开单时后端自动顶到缺号的槽位（见 `create_productions` 的 parked_code），顶掉当场清空。
+
+    两种行，各自口径：
+    - `summary_id` ＋ 号＝预取；号被某张单吃掉后预取位自动空出来，同一个号绝不会被第二次开单复用。
+    - `production_id` ＋ 号＝**补号**：建单时没带号、后来才拿到号那种。段头/推荐标题/产出清单三处
+      编号都是**导出与投板时**按 `p.hook_code` 现拼的（`format_export_block`），不写在提示词正文里，
+      所以补在还没上板的单上是全_effective_的；已经上了板（`board_tid` 有值）就**拒绝**——
+      板面任务名与回收对账都按老号钉死了，这里改一下就会对不上账。
+    - `hook_code` 留空＝清位（清生产单同样要求没上板）。
+
+    判据与开单口共用一条尺：五位 `is_valid_hook_code`、批内不许重号、
+    已经被哪张单用掉的号不许再钉（拍板③ 一钩一号）。写 AuditLog（`asset.hook_code.park`，
+    逐行 before/after）——号是烧掉的东西，谁钉的、钉之前挂着什么，必须查得回来。
+    """
+    items = data.items or []
+    if not items:
+        raise HTTPException(status_code=400, detail="请至少点名一行（summary_id 或 production_id ＋ 号）")
+    cap = int(settings.ASSET_IMPORT_BATCH_MAX)
+    if len(items) > cap:
+        raise HTTPException(status_code=400, detail=f"单次最多钉 {cap} 行，当前 {len(items)} 行——分批钉")
+
+    summary_ids: List[str] = []
+    production_ids: List[str] = []
+    wanted: List[str] = []
+    parsed: List[dict] = []
+    for idx, it in enumerate(items):
+        sid = str(it.summary_id or "").strip()
+        pid = str(it.production_id or "").strip()
+        if bool(sid) == bool(pid):
+            raise HTTPException(
+                status_code=400,
+                detail=f"第 {idx + 1} 行要**二选一**：给 summary_id（预取到文案）或给 production_id（补号到生产单）",
+            )
+        code = str(it.hook_code or "").strip().upper() or None
+        if code and not svc.is_valid_hook_code(code):
+            raise HTTPException(
+                status_code=400,
+                detail=f"第 {idx + 1} 行的钩子编号 {it.hook_code!r} 不合法：必须是五位 0-9A-Z，"
+                       "用 hook_id.py 取号，禁止手编",
+            )
+        if code:
+            wanted.append(code)
+        row = {"summary_id": sid, "production_id": pid, "code": code}
+        parsed.append(row)
+        (summary_ids if sid else production_ids).append(sid or pid)
+    if len(set(wanted)) != len(wanted):
+        raise HTTPException(status_code=400, detail="同一次提交里有重号：一钩一号，一个号只能钉一行")
+
+    s_uuids = [_as_uuid(x, "summary_id") for x in dict.fromkeys(summary_ids)]
+    p_uuids = [_as_uuid(x, "production_id") for x in dict.fromkeys(production_ids)]
+    summaries = {
+        str(r.id): r
+        for r in (await db.execute(select(AssetSummary).where(AssetSummary.id.in_(s_uuids)))).scalars().all()
+    } if s_uuids else {}
+    productions = {
+        str(r.id): r
+        for r in (await db.execute(select(AssetProduction).where(AssetProduction.id.in_(p_uuids)))).scalars().all()
+    } if p_uuids else {}
+    not_found = [
+        row["summary_id"] or row["production_id"] for row in parsed
+        if (row["summary_id"] and row["summary_id"] not in summaries)
+        or (row["production_id"] and row["production_id"] not in productions)
+    ]
+
+    # 这批要钉的号现在的真实去向：钉在哪张单上、钉在哪条文案的预取位上（都只查一次，不在行循环里打）
+    used_on: Dict[str, str] = {}
+    parked_on: Dict[str, str] = {}
+    if wanted:
+        rows = list(
+            await db.execute(
+                select(AssetProduction.hook_code, AssetProduction.seq, AssetItem.code)
+                .join(AssetItem, AssetItem.id == AssetProduction.asset_id)
+                .where(AssetProduction.hook_code.in_(wanted))
+            )
+        )
+        used_on = {c: f"素材 {ac} 的第 {seq} 张单" for c, seq, ac in rows}
+        rows2 = list(
+            await db.execute(
+                select(AssetSummary.hook_code, AssetItem.code)
+                .join(AssetItem, AssetItem.id == AssetSummary.asset_id)
+                .where(AssetSummary.hook_code.in_(wanted))
+            )
+        )
+        parked_on = {c: f"素材 {ac} 的预取位" for c, ac in rows2}
+
+    changed_summaries: List[dict] = []
+    changed_productions: List[dict] = []
+    skipped: List[dict] = []
+    conflicts: List[dict] = []
+    for row in parsed:
+        code = row["code"]
+        if row["summary_id"]:
+            s = summaries.get(row["summary_id"])
+            if s is None:
+                continue
+            if (s.hook_code or None) == code:
+                skipped.append({"kind": "summary", "id": row["summary_id"], "hook_code": code,
+                                "reason": "同态幂等：预取位已经是这个号"})
+                continue
+            # 走到这里 `s.hook_code != code`，所以 parked_on 里若还有这个号，占位的一定是别条文案
+            if code and used_on.get(code):
+                conflicts.append({"kind": "summary", "id": row["summary_id"], "hook_code": code,
+                                  "reason": f"这个号已经用在{used_on[code]}上，一钩一号不许再钉"})
+                continue
+            if code and parked_on.get(code):
+                conflicts.append({"kind": "summary", "id": row["summary_id"], "hook_code": code,
+                                  "reason": f"这个号已经挂在{parked_on[code]}上，一个号只能占一个预取位"})
+                continue
+            changed_summaries.append({"id": row["summary_id"], "before": s.hook_code, "after": code})
+            s.hook_code = code
+        else:
+            p = productions.get(row["production_id"])
+            if p is None:
+                continue
+            if p.board_tid:
+                conflicts.append({"kind": "production", "id": row["production_id"], "hook_code": code,
+                                  "reason": "这张单已经投上后台任务板（板面任务名与回收对账都按当时的号钉死），"
+                                            "编号改不得——要换号请重开一张单"})
+                continue
+            if (p.hook_code or None) == code:
+                skipped.append({"kind": "production", "id": row["production_id"], "hook_code": code,
+                                "reason": "同态幂等：这张单已经是这个号"})
+                continue
+            # 号钉在**这张单自己**名下不可能出现在 used_on（那行 hook_code 是空才会走到补号），
+            # 所以 used_on 命中就是别处已经用了这个号，直接点名
+            if code and used_on.get(code):
+                conflicts.append({"kind": "production", "id": row["production_id"], "hook_code": code,
+                                  "reason": f"这个号已经用在{used_on[code]}上，一钩一号不许再钉"})
+                continue
+            changed_productions.append({"id": row["production_id"], "before": p.hook_code, "after": code})
+            p.hook_code = code
+
+    await db.flush()
+    # 只在**真改了东西**时留痕：全批同态/全批冲突也写一条审计，会把「谁在什么时刻真的动过号」
+    # 淹成一片重复记录——号是要烧的东西，审计的价值在变化点，不在调用点。
+    if changed_summaries or changed_productions:
+        await _write_audit(
+            db,
+            action="asset.hook_code.park",
+            operator=current_user,
+            target_type="asset_hook_code",
+            target_id="asset_hook_code",
+            before={"summaries": [{"id": c["id"], "hook_code": c["before"]} for c in changed_summaries],
+                    "productions": [{"id": c["id"], "hook_code": c["before"]} for c in changed_productions]},
+            after={"summaries": [{"id": c["id"], "hook_code": c["after"]} for c in changed_summaries],
+                   "productions": [{"id": c["id"], "hook_code": c["after"]} for c in changed_productions],
+                   "conflicts": conflicts, "skipped": skipped},
+        )
+    notes: List[str] = []
+    if not_found:
+        notes.append(f"这些 id 在库里查不到，已跳过：{', '.join(not_found[:5])}"
+                     + (f"（共 {len(not_found)} 个）" if len(not_found) > 5 else ""))
+    if conflicts:
+        notes.append("；".join(c["reason"] for c in conflicts[:5])
+                     + (f"；另有 {len(conflicts) - 5} 行同因没钉上" if len(conflicts) > 5 else ""))
+    return {
+        "ok": not not_found and not conflicts,
+        "summary_parked": sum(1 for c in changed_summaries if c["after"]),
+        "summary_cleared": sum(1 for c in changed_summaries if not c["after"]),
+        "production_filled": sum(1 for c in changed_productions if c["after"]),
+        "production_cleared": sum(1 for c in changed_productions if not c["after"]),
+        "skipped": skipped,
+        "conflicts": conflicts,
+        "not_found": not_found,
+        "notes": notes,
+    }
+
+
 @router.post("/assets/produce")
 async def create_productions(
     data: ProduceRequest,
@@ -6368,6 +6562,30 @@ async def create_productions(
         _pre_summaries[_u] = (
             await db.execute(select(AssetSummary).where(AssetSummary.id == _u))
         ).scalar_one_or_none()
+    # 批 N（11-09）：这批文案名下**预取好、还没用掉**的号，先集体查一次「是不是已经被别的单用掉了」。
+    # 判据与请求体里手工粘来的号完全同一条（拍板③ 一钩一号），只是来源不同。为什么必须提前查、
+    # 不等消费时再说：号一旦顶进某个槽，这张单就带着一个板面对不上账的号投出去了，
+    # 到回收/对账时才炸——提前 400 点名比那便宜得多。一次 SELECT 查完，不在逐文案循环里打。
+    parked_codes = sorted({s.hook_code for s in _pre_summaries.values() if s is not None and s.hook_code})
+    if parked_codes:
+        stale = list(
+            await db.execute(
+                select(AssetProduction.hook_code, AssetProduction.seq, AssetItem.code)
+                .join(AssetItem, AssetItem.id == AssetProduction.asset_id)
+                .where(AssetProduction.hook_code.in_(parked_codes))
+            )
+        )
+        if stale:
+            shown = "；".join(f"{c}（已钉在素材 {ac} 的第 {seq} 张单上）" for c, seq, ac in stale[:8])
+            more = f"；另有 {len(stale) - 8} 个没列出" if len(stale) > 8 else ""
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"这几条文案名下预取的钩子编号已经被用掉了：{shown}{more}。"
+                    "一钩一号，请把这批已开单投掉、或用 POST /assets/summaries/hook-codes "
+                    "把预取位清空（hook_code 传 null）后重新取号"
+                ),
+            )
     cross_summaries = [
         s for s in _pre_summaries.values()
         if s is not None and s.audit_status in REVIEW_PASSED_STATES
@@ -6527,6 +6745,15 @@ async def create_productions(
             )
         ).scalar_one()
         codes_for_summary = hook_codes[code_pos: code_pos + n]
+        # 批 N（11-09 预取编号）：请求没给够号时，把这条文案名下预取的那个号顶到**第一个空槽**
+        # （手工粘来的号优先，预取号只补空位）。顶上去就必须把预取位清空——留着等于允许
+        # 同一个号被第二次开单复用，而号在 hook_id.py 那边一发即烧、板面同名任务回收对不上账。
+        # 另一种"也算用掉"：请求里把同一个号手工粘了一遍（前端把预取号显示出来时很容易顺手粘），
+        # 这时不再重复顶槽，但预取位同样要清，否则下一次开单会被上面的 stale 判据拦死。
+        parked_code = summary.hook_code
+        parked_consumed = bool(parked_code) and (parked_code in hook_codes or len(codes_for_summary) < n)
+        if parked_code and parked_code not in hook_codes and len(codes_for_summary) < n:
+            codes_for_summary = codes_for_summary + [parked_code]
         # 剧名一条文案查一次（不在 n 次展开循环里查）：模板要用它写「参考《剧名》剧情」
         drama_title = await _drama_title_of(db, asset)
 
@@ -6713,6 +6940,9 @@ async def create_productions(
             if not asset.has_approved_copy:
                 asset.has_approved_copy = True
             code_pos += n  # 号只在这批真的成了单之后才算用掉
+            if parked_consumed:
+                # 预取位清空与上面那行同生同死：半批被拦下时根本走不到这里，号不会被白烧
+                summary.hook_code = None
 
         created = len(pending) if not expand_error else 0
         if created:
