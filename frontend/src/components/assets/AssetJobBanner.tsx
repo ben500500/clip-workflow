@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Space, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { assetApi } from '../../api/assets';
+import { deskNotifyEnabled, notifyJobSettled } from './deskNotify';
 import type { AssetJobInfo } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 
@@ -81,6 +82,8 @@ const AssetJobBanner: React.FC<{
         // 捞终态用单独一次 GET：列表口只给未结束的，终态明细（result/error）在这里
         const job = await assetApi.getAssetJob(id);
         settledCb.current?.(job);
+        // 用户口径 2026-11-09：任务终态同时发桌面通知（开关关着/无权限时静默跳过）
+        notifyJobSettled(job);
       }
     } catch {
       // 轮询失败不弹错：台账还在，下一轮自然补上。这里报错只会把一线刷屏。
@@ -92,7 +95,9 @@ const AssetJobBanner: React.FC<{
     const timer = setInterval(() => {
       // 批 M（评审二·P2）：页面在后台时暂停轮询（与生产单页 10s 刷新同一口径）——
       // 8 秒一次的后台轮询既费接口也不会有人看。回前台下一轮立即补上。
-      if (document.hidden) return;
+      // ⚠️ 例外（2026-11-09 桌面通知）：开了桌面通知就**不能**在后台停轮询——
+      // 用户要的正是"关掉页面/切到别处也能收到完成提醒"，停了就等于没这功能。
+      if (document.hidden && !deskNotifyEnabled()) return;
       void tick();
     }, POLL_MS);
     return () => clearInterval(timer);

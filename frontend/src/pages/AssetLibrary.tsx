@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Badge, Button, Card, Modal, Popover, Space, Tabs, Tag, Typography, message } from 'antd';
-import { ApartmentOutlined, QuestionCircleOutlined } from '@ant-design/icons';
+import { Badge, Button, Card, Modal, Popover, Space, Tabs, Tag, Tooltip, Typography, message } from 'antd';
+import { ApartmentOutlined, BellOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import AssetListPanel from '../components/assets/AssetListPanel';
 import AssetJobsPanel from '../components/assets/AssetJobsPanel';
@@ -10,6 +10,12 @@ import AssetProductionPanel from '../components/assets/AssetProductionPanel';
 import AssetOutputWall from '../components/assets/AssetOutputWall';
 import AssetJobBanner from '../components/assets/AssetJobBanner';
 import AssetCategoryDrawer from '../components/assets/AssetCategoryDrawer';
+import {
+  deskNotifyState,
+  deskNotifySupported,
+  toggleDeskNotify,
+  type DeskNotifyState,
+} from '../components/assets/deskNotify';
 import type { AssetJobInfo } from '../api/assets';
 
 const { Text, Paragraph } = Typography;
@@ -62,6 +68,16 @@ const AssetLibrary: React.FC = () => {
    * 面板里只做筛选和点原型，不再各挂一份抽屉——两处入口迟早变成一个新版本一个旧版本。
    */
   const [catOpen, setCatOpen] = useState(false);
+  // 桌面通知开关（用户口径 2026-11-09）：后台任务完成时提醒，页面在后台也能收到
+  const [deskNotify, setDeskNotify] = useState<DeskNotifyState>(() => deskNotifyState());
+  const flipDeskNotify = async () => {
+    const next = await toggleDeskNotify();
+    setDeskNotify(next);
+    if (next === 'on') message.success('桌面通知已开启：后台任务完成时会提醒你', 4);
+    else if (next === 'denied')
+      message.warning('浏览器拒绝了通知权限——点地址栏左侧的锁图标，把「通知」改成允许后再试', 8);
+    else if (next === 'unsupported') message.info('当前浏览器不支持桌面通知，页内提示仍然有效');
+  };
 
   const onJobSettled = useCallback((job: AssetJobInfo) => {
     setReloadToken((t) => t + 1);
@@ -280,6 +296,27 @@ const AssetLibrary: React.FC = () => {
           <Button size="small" icon={<ApartmentOutlined />} onClick={() => setCatOpen(true)}>
             钩子原型字典
           </Button>
+          {deskNotifySupported() && (
+            <Tooltip
+              title={
+                deskNotify === 'on'
+                  ? '已开启：后台任务完成/失败时弹桌面通知（页面切到后台也收得到）——点一下关闭'
+                  : deskNotify === 'denied'
+                    ? '浏览器已禁止通知：点地址栏左侧锁图标 → 通知 → 允许，再点这里开启'
+                    : '开启后，后台任务完成/失败会弹桌面通知，切到别的页面也能收到'
+              }
+            >
+              <Button
+                size="small"
+                type={deskNotify === 'on' ? 'primary' : 'default'}
+                danger={deskNotify === 'denied'}
+                icon={<BellOutlined />}
+                onClick={flipDeskNotify}
+              >
+                桌面通知{deskNotify === 'on' ? '：开' : ''}
+              </Button>
+            </Tooltip>
+          )}
         </Space>
       </Card>
 
