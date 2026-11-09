@@ -161,6 +161,19 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const dupCodes = codes.length !== new Set(codes).size;
   const plannedRows = summaries.length * n * boardTotal;
 
+  /**
+   * 批 N（11-09 用户口径「现有已经导入的那些文案，你都去取一个编号放着吧」）：
+   * 文案名下预取好、还没用掉的号。后端在**开单当场**把它们顶到缺号的槽位上
+   * （一条文案最多顶一个），顶掉即清空，所以这里只报「有几个备用」并把待填数扣掉，
+   * 不做任何前端拼装——编号的前途由后端一处决定，避免两套口径。
+   */
+  const parkedCodes = useMemo(
+    () => summaries.map((s) => s.hook_code).filter((c): c is string => !!c),
+    [summaries],
+  );
+  /** 手工还要补几个：预取号能顶掉的槽不再要求人填（差值下限 0） */
+  const needManualCodes = Math.max(0, needCodes - parkedCodes.length);
+
   // 11-06 拍板③：500ms 防抖查已用号（不逐键打接口）；请求序号防乱序回包。
   // 回显失败静默——提交时后端硬查重还在，别因为一个回显口把填单卡死。
   useEffect(() => {
@@ -557,11 +570,16 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
           </Space>
 
           <div>
-            <Space style={{ marginBottom: 4 }}>
-              <Text>钩子编号（要填 {needCodes} 个）：</Text>
+            <Space style={{ marginBottom: 4 }} wrap>
+              <Text>钩子编号（本单共需 {needCodes} 个{parkedCodes.length ? `，其中 ${parkedCodes.length} 个已由文案预取顶上` : ''}）：</Text>
+              {parkedCodes.length > 0 && (
+                <Tooltip title={`这些号是提前取好放在文案名下的（${parkedCodes.slice(0, 6).join('、')}${parkedCodes.length > 6 ? '…' : ''}）。开单时后端自动把它们顶到缺号的槽位上，顶掉就清空——一钩一号，不会重复投。`}>
+                  <Tag color="purple">已预取 {parkedCodes.length} 个</Tag>
+                </Tooltip>
+              )}
               {codes.length > 0 && (
-                <Tag color={codes.length === needCodes && !badCodes.length && !dupCodes && !usedCodes.length ? 'green' : 'orange'}>
-                  已填 {codes.length}/{needCodes}
+                <Tag color={codes.length + parkedCodes.length >= needCodes && !badCodes.length && !dupCodes && !usedCodes.length ? 'green' : 'orange'}>
+                  手工填 {codes.length}/{needManualCodes}
                 </Tag>
               )}
             </Space>
@@ -576,9 +594,10 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
                   size="small"
                   icon={<ThunderboltOutlined />}
                   loading={takingCodes}
+                  disabled={needManualCodes <= 0}
                   onClick={async () => {
                     try {
-                      const r = await assetApi.takeHookCodes(needCodes);
+                      const r = await assetApi.takeHookCodes(needManualCodes);
                       setCodeText((t) => (t ? t + ' ' : '') + r.codes.join(' '));
                       message.success(`已代取 ${r.codes.length} 个号（一发即烧，取消开单号就作废）`);
                     } catch (e) {
@@ -586,23 +605,23 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
                     }
                   }}
                 >
-                  代取 {needCodes} 个号
+                  代取 {needManualCodes} 个号
                 </Button>
                 <Button
                   size="small"
                   icon={<CopyOutlined />}
                   onClick={() => {
                     const lines = [
-                      `本单待取号 ${needCodes} 个（${summaries.length} 条文案 × 每条 ${n} 份）`,
-                      ...summaries.map((s) => `${s.asset_code || s.id.slice(0, 8)}｜${(s.text || '').slice(0, 40)}`),
+                      `本单待取号 ${needManualCodes} 个（${summaries.length} 条文案 × 每条 ${n} 份${parkedCodes.length ? `，另 ${parkedCodes.length} 个已预取` : ''}）`,
+                      ...summaries.map((s) => `${s.asset_code || s.id.slice(0, 8)}｜${(s.text || '').slice(0, 40)}${s.hook_code ? `｜已预取 ${s.hook_code}` : ''}`),
                     ];
                     navigator.clipboard
                       .writeText(lines.join('\n'))
-                      .then(() => message.success(`待取号清单已复制（${needCodes} 个号），去服务器照着跑 hook_id.py`))
+                      .then(() => message.success(`待取号清单已复制（${needManualCodes} 个号），去服务器照着跑 hook_id.py`))
                       .catch(() => message.error('复制失败：浏览器没给剪贴板权限，请手动抄'));
                   }}
                 >
-                  复制待取号清单（{needCodes} 个）
+                  复制待取号清单（{needManualCodes} 个）
                 </Button>
               </Space>
             </div>
@@ -612,9 +631,9 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               value={codeText}
               onChange={(e) => setCodeText(e.target.value)}
             />
-            {codes.length > 0 && codes.length < needCodes && (
+            {codes.length > 0 && codes.length < needManualCodes && (
               <Text type="warning" style={{ fontSize: 12 }}>
-                还差 {needCodes - codes.length} 个：缺了照样能建单，但导出内容带不上编号。
+                还差 {needManualCodes - codes.length} 个：缺了照样能建单，但导出内容带不上编号。
               </Text>
             )}
             {!!usedCodes.length && (

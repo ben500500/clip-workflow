@@ -130,6 +130,14 @@ const AssetReviewCard: React.FC<Props> = ({
         {row.style_tag && <Tag>{HOOK_STYLE_LABELS[row.style_tag] || row.style_tag}</Tag>}
         {row.formula_tag && <Tag color="geekblue">{row.formula_tag}</Tag>}
         <CategoryTag categoryId={row.category_id} categoryName={row.category_name} />
+        {/* 批 N（11-09 用户口径「文案都去取一个编号放着」）：这条名下揣着一个**还没用掉**的
+            钩子编号——开单时后端自动顶上缺号槽位，顶掉就清。别和 ④ 生产单行上那个编号混：
+            那是已经烧掉的号，这是备用的号。 */}
+        {row.hook_code && (
+          <Tooltip title="这条文案名下预取好的钩子编号：开单时自动顶到缺号的槽位上，用掉就清（一钩一号，不会重复投）。要看已经投出去的编号请去 ④ 生产单。">
+            <Tag color="purple">已备号 {row.hook_code}</Tag>
+          </Tooltip>
+        )}
         {/* A′（2026-11-08 定稿）：过审＝质检记录（灰字）；挑选与生产归属在投产人（生产单/成片墙"投：X"） */}
         {row.audit_status !== 'pending' && row.reviewed_by_name && (
           <Text type="secondary" style={{ fontSize: 12 }}>

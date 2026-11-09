@@ -317,6 +317,12 @@ export interface AssetSummary {
    * 与 prompt_preview 的分工：那列是任务板通道（恒 10s）的过审后预览。
    */
   doubao_prompt: string | null;
+  /**
+   * 11-09 批 N：**预取好、还没用掉**的五位钩子编号（后端 `hook_id.py` 取来钉在这条文案上）。
+   * 开单时后端自动把它顶到缺号的槽位上，顶掉即清空——所以「有值」＝这条还揣着一个能用的号。
+   * ⚠️ 不是已投产那张单上的编号（那个看 ④ 生产单行的 `hook_code`）。
+   */
+  hook_code?: string | null;
   created_at: string;
   // ── 仅 list_summaries 回（join 素材行）；getAsset 的 summaries 不带这些键 ──
   asset_code?: string;

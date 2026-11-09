@@ -164,6 +164,28 @@ const ApprovedSummaryPickerModal: React.FC<Props> = ({
         ),
     },
     {
+      /**
+       * 批 N（11-09）：这条文案名下**预取好、还没用掉**的钩子编号。
+       * 挑文案的人最想知道的就是"这条还要不要现去取号"——有这列就不用猜，
+       * 开单时后端会自动把它顶到缺号槽位（顶掉即清）。
+       */
+      title: '备号',
+      dataIndex: 'hook_code',
+      width: 84,
+      render: (v?: string | null) =>
+        v ? (
+          <Tooltip title="已提前取好放在这条文案名下：开单时自动顶到缺号的槽位上，用掉就清（一钩一号）。已投出去的编号在 ④ 生产单行上。">
+            <Tag color="purple">
+              <MonoText>{v}</MonoText>
+            </Tag>
+          </Tooltip>
+        ) : (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            —
+          </Text>
+        ),
+    },
+    {
       title: '过审时间',
       dataIndex: 'reviewed_at',
       width: 96,
