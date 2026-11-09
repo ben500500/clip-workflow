@@ -89,6 +89,10 @@ export interface WechatDlPromptTask {
   /** 提示词正文（markdown），success 时有值 */
   content: string | null;
   error: string | null;
+  /** 上游原文（error）对应的人话处置建议，随 error 一起给，界面两段都要能看见 */
+  error_hint?: string | null;
+  /** 1＝系统已按「只补投一次」闸门自动重投过（failed 后又变回 processing 就是它干的） */
+  retry_count?: number;
   max_duration: number | null;
   created_at: string | null;
   updated_at: string | null;
