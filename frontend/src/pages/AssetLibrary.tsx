@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Badge, Button, Card, Modal, Popover, Space, Tabs, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Badge, Button, Card, Modal, Popover, Space, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import { ApartmentOutlined, BellOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import AssetListPanel from '../components/assets/AssetListPanel';
@@ -70,12 +70,15 @@ const AssetLibrary: React.FC = () => {
   const [catOpen, setCatOpen] = useState(false);
   // 桌面通知开关（用户口径 2026-11-09）：后台任务完成时提醒，页面在后台也能收到
   const [deskNotify, setDeskNotify] = useState<DeskNotifyState>(() => deskNotifyState());
-  const flipDeskNotify = async () => {
+  const [notifyHelpOpen, setNotifyHelpOpen] = useState(false);
+  const doToggleDeskNotify = async () => {
     const next = await toggleDeskNotify();
     setDeskNotify(next);
     if (next === 'on') message.success('桌面通知已开启：后台任务完成时会提醒你', 4);
     else if (next === 'denied')
       message.warning('浏览器拒绝了通知权限——点地址栏左侧的锁图标，把「通知」改成允许后再试', 8);
+    else if (next === 'insecure')
+      message.warning('当前是内网 HTTP 访问，浏览器不允许开通知——点「桌面通知」看解决步骤', 8);
     else if (next === 'unsupported') message.info('当前浏览器不支持桌面通知，页内提示仍然有效');
   };
 
@@ -309,9 +312,9 @@ const AssetLibrary: React.FC = () => {
               <Button
                 size="small"
                 type={deskNotify === 'on' ? 'primary' : 'default'}
-                danger={deskNotify === 'denied'}
+                danger={deskNotify === 'denied' || deskNotify === 'insecure'}
                 icon={<BellOutlined />}
-                onClick={flipDeskNotify}
+                onClick={() => setNotifyHelpOpen(true)}
               >
                 桌面通知{deskNotify === 'on' ? '：开' : ''}
               </Button>
@@ -323,6 +326,109 @@ const AssetLibrary: React.FC = () => {
       <AssetJobBanner onSettled={onJobSettled} onGoToTab={setActiveTab} />
 
       <Tabs items={items} activeKey={activeTab} onChange={setActiveTab} />
+
+      {/* 桌面通知说明弹窗（用户口径 2026-11-09）：权限怎么开、为什么点不动，一次说清 */}
+      <Modal
+        open={notifyHelpOpen}
+        title="开启桌面通知"
+        width={620}
+        onCancel={() => setNotifyHelpOpen(false)}
+        footer={
+          deskNotify === 'on' ? (
+            <Space>
+              <Button onClick={() => setNotifyHelpOpen(false)}>保留开启</Button>
+              <Button danger onClick={async () => { await doToggleDeskNotify(); setNotifyHelpOpen(false); }}>
+                关闭桌面通知
+              </Button>
+            </Space>
+          ) : (
+            <Space>
+              <Button onClick={() => setNotifyHelpOpen(false)}>暂不开启</Button>
+              <Button
+                type="primary"
+                disabled={deskNotify === 'insecure' || deskNotify === 'unsupported'}
+                onClick={async () => { await doToggleDeskNotify(); }}
+              >
+                {deskNotify === 'denied' ? '重新尝试授权' : '授权并开启'}
+              </Button>
+            </Space>
+          )
+        }
+      >
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Text>
+            开启后，后台任务（出文案／开单／投板／反推）**完成、失败或被打断**时会弹一条系统
+            桌面通知——切到别的页面、最小化窗口都能收到；失败/打断的通知不会自动消失，点一下跳回本页。
+          </Text>
+
+          {deskNotify === 'insecure' && (
+            <Alert
+              type="warning"
+              showIcon
+              message="当前访问地址不是 HTTPS，浏览器不允许开通知"
+              description={
+                <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                  <Text style={{ fontSize: 12 }}>
+                    浏览器安全策略：只有 <b>HTTPS</b> 或 <b>localhost</b> 页面能申请通知权限。
+                    你现在用的是内网 HTTP（如 http://192.168.x.x），所以点了没反应。
+                  </Text>
+                  <Text strong style={{ fontSize: 12 }}>三条路，任选其一：</Text>
+                  <Text style={{ fontSize: 12 }}>
+                    ① <b>推荐</b>：让运维给 163 的 nginx 配上 HTTPS 证书（自签也行，浏览器信任一次即可），
+                    之后用 https:// 访问本系统。
+                  </Text>
+                  <Text style={{ fontSize: 12 }}>
+                    ② <b>临时绕过</b>（仅 Chrome/Edge）：地址栏打开{' '}
+                    <Text code style={{ fontSize: 12 }}>chrome://flags/#unsafely-treat-insecure-origin-as-secure</Text>
+                    ，把本系统地址（含端口，如 http://192.168.1.163）填进来源列表，选 Enabled，重启浏览器后再来开启。
+                  </Text>
+                  <Text style={{ fontSize: 12 }}>
+                    ③ <b>先不折腾</b>：页内提示照旧有效——顶部任务横幅 + 「后台任务」页签能看到每件活的终态。
+                  </Text>
+                </Space>
+              }
+            />
+          )}
+
+          {deskNotify === 'denied' && (
+            <Alert
+              type="warning"
+              showIcon
+              message="浏览器之前拒绝过通知，需要手动改回来"
+              description={
+                <span style={{ fontSize: 12 }}>
+                  点地址栏左侧的<b>锁图标（或设置图标）→ 通知 → 允许</b>，然后刷新本页再点
+                  「重新尝试授权」。如果锁图标里没有「通知」项，到浏览器的
+                  设置 → 隐私和安全 → 网站设置 → 通知里，把本系统地址从「不允许」列表移除。
+                </span>
+              }
+            />
+          )}
+
+          {deskNotify === 'unsupported' && (
+            <Alert
+              type="info"
+              showIcon
+              message="当前浏览器不支持桌面通知"
+              description={<span style={{ fontSize: 12 }}>建议换用最新版 Chrome / Edge；页内提示不受影响。</span>}
+            />
+          )}
+
+          {(deskNotify === 'off' || deskNotify === 'on') && (
+            <Alert
+              type="info"
+              showIcon
+              message="点「授权并开启」后，浏览器顶部会弹一个权限询问——选「允许」"
+              description={
+                <span style={{ fontSize: 12 }}>
+                  如果误点了「阻止」：点地址栏左侧锁图标 → 通知 → 改为允许，再回来重新开启即可。
+                  开启后会立刻收到一条测试通知，确认通路正常。
+                </span>
+              }
+            />
+          )}
+        </Space>
+      </Modal>
 
       <AssetCategoryDrawer open={catOpen} onClose={() => setCatOpen(false)} />
     </Space>

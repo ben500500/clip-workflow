@@ -854,21 +854,11 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
             <Statistic title="成功率" value={rate(dispatch?.success_rate)} />
           </Tooltip>
         </Col>
-        {/* 用户口径 2026-11-09：号池折叠块删除，只留今日消耗统计 */}
+        {/* 用户口径 2026-11-09：号池折叠块删除，只留今日消耗统计；
+            暂不设上限/预警（原来的软提示线 120 已从界面移除，后端仍只记数不拦） */}
         <Col span={6}>
-          <Tooltip title="今天板上真吃掉的条数（Σ各单板上条数，不是行数）；与每日解压线共用同一池，只提示不拦。超线标红。">
-            <Statistic
-              title="今日消耗"
-              value={today?.board_rows ?? 0}
-              suffix={today ? `/ ${today.soft_cap}` : ''}
-              valueStyle={
-                today && today.over_cap > 0
-                  ? { color: '#cf1322' }
-                  : today && today.board_rows > today.soft_cap * 0.8
-                    ? { color: '#d46b08' }
-                    : undefined
-              }
-            />
+          <Tooltip title="今天板上真吃掉的条数（Σ各单板上条数，不是行数）；与每日解压线共用同一池，只报数。">
+            <Statistic title="今日消耗" value={today?.board_rows ?? 0} suffix="条" />
           </Tooltip>
         </Col>
       </Row>
@@ -1140,8 +1130,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           </Row>
           <Tooltip title="出好的片子自动回「成片」列，可关页面去干别的；额度按条数算（Σ各单板上条数），只含素材库自己投的，与每日解压线共用同一个池">
             <Text type="secondary" style={{ fontSize: 12 }}>
-              本批 ≈{dispatchPlan.rows} 条额度｜今天已 {dispatch?.today?.board_rows ?? 0}／提示线{' '}
-              {dispatch?.today?.soft_cap ?? '—'}（只提示不拦）
+              本批 ≈{dispatchPlan.rows} 条额度｜今天已投 {dispatch?.today?.board_rows ?? 0} 条
             </Text>
           </Tooltip>
           <Checkbox

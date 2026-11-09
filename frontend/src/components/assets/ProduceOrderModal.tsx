@@ -333,9 +333,9 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             <Descriptions.Item label="预计要跑几天">
               {result.capacity_hint.days} 天（{result.capacity_hint.account_count} 个号 × 每号每日 {result.capacity_hint.per_account_per_day} 条）
             </Descriptions.Item>
+            {/* 用户口径 2026-11-09：暂不设上限/预警，只报数 */}
             <Descriptions.Item label="当日投板量">
-              今天已排 {result.dispatch.today.board_rows} 条 / 提示线 {result.dispatch.today.soft_cap}
-              {result.dispatch.today.over_cap > 0 && <Tag color="red" style={{ marginLeft: 6 }}>超出 {result.dispatch.today.over_cap} 条</Tag>}
+              今天已排 {result.dispatch.today.board_rows} 条
             </Descriptions.Item>
             <Descriptions.Item label="今天投板情况" span={2}>
               已投出 {result.dispatch.today.dispatched} 条｜成功 {result.dispatch.today.succeeded} 条｜失败 {result.dispatch.today.failed} 条

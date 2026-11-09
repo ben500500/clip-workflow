@@ -10,8 +10,21 @@ import type { AssetJobInfo } from '../../api/assets';
 
 const LS_KEY = 'asset-desk-notify';
 
+/**
+ * 浏览器是否**可能**给出通知权限。
+ *
+ * ⚠️ 除 API 存在外还必须满足**安全上下文**（HTTPS 或 localhost）：内网 HTTP
+ * （如 http://192.168.1.163）下 Chrome/Edge 的 Notification.permission 恒为
+ * denied、requestPermission() 直接返回 denied 不弹框——这正是"点了没反应、
+ * 不知道怎么设置"的根因，界面必须把它诊断出来并给出解决路径。
+ */
+export const deskNotifySecure = (): boolean =>
+  typeof window !== 'undefined' && window.isSecureContext === true;
+
 export const deskNotifySupported = (): boolean =>
-  typeof window !== 'undefined' && typeof window.Notification !== 'undefined';
+  typeof window !== 'undefined' &&
+  typeof window.Notification !== 'undefined' &&
+  deskNotifySecure();
 
 /** 开关开着且浏览器已授权 */
 export const deskNotifyEnabled = (): boolean =>
@@ -19,10 +32,11 @@ export const deskNotifyEnabled = (): boolean =>
   window.Notification.permission === 'granted' &&
   localStorage.getItem(LS_KEY) === '1';
 
-export type DeskNotifyState = 'on' | 'off' | 'denied' | 'unsupported';
+export type DeskNotifyState = 'on' | 'off' | 'denied' | 'insecure' | 'unsupported';
 
 export const deskNotifyState = (): DeskNotifyState => {
-  if (!deskNotifySupported()) return 'unsupported';
+  if (typeof window === 'undefined' || typeof window.Notification === 'undefined') return 'unsupported';
+  if (!deskNotifySecure()) return 'insecure';
   if (window.Notification.permission === 'denied') return 'denied';
   return deskNotifyEnabled() ? 'on' : 'off';
 };
