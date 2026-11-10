@@ -11116,13 +11116,14 @@ async def package_outputs(
     import zipfile
 
     uids = [_as_uuid(i, "output_id") for i in ids]
-    rows = (
-        await db.execute(
-            select(AssetOutput).where(
-                AssetOutput.id.in_(uids), AssetOutput.kind.notin_(("package", "copy"))
+    rows = list(
+        (
+            await db.execute(
+                select(AssetOutput).where(
+                    AssetOutput.id.in_(uids), AssetOutput.kind.notin_(("package", "copy"))
+                )
             )
-        )
-        .scalars()
+        ).scalars()
         .all()
     )
     if not rows:
