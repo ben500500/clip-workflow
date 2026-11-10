@@ -404,6 +404,20 @@ export interface AssetProduction {
    * 空数组/null = 这单没走新口径，读侧回退 character_card_key（存量单不许因为加列就丢卡）。
    */
   card_asset_ids: string[];
+  // ── 批 Q（11-10，需求⑤）：成片回收后自动拼接 ──
+  /**
+   * 投板时点名的「拼接素材」（asset_items.id）。钉在**行**上而不是只活在那次请求里：
+   * 回收往往是几十分钟后另一个进程做的（重启后带 recover_only 再跑一次）。
+   * null＝这单没要求自动拼。
+   */
+  concat_asset_id: string | null;
+  /**
+   * 自动拼接的顺序。注意这是**另一套词**（hook_first／material_first），
+   * 和手工拼接口的 asset_first／second_first 不通用，别互相换算。
+   */
+  concat_order: AssetAutoConcatOrder | null;
+  /** 最近一次自动拼的结果（「拼没拼」那一列只读它做展示，不参与任何判定） */
+  concat_last_result: AssetAutoConcatResult | null;
   /** 批 I（链路收敛）：本单已收进的成片段数（排除 package/copy 附属文件），生产单列表口才有 */
   output_count?: number;
   status: ProductionState;
@@ -1862,6 +1876,61 @@ export interface AssetProductionStatusResponse {
 // 批 H（11-05）：自动投板。口径是「可自动投板，但**逐批人工确认**」
 // ──────────────────────────────────────────────
 
+// ──────────────────────────────────────────────
+// 批 Q（11-10）：成片回收后自动拼接成可投放素材（需求⑤）
+// ──────────────────────────────────────────────
+
+/**
+ * 自动拼接的顺序（投板那一屏选的词，后端 `asset_compose_service.resolve_auto_order` 判）。
+ * 与手工拼接弹窗的 `AssetConcatOrder`（asset_first／second_first）**是两套词汇**：
+ * 手工口没有"钩子片"这个概念，两段都是人挑的；自动口固定一段是豆包收回来的钩子片。
+ */
+export type AssetAutoConcatOrder = 'hook_first' | 'material_first';
+
+/** 生产单行上 `concat_last_result` 的形状（每单一份，界面「拼没拼」列读它） */
+export interface AssetAutoConcatResult {
+  /** success＝全拼成；partial＝有拼成的也有失败的；failed＝一支没拼出来；already＝全是此前已拼 */
+  status: 'success' | 'partial' | 'failed' | 'already';
+  ok: number;
+  failed: number;
+  already: number;
+  order: AssetAutoConcatOrder | null;
+  concat_asset_id: string | null;
+  /** 最近一次失败的白话成因（成功时为 null） */
+  last_error: string | null;
+  /** UTC ISO 串（后端 `utc_iso` 补了时区标记，前端 dayjs 才能正确换本地时间） */
+  at: string;
+}
+
+/** 本次投板里自动拼接的逐支结果（同步档才有整份；异步档去任务台账的 result 里看） */
+export interface AssetAutoConcatSummary {
+  attempted: number;
+  composed: number;
+  failed: number;
+  /** 幂等命中：这支此前已经拼过了，没重拼（不算失败） */
+  already: number;
+  results: Array<{
+    production_id: string;
+    hook_code: string | null;
+    from_output_id: string;
+    order: AssetAutoConcatOrder;
+    result: 'composed' | 'failed' | 'already';
+    /** result=already 时的白话说明 */
+    reason?: string;
+    /** result=failed 时的成因（挑的是图片／素材被删／成片没落桶／ffmpeg 报错） */
+    error?: string;
+    output_id?: string;
+    file_key?: string;
+    /** 和哪一段拼的（`编号·标题` 标签） */
+    with?: string;
+    resolution?: string | null;
+    duration?: number | null;
+  }>;
+  /** 白话汇总，直接并进投板那句话；本次没有任何拼装要求时是空串 */
+  note: string;
+  frames_note?: string | null;
+}
+
 /** POST /assets/productions/dispatch 的请求体 */
 export interface AssetDispatchRequest {
   /** 点名要投的生产单 id（单次上限由后端 `ASSET_DISPATCH_MAX_PER_CALL` 管，默认 20） */
@@ -1888,6 +1957,15 @@ export interface AssetDispatchRequest {
    * （第 1 张＝板上主形象），脏 id 后端 400；不传＝各单沿用已带的卡。
    */
   card_asset_ids?: string[];
+  /**
+   * 批 Q（需求⑤）：这批片子收回来之后，每支自动和这条素材（asset_items.id）两段直拼，
+   * 拼成的产物即「可投放素材」（来源素材状态随之点亮成 ready）。
+   * 0 元、不调模型。挑图片／还没取回原片的链接素材会在**投出去之前**就被后端 400 拦掉
+   * （号池还没烧），不会等回收到了才发现拼不了。
+   */
+  concat_asset_id?: string | null;
+  /** 顺序：默认 hook_first＝钩子片在前、素材片段在后 */
+  concat_order?: AssetAutoConcatOrder;
 }
 
 /** 闸门挡下/拒投的逐条说明（三堆里除"要投的"以外都是这个形状） */
@@ -1918,6 +1996,14 @@ export interface AssetDispatchPrecheck {
   capacity: AssetBoardCapacity;
   /** 11-06 拍板：投递稿可改——这次真的带着改稿投出去的生产单 id 列表 */
   prompt_overrides?: string[];
+  /**
+   * 批 Q：这次带过去的拼装要求。三种形状——
+   * `{asset_id,label,order,applied_to}`＝投出去后每支自动和 label 那条拼；
+   * `{cleared_for:[...]}`＝这次把行上原来钉的要求取消了；
+   * null＝没提要求（沿用各行原来的钉法，不清空）。
+   */
+  concat?: ({ asset_id: string; label: string; order: AssetAutoConcatOrder; applied_to: string[] }
+    | { cleared_for: string[] }) | null;
   note: string;
 }
 
@@ -1963,6 +2049,8 @@ export interface AssetDispatchResponse {
   asset_status?: Record<string, AssetStatus>;
   capacity: AssetBoardCapacity;
   dispatch: AssetDispatchCounts;
+  /** 批 Q：本次回收后自动拼接的结果（没提要求也没有钉着的行时 attempted=0、note 为空串） */
+  concat?: AssetAutoConcatSummary | null;
   message: string;
 }
 

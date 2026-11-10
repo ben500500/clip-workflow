@@ -10,7 +10,7 @@ import {
   AUDIT_STATUS_LABELS, DISPATCH_REPORT_STATUSES, PRODUCTION_STATE_LABELS, assetApi, isAssetJobAck,
 } from '../../api/assets';
 import type {
-  AssetBatch, AssetDispatchAck, AssetDispatchResponse, AssetDispatchCounts, AssetExportJson, AssetExportPayload, AssetExportTxt,
+  AssetAutoConcatOrder, AssetBatch, AssetDispatchAck, AssetDispatchResponse, AssetDispatchCounts, AssetExportJson, AssetExportPayload, AssetExportTxt,
   AssetOutput, AssetOutputPreviewResult, AssetPromptElementFound, AssetProduction, AssetSummary, DispatchReportStatus, ProductionState,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
@@ -19,6 +19,7 @@ import { withCrossPersonConfirm } from './crossPerson';
 import ProduceOrderModal from './ProduceOrderModal';
 import ApprovedSummaryPickerModal from './ApprovedSummaryPickerModal';
 import AssetCardPicker from './AssetCardPicker';
+import AssetConcatPicker from './AssetConcatPicker';
 import AssetPromptElementDrawer from './AssetPromptElementDrawer';
 import { MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
 
@@ -249,6 +250,11 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const [promptOverrides, setPromptOverrides] = useState<Record<string, string>>({});
   // 投板前统一挂卡（人物三视图）：给则覆盖本批要新建的单，空＝沿用各单已带的
   const [dispatchCardIds, setDispatchCardIds] = useState<string[]>([]);
+  // 批 Q（需求⑤）：成片收回来以后自动和哪条拼。null＝这次不提要求（各行原来钉的照旧）；
+  // `dispatchConcatClear` 是真要点名取消时才发的空串——后端把「没传」和「传空串」分得很开。
+  const [dispatchConcatId, setDispatchConcatId] = useState<string | null>(null);
+  const [dispatchConcatOrder, setDispatchConcatOrder] = useState<AssetAutoConcatOrder>('hook_first');
+  const [dispatchConcatClear, setDispatchConcatClear] = useState(false);
   const [editPromptFor, setEditPromptFor] = useState<AssetProduction | null>(null);
   const [editPromptDraft, setEditPromptDraft] = useState('');
   // 批 M（11-10）：投产前「可替换元素裂变」。这一排元素来自后端那份元素字典
@@ -484,7 +490,19 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     const other = selected.length - creating.length - recovering.length;
     // 号池额度按 Σ board_total 算，不是张数（20 张 × total 3 是 60 条，不是 20 条）
     const rows = creating.reduce((acc, p) => acc + (p.board_total || 1), 0);
-    return { willCreate: creating.length, willRecover: recovering.length, other, rows };
+    // 批 Q：这次会**被写上新拼装要求**的行＝新建堆＋回收堆（后端 `to_create + to_recover` 同一套）
+    const concatTargets = creating.length + recovering.length;
+    // 这批里原来就钉过拼装要求的行数：不为 0 才给「取消这些单的自动拼接」那个勾——
+    // 不传字段和传空串在后端是两件事（前者沿用、后者清空），界面也得把这两句话说清楚。
+    const pinned = selected.filter((p) => !!p.concat_asset_id).length;
+    return {
+      willCreate: creating.length,
+      willRecover: recovering.length,
+      other,
+      rows,
+      concatTargets,
+      pinnedConcat: pinned,
+    };
   }, [selected]);
 
   const fetchList = useCallback(
@@ -776,6 +794,13 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           cross_person_confirm: c,
           prompt_overrides: Object.keys(overrides).length ? overrides : undefined,
           card_asset_ids: dispatchCardIds.length ? dispatchCardIds : undefined,
+          // 批 Q（需求⑤）：三种语义必须分开——
+          //   勾了「取消」→ 空串（后端把这几张行上钉的要求清掉）
+          //   挑了一条   → id ＋顺序
+          //   什么都没动   → 字段不传（沿用各单行上原有的要求，不清空）
+          concat_asset_id: dispatchConcatClear ? '' : dispatchConcatId || undefined,
+          concat_order:
+            !dispatchConcatClear && dispatchConcatId ? dispatchConcatOrder : undefined,
         }),
       );
       if (!res) return; // 取消了「替他人批次」确认：什么都不做，弹窗留着
@@ -811,6 +836,21 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
               {!!pre.prompt_overrides?.length && (
                 <Text type="warning" style={{ fontSize: 12 }}>
                   其中 {pre.prompt_overrides.length} 张投的是改过的投递稿（库里的原稿不动，改前改后进了审计）。
+                </Text>
+              )}
+              {/* 批 Q：拼装要求投出去之前就得看得见——回收是几十分钟后另一个进程做的，
+                  那时才发现"没钉上"就只能手工另拼一遍（需求⑤要消掉的正是这一步）。 */}
+              {!!pre.concat && 'applied_to' in pre.concat && (
+                <Text style={{ fontSize: 12 }}>
+                  出片后每支自动和 <Text strong>{pre.concat.label}</Text> 拼一条
+                  （{pre.concat.order === 'hook_first' ? '钩子片在前' : '片段在前'}），
+                  拼成 0 元、只拼一次；要求钉在 {pre.concat.applied_to.length} 张单上，
+                  进程重启后走「只回收」也照样拼。
+                </Text>
+              )}
+              {!!pre.concat && 'cleared_for' in pre.concat && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  已取消 {pre.concat.cleared_for.length} 张单的自动拼接（成片原样进产物，要拼去详情抽屉手工拼）。
                 </Text>
               )}
               {!!pre.capacity?.advisory && (
@@ -875,12 +915,29 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
               <Text style={{ fontSize: 12 }}>
                 新建 {r.dispatched} 张、回收 {r.recovered} 张、到手 {r.succeeded ?? 0}／失败 {r.failed ?? 0}／还在板上 {r.still_running ?? 0}。
               </Text>
+              {/* 批 Q：同步档（脚本/用例走的这条）也把拼没拼说清楚；界面按钮走的是异步档，
+                  真结果在任务台账里，行上的「拼没拼」列跟着刷新。 */}
+              {!!r.concat?.note && (
+                <Text type={(r.concat.failed ?? 0) > 0 ? 'warning' : 'secondary'} style={{ fontSize: 12 }}>
+                  {r.concat.note}
+                  {r.concat.failed > 0 && (
+                    <>
+                      （
+                      {r.concat.results
+                        .filter((x) => x.result === 'failed')
+                        .slice(0, 3)
+                        .map((x) => `${x.hook_code || x.production_id.slice(0, 8)}：${x.error}`)
+                        .join('；')}
+                      ——片子已进产物，去详情抽屉手工拼）
+                    </>
+                  )}
+                </Text>
+              )}
               {!!r.uncertain?.length && (
                 <Alert
                   type="error"
                   showIcon
-                  message={`${r.uncertain.length} 张状态未知：先别重投`}
-                  description={
+                  message={`${r.uncertain.length} 张状态未知：先别重投`}                  description={
                     <Space direction="vertical" size={2}>
                       {r.uncertain.map((u) => (
                         <Text key={u.id} style={{ fontSize: 12 }}>{u.hook_code || u.id.slice(0, 8)}：{u.error}</Text>
@@ -959,7 +1016,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     {
       title: '状态',
       dataIndex: 'status',
-      width: 130,
+      width: 150,
       render: (v: ProductionState, r) => (
         <Space direction="vertical" size={0}>
           <ProductionStateTag status={v} />
@@ -972,6 +1029,56 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 ? `·${parseServerTime(r.board_last_check_at)?.format('HH:mm')}查`
                 : ''}
             </Text>
+          )}
+          {/*
+            批 Q（需求⑤）「拼没拼」：这一列只**报事实**，不参与任何判定。
+            三种可见状态——钉了要求还没回收（待拼）、回收过（拼成/部分/失败/此前已拼）、
+            没钉（不显示）。拼失败绝不代表回收失败：片子是真金白银收回来的，
+            成因在 Tooltip 里，人可以去详情抽屉手工另拼。
+          */}
+          {!!r.concat_asset_id && !r.concat_last_result && (
+            <Tooltip title={`已钉上自动拼接：收回来每支和 ${r.concat_asset_id.slice(0, 8)} 拼一条（${
+              r.concat_order === 'material_first' ? '片段在前' : '钩子片在前'
+            }），等回收`}
+            >
+              <Tag style={{ fontSize: 11 }}>待拼</Tag>
+            </Tooltip>
+          )}
+          {!!r.concat_last_result && (
+            <Tooltip
+              title={[
+                `拼成 ${r.concat_last_result.ok}／失败 ${r.concat_last_result.failed}／此前已拼 ${r.concat_last_result.already}`,
+                `${r.concat_last_result.order === 'material_first' ? '片段在前' : '钩子片在前'}`,
+                r.concat_last_result.last_error ? `成因：${r.concat_last_result.last_error}` : '',
+                r.concat_last_result.at
+                  ? `时间：${parseServerTime(r.concat_last_result.at)?.format('MM-DD HH:mm')}`
+                  : '',
+              ]
+                .filter(Boolean)
+                .join('｜')}
+            >
+              <Tag
+                color={
+                  r.concat_last_result.status === 'success'
+                    ? 'green'
+                    : r.concat_last_result.status === 'partial'
+                      ? 'orange'
+                      : r.concat_last_result.status === 'already'
+                        ? 'blue'
+                        : 'red'
+                }
+                style={{ fontSize: 11 }}
+              >
+                {
+                  {
+                    success: `拼成 ${r.concat_last_result.ok}`,
+                    partial: `拼成 ${r.concat_last_result.ok}·失败 ${r.concat_last_result.failed}`,
+                    failed: '没拼上',
+                    already: '此前已拼',
+                  }[r.concat_last_result.status]
+                }
+              </Tag>
+            </Tooltip>
           )}
         </Space>
       ),
@@ -1197,6 +1304,20 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 setPromptOverrides({});
                 setEditPromptFor(null);
                 setDispatchCardIds([]);
+                // 批 Q：这批单原来钉过拼装要求就把它带进选择器（看得见的才改得动）。
+                // 只在**全批同一条**时预填——各单钉的不一样时不猜，留空但下面的
+                // 「N 张已钉」那句话照样说清楚，免得界面显示的和实际投出去的两回事。
+                const pinnedIds = Array.from(new Set(selected.map((p) => p.concat_asset_id || '')));
+                const pinnedOrders = Array.from(
+                  new Set(selected.map((p) => p.concat_order || '')),
+                );
+                setDispatchConcatId(pinnedIds.length === 1 && pinnedIds[0] ? pinnedIds[0] : null);
+                setDispatchConcatOrder(
+                  pinnedOrders.length === 1 && pinnedOrders[0]
+                    ? (pinnedOrders[0] as AssetAutoConcatOrder)
+                    : 'hook_first',
+                );
+                setDispatchConcatClear(false);
                 setDispatchOpen(true);
               }}
             >
@@ -1418,6 +1539,37 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
               <Text type="secondary" style={{ fontSize: 12 }}>
                 选了会<b>覆盖</b>本批每张新单已带的卡；不选＝沿用各单自己的。
               </Text>
+            </div>
+          )}
+          {/*
+            批 Q（11-10，需求⑤「钩子成片生成出来以后，需要导入拼接视频自动拼接成可投放素材」）：
+            第二段在这里点名，不等回收。判据（是不是图片、有没有文件）后端在**烧号池之前**跑，
+            所以这里选不出拼不了的东西；真选的那条被人在回收前删了，也只是这一支拼失败，
+            成片照样进产物（成因写进「拼没拼」那一列）。
+          */}
+          {dispatchPlan.concatTargets > 0 && (
+            <div>
+              <Tooltip title="片子收回来以后，每支自动和这条素材两段直拼成一条可投放素材：0 元、每支只拼一次、拼成后来源素材状态点亮成「可投放」。不选＝这次不提要求（各单行上原来钉的照旧）。">
+                <Text strong style={{ fontSize: 12 }}>成片到手后自动拼接</Text>
+              </Tooltip>
+              <div style={{ marginTop: 4 }}>
+                <AssetConcatPicker
+                  active={dispatchOpen && !dispatchConcatClear}
+                  value={dispatchConcatClear ? null : dispatchConcatId}
+                  onChange={setDispatchConcatId}
+                  order={dispatchConcatOrder}
+                  onOrderChange={setDispatchConcatOrder}
+                />
+              </div>
+              {!!dispatchPlan.pinnedConcat && (
+                <Checkbox
+                  checked={dispatchConcatClear}
+                  onChange={(e) => setDispatchConcatClear(e.target.checked)}
+                  style={{ marginTop: 6 }}
+                >
+                  取消这 {dispatchPlan.pinnedConcat} 张单已钉的自动拼接（投出去就不再自动拼，成片原样进产物）
+                </Checkbox>
+              )}
             </div>
           )}
           {/* 11-06 拍板：投递稿可改。只改这次投出去的；改稿在后端照走风险词重扫并留审计 */}
