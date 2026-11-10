@@ -11101,7 +11101,7 @@ async def list_output_groups(
 
 @router.post("/assets/outputs/package")
 async def package_outputs(
-    ids: List[str] = Body(..., description="要打包的产物 id"),
+    ids: List[str] = Body(..., embed=True, description="要打包的产物 id"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
