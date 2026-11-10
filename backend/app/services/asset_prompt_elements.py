@@ -159,7 +159,7 @@ PROTOTYPE_PROMPT_ELEMENTS: List[Dict[str, Any]] = [
         "anchors": ["丈夫", "老板", "亲戚"],
         "pool": ["丈夫", "老板", "亲戚"],
         "categories": ["原型 B"],
-        "note": "说泄密话的那位。注意别与原型 D 的「施暴者」混：这一项是**说话的人**。",
+        "note": "说泄密话的那位。注意别与原型 D 的「施暴者」混：这一项是说话的人。",
     },
     {
         "key": "b_secret",
@@ -753,6 +753,69 @@ def apply_edits(
     return body, replaced, notes
 
 
+def mark_replacements(
+    text: Optional[str],
+    replaced: List[Dict[str, Any]],
+    base_text: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """标出「换完长这样」里**每一处换上来的新词落在正文哪个位置**（11-10 用户口径①）。
+
+    用户原话：「我刚选了几个元素，但是没有看到正文被替换的地方。」
+    `apply_edits` 只回 `count`（换了几处），人在上千字稿子里根本找不到那几处，
+    所以这里把位置也算出来给前端描底色。
+
+    ⚠️ 为什么是"回填位置"而不是"替换时顺手记位置"：`apply_edits` 是**逐条顺序**改的
+    （后一条在前一条改完的那份上找），跨条要把偏移一层层平移，写在那条主路上既难核对
+    又可能改动 produce 的既有行为。这里只读最终正文＋逐条 `(to, count)`，
+    主路一个字都不动。
+
+    判据：按 `replaced` 的顺序，每条最多取 `count` 个 `to` 的**最左未占用**出现处。
+    所以「原稿里本来就写着这个词」时可能多标一处（标的是那个本来就有的），
+    这种歧义不藏——单独回一句白话进 `notes`，让界面说"绿的是照着换了几处标的"。
+    返回 `(marks, notes)`；marks 已按位置升序、互不重叠。
+    """
+    body = text or ""
+    marks: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    for item in replaced or []:
+        if not isinstance(item, dict):
+            continue
+        to = str(item.get("to") or "")
+        try:
+            want = int(item.get("count") or 0)
+        except (TypeError, ValueError):
+            want = 0
+        if not to or want <= 0:
+            continue
+        pos, taken = 0, 0
+        while taken < want:
+            i = body.find(to, pos)
+            if i < 0:
+                break
+            j = i + len(to)
+            # 已经被前一条占住的区间跳过（两个参数换成同一个词时会撞）
+            if any(not (j <= m["start"] or i >= m["end"]) for m in marks):
+                pos = i + 1
+                continue
+            marks.append({
+                "start": i,
+                "end": j,
+                "to": to,
+                "from": str(item.get("from") or ""),
+                "label": str(item.get("label") or ""),
+            })
+            taken += 1
+            pos = j
+        # 原稿里本来就有这个词 → 标记位置只能"数够几个"，不保证每个都是刚换上的那处
+        if base_text and to in base_text:
+            notes.append(
+                f"「{to}」原稿里本来就写着，绿色是照着「换了几处」标的，可能把原来那处也圈上了"
+            )
+    marks.sort(key=lambda m: m["start"])
+    # 同一句歧义话只说一遍（多行扇预览时不然会刷屏）
+    return marks, list(dict.fromkeys(notes))
+
+
 def clean_value_list(values: Any, limit: int = MAX_MANUAL_VALUE_LEN) -> List[str]:
     """界面传进来的一列值：去空、去重、保序（顺序＝配对时的行序，不许打乱）。"""
     items = values if isinstance(values, (list, tuple)) else ([values] if values else [])
@@ -829,12 +892,17 @@ def compose_variants(
     base_values: Optional[Dict[str, Any]],
     rows: List[Dict[str, str]],
     category: Optional[str] = None,
+    with_marks: bool = False,
 ) -> List[Dict[str, Any]]:
     """把展开出来的每一行套到同一份底稿上，得到 N 份可投递的正文（0 元、不落库）。
 
     `base_values` 是"这一份稿子里这个参数现在是什么"（认出来的、或人手填进去的原值）。
     原值缺失的参数**这一行不做替换**，并在 `missing` 里点名——不是把旧值当新值用，
     也不是悄悄跳过：手填项（台词／泄密内容）本来就得人给原句。
+
+    `with_marks`（11-10 用户口径①「看不到正文被替换的地方」）只给**预览口**开：
+    每条多带一份 `marks`（换上的新词在正文里的位置）。开单落库那条不开——
+    `element_fanout` 是要进生产单的，位置偏移存进去没有读者，还把它撑大。
     """
     by_key = {s["key"]: s for s in catalog}
     out: List[Dict[str, Any]] = []
@@ -852,11 +920,7 @@ def compose_variants(
                 continue
             edits.append({"key": key, "from": src, "to": _clean_text(to, MAX_MANUAL_VALUE_LEN)})
         text, replaced, notes = apply_edits(base_text, catalog, edits)
-        if missing:
-            notes = notes + [
-                f"这些参数没有原值，这一条没换：{'、'.join(missing)}（手填项要自己从稿子里复制原句）"
-            ]
-        out.append({
+        variant: Dict[str, Any] = {
             "seq": idx,
             "values": dict(row or {}),
             "text": text,
@@ -864,5 +928,133 @@ def compose_variants(
             "notes": notes,
             "missing": missing,
             "changed": text != (base_text or ""),
-        })
+        }
+        if with_marks:
+            variant["marks"], mark_notes = mark_replacements(text, replaced, base_text)
+            if mark_notes:
+                variant["notes"] = notes + mark_notes
+        if missing:
+            variant["notes"] = variant["notes"] + [
+                f"这些参数没有原值，这一条没换：{'、'.join(missing)}（手填项要自己从稿子里复制原句）"
+            ]
+        out.append(variant)
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11-10（用户口径「在页面上重新认参数，能不能再将它们提炼一下呢？」）
+#
+# 界面点「重新认参数」走的从来都是**确定性认法**（词表逐字／写法正则／位置 probe）：
+# 0 元、可复现、认不出就是认不出。真坑在认不出之后——原来要一线自己从上千字稿子里
+# 抄出那句原话（台词类是间接转述，人根本不知道系统想换哪一句），抄错一个字就换不上。
+#
+# 所以另开一条**花钱但要人点头**的路：把稿子＋参数项清单交给模型，让它**逐字抄回**
+# 稿子里扮演这个角色的那段原文（机制在 autoclip `hook-copy/slots`，规则在
+# `app/prompt/hook_slots.txt`）。模型会编，所以这里有一条不许商量的硬校验：
+# **抄回来的串必须逐字出现在这一份稿子的可动区间里**，否则整条丢弃、界面说"没提炼到"。
+# 校验之外一概不做：不改稿、不进投递正文、不动字典、不覆盖已经认出来的原值。
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 一次提炼最多问几篇稿子／多少字：超出就该分批点，不然模型开始漏条目、钱也白烧
+GUESS_MAX_ITEMS = 5
+GUESS_MAX_TOTAL_CHARS = 12000
+# 给模型看的候选词表／说明都截断：这些只是"这一项长什么样"的提示，不是取值范围
+GUESS_MAX_POOL = 20
+GUESS_NOTE_LEN = 200
+
+
+def slots_for_guess(catalog: List[Dict[str, Any]], category: Optional[str]) -> List[Dict[str, Any]]:
+    """该型要提炼的参数项清单（喂模型用＋回收校验用，一份两用的行）。
+
+    包含手填项——用户嫌累的正就是这几行（说的话／偷听内容／引爆台词／绝境）：
+    确定性认法按设计永远认不出它们，模型至少能把那句间接转述原样抄回来。
+
+    ⚠️ 与 `extract_elements` 有一处**故意不一样**：`category` 为空（一批混着几种原型，
+    前端就不报原型了）时这里把**全部行并起来**问。`slot_applies` 在这种情况下会把限定
+    原型的行集体滤掉——认元素少几行只是列表短一点，提炼少几行却是"一屏空白＋一句 400"，
+    代价不对等。校验侧不受影响：每个 key 只按它自己那一行的判据过。
+
+    ⚠️ 每行**额外带 `skip_lines`**：那是回收校验（`accept_guessed_values`）判"这段是不是
+    落在保护行里"的唯一依据。少了它，模型把 ① 行里的《剧名》当"场景"抄回来也会被收下，
+    投出去就顺手改掉了一部不存在的剧。所以调用方给模型的那份要**只挑
+    key/label/note/pool 四个键**（见 `assets.guess_prompt_element_values`），
+    这两个内部判据不出本机。
+    """
+    rows: List[Dict[str, Any]] = []
+    for slot in catalog or []:
+        if category and not slot_applies(slot, category):
+            continue
+        rows.append(
+            {
+                "key": slot.get("key"),
+                "label": slot.get("label"),
+                "note": str(slot.get("note") or "")[:GUESS_NOTE_LEN],
+                "pool": [str(w) for w in (slot.get("pool") or [])][:GUESS_MAX_POOL],
+                "skip_lines": slot.get("skip_lines") or "",
+                "mode": slot.get("mode") or MODE_LITERAL,
+            }
+        )
+    return rows
+
+
+def accept_guessed_values(
+    text: str,
+    slots: List[Dict[str, Any]],
+    items: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """把模型回的 [{key,value}] 过一遍逐字校验，收成界面能直接用的形状。
+
+    Returns:
+        {"values": {slot_key: 原值}, "dropped": ["白话说明", ...]}
+
+    判据（三条全过才收）：
+      1. `key` 必须在传出去的那份清单里——模型自造的参数项一律不要；
+      2. `value` 去掉首尾空白后**逐字出现在这一份稿子里**（中间一字不差）；
+      3. 命中的那段必须落在**可动区间**内（`钩子原文：`／`生成【…】` 这类保护行不算）——
+         否则界面会拿一个"其实换不动"的原值骗人。
+    """
+    values: Dict[str, str] = {}
+    dropped: List[str] = []
+    if not text or not slots:
+        return {"values": values, "dropped": ["这一屏没有要提炼的参数项"]}
+    by_key = {str(s.get("key") or ""): s for s in slots if str(s.get("key") or "")}
+    allowed_cache: Dict[str, List[Tuple[int, int]]] = {}
+    for row in items or []:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key") or "").strip()
+        value = str(row.get("value") if row.get("value") is not None else "").strip()
+        slot = by_key.get(key)
+        if slot is None:
+            if value:
+                dropped.append(f"模型给了没配的参数项「{key[:30]}」，已丢弃")
+            continue
+        if not value:
+            continue
+        if key in values:
+            dropped.append(f"「{slot.get('label') or key}」模型回了两条，只留第一条")
+            continue
+        if len(value) > MAX_MANUAL_VALUE_LEN:
+            dropped.append(
+                f"「{slot.get('label') or key}」抄回来的有 {len(value)} 字，超过 {MAX_MANUAL_VALUE_LEN} 字上限，没敢用"
+            )
+            continue
+        if key not in allowed_cache:
+            allowed_cache[key] = _allowed_spans(text, slot.get("skip_lines") or "")
+        spans = [sp for sp in _find_all(text, value) if _span_ok(sp, allowed_cache[key])]
+        if not spans:
+            # 分两种红法说：串根本不在稿子里＝模型编的；在稿子里但只在保护行＝那儿换不动。
+            # 混成一句会让人去改字典词表，而真正该做的是别拿那半句当这一项。
+            if _find_all(text, value):
+                dropped.append(
+                    f"「{slot.get('label') or key}」抄回来的「{value[:24]}」只在不动的那两行里"
+                    "（`钩子原文：`／`生成【…】`），那一处换不了，已丢弃"
+                )
+            else:
+                dropped.append(
+                    f"「{slot.get('label') or key}」抄回来的「{value[:24]}」在这篇稿子里找不到，"
+                    "是模型自己写的，已丢弃"
+                )
+            continue
+        values[key] = value
+    return {"values": values, "dropped": dropped}

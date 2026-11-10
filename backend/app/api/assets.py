@@ -4558,6 +4558,26 @@ ASSET_JOB_STATE_LABELS = {
     JB_INTERRUPTED: "已中断（服务重启，结果不可信）",
 }
 
+# 11-10 用户口径③「刚才投出去的那条生产单显示完成，成片墙还是看不到」：
+# 「已完成」这三个字在台账里本来只说明**这一个动作**跑完了——投板跑完＝单挂上板，
+# 片子还在豆包那边出（几十分钟）；开单跑完＝单建好，还没投板。一线把它读成
+# "片儿到手了"完全合理，错的是我们只报了动作没报去向。所以每一种任务完成时都
+# 必须带一句"做到了哪一步、下一步在哪看"（`done_note`），界面摆在完成提示里。
+# 纯话术，不参与任何判定；改判定请回到各接口自己的闸门，别在这里加条件。
+ASSET_JOB_DONE_NOTES = {
+    JOB_ANALYZE: "反推只出稿：文案在「素材与文案」／审核台，这一步不产视频",
+    JOB_SUMMARY_GENERATE: "钩子文案已出稿（还没建单、没投板）：去审核台看过审，再开单才轮到出片",
+    JOB_PROMPT_PREVIEW: "提示词只是备好的预览：没建单、没投板、不占号池",
+    JOB_PRODUCE: "生产单已建好，但还没投板（不占号也不出片）：在「生产单与投板」点「投去出片」才算投出去",
+    JOB_DISPATCH: (
+        "投板只是把单挂上豆包任务板：出片＋回库要几十分钟，"
+        "回到「生产单与投板」看行上「成片」列——从「还没收片」变成「已收 N 段」才算到手，"
+        "片子同时自动进「成片墙」"
+    ),
+    JOB_DOWNLOAD: "原片已下载入库：在素材详情里就地播，这一步不出成片",
+    JOB_FRAMES: "抽帧完成：首帧摆在审核台卡片行与成片墙缩略图上",
+}
+
 
 def _job_endpoint(kind: str) -> Tuple[Any, Any, str]:
     """kind → (请求模型, 真正干活的接口函数, 白话名称)。
@@ -4947,6 +4967,9 @@ def _serialize_job(job: AssetJob, progress: Optional[Dict[str, Any]] = None) -> 
         "kind_label": _job_kind_label(job.kind),
         "status": job.status,
         "status_label": ASSET_JOB_STATE_LABELS.get(job.status, job.status),
+        # 「已完成」必须说清完成了什么、下一步在哪看（11-10 口径③）：只在成功终态给，
+        # 失败／中断的成因走 `error`，两套话术不混
+        "done_note": ASSET_JOB_DONE_NOTES.get(job.kind) if job.status == JB_SUCCEEDED else None,
         "running": job.status in JOB_OPEN_STATES,
         "batch_id": str(job.batch_id) if job.batch_id else None,
         "planned_units": job.planned_units,
@@ -5942,6 +5965,144 @@ async def extract_prompt_elements(
     }
 
 
+class PromptElementsGuessRequest(BaseModel):
+    """11-10 用户口径「在页面上重新认参数，能不能再将它们提炼一下」的入参。
+
+    形状与 `extract` 一致（行 id → 投递稿正文），但**这一口花钱**：`extract` 是 0 元、
+    可复现的确定性认法，认不出就是认不出（词表外写法＋台词类整句按设计永不自动认）；
+    这里补的是那一段——把稿子交给模型，让它**逐字抄回**稿子里扮演这个角色那段原文。
+    所以它必须是界面上一个要点才会跑的按钮，不许挂在认参数后面自动发生。
+    """
+
+    texts: Dict[str, str] = Field(
+        default_factory=dict,
+        description=f"行 id → 那份投递稿正文（一次上限 {pesvc.GUESS_MAX_ITEMS} 篇、"
+        f"总计上限 {pesvc.GUESS_MAX_TOTAL_CHARS} 字，超了就分批点）",
+    )
+    category: Optional[str] = Field(
+        None, description="钩子原型名或「原型 A」这种短前缀；给了就只提炼这一型配的参数项"
+    )
+
+
+@router.post("/assets/prompt-elements/guess-values")
+async def guess_prompt_element_values(
+    data: PromptElementsGuessRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """让模型从稿子里**逐字抄回**各换皮参数的原值（「稿子里没认出原值」的补位路）。
+
+    为什么需要它（回答一线那句「为什么都是稿子里没认出原值」）：
+      - literal 槽只认字典里那几组字面词，稿子写「黄皮子」而词表是「黄鼠狼」就认不出；
+      - manual 槽（说的话／偷听内容／引爆台词／绝境）**按设计永不自动认**——真稿是间接
+        转述，没有形状可依，让人自己去上千字里找那句原话再逐字抄，才是今天卡住的地方；
+      - 反推提示词那一步并没有"槽位"概念，所以这些值不是提前填好的，是开单这一屏现认的。
+
+    安全边界（模型会编，所以校验不许商量）：`accept_guessed_values` 要求抄回来的串
+    **逐字出现在这一份稿子的可动区间**里，编的一律丢弃并写进 `dropped` 白话。
+    本口**只读**：不改稿、不进投递正文、不动字典、不覆盖已经认出的原值（那些由前端按
+    「哪一格还没有值」决定，后端给的只是候选）。花一次模型钱，落一条审计。
+    """
+    if not data.texts:
+        raise HTTPException(status_code=400, detail="没有稿子正文，没什么可提炼的")
+    if len(data.texts) > pesvc.GUESS_MAX_ITEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一次最多提炼 {pesvc.GUESS_MAX_ITEMS} 篇（这次 {len(data.texts)} 篇），分批点",
+        )
+    total_chars = sum(len(str(v or "")) for v in data.texts.values())
+    if total_chars > pesvc.GUESS_MAX_TOTAL_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"这一批稿子共 {total_chars} 字，超过一次 {pesvc.GUESS_MAX_TOTAL_CHARS} 字上限："
+            "分批点，或先把「模板脚本提示词」里用不上的段落删短",
+        )
+    catalog = await _prompt_element_catalog(db)
+    slots = pesvc.slots_for_guess(catalog, data.category)
+    if not slots:
+        raise HTTPException(
+            status_code=400,
+            detail="这一型在元素字典里没配参数项，没有可提炼的原值——先去「可替换元素库」按原型加行",
+        )
+
+    payload_texts = [{"id": str(k), "text": str(v or "")} for k, v in data.texts.items()]
+    # 给模型的只有"这一项叫什么／是什么／常见的那些词"，`skip_lines`／`mode` 是**本机校验判据**，
+    # 不出去（出去等于告诉它哪几行不能碰，它反而会照着绕）。
+    payload_slots = [
+        {"key": s["key"], "label": s["label"], "note": s["note"], "pool": s["pool"]} for s in slots
+    ]
+    res = await _call_autoclip(
+        "hook-copy/slots",
+        {"texts": payload_texts, "slots": payload_slots, "max_retries": 1},
+        # 用 900s 默认值：单次问答比展开短，但超时链口径不许破（autoclip 600s < 这里 900s
+        # < 浏览器 MODEL_WAIT_TIMEOUT 960s），理由见 `_call_autoclip` 那段注释。
+    )
+
+    items_by_id: Dict[str, List[Dict[str, Any]]] = {}
+    stray: List[str] = []
+    for row in res.get("items") or []:
+        if not isinstance(row, dict):
+            continue
+        rid = str(row.get("id") or "")
+        if rid not in data.texts:
+            # 模型自己造的 id：这份稿子没提交过，它给的值一个都不认
+            stray.append(rid)
+            continue
+        items_by_id.setdefault(rid, []).append(row)
+
+    values: Dict[str, Dict[str, str]] = {}
+    dropped: List[str] = []
+    silent: List[str] = []
+    for key, text in data.texts.items():
+        picked = pesvc.accept_guessed_values(str(text or ""), slots, items_by_id.get(str(key), []))
+        if picked["values"]:
+            values[str(key)] = picked["values"]
+        else:
+            silent.append(str(key))
+        dropped.extend(picked["dropped"])
+
+    notes: List[str] = [
+        # 这几条会原样进界面（notification / Alert），不带 markdown 星号——
+        # 11-10 done_note 就踩过这个坑：antd 只认纯文本，`**x**` 会裸显四个星号。
+        "这一步是模型提炼（花一次模型钱，与出文案同档），不是 0 元的字典认法；"
+        "抄回来的每个词都必须逐字出现在这份稿子里，模型编的当场丢弃。",
+        "提炼只往「原稿里写的是」那一格填原值，不替你决定换成什么——换上什么还是你填。",
+    ]
+    if stray:
+        notes.append(f"模型多回了 {len(stray)} 个没提交过的稿子编号，那些值一律没用")
+    if silent:
+        notes.append(
+            f"有 {len(silent)} 篇一篇都没提炼到（多半是稿子里确实没写这一型要的那些东西）"
+        )
+
+    await _write_audit(
+        db,
+        action="asset.prompt_elements.guess_values",
+        operator=current_user,
+        target_type="asset_prompt_elements",
+        target_id=data.category or "*",
+        before=None,
+        after={
+            "text_count": len(payload_texts),
+            "slot_count": len(slots),
+            "filled_rows": len(values),
+            "dropped_count": len(dropped),
+            "model": res.get("model") or "",
+        },
+    )
+    return {
+        # 行 id → {槽位 key: 逐字抄回的原值}（与 extract 的 items 同一套 id，前端按格回填）
+        "values": values,
+        "labels": {str(s["key"]): str(s.get("label") or s["key"]) for s in slots},
+        "dropped": dropped,
+        "notes": notes,
+        "model": res.get("model") or "",
+        "slot_count": len(slots),
+        "text_count": len(payload_texts),
+        "total_chars": total_chars,
+    }
+
+
 @router.post("/assets/prompt-elements/apply")
 async def apply_prompt_elements(
     data: PromptElementsApplyRequest,
@@ -5961,6 +6122,10 @@ async def apply_prompt_elements(
     catalog = await _prompt_element_catalog(db)
     edits = [{"key": e.key, "from": e.old, "to": e.new} for e in data.edits]
     text, replaced, notes = pesvc.apply_edits(data.text, catalog, edits)
+    # 11-10 用户口径①「看不到正文被替换的地方」：位置在这里也算出来，
+    # 前端那棵高亮树只认 marks，不再自己 indexOf 猜。
+    marks, mark_notes = pesvc.mark_replacements(text, replaced, data.text)
+    notes = notes + mark_notes
     if len(text) > _PROMPT_OVERRIDE_MAX_LEN:
         notes.append(
             f"组完 {len(text)} 字，超过投递稿单条上限 {_PROMPT_OVERRIDE_MAX_LEN} 字，投板时会被拦，先删一点"
@@ -5971,6 +6136,7 @@ async def apply_prompt_elements(
     return {
         "text": text,
         "replaced": replaced,
+        "marks": marks,
         "notes": notes,
         "length": len(text),
         "risk": {
@@ -5979,6 +6145,110 @@ async def apply_prompt_elements(
         },
         # 与投板那道闸同一个判据：这里非空，点确认就会照原稿那道闸被拦（admin 可带理由强行投）
         "would_dispatch_block": bool(blocked),
+    }
+
+
+class PromptElementsFanoutPreviewRequest(BaseModel):
+    """④ 开单屏「换完长这样」的入参：和 produce 的扇出入口**同一套键**，只是不落库、不调模型。"""
+
+    texts: Dict[str, str] = Field(
+        default_factory=dict,
+        description="行 id（summary_id）→ 这一屏看到的那份底稿（上限同 extract：50 条 / 单条 20000 字）",
+    )
+    category: Optional[str] = Field(None, description="钩子原型；给了就只按这个原型的参数项换")
+    values: Dict[str, List[str]] = Field(
+        default_factory=dict, description="槽位 key → 要换上的多个值（扇几行就看它）"
+    )
+    base: Optional[Dict[str, str]] = Field(None, description="公共原值（这一屏手填/认出的那份）")
+    base_by_summary: Optional[Dict[str, Dict[str, str]]] = Field(
+        None, description="逐篇原值；与 produce 同一条合并口径：**逐篇覆盖公共**"
+    )
+    mode: str = Field(pesvc.MATRIX_ZIP, description="zip＝按行配对，product＝全组合")
+
+
+@router.post("/assets/prompt-elements/fanout-preview")
+async def preview_prompt_element_fanout(
+    data: PromptElementsFanoutPreviewRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """把「每个参数填了多个值」扇出来的那 N 份稿子当场组给人看（11-10 用户口径）。
+
+    用户 11-10 晚的原话：「我刚选了几个元素，但是没有看到正文被替换的地方。」这一口就是答案：
+    填完值立刻看到换完之后长什么样、哪几条真换动了、哪几条其实没换动。
+
+    ⚠️ 三条要说死的口径：
+     1. **和开单同一个引擎**——`expand_matrix` ＋ `compose_variants`（produce 扇出走的
+        `_element_fanout_rows` 里那两个），不是前端另拼一套字符串。所以配对报错、
+        "只填一个值的参数每行复用"、"没有原值就不换"这些行为预览与开单一致。
+     2. **0 元、不落库、不占号**：不调 autoclip，只在传进来的那份底稿上做字面替换。
+        开单时模型还会把文案展开成投递稿（`expand=true`），那份和这里看到的底稿可能有个别
+        字面差别——界面上要写清"以投板前 ④「改投递稿」那一屏为准"，别让人以为这里就是终稿。
+     3. **拦人的判据在这里也照跑，但只说不拦**：按行配对对不齐／全组合超上限 → 与 produce
+        同样的 400（免得人在预览里看好几遍、点提交才挨打）；高风险词只列进 `risk_words`
+        （produce 会整批 400），这里不拦是因为人还在试词。
+    """
+    if len(data.texts) > _MAX_EXTRACT_ITEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一次最多预览 {_MAX_EXTRACT_ITEMS} 条（这次 {len(data.texts)} 条），分批看",
+        )
+    over = [k for k, v in data.texts.items() if len(str(v or "")) > _MAX_ELEMENT_TEXT_LEN]
+    if over:
+        raise HTTPException(
+            status_code=400,
+            detail=f"这几条正文超过 {_MAX_ELEMENT_TEXT_LEN} 字上限，先删短再预览：{', '.join(over[:3])}",
+        )
+
+    catalog = await _prompt_element_catalog(db)
+    labels = {s["key"]: s["label"] for s in catalog}
+    try:
+        matrix_rows, matrix_notes = pesvc.expand_matrix(data.values, data.mode or pesvc.MATRIX_ZIP, labels)
+    except ValueError as exc:
+        # 与 produce 完全同一条 400 话术（同一函数抛的），预览里看到的拦和开单里看到的拦是一个字
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # 公共原值打底、逐篇覆盖：与 produce 的 `{**element_base, **element_bases.get(...)}` 同一条
+    common_base = {
+        str(k).strip(): str(v or "").strip()[: pesvc.MAX_MANUAL_VALUE_LEN]
+        for k, v in (data.base or {}).items()
+        if str(v or "").strip()
+    }
+    per_base: Dict[str, Dict[str, str]] = {}
+    for sid_raw, per in (data.base_by_summary or {}).items():
+        cleaned = {
+            str(k).strip(): str(v or "").strip()[: pesvc.MAX_MANUAL_VALUE_LEN]
+            for k, v in (per or {}).items()
+            if str(v or "").strip()
+        }
+        if cleaned:
+            per_base[str(_as_uuid(sid_raw, "summary_id"))] = cleaned
+
+    book, exemptions = await _risk_lexicon(db)
+    risk_words: List[str] = []
+    for row in matrix_rows:
+        for key, val in row.items():
+            hits = svc.risk_block_hits(svc.scan_risk(val, lexicon=book, exemptions=exemptions))
+            for h in hits:
+                word = f"{labels.get(key) or key}「{val}」含高风险词 {h['word']}"
+                if word not in risk_words:
+                    risk_words.append(word)
+
+    items: List[Dict[str, Any]] = []
+    for sid_raw, body in data.texts.items():
+        sid = str(_as_uuid(sid_raw, "summary_id"))
+        base_values = {**common_base, **per_base.get(sid, {})}
+        variants = pesvc.compose_variants(
+            body, catalog, base_values, matrix_rows, data.category, with_marks=True
+        )
+        items.append({"id": sid, "variants": variants})
+
+    return {
+        "rows": max(1, len(matrix_rows)),
+        "mode": data.mode or pesvc.MATRIX_ZIP,
+        "notes": matrix_notes,
+        "risk_words": risk_words,
+        "items": items,
     }
 
 
@@ -8469,6 +8739,7 @@ async def list_productions(
     batch_id: Optional[str] = None,
     asset_id: Optional[str] = None,
     owner: Optional[str] = None,
+    ids: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
     current_user: User = Depends(get_current_user),
@@ -8484,11 +8755,23 @@ async def list_productions(
     `created_by=me` 过滤（谁投账算谁）；scope 聚合同步带 owner，`today` 号池口径
     保持全站；响应另带 `dispatch_all`（同 scope 的全站口径），前端「我的/全站」
     两行并排。写口权限不受 owner 影响。
+
+    `ids`（11-10 一屏到底）：逗号拼接的**单个字符串**（与 export 同一口径）。
+    开单成功后前端要立刻把**刚建的那几张**顶进投板确认窗，而当前列表可能正筛着
+    状态/批次/「我的」——靠分页翻不一定会翻到。只进 `conds`，**不进 `scope`**：
+    投递计数（`dispatch`）说的还是这一屏的账，不该被一次点名改成三张单的账。
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 300)
     conds = []
     scope = []
+    if ids:
+        id_list = [_as_uuid(x.strip(), "ids") for x in str(ids).split(",") if x.strip()]
+        if not id_list:
+            raise HTTPException(status_code=400, detail="ids 是逗号拼接的 ID，不能是空的")
+        if len(id_list) > 300:
+            raise HTTPException(status_code=400, detail="ids 一次最多点 300 张单，请分批")
+        conds.append(AssetProduction.id.in_(id_list))
     if status:
         conds.append(AssetProduction.status == status)
     if batch_id:
@@ -10538,6 +10821,65 @@ async def list_outputs(
     }
 
 
+async def _outputs_awaiting(
+    db: AsyncSession, *, owner: Optional[str], current_user: User, batch_id: Optional[str]
+) -> dict:
+    """成片墙空态要说的三句真话（11-10 用户口径「我投去了，生产出来了就给我看，不要搞这么复杂」）。
+
+    墙空着的时候，一线分不清三件事：①**只建了单还没投板**、②**投出去了还在出片**、
+    ③**回收过了但这一屏的筛选把它藏了**。以前只会说「还没有成片」，三件事全糊在一句里，
+    人只能自己去猜——猜不动就以为系统坏了。这里按同一套 owner／批次口径把数算出来，
+    空态直接摆「20 条已投板，出片了会自动回到这里」。
+
+    只数生产单，不动 `kind`／`qc` 筛选：那两个是「成片怎么摆」的口径，
+    和「有没有在途的单」没关系，掺进来只会让人更看不懂。
+    """
+    p_conds = []
+    if owner == "me":
+        p_conds.append(AssetProduction.created_by == current_user.id)
+    if batch_id:
+        p_conds.append(AssetProduction.batch_id == _as_uuid(batch_id, "batch_id"))
+
+    waiting = never_dispatched = 0
+    for st, tid in (
+        await db.execute(
+            select(AssetProduction.status, AssetProduction.board_tid).where(*p_conds)
+        )
+    ).all():
+        if st in (PR_SUCCESS, PR_FAILED):
+            continue  # 终态：成片有没有，墙自己会说话
+        if st in (PR_QUEUED, PR_RUNNING) or tid:
+            waiting += 1  # 投出去了（含人工回写过 tid 但状态还停在待投的老单）
+        elif st == PR_ORDER_READY:
+            never_dispatched += 1  # 只建了单，一张号都没占
+
+    o_conds = []
+    if owner == "me":
+        o_conds.append(
+            or_(
+                AssetOutput.production_id.is_(None),
+                AssetOutput.production_id.in_(
+                    select(AssetProduction.id).where(AssetProduction.created_by == current_user.id)
+                ),
+            )
+        )
+    if batch_id:
+        o_conds.append(
+            AssetOutput.asset_id.in_(
+                select(AssetItem.id).where(AssetItem.batch_id == _as_uuid(batch_id, "batch_id"))
+            )
+        )
+    last_at = (
+        await db.execute(select(func.max(AssetOutput.created_at)).where(*o_conds))
+    ).scalar()
+
+    return {
+        "waiting_on_board": waiting,
+        "order_ready_not_dispatched": never_dispatched,
+        "last_output_at": utc_iso(last_at) if last_at else None,
+    }
+
+
 @router.get("/assets/outputs/groups")
 async def list_output_groups(
     group_by: str = "asset",
@@ -10745,7 +11087,16 @@ async def list_output_groups(
         for g in groups:
             g["thumb_url"] = None
 
-    return {"group_by": group_by, "owner": owner or "all", "groups": groups}
+    awaiting = await _outputs_awaiting(
+        db, owner=owner, current_user=current_user, batch_id=batch_id
+    )
+    return {
+        "group_by": group_by,
+        "owner": owner or "all",
+        "groups": groups,
+        # 空态要说真话用的三个数（见 `_outputs_awaiting`）
+        "awaiting": awaiting,
+    }
 
 
 @router.post("/assets/outputs/package")

@@ -48,6 +48,7 @@ from app.services.seedance_prompt_generator import (  # noqa: E402
 from app.services.publish_material_generator import generate_publish_material  # noqa: E402
 from app.services.hook_copy_generator import (  # noqa: E402
     expand_hook_copy,
+    extract_slot_values,
     generate_hook_candidates,
     generate_web_prompts,
 )
@@ -854,6 +855,42 @@ async def hook_prompt_web_route(data: HookPromptWebRequest):
         raise HTTPException(status_code=500, detail=f"网页版提示词生成失败: {e}")
     return {
         "prompts": result.get("prompts") or [],
+        "raw": result.get("raw"),
+        "model": _current_llm_model(),
+    }
+
+
+class HookSlotsRequest(BaseModel):
+    """11-10「帮我提炼原值」：几份投递稿 + 参数项清单 → 每个参数在这一份稿子里的原值。"""
+    texts: list = []                # [{"id": 稳定键, "text": 投递稿正文}]
+    slots: list = []                # [{"key","label","note","pool"}]
+    max_retries: int = 1            # 与展开同口径：内部只试一次，重试交给人再点一下
+
+
+@app.post("/api/v1/hook-copy/slots")
+async def extract_hook_slots_route(data: HookSlotsRequest):
+    """从**已写好的投递稿**里逐字抄回各换皮参数的原值（认参数的模型补位）。
+
+    只读认，不改稿：产物是一串"稿子里本来就有的原文"，后端还会逐条校验它真出现在
+    可动区间里（`asset_prompt_elements.accept_guessed_values`），编出来的值一律丢弃。
+    规则在 app/prompt/hook_slots.txt，机制在 hook_copy_generator.extract_slot_values。
+    """
+    texts = [t for t in (data.texts or []) if isinstance(t, dict) and str(t.get("text") or "").strip()]
+    slots = [s for s in (data.slots or []) if isinstance(s, dict) and str(s.get("key") or "")]
+    if not texts or not slots:
+        raise HTTPException(status_code=400, detail="缺少稿子或参数项清单，没什么可提炼的")
+    try:
+        result = await asyncio.to_thread(
+            extract_slot_values,
+            texts,
+            slots,
+            int(data.max_retries or 1),
+        )
+    except Exception as e:
+        logger.error("Hook slots extraction failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"参数原值提炼失败: {e}")
+    return {
+        "items": result.get("items") or [],
         "raw": result.get("raw"),
         "model": _current_llm_model(),
     }

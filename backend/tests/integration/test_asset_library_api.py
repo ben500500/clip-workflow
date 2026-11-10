@@ -313,10 +313,15 @@ async def _make_ready_asset(client, h, url=DOUYIN_2, *, script=SCRIPT, category_
 
 def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, generate_error=None,
                    expand_deviation=None, web_error=None, web_prompts=None, gen_title=None,
-                   expand_titles=None):
+                   expand_titles=None, slots_items=None, slots_error=None):
     """autoclip 文案服务替身：按 path 分发，expand 默认把过审钩子**原样**包进提示词。"""
 
     async def _call(path, payload, timeout=180.0):
+        if path.endswith("hook-copy/slots"):
+            # 11-10「帮我提炼原值」：用例自己给模型会回的那串 items，替身不猜
+            if slots_error:
+                raise HTTPException(status_code=502, detail=slots_error)
+            return {"items": slots_items or [], "raw": None, "model": "fake-llm"}
         if path.endswith("hook-copy/generate"):
             if generate_error:
                 raise HTTPException(status_code=502, detail=generate_error)
@@ -4290,6 +4295,71 @@ def test_startup_sweep_marks_open_jobs_interrupted():
         detail = await client.get(f"/api/assets/jobs/{rows[0].id}", headers=hm)
         assert detail.json()["status_label"].startswith("已中断"), detail.json()
         assert detail.json()["running"] is False
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_job_done_note_says_where_the_work_actually_got_to():
+    """11-10 用户口径③「刚才投出去的那条生产单显示完成，成片墙还是看不到」——话术表守卫（不连库）。
+
+    「已完成」这三个字在台账里本来只说明**这一个动作**跑完了：投板跑完＝单挂上豆包的板，
+    片子还在出（几十分钟）；开单跑完＝单建好、还没投板。一线把它读成"片儿到手了"完全合理，
+    错的是我们只报动作不报去向。所以每一种任务都必须带一句去向，而且**这句话本身不能谎报**：
+    这里钉的是措辞底线（投板那条必须出现"几十分钟""才算到手""成片墙"），改话术的人会先撞到这里。
+    """
+    from app.models.asset import ASSET_JOB_KINDS, JOB_ANALYZE, JOB_DISPATCH, JOB_DOWNLOAD, JOB_PROMPT_PREVIEW
+
+    notes = assets_api.ASSET_JOB_DONE_NOTES
+    # ① 每种任务都得有话：新增 kind 却忘了写去向 = 又回到"只显示完成"那个投诉
+    missing = sorted(set(ASSET_JOB_KINDS) - set(notes))
+    assert not missing, f"这些后台任务类型没有完成话术（一线只会看到「已完成」）：{missing}"
+    assert all(n and n.strip() for n in notes.values()), "话术不能是空串"
+    # ② 花钱/花号池那两条必须说清"还没到手"
+    assert "还没投板" in notes[JOB_PRODUCE], notes[JOB_PRODUCE]
+    d = notes[JOB_DISPATCH]
+    assert "几十分钟" in d and "才算到手" in d and "成片墙" in d, d
+    # ③ 出稿类不能让人以为片子已经在库里
+    assert "没投板" in notes[JOB_SUMMARY_GENERATE], notes[JOB_SUMMARY_GENERATE]
+    for kind in (JOB_ANALYZE, JOB_SUMMARY_GENERATE, JOB_PRODUCE, JOB_PROMPT_PREVIEW, JOB_DOWNLOAD):
+        assert "已出片" not in notes[kind] and "出片完成" not in notes[kind], (kind, notes[kind])
+
+
+def test_job_api_returns_done_note_only_for_succeeded():
+    """去向那句话只在**成功终态**给；失败／中断给的是成因（`error`），两套话不许混。
+
+    混了会怎样：一条失败的投板也挂着"投板只是把单挂上板…几十分钟"，一线就会守着页面
+    等一个永远不会来的片子——这正是本轮投诉的反面形态。
+    """
+    from app.models.asset import JB_FAILED, JOB_DISPATCH
+
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        async with dbmod.async_session_factory() as s:
+            s.add_all([
+                AssetJob(kind=JOB_DISPATCH, status=JB_SUCCEEDED, params={}, created_by=None),
+                AssetJob(kind=JOB_PRODUCE, status=JB_SUCCEEDED, params={}, created_by=None),
+                AssetJob(kind=JOB_DISPATCH, status=JB_FAILED, params={}, created_by=None,
+                         error="豆包任务板没回话"),
+                AssetJob(kind=JOB_SUMMARY_GENERATE, status=JB_INTERRUPTED, params={}, created_by=None,
+                         error="服务重启，这条没跑完"),
+            ])
+            await s.commit()
+        rows = {
+            (r.kind, r.status): str(r.id)
+            for r in await _rows(AssetJob, AssetJob.status.in_(list(assets_api.JOB_TERMINAL_STATES)))
+        }
+        got = {}
+        for key, jid in rows.items():
+            body = (await client.get(f"/api/assets/jobs/{jid}", headers=hm)).json()
+            got[key] = body["done_note"]
+        assert got[(JOB_DISPATCH, JB_SUCCEEDED)] == assets_api.ASSET_JOB_DONE_NOTES[JOB_DISPATCH], got
+        assert got[(JOB_PRODUCE, JB_SUCCEEDED)] == assets_api.ASSET_JOB_DONE_NOTES[JOB_PRODUCE], got
+        assert got[(JOB_DISPATCH, JB_FAILED)] is None, got
+        assert got[(JOB_SUMMARY_GENERATE, JB_INTERRUPTED)] is None, got
         await client.aclose()
 
     _run(_scenario())
@@ -8656,6 +8726,41 @@ def test_output_groups_aggregate_by_asset_and_batch():
         # 非法 group_by 400
         bad = await client.get("/api/assets/outputs/groups?group_by=hook", headers=hm)
         assert bad.status_code == 400
+
+        # ⑤ `awaiting`：墙空着的时候界面得说得出「为什么空」（11-10 用户口径
+        #    「刚才投出去的那条生产单显示完成，成片墙还是看不到」）。三件事分开数：
+        #    只建单没投板 / 已投板还在出片 / 最近一次回收时间。终态（成／败）不算在途——
+        #    成没成片墙自己会说话，再算进来就会永远"还在出片"。
+        aw = g.json()["awaiting"]
+        assert aw["order_ready_not_dispatched"] == 2, aw
+        assert aw["waiting_on_board"] == 0, aw
+        assert aw["last_output_at"], "已经有成片了，最近回收时间不能是空"
+
+        prods = await _rows(AssetProduction)
+        p_a1 = [x for x in prods if str(x.asset_id) == a1][0]
+        p_a2 = [x for x in prods if str(x.asset_id) == a2][0]
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetProduction, p_a1.id)
+            row.status, row.board_tid = PR_RUNNING, "T-G1"
+            done = await s.get(AssetProduction, p_a2.id)
+            done.status, done.board_tid = PR_SUCCESS, "T-G2"
+            await s.commit()
+        aw = (await client.get("/api/assets/outputs/groups?group_by=asset", headers=hm)).json()["awaiting"]
+        assert aw["waiting_on_board"] == 1, f"投出去那张要算成在途：{aw}"
+        assert aw["order_ready_not_dispatched"] == 0, f"回收成功的那张不能再算待投：{aw}"
+
+        # 批次口径：切到某一批时只数这一批的单，别把别人在跑的任务算成"你这批还在出片"
+        a2_item = (await _rows(AssetItem, AssetItem.id == uuid.UUID(a2)))[0]
+        assert a2_item.batch_id is not None and str(a2_item.batch_id) != str(a1_item.batch_id)
+        aw = (await client.get(
+            f"/api/assets/outputs/groups?group_by=asset&batch_id={a2_item.batch_id}", headers=hm
+        )).json()["awaiting"]
+        assert aw["waiting_on_board"] == 0 and aw["order_ready_not_dispatched"] == 0, \
+            f"这一批那张单已经回收成功了，两个在途数都该是 0：{aw}"
+        aw = (await client.get(
+            f"/api/assets/outputs/groups?group_by=asset&batch_id={a1_item.batch_id}", headers=hm
+        )).json()["awaiting"]
+        assert aw["waiting_on_board"] == 1 and aw["order_ready_not_dispatched"] == 0, aw
         await client.aclose()
 
     _run(_scenario())
@@ -10006,6 +10111,160 @@ def test_prompt_elements_catalog_extract_and_apply_api():
     _run(_scenario())
 
 
+GUESS_TEXT_10S = "\n".join([
+    "【第 1 段 · 建议 10 秒 · 本钩共 6 条 · 编号 8PZXGB1】",
+    "钩子原文：黄皮子蹲在院门口说了句别开门",
+    "生成【都市脑洞】仿真人写实短剧，参考【《黄皮子拦门》】剧情，"
+    "输入素材为 AI 多视图角色设定卡。",
+    "时长 10 秒，9:16 竖屏，模拟手机竖屏实拍短剧影视质感。",
+    "剧情：【前3秒】出租屋院门口，一只黄皮子拦住门，嘴里念叨「别开门，外头人不对」。",
+    "【后7秒】他开门看了一眼，门外空无一人，门槛上放着个布包。",
+    "镜头：门口正反打，屋内用侧四十五度中近景。",
+    "负面约束：禁止五官崩坏变脸。 9:16，10s",
+])
+
+
+def test_prompt_elements_guess_values_api():
+    """11-10「帮我提炼原值」（用户口径「为什么都是稿子里没认出原值？能不能再将它们提炼一下」）。
+
+    这一口与 0 元的 `extract` 唯一的本质区别是**它会调模型**，所以判据全在"敢不敢信它"上：
+    1. 模型抄回来的串只有**逐字出现在这一篇稿子的可动区间**才收；编的、落在保护行的、
+       字典里没这个键的、同键回了两条的——一律丢弃，且每条在 `dropped` 里说成人话
+       （不说人话就等于"没显示＝没找到"，人会白等）；
+    2. 花了钱就要留痕：成功一条 `asset.prompt_elements.guess_values` 审计；
+       autoclip 挂了（502）时**一条都不许留**，也不许造出半行数据；
+    3. 上限：稿子篇数／总字数超限 400，没稿子 400，字典空 400（都是"没得提炼"，不是崩）；
+    4. 只读：不改字典、不动任何稿件，库里那张 `system_config` 只有用例自己那一次 PUT。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ha = h["material"], h["admin"]
+
+        # 配两行：一行 literal 词表外（extract 认不出）、一行 manual（按设计永不自动认）
+        r = await client.put(
+            "/api/assets/prompt-elements",
+            json={
+                "inherit": True,
+                "slots": [
+                    {"key": "scene", "label": "场景", "pool": ["老破小客厅", "出租屋客厅"],
+                     "note": "③剧情里的地点"},
+                    {"key": "speech", "label": "动物说的话", "mode": "manual",
+                     "note": "⑤它开口那句，稿子里多半是间接转述"},
+                ],
+            },
+            headers=ha,
+        )
+        assert r.status_code == 200, r.text
+
+        items = [
+            # ① 真在稿子里（剧情行那句台词）→ 该收
+            {"id": "p1", "key": "speech", "value": "别开门，外头人不对"},
+            # ② 只出现在 ① 生成【…》 保护行里（模型把剧名当场景抄回来了）→ 该丢
+            {"id": "p1", "key": "scene", "value": "黄皮子拦门"},
+            # ③ 稿子里根本没有这串字（模型编的）→ 该丢
+            {"id": "p1", "key": "scene", "value": "村口老槐树下"},
+            # ④ 字典里没这个键 → 该丢
+            {"id": "p1", "key": "weather", "value": "出租屋院门口"},
+            # ⑤ 同键第二条 → 只留第一条
+            {"id": "p1", "key": "speech", "value": "他开门看了一眼"},
+            # ⑥ 没提交过的稿子编号 → 整条不算，notes 里点名
+            {"id": "p9", "key": "speech", "value": "门外空无一人"},
+        ]
+
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(slots_items=items)) as call:
+            r = await client.post(
+                "/api/assets/prompt-elements/guess-values",
+                json={"texts": {"p1": GUESS_TEXT_10S}},
+                headers=hm,
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+
+        # ① 只收下"逐字出现在可动区间"的那一条，其余全丢
+        assert body["values"] == {"p1": {"speech": "别开门，外头人不对"}}, body["values"]
+        assert {"scene", "speech"} <= set(body["labels"]), body["labels"]
+        # speech 是 manual 行——它进得来才证明这条路真的补的是「按设计永不自动认」那几行
+        assert body["slot_count"] >= 2 and body["text_count"] == 1
+
+        joined = "\n".join(body["dropped"])
+        assert "黄皮子拦门" in joined and "不动的那两行" in joined, body["dropped"]   # ②只在保护行里
+        assert "村口老槐树下" in joined and "找不到" in joined, body["dropped"]        # ③模型编的
+        assert "weather" in joined and "没配" in joined, body["dropped"]                # ④没这个参数项
+        assert "回了两条" in joined, body["dropped"]                                     # ⑤第二条
+        assert len(body["dropped"]) == 4, body["dropped"]
+
+        notes = "\n".join(body["notes"])
+        assert "模型" in notes and "钱" in notes, body["notes"]
+        assert "p9" not in notes, "编号是内部键，不该原样甩给一线看"
+        assert "没提交过" in notes, body["notes"]
+
+        # 发出去的东西：稿子全文＋该型参数项（含 manual 行），且候选词表带着
+        payload = call.call_args.args[1]
+        assert payload["texts"] == [{"id": "p1", "text": GUESS_TEXT_10S}], payload["texts"]
+        # 内部判据不许出本机：`skip_lines`／`mode` 只给校验用，发给模型的只有四个描述字段
+        assert all(set(s) == {"key", "label", "note", "pool"} for s in payload["slots"]), payload["slots"]
+        sent = {s["key"]: s for s in payload["slots"]}
+        assert sent["speech"]["label"] == "动物说的话" and sent["scene"]["pool"][:1] == ["老破小客厅"]
+        assert payload["max_retries"] == 1, "重试交给人再点一下，与出文案/展开同口径"
+
+        # ② 花钱要留痕
+        audits = await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.guess_values")
+        assert len(audits) == 1 and audits[0].operator_name == MATERIAL_USER, audits
+        assert audits[0].after == {
+            "text_count": 1, "slot_count": body["slot_count"], "filled_rows": 1,
+            "dropped_count": len(body["dropped"]), "model": "fake-llm",
+        }, audits[0].after
+
+        # 模型挂了：502 原样传出去，且**不补一条审计**（没花钱的事不能留痕）
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(slots_error="提炼服务没回话")):
+            r = await client.post(
+                "/api/assets/prompt-elements/guess-values",
+                json={"texts": {"p1": GUESS_TEXT_10S}}, headers=hm,
+            )
+        assert r.status_code == 502 and "提炼服务没回话" in r.text, r.text
+        assert len(await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.guess_values")) == 1
+
+        # ③ 四道 400：没稿子／篇数超／字数超／字典空
+        r = await client.post("/api/assets/prompt-elements/guess-values",
+                              json={"texts": {}}, headers=hm)
+        assert r.status_code == 400 and "没有稿子" in r.text, r.text
+        r = await client.post(
+            "/api/assets/prompt-elements/guess-values",
+            json={"texts": {f"p{i}": GUESS_TEXT_10S for i in range(6)}}, headers=hm,
+        )
+        assert r.status_code == 400 and "分批" in r.text, r.text
+        r = await client.post(
+            "/api/assets/prompt-elements/guess-values",
+            json={"texts": {"p1": GUESS_TEXT_10S + "补" * 13000}}, headers=hm,
+        )
+        assert r.status_code == 400 and "字" in r.text, r.text
+        # 上限内的最大合法请求**不许**被误拦（12000 正好、5 篇正好）
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(slots_items=[])) as call2:
+            r = await client.post(
+                "/api/assets/prompt-elements/guess-values",
+                json={"texts": {f"p{i}": (GUESS_TEXT_10S + "补" * 1300)[:2400] for i in range(5)}},
+                headers=hm,
+            )
+        assert r.status_code == 200, r.text
+        assert r.json()["values"] == {}, "空 items 就该回空，不许凭空造值"
+        assert call2.call_count == 1
+        r = await client.put("/api/assets/prompt-elements", json={"slots": [], "inherit": False},
+                             headers=ha)
+        assert r.status_code == 200, r.text
+        r = await client.post("/api/assets/prompt-elements/guess-values",
+                              json={"texts": {"p1": GUESS_TEXT_10S}}, headers=hm)
+        assert r.status_code == 400 and "参数项" in r.text, r.text
+
+        # ④ 只读：全程没动过稿件，也没造素材/生产单
+        assert await _count(AssetProduction) == 0 and await _count(AssetSummary) == 0
+        assert await _count(AssetItem) == 0
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_prompt_elements_manual_rows_protected_lines_and_seeds_api():
     """批 N（11-10 用户逐原型参数清单）四件事，都得从接口口打出来才算数：
 
@@ -10785,6 +11044,178 @@ def test_auto_concat_idempotency_and_names_every_skip_reason():
         assert len(calls) == 1, "四条跳过的成因里不许有一次真去开 ffmpeg"
         assert [o.kind for o in await _rows(AssetOutput)].count("composed") == 1
         assert len(await _rows(AuditLog, AuditLog.action == "asset.concat.auto")) == 1
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_fanout_preview_shows_replaced_text_and_matches_produce():
+    """11-10 用户口径「我刚选了几个元素，但是没有看到正文被替换的地方」→ 开单前先给人看换完长什么样。
+
+    这一口的存在理由不是"多一个接口"，是**换词这件事必须在按「生成生产单」之前就能看见**。
+    所以用例的重心全在"预览和开单是不是同一套口径"上：
+
+    1. **同一引擎**：预览第 1 条的正文，必须与开单后落在生产单上的 `prompt_text` **逐字相同**
+       （同稿、同值、同原值、且第一行不换号）——前端另拼一套字符串迟早和后端对不上，
+       那时人在预览里看到的和投出去的是两份稿，比没有预览更坏；
+    2. **0 元、不落库、不占号**：调模型的那个函数一旦被碰就直接炸，台账一张单也不许多出来；
+    3. **拦人的判据同一条话术**：按行配对个数对不齐 → 预览与 produce 的 400 `detail` 完全相等；
+    4. **风险词只说不拦**：预览 200 并把词列进 `risk_words`，produce 同样入参照样 400——
+       人还在试词，不该被闸打死；真要投时那道闸还在原地；
+    5. 没有原值 → 这一条不换，并在 `missing` 里点名（不许出一张"看起来换过了"的假稿）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.api import assets as assets_api  # noqa: F401  （取上限常量，别把 50 写死在测试里）
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+
+        base_prompt = "\n".join([
+            "【第 1 段 · 建议 10 秒 · 本钩共 1 条 · 编号 7D0B1】",
+            "剧情：【前3秒】河边，一只猫开口让他赶紧出门。【后7秒】河边，他撬开水泥管。",
+            "镜头：河边用侧四十五度中近景。",
+        ])
+        base_titles = ["7D0B1·河边猫开口了", "备用标题"]
+        values = {"a_scene": ["建筑工地", "繁华大街"], "a_animal": ["黄鼠狼"]}
+        base = {"a_scene": "河边", "a_animal": "猫"}
+
+        # ── ① 同一引擎：拿开单后的真稿逐字比 ──
+        # 原型名要拿**字典里的全名**（「原型 A：非人物件 / 动物开口说话…」）：扇出只换
+        # 适用该原型的参数项，名字给错＝槽位集体不适用＝预览一片"没认出值"，看着像接口坏了。
+        cats = (await client.get("/api/assets/categories", headers=hm)).json()["items"]
+        cat_a_row = [c for c in cats if c["name"].startswith("原型 A：")]
+        assert len(cat_a_row) == 1, cats
+        cat_a, cat_name = cat_a_row[0]["id"], cat_a_row[0]["name"]
+        asset_id, _ = await _make_ready_asset(client, hm, category_id=cat_a)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        sid = _approvable(items)["id"]
+        await client.post("/api/assets/summaries/review",
+                          json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+
+        r = await client.post(
+            "/api/assets/prompt-elements/fanout-preview",
+            json={"texts": {sid: base_prompt}, "category": cat_name,
+                  "values": values, "base": base},
+            headers=ho,
+        )
+        assert r.status_code == 200, r.text
+        pv = r.json()
+        assert pv["rows"] == 2 and pv["mode"] == "zip", pv
+        assert len(pv["items"]) == 1 and pv["items"][0]["id"] == sid, pv
+        variants = pv["items"][0]["variants"]
+        assert [v["seq"] for v in variants] == [1, 2]
+        assert variants[0]["values"]["a_scene"] == "建筑工地"
+        assert "建筑工地" in variants[0]["text"] and "河边" not in variants[0]["text"]
+        assert "繁华大街" in variants[1]["text"]
+        assert all("黄鼠狼" in v["text"] and "一只猫" not in v["text"] for v in variants), \
+            "只填一个值的参数每行复用同一个（zip 口径）"
+        assert variants[0]["changed"] is True and variants[0]["missing"] == []
+
+        with patch("app.api.assets._call_autoclip",
+                   _fake_autoclip(expand_prompt=base_prompt, expand_titles=base_titles)):
+            r = await client.post("/api/assets/produce", json={
+                "summary_ids": [sid], "n": 1,
+                "hook_codes": ["7D0B1", "7D0B2"],
+                "element_values": values, "element_base": base,
+            }, headers=ho)
+        assert r.status_code == 200, r.text
+        assert r.json()["created"] == 2
+        got = sorted(await _rows(AssetProduction), key=lambda x: x.seq)
+        assert variants[0]["text"] == got[0].prompt_text, (
+            "预览与开单必须逐字同稿（同一个 expand_matrix＋compose_variants）："
+            f"\n预览：{variants[0]['text']!r}\n开单：{got[0].prompt_text!r}"
+        )
+        # 第 2 条只差"编号换成本行自己的号"——那是 produce 的扇出口干的（板面按标题回收），
+        # 预览不带号也带不了，除此之外一个字都不许多改。
+        assert variants[1]["text"].replace("7D0B1", "7D0B2") == got[1].prompt_text, (
+            f"\n预览：{variants[1]['text']!r}\n开单：{got[1].prompt_text!r}"
+        )
+
+        # ── ② 0 元、不落库、不占号 ──
+        calls = []
+
+        async def _boom(*a, **k):
+            calls.append(1)
+            raise AssertionError("预览口不许碰模型（碰一次＝烧一次钱）")
+
+        before = await _count(AssetProduction)
+        summaries_before = await _count(AssetSummary)
+        spare = str(uuid.uuid4())
+        with patch("app.api.assets._call_autoclip", _boom):
+            r = await client.post(
+                "/api/assets/prompt-elements/fanout-preview",
+                json={"texts": {spare: base_prompt},
+                      "values": {"a_scene": ["建筑工地", "繁华大街"], "a_animal": ["狗", "黄鼠狼"]},
+                      "base": {**base, "a_animal": "猫"},
+                      "mode": "product"},
+                headers=hm,
+            )
+        assert r.status_code == 200, r.text
+        assert calls == [], "预览走的是纯字面替换，一次模型都不该调"
+        assert r.json()["rows"] == 4, "全组合＝2 场景 × 2 动物"
+        assert "×".join(["2", "2"]) in r.json()["notes"][0], r.json()["notes"]
+        assert await _count(AssetProduction) == before, "预览不建单、不占号、不落库"
+        assert await _count(AssetSummary) == summaries_before, "预览也不该造文案行"
+
+        # ── ③ 配对不齐：预览与开单同一条 400 话术（人在预览里就该看到，不该等提交才挨打）──
+        bad_values = {"a_scene": ["建筑工地", "繁华大街"], "a_animal": ["狗", "黄鼠狼", "猫"]}
+        r1 = await client.post("/api/assets/prompt-elements/fanout-preview",
+                               json={"texts": {sid: base_prompt}, "values": bad_values, "base": base},
+                               headers=ho)
+        assert r1.status_code == 400 and "对不齐" in r1.json()["detail"], r1.text
+        with patch("app.api.assets._call_autoclip",
+                   _fake_autoclip(expand_prompt=base_prompt, expand_titles=base_titles)):
+            r2 = await client.post("/api/assets/produce", json={
+                "summary_ids": [sid], "n": 1, "element_values": bad_values, "element_base": base,
+            }, headers=ho)
+        assert r2.status_code == 400, r2.text
+        assert r1.json()["detail"] == r2.json()["detail"], (
+            f"同一个错两处话术不一样，一线就分不清是预览坏了还是开单坏了：\n{r1.json()}\n{r2.json()}"
+        )
+        assert await _count(AssetProduction) == before
+
+        # ── ④ 风险词：预览只说不拦，produce 照旧拦 ──
+        await client.put("/api/assets/risk-lexicon",
+                         json={"block": ["黄鼠狼"], "warn": [], "exempt": {}, "inherit": False},
+                         headers=h["admin"])
+        r = await client.post("/api/assets/prompt-elements/fanout-preview",
+                              json={"texts": {sid: base_prompt}, "values": values, "base": base},
+                              headers=ho)
+        assert r.status_code == 200, r.text
+        assert any("黄鼠狼" in w and "高风险词" in w for w in r.json()["risk_words"]), r.json()
+        with patch("app.api.assets._call_autoclip",
+                   _fake_autoclip(expand_prompt=base_prompt, expand_titles=base_titles)):
+            r = await client.post("/api/assets/produce", json={
+                "summary_ids": [sid], "n": 1, "element_values": values, "element_base": base,
+            }, headers=ho)
+        assert r.status_code == 400 and "高风险词" in r.json()["detail"], r.text
+        assert await _count(AssetProduction) == before
+        await client.put("/api/assets/risk-lexicon",
+                         json={"block": [], "warn": [], "exempt": {}, "inherit": True},
+                         headers=h["admin"])
+
+        # ── ⑤ 没有原值：这一条不换，但必须点名（出一张"看着换过了"的假稿比不给看更坏）──
+        r = await client.post("/api/assets/prompt-elements/fanout-preview",
+                              json={"texts": {sid: base_prompt}, "values": {"a_scene": ["海底"]}},
+                              headers=ho)
+        assert r.status_code == 200, r.text
+        v0 = r.json()["items"][0]["variants"][0]
+        assert v0["text"] == base_prompt and v0["changed"] is False
+        assert v0["missing"] == ["场景"], v0
+        assert any("没有原值" in n for n in v0["notes"]), v0["notes"]
+
+        # ── ⑥ 上限与权限：和抽元素同一套（50 条封顶、未登录 401）──
+        r = await client.post(
+            "/api/assets/prompt-elements/fanout-preview",
+            json={"texts": {str(uuid.uuid4()): base_prompt
+                            for _ in range(assets_api._MAX_EXTRACT_ITEMS + 1)}, "values": values},
+            headers=ho,
+        )
+        assert r.status_code == 400 and "分批" in r.json()["detail"], r.text
+        r = await client.post("/api/assets/prompt-elements/fanout-preview",
+                              json={"texts": {sid: base_prompt}, "values": values})
+        assert r.status_code == 401, r.text
         await client.aclose()
 
     _run(_scenario())

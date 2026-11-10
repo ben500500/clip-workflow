@@ -526,3 +526,86 @@ def test_manual_row_without_a_note_still_gets_the_how_to_fill_line():
     cat = _only(_slot("x_line", mode=pe.MODE_MANUAL))
     got = pe.extract_elements(PROMPT_A, cat)[0]
     assert got["note"] == pe.MANUAL_NOTE and got["current"] is None
+
+
+# ─────────────  11-10「帮我提炼原值」：模型补位回来的原值，逐字校验才算数  ─────────────
+# 这一段的分量全在**丢弃**那半边：模型一定会有编的时候，收错了就等于把《剧名》当场景换掉、
+# 或者拿一个稿子里根本没有的词去换词（换不动，还留下一张看起来正常的单）。
+# 所以每个"该丢"都单独钉一条，每个"该收"也钉一条——只测收不测丢，等于没测。
+
+def _guess_slots(category=None):
+    return pe.slots_for_guess(pe.normalize_catalog(pe.DEFAULT_PROMPT_ELEMENTS), category)
+
+
+def test_guess_slot_list_includes_the_manual_rows_and_carries_the_guard():
+    """要提炼的清单**必须含手填项**（用户嫌累的正在那几行），还必须带 `skip_lines`。
+
+    `skip_lines` 掉了＝校验拿不到保护行判据，于是"只在 ① 行出现过的词"会被当成有效原值收下来。
+    """
+    slots = {s["key"]: s for s in _guess_slots("原型 A")}
+    assert {"a_animal", "a_scene", "a_speech"} <= set(slots), sorted(slots)
+    assert slots["a_speech"]["mode"] == pe.MODE_MANUAL, "手填项不在这份清单里就白做了"
+    assert slots["a_speech"]["skip_lines"] == pe.DEFAULT_SKIP_LINES
+    assert "f_plight" not in slots, "限定别的原型的行不该混进这一型的清单"
+    # 一批混着几种原型时前端不报原型 → 全部行并起来问（与 extract 不一样，是故意的：
+    # 跟着滤就成了一屏空白＋一句"没配参数项"，而那明明是好几种原型各要各的参数）
+    every = {s["key"] for s in _guess_slots()}
+    assert {"a_speech", "f_plight"} <= every, sorted(every)
+
+
+def test_guess_values_accepted_only_when_the_words_are_really_in_the_copy():
+    """手填项的间接转述被模型原样抄回来 → 收；这是这一口存在的全部理由。"""
+    slots = _guess_slots("原型 A")
+    out = pe.accept_guessed_values(
+        PROMPT_A, slots, [{"key": "a_speech", "value": " 催他下水求财 "}]
+    )
+    assert out["values"] == {"a_speech": "催他下水求财"}, out  # 只 strip 首尾，中间一字不动
+    assert out["dropped"] == []
+
+
+def test_guess_value_that_only_lives_in_a_protected_line_is_dropped():
+    """「鲸鱼」只在 ① 生成【…】那行（剧名）里出现 → 抄得再像也不能收，那儿换不动。"""
+    out = pe.accept_guessed_values(PROMPT_A, _guess_slots("原型 A"), [{"key": "a_animal", "value": "鲸鱼"}])
+    assert out["values"] == {}, out
+    assert len(out["dropped"]) == 1 and "不动的那两行" in out["dropped"][0], out["dropped"]
+
+
+def test_invented_guess_value_is_dropped_with_a_different_sentence():
+    """串在稿子里根本没有 → 说的是"找不到"，不是"在保护行里"（两种红的修法不一样）。"""
+    out = pe.accept_guessed_values(
+        PROMPT_A, _guess_slots("原型 A"), [{"key": "a_scene", "value": "深夜的写字楼茶水间"}]
+    )
+    assert out["values"] == {} and "找不到" in out["dropped"][0], out
+
+
+def test_guess_value_for_an_unconfigured_key_is_dropped():
+    slots = _guess_slots("原型 A")
+    out = pe.accept_guessed_values(PROMPT_A, slots, [{"key": "mood", "value": "河边"}])
+    assert out["values"] == {} and "没配" in out["dropped"][0], out
+
+
+def test_second_guess_value_for_the_same_key_loses():
+    """同键回两条只留第一条——换词一口只能有一个原值，留哪条都不该由模型掷硬币。"""
+    out = pe.accept_guessed_values(
+        PROMPT_A,
+        _guess_slots("原型 A"),
+        [{"key": "a_scene", "value": "建筑工地的水泥管边"}, {"key": "a_scene", "value": "河边"}],
+    )
+    assert out["values"] == {"a_scene": "建筑工地的水泥管边"}, out
+    assert "回了两条" in out["dropped"][0], out
+
+
+def test_overlong_guess_value_is_refused_before_it_hits_the_replace_gate():
+    """抄回来一整段（>600 字）＝拿整篇稿子当"原值"，换词必然把全稿换掉：不收。"""
+    long_text = PROMPT_A + "补" * (pe.MAX_MANUAL_VALUE_LEN + 1)
+    out = pe.accept_guessed_values(
+        long_text, _guess_slots("原型 A"), [{"key": "a_scene", "value": "补" * 700}]
+    )
+    assert out["values"] == {} and "超过" in out["dropped"][0], out
+
+
+def test_guess_accept_says_so_when_there_is_nothing_to_ask():
+    """没稿子／没清单不是"模型没活儿"，是这一屏没什么可提炼——界面要有一句人话。"""
+    assert pe.accept_guessed_values("", _guess_slots("原型 A"), [])["dropped"]
+    assert pe.accept_guessed_values(PROMPT_A, [], [{"key": "a_scene", "value": "河边"}])["dropped"]
+    assert pe.slots_for_guess([], None) == []
