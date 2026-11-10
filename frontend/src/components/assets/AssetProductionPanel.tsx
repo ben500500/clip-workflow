@@ -11,7 +11,7 @@ import {
 } from '../../api/assets';
 import type {
   AssetBatch, AssetDispatchAck, AssetDispatchResponse, AssetDispatchCounts, AssetExportJson, AssetExportPayload, AssetExportTxt,
-  AssetOutput, AssetOutputPreviewResult, AssetProduction, AssetSummary, DispatchReportStatus, ProductionState,
+  AssetOutput, AssetOutputPreviewResult, AssetPromptElementFound, AssetProduction, AssetSummary, DispatchReportStatus, ProductionState,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
@@ -19,6 +19,7 @@ import { withCrossPersonConfirm } from './crossPerson';
 import ProduceOrderModal from './ProduceOrderModal';
 import ApprovedSummaryPickerModal from './ApprovedSummaryPickerModal';
 import AssetCardPicker from './AssetCardPicker';
+import AssetPromptElementDrawer from './AssetPromptElementDrawer';
 import { MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
 
 const { Text, Paragraph } = Typography;
@@ -58,6 +59,119 @@ const boardStatusText = (raw: string | null): string | null => {
     .split('/')
     .map((s) => BOARD_ROW_STATUS_TEXT[s.trim()] || s.trim())
     .join('·');
+};
+
+/** 批 M：一条元素要换掉的原文（pattern 只换捕获组，literal/自定义＝整段逐字换） */
+interface ElementEdit {
+  key?: string;
+  old?: string;
+  new: string;
+}
+
+/**
+ * 批 M：把「某个元素换成 X」翻成后端听得懂的一组替换项。
+ *
+ * - pattern 槽位 → **一条** `old:''` 的替换＝这个槽位的所有命中都换（换完仍然处处一致，
+ *   时长那种「②⑦⑩⑬ 四处必须相同」的位置不会出现半条 10s 半条 15s）；
+ * - literal 槽位 → 把这份稿子里认出的**每个词面**都换掉，长的先换（重叠命中不重复计数）。
+ *   只换 `current` 那一个词面会留下「橘猫换了、猫没换」这种半拉子稿。
+ */
+const editsForSlot = (slot: AssetPromptElementFound, value: string): ElementEdit[] => {
+  if (slot.mode === 'pattern') return [{ key: slot.key, old: '', new: value }];
+  const faces = (slot.occurrences || [])
+    .map((o) => (o.value || '').trim())
+    .filter(Boolean);
+  const uniqFaces = Array.from(new Set(faces.length ? faces : [(slot.current || '').trim()]));
+  return uniqFaces
+    .sort((a, b) => b.length - a.length)
+    .map((face) => ({ key: slot.key, old: face, new: value }));
+};
+
+/** 批 M：候选下拉的选项＝字典里裂变的候选（推荐顺序）＋这份稿子里已认出的其它写法 */
+const optionsForSlot = (slot: AssetPromptElementFound) => {
+  const pool = (slot.pool || []).filter(Boolean);
+  const seen = new Set(pool);
+  const extra = (slot.occurrences || [])
+    .map((o) => (o.value || '').trim())
+    .filter((v) => v && !seen.has(v) && v !== (slot.current || '').trim());
+  return [
+    ...(pool.length
+      ? [{ label: `字典候选（${pool.length} 选）`, options: pool.map((v) => ({ value: v, label: v })) }]
+      : []),
+    ...(extra.length
+      ? [{ label: '这份稿子里的其它写法', options: extra.map((v) => ({ value: v, label: v })) }]
+      : []),
+  ];
+};
+
+/**
+ * 批 M：改稿弹窗里的一排元素行。
+ *
+ * 一行＝字典一行：显示「当前是什么／出现几处」，给候选下拉＋自定义输入，
+ * 「套用」只改**这一次投出去的正文**（下面那个文本框跟着变，仍可整段手改）。
+ * 字典里 pool 留空的元素只有自定义输入框——功能不断档，等运营补候选就有得选。
+ */
+const PromptElementRow: React.FC<{
+  slot: AssetPromptElementFound;
+  value: string;
+  busy: boolean;
+  otherCount: number;
+  onValue: (v: string) => void;
+  onApply: (slot: AssetPromptElementFound, v: string) => void;
+  onApplyBatch: (slot: AssetPromptElementFound, v: string) => void;
+}> = ({ slot, value, busy, otherCount, onValue, onApply, onApplyBatch }) => {
+  const counts = (slot.occurrences || []).reduce((n, o) => n + (o.count || 0), 0);
+  const opts = optionsForSlot(slot);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', rowGap: 4 }}>
+      <Tooltip title={slot.note || undefined}>
+        <Text strong style={{ fontSize: 12, minWidth: 88 }}>
+          {slot.label}
+        </Text>
+      </Tooltip>
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        当前：<MonoText>{slot.current || '（没认出）'}</MonoText>
+        {counts > 1 ? ` 出现 ${counts} 处` : ''}
+      </Text>
+      {opts.length > 0 && (
+        <Select
+          size="small"
+          style={{ minWidth: 150 }}
+          placeholder="选一个候选"
+          value={opts.some((g) => g.options.some((o) => o.value === value)) ? value : undefined}
+          options={opts}
+          onChange={(v) => onValue(v)}
+          disabled={busy}
+        />
+      )}
+      <Input
+        size="small"
+        style={{ width: 170 }}
+        placeholder={opts.length ? '或自己输入' : '自己输入换成什么'}
+        value={value}
+        onChange={(e) => onValue(e.target.value)}
+        disabled={busy}
+      />
+      <Button
+        size="small"
+        type="primary"
+        ghost
+        disabled={busy || !value.trim()}
+        onClick={() => onApply(slot, value.trim())}
+      >
+        套用
+      </Button>
+      {otherCount > 0 && (
+        <Button
+          size="small"
+          disabled={busy || !value.trim()}
+          onClick={() => onApplyBatch(slot, value.trim())}
+        >
+          同元素套用到本批另 {otherCount} 张
+        </Button>
+      )}
+    </div>
+  );
 };
 
 /**
@@ -137,6 +251,175 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const [dispatchCardIds, setDispatchCardIds] = useState<string[]>([]);
   const [editPromptFor, setEditPromptFor] = useState<AssetProduction | null>(null);
   const [editPromptDraft, setEditPromptDraft] = useState('');
+  // 批 M（11-10）：投产前「可替换元素裂变」。这一排元素来自后端那份元素字典
+  // （system_config.asset_prompt_elements），开弹窗时在**当前这份投递稿正文**里认一遍：
+  // 认出来的每个元素给几个候选（pool＝裂变）＋自定义输入，套用后把整段正文喂回下面那个
+  // 仍可全文编辑的文本框。全程 0 元、不落库——改完仍是走 prompt_overrides 那一条通道。
+  const [elementRows, setElementRows] = useState<AssetPromptElementFound[]>([]);
+  const [elementChoice, setElementChoice] = useState<Record<string, string>>({});
+  const [elementBusy, setElementBusy] = useState(false);
+  const [elementNotes, setElementNotes] = useState<string[]>([]);
+  const [elementBlocked, setElementBlocked] = useState(false);
+  const [customOld, setCustomOld] = useState('');
+  const [customNew, setCustomNew] = useState('');
+  const [elementsOpen, setElementsOpen] = useState(false);
+
+  /**
+   * 批 M：这张单**这一次要投出去**的正文＝改过的用改后的，没改过的用库里的原稿。
+   * 只读，不写回 `promptOverrides`（那是"改过了"的唯一标记）。
+   */
+  const currentDraftOf = (p: AssetProduction) => {
+    const edited = (promptOverrides[p.id] ?? '').trim();
+    return edited ? (promptOverrides[p.id] as string) : p.prompt_text ?? '';
+  };
+
+  /**
+   * 批 M：在当前正文里认一遍可替换元素（纯文本进、纯文本出，0 元、不动任何库里的稿子）。
+   * `category` 用这条单所属文案的**钩子原型名**——字典里 `categories` 非空的行只在那一类下出现。
+   * 列表口没带原型（历史单/单行口）就不传，退化成"所有槽位都认"，不会因为缺这一列而看不见元素。
+   *
+   * `carry`＝刚被这次改动替换掉的那几行（CDP 实测出来的真问题）：把场景换成「老破小客厅」后，
+   * 字典里的词面（现代咖啡厅落地窗／咖啡厅）在新稿里一处都不剩，重新认一遍就把这一行整行抹掉了——
+   * 一线连着换第二个元素时找不到刚那行，会以为改动没生效。留着这行，「当前」显示我们刚替换进去的值
+   * （这是事实，不是猜的），候选池还在，想换回来也还有入口。
+   *
+   * `keepChoice`＝套完之后**留着**刚选的那个候选：「重新认一遍」默认把选择清空（那是「照正文重认」的语义），
+   * 但刚点完「套用」就清，会把下一步「同元素套用到本批另 N 张」的按钮一起置灰（CDP 实测 G2 空转的真原因），
+   * 一线想「这个元素整批都换成它」就得重选一遍。
+   */
+  const extractElements = async (
+    p: AssetProduction,
+    text: string,
+    carry: AssetPromptElementFound[] = [],
+    keepChoice = false,
+  ) => {
+    if (!(text || '').trim()) {
+      setElementRows([]);
+      return;
+    }
+    setElementBusy(true);
+    try {
+      const res = await assetApi.extractPromptElements({
+        texts: { [p.id]: text },
+        category: p.category_name || undefined,
+      });
+      const fresh = res.items?.[p.id] || [];
+      // 已经摆在界面上的行，只要它「当前」还在正文里就别因为这次重新认没命中就消失：
+      // 换完场景再去换光线，场景那行不该跟着没了（一线看不到自己刚换的是什么、也换不回去）。
+      // 出现几处按当前正文重新数，不沿用旧数字。
+      const sticky = elementRows
+        .filter((r) => r.key && r.current && !fresh.some((f) => f.key === r.key) && text.includes(r.current))
+        .map((r) => ({
+          ...r,
+          occurrences: [{ value: r.current as string, count: text.split(r.current as string).length - 1 }],
+        }));
+      const byKey = new Map<string, AssetPromptElementFound>();
+      sticky.forEach((r) => byKey.set(r.key, r));
+      carry.forEach((r) => byKey.set(r.key, r));
+      const kept = [...byKey.values()].filter((k) => k.key && !fresh.some((f) => f.key === k.key));
+      // 顺序按上一次的位置排（新出现的槽位排到最后）：不然刚套用的那行会跳到列表底部，
+      // 一线一眼看去像「刚那行没了、下面冒出来一行新的」
+      const prevIndex = new Map(elementRows.map((r, i) => [r.key, i] as const));
+      const orderOf = (k: string) => (prevIndex.has(k) ? (prevIndex.get(k) as number) : Number.MAX_SAFE_INTEGER);
+      setElementRows([...fresh, ...kept].sort((a, b) => orderOf(a.key) - orderOf(b.key)));
+      if (!keepChoice) setElementChoice({});
+    } catch (e) {
+      message.error((e as Error).message || '认元素失败');
+    } finally {
+      setElementBusy(false);
+    }
+  };
+
+  /** 批 M：打开「改稿」＝清掉上一张的元素态，再拿当前正文认一遍 */
+  const openPromptEditor = (p: AssetProduction) => {
+    const draft = currentDraftOf(p);
+    setEditPromptFor(p);
+    setEditPromptDraft(draft);
+    setElementRows([]);
+    setElementChoice({});
+    setElementNotes([]);
+    setElementBlocked(false);
+    setCustomOld('');
+    setCustomNew('');
+    void extractElements(p, draft);
+  };
+
+  /**
+   * 批 M：把一组替换套到**本批其它已选投递稿**上（每张稿内容不同，所以逐张各算一遍）。
+   * 结果直接进 `promptOverrides`——也就是跟「改稿」同一通道，投出去才算数，库里不动。
+   */
+  const applyToOthers = async (edits: ElementEdit[], label: string) => {
+    const others = selected.filter((p) => canCreateLocally(p) && p.id !== editPromptFor?.id);
+    if (!others.length || !edits.length) return;
+    setElementBusy(true);
+    try {
+      const next: Record<string, string> = {};
+      const risky: string[] = [];
+      for (const p of others) {
+        const base = currentDraftOf(p);
+        if (!base.trim()) continue;
+        const res = await assetApi.applyPromptElements({ text: base, edits });
+        next[p.id] = res.text;
+        if (res.would_dispatch_block) risky.push(p.hook_code || p.id.slice(0, 8));
+      }
+      setPromptOverrides((m) => ({ ...m, ...next }));
+      message.success(`「${label}」已套用到本批另 ${Object.keys(next).length} 张投递稿（仍只改这一次投出去的）`);
+      if (risky.length) {
+        message.warning(`${risky.length} 张换上这个词会被投板闸门拦下：${risky.join('、')}`);
+      }
+    } catch (e) {
+      message.error((e as Error).message || '套用到本批失败');
+    } finally {
+      setElementBusy(false);
+    }
+  };
+
+  /** 批 M：套到当前这一张（改完重新认一遍，「当前值／出现几处」跟着新正文走） */
+  const applyToCurrent = async (edits: ElementEdit[], label: string) => {
+    if (!editPromptFor || !edits.length) return;
+    const beforeRows = elementRows;
+    setElementBusy(true);
+    try {
+      const res = await assetApi.applyPromptElements({ text: editPromptDraft, edits });
+      setEditPromptDraft(res.text);
+      setElementNotes(res.notes || []);
+      setElementBlocked(!!res.would_dispatch_block);
+      // 这一批改动动过的槽位先攒成 carry 行：重新认一遍若不再命中字典词面（换掉场景后旧词面整篇没了），
+      // 行也不许消失——当前值就用刚替换进去的这个，出现几处按新稿里数出来的算。
+      const touched = new Map<string, string>();
+      edits.forEach((e) => {
+        if (e.key) touched.set(e.key, e.new);
+      });
+      const carry: AssetPromptElementFound[] = [];
+      touched.forEach((to, key) => {
+        const old = beforeRows.find((r) => r.key === key);
+        if (!old || !to) return;
+        const n = to ? res.text.split(to).length - 1 : 0;
+        // 新稿里一处都没有（那次替换其实没落上）就别留行——留着只会报一个假的「当前」
+        if (n <= 0) return;
+        carry.push({ ...old, current: to, occurrences: [{ value: to, count: n }] });
+      });
+      await extractElements(editPromptFor, res.text, carry, true);
+    } catch (e) {
+      message.error((e as Error).message || '套用失败');
+    } finally {
+      setElementBusy(false);
+    }
+  };
+
+  const applySlot = (slot: AssetPromptElementFound, value: string) =>
+    applyToCurrent(editsForSlot(slot, value), slot.label);
+
+  /** 批 M：自定义替换（不带 key＝整段逐字换，不限于字典认出的元素） */
+  const applyCustom = () => {
+    const src = customOld.trim();
+    const to = customNew.trim();
+    if (!src || !to) {
+      message.info('自定义替换要写清「换掉什么」和「换成什么」');
+      return;
+    }
+    void applyToCurrent([{ old: src, new: to }], src);
+  };
 
   // 批 L：生产单页自己开单——「从过审文案开单」。审核台是审核人员的地盘，
   // 投产这步不必绕回那边；审核台原入口保留（审完顺手投的快捷路径）。
@@ -1140,9 +1423,16 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           {/* 11-06 拍板：投递稿可改。只改这次投出去的；改稿在后端照走风险词重扫并留审计 */}
           {!dispatchRecoverOnly && dispatchPlan.willCreate > 0 && (
             <div>
-              <Tooltip title="只改这一次投出去的正文，库里的提示词不动；改稿会照过一遍高风险词">
-                <Text strong style={{ fontSize: 12 }}>投递稿</Text>
-              </Tooltip>
+              <Space size={6} align="center">
+                <Tooltip title="只改这一次投出去的正文，库里的提示词不动；改稿会照过一遍高风险词">
+                  <Text strong style={{ fontSize: 12 }}>投递稿</Text>
+                </Tooltip>
+                <Tooltip title="投产前把稿子里的元素（场景／动物／题材标签…）换成别的说法：这里能看到都配了哪些、给哪几个候选（管理员可改）">
+                  <Button size="small" type="link" style={{ padding: 0 }} onClick={() => setElementsOpen(true)}>
+                    可替换元素库
+                  </Button>
+                </Tooltip>
+              </Space>
               <div style={{ marginTop: 4, maxHeight: 160, overflowY: 'auto' }}>
                 {selected.filter(canCreateLocally).map((p) => (
                   <div
@@ -1163,10 +1453,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                       size="small"
                       type="link"
                       style={{ marginLeft: 'auto', flexShrink: 0 }}
-                      onClick={() => {
-                        setEditPromptFor(p);
-                        setEditPromptDraft(promptOverrides[p.id] ?? p.prompt_text ?? '');
-                      }}
+                      onClick={() => openPromptEditor(p)}
                     >
                       改稿
                     </Button>
@@ -1206,15 +1493,28 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         </Space>
       </Modal>
 
-      {/* 11-06：单张投递稿编辑。预填当前正文（改过的预填改后的）；「还原」丢掉改稿照原稿投 */}
+      {/*
+        11-06 投递稿可改 ＋ 11-10 批 M 元素裂变：
+        上面一排是「这份稿子里认出来的可替换元素」（候选＝字典里的 pool，也能自己输入），
+        点「套用」把改后的**整段正文**写回下面这个文本框——它仍然可以整段手改；
+        确认（「用这份投」）之后才进 payload。全程只改这一次投出去的，库里的提示词不动。
+      */}
       <Modal
         open={!!editPromptFor}
         title={`编辑投递稿（${editPromptFor?.hook_code || editPromptFor?.id.slice(0, 8) || ''}）`}
-        width={760}
+        width={860}
         onCancel={() => setEditPromptFor(null)}
         onOk={() => {
           if (editPromptFor) {
-            setPromptOverrides((m) => ({ ...m, [editPromptFor.id]: editPromptDraft }));
+            const id = editPromptFor.id;
+            // 「已改」这个标签要说真话：还原成原稿又点「用这份投」不算改过，
+            // 留着 override 会让下一屏以为这张单被改过（导出/投板侧也是按这个键判的）。
+            setPromptOverrides((m) => {
+              const next = { ...m };
+              if (editPromptDraft.trim() === (editPromptFor.prompt_text ?? '').trim()) delete next[id];
+              else next[id] = editPromptDraft;
+              return next;
+            });
           }
           setEditPromptFor(null);
         }}
@@ -1233,17 +1533,132 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
               </span>
             }
           />
+
+          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: '10px 12px' }}>
+            <Space size={6} align="center" wrap style={{ marginBottom: 6 }}>
+              <Text strong style={{ fontSize: 12 }}>可替换元素</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {editPromptFor?.category_name
+                  ? `按原型「${editPromptFor.category_name}」筛`
+                  : '这张单没带原型：限定原型的槽位不显示，只认通用那些'}
+              </Text>
+              <Button
+                size="small"
+                type="link"
+                style={{ padding: 0 }}
+                loading={elementBusy}
+                onClick={() => editPromptFor && extractElements(editPromptFor, editPromptDraft)}
+              >
+                重新认一遍
+              </Button>
+              <Button
+                size="small"
+                type="link"
+                style={{ padding: 0 }}
+                onClick={() => setElementsOpen(true)}
+              >
+                元素库（管理员可配）
+              </Button>
+            </Space>
+            {elementRows.length === 0 && !elementBusy ? (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                这份稿子里没认出可替换元素——可能字典还没配这一类，也可能这份稿子不照模板写。
+                想直接改词，用下面那行「自定义替换」。
+              </Text>
+            ) : (
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                {elementRows.map((slot) => (
+                  <PromptElementRow
+                    key={slot.key}
+                    slot={slot}
+                    value={elementChoice[slot.key] ?? ''}
+                    busy={elementBusy}
+                    otherCount={selected.filter((p) => canCreateLocally(p) && p.id !== editPromptFor?.id).length}
+                    onValue={(v) => setElementChoice((m) => ({ ...m, [slot.key]: v }))}
+                    onApply={(s, v) => void applySlot(s, v)}
+                    onApplyBatch={(s, v) => void applyToOthers(editsForSlot(s, v), s.label)}
+                  />
+                ))}
+              </Space>
+            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>自定义替换</Text>
+              <Input
+                size="small"
+                style={{ width: 190 }}
+                placeholder="稿子里要换掉的那段原文"
+                value={customOld}
+                onChange={(e) => setCustomOld(e.target.value)}
+                disabled={elementBusy}
+              />
+              <Text type="secondary" style={{ fontSize: 12 }}>换成</Text>
+              <Input
+                size="small"
+                style={{ width: 190 }}
+                placeholder="换成什么"
+                value={customNew}
+                onChange={(e) => setCustomNew(e.target.value)}
+                disabled={elementBusy}
+              />
+              <Button size="small" disabled={elementBusy} onClick={applyCustom}>
+                套用
+              </Button>
+              {selected.filter((p) => canCreateLocally(p) && p.id !== editPromptFor?.id).length > 0 && (
+                <Button
+                  size="small"
+                  disabled={elementBusy}
+                  onClick={() =>
+                    customOld.trim() &&
+                    customNew.trim() &&
+                    void applyToOthers([{ old: customOld.trim(), new: customNew.trim() }], customOld.trim())
+                  }
+                >
+                  同文字套用到本批另 {selected.filter((p) => canCreateLocally(p) && p.id !== editPromptFor?.id).length} 张
+                </Button>
+              )}
+            </div>
+            {elementNotes.length > 0 && (
+              <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                {elementNotes.map((n) => (
+                  <li key={n}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{n}</Text>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {elementBlocked && (
+              <Alert
+                type="error"
+                showIcon
+                style={{ marginTop: 8 }}
+                message="换上这个词会被投板闸门拦下"
+                description={
+                  <span style={{ fontSize: 12 }}>
+                    现在还没拦你（这里只组稿），点「确认投去出片」时会被打回。
+                    要么换个说法，要么让 admin 带理由强行放行。
+                  </span>
+                }
+              />
+            )}
+          </div>
+
           <Input.TextArea
             rows={14}
             value={editPromptDraft}
             onChange={(e) => setEditPromptDraft(e.target.value)}
             placeholder="这一次投出去的提示词正文（留空＝照原稿投）"
           />
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            ↑ 上面套用出来的整段正文，这里还能继续整段手改；「用这份投」才算定稿。
+          </Text>
           <Button
             size="small"
             onClick={() => {
               if (editPromptFor) {
                 setEditPromptDraft(editPromptFor.prompt_text ?? '');
+                setElementNotes([]);
+                setElementBlocked(false);
+                void extractElements(editPromptFor, editPromptFor.prompt_text ?? '');
                 setPromptOverrides((m) => {
                   const next = { ...m };
                   delete next[editPromptFor.id];
@@ -1256,6 +1671,9 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           </Button>
         </Space>
       </Modal>
+
+      {/* 批 M：可替换元素库（读全员、写仅 admin；改完下一次打开「改稿」立即按新的认） */}
+      <AssetPromptElementDrawer open={elementsOpen} onClose={() => setElementsOpen(false)} />
 
       <Modal
         open={exportOpen}

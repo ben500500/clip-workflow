@@ -348,6 +348,11 @@ export interface AssetProduction {
   batch_id: string | null;
   /** A′：投产人显示名（谁投账算谁的灰字标注；列表口聚合返回） */
   owner_name?: string | null;
+  /**
+   * 批 M（11-10）：这条单所属文案的**钩子原型名**（只有列表口批量补，单行口为 null）。
+   * 投产弹窗的「可替换元素」按原型筛槽位（`categories` 非空的行只在其原型下出现）靠这一列。
+   */
+  category_name?: string | null;
   seq: number;
   /** 五位钩子编号（只能来自 hook_id.py 取号，后端绝不编号） */
   hook_code: string | null;
@@ -1461,6 +1466,80 @@ export interface AssetRiskLexiconUpdateResult {
 }
 
 // ──────────────────────────────────────────────
+// 投产前可替换元素（批 M，11-10：确认投产之前把提示词里的场景/动物等元素换掉）
+// ──────────────────────────────────────────────
+
+/**
+ * 一行元素槽位（`system_config.asset_prompt_elements` 的一项）。
+ *
+ * 两种认法：`literal` 在正文里逐字找 `anchors` 给的词面（场景、动物这种写在剧情
+ * 自由文本里的东西）；`pattern` 用带捕获组的正则找（模板保证存在、只能在原地处改的位置，
+ * 比如①的题材标签——**绝不能全局替换数字**，时长在②⑦⑩⑬ 四处必须一致）。
+ * `pool` 就是"裂变"出来的几个选择，顺序＝界面上的推荐顺序；`categories` 空＝所有原型都认。
+ */
+export interface AssetPromptElementSlot {
+  key: string;
+  label: string;
+  mode: 'literal' | 'pattern';
+  anchors: string[];
+  pattern: string;
+  pool: string[];
+  categories: string[];
+  note: string;
+}
+
+export interface AssetPromptElementsConfig {
+  effective: AssetPromptElementSlot[];
+  defaults: AssetPromptElementSlot[];
+  override: AssetPromptElementSlot[];
+  inherit: boolean;
+  has_override: boolean;
+  updated_at: string;
+  can_edit: boolean;
+  notes: string[];
+}
+
+export interface AssetPromptElementsUpdateResult {
+  ok: boolean;
+  effective: AssetPromptElementSlot[];
+  updated_at: string;
+  notes: string[];
+}
+
+/** 抽元素返回的一个元素：当前值＋出现次数＋候选池（自定义输入永远可用） */
+export interface AssetPromptElementFound {
+  key: string;
+  label: string;
+  mode: 'literal' | 'pattern';
+  current: string;
+  occurrences: Array<{ value: string; count: number }>;
+  pool: string[];
+  custom: boolean;
+  categories: string[];
+  note: string;
+}
+
+/** POST /assets/prompt-elements/apply 返回的一条替换明细（count=0＝原文里没这个词面，没改） */
+export interface AssetPromptElementReplaced {
+  key: string;
+  label: string;
+  mode: 'literal' | 'pattern';
+  from: string;
+  to: string;
+  count: number;
+}
+
+export interface AssetPromptElementsApplyResult {
+  text: string;
+  replaced: AssetPromptElementReplaced[];
+  notes: string[];
+  length: number;
+  risk: { block: Array<{ word: string; level: string }>; warn: Array<{ word: string; level: string }> };
+  /** true＝这份正文按投板那道闸会被拦（不是这里拦，是提前告诉你点确认会被打回） */
+  would_dispatch_block: boolean;
+}
+
+// ──────────────────────────────────────────────
 // 钩子原型字典（11-04 拍板①：单层、A–G 原名、读全员写仅 admin）
 // ──────────────────────────────────────────────
 
@@ -2378,6 +2457,30 @@ export const assetApi = {
 
   updateRiskLexicon: (data: AssetRiskLexiconUpdate) =>
     client.put('/assets/risk-lexicon', data) as Promise<AssetRiskLexiconUpdateResult>,
+
+  // 可替换元素字典（批 M）：形态跟风险词库一样——读全员、写仅 admin，存 system_config，改完立即生效。
+  getPromptElements: () =>
+    client.get('/assets/prompt-elements') as Promise<AssetPromptElementsConfig>,
+
+  updatePromptElements: (data: { slots: AssetPromptElementSlot[]; inherit?: boolean }) =>
+    client.put('/assets/prompt-elements', data) as Promise<AssetPromptElementsUpdateResult>,
+
+  // 抽元素：纯文本进、纯文本出（不读生产单、不动库、0 元）；texts 的 key＝行 id，回包按同 key 分组
+  extractPromptElements: (data: { texts: Record<string, string>; category?: string }) =>
+    client.post('/assets/prompt-elements/extract', data) as Promise<{
+      items: Record<string, AssetPromptElementFound[]>;
+      category: string;
+      catalog_count: number;
+      slot_labels: string[];
+      notes: string[];
+    }>,
+
+  // 套用替换：把改后的整段正文还给你（不落库、不写 prompt_text），顺带提前扫一遍投板闸门
+  applyPromptElements: (data: {
+    text: string;
+    edits: Array<{ key?: string; old?: string; new: string }>;
+  }) =>
+    client.post('/assets/prompt-elements/apply', data) as Promise<AssetPromptElementsApplyResult>,
 
   // 钩子原型字典（11-04 拍板①）：读全员、写仅 admin，形态与风险词库一致。
   // 字典是**表**不是 system_config——素材/文案要按它筛选，JSON 名单没法 join，
