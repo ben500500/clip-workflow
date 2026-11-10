@@ -17,13 +17,29 @@ interface Props {
 interface SlotRow {
   key: string;
   label: string;
-  mode: 'literal' | 'pattern';
+  /** 批 N 起三种：词面／正则／手填（系统不猜原句，整句由人抄） */
+  mode: 'literal' | 'pattern' | 'manual';
   anchors: string;
   pattern: string;
+  /** 批 N：只用来认位置的写法（场景这类「词面全文换、但要先认出当前值」的槽位） */
+  probe: string;
   pool: string;
   categories: string;
   note: string;
+  /**
+   * 保护行三态。后端判的是**键在不在**：不传＝用默认那串（护住「钩子原文」行和 ① 剧名行），
+   * 传空串＝这一行允许碰那两行，传别的＝自定义手法。所以这里必须留三态，
+   * 不能统一成一个字符串——一律发字符串会把「用默认」和「不保护」混成同一次保存。
+   */
+  skip: SkipMode;
+  /** 仅 skip='custom' 时用的写法 */
+  skipPattern: string;
 }
+
+type SkipMode = 'default' | 'custom' | 'none';
+
+/** 后端 DEFAULT_SKIP_LINES 的兜底显示串（真值优先取接口回的 default_skip_lines） */
+const FALLBACK_DEFAULT_SKIP = '^(钩子原文|生成【)';
 
 const splitList = (raw: string): string[] =>
   raw
@@ -33,30 +49,55 @@ const splitList = (raw: string): string[] =>
 
 const joinList = (arr: string[]): string => arr.join('、');
 
-const toRow = (s: AssetPromptElementSlot): SlotRow => ({
-  key: s.key,
-  label: s.label,
-  mode: s.mode,
-  anchors: joinList(s.anchors || []),
-  pattern: s.pattern || '',
-  pool: joinList(s.pool || []),
-  categories: joinList(s.categories || []),
-  note: s.note || '',
-});
+const toRow = (s: AssetPromptElementSlot, defaultSkip: string): SlotRow => {
+  // 读回来的行后端都已清洗成具体串（出厂那几行的 skip_lines 键根本不存在，吐回来是默认串），
+  // 所以这里按「等于默认串＝仍用默认」还原三态，别让一线以为有人手写过保护行。
+  const skipRaw = s.skip_lines;
+  let skip: SkipMode = 'default';
+  if (skipRaw === '') skip = 'none';
+  else if (skipRaw && skipRaw !== defaultSkip) skip = 'custom';
+  return {
+    key: s.key,
+    label: s.label,
+    mode: s.mode,
+    anchors: joinList(s.anchors || []),
+    pattern: s.pattern || '',
+    probe: s.probe || '',
+    pool: joinList(s.pool || []),
+    categories: joinList(s.categories || []),
+    note: s.note || '',
+    skip,
+    skipPattern: skip === 'custom' ? skipRaw || '' : '',
+  };
+};
 
 const toSlot = (r: SlotRow): AssetPromptElementSlot => ({
   key: r.key.trim(),
   label: r.label.trim() || r.key.trim(),
   mode: r.mode,
+  // 后端对 manual 行会清掉词面/正则、对 pattern 行会清掉识别位置：界面跟着 disable，
+  // 但**照原样发过去**也没关系（存进去生效的是清洗后的），少一处分叉口径。
   anchors: splitList(r.anchors),
   pattern: r.pattern.trim(),
+  probe: r.probe.trim(),
   pool: splitList(r.pool),
   categories: splitList(r.categories),
   note: r.note.trim(),
+  skip_lines: r.skip === 'default' ? undefined : r.skip === 'none' ? '' : r.skipPattern.trim(),
 });
 
 const blankRow = (): SlotRow => ({
-  key: '', label: '', mode: 'literal', anchors: '', pattern: '', pool: '', categories: '', note: '',
+  key: '',
+  label: '',
+  mode: 'literal',
+  anchors: '',
+  pattern: '',
+  probe: '',
+  pool: '',
+  categories: '',
+  note: '',
+  skip: 'default',
+  skipPattern: '',
 });
 
 /**
@@ -68,10 +109,17 @@ const blankRow = (): SlotRow => ({
  *
  * 三种写法要分清：
  *   literal  词面逐字找（场景、动物这类写在③剧情自由文本里的东西）；替换＝把正文里
- *            **每一处**这个词面都换掉（长词面先换，重叠命中不重复计数）。
+ *            **每一处**这个词面都换掉（长词面先换，重叠命中不重复计数）。可另配 probe：
+ *            一条**只用来认位置**的写法（如「剧情：」后第一段），认到的当当前值，替换仍按
+ *            词面全局走——所以 ⑧ 镜头行那句跟着换。
  *   pattern  带捕获组的正则（①题材标签、剧名这种模板保证存在的位置）；替换**只动捕获组**，
  *            所以时长这种「②⑦⑩⑬ 四处必须一致」的数字绝不会被顺手改掉。
+ *   manual   系统不猜原句（动物说的话／偷听到的内容／引爆不公那句是间接转述，没有形状可依赖，
+ *            硬编正则＝假认）：这一行永远摆出来，让人从稿子里复制。
  *   categories 留空＝所有原型都认；填了＝只在这些钩子原型名下出现（原型名或键都行）。
+ *
+ * 保护行（skip_lines）默认护住「钩子原文：」行与 ① 生成【…】行：前者是过审的那句话，动它
+ * 投产复核判漂移；后者里面写着《剧名》，全文替换动物会把剧名一起换掉，凭空造出一部不存在的剧。
  *
  * 权限跟风险词库完全一套：读全员、写仅 admin——这份字典决定的是「投出去的那份稿子能被改成
  * 什么样」，写错一行（比如正则没捕获组）会让一线点了没反应。存进 system_config，**改完立即生效，不用发版**。
@@ -83,13 +131,17 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
   const [inherit, setInherit] = useState(true);
   const [rows, setRows] = useState<SlotRow[]>([]);
 
+  /** 默认保护行的原串：优先用接口回的，后端没回才用兜底 */
+  const defaultSkip = data?.default_skip_lines || FALLBACK_DEFAULT_SKIP;
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await assetApi.getPromptElements();
+      const skipDefault = res.default_skip_lines || FALLBACK_DEFAULT_SKIP;
       setData(res);
       setInherit(res.inherit);
-      setRows(res.override.map(toRow));
+      setRows(res.override.map((s) => toRow(s, skipDefault)));
     } catch (e) {
       message.error((e as Error).message || '读取元素字典失败');
     } finally {
@@ -101,7 +153,7 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
     if (open) load();
   }, [open, load]);
 
-  const patch = (key: string, field: keyof SlotRow, value: string) =>
+  const patch = <K extends keyof SlotRow>(key: string, field: K, value: SlotRow[K]) =>
     setRows((prev) => prev.map((r, i) => (i === Number(key) ? { ...r, [field]: value } : r)));
 
   const preview = useMemo(() => {
@@ -115,8 +167,8 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
 
   const switchInherit = (checked: boolean) => {
     if (!checked && data) {
-      // 切到「整体替换」前把当前生效表搬进编辑区，否则一存就把出厂那两行（题材/剧名）丢掉。
-      setRows(preview.map(toRow));
+      // 切到「整体替换」前把当前生效表搬进编辑区，否则一存就把出厂那十几行（题材/剧名＋A–F 参数项）丢掉。
+      setRows(preview.map((s) => toRow(s, defaultSkip)));
     }
     setInherit(checked);
   };
@@ -124,8 +176,8 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
   const restoreDefaults = () => {
     if (!data) return;
     setInherit(true);
-    setRows(data.defaults.map(toRow));
-    message.info('已填回出厂两行，保存后生效');
+    setRows(data.defaults.map((s) => toRow(s, defaultSkip)));
+    message.info(`已填回出厂 ${data.defaults.length} 行，保存后生效`);
   };
 
   const save = async () => {
@@ -174,12 +226,23 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
             <Paragraph style={{ marginBottom: 4 }}>
               <Tag color="blue">词面（literal）</Tag>
               在正文里<strong>逐字</strong>找 <Monoish>{'anchors'}</Monoish> 给的词，找到几处换几处。
-              场景、动物这种写在剧情描述里的东西走这条。
+              场景、动物这种写在剧情描述里的东西走这条。要它「先认出当前值」就再配一条识别位置
+              <Monoish>{'probe'}</Monoish>（比如「剧情：」后第一段），认到的当原值、替换仍按词面全局走。
             </Paragraph>
             <Paragraph style={{ marginBottom: 4 }}>
               <Tag color="purple">正则（pattern）</Tag>
               带<strong>捕获组</strong>的写法，只换捕获组那一小段。①的题材标签、剧名走这条；
               时长在②⑦⑩⑬ 四处必须一致，所以那种数字只能用这条、不能全局换。
+            </Paragraph>
+            <Paragraph style={{ marginBottom: 4 }}>
+              <Tag color="orange">手填（manual）</Tag>
+              系统<strong>不猜原句</strong>：动物说的那句话、偷听到的内容、引爆不公那句是间接转述，
+              没有形状可靠，硬编正则＝假装认得出。这一行永远摆出来，界面上提示「请从稿子里复制」。
+            </Paragraph>
+            <Paragraph style={{ marginBottom: 4 }}>
+              <Tag>保护行</Tag>
+              默认<strong>不碰</strong>「钩子原文」那行和 ① 生成【…】那行（那里面有《剧名》，
+              全文替换动物会顺手造出一部不存在的剧）。除非确实要开口子，别改成「允许碰」。
             </Paragraph>
             <Paragraph style={{ marginBottom: 4 }}>
               <Tag color="green">候选池（裂变）</Tag>
@@ -213,8 +276,8 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
           <Text>
             在出厂字典上<strong>{inherit ? '追加／同键覆盖' : '整体替换'}</strong>
             {inherit
-              ? '（出厂那两行仍生效，这里填的是新增和改写）'
-              : '（出厂那两行也不再认，这里填什么才认什么）'}
+              ? `（出厂 ${data?.defaults.length ?? ''} 行仍生效，这里填的是新增和改写）`
+              : `（出厂 ${data?.defaults.length ?? ''} 行也不再认，这里填什么才认什么）`}
           </Text>
         </Space>
         <Text type="secondary">
@@ -233,7 +296,7 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
         rowKey={(_, i) => String(i)}
         pagination={false}
         dataSource={rows}
-        scroll={{ x: 900 }}
+        scroll={{ x: 1500 }}
         columns={[
           {
             title: '键',
@@ -273,6 +336,7 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
                 options={[
                   { value: 'literal', label: '词面' },
                   { value: 'pattern', label: '正则' },
+                  { value: 'manual', label: '手填' },
                 ]}
                 onChange={(v) => patch(String(i), 'mode', v)}
               />
@@ -314,6 +378,23 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
           },
           {
             title: (
+              <Tooltip title="词面槽位的「识别位置」：一条带捕获组的写法，只用来认出当前值（如「剧情：」后第一段）。替换仍按词面全文走，所以镜头行那句也一起换。留空＝只按词面找。">
+                <span>识别位置</span>
+              </Tooltip>
+            ),
+            dataIndex: 'probe',
+            width: 200,
+            render: (_, r, i) => (
+              <Input
+                value={r.probe}
+                disabled={!canEdit || r.mode !== 'literal'}
+                placeholder="剧情：([^，。]{2,20}?里)"
+                onChange={(e) => patch(String(i), 'probe', e.target.value)}
+              />
+            ),
+          },
+          {
+            title: (
               <Tooltip title="裂变出来的几个候选，顿号分隔＝界面上的推荐顺序；留空＝只能自定义输入">
                 <span>候选池</span>
               </Tooltip>
@@ -340,6 +421,47 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
                 placeholder="留空＝全部"
                 onChange={(e) => patch(String(i), 'categories', e.target.value)}
               />
+            ),
+          },
+          {
+            title: (
+              <Tooltip
+                title={
+                  <div>
+                    「不碰哪几行」：默认护住<strong>钩子原文</strong>那行（过审句，动它投产判漂移）
+                    和 ① 生成【…】那行（里面有《剧名》，全文替换动物会造出一部不存在的剧）。
+                    <div>默认串：<Monoish>{defaultSkip}</Monoish></div>
+                    <div>「允许碰」＝这一行做全文替换时把那两行也换掉，只有确实要时才用。</div>
+                  </div>
+                }
+              >
+                <span>保护行</span>
+              </Tooltip>
+            ),
+            dataIndex: 'skip',
+            width: 220,
+            render: (_, r, i) => (
+              <Space size={4} style={{ width: '100%' }}>
+                <Select
+                  value={r.skip}
+                  disabled={!canEdit || r.mode === 'pattern'}
+                  style={{ width: 110 }}
+                  options={[
+                    { value: 'default', label: '用默认' },
+                    { value: 'none', label: '允许碰' },
+                    { value: 'custom', label: '自定义' },
+                  ]}
+                  onChange={(v) => patch(String(i), 'skip', v)}
+                />
+                {r.skip === 'custom' && (
+                  <Input
+                    value={r.skipPattern}
+                    disabled={!canEdit}
+                    placeholder="^(钩子原文|①)"
+                    onChange={(e) => patch(String(i), 'skipPattern', e.target.value)}
+                  />
+                )}
+              </Space>
             ),
           },
           {

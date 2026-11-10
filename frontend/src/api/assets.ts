@@ -984,6 +984,22 @@ export interface AssetProduceRequest {
   waive_reason?: string | null;
   /** 仅 admin：只豁免这几类拦点（留空＝整条全放过），与审核台同一口径 */
   waive_codes?: string[] | null;
+  /**
+   * 批 P（用户口径「可自定义填入多个场景词、动物名称，并一次性生成多条钩子视频」）：
+   * 参数槽位键 → **要换上去的多个值**，一组值一张单。
+   * ⚠️ 与 `n` 是两个量：`n` 是调模型派生差异化提示词（花钱），扇出只是在展开好的那份稿子上
+   * 换词（0 元）。本批张数 = 文案数 × n × 扇出行数。留空＝不扇出。
+   */
+  element_values?: Record<string, string[]> | null;
+  /** 槽位键 → 公共兜底的**原值**（这一份稿子里现在写的是什么）；没有原值那条不换、并在结果里点名 */
+  element_base?: Record<string, string> | null;
+  /**
+   * summary_id → 这一篇自己的原值（批 P）。多条文稿同批开单时各篇场景词本来就不一样，
+   * 只传公共兜底会把替换做在错误的词面上；后端按「这里有的优先」合并。
+   */
+  element_base_by_summary?: Record<string, Record<string, string>> | null;
+  /** 多值配对方式：zip＝按行配对（默认，第1个场景配第1只动物）、product＝全组合（上限 100 行） */
+  element_mode?: 'zip' | 'product';
   /** D-1：true＝提交即回任务号（展开提示词要等模型，后台跑完再轮询取结果） */
   async_mode?: boolean;  /** A′ 归属跨人确认：投别人过审的候选（reviewed_by≠操作者）必须 true——谁投账算谁 */
   cross_person_confirm?: boolean;
@@ -1480,12 +1496,20 @@ export interface AssetRiskLexiconUpdateResult {
 export interface AssetPromptElementSlot {
   key: string;
   label: string;
-  mode: 'literal' | 'pattern';
+  /** 批 N 起有三种认法：literal＝认词面、pattern＝按写法认、manual＝系统不猜、整句由人抄 */
+  mode: 'literal' | 'pattern' | 'manual';
   anchors: string[];
   pattern: string;
   pool: string[];
   categories: string[];
   note: string;
+  /**
+   * 批 N：literal 槽位可以另配一条**只用来认位置**的写法（如「剧情：」后第一段场景）。
+   * 认到的值仍按词面全局替换，所以 ⑧镜头行那句跟着换。
+   */
+  probe?: string;
+  /** 批 N：不碰的行写法（默认护住「钩子原文」行与 ① 生成【…】行）；空串＝允许碰 */
+  skip_lines?: string;
 }
 
 export interface AssetPromptElementsConfig {
@@ -1494,6 +1518,11 @@ export interface AssetPromptElementsConfig {
   override: AssetPromptElementSlot[];
   inherit: boolean;
   has_override: boolean;
+  /**
+   * 后端那份「默认保护行」的原串（批 N）。界面靠它把某一行的保护写法分成
+   * 用的是默认／被改过／被清空三种状态显示——前端自己抄一份迟早和后端对不上。
+   */
+  default_skip_lines?: string;
   updated_at: string;
   can_edit: boolean;
   notes: string[];
@@ -1510,20 +1539,26 @@ export interface AssetPromptElementsUpdateResult {
 export interface AssetPromptElementFound {
   key: string;
   label: string;
-  mode: 'literal' | 'pattern';
-  current: string;
+  mode: 'literal' | 'pattern' | 'manual';
+  /**
+   * 批 N：`current=null`＝**这一稿里没认出原值**（词表外的值／手填项本来就不认）。
+   * 开单屏把它说成"请从稿子里复制"，不许显示成空下拉让人以为字典坏了。
+   */
+  current: string | null;
   occurrences: Array<{ value: string; count: number }>;
   pool: string[];
   custom: boolean;
   categories: string[];
   note: string;
+  /** 批 N：true＝这一槽位绕开「钩子原文／①剧名」那两行（换动物不会把剧名换掉） */
+  protected?: boolean;
 }
 
 /** POST /assets/prompt-elements/apply 返回的一条替换明细（count=0＝原文里没这个词面，没改） */
 export interface AssetPromptElementReplaced {
   key: string;
   label: string;
-  mode: 'literal' | 'pattern';
+  mode: 'literal' | 'pattern' | 'manual';
   from: string;
   to: string;
   count: number;
@@ -1740,6 +1775,24 @@ export interface AssetCardCheck {
 }
 
 /** POST /assets/produce */
+/**
+ * 批 P（11-10）：一次开单按可替换参数扇出成多条生产单的结果回显。
+ * 扇出是**字面换词、0 元**（不再调模型），但每张各占一个钩子编号、各吃一条号池额度——
+ * 这两件事必须在结果页说清，不然一线会以为「20 张 = 花了 20 次的钱」或「不占额度」。
+ */
+export interface AssetProduceElementFanout {
+  /** zip＝按行配对（第 i 行的各参数组成第 i 张）；product＝全组合（个数相乘） */
+  mode: 'zip' | 'product';
+  /** 每条文案扇几张（= 矩阵行数；没扇出时后端不回这份） */
+  rows_per_copy: number;
+  /** 参数名 → 本次填入的多值（键是 label，不是 slot key） */
+  params: Record<string, string[]>;
+  /** 单个词都过、拼进句子却撞上高风险词的条目：只摘这一条，其余照建 */
+  skipped?: Array<{ code: string; basis: string | null; words: string[] }> | null;
+  /** 「这一行其实没换动」的逐条备注（没给原值 / 原值在稿里找不到） */
+  notes?: string[] | null;
+}
+
 export interface AssetProduceResponse {
   created: number;
   results: AssetProduceResultItem[];
@@ -1767,6 +1820,8 @@ export interface AssetProduceResponse {
   card_asset_ids: string[];
   /** 缺编号/缺标题/豁免/拦下/缺骨架/漂移等提醒（要逐条显示，别只看 message） */
   warnings: string[];
+  /** 批 P：参数扇出结果（没扇出为 null）——「这批是换词扇的、没多花模型钱」按这份说 */
+  element_fanout?: AssetProduceElementFanout | null;
   message: string;
 }
 
@@ -2466,7 +2521,13 @@ export const assetApi = {
     client.put('/assets/prompt-elements', data) as Promise<AssetPromptElementsUpdateResult>,
 
   // 抽元素：纯文本进、纯文本出（不读生产单、不动库、0 元）；texts 的 key＝行 id，回包按同 key 分组
-  extractPromptElements: (data: { texts: Record<string, string>; category?: string }) =>
+  // `include_unmatched`（批 N）：true＝把这一原型**该设的参数项全摆出来**（认不出原值的
+  // current=null），④开单屏要的就是这个；②投递稿那一屏只要真换得动的，保持默认 false。
+  extractPromptElements: (data: {
+    texts: Record<string, string>;
+    category?: string;
+    include_unmatched?: boolean;
+  }) =>
     client.post('/assets/prompt-elements/extract', data) as Promise<{
       items: Record<string, AssetPromptElementFound[]>;
       category: string;

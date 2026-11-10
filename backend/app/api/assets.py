@@ -5697,6 +5697,9 @@ async def get_prompt_elements(
         "override": override,
         "inherit": bool(raw.get("inherit", True)),
         "has_override": row is not None,
+        # 界面要能把「这一行用的是默认保护行」和「这一行被改成了别的手法」分开显示，
+        # 所以把默认串也吐出去——前端自己抄一份迟早和这里对不上。
+        "default_skip_lines": pesvc.DEFAULT_SKIP_LINES,
         "updated_at": utc_iso(row.updated_at) if row is not None and row.updated_at else "",
         "can_edit": current_user.role == UserRole.admin.value,
         "notes": [

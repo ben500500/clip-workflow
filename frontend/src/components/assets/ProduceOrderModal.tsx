@@ -7,6 +7,8 @@ import { RECHECK_CODE_LABELS, assetApi, isAssetJobAck, waitForAssetJob } from '.
 import type { AssetProduceResponse, AssetSummary } from '../../api/assets';
 import { HOOK_CODE_RE, MonoText, parseHookCodes } from './AssetBits';
 import AssetCardPicker from './AssetCardPicker';
+import AssetProduceParams, { EMPTY_PRODUCE_PARAMS } from './AssetProduceParams';
+import type { ProduceParams } from './AssetProduceParams';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
 import { withCrossPersonConfirm, withCrossOwnerConfirm } from './crossPerson';
 import { useAuth } from '../../contexts/AuthContext';
@@ -82,6 +84,12 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
   const [jobHint, setJobHint] = useState<string | null>(null);
   const giveUpRef = useRef(false);
   const [takingCodes, setTakingCodes] = useState(false);
+  /**
+   * 批 O（11-10 用户口径）：换皮参数区算出来的那份（多值＋配对方式＋扇出行数）。
+   * 放在父组件而不是子组件里，是因为**三个地方都要用它**：待填号数、要投几条的预告、
+   * 以及提交时的 element_* 入参——一处算两份口径迟早对不上。
+   */
+  const [params, setParams] = useState<ProduceParams>(EMPTY_PRODUCE_PARAMS);
 
   // 批 I（链路收敛）：投产成功后顺势投板——不用再回生产单列表勾一遍。
   // 11-09 用户口径「确认步骤太多了」：原来这里还有一枚 `followupConfirm` 勾选，
@@ -105,6 +113,9 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
     setDramaAbbr('');
     setWaiveReason('');
     setWaiveCodes([]);
+    // 批 O：参数行/底稿是**这一批文案**的，换一批必须归零（子组件自己也会重认，
+    // 但父组件留着上一批的 rows 会把待填号数算错）
+    setParams(EMPTY_PRODUCE_PARAMS);
   }, [open]);
 
   const dispatchFollowup = async () => {
@@ -155,11 +166,14 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
     }
   };
 
-  const needCodes = summaries.length * n;
+  // 批 O：扇出是「一条稿子换词后另立单」，所以**编号与投板条数都要乘上扇出行数**
+  // （后端 codes_for_summary 一次取 n×扇出行数，号不够就只能建出缺号的单）。
+  const fanoutRows = Math.max(1, params.rows);
+  const needCodes = summaries.length * n * fanoutRows;
   const codes = useMemo(() => parseHookCodes(codeText), [codeText]);
   const badCodes = codes.filter((c) => !HOOK_CODE_RE.test(c));
   const dupCodes = codes.length !== new Set(codes).size;
-  const plannedRows = summaries.length * n * boardTotal;
+  const plannedRows = summaries.length * n * boardTotal * fanoutRows;
 
   /**
    * 批 N（11-09 用户口径「现有已经导入的那些文案，你都去取一个编号放着吧」）：
@@ -222,6 +236,12 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
       );
       return;
     }
+    // 批 O：参数行「按行配对对不齐」「全组合超 100 张」后端一定会 400，在这里先拦一句，
+    // 别让人等完一次模型展开（几分钟）才看到红字。
+    if (params.blocked) {
+      message.error(params.blocked, 8);
+      return;
+    }
     setBusy(true);
     giveUpRef.current = false;
     try {
@@ -248,6 +268,14 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
           expand,
           waive_reason: waiveReason || undefined,
           waive_codes: waiveCodes.length ? waiveCodes : undefined,
+          // 批 O/P：换皮参数扇出。没填任何值就**整个字段不传**（后端把空当不扇出，
+          // 走今天完全同一条路径）；填了就三样一起给——values 是要换上的多值、
+          // base 是公共原值、baseBySummary 是各篇自己认到的原值（后端按「逐篇优先」合并）。
+          element_values: params.filled.length ? params.values : undefined,
+          element_base: params.filled.length && Object.keys(params.base).length ? params.base : undefined,
+          element_base_by_summary:
+            params.filled.length && Object.keys(params.baseBySummary).length ? params.baseBySummary : undefined,
+          element_mode: params.filled.length ? params.mode : undefined,
           async_mode: true,
           cross_person_confirm: confirmed || allRemembered || undefined,
         });
@@ -362,6 +390,46 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
               )}
             </Descriptions.Item>
           </Descriptions>
+
+          {/* 批 O/P（11-10）：这批是换皮扇出来的话必须在这里说清两件事——
+              「多出来的张数不花模型钱」和「每张照样各占一个号、一条当天额度」。
+              少说一句，一线就会以为 20 张＝花了 20 次的钱，或者以为不占额度。 */}
+          {!!result.element_fanout?.rows_per_copy && (
+            <Alert
+              type="info"
+              showIcon
+              message={`这批按参数扇出：每条文案 ${result.element_fanout.rows_per_copy} 张（${
+                result.element_fanout.mode === 'product' ? '全组合' : '按行配对'
+              }）`}
+              description={
+                <Space direction="vertical" size={2}>
+                  <Text style={{ fontSize: 12 }}>
+                    {Object.entries(result.element_fanout.params || {})
+                      .map(([label, vals]) => `${label} ${vals.length} 个（${vals.slice(0, 4).join('、')}${vals.length > 4 ? '…' : ''}）`)
+                      .join('｜')}
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    换词是在展开好的那份稿子上做的，多出来的张数不再花模型钱；但每张各占一个钩子编号、各吃一条当天额度。
+                  </Text>
+                  {(result.element_fanout.skipped || []).map((s, i) => (
+                    <Text key={`${s.code}-${i}`} type="danger" style={{ fontSize: 12 }}>
+                      {s.code}：这组词拼进句子后撞上高风险词 {s.words.join('、')}，那一条没建单（同批其它条照常建），改词再来一次
+                    </Text>
+                  ))}
+                  {(result.element_fanout.notes || []).slice(0, 6).map((nx, i) => (
+                    <Text key={i} type="warning" style={{ fontSize: 12 }}>
+                      {nx}
+                    </Text>
+                  ))}
+                  {(result.element_fanout.notes || []).length > 6 && (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      另有 {result.element_fanout.notes!.length - 6} 条「其实没换动」的备注没列出（多是因为原稿里没认出那个值）
+                    </Text>
+                  )}
+                </Space>
+              }
+            />
+          )}
 
           {/* 批 I（链路收敛）：单子建好了顺势问一句投不投——不用回列表再勾一遍。
               11-09：「确认把这 N 张投去出片」那枚勾选去掉了，点按钮这一下就是确认；
@@ -569,6 +637,9 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             </Tooltip>
           </Space>
 
+          {/* 批 O（11-10 用户口径）：按原型摆参数项＋自动提原值＋每行可填多值 → 一次扇多条 */}
+          <AssetProduceParams active={open} summaries={summaries} onChange={setParams} />
+
           <div>
             <Space style={{ marginBottom: 4 }} wrap>
               <Text>钩子编号（本单共需 {needCodes} 个{parkedCodes.length ? `，其中 ${parkedCodes.length} 个已由文案预取顶上` : ''}）：</Text>
@@ -612,7 +683,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
                   icon={<CopyOutlined />}
                   onClick={() => {
                     const lines = [
-                      `本单待取号 ${needManualCodes} 个（${summaries.length} 条文案 × 每条 ${n} 份${parkedCodes.length ? `，另 ${parkedCodes.length} 个已预取` : ''}）`,
+                      `本单待取号 ${needManualCodes} 个（${summaries.length} 条文案 × 每条 ${n} 份${fanoutRows > 1 ? ` × 换皮扇出 ${fanoutRows} 张` : ''}${parkedCodes.length ? `，另 ${parkedCodes.length} 个已预取` : ''}）`,
                       ...summaries.map((s) => `${s.asset_code || s.id.slice(0, 8)}｜${(s.text || '').slice(0, 40)}${s.hook_code ? `｜已预取 ${s.hook_code}` : ''}`),
                     ];
                     navigator.clipboard
