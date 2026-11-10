@@ -468,6 +468,28 @@ class ProduceRequest(BaseModel):
         description="R-6：只豁免这几类问题（shape/risk）；留空＝整条全豁免。"
         "展开后复扫新发现的 risk 命中（模型自己加的违禁词）不在豁免范围内，仍会拦下",
     )
+    element_values: Optional[Dict[str, List[str]]] = Field(
+        None,
+        description="批 P（11-10 用户口径「可自定义填入多个场景词、动物名称，一次性生成多条钩子视频」）："
+        "槽位键 → **要换上去的多个值**，一个值一条片。0 元、不再调模型——它是在已经展开好的那份正文上"
+        "做字面替换后另立单，与 `n`（调模型派生差异化提示词）是两回事。留空＝不扇出，走今天同一条路径。",
+    )
+    element_base: Optional[Dict[str, str]] = Field(
+        None,
+        description="槽位键 → **这份稿子里现在的值**（④开单屏从原稿自动提取、或人手抄的原句）。"
+        "没有原值就无从替换：那一行照原文落单并在结果里点名（不拿旧值当新值、也不静默跳过）",
+    )
+    element_base_by_summary: Optional[Dict[str, Dict[str, str]]] = Field(
+        None,
+        description="批 P：一次开多条文稿时，各篇的**原值本来就不一样**（这条的场景是「河边」、下条是「工地」），"
+        "共用一份 `element_base` 会把第二篇的替换悄悄做在错误的词面上。这里按 summary_id 各给一份原值；"
+        "`element_base` 退化成公共兜底（同键以这里的值优先）。",
+    )
+    element_mode: str = Field(
+        "zip",
+        description="多值怎么配对：zip＝按行配对（第1个场景配第1只动物…，只填一个值的每行复用；默认）、"
+        "product＝全组合（场景数×动物数条，上限 100 行）",
+    )
     async_mode: bool = Field(
         False,
         description="D-1：true＝立即回一个任务号（展开提示词要等模型，后台跑完再轮询取结果），"
@@ -7066,6 +7088,77 @@ async def park_hook_codes(
     }
 
 
+def _element_fanout_rows(
+    base_row: Dict[str, Any],
+    catalog: List[Dict[str, Any]],
+    base_values: Dict[str, str],
+    matrix_rows: List[Dict[str, str]],
+    category: Optional[str],
+    codes: List[Optional[str]],
+    labels: Dict[str, str],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """批 P（11-10）：一份展开好的正文 × 用户填的多组参数值 → N 份投递稿。
+
+    **不调模型、不花钱**：走的是 8-14 那套字面替换引擎（`compose_variants`），
+    每一行都从模型展开出来的**同一份原稿**出发，所以第 2 个场景不会盖掉第 1 个场景。
+
+    编号是每行自己的：模型把编号写进了推荐标题与段头那行，所以第 j 份要把正文里出现的
+    "基准号"整个字面换成这一行的号。不换的后果是两张单带着同一个标题投上同一块板——
+    板面按标题回收，两条产物会挂到同一张单上（11-05 现网真踩过的对账坑）。
+    号不够时留空（照今天的口径：缺号在结果里点名，导出时标缺），绝不后端自编。
+
+    返回 `(行, 备注)`；备注只在"这一行其实没换动"时才有内容——换不动要说出来，
+    不能让人以为 20 条里每条都换了场景。
+    """
+    src_code = str(base_row.get("hook_code") or "")
+    base_titles = list(base_row.get("video_titles") or [])
+    out: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    for variant in pesvc.compose_variants(
+        base_row.get("prompt_text"), catalog, base_values, matrix_rows, category
+    ):
+        idx = int(variant["seq"])
+        code = codes[idx - 1] if idx - 1 < len(codes) else None
+        text = variant["text"]
+        titles = base_titles
+        # ⚠️ 判据是「这一行的号和基准号不一样」，**不是**「不是第 1 行」：n×K 摊开时
+        # 第 vi 份的底稿带着 codes_for_summary[vi] 那个号，而它扇出来的 K 张占的是
+        # vi*K..vi*K+K-1 ——除了 vi=0 以外第 1 行就已经要换号了，按 idx>1 判会漏换，
+        # 漏换的结果正是本函数开头写的那条坑：两张单同名投上同一块板。
+        if src_code and code != src_code:
+            if code:
+                text = text.replace(src_code, code)
+                titles = [str(t or "").replace(src_code, code) for t in base_titles]
+            elif idx > 1:
+                # 号不够：正文里仍留着别的单的号。不悄悄留，也不硬删（删了标题会变成半截话），
+                # 当场点名让一线补够号再来——今天「缺号能建单」的口径不变，但扇出时后果更重。
+                notes.append(
+                    f"第 {idx} 条没分到钩子编号，正文/标题里仍带着 {src_code}（那张号是别的单的）："
+                    f"补够 {len(codes)} 个号再来，否则投上板会重名、回收对不上账"
+                )
+        combo = "、".join(f"{labels.get(k) or k}={v}" for k, v in (variant["values"] or {}).items())
+        row = dict(base_row)
+        row.update({
+            "prompt_text": text,
+            "hook_code": code,
+            # 板上 name 取的是 video_titles[0]（B-5），标题里那句编号必须跟着换，
+            # 只换 prompt_text 等于台账改了、板面还是重名。
+            "video_titles": titles or None,
+            # 差异来源必须写进单子上：事后拿着这张单要能回答"这条和旁边那条差在哪"。
+            # 列是 String(120)，超了截断（截断只发生在极端长的词表上，不影响判读）。
+            "variant_basis": f"{base_row.get('variant_basis') or ''}｜{combo}"[:120],
+        })
+        out.append(row)
+        if variant["missing"]:
+            notes.append(
+                f"第 {idx} 条（{combo}）这些参数原稿里没认出值、这条没换："
+                + "、".join(variant["missing"]) + "（手填项要自己从稿子里复制原句）"
+            )
+        elif not variant["changed"] and idx > 1:
+            notes.append(f"第 {idx} 条（{combo}）正文和原稿一模一样：填的值和原值相同，或词面在稿子里没出现")
+    return out, notes
+
+
 @router.post("/assets/produce")
 async def create_productions(
     data: ProduceRequest,
@@ -7191,6 +7284,66 @@ async def create_productions(
     # 因为新前端改传数组就读不到卡）。多卡时写第一张——它就是 picDatas 的第一项，语义上是主卡。
     card_key = (cards[0].file_key if cards else None) or data.character_card_key or None
 
+    # ── 批 P（11-10）：多值扇出——「一次填多个场景/动物 → 一次出多条钩子视频」 ──
+    # ⚠️ 三个判据全排在 async_mode **之前**，理由与卡校验、跨人闸同一条先例：扇出来的每一条
+    # 都要占一个钩子编号、投上板就是当天号池的一条额度。参数写错了却在几分钟后于后台任务
+    # 详情里看到，人早走了，号也烧了。
+    # 扇出本身**不调模型、不花钱**：它是在已经展开好的那份正文上做字面替换（引擎在
+    # `asset_prompt_elements.compose_variants`），所以 `n`（差异化份数）与扇出行数是两个量，
+    # 本批张数 = 文案数 × n × 扇出行数。
+    element_rows: List[Dict[str, str]] = []
+    element_catalog: List[Dict[str, Any]] = []
+    element_labels: Dict[str, str] = {}
+    element_notes: List[str] = []
+    element_base = {
+        str(k).strip(): str(v or "").strip()[: pesvc.MAX_MANUAL_VALUE_LEN]
+        for k, v in (data.element_base or {}).items()
+        if str(v or "").strip()
+    }
+    # 逐文稿的原值（批 P）：键用规范化后的 summary uuid 存，下面按 `str(uuid_s)` 取，
+    # 免得前端传了带空格/大写形式就取不到、悄悄退回公共兜底那份。
+    element_bases: Dict[str, Dict[str, str]] = {}
+    for _sid_raw, _per in (data.element_base_by_summary or {}).items():
+        _cleaned = {
+            str(k).strip(): str(v or "").strip()[: pesvc.MAX_MANUAL_VALUE_LEN]
+            for k, v in (_per or {}).items()
+            if str(v or "").strip()
+        }
+        if _cleaned:
+            element_bases[str(_as_uuid(_sid_raw, "summary_id"))] = _cleaned
+    if data.element_values:
+        element_catalog = await _prompt_element_catalog(db)
+        element_labels = {s["key"]: s["label"] for s in element_catalog}
+        try:
+            element_rows, element_notes = pesvc.expand_matrix(
+                data.element_values, data.element_mode or pesvc.MATRIX_ZIP, element_labels
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        # 换上去的词当场按当前词表扫一遍：扇 10 条里有 1 条带高风险词，投到板上才发现
+        # 就是白占 9 条之外的额度＋一个烧掉的号。这里整批不建单，改词再投（比事后逐张撤便宜）。
+        _book0, _exempt0 = await _risk_lexicon(db)
+        bad_words: List[str] = []
+        for row in element_rows:
+            for key, val in row.items():
+                hits = svc.risk_block_hits(svc.scan_risk(val, lexicon=_book0, exemptions=_exempt0))
+                if hits:
+                    bad_words.append(
+                        f"{element_labels.get(key) or key}「{val}」含高风险词 "
+                        + "、".join(h["word"] for h in hits)
+                    )
+        if bad_words:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "这些替换词里有投板会被拦下的高风险词："
+                    + "；".join(sorted(set(bad_words))[:6])
+                    + "。换一批词，或者先去「风险词库」确认这个词到底要不要用"
+                ),
+            )
+    # 一条文案扇出几张单（没填多值＝1，与今天完全同一条路径）
+    fanout = max(1, len(element_rows))
+
     # A′（2026-11-07 按运营隔离）：归属跨人确认闸——投**别人过审**的候选要知情确认。
     # ⚠️ 必须在 async_mode 分支**之前**判：前端唯一真实路径是 async_mode=true（提交即回
     # 任务号），闸若放在分支之后，首呼会拿到 job ack、确认弹窗协议就断了（后台重放才
@@ -7289,6 +7442,8 @@ async def create_productions(
     title_warnings: List[dict] = []
     # 模板自报偏差（缺剧名/缺角色卡/K 未给兜底）逐条清单，见下方 deviation 处理
     deviations: List[dict] = []
+    # 批 P：扇出来的某一条换完词撞上高风险词 → 只摘那一条（点名到值，不静默丢）
+    element_skipped: List[dict] = []
     code_pos = 0  # 钩子编号消耗指针：整条文案被拦下时**不进位**，号不该被一次失败的提交烧掉
 
     # 投产整批要保持原子（撞唯一约束时回 409「整批未落库」），所以这里**不能**像
@@ -7385,21 +7540,36 @@ async def create_productions(
                 select(func.coalesce(func.max(AssetProduction.seq), 0)).where(AssetProduction.summary_id == summary.id)
             )
         ).scalar_one()
-        codes_for_summary = hook_codes[code_pos: code_pos + n]
+        codes_for_summary = hook_codes[code_pos: code_pos + n * fanout]
         # 批 N（11-09 预取编号）：请求没给够号时，把这条文案名下预取的那个号顶到**第一个空槽**
         # （手工粘来的号优先，预取号只补空位）。顶上去就必须把预取位清空——留着等于允许
         # 同一个号被第二次开单复用，而号在 hook_id.py 那边一发即烧、板面同名任务回收对不上账。
         # 另一种"也算用掉"：请求里把同一个号手工粘了一遍（前端把预取号显示出来时很容易顺手粘），
         # 这时不再重复顶槽，但预取位同样要清，否则下一次开单会被上面的 stale 判据拦死。
         parked_code = summary.hook_code
-        parked_consumed = bool(parked_code) and (parked_code in hook_codes or len(codes_for_summary) < n)
-        if parked_code and parked_code not in hook_codes and len(codes_for_summary) < n:
+        parked_consumed = bool(parked_code) and (
+            parked_code in hook_codes or len(codes_for_summary) < n * fanout
+        )
+        if parked_code and parked_code not in hook_codes and len(codes_for_summary) < n * fanout:
             codes_for_summary = codes_for_summary + [parked_code]
         # 剧名一条文案查一次（不在 n 次展开循环里查）：模板要用它写「参考《剧名》剧情」
         drama_title = await _drama_title_of(db, asset)
+        # 批 P：扇出要按**这一条的原型**决定哪些参数项参与替换（字典行上的 categories 限定）。
+        # 只在真扇出时查这一行 PK，不扇出时零成本——旧前端/脚本调用完全走不到这条路上。
+        element_category: Optional[str] = None
+        if element_rows:
+            _cat_id = summary.category_id or asset.category_id
+            if _cat_id is not None:
+                _cat_row = await db.get(AssetCategory, _cat_id)
+                element_category = _cat_row.name if _cat_row is not None else None
+        # 这一篇的原值：逐文稿那份优先，没单给才落到公共兜底（多文稿同批开单时
+        # 拿一条稿子的场景词去换另一条稿子＝换不上，还报「原稿里没认出」，一线只会以为字典坏了）
+        element_base_for_summary = {**element_base, **element_bases.get(str(uuid_s), {})}
 
         expand_error: Optional[str] = None
         pending: List[dict] = []
+        # 真正落库的行：没扇出时就是 `pending` 本身，扇出时是摊平后的 n×K 行（见下方 else 分支）
+        flat_rows: List[Dict[str, Any]] = []
         failure_recorded = False
         for i in range(1, n + 1):
             seq = max_seq + i
@@ -7528,7 +7698,46 @@ async def create_productions(
             })
         else:
             # 整条文案的全部展开都过了才落库：中途拦下不能留下半批已生成的单
-            for row in pending:
+            #
+            # 批 P：这里把「n 份展开稿」摊成「n × 扇出行数」张单。没扇出（`fanout==1`）时
+            # 这一段等价于原来的 `for row in pending`——序号、编号、正文一律不动，
+            # 老路径的回归判据就是这个等价性。
+            flat_rows: List[Dict[str, Any]] = []
+            if element_rows:
+                for vi, base_row in enumerate(pending):
+                    slice_codes = [
+                        codes_for_summary[vi * len(element_rows) + j]
+                        if vi * len(element_rows) + j < len(codes_for_summary) else None
+                        for j in range(len(element_rows))
+                    ]
+                    rows, row_notes = _element_fanout_rows(
+                        base_row, element_catalog, element_base_for_summary, element_rows,
+                        element_category, slice_codes, element_labels,
+                    )
+                    for cand in rows:
+                        # 换完词再扫一遍：单个词在词表里过、拼进句子却撞上高风险词的组合是真会
+                        # 发生的（「猫」＋「摔在地上」）。这里只摘这一条：模型那 n 次调用的钱已经
+                        # 花了，整条文案 20 张全不建是二次浪费；但摘掉的这条绝不静默——
+                        # 点名到值、进结果、进审计。
+                        hits = svc.risk_block_hits(
+                            svc.scan_risk(cand.get("prompt_text") or "", lexicon=book, exemptions=exemptions)
+                        )
+                        if hits:
+                            element_skipped.append({
+                                "code": asset.code,
+                                "basis": cand.get("variant_basis"),
+                                "words": sorted({h["word"] for h in hits}),
+                            })
+                            continue
+                        flat_rows.append(cand)
+                    element_notes.extend(f"{asset.code} #{base_row['seq']}：{note}" for note in row_notes)
+                for idx, cand in enumerate(flat_rows):
+                    # 扇出后"这条文案的第 i 份"不再是序号的唯一来源：n×K 张单必须各自占号，
+                    # 撞 uq_asset_production_seq 会让整批回滚（就是 B-5 那条 409）。
+                    cand["seq"] = max_seq + idx + 1
+            else:
+                flat_rows = list(pending)
+            for row in flat_rows:
                 prod = AssetProduction(
                     asset_id=asset.id,
                     summary_id=summary.id,
@@ -7580,12 +7789,12 @@ async def create_productions(
             # 挪到写单阶段是为了不在外部模型调用期间锁住 asset_items 那一行
             if not asset.has_approved_copy:
                 asset.has_approved_copy = True
-            code_pos += n  # 号只在这批真的成了单之后才算用掉
+            code_pos += n * fanout  # 号只在这批真的成了单之后才算用掉（扇出后每行各占一个）
             if parked_consumed:
                 # 预取位清空与上面那行同生同死：半批被拦下时根本走不到这里，号不会被白烧
                 summary.hook_code = None
 
-        created = len(pending) if not expand_error else 0
+        created = len(flat_rows) if not expand_error else 0
         if created:
             svc.apply_stage(asset, "produce", STAGE_PENDING, has_approved_copy=True)
             asset.cost_produce = asset.cost_produce or 0
@@ -7690,6 +7899,20 @@ async def create_productions(
             "title_warnings": title_warnings or None,
             # 模板自报偏差入审计：导出后一线看到的《剧名待定》/无角色卡是当时几号单报的
             "deviations": deviations or None,
+            # 批 P：扇出口径整个进审计——事后要能回答"这批为什么是 20 张不是 2 张"
+            "element_fanout": (
+                {
+                    "mode": data.element_mode or pesvc.MATRIX_ZIP,
+                    "rows_per_copy": len(element_rows),
+                    "params": {
+                        element_labels.get(k) or k: v for k, v in (data.element_values or {}).items()
+                    },
+                    "skipped": element_skipped or None,
+                    "notes": element_notes[:20] or None,
+                }
+                if element_rows
+                else None
+            ),
         },
     )
     await db.commit()
@@ -7764,6 +7987,26 @@ async def create_productions(
             "本批没挂角色卡 → picDatas 为空，画中人全靠模型自由发挥（历史上「上下集换装」就是这么来的）。"
             "定妆照先在素材库当图片传上来，投产时挑它"
         )
+    # 批 P：扇出口径当场说人话——建单的人必须知道"这 20 张是 2 份稿子 × 10 组参数"，
+    # 不然事后对账会以为模型多跑了 18 次（并没有，扇出只换词、不花钱）。
+    if element_rows:
+        combo = "＋".join(
+            f"{element_labels.get(k) or k} {len(v)} 个"
+            for k, v in (data.element_values or {}).items()
+            if v
+        )
+        warnings.append(
+            f"按参数扇出：每条文案 {len(element_rows)} 张（{combo}，{'全组合' if (data.element_mode or pesvc.MATRIX_ZIP) == pesvc.MATRIX_PRODUCT else '按行配对'}）。"
+            "扇出来的只是换了词的稿子，**没有再花模型钱**，但每张各占一个钩子编号、"
+            "各吃一条号池额度"
+        )
+    for note in element_notes[:6]:
+        warnings.append(note)
+    if element_skipped:
+        warnings.append(
+            f"{len(element_skipped)} 条扇出来的稿子换完词撞上高风险词、**这条没建单**"
+            f"（逐条见 element_fanout.skipped）：同批其它条照常建，改那个词再来一次"
+        )
     # 当日号池真实消耗 + 本批投递分布（11-03 第 4 条：不硬限，只报数）
     batch_ids = sorted({str(p.batch_id) for p in productions if p.batch_id})
     scope = (
@@ -7803,10 +8046,22 @@ async def create_productions(
         "title_warnings": title_warnings,
         # 模板自报偏差：同内容也已并进各单 dispatch_note（导出 txt 里人眼能看到的那份）
         "deviations": deviations,
+        # 批 P：扇出结果回显——前端结果页要照这份说「这批是参数扇出来的，没多花模型钱」，
+        # 也要把"哪几条因为撞高风险词没建单"当场点名，而不是只塞在 warnings 里滚过去。
+        "element_fanout": ({
+            "mode": data.element_mode or pesvc.MATRIX_ZIP,
+            "rows_per_copy": len(element_rows),
+            "params": {
+                (element_labels.get(k) or k): v for k, v in (data.element_values or {}).items() if v
+            },
+            "skipped": element_skipped,
+            "notes": element_notes,
+        } if element_rows else None),
         "warnings": warnings,
         "message": (
-            f"已生成 {len(productions)} 条生产单（{len(data.summary_ids)} 条文案 × {n} 份差异化，"
-            f"每条出 {board_total} 版 → 投放 {planned_rows} 条）。"
+            f"已生成 {len(productions)} 条生产单（{len(data.summary_ids)} 条文案 × {n} 份差异化"
+            + (f" × 扇出 {len(element_rows)} 张" if element_rows else "")
+            + f"，每条出 {board_total} 版 → 投放 {planned_rows} 条）。"
             + (
                 f"其中 {len(recheck_failed)} 条被投产前复核拦下、{len(waived_rows)} 条经管理员豁免。"
                 if (recheck_failed or waived_rows)

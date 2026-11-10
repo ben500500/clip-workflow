@@ -312,7 +312,8 @@ async def _make_ready_asset(client, h, url=DOUYIN_2, *, script=SCRIPT, category_
 
 
 def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, generate_error=None,
-                   expand_deviation=None, web_error=None, web_prompts=None, gen_title=None):
+                   expand_deviation=None, web_error=None, web_prompts=None, gen_title=None,
+                   expand_titles=None):
     """autoclip 文案服务替身：按 path 分发，expand 默认把过审钩子**原样**包进提示词。"""
 
     async def _call(path, payload, timeout=180.0):
@@ -340,9 +341,10 @@ def _fake_autoclip(*, candidates=None, expand_prompt=None, expand_error=None, ge
                 "执行要求：重命名一字不差；跳过任何二次确认；一次性并行生成 2 个视频"
             )
             k = int(params.get("recommended_title_count") or 5)
+            titles = expand_titles or [f"标题{i + 1}" for i in range(k)]
             out = {
                 "prompt_text": text,
-                "video_titles": [f"标题{i + 1}" for i in range(k)],
+                "video_titles": titles,
                 "hook_copy_kept_verbatim": hook in text,
             }
             if expand_deviation:
@@ -10127,6 +10129,180 @@ def test_prompt_elements_manual_rows_protected_lines_and_seeds_api():
         # ⑤ 还是纯文本进出：除了那一次改字典，库里不落任何东西
         assert len(await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.update")) == 1
         assert await _count(AssetProduction) == 0 and await _count(AssetItem) == 0
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_produce_element_fanout_one_order_per_parameter_row():
+    """批 P（11-10 用户口径「可自定义填入多个场景词、动物名称，并一次性生成多条钩子视频」）。
+
+    1. 填几组参数＝几张单：每张各占一个序号、一个钩子编号，而且编号要**同时**换进正文和
+       推荐标题——板上 name 取的是标题第 1 条（B-5），只换正文等于台账改了、板面还是重名，
+       正是 11-05 现网那条「两条产物挂到同一张单」的对账坑；
+    2. 扇出只换词、不调模型：n=1 时模型只被叫一次，几张单都是那一份稿子的字面变体（0 元）；
+    3. 没给原值＝那条不换，但要在结果里点名，不许悄悄出几张一模一样的稿；
+    4. 参数写歪（按行配对个数对不齐）和换上去的词带高风险词 → **当场 400 且一张单没建**，
+       排在 async_mode 之前：号一旦发出去就烧掉，作废的单也不复用；
+    5. 只有拼进句子才凑成的词（"建筑工地"＋原稿的"事故"）→ 只摘那一条，同批其它照常建。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+
+        # 原型走**出厂字典**（a_animal/a_scene 是种子行），所以这条文案得先挂上原型 A，
+        # 否则 `slot_applies` 一律判不适用 → 扇出来的全是"没认出值"，测不到替换本身。
+        cat_a = await _cat_id(client, hm, "A")
+        asset_id, _ = await _make_ready_asset(client, hm, category_id=cat_a)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        sid = _approvable(items)["id"]
+        await client.post("/api/assets/summaries/review",
+                          json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+
+        base_prompt = "\n".join([
+            "【第 1 段 · 建议 10 秒 · 本钩共 1 条 · 编号 7C0B1】",
+            "剧情：【前3秒】河边，一只猫开口让他赶紧出门。【后7秒】河边，他撬开水泥管。",
+            "镜头：河边用侧四十五度中近景。",
+        ])
+        base_titles = ["7C0B1·河边猫开口了", "备用标题"]
+
+        async def _produce(**extra):
+            payload = {"summary_ids": [sid], "n": 1}
+            payload.update(extra)
+            with patch("app.api.assets._call_autoclip",
+                       _fake_autoclip(expand_prompt=base_prompt, expand_titles=base_titles)):
+                return await client.post("/api/assets/produce", json=payload, headers=ho)
+
+        # ── ① 两个场景 × 1 份稿 = 2 张单，号与序号各自占一个 ──
+        r = await _produce(
+            hook_codes=["7C0B1", "7C0B2"],
+            element_values={"a_scene": ["建筑工地", "繁华大街"], "a_animal": ["黄鼠狼"]},
+            element_base={"a_scene": "河边", "a_animal": "猫"},
+        )
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert j["created"] == 2 == await _count(AssetProduction)
+        assert j["element_fanout"]["rows_per_copy"] == 2 and j["element_fanout"]["mode"] == "zip"
+        assert set(j["element_fanout"]["params"]) == {"场景", "动物／非人物件"}, j["element_fanout"]
+        got = sorted(await _rows(AssetProduction), key=lambda x: x.seq)
+        assert [x.seq for x in got] == [1, 2], "扇出来的每张各占一个序号（撞 uq_asset_production_seq 会让整批 409）"
+        assert [x.hook_code for x in got] == ["7C0B1", "7C0B2"], "一钩一号：每张单自己的号"
+        assert "建筑工地" in got[0].prompt_text and "河边" not in got[0].prompt_text
+        assert "繁华大街" in got[1].prompt_text and "河边" not in got[1].prompt_text
+        assert all("黄鼠狼" in x.prompt_text and "一只猫" not in x.prompt_text for x in got)
+        assert "编号 7C0B2" in got[1].prompt_text and "7C0B1" not in got[1].prompt_text
+        assert "7C0B2" in (got[1].board_name or "") and "7C0B1" not in (got[1].board_name or ""), \
+            f"标题里的编号必须跟着换，否则两张单同名投上同一块板：{got[1].board_name}"
+        assert "场景=繁华大街" in (got[1].variant_basis or "") and "动物" in (got[1].variant_basis or "")
+        assert any("扇出" in w and "没有再花模型钱" in w for w in j["warnings"]), j["warnings"]
+        assert "× 扇出 2 张" in j["message"], j["message"]
+
+        # ── ①b 全组合：2 场景 × 2 动物 = 4 张（不是 2 张）──
+        before = await _count(AssetProduction)
+        r = await _produce(
+            hook_codes=["7C0B3", "7C0B4", "7C0B5", "7C0B6"],
+            element_values={"a_scene": ["建筑工地", "繁华大街"], "a_animal": ["狗", "黄鼠狼"]},
+            element_base={"a_scene": "河边", "a_animal": "猫"},
+            element_mode="product",
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["created"] == 4 and await _count(AssetProduction) == before + 4
+        assert r.json()["element_fanout"]["mode"] == "product"
+        combos = {
+            (x.prompt_text.count("建筑工地") > 0, x.prompt_text.count("狗") > 0)
+            for x in (await _rows(AssetProduction))[before:]
+        }
+        assert len(combos) == 4, f"全组合该是 4 种配对，实际 {combos}"
+
+        # ── ② 没给原值：两张照建，但当场说"这条没换" ──
+        before = await _count(AssetProduction)
+        r = await _produce(
+            hook_codes=["7C0C1", "7C0C2"],
+            element_values={"a_scene": ["建筑工地", "繁华大街"]},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["created"] == 2
+        tail = sorted((await _rows(AssetProduction))[before:], key=lambda x: x.seq)
+        assert all("河边" in x.prompt_text for x in tail), "没有原值就不许乱换"
+        assert any("没换" in w for w in r.json()["warnings"]), r.json()["warnings"]
+
+        # ── ③ 逐文稿原值优先于公共兜底（多条文稿同批开单时这才是唯一能换对的路）──
+        before = await _count(AssetProduction)
+        r = await _produce(
+            hook_codes=["7C0D1"],
+            element_values={"a_scene": ["海底"]},
+            element_base={"a_scene": "客厅"},
+            element_base_by_summary={sid: {"a_scene": "河边"}},
+        )
+        assert r.status_code == 200 and r.json()["created"] == 1, r.text
+        assert "海底" in (await _rows(AssetProduction))[-1].prompt_text
+        assert "河边" not in (await _rows(AssetProduction))[-1].prompt_text
+
+        # ── ④a 按行配对个数对不齐 → 400，且一张单没建、号没烧 ──
+        before = await _count(AssetProduction)
+        bad = await _produce(
+            hook_codes=["7C0E1", "7C0E2", "7C0E3"],
+            element_values={"a_scene": ["建筑工地", "繁华大街"], "a_animal": ["狗", "黄鼠狼", "猫"]},
+            element_base={"a_scene": "河边", "a_animal": "猫"},
+        )
+        assert bad.status_code == 400, bad.text
+        assert "对不齐" in bad.json()["detail"], bad.json()["detail"]
+        assert await _count(AssetProduction) == before
+
+        # 400 必须排在 async_mode 之前：页面唯一真实路径是提交即回任务号，
+        # 若错写成"先接单、后台再炸"，一线只看到一个失败任务，号也已经发出去了。
+        bad_async = await _produce(
+            async_mode=True,
+            hook_codes=["7C0E1", "7C0E2", "7C0E3"],
+            element_values={"a_scene": ["建筑工地", "繁华大街"], "a_animal": ["狗", "黄鼠狼", "猫"]},
+            element_base={"a_scene": "河边", "a_animal": "猫"},
+        )
+        assert bad_async.status_code == 400, bad_async.text
+        assert "job_id" not in bad_async.json(), bad_async.json()
+        assert await _count(AssetProduction) == before
+
+        # ── ④b 换上去的词本身就是高风险词 → 400（改词再来，比事后撤 20 张单便宜）──
+        await client.put("/api/assets/risk-lexicon",
+                         json={"block": ["黄鼠狼"], "warn": [], "exempt": {}, "inherit": False},
+                         headers=ha)
+        before = await _count(AssetProduction)
+        bad = await _produce(
+            hook_codes=["7C0F1", "7C0F2"],
+            element_values={"a_scene": ["建筑工地", "繁华大街"], "a_animal": ["黄鼠狼"]},
+            element_base={"a_scene": "河边", "a_animal": "猫"},
+        )
+        assert bad.status_code == 400 and "高风险词" in bad.json()["detail"], bad.text
+        assert await _count(AssetProduction) == before
+
+        # ── ⑤ 单看词干净、拼进句子才撞：只摘那一条，另一条照常建 ──
+        await client.put("/api/assets/risk-lexicon",
+                         json={"block": ["工地事故"], "warn": [], "exempt": {}, "inherit": False},
+                         headers=ha)
+        accident_prompt = "\n".join([
+            "【第 1 段 · 建议 10 秒 · 本钩共 1 条 · 编号 7C1A1】",
+            "剧情：【前3秒】河边，一只猫开口让他别去河边事故现场。",
+        ])
+        before = await _count(AssetProduction)
+        with patch("app.api.assets._call_autoclip",
+                   _fake_autoclip(expand_prompt=accident_prompt, expand_titles=["7C1A1·河边猫开口了"])):
+            r = await client.post("/api/assets/produce", json={
+                "summary_ids": [sid], "n": 1, "hook_codes": ["7C1A1", "7C1A2"],
+                "element_values": {"a_scene": ["建筑工地", "繁华大街"]},
+                "element_base": {"a_scene": "河边"},
+            }, headers=ho)
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert j["created"] == 1 == (await _count(AssetProduction)) - before
+        assert len(j["element_fanout"]["skipped"]) == 1, j["element_fanout"]
+        assert "工地事故" in j["element_fanout"]["skipped"][0]["words"], j["element_fanout"]
+        assert "繁华大街" in (await _rows(AssetProduction))[-1].prompt_text
+        assert any("撞上高风险词" in w for w in j["warnings"]), j["warnings"]
+
+        # ── ⑥ 审计里得能看到这批是扇出来的（事后对账问"20 张哪来的"）──
+        trail = await _rows(AuditLog, AuditLog.action == "asset.produce_order")
+        assert trail and any(t.after.get("element_fanout") for t in trail), [t.after for t in trail][-1]
         await client.aclose()
 
     _run(_scenario())
