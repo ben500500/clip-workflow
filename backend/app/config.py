@@ -232,6 +232,12 @@ class Settings(BaseSettings):
     # 但连续不通超过本时长就判 failed 收口，避免任务永远挂在「处理中」。与下载侧
     # WECHAT_DL_STALE_TIMEOUT_SECONDS 同一量纲、同一默认值，运维只需记一个数。
     WECHAT_DL_PROMPT_POLL_GIVEUP_SECONDS: int = 3600
+    # 解析回来的地址要不要过**形状闸门**（11-10，见 wechat_download/url_gate.py）：
+    # 站点根／网页文件／封面图一律拒收，不再当视频直链往下喂。现网事故是短剧导流页链接
+    # 由 doc/107 回 `https://vnd2.17zhilian.cn/`，被存成 10KB 的「原片」、反推必然失败、
+    # 补投再花一次解析钱。关掉＝退回旧判据「以 http 开头就收」，只在某个渠道确实回
+    # 不带路径的直链、需要临时放行时才关。
+    WECHAT_DL_DIRECT_URL_SHAPE_GATE: bool = True
     # 本地视频上传反推（智令 doc/125 签名 + S3 POST，ISSUE #363）：
     # 签名接口路径（GET ?key=&fileName=&contentType=&expiresIn=）
     WECHAT_DL_ZHILING_UPLOAD_SIGN_PATH: str = "/api/upload/signature"

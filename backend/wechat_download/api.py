@@ -67,6 +67,7 @@ from wechat_download.prompt_service import (
     prompt_task_scope_stmt,
     refresh_prompt_task,
     serialize_prompt_task,
+    sweep_zombie_prompt_tasks,
     upload_max_bytes,
     validate_upload_ext,
     validate_upload_size,
@@ -465,7 +466,18 @@ async def list_reverse_prompt_tasks(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """反推提示词任务列表（按创建时间倒序，可见口径与下载任务列表一致）。"""
+    """反推提示词任务列表（按创建时间倒序，可见口径与下载任务列表一致）。
+
+    进列表前先做一次**全表僵尸收口**（11-10）：没有上游任务号、又超过容忍时长的
+    processing 行自己收成 failed，一线就不会再看到「生成中」骗人刷新。判据与成因见
+    `prompt_service.sweep_zombie_prompt_tasks`；0 元、不调外部接口，失败也不影响列表
+    （宁可留着僵尸让人看到，也不能让列表 500）。
+    """
+    try:
+        await sweep_zombie_prompt_tasks(db)
+    except Exception:  # noqa: BLE001 - 收口是锦上添花，列表必须照常出
+        logger.exception("反推僵尸行列表收口失败（忽略，继续返回列表）")
+        await db.rollback()
     stmt = await prompt_task_scope_stmt(current_user, limit)
     tasks = (await db.execute(stmt)).scalars().all()
     return {"items": [serialize_prompt_task(t) for t in tasks], "total": len(tasks)}

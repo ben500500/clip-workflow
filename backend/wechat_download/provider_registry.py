@@ -35,6 +35,8 @@ from typing import List, Optional
 
 import httpx
 
+from app.config import settings
+from wechat_download.url_gate import direct_url_reject_reason, url_shape_text
 from wechat_download.yuanbao_client import (
     ParseResult,
     YuanbaoClient,
@@ -367,11 +369,28 @@ class HttpApiAdapter(BaseParseClient):
             "result.url", "result.play_url",
         ]
         play_url = None
+        rejected_shape: Optional[str] = None
+        gate_on = bool(getattr(settings, "WECHAT_DL_DIRECT_URL_SHAPE_GATE", True))
         for c in candidates:
             v = _dig(data, c) if "." in c else data.get(c)
-            if isinstance(v, str) and v.startswith("http") and not _is_image_url(v):
-                play_url = v
-                break
+            if not (isinstance(v, str) and v.startswith("http")):
+                continue
+            if _is_image_url(v):
+                # 封面图直链：这条判据**不跟着闸门关**（关了是放行「形状怪的真视频」，
+                # 不是放行图片）
+                continue
+            # 形状闸门（11-10）：导流页链接会让渠道「解析成功」地回一个站点根
+            # （实测智令 doc/107 回 https://vnd2.17zhilian.cn/），旧写法照单收下 →
+            # 下载原片把 10KB 的 HTML 存成「下载成功」。理由与「为什么不按扩展名一刀切」
+            # 见 url_gate 模块注释。
+            reason = direct_url_reject_reason(v) if gate_on else None
+            if reason is not None:
+                rejected_shape = rejected_shape or (
+                    f"{reason}（解析到 {url_shape_text(v)}）"
+                )
+                continue
+            play_url = v
+            break
         if not play_url:
             # 提取失败信息（若有）
             msg = (
@@ -379,6 +398,12 @@ class HttpApiAdapter(BaseParseClient):
                 or data.get("errmsg") or (data.get("data") or {}).get("msg")
                 if isinstance(data.get("data"), dict) else data.get("msg")
             )
+            if rejected_shape:
+                return ParseResult(
+                    success=False, channel=self.channel,
+                    error=f"无可用视频直链：{rejected_shape}（响应 code={data.get('code')}, msg={msg}）",
+                    raw=raw[:4000],
+                )
             return ParseResult(
                 success=False, channel=self.channel,
                 error=f"无可用视频直链（响应 code={data.get('code')}, msg={msg}）",

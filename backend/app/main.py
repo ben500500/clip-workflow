@@ -122,6 +122,27 @@ async def _sweep_asset_jobs_at_startup():
     await sweep_interrupted_asset_jobs()
 
 
+async def _sweep_wechat_dl_zombies_at_startup():
+    """反推提示词僵尸 processing 行的启动收口（11-10）。
+
+    判据一直在 `refresh_prompt_task` 里，但它只有「有人点开那条任务」才会跑到——
+    upload 型又没有别的入口会刷它，现网就是这么攒了 6 条永远「生成中」的行、最后人工
+    进库判的（docs 8-11/8-12）。这里补的是**触发**。0 元、不发外部请求，且**有意只收
+    没有上游任务号的行**：有 pid 的行会连带触发自动补投，启动时无人值守花钱不能接受。
+
+    fail-soft：收口失败只记日志，绝不能把整个服务启动带崩。
+    """
+    from wechat_download.prompt_service import sweep_zombie_prompt_tasks
+
+    try:
+        async with async_session_factory() as db:
+            swept = await sweep_zombie_prompt_tasks(db)
+        if swept:
+            logger.warning("启动收口反推僵尸任务 %s 条", swept)
+    except Exception:  # noqa: BLE001 - 清扫不阻断启动
+        logger.exception("反推僵尸任务启动收口失败（不影响其他功能）")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle: startup and shutdown."""
@@ -136,6 +157,8 @@ async def lifespan(app: FastAPI):
     logger.info("Seed alert rules initialized.")
     await _sweep_asset_jobs_at_startup()
     logger.info("Asset background jobs swept.")
+    await _sweep_wechat_dl_zombies_at_startup()
+    logger.info("Wechat-dl zombie prompt tasks swept.")
     yield
     logger.info("Shutting down...")
     await close_db()

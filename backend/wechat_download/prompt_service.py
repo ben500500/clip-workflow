@@ -18,10 +18,11 @@
   反推只吃「上游能直接拉流的地址」，花约 0.01 元换掉一次 0.16 元的空跑。
 """
 
+import json
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import select, update
@@ -37,7 +38,7 @@ from wechat_download.models import (
     PT_SUCCESS,
     WechatDlPromptTask,
 )
-from wechat_download.prompt_client import PromptClient, PromptError
+from wechat_download.prompt_client import FAIL_DEFAULT_REASON, PromptClient, PromptError
 from wechat_download.services_client import ZhilingServiceClient
 from wechat_download.services_service import is_direct_video_url
 from wechat_download.upload_client import UploadClient, UploadError
@@ -63,6 +64,48 @@ NON_RETRYABLE_FAILURE_MARKERS = (
 
 def _norm_err(error: Optional[str]) -> str:
     return (error or "").strip().lower()
+
+
+# 失败时附带的原始响应长度上限：够看清 code/msg/errMsg 三件套，又不至于把 error 列灌满
+_RAW_BRIEF_LIMIT = 220
+# 原始响应里绝不能跟着报错入库的字段名（子串匹配，防上游把密钥回显）
+_SENSITIVE_KEYS = ("key", "token", "secret", "password", "authorization", "cookie")
+
+
+def _raw_brief(raw) -> str:
+    """把一次轮询的原始响应压成一行可入库文本（先脱敏，再截断）。
+
+    11-09 现网三条死链的 FAIL 响应里 `errMsg` 是空的，库里就只剩「任务处理失败」一句
+    废话：既命中不了 RETRYABLE／NON_RETRYABLE 任何一套标记（不知道该不该补投），一线
+    也看不出所以然。把原文截一段附上，至少这条错误事后可查。
+    """
+    if raw is None:
+        return ""
+    data = raw
+    if isinstance(data, dict):
+        data = {
+            k: ("***" if any(s in str(k).lower() for s in _SENSITIVE_KEYS) else v)
+            for k, v in data.items()
+        }
+    try:
+        text = json.dumps(data, ensure_ascii=False, default=str, sort_keys=True)
+    except (TypeError, ValueError):
+        text = str(data)
+    return text[:_RAW_BRIEF_LIMIT]
+
+
+def _failed_reason_text(st) -> str:
+    """终态失败时该落库的原因文本：上游给了人话就用原文，没给就把原始响应补上。
+
+    认 `FAIL_DEFAULT_REASON` 而不是判空：`_fail_reason` 在什么键都没捞到时返回的就是这句
+    兜底文案，它既不含信息也命中不了任何处置标记，等于「原因丢了」。
+    """
+    reason = (st.error or "").strip()
+    if reason and reason != FAIL_DEFAULT_REASON:
+        return reason
+    brief = _raw_brief(getattr(st, "raw", None))
+    base = reason or FAIL_DEFAULT_REASON
+    return f"{base}（上游未给原因，原始响应：{brief}）" if brief else base
 
 
 # 「自动补投未成功（X）；原始失败：Y」这种我们自己拼出来的句子，X 才是当下要看的原因
@@ -405,7 +448,10 @@ async def refresh_prompt_task(db: AsyncSession, task: WechatDlPromptTask) -> Wec
         task.error = None
     elif st.status == PT_FAILED:
         task.status = PT_FAILED
-        task.error = (st.error or "任务处理失败")[:500]
+        # 上游给了人话就用原文；只拿到兜底文案时把原始响应截一段附上（11-10），
+        # 否则库里那句「任务处理失败」既看不出所以然、也命中不了下面的处置标记
+        reason_text = _failed_reason_text(st)[:500]
+        task.error = reason_text
     elif st.transient and _poll_giveup_exceeded(task):
         # 抖动持续超过容忍时长：收口，别让它无限「处理中」骗一线一直点刷新
         giveup_min = int(_poll_giveup_seconds() // 60)
@@ -427,10 +473,60 @@ async def refresh_prompt_task(db: AsyncSession, task: WechatDlPromptTask) -> Wec
     await db.refresh(task)
 
     # 终态失败才考虑补投：此时 failed 已经落库，补投成功会把它改回 processing，
-    # 补投失败则停在 failed（error 里同时留下两次原因），不会出现「既没成功也没记录」
+    # 补投失败则停在 failed（error 里同时留下两次原因），不会出现「既没成功也没记录」。
+    # 判断依据用刚落库的 task.error：上游只回兜底文案时它带著原始响应，标记才有机会命中
     if st.status == PT_FAILED:
-        await _auto_retry_prompt_task(db, task, st.error)
+        await _auto_retry_prompt_task(db, task, task.error)
     return task
+
+
+# ─────────────────────────────────────────────────────────────
+# 全表僵尸收口（11-10）
+# ─────────────────────────────────────────────────────────────
+
+async def sweep_zombie_prompt_tasks(db: AsyncSession) -> int:
+    """把「永远开跑不了」的僵尸 processing 行收成 failed，返回收口条数。
+
+    判据跟 `refresh_prompt_task` 里那条**一模一样**：`processing` ＋ 没有
+    `provider_task_id` ＋ 自提交起超过容忍时长（`WECHAT_DL_PROMPT_POLL_GIVEUP_SECONDS`）。
+    这里补的从来不是判据，是**触发**：那个函数全仓只有 4 个「按单条刷」的入口会调
+    （wechat-dl 详情口 ＋ assets.py 三处按素材刷新），没有全表扫；而 upload 型又没有
+    别的入口会去刷它（一键重试口对 upload 直接 400），于是现网攒出 6 条永远「生成中」
+    的行，最后只能人工进库里判（见 docs 8-11/8-12）。
+
+    0 元：没有上游任务号的行本来就查无可查，这条 UPDATE 不发任何外部请求。
+
+    **有意只管无 pid 的行**。有 pid 的 processing 留给原轮询口——全表口要是去刷它们，
+    就会连带走 `_auto_retry_prompt_task`，等于在进程启动／别人打开列表时无人值守地
+    偷偷补投花钱。这个口子不开。
+    """
+    giveup_seconds = _poll_giveup_seconds()
+    cutoff = datetime.utcnow() - timedelta(seconds=giveup_seconds)
+    giveup_min = int(giveup_seconds // 60)
+    res = await db.execute(
+        update(WechatDlPromptTask)
+        .where(
+            WechatDlPromptTask.status == PT_PROCESSING,
+            WechatDlPromptTask.provider_task_id.is_(None),
+            WechatDlPromptTask.created_at < cutoff,
+        )
+        .values(
+            status=PT_FAILED,
+            error=(
+                f"任务提交后 {giveup_min} 分钟以上没有拿到上游任务号，已判失败"
+                "（这一步没有扣费，重新发起一次即可，不用带 retry_failed）"
+            )[:500],
+            updated_at=datetime.utcnow(),
+        )
+    )
+    changed = int(getattr(res, "rowcount", 0) or 0)
+    if changed:
+        await db.commit()
+        logger.warning(
+            "反推僵尸 processing 行全表收口 %s 条（无上游任务号且超 %s 分钟，0 元）",
+            changed, giveup_min,
+        )
+    return changed
 
 
 # 允许上传的视频扩展名（前端 accept 与后端校验共用一份，避免两边漂移）

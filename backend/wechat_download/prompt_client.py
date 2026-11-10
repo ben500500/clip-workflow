@@ -113,8 +113,12 @@ def _truncate(text: Optional[str], limit: int = 500) -> Optional[str]:
 # （个别版本确实把原因写在 msg 里）。
 FAIL_REASON_KEYS = ("errMsg", "error_msg", "errorMsg", "error", "msg")
 
+# 一个原因都没捞出来时的兜底文案。上层（prompt_service）靠**认这句**判断「原文里没人话」，
+# 从而把原始响应体补进 error——所以它必须是个常量，不能让两边各写一遍字面量。
+FAIL_DEFAULT_REASON = "任务处理失败"
 
-def _fail_reason(data: dict, default: str = "任务处理失败") -> str:
+
+def _fail_reason(data: dict, default: str = FAIL_DEFAULT_REASON) -> str:
     """从 FAIL 响应的 data 里捞出人话失败原因（errMsg 优先）。"""
     for key in FAIL_REASON_KEYS:
         value = data.get(key)
