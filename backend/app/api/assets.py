@@ -5735,6 +5735,8 @@ async def get_prompt_elements(
             "界面永远摆出来让人从稿子里复制",
             "认与换都不碰「钩子原文」那行和 ① 生成【…】那行（后者里面有《剧名》，"
             "把动物全文替换会顺手造出一部不存在的剧）",
+            "「题材标签／剧名」11-10 已按用户口径从默认字典去掉（参考文件《钩子模版换皮参数设定.docx》"
+            "里没有这两项）：要改 ① 行那几个字，用「自定义替换」照打一遍",
         ],
     }
 
@@ -5880,7 +5882,8 @@ async def update_prompt_elements(
     notes: List[str] = []
     if not data.inherit:
         notes.append(
-            "已选「整体替换」：出厂那 18 行（题材标签／剧名＋原型 A–F 的参数项）都不再认，"
+            "已选「整体替换」：出厂那 "
+            f"{len(pesvc.normalize_catalog(pesvc.DEFAULT_PROMPT_ELEMENTS))} 行（原型 A–F 的参数项）都不再认，"
             f"现在生效的只有你给的 {len(eff)} 行"
         )
     if not eff:

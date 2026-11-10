@@ -58,6 +58,8 @@ MAX_PATTERN_LEN = 300
 MAX_MANUAL_VALUE_LEN = 600  # 手填项给的是整句（台词/泄密内容），比词面上限宽
 MAX_SLOTS = 60
 MAX_SKIP_PATTERN_LEN = 300
+# 给界面摆「稿子里对应的原句」用的那一行有多长（11-10 用户口径：要能对着看）
+MAX_CONTEXT_LEN = 160
 
 # 默认跳过哪两行（批 N 的真坑）：现网 ① 行是
 # `生成【都市脑洞】仿真人写实短剧，参考【《鲸鱼开口指路跳海》】…`——
@@ -82,29 +84,17 @@ MANUAL_NOTE = "整句（台词／泄密内容／绝境描述）没有固定写�
 SCENE_LEAD_PROBE = r"剧情：(?:【[^】]{1,8}】)?\s*([^，。；\n]{2,24})"
 
 
-# 出厂默认表（一）：模板自己**保证存在**的两个位置（`autoclip/app/prompt/hook_expand.txt` ①行）。
-TEMPLATE_PROMPT_ELEMENTS: List[Dict[str, Any]] = [
-    {
-        "key": "genre",
-        "label": "题材标签",
-        "mode": MODE_PATTERN,
-        "pattern": r"生成【([^】]{1,12})】",
-        "anchors": [],
-        "pool": [],
-        "categories": [],
-        "note": "① 题材声明行。模板原文：「题材不是现言豪门时相应替换标签」，所以这里可以换。",
-    },
-    {
-        "key": "drama_name",
-        "label": "剧名",
-        "mode": MODE_PATTERN,
-        "pattern": r"参考【《([^》]{1,30})》】",
-        "anchors": [],
-        "pool": [],
-        "categories": [],
-        "note": "① 里的《剧名》。成片不念剧名，但换皮的时候顺手照抄一遍更稳。",
-    },
-]
+# 出厂默认表（一）：模板①行那两个位置（题材标签／剧名）——**11-10 用户拍板清空**。
+# 依据是用户给的《钩子模版换皮参数设定.docx》：全文只有各原型的「逐镜填空表＋文案公式＋
+# 换皮变量」，没有「剧名」「题材」「标签」这三个字。这两行是我从投产模板
+# `autoclip/app/prompt/hook_expand.txt` 第①行「生成【都市脑洞】…参考【《剧名》】」自己加的，
+# 属于自加设计，按口径撤掉：
+#  - 剧名指认的是剧目库里那部**真剧**，换了它等于让豆包参考另一部剧（还会和过审文案对不上）；
+#  - 题材标签真要改，走「自定义替换」把 `生成【…】` 里那几个字照打一遍就行，不必占一行字典。
+# 常量名留着且为空表：将来运营明确要这两行，在「可替换元素库」里自己加（PUT 口），不用发版。
+# ⚠️ 撤掉槽位**不等于**①行可以动：`DEFAULT_SKIP_LINES` 仍然把 `生成【…】`（含剧名）和
+# `钩子原文：`（过审那句）整行划在可动区间外，判据见 `test_protected_lines_are_not_touched_by_animal_replace`。
+TEMPLATE_PROMPT_ELEMENTS: List[Dict[str, Any]] = []
 
 # 出厂默认表（二）：11-10 用户逐原型给的**可替换参数清单**，词表照原话录入、
 # 一个词没加（"..." 后面的开放式取值由「自定义输入／多值」那条路走，不由我编）。
@@ -530,6 +520,22 @@ def _matches_for_anchors(text: str, anchors: List[str]) -> List[Dict[str, Any]]:
     return hits
 
 
+def _line_context(text: str, pos: int, limit: int = MAX_CONTEXT_LEN) -> str:
+    """命中处所在那一行（截断）——给界面摆「稿子里对应的原句」用。
+
+    只截不改：这一行是给人**对着看**的，不参与替换，所以哪怕它落在受保护行里也照原样给出去
+    （人一眼看到「这词在①行里」比系统替他藏起来有用）。
+    """
+    if not text:
+        return ""
+    start = text.rfind("\n", 0, pos) + 1
+    end = text.find("\n", pos)
+    if end == -1:
+        end = len(text)
+    line = " ".join(text[start:end].split())
+    return line[:limit] + ("…" if len(line) > limit else "")
+
+
 def slot_matches(text: str, slot: Dict[str, Any]) -> List[Dict[str, Any]]:
     """这个槽位在这段正文里认出哪些命中。**手填项永远认不出东西**（这是它的诚实之处）。"""
     if not text:
@@ -611,11 +617,15 @@ def extract_elements(
         if current and occurrences and occurrences[0]["value"] != current:
             # 把"系统认出来的那一个"排在第一个，界面默认选中它；别的值仍然列得出来
             occurrences.sort(key=lambda o: o["value"] != current)
+        # 用户口径（11-10）：「把原提示词中对应的内容也放出来，这样可以做一个对比」——
+        # 光给一个「当前：河边」看不出它是哪句里的哪个成分，替换点前后那整行才是人对账看的东西。
+        current_hit = next((h for h in found if h["value"] == current), found[0] if found else None)
         out.append({
             "key": slot["key"],
             "label": slot["label"],
             "mode": slot["mode"],
             "current": current,
+            "context": _line_context(body, current_hit["start"]) if current_hit else "",
             "occurrences": occurrences,
             "pool": list(slot.get("pool") or []),
             "custom": True,

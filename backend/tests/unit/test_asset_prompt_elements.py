@@ -45,8 +45,8 @@ def _catalog(*rows):
 
 
 def _only(*rows):
-    """只要这几行、**不带出厂那两个槽位**——认元素/替换的断言要 isolated，
-    不然正文里 ① 那两行每次都命中，断言写成"只有一个槽位"必假。"""
+    """**只**要这几行，不并出厂表（出厂表由 `merge_catalog` 负责）——认元素/替换的断言要
+    isolated，不然正文里别的行每次都命中，断言写成"只有一个槽位"必假。"""
     return pe.normalize_catalog({"slots": [dict(r) for r in rows]})
 
 
@@ -58,11 +58,16 @@ def _slot(key, **kw):
 
 # ─────────────────  字典：规整 / 合并 / 清洗  ─────────────────
 
-def test_defaults_cover_template_slots_plus_the_six_prototypes():
-    """出厂表＝模板保证的两个位置 ＋ 11-10 用户逐原型给的参数项，键不许撞。"""
+def test_defaults_are_exactly_the_prototype_rows_from_the_reference_doc():
+    """出厂表＝用户那份《钩子模版换皮参数设定.docx》里 A–F 的参数项，**键不许撞、也不许多东西**。
+
+    11-10 用户拍板「两行都从默认字典去掉」：`genre`（题材标签）与 `drama_name`（剧名）是我
+    从投产模板 ① 行自己加的，参考文件里没有这两项，所以它们**不许再出现在默认表里**——
+    这一条是负向断言，防止哪天又"顺手"把剧名做成可换项（换了剧名＝让豆包参考另一部真剧）。
+    """
     cat = pe.normalize_catalog(pe.DEFAULT_PROMPT_ELEMENTS)
     keys = {s["key"] for s in cat}
-    assert {"genre", "drama_name"} <= keys
+    assert not ({"genre", "drama_name"} & keys), f"出厂表多了参考文件里没有的行：{keys & {'genre', 'drama_name'}}"
     assert keys >= {
         "a_animal", "a_scene", "a_speech",
         "b_scene", "b_target", "b_secret",
@@ -71,8 +76,8 @@ def test_defaults_cover_template_slots_plus_the_six_prototypes():
         "e_power", "e_scene",
         "f_plight", "f_power",
     }
-    assert len(keys) == len(cat), "键重复会被后写的顶掉，出厂表自己不许撞键"
-    # 只有那一个手填项以外的槽位，认法都必须能落到位
+    assert len(keys) == len(cat) == 16, "出厂表只该有这 16 行（A3/B3/C2/D4/E2/F2）"
+    # 剩余槽位的认法都必须落到位（出厂表里已经没有 pattern 行了，这个循环是防将来加行时写漏）
     for slot in cat:
         if slot["mode"] == pe.MODE_PATTERN:
             assert slot["pattern"]
@@ -112,11 +117,38 @@ def test_prototype_pools_are_exactly_the_user_list():
         assert by_key[key]["anchors"] == []
 
 
-def test_template_slots_still_recognised():
-    """出厂那两个位置必须在一篇照模板写的正文里真认得出来（批 M 的判据不许退化）。"""
-    cat = pe.normalize_catalog(pe.TEMPLATE_PROMPT_ELEMENTS)
-    found = {e["key"]: e["current"] for e in pe.extract_elements(PROMPT_10S, cat)}
-    assert found == {"genre": "现言豪门", "drama_name": "一碗疙瘩汤成少爷后妈"}
+def test_line_one_is_not_an_element_but_is_still_protected():
+    """① 行不再做成可换项（11-10 拍板），但它**整行仍然受保护**。
+
+    撤槽位 ≠ 撤保护：`DEFAULT_SKIP_LINES` 与槽位表无关，换动物/换人时那行里的《剧名》
+    一个字都不许被顺手带走——那等于让豆包参考另一部真剧。
+    """
+    cat = pe.normalize_catalog(pe.DEFAULT_PROMPT_ELEMENTS)
+    rows = pe.extract_elements(PROMPT_10S, cat)
+    assert not [e for e in rows if e["current"] == "现言豪门"], "① 行的题材标签不该再被认成元素"
+    assert not [e for e in rows if e["current"] == "一碗疙瘩汤成少爷后妈"], "剧名不该是可换项"
+    text, rep, _notes = pe.apply_edits(PROMPT_10S, cat, [{"key": "d_weak", "from": "婆婆", "to": "嫂子"}])
+    assert rep[0]["count"] == 1, "剧情行里的弱势对象照换"
+    assert "生成【现言豪门】" in text and "《一碗疙瘩汤成少爷后妈》" in text
+
+
+def test_extract_returns_the_source_line_so_people_can_compare():
+    """用户口径（11-10）「把原提示词中对应的内容也放出来，这样可以做一个对比」。
+
+    只给「当前：橘猫」看不出它是哪句里的哪个成分，所以每个认出来的元素要带命中那行原文；
+    手填项本来就不认值，`context` 必须如实为空，不许编一段上下文出来。
+    """
+    cat = _only(
+        _slot("animal", label="出场的动物", anchors=["橘猫"], pool=["橘猫", "鹦鹉"]),
+        _slot("line", label="说的一句话", mode=pe.MODE_MANUAL),
+    )
+    rows = {e["key"]: e for e in pe.extract_elements(PROMPT_10S, cat)}
+    assert rows["animal"]["context"].startswith("剧情：") and "橘猫" in rows["animal"]["context"]
+    assert rows["line"]["current"] is None and rows["line"]["context"] == ""
+    # 长行要截断加省略号，不然界面一行铺出去几十个字
+    long_line = "剧情：" + "很" * 400
+    got = pe.extract_elements(long_line, _only(_slot("s", anchors=["很"])))
+    assert got[0]["context"].endswith("…") and len(got[0]["context"]) <= pe.MAX_CONTEXT_LEN + 1
 
 
 def test_normalize_drops_rows_without_key_or_way_to_match():
@@ -143,11 +175,11 @@ def test_literal_anchor_defaults_to_pool():
 
 
 def test_inherit_merges_over_default_and_replaces_same_key():
-    cat = _catalog(_slot("genre", mode="pattern", pattern=r"生成【([^】]{1,12})】", pool=["都市情感"]))
+    cat = _catalog(_slot("a_scene", pool=["建筑工地", "老家堂屋"]))
     keys = [s["key"] for s in cat]
-    assert "drama_name" in keys, "追加模式下出厂另一个槽位必须还在"
-    genre = next(s for s in cat if s["key"] == "genre")
-    assert genre["pool"] == ["都市情感"], "同键覆盖：出厂那行被配了候选的那行顶掉"
+    assert "a_animal" in keys, "追加模式下出厂其它槽位必须还在"
+    scene = next(s for s in cat if s["key"] == "a_scene")
+    assert scene["pool"] == ["建筑工地", "老家堂屋"], "同键覆盖：出厂那行被配了候选的那行顶掉"
 
 
 def test_inherit_false_replaces_whole_catalog():
@@ -165,7 +197,7 @@ def test_bad_value_shapes_do_not_crash():
     assert pe.normalize_catalog({"slots": [None, 1, ["x"], {"pool": ["客厅"]}]}) == []
     eff, override = pe.merge_catalog({"slots": [None, {"key": "s", "pool": ["客厅"]}]})
     assert override and override[0]["key"] == "s"
-    assert {s["key"] for s in eff} >= {"s", "genre"}, "合并逻辑在脏数据下仍然给出可用表"
+    assert {s["key"] for s in eff} >= {"s", "a_animal"}, "合并逻辑在脏数据下仍然给出可用表"
 
 
 # ─────────────────  认元素  ─────────────────
@@ -250,6 +282,7 @@ def test_pattern_edit_touches_only_the_capture_group():
 
 
 def test_pattern_edit_without_from_replaces_all_hits_of_that_slot():
+    """① 行那两项默认字典里已不再有，但运营自己照这个写法配一行，pattern 模式照样换得动。"""
     cat = _only(_slot("genre", mode="pattern", pattern=r"生成【([^】]{1,12})】"))
     text, rep, _ = pe.apply_edits(PROMPT_10S, cat, [{"key": "genre", "from": "", "to": "都市情感"}])
     assert "生成【都市情感】" in text and rep[0]["count"] == 1
@@ -393,7 +426,8 @@ def test_extract_with_unmatched_lists_every_parameter_of_the_prototype():
     """④开单屏要的是「这一原型该设的参数全摆出来」，认不出原值的 current=None（批 O 的前端口）。"""
     rows = pe.extract_elements("", _cat(), CAT_A, include_unmatched=True)
     keys = {r["key"] for r in rows}
-    assert {"a_animal", "a_scene", "a_speech", "genre", "drama_name"} <= keys
+    assert {"a_animal", "a_scene", "a_speech"} <= keys
+    assert not ({"genre", "drama_name"} & keys), "① 行那两项已按用户口径从默认字典去掉"
     assert all(r["current"] is None for r in rows if r["key"] in {"a_animal", "a_scene", "a_speech"})
     assert not any(r["key"].startswith("d_") for r in rows), "原型 D 的参数不该出现在 A 的单子上"
 

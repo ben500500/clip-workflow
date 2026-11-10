@@ -9848,7 +9848,7 @@ def test_prompt_elements_catalog_extract_and_apply_api():
     要验的：
     1. material 能读字典、能抽元素、能组稿，但**不能改字典**（写字只 admin）；
     2. 写法编不过／没捕获组／键重复／认法拼错 → 400，**失败请求不写审计**；
-    3. admin 存一行 → 生效表立刻能看见（出厂那两个槽位仍在），下一次抽元素就用新表；
+    3. admin 存一行 → 生效表立刻能看见（出厂那 16 行原型参数仍在），下一次抽元素就用新表；
     4. 抽元素给出候选池与出现次数（"裂变几种选择"那份数据）；
     5. 组稿时 pattern 槽位**只动命中处**（时长 10→15 不许把⑦时间轴和⑬行尾一起改掉）；
     6. 换上拦级风险词时 apply 当场报 `would_dispatch_block`（和投板那道闸同一判据）；
@@ -9868,8 +9868,11 @@ def test_prompt_elements_catalog_extract_and_apply_api():
         assert r.status_code == 200, r.text
         data = r.json()
         eff_keys = {s["key"] for s in data["effective"]}
-        # 出厂表已经不只是那两个模板位置：11-10 用户给了 A–F 参数清单，种子行必须在位
-        assert {"genre", "drama_name", "a_animal", "a_scene", "a_speech", "f_plight"} <= eff_keys, sorted(eff_keys)
+        # 出厂表＝用户那份《钩子模版换皮参数设定.docx》里 A–F 的参数项（16 行）。
+        # 11-10 用户拍板：`genre`（题材标签）／`drama_name`（剧名）是我自己从投产模板 ① 行加的，
+        # 参考文件里没有 → **默认字典里不许有这两行**（要改那几个字走「自定义替换」）。
+        assert {"a_animal", "a_scene", "a_speech", "f_plight"} <= eff_keys, sorted(eff_keys)
+        assert not ({"genre", "drama_name"} & eff_keys), sorted(eff_keys)
         assert data["defaults"] and data["can_edit"] is False
         r = await client.get("/api/assets/prompt-elements", headers=ha)
         assert r.json()["can_edit"] is True
@@ -9894,7 +9897,7 @@ def test_prompt_elements_catalog_extract_and_apply_api():
         assert await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.update") == [], \
             "失败的改字典请求不该留痕（登录本身也写审计，所以只数这一类）"
 
-        # ③ admin 存三行（含一个限定原型的槽位）→ 生效表里出厂那两个仍在
+        # ③ admin 存三行（含一个限定原型的槽位）→ 生效表里出厂那 16 行仍在
         r = await client.put(
             "/api/assets/prompt-elements",
             json={
@@ -9912,7 +9915,7 @@ def test_prompt_elements_catalog_extract_and_apply_api():
         )
         assert r.status_code == 200, r.text
         eff_keys = {s["key"] for s in r.json()["effective"]}
-        assert {"scene", "animal", "duration", "genre", "drama_name"} <= eff_keys, r.json()["effective"]
+        assert {"scene", "animal", "duration", "a_animal", "a_scene"} <= eff_keys, r.json()["effective"]
         audits = await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.update")
         assert len(audits) == 1 and audits[0].operator_id is not None
         assert not audits[0].before, "第一次配之前没有覆盖行，before 该是空"
@@ -9924,13 +9927,17 @@ def test_prompt_elements_catalog_extract_and_apply_api():
                               json={"texts": {"p1": ELEMENT_PROMPT_10S}}, headers=hm)
         assert r.status_code == 200, r.text
         got = {s["key"]: s for s in r.json()["items"]["p1"]}
-        assert {"scene", "animal", "genre", "drama_name"} <= set(got), got.keys()
+        assert {"scene", "animal"} <= set(got), got.keys()
         assert got["scene"]["current"] == "老破小客厅"
         assert got["animal"]["occurrences"] == [{"value": "橘猫", "count": 2}]
         assert got["animal"]["pool"] == ["橘猫", "中华田园犬", "鹦鹉"]
         assert got["animal"]["custom"] is True
         assert "duration" not in got, "没报原型时限定原型的槽位不该出现"
-        assert got["genre"]["current"] == "现言豪门"
+        # ① 行那两个位置（题材标签／剧名）默认字典里已按用户口径去掉 → 不再认成元素
+        assert not ({"genre", "drama_name"} & set(got)), got.keys()
+        # 认出来的元素要带回**命中处那一行原文**，界面上好做「改前／改后」对照
+        assert got["animal"]["context"].startswith("剧情："), got["animal"]
+        assert "橘猫" in got["animal"]["context"]
 
         # 4b 报了原型 → 限定该原型的槽位这才出现
         r = await client.post("/api/assets/prompt-elements/extract",
