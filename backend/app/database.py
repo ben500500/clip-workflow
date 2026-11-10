@@ -409,6 +409,14 @@ async def _apply_compat_migrations():
         # 0066（批 N 文案预取钩子编号）：可空不回填，NULL=没预取或已被某张单吃掉。
         # 开单时后端把这里的号顶到缺号槽位并当场清空，判据见 create_productions。
         ("asset_summaries", "hook_code", "VARCHAR(10)"),
+        # 0067（批 Q 成片回收后自动拼接）：投板时点名的拼接素材 + 顺序 + 最近一次拼的结果。
+        # 全部可空不回填：没勾过拼接素材的老单＝NULL，行为完全不变（不拼）。
+        ("asset_productions", "concat_asset_id", "UUID"),
+        ("asset_productions", "concat_order", "VARCHAR(20)"),
+        ("asset_productions", "concat_last_result", "JSON"),
+        # 自动拼接的幂等键（哪支豆包成片已经拼过了）。老产物行留 NULL＝没被自动拼过，
+        # 第一次重跑回收会给它们各拼一支——那是"补上该拼的"，不是重复。
+        ("asset_outputs", "composed_from_output_id", "UUID"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

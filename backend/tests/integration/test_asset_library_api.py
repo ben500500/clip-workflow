@@ -6000,7 +6000,7 @@ def test_resolution_string_is_parsed_defensively():
 # ══════════════════════════════════════════════════════════════
 
 import contextlib  # noqa: E402
-from typing import Dict, List, Tuple  # noqa: E402
+from typing import Any, Dict, List, Optional, Tuple  # noqa: E402
 
 from app.services import aivideo_board as board_mod  # noqa: E402
 from app.models.asset import (  # noqa: E402
@@ -10063,6 +10063,20 @@ def test_prompt_elements_manual_rows_protected_lines_and_seeds_api():
         assert eff["drama_swap"]["skip_lines"] == "", "显式空串＝允许碰保护行，这条得存得住"
         assert eff["a_animal"]["skip_lines"] == pesvc.DEFAULT_SKIP_LINES, "没写的槽位用默认保护"
 
+        # ②b 元素库抽屉「读回来要能还原三态」的契约：GET 除了三层表，还要回默认保护行的原串。
+        #     前端靠它分清「这行仍用默认」／「改成了允许碰」／「写了自定义」——后端不吐原串，
+        #     前端只能自己抄一份，默认串一改，界面就会把仍在用默认的行显示成被改过。
+        r = await client.get("/api/assets/prompt-elements", headers=hm)
+        assert r.status_code == 200, r.text
+        cfg = r.json()
+        assert cfg["default_skip_lines"] == pesvc.DEFAULT_SKIP_LINES
+        by_key = {s["key"]: s for s in cfg["override"]}
+        assert by_key["drama_swap"]["skip_lines"] == "", "存下来的那道口子要读得回来，不然下一次保存又变回默认"
+        assert by_key["a_speech"]["skip_lines"] == pesvc.DEFAULT_SKIP_LINES
+        assert by_key["a_speech"]["mode"] == pesvc.MODE_MANUAL and by_key["a_speech"]["anchors"] == []
+        scene = next(s for s in cfg["defaults"] if s["key"] == "a_scene")
+        assert scene["probe"], "出厂场景行的识别位置必须在：开单屏「自动提取原脚本参数」靠它认原值"
+
         # ③ 认元素：报原型 A（短前缀）时把这一原型的参数项全摆出来，含认不出原值的手填项
         r = await client.post(
             "/api/assets/prompt-elements/extract",
@@ -10303,6 +10317,467 @@ def test_produce_element_fanout_one_order_per_parameter_row():
         # ── ⑥ 审计里得能看到这批是扇出来的（事后对账问"20 张哪来的"）──
         trail = await _rows(AuditLog, AuditLog.action == "asset.produce_order")
         assert trail and any(t.after.get("element_fanout") for t in trail), [t.after for t in trail][-1]
+        await client.aclose()
+
+    _run(_scenario())
+
+
+# ══════════════════════════════════════════════════════════════
+#  1110 批 Q · 钩子成片回收后自动拼接成「可投放素材」（需求⑤）
+#
+#  用户口径原话：「钩子成片生成出来以后，需要导入拼接视频自动拼接成可投放素材。」
+#  11-10 定下的形态：**回收后自动拼＝钩子成片＋投板那一屏点名的拼接素材**，顺序可选
+#  （钩子片在前／素材片段在前），拼成即素材 `stage_compose=success` → 派生态 `ready`。
+#
+#  这节的替身比批 H 多一层「按内容认段」的探针，理由只有一个：选顺序唯一的实证是
+#  **排在最前那一段的规格当目标画幅**。所以 `download_to_file` 按 file_key 写两种可辨认
+#  的字节、`probe_media` 按内容回规格，于是断 `concat_segments` 收到的 target
+#  ＝断"到底谁在前"，而不是读代码猜。
+# ══════════════════════════════════════════════════════════════
+
+Q_HOOK_BYTES = b"QHOOKSEG" + b"\x00" * 4096      # 钩子成片那一段
+Q_MATL_BYTES = b"QMATLSEG" + b"\x00" * 2048      # 人点名的拼接素材那一段
+Q_OUT_BYTES = b"QCOMPOUT" + b"\x00" * 3072       # ffmpeg 拼出来的产物
+
+Q_VERT = {"duration": 10.08, "width": 720, "height": 1280, "fps": "25/1", "has_audio": True}
+Q_HORIZ = {"duration": 6.0, "width": 1280, "height": 720, "fps": "30/1", "has_audio": False}
+Q_COMPOSED = {"duration": 16.08, "width": 720, "height": 1280, "fps": "25/1", "has_audio": True}
+
+
+@contextlib.contextmanager
+def _q_concat_off(calls: List[dict], *, concat_error: Optional[str] = None,
+                  concat_return_error: Optional[str] = None):
+    """拼接那段（取回两段 → 探规格 → ffmpeg → 落桶）的替身，全程不出网、不跑真 ffmpeg。
+
+    `concat_return_error`＝ffmpeg 那一步**回错串**（拼接失败的原形状，不是抛异常）。
+    `concat_error`＝抛异常（形状不同，走的是 `_auto_concat_recovered` 里那条
+    `except Exception` 兜底，两种都得能兜住才会"拼不上不连累回收"）。
+
+    ⚠️ 落桶也在这里钉：批 H 的 `_patch_board` 同样钉了 `upload_file_from_path`，
+    两层钉的是同一个替身形状（返回 True）。不钉的话自动拼那一步会去连本机没起的
+    MinIO:9000，用例挂成 ConnectionRefused 而不是"拼接没落库"。
+    """
+    async def _download(bucket, key, local):
+        with open(local, "wb") as fh:
+            fh.write(Q_HOOK_BYTES if str(key).startswith("asset/board/") else Q_MATL_BYTES)
+        return True
+
+    async def _concat(paths, target, out_path):
+        with open(paths[0], "rb") as fh:
+            first_head = fh.read(8)
+        calls.append({"target": dict(target), "first_is_hook": first_head == Q_HOOK_BYTES[:8],
+                      "n_paths": len(paths)})
+        if concat_error is not None:
+            raise RuntimeError(concat_error)
+        with open(out_path, "wb") as fh:
+            fh.write(Q_OUT_BYTES)
+        return concat_return_error
+
+    def _probe(path):
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+        if head == Q_MATL_BYTES[:8]:
+            return Q_HORIZ
+        if head == Q_OUT_BYTES[:8]:
+            return Q_COMPOSED
+        # 钩子那一段＋回收侧那个假 ftyp 文件都按竖屏成片回（和现网豆包出片规格一致）
+        return Q_VERT
+
+    with contextlib.ExitStack() as st:
+        st.enter_context(patch("app.api.assets.download_to_file", _download))
+        st.enter_context(patch("app.services.asset_compose_service.concat_segments", _concat))
+        st.enter_context(patch("app.services.asset_compose_service.probe_media",
+                               AsyncMock(side_effect=_probe)))
+        st.enter_context(patch("app.api.assets.upload_file_from_path",
+                               AsyncMock(return_value=True)))
+        yield
+
+
+async def _q_video_asset(client, hm, name):
+    """入库一条**文件素材**（有 file_key、能当拼接的一段），返回该素材行。"""
+    with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
+         patch("app.api.assets._ffprobe_duration", lambda p: 6.0):
+        resp = await client.post("/api/assets/upload/batch",
+                                 files=[("files", (name, VIDEO_BYTES, "video/mp4"))], headers=hm)
+    assert resp.status_code == 201, resp.text
+    return resp.json()["items"][0]
+
+
+def test_dispatch_auto_concat_composes_each_hook_and_lights_the_asset_ready():
+    """批 Q 主干：投板点名拼接素材 → 回收到的每支豆包成片自动拼一条、素材推到 ready。
+
+    钉的都是"这算不算可投放素材"上不能错的几件：
+    - 产物**每条一行、不挂生产单**（`production_id=NULL`——批 I 定过的口径：挂上会让
+      生产单行上「成片」那列一支算两支）；
+    - 幂等键 `composed_from_output_id` 指向回收那条 doubao_raw，来源单走 `hook_production_id`；
+    - 拼成功才点亮 `stage_compose`，派生态从 composing 走到 ready（与手工口同一套 derive）；
+    - **0 元**：不写任何 cost_*，但逐条留 `asset.concat.auto` 审计（谁拼的、哪两段、什么顺序）；
+    - 拼完的产物照旧补首帧；回收结果本身一个字都不许被拼接改动（succeeded 照旧）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(
+            client, h, n=2, hook_codes=["7C0Q1", "7C0Q2"])
+        material = await _q_video_asset(client, hm, "正文片段.mp4")
+        asset_code = (await _row_of(AssetItem, asset_id)).code
+        ids = [p["id"] for p in listed]
+
+        calls: List[dict] = []
+        fb = _FakeBoard()
+        with _board_off(fb), _q_concat_off(calls), \
+             patch("app.api.assets._enqueue_frames", AsyncMock(
+                 return_value={"queued": True, "job_id": "jq", "note": "抽帧已排后台"})) as enq:
+            resp = await _dispatch(client, ho, ids, concat_asset_id=material["id"])
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        # ① 回收那条线不许因为拼接改判
+        assert body["succeeded"] == 2 and body["failed"] == 0, body
+        note = body["concat"]
+        assert note["attempted"] == 2 and note["composed"] == 2 and note["failed"] == 0, note
+        assert "自动拼接：拼成 2 支" in body["message"], body["message"]
+
+        # ② 产物：2 条 doubao_raw ＋ 2 条 composed，composed 的挂法就是需求⑤的落库形状
+        outs = await _rows(AssetOutput)
+        raws = [o for o in outs if o.kind == "doubao_raw"]
+        comp = [o for o in outs if o.kind == "composed"]
+        assert len(raws) == 2 and len(comp) == 2, [(o.kind, o.production_id) for o in outs]
+        for o in comp:
+            assert o.production_id is None, "拼接产物挂生产单＝「成片」列一支算两支（批 I 口径）"
+            assert o.hook_production_id is not None and o.composed_from_output_id is not None
+            assert o.bucket == settings.MINIO_BUCKET_RAW
+            assert o.file_key.startswith(f"asset/composed/{asset_code}/"), o.file_key
+            assert (o.duration, o.resolution) == (16.08, "720x1280"), (o.duration, o.resolution)
+            assert o.sha256 and len(o.sha256) == 64
+            assert o.board_out_url is None, "拼出来的不是板上的东西，不许带 outUrl 去污染回收幂等"
+        assert {o.composed_from_output_id for o in comp} == {o.id for o in raws}
+        assert {o.hook_production_id for o in comp} == {uuid.UUID(i) for i in ids}
+
+        # ③ 默认档＝钩子片在前：目标画幅跟钩子片（720 宽），两段都取回来了才有得拼
+        assert len(calls) == 2, calls
+        for c in calls:
+            assert c["n_paths"] == 2 and c["first_is_hook"] is True, c
+            assert c["target"]["width"] == 720, c
+
+        # ④ 「可投放素材」＝ready：stage_compose 是五阶段里唯一靠拼接才点亮的那一个
+        hook_row = await _row_of(AssetItem, asset_id)
+        assert hook_row.stage_compose == "success" and hook_row.status == "ready"
+        assert body["asset_status"][str(asset_id)] == "ready", body["asset_status"]
+
+        # ⑤ 逐条审计＋0 元
+        audits = await _rows(AuditLog, AuditLog.action == "asset.concat.auto")
+        assert len(audits) == 2, len(audits)
+        for a in audits:
+            assert a.after["order"] == "hook_first" and a.after["cost"] == 0, a.after
+            assert str(a.after["concat_asset_id"]) == material["id"]
+            assert a.after["first"].startswith("钩子·7C0Q"), a.after
+            assert "正文片段" in a.after["second"], a.after
+        assert float((await _row_of(AssetItem, asset_id)).cost_prompt or 0) == 0.0
+
+        # ⑥ 补帧：③b 排豆包成片、③c 排拼出来的产物，两次都在
+        assert len(enq.await_args_list) == 2, [c.kwargs for c in enq.await_args_list]
+        second = enq.await_args_list[1].kwargs
+        assert second["why"].startswith("回收自动拼接") and second["asset_ids"] == []
+        assert set(second["output_ids"]) == {str(o.id) for o in comp}, second
+
+        # ⑦ 行上钉着的拼装要求＋「拼没拼」结果，接口必须带得出来（前端列读它）
+        listed2 = (await client.get("/api/assets/productions",
+                                    params={"asset_id": asset_id}, headers=ho)).json()["items"]
+        assert len(listed2) == 2
+        for r2 in listed2:
+            assert r2["concat_asset_id"] == material["id"], r2
+            assert r2["concat_order"] == "hook_first", r2
+            assert r2["concat_last_result"]["status"] == "success", r2["concat_last_result"]
+            assert r2["concat_last_result"]["ok"] == 1 and r2["concat_last_result"]["failed"] == 0
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_auto_concat_material_first_swaps_the_front_segment():
+    """`concat_order="material_first"`＝素材片段排最前，于是**目标画幅跟着素材走**。
+
+    这是"选顺序"唯一的真实作用（11-04 口径）：把横屏片段放前面就出横屏框。
+    顺带钉产物命名——两支片子拼一条，文件名必须同时点出编号和拼接素材，
+    否则成片墙上几十个 `composed.mp4` 没人知道是哪条拼的哪条。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["7C0Q3"])
+        material = await _q_video_asset(client, hm, "片头彩蛋.mp4")
+
+        calls: List[dict] = []
+        fb = _FakeBoard()
+        with _board_off(fb), _q_concat_off(calls):
+            resp = await _dispatch(client, ho, [listed[0]["id"]],
+                                   concat_asset_id=material["id"],
+                                   concat_order="material_first")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["concat"]["composed"] == 1, resp.json()
+
+        assert len(calls) == 1 and calls[0]["first_is_hook"] is False, calls
+        assert calls[0]["target"]["width"] == 1280, "素材在前 → 画幅必须跟素材（横屏）"
+
+        comp = [o for o in await _rows(AssetOutput) if o.kind == "composed"]
+        assert len(comp) == 1
+        assert "7C0Q3" in comp[0].file_name and material["code"] in comp[0].file_name
+        row = await _row_of(AssetProduction, listed[0]["id"])
+        assert row.concat_order == "material_first"
+        assert row.concat_last_result["order"] == "material_first"
+        audit = (await _rows(AuditLog, AuditLog.action == "asset.concat.auto"))[-1]
+        assert audit.after["order"] == "material_first"
+        assert audit.after["first"].startswith(f"{material['code']}·"), audit.after
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_auto_concat_refuses_bad_params_before_burning_the_pool():
+    """拼装要求要是等回收到了才发现拼不了，号池已经烧了——所以全部在投出去**之前**挡。
+
+    四张脸：图片素材／链接素材还没取回原片／素材不存在／顺序词不认识。
+    话术与手工拼接口**共用 `_resolve_concat_input`**（口径只有一套），
+    这里顺带钉住"一个包都没出网、一张单都没动"。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["7C0Q4"])
+        pid = listed[0]["id"]
+        good = await _q_video_asset(client, hm, "能拼的片段.mp4")
+        link_asset, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)):
+            img = (await client.post("/api/assets/upload/batch",
+                                     files=[("files", ("角色卡.png", PNG_PORTRAIT, "image/png"))],
+                                     headers=hm)).json()["items"][0]
+        assert img["media_kind"] == "image"
+
+        fb = _FakeBoard()
+        with _board_off(fb):
+            cases = [
+                ({"concat_asset_id": img["id"]}, 400, "是图片"),
+                ({"concat_asset_id": link_asset}, 400, "/assets/resolve"),
+                ({"concat_asset_id": str(uuid.uuid4())}, 404, "不存在"),
+                ({"concat_asset_id": good["id"], "concat_order": "middle"}, 400, "拼接顺序只能是"),
+            ]
+            for extra, want, needle in cases:
+                r = await _dispatch(client, ho, [pid], **extra)
+                assert r.status_code == want, (extra, r.status_code, r.text)
+                assert needle in r.json()["detail"], (extra, r.json()["detail"])
+            assert fb.creates == [], "被拦下的拼装要求一个包都不许出网"
+
+        row = await _row_of(AssetProduction, pid)
+        assert row.status == PR_ORDER_READY and row.concat_asset_id is None
+        assert await _count(AssetOutput) == 0
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_auto_concat_failure_never_downgrades_the_recovery():
+    """拼不上 ≠ 回收失败：片子是真金白银烧号池收回来的，产物照旧、状态照旧、成因写进行上。
+
+    两种坏法分开测：ffmpeg **回错串**（原形状）和拼接那段**抛异常**（兜底形状）。
+    混成一个"投递失败"会让人以为号池白烧，其实成片就在产物里，只是还得人工拼一遍。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["7C0Q5"])
+        material = await _q_video_asset(client, hm, "正文片段.mp4")
+
+        calls: List[dict] = []
+        fb = _FakeBoard()
+        with _board_off(fb), _q_concat_off(calls, concat_return_error="ffmpeg 拼接失败（退出码 234）：Invalid argument"):
+            resp = await _dispatch(client, ho, [listed[0]["id"]], concat_asset_id=material["id"])
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["succeeded"] == 1 and body["failed"] == 0, body
+        assert body["concat"]["composed"] == 0 and body["concat"]["failed"] == 1, body["concat"]
+        assert "失败 1 支" in body["message"], body["message"]
+
+        outs = await _rows(AssetOutput)
+        assert [o.kind for o in outs] == ["doubao_raw"], [(o.kind, o.file_key) for o in outs]
+        row = await _row_of(AssetProduction, listed[0]["id"])
+        assert row.status == PR_SUCCESS
+        assert row.concat_last_result["status"] == "failed"
+        assert "退出码 234" in row.concat_last_result["last_error"], row.concat_last_result
+        hook_row = await _row_of(AssetItem, asset_id)
+        assert hook_row.stage_compose != "success" and hook_row.status == "composing"
+        assert await _rows(AuditLog, AuditLog.action == "asset.concat.auto") == []
+
+        # 第二种坏法：抛异常（比如桶连不上），同一套 fail-soft，成因带上异常类型
+        _a2, _s2, listed2 = await _order_ready_production(client, h, url=DOUYIN_3, n=1,
+                                                          hook_codes=["7C0Q6"])
+        calls.clear()
+        fb2 = _FakeBoard()
+        with _board_off(fb2), _q_concat_off(calls, concat_error="MinIO 连不上"):
+            r2 = await _dispatch(client, ho, [listed2[0]["id"]], concat_asset_id=material["id"])
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["succeeded"] == 1, r2.json()
+        row2 = await _row_of(AssetProduction, listed2[0]["id"])
+        assert row2.status == PR_SUCCESS and row2.concat_last_result["status"] == "failed"
+        assert "RuntimeError" in row2.concat_last_result["last_error"], row2.concat_last_result
+        assert [o.kind for o in await _rows(AssetOutput)].count("composed") == 0
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_auto_concat_pins_the_row_so_a_later_recover_still_composes():
+    """接续回收（进程重启后 `recover_only=true` 再跑一次）也必须拼——靠钉在行上的两列。
+
+    需求⑤那句「生成出来以后自动拼」里的"以后"是几十分钟：投板协程很可能不在了。
+    拼装要求要是只活在请求里，重跑回收就会静默不拼，一线只能手工再拼一遍，
+    而那正是需求⑤要消掉的那一步。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, n=2, hook_codes=["7C0Q7", "7C0Q8"])
+        material = await _q_video_asset(client, hm, "正文片段.mp4")
+        ids = [p["id"] for p in listed]
+
+        fb = _FakeBoard(status_fn=lambda created_index, read_round: "waiting")
+        # ── 第一轮：板子还在跑，一支都没到手 → 什么都没拼，但拼装要求已经钉在行上 ──
+        with _board_off(fb), _q_concat_off([]):
+            first = await _dispatch(client, ho, ids, concat_asset_id=material["id"])
+        assert first.status_code == 200, first.text
+        b1 = first.json()
+        assert b1["succeeded"] == 0 and b1["still_running"] == 2, b1
+        assert b1["concat"]["attempted"] == 0 and b1["concat"]["composed"] == 0, b1["concat"]
+        for pid in ids:
+            p = await _row_of(AssetProduction, pid)
+            # 板面非终态 → 单标 running（正在出片），既没判死也没到期
+            assert p.status == PR_RUNNING and str(p.concat_asset_id) == material["id"]
+            assert p.concat_order == "hook_first" and p.concat_last_result is None
+        assert await _count(AssetOutput) == 0
+
+        # ── 第二轮：只回读回收，请求里**一个字都不带**，拼不拼全看行上那两列 ──
+        fb.status_fn = lambda created_index, read_round: "succ"
+        calls: List[dict] = []
+        with _board_off(fb), _q_concat_off(calls):
+            again = await _dispatch(client, ho, ids, recover_only=True)
+        assert again.status_code == 200, again.text
+        b2 = again.json()
+        assert b2["recovered"] == 2 and b2["succeeded"] == 2, b2
+        assert b2["concat"]["composed"] == 2, b2["concat"]
+        assert len(calls) == 2 and all(c["first_is_hook"] for c in calls), calls
+        comp = [o for o in await _rows(AssetOutput) if o.kind == "composed"]
+        assert len(comp) == 2, [o.kind for o in await _rows(AssetOutput)]
+        assert (await _row_of(AssetItem, asset_id)).status == "ready"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_auto_concat_idempotency_and_names_every_skip_reason():
+    """幂等键与三条"跳过"成因（素材被删／挑的是图片／成片没落桶）只能在这里钉。
+
+    为什么直接调 `_auto_concat_recovered` 而不走接口：这三条在**接口层已经被 400 挡掉**
+    （见上一条用例），能真的走到这里的只有"投出去之后那行才坏掉"那种事后变化——
+    而幂等键命中的场景（同一支被重跑两次）在 HTTP 面上更是走不到
+    （成功的单再点投递会被闸门挡回 order_ready 不让重建）。这两个分支是**兜底的那一道**，
+    平时看不见，一旦回收被重跑就会变成"同一条片子拼出两遍"，所以必须单独钉住。
+    """
+    from app.api import assets as assets_api
+
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        asset_id, sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["7C0Q9"])
+        pid = listed[0]["id"]
+        material = await _q_video_asset(client, hm, "正文片段.mp4")
+        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)):
+            img = (await client.post("/api/assets/upload/batch",
+                                     files=[("files", ("角色卡.png", PNG_PORTRAIT, "image/png"))],
+                                     headers=hm)).json()["items"][0]
+
+        # 手工造两支"已经回收落库的豆包成片"＋把拼装要求钉在生产单上（等价于投板成功之后）。
+        # 第二支专门给后面三条"跳过"成因用：幂等预查排在最前，同一支只会回 already。
+        async with dbmod.async_session_factory() as s:
+            prod = await s.get(AssetProduction, uuid.UUID(pid))
+            prod.concat_asset_id = uuid.UUID(material["id"])
+            prod.concat_order = "hook_first"
+            raw = AssetOutput(production_id=prod.id, asset_id=prod.asset_id, kind="doubao_raw",
+                              file_key="asset/board/q/v1.mp4", bucket=settings.MINIO_BUCKET_RAW,
+                              file_name="v1.mp4", duration=10.08, resolution="720x1280",
+                              board_out_url="/out/T000009.mp4")
+            s.add(raw)
+            raw2 = AssetOutput(production_id=prod.id, asset_id=prod.asset_id, kind="doubao_raw",
+                               file_key="asset/board/q/v2.mp4", bucket=settings.MINIO_BUCKET_RAW,
+                               file_name="v2.mp4", duration=10.08, resolution="720x1280",
+                               board_out_url="/out/T000010.mp4")
+            s.add(raw2)
+            await s.commit()
+            raw_id, raw2_id = str(raw.id), str(raw2.id)
+
+        ok_rec = {"file_key": "asset/board/q/v1.mp4", "bucket": settings.MINIO_BUCKET_RAW,
+                  "file_name": "v1.mp4", "_output_id": raw_id, "_inserted": True}
+        rec2 = {"file_key": "asset/board/q/v2.mp4", "bucket": settings.MINIO_BUCKET_RAW,
+                "file_name": "v2.mp4", "_output_id": raw2_id, "_inserted": True}
+
+        async def _auto(rec: Dict[str, Any], *, concat_id=None) -> Dict[str, Any]:
+            async with dbmod.async_session_factory() as s:
+                p = await s.get(AssetProduction, uuid.UUID(pid))
+                if concat_id is not None:
+                    p.concat_asset_id = uuid.UUID(str(concat_id))
+                    await s.commit()
+                operator = (await s.execute(
+                    select(User).where(User.username == OPERATOR_USER))).scalar_one()
+                outcome = {"prods": {str(p.id): p},
+                           "outputs": [dict(rec, production_id=str(p.id))]}
+                out = await assets_api._auto_concat_recovered(s, outcome, operator=operator)
+                await s.commit()
+                return out
+
+        calls: List[dict] = []
+        with _q_concat_off(calls):
+            # ① 正常拼一条（作为后面三段的对照：幂等键就是它留下的）
+            n1 = await _auto(ok_rec)
+            assert n1["composed"] == 1 == len(calls), n1
+            comp_ids = {o.id for o in await _rows(AssetOutput) if o.kind == "composed"}
+            assert len(comp_ids) == 1
+
+            # ② 同一支再来一次 → 幂等键命中：不拼第二遍，也不算失败
+            n2 = await _auto(ok_rec)
+            assert (n2["already"], n2["composed"], n2["failed"]) == (1, 0, 0), n2
+            assert len(calls) == 1, "幂等命中时不许再碰一次 ffmpeg"
+            assert "此前已拼" in n2["note"], n2["note"]
+            assert {o.id for o in await _rows(AssetOutput) if o.kind == "composed"} == comp_ids
+            assert (await _row_of(AssetProduction, pid)).concat_last_result["status"] == "already"
+
+            # ③ 成片没有落桶路径（回收那步就没成）→ 点名这条，不开 ffmpeg
+            n3 = await _auto({k: v for k, v in rec2.items() if k != "file_key"})
+            assert n3["failed"] == 1 and "没有落桶路径" in n3["results"][0]["error"], n3
+
+            # ④ 拼接素材换成了图片（事后改行才会有的形状）→ 白话理由，与手工口同一句
+            n4 = await _auto(rec2, concat_id=img["id"])
+            assert n4["failed"] == 1 and "是图片" in n4["results"][0]["error"], n4
+
+            # ⑤ 拼接素材整行没了（被删）→ 说"已不在库里"，别让人以为是 ffmpeg 坏了
+            n5 = await _auto(rec2, concat_id=uuid.uuid4())
+            assert n5["failed"] == 1 and "已不在库里" in n5["results"][0]["error"], n5
+            assert (await _row_of(AssetProduction, pid)).concat_last_result["status"] == "failed"
+
+        # 全程只拼成过那一条，失败的四次一条都没留下产物、也没留下审计
+        assert len(calls) == 1, "四条跳过的成因里不许有一次真去开 ffmpeg"
+        assert [o.kind for o in await _rows(AssetOutput)].count("composed") == 1
+        assert len(await _rows(AuditLog, AuditLog.action == "asset.concat.auto")) == 1
         await client.aclose()
 
     _run(_scenario())

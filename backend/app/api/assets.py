@@ -575,6 +575,25 @@ class DispatchRequest(BaseModel):
             "或 admin 带 force_risk+理由放行——与原稿同一道闸），逐条留审计"
         ),
     )
+    concat_asset_id: Optional[str] = Field(
+        None,
+        description=(
+            "11-10 批 Q（需求⑤）：这几张单回收到的**每一支豆包成片**，出片后自动和这条素材"
+            "（asset_items.id）拼成一条可投放素材。传空串＝取消自动拼。"
+            "当场验三段：素材存在／不是图片／桶里有文件——和图片拼会在 ffmpeg 解码时炸，"
+            "和没文件的链接素材拼会在下载那步炸，两种都要在投出去之前拦（号池已经烧了才发现"
+            "拼不了，只能重投一遍）"
+        ),
+    )
+    concat_order: Optional[str] = Field(
+        None,
+        description=(
+            f"拼的顺序：{' 或 '.join(compose.AUTO_CONCAT_ORDERS)}"
+            f"（留空＝{compose.DEFAULT_AUTO_CONCAT_ORDER}，钩子片在前）。"
+            "和手工口 /assets/concat 的 order 不是同一套词：那两边段的位置含义不同，"
+            "共用字面量会拼反"
+        ),
+    )
 
 
 # 投递稿改后的长度上限（板上 prompt 字段没有硬上限，这里是防呆：把整篇文档粘进来）
@@ -1462,6 +1481,13 @@ def _serialize_production(
         # 批 G：多卡数组（顺序＝板上 picDatas 顺序）。旧单这里是 []——
         # 读侧要区分"没挂卡"和"挂了一张旧 key"，看 character_card_key 那一列。
         "card_asset_ids": [str(x) for x in (p.card_asset_ids or []) if str(x or "").strip()],
+        # 批 Q（11-10 需求⑤）：这张单投板时点名「出片后自动和哪条素材拼、拼在前还是拼在后」。
+        # NULL＝没勾过，回收完就停（存量单全是这个态，行为与今天一致）。
+        "concat_asset_id": str(p.concat_asset_id) if p.concat_asset_id else None,
+        "concat_order": p.concat_order,
+        # 最近一次自动拼的结果（拼成几支／失败几支／成因）。**只给界面看**，不参与任何判定——
+        # 判据在 asset_outputs.composed_from_output_id 那侧，这里坏了也不影响业务。
+        "concat_last_result": p.concat_last_result,
         "status": p.status,
         "error": p.error,
         # 投递台账（11-03 第 4 条）：一线要知道「这条投了几次、什么时候投的、什么时候出片」
@@ -9332,6 +9358,27 @@ async def dispatch_productions(
             )
 
 
+    # ── 自动拼接的入参校验（11-10 批 Q，需求⑤「钩子成片生成出来以后自动拼成可投放素材」）──
+    # 判据在投出去**之前**跑完：拼装要求要是等回收到了才发现拼不了（挑的是图片／
+    # 那条链接素材还没取回原片），号池已经烧了，片子只能人工另拼一遍。
+    # 校验复用手工拼接口的 `_resolve_concat_input`——同一套 400 话术、同一个"图片不能当一段"
+    # 的闸门，两处各写一遍必然分叉（批 M 的 R-6 就是三入口口径不一被点名）。
+    concat_spec: Optional[Dict[str, Any]] = None
+    concat_clear = False
+    if data.concat_asset_id is not None:
+        raw_concat = str(data.concat_asset_id).strip()
+        if not raw_concat:
+            concat_clear = True
+        else:
+            seg = await _resolve_concat_input(
+                db, compose.SOURCE_ASSET, raw_concat, current_user, "拼接素材"
+            )
+            concat_spec = {
+                "asset_id": raw_concat,
+                "label": seg["label"],
+                "order": compose.resolve_auto_order(data.concat_order),
+            }
+
     if to_create and not data.confirm:
         # P0 的人工确认位：不带 confirm=true 就当没确认过。放在这里而不是让前端拦，
         # 是因为这条线**任何**调用方都该被拦——脚本、按钮、将来的定时任务都得先过人这一关。
@@ -9398,6 +9445,26 @@ async def dispatch_productions(
         else None
     )
 
+    # 自动拼装的拼装要求**钉在生产单行上**（而不是只活在这次请求里）：
+    # 回收可能是几十分钟后另一个进程做的（进程重启后带 recover_only=true 再跑一次），
+    # 那时读的就是这两列——不钉行上的话"接续回收"就不会拼，一线只能手工再拼一遍，
+    # 而这正是需求⑤要消掉的那一步。新建堆和回收堆都写：回收档这次刚拿到片子，照样要拼。
+    # 和挂卡不同，这里**不**放在 `_build_delivery` 之前有任何副作用——那函数只看 payload。
+    concat_applied: List[str] = []
+    if concat_spec is not None or concat_clear:
+        for p in to_create + to_recover:
+            if concat_spec is not None:
+                p.concat_asset_id = _as_uuid(concat_spec["asset_id"], "concat_asset_id")
+                p.concat_order = concat_spec["order"]
+            else:
+                p.concat_asset_id = None
+                p.concat_order = None
+        concat_applied = [str(p.id) for p in (to_create + to_recover)]
+    concat_request = (
+        {**concat_spec, "applied_to": concat_applied} if concat_spec is not None
+        else ({"cleared_for": concat_applied} if concat_applied else None)
+    )
+
     # payload 与导出**同一个函数**（`_build_delivery`）：逐张取卡、保持 `card_asset_ids`
     # 顺序＝板上 picDatas 顺序、缺一张就点名。这里多花一次 MinIO 读是值当的——
     # 它是"投出去画中人不对"这类事故在烧钱前唯一还能看见它的地方。
@@ -9452,10 +9519,18 @@ async def dispatch_productions(
                 "capacity": capacity,
                 "cross_person": crosses or None,
                 "prompt_overrides": sorted(overrides),
+                "card_override": card_override,
+                "concat": concat_request,
                 "note": (
                     "预检已过：闸门按导出/回写同一套判据，payload 与导出同一个函数。"
                     "后台会建任务、轮询出片、把成片落进产物；跑完整份结果在任务台账里"
                     + (f"；其中 {len(overrides)} 张投的是改过的投递稿（库里原稿不动）" if overrides else "")
+                    + (
+                        f"；出片后每支自动和 {concat_spec['label']} 拼一条"
+                        f"（{'钩子片在前' if concat_spec['order'] == compose.ORDER_HOOK_FIRST else '素材片段在前'}）"
+                        if concat_spec is not None
+                        else ("；已取消这几张的自动拼接" if concat_applied else "")
+                    )
                 ),
             },
         }
@@ -9625,6 +9700,14 @@ async def _execute_dispatch(
         )
         outcome["frames_note"] = _frames_note.get("note")
 
+    # ── ③c 成片到手后自动拼接（11-10 批 Q，需求⑤）──
+    # 排在补帧之后、阶段收敛之前：这一步只读产物行（已经 commit 过了），
+    # 拼出来的新产物行自己逐条 commit，绝不把回收结果的写回窗口拖长。
+    # **整段 fail-soft**：片子是真金白银烧号池收回来的，拼不上只是"这条还得人工拼"，
+    # 不许把回收结果改判失败——那会让人以为号池白烧，其实成片就在产物里。
+    concat_note = await _auto_concat_recovered(db, outcome, operator=operator)
+    outcome["concat"] = concat_note
+
     # ── ④ 阶段收敛 + 审计 + 计数 ──
     stage_by_asset = await _converge_produce_stage(db, {t["prod"].asset_id for t in tracked.values()})
     await db.commit()
@@ -9643,6 +9726,7 @@ async def _execute_dispatch(
             "recover_only": recover_only,
             "created": created,
             "card_override": card_override,
+            "concat": outcome.get("concat"),
             "outcome": outcome["summary"],
             "outputs": outcome["outputs"],
             "uncertain": uncertain,
@@ -9682,15 +9766,291 @@ async def _execute_dispatch(
         "asset_status": stage_by_asset,
         "capacity": capacity,
         "dispatch": counts,
+        "concat": outcome.get("concat"),
         "message": (
             f"投板完成：新建 {len(created)} 张、接续回收 {len(to_recover)} 张 → "
             f"到手 {n_ok} / 失败 {n_fail}"
             + (f" / 还在板上 {n_open}" if n_open else "")
             + (f"，新增产物 {len(outcome['outputs'])} 支" if outcome["outputs"] else "")
+            + (f"，自动拼接 {(outcome.get('concat') or {}).get('note')}"
+               if (outcome.get("concat") or {}).get("note") else "")
             + (f"；闸门挡下 {len(blocked)} 张" if blocked else "")
             + (f"；{len(uncertain)} 张状态未知需人工看板" if uncertain else "")
             + f"；号池今天已吃 {capacity['total_today']} 条（软提示线 ≈{capacity['soft_cap']}，不硬拦）"
         ),
+    }
+
+
+async def _auto_concat_recovered(
+    db: AsyncSession,
+    outcome: Dict[str, Any],
+    *,
+    operator: User,
+) -> Dict[str, Any]:
+    """把这次刚落库的豆包成片，逐支和「投板时点名的那条素材」拼成可投放素材（11-10 批 Q）。
+
+    需求⑤原话：「钩子成片生成出来以后，需要导入拼接视频自动拼接成可投放素材。」
+    11-10 定下的形态是**回收后自动拼：钩子片 + 人指定的拼接素材**——第二段由人在投板那一屏
+    点名，机器不挑素材、不做智能选点（11-04 已经把拼接简化成"两段直拼、顺序可选"，这里沿用）。
+    拼装要求钉在 `asset_productions.concat_asset_id`／`concat_order` 上，所以**接续回收
+    （进程重启后带 `recover_only=true` 再跑一次）同样会拼**，不用人再点一遍。
+
+    四条规矩，每条都对应一个跑过才知道的坑：
+    1. **一支只拼一次**：幂等键是 `asset_outputs.composed_from_output_id`。回收会跑很多轮
+       （到期后再点一次、重启后补收），没有幂等键同一支片子会被拼出 N 条一模一样的产物，
+       成片墙就没法对账了。
+    2. **失败绝不连累回收**：逐支单独包异常，成因写进该单的 `concat_last_result` 给界面看。
+       片子是真金白银烧号池收回来的，拼不上只是"这条还得人工拼"，把回收改判失败会让人
+       以为号池白烧，其实成片就在产物里。
+    3. **0 元**：不调模型、不调智令，纯本机 ffmpeg——和手工口同一个口径，所以不进预算闸门、
+       不写任何 cost_*，但每条都留审计（谁拼的、哪两段、什么顺序）。
+    4. **不在事务里等网络**：`_concat_render`（两次下载＋一次转码＋一次上传）全在事务外跑，
+       跑完才开短事务写行并**逐条 commit**——中途某支炸了不许把前面已经拼好的回滚掉。
+
+    挂行口径与手工口一致：拼接产物**不挂生产单**（`production_id=NULL`），否则生产单行上
+    「成片」那列会一支算两支（批 I 定的口径）；要回溯走 `hook_production_id`
+    ＋`composed_from_output_id` 两条线。
+    """
+    prods: Dict[str, AssetProduction] = outcome.get("prods") or {}
+    recs = [
+        r for r in (outcome.get("outputs") or [])
+        if r.get("_inserted") and r.get("_output_id") and prods.get(str(r.get("production_id") or ""))
+    ]
+    wanted = [r for r in recs if getattr(prods[str(r["production_id"])], "concat_asset_id", None)]
+    if not wanted:
+        return {"attempted": 0, "composed": 0, "failed": 0, "already": 0, "results": [], "note": ""}
+
+    # 一次性把要用的素材行读齐：拼接素材（可能是同一条被多张单共用）＋各单产物要挂的那条来源素材
+    concat_ids = {str(prods[str(r["production_id"])].concat_asset_id) for r in wanted}
+    hook_ids = {str(prods[str(r["production_id"])].asset_id) for r in wanted}
+    by_id: Dict[str, AssetItem] = {
+        str(a.id): a
+        for a in (
+            await db.execute(
+                select(AssetItem).where(AssetItem.id.in_([uuid.UUID(x) for x in (concat_ids | hook_ids)]))
+            )
+        ).scalars().all()
+    }
+    # 幂等预查：这些产物支里，哪几支以前已经自动拼过了（重跑回收就会命中）
+    already = {
+        str(u)
+        for u in (
+            await db.execute(
+                select(AssetOutput.composed_from_output_id).where(
+                    AssetOutput.composed_from_output_id.in_(
+                        [uuid.UUID(str(r["_output_id"])) for r in wanted]
+                    )
+                )
+            )
+        ).scalars().all()
+        if u
+    }
+    await db.commit()  # ⚠️ 收掉这次读事务：下面每一支都要出网几十秒（现网事务上限 60s）
+
+    results: List[Dict[str, Any]] = []
+    per_prod: Dict[str, Dict[str, Any]] = {}
+    composed_output_ids: List[str] = []
+    n_ok = n_failed = n_already = 0
+    for rec in wanted:
+        prod = prods[str(rec["production_id"])]
+        out_id = str(rec["_output_id"])
+        cid = str(prod.concat_asset_id)
+        order = compose.resolve_auto_order(prod.concat_order)
+        item: Dict[str, Any] = {
+            "production_id": str(prod.id), "hook_code": prod.hook_code,
+            "from_output_id": out_id, "order": order,
+        }
+        acc = per_prod.setdefault(
+            str(prod.id), {"ok": 0, "failed": 0, "already": 0, "last_error": None, "order": order,
+                           "concat_asset_id": cid}
+        )
+        if out_id in already:
+            # 同一支不拼第二遍：这不是失败，是"上一轮已经拼好了"
+            n_already += 1
+            acc["already"] += 1
+            item.update({"result": "already", "reason": "这支此前已经自动拼过了（幂等键命中），没重拼"})
+            results.append(item)
+            continue
+        material = by_id.get(cid)
+        if material is None:
+            n_failed += 1
+            acc["failed"] += 1
+            acc["last_error"] = "拼接素材已不在库里（被删了？）"
+            item.update({"result": "failed", "error": acc["last_error"]})
+            results.append(item)
+            continue
+        if material.media_kind == MEDIA_IMAGE:
+            n_failed += 1
+            acc["failed"] += 1
+            acc["last_error"] = _image_block_reason(material, "拼接")
+            item.update({"result": "failed", "error": acc["last_error"]})
+            results.append(item)
+            continue
+        if not material.file_key:
+            n_failed += 1
+            acc["failed"] += 1
+            acc["last_error"] = (
+                f"拼接素材（{material.code}）还没有可拼的文件：链接素材要先取回原片"
+                "（`POST /assets/resolve`），文件素材要确认上传成功"
+            )
+            item.update({"result": "failed", "error": acc["last_error"]})
+            results.append(item)
+            continue
+        if not rec.get("file_key"):
+            n_failed += 1
+            acc["failed"] += 1
+            acc["last_error"] = "豆包成片没有落桶路径（回收那步就没成），无法拼接"
+            item.update({"result": "failed", "error": acc["last_error"]})
+            results.append(item)
+            continue
+
+        hook_seg = {
+            "bucket": rec.get("bucket") or settings.MINIO_BUCKET_RAW,
+            "file_key": rec["file_key"],
+            "file_name": rec.get("file_name") or f"{prod.hook_code or out_id[:8]}.mp4",
+            "label": f"钩子·{prod.hook_code or rec.get('file_name') or out_id[:8]}",
+        }
+        material_seg = _asset_concat_segment(material)
+        first, second = (
+            (material_seg, hook_seg) if order == compose.ORDER_TAIL_AFTER_HOOK
+            else (hook_seg, material_seg)
+        )
+        hook_asset = by_id.get(str(prod.asset_id))
+        raw_name = f"{prod.hook_code or 'HOOK'}×{material.code}"
+        safe = "".join(c for c in raw_name if c not in '/\\:*?"<>|').strip()[:80] or out_id[:12]
+        work_dir = tempfile.mkdtemp(prefix="asset_auto_concat_")
+        try:
+            rendered = await _concat_render(
+                first, second,
+                work_dir=work_dir,
+                safe_name=safe,
+                key_prefix_code=(hook_asset.code if hook_asset is not None else str(prod.asset_id)[:8]),
+            )
+        except HTTPException as exc:
+            n_failed += 1
+            acc["failed"] += 1
+            acc["last_error"] = str(exc.detail)[:400]
+            item.update({"result": "failed", "error": acc["last_error"]})
+            results.append(item)
+            continue
+        except Exception as exc:  # noqa: BLE001 — 拼接炸不许把回收带崩（规矩 2）
+            logger.exception("回收自动拼接异常（生产单 %s）", prod.id)
+            n_failed += 1
+            acc["failed"] += 1
+            acc["last_error"] = f"{type(exc).__name__}: {exc}"[:400]
+            item.update({"result": "failed", "error": acc["last_error"]})
+            results.append(item)
+            continue
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+        # 短事务：写产物行 + 来源素材的拼接阶段 + 审计，写完立刻 commit（规矩 4）
+        out_row = AssetOutput(
+            production_id=None,
+            asset_id=prod.asset_id,
+            kind=compose.KIND_COMPOSED,
+            hook_production_id=prod.id,
+            composed_from_output_id=uuid.UUID(out_id),
+            **rendered["output_kwargs"],
+        )
+        db.add(out_row)
+        before_stage = hook_asset.stage_compose if hook_asset is not None else None
+        before_status = hook_asset.status if hook_asset is not None else None
+        if hook_asset is not None:
+            # 和手工口同一条：拼成功就把五阶段里唯一"靠拼接才点亮"的 compose 置 success，
+            # 派生态随之从 producing/composing 走到 ready——"可投放素材"就是 ready 这个态。
+            hook_asset.stage_compose = STAGE_SUCCESS
+            hook_asset.status = svc.derive_status(
+                {
+                    "import": hook_asset.stage_import,
+                    "prompt": hook_asset.stage_prompt,
+                    "summary": hook_asset.stage_summary,
+                    "produce": hook_asset.stage_produce,
+                    "compose": STAGE_SUCCESS,
+                },
+                bool(hook_asset.has_approved_copy),
+            )
+        await _write_audit(
+            db,
+            action="asset.concat.auto",
+            operator=operator,
+            target_type="asset_output",
+            target_id=None,
+            before={
+                "production_id": str(prod.id),
+                "from_output_id": out_id,
+                "asset_id": str(prod.asset_id),
+                "stage_compose": before_stage,
+                "status": before_status,
+            },
+            after={
+                "first": first["label"],
+                "second": second["label"],
+                "order": order,
+                "concat_asset_id": cid,
+                "target_resolution": out_row.resolution,
+                "duration": out_row.duration,
+                "file_key": out_row.file_key,
+                "cost": 0,
+                "elapsed_seconds": rendered["elapsed_seconds"],
+            },
+        )
+        await db.commit()
+        await db.refresh(out_row)
+        composed_output_ids.append(str(out_row.id))
+        n_ok += 1
+        acc["ok"] += 1
+        item.update({
+            "result": "composed", "output_id": str(out_row.id),
+            "file_key": out_row.file_key, "with": material_seg["label"],
+            "resolution": out_row.resolution, "duration": out_row.duration,
+        })
+        results.append(item)
+
+    # 每单一份「拼没拼」结果写回行上（界面列 + 台账话术都读它，不参与任何判定）
+    for pid, acc in per_prod.items():
+        prod = prods.get(pid)
+        if prod is None:
+            continue
+        if acc["failed"] and not acc["ok"]:
+            status = "failed"
+        elif acc["failed"]:
+            status = "partial"
+        elif acc["ok"]:
+            status = "success"
+        else:
+            status = "already"
+        prod.concat_last_result = {
+            "status": status,
+            "ok": acc["ok"], "failed": acc["failed"], "already": acc["already"],
+            "order": acc["order"],
+            "concat_asset_id": acc["concat_asset_id"],
+            "last_error": acc["last_error"],
+            "at": utc_iso(datetime.utcnow()),
+        }
+    await db.commit()
+
+    # 拼出来的产物也补 1 张首帧（成片墙靠它当缩略图，与手工口/回收侧同一个动作）。
+    # fail-soft：帧没排上只是墙上一时没图，产物已经落库了。
+    frames_note = None
+    if composed_output_ids:
+        frames_note = await _enqueue_frames(
+            db,
+            asset_ids=[],
+            output_ids=composed_output_ids,
+            operator=operator,
+            why=f"回收自动拼接（{len(composed_output_ids)} 条）",
+        )
+
+    note = (
+        f"自动拼接：拼成 {n_ok} 支"
+        + (f"、失败 {n_failed} 支（成因见生产单「拼没拼」，可手工另拼）" if n_failed else "")
+        + (f"、此前已拼 {n_already} 支" if n_already else "")
+    )
+    return {
+        "attempted": len(wanted), "composed": n_ok, "failed": n_failed, "already": n_already,
+        "results": results, "note": note,
+        "frames_note": (frames_note or {}).get("note"),
     }
 
 
@@ -10016,6 +10376,10 @@ async def _poll_and_collect(
     return {
         "summary": summary,
         "outputs": outputs,
+        # 批 Q：把 prod 引用一并交出去。人工让位的行会从 tracked 摘除（`_reown`），
+        # 但它这次到手的产物仍要按它落库、也仍要拼——自动拼接若只认 tracked，
+        # 「刚被人工改过状态的单」就会静默少拼一条。
+        "prods": prod_refs,
         "rounds": rounds,
         "read_fail_rounds": read_fail_rounds,
     }
@@ -10667,6 +11031,22 @@ class ConcatRequest(BaseModel):
     title: Optional[str] = Field(None, max_length=120, description="可选：产物文件名前缀，默认用素材编号")
 
 
+def _asset_concat_segment(asset: AssetItem) -> Dict[str, Any]:
+    """素材行 → 拼接的一段（bucket/file_key/file_name/label）。
+
+    手工口 `_resolve_concat_input` 和批 Q 的回收自动拼共用这一份写法：自动拼那侧已经
+    把素材行读在手里了（一次批量读，避免逐支开事务查库），只要别再各写一遍 label 格式，
+    否则审计里两次拼接写的同一条素材会长得不一样，对账时没人说得清是不是同一条。
+    调用方负责先过"不是图片／桶里有文件"两道判断。
+    """
+    return {
+        "bucket": asset.bucket or settings.MINIO_BUCKET_RAW,
+        "file_key": asset.file_key,
+        "file_name": asset.file_name or f"{asset.code}.mp4",
+        "label": f"{asset.code}·{asset.title or asset.file_name or '未命名'}",
+    }
+
+
 async def _resolve_concat_input(
     db: AsyncSession,
     source: str,
@@ -10689,12 +11069,7 @@ async def _resolve_concat_input(
                 detail=f"{label}（{asset.code}）还没有可拼的文件：链接素材要先取回原片"
                        f"（`POST /assets/resolve`），文件素材要确认上传成功",
             )
-        return {
-            "bucket": asset.bucket or settings.MINIO_BUCKET_RAW,
-            "file_key": asset.file_key,
-            "file_name": asset.file_name or f"{asset.code}.mp4",
-            "label": f"{asset.code}·{asset.title or asset.file_name or '未命名'}",
-        }
+        return _asset_concat_segment(asset)
     if source == compose.SOURCE_SLICE:
         out = (
             await db.execute(
@@ -10726,6 +11101,82 @@ async def _resolve_concat_input(
         status_code=400,
         detail=f"second_source 只能是 {' 或 '.join(compose.INPUT_SOURCES)}",
     )
+
+
+async def _concat_render(
+    first: Dict[str, Any],
+    second: Dict[str, Any],
+    *,
+    work_dir: str,
+    safe_name: str,
+    key_prefix_code: str,
+) -> Dict[str, Any]:
+    """两段（已排好顺序的）视频取回→探规格→ffmpeg 直拼→落桶，返回 `AssetOutput(**kwargs)` 的字段。
+
+    手工口（`POST /assets/concat`）和批 Q 的回收自动拼**共用这一段**。两处各写一遍
+    ffmpeg 接线迟早漂移，而漂移的表现形式是「手工拼出来能播、自动拼出来不能播」
+    ——那种差别只有真投出去才知道，验收拦不住。所以转码配方只留一份。
+
+    ⚠️ **一段数据库都不碰**（与 `_fetch_board_output` 同一条纪律）：两次下载＋一次转码
+    ＋一次上传，快的十几秒、慢的按分钟算，趴着等会把现网 60s 的
+    `idle_in_transaction_session_timeout` 撞穿（11-04 等模型时真撞过一次）。
+    调用方在事务外跑完这一段，再开短事务写行。
+
+    目标画幅＝**排在最前那一段**（`first`）：调用方换顺序就等于换画幅，这是 11-04
+    定下的口径（不复用 `upload.py::_ffmpeg_concat`，它回退硬编码 1920×1080 横屏）。
+    """
+    started = time.monotonic()
+    paths: List[str] = []
+    for idx, seg in enumerate((first, second)):
+        local = os.path.join(work_dir, f"in_{idx}.mp4")
+        ok = await download_to_file(seg["bucket"], seg["file_key"], local)
+        if not ok:
+            raise HTTPException(
+                status_code=502,
+                detail=f"取回第{idx + 1}段失败（{seg['bucket']}/{seg['file_key'][:60]}），稍后重试",
+            )
+        paths.append(local)
+
+    infos: List[Optional[Dict[str, Any]]] = [await compose.probe_media(p) for p in paths]
+    target = infos[0]
+    if target is None:
+        raise HTTPException(status_code=400, detail="第1段探不出视频流，不是能拼的视频文件")
+    if infos[1] is None:
+        raise HTTPException(status_code=400, detail="第2段探不出视频流，不是能拼的视频文件")
+    for idx, info in enumerate(infos):
+        dur = info.get("duration")
+        if dur and dur > compose.MAX_SEGMENT_SECONDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"第{idx + 1}段 {dur:.0f}s 超过单次拼接上限 "
+                       f"{compose.MAX_SEGMENT_SECONDS:.0f}s（同步等 ffmpeg，别拿它当队列）",
+            )
+
+    out_path = os.path.join(work_dir, "out.mp4")
+    err = await compose.concat_segments(paths, target, out_path)
+    if err:
+        raise HTTPException(status_code=502, detail=err)
+
+    out_info = await compose.probe_media(out_path) or target
+    size = os.path.getsize(out_path) if os.path.isfile(out_path) else None
+    file_key = f"asset/composed/{key_prefix_code}/{uuid.uuid4().hex[:16]}_{safe_name}.mp4"
+    uploaded = await upload_file_from_path(
+        settings.MINIO_BUCKET_RAW, file_key, out_path, content_type="video/mp4"
+    )
+    if not uploaded:
+        raise HTTPException(status_code=502, detail="拼接成功但产物上传失败，请重试（原片未动）")
+    return {
+        "output_kwargs": {
+            "file_key": file_key,
+            "bucket": settings.MINIO_BUCKET_RAW,
+            "file_name": f"{safe_name}.mp4",
+            "duration": out_info.get("duration"),
+            "file_size": size,
+            "resolution": f"{int(out_info['width'])}x{int(out_info['height'])}",
+            "sha256": compose.sha256_of(out_path),
+        },
+        "elapsed_seconds": round(time.monotonic() - started, 2),
+    }
 
 
 @router.post("/assets/concat", status_code=201)
@@ -10777,58 +11228,16 @@ async def concat_two_videos(
 
     work_dir = tempfile.mkdtemp(prefix="asset_concat_")
     try:
-        paths: List[str] = []
-        for idx, seg in enumerate((first, second)):
-            local = os.path.join(work_dir, f"in_{idx}.mp4")
-            ok = await download_to_file(seg["bucket"], seg["file_key"], local)
-            if not ok:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"取回第{idx + 1}段失败（{seg['bucket']}/{seg['file_key'][:60]}），稍后重试",
-                )
-            paths.append(local)
-
-        infos: List[Optional[Dict[str, Any]]] = [await compose.probe_media(p) for p in paths]
-        target = infos[0]
-        if target is None:
-            raise HTTPException(status_code=400, detail="第1段探不出视频流，不是能拼的视频文件")
-        if infos[1] is None:
-            raise HTTPException(status_code=400, detail="第2段探不出视频流，不是能拼的视频文件")
-        for idx, info in enumerate(infos):
-            dur = info.get("duration")
-            if dur and dur > compose.MAX_SEGMENT_SECONDS:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"第{idx + 1}段 {dur:.0f}s 超过单次拼接上限 "
-                           f"{compose.MAX_SEGMENT_SECONDS:.0f}s（同步等 ffmpeg，别拿它当队列）",
-                )
-
-        out_path = os.path.join(work_dir, "out.mp4")
-        err = await compose.concat_segments(paths, target, out_path)
-        if err:
-            raise HTTPException(status_code=502, detail=err)
-
-        out_info = await compose.probe_media(out_path) or target
-        size = os.path.getsize(out_path) if os.path.isfile(out_path) else None
         safe = "".join(c for c in (data.title or asset.code) if c not in '/\\:*?"<>|').strip()[:80] or asset.code
-        file_key = f"asset/composed/{asset.code}/{uuid.uuid4().hex[:16]}_{safe}.mp4"
-        uploaded = await upload_file_from_path(
-            settings.MINIO_BUCKET_RAW, file_key, out_path, content_type="video/mp4"
+        # 取回两段 → 探规格 → ffmpeg 直拼 → 落桶，全在 `_concat_render`（与批 Q 自动拼同一份配方）
+        rendered = await _concat_render(
+            first, second, work_dir=work_dir, safe_name=safe, key_prefix_code=asset.code
         )
-        if not uploaded:
-            raise HTTPException(status_code=502, detail="拼接成功但产物上传失败，请重试（原片未动）")
-
         out_row = AssetOutput(
             production_id=production.id if production is not None else None,
             asset_id=asset.id,
             kind=compose.KIND_COMPOSED,
-            file_key=file_key,
-            bucket=settings.MINIO_BUCKET_RAW,
-            file_name=f"{safe}.mp4",
-            duration=out_info.get("duration"),
-            file_size=size,
-            resolution=f"{int(out_info['width'])}x{int(out_info['height'])}",
-            sha256=compose.sha256_of(out_path),
+            **rendered["output_kwargs"],
         )
         db.add(out_row)
         # 拼接是 AssetItem 五阶段里唯一还没有写入方的那一个（stage_compose）。

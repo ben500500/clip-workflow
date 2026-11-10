@@ -551,6 +551,18 @@ class AssetProduction(Base):
     # 那条卡是花钱传上来的（见 `_card_sources_for`）。JSON 而非 UUID[]：sqlite 也认，
     # 且这里从不按卡 id 反查生产单（要反查得走 jsonb 包含算子，PG 才有），没索引可谈。
     card_asset_ids = Column(JSON, nullable=True)
+    # 批 Q（11-10 需求⑤「钩子成片生成出来以后自动拼接成可投放素材」）：投板时点名的**拼接素材**。
+    # 回收一支持到手的豆包成片，就自动和这一条拼一遍（钩子片＋人指定的片段＝可投放素材），
+    # 顺序也只有「钩子在前／片段在前」两档——沿用 11-04 手工拼接的口径，不做智能选点。
+    # 存成单行字段而不是只存在那一次请求里，是为了**接续回收也能拼**：进程重启后带
+    # recover_only=true 再回收一次，这条拼装要求还在单上，不用人再点一遍。
+    # 不建 FK（与 asset_items.category_id 同一条理由：老库靠 ADD COLUMN 补列，加约束不安全），
+    # 有效性由投板闸门当场验（存在／不是图片／桶里有文件），脏值进不了这一列。
+    concat_asset_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    concat_order = Column(String(20), nullable=True)
+    # 拼没拼成的最近一次结果（界面「拼没拼」列 + 失败成因）。只存给人看的话，
+    # 判据不在这——幂等靠 asset_outputs.composed_from_output_id（见那边注释）。
+    concat_last_result = Column(JSON, nullable=True)
 
     status = Column(String(30), nullable=False, default=PR_ORDER_READY, index=True)
     provider_task_id = Column(String(100), nullable=True)
@@ -604,6 +616,13 @@ class AssetOutput(Base):
     board_out_url = Column(String(500), nullable=True)
     # 钩子来源（拼接成的成片记录用了哪个 production 的素材，一对多追溯）
     hook_production_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # 批 Q（11-10）：这条 composed 由**哪一支豆包成片**自动拼出来——自动拼接的幂等键。
+    # 回收会跑很多轮（进程重启、到期后再点一次「回收」），没有这个键同一支片子会被拼出
+    # N 条一模一样的产物，成片墙也就没法看。手工口 `POST /assets/concat` 恒为 NULL：
+    # 那是人现场点的，同一支反复拼不同顺序是正常用法，不许被幂等挡住。
+    # 只建普通索引、不建 UNIQUE：老库靠 ADD COLUMN 补列补不出约束，
+    # 建了 UNIQUE 会出现"新库拦、老库不拦"的两套行为；判重走插入前那一次 SELECT。
+    composed_from_output_id = Column(UUID(as_uuid=True), nullable=True, index=True)
 
     qc_status = Column(String(20), nullable=True)          # passed / warn / failed / NULL=未验
     qc_result = Column(JSON, nullable=True)                # 各项判据与证据（采样密度记在里面）
