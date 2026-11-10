@@ -9865,7 +9865,9 @@ def test_prompt_elements_catalog_extract_and_apply_api():
         r = await client.get("/api/assets/prompt-elements", headers=hm)
         assert r.status_code == 200, r.text
         data = r.json()
-        assert {s["key"] for s in data["effective"]} == {"genre", "drama_name"}, data["effective"]
+        eff_keys = {s["key"] for s in data["effective"]}
+        # 出厂表已经不只是那两个模板位置：11-10 用户给了 A–F 参数清单，种子行必须在位
+        assert {"genre", "drama_name", "a_animal", "a_scene", "a_speech", "f_plight"} <= eff_keys, sorted(eff_keys)
         assert data["defaults"] and data["can_edit"] is False
         r = await client.get("/api/assets/prompt-elements", headers=ha)
         assert r.json()["can_edit"] is True
@@ -9990,6 +9992,141 @@ def test_prompt_elements_catalog_extract_and_apply_api():
         assert row is not None and len(row.value["slots"]) == 3
         assert await _count(AssetProduction) == 0 and await _count(AssetSummary) == 0
         assert await _count(AssetItem) == 0, "抽元素/组稿不该造任何素材或生产单"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_prompt_elements_manual_rows_protected_lines_and_seeds_api():
+    """批 N（11-10 用户逐原型参数清单）四件事，都得从接口口打出来才算数：
+
+    1. **手填项存进去不丢**：mode=manual 一行词面、候选、写法都不给也合法（这行就是要人填）；
+    2. **认与换都不碰「钩子原文」行和 ① 生成【…】行**——现网 ① 行里带着《剧名》，
+       把「鲸鱼」全文换成「猫」会顺手造出一部不存在的剧，这是取样时看到的真形状；
+    3. **场景按位置认**：词表外的「普通民居客厅」也要能自动提出当前值
+       （用户原话：「并自动提取原脚本中的参数」）；
+    4. **开单屏要的那份**：`include_unmatched=true` 把这个原型的参数项**全**摆出来，
+       认不出原值的说"没认出"，不许默默少一行。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.services import asset_prompt_elements as pesvc
+
+        client, h = await _client_and_headers()
+        hm, ha = h["material"], h["admin"]
+
+        prompt_a = "\n".join([
+            "【第 3 段 · 建议 10 秒 · 本钩共 6 条 · 编号 8PZXGA1】",
+            "钩子原文：我家猫开口了，说门口那人不干净",
+            "生成【都市脑洞】仿真人写实短剧，参考【《鲸鱼开口指路跳海》】剧情，"
+            "输入素材为 AI 多视图角色设定卡。",
+            "时长 10 秒，9:16 竖屏，模拟手机竖屏实拍短剧影视质感。",
+            "剧情：【前3秒】普通民居客厅，一只猫开口催他赶紧出门，说沙发底下有东西。"
+            "【后7秒】河边，他撬开水泥管，捞出一只木箱。",
+            "镜头：客厅正反打，河边用侧四十五度中近景。",
+            "负面约束：禁止五官崩坏变脸。 9:16，10s",
+        ])
+
+        # ① 脏写法照样 400 且不写审计：literal 什么都没给／pattern 没写法／
+        #    probe 没捕获组／probe 安在 pattern 槽位上／跳过写法编不过
+        bad_calls = [
+            {"slots": [{"key": "empty_literal", "mode": "literal"}]},
+            {"slots": [{"key": "no_pattern", "mode": "pattern"}]},
+            {"slots": [{"key": "probe_nogroup", "mode": "literal", "pool": ["河边"], "probe": r"剧情：[^，]{2,20}"}]},
+            {"slots": [{"key": "probe_on_pattern", "mode": "pattern",
+                        "pattern": r"时长 (\d+) 秒", "probe": r"剧情：([^，]{2,20})"}]},
+            {"slots": [{"key": "bad_skip", "mode": "literal", "pool": ["河边"], "skip_lines": "(("}]},
+        ]
+        for payload in bad_calls:
+            r = await client.put("/api/assets/prompt-elements",
+                                 json={**payload, "inherit": True}, headers=ha)
+            assert r.status_code == 400, f"{payload} 该被拒：{r.text}"
+        assert await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.update") == []
+
+        # ② 手填行可以什么都不带；存进去读出来 mode 不丢
+        r = await client.put(
+            "/api/assets/prompt-elements",
+            json={"inherit": True, "slots": [
+                {"key": "a_speech", "label": "动物说的一句话", "mode": "manual", "categories": ["原型 A"],
+                 "note": "整句话系统不猜：请从稿子里复制原句，再填新句"},
+                {"key": "drama_swap", "label": "剧名（特殊活儿才碰 ① 行）", "mode": "literal",
+                 "anchors": ["鲸鱼"], "skip_lines": ""},
+            ]},
+            headers=ha,
+        )
+        assert r.status_code == 200, r.text
+        eff = {s["key"]: s for s in r.json()["effective"]}
+        assert eff["a_speech"]["mode"] == pesvc.MODE_MANUAL
+        assert eff["drama_swap"]["skip_lines"] == "", "显式空串＝允许碰保护行，这条得存得住"
+        assert eff["a_animal"]["skip_lines"] == pesvc.DEFAULT_SKIP_LINES, "没写的槽位用默认保护"
+
+        # ③ 认元素：报原型 A（短前缀）时把这一原型的参数项全摆出来，含认不出原值的手填项
+        r = await client.post(
+            "/api/assets/prompt-elements/extract",
+            json={"texts": {"p1": prompt_a}, "category": "原型 A", "include_unmatched": True},
+            headers=hm,
+        )
+        assert r.status_code == 200, r.text
+        got = {s["key"]: s for s in r.json()["items"]["p1"]}
+        assert {"a_animal", "a_scene", "a_speech"} <= set(got), got.keys()
+        assert not (set(got) & {"d_weak", "d_scene", "d_abuser", "d_line"}), "别的原型的参数项不该串台"
+        assert got["a_scene"]["current"] == "普通民居客厅", "词表外的场景要按位置认出来"
+        assert got["a_animal"]["current"] == "猫", "①行的《鲸鱼开口…》在保护行里，不该被当成动物认出来"
+        assert got["a_speech"]["current"] is None and got["a_speech"]["mode"] == "manual"
+        assert "复制" in got["a_speech"]["note"]
+        assert any("没认出" in n or "抄" in n for n in r.json()["notes"]), r.json()["notes"]
+
+        # 3b 不报原型时，出厂那 16 行限定原型的种子都不该冒出来（②投产弹窗的老口径不变）
+        r = await client.post("/api/assets/prompt-elements/extract",
+                              json={"texts": {"p1": prompt_a}}, headers=hm)
+        got2 = {s["key"] for s in r.json()["items"]["p1"]}
+        assert not {k for k in got2 if k[:2] in {"a_", "b_", "c_", "d_", "e_", "f_"}}, got2
+
+        # ④ 组稿：换动物不碰剧名、不碰过审那句；场景两句都换（认出的整段＋镜头行那个短词）；
+        #    手填项换整句
+        r = await client.post(
+            "/api/assets/prompt-elements/apply",
+            json={"text": prompt_a, "edits": [
+                {"key": "a_animal", "old": "鲸鱼", "new": "猫"},
+                {"key": "a_scene", "old": "普通民居客厅", "new": "建筑工地"},
+                {"key": "a_scene", "old": "客厅", "new": "工地"},
+                {"key": "a_speech", "old": "一只猫开口催他赶紧出门，说沙发底下有东西",
+                 "new": "一只猫开口让他去撬河边那根水泥管，说底下埋着他爹留下的三箱货"},
+            ]},
+            headers=hm,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        rep = {x["key"]: x for x in body["replaced"]}
+        assert [x["count"] for x in body["replaced"]] == [0, 1, 1, 1], body["replaced"]
+        assert "《鲸鱼开口指路跳海》" in body["text"], "剧名一个字都不许动"
+        assert rep["a_animal"]["count"] == 0, "鲸鱼只在保护行里出现＝这一条就是没改"
+        assert any("受保护行" in n for n in body["notes"]), body["notes"]
+        assert "建筑工地" in body["text"] and "普通民居客厅" not in body["text"]
+        assert "工地正反打" in body["text"], "⑧镜头行那句也得跟着换，否则画面精神分裂"
+        assert rep["a_speech"]["count"] == 1 and "三箱货" in body["text"]
+        assert "我家猫开口了" in body["text"], "过审那句原话留在稿子里"
+
+        # 4b 那个明确 skip_lines="" 的槽位是口子：它能把 ① 行的剧名换掉（换了就是换皮另一部剧）
+        r = await client.post(
+            "/api/assets/prompt-elements/apply",
+            json={"text": prompt_a, "edits": [{"key": "drama_swap", "old": "鲸鱼", "new": "白鳍豚"}]},
+            headers=hm,
+        )
+        assert "《白鳍豚开口指路跳海》" in r.json()["text"], r.text
+
+        # 4c 原型 F 的「绝境」也是手填项：出厂行的说明要当场说清"系统不猜"
+        r = await client.post("/api/assets/prompt-elements/extract",
+                              json={"texts": {"p1": prompt_a}, "category": "原型 F",
+                                    "include_unmatched": True}, headers=hm)
+        f = {s["key"]: s for s in r.json()["items"]["p1"]}
+        assert f["f_plight"]["mode"] == pesvc.MODE_MANUAL and f["f_plight"]["current"] is None
+        assert "不猜" in f["f_plight"]["note"], f["f_plight"]
+
+        # ⑤ 还是纯文本进出：除了那一次改字典，库里不落任何东西
+        assert len(await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.update")) == 1
+        assert await _count(AssetProduction) == 0 and await _count(AssetItem) == 0
         await client.aclose()
 
     _run(_scenario())

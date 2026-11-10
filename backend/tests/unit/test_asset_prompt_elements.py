@@ -58,18 +58,65 @@ def _slot(key, **kw):
 
 # ─────────────────  字典：规整 / 合并 / 清洗  ─────────────────
 
-def test_defaults_are_pattern_slots_and_match_the_template():
-    """出厂默认表那两个槽位，必须在一篇照模板写的正文里真认得出来。"""
+def test_defaults_cover_template_slots_plus_the_six_prototypes():
+    """出厂表＝模板保证的两个位置 ＋ 11-10 用户逐原型给的参数项，键不许撞。"""
     cat = pe.normalize_catalog(pe.DEFAULT_PROMPT_ELEMENTS)
-    assert {s["key"] for s in cat} == {"genre", "drama_name"}
+    keys = {s["key"] for s in cat}
+    assert {"genre", "drama_name"} <= keys
+    assert keys >= {
+        "a_animal", "a_scene", "a_speech",
+        "b_scene", "b_target", "b_secret",
+        "c_scene", "c_treasure",
+        "d_weak", "d_scene", "d_abuser", "d_line",
+        "e_power", "e_scene",
+        "f_plight", "f_power",
+    }
+    assert len(keys) == len(cat), "键重复会被后写的顶掉，出厂表自己不许撞键"
+    # 只有那一个手填项以外的槽位，认法都必须能落到位
+    for slot in cat:
+        if slot["mode"] == pe.MODE_PATTERN:
+            assert slot["pattern"]
+        elif slot["mode"] == pe.MODE_LITERAL:
+            assert slot["anchors"] or slot["probe"]
+        else:
+            assert slot["mode"] == pe.MODE_MANUAL
+
+
+def test_prototype_pools_are_exactly_the_user_list():
+    """词表**照用户 11-10 原话录入**，一个词不许我凭空加——这条是"别自加设计"的闸门。
+
+    用户后面写「猫、狗、黄鼠狼....」那个省略号是开放式取值，走「自定义输入／多值」那条路，
+    不是让我补几个动物进去。
+    """
+    expected = {
+        "a_animal": ["猫", "狗", "黄鼠狼"],
+        "a_scene": ["建筑工地", "繁华大街", "河边"],
+        "b_scene": ["房梁", "床底", "衣柜"],
+        "b_target": ["丈夫", "老板", "亲戚"],
+        "c_scene": ["枯井", "暗道", "火葬场", "坟墓", "海底"],
+        "c_treasure": ["黄金", "金碗", "金砖", "金牙"],
+        "d_weak": ["老人", "孕妇", "妻子", "儿媳"],
+        "d_scene": ["家庭", "公司", "大街"],
+        "d_abuser": ["丈夫", "婆婆", "公公"],
+        "e_power": ["催生植物", "眼发金光", "一口吸干河水"],
+        "e_scene": ["山里", "河边", "海边"],
+        "f_power": ["徒手拦车", "徒手接坠楼者"],
+    }
+    by_key = {s["key"]: s for s in pe.normalize_catalog(pe.PROTOTYPE_PROMPT_ELEMENTS)}
+    for key, words in expected.items():
+        assert by_key[key]["pool"] == words, f"{key} 的候选被改动过"
+        assert by_key[key]["anchors"] == words, f"{key} 的词面与候选必须是同一批（候选就是词面）"
+    # 整句那四项不许有词面（间接转述，认不出就是认不出）
+    for key in ("a_speech", "b_secret", "d_line", "f_plight"):
+        assert by_key[key]["mode"] == pe.MODE_MANUAL, f"{key} 该是手填项"
+        assert by_key[key]["anchors"] == []
+
+
+def test_template_slots_still_recognised():
+    """出厂那两个位置必须在一篇照模板写的正文里真认得出来（批 M 的判据不许退化）。"""
+    cat = pe.normalize_catalog(pe.TEMPLATE_PROMPT_ELEMENTS)
     found = {e["key"]: e["current"] for e in pe.extract_elements(PROMPT_10S, cat)}
     assert found == {"genre": "现言豪门", "drama_name": "一碗疙瘩汤成少爷后妈"}
-
-
-def test_defaults_have_no_invented_business_pool():
-    """出厂表不许塞我凭空写的业务词——元素候选要等用户按钩子类型给清单。"""
-    for slot in pe.DEFAULT_PROMPT_ELEMENTS:
-        assert slot["pool"] == [], f"{slot['key']} 的候选池该由运营配，不是出厂写死"
 
 
 def test_normalize_drops_rows_without_key_or_way_to_match():
@@ -256,3 +303,192 @@ def test_slot_from_another_key_is_not_used_as_literal():
     cat = _only(_slot("scene", anchors=["老破小客厅"], pool=["老破小客厅", "出租屋"]))
     text, rep, _ = pe.apply_edits(PROMPT_10S, cat, [{"key": "scene", "from": "阳台", "to": "楼道"}])
     assert rep[0]["count"] == 1 and "退到楼道" in text and "老破小客厅" in text
+
+
+# ─────────────────  批 N：手填项 / 受保护行 / 位置识别  ─────────────────
+# 这篇是照**现网真稿**的骨架写的（11-10 从 163 库里取样核对过）：
+# ① 行里带着《剧名》，钩子原文那行是过审的那句话，剧情行开头是场景句，
+# 台词是**间接转述**（「催他下水求财」）而不是带引号的原话。少一行就测不到相应那条判据。
+
+PROMPT_A = "\n".join([
+    "【第 3 段 · 建议 10 秒 · 本钩共 6 条 · 编号 8PZXGA1】",
+    "钩子原文：我家猫开口了，说门口那人不干净",
+    "生成【都市脑洞】仿真人写实短剧，参考【《鲸鱼开口指路跳海》】剧情，"
+    "输入素材为 AI 多视图角色设定卡，严格参考锁定男女主五官。",
+    "时长 10 秒，9:16 竖屏，模拟手机竖屏实拍短剧影视质感。",
+    "剧情：【前3秒】建筑工地的水泥管边，一只黄鼠狼开口催他下水求财。"
+    "【后7秒】河边，男人照做，捞出一只木箱。",
+    "镜头：自动匹配剧情对应场景，工地拦费用侧四十五度中近景。",
+    "负面约束：禁止五官崩坏变脸。 9:16，10s",
+])
+
+CAT_A = "原型 A：非人物件 / 动物开口说话（报恩·预警·神谕）"
+
+
+def _cat():
+    return pe.normalize_catalog(pe.DEFAULT_PROMPT_ELEMENTS)
+
+
+def test_protected_lines_are_not_touched_by_animal_replace():
+    """换动物绝不能把 ① 行的《剧名》换掉——那等于换成了另一部剧（现网实测的形状）。"""
+    cat = _cat()
+    text, rep, _notes = pe.apply_edits(PROMPT_A, cat, [{"key": "a_animal", "from": "鲸鱼", "to": "猫"}])
+    assert "《鲸鱼开口指路跳海》" in text, "剧名一个字都不许动"
+    assert rep[0]["count"] == 0, "唯一的命中在受保护行里，这一条就是没改"
+
+
+def test_protected_hook_copy_is_reported_not_silently_skipped():
+    """猫在钩子原文（过审那句）和剧情行各有一次：剧情行换掉、钩子行不动，并且当场说清楚。"""
+    cat = _cat()
+    text, rep, notes = pe.apply_edits(PROMPT_A, cat, [{"key": "a_animal", "from": "猫", "to": "狗"}])
+    hook_line = next(line for line in text.splitlines() if line.startswith("钩子原文"))
+    story_line = next(line for line in text.splitlines() if line.startswith("剧情"))
+    assert "我家猫开口了" in hook_line, "过审那句不许被元素替换改掉"
+    assert "一只黄鼠狼" in story_line
+    assert rep[0]["count"] == 0
+    assert any("受保护行" in n for n in notes), "没改的地方必须点名，别让人以为换上了"
+
+
+def test_explicit_empty_skip_lines_reopens_the_protected_lines():
+    """槽位自己写 skip_lines=""＝允许碰那两行（运营明确要改剧名时的正路，不用改代码）。"""
+    cat = pe.normalize_catalog({"slots": [{
+        "key": "beast", "label": "牲口", "mode": pe.MODE_LITERAL,
+        "anchors": ["鲸鱼"], "skip_lines": "",
+    }]})
+    text, rep, _notes = pe.apply_edits(PROMPT_A, cat, [{"key": "beast", "from": "鲸鱼", "to": "白鳍豚"}])
+    assert rep[0]["count"] == 1 and "《白鳍豚开口指路跳海》" in text
+
+
+def test_scene_is_recognised_by_position_even_when_the_word_list_misses_it():
+    """「自动提取原脚本中的参数」：场景认的是「剧情：」后第一段这个**位置**，不是词表。
+    现网稿子里写的是「普通民居客厅」，词表里一个都没有，照样要认出来。"""
+    body = PROMPT_A.replace("建筑工地的水泥管边", "普通民居客厅")
+    got = {e["key"]: e for e in pe.extract_elements(body, _cat(), CAT_A)}
+    assert got["a_scene"]["current"] == "普通民居客厅"
+    # 词表命中时给词表那个短值（拿去全文替换更准），位置识别不重复占同一段
+    got2 = {e["key"]: e for e in pe.extract_elements(PROMPT_A, _cat(), CAT_A)}
+    assert got2["a_scene"]["current"] == "建筑工地"
+
+
+def test_manual_speech_row_is_always_listed_and_replaces_a_whole_sentence():
+    """用户口径「所有可替换参数由手动输入」＋台词没法认：这一行永远摆出来，
+    原句由人从稿子里复制，换的时候按整句走（60 字的词面帽儿会把它截成半句话）。"""
+    rows = {e["key"]: e for e in pe.extract_elements(PROMPT_A, _cat(), CAT_A)}
+    speech = rows["a_speech"]
+    assert speech["mode"] == pe.MODE_MANUAL and speech["current"] is None
+    assert "请从稿子里复制" in speech["note"], "要如实说认不出，别让人以为系统已经填好了"
+    long_old = ("一只黄鼠狼开口催他下水求财，说这管子底下埋着他爹留下的三箱货，"
+                "还说只要他把管子推开就别再回这个工地干活，说完就钻进了水泥管里再没出来")
+    long_new = ("一只猫开口让他别上门口那辆车，说司机身上有股土腥味，"
+                "还说这车昨天刚拉过一口棺材，说完就跳上了料堆冲着他眯了眯眼")
+    body = PROMPT_A.replace("剧情：【前3秒】建筑工地的水泥管边，一只黄鼠狼开口催他下水求财。",
+                            f"剧情：【前3秒】建筑工地的水泥管边，{long_old}。")
+    text, rep, _notes = pe.apply_edits(body, _cat(), [{"key": "a_speech", "from": long_old, "to": long_new}])
+    assert len(long_old) > pe.MAX_ANCHOR_LEN, "这句要比词面上限长，才测得出帽儿放宽了"
+    assert long_new in text and long_old not in text
+    assert rep[0]["count"] == 1
+
+
+def test_extract_with_unmatched_lists_every_parameter_of_the_prototype():
+    """④开单屏要的是「这一原型该设的参数全摆出来」，认不出原值的 current=None（批 O 的前端口）。"""
+    rows = pe.extract_elements("", _cat(), CAT_A, include_unmatched=True)
+    keys = {r["key"] for r in rows}
+    assert {"a_animal", "a_scene", "a_speech", "genre", "drama_name"} <= keys
+    assert all(r["current"] is None for r in rows if r["key"] in {"a_animal", "a_scene", "a_speech"})
+    assert not any(r["key"].startswith("d_") for r in rows), "原型 D 的参数不该出现在 A 的单子上"
+
+
+def test_category_matches_on_the_short_prototype_code():
+    """字典里原型名是一句长话，界面只传「原型 A」时槽位不许集体消失。"""
+    rows = pe.extract_elements(PROMPT_A, _cat(), "原型 A")
+    assert {r["key"] for r in rows} >= {"a_animal", "a_scene", "a_speech"}
+    assert pe.slot_applies({"categories": ["原型 A"]}, CAT_A) is True
+    assert pe.slot_applies({"categories": ["原型 A"]}, "原型 B：偷听泄密（获取关键情报）") is False
+
+
+def test_normalize_keeps_manual_slot_without_any_words():
+    cat = pe.normalize_catalog({"slots": [{"key": "line", "label": "一句话", "mode": pe.MODE_MANUAL}]})
+    assert [s["key"] for s in cat] == ["line"], "手填项不需要词面也不需要候选，这行就是要人填"
+    assert cat[0]["skip_lines"] == pe.DEFAULT_SKIP_LINES
+
+
+def test_bad_probe_keeps_the_word_list_and_only_drops_the_position():
+    """位置写法编不过时只丢位置：词表那条路还在，别让一行坏正则把整个槽位吃掉。"""
+    cat = pe.normalize_catalog({"slots": [{
+        "key": "scene", "label": "场景", "mode": pe.MODE_LITERAL,
+        "pool": ["河边"], "probe": "剧情：(?:(",
+    }]})
+    assert cat and cat[0]["probe"] == ""
+    assert [h["value"] for h in pe.slot_matches(PROMPT_A, cat[0])] == ["河边"]
+
+
+# ─────────────────  批 N：多值展开（按行配对／全组合）  ─────────────────
+
+def test_expand_matrix_zip_pairs_rows_and_broadcasts_single_values():
+    rows, notes = pe.expand_matrix(
+        {
+            "a_scene": ["河边", "建筑工地", "繁华大街"],
+            "a_animal": ["猫"],
+            "a_speech": ["说别上车", "说快跑", "说那人不干净"],
+        },
+        pe.MATRIX_ZIP,
+        {"a_scene": "场景", "a_animal": "动物", "a_speech": "说的话"},
+    )
+    assert len(rows) == 3
+    assert [r["a_scene"] for r in rows] == ["河边", "建筑工地", "繁华大街"]
+    assert all(r["a_animal"] == "猫" for r in rows), "只填一个值的参数每行复用"
+    assert [r["a_speech"] for r in rows] == ["说别上车", "说快跑", "说那人不干净"]
+    assert any("动物只填了一个值" in n for n in notes), "复用了什么要当场说清楚"
+
+
+def test_expand_matrix_zip_refuses_uneven_columns_instead_of_guessing():
+    import pytest
+    with pytest.raises(ValueError) as exc:
+        pe.expand_matrix({"a_scene": ["河边", "工地", "大街"], "a_animal": ["猫", "狗"]})
+    assert "对不齐" in str(exc.value)
+
+
+def test_expand_matrix_product_and_its_row_cap():
+    rows, notes = pe.expand_matrix(
+        {"a_scene": ["河边", "工地", "大街"], "a_animal": ["猫", "狗"]}, pe.MATRIX_PRODUCT,
+    )
+    assert len(rows) == 6 and {"河边", "工地"} <= {r["a_scene"] for r in rows}
+    assert any("全组合" in n for n in notes)
+    import pytest
+    big = {"k1": [str(i) for i in range(11)], "k2": [str(i) for i in range(11)], "k3": ["x"]}
+    with pytest.raises(ValueError) as exc:
+        pe.expand_matrix(big, pe.MATRIX_PRODUCT)
+    assert str(pe.MAX_MATRIX_ROWS) in str(exc.value)
+
+
+def test_compose_variants_fans_rows_out_on_one_base_prompt():
+    """一行一条正文，逐行替换、互不污染（这条过了，批 P 才敢往生产单上落）。"""
+    cat = _cat()
+    base = {"a_scene": "建筑工地", "a_animal": "黄鼠狼"}
+    rows = [{"a_scene": "河边", "a_animal": "猫"}, {"a_scene": "繁华大街", "a_animal": "狗"}]
+    out = pe.compose_variants(PROMPT_A, cat, base, rows, CAT_A)
+    assert len(out) == 2 and [o["seq"] for o in out] == [1, 2]
+    assert "河边" in out[0]["text"] and "繁华大街" not in out[0]["text"]
+    assert "繁华大街" in out[1]["text"] and "河边" in out[1]["text"], "第 2 条只换场景，动物那条不动"
+    assert out[0]["changed"] is True
+
+
+def test_compose_variants_says_which_parameters_had_no_original_value():
+    cat = _cat()
+    out = pe.compose_variants(PROMPT_A, cat, {}, [{"a_speech": "说快跑"}], CAT_A)
+    assert out[0]["missing"] == ["动物说的一句话"]
+    assert out[0]["changed"] is False
+    assert any("没有原值" in n for n in out[0]["notes"])
+
+
+def test_manual_rows_always_tell_the_operator_the_engine_does_not_guess():
+    """手填项的说明必须带「系统不猜」——出厂行只写了业务来意，一线看到空输入框会以为字典坏了。"""
+    got = {s["key"]: s for s in pe.extract_elements(PROMPT_A, _cat(), "原型 F", True)}
+    assert "不猜" in got["f_plight"]["note"]
+    assert got["f_plight"]["note"].startswith("用户口径"), "运营写的那句说明不许被顶掉，只在后面补"
+
+
+def test_manual_row_without_a_note_still_gets_the_how_to_fill_line():
+    cat = _only(_slot("x_line", mode=pe.MODE_MANUAL))
+    got = pe.extract_elements(PROMPT_A, cat)[0]
+    assert got["note"] == pe.MANUAL_NOTE and got["current"] is None

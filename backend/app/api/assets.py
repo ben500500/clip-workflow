@@ -5575,17 +5575,28 @@ class PromptElementSlotRow(BaseModel):
     mode: str = Field(
         pesvc.MODE_LITERAL,
         description="literal＝正文里逐字找词面（场景/动物这类写在③剧情自由文本里的东西）；"
-        "pattern＝按带捕获组的正则找（①那种模板保证存在、只能在原地处改的位置）",
+        "pattern＝按带捕获组的正则找（①那种模板保证存在、只能在原地处改的位置）；"
+        "manual＝整句话（台词/泄密内容/引爆不公那句），系统不猜原值，这一行永远摆出来给人手填",
     )
     anchors: List[str] = Field(
         default_factory=list,
         description="literal 认法要匹配的词面；留空＝拿候选池当词面",
     )
     pattern: str = Field("", description="pattern 认法的正则，捕获组 1 就是当前值")
+    probe: str = Field(
+        "",
+        description="literal 专用的**识别位置**（带捕获组）：词表外的值也能认出当前值，"
+        "替换仍按逐字全局走。场景就靠它认「剧情：」后第一段。",
+    )
     pool: List[str] = Field(default_factory=list, description="裂变候选（顺序＝界面上的推荐顺序）")
     categories: List[str] = Field(
         default_factory=list,
-        description="只在这些钩子原型下出现（填原型名或键）；留空＝所有原型都用这一槽位",
+        description="只在这些钩子原型下出现（填原型名或「原型 A」这种短前缀）；留空＝所有原型都用这一槽位",
+    )
+    skip_lines: Optional[str] = Field(
+        None,
+        description="这一槽位不碰哪些行（正则，缺省＝「钩子原文」行＋①生成【…】行）。"
+        "明确写空串＝允许碰那两行（换剧名这类特殊活儿才用）",
     )
     note: str = Field("", description="行内说明（纯展示，告诉一线这个槽位换的是什么）")
 
@@ -5603,7 +5614,13 @@ class PromptElementsExtractRequest(BaseModel):
         description="行 id → 那份投递稿正文（一次上限 50 条，单条上限 20000 字）",
     )
     category: Optional[str] = Field(
-        None, description="钩子原型名或键；给了就只报这个原型适用的元素"
+        None, description="钩子原型名或「原型 A」这种短前缀；给了就只报这个原型适用的元素"
+    )
+    include_unmatched: bool = Field(
+        False,
+        description="true＝这一原型的参数项**全摆出来**，认不出原值的 current 给空"
+        "（④开单屏要的就是这个：先让人知道这个类型要设哪几项）；"
+        "false＝只回报认得出的（②投产弹窗的老口径，不摆空下拉）",
     )
 
 
@@ -5663,6 +5680,10 @@ async def get_prompt_elements(
         "notes": [
             "候选池还没配的元素槽位照样能用：界面上走「自定义输入」，功能不断档",
             "「场景／动物」这类元素要按钩子原型加行，存完立即生效，不用发版",
+            "整句话那几项（动物说的话／偷听到的内容／引爆不公那句）是手填项：系统不猜原句，"
+            "界面永远摆出来让人从稿子里复制",
+            "认与换都不碰「钩子原文」那行和 ① 生成【…】那行（后者里面有《剧名》，"
+            "把动物全文替换会顺手造出一部不存在的剧）",
         ],
     }
 
@@ -5690,7 +5711,10 @@ async def update_prompt_elements(
         if mode not in pesvc.SLOT_MODES:
             raise HTTPException(
                 status_code=400,
-                detail=f"「{key}」的认法只能是逐字找词面（literal）或按写法找（pattern），现在写的是：{mode}",
+                detail=(
+                    f"「{key}」的认法只认三种：逐字找词面（literal）、按写法找（pattern）、"
+                    f"整句自己填（manual），现在写的是：{mode}"
+                ),
             )
         pattern = str(item.pattern or "").strip()
         if pattern:
@@ -5707,6 +5731,53 @@ async def update_prompt_elements(
                     status_code=400,
                     detail=f"「{key}」的识别写法里要有捕获组（用圆括号把当前值那段包住），否则不知道该换哪一段：{pattern}",
                 )
+        if mode == pesvc.MODE_PATTERN and not pattern:
+            raise HTTPException(
+                status_code=400,
+                detail=f"「{key}」写了按写法找（pattern）却没给识别写法，这一行什么都认不出",
+            )
+        probe = str(item.probe or "").strip()
+        if probe:
+            if mode == pesvc.MODE_PATTERN:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"「{key}」是 pattern 槽位，识别位置（probe）是给逐字找词面那类用的，两者不叠加",
+                )
+            if len(probe) > pesvc.MAX_PATTERN_LEN:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"「{key}」的识别位置太长了（上限 {pesvc.MAX_PATTERN_LEN} 字）",
+                )
+            err = pesvc.compile_error(probe)
+            if err:
+                raise HTTPException(status_code=400, detail=f"「{key}」的识别位置编不过：{err}")
+            if not pattern_has_group(probe):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"「{key}」的识别位置要带一个捕获组（圆括号包住「当前值」那段），否则不知道该认哪几个字：{probe}",
+                )
+        # manual 行什么都可以不给（这行就是要人填）；literal 行必须给词面、候选或识别位置，
+        # 否则存进去的是"看着有这行、永远认不出"的僵尸槽位
+        if mode == pesvc.MODE_LITERAL and not (item.anchors or item.pool or probe):
+            raise HTTPException(
+                status_code=400,
+                detail=f"「{key}」是逐字找词面的槽位，词面（anchors）、候选（pool）、识别位置（probe）至少要给一个",
+            )
+        skip_lines = item.skip_lines
+        if skip_lines is not None:
+            skip_lines = str(skip_lines).strip()
+            if skip_lines:
+                if len(skip_lines) > pesvc.MAX_SKIP_PATTERN_LEN:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"「{key}」的跳过写法太长了（上限 {pesvc.MAX_SKIP_PATTERN_LEN} 字）",
+                    )
+                err = pesvc.compile_error(skip_lines)
+                if err:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"「{key}」的跳过写法编不过（留空表示用默认保护行）：{err}",
+                    )
         rows.append(
             {
                 "key": key,
@@ -5714,8 +5785,10 @@ async def update_prompt_elements(
                 "mode": mode,
                 "anchors": item.anchors,
                 "pattern": pattern,
+                "probe": probe,
                 "pool": item.pool,
                 "categories": item.categories,
+                "skip_lines": skip_lines,
                 "note": item.note,
             }
         )
@@ -5755,7 +5828,10 @@ async def update_prompt_elements(
     eff, _ = pesvc.merge_catalog(value)
     notes: List[str] = []
     if not data.inherit:
-        notes.append("已选「整体替换」：出厂那两个槽位（题材标签／剧名）不再认，要就自己加行")
+        notes.append(
+            "已选「整体替换」：出厂那 18 行（题材标签／剧名＋原型 A–F 的参数项）都不再认，"
+            f"现在生效的只有你给的 {len(eff)} 行"
+        )
     if not eff:
         notes.append("字典一行都没有 → 抽元素什么都认不出来，界面上只剩「自定义替换」")
     notes.append("元素换出来的正文只走这一次投递（库里原稿一字不动），下一次再投仍是原稿")
@@ -5791,15 +5867,21 @@ async def extract_prompt_elements(
             over_limit.append(str(key))
             items[str(key)] = []
             continue
-        items[str(key)] = pesvc.extract_elements(body, catalog, data.category)
+        items[str(key)] = pesvc.extract_elements(
+            body, catalog, data.category, include_unmatched=data.include_unmatched
+        )
     notes: List[str] = []
     if not catalog:
         notes.append("元素字典是空的，认不出元素——去「可替换元素库」按钩子原型加行")
     if over_limit:
         notes.append(f"有 {len(over_limit)} 条正文太长（上限 {_MAX_ELEMENT_TEXT_LEN} 字），没去认元素")
+    if data.include_unmatched:
+        notes.append("标了「没认出」的那几项不是坏了：原稿里的写法不在词表内，或者本来就是整句话，"
+                     "照原稿抄进去再填新值就行")
     return {
         "items": items,
         "category": data.category or "",
+        "include_unmatched": data.include_unmatched,
         "catalog_count": len(catalog),
         "slot_labels": [s["label"] for s in catalog],
         "notes": notes,
