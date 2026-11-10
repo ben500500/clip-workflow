@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Card, Modal, Popover, Space, Tabs, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Badge, Button, Card, Modal, Popover, Space, Tabs, Tag, Tooltip, Typography, message, notification } from 'antd';
 import { ApartmentOutlined, BellOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import AssetListPanel from '../components/assets/AssetListPanel';
@@ -8,7 +8,7 @@ import AssetImportPanel from '../components/assets/AssetImportPanel';
 import AssetReviewPanel from '../components/assets/AssetReviewPanel';
 import AssetProductionPanel from '../components/assets/AssetProductionPanel';
 import AssetOutputWall from '../components/assets/AssetOutputWall';
-import AssetJobBanner from '../components/assets/AssetJobBanner';
+import AssetJobBanner, { RESUBMIT_TARGET } from '../components/assets/AssetJobBanner';
 import AssetCategoryDrawer from '../components/assets/AssetCategoryDrawer';
 import {
   deskNotifyState,
@@ -19,6 +19,19 @@ import {
 import type { AssetJobInfo } from '../api/assets';
 
 const { Text, Paragraph } = Typography;
+
+/**
+ * 11-10 用户口径③「刚才投出去的那条生产单显示完成，成片墙还是看不到…能改得简单一点吗」：
+ * 每一种后台任务跑完，除了后端那句 `done_note`（做了什么、下一步在哪），界面还要给
+ * **一跳直达的页签**——只说"去看成片墙"却让人自己找页签，等于没说。
+ * 键是后端 `AssetJobKind`；没列在里面的（抽帧／备提示词这类）就不给跳转，只说那句话。
+ */
+const JOB_DONE_TARGET: Partial<Record<AssetJobInfo['kind'], { tab: string; label: string }>> = {
+  summary_generate: { tab: 'review', label: '去审核台看文案' },
+  produce: { tab: 'production', label: '去生产单页投板' },
+  dispatch: { tab: 'production', label: '去看这几张单的进度' },
+  analyze: { tab: 'assets', label: '去看反推回来的稿子' },
+};
 
 /**
  * 素材库 P0 工作台：导入 → 反推 → 出文案 → 审核 → 投产 → 导出/回写。
@@ -69,6 +82,18 @@ const AssetLibrary: React.FC = () => {
    * 面板里只做筛选和点原型，不再各挂一份抽屉——两处入口迟早变成一个新版本一个旧版本。
    */
   const [catOpen, setCatOpen] = useState(false);
+  /**
+   * 11-10「一屏到底」：②③④ 任一处建完生产单并点了「投去出片」，就把新单 ID 交到这儿，
+   * 页面层切到 ④ 并让生产单面板直接弹出投板确认窗——省掉「回列表、勾行、再点按钮」三段路。
+   * ④ 认领后立刻调 `onDispatchConsumed` 清空：同一批 ID 二次点提交不该再弹窗。
+   */
+  const [dispatchIds, setDispatchIds] = useState<string[] | null>(null);
+  const [dispatchNotes, setDispatchNotes] = useState<string[]>([]);
+  const handoffToDispatch = useCallback((ids: string[], notes: string[] = []) => {
+    setActiveTab('production');
+    setDispatchNotes(notes);
+    setDispatchIds(ids);
+  }, [setActiveTab]);
   // 桌面通知开关（用户口径 2026-11-09）：后台任务完成时提醒，页面在后台也能收到
   const [deskNotify, setDeskNotify] = useState<DeskNotifyState>(() => deskNotifyState());
   const [notifyHelpOpen, setNotifyHelpOpen] = useState(false);
@@ -87,47 +112,106 @@ const AssetLibrary: React.FC = () => {
     setReloadToken((t) => t + 1);
     // 11-06 承诺审计③：后端把逐条 note/error 都备在 job.result.results 里，此前前端
     // 从不读——「逐条成败看 result.results」是空头承诺。这里把它摆出来（截前 6 条）。
-    const rows: Array<{ code?: string; error?: string; note?: string }> =
-      ((job.result as { results?: unknown[] } | null)?.results as
-        | Array<{ code?: string; error?: string; note?: string }>
-        | undefined) ?? [];
-    const bad = rows.filter((r) => r.error || r.note);
+    //
+    // 11-10 修：`results` 有两种形状——出文案/开单/下载是**数组**（逐条 push），
+    // 投板是**字典**（`outcome["summary"]` 按生产单 id 索引，见后端 `_execute_dispatch`）。
+    // 老写法直接 `.filter`，投板那一支 `{}` 上没这方法 → TypeError 被 AssetJobBanner
+    // 的 try/catch 吞掉 → onSettled 回调没跑完 → done_note 消息条**永远不弹**、
+    // 一跳直达按钮也没了（用户口径③「投出去的那条生产单显示完成，成片墙还是看不到」
+    // 的现场证据就是这么丢的）。这里统一拍平成数组，判"要不要留意"只看 `error`——
+    // 投板的 `note` 是"还在板上跑，不判失败"这类正常状态说明，不是警告。
+    const rawResults = (job.result as { results?: unknown } | null)?.results;
+    const rows: Array<{ code?: string; error?: string; note?: string }> = Array.isArray(rawResults)
+      ? (rawResults as Array<{ code?: string; error?: string; note?: string }>)
+      : rawResults && typeof rawResults === 'object'
+        ? Object.values(rawResults as Record<string, { code?: string; error?: string; note?: string }>)
+        : [];
+    const bad = rows.filter((r) => r.error);
     if (job.status === 'succeeded') {
+      // 11-10 口径③「投出去的那条生产单显示完成，成片墙还是看不到」：话术权威在后端
+      // `ASSET_JOB_DONE_NOTES`（`done_note`），这里只负责把它摆出来＋给一跳直达的页签。
+      // 「已完成」只等于**这个动作**跑完：投板跑完＝挂上板，片子还在豆包那边出；
+      // 开单跑完＝单建好，还没投。不写这一句，一线就只能自己猜"完成"完成了什么。
+      const note = job.done_note || '';
+      const target = JOB_DONE_TARGET[job.kind];
       if (bad.length) {
         Modal.warning({
           title: `「${job.kind_label}」跑完了，但有 ${bad.length} 条要留意`,
           width: 560,
           content: (
-            <div style={{ maxHeight: 300, overflow: 'auto' }}>
-              {bad.slice(0, 8).map((r, i) => (
-                <div key={i} style={{ marginBottom: 4 }}>
-                  {r.code ? `${r.code}：` : ''}
-                  {r.error || r.note}
+            <>
+              <div style={{ maxHeight: 300, overflow: 'auto' }}>
+                {bad.slice(0, 8).map((r, i) => (
+                  <div key={i} style={{ marginBottom: 4 }}>
+                    {r.code ? `${r.code}：` : ''}
+                    {r.error || r.note}
+                  </div>
+                ))}
+                {bad.length > 8 && <div style={{ color: '#999' }}>…其余 {bad.length - 8} 条类似</div>}
+              </div>
+              {!!note && (
+                <div style={{ marginTop: 8, color: '#888', fontSize: 12 }}>
+                  这一步做到了哪一步：{note}
+                  {target && (
+                    <Button
+                      size="small"
+                      type="link"
+                      style={{ padding: '0 0 0 6px', fontSize: 12 }}
+                      onClick={() => setActiveTab(target.tab)}
+                    >
+                      {target.label} →
+                    </Button>
+                  )}
                 </div>
-              ))}
-              {bad.length > 8 && <div style={{ color: '#999' }}>…其余 {bad.length - 8} 条类似</div>}
-            </div>
+              )}
+            </>
+          ),
+        });
+      } else if (note) {
+        notification.success({
+          key: `asset-job-done-${job.id}`,
+          message: `「${job.kind_label}」这个动作跑完了（任务号 ${job.id.slice(0, 8)}）`,
+          // 挂久一点：这条正是"下一步去哪看"的指路牌，1.5 秒闪过等于没说
+          duration: target ? 0 : 10,
+          style: { width: 520 },
+          description: (
+            <Space direction="vertical" size={4}>
+              <Text style={{ fontSize: 12 }}>{note}</Text>
+              {target && (
+                <Button
+                  size="small"
+                  type="link"
+                  style={{ padding: 0, fontSize: 12 }}
+                  onClick={() => {
+                    setActiveTab(target.tab);
+                    notification.destroy(`asset-job-done-${job.id}`);
+                  }}
+                >
+                  {target.label} →
+                </Button>
+              )}
+            </Space>
           ),
         });
       } else {
         message.success(`「${job.kind_label}」后台跑完了，列表已刷新（任务号 ${job.id.slice(0, 8)}）`, 6);
       }
     } else if (job.status === 'interrupted') {
-      // 批 N（评审二 P1-6）：不只说"需要重新提交"，把去哪重提说清（横幅行上也有跳转按钮）
-      const tabHint =
-        job.kind === 'summary_generate'
-          ? '去「素材列表」重新出'
-          : job.kind === 'produce' || job.kind === 'dispatch'
-            ? '去「生产单与投板」页签重新点'
-            : '去对应页签重新提交';
-      message.warning(`「${job.kind_label}」被服务重启打断，结果不可信——${tabHint}（任务号 ${job.id.slice(0, 8)}）`, 10);
+      // 批 N（评审二 P1-6）：不只说"需要重新提交"，把去哪重提说清（横幅行上也有跳转按钮）。
+      // 11-10：话直接从横幅那张跳转表里取，别再在这里写一套 switch——两套必然分叉，
+      // 之前「反推」就只在这套里漏了（横幅有按钮、toast 只会说"去对应页签"）。
+      const resub = RESUBMIT_TARGET[job.kind];
+      message.warning(
+        `「${job.kind_label}」被服务重启打断，结果不可信——${resub ? resub.label : '去对应页签重新提交'}（任务号 ${job.id.slice(0, 8)}）`,
+        10,
+      );
     } else {
       message.error(
         `「${job.kind_label}」没跑成：${job.error || '逐条原因看素材行上的阶段标签（红＝失败，可重试）'}（任务号 ${job.id.slice(0, 8)}）`,
         8,
       );
     }
-  }, []);
+  }, [setActiveTab]);
 
   const role = user?.role;
   // A′：页签待办计数（轻量 total 探针；40s 一轮，够跟手不刷爆）
@@ -193,6 +277,7 @@ const AssetLibrary: React.FC = () => {
           batchId={batchId}
           reloadToken={reloadToken}
           onGoToProduction={() => setActiveTab('production')}
+          onProduced={handoffToDispatch}
           active={activeTab === 'assets'}
         />
       ),
@@ -213,6 +298,7 @@ const AssetLibrary: React.FC = () => {
           batchId={batchId}
           reloadToken={reloadToken}
           onGoToProduction={() => setActiveTab('production')}
+          onProduced={handoffToDispatch}
           active={activeTab === 'review'}
         />
       ),
@@ -232,6 +318,13 @@ const AssetLibrary: React.FC = () => {
           isAdmin={isAdmin}
           batchId={batchId}
           reloadToken={reloadToken}
+          dispatchIds={dispatchIds}
+          dispatchNotes={dispatchNotes}
+          onGoToOutputs={() => setActiveTab('outputs')}
+          onDispatchConsumed={() => {
+            setDispatchIds(null);
+            setDispatchNotes([]);
+          }}
           active={activeTab === 'production'}
         />
       ),
@@ -249,6 +342,7 @@ const AssetLibrary: React.FC = () => {
           ownerDefault={canReview && !isAdmin ? 'me' : 'all'}
           ownerSwitchable={canReview}
           active={activeTab === 'outputs'}
+          onGoToProduction={() => setActiveTab('production')}
         />
       ),
     },

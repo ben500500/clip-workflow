@@ -21,7 +21,13 @@ import {
   ReloadOutlined,
   RightOutlined,
 } from '@ant-design/icons';
-import { assetApi, type AssetBatch, type AssetOutput, type AssetOutputGroup } from '../../api/assets';
+import {
+  assetApi,
+  type AssetBatch,
+  type AssetOutput,
+  type AssetOutputGroup,
+  type AssetOutputsAwaiting,
+} from '../../api/assets';
 
 const { Text } = Typography;
 
@@ -388,12 +394,15 @@ const AssetOutputWall: React.FC<{
   ownerSwitchable?: boolean;
   /** A′ UX：页签切回来自动刷新 */
   active?: boolean;
+  /** 11-10：空态里「去看生产单」的一跳（切到 ④ 页签），由页面层传 */
+  onGoToProduction?: () => void;
 }> = ({
   batchId,
   reloadToken,
   ownerDefault = 'all',
   ownerSwitchable = false,
   active = true,
+  onGoToProduction,
 }) => {
   const [viewMode, setViewMode] = useState<'asset' | 'batch'>('asset');
   const [ownerView, setOwnerView] = useState<'me' | 'all'>(ownerDefault);
@@ -410,10 +419,16 @@ const AssetOutputWall: React.FC<{
     setBasket(b);
     sessionStorage.setItem('asset-output-basket', JSON.stringify([...b]));
   };
-  const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
+  // 11-10 用户口径「我投去了，生产出来了就给我看，不要搞这么复杂」：
+  // 墙**不再默认锁当前批次**。以前从 ② 素材页带着批次进来，墙只显示这一批的成片——
+  // 今天回收的片子挂在昨天那批素材上，于是"投出去了、也出片了、墙却空着"，
+  // 一线只会以为系统坏了。默认改成全部批次（最新在上），要看这一批就点那颗 chip。
+  const [batchFilter, setBatchFilter] = useState<string | undefined>(undefined);
   const [kindFilter, setKindFilter] = useState<string | undefined>('doubao_raw');
   const [qcFilter, setQcFilter] = useState<string | undefined>();
   const [groups, setGroups] = useState<AssetOutputGroup[]>([]);
+  // 空态要说真话用的三个数（后端算：投板在途／只建单没投／最近回收时间）
+  const [awaiting, setAwaiting] = useState<AssetOutputsAwaiting | undefined>();
   const [groupsLoading, setGroupsLoading] = useState(false);
   /** 当前展开的组（单开：点另一行切换，再点收起） */
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
@@ -440,6 +455,7 @@ const AssetOutputWall: React.FC<{
         owner: ownerView,
       });
       setGroups(res.groups || []);
+      setAwaiting(res.awaiting);
       setExpandedKey(null);
     } catch (e) {
       message.error((e as Error).message || '加载成片分组失败');
@@ -502,6 +518,45 @@ const AssetOutputWall: React.FC<{
     label: `${b.code} · ${b.name || '未命名'}（${b.item_count ?? 0} 条）`,
   }));
 
+  // 空态要说真话（11-10 用户口径「我投去了，生产出来了就给我看，不要搞这么复杂」）。
+  // 三种"空"以前糊成一句「还没有成片」：① 只建了单没投板、② 投出去了还在豆包那边跑、
+  // ③ 有片子但被筛选藏了。现在按后端给的三个数分开说，并给一跳直达 ④ 生产单。
+  const renderEmptyNote = () => {
+    const waiting = awaiting?.waiting_on_board ?? 0;
+    const unsent = awaiting?.order_ready_not_dispatched ?? 0;
+    const lastAt = awaiting?.last_output_at || '';
+    const parts: string[] = [];
+    if (unsent) parts.push(`有 ${unsent} 张单只建好还没投板——建单不占号也不出片，要在「生产单与投板」点「投去出片」才算投出去`);
+    if (waiting) parts.push(`${waiting} 张已经投板、正在豆包那边出片，回收回来会自动摆在这里`);
+    if (!parts.length && lastAt) {
+      parts.push(`这个口径下最近一次回收到成片是 ${lastAt.slice(5, 16).replace('T', ' ')}`);
+    }
+    if (!parts.length && !lastAt) {
+      parts.push('还没有回收过成片：先去「生产单与投板」开单投板，片子回来就摆在这里');
+    }
+    const filtered = !!kindFilter || !!qcFilter || !!batchFilter;
+    return (
+      <Space direction="vertical" size={4}>
+        <Text style={{ fontSize: 13 }}>这一屏现在没有可摆的成片。</Text>
+        {parts.map((p, i) => (
+          <Text key={i} type="secondary" style={{ fontSize: 12 }}>
+            {`${i + 1}) ${p}`}
+          </Text>
+        ))}
+        {filtered && (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            当前还带着筛选（成片类型／验收／批次），清掉再看一眼可能就出来了。
+          </Text>
+        )}
+        {onGoToProduction && (waiting > 0 || unsent > 0) && (
+          <Button size="small" type="link" style={{ padding: 0 }} onClick={onGoToProduction}>
+            去看生产单（{unsent > 0 ? `${unsent} 张待投板` : `${waiting} 张出片中`}）
+          </Button>
+        )}
+      </Space>
+    );
+  };
+
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       {/* ── 筛选行：视图切换＋两级共用的筛选 ── */}
@@ -526,16 +581,27 @@ const AssetOutputWall: React.FC<{
           ]}
         />
         {viewMode === 'asset' && (
-          <Select
-            style={{ width: 240 }}
-            placeholder="批次（可选）"
-            allowClear
-            showSearch
-            optionFilterProp="label"
-            value={batchFilter}
-            onChange={setBatchFilter}
-            options={batchOptions}
-          />
+          <>
+            <Select
+              style={{ width: 240 }}
+              placeholder="批次（默认全部）"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              value={batchFilter}
+              onChange={setBatchFilter}
+              options={batchOptions}
+            />
+            {/* 11-10：默认全部批次，但人从某个批次进来时给一颗「只看这批」——
+                收起不等于丢掉，只是不再拿它当默认（默认锁批次正是"墙空着"的成因） */}
+            {!!batchId && batchFilter !== batchId && (
+              <Tooltip title="墙上默认摆**全部批次**回收到的成片（最新在上）。只想看现在这个批次就点它。">
+                <Button size="small" onClick={() => setBatchFilter(batchId)}>
+                  只看这批
+                </Button>
+              </Tooltip>
+            )}
+          </>
         )}
         <Select
           style={{ width: 140 }}
@@ -588,13 +654,7 @@ const AssetOutputWall: React.FC<{
 
       {/* ── 第一级：组清单 ── */}
       {!groupsLoading && !groups.length ? (
-        <Empty
-          description={
-            kindFilter || qcFilter || batchFilter
-              ? '这个筛选条件下没有成片。清掉筛选试试，或者先去「生产单与投板」投板回收。'
-              : '还没有成片。去「生产单与投板」投板，片子回收回来就摆在这里。'
-          }
-        />
+        <Empty description={renderEmptyNote()} />
       ) : (
         <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden' }}>
           {groups.map((g) => {

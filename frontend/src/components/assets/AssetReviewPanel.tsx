@@ -51,6 +51,11 @@ interface Props {
    * 由页面层（AssetLibrary）传页签切换回调进来。
    */
   onGoToProduction?: () => void;
+  /**
+   * 11-10「一屏到底」：建完单不当场投时，把新单 ID 交给页面层带进 ④ 的投板弹窗。
+   * 没传（页面层还没接）就退回原来的 onDone 路径。
+   */
+  onProduced?: (ids: string[], notes: string[]) => void;
 }
 
 /**
@@ -70,7 +75,7 @@ interface Props {
  * 表格外壳留着只是为了 rowSelection 和分页，列定义合成一格。
  * 帧是纯呈现层：`GET /assets/frames` 拉不到就当没图，审核动作照点。
  */
-const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken, onGoToProduction, active = true }) => {
+const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken, onGoToProduction, onProduced, active = true }) => {
   const [data, setData] = useState<AssetSummaryListResult | null>(null);
   const [items, setItems] = useState<AssetSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -1044,6 +1049,17 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           // 原来只关弹窗刷自己，新单在哪要用户自己猜。
           onGoToProduction?.();
         }}
+        onProduced={
+          onProduced
+            ? (ids, notes) => {
+                // 11-10 一屏到底：建完单直接把人带到 ④ 的「投去 AI 出片」那一屏
+                setProduceOpen(false);
+                setSelected([]);
+                fetchList(page, pageSize);
+                onProduced(ids, notes);
+              }
+            : undefined
+        }
       />
 
       {/* P1（评审定稿⑨）：一致性核验抽屉——签字依据给足：原片播放＋反推脚本全文 */}

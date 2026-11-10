@@ -11,7 +11,7 @@ import {
 } from '../../api/assets';
 import type {
   AssetAutoConcatOrder, AssetBatch, AssetDispatchAck, AssetDispatchResponse, AssetDispatchCounts, AssetExportJson, AssetExportPayload, AssetExportTxt,
-  AssetOutput, AssetOutputPreviewResult, AssetPromptElementFound, AssetProduction, AssetSummary, DispatchReportStatus, ProductionState,
+  AssetOutput, AssetOutputPreviewResult, AssetPromptElementFound, AssetPromptElementMark, AssetProduction, AssetSummary, DispatchReportStatus, ProductionState,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
@@ -21,7 +21,7 @@ import ApprovedSummaryPickerModal from './ApprovedSummaryPickerModal';
 import AssetCardPicker from './AssetCardPicker';
 import AssetConcatPicker from './AssetConcatPicker';
 import AssetPromptElementDrawer from './AssetPromptElementDrawer';
-import { HelpDot, MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
+import { HelpDot, HighlightedPrompt, MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
 
 const { Text, Paragraph } = Typography;
 
@@ -35,6 +35,20 @@ interface Props {
   reloadToken?: number;
   /** A′ UX：页签切回来自动刷新 */
   active?: boolean;
+  /**
+   * 11-10 一屏到底：别的页签（②③）里开单成功后，父层把刚建的那几张 id 交到这里，
+   * 本页直接弹出「投去 AI 出片」确认窗（照旧能看全文／改投递稿／挑拼接素材）。
+   * 消费完必须调 `onDispatchConsumed` 清空，否则下次切页签会重放同一个窗。
+   */
+  dispatchIds?: string[] | null;
+  /** 开单那一屏没处说的提醒（漂移／自动检查没过／标题超字…），在确认窗里接着说 */
+  dispatchNotes?: string[];
+  onDispatchConsumed?: () => void;
+  /**
+   * 11-10 口径③：「出片成功」那一行给的一跳直达——片子真正在的地方是「成片墙」，
+   * 以前只有本行「已收 N 段」那个抽屉口，人不知道还能整墙看、整墙挑。
+   */
+  onGoToOutputs?: () => void;
 }
 
 const rate = (v: number | null | undefined) =>
@@ -60,6 +74,31 @@ const boardStatusText = (raw: string | null): string | null => {
     .split('/')
     .map((s) => BOARD_ROW_STATUS_TEXT[s.trim()] || s.trim())
     .join('·');
+};
+
+/**
+ * 11-10 用户口径③「投出去的那条生产单显示完成，成片墙还是看不到…我投去了、生产出来了就给我看」：
+ * 状态标签那两个字（「已投上板」「出片成功」）说的是**台账里这一行**，不是**片子在哪**。
+ * 一线真正想知道的是这四档各下一步谁做、在哪儿看到东西，所以标签下面固定补一句白话：
+ *  1. 还没投 —— 建单不占号也不出片，下一步是**人**点「投去出片」；
+ *  2. 已投上板 / 正在出片 —— 下一步是**机器**等豆包，几十分钟，人等着就行；
+ *  3. 出片成功 —— 片子已经落到「成片墙」，给一跳直达；
+ *  4. 投板失败 / 要求改写 —— 说清成因在哪看，别让"红色标签"自己猜。
+ * `success` 但库里一段都没收到是真实存在的一种错位（人工回写成 success、或回收没落库），
+ * 这一档单独说破——以前它和"真收到片"共用一句「已收 N 段」，正是"显示完成却看不到成片"的来源。
+ */
+const stateWhereabouts = (
+  status: ProductionState,
+  row: { output_count?: number | null },
+): string | null => {
+  const n = row.output_count ?? 0;
+  if (status === 'order_ready') return '只建了单、还没投板：不占号也不出片，点「投去出片」才开始';
+  if (status === 'queued' || status === 'running') return '已投上板，豆包在出片（几十分钟起）：这一段不用你盯，回来自动进成片墙';
+  if (status === 'success') return n > 0 ? `片子已回收 ${n} 段：在「成片墙」和本行「成片」列都能看` : '记的是出片成功，但库里一段片子都没收到——多半是人工回写或回收没落库，成因看本行「提醒」';
+  if (status === 'failed') return '没出成片：红标签旁的「有成因」写了为什么';
+  if (status === 'awaiting_rewrite') return '等你回审核台改文案重提，改完才轮到重新开单';
+  if (status === 'superseded') return '同文案重开单后这张作废：不用管它';
+  return null;
 };
 
 /** 批 M：一条元素要换掉的原文（pattern 只换捕获组，literal/自定义＝整段逐字换） */
@@ -313,7 +352,10 @@ const PromptDraftDiff: React.FC<{ before: string; after: string }> = ({ before, 
  *    没配板子凭据时后端会当场白话拒绝自动投板，这条就是唯一走法。
  * 两条路的闸门、payload、状态迁移共用后端同一套判据，前端不要自己复述规则数字。
  */
-const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId, reloadToken, active = true }) => {
+const AssetProductionPanel: React.FC<Props> = ({
+  canWriteBack, isAdmin, batchId, reloadToken, active = true,
+  dispatchIds, dispatchNotes, onDispatchConsumed, onGoToOutputs,
+}) => {
   const [items, setItems] = useState<AssetProduction[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -367,6 +409,11 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const [dispatchForceRisk, setDispatchForceRisk] = useState(false);
   const [dispatchForceReason, setDispatchForceReason] = useState('');
   const [dispatchBusy, setDispatchBusy] = useState(false);
+  /**
+   * 11-10 一屏到底：开单那一屏上原来摆着的分项警示（正文漂移／自动检查没过／标题超字／
+   * 卡是横版…）。窗口缩掉了这些话不能跟着消失——由 `onProduced` 带过来，在确认窗里接着说。
+   */
+  const [openNotes, setOpenNotes] = useState<string[]>([]);
   // 11-06 拍板：投递稿可改。只改**这一次投出去**的正文——生产单行的 prompt_text、
   // 过审文案、漂移判定都不动，下一次再投仍是原稿；后端会对改稿重扫风险词并逐条留审计。
   const [promptOverrides, setPromptOverrides] = useState<Record<string, string>>({});
@@ -388,6 +435,13 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
   const [elementBusy, setElementBusy] = useState(false);
   const [elementNotes, setElementNotes] = useState<string[]>([]);
   const [elementBlocked, setElementBlocked] = useState(false);
+  /**
+   * 11-10 用户口径①「没有看到正文被替换的地方」：上一次「套用」换上的词**在正文哪一处**。
+   * `marksText` 记住这套位置是按哪一版正文算的——人随后在文本框里手改过，坐标就作废，
+   * 界面宁可说"位置对不上了"，也不许拿旧坐标描到新正文上（那才是真的误导）。
+   */
+  const [elementMarks, setElementMarks] = useState<AssetPromptElementMark[]>([]);
+  const [marksText, setMarksText] = useState('');
   const [customOld, setCustomOld] = useState('');
   const [customNew, setCustomNew] = useState('');
   const [elementsOpen, setElementsOpen] = useState(false);
@@ -469,6 +523,8 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     setElementChoice({});
     setElementNotes([]);
     setElementBlocked(false);
+    setElementMarks([]);
+    setMarksText('');
     setCustomOld('');
     setCustomNew('');
     void extractElements(p, draft);
@@ -512,6 +568,8 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
     try {
       const res = await assetApi.applyPromptElements({ text: editPromptDraft, edits });
       setEditPromptDraft(res.text);
+      setElementMarks(res.marks || []);
+      setMarksText(res.text);
       setElementNotes(res.notes || []);
       setElementBlocked(!!res.would_dispatch_block);
       // 这一批改动动过的槽位先攒成 carry 行：重新认一遍若不再命中字典词面（换掉场景后旧词面整篇没了），
@@ -699,6 +757,75 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
 
   // 批 I：补账对象＝行级入口点的那一行；顶部批量入口没指定就还是整页勾选
   const writeRows = writeTarget ?? selected;
+
+  /**
+   * 11-10 一屏到底：弹「投去 AI 出片」确认窗的**唯一入口**。
+   * 顶部那颗按钮（勾着的这批）和「刚建完单直接顶进来」（点名这几张）两条路都走这里，
+   * 免得两套预填口径对不上。进来一次就把上一批留下的选择归零：回收档、强行放行、
+   * 投递稿改动、挑卡、挑拼装——这些都属于"那一批"，不跟着换批走。
+   */
+  const openDispatch = (rows: AssetProduction[], notes: string[] = []) => {
+    setSelected(rows);
+    setDispatchRecoverOnly(false);
+    setDispatchForceRisk(false);
+    setDispatchForceReason('');
+    setPromptOverrides({});
+    setEditPromptFor(null);
+    setDispatchCardIds([]);
+    setOpenNotes(notes);
+    // 批 Q：这批单原来钉过拼装要求就把它带进选择器（看得见的才改得动）。
+    // 只在**全批同一条**时预填——各单钉的不一样时不猜，留空但下面的
+    // 「N 张已钉」那句话照样说清楚，免得界面显示的和实际投出去的两回事。
+    const pinnedIds = Array.from(new Set(rows.map((p) => p.concat_asset_id || '')));
+    const pinnedOrders = Array.from(new Set(rows.map((p) => p.concat_order || '')));
+    setDispatchConcatId(pinnedIds.length === 1 && pinnedIds[0] ? pinnedIds[0] : null);
+    setDispatchConcatOrder(
+      pinnedOrders.length === 1 && pinnedOrders[0]
+        ? (pinnedOrders[0] as AssetAutoConcatOrder)
+        : 'hook_first',
+    );
+    setDispatchConcatClear(false);
+    setDispatchOpen(true);
+  };
+
+  /**
+   * 11-10 一屏到底：把「刚建的那几张」直接顶进确认窗。
+   * 必须**按 id 现拉**（`GET /assets/productions?ids=`）——这一屏可能正筛着状态／批次／
+   * 「我的」，新单不一定在表格里；拿不到行对象就等于开一个空选的窗（老结果屏那种"顺手投"
+   * 是把 id 直接丢给接口，不挑界面，现在改成挑界面了就得先把行认全）。
+   */
+  const takeOverDispatch = useCallback(
+    async (ids: string[], notes: string[] = []) => {
+      if (!ids.length) return;
+      try {
+        const res = await assetApi.listProductions({ ids: ids.join(','), page_size: 300 });
+        const rows = res.items || [];
+        if (!rows.length) {
+          message.warning('刚建的那几张单没抓到，请刷新后在生产单页勾上再点「投去 AI 出片」', 8);
+        } else if (!canWriteBack) {
+          message.warning('这批单建好了。投板要运营／管理员权限，你这一侧只能看不能投。', 8);
+        } else {
+          openDispatch(rows, notes);
+        }
+        void fetchList(1, pageSize);
+      } catch (e) {
+        message.error((e as Error).message || '取刚建的生产单失败', 8);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [canWriteBack, pageSize],
+  );
+
+  // 别的页签（②③）里开完单交过来的那几张：接住→开窗→立刻清账（清早不清晚，
+  // StrictMode 双跑／本页重挂都不会把同一个窗重放第二次）
+  useEffect(() => {
+    if (!dispatchIds?.length) return;
+    const ids = dispatchIds;
+    const notes = dispatchNotes || [];
+    onDispatchConsumed?.();
+    void takeOverDispatch(ids, notes);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispatchIds]);
 
   /**
    * 批 L：从这里只负责开窗。拉数（approved + passed_edited 两态一次取全）、
@@ -1150,6 +1277,29 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
       render: (v: ProductionState, r) => (
         <Space direction="vertical" size={0}>
           <ProductionStateTag status={v} />
+          {/* 11-10 口径③：这一行回答「这四档各下一步谁做、在哪儿看到东西」，
+              标签只说台账，这句说去向——「显示完成却看不到成片」就是这两件事以前没分开。 */}
+          {(() => {
+            const where = stateWhereabouts(v, r);
+            if (!where) return null;
+            return (
+              <div style={{ maxWidth: 148 }}>
+                <Text type="secondary" style={{ fontSize: 12, lineHeight: '16px' }}>
+                  {where}
+                </Text>
+                {v === 'success' && (r.output_count ?? 0) > 0 && onGoToOutputs && (
+                  <Button
+                    size="small"
+                    type="link"
+                    style={{ padding: 0, fontSize: 12, height: 18 }}
+                    onClick={onGoToOutputs}
+                  >
+                    去成片墙看 →
+                  </Button>
+                )}
+              </div>
+            );
+          })()}
           {/* 批 L（投放进度可视化）：投板在跑的单子把板侧进度带出来——「排队中/出片中」
               是板面行状态的人话，检查时间是轮询活着的证据。终态后这两行自动消失。 */}
           {(v === 'queued' || v === 'running') && r.board_last_status && (
@@ -1427,29 +1577,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
               type="primary"
               icon={<CloudUploadOutlined />}
               disabled={!ids.length}
-              onClick={() => {
-                setDispatchRecoverOnly(false);
-                setDispatchForceRisk(false);
-                setDispatchForceReason('');
-                setPromptOverrides({});
-                setEditPromptFor(null);
-                setDispatchCardIds([]);
-                // 批 Q：这批单原来钉过拼装要求就把它带进选择器（看得见的才改得动）。
-                // 只在**全批同一条**时预填——各单钉的不一样时不猜，留空但下面的
-                // 「N 张已钉」那句话照样说清楚，免得界面显示的和实际投出去的两回事。
-                const pinnedIds = Array.from(new Set(selected.map((p) => p.concat_asset_id || '')));
-                const pinnedOrders = Array.from(
-                  new Set(selected.map((p) => p.concat_order || '')),
-                );
-                setDispatchConcatId(pinnedIds.length === 1 && pinnedIds[0] ? pinnedIds[0] : null);
-                setDispatchConcatOrder(
-                  pinnedOrders.length === 1 && pinnedOrders[0]
-                    ? (pinnedOrders[0] as AssetAutoConcatOrder)
-                    : 'hook_first',
-                );
-                setDispatchConcatClear(false);
-                setDispatchOpen(true);
-              }}
+              onClick={() => openDispatch(selected)}
             >
               投去 AI 出片（{ids.length}）
             </Button>
@@ -1620,6 +1748,29 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         }}
       >
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          {/* 11-10 一屏到底：这批是**刚建完直接顶进来**的时候，开单那一屏上那些"先别投"的话
+              在这里接着说（漂移/自动检查没过/标题超字/卡是横版…）。没带话＝从列表勾单投的，不占地方。 */}
+          {!!openNotes.length && (
+            <Alert
+              type="warning"
+              showIcon
+              message={`开单时有 ${openNotes.length} 件事要看着办（这批单已经建好，投不投由你定）`}
+              description={
+                <Space direction="vertical" size={2}>
+                  {openNotes.slice(0, 8).map((nx, i) => (
+                    <Text key={i} style={{ fontSize: 12 }}>
+                      {nx}
+                    </Text>
+                  ))}
+                  {openNotes.length > 8 && (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      另有 {openNotes.length - 8} 条没列出
+                    </Text>
+                  )}
+                </Space>
+              }
+            />
+          )}
           <Row gutter={12}>
             <Col span={6}>
               <Statistic title="会新建板任务" value={dispatchPlan.willCreate} suffix="张" />
@@ -1963,6 +2114,8 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                     setEditPromptDraft(editPromptFor.prompt_text ?? '');
                     setElementNotes([]);
                     setElementBlocked(false);
+                    setElementMarks([]);
+                    setMarksText('');
                     void extractElements(editPromptFor, editPromptFor.prompt_text ?? '');
                     setPromptOverrides((m) => {
                       const next = { ...m };
@@ -1981,6 +2134,29 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
               onChange={(e) => setEditPromptDraft(e.target.value)}
               placeholder="这一次投出去的提示词正文（留空＝照原稿投）"
             />
+            {/*
+              11-10 用户口径①「选了几个元素，但没看到正文被替换的地方」：
+              TextArea 里是一整片同色字，换上的词藏在第 30 行就等于没换。这里补一块**只读稿纸**，
+              把刚换上的词按后端给的坐标描绿并自动滚到第一处。位置只在「套完之后没再手改」时有效——
+              marksText 和当前正文一旦不一致就改成一句话说明，绝不拿旧坐标描到新正文上。
+              （下面的逐行对照回答的是另一问：改了哪几行、原稿那行写的什么。）
+            */}
+            {elementMarks.length > 0 && (
+              marksText === editPromptDraft ? (
+                <div style={{ marginTop: 8 }}>
+                  <HighlightedPrompt
+                    text={editPromptDraft}
+                    marks={elementMarks}
+                    maxHeight={220}
+                    caption={`刚换上的 ${elementMarks.length} 处已标绿（投出去的就是这一段）`}
+                  />
+                </div>
+              ) : (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  标绿的位置已作废——你在文本框里手改过正文，旧坐标不能再描到新稿上。要看落点就再点一次「套用」。
+                </Text>
+              )
+            )}
             <div style={{ marginTop: 8 }}>
               <PromptDraftDiff before={editPromptFor?.prompt_text ?? ''} after={editPromptDraft} />
             </div>
@@ -2294,6 +2470,13 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
           setProduceOpen(false);
           setPickedSummaries([]);
           fetchList(page, pageSize);
+        }}
+        // 11-10 一屏到底：建完当场关窗（ProduceOrderModal 自己 onClose），这里直接
+        // 把刚建的那几张顶进投板确认窗——不用再回列表勾一遍。
+        onProduced={(ids, notes) => {
+          setProduceOpen(false);
+          setPickedSummaries([]);
+          void takeOverDispatch(ids, notes);
         }}
       />
     </Card>

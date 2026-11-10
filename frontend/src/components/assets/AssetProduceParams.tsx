@@ -2,10 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Button, Collapse, Input, Radio, Select, Space, Spin, Tag, Tooltip, Typography,
 } from 'antd';
-import { ReloadOutlined } from '@ant-design/icons';
+import { BulbOutlined, ReloadOutlined } from '@ant-design/icons';
 import { assetApi } from '../../api/assets';
-import type { AssetPromptElementFound, AssetSummary } from '../../api/assets';
-import { HelpDot } from './AssetBits';
+import type { AssetPromptElementFound, AssetSummary, FanoutPreviewVariant } from '../../api/assets';
+import { HelpDot, HighlightedPrompt } from './AssetBits';
 
 const { Text } = Typography;
 
@@ -36,6 +36,12 @@ interface SlotView {
   /** `context` 来自哪一篇（只有多篇时才显示，免得让人以为是"这批的原文"） */
   contextFrom?: string;
   protected?: boolean;
+  /**
+   * 11-10「帮我提炼原值」：这一行**至少有一格的原值是模型从稿子里抄回来的**。
+   * 只用来打标签。模型会编，后端已经按"逐字出现在这一篇稿子的可动区间"筛过一轮，
+   * 但"词在稿子里"≠"词就是这一项"（同一句里它能挑错成分），所以必须让人看一眼再投。
+   */
+  modelFilled?: boolean;
 }
 
 /**
@@ -112,6 +118,26 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
   const [categoryName, setCategoryName] = useState('');
   /** 底稿：summary_id → 正文（没改过的用 prompt_preview，退一步用文案本身） */
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  /** 11-10「帮我提炼原值」：模型那一路的回话（白话说明＋丢弃清单），只在这一屏活着 */
+  const [guessing, setGuessing] = useState(false);
+  const [guessInfo, setGuessInfo] = useState<string[]>([]);
+  const [guessError, setGuessError] = useState<string | null>(null);
+  /**
+   * 11-10 用户口径①「我刚选了几个元素，但是没有看到正文被替换的地方」：
+   * 「换完长这样」那一段的回包（逐篇 → 扇出的 N 张稿子）。只在点按钮时刷新，
+   * `previewSig` 记住"这批预览是按哪一版参数算的"，改了参数就打陈旧标。
+   */
+  const [preview, setPreview] = useState<{
+    items: { id: string; variants: FanoutPreviewVariant[] }[];
+    rows: number;
+    notes: string[];
+    risk_words: string[];
+    sig: string;
+  } | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  /** 预览展开到哪一张（每篇一份，默认第一篇的第 1 张） */
+  const [previewOpen, setPreviewOpen] = useState<string[]>([]);
   const draftsRef = useRef(drafts);
   draftsRef.current = drafts;
   const summaryIds = summaries.map((s) => s.id).join(',');
@@ -119,8 +145,28 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
   const baseText = (s: AssetSummary) =>
     drafts[s.id] ?? s.prompt_preview ?? s.text ?? '';
 
+  /**
+   * 11-10「帮我提炼原值」：模型抄回来的那几个字**在稿子里长什么样**（整行，截 160 字）。
+   * 后端认出来的行有 `context`（它截的），模型这条路只有值本身，那行只能在这儿自己捞——
+   * 判据就是"值逐字出现在这篇稿子里"（后端已经这么筛过），所以 indexOf 一定命中。
+   * 160 = 后端 `MAX_CONTEXT_LEN`，两条路的对照长度保持一致，免得同一屏一行长一行短。
+   */
+  const lineHolding = (text: string, value: string): string => {
+    const i = (text || '').indexOf(value || '');
+    if (i < 0 || !value) return '';
+    const start = text.lastIndexOf('\n', i) + 1;
+    const end = text.indexOf('\n', i);
+    const line = text.slice(start, end < 0 ? text.length : end).trim();
+    return line.length > 160 ? `${line.slice(0, 160)}…` : line;
+  };
+
   /** 认一次参数：open／换文案／点「重新认参数」时跑 */
   const extract = async () => {
+    setGuessInfo([]);
+    setGuessError(null);
+    // 底稿/字典变了，上一版预览就不是现在这套参数的结果了——宁可没有，不许陈旧还摆着像新的
+    setPreview(null);
+    setPreviewError(null);
     if (!summaries.length) {
       setSlots([]);
       setError(null);
@@ -183,6 +229,78 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
     }
   };
 
+  /**
+   * 11-10 用户口径「为什么都是稿子里没认出原值？…能不能再将它们提炼一下」：
+   * 0 元的字典认法认不出来的那些（词表外写法／整句台词），点这一下交给模型**逐字抄回**。
+   *
+   * 三条不许商量的边界（都写死在后端 `accept_guessed_values`，这里只负责回填）：
+   *  - **只填还没有的那一格**：已经自动认出的原值一个字不被覆盖，模型只补空白；
+   *  - 抄回来的串必须逐字出现在这一篇稿子的可动区间里，模型编的当场丢弃，清单摆在界面上；
+   *  - 只改「原稿里写的是」这半边，换成什么仍然由人填——它不是"自动生成投递稿"。
+   * 花钱：一次模型问答（与出文案同档），所以它是按钮、不是自动跟着「重新认参数」跑。
+   */
+  const guess = async () => {
+    if (!summaries.length || !slots.length) return;
+    setGuessing(true);
+    setGuessError(null);
+    setGuessInfo([]);
+    try {
+      const texts: Record<string, string> = {};
+      summaries.forEach((s) => {
+        texts[s.id] = baseText(s);
+      });
+      const cats = Array.from(
+        new Set(summaries.map((s) => (s.category_name || '').trim()).filter(Boolean)),
+      );
+      const res = await assetApi.guessPromptElementValues({
+        texts,
+        category: cats.length === 1 ? cats[0] : undefined,
+      });
+      // 先在闭包里算好"每一行补哪几格"，再交给 setSlots。
+      // （反过来在 setState 的 updater 里边算边累加是错的：StrictMode 下 updater 会跑两遍，
+      //  而且外面同步读那个计数器读到的还是 0。）
+      const patches: Array<{ key: string; hits: Record<string, string> }> = [];
+      slots.forEach((slot) => {
+        const hits: Record<string, string> = {};
+        summaries.forEach((s) => {
+          const v = (res.values?.[s.id] || {})[slot.key];
+          // 只补空位：确定性认法认出来的那份永远优先
+          if (v && !slot.currents[s.id]) hits[s.id] = v;
+        });
+        if (Object.keys(hits).length) patches.push({ key: slot.key, hits });
+      });
+      setSlots((prev) =>
+        prev.map((slot) => {
+          const patch = patches.find((p) => p.key === slot.key);
+          if (!patch) return slot;
+          const firstSid = Object.keys(patch.hits)[0];
+          return {
+            ...slot,
+            currents: { ...slot.currents, ...patch.hits },
+            modelFilled: true,
+            // 没有对照原句的行（模型补出来的那些）把值所在那一行捞出来，
+            // 这样"改之前长什么样"这一栏对自动认／模型认两种来源都一样摆得出来
+            context: slot.context || lineHolding(texts[firstSid] || '', patch.hits[firstSid]),
+            contextFrom: slot.context
+              ? slot.contextFrom
+              : summaries.find((s) => s.id === firstSid)?.asset_code || undefined,
+          };
+        }),
+      );
+      setGuessInfo([...(res.notes || []), ...(res.dropped || [])]);
+      if (!patches.length) {
+        setGuessError(
+          '模型没抄回能用的原值（它给的串都不在这批稿子里，或这一型确实没写那些东西）——' +
+            '下面展开底稿自己照抄那一句，留空不影响开单',
+        );
+      }
+    } catch (e) {
+      setGuessError((e as Error).message || '提炼原值没成功（不影响照常开单）');
+    } finally {
+      setGuessing(false);
+    }
+  };
+
   // 打开／换文案时自动认一次；底稿是本地状态，靠「重新认参数」按钮才再打接口，
   // 否则每敲一个字就发一次请求（正文上千字，一次一屏）。
   useEffect(() => {
@@ -190,6 +308,8 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
     setValues({});
     setBaseDraft({});
     setDrafts({});
+    setPreview(null);
+    setPreviewOpen([]);
     void extract();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, summaryIds]);
@@ -260,6 +380,58 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
 
   const multiCopy = summaries.length > 1;
 
+  /**
+   * 这次预览是按哪一版参数算的（值／原值／配对方式／底稿全算进去）。
+   * 拿它和当前 `computed` 比，不一样就是"人又改了"——界面上打陈旧标，不骗人说这就是现在的稿子。
+   */
+  const previewSig = JSON.stringify({
+    v: computed.values,
+    b: computed.base,
+    bb: computed.baseBySummary,
+    m: computed.mode,
+    t: summaries.map((s) => `${s.id}:${baseText(s).length}:${baseText(s)}`),
+  });
+
+  /**
+   * 11-10 用户口径①：把「每个参数填了多个值」扇出来的那几张稿子**当场组给人看**。
+   * 走的是开单同一个引擎（后端 `expand_matrix`＋`compose_variants`），
+   * 0 元、不落库、不占号；换词位置由后端算（`marks`），这里只描色。
+   */
+  const runPreview = async () => {
+    if (!computed.filled.length || computed.blocked) return;
+    setPreviewing(true);
+    setPreviewError(null);
+    try {
+      const texts: Record<string, string> = {};
+      summaries.forEach((s) => {
+        texts[s.id] = baseText(s);
+      });
+      const cats = Array.from(
+        new Set(summaries.map((s) => (s.category_name || '').trim()).filter(Boolean)),
+      );
+      const res = await assetApi.previewPromptElementFanout({
+        texts,
+        category: cats.length === 1 ? cats[0] : undefined,
+        values: computed.values,
+        base: computed.base,
+        base_by_summary: computed.baseBySummary,
+        mode: computed.mode,
+      });
+      setPreview({ items: res.items || [], rows: res.rows, notes: res.notes || [], risk_words: res.risk_words || [], sig: previewSig });
+      // 默认只展开第一篇的第 1 张：一屏全展开的话，"看得清"又变回"一坨"
+      const first = (res.items || [])[0];
+      setPreviewOpen(first?.variants?.length ? [`${first.id}-1`] : []);
+    } catch (e) {
+      setPreviewError((e as Error).message || '这份预览没组出来（不影响照常开单）');
+      setPreview(null);
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  /** 「一行原值都没认出」的参数项行数：只给「帮我提炼原值」那个按钮写清楚它是为谁跑的 */
+  const unrecognized = slots.filter((s) => !Object.keys(s.currents).length).length;
+
   if (!active || !summaries.length) return null;
 
   return (
@@ -277,7 +449,67 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
         <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={extract}>
           重新认参数
         </Button>
+        {/* 11-10「能不能再将它们提炼一下」：0 元认法认不出来的才走这一口，它花模型钱，
+            所以是**人点的按钮**、不跟着「重新认参数」自动跑；按钮上直接把"花钱"写出来。 */}
+        {!!slots.length && (
+          <Button
+            size="small"
+            icon={<BulbOutlined />}
+            loading={guessing}
+            onClick={guess}
+            type={unrecognized ? 'primary' : 'default'}
+            ghost={!!unrecognized}
+          >
+            {unrecognized
+              ? `帮我提炼原值（${unrecognized} 行还没认出，问模型花钱）`
+              : '帮我提炼原值（问模型，花钱）'}
+          </Button>
+        )}
       </Space>
+
+      {guessing && (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          正在让模型逐字抄回稿子里的原话，不等开单，投不投都照旧…
+        </Text>
+      )}
+      {guessError && (
+        <Alert
+          type="warning"
+          showIcon
+          message={guessError}
+          description={
+            guessInfo.length ? (
+              <Space direction="vertical" size={2}>
+                {guessInfo.slice(0, 8).map((nx, i) => (
+                  <span key={i} style={{ fontSize: 12 }}>
+                    {nx}
+                  </span>
+                ))}
+                {guessInfo.length > 8 && (
+                  <span style={{ fontSize: 12 }}>另有 {guessInfo.length - 8} 条没列出</span>
+                )}
+              </Space>
+            ) : undefined
+          }
+        />
+      )}
+      {!guessError && !!guessInfo.length && (
+        <Space wrap size={6}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {`模型提炼回话 ${guessInfo.length} 条`}
+          </Text>
+          {/* 同 212 批的口径：长说明缩进浮窗，不吃掉弹窗高度 */}
+          <HelpDot
+            text={
+              <Space direction="vertical" size={2}>
+                {guessInfo.map((nx, i) => (
+                  <span key={i}>{nx}</span>
+                ))}
+              </Space>
+            }
+          />
+        </Space>
+      )}
 
       {loading && !slots.length && <Spin size="small" />}
       {error && <Alert type="warning" showIcon message={`参数项认不出来：${error}`} description="不影响照常开单，只是这一屏没有参数行。" />}
@@ -298,17 +530,31 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
         return (
           <div key={slot.key}>
             <Space wrap size={6} style={{ marginBottom: 2 }}>
-              <Tooltip title={slot.note || undefined}>
+              <Tooltip
+                title={
+                  slot.modelFilled
+                    ? `${slot.note ? `${slot.note}\n` : ''}这一行的原值里有模型从稿子里逐字抄回来的那几格（后端验过确实出现在这一篇里，编的已经丢掉）。词在稿子里≠词就是这一项——投之前扫一眼；抄错了就在下面「原稿里写的是」那格改成对的。`
+                    : slot.note || undefined
+                }
+              >
                 <Text style={{ fontSize: 12 }}>
                   {slot.label}
-                  {slot.mode === 'manual' && <Tag style={{ marginLeft: 6 }}>要自己抄原句</Tag>}
+                  {slot.mode === 'manual' && !slot.modelFilled && (
+                    <Tag style={{ marginLeft: 6 }}>要自己抄原句</Tag>
+                  )}
                   {slot.mode === 'pattern' && <Tag style={{ marginLeft: 6 }}>按写法认</Tag>}
+                  {/* 来源标必须摆出来：模型只保证"这几个字在这篇稿子里"，不保证"这几个字就是这一项" */}
+                  {slot.modelFilled && (
+                    <Tag color="gold" style={{ marginLeft: 6 }}>
+                      模型提炼，请核一眼
+                    </Tag>
+                  )}
                 </Text>
               </Tooltip>
               {currents.length === 0 ? (
                 <Text type="warning" style={{ fontSize: 12 }}>
                   稿子里没认出原值
-                  <HelpDot text="展开下面「模板脚本提示词」，把稿子里那句原话照抄进这一行的「原稿里写的是」，再点「重新认参数」——词面一致了才换得动。抄不进也没关系：留空只是这一项不换。" />
+                  <HelpDot text="两条路：① 点上面「帮我提炼原值」，让模型从这篇稿子里把那句原话逐字抄回来（花一次模型钱，抄回来的必须真是稿子里的字，编的会被丢掉）；② 自己来——展开下面「模板脚本提示词」，把稿子里那句原话照抄进这一行的「原稿里写的是」，词面一致了才换得动。两条都不走也没关系：留空只是这一项不换。" />
                 </Text>
               ) : same ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>原稿里：{currents[0]}</Text>
@@ -386,6 +632,157 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
                 text={`还要 × 派生份数 N × 每份出几版，见下面「要投 X 条」。换词是在展开好的那份稿子上做的，这 ${computed.rows} 张不多花模型钱，但每张各占一个钩子编号、各吃一条当天额度。`}
               />
             </Space>
+          )}
+
+          {/* ── 「换完长这样」（11-10 用户口径①「选了元素但看不到正文被替换的地方」）──
+              0 元、不占号，走的和开单同一个引擎，所以这里看到的字＝开出去那张单带的字
+              （唯一差别：开单时模型还会把文案展开成投递稿，那份以 ④「改投递稿」为准——这句话必须摆出来） */}
+          {!computed.blocked && (
+            <div style={{ borderTop: '1px dashed #e5e5e5', paddingTop: 6 }}>
+              <Space wrap size={6}>
+                <Text strong style={{ fontSize: 12 }}>
+                  换完长这样
+                </Text>
+                <Button size="small" loading={previewing} onClick={runPreview}>
+                  {preview ? '按现在的参数重新算一遍' : `看看这 ${computed.rows} 张换完长什么样`}
+                </Button>
+                {preview && preview.sig !== previewSig && (
+                  <Tooltip title="参数在这份预览之后又改过了，下面还是按上一次那份算的——点左边按钮重算">
+                    <Tag color="orange">参数改了，这份是旧的</Tag>
+                  </Tooltip>
+                )}
+                <HelpDot text="不花钱、不占号、不落库：就是拿上面那份底稿，按你现在填的值逐张替换一遍给你看。绿底＝换上的新词（位置由后端算，不是前端猜）。开单时模型还会把文案展开成投递稿，那一版和这里可能有个别字的差别，最终以 ④ 投板前「改投递稿」那一屏为准。" />
+              </Space>
+
+              {previewError && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginTop: 6 }}
+                  message={`预览没组出来：${previewError}`}
+                  description="不影响照常开单，这只是这一屏的对照稿。"
+                />
+              )}
+              {!!preview?.risk_words.length && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginTop: 6 }}
+                  message={`这几处换上来的词会被投板闸门拦下（${preview.risk_words.length} 条）`}
+                  description={
+                    <Space direction="vertical" size={2}>
+                      {preview.risk_words.slice(0, 6).map((w, i) => (
+                        <span key={i} style={{ fontSize: 12 }}>
+                          {w}
+                        </span>
+                      ))}
+                      {preview.risk_words.length > 6 && (
+                        <span style={{ fontSize: 12 }}>另有 {preview.risk_words.length - 6} 条没列出</span>
+                      )}
+                    </Space>
+                  }
+                />
+              )}
+
+              {/* 11-10 用户口径①「选了元素但看不到正文被替换的地方」补齐的另一半：
+                  后端 fanout-preview 回的 `notes` 说的是**这批值怎么配成这几张**
+                  （「光线只填了一个值，2 条里都用它」／「全组合：2×3＝6 条」）。
+                  以前只把 `risk_words` 摆了，notes 存进 state 却从不渲染——人看到 6 张却不知道
+                  为什么是 6 张，跟"看不到换了哪"是同一个毛病。摆一行，长话进「？」。 */}
+              {!!preview?.notes.length && (
+                <Space wrap size={6}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {`这批值配成 ${preview.rows} 张：${preview.notes[0]}`}
+                  </Text>
+                  {preview.notes.length > 1 && (
+                    <HelpDot
+                      text={
+                        <Space direction="vertical" size={2}>
+                          {preview.notes.map((nx, i) => (
+                            <span key={i}>{nx}</span>
+                          ))}
+                        </Space>
+                      }
+                    />
+                  )}
+                </Space>
+              )}
+
+              {!!preview && (
+                <Collapse
+                  size="small"
+                  style={{ marginTop: 6 }}
+                  activeKey={previewOpen}
+                  onChange={(k) => setPreviewOpen(Array.isArray(k) ? (k as string[]) : [k as string])}
+                  items={preview.items.flatMap((it) => {
+                    const s = summaries.find((x) => x.id === it.id);
+                    const shown = it.variants.slice(0, 8);
+                    return shown.map((v, i) => {
+                      const code = s?.asset_code || s?.hook_code || it.id.slice(0, 8);
+                      return {
+                        key: `${it.id}-${v.seq}`,
+                        label: (
+                          <span style={{ fontSize: 12 }}>
+                            {multiCopy ? `${code} 第 ${v.seq} 张` : `第 ${v.seq} 张`}
+                            {v.changed ? (
+                              <Tag color="green" style={{ marginLeft: 6 }}>
+                                换了 {v.replaced.filter((r) => r.count > 0).length} 项
+                              </Tag>
+                            ) : (
+                              <Tag style={{ marginLeft: 6 }}>这一张和底稿一模一样</Tag>
+                            )}
+                            {!!v.missing.length && (
+                              <Tooltip title={`这几项没有原值，这一张没换：${v.missing.join('、')}`}>
+                                <Tag color="gold" style={{ marginLeft: 4 }}>
+                                  {v.missing.length} 项没换
+                                </Tag>
+                              </Tooltip>
+                            )}
+                          </span>
+                        ),
+                        children: (
+                          <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                            <Space wrap size={4}>
+                              {Object.entries(v.values).map(([k, val]) => {
+                                const lb =
+                                  v.replaced.find((r) => r.key === k)?.label || slots.find((sl) => sl.key === k)?.label || k;
+                                return (
+                                  <Tag key={k} color="blue">
+                                    {`${lb}→${val}`}
+                                  </Tag>
+                                );
+                              })}
+                            </Space>
+                            <HighlightedPrompt text={v.text} marks={v.marks} maxHeight={220} />
+                            {!!v.notes.length && (
+                              <Space wrap size={6}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  {`这一张有 ${v.notes.length} 句要说`}
+                                </Text>
+                                <HelpDot
+                                  text={
+                                    <Space direction="vertical" size={2}>
+                                      {v.notes.map((n, ni) => (
+                                        <span key={ni}>{n}</span>
+                                      ))}
+                                    </Space>
+                                  }
+                                />
+                              </Space>
+                            )}
+                          </Space>
+                        ),
+                      };
+                    });
+                  })}
+                />
+              )}
+              {!!preview && preview.items.some((it) => it.variants.length > 8) && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  每篇只列出前 8 张，剩下的开完单在生产单页逐张看（那张数一样的字）。
+                </Text>
+              )}
+            </div>
           )}
         </Space>
       )}

@@ -71,12 +71,18 @@ export const notifyJobSettled = (job: AssetJobInfo): void => {
   if (!deskNotifyEnabled()) return;
   const ok = job.status === 'succeeded';
   const interrupted = job.status === 'interrupted';
-  const title = ok ? '✅ 后台任务完成' : interrupted ? '⚠️ 后台任务被打断' : '❌ 后台任务失败';
+  // 11-10 口径③：原来这里裸写「后台任务完成」——投板跑完其实只是挂上板，片子还在豆包
+  // 那边出（几十分钟），一线看桌面通知以为片儿到手了，去成片墙一看是空的。
+  // 现在标题说清是**这一步**跑完，正文跟上海那边同一句 `done_note`（在哪看下一步）。
+  const title = ok
+    ? `✅「${job.kind_label}」这一步跑完了`
+    : interrupted ? '⚠️ 后台任务被打断' : '❌ 后台任务失败';
   const head = `「${job.kind_label}」${job.status_label}`;
   const detail = job.error ? `：${job.error.slice(0, 80)}` : '';
+  const body = ok && job.done_note ? `${head}｜${job.done_note}` : `${head}${detail}`;
   try {
     const n = new window.Notification(title, {
-      body: `${head}${detail}`,
+      body,
       tag: `asset-job-${job.id}`,
       // 失败/打断不自动消失（requireInteraction 仅部分浏览器支持），成功自动消失
       requireInteraction: !ok,

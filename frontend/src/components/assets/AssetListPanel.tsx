@@ -129,6 +129,11 @@ interface Props {
    * 按钮说「去生产单」就得真带人过去（同一个坑见评审二 P0-2）。
    */
   onGoToProduction?: () => void;
+  /**
+   * 11-10 一屏到底：建单成功后不只把人带到 ④，还把**刚建的那几张**交出去——
+   * ④ 那边直接弹出「投去 AI 出片」确认窗（开单窗自己缩掉）。
+   */
+  onProduced?: (ids: string[], notes: string[]) => void;
 }
 
 /**
@@ -150,7 +155,7 @@ interface Props {
  * 在弹窗里（风险词、一致性、钩子编号、号池），这里再写一套早晚对不上。
  */
 const AssetListPanel: React.FC<Props> = ({
-  canProduce, isAdmin, batchId, reloadToken, onGoToProduction, active = true,
+  canProduce, isAdmin, batchId, reloadToken, onGoToProduction, onProduced, active = true,
 }) => {
   const [items, setItems] = useState<AssetItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -1460,6 +1465,18 @@ const AssetListPanel: React.FC<Props> = ({
           // 建完单要真把人带到「生产与投板」——新单在那一屏才看得见
           onGoToProduction?.();
         }}
+        // 11-10 一屏到底：主按钮建完当场关窗，新单直接顶进 ④ 的投板确认窗
+        onProduced={
+          onProduced
+            ? (ids, notes) => {
+                setProduceOpen(false);
+                setPickedSummaries([]);
+                setSelected([]);
+                fetchList(page, pageSize);
+                onProduced(ids, notes);
+              }
+            : undefined
+        }
       />
     </Card>
   );

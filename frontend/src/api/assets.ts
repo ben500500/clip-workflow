@@ -627,12 +627,13 @@ export interface AssetQueueSegment {
  * 结果靠 `getAssetJob` 轮询取——刷新页面、换浏览器都还查得到（台账在库里，不在前端内存里）。
  */
 /**
- * 后台任务类型。六类都有写入方（批 F 加 `frames`、批 H 加 `dispatch`、批 J 加
- * `download`/`prompt_preview`）：`dispatch` 是唯一**往外花钱/花号池额度**的那一类，
- * 所以提交口另带 `confirm`；`download`/`prompt_preview` 是批 J 的搭车动作——
- * 反推时顺带下载原片、过审后自动备提示词，也开放手工批量（重试失败行用）。
+ * 后台任务类型。七类都有写入方（批 F 加 `frames`、批 H 加 `dispatch`、批 J 加
+ * `download`/`prompt_preview`、11-06 加 `analyze`＝反推进台账）：`dispatch` 是唯一
+ * **往外花钱/花号池额度**的那一类，所以提交口另带 `confirm`；`download`/`prompt_preview`
+ * 是批 J 的搭车动作——反推时顺带下载原片、过审后自动备提示词，也开放手工批量（重试失败行用）。
  */
 export type AssetJobKind =
+  | 'analyze'
   | 'summary_generate'
   | 'produce'
   | 'frames'
@@ -656,6 +657,13 @@ export interface AssetJobInfo {
   kind_label: string;
   status: AssetJobStatus;
   status_label: string;
+  /**
+   * 11-10 口径③「显示完成，成片墙还是看不到」：任务成功完成时后端给的一句白话
+   * ——**这一个动作**做到了哪一步、下一步去哪个页签看（非成功态为 null）。
+   * 「已完成」只说明投板／开单这个动作跑完，不等于片子到手；话术权威在后端
+   * `ASSET_JOB_DONE_NOTES`，前端不再自己拼一套（两套必然分叉）。
+   */
+  done_note: string | null;
   /** true = queued/running（还没完事），轮询就按这个判停 */
   running: boolean;
   batch_id: string | null;
@@ -778,6 +786,33 @@ export interface AssetOutputGroup {
   latest_at: string | null;
   /** 该组最新一条的首帧 presign（1h TTL），没帧＝null */
   thumb_url: string | null;
+}
+
+/** 成片墙空态的三个数（11-10 用户口径「我投去了，生产出来了就给我看」）。
+ *  墙空着的时候界面必须说得出是**哪一步**没走到，不能只说「还没有成片」。 */
+export interface AssetOutputsAwaiting {
+  /** 已投板、还没出终态（等豆包跑完＋回收）的张数 */
+  waiting_on_board: number;
+  /** 只建了单、还没投板的张数（要人去 ④ 点「投去出片」） */
+  order_ready_not_dispatched: number;
+  /** 这个口径下最近一次回收到成片的时间；一条都没回收过＝null */
+  last_output_at: string | null;
+}
+
+/** 换皮扇出的实时预览（`POST /assets/prompt-elements/fanout-preview`，0 元不落库）。
+ *  与开单同一个引擎（expand_matrix＋compose_variants），所以这里看到的换词结果
+ *  就是开出去的单会带的那份（编号那一步的替换除外，投板前 ④ 还能改）。 */
+export interface FanoutPreviewVariant {
+  seq: number;
+  values: Record<string, string>;
+  text: string;
+  replaced: { key: string; label: string; from: string; to: string; count: number }[];
+  /** 这一条换上的词落在正文哪里（同 `AssetPromptElementsApplyResult.marks`） */
+  marks?: AssetPromptElementMark[];
+  notes: string[];
+  /** 这些参数没有原值，这一条没换 */
+  missing: string[];
+  changed: boolean;
 }
 
 // ──────────────────────────────────────────────
@@ -1120,6 +1155,9 @@ export interface AssetProductionListParams {
   status?: ProductionState | string;
   batch_id?: string;
   asset_id?: string;
+  /** 11-10 一屏到底：逗号拼接的**单个字符串**，只点这几张单（开完单立刻拿去投板用）。
+   *  计数 `dispatch` 不跟着变——它说的还是这一屏的账。 */
+  ids?: string;
   page?: number;
   /** 默认 100，后端封顶 300 */
   page_size?: number;  /** A′：owner=me 只看自己投产的单（查询偏好）；all/缺省＝全量 */
@@ -1577,6 +1615,26 @@ export interface AssetPromptElementFound {
   context?: string;
 }
 
+/**
+ * POST /assets/prompt-elements/guess-values 的回包（11-10「帮我提炼原值」）。
+ *
+ * `values` 按**稿子 id** 分组，值只可能是"这一篇稿子里逐字存在的串"（后端 `accept_guessed_values`
+ * 过了三条硬判据才留下：key 在清单里／逐字出现／落在可动区间）。`dropped` 是被丢弃的白话说明，
+ * 界面上要说出来——不然人会以为"没显示＝模型没找到"，其实是它编了一个没敢用。
+ */
+export interface AssetPromptElementGuessResult {
+  /** 稿子 id → { 槽位 key: 抄回来的原值 } */
+  values: Record<string, Record<string, string>>;
+  /** 槽位 key → 中文名（回显用） */
+  labels: Record<string, string>;
+  dropped: string[];
+  notes: string[];
+  model: string;
+  slot_count: number;
+  text_count: number;
+  total_chars: number;
+}
+
 /** POST /assets/prompt-elements/apply 返回的一条替换明细（count=0＝原文里没这个词面，没改） */
 export interface AssetPromptElementReplaced {
   key: string;
@@ -1587,9 +1645,24 @@ export interface AssetPromptElementReplaced {
   count: number;
 }
 
+/**
+ * 一处"换上的新词在正文里的位置"（后端 `mark_replacements` 算的，前端只照它描色）。
+ * 为什么要后端算：`apply_edits` 是逐条顺序改的，前端拿 `from/to` 自己 indexOf
+ * 会和"原稿里本来就写着这个词"打架——那种情况后端会另给一句 notes 说清。
+ */
+export interface AssetPromptElementMark {
+  start: number;
+  end: number;
+  to: string;
+  from: string;
+  label: string;
+}
+
 export interface AssetPromptElementsApplyResult {
   text: string;
   replaced: AssetPromptElementReplaced[];
+  /** 11-10 用户口径①「看不到正文被替换的地方」：后端算好的替换落点（升序、互不重叠） */
+  marks?: AssetPromptElementMark[];
   notes: string[];
   length: number;
   risk: { block: Array<{ word: string; level: string }>; warn: Array<{ word: string; level: string }> };
@@ -2633,6 +2706,15 @@ export const assetApi = {
       notes: string[];
     }>,
 
+  // 11-10「帮我提炼原值」：认不出原值时让模型**逐字抄回**稿子里那句原文。
+  // ⚠️ 与上面那条的区别：这一口**调模型、花钱**，所以是界面上一个按钮（点了才跑），
+  // 超时照同步等模型的口径带 MODEL_WAIT_TIMEOUT。后端只回"确实逐字出现在这一篇稿子里"
+  // 的值，编的一律丢掉并写进 dropped。
+  guessPromptElementValues: (data: { texts: Record<string, string>; category?: string }) =>
+    client.post('/assets/prompt-elements/guess-values', data, {
+      timeout: MODEL_WAIT_TIMEOUT,
+    }) as Promise<AssetPromptElementGuessResult>,
+
   // 套用替换：把改后的整段正文还给你（不落库、不写 prompt_text），顺带提前扫一遍投板闸门
   applyPromptElements: (data: {
     text: string;
@@ -2713,8 +2795,32 @@ export const assetApi = {
     client.get('/assets/outputs', { params }) as Promise<AssetOutputListResult>,
 
   // 成片墙两级视图第一级：按素材（钩子）或按批次聚合的组清单（每组带成片数/最近回收/最新缩略图）
+  // awaiting＝空态要说真话用的三个数（11-10）：投板在途／只建单没投／最近回收时间
   listOutputGroups: (params?: { group_by?: 'asset' | 'batch'; batch_id?: string; kind?: string; qc_status?: string; owner?: 'me' | 'all'; limit?: number }) =>
-    client.get('/assets/outputs/groups', { params }) as Promise<{ group_by: string; groups: AssetOutputGroup[] }>,
+    client.get('/assets/outputs/groups', {
+      params,
+    }) as Promise<{ group_by: string; groups: AssetOutputGroup[]; awaiting?: AssetOutputsAwaiting }>,
+
+  // 换皮扇出的实时预览（11-10 用户口径「选了元素但看不到正文被替换的地方」）：
+  // 0 元、不落库、不占号；与开单同一个引擎，所以配对不齐/超上限的 400 话术也是一条
+  previewPromptElementFanout: (body: {
+    texts: Record<string, string>;
+    category?: string;
+    values: Record<string, string[]>;
+    base?: Record<string, string>;
+    base_by_summary?: Record<string, Record<string, string>>;
+    mode?: 'zip' | 'product';
+  }) =>
+    client.post('/assets/prompt-elements/fanout-preview', body, {
+      // 纯字面替换，不等模型：给 30s 够最慢的一批（50 条稿子）跑完
+      timeout: 30000,
+    }) as Promise<{
+      rows: number;
+      mode: string;
+      notes: string[];
+      risk_words: string[];
+      items: { id: string; variants: FanoutPreviewVariant[] }[];
+    }>,
 
   // P1（评审定稿⑧）：成片交付包——跨组勾选打包 zip（含 manifest），验收 failed 拦在打包口
   packageOutputs: (ids: string[]) =>

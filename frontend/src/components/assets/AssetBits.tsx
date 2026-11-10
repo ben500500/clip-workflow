@@ -8,7 +8,10 @@ import {
   PRODUCTION_STATE_LABELS,
   STAGE_FIELDS,
 } from '../../api/assets';
-import type { AssetBudgetGate, AssetBudgetGateInfo, AssetImageAspect, AssetItem, AssetMediaKind, AssetStage, AssetStatus, AuditStatus, ProductionState } from '../../api/assets';
+import type {
+  AssetPromptElementMark,
+  AssetBudgetGate, AssetBudgetGateInfo, AssetImageAspect, AssetItem, AssetMediaKind, AssetStage, AssetStatus, AuditStatus, ProductionState,
+} from '../../api/assets';
 
 const { Text } = Typography;
 
@@ -256,5 +259,102 @@ export const RiskTags: React.FC<{ riskHit: string | null | undefined }> = ({ ris
         );
       })}
     </span>
+  );
+};
+
+/**
+ * 整段提示词正文的可读呈现＋词级高亮（11-10 用户三条口径里的第一条）。
+ *
+ * 用户原话：「我刚选了几个元素，但是没有看到正文被替换的地方。正文显示的也不够明显，看不清楚。」
+ * 两句分别对应这里两件事：
+ *  1. **绿底＝刚换上的词**：位置来自后端 `mark_replacements`（`marks`），前端不自己 indexOf——
+ *     自己找会把"原稿里本来就写着这个词"的那处也当成改过的，而后端在同一句 notes 里已经把这种
+ *     歧义说清了，界面只照它给的坐标描色；
+ *  2. **摆清楚**：14px（原来那一屏是 12px 的 secondary 灰字，正文上千字挤成一坨）、行高 1.75、
+ *     保留换行、浅底加边框当"稿纸"，并**自动滚到第一处改动**——一屏 16 行的窗口里，
+ *     改动在第 30 行等于没高亮。
+ *
+ * 只读：改字永远走旁边那个 TextArea（`改投递稿`／`模板脚本提示词`），这里从不写回，
+ * 免得"看着像能编辑其实编辑不了"。
+ */
+export const HighlightedPrompt: React.FC<{
+  text: string;
+  marks?: AssetPromptElementMark[];
+  /** 稿纸最高多高（默认 260px，约 12 行）；超出内部滚，不吃弹窗整屏高度 */
+  maxHeight?: number;
+  /** 标题左侧那句话（默认「换上的词已标绿」） */
+  caption?: React.ReactNode;
+}> = ({ text, marks, maxHeight = 260, caption }) => {
+  const boxRef = React.useRef<HTMLDivElement | null>(null);
+  const firstRef = React.useRef<HTMLSpanElement | null>(null);
+  const list = (marks || []).filter((m) => m.end > m.start);
+
+  // 内容变了就滚到第一处改动（没有改动时回到顶部，别停在上一份稿子的中间）
+  React.useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const target = firstRef.current;
+    box.scrollTop = target ? Math.max(0, target.offsetTop - 12) : 0;
+  }, [text, list.length]);
+
+  const segments: React.ReactNode[] = [];
+  let cursor = 0;
+  list.forEach((m, i) => {
+    if (m.start > cursor) segments.push(text.slice(cursor, m.start));
+    segments.push(
+      <span
+        key={`m${i}`}
+        ref={i === 0 ? firstRef : undefined}
+        data-mark="first"
+        style={{
+          background: '#d9f7be',
+          color: '#135200',
+          borderRadius: 2,
+          padding: '0 2px',
+          boxShadow: 'inset 0 0 0 1px #95d475',
+        }}
+      >
+        {text.slice(m.start, m.end)}
+      </span>,
+    );
+    cursor = m.end;
+  });
+  if (cursor < text.length) segments.push(text.slice(cursor));
+
+  return (
+    <div
+      ref={boxRef}
+      style={{
+        // 必须是 offsetParent：不写 position，第一处改动的 offsetTop 会相对更外层算，滚偏
+        position: 'relative',
+        maxHeight,
+        overflow: 'auto',
+        background: '#fafafa',
+        border: '1px solid #e5e5e5',
+        borderRadius: 4,
+        padding: '10px 12px',
+        fontSize: 14,
+        lineHeight: 1.75,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+      }}
+    >
+      {segments}
+      {caption !== undefined ? (
+        <div style={{ marginTop: 6 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {caption}
+          </Text>
+        </div>
+      ) : (
+        !!list.length && (
+          <div style={{ marginTop: 6 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {`绿底 ${list.length} 处＝刚换上的词，已滚到第一处`}
+            </Text>
+          </div>
+        )
+      )}
+    </div>
   );
 };

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Button, Checkbox, Descriptions, Input, Modal, notification, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
-import { CopyOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { CopyOutlined } from '@ant-design/icons';
 import { RECHECK_CODE_LABELS, assetApi, isAssetJobAck, waitForAssetJob } from '../../api/assets';
 import type { AssetProduceResponse, AssetSummary } from '../../api/assets';
 import { HOOK_CODE_RE, MonoText, parseHookCodes } from './AssetBits';
@@ -10,7 +10,7 @@ import AssetCardPicker from './AssetCardPicker';
 import AssetProduceParams, { EMPTY_PRODUCE_PARAMS } from './AssetProduceParams';
 import type { ProduceParams } from './AssetProduceParams';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
-import { withCrossPersonConfirm, withCrossOwnerConfirm } from './crossPerson';
+import { withCrossOwnerConfirm } from './crossPerson';
 import { useAuth } from '../../contexts/AuthContext';
 
 const { Text, Paragraph } = Typography;
@@ -21,14 +21,52 @@ interface Props {
   summaries: AssetSummary[];
   isAdmin: boolean;
   onClose: () => void;
-  /** 建单成功后回主面板（切到生产单页签）。produce 的响应里**没有**新单 id 列表
-   *  （只有 created/results），所以只能让父面板自己去列表。 */
+  /** 建单成功后回主面板（切到生产单页签＋重新拉列表）。 */
   onDone: () => void;
+  /**
+   * 11-10 用户口径「一屏到底」：点「生成生产单并投去出片」→ 开单这一屏**自己缩掉**，
+   * 把刚建的那几张单直接顶进 ④ 生产单的「投去 AI 出片」确认窗（不再让人回列表勾一遍）。
+   * `notes` 是开单结果里那些「原来那一屏会亮、缩掉后就没人说」的提醒（漂移/没过自动检查/
+   * 标题超字…），由投板确认窗接着说。父层没接（老入口）就退化成一条消息条。
+   */
+  onProduced?: (ids: string[], notes: string[]) => void;
   /**
    * 批 L：就地上传角色卡挂的批次（=被投产素材所在批次）。可选——
    * 生产单页「全部」视图开单时拿不到，就由上传口新建小批次。
    */
   batchId?: string;
+}
+
+/**
+ * 建单结果压成白话句子（11-10 一屏到底）。
+ *
+ * 原来这些全在开单窗的「结果屏」上分六个 Alert 摆着；现在点完建单窗口就缩了，
+ * 警示不能跟着一起消失——所以在这里收成几句人话，交给**下一屏**（投板确认窗／
+ * 右上角消息条）接着说。只留会影响「要不要投」的那几类，逐条上限 5 条免得刷屏。
+ */
+export function produceResultNotes(res: AssetProduceResponse): string[] {
+  const out: string[] = [];
+  (res.recheck_failed || []).slice(0, 5).forEach((f) =>
+    out.push(`${f.code}：自动检查没过（${(f.problems || []).map((p) => p.message).join('；')}），这条没建单`),
+  );
+  (res.drifted || []).slice(0, 5).forEach((d) =>
+    out.push(`${d.code} #${d.seq}：正文和过审文案对不上（${d.reason || '对不上'}）——别直接投，先在生产单页逐条改名或回审核台改文案`),
+  );
+  (res.element_fanout?.skipped || []).slice(0, 5).forEach((s) =>
+    out.push(`${s.code}：这组词拼进句子后撞上高风险词 ${s.words.join('、')}，那一条没建单（同批其它条照常建）`),
+  );
+  (res.prompt_skeleton_gaps || []).slice(0, 3).forEach((g) =>
+    out.push(`${g.code} #${g.seq}：缺 ${g.missing.join('、')}（缺「负面约束」会出怪片、缺「音频与字幕」会被加字幕）`),
+  );
+  (res.title_warnings || []).slice(0, 3).forEach((w) =>
+    out.push(`${w.asset_code} #${w.seq}：推荐标题「${w.title}」实测 ${w.chars} 字／上限 ${w.limit} 字，超了会被截断`),
+  );
+  (res.cards || [])
+    .filter((c) => c.orientation === 'landscape')
+    .slice(0, 2)
+    .forEach((c) => out.push(`角色卡「${c.file_name || c.code || ''}」是横版：出的是横屏片（画幅由卡决定，提示词写 9:16 压不住）`));
+  (res.warnings || []).slice(0, 4).forEach((wn) => out.push(wn));
+  return out;
 }
 
 /**
@@ -41,7 +79,7 @@ interface Props {
  * 号池实测 ≈120 条/日，产能不做硬限（11-03 拍板），但建单当场就把「今天已经吃掉多少」摆出来。
  * 钩子编号只能从 hook_id.py 取号带进来，前端不生成、后端不编号。
  */
-const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose, onDone, batchId }) => {
+const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose, onDone, onProduced, batchId }) => {
   const { user } = useAuth();
   const currentUserId = user?.id;
   const [n, setN] = useState(3);
@@ -83,7 +121,14 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
    */
   const [jobHint, setJobHint] = useState<string | null>(null);
   const giveUpRef = useRef(false);
-  const [takingCodes, setTakingCodes] = useState(false);
+  /**
+   * 11-10「钩子编号也自动取了，不要人工参与」：自动取号失败时才有内容。
+   * 失败不静默放行（缺号单导出带不上编号、回头补号要一张一张钉），而是把白话原因摆出来，
+   * 顺带给出唯一的两条退路：我自己贴号 / 复制待取号清单去服务器跑。
+   */
+  const [autoTakeError, setAutoTakeError] = useState<string | null>(null);
+  /** 手工贴号那一格默认不出现——只有自动取号失败、且人自己点开才给（正常路径零人工） */
+  const [codesManualOpen, setCodesManualOpen] = useState(false);
   /**
    * 批 O（11-10 用户口径）：换皮参数区算出来的那份（多值＋配对方式＋扇出行数）。
    * 放在父组件而不是子组件里，是因为**三个地方都要用它**：待填号数、要投几条的预告、
@@ -91,24 +136,27 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
    */
   const [params, setParams] = useState<ProduceParams>(EMPTY_PRODUCE_PARAMS);
 
-  // 批 I（链路收敛）：投产成功后顺势投板——不用再回生产单列表勾一遍。
-  // 11-09 用户口径「确认步骤太多了」：原来这里还有一枚 `followupConfirm` 勾选，
-  // 不勾「投去出片」就是灰的、点了没反应（现网真有人以为已经投出去了）。
-  // 现在**点「投去出片」这一下本身就是人工确认**，勾去掉了；接口照旧带 confirm=true。
-  const [followupBusy, setFollowupBusy] = useState(false);
+  // 11-10 用户口径「一屏到底」＋「确认去投产的时候那个窗口就自动关闭掉吧」：
+  // 批 I 的「结果屏上再点一次投去出片」取消了——点「生成生产单并投去出片」这一颗按钮
+  // 就代表要投，建完单当场关窗，把新单直接顶进 ④ 的投板确认窗（那一屏照旧能看全文／
+  // 改投递稿／挑拼接素材，确认那一下也是当场关窗）。这里不再自己调 dispatch 口。
+  /** 这一颗按钮按下去是要「建完就投」还是「只建单」——决定成功后的分流，也决定哪颗按钮转圈 */
+  const [submitIntent, setSubmitIntent] = useState<'dispatch' | 'build_only'>('dispatch');
 
   // 批 M（评审二·P1-4）：Modal destroyOnClose 只销毁子树，本组件的 state 跨开合残留——
   // cardIds/codeText 这类"上一单填的"会 silently 落到下一单上。
   // 打开时统一归零；n/boardTotal/accounts 这类"上一批怎么配的"保留——批量开单时是顺手的好默认。
   useEffect(() => {
     if (!open) return;
-    setFollowupBusy(false);
+    setSubmitIntent('dispatch');
     setResult(null);
     setJobHint(null);
     giveUpRef.current = false;
     setCardIds([]);
     setCodeText('');
     setUsedCodes([]);
+    setAutoTakeError(null);
+    setCodesManualOpen(false);
     setBoardTag('');
     setDramaAbbr('');
     setWaiveReason('');
@@ -117,54 +165,6 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
     // 但父组件留着上一批的 rows 会把待填号数算错）
     setParams(EMPTY_PRODUCE_PARAMS);
   }, [open]);
-
-  const dispatchFollowup = async () => {
-    const ids = (result?.production_ids || []).filter(Boolean);
-    if (!ids.length) return;
-    setFollowupBusy(true);
-    try {
-      const res = await withCrossPersonConfirm((c) =>
-        assetApi.dispatchProductions({
-          ids,
-          confirm: true,
-          async_mode: true,
-          cross_person_confirm: c,
-        }),
-      );
-      if (!res) return; // 取消了「替他人批次」确认：什么都不做
-      nudgeAssetJobBanner();
-      if (isAssetJobAck(res)) {
-        const pre = (res as { precheck?: { will_create: number; will_recover: number; blocked?: unknown[]; planned_board_rows: number } }).precheck;
-        const blocked = !!pre?.blocked?.length;
-        // 11-09 用户口径「确认后窗口就缩掉，让任务在后台跑着」：原来是 Modal.success
-        // ——投都投完了还要人再点一下关闭。改成右上角消息条；**被闸门挡下**的那条不自动关
-        // （duration 0），因为那是「你以为投了其实没投」的唯一现场证据。
-        notification.open({
-          key: 'asset-dispatch-ack',
-          placement: 'topRight',
-          duration: blocked ? 0 : 8,
-          style: { width: 460 },
-          message: '已经排上：机器去企微后台建任务出片',
-          description: (
-            <Text style={{ fontSize: 12 }}>
-              新建 {pre?.will_create ?? '—'} 张、回收 {pre?.will_recover ?? 0} 张（≈{pre?.planned_board_rows ?? '—'} 条额度）
-              {blocked ? `；${pre!.blocked!.length} 张被闸门挡下没投，原因见 ④ 生产单页行上` : ''}。
-              出好的片子自动回到生产单页各单的「成片」列，可以关页面去干别的。
-            </Text>
-          ),
-        });
-      } else {
-        message.success('已经排上：机器去企微后台建任务出片，成片自动回「成片」列');
-      }
-      setResult(null);
-      onDone();
-    } catch (e) {
-      // 没配凭据/闸门拦截等，后端给的是白话 detail，原样亮出来
-      message.error((e as Error).message || '投板失败', 8);
-    } finally {
-      setFollowupBusy(false);
-    }
-  };
 
   // 批 O：扇出是「一条稿子换词后另立单」，所以**编号与投板条数都要乘上扇出行数**
   // （后端 codes_for_summary 一次取 n×扇出行数，号不够就只能建出缺号的单）。
@@ -185,8 +185,12 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
     () => summaries.map((s) => s.hook_code).filter((c): c is string => !!c),
     [summaries],
   );
-  /** 手工还要补几个：预取号能顶掉的槽不再要求人填（差值下限 0） */
-  const needManualCodes = Math.max(0, needCodes - parkedCodes.length);
+  /**
+   * 11-10「编号也自动取」还差几个＝需要的总数 − 文案名下已预取的 − 这一屏已经拿到的。
+   * 自动取来的号会回填进 `codeText`，所以点第二次提交不会二次取号（号一发即烧，
+   * 取两遍就是白废一批）。
+   */
+  const needAutoCodes = Math.max(0, needCodes - parkedCodes.length - codes.length);
 
   // 11-06 拍板③：500ms 防抖查已用号（不逐键打接口）；请求序号防乱序回包。
   // 回显失败静默——提交时后端硬查重还在，别因为一个回显口把填单卡死。
@@ -216,7 +220,63 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
     if (seen.length) setWaiveCodes(seen);
   };
 
-  const submit = async () => {
+  /**
+   * 建单成功后的分流（11-10 一屏到底）。三种收场：
+   *  - **有单＋要投**：当场关窗，把新单 id／该接着说的提醒交给父层——下一屏就是 ④ 的
+   *    「投去 AI 出片」确认窗（预勾好这几张），人不用再点一次「去投板」；
+   *  - **有单＋只建单**（或父层没接 onProduced／通道不是企微任务板）：当场关窗＋一条
+   *    右上角消息条；有提醒时消息条**不自动关**，因为那是「这批单有问题、先别投」的证据；
+   *  - **一张都没建成**：**不关窗**。原来那一屏的分项警示（自动检查没过／漂移／缺行…）
+   *    这时候是唯一的现场证据，缩掉了人就只剩一句「失败」。
+   */
+  const afterProduced = (res: AssetProduceResponse, intent: 'dispatch' | 'build_only') => {
+    collectRecheckCodes(res);
+    const ids = (res.production_ids || []).filter(Boolean);
+    const notes = produceResultNotes(res);
+    if (!ids.length) {
+      setResult(res);
+      message.error('这一批一张生产单都没建出来，原因见窗口里列的几条', 8);
+      return;
+    }
+    setResult(null);
+    setJobHint(null);
+    onClose();
+    const channelOk = res.board.channel === 'wework_aivideo';
+    if (intent === 'dispatch' && onProduced && channelOk) {
+      onProduced(ids, notes);
+      return;
+    }
+    onDone();
+    notification.open({
+      key: 'asset-produce-built',
+      placement: 'topRight',
+      duration: notes.length ? 0 : 10,
+      style: { width: 460 },
+      message: `生产单已建好：${ids.length} 张（本批 ≈${res.board.planned_rows} 条额度）`,
+      description: (
+        <Space direction="vertical" size={2}>
+          <Text style={{ fontSize: 12 }}>
+            {channelOk
+              ? '还没投板。要投就在 ④ 生产单页勾上点「投去 AI 出片」，出好的片子自己回 ⑤ 成片墙。'
+              : `这批的投板渠道是「${res.board.channel}」，机器不自动投，请导出后手工投。`}
+          </Text>
+          {notes.slice(0, 6).map((nx, i) => (
+            <Text key={i} type="warning" style={{ fontSize: 12 }}>
+              {nx}
+            </Text>
+          ))}
+          {notes.length > 6 && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              另有 {notes.length - 6} 条提醒没列出
+            </Text>
+          )}
+        </Space>
+      ),
+    });
+  };
+
+  const submit = async (intent: 'dispatch' | 'build_only' = 'dispatch') => {
+    setSubmitIntent(intent);
     if (!summaries.length) {
       message.warning('没有已过审的文案');
       return;
@@ -242,8 +302,35 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
       message.error(params.blocked, 8);
       return;
     }
+    if (needAutoCodes > 500) {
+      message.error(`这批要 ${needAutoCodes} 个号，一次最多取 500 个：请分几批开单`, 8);
+      return;
+    }
     setBusy(true);
     giveUpRef.current = false;
+    // 11-10 用户口径「钩子编号这个也自动取了，不要人工参与」：差额在**这一刻**向后端取号命令要。
+    // 放在提交而不是开屏，是因为号一发就烧掉——打开看看又关掉不该烧掉一批号。
+    // 取不到就停在这里（不建缺号单）：界面把原因说白，并给「我自己贴号」这一条退路。
+    let finalCodes = codes;
+    if (needAutoCodes > 0) {
+      setAutoTakeError(null);
+      try {
+        const taken = await assetApi.takeHookCodes(needAutoCodes);
+        // 与已预取/已手工贴的号去重：撞上了宁可少一个槽（后端会拿预取号补），
+        // 也不要让两个槽位挂同一个号——一钩一号是导出与回收对账的地基。
+        const seen = new Set([...codes, ...parkedCodes]);
+        const fresh = (taken.codes || []).filter((c) => !seen.has(c));
+        finalCodes = [...codes, ...fresh];
+        // 落到状态里，别让"提交失败再点一次"变成第二次取号（号一发就烧掉，取两遍就是白废一批）
+        if (fresh.length) setCodeText((prev) => (prev ? `${prev} ${fresh.join(' ')}` : fresh.join(' ')));
+      } catch (e) {
+        setAutoTakeError((e as Error).message || '取号命令没回话');
+        setCodesManualOpen(true);
+        setBusy(false);
+        message.error('自动取号没成功，这批还没建单（原因见「钩子编号」那一栏）', 8);
+        return;
+      }
+    }
     try {
       // A′（2026-11-08 定稿）：跨人确认改**会话级一次性**——同一条候选本会话确认过一次
       // （sessionStorage 记账）就不再弹；换会话/新候选仍会问那一句（知情不能省）。
@@ -264,7 +351,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
           board_tag: boardTag || undefined,
           card_asset_ids: cardIds.length ? cardIds : undefined,
           drama_abbr: dramaAbbr.trim() || undefined,
-          hook_codes: codes.length ? codes : undefined,
+          hook_codes: finalCodes.length ? finalCodes : undefined,
           expand,
           waive_reason: waiveReason || undefined,
           waive_codes: waiveCodes.length ? waiveCodes : undefined,
@@ -311,13 +398,10 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
           message.error(job.error || `后台任务${job.status_label}，生产单没建成（任务号 ${job.id}）`, 8);
           return;
         }
-        setResult(job.result as AssetProduceResponse);
-        collectRecheckCodes(job.result as AssetProduceResponse);
+        afterProduced(job.result as AssetProduceResponse, intent);
         return;
       }
-      setResult(res);
-      collectRecheckCodes(res);
-      message.success(res.message);
+      afterProduced(res, intent);
     } catch (e) {
       message.error((e as Error).message || '生成生产单失败');
     } finally {
@@ -355,8 +439,23 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
         ) : (
           <Space>
             <Button onClick={closeAndGiveUp}>{busy ? '先关掉，后台继续跑' : '取消'}</Button>
-            <Button type="primary" loading={busy} onClick={submit}>
-              生成生产单（要投 {plannedRows} 条）
+            {/* 11-10 用户口径「我投去了，生产出来了就给我看，不要搞这么复杂」：
+                主按钮＝建完单直接进投板确认（窗口自己缩掉）；想先囤着不投走左边那颗。 */}
+            <Button
+              loading={busy && submitIntent === 'build_only'}
+              disabled={busy && submitIntent !== 'build_only'}
+              onClick={() => submit('build_only')}
+            >
+              只建单，先不投
+            </Button>
+            <Button
+              type="primary"
+              danger
+              loading={busy && submitIntent === 'dispatch'}
+              disabled={busy && submitIntent !== 'dispatch'}
+              onClick={() => submit('dispatch')}
+            >
+              生成生产单并投去出片（{plannedRows} 条）
             </Button>
           </Space>
         )
@@ -435,29 +534,10 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
             />
           )}
 
-          {/* 批 I（链路收敛）：单子建好了顺势问一句投不投——不用回列表再勾一遍。
-              11-09：「确认把这 N 张投去出片」那枚勾选去掉了，点按钮这一下就是确认；
-              投完窗口当场缩掉，任务在后台跑，进度看顶部横幅。 */}
-          {!!result.production_ids?.length && result.board.channel === 'wework_aivideo' && (
-            <div>
-              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-                投出去吃当天号池额度：≈{result.board.planned_rows} 条，一条 25 分钟起。
-              </Text>
-              <Space style={{ marginTop: 8 }}>
-                <Button
-                  type="primary"
-                  danger
-                  loading={followupBusy}
-                  onClick={dispatchFollowup}
-                >
-                  投去出片
-                </Button>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  先不投就点「去生产单列表」，以后随时在生产单页投。
-                </Text>
-              </Space>
-            </div>
-          )}
+          {/* 11-10 一屏到底：批 I 那颗「投去出片」没了。现在主按钮就叫
+              「生成生产单并投去出片」——建完当场关窗、把这批单直接顶进 ④ 的投板确认窗。
+              还能走到这一屏只剩一种情况：一张都没建成（幂等复活除外），
+              那就先照下面列的原因改，不用谈投。 */}
 
           {!!result.recheck_failed?.length && (
             <Alert
@@ -645,71 +725,78 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
           <AssetProduceParams active={open} summaries={summaries} onChange={setParams} />
 
           <div>
-            <Space style={{ marginBottom: 4 }} wrap>
-              <Text>钩子编号（本单共需 {needCodes} 个{parkedCodes.length ? `，其中 ${parkedCodes.length} 个已由文案预取顶上` : ''}）：</Text>
+            {/* 11-10 用户口径「钩子编号这个也自动取了，不要人工参与」：
+                这一屏不再有"贴号"这一步。号的两条来源都在后端：文案名下预取的那份
+                （开单当场顶槽），加上**点提交那一刻**向取号命令现取的差额。
+                ⚠️ 取号必须压在提交那一刻，不能开屏就取：号一发就烧掉，人只是打开看看
+                又把窗关了，那几个号就白废了（原来那颗「代取 N 个号」就是这么烧号的）。 */}
+            <Space wrap size={6}>
+              <Text>钩子编号（本单共需 {needCodes} 个，自动取，不用你填）</Text>
               {parkedCodes.length > 0 && (
                 <Tooltip title={`这些号是提前取好放在文案名下的（${parkedCodes.slice(0, 6).join('、')}${parkedCodes.length > 6 ? '…' : ''}）。开单时后端自动把它们顶到缺号的槽位上，顶掉就清空——一钩一号，不会重复投。`}>
                   <Tag color="purple">已预取 {parkedCodes.length} 个</Tag>
                 </Tooltip>
               )}
+              {needAutoCodes > 0 && <Tag color="blue">提交时自动取 {needAutoCodes} 个</Tag>}
               {codes.length > 0 && (
-                <Tag color={codes.length + parkedCodes.length >= needCodes && !badCodes.length && !dupCodes && !usedCodes.length ? 'green' : 'orange'}>
-                  手工填 {codes.length}/{needManualCodes}
-                </Tag>
+                <Tooltip
+                  title={
+                    autoTakeError
+                      ? '这一格是你手工贴进来的号（自动取号没成才用得上）。五位编号，一钩一号。'
+                      : '点「生成生产单」那一下向服务器取号命令拿到的号。号一发就烧掉：这批要是没建成，下次提交会沿用这几个号，不会再取一遍。'
+                  }
+                >
+                  <Tag color={badCodes.length || dupCodes || usedCodes.length ? 'red' : 'green'}>
+                    {autoTakeError ? `手工填 ${codes.length} 个` : `已备好 ${codes.length} 个号`}
+                  </Tag>
+                </Tooltip>
               )}
             </Space>
-            <div style={{ marginBottom: 4 }}>
-              <Space size={8} wrap>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  服务器跑 hook_id.py 取号（复制清单照着跑）：
-                </Text>
-                {/* 批 N-4 最小版（评审二·P1-1）：每单 SSH 跑脚本最大的摩擦是"到底要取几个号"
-                    还得现算现抄。清单一键复制，到服务器照着跑；界面内直连取号仍待拍板。 */}
-                <Button
-                  size="small"
-                  icon={<ThunderboltOutlined />}
-                  loading={takingCodes}
-                  disabled={needManualCodes <= 0}
-                  onClick={async () => {
-                    try {
-                      const r = await assetApi.takeHookCodes(needManualCodes);
-                      setCodeText((t) => (t ? t + ' ' : '') + r.codes.join(' '));
-                      message.success(`已代取 ${r.codes.length} 个号（一发即烧，取消开单号就作废）`);
-                    } catch (e) {
-                      message.warning((e as Error).message || '代取号未启用，走手工粘贴', 6);
-                    }
-                  }}
-                >
-                  代取 {needManualCodes} 个号
-                </Button>
-                <Button
-                  size="small"
-                  icon={<CopyOutlined />}
-                  onClick={() => {
-                    const lines = [
-                      `本单待取号 ${needManualCodes} 个（${summaries.length} 条文案 × 每条 ${n} 份${fanoutRows > 1 ? ` × 换皮扇出 ${fanoutRows} 张` : ''}${parkedCodes.length ? `，另 ${parkedCodes.length} 个已预取` : ''}）`,
-                      ...summaries.map((s) => `${s.asset_code || s.id.slice(0, 8)}｜${(s.text || '').slice(0, 40)}${s.hook_code ? `｜已预取 ${s.hook_code}` : ''}`),
-                    ];
-                    navigator.clipboard
-                      .writeText(lines.join('\n'))
-                      .then(() => message.success(`待取号清单已复制（${needManualCodes} 个号），去服务器照着跑 hook_id.py`))
-                      .catch(() => message.error('复制失败：浏览器没给剪贴板权限，请手动抄'));
-                  }}
-                >
-                  复制待取号清单（{needManualCodes} 个）
-                </Button>
-              </Space>
-            </div>
-            <Input.TextArea
-              rows={2}
-              placeholder="空格/逗号/换行分隔，如：7C0B1 7C0B2（五位编号，不能自己编）"
-              value={codeText}
-              onChange={(e) => setCodeText(e.target.value)}
-            />
-            {codes.length > 0 && codes.length < needManualCodes && (
-              <Text type="warning" style={{ fontSize: 12 }}>
-                还差 {needManualCodes - codes.length} 个：缺了照样能建单，但导出内容带不上编号。
-              </Text>
+            {/* 自动取号没成时才把退路摆出来：先说清为什么，再给「我自己贴」和取号清单 */}
+            {!!autoTakeError && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginTop: 6 }}
+                message={`自动取号没成功，这批先别建单：${autoTakeError}`}
+                description={
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      缺号建出来的单导出内容带不上编号，回头补号要一张一张钉。管理员把服务器取号命令
+                      （ASSET_HOOK_ID_CMD）配好，这里就能全自动。
+                    </Text>
+                    <Space size={8} wrap>
+                      <Button size="small" type={codesManualOpen ? 'primary' : 'default'} onClick={() => setCodesManualOpen((v) => !v)}>
+                        {codesManualOpen ? '收起手工贴号' : '我自己贴号'}
+                      </Button>
+                      <Button
+                        size="small"
+                        icon={<CopyOutlined />}
+                        onClick={() => {
+                          const lines = [
+                            `本单待取号 ${needAutoCodes} 个（${summaries.length} 条文案 × 每条 ${n} 份${fanoutRows > 1 ? ` × 换皮扇出 ${fanoutRows} 张` : ''}${parkedCodes.length ? `，另 ${parkedCodes.length} 个已预取` : ''}）`,
+                            ...summaries.map((s) => `${s.asset_code || s.id.slice(0, 8)}｜${(s.text || '').slice(0, 40)}${s.hook_code ? `｜已预取 ${s.hook_code}` : ''}`),
+                          ];
+                          navigator.clipboard
+                            .writeText(lines.join('\n'))
+                            .then(() => message.success(`待取号清单已复制（${needAutoCodes} 个号），去服务器照着跑 hook_id.py`))
+                            .catch(() => message.error('复制失败：浏览器没给剪贴板权限，请手动抄'));
+                        }}
+                      >
+                        复制待取号清单（{needAutoCodes} 个）
+                      </Button>
+                    </Space>
+                    {codesManualOpen && (
+                      <Input.TextArea
+                        rows={2}
+                        placeholder="空格/逗号/换行分隔，如：7C0B1 7C0B2（五位编号，不能自己编）"
+                        value={codeText}
+                        onChange={(e) => setCodeText(e.target.value)}
+                      />
+                    )}
+                  </Space>
+                }
+              />
             )}
             {!!usedCodes.length && (
               <Alert

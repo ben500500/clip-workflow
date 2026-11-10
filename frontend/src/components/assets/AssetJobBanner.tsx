@@ -17,6 +17,7 @@ const POLL_MS = 8000;
  * 给的是**跳原入口**：去对应页签重新点一次（那一步本来就该由人点）。
  */
 export const RESUBMIT_TARGET: Record<string, { tab: string; label: string }> = {
+  analyze: { tab: 'assets', label: '去素材列表重新反推' },
   summary_generate: { tab: 'assets', label: '去素材列表重出文案' },
   produce: { tab: 'production', label: '去生产单页重新开单' },
   dispatch: { tab: 'production', label: '去生产单页重新投板' },
