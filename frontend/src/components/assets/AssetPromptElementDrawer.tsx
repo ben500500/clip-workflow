@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Drawer, Input, Select, Space, Switch, Table, Tag, Tooltip, Typography, message,
+  Button, Drawer, Input, Modal, Select, Space, Switch, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import { PlusOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
 import { assetApi } from '../../api/assets';
 import type { AssetPromptElementSlot, AssetPromptElementsConfig } from '../../api/assets';
+import { HelpDot } from './AssetBits';
 
 const { Text, Paragraph } = Typography;
 
@@ -112,8 +113,10 @@ const blankRow = (): SlotRow => ({
  *            **每一处**这个词面都换掉（长词面先换，重叠命中不重复计数）。可另配 probe：
  *            一条**只用来认位置**的写法（如「剧情：」后第一段），认到的当当前值，替换仍按
  *            词面全局走——所以 ⑧ 镜头行那句跟着换。
- *   pattern  带捕获组的正则（①题材标签、剧名这种模板保证存在的位置）；替换**只动捕获组**，
+ *   pattern  带捕获组的正则（模板保证存在的那个位置，如「生成【…】」里那一段）；替换**只动捕获组**，
  *            所以时长这种「②⑦⑩⑬ 四处必须一致」的数字绝不会被顺手改掉。
+ *            注：出厂表现在**没有**这一行（11-10 按用户口径严格按 docx 删了题材标签／剧名两行），
+ *            这条写法留着给管理员自定义槽位用。
  *   manual   系统不猜原句（动物说的话／偷听到的内容／引爆不公那句是间接转述，没有形状可依赖，
  *            硬编正则＝假认）：这一行永远摆出来，让人从稿子里复制。
  *   categories 留空＝所有原型都认；填了＝只在这些钩子原型名下出现（原型名或键都行）。
@@ -130,6 +133,11 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
   const [saving, setSaving] = useState(false);
   const [inherit, setInherit] = useState(true);
   const [rows, setRows] = useState<SlotRow[]>([]);
+  /**
+   * 上一次「读回来的样子」，只用来判脏（点遮罩／Esc 时问一句要不要丢改动）。
+   * 比 `rows`/`inherit` 的序列化串，不比对后端，所以字段顺序变了也不会误判成脏。
+   */
+  const [baseline, setBaseline] = useState('');
 
   /** 默认保护行的原串：优先用接口回的，后端没回才用兜底 */
   const defaultSkip = data?.default_skip_lines || FALLBACK_DEFAULT_SKIP;
@@ -139,9 +147,11 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
     try {
       const res = await assetApi.getPromptElements();
       const skipDefault = res.default_skip_lines || FALLBACK_DEFAULT_SKIP;
+      const nextRows = res.override.map((s) => toRow(s, skipDefault));
       setData(res);
       setInherit(res.inherit);
-      setRows(res.override.map((s) => toRow(s, skipDefault)));
+      setRows(nextRows);
+      setBaseline(JSON.stringify({ inherit: res.inherit, rows: nextRows }));
     } catch (e) {
       message.error((e as Error).message || '读取元素字典失败');
     } finally {
@@ -167,7 +177,7 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
 
   const switchInherit = (checked: boolean) => {
     if (!checked && data) {
-      // 切到「整体替换」前把当前生效表搬进编辑区，否则一存就把出厂那十几行（题材/剧名＋A–F 参数项）丢掉。
+      // 切到「整体替换」前把当前生效表搬进编辑区，否则一存就把出厂那 A–F 参数项丢掉。
       setRows(preview.map((s) => toRow(s, defaultSkip)));
     }
     setInherit(checked);
@@ -196,12 +206,34 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
 
   const canEdit = !!data?.can_edit;
 
+  /**
+   * 11-10 用户口径「不要点到旁边它就消失掉了，很容易误点」：抽屉的 Esc／关闭按钮同样走这里，
+   * 改了还没保存先问一句——这份字典是整排元素行的来源，填半屏被点掉最气人。
+   */
+  const dirty = canEdit && JSON.stringify({ inherit, rows }) !== baseline;
+  const requestClose = () => {
+    if (!dirty) {
+      onClose();
+      return;
+    }
+    Modal.confirm({
+      title: '这份字典改动还没保存',
+      content: '现在关掉，改动不会生效（下一次打开还是上次存的版本）。',
+      okText: '继续留着改',
+      cancelText: '不保存关掉',
+      okCancel: true,
+      onOk: () => undefined,
+      onCancel: onClose,
+    });
+  };
+
   return (
     <Drawer
       title="可替换元素库"
-      width={880}
+      width="min(1280px, 96vw)"
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
+      maskClosable={false}
       destroyOnClose
       extra={
         <Space>
@@ -216,79 +248,85 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
         </Space>
       }
     >
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 12 }}
-        message="这里每一行＝投产弹窗「改稿」里的一排元素"
-        description={
-          <div>
-            <Paragraph style={{ marginBottom: 4 }}>
-              <Tag color="blue">词面（literal）</Tag>
-              在正文里<strong>逐字</strong>找 <Monoish>{'anchors'}</Monoish> 给的词，找到几处换几处。
-              场景、动物这种写在剧情描述里的东西走这条。要它「先认出当前值」就再配一条识别位置
-              <Monoish>{'probe'}</Monoish>（比如「剧情：」后第一段），认到的当原值、替换仍按词面全局走。
-            </Paragraph>
-            <Paragraph style={{ marginBottom: 4 }}>
-              <Tag color="purple">正则（pattern）</Tag>
-              带<strong>捕获组</strong>的写法，只换捕获组那一小段。①的题材标签、剧名走这条；
-              时长在②⑦⑩⑬ 四处必须一致，所以那种数字只能用这条、不能全局换。
-            </Paragraph>
-            <Paragraph style={{ marginBottom: 4 }}>
-              <Tag color="orange">手填（manual）</Tag>
-              系统<strong>不猜原句</strong>：动物说的那句话、偷听到的内容、引爆不公那句是间接转述，
-              没有形状可靠，硬编正则＝假装认得出。这一行永远摆出来，界面上提示「请从稿子里复制」。
-            </Paragraph>
-            <Paragraph style={{ marginBottom: 4 }}>
-              <Tag>保护行</Tag>
-              默认<strong>不碰</strong>「钩子原文」那行和 ① 生成【…】那行（那里面有《剧名》，
-              全文替换动物会顺手造出一部不存在的剧）。除非确实要开口子，别改成「允许碰」。
-            </Paragraph>
-            <Paragraph style={{ marginBottom: 4 }}>
-              <Tag color="green">候选池（裂变）</Tag>
-              这里写几个，界面上就给几个选择（顺序＝推荐顺序）。
-              <strong>留空也不断档</strong>：界面上还能自己输入。
-            </Paragraph>
-            <Paragraph style={{ marginBottom: 4 }}>
-              <Tag>适用原型</Tag>
-              留空＝所有钩子原型都认这一行；填原型名（如「悬念」）＝只在那一类下出现。
-            </Paragraph>
-            <Text type="secondary">
-              存进系统配置，改完立即生效、不用发版；只改这一次投出去的正文，库里的提示词永不动。
-            </Text>
-          </div>
-        }
-      />
+      {/* 11-10 用户口径「说明文字太长篇大论，全部缩起来放浮窗里，不然界面看起来很乱」：
+          这一屏原本被六段说明吃掉半个抽屉，现在收进标题旁那枚「？」，指上去才展开。 */}
+      <Space wrap size={6} style={{ marginBottom: 12 }}>
+        <Text strong>这里每一行＝投产弹窗「改稿」里的一排元素</Text>
+        <HelpDot
+          text={
+            <div>
+              <Paragraph style={{ marginBottom: 4 }}>
+                <Tag color="blue">词面（literal）</Tag>
+                在正文里<strong>逐字</strong>找 <Monoish>{'anchors'}</Monoish> 给的词，找到几处换几处。
+                场景、动物这种写在剧情描述里的东西走这条。要它「先认出当前值」就再配一条识别位置
+                <Monoish>{'probe'}</Monoish>（比如「剧情：」后第一段），认到的当原值、替换仍按词面全局走。
+              </Paragraph>
+              <Paragraph style={{ marginBottom: 4 }}>
+                <Tag color="purple">正则（pattern）</Tag>
+                带<strong>捕获组</strong>的写法，只换捕获组那一小段——时长这种「②⑦⑩⑬ 四处必须一致」的
+                数字只能用这条，不能全局换。出厂表现在没有这一行（11-10 按用户口径严格按参考文档删了
+                题材标签／剧名两行），这条写法留着给自定义槽位用。
+              </Paragraph>
+              <Paragraph style={{ marginBottom: 4 }}>
+                <Tag color="orange">手填（manual）</Tag>
+                系统<strong>不猜原句</strong>：动物说的那句话、偷听到的内容、引爆不公那句是间接转述，
+                没有形状可靠，硬编正则＝假装认得出。这一行永远摆出来，界面上提示「请从稿子里复制」。
+              </Paragraph>
+              <Paragraph style={{ marginBottom: 4 }}>
+                <Tag>保护行</Tag>
+                默认<strong>不碰</strong>「钩子原文」那行和 ① 生成【…】那行（那里面有《剧名》，
+                全文替换动物会顺手造出一部不存在的剧）。除非确实要开口子，别改成「允许碰」。
+              </Paragraph>
+              <Paragraph style={{ marginBottom: 4 }}>
+                <Tag color="green">候选池（裂变）</Tag>
+                这里写几个，界面上就给几个选择（顺序＝推荐顺序）。
+                <strong>留空也不断档</strong>：界面上还能自己输入。
+              </Paragraph>
+              <Paragraph style={{ marginBottom: 4 }}>
+                <Tag>适用原型</Tag>
+                留空＝所有钩子原型都认这一行；填原型名（如「悬念」）＝只在那一类下出现。
+              </Paragraph>
+              <Text type="secondary">
+                存进系统配置，改完立即生效、不用发版；只改这一次投出去的正文，库里的提示词永不动。
+              </Text>
+            </div>
+          }
+        />
+      </Space>
 
       {!canEdit && (
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="只读：改元素库要管理员权限"
-          description="这一份决定了一线点「改稿」时能改哪些位置、给哪几个候选。写错一行（比如正则少了捕获组）会让整排元素点了没反应，所以只有管理员能改。"
-        />
+        <Space wrap size={6} style={{ marginBottom: 12 }}>
+          <Text type="warning">只读：改元素库要管理员权限</Text>
+          <HelpDot text="这一份决定了一线点「改稿」时能改哪些位置、给哪几个候选。写错一行（比如正则少了捕获组）会让整排元素点了没反应，所以只有管理员能改。你可以照着这一屏看有哪些槽位，要改词找管理员。" />
+        </Space>
       )}
 
-      <Space direction="vertical" size={10} style={{ width: '100%', marginBottom: 12 }}>
-        <Space wrap>
+      <Space direction="vertical" size={8} style={{ width: '100%', marginBottom: 12 }}>
+        <Space wrap size={6}>
           <Switch checked={inherit} onChange={switchInherit} disabled={!canEdit} />
           <Text>
             在出厂字典上<strong>{inherit ? '追加／同键覆盖' : '整体替换'}</strong>
-            {inherit
-              ? `（出厂 ${data?.defaults.length ?? ''} 行仍生效，这里填的是新增和改写）`
-              : `（出厂 ${data?.defaults.length ?? ''} 行也不再认，这里填什么才认什么）`}
           </Text>
-        </Space>
-        <Text type="secondary">
-          保存后生效：{preview.length} 个元素槽位
-          {data?.has_override && `｜上次更新：${data.updated_at || '未知'}`}
-        </Text>
-        {data && (
+          <HelpDot
+            text={inherit
+              ? `开着＝出厂那 ${data?.defaults.length ?? 0} 行仍生效，下面这一表填的是「新增」和「同键改写」，没填的照出厂走。`
+              : `关掉＝出厂那 ${data?.defaults.length ?? 0} 行也不再认，下面填什么才认什么（切回来的时候这一表已经搬进编辑区，不会一存就丢出厂那 A–F 参数项）。`}
+          />
           <Text type="secondary">
-            出厂字典：{data.defaults.map((s) => `${s.label}（${s.mode}）`).join('、') || '（空）'}
+            保存后生效：{preview.length} 个槽位
+            {data?.has_override && `｜上次更新：${data.updated_at || '未知'}`}
           </Text>
-        )}
+          {!!data?.defaults.length && (
+            <Tooltip
+              title={data.defaults.map((s) => `${s.label}（${s.mode}）`).join('、')}
+              overlayStyle={{ maxWidth: 520 }}
+            >
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                出厂 {data.defaults.length} 行
+              </Text>
+            </Tooltip>
+          )}
+        </Space>
       </Space>
 
       <Table
@@ -509,7 +547,7 @@ const AssetPromptElementDrawer: React.FC<Props> = ({ open, onClose }) => {
   );
 };
 
-/** 行内小代码体（Alert 文案里那三个字段名用） */
+/** 行内小代码体（说明里那几个字段名用） */
 const Monoish: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 }}>
     {children}

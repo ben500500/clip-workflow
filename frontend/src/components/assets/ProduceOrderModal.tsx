@@ -338,7 +338,11 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
     <Modal
       open={open}
       title={`生成生产单：${summaries.length} 条过审文案`}
-      width={720}
+      // 11-10 用户口径「窗口宽度弄宽一点，不要点到旁边它就消失」：这一屏要摆换皮参数
+      // （每个参数一行输入框），720 宽时标签＋输入框＋提示挤成三行；且误点遮罩会把一整屏参数丢掉。
+      width="min(1120px, 94vw)"
+      maskClosable={false}
+      styles={{ body: { maxHeight: '72vh', overflowY: 'auto', paddingRight: 6 } }}
       onCancel={closeAndGiveUp}
       footer={
         result ? (

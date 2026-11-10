@@ -21,7 +21,7 @@ import ApprovedSummaryPickerModal from './ApprovedSummaryPickerModal';
 import AssetCardPicker from './AssetCardPicker';
 import AssetConcatPicker from './AssetConcatPicker';
 import AssetPromptElementDrawer from './AssetPromptElementDrawer';
-import { MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
+import { HelpDot, MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
 
 const { Text, Paragraph } = Typography;
 
@@ -106,11 +106,31 @@ const optionsForSlot = (slot: AssetPromptElementFound) => {
 };
 
 /**
+ * 「稿子里这句」在前端重算一份：后端 `context` 给的是**认出来那一刻**那一句，
+ * 而「套用」之后那一行已经被换掉了（旧词面整篇没了，重新认也不命中，靠 carry 留行）。
+ * carry 若继续沿用旧原句，界面上就会指着稿子里已经不存在的字说"原稿里这句"——
+ * 所以这里按后端同一条口径（命中所在那一行、折行压平、截 160 字）从**新稿子**重算。
+ */
+const lineContextOf = (text: string, needle: string) => {
+  if (!needle) return '';
+  const line = String(text || '')
+    .split('\n')
+    .find((l) => l.includes(needle));
+  if (!line) return '';
+  const one = line.replace(/\s+/g, ' ').trim();
+  return one.length > 160 ? `${one.slice(0, 160)}…` : one;
+};
+
+/**
  * 批 M：改稿弹窗里的一排元素行。
  *
  * 一行＝字典一行：显示「当前是什么／出现几处」，给候选下拉＋自定义输入，
- * 「套用」只改**这一次投出去的正文**（下面那个文本框跟着变，仍可整段手改）。
+ * 「套用」只改**这一次投出去的正文**（右边那份全文跟着变，仍可整段手改）。
  * 字典里 pool 留空的元素只有自定义输入框——功能不断档，等运营补候选就有得选。
+ *
+ * 11-10 用户口径「把原提示词中对应的内容也放出来，这样可以做一个对比」：
+ * 每行下面把**这个元素在稿子里所在那一行**的原文摊出来（后端 `context`），
+ * 换之前看得见原句，不用自己拿放大镜在正文里找词面对不对得上。
  */
 const PromptElementRow: React.FC<{
   slot: AssetPromptElementFound;
@@ -124,54 +144,156 @@ const PromptElementRow: React.FC<{
   const counts = (slot.occurrences || []).reduce((n, o) => n + (o.count || 0), 0);
   const opts = optionsForSlot(slot);
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', rowGap: 4 }}>
-      <Tooltip title={slot.note || undefined}>
-        <Text strong style={{ fontSize: 12, minWidth: 88 }}>
-          {slot.label}
+    <div style={{ padding: '4px 0', borderBottom: '1px dashed #f0f0f0' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', rowGap: 4 }}>
+        <Tooltip title={slot.note || undefined}>
+          <Text strong style={{ fontSize: 12, minWidth: 88 }}>
+            {slot.label}
+          </Text>
+        </Tooltip>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          当前：<MonoText>{slot.current || '（没认出）'}</MonoText>
+          {counts > 1 ? ` 出现 ${counts} 处` : ''}
         </Text>
-      </Tooltip>
-      <Text type="secondary" style={{ fontSize: 12 }}>
-        当前：<MonoText>{slot.current || '（没认出）'}</MonoText>
-        {counts > 1 ? ` 出现 ${counts} 处` : ''}
-      </Text>
-      {opts.length > 0 && (
-        <Select
+        {opts.length > 0 && (
+          <Select
+            size="small"
+            style={{ minWidth: 150 }}
+            placeholder="选一个候选"
+            value={opts.some((g) => g.options.some((o) => o.value === value)) ? value : undefined}
+            options={opts}
+            onChange={(v) => onValue(v)}
+            disabled={busy}
+          />
+        )}
+        <Input
           size="small"
-          style={{ minWidth: 150 }}
-          placeholder="选一个候选"
-          value={opts.some((g) => g.options.some((o) => o.value === value)) ? value : undefined}
-          options={opts}
-          onChange={(v) => onValue(v)}
+          style={{ width: 170 }}
+          placeholder={opts.length ? '或自己输入' : '自己输入换成什么'}
+          value={value}
+          onChange={(e) => onValue(e.target.value)}
           disabled={busy}
         />
-      )}
-      <Input
-        size="small"
-        style={{ width: 170 }}
-        placeholder={opts.length ? '或自己输入' : '自己输入换成什么'}
-        value={value}
-        onChange={(e) => onValue(e.target.value)}
-        disabled={busy}
-      />
-      <Button
-        size="small"
-        type="primary"
-        ghost
-        disabled={busy || !value.trim()}
-        onClick={() => onApply(slot, value.trim())}
-      >
-        套用
-      </Button>
-      {otherCount > 0 && (
         <Button
           size="small"
+          type="primary"
+          ghost
           disabled={busy || !value.trim()}
-          onClick={() => onApplyBatch(slot, value.trim())}
+          onClick={() => onApply(slot, value.trim())}
         >
-          同元素套用到本批另 {otherCount} 张
+          套用
         </Button>
+        {otherCount > 0 && (
+          <Button
+            size="small"
+            disabled={busy || !value.trim()}
+            onClick={() => onApplyBatch(slot, value.trim())}
+          >
+            同元素套用到本批另 {otherCount} 张
+          </Button>
+        )}
+      </div>
+      {!!slot.context && (
+        <div style={{ marginTop: 2, paddingLeft: 96 }}>
+          {/* 原句整行摊出来：词面一模一样才换得动，这里就是拿来核那一下的 */}
+          <Text type="secondary" style={{ fontSize: 12, lineHeight: '18px' }}>
+            稿子里这句：<span style={{ background: '#fffbe6', padding: '0 2px' }}>{slot.context}</span>
+          </Text>
+        </div>
       )}
     </div>
+  );
+};
+
+/**
+ * 11-10 用户口径「改了一个元素之后，那提示词在哪里呢？我怎么在投出去之前确认整套提示词是我想要的？」
+ *
+ * 两件事一起做：① 右边那份**全文**始终摆在眼前（改完立刻是最终稿）；② 加这块逐行对照，
+ * 只把动过的那几行摊出来、改动的那一小段描红／描绿，没动的行折起来不占地方。
+ * 稿子十几行、行结构不变（换词不改行），按行下标对齐足够，不必上 diff 库。
+ */
+const PromptDraftDiff: React.FC<{ before: string; after: string }> = ({ before, after }) => {
+  const [showAll, setShowAll] = useState(false);
+  const b = (before || '').split('\n');
+  const a = (after || '').split('\n');
+  const n = Math.max(b.length, a.length);
+  const rows = Array.from({ length: n }, (_, i) => {
+    const from = b[i] ?? '';
+    const to = a[i] ?? '';
+    return { i, from, to, changed: from !== to };
+  });
+  const changedCount = rows.filter((r) => r.changed).length;
+  if (!changedCount) {
+    return (
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        和原稿一模一样——这一张照原稿投。
+      </Text>
+    );
+  }
+  /**
+   * 一行里公共前后缀之外的那一小段才是真改动，只给它上色，别把整行刷成一片红绿。
+   * （元素替换都是原地换词、行结构不变，所以「前后缀」就是最贴实际的切法。）
+   */
+  const splitChanged = (from: string, to: string) => {
+    const maxS = Math.min(from.length, to.length);
+    let s = 0;
+    while (s < maxS && from[s] === to[s]) s += 1;
+    let e = 0;
+    while (e < maxS - s && from[from.length - 1 - e] === to[to.length - 1 - e]) e += 1;
+    return { head: from.slice(0, s), fromMid: from.slice(s, from.length - e), toMid: to.slice(s, to.length - e), tail: e ? from.slice(from.length - e) : '' };
+  };
+  const shown = showAll ? rows : rows.filter((r) => r.changed);
+  return (
+    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+      <Space size={6} wrap>
+        <Text strong style={{ fontSize: 12 }}>
+          改了 {changedCount} 行
+        </Text>
+        <Button size="small" type="link" style={{ padding: 0 }} onClick={() => setShowAll((v) => !v)}>
+          {showAll ? '只看改动的行' : '看整段原稿对照'}
+        </Button>
+      </Space>
+      <div
+        style={{
+          border: '1px solid #f0f0f0', borderRadius: 6, padding: '6px 8px',
+          maxHeight: 210, overflowY: 'auto', background: '#fafafa',
+        }}
+      >
+        {shown.map((r) => {
+          const c = splitChanged(r.from, r.to);
+          return (
+            <div key={r.i} style={{ marginBottom: r.changed ? 4 : 0 }}>
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                第 {r.i + 1} 行
+              </Text>
+              {r.changed ? (
+                <>
+                  <div style={{ fontSize: 12, lineHeight: '18px', wordBreak: 'break-all' }}>
+                    <span style={{ color: '#8c8c8c' }}>{c.head}</span>
+                    {!!c.fromMid && (
+                      <span style={{ background: '#fff1f0', color: '#cf1322', textDecoration: 'line-through' }}>
+                        {c.fromMid}
+                      </span>
+                    )}
+                    <span style={{ color: '#8c8c8c' }}>{c.tail}</span>
+                  </div>
+                  <div style={{ fontSize: 12, lineHeight: '18px', wordBreak: 'break-all', background: '#f6ffed', padding: '0 2px' }}>
+                    <span style={{ color: '#389e0d' }}>↓ </span>
+                    <span style={{ color: '#8c8c8c' }}>{c.head}</span>
+                    <span style={{ background: '#b7eb8f' }}>{c.toMid}</span>
+                    <span style={{ color: '#8c8c8c' }}>{c.tail}</span>
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 12, lineHeight: '18px', color: '#8c8c8c', wordBreak: 'break-all' }}>
+                  {r.to || '（空行）'}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Space>
   );
 };
 
@@ -318,6 +440,8 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         .map((r) => ({
           ...r,
           occurrences: [{ value: r.current as string, count: text.split(r.current as string).length - 1 }],
+          // 原句也从**当前正文**重算：上一行的编辑可能就动过这一句
+          context: lineContextOf(text, (r.current || '').trim()) || r.context,
         }));
       const byKey = new Map<string, AssetPromptElementFound>();
       sticky.forEach((r) => byKey.set(r.key, r));
@@ -403,7 +527,13 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         const n = to ? res.text.split(to).length - 1 : 0;
         // 新稿里一处都没有（那次替换其实没落上）就别留行——留着只会报一个假的「当前」
         if (n <= 0) return;
-        carry.push({ ...old, current: to, occurrences: [{ value: to, count: n }] });
+        carry.push({
+          ...old,
+          current: to,
+          occurrences: [{ value: to, count: n }],
+          // 对照那句也跟着换到新稿子上：留旧原句＝界面指着一句稿子里已经不存在的话
+          context: lineContextOf(res.text, to) || old.context,
+        });
       });
       await extractElements(editPromptFor, res.text, carry, true);
     } catch (e) {
@@ -1478,6 +1608,9 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         open={dispatchOpen}
         title={`投去 AI 出片（已选 ${ids.length} 张生产单）`}
         width={720}
+        // 11-10 用户口径「不要点到旁边它就消失掉了，很容易误点」：这一屏勾了卡、点了改稿，
+        // 误触遮罩等于整屏白填——遮罩不给关，只能走「取消 / 开始回收 / 确认投去出片」三个明确的口。
+        maskClosable={false}
         onCancel={() => setDispatchOpen(false)}
         onOk={submitDispatch}
         confirmLoading={dispatchBusy}
@@ -1579,7 +1712,7 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
                 <Tooltip title="只改这一次投出去的正文，库里的提示词不动；改稿会照过一遍高风险词">
                   <Text strong style={{ fontSize: 12 }}>投递稿</Text>
                 </Tooltip>
-                <Tooltip title="投产前把稿子里的元素（场景／动物／题材标签…）换成别的说法：这里能看到都配了哪些、给哪几个候选（管理员可改）">
+                <Tooltip title="投产前把稿子里的元素（场景／动物／动物说的话…）换成别的说法：这里能看到都配了哪些、给哪几个候选（管理员可改）">
                   <Button size="small" type="link" style={{ padding: 0 }} onClick={() => setElementsOpen(true)}>
                     可替换元素库
                   </Button>
@@ -1646,16 +1779,46 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
       </Modal>
 
       {/*
-        11-06 投递稿可改 ＋ 11-10 批 M 元素裂变：
-        上面一排是「这份稿子里认出来的可替换元素」（候选＝字典里的 pool，也能自己输入），
-        点「套用」把改后的**整段正文**写回下面这个文本框——它仍然可以整段手改；
+        11-06 投递稿可改 ＋ 11-10 批 M 元素裂变 ＋ 11-10 下午用户五条口径：
+        · 左边一排是「这份稿子里认出来的可替换元素」（候选＝字典里的 pool，也能自己输入），
+          每行下面把**稿子里那一行的原句**摊出来做对照；
+        · 右边那一大段是**这一次真正投出去的全文**——套完立刻能在眼前看到整份稿子，
+          底下「改了 N 行」是把改前改后逐行描出来的地方，不用自己在几千字里找；
+        · 窗口加宽＋点旁边不再关掉（原来误点遮罩整屏白改）；
+        · 静态说明缩进「？」浮窗，只有会拦人的话（风险词）留在界面上。
         确认（「用这份投」）之后才进 payload。全程只改这一次投出去的，库里的提示词不动。
       */}
       <Modal
         open={!!editPromptFor}
-        title={`编辑投递稿（${editPromptFor?.hook_code || editPromptFor?.id.slice(0, 8) || ''}）`}
-        width={860}
-        onCancel={() => setEditPromptFor(null)}
+        title={
+          <Space size={6}>
+            {`改投递稿（${editPromptFor?.hook_code || editPromptFor?.id.slice(0, 8) || ''}）`}
+            <HelpDot text="只改这一次投出去的正文：库里的提示词、过审文案、漂移判定都不动，下一次再投仍是原稿。改后的稿子会照过一遍高风险词（命中会被拦，admin 可带理由放行）；改了哪张、改前是什么，进审计。">
+              <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>（这份只投一次）</Text>
+            </HelpDot>
+          </Space>
+        }
+        width="min(1280px, 96vw)"
+        maskClosable={false}
+        styles={{ body: { maxHeight: '70vh', overflowY: 'auto', paddingRight: 6 } }}
+        onCancel={() => {
+          // 「点旁边就消失」＝改了半天一句话没存，加一道脏检查：真改了就先问一句
+          const dirty = !!editPromptFor
+            && editPromptDraft.trim() !== (promptOverrides[editPromptFor.id] ?? editPromptFor.prompt_text ?? '').trim();
+          if (!dirty) {
+            setEditPromptFor(null);
+            return;
+          }
+          Modal.confirm({
+            title: '这份改完还没点「用这份投」',
+            content: '现在关掉，这次的改动就不算了（下一屏仍按没改过处理）。',
+            okText: '继续留着改',
+            cancelText: '丢掉这次改动',
+            okCancel: true,
+            onOk: () => undefined,
+            onCancel: () => setEditPromptFor(null),
+          });
+        }}
         onOk={() => {
           if (editPromptFor) {
             const id = editPromptFor.id;
@@ -1673,155 +1836,156 @@ const AssetProductionPanel: React.FC<Props> = ({ canWriteBack, isAdmin, batchId,
         okText="用这份投"
         cancelText="算了不改"
       >
-        <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          <Alert
-            type="info"
-            showIcon
-            message="只改这一次投出去的正文"
-            description={
-              <span style={{ fontSize: 12 }}>
-                库里的提示词、过审文案、漂移判定都不动，下一次再投仍是原稿。
-                改后的稿子会照过一遍高风险词（命中会被拦，admin 可带理由放行）；改了哪张、改前是什么，进审计。
-              </span>
-            }
-          />
-
-          <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: '10px 12px' }}>
-            <Space size={6} align="center" wrap style={{ marginBottom: 6 }}>
-              <Text strong style={{ fontSize: 12 }}>可替换元素</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {editPromptFor?.category_name
-                  ? `按原型「${editPromptFor.category_name}」筛`
-                  : '这张单没带原型：限定原型的槽位不显示，只认通用那些'}
-              </Text>
-              <Button
-                size="small"
-                type="link"
-                style={{ padding: 0 }}
-                loading={elementBusy}
-                onClick={() => editPromptFor && extractElements(editPromptFor, editPromptDraft)}
-              >
-                重新认一遍
-              </Button>
-              <Button
-                size="small"
-                type="link"
-                style={{ padding: 0 }}
-                onClick={() => setElementsOpen(true)}
-              >
-                元素库（管理员可配）
-              </Button>
-            </Space>
-            {elementRows.length === 0 && !elementBusy ? (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                这份稿子里没认出可替换元素——可能字典还没配这一类，也可能这份稿子不照模板写。
-                想直接改词，用下面那行「自定义替换」。
-              </Text>
-            ) : (
-              <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                {elementRows.map((slot) => (
-                  <PromptElementRow
-                    key={slot.key}
-                    slot={slot}
-                    value={elementChoice[slot.key] ?? ''}
-                    busy={elementBusy}
-                    otherCount={selected.filter((p) => canCreateLocally(p) && p.id !== editPromptFor?.id).length}
-                    onValue={(v) => setElementChoice((m) => ({ ...m, [slot.key]: v }))}
-                    onApply={(s, v) => void applySlot(s, v)}
-                    onApplyBatch={(s, v) => void applyToOthers(editsForSlot(s, v), s.label)}
-                  />
-                ))}
-              </Space>
-            )}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>自定义替换</Text>
-              <Input
-                size="small"
-                style={{ width: 190 }}
-                placeholder="稿子里要换掉的那段原文"
-                value={customOld}
-                onChange={(e) => setCustomOld(e.target.value)}
-                disabled={elementBusy}
-              />
-              <Text type="secondary" style={{ fontSize: 12 }}>换成</Text>
-              <Input
-                size="small"
-                style={{ width: 190 }}
-                placeholder="换成什么"
-                value={customNew}
-                onChange={(e) => setCustomNew(e.target.value)}
-                disabled={elementBusy}
-              />
-              <Button size="small" disabled={elementBusy} onClick={applyCustom}>
-                套用
-              </Button>
-              {selected.filter((p) => canCreateLocally(p) && p.id !== editPromptFor?.id).length > 0 && (
+        <Row gutter={16} align="top">
+          <Col xs={24} xl={11}>
+            <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: '10px 12px' }}>
+              <Space size={6} align="center" wrap style={{ marginBottom: 6 }}>
+                <Text strong style={{ fontSize: 12 }}>可替换元素</Text>
+                <HelpDot
+                  text={
+                    editPromptFor?.category_name
+                      ? `这一屏只摆原型「${editPromptFor.category_name}」在字典里配的参数项。换词是在右边那份正文上做的字面替换，不花钱、不动库里的稿子。认得不准就点「重新认一遍」——字典是管理员随时在改的，改完这里立刻按新的认。`
+                      : '这张单没带原型：限定原型的槽位不显示，只认通用那些。要让它按原型摆参数，回②素材与文案那边把钩子原型点上。'
+                  }
+                />
                 <Button
                   size="small"
-                  disabled={elementBusy}
-                  onClick={() =>
-                    customOld.trim() &&
-                    customNew.trim() &&
-                    void applyToOthers([{ old: customOld.trim(), new: customNew.trim() }], customOld.trim())
-                  }
+                  type="link"
+                  style={{ padding: 0 }}
+                  loading={elementBusy}
+                  onClick={() => editPromptFor && extractElements(editPromptFor, editPromptDraft)}
                 >
-                  同文字套用到本批另 {selected.filter((p) => canCreateLocally(p) && p.id !== editPromptFor?.id).length} 张
+                  重新认一遍
                 </Button>
+                <Button
+                  size="small"
+                  type="link"
+                  style={{ padding: 0 }}
+                  onClick={() => setElementsOpen(true)}
+                >
+                  元素库（管理员可配）
+                </Button>
+              </Space>
+              {elementRows.length === 0 && !elementBusy ? (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  这份稿子里没认出可替换元素——可能字典还没配这一类，也可能这份稿子不照模板写。
+                  想直接改词，用下面那行「自定义替换」。
+                </Text>
+              ) : (
+                <div>
+                  {elementRows.map((slot) => (
+                    <PromptElementRow
+                      key={slot.key}
+                      slot={slot}
+                      value={elementChoice[slot.key] ?? ''}
+                      busy={elementBusy}
+                      otherCount={selected.filter((p) => canCreateLocally(p) && p.id !== editPromptFor?.id).length}
+                      onValue={(v) => setElementChoice((m) => ({ ...m, [slot.key]: v }))}
+                      onApply={(s, v) => void applySlot(s, v)}
+                      onApplyBatch={(s, v) => void applyToOthers(editsForSlot(s, v), s.label)}
+                    />
+                  ))}
+                </div>
+              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>自定义替换</Text>
+                <HelpDot text="上面那些是字典认出来的元素；这一行不限字典——把稿子里那段原文照抄进第一个框（一字不差，多个字也行），第二个框写换成什么，点「套用」就整段逐字换掉。" />
+                <Input
+                  size="small"
+                  style={{ width: 150 }}
+                  placeholder="稿子里要换掉的那段原文"
+                  value={customOld}
+                  onChange={(e) => setCustomOld(e.target.value)}
+                  disabled={elementBusy}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>换成</Text>
+                <Input
+                  size="small"
+                  style={{ width: 150 }}
+                  placeholder="换成什么"
+                  value={customNew}
+                  onChange={(e) => setCustomNew(e.target.value)}
+                  disabled={elementBusy}
+                />
+                <Button size="small" disabled={elementBusy} onClick={applyCustom}>
+                  套用
+                </Button>
+                {selected.filter((p) => canCreateLocally(p) && p.id !== editPromptFor?.id).length > 0 && (
+                  <Button
+                    size="small"
+                    disabled={elementBusy}
+                    onClick={() =>
+                      customOld.trim() &&
+                      customNew.trim() &&
+                      void applyToOthers([{ old: customOld.trim(), new: customNew.trim() }], customOld.trim())
+                    }
+                  >
+                    同文字套用到本批另 {selected.filter((p) => canCreateLocally(p) && p.id !== editPromptFor?.id).length} 张
+                  </Button>
+                )}
+              </div>
+              {elementNotes.length > 0 && (
+                <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                  {elementNotes.map((n) => (
+                    <li key={n}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>{n}</Text>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {elementBlocked && (
+                <Alert
+                  type="error"
+                  showIcon
+                  style={{ marginTop: 8 }}
+                  message="换上这个词会被投板闸门拦下"
+                  description={
+                    <span style={{ fontSize: 12 }}>
+                      现在还没拦你（这里只组稿），点「确认投去出片」时会被打回。
+                      要么换个说法，要么让 admin 带理由强行放行。
+                    </span>
+                  }
+                />
               )}
             </div>
-            {elementNotes.length > 0 && (
-              <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
-                {elementNotes.map((n) => (
-                  <li key={n}>
-                    <Text type="secondary" style={{ fontSize: 12 }}>{n}</Text>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {elementBlocked && (
-              <Alert
-                type="error"
-                showIcon
-                style={{ marginTop: 8 }}
-                message="换上这个词会被投板闸门拦下"
-                description={
-                  <span style={{ fontSize: 12 }}>
-                    现在还没拦你（这里只组稿），点「确认投去出片」时会被打回。
-                    要么换个说法，要么让 admin 带理由强行放行。
-                  </span>
-                }
-              />
-            )}
-          </div>
+          </Col>
 
-          <Input.TextArea
-            rows={14}
-            value={editPromptDraft}
-            onChange={(e) => setEditPromptDraft(e.target.value)}
-            placeholder="这一次投出去的提示词正文（留空＝照原稿投）"
-          />
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            ↑ 上面套用出来的整段正文，这里还能继续整段手改；「用这份投」才算定稿。
-          </Text>
-          <Button
-            size="small"
-            onClick={() => {
-              if (editPromptFor) {
-                setEditPromptDraft(editPromptFor.prompt_text ?? '');
-                setElementNotes([]);
-                setElementBlocked(false);
-                void extractElements(editPromptFor, editPromptFor.prompt_text ?? '');
-                setPromptOverrides((m) => {
-                  const next = { ...m };
-                  delete next[editPromptFor.id];
-                  return next;
-                });
-              }
-            }}
-          >
-            还原成原稿
-          </Button>
-        </Space>
+          <Col xs={24} xl={13}>
+            <Space size={6} align="center" wrap style={{ marginBottom: 4 }}>
+              <Text strong style={{ fontSize: 12 }}>这一次投出去的全文</Text>
+              <HelpDot text="左边每点一次「套用」，这里就是改完之后的整份稿子——投出去的就是这一段，一个字都不差。还能继续整段手改；点「用这份投」才算定稿，否则回上一屏仍是原稿。" />
+              <Button
+                size="small"
+                type="link"
+                style={{ padding: 0 }}
+                onClick={() => {
+                  if (editPromptFor) {
+                    setEditPromptDraft(editPromptFor.prompt_text ?? '');
+                    setElementNotes([]);
+                    setElementBlocked(false);
+                    void extractElements(editPromptFor, editPromptFor.prompt_text ?? '');
+                    setPromptOverrides((m) => {
+                      const next = { ...m };
+                      delete next[editPromptFor.id];
+                      return next;
+                    });
+                  }
+                }}
+              >
+                还原成原稿
+              </Button>
+            </Space>
+            <Input.TextArea
+              rows={16}
+              value={editPromptDraft}
+              onChange={(e) => setEditPromptDraft(e.target.value)}
+              placeholder="这一次投出去的提示词正文（留空＝照原稿投）"
+            />
+            <div style={{ marginTop: 8 }}>
+              <PromptDraftDiff before={editPromptFor?.prompt_text ?? ''} after={editPromptDraft} />
+            </div>
+          </Col>
+        </Row>
       </Modal>
 
       {/* 批 M：可替换元素库（读全员、写仅 admin；改完下一次打开「改稿」立即按新的认） */}

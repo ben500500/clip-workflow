@@ -198,6 +198,8 @@ const ApprovedSummaryPickerModal: React.FC<Props> = ({
       open={open}
       title={title}
       width={820}
+      // 11-10 用户口径「不要点到旁边它就消失掉了」：这一屏勾的文案是开单的输入，误触遮罩等于白勾
+      maskClosable={false}
       onCancel={onCancel}
       footer={
         <Space>

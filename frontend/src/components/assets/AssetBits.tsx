@@ -1,5 +1,6 @@
 import React from 'react';
-import { Tag, Tooltip, Typography } from 'antd';
+import { Popover, Tag, Tooltip, Typography } from 'antd';
+import { QuestionCircleOutlined } from '@ant-design/icons';
 import {
   ASSET_STAGE_LABELS,
   ASSET_STATUS_LABELS,
@@ -206,6 +207,34 @@ export const MonoText: React.FC<{ children: React.ReactNode }> = ({ children }) 
   <Text style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 }}>
     {children}
   </Text>
+);
+
+/**
+ * 11-10 用户口径「说明文字太长篇大论了，把它们全部缩起来放在浮窗里面显示，不然整个界面看起来很乱」：
+ * 静态解释一律收进这枚「？」浮窗（`text` 传那段话），标题旁一个点，指上去才展开。
+ * `children` 是点后面**仍然显示**的短标签（比如「（这份只投一次）」），不是浮窗内容。
+ * **会拦住人的**话（风险词命中、条数对不齐、上限）不算说明，仍留在界面上。
+ */
+export const HelpDot: React.FC<{ text: React.ReactNode; children?: React.ReactNode }> = ({
+  text,
+  children,
+}) => (
+  <Popover
+    trigger="hover"
+    placement="rightTop"
+    overlayStyle={{ maxWidth: 420 }}
+    content={<div style={{ fontSize: 12, lineHeight: '20px' }}>{text}</div>}
+  >
+    {/* 收起面板／挑行这类"点整块都算"的容器里也会摆这枚点：不挡住冒泡的话，
+        人只想看个说明，顺手把面板收了（11-10 「缩进浮窗」后 Collapse 标题旁就有一枚） */}
+    <span
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <QuestionCircleOutlined style={{ color: '#8c8c8c', fontSize: 12, cursor: 'help' }} />
+      {children}
+    </span>
+  </Popover>
 );
 
 /** 风险词串 `词|block,词|warn` → 可读标签；block 拦过审/投产，warn 只预警 */

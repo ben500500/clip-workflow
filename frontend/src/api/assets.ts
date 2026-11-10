@@ -1502,9 +1502,12 @@ export interface AssetRiskLexiconUpdateResult {
 /**
  * 一行元素槽位（`system_config.asset_prompt_elements` 的一项）。
  *
- * 两种认法：`literal` 在正文里逐字找 `anchors` 给的词面（场景、动物这种写在剧情
+ * 三种认法：`literal` 在正文里逐字找 `anchors` 给的词面（场景、动物这种写在剧情
  * 自由文本里的东西）；`pattern` 用带捕获组的正则找（模板保证存在、只能在原地处改的位置，
- * 比如①的题材标签——**绝不能全局替换数字**，时长在②⑦⑩⑬ 四处必须一致）。
+ * **绝不能全局替换数字**——时长在②⑦⑩⑬ 四处必须一致，那种位置只能靠正则圈定）；
+ * `manual` 系统不猜原句，整句由人从稿子里抄。
+ * 出厂表 11-10 起只有 literal／manual 两种（按用户口径严格照参考文档，题材标签／剧名两行已删），
+ * `pattern` 这能力留着给管理员自定义槽位。
  * `pool` 就是"裂变"出来的几个选择，顺序＝界面上的推荐顺序；`categories` 空＝所有原型都认。
  */
 export interface AssetPromptElementSlot {
@@ -1566,6 +1569,12 @@ export interface AssetPromptElementFound {
   note: string;
   /** 批 N：true＝这一槽位绕开「钩子原文／①剧名」那两行（换动物不会把剧名换掉） */
   protected?: boolean;
+  /**
+   * 11-10 用户口径「把原提示词中对应的内容也放出来，这样可以做一个对比」：
+   * 这个元素在**稿子里所在那一行**的原文（后端截断到 160 字）。
+   * 手工项／没认出的那些是空串。界面拿它当"改之前长什么样"的那半边。
+   */
+  context?: string;
 }
 
 /** POST /assets/prompt-elements/apply 返回的一条替换明细（count=0＝原文里没这个词面，没改） */

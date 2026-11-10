@@ -5,6 +5,7 @@ import {
 import { ReloadOutlined } from '@ant-design/icons';
 import { assetApi } from '../../api/assets';
 import type { AssetPromptElementFound, AssetSummary } from '../../api/assets';
+import { HelpDot } from './AssetBits';
 
 const { Text } = Typography;
 
@@ -26,6 +27,14 @@ interface SlotView {
   pool: string[];
   /** summary_id → 这一篇稿子里认到的原值（manual／没认出的篇目不在里面） */
   currents: Record<string, string>;
+  /**
+   * 11-10 用户口径「把原提示词中对应的内容也放出来，这样可以做一个对比」：
+   * 后端给的那个词在稿子里**所在那一行**的原文（截断到 160 字），拿它当"改之前长什么样"。
+   * 一批多篇时只留第一篇认到的那句——要逐篇看全文，去 ④ 投板那一步的「改投递稿」。
+   */
+  context: string;
+  /** `context` 来自哪一篇（只有多篇时才显示，免得让人以为是"这批的原文"） */
+  contextFrom?: string;
   protected?: boolean;
 }
 
@@ -147,11 +156,17 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
               note: f.note || '',
               pool: [],
               currents: {},
+              context: '',
               protected: f.protected,
             };
             byKey.set(f.key, slot);
           }
           if (f.current) slot.currents[s.id] = f.current;
+          // 原句只留**第一篇**认到的那句，并记下是哪篇的稿子（多篇时不注明会让人以为是"这批的原文"）
+          if (!slot.context && f.context) {
+            slot.context = f.context;
+            slot.contextFrom = s.asset_code || s.hook_code || s.id.slice(0, 8);
+          }
           (f.pool || []).forEach((p) => {
             if (!slot!.pool.includes(p)) slot!.pool.push(p);
           });
@@ -250,9 +265,9 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
   return (
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
       <Space wrap size={6}>
-        <Tooltip title="参数项来自「可替换元素库」字典（按钩子原型配的行）；原值是这一批稿子里自动认出来的。填多个值＝一次扇多条，换词不花钱。">
-          <Text strong>换皮参数（填多个值＝一次出多条）</Text>
-        </Tooltip>
+        <Text strong>换皮参数（填多个值＝一次出多条）</Text>
+        {/* 11-10 用户口径「说明太长篇大论，缩进浮窗」：这段解释从 Tooltip 换成「？」，界面只留标题 */}
+        <HelpDot text="参数项来自「可替换元素库」字典（按钩子原型配的行）；原值是这一批稿子里自动认出来的。填多个值＝一次扇多条，换词不花钱。" />
         {!!categoryName && <Tag color="blue">{categoryName}</Tag>}
         {multiCopy && (
           <Tooltip title={`这批选了 ${summaries.length} 条文案，各篇的原值可能不同：后端按每条稿子自己认到的值分别换，认不出的那些才用下面手填的公共原值`}>
@@ -267,16 +282,12 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
       {loading && !slots.length && <Spin size="small" />}
       {error && <Alert type="warning" showIcon message={`参数项认不出来：${error}`} description="不影响照常开单，只是这一屏没有参数行。" />}
       {!loading && !error && !slots.length && (
-        <Alert
-          type="info"
-          showIcon
-          message="这个原型在字典里还没配参数项"
-          description={
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              要在这里换皮，先去「可替换元素库」按原型加行（管理员）。不加也能开单，只是每条文案出 n 份的老路径。
-            </Text>
-          }
-        />
+        <Space wrap size={6}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            这个原型在字典里还没配参数项——不加也能照常开单（走每条文案出 n 份的老路径）
+          </Text>
+          <HelpDot text="要在这里换皮，先去「可替换元素库」按原型加参数项（管理员），加完回来点「重新认参数」。这一屏只摆当前原型配的那些行，别的原型的行不会混进来。" />
+        </Space>
       )}
 
       {slots.map((slot) => {
@@ -296,7 +307,8 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
               </Tooltip>
               {currents.length === 0 ? (
                 <Text type="warning" style={{ fontSize: 12 }}>
-                  稿子里没认出原值——展开下面「模板脚本提示词」，把原句照抄进「原稿里写的是」
+                  稿子里没认出原值
+                  <HelpDot text="展开下面「模板脚本提示词」，把稿子里那句原话照抄进这一行的「原稿里写的是」，再点「重新认参数」——词面一致了才换得动。抄不进也没关系：留空只是这一项不换。" />
                 </Text>
               ) : same ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>原稿里：{currents[0]}</Text>
@@ -308,6 +320,16 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
               )}
               {!!list.length && <Tag color="green">{list.length} 个值</Tag>}
             </Space>
+            {/* 11-10 用户口径「把原提示词中对应的内容也放出来，这样可以做一个对比」：
+                这一行是那个词在**稿子里所在那一行**的原文（后端截断），改之前长什么样一眼看得到 */}
+            {!!slot.context && (
+              <div style={{ marginBottom: 2 }}>
+                <Text type="secondary" style={{ fontSize: 12, lineHeight: '18px' }}>
+                  稿子里这句{multiCopy && slot.contextFrom ? `（${slot.contextFrom}）` : ''}：
+                  <span style={{ background: '#fffbe6', padding: '0 2px' }}>{slot.context}</span>
+                </Text>
+              </div>
+            )}
             <Select
               mode="tags"
               style={{ width: '100%' }}
@@ -350,29 +372,39 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
               ]}
             />
           </Space>
-          <Text type={computed.blocked ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>
-            {computed.blocked
-              ? computed.blocked
-              : `每条文案扇 ${computed.rows} 张 → 本批 ${summaries.length * computed.rows} 组稿子（还要 × 派生份数 N × 每份出几版，见下面「要投 X 条」）。换词是在展开好的那份稿子上做的，这 ${computed.rows} 张不多花模型钱，但每张各占一个钩子编号、各吃一条当天额度。`}
-          </Text>
+          {computed.blocked ? (
+            // 拦人的话不留浮窗里——这是「现在点提交会被打回」，必须摆在界面上
+            <Text type="danger" style={{ fontSize: 12 }}>
+              {computed.blocked}
+            </Text>
+          ) : (
+            <Space wrap size={6}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {`每条文案扇 ${computed.rows} 张 → 本批 ${summaries.length * computed.rows} 组稿子`}
+              </Text>
+              <HelpDot
+                text={`还要 × 派生份数 N × 每份出几版，见下面「要投 X 条」。换词是在展开好的那份稿子上做的，这 ${computed.rows} 张不多花模型钱，但每张各占一个钩子编号、各吃一条当天额度。`}
+              />
+            </Space>
+          )}
         </Space>
       )}
 
       {!!notes.length && (
-        <Alert
-          type="info"
-          showIcon
-          message="认参数这件事本身的两句话"
-          description={
-            <Space direction="vertical" size={2}>
-              {notes.map((nx, i) => (
-                <Text key={i} style={{ fontSize: 12 }}>
-                  {nx}
-                </Text>
-              ))}
-            </Space>
-          }
-        />
+        <Space wrap size={6}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {`认参数时有 ${notes.length} 条提示`}
+          </Text>
+          <HelpDot
+            text={
+              <Space direction="vertical" size={2}>
+                {notes.map((nx, i) => (
+                  <span key={i}>{nx}</span>
+                ))}
+              </Space>
+            }
+          />
+        </Space>
       )}
 
       {/* 底稿：默认收起，不把人原本就紧张的弹窗高度吃掉 */}
@@ -384,16 +416,12 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
               key: 'draft',
               label: (
                 <span style={{ fontSize: 12 }}>
-                  模板脚本提示词（{summaries.length} 篇，可改）——改这里是让「认参数」认得准，不会改到投出去的正文
+                  模板脚本提示词（{summaries.length} 篇，可改）
+                  <HelpDot text="改这里是让「认参数」认得准，不会改到投出去的正文。这份是过审后自动备好的投产稿预览（缺预览的用文案本身），改完点上面的「重新认参数」，词面一致了那一行才换得动。真正要改投到板上的正文，在 ④ 生产单页投板那一步的「改投递稿」里改——那才是进板面的那份字。" />
                 </span>
               ),
               children: (
                 <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    这份是过审后自动备好的投产稿预览（缺预览的用文案本身）。改完点上面的「重新认参数」，
-                    词面一致了那一行才换得动。<b>真正要改投到板上的正文，在 ④ 生产单页投板那一步的「改投递稿」里改</b>
-                    ——那才是进板面的那份字。
-                  </Text>
                   {summaries.map((s) => (
                     <div key={s.id}>
                       <Text type="secondary" style={{ fontSize: 12 }}>
