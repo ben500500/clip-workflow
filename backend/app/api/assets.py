@@ -134,6 +134,7 @@ from app.models.models import User
 from app.models.user import UserRole
 from app.services import asset_compose_service as compose
 from app.services import asset_frame_service as framesvc
+from app.services import asset_prompt_elements as pesvc
 from app.services import asset_service as svc
 from app.services import aivideo_board as board
 from app.services.data_scope import check_project_access_by_episode
@@ -1396,7 +1397,12 @@ def _serialize_summary(
     return data
 
 
-def _serialize_production(p: AssetProduction, output_count: int = 0, owner_name: Optional[str] = None) -> dict:
+def _serialize_production(
+    p: AssetProduction,
+    output_count: int = 0,
+    owner_name: Optional[str] = None,
+    category_name: Optional[str] = None,
+) -> dict:
     return {
         "id": str(p.id),
         "asset_id": str(p.asset_id),
@@ -1406,6 +1412,9 @@ def _serialize_production(p: AssetProduction, output_count: int = 0, owner_name:
         "owner_name": owner_name,
         "seq": p.seq,
         "hook_code": p.hook_code,
+        # 批 M（11-10）：这条单所属文案的钩子原型名（列表口一次性批量补，口径与审核台一致）。
+        # 投产弹窗的「可替换元素」按原型筛槽位，靠的就是这一列——单行口为 null。
+        "category_name": category_name,
         "project_title": p.project_title,  # 废弃：11-02 版取消项目标题行，只读历史
         "prompt_text": p.prompt_text,
         "dispatch_note": p.dispatch_note,  # 只给人看，不进 payload
@@ -5535,6 +5544,308 @@ async def update_risk_lexicon(
     }
 
 
+# ─────────────────────  投产前可替换元素（批 M，11-10）  ─────────────────────
+# 用户在②投产弹窗点「确认投板」之前，要把提示词里换得动的元素（场景／动物／道具…）
+# 挑一个或自己填，换完拿到一份**完整可编辑**的正文再投。
+#
+# 形态完全照风险词库（同一类东西：运营能改、全员要读、不进模型提示词）：
+# 读用 `_PROD_ROLES`、写只 admin、改动写 AuditLog，三层 defaults／override／effective。
+#
+# **抽元素与组稿都是纯文本进、纯文本出**，不读生产单、不落任何库：
+# 前端把手上那份投递稿正文递进来，引擎认槽位、按人选替换，再把新正文原样递回去。
+# 这样「换元素」与「改稿」是同一条通道（`DispatchRequest.prompt_overrides`），
+# 库里的 `prompt_text`／过审文案一字不动——这是 11-06 的拍板，也是用户这次的原话
+# （「原有的提示词，你不要给它们覆盖掉」）。
+# 组出来的正文在返回时就照投板那道 block 级风险词重扫一遍，
+# 让人在弹窗里就知道"换上这个词会被拦"，而不是点确认才吃 400。
+
+
+def pattern_has_group(pattern: str) -> bool:
+    """写法里到底有没有捕获组——存进去才发现没有，界面就会「认得出但换不动」。"""
+    try:
+        return re.compile(pattern).groups >= 1
+    except re.error:
+        return False
+
+
+class PromptElementSlotRow(BaseModel):
+    """元素库的一行（PUT 的一条）。键与写法当场校验：坏正则直接 400，不让人以为存好了。"""
+    key: str = Field(..., description="稳定标识（同键覆盖出厂默认表；建议小写英文＋下划线）")
+    label: str = Field("", description="界面显示名（如「场景」「出场的动物」），留空用 key")
+    mode: str = Field(
+        pesvc.MODE_LITERAL,
+        description="literal＝正文里逐字找词面（场景/动物这类写在③剧情自由文本里的东西）；"
+        "pattern＝按带捕获组的正则找（①那种模板保证存在、只能在原地处改的位置）",
+    )
+    anchors: List[str] = Field(
+        default_factory=list,
+        description="literal 认法要匹配的词面；留空＝拿候选池当词面",
+    )
+    pattern: str = Field("", description="pattern 认法的正则，捕获组 1 就是当前值")
+    pool: List[str] = Field(default_factory=list, description="裂变候选（顺序＝界面上的推荐顺序）")
+    categories: List[str] = Field(
+        default_factory=list,
+        description="只在这些钩子原型下出现（填原型名或键）；留空＝所有原型都用这一槽位",
+    )
+    note: str = Field("", description="行内说明（纯展示，告诉一线这个槽位换的是什么）")
+
+
+class PromptElementsUpdateRequest(BaseModel):
+    slots: List[PromptElementSlotRow] = Field(default_factory=list)
+    inherit: bool = Field(
+        True, description="true＝在出厂默认表上追加/覆盖同键；false＝整体替换（默认槽位也不再认）"
+    )
+
+
+class PromptElementsExtractRequest(BaseModel):
+    texts: Dict[str, str] = Field(
+        default_factory=dict,
+        description="行 id → 那份投递稿正文（一次上限 50 条，单条上限 20000 字）",
+    )
+    category: Optional[str] = Field(
+        None, description="钩子原型名或键；给了就只报这个原型适用的元素"
+    )
+
+
+class PromptElementEditItem(BaseModel):
+    """一条替换。`old` 留空＋槽位是 pattern＝把这个槽位的所有命中都换掉。"""
+    key: str = Field("", description="元素槽位键；留空＝自定义替换（整段逐字换，不限于字典认出的元素）")
+    old: str = Field("", description="要换掉的那段原文")
+    new: str = Field(..., description="换成什么")
+
+
+class PromptElementsApplyRequest(BaseModel):
+    text: str = Field(..., description="当前那份投递稿正文")
+    edits: List[PromptElementEditItem] = Field(default_factory=list)
+
+
+_MAX_EXTRACT_ITEMS = 50
+_MAX_ELEMENT_TEXT_LEN = 20000
+
+
+async def _prompt_element_catalog(db: AsyncSession) -> List[Dict[str, Any]]:
+    """读生效元素字典（每次现读，不缓存）。
+
+    TTL 缓存是给"每个动作都要扫一遍"的风险词表准备的；元素字典只在开弹窗时读一次，
+    而**运营刚配完就等着看效果**，缓存反而制造"配了看着没生效"。
+    """
+    row = (
+        await db.execute(
+            select(SystemConfig).where(SystemConfig.key == pesvc.PROMPT_ELEMENTS_CONFIG_KEY)
+        )
+    ).scalar_one_or_none()
+    value = row.value if row is not None and isinstance(row.value, dict) else {}
+    eff, _override = pesvc.merge_catalog(value)
+    return eff
+
+
+@router.get("/assets/prompt-elements")
+async def get_prompt_elements(
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """读当前生效的可替换元素字典（抽元素／组稿用的就是这一份）。"""
+    row = (
+        await db.execute(
+            select(SystemConfig).where(SystemConfig.key == pesvc.PROMPT_ELEMENTS_CONFIG_KEY)
+        )
+    ).scalar_one_or_none()
+    raw = row.value if row is not None and isinstance(row.value, dict) else {}
+    eff, override = pesvc.merge_catalog(raw)
+    return {
+        "effective": eff,
+        "defaults": pesvc.normalize_catalog(pesvc.DEFAULT_PROMPT_ELEMENTS),
+        "override": override,
+        "inherit": bool(raw.get("inherit", True)),
+        "has_override": row is not None,
+        "updated_at": utc_iso(row.updated_at) if row is not None and row.updated_at else "",
+        "can_edit": current_user.role == UserRole.admin.value,
+        "notes": [
+            "候选池还没配的元素槽位照样能用：界面上走「自定义输入」，功能不断档",
+            "「场景／动物」这类元素要按钩子原型加行，存完立即生效，不用发版",
+        ],
+    }
+
+
+@router.put("/assets/prompt-elements")
+async def update_prompt_elements(
+    data: PromptElementsUpdateRequest,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+    db: AsyncSession = Depends(get_db),
+):
+    """改元素字典（仅 admin）。改完下一次抽元素就用新表。"""
+    rows: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in data.slots:
+        key = str(item.key or "").strip()[:60]
+        if not key:
+            raise HTTPException(status_code=400, detail="有一行没写「键」，键是这一行的身份证号，不能空")
+        if key in seen:
+            raise HTTPException(
+                status_code=400,
+                detail=f"键重复了：{key}（同键只会留一份，先把多余那行删掉）",
+            )
+        seen.add(key)
+        mode = str(item.mode or pesvc.MODE_LITERAL).strip()
+        if mode not in pesvc.SLOT_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"「{key}」的认法只能是逐字找词面（literal）或按写法找（pattern），现在写的是：{mode}",
+            )
+        pattern = str(item.pattern or "").strip()
+        if pattern:
+            if len(pattern) > pesvc.MAX_PATTERN_LEN:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"「{key}」的识别写法太长了（上限 {pesvc.MAX_PATTERN_LEN} 字）",
+                )
+            err = pesvc.compile_error(pattern)
+            if err:
+                raise HTTPException(status_code=400, detail=f"「{key}」的识别写法编不过：{err}")
+            if not pattern_has_group(pattern):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"「{key}」的识别写法里要有捕获组（用圆括号把当前值那段包住），否则不知道该换哪一段：{pattern}",
+                )
+        rows.append(
+            {
+                "key": key,
+                "label": item.label,
+                "mode": mode,
+                "anchors": item.anchors,
+                "pattern": pattern,
+                "pool": item.pool,
+                "categories": item.categories,
+                "note": item.note,
+            }
+        )
+    if len(rows) > pesvc.MAX_SLOTS:
+        raise HTTPException(status_code=400, detail=f"元素槽位最多 {pesvc.MAX_SLOTS} 行")
+
+    value = {"slots": rows, "inherit": bool(data.inherit)}
+    row = (
+        await db.execute(
+            select(SystemConfig).where(SystemConfig.key == pesvc.PROMPT_ELEMENTS_CONFIG_KEY)
+        )
+    ).scalar_one_or_none()
+    before_value = copy.deepcopy(row.value) if row is not None and row.value else None
+    if row is None:
+        row = SystemConfig(
+            key=pesvc.PROMPT_ELEMENTS_CONFIG_KEY,
+            value=value,
+            description="投产前可替换元素字典（slots=槽位／inherit=是否在出厂默认表上追加）",
+        )
+        db.add(row)
+    else:
+        row.value = value
+        row.updated_at = datetime.utcnow()
+        if not row.description:
+            row.description = "投产前可替换元素字典（slots=槽位／inherit=是否在出厂默认表上追加）"
+    await db.flush()
+    await db.refresh(row)
+    await _write_audit(
+        db,
+        action="asset.prompt_elements.update",
+        operator=current_user,
+        target_type="asset_prompt_elements",
+        target_id=pesvc.PROMPT_ELEMENTS_CONFIG_KEY,
+        before=before_value,
+        after=value,
+    )
+    eff, _ = pesvc.merge_catalog(value)
+    notes: List[str] = []
+    if not data.inherit:
+        notes.append("已选「整体替换」：出厂那两个槽位（题材标签／剧名）不再认，要就自己加行")
+    if not eff:
+        notes.append("字典一行都没有 → 抽元素什么都认不出来，界面上只剩「自定义替换」")
+    notes.append("元素换出来的正文只走这一次投递（库里原稿一字不动），下一次再投仍是原稿")
+    return {
+        "ok": True,
+        "effective": eff,
+        "updated_at": utc_iso(row.updated_at) if row.updated_at else "",
+        "notes": notes,
+    }
+
+
+@router.post("/assets/prompt-elements/extract")
+async def extract_prompt_elements(
+    data: PromptElementsExtractRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """从投递稿正文里认出可替换元素（带候选池），供②投产弹窗摆元素行。
+
+    纯文本进出，不读库、不落库、不花钱。
+    """
+    catalog = await _prompt_element_catalog(db)
+    if len(data.texts) > _MAX_EXTRACT_ITEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一次最多认 {_MAX_EXTRACT_ITEMS} 条（这次 {len(data.texts)} 条），分批看",
+        )
+    items: Dict[str, Any] = {}
+    over_limit: List[str] = []
+    for key, text in data.texts.items():
+        body = str(text or "")
+        if len(body) > _MAX_ELEMENT_TEXT_LEN:
+            over_limit.append(str(key))
+            items[str(key)] = []
+            continue
+        items[str(key)] = pesvc.extract_elements(body, catalog, data.category)
+    notes: List[str] = []
+    if not catalog:
+        notes.append("元素字典是空的，认不出元素——去「可替换元素库」按钩子原型加行")
+    if over_limit:
+        notes.append(f"有 {len(over_limit)} 条正文太长（上限 {_MAX_ELEMENT_TEXT_LEN} 字），没去认元素")
+    return {
+        "items": items,
+        "category": data.category or "",
+        "catalog_count": len(catalog),
+        "slot_labels": [s["label"] for s in catalog],
+        "notes": notes,
+    }
+
+
+@router.post("/assets/prompt-elements/apply")
+async def apply_prompt_elements(
+    data: PromptElementsApplyRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """按人选的元素替换把整段正文组出来，并当场扫一遍拦级风险词。
+
+    返回的 `text` 就是要塞进「完整可编辑正文」那一份；人还能接着手改，
+    点确认时才作为 `prompt_overrides` 投出去。
+    """
+    if len(data.text) > _MAX_ELEMENT_TEXT_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"正文 {len(data.text)} 字，超过 {_MAX_ELEMENT_TEXT_LEN} 字上限，先删短再组稿",
+        )
+    catalog = await _prompt_element_catalog(db)
+    edits = [{"key": e.key, "from": e.old, "to": e.new} for e in data.edits]
+    text, replaced, notes = pesvc.apply_edits(data.text, catalog, edits)
+    if len(text) > _PROMPT_OVERRIDE_MAX_LEN:
+        notes.append(
+            f"组完 {len(text)} 字，超过投递稿单条上限 {_PROMPT_OVERRIDE_MAX_LEN} 字，投板时会被拦，先删一点"
+        )
+    book, exemptions = await _risk_lexicon(db)
+    hits = svc.scan_risk(text, lexicon=book, exemptions=exemptions)
+    blocked = svc.risk_block_hits(hits)
+    return {
+        "text": text,
+        "replaced": replaced,
+        "notes": notes,
+        "length": len(text),
+        "risk": {
+            "block": blocked,
+            "warn": [h for h in hits if h.get("level") == svc.RISK_LEVEL_WARN],
+        },
+        # 与投板那道闸同一个判据：这里非空，点确认就会照原稿那道闸被拦（admin 可带理由强行投）
+        "would_dispatch_block": bool(blocked),
+    }
+
+
 @router.get("/assets/summaries")
 async def list_summaries(
     audit_status: Optional[str] = None,
@@ -7854,12 +8165,35 @@ async def list_productions(
         out_counts = {pid: int(cnt) for pid, cnt in orows}
     # A′：投产人显示名一次聚合
     owner_names = await _user_names(db, {p.created_by for p in rows})
+    # 批 M（11-10）：这一页各单所属文案的**钩子原型名**（整页一次聚合，逐行查＝100 次）。
+    # 原型是「每种钩子给几个可换元素」的分组依据，投产弹窗抽可替换元素要按它筛槽位；
+    # 名字口径与审核台 `category_name` 同一个 `_category_name_map`（下线行也读得到名字）。
+    summary_cats: Dict[Any, Any] = {}
+    sids = {p.summary_id for p in rows if p.summary_id}
+    if sids:
+        summary_cats = {
+            sid: cid
+            for sid, cid in (
+                await db.execute(
+                    select(AssetSummary.id, AssetSummary.category_id).where(
+                        AssetSummary.id.in_(sids)
+                    )
+                )
+            ).all()
+        }
+    cat_names = await _category_name_map(db)
+
+    def _prod_category_name(p: AssetProduction) -> Optional[str]:
+        cid = summary_cats.get(p.summary_id)
+        return cat_names.get(str(cid)) if cid else None
+
     return {
         "items": [
             _serialize_production(
                 p,
                 output_count=out_counts.get(p.id, 0),
                 owner_name=owner_names.get(str(p.created_by)) if p.created_by else None,
+                category_name=_prod_category_name(p),
             )
             for p in rows
         ],

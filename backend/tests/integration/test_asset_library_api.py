@@ -9828,3 +9828,168 @@ def test_auto_park_never_double_books_a_code_already_used():
         await client.aclose()
 
     _run(_scenario())
+
+
+ELEMENT_PROMPT_10S = (
+    "生成【现言豪门】仿真人写实短剧，参考【《一碗疙瘩汤成少爷后妈》】剧情，"
+    "输入素材为 AI 多视图角色设定卡。\n"
+    "时长 10 秒，9:16 竖屏，模拟手机竖屏实拍短剧影视质感。\n"
+    "剧情：老破小客厅里，婆婆把一只橘猫摔在地上，媳妇抱着橘猫退到阳台。\n"
+    "时间轴：0-3 秒强冲突钩子，3-7 秒推进矛盾，7-10 秒情绪定格收束留悬念。\n"
+    "负面约束：禁止五官崩坏变脸。 9:16，10s"
+)
+
+
+def test_prompt_elements_catalog_extract_and_apply_api():
+    """投产前可替换元素四个口（批 M，11-10，用户口径「确认投产之前要能换元素」）。
+
+    要验的：
+    1. material 能读字典、能抽元素、能组稿，但**不能改字典**（写字只 admin）；
+    2. 写法编不过／没捕获组／键重复／认法拼错 → 400，**失败请求不写审计**；
+    3. admin 存一行 → 生效表立刻能看见（出厂那两个槽位仍在），下一次抽元素就用新表；
+    4. 抽元素给出候选池与出现次数（"裂变几种选择"那份数据）；
+    5. 组稿时 pattern 槽位**只动命中处**（时长 10→15 不许把⑦时间轴和⑬行尾一起改掉）；
+    6. 换上拦级风险词时 apply 当场报 `would_dispatch_block`（和投板那道闸同一判据）；
+    7. 全程纯文本进出：不动 `system_config` 以外的任何行，更不动库里的 `prompt_text`。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.api import assets as assets_api  # noqa: F401  （模块级引用，确认口已挂上）
+        from app.services import asset_prompt_elements as pe
+
+        client, h = await _client_and_headers()
+        hm, ha = h["material"], h["admin"]
+
+        # ① 读：全员能读，看得到生效表／出厂表／能不能改
+        r = await client.get("/api/assets/prompt-elements", headers=hm)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert {s["key"] for s in data["effective"]} == {"genre", "drama_name"}, data["effective"]
+        assert data["defaults"] and data["can_edit"] is False
+        r = await client.get("/api/assets/prompt-elements", headers=ha)
+        assert r.json()["can_edit"] is True
+        # material 改字典 → 403（字典决定投出去的是什么）
+        r = await client.put("/api/assets/prompt-elements",
+                             json={"slots": [{"key": "scene", "pool": ["出租屋"]}], "inherit": True},
+                             headers=hm)
+        assert r.status_code == 403, r.text
+
+        # ② 四种脏写法全 400，而且一条审计都不许留
+        bad_calls = [
+            {"slots": [{"key": "bad_rx", "mode": "pattern", "pattern": "([a-z"}]},
+            {"slots": [{"key": "no_group", "mode": "pattern", "pattern": r"生成【[^】]{1,12}】"}]},
+            {"slots": [{"key": "dup", "pool": ["a"]}, {"key": "dup", "pool": ["b"]}]},
+            {"slots": [{"key": "", "pool": ["a"]}]},
+            {"slots": [{"key": "weird", "mode": "fuzzy", "pool": ["a"]}]},
+        ]
+        for payload in bad_calls:
+            r = await client.put("/api/assets/prompt-elements",
+                                 json={**payload, "inherit": True}, headers=ha)
+            assert r.status_code == 400, f"{payload} 该被拒：{r.text}"
+        assert await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.update") == [], \
+            "失败的改字典请求不该留痕（登录本身也写审计，所以只数这一类）"
+
+        # ③ admin 存三行（含一个限定原型的槽位）→ 生效表里出厂那两个仍在
+        r = await client.put(
+            "/api/assets/prompt-elements",
+            json={
+                "inherit": True,
+                "slots": [
+                    {"key": "scene", "label": "场景", "pool": ["老破小客厅", "出租屋客厅", "医院走廊"],
+                     "note": "③剧情里的地点"},
+                    {"key": "animal", "label": "出场的动物", "anchors": ["橘猫", "猫"],
+                     "pool": ["橘猫", "中华田园犬", "鹦鹉"]},
+                    {"key": "duration", "label": "时长（秒）", "mode": "pattern",
+                     "pattern": r"时长 (\d+) 秒", "pool": ["10", "15"], "categories": ["悬念"]},
+                ],
+            },
+            headers=ha,
+        )
+        assert r.status_code == 200, r.text
+        eff_keys = {s["key"] for s in r.json()["effective"]}
+        assert {"scene", "animal", "duration", "genre", "drama_name"} <= eff_keys, r.json()["effective"]
+        audits = await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.update")
+        assert len(audits) == 1 and audits[0].operator_id is not None
+        assert not audits[0].before, "第一次配之前没有覆盖行，before 该是空"
+        assert len(audits[0].after["slots"]) == 3
+        assert any("只走这一次投递" in n for n in r.json()["notes"]), r.json()["notes"]
+
+        # ④ 抽元素：候选池＋出现次数（"裂变几种选择"就是这份）
+        r = await client.post("/api/assets/prompt-elements/extract",
+                              json={"texts": {"p1": ELEMENT_PROMPT_10S}}, headers=hm)
+        assert r.status_code == 200, r.text
+        got = {s["key"]: s for s in r.json()["items"]["p1"]}
+        assert {"scene", "animal", "genre", "drama_name"} <= set(got), got.keys()
+        assert got["scene"]["current"] == "老破小客厅"
+        assert got["animal"]["occurrences"] == [{"value": "橘猫", "count": 2}]
+        assert got["animal"]["pool"] == ["橘猫", "中华田园犬", "鹦鹉"]
+        assert got["animal"]["custom"] is True
+        assert "duration" not in got, "没报原型时限定原型的槽位不该出现"
+        assert got["genre"]["current"] == "现言豪门"
+
+        # 4b 报了原型 → 限定该原型的槽位这才出现
+        r = await client.post("/api/assets/prompt-elements/extract",
+                              json={"texts": {"p1": ELEMENT_PROMPT_10S}, "category": "悬念"}, headers=hm)
+        assert "duration" in {s["key"] for s in r.json()["items"]["p1"]}, r.text
+        # 4c 一次给太多条 → 400 白话
+        r = await client.post("/api/assets/prompt-elements/extract",
+                              json={"texts": {f"p{i}": ELEMENT_PROMPT_10S
+                                              for i in range(assets_api._MAX_EXTRACT_ITEMS + 1)}},
+                              headers=hm)
+        assert r.status_code == 400 and "分批" in r.text, r.text
+
+        # ⑤ 组稿：literal 全处换、pattern 只动命中处
+        r = await client.post(
+            "/api/assets/prompt-elements/apply",
+            json={"text": ELEMENT_PROMPT_10S,
+                  "edits": [{"key": "animal", "old": "橘猫", "new": "中华田园犬"},
+                            {"key": "duration", "old": "10", "new": "15"}]},
+            headers=hm,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        rep = {x["key"]: x for x in body["replaced"]}
+        assert rep["animal"]["count"] == 2 and rep["duration"]["count"] == 1, body["replaced"]
+        assert "中华田园犬" in body["text"] and "橘猫" not in body["text"]
+        assert "时长 15 秒" in body["text"]
+        assert "7-10 秒" in body["text"], "⑦时间轴不许被顺手改掉（模板自查第③条硬要求）"
+        assert "9:16，10s" in body["text"], "⑬行尾同理"
+        assert body["risk"]["block"] == [] and body["would_dispatch_block"] is False
+
+        # 5b 没找到的那一行要说出来，不许静默假装换上了
+        r = await client.post("/api/assets/prompt-elements/apply",
+                              json={"text": ELEMENT_PROMPT_10S,
+                                    "edits": [{"key": "scene", "old": "幼儿园", "new": "公司前台"},
+                                              {"key": "scene", "old": "老破小客厅", "new": "出租屋客厅"}]},
+                              headers=hm)
+        notes = r.json()["notes"]
+        rep = {x["from"]: x["count"] for x in r.json()["replaced"]}
+        assert rep["幼儿园"] == 0 and rep["老破小客厅"] == 1
+        assert any("幼儿园" in n and "没改" in n for n in notes), notes
+        assert "出租屋客厅" in r.json()["text"]
+
+        # 5c 自定义替换（字典里没这槽位）照样走得通
+        r = await client.post("/api/assets/prompt-elements/apply",
+                              json={"text": ELEMENT_PROMPT_10S,
+                                    "edits": [{"key": "", "old": "阳台", "new": "楼道口"}]}, headers=hm)
+        assert "退到楼道口" in r.json()["text"], r.text
+
+        # ⑥ 换上拦级风险词 → 与投板那道闸同一判据，当场就说会被拦
+        r = await client.post("/api/assets/prompt-elements/apply",
+                              json={"text": ELEMENT_PROMPT_10S,
+                                    "edits": [{"key": "animal", "old": "橘猫", "new": "砍死"}]}, headers=hm)
+        body = r.json()
+        assert body["would_dispatch_block"] is True, body
+        assert [w["word"] for w in body["risk"]["block"]] == ["砍死"], body["risk"]
+
+        # ⑦ 纯文本进出：除了③那一次改字典，抽元素/组稿一次都没往库里写
+        assert len(await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.update")) == 1
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(SystemConfig, pe.PROMPT_ELEMENTS_CONFIG_KEY)
+        assert row is not None and len(row.value["slots"]) == 3
+        assert await _count(AssetProduction) == 0 and await _count(AssetSummary) == 0
+        assert await _count(AssetItem) == 0, "抽元素/组稿不该造任何素材或生产单"
+        await client.aclose()
+
+    _run(_scenario())
