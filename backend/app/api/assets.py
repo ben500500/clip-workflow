@@ -11197,7 +11197,8 @@ async def package_outputs(
             url = await get_presigned_url(
                 o.bucket or settings.MINIO_BUCKET_RAW, o.file_key, expires_seconds=600
             )
-            async with httpx.AsyncClient(timeout=300) as cl:
+            # verify=False：163 用自签证书，presigned 签名已保证真实性（内网）
+            async with httpx.AsyncClient(timeout=300, verify=False) as cl:
                 resp = await cl.get(url)
                 resp.raise_for_status()
             zf.writestr(name, resp.content)
