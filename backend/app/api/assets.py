@@ -3586,12 +3586,33 @@ async def list_batches(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """批次列表（含成本预估/实扣，对账页用）。"""
+    """批次列表（含成本预估/实扣，对账页用）。
+
+    2026-11-11 评审（审核/投放席 P0）：批次下拉的「（N 条）」原来读入库时回填的
+    `item_count` 存量列——贴文案导入的老路径没写过，一线永远看到假 0、无法信任任何
+    计数。现在**实时 COUNT**（一条 GROUP BY，50 批成本可忽略）：计数只说真话，
+    存量错数自愈，不再依赖每条写路径都记得回填。
+    """
     limit = min(max(1, limit), 200)
     rows = (
         await db.execute(select(AssetBatch).order_by(AssetBatch.created_at.desc()).limit(limit))
     ).scalars().all()
-    return {"items": [_serialize_batch(b) for b in rows]}
+    live_counts: Dict[Any, int] = {}
+    if rows:
+        for bid, cnt in (
+            await db.execute(
+                select(AssetItem.batch_id, func.count(AssetItem.id))
+                .where(AssetItem.batch_id.in_([b.id for b in rows]))
+                .group_by(AssetItem.batch_id)
+            )
+        ).all():
+            live_counts[bid] = int(cnt)
+    items = []
+    for b in rows:
+        payload = _serialize_batch(b)
+        payload["item_count"] = live_counts.get(b.id, 0)
+        items.append(payload)
+    return {"items": items}
 
 
 # ──────────────────────────────────────────────
