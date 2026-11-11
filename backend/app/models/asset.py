@@ -803,3 +803,41 @@ class AssetJob(Base):
 
     def __repr__(self) -> str:
         return f"<AssetJob(kind={self.kind}, status={self.status}, batch={self.batch_id})>"
+
+
+class AssetElementGuess(Base):
+    """模型从投递稿里**逐字抄回**的换皮参数原值（一行 = 一份稿子的一个参数项）。
+
+    为什么要有这张表（11-11 用户口径「你不能按照固定的词典去识别，你要调用大模型的能力
+    去做这个事情」）：词表认不出的那些（真稿写「黄皮子」而词表只有「黄鼠狼」、整句台词
+    是间接转述）只能问模型，但问一次花一次钱、还要等十几秒。同一份稿子的原值不会自己变，
+    所以抄回来的结果必须存下来复用——**每篇稿子每个参数项只花一次模型钱**，之后
+    反复开单、刷新页面、换浏览器都是 0 元。
+
+    ⚠️ 存的是"模型当时抄回来的那串"，**不是"已验证的原值"**：
+    读出来时照样过一遍 `accept_guessed_values`（逐字在不在稿子里、有没有落在
+    `钩子原文：`／`生成【…】` 这类保护行里、长度上限）。因为保护规则来自**当前**生效的
+    元素字典，字典一改（比如某行从 protected 变成可动），陈旧的判定就该重算，
+    不能拿存下来的时候的口径当现在的结论。过不了就丢弃这一行缓存，下次重新问。
+
+    键是 `body_hash`（那份投递稿正文的 sha256）而不是 `summary_id`：稿子一旦改写，
+    哈希就变，旧行自然不再命中（不删，留着给「同一篇稿子回滚了」复用）；
+    同一份稿子被两条生产单引用也只占一份缓存。
+    """
+    __tablename__ = "asset_element_guesses"
+    __table_args__ = (
+        UniqueConstraint("body_hash", "slot_key", name="uq_asset_element_guesses_hash_slot"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    body_hash = Column(String(64), nullable=False, index=True)
+    slot_key = Column(String(60), nullable=False)
+    value = Column(Text, nullable=False)
+    # 抄回它的那个模型（换模型后值可能重抄，排查"这个原值哪来的"要看这行）
+    model = Column(String(80), nullable=False, default="")
+    # 认的时候那一份生效字典里这一项挂的原型（只做诊断，不参与命中判定）
+    category = Column(String(60), nullable=False, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def __repr__(self) -> str:
+        return f"<AssetElementGuess(hash={self.body_hash[:8]}, slot={self.slot_key})>"

@@ -703,3 +703,64 @@ def test_guess_accept_says_so_when_there_is_nothing_to_ask():
     assert pe.accept_guessed_values("", _guess_slots("原型 A"), [])["dropped"]
     assert pe.accept_guessed_values(PROMPT_A, [], [{"key": "a_scene", "value": "河边"}])["dropped"]
     assert pe.slots_for_guess([], None) == []
+
+
+# ── 批 Z（11-11）：认不出自动问模型，钱只能花一次 ────────────────────────────
+
+
+def test_body_fingerprint_is_the_cache_key_and_changes_with_the_draft():
+    """缓存键是**正文指纹**，不是 summary_id。
+
+    三条都要成立，否则"只花一次钱"会变成"拿旧稿的词去新稿里换"：
+    同文同键（跨行 id、跨生产单都命中同一份）、改一个字符就换键、空文也有稳定键（不炸）。
+    """
+    assert pe.body_fingerprint(PROMPT_A) == pe.body_fingerprint(PROMPT_A)
+    assert pe.body_fingerprint(PROMPT_A) != pe.body_fingerprint(PROMPT_A + "补一句")
+    assert pe.body_fingerprint(None) == pe.body_fingerprint("")
+    assert len(pe.body_fingerprint(PROMPT_A)) == 64, "列宽 String(64)＝sha256 hex，别换成别的摘要"
+
+
+def test_guess_batch_prefers_the_row_missing_the_most_slots():
+    """分批是**确定**的，而且钱要花在缺得最多的那篇上。
+
+    同一篇稿子读一遍是这一枪的固定开销：缺 3 格的那篇才是该问的，只缺 1 格的下次再说。
+    排序规则一旦不确定（比如按 dict 遍历序），同一批稿子两次打开弹窗会问到不同的篇，
+    钱花在哪没人说得清。
+    """
+    chosen, skipped = pe.select_guess_batch(
+        {"a": ["x"], "b": ["x", "y", "z"], "c": ["y", "z"]},
+        max_items=2,
+        max_chars=10 ** 6,
+    )
+    assert chosen == ["b", "c"] and skipped == ["a"], (chosen, skipped)
+    again, _ = pe.select_guess_batch(
+        {"c": ["y", "z"], "b": ["x", "y", "z"], "a": ["x"]}, max_items=2, max_chars=10 ** 6
+    )
+    assert again == chosen, "同样的缺法必须问同样的篇"
+
+
+def test_guess_batch_never_drops_everything_and_stays_inside_the_budget():
+    """一次问不完时分两种情况，两种都不许出现"一篇都不问"。
+
+    - 只有一篇、且它本身就超字数预算 → **照样问**（它缺的那格正是人卡住的地方，
+      宁可这一枪超预算，也不能让界面回一句"没提炼到"其实一枪都没打）；
+    - 一篇超长＋几篇短的 → 按预算装得下的那几篇先问，超长的这篇留到下次；
+    - 篇数超上限 → 只少几篇，不是全都别问。
+    """
+    only_big, skipped = pe.select_guess_batch(
+        {"big": ["x"]}, max_items=5, max_chars=1000, char_of=lambda _t: 9999
+    )
+    assert only_big == ["big"] and skipped == [], "唯一该问的一篇不许被字数预算挡掉"
+
+    chosen, skipped = pe.select_guess_batch(
+        {"big": ["x"], "s1": ["x"], "s2": ["x"]},
+        max_items=5,
+        max_chars=1000,
+        char_of=lambda t: {"big": 9999, "s1": 10, "s2": 10}[t],
+    )
+    assert chosen == ["s1", "s2"] and skipped == ["big"], (chosen, skipped)
+
+    chosen2, _ = pe.select_guess_batch(
+        {t: ["x"] for t in "abcdef"}, max_items=pe.GUESS_MAX_ITEMS, max_chars=pe.GUESS_MAX_TOTAL_CHARS
+    )
+    assert len(chosen2) == pe.GUESS_MAX_ITEMS, "超篇数只该少几篇，不是全都别问"

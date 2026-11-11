@@ -33,10 +33,11 @@
 命中了几处、没找到哪一条，都在返回值里点名，界面复述给人看。
 """
 
+import hashlib
 import itertools
 import logging
 import re
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -1012,6 +1013,46 @@ GUESS_MAX_TOTAL_CHARS = 12000
 # 给模型看的候选词表／说明都截断：这些只是"这一项长什么样"的提示，不是取值范围
 GUESS_MAX_POOL = 20
 GUESS_NOTE_LEN = 200
+
+
+def body_fingerprint(text: Optional[str]) -> str:
+    """一份投递稿正文的指纹（模型提炼结果缓存 `asset_element_guesses` 的键）。
+
+    用正文内容当键而不是 `summary_id`：稿子一改写指纹就变，旧缓存自然不再命中（不删，
+    留着给"同一篇稿子被回滚"复用）；同一篇稿子被两条生产单引用也只占一份。
+    """
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def select_guess_batch(
+    pending: Dict[str, List[str]],
+    max_items: int = GUESS_MAX_ITEMS,
+    max_chars: int = GUESS_MAX_TOTAL_CHARS,
+    char_of: Optional[Callable[[str], int]] = None,
+) -> Tuple[List[str], List[str]]:
+    """一批"还缺原值的稿子"里，这一次该问哪几篇、哪几篇这次先不问。
+
+    `pending` 是 稿子指纹/id → 还缺的参数项 key。排序按**缺得多的先问**（一次问模型
+    的固定开销主要是"读一遍稿子"，缺 3 格的那篇才是钱该花的地方），同缺再按正文短的
+    先问（同一份字数预算里多塞几篇）。
+
+    返回 `(要问的, 这次先不问的)`。分批规则必须是**确定**的——不然同一批稿子两次打开
+    弹窗会问到不同的篇，钱花在哪没人说得清。
+    """
+    size = char_of or (lambda _text_id: 1)
+    ordered = sorted(pending, key=lambda tid: (-len(pending[tid]), size(tid), tid))
+    chosen: List[str] = []
+    left = max_chars
+    for tid in ordered:
+        if len(chosen) >= max_items:
+            break
+        cost = size(tid)
+        if chosen and cost > left:
+            break
+        chosen.append(tid)
+        left -= cost
+    skipped = [t for t in ordered if t not in set(chosen)]
+    return chosen, skipped
 
 
 def slots_for_guess(catalog: List[Dict[str, Any]], category: Optional[str]) -> List[Dict[str, Any]]:

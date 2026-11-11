@@ -10335,12 +10335,13 @@ def test_prompt_elements_guess_values_api():
         assert sent["speech"]["label"] == "动物说的话" and sent["scene"]["pool"][:1] == ["老破小客厅"]
         assert payload["max_retries"] == 1, "重试交给人再点一下，与出文案/展开同口径"
 
-        # ② 花钱要留痕
+        # ② 花钱要留痕（text/slot 是**这一枪真问出去的量**，缓存命中的部分另记 cached_rows）
         audits = await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.guess_values")
         assert len(audits) == 1 and audits[0].operator_name == MATERIAL_USER, audits
         assert audits[0].after == {
             "text_count": 1, "slot_count": body["slot_count"], "filled_rows": 1,
             "dropped_count": len(body["dropped"]), "model": "fake-llm",
+            "auto": False, "cached_rows": 0,
         }, audits[0].after
 
         # 模型挂了：502 原样传出去，且**不补一条审计**（没花钱的事不能留痕）
@@ -10386,6 +10387,188 @@ def test_prompt_elements_guess_values_api():
         # ④ 只读：全程没动过稿件，也没造素材/生产单
         assert await _count(AssetProduction) == 0 and await _count(AssetSummary) == 0
         assert await _count(AssetItem) == 0
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_prompt_elements_auto_guess_once_per_row_api():
+    """批 Z（11-11 用户口径「你不能按照固定的词典去识别，你要调用大模型的能力去做这个事情」）：
+
+    词表退成第一道免费粗筛，认不出的那几格**自动**问模型。这一枪从按钮变成了跟着开单屏跑的
+    默认动作，所以四条判据必须钉死，否则就是"每次打开弹窗都在偷偷烧钱＋把开单这一屏带崩"：
+
+    1. **同一篇稿子的同一格只花一次钱**：第二次同样请求 `paid=false`、一次模型都不打，
+       填回来的值与第一次逐字相同（结果进 `asset_element_guesses`，键是正文指纹）；
+    2. **已经认出的格子不会被重复问、也不会被覆盖**：`only_missing` 只把缺的那几格端给模型，
+       模型顺手多回的那些格子（词表已经认出的）一律不进结果；
+    3. **模型那一路炸了不许把开单带崩**（`auto=true`）：照常 200、`paid=false`、一条审计都不留、
+       白话说明"这批仍按词表的认法"——人工点的那个按钮仍然把 502 原样红给人看（上面的用例钉的）；
+    4. **旋钮关了只吃缓存**：`ASSET_ELEMENT_AUTO_GUESS=false` 时自动那一支一次模型都不打，
+       但已经存着的原值照旧填回来（那一分钱已经花过，没理由不给）；
+    5. **一次问不完就分批**（超上限不报 400）：剩下的下次打开还会补；
+    6. **字典改了 → 陈旧缓存当场作废重问**：缓存存的是原串不是判据，读的时候按**当前**字典
+       重过一遍逐字校验，过不了就删行（下次重新问），不能拿存下来那天的口径当今天的结论。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.config import settings
+        from app.models.asset import AssetElementGuess
+        from app.services import asset_prompt_elements as pesvc
+
+        client, h = await _client_and_headers()
+        hm, ha = h["material"], h["admin"]
+        G = "/api/assets/prompt-elements/guess-values"
+
+        async def _put_slots(skip: str | None = None, with_scene: bool = False):
+            slot = {"key": "speech", "label": "动物说的话", "mode": "manual",
+                    "note": "⑤它开口那句，稿子里多半是间接转述"}
+            if skip is not None:
+                slot["skip_lines"] = skip
+            slots = [slot]
+            if with_scene:
+                # scene 是**字典里配了、这一枪却没问**的那一格（词表已经认出的那种）
+                slots.insert(0, {"key": "scene", "label": "场景", "pool": ["老破小客厅"]})
+            r = await client.put("/api/assets/prompt-elements",
+                                 json={"inherit": False, "slots": slots}, headers=ha)
+            assert r.status_code == 200, r.text
+
+        items = [{"id": "p1", "key": "speech", "value": "别开门，外头人不对"}]
+
+        # ── ① 第一次：花钱，且落一行缓存 ────────────────────────────────
+        await _put_slots()
+        with patch("app.api.assets._call_autoclip",
+                   _fake_autoclip(slots_items=items)) as c1:
+            r = await client.post(G, json={"texts": {"p1": GUESS_TEXT_10S}, "auto": True},
+                                  headers=hm)
+        assert r.status_code == 200, r.text
+        first = r.json()
+        assert first["paid"] is True and c1.call_count == 1, first
+        assert first["values"] == {"p1": {"speech": "别开门，外头人不对"}}, first["values"]
+        assert first["from_model"] == {"p1": ["speech"]} and first["from_cache"] == {}
+        rows = await _rows(AssetElementGuess)
+        assert len(rows) == 1 and rows[0].slot_key == "speech", rows
+        assert rows[0].body_hash == pesvc.body_fingerprint(GUESS_TEXT_10S)
+        audits_1 = await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.guess_values")
+        assert len(audits_1) == 1, audits_1
+
+        # ── ② 第二次：一个字都没变 → 0 元、一次模型都不打、值照旧填回来 ──
+        with patch("app.api.assets._call_autoclip",
+                   _fake_autoclip(slots_items=items)) as c2:
+            r = await client.post(G, json={"texts": {"p1": GUESS_TEXT_10S}, "auto": True},
+                                  headers=hm)
+        assert r.status_code == 200, r.text
+        second = r.json()
+        assert c2.call_count == 0, "同一篇稿子同一格第二次还打模型＝每开一次弹窗烧一次钱"
+        assert second["paid"] is False and second["values"] == first["values"], second
+        assert second["from_cache"] == {"p1": ["speech"]} and second["from_model"] == {}
+        assert await _count(AssetElementGuess) == 1
+        assert len(await _rows(AuditLog,
+                               AuditLog.action == "asset.prompt_elements.guess_values")) == 1, \
+            "没花钱的事不许留痕"
+        assert any("上一次抄回来" in n for n in second["notes"]), second["notes"]
+
+        # ── ③ only_missing：词表已经认出的格子不重复问、也不被模型覆盖 ──
+        # （`use_cache=false` 是这一枪要**真的**打到模型才看得出问了哪几格；
+        #   speech 已经被 ①② 存进缓存了，不绕开缓存这一枪根本不会发出去。）
+        await _put_slots(with_scene=True)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(slots_items=[
+            {"id": "p1", "key": "speech", "value": "别开门，外头人不对"},
+            {"id": "p1", "key": "scene", "value": "出租屋院门口"},   # 词表已经认出，模型多嘴
+        ])) as c3:
+            r = await client.post(
+                G,
+                json={"texts": {"p1": GUESS_TEXT_10S},
+                      "only_missing": {"p1": ["speech"]}, "use_cache": False},
+                headers=hm,
+            )
+        assert r.status_code == 200, r.text
+        third = r.json()
+        assert c3.call_count == 1
+        assert {s["key"] for s in c3.call_args.args[1]["slots"]} == {"speech"}, \
+            "只缺 speech 却把 scene 也端给模型＝白花一遍钱"
+        assert third["values"] == {"p1": {"speech": "别开门，外头人不对"}}, third["values"]
+        assert "scene" in third["labels"], third["labels"]  # 清单仍给全（界面要知道有几格）
+        assert not any("没配的参数项" in d for d in third["dropped"]), \
+            "字典里明明配了 scene，说它「没配」是假话，会让人白跑去改词表"
+
+        # ── ④ 模型炸了（auto）：照常 200、不花钱、不留痕、说明是白话 ─────
+        # 用一篇**没进过缓存**的稿子，否则缓存先兜住，这一枪根本不会打到模型
+        other = GUESS_TEXT_10S + "\n【另一篇】门口那条黄狗又叫了两声。"
+        audits_before = await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.guess_values")
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(slots_error="提炼服务没回话")):
+            r = await client.post(
+                G, json={"texts": {"p8": other}, "auto": True}, headers=hm,
+            )
+        assert r.status_code == 200, r.text
+        fourth = r.json()
+        assert fourth["paid"] is False and fourth["values"] == {}, fourth
+        assert any("没通" in n and "照常开单" in n for n in fourth["notes"]), fourth["notes"]
+        assert len(await _rows(AuditLog,
+                               AuditLog.action == "asset.prompt_elements.guess_values")) == \
+            len(audits_before)
+        # 人工点的那一下仍然要红（11-10 用例钉的 502）——兜错只兜自动那一支
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(slots_error="提炼服务没回话")):
+            r = await client.post(
+                G, json={"texts": {"p8": other}}, headers=hm,
+            )
+        assert r.status_code == 502 and "提炼服务没回话" in r.text, r.text
+
+        # ── ⑤ 旋钮关了：自动那一支只吃缓存，一次模型都不打 ──────────────
+        old = settings.ASSET_ELEMENT_AUTO_GUESS
+        settings.ASSET_ELEMENT_AUTO_GUESS = False
+        try:
+            with patch("app.api.assets._call_autoclip",
+                       _fake_autoclip(slots_items=items)) as c5:
+                r = await client.post(
+                    G,
+                    json={"texts": {"p1": GUESS_TEXT_10S, "p9": GUESS_TEXT_10S + "补一句"},
+                          "auto": True},
+                    headers=hm,
+                )
+            assert r.status_code == 200, r.text
+            off = r.json()
+            assert c5.call_count == 0, "旋钮关了还打模型＝关掉的是花钱不是关掉一句说明"
+            assert off["paid"] is False
+            assert off["values"].get("p1") == {"speech": "别开门，外头人不对"}, off["values"]
+            assert any("ASSET_ELEMENT_AUTO_GUESS" in n for n in off["notes"]), off["notes"]
+            # 关掉旋钮不影响人主动点：use_cache=false＋auto=false 照旧打模型
+            with patch("app.api.assets._call_autoclip",
+                       _fake_autoclip(slots_items=items)) as c5b:
+                r = await client.post(
+                    G, json={"texts": {"p1": GUESS_TEXT_10S}, "use_cache": False}, headers=hm,
+                )
+            assert r.status_code == 200 and c5b.call_count == 1, r.text
+        finally:
+            settings.ASSET_ELEMENT_AUTO_GUESS = old
+
+        # ── ⑥ 超上限（auto）：不报 400，分批＋白话说明剩下的下次还会补 ───
+        bodies = {f"p{i}": GUESS_TEXT_10S + f"补{i}" for i in range(7)}
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(slots_items=[])) as c6:
+            r = await client.post(G, json={"texts": bodies, "auto": True}, headers=hm)
+        assert r.status_code == 200, r.text
+        sixth = r.json()
+        assert c6.call_count == 1, "不许在一次请求里连着打多枪模型"
+        assert len(c6.call_args.args[1]["texts"]) == pesvc.GUESS_MAX_ITEMS
+        assert len(sixth["skipped"]) == 7 - pesvc.GUESS_MAX_ITEMS, sixth["skipped"]
+        assert any("一次问不完" in n for n in sixth["notes"]), sixth["notes"]
+
+        # ── ⑦ 字典改了保护行 → 陈旧缓存当场作废并重问（不拿旧口径当今天结论）──
+        await _put_slots(skip=r"剧情")   # 那句台词正好在「剧情：」这一行里
+        with patch("app.api.assets._call_autoclip", _fake_autoclip(slots_items=items)) as c7:
+            r = await client.post(G, json={"texts": {"p1": GUESS_TEXT_10S}, "auto": True},
+                                  headers=hm)
+        assert r.status_code == 200, r.text
+        seventh = r.json()
+        assert c7.call_count == 1, "字典改了还端旧缓存＝拿换不动的原值骗人"
+        assert seventh["values"] == {}, seventh["values"]
+        assert any("不动的那两行" in d or "找不到" in d for d in seventh["dropped"]), \
+            seventh["dropped"]
+        # 旧行被删掉了（过不了当前判据的缓存留着只会一次次端上同一个坏值）
+        assert await _count(AssetElementGuess) == 0, await _rows(AssetElementGuess)
+
+        assert await _count(AssetProduction) == 0 and await _count(AssetSummary) == 0
         await client.aclose()
 
     _run(_scenario())

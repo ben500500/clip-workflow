@@ -120,6 +120,7 @@ from app.models.asset import (
     STAGE_SUCCESS,
     AssetBatch,
     AssetCategory,
+    AssetElementGuess,
     AssetFrame,
     AssetItem,
     AssetJob,
@@ -6030,20 +6031,141 @@ async def extract_prompt_elements(
 class PromptElementsGuessRequest(BaseModel):
     """11-10 用户口径「在页面上重新认参数，能不能再将它们提炼一下」的入参。
 
-    形状与 `extract` 一致（行 id → 投递稿正文），但**这一口花钱**：`extract` 是 0 元、
+    形状与 `extract` 一致（行 id → 投递稿正文），但**这一口可能花钱**：`extract` 是 0 元、
     可复现的确定性认法，认不出就是认不出（词表外写法＋台词类整句按设计永不自动认）；
     这里补的是那一段——把稿子交给模型，让它**逐字抄回**稿子里扮演这个角色那段原文。
-    所以它必须是界面上一个要点才会跑的按钮，不许挂在认参数后面自动发生。
+
+    11-11 批 Z 改了口径（用户原话「你不能按照固定的词典去识别，你要调用大模型的能力去做
+    这个」）：这条路不再只是界面上一个要人点的按钮——开单屏认完词表后会**自动**用它补空，
+    但先查 `asset_element_guesses` 缓存，所以每篇稿子每个参数项**只花一次钱**。
+    `auto=true` 就是"这一枪是自动补位"，服务端据此改三处行为：装不下不报 400 而是分批、
+    模型那一路挂了不报错只说明（照常开单）、旋钮关掉时只用缓存。
     """
 
     texts: Dict[str, str] = Field(
         default_factory=dict,
         description=f"行 id → 那份投递稿正文（一次上限 {pesvc.GUESS_MAX_ITEMS} 篇、"
-        f"总计上限 {pesvc.GUESS_MAX_TOTAL_CHARS} 字，超了就分批点）",
+        f"总计上限 {pesvc.GUESS_MAX_TOTAL_CHARS} 字；自动补位时超了会分批，不报错）",
     )
     category: Optional[str] = Field(
         None, description="钩子原型名或「原型 A」这种短前缀；给了就只提炼这一型配的参数项"
     )
+    auto: bool = Field(
+        False,
+        description="true＝界面认完词表自动补位（受 `ASSET_ELEMENT_AUTO_GUESS` 旋钮约束，"
+        "且失败不报错）；false＝人点了「再问一次模型」",
+    )
+    use_cache: bool = Field(
+        True,
+        description="先查这份稿子上一次抄回来的原值（命中＝0 元）。人主动重问时传 false 绕过缓存",
+    )
+    only_missing: Optional[Dict[str, List[str]]] = Field(
+        None,
+        description="行 id → 词表**还没认出来**的那几格参数项 key。给了就只问这几格"
+        "（已经认出的绝不重复花钱）；不给＝这一型全部参数项都问",
+    )
+
+
+async def _guess_cache_read(
+    db: AsyncSession,
+    texts: Dict[str, str],
+    missing: Dict[str, List[str]],
+    slots: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Dict[str, str]], Dict[str, List[str]], List[str]]:
+    """查缓存：把这份稿子上一次抄回来、且**按现在的字典仍然过得了校验**的原值取回来。
+
+    返回 `({行 id: {槽位 key: 原值}}, {还缺的}, {白话说明})`。
+
+    ⚠️ 取回来不等于能用：逐字在不在稿子里、有没有落进保护行、长度上限，全部拿**当前生效
+    的字典**重算一遍（`accept_guessed_values`）。过不了就把那行缓存删掉——它代表的是旧字典
+    的判定，留着只会一次次把同一个坏值端上来，删了下次自动重新问、重新判。
+    """
+    if not missing:
+        return {}, dict(missing), []
+    hashes = {rid: pesvc.body_fingerprint(texts.get(rid)) for rid in missing}
+    rows = (
+        await db.execute(
+            select(AssetElementGuess).where(
+                AssetElementGuess.body_hash.in_(list({*hashes.values()}))
+            )
+        )
+    ).scalars().all()
+    by_hash: Dict[str, Dict[str, str]] = {}
+    for row in rows:
+        by_hash.setdefault(row.body_hash, {})[row.slot_key] = row.value
+    by_key_slot = {str(s["key"]): s for s in slots}
+    cached: Dict[str, Dict[str, str]] = {}
+    still: Dict[str, List[str]] = {}
+    notes: List[str] = []
+    purge: List[Tuple[str, str]] = []
+    for rid, keys in missing.items():
+        got = by_hash.get(hashes[rid], {})
+        hit = [k for k in keys if k in got]
+        rest = [k for k in keys if k not in got]
+        if not hit:
+            if rest:
+                still[rid] = rest
+            continue
+        sub = [by_key_slot[k] for k in hit if k in by_key_slot]
+        picked = pesvc.accept_guessed_values(
+            str(texts.get(rid) or ""), sub, [{"key": k, "value": got[k]} for k in hit]
+        )
+        if picked["values"]:
+            cached.setdefault(rid, {}).update(picked["values"])
+        stale = [k for k in hit if k not in picked["values"]]
+        purge.extend((hashes[rid], k) for k in stale)
+        for item in picked["dropped"]:
+            notes.append(f"上一次抄回的「{rid[:8]}」这条现在不能用了：{item}")
+        still_keys = [k for k in keys if k not in picked["values"]]
+        if still_keys:
+            still[rid] = still_keys
+    if purge:
+        for body_hash, slot_key in purge:
+            await db.execute(
+                delete(AssetElementGuess).where(
+                    AssetElementGuess.body_hash == body_hash,
+                    AssetElementGuess.slot_key == slot_key,
+                )
+            )
+        await db.commit()
+    return cached, still, notes
+
+
+async def _guess_cache_write(
+    db: AsyncSession, values_by_row: Dict[str, Tuple[str, Dict[str, str]]], model_name: str,
+    category: str,
+) -> None:
+    """把这次模型抄回且过了校验的原值存下来（同一份稿子同一格覆盖旧值）。
+
+    `values_by_row`：行 id → (那份正文的指纹, {槽位 key: 原值})。
+    存的是**原串**，判据不存——读的时候按当时的字典重判（见 `_guess_cache_read`）。
+    """
+    for _rid, (body_hash, vals) in values_by_row.items():
+        for slot_key, value in vals.items():
+            row = (
+                await db.execute(
+                    select(AssetElementGuess).where(
+                        AssetElementGuess.body_hash == body_hash,
+                        AssetElementGuess.slot_key == slot_key,
+                    )
+                )
+            ).scalars().first()
+            if row is None:
+                db.add(
+                    AssetElementGuess(
+                        body_hash=body_hash,
+                        slot_key=slot_key[:60],
+                        value=value,
+                        model=(model_name or "")[:80],
+                        category=(category or "")[:60],
+                    )
+                )
+            else:
+                row.value = value
+                row.model = (model_name or "")[:80]
+                row.category = (category or "")[:60]
+    await db.commit()
+
 
 
 @router.post("/assets/prompt-elements/guess-values")
@@ -6056,112 +6178,252 @@ async def guess_prompt_element_values(
 
     为什么需要它（回答一线那句「为什么都是稿子里没认出原值」）：
       - literal 槽只认字典里那几组字面词，稿子写「黄皮子」而词表是「黄鼠狼」就认不出；
-      - manual 槽（说的话／偷听内容／引爆台词／绝境）**按设计永不自动认**——真稿是间接
-        转述，没有形状可依，让人自己去上千字里找那句原话再逐字抄，才是今天卡住的地方；
+      - manual 槽（说的话／偷听内容／引爆台词／绝境）**按设计不靠词表认**——真稿是间接
+        转述，没有形状可依，这种人自己去上千字里找那句原话才卡住；
       - 反推提示词那一步并没有"槽位"概念，所以这些值不是提前填好的，是开单这一屏现认的。
+
+    11-11 批 Z 的口径（用户原话「你不能按照固定的词典去识别，你要调用大模型的能力去做这个
+    事情」）：词表退成**第一道免费粗筛＋给模型的提示＋替换用的词面**，认不出的那一格
+    自动走这里补，不再等人点按钮。三条判据一条没松：
+      - 结果先查 `asset_element_guesses`（同一份稿子同一格只花一次钱），命中也照样
+        按当前字典重过一遍逐字校验；
+      - `only_missing` 让已经认出的格子**不会被重复花钱、也不会被覆盖**；
+      - `auto=true` 时装不下不报 400 而是分批、模型那一路炸了不报 502 而是照常开单。
 
     安全边界（模型会编，所以校验不许商量）：`accept_guessed_values` 要求抄回来的串
     **逐字出现在这一份稿子的可动区间**里，编的一律丢弃并写进 `dropped` 白话。
-    本口**只读**：不改稿、不进投递正文、不动字典、不覆盖已经认出的原值（那些由前端按
-    「哪一格还没有值」决定，后端给的只是候选）。花一次模型钱，落一条审计。
+    本口**只读**：不改稿、不进投递正文、不动字典。花到钱才落一条审计。
     """
     if not data.texts:
         raise HTTPException(status_code=400, detail="没有稿子正文，没什么可提炼的")
-    if len(data.texts) > pesvc.GUESS_MAX_ITEMS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"一次最多提炼 {pesvc.GUESS_MAX_ITEMS} 篇（这次 {len(data.texts)} 篇），分批点",
-        )
     total_chars = sum(len(str(v or "")) for v in data.texts.values())
-    if total_chars > pesvc.GUESS_MAX_TOTAL_CHARS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"这一批稿子共 {total_chars} 字，超过一次 {pesvc.GUESS_MAX_TOTAL_CHARS} 字上限："
-            "分批点，或先把「模板脚本提示词」里用不上的段落删短",
-        )
+    if not data.auto:
+        # 人显式点的按钮：批太大就白话拒收，让人自己分批——悄悄只处理前几篇会让人
+        # 以为整批都提炼过了。自动补位那一支反过来（见下面 select_guess_batch）。
+        if len(data.texts) > pesvc.GUESS_MAX_ITEMS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"一次最多提炼 {pesvc.GUESS_MAX_ITEMS} 篇（这次 {len(data.texts)} 篇），分批点",
+            )
+        if total_chars > pesvc.GUESS_MAX_TOTAL_CHARS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"这一批稿子共 {total_chars} 字，超过一次 {pesvc.GUESS_MAX_TOTAL_CHARS} 字上限："
+                "分批点，或先把「模板脚本提示词」里用不上的段落删短",
+            )
     catalog = await _prompt_element_catalog(db)
     slots = pesvc.slots_for_guess(catalog, data.category)
     if not slots:
+        if data.auto:
+            return {
+                "values": {}, "labels": {}, "dropped": [],
+                "notes": ["这一型在元素字典里没配参数项，没有可提炼的原值——"
+                          "不影响照常开单；要让它认，去「可替换元素库」按原型加行"],
+                "model": "", "slot_count": 0, "text_count": len(data.texts),
+                "total_chars": total_chars, "paid": False, "auto": True,
+                "from_cache": {}, "from_model": {}, "skipped": [],
+            }
         raise HTTPException(
             status_code=400,
             detail="这一型在元素字典里没配参数项，没有可提炼的原值——先去「可替换元素库」按原型加行",
         )
 
-    payload_texts = [{"id": str(k), "text": str(v or "")} for k, v in data.texts.items()]
-    # 给模型的只有"这一项叫什么／是什么／常见的那些词"，`skip_lines`／`mode` 是**本机校验判据**，
-    # 不出去（出去等于告诉它哪几行不能碰，它反而会照着绕）。
-    payload_slots = [
-        {"key": s["key"], "label": s["label"], "note": s["note"], "pool": s["pool"]} for s in slots
-    ]
-    res = await _call_autoclip(
-        "hook-copy/slots",
-        {"texts": payload_texts, "slots": payload_slots, "max_retries": 1},
-        # 用 900s 默认值：单次问答比展开短，但超时链口径不许破（autoclip 600s < 这里 900s
-        # < 浏览器 MODEL_WAIT_TIMEOUT 960s），理由见 `_call_autoclip` 那段注释。
-    )
-
-    items_by_id: Dict[str, List[Dict[str, Any]]] = {}
-    stray: List[str] = []
-    for row in res.get("items") or []:
-        if not isinstance(row, dict):
+    allowed = {str(s["key"]) for s in slots}
+    missing: Dict[str, List[str]] = {}
+    for rid, body in data.texts.items():
+        if not str(body or "").strip():
             continue
-        rid = str(row.get("id") or "")
-        if rid not in data.texts:
-            # 模型自己造的 id：这份稿子没提交过，它给的值一个都不认
-            stray.append(rid)
-            continue
-        items_by_id.setdefault(rid, []).append(row)
-
-    values: Dict[str, Dict[str, str]] = {}
-    dropped: List[str] = []
-    silent: List[str] = []
-    for key, text in data.texts.items():
-        picked = pesvc.accept_guessed_values(str(text or ""), slots, items_by_id.get(str(key), []))
-        if picked["values"]:
-            values[str(key)] = picked["values"]
+        if data.only_missing is None:
+            keys = [str(s["key"]) for s in slots]
         else:
-            silent.append(str(key))
-        dropped.extend(picked["dropped"])
+            keys = [str(k) for k in (data.only_missing.get(str(rid)) or []) if str(k) in allowed]
+        if keys:
+            missing[str(rid)] = keys
 
     notes: List[str] = [
         # 这几条会原样进界面（notification / Alert），不带 markdown 星号——
         # 11-10 done_note 就踩过这个坑：antd 只认纯文本，`**x**` 会裸显四个星号。
-        "这一步是模型提炼（花一次模型钱，与出文案同档），不是 0 元的字典认法；"
-        "抄回来的每个词都必须逐字出现在这份稿子里，模型编的当场丢弃。",
         "提炼只往「原稿里写的是」那一格填原值，不替你决定换成什么——换上什么还是你填。",
     ]
-    if stray:
-        notes.append(f"模型多回了 {len(stray)} 个没提交过的稿子编号，那些值一律没用")
-    if silent:
-        notes.append(
-            f"有 {len(silent)} 篇一篇都没提炼到（多半是稿子里确实没写这一型要的那些东西）"
-        )
+    if not missing:
+        notes.insert(0, "这一批该认的词表都认出来了，没有要补的空格，没问模型（0 元）")
+        return {
+            "values": {}, "labels": {str(s["key"]): str(s.get("label") or s["key"]) for s in slots},
+            "dropped": [], "notes": notes, "model": "",
+            "slot_count": len(slots), "text_count": len(data.texts),
+            "total_chars": total_chars, "paid": False, "auto": data.auto,
+            "from_cache": {}, "from_model": {}, "skipped": [],
+        }
 
-    await _write_audit(
-        db,
-        action="asset.prompt_elements.guess_values",
-        operator=current_user,
-        target_type="asset_prompt_elements",
-        target_id=data.category or "*",
-        before=None,
-        after={
-            "text_count": len(payload_texts),
-            "slot_count": len(slots),
-            "filled_rows": len(values),
-            "dropped_count": len(dropped),
-            "model": res.get("model") or "",
-        },
-    )
+    values: Dict[str, Dict[str, str]] = {}
+    dropped: List[str] = []
+    model_name = ""
+    paid = False
+    skipped: List[str] = []
+    still: Dict[str, List[str]] = {}
+    chosen: List[str] = []
+    from_cache: Dict[str, List[str]] = {}
+    from_model: Dict[str, List[str]] = {}
+
+    if data.use_cache:
+        cached, still, cache_notes = await _guess_cache_read(db, data.texts, missing, slots)
+        for rid, vals in cached.items():
+            values.setdefault(rid, {}).update(vals)
+            from_cache[rid] = sorted(vals)
+        dropped.extend(cache_notes)
+    else:
+        still = dict(missing)
+
+    if still:
+        chosen, skipped = pesvc.select_guess_batch(
+            still, char_of=lambda rid: len(str(data.texts.get(rid) or ""))
+        )
+        # `skipped` 只在自动那一支可能非空：人工点的超上限已在上面白话拒收，
+        # 一次 5 篇／12000 字的批 `select_guess_batch` 必然全收（边界等号也算得进）。
+        if skipped and data.auto:
+            notes.append(
+                f"这批有 {len(skipped)} 篇一次问不完（一次上限 {pesvc.GUESS_MAX_ITEMS} 篇、"
+                f"{pesvc.GUESS_MAX_TOTAL_CHARS} 字），这次先补了缺得最多的那几篇，"
+                "剩下的下次打开还会补"
+            )
+        if data.auto and not settings.ASSET_ELEMENT_AUTO_GUESS:
+            notes.append(
+                "自动提炼现在是关的（旋钮 ASSET_ELEMENT_AUTO_GUESS=false），"
+                "这次只用了已经存着的结果；要恢复把它设回 true，要现在问就点「再问一次模型」"
+            )
+            chosen = []
+        if chosen:
+            ask_keys = {k for rid in chosen for k in still.get(rid, [])}
+            slots_ask = [s for s in slots if str(s["key"]) in ask_keys]
+            payload_texts = [
+                {"id": rid, "text": str(data.texts.get(rid) or "")} for rid in chosen
+            ]
+            # 给模型的只有"这一项叫什么／是什么／常见的那些词"，`skip_lines`／`mode` 是**本机校验判据**，
+            # 不出去（出去等于告诉它哪几行不能碰，它反而会照着绕）。
+            payload_slots = [
+                {"key": s["key"], "label": s["label"], "note": s["note"], "pool": s["pool"]}
+                for s in slots_ask
+            ]
+            try:
+                res = await _call_autoclip(
+                    "hook-copy/slots",
+                    {"texts": payload_texts, "slots": payload_slots, "max_retries": 1},
+                    # 用 900s 默认值：单次问答比展开短，但超时链口径不许破（autoclip 600s < 这里 900s
+                    # < 浏览器 MODEL_WAIT_TIMEOUT 960s），理由见 `_call_autoclip` 那段注释。
+                )
+            except Exception as exc:  # noqa: BLE001
+                # **只有自动补位那一支**兜住：这一枪是跟着「重新认参数」顺手打的，模型挂了
+                # 不该把开单这一屏带崩（词表那份结果照旧有效，照常开单）。
+                # 人显式点了「再问一次模型」就不同——那一下就是他要的答复，失败必须原样红给他看
+                # （11-10 用例钉的就是 502 原样传出＋一条审计都不留）。
+                if not data.auto:
+                    raise
+                detail = getattr(exc, "detail", None) or str(exc)
+                notes.append(
+                    f"模型那一路这次没通（{str(detail)[:80]}），这批仍按词表的认法，"
+                    "照常开单不受影响；可以再点「再问一次模型」"
+                )
+                res = {}
+            if res:
+                paid = True
+                model_name = str(res.get("model") or "")
+                items_by_id: Dict[str, List[Dict[str, Any]]] = {}
+                stray: List[str] = []
+                for row in res.get("items") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    rid = str(row.get("id") or "")
+                    if rid not in still:
+                        # 模型自己造的 id／这次没问的稿子：它给的值一个都不认
+                        stray.append(rid)
+                        continue
+                    items_by_id.setdefault(rid, []).append(row)
+                if stray:
+                    notes.append(
+                        f"模型多回了 {len(stray)} 个这次没提交过的稿子编号，那些值一律没用"
+                    )
+                to_cache: Dict[str, Tuple[str, Dict[str, str]]] = {}
+                silent: List[str] = []
+                for rid in chosen:
+                    want = set(still.get(rid, []))
+                    # **只把它这次确实问的那几格端进校验**：词表已经认出的那些格，模型常常
+                    # 也会顺手回一份，直接喂给 `accept_guessed_values` 会被报成「没配的参数项」
+                    # ——那话是假的（字典里明明配了），会让人白跑去改词表。
+                    # 但**字典里真没配的键要留着**：那才是"模型在编参数项"的信号，丢了就没人知道。
+                    items = [
+                        r
+                        for r in items_by_id.get(rid, [])
+                        if str(r.get("key") or "") in want or str(r.get("key") or "") not in allowed
+                    ]
+                    picked = pesvc.accept_guessed_values(
+                        str(data.texts.get(rid) or ""),
+                        [s for s in slots_ask if str(s["key"]) in want],
+                        items,
+                    )
+                    got = picked["values"]
+                    dropped.extend(picked["dropped"])
+                    if got:
+                        values.setdefault(rid, {}).update(got)
+                        from_model[rid] = sorted(got)
+                        to_cache[rid] = (pesvc.body_fingerprint(data.texts.get(rid)), got)
+                    else:
+                        silent.append(rid)
+                if silent:
+                    notes.append(
+                        f"有 {len(silent)} 篇一格都没提炼到（多半是稿子里确实没写这一型要的那些东西）"
+                    )
+                if to_cache:
+                    await _guess_cache_write(db, to_cache, model_name, data.category or "")
+
+    if paid:
+        await _write_audit(
+            db,
+            action="asset.prompt_elements.guess_values",
+            operator=current_user,
+            target_type="asset_prompt_elements",
+            target_id=data.category or "*",
+            before=None,
+            after={
+                # 记的是**这一枪真问出去的量**（缓存命中的那部分不进 text_count/slot_count，
+                # 它们一分钱没花，只进 cached_rows）
+                "text_count": len(chosen),
+                "slot_count": len({k for rid in chosen for k in still.get(rid, [])}),
+                "filled_rows": len(from_model),
+                "dropped_count": len(dropped),
+                "model": model_name,
+                "auto": data.auto,
+                "cached_rows": sum(len(v) for v in from_cache.values()),
+            },
+        )
+    if from_cache and not paid:
+        notes.insert(
+            0,
+            f"有 {sum(len(v) for v in from_cache.values())} 格用的是这份稿子上一次抄回来的结果"
+            "（0 元，这次没再问模型）",
+        )
+    if paid:
+        notes.insert(
+            0,
+            f"这次问了模型：{len(chosen)} 篇、{len(from_model)} 篇补到了值（花一次模型钱，"
+            "与出文案同档；同一篇稿子的同一格下次不再花钱）。抄回来的每个词都必须逐字"
+            "出现在这份稿子里，模型编的当场丢弃。",
+        )
     return {
         # 行 id → {槽位 key: 逐字抄回的原值}（与 extract 的 items 同一套 id，前端按格回填）
         "values": values,
         "labels": {str(s["key"]): str(s.get("label") or s["key"]) for s in slots},
         "dropped": dropped,
         "notes": notes,
-        "model": res.get("model") or "",
+        "model": model_name,
         "slot_count": len(slots),
-        "text_count": len(payload_texts),
+        "text_count": len(data.texts),
         "total_chars": total_chars,
+        # 花钱判据：paid=false 时一分钱没花（全缓存命中／没空格要补／旋钮关了／模型没通）
+        "paid": paid,
+        "auto": data.auto,
+        "from_cache": from_cache,
+        "from_model": from_model,
+        "skipped": skipped,
     }
 
 
