@@ -358,7 +358,12 @@ tag_last_good() {
   _n_tag="$(printf '%s\n' "$ROLLBACK_TAG_LIST" | grep -c . || true)"
   _n_skip="$(printf '%s\n' "$raw" | grep -c '^SKIP' || true)"
   _n_fail="$(printf '%s\n' "$raw" | grep -c '^FAIL' || true)"
-  log "回滚标签：已打 ${_n_tag} 个（rollback-pre-${suffix}）· 跳过 ${_n_skip} · 失败 ${_n_fail}"
+  # ⚠️ 「服务数」≠「标签数」：backend/beat/6 个 worker/alembic-migrate 全共用
+  # `clip-backend:latest`，10 次 docker tag 只会落下 **2 个**唯一标签（backend 系 1 个＋
+  # frontend 1 个），后面几次是同 repo 同 tag 的幂等重打。原来这句只报 ${_n_tag}，
+  # 读日志的人会以为有 10 个可回退的镜像备份（2026-11-11 现网部署后 `docker images` 实拍只有 2 个）。
+  _n_uniq="$(printf '%s\n' "$ROLLBACK_TAG_LIST" | cut -d'|' -f2 | sort -u | grep -c . || true)"
+  log "回滚标签：${_n_tag} 次 docker tag → **${_n_uniq} 个唯一镜像标签**（rollback-pre-${suffix}）· 跳过 ${_n_skip} · 失败 ${_n_fail}"
   if [ "${_n_fail}" != "0" ]; then
     printf '%s\n' "$raw" | grep '^FAIL' | sed 's/^/      docker tag 失败: /'
   fi
