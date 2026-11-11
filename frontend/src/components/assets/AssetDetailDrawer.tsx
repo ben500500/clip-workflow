@@ -713,9 +713,14 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                       <Button
                         size="small"
                         icon={<CopyOutlined />}
-                        onClick={() => {
-                          navigator.clipboard.writeText(data.prompt_script || '');
-                          message.success('已复制反推文案稿');
+                        onClick={async () => {
+                          // 2026-11-11 评审（前端席）同类修：剪贴板失败不再假报「已复制」
+                          try {
+                            await navigator.clipboard.writeText(data.prompt_script || '');
+                            message.success('已复制反推文案稿');
+                          } catch {
+                            message.error('复制失败：浏览器没给剪贴板权限，请手动选中文字复制');
+                          }
                         }}
                       >
                         复制
@@ -820,9 +825,13 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                                   size="small"
                                   icon={<CopyOutlined />}
                                   style={{ padding: 0, fontSize: 12 }}
-                                  onClick={() => {
-                                    navigator.clipboard.writeText(s.doubao_prompt || '');
-                                    message.success('已复制网页版提示词，去豆包对话框粘贴即可');
+                                  onClick={async () => {
+                                    try {
+                                      await navigator.clipboard.writeText(s.doubao_prompt || '');
+                                      message.success('已复制网页版提示词，去豆包对话框粘贴即可');
+                                    } catch {
+                                      message.error('复制失败：浏览器没给剪贴板权限，请手动选中文字复制');
+                                    }
                                   }}
                                 >
                                   复制

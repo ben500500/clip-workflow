@@ -392,7 +392,7 @@ const AssetComposeModal: React.FC<Props> = ({ open, asset, onClose, onDone }) =>
                         <p className="ant-upload-text">把视频拖进来，或点击选择文件</p>
                         <p className="ant-upload-hint" style={{ fontSize: 12 }}>
                           服务端不留「没入库的临时文件」（留了没人对账），所以这里会先把它收进素材库、
-                          建一个「拼接补段」批次，再拿这条当第二段。单请求整包上限 500MB。
+                          建一个「拼接补段」批次，再拿这条当第二段。单请求整包上限 2GB（撞线会回 nginx 的 413，界面只说「上传失败」）。
                         </p>
                       </Upload.Dragger>
                       <Space style={{ marginTop: 8 }}>

@@ -29,8 +29,9 @@ const baseOf = (p: string) => p.replace(/\\/g, '/').split('/').pop() || p;
 /** 成稿导入只收视频原片（图片走「文件上传」那页——那是投产的角色卡，不是原片） */
 const RAW_VIDEO_RE = /\.(mp4|mov|m4v|webm|avi|mkv|flv|ts)$/i;
 
-/** 单请求整包上限：nginx `client_max_body_size 500M`，留 40M 余量；超了当场提醒拆批 */
-const PAIRED_BODY_LIMIT = 460 * 1024 * 1024;
+/** 单请求整包上限：nginx `client_max_body_size 2G`（2026-11-11 运维席 P1 从 500M 抬上来），
+ *  留 ~150M 余量；撞在 nginx 上回的是 413 的 HTML 页，界面只会说"上传失败"，所以宁可在前端先拦。 */
+const PAIRED_BODY_LIMIT = 1900 * 1024 * 1024;
 
 /** 清单项在前端配对后的状态（与后端 `import_paired_batch` 的判据一一对应） */
 type PairedRowState = 'ok' | 'missing' | 'dup_manifest' | 'dup_file' | 'skipped';
@@ -119,6 +120,11 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
   const cats = useAssetCategories();
   const [importing, setImporting] = useState(false);
   const [lastImport, setLastImport] = useState<AssetImportBatchResponse | null>(null);
+  /**
+   * 贴文案/文件导入被形态闸门跳过的条目（2026-11-11 评审·业务席 P2）。
+   * 原来只 console.warn——一线不看控制台，等于「少了 3 条」这件事没人知道。
+   */
+  const [copySkipped, setCopySkipped] = useState<{ index: number; problems: string[]; text: string }[]>([]);
 
   // ── 文件上传 ──
   const [fileList, setFileList] = useState<UploadFile[]>([]);
@@ -242,7 +248,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
     }
     if (pairedStat.bytes > PAIRED_BODY_LIMIT) {
       message.error(
-        `配上的 ${pairedStat.ok} 条整包 ${(pairedStat.bytes / 1024 / 1024).toFixed(0)}MB，超了单次上传上限 500MB——`
+        `配上的 ${pairedStat.ok} 条整包 ${(pairedStat.bytes / 1024 / 1024).toFixed(0)}MB，超了单次上传上限 ${Math.round(PAIRED_BODY_LIMIT / 1024 / 1024)}MB——`
         + '按原型分几次投（每次选对应的文件夹/文件）',
         10,
       );
@@ -297,8 +303,10 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
       const res = await assetApi.importCopySummaries(copyBatchName, texts);
       message.success(res.message, 6);
       if (res.skipped.length) {
-        message.warning(`${res.skipped.length} 条形态不合格被跳过（超字数等），明细看控制台`, 8);
-        console.warn('贴文案导入被跳过的条目', res.skipped);
+        message.warning(`${res.skipped.length} 条形态不合格被跳过（超字数等）`, 8);
+        setCopySkipped(res.skipped);
+      } else {
+        setCopySkipped([]);
       }
       setCopyText('');
       setCopyBatchName('');
@@ -332,7 +340,9 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
       message.success(res.message, 6);
       if (res.skipped.length) {
         message.warning(`${res.skipped.length} 条形态不合格被跳过（超字数等）`, 8);
-        console.warn('文件导入被跳过的条目', res.skipped);
+        setCopySkipped(res.skipped);
+      } else {
+        setCopySkipped([]);
       }
       setCopyText('');
       setCopyBatchName('');
@@ -428,6 +438,17 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
   const submitFiles = async () => {
     if (!rawFiles.current.length) {
       message.warning('选择要上传的视频或图片文件');
+      return;
+    }
+    // 2026-11-11 评审（运维席）：整包超过 nginx 上限时，用户看到的是 413 的白屏报错，
+    // 而不是「这批 2.3G 要拆成两批」。在门口按字节算总量，先说清楚。
+    const totalBytes = rawFiles.current.reduce((a, f) => a + f.size, 0);
+    if (totalBytes > PAIRED_BODY_LIMIT) {
+      message.error(
+        `已选 ${rawFiles.current.length} 个文件共 ${(totalBytes / 1024 / 1024).toFixed(0)}MB，`
+        + `超过单次上传上限 ${(PAIRED_BODY_LIMIT / 1024 / 1024).toFixed(0)}MB——请分批选，先少选几个传`,
+        10,
+      );
       return;
     }
     setUploading(true);
@@ -676,6 +697,23 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
                     </Button>
                   </Upload>
                 </Space>
+                {!!copySkipped.length && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={`${copySkipped.length} 条被形态闸门拦下、没进审核队列（改完可以再贴一次，已入库的不会重复）`}
+                    description={
+                      <div style={{ maxHeight: 180, overflow: 'auto' }}>
+                        {copySkipped.map((s) => (
+                          <div key={s.index} style={{ fontSize: 12 }}>
+                            第 {s.index} 条（{s.problems.join('；')}）：{s.text.slice(0, 40)}
+                          </div>
+                        ))}
+                      </div>
+                    }
+                    style={{ marginTop: 4 }}
+                  />
+                )}
               </Space>
             ),
           }]}

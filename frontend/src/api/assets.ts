@@ -2525,7 +2525,7 @@ export const assetApi = {
   // 视频文件批量上传（multipart，可多文件）→ 落自有桶 raw-footage/asset/ 前缀
   // Content-Type 只给不带 boundary 的 multipart/form-data：axios 在 adapter 里会把它清掉，
   // 交给浏览器补 boundary（完全不设则命中实例默认 application/json，FormData 会被 JSON.stringify）。
-  // 单请求整包上限 500MB（nginx），60s 默认超时会掐断大视频，故 timeout 关闭。
+  // 单请求整包上限 2G（nginx `client_max_body_size`），60s 默认超时会掐断大视频，故 timeout 关闭。
   uploadBatch: (
     data: {
       files: File[];

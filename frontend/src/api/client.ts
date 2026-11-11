@@ -104,9 +104,20 @@ client.interceptors.response.use(
         }
       }
 
+      // 2026-11-11 评审（前端席 P1）：blob 接口（打包下载）失败时 response.data 是
+      // Blob，.detail 取不到只剩 "Bad Request"——后端精心写的 400 白话全被吞。先把
+      // Blob 解回 JSON 再取 detail。
+      let data: any = error.response.data;
+      if (typeof Blob !== 'undefined' && data instanceof Blob) {
+        try {
+          data = JSON.parse(await data.text());
+        } catch {
+          /* 不是 JSON（如 413 HTML 页）就保留原样，走 statusText */
+        }
+      }
       const detail =
-        error.response.data?.detail ||
-        error.response.data?.message ||
+        data?.detail ||
+        data?.message ||
         error.response.statusText ||
         '请求失败';
       const err = new Error(detail) as Error & { status?: number };

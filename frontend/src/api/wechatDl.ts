@@ -220,7 +220,7 @@ export const wechatDlApi = {
     return client.post('/wechat-dl/reverse-prompt/upload', form, {
       // 与仓库其它上传一致：显式 multipart，boundary 由 axios/浏览器补
       headers: { 'Content-Type': 'multipart/form-data' },
-      // 大视频上传慢：60s 默认超时会把 500MB 上传直接掐断
+      // 大视频上传慢：60s 默认超时会把整包大文件直接掐断
       timeout: 0,
       onUploadProgress: (e) => {
         if (!onUploadProgress) return;

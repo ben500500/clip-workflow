@@ -46,6 +46,9 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
   // 批 M（评审二·P2）：排队的上传张数。原来每段 .finally 都 setUploading(false)——
   // 第二张还在传时第一张完成就把 loading 灯提前熄了，看起来像传完其实没有。
   const pendingUploads = useRef(0);
+  // 2026-11-11 评审（前端席 P1）：就地传卡链内记住第一张新建的批次 id——
+  // 原来每张都各自建批（batch_id=undefined），拖 5 张卡裂 5 个批次，台账对账废掉
+  const createdBatchIdRef = useRef<string | undefined>(undefined);
   const valueRef = useRef(value);
   valueRef.current = value;
   const [reloadTick, setReloadTick] = useState(0);
@@ -141,19 +144,22 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
   const unknownSize = selected.filter((a) => !a.aspect?.ratio);
 
   /** 批 L：就地上传角色卡。逐张串行（没有 batch_id 时第一张要先建上批次，
-   *  并发第二张会裂成两个批次）；成功即入库＋自动排进已选卡末尾＋刷新列表。 */
+   *  并发第二张会裂成两个批次）；成功即入库＋自动排进已选卡末尾＋刷新列表。
+   *  2026-11-11 评审（前端席 P1）：链内记住第一张新建的 batch_id 传给后续。 */
   const uploadCard = (file: File) => {
     pendingUploads.current += 1;
     setUploading(true);
     chainRef.current = chainRef.current
-      .then(() =>
-        assetApi.uploadBatch({
+      .then(() => {
+        const bid = createdBatchIdRef.current ?? batchId ?? undefined;
+        return assetApi.uploadBatch({
           files: [file],
-          batch_id: batchId,
-          name: batchId ? undefined : '角色卡（投产时就地传）',
-        }),
-      )
+          batch_id: bid,
+          name: bid ? undefined : '角色卡（投产时就地传）',
+        });
+      })
       .then((res) => {
+        if (!createdBatchIdRef.current && res.batch_id) createdBatchIdRef.current = res.batch_id;
         const ok = res.items || [];
         if (ok.length) {
           onChange([...valueRef.current, ...ok.map((a) => a.id)]);

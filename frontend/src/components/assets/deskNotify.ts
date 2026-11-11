@@ -43,7 +43,11 @@ export const deskNotifyState = (): DeskNotifyState => {
 
 /** 用户点开关：申请权限并记住选择。返回最终状态。 */
 export const toggleDeskNotify = async (): Promise<DeskNotifyState> => {
-  if (!deskNotifySupported()) return 'unsupported';
+  // 2026-11-11 评审（前端席 P1）：内网 HTTP 下原先统一回 'unsupported'，把精心写的
+  // 'insecure' 诊断分支变成死代码。区分开：浏览器压根没有 Notification API 才是
+  // unsupported；有 API 但不是安全上下文，如实回 insecure（界面会指路解决步骤）。
+  if (typeof window === 'undefined' || typeof window.Notification === 'undefined') return 'unsupported';
+  if (!deskNotifySecure()) return 'insecure';
   if (deskNotifyEnabled()) {
     localStorage.setItem(LS_KEY, '0');
     return 'off';

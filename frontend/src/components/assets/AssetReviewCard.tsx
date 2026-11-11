@@ -198,9 +198,14 @@ const AssetReviewCard: React.FC<Props> = ({
                   <Button
                     size="small"
                     type="primary"
-                    onClick={() => {
-                      navigator.clipboard.writeText(row.doubao_prompt || '');
-                      message.success('已复制网页版提示词，去豆包对话框粘贴即可');
+                    onClick={async () => {
+                      // 2026-11-11 评审（前端席）：原来不 await 也不 catch，剪贴板被拒照样喊「已复制」。
+                      try {
+                        await navigator.clipboard.writeText(row.doubao_prompt || '');
+                        message.success('已复制网页版提示词，去豆包对话框粘贴即可');
+                      } catch {
+                        message.error('复制失败：浏览器没给剪贴板权限，请手动选中文字复制');
+                      }
                     }}
                   >
                     复制

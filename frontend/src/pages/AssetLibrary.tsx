@@ -12,7 +12,6 @@ import AssetJobBanner, { RESUBMIT_TARGET } from '../components/assets/AssetJobBa
 import AssetCategoryDrawer from '../components/assets/AssetCategoryDrawer';
 import {
   deskNotifyState,
-  deskNotifySupported,
   toggleDeskNotify,
   type DeskNotifyState,
 } from '../components/assets/deskNotify';
@@ -220,7 +219,10 @@ const AssetLibrary: React.FC = () => {
     let alive = true;
     const pull = async () => {
       try {
-        const H = { Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` };
+        // 2026-11-11 评审（前端席 P0）：键名写错成 'token'——全站 token 存的是
+        // 'auth_token'（AuthContext/client.ts），Authorization 恒为空 → 两个计数口
+        // 每 40s 各 401 一次，「等审核/待投单」角标整体静默死亡。
+        const H = { Authorization: `Bearer ${localStorage.getItem('auth_token') ?? ''}` };
         const [r1, r2] = await Promise.all([
           fetch('/api/assets/summaries?audit_status=pending&page_size=1', { headers: H }).then((r) => r.json()),
           fetch(`/api/assets/productions?status=order_ready&owner=${role === 'operator' ? 'me' : 'all'}&page_size=1`, { headers: H }).then((r) => r.json()),
@@ -395,7 +397,10 @@ const AssetLibrary: React.FC = () => {
           <Button size="small" icon={<ApartmentOutlined />} onClick={() => setCatOpen(true)}>
             钩子原型字典
           </Button>
-          {deskNotifySupported() && (
+          {/* 2026-11-11 评审（前端席 P1）：原来用 deskNotifySupported() 当渲染条件——
+              它要求安全上下文，内网 HTTP 下按钮整个消失，写好的诊断弹窗永远打不开。
+              改成「Notification API 存在就显示」：HTTP 下也能点开看解决步骤。 */}
+          {deskNotify !== 'unsupported' && (
             <Tooltip
               title={
                 deskNotify === 'on'
