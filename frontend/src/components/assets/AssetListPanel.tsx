@@ -514,8 +514,11 @@ const AssetListPanel: React.FC<Props> = ({
   };
 
   // ── 查时长（去原链接解析，0.01 元/次）──
+  // 2026-11-11 评审（素材席 R2 P1）：贴文案导入的素材壳 source_kind 也是 'link'，但没有
+  // 原片可解析——把它们排除在「查时长」外，别让一线对着一条文案按 0.01 元/次的解析。
+  const isCopyShell = (s: { stage_import?: string | null }) => s.stage_import === 'skipped';
   const openResolve = async () => {
-    const linkItems = selected.filter((s) => s.source_kind === 'link');
+    const linkItems = selected.filter((s) => s.source_kind === 'link' && !isCopyShell(s));
     if (!linkItems.length) {
       message.warning('查时长只对链接导入的素材有意义：上传文件的素材入库时已经知道时长');
       return;
@@ -539,7 +542,7 @@ const AssetListPanel: React.FC<Props> = ({
   const submitResolve = async () => {
     setResolveBusy(true);
     try {
-      const linkIds = selected.filter((s) => s.source_kind === 'link').map((s) => s.id);
+      const linkIds = selected.filter((s) => s.source_kind === 'link' && !isCopyShell(s)).map((s) => s.id);
       const res: AssetResolveResponse | undefined = await withCrossPersonConfirm((c) =>
         assetApi.resolveAssets({
           asset_ids: linkIds,
@@ -838,7 +841,11 @@ const AssetListPanel: React.FC<Props> = ({
       width: 96,
       render: (v: string, row) => (
         <Space direction="vertical" size={0}>
-          <Tag>{v === 'link' ? row.platform || '链接' : '文件'}</Tag>
+          {/* 2026-11-11 评审（素材席 R2 P1）：贴文案导入的壳也是 source_kind='link'，
+              却被标成「链接/视频/原片未下载」——语义全错。壳单独标「贴文案」。 */}
+          <Tag color={row.stage_import === 'skipped' ? 'purple' : undefined}>
+            {row.stage_import === 'skipped' ? '贴文案' : v === 'link' ? row.platform || '链接' : '文件'}
+          </Tag>
           {/* 批 J：链接素材的原片下载三态小标——下载是搭车动作，失败不拦流程，
               但得让人看得见、点得动重试，不能只藏在详情抽屉里 */}
           {!isImageAsset(row) && v === 'link' && (
@@ -1390,7 +1397,7 @@ const AssetListPanel: React.FC<Props> = ({
 
       <CostConfirmModal
         open={resolveOpen}
-        title={`查时长（${selected.filter((s) => s.source_kind === 'link').length} 条链接素材）`}
+        title={`查时长（${selected.filter((s) => s.source_kind === 'link' && !isCopyShell(s)).length} 条链接素材）`}
         preview={resolvePreview}
         previewLoading={previewLoading}
         loading={resolveBusy}

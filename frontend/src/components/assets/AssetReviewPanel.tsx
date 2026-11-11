@@ -719,6 +719,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
             <Select
               style={{ width: 220 }}
               placeholder="批次（可选）"
+              popupMatchSelectWidth={false}
               allowClear
               showSearch
               optionFilterProp="label"

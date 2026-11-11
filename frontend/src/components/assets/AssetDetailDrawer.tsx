@@ -768,7 +768,8 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                               </Tooltip>
                             )}
                             {s.formula_tag && <Tag color="geekblue">{s.formula_tag}</Tag>}
-                            <Text type="secondary">{s.word_count ?? '-'} 字</Text>
+                            {/* 2026-11-11 评审：老数据 word_count 空，用正文长度兜底 */}
+                            <Text type="secondary">{s.word_count ?? s.text?.length ?? '-'} 字</Text>
                             <RiskTags riskHit={s.risk_hit} />
                           </Space>
                           <Paragraph

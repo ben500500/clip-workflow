@@ -172,11 +172,13 @@ const MENU_GROUPS: { label: string; keys: string[] }[] = [
 ];
 
 // 角色显示名称映射
+// 2026-11-11 评审（审核席 R2）：头衔两套口径（这里「运营人员」、/auth/me「运营专员」）
+// ——对齐后端 ROLE_DISPLAY_NAMES，一线不再猜是不是两个岗位。
 const ROLE_LABELS: Record<string, string> = {
   admin: '管理员',
-  operator: '运营人员',
-  publisher: '发布人员',
-  material: '素材人员',
+  operator: '运营专员',
+  publisher: '发布专员',
+  material: '素材专员',
 };
 
 // ─── Header 中的 Worker 节点状态图标组件 ───────────────────

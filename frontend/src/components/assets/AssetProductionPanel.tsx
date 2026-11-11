@@ -1566,6 +1566,7 @@ const AssetProductionPanel: React.FC<Props> = ({
             allowClear
             style={{ width: 220 }}
             placeholder="批次（可选/可贴 ID）"
+            popupMatchSelectWidth={false}
             value={batchFilter}
             onChange={setBatchFilter}
             options={batchOptions}

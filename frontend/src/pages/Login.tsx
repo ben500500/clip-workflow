@@ -6,14 +6,20 @@ import { useAuth } from '../contexts/AuthContext';
 
 const { Title, Text } = Typography;
 
+// 2026-11-11 评审（三席同报 P0）：登录落位按角色——素材/运营直达素材库，别落切片仪表盘。
+// ⚠️ 顶部「已登录自动跳转」的 <Navigate> 也必须走同一helper：login() 里 setUser 会立刻
+// 触发重渲染，抢先跳 /dashboard，把 handleSubmit 里的角色落位整个吃掉（R2 实测就栽在这）。
+const landingFor = (role?: string): string =>
+  role === 'material' || role === 'operator' ? '/assets' : '/dashboard';
+
 const Login: React.FC = () => {
   const { login, user, loading: authLoading } = useAuth();
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
-  // 如果已登录则自动跳转
+  // 如果已登录则自动跳转（同角色落位，见 landingFor 注释）
   if (!authLoading && user) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to={landingFor(user.role)} replace />;
   }
 
   const handleSubmit = async (values: { username: string; password: string }) => {
@@ -23,8 +29,7 @@ const Login: React.FC = () => {
       message.success('登录成功');
       // 2026-11-11 评审（三席同报 P0）：全员落仪表盘——素材/运营看到的全是切片指标，
       // 没人知道自己该去哪。按角色落位：素材/运营直达素材库，管理员留仪表盘。
-      const role = (u as { role?: string } | null | undefined)?.role;
-      navigate(role === 'material' || role === 'operator' ? '/assets' : '/dashboard', { replace: true });
+      navigate(landingFor((u as { role?: string } | null | undefined)?.role), { replace: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : '登录失败，请检查用户名和密码';
       message.error(msg);

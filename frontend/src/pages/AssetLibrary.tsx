@@ -63,20 +63,22 @@ const AssetLibrary: React.FC = () => {
    */
   // A′（2026-11-08 定稿）：页签角色化默认着陆（material→导入、operator→审核台、admin→素材列表）
   // ＋记住上次页签（首次访问按角色、之后 localStorage 记忆）。
+  // 2026-11-11 评审（素材席 R2 P0）：默认 tab 的记忆键原来是全局一个——上一任使用者
+  // （或同一浏览器另一账号）留下的「④ 生产与投板」会让素材专员登录就落到一个恒 0 的页。
+  // 键按用户隔离；首次访问按角色落位（素材→①导入，运营→③审核）。
   const defaultTab = useMemo(() => {
-    const saved = localStorage.getItem('asset-library-tab');
+    const saved = user ? localStorage.getItem(`asset-library-tab:${user.id}`) : null;
     if (saved) return saved;
     const r = user?.role;
     if (r === 'material') return 'import';
     if (r === 'operator') return 'review';
     return 'assets';
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user]);
   const [activeTab, setActiveTabState] = useState<string>(defaultTab);
   const setActiveTab = useCallback((k: string) => {
     setActiveTabState(k);
-    localStorage.setItem('asset-library-tab', k);
-  }, []);
+    if (user) localStorage.setItem(`asset-library-tab:${user.id}`, k);
+  }, [user]);
   /**
    * 钩子原型字典抽屉：入口只在这张顶部卡片放**一处**（四个页签都看得到），
    * 面板里只做筛选和点原型，不再各挂一份抽屉——两处入口迟早变成一个新版本一个旧版本。

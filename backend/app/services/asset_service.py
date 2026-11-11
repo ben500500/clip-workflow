@@ -515,6 +515,10 @@ def check_copy_shape(text: str, *, max_chars: int = 80, max_first_clause: int = 
         problems.append("空文案")
     if chars > max_chars:
         problems.append(f"超字数 {chars}>{max_chars}")
+    # 2026-11-11 评审（素材席 R2 P1）：1 字「哈」都能过导入闸——钩子文案没有下限等于没有形态。
+    # 10 字下限：一句像样的钩子（谁+反常）至少这个量级；太短的判「过短」，进跳过明细。
+    if 0 < chars < 10:
+        problems.append(f"过短 {chars}<10 字")
     if count_copy_chars(first) > max_first_clause:
         problems.append(f"首句钩子超 {max_first_clause} 字")
     if len(t) > 0 and t.endswith(("，", ",", "、")):
