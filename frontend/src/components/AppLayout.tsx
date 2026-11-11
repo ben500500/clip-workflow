@@ -138,6 +138,39 @@ const allMenuItems = [
   },
 ];
 
+// 2026-11-11 评审（管理员席 P2）：18 项平铺、管理动作沉底——按「业务 / 管理与看板」
+// 分两组，管理员两件常用药不再埋在第 17/18 位。分组只影响渲染，权限过滤逻辑不变。
+const MENU_GROUPS: { label: string; keys: string[] }[] = [
+  {
+    label: '业务',
+    keys: [
+      '/dashboard',
+      '/projects',
+      '/batch-slice',
+      '/watermark',
+      '/resource-download',
+      '/publish',
+      '/variant-matrix',
+      '/dedupe',
+      '/channel-accounts',
+      '/dramas',
+      '/assets',
+    ],
+  },
+  {
+    label: '管理与看板',
+    keys: [
+      '/workers',
+      '/monitor',
+      '/maintenance',
+      'analytics-sub',
+      '/profile',
+      '/user-management',
+      '/settings',
+    ],
+  },
+];
+
 // 角色显示名称映射
 const ROLE_LABELS: Record<string, string> = {
   admin: '管理员',
@@ -323,9 +356,9 @@ const AppLayout: React.FC = () => {
   const { token } = theme.useToken();
   const { user, logout, hasPermission } = useAuth();
 
-  // 根据用户角色动态过滤菜单项
+  // 根据用户角色动态过滤菜单项（再按 MENU_GROUPS 分「业务 / 管理与看板」两组）
   const filteredMenuItems = useMemo(() => {
-    return allMenuItems
+    const visible = allMenuItems
       .map((item) => {
         // 如果用户没有访问该菜单的权限，则移除
         if (!hasPermission(item.key)) return null;
@@ -339,7 +372,18 @@ const AppLayout: React.FC = () => {
 
         return item;
       })
-      .filter(Boolean) as MenuProps['items'];
+      .filter(Boolean) as NonNullable<MenuProps['items']>;
+
+    const byKey = new Map<string, NonNullable<MenuProps['items']>[number]>();
+    visible.forEach((it) => {
+      const k = (it as { key?: string }).key;
+      if (k) byKey.set(k, it);
+    });
+    return MENU_GROUPS.map((g) => ({
+      type: 'group' as const,
+      label: g.label,
+      children: g.keys.map((k) => byKey.get(k)).filter(Boolean),
+    })).filter((g) => g.children.length > 0) as MenuProps['items'];
   }, [hasPermission]);
 
   // 计算当前选中的菜单项，支持嵌套路由祖先匹配

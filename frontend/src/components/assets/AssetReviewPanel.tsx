@@ -40,6 +40,8 @@ const unionCodes = (list: AssetReviewResultItem[]): string[] => {
 interface Props {
   /** operator + admin 才能审；素材专员只读（后端还会挡「生产者不得自审」） */
   canReview: boolean;
+  /** 2026-11-11 评审：审核台里也有「生成生产单」入口，投产职能被关的人不能看到它 */
+  canProduce: boolean;
   isAdmin: boolean;
   batchId?: string;
   /** 后台出文案任务收敛后自增（D-1）：新候选是后端落库的，只能重新拉一次才看得到 */
@@ -75,7 +77,7 @@ interface Props {
  * 表格外壳留着只是为了 rowSelection 和分页，列定义合成一格。
  * 帧是纯呈现层：`GET /assets/frames` 拉不到就当没图，审核动作照点。
  */
-const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken, onGoToProduction, onProduced, active = true }) => {
+const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, batchId, reloadToken, onGoToProduction, onProduced, active = true }) => {
   const [data, setData] = useState<AssetSummaryListResult | null>(null);
   const [items, setItems] = useState<AssetSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -165,8 +167,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
       } else {
         setInspectPlayNote(
           src?.note
-            ? `${src.note}（分享页链接不能直接播放；要看原片请点右上角「原片」下载）`
-            : '这条素材不在自有桶，拿不到可播直链——要看原片请点右上角「原片」下载',
+            ? `${src.note}。本条没有可播的原片：纯文案导入无原片（凭文案形态与风险词判定即可），外链素材可去「② 素材与文案」的详情抽屉里看原片`
+            : '这条素材不在自有桶（外链导入），拿不到可播直链——核验凭文案与详情页信息判断即可',
         );
       }
     } catch (e) {
@@ -378,6 +380,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
       if (hints.length) message.info(hints.join('；'), 10);
       setSelected([]);
       fetchList(1, pageSize);
+      // 2026-11-11 评审（审核席 P1）：审完角标立即重拉，别等 20s 轮询跳变
+      window.dispatchEvent(new Event('asset-badges-refresh'));
       return { ok: okCount, blocked: blocked.length };
     } catch (e) {
       message.error((e as Error).message || '审核提交失败');
@@ -821,7 +825,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           <Button disabled={!ids.length} onClick={() => askReason('need_rewrite')}>
             要求改写（{ids.length}）
           </Button>
-          {canReview && (
+          {canReview && canProduce && (
             <Tooltip title="把过审文案变成一条条要投的提示词；括号只算已过审/改后通过的条，勾了待审核数字不变；素材专员不能开单。">
               <Button
                 icon={<ThunderboltOutlined />}
@@ -835,7 +839,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
         </Space>
       ) : (
         <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-          当前角色只读：审核与生成生产单需要运营或管理员
+          当前账号不能审核：需要运营/管理员角色、且审核（质检）职能已开启——职能被关的找管理员在用户管理里开通
         </Text>
       )}
       {!!data && recommendedOnly && auditStatus === 'pending' && (

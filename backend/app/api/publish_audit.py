@@ -76,6 +76,36 @@ def _serialize_risk_event(a) -> dict:
     }
 
 
+def _serialize_asset_audit(a) -> dict:
+    """素材库审计（2026-11-11 评审·管理员席 P0）：跨人投产/取号/钉号/审核的留痕入口。
+
+    AuditLog 的 before/after 是自由 JSON，序列化成紧凑文本给人看：抽关键字段拼一句，
+    前端一列展示，不再要求管理员去数据库里翻。
+    """
+    def _brief(d) -> str:
+        if not isinstance(d, dict):
+            return ""
+        parts = []
+        for k, v in d.items():
+            if v in (None, "", [], {}):
+                continue
+            text = str(v)
+            parts.append(f"{k}={text[:80]}")
+        return "；".join(parts[:6])
+
+    return {
+        "id": str(a.id),
+        "action": a.action,
+        "operator_name": a.operator_name,
+        "target_type": a.target_type,
+        "target_id": a.target_id,
+        "before_brief": _brief(a.before),
+        "after_brief": _brief(a.after),
+        "ip_address": a.ip_address,
+        "created_at": utc_iso(a.created_at) if a.created_at else None,
+    }
+
+
 @router.get("/publish/multi-operator/matrix", response_model=List[dict])
 async def get_multi_operator_matrix(
     db: AsyncSession = Depends(get_db),
@@ -153,6 +183,19 @@ async def list_publish_audits(
             db, account_id=account_id, operator_id=operator_id, limit=limit
         )
         return {"kind": "risk", "items": [_serialize_risk_event(x) for x in items]}
+    if kind == "asset":
+        # 2026-11-11 评审（管理员席 P0）：素材库关键动作（跨人投产/取号/钉号/审核/
+        # 交付包）的审计一直只写不读——管理员界面上根本找不到入口。这里按 action
+        # 前缀 asset. 读通用 AuditLog，admin-only，给素材库页的「审计流水」抽屉用。
+        from sqlalchemy import select as _select
+        from app.models.audit import AuditLog
+
+        q = _select(AuditLog).where(AuditLog.action.like("asset.%"))
+        if action:
+            q = q.where(AuditLog.action == action)
+        q = q.order_by(AuditLog.created_at.desc()).limit(limit)
+        rows = (await db.execute(q)).scalars().all()
+        return {"kind": "asset", "items": [_serialize_asset_audit(x) for x in rows]}
     items = await audit_service.list_publish_audits(
         db, action=action, account_id=account_id,
         operator_id=operator_id, request_id=request_id, limit=limit,

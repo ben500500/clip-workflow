@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Card, Modal, Popover, Space, Tabs, Tag, Tooltip, Typography, message, notification } from 'antd';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Badge, Button, Card, Drawer, Modal, Popover, Space, Table, Tabs, Tag, Tooltip, Typography, message, notification } from 'antd';
 import { ApartmentOutlined, BellOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import AssetListPanel from '../components/assets/AssetListPanel';
@@ -10,6 +10,7 @@ import AssetProductionPanel from '../components/assets/AssetProductionPanel';
 import AssetOutputWall from '../components/assets/AssetOutputWall';
 import AssetJobBanner, { RESUBMIT_TARGET } from '../components/assets/AssetJobBanner';
 import AssetCategoryDrawer from '../components/assets/AssetCategoryDrawer';
+import { publishApi } from '../api/publish';
 import {
   deskNotifyState,
   toggleDeskNotify,
@@ -81,6 +82,23 @@ const AssetLibrary: React.FC = () => {
    * 面板里只做筛选和点原型，不再各挂一份抽屉——两处入口迟早变成一个新版本一个旧版本。
    */
   const [catOpen, setCatOpen] = useState(false);
+  // 2026-11-11 评审（管理员席 P0）：跨人投产/取号/审核的审计一直只写不读——
+  // 管理员在界面上找不到入口。给 admin 一颗「审计」按钮＋抽屉表（动作发生地就在这页）。
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditRows, setAuditRows] = useState<Record<string, unknown>[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const openAuditDrawer = async () => {
+    setAuditOpen(true);
+    setAuditLoading(true);
+    try {
+      const res = await publishApi.getAuditLogs({ kind: 'asset', limit: 200 });
+      setAuditRows((res.items ?? []) as unknown as Record<string, unknown>[]);
+    } catch (e) {
+      message.error((e as Error).message || '审计读取失败');
+    } finally {
+      setAuditLoading(false);
+    }
+  };
   /**
    * 11-10「一屏到底」：②③④ 任一处建完生产单并点了「投去出片」，就把新单 ID 交到这儿，
    * 页面层切到 ④ 并让生产单面板直接弹出投板确认窗——省掉「回列表、勾行、再点按钮」三段路。
@@ -109,6 +127,8 @@ const AssetLibrary: React.FC = () => {
 
   const onJobSettled = useCallback((job: AssetJobInfo) => {
     setReloadToken((t) => t + 1);
+    // 2026-11-11 评审（审核席 P1）：任务收尾（开单/出文案等）角标立即重拉
+    window.dispatchEvent(new Event('asset-badges-refresh'));
     // 11-06 承诺审计③：后端把逐条 note/error 都备在 job.result.results 里，此前前端
     // 从不读——「逐条成败看 result.results」是空头承诺。这里把它摆出来（截前 6 条）。
     //
@@ -213,8 +233,9 @@ const AssetLibrary: React.FC = () => {
   }, [setActiveTab]);
 
   const role = user?.role;
-  // A′：页签待办计数（轻量 total 探针；40s 一轮，够跟手不刷爆）
+  // A′：页签待办计数（轻量 total 探针；20s 一轮＋动作后事件触发，够跟手不刷爆）
   const [badges, setBadges] = useState<{ review?: number; ready?: number }>({});
+  const badgePullRef = useRef<() => void>(() => undefined);
   useEffect(() => {
     let alive = true;
     const pull = async () => {
@@ -232,23 +253,38 @@ const AssetLibrary: React.FC = () => {
         /* 计数失败静默 */
       }
     };
+    badgePullRef.current = pull;
     void pull();
-    const t = setInterval(pull, 40000);
+    const t = setInterval(pull, 20000);
+    // 2026-11-11 评审（审核席 P1）：审完一条角标要 40s 才动，91→89→88 跳变像坏了。
+    // 面板动作完成后 dispatch 这个事件，角标立即重拉。
+    const onRefresh = () => void pull();
+    window.addEventListener('asset-badges-refresh', onRefresh);
     return () => {
       alive = false;
       clearInterval(t);
+      window.removeEventListener('asset-badges-refresh', onRefresh);
     };
   }, [role, reloadToken]);
   const isAdmin = role === 'admin';
-  const canProduce = role === 'admin' || role === 'operator' || role === 'material';
-  const canReview = role === 'admin' || role === 'operator';
+  // 2026-11-11 评审（审核/投放席 P0）：光看角色不够——管理员可以按人关掉审核/投产职能
+  //（users.can_review / can_produce，/auth/me 已返回）。职能关了按钮必须真的不可用，
+  // 否则一线点进去被后端 403，还以为系统坏了。旧缓存没有这两个字段时按开（后端兜底）。
+  const fnReview = user?.can_review !== false;
+  const fnProduce = user?.can_produce !== false;
+  const canProduce = fnProduce && (role === 'admin' || role === 'operator' || role === 'material');
+  const canReview = fnReview && (role === 'admin' || role === 'operator');
 
   const roleHint = useMemo(() => {
     if (!role) return null;
     if (isAdmin) return <Tag color="red">管理员：全部操作都能做，包括余额不够时强行提交、检查不过时带理由放行</Tag>;
-    if (role === 'operator') return <Tag color="orange">运营：可导入、可反推文案、可审核过审、可出生产单与登记投板结果</Tag>;
+    if (role === 'operator') {
+      if (!fnReview) return <Tag color="orange">运营（审核职能已关）：不能审核——要审文案找管理员在用户管理里开通</Tag>;
+      if (!fnProduce) return <Tag color="orange">运营（投产职能已关）：不能开单投板——要投产找管理员在用户管理里开通</Tag>;
+      return <Tag color="orange">运营：可导入、可反推文案、可审核过审、可出生产单与登记投板结果</Tag>;
+    }
     return <Tag color="blue">素材专员：可导入/读视频/出文案，不能审自己写的文案、不能出生产单（审核台与生产单只读）</Tag>;
-  }, [isAdmin, role]);
+  }, [fnProduce, fnReview, isAdmin, role]);
 
   // 用户口径 2026-11-09：页签按**业务流程顺序**排列并加编号——
   // ① 导入 → ② 素材与文案（反推/出文案）→ ③ 审核 → ④ 生产与投板 → ⑤ 成片墙；
@@ -296,6 +332,7 @@ const AssetLibrary: React.FC = () => {
         <AssetReviewPanel
           key={`review-${batchId ?? 'all'}`}
           canReview={canReview}
+          canProduce={canProduce}
           isAdmin={isAdmin}
           batchId={batchId}
           reloadToken={reloadToken}
@@ -316,7 +353,7 @@ const AssetLibrary: React.FC = () => {
       children: (
         <AssetProductionPanel
           key={`prod-${batchId ?? 'all'}`}
-          canWriteBack={canReview}
+          canWriteBack={canProduce}
           isAdmin={isAdmin}
           batchId={batchId}
           reloadToken={reloadToken}
@@ -397,6 +434,13 @@ const AssetLibrary: React.FC = () => {
           <Button size="small" icon={<ApartmentOutlined />} onClick={() => setCatOpen(true)}>
             钩子原型字典
           </Button>
+          {isAdmin && (
+            <Tooltip title="跨人投产、取号、钉号、审核、交付包的留痕——谁在什么时候动了什么">
+              <Button size="small" onClick={() => void openAuditDrawer()}>
+                审计
+              </Button>
+            </Tooltip>
+          )}
           {/* 2026-11-11 评审（前端席 P1）：原来用 deskNotifySupported() 当渲染条件——
               它要求安全上下文，内网 HTTP 下按钮整个消失，写好的诊断弹窗永远打不开。
               改成「Notification API 存在就显示」：HTTP 下也能点开看解决步骤。 */}
@@ -458,7 +502,7 @@ const AssetLibrary: React.FC = () => {
       >
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
           <Text>
-            开启后，后台任务（出文案／开单／投板／反推）**完成、失败或被打断**时会弹一条系统
+            开启后，后台任务（出文案／开单／投板／反推）完成、失败或被打断时，会弹一条系统
             桌面通知——切到别的页面、最小化窗口都能收到；失败/打断的通知不会自动消失，点一下跳回本页。
           </Text>
 
@@ -532,6 +576,28 @@ const AssetLibrary: React.FC = () => {
       </Modal>
 
       <AssetCategoryDrawer open={catOpen} onClose={() => setCatOpen(false)} />
+      <Drawer
+        title="素材库审计流水（最近 200 条）"
+        width={860}
+        open={auditOpen}
+        onClose={() => setAuditOpen(false)}
+      >
+        <Table
+          size="small"
+          rowKey="id"
+          loading={auditLoading}
+          dataSource={auditRows}
+          pagination={{ pageSize: 20, showSizeChanger: false }}
+          columns={[
+            { title: '时间', dataIndex: 'created_at', width: 150, render: (v: string) => (v || '').replace('T', ' ').slice(0, 19) },
+            { title: '操作人', dataIndex: 'operator_name', width: 110 },
+            { title: '动作', dataIndex: 'action', width: 210 },
+            { title: '对象', key: 'target', width: 170, render: (_: unknown, r: Record<string, unknown>) => `${r.target_type ?? ''} ${(r.target_id as string ?? '').slice(0, 13)}` },
+            { title: '变更', key: 'brief', ellipsis: true, render: (_: unknown, r: Record<string, unknown>) => (r.after_brief as string) || (r.before_brief as string) || '' },
+            { title: 'IP', dataIndex: 'ip_address', width: 110 },
+          ]}
+        />
+      </Drawer>
     </Space>
   );
 };

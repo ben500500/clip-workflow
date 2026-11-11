@@ -846,7 +846,11 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                             </Space>
                           ) : (
                             <Space wrap size={4}>
-                              <Text type="secondary" style={{ fontSize: 12 }}>网页版提示词没生成出来</Text>
+                              {/* 2026-11-11 评审（素材席 P2）：「网页版提示词没生成出来」是内部状态，
+                                  对一线是噪音——收成四个字加悬停解释 */}
+                              <Tooltip title="豆包网页版粘贴用的提示词还没备好；不影响投产，投产时会自动展开。点「补提示词」可以现在就备一份">
+                                <Text type="secondary" style={{ fontSize: 12 }}>提示词未备</Text>
+                              </Tooltip>
                               <Button
                                 type="link"
                                 size="small"

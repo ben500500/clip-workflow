@@ -767,20 +767,24 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
             />
           )}
           <Space wrap size={16}>
-            <span>
-              <Text>N 每条文案派生份数：</Text>
-              <Input type="number" min={1} max={10} style={{ width: 80, marginLeft: 6 }} value={n} onChange={(e) => setN(Math.max(1, Math.min(10, Number(e.target.value) || 1)))} />
-            </span>
+            <Tooltip title="N＝一条过审文案派生出几条不同写法的提示词（差异化换皮）。文案数 × N × 每份出几版 ＝ 本批总条数，号也按这个数烧——拿不准就填 1">
+              <span>
+                <Text>N 每条文案派生份数：</Text>
+                <Input type="number" min={1} max={10} style={{ width: 80, marginLeft: 6 }} value={n} onChange={(e) => setN(Math.max(1, Math.min(10, Number(e.target.value) || 1)))} />
+              </span>
+            </Tooltip>
             <Tooltip title="板上的 total＝同一条提示词出几版（1..20）。和 N 是两回事，弄混会白花 N×total 的量">
               <span>
                 <Text>每份出几版：</Text>
                 <Input type="number" min={1} max={20} style={{ width: 80, marginLeft: 6 }} value={boardTotal} onChange={(e) => setBoardTotal(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} />
               </span>
             </Tooltip>
-            <span>
-              <Text>豆包号数（折算天数）：</Text>
-              <Input type="number" min={1} max={50} style={{ width: 80, marginLeft: 6 }} value={accounts} onChange={(e) => setAccounts(Math.max(1, Number(e.target.value) || 1))} />
-            </span>
+            <Tooltip title="本批占用的豆包发布号数量，号池按天折算额度（一本账不分人）。拿不准就保持 1——多填不会更快出片，只会多吃额度">
+              <span>
+                <Text>豆包号数（折算天数）：</Text>
+                <Input type="number" min={1} max={50} style={{ width: 80, marginLeft: 6 }} value={accounts} onChange={(e) => setAccounts(Math.max(1, Number(e.target.value) || 1))} />
+              </span>
+            </Tooltip>
             <Tooltip title="K＝这部剧发布账号的数量，决定推荐视频标题给几条（现在不再固定 5 条）">
               <span>
                 <Text>推荐标题条数（K）：</Text>

@@ -19,9 +19,12 @@ const Login: React.FC = () => {
   const handleSubmit = async (values: { username: string; password: string }) => {
     setLoading(true);
     try {
-      await login(values.username, values.password);
+      const u = await login(values.username, values.password);
       message.success('登录成功');
-      navigate('/dashboard', { replace: true });
+      // 2026-11-11 评审（三席同报 P0）：全员落仪表盘——素材/运营看到的全是切片指标，
+      // 没人知道自己该去哪。按角色落位：素材/运营直达素材库，管理员留仪表盘。
+      const role = (u as { role?: string } | null | undefined)?.role;
+      navigate(role === 'material' || role === 'operator' ? '/assets' : '/dashboard', { replace: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : '登录失败，请检查用户名和密码';
       message.error(msg);

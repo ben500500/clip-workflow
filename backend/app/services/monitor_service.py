@@ -46,8 +46,11 @@ METRIC_DESCRIPTIONS: dict[str, str] = {
 }
 
 DEFAULT_RULES: list[dict] = [
-    {"name": "Worker 节点离线", "metric": "worker_offline", "operator": ">", "threshold": 60, "level": "critical",
-     "description": "Worker 超过 60 秒未收到心跳，视为离线"},
+    # 2026-11-11 评审（管理员席 P1）：worker_offline 的口径统一为**离线节点个数**——
+    # 原来指标存「最久未心跳的秒数」（77 天＝6710751）而阈值按个数判（>5），管理员看到的
+    # 永远是假严重。个数口径下「有节点离线就该知道」，阈值 0。
+    {"name": "Worker 节点离线", "metric": "worker_offline", "operator": ">", "threshold": 0, "level": "critical",
+     "description": "有 Worker 节点超过 60 秒未收到心跳（按离线节点个数计）"},
     {"name": "任务失败过多", "metric": "task_failed", "operator": ">", "threshold": 3, "level": "critical",
      "description": "同一任务失败超过 3 次，需要人工介入"},
     {"name": "磁盘使用率过高", "metric": "disk_usage", "operator": ">", "threshold": 80, "level": "warning",
@@ -91,41 +94,42 @@ async def collect_metrics() -> dict[str, float]:
     """采集各监控指标的当前值（返回 metric → value 映射）."""
     metrics: dict[str, float] = {}
 
-    # worker_offline：离线节点数（秒，DB 中 last_heartbeat 距今）
-    # 取最久未心跳节点的秒数并取整，保证「当前值」为整数，避免出现小数秒
+    # worker_offline：**离线节点个数**（last_heartbeat 距今 >60s，或从未心跳）。
+    # 2026-11-11 评审（管理员席 P1）：原来存「最久未心跳的秒数」（实测 77 天＝6710751），
+    # 告警阈值却按「个数 >5」判——语义错位让管理员永远看到假严重。现在指标＝个数，
+    # 与阈值（默认 >0，历史 DB 行可在界面改）同一口径。
     async with async_session_factory() as session:
         nodes = (await session.execute(select(WorkerNode))).scalars().all()
         now = datetime.utcnow()
-        offline_seconds = 0
+        offline_count = 0
         for node in nodes:
-            if node.last_heartbeat:
-                gap = (now - node.last_heartbeat).total_seconds()
-                offline_seconds = max(offline_seconds, gap)
-        metrics["worker_offline"] = int(round(offline_seconds))
+            if node.last_heartbeat is None or (now - node.last_heartbeat).total_seconds() > 60:
+                offline_count += 1
+        metrics["worker_offline"] = offline_count
 
-        # task_failed：失败任务数（连续失败 >3 次的任务）
-        failed_tasks = (
-            await session.execute(
-                select(func.count(SliceTask.id)).where(SliceTask.status == "failed")
-            )
-        ).scalar() or 0
-        metrics["task_failed"] = float(failed_tasks)
+    # task_failed：失败任务数（连续失败 >3 次的任务）
+    failed_tasks = (
+        await session.execute(
+            select(func.count(SliceTask.id)).where(SliceTask.status == "failed")
+        )
+    ).scalar() or 0
+    metrics["task_failed"] = float(failed_tasks)
 
-        # cookie_expiring：最早过期的 PublishProfile cookie（无 cookie 则跳过）
-        # PublishProfile 无 cookie 过期字段，此处简化为 0（跳过告警），由 RPA check_cookie_status 补充。
-        metrics["cookie_expiring"] = 0.0
+    # cookie_expiring：最早过期的 PublishProfile cookie（无 cookie 则跳过）
+    # PublishProfile 无 cookie 过期字段，此处简化为 0（跳过告警），由 RPA check_cookie_status 补充。
+    metrics["cookie_expiring"] = 0.0
 
-        # ecpm_low：最近一天平均 eCPM
-        from app.models.models import AdMetric
-        yesterday = (datetime.utcnow() - timedelta(days=1)).date()
-        ecpm = (
-            await session.execute(
-                select(func.coalesce(func.avg(AdMetric.ecpm), -1)).where(AdMetric.date >= yesterday)
-            )
-        ).scalar() or -1
-        metrics["ecpm_low"] = float(ecpm)
-        # 事务内只读：显式结束事务
-        await session.rollback()
+    # ecpm_low：最近一天平均 eCPM
+    from app.models.models import AdMetric
+    yesterday = (datetime.utcnow() - timedelta(days=1)).date()
+    ecpm = (
+        await session.execute(
+            select(func.coalesce(func.avg(AdMetric.ecpm), -1)).where(AdMetric.date >= yesterday)
+        )
+    ).scalar() or -1
+    metrics["ecpm_low"] = float(ecpm)
+    # 事务内只读：显式结束事务
+    await session.rollback()
 
     # disk_usage：根分区使用率
     try:

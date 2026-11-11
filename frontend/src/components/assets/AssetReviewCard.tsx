@@ -114,8 +114,17 @@ const AssetReviewCard: React.FC<Props> = ({
 
       <Space size={6} wrap>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          {row.word_count ?? '-'} 字
+          {/* 2026-11-11 评审（审核席 P1）：老数据没存 word_count 时用正文长度兜底，
+              别再给一线看「- 字」——字数是审核第一检查点 */}
+          {row.word_count ?? row.text?.length ?? '-'} 字
         </Text>
+        {/* 2026-11-11 评审（审核席 P1）：驳回理由原来只藏在状态标签的悬停里，
+            驳回的卡片上看不到为什么被驳——写文案的人看不到就没法改 */}
+        {row.reject_reason?.trim() && (
+          <Text type="secondary" style={{ fontSize: 12 }} ellipsis={{ tooltip: row.reject_reason }}>
+            驳回理由：{row.reject_reason.slice(0, 24)}
+          </Text>
+        )}
         {/* 批 N（评审二·P1-4）：一致性判读取前 20 字平铺——原来整条藏在 Tooltip 里，
             不悬停根本看不见。全量判读仍在右列徽标的悬停里。 */}
         {row.consistency_ok === false && (row.consistency_note || '').trim() && (

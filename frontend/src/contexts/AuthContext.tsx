@@ -56,7 +56,7 @@ interface AuthContextType {
   token: string | null;
   roles: Role[];
   loading: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<User | null | void>;
   logout: () => void;
   hasPermission: (menuKey: string) => boolean;
 }
@@ -125,11 +125,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // 登录返回中已包含用户信息
     if (result.user) {
       setUser(result.user);
-    } else {
-      // 兼容旧版本：单独获取用户信息
-      const userData = await authApi.getMe();
-      setUser(userData);
+      return result.user;
     }
+    // 兼容旧版本：单独获取用户信息
+    const userData = await authApi.getMe();
+    setUser(userData);
+    return userData;
   }, []);
 
   const logout = useCallback(() => {

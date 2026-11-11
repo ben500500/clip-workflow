@@ -1956,6 +1956,9 @@ async def import_copy_summaries(
             asset_id=asset.id,
             seq=1,
             text=text,
+            # 2026-11-11 评审（素材/审核席 P1）：贴文案导入不写字数，审核卡「- 字」——
+            # 字数是审核的第一道检查点，数据明明有（shape.chars）就该落库
+            word_count=shape["chars"],
             is_recommended=seq_offset == 1,
             audit_status=RV_PENDING,
         )
@@ -1982,6 +1985,10 @@ async def import_copy_summaries(
     park = await _auto_park_hook_codes(db, summary_rows, operator=current_user, source="import_copy")
     await db.commit()
     note = _park_note(park)
+    # 2026-11-11 评审（审核/投放席 P0）：贴文案导入不更新 item_count，批次下拉永远
+    # 「（0 条）」而列表明明有 N 条——一线无法信任任何计数。按实际入库条数回填。
+    batch.item_count = (batch.item_count or 0) + len(created)
+    await db.commit()
     return {
         "batch_id": str(batch.id),
         "batch_code": batch.code,
@@ -1989,7 +1996,7 @@ async def import_copy_summaries(
         "skipped": skipped,
         "items": created,
         "hook_codes": _park_payload(park),
-        "message": f"已导入 {len(created)} 条文案进审核队列（{batch.code}）"
+        "message": f"已导入 {len(created)} 条文案进审核队列（{batch.name or batch.code}·{batch.code}）"
         + (f"；{len(skipped)} 条形态不合格被跳过" if skipped else "")
         + (f"；{note}" if note else ""),
     }
@@ -4873,7 +4880,7 @@ async def _run_asset_job(job_id: str, kind: str, params: Dict[str, Any], operato
                     n_ok = sum(1 for r in rows if r.get("result") == "extracted")
                     if rows and n_ok == 0 and n_fail > 0:
                         outcome_status = JB_FAILED
-                        outcome_detail = f"抽帧 {n_fail} 条全部失败（无一条成功）：详见 results 与 worker 日志"
+                        outcome_detail = f"抽帧 {n_fail} 条全部失败（无一条成功）：逐条原因在任务详情里，技术细节看 worker 日志"
                         logger.warning("素材库后台任务 %s(frames) 全败：%s", job_id, outcome_detail)
                 # 反推的「接口成功」≠「收到结果」：后台等完收敛后一条都没成、还都是终态失败
                 # （含自动重试仍失败）→ 任务记 FAILED，别让台账绿着让人以为文案马上就有
@@ -7115,7 +7122,7 @@ async def review_summaries(
         "results": results,
         "prompt_preview_note": preview_note,
         "message": (
-            f"审核完成：成功 {ok} 条，未通过 {len(results) - ok} 条（未通过原因见 results）"
+            f"审核完成：成功 {ok} 条，未通过 {len(results) - ok} 条（逐条原因见任务详情 results 区）"
             + (f"，其中 {waived_cnt} 条为管理员豁免（已入审计，admin 可抽检）" if waived_cnt else "")
             + (f"；{warn_cnt} 条带预警（与反推详规对不上，不拦过审但请复核一眼）" if warn_cnt else "")
             + (
@@ -7399,7 +7406,7 @@ async def resubmit_summaries(
         "results": results,
         "message": (
             f"重新提审：成功 {ok} 条，已交回待审队列"
-            + (f"，未通过 {len(results) - ok} 条（原因见 results）" if ok < len(results) else "")
+            + (f"，未通过 {len(results) - ok} 条（逐条原因见任务详情 results 区）" if ok < len(results) else "")
         ),
     }
 

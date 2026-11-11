@@ -640,6 +640,32 @@ const AssetProductionPanel: React.FC<Props> = ({
     return opts;
   }, [batches, batchFilter]);
 
+  // 2026-11-11 评审（投放席 P1）：「从过审文案开单」原来是裸按钮——投放专员不知道
+  // 现在有多少过审候选等着开单，只能去审核台翻。这里给按钮挂上「待产」计数
+  //（过审+改后过、还没建过生产单的条数；两个状态各拉一页 100，超出不追，角标足够指路）。
+  const [approvedPendingCount, setApprovedPendingCount] = useState<number | null>(null);
+  useEffect(() => {
+    if (!active || !canWriteBack) return;
+    let alive = true;
+    (async () => {
+      try {
+        const [a, b] = await Promise.all([
+          assetApi.listSummaries({ audit_status: 'approved', page_size: 100 }),
+          assetApi.listSummaries({ audit_status: 'passed_edited', page_size: 100 }),
+        ]);
+        const cnt = [...(a.items || []), ...(b.items || [])].filter(
+          (s) => !s.production_count,
+        ).length;
+        if (alive) setApprovedPendingCount(cnt);
+      } catch {
+        /* 计数失败静默——按钮不数也能点 */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [active, canWriteBack, reloadToken]);
+
   const ids = useMemo(() => selected.map((s) => s.id), [selected]);
 
   /**
@@ -1566,7 +1592,7 @@ const AssetProductionPanel: React.FC<Props> = ({
               icon={<ThunderboltOutlined />}
               onClick={openApprovedPicker}
             >
-              从过审文案开单
+              从过审文案开单{approvedPendingCount ? `（${approvedPendingCount} 待产）` : ''}
             </Button>
           </Tooltip>
         )}
