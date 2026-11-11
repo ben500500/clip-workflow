@@ -47,6 +47,10 @@ const PROMPT_POLL_INTERVAL_MS = 4000;
 
 // 本地视频上传反推（ISSUE #363）：与后端 wechat_download.prompt_service.UPLOAD_ALLOWED_EXTS
 // 及 settings.WECHAT_DL_PROMPT_UPLOAD_MAX_MB 对齐；前端只做预校验省一次白跑的网络请求。
+// ⚠️ 这一档**故意不跟着生产 env 的 2048 抬**：本流程是把文件投进智令 temp 桶（6 小时自删）
+//    再拿 fileUrl 去 doc/120 反推，超大包在那条链路上没有意义。要传 1.9GB 级别的原片请走
+//    素材库导入（POST /api/assets/upload/batch，11-11 现网实测 1857.8MB 通过）——那一页
+//    没有客户端字节闸门，读的是后端同一个 upload_max_bytes()。
 export const PROMPT_UPLOAD_ACCEPT = '.mp4,.mov,.webm,.avi,.mkv,.m4v';
 export const PROMPT_UPLOAD_MAX_MB = 500;
 
