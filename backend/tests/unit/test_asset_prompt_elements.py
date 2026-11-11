@@ -87,13 +87,41 @@ def test_defaults_are_exactly_the_prototype_rows_from_the_reference_doc():
             assert slot["mode"] == pe.MODE_MANUAL
 
 
-def test_prototype_pools_are_exactly_the_user_list():
-    """词表**照用户 11-10 原话录入**，一个词不许我凭空加——这条是"别自加设计"的闸门。
+# 《钩子模版换皮参数设定.docx》各原型「换皮变量」行里给了**词表**的那几项（斜杠段逐字照抄）。
+# docx 没给词表的参数项不在这里：A 的「善举／神谕指令」、D 的「不公事实」、E 的「揭晓身份」、
+# F 的三项都是整句或开放式取值；B 的「情报：股票/遗产/阴谋」走的是 `b_secret` 手填行
+# （那一格要的是整句泄密内容，不是这三个词），manual 槽的 anchors 根本不参与识别，
+# 塞进去只会让人往台词格里填半截词——判据见 `asset_prompt_elements` 顶部 8-25 批注。
+DOCX_WORD_LISTS = {
+    "a_animal": ["猫", "狗", "狐", "黄鼠狼", "孔雀", "鹰", "雕像", "佛像"],
+    "b_scene": ["房梁", "引擎盖", "床底", "屋顶"],
+    "b_target": ["老板", "对手", "亲戚"],
+    "c_scene": ["老宅灶台", "枯井", "墙缝", "火葬场"],
+    "c_treasure": ["金牙", "黄金碗", "金砖", "暗门金库"],
+    "d_weak": ["老人", "孕妇", "婆婆", "妻子"],
+    "d_abuser": ["儿媳", "丈夫", "长子"],
+    "e_power": ["催生植物", "木耳双胞胎", "徒手神力"],
+}
 
-    用户后面写「猫、狗、黄鼠狼....」那个省略号是开放式取值，走「自定义输入／多值」那条路，
-    不是让我补几个动物进去。
+# docx 用单字「狐／鹰」，现网 11 处全写成整词（狐狸/白狐/猫头鹰/老鹰/神鹰/幼鹰）。
+# 这批**不是新词**，是同一个业务指称的写法；登记它们只为了让长词面优先取到整词，
+# 换掉之后不留「猫头雕」「…狸」这种残渣。除这批之外不许再往词表里塞自加词。
+COMPOUND_FORMS = {"狐狸", "白狐", "猫头鹰", "老鹰", "神鹰", "幼鹰"}
+
+
+def test_prototype_pools_are_the_docx_union_over_the_1110_list():
+    """词表闸门（11-11 批 8-25 改写）。
+
+    11-10 那版闸门是「照用户口述的三个词录入，一个不许加」；11-11 用户对着现网普查
+    （88 条里只有 29 条认出过东西）拍板改成「按《钩子模版换皮参数设定.docx》补宽」。
+    于是闸门从"卡死不许变"换成**三条同时成立**：
+      ① docx 每行「换皮变量」里的词**必须在**（补宽不许漏）；
+      ② 11-10 那批词一个不许掉（现网历史稿的实际写法，删了＝把已认出的改回认不出）；
+      ③ 表里除了 ①② 和 `COMPOUND_FORMS` 之外**不许有别的词**——想自加业务词，
+         必须先把它写进 docx 或者在元素库抽屉里由运营自己加（PUT 口，不用发版）。
     """
-    expected = {
+    by_key = {s["key"]: s for s in pe.normalize_catalog(pe.PROTOTYPE_PROMPT_ELEMENTS)}
+    legacy_1110 = {
         "a_animal": ["猫", "狗", "黄鼠狼"],
         "a_scene": ["建筑工地", "繁华大街", "河边"],
         "b_scene": ["房梁", "床底", "衣柜"],
@@ -107,14 +135,43 @@ def test_prototype_pools_are_exactly_the_user_list():
         "e_scene": ["山里", "河边", "海边"],
         "f_power": ["徒手拦车", "徒手接坠楼者"],
     }
-    by_key = {s["key"]: s for s in pe.normalize_catalog(pe.PROTOTYPE_PROMPT_ELEMENTS)}
-    for key, words in expected.items():
-        assert by_key[key]["pool"] == words, f"{key} 的候选被改动过"
-        assert by_key[key]["anchors"] == words, f"{key} 的词面与候选必须是同一批（候选就是词面）"
+    for key, words in DOCX_WORD_LISTS.items():
+        assert set(words) <= set(by_key[key]["pool"]), \
+            f"{key} 漏了设定表里的词：{set(words) - set(by_key[key]['pool'])}"
+    for key, words in legacy_1110.items():
+        assert set(words) <= set(by_key[key]["pool"]), \
+            f"{key} 把 11-10 现网在用的词删掉了：{set(words) - set(by_key[key]['pool'])}"
+    # 表里不许出现 ①②/整词形态之外的自加词（场景行也一并管：词面短了还有 probe 认位置，
+    # 但"多出来一个 docx 没有的名词"同样要在这里被拦住）
+    for key, slot in by_key.items():
+        if slot["mode"] != pe.MODE_LITERAL:
+            continue
+        base = set(DOCX_WORD_LISTS.get(key, [])) | set(legacy_1110.get(key, []))
+        extra = set(slot["pool"]) - base
+        assert extra <= COMPOUND_FORMS, f"{key} 出现了自加词：{extra - COMPOUND_FORMS}"
+    # 词面与候选必须同源（候选就是拿去正文里找的那批词）
+    for key, slot in by_key.items():
+        if slot["mode"] == pe.MODE_LITERAL:
+            assert slot["anchors"] == slot["pool"], f"{key} 的词面与候选不是同一批"
     # 整句那四项不许有词面（间接转述，认不出就是认不出）
     for key in ("a_speech", "b_secret", "d_line", "f_plight"):
         assert by_key[key]["mode"] == pe.MODE_MANUAL, f"{key} 该是手填项"
         assert by_key[key]["anchors"] == []
+
+
+def test_animal_compound_forms_win_over_the_single_char():
+    """docx 写「狐／鹰」是单字，但**认半截会产出坏稿**：值拿去逐字全局替换，
+    把「猫头鹰」认成「鹰」再换成雕，稿子里就剩「猫头雕」。
+    所以词表登记了整词形态，靠 `_matches_for_anchors` 的长词面优先取整词。
+    """
+    slot = next(s for s in pe.normalize_catalog(pe.PROTOTYPE_PROMPT_ELEMENTS) if s["key"] == "a_animal")
+    body = "剧情：【前3秒】院子里，一只猫头鹰突然开口劝他别上那辆车。\n镜头：猫头鹰转身。"
+    assert [h["value"] for h in pe.slot_matches(body, slot)] == ["猫头鹰", "猫头鹰"], \
+        "整词必须赢，且不许同时冒出「鹰」「猫」两行"
+    body2 = "剧情：山上，一只白狐开口报恩。"
+    assert [h["value"] for h in pe.slot_matches(body2, slot)] == ["白狐"]
+    # 真正独立出现的单字照旧认（docx 那个词本身还在表里）
+    assert [h["value"] for h in pe.slot_matches("剧情：一只狐蹲在门口。", slot)] == ["狐"]
 
 
 def test_line_one_is_not_an_element_but_is_still_protected():
