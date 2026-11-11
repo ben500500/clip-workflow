@@ -1639,6 +1639,19 @@ export interface AssetPromptElementGuessResult {
   slot_count: number;
   text_count: number;
   total_chars: number;
+  /**
+   * 11-11 批 Z：**这一枪到底花没花钱**。全缓存命中／没有空格要补／旋钮关了／模型没通，
+   * 都是 false。界面拿它决定措辞——说"问了模型"其实一分钱没花，是假话。
+   */
+  paid: boolean;
+  /** 回显这次是自动补位（true）还是人点了按钮（false） */
+  auto: boolean;
+  /** 稿子 id → 这次**从缓存**拿到的槽位 key（0 元那部分，界面上标「上次抄回」） */
+  from_cache: Record<string, string[]>;
+  /** 稿子 id → 这次**真问模型**拿到值的槽位 key（界面上标「模型抄回」） */
+  from_model: Record<string, string[]>;
+  /** 这次没问的稿子 id（自动补位分批装不下 / 稿子是空的） */
+  skipped: string[];
 }
 
 /** POST /assets/prompt-elements/apply 返回的一条替换明细（count=0＝原文里没这个词面，没改） */
@@ -2712,11 +2725,19 @@ export const assetApi = {
       notes: string[];
     }>,
 
-  // 11-10「帮我提炼原值」：认不出原值时让模型**逐字抄回**稿子里那句原文。
-  // ⚠️ 与上面那条的区别：这一口**调模型、花钱**，所以是界面上一个按钮（点了才跑），
-  // 超时照同步等模型的口径带 MODEL_WAIT_TIMEOUT。后端只回"确实逐字出现在这一篇稿子里"
-  // 的值，编的一律丢掉并写进 dropped。
-  guessPromptElementValues: (data: { texts: Record<string, string>; category?: string }) =>
+  // 11-10「帮我提炼原值」＋11-11 批 Z 改口径（用户原话「你不能按照固定的词典去识别，
+  // 你要调用大模型的能力去做这个事情」）：认不出原值时让模型**逐字抄回**稿子里那句原文。
+  // ⚠️ 与上面那条的区别：这一口**可能花钱**——但先查后端那份按正文指纹存的缓存，
+  // 同一篇稿子的同一格只花一次。`auto=true` 是开单屏认完词表**自动**补位（分批装不下不报错、
+  // 模型挂了只说明不甩脸子）；`auto=false` 是人点了「再问一次模型」，此时 `use_cache=false`
+  // 绕过缓存、失败原样报错。超时照同步等模型的口径带 MODEL_WAIT_TIMEOUT。
+  guessPromptElementValues: (data: {
+    texts: Record<string, string>;
+    category?: string;
+    auto?: boolean;
+    use_cache?: boolean;
+    only_missing?: Record<string, string[]>;
+  }) =>
     client.post('/assets/prompt-elements/guess-values', data, {
       timeout: MODEL_WAIT_TIMEOUT,
     }) as Promise<AssetPromptElementGuessResult>,

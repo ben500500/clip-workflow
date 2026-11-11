@@ -42,6 +42,13 @@ interface SlotView {
    * 但"词在稿子里"≠"词就是这一项"（同一句里它能挑错成分），所以必须让人看一眼再投。
    */
   modelFilled?: boolean;
+  /**
+   * 11-11 批 Z：稿子 id → 这一格原值的**来源**。
+   * `model`＝这次真问了模型（花钱）；`cache`＝这份稿子上一次抄回来的结果（0 元）；
+   * 不在里面＝词表认出来的。界面按它分开打标签——"上次抄回"和"刚抄回"在人眼里的
+   * 核验优先级不一样（稿子改写过后缓存才会失效，刚抄的那份才是生的一次都没人看过）。
+   */
+  origins?: Record<string, 'model' | 'cache'>;
 }
 
 /**
@@ -131,6 +138,16 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
   const [guessInfo, setGuessInfo] = useState<string[]>([]);
   const [guessError, setGuessError] = useState<string | null>(null);
   /**
+   * 11-11 批 Z：刚才那一枪（自动补位／人点重问）的**花费实况**。
+   * `paid=false` 时界面不许说"问了模型"——全缓存命中、没空格要补、旋钮关了、模型没通，
+   * 这四种都是一分钱没花，说成花钱的会让人不敢点。
+   */
+  const [guessCost, setGuessCost] = useState<{
+    paid: boolean;
+    cached: number;
+    cells: number;
+  } | null>(null);
+  /**
    * 11-11「再重新生成的时候可以重新获取」：稿子刚被换过、这一屏自动重认了一遍参数，
    * 就在界面上留一句话说明**重认过、并且哪些人填的东西被作废了**。不说这句，人会看见
    * 自己填的原值凭空变了（那是按新稿重认的），或投出去才发现换的是旧稿的词。
@@ -186,6 +203,7 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
   const extract = async (serverDraft = false) => {
     setGuessInfo([]);
     setGuessError(null);
+    setGuessCost(null);
     // 底稿/字典变了，上一版预览就不是现在这套参数的结果了——宁可没有，不许陈旧还摆着像新的
     setPreview(null);
     setPreviewError(null);
@@ -240,9 +258,37 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
           });
         });
       });
-      setSlots(Array.from(byKey.values()));
+      const nextSlots = Array.from(byKey.values());
+      // 底稿逐字没换（还是上次问模型那一版）才把抄回的那几格接回去；换了就作废，
+      // 那句是从旧稿抄来的，留着＝拿旧稿的词去新稿里换。
+      const textsSig = JSON.stringify(texts);
+      if (guessedCellsRef.current && guessedCellsRef.current.textsSig === textsSig) {
+        const saved = guessedCellsRef.current.cells;
+        nextSlots.forEach((slot) => {
+          const per = saved[slot.key];
+          if (!per) return;
+          Object.entries(per).forEach(([sid, value]) => {
+            if (!value || slot.currents[sid]) return;
+            slot.currents[sid] = value;
+            slot.origins = { ...(slot.origins || {}), [sid]: 'cache' };
+          });
+        });
+        const anyHeld = nextSlots.some((slot) => Object.values(slot.origins || {}).length);
+        if (anyHeld) {
+          nextSlots.forEach((slot) => {
+            if (Object.values(slot.origins || {}).length) slot.modelFilled = true;
+          });
+        }
+      } else {
+        guessedCellsRef.current = null;
+      }
+      setSlots(nextSlots);
       setNotes(res.notes || []);
       setCategoryName(res.category || (cats.length === 1 ? cats[0] : ''));
+      // 11-11 批 Z（用户原话「你不能按照固定的词典去识别，你要调用大模型的能力去做这个事情」）：
+      // 词表退成**第一道 0 元粗筛**，认完还空着的那几格当场自动接模型补位，不再等人点按钮。
+      // 钱有上限：后端按这份稿子的正文指纹缓存，同一篇同一格只花一次（全命中这次就 0 元）。
+      void autoGuess(nextSlots, texts, cats.length === 1 ? cats[0] : undefined);
     } catch (e) {
       setError((e as Error).message || '参数项认不出来（不影响照常开单）');
       setSlots([]);
@@ -252,57 +298,70 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
   };
 
   /**
-   * 11-10 用户口径「为什么都是稿子里没认出原值？…能不能再将它们提炼一下」：
-   * 0 元的字典认法认不出来的那些（词表外写法／整句台词），点这一下交给模型**逐字抄回**。
+   * 「让模型逐字抄回原值」这一枪的实现——开单屏认完词表**自动**打（`auto`）和
+   * 人点「再问一次模型」（手动）共用同一段，只差三个入参，免得两条路长歪成两套口径。
    *
    * 三条不许商量的边界（都写死在后端 `accept_guessed_values`，这里只负责回填）：
-   *  - **只填还没有的那一格**：已经自动认出的原值一个字不被覆盖，模型只补空白；
+   *  - **只填还没有的那一格**：已经认出的原值一个字不被覆盖，模型只补空白；
    *  - 抄回来的串必须逐字出现在这一篇稿子的可动区间里，模型编的当场丢弃，清单摆在界面上；
    *  - 只改「原稿里写的是」这半边，换成什么仍然由人填——它不是"自动生成投递稿"。
-   * 花钱：一次模型问答（与出文案同档），所以它是按钮、不是自动跟着「重新认参数」跑。
+   *
+   * `auto=true` 时后端不会抛错（模型那一路没通也只回一条说明，照常开单），所以异常照旧
+   * 只可能来自手动那一支——那一下是人自己要的答复，失败必须原样亮出来。
    */
-  const guess = async () => {
-    if (!summaries.length || !slots.length) return;
+  const runGuess = async (opts: {
+    texts: Record<string, string>;
+    category?: string;
+    /** 提交时那版参数行（计数按它算，回填走 setState 的 `prev`，不受中途重认影响） */
+    rows: SlotView[];
+    auto: boolean;
+    /** 稿子 id → 词表还没认出的参数项 key；不给＝这一型全部参数项都问 */
+    onlyMissing?: Record<string, string[]>;
+  }) => {
     setGuessing(true);
     setGuessError(null);
     setGuessInfo([]);
     try {
-      const texts: Record<string, string> = {};
-      summaries.forEach((s) => {
-        texts[s.id] = baseText(s);
-      });
-      const cats = Array.from(
-        new Set(summaries.map((s) => (s.category_name || '').trim()).filter(Boolean)),
-      );
       const res = await assetApi.guessPromptElementValues({
-        texts,
-        category: cats.length === 1 ? cats[0] : undefined,
+        texts: opts.texts,
+        category: opts.category,
+        auto: opts.auto,
+        // 人主动点「再问一次」＝绕过缓存（拿上一次的结果回他等于没重问）；自动补位照旧先查缓存
+        use_cache: opts.auto,
+        only_missing: opts.onlyMissing,
       });
-      // 先在闭包里算好"每一行补哪几格"，再交给 setSlots。
+      // 先在闭包里按 `rows` 算好"这一枪补到了哪几格"，再交给 setSlots。
       // （反过来在 setState 的 updater 里边算边累加是错的：StrictMode 下 updater 会跑两遍，
       //  而且外面同步读那个计数器读到的还是 0。）
-      const patches: Array<{ key: string; hits: Record<string, string> }> = [];
-      slots.forEach((slot) => {
-        const hits: Record<string, string> = {};
-        summaries.forEach((s) => {
-          const v = (res.values?.[s.id] || {})[slot.key];
-          // 只补空位：确定性认法认出来的那份永远优先
-          if (v && !slot.currents[s.id]) hits[s.id] = v;
+      let filledCells = 0;
+      opts.rows.forEach((slot) => {
+        Object.keys(opts.texts).forEach((sid) => {
+          if ((res.values?.[sid] || {})[slot.key] && !slot.currents[sid]) filledCells += 1;
         });
-        if (Object.keys(hits).length) patches.push({ key: slot.key, hits });
       });
+      const cachedCells = Object.values(res.from_cache || {}).reduce((a, v) => a + v.length, 0);
       setSlots((prev) =>
         prev.map((slot) => {
-          const patch = patches.find((p) => p.key === slot.key);
-          if (!patch) return slot;
-          const firstSid = Object.keys(patch.hits)[0];
+          const hits: Record<string, string> = {};
+          const origins: Record<string, 'model' | 'cache'> = {};
+          Object.keys(opts.texts).forEach((sid) => {
+            const v = (res.values?.[sid] || {})[slot.key];
+            // 只补空位：词表认出来的那份永远优先
+            if (v && !slot.currents[sid]) {
+              hits[sid] = v;
+              origins[sid] = (res.from_cache?.[sid] || []).includes(slot.key) ? 'cache' : 'model';
+            }
+          });
+          if (!Object.keys(hits).length) return slot;
+          const firstSid = Object.keys(hits)[0];
           return {
             ...slot,
-            currents: { ...slot.currents, ...patch.hits },
+            currents: { ...slot.currents, ...hits },
+            origins: { ...(slot.origins || {}), ...origins },
             modelFilled: true,
             // 没有对照原句的行（模型补出来的那些）把值所在那一行捞出来，
             // 这样"改之前长什么样"这一栏对自动认／模型认两种来源都一样摆得出来
-            context: slot.context || lineHolding(texts[firstSid] || '', patch.hits[firstSid]),
+            context: slot.context || lineHolding(opts.texts[firstSid] || '', hits[firstSid]),
             contextFrom: slot.context
               ? slot.contextFrom
               : summaries.find((s) => s.id === firstSid)?.asset_code || undefined,
@@ -310,10 +369,30 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
         }),
       );
       setGuessInfo([...(res.notes || []), ...(res.dropped || [])]);
-      if (!patches.length) {
+      setGuessCost({ paid: !!res.paid, cached: cachedCells, cells: filledCells });
+      // 记这笔账给「重新认参数」用（见 guessedCellsRef）：底稿没换时把这几格接回去，
+      // 词表自己认得出的那些格接不进来都无所谓——合并那一步只填还空着的格子。
+      const textsSig = JSON.stringify(opts.texts);
+      if (guessedCellsRef.current?.textsSig !== textsSig) {
+        guessedCellsRef.current = { textsSig, cells: {} };
+      }
+      Object.entries(res.values || {}).forEach(([sid, per]) => {
+        Object.entries((per as Record<string, string>) || {}).forEach(([key, value]) => {
+          if (!value) return;
+          const slot = (guessedCellsRef.current as NonNullable<typeof guessedCellsRef.current>).cells;
+          slot[key] = { ...(slot[key] || {}), [sid]: value };
+        });
+      });
+      if (!filledCells) {
+        // 两种「没补到」得说不同的话：模型那一路根本没通，和模型通了但抄回来的串不在稿子里。
+        // 后者才该让人去底稿自己照抄；前者照实说"这次只用了词表的认法"，别把没发生的事写成品状。
+        const downNote = (res.notes || []).some((n) => /模型那一路这次没通/.test(String(n)));
         setGuessError(
-          '模型没抄回能用的原值（它给的串都不在这批稿子里，或这一型确实没写那些东西）——' +
-            '下面展开底稿自己照抄那一句，留空不影响开单',
+          downNote
+            ? '模型那一路这次没通，这批只用了词表认出来的原值——不影响照常开单；下面那句是它回的原话，' +
+              '要再试一次点上面「再问一次模型（花钱）」。'
+            : '模型没抄回能用的原值（它给的串都不在这批稿子里，或这一型确实没写那些东西）——' +
+              '下面展开底稿自己照抄那一句，留空不影响开单',
         );
       }
     } catch (e) {
@@ -321,6 +400,86 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
     } finally {
       setGuessing(false);
     }
+  };
+
+  /**
+   * 「同一版底稿同一格别重复花钱」的账本：底稿逐字签名 → 每篇**已经问过**哪几格。
+   *
+   * 为什么逐格记，而不是拿「这批稿子＋要补的格子」整个比签名：词表重认时会把已经抄回的那几格
+   * 接回界面（见 `guessedCellsRef`），于是「还空着哪些格」这个集合自己会变小 → 整批签名一变就
+   * 重新开枪，等于把上一枪**没抄到**的那几格（缓存里没有，问一次花一次钱）又问了一遍。
+   * 这个漏是接回逻辑带出来的，只有逐格记账拦得住。
+   */
+  const askedRef = useRef<{ textsSig: string; per: Record<string, string[]> } | null>(null);
+
+  const textsSigOf = (texts: Record<string, string>) => JSON.stringify(texts);
+
+  const markAsked = (textsSig: string, map: Record<string, string[]>) => {
+    if (!askedRef.current || askedRef.current.textsSig !== textsSig) {
+      askedRef.current = { textsSig, per: {} };
+    }
+    Object.entries(map).forEach(([sid, keys]) => {
+      const prev = askedRef.current?.per[sid] || [];
+      if (askedRef.current) askedRef.current.per[sid] = Array.from(new Set([...prev, ...keys]));
+    });
+  };
+
+  /**
+   * 上一枪模型/缓存抄回来的那几格，连同**当时那版底稿**一起记着。
+   *
+   * 为什么要有这份账：`extract()` 每认一次就把整包 slots 按词表回包重建，模型补的那些格子
+   * 不在词表回包里 → 点一下「重新认参数」就把刚抄回的原值当场擦成空；而花钱闸又**正确地**
+   * 拦着「同一版稿子同一格别重复问」→ 两条各自都对，合起来让人看见刚有值的行又没了，
+   * 而且怎么点都不会回来（只有重开弹窗或点花钱那颗才动）。所以词表重认时把这份账接回去：
+   * 底稿逐字没变才接（变了说明那句是从旧稿抄的，按 11-11 口径作废），接回去的来源一律算
+   * 「上次抄回（0 元）」——这一枪确实一分钱没花。
+   */
+  const guessedCellsRef = useRef<{
+    textsSig: string;
+    cells: Record<string, Record<string, string>>;
+  } | null>(null);
+
+  const autoGuess = async (rows: SlotView[], texts: Record<string, string>, category?: string) => {
+    const textsSig = textsSigOf(texts);
+    const missing: Record<string, string[]> = {};
+    rows.forEach((slot) => {
+      Object.keys(texts).forEach((sid) => {
+        if (!slot.currents[sid] && (texts[sid] || '').trim()) {
+          (missing[sid] = missing[sid] || []).push(slot.key);
+        }
+      });
+    });
+    const seen = askedRef.current && askedRef.current.textsSig === textsSig ? askedRef.current.per : {};
+    const left: Record<string, string[]> = {};
+    Object.entries(missing).forEach(([sid, keys]) => {
+      const rest = keys.filter((k) => !(seen[sid] || []).includes(k));
+      if (rest.length) left[sid] = rest;
+    });
+    if (!Object.keys(left).length) return;
+    // 先记账再开枪：这一枪哪怕模型没通、或一个字都没抄到，也不该在同一个空格上原地再花一次钱
+    markAsked(textsSig, left);
+    await runGuess({ texts, category, rows, auto: true, onlyMissing: left });
+  };
+
+  /**
+   * 人主动点的「再问一次模型」：绕过缓存原样再问一遍（11-10 用例钉的就是这一支失败要 502
+   * 原样传出、一条审计都不留），所以它不带 `only_missing`——这一型的参数项全部重问。
+   */
+  const guess = async () => {
+    if (!summaries.length || !slots.length) return;
+    const texts: Record<string, string> = {};
+    summaries.forEach((s) => {
+      texts[s.id] = baseText(s);
+    });
+    const cats = Array.from(
+      new Set(summaries.map((s) => (s.category_name || '').trim()).filter(Boolean)),
+    );
+    // 人自己掏钱把这一型的格子全问过一遍了，自动补位就不必再对同一版底稿打第二枪
+    markAsked(
+      textsSigOf(texts),
+      Object.fromEntries(summaries.map((s) => [s.id, slots.map((x) => x.key)])),
+    );
+    await runGuess({ texts, category: cats.length === 1 ? cats[0] : undefined, rows: slots, auto: false });
   };
 
   /**
@@ -354,6 +513,10 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
     if (!active || !summaries.length) {
       scopeRef.current = '';
       sigRef.current = '';
+      // 关掉弹窗＝闸门作废：下次重开还要自动补位（这一枪**不会白花钱**——已经抄回来的
+      // 那几格后端按正文指纹命中缓存、0 元，只有上次真没抄到的才会再问一次）
+      askedRef.current = null;
+      guessedCellsRef.current = null;
       return;
     }
     const prevScope = scopeRef.current;
@@ -367,6 +530,8 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
       setPreview(null);
       setPreviewOpen([]);
       setRecheckNote(null);
+      askedRef.current = null;
+      guessedCellsRef.current = null;
       void extract();
       return;
     }
@@ -509,7 +674,7 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
       <Space wrap size={6}>
         <Text strong>换皮参数（填多个值＝一次出多条）</Text>
         {/* 11-10 用户口径「说明太长篇大论，缩进浮窗」：这段解释从 Tooltip 换成「？」，界面只留标题 */}
-        <HelpDot text="参数项来自「可替换元素库」字典（按钩子原型配的行）；原值是这一批稿子里自动认出来的。填多个值＝一次扇多条，换词不花钱。" />
+        <HelpDot text="参数项来自「可替换元素库」字典（按钩子原型配的行）。原值分两道认：先用字典里的词面 0 元认一遍，认不出的那几格**自动**交给模型从这篇稿子里逐字抄回（后端按正文存着，同一篇同一格只花一次钱）。标签会写明每一格是词表认的还是模型抄的。填多个值＝一次扇多条，换词本身不花钱。" />
         {!!categoryName && <Tag color="blue">{categoryName}</Tag>}
         {multiCopy && (
           <Tooltip title={`这批选了 ${summaries.length} 条文案，各篇的原值可能不同：后端按每条稿子自己认到的值分别换，认不出的那些才用下面手填的公共原值`}>
@@ -538,21 +703,16 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
             </Button>
           </Tooltip>
         )}
-        {/* 11-10「能不能再将它们提炼一下」：0 元认法认不出来的才走这一口，它花模型钱，
-            所以是**人点的按钮**、不跟着「重新认参数」自动跑；按钮上直接把"花钱"写出来。 */}
+        {/* 11-11 批 Z 改了口径（用户原话「你不能按照固定的词典去识别，你要调用大模型的能力
+            去做这个事情」）：认不出来的那一格**认完词表就已经自动问过模型**了，这颗按钮不再
+            是唯一入口，只留给人主动「绕过已经存着的结果、让模型重新抄一遍」。
+            它一定会再花一次钱，所以措辞不许含糊，花钱与否在下一行按实况说真话。 */}
         {!!slots.length && (
-          <Button
-            size="small"
-            icon={<BulbOutlined />}
-            loading={guessing}
-            onClick={guess}
-            type={unrecognized ? 'primary' : 'default'}
-            ghost={!!unrecognized}
-          >
-            {unrecognized
-              ? `帮我提炼原值（${unrecognized} 行还没认出，问模型花钱）`
-              : '帮我提炼原值（问模型，花钱）'}
-          </Button>
+          <Tooltip title="认不出来的那几格，点「重新认参数」后会自动问一轮模型（同一篇稿子同一格只花一次钱，之后走缓存）。这一颗是绕过缓存原样再问一遍——会再花一次钱，改了字典或想让模型重看时用它。">
+            <Button size="small" icon={<BulbOutlined />} loading={guessing} onClick={guess}>
+              再问一次模型（花钱）
+            </Button>
+          </Tooltip>
         )}
       </Space>
 
@@ -561,7 +721,26 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
       )}
       {guessing && (
         <Text type="secondary" style={{ fontSize: 12 }}>
-          正在让模型逐字抄回稿子里的原话，不等开单，投不投都照旧…
+          词表认完了，正在让模型把还空着的那几格逐字抄回稿子里的原话…（不等开单，投不投都照旧）
+        </Text>
+      )}
+      {!guessing && guessCost && !guessError && (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {guessCost.paid
+            ? `这一下问了模型：补到 ${guessCost.cells} 格` +
+              (guessCost.cached
+                ? `，另有 ${guessCost.cached} 格直接用了这份稿子上一次抄回的结果（0 元）`
+                : '（同一篇稿子的同一格下次不再花钱）')
+            : guessCost.cached
+              ? `没花钱：${guessCost.cached} 格用的是这份稿子上一次抄回的结果`
+              : '这一枪一分钱没花（没有要补的空格／自动提炼的旋钮关了／模型那一路这次没通），下面那句是原话'}
+        </Text>
+      )}
+      {/* 词表＋模型都跑过还全行皆空的参数项：把"为什么还是空的"说在前面，不然人会以为这一屏坏了 */}
+      {!guessing && !!slots.length && unrecognized > 0 && (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          还有 {unrecognized} 行一个原值都没认出来（词表和模型都过了一遍）——多半这几篇稿子里确实没写那样东西，
+          留空照常开单，只是这一项不换。
         </Text>
       )}
       {guessError && (
@@ -619,6 +798,11 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
         const currents = Object.values(slot.currents);
         const same = currents.length > 0 && currents.every((c) => c === currents[0]);
         const baseVal = baseDraft[slot.key] ?? (currents.length && same ? currents[0] : '');
+        // 11-11 批 Z：这一行里模型补的格子分「这次真问了模型」和「上次抄回、这次 0 元复用」两种，
+        // 分开打标签——前者一次都没人看过，核验优先级更高。
+        const originList = Object.values(slot.origins || {});
+        const freshCells = originList.filter((o) => o === 'model').length;
+        const reusedCells = originList.length - freshCells;
         return (
           <div key={slot.key}>
             <Space wrap size={6} style={{ marginBottom: 2 }}>
@@ -636,17 +820,22 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
                   )}
                   {slot.mode === 'pattern' && <Tag style={{ marginLeft: 6 }}>按写法认</Tag>}
                   {/* 来源标必须摆出来：模型只保证"这几个字在这篇稿子里"，不保证"这几个字就是这一项" */}
-                  {slot.modelFilled && (
+                  {!!freshCells && (
                     <Tag color="gold" style={{ marginLeft: 6 }}>
-                      模型提炼，请核一眼
+                      模型抄回 {freshCells} 格，请核一眼
                     </Tag>
+                  )}
+                  {!!reusedCells && (
+                    <Tooltip title="这份稿子上一次已经问过模型、结果按正文存着（`asset_element_guesses`），这次直接复用，一分钱没花。稿子一改写就会重新问。">
+                      <Tag style={{ marginLeft: 6 }}>上次抄回 {reusedCells} 格（0 元）</Tag>
+                    </Tooltip>
                   )}
                 </Text>
               </Tooltip>
               {currents.length === 0 ? (
-                <Text type="warning" style={{ fontSize: 12 }}>
-                  稿子里没认出原值
-                  <HelpDot text="两条路：① 点上面「帮我提炼原值」，让模型从这篇稿子里把那句原话逐字抄回来（花一次模型钱，抄回来的必须真是稿子里的字，编的会被丢掉）；② 自己来——展开下面「模板脚本提示词」，把稿子里那句原话照抄进这一行的「原稿里写的是」，词面一致了才换得动。两条都不走也没关系：留空只是这一项不换。" />
+                <Text type={guessing ? 'secondary' : 'warning'} style={{ fontSize: 12 }}>
+                  {guessing ? '词表没认出，正在让模型从这篇稿子里抄…' : '词表和模型都没认出原值'}
+                  <HelpDot text="这一行 0 元的词表和模型都过了一遍还是空的——认完词表会自动问一次模型（同一篇稿子的同一格只花一次钱）。空着多半是这篇稿子里确实没写那样东西，也可能是模型抄回来的词没通过「必须逐字出现在稿子里」那道校验。要自己填：展开下面「模板脚本提示词」，把稿子里那句原话照抄进这一行的「原稿里写的是」，词面一致了才换得动。留空不影响开单，只是这一项不换。" />
                 </Text>
               ) : same ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>原稿里：{currents[0]}</Text>
