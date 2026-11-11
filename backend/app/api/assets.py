@@ -6196,7 +6196,14 @@ async def _guess_cache_write(
                 row.value = value
                 row.model = (model_name or "")[:80]
                 row.category = (category or "")[:60]
-    await db.commit()
+    # 兜底：万一这次提交仍撞上连接已死（等模型期间被掐的那类事故），换新事务重放一次——
+    # 这些行是花钱换来的答案，丢了下次就要再花一遍（11-11 现网两批就是这么白跑的）。
+    try:
+        await db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("换皮参数原值落库第一次提交失败（%s），换新事务重试", str(e)[:120])
+        await db.rollback()
+        await db.commit()
 
 
 
@@ -6348,6 +6355,12 @@ async def guess_prompt_element_values(
                 {"key": s["key"], "label": s["label"], "note": s["note"], "pool": s["pool"]}
                 for s in slots_ask
             ]
+            # ⚠️ 调模型前必须把事务收掉（与出文案/预览口同一条铁律）：这一枪要趴几十秒到
+            # 几分钟等 autoclip，开着事务等会被 PG 的 idle_in_transaction_session_timeout=60s
+            # 掐掉连接，模型成功返回、后面的 `_guess_cache_write` 却报 connection is closed
+            # → 整口 500，**花过钱的格子一条没记住**（11-11 现网 MODE=full 实测两批这样炸）。
+            # 此刻事务里只有上面那几笔 SELECT（字典、缓存、SystemConfig），commit 是干净收尾。
+            await db.commit()
             try:
                 res = await _call_autoclip(
                     "hook-copy/slots",

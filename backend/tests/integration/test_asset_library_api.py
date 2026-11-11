@@ -10743,6 +10743,121 @@ def test_prompt_elements_guess_negative_answer_cached_api():
     _run(_scenario())
 
 
+def test_prompt_elements_guess_ends_transaction_before_model_call():
+    """11-11 现网批量补位实测：问 5 篇要趴几十秒等 autoclip，而接口进来到调模型之间
+    那几笔 SELECT 一直开着事务没人收——PG 的 `idle_in_transaction_session_timeout=60s`
+    把连接掐掉，模型**成功返回**之后 `_guess_cache_write` 报 connection is closed
+    → 整口 500。这比出文案口那次贵：钱已经花了，缓存一行没落，下次进来照旧再花一遍。
+
+    回归判据（与 `test_preview_prompt_ends_transaction_before_model_call` 同一手法）：
+    用 `before_commit` 事件记次序——commit 必须发生在调模型**之前**，且回写成功、
+    缓存行真的落进去了。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        from sqlalchemy import event
+        from sqlalchemy.orm import Session as _SyncSession
+
+        from app.models.asset import AssetElementGuess
+        from app.services import asset_prompt_elements as pesvc
+
+        client, h = await _client_and_headers()
+        hm = h["material"]
+
+        r = await client.put(
+            "/api/assets/prompt-elements",
+            headers=h["admin"],
+            json={"inherit": False, "slots": [
+                {"key": "speech", "label": "动物说的话", "mode": "manual"},
+            ]},
+        )
+        assert r.status_code == 200, r.text
+
+        order: List[str] = []  # "commit" / "model" 按发生顺序
+
+        def _on_commit(session):
+            order.append("commit")
+
+        fake = _fake_autoclip(slots_items=[
+            {"id": "p1", "key": "speech", "value": "别开门，外头人不对"},
+        ])
+
+        async def autoclip_spy(path, payload, timeout=900.0):
+            order.append("model")
+            return await fake(path, payload, timeout)
+
+        event.listen(_SyncSession, "before_commit", _on_commit)
+        try:
+            with patch("app.api.assets._call_autoclip", autoclip_spy):
+                resp = await client.post(
+                    "/api/assets/prompt-elements/guess-values",
+                    json={"texts": {"p1": GUESS_TEXT_10S}, "auto": True}, headers=hm,
+                )
+        finally:
+            event.remove(_SyncSession, "before_commit", _on_commit)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["paid"] is True, resp.json()
+        assert "model" in order, "模型没被调到，探针失效"
+        assert "commit" in order[:order.index("model")], (
+            "调模型前没收事务：等模型那几十秒里读事务一直趴着，现网 60s 一到连接就被掐，"
+            "钱花了、缓存一行没落（11-11 现网两批 500 实录）"
+        )
+        rows = await _rows(AssetElementGuess,
+                           AssetElementGuess.body_hash == pesvc.body_fingerprint(GUESS_TEXT_10S))
+        assert [x.value for x in rows] == ["别开门，外头人不对"], rows
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_guess_cache_write_retries_on_dead_connection():
+    """上面那条是防「连接被掐」，这条是掐了之后的兜底：第一次 commit 抛
+    InterfaceError 时**换新事务重放一次**，不能把花钱换来的答案丢了直接 500。
+    """
+    from sqlalchemy.exc import InterfaceError
+
+    from app.services import asset_prompt_elements as pesvc
+
+    class _FlakySession:
+        def __init__(self):
+            self.added = []
+            self.commits = 0
+            self.rollbacks = 0
+
+        def add(self, obj):
+            self.added.append(obj)
+
+        async def execute(self, *_a, **_k):
+            class _Res:
+                def scalars(self):
+                    class _S:
+                        def first(self):
+                            return None
+                    return _S()
+            return _Res()
+
+        async def commit(self):
+            self.commits += 1
+            if self.commits == 1:
+                raise InterfaceError("COMMIT", None, Exception("connection is closed"))
+
+        async def rollback(self):
+            self.rollbacks += 1
+
+    async def _scenario():
+        sess = _FlakySession()
+        await assets_api._guess_cache_write(
+            sess, {"p1": (pesvc.body_fingerprint(GUESS_TEXT_10S), {"speech": "别开门"})},
+            "mimo-v2.6-flash", "A",
+        )
+        assert sess.commits == 2 and sess.rollbacks == 1, \
+            f"没做「换新事务重放一次」：commit={sess.commits} rollback={sess.rollbacks}"
+        assert len(sess.added) == 1 and sess.added[0].value == "别开门", sess.added
+
+    _run(_scenario())
+
+
 def test_prompt_elements_manual_rows_protected_lines_and_seeds_api():
     """批 N（11-10 用户逐原型参数清单）四件事，都得从接口口打出来才算数：
 
