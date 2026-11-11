@@ -9435,7 +9435,11 @@ def test_parked_code_not_double_spent_when_request_already_carries_it():
     """预取号被手工粘进 hook_codes 时也算用掉：不重复顶槽，但预取位同样要清。
 
     前端把预取号显示在编号框里（甚至直接带上）是很自然的动作，如果这里只认"顶空槽"
-    那一支，预取位就会留着一个已经在单上的号，下一次开单整批被 stale 判据 400 拦死。
+    那一支，预取位就会留着一个已经在单上的号，下一次开单又要撞上「号已被用掉」那条判据。
+
+    2026-11-11 评审把预取位并入撞号拦查之后，这条路径差点被自己的新闸门 400 掉——
+    本批文案自己的预取位不是冲突（号就是给这批备的），必须排掉自己；漏排的话最常见
+    的那条链路（带预取号开单）当场全红，所以这里既是合同也是防回归。
     """
     _run(_bootstrap())
 
@@ -9453,6 +9457,21 @@ def test_parked_code_not_double_spent_when_request_already_carries_it():
         listed = (await client.get(f"/api/assets/productions?asset_id={asset_id}", headers=ho)).json()["items"]
         assert [p["hook_code"] for p in listed] == ["7N0K2"], listed
         assert (await _row_of(AssetSummary, sid)).hook_code is None
+
+        # ── 反向腿：同一个号钉在**别人文案**的预取位上，手工带过来必须当场 400 ──
+        # 排掉本批自己之后剩下的那支才是真对撞。不拦的话两条文案各带 7N0K3 投上同一块板，
+        # 回收时按号对账直接分不清哪条是哪条——这正是 2026-11-11 评审（业务席 P1）要补的那道。
+        _aid_b, sid_b = await _approve_one(client, h, url=DOUYIN_3)
+        assert (await _park(client, ho, [{"summary_id": sid_b, "hook_code": "7N0K3"}])).json()["ok"] is True
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            clash = await client.post("/api/assets/produce",
+                                      json={"summary_ids": [sid], "n": 1, "hook_codes": ["7N0K3"],
+                                            "recommended_title_count": 1}, headers=ho)
+        assert clash.status_code == 400, clash.text
+        assert "7N0K3" in clash.text and "已预取在素材" in clash.text, clash.text
+        # 拦在写库之前：既没建单，也没把别人那个预取位顺手清掉
+        assert await _count(AssetProduction) == len(listed), "拒开不该留半张单"
+        assert (await _row_of(AssetSummary, sid_b)).hook_code == "7N0K3"
         await client.aclose()
 
     _run(_scenario())
@@ -9548,11 +9567,16 @@ def test_hook_code_backfill_on_production_and_refusal_after_board_tid():
     _run(_scenario())
 
 
-def test_produce_refuses_when_parked_code_is_already_on_a_production():
-    """预取位里躺着一个已经用过的号（陈旧数据）→ 开单当场点名，不投出去才发现对不上账。
+def test_produce_clears_stale_parked_code_and_says_so_instead_of_blocking():
+    """预取位里躺着一个已经用过的号（陈旧数据）→ 当场清空＋点名，这批照常开单。
 
-    正常路径走不出这个状态（钉号口自己拦、用完即清），所以这里直接写库造脏数据——
-    判据是"宁可拒开也不带脏号投板"，得有脏数据时才测得到。
+    正常路径走不出这个状态（钉号口自己拦、用完即清），所以这里直接写库造脏数据。
+
+    2026-11-11 评审（业务席 P1）把口径从「整批 400 拒开」改成「清位＋往下走」，理由：
+    一线拿着一条死号只能手工清位重来，而**同批其余几十条**明明能开单，被一条脏数据一起卡住；
+    脏号清掉后这条文案就退化成普通的「缺号」——那条路本来就有兜底（预取池／代取／手工填）。
+    判据因此是三条：①不拦（200＋建单）；②号被点名（不能静悄悄换个号就投出去）；
+    ③预取位**必须真的清掉**（留着下次还是撞）——原版反过来要求「不许清」，那是配 400 的口径。
     """
     _run(_bootstrap())
 
@@ -9569,10 +9593,23 @@ def test_produce_refuses_when_parked_code_is_already_on_a_production():
             made = await client.post("/api/assets/produce",
                                      json={"summary_ids": [sid], "n": 1,
                                            "recommended_title_count": 1}, headers=ho)
-        assert made.status_code == 400, made.text
-        assert "预取的钩子编号已经被用掉了" in made.text and "7C0F1" in made.text, made.text
-        # 拦下来之后预取位**不许被顺手清掉**：清了就等于把脏数据藏起来，下次还是撞
-        assert (await _row_of(AssetSummary, sid)).hook_code == "7C0F1"
+        assert made.status_code == 200, made.text
+        body = made.json()
+        assert body["created"] == 1, body
+        note = body["results"][0].get("note") or ""
+        assert "7C0F1" in note and "已被" in note and "自动清空" in note, note
+        # 批次级警告跟着说一句「这批缺号」：清位之后这条文案就是普通缺号，
+        # 界面只读 results[].note 的话，运营看不到「还得回去取号」这一步。
+        assert any("缺五位钩子编号" in w for w in body["warnings"]), body["warnings"]
+        # 单子上绝不能带着这个脏号投出去（顶槽已被清位，缺号兜底也不该把它捡回来）
+        listed = (await client.get(f"/api/assets/productions?asset_id={asset_id}", headers=ho)).json()["items"]
+        mine = [p for p in listed if p["id"] in {x for x in body["production_ids"]}]
+        assert mine and all(p["hook_code"] != "7C0F1" for p in mine), mine
+        assert (await _row_of(AssetSummary, sid)).hook_code is None, "脏号当场清位，别留给下一次"
+        # 另一支「同一个号同时钉在别人文案的预取位上」没在这里造：0068 给
+        # asset_summaries.hook_code 加了部分唯一索引（uq_asset_summaries_hook_code），
+        # 两条文案挂同一个号在**建表层面**就不成立了，那段代码只剩现网索引没回填成功时的兜底，
+        # 想钉它得先把索引拆掉——那测的是自己搭的现场，不是产品行为。
         await client.aclose()
 
     _run(_scenario())
@@ -9618,13 +9655,17 @@ def _fake_take_script(fail_after=None):
     return f"{sys.executable} {script} {ledger}", ledger
 
 
-def _take_stub(codes, err=None):
-    """取号底层替身（只测调用次数与结果，不真跑脚本）。"""
+def _take_stub(codes, err=None, discarded=None):
+    """取号底层替身（只测调用次数与结果，不真跑脚本）。
+
+    2026-11-11 评审后 `_take_hook_codes` 签名是三元组 `(codes, discarded, err)`——
+    超发丢弃的号已在共享台账烧掉，调用方要拿去写审计，替身必须照形状回。
+    """
     calls = []
 
     async def _fake(count):
         calls.append(int(count))
-        return list(codes)[: int(count)], err
+        return list(codes)[: int(count)], list(discarded or []), err
 
     return _fake, calls
 
@@ -9850,8 +9891,9 @@ def test_take_hook_codes_chunks_past_the_script_max_and_keeps_issued_numbers():
         old = settings.ASSET_HOOK_ID_CMD
         settings.ASSET_HOOK_ID_CMD = cmd
         try:
-            codes, err = await assets_api._take_hook_codes(85)
+            codes, discarded, err = await assets_api._take_hook_codes(85)
             assert err is None, err
+            assert discarded == [], "按 50＋35 分枪正好要满 85，不该有超发"
             assert len(codes) == 85 and len(set(codes)) == 85, codes[:5]
             assert ledger.read_text() == "85", "两块分别真跑了 50＋35 枪"
         finally:
@@ -9861,8 +9903,9 @@ def test_take_hook_codes_chunks_past_the_script_max_and_keeps_issued_numbers():
         bad, ledger2 = _fake_take_script(fail_after=True)
         settings.ASSET_HOOK_ID_CMD = bad
         try:
-            codes, err = await assets_api._take_hook_codes(80)
+            codes, discarded, err = await assets_api._take_hook_codes(80)
             assert len(codes) == 50, codes
+            assert discarded == [], err
             assert err and "第 2 枪" in err, err
             assert ledger2.read_text() == "50", ledger2.read_text()
         finally:
@@ -11216,6 +11259,300 @@ def test_fanout_preview_shows_replaced_text_and_matches_produce():
         r = await client.post("/api/assets/prompt-elements/fanout-preview",
                               json={"texts": {sid: base_prompt}, "values": values})
         assert r.status_code == 401, r.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
+# ────────────────  24. 职能闸与成片打包合同（2026-11-11 七席评审·测试席 P0） ────────────────
+#
+# 这两块是本轮改动里**唯一零覆盖**的口子，也是评审给测试席打 6/10 的直接原因：
+#   · `require_functions` 刚从 `getattr(user, fn, True)`（列缺失静默放行）改成直接访问列，
+#     改完没有任何用例证明四个端点各认各的列、admin 恒过、关掉再打开真的可逆；
+#   · `POST /assets/outputs/package` 本轮重写过（下载移出事务、CA bundle 强校验、
+#     manifest 补对账主键、包名带日期条数、单支失败 502 点名），此前一条断言都没有。
+# 判据都写成「关掉会怎样」而不是「代码长这样」——列改错名、闸门口径漂了，测试必须先红。
+
+
+async def _set_flags(username: str, **flags):
+    """按用户名改 users.can_review / can_produce（岗位隔离的唯一入口＝管理员改这两列）。"""
+    async with dbmod.async_session_factory() as s:
+        u = (await s.execute(select(User).where(User.username == username))).scalar_one()
+        for k, v in flags.items():
+            setattr(u, k, v)
+        await s.commit()
+
+
+async def _approved_summary(client, h, url):
+    """造一条**已过审**的文案并返回 (asset_id, summary_id)：职能闸用例的正向腿要用它。"""
+    aid, _ = await _make_ready_asset(client, h["material"], url)
+    items, _ = await _gen_and_list(aid, h["material"], client)
+    sid = _approvable(items)["id"]
+    r = await client.post("/api/assets/summaries/review",
+                          json={"summary_ids": [sid], "action": "approve"}, headers=h["admin"])
+    assert r.status_code == 200, r.text
+    return aid, sid
+
+
+def test_function_flags_gate_the_four_endpoints_and_are_reversible():
+    """can_review / can_produce 两列真的是闸：各认各的端点、admin 恒过、关→开立刻可用。
+
+    钉五件事（评审 2026-11-11 测试席 P0 的原始问句：「把 getattr 去掉之后，谁保证闸还在？」）：
+    ① 关 can_review ⇒ 审核口 403，且**库里状态没动**（拦在写库之前，不是写完再报错）；
+    ② 关 can_review **不牵连**投产/导出/投板（它们读的是 can_produce）——
+       投产口照常干活，错误话术是业务侧的「文案未过审」，不是「未启用审核职能」；
+       （实测合同：投产口对未过审文案返回 **200 信封 + results[].error**，整单不抛 400）
+    ③ 关 can_produce ⇒ 投产、导出、投板三口**全部** 403 且一张单都不落
+       （投板口连 `is_configured()` 都没走到：闸在外部动作之前）；
+    ④ 打开即恢复：同一个请求、同一份入参，200 可用——防「写死一句 403」的假闸门；
+    ⑤ admin 恒过：把管理员的两列一起关掉，过审与投产照旧 200（岗位隔离不拆管理员）。
+    403 文案还得点名是哪项职能，否则一线只知道被拦、不知道该找谁开。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, had = h["material"], h["operator"], h["admin"]
+        aid, _ = await _make_ready_asset(client, hm)
+        items, _ = await _gen_and_list(aid, hm, client)
+        sid = _approvable(items)["id"]
+
+        # ── ① 审核闸：403 + 库里没动 ──
+        await _set_flags(OPERATOR_USER, can_review=False)
+        blocked = await client.post("/api/assets/summaries/review",
+                                    json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+        assert blocked.status_code == 403, blocked.text
+        msg = blocked.json()["detail"]
+        assert "审核（质检）" in msg and "职能" in msg, msg
+        assert (await _row_of(AssetSummary, sid)).audit_status == RV_PENDING, "拦在写库之前：状态还是待审"
+
+        # ── ② 不牵连：can_review 关着，投产口照常过闸，拿到的是业务话术而不是「未启用审核职能」──
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            not_review = await client.post("/api/assets/produce",
+                                           json={"summary_ids": [sid], "n": 1, "async_mode": False},
+                                           headers=ho)
+        # 实测口径（本轮把它钉下来）：投产口对**未过审文案**不抛 400，而是 200 信封 +
+        # results[].error 逐条说明。所以这里的判据只能是「没被审核职能闸拦掉」＋「一单没建」，
+        # 断状态码 400 是把业务实现当成合同，将来把逐条失败改成整单 400 反而会误红。
+        assert not_review.status_code == 200, not_review.text
+        body = not_review.json()
+        assert "职能" not in str(body), body
+        assert body["created"] == 0, "文案还在待审，不该借这条腿建单"
+        assert any("未过审" in str(r.get("error")) for r in body["results"]), body
+
+        # ── ④ 打开即恢复（同一份入参再来一次就是 200）──
+        await _set_flags(OPERATOR_USER, can_review=True)
+        again = await client.post("/api/assets/summaries/review",
+                                  json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+        assert again.status_code == 200, again.text
+        assert again.json()["results"][0]["ok"] is True, again.json()
+        assert (await _row_of(AssetSummary, sid)).audit_status == RV_APPROVED
+
+        # ── ③ 投产闸：三口一起拦，且一张单都不落 ──
+        await _set_flags(OPERATOR_USER, can_produce=False)
+        orders_before = await _count(AssetProduction)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            p = await client.post("/api/assets/produce",
+                                  json={"summary_ids": [sid], "n": 1, "async_mode": False}, headers=ho)
+        assert p.status_code == 403, p.text
+        assert "投产（挑选、投板）" in p.json()["detail"], p.json()["detail"]
+        assert await _count(AssetProduction) == orders_before, "闸在建单之前：关掉不该留半张单"
+
+        e = await client.get("/api/assets/productions/export", headers=ho)
+        assert e.status_code == 403 and "投产" in e.json()["detail"], e.text
+
+        # 投板口：闸必须走在 `is_configured()` 和任何板侧动作之前（拿不存在的 id 也拦得住）
+        d = await client.post("/api/assets/productions/dispatch",
+                              json={"ids": [str(uuid.uuid4())], "confirm": True}, headers=ho)
+        assert d.status_code == 403, d.text
+        assert "自动投板还没启用" not in d.json()["detail"], "先过闸再谈凭据：外部动作一步都不该碰"
+
+        # ── ④′ 打开：投产 200、导出 200、投板拿到的是凭据话术（说明闸真的让开了）──
+        await _set_flags(OPERATOR_USER, can_produce=True)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            ok = await client.post("/api/assets/produce",
+                                   json={"summary_ids": [sid], "n": 1, "async_mode": False}, headers=ho)
+        assert ok.status_code == 200, ok.text
+        prod = (await _rows(AssetProduction, AssetProduction.asset_id == uuid.UUID(aid)))[0]
+        ex = await client.get(f"/api/assets/productions/export?ids={prod.id}", headers=ho)
+        assert ex.status_code == 200, ex.text
+        with patch("app.services.aivideo_board.is_configured", return_value=False):
+            dd = await client.post("/api/assets/productions/dispatch",
+                                   json={"ids": [str(prod.id)], "confirm": True,
+                                         "cross_person_confirm": True}, headers=ho)
+        assert dd.status_code == 400 and "自动投板还没启用" in dd.json()["detail"], dd.text
+
+        # ── ⑤ admin 恒过：两列全关也不拦（岗位隔离不拆管理员）──
+        await _set_flags(ADMIN_USER, can_review=False, can_produce=False)
+        aid2, sid2 = await _approved_summary(client, h, DOUYIN_3)
+        assert (await _row_of(AssetSummary, sid2)).audit_status == RV_APPROVED, "admin 关列也应能过审"
+        orders_before_admin = await _count(AssetProduction)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            admin_produce = await client.post("/api/assets/produce",
+                                              json={"summary_ids": [sid2], "n": 1, "async_mode": False},
+                                              headers=had)
+        assert admin_produce.status_code == 200, admin_produce.text
+        assert admin_produce.json()["created"] == 1, admin_produce.json()
+        # 基线取「admin 这一枪之前」而不是 orders_before：④′ 里 operator 已经建过一张了
+        assert await _count(AssetProduction) == orders_before_admin + 1
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_outputs_package_contract_manifest_and_ca_bundle():
+    """成片打包口的合同：入参形状、验收闸门、manifest 对账主键、包名、CA bundle、单支失败。
+
+    为什么每条都值得钉（评审 2026-11-11 测试席 P0＋安全席 P2＋业务席 P1）：
+    ① `ids` 用 `Body(..., embed=True)` ⇒ 必须是 `{"ids":[…]}`。裸数组是 422——
+       前端当年就是按裸数组写的，接口照样挂着，**没有一条断言会红**；
+    ② 验收 failed 的单条下载口拦、打包口也必须拦（409 并点名是哪条），
+       否则「一条废片混在包里发出去」这条路是通的；勾选里全查不到 ⇒ 404 而不是空包；
+    ③ manifest 是发布侧「下载即落位」的输入：`production_id`（＝板侧 reqID，对账主键）、
+       `board_tid`、`hook_code`、`asset_title` 少一个就要人肉改名贴标题；
+    ④ 包名带日期与条数（同一周打多个包要对得上批次）；
+    ⑤ 本轮把 `verify=False` 换成自签 CA bundle：bundle 有值时 httpx **必须拿到它**，
+       没值时退回 `False`（本地 HTTP 部署零变化）——写死任何一个都不算这条纪律；
+    ⑥ 单支 presign 失败 ⇒ 502 点名到哪一支，且**不产出半个包**（打包是原子的）。
+    """
+    _run(_bootstrap())
+
+    import httpx
+    import io as _io
+    import time as _time
+    import zipfile
+
+    payload = b"FAKE-MP4-BYTES"
+    seen_kwargs: list = []
+
+    class _PkgResp:
+        content = payload
+
+        def raise_for_status(self):
+            return None
+
+    def _client_factory(recorder):
+        class _Client:
+            def __init__(self, **kwargs):
+                recorder.append(kwargs)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, url):
+                return _PkgResp()
+
+        return _Client
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        aid, sid = await _approved_summary(client, h, DOUYIN_2)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            r = await client.post("/api/assets/produce",
+                                  json={"summary_ids": [sid], "n": 1, "async_mode": False},
+                                  headers=h["admin"])
+        assert r.status_code == 200, r.text
+        prod = (await _rows(AssetProduction))[0]
+        # 板侧对账主键直接钉进库（投板链路有专项用例，本口只管"能不能带出去"）
+        async with dbmod.async_session_factory() as s:
+            p = await s.get(AssetProduction, prod.id)
+            p.hook_code, p.board_tid = "8PZ12", "TID-9527"
+            p.video_titles = ["总裁摘下手表坐在塑料凳上吃泡面"]
+            await s.commit()
+
+        async def _add(qc, name):
+            oid = uuid.uuid4()
+            async with dbmod.async_session_factory() as s:
+                s.add(AssetOutput(
+                    id=oid, production_id=prod.id, asset_id=uuid.UUID(aid),
+                    kind="doubao_raw", file_key=f"asset-out/{oid}.mp4",
+                    bucket=settings.MINIO_BUCKET_SLICED, file_name=name,
+                    qc_status=qc, qc_note="字幕压脸" if qc == "failed" else None,
+                    duration=11.0, resolution="720x1280",
+                ))
+                await s.commit()
+            return str(oid)
+
+        good = await _add("passed", "解压片A.mp4")
+        bad = await _add("failed", "解压片B.mp4")
+
+        http_ns = SimpleNamespace(AsyncClient=_client_factory(seen_kwargs), HTTPError=httpx.HTTPError)
+        presign = AsyncMock(return_value="http://minio:9000/o/clip.mp4?sig=abc")
+        with patch("app.api.assets.get_presigned_url", presign), \
+             patch("app.api.assets.extra_ca_bundle_path",
+                   return_value="/etc/clip/self-signed-ca.pem"), \
+             patch("app.api.assets.httpx", http_ns):
+
+            # ── ②′ 形状回归：裸数组必须 422（embed=True 的合同）──
+            bare = await client.post("/api/assets/outputs/package", json=[good], headers=hm)
+            assert bare.status_code == 422, bare.text
+
+            # ── ② 空勾选/全查不到：404，不是 200 空包 ──
+            none = await client.post("/api/assets/outputs/package",
+                                     json={"ids": [str(uuid.uuid4())]}, headers=hm)
+            assert none.status_code == 404, none.text
+
+            # ── ② 混进一条废片：409 点名，且不改投出去任何东西 ──
+            mixed = await client.post("/api/assets/outputs/package",
+                                      json={"ids": [good, bad]}, headers=hm)
+            assert mixed.status_code == 409, mixed.text
+            assert "验收不合格" in mixed.json()["detail"] and "解压片B" in mixed.json()["detail"], mixed.text
+
+            # ── ①③④⑤ 正向腿：zip 内容、manifest 合同、包名、CA bundle ──
+            ok = await client.post("/api/assets/outputs/package", json={"ids": [good]}, headers=hm)
+            assert ok.status_code == 200, ok.text
+            assert ok.headers["content-type"] == "application/zip", ok.headers
+            cd = ok.headers["content-disposition"]
+            assert f"-1items.zip" in cd and _time.strftime("%m%d") in cd, cd
+            with zipfile.ZipFile(_io.BytesIO(ok.content)) as zf:
+                names = set(zf.namelist())
+                assert names == {"解压片A.mp4", "manifest.json"}, names
+                assert zf.read("解压片A.mp4") == payload
+                manifest = json.loads(zf.read("manifest.json"))
+            assert manifest["exported_by"] == MATERIAL_USER, manifest
+            assert len(manifest["items"]) == 1, manifest
+            item = manifest["items"][0]
+            asset_row = await _row_of(AssetItem, aid)
+            assert item["production_id"] == str(prod.id), item       # 板侧 reqID＝对账主键
+            assert item["board_tid"] == "TID-9527", item
+            assert item["hook_code"] == "8PZ12", item
+            assert item["asset_title"] == asset_row.title, item
+            assert item["recommended_title"] == "总裁摘下手表坐在塑料凳上吃泡面", item
+            assert item["qc_status"] == "passed" and item["duration"] == 11.0, item
+            assert item["thumb_url"] is None, item                  # 没抽帧就照实说没有
+            # 归属人灰字：`_user_names` 返回的键是 str(uuid)，拿 UUID 去 get 会静默 None
+            # ——这条断言专门钉那个键型（正向腿过审＋投产都是 admin 账号）
+            assert item["produced_by"] == "管理员", item
+            assert item["reviewed_by"] == "管理员", item
+            assert seen_kwargs and seen_kwargs[-1]["verify"] == "/etc/clip/self-signed-ca.pem", seen_kwargs
+            assert seen_kwargs[-1]["timeout"] == 300, seen_kwargs
+            assert presign.await_count >= 1
+
+            # ── ⑥ 单支 presign 失败：502 点名，不产出半个包 ──
+            presign.return_value = None
+            broken = await client.post("/api/assets/outputs/package", json={"ids": [good]}, headers=hm)
+            assert broken.status_code == 502, broken.text
+            assert "解压片A.mp4" in broken.json()["detail"], broken.text
+            assert not (broken.content[:2] == b"PK"), "失败不该吐半个 zip"
+
+        # ── ⑤ 反面：bundle 缺失（本地 HTTP 部署）必须退回 verify=False，且功能不变 ──
+        seen2: list = []
+        with patch("app.api.assets.get_presigned_url", AsyncMock(return_value="http://minio:9000/o/a.mp4")), \
+             patch("app.api.assets.extra_ca_bundle_path", return_value=""), \
+             patch("app.api.assets.httpx",
+                   SimpleNamespace(AsyncClient=_client_factory(seen2), HTTPError=httpx.HTTPError)):
+            plain = await client.post("/api/assets/outputs/package", json={"ids": [good]}, headers=hm)
+        assert plain.status_code == 200, plain.text
+        assert seen2[-1]["verify"] is False, seen2
+
+        # ── 下载口不是只有 admin 能用：交付口全员可达（与 11-03 可见范围口径一致）──
+        audits = await _rows(AuditLog, AuditLog.action == "asset.outputs_package")
+        # 留痕＝两次成功打包（废片那次 409、presign 失败那次 502 都不该写审计）
+        assert len(audits) == 2, f"打包是交付动作，必须留痕：{[a.after for a in audits]}"
         await client.aclose()
 
     _run(_scenario())

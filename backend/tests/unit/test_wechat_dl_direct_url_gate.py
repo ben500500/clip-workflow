@@ -36,11 +36,22 @@ import pytest_asyncio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:////tmp/_unit_url_shape_gate.db")
-os.environ.setdefault("JWT_SECRET", "u" * 64)
-os.environ.setdefault("MINIO_ACCESS_KEY", "test")
-os.environ.setdefault("MINIO_SECRET_KEY", "testtest")
-os.environ.setdefault("WECHAT_DL_ZHILING_KEY", "fake-key-for-unit-only")
+# 2026-11-11 评审（测试席 P1）：这里原来是 5 行裸 `os.environ.setdefault`，会把值**永久**
+# 留在整个 pytest 进程的 os.environ 里——后面任何模块重建 Settings 时读到的都是本文件的
+# sqlite 临时库和假密钥（谁先被收集谁定规矩，改一下收集顺序结果就变，而且没人看得见）。
+# app.config 是模块级单例（config.py:552 `settings = Settings()`），下面这几个 import 已经把
+# Settings 构造完了，所以导入完就把环境**还原**，污染面从"整个会话"收成"本模块导入期"；
+# 每条用例再由 `_unit_env` 夹具临时补回，防的是以后有人改成惰性重建 Settings。
+_UNIT_ENV = {
+    "DATABASE_URL": "sqlite+aiosqlite:////tmp/_unit_url_shape_gate.db",
+    "JWT_SECRET": "u" * 64,
+    "MINIO_ACCESS_KEY": "test",
+    "MINIO_SECRET_KEY": "testtest",
+    "WECHAT_DL_ZHILING_KEY": "fake-key-for-unit-only",
+}
+_saved_env = {k: os.environ.get(k) for k in _UNIT_ENV}
+for _k, _v in _UNIT_ENV.items():
+    os.environ.setdefault(_k, _v)
 
 from wechat_download import prompt_service as ps  # noqa: E402
 from wechat_download import provider_registry as pr  # noqa: E402
@@ -51,6 +62,19 @@ from wechat_download.url_gate import (  # noqa: E402
     direct_url_reject_reason,
     url_shape_text,
 )
+
+for _k, _prev in _saved_env.items():
+    if _prev is None:
+        os.environ.pop(_k, None)
+    else:
+        os.environ[_k] = _prev
+
+
+@pytest.fixture(autouse=True)
+def _unit_env(monkeypatch):
+    """按用例临时补回必填配置（monkeypatch 会自动还原，不在进程里留痕）。"""
+    for _k, _v in _UNIT_ENV.items():
+        monkeypatch.setenv(_k, os.environ.get(_k) or _v)
 
 # 事故里智令真实回的形状（站点根，没有任何视频路径）
 SITE_ROOT = "https://vnd2.17zhilian.cn/"
