@@ -6319,6 +6319,7 @@ async def list_summaries(
     audit_status: Optional[str] = None,
     asset_id: Optional[str] = None,
     asset_ids: Optional[str] = None,
+    ids: Optional[str] = None,
     batch_id: Optional[str] = None,
     only_risk: bool = False,
     only_inconsistent: bool = False,
@@ -6337,6 +6338,11 @@ async def list_summaries(
     11-09 加的两个入参（给「② 素材与文案 → 投去 AI 生成」用，读口径不变）：
       - `audit_status` 可传逗号多值（如 `approved,passed_edited`），单值行为照旧；
       - `asset_ids` 逗号分隔的素材 id（≤300 个），与 `asset_id` 是两套筛选、可叠加。
+
+    11-11 加的 `ids`：逗号分隔的**文案 id**（≤300 条），给开单屏「取最新稿子」用——
+    那一屏手里点的就是这几条文案，要问的是"它们此刻库里是什么稿子"（正文/豆包提示词/原型
+    都可能刚在别的屏被重出或改过），所以这一口**不因审核态而消失**：撤审、作废的照样回，
+    让界面能说清"这条已经不在了"而不是静默少一行。
 
     `recommended_only`：只出推荐条。方案 §七「默认只过推荐条」防橡皮章——前端默认勾它，
     后端提供口径（B 组：原先只有列、没有参数）。
@@ -6384,6 +6390,20 @@ async def list_summaries(
                 detail=f"asset_ids 一次最多 300 个（当前 {len(wanted_assets)} 个）；按整批取请改用 batch_id",
             )
         conds.append(AssetSummary.asset_id.in_([uuid.UUID(x) for x in wanted_assets]))
+    # 11-11 新增：按**文案自己的 id**点名取（开单屏「取最新稿子」用）。口径抄 GET /assets/productions
+    # 的 `ids`：逗号拼接的单个字符串、上限 300、非法值当场 400 说是哪一颗。
+    # 关键是**不带 audit_status 也照出**——这一口要回答的是「我手里这几条现在库里长什么样」，
+    # 包括刚被撤审/作废的那些（界面要靠这个 difference 说清哪几条已经不在过审区了）。
+    # 与 `asset_ids` 是两套筛选、可叠加（和素材维那个参数一样，别互相覆盖）。
+    if ids:
+        wanted = _split_ids(ids, "ids")
+        if not wanted:
+            raise HTTPException(status_code=400, detail="ids 是逗号拼接的文案 id，不能是空的")
+        if len(wanted) > 300:
+            raise HTTPException(
+                status_code=400, detail=f"ids 一次最多点 300 条（当前 {len(wanted)} 条），请分批"
+            )
+        conds.append(AssetSummary.id.in_([uuid.UUID(x) for x in wanted]))
     if batch_id:
         conds.append(AssetItem.batch_id == _as_uuid(batch_id, "batch_id"))
     if only_risk:

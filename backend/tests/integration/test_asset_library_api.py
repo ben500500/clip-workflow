@@ -2044,6 +2044,89 @@ def test_summaries_list_supports_asset_ids_and_multi_status():
     _run(_scenario())
 
 
+def test_summaries_list_ids_returns_these_rows_whatever_their_state_is():
+    """11-11 为开单屏「取最新稿子」加的 `ids`：点名的这几条，库里现在长什么样就回什么。
+
+    这一口存在的理由不是"能过滤"，而是开单那一屏手里拿的是**进弹窗那一刻的快照**，
+    文案可能刚在别的屏被重出/改过/撤审。所以两条硬判据：
+      ① **不因审核态消失**——pending 的照样回（撤审那条要是查不到，界面只能报「少了一行」，
+         说不出「这条已经不没过审了」，人就会以为是接口抽风）；
+      ② **回的是当前值**——改后通过的正文必须变成 new_text（拿旧正文重认换皮参数＝换错词）。
+    与 `audit_status` 叠加时仍以状态为准（不越权把已筛掉的塞回来）。
+    未知但形状合法的 id 只当查不到（total 里没它），不 400——前端靠这个差集点名「哪几条没了」。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+
+        id_a, _ = await _make_ready_asset(client, hm, DOUYIN_2)
+        id_b, _ = await _make_ready_asset(client, hm, DOUYIN_3)
+        id_c, _ = await _make_ready_asset(client, hm, DOUYIN_1)
+        items_a, _ = await _gen_and_list(id_a, hm, client)
+        items_b, _ = await _gen_and_list(id_b, hm, client)
+        items_c, _ = await _gen_and_list(id_c, hm, client)
+
+        sid_ok = _approvable(items_a)["id"]
+        approved = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [sid_ok], "action": "approve"}, headers=ho)
+        assert approved.status_code == 200 and approved.json()["results"][0]["ok"] is True, approved.text
+
+        b_good = _approvable(items_b)
+        new_text = f"{b_good['text']}，这方案百分百能成"
+        edited = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [b_good["id"]], "action": "pass_edited", "new_text": new_text},
+            headers=ho)
+        assert edited.status_code == 200 and edited.json()["results"][0]["ok"] is True, edited.text
+
+        # pending 的那条（素材 C 名下随便一条，没过审）——ids 口必须照样回它
+        sid_pending = items_c[0]["id"]
+
+        # ① 三种审核态一起点：一条不吞
+        got = await client.get(
+            f"/api/assets/summaries?ids={sid_ok},{b_good['id']},{sid_pending}", headers=ho)
+        assert got.status_code == 200, got.text
+        body = got.json()
+        assert body["total"] == 3, body
+        assert {i["id"] for i in body["items"]} == {sid_ok, b_good["id"], sid_pending}
+        assert {i["audit_status"] for i in body["items"]} == {"approved", "passed_edited", "pending"}
+
+        # ② 回的是**当前**正文：改后通过的那条必须已经是改后的字
+        row_b = [i for i in body["items"] if i["id"] == b_good["id"]][0]
+        assert row_b["text"] == new_text, row_b
+        assert "prompt_preview" in row_b and "category_name" in row_b, sorted(row_b)
+
+        # ③ 与 audit_status 叠加：状态仍然是硬筛，ids 不越权把 pending 塞回来
+        only_ap = await client.get(
+            f"/api/assets/summaries?ids={sid_ok},{b_good['id']},{sid_pending}"
+            "&audit_status=approved,passed_edited", headers=ho)
+        assert only_ap.json()["total"] == 2, only_ap.text
+
+        # ④ 逗号里带空段/重复：去空去重后照查（抄 asset_ids 的宽容口径）
+        sloppy = await client.get(
+            f"/api/assets/summaries?ids={sid_ok},,{sid_ok},{b_good['id']}", headers=ho)
+        assert sloppy.status_code == 200 and sloppy.json()["total"] == 2, sloppy.text
+
+        # ⑤ 形状合法但库里没有＝查不到，不报错（前端就靠这个差集说「这几条已经不在了」）
+        ghost = await client.get(f"/api/assets/summaries?ids={uuid.uuid4()}", headers=ho)
+        assert ghost.status_code == 200 and ghost.json()["total"] == 0, ghost.text
+
+        # ⑥ 脏入参当场 400 点名：不是 id、只写了逗号、一次塞太多
+        bad = await client.get("/api/assets/summaries?ids=abc123", headers=ho)
+        assert bad.status_code == 400 and "ids" in bad.json()["detail"], bad.text
+        empty = await client.get("/api/assets/summaries?ids=,,", headers=ho)
+        assert empty.status_code == 400 and "不能是空的" in empty.json()["detail"], empty.text
+        too_many = ",".join(str(uuid.uuid4()) for _ in range(301))
+        over = await client.get(f"/api/assets/summaries?ids={too_many}", headers=ho)
+        assert over.status_code == 400 and "300" in over.json()["detail"], over.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_self_produce_gate_is_open_by_default_and_blocks_only_when_closed():
     """11-09 用户口径：自审自投**默认放开**（ASSET_SELF_PRODUCE_ALLOWED=true）。
 
