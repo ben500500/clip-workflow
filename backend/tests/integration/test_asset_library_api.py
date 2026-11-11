@@ -10345,10 +10345,12 @@ def test_prompt_elements_guess_values_api():
         }, audits[0].after
 
         # 模型挂了：502 原样传出去，且**不补一条审计**（没花钱的事不能留痕）
+        # 必须带 `use_cache=false`：11-11 之后「问过但稿子里没有」也记进缓存，
+        # 走到缓存全命中时这一枪根本不会发出去，502 也就无从谈起。
         with patch("app.api.assets._call_autoclip", _fake_autoclip(slots_error="提炼服务没回话")):
             r = await client.post(
                 "/api/assets/prompt-elements/guess-values",
-                json={"texts": {"p1": GUESS_TEXT_10S}}, headers=hm,
+                json={"texts": {"p1": GUESS_TEXT_10S}, "use_cache": False}, headers=hm,
             )
         assert r.status_code == 502 and "提炼服务没回话" in r.text, r.text
         assert len(await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.guess_values")) == 1
@@ -10565,8 +10567,175 @@ def test_prompt_elements_auto_guess_once_per_row_api():
         assert seventh["values"] == {}, seventh["values"]
         assert any("不动的那两行" in d or "找不到" in d for d in seventh["dropped"]), \
             seventh["dropped"]
-        # 旧行被删掉了（过不了当前判据的缓存留着只会一次次端上同一个坏值）
-        assert await _count(AssetElementGuess) == 0, await _rows(AssetElementGuess)
+        # 坏值不许再留着端上来：这一格这一枪重问还是没过判据，行里的值必须已经变空
+        # （11-11 之前这里断的是「整篇一行都不剩」，那时没结果就不写；现在「问过、没有」
+        #  本身是要记的答案，所以判据换成「坏值不在了」。）
+        h_p1 = pesvc.body_fingerprint(GUESS_TEXT_10S)
+        rows_p1 = await _rows(AssetElementGuess, AssetElementGuess.body_hash == h_p1)
+        assert all(str(r.value or "") != "别开门，外头人不对" for r in rows_p1), rows_p1
+        assert any(r.slot_key == "speech" and not str(r.value or "") for r in rows_p1), \
+            f"重问过还是空，却没记下「这一格稿子里没有」：{rows_p1}"
+
+        assert await _count(AssetProduction) == 0 and await _count(AssetSummary) == 0
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_prompt_elements_guess_negative_answer_cached_api():
+    """11-11 现网第一枪抓出来的真 bug：**没抄到的那一格也要记下来**，否则同一格反复花钱。
+
+    批 Z 对用户承诺「同一篇稿子同一格最多花一次钱」。缓存当时只写模型**抄到**的值，
+    于是稿子里确实没写的那一格（以及模型编的、被逐字校验丢掉的那一格）每次打开开单屏
+    都会重新问一遍模型、每次都重新付一次，而且永远问不出结果。现网实测：第二次请求
+    `paid` 仍是 true，`asset.prompt_elements.guess_values` 审计从 1 条涨到 3 条。
+
+    钉五件事：
+    1. 问过但没结果的格子存**空串**（=「稿子里没有」这个答案本身），第二次一个字都不问；
+    2. 空串行**不算坏值**，不因字典重判被清掉，也不端进 `values` 骗人说认出来了；
+    3. 人工「再问一次模型」（`use_cache=false`）照样能重问，问出来的新值覆盖空串；
+    4. 模型那一路**炸了**（`res` 空）＝没问到，不是没有——不许记成空串，下次照旧重问；
+    5. **字典一改，那条「没有」就作废重问**（旧字典答不了新题；真值那一头的陈旧保护
+       走 `accept_guessed_values` 逐字复验，不看时间戳）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.models.asset import AssetElementGuess
+        from app.services import asset_prompt_elements as pesvc
+
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        G = "/api/assets/prompt-elements/guess-values"
+
+        # 两格都是 manual：词表一律认不出，这一枪必然把两格都端给模型
+        r = await client.put(
+            "/api/assets/prompt-elements",
+            headers=h["admin"],
+            json={"inherit": False, "slots": [
+                {"key": "speech", "label": "动物说的话", "mode": "manual"},
+                {"key": "wealth", "label": "发现的财富", "mode": "manual"},
+            ]},
+        )
+        assert r.status_code == 200, r.text
+        h1 = pesvc.body_fingerprint(GUESS_TEXT_10S)
+
+        async def _row(slot_key: str, body_hash: str = h1):
+            rows = await _rows(
+                AssetElementGuess,
+                AssetElementGuess.body_hash == body_hash,
+                AssetElementGuess.slot_key == slot_key,
+            )
+            return rows[0] if rows else None
+
+        # ── ① 第一枪：speech 抄到（逐字在稿里），wealth 模型编的 → 被丢 ──────
+        called: List[int] = []
+
+        def _counting(items, err=None):
+            async def _proxy(path, payload, timeout=180.0):
+                called.append(1)
+                return await _fake_autoclip(slots_items=items, slots_error=err)(path, payload, timeout)
+            return _proxy
+
+        first_items = [
+            {"id": "p1", "key": "speech", "value": "别开门，外头人不对"},
+            {"id": "p1", "key": "wealth", "value": "一箱金条"},   # 稿子里没有＝模型编的
+        ]
+        with patch("app.api.assets._call_autoclip", _counting(first_items)):
+            r = await client.post(G, json={"texts": {"p1": GUESS_TEXT_10S}, "auto": True},
+                                  headers=hm)
+        assert r.status_code == 200, r.text
+        first = r.json()
+        assert len(called) == 1 and first["paid"] is True, first
+        assert first["values"] == {"p1": {"speech": "别开门，外头人不对"}}, first["values"]
+        assert any("在这篇稿子里找不到" in d for d in first["dropped"]), first["dropped"]
+        row_s = await _row("speech")
+        assert row_s is not None and row_s.value == "别开门，外头人不对", row_s
+        row_w = await _row("wealth")
+        assert row_w is not None and row_w.value == "", \
+            "问过、没结果的那格没记下来＝下次进来还会再花一次钱问同一个空"
+
+        # ── ② 第二枪（同一个请求）：一次模型都不打、不花钱、值照旧 ───────────
+        n = len(called)
+        with patch("app.api.assets._call_autoclip", _counting(first_items)):
+            r = await client.post(G, json={"texts": {"p1": GUESS_TEXT_10S}, "auto": True},
+                                  headers=hm)
+        assert r.status_code == 200, r.text
+        second = r.json()
+        assert len(called) == n, "同一篇同一格第二次还打模型＝这个 bug 没修掉"
+        assert second["paid"] is False, second
+        assert second["values"] == first["values"], second
+        assert second["from_cache"] == {"p1": ["speech"]} and second["from_model"] == {}
+        assert any("上一次问过" in x for x in second["notes"]), \
+            f"没告诉用户那一格是「问过、稿子里没有」：{second['notes']}"
+        assert await _count(AssetElementGuess) == 2, await _rows(AssetElementGuess)
+        audits = await _rows(AuditLog, AuditLog.action == "asset.prompt_elements.guess_values")
+        assert len(audits) == 1, f"没花钱的一枪不许留痕：{len(audits)} 条"
+
+        # ── ③ 人工「再问一次模型」：能重问，问出来的值覆盖空串 ────────────────
+        n = len(called)
+        with patch("app.api.assets._call_autoclip", _counting([
+            {"id": "p1", "key": "speech", "value": "别开门，外头人不对"},
+            {"id": "p1", "key": "wealth", "value": "布包"},   # 「门槛上放着个布包」里有
+        ])):
+            r = await client.post(
+                G, json={"texts": {"p1": GUESS_TEXT_10S}, "use_cache": False}, headers=hm,
+            )
+        assert r.status_code == 200, r.text
+        assert len(called) == n + 1
+        assert r.json()["values"]["p1"]["wealth"] == "布包", r.json()["values"]
+        assert (await _row("wealth")).value == "布包", "重问出来的值没覆盖那条空串"
+        assert await _count(AssetElementGuess) == 2, "同键要覆盖，不许长出一行重复的"
+
+        # ── ④ 模型炸了＝没问到，不许记成「稿子里没有」────────────────────────
+        # 缓存键是正文指纹，所以这一枪必须用一篇**没进过缓存**的稿子
+        other = GUESS_TEXT_10S + "\n【另一篇】院墙外头又传来两声狗叫。"
+        h2 = pesvc.body_fingerprint(other)
+        before = await _count(AssetElementGuess)
+        n = len(called)
+        with patch("app.api.assets._call_autoclip", _counting([], err="提炼服务没回话")):
+            r = await client.post(G, json={"texts": {"p7": other}, "auto": True}, headers=hm)
+        assert r.status_code == 200, r.text
+        assert len(called) == n + 1 and r.json()["paid"] is False, r.json()
+        assert await _count(AssetElementGuess) == before, \
+            "一次网络抖动就把这一格永久记成「没有」＝以后再也不问了"
+
+        # 下一枪照旧重问（不是被空串拦住的 0 元）
+        n = len(called)
+        with patch("app.api.assets._call_autoclip", _counting([
+            {"id": "p7", "key": "speech", "value": "别开门，外头人不对"},
+        ])):
+            r = await client.post(G, json={"texts": {"p7": other}, "auto": True}, headers=hm)
+        assert r.status_code == 200, r.text
+        assert len(called) == n + 1 and r.json()["paid"] is True, r.json()
+        assert (await _row("speech", h2)).value == "别开门，外头人不对"
+
+        # ── ⑤ 字典又改过一次 → 「没有」这条作废重问（不拿旧字典的答案糊弄新题）────
+        r = await client.put(
+            "/api/assets/prompt-elements",
+            headers=h["admin"],
+            json={"inherit": False, "slots": [
+                {"key": "speech", "label": "动物说的话", "mode": "manual"},
+                {"key": "wealth", "label": "发现的财富", "pool": ["布包"]},
+            ]},
+        )
+        assert r.status_code == 200, r.text
+        n = len(called)
+        # 这一腿必须点名**还存着负样本**的那篇（p7／h2）：p1 那两格在第 ③ 腿里已经被
+        # 真值覆盖了，拿它来验「作废重问」会验到一个空集——改完字典它照样 0 元，
+        # 那不是缓存没作废，是这一篇已经没有空格了。
+        with patch("app.api.assets._call_autoclip", _counting(
+            [{"id": "p7", "key": "wealth", "value": "布包"}]
+        )):
+            r = await client.post(G, json={"texts": {"p7": other}, "auto": True}, headers=hm)
+        assert r.status_code == 200, r.text
+        assert len(called) == n + 1, (
+            "改了词表还拿改之前那句「稿子里没有」挡着＝这一格永远问不出来了："
+            f"{r.json()}"
+        )
+        assert r.json()["paid"] is True, r.json()
+        rows_h2 = await _rows(AssetElementGuess, AssetElementGuess.body_hash == h2)
+        assert (await _row("wealth", h2)).value == "布包", rows_h2
 
         assert await _count(AssetProduction) == 0 and await _count(AssetSummary) == 0
         await client.aclose()

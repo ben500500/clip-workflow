@@ -6071,17 +6071,25 @@ async def _guess_cache_read(
     texts: Dict[str, str],
     missing: Dict[str, List[str]],
     slots: List[Dict[str, Any]],
-) -> Tuple[Dict[str, Dict[str, str]], Dict[str, List[str]], List[str]]:
+    catalog_stamp: Optional[datetime] = None,
+) -> Tuple[Dict[str, Dict[str, str]], Dict[str, List[str]], List[str], List[str]]:
     """查缓存：把这份稿子上一次抄回来、且**按现在的字典仍然过得了校验**的原值取回来。
 
-    返回 `({行 id: {槽位 key: 原值}}, {还缺的}, {白话说明})`。
+    返回 `({行 id: {槽位 key: 原值}}, {还缺的}, {白话说明：哪些旧值作废了}, {白话说明：状态})`。
+    后两栏分开是因为前端把第三栏当「这格被丢了」渲染，第四栏只是解释「为什么这格还是空的」。
 
     ⚠️ 取回来不等于能用：逐字在不在稿子里、有没有落进保护行、长度上限，全部拿**当前生效
     的字典**重算一遍（`accept_guessed_values`）。过不了就把那行缓存删掉——它代表的是旧字典
     的判定，留着只会一次次把同一个坏值端上来，删了下次自动重新问、重新判。
+
+    ⚠️ 例外是**空串**：那是"上一次确实问过这一格、稿子里没有"这个答案本身，不是坏值。
+    空串行不再重判、也不进 `values`（要重问有「再问一次模型」那条 `use_cache=false` 的路）。
+    11-11 现网第一枪就是没记这一条，同一篇稿子的同一格连着两次花钱问出同一个空结果。
+    但空串**只在这道题没变时算答案**：`catalog_stamp`（元素字典最后一次改动）晚于这一行的
+    `created_at` 就作废重问——改了词表却还拿旧字典的"没有"糊弄人，比多问一次贵得多。
     """
     if not missing:
-        return {}, dict(missing), []
+        return {}, dict(missing), [], []
     hashes = {rid: pesvc.body_fingerprint(texts.get(rid)) for rid in missing}
     rows = (
         await db.execute(
@@ -6090,35 +6098,59 @@ async def _guess_cache_read(
             )
         )
     ).scalars().all()
-    by_hash: Dict[str, Dict[str, str]] = {}
+    by_hash_raw: Dict[str, Dict[str, Tuple[Any, Any]]] = {}
     for row in rows:
-        by_hash.setdefault(row.body_hash, {})[row.slot_key] = row.value
+        by_hash_raw.setdefault(row.body_hash, {})[row.slot_key] = (row.value, row.created_at)
     by_key_slot = {str(s["key"]): s for s in slots}
     cached: Dict[str, Dict[str, str]] = {}
     still: Dict[str, List[str]] = {}
     notes: List[str] = []
+    info: List[str] = []
     purge: List[Tuple[str, str]] = []
+    empty_cells = 0
     for rid, keys in missing.items():
-        got = by_hash.get(hashes[rid], {})
+        # 空串行只有在「问它的那道题没变」时才算答案：元素字典（可替换元素库）在上次问过
+        # 以后又改过，这一格就可能问得出来了——宁可多问一次，也不许拿旧字典的「没有」骗人。
+        # 判据用配置行的 `updated_at` 对缓存行的 `created_at`（整本字典一个戳，粗一点，
+        # 但方向是安全的：改字典只会导致重问，不会导致漏问）。
+        got: Dict[str, str] = {}
+        for slot_key, (value, created_at) in by_hash_raw.get(hashes[rid], {}).items():
+            expired = (
+                catalog_stamp is not None
+                and not str(value or "").strip()
+                and (created_at is None or created_at < catalog_stamp)
+            )
+            if expired:
+                purge.append((hashes[rid], slot_key))
+            else:
+                got[slot_key] = value
         hit = [k for k in keys if k in got]
         rest = [k for k in keys if k not in got]
-        if not hit:
+        known_empty = [k for k in hit if not str(got[k] or "").strip()]
+        askable = [k for k in hit if k not in known_empty]
+        empty_cells += len(known_empty)
+        if not askable:
             if rest:
                 still[rid] = rest
             continue
-        sub = [by_key_slot[k] for k in hit if k in by_key_slot]
+        sub = [by_key_slot[k] for k in askable if k in by_key_slot]
         picked = pesvc.accept_guessed_values(
-            str(texts.get(rid) or ""), sub, [{"key": k, "value": got[k]} for k in hit]
+            str(texts.get(rid) or ""), sub, [{"key": k, "value": got[k]} for k in askable]
         )
         if picked["values"]:
             cached.setdefault(rid, {}).update(picked["values"])
-        stale = [k for k in hit if k not in picked["values"]]
+        stale = [k for k in askable if k not in picked["values"]]
         purge.extend((hashes[rid], k) for k in stale)
         for item in picked["dropped"]:
             notes.append(f"上一次抄回的「{rid[:8]}」这条现在不能用了：{item}")
-        still_keys = [k for k in keys if k not in picked["values"]]
+        still_keys = [k for k in keys if k not in picked["values"] and k not in known_empty]
         if still_keys:
             still[rid] = still_keys
+    if empty_cells:
+        info.append(
+            f"有 {empty_cells} 格上一次问过、稿子里确实没有（这一条已经记下来了，"
+            "0 元，不再重复花钱问）；换了写法要重新问，点「再问一次模型」"
+        )
     if purge:
         for body_hash, slot_key in purge:
             await db.execute(
@@ -6128,7 +6160,7 @@ async def _guess_cache_read(
                 )
             )
         await db.commit()
-    return cached, still, notes
+    return cached, still, notes, info
 
 
 async def _guess_cache_write(
@@ -6212,6 +6244,15 @@ async def guess_prompt_element_values(
                 "分批点，或先把「模板脚本提示词」里用不上的段落删短",
             )
     catalog = await _prompt_element_catalog(db)
+    # 字典最后一次改动的时间戳——只用来判「问过、稿子里没有」那条空串还算不算数
+    # （理由见 `_guess_cache_read`）。没有覆盖行＝用出厂默认表，那时缓存只可能更早；
+    # 传 None 表示「无从判旧」，空串照旧算答案。
+    _cfg = (
+        await db.execute(
+            select(SystemConfig).where(SystemConfig.key == pesvc.PROMPT_ELEMENTS_CONFIG_KEY)
+        )
+    ).scalar_one_or_none()
+    catalog_stamp = _cfg.updated_at if _cfg is not None else None
     slots = pesvc.slots_for_guess(catalog, data.category)
     if not slots:
         if data.auto:
@@ -6266,11 +6307,14 @@ async def guess_prompt_element_values(
     from_model: Dict[str, List[str]] = {}
 
     if data.use_cache:
-        cached, still, cache_notes = await _guess_cache_read(db, data.texts, missing, slots)
+        cached, still, cache_notes, cache_info = await _guess_cache_read(
+            db, data.texts, missing, slots, catalog_stamp
+        )
         for rid, vals in cached.items():
             values.setdefault(rid, {}).update(vals)
             from_cache[rid] = sorted(vals)
         dropped.extend(cache_notes)
+        notes.extend(cache_info)
     else:
         still = dict(missing)
 
@@ -6365,9 +6409,18 @@ async def guess_prompt_element_values(
                     if got:
                         values.setdefault(rid, {}).update(got)
                         from_model[rid] = sorted(got)
-                        to_cache[rid] = (pesvc.body_fingerprint(data.texts.get(rid)), got)
                     else:
                         silent.append(rid)
+                    # 11-11 现网第一枪抓出来的真 bug：只存"抄到的"，**没抄到的那格下次进来
+                    # 还会再问一遍模型**——而它下一次照样抄不到（稿子里确实没写／模型编的），
+                    # 于是这一格可以永远重复花钱，把"每篇每格最多付一次"这条承诺打穿了。
+                    # 现在把问过的每一格都落一条：抄到的存原文，没抄到的存空串（=已知答案）。
+                    # ⚠️ 只在模型**确实回了东西**（`res` 非空）时这么记：autoclip 挂了／超时
+                    # 那一支 `res={}`，那是"没问到"不是"没有"，必须留着下次重问。
+                    to_cache[rid] = (
+                        pesvc.body_fingerprint(data.texts.get(rid)),
+                        {**{k: "" for k in want}, **got},
+                    )
                 if silent:
                     notes.append(
                         f"有 {len(silent)} 篇一格都没提炼到（多半是稿子里确实没写这一型要的那些东西）"
