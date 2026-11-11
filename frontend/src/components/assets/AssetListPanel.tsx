@@ -15,7 +15,6 @@ import type {
   AssetItem, AssetAnalyzeResponse, AssetCostEstimateResponse, AssetMediaKind, AssetResolveResponse,
   AssetSummary,
 } from '../../api/assets';
-import { parseServerTime } from '../../utils/format';
 import {
   AssetStatusTag, LandscapeTag, MediaKindTag, StageTags,
   aspectShortText, durationText, isImageAsset, yuan,
@@ -981,16 +980,6 @@ const AssetListPanel: React.FC<Props> = ({
       render: (v?: number) => v ?? 0,
     },
     {
-      title: '成本',
-      key: 'cost',
-      width: 110,
-      render: (_, row) => (
-        <Tooltip title={`反推文案 ${yuan(row.cost_prompt)}｜查时长 ${yuan(row.cost_parse)}`}>
-          <Text>{yuan((row.cost_prompt || 0) + (row.cost_parse || 0))}</Text>
-        </Tooltip>
-      ),
-    },
-    {
       // A′：阶段是全站口径（本素材所有生产单合并计算）——个人结果看生产单/成片墙
       title: (
         <Tooltip title="阶段为全站口径：按本素材所有生产单合并计算，不分人；个人出片结果看「生产单与投板」「成片素材墙」的「我的」视图">
@@ -1002,13 +991,20 @@ const AssetListPanel: React.FC<Props> = ({
       render: (v: AssetItem['status']) => <AssetStatusTag status={v} />,
     },
     {
-      title: '导入',
-      dataIndex: 'created_at',
-      width: 120,
-      render: (v: string | null) => (
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          {parseServerTime(v)?.format('MM-DD HH:mm') || '-'}
-        </Text>
+      // 2026-11-11 R3（素材席 P0「13 列挤压」）：成本与导入时间不再独占列——
+      // 1280 宽下状态/操作列被挤出视口。成本进「状态」列的悬停（明细本就在批次台账），
+      // 导入时间进「编号」列悬停（详情抽屉里有全量时间线）。
+      title: (
+        <Tooltip title="悬停看本条成本；阶段为全站口径（按所有生产单合并），个人结果看生产单/成片墙">
+          <span>状态·本条花费 ⓘ</span>
+        </Tooltip>
+      ),
+      dataIndex: 'status',
+      width: 128,
+      render: (v: AssetItem['status'], row) => (
+        <Tooltip title={`反推文案 ${yuan(row.cost_prompt)}｜查时长 ${yuan(row.cost_parse)}｜导入 ${(row.created_at || '').replace('T', ' ').slice(0, 16)}`}>
+          <span><AssetStatusTag status={v} /></span>
+        </Tooltip>
       ),
     },
     {

@@ -87,6 +87,20 @@ const AssetLibrary: React.FC = () => {
   // 2026-11-11 评审（管理员席 P0）：跨人投产/取号/审核的审计一直只写不读——
   // 管理员在界面上找不到入口。给 admin 一颗「审计」按钮＋抽屉表（动作发生地就在这页）。
   const [auditOpen, setAuditOpen] = useState(false);
+  // 2026-11-11 评审（素材席 R2 P1）：批次筛选 chip 原来只露 UUID——和回执/下拉的
+  // 「AB 码·名称」对不上。这里拉一次批次表把 chip 换成人话；失败就退回短码。
+  const [batchNames, setBatchNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    import('../api/assets').then(({ assetApi }) =>
+      assetApi.listBatches({ limit: 100 }).then((res) => {
+        const m: Record<string, string> = {};
+        (res.items || []).forEach((b) => {
+          m[b.id] = `${b.code} · ${b.name || '未命名'}`;
+        });
+        setBatchNames(m);
+      }).catch(() => undefined),
+    );
+  }, [reloadToken]);
   const [auditRows, setAuditRows] = useState<Record<string, unknown>[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const openAuditDrawer = async () => {
@@ -430,7 +444,7 @@ const AssetLibrary: React.FC = () => {
           {roleHint}
           {batchId && (
             <Tag closable onClose={() => setBatchId(undefined)} color="geekblue">
-              批次：{batchId.slice(0, 8)}
+              批次：{batchNames[batchId] || batchId.slice(0, 8)}
             </Tag>
           )}
           <Button size="small" icon={<ApartmentOutlined />} onClick={() => setCatOpen(true)}>
