@@ -170,11 +170,16 @@ bash scripts/backup_server.sh
 BACKUP_DIR=/data/backup KEEP_DAYS=30 bash scripts/backup_server.sh
 ```
 
-挂 cron（每日 03:40，错开整点高峰）：
+**已挂 cron（2026-11-11 起生效，别再重复装）**——每日 03:25 落在 `logs/backup.log`：
 
 ```cron
-40 3 * * * cd /home/cc12703/clip-workflow && bash scripts/backup_server.sh >> logs/backup.log 2>&1
+25 3 * * * cd /home/cc12703/clip-workflow && PATH=/snap/bin:/usr/local/bin:/usr/bin:/bin /usr/bin/bash scripts/backup_server.sh >> logs/backup.log 2>&1
 ```
+
+两个必须照抄的细节，改回去备份就会静默失效：不写 03:40（那一分钟已被同机
+`revenue_keepalive` 占用）；`PATH` 要显式带 `/snap/bin` —— 163 的 docker 是 snap 装的，
+而 cron 继承的 PATH 里没有它，缺了就是「每天定点跑、每天 command not found」，
+失败只写日志，没人看等于没有。核对与卸载口径见 `scripts/backup_server.sh` 头部注释。
 
 ⚠️ 本脚本只管**数据库＋部署变量**。MinIO 媒体卷（raw-footage/sliced/previews 等桶）
 与 media 卷体积大、再生成本各不相同，不在本脚本范围——按卷快照另行处理

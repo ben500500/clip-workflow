@@ -19,6 +19,55 @@ _client: Optional[Minio] = None
 _external_client: Optional[Minio] = None
 
 
+def extra_ca_bundle_path() -> Optional[str]:
+    """自签证书拼进 certifi 根库后的 CA bundle 路径（没有就返回 None）。
+
+    2026-11-11 评审后从 `_http_client_with_extra_ca` 拆出来共用：minio-py 用它喂
+    urllib3，交付包打包（assets.py）用它喂 httpx 的 verify——两处用同一份信任链，
+    不再出现「SDK 强校验、打包 verify=False」的双标。
+    """
+    extra = (os.environ.get("REQUESTS_CA_BUNDLE") or "").strip()
+    if not extra or not os.path.exists(extra):
+        return None
+    try:
+        import certifi
+
+        bundle = "/tmp/clip-ca-bundle.pem"
+        if not os.path.exists(bundle):
+            with open(bundle, "wb") as out:
+                with open(certifi.where(), "rb") as base:
+                    out.write(base.read())
+                out.write(b"\n")
+                with open(extra, "rb") as add:
+                    out.write(add.read())
+        return bundle
+    except Exception:  # noqa: BLE001 —— 信任链补不上时退回默认（失败会如实报错，不静默）
+        logger.warning("自签证书拼 CA bundle 失败，退回默认信任库", exc_info=True)
+        return None
+
+
+def _http_client_with_extra_ca():
+    """HTTPS 连 MinIO 时信任**自签证书**的 urllib3 客户端（2026-11-09 HTTPS 改造）。
+
+    minio-py 内部用 urllib3 + certifi 自带根库，**不认** REQUESTS_CA_BUNDLE；
+    内网自签证书（certs/clip.crt）必须拼进 CA bundle 后显式传 http_client，
+    否则 presign 前的 bucket-region 探测直接 CERTIFICATE_VERIFY_FAILED。
+
+    额外证书路径取 REQUESTS_CA_BUNDLE（compose 里指向 /app/certs/clip.crt）；
+    没配/文件不存在＝返回 None（走 SDK 默认行为，保持原有部署零变化）。
+    """
+    bundle = extra_ca_bundle_path()
+    if not bundle:
+        return None
+    try:
+        import urllib3
+
+        return urllib3.PoolManager(cert_reqs="CERT_REQUIRED", ca_certs=bundle)
+    except Exception:  # noqa: BLE001
+        logger.warning("urllib3 客户端构造失败，退回 SDK 默认信任库", exc_info=True)
+        return None
+
+
 def _parse_endpoint(endpoint: str) -> tuple[str, bool]:
     """解析 endpoint 为 (host:port, secure)。"""
     secure = settings.MINIO_USE_SSL
@@ -68,6 +117,8 @@ def get_external_minio_client() -> Optional[Minio]:
         access_key=settings.MINIO_ACCESS_KEY,
         secret_key=settings.MINIO_SECRET_KEY,
         secure=secure,
+        # HTTPS 自签：必须显式带信任该证书的 http_client（见上方工厂说明）
+        http_client=_http_client_with_extra_ca() if secure else None,
     )
     return _external_client
 

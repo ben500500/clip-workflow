@@ -1,5 +1,6 @@
 import React from 'react';
-import { Tag, Tooltip, Typography } from 'antd';
+import { Popover, Tag, Tooltip, Typography } from 'antd';
+import { QuestionCircleOutlined } from '@ant-design/icons';
 import {
   ASSET_STAGE_LABELS,
   ASSET_STATUS_LABELS,
@@ -7,7 +8,10 @@ import {
   PRODUCTION_STATE_LABELS,
   STAGE_FIELDS,
 } from '../../api/assets';
-import type { AssetBudgetGate, AssetBudgetGateInfo, AssetImageAspect, AssetItem, AssetMediaKind, AssetStage, AssetStatus, AuditStatus, ProductionState } from '../../api/assets';
+import type {
+  AssetPromptElementMark,
+  AssetBudgetGate, AssetBudgetGateInfo, AssetImageAspect, AssetItem, AssetMediaKind, AssetStage, AssetStatus, AuditStatus, ProductionState,
+} from '../../api/assets';
 
 const { Text } = Typography;
 
@@ -69,6 +73,8 @@ const ASSET_STATUS_COLOR: Record<AssetStatus, string> = {
   importing: 'processing',
   waiting_prompt: 'default',
   analyzing: 'processing',
+  /** 等出文案＝没人提交，给「灰」而不是「蓝（在跑）」，与等读视频同一档 */
+  waiting_summary: 'default',
   summarizing: 'processing',
   awaiting_review: 'orange',
   ready_to_produce: 'green',
@@ -129,6 +135,31 @@ export const MediaKindTag: React.FC<{ asset: AssetItem }> = ({ asset }) =>
     <Tag>视频</Tag>
   );
 
+/**
+ * 11-09 用户拍板：横屏原片**全部收进来、界面上要标横屏**，而且「豆包生产的时候
+ * 可能也需要进行这种横屏素材的」——所以这个徽标不只出现在素材列表，投产口那侧也要看得见。
+ * 判据只读后端算好的 `aspect.orientation`（口径在 `_card_ratio_fields` 一处），前端不量尺寸；
+ * 竖屏与量不到都不打标（满屏红标会把「横屏」这件事稀释成噪音）。
+ */
+export const LandscapeTag: React.FC<{
+  aspect?: AssetImageAspect | null;
+  /** 措辞：原片/成片用「横屏」，角色卡沿用「横版」（跟 aspectShortText 的口径一致） */
+  label?: string;
+}> = ({ aspect, label = '横屏' }) =>
+  aspect?.orientation === 'landscape' ? (
+    <Tooltip
+      title={
+        `量出来宽>高（${aspect.ratio || '比例未知'}${aspect.width && aspect.height ? ` · ${aspect.width}×${aspect.height}` : ''}）。` +
+        '成片画幅实际由**角色卡**宽高比决定，提示词写 9:16 压不住一张横版卡；' +
+        '这条素材要不要按横屏投产，挑卡/投产那一屏还能再核一次。'
+      }
+    >
+      <Tag color="orange" style={{ fontSize: 11, marginInlineEnd: 0 }}>
+        {label}
+      </Tag>
+    </Tooltip>
+  ) : null;
+
 const AUDIT_COLOR: Record<AuditStatus, string> = {
   pending: 'orange',
   approved: 'green',
@@ -181,6 +212,34 @@ export const MonoText: React.FC<{ children: React.ReactNode }> = ({ children }) 
   </Text>
 );
 
+/**
+ * 11-10 用户口径「说明文字太长篇大论了，把它们全部缩起来放在浮窗里面显示，不然整个界面看起来很乱」：
+ * 静态解释一律收进这枚「？」浮窗（`text` 传那段话），标题旁一个点，指上去才展开。
+ * `children` 是点后面**仍然显示**的短标签（比如「（这份只投一次）」），不是浮窗内容。
+ * **会拦住人的**话（风险词命中、条数对不齐、上限）不算说明，仍留在界面上。
+ */
+export const HelpDot: React.FC<{ text: React.ReactNode; children?: React.ReactNode }> = ({
+  text,
+  children,
+}) => (
+  <Popover
+    trigger="hover"
+    placement="rightTop"
+    overlayStyle={{ maxWidth: 420 }}
+    content={<div style={{ fontSize: 12, lineHeight: '20px' }}>{text}</div>}
+  >
+    {/* 收起面板／挑行这类"点整块都算"的容器里也会摆这枚点：不挡住冒泡的话，
+        人只想看个说明，顺手把面板收了（11-10 「缩进浮窗」后 Collapse 标题旁就有一枚） */}
+    <span
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <QuestionCircleOutlined style={{ color: '#8c8c8c', fontSize: 12, cursor: 'help' }} />
+      {children}
+    </span>
+  </Popover>
+);
+
 /** 风险词串 `词|block,词|warn` → 可读标签；block 拦过审/投产，warn 只预警 */
 export const RiskTags: React.FC<{ riskHit: string | null | undefined }> = ({ riskHit }) => {
   if (!riskHit) return null;
@@ -200,5 +259,102 @@ export const RiskTags: React.FC<{ riskHit: string | null | undefined }> = ({ ris
         );
       })}
     </span>
+  );
+};
+
+/**
+ * 整段提示词正文的可读呈现＋词级高亮（11-10 用户三条口径里的第一条）。
+ *
+ * 用户原话：「我刚选了几个元素，但是没有看到正文被替换的地方。正文显示的也不够明显，看不清楚。」
+ * 两句分别对应这里两件事：
+ *  1. **绿底＝刚换上的词**：位置来自后端 `mark_replacements`（`marks`），前端不自己 indexOf——
+ *     自己找会把"原稿里本来就写着这个词"的那处也当成改过的，而后端在同一句 notes 里已经把这种
+ *     歧义说清了，界面只照它给的坐标描色；
+ *  2. **摆清楚**：14px（原来那一屏是 12px 的 secondary 灰字，正文上千字挤成一坨）、行高 1.75、
+ *     保留换行、浅底加边框当"稿纸"，并**自动滚到第一处改动**——一屏 16 行的窗口里，
+ *     改动在第 30 行等于没高亮。
+ *
+ * 只读：改字永远走旁边那个 TextArea（`改投递稿`／`模板脚本提示词`），这里从不写回，
+ * 免得"看着像能编辑其实编辑不了"。
+ */
+export const HighlightedPrompt: React.FC<{
+  text: string;
+  marks?: AssetPromptElementMark[];
+  /** 稿纸最高多高（默认 260px，约 12 行）；超出内部滚，不吃弹窗整屏高度 */
+  maxHeight?: number;
+  /** 标题左侧那句话（默认「换上的词已标绿」） */
+  caption?: React.ReactNode;
+}> = ({ text, marks, maxHeight = 260, caption }) => {
+  const boxRef = React.useRef<HTMLDivElement | null>(null);
+  const firstRef = React.useRef<HTMLSpanElement | null>(null);
+  const list = (marks || []).filter((m) => m.end > m.start);
+
+  // 内容变了就滚到第一处改动（没有改动时回到顶部，别停在上一份稿子的中间）
+  React.useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const target = firstRef.current;
+    box.scrollTop = target ? Math.max(0, target.offsetTop - 12) : 0;
+  }, [text, list.length]);
+
+  const segments: React.ReactNode[] = [];
+  let cursor = 0;
+  list.forEach((m, i) => {
+    if (m.start > cursor) segments.push(text.slice(cursor, m.start));
+    segments.push(
+      <span
+        key={`m${i}`}
+        ref={i === 0 ? firstRef : undefined}
+        data-mark="first"
+        style={{
+          background: '#d9f7be',
+          color: '#135200',
+          borderRadius: 2,
+          padding: '0 2px',
+          boxShadow: 'inset 0 0 0 1px #95d475',
+        }}
+      >
+        {text.slice(m.start, m.end)}
+      </span>,
+    );
+    cursor = m.end;
+  });
+  if (cursor < text.length) segments.push(text.slice(cursor));
+
+  return (
+    <div
+      ref={boxRef}
+      style={{
+        // 必须是 offsetParent：不写 position，第一处改动的 offsetTop 会相对更外层算，滚偏
+        position: 'relative',
+        maxHeight,
+        overflow: 'auto',
+        background: '#fafafa',
+        border: '1px solid #e5e5e5',
+        borderRadius: 4,
+        padding: '10px 12px',
+        fontSize: 14,
+        lineHeight: 1.75,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+      }}
+    >
+      {segments}
+      {caption !== undefined ? (
+        <div style={{ marginTop: 6 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {caption}
+          </Text>
+        </div>
+      ) : (
+        !!list.length && (
+          <div style={{ marginTop: 6 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {`绿底 ${list.length} 处＝刚换上的词，已滚到第一处`}
+            </Text>
+          </div>
+        )
+      )}
+    </div>
   );
 };

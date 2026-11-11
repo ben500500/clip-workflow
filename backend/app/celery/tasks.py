@@ -157,6 +157,24 @@ celery_app.conf.update(
 logger = logging.getLogger(__name__)
 
 
+# 密钥脱敏（11-09）：智令 doc/107/119 把账号 key 放在 URL 查询串里，逐请求 INFO 日志
+# 会把 key 原样写进容器日志（现网 docker logs 实测到）。worker/beat 的 root handler 是
+# Celery 自己配的，import 期挂 filter 会被它后面重建掉，所以挂在这两个信号上——
+# 它们在 Celery 配好日志之后触发。详见 app/logging_setup.py。
+from app.logging_setup import install_credential_redaction  # noqa: E402
+from celery.signals import after_setup_logger, after_setup_task_logger  # noqa: E402
+
+
+def _redact_credentials_on_startup(**_kwargs):
+    """信号回调包一层：Celery 会传 logger=/level=/handlers= 过来，直接接会
+    ① 参数对不上炸掉 worker 启动，② 把它的 INFO level 当成我们的脱敏级别。全部忽略。"""
+    install_credential_redaction()
+
+
+after_setup_logger.connect(_redact_credentials_on_startup)
+after_setup_task_logger.connect(_redact_credentials_on_startup)
+
+
 _async_local = threading.local()
 
 

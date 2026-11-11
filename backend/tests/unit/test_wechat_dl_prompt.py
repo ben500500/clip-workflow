@@ -240,6 +240,9 @@ def _task(**kw):
     t.content = kw.get("content")
     t.error = kw.get("error")
     t.max_duration = kw.get("max_duration")
+    # 自动补投闸门读的是整数：老替身给 MagicMock 会被 _retry_count_of 判成「已补投过」而跳过，
+    # 所以这里必须显式给 0，补投相关用例才打得开。
+    t.retry_count = kw.get("retry_count", 0)
     # 轮询容忍时长按 created_at（提交时刻）算，mock 必须给一个真 datetime
     t.created_at = kw.get("created_at", datetime.utcnow())
     return t
@@ -367,7 +370,7 @@ async def test_refresh_transient_error_beyond_giveup_closes_as_failed(monkeypatc
     )
     out = await ps.refresh_prompt_task(_db(), task)
     assert out.status == PT_FAILED
-    assert "60 分钟" in out.error and "retry_failed" in out.error
+    assert "60 分钟" in out.error and "再扣一次钱" in out.error
     assert "转发请求失败" in out.error
 
 

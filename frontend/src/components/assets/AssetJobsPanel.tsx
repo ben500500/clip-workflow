@@ -28,6 +28,9 @@ const STATUS_COLOR: Record<AssetJobStatus, string> = {
 };
 
 const KIND_OPTIONS: Array<{ value: AssetJobKind; label: string }> = [
+  // 11-06 反推进台账后一直是「列表里有、筛选里没有」——一线按类型找自己刚点的反推找不到，
+  // 只能从头翻。这里补上，标签和后端 `_job_endpoint` 给的 `kind_label` 用同一个词。
+  { value: 'analyze', label: '反推文案' },
   { value: 'summary_generate', label: '出钩子文案' },
   { value: 'produce', label: '生成生产单' },
   { value: 'dispatch', label: '投板' },
@@ -58,7 +61,16 @@ interface ResultRow {
 
 const summarize = (job: AssetJobInfo): string => {
   if (job.error) return job.error;
-  const rows = ((job.result as { results?: ResultRow[] } | null)?.results ?? []) as ResultRow[];
+  // 11-10 修：投板任务的 `result.results` 是**字典**（按生产单 id 索引，见后端
+  // `_execute_dispatch` 的 `outcome["summary"]`），其他任务是数组。老写法 `?? []` 拿到
+  // `{}` 后 `.length` 是 undefined → 直接 return ''，投板那行的摘要永远空。这里统一
+  // 拍平，两种形状都走同一套判据。
+  const rawResults = (job.result as { results?: unknown } | null)?.results;
+  const rows: ResultRow[] = Array.isArray(rawResults)
+    ? (rawResults as ResultRow[])
+    : rawResults && typeof rawResults === 'object'
+      ? Object.values(rawResults as Record<string, ResultRow>)
+      : [];
   if (!rows.length) return '';
   const bad = rows.filter((r) => r.error || (r.result && r.result !== 'extracted' && r.note) || r.reason);
   if (bad.length) return `${bad.length} 条要留意：${bad[0].code ?? ''}${bad[0].error ?? bad[0].note ?? bad[0].reason ?? ''}`.slice(0, 80);
@@ -150,15 +162,23 @@ const AssetJobsPanel: React.FC<{ onGoToTab?: (key: string) => void; active?: boo
       key: 'summary',
       render: (_, row: AssetJobInfo) => {
         const s = summarize(row);
-        return s ? (
-          <Tooltip title={s}>
-            <Text type={row.status === 'failed' ? 'danger' : 'warning'} style={{ fontSize: 12 }}>
-              {s}
-            </Text>
-          </Tooltip>
-        ) : (
-          <Text type="secondary" style={{ fontSize: 12 }}>—</Text>
-        );
+        if (s)
+          return (
+            <Tooltip title={s}>
+              <Text type={row.status === 'failed' ? 'danger' : 'warning'} style={{ fontSize: 12 }}>
+                {s}
+              </Text>
+            </Tooltip>
+          );
+        // 11-10 口径③：绿「已完成」单独挂着等于没说话——投板完成只是挂上板，开单完成只是建好单。
+        // 后端上海量的那句去向（`done_note`）在这里摆出来，台账这一屏和横幅／桌面通知才是同一套话。
+        if (row.done_note)
+          return (
+            <Tooltip title={row.done_note}>
+              <Text style={{ fontSize: 12 }}>{row.done_note}</Text>
+            </Tooltip>
+          );
+        return <Text type="secondary" style={{ fontSize: 12 }}>—</Text>;
       },
     },
     { title: '开始', dataIndex: 'started_at', width: 110, render: fmtTime },
@@ -207,11 +227,13 @@ const AssetJobsPanel: React.FC<{ onGoToTab?: (key: string) => void; active?: boo
     });
   }, [items]);
 
-  const [collapsedKinds, setCollapsedKinds] = useState<Set<string>>(new Set());
+  // 默认**全部收起**（用户口径 2026-11-09）；在跑/排队的组自动展开；
+  // 点开过的组保持展开（直到用户再点收起）。
+  const [userOpened, setUserOpened] = useState<Set<string>>(new Set());
   const isGroupOpen = (g: { kind: string; open: number }) =>
-    g.open > 0 || !collapsedKinds.has(g.kind);
+    g.open > 0 || userOpened.has(g.kind);
   const toggleGroup = (kind: string) =>
-    setCollapsedKinds((prev) => {
+    setUserOpened((prev) => {
       const next = new Set(prev);
       if (next.has(kind)) next.delete(kind);
       else next.add(kind);

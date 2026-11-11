@@ -176,7 +176,8 @@ def _stages(**kw):
     (_stages(**{"import": "success"}), False, "waiting_prompt"),
     (_stages(**{"import": "success", "prompt": "running"}), False, "analyzing"),
     (_stages(**{"import": "success", "prompt": "skipped"}), False, "waiting_prompt"),
-    (_stages(**{"prompt": "success"}), False, "summarizing"),
+    # 11-09：稿到了但出文案没提交＝waiting_summary，不能再报「出文案中」
+    (_stages(**{"prompt": "success"}), False, "waiting_summary"),
     (_stages(**{"prompt": "success", "summary": "running"}), False, "summarizing"),
     (_stages(**{"prompt": "success", "summary": "success"}), False, "awaiting_review"),
     (_stages(**{"prompt": "success", "summary": "success"}), True, "ready_to_produce"),
@@ -242,7 +243,7 @@ def test_apply_stage_passes_media_kind_through():
         stage_produce="pending", stage_compose="pending", status="draft",
         has_approved_copy=False,
     )
-    assert svc.apply_stage(legacy, "prompt", "success") == "summarizing"
+    assert svc.apply_stage(legacy, "prompt", "success") == "waiting_summary"
 
 
 def test_shared_video_whitelist_still_rejects_images():
@@ -742,4 +743,26 @@ def test_every_settings_attribute_used_by_the_code_actually_exists():
                 bad.setdefault(node.attr, []).append(f"{rel}:{node.lineno}")
     assert not bad, "代码引用了 config.py 里不存在的配置字段：" + "; ".join(
         f"settings.{k}（{', '.join(v)}）" for k, v in sorted(bad.items())
+    )
+
+
+def test_self_produce_flag_class_default_is_open():
+    """`ASSET_SELF_PRODUCE_ALLOWED` 的**类默认值**必须是 true（2026-11-11 评审·测试席 P1）。
+
+    为什么 conftest 那钉不算数：`tests/conftest.py` 的 autouse 夹具用
+    `monkeypatch.setattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", True)` 把**实例属性**钉成
+    true——它保证 634 条存量用例跑在放开口径上，但它同时把类默认值**遮住了**：
+    哪天有人把 config.py 改回 false（或反过来"以为默认是 true"却在 .env 里写了 false
+    而没人发现），夹具照样把它盖成 true，全套测试仍然绿，现网行为却已经变了。
+    11-09 用户拍板「一人多角是常态，默认放开」，这条拍板只有钉在类字段上才算数。
+
+    读的是 `Settings.model_fields[...].default`（pydantic v2 的类字段默认值），
+    不读 `settings.X`——后者已被夹具改过，读了就是自己骗自己。
+    """
+    from app.config import Settings
+
+    default = Settings.model_fields["ASSET_SELF_PRODUCE_ALLOWED"].default
+    assert default is True, (
+        "自审自投默认值被人改回去了：11-09 用户口径是**默认放开**（一人多角常态），"
+        "放开时逐条写豁免审计。要改请连带改 conftest 基线与专项用例，别只改一行。"
     )

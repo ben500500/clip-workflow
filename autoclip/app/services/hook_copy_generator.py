@@ -356,3 +356,97 @@ def _parse_expand(raw: str, hook_copy: str) -> Dict[str, Any]:
         "dispatch_note": None,
         "note": "未按 JSON 结构返回，已整段作为提示词",
     }
+
+
+# ── 11-10 新增（用户口径「重新认参数能不能再将它们提炼一下」）：
+#    从**已写好的投递稿**里把每个换皮参数的"原值"抄回来。
+#    机制在这里，规则在 app/prompt/hook_slots.txt；**逐字校验不在本文件做**
+#    （后端 asset_prompt_elements.accept_guessed_values 只认稿子里真出现过的串，
+#    模型编出来的值一律丢弃）——本函数只负责把结构整理成 [{id,key,value}]。
+HOOK_SLOTS_FILE = APP_DIR / "prompt" / "hook_slots.txt"
+
+# 一次问多少个槽位：再多模型开始漏条目、也纯属烧钱（开单屏一批通常 3~6 个参数项）
+_MAX_SLOT_ITEMS = 60
+
+
+def load_hook_slots_template() -> str:
+    """投递稿 → 各换皮参数原值（逐字抄回）的提炼模板。"""
+    return _load(HOOK_SLOTS_FILE)
+
+
+def extract_slot_values(
+    texts: List[Dict[str, Any]],
+    slots: List[Dict[str, Any]],
+    max_retries: int = 1,
+) -> Dict[str, Any]:
+    """把「几份投递稿 + 参数项清单」交给模型，拿回逐条原值。
+
+    Args:
+        texts: [{"id": 稳定键, "text": 投递稿正文}]
+        slots: [{"key": 槽位 key, "label": 中文名, "note": 这一项是什么, "pool": [候选词]}]
+
+    Returns:
+        {"items": [{"id","key","value"}...], "raw": 原始文本（解析失败时留档）}
+    """
+    template = load_hook_slots_template()
+    if not template:
+        raise RuntimeError("参数提炼模板未找到，请检查 autoclip/app/prompt/hook_slots.txt")
+    payload_slots = [
+        {
+            "key": str(s.get("key") or ""),
+            "名称": str(s.get("label") or ""),
+            "这一项是什么": str(s.get("note") or "")[:200],
+            "候选词表（仅提示，不是范围）": [str(w) for w in (s.get("pool") or [])][:20],
+        }
+        for s in slots[:_MAX_SLOT_ITEMS]
+        if str(s.get("key") or "")
+    ]
+    payload_texts = [
+        {"id": str(t.get("id") or ""), "稿子正文": str(t.get("text") or "")}
+        for t in texts
+        if str(t.get("text") or "").strip()
+    ]
+    if not payload_slots or not payload_texts:
+        return {"items": [], "raw": None}
+    manager = get_llm_manager()
+    raw = manager.call_with_retry(
+        template,
+        {"稿子（唯一事实来源）": payload_texts, "参数项清单": payload_slots},
+        max_retries=max_retries,
+    )
+    if not raw:
+        raise RuntimeError("大模型返回空响应，参数提炼失败")
+    return {"items": _parse_slot_items(raw), "raw": raw}
+
+
+def _parse_slot_items(raw: str) -> List[Dict[str, Any]]:
+    """解析 {"items":[...]} / 裸数组 / {"slots":[...]} 三种形状，非 dict 条目丢掉。"""
+    stripped = _strip_fence(raw.strip())
+    items: List[Any] = []
+    data = _loads_object(stripped)
+    if data:
+        for name in ("items", "slots", "结果"):
+            rows = data.get(name)
+            if isinstance(rows, list):
+                items = rows
+                break
+    if not items:
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                items = parsed
+        except (json.JSONDecodeError, ValueError):
+            items = []
+    out: List[Dict[str, Any]] = []
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        out.append(
+            {
+                "id": str(row.get("id") or row.get("稿子id") or "").strip(),
+                "key": str(row.get("key") or row.get("参数") or "").strip(),
+                # 只剥首尾空白：中间的标点/空格是"逐字"的一部分，动了就换不上
+                "value": str(row.get("value") if row.get("value") is not None else "").strip(),
+            }
+        )
+    return out

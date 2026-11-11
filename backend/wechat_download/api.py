@@ -67,6 +67,7 @@ from wechat_download.prompt_service import (
     prompt_task_scope_stmt,
     refresh_prompt_task,
     serialize_prompt_task,
+    sweep_zombie_prompt_tasks,
     upload_max_bytes,
     validate_upload_ext,
     validate_upload_size,
@@ -454,7 +455,8 @@ class ReversePromptRequest(BaseModel):
     source_url: str = Field(..., description="视频链接（支持 30+ 平台分享链接与视频直链）")
     max_duration: Optional[int] = Field(
         None, ge=1, le=600,
-        description="计时上限（秒，默认 600，最大 600）；决定计费上限",
+        description="计时上限（秒，留空按 WECHAT_DL_PROMPT_MAX_DURATION，默认 180；官方最大 600）。"
+                    "计费按这个上限算、失败也扣钱，所以它是单价而不是保险",
     )
 
 
@@ -464,7 +466,18 @@ async def list_reverse_prompt_tasks(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """反推提示词任务列表（按创建时间倒序，可见口径与下载任务列表一致）。"""
+    """反推提示词任务列表（按创建时间倒序，可见口径与下载任务列表一致）。
+
+    进列表前先做一次**全表僵尸收口**（11-10）：没有上游任务号、又超过容忍时长的
+    processing 行自己收成 failed，一线就不会再看到「生成中」骗人刷新。判据与成因见
+    `prompt_service.sweep_zombie_prompt_tasks`；0 元、不调外部接口，失败也不影响列表
+    （宁可留着僵尸让人看到，也不能让列表 500）。
+    """
+    try:
+        await sweep_zombie_prompt_tasks(db)
+    except Exception:  # noqa: BLE001 - 收口是锦上添花，列表必须照常出
+        logger.exception("反推僵尸行列表收口失败（忽略，继续返回列表）")
+        await db.rollback()
     stmt = await prompt_task_scope_stmt(current_user, limit)
     tasks = (await db.execute(stmt)).scalars().all()
     return {"items": [serialize_prompt_task(t) for t in tasks], "total": len(tasks)}
@@ -505,7 +518,7 @@ def _content_length(headers) -> Optional[int]:
 @router.post("/reverse-prompt/upload", status_code=201)
 async def upload_reverse_prompt_task(
     file: UploadFile = File(..., description="本地视频文件（mp4/mov/webm/avi/mkv/m4v）"),
-    max_duration: Optional[int] = Form(None, description="计时上限（秒），默认 600，最大 600"),
+    max_duration: Optional[int] = Form(None, description="计时上限（秒），留空默认 180，最大 600"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -589,6 +602,9 @@ async def get_reverse_prompt_task(
     """查询反推提示词任务；仍在 processing 时顺带向智令查询一次并更新状态。
 
     前端在 processing 期间每 4s 轮询本接口即可，无需直接访问第三方。
+    顺带承担两件事（都在 refresh_prompt_task 里）：可重试的终态失败自动补投一次
+    （所以这一轮返回可能是 failed，下一轮就变回 processing），以及僵尸 processing 行
+    到期收口。列表接口不轮询、不补投，只有本接口会。
     """
     task = await get_prompt_task(db, task_id)
     if task is None or not can_access_prompt_task(task, current_user):

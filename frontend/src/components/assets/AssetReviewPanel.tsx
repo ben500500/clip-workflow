@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Drawer, Input, Modal, Popover, Segmented, Select, Space, Table, Tag, Tooltip, Typography, message,
+  Alert, Button, Card, Checkbox, Drawer, Input, Modal, Popover, Segmented, Select, Space, Spin, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   CheckCircleOutlined, CloseCircleOutlined, QuestionCircleOutlined,
@@ -51,6 +51,11 @@ interface Props {
    * 由页面层（AssetLibrary）传页签切换回调进来。
    */
   onGoToProduction?: () => void;
+  /**
+   * 11-10「一屏到底」：建完单不当场投时，把新单 ID 交给页面层带进 ④ 的投板弹窗。
+   * 没传（页面层还没接）就退回原来的 onDone 路径。
+   */
+  onProduced?: (ids: string[], notes: string[]) => void;
 }
 
 /**
@@ -70,7 +75,7 @@ interface Props {
  * 表格外壳留着只是为了 rowSelection 和分页，列定义合成一格。
  * 帧是纯呈现层：`GET /assets/frames` 拉不到就当没图，审核动作照点。
  */
-const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken, onGoToProduction, active = true }) => {
+const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reloadToken, onGoToProduction, onProduced, active = true }) => {
   const [data, setData] = useState<AssetSummaryListResult | null>(null);
   const [items, setItems] = useState<AssetSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -138,13 +143,36 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
   // P1（评审定稿⑨）：一致性核验抽屉（原片播放＋反推脚本全文）
   const [inspecting, setInspecting] = useState<AssetSummary | null>(null);
   const [inspectData, setInspectData] = useState<AssetDetailResponse | null>(null);
+  const [inspectLoading, setInspectLoading] = useState(false);
+  // 原片可播直链：走「素材原文件」口（自有桶 presigned）——share 页链接（weixin.qq.com/sph/…）
+  // 直接喂 <video> 是黑屏，这就是上一版"原片无法播放"的原因
+  const [inspectPlayUrl, setInspectPlayUrl] = useState<string | null>(null);
+  const [inspectPlayNote, setInspectPlayNote] = useState<string | null>(null);
   const openInspect = async (row: AssetSummary) => {
     setInspecting(row);
     setInspectData(null);
+    setInspectPlayUrl(null);
+    setInspectPlayNote(null);
+    setInspectLoading(true);
     try {
-      setInspectData(await assetApi.getAsset(row.asset_id));
+      const [detail, src] = await Promise.all([
+        assetApi.getAsset(row.asset_id),
+        assetApi.downloadAssetSource(row.asset_id).catch(() => null),
+      ]);
+      setInspectData(detail);
+      if (src?.url) {
+        setInspectPlayUrl(src.url);
+      } else {
+        setInspectPlayNote(
+          src?.note
+            ? `${src.note}（分享页链接不能直接播放；要看原片请点右上角「原片」下载）`
+            : '这条素材不在自有桶，拿不到可播直链——要看原片请点右上角「原片」下载',
+        );
+      }
     } catch (e) {
       message.error((e as Error).message || '取素材详情失败');
+    } finally {
+      setInspectLoading(false);
     }
   };
 
@@ -256,15 +284,18 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
       waive_codes?: string[];
       summaryIds?: string[];
     } = {},
-  ) => {
+    // 2026-11-11 评审（前端席 P1）：调用方需要知道审核**到底成没成**——submitEdited
+    // 原来 await 完就顺手改分类+报成功，复核被拦时「文案没过、原型已改、提示说都提交了」。
+    // 返回 {ok, blocked}；早退（没选条/缺理由）与抛错回 null。
+  ): Promise<{ ok: number; blocked: number } | null> => {
     const targetIds = opts.summaryIds || ids;
     if (!targetIds.length) {
       message.warning('先勾选要处理的文案');
-      return;
+      return null;
     }
     if ((action === 'reject' || action === 'need_rewrite') && !(opts.reason || '').trim()) {
       message.warning('驳回 / 要求改写必须填理由');
-      return;
+      return null;
     }
     setBusy(true);
     try {
@@ -347,8 +378,10 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
       if (hints.length) message.info(hints.join('；'), 10);
       setSelected([]);
       fetchList(1, pageSize);
+      return { ok: okCount, blocked: blocked.length };
     } catch (e) {
       message.error((e as Error).message || '审核提交失败');
+      return null;
     } finally {
       setBusy(false);
     }
@@ -446,8 +479,22 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
     }
     const target = editCat || null;
     const changedCat = target !== (editing.category_id || null);
-    await runReview('pass_edited', { summaryIds: [editing.id], new_text: editText.trim() });
+    const r = await runReview('pass_edited', { summaryIds: [editing.id], new_text: editText.trim() });
     // 分类是另一件事：过审若被复核拦下会弹窗，那时不顺手改分类，避免「以为过了其实没」
+    // 2026-11-11 评审（前端席 P1）：这里真的接住返回值——原来 await 完无条件改分类，
+    // 拦下时库里状态没动、原型却改了，提示还说「文字与原型都已提交」。
+    if (r === null || r.blocked > 0) {
+      if (changedCat) {
+        message.warning(
+          r === null
+            ? '这次「改后过」没提交成功，文字与原型都未改动'
+            : '复核被拦，文字按拦下结果处理、分类未动',
+        );
+      }
+      setEditing(null);
+      setEditCat(undefined);
+      return;
+    }
     if (changedCat) {
       try {
         const res = await assetApi.assignCategory({ summary_ids: [editing.id], category_id: target });
@@ -553,7 +600,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
             setResubmitText(row.text);
             setResubmitNote('');
           }}
-          onInspect={setInspecting}
+          onInspect={(row) => void openInspect(row)}
         />
       ),
     },
@@ -1021,6 +1068,17 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
           // 原来只关弹窗刷自己，新单在哪要用户自己猜。
           onGoToProduction?.();
         }}
+        onProduced={
+          onProduced
+            ? (ids, notes) => {
+                // 11-10 一屏到底：建完单直接把人带到 ④ 的「投去 AI 出片」那一屏
+                setProduceOpen(false);
+                setSelected([]);
+                fetchList(page, pageSize);
+                onProduced(ids, notes);
+              }
+            : undefined
+        }
       />
 
       {/* P1（评审定稿⑨）：一致性核验抽屉——签字依据给足：原片播放＋反推脚本全文 */}
@@ -1032,15 +1090,43 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, isAdmin, batchId, reload
       >
         {inspecting && (
           <Space direction="vertical" size={10} style={{ width: '100%' }}>
-            {inspectData?.asset?.source_url && (
+            {/* 2026-11-11 评审（前端席 P2）：抽屉原来一上来就是原片＋反推稿，
+                「正在审的到底是哪句」要滚回卡片去看。这里把候选文案钉在顶部（只读，
+                改动仍在卡片上做），对照着核才不用两头翻页。 */}
+            <Card
+              size="small"
+              title={`正在核验的候选文案（第 ${inspecting.seq} 条，只读）`}
+              style={{ background: '#f6ffed', borderColor: '#b7eb8f' }}
+            >
+              <Paragraph style={{ marginBottom: 0, fontSize: 13, whiteSpace: 'pre-wrap' }}>
+                {inspecting.text}
+              </Paragraph>
+            </Card>
+            {inspectPlayUrl ? (
               <video
-                src={inspectData.asset.source_url}
+                src={inspectPlayUrl}
                 controls
+                autoPlay
+                preload="metadata"
                 style={{ width: '100%', maxHeight: 380, background: '#000', borderRadius: 8 }}
+                onError={() =>
+                  setInspectPlayNote('这一段放不出来：直链可能已过期（时效链接约 1 小时），关掉重开即可续期')
+                }
               />
-            )}
-            {inspectData?.prompt_script ? (
-              <Card size="small" title="反推文案稿（一致性比对的事实来源）">
+            ) : inspectPlayNote ? (
+              <Alert type="info" showIcon message={inspectPlayNote} />
+            ) : null}
+            {inspectLoading ? (
+              <div style={{ padding: 24, textAlign: 'center' }}>
+                <Spin />
+                <div style={{ marginTop: 8 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    正在取反推文案稿…
+                  </Text>
+                </div>
+              </div>
+            ) : inspectData?.prompt_script ? (
+              <Card size="small" title="反推文案稿">
                 <Paragraph
                   style={{ marginBottom: 0, fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 360, overflow: 'auto' }}
                 >

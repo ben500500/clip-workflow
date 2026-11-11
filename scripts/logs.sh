@@ -33,12 +33,29 @@ else
 fi
 
 # 可用的服务列表
-SERVICES=("postgres" "redis" "minio" "minio_init" "autoclip" "autoclip_worker" "backend" "worker-video" "worker-variant" "worker-publish" "worker-fast" "beat" "frontend" "nginx")
+# 2026-11-11 运维席 P2：原来这里硬编码 14 个名字，compose 后来加的
+# worker-selection / worker-wechat-dl / worker-remotion / rpa_worker / slice-worker /
+# alembic-migrate 一个都不在表里——`logs.sh worker-wechat-dl` 直接报「无效的服务名」，
+# 而微信下载恰恰是最需要看日志的那个（它不在部署重建名单里时就是靠这里发现的）。
+# 改成从 compose 现算；compose 不可用（缺 .env、语法错）时退回一份保底名单，
+# 至少 backend/frontend 这些老名字还能看——宁可列表旧一点，别让脚本在排障当场罢工。
+COMPOSE_SERVICES="$(cd "$PROJECT_DIR" && $COMPOSE_CMD config --services 2>/dev/null | sort || true)"
+if [ -n "$COMPOSE_SERVICES" ]; then
+    # shellcheck disable=SC2207
+    SERVICES=($COMPOSE_SERVICES)
+    SERVICES_SRC="docker compose config --services"
+else
+    SERVICES=("postgres" "redis" "minio" "minio_init" "autoclip" "autoclip_worker" "backend" "beat" \
+              "frontend" "nginx" "worker-video" "worker-variant" "worker-publish" "worker-fast" \
+              "worker-selection" "worker-wechat-dl")
+    SERVICES_SRC="内置保底名单（compose 读不到，服务列表可能已过期）"
+    echo -e "${YELLOW}[WARN]${NC} 读不到 compose 服务清单，退回保底名单" >&2
+fi
 
 show_usage() {
     echo "用法: bash scripts/logs.sh [service_name] [options]"
     echo ""
-    echo "可用服务:"
+    echo "可用服务（来源：${SERVICES_SRC}）:"
     for s in "${SERVICES[@]}"; do
         echo "  - $s"
     done

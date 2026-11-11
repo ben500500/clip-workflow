@@ -213,13 +213,31 @@ class Settings(BaseSettings):
     WECHAT_DL_ZHILING_PROMPT_STATUS_PATH: str = "/api/video-inference/task-status"
     # 外部请求超时（秒）
     WECHAT_DL_PROMPT_TIMEOUT: int = 15
-    # 计时上限（秒）：默认 600，官方最大 600；按此上限计费（约 0.00054 元/秒）
-    WECHAT_DL_PROMPT_MAX_DURATION: int = 600
+    # 计时上限（秒）：官方最大 600；**按这个上限计费**（约 0.00054 元/秒），不是按视频实际长度。
+    # 11-09 现网实测把默认从 600 降到 180：留空＝按 600 投＝每条 0.324 元，比 180 档（0.097 元）
+    # 贵 3 倍，而且上游失败照样扣——当天 7 条「视频理解服务返回空结果」就白花了 2.268 元。
+    # 资源下载页粘的多是 1~3 分钟的短剧切片，180 够用；长视频界面上显式选 300/600。
+    WECHAT_DL_PROMPT_MAX_DURATION: int = 180
+    # 上游「视频理解服务返回空结果」这类终态失败，自动原地补投一次（默认开）。
+    # 现网事实：同一链接失败后人工再点一次多数就成（10-11 月 5 条链接都是 fail→success），
+    # 但要点两下、而且每点一次再扣一次钱。这里只补**一次**（retry_count 闸门＋原子认领
+    # 防两个轮询请求同时看到 FAIL 而双扣），关掉＝回到「失败就等人工重试」。
+    WECHAT_DL_PROMPT_AUTO_RETRY: bool = True
+    # 补投那一次先过 doc/107 把分享链接解析成视频直链（约 0.01 元/次）再反推：
+    # 上游读不到短链背后的视频时，换直链是另一条取数路径；解析失败就退回原链接重投。
+    # 关掉＝补投照原链接重投，不花这份解析钱（但少一条排障路径）。
+    WECHAT_DL_PROMPT_RETRY_VIA_DIRECT: bool = True
     # 反推轮询「查询不通」的容忍时长（秒，默认 3600＝1 小时）：
     # 智令网关自己转发超时（code=500 转发请求失败）时不再当场判死，保持 processing 继续轮；
     # 但连续不通超过本时长就判 failed 收口，避免任务永远挂在「处理中」。与下载侧
     # WECHAT_DL_STALE_TIMEOUT_SECONDS 同一量纲、同一默认值，运维只需记一个数。
     WECHAT_DL_PROMPT_POLL_GIVEUP_SECONDS: int = 3600
+    # 解析回来的地址要不要过**形状闸门**（11-10，见 wechat_download/url_gate.py）：
+    # 站点根／网页文件／封面图一律拒收，不再当视频直链往下喂。现网事故是短剧导流页链接
+    # 由 doc/107 回 `https://vnd2.17zhilian.cn/`，被存成 10KB 的「原片」、反推必然失败、
+    # 补投再花一次解析钱。关掉＝退回旧判据「以 http 开头就收」，只在某个渠道确实回
+    # 不带路径的直链、需要临时放行时才关。
+    WECHAT_DL_DIRECT_URL_SHAPE_GATE: bool = True
     # 本地视频上传反推（智令 doc/125 签名 + S3 POST，ISSUE #363）：
     # 签名接口路径（GET ?key=&fileName=&contentType=&expiresIn=）
     WECHAT_DL_ZHILING_UPLOAD_SIGN_PATH: str = "/api/upload/signature"
@@ -397,11 +415,29 @@ class Settings(BaseSettings):
     ASSET_BOARD_DEFAULT_TOTAL: int = 1
     # 号池实测 ≈120 条/日：1023 叠两份量（240）其中一批 10 分钟内 115/120 全 fail；
     # 1028 投 230 只到手 162（70%），"超出 120 的那部分基本是白投"。
-    # 用户口径「产能不限」→ **不做硬限**，只在 /produce 返回里给软提示；设 0 关闭提示。
-    ASSET_BOARD_DAILY_SOFT_CAP: int = 120
-    # A′（2026-11-08 评审定稿）：自审自投硬闸——自己过审的候选自己投产默认拦；
-    # 小团队/应急需一人包干时显式设 true（每次自审自投仍逐条写豁免审计）。
-    ASSET_SELF_PRODUCE_ALLOWED: bool = False
+    # 用户口径 11-09 深夜「号池不要做限制了，先不用做限制」→ **默认 0＝连软提示都不给**，
+    # 界面只报当日真实条数，不再弹「号池余量」告警。实测那 120 条/日的依据留在上面两行，
+    # 哪天想恢复提示把这里（或现网 .env）填回 120 即可，代码路径没删。
+    ASSET_BOARD_DAILY_SOFT_CAP: int = 0
+    # 新文案自动预取钩子编号（11-09 批 O，用户口径「以后的新文案也自动预取吧」）：
+    # 三个建文案行的入口（出文案／贴文案导入／成稿配对导入）**建成当场**取号挂到
+    # `asset_summaries.hook_code`，开单时顶到缺号槽位（一钩一号，用掉即清）。
+    # 取不到号**不拦导入**——预取是便利，不是前置条件；
+    # 哪条没挂上号，开单时照旧手工填或点「代取」。
+    ASSET_AUTO_PARK_HOOK_CODES: bool = True
+    # 认换皮参数时**词表认不出就自动问模型**（11-11 批 Z，用户口径「你不能按照固定的词典去
+    # 识别，你要调用大模型的能力去做这个事情」）。true＝开单屏认完词表后，对还空着的那几格
+    # 自动发起一次提炼（先查 `asset_element_guesses` 缓存，命中 0 元，没命中才花一次模型钱，
+    # 每篇稿子每个参数项只花一次）；false＝只查缓存、不自动花钱，界面上「再问一次模型」
+    # 那个按钮照旧能用（人显式点的仍然打模型）。
+    # 判据不变的那三条：抄回来的串必须逐字在这份稿子里、不许落在保护行、只填空格不覆盖
+    # 词表已认出的值——都钉在 `accept_guessed_values`，跟这个开关无关。
+    ASSET_ELEMENT_AUTO_GUESS: bool = True
+    # A′（2026-11-08 评审定稿）：自审自投硬闸——自己过审的候选自己投产默认拦。
+    # **11-09 用户口径改为默认放开**（true）：一人多角是本团队的常态，闸门留着但不再
+    # 挡路；要恢复纪律（例如外包/新人进来）显式设 false。放开时每次自审自投仍逐条写
+    # 豁免审计（owner_cross 带 self 标记），所以"谁自己审自己投的"随时查得到。
+    ASSET_SELF_PRODUCE_ALLOWED: bool = True
     # P1（评审定稿⑦）：取号进界面——后端代理的取号命令（参数为数量、stdout 每行一个
     # 五位编号）。留空＝功能关闭（前端走手工粘贴）。
     ASSET_HOOK_ID_CMD: str = ""

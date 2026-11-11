@@ -28,6 +28,7 @@ export type AssetStatus =
   | 'importing'
   | 'analyzing'
   | 'waiting_prompt'
+  | 'waiting_summary'
   | 'summarizing'
   | 'awaiting_review'
   | 'ready_to_produce'
@@ -77,7 +78,10 @@ export type AssetSourceKind = 'link' | 'file';
 export type AssetMediaKind = 'video' | 'image';
 
 /**
- * 图片画幅判读（后端 `_serialize_item.aspect`，只对 media_kind=image 回，视频回 null）。
+ * 图片/视频画幅判读（后端 `_serialize_item.aspect`）。
+ * 11-09 起**两类都给**（横屏原片要收进库并在界面标「横屏」，而 orientation 只能从
+ * resolution 推）；此前只喂图片，视频那列永远显示「画幅未知」——不是量不到，是那一行
+ * 只吃 media_kind=image。量不到时仍是 null，界面照样显示「量不到」而不是猜一个。
  * 口径来自**实测**：成片画幅由角色卡宽高比决定，提示词写 9:16 压不住一张横版卡。
  * 判据留在后端一处——前端再拼一张比例表，日后口径一改就是两边各说一套。
  */
@@ -313,9 +317,20 @@ export interface AssetSummary {
    * 与 prompt_preview 的分工：那列是任务板通道（恒 10s）的过审后预览。
    */
   doubao_prompt: string | null;
+  /**
+   * 11-09 批 N：**预取好、还没用掉**的五位钩子编号（后端 `hook_id.py` 取来钉在这条文案上）。
+   * 开单时后端自动把它顶到缺号的槽位上，顶掉即清空——所以「有值」＝这条还揣着一个能用的号。
+   * ⚠️ 不是已投产那张单上的编号（那个看 ④ 生产单行的 `hook_code`）。
+   */
+  hook_code?: string | null;
   created_at: string;
   // ── 仅 list_summaries 回（join 素材行）；getAsset 的 summaries 不带这些键 ──
   asset_code?: string;
+  /**
+   * 这条文案之前开过几张生产单（批 M 起列表口给，挑选弹窗拿来防重复投）。
+   * optional 的理由同 `output_count`：详情口不带＝"没查"，不是 0。
+   */
+  production_count?: number;
   asset_title?: string | null;
   asset_source_url?: string | null;
   asset_platform?: AssetPlatform | null;
@@ -333,6 +348,11 @@ export interface AssetProduction {
   batch_id: string | null;
   /** A′：投产人显示名（谁投账算谁的灰字标注；列表口聚合返回） */
   owner_name?: string | null;
+  /**
+   * 批 M（11-10）：这条单所属文案的**钩子原型名**（只有列表口批量补，单行口为 null）。
+   * 投产弹窗的「可替换元素」按原型筛槽位（`categories` 非空的行只在其原型下出现）靠这一列。
+   */
+  category_name?: string | null;
   seq: number;
   /** 五位钩子编号（只能来自 hook_id.py 取号，后端绝不编号） */
   hook_code: string | null;
@@ -384,6 +404,20 @@ export interface AssetProduction {
    * 空数组/null = 这单没走新口径，读侧回退 character_card_key（存量单不许因为加列就丢卡）。
    */
   card_asset_ids: string[];
+  // ── 批 Q（11-10，需求⑤）：成片回收后自动拼接 ──
+  /**
+   * 投板时点名的「拼接素材」（asset_items.id）。钉在**行**上而不是只活在那次请求里：
+   * 回收往往是几十分钟后另一个进程做的（重启后带 recover_only 再跑一次）。
+   * null＝这单没要求自动拼。
+   */
+  concat_asset_id: string | null;
+  /**
+   * 自动拼接的顺序。注意这是**另一套词**（hook_first／material_first），
+   * 和手工拼接口的 asset_first／second_first 不通用，别互相换算。
+   */
+  concat_order: AssetAutoConcatOrder | null;
+  /** 最近一次自动拼的结果（「拼没拼」那一列只读它做展示，不参与任何判定） */
+  concat_last_result: AssetAutoConcatResult | null;
   /** 批 I（链路收敛）：本单已收进的成片段数（排除 package/copy 附属文件），生产单列表口才有 */
   output_count?: number;
   status: ProductionState;
@@ -593,12 +627,13 @@ export interface AssetQueueSegment {
  * 结果靠 `getAssetJob` 轮询取——刷新页面、换浏览器都还查得到（台账在库里，不在前端内存里）。
  */
 /**
- * 后台任务类型。六类都有写入方（批 F 加 `frames`、批 H 加 `dispatch`、批 J 加
- * `download`/`prompt_preview`）：`dispatch` 是唯一**往外花钱/花号池额度**的那一类，
- * 所以提交口另带 `confirm`；`download`/`prompt_preview` 是批 J 的搭车动作——
- * 反推时顺带下载原片、过审后自动备提示词，也开放手工批量（重试失败行用）。
+ * 后台任务类型。七类都有写入方（批 F 加 `frames`、批 H 加 `dispatch`、批 J 加
+ * `download`/`prompt_preview`、11-06 加 `analyze`＝反推进台账）：`dispatch` 是唯一
+ * **往外花钱/花号池额度**的那一类，所以提交口另带 `confirm`；`download`/`prompt_preview`
+ * 是批 J 的搭车动作——反推时顺带下载原片、过审后自动备提示词，也开放手工批量（重试失败行用）。
  */
 export type AssetJobKind =
+  | 'analyze'
   | 'summary_generate'
   | 'produce'
   | 'frames'
@@ -622,6 +657,13 @@ export interface AssetJobInfo {
   kind_label: string;
   status: AssetJobStatus;
   status_label: string;
+  /**
+   * 11-10 口径③「显示完成，成片墙还是看不到」：任务成功完成时后端给的一句白话
+   * ——**这一个动作**做到了哪一步、下一步去哪个页签看（非成功态为 null）。
+   * 「已完成」只说明投板／开单这个动作跑完，不等于片子到手；话术权威在后端
+   * `ASSET_JOB_DONE_NOTES`，前端不再自己拼一套（两套必然分叉）。
+   */
+  done_note: string | null;
   /** true = queued/running（还没完事），轮询就按这个判停 */
   running: boolean;
   batch_id: string | null;
@@ -744,6 +786,33 @@ export interface AssetOutputGroup {
   latest_at: string | null;
   /** 该组最新一条的首帧 presign（1h TTL），没帧＝null */
   thumb_url: string | null;
+}
+
+/** 成片墙空态的三个数（11-10 用户口径「我投去了，生产出来了就给我看」）。
+ *  墙空着的时候界面必须说得出是**哪一步**没走到，不能只说「还没有成片」。 */
+export interface AssetOutputsAwaiting {
+  /** 已投板、还没出终态（等豆包跑完＋回收）的张数 */
+  waiting_on_board: number;
+  /** 只建了单、还没投板的张数（要人去 ④ 点「投去出片」） */
+  order_ready_not_dispatched: number;
+  /** 这个口径下最近一次回收到成片的时间；一条都没回收过＝null */
+  last_output_at: string | null;
+}
+
+/** 换皮扇出的实时预览（`POST /assets/prompt-elements/fanout-preview`，0 元不落库）。
+ *  与开单同一个引擎（expand_matrix＋compose_variants），所以这里看到的换词结果
+ *  就是开出去的单会带的那份（编号那一步的替换除外，投板前 ④ 还能改）。 */
+export interface FanoutPreviewVariant {
+  seq: number;
+  values: Record<string, string>;
+  text: string;
+  replaced: { key: string; label: string; from: string; to: string; count: number }[];
+  /** 这一条换上的词落在正文哪里（同 `AssetPromptElementsApplyResult.marks`） */
+  marks?: AssetPromptElementMark[];
+  notes: string[];
+  /** 这些参数没有原值，这一条没换 */
+  missing: string[];
+  changed: boolean;
 }
 
 // ──────────────────────────────────────────────
@@ -964,6 +1033,22 @@ export interface AssetProduceRequest {
   waive_reason?: string | null;
   /** 仅 admin：只豁免这几类拦点（留空＝整条全放过），与审核台同一口径 */
   waive_codes?: string[] | null;
+  /**
+   * 批 P（用户口径「可自定义填入多个场景词、动物名称，并一次性生成多条钩子视频」）：
+   * 参数槽位键 → **要换上去的多个值**，一组值一张单。
+   * ⚠️ 与 `n` 是两个量：`n` 是调模型派生差异化提示词（花钱），扇出只是在展开好的那份稿子上
+   * 换词（0 元）。本批张数 = 文案数 × n × 扇出行数。留空＝不扇出。
+   */
+  element_values?: Record<string, string[]> | null;
+  /** 槽位键 → 公共兜底的**原值**（这一份稿子里现在写的是什么）；没有原值那条不换、并在结果里点名 */
+  element_base?: Record<string, string> | null;
+  /**
+   * summary_id → 这一篇自己的原值（批 P）。多条文稿同批开单时各篇场景词本来就不一样，
+   * 只传公共兜底会把替换做在错误的词面上；后端按「这里有的优先」合并。
+   */
+  element_base_by_summary?: Record<string, Record<string, string>> | null;
+  /** 多值配对方式：zip＝按行配对（默认，第1个场景配第1只动物）、product＝全组合（上限 100 行） */
+  element_mode?: 'zip' | 'product';
   /** D-1：true＝提交即回任务号（展开提示词要等模型，后台跑完再轮询取结果） */
   async_mode?: boolean;  /** A′ 归属跨人确认：投别人过审的候选（reviewed_by≠操作者）必须 true——谁投账算谁 */
   cross_person_confirm?: boolean;
@@ -1032,8 +1117,21 @@ export interface AssetListParams {
 
 /** GET /assets/summaries */
 export interface AssetSummaryListParams {
+  /** 逗号分隔的多状态（11-09 起后端支持）：`approved,passed_edited` 一次拿全「能投产的」 */
   audit_status?: AuditStatus | string;
   asset_id?: string;
+  /**
+   * 批 M（11-09）：一次按多条素材取文案（逗号分隔，后端上限 300 个）。
+   * ② 素材页「投去 AI 生成」靠它把「勾的这几条素材」直接翻成「它们名下已过审的文案」，
+   * 不用像生产单页那样先整批拉 300 条再前端筛——那种拉法量大时会截断。
+   */
+  asset_ids?: string;
+  /**
+   * 11-11 开单屏「取最新稿子」：逗号拼接的**文案 id**（单个字符串，≤300 条），点哪几条回哪几条。
+   * 与 `audit_status` 是叠加不是覆盖，但**不点状态时撤审/待审的照样回**——这一口要回答的是
+   * 「我手里这几条现在库里长什么样」，查不到的那几条前端靠差集点名（不是接口抽风）。
+   */
+  ids?: string;
   batch_id?: string;
   /** 只看风险词命中的 */
   only_risk?: boolean;
@@ -1063,6 +1161,9 @@ export interface AssetProductionListParams {
   status?: ProductionState | string;
   batch_id?: string;
   asset_id?: string;
+  /** 11-10 一屏到底：逗号拼接的**单个字符串**，只点这几张单（开完单立刻拿去投板用）。
+   *  计数 `dispatch` 不跟着变——它说的还是这一屏的账。 */
+  ids?: string;
   page?: number;
   /** 默认 100，后端封顶 300 */
   page_size?: number;  /** A′：owner=me 只看自己投产的单（查询偏好）；all/缺省＝全量 */
@@ -1188,6 +1289,81 @@ export interface AssetUploadResponse {
   message: string;
 }
 
+/**
+ * 配对清单的一条（POST /assets/import/paired 的 `manifest.items[i]`）。
+ * `video` 是**文件名**（后端只取 basename），四个槽位缺哪个就留空——缺了不报错，
+ * 只是在响应的 `need_copy` / `need_prompt` 里点名，让一线知道还欠哪一步。
+ */
+export interface AssetPairedManifestItem {
+  video: string;
+  title?: string;
+  /** 钩子原型**名称**（不是 id）；字典里没有这名字会落未分类并出现在 unknown_categories */
+  category?: string;
+  /** 人工反推稿：填了 = 登记一条 success 反推任务行，出文案直接吃它、不再花反推钱 */
+  script_text?: string;
+  /** 一句话钩子文案：填了 = 直接建 pending 候选进审核队列（形态不合格照样入库只点名） */
+  hook_copy?: string;
+  doubao_prompt?: string;
+  note?: string;
+  /** 标 true = 这条清单自己声明不收（如重复素材），理由进 skipped 里回显 */
+  skip?: boolean;
+  skip_reason?: string;
+}
+
+/** POST /assets/import/paired 的 `manifest` 字段（JSON 字符串，见 assetApi.importPaired） */
+export interface AssetPairedManifest {
+  batch_name?: string;
+  items: AssetPairedManifestItem[];
+}
+
+/**
+ * POST /assets/import/paired 的逐条入库结果（11-09 成稿配对导入）。
+ * 一条清单项 = 一条素材；`has_*` 说的是**清单里带了什么**，不是入库后猜的。
+ */
+export interface AssetPairedItem {
+  asset_id: string;
+  code: string;
+  batch_code: string;
+  title: string | null;
+  resolution: string | null;
+  duration: number | null;
+  status: AssetStatus;
+  has_copy: boolean;
+  has_script: boolean;
+}
+
+/** 配对没上、或清单里被标 skip 的逐条原因（都留在响应里，界面要一条条摊开给人看） */
+export interface AssetPairedIssue {
+  index: number;
+  video?: string;
+  error?: string;
+  reason?: string;
+}
+
+/** POST /assets/import/paired */
+export interface AssetPairedResponse {
+  created: number;
+  batches: AssetBatch[];
+  items: AssetPairedItem[];
+  /** 有稿没文案：点一下「出文案」就补上，不吃反推钱 */
+  need_copy: string[];
+  /** 缺反推稿（哪怕它有文案）：要补只能跑反推，那步花钱 */
+  need_prompt: string[];
+  /** 人工写的文案形态不合格——**照样入库了**，这里只是点名 */
+  shape_warnings: Array<{ code: string; video: string; problems: string[]; text: string }>;
+  /** 清单里的原型名不在字典里（导入不替人建字典行） */
+  unknown_categories: string[];
+  skipped: AssetPairedIssue[];
+  errors: AssetPairedIssue[];
+  /** 文件夹里多出来、清单没引用的文件（本口一个都不投） */
+  leftover_files: string[];
+  audit_rows: number;
+  frames: { enqueued: number; note?: string | null };
+  /** 11-09 批 O：本批新建候选的自动预取编号统计 */
+  hook_codes?: AssetHookParkStat;
+  message: string;
+}
+
 /** POST /assets/analyze/batch 的逐条结果 */
 export interface AssetAnalyzeResultItem {
   asset_id: string;
@@ -1270,7 +1446,21 @@ export interface AssetSummaryGenerateResultItem {
 export interface AssetSummaryGenerateResponse {
   results: AssetSummaryGenerateResultItem[];
   queue: AssetQueueSegment | null;
+  /** 11-09 批 O：本批新候选的自动预取编号统计（没开旋钮/没建候选时 attempted=0） */
+  hook_codes?: AssetHookParkStat;
   message: string;
+}
+
+/** 新文案自动预取编号的回包（导入/配对导入/出文案三个入口同一个形状）。
+ *
+ *  `collisions` 一定要看：报「没全配上」时得知道是哪几个号撞了库里的单，
+ *  否则一线只会反复点同一个按钮。 */
+export interface AssetHookParkStat {
+  attempted: number;
+  parked: number;
+  codes: string[];
+  collisions: string[];
+  reason: string | null;
 }
 
 /** POST /assets/summaries/review 的逐条结果 */
@@ -1347,6 +1537,156 @@ export interface AssetRiskLexiconUpdateResult {
   exempt: Record<string, string>;
   updated_at: string;
   notes: string[];
+}
+
+// ──────────────────────────────────────────────
+// 投产前可替换元素（批 M，11-10：确认投产之前把提示词里的场景/动物等元素换掉）
+// ──────────────────────────────────────────────
+
+/**
+ * 一行元素槽位（`system_config.asset_prompt_elements` 的一项）。
+ *
+ * 三种认法：`literal` 在正文里逐字找 `anchors` 给的词面（场景、动物这种写在剧情
+ * 自由文本里的东西）；`pattern` 用带捕获组的正则找（模板保证存在、只能在原地处改的位置，
+ * **绝不能全局替换数字**——时长在②⑦⑩⑬ 四处必须一致，那种位置只能靠正则圈定）；
+ * `manual` 系统不猜原句，整句由人从稿子里抄。
+ * 出厂表 11-10 起只有 literal／manual 两种（按用户口径严格照参考文档，题材标签／剧名两行已删），
+ * `pattern` 这能力留着给管理员自定义槽位。
+ * `pool` 就是"裂变"出来的几个选择，顺序＝界面上的推荐顺序；`categories` 空＝所有原型都认。
+ */
+export interface AssetPromptElementSlot {
+  key: string;
+  label: string;
+  /** 批 N 起有三种认法：literal＝认词面、pattern＝按写法认、manual＝系统不猜、整句由人抄 */
+  mode: 'literal' | 'pattern' | 'manual';
+  anchors: string[];
+  pattern: string;
+  pool: string[];
+  categories: string[];
+  note: string;
+  /**
+   * 批 N：literal 槽位可以另配一条**只用来认位置**的写法（如「剧情：」后第一段场景）。
+   * 认到的值仍按词面全局替换，所以 ⑧镜头行那句跟着换。
+   */
+  probe?: string;
+  /** 批 N：不碰的行写法（默认护住「钩子原文」行与 ① 生成【…】行）；空串＝允许碰 */
+  skip_lines?: string;
+}
+
+export interface AssetPromptElementsConfig {
+  effective: AssetPromptElementSlot[];
+  defaults: AssetPromptElementSlot[];
+  override: AssetPromptElementSlot[];
+  inherit: boolean;
+  has_override: boolean;
+  /**
+   * 后端那份「默认保护行」的原串（批 N）。界面靠它把某一行的保护写法分成
+   * 用的是默认／被改过／被清空三种状态显示——前端自己抄一份迟早和后端对不上。
+   */
+  default_skip_lines?: string;
+  updated_at: string;
+  can_edit: boolean;
+  notes: string[];
+}
+
+export interface AssetPromptElementsUpdateResult {
+  ok: boolean;
+  effective: AssetPromptElementSlot[];
+  updated_at: string;
+  notes: string[];
+}
+
+/** 抽元素返回的一个元素：当前值＋出现次数＋候选池（自定义输入永远可用） */
+export interface AssetPromptElementFound {
+  key: string;
+  label: string;
+  mode: 'literal' | 'pattern' | 'manual';
+  /**
+   * 批 N：`current=null`＝**这一稿里没认出原值**（词表外的值／手填项本来就不认）。
+   * 开单屏把它说成"请从稿子里复制"，不许显示成空下拉让人以为字典坏了。
+   */
+  current: string | null;
+  occurrences: Array<{ value: string; count: number }>;
+  pool: string[];
+  custom: boolean;
+  categories: string[];
+  note: string;
+  /** 批 N：true＝这一槽位绕开「钩子原文／①剧名」那两行（换动物不会把剧名换掉） */
+  protected?: boolean;
+  /**
+   * 11-10 用户口径「把原提示词中对应的内容也放出来，这样可以做一个对比」：
+   * 这个元素在**稿子里所在那一行**的原文（后端截断到 160 字）。
+   * 手工项／没认出的那些是空串。界面拿它当"改之前长什么样"的那半边。
+   */
+  context?: string;
+}
+
+/**
+ * POST /assets/prompt-elements/guess-values 的回包（11-10「帮我提炼原值」）。
+ *
+ * `values` 按**稿子 id** 分组，值只可能是"这一篇稿子里逐字存在的串"（后端 `accept_guessed_values`
+ * 过了三条硬判据才留下：key 在清单里／逐字出现／落在可动区间）。`dropped` 是被丢弃的白话说明，
+ * 界面上要说出来——不然人会以为"没显示＝模型没找到"，其实是它编了一个没敢用。
+ */
+export interface AssetPromptElementGuessResult {
+  /** 稿子 id → { 槽位 key: 抄回来的原值 } */
+  values: Record<string, Record<string, string>>;
+  /** 槽位 key → 中文名（回显用） */
+  labels: Record<string, string>;
+  dropped: string[];
+  notes: string[];
+  model: string;
+  slot_count: number;
+  text_count: number;
+  total_chars: number;
+  /**
+   * 11-11 批 Z：**这一枪到底花没花钱**。全缓存命中／没有空格要补／旋钮关了／模型没通，
+   * 都是 false。界面拿它决定措辞——说"问了模型"其实一分钱没花，是假话。
+   */
+  paid: boolean;
+  /** 回显这次是自动补位（true）还是人点了按钮（false） */
+  auto: boolean;
+  /** 稿子 id → 这次**从缓存**拿到的槽位 key（0 元那部分，界面上标「上次抄回」） */
+  from_cache: Record<string, string[]>;
+  /** 稿子 id → 这次**真问模型**拿到值的槽位 key（界面上标「模型抄回」） */
+  from_model: Record<string, string[]>;
+  /** 这次没问的稿子 id（自动补位分批装不下 / 稿子是空的） */
+  skipped: string[];
+}
+
+/** POST /assets/prompt-elements/apply 返回的一条替换明细（count=0＝原文里没这个词面，没改） */
+export interface AssetPromptElementReplaced {
+  key: string;
+  label: string;
+  mode: 'literal' | 'pattern' | 'manual';
+  from: string;
+  to: string;
+  count: number;
+}
+
+/**
+ * 一处"换上的新词在正文里的位置"（后端 `mark_replacements` 算的，前端只照它描色）。
+ * 为什么要后端算：`apply_edits` 是逐条顺序改的，前端拿 `from/to` 自己 indexOf
+ * 会和"原稿里本来就写着这个词"打架——那种情况后端会另给一句 notes 说清。
+ */
+export interface AssetPromptElementMark {
+  start: number;
+  end: number;
+  to: string;
+  from: string;
+  label: string;
+}
+
+export interface AssetPromptElementsApplyResult {
+  text: string;
+  replaced: AssetPromptElementReplaced[];
+  /** 11-10 用户口径①「看不到正文被替换的地方」：后端算好的替换落点（升序、互不重叠） */
+  marks?: AssetPromptElementMark[];
+  notes: string[];
+  length: number;
+  risk: { block: Array<{ word: string; level: string }>; warn: Array<{ word: string; level: string }> };
+  /** true＝这份正文按投板那道闸会被拦（不是这里拦，是提前告诉你点确认会被打回） */
+  would_dispatch_block: boolean;
 }
 
 // ──────────────────────────────────────────────
@@ -1550,6 +1890,24 @@ export interface AssetCardCheck {
 }
 
 /** POST /assets/produce */
+/**
+ * 批 P（11-10）：一次开单按可替换参数扇出成多条生产单的结果回显。
+ * 扇出是**字面换词、0 元**（不再调模型），但每张各占一个钩子编号、各吃一条号池额度——
+ * 这两件事必须在结果页说清，不然一线会以为「20 张 = 花了 20 次的钱」或「不占额度」。
+ */
+export interface AssetProduceElementFanout {
+  /** zip＝按行配对（第 i 行的各参数组成第 i 张）；product＝全组合（个数相乘） */
+  mode: 'zip' | 'product';
+  /** 每条文案扇几张（= 矩阵行数；没扇出时后端不回这份） */
+  rows_per_copy: number;
+  /** 参数名 → 本次填入的多值（键是 label，不是 slot key） */
+  params: Record<string, string[]>;
+  /** 单个词都过、拼进句子却撞上高风险词的条目：只摘这一条，其余照建 */
+  skipped?: Array<{ code: string; basis: string | null; words: string[] }> | null;
+  /** 「这一行其实没换动」的逐条备注（没给原值 / 原值在稿里找不到） */
+  notes?: string[] | null;
+}
+
 export interface AssetProduceResponse {
   created: number;
   results: AssetProduceResultItem[];
@@ -1577,6 +1935,8 @@ export interface AssetProduceResponse {
   card_asset_ids: string[];
   /** 缺编号/缺标题/豁免/拦下/缺骨架/漂移等提醒（要逐条显示，别只看 message） */
   warnings: string[];
+  /** 批 P：参数扇出结果（没扇出为 null）——「这批是换词扇的、没多花模型钱」按这份说 */
+  element_fanout?: AssetProduceElementFanout | null;
   message: string;
 }
 
@@ -1617,6 +1977,61 @@ export interface AssetProductionStatusResponse {
 // 批 H（11-05）：自动投板。口径是「可自动投板，但**逐批人工确认**」
 // ──────────────────────────────────────────────
 
+// ──────────────────────────────────────────────
+// 批 Q（11-10）：成片回收后自动拼接成可投放素材（需求⑤）
+// ──────────────────────────────────────────────
+
+/**
+ * 自动拼接的顺序（投板那一屏选的词，后端 `asset_compose_service.resolve_auto_order` 判）。
+ * 与手工拼接弹窗的 `AssetConcatOrder`（asset_first／second_first）**是两套词汇**：
+ * 手工口没有"钩子片"这个概念，两段都是人挑的；自动口固定一段是豆包收回来的钩子片。
+ */
+export type AssetAutoConcatOrder = 'hook_first' | 'material_first';
+
+/** 生产单行上 `concat_last_result` 的形状（每单一份，界面「拼没拼」列读它） */
+export interface AssetAutoConcatResult {
+  /** success＝全拼成；partial＝有拼成的也有失败的；failed＝一支没拼出来；already＝全是此前已拼 */
+  status: 'success' | 'partial' | 'failed' | 'already';
+  ok: number;
+  failed: number;
+  already: number;
+  order: AssetAutoConcatOrder | null;
+  concat_asset_id: string | null;
+  /** 最近一次失败的白话成因（成功时为 null） */
+  last_error: string | null;
+  /** UTC ISO 串（后端 `utc_iso` 补了时区标记，前端 dayjs 才能正确换本地时间） */
+  at: string;
+}
+
+/** 本次投板里自动拼接的逐支结果（同步档才有整份；异步档去任务台账的 result 里看） */
+export interface AssetAutoConcatSummary {
+  attempted: number;
+  composed: number;
+  failed: number;
+  /** 幂等命中：这支此前已经拼过了，没重拼（不算失败） */
+  already: number;
+  results: Array<{
+    production_id: string;
+    hook_code: string | null;
+    from_output_id: string;
+    order: AssetAutoConcatOrder;
+    result: 'composed' | 'failed' | 'already';
+    /** result=already 时的白话说明 */
+    reason?: string;
+    /** result=failed 时的成因（挑的是图片／素材被删／成片没落桶／ffmpeg 报错） */
+    error?: string;
+    output_id?: string;
+    file_key?: string;
+    /** 和哪一段拼的（`编号·标题` 标签） */
+    with?: string;
+    resolution?: string | null;
+    duration?: number | null;
+  }>;
+  /** 白话汇总，直接并进投板那句话；本次没有任何拼装要求时是空串 */
+  note: string;
+  frames_note?: string | null;
+}
+
 /** POST /assets/productions/dispatch 的请求体 */
 export interface AssetDispatchRequest {
   /** 点名要投的生产单 id（单次上限由后端 `ASSET_DISPATCH_MAX_PER_CALL` 管，默认 20） */
@@ -1643,6 +2058,15 @@ export interface AssetDispatchRequest {
    * （第 1 张＝板上主形象），脏 id 后端 400；不传＝各单沿用已带的卡。
    */
   card_asset_ids?: string[];
+  /**
+   * 批 Q（需求⑤）：这批片子收回来之后，每支自动和这条素材（asset_items.id）两段直拼，
+   * 拼成的产物即「可投放素材」（来源素材状态随之点亮成 ready）。
+   * 0 元、不调模型。挑图片／还没取回原片的链接素材会在**投出去之前**就被后端 400 拦掉
+   * （号池还没烧），不会等回收到了才发现拼不了。
+   */
+  concat_asset_id?: string | null;
+  /** 顺序：默认 hook_first＝钩子片在前、素材片段在后 */
+  concat_order?: AssetAutoConcatOrder;
 }
 
 /** 闸门挡下/拒投的逐条说明（三堆里除"要投的"以外都是这个形状） */
@@ -1673,6 +2097,14 @@ export interface AssetDispatchPrecheck {
   capacity: AssetBoardCapacity;
   /** 11-06 拍板：投递稿可改——这次真的带着改稿投出去的生产单 id 列表 */
   prompt_overrides?: string[];
+  /**
+   * 批 Q：这次带过去的拼装要求。三种形状——
+   * `{asset_id,label,order,applied_to}`＝投出去后每支自动和 label 那条拼；
+   * `{cleared_for:[...]}`＝这次把行上原来钉的要求取消了；
+   * null＝没提要求（沿用各行原来的钉法，不清空）。
+   */
+  concat?: ({ asset_id: string; label: string; order: AssetAutoConcatOrder; applied_to: string[] }
+    | { cleared_for: string[] }) | null;
   note: string;
 }
 
@@ -1718,6 +2150,8 @@ export interface AssetDispatchResponse {
   asset_status?: Record<string, AssetStatus>;
   capacity: AssetBoardCapacity;
   dispatch: AssetDispatchCounts;
+  /** 批 Q：本次回收后自动拼接的结果（没提要求也没有钉着的行时 attempted=0、note 为空串） */
+  concat?: AssetAutoConcatSummary | null;
   message: string;
 }
 
@@ -2110,7 +2544,7 @@ export const assetApi = {
   // 视频文件批量上传（multipart，可多文件）→ 落自有桶 raw-footage/asset/ 前缀
   // Content-Type 只给不带 boundary 的 multipart/form-data：axios 在 adapter 里会把它清掉，
   // 交给浏览器补 boundary（完全不设则命中实例默认 application/json，FormData 会被 JSON.stringify）。
-  // 单请求整包上限 500MB（nginx），60s 默认超时会掐断大视频，故 timeout 关闭。
+  // 单请求整包上限 2G（nginx `client_max_body_size`），60s 默认超时会掐断大视频，故 timeout 关闭。
   uploadBatch: (
     data: {
       files: File[];
@@ -2161,6 +2595,41 @@ export const assetApi = {
         if (total > 0) onProgress(Math.min(100, Math.round((progressEvent.loaded / total) * 100)));
       },
     }) as Promise<AssetUploadResponse>;
+  },
+
+  // 成稿配对导入（11-09）：原片 + 人工稿 + 钩子文案 + 豆包提示词一次进四个槽位，0 模型费。
+  // ⚠️ `files` 只投清单引用到的那些文件：后端按 basename 一一对应，两边任一侧重名都会
+  // 当场 400（按大小/顺序猜＝把 A 的画面配上 B 的稿，这条链路上没有任何环节会发现）。
+  // 超时沿用 UPLOAD_TIMEOUT=0：86 支原片整包走一次 multipart，60s 默认必掐在半路，
+  // 而那时字节已经落库——界面上会显示「失败」，实际却多了一批素材。
+  importPaired: (
+    data: {
+      files: File[];
+      manifest: AssetPairedManifest;
+      /** 登记用的反推计时上限档位（秒）；本口不产生反推费，只决定档位怎么记 */
+      max_duration?: number;
+      project_id?: string;
+      /** 库里已有同名素材时仍再入一份（默认后端跳过并在 skipped 里点名） */
+      force_duplicates?: boolean;
+    },
+    onProgress?: (percent: number) => void,
+  ) => {
+    const form = new FormData();
+    data.files.forEach((f) => form.append('files', f));
+    // manifest 是**字符串**字段（后端 Form 收 JSON 文本，不是 multipart 的 JSON part）
+    form.append('manifest', JSON.stringify(data.manifest));
+    if (data.max_duration != null) form.append('max_duration', String(data.max_duration));
+    if (data.project_id != null) form.append('project_id', data.project_id);
+    if (data.force_duplicates) form.append('force_duplicates', 'true');
+    return client.post('/assets/import/paired', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: UPLOAD_TIMEOUT,
+      onUploadProgress: (progressEvent) => {
+        if (!onProgress) return;
+        const total = progressEvent.total || 0;
+        if (total > 0) onProgress(Math.min(100, Math.round((progressEvent.loaded / total) * 100)));
+      },
+    }) as Promise<AssetPairedResponse>;
   },
 
   // 成本预览：批量按钮的二次确认单先调这个（不落库，只给预估+余额+闸门结论）
@@ -2232,6 +2701,53 @@ export const assetApi = {
 
   updateRiskLexicon: (data: AssetRiskLexiconUpdate) =>
     client.put('/assets/risk-lexicon', data) as Promise<AssetRiskLexiconUpdateResult>,
+
+  // 可替换元素字典（批 M）：形态跟风险词库一样——读全员、写仅 admin，存 system_config，改完立即生效。
+  getPromptElements: () =>
+    client.get('/assets/prompt-elements') as Promise<AssetPromptElementsConfig>,
+
+  updatePromptElements: (data: { slots: AssetPromptElementSlot[]; inherit?: boolean }) =>
+    client.put('/assets/prompt-elements', data) as Promise<AssetPromptElementsUpdateResult>,
+
+  // 抽元素：纯文本进、纯文本出（不读生产单、不动库、0 元）；texts 的 key＝行 id，回包按同 key 分组
+  // `include_unmatched`（批 N）：true＝把这一原型**该设的参数项全摆出来**（认不出原值的
+  // current=null），④开单屏要的就是这个；②投递稿那一屏只要真换得动的，保持默认 false。
+  extractPromptElements: (data: {
+    texts: Record<string, string>;
+    category?: string;
+    include_unmatched?: boolean;
+  }) =>
+    client.post('/assets/prompt-elements/extract', data) as Promise<{
+      items: Record<string, AssetPromptElementFound[]>;
+      category: string;
+      catalog_count: number;
+      slot_labels: string[];
+      notes: string[];
+    }>,
+
+  // 11-10「帮我提炼原值」＋11-11 批 Z 改口径（用户原话「你不能按照固定的词典去识别，
+  // 你要调用大模型的能力去做这个事情」）：认不出原值时让模型**逐字抄回**稿子里那句原文。
+  // ⚠️ 与上面那条的区别：这一口**可能花钱**——但先查后端那份按正文指纹存的缓存，
+  // 同一篇稿子的同一格只花一次。`auto=true` 是开单屏认完词表**自动**补位（分批装不下不报错、
+  // 模型挂了只说明不甩脸子）；`auto=false` 是人点了「再问一次模型」，此时 `use_cache=false`
+  // 绕过缓存、失败原样报错。超时照同步等模型的口径带 MODEL_WAIT_TIMEOUT。
+  guessPromptElementValues: (data: {
+    texts: Record<string, string>;
+    category?: string;
+    auto?: boolean;
+    use_cache?: boolean;
+    only_missing?: Record<string, string[]>;
+  }) =>
+    client.post('/assets/prompt-elements/guess-values', data, {
+      timeout: MODEL_WAIT_TIMEOUT,
+    }) as Promise<AssetPromptElementGuessResult>,
+
+  // 套用替换：把改后的整段正文还给你（不落库、不写 prompt_text），顺带提前扫一遍投板闸门
+  applyPromptElements: (data: {
+    text: string;
+    edits: Array<{ key?: string; old?: string; new: string }>;
+  }) =>
+    client.post('/assets/prompt-elements/apply', data) as Promise<AssetPromptElementsApplyResult>,
 
   // 钩子原型字典（11-04 拍板①）：读全员、写仅 admin，形态与风险词库一致。
   // 字典是**表**不是 system_config——素材/文案要按它筛选，JSON 名单没法 join，
@@ -2306,8 +2822,32 @@ export const assetApi = {
     client.get('/assets/outputs', { params }) as Promise<AssetOutputListResult>,
 
   // 成片墙两级视图第一级：按素材（钩子）或按批次聚合的组清单（每组带成片数/最近回收/最新缩略图）
+  // awaiting＝空态要说真话用的三个数（11-10）：投板在途／只建单没投／最近回收时间
   listOutputGroups: (params?: { group_by?: 'asset' | 'batch'; batch_id?: string; kind?: string; qc_status?: string; owner?: 'me' | 'all'; limit?: number }) =>
-    client.get('/assets/outputs/groups', { params }) as Promise<{ group_by: string; groups: AssetOutputGroup[] }>,
+    client.get('/assets/outputs/groups', {
+      params,
+    }) as Promise<{ group_by: string; groups: AssetOutputGroup[]; awaiting?: AssetOutputsAwaiting }>,
+
+  // 换皮扇出的实时预览（11-10 用户口径「选了元素但看不到正文被替换的地方」）：
+  // 0 元、不落库、不占号；与开单同一个引擎，所以配对不齐/超上限的 400 话术也是一条
+  previewPromptElementFanout: (body: {
+    texts: Record<string, string>;
+    category?: string;
+    values: Record<string, string[]>;
+    base?: Record<string, string>;
+    base_by_summary?: Record<string, Record<string, string>>;
+    mode?: 'zip' | 'product';
+  }) =>
+    client.post('/assets/prompt-elements/fanout-preview', body, {
+      // 纯字面替换，不等模型：给 30s 够最慢的一批（50 条稿子）跑完
+      timeout: 30000,
+    }) as Promise<{
+      rows: number;
+      mode: string;
+      notes: string[];
+      risk_words: string[];
+      items: { id: string; variants: FanoutPreviewVariant[] }[];
+    }>,
 
   // P1（评审定稿⑧）：成片交付包——跨组勾选打包 zip（含 manifest），验收 failed 拦在打包口
   packageOutputs: (ids: string[]) =>
@@ -2329,6 +2869,8 @@ export const assetApi = {
       created: number;
       skipped: { index: number; problems: string[]; text: string }[];
       items: { asset_id: string; summary_id: string; text: string }[];
+      /** 11-09 批 O：这批文案的自动预取编号统计（关旋钮/取不到号只提示，不拦导入） */
+      hook_codes?: AssetHookParkStat;
       message: string;
     }>,
 
@@ -2478,12 +3020,18 @@ export const ASSET_STAGE_LABELS: Record<AssetStage, string> = {
   skipped: '跳过',
 };
 
-/** derive_status 的 13 个派生态（值以 models/asset.py 的 AS_* 为准） */
+/** derive_status 的 14 个派生态（值以 models/asset.py 的 AS_* 为准） */
 export const ASSET_STATUS_LABELS: Record<AssetStatus, string> = {
   draft: '草稿',
   importing: '导入中',
   waiting_prompt: '等读视频',
   analyzing: '读视频中',
+  /**
+   * 11-09 成稿导入：稿已就位、**但出文案这一步还没人提交**。
+   * 以前这种状态也叫「出文案中」，86 条成稿一次进来就是几十条假「在跑」，
+   * 一线分不清该点一下还是该等——和「等读视频／读视频中」分开是同一个道理。
+   */
+  waiting_summary: '等出文案',
   summarizing: '出文案中',
   awaiting_review: '等审核',
   ready_to_produce: '可以出生产单',

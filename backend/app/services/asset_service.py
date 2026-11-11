@@ -412,7 +412,7 @@ def derive_status(stages: Dict[str, str], has_approved_copy: bool = False, media
       summary success 且无过审文案     → awaiting_review
       summary success 且有过审文案     → ready_to_produce
       prompt running                  → analyzing
-      prompt success                  → summarizing
+      prompt success                  → waiting_summary（**等出文案**，任务还没提交）
       import running                  → importing
       import success                  → waiting_prompt（**待反推**，任务还没提交）
       其余                            → draft
@@ -420,6 +420,9 @@ def derive_status(stages: Dict[str, str], has_approved_copy: bool = False, media
     A4-6：`analyzing` 与 `waiting_prompt` 必须分开。旧口径把「导入完成待反推」和
     「智令正在跑」都算成 analyzing，200 条的队列里一线看不出哪些是**没人提交**、
     哪些是**提交了在等**，两种情况的处置动作完全相反（一个要点提交、一个要等收敛）。
+    11-09 成稿导入：同一条规矩搬到文案这一环——`prompt success + summary pending`
+    以前给 `summarizing`（界面「出文案中」），但那一步压根没提交；86 条成稿一次进来
+    就是几十条假「在跑」。现在 `waiting_summary`＝等你点出文案，`summarizing`＝真在跑。
     """
     s = {k: (stages.get(k) or "pending") for k in ("import", "prompt", "summary", "produce", "compose")}
     # 11-05 批 G：图片**先于一切**返回 image_ready。四环（反推/文案/生产/拼接）对图都不成立，
@@ -445,7 +448,10 @@ def derive_status(stages: Dict[str, str], has_approved_copy: bool = False, media
     if s["prompt"] == "running":
         return "analyzing"
     if s["prompt"] == "success":
-        return "summarizing"
+        # 稿到了但文案任务**还没提交**——这不是「出文案中」，是「等你点出文案」。
+        # 11-09 成稿导入一次进来几十条这种状态，界面上全写成「出文案中」而实际零个在跑，
+        # 与 A4-6 拆 analyzing／waiting_prompt 是同一个坑（详见 models/asset.py 那段注释）。
+        return "waiting_summary"
     if s["import"] == "running":
         return "importing"
     if s["import"] in ("success", "skipped"):

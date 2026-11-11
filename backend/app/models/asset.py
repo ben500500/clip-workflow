@@ -107,6 +107,12 @@ AS_IMPORTING = "importing"
 AS_ANALYZING = "analyzing"
 AS_WAITING_PROMPT = "waiting_prompt"
 AS_SUMMARIZING = "summarizing"
+# 11-09 成稿导入暴露的同一条坑（照 A4-6 的手法再拆一次）：`prompt success + summary pending`
+# 以前也派生成 summarizing（界面「出文案中」），但那一步**根本没人提交**。
+# 86 条成稿一次进来，队列里几十条写着「出文案中」而实际一条都没跑——和 A4-6 修之前
+# 「分不清谁在跑、谁卡着没人管」是同一个病，只是搬到了文案这一环。
+# 拆开后：`waiting_summary`＝稿已就位、等你点「出文案」（免费）；`summarizing`＝任务真在跑。
+AS_WAITING_SUMMARY = "waiting_summary"
 AS_AWAITING_REVIEW = "awaiting_review"
 AS_READY_TO_PRODUCE = "ready_to_produce"   # 有过审文案，可开生产单
 AS_PRODUCING = "producing"
@@ -404,6 +410,17 @@ class AssetSummary(Base):
     __tablename__ = "asset_summaries"
     __table_args__ = (
         UniqueConstraint("asset_id", "seq", name="uq_asset_summary_seq"),
+        # 一钩一号的 DB 底线（2026-11-11 七席评审，业务 P0）：预取位也全库唯一——
+        # 应用层查重（_auto_park / 手工钉号）是 SELECT 前置提示，并发窗口拦不住；
+        # 两个文案挂着同一个号，早晚有一边顶进生产单变双烧。部分唯一索引：
+        # NULL（未预取/已消费）不参与唯一性。撞约束的写路径统一转 409 点名。
+        Index(
+            "uq_asset_summaries_hook_code",
+            "hook_code",
+            unique=True,
+            postgresql_where=text("hook_code IS NOT NULL"),
+            sqlite_where=text("hook_code IS NOT NULL"),
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -450,6 +467,15 @@ class AssetSummary(Base):
     # （文案本身不受影响），用 POST /assets/summaries/prompt-web 单独补。
     doubao_prompt = Column(Text, nullable=True)
 
+    # 批 N（11-09 用户口径「现有已经导入的那些文案，你都去取一个编号放着吧」）：
+    # **预取**好、还没用掉的钩子编号。为什么要在文案上存一份：取号是「一发即烧」的
+    # 外部动作（hook_id.py 写共享台账），过去只能在开单那一屏现取现贴，一线慢一步
+    # 就得回头再取；批量导入的 85 条更是每条都得手动粘。现在号先钉在文案上等着，
+    # 开单时后端自动顶上去（见 `create_productions` 的 parked_code），顶掉就当场清空
+    # ——不清空就等于允许同一个号被第二次开单复用，而拍板③ 明确禁止（一钩一号，
+    # 已用号在 `asset_productions` 那侧当场 400）。NULL＝没预取 / 已被某张单吃掉。
+    hook_code = Column(String(10), nullable=True)
+
     source_prompt_task_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -489,6 +515,17 @@ class AssetProduction(Base):
     __table_args__ = (
         UniqueConstraint("summary_id", "seq", name="uq_asset_production_seq"),
         UniqueConstraint("idempotency_key", name="uq_asset_production_idem"),
+        # 一钩一号的 DB 底线（2026-11-11 七席评审，业务 P0）：应用层查重（7556 起）
+        # 与真实 INSERT 之间隔着 n×90-150s 的模型展开，竞态窗口是分钟级——两人先后
+        # 开同一个号，后查的人看到的是前者未提交的空库，两张单都落库。唯一索引是
+        # 唯一能从数据库层兜住的手段；NULL（无号单）不参与唯一性。
+        Index(
+            "uq_asset_productions_hook_code",
+            "hook_code",
+            unique=True,
+            postgresql_where=text("hook_code IS NOT NULL"),
+            sqlite_where=text("hook_code IS NOT NULL"),
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -536,6 +573,18 @@ class AssetProduction(Base):
     # 那条卡是花钱传上来的（见 `_card_sources_for`）。JSON 而非 UUID[]：sqlite 也认，
     # 且这里从不按卡 id 反查生产单（要反查得走 jsonb 包含算子，PG 才有），没索引可谈。
     card_asset_ids = Column(JSON, nullable=True)
+    # 批 Q（11-10 需求⑤「钩子成片生成出来以后自动拼接成可投放素材」）：投板时点名的**拼接素材**。
+    # 回收一支持到手的豆包成片，就自动和这一条拼一遍（钩子片＋人指定的片段＝可投放素材），
+    # 顺序也只有「钩子在前／片段在前」两档——沿用 11-04 手工拼接的口径，不做智能选点。
+    # 存成单行字段而不是只存在那一次请求里，是为了**接续回收也能拼**：进程重启后带
+    # recover_only=true 再回收一次，这条拼装要求还在单上，不用人再点一遍。
+    # 不建 FK（与 asset_items.category_id 同一条理由：老库靠 ADD COLUMN 补列，加约束不安全），
+    # 有效性由投板闸门当场验（存在／不是图片／桶里有文件），脏值进不了这一列。
+    concat_asset_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    concat_order = Column(String(20), nullable=True)
+    # 拼没拼成的最近一次结果（界面「拼没拼」列 + 失败成因）。只存给人看的话，
+    # 判据不在这——幂等靠 asset_outputs.composed_from_output_id（见那边注释）。
+    concat_last_result = Column(JSON, nullable=True)
 
     status = Column(String(30), nullable=False, default=PR_ORDER_READY, index=True)
     provider_task_id = Column(String(100), nullable=True)
@@ -589,6 +638,13 @@ class AssetOutput(Base):
     board_out_url = Column(String(500), nullable=True)
     # 钩子来源（拼接成的成片记录用了哪个 production 的素材，一对多追溯）
     hook_production_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # 批 Q（11-10）：这条 composed 由**哪一支豆包成片**自动拼出来——自动拼接的幂等键。
+    # 回收会跑很多轮（进程重启、到期后再点一次「回收」），没有这个键同一支片子会被拼出
+    # N 条一模一样的产物，成片墙也就没法看。手工口 `POST /assets/concat` 恒为 NULL：
+    # 那是人现场点的，同一支反复拼不同顺序是正常用法，不许被幂等挡住。
+    # 只建普通索引、不建 UNIQUE：老库靠 ADD COLUMN 补列补不出约束，
+    # 建了 UNIQUE 会出现"新库拦、老库不拦"的两套行为；判重走插入前那一次 SELECT。
+    composed_from_output_id = Column(UUID(as_uuid=True), nullable=True, index=True)
 
     qc_status = Column(String(20), nullable=True)          # passed / warn / failed / NULL=未验
     qc_result = Column(JSON, nullable=True)                # 各项判据与证据（采样密度记在里面）
@@ -747,3 +803,41 @@ class AssetJob(Base):
 
     def __repr__(self) -> str:
         return f"<AssetJob(kind={self.kind}, status={self.status}, batch={self.batch_id})>"
+
+
+class AssetElementGuess(Base):
+    """模型从投递稿里**逐字抄回**的换皮参数原值（一行 = 一份稿子的一个参数项）。
+
+    为什么要有这张表（11-11 用户口径「你不能按照固定的词典去识别，你要调用大模型的能力
+    去做这个事情」）：词表认不出的那些（真稿写「黄皮子」而词表只有「黄鼠狼」、整句台词
+    是间接转述）只能问模型，但问一次花一次钱、还要等十几秒。同一份稿子的原值不会自己变，
+    所以抄回来的结果必须存下来复用——**每篇稿子每个参数项只花一次模型钱**，之后
+    反复开单、刷新页面、换浏览器都是 0 元。
+
+    ⚠️ 存的是"模型当时抄回来的那串"，**不是"已验证的原值"**：
+    读出来时照样过一遍 `accept_guessed_values`（逐字在不在稿子里、有没有落在
+    `钩子原文：`／`生成【…】` 这类保护行里、长度上限）。因为保护规则来自**当前**生效的
+    元素字典，字典一改（比如某行从 protected 变成可动），陈旧的判定就该重算，
+    不能拿存下来的时候的口径当现在的结论。过不了就丢弃这一行缓存，下次重新问。
+
+    键是 `body_hash`（那份投递稿正文的 sha256）而不是 `summary_id`：稿子一旦改写，
+    哈希就变，旧行自然不再命中（不删，留着给「同一篇稿子回滚了」复用）；
+    同一份稿子被两条生产单引用也只占一份缓存。
+    """
+    __tablename__ = "asset_element_guesses"
+    __table_args__ = (
+        UniqueConstraint("body_hash", "slot_key", name="uq_asset_element_guesses_hash_slot"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    body_hash = Column(String(64), nullable=False, index=True)
+    slot_key = Column(String(60), nullable=False)
+    value = Column(Text, nullable=False)
+    # 抄回它的那个模型（换模型后值可能重抄，排查"这个原值哪来的"要看这行）
+    model = Column(String(80), nullable=False, default="")
+    # 认的时候那一份生效字典里这一项挂的原型（只做诊断，不参与命中判定）
+    category = Column(String(60), nullable=False, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def __repr__(self) -> str:
+        return f"<AssetElementGuess(hash={self.body_hash[:8]}, slot={self.slot_key})>"

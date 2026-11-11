@@ -4,7 +4,7 @@ import {
 } from 'antd';
 import {
   BulbOutlined, CloudDownloadOutlined, DeleteOutlined, DownloadOutlined, FileTextOutlined, LoadingOutlined,
-  MergeCellsOutlined, QuestionCircleOutlined, ReloadOutlined, SearchOutlined,
+  MergeCellsOutlined, QuestionCircleOutlined, ReloadOutlined, SearchOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -13,15 +13,21 @@ import {
 } from '../../api/assets';
 import type {
   AssetItem, AssetAnalyzeResponse, AssetCostEstimateResponse, AssetMediaKind, AssetResolveResponse,
+  AssetSummary,
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
-import { AssetStatusTag, MediaKindTag, StageTags, aspectShortText, durationText, isImageAsset, yuan } from './AssetBits';
+import {
+  AssetStatusTag, LandscapeTag, MediaKindTag, StageTags,
+  aspectShortText, durationText, isImageAsset, yuan,
+} from './AssetBits';
 import {
   CategorySelect, CategoryTag, UNCLASSIFIED, invalidateAssetCategories, useAssetCategories,
 } from './AssetCategoryBits';
 import CostConfirmModal from './CostConfirmModal';
 import AssetDetailDrawer from './AssetDetailDrawer';
 import AssetComposeModal from './AssetComposeModal';
+import ApprovedSummaryPickerModal from './ApprovedSummaryPickerModal';
+import ProduceOrderModal from './ProduceOrderModal';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
 import { withCrossPersonConfirm } from './crossPerson';
 
@@ -30,6 +36,12 @@ const { RangePicker } = DatePicker;
 
 /** 列宽拖拽的记忆键（批 J 列表列宽可拖，拖完存本地，下次进来保持） */
 const COL_WIDTH_KEY = 'asset-list-col-widths-v1';
+
+/**
+ * 「投去 AI 生成」一次最多带多少条素材去捞文案：**跟后端 `asset_ids` 的上限对齐（300）**。
+ * 在这里拦是为了不让人点完才吃一个 400；后端那道仍在，是防直连调用的。
+ */
+const PRODUCE_FROM_ASSET_MAX = 300;
 
 /** 来源链接太长截断成「域名+尾巴」，全文放 Tooltip（批 J：超长链接把列撑爆） */
 const shortUrl = (u: string) => {
@@ -112,6 +124,16 @@ interface Props {
   reloadToken?: number;
   /** A′ UX：页签切回来自动刷新（antd Tabs 挂载不卸载） */
   active?: boolean;
+  /**
+   * 批 M（11-09）：② 页直达投产后，建单成功要把人带到「生产与投板」页签——
+   * 按钮说「去生产单」就得真带人过去（同一个坑见评审二 P0-2）。
+   */
+  onGoToProduction?: () => void;
+  /**
+   * 11-10 一屏到底：建单成功后不只把人带到 ④，还把**刚建的那几张**交出去——
+   * ④ 那边直接弹出「投去 AI 出片」确认窗（开单窗自己缩掉）。
+   */
+  onProduced?: (ids: string[], notes: string[]) => void;
 }
 
 /**
@@ -127,8 +149,14 @@ interface Props {
  *
  * 「原型」那一列（11-04 拍板①）是**结构层人工标记**：不点也能走完全链，所以既不必填也不拦人；
  * 点原型 0 元、不等模型，因此不走成本确认单，直接批量提交。
+ *
+ * 「投去 AI 生成」（11-09）是**只读的一步跳转**：把勾选素材名下已过审的文案捞出来，
+ * 交给生产单页/审核台共用的那个投产弹窗。本按钮自己不算钱、不做校验——闸门只有一套，
+ * 在弹窗里（风险词、一致性、钩子编号、号池），这里再写一套早晚对不上。
  */
-const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadToken, active = true }) => {
+const AssetListPanel: React.FC<Props> = ({
+  canProduce, isAdmin, batchId, reloadToken, onGoToProduction, onProduced, active = true,
+}) => {
   const [items, setItems] = useState<AssetItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -200,6 +228,15 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
   const [resolvePreview, setResolvePreview] = useState<AssetCostEstimateResponse | null>(null);
   const [resolveConfirmed, setResolveConfirmed] = useState(false);
   const [resolveBusy, setResolveBusy] = useState(false);
+
+  // 批 M（11-09 用户口径）：② 页直达投产——勾素材 → 看它们名下已过审的文案 → 投产弹窗。
+  // 原来这条路的入口在生产单页（从整批过审文案里翻）和审核台（审完顺手投），
+  // 但一线手上拿着的是「素材」，最自然的动作就是在素材这一行点下去。
+  // 批 N（11-09 收「两套入口」）：挑选那一屏换成 ②④ 共用的 ApprovedSummaryPickerModal，
+  // 这里只留「开不开」和「选中了哪几条」，取数/截断/缺文案点名都在组件里。
+  const [aiOpen, setAiOpen] = useState(false);
+  const [pickedSummaries, setPickedSummaries] = useState<AssetSummary[]>([]);
+  const [produceOpen, setProduceOpen] = useState(false);
 
   const [genBusy, setGenBusy] = useState(false);
   const [refreshBusy, setRefreshBusy] = useState(false);
@@ -289,6 +326,17 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     [selected],
   );
   const selectedVideoCount = selectedVideoIds.length;
+  /**
+   * 共用挑选弹窗要的「范围」：id 拿去按 `asset_ids` 捞文案，code 用来点名哪几条
+   * 排在外面（只有过审文案的素材才进得来）。图片不在这里——图没有文案。
+   */
+  const selectedVideoAssets = useMemo(
+    () =>
+      selected
+        .filter((s) => !isImageAsset(s))
+        .map((s) => ({ id: s.id, code: s.code })),
+    [selected],
+  );
 
   // ── 反推文案（原「反推」）──
   const openAnalyze = async () => {
@@ -446,6 +494,23 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
     } finally {
       setGenBusy(false);
     }
+  };
+
+  // ── 投去 AI 生成（② 页直达投产，批 M 11-09）──
+  // 取数与展示都在共用挑选弹窗里（ApprovedSummaryPickerModal，11-09 收「两套入口」），
+  // 这里只留两道**开弹窗之前**就能判的拦：没勾视频不拦、超上限不拦会让点完才吃 400。
+  const openProduceFromAssets = () => {
+    if (!selectedVideoCount) {
+      message.warning('角色卡（图片）没有文案可投：只勾视频素材');
+      return;
+    }
+    if (selectedVideoIds.length > PRODUCE_FROM_ASSET_MAX) {
+      message.warning(
+        `一次最多带 ${PRODUCE_FROM_ASSET_MAX} 条素材（当前 ${selectedVideoIds.length} 条）——先用上面的批次筛选缩小范围`,
+      );
+      return;
+    }
+    setAiOpen(true);
   };
 
   // ── 查时长（去原链接解析，0.01 元/次）──
@@ -817,7 +882,12 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
             </Text>
           </Space>
         ) : (
-          <MediaKindTag asset={row} />
+          // 11-09 用户拍板：横屏原片全部收进来、界面上要标横屏（以前这一列对视频永远空着，
+          // 因为后端 aspect 只喂图片——现在两类都给了，判据仍只在后端一处）
+          <Space size={2}>
+            <MediaKindTag asset={row} />
+            <LandscapeTag aspect={row.aspect} />
+          </Space>
         ),
     },
     {
@@ -1136,6 +1206,29 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
               出钩子文案（{selectedVideoCount}）
             </Button>
           </Tooltip>
+          {/*
+            批 M（11-09）：直达投产。这一步 0 元、只读（拉已过审文案清单），
+            真花钱的是下一屏投产弹窗里的展开/投板，所以不走这里的成本确认单——
+            闸门在 ProduceOrderModal 里，全站只有那一套。
+          */}
+          <Tooltip
+            title={
+              <div style={{ maxWidth: 300 }}>
+                <div>把勾选素材名下<strong>已过审 / 改后通过</strong>的文案捞出来，进投产弹窗开生产单。</div>
+                <div style={{ marginTop: 4 }}>
+                  风险词、一致性、钩子编号、号池这些检查都在弹窗里，这里不重复一遍。
+                </div>
+              </div>
+            }
+          >
+            <Button
+              icon={<ThunderboltOutlined />}
+              onClick={openProduceFromAssets}
+              disabled={!ids.length}
+            >
+              投去 AI 生成（{selectedVideoCount}）
+            </Button>
+          </Tooltip>
           <Tooltip title="把这一批里还在跑的视频读取结果一次性收回来（不用逐条点）">
             <Button icon={<ReloadOutlined />} loading={refreshBusy} onClick={refreshRunning}>
               收取在跑结果（本页 {runningCount}）
@@ -1335,6 +1428,55 @@ const AssetListPanel: React.FC<Props> = ({ canProduce, isAdmin, batchId, reloadT
         asset={composeAsset}
         onClose={() => setComposeAsset(null)}
         onDone={() => fetchList(page, pageSize)}
+      />
+
+      {/*
+        批 M（11-09）：② 页「投去 AI 生成」的中间一屏，只回答一个问题——
+        「你勾的这几条素材里，哪些文案已经过审、能开单」。
+        批 N（11-09 收「两套入口」）：这屏抽成 ②④ 共用组件 ApprovedSummaryPickerModal，
+        生产单页那版（原来 approved/passed_edited 各拉 300 条再前端拼）一起并进来。
+        不做默认全选：一条素材可能好几版都过了审，全勾＝一次投出几倍号池额度，
+        而号池是按天算的（≈120 条/日）。
+      */}
+      <ApprovedSummaryPickerModal
+        open={aiOpen}
+        title={`从勾选素材开生产单（${selectedVideoCount} 条素材）`}
+        assets={selectedVideoAssets}
+        onCancel={() => setAiOpen(false)}
+        onConfirm={(rows) => {
+          setPickedSummaries(rows);
+          setAiOpen(false);
+          setProduceOpen(true);
+        }}
+      />
+
+      {/* 与生产单页/审核台同一个投产弹窗：闸门（风险词、一致性、钩子编号、号池、成本）只有一套 */}
+      <ProduceOrderModal
+        open={produceOpen}
+        summaries={pickedSummaries}
+        isAdmin={isAdmin}
+        batchId={batchFilter || batchId}
+        onClose={() => setProduceOpen(false)}
+        onDone={() => {
+          setProduceOpen(false);
+          setPickedSummaries([]);
+          setSelected([]);
+          fetchList(page, pageSize);
+          // 建完单要真把人带到「生产与投板」——新单在那一屏才看得见
+          onGoToProduction?.();
+        }}
+        // 11-10 一屏到底：主按钮建完当场关窗，新单直接顶进 ④ 的投板确认窗
+        onProduced={
+          onProduced
+            ? (ids, notes) => {
+                setProduceOpen(false);
+                setPickedSummaries([]);
+                setSelected([]);
+                fetchList(page, pageSize);
+                onProduced(ids, notes);
+              }
+            : undefined
+        }
       />
     </Card>
   );

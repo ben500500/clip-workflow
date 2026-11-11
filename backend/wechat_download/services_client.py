@@ -27,6 +27,7 @@ from typing import Optional
 import httpx
 
 from app.config import settings
+from wechat_download.url_gate import direct_url_reject_reason, url_shape_text
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,31 @@ def _dig(data, path: str):
         if cur is None:
             return None
     return cur
+
+
+# 上游响应里值得进报错的字段：只有这几个机器可读的状态位
+_HINT_KEYS = ("code", "msg", "message", "errMsg", "error")
+
+
+def _resp_hint(data) -> str:
+    """把上游响应的 code/msg 拼成报错后缀（**不带 key、不带整包 body**）。
+
+    旧写法是 `str(data)[:200]` 整包塞进报错：一来上游若在响应里回显敏感字段会跟着
+    入库存，二来一线看见一坨 JSON 也不知道下一步干什么。这里只挑状态码和原因文本，
+    外层和 `data` 内层各取一次（智令两种形状都见过）。
+    """
+    if not isinstance(data, dict):
+        return f"；上游响应不是对象（{_truncate(str(data), 120) or '空'}）"
+    bits = []
+    for source in (data, data.get("data") if isinstance(data.get("data"), dict) else None):
+        if source is None:
+            continue
+        for key in _HINT_KEYS:
+            value = source.get(key)
+            if value is None or str(value).strip() == "" or f"{key}={value}" in bits:
+                continue
+            bits.append(f"{key}={_truncate(str(value).strip(), 80)}")
+    return f"；上游响应 {' '.join(bits)}" if bits else ""
 
 
 class ZhilingServiceClient:
@@ -306,6 +332,13 @@ class ZhilingServiceClient:
         """分享链接 → 视频直链（智令 doc/107，约 0.01 元/次）。
 
         AI消除 / 画质修复只吃直链，分享链接必须先过这一层。
+
+        **收单要过形状闸门**（11-10 加，见 `url_gate` 模块注释）：短剧导流页那类链接，
+        智令会「解析成功」地回一个站点根（实测 `https://vnd2.17zhilian.cn/`）。旧写法
+        只看「是不是以 http 开头」就收，于是下游把首页当视频用——下载原片存成 10KB 的
+        HTML、反推必然「未检测到视频」、补投再解析一次再拿回同一个根路径。现在这种
+        地址在**花钱解析的这一层**就白话拒收，报错里带上「解析到什么形状 + 上游
+        code/msg」，一线看得懂下一步干什么。
         """
         self._require_key()
         data = await self._request(
@@ -315,8 +348,17 @@ class ZhilingServiceClient:
             "play_url", "url", "video_url", "mp4", "videoUrl",
             "data.play_url", "data.url", "data.video_url",
         ]
+        gate_on = bool(getattr(settings, "WECHAT_DL_DIRECT_URL_SHAPE_GATE", True))
+        rejected: Optional[str] = None
         for c in candidates:
             v = _dig(data, c) if "." in c else (data.get(c) if isinstance(data, dict) else None)
-            if isinstance(v, str) and v.startswith("http"):
+            if not (isinstance(v, str) and v.startswith("http")):
+                continue
+            reason = direct_url_reject_reason(v) if gate_on else None
+            if reason is None:
                 return v
-        raise ZhilingServiceError(f"视频直链解析失败: {_truncate(str(data), 200)}")
+            # 记第一条被拒的形状继续找下一个候选：智令有时同一层里给多个地址
+            rejected = rejected or f"{reason}（解析到 {url_shape_text(v)}）"
+        if rejected:
+            raise ZhilingServiceError(f"视频直链不可用：{rejected}{_resp_hint(data)}")
+        raise ZhilingServiceError(f"视频直链解析失败：响应里没有 http 地址{_resp_hint(data)}")

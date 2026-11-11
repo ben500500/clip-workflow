@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button, Popover, Space, Tag, Tooltip, Typography, message } from 'antd';
-import { CheckCircleOutlined, CloseCircleOutlined, EditOutlined, SendOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, CloseCircleOutlined, EditOutlined, FileSearchOutlined, SendOutlined } from '@ant-design/icons';
 import { HOOK_STYLE_LABELS, type AssetFrameSlot, type AssetSummary } from '../../api/assets';
 import { AuditStatusTag, RiskTags } from './AssetBits';
 import { CategoryTag } from './AssetCategoryBits';
@@ -126,21 +126,18 @@ const AssetReviewCard: React.FC<Props> = ({
             </Text>
           </Tooltip>
         )}
-        {/* P1（评审定稿⑨）：一致性核验入口——签字依据给足：原片播放＋反推脚本全文 */}
-        {onInspect && (
-          <a
-            style={{ fontSize: 12 }}
-            onClick={(e) => {
-              e.preventDefault();
-              onInspect(row);
-            }}
-          >
-            核验原片/脚本
-          </a>
-        )}
+
         {row.style_tag && <Tag>{HOOK_STYLE_LABELS[row.style_tag] || row.style_tag}</Tag>}
         {row.formula_tag && <Tag color="geekblue">{row.formula_tag}</Tag>}
         <CategoryTag categoryId={row.category_id} categoryName={row.category_name} />
+        {/* 批 N（11-09 用户口径「文案都去取一个编号放着」）：这条名下揣着一个**还没用掉**的
+            钩子编号——开单时后端自动顶上缺号槽位，顶掉就清。别和 ④ 生产单行上那个编号混：
+            那是已经烧掉的号，这是备用的号。 */}
+        {row.hook_code && (
+          <Tooltip title="这条文案名下预取好的钩子编号：开单时自动顶到缺号的槽位上，用掉就清（一钩一号，不会重复投）。要看已经投出去的编号请去 ④ 生产单。">
+            <Tag color="purple">已备号 {row.hook_code}</Tag>
+          </Tooltip>
+        )}
         {/* A′（2026-11-08 定稿）：过审＝质检记录（灰字）；挑选与生产归属在投产人（生产单/成片墙"投：X"） */}
         {row.audit_status !== 'pending' && row.reviewed_by_name && (
           <Text type="secondary" style={{ fontSize: 12 }}>
@@ -201,9 +198,14 @@ const AssetReviewCard: React.FC<Props> = ({
                   <Button
                     size="small"
                     type="primary"
-                    onClick={() => {
-                      navigator.clipboard.writeText(row.doubao_prompt || '');
-                      message.success('已复制网页版提示词，去豆包对话框粘贴即可');
+                    onClick={async () => {
+                      // 2026-11-11 评审（前端席）：原来不 await 也不 catch，剪贴板被拒照样喊「已复制」。
+                      try {
+                        await navigator.clipboard.writeText(row.doubao_prompt || '');
+                        message.success('已复制网页版提示词，去豆包对话框粘贴即可');
+                      } catch {
+                        message.error('复制失败：浏览器没给剪贴板权限，请手动选中文字复制');
+                      }
                     }}
                   >
                     复制
@@ -261,6 +263,20 @@ const AssetReviewCard: React.FC<Props> = ({
           </Tooltip>
         )}
       </Space>
+
+      {/* P1（评审定稿⑨）：核验是一个重要功能——做成独立按钮，放右侧操作区顶部 */}
+      {onInspect && (
+        <Tooltip title="核验签字依据：看原片 + 反推文案稿全文（一致性比对的事实来源）">
+          <Button
+            size="middle"
+            block
+            icon={<FileSearchOutlined />}
+            onClick={() => onInspect(row)}
+          >
+            核验原片/脚本
+          </Button>
+        </Tooltip>
+      )}
 
       <Space size={4}>
         {row.can_resubmit && (

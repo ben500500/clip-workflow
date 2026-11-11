@@ -97,6 +97,7 @@ from app.models.asset import (
     AssetItem,
     AssetJob,
     AssetFrame,
+    AssetElementGuess,
     AssetSummary,
     AssetProduction,
     AssetOutput,

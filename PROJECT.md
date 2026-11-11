@@ -904,7 +904,7 @@ Worker 节点提供基于 **bubbletea** 框架的终端 UI，方便运维人员�
 | `/api/` | `backend:8000` | 后端 API |
 | `/autoclip/` | `autoclip:8000` | AutoClip API（rewrite 去前缀） |
 | `/ws/` | `backend:8000` | WebSocket（长连接 86400s） |
-| `/minio/` | `minio:9000` | MinIO 代理（500M 上传限制） |
+| `/minio/` | `minio:9000` | MinIO 代理（2G 上传限制） |
 | `/health` | 200 OK | 健康检查 |
 
 ---

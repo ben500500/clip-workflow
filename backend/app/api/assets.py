@@ -39,6 +39,7 @@ name/picDatas），不是豆包网页 RPA、也不是火山方舟 Seedance 官�
 """
 
 import asyncio
+import contextlib
 import copy
 import logging
 import os
@@ -119,6 +120,7 @@ from app.models.asset import (
     STAGE_SUCCESS,
     AssetBatch,
     AssetCategory,
+    AssetElementGuess,
     AssetFrame,
     AssetItem,
     AssetJob,
@@ -134,6 +136,7 @@ from app.models.models import User
 from app.models.user import UserRole
 from app.services import asset_compose_service as compose
 from app.services import asset_frame_service as framesvc
+from app.services import asset_prompt_elements as pesvc
 from app.services import asset_service as svc
 from app.services import aivideo_board as board
 from app.services.data_scope import check_project_access_by_episode
@@ -142,13 +145,14 @@ from app.services.minio_service import (
     delete_file,
     download_file,
     download_to_file,
+    extra_ca_bundle_path,
     get_presigned_url,
     upload_file_from_path,
 )
 from app.api.slice_helpers import _ffprobe_duration
 from app.services.upload_service import validate_file_name
 from app.utils.helpers import utc_iso
-from wechat_download.models import PT_FAILED, PT_SUCCESS
+from wechat_download.models import PST_UPLOAD, PT_FAILED, PT_SUCCESS, WechatDlPromptTask
 from wechat_download.provider_registry import ProviderParseError, dispatch_parse
 # 批 J（11-05）：下载原片复用采集侧同一个拉流下载器（断点续传/HLS 都在里面），
 # 不从 service 导——那份还连着采集侧的 session/任务表，借了就会把两条链搅在一起。
@@ -187,9 +191,12 @@ def require_functions(*funcs: str):
     async def _dep(current_user: User = Depends(get_current_user)) -> User:
         if current_user.role == UserRole.admin.value:
             return current_user
+        # 2026-11-11 评审（测试席 P0）：不能 getattr(…, True) 兜底——属性缺失时静默放行，
+        # 列一旦改名闸就变 no-op 而全套测试照样绿。列由 0064 迁移落地，直接访问：
+        # 模型/库不一致时当场炸出来，而不是悄悄失去闸门。
         fn_map = {
-            "review": bool(getattr(current_user, "can_review", True)),
-            "produce": bool(getattr(current_user, "can_produce", True)),
+            "review": bool(current_user.can_review),
+            "produce": bool(current_user.can_produce),
         }
         for f in funcs:
             if not fn_map.get(f, True):
@@ -467,6 +474,28 @@ class ProduceRequest(BaseModel):
         description="R-6：只豁免这几类问题（shape/risk）；留空＝整条全豁免。"
         "展开后复扫新发现的 risk 命中（模型自己加的违禁词）不在豁免范围内，仍会拦下",
     )
+    element_values: Optional[Dict[str, List[str]]] = Field(
+        None,
+        description="批 P（11-10 用户口径「可自定义填入多个场景词、动物名称，一次性生成多条钩子视频」）："
+        "槽位键 → **要换上去的多个值**，一个值一条片。0 元、不再调模型——它是在已经展开好的那份正文上"
+        "做字面替换后另立单，与 `n`（调模型派生差异化提示词）是两回事。留空＝不扇出，走今天同一条路径。",
+    )
+    element_base: Optional[Dict[str, str]] = Field(
+        None,
+        description="槽位键 → **这份稿子里现在的值**（④开单屏从原稿自动提取、或人手抄的原句）。"
+        "没有原值就无从替换：那一行照原文落单并在结果里点名（不拿旧值当新值、也不静默跳过）",
+    )
+    element_base_by_summary: Optional[Dict[str, Dict[str, str]]] = Field(
+        None,
+        description="批 P：一次开多条文稿时，各篇的**原值本来就不一样**（这条的场景是「河边」、下条是「工地」），"
+        "共用一份 `element_base` 会把第二篇的替换悄悄做在错误的词面上。这里按 summary_id 各给一份原值；"
+        "`element_base` 退化成公共兜底（同键以这里的值优先）。",
+    )
+    element_mode: str = Field(
+        "zip",
+        description="多值怎么配对：zip＝按行配对（第1个场景配第1只动物…，只填一个值的每行复用；默认）、"
+        "product＝全组合（场景数×动物数条，上限 100 行）",
+    )
     async_mode: bool = Field(
         False,
         description="D-1：true＝立即回一个任务号（展开提示词要等模型，后台跑完再轮询取结果），"
@@ -552,6 +581,25 @@ class DispatchRequest(BaseModel):
             "或 admin 带 force_risk+理由放行——与原稿同一道闸），逐条留审计"
         ),
     )
+    concat_asset_id: Optional[str] = Field(
+        None,
+        description=(
+            "11-10 批 Q（需求⑤）：这几张单回收到的**每一支豆包成片**，出片后自动和这条素材"
+            "（asset_items.id）拼成一条可投放素材。传空串＝取消自动拼。"
+            "当场验三段：素材存在／不是图片／桶里有文件——和图片拼会在 ffmpeg 解码时炸，"
+            "和没文件的链接素材拼会在下载那步炸，两种都要在投出去之前拦（号池已经烧了才发现"
+            "拼不了，只能重投一遍）"
+        ),
+    )
+    concat_order: Optional[str] = Field(
+        None,
+        description=(
+            f"拼的顺序：{' 或 '.join(compose.AUTO_CONCAT_ORDERS)}"
+            f"（留空＝{compose.DEFAULT_AUTO_CONCAT_ORDER}，钩子片在前）。"
+            "和手工口 /assets/concat 的 order 不是同一套词：那两边段的位置含义不同，"
+            "共用字面量会拼反"
+        ),
+    )
 
 
 # 投递稿改后的长度上限（板上 prompt 字段没有硬上限，这里是防呆：把整篇文档粘进来）
@@ -587,6 +635,17 @@ class CategoryAssignRequest(BaseModel):
     asset_ids: List[str] = Field(default_factory=list, description="点名若干条素材")
     summary_ids: List[str] = Field(default_factory=list, description="点名若干条文案")
     category_id: Optional[str] = Field(None, description="目标原型 id；留空＝清成未分类")
+
+
+class HookCodeParkItem(BaseModel):
+    """一行＝一个号钉在一行上。`summary_id` / `production_id` 二选一。"""
+    summary_id: Optional[str] = Field(None, description="文案 id（预取：号先挂在文案上等开单）")
+    production_id: Optional[str] = Field(None, description="生产单 id（补号：号直接钉在已建好的单上）")
+    hook_code: Optional[str] = Field(None, description="五位编号；留空＝把这一行的预取位/编号清空")
+
+
+class HookCodeParkRequest(BaseModel):
+    items: List[HookCodeParkItem] = Field(default_factory=list, description="逐行点名，一次最多 100 行")
 
 
 # ──────────────────────────────────────────────
@@ -1263,11 +1322,13 @@ def _serialize_item(a: AssetItem, agg: Optional[dict] = None) -> dict:
         # 批 G：图片在"挑卡"列表里要直接说画幅（这张 9:16 出竖屏 / 这张横版出横屏）。
         # 判据留在后端一处：前端自己另拼一张宽高比表，日后口径一改就是两边各说一套
         # ——而这条口径的来源是实测（卡决定成片画幅），不是显示偏好。
-        "aspect": (
-            _card_ratio_fields(a.resolution)
-            if (getattr(a, "media_kind", None) or MEDIA_VIDEO) == MEDIA_IMAGE
-            else None
-        ),
+        #
+        # 11-09 起视频也给：这批横屏原片要收进库并在界面标「横屏」（用户拍板），而
+        # orientation 只能从 resolution 推。此前恒回 null，界面那一列对视频永远显示
+        # 「画幅未知」——不是量不到，是这一行只喂图片。resolution 已补齐（文件上传
+        # 当场量、链接素材下载后回写），所以这里不加新口径，只把已有的一列对两类摊开；
+        # 量不到时仍是 null，界面照样显示「画幅未知」。
+        "aspect": _card_ratio_fields(a.resolution),
         "source_url": a.source_url,
         "platform": a.platform,
         "file_name": a.file_name,
@@ -1361,6 +1422,10 @@ def _serialize_summary(
         "cost_preview": float(s.cost_preview or 0.0),
         # 11-06 双产出：出文案时同步生成的豆包网页版完整提示词（NULL=失败/未生成，可单独补）
         "doubao_prompt": s.doubao_prompt,
+        # 批 N（11-09）：**预取**好、还没用掉的钩子编号（不是已投出去的号——那种号钉在
+        # 生产单行上，看 production 的 hook_code）。开单时后端自动顶到缺号槽位并清空，
+        # 所以这个键有值＝这条文案还欠着一张没开的单、手里有个能用的号。
+        "hook_code": s.hook_code,
         "created_at": utc_iso(s.created_at),
         # 「改后重提」按钮要不要亮：前端不猜权限，按后端给的行级判定画
         "can_resubmit": bool(can_resubmit),
@@ -1379,7 +1444,12 @@ def _serialize_summary(
     return data
 
 
-def _serialize_production(p: AssetProduction, output_count: int = 0, owner_name: Optional[str] = None) -> dict:
+def _serialize_production(
+    p: AssetProduction,
+    output_count: int = 0,
+    owner_name: Optional[str] = None,
+    category_name: Optional[str] = None,
+) -> dict:
     return {
         "id": str(p.id),
         "asset_id": str(p.asset_id),
@@ -1389,6 +1459,9 @@ def _serialize_production(p: AssetProduction, output_count: int = 0, owner_name:
         "owner_name": owner_name,
         "seq": p.seq,
         "hook_code": p.hook_code,
+        # 批 M（11-10）：这条单所属文案的钩子原型名（列表口一次性批量补，口径与审核台一致）。
+        # 投产弹窗的「可替换元素」按原型筛槽位，靠的就是这一列——单行口为 null。
+        "category_name": category_name,
         "project_title": p.project_title,  # 废弃：11-02 版取消项目标题行，只读历史
         "prompt_text": p.prompt_text,
         "dispatch_note": p.dispatch_note,  # 只给人看，不进 payload
@@ -1414,6 +1487,13 @@ def _serialize_production(p: AssetProduction, output_count: int = 0, owner_name:
         # 批 G：多卡数组（顺序＝板上 picDatas 顺序）。旧单这里是 []——
         # 读侧要区分"没挂卡"和"挂了一张旧 key"，看 character_card_key 那一列。
         "card_asset_ids": [str(x) for x in (p.card_asset_ids or []) if str(x or "").strip()],
+        # 批 Q（11-10 需求⑤）：这张单投板时点名「出片后自动和哪条素材拼、拼在前还是拼在后」。
+        # NULL＝没勾过，回收完就停（存量单全是这个态，行为与今天一致）。
+        "concat_asset_id": str(p.concat_asset_id) if p.concat_asset_id else None,
+        "concat_order": p.concat_order,
+        # 最近一次自动拼的结果（拼成几支／失败几支／成因）。**只给界面看**，不参与任何判定——
+        # 判据在 asset_outputs.composed_from_output_id 那侧，这里坏了也不影响业务。
+        "concat_last_result": p.concat_last_result,
         "status": p.status,
         "error": p.error,
         # 投递台账（11-03 第 4 条）：一线要知道「这条投了几次、什么时候投的、什么时候出片」
@@ -1526,30 +1606,287 @@ async def list_asset_audit_logs(
 # ── P1（评审定稿⑦）：取号进界面——后端代理 hook_id.py（服务器脚本），保留手工旁路。
 # ASSET_HOOK_ID_CMD 未配置时 501（前端提示走手工粘贴）。命令须输出每行一个五位编号；
 # 一钩一号「发了即烧」的铁律不变：代取的号也走既有硬查重＋白名单校验。 ──
+
+# 11-09 批 O：把「取号」下沉成界面代取与新文案自动预取共用的底层，两个坑在这里一起解决：
+#   ① `hook_id.py` 有 TAKE_MAX=50（一次最多发 50 个号），整批 85 条一口要过去 → 脚本 rc=2、
+#      一个号都拿不到（现网第一次钉 88 个号就是在服务器上分 50＋38 两枪取的）。所以分块取。
+#   ② 「发了即烧」是硬铁律：号一旦发出就记在共享台账上，后面一块失败也**不能把前面已经
+#      拿到手的号扔掉重来**——扔掉等于白烧。所以本函数返回 (已拿到的号, 失败说明)，
+#      而不是抛异常。调用方自己决定「够不够」。
+_HOOK_TAKE_CHUNK = 50  # 与 hook_id.py 的 TAKE_MAX 对齐；放宽只会让脚本 rc=2，改这里没用
+_HOOK_TAKE_TIMEOUT_SECONDS = 30
+
+
+async def _take_hook_codes(count: int) -> Tuple[List[str], List[str], Optional[str]]:
+    """跑 `ASSET_HOOK_ID_CMD` 取 `count` 个钩子编号，返回 (编号列表, 超发丢弃, 错误说明或 None)。
+
+    **永不抛异常**（除非调用方自己没接住 `asyncio` 取消）：自动预取那条路上取不到号
+    不该把导入整体拒掉，界面代取那条路则把 `error` 原文转成白话 502/501。
+    `discarded`（超发丢弃）在 2026-11-11 评审后必须由调用方写审计——号已在共享台账
+    烧掉，系统侧「丢得无声无息」违反一切状态可追溯。
+    """
+    want = max(0, int(count))
+    if want == 0:
+        return [], [], None
+    cmd = (getattr(settings, "ASSET_HOOK_ID_CMD", "") or "").strip()
+    if not cmd:
+        # 2026-11-11 评审后签名是三元组，这里漏改会让调用方 `ValueError: not enough
+        # values to unpack`——未配置取号命令是本地/测试最常见的一枪，必须照形状返回。
+        return [], [], "未配置自动取号命令（ASSET_HOOK_ID_CMD）"
+    got: List[str] = []
+    discarded: List[str] = []  # 超发/超收丢弃的号：一发即烧，丢也要点名留痕（评审 2026-11-11）
+    blocks = 0
+    while len(got) < want:
+        need = min(want - len(got), _HOOK_TAKE_CHUNK)
+        blocks += 1
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                f"{cmd} {need}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await asyncio.wait_for(
+                proc.communicate(), timeout=_HOOK_TAKE_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            # 2026-11-11 评审（可靠性席 P1）：超时只取消读、不杀进程——hook_id.py 可能已经
+            # 把号从共享台账划走（一发即烧），stdout 却无人读，号烧成黑洞；脚本若全程持
+            # flock，残留进程还会把后续所有取号拖到同样超时。必须 kill 收尸。
+            with contextlib.suppress(Exception):
+                proc.kill()
+                await proc.wait()
+            return got, discarded, (
+                f"取号脚本第 {blocks} 枪超过 {_HOOK_TAKE_TIMEOUT_SECONDS} 秒没回话（要 {need} 个）"
+                "——已终止脚本；这一枪可能烧了号但没回话，以共享台账为准"
+            )
+        except Exception as exc:  # noqa: BLE001 — 命令不存在/权限问题都要回人话，不是回栈
+            with contextlib.suppress(Exception):
+                proc.kill()
+                await proc.wait()
+            return got, discarded, f"取号脚本没能跑起来：{type(exc).__name__}: {exc}"
+        raw_err = (err or b"").decode("utf-8", "ignore").strip()
+        # 2026-11-11 评审（业务席 P1）：按**行**严解析，不再全文 findall——全文扫描会把
+        # 脚本打进 stdout 的说明词（READY/ERROR 这类五位大写词）当成编号带回界面挂上单。
+        # 每行整行匹配 ^[0-9A-Z]{5}$，混进说明的行直接丢进 stderr 日志。
+        codes = []
+        for line in (out or b"").decode("utf-8", "ignore").splitlines():
+            token = line.strip().upper()
+            if not token:
+                continue
+            if svc.HOOK_CODE_RE.match(token):
+                codes.append(token)
+            elif len(token) <= 40:  # 太长的行八成是日志，不刷屏
+                logger.info("取号脚本 stdout 非编号行已忽略：%r", token)
+        # 超发点名：脚本这枪发的号比要的多（chunk 只请求 need 个），多的部分已按
+        # 「一发即烧」烧在共享台账里，系统侧不回收也不复用——记下来给审计。
+        overflow = [c for c in codes if c not in got][need:]
+        for c in overflow:
+            if c not in discarded:
+                discarded.append(c)
+        gained = 0
+        for c in codes:
+            if c not in got:
+                got.append(c)
+                gained += 1
+        if gained == 0:
+            rc = proc.returncode
+            return got, discarded, (
+                f"取号脚本第 {blocks} 枪没发新号（要 {need} 个、得 {len(codes)} 个，退出码 {rc}）："
+                f"{raw_err[:200] or '脚本没给原因'}"
+            )
+    return got, discarded, None
+
+
+async def _auto_park_hook_codes(
+    db: AsyncSession,
+    rows: List[AssetSummary],
+    *,
+    operator: Optional[User],
+    source: str,
+) -> Dict[str, Any]:
+    """新建的文案**当场**挂上预取编号（11-09 批 O，用户口径「以后的新文案也自动预取吧」）。
+
+    为什么要自动化：一钩一号，开单那一屏现取现贴每次都把人挡在服务器上跑一次
+    `hook_id.py`；11-09 那批 85 条就是手工钉的（见 8-9）。号先挂在 `asset_summaries.hook_code`
+    上等着，开单时后端自动顶到缺号的槽位、顶上即清空（`create_productions` 的 parked_code）。
+
+    三条设计约束：
+    - **fail-soft**：号是外部动作（脚本没配、台账锁不上、当天池子用光），任何一种都不能
+      把「文案已经建好」这件事回滚掉——稿是人写的，比号金贵。所以本函数不抛 HTTPException，
+      只回统计；哪条没挂上号，开单时照旧手工填或点「代取」。
+    - **不重复发号**：只给 `hook_code` 还是空的行取号（重投同一批、或已经挂过号的行不再烧号）。
+    - **一钩一号**：拿回来的号先对着库里两张表（`asset_productions.hook_code` /
+      `asset_summaries.hook_code`）扫一遍，撞上的号不钉（号已烧掉，界面如实报出来）。
+
+    留痕与手工钉号口共用同一套动作名 `asset.hook_code.park`，靠 `after.source` 区分
+    「自动预取」和「人工钉」；只在真钉上号时写审计，取不到号不写（同 8-9 的判据：
+    审计的价值在变化点，不在调用点）。**不 commit**，由调用方那一枪一起提交。
+    """
+    targets = [r for r in rows if not str(r.hook_code or "").strip()]
+    result: Dict[str, Any] = {
+        "attempted": len(targets),
+        "parked": 0,
+        "codes": [],
+        "collisions": [],
+        "reason": None,
+    }
+    if not targets:
+        return result
+    if not bool(getattr(settings, "ASSET_AUTO_PARK_HOOK_CODES", True)):
+        # attempted 归零：旋钮关了不是「这批没配上号」，是「本批不打算配号」——
+        # 前者要在导入回话里提醒人去补，后者提醒了只会让一线以为坏了。
+        result["attempted"] = 0
+        result["reason"] = "自动预取未开启（ASSET_AUTO_PARK_HOOK_CODES=false）"
+        return result
+    try:
+        codes, _overflow, err = await _take_hook_codes(len(targets))
+        if not codes:
+            result["reason"] = err or "取号脚本没返回编号"
+            return result
+        wanted = list(dict.fromkeys(codes))[: len(targets)]  # 脚本多给了也不多吃号：一条文案一个位
+        used = {
+            str(c)
+            for (c,) in (
+                await db.execute(
+                    select(AssetProduction.hook_code).where(
+                        AssetProduction.hook_code.in_(wanted)
+                    )
+                )
+            ).all()
+            if c
+        }
+        parked = {
+            str(c)
+            for (c,) in (
+                await db.execute(
+                    select(AssetSummary.hook_code).where(
+                        AssetSummary.hook_code.in_(wanted)
+                    )
+                )
+            ).all()
+            if c
+        }
+        collisions = sorted(used | parked)
+        free = [c for c in wanted if c not in used and c not in parked]
+        changed: List[dict] = []
+        for row, code in zip(targets, free):
+            row.hook_code = code
+            changed.append({"id": str(row.id), "before": None, "after": code})
+        result["collisions"] = collisions
+        if changed:
+            await db.flush()
+            result["parked"] = len(changed)
+            result["codes"] = [c["after"] for c in changed]
+            if len(changed) < len(targets):
+                result["reason"] = err or (
+                    f"可用号只有 {len(free)} 个（{len(collisions)} 个撞了库里已占的号）"
+                    if collisions else f"取号脚本只给到 {len(free)} 个号"
+                )
+            await _write_audit(
+                db,
+                action="asset.hook_code.park",
+                operator=operator,
+                target_type="asset_hook_code",
+                target_id="asset_hook_code",
+                before={"summaries": [{"id": c["id"], "hook_code": None} for c in changed]},
+                after={
+                    "summaries": [{"id": c["id"], "hook_code": c["after"]} for c in changed],
+                    "productions": [],
+                    "source": f"auto_park:{source}",
+                    "collisions": collisions,
+                },
+            )
+        elif err:
+            result["reason"] = err
+        else:
+            result["reason"] = "取到的号在库里全都占着了（异常，请手工取号）"
+    except Exception as exc:  # noqa: BLE001 — 预取是便利，不是前置条件；任何意外都不拦导入
+        logger.warning("新文案自动预取编号失败（source=%s）：%s", source, exc)
+        result["reason"] = result["reason"] or f"自动预取异常：{type(exc).__name__}: {exc}"
+    return result
+
+
+def _park_payload(park: Dict[str, Any]) -> Dict[str, Any]:
+    """自动预取统计的回包形状（三个建文案入口共用，别各写一套漏字段）。
+
+    `collisions` 必须在：界面报「没全配上」时，一线要能看见是哪几个号撞了库，
+    不然只会反复点同一个入口。
+    """
+    return {
+        "attempted": park["attempted"],
+        "parked": park["parked"],
+        "codes": park["codes"],
+        "collisions": park["collisions"],
+        "reason": park["reason"],
+    }
+
+
+def _park_note(park: Dict[str, Any]) -> str:
+    """把自动预取的统计说成一句人话，塞进导入响应的 message（空串＝没什么要说）。"""
+    if not park.get("attempted"):
+        return ""
+    parked = int(park.get("parked") or 0)
+    if parked:
+        tail = ""
+        if park.get("collisions"):
+            tail = f"；{len(park['collisions'])} 个号库里已占用，已跳过"
+        if parked < park["attempted"]:
+            return (
+                f"已自动预取 {parked} 个编号（本批 {park['attempted']} 条没全配上："
+                f"{park.get('reason') or '取号脚本给的号不够'}）{tail}"
+            )
+        return f"已自动预取 {parked} 个编号，开单时自动带上{tail}"
+    return (
+        f"本批 {park['attempted']} 条没预取到编号（{park.get('reason') or '原因未知'}）——"
+        "不影响导入，开单时手工填或点「代取」即可"
+    )
+
+
 @router.post("/assets/hook-codes/take")
 async def take_hook_codes(
     current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
-    count: int = Query(..., ge=1, le=50, description="要取几个号"),
+    count: int = Query(..., ge=1, le=500, description="要取几个号"),
+    db: AsyncSession = Depends(get_db),
 ):
-    cmd = (getattr(settings, "ASSET_HOOK_ID_CMD", "") or "").strip()
-    if not cmd:
-        raise HTTPException(
-            status_code=501,
-            detail="未配置自动取号命令（ASSET_HOOK_ID_CMD）——请按原流程在服务器跑 hook_id.py 取号后手工粘贴",
+    """代取编号（2026-11-08 P1⑦ + 11-11 评审补审计）：取号是「一发即烧」的外部动作，
+    之前这条路径零留痕——前端取了号又取消开单，号已在共享台账烧掉、系统内查无此号。
+    现在取号成功/超发丢弃都写 `asset.hook_code.take` 审计，和 park 口同一条留痕纪律。"""
+    codes, overflow, err = await _take_hook_codes(count)
+    if len(codes) < count:
+        if (getattr(settings, "ASSET_HOOK_ID_CMD", "") or "").strip() == "" and not codes:
+            raise HTTPException(
+                status_code=501,
+                detail="未配置自动取号命令（ASSET_HOOK_ID_CMD）——请按原流程在服务器跑 hook_id.py 取号后手工粘贴",
+            )
+        await _write_audit(
+            db,
+            action="asset.hook_code.take",
+            operator=current_user,
+            target_type="asset_production",
+            target_id=None,
+            after={"count": count, "got": len(codes), "error": (err or "")[:200]},
         )
-    proc = await asyncio.create_subprocess_shell(
-        f"{cmd} {int(count)}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
-    codes = [c for c in re.findall(r"[0-9A-Z]{5}", (out or b"").decode("utf-8", "ignore")) if HOOK_CODE_RE.match(c)]
-    if proc.returncode != 0 or len(codes) < int(count):
+        await db.commit()
         raise HTTPException(
             status_code=502,
-            detail=f"取号脚本没返回足够的编号（要 {count}、得 {len(codes)}）：{(err or b'').decode('utf-8', 'ignore')[:200]}",
+            detail=f"取号脚本没返回足够的编号（要 {count}、得 {len(codes)}）：{err or '脚本没给原因'}",
         )
-    return {"codes": codes[: int(count)]}
+    got = codes[: int(count)]
+    await _write_audit(
+        db,
+        action="asset.hook_code.take",
+        operator=current_user,
+        target_type="asset_production",
+        target_id=None,
+        after={
+            "count": int(count),
+            "codes": got[:20],
+            # 超发丢弃：脚本多发的号已按一发即烧烧在台账，系统侧不复用，点名留痕
+            "overflow_discarded": overflow[:20],
+        },
+    )
+    await db.commit()
+    return {"codes": got}
 
 
 # ── P1 新增（用户需求 2026-11-08）：直接贴文案导入——已有外部生成好的钩子文案，
@@ -1590,6 +1927,7 @@ async def import_copy_summaries(
 
     created = []
     skipped: List[dict] = []
+    summary_rows: List[AssetSummary] = []
     seq_offset = 0
     for i, raw in enumerate(texts):
         text = (raw or "").strip()
@@ -1622,21 +1960,538 @@ async def import_copy_summaries(
             audit_status=RV_PENDING,
         )
         db.add(summary)
+        # 必须在这里 flush：`summary.id` 是 SQLAlchemy 的 Python 端默认值，
+        # **到 INSERT 那一刻才生成**。不 flush 就取 `str(summary.id)`，最后一条
+        # （循环里再没有别的 flush 触发点）会拿到 None，接口回体里就成了字符串
+        # "None"——11-09 现网冒烟实测到的，前端今天没读这个字段所以没炸，
+        # 但它是个谎报的主键，下一句「点这条进投产」就会拿它去查库查无此人。
+        await db.flush()
+        summary_rows.append(summary)
         created.append({
             "asset_id": str(asset.id),
             "summary_id": str(summary.id),
             "text": text[:60],
         })
 
+    # 11-09 批 O：新建的文案当场自动挂预取编号（用户口径「以后的新文案也自动预取吧」）。
+    # 先 commit 再取号：取号是本机子进程、最坏 30s×块数，而 PG 侧
+    # idle_in_transaction_session_timeout=60s 会把"事务开着等外部调用"的连接直接掐掉
+    # （11-03 预览栈真链路就是这么整口 500 丢候选的）。文案先落库，号随后一枪补上——
+    # 预取是便利不是前置条件，取不到号也不该把这批稿回滚掉。
     await db.commit()
+    park = await _auto_park_hook_codes(db, summary_rows, operator=current_user, source="import_copy")
+    await db.commit()
+    note = _park_note(park)
     return {
         "batch_id": str(batch.id),
         "batch_code": batch.code,
         "created": len(created),
         "skipped": skipped,
         "items": created,
+        "hook_codes": _park_payload(park),
         "message": f"已导入 {len(created)} 条文案进审核队列（{batch.code}）"
-        + (f"；{len(skipped)} 条形态不合格被跳过" if skipped else ""),
+        + (f"；{len(skipped)} 条形态不合格被跳过" if skipped else "")
+        + (f"；{note}" if note else ""),
+    }
+
+
+def _paired_reason_digest(rows: List[dict], key: str = "error", limit: int = 2) -> str:
+    """把逐条明细里的原因去重拼一句，塞进整体失败时的 `detail`。
+
+    为什么不能只写"明细见 errors"：全拒的那一枪调用方（一线用的是界面弹窗）只会读
+    `detail` 这一句，errors 里的逐条原因埋在响应体第二层没人翻。而"配对失败"最需要的
+    恰恰是**为什么**（重名？没传？库里有同名？）——说不清原因，人就只会反复重投同一份清单。
+    """
+    seen: List[str] = []
+    for r in rows:
+        msg = str(r.get(key) or "").strip()
+        if msg and msg not in seen:
+            seen.append(msg)
+        if len(seen) >= limit:
+            break
+    return "；".join(seen)
+
+
+# ── 11-09 成稿配对导入（外部已经产好稿的一批原片）────────────────────────
+# 为什么不是把两条老路拼起来用：拼不了。
+#   · `/assets/upload/batch` 建出来的素材停在「待反推」，而出文案口硬要求先有反推稿
+#     （`generate_summaries` 的 `require_prompt_success=True` ＋ "反推脚本尚未就绪"），
+#     人工稿在手里也喂不进去；
+#   · `/assets/summaries/import-copy` 建的是**无视频的文本壳**，原片进不去。
+# 走老路等于把 86 条真素材重新反推一遍：0.00054×档位 ≈ 每条 0.03~0.10 元、
+# 86 次智令调用，买的却是一份库里本来就能放下的稿。
+# 落点全部是既有表、**不新增一列**：批次 → 素材（含 resolution，横屏在这一步才量得出来）
+# → `wechat_dl_prompt_tasks` 一行 success（content＝人工稿）→ 候选文案（pending，进审核队列）。
+# 反推任务这一行是唯一的新写法：status 直接给 success、不带 provider_task_id。安全性靠两件事
+# 兜住——① `refresh_prompt_task` 对非 processing 任务是**只读原样返回**（不会去轮询、更不会扣费）；
+# ② `_prompt_script_of` 命中 success 就把 stage_prompt 写成 success 并回填标题（已有标题不覆盖）。
+# 费用三列一律 0 并写进 note：稿是人工产的，对账页不能出现一笔从没发生的钱。
+@router.post("/assets/import/paired", status_code=201)
+async def import_paired_batch(
+    files: List[UploadFile] = File(
+        ..., description="原片视频文件；multipart 里的文件名＝清单项 `video` 的 basename"
+    ),
+    manifest: str = Form(
+        ...,
+        description=(
+            "配对清单 JSON：{batch_name?, items:[{video, title?, category?, script_text?, "
+            "hook_copy?, doubao_prompt?, note?, skip?, skip_reason?}]}"
+        ),
+    ),
+    max_duration: Optional[int] = Form(None, description="登记用的反推计时上限档位（秒）；本口不产生反推费"),
+    project_id: Optional[str] = Form(None, description="归属项目（可选）"),
+    force_duplicates: bool = Form(False, description="库里已有同名素材时仍要再入一份（默认跳过不重复占位）"),
+    current_user: User = Depends(require_roles(*_PROD_ROLES)),
+    db: AsyncSession = Depends(get_db),
+):
+    """成稿配对导入：原片 + 人工反推稿 + 一句话钩子文案 + 豆包提示词，一次进四个槽位，0 模型费。
+
+    一条清单项 = 一条素材。缺哪个槽位就留哪个口子，**不硬编**：
+    - 有 `hook_copy` → 建 pending 候选，直接进审核队列（形态不合格**照样入库**、
+      只在响应里点名——文案是人写的，丢掉等于把稿扔掉；真正的硬拦在审核口 recheck）；
+    - 有 `script_text` → 登记一条 success 的反推任务行（不带 provider_task_id，见上面的
+      安全论证），出文案口能直接吃它，不再花一次反推钱；
+    - 两样各缺一半的，**两条欠账轴分开报**（`need_copy` / `need_prompt`）：有稿没文案＝
+      点一下出文案就补上；没稿（哪怕它有文案）＝要补只能跑反推，那步花钱，不补则过审时
+      没有稿做一致性对照。宁可报多一条，也不能让「有文案没稿」这种在响应里两头都不提。
+    批次按 `category`（钩子原型**名称**）分组，一个原型一批次，方便按类别验收与回滚；
+    字典里没有这个名字的，落未分类并点名——写共享字典是管理员的口子（PUT /assets/categories），
+    导入不替人建字典行。
+    """
+    try:
+        spec = json.loads(manifest or "")
+    except Exception as exc:  # noqa: BLE001 — 脏 JSON 要回人话，不是回一句 JSON decode error
+        raise HTTPException(status_code=400, detail=f"配对清单不是合法 JSON：{exc}")
+    if not isinstance(spec, dict):
+        raise HTTPException(status_code=400, detail="配对清单要是一个对象：{\"items\": [...]}")
+    raw_items = spec.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise HTTPException(status_code=400, detail="配对清单里没有 items")
+
+    items: List[dict] = []
+    dropped: List[dict] = []
+    for i, raw in enumerate(raw_items):
+        if not isinstance(raw, dict):
+            dropped.append({"index": i + 1, "reason": "清单里这一项不是对象"})
+            continue
+        video = str(raw.get("video") or "").strip()
+        if not video:
+            dropped.append({"index": i + 1, "reason": "缺 video 字段（原片文件名）"})
+            continue
+        if raw.get("skip"):
+            dropped.append({
+                "index": i + 1, "video": video,
+                "reason": str(raw.get("skip_reason") or "清单标了 skip，默认不收"),
+            })
+            continue
+        items.append({
+            "index": i + 1,
+            "video": video,
+            "name": os.path.basename(video.replace("\\", "/")),
+            "title": str(raw.get("title") or "").strip(),
+            "category": str(raw.get("category") or "").strip(),
+            "script_text": str(raw.get("script_text") or "").strip(),
+            "hook_copy": str(raw.get("hook_copy") or "").strip(),
+            "doubao_prompt": str(raw.get("doubao_prompt") or "").strip(),
+            "note": str(raw.get("note") or "").strip(),
+            "file_pos": None,
+        })
+
+    if not items:
+        raise HTTPException(
+            status_code=400,
+            detail=f"清单里没有可导入的条目（{len(dropped)} 项被丢弃：{_paired_reason_digest(dropped, 'reason')}）",
+        )
+    if len(items) > int(settings.ASSET_IMPORT_BATCH_MAX):
+        raise HTTPException(
+            status_code=400,
+            detail=f"单请求最多 {settings.ASSET_IMPORT_BATCH_MAX} 条；请按钩子原型分几次投",
+        )
+
+    # ── 配对：清单项 ↔ multipart 文件，**按文件名一一对应，两边都不许重名** ──
+    # 为什么宁可在门口拦也不猜：`validate_file_name` 只留 basename，两个目录里同名的
+    # 两支 mp4 落到素材表上就是同一个名字（本批实测有一对 `260825-小男孩遇贵人.mp4`，
+    # 11.07s 与 10.87s 是两个不同版本）。按大小或顺序去猜，猜错的那条会把 A 的画面配上
+    # B 的稿——这条链路上没有任何后续环节会发现，因为稿和画面对不上是"内容问题"不是"数据问题"。
+    # 所以调用方（前端和脚本）都按同一条规矩准备：**只投清单里非 skip 的那些文件**。
+    by_name: Dict[str, List[int]] = {}
+    for pos, f in enumerate(files):
+        base = os.path.basename((f.filename or "").replace("\\", "/")).strip()
+        if base:
+            by_name.setdefault(base, []).append(pos)
+    errors: List[dict] = []
+    item_names = [it["name"] for it in items]
+    repeated_items = {n for n in item_names if item_names.count(n) > 1}
+    keep: List[dict] = []
+    for it in items:
+        if it["name"] in repeated_items:
+            errors.append({
+                "index": it["index"], "video": it["video"],
+                "error": f"清单里有 {item_names.count(it['name'])} 条同名原片（{it['name']}），"
+                         "按文件名配不出一一对应；同名只留一条，其余标 skip 或改名后重投",
+            })
+            continue
+        cands = by_name.get(it["name"], [])
+        if not cands:
+            errors.append({"index": it["index"], "video": it["video"], "error": "请求里没收到这个文件"})
+            continue
+        if len(cands) > 1:
+            errors.append({
+                "index": it["index"], "video": it["video"],
+                "error": f"请求里有 {len(cands)} 个同名文件但清单只有 1 条，无法判断配哪一个；"
+                         "只投清单引用的那些文件（重名的另一份别一起传）",
+            })
+            continue
+        it["file_pos"] = cands[0]
+        keep.append(it)
+    items = keep
+    matched = {it["file_pos"] for it in items}
+    leftover_files = [
+        os.path.basename((files[p].filename or "").replace("\\", "/"))
+        for p in range(len(files)) if p not in matched
+    ]
+    if not items:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"一条都没配上（{len(errors)} 条）——{_paired_reason_digest(errors)}"
+                + (f"；另有 {len(leftover_files)} 个文件清单没引用" if leftover_files else "")
+            ),
+        )
+
+    # ── 重复预检：库里已有同名素材就不静默再入一份（口径与链接导入一致：提示＋可放行）──
+    if not force_duplicates:
+        names = sorted({it["name"] for it in items})
+        rows = (
+            await db.execute(
+                select(
+                    AssetItem.file_name, AssetItem.code, AssetItem.created_at
+                ).where(
+                    AssetItem.source_kind == SOURCE_FILE,
+                    AssetItem.file_name.in_(names),
+                )
+            )
+        ).all()
+        # 同名只出现过一次才点名到具体是哪条；出现过两次就说"库里已有 N 条同名"，
+        # 报第一个 code 会让人觉得那一条就是它、而实际库里还有另一条。
+        hits_by_name: Dict[str, List[tuple]] = {}
+        for fn, code, created_at in rows:
+            hits_by_name.setdefault(fn, []).append((code, utc_iso(created_at) if created_at else None))
+        keep = []
+        dup_start = len(dropped)  # 只把"重名"这一段喂给 detail，别和清单里 skip 的话术混在一句里
+        for it in items:
+            hits = hits_by_name.get(it["name"])
+            if not hits:
+                keep.append(it)
+                continue
+            who = (
+                f"{hits[0][0]}（{hits[0][1] or '日期未知'} 导入）"
+                if len(hits) == 1 else f"{len(hits)} 条同名"
+            )
+            dropped.append({
+                "index": it["index"], "video": it["video"],
+                "reason": f"库里已有同名素材 {who}，默认不收；确要再入一份带 force_duplicates=true",
+            })
+        items = keep
+        if not items:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{len(dropped) - dup_start} 条全部因库里同名没入库——"
+                    f"{_paired_reason_digest(dropped[dup_start:], 'reason')}"
+                ),
+            )
+
+    tier = _tier_or_400(max_duration)
+    project_uuid = _as_uuid(project_id, "project_id") if project_id else None
+
+    # ── 字典按**名字**解析（清单吃的是人话类别，不是 UUID）──
+    cat_names = sorted({it["category"] for it in items if it["category"]})
+    cat_map: Dict[str, Optional[uuid.UUID]] = {}
+    unknown_cats: List[str] = []
+    if cat_names:
+        rows = (
+            await db.execute(
+                select(AssetCategory.name, AssetCategory.id, AssetCategory.active).where(
+                    AssetCategory.name.in_(cat_names)
+                )
+            )
+        ).all()
+        found = {}
+        for name, cid, active in rows:
+            found[name] = (cid, active)
+        for name in cat_names:
+            cid, active = found.get(name, (None, None))
+            if cid is None:
+                unknown_cats.append(name)
+                cat_map[name] = None
+            elif not active:
+                # 下线行不新建引用（与 `_resolve_category_or_400` 同一口径），但也不拦导入
+                unknown_cats.append(f"{name}（已下线）")
+                cat_map[name] = None
+            else:
+                cat_map[name] = cid
+
+    # ── 一个原型一个批次，先建行（`_ingest_one_video_file` 要用 batch.code 拼 file_key）──
+    prefix = str(spec.get("batch_name") or "").strip()
+    groups: Dict[Optional[str], List[dict]] = {}
+    for it in items:
+        groups.setdefault(it["category"] or None, []).append(it)
+    batches: Dict[Optional[str], AssetBatch] = {}
+    for key, group in groups.items():
+        batch = AssetBatch(
+            code=gen_batch_code(),
+            name=(f"{prefix} " if prefix else "") + (f"成稿导入·{key} {len(group)} 条" if key
+                                                    else f"成稿导入 {len(group)} 条"),
+            source_kind=SOURCE_FILE,
+            prompt_max_duration=tier,
+            # 成稿导入**真不花钱**：稿是人工产的，这里不套 `_apply_import_budget`
+            # （那算的是"这批若全去反推要多少钱"，而这批永远不会去反推，写上去就是一笔
+            #  对账页里凭空多出来的预估）。0 元是事实，不是乐观。
+            cost_estimate=0.0,
+            cost_actual=0.0,
+            budget_cap=settings.ASSET_BATCH_BUDGET_CAP,
+            budget_gate=svc.budget_gate(
+                0.0, None,
+                batch_cap=settings.ASSET_BATCH_BUDGET_CAP,
+                safety_ratio=settings.ASSET_BALANCE_SAFETY_RATIO,
+            )["level"],
+            budget_note="成稿配对导入：原片与稿都是外部已产好的，本口 0 模型费",
+            created_by=current_user.id,
+        )
+        db.add(batch)
+        batches[key] = batch
+    await db.flush()
+
+    # ── I/O 段并发（落盘/探时长量画幅/传桶），建行留给下面串行（AsyncSession 非并发安全，A4-5）──
+    max_bytes = upload_max_bytes()
+    sem = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
+    tmp_dir = os.path.join(tempfile.gettempdir(), f"asset_paired_{uuid.uuid4().hex}")
+    os.makedirs(tmp_dir, exist_ok=True)
+    try:
+        results = await asyncio.gather(*[
+            _ingest_one_video_file(
+                files[it["file_pos"]],
+                tmp_dir=tmp_dir,
+                batch_code=batches[it["category"] or None].code,
+                max_bytes=max_bytes,
+                sem=sem,
+            )
+            for it in items
+        ])
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    created: List[dict] = []
+    need_copy: List[str] = []
+    need_prompt: List[str] = []
+    shape_warnings: List[dict] = []
+    park_rows: List[AssetSummary] = []  # 11-09 批 O：本轮新建的文案，出料后统一自动预取号
+    audit_rows = 0
+    for it, res in zip(items, results):
+        if not res["ok"]:
+            errors.append({"index": it["index"], "video": it["video"], "error": res["error"]})
+            continue
+        batch = batches[it["category"] or None]
+        asset = AssetItem(
+            code=gen_asset_code(),
+            batch_id=batch.id,
+            source_kind=SOURCE_FILE,
+            media_kind=MEDIA_VIDEO,
+            file_name=res["file_name"][:255],
+            file_key=res["file_key"],
+            bucket=settings.MINIO_BUCKET_RAW,
+            file_size=res["size"],
+            duration=res.get("duration"),
+            # 画幅在这里量，是「界面上标横屏」的唯一数据源（链接素材是下载后回写，两条路都要有）
+            resolution=(
+                f"{res['width']}x{res['height']}"
+                if res.get("width") and res.get("height") else None
+            ),
+            title=(it["title"] or os.path.splitext(it["name"])[0])[:500],
+            project_id=project_uuid,
+            category_id=cat_map.get(it["category"]) if it["category"] else None,
+            stage_import=STAGE_SUCCESS,
+            prompt_max_duration=tier if it["script_text"] else None,
+            created_by=current_user.id,
+            note=(
+                "11-09 成稿配对导入：反推稿与文案为外部人工产出，未走模型（cost_prompt/cost_parse=0）"
+                + (f"｜{it['note']}" if it["note"] else "")
+            )[:1000],
+        )
+        if it["script_text"]:
+            task = WechatDlPromptTask(
+                created_by=current_user.id,
+                source_type=PST_UPLOAD,
+                # 这一列 NOT NULL，而这条任务从没属于任何链接/直链——用一个**明确不是 URL** 的
+                # 哨兵值，而不是留空串：日后有人按 source_url 去回源，空串会让他以为数据坏了，
+                # `paired://` 一眼就知道这是导入进来的稿，没有源可回。
+                source_url=f"paired://{res['file_name']}"[:1000],
+                file_name=res["file_name"][:255],
+                status=PT_SUCCESS,
+                content=it["script_text"],
+                max_duration=tier,
+            )
+            db.add(task)
+            await db.flush()
+            asset.prompt_task_id = task.id
+            svc.apply_stage(asset, "prompt", STAGE_SUCCESS)
+        else:
+            svc.apply_stage(asset, "prompt", STAGE_PENDING)
+        db.add(asset)
+        await db.flush()
+
+        summary_id = None
+        if it["hook_copy"]:
+            shape = svc.check_copy_shape(it["hook_copy"])
+            summary = AssetSummary(
+                asset_id=asset.id,
+                seq=1,
+                text=it["hook_copy"],
+                word_count=shape["chars"],
+                category_id=cat_map.get(it["category"]) if it["category"] else None,
+                # 外部稿没有"三候选选一"这回事：这条就是唯一候选，默认推荐
+                is_recommended=True,
+                audit_status=RV_PENDING,
+                doubao_prompt=it["doubao_prompt"] or None,
+                source_prompt_task_id=asset.prompt_task_id,
+            )
+            db.add(summary)
+            park_rows.append(summary)
+            svc.apply_stage(asset, "summary", STAGE_SUCCESS)
+            await db.flush()
+            summary_id = str(summary.id)
+            if not shape["ok"]:
+                shape_warnings.append({
+                    "code": asset.code, "video": it["video"], "problems": shape["problems"],
+                    "text": it["hook_copy"][:60],
+                })
+        # 两条**独立**的欠账轴各记各的（11-09 实测口径：这批 86 条里四种组合都有）：
+        # - 没稿 → 欠一次反推（那步花钱），不管它有没有文案；
+        # - 有稿没文案 → 欠一次出文案（免费吃稿）。
+        # 以前只在"没文案"那一支里二选一，于是「人工文案＋没稿」这条两头都不报，
+        # 一线看不见它还欠反推稿——而一致性闸门没有对照物，过审时才暴露。
+        if not it["script_text"]:
+            need_prompt.append(asset.code)
+        elif not it["hook_copy"]:
+            need_copy.append(asset.code)
+
+        await _write_audit(
+            db,
+            action="asset.import_paired",
+            operator=current_user,
+            target_type="asset_item",
+            target_id=str(asset.id),
+            before=None,
+            after={
+                "code": asset.code,
+                "batch_code": batch.code,
+                "file_name": asset.file_name,
+                "category": it["category"] or None,
+                "has_script": bool(it["script_text"]),
+                "has_copy": bool(it["hook_copy"]),
+                "has_doubao_prompt": bool(it["doubao_prompt"]),
+                "summary_id": summary_id,
+                "cost": 0.0,
+                "from_manifest_index": it["index"],
+            },
+        )
+        audit_rows += 1
+        created.append({
+            "asset_id": str(asset.id),
+            "code": asset.code,
+            "batch_code": batch.code,
+            "title": asset.title,
+            "resolution": asset.resolution,
+            "duration": asset.duration,
+            "status": asset.status,
+            "has_copy": bool(it["hook_copy"]),
+            "has_script": bool(it["script_text"]),
+        })
+
+    # 空批次不留行：这里的批次全是本请求新建的，一条都没进来就该撤掉，
+    # 否则对账页会出现一个「0 条素材」的批次，一线以为文件丢了
+    # （同 `_upload_into_batch` 里 `batch_is_new` 那条判据）。
+    kept = [b for b in batches.values() if any(c["batch_code"] == b.code for c in created)]
+    if not created:
+        # 桶里可能已经落了对象（落盘传桶成功、建行前失败），那是既有上传口同样的既有行为：
+        # 不留数据库行、孤儿对象由桶生命周期规则兜；宁可回 400 让人重投，也不留半批数据。
+        await db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(errors)} 条全部没入库，批次未创建——{_paired_reason_digest(errors)}"
+                "（修正后可直接重投同一份清单）"
+            ),
+        )
+    for b in batches.values():
+        if b not in kept:
+            await db.delete(b)
+    for b in kept:
+        b.item_count = len([c for c in created if c["batch_code"] == b.code])
+    # 序列化**必须在 commit 之前**：commit 会 expire 所有属性，之后读 `b.name` 触发懒加载，
+    # 而异步会话在非 greenlet 上下文里懒加载直接抛 MissingGreenlet（既有序列化都遵循这个次序）
+    batch_payload = [_serialize_batch(b) for b in kept]
+
+    await db.commit()
+
+    # 11-09 批 O：真入库了才自动预取编号——放在 `if not created` 那道回滚闸门与首次 commit
+    # 之后：① 全批没入库被回滚时一个号都不该发（号是烧掉的东西）；② 取号是本机子进程、
+    # 最坏 30s×块数，事务开着等它会被 PG 的 idle_in_transaction 60s 掐连接（11-03 预览栈
+    # 真链路实测踩过：模型回来时连接已闭，整口 500、候选一条没落库）。
+    # 一次导入只跑一枪脚本，不在逐条循环里取：86 条各取一次 = 86 次台账锁 + 86 倍失败面。
+    park = await _auto_park_hook_codes(db, park_rows, operator=current_user, source="import_paired")
+    await db.commit()
+
+    # 与文件上传口同一套收尾：入库即自动排抽帧（审核台卡片靠它，0 元、纯本机 ffmpeg）。
+    # `_enqueue_frames` 自己 fail-soft，排不上只回一条 note，不会把已经落库的导入带崩。
+    frames = await _enqueue_frames(
+        db,
+        asset_ids=[c["asset_id"] for c in created],
+        output_ids=[],
+        operator=current_user,
+        why=f"成稿配对导入 {len(created)} 条",
+    )
+
+    parts = [f"已配对入库 {len(created)} 条（{len(batch_payload)} 个批次），本口 0 模型费"]
+    if need_copy:
+        parts.append(f"{len(need_copy)} 条有稿没文案，可直接点「出文案」（这一步不吃反推钱）")
+    if need_prompt:
+        parts.append(f"{len(need_prompt)} 条没有反推稿（要补只能跑一次反推，那步花钱；不补则过审时没有稿做对照）")
+    if shape_warnings:
+        parts.append(f"{len(shape_warnings)} 条文案形态不合格已照样入库，过审前需按审核口提示改")
+    if unknown_cats:
+        parts.append(f"字典里没有这些原型、已按未分类入库：{'、'.join(unknown_cats)}（要归类请管理员先在字典加行）")
+    if dropped:
+        parts.append(f"{len(dropped)} 条未入库（清单标注/库里重名），明细在 skipped")
+    if errors:
+        parts.append(f"{len(errors)} 条失败，明细在 errors")
+    if leftover_files:
+        parts.append(f"{len(leftover_files)} 个文件清单里没引用，未入库")
+    if not frames.get("queued"):
+        parts.append(
+            f"抽帧没排上（{frames.get('note') or '原因未知'}）：不影响导入，"
+            "审核台卡片暂时没图，可就地补抽"
+        )
+    park_note = _park_note(park)
+    if park_note:
+        parts.append(park_note)
+
+    return {
+        "created": len(created),
+        "batches": batch_payload,
+        "items": created,
+        "need_copy": need_copy,
+        "need_prompt": need_prompt,
+        "shape_warnings": shape_warnings,
+        "unknown_categories": unknown_cats,
+        "skipped": dropped,
+        "errors": errors,
+        "leftover_files": leftover_files,
+        "audit_rows": audit_rows,
+        "frames": frames,
+        "hook_codes": _park_payload(park),
+        "message": "；".join(parts),
     }
 
 
@@ -1915,7 +2770,8 @@ def _auto_download_phrase(kicks: List[dict], total: int) -> str:
 
 
 _UPLOAD_CONCURRENCY = 3
-# 单请求整包上限 = nginx `client_max_body_size 500M`（nginx.conf:92）。逐文件并发把
+# 单请求整包上限 = nginx `client_max_body_size 2G`（2026-11-11 运维席 P1 从 500M 抬上来；
+# nginx.conf 与 deploy/nginx.conf 各若干处，改一处不够）。逐文件并发把
 # N 个文件拆成 N 个请求，等于绕开"200 个文件一次提交必然 413、而且回的是 nginx 的 HTML
 # 不是 JSON"这一坑（A4-5）；前端一次建批次、按 batch_id 分批投即可。
 
@@ -2019,6 +2875,12 @@ async def _ingest_one_video_file(
             if size_err:
                 return {"ok": False, "file_name": safe_name, "error": size_err}
             duration = await _probe_duration(tmp_path)
+            # 宽高同一条 ffprobe `stream=width,height` 查询，视频与图通用（`_probe_image_size`
+            # 名字带 image 只是历史包袱）。为什么视频也要量：画幅是**素材自己的属性**，
+            # 11-09 起横屏原片要在界面标出来（画幅由角色卡宽高比决定，投产前必须看得见），
+            # 而 `resolution` 只有入库这一刻能免费量到——链接素材是下载后回写，文件素材此前
+            # 一直没写，列表与投产口只能显示「画幅未知」。
+            width, height = await _probe_image_size(tmp_path)
             file_key = f"asset/{batch_code}/{uuid.uuid4().hex}_{safe_name}"
             # content type 按真实扩展名给：写死 video/mp4 的话 .mov/.webm 在桶里是错标签，
             # 浏览器 presigned 直连会当 mp4 解（Safari 直接黑屏），下载侧也无法按类型还原
@@ -2036,7 +2898,8 @@ async def _ingest_one_video_file(
                     "error": "对象存储写入失败。原文件没入库，带 batch_id 走 /assets/upload/retry 补投这一个",
                 }
             return {"ok": True, "file_name": safe_name, "file_key": file_key,
-                    "size": size, "duration": duration, "media_kind": MEDIA_VIDEO}
+                    "size": size, "duration": duration, "media_kind": MEDIA_VIDEO,
+                    "width": width, "height": height}
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -2254,6 +3117,12 @@ async def _upload_into_batch(
             stage_import=STAGE_SUCCESS,
             created_by=current_user.id,
         )
+        # 画幅：视频和图片一律入库时就量（11-09 起横屏原片要在界面标出来，
+        # 而 resolution 只有这一刻免费拿得到——链接素材是下载后回写，文件素材此前只给图写，
+        # 视频行一直空着，列表与投产口只能显示「画幅未知」。
+        asset.resolution = (
+            f"{res['width']}x{res['height']}" if res.get("width") and res.get("height") else None
+        )
         if is_image:
             # 图片四阶段一律 skipped（拍板③：图是**生产输入**，不参与反推/文案/投产/拼接）。
             # 不显式写 skipped 的话它们会停在 pending —— 于是既在「待反推」计数里碍事，
@@ -2262,9 +3131,6 @@ async def _upload_into_batch(
             asset.stage_summary = STAGE_SKIPPED
             asset.stage_produce = STAGE_SKIPPED
             asset.stage_compose = STAGE_SKIPPED
-            asset.resolution = (
-                f"{res['width']}x{res['height']}" if res.get("width") and res.get("height") else None
-            )
             # 抽帧对图没有意义（原图本身就是封面），直接把 file_key 当封面
             asset.cover_image_key = res["file_key"]
         # 派生态必须带 media_kind：不带的话图会一路落到 `waiting_prompt`（"待反推"），
@@ -3755,6 +4621,26 @@ ASSET_JOB_STATE_LABELS = {
     JB_INTERRUPTED: "已中断（服务重启，结果不可信）",
 }
 
+# 11-10 用户口径③「刚才投出去的那条生产单显示完成，成片墙还是看不到」：
+# 「已完成」这三个字在台账里本来只说明**这一个动作**跑完了——投板跑完＝单挂上板，
+# 片子还在豆包那边出（几十分钟）；开单跑完＝单建好，还没投板。一线把它读成
+# "片儿到手了"完全合理，错的是我们只报了动作没报去向。所以每一种任务完成时都
+# 必须带一句"做到了哪一步、下一步在哪看"（`done_note`），界面摆在完成提示里。
+# 纯话术，不参与任何判定；改判定请回到各接口自己的闸门，别在这里加条件。
+ASSET_JOB_DONE_NOTES = {
+    JOB_ANALYZE: "反推只出稿：文案在「素材与文案」／审核台，这一步不产视频",
+    JOB_SUMMARY_GENERATE: "钩子文案已出稿（还没建单、没投板）：去审核台看过审，再开单才轮到出片",
+    JOB_PROMPT_PREVIEW: "提示词只是备好的预览：没建单、没投板、不占号池",
+    JOB_PRODUCE: "生产单已建好，但还没投板（不占号也不出片）：在「生产单与投板」点「投去出片」才算投出去",
+    JOB_DISPATCH: (
+        "投板只是把单挂上豆包任务板：出片＋回库要几十分钟，"
+        "回到「生产单与投板」看行上「成片」列——从「还没收片」变成「已收 N 段」才算到手，"
+        "片子同时自动进「成片墙」"
+    ),
+    JOB_DOWNLOAD: "原片已下载入库：在素材详情里就地播，这一步不出成片",
+    JOB_FRAMES: "抽帧完成：首帧摆在审核台卡片行与成片墙缩略图上",
+}
+
 
 def _job_endpoint(kind: str) -> Tuple[Any, Any, str]:
     """kind → (请求模型, 真正干活的接口函数, 白话名称)。
@@ -4144,6 +5030,9 @@ def _serialize_job(job: AssetJob, progress: Optional[Dict[str, Any]] = None) -> 
         "kind_label": _job_kind_label(job.kind),
         "status": job.status,
         "status_label": ASSET_JOB_STATE_LABELS.get(job.status, job.status),
+        # 「已完成」必须说清完成了什么、下一步在哪看（11-10 口径③）：只在成功终态给，
+        # 失败／中断的成因走 `error`，两套话术不混
+        "done_note": ASSET_JOB_DONE_NOTES.get(job.kind) if job.status == JB_SUCCEEDED else None,
         "running": job.status in JOB_OPEN_STATES,
         "batch_id": str(job.batch_id) if job.batch_id else None,
         "planned_units": job.planned_units,
@@ -4370,6 +5259,7 @@ async def generate_summaries(
     # hook-copy/prompt-web 生成豆包网页版提示词（第二跳）。收集在循环里、
     # 调用在提交后——外部模型调用前事务必须干净（idle_in_transaction 60s 掐连接）。
     web_jobs: List[dict] = []
+    new_copy_rows: List[AssetSummary] = []  # 11-09 批 O：整批新出的候选，出料后一次性自动预取号
     for asset, script in targets:
         aid = str(asset.id)
         # 批 G：图片没有详规、也不该有 —— 出文案要读 doc/120 的脚本，喂一张 jpg 进去
@@ -4550,6 +5440,10 @@ async def generate_summaries(
             entry["note"] = f"候选不齐：要 {count} 条只出 {created} 条，审核缺横向对照，建议重生成"
         results.append(entry)
         if created_rows:
+            # 多候选时只给**推荐条**挂号（没有推荐条就挂第一条）：一钩一号、发了即烧，
+            # 三条候选都挂＝一条文案烧三个号，280/日的号池会被当废纸烧光。
+            # 审核时真挑了非推荐那条，开单屏照旧手工填或点「代取」，跟批 N 之前一样。
+            new_copy_rows.append(next((s for s in created_rows if s.is_recommended), created_rows[0]))
             web_jobs.append({"asset": asset, "script": script, "summaries": created_rows})
 
     await _write_audit(
@@ -4567,6 +5461,14 @@ async def generate_summaries(
             "cross_person": crosses or None,
         },
     )
+    await db.commit()
+
+    # 11-09 批 O：出文案的当场把编号预取好挂上（用户口径「以后的新文案也自动预取吧」）。
+    # 放在 commit 之后、第二跳之前：这一枪上面刚做完模型调用，同一条铁律——
+    # 事务开着等外部调用（取号脚本最坏 30s×块数）会被 idle_in_transaction 60s 掐连接，
+    # 11-03 预览栈实测整口 500、花钱换来的候选一条没落库。候选此刻已经提交，
+    # 取号失败只少个预取位，开单时手工填或点「代取」照旧补得上。
+    park = await _auto_park_hook_codes(db, new_copy_rows, operator=current_user, source="summary_generate")
     await db.commit()
 
     # ── 11-06 双产出第二跳：豆包网页版提示词 ──
@@ -4636,6 +5538,7 @@ async def generate_summaries(
     return {
         "results": results,
         "queue": queue,
+        "hook_codes": _park_payload(park),
         "message": f"已为 {sum(1 for r in results if r.get('created'))} 条素材出文案"
         + (
             f"；{web_ok_assets} 条素材的豆包网页版提示词已同步生成（共 {web_filled} 段）"
@@ -4645,7 +5548,8 @@ async def generate_summaries(
             f"；{web_fail_assets} 条素材的网页版提示词没生成全，详情里可单独补"
             if web_fail_assets else ""
         )
-        + (f"；队列还剩 {queue['remaining']} 条，下一次接着排" if queue and queue["remaining"] else ""),
+        + (f"；队列还剩 {queue['remaining']} 条，下一次接着排" if queue and queue["remaining"] else "")
+        + (f"；{_park_note(park)}" if park.get("attempted") else ""),
     }
 
 
@@ -4774,10 +5678,976 @@ async def update_risk_lexicon(
     }
 
 
+# ─────────────────────  投产前可替换元素（批 M，11-10）  ─────────────────────
+# 用户在②投产弹窗点「确认投板」之前，要把提示词里换得动的元素（场景／动物／道具…）
+# 挑一个或自己填，换完拿到一份**完整可编辑**的正文再投。
+#
+# 形态完全照风险词库（同一类东西：运营能改、全员要读、不进模型提示词）：
+# 读用 `_PROD_ROLES`、写只 admin、改动写 AuditLog，三层 defaults／override／effective。
+#
+# **抽元素与组稿都是纯文本进、纯文本出**，不读生产单、不落任何库：
+# 前端把手上那份投递稿正文递进来，引擎认槽位、按人选替换，再把新正文原样递回去。
+# 这样「换元素」与「改稿」是同一条通道（`DispatchRequest.prompt_overrides`），
+# 库里的 `prompt_text`／过审文案一字不动——这是 11-06 的拍板，也是用户这次的原话
+# （「原有的提示词，你不要给它们覆盖掉」）。
+# 组出来的正文在返回时就照投板那道 block 级风险词重扫一遍，
+# 让人在弹窗里就知道"换上这个词会被拦"，而不是点确认才吃 400。
+
+
+def pattern_has_group(pattern: str) -> bool:
+    """写法里到底有没有捕获组——存进去才发现没有，界面就会「认得出但换不动」。"""
+    try:
+        return re.compile(pattern).groups >= 1
+    except re.error:
+        return False
+
+
+class PromptElementSlotRow(BaseModel):
+    """元素库的一行（PUT 的一条）。键与写法当场校验：坏正则直接 400，不让人以为存好了。"""
+    key: str = Field(..., description="稳定标识（同键覆盖出厂默认表；建议小写英文＋下划线）")
+    label: str = Field("", description="界面显示名（如「场景」「出场的动物」），留空用 key")
+    mode: str = Field(
+        pesvc.MODE_LITERAL,
+        description="literal＝正文里逐字找词面（场景/动物这类写在③剧情自由文本里的东西）；"
+        "pattern＝按带捕获组的正则找（①那种模板保证存在、只能在原地处改的位置）；"
+        "manual＝整句话（台词/泄密内容/引爆不公那句），系统不猜原值，这一行永远摆出来给人手填",
+    )
+    anchors: List[str] = Field(
+        default_factory=list,
+        description="literal 认法要匹配的词面；留空＝拿候选池当词面",
+    )
+    pattern: str = Field("", description="pattern 认法的正则，捕获组 1 就是当前值")
+    probe: str = Field(
+        "",
+        description="literal 专用的**识别位置**（带捕获组）：词表外的值也能认出当前值，"
+        "替换仍按逐字全局走。场景就靠它认「剧情：」后第一段。",
+    )
+    pool: List[str] = Field(default_factory=list, description="裂变候选（顺序＝界面上的推荐顺序）")
+    categories: List[str] = Field(
+        default_factory=list,
+        description="只在这些钩子原型下出现（填原型名或「原型 A」这种短前缀）；留空＝所有原型都用这一槽位",
+    )
+    skip_lines: Optional[str] = Field(
+        None,
+        description="这一槽位不碰哪些行（正则，缺省＝「钩子原文」行＋①生成【…】行）。"
+        "明确写空串＝允许碰那两行（换剧名这类特殊活儿才用）",
+    )
+    note: str = Field("", description="行内说明（纯展示，告诉一线这个槽位换的是什么）")
+
+
+class PromptElementsUpdateRequest(BaseModel):
+    slots: List[PromptElementSlotRow] = Field(default_factory=list)
+    inherit: bool = Field(
+        True, description="true＝在出厂默认表上追加/覆盖同键；false＝整体替换（默认槽位也不再认）"
+    )
+
+
+class PromptElementsExtractRequest(BaseModel):
+    texts: Dict[str, str] = Field(
+        default_factory=dict,
+        description="行 id → 那份投递稿正文（一次上限 50 条，单条上限 20000 字）",
+    )
+    category: Optional[str] = Field(
+        None, description="钩子原型名或「原型 A」这种短前缀；给了就只报这个原型适用的元素"
+    )
+    include_unmatched: bool = Field(
+        False,
+        description="true＝这一原型的参数项**全摆出来**，认不出原值的 current 给空"
+        "（④开单屏要的就是这个：先让人知道这个类型要设哪几项）；"
+        "false＝只回报认得出的（②投产弹窗的老口径，不摆空下拉）",
+    )
+
+
+class PromptElementEditItem(BaseModel):
+    """一条替换。`old` 留空＋槽位是 pattern＝把这个槽位的所有命中都换掉。"""
+    key: str = Field("", description="元素槽位键；留空＝自定义替换（整段逐字换，不限于字典认出的元素）")
+    old: str = Field("", description="要换掉的那段原文")
+    new: str = Field(..., description="换成什么")
+
+
+class PromptElementsApplyRequest(BaseModel):
+    text: str = Field(..., description="当前那份投递稿正文")
+    edits: List[PromptElementEditItem] = Field(default_factory=list)
+
+
+_MAX_EXTRACT_ITEMS = 50
+_MAX_ELEMENT_TEXT_LEN = 20000
+
+
+async def _prompt_element_catalog(db: AsyncSession) -> List[Dict[str, Any]]:
+    """读生效元素字典（每次现读，不缓存）。
+
+    TTL 缓存是给"每个动作都要扫一遍"的风险词表准备的；元素字典只在开弹窗时读一次，
+    而**运营刚配完就等着看效果**，缓存反而制造"配了看着没生效"。
+    """
+    row = (
+        await db.execute(
+            select(SystemConfig).where(SystemConfig.key == pesvc.PROMPT_ELEMENTS_CONFIG_KEY)
+        )
+    ).scalar_one_or_none()
+    value = row.value if row is not None and isinstance(row.value, dict) else {}
+    eff, _override = pesvc.merge_catalog(value)
+    return eff
+
+
+@router.get("/assets/prompt-elements")
+async def get_prompt_elements(
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """读当前生效的可替换元素字典（抽元素／组稿用的就是这一份）。"""
+    row = (
+        await db.execute(
+            select(SystemConfig).where(SystemConfig.key == pesvc.PROMPT_ELEMENTS_CONFIG_KEY)
+        )
+    ).scalar_one_or_none()
+    raw = row.value if row is not None and isinstance(row.value, dict) else {}
+    eff, override = pesvc.merge_catalog(raw)
+    return {
+        "effective": eff,
+        "defaults": pesvc.normalize_catalog(pesvc.DEFAULT_PROMPT_ELEMENTS),
+        "override": override,
+        "inherit": bool(raw.get("inherit", True)),
+        "has_override": row is not None,
+        # 界面要能把「这一行用的是默认保护行」和「这一行被改成了别的手法」分开显示，
+        # 所以把默认串也吐出去——前端自己抄一份迟早和这里对不上。
+        "default_skip_lines": pesvc.DEFAULT_SKIP_LINES,
+        "updated_at": utc_iso(row.updated_at) if row is not None and row.updated_at else "",
+        "can_edit": current_user.role == UserRole.admin.value,
+        "notes": [
+            "候选池还没配的元素槽位照样能用：界面上走「自定义输入」，功能不断档",
+            "「场景／动物」这类元素要按钩子原型加行，存完立即生效，不用发版",
+            "整句话那几项（动物说的话／偷听到的内容／引爆不公那句）是手填项：系统不猜原句，"
+            "界面永远摆出来让人从稿子里复制",
+            "认与换都不碰「钩子原文」那行和 ① 生成【…】那行（后者里面有《剧名》，"
+            "把动物全文替换会顺手造出一部不存在的剧）",
+            "「题材标签／剧名」11-10 已按用户口径从默认字典去掉（参考文件《钩子模版换皮参数设定.docx》"
+            "里没有这两项）：要改 ① 行那几个字，用「自定义替换」照打一遍",
+        ],
+    }
+
+
+@router.put("/assets/prompt-elements")
+async def update_prompt_elements(
+    data: PromptElementsUpdateRequest,
+    current_user: Annotated[User, Depends(require_roles(UserRole.admin))],
+    db: AsyncSession = Depends(get_db),
+):
+    """改元素字典（仅 admin）。改完下一次抽元素就用新表。"""
+    rows: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in data.slots:
+        key = str(item.key or "").strip()[:60]
+        if not key:
+            raise HTTPException(status_code=400, detail="有一行没写「键」，键是这一行的身份证号，不能空")
+        if key in seen:
+            raise HTTPException(
+                status_code=400,
+                detail=f"键重复了：{key}（同键只会留一份，先把多余那行删掉）",
+            )
+        seen.add(key)
+        mode = str(item.mode or pesvc.MODE_LITERAL).strip()
+        if mode not in pesvc.SLOT_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"「{key}」的认法只认三种：逐字找词面（literal）、按写法找（pattern）、"
+                    f"整句自己填（manual），现在写的是：{mode}"
+                ),
+            )
+        pattern = str(item.pattern or "").strip()
+        if pattern:
+            if len(pattern) > pesvc.MAX_PATTERN_LEN:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"「{key}」的识别写法太长了（上限 {pesvc.MAX_PATTERN_LEN} 字）",
+                )
+            err = pesvc.compile_error(pattern)
+            if err:
+                raise HTTPException(status_code=400, detail=f"「{key}」的识别写法编不过：{err}")
+            if not pattern_has_group(pattern):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"「{key}」的识别写法里要有捕获组（用圆括号把当前值那段包住），否则不知道该换哪一段：{pattern}",
+                )
+        if mode == pesvc.MODE_PATTERN and not pattern:
+            raise HTTPException(
+                status_code=400,
+                detail=f"「{key}」写了按写法找（pattern）却没给识别写法，这一行什么都认不出",
+            )
+        probe = str(item.probe or "").strip()
+        if probe:
+            if mode == pesvc.MODE_PATTERN:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"「{key}」是 pattern 槽位，识别位置（probe）是给逐字找词面那类用的，两者不叠加",
+                )
+            if len(probe) > pesvc.MAX_PATTERN_LEN:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"「{key}」的识别位置太长了（上限 {pesvc.MAX_PATTERN_LEN} 字）",
+                )
+            err = pesvc.compile_error(probe)
+            if err:
+                raise HTTPException(status_code=400, detail=f"「{key}」的识别位置编不过：{err}")
+            if not pattern_has_group(probe):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"「{key}」的识别位置要带一个捕获组（圆括号包住「当前值」那段），否则不知道该认哪几个字：{probe}",
+                )
+        # manual 行什么都可以不给（这行就是要人填）；literal 行必须给词面、候选或识别位置，
+        # 否则存进去的是"看着有这行、永远认不出"的僵尸槽位
+        if mode == pesvc.MODE_LITERAL and not (item.anchors or item.pool or probe):
+            raise HTTPException(
+                status_code=400,
+                detail=f"「{key}」是逐字找词面的槽位，词面（anchors）、候选（pool）、识别位置（probe）至少要给一个",
+            )
+        skip_lines = item.skip_lines
+        if skip_lines is not None:
+            skip_lines = str(skip_lines).strip()
+            if skip_lines:
+                if len(skip_lines) > pesvc.MAX_SKIP_PATTERN_LEN:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"「{key}」的跳过写法太长了（上限 {pesvc.MAX_SKIP_PATTERN_LEN} 字）",
+                    )
+                err = pesvc.compile_error(skip_lines)
+                if err:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"「{key}」的跳过写法编不过（留空表示用默认保护行）：{err}",
+                    )
+        rows.append(
+            {
+                "key": key,
+                "label": item.label,
+                "mode": mode,
+                "anchors": item.anchors,
+                "pattern": pattern,
+                "probe": probe,
+                "pool": item.pool,
+                "categories": item.categories,
+                "skip_lines": skip_lines,
+                "note": item.note,
+            }
+        )
+    if len(rows) > pesvc.MAX_SLOTS:
+        raise HTTPException(status_code=400, detail=f"元素槽位最多 {pesvc.MAX_SLOTS} 行")
+
+    value = {"slots": rows, "inherit": bool(data.inherit)}
+    row = (
+        await db.execute(
+            select(SystemConfig).where(SystemConfig.key == pesvc.PROMPT_ELEMENTS_CONFIG_KEY)
+        )
+    ).scalar_one_or_none()
+    before_value = copy.deepcopy(row.value) if row is not None and row.value else None
+    if row is None:
+        row = SystemConfig(
+            key=pesvc.PROMPT_ELEMENTS_CONFIG_KEY,
+            value=value,
+            description="投产前可替换元素字典（slots=槽位／inherit=是否在出厂默认表上追加）",
+        )
+        db.add(row)
+    else:
+        row.value = value
+        row.updated_at = datetime.utcnow()
+        if not row.description:
+            row.description = "投产前可替换元素字典（slots=槽位／inherit=是否在出厂默认表上追加）"
+    await db.flush()
+    await db.refresh(row)
+    await _write_audit(
+        db,
+        action="asset.prompt_elements.update",
+        operator=current_user,
+        target_type="asset_prompt_elements",
+        target_id=pesvc.PROMPT_ELEMENTS_CONFIG_KEY,
+        before=before_value,
+        after=value,
+    )
+    eff, _ = pesvc.merge_catalog(value)
+    notes: List[str] = []
+    if not data.inherit:
+        notes.append(
+            "已选「整体替换」：出厂那 "
+            f"{len(pesvc.normalize_catalog(pesvc.DEFAULT_PROMPT_ELEMENTS))} 行（原型 A–F 的参数项）都不再认，"
+            f"现在生效的只有你给的 {len(eff)} 行"
+        )
+    if not eff:
+        notes.append("字典一行都没有 → 抽元素什么都认不出来，界面上只剩「自定义替换」")
+    notes.append("元素换出来的正文只走这一次投递（库里原稿一字不动），下一次再投仍是原稿")
+    return {
+        "ok": True,
+        "effective": eff,
+        "updated_at": utc_iso(row.updated_at) if row.updated_at else "",
+        "notes": notes,
+    }
+
+
+@router.post("/assets/prompt-elements/extract")
+async def extract_prompt_elements(
+    data: PromptElementsExtractRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """从投递稿正文里认出可替换元素（带候选池），供②投产弹窗摆元素行。
+
+    纯文本进出，不读库、不落库、不花钱。
+    """
+    catalog = await _prompt_element_catalog(db)
+    if len(data.texts) > _MAX_EXTRACT_ITEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一次最多认 {_MAX_EXTRACT_ITEMS} 条（这次 {len(data.texts)} 条），分批看",
+        )
+    items: Dict[str, Any] = {}
+    over_limit: List[str] = []
+    for key, text in data.texts.items():
+        body = str(text or "")
+        if len(body) > _MAX_ELEMENT_TEXT_LEN:
+            over_limit.append(str(key))
+            items[str(key)] = []
+            continue
+        items[str(key)] = pesvc.extract_elements(
+            body, catalog, data.category, include_unmatched=data.include_unmatched
+        )
+    notes: List[str] = []
+    if not catalog:
+        notes.append("元素字典是空的，认不出元素——去「可替换元素库」按钩子原型加行")
+    if over_limit:
+        notes.append(f"有 {len(over_limit)} 条正文太长（上限 {_MAX_ELEMENT_TEXT_LEN} 字），没去认元素")
+    if data.include_unmatched:
+        notes.append("标了「没认出」的那几项不是坏了：原稿里的写法不在词表内，或者本来就是整句话，"
+                     "照原稿抄进去再填新值就行")
+    return {
+        "items": items,
+        "category": data.category or "",
+        "include_unmatched": data.include_unmatched,
+        "catalog_count": len(catalog),
+        "slot_labels": [s["label"] for s in catalog],
+        "notes": notes,
+    }
+
+
+class PromptElementsGuessRequest(BaseModel):
+    """11-10 用户口径「在页面上重新认参数，能不能再将它们提炼一下」的入参。
+
+    形状与 `extract` 一致（行 id → 投递稿正文），但**这一口可能花钱**：`extract` 是 0 元、
+    可复现的确定性认法，认不出就是认不出（词表外写法＋台词类整句按设计永不自动认）；
+    这里补的是那一段——把稿子交给模型，让它**逐字抄回**稿子里扮演这个角色那段原文。
+
+    11-11 批 Z 改了口径（用户原话「你不能按照固定的词典去识别，你要调用大模型的能力去做
+    这个」）：这条路不再只是界面上一个要人点的按钮——开单屏认完词表后会**自动**用它补空，
+    但先查 `asset_element_guesses` 缓存，所以每篇稿子每个参数项**只花一次钱**。
+    `auto=true` 就是"这一枪是自动补位"，服务端据此改三处行为：装不下不报 400 而是分批、
+    模型那一路挂了不报错只说明（照常开单）、旋钮关掉时只用缓存。
+    """
+
+    texts: Dict[str, str] = Field(
+        default_factory=dict,
+        description=f"行 id → 那份投递稿正文（一次上限 {pesvc.GUESS_MAX_ITEMS} 篇、"
+        f"总计上限 {pesvc.GUESS_MAX_TOTAL_CHARS} 字；自动补位时超了会分批，不报错）",
+    )
+    category: Optional[str] = Field(
+        None, description="钩子原型名或「原型 A」这种短前缀；给了就只提炼这一型配的参数项"
+    )
+    auto: bool = Field(
+        False,
+        description="true＝界面认完词表自动补位（受 `ASSET_ELEMENT_AUTO_GUESS` 旋钮约束，"
+        "且失败不报错）；false＝人点了「再问一次模型」",
+    )
+    use_cache: bool = Field(
+        True,
+        description="先查这份稿子上一次抄回来的原值（命中＝0 元）。人主动重问时传 false 绕过缓存",
+    )
+    only_missing: Optional[Dict[str, List[str]]] = Field(
+        None,
+        description="行 id → 词表**还没认出来**的那几格参数项 key。给了就只问这几格"
+        "（已经认出的绝不重复花钱）；不给＝这一型全部参数项都问",
+    )
+
+
+async def _guess_cache_read(
+    db: AsyncSession,
+    texts: Dict[str, str],
+    missing: Dict[str, List[str]],
+    slots: List[Dict[str, Any]],
+    catalog_stamp: Optional[datetime] = None,
+) -> Tuple[Dict[str, Dict[str, str]], Dict[str, List[str]], List[str], List[str]]:
+    """查缓存：把这份稿子上一次抄回来、且**按现在的字典仍然过得了校验**的原值取回来。
+
+    返回 `({行 id: {槽位 key: 原值}}, {还缺的}, {白话说明：哪些旧值作废了}, {白话说明：状态})`。
+    后两栏分开是因为前端把第三栏当「这格被丢了」渲染，第四栏只是解释「为什么这格还是空的」。
+
+    ⚠️ 取回来不等于能用：逐字在不在稿子里、有没有落进保护行、长度上限，全部拿**当前生效
+    的字典**重算一遍（`accept_guessed_values`）。过不了就把那行缓存删掉——它代表的是旧字典
+    的判定，留着只会一次次把同一个坏值端上来，删了下次自动重新问、重新判。
+
+    ⚠️ 例外是**空串**：那是"上一次确实问过这一格、稿子里没有"这个答案本身，不是坏值。
+    空串行不再重判、也不进 `values`（要重问有「再问一次模型」那条 `use_cache=false` 的路）。
+    11-11 现网第一枪就是没记这一条，同一篇稿子的同一格连着两次花钱问出同一个空结果。
+    但空串**只在这道题没变时算答案**：`catalog_stamp`（元素字典最后一次改动）晚于这一行的
+    `created_at` 就作废重问——改了词表却还拿旧字典的"没有"糊弄人，比多问一次贵得多。
+    """
+    if not missing:
+        return {}, dict(missing), [], []
+    hashes = {rid: pesvc.body_fingerprint(texts.get(rid)) for rid in missing}
+    rows = (
+        await db.execute(
+            select(AssetElementGuess).where(
+                AssetElementGuess.body_hash.in_(list({*hashes.values()}))
+            )
+        )
+    ).scalars().all()
+    by_hash_raw: Dict[str, Dict[str, Tuple[Any, Any]]] = {}
+    for row in rows:
+        by_hash_raw.setdefault(row.body_hash, {})[row.slot_key] = (row.value, row.created_at)
+    by_key_slot = {str(s["key"]): s for s in slots}
+    cached: Dict[str, Dict[str, str]] = {}
+    still: Dict[str, List[str]] = {}
+    notes: List[str] = []
+    info: List[str] = []
+    purge: List[Tuple[str, str]] = []
+    empty_cells = 0
+    for rid, keys in missing.items():
+        # 空串行只有在「问它的那道题没变」时才算答案：元素字典（可替换元素库）在上次问过
+        # 以后又改过，这一格就可能问得出来了——宁可多问一次，也不许拿旧字典的「没有」骗人。
+        # 判据用配置行的 `updated_at` 对缓存行的 `created_at`（整本字典一个戳，粗一点，
+        # 但方向是安全的：改字典只会导致重问，不会导致漏问）。
+        got: Dict[str, str] = {}
+        for slot_key, (value, created_at) in by_hash_raw.get(hashes[rid], {}).items():
+            expired = (
+                catalog_stamp is not None
+                and not str(value or "").strip()
+                and (created_at is None or created_at < catalog_stamp)
+            )
+            if expired:
+                purge.append((hashes[rid], slot_key))
+            else:
+                got[slot_key] = value
+        hit = [k for k in keys if k in got]
+        rest = [k for k in keys if k not in got]
+        known_empty = [k for k in hit if not str(got[k] or "").strip()]
+        askable = [k for k in hit if k not in known_empty]
+        empty_cells += len(known_empty)
+        if not askable:
+            if rest:
+                still[rid] = rest
+            continue
+        sub = [by_key_slot[k] for k in askable if k in by_key_slot]
+        picked = pesvc.accept_guessed_values(
+            str(texts.get(rid) or ""), sub, [{"key": k, "value": got[k]} for k in askable]
+        )
+        if picked["values"]:
+            cached.setdefault(rid, {}).update(picked["values"])
+        stale = [k for k in askable if k not in picked["values"]]
+        purge.extend((hashes[rid], k) for k in stale)
+        for item in picked["dropped"]:
+            notes.append(f"上一次抄回的「{rid[:8]}」这条现在不能用了：{item}")
+        still_keys = [k for k in keys if k not in picked["values"] and k not in known_empty]
+        if still_keys:
+            still[rid] = still_keys
+    if empty_cells:
+        info.append(
+            f"有 {empty_cells} 格上一次问过、稿子里确实没有（这一条已经记下来了，"
+            "0 元，不再重复花钱问）；换了写法要重新问，点「再问一次模型」"
+        )
+    if purge:
+        for body_hash, slot_key in purge:
+            await db.execute(
+                delete(AssetElementGuess).where(
+                    AssetElementGuess.body_hash == body_hash,
+                    AssetElementGuess.slot_key == slot_key,
+                )
+            )
+        await db.commit()
+    return cached, still, notes, info
+
+
+async def _guess_cache_write(
+    db: AsyncSession, values_by_row: Dict[str, Tuple[str, Dict[str, str]]], model_name: str,
+    category: str,
+) -> None:
+    """把这次模型抄回且过了校验的原值存下来（同一份稿子同一格覆盖旧值）。
+
+    `values_by_row`：行 id → (那份正文的指纹, {槽位 key: 原值})。
+    存的是**原串**，判据不存——读的时候按当时的字典重判（见 `_guess_cache_read`）。
+    """
+    for _rid, (body_hash, vals) in values_by_row.items():
+        for slot_key, value in vals.items():
+            row = (
+                await db.execute(
+                    select(AssetElementGuess).where(
+                        AssetElementGuess.body_hash == body_hash,
+                        AssetElementGuess.slot_key == slot_key,
+                    )
+                )
+            ).scalars().first()
+            if row is None:
+                db.add(
+                    AssetElementGuess(
+                        body_hash=body_hash,
+                        slot_key=slot_key[:60],
+                        value=value,
+                        model=(model_name or "")[:80],
+                        category=(category or "")[:60],
+                    )
+                )
+            else:
+                row.value = value
+                row.model = (model_name or "")[:80]
+                row.category = (category or "")[:60]
+    # 兜底：万一这次提交仍撞上连接已死（等模型期间被掐的那类事故），换新事务重放一次——
+    # 这些行是花钱换来的答案，丢了下次就要再花一遍（11-11 现网两批就是这么白跑的）。
+    try:
+        await db.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("换皮参数原值落库第一次提交失败（%s），换新事务重试", str(e)[:120])
+        await db.rollback()
+        await db.commit()
+
+
+
+@router.post("/assets/prompt-elements/guess-values")
+async def guess_prompt_element_values(
+    data: PromptElementsGuessRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """让模型从稿子里**逐字抄回**各换皮参数的原值（「稿子里没认出原值」的补位路）。
+
+    为什么需要它（回答一线那句「为什么都是稿子里没认出原值」）：
+      - literal 槽只认字典里那几组字面词，稿子写「黄皮子」而词表是「黄鼠狼」就认不出；
+      - manual 槽（说的话／偷听内容／引爆台词／绝境）**按设计不靠词表认**——真稿是间接
+        转述，没有形状可依，这种人自己去上千字里找那句原话才卡住；
+      - 反推提示词那一步并没有"槽位"概念，所以这些值不是提前填好的，是开单这一屏现认的。
+
+    11-11 批 Z 的口径（用户原话「你不能按照固定的词典去识别，你要调用大模型的能力去做这个
+    事情」）：词表退成**第一道免费粗筛＋给模型的提示＋替换用的词面**，认不出的那一格
+    自动走这里补，不再等人点按钮。三条判据一条没松：
+      - 结果先查 `asset_element_guesses`（同一份稿子同一格只花一次钱），命中也照样
+        按当前字典重过一遍逐字校验；
+      - `only_missing` 让已经认出的格子**不会被重复花钱、也不会被覆盖**；
+      - `auto=true` 时装不下不报 400 而是分批、模型那一路炸了不报 502 而是照常开单。
+
+    安全边界（模型会编，所以校验不许商量）：`accept_guessed_values` 要求抄回来的串
+    **逐字出现在这一份稿子的可动区间**里，编的一律丢弃并写进 `dropped` 白话。
+    本口**只读**：不改稿、不进投递正文、不动字典。花到钱才落一条审计。
+    """
+    if not data.texts:
+        raise HTTPException(status_code=400, detail="没有稿子正文，没什么可提炼的")
+    total_chars = sum(len(str(v or "")) for v in data.texts.values())
+    if not data.auto:
+        # 人显式点的按钮：批太大就白话拒收，让人自己分批——悄悄只处理前几篇会让人
+        # 以为整批都提炼过了。自动补位那一支反过来（见下面 select_guess_batch）。
+        if len(data.texts) > pesvc.GUESS_MAX_ITEMS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"一次最多提炼 {pesvc.GUESS_MAX_ITEMS} 篇（这次 {len(data.texts)} 篇），分批点",
+            )
+        if total_chars > pesvc.GUESS_MAX_TOTAL_CHARS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"这一批稿子共 {total_chars} 字，超过一次 {pesvc.GUESS_MAX_TOTAL_CHARS} 字上限："
+                "分批点，或先把「模板脚本提示词」里用不上的段落删短",
+            )
+    catalog = await _prompt_element_catalog(db)
+    # 字典最后一次改动的时间戳——只用来判「问过、稿子里没有」那条空串还算不算数
+    # （理由见 `_guess_cache_read`）。没有覆盖行＝用出厂默认表，那时缓存只可能更早；
+    # 传 None 表示「无从判旧」，空串照旧算答案。
+    _cfg = (
+        await db.execute(
+            select(SystemConfig).where(SystemConfig.key == pesvc.PROMPT_ELEMENTS_CONFIG_KEY)
+        )
+    ).scalar_one_or_none()
+    catalog_stamp = _cfg.updated_at if _cfg is not None else None
+    slots = pesvc.slots_for_guess(catalog, data.category)
+    if not slots:
+        if data.auto:
+            return {
+                "values": {}, "labels": {}, "dropped": [],
+                "notes": ["这一型在元素字典里没配参数项，没有可提炼的原值——"
+                          "不影响照常开单；要让它认，去「可替换元素库」按原型加行"],
+                "model": "", "slot_count": 0, "text_count": len(data.texts),
+                "total_chars": total_chars, "paid": False, "auto": True,
+                "from_cache": {}, "from_model": {}, "skipped": [],
+            }
+        raise HTTPException(
+            status_code=400,
+            detail="这一型在元素字典里没配参数项，没有可提炼的原值——先去「可替换元素库」按原型加行",
+        )
+
+    allowed = {str(s["key"]) for s in slots}
+    missing: Dict[str, List[str]] = {}
+    for rid, body in data.texts.items():
+        if not str(body or "").strip():
+            continue
+        if data.only_missing is None:
+            keys = [str(s["key"]) for s in slots]
+        else:
+            keys = [str(k) for k in (data.only_missing.get(str(rid)) or []) if str(k) in allowed]
+        if keys:
+            missing[str(rid)] = keys
+
+    notes: List[str] = [
+        # 这几条会原样进界面（notification / Alert），不带 markdown 星号——
+        # 11-10 done_note 就踩过这个坑：antd 只认纯文本，`**x**` 会裸显四个星号。
+        "提炼只往「原稿里写的是」那一格填原值，不替你决定换成什么——换上什么还是你填。",
+    ]
+    if not missing:
+        notes.insert(0, "这一批该认的词表都认出来了，没有要补的空格，没问模型（0 元）")
+        return {
+            "values": {}, "labels": {str(s["key"]): str(s.get("label") or s["key"]) for s in slots},
+            "dropped": [], "notes": notes, "model": "",
+            "slot_count": len(slots), "text_count": len(data.texts),
+            "total_chars": total_chars, "paid": False, "auto": data.auto,
+            "from_cache": {}, "from_model": {}, "skipped": [],
+        }
+
+    values: Dict[str, Dict[str, str]] = {}
+    dropped: List[str] = []
+    model_name = ""
+    paid = False
+    skipped: List[str] = []
+    still: Dict[str, List[str]] = {}
+    chosen: List[str] = []
+    from_cache: Dict[str, List[str]] = {}
+    from_model: Dict[str, List[str]] = {}
+
+    if data.use_cache:
+        cached, still, cache_notes, cache_info = await _guess_cache_read(
+            db, data.texts, missing, slots, catalog_stamp
+        )
+        for rid, vals in cached.items():
+            values.setdefault(rid, {}).update(vals)
+            from_cache[rid] = sorted(vals)
+        dropped.extend(cache_notes)
+        notes.extend(cache_info)
+    else:
+        still = dict(missing)
+
+    if still:
+        chosen, skipped = pesvc.select_guess_batch(
+            still, char_of=lambda rid: len(str(data.texts.get(rid) or ""))
+        )
+        # `skipped` 只在自动那一支可能非空：人工点的超上限已在上面白话拒收，
+        # 一次 5 篇／12000 字的批 `select_guess_batch` 必然全收（边界等号也算得进）。
+        if skipped and data.auto:
+            notes.append(
+                f"这批有 {len(skipped)} 篇一次问不完（一次上限 {pesvc.GUESS_MAX_ITEMS} 篇、"
+                f"{pesvc.GUESS_MAX_TOTAL_CHARS} 字），这次先补了缺得最多的那几篇，"
+                "剩下的下次打开还会补"
+            )
+        if data.auto and not settings.ASSET_ELEMENT_AUTO_GUESS:
+            notes.append(
+                "自动提炼现在是关的（旋钮 ASSET_ELEMENT_AUTO_GUESS=false），"
+                "这次只用了已经存着的结果；要恢复把它设回 true，要现在问就点「再问一次模型」"
+            )
+            chosen = []
+        if chosen:
+            ask_keys = {k for rid in chosen for k in still.get(rid, [])}
+            slots_ask = [s for s in slots if str(s["key"]) in ask_keys]
+            payload_texts = [
+                {"id": rid, "text": str(data.texts.get(rid) or "")} for rid in chosen
+            ]
+            # 给模型的只有"这一项叫什么／是什么／常见的那些词"，`skip_lines`／`mode` 是**本机校验判据**，
+            # 不出去（出去等于告诉它哪几行不能碰，它反而会照着绕）。
+            payload_slots = [
+                {"key": s["key"], "label": s["label"], "note": s["note"], "pool": s["pool"]}
+                for s in slots_ask
+            ]
+            # ⚠️ 调模型前必须把事务收掉（与出文案/预览口同一条铁律）：这一枪要趴几十秒到
+            # 几分钟等 autoclip，开着事务等会被 PG 的 idle_in_transaction_session_timeout=60s
+            # 掐掉连接，模型成功返回、后面的 `_guess_cache_write` 却报 connection is closed
+            # → 整口 500，**花过钱的格子一条没记住**（11-11 现网 MODE=full 实测两批这样炸）。
+            # 此刻事务里只有上面那几笔 SELECT（字典、缓存、SystemConfig），commit 是干净收尾。
+            await db.commit()
+            try:
+                res = await _call_autoclip(
+                    "hook-copy/slots",
+                    {"texts": payload_texts, "slots": payload_slots, "max_retries": 1},
+                    # 用 900s 默认值：单次问答比展开短，但超时链口径不许破（autoclip 600s < 这里 900s
+                    # < 浏览器 MODEL_WAIT_TIMEOUT 960s），理由见 `_call_autoclip` 那段注释。
+                )
+            except Exception as exc:  # noqa: BLE001
+                # **只有自动补位那一支**兜住：这一枪是跟着「重新认参数」顺手打的，模型挂了
+                # 不该把开单这一屏带崩（词表那份结果照旧有效，照常开单）。
+                # 人显式点了「再问一次模型」就不同——那一下就是他要的答复，失败必须原样红给他看
+                # （11-10 用例钉的就是 502 原样传出＋一条审计都不留）。
+                if not data.auto:
+                    raise
+                detail = getattr(exc, "detail", None) or str(exc)
+                notes.append(
+                    f"模型那一路这次没通（{str(detail)[:80]}），这批仍按词表的认法，"
+                    "照常开单不受影响；可以再点「再问一次模型」"
+                )
+                res = {}
+            if res:
+                paid = True
+                model_name = str(res.get("model") or "")
+                items_by_id: Dict[str, List[Dict[str, Any]]] = {}
+                stray: List[str] = []
+                for row in res.get("items") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    rid = str(row.get("id") or "")
+                    if rid not in still:
+                        # 模型自己造的 id／这次没问的稿子：它给的值一个都不认
+                        stray.append(rid)
+                        continue
+                    items_by_id.setdefault(rid, []).append(row)
+                if stray:
+                    notes.append(
+                        f"模型多回了 {len(stray)} 个这次没提交过的稿子编号，那些值一律没用"
+                    )
+                to_cache: Dict[str, Tuple[str, Dict[str, str]]] = {}
+                silent: List[str] = []
+                for rid in chosen:
+                    want = set(still.get(rid, []))
+                    # **只把它这次确实问的那几格端进校验**：词表已经认出的那些格，模型常常
+                    # 也会顺手回一份，直接喂给 `accept_guessed_values` 会被报成「没配的参数项」
+                    # ——那话是假的（字典里明明配了），会让人白跑去改词表。
+                    # 但**字典里真没配的键要留着**：那才是"模型在编参数项"的信号，丢了就没人知道。
+                    items = [
+                        r
+                        for r in items_by_id.get(rid, [])
+                        if str(r.get("key") or "") in want or str(r.get("key") or "") not in allowed
+                    ]
+                    picked = pesvc.accept_guessed_values(
+                        str(data.texts.get(rid) or ""),
+                        [s for s in slots_ask if str(s["key"]) in want],
+                        items,
+                    )
+                    got = picked["values"]
+                    dropped.extend(picked["dropped"])
+                    if got:
+                        values.setdefault(rid, {}).update(got)
+                        from_model[rid] = sorted(got)
+                    else:
+                        silent.append(rid)
+                    # 11-11 现网第一枪抓出来的真 bug：只存"抄到的"，**没抄到的那格下次进来
+                    # 还会再问一遍模型**——而它下一次照样抄不到（稿子里确实没写／模型编的），
+                    # 于是这一格可以永远重复花钱，把"每篇每格最多付一次"这条承诺打穿了。
+                    # 现在把问过的每一格都落一条：抄到的存原文，没抄到的存空串（=已知答案）。
+                    # ⚠️ 只在模型**确实回了东西**（`res` 非空）时这么记：autoclip 挂了／超时
+                    # 那一支 `res={}`，那是"没问到"不是"没有"，必须留着下次重问。
+                    to_cache[rid] = (
+                        pesvc.body_fingerprint(data.texts.get(rid)),
+                        {**{k: "" for k in want}, **got},
+                    )
+                if silent:
+                    notes.append(
+                        f"有 {len(silent)} 篇一格都没提炼到（多半是稿子里确实没写这一型要的那些东西）"
+                    )
+                if to_cache:
+                    await _guess_cache_write(db, to_cache, model_name, data.category or "")
+
+    if paid:
+        await _write_audit(
+            db,
+            action="asset.prompt_elements.guess_values",
+            operator=current_user,
+            target_type="asset_prompt_elements",
+            target_id=data.category or "*",
+            before=None,
+            after={
+                # 记的是**这一枪真问出去的量**（缓存命中的那部分不进 text_count/slot_count，
+                # 它们一分钱没花，只进 cached_rows）
+                "text_count": len(chosen),
+                "slot_count": len({k for rid in chosen for k in still.get(rid, [])}),
+                "filled_rows": len(from_model),
+                "dropped_count": len(dropped),
+                "model": model_name,
+                "auto": data.auto,
+                "cached_rows": sum(len(v) for v in from_cache.values()),
+            },
+        )
+    if from_cache and not paid:
+        notes.insert(
+            0,
+            f"有 {sum(len(v) for v in from_cache.values())} 格用的是这份稿子上一次抄回来的结果"
+            "（0 元，这次没再问模型）",
+        )
+    if paid:
+        notes.insert(
+            0,
+            f"这次问了模型：{len(chosen)} 篇、{len(from_model)} 篇补到了值（花一次模型钱，"
+            "与出文案同档；同一篇稿子的同一格下次不再花钱）。抄回来的每个词都必须逐字"
+            "出现在这份稿子里，模型编的当场丢弃。",
+        )
+    return {
+        # 行 id → {槽位 key: 逐字抄回的原值}（与 extract 的 items 同一套 id，前端按格回填）
+        "values": values,
+        "labels": {str(s["key"]): str(s.get("label") or s["key"]) for s in slots},
+        "dropped": dropped,
+        "notes": notes,
+        "model": model_name,
+        "slot_count": len(slots),
+        "text_count": len(data.texts),
+        "total_chars": total_chars,
+        # 花钱判据：paid=false 时一分钱没花（全缓存命中／没空格要补／旋钮关了／模型没通）
+        "paid": paid,
+        "auto": data.auto,
+        "from_cache": from_cache,
+        "from_model": from_model,
+        "skipped": skipped,
+    }
+
+
+@router.post("/assets/prompt-elements/apply")
+async def apply_prompt_elements(
+    data: PromptElementsApplyRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """按人选的元素替换把整段正文组出来，并当场扫一遍拦级风险词。
+
+    返回的 `text` 就是要塞进「完整可编辑正文」那一份；人还能接着手改，
+    点确认时才作为 `prompt_overrides` 投出去。
+    """
+    if len(data.text) > _MAX_ELEMENT_TEXT_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"正文 {len(data.text)} 字，超过 {_MAX_ELEMENT_TEXT_LEN} 字上限，先删短再组稿",
+        )
+    catalog = await _prompt_element_catalog(db)
+    edits = [{"key": e.key, "from": e.old, "to": e.new} for e in data.edits]
+    text, replaced, notes = pesvc.apply_edits(data.text, catalog, edits)
+    # 11-10 用户口径①「看不到正文被替换的地方」：位置在这里也算出来，
+    # 前端那棵高亮树只认 marks，不再自己 indexOf 猜。
+    marks, mark_notes = pesvc.mark_replacements(text, replaced, data.text)
+    notes = notes + mark_notes
+    if len(text) > _PROMPT_OVERRIDE_MAX_LEN:
+        notes.append(
+            f"组完 {len(text)} 字，超过投递稿单条上限 {_PROMPT_OVERRIDE_MAX_LEN} 字，投板时会被拦，先删一点"
+        )
+    book, exemptions = await _risk_lexicon(db)
+    hits = svc.scan_risk(text, lexicon=book, exemptions=exemptions)
+    blocked = svc.risk_block_hits(hits)
+    return {
+        "text": text,
+        "replaced": replaced,
+        "marks": marks,
+        "notes": notes,
+        "length": len(text),
+        "risk": {
+            "block": blocked,
+            "warn": [h for h in hits if h.get("level") == svc.RISK_LEVEL_WARN],
+        },
+        # 与投板那道闸同一个判据：这里非空，点确认就会照原稿那道闸被拦（admin 可带理由强行投）
+        "would_dispatch_block": bool(blocked),
+    }
+
+
+class PromptElementsFanoutPreviewRequest(BaseModel):
+    """④ 开单屏「换完长这样」的入参：和 produce 的扇出入口**同一套键**，只是不落库、不调模型。"""
+
+    texts: Dict[str, str] = Field(
+        default_factory=dict,
+        description="行 id（summary_id）→ 这一屏看到的那份底稿（上限同 extract：50 条 / 单条 20000 字）",
+    )
+    category: Optional[str] = Field(None, description="钩子原型；给了就只按这个原型的参数项换")
+    values: Dict[str, List[str]] = Field(
+        default_factory=dict, description="槽位 key → 要换上的多个值（扇几行就看它）"
+    )
+    base: Optional[Dict[str, str]] = Field(None, description="公共原值（这一屏手填/认出的那份）")
+    base_by_summary: Optional[Dict[str, Dict[str, str]]] = Field(
+        None, description="逐篇原值；与 produce 同一条合并口径：**逐篇覆盖公共**"
+    )
+    mode: str = Field(pesvc.MATRIX_ZIP, description="zip＝按行配对，product＝全组合")
+
+
+@router.post("/assets/prompt-elements/fanout-preview")
+async def preview_prompt_element_fanout(
+    data: PromptElementsFanoutPreviewRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """把「每个参数填了多个值」扇出来的那 N 份稿子当场组给人看（11-10 用户口径）。
+
+    用户 11-10 晚的原话：「我刚选了几个元素，但是没有看到正文被替换的地方。」这一口就是答案：
+    填完值立刻看到换完之后长什么样、哪几条真换动了、哪几条其实没换动。
+
+    ⚠️ 三条要说死的口径：
+     1. **和开单同一个引擎**——`expand_matrix` ＋ `compose_variants`（produce 扇出走的
+        `_element_fanout_rows` 里那两个），不是前端另拼一套字符串。所以配对报错、
+        "只填一个值的参数每行复用"、"没有原值就不换"这些行为预览与开单一致。
+     2. **0 元、不落库、不占号**：不调 autoclip，只在传进来的那份底稿上做字面替换。
+        开单时模型还会把文案展开成投递稿（`expand=true`），那份和这里看到的底稿可能有个别
+        字面差别——界面上要写清"以投板前 ④「改投递稿」那一屏为准"，别让人以为这里就是终稿。
+     3. **拦人的判据在这里也照跑，但只说不拦**：按行配对对不齐／全组合超上限 → 与 produce
+        同样的 400（免得人在预览里看好几遍、点提交才挨打）；高风险词只列进 `risk_words`
+        （produce 会整批 400），这里不拦是因为人还在试词。
+    """
+    if len(data.texts) > _MAX_EXTRACT_ITEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一次最多预览 {_MAX_EXTRACT_ITEMS} 条（这次 {len(data.texts)} 条），分批看",
+        )
+    over = [k for k, v in data.texts.items() if len(str(v or "")) > _MAX_ELEMENT_TEXT_LEN]
+    if over:
+        raise HTTPException(
+            status_code=400,
+            detail=f"这几条正文超过 {_MAX_ELEMENT_TEXT_LEN} 字上限，先删短再预览：{', '.join(over[:3])}",
+        )
+
+    catalog = await _prompt_element_catalog(db)
+    labels = {s["key"]: s["label"] for s in catalog}
+    try:
+        matrix_rows, matrix_notes = pesvc.expand_matrix(data.values, data.mode or pesvc.MATRIX_ZIP, labels)
+    except ValueError as exc:
+        # 与 produce 完全同一条 400 话术（同一函数抛的），预览里看到的拦和开单里看到的拦是一个字
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # 公共原值打底、逐篇覆盖：与 produce 的 `{**element_base, **element_bases.get(...)}` 同一条
+    common_base = {
+        str(k).strip(): str(v or "").strip()[: pesvc.MAX_MANUAL_VALUE_LEN]
+        for k, v in (data.base or {}).items()
+        if str(v or "").strip()
+    }
+    per_base: Dict[str, Dict[str, str]] = {}
+    for sid_raw, per in (data.base_by_summary or {}).items():
+        cleaned = {
+            str(k).strip(): str(v or "").strip()[: pesvc.MAX_MANUAL_VALUE_LEN]
+            for k, v in (per or {}).items()
+            if str(v or "").strip()
+        }
+        if cleaned:
+            per_base[str(_as_uuid(sid_raw, "summary_id"))] = cleaned
+
+    book, exemptions = await _risk_lexicon(db)
+    risk_words: List[str] = []
+    for row in matrix_rows:
+        for key, val in row.items():
+            hits = svc.risk_block_hits(svc.scan_risk(val, lexicon=book, exemptions=exemptions))
+            for h in hits:
+                word = f"{labels.get(key) or key}「{val}」含高风险词 {h['word']}"
+                if word not in risk_words:
+                    risk_words.append(word)
+
+    items: List[Dict[str, Any]] = []
+    for sid_raw, body in data.texts.items():
+        sid = str(_as_uuid(sid_raw, "summary_id"))
+        base_values = {**common_base, **per_base.get(sid, {})}
+        variants = pesvc.compose_variants(
+            body, catalog, base_values, matrix_rows, data.category, with_marks=True
+        )
+        items.append({"id": sid, "variants": variants})
+
+    return {
+        "rows": max(1, len(matrix_rows)),
+        "mode": data.mode or pesvc.MATRIX_ZIP,
+        "notes": matrix_notes,
+        "risk_words": risk_words,
+        "items": items,
+    }
+
+
 @router.get("/assets/summaries")
 async def list_summaries(
     audit_status: Optional[str] = None,
     asset_id: Optional[str] = None,
+    asset_ids: Optional[str] = None,
+    ids: Optional[str] = None,
     batch_id: Optional[str] = None,
     only_risk: bool = False,
     only_inconsistent: bool = False,
@@ -4792,6 +6662,15 @@ async def list_summaries(
     db: AsyncSession = Depends(get_db),
 ):
     """文案审核队列（列表形式 + 审核态），素材列表点「文案」也走这里。
+
+    11-09 加的两个入参（给「② 素材与文案 → 投去 AI 生成」用，读口径不变）：
+      - `audit_status` 可传逗号多值（如 `approved,passed_edited`），单值行为照旧；
+      - `asset_ids` 逗号分隔的素材 id（≤300 个），与 `asset_id` 是两套筛选、可叠加。
+
+    11-11 加的 `ids`：逗号分隔的**文案 id**（≤300 条），给开单屏「取最新稿子」用——
+    那一屏手里点的就是这几条文案，要问的是"它们此刻库里是什么稿子"（正文/豆包提示词/原型
+    都可能刚在别的屏被重出或改过），所以这一口**不因审核态而消失**：撤审、作废的照样回，
+    让界面能说清"这条已经不在了"而不是静默少一行。
 
     `recommended_only`：只出推荐条。方案 §七「默认只过推荐条」防橡皮章——前端默认勾它，
     后端提供口径（B 组：原先只有列、没有参数）。
@@ -4812,10 +6691,47 @@ async def list_summaries(
 
     conds = []
     # 11-03 口径：审核队列与全部读口一样**不分可见范围**，全量进队列（谁能审仍看角色）
-    if audit_status:
-        conds.append(AssetSummary.audit_status == audit_status)
+    # 11-09：`audit_status` 支持逗号多值（② 素材与文案「投去 AI 生成」要一次把
+    # approved + passed_edited 一起取回）。拆成两次请求拼不出可信 total，也不该让人
+    # 猜「这条素材的过审文案到底在哪个请求里」。非法值当场 400 说清认哪几个——
+    # 与 GET /assets 的 audit_status 同一口径，别让手滑变成一个查不到东西的空页签。
+    status_list = [s.strip() for s in (audit_status or "").split(",") if s.strip()]
+    bad_status = [s for s in status_list if s not in REVIEW_STATES]
+    if bad_status:
+        raise HTTPException(
+            status_code=400,
+            detail=f"audit_status 里有不认的值：{'、'.join(bad_status)}（只认 {'/'.join(REVIEW_STATES)}）",
+        )
+    if len(status_list) == 1:
+        conds.append(AssetSummary.audit_status == status_list[0])
+    elif len(status_list) > 1:
+        conds.append(AssetSummary.audit_status.in_(status_list))
     if asset_id:
         conds.append(AssetSummary.asset_id == _as_uuid(asset_id, "asset_id"))
+    # 11-09 新增：按**一批素材**取文案（素材列表勾选后直达投产要用）。上限 300＝一页
+    # 勾选的实际上限，再多就是拿 IN 子句当遍历全表用，那种活该走 batch_id。
+    if asset_ids:
+        wanted_assets = _split_ids(asset_ids, "asset_ids")
+        if len(wanted_assets) > 300:
+            raise HTTPException(
+                status_code=400,
+                detail=f"asset_ids 一次最多 300 个（当前 {len(wanted_assets)} 个）；按整批取请改用 batch_id",
+            )
+        conds.append(AssetSummary.asset_id.in_([uuid.UUID(x) for x in wanted_assets]))
+    # 11-11 新增：按**文案自己的 id**点名取（开单屏「取最新稿子」用）。口径抄 GET /assets/productions
+    # 的 `ids`：逗号拼接的单个字符串、上限 300、非法值当场 400 说是哪一颗。
+    # 关键是**不带 audit_status 也照出**——这一口要回答的是「我手里这几条现在库里长什么样」，
+    # 包括刚被撤审/作废的那些（界面要靠这个 difference 说清哪几条已经不在过审区了）。
+    # 与 `asset_ids` 是两套筛选、可叠加（和素材维那个参数一样，别互相覆盖）。
+    if ids:
+        wanted = _split_ids(ids, "ids")
+        if not wanted:
+            raise HTTPException(status_code=400, detail="ids 是逗号拼接的文案 id，不能是空的")
+        if len(wanted) > 300:
+            raise HTTPException(
+                status_code=400, detail=f"ids 一次最多点 300 条（当前 {len(wanted)} 条），请分批"
+            )
+        conds.append(AssetSummary.id.in_([uuid.UUID(x) for x in wanted]))
     if batch_id:
         conds.append(AssetItem.batch_id == _as_uuid(batch_id, "batch_id"))
     if only_risk:
@@ -4990,16 +6906,37 @@ async def review_summaries(
     # 批 J：本次真正过审的文案（含"改后过"）——审核 commit 完之后拿去排提示词预览
     approved_now: List[Any] = []
 
+    # 2026-11-11 评审（架构席 P1）：批量审 N 条原来是每条 2 次往返（summary + asset），
+    # 全选页面一次几百条就是几百次查询。两次 IN 批量取回＋映射，语义逐条不变；
+    # 上限与 asset_ids（6319 行）同口径。
+    if len(data.summary_ids) > 300:
+        raise HTTPException(status_code=400, detail=f"一次最多审 300 条（当前 {len(data.summary_ids)}）——分批处理")
+    _s_uuids = [_as_uuid(s, "summary_id") for s in data.summary_ids]
+    _summary_map: Dict[Any, AssetSummary] = {}
+    for _row in (await db.execute(select(AssetSummary).where(AssetSummary.id.in_(_s_uuids)))).scalars().all():
+        _summary_map[_row.id] = _row
+    _asset_map: Dict[Any, AssetItem] = {}
+    _asset_uuids = {s.asset_id for s in _summary_map.values()}
+    if _asset_uuids:
+        for _row in (await db.execute(select(AssetItem).where(AssetItem.id.in_(_asset_uuids)))).scalars().all():
+            _asset_map[_row.id] = _row
+    # 复核脚本文案按素材缓存：同一素材的多条候选共享一份反推稿（也少走会中途 commit 的
+    # refresh_prompt_task——评审已点名它的嵌套提交会击穿整批原子性）。
+    _script_cache: Dict[Any, Optional[str]] = {}
+
     for sid in data.summary_ids:
         uuid_s = _as_uuid(sid, "summary_id")
-        summary = (
-            await db.execute(select(AssetSummary).where(AssetSummary.id == uuid_s))
-        ).scalar_one_or_none()
+        summary = _summary_map.get(uuid_s)
         if summary is None:
             results.append({"summary_id": str(uuid_s), "ok": False, "error": "文案不存在"})
             continue
         # 文案所属素材（11-03 起不分可见范围，仍要确认素材行在，防孤儿文案 500）
-        asset = await _get_asset_or_404(db, summary.asset_id)
+        asset = _asset_map.get(summary.asset_id)
+        if asset is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"文案 {str(uuid_s)[:8]} 所属素材不在库里（孤儿文案），本批中止未提交",
+            )
 
         # 生产者不得自审（素材是别人导入的就不算自审，这里按「素材创建人」判）
         if not is_admin and asset.created_by == current_user.id:
@@ -5027,7 +6964,9 @@ async def review_summaries(
             else (summary.text if to_state == RV_APPROVED else None)
         )
         if effective is not None:
-            script = await _prompt_script_of(db, asset)
+            if asset.id not in _script_cache:
+                _script_cache[asset.id] = await _prompt_script_of(db, asset)
+            script = _script_cache[asset.id]
             verdict = svc.recheck_copy(effective, script, lexicon=book, exemptions=exemptions)
             if not verdict["ok"]:
                 waived_list, still_blocking = _split_waived(
@@ -5086,6 +7025,10 @@ async def review_summaries(
         summary.reviewed_by = current_user.id
         summary.reviewed_at = datetime.utcnow()
         summary.reject_reason = (data.reason or "").strip()[:500] if to_state in (RV_REJECTED, RV_NEED_REWRITE) else None
+        # 2026-11-11 评审（业务席 P2）：重提说明只属于「等审」那一轮——进了终态还挂着
+        # 上一轮写给审核人的说明，下一轮审核容易读成这轮的留言。历史在审计里。
+        if to_state in REVIEW_PASSED_STATES or to_state in (RV_REJECTED, RV_NEED_REWRITE):
+            summary.resubmit_note = None
 
         # 素材概要态回写：只要有任意一条过审，就允许开生产单
         approved_cnt = (
@@ -5697,12 +7640,286 @@ async def hook_codes_used(
             .where(AssetProduction.hook_code.in_(wanted))
         )
     )
+    # 2026-11-11 评审（业务席 P1）：预取位也要回显——号钉在别人文案的预取位上时，
+    # 弹窗不亮红、提交照样过，等投产消费才发现对撞。已烧（生产单）与已预取（文案）
+    # 两处都点名，前端当场亮红比提交后 400 顺手。
+    parked_rows = list(
+        await db.execute(
+            select(AssetSummary.hook_code, AssetItem.code)
+            .join(AssetItem, AssetItem.id == AssetSummary.asset_id)
+            .where(AssetSummary.hook_code.in_(wanted))
+        )
+    )
     return {
         "used": [
             {"code": c, "asset_code": ac, "seq": seq, "status": st}
             for c, seq, st, ac in rows
         ]
+        + [
+            {"code": c, "asset_code": ac, "seq": None, "status": "已预取（还没投产）", "parked": True}
+            for c, ac in parked_rows
+        ]
     }
+
+
+@router.post("/assets/summaries/hook-codes")
+async def park_hook_codes(
+    data: HookCodeParkRequest,
+    current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """把 hook_id.py 取来的号**提前钉**在文案上（或补钉在已建好的生产单上）。11-09 批 N，
+    用户口径「现有已经导入的那些文案，你都去取一个编号放着吧」。
+
+    为什么要这个口：取号是外部动作（共享台账、一发即烧），过去只能在开单那一屏现取现贴。
+    批量导入的 85 条要每条手动粘一遍，慢一步还得回服务器重取。号先钉在 `asset_summaries.hook_code`
+    上等着，开单时后端自动顶到缺号的槽位（见 `create_productions` 的 parked_code），顶掉当场清空。
+
+    两种行，各自口径：
+    - `summary_id` ＋ 号＝预取；号被某张单吃掉后预取位自动空出来，同一个号绝不会被第二次开单复用。
+    - `production_id` ＋ 号＝**补号**：建单时没带号、后来才拿到号那种。段头/推荐标题/产出清单三处
+      编号都是**导出与投板时**按 `p.hook_code` 现拼的（`format_export_block`），不写在提示词正文里，
+      所以补在还没上板的单上是全_effective_的；已经上了板（`board_tid` 有值）就**拒绝**——
+      板面任务名与回收对账都按老号钉死了，这里改一下就会对不上账。
+    - `hook_code` 留空＝清位（清生产单同样要求没上板）。
+
+    判据与开单口共用一条尺：五位 `is_valid_hook_code`、批内不许重号、
+    已经被哪张单用掉的号不许再钉（拍板③ 一钩一号）。写 AuditLog（`asset.hook_code.park`，
+    逐行 before/after）——号是烧掉的东西，谁钉的、钉之前挂着什么，必须查得回来。
+    """
+    items = data.items or []
+    if not items:
+        raise HTTPException(status_code=400, detail="请至少点名一行（summary_id 或 production_id ＋ 号）")
+    cap = int(settings.ASSET_IMPORT_BATCH_MAX)
+    if len(items) > cap:
+        raise HTTPException(status_code=400, detail=f"单次最多钉 {cap} 行，当前 {len(items)} 行——分批钉")
+
+    summary_ids: List[str] = []
+    production_ids: List[str] = []
+    wanted: List[str] = []
+    parsed: List[dict] = []
+    for idx, it in enumerate(items):
+        sid = str(it.summary_id or "").strip()
+        pid = str(it.production_id or "").strip()
+        if bool(sid) == bool(pid):
+            raise HTTPException(
+                status_code=400,
+                detail=f"第 {idx + 1} 行要**二选一**：给 summary_id（预取到文案）或给 production_id（补号到生产单）",
+            )
+        code = str(it.hook_code or "").strip().upper() or None
+        if code and not svc.is_valid_hook_code(code):
+            raise HTTPException(
+                status_code=400,
+                detail=f"第 {idx + 1} 行的钩子编号 {it.hook_code!r} 不合法：必须是五位 0-9A-Z，"
+                       "用 hook_id.py 取号，禁止手编",
+            )
+        if code:
+            wanted.append(code)
+        row = {"summary_id": sid, "production_id": pid, "code": code}
+        parsed.append(row)
+        (summary_ids if sid else production_ids).append(sid or pid)
+    if len(set(wanted)) != len(wanted):
+        raise HTTPException(status_code=400, detail="同一次提交里有重号：一钩一号，一个号只能钉一行")
+
+    s_uuids = [_as_uuid(x, "summary_id") for x in dict.fromkeys(summary_ids)]
+    p_uuids = [_as_uuid(x, "production_id") for x in dict.fromkeys(production_ids)]
+    summaries = {
+        str(r.id): r
+        for r in (await db.execute(select(AssetSummary).where(AssetSummary.id.in_(s_uuids)))).scalars().all()
+    } if s_uuids else {}
+    productions = {
+        str(r.id): r
+        for r in (await db.execute(select(AssetProduction).where(AssetProduction.id.in_(p_uuids)))).scalars().all()
+    } if p_uuids else {}
+    not_found = [
+        row["summary_id"] or row["production_id"] for row in parsed
+        if (row["summary_id"] and row["summary_id"] not in summaries)
+        or (row["production_id"] and row["production_id"] not in productions)
+    ]
+
+    # 这批要钉的号现在的真实去向：钉在哪张单上、钉在哪条文案的预取位上（都只查一次，不在行循环里打）
+    used_on: Dict[str, str] = {}
+    parked_on: Dict[str, str] = {}
+    if wanted:
+        rows = list(
+            await db.execute(
+                select(AssetProduction.hook_code, AssetProduction.seq, AssetItem.code)
+                .join(AssetItem, AssetItem.id == AssetProduction.asset_id)
+                .where(AssetProduction.hook_code.in_(wanted))
+            )
+        )
+        used_on = {c: f"素材 {ac} 的第 {seq} 张单" for c, seq, ac in rows}
+        rows2 = list(
+            await db.execute(
+                select(AssetSummary.hook_code, AssetItem.code)
+                .join(AssetItem, AssetItem.id == AssetSummary.asset_id)
+                .where(AssetSummary.hook_code.in_(wanted))
+            )
+        )
+        parked_on = {c: f"素材 {ac} 的预取位" for c, ac in rows2}
+
+    changed_summaries: List[dict] = []
+    changed_productions: List[dict] = []
+    skipped: List[dict] = []
+    conflicts: List[dict] = []
+    for row in parsed:
+        code = row["code"]
+        if row["summary_id"]:
+            s = summaries.get(row["summary_id"])
+            if s is None:
+                continue
+            if (s.hook_code or None) == code:
+                skipped.append({"kind": "summary", "id": row["summary_id"], "hook_code": code,
+                                "reason": "同态幂等：预取位已经是这个号"})
+                continue
+            # 走到这里 `s.hook_code != code`，所以 parked_on 里若还有这个号，占位的一定是别条文案
+            if code and used_on.get(code):
+                conflicts.append({"kind": "summary", "id": row["summary_id"], "hook_code": code,
+                                  "reason": f"这个号已经用在{used_on[code]}上，一钩一号不许再钉"})
+                continue
+            if code and parked_on.get(code):
+                conflicts.append({"kind": "summary", "id": row["summary_id"], "hook_code": code,
+                                  "reason": f"这个号已经挂在{parked_on[code]}上，一个号只能占一个预取位"})
+                continue
+            changed_summaries.append({"id": row["summary_id"], "before": s.hook_code, "after": code})
+            s.hook_code = code
+        else:
+            p = productions.get(row["production_id"])
+            if p is None:
+                continue
+            if p.board_tid:
+                conflicts.append({"kind": "production", "id": row["production_id"], "hook_code": code,
+                                  "reason": "这张单已经投上后台任务板（板面任务名与回收对账都按当时的号钉死），"
+                                            "编号改不得——要换号请重开一张单"})
+                continue
+            if (p.hook_code or None) == code:
+                skipped.append({"kind": "production", "id": row["production_id"], "hook_code": code,
+                                "reason": "同态幂等：这张单已经是这个号"})
+                continue
+            # 号钉在**这张单自己**名下不可能出现在 used_on（那行 hook_code 是空才会走到补号），
+            # 所以 used_on 命中就是别处已经用了这个号，直接点名
+            if code and used_on.get(code):
+                conflicts.append({"kind": "production", "id": row["production_id"], "hook_code": code,
+                                  "reason": f"这个号已经用在{used_on[code]}上，一钩一号不许再钉"})
+                continue
+            changed_productions.append({"id": row["production_id"], "before": p.hook_code, "after": code})
+            p.hook_code = code
+
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        # 2026-11-11 评审：钩子号唯一索引兜底——上面的 SELECT 查重拦不住的并发窗口，
+        # DB 挡下来时转 409 点名，不裸 500（一钩一号的号是烧掉的东西，报错要说人话）。
+        await db.rollback()
+        logger.warning("钉号/补号撞钩子号唯一约束：%s", exc)
+        raise HTTPException(
+            status_code=409,
+            detail="有编号刚被别人用掉或占位（一钩一号，库上唯一索引兜底）——刷新后重新钉号/补号",
+        )
+    # 只在**真改了东西**时留痕：全批同态/全批冲突也写一条审计，会把「谁在什么时刻真的动过号」
+    # 淹成一片重复记录——号是要烧的东西，审计的价值在变化点，不在调用点。
+    if changed_summaries or changed_productions:
+        await _write_audit(
+            db,
+            action="asset.hook_code.park",
+            operator=current_user,
+            target_type="asset_hook_code",
+            target_id="asset_hook_code",
+            before={"summaries": [{"id": c["id"], "hook_code": c["before"]} for c in changed_summaries],
+                    "productions": [{"id": c["id"], "hook_code": c["before"]} for c in changed_productions]},
+            after={"summaries": [{"id": c["id"], "hook_code": c["after"]} for c in changed_summaries],
+                   "productions": [{"id": c["id"], "hook_code": c["after"]} for c in changed_productions],
+                   "conflicts": conflicts, "skipped": skipped},
+        )
+    notes: List[str] = []
+    if not_found:
+        notes.append(f"这些 id 在库里查不到，已跳过：{', '.join(not_found[:5])}"
+                     + (f"（共 {len(not_found)} 个）" if len(not_found) > 5 else ""))
+    if conflicts:
+        notes.append("；".join(c["reason"] for c in conflicts[:5])
+                     + (f"；另有 {len(conflicts) - 5} 行同因没钉上" if len(conflicts) > 5 else ""))
+    return {
+        "ok": not not_found and not conflicts,
+        "summary_parked": sum(1 for c in changed_summaries if c["after"]),
+        "summary_cleared": sum(1 for c in changed_summaries if not c["after"]),
+        "production_filled": sum(1 for c in changed_productions if c["after"]),
+        "production_cleared": sum(1 for c in changed_productions if not c["after"]),
+        "skipped": skipped,
+        "conflicts": conflicts,
+        "not_found": not_found,
+        "notes": notes,
+    }
+
+
+def _element_fanout_rows(
+    base_row: Dict[str, Any],
+    catalog: List[Dict[str, Any]],
+    base_values: Dict[str, str],
+    matrix_rows: List[Dict[str, str]],
+    category: Optional[str],
+    codes: List[Optional[str]],
+    labels: Dict[str, str],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """批 P（11-10）：一份展开好的正文 × 用户填的多组参数值 → N 份投递稿。
+
+    **不调模型、不花钱**：走的是 8-14 那套字面替换引擎（`compose_variants`），
+    每一行都从模型展开出来的**同一份原稿**出发，所以第 2 个场景不会盖掉第 1 个场景。
+
+    编号是每行自己的：模型把编号写进了推荐标题与段头那行，所以第 j 份要把正文里出现的
+    "基准号"整个字面换成这一行的号。不换的后果是两张单带着同一个标题投上同一块板——
+    板面按标题回收，两条产物会挂到同一张单上（11-05 现网真踩过的对账坑）。
+    号不够时留空（照今天的口径：缺号在结果里点名，导出时标缺），绝不后端自编。
+
+    返回 `(行, 备注)`；备注只在"这一行其实没换动"时才有内容——换不动要说出来，
+    不能让人以为 20 条里每条都换了场景。
+    """
+    src_code = str(base_row.get("hook_code") or "")
+    base_titles = list(base_row.get("video_titles") or [])
+    out: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    for variant in pesvc.compose_variants(
+        base_row.get("prompt_text"), catalog, base_values, matrix_rows, category
+    ):
+        idx = int(variant["seq"])
+        code = codes[idx - 1] if idx - 1 < len(codes) else None
+        text = variant["text"]
+        titles = base_titles
+        # ⚠️ 判据是「这一行的号和基准号不一样」，**不是**「不是第 1 行」：n×K 摊开时
+        # 第 vi 份的底稿带着 codes_for_summary[vi] 那个号，而它扇出来的 K 张占的是
+        # vi*K..vi*K+K-1 ——除了 vi=0 以外第 1 行就已经要换号了，按 idx>1 判会漏换，
+        # 漏换的结果正是本函数开头写的那条坑：两张单同名投上同一块板。
+        if src_code and code != src_code:
+            if code:
+                text = text.replace(src_code, code)
+                titles = [str(t or "").replace(src_code, code) for t in base_titles]
+            elif idx > 1:
+                # 号不够：正文里仍留着别的单的号。不悄悄留，也不硬删（删了标题会变成半截话），
+                # 当场点名让一线补够号再来——今天「缺号能建单」的口径不变，但扇出时后果更重。
+                notes.append(
+                    f"第 {idx} 条没分到钩子编号，正文/标题里仍带着 {src_code}（那张号是别的单的）："
+                    f"补够 {len(codes)} 个号再来，否则投上板会重名、回收对不上账"
+                )
+        combo = "、".join(f"{labels.get(k) or k}={v}" for k, v in (variant["values"] or {}).items())
+        row = dict(base_row)
+        row.update({
+            "prompt_text": text,
+            "hook_code": code,
+            # 板上 name 取的是 video_titles[0]（B-5），标题里那句编号必须跟着换，
+            # 只换 prompt_text 等于台账改了、板面还是重名。
+            "video_titles": titles or None,
+            # 差异来源必须写进单子上：事后拿着这张单要能回答"这条和旁边那条差在哪"。
+            # 列是 String(120)，超了截断（截断只发生在极端长的词表上，不影响判读）。
+            "variant_basis": f"{base_row.get('variant_basis') or ''}｜{combo}"[:120],
+        })
+        out.append(row)
+        if variant["missing"]:
+            notes.append(
+                f"第 {idx} 条（{combo}）这些参数原稿里没认出值、这条没换："
+                + "、".join(variant["missing"]) + "（手填项要自己从稿子里复制原句）"
+            )
+        elif not variant["changed"] and idx > 1:
+            notes.append(f"第 {idx} 条（{combo}）正文和原稿一模一样：填的值和原值相同，或词面在稿子里没出现")
+    return out, notes
 
 
 @router.post("/assets/produce")
@@ -5797,6 +8014,13 @@ async def create_productions(
         # 哪怕挂着号的那张单后来作废了，重用同一个号也可能让板面出现两条同名任务、
         # 回收时对不上账。在这里点名「这个号已经钉在哪条素材的哪张单上」，
         # 比等导出/投板时才发现对不上账再返工便宜得多。取号仍走 hook_id.py，后端不代取。
+        # 2026-11-11 评审（业务席 P1）：预取位（asset_summaries.hook_code）也并入——号钉在别人文案
+        # 预取位上时，之前不亮红不拦，投产消费才发现对撞；并发兜底另有唯一索引。
+        # ⚠️ 但**本批文案自己的预取位不是冲突**：前端把预取号显示在编号框里、甚至直接带上
+        # 这条请求，是批 N 之后的正常动作（用例 `test_parked_code_not_double_spent_when_request_already_carries_it`
+        # 钉的就是它）。这一支若不排掉自己，最常见的那条路径会被当场 400 拦死——号明明就是
+        # 给这批文案备的。消费逻辑随后会顶槽并把预取位清空，所以这里只该拦「别人的预取位」。
+        batch_summary_uuids = [_as_uuid(sid, "summary_id") for sid in data.summary_ids]
         used = list(
             await db.execute(
                 select(AssetProduction.hook_code, AssetProduction.seq, AssetItem.code)
@@ -5804,12 +8028,24 @@ async def create_productions(
                 .where(AssetProduction.hook_code.in_(hook_codes))
             )
         )
-        if used:
+        parked_conditions = [AssetSummary.hook_code.in_(hook_codes)]
+        if batch_summary_uuids:
+            parked_conditions.append(AssetSummary.id.notin_(batch_summary_uuids))
+        used_parked = list(
+            await db.execute(
+                select(AssetSummary.hook_code, AssetItem.code)
+                .join(AssetItem, AssetItem.id == AssetSummary.asset_id)
+                .where(*parked_conditions)
+            )
+        )
+        if used or used_parked:
             shown = "；".join(f"{c}（已钉在素材 {ac} 的第 {seq} 张单上）" for c, seq, ac in used[:8])
-            more = f"；另有 {len(used) - 8} 张没列出" if len(used) > 8 else ""
+            shown += "；".join(f"{c}（已预取在素材 {ac} 的文案上）" for c, ac in used_parked[:8])
+            total = len(used) + len(used_parked)
+            more = f"；另有 {total - 16} 个没列出" if total > 16 else ""
             raise HTTPException(
                 status_code=400,
-                detail=f"这些钩子编号已经被用掉了：{shown}{more}。一钩一号，回 hook_id.py 重新取号再投产",
+                detail=f"这些钩子编号已经被用掉或被预取占位：{shown}{more}。一钩一号，回 hook_id.py 重新取号再投产",
             )
 
     board_tag = (data.board_tag or settings.ASSET_BOARD_TAG).strip()[:60]
@@ -5830,6 +8066,66 @@ async def create_productions(
     # 因为新前端改传数组就读不到卡）。多卡时写第一张——它就是 picDatas 的第一项，语义上是主卡。
     card_key = (cards[0].file_key if cards else None) or data.character_card_key or None
 
+    # ── 批 P（11-10）：多值扇出——「一次填多个场景/动物 → 一次出多条钩子视频」 ──
+    # ⚠️ 三个判据全排在 async_mode **之前**，理由与卡校验、跨人闸同一条先例：扇出来的每一条
+    # 都要占一个钩子编号、投上板就是当天号池的一条额度。参数写错了却在几分钟后于后台任务
+    # 详情里看到，人早走了，号也烧了。
+    # 扇出本身**不调模型、不花钱**：它是在已经展开好的那份正文上做字面替换（引擎在
+    # `asset_prompt_elements.compose_variants`），所以 `n`（差异化份数）与扇出行数是两个量，
+    # 本批张数 = 文案数 × n × 扇出行数。
+    element_rows: List[Dict[str, str]] = []
+    element_catalog: List[Dict[str, Any]] = []
+    element_labels: Dict[str, str] = {}
+    element_notes: List[str] = []
+    element_base = {
+        str(k).strip(): str(v or "").strip()[: pesvc.MAX_MANUAL_VALUE_LEN]
+        for k, v in (data.element_base or {}).items()
+        if str(v or "").strip()
+    }
+    # 逐文稿的原值（批 P）：键用规范化后的 summary uuid 存，下面按 `str(uuid_s)` 取，
+    # 免得前端传了带空格/大写形式就取不到、悄悄退回公共兜底那份。
+    element_bases: Dict[str, Dict[str, str]] = {}
+    for _sid_raw, _per in (data.element_base_by_summary or {}).items():
+        _cleaned = {
+            str(k).strip(): str(v or "").strip()[: pesvc.MAX_MANUAL_VALUE_LEN]
+            for k, v in (_per or {}).items()
+            if str(v or "").strip()
+        }
+        if _cleaned:
+            element_bases[str(_as_uuid(_sid_raw, "summary_id"))] = _cleaned
+    if data.element_values:
+        element_catalog = await _prompt_element_catalog(db)
+        element_labels = {s["key"]: s["label"] for s in element_catalog}
+        try:
+            element_rows, element_notes = pesvc.expand_matrix(
+                data.element_values, data.element_mode or pesvc.MATRIX_ZIP, element_labels
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        # 换上去的词当场按当前词表扫一遍：扇 10 条里有 1 条带高风险词，投到板上才发现
+        # 就是白占 9 条之外的额度＋一个烧掉的号。这里整批不建单，改词再投（比事后逐张撤便宜）。
+        _book0, _exempt0 = await _risk_lexicon(db)
+        bad_words: List[str] = []
+        for row in element_rows:
+            for key, val in row.items():
+                hits = svc.risk_block_hits(svc.scan_risk(val, lexicon=_book0, exemptions=_exempt0))
+                if hits:
+                    bad_words.append(
+                        f"{element_labels.get(key) or key}「{val}」含高风险词 "
+                        + "、".join(h["word"] for h in hits)
+                    )
+        if bad_words:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "这些替换词里有投板会被拦下的高风险词："
+                    + "；".join(sorted(set(bad_words))[:6])
+                    + "。换一批词，或者先去「风险词库」确认这个词到底要不要用"
+                ),
+            )
+    # 一条文案扇出几张单（没填多值＝1，与今天完全同一条路径）
+    fanout = max(1, len(element_rows))
+
     # A′（2026-11-07 按运营隔离）：归属跨人确认闸——投**别人过审**的候选要知情确认。
     # ⚠️ 必须在 async_mode 分支**之前**判：前端唯一真实路径是 async_mode=true（提交即回
     # 任务号），闸若放在分支之后，首呼会拿到 job ack、确认弹窗协议就断了（后台重放才
@@ -5842,6 +8138,56 @@ async def create_productions(
         _pre_summaries[_u] = (
             await db.execute(select(AssetSummary).where(AssetSummary.id == _u))
         ).scalar_one_or_none()
+    # 批 N（11-09）：这批文案名下**预取好、还没用掉**的号，先集体查一次「是不是已经被别的单用掉了」。
+    # 判据与请求体里手工粘来的号完全同一条（拍板③ 一钩一号），只是来源不同。为什么必须提前查、
+    # 不等消费时再说：号一旦顶进某个槽，这张单就带着一个板面对不上账的号投出去了，
+    # 到回收/对账时才炸——提前 400 点名比那便宜得多。一次 SELECT 查完，不在逐文案循环里打。
+    parked_codes = sorted({s.hook_code for s in _pre_summaries.values() if s is not None and s.hook_code})
+    # 批 N 原版把 stale 预取号整批 400——一线只能手工清位重来，而且「号钉在别人预取位」
+    # 这种对撞根本不报。2026-11-11 评审（业务席 P1）改为：stale 预取位**当场清空＋点名**，
+    # 这批照常往下走（缺号走预取池/代取/手工填），不再让一条死号卡住整批。
+    parked_cleared_notes: Dict[Any, str] = {}
+    if parked_codes:
+        stale_prod: Dict[str, tuple] = {}
+        for hc, seq, ac in (
+            await db.execute(
+                select(AssetProduction.hook_code, AssetProduction.seq, AssetItem.code)
+                .join(AssetItem, AssetItem.id == AssetProduction.asset_id)
+                .where(AssetProduction.hook_code.in_(parked_codes))
+            )
+        ).all():
+            stale_prod[hc] = (seq, ac)
+        batch_ids = [s.id for s in _pre_summaries.values() if s is not None]
+        stale_parked: Dict[str, str] = {}
+        if batch_ids:
+            for hc, ac in (
+                await db.execute(
+                    select(AssetSummary.hook_code, AssetItem.code)
+                    .join(AssetItem, AssetItem.id == AssetSummary.asset_id)
+                    .where(
+                        AssetSummary.hook_code.in_(parked_codes),
+                        AssetSummary.id.notin_(batch_ids),
+                    )
+                )
+            ).all():
+                stale_parked[hc] = ac
+        for s in _pre_summaries.values():
+            if s is None or not s.hook_code:
+                continue
+            hc = s.hook_code
+            if hc in stale_prod:
+                seq, ac = stale_prod[hc]
+                parked_cleared_notes[s.id] = (
+                    f"预取的编号 {hc} 已被素材 {ac} 的第 {seq} 张单用掉——预取位已自动清空，"
+                    "一钩一号，缺号请重新取"
+                )
+            elif hc in stale_parked:
+                parked_cleared_notes[s.id] = (
+                    f"预取的编号 {hc} 同时钉在素材 {stale_parked[hc]} 的文案上——"
+                    "预取位已自动清空，缺号请重新取"
+                )
+            if s.id in parked_cleared_notes:
+                s.hook_code = None
     cross_summaries = [
         s for s in _pre_summaries.values()
         if s is not None and s.audit_status in REVIEW_PASSED_STATES
@@ -5904,6 +8250,8 @@ async def create_productions(
     title_warnings: List[dict] = []
     # 模板自报偏差（缺剧名/缺角色卡/K 未给兜底）逐条清单，见下方 deviation 处理
     deviations: List[dict] = []
+    # 批 P：扇出来的某一条换完词撞上高风险词 → 只摘那一条（点名到值，不静默丢）
+    element_skipped: List[dict] = []
     code_pos = 0  # 钩子编号消耗指针：整条文案被拦下时**不进位**，号不该被一次失败的提交烧掉
 
     # 投产整批要保持原子（撞唯一约束时回 409「整批未落库」），所以这里**不能**像
@@ -5919,19 +8267,22 @@ async def create_productions(
     if db.get_bind().dialect.name == "postgresql":
         await db.execute(text("SET LOCAL idle_in_transaction_session_timeout = 0"))
 
-    # A′（2026-11-08 评审定稿）：自审自投硬闸**默认开**——自己过审的候选自己投产默认拦。
-    # 放开=admin 把 ASSET_SELF_PRODUCE_ALLOWED 设 true（显式关闸），且每次自审自投
-    # 逐条写豁免审计（owner_cross 带 self 标记）——质检关不能沦为可静默绕过的橡皮章。
-    self_produce_allowed = bool(getattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", False))
+    # A′（2026-11-08 评审定稿）：自审自投闸门——自己过审的候选自己投产要不要拦。
+    # 11-09 用户口径：一人多角是常态，**默认放开**（config 里 ASSET_SELF_PRODUCE_ALLOWED=True）。
+    # 放开不等于无痕：每次自审自投仍逐条写豁免审计（owner_cross 带 self 标记），
+    # 质检关不会沦为静默绕过的橡皮章；确需纪律（外包/新人）显式设 false 就恢复拦。
+    # getattr 的兜底值跟 config 默认保持一致——别出现「字段没读到反而变严」的分裂口径。
+    self_produce_allowed = bool(getattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", True))
     self_cross = self_summaries
     if self_cross and not self_produce_allowed:
         shown = "；".join(f"#{s.seq}" for s in self_cross[:5])
         raise HTTPException(
             status_code=400,
             detail=(
-                f"自审自投默认拦：这 {len(self_cross)} 条是你自己质检过审的（{'、'.join(_user_codes(db, self_cross)) if False else '逐条见下'}{shown}）。"
+                f"这 {len(self_cross)} 条是你自己质检过审的（候选序号 {shown}），"
+                "而自审自投闸门当前是关着的（ASSET_SELF_PRODUCE_ALLOWED=false）。"
                 "质检与投产分离是三角色模型的纪律——确需一人包干（小团队/应急），"
-                "由管理员把 ASSET_SELF_PRODUCE_ALLOWED 设为 true 后重发（每次都会留豁免审计）。"
+                "由管理员把该旋钮设为 true 后重发（每次自审自投都会逐条留豁免审计）。"
             ),
         )
 
@@ -5997,12 +8348,36 @@ async def create_productions(
                 select(func.coalesce(func.max(AssetProduction.seq), 0)).where(AssetProduction.summary_id == summary.id)
             )
         ).scalar_one()
-        codes_for_summary = hook_codes[code_pos: code_pos + n]
+        codes_for_summary = hook_codes[code_pos: code_pos + n * fanout]
+        # 批 N（11-09 预取编号）：请求没给够号时，把这条文案名下预取的那个号顶到**第一个空槽**
+        # （手工粘来的号优先，预取号只补空位）。顶上去就必须把预取位清空——留着等于允许
+        # 同一个号被第二次开单复用，而号在 hook_id.py 那边一发即烧、板面同名任务回收对不上账。
+        # 另一种"也算用掉"：请求里把同一个号手工粘了一遍（前端把预取号显示出来时很容易顺手粘），
+        # 这时不再重复顶槽，但预取位同样要清，否则下一次开单会被上面的 stale 判据拦死。
+        parked_code = summary.hook_code
+        parked_consumed = bool(parked_code) and (
+            parked_code in hook_codes or len(codes_for_summary) < n * fanout
+        )
+        if parked_code and parked_code not in hook_codes and len(codes_for_summary) < n * fanout:
+            codes_for_summary = codes_for_summary + [parked_code]
         # 剧名一条文案查一次（不在 n 次展开循环里查）：模板要用它写「参考《剧名》剧情」
         drama_title = await _drama_title_of(db, asset)
+        # 批 P：扇出要按**这一条的原型**决定哪些参数项参与替换（字典行上的 categories 限定）。
+        # 只在真扇出时查这一行 PK，不扇出时零成本——旧前端/脚本调用完全走不到这条路上。
+        element_category: Optional[str] = None
+        if element_rows:
+            _cat_id = summary.category_id or asset.category_id
+            if _cat_id is not None:
+                _cat_row = await db.get(AssetCategory, _cat_id)
+                element_category = _cat_row.name if _cat_row is not None else None
+        # 这一篇的原值：逐文稿那份优先，没单给才落到公共兜底（多文稿同批开单时
+        # 拿一条稿子的场景词去换另一条稿子＝换不上，还报「原稿里没认出」，一线只会以为字典坏了）
+        element_base_for_summary = {**element_base, **element_bases.get(str(uuid_s), {})}
 
         expand_error: Optional[str] = None
         pending: List[dict] = []
+        # 真正落库的行：没扇出时就是 `pending` 本身，扇出时是摊平后的 n×K 行（见下方 else 分支）
+        flat_rows: List[Dict[str, Any]] = []
         failure_recorded = False
         for i in range(1, n + 1):
             seq = max_seq + i
@@ -6131,7 +8506,46 @@ async def create_productions(
             })
         else:
             # 整条文案的全部展开都过了才落库：中途拦下不能留下半批已生成的单
-            for row in pending:
+            #
+            # 批 P：这里把「n 份展开稿」摊成「n × 扇出行数」张单。没扇出（`fanout==1`）时
+            # 这一段等价于原来的 `for row in pending`——序号、编号、正文一律不动，
+            # 老路径的回归判据就是这个等价性。
+            flat_rows: List[Dict[str, Any]] = []
+            if element_rows:
+                for vi, base_row in enumerate(pending):
+                    slice_codes = [
+                        codes_for_summary[vi * len(element_rows) + j]
+                        if vi * len(element_rows) + j < len(codes_for_summary) else None
+                        for j in range(len(element_rows))
+                    ]
+                    rows, row_notes = _element_fanout_rows(
+                        base_row, element_catalog, element_base_for_summary, element_rows,
+                        element_category, slice_codes, element_labels,
+                    )
+                    for cand in rows:
+                        # 换完词再扫一遍：单个词在词表里过、拼进句子却撞上高风险词的组合是真会
+                        # 发生的（「猫」＋「摔在地上」）。这里只摘这一条：模型那 n 次调用的钱已经
+                        # 花了，整条文案 20 张全不建是二次浪费；但摘掉的这条绝不静默——
+                        # 点名到值、进结果、进审计。
+                        hits = svc.risk_block_hits(
+                            svc.scan_risk(cand.get("prompt_text") or "", lexicon=book, exemptions=exemptions)
+                        )
+                        if hits:
+                            element_skipped.append({
+                                "code": asset.code,
+                                "basis": cand.get("variant_basis"),
+                                "words": sorted({h["word"] for h in hits}),
+                            })
+                            continue
+                        flat_rows.append(cand)
+                    element_notes.extend(f"{asset.code} #{base_row['seq']}：{note}" for note in row_notes)
+                for idx, cand in enumerate(flat_rows):
+                    # 扇出后"这条文案的第 i 份"不再是序号的唯一来源：n×K 张单必须各自占号，
+                    # 撞 uq_asset_production_seq 会让整批回滚（就是 B-5 那条 409）。
+                    cand["seq"] = max_seq + idx + 1
+            else:
+                flat_rows = list(pending)
+            for row in flat_rows:
                 prod = AssetProduction(
                     asset_id=asset.id,
                     summary_id=summary.id,
@@ -6183,9 +8597,12 @@ async def create_productions(
             # 挪到写单阶段是为了不在外部模型调用期间锁住 asset_items 那一行
             if not asset.has_approved_copy:
                 asset.has_approved_copy = True
-            code_pos += n  # 号只在这批真的成了单之后才算用掉
+            code_pos += n * fanout  # 号只在这批真的成了单之后才算用掉（扇出后每行各占一个）
+            if parked_consumed:
+                # 预取位清空与上面那行同生同死：半批被拦下时根本走不到这里，号不会被白烧
+                summary.hook_code = None
 
-        created = len(pending) if not expand_error else 0
+        created = len(flat_rows) if not expand_error else 0
         if created:
             svc.apply_stage(asset, "produce", STAGE_PENDING, has_approved_copy=True)
             asset.cost_produce = asset.cost_produce or 0
@@ -6194,6 +8611,7 @@ async def create_productions(
         results.append({
             "summary_id": str(uuid_s), "created": created, "code": asset.code,
             "error": expand_error if expand_error else None,
+            "note": parked_cleared_notes.get(uuid_s),
         })
 
     try:
@@ -6203,6 +8621,14 @@ async def create_productions(
         # 裸 500 会让一线以为"没投出去"再点一次，这里明确回 409（B 组）。
         await db.rollback()
         logger.warning("生产单唯一约束冲突：%s", exc)
+        # 2026-11-11 评审（业务 P0）：钩子号唯一索引兜底命中——查重 SELECT 拦不住的
+        # 分钟级并发窗口，DB 挡下来时要点名说清是「抢号」不是「重投」。
+        if "hook_code" in str(getattr(exc, "orig", "") or "") or "hook_code" in str(exc):
+            raise HTTPException(
+                status_code=409,
+                detail="这个钩子编号刚被另一张单抢走了（一钩一号，库上唯一索引兜底）——"
+                       "回 hook_id.py 重新取号再投产，本次整批未落库",
+            )
         raise HTTPException(
             status_code=409,
             detail="生产单与已有记录撞了唯一约束（同一文案同一序号已投过），本次整批未落库，请刷新后重试",
@@ -6290,6 +8716,20 @@ async def create_productions(
             "title_warnings": title_warnings or None,
             # 模板自报偏差入审计：导出后一线看到的《剧名待定》/无角色卡是当时几号单报的
             "deviations": deviations or None,
+            # 批 P：扇出口径整个进审计——事后要能回答"这批为什么是 20 张不是 2 张"
+            "element_fanout": (
+                {
+                    "mode": data.element_mode or pesvc.MATRIX_ZIP,
+                    "rows_per_copy": len(element_rows),
+                    "params": {
+                        element_labels.get(k) or k: v for k, v in (data.element_values or {}).items()
+                    },
+                    "skipped": element_skipped or None,
+                    "notes": element_notes[:20] or None,
+                }
+                if element_rows
+                else None
+            ),
         },
     )
     await db.commit()
@@ -6364,6 +8804,26 @@ async def create_productions(
             "本批没挂角色卡 → picDatas 为空，画中人全靠模型自由发挥（历史上「上下集换装」就是这么来的）。"
             "定妆照先在素材库当图片传上来，投产时挑它"
         )
+    # 批 P：扇出口径当场说人话——建单的人必须知道"这 20 张是 2 份稿子 × 10 组参数"，
+    # 不然事后对账会以为模型多跑了 18 次（并没有，扇出只换词、不花钱）。
+    if element_rows:
+        combo = "＋".join(
+            f"{element_labels.get(k) or k} {len(v)} 个"
+            for k, v in (data.element_values or {}).items()
+            if v
+        )
+        warnings.append(
+            f"按参数扇出：每条文案 {len(element_rows)} 张（{combo}，{'全组合' if (data.element_mode or pesvc.MATRIX_ZIP) == pesvc.MATRIX_PRODUCT else '按行配对'}）。"
+            "扇出来的只是换了词的稿子，**没有再花模型钱**，但每张各占一个钩子编号、"
+            "各吃一条号池额度"
+        )
+    for note in element_notes[:6]:
+        warnings.append(note)
+    if element_skipped:
+        warnings.append(
+            f"{len(element_skipped)} 条扇出来的稿子换完词撞上高风险词、**这条没建单**"
+            f"（逐条见 element_fanout.skipped）：同批其它条照常建，改那个词再来一次"
+        )
     # 当日号池真实消耗 + 本批投递分布（11-03 第 4 条：不硬限，只报数）
     batch_ids = sorted({str(p.batch_id) for p in productions if p.batch_id})
     scope = (
@@ -6403,10 +8863,22 @@ async def create_productions(
         "title_warnings": title_warnings,
         # 模板自报偏差：同内容也已并进各单 dispatch_note（导出 txt 里人眼能看到的那份）
         "deviations": deviations,
+        # 批 P：扇出结果回显——前端结果页要照这份说「这批是参数扇出来的，没多花模型钱」，
+        # 也要把"哪几条因为撞高风险词没建单"当场点名，而不是只塞在 warnings 里滚过去。
+        "element_fanout": ({
+            "mode": data.element_mode or pesvc.MATRIX_ZIP,
+            "rows_per_copy": len(element_rows),
+            "params": {
+                (element_labels.get(k) or k): v for k, v in (data.element_values or {}).items() if v
+            },
+            "skipped": element_skipped,
+            "notes": element_notes,
+        } if element_rows else None),
         "warnings": warnings,
         "message": (
-            f"已生成 {len(productions)} 条生产单（{len(data.summary_ids)} 条文案 × {n} 份差异化，"
-            f"每条出 {board_total} 版 → 投放 {planned_rows} 条）。"
+            f"已生成 {len(productions)} 条生产单（{len(data.summary_ids)} 条文案 × {n} 份差异化"
+            + (f" × 扇出 {len(element_rows)} 张" if element_rows else "")
+            + f"，每条出 {board_total} 版 → 投放 {planned_rows} 条）。"
             + (
                 f"其中 {len(recheck_failed)} 条被投产前复核拦下、{len(waived_rows)} 条经管理员豁免。"
                 if (recheck_failed or waived_rows)
@@ -6782,6 +9254,7 @@ async def list_productions(
     batch_id: Optional[str] = None,
     asset_id: Optional[str] = None,
     owner: Optional[str] = None,
+    ids: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
     current_user: User = Depends(get_current_user),
@@ -6797,11 +9270,23 @@ async def list_productions(
     `created_by=me` 过滤（谁投账算谁）；scope 聚合同步带 owner，`today` 号池口径
     保持全站；响应另带 `dispatch_all`（同 scope 的全站口径），前端「我的/全站」
     两行并排。写口权限不受 owner 影响。
+
+    `ids`（11-10 一屏到底）：逗号拼接的**单个字符串**（与 export 同一口径）。
+    开单成功后前端要立刻把**刚建的那几张**顶进投板确认窗，而当前列表可能正筛着
+    状态/批次/「我的」——靠分页翻不一定会翻到。只进 `conds`，**不进 `scope`**：
+    投递计数（`dispatch`）说的还是这一屏的账，不该被一次点名改成三张单的账。
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 300)
     conds = []
     scope = []
+    if ids:
+        id_list = [_as_uuid(x.strip(), "ids") for x in str(ids).split(",") if x.strip()]
+        if not id_list:
+            raise HTTPException(status_code=400, detail="ids 是逗号拼接的 ID，不能是空的")
+        if len(id_list) > 300:
+            raise HTTPException(status_code=400, detail="ids 一次最多点 300 张单，请分批")
+        conds.append(AssetProduction.id.in_(id_list))
     if status:
         conds.append(AssetProduction.status == status)
     if batch_id:
@@ -6847,12 +9332,35 @@ async def list_productions(
         out_counts = {pid: int(cnt) for pid, cnt in orows}
     # A′：投产人显示名一次聚合
     owner_names = await _user_names(db, {p.created_by for p in rows})
+    # 批 M（11-10）：这一页各单所属文案的**钩子原型名**（整页一次聚合，逐行查＝100 次）。
+    # 原型是「每种钩子给几个可换元素」的分组依据，投产弹窗抽可替换元素要按它筛槽位；
+    # 名字口径与审核台 `category_name` 同一个 `_category_name_map`（下线行也读得到名字）。
+    summary_cats: Dict[Any, Any] = {}
+    sids = {p.summary_id for p in rows if p.summary_id}
+    if sids:
+        summary_cats = {
+            sid: cid
+            for sid, cid in (
+                await db.execute(
+                    select(AssetSummary.id, AssetSummary.category_id).where(
+                        AssetSummary.id.in_(sids)
+                    )
+                )
+            ).all()
+        }
+    cat_names = await _category_name_map(db)
+
+    def _prod_category_name(p: AssetProduction) -> Optional[str]:
+        cid = summary_cats.get(p.summary_id)
+        return cat_names.get(str(cid)) if cid else None
+
     return {
         "items": [
             _serialize_production(
                 p,
                 output_count=out_counts.get(p.id, 0),
                 owner_name=owner_names.get(str(p.created_by)) if p.created_by else None,
+                category_name=_prod_category_name(p),
             )
             for p in rows
         ],
@@ -7651,6 +10159,27 @@ async def dispatch_productions(
             )
 
 
+    # ── 自动拼接的入参校验（11-10 批 Q，需求⑤「钩子成片生成出来以后自动拼成可投放素材」）──
+    # 判据在投出去**之前**跑完：拼装要求要是等回收到了才发现拼不了（挑的是图片／
+    # 那条链接素材还没取回原片），号池已经烧了，片子只能人工另拼一遍。
+    # 校验复用手工拼接口的 `_resolve_concat_input`——同一套 400 话术、同一个"图片不能当一段"
+    # 的闸门，两处各写一遍必然分叉（批 M 的 R-6 就是三入口口径不一被点名）。
+    concat_spec: Optional[Dict[str, Any]] = None
+    concat_clear = False
+    if data.concat_asset_id is not None:
+        raw_concat = str(data.concat_asset_id).strip()
+        if not raw_concat:
+            concat_clear = True
+        else:
+            seg = await _resolve_concat_input(
+                db, compose.SOURCE_ASSET, raw_concat, current_user, "拼接素材"
+            )
+            concat_spec = {
+                "asset_id": raw_concat,
+                "label": seg["label"],
+                "order": compose.resolve_auto_order(data.concat_order),
+            }
+
     if to_create and not data.confirm:
         # P0 的人工确认位：不带 confirm=true 就当没确认过。放在这里而不是让前端拦，
         # 是因为这条线**任何**调用方都该被拦——脚本、按钮、将来的定时任务都得先过人这一关。
@@ -7717,6 +10246,26 @@ async def dispatch_productions(
         else None
     )
 
+    # 自动拼装的拼装要求**钉在生产单行上**（而不是只活在这次请求里）：
+    # 回收可能是几十分钟后另一个进程做的（进程重启后带 recover_only=true 再跑一次），
+    # 那时读的就是这两列——不钉行上的话"接续回收"就不会拼，一线只能手工再拼一遍，
+    # 而这正是需求⑤要消掉的那一步。新建堆和回收堆都写：回收档这次刚拿到片子，照样要拼。
+    # 和挂卡不同，这里**不**放在 `_build_delivery` 之前有任何副作用——那函数只看 payload。
+    concat_applied: List[str] = []
+    if concat_spec is not None or concat_clear:
+        for p in to_create + to_recover:
+            if concat_spec is not None:
+                p.concat_asset_id = _as_uuid(concat_spec["asset_id"], "concat_asset_id")
+                p.concat_order = concat_spec["order"]
+            else:
+                p.concat_asset_id = None
+                p.concat_order = None
+        concat_applied = [str(p.id) for p in (to_create + to_recover)]
+    concat_request = (
+        {**concat_spec, "applied_to": concat_applied} if concat_spec is not None
+        else ({"cleared_for": concat_applied} if concat_applied else None)
+    )
+
     # payload 与导出**同一个函数**（`_build_delivery`）：逐张取卡、保持 `card_asset_ids`
     # 顺序＝板上 picDatas 顺序、缺一张就点名。这里多花一次 MinIO 读是值当的——
     # 它是"投出去画中人不对"这类事故在烧钱前唯一还能看见它的地方。
@@ -7771,10 +10320,18 @@ async def dispatch_productions(
                 "capacity": capacity,
                 "cross_person": crosses or None,
                 "prompt_overrides": sorted(overrides),
+                "card_override": card_override,
+                "concat": concat_request,
                 "note": (
                     "预检已过：闸门按导出/回写同一套判据，payload 与导出同一个函数。"
                     "后台会建任务、轮询出片、把成片落进产物；跑完整份结果在任务台账里"
                     + (f"；其中 {len(overrides)} 张投的是改过的投递稿（库里原稿不动）" if overrides else "")
+                    + (
+                        f"；出片后每支自动和 {concat_spec['label']} 拼一条"
+                        f"（{'钩子片在前' if concat_spec['order'] == compose.ORDER_HOOK_FIRST else '素材片段在前'}）"
+                        if concat_spec is not None
+                        else ("；已取消这几张的自动拼接" if concat_applied else "")
+                    )
                 ),
             },
         }
@@ -7944,6 +10501,14 @@ async def _execute_dispatch(
         )
         outcome["frames_note"] = _frames_note.get("note")
 
+    # ── ③c 成片到手后自动拼接（11-10 批 Q，需求⑤）──
+    # 排在补帧之后、阶段收敛之前：这一步只读产物行（已经 commit 过了），
+    # 拼出来的新产物行自己逐条 commit，绝不把回收结果的写回窗口拖长。
+    # **整段 fail-soft**：片子是真金白银烧号池收回来的，拼不上只是"这条还得人工拼"，
+    # 不许把回收结果改判失败——那会让人以为号池白烧，其实成片就在产物里。
+    concat_note = await _auto_concat_recovered(db, outcome, operator=operator)
+    outcome["concat"] = concat_note
+
     # ── ④ 阶段收敛 + 审计 + 计数 ──
     stage_by_asset = await _converge_produce_stage(db, {t["prod"].asset_id for t in tracked.values()})
     await db.commit()
@@ -7962,6 +10527,7 @@ async def _execute_dispatch(
             "recover_only": recover_only,
             "created": created,
             "card_override": card_override,
+            "concat": outcome.get("concat"),
             "outcome": outcome["summary"],
             "outputs": outcome["outputs"],
             "uncertain": uncertain,
@@ -8001,15 +10567,291 @@ async def _execute_dispatch(
         "asset_status": stage_by_asset,
         "capacity": capacity,
         "dispatch": counts,
+        "concat": outcome.get("concat"),
         "message": (
             f"投板完成：新建 {len(created)} 张、接续回收 {len(to_recover)} 张 → "
             f"到手 {n_ok} / 失败 {n_fail}"
             + (f" / 还在板上 {n_open}" if n_open else "")
             + (f"，新增产物 {len(outcome['outputs'])} 支" if outcome["outputs"] else "")
+            + (f"，自动拼接 {(outcome.get('concat') or {}).get('note')}"
+               if (outcome.get("concat") or {}).get("note") else "")
             + (f"；闸门挡下 {len(blocked)} 张" if blocked else "")
             + (f"；{len(uncertain)} 张状态未知需人工看板" if uncertain else "")
             + f"；号池今天已吃 {capacity['total_today']} 条（软提示线 ≈{capacity['soft_cap']}，不硬拦）"
         ),
+    }
+
+
+async def _auto_concat_recovered(
+    db: AsyncSession,
+    outcome: Dict[str, Any],
+    *,
+    operator: User,
+) -> Dict[str, Any]:
+    """把这次刚落库的豆包成片，逐支和「投板时点名的那条素材」拼成可投放素材（11-10 批 Q）。
+
+    需求⑤原话：「钩子成片生成出来以后，需要导入拼接视频自动拼接成可投放素材。」
+    11-10 定下的形态是**回收后自动拼：钩子片 + 人指定的拼接素材**——第二段由人在投板那一屏
+    点名，机器不挑素材、不做智能选点（11-04 已经把拼接简化成"两段直拼、顺序可选"，这里沿用）。
+    拼装要求钉在 `asset_productions.concat_asset_id`／`concat_order` 上，所以**接续回收
+    （进程重启后带 `recover_only=true` 再跑一次）同样会拼**，不用人再点一遍。
+
+    四条规矩，每条都对应一个跑过才知道的坑：
+    1. **一支只拼一次**：幂等键是 `asset_outputs.composed_from_output_id`。回收会跑很多轮
+       （到期后再点一次、重启后补收），没有幂等键同一支片子会被拼出 N 条一模一样的产物，
+       成片墙就没法对账了。
+    2. **失败绝不连累回收**：逐支单独包异常，成因写进该单的 `concat_last_result` 给界面看。
+       片子是真金白银烧号池收回来的，拼不上只是"这条还得人工拼"，把回收改判失败会让人
+       以为号池白烧，其实成片就在产物里。
+    3. **0 元**：不调模型、不调智令，纯本机 ffmpeg——和手工口同一个口径，所以不进预算闸门、
+       不写任何 cost_*，但每条都留审计（谁拼的、哪两段、什么顺序）。
+    4. **不在事务里等网络**：`_concat_render`（两次下载＋一次转码＋一次上传）全在事务外跑，
+       跑完才开短事务写行并**逐条 commit**——中途某支炸了不许把前面已经拼好的回滚掉。
+
+    挂行口径与手工口一致：拼接产物**不挂生产单**（`production_id=NULL`），否则生产单行上
+    「成片」那列会一支算两支（批 I 定的口径）；要回溯走 `hook_production_id`
+    ＋`composed_from_output_id` 两条线。
+    """
+    prods: Dict[str, AssetProduction] = outcome.get("prods") or {}
+    recs = [
+        r for r in (outcome.get("outputs") or [])
+        if r.get("_inserted") and r.get("_output_id") and prods.get(str(r.get("production_id") or ""))
+    ]
+    wanted = [r for r in recs if getattr(prods[str(r["production_id"])], "concat_asset_id", None)]
+    if not wanted:
+        return {"attempted": 0, "composed": 0, "failed": 0, "already": 0, "results": [], "note": ""}
+
+    # 一次性把要用的素材行读齐：拼接素材（可能是同一条被多张单共用）＋各单产物要挂的那条来源素材
+    concat_ids = {str(prods[str(r["production_id"])].concat_asset_id) for r in wanted}
+    hook_ids = {str(prods[str(r["production_id"])].asset_id) for r in wanted}
+    by_id: Dict[str, AssetItem] = {
+        str(a.id): a
+        for a in (
+            await db.execute(
+                select(AssetItem).where(AssetItem.id.in_([uuid.UUID(x) for x in (concat_ids | hook_ids)]))
+            )
+        ).scalars().all()
+    }
+    # 幂等预查：这些产物支里，哪几支以前已经自动拼过了（重跑回收就会命中）
+    already = {
+        str(u)
+        for u in (
+            await db.execute(
+                select(AssetOutput.composed_from_output_id).where(
+                    AssetOutput.composed_from_output_id.in_(
+                        [uuid.UUID(str(r["_output_id"])) for r in wanted]
+                    )
+                )
+            )
+        ).scalars().all()
+        if u
+    }
+    await db.commit()  # ⚠️ 收掉这次读事务：下面每一支都要出网几十秒（现网事务上限 60s）
+
+    results: List[Dict[str, Any]] = []
+    per_prod: Dict[str, Dict[str, Any]] = {}
+    composed_output_ids: List[str] = []
+    n_ok = n_failed = n_already = 0
+    for rec in wanted:
+        prod = prods[str(rec["production_id"])]
+        out_id = str(rec["_output_id"])
+        cid = str(prod.concat_asset_id)
+        order = compose.resolve_auto_order(prod.concat_order)
+        item: Dict[str, Any] = {
+            "production_id": str(prod.id), "hook_code": prod.hook_code,
+            "from_output_id": out_id, "order": order,
+        }
+        acc = per_prod.setdefault(
+            str(prod.id), {"ok": 0, "failed": 0, "already": 0, "last_error": None, "order": order,
+                           "concat_asset_id": cid}
+        )
+        if out_id in already:
+            # 同一支不拼第二遍：这不是失败，是"上一轮已经拼好了"
+            n_already += 1
+            acc["already"] += 1
+            item.update({"result": "already", "reason": "这支此前已经自动拼过了（幂等键命中），没重拼"})
+            results.append(item)
+            continue
+        material = by_id.get(cid)
+        if material is None:
+            n_failed += 1
+            acc["failed"] += 1
+            acc["last_error"] = "拼接素材已不在库里（被删了？）"
+            item.update({"result": "failed", "error": acc["last_error"]})
+            results.append(item)
+            continue
+        if material.media_kind == MEDIA_IMAGE:
+            n_failed += 1
+            acc["failed"] += 1
+            acc["last_error"] = _image_block_reason(material, "拼接")
+            item.update({"result": "failed", "error": acc["last_error"]})
+            results.append(item)
+            continue
+        if not material.file_key:
+            n_failed += 1
+            acc["failed"] += 1
+            acc["last_error"] = (
+                f"拼接素材（{material.code}）还没有可拼的文件：链接素材要先取回原片"
+                "（`POST /assets/resolve`），文件素材要确认上传成功"
+            )
+            item.update({"result": "failed", "error": acc["last_error"]})
+            results.append(item)
+            continue
+        if not rec.get("file_key"):
+            n_failed += 1
+            acc["failed"] += 1
+            acc["last_error"] = "豆包成片没有落桶路径（回收那步就没成），无法拼接"
+            item.update({"result": "failed", "error": acc["last_error"]})
+            results.append(item)
+            continue
+
+        hook_seg = {
+            "bucket": rec.get("bucket") or settings.MINIO_BUCKET_RAW,
+            "file_key": rec["file_key"],
+            "file_name": rec.get("file_name") or f"{prod.hook_code or out_id[:8]}.mp4",
+            "label": f"钩子·{prod.hook_code or rec.get('file_name') or out_id[:8]}",
+        }
+        material_seg = _asset_concat_segment(material)
+        first, second = (
+            (material_seg, hook_seg) if order == compose.ORDER_TAIL_AFTER_HOOK
+            else (hook_seg, material_seg)
+        )
+        hook_asset = by_id.get(str(prod.asset_id))
+        raw_name = f"{prod.hook_code or 'HOOK'}×{material.code}"
+        safe = "".join(c for c in raw_name if c not in '/\\:*?"<>|').strip()[:80] or out_id[:12]
+        work_dir = tempfile.mkdtemp(prefix="asset_auto_concat_")
+        try:
+            rendered = await _concat_render(
+                first, second,
+                work_dir=work_dir,
+                safe_name=safe,
+                key_prefix_code=(hook_asset.code if hook_asset is not None else str(prod.asset_id)[:8]),
+            )
+        except HTTPException as exc:
+            n_failed += 1
+            acc["failed"] += 1
+            acc["last_error"] = str(exc.detail)[:400]
+            item.update({"result": "failed", "error": acc["last_error"]})
+            results.append(item)
+            continue
+        except Exception as exc:  # noqa: BLE001 — 拼接炸不许把回收带崩（规矩 2）
+            logger.exception("回收自动拼接异常（生产单 %s）", prod.id)
+            n_failed += 1
+            acc["failed"] += 1
+            acc["last_error"] = f"{type(exc).__name__}: {exc}"[:400]
+            item.update({"result": "failed", "error": acc["last_error"]})
+            results.append(item)
+            continue
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+        # 短事务：写产物行 + 来源素材的拼接阶段 + 审计，写完立刻 commit（规矩 4）
+        out_row = AssetOutput(
+            production_id=None,
+            asset_id=prod.asset_id,
+            kind=compose.KIND_COMPOSED,
+            hook_production_id=prod.id,
+            composed_from_output_id=uuid.UUID(out_id),
+            **rendered["output_kwargs"],
+        )
+        db.add(out_row)
+        before_stage = hook_asset.stage_compose if hook_asset is not None else None
+        before_status = hook_asset.status if hook_asset is not None else None
+        if hook_asset is not None:
+            # 和手工口同一条：拼成功就把五阶段里唯一"靠拼接才点亮"的 compose 置 success，
+            # 派生态随之从 producing/composing 走到 ready——"可投放素材"就是 ready 这个态。
+            hook_asset.stage_compose = STAGE_SUCCESS
+            hook_asset.status = svc.derive_status(
+                {
+                    "import": hook_asset.stage_import,
+                    "prompt": hook_asset.stage_prompt,
+                    "summary": hook_asset.stage_summary,
+                    "produce": hook_asset.stage_produce,
+                    "compose": STAGE_SUCCESS,
+                },
+                bool(hook_asset.has_approved_copy),
+            )
+        await _write_audit(
+            db,
+            action="asset.concat.auto",
+            operator=operator,
+            target_type="asset_output",
+            target_id=None,
+            before={
+                "production_id": str(prod.id),
+                "from_output_id": out_id,
+                "asset_id": str(prod.asset_id),
+                "stage_compose": before_stage,
+                "status": before_status,
+            },
+            after={
+                "first": first["label"],
+                "second": second["label"],
+                "order": order,
+                "concat_asset_id": cid,
+                "target_resolution": out_row.resolution,
+                "duration": out_row.duration,
+                "file_key": out_row.file_key,
+                "cost": 0,
+                "elapsed_seconds": rendered["elapsed_seconds"],
+            },
+        )
+        await db.commit()
+        await db.refresh(out_row)
+        composed_output_ids.append(str(out_row.id))
+        n_ok += 1
+        acc["ok"] += 1
+        item.update({
+            "result": "composed", "output_id": str(out_row.id),
+            "file_key": out_row.file_key, "with": material_seg["label"],
+            "resolution": out_row.resolution, "duration": out_row.duration,
+        })
+        results.append(item)
+
+    # 每单一份「拼没拼」结果写回行上（界面列 + 台账话术都读它，不参与任何判定）
+    for pid, acc in per_prod.items():
+        prod = prods.get(pid)
+        if prod is None:
+            continue
+        if acc["failed"] and not acc["ok"]:
+            status = "failed"
+        elif acc["failed"]:
+            status = "partial"
+        elif acc["ok"]:
+            status = "success"
+        else:
+            status = "already"
+        prod.concat_last_result = {
+            "status": status,
+            "ok": acc["ok"], "failed": acc["failed"], "already": acc["already"],
+            "order": acc["order"],
+            "concat_asset_id": acc["concat_asset_id"],
+            "last_error": acc["last_error"],
+            "at": utc_iso(datetime.utcnow()),
+        }
+    await db.commit()
+
+    # 拼出来的产物也补 1 张首帧（成片墙靠它当缩略图，与手工口/回收侧同一个动作）。
+    # fail-soft：帧没排上只是墙上一时没图，产物已经落库了。
+    frames_note = None
+    if composed_output_ids:
+        frames_note = await _enqueue_frames(
+            db,
+            asset_ids=[],
+            output_ids=composed_output_ids,
+            operator=operator,
+            why=f"回收自动拼接（{len(composed_output_ids)} 条）",
+        )
+
+    note = (
+        f"自动拼接：拼成 {n_ok} 支"
+        + (f"、失败 {n_failed} 支（成因见生产单「拼没拼」，可手工另拼）" if n_failed else "")
+        + (f"、此前已拼 {n_already} 支" if n_already else "")
+    )
+    return {
+        "attempted": len(wanted), "composed": n_ok, "failed": n_failed, "already": n_already,
+        "results": results, "note": note,
+        "frames_note": (frames_note or {}).get("note"),
     }
 
 
@@ -8335,6 +11177,10 @@ async def _poll_and_collect(
     return {
         "summary": summary,
         "outputs": outputs,
+        # 批 Q：把 prod 引用一并交出去。人工让位的行会从 tracked 摘除（`_reown`），
+        # 但它这次到手的产物仍要按它落库、也仍要拼——自动拼接若只认 tracked，
+        # 「刚被人工改过状态的单」就会静默少拼一条。
+        "prods": prod_refs,
         "rounds": rounds,
         "read_fail_rounds": read_fail_rounds,
     }
@@ -8487,6 +11333,65 @@ async def list_outputs(
             }
             for o in rows
         ]
+    }
+
+
+async def _outputs_awaiting(
+    db: AsyncSession, *, owner: Optional[str], current_user: User, batch_id: Optional[str]
+) -> dict:
+    """成片墙空态要说的三句真话（11-10 用户口径「我投去了，生产出来了就给我看，不要搞这么复杂」）。
+
+    墙空着的时候，一线分不清三件事：①**只建了单还没投板**、②**投出去了还在出片**、
+    ③**回收过了但这一屏的筛选把它藏了**。以前只会说「还没有成片」，三件事全糊在一句里，
+    人只能自己去猜——猜不动就以为系统坏了。这里按同一套 owner／批次口径把数算出来，
+    空态直接摆「20 条已投板，出片了会自动回到这里」。
+
+    只数生产单，不动 `kind`／`qc` 筛选：那两个是「成片怎么摆」的口径，
+    和「有没有在途的单」没关系，掺进来只会让人更看不懂。
+    """
+    p_conds = []
+    if owner == "me":
+        p_conds.append(AssetProduction.created_by == current_user.id)
+    if batch_id:
+        p_conds.append(AssetProduction.batch_id == _as_uuid(batch_id, "batch_id"))
+
+    waiting = never_dispatched = 0
+    for st, tid in (
+        await db.execute(
+            select(AssetProduction.status, AssetProduction.board_tid).where(*p_conds)
+        )
+    ).all():
+        if st in (PR_SUCCESS, PR_FAILED):
+            continue  # 终态：成片有没有，墙自己会说话
+        if st in (PR_QUEUED, PR_RUNNING) or tid:
+            waiting += 1  # 投出去了（含人工回写过 tid 但状态还停在待投的老单）
+        elif st == PR_ORDER_READY:
+            never_dispatched += 1  # 只建了单，一张号都没占
+
+    o_conds = []
+    if owner == "me":
+        o_conds.append(
+            or_(
+                AssetOutput.production_id.is_(None),
+                AssetOutput.production_id.in_(
+                    select(AssetProduction.id).where(AssetProduction.created_by == current_user.id)
+                ),
+            )
+        )
+    if batch_id:
+        o_conds.append(
+            AssetOutput.asset_id.in_(
+                select(AssetItem.id).where(AssetItem.batch_id == _as_uuid(batch_id, "batch_id"))
+            )
+        )
+    last_at = (
+        await db.execute(select(func.max(AssetOutput.created_at)).where(*o_conds))
+    ).scalar()
+
+    return {
+        "waiting_on_board": waiting,
+        "order_ready_not_dispatched": never_dispatched,
+        "last_output_at": utc_iso(last_at) if last_at else None,
     }
 
 
@@ -8697,12 +11602,21 @@ async def list_output_groups(
         for g in groups:
             g["thumb_url"] = None
 
-    return {"group_by": group_by, "owner": owner or "all", "groups": groups}
+    awaiting = await _outputs_awaiting(
+        db, owner=owner, current_user=current_user, batch_id=batch_id
+    )
+    return {
+        "group_by": group_by,
+        "owner": owner or "all",
+        "groups": groups,
+        # 空态要说真话用的三个数（见 `_outputs_awaiting`）
+        "awaiting": awaiting,
+    }
 
 
 @router.post("/assets/outputs/package")
 async def package_outputs(
-    ids: List[str] = Body(..., description="要打包的产物 id"),
+    ids: List[str] = Body(..., embed=True, description="要打包的产物 id"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -8717,13 +11631,14 @@ async def package_outputs(
     import zipfile
 
     uids = [_as_uuid(i, "output_id") for i in ids]
-    rows = (
-        await db.execute(
-            select(AssetOutput).where(
-                AssetOutput.id.in_(uids), AssetOutput.kind.notin_(("package", "copy"))
+    rows = list(
+        (
+            await db.execute(
+                select(AssetOutput).where(
+                    AssetOutput.id.in_(uids), AssetOutput.kind.notin_(("package", "copy"))
+                )
             )
-        )
-        .scalars()
+        ).scalars()
         .all()
     )
     if not rows:
@@ -8736,12 +11651,13 @@ async def package_outputs(
             + "、".join((b.file_name or b.id)[:24] for b in blocked[:5]),
         )
 
-    # 归属与标题一次聚合
+    # 归属与标题一次聚合（2026-11-11 评审·业务席 P1：manifest 补 production_id / board_tid /
+    # 素材剧名——板侧 reqID=生产单 id 是对账主键，交付包里必须对得回去，不能靠人肉抠标题）
     prod_ids = {o.production_id for o in rows if o.production_id}
     asset_ids = {o.asset_id for o in rows}
     prod_meta: Dict[Any, dict] = {}
     if prod_ids:
-        for pid, hc, titles, cb, rb in (
+        for pid, hc, titles, cb, rb, btid in (
             await db.execute(
                 select(
                     AssetProduction.id,
@@ -8749,6 +11665,7 @@ async def package_outputs(
                     AssetProduction.video_titles,
                     AssetProduction.created_by,
                     AssetSummary.reviewed_by,
+                    AssetProduction.board_tid,
                 )
                 .join(AssetSummary, AssetSummary.id == AssetProduction.summary_id)
                 .where(AssetProduction.id.in_(prod_ids))
@@ -8757,15 +11674,23 @@ async def package_outputs(
             prod_meta[pid] = {
                 "hook_code": hc,
                 "titles": titles or [],
-                "created_by": str(cb) if cb else None,
-                "reviewed_by": str(rb) if rb else None,
+                # created_by/reviewed_by **保持 UUID 原值**：它们要喂给 `_user_names` 的
+                # `User.id.in_(...)`，那里不接 str（sqlite/PG 的 UUID 列拿到 str 会
+                # `'str' object has no attribute 'hex'` 当场 500）。取名时才转 str，见下面。
+                "created_by": cb,
+                "reviewed_by": rb,
+                "board_tid": str(btid) if btid else None,
             }
     asset_codes: Dict[Any, str] = {}
+    asset_titles: Dict[Any, str] = {}
     if asset_ids:
-        for aid, code in (
-            await db.execute(select(AssetItem.id, AssetItem.code).where(AssetItem.id.in_(asset_ids)))
+        for aid, code, atitle in (
+            await db.execute(
+                select(AssetItem.id, AssetItem.code, AssetItem.title).where(AssetItem.id.in_(asset_ids))
+            )
         ).all():
             asset_codes[aid] = code
+            asset_titles[aid] = atitle or ""
     names = await _user_names(db, {m.get("created_by") for m in prod_meta.values() if m.get("created_by")})
 
     # 首帧（无帧缩略不打包，manifest 照记）
@@ -8779,63 +11704,102 @@ async def package_outputs(
     ).scalars().all()
     frames_by_output = {f.output_id: f for f in frame_rows}
 
-    manifest_entries = []
     used_names: Dict[str, int] = {}
-    import asyncio as _aio
-
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
-        for o in rows:
-            meta = prod_meta.get(o.production_id) or {}
-            base = (o.file_name or f"{o.id}").rsplit(".", 1)[0][:80] or "clip"
-            ext = (o.file_name or "clip.mp4").rsplit(".", 1)[-1] or "mp4"
-            name = f"{base}.{ext}"
-            n = used_names.get(name, 0)
-            if n:
-                name = f"{base}({n + 1}).{ext}"
-            used_names[name] = n + 1
-            url = await get_presigned_url(
-                o.bucket or settings.MINIO_BUCKET_RAW, o.file_key, expires_seconds=600
-            )
-            async with httpx.AsyncClient(timeout=300) as cl:
-                resp = await cl.get(url)
-                resp.raise_for_status()
-            zf.writestr(name, resp.content)
-            fr = frames_by_output.get(o.id)
-            manifest_entries.append(
-                {
-                    "file": name,
-                    "asset_code": asset_codes.get(o.asset_id),
-                    "hook_code": meta.get("hook_code"),
-                    "recommended_title": (meta.get("titles") or [""])[0],
-                    "qc_status": o.qc_status,
-                    "duration": o.duration,
-                    "resolution": o.resolution,
-                    "produced_by": names.get(meta.get("created_by") or ""),
-                    "reviewed_by": names.get(meta.get("reviewed_by") or ""),
-                    "thumb_url": (
-                        await get_presigned_url(
-                            fr.bucket or settings.MINIO_BUCKET_RAW,
-                            fr.file_key,
-                            expires_seconds=_FRAME_URL_TTL_SECONDS,
-                        )
-                        if fr
-                        else None
-                    ),
-                }
-            )
-        zf.writestr(
-            "manifest.json",
-            json.dumps(
-                {
-                    "exported_at": utc_iso(datetime.utcnow()),
-                    "exported_by": current_user.username,
-                    "items": manifest_entries,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+    plan: List[dict] = []
+    for o in rows:
+        meta = prod_meta.get(o.production_id) or {}
+        base = (o.file_name or f"{o.id}").rsplit(".", 1)[0][:80] or "clip"
+        ext = (o.file_name or "clip.mp4").rsplit(".", 1)[-1] or "mp4"
+        name = f"{base}.{ext}"
+        n = used_names.get(name, 0)
+        if n:
+            name = f"{base}({n + 1}).{ext}"
+        used_names[name] = n + 1
+        url = await get_presigned_url(
+            o.bucket or settings.MINIO_BUCKET_RAW, o.file_key, expires_seconds=600
         )
+        fr = frames_by_output.get(o.id)
+        plan.append(
+            {
+                "row": o,
+                "name": name,
+                "url": url,
+                "meta": meta,
+                "frame": fr,
+                "thumb_url": (
+                    await get_presigned_url(
+                        fr.bucket or settings.MINIO_BUCKET_RAW,
+                        fr.file_key,
+                        expires_seconds=_FRAME_URL_TTL_SECONDS,
+                    )
+                    if fr
+                    else None
+                ),
+            }
+        )
+
+    # 2026-11-11 评审（可靠性席 P2）：下载前收掉读事务——事务从首个 SELECT 一路开到下载完，
+    # 任何一支等待超过 60s 就触发 idle_in_transaction_session_timeout 掐连接，整包 500。
+    # 所有 DB 读取（行、meta、presign）已完成，commit 收事务，下载全程在事务外。
+    await db.commit()
+
+    # 2026-11-11 评审（安全席 P2）：不再 verify=False——用与 minio SDK 同一份自签
+    # CA bundle（REQUESTS_CA_BUNDLE 拼 certifi），传输层强校验；presigned 签名管鉴权，
+    # bundle 管传输不被替换。bundle 缺失（本地 HTTP 部署）退回旧行为零变化。
+    _verify = extra_ca_bundle_path() or False
+
+    manifest_entries = []
+    buf = io.BytesIO()
+    async with httpx.AsyncClient(timeout=300, verify=_verify, follow_redirects=True) as cl:
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+            for item in plan:
+                o, name, url, meta = item["row"], item["name"], item["url"], item["meta"]
+                if not url:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"「{name}」拿不到下载链接（presign 失败），打包中止——"
+                               "把这条从勾选里去掉再打包，或稍后重试",
+                    )
+                try:
+                    resp = await cl.get(url)
+                    resp.raise_for_status()
+                except httpx.HTTPError as exc:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"「{name}」下载失败（{type(exc).__name__}），打包中止——"
+                               "把这条去掉重试，或稍后再试（时效链接约 1 小时，过期重开即可续）",
+                    )
+                zf.writestr(name, resp.content)
+                manifest_entries.append(
+                    {
+                        "file": name,
+                        "production_id": str(o.production_id) if o.production_id else None,
+                        "board_tid": meta.get("board_tid"),
+                        "asset_code": asset_codes.get(o.asset_id),
+                        "asset_title": asset_titles.get(o.asset_id),
+                        "hook_code": meta.get("hook_code"),
+                        "recommended_title": (meta.get("titles") or [""])[0],
+                        "qc_status": o.qc_status,
+                        "duration": o.duration,
+                        "resolution": o.resolution,
+                        # 取名要 str：`_user_names` 返回的字典键是 `str(uuid)`
+                        "produced_by": names.get(str(meta.get("created_by"))) if meta.get("created_by") else None,
+                        "reviewed_by": names.get(str(meta.get("reviewed_by"))) if meta.get("reviewed_by") else None,
+                        "thumb_url": item["thumb_url"],
+                    }
+                )
+            zf.writestr(
+                "manifest.json",
+                json.dumps(
+                    {
+                        "exported_at": utc_iso(datetime.utcnow()),
+                        "exported_by": current_user.username,
+                        "items": manifest_entries,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
     buf.seek(0)
     await _write_audit(
         db,
@@ -8846,10 +11810,15 @@ async def package_outputs(
         after={"count": len(rows), "ids": [str(o.id) for o in rows[:20]]},
     )
     await db.commit()
+    # 2026-11-11 评审（业务席 P1）：包名带日期与条数——同一周打多个包，文件名就能对上批次
     return Response(
         content=buf.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="delivery-package.zip"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="delivery-package-{time.strftime("%m%d")}-{len(rows)}items.zip"'
+            )
+        },
     )
 
 
@@ -8986,6 +11955,22 @@ class ConcatRequest(BaseModel):
     title: Optional[str] = Field(None, max_length=120, description="可选：产物文件名前缀，默认用素材编号")
 
 
+def _asset_concat_segment(asset: AssetItem) -> Dict[str, Any]:
+    """素材行 → 拼接的一段（bucket/file_key/file_name/label）。
+
+    手工口 `_resolve_concat_input` 和批 Q 的回收自动拼共用这一份写法：自动拼那侧已经
+    把素材行读在手里了（一次批量读，避免逐支开事务查库），只要别再各写一遍 label 格式，
+    否则审计里两次拼接写的同一条素材会长得不一样，对账时没人说得清是不是同一条。
+    调用方负责先过"不是图片／桶里有文件"两道判断。
+    """
+    return {
+        "bucket": asset.bucket or settings.MINIO_BUCKET_RAW,
+        "file_key": asset.file_key,
+        "file_name": asset.file_name or f"{asset.code}.mp4",
+        "label": f"{asset.code}·{asset.title or asset.file_name or '未命名'}",
+    }
+
+
 async def _resolve_concat_input(
     db: AsyncSession,
     source: str,
@@ -9008,12 +11993,7 @@ async def _resolve_concat_input(
                 detail=f"{label}（{asset.code}）还没有可拼的文件：链接素材要先取回原片"
                        f"（`POST /assets/resolve`），文件素材要确认上传成功",
             )
-        return {
-            "bucket": asset.bucket or settings.MINIO_BUCKET_RAW,
-            "file_key": asset.file_key,
-            "file_name": asset.file_name or f"{asset.code}.mp4",
-            "label": f"{asset.code}·{asset.title or asset.file_name or '未命名'}",
-        }
+        return _asset_concat_segment(asset)
     if source == compose.SOURCE_SLICE:
         out = (
             await db.execute(
@@ -9045,6 +12025,82 @@ async def _resolve_concat_input(
         status_code=400,
         detail=f"second_source 只能是 {' 或 '.join(compose.INPUT_SOURCES)}",
     )
+
+
+async def _concat_render(
+    first: Dict[str, Any],
+    second: Dict[str, Any],
+    *,
+    work_dir: str,
+    safe_name: str,
+    key_prefix_code: str,
+) -> Dict[str, Any]:
+    """两段（已排好顺序的）视频取回→探规格→ffmpeg 直拼→落桶，返回 `AssetOutput(**kwargs)` 的字段。
+
+    手工口（`POST /assets/concat`）和批 Q 的回收自动拼**共用这一段**。两处各写一遍
+    ffmpeg 接线迟早漂移，而漂移的表现形式是「手工拼出来能播、自动拼出来不能播」
+    ——那种差别只有真投出去才知道，验收拦不住。所以转码配方只留一份。
+
+    ⚠️ **一段数据库都不碰**（与 `_fetch_board_output` 同一条纪律）：两次下载＋一次转码
+    ＋一次上传，快的十几秒、慢的按分钟算，趴着等会把现网 60s 的
+    `idle_in_transaction_session_timeout` 撞穿（11-04 等模型时真撞过一次）。
+    调用方在事务外跑完这一段，再开短事务写行。
+
+    目标画幅＝**排在最前那一段**（`first`）：调用方换顺序就等于换画幅，这是 11-04
+    定下的口径（不复用 `upload.py::_ffmpeg_concat`，它回退硬编码 1920×1080 横屏）。
+    """
+    started = time.monotonic()
+    paths: List[str] = []
+    for idx, seg in enumerate((first, second)):
+        local = os.path.join(work_dir, f"in_{idx}.mp4")
+        ok = await download_to_file(seg["bucket"], seg["file_key"], local)
+        if not ok:
+            raise HTTPException(
+                status_code=502,
+                detail=f"取回第{idx + 1}段失败（{seg['bucket']}/{seg['file_key'][:60]}），稍后重试",
+            )
+        paths.append(local)
+
+    infos: List[Optional[Dict[str, Any]]] = [await compose.probe_media(p) for p in paths]
+    target = infos[0]
+    if target is None:
+        raise HTTPException(status_code=400, detail="第1段探不出视频流，不是能拼的视频文件")
+    if infos[1] is None:
+        raise HTTPException(status_code=400, detail="第2段探不出视频流，不是能拼的视频文件")
+    for idx, info in enumerate(infos):
+        dur = info.get("duration")
+        if dur and dur > compose.MAX_SEGMENT_SECONDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"第{idx + 1}段 {dur:.0f}s 超过单次拼接上限 "
+                       f"{compose.MAX_SEGMENT_SECONDS:.0f}s（同步等 ffmpeg，别拿它当队列）",
+            )
+
+    out_path = os.path.join(work_dir, "out.mp4")
+    err = await compose.concat_segments(paths, target, out_path)
+    if err:
+        raise HTTPException(status_code=502, detail=err)
+
+    out_info = await compose.probe_media(out_path) or target
+    size = os.path.getsize(out_path) if os.path.isfile(out_path) else None
+    file_key = f"asset/composed/{key_prefix_code}/{uuid.uuid4().hex[:16]}_{safe_name}.mp4"
+    uploaded = await upload_file_from_path(
+        settings.MINIO_BUCKET_RAW, file_key, out_path, content_type="video/mp4"
+    )
+    if not uploaded:
+        raise HTTPException(status_code=502, detail="拼接成功但产物上传失败，请重试（原片未动）")
+    return {
+        "output_kwargs": {
+            "file_key": file_key,
+            "bucket": settings.MINIO_BUCKET_RAW,
+            "file_name": f"{safe_name}.mp4",
+            "duration": out_info.get("duration"),
+            "file_size": size,
+            "resolution": f"{int(out_info['width'])}x{int(out_info['height'])}",
+            "sha256": compose.sha256_of(out_path),
+        },
+        "elapsed_seconds": round(time.monotonic() - started, 2),
+    }
 
 
 @router.post("/assets/concat", status_code=201)
@@ -9096,58 +12152,16 @@ async def concat_two_videos(
 
     work_dir = tempfile.mkdtemp(prefix="asset_concat_")
     try:
-        paths: List[str] = []
-        for idx, seg in enumerate((first, second)):
-            local = os.path.join(work_dir, f"in_{idx}.mp4")
-            ok = await download_to_file(seg["bucket"], seg["file_key"], local)
-            if not ok:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"取回第{idx + 1}段失败（{seg['bucket']}/{seg['file_key'][:60]}），稍后重试",
-                )
-            paths.append(local)
-
-        infos: List[Optional[Dict[str, Any]]] = [await compose.probe_media(p) for p in paths]
-        target = infos[0]
-        if target is None:
-            raise HTTPException(status_code=400, detail="第1段探不出视频流，不是能拼的视频文件")
-        if infos[1] is None:
-            raise HTTPException(status_code=400, detail="第2段探不出视频流，不是能拼的视频文件")
-        for idx, info in enumerate(infos):
-            dur = info.get("duration")
-            if dur and dur > compose.MAX_SEGMENT_SECONDS:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"第{idx + 1}段 {dur:.0f}s 超过单次拼接上限 "
-                           f"{compose.MAX_SEGMENT_SECONDS:.0f}s（同步等 ffmpeg，别拿它当队列）",
-                )
-
-        out_path = os.path.join(work_dir, "out.mp4")
-        err = await compose.concat_segments(paths, target, out_path)
-        if err:
-            raise HTTPException(status_code=502, detail=err)
-
-        out_info = await compose.probe_media(out_path) or target
-        size = os.path.getsize(out_path) if os.path.isfile(out_path) else None
         safe = "".join(c for c in (data.title or asset.code) if c not in '/\\:*?"<>|').strip()[:80] or asset.code
-        file_key = f"asset/composed/{asset.code}/{uuid.uuid4().hex[:16]}_{safe}.mp4"
-        uploaded = await upload_file_from_path(
-            settings.MINIO_BUCKET_RAW, file_key, out_path, content_type="video/mp4"
+        # 取回两段 → 探规格 → ffmpeg 直拼 → 落桶，全在 `_concat_render`（与批 Q 自动拼同一份配方）
+        rendered = await _concat_render(
+            first, second, work_dir=work_dir, safe_name=safe, key_prefix_code=asset.code
         )
-        if not uploaded:
-            raise HTTPException(status_code=502, detail="拼接成功但产物上传失败，请重试（原片未动）")
-
         out_row = AssetOutput(
             production_id=production.id if production is not None else None,
             asset_id=asset.id,
             kind=compose.KIND_COMPOSED,
-            file_key=file_key,
-            bucket=settings.MINIO_BUCKET_RAW,
-            file_name=f"{safe}.mp4",
-            duration=out_info.get("duration"),
-            file_size=size,
-            resolution=f"{int(out_info['width'])}x{int(out_info['height'])}",
-            sha256=compose.sha256_of(out_path),
+            **rendered["output_kwargs"],
         )
         db.add(out_row)
         # 拼接是 AssetItem 五阶段里唯一还没有写入方的那一个（stage_compose）。
@@ -9589,6 +12603,68 @@ async def resolve_link_assets(
 # 下载动作自己的状态字（models 侧不设常量：三取值只在这一个口里写，别处只读）
 _DL_RUNNING, _DL_SUCCESS, _DL_FAILED = "running", "success", "failed"
 
+# 视频容器魔数（闸门第一层）。只认「开头就摆明自己是视频」的几种，认不出交给 ffprobe 兜底。
+_VIDEO_BOX_KEYS = (b"ftyp", b"styp", b"free", b"mdat", b"skip")  # ISO BMFF 族：4~8 字节是 box 类型
+
+
+def _sniff_video_container(head: bytes) -> Optional[str]:
+    """文件头若干字节 → 容器名；认不出回 None（不代表不是视频，交给 ffprobe 实探）。"""
+    if len(head) >= 12 and head[4:8] in _VIDEO_BOX_KEYS:
+        return "mp4/mov"
+    if head[:4] == b"\x1a\x45\xdf\xa3":
+        return "mkv/webm"
+    if head[:4] in (b"\x00\x00\x01\xb3", b"\x00\x00\x01\xba"):
+        return "mpeg"
+    if len(head) >= 189 and head[0] == 0x47 and head[188] == 0x47:
+        return "mpeg-ts"  # TS 包长 188：第一包同步字节后面，第二包开头还得是 0x47（不足 189 字节别硬认，交给 ffprobe）
+    if head[:4] == b"RIFF" and head[8:12] == b"AVI ":
+        return "avi"
+    if head[:3] == b"FLV":
+        return "flv"
+    return None
+
+
+def _describe_not_video(head: bytes) -> str:
+    """闸门挡下时给一线看的白话原因：说清拉回来的**到底是**什么，别只说"不是视频"。"""
+    text = head.decode("utf-8", "ignore").lstrip("﻿ \r\n\t")
+    low = text[:2048].lower()
+    if low.startswith("<!doctype html") or low.startswith("<html") or "<head" in low[:600]:
+        title = re.search(r"<title[^>]*>(.*?)</title>", text[:4096], re.S | re.I)
+        name = (title.group(1).strip()[:40] if title else "")
+        return ("一个网页（源站/解析方给的中转引导页，不是视频流）"
+                + (f"，页面标题「{name}」" if name else ""))
+    sample = text[:200]
+    if sample and sample.isascii() and all(c.isprintable() or c in " \t\r\n" for c in sample):
+        # isprintable() 把换行算作"不可打印"，而 m3u8 / JSON 报错体都是带换行的纯文本
+        return f"一段纯文本（开头是「{text[:60].strip()}」），不是视频流"
+    return "认不出的字节（既不是已知视频容器，也不是文本）"
+
+
+async def _video_content_gate(path: str) -> Tuple[Optional[str], Optional[float]]:
+    """下载内容闸门：`返回 (挡下的原因, 顺手探到的时长)`。
+
+    为什么必须有这道闸（2026-11-09 现网事故 `AS-BB8563FD`）：旧代码只挡 0 字节、异常和
+    落桶失败，智令对一条视频号链接回的是一个 10.8KB 的 HTML 中转页——**多大都算过**，
+    于是网页带着 `video/mp4` 的 content-type 进了自有桶、`download_status=success`、
+    `stage_import=success`、照记 0.01 元解析费、还排了抽帧（必然 0 帧）。列表和抽屉里
+    看着"下载成功"，实际点开是坏的。
+
+    两层判据：① 容器魔数——认得出 mp4/mkv/ts/avi/flv 就直接放行，不额外花 ffprobe；
+    ② 魔数认不出再实探一次时长（探得出就放行并把时长带回，别把没见过的合法容器挡死；
+    探不出才判"不是视频"）。挡下的东西**不入桶、不标成功**，原因写成一线能照着换路子的大白话。
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8192)
+    except OSError as exc:  # pragma: no cover - 拉流声称成功但文件没落盘
+        return f"下载器报了字节数但临时文件读不到（{type(exc).__name__}）", None
+    if _sniff_video_container(head):
+        return None, None
+    probed = await _probe_duration(path)
+    if probed:
+        return None, probed
+    return _describe_not_video(head), None
+
 
 @router.post("/assets/download")
 async def download_asset_sources(
@@ -9612,6 +12688,9 @@ async def download_asset_sources(
     幂等：`file_key` 已非空的原样跳过（不重复下载、不重复占桶）；每条
     running→终态**逐条落库**（同 analyze 口径：一条几分钟，中途崩不能整批白跑）。
     `download_status` 是下载自己的状态，不进五阶段、不影响任何闸门。
+
+    11-09 补第五步＝**内容闸门**（`_video_content_gate`）：字节数不为 0 不代表拿到的是视频，
+    验完容器才入桶标 success；挡下的条标 failed 带白话原因、不抽帧（详见该函数注释的事故记录）。
     """
     if not data.asset_ids:
         raise HTTPException(
@@ -9684,11 +12763,11 @@ async def download_asset_sources(
         try:
             parsed = await dispatch_parse(a.source_url)
         except ProviderParseError as exc:
+            logger.warning("下载原片解析失败 %s channel未知: %s", a.code, str(exc)[:200])
             a.download_status = _DL_FAILED
             entry["error"] = f"解析分享链接失败：{str(exc)[:200]}（失败不记账）"
             await db.commit()
             continue
-            logger.warning("下载原片解析失败 %s channel未知: %s", a.code, str(exc)[:200])
         except Exception as exc:
             logger.exception("下载原片解析异常 %s", a.code)
             a.download_status = _DL_FAILED
@@ -9708,28 +12787,40 @@ async def download_asset_sources(
 
         play_url = getattr(parsed, "play_url", None)
         if not play_url:
+            logger.warning("下载原片失败 %s：解析成功但 play_url 为空（channel=%s）", a.code, channel)
             a.download_status = _DL_FAILED
             entry["error"] = "解析成功但没拿到可下载的直链（源站没给播放地址）"
             await db.commit()
             continue
-            logger.warning("下载原片失败 %s：解析成功但 play_url 为空（channel=%s）", a.code, channel)
 
         # ② 拉流下载（断点续传在 downloader 里；HLS/直链都归它）
         local_path = os.path.join(tmp_dir, f"{a.code}.mp4")
         try:
             total = await get_downloader().download_to_file(play_url, local_path)
         except Exception as exc:
+            logger.warning("下载原片拉流失败 %s（channel=%s, play_url=%s…）: %s",
+                           a.code, channel, str(play_url)[:80], str(exc)[:200])
             a.download_status = _DL_FAILED
             entry["error"] = f"拉流下载失败：{str(exc)[:200]}（解析费已按渠道记账）"
             await db.commit()
             continue
-            logger.warning("下载原片拉流失败 %s（channel=%s, play_url=%s…）: %s", a.code, channel, play_url[:80], str(exc)[:200])
         if not total:
+            logger.warning("下载原片失败 %s：0 字节（channel=%s）", a.code, channel)
             a.download_status = _DL_FAILED
             entry["error"] = "下载到 0 字节（直链秒回空响应），没入桶，不假装成功"
             await db.commit()
             continue
-            logger.warning("下载原片失败 %s：0 字节（channel=%s）", a.code, channel)
+
+        # ②' 内容闸门（11-09 事故补的）：字节数不为 0 ≠ 拿到的是视频，先验容器再入桶
+        gate_reason, gated_duration = await _video_content_gate(local_path)
+        if gate_reason:
+            logger.warning("下载原片被内容闸门挡下 %s（channel=%s, size=%s）：%s",
+                           a.code, channel, total, gate_reason)
+            a.download_status = _DL_FAILED
+            entry["error"] = (f"拉回来的不是视频：{gate_reason}。没入桶、不标成功，"
+                              f"这条请换渠道/换链接重试或走人工下载（解析费已按渠道记账）")
+            await db.commit()
+            continue
 
         # ③ 落自有桶：key 风格与抽帧/拼接一致（asset/<用途>/<素材号>/…），按素材号聚得拢
         object_key = f"asset/source/{a.code}/{uuid.uuid4().hex[:16]}.mp4"
@@ -9737,11 +12828,11 @@ async def download_asset_sources(
             settings.MINIO_BUCKET_RAW, object_key, local_path, "video/mp4"
         )
         if not ok:
+            logger.warning("下载原片失败 %s：落桶失败 key=%s（桶不可达或写入被拒）", a.code, object_key)
             a.download_status = _DL_FAILED
             entry["error"] = "对象存储入库失败（桶不可达或写入被拒）"
             await db.commit()
             continue
-            logger.warning("下载原片失败 %s：落桶失败 key=%s（桶不可达或写入被拒）", a.code, object_key)
 
         # ④ 回写 + 探真实时长（已有时长的不覆盖——那是 resolve/上传时探过的口径）
         a.file_key = object_key
@@ -9749,7 +12840,7 @@ async def download_asset_sources(
         a.file_size = total
         a.file_name = a.file_name or f"{a.code}.mp4"
         if not a.duration:
-            a.duration = await _probe_duration(local_path)
+            a.duration = gated_duration or await _probe_duration(local_path)
         a.download_status = _DL_SUCCESS
         entry.update(ok=True, file_key=object_key, size=total,
                      note="原片已落到自有桶，列表/抽屉里可直接预览和下载")

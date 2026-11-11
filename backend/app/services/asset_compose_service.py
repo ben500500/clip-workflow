@@ -48,6 +48,15 @@ ORDER_ASSET_FIRST = "asset_first"    # 素材库片段在前，第二段在后
 ORDER_SECOND_FIRST = "second_first"  # 第二段在前，素材库片段在后
 INPUT_ORDERS = (ORDER_ASSET_FIRST, ORDER_SECOND_FIRST)
 
+# 自动拼接（11-10 批 Q）的顺序取值。**故意不和上面那对共用**：
+# 手工口的两段是「素材库片段(A) + 另一段(B)」，自动口的两段是「钩子成片 + 素材库片段」，
+# 同一个 `asset_first` 字面量在两处指的不是同一段片子——共用一套词表迟早拼反，
+# 而"拼反了"这种事没人会在验收里发现（片子能播、时长对、就是前 10 秒不对）。
+ORDER_HOOK_FIRST = "hook_first"          # 钩子片在前、素材片段在后（引流→正文）
+ORDER_TAIL_AFTER_HOOK = "material_first"  # 素材片段在前、钩子片在后
+AUTO_CONCAT_ORDERS = (ORDER_HOOK_FIRST, ORDER_TAIL_AFTER_HOOK)
+DEFAULT_AUTO_CONCAT_ORDER = ORDER_HOOK_FIRST
+
 # 兜底帧率：探不到 avg_frame_rate（容器内 ffprobe 偶发回 N/A）时用 25，与切片档位一致
 DEFAULT_FPS = "25"
 # 单段最长允许多少秒（拼接是同步等 ffmpeg 的 HTTP 请求，纯防御，别拿它当队列用）
@@ -94,6 +103,23 @@ def resolve_input_order(order: Optional[str], asset_label: str, second_label: st
     if normalized == ORDER_SECOND_FIRST:
         return [second_label, asset_label]
     return [asset_label, second_label]
+
+
+def resolve_auto_order(order: Optional[str]) -> str:
+    """自动拼接（批 Q）的顺序校验：非法值 400，留空回默认档。
+
+    判据放在服务层而不是接口层，是因为投板口和将来的重拼口都要用同一个说法——
+    两处各写一遍 `if order not in (...)` 必然出现"一处认 material_first、
+    另一处不认"，那种 bug 只在生产单已经投出去之后才暴露。
+    """
+    normalized = (order or DEFAULT_AUTO_CONCAT_ORDER).strip()
+    if normalized not in AUTO_CONCAT_ORDERS:
+        _fail(
+            400,
+            f"拼接顺序只能是 {' 或 '.join(AUTO_CONCAT_ORDERS)}"
+            "（hook_first＝钩子片在前 / material_first＝素材片段在前）",
+        )
+    return normalized
 
 
 def check_inputs_differ(asset_id: str, source: str, second_id: str) -> None:

@@ -803,13 +803,22 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
       render: (v: string) => <Text style={{ fontSize: 12 }}>{v || '-'}</Text>,
     },
     {
-      title: '状态', dataIndex: 'status', key: 'status', width: 110,
+      title: '状态', dataIndex: 'status', key: 'status', width: 150,
       render: (v: string, r: WechatDlPromptTask) => {
         const meta = PROMPT_STATUS_META[v] || { color: 'default', label: v };
+        // 上游原文（errMsg）＋人话建议分开两段：原文便于对账/找供应商，建议告诉一线下一步干什么
+        const tip = [r.error, r.error_hint].filter(Boolean).join('\n');
         return (
-          <Tooltip title={r.status === 'failed' ? r.error || '' : ''}>
-            <Tag color={meta.color}>{meta.label}</Tag>
-          </Tooltip>
+          <Space size={4}>
+            <Tooltip title={tip}>
+              <Tag color={meta.color}>{meta.label}</Tag>
+            </Tooltip>
+            {!!r.retry_count && (
+              <Tooltip title="这一条系统已经自动补投过一次（每条链接只补投一次，再失败就要人工点「重试」）">
+                <Tag color="purple" style={{ marginInlineEnd: 0 }}>已补投</Tag>
+              </Tooltip>
+            )}
+          </Space>
         );
       },
     },
@@ -879,7 +888,7 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
         style={{ marginBottom: 16 }}
         icon={<RobotOutlined />}
         message="粘贴任意视频链接或上传本地视频，自动反推生成结构化提示词"
-        description="基于智令 doc/120《视频反推提示词（计时）》：支持 30+ 平台分享链接与视频直链，按计时上限计费（0.00054 元/秒，注册赠 30 次）。本地视频经 doc/125 签名直传智令临时桶后走同一反推链路（上传计费 0.001 元/次，文件 6 小时自动删除）。生成中约需数十秒，页面每 4s 自动刷新；完成后可一键复制 markdown 提示词。"
+        description="基于智令 doc/120《视频反推提示词（计时）》：支持 30+ 平台分享链接与视频直链，按计时上限计费（0.00054 元/秒，默认 180 秒≈0.097 元/条，失败同样扣钱；注册赠 30 次）。本地视频经 doc/125 签名直传智令临时桶后走同一反推链路（上传计费 0.001 元/次，文件 6 小时自动删除）。生成中约需数十秒，页面每 4s 自动刷新；上游偶发「返回空结果」时系统会自动补投一次（每条链接只补一次，界面上标「已补投」）。完成后可一键复制 markdown 提示词。"
       />
 
       <Form form={form} layout="inline" style={{ marginBottom: 16, rowGap: 8 }}>
@@ -891,14 +900,18 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
         >
           <Input placeholder="粘贴视频链接（视频号 / 抖音 / 快手 / 小红书等 30+ 平台，或视频直链）" />
         </Form.Item>
-        <Form.Item name="max_duration" label="计时上限" style={{ marginBottom: 8 }}>
+        <Form.Item
+          name="max_duration"
+          label="计时上限"
+          style={{ marginBottom: 8 }}
+          initialValue={180}
+          tooltip="计费按这个上限算（0.00054 元/秒），失败也照扣：180 秒≈0.097 元/条，600 秒≈0.324 元/条。短视频可以选 60 省一半，视频确实更长再往上调。"
+        >
           <Select
             style={{ width: 130 }}
-            placeholder="默认 600s"
-            allowClear
             options={[
               { value: 60, label: '60 秒' },
-              { value: 180, label: '180 秒' },
+              { value: 180, label: '180 秒（默认）' },
               { value: 300, label: '300 秒' },
               { value: 600, label: '600 秒（最大）' },
             ]}
@@ -995,7 +1008,36 @@ const ReversePromptPanel: React.FC<{ presetUrl?: string }> = ({ presetUrl }) => 
               )}
             </Space>
             {detail.status === 'failed' && (
-              <Alert type="error" showIcon message="生成失败" description={detail.error || '未知原因'} />
+              <Alert
+                type="error"
+                showIcon
+                message="生成失败"
+                description={(
+                  <div>
+                    <div>{detail.error || '未知原因'}</div>
+                    {detail.error_hint && (
+                      <div style={{ marginTop: 6 }}><Text style={{ fontSize: 12 }}>{detail.error_hint}</Text></div>
+                    )}
+                  </div>
+                )}
+              />
+            )}
+            {/* 补投后仍在跑：error 里留的是上次失败原因，界面要解释清楚这不是又挂了 */}
+            {detail.status === 'processing' && !!detail.retry_count && (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message="上一次失败后，系统已自动补投一次"
+                description={(
+                  <div>
+                    <div>{detail.error || ''}</div>
+                    <div style={{ marginTop: 4 }}>
+                      同一条链接只自动补投一次，这次仍失败就会停在「失败」，需要人工点「重试」。
+                    </div>
+                  </div>
+                )}
+              />
             )}
             {detail.content && (
               <pre

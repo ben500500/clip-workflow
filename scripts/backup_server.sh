@@ -13,8 +13,17 @@
 #   BACKUP_DIR=/data/backup bash scripts/backup_server.sh
 #   KEEP_DAYS=30 bash scripts/backup_server.sh
 #
-# 挂 cron（每日 03:40，错开整点业务高峰；示例，按需改）：
-#   40 3 * * * cd /home/cc12703/clip-workflow && bash scripts/backup_server.sh >> logs/backup.log 2>&1
+# 挂 cron：**已于 2026-11-11 装在 163 的 cc12703 crontab 里，别再重复装**。
+#   25 3 * * * cd /home/cc12703/clip-workflow && PATH=/snap/bin:/usr/local/bin:/usr/bin:/bin /usr/bin/bash scripts/backup_server.sh >> logs/backup.log 2>&1
+#   两个当时踩过的点，改回去备份就会静默失效：
+#     · 不写 03:40：那一分钟已被 revenue_keepalive 占用（同机同一个 crontab）；
+#     · PATH 必须显式带上 /snap/bin：163 的 docker 是 snap 装的（/snap/bin/docker），
+#       而 cron 继承的 PATH 里没有它 —— 不加这行就是「每天定点跑、每天 command not found」，
+#       而失败只落在 logs/backup.log 里，没人看就等于没有。
+#   核对：crontab -l | grep backup_server ；日志：tail -20 /home/cc12703/clip-workflow/logs/backup.log
+#   卸载：crontab -l | grep -v backup_server | crontab -
+#
+# 首次实跑（2026-11-11 本机验过）：dump 4.1M / 1 秒，pg_restore --list 自检通过。
 #
 # ⚠️ 不覆盖 MinIO 数据卷（媒体文件量大，另行按卷快照策略处理，见 docs/DEPLOYMENT.md 回滚一节）。
 
