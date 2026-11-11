@@ -410,6 +410,17 @@ class AssetSummary(Base):
     __tablename__ = "asset_summaries"
     __table_args__ = (
         UniqueConstraint("asset_id", "seq", name="uq_asset_summary_seq"),
+        # 一钩一号的 DB 底线（2026-11-11 七席评审，业务 P0）：预取位也全库唯一——
+        # 应用层查重（_auto_park / 手工钉号）是 SELECT 前置提示，并发窗口拦不住；
+        # 两个文案挂着同一个号，早晚有一边顶进生产单变双烧。部分唯一索引：
+        # NULL（未预取/已消费）不参与唯一性。撞约束的写路径统一转 409 点名。
+        Index(
+            "uq_asset_summaries_hook_code",
+            "hook_code",
+            unique=True,
+            postgresql_where=text("hook_code IS NOT NULL"),
+            sqlite_where=text("hook_code IS NOT NULL"),
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -504,6 +515,17 @@ class AssetProduction(Base):
     __table_args__ = (
         UniqueConstraint("summary_id", "seq", name="uq_asset_production_seq"),
         UniqueConstraint("idempotency_key", name="uq_asset_production_idem"),
+        # 一钩一号的 DB 底线（2026-11-11 七席评审，业务 P0）：应用层查重（7556 起）
+        # 与真实 INSERT 之间隔着 n×90-150s 的模型展开，竞态窗口是分钟级——两人先后
+        # 开同一个号，后查的人看到的是前者未提交的空库，两张单都落库。唯一索引是
+        # 唯一能从数据库层兜住的手段；NULL（无号单）不参与唯一性。
+        Index(
+            "uq_asset_productions_hook_code",
+            "hook_code",
+            unique=True,
+            postgresql_where=text("hook_code IS NOT NULL"),
+            sqlite_where=text("hook_code IS NOT NULL"),
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

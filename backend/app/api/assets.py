@@ -39,6 +39,7 @@ name/picDatas），不是豆包网页 RPA、也不是火山方舟 Seedance 官�
 """
 
 import asyncio
+import contextlib
 import copy
 import logging
 import os
@@ -143,6 +144,7 @@ from app.services.minio_service import (
     delete_file,
     download_file,
     download_to_file,
+    extra_ca_bundle_path,
     get_presigned_url,
     upload_file_from_path,
 )
@@ -188,9 +190,12 @@ def require_functions(*funcs: str):
     async def _dep(current_user: User = Depends(get_current_user)) -> User:
         if current_user.role == UserRole.admin.value:
             return current_user
+        # 2026-11-11 评审（测试席 P0）：不能 getattr(…, True) 兜底——属性缺失时静默放行，
+        # 列一旦改名闸就变 no-op 而全套测试照样绿。列由 0064 迁移落地，直接访问：
+        # 模型/库不一致时当场炸出来，而不是悄悄失去闸门。
         fn_map = {
-            "review": bool(getattr(current_user, "can_review", True)),
-            "produce": bool(getattr(current_user, "can_produce", True)),
+            "review": bool(current_user.can_review),
+            "produce": bool(current_user.can_produce),
         }
         for f in funcs:
             if not fn_map.get(f, True):
@@ -1611,19 +1616,24 @@ _HOOK_TAKE_CHUNK = 50  # 与 hook_id.py 的 TAKE_MAX 对齐；放宽只会让脚
 _HOOK_TAKE_TIMEOUT_SECONDS = 30
 
 
-async def _take_hook_codes(count: int) -> Tuple[List[str], Optional[str]]:
-    """跑 `ASSET_HOOK_ID_CMD` 取 `count` 个钩子编号，返回 (编号列表, 错误说明或 None)。
+async def _take_hook_codes(count: int) -> Tuple[List[str], List[str], Optional[str]]:
+    """跑 `ASSET_HOOK_ID_CMD` 取 `count` 个钩子编号，返回 (编号列表, 超发丢弃, 错误说明或 None)。
 
     **永不抛异常**（除非调用方自己没接住 `asyncio` 取消）：自动预取那条路上取不到号
     不该把导入整体拒掉，界面代取那条路则把 `error` 原文转成白话 502/501。
+    `discarded`（超发丢弃）在 2026-11-11 评审后必须由调用方写审计——号已在共享台账
+    烧掉，系统侧「丢得无声无息」违反一切状态可追溯。
     """
     want = max(0, int(count))
     if want == 0:
-        return [], None
+        return [], [], None
     cmd = (getattr(settings, "ASSET_HOOK_ID_CMD", "") or "").strip()
     if not cmd:
-        return [], "未配置自动取号命令（ASSET_HOOK_ID_CMD）"
+        # 2026-11-11 评审后签名是三元组，这里漏改会让调用方 `ValueError: not enough
+        # values to unpack`——未配置取号命令是本地/测试最常见的一枪，必须照形状返回。
+        return [], [], "未配置自动取号命令（ASSET_HOOK_ID_CMD）"
     got: List[str] = []
+    discarded: List[str] = []  # 超发/超收丢弃的号：一发即烧，丢也要点名留痕（评审 2026-11-11）
     blocks = 0
     while len(got) < want:
         need = min(want - len(got), _HOOK_TAKE_CHUNK)
@@ -1638,17 +1648,40 @@ async def _take_hook_codes(count: int) -> Tuple[List[str], Optional[str]]:
                 proc.communicate(), timeout=_HOOK_TAKE_TIMEOUT_SECONDS
             )
         except asyncio.TimeoutError:
-            return got, (
+            # 2026-11-11 评审（可靠性席 P1）：超时只取消读、不杀进程——hook_id.py 可能已经
+            # 把号从共享台账划走（一发即烧），stdout 却无人读，号烧成黑洞；脚本若全程持
+            # flock，残留进程还会把后续所有取号拖到同样超时。必须 kill 收尸。
+            with contextlib.suppress(Exception):
+                proc.kill()
+                await proc.wait()
+            return got, discarded, (
                 f"取号脚本第 {blocks} 枪超过 {_HOOK_TAKE_TIMEOUT_SECONDS} 秒没回话（要 {need} 个）"
+                "——已终止脚本；这一枪可能烧了号但没回话，以共享台账为准"
             )
         except Exception as exc:  # noqa: BLE001 — 命令不存在/权限问题都要回人话，不是回栈
-            return got, f"取号脚本没能跑起来：{type(exc).__name__}: {exc}"
+            with contextlib.suppress(Exception):
+                proc.kill()
+                await proc.wait()
+            return got, discarded, f"取号脚本没能跑起来：{type(exc).__name__}: {exc}"
         raw_err = (err or b"").decode("utf-8", "ignore").strip()
-        # 脚本可能把说明打在 stdout（"已取 N 个"），只认五位 0-9A-Z，且同一次不许重号
-        codes = [
-            c for c in re.findall(r"[0-9A-Z]{5}", (out or b"").decode("utf-8", "ignore"))
-            if svc.HOOK_CODE_RE.match(c)
-        ]
+        # 2026-11-11 评审（业务席 P1）：按**行**严解析，不再全文 findall——全文扫描会把
+        # 脚本打进 stdout 的说明词（READY/ERROR 这类五位大写词）当成编号带回界面挂上单。
+        # 每行整行匹配 ^[0-9A-Z]{5}$，混进说明的行直接丢进 stderr 日志。
+        codes = []
+        for line in (out or b"").decode("utf-8", "ignore").splitlines():
+            token = line.strip().upper()
+            if not token:
+                continue
+            if svc.HOOK_CODE_RE.match(token):
+                codes.append(token)
+            elif len(token) <= 40:  # 太长的行八成是日志，不刷屏
+                logger.info("取号脚本 stdout 非编号行已忽略：%r", token)
+        # 超发点名：脚本这枪发的号比要的多（chunk 只请求 need 个），多的部分已按
+        # 「一发即烧」烧在共享台账里，系统侧不回收也不复用——记下来给审计。
+        overflow = [c for c in codes if c not in got][need:]
+        for c in overflow:
+            if c not in discarded:
+                discarded.append(c)
         gained = 0
         for c in codes:
             if c not in got:
@@ -1656,11 +1689,11 @@ async def _take_hook_codes(count: int) -> Tuple[List[str], Optional[str]]:
                 gained += 1
         if gained == 0:
             rc = proc.returncode
-            return got, (
+            return got, discarded, (
                 f"取号脚本第 {blocks} 枪没发新号（要 {need} 个、得 {len(codes)} 个，退出码 {rc}）："
                 f"{raw_err[:200] or '脚本没给原因'}"
             )
-    return got, None
+    return got, discarded, None
 
 
 async def _auto_park_hook_codes(
@@ -1705,7 +1738,7 @@ async def _auto_park_hook_codes(
         result["reason"] = "自动预取未开启（ASSET_AUTO_PARK_HOOK_CODES=false）"
         return result
     try:
-        codes, err = await _take_hook_codes(len(targets))
+        codes, _overflow, err = await _take_hook_codes(len(targets))
         if not codes:
             result["reason"] = err or "取号脚本没返回编号"
             return result
@@ -1812,19 +1845,47 @@ def _park_note(park: Dict[str, Any]) -> str:
 async def take_hook_codes(
     current_user: Annotated[User, Depends(require_roles(*_REVIEW_ROLES))],
     count: int = Query(..., ge=1, le=500, description="要取几个号"),
+    db: AsyncSession = Depends(get_db),
 ):
-    codes, err = await _take_hook_codes(count)
+    """代取编号（2026-11-08 P1⑦ + 11-11 评审补审计）：取号是「一发即烧」的外部动作，
+    之前这条路径零留痕——前端取了号又取消开单，号已在共享台账烧掉、系统内查无此号。
+    现在取号成功/超发丢弃都写 `asset.hook_code.take` 审计，和 park 口同一条留痕纪律。"""
+    codes, overflow, err = await _take_hook_codes(count)
     if len(codes) < count:
         if (getattr(settings, "ASSET_HOOK_ID_CMD", "") or "").strip() == "" and not codes:
             raise HTTPException(
                 status_code=501,
                 detail="未配置自动取号命令（ASSET_HOOK_ID_CMD）——请按原流程在服务器跑 hook_id.py 取号后手工粘贴",
             )
+        await _write_audit(
+            db,
+            action="asset.hook_code.take",
+            operator=current_user,
+            target_type="asset_production",
+            target_id=None,
+            after={"count": count, "got": len(codes), "error": (err or "")[:200]},
+        )
+        await db.commit()
         raise HTTPException(
             status_code=502,
             detail=f"取号脚本没返回足够的编号（要 {count}、得 {len(codes)}）：{err or '脚本没给原因'}",
         )
-    return {"codes": codes[: int(count)]}
+    got = codes[: int(count)]
+    await _write_audit(
+        db,
+        action="asset.hook_code.take",
+        operator=current_user,
+        target_type="asset_production",
+        target_id=None,
+        after={
+            "count": int(count),
+            "codes": got[:20],
+            # 超发丢弃：脚本多发的号已按一发即烧烧在台账，系统侧不复用，点名留痕
+            "overflow_discarded": overflow[:20],
+        },
+    )
+    await db.commit()
+    return {"codes": got}
 
 
 # ── P1 新增（用户需求 2026-11-08）：直接贴文案导入——已有外部生成好的钩子文案，
@@ -2708,7 +2769,8 @@ def _auto_download_phrase(kicks: List[dict], total: int) -> str:
 
 
 _UPLOAD_CONCURRENCY = 3
-# 单请求整包上限 = nginx `client_max_body_size 500M`（nginx.conf:92）。逐文件并发把
+# 单请求整包上限 = nginx `client_max_body_size 2G`（2026-11-11 运维席 P1 从 500M 抬上来；
+# nginx.conf 与 deploy/nginx.conf 各若干处，改一处不够）。逐文件并发把
 # N 个文件拆成 N 个请求，等于绕开"200 个文件一次提交必然 413、而且回的是 nginx 的 HTML
 # 不是 JSON"这一坑（A4-5）；前端一次建批次、按 batch_id 分批投即可。
 
@@ -6496,16 +6558,37 @@ async def review_summaries(
     # 批 J：本次真正过审的文案（含"改后过"）——审核 commit 完之后拿去排提示词预览
     approved_now: List[Any] = []
 
+    # 2026-11-11 评审（架构席 P1）：批量审 N 条原来是每条 2 次往返（summary + asset），
+    # 全选页面一次几百条就是几百次查询。两次 IN 批量取回＋映射，语义逐条不变；
+    # 上限与 asset_ids（6319 行）同口径。
+    if len(data.summary_ids) > 300:
+        raise HTTPException(status_code=400, detail=f"一次最多审 300 条（当前 {len(data.summary_ids)}）——分批处理")
+    _s_uuids = [_as_uuid(s, "summary_id") for s in data.summary_ids]
+    _summary_map: Dict[Any, AssetSummary] = {}
+    for _row in (await db.execute(select(AssetSummary).where(AssetSummary.id.in_(_s_uuids)))).scalars().all():
+        _summary_map[_row.id] = _row
+    _asset_map: Dict[Any, AssetItem] = {}
+    _asset_uuids = {s.asset_id for s in _summary_map.values()}
+    if _asset_uuids:
+        for _row in (await db.execute(select(AssetItem).where(AssetItem.id.in_(_asset_uuids)))).scalars().all():
+            _asset_map[_row.id] = _row
+    # 复核脚本文案按素材缓存：同一素材的多条候选共享一份反推稿（也少走会中途 commit 的
+    # refresh_prompt_task——评审已点名它的嵌套提交会击穿整批原子性）。
+    _script_cache: Dict[Any, Optional[str]] = {}
+
     for sid in data.summary_ids:
         uuid_s = _as_uuid(sid, "summary_id")
-        summary = (
-            await db.execute(select(AssetSummary).where(AssetSummary.id == uuid_s))
-        ).scalar_one_or_none()
+        summary = _summary_map.get(uuid_s)
         if summary is None:
             results.append({"summary_id": str(uuid_s), "ok": False, "error": "文案不存在"})
             continue
         # 文案所属素材（11-03 起不分可见范围，仍要确认素材行在，防孤儿文案 500）
-        asset = await _get_asset_or_404(db, summary.asset_id)
+        asset = _asset_map.get(summary.asset_id)
+        if asset is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"文案 {str(uuid_s)[:8]} 所属素材不在库里（孤儿文案），本批中止未提交",
+            )
 
         # 生产者不得自审（素材是别人导入的就不算自审，这里按「素材创建人」判）
         if not is_admin and asset.created_by == current_user.id:
@@ -6533,7 +6616,9 @@ async def review_summaries(
             else (summary.text if to_state == RV_APPROVED else None)
         )
         if effective is not None:
-            script = await _prompt_script_of(db, asset)
+            if asset.id not in _script_cache:
+                _script_cache[asset.id] = await _prompt_script_of(db, asset)
+            script = _script_cache[asset.id]
             verdict = svc.recheck_copy(effective, script, lexicon=book, exemptions=exemptions)
             if not verdict["ok"]:
                 waived_list, still_blocking = _split_waived(
@@ -6592,6 +6677,10 @@ async def review_summaries(
         summary.reviewed_by = current_user.id
         summary.reviewed_at = datetime.utcnow()
         summary.reject_reason = (data.reason or "").strip()[:500] if to_state in (RV_REJECTED, RV_NEED_REWRITE) else None
+        # 2026-11-11 评审（业务席 P2）：重提说明只属于「等审」那一轮——进了终态还挂着
+        # 上一轮写给审核人的说明，下一轮审核容易读成这轮的留言。历史在审计里。
+        if to_state in REVIEW_PASSED_STATES or to_state in (RV_REJECTED, RV_NEED_REWRITE):
+            summary.resubmit_note = None
 
         # 素材概要态回写：只要有任意一条过审，就允许开生产单
         approved_cnt = (
@@ -7203,10 +7292,24 @@ async def hook_codes_used(
             .where(AssetProduction.hook_code.in_(wanted))
         )
     )
+    # 2026-11-11 评审（业务席 P1）：预取位也要回显——号钉在别人文案的预取位上时，
+    # 弹窗不亮红、提交照样过，等投产消费才发现对撞。已烧（生产单）与已预取（文案）
+    # 两处都点名，前端当场亮红比提交后 400 顺手。
+    parked_rows = list(
+        await db.execute(
+            select(AssetSummary.hook_code, AssetItem.code)
+            .join(AssetItem, AssetItem.id == AssetSummary.asset_id)
+            .where(AssetSummary.hook_code.in_(wanted))
+        )
+    )
     return {
         "used": [
             {"code": c, "asset_code": ac, "seq": seq, "status": st}
             for c, seq, st, ac in rows
+        ]
+        + [
+            {"code": c, "asset_code": ac, "seq": None, "status": "已预取（还没投产）", "parked": True}
+            for c, ac in parked_rows
         ]
     }
 
@@ -7354,7 +7457,17 @@ async def park_hook_codes(
             changed_productions.append({"id": row["production_id"], "before": p.hook_code, "after": code})
             p.hook_code = code
 
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        # 2026-11-11 评审：钩子号唯一索引兜底——上面的 SELECT 查重拦不住的并发窗口，
+        # DB 挡下来时转 409 点名，不裸 500（一钩一号的号是烧掉的东西，报错要说人话）。
+        await db.rollback()
+        logger.warning("钉号/补号撞钩子号唯一约束：%s", exc)
+        raise HTTPException(
+            status_code=409,
+            detail="有编号刚被别人用掉或占位（一钩一号，库上唯一索引兜底）——刷新后重新钉号/补号",
+        )
     # 只在**真改了东西**时留痕：全批同态/全批冲突也写一条审计，会把「谁在什么时刻真的动过号」
     # 淹成一片重复记录——号是要烧的东西，审计的价值在变化点，不在调用点。
     if changed_summaries or changed_productions:
@@ -7553,6 +7666,13 @@ async def create_productions(
         # 哪怕挂着号的那张单后来作废了，重用同一个号也可能让板面出现两条同名任务、
         # 回收时对不上账。在这里点名「这个号已经钉在哪条素材的哪张单上」，
         # 比等导出/投板时才发现对不上账再返工便宜得多。取号仍走 hook_id.py，后端不代取。
+        # 2026-11-11 评审（业务席 P1）：预取位（asset_summaries.hook_code）也并入——号钉在别人文案
+        # 预取位上时，之前不亮红不拦，投产消费才发现对撞；并发兜底另有唯一索引。
+        # ⚠️ 但**本批文案自己的预取位不是冲突**：前端把预取号显示在编号框里、甚至直接带上
+        # 这条请求，是批 N 之后的正常动作（用例 `test_parked_code_not_double_spent_when_request_already_carries_it`
+        # 钉的就是它）。这一支若不排掉自己，最常见的那条路径会被当场 400 拦死——号明明就是
+        # 给这批文案备的。消费逻辑随后会顶槽并把预取位清空，所以这里只该拦「别人的预取位」。
+        batch_summary_uuids = [_as_uuid(sid, "summary_id") for sid in data.summary_ids]
         used = list(
             await db.execute(
                 select(AssetProduction.hook_code, AssetProduction.seq, AssetItem.code)
@@ -7560,12 +7680,24 @@ async def create_productions(
                 .where(AssetProduction.hook_code.in_(hook_codes))
             )
         )
-        if used:
+        parked_conditions = [AssetSummary.hook_code.in_(hook_codes)]
+        if batch_summary_uuids:
+            parked_conditions.append(AssetSummary.id.notin_(batch_summary_uuids))
+        used_parked = list(
+            await db.execute(
+                select(AssetSummary.hook_code, AssetItem.code)
+                .join(AssetItem, AssetItem.id == AssetSummary.asset_id)
+                .where(*parked_conditions)
+            )
+        )
+        if used or used_parked:
             shown = "；".join(f"{c}（已钉在素材 {ac} 的第 {seq} 张单上）" for c, seq, ac in used[:8])
-            more = f"；另有 {len(used) - 8} 张没列出" if len(used) > 8 else ""
+            shown += "；".join(f"{c}（已预取在素材 {ac} 的文案上）" for c, ac in used_parked[:8])
+            total = len(used) + len(used_parked)
+            more = f"；另有 {total - 16} 个没列出" if total > 16 else ""
             raise HTTPException(
                 status_code=400,
-                detail=f"这些钩子编号已经被用掉了：{shown}{more}。一钩一号，回 hook_id.py 重新取号再投产",
+                detail=f"这些钩子编号已经被用掉或被预取占位：{shown}{more}。一钩一号，回 hook_id.py 重新取号再投产",
             )
 
     board_tag = (data.board_tag or settings.ASSET_BOARD_TAG).strip()[:60]
@@ -7663,25 +7795,51 @@ async def create_productions(
     # 不等消费时再说：号一旦顶进某个槽，这张单就带着一个板面对不上账的号投出去了，
     # 到回收/对账时才炸——提前 400 点名比那便宜得多。一次 SELECT 查完，不在逐文案循环里打。
     parked_codes = sorted({s.hook_code for s in _pre_summaries.values() if s is not None and s.hook_code})
+    # 批 N 原版把 stale 预取号整批 400——一线只能手工清位重来，而且「号钉在别人预取位」
+    # 这种对撞根本不报。2026-11-11 评审（业务席 P1）改为：stale 预取位**当场清空＋点名**，
+    # 这批照常往下走（缺号走预取池/代取/手工填），不再让一条死号卡住整批。
+    parked_cleared_notes: Dict[Any, str] = {}
     if parked_codes:
-        stale = list(
+        stale_prod: Dict[str, tuple] = {}
+        for hc, seq, ac in (
             await db.execute(
                 select(AssetProduction.hook_code, AssetProduction.seq, AssetItem.code)
                 .join(AssetItem, AssetItem.id == AssetProduction.asset_id)
                 .where(AssetProduction.hook_code.in_(parked_codes))
             )
-        )
-        if stale:
-            shown = "；".join(f"{c}（已钉在素材 {ac} 的第 {seq} 张单上）" for c, seq, ac in stale[:8])
-            more = f"；另有 {len(stale) - 8} 个没列出" if len(stale) > 8 else ""
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"这几条文案名下预取的钩子编号已经被用掉了：{shown}{more}。"
-                    "一钩一号，请把这批已开单投掉、或用 POST /assets/summaries/hook-codes "
-                    "把预取位清空（hook_code 传 null）后重新取号"
-                ),
-            )
+        ).all():
+            stale_prod[hc] = (seq, ac)
+        batch_ids = [s.id for s in _pre_summaries.values() if s is not None]
+        stale_parked: Dict[str, str] = {}
+        if batch_ids:
+            for hc, ac in (
+                await db.execute(
+                    select(AssetSummary.hook_code, AssetItem.code)
+                    .join(AssetItem, AssetItem.id == AssetSummary.asset_id)
+                    .where(
+                        AssetSummary.hook_code.in_(parked_codes),
+                        AssetSummary.id.notin_(batch_ids),
+                    )
+                )
+            ).all():
+                stale_parked[hc] = ac
+        for s in _pre_summaries.values():
+            if s is None or not s.hook_code:
+                continue
+            hc = s.hook_code
+            if hc in stale_prod:
+                seq, ac = stale_prod[hc]
+                parked_cleared_notes[s.id] = (
+                    f"预取的编号 {hc} 已被素材 {ac} 的第 {seq} 张单用掉——预取位已自动清空，"
+                    "一钩一号，缺号请重新取"
+                )
+            elif hc in stale_parked:
+                parked_cleared_notes[s.id] = (
+                    f"预取的编号 {hc} 同时钉在素材 {stale_parked[hc]} 的文案上——"
+                    "预取位已自动清空，缺号请重新取"
+                )
+            if s.id in parked_cleared_notes:
+                s.hook_code = None
     cross_summaries = [
         s for s in _pre_summaries.values()
         if s is not None and s.audit_status in REVIEW_PASSED_STATES
@@ -8105,6 +8263,7 @@ async def create_productions(
         results.append({
             "summary_id": str(uuid_s), "created": created, "code": asset.code,
             "error": expand_error if expand_error else None,
+            "note": parked_cleared_notes.get(uuid_s),
         })
 
     try:
@@ -8114,6 +8273,14 @@ async def create_productions(
         # 裸 500 会让一线以为"没投出去"再点一次，这里明确回 409（B 组）。
         await db.rollback()
         logger.warning("生产单唯一约束冲突：%s", exc)
+        # 2026-11-11 评审（业务 P0）：钩子号唯一索引兜底命中——查重 SELECT 拦不住的
+        # 分钟级并发窗口，DB 挡下来时要点名说清是「抢号」不是「重投」。
+        if "hook_code" in str(getattr(exc, "orig", "") or "") or "hook_code" in str(exc):
+            raise HTTPException(
+                status_code=409,
+                detail="这个钩子编号刚被另一张单抢走了（一钩一号，库上唯一索引兜底）——"
+                       "回 hook_id.py 重新取号再投产，本次整批未落库",
+            )
         raise HTTPException(
             status_code=409,
             detail="生产单与已有记录撞了唯一约束（同一文案同一序号已投过），本次整批未落库，请刷新后重试",
@@ -11136,12 +11303,13 @@ async def package_outputs(
             + "、".join((b.file_name or b.id)[:24] for b in blocked[:5]),
         )
 
-    # 归属与标题一次聚合
+    # 归属与标题一次聚合（2026-11-11 评审·业务席 P1：manifest 补 production_id / board_tid /
+    # 素材剧名——板侧 reqID=生产单 id 是对账主键，交付包里必须对得回去，不能靠人肉抠标题）
     prod_ids = {o.production_id for o in rows if o.production_id}
     asset_ids = {o.asset_id for o in rows}
     prod_meta: Dict[Any, dict] = {}
     if prod_ids:
-        for pid, hc, titles, cb, rb in (
+        for pid, hc, titles, cb, rb, btid in (
             await db.execute(
                 select(
                     AssetProduction.id,
@@ -11149,6 +11317,7 @@ async def package_outputs(
                     AssetProduction.video_titles,
                     AssetProduction.created_by,
                     AssetSummary.reviewed_by,
+                    AssetProduction.board_tid,
                 )
                 .join(AssetSummary, AssetSummary.id == AssetProduction.summary_id)
                 .where(AssetProduction.id.in_(prod_ids))
@@ -11157,15 +11326,23 @@ async def package_outputs(
             prod_meta[pid] = {
                 "hook_code": hc,
                 "titles": titles or [],
-                "created_by": str(cb) if cb else None,
-                "reviewed_by": str(rb) if rb else None,
+                # created_by/reviewed_by **保持 UUID 原值**：它们要喂给 `_user_names` 的
+                # `User.id.in_(...)`，那里不接 str（sqlite/PG 的 UUID 列拿到 str 会
+                # `'str' object has no attribute 'hex'` 当场 500）。取名时才转 str，见下面。
+                "created_by": cb,
+                "reviewed_by": rb,
+                "board_tid": str(btid) if btid else None,
             }
     asset_codes: Dict[Any, str] = {}
+    asset_titles: Dict[Any, str] = {}
     if asset_ids:
-        for aid, code in (
-            await db.execute(select(AssetItem.id, AssetItem.code).where(AssetItem.id.in_(asset_ids)))
+        for aid, code, atitle in (
+            await db.execute(
+                select(AssetItem.id, AssetItem.code, AssetItem.title).where(AssetItem.id.in_(asset_ids))
+            )
         ).all():
             asset_codes[aid] = code
+            asset_titles[aid] = atitle or ""
     names = await _user_names(db, {m.get("created_by") for m in prod_meta.values() if m.get("created_by")})
 
     # 首帧（无帧缩略不打包，manifest 照记）
@@ -11179,64 +11356,102 @@ async def package_outputs(
     ).scalars().all()
     frames_by_output = {f.output_id: f for f in frame_rows}
 
-    manifest_entries = []
     used_names: Dict[str, int] = {}
-    import asyncio as _aio
-
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
-        for o in rows:
-            meta = prod_meta.get(o.production_id) or {}
-            base = (o.file_name or f"{o.id}").rsplit(".", 1)[0][:80] or "clip"
-            ext = (o.file_name or "clip.mp4").rsplit(".", 1)[-1] or "mp4"
-            name = f"{base}.{ext}"
-            n = used_names.get(name, 0)
-            if n:
-                name = f"{base}({n + 1}).{ext}"
-            used_names[name] = n + 1
-            url = await get_presigned_url(
-                o.bucket or settings.MINIO_BUCKET_RAW, o.file_key, expires_seconds=600
-            )
-            # verify=False：163 用自签证书，presigned 签名已保证真实性（内网）
-            async with httpx.AsyncClient(timeout=300, verify=False) as cl:
-                resp = await cl.get(url)
-                resp.raise_for_status()
-            zf.writestr(name, resp.content)
-            fr = frames_by_output.get(o.id)
-            manifest_entries.append(
-                {
-                    "file": name,
-                    "asset_code": asset_codes.get(o.asset_id),
-                    "hook_code": meta.get("hook_code"),
-                    "recommended_title": (meta.get("titles") or [""])[0],
-                    "qc_status": o.qc_status,
-                    "duration": o.duration,
-                    "resolution": o.resolution,
-                    "produced_by": names.get(meta.get("created_by") or ""),
-                    "reviewed_by": names.get(meta.get("reviewed_by") or ""),
-                    "thumb_url": (
-                        await get_presigned_url(
-                            fr.bucket or settings.MINIO_BUCKET_RAW,
-                            fr.file_key,
-                            expires_seconds=_FRAME_URL_TTL_SECONDS,
-                        )
-                        if fr
-                        else None
-                    ),
-                }
-            )
-        zf.writestr(
-            "manifest.json",
-            json.dumps(
-                {
-                    "exported_at": utc_iso(datetime.utcnow()),
-                    "exported_by": current_user.username,
-                    "items": manifest_entries,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+    plan: List[dict] = []
+    for o in rows:
+        meta = prod_meta.get(o.production_id) or {}
+        base = (o.file_name or f"{o.id}").rsplit(".", 1)[0][:80] or "clip"
+        ext = (o.file_name or "clip.mp4").rsplit(".", 1)[-1] or "mp4"
+        name = f"{base}.{ext}"
+        n = used_names.get(name, 0)
+        if n:
+            name = f"{base}({n + 1}).{ext}"
+        used_names[name] = n + 1
+        url = await get_presigned_url(
+            o.bucket or settings.MINIO_BUCKET_RAW, o.file_key, expires_seconds=600
         )
+        fr = frames_by_output.get(o.id)
+        plan.append(
+            {
+                "row": o,
+                "name": name,
+                "url": url,
+                "meta": meta,
+                "frame": fr,
+                "thumb_url": (
+                    await get_presigned_url(
+                        fr.bucket or settings.MINIO_BUCKET_RAW,
+                        fr.file_key,
+                        expires_seconds=_FRAME_URL_TTL_SECONDS,
+                    )
+                    if fr
+                    else None
+                ),
+            }
+        )
+
+    # 2026-11-11 评审（可靠性席 P2）：下载前收掉读事务——事务从首个 SELECT 一路开到下载完，
+    # 任何一支等待超过 60s 就触发 idle_in_transaction_session_timeout 掐连接，整包 500。
+    # 所有 DB 读取（行、meta、presign）已完成，commit 收事务，下载全程在事务外。
+    await db.commit()
+
+    # 2026-11-11 评审（安全席 P2）：不再 verify=False——用与 minio SDK 同一份自签
+    # CA bundle（REQUESTS_CA_BUNDLE 拼 certifi），传输层强校验；presigned 签名管鉴权，
+    # bundle 管传输不被替换。bundle 缺失（本地 HTTP 部署）退回旧行为零变化。
+    _verify = extra_ca_bundle_path() or False
+
+    manifest_entries = []
+    buf = io.BytesIO()
+    async with httpx.AsyncClient(timeout=300, verify=_verify, follow_redirects=True) as cl:
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+            for item in plan:
+                o, name, url, meta = item["row"], item["name"], item["url"], item["meta"]
+                if not url:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"「{name}」拿不到下载链接（presign 失败），打包中止——"
+                               "把这条从勾选里去掉再打包，或稍后重试",
+                    )
+                try:
+                    resp = await cl.get(url)
+                    resp.raise_for_status()
+                except httpx.HTTPError as exc:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"「{name}」下载失败（{type(exc).__name__}），打包中止——"
+                               "把这条去掉重试，或稍后再试（时效链接约 1 小时，过期重开即可续）",
+                    )
+                zf.writestr(name, resp.content)
+                manifest_entries.append(
+                    {
+                        "file": name,
+                        "production_id": str(o.production_id) if o.production_id else None,
+                        "board_tid": meta.get("board_tid"),
+                        "asset_code": asset_codes.get(o.asset_id),
+                        "asset_title": asset_titles.get(o.asset_id),
+                        "hook_code": meta.get("hook_code"),
+                        "recommended_title": (meta.get("titles") or [""])[0],
+                        "qc_status": o.qc_status,
+                        "duration": o.duration,
+                        "resolution": o.resolution,
+                        # 取名要 str：`_user_names` 返回的字典键是 `str(uuid)`
+                        "produced_by": names.get(str(meta.get("created_by"))) if meta.get("created_by") else None,
+                        "reviewed_by": names.get(str(meta.get("reviewed_by"))) if meta.get("reviewed_by") else None,
+                        "thumb_url": item["thumb_url"],
+                    }
+                )
+            zf.writestr(
+                "manifest.json",
+                json.dumps(
+                    {
+                        "exported_at": utc_iso(datetime.utcnow()),
+                        "exported_by": current_user.username,
+                        "items": manifest_entries,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
     buf.seek(0)
     await _write_audit(
         db,
@@ -11247,10 +11462,15 @@ async def package_outputs(
         after={"count": len(rows), "ids": [str(o.id) for o in rows[:20]]},
     )
     await db.commit()
+    # 2026-11-11 评审（业务席 P1）：包名带日期与条数——同一周打多个包，文件名就能对上批次
     return Response(
         content=buf.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="delivery-package.zip"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="delivery-package-{time.strftime("%m%d")}-{len(rows)}items.zip"'
+            )
+        },
     )
 
 

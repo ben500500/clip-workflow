@@ -1,3 +1,5 @@
+import json
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -7,11 +9,74 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user, require_roles
 from app.database import get_db
 from app.models.models import SystemConfig, PlatformProfile
+from app.models.user import User, UserRole
 from app.utils.helpers import utc_iso
 
 router = APIRouter()
+
+# ── 2026-11-11 七席评审（安全席 P1）：/api/config 收口与密钥脱敏 ──
+# 此前 GET/PUT 只有路由级登录兜底：任何登录用户 GET 就能读到 llm_api_key /
+# vision_api_key / app_secret / auth_headers 明文（描述里写的「不回显」从未实现），
+# PUT 还能热改 LLM 网关指向。现在：读口全员但密钥打码，写口 admin-only
+# （白名单例外见 _NONADMIN_WRITABLE_KEYS），平台档案写口 admin-only。
+_SENSITIVE_FIELD_RE = re.compile(r"api_key|apikey|secret|token|password|auth_headers", re.IGNORECASE)
+_MASKED = "****"
+# 非管理员可写的键：ResourceDownload（投放侧页面）会读写「默认清晰度」，不拦
+_NONADMIN_WRITABLE_KEYS = {"default_download_resolution"}
+
+
+def _mask_config_value(key: str, value: Any) -> Any:
+    """读口脱敏：JSON 配置里名字长得像密钥的非空字段打码；键名本身敏感的标量整值打码。
+
+    只影响**读**：写口有对应的去掩码（_unmask_incoming），前端把打码值原样存回来
+    不会把真密钥覆盖成 "****"。
+    """
+    def _mask_node(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {
+                k: (_MASKED if _SENSITIVE_FIELD_RE.search(str(k)) and v not in (None, "", [], {})
+                    else _mask_node(v))
+                for k, v in node.items()
+            }
+        if isinstance(node, list):
+            return [_mask_node(v) for v in node]
+        return node
+
+    if not isinstance(value, (dict, list)) and _SENSITIVE_FIELD_RE.search(str(key)) \
+            and value not in (None, ""):
+        return _MASKED
+    if isinstance(value, str) and value.strip().startswith(("{", "[")):
+        try:
+            return json.dumps(_mask_node(json.loads(value)), ensure_ascii=False)
+        except Exception:  # noqa: BLE001 —— 非法 JSON 原样返回，别把读口搞挂
+            return value
+    return _mask_node(value)
+
+
+def _unmask_incoming(key: str, incoming: Any, existing: Any) -> Any:
+    """写口去掩码：incoming 里的 "****" 还原成库里的真值（沿用 publish_profiles 的惯例）。"""
+    def _loads(x: Any) -> Any:
+        if isinstance(x, str) and x.strip().startswith(("{", "[")):
+            try:
+                return json.loads(x)
+            except Exception:  # noqa: BLE001
+                return x
+        return x
+
+    in_obj = _loads(incoming)
+    ex_obj = _loads(existing)
+    if isinstance(incoming, str) and incoming.strip() == _MASKED:
+        return existing
+    if isinstance(in_obj, dict) and isinstance(ex_obj, dict):
+        merged = dict(in_obj)
+        for k, v in in_obj.items():
+            if v == _MASKED and _SENSITIVE_FIELD_RE.search(str(k)):
+                merged[k] = ex_obj.get(k, v)
+        return json.dumps(merged, ensure_ascii=False) if isinstance(incoming, str) else merged
+    return incoming
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -349,7 +414,9 @@ def _default_profile_for(profile: PlatformProfile) -> dict | None:
 def _serialize_config(cfg: SystemConfig) -> dict:
     return {
         "key": cfg.key,
-        "value": cfg.value,
+        # 2026-11-11 评审（安全席 P1）：读口密钥打码——llm_api_key/vision_api_key/
+        # app_secret/auth_headers 不再明文回显，写口 _unmask_incoming 保证回存不覆盖真值
+        "value": _mask_config_value(cfg.key, cfg.value),
         "description": cfg.description or CONFIG_DESCRIPTIONS.get(cfg.key),
         "updated_at": utc_iso(cfg.updated_at) if cfg.updated_at else "",
     }
@@ -370,7 +437,10 @@ def _serialize_profile(profile: PlatformProfile) -> dict:
 
 
 @router.get("/config", response_model=List[ConfigResponse])
-async def get_all_config(db: AsyncSession = Depends(get_db)):
+async def get_all_config(
+    db: AsyncSession = Depends(get_db),
+    _current_user: User = Depends(get_current_user),
+):
     """Get all system configuration key-value pairs.
 
     默认配置与数据库中已保存的配置合并返回：
@@ -406,15 +476,23 @@ async def get_all_config(db: AsyncSession = Depends(get_db)):
 async def update_config(
     data: ConfigUpdateRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Update a system configuration value."""
+    """Update a system configuration value.
+
+    2026-11-11 评审（安全席 P1）：写口 admin-only（白名单 `_NONADMIN_WRITABLE_KEYS`
+    例外）；前端把读到的打码值原样存回来时走 _unmask_incoming 还原真密钥，不会被
+    "****" 覆盖。
+    """
+    if current_user.role != UserRole.admin.value and data.key not in _NONADMIN_WRITABLE_KEYS:
+        raise HTTPException(status_code=403, detail="系统配置只有管理员能改（如需调整请找管理员）")
     result = await db.execute(
         select(SystemConfig).where(SystemConfig.key == data.key)
     )
     config = result.scalar_one_or_none()
 
     if config:
-        config.value = data.value
+        config.value = _unmask_incoming(data.key, data.value, config.value)
         config.updated_at = datetime.utcnow()
         if not config.description:
             config.description = CONFIG_DESCRIPTIONS.get(data.key)
@@ -435,12 +513,15 @@ async def update_config(
 async def reset_config_default(
     data: ConfigUpdateRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """系统设置：将指定配置项恢复为默认值.
 
     默认值取自 DEFAULT_CONFIGS；对 JSON 类配置（default_dedupe_config 等）同样适用。
     恢复后删除数据库中的覆盖记录，使其重新展示默认值。
     """
+    if current_user.role != UserRole.admin.value:
+        raise HTTPException(status_code=403, detail="系统配置只有管理员能改（如需调整请找管理员）")
     default = next((d for d in DEFAULT_CONFIGS if d["key"] == data.key), None)
     if default is None:
         raise HTTPException(status_code=404, detail=f"配置项 {data.key} 没有内置默认值")
@@ -476,6 +557,7 @@ async def list_platform_profiles(db: AsyncSession = Depends(get_db)):
 async def create_platform_profile(
     data: ProfileCreate,
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_roles(UserRole.admin)),
 ):
     """Create a new platform profile."""
     # Check for duplicate name
@@ -508,6 +590,7 @@ async def update_platform_profile(
     profile_id: str,
     data: ProfileUpdate,
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_roles(UserRole.admin)),
 ):
     """Update a platform profile."""
     try:
@@ -558,6 +641,7 @@ async def update_platform_profile(
 async def reset_platform_profile_default(
     profile_id: str,
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_roles(UserRole.admin)),
 ):
     """去重配置：将指定平台配置恢复为内置默认值（含去重 JSON、分辨率、码率、最大时长）。
 
@@ -614,6 +698,7 @@ async def get_platform_presets():
 async def delete_platform_profile(
     profile_id: str,
     db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_roles(UserRole.admin)),
 ):
     """删除平台去重配置."""
     try:
