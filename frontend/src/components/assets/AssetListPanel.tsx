@@ -980,17 +980,6 @@ const AssetListPanel: React.FC<Props> = ({
       render: (v?: number) => v ?? 0,
     },
     {
-      // A′：阶段是全站口径（本素材所有生产单合并计算）——个人结果看生产单/成片墙
-      title: (
-        <Tooltip title="阶段为全站口径：按本素材所有生产单合并计算，不分人；个人出片结果看「生产单与投板」「成片素材墙」的「我的」视图">
-          <span>状态 ⓘ</span>
-        </Tooltip>
-      ),
-      dataIndex: 'status',
-      width: 96,
-      render: (v: AssetItem['status']) => <AssetStatusTag status={v} />,
-    },
-    {
       // 2026-11-11 R3（素材席 P0「13 列挤压」）：成本与导入时间不再独占列——
       // 1280 宽下状态/操作列被挤出视口。成本进「状态」列的悬停（明细本就在批次台账），
       // 导入时间进「编号」列悬停（详情抽屉里有全量时间线）。
