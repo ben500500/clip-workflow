@@ -403,6 +403,43 @@ def test_scene_is_recognised_by_position_even_when_the_word_list_misses_it():
     assert got2["a_scene"]["current"] == "建筑工地"
 
 
+def test_scene_probe_skips_a_leading_question_sentence():
+    """现网实拍（8PZY7／8QZYV，11-11 唯一一次花钱的 guess-values 对照出来的）：
+    ③行以**问话**起手时，问句不是场景。这一格的值是拿去逐字全局替换的，
+    认错的后果不是"提示不准"，是照它换会把开场那句问话整句换掉。"""
+    tagged = PROMPT_A.replace(
+        "剧情：【前3秒】建筑工地的水泥管边，一只黄鼠狼开口催他下水求财。",
+        "剧情：【疑问起手】女首富为什么蹲在池塘边给一只孔雀敷药？"
+        "清晨的普通庭院池塘边，儿媳一把攥住孔雀尾羽拔下。",
+    )
+    plain = PROMPT_A.replace(
+        "剧情：【前3秒】建筑工地的水泥管边，一只黄鼠狼开口催他下水求财。",
+        "剧情：谁把床上的人换掉了？深夜的普通家庭卧室，丈夫给熟睡的妻子擦脸。",
+    )
+    assert _scene_current(tagged) == "清晨的普通庭院池塘边"
+    assert _scene_current(plain) == "深夜的普通家庭卧室"
+    # 反向：问句里的字不许当成场景值出现在替换起点上（老写法就是栽在这两条上）
+    assert "为什么" not in _scene_current(tagged)
+    assert "谁把床上" not in _scene_current(plain)
+
+
+def test_scene_probe_refuses_to_cut_a_lead_sentence_in_half():
+    """超过 24 字的场景段**认不出**，而不是给半句：老写法截出过「清晨的普通」这种尾巴，
+    人照半句去全文替换会命中不到／命中到别处，比留空更坏（留空界面会走「原稿里没认出」白话）。"""
+    overlong = "剧情：" + "房" * 30 + "，男人推门。"
+    assert _scene_current(overlong, include_unmatched=True) is None
+    # 恰好卡在 24 字且以逗号收尾＝正常认出（上限没被 lookahead 收紧成"只认短句"）
+    assert _scene_current("剧情：" + "房" * 24 + "，男人推门。") == "房" * 24
+    # 只有问话、后面没有场景段 → 认不出，且**不许跨行**去④「镜头：」那行开头捞
+    only_question = "剧情：为什么？\n镜头：自动匹配剧情对应场景。"
+    assert _scene_current(only_question, include_unmatched=True) is None
+
+
+def _scene_current(body: str, include_unmatched: bool = False):
+    got = {e["key"]: e for e in pe.extract_elements(body, _cat(), CAT_A, include_unmatched)}
+    return got.get("a_scene", {}).get("current")
+
+
 def test_manual_speech_row_is_always_listed_and_replaces_a_whole_sentence():
     """用户口径「所有可替换参数由手动输入」＋台词没法认：这一行永远摆出来，
     原句由人从稿子里复制，换的时候按整句走（60 字的词面帽儿会把它截成半句话）。"""
