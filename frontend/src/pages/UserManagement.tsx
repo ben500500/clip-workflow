@@ -3,9 +3,7 @@ import {
   ApartmentOutlined,
   PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, SafetyOutlined,
 } from '@ant-design/icons';
-import {
-  Card, Checkbox, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, Popconfirm, Tooltip,
-} from 'antd';
+import { Card, Checkbox, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, Popconfirm, Tooltip, Switch } from 'antd';
 import { authApi } from '../api/auth';
 import { ROLE_OPTIONS, DATA_SCOPE_OPTIONS } from '../types';
 import type { User, Role } from '../types';
@@ -92,7 +90,13 @@ const UserManagement: React.FC = () => {
 
   const handleScopeEdit = (user: User) => {
     setEditingUser(user);
-    scopeForm.setFieldsValue({ data_scope: user.data_scope || 'own' });
+    scopeForm.setFieldsValue({
+      data_scope: user.data_scope || 'own',
+      // 2026-11-11 评审（管理员席 P0）：职能开关此前只在后端有口、界面没有——
+      // 管理员想关某人的投产职能根本无处可点。收进「权限编辑」弹窗一起改。
+      can_review: user.can_review !== false,
+      can_produce: user.can_produce !== false,
+    });
     setScopeModalOpen(true);
   };
 
@@ -101,7 +105,13 @@ const UserManagement: React.FC = () => {
       const values = await scopeForm.validateFields();
       if (!editingUser) return;
       await authApi.updateUserDataScope(editingUser.id, values.data_scope as string);
-      message.success('数据范围已更新');
+      // 职能与数据范围一起保存（开关端点整体覆盖两个布尔，先读后写避免互踩）
+      await authApi.updateUserFunctions(
+        editingUser.id,
+        values.can_review !== false,
+        values.can_produce !== false,
+      );
+      message.success('权限已更新（数据范围＋职能）');
       setScopeModalOpen(false);
       fetchUsers();
     } catch (err: unknown) {
@@ -194,7 +204,7 @@ const UserManagement: React.FC = () => {
         />
       </Card>
       <Modal
-        title={editingUser ? '权限编辑：数据可见范围' : '权限编辑'}
+        title={editingUser ? '权限编辑：数据范围与职能' : '权限编辑'}
         open={scopeModalOpen}
         onOk={handleScopeSubmit}
         onCancel={() => setScopeModalOpen(false)}
@@ -208,9 +218,19 @@ const UserManagement: React.FC = () => {
           <Form.Item name="data_scope" label="数据可见范围" rules={[{ required: true, message: '请选择数据范围' }]}>
             <Select options={DATA_SCOPE_OPTIONS.map((r) => ({ value: r.value, label: r.label }))} />
           </Form.Item>
+          <Form.Item label="职能开关" style={{ marginBottom: 4 }}>
+            <Space size={24}>
+              <Form.Item name="can_review" valuePropName="checked" noStyle>
+                <Switch checkedChildren="可质检" unCheckedChildren="无质检" />
+              </Form.Item>
+              <Form.Item name="can_produce" valuePropName="checked" noStyle>
+                <Switch checkedChildren="可投产" unCheckedChildren="无投产" />
+              </Form.Item>
+            </Space>
+          </Form.Item>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            说明：管理员、素材专员、发布专员默认可见全部素材；运营专员默认仅可见自己创建的素材，
-            可通过此处授予「全部素材」权限。
+            数据范围：管理员/素材/发布默认全部素材，运营默认仅自己创建。职能：关掉后对应按钮对该账号隐藏，
+            改动进审计可查。
           </Typography.Text>
         </Form>
       </Modal>
