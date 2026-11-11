@@ -27,6 +27,10 @@
 #      refresh_pingyue_roster.sh / server-setup.sh 各有 1~4 处，非本次范围。）
 #   9. rpa/ 已纳入同步（2026-09-15）：此前 163 上的 rpa/app/** 在仓库里不存在但
 #      clip-rpa-worker 一直在跑 —— 服务器是唯一事实来源。已回仓 + 加映射 rpa/→rpa_worker。
+#  10. 根级单文件如果是 bind mount 进容器的（nginx.conf → clip-nginx 的
+#      /etc/nginx/conf.d/default.conf），文件同步完 **进程不会重读配置**，而它又不在任何
+#      服务的构建上下文里 → 重建名单永远不含它 → 「日志全绿、现网没变」。现由第 4.6 步
+#      按 mtime／内容变更两条判据自动 docker restart（Issue #244）。
 #
 set -uo pipefail
 
@@ -139,6 +143,160 @@ file_md5() {
   else
     md5 -q "$1"
   fi
+}
+
+# ============================================================
+# 单文件 bind mount 变更后自动 restart（Issue #244）
+# ============================================================
+# 症状：改了仓库根 nginx.conf → 同步成功、compose md5 对账通过、容器 Up healthy ——
+#   但现网行为一点没变。原因：clip-nginx 把 nginx.conf **以单文件 bind mount**
+#   挂成 /etc/nginx/conf.d/default.conf，宿主机换文件 ≠ 进程重读配置；而 nginx.conf
+#   不在任何服务的构建上下文里，compute_services 的重建名单永远不会包含它。
+#   于是这类改动在日志全绿的情况下静默留在「文件已更新、进程还是旧配置」。
+# 判据：bind mount 下「容器内 md5」永远等于宿主机那份，拿它判「是否生效」毫无信息量。
+#   真正能区分的只有时间：宿主机文件 mtime 比容器进程启动时间新 → 进程用的可能是旧配置。
+#   再并上「本次内容真的变了」（diff 动过 / 远端与本地 md5 不一致）—— tar 保留 mtime，
+#   单靠时间会漏掉「上一轮同步过但从没重启」的历史欠账，两条合起来才闭环。
+# 作用域：只处理挂在 $REMOTE_DIR 下、且落在本脚本同步集（SYNC_DIRS ∪ SYNC_FILES）里的
+#   单文件挂载。163 上还有 clip-postgres 挂 init.sql 这类单文件挂载 —— init.sql 不由本
+#   脚本同步、且只在 postgres 首次启动时生效，去重启它属于越界，一律不动。
+# 冻结名单：clip-rpa-worker（现网冻结）即使命中也只告警不重启，交人工判。
+BIND_RESTART_SKIP="${DEPLOY_SKIP_RESTART:-clip-rpa-worker}"
+STALE_SYNC_FILES=""       # 本次内容真的变了的根级同步文件（空格分隔相对路径）
+BIND_CANDIDATES=""        # 每行 container|容器内路径|仓库相对路径|判据
+
+# 远端根级同步文件的指纹表：md5|相对路径（缺失打 missing）
+remote_sync_file_md5s() {
+  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "bash -s" <<MD5_EOF
+R='${REMOTE_DIR}'
+for f in ${SYNC_FILES[*]}; do
+  m=\$(md5sum "\$R/\$f" 2>/dev/null | awk '{print \$1}')
+  echo "\${m:-missing}|\$f"
+done
+MD5_EOF
+}
+
+# 哪些根级单文件「内容真的变了」：git diff 动过 ／ 远端 md5 与本地不一致（漂移也算变）。
+# 必须在同步**之前**调 —— 同步完两侧必然相等，这个信号会自己把自己抹掉。
+stale_sync_files() {
+  local rel out="" table l r diff_all=0
+  table="$(remote_sync_file_md5s 2>/dev/null)" || table=""
+  if [ "$FORCE_ALL" = "1" ] || [ -z "$PREV" ] || \
+     ! git -C "$LOCAL_DIR" cat-file -e "$PREV^{commit}" 2>/dev/null; then
+    diff_all=1
+  fi
+  for rel in "${SYNC_FILES[@]}"; do
+    if [ -f "$LOCAL_DIR/$rel" ]; then
+      l="$(file_md5 "$LOCAL_DIR/$rel")"
+      r="$(printf '%s\n' "$table" | awk -F'|' -v k="$rel" '$2==k{print $1}')"
+      if [ -n "$r" ] && [ "$r" != "missing" ] && [ "$r" != "$l" ]; then
+        out="$out $rel"
+        continue
+      fi
+    fi
+    if [ "$diff_all" = "1" ] || \
+       git -C "$LOCAL_DIR" diff --name-only "$PREV" HEAD -- "$rel" 2>/dev/null | grep -qx "$rel"; then
+      out="$out $rel"
+    fi
+  done
+  echo "$out"
+}
+
+# 远端单文件 bind mount 全表：container|宿主机路径|容器内路径|stale|ok
+bind_mount_stale_table() {
+  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "bash -s '${REMOTE_DIR}'" <<'STALE_EOF'
+R="$1"
+for c in $(docker ps -q); do
+  n=$(docker inspect -f '{{.Name}}' "$c" | sed 's|^/||')
+  se=$(date -d "$(docker inspect -f '{{.State.StartedAt}}' "$c")" +%s 2>/dev/null) || continue
+  docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}=>{{.Destination}}{{println}}{{end}}{{end}}' "$c" \
+    | while IFS= read -r m; do
+        src="${m%%=>*}"; dst="${m#*=>}"
+        [ -f "$src" ] || continue
+        case "$src" in "$R"/*) ;; *) continue ;; esac
+        mt=$(stat -c %Y "$src" 2>/dev/null) || continue
+        if [ "$mt" -gt "$se" ]; then st=stale; else st=ok; fi
+        echo "$n|$src|$dst|$st"
+      done
+done
+STALE_EOF
+}
+
+# 相对路径是否落在本脚本的同步集内（SYNC_FILES 精确 ／ SYNC_DIRS 前缀）
+in_synced_set() {
+  local rel="$1" d f
+  for f in "${SYNC_FILES[@]}"; do
+    [ "$rel" = "$f" ] && return 0
+  done
+  for d in "${SYNC_DIRS[@]}"; do
+    case "$rel" in "$d"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+collect_bind_candidates() {
+  local raw n src dst st rel
+  BIND_CANDIDATES=""
+  raw="$(bind_mount_stale_table 2>/dev/null)"
+  if [ -z "$raw" ]; then
+    log "WARN: 单文件 bind mount 探测失败／为空（本次不做自动重启，改过 nginx.conf 请人工 docker restart clip-nginx）"
+    return 0
+  fi
+  while IFS='|' read -r n src dst st; do
+    [ -n "$n" ] || continue
+    rel="${src#"$REMOTE_DIR"/}"
+    in_synced_set "$rel" || continue
+    case " $STALE_SYNC_FILES " in
+      *" $rel "*) st="content_changed" ;;
+    esac
+    [ "$st" = "stale" ] || [ "$st" = "content_changed" ] || continue
+    BIND_CANDIDATES="${BIND_CANDIDATES}${n}|${dst}|${rel}|${st}
+"
+  done <<CAND_EOF
+$raw
+CAND_EOF
+}
+
+restart_stale_bind_mounts() {
+  local done_list="" n dst rel why cur want
+  collect_bind_candidates
+  if [ -z "$BIND_CANDIDATES" ]; then
+    if [ -n "$STALE_SYNC_FILES" ]; then
+      log "单文件 bind mount：${STALE_SYNC_FILES} 有变更，但没有容器以单文件方式挂载它们（无需重启）"
+    fi
+    return 0
+  fi
+  while IFS='|' read -r n dst rel why; do
+    [ -n "$n" ] || continue
+    case " $done_list " in
+      *" $n "*) continue ;;
+    esac
+    done_list="$done_list $n"
+    case " $BIND_RESTART_SKIP " in
+      *" $n "*)
+        log "WARN: ${n} 挂载的 ${rel} 已更新（判据 ${why}），但它在冻结名单里 → **没有**自动重启，需人工判：docker restart ${n}"
+        continue
+        ;;
+    esac
+    if [ "$DRY_RUN" = "1" ]; then
+      log "[dry-run] 将 restart ${n}（单文件 bind mount: ${rel} -> ${dst}，判据 ${why}）"
+      continue
+    fi
+    log "restart ${n}（单文件 bind mount: ${rel}，判据 ${why}）..."
+    if ! ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker restart $n" >/dev/null 2>&1; then
+      log "WARN: ${n} 重启失败（${rel} 的改动可能未生效，请手工 docker restart ${n}）"
+      continue
+    fi
+    want="$(file_md5 "$LOCAL_DIR/$rel")"
+    cur="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker exec $n md5sum '$dst' 2>/dev/null | awk '{print \$1}'")"
+    if [ "$cur" = "$want" ]; then
+      log "  验收：容器内 ${dst} md5=${cur} 与仓库一致"
+    else
+      log "  WARN: 容器内 ${dst} md5=${cur:-取不到} 与仓库 ${want} 不一致（不是 bind mount？路径变了？请人工 docker inspect ${n}）"
+    fi
+  done <<APPLY_EOF
+$BIND_CANDIDATES
+APPLY_EOF
 }
 
 # 从 compose 推导「运行 clip-backend:latest 镜像」的服务集合 —— 也就是 backend/ 代码
@@ -283,6 +441,10 @@ fi
 if [ "$DRY_RUN" = "1" ]; then
   log "[dry-run] 将同步目录: ${SYNC_DIRS[*]}"
   log "[dry-run] 将同步文件: ${SYNC_FILES[*]}"
+  # 3.0 同 real 分支：干跑也要算「哪些根级单文件内容变了」（远端 md5 取当前值，
+  #     同步还没发生）。restart 本身由第 4.6 步统一调，干跑在那里打「将 restart ...」。
+  STALE_SYNC_FILES="$(stale_sync_files)"
+  [ -n "$STALE_SYNC_FILES" ] && log "[dry-run] 根级单文件内容有变更:${STALE_SYNC_FILES}"
   log "[dry-run] 重建前将打回滚标签 rollback-pre-<MMDD-HHMM>-<commit>；部署后跑 smoke_deploy.py（未过则不写 .deploy_last_commit 并非零退出，--no-smoke 可关）；末尾清理 ${ROLLBACK_KEEP_DAYS} 天前的旧回滚标签（每仓库留最新 ${ROLLBACK_KEEP} 个，--no-prune-rollback 可关）"
 else
   # 3.1 覆盖前先探测服务器侧根 compose 是否被手改过 —— 只告警，仓库是唯一事实来源。
@@ -294,6 +456,12 @@ else
     ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cat '$REMOTE_DIR/docker-compose.yml'" > /tmp/.deploy_remote_compose.yml 2>/dev/null \
       && diff -u "$LOCAL_DIR/docker-compose.yml" /tmp/.deploy_remote_compose.yml | head -40
   fi
+
+  # 3.0 同步**前**先算哪些根级单文件内容真的变了（漂移／新改动都算）。顺序是硬要求：
+  #     同步之后两侧 md5 必然相等，这个信号就没了，nginx 这类 bind mount 也就永远不会
+  #     被重启（Issue #244 的根因正是「同步了、没人重启、日志全绿」）。
+  STALE_SYNC_FILES="$(stale_sync_files)"
+  [ -n "$STALE_SYNC_FILES" ] && log "根级单文件内容有变更:${STALE_SYNC_FILES}"
 
   for d in "${SYNC_DIRS[@]}"; do
     sync_dir "$d"
@@ -452,6 +620,13 @@ if [ -n "$SERVICES" ]; then
 else
   log "跳过容器重建"
 fi
+
+# 4.6 单文件 bind mount 生效收口（Issue #244）—— 必须放在重建之后、冒烟之前：
+#     · 放重建之后：compose 刚 recreate 的容器 StartedAt 是现在，mtime 判据自动不命中，
+#       不会重复重启；nginx.conf 这类不在重建名单里的才轮到我们补 restart。
+#     · 放冒烟之前：冒烟走 nginx :80 打接口，nginx 没换配置就等于「验的是旧网关」，
+#       超时链／location 改动这类回归会被冒烟漏掉。
+restart_stale_bind_mounts
 
 # 5. 验证
 if [ "$DRY_RUN" = "1" ]; then
