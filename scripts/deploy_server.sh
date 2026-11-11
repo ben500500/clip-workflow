@@ -41,7 +41,15 @@ SSH_OPTS="${DEPLOY_SSH_OPTS:--o StrictHostKeyChecking=no -o BatchMode=yes}"
 # ⚠️ rpa 于 2026-09-15 加入：此前 163 上的 rpa/app/**（8 个文件，含 celery_app/tasks/
 #    publishers）在仓库里根本不存在，而 clip-rpa-worker 一直在跑 —— 典型的「服务器是
 #    唯一事实来源」漂移。已于当日从 163 回仓（逐文件 md5 一致），并纳入同步防复发。
-SYNC_DIRS=(backend slice-worker frontend engines alembic deploy scripts autoclip rpa)
+SYNC_DIRS=(backend slice-worker frontend engines alembic deploy scripts autoclip rpa docker remotion)
+# ⚠️ docker / remotion 于 2026-11-11 加入（运维席 P1）：worker-remotion 的构建上下文是仓库根、
+#    dockerfile 指向 docker/remotion-worker/Dockerfile，渲染源在 remotion/src。这两目录此前
+#    **从不同步**，服务器那份是当初手工放的 —— 仓库改了 Dockerfile／渲染逻辑，现网永远不知道
+#    （和上面 rpa、下面 nginx.conf 同一个病根：服务器变成唯一事实来源）。
+#    只同步文件、**不纳入重建名单**：worker-remotion 被 compose profile 门控
+#    （profiles: ["remotion"]），默认没启，`up -d --build worker-remotion` 会被 compose
+#    判成 "service not enabled" 直接中断部署。真要启用时手工跑：
+#      docker compose --profile remotion up -d --build worker-remotion
 
 # 根级散落文件同步（不在任何 SYNC_DIRS 里，必须单列，否则会与仓库漂移）
 # nginx.conf 是根级散落文件（不在 SYNC_DIRS 里）——2026-11-09 加 HTTPS 时发现
@@ -56,12 +64,26 @@ FORCE_ALL="${DEPLOY_FORCE_ALL:-0}"
 
 # 干跑：只打印将要执行的操作，不实际同步/重建
 DRY_RUN=0
+
+# 部署后端到端冒烟（scripts/smoke_deploy.py，只读登录＋GET，零成本）。
+# 默认开：冒烟不过 = 这次部署没落地成功，**不写 .deploy_last_commit**（下次重跑仍会
+# 重建这批容器）并以非零退出。--no-smoke 用于「明知容器在慢慢起来、先放行标记」。
+RUN_SMOKE="${DEPLOY_RUN_SMOKE:-1}"
+
+# 回滚镜像标签清理：每个镜像仓库保留最新 N 个 rollback/lastgood 标签，
+# 且创建时间距今不足 KEEP_DAYS 天的一律不删。--no-prune-rollback 关掉清理。
+PRUNE_ROLLBACK="${DEPLOY_PRUNE_ROLLBACK:-1}"
+ROLLBACK_KEEP="${DEPLOY_ROLLBACK_KEEP:-2}"
+ROLLBACK_KEEP_DAYS="${DEPLOY_ROLLBACK_KEEP_DAYS:-3}"
+
 for a in "$@"; do
   case "$a" in
-    --dry-run|-n) DRY_RUN=1 ;;
-    --no-pull)    PULL_CNB=0 ;;
-    --all)        FORCE_ALL=1 ;;
-    -h|--help)    sed -n '2,20p' "$0"; exit 0 ;;
+    --dry-run|-n)         DRY_RUN=1 ;;
+    --no-pull)            PULL_CNB=0 ;;
+    --all)                FORCE_ALL=1 ;;
+    --no-smoke)           RUN_SMOKE=0 ;;
+    --no-prune-rollback)  PRUNE_ROLLBACK=0 ;;
+    -h|--help)            sed -n '2,20p' "$0"; exit 0 ;;
   esac
 done
 
@@ -261,6 +283,7 @@ fi
 if [ "$DRY_RUN" = "1" ]; then
   log "[dry-run] 将同步目录: ${SYNC_DIRS[*]}"
   log "[dry-run] 将同步文件: ${SYNC_FILES[*]}"
+  log "[dry-run] 重建前将打回滚标签 rollback-pre-<MMDD-HHMM>-<commit>；部署后跑 smoke_deploy.py（未过则不写 .deploy_last_commit 并非零退出，--no-smoke 可关）；末尾清理 ${ROLLBACK_KEEP_DAYS} 天前的旧回滚标签（每仓库留最新 ${ROLLBACK_KEEP} 个，--no-prune-rollback 可关）"
 else
   # 3.1 覆盖前先探测服务器侧根 compose 是否被手改过 —— 只告警，仓库是唯一事实来源。
   #     如果不报出来，漂移会被静默抹平，下次就再也发现不了「服务器上到底跑的是什么」。
@@ -301,24 +324,84 @@ else
   log "compose 服务清单: $(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose config --services | sort | tr '\n' ' '")"
 fi
 
-# 3.6 last-good 镜像标签（P1·评审定稿⑬）：重建前给当前运行的镜像打 tag，
-# 健康冒烟失败时自动回滚到这个 tag（仅回代码不回 DB；有破坏性迁移时人工判）。
+# 3.6 回滚镜像标签（P1·评审定稿⑬ ＋ 2026-11-11 运维席 P1 重做）
+# 原实现有两处硬伤，合起来等于「回滚预案从来没存在过」：
+#   · 从没被调用：函数定义在这儿，主流程里一句 `tag_last_good` 都没有 —— 打 tag 这步
+#     实际一次都没跑过（163 上那批 rollback-pre-* 全是历次手工部署留下的，不是脚本的功劳）。
+#   · tag 名算错：`${img%-*}-lastgood` 想剥掉 `:latest`，但 `clip-backend:latest` 里唯一的
+#     `-` 在仓库名中间 → 剥出 `clip`，所有服务全打成同一个 `clip-lastgood`，互相覆盖。
+# 现在：① 重建前真调用；② 镜像引用交给 compose 自己解析
+# （`docker compose images <svc> --format json`，实测 backend / alembic-migrate / frontend /
+# autoclip / slice-worker / rpa_worker 都取得到；没建过镜像的 worker-remotion 取到空 → 跳过）；
+# ③ tag 名带「部署时刻」而不是只带 commit —— 同一 HEAD 一天部署两次不会把第一次的备份顶掉；
+# ④ 打完把可直接复制的回滚指令打出来（自动回滚仍不做：DB 可能已经迁移过，回代码不回库
+#    会把现网打成半新半旧，这一步必须人来判）。
 LAST_GOOD_TAGGED=0
+ROLLBACK_TAG_LIST=""      # 每行 svc|当前镜像|新打的回滚 tag
 tag_last_good() {
   [ "$LAST_GOOD_TAGGED" = "1" ] && return 0
-  for svc in $SERVICES; do
-    cid="$(docker -H "ssh://${REMOTE_USER}@${REMOTE_HOST}" ps -q --filter "name=clip-$svc" 2>/dev/null | head -1)"
-    [ -n "$cid" ] || continue
-  done 2>/dev/null || true
-  # ssh 远端打 tag（docker 命令在远端执行，避免本地 docker -H 依赖）
-  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "
-    for svc in $SERVICES; do
-      img=\$(docker compose -f '$REMOTE_DIR/docker-compose.yml' config 2>/dev/null | grep -A2 "  \$svc:" | grep 'image:' | awk '{print \$2}' | head -1)
-      [ -n "\$img" ] && docker tag "\$img" "\${img%-*}-lastgood" 2>/dev/null || true
-    done
-  " 2>/dev/null || true
   LAST_GOOD_TAGGED=1
-  log "已给受影响服务打 last-good 标签（健康检查失败时回滚用）"
+  [ -n "$SERVICES" ] || return 0
+  local suffix raw
+  suffix="$(date +%m%d-%H%M)-$(git -C "$LOCAL_DIR" rev-parse --short HEAD)"
+  raw="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "
+    cd '$REMOTE_DIR' || exit 1
+    for svc in $SERVICES; do
+      ref=\$(docker compose images \"\$svc\" --format json 2>/dev/null \\
+            | sed -n 's/.*\"Repository\":\"\([^\"]*\)\",\"Tag\":\"\([^\"]*\)\".*/\1:\2/p' | head -1)
+      if [ -z \"\$ref\" ]; then echo \"SKIP|\$svc||\"; continue; fi
+      new=\"\${ref%:*}:rollback-pre-${suffix}\"
+      if docker tag \"\$ref\" \"\$new\" 2>/dev/null; then echo \"TAG|\$svc|\$ref|\$new\"; else echo \"FAIL|\$svc|\$ref|\$new\"; fi
+    done
+  " 2>&1)"
+  ROLLBACK_TAG_LIST="$(printf '%s\n' "$raw" | awk -F'|' '$1=="TAG"{print $2"|"$3"|"$4}')"
+  _n_tag="$(printf '%s\n' "$ROLLBACK_TAG_LIST" | grep -c . || true)"
+  _n_skip="$(printf '%s\n' "$raw" | grep -c '^SKIP' || true)"
+  _n_fail="$(printf '%s\n' "$raw" | grep -c '^FAIL' || true)"
+  log "回滚标签：已打 ${_n_tag} 个（rollback-pre-${suffix}）· 跳过 ${_n_skip} · 失败 ${_n_fail}"
+  if [ "${_n_fail}" != "0" ]; then
+    printf '%s\n' "$raw" | grep '^FAIL' | sed 's/^/      docker tag 失败: /'
+  fi
+  if [ "${_n_tag}" = "0" ]; then
+    log "WARN: 一个回滚标签都没打上（受影响服务全没有可解析的镜像？），本次部署出问题只能靠重跑旧 commit 回退"
+  fi
+}
+
+print_rollback_howto() {
+  [ -n "$ROLLBACK_TAG_LIST" ] || return 0
+  local svcs
+  svcs="$(printf '%s\n' "$ROLLBACK_TAG_LIST" | cut -d'|' -f1 | sort -u | tr '\n' ' ')"
+  log "回滚预案（在 ${REMOTE_USER}@${REMOTE_HOST} 上执行；只回代码，不回数据库 —— 本次若有迁移要人工判）:"
+  printf '%s\n' "$ROLLBACK_TAG_LIST" | awk -F'|' '{print $2" "$3}' | sort -u | while read -r ref new; do
+    echo "      docker tag ${new} ${ref}"
+  done
+  echo "      cd ${REMOTE_DIR} && docker compose up -d --no-build ${svcs}"
+}
+
+# 3.7 回滚标签清理（2026-11-11 运维席 P1）：163 上 rollback/lastgood 标签已堆到 57 个，
+# 全是历次手工部署留的一次性备份 —— 占着旧镜像不让 prune 回收，且越堆越没人敢删。
+# 判据两条同时成立才删：① 同仓库内**不是**最新 ${ROLLBACK_KEEP} 个；② 镜像构建时间早于
+# ${ROLLBACK_KEEP_DAYS} 天前。按构建时间而不是打 tag 的时间排序有已知偏差（长期不重建的
+# 服务，其备份镜像会比 tag 老），所以第一条兜底：每个仓库最新两个永远留着。
+# 只 untag／删无引用的镜像，且**不带 -f**：仍被容器占用的会失败并打 KEEP，绝不动在跑的容器。
+prune_rollback_tags() {
+  if [ "$PRUNE_ROLLBACK" != "1" ]; then
+    log "跳过回滚标签清理（--no-prune-rollback）"
+    return 0
+  fi
+  log "清理 ${ROLLBACK_KEEP_DAYS} 天前的回滚标签（每个镜像仓库至少留最新 ${ROLLBACK_KEEP} 个）..."
+  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "
+    cutoff=\$(date -d '-${ROLLBACK_KEEP_DAYS} days' +%Y-%m-%d 2>/dev/null) || { echo 'WARN: 远端 date -d 不支持，跳过清理'; exit 0; }
+    docker images --format '{{.Repository}}:{{.Tag}}|{{.CreatedAt}}' \\
+      | grep -E '^clip-[A-Za-z0-9_-]+:(rollback|.*lastgood)' \\
+      | awk -F'|' '{repo=\$1; sub(/:.*/,\"\",repo); print repo\"|\"\$2\"|\"\$1}' \\
+      | sort -t'|' -k1,1 -k2,2r \\
+      | awk -F'|' -v cutoff=\"\$cutoff\" -v keep=${ROLLBACK_KEEP} '
+          { rank[\$1]++; if (rank[\$1] > keep && substr(\$2,1,10) < cutoff) print \$3 }' \\
+      | while read -r t; do
+          if docker rmi \"\$t\" >/dev/null 2>&1; then echo \"  已删 \$t\"; else echo \"  保留 \$t（仍被容器占用）\"; fi
+        done
+  " 2>&1 | tail -40 || log "WARN: 回滚标签清理失败（不影响部署）"
 }
 
 # 4. 重建受影响容器
@@ -332,6 +415,9 @@ if [ -n "$SERVICES" ]; then
       log "[dry-run] engines 有变更 → 部署后将需要重启 clip-backend 重新加载引擎"
     fi
   else
+    # 4.0 重建前先留回滚标签（必须在 --build 之前：build 会把 clip-xxx:latest 顶到
+    #     新镜像上，之后再打就把刚部署的新版本当备份了）。
+    tag_last_good
     # 4.1 slice-worker 镜像是 `COPY --from=builder /build/engines`，其构建输入
     #     slice-worker/engines 是 .gitignore 忽略的产物副本（本地那份可能长期陈旧，
     #     且已从同步排除）→ 重建前必须在服务器上从 engines/ 全量刷新，否则镜像里
@@ -380,11 +466,50 @@ else
     ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose logs --since 2m $SERVICES 2>&1 | grep -iE 'error|traceback|panic|undefined|exception' | tail -10 || true"
   fi
 
+  # 5.5 部署后端到端冒烟（2026-11-11 运维席 P1）。此前的「验证」只看 compose ps ＋
+  #     grep 错误日志，属于「容器起来了」而不是「服务能用」：登录竞态（Issue #350）
+  #     那种一进门就 401 的回归全靠人记得手工跑 smoke_deploy.py，跑漏了就静默留在现网。
+  #     零成本：只登录 admin ＋ 5 个 GET，不建数据、不调模型、不投板。
+  #     未过则 **不写 .deploy_last_commit** 并非零退出 —— 写了标记，下次增量判定就会
+  #     认为这批容器已经部署过，一次坏部署会被永久藏起来。
+  if [ "$RUN_SMOKE" = "1" ]; then
+    if [ "$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker inspect -f '{{.State.Running}}' clip-backend 2>/dev/null || echo missing")" != "true" ]; then
+      log "WARN: clip-backend 不在运行，跳过冒烟（这本身就是部署事故，请立刻人工看 docker compose ps）"
+    else
+      log "部署后冒烟 scripts/smoke_deploy.py（容器内 127.0.0.1:8080）..."
+      # 刚 recreate 完 uvicorn 可能还在起，健康探测最多等 60s；超时不判死，交给冒烟本身说话。
+      _hs=""
+      for _i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        _hs="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' clip-backend 2>/dev/null")"
+        case "$_hs" in healthy|no-healthcheck) break ;; esac
+        sleep 5
+      done
+      log "clip-backend 状态: ${_hs:-unknown}"
+      _smoke_rc=0
+      ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker exec -i clip-backend python -" \
+        < "$LOCAL_DIR/scripts/smoke_deploy.py" 2>&1 | tail -25 || _smoke_rc=$?
+      if [ "$_smoke_rc" != "0" ]; then
+        print_rollback_howto
+        die "部署后冒烟未通过（退出码 ${_smoke_rc}）—— 本次**没有**记录部署标记：现网跑的已是新代码，要么修完重跑本脚本，要么照上面的预案回滚（有迁移时别只回镜像）"
+      fi
+      log "冒烟通过 ✅"
+    fi
+  else
+    log "跳过部署后冒烟（--no-smoke）"
+  fi
+
   # 6. 记录本次部署 commit（本地 + 远端标记同步，避免两侧失配）
   git -C "$LOCAL_DIR" rev-parse HEAD > "$LAST_FILE"
   ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "echo -n \"$(cat "$LAST_FILE")\" > '$REMOTE_DIR/.deploy_last_commit'" \
     || log "WARN: 远端部署标记写入失败（不影响部署）"
   log "部署完成 ✅  (commit $(cat "$LAST_FILE"))"
+  # 回滚预案留档：即使这次一切正常，也把「刚才那一版是哪个 tag」打出来，
+  # 免得事后想回退时只能去 docker images 里猜时间。
+  print_rollback_howto
+
+  # 6.5 回滚标签清理放在悬空清理之前：先把没人要的 rollback tag 摘掉，
+  #     下面 image prune 才收得回那些只剩回滚标签占着的旧镜像。
+  prune_rollback_tags
 
   # 7. 自动清理 Docker 垃圾（悬空镜像 + 构建缓存）——每次部署 --build 会产生
   #    新镜像覆盖旧 tag，旧镜像层变 <none> 悬空；BuildKit 缓存默认不自动清，
