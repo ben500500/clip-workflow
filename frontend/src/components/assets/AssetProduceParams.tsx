@@ -89,6 +89,14 @@ interface Props {
   active: boolean;
   summaries: AssetSummary[];
   onChange: (p: ProduceParams) => void;
+  /**
+   * 11-11 用户口径「再重新生成的时候可以重新获取」：父层去库里把这几条文案的**当前稿子**
+   * 取回来（覆盖重出／改后重提／补网页版提示词都可能已经换了正文），换进来后本组件按新稿重认。
+   * 不传＝这一屏没有"取最新"这条路（比如父层手里就是实时数据），按钮也就不出现。
+   */
+  onRefetch?: () => Promise<void>;
+  /** `onRefetch` 在跑：按钮转圈，别让人连点（重复取回会把上一轮的自动重认打断） */
+  refetching?: boolean;
 }
 
 /**
@@ -106,7 +114,7 @@ interface Props {
  *     ⚠️ 这里改的字**不会**变成投递稿正文——进板面的正文只有 ④ 投板那一步的「改投递稿」那道口，
  *     界面上把这句说死，不让人以为在这里改了就会投出去。
  */
-const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) => {
+const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRefetch, refetching }) => {
   const [slots, setSlots] = useState<SlotView[]>([]);
   const [values, setValues] = useState<Record<string, string[]>>({});
   /** 槽位 key → 人手填的公共原值（逐篇没认出、或整句话那种 manual 项，全靠这里） */
@@ -122,6 +130,12 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
   const [guessing, setGuessing] = useState(false);
   const [guessInfo, setGuessInfo] = useState<string[]>([]);
   const [guessError, setGuessError] = useState<string | null>(null);
+  /**
+   * 11-11「再重新生成的时候可以重新获取」：稿子刚被换过、这一屏自动重认了一遍参数，
+   * 就在界面上留一句话说明**重认过、并且哪些人填的东西被作废了**。不说这句，人会看见
+   * 自己填的原值凭空变了（那是按新稿重认的），或投出去才发现换的是旧稿的词。
+   */
+  const [recheckNote, setRecheckNote] = useState<string | null>(null);
   /**
    * 11-10 用户口径①「我刚选了几个元素，但是没有看到正文被替换的地方」：
    * 「换完长这样」那一段的回包（逐篇 → 扇出的 N 张稿子）。只在点按钮时刷新，
@@ -160,8 +174,16 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
     return line.length > 160 ? `${line.slice(0, 160)}…` : line;
   };
 
-  /** 认一次参数：open／换文案／点「重新认参数」时跑 */
-  const extract = async () => {
+  /**
+   * 认一次参数：open／换文案／稿子换了／点「重新认参数」时跑。
+   *
+   * `serverDraft`＝按**库里那份稿子**认，忽略本屏还没保存的底稿编辑。
+   * 「稿子刚被重新生成」那条路必须走它：人在这一屏手抄/改过的那几行是按**旧稿**改的，
+   * 新稿都换了还拿旧稿的编辑去认，界面摆出来的原值在新稿里根本不存在——换词只会 skipped，
+   * 而 skipped 只写在开单回执里，一线看不见，投出去才发现是一条错稿。
+   * 默认（按钮／首次打开）按界面上的底稿认：人刚抄进来的那句就是要拿来认参数的，那是他主动的改动。
+   */
+  const extract = async (serverDraft = false) => {
     setGuessInfo([]);
     setGuessError(null);
     // 底稿/字典变了，上一版预览就不是现在这套参数的结果了——宁可没有，不许陈旧还摆着像新的
@@ -177,7 +199,7 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
     try {
       const texts: Record<string, string> = {};
       summaries.forEach((s) => {
-        texts[s.id] = baseText(s);
+        texts[s.id] = serverDraft ? (s.prompt_preview ?? s.text ?? '') : baseText(s);
       });
       // 同批只有一种原型时才限定参数项；混着好几种就不限定（各篇按自己的原型换，
       // 后端 compose_variants 逐条按那条的原型判 categories，界面把该看的都摆出来）
@@ -301,18 +323,66 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
     }
   };
 
-  // 打开／换文案时自动认一次；底稿是本地状态，靠「重新认参数」按钮才再打接口，
-  // 否则每敲一个字就发一次请求（正文上千字，一次一屏）。
+  /**
+   * 这批文案「库里那份稿子」的签名（正文＋豆包提示词预览＋原型）。**不含本地底稿编辑**——
+   * 人在这一屏敲字不该打接口（正文上千字，一次一屏），那种改动照旧靠「重新认参数」按钮。
+   */
+  const incomingSig = useMemo(
+    () =>
+      summaries
+        .map((s) => `${s.id}#${(s.category_name || '').trim()}#${s.text ?? ''}#${s.prompt_preview ?? ''}`)
+        .join('|'),
+    [summaries],
+  );
+  /** 上一次自动认参数是**按哪一批**、**按哪一版稿子**认的（关掉弹窗就清空＝下次打开算新一轮） */
+  const scopeRef = useRef('');
+  const sigRef = useRef('');
+
+  /**
+   * 什么时候自动重认——11-11 用户口径「再重新生成的时候可以重新获取」要求两种情况分开，
+   * 因为它们该留的东西不一样：
+   *  ① **换了一批文案**（勾选变了）＝这一屏重开。上一批的换后值／公共原值／底稿编辑都是
+   *     按上一批稿子填的，留着会往这批上换错词 → 全部归零再认（沿用原口径，顺带也解决了
+   *     「admin 刚在字典里加了参数项，缓存那份看不见」）。
+   *  ② **还是这批文案，但稿子本身换了**——在别的屏「覆盖重出」／「改后重提」／补网页版提示词，
+   *     或点了本屏的「取最新稿子」。这时**自动重新认原值**，而且人填的「换成什么」照旧留着
+   *     （那是人打的字，跟稿子新旧无关，清掉等于把输入抹了）；但本地底稿编辑和手填的公共原值
+   *     按新稿作废（它俩都是从**旧稿**抄来的，留着＝拿旧稿的词去新稿里换，后端只会记一条
+   *     skipped，界面看不出来）。上一版「换完长这样」也跟着作废，不许陈旧还摆着像新的。
+   */
   useEffect(() => {
-    if (!active || !summaries.length) return;
-    setValues({});
-    setBaseDraft({});
-    setDrafts({});
-    setPreview(null);
-    setPreviewOpen([]);
-    void extract();
+    if (!active || !summaries.length) {
+      scopeRef.current = '';
+      sigRef.current = '';
+      return;
+    }
+    const prevScope = scopeRef.current;
+    const prevSig = sigRef.current;
+    scopeRef.current = summaryIds;
+    sigRef.current = incomingSig;
+    if (prevScope !== summaryIds) {
+      setValues({});
+      setBaseDraft({});
+      setDrafts({});
+      setPreview(null);
+      setPreviewOpen([]);
+      setRecheckNote(null);
+      void extract();
+      return;
+    }
+    if (prevSig && prevSig !== incomingSig) {
+      setBaseDraft({});
+      setDrafts({});
+      setPreview(null);
+      setPreviewOpen([]);
+      setRecheckNote(
+        '这批文案的稿子刚被重新生成过，参数项已按新稿重认一遍。你填的「换成什么」都留着；' +
+          '「原稿里写的是」和下面手改的底稿是按旧稿抄的，已清空——按新稿重填即可（不填也能照常开单）。',
+      );
+      void extract(true);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, summaryIds]);
+  }, [active, summaryIds, incomingSig]);
 
   /** 每篇各认各的原值；没认出的篇目不塞空串（后端把空当「没给」，会落到公共兜底那份） */
   const baseBySummary = useMemo(() => {
@@ -446,9 +516,28 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
             <Tag>{summaries.length} 篇各认各的原值</Tag>
           </Tooltip>
         )}
-        <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={extract}>
+        <Button
+          size="small"
+          icon={<ReloadOutlined />}
+          loading={loading}
+          onClick={() => {
+            // 人主动点＝按**界面上这一版**底稿重认，「我重认过了」那句话也就没意义了
+            setRecheckNote(null);
+            void extract();
+          }}
+        >
           重新认参数
         </Button>
+        {/* 11-11「再重新生成的时候可以重新获取」：稿子可能刚在别的屏被覆盖重出／改后重提／补提示词，
+            这一颗按钮去库里取回这几条**现在**的样子（0 元、一次列表读口），取回来上面那段会自动重认。
+            它不跟着自动跑：开单中途擅自换底稿会把人刚填的东西冲掉，那必须是人自己点的。 */}
+        {!!onRefetch && (
+          <Tooltip title="这批稿子如果在别的屏重新生成过（覆盖重出／改后重提／补提示词），点这一下取回库里现在的正文和提示词，参数项会按新稿重认一遍。不花钱。">
+            <Button size="small" loading={refetching} onClick={() => void onRefetch?.()}>
+              取最新稿子
+            </Button>
+          </Tooltip>
+        )}
         {/* 11-10「能不能再将它们提炼一下」：0 元认法认不出来的才走这一口，它花模型钱，
             所以是**人点的按钮**、不跟着「重新认参数」自动跑；按钮上直接把"花钱"写出来。 */}
         {!!slots.length && (
@@ -467,6 +556,9 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange }) =>
         )}
       </Space>
 
+      {recheckNote && (
+        <Alert type="info" showIcon closable onClose={() => setRecheckNote(null)} message={recheckNote} />
+      )}
       {guessing && (
         <Text type="secondary" style={{ fontSize: 12 }}>
           正在让模型逐字抄回稿子里的原话，不等开单，投不投都照旧…

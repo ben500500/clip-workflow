@@ -1126,6 +1126,12 @@ export interface AssetSummaryListParams {
    * 不用像生产单页那样先整批拉 300 条再前端筛——那种拉法量大时会截断。
    */
   asset_ids?: string;
+  /**
+   * 11-11 开单屏「取最新稿子」：逗号拼接的**文案 id**（单个字符串，≤300 条），点哪几条回哪几条。
+   * 与 `audit_status` 是叠加不是覆盖，但**不点状态时撤审/待审的照样回**——这一口要回答的是
+   * 「我手里这几条现在库里长什么样」，查不到的那几条前端靠差集点名（不是接口抽风）。
+   */
+  ids?: string;
   batch_id?: string;
   /** 只看风险词命中的 */
   only_risk?: boolean;

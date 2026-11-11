@@ -79,9 +79,86 @@ export function produceResultNotes(res: AssetProduceResponse): string[] {
  * 号池实测 ≈120 条/日，产能不做硬限（11-03 拍板），但建单当场就把「今天已经吃掉多少」摆出来。
  * 钩子编号只能从 hook_id.py 取号带进来，前端不生成、后端不编号。
  */
-const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose, onDone, onProduced, batchId }) => {
+const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, onClose, onDone, onProduced, batchId }) => {
   const { user } = useAuth();
   const currentUserId = user?.id;
+  /**
+   * 11-11 用户口径「再重新生成的时候可以重新获取」：`picked` 是**进弹窗那一刻**的快照，
+   * 而这一屏可能开着就去别的屏「覆盖重出」／「改后重提」／补了网页版提示词——稿子换了，
+   * 换皮参数还按旧稿认，投出去就是拿旧稿的词换新稿（后端只会记一条 skipped，界面看不见）。
+   * 所以本组件自己持一份「当前用的文案」，「取最新稿子」把库里现在的样子换进来，
+   * 下面所有算法（待取号数、扇出行数、提交入参）跟着一起换——只有一处真相。
+   */
+  const [liveSummaries, setLiveSummaries] = useState<AssetSummary[]>(picked);
+  const summaries = liveSummaries;
+  const [refetching, setRefetching] = useState(false);
+
+  // 父层那份快照：**打开这一屏**或**勾选的那几条变了**才以它为准。
+  // ⚠️ 不能按 `picked` 的引用同步（三个入口里 `approvedSelected` 这类是每次渲染现算的数组，
+  // 引用天天变），那样父层一重渲染就把本屏「取最新稿子」换回来的行覆盖回旧快照，
+  // 人刚看见的新稿又变回旧的——按 id 集合判"是不是同一批"才是这件事的本意。
+  const pickedIds = picked.map((s) => s.id).join(',');
+  useEffect(() => {
+    setLiveSummaries(picked);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, pickedIds]);
+
+  /**
+   * 取回这几条文案**当前**的稿子：一次列表读口（0 元、不动库、不占号）。
+   * 三种结果分开说，因为下一步动作不一样：
+   *  - 有变化 → 换进来，子组件那段签名会自动按新稿重认参数（人填的换后值保留）；
+   *  - 没变化 → 明说「还是刚才那一版」，别让人以为点了没反应；
+   *  - 库里查不到（撤审后整批重出把旧行作废了、或素材被删）→ 保留旧的那份并点名，
+   *    开单时后端那道闸门会自己拦下；这里先说一声，省得人投出去才发现少了几条。
+   */
+  const refetchLatest = async () => {
+    if (!liveSummaries.length) return;
+    setRefetching(true);
+    try {
+      const res = await assetApi.listSummaries({
+        ids: liveSummaries.map((s) => s.id).join(','),
+        page_size: 300,
+      });
+      const byId = new Map((res.items || []).map((i) => [i.id, i]));
+      const sameDraft = (a: AssetSummary, b: AssetSummary) =>
+        (a.text ?? '') === (b.text ?? '')
+        && (a.prompt_preview ?? '') === (b.prompt_preview ?? '')
+        && (a.category_name ?? '') === (b.category_name ?? '');
+      const gone: string[] = [];
+      const changed: string[] = [];
+      const next = liveSummaries.map((s) => {
+        const fresh = byId.get(s.id);
+        if (!fresh) {
+          gone.push(s.asset_code || s.hook_code || s.id.slice(0, 8));
+          return s;
+        }
+        if (!sameDraft(s, fresh)) {
+          changed.push(s.asset_code || s.hook_code || s.id.slice(0, 8));
+          return fresh;
+        }
+        // 稿子没动就别换引用：换了子组件的签名不变、不重认，但 React 会白重渲染一整屏
+        return s;
+      });
+      if (changed.length) setLiveSummaries(next);
+      if (gone.length) {
+        message.warning(
+          `${gone.length} 条在库里已经查不到了（${gone.slice(0, 3).join('、')}${gone.length > 3 ? '…' : ''}）`
+            + '——多半是刚被撤审重出或素材删掉了，这里先留着旧稿，开单时后端会点名拦下',
+          8,
+        );
+      }
+      if (changed.length) {
+        message.success(`已取回最新稿子：${changed.length} 条正文/提示词变了，参数项按新稿重认过`, 6);
+      } else if (!gone.length) {
+        message.info('这几条的稿子没变，还是刚才那一版（参数项不用重认）');
+      }
+    } catch (e) {
+      message.error(`${(e as Error).message || '取最新稿子没成功'}——不影响照常开单，按手里这一版继续`, 8);
+    } finally {
+      setRefetching(false);
+    }
+  };
+
   const [n, setN] = useState(3);
   const [boardTotal, setBoardTotal] = useState(1);
   const [accounts, setAccounts] = useState(1);
@@ -722,7 +799,13 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries, isAdmin, onClose,
           </Space>
 
           {/* 批 O（11-10 用户口径）：按原型摆参数项＋自动提原值＋每行可填多值 → 一次扇多条 */}
-          <AssetProduceParams active={open} summaries={summaries} onChange={setParams} />
+          <AssetProduceParams
+            active={open}
+            summaries={summaries}
+            onChange={setParams}
+            onRefetch={refetchLatest}
+            refetching={refetching}
+          />
 
           <div>
             {/* 11-10 用户口径「钩子编号这个也自动取了，不要人工参与」：
