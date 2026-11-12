@@ -702,13 +702,6 @@ export interface AssetJobListResult {
 }
 
 /** 后台任务的状态中文名（后端只回英文枚举 + status_label，这里兜底给列表筛选用） */
-export const ASSET_JOB_STATUS_LABELS: Record<AssetJobStatus, string> = {
-  queued: '排队中',
-  running: '正在跑',
-  succeeded: '已完成',
-  failed: '失败',
-  interrupted: '已中断（服务重启，结果不可信）',
-};
 
 /** 复核的一条问题（svc.recheck_copy）：problems＝真拦点，warnings＝只留痕不拦 */
 export interface AssetRecheckProblem {

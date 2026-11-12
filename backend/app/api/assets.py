@@ -40,6 +40,7 @@ name/picDatas），不是豆包网页 RPA、也不是火山方舟 Seedance 官�
 
 import asyncio
 import contextlib
+import sys
 import copy
 import logging
 import os
@@ -57,7 +58,7 @@ import httpx
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import and_, delete, func, or_, select, text
+from sqlalchemy import and_, delete, exists, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -149,6 +150,16 @@ from app.services.minio_service import (
     get_presigned_url,
     upload_file_from_path,
 )
+from app.services.asset_serializers import (  # noqa: E402 — god file 外移的序列化组
+    _serialize_batch,
+    _serialize_category,
+    _serialize_item,
+    _serialize_production,
+    _serialize_summary,
+)
+
+import app.services.asset_serializers as _asset_ser  # noqa: E402
+
 from app.api.slice_helpers import _ffprobe_duration
 from app.services.upload_service import validate_file_name
 from app.utils.helpers import utc_iso
@@ -935,22 +946,6 @@ async def _category_rows(db: AsyncSession, *, include_inactive: bool = True) -> 
     return list((await db.execute(stmt)).scalars().all())
 
 
-def _serialize_category(c: AssetCategory, usage: Optional[dict] = None) -> dict:
-    data = {
-        "id": str(c.id),
-        "name": c.name,
-        "parent_id": str(c.parent_id) if c.parent_id else None,
-        "sort": c.sort,
-        "active": bool(c.active),
-        "note": c.note,
-        "created_at": utc_iso(c.created_at),
-        "updated_at": utc_iso(c.updated_at),
-    }
-    if usage:
-        data.update(usage)
-    return data
-
-
 async def _category_usage(db: AsyncSession) -> Dict[str, Dict[str, int]]:
     """每个分类被引用了多少次（素材 / 文案各算各的），给字典抽屉显示"这条挂着 N 条素材"。
 
@@ -1302,81 +1297,6 @@ def _apply_import_budget(batch: AssetBatch, *, count: int, tier: int, need_uploa
     }
 
 
-def _serialize_batch(b: AssetBatch) -> dict:
-    return {
-        "id": str(b.id),
-        "code": b.code,
-        "name": b.name,
-        "source_kind": b.source_kind,
-        "item_count": b.item_count,
-        "prompt_max_duration": b.prompt_max_duration,
-        "cost_estimate": b.cost_estimate,
-        "cost_actual": b.cost_actual,
-        "budget_cap": b.budget_cap,
-        "budget_gate": b.budget_gate,
-        "budget_note": b.budget_note,
-        "created_at": utc_iso(b.created_at),
-    }
-
-
-def _serialize_item(a: AssetItem, agg: Optional[dict] = None) -> dict:
-    data = {
-        "id": str(a.id),
-        "code": a.code,
-        "batch_id": str(a.batch_id) if a.batch_id else None,
-        "source_kind": a.source_kind,
-        # 批 G：前端按这一列分流（图片走"角色卡"卡片、视频走播放器），并据此隐藏
-        # 「反推/出文案/拼接」入口。存量行由 ADD COLUMN 的 DEFAULT 'video' 兜住。
-        "media_kind": getattr(a, "media_kind", None) or MEDIA_VIDEO,
-        # 批 G：图片在"挑卡"列表里要直接说画幅（这张 9:16 出竖屏 / 这张横版出横屏）。
-        # 判据留在后端一处：前端自己另拼一张宽高比表，日后口径一改就是两边各说一套
-        # ——而这条口径的来源是实测（卡决定成片画幅），不是显示偏好。
-        #
-        # 11-09 起视频也给：这批横屏原片要收进库并在界面标「横屏」（用户拍板），而
-        # orientation 只能从 resolution 推。此前恒回 null，界面那一列对视频永远显示
-        # 「画幅未知」——不是量不到，是这一行只喂图片。resolution 已补齐（文件上传
-        # 当场量、链接素材下载后回写），所以这里不加新口径，只把已有的一列对两类摊开；
-        # 量不到时仍是 null，界面照样显示「画幅未知」。
-        "aspect": _card_ratio_fields(a.resolution),
-        "source_url": a.source_url,
-        "platform": a.platform,
-        "file_name": a.file_name,
-        "file_key": a.file_key,
-        "bucket": a.bucket,
-        "file_size": a.file_size,
-        # 批 J：下载动作自己的状态（NULL=没有要下的/还没排到），前端画成小图标
-        "download_status": getattr(a, "download_status", None),
-        "project_id": str(a.project_id) if a.project_id else None,
-        "episode_id": str(a.episode_id) if a.episode_id else None,
-        "prompt_task_id": str(a.prompt_task_id) if a.prompt_task_id else None,
-        "title": a.title,
-        "cover_image_key": a.cover_image_key,
-        "duration": a.duration,
-        "resolution": a.resolution,
-        "prompt_max_duration": a.prompt_max_duration,
-        # 11-04 拍板①：钩子原型（category_name 由列表侧一次性批量补，避免逐行查）
-        "category_id": str(a.category_id) if a.category_id else None,
-        "category_name": None,
-        "stage_import": a.stage_import,
-        "stage_prompt": a.stage_prompt,
-        "stage_summary": a.stage_summary,
-        "stage_produce": a.stage_produce,
-        "stage_compose": a.stage_compose,
-        "status": a.status,
-        "has_approved_copy": bool(a.has_approved_copy),
-        "cost_prompt": a.cost_prompt,
-        "cost_produce": a.cost_produce,
-        "cost_parse": a.cost_parse,
-        "note": a.note,
-        "created_by": str(a.created_by) if a.created_by else None,
-        "created_at": utc_iso(a.created_at),
-        "updated_at": utc_iso(a.updated_at),
-    }
-    if agg:
-        data.update(agg)
-    return data
-
-
 def _can_resubmit(summary: AssetSummary, asset: AssetItem, current_user: User) -> bool:
     """这条文案现在能不能「改后重新提审」。
 
@@ -1391,136 +1311,6 @@ def _can_resubmit(summary: AssetSummary, asset: AssetItem, current_user: User) -
     if current_user.role == UserRole.admin.value:
         return True
     return asset.created_by == current_user.id
-
-
-def _serialize_summary(
-    s: AssetSummary, asset: Optional[AssetItem] = None, *, can_resubmit: bool = False,
-    category_name: Optional[str] = None, output_count: Optional[int] = None,
-    reviewer_name: Optional[str] = None,
-    production_count: Optional[int] = None,
-) -> dict:
-    data = {
-        "id": str(s.id),
-        "asset_id": str(s.asset_id),
-        "seq": s.seq,
-        "text": s.text,
-        "style_tag": s.style_tag,
-        "formula_tag": s.formula_tag,
-        # 11-04 拍板①：文案的原型（出稿时继承素材，审核台可逐条改）
-        "category_id": str(s.category_id) if s.category_id else None,
-        "category_name": category_name,
-        "word_count": s.word_count,
-        "is_recommended": bool(s.is_recommended),
-        "consistency_ok": s.consistency_ok,
-        "consistency_note": s.consistency_note,
-        "risk_hit": s.risk_hit,
-        # P1（评审定稿⑯）：已开过几张生产单（挑选器防重复开单白烧号池）
-        "production_count": production_count,
-        "audit_status": s.audit_status,
-        "reviewed_by": str(s.reviewed_by) if s.reviewed_by else None,
-        # A′：过审人显示名（12px 灰字标注用）；None=调用方没聚合（详情口）或无主
-        "reviewed_by_name": reviewer_name,
-        "reviewed_at": utc_iso(s.reviewed_at) if s.reviewed_at else None,
-        "reject_reason": s.reject_reason,
-        # P1（评审定稿⑩）：作者重提说明（改后重提时写，审核卡展示）
-        "resubmit_note": s.resubmit_note,
-        "text_before_edit": s.text_before_edit,
-        # 批 J：过审后备好的豆包提示词预览（NULL=还没备好/没排上；备好了审核台直接能看）
-        "prompt_preview": s.prompt_preview,
-        "prompt_preview_at": utc_iso(s.prompt_preview_at) if s.prompt_preview_at else None,
-        "cost_preview": float(s.cost_preview or 0.0),
-        # 11-06 双产出：出文案时同步生成的豆包网页版完整提示词（NULL=失败/未生成，可单独补）
-        "doubao_prompt": s.doubao_prompt,
-        # 批 N（11-09）：**预取**好、还没用掉的钩子编号（不是已投出去的号——那种号钉在
-        # 生产单行上，看 production 的 hook_code）。开单时后端自动顶到缺号槽位并清空，
-        # 所以这个键有值＝这条文案还欠着一张没开的单、手里有个能用的号。
-        "hook_code": s.hook_code,
-        "created_at": utc_iso(s.created_at),
-        # 「改后重提」按钮要不要亮：前端不猜权限，按后端给的行级判定画
-        "can_resubmit": bool(can_resubmit),
-    }
-    if asset is not None:
-        data["asset_code"] = asset.code
-        data["asset_title"] = asset.title
-        data["asset_source_url"] = asset.source_url
-        data["asset_platform"] = asset.platform
-        data["asset_status"] = asset.status
-    if output_count is not None:
-        # 批 F 卡片右侧「已产 N 条」：只有 list_summaries 会查（整页一次聚合），
-        # 别的调用方不传 = 这个键**不存在**，而不是 0——0 和"没查"是两回事，
-        # 卡片拿 0 会画成「这条还没产出」，那是假信息。
-        data["output_count"] = int(output_count)
-    return data
-
-
-def _serialize_production(
-    p: AssetProduction,
-    output_count: int = 0,
-    owner_name: Optional[str] = None,
-    category_name: Optional[str] = None,
-) -> dict:
-    return {
-        "id": str(p.id),
-        "asset_id": str(p.asset_id),
-        "summary_id": str(p.summary_id),
-        "batch_id": str(p.batch_id) if p.batch_id else None,
-        # 试产单（2026-11-12）：前端据此把成片标注「试产」，成片墙/交付包读侧过滤
-        "is_trial": bool(getattr(p, "is_trial", False)),
-        # A′：投产人显示名（谁投账算谁的灰字标注）；None=调用方没聚合
-        "owner_name": owner_name,
-        "seq": p.seq,
-        "hook_code": p.hook_code,
-        # 批 M（11-10）：这条单所属文案的钩子原型名（列表口一次性批量补，口径与审核台一致）。
-        # 投产弹窗的「可替换元素」按原型筛槽位，靠的就是这一列——单行口为 null。
-        "category_name": category_name,
-        "project_title": p.project_title,  # 废弃：11-02 版取消项目标题行，只读历史
-        "prompt_text": p.prompt_text,
-        "dispatch_note": p.dispatch_note,  # 只给人看，不进 payload
-        "prompt_snapshot": p.prompt_snapshot,
-        "video_titles": p.video_titles or [],
-        "variant_basis": p.variant_basis,
-        "drift": bool(p.drift),
-        "drift_reason": p.drift_reason,
-        "duration": p.duration,
-        "channel": p.channel,
-        # 后台任务板对账字段
-        "board_total": p.board_total,
-        "board_tag": p.board_tag,
-        "board_date": utc_iso(p.board_date) if p.board_date else None,
-        "board_name": p.board_name,
-        "board_tid": p.board_tid,
-        "board_rgid": p.board_rgid,
-        # 批 L（投放进度可视化）：板子侧最后看到的行状态＋检查时间。null=没投过板
-        # /回收动作没走到轮询（人工回写、刚建未投）。前端拿它显示「板子：出片中·上轮检查 …」。
-        "board_last_status": p.board_last_status,
-        "board_last_check_at": utc_iso(p.board_last_check_at) if p.board_last_check_at else None,
-        "character_card_key": p.character_card_key,
-        # 批 G：多卡数组（顺序＝板上 picDatas 顺序）。旧单这里是 []——
-        # 读侧要区分"没挂卡"和"挂了一张旧 key"，看 character_card_key 那一列。
-        "card_asset_ids": [str(x) for x in (p.card_asset_ids or []) if str(x or "").strip()],
-        # 批 Q（11-10 需求⑤）：这张单投板时点名「出片后自动和哪条素材拼、拼在前还是拼在后」。
-        # NULL＝没勾过，回收完就停（存量单全是这个态，行为与今天一致）。
-        "concat_asset_id": str(p.concat_asset_id) if p.concat_asset_id else None,
-        "concat_order": p.concat_order,
-        # 最近一次自动拼的结果（拼成几支／失败几支／成因）。**只给界面看**，不参与任何判定——
-        # 判据在 asset_outputs.composed_from_output_id 那侧，这里坏了也不影响业务。
-        "concat_last_result": p.concat_last_result,
-        "status": p.status,
-        "error": p.error,
-        # 投递台账（11-03 第 4 条）：一线要知道「这条投了几次、什么时候投的、什么时候出片」
-        "attempts": int(p.attempts or 0),
-        "started_at": utc_iso(p.started_at) if p.started_at else None,
-        "completed_at": utc_iso(p.completed_at) if p.completed_at else None,
-        "created_at": utc_iso(p.created_at),
-        # 批 I（链路收敛）：行上「成片」列的数字——本单已收进几段片。口径与审核台
-        # 卡片「已产 N 条」一致：排除 package/copy 附属文件，拼接产物没挂生产单天然不计。
-        "output_count": int(output_count),
-    }
-
-
-# ──────────────────────────────────────────────
-# 成本预览（前端确认弹窗先调这个，不落库）
-# ──────────────────────────────────────────────
 
 
 @router.get("/assets/cost/estimate")
@@ -5062,7 +4852,9 @@ async def _job_progress(db: AsyncSession, job: AssetJob) -> Dict[str, Any]:
     return {"total": total, "done": done, "note": note}
 
 
-def _serialize_job(job: AssetJob, progress: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _serialize_job(
+    job: AssetJob, progress: Optional[Dict[str, Any]] = None, *, slim_result: bool = False
+) -> Dict[str, Any]:
     return {
         "id": str(job.id),
         "kind": job.kind,
@@ -5078,12 +4870,38 @@ def _serialize_job(job: AssetJob, progress: Optional[Dict[str, Any]] = None) -> 
         "progress": progress,
         "params": job.params,
         "error": job.error,
-        # 结果只在终态回；跑一半时前端不该看到半份清单（会让人以为已经完事）
-        "result": job.result if job.status in JOB_TERMINAL_STATES else None,
+        # 结果只在终态回；跑一半时前端不该看到半份清单（会让人以为已经完事）。
+        # slim_result=True（列表口）：result 摘要化，明细走单任务详情口（2026-11-13）
+        "result": (
+            _slim_job_result(job.result)
+            if (slim_result and job.status in JOB_TERMINAL_STATES)
+            else (job.result if job.status in JOB_TERMINAL_STATES else None)
+        ),
         "created_at": utc_iso(job.created_at),
         "started_at": utc_iso(job.started_at),
         "finished_at": utc_iso(job.finished_at),
     }
+
+
+def _slim_job_result(result: Optional[dict]) -> Optional[dict]:
+    # 2026-11-13 性能席 P1：终态大任务的 result 内含逐条明细，单行几十 KB；
+    # 任务面板每 8s 拉一页 50 条全量回传就是百 KB 级轮询。前端展示约定是截前 6 条
+    # （AssetLibrary.onJobSettled），摘要保留 results 前 6 条+计数——展示不缺字、
+    # payload 降两个数量级；完整明细走 GET /assets/jobs/{id}。
+    if not isinstance(result, dict):
+        return result
+    slim = dict(result)
+    raw = result.get("results")
+    try:
+        if isinstance(raw, list):
+            slim["results"] = raw[:6]
+            slim["results_total"] = len(raw)
+        elif isinstance(raw, dict):
+            slim["results"] = dict(list(raw.items())[:6])
+            slim["results_total"] = len(raw)
+    except Exception:  # noqa: BLE001 —— 摘要失败原样回，不把列表口搞挂
+        pass
+    return slim
 
 
 def _job_kind_label(kind: str) -> str:
@@ -5197,8 +5015,8 @@ async def list_asset_jobs(
     )
     jobs = list((await db.execute(stmt)).scalars().all())
     return {
-        "items": [_serialize_job(j) for j in jobs],
-        "note": "进度是现算的粗口径；逐条成败看 result.results 或列表页的阶段标签",
+        "items": [_serialize_job(j, slim_result=True) for j in jobs],
+        "note": "进度是现算的粗口径；逐条成败看 result.results（列表为摘要，全量在任务详情口）",
     }
 
 
@@ -6818,9 +6636,14 @@ async def list_summaries(
         if conds
         else select(AssetSummary, AssetItem).join(AssetItem, AssetItem.id == AssetSummary.asset_id)
     )
-    total = (
-        await db.execute(select(func.count()).select_from(stmt.subquery()))
-    ).scalar_one()
+    # 2026-11-13 性能席 P2：count 从「包全量子查询」改成扁平 join count——
+    # planner 不必先物化整页子查询（10 万级 summaries 时每翻页省一次全量物化）。
+    _count_stmt = select(func.count(AssetSummary.id)).join(
+        AssetItem, AssetItem.id == AssetSummary.asset_id
+    )
+    if conds:
+        _count_stmt = _count_stmt.where(and_(*conds))
+    total = int((await db.execute(_count_stmt)).scalar() or 0)
     rows = (
         await db.execute(
             # 同素材 3 条候选必须相邻：created_at 是同事务批量插入、秒级相同，只按
@@ -9009,6 +8832,104 @@ async def _converge_produce_stage(db: AsyncSession, asset_ids: set) -> Dict[str,
     return stage_by_asset
 
 
+async def _dispatch_counts_dual(db: AsyncSession, *conds, owner_uid: Any = None):
+    """一趟聚合出（我的口径, 全站口径）两套投递计数（2026-11-13 性能席）。
+
+    与 `_dispatch_counts` 完全同键：by_status/order_ready/dispatched/voided_after_dispatch/
+    succeeded/failed/success_rate/total/scope_note；today 号池口径全站一本账，两套共用
+    同一份（由全站那份计算）。by_status 用一次 GROUP BY 双计数列（总行数＋FILTER 我的）；
+    voided 用一条 SELECT 双列。owner 视图套在 conds 之上（conds 是 scope 过滤）。
+    """
+    base_conds = list(conds)
+    dual_stmt = select(
+        AssetProduction.status,
+        func.count(),
+        func.count().filter(AssetProduction.created_by == owner_uid) if owner_uid is not None else func.count(),
+    ).group_by(AssetProduction.status)
+    if base_conds:
+        dual_stmt = dual_stmt.where(and_(*base_conds))
+    rows = (await db.execute(dual_stmt)).all()
+    by_all: Dict[str, int] = {}
+    by_mine: Dict[str, int] = {}
+    for s, n_all, n_mine in rows:
+        by_all[str(s)] = int(n_all)
+        by_mine[str(s)] = int(n_mine or 0)
+
+    async def _voided(filter_owner: bool) -> int:
+        stmt = select(func.count()).select_from(AssetProduction).where(
+            and_(
+                AssetProduction.status == PR_SUPERSEDED,
+                AssetProduction.started_at.is_not(None),
+                *base_conds,
+            )
+        )
+        if filter_owner:
+            stmt = stmt.where(AssetProduction.created_by == owner_uid)
+        return int((await db.execute(stmt)).scalar() or 0)
+
+    def _build(by_status: Dict[str, int], voided: int) -> dict:
+        succeeded = by_status.get(PR_SUCCESS, 0)
+        failed = by_status.get(PR_FAILED, 0)
+        dispatched = sum(by_status.get(s, 0) for s in _DISPATCH_STATES) + voided
+        terminal = succeeded + failed
+        return {
+            "total": sum(by_status.values()),
+            "by_status": by_status,
+            "order_ready": by_status.get(PR_ORDER_READY, 0),
+            "dispatched": dispatched,
+            "voided_after_dispatch": voided,
+            "succeeded": succeeded,
+            "failed": failed,
+            "success_rate": round(succeeded / terminal, 3) if terminal else None,
+            "scope_note": (
+                "by_status 含未投的 order_ready；success_rate 只按已终态（成功+失败）算，"
+                "在投/出片中不进分母；投上板后又被撤审作废的单仍计入 dispatched（号池那天真被吃了）"
+            ),
+        }
+
+    mine = _build(by_mine, await _voided(filter_owner=True))
+    total_all = _build(by_all, await _voided(filter_owner=False))
+    # today 号池口径＝全站事实：让全站那份带上 today（与 _dispatch_counts 同一条查询逻辑）
+    day_start = svc.board_timestamp().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_rows = (
+        await db.execute(
+            select(
+                AssetProduction.status,
+                func.sum(AssetProduction.board_total),
+                func.count(),
+            ).where(
+                and_(
+                    AssetProduction.board_date >= day_start,
+                    AssetProduction.board_date < day_start + timedelta(days=1),
+                )
+            ).group_by(AssetProduction.status)
+        )
+    ).all()
+    today_status = {str(r[0]): int(r[2]) for r in today_rows}
+    cap = int(settings.ASSET_BOARD_DAILY_SOFT_CAP)
+    today_tasks = sum(int(cnt) for _s, _total, cnt in today_rows)
+    today_board_rows = sum(int(total) for _s, total, _cnt in today_rows)
+    today_block = {
+        "day": day_start.strftime("%Y-%m-%d"),
+        "tasks": today_tasks,
+        "board_rows": today_board_rows,
+        "by_status": today_status,
+        "succeeded": today_status.get(PR_SUCCESS, 0),
+        "failed": today_status.get(PR_FAILED, 0),
+        "dispatched": sum(today_status.get(s, 0) for s in _DISPATCH_STATES)
+        + today_status.get(PR_SUPERSEDED, 0),
+        "soft_cap": cap,
+        "over_cap": max(0, today_board_rows - cap) if cap > 0 else 0,
+        "note": (
+            "当日口径按板面本地时区切日（与建任务的 board_date 同一套），"
+            "board_rows=Σ total（号池真正吃掉的条数），tasks=生产单行数"
+        ),
+    }
+    total_all["today"] = today_block
+    mine["today"] = today_block
+    return mine, total_all
+
+
 async def _dispatch_counts(
     db: AsyncSession, *conds, soft_cap: Optional[int] = None, owner_uid: Optional[Any] = None
 ) -> dict:
@@ -9360,13 +9281,17 @@ async def list_productions(
     rows = (
         await db.execute(stmt.order_by(AssetProduction.created_at.desc()).offset((page - 1) * page_size).limit(page_size))
     ).scalars().all()
-    dispatch = await _dispatch_counts(db, *scope, owner_uid=current_user.id if owner == "me" else None)
-    # A′：「我的」视图附全站口径一行（today 本就全站；scope 的全站版给前端两行并排）
-    dispatch_all = (
-        await _dispatch_counts(db, *scope)
-        if owner == "me"
-        else None
-    )
+    # 2026-11-13 性能席 P2：owner=me 的「我的/全站」两套计数由 _dispatch_counts_dual
+    # 一趟聚合出两套（by_status 一次 GROUP BY 双计数列、voided 一条 SELECT 双列）——
+    # 原来调两遍 _dispatch_counts 是每 10s 轮询 6 条聚合 SQL。
+    if owner == "me":
+        dispatch, dispatch_all = await _dispatch_counts_dual(
+            db, *scope, owner_uid=current_user.id
+        )
+    else:
+        dispatch = await _dispatch_counts(db, *scope)
+        dispatch_all = None
+
 
     # 批 I：整页一次聚合每单的成片数（与上面 summaries 的 out_counts 同一个套路——
     # 逐行数＝100 次查询）。排除 package/copy 附属文件，只数片。
@@ -10634,13 +10559,19 @@ async def _execute_dispatch(
     n_ok = sum(1 for s in outcome["summary"].values() if s["status"] == PR_SUCCESS)
     n_fail = sum(1 for s in outcome["summary"].values() if s["status"] == PR_FAILED)
     n_open = len(outcome["summary"]) - n_ok - n_fail
+    # 试产标记透传到逐条 results（前端任务终态 toast 据此把人带回 ③ 判定，2026-11-13）
+    trial_by_pid = {str(p.id): True for p in to_create if p.is_trial}
+    results_out = {
+        pid: {**s, "trial": trial_by_pid.get(pid, False)}
+        for pid, s in outcome["summary"].items()
+    }
     return {
         "dispatched": len(created),
         "recovered": len(to_recover),
         "succeeded": n_ok,
         "failed": n_fail,
         "still_running": n_open,
-        "results": outcome["summary"],
+        "results": results_out,
         "outputs": outcome["outputs"],
         "created": created,
         "blocked": blocked,
@@ -11340,11 +11271,16 @@ async def list_outputs(
     # include_trial=true（审核台试产区拉片用）才放开；单点 production_id 查询不过滤
     #（详情/打包单点口自己有闸）。
     if not include_trial and production_id is None:
+        # 2026-11-13 性能席 P2：OR+IN 子查询实测 Seq Scan+hashed SubPlan（不走
+        # ix_asset_outputs_production_id）；NOT EXISTS 反连接让 planner 用索引。
         conds.append(
             or_(
                 AssetOutput.production_id.is_(None),
-                AssetOutput.production_id.in_(
-                    select(AssetProduction.id).where(AssetProduction.is_trial.is_(False))
+                ~exists(
+                    select(AssetProduction.id).where(
+                        AssetProduction.id == AssetOutput.production_id,
+                        AssetProduction.is_trial.is_(True),
+                    )
                 ),
             )
         )
@@ -11937,6 +11873,25 @@ async def package_outputs(
 
     used_names: Dict[str, int] = {}
     plan: List[dict] = []
+    # 2026-11-13 性能席：presign 本体是本地 HMAC（实测 0.06ms/次），但串行循环把
+    # 响应时间与行数线性耦合；且错误路径（bucket 缺失）会逐次走网络。并发预签解耦。
+    import asyncio as _aio_pkg
+
+    async def _presign_pair(o: AssetOutput, fr: Optional[AssetFrame]) -> "tuple[Optional[str], Optional[str]]":
+        url = await get_presigned_url(
+            o.bucket or settings.MINIO_BUCKET_RAW, o.file_key, expires_seconds=600
+        )
+        thumb = (
+            await get_presigned_url(
+                fr.bucket or settings.MINIO_BUCKET_RAW,
+                fr.file_key,
+                expires_seconds=_FRAME_URL_TTL_SECONDS,
+            )
+            if fr
+            else None
+        )
+        return url, thumb
+
     for o in rows:
         meta = prod_meta.get(o.production_id) or {}
         base = (o.file_name or f"{o.id}").rsplit(".", 1)[0][:80] or "clip"
@@ -11946,28 +11901,23 @@ async def package_outputs(
         if n:
             name = f"{base}({n + 1}).{ext}"
         used_names[name] = n + 1
-        url = await get_presigned_url(
-            o.bucket or settings.MINIO_BUCKET_RAW, o.file_key, expires_seconds=600
-        )
         fr = frames_by_output.get(o.id)
         plan.append(
             {
                 "row": o,
                 "name": name,
-                "url": url,
+                "url": None,
                 "meta": meta,
                 "frame": fr,
-                "thumb_url": (
-                    await get_presigned_url(
-                        fr.bucket or settings.MINIO_BUCKET_RAW,
-                        fr.file_key,
-                        expires_seconds=_FRAME_URL_TTL_SECONDS,
-                    )
-                    if fr
-                    else None
-                ),
+                "thumb_url": None,
             }
         )
+    if plan:
+        pairs = await _aio_pkg.gather(
+            *[ _presign_pair(x["row"], x["frame"]) for x in plan ]
+        )
+        for x, (u, t) in zip(plan, pairs):
+            x["url"], x["thumb_url"] = u, t
 
     # 2026-11-11 评审（可靠性席 P2）：下载前收掉读事务——事务从首个 SELECT 一路开到下载完，
     # 任何一支等待超过 60s 就触发 idle_in_transaction_session_timeout 掐连接，整包 500。
@@ -14442,3 +14392,14 @@ async def refresh_asset_prompt(
             "要时长走 POST /assets/resolve 显式回源解析（doc/107 按次 0.01 元，计入批次成本）"
         )
     return result
+
+
+# ── 外移序列化器的晚绑定（2026-11-13）：上面 import 时这些 helper 还没定义，
+# 在文件末尾（全部 def 已就位）再注入——避免 serializers 反向 import 本文件成环。
+for _n in (
+    "_card_ratio_fields", "_card_shape_notes", "_card_mixed_orientation_note",
+    "_describe_not_video", "_export_block_reason", "_image_block_reason",
+    "REVIEW_PASSED_STATES", "_can_resubmit",
+):
+    if hasattr(sys.modules[__name__], _n):
+        setattr(_asset_ser, _n, getattr(sys.modules[__name__], _n))

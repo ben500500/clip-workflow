@@ -54,7 +54,6 @@ class Settings(BaseSettings):
     BATCH_AGGREGATE_INTERVAL_SECONDS: int = 10 # 批次状态聚合间隔
 
     # Upload
-    UPLOAD_CHUNK_SIZE: int = 5 * 1024 * 1024  # 5MB
     UPLOAD_TEMP_DIR: str = "/tmp/uploads"
     UPLOAD_MAX_SIZE: int = 50 * 1024 * 1024 * 1024  # 50GB
     ALLOWED_VIDEO_EXTENSIONS: str = ".mp4,.avi,.mov,.mkv,.webm"
@@ -65,8 +64,6 @@ class Settings(BaseSettings):
     MULTI_UPLOAD_SECOND_DIFF_DETECT: bool = False
 
     # App
-    APP_HOST: str = "0.0.0.0"
-    APP_PORT: int = 8080
     DEBUG: bool = False
 
     # CORS（逗号分隔；默认放行所有来源，但不带凭据）
@@ -74,7 +71,6 @@ class Settings(BaseSettings):
 
     # RPA / Publish
     CHROME_DEBUG_PORT: int = 9222
-    RPA_REQUIRE_MANUAL_CONFIRM: bool = True
     MINIO_BUCKET_SCREENSHOTS: str = "publish-screenshots"
 
     # Chrome CDP 地址（容器内发布时指向 rpa_worker）
@@ -101,29 +97,19 @@ class Settings(BaseSettings):
     # remove_mask（remove-mask 仓库 ROI + cv2.inpaint TELEA）执行入口脚本（位于 ENGINES_DIR 下）
     WATERMARK_REMOVE_MASK_SCRIPT: str = "remove_mask_remover.py"
     # 单个去水印视频最大时长（秒），超长会显著耗时
-    WATERMARK_MAX_DURATION: int = 3600
 
     # ── Seedance 官方 API 直连出片（与豆包 RPA 并行、独立通道） ──
     # 总开关（默认关闭）。开启后短片制作「提示词生成历史」出现「Seedance 生成」按钮，
     # 走火山方舟官方 API 直连出片（无需浏览器 RPA / 扫码）。
     # 也可在 system_config 的 shortdrama_seedance_config.enabled 覆盖。
-    SEEDANCE_ENABLED: bool = False
     # 火山方舟 API Key（https://console.volcengine.com/ark）
-    SEEDANCE_API_KEY: str = ""
     # 模型名或推理接入点 ID（ep-xxx）。Seedance 1.0 仅支持 5s/10s
-    SEEDANCE_MODEL: str = "seedance-1-0-pro-250528"
     # API Base（默认即可）
-    SEEDANCE_API_BASE: str = "https://ark.cn-beijing.volces.com/api/v3"
     # 出片分辨率：480p / 720p / 1080p
-    SEEDANCE_RESOLUTION: str = "1080p"
     # 是否加水印（建议 true，避免被平台判搬运）
-    SEEDANCE_WATERMARK: bool = True
     # 生成超时（秒）
-    SEEDANCE_TIMEOUT: int = 600
     # 时长超 10s 的处理策略：truncate(截成10s) / block(拒绝并提示)
-    SEEDANCE_LONG_DURATION_POLICY: str = "truncate"
     # 每日配额（0=不限）
-    SEEDANCE_DAILY_QUOTA: int = 0
 
     # 切片分发引擎：worker（Redis Stream / Go Worker）、local（单机同步执行）或 celery（回退）
     SLICE_ENGINE: str = "worker"
@@ -150,11 +136,8 @@ class Settings(BaseSettings):
     #   cc0 / self_produced / commercial 的文件。
     # BGM_VOLUME：BGM 母音量（默认 0.35，弱背景、不压人声，与 FFmpeg bgm_volume 对齐）。
     # BGM_MIX_RATIO：派生变体中采用 BGM 模式的比例（0~1，默认 0.4，其余走原音频模式池）。
-    BGM_ENABLED: bool = False
     BGM_DIR: str = ""
     BGM_LICENSE_MANIFEST: str = ""
-    BGM_VOLUME: float = 0.35
-    BGM_MIX_RATIO: float = 0.4
 
     # JWT
     JWT_SECRET: str  # 必填无默认；启动时 field_validator 拒绝占位符/默认值
@@ -278,7 +261,6 @@ class Settings(BaseSettings):
     # 文件缺失/解析失败时任务 fail-soft 跳过本轮，等下一个采集周期，不重试不告警。
     BOARD_DATA_JSON_PATH: str = "/data/board/board_data.json"
     # 导入任务队列（复用 worker-fast 已订阅的 metrics 队列）
-    BOARD_METRICS_QUEUE: str = "metrics"
 
     # ── 推送到下载平台（dupload，对接 21:8800 dramaupload / dupload 独立服务）──
     # 总开关（默认开启）。开启后剧目详情页出现「推送到下载平台」区块，
@@ -327,7 +309,6 @@ class Settings(BaseSettings):
     # 渲染产物上传到 sliced 桶的 key 前缀
     REMOTION_OUTPUT_PREFIX: str = "remotion"
     # Remotion 渲染独立队列（由 worker-remotion 独占消费）
-    REMOTION_QUEUE: str = "remotion"
     # Remotion 渲染超时守护巡检间隔（秒）：周期回写 stuck 在 rendering 的超时任务为 failed
     REMOTION_STALE_INTERVAL_SECONDS: int = 300
     # Remotion 渲染任务超时阈值（秒）：超过该时长仍 rendering 视为卡死，守护任务回写 failed

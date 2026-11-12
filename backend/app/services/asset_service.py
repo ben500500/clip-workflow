@@ -166,11 +166,6 @@ def guess_platform(host: str) -> Optional[str]:
     return None
 
 
-def is_noise_param(key: str) -> bool:
-    """判断某 query 参数是否属于可丢弃的分享埋点（供前端提示/后续扩展用）。"""
-    k = (key or "").lower()
-    return k in _NOISE_PARAM_KEYS or any(k.startswith(p) for p in _NOISE_PARAM_PREFIXES)
-
 
 def looks_like_direct_url(raw: Optional[str]) -> bool:
     """是否视频直链（AI 消除/画质修复吃直链最省，分享链接要多花 0.01 元解析）。"""

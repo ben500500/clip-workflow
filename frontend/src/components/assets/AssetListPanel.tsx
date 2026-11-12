@@ -1167,7 +1167,9 @@ const AssetListPanel: React.FC<Props> = ({
               <Tag color="purple">另勾了 {selectedImageCount} 张图，不参与这几步</Tag>
             </Tooltip>
           )}
-          <Button type="primary" icon={<FileTextOutlined />} onClick={openAnalyze} disabled={!ids.length}>
+          {/* 2026-11-13 流畅性席 P0：analyzeLoading/resolveBusy 没接线——点击后 0.3-2s 死寂窗，
+              按钮可再点＝双份反推任务双份扣费。loading＋busy 期间一并禁点。 */}
+          <Button type="primary" icon={<FileTextOutlined />} loading={analyzeLoading} onClick={openAnalyze} disabled={!ids.length || analyzeLoading}>
             反推文案（{selectedVideoCount}）
           </Button>
           {/*
@@ -1218,7 +1220,7 @@ const AssetListPanel: React.FC<Props> = ({
             </Button>
           </Tooltip>
           <Tooltip title="去原链接查视频时长（费用自动记账进批次成本；只适用于链接素材）">
-            <Button icon={<CloudDownloadOutlined />} onClick={openResolve} disabled={!ids.length}>
+            <Button icon={<CloudDownloadOutlined />} loading={resolveBusy} onClick={openResolve} disabled={!ids.length || resolveBusy}>
               查时长（{ids.length}）
             </Button>
           </Tooltip>

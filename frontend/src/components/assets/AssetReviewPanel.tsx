@@ -146,6 +146,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
   const [trialFor, setTrialFor] = useState<AssetSummary | null>(null);
   const [trialPrompt, setTrialPrompt] = useState('');
   const [trialBusy, setTrialBusy] = useState(false);
+  const [trialStep, setTrialStep] = useState('');
   // 当前页候选名下的试产单（summary_id → 单列表）：卡上显示「试产中/样片待判定」
   const [trialProds, setTrialProds] = useState<
     Record<string, { id: string; status: string; error?: string | null }[]>
@@ -260,6 +261,15 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
     },
     [auditStatus, recommendedOnly, onlyRisk, onlyInconsistent, onlyMine, batchFilter, categoryFilter, keyword, ownerView, page, pageSize],
   );
+
+  // 2026-11-13 流畅性席 P0：搜索框逐键触发全量重拉（每键 2 请求+表格闪一次）。
+  // 输入态即时、查询态 400ms 防抖。
+  const [keywordInput, setKeywordInput] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setKeyword(keywordInput.trim()), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keywordInput]);
 
   useEffect(() => {
     fetchList(1, pageSize);
@@ -409,7 +419,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
       }
       if (hints.length) message.info(hints.join('；'), 10);
       setSelected([]);
-      fetchList(1, pageSize);
+      // 2026-11-13 流畅性席 P2：审完停在当前页——翻到第 3 页审完弹回第 1 页很烦人
+      fetchList(page, pageSize);
       // 2026-11-11 评审（审核席 P1）：审完角标立即重拉，别等 20s 轮询跳变
       window.dispatchEvent(new Event('asset-badges-refresh'));
       return { ok: okCount, blocked: blocked.length };
@@ -519,6 +530,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
       return;
     }
     setTrialBusy(true);
+    setTrialStep('① 建单中（复核＋取号，几秒）…');
     try {
       // ① 建单：走正常投产口（async_mode=false 拿同步回执拿 ids），1 条 × 1 版
       const res = await assetApi.produce({
@@ -539,6 +551,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
         return;
       }
       // ② 投板：trial_only=true（成片只回审核台），改后的提示词走 prompt_overrides
+      setTrialStep('② 投板上板中…');
       await assetApi.dispatchProductions({
         ids: [pid],
         confirm: true,
@@ -556,6 +569,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
       message.error((e as Error).message || '试产没投出去（原因见报错）', 8);
     } finally {
       setTrialBusy(false);
+      setTrialStep('');
     }
   };
 
@@ -898,7 +912,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
             allowClear
             style={{ width: 190 }}
             value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
+            onChange={(e) => setKeywordInput(e.target.value)}
           />
         </Tooltip>
         <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
@@ -1194,6 +1208,9 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
               showIcon
               message="这条还没备好豆包提示词预览——可在输入框直接写，或去卡片点「过」让系统备好后再来试产。"
             />
+          )}
+          {trialStep && (
+            <Alert type="info" showIcon message={trialStep} />
           )}
           <Input.TextArea
             rows={10}

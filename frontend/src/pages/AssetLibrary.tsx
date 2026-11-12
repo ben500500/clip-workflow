@@ -145,6 +145,21 @@ const AssetLibrary: React.FC = () => {
     setReloadToken((t) => t + 1);
     // 2026-11-11 评审（审核席 P1）：任务收尾（开单/出文案等）角标立即重拉
     window.dispatchEvent(new Event('asset-badges-refresh'));
+    // 2026-11-13 流畅性席 P1：试产任务终态要把人带到看得到片的地方——
+    // 试产片不在 ④（is_trial 被成片链路过滤），判定按钮在 ③ 的卡片试产区。
+    if (job.kind === 'dispatch' && job.status === 'succeeded') {
+      const raw = (job.result as { results?: unknown } | null)?.results;
+      const isTrial = (() => {
+        if (Array.isArray(raw)) return raw.some((x) => (x as { trial?: boolean })?.trial);
+        if (raw && typeof raw === 'object') {
+          return Object.values(raw as Record<string, { trial?: boolean }>).some((x) => x?.trial);
+        }
+        return false;
+      })();
+      if (isTrial) {
+        setActiveTab('review');
+      }
+    }
     // 11-06 承诺审计③：后端把逐条 note/error 都备在 job.result.results 里，此前前端
     // 从不读——「逐条成败看 result.results」是空头承诺。这里把它摆出来（截前 6 条）。
     //
