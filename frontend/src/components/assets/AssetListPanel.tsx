@@ -1217,7 +1217,7 @@ const AssetListPanel: React.FC<Props> = ({
               收取在跑结果（本页 {runningCount}）
             </Button>
           </Tooltip>
-          <Tooltip title="去原链接查视频时长：每次 0.01 元，计入批次成本；只适用于链接素材">
+          <Tooltip title="去原链接查视频时长（费用自动记账进批次成本；只适用于链接素材）">
             <Button icon={<CloudDownloadOutlined />} onClick={openResolve} disabled={!ids.length}>
               查时长（{ids.length}）
             </Button>
