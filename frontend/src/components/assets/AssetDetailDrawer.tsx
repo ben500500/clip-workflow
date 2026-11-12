@@ -258,6 +258,12 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
       message.success(
         res.asset_changed ? `原型已改成「${name || '未分类'}」（改动留档）` : '原型没有变化',
       );
+      // 2026-11-12（用户现场 AS-9305555A）：改完素材原型的人几乎都会去开单页点
+      // 「重新认参数」然后以为失灵——因为已出的候选不跟素材回写（11-04 拍板①）。
+      // 在动作原地把这件事说穿，别让一线到开单页才发现。
+      if (res.asset_changed) {
+        message.info('已出的候选文案不跟着改：开单换皮想按新原型走，去「审核台给这条候选点原型」即可（0 元）', 8);
+      }
       invalidateAssetCategories();
       onChanged?.();
     } catch (e) {

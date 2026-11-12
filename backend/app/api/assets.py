@@ -6862,7 +6862,15 @@ async def list_summaries(
             _serialize_summary(
                 s, a,
                 can_resubmit=_can_resubmit(s, a, current_user),
-                category_name=cat_names.get(str(s.category_id)) if s.category_id else None,
+                # 2026-11-12（用户现场 AS-9305555A）：候选自己没点原型时回退**素材的原型**。
+                # 「出稿时从素材继承」本来就是这个语义——素材在详情抽屉改了原型，开单的
+                # 换皮参数与原型标记必须跟得上，否则一线改完像没改（extract 拿空 category
+                # 过滤，原型专属参数项一格不出）。候选自己点过原型则永不回退（显式覆盖继承）。
+                category_name=(
+                    cat_names.get(str(s.category_id))
+                    if s.category_id
+                    else (cat_names.get(str(a.category_id)) if a.category_id else None)
+                ),
                 output_count=out_counts.get(s.id, 0),
                 production_count=prod_counts.get(s.id, 0),
                 reviewer_name=reviewer_names.get(str(s.reviewed_by)) if s.reviewed_by else None,

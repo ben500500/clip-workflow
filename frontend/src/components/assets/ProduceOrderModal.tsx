@@ -111,8 +111,8 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
    *  - 库里查不到（撤审后整批重出把旧行作废了、或素材被删）→ 保留旧的那份并点名，
    *    开单时后端那道闸门会自己拦下；这里先说一声，省得人投出去才发现少了几条。
    */
-  const refetchLatest = async () => {
-    if (!liveSummaries.length) return;
+  const refetchLatest = async (): Promise<number> => {
+    if (!liveSummaries.length) return 0;
     setRefetching(true);
     try {
       const res = await assetApi.listSummaries({
@@ -140,6 +140,8 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
         return s;
       });
       if (changed.length) setLiveSummaries(next);
+      // 变更回执交给 AssetProduceParams 的自动重认（它认完会给「已重新认出 N 项」），
+      // 这里不再重复播报（2026-11-12 审计：两处播报叠加像卡了两次）
       if (gone.length) {
         message.warning(
           `${gone.length} 条在库里已经查不到了（${gone.slice(0, 3).join('、')}${gone.length > 3 ? '…' : ''}）`
@@ -147,13 +149,11 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
           8,
         );
       }
-      if (changed.length) {
-        message.success(`已取回最新稿子：${changed.length} 条正文/提示词变了，参数项按新稿重认过`, 6);
-      } else if (!gone.length) {
-        message.info('这几条的稿子没变，还是刚才那一版（参数项不用重认）');
-      }
+
+      return changed.length;
     } catch (e) {
       message.error(`${(e as Error).message || '取最新稿子没成功'}——不影响照常开单，按手里这一版继续`, 8);
+      return 0;
     } finally {
       setRefetching(false);
     }
