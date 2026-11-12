@@ -518,13 +518,15 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
             <Button onClick={closeAndGiveUp}>{busy ? '先关掉，后台继续跑' : '取消'}</Button>
             {/* 11-10 用户口径「我投去了，生产出来了就给我看，不要搞这么复杂」：
                 主按钮＝建完单直接进投板确认（窗口自己缩掉）；想先囤着不投走左边那颗。 */}
-            <Button
-              loading={busy && submitIntent === 'build_only'}
-              disabled={busy && submitIntent !== 'build_only'}
-              onClick={() => submit('build_only')}
-            >
-              只建单，先不投
-            </Button>
+            <Tooltip title="想先把单建好、参数回头再核一遍的场合用这颗：单子会出现在「④ 生产与投板」，之后勾选再投。常态直接点右边红色那颗，一步到位。">
+              <Button
+                loading={busy && submitIntent === 'build_only'}
+                disabled={busy && submitIntent !== 'build_only'}
+                onClick={() => submit('build_only')}
+              >
+                只建单，先不投
+              </Button>
+            </Tooltip>
             <Button
               type="primary"
               danger

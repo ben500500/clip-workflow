@@ -655,6 +655,9 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
       <Col span={24} style={{ marginBottom: 12 }}>
         <Collapse
           size="small"
+          /* 2026-11-12 复杂度审计：贴文案是当前主路径（两轮实走评审全走它），默认收起
+             等于每次多一击。默认展开；链接/文件/成稿配对仍是并列入口不受影响。 */
+          defaultActiveKey={['paste-copy']}
           items={[{
             key: 'paste-copy',
             label: <Text strong style={{ fontSize: 12 }}>直接贴文案（跳过链接/反推，直进审核队列）</Text>,
