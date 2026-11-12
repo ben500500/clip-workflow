@@ -31,6 +31,8 @@
 #      /etc/nginx/conf.d/default.conf），文件同步完 **进程不会重读配置**，而它又不在任何
 #      服务的构建上下文里 → 重建名单永远不含它 → 「日志全绿、现网没变」。现由第 4.6 步
 #      按 mtime／内容变更两条判据自动 docker restart（Issue #244）。
+#  11. 整镜像重建是这台机器最重的负载，现由 heavy_run() 在**服务器侧**加 flock 串成
+#      单队 + ionice/nice 降级（2026-11-12 内存枯竭事故的运维项，详见配置区注释）。
 #
 set -uo pipefail
 
@@ -80,6 +82,30 @@ PRUNE_ROLLBACK="${DEPLOY_PRUNE_ROLLBACK:-1}"
 ROLLBACK_KEEP="${DEPLOY_ROLLBACK_KEEP:-2}"
 ROLLBACK_KEEP_DAYS="${DEPLOY_ROLLBACK_KEEP_DAYS:-3}"
 
+# 重建（整镜像 build）串行锁 + 让路降级 —— 2026-11-12 上午现网事故的运维项：
+# 一个上午七轮 clip-* 镜像重建（06:28／06:39／06:41／08:50／08:57／09:13／10:08）叠加
+# 在一台**内存超额承诺约 385%（sar %commit）** 的机器上，
+# 10:29~10:36 内存枯竭（snapd goroutine dump、
+# PAM 卡 5 分钟、两次非正常重启）。多会话同时部署时脚本彼此不知情 → 构建峰值直接相加。
+# 治法（脚本层能做的部分，不改任何容器配置）：
+#   ① flock：所有走本脚本的重建排成一条队，后来的等锁而不是并发抢资源；
+#   ② ionice -c2 -n7 + nice -n10：让重建的 IO／CPU 给在线服务让路 —— 注意它只压得住
+#      compose 客户端本身（真正的编译在 dockerd/buildkit 里，不继承调用方优先级），
+#      所以它是辅助，不是主药；
+#   ③ mem_gate：重建前先探服务器 MemAvailable，低于闸门线先等、等不到就不重建。
+#      这条才是直接对着「内存枯竭」下手的。
+# 锁必须在**服务器侧**取：本机 macOS 没有 flock/ionice，且 ssh 远端持有的 fd 会随
+# 会话结束而释放。缺 util-linux（无 flock/ionice）时 heavy_run() 自动退化为直接执行，
+# 不会因此中断部署。DEPLOY_NICE=0 关掉降级、DEPLOY_SKIP_MEM_GATE=1 关掉内存闸门。
+BUILD_LOCK_FILE="${DEPLOY_BUILD_LOCK_FILE:-/var/tmp/clip-build.lock}"
+BUILD_LOCK_WAIT="${DEPLOY_BUILD_LOCK_WAIT:-3600}"
+NICE_BUILD="${DEPLOY_NICE:-1}"
+# 重建前的内存闸门（比 ②③ 更管用：build 的重活在 dockerd 里，nice 压不住它）。
+# 可用内存低于 MIN_MEM_MB 就先等，等满 MEM_WAIT 秒仍不足 → 直接不重建，把选择权交回人。
+MIN_MEM_MB="${DEPLOY_MIN_MEM_MB:-1500}"
+MEM_WAIT="${DEPLOY_MEM_WAIT:-600}"
+SKIP_MEM_GATE="${DEPLOY_SKIP_MEM_GATE:-0}"
+
 for a in "$@"; do
   case "$a" in
     --dry-run|-n)         DRY_RUN=1 ;;
@@ -94,6 +120,64 @@ done
 # ============ 函数 ============
 log()  { echo "[$(date +%H:%M:%S)] $*"; }
 die()  { echo "[$(date +%H:%M:%S)] ERROR: $*" >&2; exit 1; }
+
+# 在服务器上以「flock 串行 +（尽力）ionice/nice 让路」执行一条重活命令（整镜像重建）。
+#   $1 = 远端命令，其中的变量请在调用侧先展开成字面量。
+# 实现要点：
+#   · 命令正文本地 base64 后再传，远端 `base64 -d | sh` 还原 —— 这样内层的引号、
+#     && 、管道都不会在「ssh → flock -c → nice → sh -c」四层嵌套里被切错。
+#   · 优先级只能压到 compose **客户端**进程（build 的重活实际在 dockerd/buildkit 里，
+#     不继承调用方的 nice/ionice），所以它只是锦上添花；真正挡事故的是下面两件事：
+#     排队（heavy_run 的 flock）＋ 重建前体检（mem_gate）。
+#   · 远端缺 flock / ionice / nice 时逐项自动退化，最差等价于直接执行；退出码透传，
+#     所以调用侧原有的 `|| die "..."` 仍然成立（等锁超时同样非零 → 会 die）。
+heavy_run() {
+  local inner="$1"
+  local b64 remote
+  b64=$(printf '%s' "$inner" | base64 | tr -d '\n')
+  if [ -z "$b64" ]; then die "heavy_run 收到空命令（拒绝执行）"; fi
+  remote="RUN=\"sh -c 'echo ${b64} | base64 -d | sh'\"; "
+  if [ "$NICE_BUILD" = "1" ]; then
+    remote="${remote}command -v ionice >/dev/null 2>&1 && RUN=\"ionice -c2 -n7 \${RUN}\"; "
+    remote="${remote}command -v nice   >/dev/null 2>&1 && RUN=\"nice -n10 \${RUN}\"; "
+  fi
+  remote="${remote}if command -v flock >/dev/null 2>&1; then "
+  remote="${remote}echo \"[lock] flock -w ${BUILD_LOCK_WAIT} ${BUILD_LOCK_FILE}\"; "
+  remote="${remote}flock -w ${BUILD_LOCK_WAIT} ${BUILD_LOCK_FILE} -c \"\${RUN}\"; "
+  remote="${remote}else echo '[lock] 服务器无 flock，本次不加锁'; eval \"\${RUN}\"; fi"
+  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "$remote"
+}
+
+# 重建前的内存闸门：服务器可用内存低于阈值就先等，等不到就**不重建**。
+# 判据取 /proc/meminfo 的 MemAvailable（含可回收 cache），比 free 的「可用」列贴近实际。
+# 拿不到数（老内核／ssh 异常）时只 WARN 不拦，避免把部署卡死在一次探测上。
+mem_gate() {
+  if [ "$SKIP_MEM_GATE" = "1" ]; then
+    log "内存闸门已由 DEPLOY_SKIP_MEM_GATE=1 关掉"
+    return 0
+  fi
+  local waited=0 avail=""
+  while :; do
+    # shellcheck disable=SC2086
+    avail=$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" \
+      "awk '/^MemAvailable:/{print int(\$2/1024); exit}' /proc/meminfo" 2>/dev/null \
+      | tail -1 | tr -dc '0-9')
+    if [ -z "$avail" ]; then
+      log "WARN: 读不到服务器 MemAvailable，闸门跳过（请自行确认机器余量再重建）"
+      return 0
+    fi
+    if [ "$avail" -ge "$MIN_MEM_MB" ]; then
+      log "内存闸门通过：服务器可用 ${avail}MB ≥ 闸门线 ${MIN_MEM_MB}MB"
+      return 0
+    fi
+    if [ "$waited" -ge "$MEM_WAIT" ]; then
+      die "服务器可用内存仅 ${avail}MB（闸门线 ${MIN_MEM_MB}MB），已等 ${waited}s 仍不足 → 本次不重建。先腾出内存（或 DEPLOY_SKIP_MEM_GATE=1 强行、DEPLOY_MIN_MEM_MB 调线）"
+    fi
+    log "服务器可用 ${avail}MB < 闸门线 ${MIN_MEM_MB}MB，30s 后重探（已等 ${waited}/${MEM_WAIT}s）"
+    sleep 30
+    waited=$((waited + 30))
+  done
+}
 
 # 整目录打包并管道传到服务器解压（正确写法）
 sync_dir() {
@@ -437,6 +521,16 @@ else
   log "需重建容器: $SERVICES"
 fi
 
+# 2.5 重建前的内存闸门 —— 故意放在**同步之前**：不通过就这次一个文件都不动，
+#     服务器上不会留下「代码已换新、容器还跑旧的」半部署状态。
+if [ -n "$SERVICES" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    log "[dry-run] 同步前先过内存闸门：MemAvailable ≥ ${MIN_MEM_MB}MB，最多等 ${MEM_WAIT}s（DEPLOY_SKIP_MEM_GATE=1 关掉，DEPLOY_MIN_MEM_MB 调线）"
+  else
+    mem_gate
+  fi
+fi
+
 # 3. 同步受影响目录（整目录，避免半同步）+ 根级散落文件
 if [ "$DRY_RUN" = "1" ]; then
   log "[dry-run] 将同步目录: ${SYNC_DIRS[*]}"
@@ -581,6 +675,7 @@ prune_rollback_tags() {
 if [ -n "$SERVICES" ]; then
   if [ "$DRY_RUN" = "1" ]; then
     log "[dry-run] 将重建容器: $SERVICES"
+    log "[dry-run] 重建将在服务器侧排队: flock -w ${BUILD_LOCK_WAIT} ${BUILD_LOCK_FILE}；DEPLOY_NICE=${NICE_BUILD}（1=构建加 ionice -c2 -n7 nice -n10）"
     case " $SERVICES " in
       *" slice-worker "*) log "[dry-run] 将先在服务器执行 sync-engines-to-worker.sh（刷新构建副本）" ;;
     esac
@@ -598,15 +693,18 @@ if [ -n "$SERVICES" ]; then
     case " $SERVICES " in
       *" slice-worker "*)
         log "刷新构建副本 slice-worker/engines (sync-engines-to-worker.sh)..."
-        ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && bash scripts/sync-engines-to-worker.sh" \
+        # 也走 heavy_run：这把 cp 是 slice-worker 的**构建输入**，不排进同一把锁的话，
+        # 可能正好把别人的 build 读到一半的 engines 换掉（rm -rf + cp -r 不是原子的）。
+        # shellcheck disable=SC2086
+        heavy_run "cd ${REMOTE_DIR} && bash scripts/sync-engines-to-worker.sh" \
           || die "sync-engines-to-worker.sh 执行失败"
         ;;
     esac
 
     log "重建容器: $SERVICES"
     # shellcheck disable=SC2086
-    ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose up -d --build $SERVICES" \
-      || die "docker compose 重建失败"
+    heavy_run "cd ${REMOTE_DIR} && docker compose up -d --build ${SERVICES}" \
+      || die "docker compose 重建失败（若上一行没有构建输出就直接失败，多半是等 ${BUILD_LOCK_WAIT}s 没抢到 ${BUILD_LOCK_FILE} —— 说明有另一场重建还在跑）"
 
     # 4.2 engines/ 变更且 backend 不在重建名单时：engines 对 clip-backend 是只读
     #     bind mount（/app/engines），文件已随同步生效，但 uvicorn 无 --reload，
