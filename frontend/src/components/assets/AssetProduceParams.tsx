@@ -1,7 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Alert, Button, Collapse, Input, Radio, Select, Space, Spin, Tag, Tooltip, Typography,
-} from 'antd';
+import { Alert, Button, Collapse, Input, Radio, Select, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
 import { BulbOutlined, ReloadOutlined } from '@ant-design/icons';
 import { assetApi } from '../../api/assets';
 import type { AssetPromptElementFound, AssetSummary, FanoutPreviewVariant } from '../../api/assets';
@@ -285,6 +283,14 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
       setSlots(nextSlots);
       setNotes(res.notes || []);
       setCategoryName(res.category || (cats.length === 1 ? cats[0] : ''));
+      // 2026-11-12（用户现场 AS-9305555A）：认完要给一句可见回执——参数项没变时
+      // 界面一格不动，一线只会觉得「点了没反应」。顺带把两个按钮的分工说清。
+      message.info(
+        `已按当前屏幕底稿重认：${nextSlots.length} 项参数${
+          res.items ? `（${Object.keys(res.items).length} 篇稿子）` : ''
+        }。若刚在别的屏改过原型/稿子，点「取最新稿子/原型」才会拉到新值`,
+        6,
+      );
       // 11-11 批 Z（用户原话「你不能按照固定的词典去识别，你要调用大模型的能力去做这个事情」）：
       // 词表退成**第一道 0 元粗筛**，认完还空着的那几格当场自动接模型补位，不再等人点按钮。
       // 钱有上限：后端按这份稿子的正文指纹缓存，同一篇同一格只花一次（全命中这次就 0 元）。
@@ -681,25 +687,27 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
             <Tag>{summaries.length} 篇各认各的原值</Tag>
           </Tooltip>
         )}
-        <Button
-          size="small"
-          icon={<ReloadOutlined />}
-          loading={loading}
-          onClick={() => {
-            // 人主动点＝按**界面上这一版**底稿重认，「我重认过了」那句话也就没意义了
-            setRecheckNote(null);
-            void extract();
-          }}
-        >
-          重新认参数
-        </Button>
+        <Tooltip title="按你屏幕上这一版底稿和原型重认一遍——**不会**去库里重新拉取。原型/稿子刚在别的屏改过的话，先点旁边「取最新稿子/原型」把新值取回来，它会自动重认。">
+          <Button
+            size="small"
+            icon={<ReloadOutlined />}
+            loading={loading}
+            onClick={() => {
+              // 人主动点＝按**界面上这一版**底稿重认，「我重认过了」那句话也就没意义了
+              setRecheckNote(null);
+              void extract();
+            }}
+          >
+            重新认参数
+          </Button>
+        </Tooltip>
         {/* 11-11「再重新生成的时候可以重新获取」：稿子可能刚在别的屏被覆盖重出／改后重提／补提示词，
             这一颗按钮去库里取回这几条**现在**的样子（0 元、一次列表读口），取回来上面那段会自动重认。
             它不跟着自动跑：开单中途擅自换底稿会把人刚填的东西冲掉，那必须是人自己点的。 */}
         {!!onRefetch && (
-          <Tooltip title="这批稿子如果在别的屏重新生成过（覆盖重出／改后重提／补提示词），点这一下取回库里现在的正文和提示词，参数项会按新稿重认一遍。不花钱。">
+          <Tooltip title="这批稿子如果在别的屏重新生成过（覆盖重出／改后重提／补提示词），点这一下取回库里现在的正文、提示词和原型归类（在审核台改过原型也算），参数项会按新值自动重认一遍。不花钱。">
             <Button size="small" loading={refetching} onClick={() => void onRefetch?.()}>
-              取最新稿子
+              取最新稿子/原型
             </Button>
           </Tooltip>
         )}
