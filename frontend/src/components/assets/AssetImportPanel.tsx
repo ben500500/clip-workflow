@@ -603,7 +603,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
     { title: '原型', key: 'cat', width: 92, render: (_, r) => r.item.category || <Text type="secondary">未填</Text> },
     {
       title: (
-        <Tooltip title="四个槽位：原片（配对上就有）／反推稿 script_text／钩子文案 hook_copy／豆包提示词 doubao_prompt。缺稿＝欠一次反推（花钱）；有稿没文案＝欠一次出文案（免费）">
+        <Tooltip title="四个槽位：原片（配对上就有）／反推稿 script_text／钩子文案 hook_copy／豆包提示词 doubao_prompt。缺稿＝欠一次反推；有稿没文案＝欠一次出文案">
           <span>槽位</span>
         </Tooltip>
       ),
@@ -801,7 +801,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
                   <Button type="primary" loading={importing} onClick={() => submitLinks()}>
                     导入 {parsedLinks.length} 条链接
                   </Button>
-                  <Tooltip title="导入后系统自动下载原片（解析 0.01 元/条照记账，进批次成本）；不想要这批的片就别导入。进度看页面顶上的任务条">
+                  <Tooltip title="导入后系统自动下载原片（解析费自动记账，进批次成本）；不想要这批的片就别导入。进度看页面顶上的任务条">
                     <Text type="secondary" style={{ fontSize: 12 }}>导入后自动下载原片</Text>
                   </Tooltip>
                 </Space>
@@ -890,7 +890,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
                       <Space direction="vertical" size={2}>
                         <Text style={{ fontSize: 12 }}>
                           两条欠账分开记：<b>有稿没文案 {pairedStat.needCopy} 条</b>（入库后点一下「出文案」就补上，不吃反推钱）；
-                          <b> 没反推稿 {pairedStat.noScript} 条</b>（要补只能跑一次反推，那步花钱；不补则过审时没有稿做一致性对照）。
+                          <b> 没反推稿 {pairedStat.noScript} 条</b>（要补只能跑一次反推；不补则过审时没有稿做一致性对照）。
                         </Text>
                         {(pairedStat.dupManifest > 0 || pairedStat.dupFile > 0) && (
                           <Text type="warning" style={{ fontSize: 12 }}>
@@ -1080,7 +1080,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
                     )}
                     {!!lastPaired.need_prompt?.length && (
                       <Text type="warning" style={{ fontSize: 12 }}>
-                        {lastPaired.need_prompt.length} 条没反推稿 → 要补只能跑一次反推（那步花钱）；不补则过审时没有稿做一致性对照：
+                        {lastPaired.need_prompt.length} 条没反推稿 → 要补只能跑一次反推；不补则过审时没有稿做一致性对照：
                         {lastPaired.need_prompt.slice(0, 12).join('、')}
                         {lastPaired.need_prompt.length > 12 ? '…' : ''}
                       </Text>

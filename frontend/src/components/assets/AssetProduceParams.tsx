@@ -294,7 +294,7 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
       );
       // 11-11 批 Z（用户原话「你不能按照固定的词典去识别，你要调用大模型的能力去做这个事情」）：
       // 词表退成**第一道 0 元粗筛**，认完还空着的那几格当场自动接模型补位，不再等人点按钮。
-      // 钱有上限：后端按这份稿子的正文指纹缓存，同一篇同一格只花一次（全命中这次就 0 元）。
+      // 同一篇稿子同一格只问一次模型，之后走缓存。
       void autoGuess(nextSlots, texts, cats.length === 1 ? cats[0] : undefined);
     } catch (e) {
       setError((e as Error).message || '参数项认不出来（不影响照常开单）');
@@ -397,7 +397,7 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
         setGuessError(
           downNote
             ? '模型那一路这次没通，这批只用了词表认出来的原值——不影响照常开单；下面那句是它回的原话，' +
-              '要再试一次点上面「再问一次模型（花钱）」。'
+              '要再试一次点上面「再问一次模型」。'
             : '模型没抄回能用的原值（它给的串都不在这批稿子里，或这一型确实没写那些东西）——' +
               '下面展开底稿自己照抄那一句，留空不影响开单',
         );
@@ -681,7 +681,7 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
       <Space wrap size={6}>
         <Text strong>换皮参数（填多个值＝一次出多条）</Text>
         {/* 11-10 用户口径「说明太长篇大论，缩进浮窗」：这段解释从 Tooltip 换成「？」，界面只留标题 */}
-        <HelpDot text="参数项来自「可替换元素库」字典（按钩子原型配的行）。原值分两道认：先用字典里的词面 0 元认一遍，认不出的那几格**自动**交给模型从这篇稿子里逐字抄回（后端按正文存着，同一篇同一格只花一次钱）。标签会写明每一格是词表认的还是模型抄的。填多个值＝一次扇多条，换词本身不花钱。" />
+        <HelpDot text="参数项来自「可替换元素库」字典（按钩子原型配的行）。原值分两道认：先用字典里的词面 0 元认一遍，认不出的那几格**自动**交给模型从这篇稿子里逐字抄回（同一篇同一格只问一次，之后走缓存）。标签会写明每一格是词表认的还是模型抄的。填多个值＝一次扇多条，换词本身不花钱。" />
         {!!categoryName && <Tag color="blue">{categoryName}</Tag>}
         {!categoryName && (
           <Tooltip title="这批候选还没点钩子原型：不限定参数项，全部参数都会摆出来。想让开单只按某个原型的参数换皮，去审核台给候选「点原型」（素材上改原型只影响以后新出的文案）。">
@@ -718,7 +718,7 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
         {!!slots.length && (
           <Tooltip title="认不出来的那几格，点「重新认参数」后会自动问一轮模型（同一篇稿子同一格只花一次钱，之后走缓存）。这一颗是绕过缓存原样再问一遍——会再花一次钱，改了字典或想让模型重看时用它。">
             <Button size="small" icon={<BulbOutlined />} loading={guessing} onClick={guess}>
-              再问一次模型（花钱）
+              再问一次模型
             </Button>
           </Tooltip>
         )}

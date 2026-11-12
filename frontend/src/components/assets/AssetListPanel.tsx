@@ -22,7 +22,6 @@ import {
 import {
   CategorySelect, CategoryTag, UNCLASSIFIED, invalidateAssetCategories, useAssetCategories,
 } from './AssetCategoryBits';
-import CostConfirmModal from './CostConfirmModal';
 import AssetDetailDrawer from './AssetDetailDrawer';
 import AssetComposeModal from './AssetComposeModal';
 import ApprovedSummaryPickerModal from './ApprovedSummaryPickerModal';
@@ -166,26 +165,6 @@ const AssetListPanel: React.FC<Props> = ({
   // 筛选
   const [keyword, setKeyword] = useState('');
   // P1（评审定稿⑪）：选档帮手——只用已落库时长（文件 ffprobe/链接解析回填），不现场探
-  const durationHint = useMemo(() => {
-    const ds = selected
-      .filter((s) => s.media_kind !== 'image')
-      .map((s) => s.duration)
-      .filter((d): d is number => typeof d === 'number' && d > 0);
-    if (!ds.length) return '';
-    const known = ds.length;
-    const buckets = { 60: 0, 180: 0, 300: 0, 600: 0 } as Record<number, number>;
-    let unknown = selected.filter((s) => s.media_kind !== 'image').length - known;
-    ds.forEach((d) => {
-      const cap = d <= 60 ? 60 : d <= 180 ? 180 : d <= 300 ? 300 : 600;
-      buckets[cap] += 1;
-    });
-    const suggest = (Object.entries(buckets).find(([, c]) => c >= known / 2) || [null])[0];
-    const parts = Object.entries(buckets)
-      .filter(([, c]) => c)
-      .map(([t, c]) => `${c} 条≤${t}s`)
-      .concat(unknown > 0 ? [`${unknown} 条时长未知`] : []);
-    return `${parts.join('、')}${suggest ? `——建议 ${suggest}s 档` : ''}`;
-  }, [selected]);
   const [status, setStatus] = useState<string | undefined>();
   const [sourceKind, setSourceKind] = useState<string | undefined>();
   /**
@@ -213,19 +192,10 @@ const AssetListPanel: React.FC<Props> = ({
   const [composeAsset, setComposeAsset] = useState<AssetItem | null>(null);
 
   // 反推确认
-  const [analyzeOpen, setAnalyzeOpen] = useState(false);
-  const [analyzePreview, setAnalyzePreview] = useState<AssetCostEstimateResponse | null>(null);
   const [analyzeLoading, setAnalyzeLoading] = useState(false);
-  const [previewLoading, setPreviewLoading] = useState(false);
   const [tier, setTier] = useState<number>(DEFAULT_TIER);
-  const [confirmed, setConfirmed] = useState(false);
-  const [force, setForce] = useState(false);
   const [retryFailed, setRetryFailed] = useState(false);
 
-  // 回源解析确认
-  const [resolveOpen, setResolveOpen] = useState(false);
-  const [resolvePreview, setResolvePreview] = useState<AssetCostEstimateResponse | null>(null);
-  const [resolveConfirmed, setResolveConfirmed] = useState(false);
   const [resolveBusy, setResolveBusy] = useState(false);
 
   // 批 M（11-09 用户口径）：② 页直达投产——勾素材 → 看它们名下已过审的文案 → 投产弹窗。
@@ -351,29 +321,9 @@ const AssetListPanel: React.FC<Props> = ({
       );
       return;
     }
-    setAnalyzeOpen(true);
-    // 11-05 用户口径：反推是常规动作，进来就默认勾上「同意提交」——
-    // 想反悔的人再点一下取消即可；确认单上的钱数照旧展示，闸门本身不放松
-    setConfirmed(true);
-    setForce(false);
-    setPreviewLoading(true);
-    try {
-      setAnalyzePreview(await assetApi.estimateCost({ count: selectedVideoCount, max_duration: tier }));
-    } catch (e) {
-      message.error((e as Error).message || '成本预估失败');
-    } finally {
-      setPreviewLoading(false);
-    }
-  };
-
-  const refreshAnalyzePreview = async (nextTier: number) => {
-    setTier(nextTier);
-    setPreviewLoading(true);
-    try {
-      setAnalyzePreview(await assetApi.estimateCost({ count: selectedVideoCount, max_duration: nextTier }));
-    } finally {
-      setPreviewLoading(false);
-    }
+    // 2026-11-12（用户口径「花模型的钱不用放台面上，后台有记录就行」）：反推不再弹
+    // 成本确认单——费用照实记账进批次台账与审计，界面直接提交。守卫（没选/全是图）保留。
+    void submitAnalyze();
   };
 
   const submitAnalyze = async () => {
@@ -384,7 +334,9 @@ const AssetListPanel: React.FC<Props> = ({
           asset_ids: selectedVideoIds,
           max_duration: tier,
           confirmed: true,
-          force,
+          // 余额闸门仍在后端：非 admin 余额不足照样被拦（报错文案带原因）；
+          // admin 视为已知情（费用记账可查），自动带 force 免一道勾选
+          force: isAdmin,
           retry_failed: retryFailed,
           download: withDownload,
           cross_person_confirm: c,
@@ -403,7 +355,6 @@ const AssetListPanel: React.FC<Props> = ({
           content: <Text>{res.message}</Text>,
         });
       }
-      setAnalyzeOpen(false);
       setSelected([]);
       fetchList();
     } catch (e) {
@@ -522,20 +473,8 @@ const AssetListPanel: React.FC<Props> = ({
       message.warning('查时长只对链接导入的素材有意义：上传文件的素材入库时已经知道时长');
       return;
     }
-    setResolveOpen(true);
-    setResolveConfirmed(false);
-    setPreviewLoading(true);
-    try {
-      setResolvePreview(
-        await assetApi.estimateCost({
-          count: linkItems.length,
-          max_duration: DEFAULT_TIER,
-          need_parse: true,
-        }),
-      );
-    } finally {
-      setPreviewLoading(false);
-    }
+    // 2026-11-12（同上口径）：查时长不再弹确认单，费用自动记账
+    void submitResolve();
   };
 
   const submitResolve = async () => {
@@ -545,14 +484,14 @@ const AssetListPanel: React.FC<Props> = ({
       const res: AssetResolveResponse | undefined = await withCrossPersonConfirm((c) =>
         assetApi.resolveAssets({
           asset_ids: linkIds,
-          confirmed: linkIds.length >= 2,
+          confirmed: true,
           cross_person_confirm: c,
         }),
       );
       if (!res) return; // 取消了「替他人批次」确认：什么都不做
       const notes = (res.results || []).filter((r) => r.note && !r.ok);
       Modal.info({
-        title: `查时长：拿到 ${res.resolved} 条，实扣 ${yuan(res.charged)}`,
+        title: `查时长：拿到 ${res.resolved} 条（费用已自动记账）`,
         width: 640,
         content: (
           <Space direction="vertical" style={{ width: '100%' }}>
@@ -579,7 +518,6 @@ const AssetListPanel: React.FC<Props> = ({
           </Space>
         ),
       });
-      setResolveOpen(false);
       setSelected([]);
       fetchList();
     } catch (e) {
@@ -906,7 +844,7 @@ const AssetListPanel: React.FC<Props> = ({
                 原片下载中
               </Tag>
             ) : row.download_status === 'failed' ? (
-              <Tooltip title="原片没下载下来，点这里重试（只重下这一条；走免费渠道不花钱，付费渠道一条 0.01 元）">
+              <Tooltip title="原片没下载下来，点这里重试（只重下这一条，费用自动记账）">
                 <a onClick={() => retryDownload(row)}>
                   <Tag color="red" style={{ fontSize: 11, marginInlineEnd: 0 }}>
                     {retryDlId === row.id ? '提交中…' : '下载失败·点重试'}
@@ -968,7 +906,7 @@ const AssetListPanel: React.FC<Props> = ({
           <Tooltip
             title={
               row.source_kind === 'link'
-                ? '链接素材库里没存原片，反推文案也只回文字提示词。要看时长点「查时长」（0.01 元/次）'
+                ? '链接素材库里没存原片，反推文案也只回文字提示词。要看时长点「查时长」'
                 : '文件素材上传时本地探查没拿到时长（文件损坏或格式不识别）；本地重探不花钱，重传一次即可'
             }
           >
@@ -1347,6 +1285,15 @@ const AssetListPanel: React.FC<Props> = ({
           </Tooltip>
         </Space>
       )}
+      {/* 2026-11-12：反推的两个随批选项从已下架的成本确认单挪到台面（费用话术撤下，功能保留） */}
+      <Space wrap size={12} style={{ marginBottom: 12 }}>
+        <Checkbox checked={withDownload} onChange={(e) => setWithDownload(e.target.checked)}>
+          <Text style={{ fontSize: 12 }}>反推时顺带把链接原片下载进我们自己的存储（默认勾上）</Text>
+        </Checkbox>
+        <Checkbox checked={retryFailed} onChange={(e) => setRetryFailed(e.target.checked)}>
+          <Text style={{ fontSize: 12 }}>同时重跑上次反推失败的（默认跳过已跑过的）</Text>
+        </Checkbox>
+      </Space>
       <Table<AssetItem>
         rowKey="id"
         size="small"
@@ -1383,81 +1330,6 @@ const AssetListPanel: React.FC<Props> = ({
             fetchList(p, ps);
           },
         }}
-      />
-
-      <CostConfirmModal
-        open={analyzeOpen}
-        title={`批量反推文案（${selectedVideoCount} 条${selectedImageCount ? `，另勾的 ${selectedImageCount} 张图不读、不计费` : ''}）`}
-        preview={analyzePreview}
-        previewLoading={previewLoading}
-        loading={analyzeLoading}
-        needConfirm
-        confirmed={confirmed}
-        onConfirmChange={setConfirmed}
-        allowForce={isAdmin}
-        force={force}
-        onForceChange={setForce}
-        onOk={submitAnalyze}
-        onCancel={() => setAnalyzeOpen(false)}
-        extra={
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
-            <Space>
-              <Text>视频时长上限（秒）：</Text>
-              <Select
-                style={{ width: 160 }}
-                value={tier}
-                onChange={refreshAnalyzePreview}
-                options={DURATION_TIERS.map((t) => ({ value: t, label: `${t}s${t === DEFAULT_TIER ? '（默认）' : ''}` }))}
-              />
-            </Space>
-            <Alert
-              type="info"
-              showIcon
-              message="按所选时长上限扣费（600s 档 0.324 元/条、180s 档 0.0972 元/条），不按实际时长；账面是对账估算值"
-              description={
-                durationHint ? (
-                  <span style={{ fontSize: 12 }}>本批时长分布：{durationHint}——据此选档，别按上限白烧钱。</span>
-                ) : undefined
-              }
-            />
-            <Checkbox checked={withDownload} onChange={(e) => setWithDownload(e.target.checked)}>
-              <Text style={{ fontSize: 12 }}>顺带把链接素材的原片下载到我们自己的存储（默认勾上）</Text>
-            </Checkbox>
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              付费渠道 +0.01 元/条解析费；上传文件自动跳过。原片占存储，暂不自动清理。
-            </Text>
-            <Checkbox checked={retryFailed} onChange={(e) => setRetryFailed(e.target.checked)}>
-              <Text style={{ fontSize: 12 }}>同时重跑反推文案失败的素材（默认跳过已跑过的）</Text>
-            </Checkbox>
-          </Space>
-        }
-      />
-
-      <CostConfirmModal
-        open={resolveOpen}
-        title={`查时长（${selected.filter((s) => s.source_kind === 'link' && !isCopyShell(s)).length} 条链接素材）`}
-        preview={resolvePreview}
-        previewLoading={previewLoading}
-        loading={resolveBusy}
-        needConfirm
-        confirmed={resolveConfirmed}
-        onConfirmChange={setResolveConfirmed}
-        okText="确认查询（0.01 元/次）"
-        onOk={submitResolve}
-        onCancel={() => setResolveOpen(false)}
-        extra={
-          <Alert
-            type="warning"
-            showIcon
-            message="这一步会真扣钱，且预估按「全部走付费渠道」算"
-            description={
-              <span style={{ fontSize: 12 }}>
-                实际命中 yuanbao/preview 这些免费渠道时库里记 0，对账只会偏高不会偏低。
-                拿到时长才能判断「这条能不能放进 180 秒档」，所以它是反推文案之前的可选一步，不能替代反推文案。
-              </span>
-            }
-          />
-        }
       />
 
       <AssetDetailDrawer

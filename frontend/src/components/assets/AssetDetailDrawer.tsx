@@ -178,8 +178,8 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
         if (!retake && (reason.includes('已过期') || reason.includes('retake=true'))) {
           Modal.confirm({
             title: '上次取的直链已过期',
-            content: `${reason}。要现在重取吗？重取会重新解析这条链接（0.01 元/次，计入批次成本）。`,
-            okText: '重取（0.01 元）',
+            content: `${reason}。要现在重取吗？会重新解析这条链接（费用自动记账进批次成本）。`,
+            okText: '重取链接',
             cancelText: '先不取',
             onOk: () => playLinkSource(true),
           });
@@ -406,7 +406,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
             </Button>
           )}
           {canProduce && asset?.source_kind === 'link' && asset?.duration === null && (
-            <Tooltip title="去原链接查时长：每次 0.01 元，会计入批次成本">
+            <Tooltip title="去原链接查时长（费用自动记账进批次成本）">
               <Button loading={resolveBusy} onClick={resolveOne}>
                 查视频时长
               </Button>
@@ -536,7 +536,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                 ) : (
                   <>
                     <Text type="secondary">
-                      链接素材我们桶里没有原片，不能直接播——想在这儿看画面，得花 <strong>0.01 元</strong>
+                      链接素材我们桶里没有原片，不能直接播——点下面取直链看画面（费用自动记账）
                       回源取一条时效直链（约 6 小时过期，计入批次成本）。
                     </Text>
                     <div style={{ marginTop: 8 }}>
@@ -548,7 +548,7 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                         disabled={!canProduce}
                         onClick={() => playLinkSource()}
                       >
-                        取直链并播放（0.01 元）
+                        取直链并播放
                       </Button>
                       {!canProduce && (
                         <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
