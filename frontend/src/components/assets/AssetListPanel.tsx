@@ -764,13 +764,17 @@ const AssetListPanel: React.FC<Props> = ({
       onOk: async () => {
         setDelBusy(true);
         const failed: string[] = [];
+        const conflictRows: AssetItem[] = [];
         let done = 0;
         for (const row of rows) {
           try {
             await assetApi.deleteAsset(row.id);
             done += 1;
           } catch (e) {
-            failed.push(`${row.code}：${(e as Error).message}`);
+            const msg = (e as Error).message || '';
+            // 409：挂着文案/生产单/产物。admin 可在下一步选择强制连坐；其他人如实报错
+            if (isAdmin && /force=true/.test(msg)) conflictRows.push(row);
+            else failed.push(`${row.code}：${msg}`);
           }
         }
         setDelBusy(false);
@@ -778,6 +782,55 @@ const AssetListPanel: React.FC<Props> = ({
         failed.forEach((m) => message.error(m, 6));
         setSelected([]);
         fetchList();
+        // 2026-11-12（用户现场 AS-2FE3D9BA）：admin 撞 409 后界面原来到此为止——
+        // 后端的 force=true 通道在界面上没有出口。这里补「强制连坐删除」二次确认
+        //（必填理由，进审计），不默认强删。
+        if (conflictRows.length) {
+          let reason = '';
+          Modal.confirm({
+            title: `${conflictRows.length} 条挂着审核/投放历史，强制连坐删除？`,
+            width: 560,
+            content: (
+              <div>
+                <p style={{ marginBottom: 8 }}>
+                  会把这些素材的<strong>文案、生产单、成片记录和桶里的文件一起删掉</strong>，恢复不了。
+                  删除动作与理由进审计。
+                </p>
+                <Input.TextArea
+                  rows={2}
+                  placeholder="为什么连历史一起删（必填，例如：评审测试数据清理）"
+                  onChange={(e) => {
+                    reason = e.target.value;
+                  }}
+                />
+              </div>
+            ),
+            okText: '强制连坐删除',
+            okType: 'danger',
+            cancelText: '留着不删',
+            onOk: async () => {
+              if (!reason.trim()) {
+                message.warning('必须填删除理由（会进审计）');
+                return Promise.reject();
+              }
+              setDelBusy(true);
+              let done2 = 0;
+              const failed2: string[] = [];
+              for (const row of conflictRows) {
+                try {
+                  await assetApi.deleteAsset(row.id, { force: true, reason: reason.trim() });
+                  done2 += 1;
+                } catch (e) {
+                  failed2.push(`${row.code}：${(e as Error).message}`);
+                }
+              }
+              setDelBusy(false);
+              if (done2) message.success(`已强制连坐删除 ${done2} 条（理由已进审计）`);
+              failed2.forEach((m) => message.error(m, 6));
+              fetchList();
+            },
+          });
+        }
       },
     });
   };
