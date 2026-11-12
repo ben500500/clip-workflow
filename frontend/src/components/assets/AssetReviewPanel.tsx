@@ -142,6 +142,14 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
 
   // 投产弹窗
   const [produceOpen, setProduceOpen] = useState(false);
+  // ── 试产（2026-11-12 用户口径）：审核员改提示词投豆包验证预期，不打回采集人 ──
+  const [trialFor, setTrialFor] = useState<AssetSummary | null>(null);
+  const [trialPrompt, setTrialPrompt] = useState('');
+  const [trialBusy, setTrialBusy] = useState(false);
+  // 当前页候选名下的试产单（summary_id → 单列表）：卡上显示「试产中/样片待判定」
+  const [trialProds, setTrialProds] = useState<
+    Record<string, { id: string; status: string; error?: string | null }[]>
+  >({});
   // P1（评审定稿⑨）：一致性核验抽屉（原片播放＋反推脚本全文）
   const [inspecting, setInspecting] = useState<AssetSummary | null>(null);
   const [inspectData, setInspectData] = useState<AssetDetailResponse | null>(null);
@@ -199,6 +207,27 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
   // 批 M（评审一·P1-3）：fetchList 请求序号守卫——筛选变更与 reloadToken 重拉并发时，
   // 慢的新筛选回包可能被旧的覆盖。与生产单面板同一套模式（模块级自增序号）。
   const listReqRef = React.useRef(0);
+  // 拉当前页候选的试产单（试产角标＋判定按钮的数据源）
+  const fetchTrialProds = useCallback(async (summaryIds: string[]) => {
+    if (!summaryIds.length) {
+      setTrialProds({});
+      return;
+    }
+    try {
+      const res = await assetApi.listProductions({ summary_ids: summaryIds.join(','), page_size: 100 });
+      const bySummary: Record<string, { id: string; status: string; error?: string | null }[]> = {};
+      (res.items || []).forEach((p) => {
+        if (!p.is_trial) return;
+        (bySummary[p.summary_id] = bySummary[p.summary_id] || []).push({
+          id: p.id, status: p.status, error: p.error,
+        });
+      });
+      setTrialProds(bySummary);
+    } catch {
+      /* 试产角标失败静默——主列表不因此卡住 */
+    }
+  }, []);
+
   const fetchList = useCallback(
     async (p: number = page, ps: number = pageSize) => {
       const reqId = ++listReqRef.current;
@@ -219,6 +248,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
         });
         if (reqId !== listReqRef.current) return; // 已有更新的请求在途，旧回包作废
         setData(res);
+        void fetchTrialProds((res.items || []).map((s) => s.id));
         setItems(res.items || []);
         setTotal(res.total || 0);
         setPage(res.page || p);
@@ -475,6 +505,86 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
     });
   };
 
+  // ── 试产（2026-11-12 用户口径）：改提示词投豆包 → 看片 → 定稿/废片，不打回采集 ──
+  const openTrial = (row: AssetSummary) => {
+    setTrialFor(row);
+    // 预填：备好的豆包提示词预览（没有就空着，审核员从零写也行）
+    setTrialPrompt((row as unknown as { prompt_preview?: string | null }).prompt_preview || '');
+  };
+
+  const submitTrial = async () => {
+    if (!trialFor) return;
+    if (!trialPrompt.trim()) {
+      message.warning('提示词不能为空——试产投的就是这一段');
+      return;
+    }
+    setTrialBusy(true);
+    try {
+      // ① 建单：走正常投产口（async_mode=false 拿同步回执拿 ids），1 条 × 1 版
+      const res = await assetApi.produce({
+        summary_ids: [trialFor.id],
+        expand: false,
+        n: 1,
+        board_total: 1,
+        hook_codes: [], // 试产也走「一发即烧」：空数组＝后端自动预取/代取一个（号池纪律不豁免）
+        async_mode: false,
+      });
+      const pr = res as { production_ids?: string[]; results?: Array<{ ok?: boolean; error?: string | null }>;
+        recheck_failed?: Array<{ error?: string }>; warnings?: string[] };
+      const pid = (pr.production_ids || [])[0];
+      if (!pid) {
+        const why = pr.recheck_failed?.[0]?.error || pr.results?.[0]?.error || pr.warnings?.[0]
+          || '建单没成功（回包里没有生产单 id）';
+        message.error(`试产建单被拦：${why}`, 8);
+        return;
+      }
+      // ② 投板：trial_only=true（成片只回审核台），改后的提示词走 prompt_overrides
+      await assetApi.dispatchProductions({
+        ids: [pid],
+        confirm: true,
+        async_mode: true,
+        trial_only: true,
+        prompt_overrides: { [pid]: trialPrompt.trim() },
+      });
+      message.success(
+        '试产已投出去：豆包出片约 25 分钟，任务条会报进度；成片回到这条卡上，看完点「定稿 / 废片」',
+        10,
+      );
+      setTrialFor(null);
+      fetchList(page, pageSize);
+    } catch (e) {
+      message.error((e as Error).message || '试产没投出去（原因见报错）', 8);
+    } finally {
+      setTrialBusy(false);
+    }
+  };
+
+  const submitVerdict = (productionId: string, verdict: 'pass' | 'fail') => {
+    let note = '';
+    Modal.confirm({
+      title: verdict === 'pass' ? '定稿：这条文案过审？' : '记废片：提示词没达预期？',
+      width: 560,
+      content: (
+        <Input.TextArea
+          rows={2}
+          placeholder={verdict === 'pass' ? '判定说明（可选）' : '差在哪（建议写清：节奏/画面/换词没生效…会进审计）'}
+          onChange={(e) => { note = e.target.value; }}
+        />
+      ),
+      okText: verdict === 'pass' ? '定稿过审' : '记废片',
+      okType: verdict === 'pass' ? 'primary' : 'danger',
+      onOk: async () => {
+        try {
+          const res = await assetApi.trialVerdict(productionId, verdict, note.trim() || undefined);
+          message.success(res.message, 8);
+          fetchList(page, pageSize);
+        } catch (e) {
+          message.error((e as Error).message || '判定没成功');
+        }
+      },
+    });
+  };
+
   const submitEdited = async () => {
     if (!editing) return;
     if (!editText.trim()) {
@@ -605,6 +715,9 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
             setResubmitNote('');
           }}
           onInspect={(row) => void openInspect(row)}
+          onTrial={canReview ? (row) => openTrial(row) : undefined}
+          trialProds={trialProds[r.id]}
+          onVerdict={canReview ? submitVerdict : undefined}
         />
       ),
     },
@@ -1056,6 +1169,39 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
           ) : (
             <Alert type="info" showIcon message="只有管理员可以为检查不过的文案放行" />
           )}
+        </Space>
+      </Modal>
+
+      {/* ── 试产弹窗（2026-11-12 用户口径）：改提示词 → 投豆包 → 看片定稿，不打回采集 ── */}
+      <Modal
+        open={!!trialFor}
+        title={`试产：${trialFor?.asset_code || ''}（第 ${trialFor?.seq ?? 1} 条候选）`}
+        width={720}
+        confirmLoading={trialBusy}
+        onCancel={() => { if (!trialBusy) setTrialFor(null); }}
+        okText="投豆包试产（占 1 个号池额度）"
+        onOk={submitTrial}
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            message="下面这一段就是要投给豆包的提示词——直接改，改完点确认投出去。成片约 25 分钟回到这条卡上，看完「定稿」（文案过审）或「废片」（文案留原态，改词再来一轮），不用打回采集人重提。"
+          />
+          {!trialPrompt.trim() && (
+            <Alert
+              type="warning"
+              showIcon
+              message="这条还没备好豆包提示词预览——可在输入框直接写，或去卡片点「过」让系统备好后再来试产。"
+            />
+          )}
+          <Input.TextArea
+            rows={10}
+            value={trialPrompt}
+            onChange={(e) => setTrialPrompt(e.target.value)}
+            placeholder="投给豆包的提示词（可自由编辑）"
+            style={{ fontFamily: 'monospace', fontSize: 12 }}
+          />
         </Space>
       </Modal>
 

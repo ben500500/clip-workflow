@@ -346,6 +346,8 @@ export interface AssetProduction {
   asset_id: string;
   summary_id: string;
   batch_id: string | null;
+  /** 试产单（2026-11-12）：成片只进审核台判定，不进成片墙/交付包 */
+  is_trial?: boolean;
   /** A′：投产人显示名（谁投账算谁的灰字标注；列表口聚合返回） */
   owner_name?: string | null;
   /**
@@ -1164,6 +1166,8 @@ export interface AssetProductionListParams {
   /** 11-10 一屏到底：逗号拼接的**单个字符串**，只点这几张单（开完单立刻拿去投板用）。
    *  计数 `dispatch` 不跟着变——它说的还是这一屏的账。 */
   ids?: string;
+  /** 试产区（2026-11-12）：按文案 id 集拉它们名下的试产单（逗号拼接单串） */
+  summary_ids?: string;
   page?: number;
   /** 默认 100，后端封顶 300 */
   page_size?: number;  /** A′：owner=me 只看自己投产的单（查询偏好）；all/缺省＝全量 */
@@ -1197,6 +1201,8 @@ export interface AssetOutputListParams {
   limit?: number;
   /** 批 K：翻页偏移，配 total 用 */
   offset?: number;
+  /** 试产片拉取（审核台试产区用）：默认 false＝成片墙不回试产片 */
+  include_trial?: boolean;
   /** 验收筛选：passed/warn/failed；不传＝不限（2026-11-07 起真正生效，此前前端筛了没传参） */
   qc_status?: string;
   /** A′：owner=me 只看自己的链路（查询偏好，写口不受影响）；all/缺省＝全量 */
@@ -2053,6 +2059,8 @@ export interface AssetDispatchRequest {
    * 改后的正文照走 block 级风险词重扫（命中 400，或 admin force+理由）。
    */
   prompt_overrides?: Record<string, string>;
+  /** 试产（2026-11-12）：审核员改提示词投豆包验证预期——生产单落 is_trial，成片只进审核台判定 */
+  trial_only?: boolean;
   /**
    * 投板前统一挂卡（人物三视图）：给出时对本次要新建的每张单覆盖写入
    * （第 1 张＝板上主形象），脏 id 后端 400；不传＝各单沿用已带的卡。
@@ -2805,6 +2813,13 @@ export const assetApi = {
     client.post('/assets/productions/dispatch', data) as Promise<
       AssetDispatchResponse | AssetDispatchAck
     >,
+
+  // 试产判定（2026-11-12）：定稿（＝文案过审）或废片（文案留原态，改词再试一轮）
+  trialVerdict: (productionId: string, verdict: 'pass' | 'fail', note?: string) =>
+    client.post(`/assets/productions/${productionId}/trial-verdict`, {
+      verdict,
+      note: note || undefined,
+    }) as Promise<{ ok: boolean; verdict: string; message: string; audit_status?: string; status?: string }>,
 
   // 生产单列表 + 投递计数（by_status 走过滤前口径，不跟 status= 一起筛）
   listProductions: (params?: AssetProductionListParams) =>

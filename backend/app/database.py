@@ -417,6 +417,9 @@ async def _apply_compat_migrations():
         # 自动拼接的幂等键（哪支豆包成片已经拼过了）。老产物行留 NULL＝没被自动拼过，
         # 第一次重跑回收会给它们各拼一支——那是"补上该拼的"，不是重复。
         ("asset_outputs", "composed_from_output_id", "UUID"),
+        # 0070（试产单标记，2026-11-12）：审核员改提示词投豆包验证预期的单——
+        # 成片只进审核台做判定依据，不进成片墙/交付包。存量单回填 false＝非试产。
+        ("asset_productions", "is_trial", "BOOLEAN NOT NULL DEFAULT FALSE"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

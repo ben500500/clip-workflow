@@ -572,6 +572,15 @@ class DispatchRequest(BaseModel):
             "不传＝各单沿用自己已带的卡。"
         ),
     )
+    trial_only: bool = Field(
+        False,
+        description=(
+            "试产（2026-11-12 用户口径）：审核员改提示词投豆包验证预期用。"
+            "true 时本口额外允许**审核职能**（can_review）的账号调用（正常投板仍要 produce）"
+            "——试产是「审的辅助证据」，与审核状态解耦，待审候选也允许试产；"
+            "生产单行落 is_trial=true，其成片只进审核台判定、不进成片墙/交付包。"
+        ),
+    )
     prompt_overrides: Dict[str, str] = Field(
         default_factory=dict,
         description=(
@@ -1455,6 +1464,8 @@ def _serialize_production(
         "asset_id": str(p.asset_id),
         "summary_id": str(p.summary_id),
         "batch_id": str(p.batch_id) if p.batch_id else None,
+        # 试产单（2026-11-12）：前端据此把成片标注「试产」，成片墙/交付包读侧过滤
+        "is_trial": bool(getattr(p, "is_trial", False)),
         # A′：投产人显示名（谁投账算谁的灰字标注）；None=调用方没聚合
         "owner_name": owner_name,
         "seq": p.seq,
@@ -9291,6 +9302,7 @@ async def list_productions(
     asset_id: Optional[str] = None,
     owner: Optional[str] = None,
     ids: Optional[str] = None,
+    summary_ids: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
     current_user: User = Depends(get_current_user),
@@ -9323,6 +9335,12 @@ async def list_productions(
         if len(id_list) > 300:
             raise HTTPException(status_code=400, detail="ids 一次最多点 300 张单，请分批")
         conds.append(AssetProduction.id.in_(id_list))
+    if summary_ids:
+        sid_list = [_as_uuid(x.strip(), "summary_ids") for x in str(summary_ids).split(",") if x.strip()]
+        if sid_list:
+            if len(sid_list) > 300:
+                raise HTTPException(status_code=400, detail="summary_ids 一次最多点 300 条，请分批")
+            conds.append(AssetProduction.summary_id.in_(sid_list))
     if status:
         conds.append(AssetProduction.status == status)
     if batch_id:
@@ -10069,7 +10087,7 @@ async def _fetch_board_output(
 @router.post("/assets/productions/dispatch")
 async def dispatch_productions(
     data: DispatchRequest,
-    current_user: Annotated[User, Depends(require_functions("produce"))],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
     _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
 ):
@@ -10100,6 +10118,21 @@ async def dispatch_productions(
     拒绝的措辞必须把"那我现在怎么办"说清楚——导出 payload 人工投板、投完走回写口记账，
     这条路一直没断。
     """
+    # 试产（2026-11-12）：审核职能（can_review）就能投试产单；正常投板仍要 produce 职能。
+    # 2026-11-12 评审先例（require_functions）：职能判定直接读列，不 getattr 兜底。
+    is_admin = current_user.role == UserRole.admin.value
+    fn_produce = bool(current_user.can_produce)
+    fn_review = bool(current_user.can_review)
+    if data.trial_only and not (fn_review or is_admin):
+        raise HTTPException(
+            status_code=403,
+            detail="试产需要「审核（质检）」职能——你的账号没有它，找管理员在用户管理里开通",
+        )
+    if not (fn_produce or is_admin):
+        raise HTTPException(
+            status_code=403,
+            detail="正常投板需要「投产（挑选、投板）」职能——你的账号没有它，找管理员在用户管理里开通",
+        )
     if not board.is_configured():
         raise HTTPException(
             status_code=400,
@@ -10305,6 +10338,20 @@ async def dispatch_productions(
     # payload 与导出**同一个函数**（`_build_delivery`）：逐张取卡、保持 `card_asset_ids`
     # 顺序＝板上 picDatas 顺序、缺一张就点名。这里多花一次 MinIO 读是值当的——
     # 它是"投出去画中人不对"这类事故在烧钱前唯一还能看见它的地方。
+    # 试产（2026-11-12）：要新建的单落 is_trial=true——成片读侧按此列把它们挡在
+    # 成片墙/交付包外，只进审核台做判定依据。写库在 override 之前的同一事务里。
+    if data.trial_only and to_create:
+        for p in to_create:
+            p.is_trial = True
+        await _write_audit(
+            db,
+            action="asset.production.dispatch",
+            operator=current_user,
+            target_type="asset_production",
+            target_id=None,
+            after={"phase": "trial_marked", "trial_ids": [str(p.id) for p in to_create][:20],
+                   "summary_ids": data.ids},
+        )
     delivery = await _build_delivery(db, to_create, "payload") if to_create else {"payloads": []}
     # 投递稿 override 在这里落地：只改 `payload["prompt"]` 这一个键——生产单行的
     # prompt_text / 审计快照 / 漂移判定全都不碰，下一次再投仍是原稿。
@@ -11243,6 +11290,7 @@ async def list_outputs(
     kind: Optional[str] = None,
     qc_status: Optional[str] = None,
     owner: Optional[str] = None,
+    include_trial: bool = False,
     limit: int = 100,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
@@ -11288,6 +11336,18 @@ async def list_outputs(
                 select(AssetProduction.id).where(AssetProduction.created_by == current_user.id)
             ),
         ))
+    # 试产单的成片（2026-11-12）：默认不进成片墙/交付链路——它们只进审核台判定。
+    # include_trial=true（审核台试产区拉片用）才放开；单点 production_id 查询不过滤
+    #（详情/打包单点口自己有闸）。
+    if not include_trial and production_id is None:
+        conds.append(
+            or_(
+                AssetOutput.production_id.is_(None),
+                AssetOutput.production_id.in_(
+                    select(AssetProduction.id).where(AssetProduction.is_trial.is_(False))
+                ),
+            )
+        )
     base = select(AssetOutput).where(and_(*conds)) if conds else select(AssetOutput)
     total = int(
         (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
@@ -11650,7 +11710,123 @@ async def list_output_groups(
     }
 
 
+class TrialVerdictRequest(BaseModel):
+    """试产判定（2026-11-12）：审核员看完试产片给结论。
+
+    - pass＝定稿：把**该试产单挂的文案**过审（approve；改后过请走审核台正常入口），
+      试产单本身保持 success（它的成片就是判定证据，不进交付）；
+    - fail＝废片：试产单落 failed 并点名 error（提示词没达预期），文案**原样留在原审核态**，
+      审核员在卡片上改提示词再试一轮——不打回采集人重提。
+    """
+    verdict: str = Field(..., description="pass=定稿过审 / fail=废片")
+    note: Optional[str] = Field(None, description="判定说明（进审计；废片建议写清差在哪）")
+
+
+@router.post("/assets/productions/{production_id}/trial-verdict")
+async def trial_verdict(
+    production_id: str,
+    data: TrialVerdictRequest,
+    current_user: Annotated[User, Depends(require_functions("review"))],
+    db: AsyncSession = Depends(get_db),
+    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
+):
+    """试产片的判定口：定稿（＝过审）或废片（＝留在审核态等下一轮试产）。
+
+    为什么不复用 `/productions/status` 回写口：那是投产台账动作（写板上结果），
+    试产判定是**审核动作**（写审核结论）——动作主体、审计口径、权限闸全不同，
+    缝在一起早晚会把「谁投的」和「谁判的」记成一团。
+    """
+    if data.verdict not in ("pass", "fail"):
+        raise HTTPException(status_code=400, detail="verdict 只支持 pass（定稿）或 fail（废片）")
+    p = (
+        await db.execute(
+            select(AssetProduction).where(AssetProduction.id == _as_uuid(production_id, "production_id"))
+        )
+    ).scalar_one_or_none()
+    if p is None:
+        raise HTTPException(status_code=404, detail="这条生产单不存在")
+    if not p.is_trial:
+        raise HTTPException(status_code=409, detail="这张单不是试产单（正式投产的单走交付/回写口）")
+    s = await db.get(AssetSummary, p.summary_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail="试产单挂的文案不在库里")
+
+    if data.verdict == "pass":
+        # 定稿＝把这条文案过审。试产的前提就是审核员逐字改过提示词并亲眼看片，
+        # 这里不再跑 recheck 复核（那道闸拦的是"文案没人看过就投"，试产恰恰相反）。
+        from_state = s.audit_status
+        allowed = (RV_PENDING, RV_APPROVED, RV_PASSED_EDITED, RV_REJECTED, RV_NEED_REWRITE)
+        if from_state not in allowed:
+            raise HTTPException(status_code=409, detail=f"文案当前状态 {from_state} 不可定稿")
+        before = {"audit_status": s.audit_status, "text": s.text}
+        s.audit_status = RV_APPROVED
+        s.reviewed_by = current_user.id
+        s.reviewed_at = datetime.utcnow()
+        s.reject_reason = None
+        s.resubmit_note = None
+        asset = await db.get(AssetItem, s.asset_id)
+        if asset is not None:
+            approved_cnt = int(
+                (
+                    await db.execute(
+                        select(func.count(AssetSummary.id)).where(
+                            AssetSummary.asset_id == asset.id,
+                            AssetSummary.audit_status.in_(REVIEW_PASSED_STATES),
+                        )
+                    )
+                ).scalar_one()
+            )
+            asset.has_approved_copy = approved_cnt > 0
+            svc.apply_stage(asset, "summary", STAGE_SUCCESS, has_approved_copy=asset.has_approved_copy)
+        await _write_audit(
+            db,
+            action="asset.trial.verdict",
+            operator=current_user,
+            target_type="asset_summary",
+            target_id=s.id,
+            strict=True,
+            before=before,
+            after={
+                "verdict": "pass",
+                "trial_production_id": str(p.id),
+                "audit_status": s.audit_status,
+                "note": (data.note or "").strip()[:500],
+            },
+        )
+        await db.commit()
+        return {
+            "ok": True,
+            "verdict": "pass",
+            "audit_status": s.audit_status,
+            "message": "已定稿：文案过审，可正常开单投产（试产单与样片留档）",
+        }
+
+    # fail＝废片：单落 failed（error 必填纪律），文案不动，审核员可改词再来一轮
+    if p.status == PR_SUCCESS:
+        p.status = PR_FAILED
+        p.error = "试产废片（审核员判定）：提示词未达预期" + (f"；{data.note.strip()[:200]}" if data.note else "")
+        p.completed_at = datetime.utcnow()
+    await _write_audit(
+        db,
+        action="asset.trial.verdict",
+        operator=current_user,
+        target_type="asset_production",
+        target_id=p.id,
+        strict=True,
+        before={"status": p.status, "error": p.error},
+        after={"verdict": "fail", "note": (data.note or "").strip()[:500]},
+    )
+    await db.commit()
+    return {
+        "ok": True,
+        "verdict": "fail",
+        "status": p.status,
+        "message": "已记废片：文案留在原审核态，改完提示词可再试一轮",
+    }
+
+
 @router.post("/assets/outputs/package")
+
 async def package_outputs(
     ids: List[str] = Body(..., embed=True, description="要打包的产物 id"),
     current_user: User = Depends(get_current_user),
@@ -11677,6 +11853,25 @@ async def package_outputs(
         ).scalars()
         .all()
     )
+    # 试产单成片不进交付包（2026-11-12）：试产是审的辅助证据，不是交付物
+    trial_ids = {
+        str(x.id)
+        for x in (
+            await db.execute(
+                select(AssetProduction.id).where(
+                    AssetProduction.id.in_([o.production_id for o in rows if o.production_id]),
+                    AssetProduction.is_trial.is_(True),
+                )
+            )
+        ).scalars().all()
+    }
+    if trial_ids:
+        rows = [o for o in rows if str(o.production_id) not in trial_ids]
+        if not rows:
+            raise HTTPException(
+                status_code=409,
+                detail="勾选的产物全是试产片的判定样片——它们不进交付包（在审核台定稿后重新投产才会出交付片）",
+            )
     if not rows:
         raise HTTPException(status_code=404, detail="没有可打包的产物")
     blocked = [o for o in rows if o.qc_status == "failed"]

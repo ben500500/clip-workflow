@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button, Popover, Space, Tag, Tooltip, Typography, message } from 'antd';
-import { CheckCircleOutlined, CloseCircleOutlined, EditOutlined, FileSearchOutlined, SendOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, CloseCircleOutlined, EditOutlined, FileSearchOutlined, SendOutlined, ThunderboltOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { HOOK_STYLE_LABELS, type AssetFrameSlot, type AssetSummary } from '../../api/assets';
 import { AuditStatusTag, RiskTags } from './AssetBits';
 import { CategoryTag } from './AssetCategoryBits';
@@ -53,6 +53,12 @@ interface Props {
   onResubmit: (row: AssetSummary) => void;
   /** P1（评审定稿⑨）：一致性核验入口——弹出原片播放+反推脚本全文 */
   onInspect?: (row: AssetSummary) => void;
+  /** 试产（2026-11-12）：审核员改提示词投豆包验证预期——成片回来在这条卡上判定 */
+  onTrial?: (row: AssetSummary) => void;
+  /** 这条候选名下的试产单（状态区渲染＋判定入口的数据源） */
+  trialProds?: { id: string; status: string; error?: string | null }[];
+  /** 试产判定：pass=定稿过审 / fail=记废片 */
+  onVerdict?: (productionId: string, verdict: 'pass' | 'fail') => void;
 }
 
 /**
@@ -70,18 +76,7 @@ interface Props {
  * 每行卡片的按钮位置恒定，不用在标签堆里找「过」。
  * 图是纯呈现层：没图（老素材、链接素材、整集片）不拦任何审核动作，右边照样能点。
  */
-const AssetReviewCard: React.FC<Props> = ({
-  row,
-  slot,
-  framesLoading,
-  canReview,
-  busy,
-  onApprove,
-  onEdit,
-  onReject,
-  onResubmit,
-  onInspect,
-}) => (
+const AssetReviewCard: React.FC<Props> = ({ row, slot, framesLoading, canReview, busy, onApprove, onEdit, onReject, onResubmit, onInspect, onTrial, trialProds, onVerdict }) => (
   <div style={{ display: 'flex', gap: 16, alignItems: 'stretch' }}>
     {/* 左：三帧横排，点开九宫格 */}
     <FrameStrip slot={slot} loading={framesLoading} assetId={row.asset_id} />
@@ -283,6 +278,60 @@ const AssetReviewCard: React.FC<Props> = ({
             onClick={() => onInspect(row)}
           >
             核验原片/脚本
+          </Button>
+        </Tooltip>
+      )}
+
+      {/* 试产状态区（2026-11-12）：试产中→等片；success→样片可判定；failed→废片原因 */}
+      {!!trialProds?.length && (
+        <Space direction="vertical" size={4} style={{ width: '100%', marginBottom: 6 }}>
+          {trialProds.map((t) => {
+            const label =
+              t.status === 'queued' || t.status === 'running'
+                ? { color: 'blue' as const, text: '试产中：豆包出片（约 25 分钟），任务条会报' }
+                : t.status === 'success'
+                  ? { color: 'green' as const, text: '试产片已回：看完给结论' }
+                  : t.status === 'failed'
+                    ? { color: 'red' as const, text: `试产废片：${(t.error || '').slice(0, 60) || '板上失败，原因看任务详情'}` }
+                    : { color: 'default' as const, text: `试产单状态：${t.status}` };
+            return (
+              <div
+                key={t.id}
+                style={{ border: '1px solid #eee', borderRadius: 6, padding: '6px 8px', background: '#fafafa' }}
+              >
+                <Tag color={label.color}>{label.text}</Tag>
+                {t.status === 'success' && onVerdict && (
+                  <Space size={6} style={{ marginTop: 4 }}>
+                    <Button size="small" type="primary" onClick={() => onVerdict(t.id, 'pass')}>
+                      定稿（文案过审）
+                    </Button>
+                    <Button size="small" danger onClick={() => onVerdict(t.id, 'fail')}>
+                      废片（改词再试）
+                    </Button>
+                    <Tooltip title="样片在「⑤ 成片墙」不出现（试产片不进交付）；这里看片走下面「核验原片/脚本」或任务详情">
+                      <QuestionCircleOutlined style={{ color: '#999' }} />
+                    </Tooltip>
+                  </Space>
+                )}
+                {t.status === 'failed' && onTrial && (
+                  <Button size="small" style={{ marginTop: 4 }} onClick={() => onTrial(row)}>
+                    改词再试一轮
+                  </Button>
+                )}
+              </div>
+            );
+          })}
+        </Space>
+      )}
+      {onTrial && (
+        <Tooltip title="试产：改提示词投豆包出一条验证片（占 1 个当天号池额度）——成片回到这条卡上，看完点「定稿」或「废片」，不用打回采集人重提">
+          <Button
+            size="middle"
+            block
+            icon={<ThunderboltOutlined />}
+            onClick={() => onTrial(row)}
+          >
+            试产（投豆包验证）
           </Button>
         </Tooltip>
       )}

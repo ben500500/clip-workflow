@@ -533,6 +533,10 @@ class AssetProduction(Base):
     summary_id = Column(UUID(as_uuid=True), ForeignKey("asset_summaries.id", ondelete="CASCADE"), nullable=False, index=True)
     batch_id = Column(UUID(as_uuid=True), ForeignKey("asset_batches.id", ondelete="SET NULL"), nullable=True, index=True)
     seq = Column(Integer, nullable=False, default=1)
+    # 试产单（2026-11-12 用户口径）：审核员改提示词投豆包验证预期用——
+    # 成片只进审核台做判定依据，不进交付墙（成片墙/交付包按此列过滤）。
+    # true＋audit passed 之外的状态都可能出现（待审也能试产）。
+    is_trial = Column(Boolean, nullable=False, default=False, server_default="false")
 
     # 提示词（按 NAS《豆包文案生成模板与规则.md》11-02 版展开的成品提示词）
     hook_code = Column(String(10), nullable=True)           # 五位钩子编号：段头/推荐标题/产出清单三处必须带
