@@ -18,6 +18,7 @@ import { useAssetFrames } from './AssetFrameBits';
 import AssetReviewCard from './AssetReviewCard';
 import ProduceOrderModal from './ProduceOrderModal';
 import RiskLexiconDrawer from './RiskLexiconDrawer';
+import TrialProduceGuide from './TrialProduceGuide';
 
 const { Text, Paragraph } = Typography;
 
@@ -143,6 +144,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
   // 投产弹窗
   const [produceOpen, setProduceOpen] = useState(false);
   // ── 试产（2026-11-12 用户口径）：审核员改提示词投豆包验证预期，不打回采集人 ──
+  // 11-13 用户提「流程很多人看不懂」：六步动画引导，工具条与试产弹窗双入口
+  const [guideOpen, setGuideOpen] = useState(false);
   const [trialFor, setTrialFor] = useState<AssetSummary | null>(null);
   const [trialPrompt, setTrialPrompt] = useState('');
   const [trialBusy, setTrialBusy] = useState(false);
@@ -1000,6 +1003,12 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
         <Button icon={<ReloadOutlined />} onClick={() => fetchList(page, pageSize)}>
           刷新
         </Button>
+        {/* 11-13 用户口径「流程很多人看不懂」：试产六步动画引导，常驻入口 */}
+        <Tooltip title="60 秒动画：试产怎么发起、窗口为什么自己关、片回来在哪看、怎么定稿/废片">
+          <Button icon={<ThunderboltOutlined style={{ color: '#722ed1' }} />} onClick={() => setGuideOpen(true)}>
+            试产怎么用
+          </Button>
+        </Tooltip>
       </Space>
       {/* ② 批量动作行：勾选后的审核动作都在这一行，位置固定不随筛选换行跳动 */}
       {canReview ? (
@@ -1284,6 +1293,11 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
             type="info"
             showIcon
             message="下面这一段就是要投给豆包的提示词——直接改，改完点确认投出去。成片约 25 分钟回到这条卡上，看完「定稿」（文案过审）或「废片」（文案留原态，改词再来一轮），不用打回采集人重提。"
+            description={
+              <Button type="link" size="small" style={{ padding: 0, height: 'auto' }} onClick={() => setGuideOpen(true)}>
+                ▶ 没试过？看 60 秒动画「试产怎么用」
+              </Button>
+            }
           />
           {!!trialDrafting && (
             <Alert
@@ -1466,6 +1480,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
         )}
       </Drawer>
       <RiskLexiconDrawer open={lexiconOpen} onClose={() => setLexiconOpen(false)} />
+      {/* 11-13：试产六步动画引导（从工具条按钮或试产弹窗内链接打开） */}
+      <TrialProduceGuide open={guideOpen} onClose={() => setGuideOpen(false)} />
     </Card>
   );
 };
