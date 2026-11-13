@@ -624,18 +624,28 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
       }
       // ② 投板：trial_only=true（成片只回审核台）；提示词已在建单时落行
       setTrialStep('② 投板上板中…');
-      await assetApi.dispatchProductions({
+      const ack = await assetApi.dispatchProductions({
         ids: [pid],
         confirm: true,
         async_mode: true,
         trial_only: true,
       });
+      // 2026-11-13 用户口径「任务发出去之后就把对话框关掉，别一直转圈」：
+      // ack＝任务已受理，窗口立刻缩掉；卡片状态由下方乐观插入＋fetchList 接管
+      const ackJob = (ack as { job_id?: string }).job_id;
+      setTrialProds((prev) => ({
+        ...prev,
+        [trialFor.id]: [
+          ...(prev[trialFor.id] || []),
+          { id: pid, status: 'queued', error: null, prompt_text: trialPrompt.trim() },
+        ],
+      }));
+      setTrialFor(null);
       message.success(
-        '试产已投出去：豆包出片约 25 分钟，任务条会报进度；成片回到这条卡上，看完点「定稿 / 废片」',
+        `试产已投出去${ackJob ? '（任务受理）' : ''}：豆包出片约 25 分钟——这条卡上会亮「试产中」，片回来自动变判定按钮`,
         10,
       );
-      setTrialFor(null);
-      fetchList(page, pageSize);
+      void fetchTrialProds([trialFor.id]);
     } catch (e) {
       message.error((e as Error).message || '试产没投出去（原因见报错）', 8);
     } finally {

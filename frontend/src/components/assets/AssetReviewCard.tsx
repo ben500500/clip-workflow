@@ -330,18 +330,35 @@ const AssetReviewCard: React.FC<Props> = ({ row, slot, framesLoading, canReview,
           })}
         </Space>
       )}
-      {onTrial && (
-        <Tooltip title="试产：改提示词投豆包出一条验证片（占 1 个当天号池额度）——成片回到这条卡上，看完点「定稿」或「废片」，不用打回采集人重提">
-          <Button
-            size="middle"
-            block
-            icon={<ThunderboltOutlined />}
-            onClick={() => onTrial(row)}
-          >
-            试产（投豆包验证）
-          </Button>
-        </Tooltip>
-      )}
+      {(() => {
+        // 2026-11-13 用户口径「按钮别一直转圈，发出去就关窗，外面按钮改成投产中」：
+        // 有在途试产（queued/running）时外按钮变「试产中…」并禁点——状态区那颗蓝标
+        // 会在片回来时变成判定按钮。
+        const inFlight = (trialProds || []).filter(
+          (t) => t.status === 'queued' || t.status === 'running',
+        );
+        if (inFlight.length) {
+          return (
+            <Tooltip title="这条的试产还在豆包出片（约 25 分钟）——片回来后本区会出现「看试产片 · 对比判定」">
+              <Button size="middle" block icon={<ThunderboltOutlined />} disabled>
+                试产中…（{inFlight.length} 条在豆包）
+              </Button>
+            </Tooltip>
+          );
+        }
+        return onTrial ? (
+          <Tooltip title="试产：改提示词投豆包出一条验证片——成片回到这条卡上，看完点「定稿」或「废片」，不用打回采集人重提">
+            <Button
+              size="middle"
+              block
+              icon={<ThunderboltOutlined />}
+              onClick={() => onTrial(row)}
+            >
+              试产（投豆包验证）
+            </Button>
+          </Tooltip>
+        ) : null;
+      })()}
 
       <Space size={4}>
         {row.can_resubmit && (

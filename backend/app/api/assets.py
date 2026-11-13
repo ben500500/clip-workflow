@@ -8191,38 +8191,43 @@ async def create_productions(
         # A2-1 投产前复核（方案 §十一.7）：审核时看的是文案，投产时投的是**展开后的提示词**，
         # 中间词表可能已经更新（迁进 system_config 后改词不用发版），文案本身也可能被别处改过。
         # 这一遍跑在真正花号池额度**之前**，不过就整条文案不生成单，而不是生成了再靠人肉眼拦。
-        script = await _prompt_script_of(db, asset)
-        verdict = svc.recheck_copy(summary.text, script, lexicon=book, exemptions=exemptions)
+        # 试产（2026-11-12）整体跳过这遍复核：它的字数/形态检查是给**文案**的，套在
+        # 提示词上会全拦；且待审条目多无反推稿，_prompt_script_of 的补稿路径会同步等
+        # 模型——正是弹窗长时间转圈的来源。试产提示词的风险词闸在投板侧照扫
+        #（_risk_recheck_map 扫的就是 p.prompt_text，admin force+理由同一道口）。
         waived = None
-        if not verdict["ok"]:
-            waived_list, still_blocking = _split_waived(
-                verdict["problems"], data.waive_codes if is_admin else None
-            )
-            if is_admin and (data.waive_reason or "").strip() and not still_blocking:
-                waived = {
-                    "problems": waived_list,
-                    "codes": sorted({p["code"] for p in waived_list}),
-                    "reason": (data.waive_reason or "").strip()[:500],
-                }
-                # 注意是**嵌一套**不是摊平：展开后的复扫结果要往同一个 dict 里补
-                # prompt_problems，摊平（`{**waived}`）等于把那个引用丢了、补进去的东西永远看不见
-                waived_rows.append({"summary_id": str(uuid_s), "code": asset.code, "waived": waived})
-            else:
-                detail = still_blocking or verdict["problems"]
-                recheck_failed.append({
-                    "summary_id": str(uuid_s), "code": asset.code, "problems": detail,
-                })
-                results.append({
-                    "summary_id": str(uuid_s), "created": 0, "code": asset.code,
-                    "error_code": "ASSET_RECHECK_FAILED",
-                    "problems": detail,
-                    "waivable_codes": sorted({p["code"] for p in verdict["problems"]}),
-                    "error": "投产前复核未过：" + "；".join(p["message"] for p in detail)
-                             + ("（本条未生成生产单；管理员可带 waive_reason 豁免，"
-                                "只放过某几类问题请传 waive_codes）"
-                                if is_admin else "（本条未生成生产单，请找审核人）"),
-                })
-                continue
+        if not data.trial:
+            script = await _prompt_script_of(db, asset)
+            verdict = svc.recheck_copy(summary.text, script, lexicon=book, exemptions=exemptions)
+            if not verdict["ok"]:
+                waived_list, still_blocking = _split_waived(
+                    verdict["problems"], data.waive_codes if is_admin else None
+                )
+                if is_admin and (data.waive_reason or "").strip() and not still_blocking:
+                    waived = {
+                        "problems": waived_list,
+                        "codes": sorted({p["code"] for p in waived_list}),
+                        "reason": (data.waive_reason or "").strip()[:500],
+                    }
+                    # 注意是**嵌一套**不是摊平：展开后的复扫结果要往同一个 dict 里补
+                    # prompt_problems，摊平（`{**waived}`）等于把那个引用丢了、补进去的东西永远看不见
+                    waived_rows.append({"summary_id": str(uuid_s), "code": asset.code, "waived": waived})
+                else:
+                    detail = still_blocking or verdict["problems"]
+                    recheck_failed.append({
+                        "summary_id": str(uuid_s), "code": asset.code, "problems": detail,
+                    })
+                    results.append({
+                        "summary_id": str(uuid_s), "created": 0, "code": asset.code,
+                        "error_code": "ASSET_RECHECK_FAILED",
+                        "problems": detail,
+                        "waivable_codes": sorted({p["code"] for p in verdict["problems"]}),
+                        "error": "投产前复核未过：" + "；".join(p["message"] for p in detail)
+                                 + ("（本条未生成生产单；管理员可带 waive_reason 豁免，"
+                                    "只放过某几类问题请传 waive_codes）"
+                                    if is_admin else "（本条未生成生产单，请找审核人）"),
+                    })
+                    continue
 
         # 已有同文案的序号接着排（重头发不覆盖历史，交付对账要能追到每一版）
         max_seq = (
