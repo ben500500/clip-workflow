@@ -420,6 +420,67 @@ $BIND_CANDIDATES
 APPLY_EOF
 }
 
+# ============================================================
+# 每轮部署的 bind mount 全量对账（X31 补充刀，11-13）
+# ============================================================
+# 补的漏洞：上面的 restart 候选判据看「宿主 mtime 新／本轮内容变」——若有人拿 `cp -p`
+# 之类保 mtime 的写法弄脏宿主配置（或容器挂的旧 inode 内容与仓库不同而宿主恰好没换），
+# 两条判据都不命中 → 永不重启 → 现网行为与仓库悄悄漂移，且下次部署也不会修。
+# 对账不看时间轴，直接比「容器真实读到的内容 md5 vs 仓库 md5」：不一致就 restart
+# （restart 换容器、按路径重新解析 bind，挂载视图自动跟上宿主当前本体，11-13 实测
+# inode 宿主/容器两侧对账后一致），restart 后仍不一致才升级 WARN 交人工。
+# 作用域：只数「单文件 bind 且宿主源落在 $REMOTE_DIR 下的根级 SYNC_FILES」——目录挂载、
+# init.sql 这类非本脚本同步物的处置口径与 restart_stale_bind_mounts 完全一致。
+audit_bind_mount_converge() {
+  local raw pairs="" line n src dst st rel f g want have
+  raw="$(bind_mount_stale_table 2>/dev/null)"
+  if [ -z "$raw" ]; then
+    log "WARN: bind mount 对账探测失败（本轮跳过对账）"
+    return 0
+  fi
+  while IFS='|' read -r n src dst st; do
+    [ -n "$n" ] || continue
+    rel="${src#"$REMOTE_DIR"/}"
+    for f in "${SYNC_FILES[@]}"; do
+      if [ "$f" = "$rel" ] && [ -f "$LOCAL_DIR/$rel" ]; then
+        pairs="${pairs}${n}|${dst}|${rel}
+"
+      fi
+    done
+  done <<PAIRS_EOF
+$raw
+PAIRS_EOF
+  if [ -z "$pairs" ]; then
+    return 0
+  fi
+  while IFS='|' read -r n dst rel; do
+    [ -n "$n" ] || continue
+    want="$(file_md5 "$LOCAL_DIR/$rel")"
+    have="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker exec $n md5sum '$dst' 2>/dev/null | awk '{print \$1}'")"
+    if [ "$have" = "$want" ]; then
+      log "bind 对账：${n} 的挂载视图 ${rel} == 仓库值 ✅"
+      continue
+    fi
+    if [ "$DRY_RUN" = "1" ]; then
+      log "[dry-run] 对账发现 ${n} 挂载视图 ${rel}（${have:-读不到}）≠ 仓库（${want}），将 restart 纠偏并复验"
+      continue
+    fi
+    log "对账：${n} 挂载视图 ${rel}（${have:-读不到}）≠ 仓库（${want}）→ restart 按路径重挂纠偏..."
+    if ! ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker restart $n" >/dev/null 2>&1; then
+      log "WARN: ${n} restart 失败，${rel} 的现网值仍与仓库不一致，需人工 docker restart ${n}"
+      continue
+    fi
+    have="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker exec $n md5sum '$dst' 2>/dev/null | awk '{print \$1}'")"
+    if [ "$have" = "$want" ]; then
+      log "  对账纠偏成功：${n} 已重挂到仓库内容（静默漂移被拦下）"
+    else
+      log "WARN: ${n} restart 后挂载视图仍 ≠ 仓库（${have:-读不到}）——宿主本体可能也被改脏，需人工：比对 $REMOTE_DIR/$rel 与仓库并 compose up -d --force-recreate $n"
+    fi
+  done <<PAIRS2_EOF
+$pairs
+PAIRS2_EOF
+}
+
 # 从 compose 推导「运行 clip-backend:latest 镜像」的服务集合 —— 也就是 backend/ 代码
 # 变更后必须重建的容器。以 compose 为唯一事实来源，避免硬编码名单随新增 worker 失效。
 compose_backend_image_services() {
@@ -762,6 +823,11 @@ fi
 #     · 放冒烟之前：冒烟走 nginx :80 打接口，nginx 没换配置就等于「验的是旧网关」，
 #       超时链／location 改动这类回归会被冒烟漏掉。
 restart_stale_bind_mounts
+
+# 4.7 X31 补充刀（11-13）：bind mount 全量静默漂移对账——候选 restart 链按「时间/内容变更」
+#     触发，`cp -p` 弄脏宿主这类不留时间戳的漂移不在触发面里；对账按「内容 vs 仓库」兜死。
+#     紧跟 4.6 之后：若 4.6 刚 restart 过，视图此刻已=仓库，对账秒过不重复重启。
+audit_bind_mount_converge
 
 # 5. 验证
 if [ "$DRY_RUN" = "1" ]; then
