@@ -517,10 +517,44 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
   };
 
   // ── 试产（2026-11-12 用户口径）：改提示词投豆包 → 看片 → 定稿/废片，不打回采集 ──
-  const openTrial = (row: AssetSummary) => {
+  // 2026-11-13 修正（用户质询「审核时都没预览，试产意义何在」）：prompt_preview 是
+  // 过审后才备的，待审条目正是试产的主角——当场走 prompt-web 起草（该口不看审核态，
+  // 一次模型调用、费用自动记账），起草完回填可编辑；绝不支人先去点「过」。
+  const [trialDrafting, setTrialDrafting] = useState('');
+  const openTrial = async (row: AssetSummary) => {
     setTrialFor(row);
-    // 预填：备好的豆包提示词预览（没有就空着，审核员从零写也行）
-    setTrialPrompt((row as unknown as { prompt_preview?: string | null }).prompt_preview || '');
+    setTrialPrompt('');
+    const pre = (row as unknown as { prompt_preview?: string | null }).prompt_preview
+      || (row as unknown as { doubao_prompt?: string | null }).doubao_prompt || '';
+    if (pre.trim()) {
+      setTrialPrompt(pre);
+      setTrialDrafting('');
+      return;
+    }
+    setTrialDrafting('正在按稿子起草豆包提示词（一次模型调用，费用自动记账）…');
+    try {
+      const res = await assetApi.promptWebSummaries({ summary_ids: [row.id] });
+      const r0 = (res.results || [])[0] as { error?: string } | undefined;
+      if (r0?.error) {
+        setTrialDrafting(`起草被拦：${r0.error}——可直接在框里手写`);
+        return;
+      }
+      const fresh = await assetApi.listSummaries({ ids: row.id, page_size: 1 });
+      const s0 = (fresh.items || [])[0];
+      const text = s0?.doubao_prompt || s0?.prompt_preview || '';
+      if (text.trim()) {
+        setTrialPrompt(text);
+        setTrialDrafting('');
+        // 回写本地行：卡片上的「提示词未备」下次也拿得到
+        setData((prev) =>
+          prev ? { ...prev, items: prev.items.map((x) => (x.id === row.id ? { ...x, doubao_prompt: text } : x)) } : prev,
+        );
+      } else {
+        setTrialDrafting('没起草出来（模型没回可用正文）——可直接在框里手写');
+      }
+    } catch (e) {
+      setTrialDrafting(`起草失败：${(e as Error).message}——可直接在框里手写`);
+    }
   };
 
   const submitTrial = async () => {
@@ -729,7 +763,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
             setResubmitNote('');
           }}
           onInspect={(row) => void openInspect(row)}
-          onTrial={canReview ? (row) => openTrial(row) : undefined}
+          onTrial={canReview ? (row) => void openTrial(row) : undefined}
           trialProds={trialProds[r.id]}
           onVerdict={canReview ? submitVerdict : undefined}
         />
@@ -1194,6 +1228,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
         confirmLoading={trialBusy}
         onCancel={() => { if (!trialBusy) setTrialFor(null); }}
         okText="投豆包试产（占 1 个号池额度）"
+        okButtonProps={{ disabled: !!trialDrafting.startsWith('正在') }}
         onOk={submitTrial}
       >
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -1202,11 +1237,18 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
             showIcon
             message="下面这一段就是要投给豆包的提示词——直接改，改完点确认投出去。成片约 25 分钟回到这条卡上，看完「定稿」（文案过审）或「废片」（文案留原态，改词再来一轮），不用打回采集人重提。"
           />
-          {!trialPrompt.trim() && (
+          {!!trialDrafting && (
+            <Alert
+              type={trialDrafting.startsWith('正在') ? 'info' : 'warning'}
+              showIcon
+              message={trialDrafting}
+            />
+          )}
+          {!trialPrompt.trim() && !trialDrafting && (
             <Alert
               type="warning"
               showIcon
-              message="这条还没备好豆包提示词预览——可在输入框直接写，或去卡片点「过」让系统备好后再来试产。"
+              message="框里现在是空的：可直接手写，或关掉重开一次（会重新起草）。"
             />
           )}
           {trialStep && (
