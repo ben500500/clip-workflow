@@ -1002,6 +1002,10 @@ export interface AssetProduceRequest {
   accounts?: number | null;
   /** 是否调 AutoClip 按 11-02 权威模板展开成可投提示词（默认 true；false 的裸单不许投） */
   expand?: boolean;
+  /** 试产（2026-11-12）：不过审闸，prompt_text 直投；行落 is_trial，成片只进审核台判定 */
+  trial?: boolean;
+  /** trial=true 时必填：投给豆包的提示词正文（审核员改过的那一段） */
+  prompt_text?: string;
   /** 板上 total＝**同一条提示词出几版**（1..20，默认 1）。与 n 是两个量，混用会白烧 n×total */
   board_total?: number | null;
   /** 板上 tag（拥有者标记），缺省用 ASSET_BOARD_TAG；不填=无主任务、按天筛不到 */

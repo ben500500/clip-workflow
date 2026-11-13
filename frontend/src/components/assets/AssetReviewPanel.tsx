@@ -521,6 +521,15 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
   // 过审后才备的，待审条目正是试产的主角——当场走 prompt-web 起草（该口不看审核态，
   // 一次模型调用、费用自动记账），起草完回填可编辑；绝不支人先去点「过」。
   const [trialDrafting, setTrialDrafting] = useState('');
+  // ── 试产对比判定视图（2026-11-13 用户质询「试产回来的素材怎么展现、和原片怎么对比」）：
+  // 左＝原片（一致性对照），右＝试产片，下＝所用提示词＋候选文案，底部＝定稿/废片
+  const [trialView, setTrialView] = useState<{
+    prodId: string; row: AssetSummary; promptText?: string | null;
+  } | null>(null);
+  const [trialVideoUrl, setTrialVideoUrl] = useState('');
+  const [trialSourceUrl, setTrialSourceUrl] = useState('');
+  const [trialViewNote, setTrialViewNote] = useState('');
+  const [trialViewBusy, setTrialViewBusy] = useState(false);
   const openTrial = async (row: AssetSummary) => {
     setTrialFor(row);
     setTrialPrompt('');
@@ -557,6 +566,33 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
     }
   };
 
+  const openTrialView = async (prodId: string, row: AssetSummary, promptText?: string | null) => {
+    setTrialView({ prodId, row, promptText });
+    setTrialVideoUrl('');
+    setTrialSourceUrl('');
+    setTrialViewNote('');
+    setTrialViewBusy(true);
+    try {
+      const [outs, srcRes] = await Promise.all([
+        assetApi.listOutputs({ production_id: prodId, limit: 5 }),
+        assetApi.downloadAssetSource(row.asset_id).catch(() => null),
+      ]);
+      const o = (outs.items || [])[0];
+      if (o) {
+        const pv = await assetApi.previewOutput(o.id);
+        setTrialVideoUrl(pv.url);
+      } else {
+        setTrialViewNote('试产片还没回收到：板上还在出（任务条报进度），回收后这里就能播');
+      }
+      if (srcRes?.url) setTrialSourceUrl(srcRes.url);
+      else if (srcRes?.note) setTrialViewNote((n) => (n ? n + '；' : '') + `原片取不到直链：${srcRes.note}`);
+    } catch (e) {
+      setTrialViewNote(`打开失败：${(e as Error).message}`);
+    } finally {
+      setTrialViewBusy(false);
+    }
+  };
+
   const submitTrial = async () => {
     if (!trialFor) return;
     if (!trialPrompt.trim()) {
@@ -569,10 +605,12 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
       // ① 建单：走正常投产口（async_mode=false 拿同步回执拿 ids），1 条 × 1 版
       const res = await assetApi.produce({
         summary_ids: [trialFor.id],
-        expand: false,
+        trial: true,
+        // 投给豆包的就是这一段（审核员改过的），行上落 prompt_text 供判定与再迭代
+        prompt_text: trialPrompt.trim(),
         n: 1,
         board_total: 1,
-        hook_codes: [], // 试产也走「一发即烧」：空数组＝后端自动预取/代取一个（号池纪律不豁免）
+        hook_codes: [],
         async_mode: false,
       });
       const pr = res as { production_ids?: string[]; results?: Array<{ ok?: boolean; error?: string | null }>;
@@ -584,14 +622,13 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
         message.error(`试产建单被拦：${why}`, 8);
         return;
       }
-      // ② 投板：trial_only=true（成片只回审核台），改后的提示词走 prompt_overrides
+      // ② 投板：trial_only=true（成片只回审核台）；提示词已在建单时落行
       setTrialStep('② 投板上板中…');
       await assetApi.dispatchProductions({
         ids: [pid],
         confirm: true,
         async_mode: true,
         trial_only: true,
-        prompt_overrides: { [pid]: trialPrompt.trim() },
       });
       message.success(
         '试产已投出去：豆包出片约 25 分钟，任务条会报进度；成片回到这条卡上，看完点「定稿 / 废片」',
@@ -766,6 +803,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
           onTrial={canReview ? (row) => void openTrial(row) : undefined}
           trialProds={trialProds[r.id]}
           onVerdict={canReview ? submitVerdict : undefined}
+          onCompare={canReview ? (pid, r2, pt) => void openTrialView(pid, r2, pt) : undefined}
         />
       ),
     },
@@ -1262,6 +1300,74 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
             style={{ fontFamily: 'monospace', fontSize: 12 }}
           />
         </Space>
+      </Modal>
+
+      {/* ── 试产对比判定视图（2026-11-13）：左原片｜右试产片｜下提示词与判定 ── */}
+      <Modal
+        open={!!trialView}
+        title={`试产判定：${trialView?.row.asset_code || ''}（第 ${trialView?.row.seq ?? 1} 条候选）`}
+        width={1080}
+        footer={[
+          <Button key="close" onClick={() => setTrialView(null)}>关闭</Button>,
+          <Button key="fail" danger onClick={() => { const t = trialView; setTrialView(null); if (t) submitVerdict(t.prodId, 'fail'); }}>
+            废片（改词再试一轮）
+          </Button>,
+          <Button key="pass" type="primary" onClick={() => { const t = trialView; setTrialView(null); if (t) submitVerdict(t.prodId, 'pass'); }}>
+            定稿（文案过审）
+          </Button>,
+        ]}
+        onCancel={() => setTrialView(null)}
+      >
+        {trialView && (
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            {trialViewBusy && <Alert type="info" showIcon message="正在取片…" />}
+            {!!trialViewNote && <Alert type="warning" showIcon message={trialViewNote} />}
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Text strong style={{ fontSize: 12 }}>原片（一致性对照）</Text>
+                {trialSourceUrl ? (
+                  <video src={trialSourceUrl} controls preload="metadata"
+                    style={{ width: '100%', maxHeight: 380, background: '#000', borderRadius: 8, marginTop: 4 }} />
+                ) : (
+                  <div style={{ width: '100%', height: 200, background: '#f5f5f5', borderRadius: 8, marginTop: 4,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {(trialView.row as unknown as { stage_import?: string }).stage_import === 'skipped'
+                        ? '贴文案导入无原片'
+                        : '原片直链没取到（过期关掉重开会续）'}
+                    </Text>
+                  </div>
+                )}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Text strong style={{ fontSize: 12 }}>试产片（本轮提示词的产出）</Text>
+                {trialVideoUrl ? (
+                  <video src={trialVideoUrl} controls autoPlay preload="metadata"
+                    style={{ width: '100%', maxHeight: 380, background: '#000', borderRadius: 8, marginTop: 4 }} />
+                ) : (
+                  <div style={{ width: '100%', height: 200, background: '#f5f5f5', borderRadius: 8, marginTop: 4,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {trialViewNote.includes('还没回收') ? '等回收后重开' : '取片中…'}
+                    </Text>
+                  </div>
+                )}
+              </div>
+            </div>
+            {!!trialView.promptText && (
+              <Card size="small" title="本轮投给豆包的提示词（改词再试时以此为基础）">
+                <Paragraph style={{ marginBottom: 0, fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 160, overflow: 'auto' }}>
+                  {trialView.promptText}
+                </Paragraph>
+              </Card>
+            )}
+            <Card size="small" title="候选文案（第 1 手素材，对照画面是否拍出了钩子）">
+              <Paragraph style={{ marginBottom: 0, fontSize: 13, whiteSpace: 'pre-wrap' }}>
+                {trialView.row.text}
+              </Paragraph>
+            </Card>
+          </Space>
+        )}
       </Modal>
 
       <ProduceOrderModal

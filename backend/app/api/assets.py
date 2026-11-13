@@ -444,6 +444,12 @@ class ProduceRequest(BaseModel):
     channel: Optional[str] = Field(None, description="wework_aivideo（默认，= 企微后台 AI 视频任务板）/ doubao_rpa(deprecated) / seedance_api")
     accounts: Optional[int] = Field(None, description="准备用几个豆包号跑（仅用于折算天数；后台派号，本系统无号池表）")
     expand: bool = Field(True, description="是否调 autoclip 按 11-02 权威模板展开成可投提示词")
+    # 试产（2026-11-12 用户口径）：审核员改提示词投豆包验证预期——**不看审核态**，
+    # 待审/被驳的候选正是试产主角。必须带 prompt_text（投的就是这一段，不展开）；
+    # 行落 is_trial=true，成片只进审核台判定；has_approved_copy/produce 阶段不被动
+    #（那是「过审」信号，试产不能冒充）。
+    trial: bool = Field(False, description="试产单：不过审闸，prompt_text 直投，行带 is_trial")
+    prompt_text: Optional[str] = Field(None, description="trial=true 时必填：投给豆包的提示词正文")
     board_total: Optional[int] = Field(None, description="板上 total＝**同一条提示词出几版**（1..20，默认 1）。与 n 是两个量，混用会白烧 n×total")
     board_tag: Optional[str] = Field(None, description="板上 tag（拥有者标记），缺省用 ASSET_BOARD_TAG；不填=无主任务、按天筛不到")
     hook_codes: Optional[List[str]] = Field(None, description="五位钩子编号（hook_id.py 取来的，按 n 的顺序对应）；后端不自己编号")
@@ -8165,10 +8171,16 @@ async def create_productions(
         # 素材多为素材专员导入，运营审完必须能直接投产（11-03 起读口不分可见范围，
         # 这里只校验素材行存在；投产权限仍是 operator/admin，自审禁令在 review 口）
         asset = await _get_asset_or_404(db, summary.asset_id)
-        if summary.audit_status not in REVIEW_PASSED_STATES:
+        if summary.audit_status not in REVIEW_PASSED_STATES and not data.trial:
             results.append({
                 "summary_id": str(uuid_s), "created": 0, "code": asset.code,
                 "error": f"文案未过审（当前 {summary.audit_status}），生产必须只吃过审文案",
+            })
+            continue
+        if data.trial and not (data.prompt_text or "").strip():
+            results.append({
+                "summary_id": str(uuid_s), "created": 0, "code": asset.code,
+                "error": "试产必须带 prompt_text（投给豆包的就是这一段）",
             })
             continue
         # 这里原本有一句 `asset.has_approved_copy = True`：挪到**写单阶段**去做
@@ -8416,6 +8428,11 @@ async def create_productions(
             else:
                 flat_rows = list(pending)
             for row in flat_rows:
+                # 试产（2026-11-12）：审核员手写/改过的提示词直接写进行字典（**row 在
+                # 构造器里后展开，显式 kwargs 会被它覆盖/报重复键——只能改 row 本身）
+                if data.trial:
+                    row["prompt_text"] = (data.prompt_text or "").strip() or None
+                    row["is_trial"] = True
                 prod = AssetProduction(
                     asset_id=asset.id,
                     summary_id=summary.id,
@@ -8464,8 +8481,10 @@ async def create_productions(
                 if asset.batch_id:
                     batch_codes.add(str(asset.batch_id))
             # 过审标记落列（apply_stage 只用它算派生态、**不写列**，所以必须在这里显式置）：
-            # 挪到写单阶段是为了不在外部模型调用期间锁住 asset_items 那一行
-            if not asset.has_approved_copy:
+            # 挪到写单阶段是为了不在外部模型调用期间锁住 asset_items 那一行。
+            # 试产（2026-11-12）**不置**：has_approved_copy 是「有可投过审文案」的信号，
+            # 待审条目试产不能冒充——否则它会出现在各种过审挑选器里。
+            if not data.trial and not asset.has_approved_copy:
                 asset.has_approved_copy = True
             code_pos += n * fanout  # 号只在这批真的成了单之后才算用掉（扇出后每行各占一个）
             if parked_consumed:
@@ -8473,7 +8492,7 @@ async def create_productions(
                 summary.hook_code = None
 
         created = len(flat_rows) if not expand_error else 0
-        if created:
+        if created and not data.trial:
             svc.apply_stage(asset, "produce", STAGE_PENDING, has_approved_copy=True)
             asset.cost_produce = asset.cost_produce or 0
         if failure_recorded:
@@ -9785,6 +9804,7 @@ async def _dispatch_gate(
     force_risk: bool,
     force_reason: Optional[str],
     recover_only: bool,
+    trial_only: bool = False,
 ) -> Dict[str, Any]:
     """把点名的单分成三堆：`to_create`（新建板任务）/ `to_recover`（只回读回收）/ `blocked`。
 
@@ -9889,8 +9909,13 @@ async def _dispatch_gate(
             _block(p, "没有展开后的提示词正文（expand=false 的裸单）：先补 expand 再投")
             continue
         if not (p.board_name or "").strip():
-            _block(p, "缺推荐标题 → 板上 name 会是空的，投放后按标题回收不到、交付文件名也无从生成")
-            continue
+            # 试产单（2026-11-12）：板面 name 用「试产-编号」代填——试产片不进交付墙，
+            # 不靠标题回收（按 tid 差集认领），不因缺推荐标题卡死审核员的验证流程
+            if trial_only:
+                p.board_name = f"试产-{p.hook_code or str(p.id)[:8]}"
+            else:
+                _block(p, "缺推荐标题 → 板上 name 会是空的，投放后按标题回收不到、交付文件名也无从生成")
+                continue
         if p.drift:
             _block(
                 p,
@@ -10092,6 +10117,7 @@ async def dispatch_productions(
         force_risk=data.force_risk,
         force_reason=data.force_reason,
         recover_only=data.recover_only,
+        trial_only=data.trial_only,
     )
     to_create, to_recover, blocked = gate["to_create"], gate["to_recover"], gate["blocked"]
 

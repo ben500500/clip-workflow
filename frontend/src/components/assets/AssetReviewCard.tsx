@@ -56,9 +56,11 @@ interface Props {
   /** 试产（2026-11-12）：审核员改提示词投豆包验证预期——成片回来在这条卡上判定 */
   onTrial?: (row: AssetSummary) => void;
   /** 这条候选名下的试产单（状态区渲染＋判定入口的数据源） */
-  trialProds?: { id: string; status: string; error?: string | null }[];
+  trialProds?: { id: string; status: string; error?: string | null; prompt_text?: string | null }[];
   /** 试产判定：pass=定稿过审 / fail=记废片 */
   onVerdict?: (productionId: string, verdict: 'pass' | 'fail') => void;
+  /** 打开对比判定视图（原片｜试产片｜提示词） */
+  onCompare?: (productionId: string, row: AssetSummary, promptText?: string | null) => void;
 }
 
 /**
@@ -76,7 +78,7 @@ interface Props {
  * 每行卡片的按钮位置恒定，不用在标签堆里找「过」。
  * 图是纯呈现层：没图（老素材、链接素材、整集片）不拦任何审核动作，右边照样能点。
  */
-const AssetReviewCard: React.FC<Props> = ({ row, slot, framesLoading, canReview, busy, onApprove, onEdit, onReject, onResubmit, onInspect, onTrial, trialProds, onVerdict }) => (
+const AssetReviewCard: React.FC<Props> = ({ row, slot, framesLoading, canReview, busy, onApprove, onEdit, onReject, onResubmit, onInspect, onTrial, trialProds, onVerdict, onCompare }) => (
   <div style={{ display: 'flex', gap: 16, alignItems: 'stretch' }}>
     {/* 左：三帧横排，点开九宫格 */}
     <FrameStrip slot={slot} loading={framesLoading} assetId={row.asset_id} />
@@ -301,14 +303,19 @@ const AssetReviewCard: React.FC<Props> = ({ row, slot, framesLoading, canReview,
               >
                 <Tag color={label.color}>{label.text}</Tag>
                 {t.status === 'success' && onVerdict && (
-                  <Space size={6} style={{ marginTop: 4 }}>
-                    <Button size="small" type="primary" onClick={() => onVerdict(t.id, 'pass')}>
-                      定稿（文案过审）
+                  <Space size={6} style={{ marginTop: 4 }} wrap>
+                    {onCompare && (
+                      <Button size="small" type="primary" onClick={() => onCompare(t.id, row, t.prompt_text)}>
+                        看试产片 · 对比判定
+                      </Button>
+                    )}
+                    <Button size="small" onClick={() => onVerdict(t.id, 'pass')}>
+                      直接定稿
                     </Button>
                     <Button size="small" danger onClick={() => onVerdict(t.id, 'fail')}>
-                      废片（改词再试）
+                      废片
                     </Button>
-                    <Tooltip title="样片在「⑤ 成片墙」不出现（试产片不进交付）；这里看片走下面「核验原片/脚本」或任务详情">
+                    <Tooltip title="样片在「⑤ 成片墙」不出现（试产片不进交付）；对比视图＝左原片右试产片＋所用提示词">
                       <QuestionCircleOutlined style={{ color: '#999' }} />
                     </Tooltip>
                   </Space>
