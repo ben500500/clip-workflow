@@ -208,16 +208,26 @@ sync_dir() {
 # scripts/sync-engines-to-worker.sh（见主流程第 3.5 步）从 engines/ 全量刷新。
 
 # 单文件同步（根 compose 等散落文件）
+# ⚠️ 11-13 X31 教训（163 nginx.conf 500M/2G 弹古）：tar 解包是「新建同名文件」→ 宿主路径的
+# inode 会换，而**单文件 bind mount 钉的是 inode 不是路径**——容器视图不跟着换，两侧从此分叉；
+# restart 也没用（mount 还钉在旧 inode）；而部署对账数的是「宿主 vs 仓库」，永远绿。
+# 所以根级单文件一律改为「同路径截断写」（cat > 保 inode），写完当场远端 md5 验收——
+# 从源头不再制造分叉，静默失败也不再可能过账。
 sync_file() {
-  local f="$1"
+  local f="$1" want have
   if [ ! -f "$LOCAL_DIR/$f" ]; then
     log "跳过不存在的本地文件: $f"
     return
   fi
-  log "同步 $f -> $REMOTE_HOST:$REMOTE_DIR/$f"
-  tar czf - -C "$LOCAL_DIR" "$f" \
-    | ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && tar xzf -" \
+  log "同步 $f -> $REMOTE_HOST:$REMOTE_DIR/$f（保 inode 截断写）"
+  cat "$LOCAL_DIR/$f" \
+    | ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cat > '$REMOTE_DIR/$f'" \
     || die "同步 $f 失败"
+  want="$(file_md5 "$LOCAL_DIR/$f")"
+  have="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "md5sum '$REMOTE_DIR/$f' 2>/dev/null | awk '{print \$1}'")"
+  [ -n "$have" ] && [ "$have" = "$want" ] \
+    || die "$f 远端 md5 验收未过（期望 $want，实到 ${have:-读不到}）——不同步了，带着已知值去排障"
+  log "  验收：$f 远端 md5=${have} 与仓库一致（inode 未换）"
 }
 
 # 可移植 md5（macOS 自带的是 md5，无 md5sum）
@@ -373,10 +383,37 @@ restart_stale_bind_mounts() {
     fi
     want="$(file_md5 "$LOCAL_DIR/$rel")"
     cur="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker exec $n md5sum '$dst' 2>/dev/null | awk '{print \$1}'")"
+    # inode 观察（只记录不判死）：内容一致但 inode 已分叉＝挂载与宿主路径脱钩的历史印记，
+    # 行为此刻无险（两侧同值），但「谁是正主」只有这一行日志能回答。
     if [ "$cur" = "$want" ]; then
-      log "  验收：容器内 ${dst} md5=${cur} 与仓库一致"
+      _inodes="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "echo \$(stat -c %i '$REMOTE_DIR/$rel' 2>/dev/null) \$(docker exec $n stat -c %i '$dst' 2>/dev/null)" 2>/dev/null)"
+      set -- $_inodes
+      if [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ "$1" != "$2" ]; then
+        log "  验收：容器内 ${dst} md5 与仓库一致（但 inode 分叉：宿主 $1 / 容器视图 $2——历史上的换文件留下的脱钩印记，本次已保 inode 同步，后续 recreate 将以宿主为准）"
+      else
+        log "  验收：容器内 ${dst} md5=${cur} 与仓库一致"
+      fi
+      continue
+    fi
+    # X31 强制读回：restart 后容器视图仍 ≠ 仓库 ⇒ 该单文件挂载钉在野 inode 上
+    # （宿主路径那份 inode 早已不是 mount 引用的那份——分叉多半是历史 tar/cp/vim 制造的）。
+    # 处置＝经「容器里真正引用的那份」把仓库内容打回去（走 mount 路径＝写旧 inode），
+    # 再 restart 让进程读回；不 recreate、不中断服务。打完立刻复验，绝不允许「打了但没读回」。
+    log "  容器内 ${rel}（${n}:${dst}）与仓库不一致（${cur:-读不到} ≠ ${want} ⇒ bind mount 钉在野 inode），注入仓库值强制读回"
+    if ! cat "$LOCAL_DIR/$rel" \
+        | ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker exec -i ${n} sh -c 'cat > \"$dst\"'" 2>/dev/null; then
+      log "WARN: 向 ${n} 的 ${dst} 注入失败（只读挂载？），需人工：docker cp 或直接 recreate ${n}"
+      continue
+    fi
+    if ! ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker restart $n" >/dev/null 2>&1; then
+      log "WARN: ${n} 二次重启失败，注入的内容进程还没读到，请手工 docker restart ${n}"
+      continue
+    fi
+    cur="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker exec $n md5sum '$dst' 2>/dev/null | awk '{print \$1}'")"
+    if [ "$cur" = "$want" ]; then
+      log "  验收：已强制 ${n} 读回仓库值（容器内 md5=${cur}，经旧 inode 注回，无需 recreate）"
     else
-      log "  WARN: 容器内 ${dst} md5=${cur:-取不到} 与仓库 ${want} 不一致（不是 bind mount？路径变了？请人工 docker inspect ${n}）"
+      log "WARN: 注入后复验仍不符（${cur:-读不到} ≠ ${want}）——这不是 restart 能治的，需人工 recreate ${n}（会短暂中断该容器）"
     fi
   done <<APPLY_EOF
 $BIND_CANDIDATES
