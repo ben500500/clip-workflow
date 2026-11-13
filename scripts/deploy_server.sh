@@ -30,7 +30,8 @@
 #  10. 根级单文件如果是 bind mount 进容器的（nginx.conf → clip-nginx 的
 #      /etc/nginx/conf.d/default.conf），文件同步完 **进程不会重读配置**，而它又不在任何
 #      服务的构建上下文里 → 重建名单永远不含它 → 「日志全绿、现网没变」。现由第 4.6 步
-#      按 mtime／内容变更两条判据自动 docker restart（Issue #244）。
+#      按「本轮内容／漂移变更」判据自动 docker restart（Issue #244；11-13 X31 二期后
+#      mtime 判据退役——sync 每轮刷 mtime 会把它变成"必重启动作"，漂移改由内容对账兜，见 4.6/4.7）。
 #  11. 整镜像重建是这台机器最重的负载，现由 heavy_run() 在**服务器侧**加 flock 串成
 #      单队 + ionice/nice 降级（2026-11-12 内存枯竭事故的运维项，详见配置区注释）。
 #
@@ -343,7 +344,13 @@ collect_bind_candidates() {
     case " $STALE_SYNC_FILES " in
       *" $rel "*) st="content_changed" ;;
     esac
-    [ "$st" = "stale" ] || [ "$st" = "content_changed" ] || continue
+    # X31 补充刀二期（11-13 用户拍板）：mtime 判据退役。sync_file 每轮保 inode 截断写后
+    # 必把宿主 mtime 刷成「现在」—→旧「mt>StartedAt 即 stale」每轮都命中 clip-nginx →
+    # 每轮一次 2~5s 白 restart（无变化也重）。退役后覆盖面不缩：
+    # 「本轮真改过／宿主被改漂」＝content_changed（stale_sync_files 同步前采，漂移也算变）；
+    # 「容器视图内容≠仓库」＝4.7 全量对账兜底；「inode 分叉但内容恰好一致」＝行为此刻无险，
+    # 由 4.7 一致分支的记录行显形（下轮真变更自然纠偏）。
+    [ "$st" = "content_changed" ] || continue
     BIND_CANDIDATES="${BIND_CANDIDATES}${n}|${dst}|${rel}|${st}
 "
   done <<CAND_EOF
@@ -458,7 +465,15 @@ PAIRS_EOF
     want="$(file_md5 "$LOCAL_DIR/$rel")"
     have="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "docker exec $n md5sum '$dst' 2>/dev/null | awk '{print \$1}'")"
     if [ "$have" = "$want" ]; then
-      log "bind 对账：${n} 的挂载视图 ${rel} == 仓库值 ✅"
+      # 同值之下再看 inode：分叉＝「宿主与容器各拿一份恰好同内容的文件」——此刻行为无险，
+      # 真变更那轮由 content_changed restart 自然收敛；这里让它显形，不再无人知晓。
+      _inodes="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "echo \$(stat -c %i '$REMOTE_DIR/$rel' 2>/dev/null) \$(docker exec $n stat -c %i '$dst' 2>/dev/null)" 2>/dev/null)"
+      _hi="${_inodes%% *}"; _ci="${_inodes##* }"
+      if [ -n "$_hi" ] && [ -n "$_ci" ] && [ "$_hi" != "$_ci" ]; then
+        log "bind 对账：${n} 的 ${rel} 内容==仓库 ✅（但 inode 分叉：宿主 ${_hi} ≠ 容器挂载 ${_ci}——两份同值文件，下次真变更 restart 重挂即归一，无需现在动）"
+      else
+        log "bind 对账：${n} 的挂载视图 ${rel} == 仓库值 ✅"
+      fi
       continue
     fi
     if [ "$DRY_RUN" = "1" ]; then
