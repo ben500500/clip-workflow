@@ -766,3 +766,151 @@ def test_self_produce_flag_class_default_is_open():
         "自审自投默认值被人改回去了：11-09 用户口径是**默认放开**（一人多角常态），"
         "放开时逐条写豁免审计。要改请连带改 conftest 基线与专项用例，别只改一行。"
     )
+
+
+# ─────────────────────────  8. 静态守卫：同步等模型不许带着开着的会话操作  ─────────────────────────
+
+
+def test_no_model_wait_with_unended_session_activity():
+    """G-1（11-11 评审留口，11-13 落地）：函数内 `await _call_autoclip(...)` 之前，若自
+    最近一次 commit/rollback 之后还有过任何 `db.*`／`session.*` 会话操作、中间没收口——红。
+
+    钉的是什么坑：现网 PG `idle_in_transaction_session_timeout=60s`（app/database.py 强制），
+    接口从进来到调模型之间的 SELECT 一路开着事务趴到模型回来（pro/flash 实测每次 90~150s，
+    扇出还要 ×N），60s 一到连接被掐：模型**成功返回**、回写报 `connection is closed`、
+    整口 500——钱花了、结果丢了、缓存一行没落（11-11 现网 8-27 两批 500 实录）。
+
+    为什么必须静态钉：11-03 出文案、11-05 预览展开、11-11 换皮补位三个入口**先后踩过同一坑**，
+    修法早就写在进度总览（调模型前先 `await db.commit()` 收读事务），前两个口只有行为级用例、
+    第三个口有源码级钉，但**全仓没有任何守卫能拦住第四个入口**——本机 648 条用例把模型
+    全打了桩，测不到 60s 掐线，新入口照样能静默上线（§4 F41 判断，11-13 首跑即抓到
+    create_productions 扇出口＝活体第四入口）。
+
+    扫描口径（诚实说明边界）：
+    · 事件流按**行号序**（近似控制流）：`db./session.` 的 execute/get/add/flush…＝开，
+      commit/rollback＝收，`_call_autoclip(`＝模型等待——等待点前仍有"未收的开"即违规；
+    · **例外姿势（必须登记）**：函数体内有 `SET LOCAL idle_in_transaction_session_timeout = 0`
+      ＝"续命"而非"收口"（投产口 8143：整批原子性要求在调模型前**不能** commit，
+      靠 SET LOCAL 让本事务不被 60s 掐线 + 等待期间不锁别人要动的行 + 页面路径 D-1 批收进
+      async_mode 后台任务、HTTP 不趴连接池三层并立）。这种等待点不违规，但必须出现在
+      `SET_LOCAL_TIMEOUT_EXEMPTS` 登记名单里——名单**双向钉死**：SET LOCAL 被摘掉 → 该口
+      裸奔进违规红；新长出一个 SET LOCAL 防护口 → 名单不匹配红，逼人来复核三层防护；
+    · helper 里的会话（`await _get_asset_or_404(db, …)`）不计入"开"：helper 若自带收口，
+      等待点前必有本函数可见的 commit；若无收口又开事务，行为与直接调用等价，扫描会漏——
+      这是**有意的简化**，新增 helper 包装的模型口请补行为级用例；
+    · 循环回跳可能产生理论假红（行序看"最后一次开"在 commit 之后但控制流会回绕）——
+      命中者逐个复核后登记，不静默放宽规则。
+    """
+    import ast
+
+    MODEL_FUNCS = {"_call_autoclip"}
+    SESSION_NAMES = {"db", "session"}
+    OPEN_ATTRS = {"execute", "get", "get_all", "add", "add_all", "flush", "merge",
+                  "delete", "refresh", "scalar", "scalars"}
+    CLOSE_ATTRS = {"commit", "rollback"}
+    # SET LOCAL 续命姿势的特征串（与 8144 现文对得上；写法变了本守卫当"没有防护"处理）
+    TIMEOUT_OFF_MARK = "idle_in_transaction_session_timeout = 0"
+
+    # SET LOCAL 豁免登记名单（函数身份 file::func）。改动任何一个都会红，新加口必须先来登记。
+    SET_LOCAL_TIMEOUT_EXEMPTS = {"app/api/assets.py::create_productions"}
+
+    app_dir = Path(__file__).resolve().parents[2] / "app"
+    roots = [app_dir / "api", app_dir / "services"]
+
+    def _walk_own_body(fn):
+        """遍历函数体，不钻进嵌套的函数/类/生成器定义（那些另立事件流）。"""
+        stack = list(ast.iter_child_nodes(fn))
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda,
+                                 ast.ClassDef)):
+                continue
+            yield node
+            stack.extend(ast.iter_child_nodes(node))
+
+    def _is_timeout_off_call(node, src_lines) -> bool:
+        """识别 `await db.execute(text("SET LOCAL …idle…= 0"))`（只认 text 字面量）。"""
+        f = node.func
+        if not (isinstance(f, ast.Attribute) and f.attr == "execute"
+                and isinstance(f.value, ast.Name)
+                and f.value.id in SESSION_NAMES):
+            return False
+        if not node.args:
+            return False
+        arg0 = node.args[0]
+        if (isinstance(arg0, ast.Call) and isinstance(arg0.func, ast.Name)
+                and arg0.func.id == "text" and arg0.args
+                and isinstance(arg0.args[0], ast.Constant)
+                and isinstance(arg0.args[0].value, str)):
+            return TIMEOUT_OFF_MARK in arg0.args[0].value
+        return False
+
+    def _as_timeout_off(node, src_lines) -> bool:
+        return _is_timeout_off_call(node, src_lines)
+
+    # 显式登记表（行为级豁免，当前应为空——"裸奔等待点"一律不许登记）
+    EXEMPT: dict = {}
+
+    hits = []
+    seen_timeout_exempts = set()
+    for root_dir in roots:
+        for py in sorted(root_dir.rglob("*.py")):
+            try:
+                src = py.read_text(encoding="utf-8")
+                tree = ast.parse(src, filename=str(py))
+            except SyntaxError:
+                continue
+            src_lines = src.splitlines()
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                events = []
+                for node in _walk_own_body(fn):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    f = node.func
+                    if isinstance(f, ast.Name) and f.id in MODEL_FUNCS:
+                        events.append((node.lineno, "model"))
+                    elif (isinstance(f, ast.Attribute)
+                          and isinstance(f.value, ast.Name)
+                          and f.value.id in SESSION_NAMES):
+                        if f.attr in OPEN_ATTRS:
+                            if _as_timeout_off(node, src_lines):
+                                events.append((node.lineno, "timeout_off"))
+                            else:
+                                events.append((node.lineno, "open"))
+                        elif f.attr in CLOSE_ATTRS:
+                            events.append((node.lineno, "close"))
+                if not events:
+                    continue
+                events.sort(key=lambda x: x[0])
+                rel = py.relative_to(app_dir.parent)
+                fn_key = f"{rel}::{fn.name}"
+                open_since_close = False
+                timeout_off_active = False
+                for lineno, kind in events:
+                    if kind == "open":
+                        open_since_close = True
+                    elif kind == "close":
+                        open_since_close = False
+                        timeout_off_active = False   # 事务一收 SET LOCAL 随之失效，等待点必须重新防护
+                    elif kind == "timeout_off":
+                        timeout_off_active = True
+                    elif kind == "model":
+                        if open_since_close and not timeout_off_active:
+                            if fn_key in EXEMPT:
+                                continue
+                            hits.append(f"{fn_key}@{lineno}")
+                        elif open_since_close and timeout_off_active:
+                            seen_timeout_exempts.add(fn_key)
+    assert not hits, (
+        "这些『同步等待模型』之前既没收掉会话操作、也没有 SET LOCAL 续命防护（11-11 现网实录："
+        "模型成功返回、回写被 60s 掐线炸 500、钱白花）——首选修法是等待点前补 "
+        "`await db.commit()` 收读事务（与 6226/7073/13161 三口同法）；确需整批原子性的口"
+        "照 create_productions 补 SET LOCAL 三层并立并在登记名单里写明：" + ", ".join(hits)
+    )
+    assert seen_timeout_exempts == SET_LOCAL_TIMEOUT_EXEMPTS, (
+        "SET LOCAL 续命口名单漂移：新增了先复核三层防护（原子性理由＋不锁他人行＋async_mode）"
+        "再登记；减少了说明防护被摘、等待点已经在裸奔。"
+        f"实到 {sorted(seen_timeout_exempts)} ≠ 登记 {sorted(SET_LOCAL_TIMEOUT_EXEMPTS)}"
+    )
