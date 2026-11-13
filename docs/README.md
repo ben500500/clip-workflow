@@ -424,3 +424,7 @@ bash scripts/server-setup.sh  # 服务器初始化
 ## 许可证
 
 本项目基于 MIT 许可证开源。详见 [LICENSE](../LICENSE)
+
+## 素材库相关文档（补充索引）
+- `docs/项目进度总览-20261109.md` §四·乙 —— 11-13 批（试产/钱面下架/三席评审/163 事故）
+- 试产功能：`POST /assets/productions/{id}/trial-verdict`（判定口）＋ `DispatchRequest.trial_only`（审核职能投试产）
