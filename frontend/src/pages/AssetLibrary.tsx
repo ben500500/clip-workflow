@@ -278,9 +278,12 @@ const AssetLibrary: React.FC = () => {
         // 2026-11-14 P2 收口：不再手拼 header 裸 fetch——统一走 client（axios 实例带
         // auth_token 注入＋401 无感 refresh 拦截器）。旧写法 token 过期后角标会再死一轮，
         // 这正是 P2 判据「全仓无裸 fetch /api」的最后一块。
+        // ⚠️ client 的响应拦截器已把 response 解包成 body（client.ts `(response)=>response.data`），
+        // 这里拿到的 r1/r2 就是 {total,...} 本体——再 .then(r=>r.data) 会二次解包成 undefined，
+        // 角标静默归零（11-14 CDP P-B1 实拍抓到的自伤，别再犯）。
         const [r1, r2] = await Promise.all([
-          client.get('/assets/summaries', { params: { audit_status: 'pending', page_size: 1 } }).then((r) => r.data),
-          client.get('/assets/productions', { params: { status: 'order_ready', owner: role === 'operator' ? 'me' : 'all', page_size: 1 } }).then((r) => r.data),
+          client.get('/assets/summaries', { params: { audit_status: 'pending', page_size: 1 } }),
+          client.get('/assets/productions', { params: { status: 'order_ready', owner: role === 'operator' ? 'me' : 'all', page_size: 1 } }),
         ]);
         if (alive) setBadges({ review: r1.total ?? 0, ready: r2.total ?? 0 });
       } catch {
