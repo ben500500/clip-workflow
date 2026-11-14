@@ -282,8 +282,8 @@ const AssetLibrary: React.FC = () => {
         // 这里拿到的 r1/r2 就是 {total,...} 本体——再 .then(r=>r.data) 会二次解包成 undefined，
         // 角标静默归零（11-14 CDP P-B1 实拍抓到的自伤，别再犯）。
         const [r1, r2] = await Promise.all([
-          client.get('/assets/summaries', { params: { audit_status: 'pending', page_size: 1 } }),
-          client.get('/assets/productions', { params: { status: 'order_ready', owner: role === 'operator' ? 'me' : 'all', page_size: 1 } }),
+          client.get('/assets/summaries', { params: { audit_status: 'pending', page_size: 1 } }) as Promise<{ total?: number }>,
+          client.get('/assets/productions', { params: { status: 'order_ready', owner: role === 'operator' ? 'me' : 'all', page_size: 1 } }) as Promise<{ total?: number }>,
         ]);
         if (alive) setBadges({ review: r1.total ?? 0, ready: r2.total ?? 0 });
       } catch {
