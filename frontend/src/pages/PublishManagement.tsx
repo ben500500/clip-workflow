@@ -2,11 +2,12 @@ import React, { useEffect, useState } from 'react';
 import {
   Card, Table, Tag, Button, Space, Typography, message, Modal, Form, Input, Select, InputNumber, Alert, Tabs, Tooltip, Switch, DatePicker, Popconfirm,
 } from 'antd';
-import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined, QrcodeOutlined, HeartOutlined, QuestionCircleOutlined, LinkOutlined } from '@ant-design/icons';
+import { ReloadOutlined, PlusOutlined, CheckCircleOutlined, DeleteOutlined, EyeOutlined, EditOutlined, QrcodeOutlined, HeartOutlined, QuestionCircleOutlined, LinkOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { publishApi, type VideoAccountInput, type MiniProgramInput } from '../api/publish';
 import type { PublishProfile, PublishTask, VideoAccount, MiniProgram, OperatorRouteRow, OperatorStat, PublishAuditItem, LoginAuditItem, RiskEventItem, AuditResult, MultiOpVerification, PublishTimeSlot } from '../types';
 import { formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
 import dayjs from 'dayjs';
+import { PublishFlowGuide } from '../components/assets/BizGuides';
 
 const { Title, Text } = Typography;
 
@@ -81,6 +82,8 @@ const PublishManagement: React.FC = () => {
 
   // ── 发布流程操作指引（面向初次使用者） ──
   const [publishGuideOpen, setPublishGuideOpen] = useState(false);
+  // 11-14 用户批准向业务区铺动画：发布流程分步动画版（静态指引保留当速查）
+  const [flowAnimOpen, setFlowAnimOpen] = useState(false);
 
   const fetchTasks = () => {
     setTaskLoading(true);
@@ -1040,6 +1043,8 @@ const PublishManagement: React.FC = () => {
         <Button icon={<ReloadOutlined />} onClick={fetchAll}>刷新</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => { taskForm.resetFields(); setTaskModal(true); }}>新建发布任务</Button>
         <Button icon={<QuestionCircleOutlined />} onClick={() => setPublishGuideOpen(true)}>发布流程指引</Button>
+        <Button icon={<ThunderboltOutlined style={{ color: '#722ed1' }} />} onClick={() => setFlowAnimOpen(true)}>发布流程动画版</Button>
+        <PublishFlowGuide open={flowAnimOpen} onClose={() => setFlowAnimOpen(false)} />
       </Space>
 
       <Tabs items={tabItems} />

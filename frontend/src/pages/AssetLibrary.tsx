@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Badge, Button, Card, Drawer, Modal, Popover, Space, Table, Tabs, Tag, Tooltip, Typography, message, notification } from 'antd';
 import { ApartmentOutlined, BellOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
+import client from '../api/client';
 import AssetListPanel from '../components/assets/AssetListPanel';
 import AssetJobsPanel from '../components/assets/AssetJobsPanel';
 import AssetImportPanel from '../components/assets/AssetImportPanel';
@@ -274,10 +275,12 @@ const AssetLibrary: React.FC = () => {
         // 2026-11-11 评审（前端席 P0）：键名写错成 'token'——全站 token 存的是
         // 'auth_token'（AuthContext/client.ts），Authorization 恒为空 → 两个计数口
         // 每 40s 各 401 一次，「等审核/待投单」角标整体静默死亡。
-        const H = { Authorization: `Bearer ${localStorage.getItem('auth_token') ?? ''}` };
+        // 2026-11-14 P2 收口：不再手拼 header 裸 fetch——统一走 client（axios 实例带
+        // auth_token 注入＋401 无感 refresh 拦截器）。旧写法 token 过期后角标会再死一轮，
+        // 这正是 P2 判据「全仓无裸 fetch /api」的最后一块。
         const [r1, r2] = await Promise.all([
-          fetch('/api/assets/summaries?audit_status=pending&page_size=1', { headers: H }).then((r) => r.json()),
-          fetch(`/api/assets/productions?status=order_ready&owner=${role === 'operator' ? 'me' : 'all'}&page_size=1`, { headers: H }).then((r) => r.json()),
+          client.get('/assets/summaries', { params: { audit_status: 'pending', page_size: 1 } }).then((r) => r.data),
+          client.get('/assets/productions', { params: { status: 'order_ready', owner: role === 'operator' ? 'me' : 'all', page_size: 1 } }).then((r) => r.data),
         ]);
         if (alive) setBadges({ review: r1.total ?? 0, ready: r2.total ?? 0 });
       } catch {
