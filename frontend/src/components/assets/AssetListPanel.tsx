@@ -7,6 +7,7 @@ import {
   MergeCellsOutlined, QuestionCircleOutlined, ReloadOutlined, SearchOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import { CopyGuide } from './PanelGuides';
 import dayjs from 'dayjs';
 import {
   ASSET_STAGE_LABELS, ASSET_STATUS_LABELS, AssetJobAck, DEFAULT_TIER, DURATION_TIERS, assetApi, isAssetJobAck,
@@ -160,6 +161,8 @@ const AssetListPanel: React.FC<Props> = ({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [loading, setLoading] = useState(false);
+  // 11-13 用户口径：五板块都配内嵌动画，本面板＝反推/出文案链路的「怎么用」
+  const [howOpen, setHowOpen] = useState(false);
   const [selected, setSelected] = useState<AssetItem[]>([]);
 
   // 筛选
@@ -1191,6 +1194,13 @@ const AssetListPanel: React.FC<Props> = ({
               出钩子文案（{selectedVideoCount}）
             </Button>
           </Tooltip>
+          <span
+            onClick={() => setHowOpen(true)}
+            style={{ cursor: 'pointer', fontSize: 12, color: '#722ed1', marginLeft: 8, whiteSpace: 'nowrap' }}
+          >
+            ❓ 这一屏怎么用
+          </span>
+          <CopyGuide open={howOpen} onClose={() => setHowOpen(false)} />
           {/*
             批 M（11-09）：直达投产。这一步 0 元、只读（拉已过审文案清单），
             真花钱的是下一屏投产弹窗里的展开/投板，所以不走这里的成本确认单——

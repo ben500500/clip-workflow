@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { OutputGuide } from './PanelGuides';
 import {
   Button,
   Checkbox,
@@ -404,6 +405,8 @@ const AssetOutputWall: React.FC<{
   active = true,
   onGoToProduction,
 }) => {
+  // 11-13 用户口径：五板块内嵌动画——本面板＝挑片/交付链路
+  const [howOpen, setHowOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'asset' | 'batch'>('asset');
   const [ownerView, setOwnerView] = useState<'me' | 'all'>(ownerDefault);
   const [packaging, setPackaging] = useState(false);
@@ -561,6 +564,13 @@ const AssetOutputWall: React.FC<{
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       {/* ── 筛选行：视图切换＋两级共用的筛选 ── */}
       <Space size={8} wrap>
+        <span
+          onClick={() => setHowOpen(true)}
+          style={{ cursor: 'pointer', fontSize: 12, color: '#722ed1', whiteSpace: 'nowrap' }}
+        >
+          ❓ 挑片交付怎么用
+        </span>
+        <OutputGuide open={howOpen} onClose={() => setHowOpen(false)} />
         {ownerSwitchable && (
           <Segmented
             size="small"

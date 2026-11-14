@@ -4,6 +4,7 @@ import {
 } from 'antd';
 import { CloudUploadOutlined, FolderOpenOutlined, InboxOutlined, LinkOutlined, QuestionCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import { ImportGuide } from './PanelGuides';
 import type { UploadFile } from 'antd/es/upload/interface';
 import { DEFAULT_TIER, DURATION_TIERS, assetApi } from '../../api/assets';
 import type {
@@ -119,6 +120,8 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
   const [category, setCategory] = useState<string | undefined>();
   const cats = useAssetCategories();
   const [importing, setImporting] = useState(false);
+  // 11-13 用户口径：五板块内嵌动画——本面板＝导入链路
+  const [howOpen, setHowOpen] = useState(false);
   const [lastImport, setLastImport] = useState<AssetImportBatchResponse | null>(null);
   /**
    * 贴文案/文件导入被形态闸门跳过的条目（2026-11-11 评审·业务席 P2）。
@@ -804,6 +807,13 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
                   <Tooltip title="导入后系统自动下载原片（解析费自动记账，进批次成本）；不想要这批的片就别导入。进度看页面顶上的任务条">
                     <Text type="secondary" style={{ fontSize: 12 }}>导入后自动下载原片</Text>
                   </Tooltip>
+                  <span
+                    onClick={() => setHowOpen(true)}
+                    style={{ cursor: 'pointer', fontSize: 12, color: '#722ed1', whiteSpace: 'nowrap' }}
+                  >
+                    ❓ 导入怎么用
+                  </span>
+                  <ImportGuide open={howOpen} onClose={() => setHowOpen(false)} />
                 </Space>
               </>
             ) : tab === 'file' ? (

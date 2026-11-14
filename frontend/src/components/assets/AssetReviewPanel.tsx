@@ -19,6 +19,7 @@ import AssetReviewCard from './AssetReviewCard';
 import ProduceOrderModal from './ProduceOrderModal';
 import RiskLexiconDrawer from './RiskLexiconDrawer';
 import TrialProduceGuide from './TrialProduceGuide';
+import { ReviewGuide } from './PanelGuides';
 
 const { Text, Paragraph } = Typography;
 
@@ -146,6 +147,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
   // ── 试产（2026-11-12 用户口径）：审核员改提示词投豆包验证预期，不打回采集人 ──
   // 11-13 用户提「流程很多人看不懂」：六步动画引导，工具条与试产弹窗双入口
   const [guideOpen, setGuideOpen] = useState(false);
+  const [howOpen, setHowOpen] = useState(false);
   const [trialFor, setTrialFor] = useState<AssetSummary | null>(null);
   const [trialPrompt, setTrialPrompt] = useState('');
   const [trialBusy, setTrialBusy] = useState(false);
@@ -1009,6 +1011,11 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
             试产怎么用
           </Button>
         </Tooltip>
+        <Tooltip title="60 秒动画：只看推荐条防橡皮章、判定标签怎么读、过/改后过/驳、撤销的连带影响">
+          <Button icon={<QuestionCircleOutlined style={{ color: '#722ed1' }} />} onClick={() => setHowOpen(true)}>
+            审核怎么用
+          </Button>
+        </Tooltip>
       </Space>
       {/* ② 批量动作行：勾选后的审核动作都在这一行，位置固定不随筛选换行跳动 */}
       {canReview ? (
@@ -1482,6 +1489,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
       <RiskLexiconDrawer open={lexiconOpen} onClose={() => setLexiconOpen(false)} />
       {/* 11-13：试产六步动画引导（从工具条按钮或试产弹窗内链接打开） */}
       <TrialProduceGuide open={guideOpen} onClose={() => setGuideOpen(false)} />
+      <ReviewGuide open={howOpen} onClose={() => setHowOpen(false)} />
     </Card>
   );
 };

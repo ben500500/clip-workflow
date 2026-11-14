@@ -6,6 +6,7 @@ import {
   CloudUploadOutlined, CopyOutlined, DownloadOutlined, ExportOutlined, MoreOutlined, PlayCircleOutlined, ReloadOutlined, ThunderboltOutlined, VideoCameraOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import { ProduceGuide } from './PanelGuides';
 import {
   AUDIT_STATUS_LABELS, DISPATCH_REPORT_STATUSES, PRODUCTION_STATE_LABELS, assetApi, isAssetJobAck,
 } from '../../api/assets';
@@ -361,6 +362,8 @@ const AssetProductionPanel: React.FC<Props> = ({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const [loading, setLoading] = useState(false);
+  // 11-13 用户口径：五板块内嵌动画——本面板＝开单/投板链路
+  const [howOpen, setHowOpen] = useState(false);
   const [dispatch, setDispatch] = useState<AssetDispatchCounts | null>(null);
   const [dispatch_all_, setDispatchAll] = useState<AssetDispatchCounts | null>(null);
 
@@ -1613,6 +1616,13 @@ const AssetProductionPanel: React.FC<Props> = ({
         <Button icon={<ExportOutlined />} onClick={() => setExportOpen(true)}>
           导出任务文件（手工投）
         </Button>
+        <span
+          onClick={() => setHowOpen(true)}
+          style={{ cursor: 'pointer', fontSize: 12, color: '#722ed1', marginLeft: 8, whiteSpace: 'nowrap' }}
+        >
+          ❓ 开单投板怎么用
+        </span>
+        <ProduceGuide open={howOpen} onClose={() => setHowOpen(false)} />
         {canWriteBack && (
           <Tooltip title="自己上企微后台手工投的，回来在这里把结果记上账；机器投的不用记。">
             <Button
