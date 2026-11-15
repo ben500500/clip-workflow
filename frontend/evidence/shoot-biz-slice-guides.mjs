@@ -15,6 +15,10 @@ const OUT = '/tmp/shots-biz-slice';
 mkdirSync(OUT, { recursive: true });
 const TOK = readFileSync(process.argv[2] || '/tmp/.cdp_tok_local', 'utf8').trim();
 if (!TOK.startsWith('ey')) { console.error('token 文件不对'); process.exit(2); }
+// /publish 受 RBAC 闸（AuthGuard hasPermission('publish-management')，operator 角色进不去会弹
+// 403 ForbiddenPage），回归段必须用带该菜单的角色 token（admin/publisher）。缺省同文件。
+let ADMIN_TOK = TOK;
+try { ADMIN_TOK = readFileSync('/tmp/.cdp_tok_admin', 'utf8').trim() || TOK; } catch {}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const flat = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -86,7 +90,7 @@ async function main() {
   assert('B-A0 页面渲染（「创建批次并开始处理」按钮在位）', String(await js(`Array.from(document.querySelectorAll('button')).some(b=>b.textContent.includes('创建批次并开始处理'))`)) === 'true');
   assert('B-A1 入口「批量切片怎么用」点开', (await openGuide('批量切片怎么用')) === 'ok');
   body = await modalText();
-  assert('B-A2 标题+第1步 JSON 字段真话术', body.includes('批量切片怎么用 · 50 秒动画版') && body.includes('系统按剧名查找/创建项目'.slice(0, 0) + 'drama'), body.slice(0, 160));
+  assert('B-A2 标题+第1步 JSON 字段真话术', body.includes('批量切片怎么用 · 50 秒动画版') && body.includes('drama'), body.slice(0, 160));
   assert('B-A3 tagline 逐字（整页 Alert 真话术）', body.includes('一份 JSON 排几十集，机器按剧名建项目连夜切完'), body.slice(0, 160));
   await nextStep();
   body = await modalText();
@@ -100,7 +104,8 @@ async function main() {
   await shot('batch-slice-guide-step4');
   await closeGuide();
 
-  // ── 回归：发布管理动画仍在（BizGuides 同文件改动零破坏）──
+  // ── 回归：发布管理动画仍在（BizGuides 同文件改动零破坏；RBAC 段用 admin/publisher token）──
+  await js(`try{localStorage.setItem('auth_token', ${JSON.stringify(ADMIN_TOK)})}catch(e){}`);
   await send('Page.navigate', { url: `${BASE}/publish` });
   await sleep(4000);
   assert('R-A1 回归：发布流程动画版入口仍在', String(await js(`Array.from(document.querySelectorAll('button')).some(b=>b.textContent.includes('发布流程动画版'))`)) === 'true');
