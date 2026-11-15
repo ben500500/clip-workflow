@@ -17,6 +17,7 @@ import { sliceApi, type TextOverlayItem } from '../api/slice';
 import { formatDuration } from '../utils/format';
 import { loadCustomPresets, buildBatchSlicePayload, DEFAULT_SLICE_PRESET, VERT2HORIZON_OUTPUT_SIZES, type SlicePreset } from '../utils/slicePresets';
 import { useDedupePresets } from '../hooks/useDedupePresets';
+import { BizGuideEntry, BatchSliceGuide } from '../components/assets/BizGuides';
 
 const { Text, Title } = Typography;
 
@@ -128,6 +129,8 @@ const BatchSlicePage: React.FC = () => {
   const [jsonText, setJsonText] = useState('');
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  // 「批量切片怎么用」内嵌动画（11-15 业务区推进①，话术逐字耦合本页源码，X44/F72）
+  const [batchGuideOpen, setBatchGuideOpen] = useState(false);
 
   const [batches, setBatches] = useState<BatchSlice[]>([]);
   const [batchListLoading, setBatchListLoading] = useState(false);
@@ -694,7 +697,8 @@ const BatchSlicePage: React.FC = () => {
 
   return (
     <div style={{ padding: 16 }}>
-      <Title level={4}>批量切片工作流</Title>
+      <Title level={4}>批量切片工作流<BizGuideEntry label="批量切片怎么用" onOpen={() => setBatchGuideOpen(true)} /></Title>
+      <BatchSliceGuide open={batchGuideOpen} onClose={() => setBatchGuideOpen(false)} />
       <Alert
         type="info"
         showIcon

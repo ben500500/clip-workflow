@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { projectApi } from '../api/projects';
 import type { Project, ProjectFormValues } from '../types';
 import { formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
+import { BizGuideEntry, SliceFlowGuide } from '../components/assets/BizGuides';
 
 const { Title } = Typography;
 
@@ -22,6 +23,8 @@ const Projects: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Project | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // 「短剧切片怎么用」内嵌动画（11-15 业务区推进①，话术逐字耦合本页与 ProjectDetail/EpisodeDetail/ClipReview）
+  const [sliceGuideOpen, setSliceGuideOpen] = useState(false);
   const [form] = Form.useForm<ProjectFormValues>();
 
   const fetchProjects = React.useCallback(async () => {
@@ -158,9 +161,10 @@ const Projects: React.FC = () => {
   return (
     <div>
       <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
-        <Col><Title level={4} style={{ margin: 0 }}>短剧切片</Title></Col>
+        <Col><Title level={4} style={{ margin: 0 }}>短剧切片</Title><BizGuideEntry label="短剧切片怎么用" onOpen={() => setSliceGuideOpen(true)} /></Col>
         <Col><Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>新建项目</Button></Col>
       </Row>
+      <SliceFlowGuide open={sliceGuideOpen} onClose={() => setSliceGuideOpen(false)} />
       <Card size="small" style={{ marginBottom: 16 }}>
         <Row gutter={16} align="middle">
           <Col flex="auto">
