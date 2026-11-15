@@ -45,7 +45,8 @@ async function main() {
   ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); m.error ? p.rej(new Error('x')) : p.res(m.result); } };
   await send('Page.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false });
-  await send('Page.addScriptToEvaluateOnNewDocument', { source: `try{localStorage.setItem('auth_token', ${JSON.stringify(TOK)})}catch(e){}` });
+  let injectId = null;
+  try { injectId = (await send('Page.addScriptToEvaluateOnNewDocument', { source: `try{localStorage.setItem('auth_token', ${JSON.stringify(TOK)})}catch(e){}` })).identifier; } catch {}
   const js = async (e) => { const r = await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true }); return r.exceptionDetails ? `EXC ${JSON.stringify(r.exceptionDetails).slice(0, 150)}` : r.result?.value; };
   const shot = async (n) => { const { data } = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(`${OUT}/${n}.png`, Buffer.from(data, 'base64')); };
   // X46 姿势：取 .ant-modal 全容器（标题在 header），再剥 tg- 样式串防 CSS 混入正文
@@ -105,9 +106,14 @@ async function main() {
   await closeGuide();
 
   // ── 回归：发布管理动画仍在（BizGuides 同文件改动零破坏；RBAC 段用 admin/publisher token）──
+  // ⚠️ 两层坑叠加（三轮假红的完整根因）：①operator 无 publish-management 菜单，AuthGuard 弹
+  // ForbiddenPage，必须换 admin/publisher token；②`addScriptToEvaluateOnNewDocument` 是**持久
+  // 注入钩子**，每次新文档都会把旧的 operator token **覆盖回去**——只写 localStorage＋reload 没用。
+  // 正解＝先 removeScriptToEvaluateOnNewDocument 撤钩子，再换 token、reload。
+  if (injectId) { await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: injectId }); }
   await js(`try{localStorage.setItem('auth_token', ${JSON.stringify(ADMIN_TOK)})}catch(e){}`);
   await send('Page.navigate', { url: `${BASE}/publish` });
-  await sleep(4000);
+  await sleep(4500);
   assert('R-A1 回归：发布流程动画版入口仍在', String(await js(`Array.from(document.querySelectorAll('button')).some(b=>b.textContent.includes('发布流程动画版'))`)) === 'true');
   await js(`(() => { const b=Array.from(document.querySelectorAll('button')).find(x=>x.textContent.includes('发布流程动画版')); b&&b.click(); })()`);
   body = await modalText();
