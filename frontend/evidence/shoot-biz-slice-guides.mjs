@@ -116,11 +116,11 @@ async function main() {
   await nextStep();
   body = await modalText();
   assert('B-A5 第3步六阶段＋失败重试话术', body.includes('AI 选点') && body.includes('删除源视频') && body.includes('已完成项将跳过'), body.slice(0, 160));
-  assert('B-A5b 第3步无限循环动效>0（帧播放器）', Number(await loopCount()) > 0);
+  assert('B-A5b 第3步帧模式（img 双快照切换）', Number(await loopCount()) > 0);
   await nextStep();
   body = await modalText();
   assert('B-A6 第4步成品 Alert 逐字＋「开始裁剪」', body.includes('每个成品支持「预览」播放，以及「编辑」通过拖动进度条选定时间范围进行简单裁剪（会重新编码生成新片段）。') && body.includes('开始裁剪'), body.slice(0, 160));
-  assert('B-A6b 第4步无限循环动效>0', Number(await loopCount()) > 0);
+  assert('B-A6b 第4步帧模式（img 双快照切换）', Number(await loopCount()) > 0);
   await shot('batch-slice-guide-step4');
   await closeGuide();
 

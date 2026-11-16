@@ -79,7 +79,8 @@ export default function TrialProduceGuide({
   onClose: () => void;
 }) {
   const [step, setStep] = useState(0);
-  const [playing, setPlaying] = useState(true);
+  /** 用户显式暂停才冻结帧循环＋自动翻页；手动翻页不冻结（同 StepGuide 口径） */
+  const [userPaused, setUserPaused] = useState(false);
   const timerRef = useRef<number | null>(null);
 
   const goto = useCallback((i: number) => {
@@ -89,17 +90,17 @@ export default function TrialProduceGuide({
   useEffect(() => {
     if (!open) {
       setStep(0);
-      setPlaying(true);
+      setUserPaused(false);
       return;
     }
-    if (!playing) return;
+    if (userPaused) return;
     timerRef.current = window.setTimeout(() => {
       setStep((s) => (s + 1) % STEPS.length);
     }, STEP_MS[step]);
     return () => {
       if (timerRef.current) window.clearTimeout(timerRef.current);
     };
-  }, [open, playing, step]);
+  }, [open, userPaused, step]);
 
   const cur = STEPS[step];
   return (
@@ -128,7 +129,7 @@ export default function TrialProduceGuide({
               type="button"
               key={s.title}
               className={`tg-dot ${i === step ? 'on' : ''} ${i < step ? 'done' : ''}`}
-              onClick={() => { setPlaying(false); goto(i); }}
+              onClick={() => goto(i)}
               title={s.title}
             >
               {i + 1}
@@ -136,7 +137,7 @@ export default function TrialProduceGuide({
           ))}
         </div>
         <div className="tg-cols">
-          <FramePlayer frameDir="/guides/trial" step={step} playing={playing} />
+          <FramePlayer frameDir="/guides/trial" step={step} playing={!userPaused} />
           <div className="tg-side">
             <Paragraph strong style={{ marginBottom: 2 }}>{cur.title}</Paragraph>
             <Text type="secondary">{cur.sub}</Text>
@@ -151,16 +152,16 @@ export default function TrialProduceGuide({
           </div>
         </div>
         <div className="tg-ctrls">
-          <Button size="small" onClick={() => { setPlaying(false); goto(step - 1); }}>上一步</Button>
+          <Button size="small" onClick={() => goto(step - 1)}>上一步</Button>
           <Button
             size="small"
             type="text"
-            icon={playing ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
-            onClick={() => setPlaying((p) => !p)}
+            icon={userPaused ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+            onClick={() => setUserPaused((p) => !p)}
           >
-            {playing ? '暂停' : '连播'}
+            {userPaused ? '暂停' : '连播'}
           </Button>
-          <Button size="small" onClick={() => { setPlaying(false); goto(step + 1); }}>下一步</Button>
+          <Button size="small" onClick={() => goto(step + 1)}>下一步</Button>
           <Button size="small" type="primary" onClick={onClose}>学会了，去试一条</Button>
         </div>
       </div>

@@ -57,7 +57,8 @@ export default function StepGuide({
 }: StepGuideProps) {
   const [step, setStep] = useState(0);
   const [tick, setTick] = useState(0);
-  const [playing, setPlaying] = useState(true);
+  /** 用户显式暂停（暂停/连播按钮）才冻结：自动翻页＋帧循环都归它管；手动点圆点/翻页不冻结 */
+  const [userPaused, setUserPaused] = useState(false);
   const timerRef = useRef<number | null>(null);
 
   const goto = useCallback((i: number) => {
@@ -71,14 +72,14 @@ export default function StepGuide({
   stepsRef.current = steps;
   const nSteps = steps.length;
   useEffect(() => {
-    if (!open) { setStep(0); setTick(0); setPlaying(true); return; }
-    if (!playing) return;
+    if (!open) { setStep(0); setTick(0); setUserPaused(false); return; }
+    if (userPaused) return;
     timerRef.current = window.setTimeout(() => {
       setStep((x) => (x + 1) % nSteps);
       setTick((t) => t + 1);
     }, stepsRef.current[step]?.ms ?? 7000);
     return () => { if (timerRef.current) window.clearTimeout(timerRef.current); };
-  }, [open, playing, step, nSteps]);
+  }, [open, userPaused, step, nSteps]);
 
   const cur = steps[step];
   if (!cur) return null;
@@ -105,7 +106,7 @@ export default function StepGuide({
               type="button"
               key={s.title}
               className={`tg-dot ${i === step ? 'on' : ''} ${i < step ? 'done' : ''}`}
-              onClick={() => { setPlaying(false); goto(i); }}
+              onClick={() => goto(i)}
               title={s.title}
             >
               {i + 1}
@@ -117,7 +118,7 @@ export default function StepGuide({
               老形态：stage 内联 mock ＋声明式巡航光标 */}
           <div className="tg-stage" key={`st-${step}-${tick}`}>
             {frameDir ? (
-              <FramePlayer frameDir={frameDir} step={step} playing={playing} />
+              <FramePlayer frameDir={frameDir} step={step} playing={!userPaused} />
             ) : (
               <>
                 {cur.stage}
@@ -139,15 +140,15 @@ export default function StepGuide({
           </div>
         </div>
         <div className="tg-ctrls">
-          <Button size="small" onClick={() => { setPlaying(false); goto(step - 1); }}>上一步</Button>
+          <Button size="small" onClick={() => goto(step - 1)}>上一步</Button>
           <Button
             size="small" type="text"
-            icon={playing ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
-            onClick={() => setPlaying((p) => !p)}
+            icon={userPaused ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+            onClick={() => setUserPaused((p) => !p)}
           >
-            {playing ? '暂停' : '连播'}
+            {userPaused ? '暂停' : '连播'}
           </Button>
-          <Button size="small" onClick={() => { setPlaying(false); goto(step + 1); }}>下一步</Button>
+          <Button size="small" onClick={() => goto(step + 1)}>下一步</Button>
           <Button size="small" type="primary" onClick={onClose}>{okText}，去试一下</Button>
         </div>
       </div>
