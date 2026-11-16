@@ -12,6 +12,8 @@
  *  · BatchSliceGuide 批量切片（BatchSlice 一页三步工作流）
  * 话术同样逐字 grep 抄真机源码；改这些页面的主按钮文案时请连改这里
  * （X44/F72 耦合制度，CDP 断言把关）。
+ * 11-16 补账：这两颗初版漏配 c06a129 立下的动效规矩（每步巡航光标 pulse/blink）——
+ * 现全部 9 步补齐，shoot-biz-slice-guides.mjs 每步数无限循环元素>0 实测把关。
  */
 import React, { useState } from 'react';
 import StepGuide, {
@@ -140,9 +142,10 @@ export function SliceFlowGuide({ open, onClose }: { open: boolean; onClose: () =
             '列表页可按「搜索项目名称...」找回老项目；状态分 草稿 / 处理中 / 已完成 / 已归档',
             '点项目名称或「详情」进入项目页，后续全在项目里操作',
           ],
+          cursor: [20, 300, 170, 42],
           stage: (
             <MockCard>
-              <div style={{ marginBottom: 8 }}><MockChip>短剧切片</MockChip>　<MockBtn kind="primary">新建项目</MockBtn></div>
+              <div style={{ marginBottom: 8 }}><MockChip>短剧切片</MockChip>　<MockBtn kind="primary" pulse>新建项目</MockBtn></div>
               <MockLines widths={['92%', '78%']} />
               <div style={{ marginTop: 8 }}>
                 <MockTag color="blue">甜宠短剧 A 组</MockTag>
@@ -161,6 +164,7 @@ export function SliceFlowGuide({ open, onClose }: { open: boolean; onClose: () =
             '「多视频上传（合并成剧集）」弹窗里勾「合并成一个视频（作为一个正片进入选点/切片处理）」——无损拼接不转码，各视频需编码/分辨率/帧率一致',
             '可开「秒差检测（音画同步校验）」，不同步仅提示标注、不拦截上传',
           ],
+          cursor: [20, 300, 240, 205],
           stage: (
             <MockPanel>
               <div style={{ marginBottom: 8 }}><b>多视频上传（当前项目下创建剧集）</b></div>
@@ -169,7 +173,7 @@ export function SliceFlowGuide({ open, onClose }: { open: boolean; onClose: () =
               <div style={{ marginTop: 8, textAlign: 'center', border: '1px dashed #d9d9d9', borderRadius: 8, padding: 14, color: '#999' }}>
                 点击或拖拽多个视频到此处
               </div>
-              <div style={{ marginTop: 8 }}><MockTag color="green">☑ 合并成一个视频</MockTag><MockTag color="default">秒差检测（音画同步校验）</MockTag></div>
+              <div style={{ marginTop: 8 }}><MockTag color="green" blink>☑ 合并成一个视频</MockTag><MockTag color="default">秒差检测（音画同步校验）</MockTag></div>
             </MockPanel>
           ),
           ms: 9000,
@@ -182,13 +186,14 @@ export function SliceFlowGuide({ open, onClose }: { open: boolean; onClose: () =
             '「无候选片段时自动补一轮 AI 选点」默认开着：没选过点的剧集会先自动选点再切',
             '单集精修：剧集详情页顶部工作台入口有「一键切片」「片段审核」「区间检测」「切片任务」「成品预览」五颗按钮',
           ],
+          cursor: [20, 300, 390, 160],
           stage: (
             <>
               <MockSteps items={['上传视频', 'AI 智能选点', '片段审核', '区间检测', '切片执行', '成品预览']} at={4} />
               <MockCard focus>
                 <MockLines widths={['80%']} />
                 <div style={{ marginTop: 8, textAlign: 'right' }}>
-                  <MockBtn kind="primary">批量一键切片（3）</MockBtn>　<MockBtn kind="danger">一键切片</MockBtn>
+                  <MockBtn kind="primary" pulse>批量一键切片（3）</MockBtn>　<MockBtn kind="danger">一键切片</MockBtn>
                 </div>
               </MockCard>
               <MockCallout pos="top">免审核直接出片：候选片段（含待审核）直接切割成成品</MockCallout>
@@ -204,12 +209,13 @@ export function SliceFlowGuide({ open, onClose }: { open: boolean; onClose: () =
             '「片段审核」页：每个候选可「通过」/「拒绝」，也可「批量通过 (N)」「一键全部通过 (N)」',
             '「区间检测」会自动找片尾/静止/水印区间（「开始检测」或「手动添加」），切片时自动避让',
           ],
+          cursor: [20, 300, 215, 40],
           stage: (
             <MockCard>
-              <div style={{ marginBottom: 6 }}><MockChip color="blue">AI 智能选点</MockChip>　<MockBtn kind="primary">启动选点</MockBtn></div>
+              <div style={{ marginBottom: 6 }}><MockChip color="blue">AI 智能选点</MockChip>　<MockBtn kind="primary" pulse>启动选点</MockBtn></div>
               <MockLines widths={['90%', '76%']} />
               <div style={{ marginTop: 8 }}>
-                <MockTag color="blue">待审核: 12</MockTag>
+                <MockTag color="blue" blink>待审核: 12</MockTag>
                 <MockTag color="green">已通过: 8</MockTag>
                 <MockBtn kind="primary">通过</MockBtn> <MockBtn>批量通过 (5)</MockBtn> <MockBtn>一键全部通过 (12)</MockBtn>
               </div>
@@ -225,9 +231,10 @@ export function SliceFlowGuide({ open, onClose }: { open: boolean; onClose: () =
             '每组顶部「一键下载全部」整集打包；单条点「下载」',
             '「暂无成品。请先对剧集执行切片（可勾选多个剧集后使用「批量一键切片」），完成后即可在此预览。」',
           ],
+          cursor: [20, 300, 255, 42],
           stage: (
             <MockCard>
-              <div style={{ marginBottom: 6 }}><MockChip color="green">成品预览（24）</MockChip>　<MockBtn>一键下载全部</MockBtn></div>
+              <div style={{ marginBottom: 6 }}><MockChip color="green">成品预览（24）</MockChip>　<MockBtn pulse>一键下载全部</MockBtn></div>
               <MockLines widths={['88%', '72%', '80%']} />
               <MockCallout pos="bottom">切片任务排队中 / 运行中… 完成后本页自动可见</MockCallout>
             </MockCard>
@@ -263,6 +270,7 @@ export function BatchSliceGuide({ open, onClose }: { open: boolean; onClose: () 
             '支持整个数组一次给多部剧：[{ "drama": ... }, ...]',
             '系统按剧名查找/创建项目，不用先去建项目',
           ],
+          cursor: [20, 300, 230, 130],
           stage: (
             <MockPanel>
               <div style={{ marginBottom: 6 }}><b>① 上传列表（JSON）</b></div>
@@ -285,18 +293,19 @@ export function BatchSliceGuide({ open, onClose }: { open: boolean; onClose: () 
             '「启用 AI 选点」管候选数、最低评分、最短/最长时长；「启用区间检测」切片前自动检测片尾/静止/水印区间',
             '「画面去重」按档位降低平台查重风险；「输出档位」高规格素材可降档提速',
           ],
+          cursor: [20, 300, 395, 175],
           stage: (
             <MockCard>
               <div style={{ marginBottom: 6 }}><MockChip>选择配置：</MockChip>　<MockTag color="default">默认</MockTag><MockTag color="purple">标准档</MockTag></div>
               <MockLines widths={['86%', '70%']} />
               <div style={{ marginTop: 8 }}>
-                <MockTag color="blue">启用 AI 选点 ✓</MockTag>
+                <MockTag color="blue" blink>启用 AI 选点 ✓</MockTag>
                 <MockTag color="blue">切片前自动检测</MockTag>
                 <MockTag color="orange">去重档位</MockTag>
                 <MockTag color="green">输出档位</MockTag>
               </div>
               <div style={{ marginTop: 10, textAlign: 'right' }}>
-                <MockBtn kind="primary">创建批次并开始处理</MockBtn>　<MockBtn>恢复默认配置</MockBtn>
+                <MockBtn kind="primary" pulse>创建批次并开始处理</MockBtn>　<MockBtn>恢复默认配置</MockBtn>
               </div>
             </MockCard>
           ),
@@ -310,15 +319,16 @@ export function BatchSliceGuide({ open, onClose }: { open: boolean; onClose: () 
             '状态话术：待处理 / 上传中 / 选点中 / 审核中 / 检测中 / 切片中 / 已完成 / 失败 / 已取消',
             '跑不完可以「取消批次」（未完成的剧集将标记为已取消）；部分失败点「重试失败项」',
           ],
+          cursor: [20, 300, 300, 118],
           stage: (
             <>
               <MockSteps items={['上传源视频', 'AI 选点', '自动审核', '区间检测', '一键切片', '删除源视频']} at={4} />
               <MockCard focus>
                 <MockLines widths={['82%']} />
                 <div style={{ marginTop: 8 }}>
-                  <MockTag color="blue">切片中</MockTag>
+                  <MockTag color="blue" blink>切片中</MockTag>
                   <MockTag color="green">已完成</MockTag>
-                  <MockBtn>刷新批次列表</MockBtn> <MockBtn>重试失败项</MockBtn> <MockBtn kind="danger">取消批次</MockBtn>
+                  <MockBtn pulse>刷新批次列表</MockBtn> <MockBtn>重试失败项</MockBtn> <MockBtn kind="danger">取消批次</MockBtn>
                 </div>
               </MockCard>
             </>
@@ -333,12 +343,13 @@ export function BatchSliceGuide({ open, onClose }: { open: boolean; onClose: () 
             '裁剪弹窗里可「取当前播放点为起点」「选全部」，点「开始裁剪」出新片段',
             '明细分组双击任意一集可直接跳该剧集成品预览；下载走「下载」链接',
           ],
+          cursor: [20, 300, 400, 150],
           stage: (
             <MockPanel>
               <div style={{ marginBottom: 6 }}><b>输出列表（共 48 个成品）</b></div>
               <MockLines widths={['88%', '64%']} />
               <div style={{ marginTop: 8, textAlign: 'right' }}>
-                <MockBtn>预览</MockBtn>　<MockBtn kind="primary">编辑</MockBtn>　<MockBtn>下载</MockBtn>
+                <MockBtn>预览</MockBtn>　<MockBtn kind="primary" pulse>编辑</MockBtn>　<MockBtn>下载</MockBtn>
               </div>
               <MockCallout pos="bottom">拖动进度条选定时间范围 →「开始裁剪」</MockCallout>
             </MockPanel>
