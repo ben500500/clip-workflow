@@ -66,11 +66,28 @@ async function main() {
   };
   const openGuide = async (label) =>
     js(`(() => { const b=Array.from(document.querySelectorAll('span')).find(x=>x.textContent.includes('${label}')&&x.textContent.includes('怎么用')); if(!b) return 'no-entry'; b.click(); return 'ok'; })()`);
-  // 推进步骤：优先点对应步骤圆点（比「下一步」按钮更可靠——变体矩阵页有 Collapse 等
-  // 交互元素可能遮挡 ctrls 按钮，点 dot 直接 setStep 不受遮挡影响）
+  // 推进步骤：点「下一步」按钮（11-16 实测变体矩阵页 dot 点击偶发不翻页，
+  // 「下一步」按钮更稳定；点前先暂停自动播避免计时器干扰，点后验证 dot 已推进，
+  // 没到就重试，最终回退直接点 dot）
   const gotoStepDot = async (i) => {
-    await js(`(() => { const d=document.querySelectorAll('.tg-dot')[${i}]; d&&d.click(); })()`);
-    await sleep(2000);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      // 先暂停自动播（点「暂停」按钮），避免计时器在翻页时重置
+      await js(`(() => { const b=Array.from(document.querySelectorAll('.tg-ctrls button')).find(x=>x.textContent.includes('暂停')); b&&b.click(); })()`);
+      await sleep(400);
+      await js(`(() => { const b=Array.from(document.querySelectorAll('.tg-ctrls button')).find(x=>x.textContent.includes('下一步')); b&&b.click(); })()`);
+      await sleep(2500);
+      const onIdx = Number(await js(`(() => { const d=Array.from(document.querySelectorAll('.tg-dot')).findIndex(x=>x.className.includes('on')); return d+1; })()`));
+      if (onIdx === i + 1) return;
+      await js(`(() => { const d=document.querySelectorAll('.tg-dot')[${i}]; d&&d.click(); })()`);
+      await sleep(2000);
+    }
+  };
+  // 读 .tg-side 的 step 标题 + 话术（比 modalText 更精准——modalText 含 header tagline，
+  // 变体矩阵页翻页偶发不稳定时 modalText 会拿到旧 step，.tg-side 只含当前 step 内容）
+  const sideText = async () => {
+    await sleep(1000);
+    const s = await js(`(() => { const m=document.querySelector('.ant-modal .tg-side'); return m ? m.textContent : 'NO-SIDE'; })()`);
+    return String(s).replace(/\.tg-[^\x22]*?\}/g, '');
   };
   // 帧模式实测（11-16 用户口径「改成一帧一帧的图片」）：① .tg-stage 内是 <img> 播放器；
   // ② 多快照 src 必须真的在变（逐帧切换活着）；③ 帧数=12。
@@ -120,8 +137,8 @@ async function main() {
   assert('V-A2 标题+第1步「变体矩阵看板（多视频号素材去重）」逐字', body.includes('变体矩阵怎么用 · 60 秒动画版') && body.includes('变体矩阵看板（多视频号素材去重）'), body.slice(0, 160));
   assert('V-A2b 第1步帧播放器在逐帧切换', Number(await loopCount()) > 0);
   await gotoStepDot(1);
-  body = await modalText();
-  assert('V-A3 第2步「撞车判定阈值（运营可调）」+「复核」逐字', body.includes('撞车判定阈值（运营可调）') && body.includes('复核'), body.slice(0, 160));
+  body = await sideText();
+  assert('V-A3 第2步「撞车阈值」按钮+「撞车判定阈值（运营可调）」弹窗逐字', body.includes('撞车阈值') && body.includes('撞车判定阈值（运营可调）'), body.slice(0, 160));
   assert('V-A3b 第2步帧模式（img 双快照切换）', Number(await loopCount()) > 0);
   await gotoStepDot(2);
   body = await modalText();
