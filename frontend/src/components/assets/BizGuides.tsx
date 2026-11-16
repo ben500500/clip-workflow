@@ -35,13 +35,14 @@ export function PublishFlowGuide({ open, onClose }: { open: boolean; onClose: ()
             '「视频号账号」Tab 新增账号并绑定配置；要挂小程序先在「小程序链接」Tab 维护',
             '「运营者端口矩阵」Tab 选账号 →「登录态扫码」→ 微信扫码 →「心跳检查」置为 valid',
           ],
+          cursor: [20, 300, 120, 180],
           stage: (
             <MockCard>
               <div style={{ marginBottom: 6 }}><MockChip>发布配置</MockChip>　视频号 · Chrome 9222档 · 每日上限 · 间隔</div>
               <MockLines widths={['88%']} />
               <div style={{ marginBottom: 6 }}><MockChip>账号库</MockChip>　新增账号 → 绑定配置 → 小程序链接（可选）</div>
               <MockLines widths={['76%']} />
-              <div><MockTag color="green">心跳检查 valid</MockTag><MockTag color="red">expired＝发不出</MockTag></div>
+              <div><MockTag color="green" blink>心跳检查 valid</MockTag><MockTag color="red">expired＝发不出</MockTag></div>
             </MockCard>
           ),
           ms: 9000,
@@ -54,15 +55,16 @@ export function PublishFlowGuide({ open, onClose }: { open: boolean; onClose: ()
             '「截图确认后发布」推荐选是——RPA 填好表单后截图人工确认，避免误发',
             '提交后自动创建发布任务并触发 RPA 发布，不用在这页手建',
           ],
+          cursor: [20, 300, 380, 160],
           stage: (
             <MockPanel>
               <div style={{ marginBottom: 8 }}><b>一键发布</b>　平台：☑视频号 ☑抖音</div>
               <MockLines widths={['84%', '60%']} />
               <div style={{ marginTop: 8 }}>
                 <MockTag color="blue">发布素材：短标题/配文/标签自动代入</MockTag>
-                <MockTag color="green">截图确认后发布：是（推荐）</MockTag>
+                <MockTag color="green" blink>截图确认后发布：是（推荐）</MockTag>
               </div>
-              <div style={{ marginTop: 10, textAlign: 'right' }}><MockBtn kind="primary">提交（创建任务＋触发 RPA）</MockBtn></div>
+              <div style={{ marginTop: 10, textAlign: 'right' }}><MockBtn kind="primary" pulse>提交（创建任务＋触发 RPA）</MockBtn></div>
             </MockPanel>
           ),
           ms: 9000,
@@ -75,13 +77,14 @@ export function PublishFlowGuide({ open, onClose }: { open: boolean; onClose: ()
             '未开启截图确认的任务会直接自动发布，无需人工确认',
             '本页「新建发布任务」是给补发/手工建单用的，正常链路从上一步来',
           ],
+          cursor: [20, 300, 330, 150],
           stage: (
             <>
               <MockSteps items={['待发布', 'RPA 填表', '待确认', '确认发布', '已发布']} at={2} />
               <MockCard focus>
                 <MockLines widths={['80%']} />
                 <div style={{ marginTop: 8, textAlign: 'right' }}>
-                  <MockBtn>查看截图</MockBtn>　<MockBtn kind="primary">确认发布</MockBtn>
+                  <MockBtn>查看截图</MockBtn>　<MockBtn kind="primary" pulse>确认发布</MockBtn>
                 </div>
               </MockCard>
               <MockCallout pos="bottom">截图没问题再点「确认发布」——这一下才真发出去</MockCallout>
@@ -96,6 +99,7 @@ export function PublishFlowGuide({ open, onClose }: { open: boolean; onClose: ()
             '「定时发布时间窗口（预置 ＋ 自定义）」：选窗口即「窗口内随机选点错峰发布」；不够就「新增自定义窗口」',
             '「发布审计与可观测（仅管理员）」：每条任务的确认人、时间、错误信息可溯源',
           ],
+          cursor: [20, 300, 240, 45],
           stage: (
             <MockCard>
               <div style={{ marginBottom: 6 }}><MockChip>发布窗口</MockChip>　<MockTag color="default">选择发布窗口（窗口内随机选点错峰发布）</MockTag></div>

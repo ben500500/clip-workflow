@@ -24,6 +24,8 @@ export interface GuideStep {
   stage: React.ReactNode;
   /** 自动播时长 ms，缺省 7000 */
   ms?: number;
+  /** 声明即自动渲染无限巡航假光标 [x0,y0,x1,y1]（stage 520x330 坐标系） */
+  cursor?: [number, number, number, number];
 }
 
 export interface StepGuideProps {
@@ -52,15 +54,20 @@ export default function StepGuide({
     setTick((t) => t + 1);
   }, [steps.length]);
 
+  // steps 数组是父组件每次 render 新建的字面量——把它放进 effect 依赖会让计时器被
+  // 任意父级重渲（20s badge 轮询、状态刷新）重置，翻页变慢甚至不翻。值走 ref，依赖只留长度。
+  const stepsRef = useRef(steps);
+  stepsRef.current = steps;
+  const nSteps = steps.length;
   useEffect(() => {
     if (!open) { setStep(0); setTick(0); setPlaying(true); return; }
     if (!playing) return;
     timerRef.current = window.setTimeout(() => {
-      setStep((s) => (s + 1) % steps.length);
+      setStep((x) => (x + 1) % nSteps);
       setTick((t) => t + 1);
-    }, steps[step]?.ms ?? 7000);
+    }, stepsRef.current[step]?.ms ?? 7000);
     return () => { if (timerRef.current) window.clearTimeout(timerRef.current); };
-  }, [open, playing, step, steps]);
+  }, [open, playing, step, nSteps]);
 
   const cur = steps[step];
   if (!cur) return null;
@@ -96,7 +103,12 @@ export default function StepGuide({
         </div>
         <div className="tg-cols">
           {/* key 强制当步重放入场动画 */}
-          <div className="tg-stage" key={`st-${step}-${tick}`}>{cur.stage}</div>
+          <div className="tg-stage" key={`st-${step}-${tick}`}>
+            {cur.stage}
+            {cur.cursor && (
+              <MockCursorRun x0={cur.cursor[0]} y0={cur.cursor[1]} x1={cur.cursor[2]} y1={cur.cursor[3]} />
+            )}
+          </div>
           <div className="tg-side">
             <Paragraph strong style={{ marginBottom: 2 }}>{cur.title}</Paragraph>
             <Text type="secondary">{cur.sub}</Text>
@@ -139,12 +151,12 @@ export function MockLines({ widths = ['92%', '78%', '85%'] }: { widths?: string[
   return <div className="tg-lines">{widths.map((w, i) => <i key={i} style={{ width: w }} />)}</div>;
 }
 
-export function MockBtn({ kind = '', children }: { kind?: '' | 'primary' | 'danger' | 'violet' | 'muted'; children: React.ReactNode }) {
-  return <span className={`tg-btn ${kind ? `tg-btn-${kind}` : ''}`}>{children}</span>;
+export function MockBtn({ kind = '', pulse, children }: { kind?: '' | 'primary' | 'danger' | 'violet' | 'muted'; pulse?: boolean; children: React.ReactNode }) {
+  return <span className={`tg-btn ${kind ? `tg-btn-${kind}` : ''} ${pulse ? 'tg-pulse-loop' : ''}`}>{children}</span>;
 }
 
-export function MockTag({ color = 'blue', children }: { color?: string; children: React.ReactNode }) {
-  return <span className={`tg-tag tg-tag-${color}`}>{children}</span>;
+export function MockTag({ color = 'blue', blink, children }: { color?: string; blink?: boolean; children: React.ReactNode }) {
+  return <span className={`tg-tag tg-tag-${color} ${blink ? 'tg-blink-loop' : ''}`}>{children}</span>;
 }
 
 /** 流程总览条：①导入→②…→⑤成片墙，当前所在环节高亮（多份教程共用同一张地图） */
@@ -181,6 +193,18 @@ export function MockCallout({ children, pos = 'top' }: { children: React.ReactNo
 
 export function MockCursor({ cls }: { cls: string }) {
   return <div className={`tg-cursor ${cls}`}>➤</div>;
+}
+
+/** 持续版光标：从 (--x0,--y0) 飞到 (--x1,--y1) 按一下，整段无限循环——画面「活着」的关键件 */
+export function MockCursorRun({ x0, y0, x1, y1 }: { x0: number; y0: number; x1: number; y1: number }) {
+  return (
+    <div
+      className="tg-cursor tg-cursor-run"
+      style={{ ['--x0' as never]: `${x0}px`, ['--y0' as never]: `${y0}px`, ['--x1' as never]: `${x1}px`, ['--y1' as never]: `${y1}px` }}
+    >
+      ➤
+    </div>
+  );
 }
 
 export function MockPanel({ children }: { children: React.ReactNode }) {
@@ -262,4 +286,14 @@ const CSS = `
 @keyframes tg-blink{0%,100%{opacity:1}50%{opacity:.15}}
 @keyframes tg-pulse{0%,100%{box-shadow:0 0 0 0 rgba(114,46,209,.45)}
   50%{box-shadow:0 0 0 8px rgba(114,46,209,0)}}
+@keyframes tg-run{
+  0%{left:var(--x0,20px);top:var(--y0,280px);opacity:0;transform:scale(1)}
+  10%{opacity:1}
+  55%{left:var(--x1,240px);top:var(--y1,120px);opacity:1;transform:scale(1)}
+  66%{transform:scale(.62)}
+  74%,100%{left:var(--x1);top:var(--y1);opacity:1;transform:scale(1)}
+}
+.tg-cursor-run{animation:tg-run 3.6s .3s infinite}
+.tg-pulse-loop{animation:tg-pulse 1.3s infinite}
+.tg-blink-loop{animation:tg-blink 1.5s infinite}
 `;

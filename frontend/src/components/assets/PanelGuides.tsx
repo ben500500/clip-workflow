@@ -32,6 +32,7 @@ export function ImportGuide({ open, onClose }: { open: boolean; onClose: () => v
             '「一行一条分享链接（可以整段粘含中文的分享文案，后端自己提 http token）」——不用自己挑链接',
             '例：https://v.douyin.com/xxxx/ 这剧太上头了 ← 整句粘进来也对',
           ],
+          cursor: [20, 300, 240, 70],
           stage: (
             <>
               <MockTextarea caret>
@@ -49,6 +50,7 @@ export function ImportGuide({ open, onClose }: { open: boolean; onClose: () => v
             '「一条文案一段（空行分隔）」——先有稿子后配视频也走得通',
             '默认勾「导入后自动下载原片」：原片进自有桶，后面反推/回源都不求人',
           ],
+          cursor: [20, 300, 120, 190],
           stage: (
             <>
               <MockTextarea>
@@ -56,7 +58,7 @@ export function ImportGuide({ open, onClose }: { open: boolean; onClose: () => v
                 他寻子坠崖挂在歪脖子树上，拼死跃进山洞竟挖出黄金
               </MockTextarea>
               <div style={{ marginTop: 8 }}>
-                <MockTag color="green">✓ 导入后自动下载原片</MockTag>
+                <MockTag color="green" blink>✓ 导入后自动下载原片</MockTag>
               </div>
             </>
           ),
@@ -68,6 +70,7 @@ export function ImportGuide({ open, onClose }: { open: boolean; onClose: () => v
             '「批次名（可选，留空自动命名）」——赶时间可以直接点导入',
             '分类决定后面出文案用哪套原型词表；拿不准就先不选，② 里还能补',
           ],
+          cursor: [20, 300, 260, 55],
           stage: (
             <MockCard>
               <div style={{ marginBottom: 8 }}><MockChip>批次</MockChip>　批次名（可选，留空自动命名）</div>
@@ -83,11 +86,12 @@ export function ImportGuide({ open, onClose }: { open: boolean; onClose: () => v
             '不用手动切页签——批次码就是跳转按钮（onSelectBatch 直达 ②）',
             '接下来在 ② 反推文案、出钩子候选；整条链：导入→反推→出文案→审核→生产→成片',
           ],
+          cursor: [20, 300, 150, 210],
           stage: (
             <>
               <MockFlow at="① 导入" note="导入完成 → 批次码一键跳 ② 素材与文案" />
               <div style={{ marginTop: 14 }}>
-                <MockBtn kind="primary">跳到这一批的素材列表 →</MockBtn>
+                <MockBtn kind="primary" pulse>跳到这一批的素材列表 →</MockBtn>
               </div>
             </>
           ),
@@ -115,9 +119,10 @@ export function CopyGuide({ open, onClose }: { open: boolean; onClose: () => voi
             '没勾就点按钮 → 「先勾选要反推文案的素材」',
             '全是图片 → 「选中的 N 条都是图片：图片只当投产用的角色卡，不反推文案（提交了也是白扣一次钱）」',
           ],
+          cursor: [20, 300, 60, 45],
           stage: (
             <MockCard>
-              <div style={{ marginBottom: 6 }}><MockTag color="blue">✓ 已勾</MockTag>AS-142C3C00 钓鱼踩出巨型金矿</div>
+              <div style={{ marginBottom: 6 }}><MockTag color="blue" blink>✓ 已勾</MockTag>AS-142C3C00 钓鱼踩出巨型金矿</div>
               <MockLines widths={['90%', '70%']} />
               <div style={{ marginTop: 6 }}><MockTag color="default">图片 · 不勾它反推</MockTag>角色卡三视图</div>
             </MockCard>
@@ -130,10 +135,11 @@ export function CopyGuide({ open, onClose }: { open: boolean; onClose: () => voi
             '「反推文案已排到后台，跑完顶部任务条会报」——不用守着页面',
             '反推按计时上限扣费、后台记账，台面上不弹钱确认单（11-13 口径）',
           ],
+          cursor: [20, 300, 200, 30],
           stage: (
             <>
               <MockSteps items={['勾选', '点反推文案', '后台跑', '任务条报']} at={2} />
-              <div style={{ marginTop: 12 }}><MockTag color="blue">反推文案已排到后台，跑完顶部任务条会报</MockTag></div>
+              <div style={{ marginTop: 12 }}><MockTag color="blue" blink>反推文案已排到后台，跑完顶部任务条会报</MockTag></div>
             </>
           ),
         },
@@ -144,6 +150,7 @@ export function CopyGuide({ open, onClose }: { open: boolean; onClose: () => voi
             '按钮就叫「出钩子文案（N）」——N 是勾选的视频数',
             '单条约 95 秒、提交即回任务号；一批多条也是后台排队，不占你屏幕',
           ],
+          cursor: [20, 300, 240, 175],
           stage: (
             <>
               <MockCard dim>
@@ -151,7 +158,7 @@ export function CopyGuide({ open, onClose }: { open: boolean; onClose: () => voi
                 <MockLines widths={['92%', '64%']} />
               </MockCard>
               <div style={{ marginTop: 10, textAlign: 'center' }}>
-                <MockBtn kind="primary">出钩子文案（3）</MockBtn>
+                <MockBtn kind="primary" pulse>出钩子文案（3）</MockBtn>
               </div>
             </>
           ),
@@ -163,6 +170,7 @@ export function CopyGuide({ open, onClose }: { open: boolean; onClose: () => voi
             '五个阶段一排摆出来：一线问的是「谁卡在哪一步」',
             '出完文案阶段转「等审核」——切 ③ 文案审核接着走',
           ],
+          cursor: [20, 300, 260, 40],
           stage: (
             <>
               <MockFlow at="② 素材与文案" note="候选就绪 → ③ 文案审核（防橡皮章：默认只看推荐条）" />
@@ -195,9 +203,10 @@ export function ReviewGuide({ open, onClose }: { open: boolean; onClose: () => v
             '这是防橡皮章设计：先把最像的那条摆到你眼前',
             '范围四个互斥筛选：只看推荐条／命中违禁词／和原视频对不上／等——叠加用',
           ],
+          cursor: [20, 300, 220, 120],
           stage: (
             <>
-              <MockTag color="green">✓ 只看推荐条（默认开）</MockTag>
+              <MockTag color="green" blink>✓ 只看推荐条（默认开）</MockTag>
               <MockCard focus>
                 <div style={{ marginBottom: 6 }}><MockChip>候选 #1</MockChip>　<MockTag color="orange">推荐</MockTag><MockTag color="default">等审核</MockTag></div>
                 他在河里踩到的哪是金块，分明是整条金矿，扔掉鱼竿运回黄金
@@ -213,6 +222,7 @@ export function ReviewGuide({ open, onClose }: { open: boolean; onClose: () => v
             '「和原视频对不上」＝预警（标红但不卡你过审）——过审成功也会弹黄字',
             '右侧「核验原片/脚本」点开就是原片播放＋反推脚本全文，对得上号再落锤',
           ],
+          cursor: [20, 300, 140, 150],
           stage: (
             <MockCard>
               <div style={{ marginBottom: 6 }}>41 字 判读：<span style={{ color: '#d48806' }}>实体未命中：这笔财富开遍分公司</span></div>
@@ -230,6 +240,7 @@ export function ReviewGuide({ open, onClose }: { open: boolean; onClose: () => v
             '改后过是给「就差一句」的候选留的活路——不用整条重出',
             '驳掉的文案回采集人手里；撤销过审会连带作废这条**还没投出去**的生产单，所以单独走一次确认',
           ],
+          cursor: [20, 300, 330, 115],
           stage: (
             <MockCard focus>
               <MockLines widths={['92%', '80%']} />
@@ -248,6 +259,7 @@ export function ReviewGuide({ open, onClose }: { open: boolean; onClose: () => v
             '不打回采集人、不用先过审——试产是给审核员自己的验片工具',
             '完整六步另有专属动画：工具条「试产怎么用」',
           ],
+          cursor: [20, 300, 360, 80],
           stage: (
             <MockCard>
               <MockLines widths={['86%']} />
@@ -265,10 +277,11 @@ export function ReviewGuide({ open, onClose }: { open: boolean; onClose: () => v
             '「过审」只是质检记录盖章——投产归属在操作人（生产单/成片墙「投：X」）',
             '下一步：④ 生产与投板「生成生产单」（审核台里也有同名入口，同一个弹窗）',
           ],
+          cursor: [20, 300, 220, 190],
           stage: (
             <>
               <MockFlow at="③ 文案审核" note="已过审 → ④ 生产与投板 生成生产单" />
-              <div style={{ marginTop: 12 }}><MockTag color="green">已过审</MockTag><MockBtn kind="primary">生成生产单 →</MockBtn></div>
+              <div style={{ marginTop: 12 }}><MockTag color="green">已过审</MockTag><MockBtn kind="primary" pulse>生成生产单 →</MockBtn></div>
             </>
           ),
           ms: 8000,
@@ -295,11 +308,12 @@ export function ProduceGuide({ open, onClose }: { open: boolean; onClose: () => 
             '「列出全部已过审的文案，勾选后生成生产单（一条文案派生 N 条差异化提示词）」',
             'N 不是把同一条重复投 N 次——差异记在 variant_basis，产物才不会近似到白烧额度',
           ],
+          cursor: [20, 300, 390, 150],
           stage: (
             <MockPanel>
               <div style={{ marginBottom: 8 }}><b>从过审文案开单（3 待产）</b>　已过审文案 ☑ ×3　条数 N＝3</div>
               <MockLines widths={['90%', '72%']} />
-              <div style={{ marginTop: 10, textAlign: 'right' }}><MockBtn kind="primary">提交（建单不花钱）</MockBtn></div>
+              <div style={{ marginTop: 10, textAlign: 'right' }}><MockBtn kind="primary" pulse>提交（建单不花钱）</MockBtn></div>
             </MockPanel>
           ),
         },
@@ -310,9 +324,10 @@ export function ProduceGuide({ open, onClose }: { open: boolean; onClose: () => 
             '「只建了单、还没投板：不占号也不出片，点『投去出片』才开始」',
             '这一步反悔零成本：单没投，号没烧——想改就作废重建',
           ],
+          cursor: [20, 300, 200, 110],
           stage: (
             <MockCard>
-              <MockChip>order_ready</MockChip>　<MockTag color="orange">还没投</MockTag>
+              <MockChip>order_ready</MockChip>　<MockTag color="orange" blink>还没投</MockTag>
               <div style={{ marginTop: 6, color: '#888', fontSize: 12 }}>
                 只建了单、还没投板：不占号也不出片，点「投去出片」才开始
               </div>
@@ -326,12 +341,13 @@ export function ProduceGuide({ open, onClose }: { open: boolean; onClose: () => 
             '「投去 AI 出片（N）」→ 一次最多 20 张；点「确认投去出片」那一下就是人工确认，投完窗口当场缩掉，进度看顶部横幅',
             '没配板子凭据时后端当场白话拒绝——老路「导出任务文件（手工投）」没断',
           ],
+          cursor: [20, 300, 330, 150],
           stage: (
             <MockPanel>
               <MockSteps items={['勾单', '投去 AI 出片', '勾人工确认', '确认投去出片']} at={2} />
               <div style={{ marginTop: 12 }}>
-                <MockTag color="green">✓ 逐批人工确认</MockTag>
-                <MockBtn kind="primary">确认投去出片</MockBtn>
+                <MockTag color="green" blink>✓ 逐批人工确认</MockTag>
+                <MockBtn kind="primary" pulse>确认投去出片</MockBtn>
               </div>
               <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>只回收（已有 tid）＝不花钱的收片动作</div>
             </MockPanel>
@@ -344,6 +360,7 @@ export function ProduceGuide({ open, onClose }: { open: boolean; onClose: () => 
             '人工在企微后台投的，回来用「补记手工投板结果」把账记上（这是记账不是又投一次）',
             '「记的是出片成功，但库里一段片子都没收到」＝多半人工回写或回收没落库——看本行「提醒」',
           ],
+          cursor: [20, 300, 120, 150],
           stage: (
             <MockCard>
               <MockTag color="blue">机器去企微后台建任务 → 等出片 → 成片自动回到每张单的「成片」列</MockTag>
@@ -359,10 +376,11 @@ export function ProduceGuide({ open, onClose }: { open: boolean; onClose: () => 
             '挑片子去 ⑤ 的墙——缩略图摆开、点开就播、勾选下载',
             '要交付下游就切「交付包」视图整包导出',
           ],
+          cursor: [20, 300, 260, 190],
           stage: (
             <>
               <MockFlow at="④ 生产与投板" note="已回收 → ⑤ 成片墙 挑片/交付" />
-              <div style={{ marginTop: 12 }}><MockTag color="green">已产 3 条</MockTag><MockBtn kind="primary">去成片墙看这几张 →</MockBtn></div>
+              <div style={{ marginTop: 12 }}><MockTag color="green">已产 3 条</MockTag><MockBtn kind="primary" pulse>去成片墙看这几张 →</MockBtn></div>
             </>
           ),
           ms: 8000,
@@ -389,6 +407,7 @@ export function OutputGuide({ open, onClose }: { open: boolean; onClose: () => v
             '两级视图：先选组（素材/批次），组内摆片——勾选集收起即清空，不跨组串账',
             '「图打不开」＝直链时效问题（约 1 小时）——关掉重开即可续期，不是片子丢了',
           ],
+          cursor: [20, 300, 120, 110],
           stage: (
             <MockCard>
               <MockChip>AS-142C3C00 · 已产 3 段</MockChip>
@@ -407,10 +426,11 @@ export function OutputGuide({ open, onClose }: { open: boolean; onClose: () => v
             '串行一条条落（并行会被浏览器拦一部分），每条走 /download 口落账——谁下过哪条有据可查',
             '「已发起 N 条下载，浏览器右上角下载列表里看进度」',
           ],
+          cursor: [20, 300, 150, 140],
           stage: (
             <>
               <MockSteps items={['勾选', '点下载', '落账', '浏览器进度']} at={1} />
-              <div style={{ marginTop: 12 }}><MockBtn kind="primary">下载勾选的 2 条</MockBtn>　<MockTag color="default">已下载</MockTag></div>
+              <div style={{ marginTop: 12 }}><MockBtn kind="primary" pulse>下载勾选的 2 条</MockBtn>　<MockTag color="default">已下载</MockTag></div>
             </>
           ),
         },
@@ -421,11 +441,12 @@ export function OutputGuide({ open, onClose }: { open: boolean; onClose: () => v
             '「交付包」视图摆整批成果；勾选进跨组篮子后点「打包下载（N 条）」——后端 zip＋manifest 一次拿走',
             '包里的账（哪条单哪段片）在清单里，出问题能倒查',
           ],
+          cursor: [20, 300, 120, 150],
           stage: (
             <MockCard focus>
               <MockTag color="blue">成片</MockTag>｜<MockTag color="violet">交付包</MockTag>
               <div style={{ marginTop: 8, color: '#888', fontSize: 12 }}>zip ＝ 勾选成片 ＋ manifest 清单</div>
-              <div style={{ marginTop: 8 }}><MockBtn kind="primary">打包下载（5 条）</MockBtn></div>
+              <div style={{ marginTop: 8 }}><MockBtn kind="primary" pulse>打包下载（5 条）</MockBtn></div>
             </MockCard>
           ),
         },
@@ -436,10 +457,11 @@ export function OutputGuide({ open, onClose }: { open: boolean; onClose: () => v
             '「记的是出片成功，但库里一段片子都没收到——多半是人工回写或回收没落库，成因看本行『提醒』」',
             '回 ④ 用「只回收」再收一轮（不花钱）；确认丢了才走补记/重投',
           ],
+          cursor: [20, 300, 220, 200],
           stage: (
             <>
               <MockFlow at="⑤ 成片墙" note="缺片 → 回 ④ 生产与投板：先看提醒，再『只回收』" />
-              <div style={{ marginTop: 12 }}><MockTag color="red">success 但零回收</MockTag><MockBtn>回 ④ 看提醒</MockBtn></div>
+              <div style={{ marginTop: 12 }}><MockTag color="red" blink>success 但零回收</MockTag><MockBtn kind="primary" pulse>回 ④ 看提醒</MockBtn></div>
             </>
           ),
           ms: 8000,

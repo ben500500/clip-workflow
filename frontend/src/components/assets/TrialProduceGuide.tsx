@@ -344,7 +344,7 @@ const CSS = `
 
 /* 光标 */
 .tg-cursor{position:absolute;font-size:16px;color:#333;z-index:5;text-shadow:0 1px 2px #fff}
-.tg-cursor-to-trial{top:250px;left:-30px;animation:tg-move-to-trial 2.6s .2s both, tg-click .5s 2.9s both}
+.tg-cursor-to-trial{top:250px;left:-30px;animation:tg-move-to-trial 3.8s .2s infinite}
 .tg-cursor-away{top:60px;right:220px;animation:tg-cursor-fade 1.2s .8s both}
 
 /* 弹层（第2步） */
@@ -398,7 +398,7 @@ const CSS = `
   animation:tg-spin 2.4s 3s infinite linear}
 
 /* 强调脉动 */
-.tg-pulse{animation:tg-pulse 1.1s .6s 2 both}
+.tg-pulse{animation:tg-pulse 1.3s .6s infinite}
 .tg-pulse-late{animation:tg-pulse 1.1s 2.2s 2 both}
 
 @keyframes tg-fadein{from{opacity:0}to{opacity:1}}
@@ -407,10 +407,15 @@ const CSS = `
 @keyframes tg-pop{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:scale(1)}}
 @keyframes tg-pop-out{from{opacity:1;transform:scale(1)}to{opacity:0;transform:scale(.9)}}
 @keyframes tg-blink{0%,100%{opacity:1}50%{opacity:.15}}
+/* 巡航版：移动+点击收进同一条 keyframes（3.8s 无限循环），delay 只生效一次不会跑偏 */
 @keyframes tg-move-to-trial{
-  0%{top:250px;left:-30px}
-  60%{top:88px;left:392px}
-  100%{top:88px;left:392px}
+  0%{top:250px;left:-30px;opacity:0;transform:scale(1)}
+  10%{opacity:1}
+  58%{top:88px;left:392px;opacity:1;transform:scale(1)}
+  66%{transform:scale(.62)}
+  74%{top:88px;left:392px;opacity:1;transform:scale(1)}
+  92%{top:88px;left:392px;opacity:1;transform:scale(1)}
+  100%{top:250px;left:-30px;opacity:0;transform:scale(1)}
 }
 @keyframes tg-click{0%,100%{transform:scale(1)}50%{transform:scale(.7)}}
 @keyframes tg-cursor-fade{from{opacity:1}to{opacity:0}}
