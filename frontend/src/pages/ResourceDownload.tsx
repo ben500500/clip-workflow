@@ -14,6 +14,7 @@ import {
   ExperimentOutlined, DownloadOutlined as DownloadFileIcon, PlayCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import { BizGuideEntry, ResourceDownloadGuide } from '../components/assets/BizGuides';
 import {
   wechatDlApi, WechatDlTask, WechatDlProviderInfo, WechatDlPromptTask,
   ZhilingServiceTask, ZhilingServiceTaskType, ZhilingServiceOptions,
@@ -2037,6 +2038,8 @@ const ResourceDownload: React.FC = () => {
   const [activeTab, setActiveTab] = useState('import');
   // 下载任务行「反推提示词」→ 带链接跳到反推页签
   const [presetUrl, setPresetUrl] = useState<string | undefined>();
+  // 「资源下载怎么用」内嵌动画（11-16 业务区推进②，话术逐字耦合本页源码，X44/F72）
+  const [resourceGuideOpen, setResourceGuideOpen] = useState(false);
 
   const gotoReversePrompt = (url: string) => {
     setPresetUrl(url);
@@ -2045,7 +2048,7 @@ const ResourceDownload: React.FC = () => {
 
   return (
     <div>
-      <Title level={4} style={{ marginBottom: 20 }}>资源下载</Title>
+      <Title level={4} style={{ marginBottom: 20 }}>资源下载<BizGuideEntry label="资源下载怎么用" onOpen={() => setResourceGuideOpen(true)} /></Title>
       <Tabs
         activeKey={activeTab}
         onChange={setActiveTab}
@@ -2075,8 +2078,9 @@ const ResourceDownload: React.FC = () => {
             label: <span><DownloadOutlined /> 下载任务</span>,
             children: <TaskListPanel onReversePrompt={gotoReversePrompt} />,
           },
-        ]}
+         ]}
       />
+      <ResourceDownloadGuide open={resourceGuideOpen} onClose={() => setResourceGuideOpen(false)} />
     </div>
   );
 };

@@ -17,6 +17,7 @@ import { dedupeApi, DedupeUploadedFile } from '../api/dedupe';
 import { batchSliceApi } from '../api/batchSlice';
 import { useNavigate } from 'react-router-dom';
 import { useDedupePresets } from '../hooks/useDedupePresets';
+import { BizGuideEntry, DedupGuide } from '../components/assets/BizGuides';
 
 const { Text } = Typography;
 
@@ -244,9 +245,12 @@ const DedupeProcessing: React.FC = () => {
     { title: '生成时间', dataIndex: 'created_at', width: 150, render: (_: unknown, row: GroupRow) => (row.type === 'output' && row.item?.created_at ? parseServerTime(row.item.created_at)?.format('MM-DD HH:mm') || '' : '') },
   ];
 
+  // 「去重处理怎么用」内嵌动画（11-16 业务区推进②，话术逐字耦合本页源码，X44/F72）
+  const [dedupeGuideOpen, setDedupeGuideOpen] = useState(false);
+
   return (
     <Card
-      title={<Space><ThunderboltOutlined />去重处理（多视频号素材去重）</Space>}
+      title={<Space><ThunderboltOutlined />去重处理（多视频号素材去重）<BizGuideEntry label="去重处理怎么用" onOpen={() => setDedupeGuideOpen(true)} /></Space>}
       style={{ margin: 16 }}
     >
       <Alert
@@ -374,6 +378,7 @@ const DedupeProcessing: React.FC = () => {
         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>每个素材派生 N 套去重变体（默认 3）</Text>
         <DedupeManualConfig value={dedupeManual} onChange={setDedupeManual} preset={dedupePreset} />
       </Modal>
+      <DedupGuide open={dedupeGuideOpen} onClose={() => setDedupeGuideOpen(false)} />
     </Card>
   );
 };

@@ -39,10 +39,21 @@ export interface StepGuideProps {
   /** 侧栏底部的常驻提醒（橙字），如「试产片不进成片墙…」 */
   footnote?: string;
   okText?: string;
+  /**
+   * 逐帧图片模式（11-16 用户口径「动画效果太差，改成一帧一帧的图片」）：
+   * 传 public 下的帧目录（如 /guides/biz-slice），舞台渲染
+   * <FramePlayer>——每步 12 帧、0.36s/帧循环（捕获脚本 capture-guide-frames.mjs 所出，
+   * 相位采样真机 CSS 动画原帧）。不传则退回 stage 内联 mock（旧形态）。
+   */
+  frameDir?: string;
 }
 
+/** 帧循环节奏（与捕获脚本 PHASE/FRAMES 同口径：12 帧 × 0.36s ≈ 4.32s 一轮） */
+export const TG_FRAME_MS = 360;
+export const TG_FRAMES = 12;
+
 export default function StepGuide({
-  open, onClose, headline, tagline, steps, footnote, okText = '学会了',
+  open, onClose, headline, tagline, steps, footnote, okText = '学会了', frameDir,
 }: StepGuideProps) {
   const [step, setStep] = useState(0);
   const [tick, setTick] = useState(0);
@@ -102,11 +113,18 @@ export default function StepGuide({
           ))}
         </div>
         <div className="tg-cols">
-          {/* key 强制当步重放入场动画 */}
+          {/* 帧模式：play 内容=逐帧图片（捕获脚本从真机 CSS 动画相位采样所得）；
+              老形态：stage 内联 mock ＋声明式巡航光标 */}
           <div className="tg-stage" key={`st-${step}-${tick}`}>
-            {cur.stage}
-            {cur.cursor && (
-              <MockCursorRun x0={cur.cursor[0]} y0={cur.cursor[1]} x1={cur.cursor[2]} y1={cur.cursor[3]} />
+            {frameDir ? (
+              <FramePlayer frameDir={frameDir} step={step} playing={playing} />
+            ) : (
+              <>
+                {cur.stage}
+                {cur.cursor && (
+                  <MockCursorRun x0={cur.cursor[0]} y0={cur.cursor[1]} x1={cur.cursor[2]} y1={cur.cursor[3]} />
+                )}
+              </>
             )}
           </div>
           <div className="tg-side">
@@ -138,6 +156,29 @@ export default function StepGuide({
 }
 
 /* ───────── 通用 mock 原语：各板块画面用它们拼，样式与真机同色系 ───────── */
+
+/**
+ * 逐帧图片播放器（11-16 用户口径「动画效果太差，改成一帧一帧的图片」）。
+ * 帧图由 capture-guide-frames.mjs 对现网动画做相位采样捕获（12 帧/步，0.36s/帧，
+ * 与 CSS 巡航一轮 3.6s 同节奏）。切步重挂（key 由父级给），暂停时定格。
+ */
+export function FramePlayer({ frameDir, step, playing }: { frameDir: string; step: number; playing: boolean }) {
+  const [f, setF] = useState(0);
+  const N = TG_FRAMES;
+  useEffect(() => {
+    setF(0);
+    if (!playing) return;
+    const t = window.setInterval(() => setF((x) => (x + 1) % N), TG_FRAME_MS);
+    return () => window.clearInterval(t);
+  }, [frameDir, step, playing]);
+  return (
+    <img
+      src={`${frameDir}/s${step + 1}/f${String(f).padStart(2, '0')}.png`}
+      alt={`第 ${step + 1} 步教学帧 ${f + 1}/${N}`}
+      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+    />
+  );
+}
 
 export function MockChip({ color = 'orange', children }: { color?: string; children: React.ReactNode }) {
   return <span className={`tg-chip tg-chip-${color}`}>{children}</span>;

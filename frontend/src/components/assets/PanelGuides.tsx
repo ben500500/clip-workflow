@@ -22,6 +22,7 @@ export function ImportGuide({ open, onClose }: { open: boolean; onClose: () => v
     <StepGuide
       open={open} onClose={onClose}
       headline="导入怎么用 · 40 秒动画版"
+      frameDir="/guides/panel-import"
       tagline="链接或文案进批次 → 自动下载原片 → 一键跳 ② 继续加工"
       footnote="批次名可以留空——留空自动命名，不拦你"
       steps={[
@@ -109,6 +110,7 @@ export function CopyGuide({ open, onClose }: { open: boolean; onClose: () => voi
     <StepGuide
       open={open} onClose={onClose}
       headline="反推与出文案怎么用 · 50 秒动画版"
+      frameDir="/guides/panel-copy"
       tagline="勾选素材 → 反推文案 → 出钩子候选 → 交 ③ 审核，全程后台跑、任务条会报"
       footnote="图片不反推文案——图片只当投产用的角色卡"
       steps={[
@@ -193,6 +195,7 @@ export function ReviewGuide({ open, onClose }: { open: boolean; onClose: () => v
     <StepGuide
       open={open} onClose={onClose}
       headline="审核怎么用 · 60 秒动画版"
+      frameDir="/guides/panel-review"
       tagline="读文案 → 对判定标签 → 过 / 改后过 / 驳；拿不准还能先试产看片（另有专属动画）"
       footnote="写文案的人不能审自己写的文案（管理员除外）——三角色纪律"
       steps={[
@@ -298,6 +301,7 @@ export function ProduceGuide({ open, onClose }: { open: boolean; onClose: () => 
     <StepGuide
       open={open} onClose={onClose}
       headline="生产与投板怎么用 · 60 秒动画版"
+      frameDir="/guides/panel-produce"
       tagline="生成生产单（建单不花钱）→ 人工确认投去出片 → 机器回收 → 成片进 ⑤"
       footnote="四档状态话术说真话——「还没投」就是只建了单、不占号也不出片"
       steps={[
@@ -397,6 +401,7 @@ export function OutputGuide({ open, onClose }: { open: boolean; onClose: () => v
     <StepGuide
       open={open} onClose={onClose}
       headline="成片墙怎么用 · 40 秒动画版"
+      frameDir="/guides/panel-output"
       tagline="一面墙摆开回收的片子：点开就播、勾选下载、整包成交付包"
       footnote="默认全部批次、最新在上——挑片子就在一组里挑，不用去生产单行里翻"
       steps={[

@@ -61,20 +61,16 @@ async function main() {
     await js(`(() => { const b=Array.from(document.querySelectorAll('.tg-ctrls button')).find(x=>x.textContent.includes('下一步')); b&&b.click(); })()`);
     await sleep(1300);
   };
-  // 无限循环动效实测（c06a129 验收口径）：数 .tg-stage 里持续循环元素
-  // （巡航光标 tg-cursor-run／按钮 pulse／角标 blink／步骤条 on pulse／光标 ::after blink），必须 >0
-  const loopCount = async () => js(`(() => {
-    const st = document.querySelector('.ant-modal .tg-stage');
-    if (!st) return -1;
-    let n = 0;
-    st.querySelectorAll('*').forEach((e) => {
-      const cs = getComputedStyle(e);
-      if (cs.animationName !== 'none' && cs.animationIterationCount === 'infinite') n++;
-      const ca = getComputedStyle(e, '::after');
-      if (ca.animationName !== 'none' && ca.animationIterationCount === 'infinite') n++;
-    });
-    return n;
-  })()`);
+  // 帧模式实测（11-16 用户口径「改成一帧一帧的图片」）：① .tg-stage 内是 <img> 播放器；
+  // ② 双快照 src 必须真的在变（逐帧切换活着）；③ 帧数=12。替代旧的「数 infinite CSS 元素」探针。
+  const loopCount = async () => {
+    const imgs = Number(await js(`(() => { const st=document.querySelector('.ant-modal .tg-stage'); return st?st.querySelectorAll('img').length:-1; })()`));
+    if (imgs <= 0) return 0;
+    const a = String(await js(`document.querySelector('.ant-modal .tg-stage img')?.getAttribute('src') || ''`));
+    await sleep(1100);
+    const b = String(await js(`document.querySelector('.ant-modal .tg-stage img')?.getAttribute('src') || ''`));
+    return (a !== b ? imgs * 2 : 0); // 双快照变化才给正分
+  };
   const closeGuide = async () => { await js(`(() => { const x=document.querySelector('.ant-modal-close'); x&&x.click(); })()`); await sleep(500); };
 
   // ── ① 短剧切片（/projects）──
@@ -84,23 +80,23 @@ async function main() {
   assert('S-A1 入口「❓ 短剧切片怎么用」在位且点开', (await openGuide('短剧切片怎么用')) === 'ok');
   let body = await modalText();
   assert('S-A2 标题+第1步「新建项目」真字面', body.includes('短剧切片怎么用 · 60 秒动画版') && body.includes('新建项目'), body.slice(0, 160));
-  assert('S-A2b 第1步无限循环动效>0（巡航光标 3.6s/轮）', Number(await loopCount()) > 0);
+  assert('S-A2b 第1步帧播放器在逐帧切换（12 帧×0.36s）', Number(await loopCount()) > 0);
   await nextStep();
   body = await modalText();
   assert('S-A3 第2步上传话术逐字「多视频上传（合并成剧集）」', body.includes('多视频上传（合并成剧集）') && body.includes('单个视频也会作为一个剧集；需要合并请在下方使用「多视频上传」'), body.slice(0, 160));
-  assert('S-A3b 第2步无限循环动效>0', Number(await loopCount()) > 0);
+  assert('S-A3b 第2步帧模式（img 双快照切换）', Number(await loopCount()) > 0);
   await nextStep();
   body = await modalText();
   assert('S-A4 第3步「批量一键切片」+「无候选片段时自动补一轮 AI 选点」', body.includes('批量一键切片') && body.includes('无候选片段时自动补一轮 AI 选点'), body.slice(0, 160));
-  assert('S-A4b 第3步无限循环动效>0（步骤条 pulse＋按钮 pulse）', Number(await loopCount()) > 0);
+  assert('S-A4b 第3步帧模式（img 双快照切换）', Number(await loopCount()) > 0);
   await nextStep();
   body = await modalText();
   assert('S-A5 第4步审核真字面「启动选点」「一键全部通过」', body.includes('启动选点') && body.includes('一键全部通过'), body.slice(0, 160));
-  assert('S-A5b 第4步无限循环动效>0（角标 blink）', Number(await loopCount()) > 0);
+  assert('S-A5b 第4步帧模式（img 双快照切换）', Number(await loopCount()) > 0);
   await nextStep();
   body = await modalText();
   assert('S-A6 第5步「成品预览」Tab 长句逐字', body.includes('暂无成品。请先对剧集执行切片（可勾选多个剧集后使用「批量一键切片」），完成后即可在此预览。'), body.slice(0, 160));
-  assert('S-A6b 第5步无限循环动效>0', Number(await loopCount()) > 0);
+  assert('S-A6b 第5步帧模式（img 双快照切换）', Number(await loopCount()) > 0);
   await shot('slice-guide-step5');
   await closeGuide();
 
@@ -112,15 +108,15 @@ async function main() {
   body = await modalText();
   assert('B-A2 标题+第1步 JSON 字段真话术', body.includes('批量切片怎么用 · 50 秒动画版') && body.includes('drama'), body.slice(0, 160));
   assert('B-A3 tagline 逐字（整页 Alert 真话术）', body.includes('一份 JSON 排几十集，机器按剧名建项目连夜切完'), body.slice(0, 160));
-  assert('B-A3b 第1步无限循环动效>0（光标＋textarea 光标 blink）', Number(await loopCount()) > 0);
+  assert('B-A3b 第1步帧模式（img 双快照切换）（帧播放器）', Number(await loopCount()) > 0);
   await nextStep();
   body = await modalText();
   assert('B-A4 第2步预设共用长句逐字', body.includes('与剧集详情页「一键切片配置」共用，选中后自动套用竖屏转横屏/字幕/打码/水印/去重档位等全部参数'), body.slice(0, 160));
-  assert('B-A4b 第2步无限循环动效>0（主按钮 pulse＋状态 blink）', Number(await loopCount()) > 0);
+  assert('B-A4b 第2步帧模式（img 双快照切换）（帧播放器）', Number(await loopCount()) > 0);
   await nextStep();
   body = await modalText();
   assert('B-A5 第3步六阶段＋失败重试话术', body.includes('AI 选点') && body.includes('删除源视频') && body.includes('已完成项将跳过'), body.slice(0, 160));
-  assert('B-A5b 第3步无限循环动效>0（步骤条 pulse）', Number(await loopCount()) > 0);
+  assert('B-A5b 第3步无限循环动效>0（帧播放器）', Number(await loopCount()) > 0);
   await nextStep();
   body = await modalText();
   assert('B-A6 第4步成品 Alert 逐字＋「开始裁剪」', body.includes('每个成品支持「预览」播放，以及「编辑」通过拖动进度条选定时间范围进行简单裁剪（会重新编码生成新片段）。') && body.includes('开始裁剪'), body.slice(0, 160));

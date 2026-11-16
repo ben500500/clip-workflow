@@ -13,6 +13,7 @@ import { parseServerTime } from '../utils/format';
 import { variantsApi, VariantGroup, VariantMatrixItem } from '../api/variants';
 import { publishApi } from '../api/publish';
 import type { VideoAccount } from '../types';
+import { BizGuideEntry, VariantMatrixGuide } from '../components/assets/BizGuides';
 
 const { Text } = Typography;
 
@@ -59,6 +60,8 @@ const VariantMatrix: React.FC = () => {
   const [thresholdOpen, setThresholdOpen] = useState(false);
   const [thresholdForm, setThresholdForm] = useState<Record<string, number>>({});
   const [thresholdLoading, setThresholdLoading] = useState(false);
+  // 「变体矩阵怎么用」内嵌动画（11-16 业务区推进②，话术逐字耦合本页源码，X44/F72）
+  const [variantGuideOpen, setVariantGuideOpen] = useState(false);
 
   const fetchMatrix = useCallback(async () => {
     setLoading(true);
@@ -442,7 +445,7 @@ const VariantMatrix: React.FC = () => {
 
   return (
     <Card
-      title={<Space><ThunderboltOutlined />变体矩阵看板（多视频号素材去重）</Space>}
+      title={<Space><ThunderboltOutlined />变体矩阵看板（多视频号素材去重）<BizGuideEntry label="变体矩阵怎么用" onOpen={() => setVariantGuideOpen(true)} /></Space>}
       extra={
         <Space>
           <Tooltip title="清理存量卡住的生成任务（running 超时 30 分钟 → failed）">
@@ -553,6 +556,7 @@ const VariantMatrix: React.FC = () => {
           距离值越低越相似；低于阈值判定为撞车。调低阈值更宽松（更易通过），调高阈值更严格。
         </Text>
       </Modal>
+      <VariantMatrixGuide open={variantGuideOpen} onClose={() => setVariantGuideOpen(false)} />
     </Card>
   );
 };
