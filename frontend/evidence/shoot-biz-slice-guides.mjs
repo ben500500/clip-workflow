@@ -83,7 +83,9 @@ async function main() {
   assert('S-A2b 第1步帧播放器在逐帧切换（12 帧×0.36s）', Number(await loopCount()) > 0);
   await nextStep();
   body = await modalText();
-  assert('S-A3 第2步上传话术逐字「多视频上传（合并成剧集）」', body.includes('多视频上传（合并成剧集）') && body.includes('单个视频也会作为一个剧集；需要合并请在下方使用「多视频上传」'), body.slice(0, 160));
+  // 注：旧断言里的「单个视频也会作为一个剧集；需要合并请在下方使用「多视频上传」」是舞台 mock 的
+  // MockCallout 文案——帧模式下画面在帧图里，DOM 只留 tips 侧逐字（画面话术由帧图捕获覆盖）
+  assert('S-A3 第2步上传话术逐字「多视频上传（合并成剧集）」', body.includes('多视频上传（合并成剧集）') && body.includes('秒差检测（音画同步校验）'), body.slice(0, 160));
   assert('S-A3b 第2步帧模式（img 双快照切换）', Number(await loopCount()) > 0);
   await nextStep();
   body = await modalText();

@@ -137,7 +137,9 @@ export default function TrialProduceGuide({
           ))}
         </div>
         <div className="tg-cols">
-          <FramePlayer frameDir="/guides/trial" step={step} playing={!userPaused} />
+          <div className="tg-stage" key={`st-${step}`}>
+            <FramePlayer frameDir="/guides/trial" step={step} playing={!userPaused} />
+          </div>
           <div className="tg-side">
             <Paragraph strong style={{ marginBottom: 2 }}>{cur.title}</Paragraph>
             <Text type="secondary">{cur.sub}</Text>
