@@ -10,6 +10,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { useNavigate } from 'react-router-dom';
+import { BizGuideEntry, ChannelAccountsGuide } from '../components/assets/BizGuides';
 import { channelAccountApi, ChannelAccountInput, OperatorInput } from '../api/channelAccounts';
 import { theaterApi, Theater, TheaterInput } from '../api/theaters';
 import { publishApi } from '../api/publish';
@@ -45,6 +46,8 @@ const ChannelAccounts: React.FC = () => {
   const navigate = useNavigate();
   const [data, setData] = useState<ChannelAccount[]>([]);
   const [loading, setLoading] = useState(false);
+  // 2026-11-17 教程动画推进③：视频号列表「怎么用」分步动画
+  const [channelGuideOpen, setChannelGuideOpen] = useState(false);
   const [keyword, setKeyword] = useState('');
   const [videoAccounts, setVideoAccounts] = useState<VideoAccount[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -433,8 +436,14 @@ const ChannelAccounts: React.FC = () => {
   ];
 
   return (
+    <>
     <Card
-      title="视频号列表"
+      title={
+        <Space>
+          视频号列表
+          <BizGuideEntry label="视频号列表怎么用" onOpen={() => setChannelGuideOpen(true)} />
+        </Space>
+      }
       extra={
         <Space>
           <Input
@@ -686,6 +695,8 @@ const ChannelAccounts: React.FC = () => {
         )}
       </Modal>
     </Card>
+    <ChannelAccountsGuide open={channelGuideOpen} onClose={() => setChannelGuideOpen(false)} />
+    </>
   );
 };
 

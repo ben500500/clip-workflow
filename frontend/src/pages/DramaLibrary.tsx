@@ -10,6 +10,7 @@ import {
   CloudSyncOutlined,
 } from '@ant-design/icons';
 import { DatePicker } from 'antd';
+import { BizGuideEntry, DramasGuide } from '../components/assets/BizGuides';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd/es/upload/interface';
 import dayjs from 'dayjs';
@@ -96,6 +97,8 @@ const DraggableUpload: React.FC<{
 const DramaLibrary: React.FC = () => {
   const [data, setData] = useState<Drama[]>([]);
   const [loading, setLoading] = useState(false);
+  // 2026-11-17 教程动画推进③：剧目库「怎么用」分步动画
+  const [dramasGuideOpen, setDramasGuideOpen] = useState(false);
   const [videoAccounts, setVideoAccounts] = useState<VideoAccount[]>([]);
 
   // 筛选
@@ -743,7 +746,12 @@ const DramaLibrary: React.FC = () => {
 
   return (
     <div>
-      <Card title="剧目库">
+      <Card title={
+        <Space>
+          剧目库
+          <BizGuideEntry label="剧目库怎么用" onOpen={() => setDramasGuideOpen(true)} />
+        </Space>
+      }>
         <div style={{ marginBottom: 16 }}>
           <Space wrap size={[8, 8]} align="center">
             <Input
@@ -1353,6 +1361,7 @@ const DramaLibrary: React.FC = () => {
           </Button>
         </Space>
       </Modal>
+      <DramasGuide open={dramasGuideOpen} onClose={() => setDramasGuideOpen(false)} />
     </div>
   );
 };

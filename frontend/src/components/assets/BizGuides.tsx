@@ -737,3 +737,162 @@ export function ResourceDownloadGuide({ open, onClose }: { open: boolean; onClos
     />
   );
 }
+
+
+/**
+ * 视频号列表怎么用（11-17 业务区动画推进③·ChannelAccounts.tsx）。
+ * 话术逐字抄自 ChannelAccounts.tsx：Card 标题「视频号列表」、搜索「搜索名称/视频号ID」、
+ * 筛选「按剧场筛选」、按钮「新增剧场」「查询」「新增」、弹窗「新增视频号列表」、
+ * 表单「视频号名称」「视频号ID」「关联账号库（选填，自动同步）」、行操作
+ * 「运营账号」「编辑」「确认删除该视频号列表？」、分析跳转「数据分析」。改本页按钮文案请连改这里（X44/F72）。
+ */
+export function ChannelAccountsGuide({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <StepGuide
+      open={open} onClose={onClose}
+      headline="视频号列表怎么用 · 60 秒动画版"
+      frameDir="/guides/biz-channel"
+      tagline="建剧场 → 挂视频号 → 跑数据分析 / 配运营账号"
+      footnote="删除前会二次确认；视频号ID 是平台侧唯一标识，选填不影响建档"
+      steps={[
+        {
+          title: '第 1 步 · 先建剧场（可选但建议先建）',
+          sub: '剧场是视频号的分组维度，筛选和数据分析都按它走',
+          tips: [
+            '顶部「新增剧场」开剧场弹窗，输入剧场名称保存（「剧场已新增」）',
+            '「按剧场筛选」下拉按剧场过滤视频号，支持搜索',
+          ],
+          cursor: [20, 300, 220, 140],
+          stage: (
+            <MockCard>
+              <div style={{ marginBottom: 6 }}><MockChip>视频号列表</MockChip></div>
+              <MockLines widths={['86%', '64%']} />
+              <div style={{ marginTop: 8 }}>
+                <MockTag color="default">按剧场筛选</MockTag>
+                <MockBtn>新增剧场</MockBtn>
+              </div>
+            </MockCard>
+          ),
+        },
+        {
+          title: '第 2 步 · 新增视频号',
+          sub: '「新增」开表单，名称必填、ID 选填',
+          tips: [
+            '弹窗「新增视频号列表」：「视频号名称」placeholder「如：主号-剧集A」（必填）',
+            '「视频号ID」placeholder「平台侧唯一标识（选填）」',
+            '「关联账号库（选填，自动同步）」：挂上后账号信息自动同步，不用两边维护',
+            '默认「启用」；保存成功后列表立即可见',
+          ],
+          cursor: [20, 300, 220, 140],
+          stage: (
+            <MockCard>
+              <MockBtn kind="primary">新 增</MockBtn>
+              <MockLines widths={['70%', '54%']} />
+              <div style={{ marginTop: 8 }}><MockChip>视频号名称</MockChip>　<MockChip>视频号ID</MockChip></div>
+            </MockCard>
+          ),
+        },
+        {
+          title: '第 3 步 · 日常管理与去向',
+          sub: '每一行三个常用动作',
+          tips: [
+            '行内「数据分析」跳「数据分析/短片分析」按号看经营数据',
+            '行内「运营账号」开该号的运营者配置；「编辑」改名称/剧场/启用态',
+            '删除有「确认删除该视频号列表？」二次确认；搜「搜索名称/视频号ID」快速定位',
+          ],
+          cursor: [20, 300, 220, 140],
+          stage: (
+            <MockCard>
+              <MockLines widths={['80%']} />
+              <div style={{ marginTop: 8 }}>
+                <MockTag color="blue">数据分析</MockTag>
+                <MockTag color="default">运营账号</MockTag>
+                <MockTag color="red" blink>删除</MockTag>
+              </div>
+            </MockCard>
+          ),
+        },
+      ]}
+    />
+  );
+}
+
+/**
+ * 剧目库怎么用（11-17 业务区动画推进③·DramaLibrary.tsx）。
+ * 话术逐字抄自 DramaLibrary.tsx：Card 标题「剧目库」、按钮「导入剧目」「飞书同步」「新增剧目」「查询」、
+ * 筛选「搜索名称/ID」「男/女频」「评级」「状态」「按剧场筛选」「上线时间」、弹窗「新增剧目」、
+ * 表单「漫剧名称」（必填）「男/女频」「漫剧类型」「评级」「题材」「话题大方向」「话题标签」
+ * 「剧情简介」「上架状态」（默认已上架）「更新日期」「上线时间」「所属剧场（一剧多剧场，可多选）」、
+ * 行操作「详情」「编辑」「删除「剧名」？」、导入弹窗列名「漫剧名称 / 更新日期 / 男/女频 / 题材 /
+ * 漫剧类型 / 上架状态 / 上架日期 / 评级 / 素材链接 / 上架账号」。改本页按钮文案请连改这里（X44/F72）。
+ */
+export function DramasGuide({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <StepGuide
+      open={open} onClose={onClose}
+      headline="剧目库怎么用 · 60 秒动画版"
+      frameDir="/guides/biz-dramas"
+      tagline="录剧目（手动/导入/飞书）→ 挂剧场 → 发布复用"
+      footnote="「话题大方向」选完自动带入成套话题标签，发布时直接复用"
+      steps={[
+        {
+          title: '第 1 步 · 三种录入口（选一种）',
+          sub: '手动单条 / 表格批量导入 / 飞书表同步',
+          tips: [
+            '「新增剧目」开表单；「导入剧目」按 Excel 列名对齐：漫剧名称 / 更新日期 / 男/女频 / 题材 / 漫剧类型 / 上架状态 / 上架日期 / 评级 / 素材链接 / 上架账号',
+            '「飞书同步」拉飞书表剧目；重复剧目以名称对齐不重复建',
+          ],
+          cursor: [20, 300, 220, 140],
+          stage: (
+            <MockCard>
+              <div style={{ marginBottom: 6 }}><MockChip>剧目库</MockChip></div>
+              <MockLines widths={['82%', '60%']} />
+              <div style={{ marginTop: 8 }}>
+                <MockBtn>导入剧目</MockBtn>　<MockBtn>飞书同步</MockBtn>　<MockBtn kind="primary">新增剧目</MockBtn>
+              </div>
+            </MockCard>
+          ),
+        },
+        {
+          title: '第 2 步 · 填什么（新增剧目表单）',
+          sub: '名称必填；上架状态默认「已上架」',
+          tips: [
+            '「漫剧名称」必填；「男/女频」「漫剧类型」「评级」「题材」按片选',
+            '「话题大方向」选择后自动带入对应成套话题标签，可再手动增删；发布时直接复用',
+            '「所属剧场（一剧多剧场，可多选）」：一剧挂多个剧场',
+            '「上架状态」默认已上架；「更新日期」「上线时间」按实际情况填',
+          ],
+          cursor: [20, 300, 220, 140],
+          stage: (
+            <MockCard>
+              <div style={{ marginBottom: 6 }}><MockChip>新增剧目</MockChip></div>
+              <MockLines widths={['76%', '66%']} />
+              <div style={{ marginTop: 8 }}>
+                <MockChip>漫剧名称</MockChip>　<MockChip>男/女频</MockChip>　<MockChip>题材</MockChip>
+              </div>
+            </MockCard>
+          ),
+        },
+        {
+          title: '第 3 步 · 找与管',
+          sub: '六个筛选轴＋行内三动作',
+          tips: [
+            '筛选：搜索名称/ID、男/女频、评级、状态、按剧场筛选、上线时间——组合后「查询」',
+            '行内「详情」看全字段与海报；「编辑」改；删除有「删除「剧名」？」二次确认',
+          ],
+          cursor: [20, 300, 220, 140],
+          stage: (
+            <MockCard>
+              <MockLines widths={['88%', '70%']} />
+              <div style={{ marginTop: 8 }}>
+                <MockTag color="blue">详情</MockTag>
+                <MockTag color="default">编辑</MockTag>
+                <MockTag color="red" blink>删除</MockTag>
+              </div>
+            </MockCard>
+          ),
+        },
+      ]}
+    />
+  );
+}

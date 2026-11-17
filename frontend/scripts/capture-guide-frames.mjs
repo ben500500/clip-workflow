@@ -35,6 +35,9 @@ const GUIDES = [
   { slug: 'biz-dedup', page: '/dedupe', tab: null, entry: '去重处理怎么用', span: true },
   { slug: 'biz-variant', page: '/variant-matrix', tab: null, entry: '变体矩阵怎么用', span: true },
   { slug: 'biz-resource', page: '/resource-download', tab: null, entry: '资源下载怎么用', span: true },
+  // 11-17 业务区动画推进③（视频号列表/剧目库，frameDir 逐帧图片模式）
+  { slug: 'biz-channel', page: '/channel-accounts', tab: null, entry: '视频号列表怎么用', span: true },
+  { slug: 'biz-dramas', page: '/dramas', tab: null, entry: '剧目库怎么用', span: true },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
