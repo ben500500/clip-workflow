@@ -220,14 +220,14 @@ sync_file() {
     log "跳过不存在的本地文件: $f"
     return
   fi
-  log "同步 $f -> $REMOTE_HOST:$REMOTE_DIR/$f（保 inode 截断写）"
+  log "同步 $f -> $REMOTE_HOST:$REMOTE_DIR/${f}（保 inode 截断写）"
   cat "$LOCAL_DIR/$f" \
     | ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cat > '$REMOTE_DIR/$f'" \
     || die "同步 $f 失败"
   want="$(file_md5 "$LOCAL_DIR/$f")"
   have="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "md5sum '$REMOTE_DIR/$f' 2>/dev/null | awk '{print \$1}'")"
   [ -n "$have" ] && [ "$have" = "$want" ] \
-    || die "$f 远端 md5 验收未过（期望 $want，实到 ${have:-读不到}）——不同步了，带着已知值去排障"
+    || die "$f 远端 md5 验收未过（期望 ${want}，实到 ${have:-读不到}）——不同步了，带着已知值去排障"
   log "  验收：$f 远端 md5=${have} 与仓库一致（inode 未换）"
 }
 
@@ -779,7 +779,7 @@ prune_rollback_tags() {
       | awk -F'|' -v cutoff=\"\$cutoff\" -v keep=${ROLLBACK_KEEP} '
           { rank[\$1]++; if (rank[\$1] > keep && substr(\$2,1,10) < cutoff) print \$3 }' \\
       | while read -r t; do
-          if docker rmi \"\$t\" >/dev/null 2>&1; then echo \"  已删 \$t\"; else echo \"  保留 \$t（仍被容器占用）\"; fi
+          if docker rmi \"\$t\" >/dev/null 2>&1; then echo \"  已删 \$t\"; else echo \"  保留 \${t}（仍被容器占用）\"; fi
         done
   " 2>&1 | tail -40 || log "WARN: 回滚标签清理失败（不影响部署）"
 }
