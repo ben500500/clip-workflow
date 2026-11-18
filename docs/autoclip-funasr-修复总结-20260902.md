@@ -113,3 +113,16 @@ fi
 
 - 当前运行的 `clip-autoclip:latest`（fcd73）是 docker commit 快照，功能正常但不是纯 Dockerfile 构建产物。**下次正常发版时**跑一次 `docker compose build autoclip`（compose 已带 `ENABLE_FUNASR=true`）即可产出干净的正式镜像（funasr 会装进系统 site-packages）。
 - 40 与本地 compose 的 RPA 健康检查段差异仍未同步（RPA 停用中，按用户要求暂不动）。
+
+---
+
+## 七、追记（2026-11-18）：同一根因的第二次复发——funasr 版本漂移
+
+**现象**：《我的植物人老公》两次选点失败，AutoClip progress 报
+`语音识别失败: 本地 FunASR 生成字幕失败: model 'iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch' is not registered. Registered model keys (51): ...`
+
+**根因**：`requirements-funasr.txt` 写的是 `funasr>=1.0.0`（未锁版本）。11-12 前后镜像重建时 pip 拉到 **1.4.23**，其模型注册表不再收录该 iic 模型 id（9-02 实证基线为 **1.4.12**），ASR 初始化即失败。10 月后无人跑选点，故障积压到 11-18 才暴露。
+
+**修复**：`requirements-funasr.txt` 锁死 `funasr==1.4.12` 并注释禁止放开上界。
+
+**沉淀**：与 9-02 的「条件安装丢 funasr」同源——**funasr 依赖链上任何未锁版本都是定时炸弹**。9 月丢了运行时（No module named funasr），11 月换了新版本不认模型（not registered）。凡 autoclip 重依赖一律精确 pin；升级必须先在容器内实测模型加载通过再合入。
