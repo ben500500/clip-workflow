@@ -22,7 +22,11 @@
 #   注意：cu126+ 索引已无 Python 3.11（cp311）轮子；cu124 最高 torch 2.6.0。
 #   注意：本文件严禁再写死 --extra-index-url，否则会与 TORCH_INDEX_URL 冲突
 #   把 torch 锁死在单一来源。
-funasr>=1.0.0
+# funasr 锁定 1.4.12：2026-09-02 修复实证基线（docs/autoclip-funasr-修复总结-20260902.md）。
+# 严禁放开上界——2026-11-18 曾因未锁版本拉到 1.4.23，其模型注册表不认
+# iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch，
+# 报 "model is not registered"，选点全挂（ISSUE 沉淀见 git log）。
+funasr==1.4.12
 modelscope>=1.11.0
 torch>=2.1.0
 torchaudio>=2.1.0
