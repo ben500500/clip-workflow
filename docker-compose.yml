@@ -205,6 +205,12 @@ services:
     image: clip-autoclip:latest
     container_name: clip-autoclip
     restart: unless-stopped
+    # 内存限额 6g：Paraformer-Large CPU 加载+推理峰值约 3G+
+    # （2026-11-18 曾因某次 docker update 手动设 2g 触发 cgroup OOM，
+    #  ASR 加载完模型即被杀、选点失败——显式写进 compose 固化，
+    #  并禁止再次用 docker update 调小）
+    mem_limit: 6g
+    memswap_limit: 7g
     networks:
       - clip-network
     depends_on:
