@@ -116,13 +116,17 @@ fi
 
 ---
 
-## 七、追记（2026-11-18）：同一根因的第二次复发——funasr 版本漂移
+## 七、追记（2026-11-18）：选点失败三层根因
 
-**现象**：《我的植物人老公》两次选点失败，AutoClip progress 报
-`语音识别失败: 本地 FunASR 生成字幕失败: model 'iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch' is not registered. Registered model keys (51): ...`
+**现象**：《我的植物人老公》多次选点失败，报「FunASR 引擎失败 / model is not registered」。
 
-**根因**：`requirements-funasr.txt` 写的是 `funasr>=1.0.0`（未锁版本）。11-12 前后镜像重建时 pip 拉到 **1.4.23**，其模型注册表不再收录该 iic 模型 id（9-02 实证基线为 **1.4.12**），ASR 初始化即失败。10 月后无人跑选点，故障积压到 11-18 才暴露。
+**实际是三层问题叠加**，逐层剥开才见真因：
 
-**修复**：`requirements-funasr.txt` 锁死 `funasr==1.4.12` 并注释禁止放开上界。
+1. **funasr 版本漂移**（表层）：`requirements-funasr.txt` 未锁版本，11-12 镜像重建拉到 1.4.23，注册表不认 iic 模型 id。已锁 `funasr==1.4.12`。
+2. **模型缓存目录权限**（中层）：模型缓存 bind 挂载 `/app/.cache`（宿主 hf-cache）属主为 root，而容器 11-12 起以 uid=1000(autoclip) 运行 → 模型下载静默 PermissionError → funasr 回退注册表查询才报 not registered。**版本回退后仍报同样错误，就是这一层在挡**。已 `docker exec -u root chown -R 1000:1000 /app/.cache` 修复。
+3. **容器内存限额 2G**（底层）：qoder 11-12 生成的 `docker-compose.override.yml`（不在部署同步清单、md5 校验不到的覆盖层）给 autoclip 设了 `deploy.resources.limits.memory: 2G`，Paraformer-Large 加载+推理峰值约 3G → cgroup OOM 杀进程 → 容器重启丢内存项目 → 「项目状态连续查询失败」。已运行时 `docker update --memory 6g` 恢复，并把 `mem_limit: 6g` 写进主 compose 固化；override 中 autoclip 段已删除（其他服务限额保留）。
 
-**沉淀**：与 9-02 的「条件安装丢 funasr」同源——**funasr 依赖链上任何未锁版本都是定时炸弹**。9 月丢了运行时（No module named funasr），11 月换了新版本不认模型（not registered）。凡 autoclip 重依赖一律精确 pin；升级必须先在容器内实测模型加载通过再合入。
+**沉淀**：
+- 排障时**必须实测容器内模型下载**（`snapshot_download`）而不是只看 funasr 版本——「not registered」多数时候是「没拿到模型」，不是「版本不认」。
+- **主 compose 之外的覆盖层（override）不在部署 md5 校验范围内**，是配置漂移的天然藏身处；给 autoclip 这类大内存服务设限时，2G 起步必误杀。
+- ASR 任务失败的排查顺序：funasr 版本 → 缓存目录可写性 → 容器内存限额（dmesg 看 cgroup OOM）。
