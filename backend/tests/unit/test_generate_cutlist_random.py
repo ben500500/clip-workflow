@@ -87,3 +87,47 @@ def test_single_clip_over_limit_gets_trimmed_in_random_mode():
     total = _total(cut)
     assert total <= 50.0 + 1e-6
     assert cut, "超长段裁剪后应至少保留一段"
+
+
+def test_multi_output_splits_into_n_files_without_max_duration():
+    clips = [_mk(i, i * 100, i * 100 + 20) for i in range(5)]  # 5 段各 20s
+    cut = generate_cutlist(clips, episode_title="剧名", highlight_mix=True,
+                           mix_output_count=3, order="time")
+    names = [line.split()[2] for line in _lines(cut)]
+    distinct = sorted(set(names))
+    assert len(distinct) == 3, f"应产出 3 个不同文件名，实际 {distinct}"
+    counts = [names.count(n) for n in distinct]
+    assert sorted(counts, reverse=True) == [2, 2, 1], f"按段数均分应为 2/2/1，实际 {counts}"
+
+
+def test_multi_output_respects_per_file_duration():
+    clips = [_mk(i, i * 100, i * 100 + 30) for i in range(10)]  # 10 段各 30s
+    cut = generate_cutlist(clips, episode_title="剧名", highlight_mix=True,
+                           max_duration=60.0, mix_output_count=4, order="time")
+    names = [line.split()[2] for line in _lines(cut)]
+    distinct = sorted(set(names))
+    assert len(distinct) == 4, f"应产出 4 个文件，实际 {len(distinct)}"
+    # 每文件累计 ≤ 60s（每文件 2 段 × 30s）
+    for n in distinct:
+        t = sum(_sec(l.split()[1]) - _sec(l.split()[0]) for l in _lines(cut) if l.split()[2] == n)
+        assert t <= 60.0 + 1e-6, f"文件 {n} 累计 {t}s 超过 60s"
+    assert len(_lines(cut)) == 8, "4 个文件 × 每文件 2 段 = 8 段，剩余 2 段丢弃"
+
+
+def test_multi_output_random_nondeterministic_grouping():
+    clips = [_mk(i, i * 100, i * 100 + 20) for i in range(9)]
+    outs = set()
+    for _ in range(10):
+        cut = generate_cutlist(clips, episode_title="剧名", highlight_mix=True,
+                               max_duration=60.0, mix_output_count=3, order="random")
+        outs.add(tuple(_lines(cut)))
+    assert len(outs) > 1, "随机模式多次切片的文件内容组合应不同"
+
+
+def test_single_output_regression_matches_legacy():
+    clips = [_mk(i, i * 100, i * 100 + 20) for i in range(5)]
+    cut = generate_cutlist(clips, episode_title="剧名", highlight_mix=True,
+                           max_duration=60.0, order="time", mix_output_count=1)
+    names = {line.split()[2] for line in _lines(cut)}
+    assert len(names) == 1, "output_count=1 应保持单文件行为"
+    assert len(_lines(cut)) == 3, "60s 上限 × 20s 段应纳入 3 段"

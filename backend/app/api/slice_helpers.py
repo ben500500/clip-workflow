@@ -210,6 +210,10 @@ class SliceRunRequest(BaseModel):
     highlight_mix_max_clip_duration: Optional[float] = None
     # 拼接顺序：time（按源时间顺序，默认）/ score（按评分从高到低）。
     highlight_mix_order: str = "time"
+    # 高光混剪输出文件个数（默认 1=单成品）：>1 时把入选段分组填充，
+    # 产出 N 个混剪文件（剧名_MMDD_001..N）；highlight_mix_max_duration 语义
+    # 变为「每个文件」的时长上限；未设上限时按段数均分到 N 个文件。
+    highlight_mix_output_count: Optional[int] = None
     # ── Remotion 混剪增强（模板化编排，替代/增强基础 concat 混剪）──
     # 全部可选、默认关闭，零侵入基础高光混剪。开启后走 Remotion 后处理增强层
     # （独立容器渲染），用片头/片尾/段间转场/动态字幕替代裸 concat 拼贴。
