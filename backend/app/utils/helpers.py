@@ -73,7 +73,8 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
     - max_duration: 输出总时长上限（秒），累计段长不超过该值，最后一段塞入会超额时丢弃；
     - max_clip_duration: 单段最大时长（秒），超长段裁剪到该上限后纳入（只裁不丢，段数不变），
       避免全部候选超长被过滤后静默返回空 cutlist -> 引擎兜底整片切片；
-    - order: "time"（按源时间升序，默认）/ "score"（按评分从高到低）。
+    - order: "time"（按源时间升序，默认）/ "score"（按评分从高到低）/ "random"（随机抽取：
+      打乱候选贪心累计凑近 max_duration，单段超额则跳过继续尝试更短的段）。
     不开启混剪时行为不变：每段独立命名（独立输出文件）。
 
     非混剪路径的时长硬规整（duration_hard_limit=true 时由 api/slice.py 传入）：
@@ -109,11 +110,19 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
             return ""
         if order == "score":
             segs.sort(key=lambda s: (s[3].score if s[3].score is not None else 0.0), reverse=True)
+        elif order == "random":
+            # 随机抽取模式：打乱候选后贪心累计；单段会超额时跳过并继续尝试更短的段，
+            # 尽量贴近总时长上限（而非 time/score 的「到上限即停」）。
+            # 每次切片抽取组合不同（业务预期：同素材多次切片产出不同混剪）。
+            import random as _random
+            _random.shuffle(segs)
         else:  # 默认 time：按源时间顺序
             segs.sort(key=lambda s: s[0])
         total = 0.0
         for start, end, dur, _c in segs:
             if max_duration is not None and total + dur > max_duration:
+                if order == "random":
+                    continue  # 随机抽取：超额段跳过，继续尝试后续（更短的）段凑近上限
                 # 最后一段塞入会超额：丢弃该段（不裁剪首尾），保持累计不超过上限
                 break
             lines.append(f"{format_time(start)} {format_time(end)} {mix_name}")
