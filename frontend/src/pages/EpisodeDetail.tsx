@@ -378,7 +378,7 @@ const EpisodeDetail: React.FC = () => {
   // 单段最大时长（秒，可选）：仅纳入时长不超过该值的短高光段
   const [highlightMixMaxClipDuration, setHighlightMixMaxClipDuration] = useState<number | null>(null);
   // 拼接顺序：time（源时间顺序，默认）/ score（评分从高到低）
-  const [highlightMixOrder, setHighlightMixOrder] = useState<'time' | 'score'>('time');
+  const [highlightMixOrder, setHighlightMixOrder] = useState<'time' | 'score' | 'random'>('time');
   // 高光混剪设置弹窗是否打开
   const [highlightMixModalOpen, setHighlightMixModalOpen] = useState(false);
   // ── ASR 字幕烧录开关 ──
@@ -2215,7 +2215,7 @@ const EpisodeDetail: React.FC = () => {
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {highlightMixMaxDuration ? `总时长≤${highlightMixMaxDuration}s` : '总时长由片段自然决定'}
                 {highlightMixMaxClipDuration ? ` · 单段≤${highlightMixMaxClipDuration}s` : ''}
-                {highlightMixOrder === 'score' ? ' · 评分优先' : ' · 时间顺序'}
+                {highlightMixOrder === 'score' ? ' · 评分优先' : highlightMixOrder === 'random' ? ' · 随机抽取' : ' · 时间顺序'}
               </Text>
             )}
           </Space>
@@ -2419,6 +2419,7 @@ const EpisodeDetail: React.FC = () => {
                   options={[
                     { value: 'time', label: '源时间顺序（默认）' },
                     { value: 'score', label: '评分从高到低' },
+                    { value: 'random', label: '随机抽取（凑总时长）' },
                   ]}
                 />
               </Space>

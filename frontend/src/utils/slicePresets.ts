@@ -97,7 +97,7 @@ export interface SlicePreset {
   // 单段最大时长（秒，可选）：仅纳入时长不超过该值的短高光段
   highlight_mix_max_clip_duration?: number;
   // 拼接顺序：time（源时间顺序，默认）/ score（评分从高到低）
-  highlight_mix_order?: 'time' | 'score';
+  highlight_mix_order?: 'time' | 'score' | 'random';
 }
 
 // ─── 默认配置（在默认项基础上：竖屏转横屏开 / ASR字幕开 / 固定文字开） ───
