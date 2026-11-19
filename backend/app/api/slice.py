@@ -701,14 +701,22 @@ async def _resolve_slice_inputs(
                 fallback_whole_video = True
             else:
                 fallback_whole_video = False
-                # 自动通过所有待审核片段，方便后续在切片任务/成品预览中看到关联关系。
+                # 自动通过待审核片段，方便后续在切片任务/成品预览中看到关联关系。
                 # 一键切片=候选自动全部通过审核：不仅 pending，之前被手动拒绝(rejected)的
                 # 候选也一并恢复为 accepted，确保一次一键切片后所有候选都处于「已通过」状态。
+                # auto_accept_min_score（选点后自动切片传入）：仅通过达标候选并纳入切片；
+                # 全量入库模式下低分候选保持 pending，供审核页按分数筛选。
+                floor = data.auto_accept_min_score
                 for clip in all_clips:
                     if clip.status in ("pending", "rejected"):
-                        clip.status = "accepted"
+                        if floor is None or (clip.score is not None and clip.score >= floor):
+                            clip.status = "accepted"
                 await db.flush()
-                accepted_clips = all_clips
+                # cutlist 只吃达标片段：低分候选不入切片（区别于 status 标记）
+                accepted_clips = [
+                    c for c in all_clips
+                    if floor is None or (c.score is not None and c.score >= floor)
+                ]
         else:
             fallback_whole_video = False
 

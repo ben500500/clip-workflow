@@ -289,9 +289,11 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
 
         clips = run_async(get_clips(
             autoclip_project_id,
-            # P1-5 修复：用 is not None 判断而非 `or`（falsy 陷阱）。
-            # 显式传 0 表示"最低分不限/时长不限"，不再被 `or 60` / `or 0` 回退吞掉。
-            min_score=float(config.get("min_score_threshold")) if config.get("min_score_threshold") is not None else 50.0,
+            # 全量入库：候选只是时间轴数据，不占空间；分数过滤放到查询/审核端
+            # （ClipReview 评分入口即时筛选）。此前 min_score=60 + max_clips=30
+            # 双重截断，122 个达标片段只入库 30 个（2026-11-19《少夫人》）。
+            min_score=0.0,
+            max_clips=1000,
             # P1 修复（#228）：min_duration/max_duration 不再作为硬过滤传给引擎 /api/v1/clips。
             # 引擎产出的高光片段天然 50~145s，若把用户配置的 max_duration=30 作为硬过滤，
             # 会把全部候选砍成 0。duration 仅作引擎 step2 定位参考（经 trigger_pipeline 的 config 下发），
@@ -1093,7 +1095,24 @@ async def _autoclip_auto_dispatch_slice(episode_id: str):
             from app.api.slice import run_slice
             from app.api.slice_helpers import SliceRunRequest
 
-            data = SliceRunRequest(auto_accept_all=True)
+            # 自动切片只自动通过「达标」候选（最新 run config 的 min_score_threshold，
+            # 默认 60）；全量入库模式下低分候选保持 pending，供审核页按分数筛选。
+            from app.models.models import AutoClipRun
+            cfg_row = (await session.execute(
+                select(AutoClipRun.config)
+                .where(AutoClipRun.episode_id == eid)
+                .order_by(AutoClipRun.created_at.desc())
+                .limit(1)
+            )).scalar()
+            try:
+                accept_min_score = float((cfg_row or {}).get("min_score_threshold", 60))
+            except (TypeError, ValueError):
+                accept_min_score = 60.0
+
+            data = SliceRunRequest(
+                auto_accept_all=True,
+                auto_accept_min_score=accept_min_score,
+            )
             resp = await run_slice(episode_id, data, current_user=admin, db=session)
             await session.commit()
             logger.info("剧集 %s 选点后自动切片已创建 task=%s engine=%s", episode_id, resp.task_id, resp.engine)

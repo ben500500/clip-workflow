@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import {
   Card, Table, Tag, Button, Space, Typography, Spin, Alert, message, Popconfirm, InputNumber, Progress,
   Tooltip, Slider,
@@ -287,6 +287,13 @@ const ClipReview: React.FC = () => {
   // 高光识别片段：clip_type = highlight（短高光段）
   const highlightCount = clips.filter((c) => c.clip_type === 'highlight').length;
 
+  // ─── 最低评分过滤（全量候选入库后，任意调分数即时筛选，不重跑选点）───
+  const [minScoreFilter, setMinScoreFilter] = useState<number>(0);
+  const visibleClips = useMemo(
+    () => clips.filter((c) => (c.score ?? 0) >= minScoreFilter),
+    [clips, minScoreFilter],
+  );
+
   // ─── 点击标题展开行 ─────────────────────────────────
   const onTitleClick = (clipId: string) => {
     const isExpanded = expandedRowKeys.includes(clipId);
@@ -415,6 +422,32 @@ const ClipReview: React.FC = () => {
             </Text>
           )}
         </Space>
+        <div style={{ marginTop: 8 }}>
+          <Space wrap>
+            <Text type="secondary">最低评分:</Text>
+            <InputNumber
+              min={0}
+              max={100}
+              step={5}
+              value={minScoreFilter}
+              onChange={(v) => setMinScoreFilter(typeof v === 'number' ? v : 0)}
+              style={{ width: 90 }}
+            />
+            {[0, 60, 70, 80].map((v) => (
+              <Button
+                key={v}
+                size="small"
+                type={minScoreFilter === v ? 'primary' : 'default'}
+                onClick={() => setMinScoreFilter(v)}
+              >
+                {v === 0 ? '全部' : `≥${v}`}
+              </Button>
+            ))}
+            <Text type="secondary">
+              当前显示 <strong>{visibleClips.length}</strong> / {clips.length} 个（调整分数即时过滤，不改数据）
+            </Text>
+          </Space>
+        </div>
       </Card>
 
       {/* ── 批量操作栏 ── */}
@@ -504,7 +537,7 @@ const ClipReview: React.FC = () => {
           <Table
             rowKey="id"
             columns={columns}
-            dataSource={clips}
+            dataSource={visibleClips}
             pagination={false}
             size="small"
             scroll={{ x: 1050 }}

@@ -110,6 +110,11 @@ class SliceRunRequest(BaseModel):
     # 免审核一键切片：为 True 时自动把所有候选片段（含 pending）纳入切片，
     # 不再要求存在 status=accepted 的片段
     auto_accept_all: bool = False
+    # auto_accept_all 的分数门控（可选）：仅自动通过 score ≥ 该值的候选，
+    # 低分候选保持原状态（pending）供审核页按分数筛选。
+    # 场景：选点全量入库后（min_score=0），自动切片仍只应切达标片段。
+    # None = 不设门槛（保持旧行为：全部通过），供前端手动一键切片使用。
+    auto_accept_min_score: Optional[float] = None
     # 免审核一键切片时选点未产出候选片段的回退策略：
     # - True（默认）：静默回退为「整片切片」，保证自动化流程一定出片（响应会带 fallback_whole_video=true 提示）；
     # - False：不回退，直接返回 400 明确报错，供自动化脚本识别并单独处理。
