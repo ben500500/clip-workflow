@@ -147,6 +147,7 @@ export const sliceApi = {
       highlight_mix_max_clip_duration?: number;
       // 拼接顺序：time（源时间顺序，默认）/ score（评分从高到低）
       highlight_mix_order?: 'time' | 'score' | 'random';
+      highlight_mix_output_count?: number;
       // 输出档位：original（默认）/ auto（源宽>720 或 fps>30 自动降 720P@30）/ 1080p / 720p / 480p
       output_tier?: 'original' | 'auto' | '1080p' | '720p' | '480p' | string;
       // 指定某一次「AI 选点历史」run：切片时若当前候选为空（最近选点失败清空候选），

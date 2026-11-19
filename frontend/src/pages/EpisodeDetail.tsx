@@ -379,6 +379,9 @@ const EpisodeDetail: React.FC = () => {
   const [highlightMixMaxClipDuration, setHighlightMixMaxClipDuration] = useState<number | null>(null);
   // 拼接顺序：time（源时间顺序，默认）/ score（评分从高到低）
   const [highlightMixOrder, setHighlightMixOrder] = useState<'time' | 'score' | 'random'>('time');
+  // 输出文件个数（默认 1=单成品）：>1 时把入选段分组填充产出 N 个混剪文件，
+  // 「输出总时长上限」语义变为每个文件的时长上限；未设上限时按段数均分
+  const [highlightMixOutputCount, setHighlightMixOutputCount] = useState<number>(1);
   // 高光混剪设置弹窗是否打开
   const [highlightMixModalOpen, setHighlightMixModalOpen] = useState(false);
   // ── ASR 字幕烧录开关 ──
@@ -660,6 +663,7 @@ const EpisodeDetail: React.FC = () => {
     highlight_mix_max_duration: highlightMixMaxDuration ?? undefined,
     highlight_mix_max_clip_duration: highlightMixMaxClipDuration ?? undefined,
     highlight_mix_order: highlightMixOrder,
+    highlight_mix_output_count: highlightMixOutputCount,
   });
 
   // 将一套配置应用到页面切片状态
@@ -720,7 +724,8 @@ const EpisodeDetail: React.FC = () => {
     setHighlightMixEnabled(p.highlight_mix_enabled ?? false);
     setHighlightMixMaxDuration(p.highlight_mix_max_duration ?? null);
     setHighlightMixMaxClipDuration(p.highlight_mix_max_clip_duration ?? null);
-    setHighlightMixOrder(p.highlight_mix_order ?? 'time');
+    setHighlightMixOrder((p.highlight_mix_order as 'time' | 'score' | 'random') ?? 'time');
+    setHighlightMixOutputCount(p.highlight_mix_output_count ?? 1);
     setActivePresetId(p.id);
   };
 
@@ -861,7 +866,7 @@ const EpisodeDetail: React.FC = () => {
     // 刷新页面后被预设重置回默认关闭（用户感知为「开关状态没保存」）
     frameAnalysisProvider,
     highlightMode, highlightMaxDuration,
-    highlightMixEnabled, highlightMixMaxDuration, highlightMixMaxClipDuration, highlightMixOrder,
+    highlightMixEnabled, highlightMixMaxDuration, highlightMixMaxClipDuration, highlightMixOrder, highlightMixOutputCount,
   ]);
 
   useEffect(() => {
@@ -1334,6 +1339,7 @@ const EpisodeDetail: React.FC = () => {
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
         highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
         highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
+        highlight_mix_output_count: highlightMixEnabled ? highlightMixOutputCount : undefined,
         // 选点历史：当前候选为空（最近选点失败）时用所选历史 run 恢复候选再切片
         slice_autoclip_run_id: sliceAutoclipRunId || undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
@@ -1529,6 +1535,7 @@ const EpisodeDetail: React.FC = () => {
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
         highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
         highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
+        highlight_mix_output_count: highlightMixEnabled ? highlightMixOutputCount : undefined,
         // 选点历史：当前候选为空（最近选点失败）时用所选历史 run 恢复候选再切片
         slice_autoclip_run_id: sliceAutoclipRunId || undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
@@ -2216,6 +2223,7 @@ const EpisodeDetail: React.FC = () => {
                 {highlightMixMaxDuration ? `总时长≤${highlightMixMaxDuration}s` : '总时长由片段自然决定'}
                 {highlightMixMaxClipDuration ? ` · 单段≤${highlightMixMaxClipDuration}s` : ''}
                 {highlightMixOrder === 'score' ? ' · 评分优先' : highlightMixOrder === 'random' ? ' · 随机抽取' : ' · 时间顺序'}
+                {highlightMixOutputCount > 1 ? ` · 输出${highlightMixOutputCount}个文件` : ''}
               </Text>
             )}
           </Space>
@@ -2422,6 +2430,20 @@ const EpisodeDetail: React.FC = () => {
                     { value: 'random', label: '随机抽取（凑总时长）' },
                   ]}
                 />
+                <Space wrap align="center" size={8}>
+                  <Text strong style={{ fontSize: 13 }}>输出个数</Text>
+                  <InputNumber
+                    size="small"
+                    min={1}
+                    max={100}
+                    value={highlightMixOutputCount}
+                    onChange={(v) => setHighlightMixOutputCount(v ?? 1)}
+                    style={{ width: 120 }}
+                  />
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    产出 N 个混剪文件（剧名_MMDD_001..N）；「总时长上限」即每个文件的时长上限，不填则按段数均分
+                  </Text>
+                </Space>
               </Space>
             </Space>
           </Modal>

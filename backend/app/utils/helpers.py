@@ -62,7 +62,8 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
                     max_clip_duration: Optional[float] = None,
                     order: str = "time",
                     trim_over_duration: Optional[float] = None,
-                    drop_under_duration: Optional[float] = None) -> str:
+                    drop_under_duration: Optional[float] = None,
+                    mix_output_count: Optional[int] = None) -> str:
     """Generate cutlist content from accepted clip candidates.
 
     Format per line:
@@ -70,11 +71,15 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
 
     highlight_mix=True 时，把所有入选高光段共用同一输出文件名（同 name）生成 cutlist：
     引擎 groups 按 name 分组后天然顺序 concat 成单个混剪视频。可选配置：
-    - max_duration: 输出总时长上限（秒），累计段长不超过该值，最后一段塞入会超额时丢弃；
+    - max_duration: 每个输出文件的时长上限（秒），该文件累计段长不超过该值，
+      塞入会超额时 time/score 顺序丢弃该段、random 顺序跳过后继续尝试更短的段；
     - max_clip_duration: 单段最大时长（秒），超长段裁剪到该上限后纳入（只裁不丢，段数不变），
       避免全部候选超长被过滤后静默返回空 cutlist -> 引擎兜底整片切片；
     - order: "time"（按源时间升序，默认）/ "score"（按评分从高到低）/ "random"（随机抽取：
-      打乱候选贪心累计凑近 max_duration，单段超额则跳过继续尝试更短的段）。
+      打乱候选贪心累计凑近 max_duration，单段超额则跳过继续尝试更短的段）；
+    - mix_output_count: 输出文件个数（默认 1）。>1 时把入选段按顺序分组填充，产出
+      N 个混剪文件（剧名_MMDD_001..N）：max_duration 为**每个文件**的时长上限，
+      段耗尽或组满即止；未设 max_duration 时按段数均分到 N 个文件。
     不开启混剪时行为不变：每段独立命名（独立输出文件）。
 
     非混剪路径的时长硬规整（duration_hard_limit=true 时由 api/slice.py 传入）：
@@ -88,8 +93,8 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
     if not accepted:
         return ""
     if highlight_mix:
-        # 高光混剪：所有入选段共用一个输出文件名（同 name -> 引擎同组顺序 concat 成一个文件）
-        mix_name = build_clip_name(episode_title, 1)
+        # 高光混剪：入选段共用输出文件名（同 name -> 引擎同组顺序 concat）；
+        # mix_output_count>1 时按组分名输出 N 个混剪文件（见下方分组填充）
         segs = []
         trimmed_long = 0
         for c in accepted:
@@ -112,36 +117,64 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
             segs.sort(key=lambda s: (s[3].score if s[3].score is not None else 0.0), reverse=True)
         elif order == "random":
             # 随机抽取模式：打乱候选后贪心累计；单段会超额时跳过并继续尝试更短的段，
-            # 尽量贴近总时长上限（而非 time/score 的「到上限即停」）。
+            # 尽量贴近每文件的时长上限（而非 time/score 的「到上限即停」）。
             # 每次切片抽取组合不同（业务预期：同素材多次切片产出不同混剪）。
             import random as _random
             _random.shuffle(segs)
         else:  # 默认 time：按源时间顺序
             segs.sort(key=lambda s: s[0])
+
+        # ── 分组填充：output_count>1 时产出 N 个混剪文件 ──
+        output_count = max(1, int(mix_output_count or 1))
+        if output_count > 1 and max_duration is None:
+            # 未设每文件时长上限：按段数均分到 N 个文件
+            per = -(-len(segs) // output_count)
+            groups = [segs[i * per:(i + 1) * per] for i in range(output_count)]
+        else:
+            groups = [[] for _ in range(output_count)]
+            gi = 0
+            for seg in segs:
+                if gi >= output_count:
+                    break  # 组满：剩余段丢弃（用户要求精确 N 个文件）
+                if max_duration is not None and sum(s[2] for s in groups[gi]) + seg[2] > max_duration:
+                    gi += 1  # 本文件已到时长上限：开下一个文件
+                    if gi >= output_count:
+                        break
+                groups[gi].append(seg)
+
+        lines = []
         total = 0.0
-        for start, end, dur, _c in segs:
-            if max_duration is not None and total + dur > max_duration:
-                if order == "random":
-                    continue  # 随机抽取：超额段跳过，继续尝试后续（更短的）段凑近上限
-                # 最后一段塞入会超额：丢弃该段（不裁剪首尾），保持累计不超过上限
-                break
-            lines.append(f"{format_time(start)} {format_time(end)} {mix_name}")
-            total += dur
+        out_idx = 0
+        for g in groups:
+            if not g:
+                continue
+            out_idx += 1
+            g_name = build_clip_name(episode_title, out_idx)
+            g_total = 0.0
+            for start, end, dur, _c in g:
+                if max_duration is not None and g_total + dur > max_duration:
+                    if order == "random":
+                        continue  # 随机抽取：超额段跳过，继续尝试后续更短的段凑近上限
+                    break  # time/score：该文件到上限即停
+                lines.append(f"{format_time(start)} {format_time(end)} {g_name}")
+                g_total += dur
+            total += g_total
         if not lines:
-            # 全部段都超总时长上限：保底裁剪纳入排序后首段，保证 cutlist 非空
+            # 全部段都超每文件上限：保底裁剪纳入排序后首段，保证 cutlist 非空
             # （对齐 duration_hard_limit「不出 0 候选」的兜底哲学，杜绝静默整片）
             start, end, _dur, _c = segs[0]
             if max_duration is not None and end - start > max_duration:
                 end = start + float(max_duration)
-            lines.append(f"{format_time(start)} {format_time(end)} {mix_name}")
+            lines.append(f"{format_time(start)} {format_time(end)} {build_clip_name(episode_title, 1)}")
             total = end - start
             logger.warning(
-                "高光混剪全部段超总时长上限(max_duration=%s)，保底裁剪纳入首段 %s-%s",
+                "高光混剪全部段超每文件上限(max_duration=%s)，保底裁剪纳入首段 %s-%s",
                 max_duration, format_time(start), format_time(end),
             )
         logger.info(
-            "高光混剪 cutlist：候选 %d 段，超长裁剪 %d 段(max_clip_duration=%s)，纳入 %d 段，总时长 %.1fs",
-            len(accepted), trimmed_long, max_clip_duration, len(lines), total,
+            "高光混剪 cutlist：候选 %d 段，超长裁剪 %d 段(max_clip_duration=%s)，"
+            "输出 %d 个文件共 %d 段，总时长 %.1fs",
+            len(accepted), trimmed_long, max_clip_duration, out_idx, len(lines), total,
         )
         return "\n".join(lines)
     # 非混剪路径：可选时长硬规整（duration_hard_limit=true 时由 api/slice.py 传入）

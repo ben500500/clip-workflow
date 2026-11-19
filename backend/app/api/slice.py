@@ -789,6 +789,7 @@ async def _resolve_slice_inputs(
                 max_duration=data.highlight_mix_max_duration,
                 max_clip_duration=data.highlight_mix_max_clip_duration,
                 order=data.highlight_mix_order or "time",
+                mix_output_count=data.highlight_mix_output_count,
                 trim_over_duration=trim_over_duration,
                 drop_under_duration=drop_under_duration,
             )
