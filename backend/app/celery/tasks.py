@@ -250,7 +250,11 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
             raise RuntimeError("Failed to trigger AutoClip pipeline")
 
         # Poll for progress
-        max_polls = 120  # 10 minutes at 5-second intervals
+        # 轮询上限默认 30 分钟（360×5s）：451MB 剧集实测约 14 分钟，45 分钟全集更长。
+        # 2026-11-19《少夫人》因旧值 120 次（10 分钟）被提前判死，
+        # autoclip 4 分钟后自己跑完 117 个片段但已无人收取。可用
+        # AUTOCLIP_POLL_MAX_POLLS 环境变量覆盖。
+        max_polls = int(os.getenv("AUTOCLIP_POLL_MAX_POLLS", "360"))
         consecutive_failures = 0
         completed = False
         for i in range(max_polls):
