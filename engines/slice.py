@@ -4742,7 +4742,14 @@ def main():
                     if hook_position == "tail":
                         # 片尾模式：钩子暂存，本体各段拼完后再追加到末尾（[封面][本体][钩子]）
                         tail_hook_part = hook_part
-                        print(f"钩子拼接[片尾]: {os.path.basename(hook_path)} (时长 {hook_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
+                        # 钩子文件已占用 part_0 命名，本体段必须从 part_1 起编号，
+                        # 否则本体首段会覆盖同名钩子文件 -> 成品变成本体重复两遍、钩子丢失。
+                        part_offset = 1
+                        if hook_mix_mode == "combine" and len(hook_paths) > 1:
+                            # combine 场景没有单钩子变量（hook_path 未定义），按组合描述
+                            print(f"钩子拼接[片尾][combine]: 已拼接 {len(hook_paths)} 个钩子 (总时长 {hook_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
+                        else:
+                            print(f"钩子拼接[片尾]: {os.path.basename(hook_path)} (时长 {hook_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
                     else:
                         parts.append(hook_part)
                         part_offset = 1
