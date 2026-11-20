@@ -642,6 +642,23 @@ func (w *Worker) requeueStuckTask(rt *RunningTask) {
 		"error":    "卡死任务被强制重投",
 		"retry_at": time.Now().Unix(),
 	})
+	// direct 队列任务（服务器指定派发）重投必须压回节点专属 LIST：
+	// rt.Stream == "direct" 是 buildDirectMessage 的合成标记（无对应消费流），
+	// 此前 RequeueTask 直接 XADD 到名为 "direct" 的 Stream —— 没有任何消费者
+	// 读它，任务从此永久 pending（2026-11-21 实测踩中：0f08daa1 二次卡死后
+	// 悬挂 6 分钟无人认领）。
+	if rt.Stream == "direct" {
+		nodeID := rt.Task.TargetNodeID
+		if nodeID == "" {
+			nodeID = w.config.NodeID // 目标节点缺失时回退当前节点，至少不丢任务
+		}
+		if err := w.redis.RequeueDirectTask(nodeID, string(data)); err != nil {
+			w.log("error", "卡死任务重投入队失败(direct→%s): %v", nodeID, err)
+			return
+		}
+		w.log("info", "卡死任务 %s 已重投到节点 %s 专属队列（第 %d 次重试）", taskID, nodeID, rt.Task.RetryCount)
+		return
+	}
 	if err := w.redis.RequeueTask(rt.Stream, string(data)); err != nil {
 		w.log("error", "卡死任务重投入队失败: %v", err)
 		return
