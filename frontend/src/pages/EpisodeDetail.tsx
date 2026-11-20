@@ -2906,6 +2906,13 @@ const EpisodeDetail: React.FC = () => {
                 <Text type="secondary" style={{ fontSize: 12 }}>加粗让字幕更醒目</Text>
               </Space>
               <Space wrap align="center" size={8}>
+                <SubtitleMarginPicker value={subtitleMarginRatio} onChange={setSubtitleMarginRatio} labelStrong numberWidth={100} />
+                <Text type="secondary" style={{ fontSize: 12 }}>预设或精调（越小越贴底）</Text>
+                <Tooltip title="注意：开启「字幕对齐源字幕打码区域」且检测到源字幕时，ASR 字幕位置会跟随打码区域，此处高度设置暂不生效。">
+                  <Text type="warning" style={{ fontSize: 12, cursor: 'help' }}>何时无效？</Text>
+                </Tooltip>
+              </Space>
+              <Space wrap align="center" size={8}>
                 <Switch size="small" checked={subtitleAlignMask} onChange={setSubtitleAlignMask} />
                 <Text strong style={{ fontSize: 13 }}>字幕对齐源字幕打码区域</Text>
                 <Tooltip title="开启源字幕打码并检测到字幕区域时，把 ASR 字幕默认位置对齐到打码区域（与被打掉的源字幕位置重合）；关闭则用默认底边距。默认开启。">
