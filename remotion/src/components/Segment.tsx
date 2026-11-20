@@ -18,7 +18,7 @@ export const Segment: React.FC<{
     <AbsoluteFill style={{backgroundColor: '#000'}}>
       {/* cover 裁切：视频等比填满画布 */}
       <OffthreadVideo
-        src={staticFile(segment.file)}
+        src={segment.file.startsWith('/') ? segment.file : staticFile(segment.file)}
         style={{
           width: '100%',
           height: '100%',
