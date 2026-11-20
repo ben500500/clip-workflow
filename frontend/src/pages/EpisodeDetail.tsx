@@ -16,6 +16,7 @@ import { intervalApi } from '../api/intervals';
 import { sliceApi, type BadgeItem, type TextOverlayItem } from '../api/slice';
 import ErrorHint from '../components/ErrorHint';
 import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/DedupeManualConfig';
+import SubtitleMarginPicker from '../components/SubtitleMarginPicker';
 import { useDedupePresets } from '../hooks/useDedupePresets';
 import type { AutoClipRunRecord, Episode, IntervalHistoryItem, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
@@ -3843,10 +3844,7 @@ const EpisodeDetail: React.FC = () => {
               <Space wrap align="center" size={8}>
                 <Text style={{ fontSize: 12 }}>字号</Text>
                 <InputNumber size="small" min={10} max={60} step={1} value={Math.round(subtitleFontRatio * 100)} onChange={(v) => { const fs = v ?? 30; setSubtitleFontRatio(Math.max(0.1, Math.min(0.6, fs / 100))); }} style={{ width: 80 }} />
-                <Tooltip title="字幕高度：字幕块中心距画面底部的距离（占屏高比例）。默认 0.25 = 字幕位于画面下方 1/4 处；越小越贴底，0.5 ≈ 垂直居中">
-                  <Text style={{ fontSize: 12, cursor: 'help' }}>字幕高度</Text>
-                </Tooltip>
-                <InputNumber size="small" min={0.02} max={0.6} step={0.01} value={subtitleMarginRatio} onChange={(v) => setSubtitleMarginRatio(v ?? 0.25)} style={{ width: 70 }} />
+                <SubtitleMarginPicker value={subtitleMarginRatio} onChange={setSubtitleMarginRatio} />
                 <Radio.Group size="small" value={subtitleStyle} onChange={(e) => setSubtitleStyle(e.target.value)}>
                   <Radio.Button value="default">默认</Radio.Button>
                   <Radio.Button value="custom">自定义</Radio.Button>

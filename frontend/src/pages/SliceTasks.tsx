@@ -9,6 +9,7 @@ import { sliceApi, type BadgeItem, type TextOverlayItem } from '../api/slice';
 import { previewApi } from '../api/preview';
 import ErrorHint from '../components/ErrorHint';
 import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/DedupeManualConfig';
+import SubtitleMarginPicker from '../components/SubtitleMarginPicker';
 import type { SliceOutput, SliceTask } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
 import { buildSliceConfigTooltip } from '../utils/sliceConfigTooltip';
@@ -1023,19 +1024,8 @@ const SUBTITLE_MASK_PRESETS = [
                 <Text type="secondary" style={{ fontSize: 12 }}>越小越紧凑</Text>
               </Space>
               <Space wrap align="center" size={8}>
-                <Tooltip title="字幕高度：字幕块中心距画面底部的距离（占屏高比例）。默认 0.25 = 字幕位于画面下方 1/4 处；越小越贴底，0.5 ≈ 垂直居中">
-                  <Text strong style={{ fontSize: 12, cursor: 'help' }}>字幕高度</Text>
-                </Tooltip>
-                <InputNumber
-                  size="small"
-                  min={0.02}
-                  max={0.6}
-                  step={0.01}
-                  value={subtitleMarginRatio}
-                  onChange={(v) => setSubtitleMarginRatio(v ?? 0.25)}
-                  style={{ width: 100 }}
-                />
-                <Text type="secondary" style={{ fontSize: 12 }}>默认 0.25（屏高 1/4 处）</Text>
+                <SubtitleMarginPicker value={subtitleMarginRatio} onChange={setSubtitleMarginRatio} labelStrong numberWidth={100} />
+                <Text type="secondary" style={{ fontSize: 12 }}>预设或精调（越小越贴底）</Text>
               </Space>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 12 }}>字幕样式</Text>
