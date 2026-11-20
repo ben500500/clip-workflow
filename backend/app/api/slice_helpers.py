@@ -350,6 +350,9 @@ class SliceTaskResponse(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     created_at: str
+    # 最后一次 DB 行更新时间（进度回调会刷新）：任务列表「最后活动」列数据源，
+    # 用于辨识僵尸任务（2026-11-20 评审 UX/SRE）
+    updated_at: Optional[str] = None
     # ── 该任务实际应用的配置（用于历史列表悬停展示） ──
     dedupe_config: Optional[dict] = None
     watermark_config: Optional[dict] = None
@@ -429,6 +432,7 @@ def _serialize_task(task: SliceTask) -> dict:
         "started_at": utc_iso(task.started_at) if task.started_at else None,
         "completed_at": utc_iso(task.completed_at) if task.completed_at else None,
         "created_at": utc_iso(task.created_at) if task.created_at else "",
+        "updated_at": utc_iso(task.updated_at) if getattr(task, "updated_at", None) else None,
         # 该任务实际应用的配置（用于历史列表悬停展示）
         "dedupe_config": task.dedupe_config,
         "watermark_config": task.watermark_config,

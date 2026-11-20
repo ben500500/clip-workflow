@@ -107,10 +107,17 @@ async def collect_metrics() -> dict[str, float]:
                 offline_count += 1
         metrics["worker_offline"] = offline_count
 
-    # task_failed：失败任务数（连续失败 >3 次的任务）
+    # task_failed：近 24h 失败任务数。
+    # 2026-11-20 评审（SRE P1-3）：原口径统计全表 failed 总数，规则描述却是
+    # 「同一任务失败超 3 次」——口径错位让告警永久 critical、钉钉通知失去信用
+    # （与 2026-11-11 worker_offline 口径事故同款）。改 24h 时间窗与阈值同口径。
+    day_ago = now - timedelta(hours=24)
     failed_tasks = (
         await session.execute(
-            select(func.count(SliceTask.id)).where(SliceTask.status == "failed")
+            select(func.count(SliceTask.id)).where(
+                SliceTask.status == "failed",
+                SliceTask.updated_at >= day_ago,
+            )
         )
     ).scalar() or 0
     metrics["task_failed"] = float(failed_tasks)

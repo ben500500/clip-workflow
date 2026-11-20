@@ -12,7 +12,7 @@ import logging
 import os
 import uuid
 
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 
@@ -211,8 +211,11 @@ def _load_dedupe_presets() -> dict:
 
     采用 AST 静态解析（DEDUPE_PRESETS 为纯字面量 dict），不执行整个引擎脚本，
     避免触发 OpenCV 等可选依赖。解析失败时回退为空 dict（接口仍返回字段定义，
-    前端可继续展示）。
+    前端可继续展示），并把错误记入 _DEDUPE_PRESETS_LOAD_ERROR（响应体带
+    degraded/presets_error 标记，2026-11-20 评审：原 warning 静默兜底会让
+    「引擎重命名 DEDUPE_PRESETS」这类事故变成无声的空档位）。
     """
+    global _DEDUPE_PRESETS_LOAD_ERROR
     engine_path = os.path.join(_resolve_engines_dir(), DEDUPE_ENGINE_FILE)
     try:
         with open(engine_path, "r", encoding="utf-8") as fh:
@@ -221,10 +224,16 @@ def _load_dedupe_presets() -> dict:
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name) and target.id == "DEDUPE_PRESETS":
+                        _DEDUPE_PRESETS_LOAD_ERROR = None
                         return ast.literal_eval(node.value)
     except Exception as exc:  # pragma: no cover - 引擎文件缺失/语法变更时的兜底
-        logger.warning("读取 DEDUPE_PRESETS 失败，接口回退空默认：%s", exc)
+        _DEDUPE_PRESETS_LOAD_ERROR = f"{type(exc).__name__}: {exc}"
+        logger.error("读取 DEDUPE_PRESETS 失败，接口将以空默认兜底并标记 degraded：%s", exc)
     return {}
+
+
+# 最近一次 DEDUPE_PRESETS 提取失败原因（None=正常）；透出到 /dedupe/presets 响应体
+_DEDUPE_PRESETS_LOAD_ERROR: Optional[str] = None
 
 
 def _dedupe_presets_payload() -> dict:
@@ -232,11 +241,16 @@ def _dedupe_presets_payload() -> dict:
     defaults = _load_dedupe_presets()
     # 档位列表按 DEDUPE_PRESETS 实际存在的键收敛（后端新增档位自动出现在前端）
     presets = [m for m in DEDUPE_PRESET_META if m["value"] in defaults]
-    return {
+    payload = {
         "presets": presets,
         "fields": DEDUPE_FIELD_DEFS,
         "defaults": defaults,
     }
+    # 2026-11-20 评审：提取失败显式暴露（前端可提示「档位加载降级」），不再静默
+    if _DEDUPE_PRESETS_LOAD_ERROR:
+        payload["degraded"] = True
+        payload["presets_error"] = _DEDUPE_PRESETS_LOAD_ERROR
+    return payload
 
 
 @router.get("/dedupe/presets")
