@@ -1283,7 +1283,10 @@ async def run_slice(
     # Remotion 模式：规划出有效 cutlist 且启用增强时，**拼接由 Remotion 渲染完成**
     # （从源视频按段时间轴截取+转场/字幕/片头片尾），不再派发 ffmpeg concat，
     # 避免同一批段被拼接两遍的重复劳动。整片回退（无候选）仍走 ffmpeg。
-    if slice_task.remotion_mix_config and not fallback_whole_video and cutlist.strip():
+    # 条件必须与 _create_slice_task_record 的渲染投递条件（highlight_mix_enabled）一致：
+    # 仅开「Remotion 增强」未开「高光混剪」时投递不会发生，若这里仍短路返回，
+    # 任务会永远卡在 processing/1% 且不被 stale recovery 回收（remotion_status 为 NULL）。
+    if slice_task.remotion_mix_config and data.highlight_mix_enabled and not fallback_whole_video and cutlist.strip():
         slice_task.status = "processing"
         slice_task.progress = 1.0
         await db.commit()

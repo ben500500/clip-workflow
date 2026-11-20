@@ -2416,6 +2416,11 @@ const EpisodeDetail: React.FC = () => {
               checked={remotionMixEnabled}
               onChange={(v) => {
                 setRemotionMixEnabled(v);
+                // Remotion 增强是「高光混剪」的渲染器替换：后端仅在两者同时开启时
+                // 才投递 Remotion 渲染任务，这里联动开启避免任务卡死在 processing
+                if (v && !highlightMixEnabled) {
+                  setHighlightMixEnabled(true);
+                }
                 // 冲突提示：Remotion 渲染管线不消费钩子视频，开启后已选钩子将被忽略
                 if (v && (hookPendingFiles.length > 0 || hookVideoKeys.length > 0)) {
                   message.warning('已开启 Remotion 增强：渲染管线暂不消费钩子视频，本次切片将忽略已选钩子；如需钩子请改用普通高光混剪（关闭此开关）');

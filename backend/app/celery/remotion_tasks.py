@@ -249,7 +249,16 @@ def remotion_stale_recovery_task(self):
 
 
 async def _recover_stale_remotion(timeout_seconds: int) -> int:
-    """把 stuck 在 rendering 且超过超时阈值的 SliceTask 回写 remotion_status=failed。"""
+    """回写卡死的 Remotion 任务（remotion_status=failed）。
+
+    两类卡死形态：
+    1. rendering 超时：worker 已领取但渲染挂死（Celery retry 仍在链路上，只改
+       remotion_status，主 status 交给任务自身的失败回写收敛）；
+    2. 孤儿：remotion_status 仍为 NULL 但主任务已 processing 超时——渲染消息
+       丢失或（2026-11-20 前）仅开「Remotion 增强」未开「高光混剪」时短路创建
+       而从未投递。此类任务无任何 Celery 链路在跑，必须连主 status 一起置 failed，
+       否则前端永远显示 processing 且无法重试。
+    """
     from sqlalchemy import text
 
     # 用 started_at 判定：rendering 状态且 started_at 超过超时阈值（无 started_at 时按 created_at）
@@ -269,5 +278,21 @@ async def _recover_stale_remotion(timeout_seconds: int) -> int:
             ),
             {"to": timeout_seconds},
         )
+        # 孤儿回收：状态从未进入 rendering（消息未投递/未消费），主任务一并置 failed
+        orphan = await db.execute(
+            text(
+                """
+                UPDATE slice_tasks
+                SET remotion_status='failed',
+                    status='failed',
+                    error_message=COALESCE(error_message, '') || '; Remotion 渲染任务未投递成功（孤儿任务），由守护任务回写失败'
+                WHERE remotion_status IS NULL
+                  AND remotion_mix_config IS NOT NULL
+                  AND status='processing'
+                  AND created_at < now() - make_interval(secs => :to)
+                """
+            ),
+            {"to": timeout_seconds},
+        )
         await db.commit()
-        return result.rowcount or 0
+        return (result.rowcount or 0) + (orphan.rowcount or 0)
