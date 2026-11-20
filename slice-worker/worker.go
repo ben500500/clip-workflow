@@ -43,6 +43,12 @@ type Worker struct {
 	engineVersion string
 	// 本节点硬件编码能力（启动时检测一次，供心跳/注册上报；预留 GPU 自动分派接口）
 	encoderCapabilities []string
+	// 进度整数节流表：key = taskID|phase -> 上次上报的整数百分比（emitProgress 用，
+	// 防 transfer 逐 chunk 回调造成 Redis 写放大；LastProgress 心跳不受节流影响）
+	progressLast sync.Map
+	// 各任务当前传输方向（download/upload）：transfer 粒度回调下载/上传共用一条，
+	// 靠这张表把 phase 标对（下载占任务进度 0-10、上传 95-100，映射见 stagePercent）
+	transferPhases sync.Map
 
 	// 回调
 	onTaskStart    func(task *SliceTask)
@@ -104,22 +110,28 @@ func (w *Worker) SetCallbacks(
 	w.onTaskError = onError
 	w.onLog = onLog
 
-	// 设置文件传输进度回调
+	// 设置文件传输进度回调。
+	// 2026-11-20 评审修复：此前这里只接 onTaskProgress（--no-tui 下是纯 Printf），
+	// 传输/引擎粒度进度根本不进 Redis，前端进度条只停在阶段边界值（0-5% 假死），
+	// 且 stuckTaskLoop 的 LastProgress 心跳也不刷新 → 长任务被误杀。改走 emitProgress。
+	// phase 按任务当前方向标注（下载/上传共用一条回调，见 transferPhases）。
 	w.transfer.SetProgressCallback(func(taskID, fileName string, downloaded, total int64) {
 		percent := float64(0)
 		if total > 0 {
 			percent = float64(downloaded) / float64(total) * 100
 		}
-		if w.onTaskProgress != nil {
-			w.onTaskProgress(taskID, "transfer", percent, fmt.Sprintf("%s: %d/%d", fileName, downloaded, total))
+		phase := "download"
+		if v, ok := w.transferPhases.Load(taskID); ok {
+			if s, ok := v.(string); ok {
+				phase = s
+			}
 		}
+		w.emitProgress(taskID, phase, percent, fmt.Sprintf("%s: %d/%d", fileName, downloaded, total))
 	})
 
-	// 设置引擎进度回调
+	// 设置引擎进度回调（PROGRESS 行 → 真实进度上报；同上，勿回退到 onTaskProgress）
 	w.executor.SetProgressCallback(func(taskID string, percent float64, speed string, eta string) {
-		if w.onTaskProgress != nil {
-			w.onTaskProgress(taskID, "ffmpeg", percent, fmt.Sprintf("speed=%s", speed))
-		}
+		w.emitProgress(taskID, "ffmpeg", percent, fmt.Sprintf("speed=%s", speed))
 	})
 }
 
@@ -710,6 +722,14 @@ func (w *Worker) runTask(msg *StreamMessage) {
 			w.runningTasks.Delete(task.TaskID)
 			atomic.AddInt32(&w.currentTasks, -1)
 		}
+		// 清理本任务的进度节流表与传输方向标注（防长生命周期 worker 内存缓涨）
+		w.progressLast.Range(func(k, _ interface{}) bool {
+			if ks, ok := k.(string); ok && strings.HasPrefix(ks, task.TaskID+"|") {
+				w.progressLast.Delete(k)
+			}
+			return true
+		})
+		w.transferPhases.Delete(task.TaskID)
 	}()
 
 	w.log("info", "开始任务: %s (模式: %s)", task.TaskID, task.Mode)
@@ -750,6 +770,7 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	// 1. 下载素材（断点续传优化：重启后 source.mp4 若已存在则直接复用，避免重复下载）
 	sourcePath := filepath.Join(taskDir, "source.mp4")
 	if _, statErr := os.Stat(sourcePath); statErr != nil {
+		w.transferPhases.Store(task.TaskID, "download")
 		w.emitProgress(task.TaskID, "download", 0, "开始下载素材")
 		if err := w.transfer.DownloadFile(taskCtx, task.Source.URL, sourcePath, task.TaskID); err != nil {
 			w.handleTaskError(taskCtx, task, msg, fmt.Errorf("下载素材失败: %w", err))
@@ -824,31 +845,75 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	}
 	w.emitProgress(task.TaskID, "ffmpeg", 100, "切片完成")
 
-	// 3. 上传结果（每个文件逐一申请 presigned PUT URL）
+	// 3. 上传结果（3 路并发：预签名 URL 申请 + PUT 上传）。
+	// 2026-11-20 评审：100 成品串行上传尾延迟 2-3 分钟，3 路并发内网千兆足够吃满；
+	// 进度按「完成数」原子推进（并发下序号 i 不再等于完成序），首错快速失败。
+	w.transferPhases.Store(task.TaskID, "upload")
 	w.emitProgress(task.TaskID, "upload", 0, "开始上传结果")
-	var outputFiles []OutputFileInfo
+	uploadCtx, uploadCancel := context.WithCancel(taskCtx)
+	defer uploadCancel()
+	outputFiles := make([]OutputFileInfo, len(outputs))
+	var uploadWG sync.WaitGroup
+	uploadSem := make(chan struct{}, 3) // 并发上限：3 路
+	var uploadedCount int32
+	var uploadErrMu sync.Mutex
+	var uploadErr error
 	for i, outputPath := range outputs {
-		fileName := filepath.Base(outputPath)
+		uploadWG.Add(1)
+		go func(idx int, path string) {
+			defer uploadWG.Done()
+			uploadSem <- struct{}{}
+			defer func() { <-uploadSem }()
 
-		// 申请精确绑定 object key 的上传 URL
-		uploadURL, fileKey, err := w.transfer.GetUploadURL(taskCtx, w.config.BackendURL, task.TaskID, fileName, task.Output.CallbackToken)
-		if err != nil {
-			w.handleTaskError(taskCtx, task, msg, fmt.Errorf("获取上传URL失败(%s): %w", fileName, err))
-			return
-		}
+			uploadErrMu.Lock()
+			abort := uploadErr != nil
+			uploadErrMu.Unlock()
+			if abort {
+				return
+			}
+			select {
+			case <-uploadCtx.Done():
+				return
+			default:
+			}
 
-		progress := float64(i) / float64(len(outputs)) * 100
-		w.emitProgress(task.TaskID, "upload", progress, fmt.Sprintf("上传 %s", fileName))
-		if err := w.transfer.UploadFileWithProgress(taskCtx, outputPath, uploadURL, task.TaskID); err != nil {
-			w.handleTaskError(taskCtx, task, msg, fmt.Errorf("上传结果失败(%s): %w", fileName, err))
-			return
-		}
+			fileName := filepath.Base(path)
 
-		outputFiles = append(outputFiles, OutputFileInfo{
-			FileName: fileName,
-			FileKey:  fileKey,
-			FileSize: getFileSize(outputPath),
-		})
+			// 申请精确绑定 object key 的上传 URL
+			uploadURL, fileKey, err := w.transfer.GetUploadURL(uploadCtx, w.config.BackendURL, task.TaskID, fileName, task.Output.CallbackToken)
+			if err != nil {
+				uploadErrMu.Lock()
+				if uploadErr == nil {
+					uploadErr = fmt.Errorf("获取上传URL失败(%s): %w", fileName, err)
+					uploadCancel()
+				}
+				uploadErrMu.Unlock()
+				return
+			}
+
+			if err := w.transfer.UploadFileWithProgress(uploadCtx, path, uploadURL, task.TaskID); err != nil {
+				uploadErrMu.Lock()
+				if uploadErr == nil {
+					uploadErr = fmt.Errorf("上传结果失败(%s): %w", fileName, err)
+					uploadCancel()
+				}
+				uploadErrMu.Unlock()
+				return
+			}
+
+			outputFiles[idx] = OutputFileInfo{
+				FileName: fileName,
+				FileKey:  fileKey,
+				FileSize: getFileSize(path),
+			}
+			n := atomic.AddInt32(&uploadedCount, 1)
+			w.emitProgress(task.TaskID, "upload", float64(n)/float64(len(outputs))*100, fmt.Sprintf("上传 %s", fileName))
+		}(i, outputPath)
+	}
+	uploadWG.Wait()
+	if uploadErr != nil {
+		w.handleTaskError(taskCtx, task, msg, uploadErr)
+		return
 	}
 	w.emitProgress(task.TaskID, "upload", 100, "上传完成")
 
@@ -1152,20 +1217,51 @@ func (w *Worker) checkEngineUpdate() {
 	w.log("info", "引擎更新完成：新版本 %s", newVersion)
 }
 
-// emitProgress 上报进度（同时写入 Redis，供后端查询真实进度）
+// stagePercent 把各阶段原始 0-100 百分比映射为「任务级」单调百分比：
+// 下载/传输 0-10、切片(ffmpeg，引擎任务级 0-100) 10-95、上传 95-100。
+// 背景（2026-11-20 评审）：后端进度回写用 max() 防回退，各阶段各自 0-100 会互相
+// 粘滞（素材下载到 100% 后切片阶段永远停在 100%）；映射成单调区间后进度条全程可读。
+func stagePercent(phase string, percent float64) float64 {
+	switch phase {
+	case "download", "transfer":
+		return percent * 0.10
+	case "upload":
+		return 95.0 + percent*0.05
+	default: // ffmpeg 及其它
+		return 10.0 + percent*0.85
+	}
+}
+
+// emitProgress 上报进度（写入 Redis 供后端查询真实进度 + 刷新卡死检测心跳）。
+// 2026-11-20 评审改造：
+//  1. 百分比经 stagePercent 映射为任务级单调值；
+//  2. 整数百分比节流：未跨档时只 TouchLease 续约（防 transfer 逐 chunk 写放大），
+//     但 LastProgress 心跳无条件刷新——同一档位内的细分打点（引擎阶段 tick）
+//     仍能证明「任务在推进」，避免 stuckTaskLoop 误杀；
+//  3. 引擎/传输回调统一从 SetCallbacks 接到这里（此前 --no-tui 下只进 Printf）。
 func (w *Worker) emitProgress(taskID, phase string, percent float64, detail string) {
+	// 日志回调：保留原始百分比，便于日志与引擎输出对表
 	if w.onTaskProgress != nil {
 		w.onTaskProgress(taskID, phase, percent, detail)
 	}
-	w.redis.UpdateTaskStatus(taskID, "running", map[string]interface{}{
-		"progress": percent,
-		"phase":    phase,
-		"lease":    time.Now().Unix(),
-	})
-	// 刷新卡死检测的进度时间戳：只要有进度上报就说明任务仍在推进
+	// 心跳：无条件刷新卡死检测时间戳（优先级最高，任何进度行都证明"仍在推进"）
 	if rt, ok := w.runningTasks.Load(taskID); ok {
 		rt.(*RunningTask).LastProgress.Store(time.Now().UnixNano())
 	}
+	staged := stagePercent(phase, percent)
+	key := taskID + "|" + phase
+	pct := int(staged)
+	if prev, ok := w.progressLast.Load(key); ok && prev.(int) == pct {
+		// 百分比未跨档：轻量续 lease（TouchTask 只 HSet lease 字段），跳过完整状态写
+		_ = w.redis.TouchTask(taskID)
+		return
+	}
+	w.progressLast.Store(key, pct)
+	_ = w.redis.UpdateTaskStatus(taskID, "running", map[string]interface{}{
+		"progress": staged,
+		"phase":    phase,
+		"lease":    time.Now().Unix(),
+	})
 }
 
 // matchTags 检查标签匹配
