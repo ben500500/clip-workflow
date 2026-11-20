@@ -77,11 +77,15 @@ async function main() {
   };
 
   // 3. 即时 bundle
+  // publicDir：媒体文件（源视频/封面）必须经 public 目录由 Remotion 内部 HTTP 服务
+  // 提供——compositor 只接受 http(s) URL，绝对文件路径会被当成 URL 而 404。
+  // symlinkPublicDir 用目录符号链接替代整目录拷贝，避免几百 MB 源视频重复落盘。
   const publicDir = args['public-dir'] || null;
   console.error(`[render] bundling entry: ${path.resolve('src/index.ts')} (publicDir: ${publicDir})`);
   const serveUrl = await bundle({
     entryPoint: path.resolve('src/index.ts'),
     publicDir: publicDir,
+    symlinkPublicDir: true,
   });
 
   // 4. 选中 Composition

@@ -6,6 +6,10 @@ import {SubtitleOverlay} from './SubtitleOverlay';
 /**
  * 单段高光渲染：OffthreadVideo 覆盖裁切 + 字幕叠加。
  * 外层由 HighlightMix 的 <Sequence> 提供时间定位，转场由外层 Transition 施加。
+ *
+ * 媒体路径契约：props 里只能传 public 目录相对名或 http(s) URL——Remotion 的
+ * compositor 只从内部 HTTP 服务拉流（bundle 目录为根），绝对文件路径会被当成
+ * URL 解析而 404。后端预先把源视频 symlink 进 public 目录。
  */
 export const Segment: React.FC<{
   segment: SegmentData;
@@ -18,7 +22,7 @@ export const Segment: React.FC<{
     <AbsoluteFill style={{backgroundColor: '#000'}}>
       {/* cover 裁切：视频等比填满画布 */}
       <OffthreadVideo
-        src={segment.file.startsWith('/') ? segment.file : staticFile(segment.file)}
+        src={segment.file.startsWith('http') ? segment.file : staticFile(segment.file)}
         style={{
           width: '100%',
           height: '100%',
