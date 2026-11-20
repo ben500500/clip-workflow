@@ -660,7 +660,7 @@ def _build_remotion_mix_config(data: SliceRunRequest) -> Optional[dict]:
     else:
         cfg["transition_frames"] = 12
 
-    # 片头配置（可选）
+    # 片头配置（可选；不配置 = 无片头直接正片）
     if data.remotion_intro:
         intro: dict = {}
         if data.remotion_intro.get("title"):
@@ -669,12 +669,28 @@ def _build_remotion_mix_config(data: SliceRunRequest) -> Optional[dict]:
             intro["episode"] = str(data.remotion_intro["episode"]).strip()
         if data.remotion_intro.get("cover_file_key"):
             intro["cover_file_key"] = str(data.remotion_intro["cover_file_key"]).strip()
+        # 自定义时长（秒，钳制 2~6）与背景色
+        if data.remotion_intro.get("duration_seconds") is not None:
+            intro["duration_seconds"] = max(2.0, min(6.0, float(data.remotion_intro["duration_seconds"])))
+        if data.remotion_intro.get("background"):
+            intro["background"] = str(data.remotion_intro["background"]).strip()
         if intro:
             cfg["intro"] = intro
 
-    # 片尾配置（可选）
-    if data.remotion_outro and data.remotion_outro.get("text"):
-        cfg["outro"] = {"text": str(data.remotion_outro["text"]).strip()}
+    # 片尾配置（可选；不配置 = 无片尾）
+    if data.remotion_outro:
+        outro: dict = {}
+        if data.remotion_outro.get("text"):
+            outro["text"] = str(data.remotion_outro["text"]).strip()
+        # 副文案（空串 = 不显示副文案行）
+        if data.remotion_outro.get("subtitle") is not None:
+            outro["subtitle"] = str(data.remotion_outro["subtitle"]).strip()
+        if data.remotion_outro.get("duration_seconds") is not None:
+            outro["duration_seconds"] = max(2.0, min(5.0, float(data.remotion_outro["duration_seconds"])))
+        if data.remotion_outro.get("background"):
+            outro["background"] = str(data.remotion_outro["background"]).strip()
+        if outro:
+            cfg["outro"] = outro
 
     # 字幕样式（可选，校验关键字段类型）
     if data.remotion_subtitle_style:

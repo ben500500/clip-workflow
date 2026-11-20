@@ -24,10 +24,15 @@ export interface MixLayout {
 export const computeMixLayout = (props: HighlightMixProps): MixLayout => {
   const {segments = [], intro, outro, transitionFrames = DEFAULT_TRANSITION_FRAMES, fps = 30} = props;
 
-  const introFrames = intro
-    ? Math.round((intro.title || intro.episode || intro.cover ? 3.2 : 2) * fps)
-    : 0;
-  const outroFrames = outro ? Math.round(2.5 * fps) : 0;
+  // 片头/片尾时长支持自定义（秒 → 帧，钳制到合理区间；缺省 3s / 2.5s）
+  const clamp = (v: number | undefined, lo: number, hi: number, dflt: number) =>
+    v === undefined || v === null || Number.isNaN(Number(v))
+      ? dflt
+      : Math.min(hi, Math.max(lo, Number(v)));
+  const introSeconds = intro ? clamp(intro.durationSeconds, 2, 6, 3) : 0;
+  const outroSeconds = outro ? clamp(outro.durationSeconds, 2, 5, 2.5) : 0;
+  const introFrames = intro ? Math.round(introSeconds * fps) : 0;
+  const outroFrames = outro ? Math.round(outroSeconds * fps) : 0;
 
   const segFrames = segments.map((s) => Math.round((s.end - s.start) * fps));
 

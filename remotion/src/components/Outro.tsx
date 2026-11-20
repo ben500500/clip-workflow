@@ -21,13 +21,15 @@ export const Outro: React.FC<{
   const opacity = fadeIn * fadeOut;
 
   const text = outro.text || '感谢观看 · 一键三连支持一下吧！';
+  const subtitle = outro.subtitle !== undefined ? outro.subtitle : '点赞 · 收藏 · 关注';
+  const background = outro.background || '#0d0d12';
 
   return (
     <AbsoluteFill
       style={{
         justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: '#0d0d12',
+        backgroundColor: background,
         opacity,
       }}
     >
@@ -43,16 +45,18 @@ export const Outro: React.FC<{
       >
         {text}
       </div>
-      <div
-        style={{
-          fontSize: 24,
-          color: '#EDD736',
-          marginTop: 20,
-          fontFamily: 'Noto Sans SC, sans-serif',
-        }}
-      >
-        点赞 · 收藏 · 关注
-      </div>
+      {subtitle ? (
+        <div
+          style={{
+            fontSize: 24,
+            color: '#EDD736',
+            marginTop: 20,
+            fontFamily: 'Noto Sans SC, sans-serif',
+          }}
+        >
+          {subtitle}
+        </div>
+      ) : null}
     </AbsoluteFill>
   );
 };

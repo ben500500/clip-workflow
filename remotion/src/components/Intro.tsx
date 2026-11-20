@@ -30,13 +30,14 @@ export const Intro: React.FC<{
 
   const title = intro.title || '高光混剪';
   const episode = intro.episode || '';
+  const background = intro.background || '#0d0d12';
 
   return (
     <AbsoluteFill
       style={{
         justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: '#0d0d12',
+        backgroundColor: background,
         opacity,
       }}
     >
