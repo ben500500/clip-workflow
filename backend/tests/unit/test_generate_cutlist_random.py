@@ -187,3 +187,31 @@ def test_multi_output_time_mode_still_stops_when_pool_exhausted():
                            max_duration=60.0, mix_output_count=5, order="time")
     names = {l.split()[2] for l in _lines(cut)}
     assert len(names) == 3, "time 模式素材耗尽应只出 3 个文件（180s ÷ 60s），不凑满"
+
+
+# ─────────────────────────────────────────────────────────────
+# _build_props 画布方向（短剧竖屏源 → 画布 9:16）
+# ─────────────────────────────────────────────────────────────
+
+def test_build_props_portrait_canvas():
+    from app.services.remotion_renderer import _build_props
+
+    segs = [{"start": 1.0, "end": 10.0}]
+    cfg = {"enabled": True, "template": "highlight", "transition_frames": 12, "output_tier": "720p"}
+    props = _build_props(segs, cfg, "source.mp4", portrait=True)
+    assert (props["width"], props["height"]) == (720, 1280), "竖屏源 720p 档画布应为 720x1280"
+
+    cfg1080 = dict(cfg, output_tier="1080p")
+    props = _build_props(segs, cfg1080, "source.mp4", portrait=True)
+    assert (props["width"], props["height"]) == (1080, 1920), "竖屏源 1080p 档画布应为 1080x1920"
+
+
+def test_build_props_landscape_canvas_default():
+    from app.services.remotion_renderer import _build_props
+
+    segs = [{"start": 1.0, "end": 10.0}]
+    cfg = {"enabled": True, "template": "highlight", "transition_frames": 12, "output_tier": "720p"}
+    props = _build_props(segs, cfg, "source.mp4", portrait=False)
+    assert (props["width"], props["height"]) == (1280, 720), "横屏源默认画布保持 1280x720"
+    # trim 帧换算在 Segment 组件内完成，props 只透传秒
+    assert props["segments"][0]["start"] == 1.0 and props["segments"][0]["end"] == 10.0
