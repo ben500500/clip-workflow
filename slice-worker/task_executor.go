@@ -194,6 +194,10 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		if task.HookMixOutputCount > 1 {
 			args = append(args, "--hook-mix-output-count", strconv.Itoa(task.HookMixOutputCount))
 		}
+		// 钩子拼接位置：透传给引擎（head=片头默认 / tail=片尾）
+		if task.HookPosition == "head" || task.HookPosition == "tail" {
+			args = append(args, "--hook-position", task.HookPosition)
+		}
 	}
 
 	// ASR 字幕烧录：把后端下发的 SRT 内容写到本地文件，透传给引擎 --subtitle

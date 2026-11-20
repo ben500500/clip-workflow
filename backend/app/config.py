@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # Upload
     UPLOAD_TEMP_DIR: str = "/tmp/uploads"
     UPLOAD_MAX_SIZE: int = 50 * 1024 * 1024 * 1024  # 50GB
+    # 上传后自动压缩：源视频分辨率超过 720p（竖屏 720x1280 / 横屏 1280x720）时，
+    # 上传完成自动转码 720p 并替换源（省存储、加快选点/切片）。可 env 关闭。
+    UPLOAD_COMPRESS_720P: bool = True
     ALLOWED_VIDEO_EXTENSIONS: str = ".mp4,.avi,.mov,.mkv,.webm"
     # 多视频上传「秒差检测」（音画同步粗检）总开关：默认关闭。
     # 开启后多视频批量上传会对每个视频做音画时长差校验，发现不同步时

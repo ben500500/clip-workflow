@@ -523,10 +523,25 @@ async def upload_multi(
                 av_sync_warning=av_sync_warning,
                 av_sync_diff=av_sync_diff,
             )
+            # 源分辨率探测（用于 720p 自动压缩判断 + 前端展示）
+            dims = await _probe_dimensions(p)
+            if dims:
+                episode.resolution = f"{dims[0]}x{dims[1]}"
             db.add(episode)
             await db.flush()
             await db.refresh(episode)
             episodes.append(_serialize_episode(episode))
+            # 上传后自动压缩 720p：源超 720p 且开关开启时投递转码任务（video_processing 队列），
+            # 转码完成自动替换源视频；失败不影响上传结果（原源保留）。
+            if settings.UPLOAD_COMPRESS_720P and dims and max(dims) > 1280:
+                from app.celery.tasks import compress_episode_720p_task
+
+                compress_episode_720p_task.apply_async(
+                    args=[str(episode.id)], queue="video_processing"
+                )
+                warnings.append(
+                    f"{name} 分辨率 {dims[0]}x{dims[1]} 超过 720p，已排队自动压缩（完成后自动替换源视频）"
+                )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -541,6 +556,25 @@ async def upload_multi(
         ),
         warnings=warnings,
     )
+
+
+async def _probe_dimensions(file_path: str) -> Optional[tuple[int, int]]:
+    """ffprobe 探测视频宽高（失败返回 None）。用于上传后 720p 自动压缩判断。"""
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0",
+        file_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+        dims = out_b.decode(errors="replace").strip().split(",")
+        if len(dims) >= 2 and dims[0].isdigit() and dims[1].isdigit():
+            return int(dims[0]), int(dims[1])
+    except Exception:
+        pass
+    return None
 
 
 async def _check_av_sync(file_path: str, threshold: float = 0.5) -> dict:

@@ -261,8 +261,16 @@ const EpisodeDetail: React.FC = () => {
   const [hookUploading, setHookUploading] = useState(false);
   // 钩子混搭模式：sequential（顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
   const [hookMixMode, setHookMixMode] = useState<'sequential' | 'random' | 'combine'>('sequential');
+  // 钩子拼接位置：head=片头（默认，[封面][钩子][本体]）/ tail=片尾（[封面][本体][钩子]）
+  const [hookPosition, setHookPosition] = useState<'head' | 'tail'>('head');
   // 钩子混搭输出数量：当模式为 random/combine 时，生成多个不同钩子组合的成品（-v1, -v2 后缀）
   const [hookMixOutputCount, setHookMixOutputCount] = useState<number>(1);
+  // ── 角标保存库：从历史上传的角标直接选用（免重复上传） ──
+  const [badgeLibraryOpen, setBadgeLibraryOpen] = useState(false);
+  const [badgeLibraryLoading, setBadgeLibraryLoading] = useState(false);
+  const [badgeLibraryItems, setBadgeLibraryItems] = useState<
+    { file_key: string; file_name: string; file_size?: number; preview: string }[]
+  >([]);
 
   // 钩子选择持久化：变化时写 localStorage（为空则清除）
   useEffect(() => {
@@ -1272,6 +1280,29 @@ const EpisodeDetail: React.FC = () => {
     setBadges((prev) => prev.map((b, i) => (i === index ? { ...b, ...patch } : b)));
   };
 
+  const openBadgeLibrary = async () => {
+    setBadgeLibraryOpen(true);
+    setBadgeLibraryLoading(true);
+    try {
+      const res = await sliceApi.listBadges();
+      setBadgeLibraryItems(res.items || []);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '角标库加载失败');
+    } finally {
+      setBadgeLibraryLoading(false);
+    }
+  };
+
+  const pickBadgeFromLibrary = (item: { file_key: string; file_name: string; preview: string }) => {
+    setBadges((prev) =>
+      prev.some((b) => b.file_key === item.file_key)
+        ? prev
+        : [...prev, { file_key: item.file_key, position: 'top-left', name: item.file_name, preview: item.preview }],
+    );
+    message.success(`角标「${item.file_name}」已添加`);
+    setBadgeLibraryOpen(false);
+  };
+
   const removeBadge = (index: number) => {
     setBadges((prev) => prev.filter((_, i) => i !== index));
   };
@@ -1348,9 +1379,11 @@ const EpisodeDetail: React.FC = () => {
         hook_video_keys: hookVideoKeys.length > 0 ? hookVideoKeys : undefined,
         hook_video_key: hookVideoKeys.length === 1 ? hookVideoKeys[0] : undefined,
         // 钩子混搭模式：多钩子时生效（sequential/random/combine）
-        hook_mix_mode: hookVideoKeys.length > 1 ? (hookMixMode || 'sequential') : undefined,
-        // 钩子混搭输出数量：random/combine 模式下生效
-        hook_mix_output_count: (hookVideoKeys.length > 1 && (hookMixMode === 'random' || hookMixMode === 'combine')) && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
+        hook_mix_mode: hookVideoKeys.length > 0 ? (hookMixMode || 'sequential') : undefined,
+        // 钩子拼接位置（head=片头默认 / tail=片尾）
+        hook_position: hookVideoKeys.length > 0 ? hookPosition : undefined,
+        // 钩子混搭输出数量：random/combine 模式（单钩子也支持多输出）
+        hook_mix_output_count: (hookVideoKeys.length > 0 && (hookMixMode === 'random' || hookMixMode === 'combine')) && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
         // 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品
         highlight_mix_enabled: highlightMixEnabled,
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
@@ -1561,8 +1594,11 @@ const EpisodeDetail: React.FC = () => {
         cover_image_key: coverImageKey || undefined,
         hook_video_keys: hookVideoKeys.length > 0 ? hookVideoKeys : undefined,
         hook_video_key: hookVideoKeys.length === 1 ? hookVideoKeys[0] : undefined,
-        hook_mix_mode: hookVideoKeys.length > 1 ? (hookMixMode || 'sequential') : undefined,
-        hook_mix_output_count: (hookVideoKeys.length > 1 && (hookMixMode === 'random' || hookMixMode === 'combine')) && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
+        hook_mix_mode: hookVideoKeys.length > 0 ? (hookMixMode || 'sequential') : undefined,
+        // 钩子拼接位置（head=片头默认 / tail=片尾）
+        hook_position: hookVideoKeys.length > 0 ? hookPosition : undefined,
+        // 钩子混搭输出数量：random/combine 模式（单钩子也支持多输出）
+        hook_mix_output_count: (hookVideoKeys.length > 0 && (hookMixMode === 'random' || hookMixMode === 'combine')) && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
         highlight_mix_enabled: highlightMixEnabled,
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
         highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
@@ -2218,7 +2254,7 @@ const EpisodeDetail: React.FC = () => {
               </Tag>
               </FileHoverPreview>
             )}
-            {hookVideoKeys.length > 1 && (
+            {hookVideoKeys.length > 0 && (
               <Select
                 size="small"
                 style={{ width: 140 }}
@@ -2231,8 +2267,21 @@ const EpisodeDetail: React.FC = () => {
                 ]}
               />
             )}
-            {/* 钩子混搭输出数量：仅在 random/combine 模式且多钩子时显示 */}
-            {hookVideoKeys.length > 1 && (hookMixMode === 'random' || hookMixMode === 'combine') && (
+            {/* 钩子位置：片头（默认，[封面][钩子][本体]）或片尾（[封面][本体][钩子]） */}
+            {hookVideoKeys.length > 0 && (
+              <Select
+                size="small"
+                style={{ width: 110 }}
+                value={hookPosition}
+                onChange={(v) => setHookPosition(v as 'head' | 'tail')}
+                options={[
+                  { value: 'head', label: '放在片头' },
+                  { value: 'tail', label: '放在片尾' },
+                ]}
+              />
+            )}
+            {/* 钩子混搭输出数量：random/combine 模式下显示（单钩子也可多输出） */}
+            {hookVideoKeys.length > 0 && (hookMixMode === 'random' || hookMixMode === 'combine') && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <span style={{ fontSize: 12, color: '#666', whiteSpace: 'nowrap' }}>生成数量：</span>
                 <InputNumber
@@ -2520,6 +2569,39 @@ const EpisodeDetail: React.FC = () => {
                 </Space>
               </Space>
             </Space>
+          </Modal>
+
+          {/* ── 角标保存库弹窗：点选历史角标直接加入 ── */}
+          <Modal
+            title="从已保存角标中选择"
+            open={badgeLibraryOpen}
+            onCancel={() => setBadgeLibraryOpen(false)}
+            footer={null}
+            width={640}
+          >
+            {badgeLibraryLoading ? (
+              <div style={{ textAlign: 'center', padding: 32 }}><Spin /></div>
+            ) : badgeLibraryItems.length === 0 ? (
+              <Alert type="info" showIcon message="角标库为空——上传过的角标图片会自动保存在这里，下次无需重复上传。" />
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                {badgeLibraryItems.map((item) => (
+                  <div
+                    key={item.file_key}
+                    onClick={() => pickBadgeFromLibrary(item)}
+                    style={{
+                      width: 120, cursor: 'pointer', textAlign: 'center',
+                      border: '1px solid #eee', borderRadius: 8, padding: 8,
+                    }}
+                  >
+                    <AntImage src={item.preview} width={96} height={72} style={{ objectFit: 'contain' }} />
+                    <div style={{ fontSize: 11, color: '#666', marginTop: 4, wordBreak: 'break-all' }}>
+                      {item.file_name.length > 16 ? `${item.file_name.slice(0, 16)}…` : item.file_name}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </Modal>
 
           {/* Remotion 片头片尾配置弹窗（默认全关 = 不配置，直接进入正片） */}
@@ -3069,6 +3151,9 @@ const EpisodeDetail: React.FC = () => {
                     添加角标图片
                   </Button>
                 </Upload>
+                <Button size="small" onClick={openBadgeLibrary}>
+                  从已保存选择
+                </Button>
                 <Tooltip title="角标默认尺寸（px），所有角标未单独设置宽度时的统一宽度；留空=保持原图尺寸">
                   <InputNumber
                     size="small"

@@ -178,6 +178,41 @@ async def upload_badge_image(
     }
 
 
+@router.get("/slice/badge-list")
+async def list_saved_badges(
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """列出历史保存的角标图片（raw-footage 桶 badge/ 前缀，按时间倒序，最多 200 条）。
+
+    供前端「从已保存选择」直接复用历史角标，免反复上传。返回 file_key +
+    预签名预览 URL（1 小时有效），前端点选后把 file_key 纳入 badges 列表即可。
+    """
+    from functools import partial
+
+    from app.services.minio_service import _list_objects_sync, get_presigned_url
+
+    try:
+        loop = asyncio.get_event_loop()
+        objects = await loop.run_in_executor(
+            None, partial(_list_objects_sync, settings.MINIO_BUCKET_RAW, "badge/")
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"列举角标库失败: {e}")
+
+    objects.sort(key=lambda o: o.get("last_modified") or "", reverse=True)
+    items = []
+    for o in objects[:200]:
+        preview = await get_presigned_url(settings.MINIO_BUCKET_RAW, o["key"])
+        items.append({
+            "file_key": o["key"],
+            "file_name": os.path.basename(o["key"]),
+            "file_size": o.get("size"),
+            "last_modified": o.get("last_modified"),
+            "preview": preview,
+        })
+    return {"items": items}
+
+
 @router.post("/slice/hook-upload")
 async def upload_hook_video(
     file: UploadFile = File(...),
@@ -913,6 +948,8 @@ async def _create_slice_task_record(
     slice_task.hook_mix_mode = data.hook_mix_mode or None
     # 钩子混搭输出数量
     slice_task.hook_mix_output_count = data.hook_mix_output_count or None
+    # 钩子拼接位置（head=片头默认 / tail=片尾；重试时保留）
+    slice_task.hook_position = data.hook_position if data.hook_position in ("head", "tail") else None
     # 输出档位：高分辨率/高 fps 素材降档提速（重试时保留）
     slice_task.output_tier = data.output_tier or "auto"
 
@@ -997,6 +1034,7 @@ async def _dispatch_slice_task(
             data.hook_video_keys,
             data.hook_mix_mode,
             data.hook_mix_output_count,
+            data.hook_position,
             data.priority,
             data.target_node_id,
         )
@@ -1711,6 +1749,7 @@ async def retry_slice_task(
         hook_video_keys=getattr(task, "hook_video_keys", None),
         hook_mix_mode=getattr(task, "hook_mix_mode", None),
         hook_mix_output_count=getattr(task, "hook_mix_output_count", None),
+        hook_position=getattr(task, "hook_position", None),
         remotion_mix_config=getattr(task, "remotion_mix_config", None),
         output_tier=getattr(task, "output_tier", None) or "auto",
         status="pending",
@@ -1751,6 +1790,7 @@ async def retry_slice_task(
             getattr(task, "hook_video_keys", None),
             getattr(task, "hook_mix_mode", None),
             getattr(task, "hook_mix_output_count", None),
+            getattr(task, "hook_position", None),
             None,  # 重试沿用默认 priority
         )
 
@@ -1794,6 +1834,7 @@ async def retry_slice_task(
                 getattr(task, "hook_video_keys", None),
                 getattr(task, "hook_mix_mode", None),
                 getattr(task, "hook_mix_output_count", None),
+                getattr(task, "hook_position", None),
                 None,
             )
         except HTTPException:
@@ -1830,6 +1871,7 @@ async def retry_slice_task(
                 getattr(task, "hook_video_keys", None),
                 getattr(task, "hook_mix_mode", None),
                 getattr(task, "hook_mix_output_count", None),
+                getattr(task, "hook_position", None),
                 None,
             )
         except Exception as e:

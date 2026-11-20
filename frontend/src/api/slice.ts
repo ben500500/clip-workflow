@@ -149,6 +149,8 @@ export const sliceApi = {
       // 钩子视频文件夹：选择整个文件夹，含多个钩子视频（MinIO key 列表，通过 uploadHookFolder 上传）。
       // 切片时每个成品随机从文件夹中取一个钩子作为片头。优先于 hook_video_key。
       hook_video_keys?: string[];
+      // 钩子拼接位置：head=片头（默认，[封面][钩子][本体]）/ tail=片尾（[封面][本体][钩子]）
+      hook_position?: 'head' | 'tail';
       // 钩子混搭模式：sequential（默认，顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
       hook_mix_mode?: 'sequential' | 'random' | 'combine';
       // 钩子混搭输出数量：当 hook_mix_mode 为 random/combine 时，生成多个不同钩子组合的成品（-v1, -v2 后缀）
@@ -193,6 +195,13 @@ export const sliceApi = {
         }
       },
     }) as Promise<BadgeUploadResult>;
+  },
+
+  // 已保存角标库：列出历史上传的角标图片（免重复上传，直接选用）
+  listBadges: () => {
+    return client.get('/slice/badge-list') as Promise<{
+      items: { file_key: string; file_name: string; file_size?: number; last_modified?: string; preview: string }[];
+    }>;
   },
 
   // 上传钩子视频（作为片头拼接在封面与本体之间）
