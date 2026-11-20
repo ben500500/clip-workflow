@@ -263,9 +263,14 @@ async def _run_render_media(props: dict, config: dict) -> tuple[bool, str, str]:
 
     tier = config.get("output_tier") or "720p"
     cmd = ["node", script, "--props", props_path, "--output", output_path, "--tier", tier]
+    # render.js 的 bundle entry（src/index.ts）按**子进程 cwd** 相对解析：
+    # worker-remotion 容器 cwd=/app（backend 代码），必须切到 remotion 源码目录
+    # （REMOTION_WORK_DIR=/remotion），否则 ENOENT /app/src/index.ts。
+    work_dir = (settings.REMOTION_WORK_DIR or "").strip() or None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            cwd=work_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
