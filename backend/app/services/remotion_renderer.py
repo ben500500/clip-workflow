@@ -53,6 +53,29 @@ async def is_remotion_enabled(db: AsyncSession) -> bool:
     return str(cfg.value).strip().lower() in ("true", "1", "yes")
 
 
+def parse_mix_groups(cutlist: str) -> list[dict]:
+    """解析高光混剪 cutlist，按输出文件名（name）分组。
+
+    cutlist 每行 `start end name`；mix_output_count>1 时含多组 name（= 多个输出文件）。
+    返回 [{"name": <name>, "segs": [{"start": s, "end": e}]}, ...]（按首次出现顺序）。
+    """
+    groups: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for line in (cutlist or "").splitlines():
+        parts = line.split()
+        if len(parts) != 3:
+            continue
+        s_raw, e_raw, name = parts
+        start, end = _parse_ts(s_raw), _parse_ts(e_raw)
+        if start is None or end is None or end <= start:
+            continue
+        if name not in groups:
+            groups[name] = []
+            order.append(name)
+        groups[name].append({"start": start, "end": end})
+    return [{"name": n, "segs": groups[n]} for n in order]
+
+
 def parse_mix_segments(cutlist: str) -> list[dict]:
     """从高光混剪 cutlist（每行 `start end name`，所有段共用一个 name）解析高光段时间轴。
 
@@ -154,33 +177,30 @@ def _build_props(segments: list[dict], config: dict, source_path: str) -> dict:
 async def render_highlight_mix(
     slice_task,
     config: dict,
-    source_file_key: Optional[str] = None,
-    source_bucket: Optional[str] = None,
     progress_cb: ProgressCallback = None,
-) -> tuple[bool, str]:
-    """编排一次 Remotion 高光混剪增强渲染，返回 (ok, 本地输出路径或错误信息)。
+) -> tuple[bool, list[str] | str]:
+    """按高光混剪 cutlist 分组，逐文件渲染 Remotion 增强混剪。
 
-    - 解析 cutlist 高光段 → 下载源视频 → 组装 props → 调用 render.js → 返回产物路径。
-    - 任何一步失败返回 (False, 错误信息)，由 Celery 任务负责状态回写与重试。
+    职责分离（2026-11-20 重构）：高光选点/混剪规划（cutlist：哪些段、什么顺序、
+    分几个文件）完成后，**拼接与增强由 Remotion 一次性完成**——从源视频按各段
+    时间轴截取、段间转场、字幕/段标题/片头片尾，产出 N 个成品文件。
+    ffmpeg concat 派发在该模式下被跳过，不存在两遍拼接的重复劳动。
+
+    - 返回 (True, 本地输出路径列表) 或 (False, 错误信息)，由 Celery 任务负责
+      上传 MinIO、状态回写（completed/failed）与重试。
     - 渲染动作封装在 _run_render_media，便于单元测试 mock。
     """
-    from app.models.models import SliceTask
-
-    if not isinstance(slice_task, SliceTask) and hasattr(slice_task, "cutlist"):
-        cutlist = slice_task.cutlist
-    else:
-        cutlist = getattr(slice_task, "cutlist", "")
-
-    segments = parse_mix_segments(cutlist)
-    if not segments:
+    cutlist = getattr(slice_task, "cutlist", "") or ""
+    groups = parse_mix_groups(cutlist)
+    if not groups:
         return False, "cutlist 无合法高光段时间轴，跳过 Remotion 渲染"
 
-    source_key = source_file_key or getattr(slice_task, "source_file_key", None)
+    source_key = getattr(slice_task, "source_file_key", None)
     if not source_key:
         return False, "缺少源视频 source_file_key，无法渲染 Remotion 增强"
-    bucket = source_bucket or getattr(slice_task, "source_bucket", None) or settings.MINIO_BUCKET_RAW
+    bucket = getattr(slice_task, "source_bucket", None) or settings.MINIO_BUCKET_RAW
 
-    # 下载源视频到本地临时目录
+    # 下载源视频到本地临时目录（一次下载，多组共用）
     tmp_dir = settings.REMOTION_TMP_DIR
     os.makedirs(tmp_dir, exist_ok=True)
     ext = os.path.splitext(source_key)[1] or ".mp4"
@@ -199,16 +219,22 @@ async def render_highlight_mix(
     if config.get("intro"):
         config["intro"]["cover_path"] = cover_path
 
+    outputs: list[str] = []
     try:
-        props = _build_props(segments, config, source_path)
-        ok, out, err = await _run_render_media(props, config)
-        if not ok:
-            logger.error("remotion render failed: %s", err)
-            return False, f"Remotion 渲染失败: {err or '未知错误'}"
-        _parse_progress_stdout(out)
-        if not os.path.isfile(out):
-            return False, f"Remotion 渲染产物不存在: {out}"
-        return True, out
+        for gi, group in enumerate(groups, start=1):
+            props = _build_props(group["segs"], config, source_path)
+            ok, out, err = await _run_render_media(props, config)
+            if not ok:
+                logger.error(
+                    "remotion render failed (file %d/%d, name=%s): %s",
+                    gi, len(groups), group["name"], err,
+                )
+                return False, f"Remotion 渲染失败: {err or '未知错误'}"
+            _parse_progress_stdout(out)
+            if not os.path.isfile(out):
+                return False, f"Remotion 渲染产物不存在: {out}"
+            outputs.append(out)
+        return True, outputs
     finally:
         # 清理临时文件（源视频/封面）
         for p in (source_path, cover_path):

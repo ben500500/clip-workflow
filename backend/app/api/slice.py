@@ -922,8 +922,9 @@ async def _create_slice_task_record(
     }
 
     # Remotion 混剪增强：启用时投递渲染任务到 remotion 队列（独立 worker-remotion 消费）。
-    # 仅当 remotion_mix_config 非空时触发，未启用零侵入。任务内部由 REMOTION_ENABLED 开关兜底。
-    if slice_task.remotion_mix_config:
+    # 仅对「高光混剪 + 有效 cutlist」生效（Remotion 即拼接者；普通逐段切片/整片回退
+    # 不适用增强渲染）。任务内部由系统设置「Remotion 渲染」开关兜底。
+    if slice_task.remotion_mix_config and data.highlight_mix_enabled and slice_task.cutlist and slice_task.cutlist.strip():
         try:
             run_remotion_mix_task.delay(str(slice_task.id))
         except Exception as e:
@@ -1225,6 +1226,21 @@ async def run_slice(
     slice_task, configs = await _create_slice_task_record(
         db, eid, episode, data, cutlist, intervals_content, source_file_key, source_bucket
     )
+
+    # Remotion 模式：规划出有效 cutlist 且启用增强时，**拼接由 Remotion 渲染完成**
+    # （从源视频按段时间轴截取+转场/字幕/片头片尾），不再派发 ffmpeg concat，
+    # 避免同一批段被拼接两遍的重复劳动。整片回退（无候选）仍走 ffmpeg。
+    if slice_task.remotion_mix_config and not fallback_whole_video and cutlist.strip():
+        slice_task.status = "processing"
+        slice_task.progress = 1.0
+        await db.commit()
+        return SliceRunResponse(
+            task_id=str(slice_task.id),
+            engine="remotion",
+            message="Remotion 增强混剪已启动：高光片段将由 Remotion 渲染拼接（片头/转场/字幕/片尾），完成后可在成品列表查看",
+            fallback_whole_video=False,
+        )
+
     return await _dispatch_slice_task(
         db, engine, episode, slice_task, data, source_file_key, source_bucket,
         cutlist, intervals_content, configs, fallback_whole_video,

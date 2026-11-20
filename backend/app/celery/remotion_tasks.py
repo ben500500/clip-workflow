@@ -86,38 +86,55 @@ async def _run_remotion_mix_flow(slice_task_id: str) -> dict:
             return {"ok": True, "skipped": True, "reason": "remotion_mix_config 为空"}
 
         task.remotion_status = "rendering"
+        task.status = "processing"  # Remotion 模式：拼接由 Remotion 完成，不派发 ffmpeg
         task.error_message = None
         await db.flush()
 
-    # 渲染（独立子进程，耗时；在会话外执行，避免长事务）
-    ok, out = await render_highlight_mix(
-        task, config,
-        source_file_key=getattr(task, "source_file_key", None),
-        source_bucket=getattr(task, "source_bucket", None),
-    )
+    # 渲染（独立子进程，耗时；在会话外执行，避免长事务）。
+    # 返回 outputs 为「每个混剪成品文件」的本地路径列表（mix_output_count>1 时多文件）。
+    ok, out = await render_highlight_mix(task, config)
     if not ok:
+        # 回写失败：任务无 ffmpeg 产物（Remotion 即拼接者），整体置 failed 供手动重试
+        async with async_session_factory() as db:
+            t = (
+                await db.execute(select(SliceTask).where(SliceTask.id == slice_task_id))
+            ).scalar_one_or_none()
+            if t:
+                t.remotion_status = "failed"
+                t.status = "failed"
+                t.error_message = str(out)[:2000]
+                await db.commit()
         return {"ok": False, "error": out}
 
-    # 上传渲染产物到 MinIO sliced 桶
+    # 上传渲染产物到 MinIO sliced 桶（多文件：_001..N 序号 key）
     await ensure_bucket(settings.MINIO_BUCKET_SLICED)
-    output_file_key = f"{settings.REMOTION_OUTPUT_PREFIX}/{slice_task_id}.mp4"
-    uploaded = await upload_file_from_path(
-        settings.MINIO_BUCKET_SLICED, output_file_key, out
-    )
-    if not uploaded:
-        return {"ok": False, "error": "上传 Remotion 渲染产物到 MinIO 失败"}
+    outputs = out if isinstance(out, list) else [out]
+    keys: list[str] = []
+    for i, local_path in enumerate(outputs, start=1):
+        if len(outputs) == 1:
+            key = f"{settings.REMOTION_OUTPUT_PREFIX}/{slice_task_id}.mp4"
+        else:
+            key = f"{settings.REMOTION_OUTPUT_PREFIX}/{slice_task_id}_{i:03d}.mp4"
+        uploaded = await upload_file_from_path(settings.MINIO_BUCKET_SLICED, key, local_path)
+        if not uploaded:
+            return {"ok": False, "error": f"上传 Remotion 渲染产物到 MinIO 失败: {key}"}
+        keys.append(key)
 
     async with async_session_factory() as db:
         task = (
             await db.execute(select(SliceTask).where(SliceTask.id == slice_task_id))
         ).scalar_one_or_none()
         if task:
-            task.remotion_output_file_key = output_file_key
+            task.remotion_output_file_key = ",".join(keys)
             task.remotion_status = "done"
+            # Remotion 即拼接者：渲染完成 = 切片任务完成
+            task.status = "completed"
+            task.output_count = len(keys)
+            task.progress = 100.0
             task.error_message = None
             await db.commit()
 
-    return {"ok": True, "output_file_key": output_file_key}
+    return {"ok": True, "output_file_key": keys[0], "output_file_keys": keys}
 
 
 async def _mark_remotion_failed(slice_task_id: str, error: str) -> None:
