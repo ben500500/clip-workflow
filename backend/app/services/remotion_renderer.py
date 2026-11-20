@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import uuid
 from typing import Optional
 
@@ -123,17 +124,20 @@ def _parse_progress_stdout(stdout: str) -> None:
                 pass
 
 
-def _build_props(segments: list[dict], config: dict, source_path: str) -> dict:
+def _build_props(segments: list[dict], config: dict, source_name: str) -> dict:
     """把后端 remotion_mix_config + 高光段时间轴组装成 render.ts 期望的 HighlightMixProps。
 
     config 字段（来自 _build_remotion_mix_config）：
       enabled / template / intro / outro / transition_frames / subtitle_style / output_tier
+
+    媒体路径契约：file/cover 一律传 public 目录相对名——Remotion compositor 只从
+    内部 HTTP 服务拉流，绝对路径会被当成 URL 而 fatally 404。
     """
     fps = 30
-    # 逐段本地文件统一指向已下载的源视频，用 start/end 在源内取子段
+    # 逐段统一指向 public 目录里的源视频符号链接，用 start/end 在源内取子段
     seg_props = []
     for seg in segments:
-        item = {"file": source_path, "start": seg["start"], "end": seg["end"]}
+        item = {"file": source_name, "start": seg["start"], "end": seg["end"]}
         if config.get("intro") and config["intro"].get("title"):
             item["title"] = config["intro"]["title"]
         seg_props.append(item)
@@ -161,11 +165,11 @@ def _build_props(segments: list[dict], config: dict, source_path: str) -> dict:
     }
     if config.get("intro"):
         intro = dict(config["intro"])
-        # cover_file_key → 本地下载路径（由 renderer 提前下载；无则省略）
-        if intro.get("cover_file_key") and intro.get("cover_path"):
-            intro["cover"] = intro["cover_path"]
-        intro.pop("cover_file_key", None)
-        intro.pop("cover_path", None)
+        # cover → public 目录相对名（由 renderer 预先 symlink；无则省略）
+        if intro.get("cover_name"):
+            intro["cover"] = intro["cover_name"]
+        for k in ("cover_file_key", "cover_path", "cover_name"):
+            intro.pop(k, None)
         props["intro"] = intro
     if config.get("outro"):
         props["outro"] = config["outro"]
@@ -209,21 +213,34 @@ async def render_highlight_mix(
     if not ok:
         return False, f"下载源视频失败: {bucket}/{source_key}"
 
-    # 片头封面：下载 cover_file_key（若有）到本地
+    # Remotion 媒体供给：compositor 只从内部 HTTP 服务拉流，绝对路径会 404。
+    # 把源视频/封面 symlink 进 public 目录，props 传相对名（render.js --public-dir）。
+    public_dir = os.path.join(tmp_dir, "public")
+    os.makedirs(public_dir, exist_ok=True)
+    source_name = f"source{ext}"
+    source_link = os.path.join(public_dir, source_name)
+    _ensure_symlink(source_path, source_link)
+
+    # 片头封面：下载 cover_file_key（若有）并 symlink 进 public 目录
     cover_path = None
+    cover_name = None
     if config.get("intro") and config["intro"].get("cover_file_key"):
         cover_key = config["intro"]["cover_file_key"]
         cover_path = os.path.join(tmp_dir, f"cover_{uuid.uuid4().hex}.jpg")
-        if not await download_to_file(bucket, cover_key, cover_path):
+        if await download_to_file(bucket, cover_key, cover_path):
+            cover_name = f"cover_{uuid.uuid4().hex}.jpg"
+            _ensure_symlink(cover_path, os.path.join(public_dir, cover_name))
+        else:
             cover_path = None
     if config.get("intro"):
         config["intro"]["cover_path"] = cover_path
+        config["intro"]["cover_name"] = cover_name
 
     outputs: list[str] = []
     try:
         for gi, group in enumerate(groups, start=1):
-            props = _build_props(group["segs"], config, source_path)
-            ok, out, err = await _run_render_media(props, config)
+            props = _build_props(group["segs"], config, source_name)
+            ok, out, err = await _run_render_media(props, config, public_dir)
             if not ok:
                 logger.error(
                     "remotion render failed (file %d/%d, name=%s): %s",
@@ -236,18 +253,34 @@ async def render_highlight_mix(
             outputs.append(out)
         return True, outputs
     finally:
-        # 清理临时文件（源视频/封面）
+        # 清理临时文件（源视频/封面本体 + public 目录及其符号链接）
         for p in (source_path, cover_path):
             try:
                 if p and os.path.isfile(p):
                     os.remove(p)
             except OSError:
                 pass
+        try:
+            shutil.rmtree(public_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
-async def _run_render_media(props: dict, config: dict) -> tuple[bool, str, str]:
+def _ensure_symlink(target: str, link_path: str) -> None:
+    """在 link_path 建立指向 target 的符号链接（已存在则先删再建）。"""
+    try:
+        if os.path.islink(link_path) or os.path.exists(link_path):
+            os.remove(link_path)
+    except OSError:
+        pass
+    os.symlink(target, link_path)
+
+
+async def _run_render_media(props: dict, config: dict, public_dir: str | None = None) -> tuple[bool, str, str]:
     """调用 Remotion render.js 子进程，返回 (ok, 输出路径, 错误信息)。
 
+    public_dir：Remotion public 目录（含源视频/封面符号链接），经 --public-dir
+    传给 bundle()，由内部 HTTP 服务按 /<相对名> 提供。
     独立函数便于单元测试 mock 掉真实渲染。
     """
     script = REMOTION_RENDER_SCRIPT
@@ -263,6 +296,8 @@ async def _run_render_media(props: dict, config: dict) -> tuple[bool, str, str]:
 
     tier = config.get("output_tier") or "720p"
     cmd = ["node", script, "--props", props_path, "--output", output_path, "--tier", tier]
+    if public_dir:
+        cmd += ["--public-dir", public_dir]
     # render.js 的 bundle entry（src/index.ts）按**子进程 cwd** 相对解析：
     # worker-remotion 容器 cwd=/app（backend 代码），必须切到 remotion 源码目录
     # （REMOTION_WORK_DIR=/remotion），否则 ENOENT /app/src/index.ts。

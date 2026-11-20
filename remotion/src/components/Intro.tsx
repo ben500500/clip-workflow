@@ -1,5 +1,5 @@
 import React from 'react';
-import {AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig} from 'remotion';
+import {AbsoluteFill, interpolate, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
 import type {IntroConfig} from '../types';
 
 /**
@@ -43,7 +43,7 @@ export const Intro: React.FC<{
       <div style={{transform: `translateY(${translateY}px)`, textAlign: 'center', padding: 40}}>
         {intro.cover ? (
           <img
-            src={intro.cover}
+            src={intro.cover.startsWith('http') ? intro.cover : staticFile(intro.cover)}
             style={{
               width: width * 0.4,
               borderRadius: 16,

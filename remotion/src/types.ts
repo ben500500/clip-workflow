@@ -6,9 +6,9 @@
  * 实际渲染 props 使用。
  */
 
-/** 单个高光段：容器内本地路径 + 源内时间轴 + 可选标题 */
+/** 单个高光段：public 相对名 + 源内时间轴 + 可选标题 */
 export interface Segment {
-  /** 该段在容器内的本地绝对路径（后端任务预先下载到工作目录） */
+  /** 源视频文件名（public 目录相对名；compositor 只从内部 HTTP 服务拉流） */
   file: string;
   /** 源内时间轴起点（秒） */
   start: number;
@@ -29,7 +29,7 @@ export interface Subtitle {
 export interface IntroConfig {
   title?: string;
   episode?: string;
-  /** 封面图本地路径（可选） */
+  /** 封面图文件名（public 目录相对名，可选） */
   cover?: string;
 }
 
