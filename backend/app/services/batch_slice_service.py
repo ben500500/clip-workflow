@@ -368,8 +368,9 @@ async def _trigger_slice(episode_id: str, item: BatchSliceItem, user: User, slic
         "highlight_mix_enabled", "highlight_mix_max_duration",
         "highlight_mix_max_clip_duration", "highlight_mix_order",
         "highlight_mix_output_count",
-        # 钩子视频混搭模式（sequential/random/combine）
+        # 钩子视频混搭模式（sequential/random/combine）+ 拼接位置（head/tail）
         "hook_video_key", "hook_video_keys", "hook_mix_mode",
+        "hook_mix_output_count", "hook_position",
         # 优先级流映射（方案A）：标准生产→normal / 高清首发→high / 实验测试→low
         "priority",
         # 服务器指定派发：任务直投目标节点专属队列（空/缺省走公共 Stream）

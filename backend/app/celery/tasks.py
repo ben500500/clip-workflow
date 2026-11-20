@@ -640,6 +640,7 @@ def slice_task(
     hook_video_keys: Optional[List[str]] = None,
     hook_mix_mode: Optional[str] = None,
     hook_mix_output_count: Optional[int] = None,
+    hook_position: Optional[str] = None,
 ):
     """Execute video slicing, upload outputs to MinIO and persist SliceOutput rows.
 
@@ -2764,3 +2765,137 @@ try:
     import lan_source.tasks  # noqa: F401  # 触发任务注册
 except Exception as _lan_source_import_err:  # pragma: no cover
     logger.warning("lan_source.tasks 注册失败（不影响主系统其他任务）: %s", _lan_source_import_err)
+
+
+# ─────────────────────────────────────────────────────────────
+# 上传后自动压缩 720p（2026-11-20）：源分辨率超过 720p 的剧集在上传完成后
+# 自动转码并替换源视频——省存储、加快选点/切片；失败回退保留原源。
+# ─────────────────────────────────────────────────────────────
+
+@celery_app.task(bind=True, name="tasks.compress_episode_720p", max_retries=1, default_retry_delay=60)
+def compress_episode_720p_task(self, episode_id: str):
+    """把剧集源视频压缩到 720p（竖屏 720x1280 / 横屏 1280x720）并替换源。
+
+    流程：置 transcoding → 下载源 → ffprobe 方向 → ffmpeg CRF23 fast 转码 →
+    上传 compressed/ 前缀 → 原子替换 source_file_key/file_size/resolution →
+    status 回 uploaded 并删除原 key。任何失败回退 status=uploaded（原源保留）。
+    """
+    import asyncio
+    import os
+    import subprocess
+    import tempfile
+    import uuid
+
+    from sqlalchemy import select as _select
+
+    from app.database import async_session_factory
+    from app.models.material import Episode
+    from app.services.minio_service import delete_file, download_to_file, upload_file_from_path
+
+    async def _load_episode():
+        async with async_session_factory() as db:
+            ep = (
+                await db.execute(_select(Episode).where(Episode.id == episode_id))
+            ).scalar_one_or_none()
+            if not ep:
+                return None, None, None
+            return ep.source_file_key, ep.source_bucket, ep.status
+
+    source_key, source_bucket, status = run_async(_load_episode())
+    if not source_key:
+        return {"ok": False, "error": "episode 或 source_file_key 不存在"}
+    if status == "transcoding":
+        return {"ok": False, "error": "已在转码中，跳过重复触发"}
+    bucket = source_bucket or settings.MINIO_BUCKET_RAW
+
+    async def _set_status(s: str):
+        async with async_session_factory() as db:
+            ep = (
+                await db.execute(_select(Episode).where(Episode.id == episode_id))
+            ).scalar_one_or_none()
+            if ep:
+                ep.status = s
+                await db.commit()
+
+    run_async(_set_status("transcoding"))
+    tmp_dir = None
+    new_key = None
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="compress720_")
+        ext = os.path.splitext(source_key)[1] or ".mp4"
+        src_local = os.path.join(tmp_dir, f"src{ext}")
+        if not run_async(download_to_file(bucket, source_key, src_local)):
+            raise RuntimeError("下载源视频失败")
+
+        # 探测方向：竖屏限高 1280，横屏限宽 1280
+        def _dims():
+            p = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height", "-of", "csv=p=0", src_local],
+                capture_output=True, text=True, timeout=120,
+            )
+            dims = (p.stdout or "").strip().split(",")
+            return (int(dims[0]), int(dims[1])) if len(dims) >= 2 and dims[0].isdigit() else None
+
+        dims = _dims()
+        if not dims:
+            raise RuntimeError("ffprobe 探测分辨率失败")
+        w, h = dims
+        if max(w, h) <= 1280:
+            run_async(_set_status("uploaded"))
+            return {"ok": True, "skipped": True, "reason": f"已是 720p 内（{w}x{h}）"}
+        vf = "scale=-2:1280" if h > w else "scale=1280:-2"
+
+        out_local = os.path.join(tmp_dir, f"compressed{ext}")
+        cmd = [
+            "ffmpeg", "-y", "-i", src_local,
+            "-vf", vf, "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+            out_local,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+        if proc.returncode != 0 or not os.path.isfile(out_local) or os.path.getsize(out_local) == 0:
+            raise RuntimeError(f"ffmpeg 转码失败: {(proc.stderr or '')[-500:]}")
+
+        new_key = f"compressed/{uuid.uuid4().hex}{ext}"
+        if not run_async(upload_file_from_path(bucket, new_key, out_local)):
+            raise RuntimeError("上传压缩产物失败")
+
+        new_size = os.path.getsize(out_local)
+        new_res = "720p"
+
+        async def _finalize():
+            async with async_session_factory() as db:
+                ep = (
+                    await db.execute(_select(Episode).where(Episode.id == episode_id))
+                ).scalar_one_or_none()
+                if not ep:
+                    return
+                old_key = ep.source_file_key
+                ep.source_file_key = new_key
+                ep.file_size = new_size
+                ep.resolution = new_res
+                ep.status = "uploaded"
+                await db.commit()
+                # 替换成功后删除原源（省存储；压缩产物即新源）
+                if old_key and old_key != new_key:
+                    try:
+                        run_async(delete_file(bucket, old_key))
+                    except Exception:
+                        logger.warning("删除原源视频失败（不影响使用）: %s", old_key)
+
+        run_async(_finalize())
+        logger.info(
+            "720p 自动压缩完成 episode=%s %sx%s→720p（%.1fMB）",
+            episode_id, w, h, new_size / 1024 / 1024,
+        )
+        return {"ok": True, "source_file_key": new_key, "resolution": new_res}
+    except Exception as e:
+        logger.exception("720p 自动压缩失败 episode=%s: %s", episode_id, e)
+        run_async(_set_status("uploaded"))  # 回退：原源保留可用
+        return {"ok": False, "error": str(e)}
+    finally:
+        if tmp_dir:
+            import shutil
+
+            shutil.rmtree(tmp_dir, ignore_errors=True)

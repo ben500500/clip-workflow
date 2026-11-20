@@ -4239,6 +4239,12 @@ def main():
              "（多于切片组数时按组循环补齐，多出的变体追加 -v2/-v3 后缀；否则维持每组 1 个成品）",
     )
     parser.add_argument(
+        "--hook-position",
+        default="head",
+        choices=["head", "tail"],
+        help="钩子拼接位置：head=片头（默认，[封面][钩子][本体]）/ tail=片尾（[封面][本体][钩子]）",
+    )
+    parser.add_argument(
         "--output-tier",
         default="original",
         choices=OUTPUT_TIERS,
@@ -4612,15 +4618,17 @@ def main():
     try:
         outputs = []
         # 钩子混搭输出规划（--hook-mix-output-count）：
-        #   random/combine + 多钩子 + 指定数量 > 1 时，总共生成指定数量的成品：
+        #   random/combine + 指定数量 > 1 时，总共生成指定数量的成品：
         #   先每个切片组出 1 个（v1，沿用组名），多出的按组循环补齐（-v2/-v3… 后缀）。
-        #   未启用时维持原行为：每组 1 个成品。
+        #   2026-11-20 放宽：单钩子也支持多输出（N 个成品 = 本体 × 同一钩子组合），
+        #   不再要求多钩子；未启用时维持原行为：每组 1 个成品。
         hook_mix_mode = args.hook_mix_mode or "sequential"
         hook_mix_output_count = args.hook_mix_output_count or 0
+        hook_position = args.hook_position or "head"
         use_multi_output = (
             hook_mix_output_count > 1
             and hook_mix_mode in ("random", "combine")
-            and len(hook_paths) > 1
+            and len(hook_paths) >= 1
             and len(groups) > 0
         )
         group_keys = list(groups.keys())
@@ -4651,6 +4659,7 @@ def main():
                 name = f"{stem}-v{variant}{ext or '.mp4'}"
             out_path = os.path.join(args.output_dir, name)
             parts = []
+            tail_hook_part = None
             with tempfile.TemporaryDirectory() as tmp:
                 part_offset = 0
                 hook_injected = False
@@ -4730,13 +4739,20 @@ def main():
                                       vf=hook_vf, af=af, threads=threads, encoder=encoder,
                                       bgm=bgm_audio)
                         print(f"钩子拼接: {os.path.basename(hook_path)} (时长 {hook_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
-                    parts.append(hook_part)
-                    part_offset = 1
+                    if hook_position == "tail":
+                        # 片尾模式：钩子暂存，本体各段拼完后再追加到末尾（[封面][本体][钩子]）
+                        tail_hook_part = hook_part
+                        print(f"钩子拼接[片尾]: {os.path.basename(hook_path)} (时长 {hook_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
+                    else:
+                        parts.append(hook_part)
+                        part_offset = 1
                 for i, (start, end, _) in enumerate(group):
                     part = os.path.join(tmp, f"part_{i + part_offset}.mp4")
                     slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder,
                                   bgm=bgm_audio)
                     parts.append(part)
+                if tail_hook_part:
+                    parts.append(tail_hook_part)
                 # 含钩子段时强制走 filter_complex 重编码 concat（各段参数已归一化对齐），
                 # 不做 concat demuxer 免重编码拼接，避免钩子与本体规格差异导致坏片。
                 concat_segments(parts, out_path, threads=threads, encoder=encoder,

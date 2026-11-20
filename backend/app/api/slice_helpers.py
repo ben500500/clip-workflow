@@ -193,6 +193,8 @@ class SliceRunRequest(BaseModel):
     hook_mix_mode: Optional[str] = None
     # 钩子混搭输出数量：当 hook_mix_mode 为 random/combine 且值 > 1 时，生成多个不同钩子组合的成品（-v1, -v2 后缀）
     hook_mix_output_count: Optional[int] = None
+    # 钩子拼接位置：head（默认，片头）/ tail（片尾）
+    hook_position: Optional[str] = None
     # ── 优先级流映射（方案A：档位→优先级流）──
     # 取值 high / normal / low（缺省 normal，向后兼容）。路由规则：
     #   标准生产 → normal 流；高清首发 → high 流（优先消费）；实验测试 → low 流。
@@ -366,6 +368,8 @@ class SliceTaskResponse(BaseModel):
     hook_mix_mode: Optional[str] = None
     # 钩子混搭输出数量
     hook_mix_output_count: Optional[int] = None
+    # 钩子拼接位置（head/tail）
+    hook_position: Optional[str] = None
     # Remotion 混剪增强配置（开启时展示）
     remotion_mix_config: Optional[dict] = None
     # Remotion 混剪增强渲染产物 MinIO key / 渲染状态（P2 回写，前端任务列表展示）
@@ -441,6 +445,7 @@ def _serialize_task(task: SliceTask) -> dict:
         "remotion_output_file_key": task.remotion_output_file_key,
         "remotion_status": task.remotion_status,
         "hook_mix_output_count": task.hook_mix_output_count,
+        "hook_position": getattr(task, "hook_position", None),
     }
 
 
@@ -1148,6 +1153,7 @@ async def _publish_to_worker(
     hook_video_keys: Optional[List[str]] = None,
     hook_mix_mode: Optional[str] = None,
     hook_mix_output_count: Optional[int] = None,
+    hook_position: Optional[str] = None,
     priority: Optional[str] = None,
     # 指定目标 Worker 节点（服务器指定派发）：非空时任务直投该节点专属队列，
     # 否则走公共 Stream（由任意匹配标签的节点消费，与旧行为一致）
@@ -1261,6 +1267,8 @@ async def _publish_to_worker(
         "hook_mix_mode": hook_mix_mode,
         # 钩子混搭输出数量（可选；Worker 透传给引擎 --hook-mix-output-count）
         "hook_mix_output_count": hook_mix_output_count,
+        # 钩子拼接位置（head/tail，可选；Worker 透传给引擎 --hook-position）
+        "hook_position": hook_position,
         "cutlist": cutlist,
         "intervals": intervals_content,
         "dedupe_config": dedupe_config or {},
@@ -1356,6 +1364,7 @@ async def _dispatch_celery(
     hook_video_keys: Optional[List[str]] = None,
     hook_mix_mode: Optional[str] = None,
     hook_mix_output_count: Optional[int] = None,
+    hook_position: Optional[str] = None,
     priority: Optional[str] = None,
 ) -> bool:
     """通过 Celery 队列分发切片任务（回退路径）。"""
@@ -1395,6 +1404,7 @@ async def _dispatch_celery(
         hook_video_keys=hook_video_keys,
         hook_mix_mode=hook_mix_mode,
         hook_mix_output_count=hook_mix_output_count,
+        hook_position=hook_position,
     )
     slice_task.celery_task_id = task.id
     logger.info("Dispatched slice task %s via Celery (celery_task_id=%s)", slice_task.id, task.id)
@@ -1426,6 +1436,7 @@ async def _dispatch_local(
     hook_video_keys: Optional[List[str]] = None,
     hook_mix_mode: Optional[str] = None,
     hook_mix_output_count: Optional[int] = None,
+    hook_position: Optional[str] = None,
     priority: Optional[str] = None,
 ) -> None:
     """单机同步执行切片引擎（SLICE_ENGINE=local）。
@@ -1619,6 +1630,7 @@ async def _dispatch_local(
                 hook_paths=hook_paths,
                 hook_mix_mode=hook_mix_mode,
                 hook_mix_output_count=hook_mix_output_count,
+                hook_position=hook_position,
                 task_id=task_id,
             )
         else:
@@ -1651,6 +1663,7 @@ async def _dispatch_local(
                 hook_paths=hook_paths,
                 hook_mix_mode=hook_mix_mode,
                 hook_mix_output_count=hook_mix_output_count,
+                hook_position=hook_position,
                 task_id=task_id,
             )
 
