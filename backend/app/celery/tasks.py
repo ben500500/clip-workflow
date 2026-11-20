@@ -12,7 +12,7 @@ from typing import List, Optional
 from celery import Celery
 from celery.schedules import crontab
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import settings
 from app.database import async_session_factory
@@ -236,7 +236,9 @@ def slice_stuck_sweep_task():
                 await db.execute(
                     select(SliceTask).where(
                         SliceTask.status.in_(("running", "pending")),
-                        SliceTask.updated_at < cutoff,
+                        # slice_tasks 表没有 updated_at 列（勿改）：pending 用 created_at，
+                        # running 用 started_at（从未起跑的 running 行回退 created_at）
+                        func.coalesce(SliceTask.started_at, SliceTask.created_at) < cutoff,
                     )
                 )
             ).scalars().all()

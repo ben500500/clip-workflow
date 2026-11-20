@@ -116,7 +116,8 @@ async def collect_metrics() -> dict[str, float]:
         await session.execute(
             select(func.count(SliceTask.id)).where(
                 SliceTask.status == "failed",
-                SliceTask.updated_at >= day_ago,
+                # slice_tasks 表没有 updated_at 列（勿改）：失败行必有 completed_at
+                SliceTask.completed_at >= day_ago,
             )
         )
     ).scalar() or 0

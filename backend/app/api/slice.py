@@ -1331,7 +1331,27 @@ async def list_slice_tasks(
         .order_by(SliceTask.created_at.desc())
     )
     tasks = result.scalars().all()
-    return [_serialize_task(t) for t in tasks]
+
+    # 最后进度心跳（2026-11-20 评审 UX/SRE）：slice_tasks 表没有 updated_at 列，
+    # 活任务的「最后活动」以 Redis 任务 hash 的 lease 为准（worker 每条进度行续约）。
+    # 仅对 running/pending 行查 Redis（每剧集最多几条），终态行跳过、失败静默。
+    payloads = []
+    _redis = None
+    from app.services.redis_stream import get_redis as _get_redis
+    for t in tasks:
+        d = _serialize_task(t)
+        if t.status in ("running", "pending"):
+            try:
+                if _redis is None:
+                    _redis = await _get_redis()
+                data = await _redis.hgetall(f"slice:task:{t.id}")
+                lease = data.get("lease")
+                if lease:
+                    d["last_progress_at"] = utc_iso(datetime.utcfromtimestamp(float(lease)))
+            except Exception:  # noqa: BLE001 - 心跳缺失不影响列表主流程
+                pass
+        payloads.append(d)
+    return payloads
 
 
 @router.get("/slice-tasks/{task_id}", response_model=SliceTaskResponse)

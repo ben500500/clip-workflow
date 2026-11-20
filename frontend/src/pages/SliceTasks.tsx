@@ -479,16 +479,16 @@ const SUBTITLE_MASK_PRESETS = [
     { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 160, render: (d: string) => <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text> },
     {
       title: '最后活动',
-      dataIndex: 'updated_at',
-      key: 'updated_at',
+      dataIndex: 'last_progress_at',
+      key: 'last_progress_at',
       width: 110,
       render: (_: string | undefined, t: SliceTask) => {
         // 仅运行中/待处理任务展示相对时间，其它状态一律显示 '—'
-        if ((t.status !== 'running' && t.status !== 'pending') || !t.updated_at) {
+        if ((t.status !== 'running' && t.status !== 'pending') || !t.last_progress_at) {
           return <Text style={{ fontSize: 12 }}>—</Text>;
         }
-        const diffMin = Math.floor((Date.now() - new Date(t.updated_at).getTime()) / 60000);
-        // updated_at 异常（解析为 NaN）时回退显示 '—'，避免渲染 NaN
+        const diffMin = Math.floor((Date.now() - new Date(t.last_progress_at as string).getTime()) / 60000);
+        // last_progress_at 异常（解析为 NaN）时回退显示 '—'，避免渲染 NaN
         if (Number.isNaN(diffMin)) return <Text style={{ fontSize: 12 }}>—</Text>;
         let label: string;
         if (diffMin < 1) label = '刚刚';
