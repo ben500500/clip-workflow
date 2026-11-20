@@ -31,11 +31,21 @@ export interface IntroConfig {
   episode?: string;
   /** 封面图文件名（public 目录相对名，可选） */
   cover?: string;
+  /** 片头时长（秒，默认 3；钳制 2~6） */
+  durationSeconds?: number;
+  /** 背景色（CSS 颜色值，默认深色 #0d0d12） */
+  background?: string;
 }
 
 /** 片尾配置 */
 export interface OutroConfig {
   text?: string;
+  /** 副文案（默认「点赞 · 收藏 · 关注」） */
+  subtitle?: string;
+  /** 片尾时长（秒，默认 2.5；钳制 2~5） */
+  durationSeconds?: number;
+  /** 背景色（CSS 颜色值，默认深色 #0d0d12） */
+  background?: string;
 }
 
 /** 字幕样式 */

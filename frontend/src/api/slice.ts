@@ -46,6 +46,21 @@ export const sliceApi = {
       engine?: string;
       auto_accept_all?: boolean;
       remotion_mix_enabled?: boolean;
+      // Remotion 片头片尾自定义（默认不传 = 不配置，渲染直接进入正片）
+      remotion_intro?: {
+        title?: string;
+        episode?: string;
+        /** 勾选「使用剧集封面」时后端自动带出 episode.cover_image_key */
+        cover_use_episode?: boolean;
+        duration_seconds?: number;
+        background?: string;
+      };
+      remotion_outro?: {
+        text?: string;
+        subtitle?: string;
+        duration_seconds?: number;
+        background?: string;
+      };
       // 后端兜底：无候选片段时后端自动补一轮 AI 选点（前端提交即走，关窗口安全）
       auto_autoclip_if_empty?: boolean;
       // 补选点时的 AI 选点配置

@@ -147,9 +147,19 @@ def _build_props(segments: list[dict], config: dict, source_name: str,
 
     transition_frames = int(config.get("transition_frames", 12) or 0)
 
-    # 帧数估算：片头 90 帧 + 各段 + 段间转场 + 片尾 60 帧（与 remotion HighlightMix 编排一致）
-    intro_frames = 90 if config.get("intro") else 0
-    outro_frames = 60 if config.get("outro") else 0
+    # 帧数估算与 remotion computeMixLayout 算法保持一致：
+    # 片头（默认 3s，钳 2~6）+ 各段 + 段间转场 + 片尾（默认 2.5s，钳 2~5）
+    def _clamped_seconds(cfg_entry: dict, lo: float, hi: float, dflt: float) -> float:
+        raw = cfg_entry.get("duration_seconds")
+        if raw is None:
+            return dflt
+        try:
+            return max(lo, min(hi, float(raw)))
+        except (TypeError, ValueError):
+            return dflt
+
+    intro_frames = round(_clamped_seconds(config.get("intro") or {}, 2, 6, 3) * fps) if config.get("intro") else 0
+    outro_frames = round(_clamped_seconds(config.get("outro") or {}, 2, 5, 2.5) * fps) if config.get("outro") else 0
     total_frames = intro_frames + outro_frames
     for i, seg in enumerate(seg_props):
         dur = max(1, round((seg["end"] - seg["start"]) * fps))
@@ -173,14 +183,21 @@ def _build_props(segments: list[dict], config: dict, source_name: str,
     }
     if config.get("intro"):
         intro = dict(config["intro"])
-        # cover → public 目录相对名（由 renderer 预先 symlink；无则省略）
+        # cover → public 目录相对名（由 renderer 预先硬链接；无则省略）
         if intro.get("cover_name"):
             intro["cover"] = intro["cover_name"]
-        for k in ("cover_file_key", "cover_path", "cover_name"):
+        # snake → 前端契约驼峰（duration_seconds → durationSeconds，秒）
+        if intro.get("duration_seconds") is not None:
+            intro["durationSeconds"] = float(intro["duration_seconds"])
+        for k in ("cover_file_key", "cover_path", "cover_name", "duration_seconds"):
             intro.pop(k, None)
         props["intro"] = intro
     if config.get("outro"):
-        props["outro"] = config["outro"]
+        outro = dict(config["outro"])
+        if outro.get("duration_seconds") is not None:
+            outro["durationSeconds"] = float(outro["duration_seconds"])
+        outro.pop("duration_seconds", None)
+        props["outro"] = outro
     if config.get("subtitle_style"):
         props["subtitleStyle"] = config["subtitle_style"]
     return props

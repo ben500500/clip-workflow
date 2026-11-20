@@ -128,6 +128,53 @@ def test_config_font_ratio_clamped():
 
 
 # ─────────────────────────────────────────────────────────────
+# 片头片尾自定义（2026-11-20）：时长钳制 / 背景色 / 封面开关 / 默认不配置
+# ─────────────────────────────────────────────────────────────
+
+def test_intro_outro_custom_duration_and_background():
+    """片头片尾自定义时长（钳制）与背景色透传。"""
+    cfg = _build_remotion_mix_config(
+        _req(
+            remotion_mix_enabled=True,
+            remotion_intro={"title": "T", "duration_seconds": 99, "background": "#101010"},
+            remotion_outro={"text": "END", "duration_seconds": 1, "subtitle": "关注我"},
+        )
+    )
+    assert cfg["intro"]["duration_seconds"] == 6.0, "片头时长钳制上限 6s"
+    assert cfg["intro"]["background"] == "#101010"
+    assert cfg["outro"]["duration_seconds"] == 2.0, "片尾时长钳制下限 2s"
+    assert cfg["outro"]["subtitle"] == "关注我"
+
+
+def test_no_intro_outro_by_default():
+    """片头片尾默认不配置：config 不含 intro/outro → 渲染直接进入正片。"""
+    cfg = _build_remotion_mix_config(_req(remotion_mix_enabled=True))
+    assert "intro" not in cfg and "outro" not in cfg
+
+
+def test_build_props_maps_intro_outro_to_contract():
+    """renderer 把 snake 配置映射为前端契约（durationSeconds 驼峰）。"""
+    from app.services.remotion_renderer import _build_props
+
+    cfg = {
+        "enabled": True,
+        "template": "highlight",
+        "transition_frames": 12,
+        "output_tier": "720p",
+        "intro": {"title": "T", "duration_seconds": 4.0, "background": "#101010", "cover_name": "cover_1.jpg"},
+        "outro": {"text": "END", "subtitle": "关注", "duration_seconds": 3.0},
+    }
+    props = _build_props([{"start": 1.0, "end": 5.0}], cfg, "source.mp4")
+    assert props["intro"]["durationSeconds"] == 4.0
+    assert props["intro"]["cover"] == "cover_1.jpg"
+    assert "duration_seconds" not in props["intro"]
+    assert props["outro"]["durationSeconds"] == 3.0
+    assert props["outro"]["subtitle"] == "关注"
+    # 帧数估算与组件 computeMixLayout 一致：片头 4s×30 + 段 4s×30 + 片尾 3s×30 = 330
+    assert props["durationInFrames"] == (4 + 4 + 3) * 30
+
+
+# ─────────────────────────────────────────────────────────────
 # run_remotion_mix_task mock 测试
 # ─────────────────────────────────────────────────────────────
 

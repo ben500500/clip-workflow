@@ -385,8 +385,22 @@ const EpisodeDetail: React.FC = () => {
   // Remotion 混剪增强（任务级）：切片完成后走 Remotion 引擎渲染增强版混剪
   // （片头/转场/字幕/段标题/片尾）；全局能力开关在系统设置页。
   const [remotionMixEnabled, setRemotionMixEnabled] = useState(false);
+  // ── Remotion 片头片尾自定义（默认全部关闭 = 不配置 → 无片头片尾直接正片）──
+  const [remotionIntroEnabled, setRemotionIntroEnabled] = useState(false);
+  const [remotionIntroTitle, setRemotionIntroTitle] = useState('');
+  const [remotionIntroEpisode, setRemotionIntroEpisode] = useState('');
+  const [remotionIntroCover, setRemotionIntroCover] = useState(true);
+  const [remotionIntroDuration, setRemotionIntroDuration] = useState<number>(3);
+  const [remotionIntroBg, setRemotionIntroBg] = useState('#0d0d12');
+  const [remotionOutroEnabled, setRemotionOutroEnabled] = useState(false);
+  const [remotionOutroText, setRemotionOutroText] = useState('感谢观看');
+  const [remotionOutroSubtitle, setRemotionOutroSubtitle] = useState('点赞 · 收藏 · 关注');
+  const [remotionOutroDuration, setRemotionOutroDuration] = useState<number>(2.5);
+  const [remotionOutroBg, setRemotionOutroBg] = useState('#0d0d12');
   // 高光混剪设置弹窗是否打开
   const [highlightMixModalOpen, setHighlightMixModalOpen] = useState(false);
+  // Remotion 片头片尾配置弹窗是否打开
+  const [remotionIntroOutroModalOpen, setRemotionIntroOutroModalOpen] = useState(false);
   // ── ASR 字幕烧录开关 ──
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
   // 字幕字号（相对输出视频高度的比例，默认 0.30→FontSize 30；转横屏开启时默认套用，用户可调）
@@ -1344,6 +1358,20 @@ const EpisodeDetail: React.FC = () => {
         highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
         highlight_mix_output_count: highlightMixEnabled ? highlightMixOutputCount : undefined,
         remotion_mix_enabled: remotionMixEnabled,
+        // Remotion 片头片尾（默认关闭=不配置，渲染直接进入正片）
+        remotion_intro: remotionMixEnabled && remotionIntroEnabled ? {
+          title: remotionIntroTitle,
+          episode: remotionIntroEpisode,
+          cover_use_episode: remotionIntroCover,
+          duration_seconds: remotionIntroDuration,
+          background: remotionIntroBg,
+        } : undefined,
+        remotion_outro: remotionMixEnabled && remotionOutroEnabled ? {
+          text: remotionOutroText,
+          subtitle: remotionOutroSubtitle,
+          duration_seconds: remotionOutroDuration,
+          background: remotionOutroBg,
+        } : undefined,
         // 选点历史：当前候选为空（最近选点失败）时用所选历史 run 恢复候选再切片
         slice_autoclip_run_id: sliceAutoclipRunId || undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
@@ -1541,6 +1569,20 @@ const EpisodeDetail: React.FC = () => {
         highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
         highlight_mix_output_count: highlightMixEnabled ? highlightMixOutputCount : undefined,
         remotion_mix_enabled: remotionMixEnabled,
+        // Remotion 片头片尾（默认关闭=不配置，渲染直接进入正片）
+        remotion_intro: remotionMixEnabled && remotionIntroEnabled ? {
+          title: remotionIntroTitle,
+          episode: remotionIntroEpisode,
+          cover_use_episode: remotionIntroCover,
+          duration_seconds: remotionIntroDuration,
+          background: remotionIntroBg,
+        } : undefined,
+        remotion_outro: remotionMixEnabled && remotionOutroEnabled ? {
+          text: remotionOutroText,
+          subtitle: remotionOutroSubtitle,
+          duration_seconds: remotionOutroDuration,
+          background: remotionOutroBg,
+        } : undefined,
         // 选点历史：当前候选为空（最近选点失败）时用所选历史 run 恢复候选再切片
         slice_autoclip_run_id: sliceAutoclipRunId || undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
@@ -2212,7 +2254,7 @@ const EpisodeDetail: React.FC = () => {
               checked={highlightMixEnabled}
               onChange={(v) => setHighlightMixEnabled(v)}
             />
-            <Tooltip title="开启后，该次切片完成后将使用 Remotion 引擎渲染增强版混剪（片头标题卡 + 段间转场 + 字幕 + 段标题 + 片尾卡），替代裸 concat 拼接。需在系统设置开启「Remotion 渲染」。">
+            <Tooltip title="开启后混剪由 Remotion 渲染：段间转场 + 字幕 + 段标题；可在「片头片尾」里自定义片头标题卡与片尾文案卡（默认不配置 = 直接正片）。需在系统设置开启「Remotion 渲染」。">
               <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
             </Tooltip>
             <Switch
@@ -2232,6 +2274,24 @@ const EpisodeDetail: React.FC = () => {
             >
               混剪配置
             </Button>
+            <Button
+              size="small"
+              icon={<SettingOutlined />}
+              disabled={!remotionMixEnabled}
+              onClick={() => setRemotionIntroOutroModalOpen(true)}
+            >
+              片头片尾
+            </Button>
+            {remotionMixEnabled && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {!remotionIntroEnabled && !remotionOutroEnabled
+                  ? '无片头片尾（直接正片）'
+                  : [
+                      remotionIntroEnabled ? `片头${remotionIntroDuration}s` : '无片头',
+                      remotionOutroEnabled ? `片尾${remotionOutroDuration}s` : '无片尾',
+                    ].join(' · ')}
+              </Text>
+            )}
             {highlightMixEnabled && (
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {highlightMixMaxDuration ? `总时长≤${highlightMixMaxDuration}s` : '总时长由片段自然决定'}
@@ -2459,6 +2519,80 @@ const EpisodeDetail: React.FC = () => {
                   </Text>
                 </Space>
               </Space>
+            </Space>
+          </Modal>
+
+          {/* Remotion 片头片尾配置弹窗（默认全关 = 不配置，直接进入正片） */}
+          <Modal
+            title="Remotion 片头片尾配置"
+            open={remotionIntroOutroModalOpen}
+            onCancel={() => setRemotionIntroOutroModalOpen(false)}
+            footer={(
+              <Button type="primary" onClick={() => setRemotionIntroOutroModalOpen(false)}>完成</Button>
+            )}
+            width={560}
+          >
+            <Space direction="vertical" size={16} style={{ width: '100%' }}>
+              {/* ── 片头 ── */}
+              <div>
+                <Space wrap align="center" size={8}>
+                  <Text strong style={{ fontSize: 13 }}>片头</Text>
+                  <Switch size="small" checked={remotionIntroEnabled} onChange={setRemotionIntroEnabled} />
+                  <Text type="secondary" style={{ fontSize: 12 }}>关闭 = 无片头直接正片</Text>
+                </Space>
+                {remotionIntroEnabled && (
+                  <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 10 }}>
+                    <Space wrap align="center" size={8}>
+                      <Text style={{ fontSize: 12, width: 64 }}>主标题</Text>
+                      <Input size="small" style={{ width: 220 }} placeholder="不填=「高光混剪」" value={remotionIntroTitle} onChange={(e) => setRemotionIntroTitle(e.target.value)} />
+                    </Space>
+                    <Space wrap align="center" size={8}>
+                      <Text style={{ fontSize: 12, width: 64 }}>副标题</Text>
+                      <Input size="small" style={{ width: 220 }} placeholder="如：第 1 集" value={remotionIntroEpisode} onChange={(e) => setRemotionIntroEpisode(e.target.value)} />
+                    </Space>
+                    <Space wrap align="center" size={8}>
+                      <Text style={{ fontSize: 12, width: 64 }}>时长(秒)</Text>
+                      <InputNumber size="small" min={2} max={6} step={0.5} value={remotionIntroDuration} onChange={(v) => setRemotionIntroDuration(v ?? 3)} style={{ width: 90 }} />
+                      <Text style={{ fontSize: 12, width: 64 }}>背景色</Text>
+                      <Input size="small" style={{ width: 120 }} value={remotionIntroBg} onChange={(e) => setRemotionIntroBg(e.target.value)} placeholder="#0d0d12" />
+                    </Space>
+                    <Space wrap align="center" size={8}>
+                      <Text style={{ fontSize: 12, width: 64 }}>封面图</Text>
+                      <Switch size="small" checked={remotionIntroCover} onChange={setRemotionIntroCover} />
+                      <Text type="secondary" style={{ fontSize: 12 }}>使用剧集封面图（未上传封面时片头不带图）</Text>
+                    </Space>
+                  </Space>
+                )}
+              </div>
+              {/* ── 片尾 ── */}
+              <div>
+                <Space wrap align="center" size={8}>
+                  <Text strong style={{ fontSize: 13 }}>片尾</Text>
+                  <Switch size="small" checked={remotionOutroEnabled} onChange={setRemotionOutroEnabled} />
+                  <Text type="secondary" style={{ fontSize: 12 }}>关闭 = 无片尾</Text>
+                </Space>
+                {remotionOutroEnabled && (
+                  <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 10 }}>
+                    <Space wrap align="center" size={8}>
+                      <Text style={{ fontSize: 12, width: 64 }}>结尾文案</Text>
+                      <Input size="small" style={{ width: 220 }} value={remotionOutroText} onChange={(e) => setRemotionOutroText(e.target.value)} placeholder="感谢观看" />
+                    </Space>
+                    <Space wrap align="center" size={8}>
+                      <Text style={{ fontSize: 12, width: 64 }}>副文案</Text>
+                      <Input size="small" style={{ width: 220 }} value={remotionOutroSubtitle} onChange={(e) => setRemotionOutroSubtitle(e.target.value)} placeholder="留空则不显示该行" />
+                    </Space>
+                    <Space wrap align="center" size={8}>
+                      <Text style={{ fontSize: 12, width: 64 }}>时长(秒)</Text>
+                      <InputNumber size="small" min={2} max={5} step={0.5} value={remotionOutroDuration} onChange={(v) => setRemotionOutroDuration(v ?? 2.5)} style={{ width: 90 }} />
+                      <Text style={{ fontSize: 12, width: 64 }}>背景色</Text>
+                      <Input size="small" style={{ width: 120 }} value={remotionOutroBg} onChange={(e) => setRemotionOutroBg(e.target.value)} placeholder="#0d0d12" />
+                    </Space>
+                  </Space>
+                )}
+              </div>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                片头为「标题卡」（主标题 + 副标题 + 可选封面图），片尾为「结尾文案卡」；两项都关闭时渲染直接进入正片。
+              </Text>
             </Space>
           </Modal>
 

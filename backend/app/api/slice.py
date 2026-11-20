@@ -897,6 +897,12 @@ async def _create_slice_task_record(
     # 仍为空则引擎使用源视频首帧。
     cover_key = data.cover_image_key or (getattr(episode, "cover_image_key", None) if episode else None)
     slice_task.cover_image_key = cover_key or None
+    # Remotion 片头封面：前端勾选「使用剧集封面」（cover_use_episode）时自动带出，
+    # 无需手填文件 key；找不到封面时静默跳过（片头不带图）。
+    if remotion_mix_config and remotion_mix_config.get("intro", {}).get("cover_use_episode"):
+        remotion_mix_config["intro"].pop("cover_use_episode", None)
+        if cover_key:
+            remotion_mix_config["intro"]["cover_file_key"] = cover_key
     # 钩子视频：作为片头拼接（[封面][钩子][本体]）。钩子是临时素材，不按剧集持久化，
     # 仅随本次切片请求透传（重试时保留）。
     # 文件夹方式优先：勾选了文件夹（多个钩子）时保存 hook_video_keys 列表；
