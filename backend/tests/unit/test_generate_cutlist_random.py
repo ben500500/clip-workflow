@@ -131,3 +131,59 @@ def test_single_output_regression_matches_legacy():
     names = {line.split()[2] for line in _lines(cut)}
     assert len(names) == 1, "output_count=1 应保持单文件行为"
     assert len(_lines(cut)) == 3, "60s 上限 × 20s 段应纳入 3 段"
+
+
+# ─────────────────────────────────────────────────────────────
+# random + 输出个数：素材复用凑满 N 个（2026-11-20 业务规则：
+# 输出个数是硬指标，素材可跨文件复用，只要组合顺序不同）
+# ─────────────────────────────────────────────────────────────
+
+def test_multi_output_random_fills_exact_n_by_reusing_segments():
+    """素材总时长不足 N×上限时，random 模式复用素材凑满 N 个文件。
+
+    场景还原：52 段 × 9.3s ≈ 485s，上限 60s，顺序填充只能出 9 个；
+    业务要求必须出满 20 个。
+    """
+    clips = [_mk(i, i * 100, i * 100 + 9.3) for i in range(52)]
+    cut = generate_cutlist(clips, episode_title="剧名", highlight_mix=True,
+                           max_duration=60.0, mix_output_count=20, order="random")
+    names = [l.split()[2] for l in _lines(cut)]
+    distinct = sorted(set(names))
+    assert len(distinct) == 20, f"必须凑满 20 个文件，实际 {len(distinct)}"
+    for n in distinct:
+        t = sum(_sec(l.split()[1]) - _sec(l.split()[0]) for l in _lines(cut) if l.split()[2] == n)
+        assert t <= 60.0 + 1e-6, f"文件 {n} 累计 {t}s 超过上限 60s"
+        assert t >= 45.0, f"文件 {n} 累计 {t}s 远低于上限，凑近逻辑失效"
+
+
+def test_multi_output_random_groups_have_different_sequences():
+    """各文件的段组合序列互不相同（素材可复用，但不能按相同顺序使用）。"""
+    clips = [_mk(i, i * 100, i * 100 + 30) for i in range(6)]  # 池 180s < 5×60s
+    cut = generate_cutlist(clips, episode_title="剧名", highlight_mix=True,
+                           max_duration=60.0, mix_output_count=5, order="random")
+    names = {l.split()[2] for l in _lines(cut)}
+    assert len(names) == 5, f"应凑满 5 个文件，实际 {len(names)}"
+    sigs = {
+        tuple(l.split()[0] for l in _lines(cut) if l.split()[2] == n)
+        for n in names
+    }
+    assert len(sigs) == len(names), "各文件的段组合序列应互不相同"
+
+
+def test_multi_output_random_no_duplicate_segment_within_a_file():
+    """单个文件内同一段不应重复使用。"""
+    clips = [_mk(i, i * 100, i * 100 + 30) for i in range(6)]
+    cut = generate_cutlist(clips, episode_title="剧名", highlight_mix=True,
+                           max_duration=60.0, mix_output_count=5, order="random")
+    for n in {l.split()[2] for l in _lines(cut)}:
+        starts = [l.split()[0] for l in _lines(cut) if l.split()[2] == n]
+        assert len(starts) == len(set(starts)), f"文件 {n} 内存在重复使用的段"
+
+
+def test_multi_output_time_mode_still_stops_when_pool_exhausted():
+    """time/score 顺序模式语义不变：素材用完即止，不凑满（只有 random 复用素材）。"""
+    clips = [_mk(i, i * 100, i * 100 + 30) for i in range(6)]  # 池 180s
+    cut = generate_cutlist(clips, episode_title="剧名", highlight_mix=True,
+                           max_duration=60.0, mix_output_count=5, order="time")
+    names = {l.split()[2] for l in _lines(cut)}
+    assert len(names) == 3, "time 模式素材耗尽应只出 3 个文件（180s ÷ 60s），不凑满"
