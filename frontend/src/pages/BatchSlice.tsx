@@ -18,6 +18,7 @@ import { formatDuration } from '../utils/format';
 import { loadCustomPresets, buildBatchSlicePayload, DEFAULT_SLICE_PRESET, VERT2HORIZON_OUTPUT_SIZES, type SlicePreset } from '../utils/slicePresets';
 import { useDedupePresets } from '../hooks/useDedupePresets';
 import { BizGuideEntry, BatchSliceGuide } from '../components/assets/BizGuides';
+import SubtitleMarginPicker from '../components/SubtitleMarginPicker';
 
 const { Text, Title } = Typography;
 
@@ -966,16 +967,10 @@ const BatchSlicePage: React.FC = () => {
                   max={20}
                   style={{ width: 70 }}
                 />
-                <Tooltip title="字幕高度：字幕块中心距画面底部的距离（占屏高比例）。默认 0.25 = 字幕位于画面下方 1/4 处；越小越贴底，0.5 ≈ 垂直居中">
-                  <Text style={{ cursor: 'help' }}>字幕高度</Text>
-                </Tooltip>
-                <InputNumber
+                <SubtitleMarginPicker
                   value={sliceConfig.subtitle_margin_ratio}
-                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_margin_ratio: v ?? 0.25 })}
-                  step={0.01}
-                  min={0.02}
-                  max={0.6}
-                  style={{ width: 80 }}
+                  onChange={(v) => setSliceConfig({ ...sliceConfig, subtitle_margin_ratio: v })}
+                  numberWidth={80}
                 />
                 <Text>粗细</Text>
                 <Select
