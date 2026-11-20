@@ -249,7 +249,11 @@ def slice_stuck_sweep_task():
             if not rows:
                 return []
             redis = await get_redis()
-            now_ts = datetime.utcnow().timestamp()
+            # 2026-11-21 修复：不能用 datetime.utcnow().timestamp()——朴素 UTC 时间
+            # 会被按容器本地时区（+08）解释，now_ts 虚涨 8h，5h 陈旧的 lease 看起来
+            # 永远「新鲜」，巡检永远跳过（163 实测 swept:[] 而僵尸就躺在眼前）。
+            # time.time() 是真实 epoch，与 worker 侧 time.Now().Unix() 同基。
+            now_ts = time.time()
             for task in rows:
                 try:
                     data = await redis.hgetall(f"{TASK_STATUS_PREFIX}{str(task.id)}")
