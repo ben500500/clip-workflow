@@ -110,6 +110,15 @@ async function main() {
     outputLocation: outputPath,
     inputProps: props,
     browserExecutable: CHROMIUM_EXECUTABLE ?? null,
+    // 并发页数限流：trim 后 compositor 对大源视频随机 seek 抽帧，内存随
+    // 并发页数线性放大，默认（CPU 核数）会 chromium Page crashed
+    // （2026-11-20 生产实测）。可用 REMOTION_CONCURRENCY 覆盖。
+    concurrency: Number(process.env.REMOTION_CONCURRENCY) || 2,
+    // 抽帧缓存限流：默认缓存（数百 MB~2GB）在 300MB+ 大源视频随机 seek 场景
+    // 会撑爆容器 cgroup，compositor 进程被 SIGKILL（2026-11-20 生产实测，
+    // frame 765 处连续 OOM）。512MB 起步，可用 REMOTION_VIDEO_CACHE_BYTES 覆盖。
+    offthreadVideoCacheSizeInBytes:
+      Number(process.env.REMOTION_VIDEO_CACHE_BYTES) || 512 * 1024 * 1024,
     onProgress: ({progress}) => {
       const pct = Math.round(progress * 100);
       if (pct !== lastPct) {
