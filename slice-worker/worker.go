@@ -932,6 +932,12 @@ func (w *Worker) runTask(msg *StreamMessage) {
 		w.handleTaskError(taskCtx, task, msg, uploadErr)
 		return
 	}
+	// 2026-11-21 架构复评：取消恰好落在所有 goroutine 开工前时，全部走 ctx 早退、
+	// uploadErr 为 nil——若不复查会带零值 outputFiles 走 completed（假完成）。
+	if int(atomic.LoadInt32(&uploadedCount)) < len(outputs) {
+		w.handleTaskError(taskCtx, task, msg, fmt.Errorf("上传在任务取消/中止时未完成 (%d/%d)", uploadedCount, len(outputs)))
+		return
+	}
 	w.emitProgress(task.TaskID, "upload", 100, "上传完成")
 
 	// 4. 确认完成（Stream 消息从 PEL 移除；专属队列消息取出即确认，无需处理）

@@ -1338,29 +1338,45 @@ async def list_slice_tasks(
     # 活任务的「最后活动」以 Redis 任务 hash 的 lease 为准（worker 每条进度行续约）。
     # 顺带把 hash 里的实时进度同步回 DB（前端轮询本列表端点刷进度条；worker 只在
     # 终态回调写 DB，进度此前长期停在 0）。仅对 running/pending 行查 Redis。
+    # 2026-11-21 架构复评：hgetall 走 pipeline（活跃任务多时省 RTT）；进度回写的
+    # commit 失败不让列表 500（回滚后仍返回 payload，下轮轮询再写）。
     payloads = []
     _redis = None
+    pipe = None
     from app.services.redis_stream import get_redis as _get_redis
+    active_tasks = [t for t in tasks if t.status in ("running", "pending")]
+    if active_tasks:
+        try:
+            _redis = await _get_redis()
+            pipe = _redis.pipeline(transaction=False)
+            for t in active_tasks:
+                pipe.hgetall(f"slice:task:{t.id}")
+            hash_rows = await pipe.execute()
+        except Exception:  # noqa: BLE001 - Redis 不可达时退化为纯 DB 视图
+            hash_rows = [dict() for _ in active_tasks]
+    else:
+        hash_rows = []
+    hash_map = {str(t.id): (data or {}) for t, data in zip(active_tasks, hash_rows)}
     for t in tasks:
         d = _serialize_task(t)
-        if t.status in ("running", "pending"):
-            try:
-                if _redis is None:
-                    _redis = await _get_redis()
-                data = await _redis.hgetall(f"slice:task:{t.id}")
-                lease = data.get("lease")
-                if lease:
-                    d["last_progress_at"] = utc_iso(datetime.utcfromtimestamp(float(lease)))
-                rs_prog = data.get("progress")
-                if rs_prog:
-                    p = float(rs_prog)
-                    if p > (t.progress or 0):
-                        t.progress = p
-                    d["progress"] = t.progress
-            except Exception:  # noqa: BLE001 - 心跳缺失不影响列表主流程
-                pass
+        data = hash_map.get(str(t.id)) or {}
+        try:
+            lease = data.get("lease")
+            if lease:
+                d["last_progress_at"] = utc_iso(datetime.utcfromtimestamp(float(lease)))
+            rs_prog = data.get("progress")
+            if rs_prog:
+                p = float(rs_prog)
+                if p > (t.progress or 0):
+                    t.progress = p
+                d["progress"] = t.progress
+        except Exception:  # noqa: BLE001 - 心跳缺失不影响列表主流程
+            pass
         payloads.append(d)
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception:  # noqa: BLE001 - 进度回写失败不影响列表返回
+        await db.rollback()
     return payloads
 
 
