@@ -213,15 +213,15 @@ async def render_highlight_mix(
     if not ok:
         return False, f"下载源视频失败: {bucket}/{source_key}"
 
-    # Remotion 媒体供给：compositor 只从内部 HTTP 服务拉流，绝对路径会 404。
-    # 把源视频/封面 symlink 进 public 目录，props 传相对名（render.js --public-dir）。
+    # Remotion 媒体供给：compositor 只从内部 HTTP 服务拉流，绝对路径会 404；
+    # 且其静态服务（serve-handler）默认拒绝符号链接（lstat + symlinks: false），
+    # 所以 public 目录里必须放**硬链接**（同盘零拷贝；跨盘退回真实拷贝）。
     public_dir = os.path.join(tmp_dir, "public")
     os.makedirs(public_dir, exist_ok=True)
     source_name = f"source{ext}"
-    source_link = os.path.join(public_dir, source_name)
-    _ensure_symlink(source_path, source_link)
+    _ensure_public_file(source_path, os.path.join(public_dir, source_name))
 
-    # 片头封面：下载 cover_file_key（若有）并 symlink 进 public 目录
+    # 片头封面：下载 cover_file_key（若有）并放进 public 目录
     cover_path = None
     cover_name = None
     if config.get("intro") and config["intro"].get("cover_file_key"):
@@ -229,7 +229,7 @@ async def render_highlight_mix(
         cover_path = os.path.join(tmp_dir, f"cover_{uuid.uuid4().hex}.jpg")
         if await download_to_file(bucket, cover_key, cover_path):
             cover_name = f"cover_{uuid.uuid4().hex}.jpg"
-            _ensure_symlink(cover_path, os.path.join(public_dir, cover_name))
+            _ensure_public_file(cover_path, os.path.join(public_dir, cover_name))
         else:
             cover_path = None
     if config.get("intro"):
@@ -266,14 +266,21 @@ async def render_highlight_mix(
             pass
 
 
-def _ensure_symlink(target: str, link_path: str) -> None:
-    """在 link_path 建立指向 target 的符号链接（已存在则先删再建）。"""
+def _ensure_public_file(target: str, link_path: str) -> None:
+    """把媒体文件放进 public 目录：优先硬链接（零拷贝），跨设备等失败时退回真实拷贝。
+
+    注意不能用符号链接——Remotion 内部静态服务 serve-handler 用 lstat 判定，
+    默认拒绝服务 symlink（404）。
+    """
     try:
         if os.path.islink(link_path) or os.path.exists(link_path):
             os.remove(link_path)
     except OSError:
         pass
-    os.symlink(target, link_path)
+    try:
+        os.link(target, link_path)
+    except OSError:
+        shutil.copy2(target, link_path)
 
 
 async def _run_render_media(props: dict, config: dict, public_dir: str | None = None) -> tuple[bool, str, str]:
