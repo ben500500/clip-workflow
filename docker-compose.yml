@@ -554,6 +554,10 @@ services:
     # 优雅退出窗口：SIGTERM 后等待当前任务完成再退出（worker 会停止认领新任务），
     # 避免强杀正在处理的任务导致临时目录残留
     stop_grace_period: 15m
+    # CPU cgroup 限额（2026-11-20 评审 P1-1）：libx264 多线程单任务实测可吃 847%，
+    # 两个 worker 叠加会把同机 19 容器（backend/pg/redis/nginx…）挤到饿死。
+    # 6 核/节点 × 2 节点 = 12 核封顶，给常驻服务留足余量。
+    cpus: 6.0
     networks:
       - clip-network
     depends_on:
@@ -591,6 +595,8 @@ services:
     container_name: clip-slice-worker-2
     restart: unless-stopped
     stop_grace_period: 15m
+    # CPU 限额：同 slice-worker（评审 P1-1）
+    cpus: 6.0
     networks:
       - clip-network
     depends_on:

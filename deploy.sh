@@ -163,6 +163,9 @@ build_images() {
     # 先同步进去才能把引擎打入镜像（与 .cnb.yml 同步逻辑一致）
     bash scripts/sync-engines-to-worker.sh
 
+    # 同步后 sha256 复核（2026-11-20 评审：双份引擎曾在树内静默分叉 4975 vs 4867 行）
+    bash scripts/check-engine-sync.sh
+
     # 执行构建
     $COMPOSE_CMD build --parallel
 
