@@ -92,7 +92,28 @@ async def _run_remotion_mix_flow(slice_task_id: str) -> dict:
 
     # 渲染（独立子进程，耗时；在会话外执行，避免长事务）。
     # 返回 outputs 为「每个混剪成品文件」的本地路径列表（mix_output_count>1 时多文件）。
-    ok, out = await render_highlight_mix(task, config)
+    # 进度回写：渲染中按 progress_cb 节流（≥2% 或阶段切换）更新 slice_tasks.progress，
+    # 让前端能看到多文件渲染的实时推进（下载 5% → 渲染 5~92% → 上传 92~99%）。
+    progress_state = {"last": 0.0}
+
+    async def _progress_cb(pct: float, message: str = "") -> None:
+        if pct - progress_state["last"] < 2.0 and pct < 91.0:
+            return  # 节流：进度变化不足 2% 不写库（渲染末段与阶段切换强制写入）
+        progress_state["last"] = pct
+        try:
+            async with async_session_factory() as db:
+                t = (
+                    await db.execute(select(SliceTask).where(SliceTask.id == slice_task_id))
+                ).scalar_one_or_none()
+                if t and t.status == "processing":
+                    t.progress = float(min(92.0, max(1.0, pct)))
+                    if message:
+                        t.error_message = None  # 渲染中清除历史错误，message 走日志
+                    await db.commit()
+        except Exception as e:
+            logger.warning("回写渲染进度失败 slice_task=%s pct=%s: %s", slice_task_id, pct, e)
+
+    ok, out = await render_highlight_mix(task, config, progress_cb=_progress_cb)
     if not ok:
         # 回写失败：任务无 ffmpeg 产物（Remotion 即拼接者），整体置 failed 供手动重试
         async with async_session_factory() as db:
@@ -108,6 +129,13 @@ async def _run_remotion_mix_flow(slice_task_id: str) -> dict:
 
     # 上传渲染产物到 MinIO sliced 桶（多文件：_001..N 序号 key）
     await ensure_bucket(settings.MINIO_BUCKET_SLICED)
+    async with async_session_factory() as db:
+        t = (
+            await db.execute(select(SliceTask).where(SliceTask.id == slice_task_id))
+        ).scalar_one_or_none()
+        if t and t.status == "processing":
+            t.remotion_status = "uploading"
+            await db.commit()
     outputs = out if isinstance(out, list) else [out]
     keys: list[str] = []
     for i, local_path in enumerate(outputs, start=1):
@@ -119,6 +147,8 @@ async def _run_remotion_mix_flow(slice_task_id: str) -> dict:
         if not uploaded:
             return {"ok": False, "error": f"上传 Remotion 渲染产物到 MinIO 失败: {key}"}
         keys.append(key)
+        # 上传进度：92% → 99% 按文件数均分
+        await _progress_cb(92.0 + 7.0 * i / len(outputs), f"上传第 {i}/{len(outputs)} 个文件")
 
     async with async_session_factory() as db:
         task = (

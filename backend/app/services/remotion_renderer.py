@@ -181,7 +181,8 @@ def _build_props(segments: list[dict], config: dict, source_name: str) -> dict:
 async def render_highlight_mix(
     slice_task,
     config: dict,
-    progress_cb: ProgressCallback = None,
+    progress_cb=None,
+    on_progress=None,
 ) -> tuple[bool, list[str] | str]:
     """按高光混剪 cutlist 分组，逐文件渲染 Remotion 增强混剪。
 
@@ -190,6 +191,11 @@ async def render_highlight_mix(
     时间轴截取、段间转场、字幕/段标题/片头片尾，产出 N 个成品文件。
     ffmpeg concat 派发在该模式下被跳过，不存在两遍拼接的重复劳动。
 
+    - progress_cb：总进度回调 `async def(pct: float, message: str)`（0-100），
+      由 Celery flow 回写 slice_tasks.progress，让前端能看到多文件渲染的推进
+      （下载 5% → 渲染 5~92% 按组均分 → 上传由 flow 推进 92~99%）。
+    - on_progress：单文件组内进度回调 `async def(pct: int)`（render.js 的
+      PROGRESS 行，0-100），由 render_highlight_mix 映射到总进度。
     - 返回 (True, 本地输出路径列表) 或 (False, 错误信息)，由 Celery 任务负责
       上传 MinIO、状态回写（completed/failed）与重试。
     - 渲染动作封装在 _run_render_media，便于单元测试 mock。
@@ -212,6 +218,8 @@ async def render_highlight_mix(
     ok = await download_to_file(bucket, source_key, source_path)
     if not ok:
         return False, f"下载源视频失败: {bucket}/{source_key}"
+    if progress_cb:
+        await progress_cb(5.0, f"源视频已下载，共 {len(groups)} 个文件待渲染")
 
     # Remotion 媒体供给：compositor 只从内部 HTTP 服务拉流，绝对路径会 404；
     # 且其静态服务（serve-handler）默认拒绝符号链接（lstat + symlinks: false），
@@ -237,20 +245,38 @@ async def render_highlight_mix(
         config["intro"]["cover_name"] = cover_name
 
     outputs: list[str] = []
+    n_groups = len(groups)
+
+    def _group_progress(gi: int):
+        """第 gi 组的组内进度 → 总进度映射：渲染段占 5%~92%，按组数均分。"""
+        async def _cb(pct: int):
+            if not progress_cb:
+                return
+            clamped = max(0, min(100, int(pct)))
+            total = 5.0 + 87.0 * ((gi - 1) + clamped / 100.0) / n_groups
+            await progress_cb(total, f"正在渲染第 {gi}/{n_groups} 个文件（{clamped}%）")
+        return _cb
+
     try:
         for gi, group in enumerate(groups, start=1):
             props = _build_props(group["segs"], config, source_name)
-            ok, out, err = await _run_render_media(props, config, public_dir)
+            ok, out, err = await _run_render_media(
+                props, config, public_dir, on_progress=_group_progress(gi)
+            )
             if not ok:
                 logger.error(
                     "remotion render failed (file %d/%d, name=%s): %s",
                     gi, len(groups), group["name"], err,
                 )
                 return False, f"Remotion 渲染失败: {err or '未知错误'}"
+            if progress_cb:
+                await progress_cb(5.0 + 87.0 * gi / n_groups, f"第 {gi}/{n_groups} 个文件渲染完成")
             _parse_progress_stdout(out)
             if not os.path.isfile(out):
                 return False, f"Remotion 渲染产物不存在: {out}"
             outputs.append(out)
+        if progress_cb:
+            await progress_cb(92.0, "全部文件渲染完成，开始上传")
         return True, outputs
     finally:
         # 清理临时文件（源视频/封面本体 + public 目录及其符号链接）
@@ -283,11 +309,19 @@ def _ensure_public_file(target: str, link_path: str) -> None:
         shutil.copy2(target, link_path)
 
 
-async def _run_render_media(props: dict, config: dict, public_dir: str | None = None) -> tuple[bool, str, str]:
+async def _run_render_media(
+    props: dict,
+    config: dict,
+    public_dir: str | None = None,
+    on_progress=None,
+) -> tuple[bool, str, str]:
     """调用 Remotion render.js 子进程，返回 (ok, 输出路径, 错误信息)。
 
-    public_dir：Remotion public 目录（含源视频/封面符号链接），经 --public-dir
+    public_dir：Remotion public 目录（含源视频/封面硬链接），经 --public-dir
     传给 bundle()，由内部 HTTP 服务按 /<相对名> 提供。
+    on_progress：组内进度回调 `async def(pct: int)`——render.js 的 stdout 每输出
+    一行 `PROGRESS: <pct>%` 即触发一次（流式逐行读取，非等进程结束）。
+    stderr 必须并发排空：chromium 日志量大，管道缓冲写满会阻塞子进程。
     独立函数便于单元测试 mock 掉真实渲染。
     """
     script = REMOTION_RENDER_SCRIPT
@@ -309,6 +343,28 @@ async def _run_render_media(props: dict, config: dict, public_dir: str | None = 
     # worker-remotion 容器 cwd=/app（backend 代码），必须切到 remotion 源码目录
     # （REMOTION_WORK_DIR=/remotion），否则 ENOENT /app/src/index.ts。
     work_dir = (settings.REMOTION_WORK_DIR or "").strip() or None
+    out_lines: list[str] = []
+    err_lines: list[str] = []
+
+    async def _pump_stdout(stream) -> None:
+        async for raw in stream:
+            line = raw.decode(errors="replace").rstrip()
+            out_lines.append(line)
+            stripped = line.strip()
+            if stripped.startswith("PROGRESS:") and on_progress:
+                try:
+                    pct = int(stripped.split(":", 1)[1].strip().rstrip("%").strip())
+                except ValueError:
+                    continue
+                try:
+                    await on_progress(pct)
+                except Exception as cb_e:  # 进度回调失败不影响渲染主流程
+                    logger.warning("remotion progress callback failed: %s", cb_e)
+
+    async def _pump_stderr(stream) -> None:
+        async for raw in stream:
+            err_lines.append(raw.decode(errors="replace").rstrip())
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -316,21 +372,29 @@ async def _run_render_media(props: dict, config: dict, public_dir: str | None = 
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=3600)
-    except asyncio.TimeoutError:
         try:
-            proc.kill()
-        except Exception:
-            pass
-        return False, "", "Remotion 渲染超时（>3600s）"
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _pump_stdout(proc.stdout),
+                    _pump_stderr(proc.stderr),
+                    proc.wait(),
+                ),
+                timeout=3600,
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return False, "", "Remotion 渲染超时（>3600s）"
     finally:
         try:
             os.remove(props_path)
         except OSError:
             pass
 
-    out = out_b.decode(errors="replace")
-    err = err_b.decode(errors="replace")
+    out = "\n".join(out_lines)
+    err = "\n".join(err_lines)
     if proc.returncode != 0 or not os.path.isfile(output_path):
         return False, out, (err or f"render.js 退出码 {proc.returncode}")
     return True, output_path, ""

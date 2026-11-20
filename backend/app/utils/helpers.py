@@ -130,6 +130,38 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
             # 未设每文件时长上限：按段数均分到 N 个文件
             per = -(-len(segs) // output_count)
             groups = [segs[i * per:(i + 1) * per] for i in range(output_count)]
+        elif order == "random" and max_duration is not None:
+            # 随机抽取 + 每文件时长上限：**必须凑满 N 个文件**——素材允许跨文件复用
+            # （业务规则：只要各文件组合顺序不同即可），每组独立洗牌贪心抽取贴近上限。
+            # 背景：素材总时长不足 N×上限时，顺序填充只能产出「素材够分」的组数
+            # （2026-11-20 余生践一诺：52 段/485s 上限 60s 只出 9 个），业务要求
+            # 输出个数是硬指标而非上限。
+            groups = []
+            seen_sigs = set()
+            attempts = 0
+            while len(groups) < output_count and attempts < output_count * 25:
+                attempts += 1
+                pool = segs[:]
+                _random.shuffle(pool)
+                group = []
+                g_total = 0.0
+                for seg in pool:
+                    if g_total + seg[2] > max_duration:
+                        continue  # 超额段跳过，继续尝试更短的段凑近上限
+                    group.append(seg)
+                    g_total += seg[2]
+                if not group:
+                    # 全部段都超每文件上限：裁剪洗牌后首段保底（不出空组）
+                    start, _end, _dur, _c = pool[0]
+                    group = [(start, start + float(max_duration), float(max_duration), _c)]
+                sig = tuple((s[0], s[1]) for s in group)
+                if sig in seen_sigs:
+                    continue  # 与已有文件的段组合完全相同：重洗重抽（防「相同顺序使用」）
+                seen_sigs.add(sig)
+                groups.append(group)
+            # 重试耗尽仍凑不满（概率极低）：接受重复补齐，保证精确 N 个文件
+            while len(groups) < output_count:
+                groups.append(list(groups[-1]) if groups else segs[:1])
         else:
             groups = [[] for _ in range(output_count)]
             gi = 0
