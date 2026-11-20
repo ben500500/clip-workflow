@@ -23,6 +23,9 @@ celery_app = Celery(
     "clip_workflow",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
+    # remotion 任务定义在独立模块（worker-remotion 仅 -A tasks.celery_app 启动，
+    # 无显式 include 时 run_remotion_mix_task 不会注册 → 消息到达即 KeyError 丢弃）
+    include=["app.celery.remotion_tasks"],
 )
 
 celery_app.conf.update(
