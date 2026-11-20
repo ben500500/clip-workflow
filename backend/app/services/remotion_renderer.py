@@ -124,7 +124,8 @@ def _parse_progress_stdout(stdout: str) -> None:
                 pass
 
 
-def _build_props(segments: list[dict], config: dict, source_name: str) -> dict:
+def _build_props(segments: list[dict], config: dict, source_name: str,
+                 portrait: bool = False) -> dict:
     """把后端 remotion_mix_config + 高光段时间轴组装成 render.ts 期望的 HighlightMixProps。
 
     config 字段（来自 _build_remotion_mix_config）：
@@ -132,6 +133,8 @@ def _build_props(segments: list[dict], config: dict, source_name: str) -> dict:
 
     媒体路径契约：file/cover 一律传 public 目录相对名——Remotion compositor 只从
     内部 HTTP 服务拉流，绝对路径会被当成 URL 而 fatally 404。
+    portrait：源视频是否竖屏——画布跟随源方向（短剧源均为竖屏 9:16，横屏画布
+    会把竖屏素材 cover 裁掉上下大半画面，2026-11-20 生产反馈）。
     """
     fps = 30
     # 逐段统一指向 public 目录里的源视频符号链接，用 start/end 在源内取子段
@@ -154,13 +157,18 @@ def _build_props(segments: list[dict], config: dict, source_name: str) -> dict:
         if i < len(seg_props) - 1:
             total_frames += transition_frames
 
+    if portrait:
+        width, height = (1080, 1920) if config.get("output_tier") == "1080p" else (720, 1280)
+    else:
+        width, height = (1920, 1080) if config.get("output_tier") == "1080p" else (1280, 720)
+
     props: dict = {
         "segments": seg_props,
         "subtitles": [],  # MVP：字幕透传可后续由 ASR 时间轴填充
         "fps": fps,
         "durationInFrames": max(1, total_frames),
-        "width": 1920 if config.get("output_tier") == "1080p" else 1280,
-        "height": 1080 if config.get("output_tier") == "1080p" else 720,
+        "width": width,
+        "height": height,
         "transitionFrames": transition_frames,
     }
     if config.get("intro"):
@@ -221,6 +229,10 @@ async def render_highlight_mix(
     if progress_cb:
         await progress_cb(5.0, f"源视频已下载，共 {len(groups)} 个文件待渲染")
 
+    # 画布跟随源视频方向：短剧源均为竖屏 9:16，横屏画布会把竖屏素材
+    # cover 裁掉上下大半（2026-11-20 生产反馈「全是横屏」）。探测失败默认竖屏。
+    portrait = await _probe_portrait(source_path)
+
     # Remotion 媒体供给：compositor 只从内部 HTTP 服务拉流，绝对路径会 404；
     # 且其静态服务（serve-handler）默认拒绝符号链接（lstat + symlinks: false），
     # 所以 public 目录里必须放**硬链接**（同盘零拷贝；跨盘退回真实拷贝）。
@@ -259,7 +271,7 @@ async def render_highlight_mix(
 
     try:
         for gi, group in enumerate(groups, start=1):
-            props = _build_props(group["segs"], config, source_name)
+            props = _build_props(group["segs"], config, source_name, portrait=portrait)
             ok, out, err = await _run_render_media(
                 props, config, public_dir, on_progress=_group_progress(gi)
             )
@@ -290,6 +302,29 @@ async def render_highlight_mix(
             shutil.rmtree(public_dir, ignore_errors=True)
         except Exception:
             pass
+
+
+async def _probe_portrait(video_path: str) -> bool:
+    """ffprobe 探测视频方向（30s 超时）：宽<高为竖屏。
+
+    短剧业务源全部为竖屏 9:16，探测失败时按竖屏兜底（宁竖勿横——横屏画布
+    会把竖屏素材上下裁掉大半画面）。
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height", "-of", "csv=p=0",
+            video_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        dims = out_b.decode(errors="replace").strip().split(",")
+        if len(dims) >= 2:
+            return int(dims[1]) > int(dims[0])
+    except Exception as e:
+        logger.warning("ffprobe 探测视频方向失败 %s: %s", video_path, e)
+    return True  # 兜底竖屏
 
 
 def _ensure_public_file(target: str, link_path: str) -> None:

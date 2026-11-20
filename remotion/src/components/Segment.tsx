@@ -16,13 +16,17 @@ export const Segment: React.FC<{
   subtitles?: Subtitle[];
   subtitleStyle?: SubtitleStyle;
 }> = ({segment, subtitles, subtitleStyle}) => {
-  const {height} = useVideoConfig();
+  const {height, fps} = useVideoConfig();
 
   return (
     <AbsoluteFill style={{backgroundColor: '#000'}}>
-      {/* cover 裁切：视频等比填满画布 */}
+      {/* cover 裁切：视频等比填满画布；trimBefore/After 把源内 [start,end] 子段
+          映射到本段时间线（单位为帧）——缺省时每段都从源视频 0 秒开始播，
+          成片会变成「同一段开头画面反复重复」（2026-11-20 生产发现） */}
       <OffthreadVideo
         src={segment.file.startsWith('http') ? segment.file : staticFile(segment.file)}
+        trimBefore={Math.round(segment.start * fps)}
+        trimAfter={Math.round(segment.end * fps)}
         style={{
           width: '100%',
           height: '100%',
