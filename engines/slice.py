@@ -4593,6 +4593,15 @@ def main():
     hook_part_path = None
     hook_target_key = None
     hook_dur = 0.0
+    # combine 钩子链任务级缓存（2026-11-20 评审 P0-1）：None=未构建。
+    # combine 模式所有变体共用同一条「全部钩子 concat」片头，此前每个成品都在
+    # 自己的 TemporaryDirectory 里重建整条链（518s 链 × N 成品全量重编码 ≈ 任务
+    # 总耗时 85%）。改为循环外只建一次、循环内只读复用；缓存目录放 output_dir
+    # 同级（任务临时目录内，随任务被 Worker 清理），不落 node 根目录避开
+    # cleanupOrphanDirs 的 UUID 清扫，也不会被当成成品上传。finally 里兜底 rmtree。
+    combine_hook_part = None
+    combine_hook_dur = 0.0
+    chain_cache_dir = None
     # 钩子视频：--hook 可重复传入多个路径（文件夹方式，切片时按顺序循环取用）。
     # 过滤出不存在的文件，保留有效钩子列表。
     hook_paths = [h for h in (args.hook or []) if os.path.isfile(h)]
@@ -4678,42 +4687,57 @@ def main():
                     hook_injected = True
                     if hook_mix_mode == "combine" and len(hook_paths) > 1:
                         # combine 模式：所有钩子依次拼接成完整片头（part_0 为多个钩子 concat）。
-                        # 各变体共用同一钩子组合（combine 本身即拼接全部钩子）。
-                        hook_parts_concat = []
-                        hook_total_dur = 0.0
-                        for ci, chp in enumerate(hook_paths):
-                            ch_dur = ffprobe_duration(chp) or 0.0
-                            hook_total_dur += ch_dur
-                            ch_part = os.path.join(tmp, f"hook_{ci}.mp4")
-                            hook_w = tier_w or 1280
-                            hook_h = tier_h or 720
-                            hook_fps = _fps_value(tier_fps) if tier_fps else 25.0
-                            hook_vf = (
-                                f"scale={hook_w}:{hook_h}:force_original_aspect_ratio=increase,"
-                                f"crop={hook_w}:{hook_h},fps={hook_fps:.3f},setsar=1,format=yuv420p"
-                            )
-                            if vf:
-                                hook_vf = f"{hook_vf},{vf}"
-                            slice_segment(chp, 0.0, ch_dur, ch_part,
-                                          vf=hook_vf, af=af, threads=threads, encoder=encoder,
-                                          bgm=bgm_audio)
-                            hook_parts_concat.append(ch_part)
-                            print(f"钩子拼接[combine]: {os.path.basename(chp)} (时长 {ch_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
-                        # concat 所有钩子段为完整片头 part_0
-                        hook_part = os.path.join(tmp, "part_0.mp4")
-                        concat_list = os.path.join(tmp, "hook_concat.txt")
-                        with open(concat_list, "w") as f:
-                            for hp in hook_parts_concat:
-                                f.write(f"file '{hp}'\n")
-                        concat_cmd = [
-                            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                            "-i", concat_list,
-                        ]
-                        concat_cmd += build_encoder_args(encoder, threads)
-                        concat_cmd += ["-c:a", "aac", "-b:a", "128k", hook_part]
-                        subprocess.run(concat_cmd, capture_output=True, check=True)
-                        hook_dur = hook_total_dur
-                        print(f"钩子拼接[combine]: 已拼接 {len(hook_parts_concat)} 个钩子 (总时长 {hook_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
+                        # 各变体共用同一钩子组合（combine 本身即拼接全部钩子）——
+                        # 2026-11-20 评审 P0-1：链提升为任务级缓存，只构建一次，
+                        # 后续成品只读复用（缓存目录在任务临时目录内，见循环外注释）。
+                        if combine_hook_part is None:
+                            if chain_cache_dir is None:
+                                chain_cache_dir = tempfile.mkdtemp(
+                                    prefix="hookchain_",
+                                    dir=os.path.dirname(os.path.abspath(args.output_dir)) or None,
+                                )
+                            hook_parts_concat = []
+                            hook_total_dur = 0.0
+                            for ci, chp in enumerate(hook_paths):
+                                ch_dur = ffprobe_duration(chp) or 0.0
+                                hook_total_dur += ch_dur
+                                ch_part = os.path.join(chain_cache_dir, f"hook_{ci}.mp4")
+                                hook_w = tier_w or 1280
+                                hook_h = tier_h or 720
+                                hook_fps = _fps_value(tier_fps) if tier_fps else 25.0
+                                hook_vf = (
+                                    f"scale={hook_w}:{hook_h}:force_original_aspect_ratio=increase,"
+                                    f"crop={hook_w}:{hook_h},fps={hook_fps:.3f},setsar=1,format=yuv420p"
+                                )
+                                if vf:
+                                    hook_vf = f"{hook_vf},{vf}"
+                                slice_segment(chp, 0.0, ch_dur, ch_part,
+                                              vf=hook_vf, af=af, threads=threads, encoder=encoder,
+                                              bgm=bgm_audio)
+                                hook_parts_concat.append(ch_part)
+                                print(f"钩子拼接[combine]: {os.path.basename(chp)} (时长 {ch_dur:.3f}s)", file=sys.stderr)
+                            # concat 所有钩子段为完整片头 part_0（缓存目录不进 output_dir，
+                            # 不会被当成成品上传）
+                            hook_part = os.path.join(chain_cache_dir, "part_0.mp4")
+                            concat_list = os.path.join(chain_cache_dir, "hook_concat.txt")
+                            with open(concat_list, "w") as f:
+                                for hp in hook_parts_concat:
+                                    f.write(f"file '{hp}'\n")
+                            concat_cmd = [
+                                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                                "-i", concat_list,
+                            ]
+                            concat_cmd += build_encoder_args(encoder, threads)
+                            concat_cmd += ["-c:a", "aac", "-b:a", "128k", hook_part]
+                            subprocess.run(concat_cmd, capture_output=True, check=True)
+                            hook_dur = hook_total_dur
+                            combine_hook_part = hook_part
+                            combine_hook_dur = hook_dur
+                            print(f"钩子拼接[combine]: 已拼接 {len(hook_parts_concat)} 个钩子 (总时长 {hook_dur:.3f}s) [任务级缓存，后续成品复用]", file=sys.stderr)
+                        else:
+                            hook_part = combine_hook_part
+                            hook_dur = combine_hook_dur
+                            print(f"钩子拼接[combine 缓存复用]: (总时长 {hook_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
                     else:
                         # sequential 或 random：取一个钩子作为片头
                         if hook_mix_mode == "random" and len(hook_paths) > 1:
@@ -4763,6 +4787,10 @@ def main():
                     slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder,
                                   bgm=bgm_audio)
                     parts.append(part)
+                # 细分进度（2026-11-20 评审 P0-3）：成品内阶段 tick，格式与成品级一致。
+                # 同档位百分比在 worker 侧只续 lease 不重复写 Redis（节流），
+                # 但足以刷新卡死检测心跳——单成品耗时再长也不会被 stuckTaskLoop 误杀。
+                print(f"PROGRESS:{min(99, int((processed + 0.6) * 100 / total))}")
                 if tail_hook_part:
                     parts.append(tail_hook_part)
                 # 含钩子段时强制走 filter_complex 重编码 concat（各段参数已归一化对齐），
@@ -4770,6 +4798,7 @@ def main():
                 concat_segments(parts, out_path, threads=threads, encoder=encoder,
                                 copy_if_possible=(not hook_injected))
                 seg_times = [(s, e) for s, e, _ in group]
+                print(f"PROGRESS:{min(99, int((processed + 0.7) * 100 / total))}")
                 # 源字幕打码：打掉片源自带字幕（在烧录自己的新字幕之前）
                 if subtitle_mask:
                     mask_out = out_path + ".masked.mp4"
@@ -4826,6 +4855,8 @@ def main():
                                             enable="",
                                             threads=threads, encoder=encoder)
                         os.replace(mask_out, out_path)
+                # 源字幕打码完成（若启用）→ 阶段 tick
+                print(f"PROGRESS:{min(99, int((processed + 0.75) * 100 / total))}")
                 # 字幕烧录：开启后按该切片的源时间段从源 SRT 截取并烧录到成品
                 if args.subtitle:
                     sub_srt = os.path.join(tmp, "clip_subtitle.srt")
@@ -4853,6 +4884,8 @@ def main():
                                   margin_v=margin_v,
                                   margin_ratio=subtitle_margin_ratio)
                     os.replace(sub_out, out_path)
+                    # 字幕烧录完成 → 阶段 tick
+                    print(f"PROGRESS:{min(99, int((processed + 0.8) * 100 / total))}")
             # 恒定水印/角标打码：切片+字幕完成后，打掉片源固定水印（全程打码，
             # 水印是恒定元素无时间轴可言；区域由自动检测或手动 x/y/width/height 指定）。
             if watermark_mask:
@@ -4862,6 +4895,8 @@ def main():
                                     threads=threads, encoder=encoder)
                 os.replace(wm_out, out_path)
                 print(f"恒定水印打码完成: {os.path.basename(out_path)}", file=sys.stderr)
+            # 恒定水印打码完成 → 阶段 tick
+            print(f"PROGRESS:{min(99, int((processed + 0.85) * 100 / total))}")
             # 图片角标：切片完成后在成品上叠加角标（全程覆盖视频指定位置）
             if badges:
                 badge_out = out_path + ".badge.mp4"
@@ -4871,6 +4906,8 @@ def main():
                     default_width=args.badge_default_width,
                 )
                 os.replace(badge_out, out_path)
+                # 角标叠加完成 → 阶段 tick
+                print(f"PROGRESS:{min(99, int((processed + 0.88) * 100 / total))}")
             # 固定文字角标：在图片角标之后再叠加文字（文字常叠在角标之上层）
             if text_overlays:
                 txt_out = out_path + ".textov.mp4"
@@ -4879,12 +4916,16 @@ def main():
                     threads=threads, encoder=encoder,
                 )
                 os.replace(txt_out, out_path)
+                # 固定文字角标完成 → 阶段 tick
+                print(f"PROGRESS:{min(99, int((processed + 0.91) * 100 / total))}")
             # 视频封面：将封面叠加到成品第一帧作为视频首帧
             if args.cover:
                 cover_out = out_path + ".coverout.mp4"
                 apply_cover_first_frame(out_path, args.cover, cover_out, threads=threads, encoder=encoder)
                 if os.path.isfile(cover_out):
                     os.replace(cover_out, out_path)
+                # 封面首帧完成 → 阶段 tick
+                print(f"PROGRESS:{min(99, int((processed + 0.93) * 100 / total))}")
             duration = ffprobe_duration(out_path)
             outputs.append((name, duration))
             processed += 1
@@ -4893,6 +4934,9 @@ def main():
 
         print("PROGRESS:100")
     finally:
+        # 清理 combine 钩子链任务级缓存目录（正常由任务目录级联清理，这里兜底防残留）
+        if chain_cache_dir and os.path.isdir(chain_cache_dir):
+            shutil.rmtree(chain_cache_dir, ignore_errors=True)
         # 清理竖屏转横屏临时文件
         if source_path != args.source and os.path.isfile(source_path):
             try:
