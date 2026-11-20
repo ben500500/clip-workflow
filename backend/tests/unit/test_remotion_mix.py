@@ -8,6 +8,7 @@
 运行：cd backend && python -m pytest tests/unit/test_remotion_mix.py -v
 """
 
+import os
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,6 +17,17 @@ import pytest
 
 # 让 backend 作为根包可导入（app.*）
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://u:p@localhost:5432/db")
+os.environ.setdefault("JWT_SECRET", "u" * 64)
+os.environ.setdefault("MINIO_ACCESS_KEY", "test")
+os.environ.setdefault("MINIO_SECRET_KEY", "testtest")
+
+def _enable_remotion(monkeypatch, enabled: bool):
+    """patch 实体开关查询（system_configs 驱动，2026-11-20 起）。"""
+    async def fake(db):
+        return enabled
+    monkeypatch.setattr("app.services.remotion_renderer.is_remotion_enabled", fake)
 
 from app.api import slice_helpers
 from app.api.slice_helpers import SliceRunRequest, _build_remotion_mix_config
@@ -128,7 +140,7 @@ def test_run_remotion_mix_success_marks_done(monkeypatch):
         return {"ok": True, "output_file_key": "remotion/task.mp4"}
 
     monkeypatch.setattr("app.celery.remotion_tasks._run_remotion_mix_flow", fake_flow)
-    monkeypatch.setattr("app.celery.remotion_tasks.settings.REMOTION_ENABLED", True)
+    _enable_remotion(monkeypatch, True)
 
     res = run_remotion_mix_task.run("some-id")
     assert res["ok"] is True
@@ -148,7 +160,7 @@ def test_run_remotion_mix_failure_retries(monkeypatch):
 
     monkeypatch.setattr("app.celery.remotion_tasks._run_remotion_mix_flow", fake_flow)
     monkeypatch.setattr("app.celery.remotion_tasks._mark_remotion_failed", fake_mark)
-    monkeypatch.setattr("app.celery.remotion_tasks.settings.REMOTION_ENABLED", True)
+    _enable_remotion(monkeypatch, True)
 
     with patch.object(run_remotion_mix_task, "retry", side_effect=Exception("retry")) as mock_retry:
         with pytest.raises(Exception, match="retry"):
@@ -164,7 +176,7 @@ def test_run_remotion_mix_disabled_skips(monkeypatch):
         raise AssertionError("不应渲染")
 
     monkeypatch.setattr("app.celery.remotion_tasks._run_remotion_mix_flow", fake_flow)
-    monkeypatch.setattr("app.celery.remotion_tasks.settings.REMOTION_ENABLED", False)
+    _enable_remotion(monkeypatch, False)
 
     res = run_remotion_mix_task.run("some-id")
     assert res.get("skipped") is True

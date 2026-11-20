@@ -78,11 +78,12 @@ async def get_remotion_status(
 ):
     """查询指定切片任务的 Remotion 渲染状态。"""
     task = await _load_remotion_task(slice_task_id, current_user, db)
+    from app.services.remotion_renderer import is_remotion_enabled
     return RemotionStatusResponse(
         slice_task_id=str(task.id),
         remotion_status=getattr(task, "remotion_status", None),
         remotion_output_file_key=getattr(task, "remotion_output_file_key", None),
-        remotion_enabled=settings.REMOTION_ENABLED,
+        remotion_enabled=await is_remotion_enabled(db),
         error_message=getattr(task, "error_message", None),
     )
 
@@ -105,10 +106,11 @@ async def trigger_remotion_render(
             status_code=400,
             detail="该切片任务未启用 Remotion 混剪增强（remotion_mix_config 为空）",
         )
-    if not settings.REMOTION_ENABLED:
+    from app.services.remotion_renderer import is_remotion_enabled
+    if not await is_remotion_enabled(db):
         raise HTTPException(
             status_code=400,
-            detail="REMOTION_ENABLED 未开启，无法触发 Remotion 渲染",
+            detail="Remotion 渲染开关未开启（系统设置 → Remotion 渲染），无法触发渲染",
         )
 
     from app.celery.remotion_tasks import run_remotion_mix_task

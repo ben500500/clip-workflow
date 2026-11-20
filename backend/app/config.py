@@ -299,9 +299,8 @@ class Settings(BaseSettings):
     FEISHU_ROSTER_CACHE_DIR: str = "/app/media/pingyue"
 
     # ── Remotion 高光混剪增强（MVP：模板化编排的混剪包装层）──
-    # 生产安全开关（参考 SPARKLE_ENABLED 思路）：默认关闭，开启后切片启用
-    # remotion_mix_enabled 时才会触发 Remotion 渲染容器出增强版混剪。
-    REMOTION_ENABLED: bool = False
+    # Remotion 渲染能力开关已改为界面实体开关（系统设置 → system_configs.remotion_enabled），
+    # 不再提供 env REMOTION_ENABLED（2026-11-20 弃用）。
     # Remotion 渲染容器内 render.js 入口路径（可被 env 覆盖）
     REMOTION_RENDER_SCRIPT: str = "/remotion/dist/render.js"
     # Remotion 渲染临时目录（源视频/封面/props/产物落盘）

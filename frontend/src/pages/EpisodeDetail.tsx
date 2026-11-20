@@ -382,6 +382,9 @@ const EpisodeDetail: React.FC = () => {
   // 输出文件个数（默认 1=单成品）：>1 时把入选段分组填充产出 N 个混剪文件，
   // 「输出总时长上限」语义变为每个文件的时长上限；未设上限时按段数均分
   const [highlightMixOutputCount, setHighlightMixOutputCount] = useState<number>(1);
+  // Remotion 混剪增强（任务级）：切片完成后走 Remotion 引擎渲染增强版混剪
+  // （片头/转场/字幕/段标题/片尾）；全局能力开关在系统设置页。
+  const [remotionMixEnabled, setRemotionMixEnabled] = useState(false);
   // 高光混剪设置弹窗是否打开
   const [highlightMixModalOpen, setHighlightMixModalOpen] = useState(false);
   // ── ASR 字幕烧录开关 ──
@@ -1340,6 +1343,7 @@ const EpisodeDetail: React.FC = () => {
         highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
         highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
         highlight_mix_output_count: highlightMixEnabled ? highlightMixOutputCount : undefined,
+        remotion_mix_enabled: remotionMixEnabled,
         // 选点历史：当前候选为空（最近选点失败）时用所选历史 run 恢复候选再切片
         slice_autoclip_run_id: sliceAutoclipRunId || undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
@@ -1536,6 +1540,7 @@ const EpisodeDetail: React.FC = () => {
         highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
         highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
         highlight_mix_output_count: highlightMixEnabled ? highlightMixOutputCount : undefined,
+        remotion_mix_enabled: remotionMixEnabled,
         // 选点历史：当前候选为空（最近选点失败）时用所选历史 run 恢复候选再切片
         slice_autoclip_run_id: sliceAutoclipRunId || undefined,
         // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
@@ -2207,6 +2212,15 @@ const EpisodeDetail: React.FC = () => {
               checked={highlightMixEnabled}
               onChange={(v) => setHighlightMixEnabled(v)}
             />
+            <Tooltip title="开启后，该次切片完成后将使用 Remotion 引擎渲染增强版混剪（片头标题卡 + 段间转场 + 字幕 + 段标题 + 片尾卡），替代裸 concat 拼接。需在系统设置开启「Remotion 渲染」。">
+              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+            </Tooltip>
+            <Switch
+              size="small"
+              checked={remotionMixEnabled}
+              onChange={(v) => setRemotionMixEnabled(v)}
+            />
+            <Text strong style={{ fontSize: 12 }}>Remotion 增强</Text>
             <Tooltip title="开启后不再把每个高光段切成独立文件，而是把所有入选高光段按源时间顺序混剪拼接为单个成品视频（可设输出总时长上限/单段最大时长/拼接顺序）。">
               <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
             </Tooltip>
