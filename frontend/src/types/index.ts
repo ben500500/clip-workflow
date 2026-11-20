@@ -156,6 +156,8 @@ export interface SliceTask {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+  // 最后活动时间（后端同步提供，可选字段）：任务列表「最后活动」列据此显示相对时间
+  updated_at?: string;
   // ── 该任务实际应用的配置（用于历史列表悬停展示） ──
   dedupe_config?: Record<string, unknown> | null;
   watermark_config?: Record<string, unknown> | null;

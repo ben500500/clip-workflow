@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Space, Typography, Spin, Alert, Breadcrumb, Descriptions, Tag, message, Select, Row, Col, Progress,
   Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input, Table, Upload, Image as AntImage, Radio, ColorPicker,
-  Checkbox, Modal, Cascader, Popover,
+  Checkbox, Modal, Cascader, Popover, Collapse,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
@@ -523,6 +523,10 @@ const EpisodeDetail: React.FC = () => {
   const [oneClickSlicing, setOneClickSlicing] = useState(false);
   // 一键切片进度（与普通切片共用轮询逻辑）
   const [oneClickProgress, setOneClickProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
+  // ── 专家/简单双模式：专家模式展开全部高级配置，简单模式收纳（偏好记忆到 localStorage）──
+  const [expertMode, setExpertMode] = useState<boolean>(() => localStorage.getItem('slice_expert_mode') === '1');
+  // 「视觉与遮罩高级配置」Collapse 展开状态：初始跟随专家模式（专家=展开，简单=折叠），用户可随时手动开合
+  const [visualCardsOpen, setVisualCardsOpen] = useState<boolean>(expertMode);
 
   const autoclipTimerRef = useRef<number | null>(null);
   const detectTimerRef = useRef<number | null>(null);
@@ -1388,6 +1392,135 @@ const EpisodeDetail: React.FC = () => {
   };
 
   // ─── 一键切片（免审核直接出片） ──────────────────────
+  // ── 切片 payload 单源组装（2026-11-20 评审 #9）──────────────────
+  // 此前「一键切片」「开始切片/快速转换」各手抄一份 ~90 字段 payload，条件已经
+  // 漂移（dedupe 门控一边用 dedupeEnabled、一边用 mode === 'dedupe'）。抽成单源
+  // builder：公共字段只写一遍，两处调用只传差异项。dedupeOn 由调用方传入以保留
+  // 两入口历史语义（一键=dedupeEnabled 独立开关；主路径=sliceMode==='dedupe'）。
+  const buildSlicePayload = (args: {
+    hookKeys: string[];
+    hooksActive: boolean;
+    noCut?: boolean;
+    autoAcceptAll?: boolean;
+    dedupeOn: boolean;
+  }) => ({
+    no_cut: args.noCut || undefined,
+    auto_accept_all: args.autoAcceptAll || undefined,
+    // 无候选片段时自动补一轮 AI 选点（复用所选选点历史参数）
+    auto_autoclip_if_empty: true,
+    autoclip_config: resolveAutoclipConfig(),
+    // 视频封面（首帧）：选择图片作为成品视频首帧
+    cover_image_key: coverImageKey || undefined,
+    // 钩子视频：作为片头/片尾拼接（[封面][钩子][本体] 或 [封面][本体][钩子]）
+    hook_video_keys: args.hooksActive ? args.hookKeys : undefined,
+    hook_video_key: args.hooksActive && args.hookKeys.length === 1 ? args.hookKeys[0] : undefined,
+    // 钩子混搭模式：多钩子时生效（sequential/random/combine）
+    hook_mix_mode: args.hooksActive ? (hookMixMode || 'sequential') : undefined,
+    // 钩子拼接位置（head=片头默认 / tail=片尾）
+    hook_position: args.hooksActive ? hookPosition : undefined,
+    // 钩子混搭输出数量：random/combine 模式；高光混剪有自己的输出个数（cutlist 组数），
+    // 两者并存会按组相乘导致输出爆炸 → 高光混剪开启时忽略
+    hook_mix_output_count: args.hooksActive && !highlightMixEnabled && (hookMixMode === 'random' || hookMixMode === 'combine') && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
+    // 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品
+    highlight_mix_enabled: highlightMixEnabled,
+    highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
+    highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
+    highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
+    highlight_mix_output_count: highlightMixEnabled ? highlightMixOutputCount : undefined,
+    remotion_mix_enabled: remotionMixEnabled,
+    // Remotion 片头片尾（默认关闭=不配置，渲染直接进入正片）
+    remotion_intro: remotionMixEnabled && remotionIntroEnabled ? {
+      title: remotionIntroTitle,
+      episode: remotionIntroEpisode,
+      cover_use_episode: remotionIntroCover,
+      duration_seconds: remotionIntroDuration,
+      background: remotionIntroBg,
+    } : undefined,
+    remotion_outro: remotionMixEnabled && remotionOutroEnabled ? {
+      text: remotionOutroText,
+      subtitle: remotionOutroSubtitle,
+      duration_seconds: remotionOutroDuration,
+      background: remotionOutroBg,
+    } : undefined,
+    // 选点历史：当前候选为空（最近选点失败）时用所选历史 run 恢复候选再切片
+    slice_autoclip_run_id: sliceAutoclipRunId || undefined,
+    // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
+    output_tier: outputTier || 'auto',
+    // 去重档位（轻/标准/重）+ 手动覆盖，仅 dedupeOn 时生效
+    dedupe_config: args.dedupeOn ? buildDedupeConfig(dedupePreset, dedupeManual) : undefined,
+    // 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本）
+    variant_count: args.dedupeOn && variantCount && variantCount > 1 ? variantCount : undefined,
+    // 自定义文字水印：开启后后端下发给引擎，在成品视频上叠加动态文字水印
+    watermark_enabled: watermarkEnabled,
+    watermark_text: watermarkEnabled ? watermarkText : undefined,
+    watermark_font_size: watermarkEnabled ? watermarkFontSize : undefined,
+    watermark_opacity: watermarkEnabled ? watermarkOpacity : undefined,
+    watermark_position: watermarkEnabled ? watermarkPosition : undefined,
+    watermark_style: watermarkEnabled ? watermarkStyle : undefined,
+    // 恒定水印/角标打码：开启后打掉片源固定水印（独立开关，与字幕打码互不干扰）
+    watermark_mask_enabled: watermarkMaskEnabled,
+    watermark_mask_style: watermarkMaskEnabled ? watermarkMaskStyle : undefined,
+    watermark_mask_width_ratio: watermarkMaskEnabled ? watermarkMaskWidthRatio : undefined,
+    watermark_mask_height_ratio: watermarkMaskEnabled ? watermarkMaskHeightRatio : undefined,
+    watermark_mask_bottom_ratio: watermarkMaskEnabled ? watermarkMaskBottomRatio : undefined,
+    // 竖屏转横屏：开启后切片前自动把竖屏素材转成横屏
+    vert2horiz_enabled: vert2horizEnabled,
+    vert2horiz_mode: vert2horizEnabled ? vert2horizMode : undefined,
+    vert2horiz_ratio: vert2horizEnabled ? vert2horizRatio : undefined,
+    vert2horiz_output_size: vert2horizEnabled ? vert2horizOutputSize : undefined,
+    vert2horiz_detect_interval: vert2horizEnabled ? vert2horizDetectInterval : undefined,
+    vert2horiz_smooth_window: vert2horizEnabled ? vert2horizSmoothWindow : undefined,
+    vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
+    vert2horiz_face_margin: vert2horizEnabled ? vert2horizFaceMargin : undefined,
+    // 图片角标：多角标、六角位置、宽度/偏移/透明度，全程叠加
+    badges: badges.length > 0
+      ? badges.map((b) => ({
+          file_key: b.file_key,
+          position: b.position,
+          ...(b.width ? { width: b.width } : {}),
+          ...(b.offset != null ? { offset: b.offset } : {}),
+          ...(b.opacity != null ? { opacity: b.opacity } : {}),
+        }))
+      : undefined,
+    badge_default_width: badgeDefaultWidth || undefined,
+    // ASR 字幕烧录：开启后对源视频做 ASR 识别并烧录到成品视频
+    subtitle_enabled: subtitleEnabled,
+    // 字幕字号/间距/高度（相对高度比例，默认 1/4）/粗细
+    subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
+    subtitle_margin_ratio: subtitleEnabled ? subtitleMarginRatio : undefined,
+    subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
+    subtitle_bold: subtitleEnabled ? subtitleBold : undefined,
+    subtitle_align_mask: subtitleEnabled ? subtitleAlignMask : undefined,
+    // 字幕样式：custom 时可选字体色/边框色（无底色）
+    subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
+    subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
+    subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
+    // 上传的字幕文件：提供后直接应用该字幕，跳过 ASR 识别
+    subtitle_file_key: subtitleFileKey || undefined,
+    // 源视频字幕打码：独立开关，开启后仅打掉片源自带字幕（不依赖 ASR 字幕开关）
+    subtitle_mask_enabled: subtitleMaskEnabled,
+    subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
+    subtitle_mask_preset: subtitleMaskEnabled ? subtitleMaskPreset : undefined,
+    subtitle_mask_temporal: subtitleMaskEnabled ? subtitleMaskTemporal : undefined,
+    subtitle_mask_spatial: (subtitleMaskEnabled && subtitleMaskTemporal) ? subtitleMaskSpatial : undefined,
+    subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
+    subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
+    subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
+    subtitle_mask_srt_offset: (subtitleMaskEnabled && !subtitleMaskTemporal) ? subtitleMaskSrtOffset : undefined,
+    // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排（仅开关开启时生效）
+    text_overlays: textOverlayEnabled && textOverlays.length > 0
+      ? textOverlays.map((t) => ({
+          text: t.text,
+          position: t.position,
+          ...(t.font_size ? { font_size: t.font_size } : {}),
+          ...(t.color ? { color: t.color } : {}),
+          ...(t.border_color ? { border_color: t.border_color } : {}),
+          ...(t.vertical != null ? { vertical: t.vertical } : {}),
+          ...(t.offset != null ? { offset: t.offset } : {}),
+        }))
+      : undefined,
+  });
+
   const oneClickSlice = async () => {
     setOneClickSlicing(true);
     setOneClickProgress({ status: 'running', progress: 5, message: '正在提交一键切片任务…' });
@@ -1401,113 +1534,13 @@ const EpisodeDetail: React.FC = () => {
       // auto_accept_all=true：后端自动把所有候选片段（含 pending）纳入切片，
       // 无需逐个审核/预览，直接产出成品视频；无候选片段时由后端自动补一轮 AI 选点
       // （auto_autoclip_if_empty）——提交即走，关窗口安全
-      const res = await sliceApi.run(episodeId, dedupeEnabled ? 'dedupe' : 'fast', {
-        auto_accept_all: true,
-        // 后端兜底：无候选片段时后端自动补一轮 AI 选点再切片
-        auto_autoclip_if_empty: true,
-        autoclip_config: resolveAutoclipConfig(),
-        // 视频封面：作为视频首帧
-        cover_image_key: coverImageKey || undefined,
-        // 钩子视频：作为片头/片尾拼接（[封面][钩子][本体] 或 [封面][本体][钩子]）
-        hook_video_keys: hooksActive ? hookKeys : undefined,
-        hook_video_key: hooksActive && hookKeys.length === 1 ? hookKeys[0] : undefined,
-        // 钩子混搭模式：多钩子时生效（sequential/random/combine）
-        hook_mix_mode: hooksActive ? (hookMixMode || 'sequential') : undefined,
-        // 钩子拼接位置（head=片头默认 / tail=片尾）
-        hook_position: hooksActive ? hookPosition : undefined,
-        // 钩子混搭输出数量：random/combine 模式；高光混剪有自己的输出个数（cutlist 组数），
-        // 两者并存会按组相乘导致输出爆炸 → 高光混剪开启时忽略
-        hook_mix_output_count: hooksActive && !highlightMixEnabled && (hookMixMode === 'random' || hookMixMode === 'combine') && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
-        // 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品
-        highlight_mix_enabled: highlightMixEnabled,
-        highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
-        highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
-        highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
-        highlight_mix_output_count: highlightMixEnabled ? highlightMixOutputCount : undefined,
-        remotion_mix_enabled: remotionMixEnabled,
-        // Remotion 片头片尾（默认关闭=不配置，渲染直接进入正片）
-        remotion_intro: remotionMixEnabled && remotionIntroEnabled ? {
-          title: remotionIntroTitle,
-          episode: remotionIntroEpisode,
-          cover_use_episode: remotionIntroCover,
-          duration_seconds: remotionIntroDuration,
-          background: remotionIntroBg,
-        } : undefined,
-        remotion_outro: remotionMixEnabled && remotionOutroEnabled ? {
-          text: remotionOutroText,
-          subtitle: remotionOutroSubtitle,
-          duration_seconds: remotionOutroDuration,
-          background: remotionOutroBg,
-        } : undefined,
-        // 选点历史：当前候选为空（最近选点失败）时用所选历史 run 恢复候选再切片
-        slice_autoclip_run_id: sliceAutoclipRunId || undefined,
-        // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
-        output_tier: outputTier || 'auto',
-        // 去重模式：一键切片启用后按档位做画面去重（手动配置沿用主页「去重高级配置」）
-        dedupe_config: dedupeEnabled ? buildDedupeConfig(dedupePreset, dedupeManual) : undefined,
-        // 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本）
-        variant_count: dedupeEnabled && variantCount && variantCount > 1 ? variantCount : undefined,
-        // 竖屏转横屏：一键切片同样透传配置
-        vert2horiz_enabled: vert2horizEnabled,
-        vert2horiz_mode: vert2horizEnabled ? vert2horizMode : undefined,
-        vert2horiz_ratio: vert2horizEnabled ? vert2horizRatio : undefined,
-        vert2horiz_output_size: vert2horizEnabled ? vert2horizOutputSize : undefined,
-        vert2horiz_detect_interval: vert2horizEnabled ? vert2horizDetectInterval : undefined,
-        vert2horiz_smooth_window: vert2horizEnabled ? vert2horizSmoothWindow : undefined,
-        // 图片角标：一键切片同样透传配置
-        badges: badges.length > 0
-          ? badges.map((b) => ({
-              file_key: b.file_key,
-              position: b.position,
-              ...(b.width ? { width: b.width } : {}),
-              ...(b.offset != null ? { offset: b.offset } : {}),
-              ...(b.opacity != null ? { opacity: b.opacity } : {}),
-            }))
-          : undefined,
-        badge_default_width: badgeDefaultWidth || undefined,
-        vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
-        vert2horiz_face_margin: vert2horizEnabled ? vert2horizFaceMargin : undefined,
-        // ASR 字幕烧录：一键切片同样透传配置
-        subtitle_enabled: subtitleEnabled,
-        // 字幕字号（相对高度比例）：可调大让字幕更清晰易读
-        subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
-        // 字幕高度（相对高度比例，默认 1/4，字幕块中心约在 3/4 屏高处）
-        subtitle_margin_ratio: subtitleEnabled ? subtitleMarginRatio : undefined,
-        // 字幕字间距（ASS Spacing 像素）：让字幕文字更紧凑
-        subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
-        // 字幕字体粗细：加粗让字幕文字更醒目
-        subtitle_bold: subtitleEnabled ? subtitleBold : undefined,
-        // 字幕对齐源字幕打码区域（默认开启）
-        subtitle_align_mask: subtitleEnabled ? subtitleAlignMask : undefined,
-        // 字幕样式：custom 时可选字体色/边框色（无底色）
-        subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
-        subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
-        subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
-        // 上传的字幕文件：提供后直接应用该字幕，跳过 ASR 识别
-        subtitle_file_key: subtitleFileKey || undefined,
-        // 源视频字幕打码：独立开关，开启后仅打掉片源自带字幕（不依赖 ASR 字幕开关）
-        subtitle_mask_enabled: subtitleMaskEnabled,
-        subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
-        subtitle_mask_preset: subtitleMaskEnabled ? subtitleMaskPreset : undefined,
-        subtitle_mask_temporal: subtitleMaskEnabled ? subtitleMaskTemporal : undefined,
-        subtitle_mask_spatial: (subtitleMaskEnabled && subtitleMaskTemporal) ? subtitleMaskSpatial : undefined,
-        subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
-        subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
-        subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
-        subtitle_mask_srt_offset: (subtitleMaskEnabled && !subtitleMaskTemporal) ? subtitleMaskSrtOffset : undefined,
-        // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排（仅开关开启时生效）
-        text_overlays: textOverlayEnabled && textOverlays.length > 0
-          ? textOverlays.map((t) => ({
-              text: t.text,
-              position: t.position,
-              ...(t.font_size ? { font_size: t.font_size } : {}),
-              ...(t.color ? { color: t.color } : {}),
-              ...(t.border_color ? { border_color: t.border_color } : {}),
-              ...(t.vertical != null ? { vertical: t.vertical } : {}),
-              ...(t.offset != null ? { offset: t.offset } : {}),
-            }))
-          : undefined,
-      });
+      const res = await sliceApi.run(episodeId, dedupeEnabled ? 'dedupe' : 'fast', buildSlicePayload({
+        hookKeys,
+        hooksActive,
+        // 一键切片：免审核自动纳入全部候选 + 自动补选点（提交即走、关窗口安全）
+        autoAcceptAll: true,
+        dedupeOn: dedupeEnabled,
+      }));
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
       message.info('切片完成后请到「成品预览」查看并下载结果');
       fetchEpisode();
@@ -1624,126 +1657,13 @@ const EpisodeDetail: React.FC = () => {
       // 冲突矩阵：Remotion 增强渲染管线不消费钩子 → 钩子参数不下发
       const hooksActive = hookKeys.length > 0 && !remotionMixEnabled;
       setProgress({ status: 'running', progress: 5, message: noCut ? '正在提交快速转换任务…' : '正在提交切片任务…' });
-      const res = await sliceApi.run(episodeId, mode, {
-        // 快速转换：跳过 AI 选点与区间检测，整段源视频直接应用下方配置转换输出
-        no_cut: noCut || undefined,
-        // 无候选片段时自动补一轮 AI 选点（复用所选选点历史参数）
-        auto_autoclip_if_empty: true,
-        autoclip_config: resolveAutoclipConfig(),
-        // 视频封面（首帧）：选择图片作为成品视频首帧（与一键切片共用同一封面选择）
-        cover_image_key: coverImageKey || undefined,
-        // 钩子视频：作为片头/片尾拼接（[封面][钩子][本体] 或 [封面][本体][钩子]）
-        hook_video_keys: hooksActive ? hookKeys : undefined,
-        hook_video_key: hooksActive && hookKeys.length === 1 ? hookKeys[0] : undefined,
-        hook_mix_mode: hooksActive ? (hookMixMode || 'sequential') : undefined,
-        // 钩子拼接位置（head=片头默认 / tail=片尾）
-        hook_position: hooksActive ? hookPosition : undefined,
-        // 钩子混搭输出数量：random/combine 模式；高光混剪有自己的输出个数（cutlist 组数），
-        // 两者并存会按组相乘导致输出爆炸 → 高光混剪开启时忽略
-        hook_mix_output_count: hooksActive && !highlightMixEnabled && (hookMixMode === 'random' || hookMixMode === 'combine') && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
-        highlight_mix_enabled: highlightMixEnabled,
-        highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
-        highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
-        highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
-        highlight_mix_output_count: highlightMixEnabled ? highlightMixOutputCount : undefined,
-        remotion_mix_enabled: remotionMixEnabled,
-        // Remotion 片头片尾（默认关闭=不配置，渲染直接进入正片）
-        remotion_intro: remotionMixEnabled && remotionIntroEnabled ? {
-          title: remotionIntroTitle,
-          episode: remotionIntroEpisode,
-          cover_use_episode: remotionIntroCover,
-          duration_seconds: remotionIntroDuration,
-          background: remotionIntroBg,
-        } : undefined,
-        remotion_outro: remotionMixEnabled && remotionOutroEnabled ? {
-          text: remotionOutroText,
-          subtitle: remotionOutroSubtitle,
-          duration_seconds: remotionOutroDuration,
-          background: remotionOutroBg,
-        } : undefined,
-        // 选点历史：当前候选为空（最近选点失败）时用所选历史 run 恢复候选再切片
-        slice_autoclip_run_id: sliceAutoclipRunId || undefined,
-        // 输出档位：高分辨率/高 fps 素材降档提速（原档不处理 / auto 自动降档 / 1080p / 720p / 480p）
-        output_tier: outputTier || 'auto',
-        // 去重模式档位（轻/标准/重）+ 手动配置（每项手段可单独覆盖预设），仅去重模式生效
-        dedupe_config: mode === 'dedupe'
-          ? buildDedupeConfig(dedupePreset, dedupeManual)
-          : undefined,
-        // 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本）
-        variant_count: mode === 'dedupe' && variantCount && variantCount > 1 ? variantCount : undefined,
-        // 自定义文字水印：开启后后端下发给引擎，在成品视频上叠加动态文字水印
-        watermark_enabled: watermarkEnabled,
-        watermark_text: watermarkEnabled ? watermarkText : undefined,
-        watermark_font_size: watermarkEnabled ? watermarkFontSize : undefined,
-        watermark_opacity: watermarkEnabled ? watermarkOpacity : undefined,
-        watermark_position: watermarkEnabled ? watermarkPosition : undefined,
-        watermark_style: watermarkEnabled ? watermarkStyle : undefined,
-        // 恒定水印/角标打码：开启后打掉片源固定水印（独立开关，与字幕打码互不干扰）
-        watermark_mask_enabled: watermarkMaskEnabled,
-        watermark_mask_style: watermarkMaskEnabled ? watermarkMaskStyle : undefined,
-        watermark_mask_width_ratio: watermarkMaskEnabled ? watermarkMaskWidthRatio : undefined,
-        watermark_mask_height_ratio: watermarkMaskEnabled ? watermarkMaskHeightRatio : undefined,
-        watermark_mask_bottom_ratio: watermarkMaskEnabled ? watermarkMaskBottomRatio : undefined,
-        // 竖屏转横屏：开启后切片前自动把竖屏素材转成横屏
-        vert2horiz_enabled: vert2horizEnabled,
-        vert2horiz_mode: vert2horizEnabled ? vert2horizMode : undefined,
-        vert2horiz_ratio: vert2horizEnabled ? vert2horizRatio : undefined,
-        vert2horiz_output_size: vert2horizEnabled ? vert2horizOutputSize : undefined,
-        vert2horiz_detect_interval: vert2horizEnabled ? vert2horizDetectInterval : undefined,
-        vert2horiz_smooth_window: vert2horizEnabled ? vert2horizSmoothWindow : undefined,
-        // 图片角标：多角标、六角位置、宽度/偏移/透明度，全程叠加
-        badges: badges.length > 0
-          ? badges.map((b) => ({
-              file_key: b.file_key,
-              position: b.position,
-              ...(b.width ? { width: b.width } : {}),
-              ...(b.offset != null ? { offset: b.offset } : {}),
-              ...(b.opacity != null ? { opacity: b.opacity } : {}),
-            }))
-          : undefined,
-        badge_default_width: badgeDefaultWidth || undefined,
-        vert2horiz_min_step: vert2horizEnabled ? vert2horizMinStep : undefined,
-        vert2horiz_face_margin: vert2horizEnabled ? vert2horizFaceMargin : undefined,
-        // ASR 字幕烧录：开启后对源视频做 ASR 识别并烧录到成品视频
-        subtitle_enabled: subtitleEnabled,
-        // 字幕字号（相对高度比例）：可调大让字幕更清晰易读
-        subtitle_font_ratio: subtitleEnabled ? subtitleFontRatio : undefined,
-        // 字幕字间距（ASS Spacing 像素）：让字幕文字更紧凑
-        subtitle_spacing: subtitleEnabled ? subtitleSpacing : undefined,
-        // 字幕高度（相对高度比例，默认 1/4，字幕块中心约在 3/4 屏高处）
-        subtitle_margin_ratio: subtitleEnabled ? subtitleMarginRatio : undefined,
-        // 字幕字体粗细：加粗让字幕文字更醒目
-        subtitle_bold: subtitleEnabled ? subtitleBold : undefined,
-        subtitle_align_mask: subtitleEnabled ? subtitleAlignMask : undefined,
-        // 字幕样式：custom 时可选字体色/边框色（无底色）
-        subtitle_style: subtitleEnabled ? subtitleStyle : undefined,
-        subtitle_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleColor : undefined,
-        subtitle_border_color: subtitleEnabled && subtitleStyle === 'custom' ? subtitleBorderColor : undefined,
-        // 上传的字幕文件：提供后直接应用该字幕，跳过 ASR 识别
-        subtitle_file_key: subtitleFileKey || undefined,
-        // 源视频字幕打码：独立开关，开启后仅打掉片源自带字幕（不依赖 ASR 字幕开关）
-        subtitle_mask_enabled: subtitleMaskEnabled,
-        subtitle_mask_style: subtitleMaskEnabled ? subtitleMaskStyle : undefined,
-        subtitle_mask_preset: subtitleMaskEnabled ? subtitleMaskPreset : undefined,
-        subtitle_mask_temporal: subtitleMaskEnabled ? subtitleMaskTemporal : undefined,
-        subtitle_mask_spatial: (subtitleMaskEnabled && subtitleMaskTemporal) ? subtitleMaskSpatial : undefined,
-        subtitle_mask_width_ratio: subtitleMaskEnabled ? subtitleMaskWidthRatio : undefined,
-        subtitle_mask_height_ratio: subtitleMaskEnabled ? subtitleMaskHeightRatio : undefined,
-        subtitle_mask_bottom_ratio: subtitleMaskEnabled ? subtitleMaskBottomRatio : undefined,
-        subtitle_mask_srt_offset: (subtitleMaskEnabled && !subtitleMaskTemporal) ? subtitleMaskSrtOffset : undefined,
-        // 固定文字角标：传递每条文字内容/位置/字号/颜色/竖排（仅开关开启时生效）
-        text_overlays: textOverlayEnabled && textOverlays.length > 0
-          ? textOverlays.map((t) => ({
-              text: t.text,
-              position: t.position,
-              ...(t.font_size ? { font_size: t.font_size } : {}),
-              ...(t.color ? { color: t.color } : {}),
-              ...(t.border_color ? { border_color: t.border_color } : {}),
-              ...(t.vertical != null ? { vertical: t.vertical } : {}),
-              ...(t.offset != null ? { offset: t.offset } : {}),
-            }))
-          : undefined,
-      });
+      const res = await sliceApi.run(episodeId, mode, buildSlicePayload({
+        hookKeys,
+        hooksActive,
+        // 快速转换：跳过 AI 选点与区间检测，整段源视频直接应用配置转换输出
+        noCut,
+        dedupeOn: mode === 'dedupe',
+      }));
       message.success(res.message);
       fetchHistories();
       // 任务已加入处理队列，立即恢复按钮状态，可继续添加任务（不再锁定到任务完成）
@@ -2017,6 +1937,32 @@ const EpisodeDetail: React.FC = () => {
       </Text>
     );
   };
+
+  // ── 「视觉与遮罩高级配置」已开启功能计数（Collapse extra 实时展示）──
+  // 与 runSlice payload 的生效条件保持一致：固定文字需开关+列表均非空，图片角标看列表长度
+  const visualEnabledCount = [
+    vert2horizEnabled,
+    subtitleEnabled,
+    subtitleMaskEnabled,
+    watermarkMaskEnabled,
+    textOverlayEnabled && textOverlays.length > 0,
+    badges.length > 0,
+    watermarkEnabled,
+  ].filter(Boolean).length;
+
+  // ── 「预计产出」实时算式：镜像 runSlice payload 的真实逻辑 ──
+  // 注意：最终产出几个成品取决于 AI 选点命中的片段数（提交前无法预知，不瞎乘），
+  // 这里只镜像 payload 中可预知的放大因子：
+  //   1) hook_mix_output_count：钩子混搭 random/combine 且 >1 时每个切片产出 N 个；
+  //      生效条件 = 有已上传/暂存钩子 且 未开 Remotion（Remotion 管线不消费钩子）且 未开高光混剪
+  //   2) highlight_mix_output_count：高光混剪开启时产出 N 个混剪文件
+  //   3) variant_count：仅去重模式（快速转换 mode=fast 不生效）且 >1 时切片后自动派生 N 个去重版本
+  // 前端 payload 保证钩子个数与高光个数互斥（高光开启时不下发钩子个数），故二者不会同时 >1
+  const hooksActiveForEstimate = (hookVideoKeys.length > 0 || hookPendingFiles.length > 0) && !remotionMixEnabled;
+  const estHookFactor = hooksActiveForEstimate && !highlightMixEnabled && (hookMixMode === 'random' || hookMixMode === 'combine') && hookMixOutputCount > 1 ? hookMixOutputCount : 1;
+  const estHighlightFactor = highlightMixEnabled ? highlightMixOutputCount : 1;
+  const estVariantFactor = sliceMode === 'dedupe' && variantCount && variantCount > 1 ? variantCount : 1;
+  const estOutputCount = estHookFactor * estHighlightFactor * estVariantFactor;
 
   const actions: { title: string; node: React.ReactNode }[] = [
     {
@@ -2345,52 +2291,56 @@ const EpisodeDetail: React.FC = () => {
             />
             <Text type="secondary" style={{ fontSize: 12 }}>降档后编码耗时显著下降（预计 1/3 以下）</Text>
           </Space>
-          {/* 选择 AI 选点历史：补选点/切片复用它那套选点参数（时长范围等） */}
-          <Space wrap align="center" size={8}>
-            <Text strong style={{ fontSize: 13 }}>选点历史</Text>
-            <Select
-              size="small"
-              allowClear
-              placeholder="不选则用当前选点参数"
-              value={sliceAutoclipRunId}
-              onChange={(v) => setSliceAutoclipRunId(v ?? undefined)}
-              style={{ width: 260 }}
-              options={autoclipHistory.map((h, i) => ({
-                value: h.id,
-                label: `${formatDateTime(h.created_at)} · ${renderAutoclipParamsLabel(h)}`,
-              }))}
-            />
-            <Tooltip title="选择某一套 AI 智能选点历史后，切片时（含无候选自动补选点）将复用该次选点的时间范围等参数；不选则使用当前页面设置的选点参数。">
-              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-            </Tooltip>
-          </Space>
-          {/* 视频封面（首帧，可选）：选择图片作为成品第一帧，不选则按源视频首帧 */}
-          <Space wrap align="center" size={8}>
-            <Text strong style={{ fontSize: 13 }}>视频封面（首帧）</Text>
-            <Upload
-              accept="image/*"
-              showUploadList={false}
-              beforeUpload={(file) => handleCoverUpload(file as File)}
-              disabled={coverUploading}
-            >
-              <Button size="small" icon={<PictureOutlined />} loading={coverUploading}>
-                {coverImageKey ? '更换封面' : '选择封面图片'}
-              </Button>
-            </Upload>
-            {coverImageKey && (
-              <FileHoverPreview fileKey={coverImageKey} kind="image">
-              <Tag closable onClose={() => {
-  setCoverImageKey(null);
-  setCoverImageName(null);
-  sliceApi.updateEpisodeCover(episodeId, null).catch((err: unknown) => {
-    console.error('清除剧集封面失败', err);
-  });
+          {/* 选择 AI 选点历史：补选点/切片复用它那套选点参数（时长范围等）。纯高级功能，简单模式下隐藏 */}
+          {expertMode && (
+            <Space wrap align="center" size={8}>
+              <Text strong style={{ fontSize: 13 }}>选点历史</Text>
+              <Select
+                size="small"
+                allowClear
+                placeholder="不选则用当前选点参数"
+                value={sliceAutoclipRunId}
+                onChange={(v) => setSliceAutoclipRunId(v ?? undefined)}
+                style={{ width: 260 }}
+                options={autoclipHistory.map((h, i) => ({
+                  value: h.id,
+                  label: `${formatDateTime(h.created_at)} · ${renderAutoclipParamsLabel(h)}`,
+                }))}
+              />
+              <Tooltip title="选择某一套 AI 智能选点历史后，切片时（含无候选自动补选点）将复用该次选点的时间范围等参数；不选则使用当前页面设置的选点参数。">
+                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+              </Tooltip>
+            </Space>
+          )}
+          {/* 视频封面（首帧，可选）：选择图片作为成品第一帧，不选则按源视频首帧。纯高级功能，简单模式下隐藏 */}
+          {expertMode && (
+            <Space wrap align="center" size={8}>
+              <Text strong style={{ fontSize: 13 }}>视频封面（首帧）</Text>
+              <Upload
+                accept="image/*"
+                showUploadList={false}
+                beforeUpload={(file) => handleCoverUpload(file as File)}
+                disabled={coverUploading}
+              >
+                <Button size="small" icon={<PictureOutlined />} loading={coverUploading}>
+                  {coverImageKey ? '更换封面' : '选择封面图片'}
+                </Button>
+              </Upload>
+              {coverImageKey && (
+                <FileHoverPreview fileKey={coverImageKey} kind="image">
+                <Tag closable onClose={() => {
+    setCoverImageKey(null);
+    setCoverImageName(null);
+    sliceApi.updateEpisodeCover(episodeId, null).catch((err: unknown) => {
+      console.error('清除剧集封面失败', err);
+    });
 }}>
-                  封面：{coverImageName || '已选择'}
-              </Tag>
-              </FileHoverPreview>
-            )}
-          </Space>
+                    封面：{coverImageName || '已选择'}
+                </Tag>
+                </FileHoverPreview>
+              )}
+            </Space>
+          )}
           {/* 钩子视频（可选）：支持选整个文件夹或多选文件；选完仅暂存，开始切片时才上传。
               混搭模式/拼接位置/生成数量独立成行，避免长文件列表把后续控件挤出屏幕 */}
           <div style={{ width: '100%' }}>
@@ -2400,6 +2350,14 @@ const EpisodeDetail: React.FC = () => {
             </Space>
             {renderHookOptions()}
           </div>
+          {/* Remotion 逐帧渲染提示：开启增强时提醒用户渲染进度特征，避免误判卡死 */}
+          {remotionMixEnabled && (
+            <Alert
+              type="info"
+              showIcon
+              message="Remotion 渲染为逐帧渲染，期间进度缓步属正常，请耐心等待；若长期无进度请到 Worker 页检查节点状态"
+            />
+          )}
           {/* 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品 */}
           <Space wrap align="center" size={8}>
             <Text strong style={{ fontSize: 13 }}>高光混剪</Text>
@@ -2475,19 +2433,29 @@ const EpisodeDetail: React.FC = () => {
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {Object.keys(dedupeManual).length > 0 ? '已启用手动配置' : '跟随所选档位'}
               </Text>
-              {/* 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本） */}
-              <InputNumber
-                size="small"
-                min={1}
-                max={20}
-                placeholder="变体数"
-                value={variantCount}
-                onChange={(v) => setVariantCount(v ?? undefined)}
-                style={{ width: 90 }}
-              />
-              <Text type="secondary" style={{ fontSize: 12 }}>多版本数</Text>
+              {/* 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本）。纯高级功能，简单模式下隐藏 */}
+              {expertMode && (
+                <>
+                  <InputNumber
+                    size="small"
+                    min={1}
+                    max={20}
+                    placeholder="变体数"
+                    value={variantCount}
+                    onChange={(v) => setVariantCount(v ?? undefined)}
+                    style={{ width: 90 }}
+                  />
+                  <Text type="secondary" style={{ fontSize: 12 }}>多版本数</Text>
+                </>
+              )}
             </Space>
           )}
+          {/* 预计产出提示：实时镜像 runSlice payload 的放大因子（算式见 return 前 estOutputCount 注释） */}
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            预计产出 ≈ {estOutputCount} 个成品
+            {estOutputCount > 1 ? `（每个切片产出 ${estOutputCount} 个文件）` : ''}
+            （切片个数由 AI 选点结果决定）
+          </Text>
           {/* 开始切片 / 快速转换按钮（位于切片模式选择下方） */}
           <Space wrap>
             <Button icon={<ScissorOutlined />} loading={sliceRunning} disabled={quickConverting} onClick={() => runSlice(false)}>开始切片</Button>
@@ -2509,21 +2477,216 @@ const EpisodeDetail: React.FC = () => {
             <DedupeManualConfig value={dedupeManual} onChange={setDedupeManual} preset={dedupePreset} />
           </Modal>
 
-          {/* ── 竖屏转横屏智能裁切开关 ── */}
-          <Card size="small" style={{ width: '100%' }}>
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              <Space wrap>
-                <Switch checked={vert2horizEnabled} onChange={handleVert2horizToggle} size="small" />
-                <Text strong style={{ fontSize: 13 }}>竖屏转横屏</Text>
-                <Tooltip title="开启后若素材为竖屏（9:16），切片前自动转为横屏（16:9）：固定裁切快速稳定，动态跟踪会逐帧检测人脸确保人物不出画。适用于发布到视频号横屏模式 / B站等横屏平台。">
-                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-                </Tooltip>
-                {vert2horizEnabled && (
-                  <Button size="small" icon={<SettingOutlined />} onClick={() => setVert2horizModalOpen(true)}>配置</Button>
-                )}
-              </Space>
-            </Space>
-          </Card>
+          {/* ── 视觉与遮罩高级配置收纳区：7 张功能卡收进 Collapse，默认折叠；专家模式自动展开 ──
+              所有 state 留在原地不动，这里仅做 JSX 包裹收纳；各功能卡之间的设置弹窗仍保留在原位置（Modal 为传送门渲染，位置无关） ── */}
+          <Collapse
+            activeKey={visualCardsOpen ? ['visual-advanced'] : []}
+            onChange={(keys) => setVisualCardsOpen((Array.isArray(keys) ? keys : [keys]).includes('visual-advanced'))}
+            size="small"
+            style={{ width: '100%' }}
+            items={[{
+              key: 'visual-advanced',
+              label: '视觉与遮罩高级配置',
+              extra: (
+                <Text
+                  type="secondary"
+                  style={{ fontSize: 12 }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {visualEnabledCount} 项已开启
+                </Text>
+              ),
+              children: (
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  {/* ── 竖屏转横屏智能裁切开关 ── */}
+                  <Card size="small" style={{ width: '100%' }}>
+                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      <Space wrap>
+                        <Switch checked={vert2horizEnabled} onChange={handleVert2horizToggle} size="small" />
+                        <Text strong style={{ fontSize: 13 }}>竖屏转横屏</Text>
+                        {vert2horizEnabled && <Tag color="green">已开启</Tag>}
+                        <Tooltip title="开启后若素材为竖屏（9:16），切片前自动转为横屏（16:9）：固定裁切快速稳定，动态跟踪会逐帧检测人脸确保人物不出画。适用于发布到视频号横屏模式 / B站等横屏平台。">
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                        </Tooltip>
+                        {vert2horizEnabled && (
+                          <Button size="small" icon={<SettingOutlined />} onClick={() => setVert2horizModalOpen(true)}>配置</Button>
+                        )}
+                      </Space>
+                    </Space>
+                  </Card>
+
+                  {/* ── ASR 字幕烧录开关 ── */}
+                  <Card size="small" style={{ width: '100%' }}>
+                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      <Space wrap>
+                        <Switch checked={subtitleEnabled} onChange={setSubtitleEnabled} size="small" />
+                        <Text strong style={{ fontSize: 13 }}>ASR 字幕</Text>
+                        {subtitleEnabled && <Tag color="green">已开启</Tag>}
+                        <Tooltip title="开启后对源视频做语音识别（ASR），并把识别到的台词烧录到每个切片成品上（白字黑边，底部居中）。适合把关键对白直观呈现在短剧切片上。">
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                        </Tooltip>
+                        {subtitleEnabled && (
+                          <Button size="small" icon={<SettingOutlined />} onClick={() => setSubtitleModalOpen(true)}>字幕设置</Button>
+                        )}
+                      </Space>
+                    </Space>
+                  </Card>
+
+                  {/* ── 源视频字幕打码（去片源自带字幕，独立开关） ── */}
+                  <Card size="small" style={{ width: '100%' }}>
+                    <Space wrap align="center" size={8}>
+                      <Switch size="small" checked={subtitleMaskEnabled} onChange={setSubtitleMaskEnabled} />
+                      <Text strong style={{ fontSize: 13 }}>源字幕打码</Text>
+                      {subtitleMaskEnabled && <Tag color="green">已开启</Tag>}
+                      <Tooltip title="把片源自带的字幕去字幕/打码（独立开关，与 ASR 字幕无关）。默认自动检测字幕位置，样式为去水印（智能插值），仅在有源字幕的时间段生效。">
+                        <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                      </Tooltip>
+                      {subtitleMaskEnabled && (
+                        <Button size="small" icon={<SettingOutlined />} onClick={() => setSubtitleMaskModalOpen(true)}>打码设置</Button>
+                      )}
+                    </Space>
+                  </Card>
+
+                  {/* ── 恒定水印/角标打码（打掉片源固定水印，独立开关） ── */}
+                  <Card size="small" style={{ width: '100%' }}>
+                    <Space wrap align="center" size={8}>
+                      <Switch size="small" checked={watermarkMaskEnabled} onChange={setWatermarkMaskEnabled} />
+                      <Text strong style={{ fontSize: 13 }}>恒定水印打码</Text>
+                      {watermarkMaskEnabled && <Tag color="green">已开启</Tag>}
+                      <Tooltip title="打掉片源固定的水印/角标（如频道角标、平台水印、底部固定字条）。与源字幕打码互不干扰：字幕打码管动态对话字幕，水印打码管恒定出现的水印。默认自动检测恒定出现区域，样式为去水印（智能插值）。">
+                        <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                      </Tooltip>
+                      {watermarkMaskEnabled && (
+                        <Button size="small" icon={<SettingOutlined />} onClick={() => setWatermarkMaskModalOpen(true)}>打码设置</Button>
+                      )}
+                    </Space>
+                  </Card>
+
+                  {/* ── 固定文字角标（文字版角标，最左侧/左下角/右上角等） ── */}
+                  <Card size="small" style={{ width: '100%' }}>
+                    <Space wrap align="center" size={8}>
+                      <Switch size="small" checked={textOverlayEnabled} onChange={setTextOverlayEnabled} />
+                      <Text strong style={{ fontSize: 13 }}>固定文字</Text>
+                      {(textOverlayEnabled && textOverlays.length > 0) && <Tag color="green">已开启</Tag>}
+                      <Tooltip title="开启后在视频指定位置叠加固定文字（无需上传图片）：最左侧（竖排）/左下角/右上角等，全程覆盖。开启后点击右侧「设置文字」按钮配置文字内容、字号、颜色等。">
+                        <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                      </Tooltip>
+                      {textOverlayEnabled && (
+                        <Button size="small" icon={<SettingOutlined />} onClick={() => setTextOverlayModalOpen(true)}>设置文字</Button>
+                      )}
+                    </Space>
+                  </Card>
+
+                  {/* ── 图片角标配置（多角标、六角位置，全程叠加） ── */}
+                  <Card size="small" style={{ width: '100%' }}>
+                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      <Space wrap>
+                        <Text strong style={{ fontSize: 13 }}>图片角标</Text>
+                        {badges.length > 0 && <Tag color="green">已开启</Tag>}
+                        <Tooltip title="可上传多张图片作为角标，全程叠加在视频指定位置；支持六角定位、宽度、偏移量、透明度。">
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                        </Tooltip>
+                        <Upload
+                          accept="image/*"
+                          showUploadList={false}
+                          beforeUpload={uploadBadgeFile}
+                          disabled={badgeUploading}
+                        >
+                          <Button size="small" icon={<UploadOutlined />} loading={badgeUploading}>
+                            添加角标图片
+                          </Button>
+                        </Upload>
+                        <Button size="small" onClick={openBadgeLibrary}>
+                          从已保存选择
+                        </Button>
+                        <Tooltip title="角标默认尺寸（px），所有角标未单独设置宽度时的统一宽度；留空=保持原图尺寸">
+                          <InputNumber
+                            size="small"
+                            min={0}
+                            max={800}
+                            placeholder="默认尺寸"
+                            value={badgeDefaultWidth || undefined}
+                            onChange={(v) => setBadgeDefaultWidth(v ?? 0)}
+                            style={{ width: 100 }}
+                            addonAfter="px"
+                          />
+                        </Tooltip>
+                      </Space>
+                      {badges.length > 0 && (
+                        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                          {badges.map((b, i) => (
+                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <AntImage src={b.preview} width={40} height={40} style={{ objectFit: 'contain', borderRadius: 4, border: '1px solid #eee' }} />
+                              <Text style={{ fontSize: 12 }}>{b.name}</Text>
+                              <Select
+                                size="small"
+                                style={{ width: 90 }}
+                                value={b.position}
+                                onChange={(v) => updateBadge(i, { position: v })}
+                                options={BADGE_POSITIONS}
+                              />
+                              <Tooltip title="角标宽度（px），留空=使用默认尺寸/原图尺寸">
+                                <InputNumber
+                                  size="small"
+                                  min={10}
+                                  max={800}
+                                  placeholder="宽"
+                                  value={b.width}
+                                  onChange={(v) => updateBadge(i, { width: v ?? undefined })}
+                                  style={{ width: 80 }}
+                                />
+                              </Tooltip>
+                              <Tooltip title="到视频边缘的偏移量（px），默认 10">
+                                <InputNumber
+                                  size="small"
+                                  min={0}
+                                  max={500}
+                                  placeholder="偏移"
+                                  value={b.offset}
+                                  onChange={(v) => updateBadge(i, { offset: v ?? undefined })}
+                                  style={{ width: 80 }}
+                                />
+                              </Tooltip>
+                              <Tooltip title="角标透明度（0~1），默认 1 不透明">
+                                <InputNumber
+                                  size="small"
+                                  min={0}
+                                  max={1}
+                                  step={0.05}
+                                  placeholder="透明"
+                                  value={b.opacity}
+                                  onChange={(v) => updateBadge(i, { opacity: v ?? undefined })}
+                                  style={{ width: 80 }}
+                                />
+                              </Tooltip>
+                              <Button size="small" type="text" danger icon={<DelIcon />} onClick={() => removeBadge(i)} />
+                            </div>
+                          ))}
+                        </Space>
+                      )}
+                    </Space>
+                  </Card>
+
+                  {/* ── 动态文字水印开关（置于配置项最后） ── */}
+                  <Card size="small" style={{ width: '100%' }}>
+                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      <Space wrap>
+                        <Switch checked={watermarkEnabled} onChange={setWatermarkEnabled} size="small" />
+                        <Text strong style={{ fontSize: 13 }}>动态文字水印</Text>
+                        {watermarkEnabled && <Tag color="green">已开启</Tag>}
+                        <Tooltip title="开启后会在切片成品视频上叠加动态文字水印（文字缓慢移动 + 透明度呼吸），可用于防搬运/标识来源。">
+                          <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+                        </Tooltip>
+                        {watermarkEnabled && (
+                          <Button size="small" icon={<SettingOutlined />} onClick={() => setWatermarkModalOpen(true)}>配置</Button>
+                        )}
+                      </Space>
+                    </Space>
+                  </Card>
+                </Space>
+              ),
+            }]}
+          />
 
           {/* 竖屏转横屏设置弹窗（详细配置收进弹窗，节省主界面空间） */}
           <Modal
@@ -2820,22 +2983,6 @@ const EpisodeDetail: React.FC = () => {
             </Space>
           </Modal>
 
-          {/* ── ASR 字幕烧录开关 ── */}
-          <Card size="small" style={{ width: '100%' }}>
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              <Space wrap>
-                <Switch checked={subtitleEnabled} onChange={setSubtitleEnabled} size="small" />
-                <Text strong style={{ fontSize: 13 }}>ASR 字幕</Text>
-                <Tooltip title="开启后对源视频做语音识别（ASR），并把识别到的台词烧录到每个切片成品上（白字黑边，底部居中）。适合把关键对白直观呈现在短剧切片上。">
-                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-                </Tooltip>
-                {subtitleEnabled && (
-                  <Button size="small" icon={<SettingOutlined />} onClick={() => setSubtitleModalOpen(true)}>字幕设置</Button>
-                )}
-              </Space>
-            </Space>
-          </Card>
-
           {/* 字幕设置弹窗（详细配置收进弹窗，节省主界面空间） */}
           <Modal
             title="字幕设置"
@@ -2961,34 +3108,6 @@ const EpisodeDetail: React.FC = () => {
               </Text>
             </Space>
           </Modal>
-
-          {/* ── 源视频字幕打码（去片源自带字幕，独立开关） ── */}
-          <Card size="small" style={{ width: '100%' }}>
-            <Space wrap align="center" size={8}>
-              <Switch size="small" checked={subtitleMaskEnabled} onChange={setSubtitleMaskEnabled} />
-              <Text strong style={{ fontSize: 13 }}>源字幕打码</Text>
-              <Tooltip title="把片源自带的字幕去字幕/打码（独立开关，与 ASR 字幕无关）。默认自动检测字幕位置，样式为去水印（智能插值），仅在有源字幕的时间段生效。">
-                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-              </Tooltip>
-              {subtitleMaskEnabled && (
-                <Button size="small" icon={<SettingOutlined />} onClick={() => setSubtitleMaskModalOpen(true)}>打码设置</Button>
-              )}
-            </Space>
-          </Card>
-
-          {/* ── 恒定水印/角标打码（打掉片源固定水印，独立开关） ── */}
-          <Card size="small" style={{ width: '100%' }}>
-            <Space wrap align="center" size={8}>
-              <Switch size="small" checked={watermarkMaskEnabled} onChange={setWatermarkMaskEnabled} />
-              <Text strong style={{ fontSize: 13 }}>恒定水印打码</Text>
-              <Tooltip title="打掉片源固定的水印/角标（如频道角标、平台水印、底部固定字条）。与源字幕打码互不干扰：字幕打码管动态对话字幕，水印打码管恒定出现的水印。默认自动检测恒定出现区域，样式为去水印（智能插值）。">
-                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-              </Tooltip>
-              {watermarkMaskEnabled && (
-                <Button size="small" icon={<SettingOutlined />} onClick={() => setWatermarkMaskModalOpen(true)}>打码设置</Button>
-              )}
-            </Space>
-          </Card>
 
           {/* 恒定水印打码设置弹窗 */}
           <Modal
@@ -3167,20 +3286,6 @@ const EpisodeDetail: React.FC = () => {
             </Space>
           </Modal>
 
-          {/* ── 固定文字角标（文字版角标，最左侧/左下角/右上角等） ── */}
-          <Card size="small" style={{ width: '100%' }}>
-            <Space wrap align="center" size={8}>
-              <Switch size="small" checked={textOverlayEnabled} onChange={setTextOverlayEnabled} />
-              <Text strong style={{ fontSize: 13 }}>固定文字</Text>
-              <Tooltip title="开启后在视频指定位置叠加固定文字（无需上传图片）：最左侧（竖排）/左下角/右上角等，全程覆盖。开启后点击右侧「设置文字」按钮配置文字内容、字号、颜色等。">
-                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-              </Tooltip>
-              {textOverlayEnabled && (
-                <Button size="small" icon={<SettingOutlined />} onClick={() => setTextOverlayModalOpen(true)}>设置文字</Button>
-              )}
-            </Space>
-          </Card>
-
           {/* 固定文字设置弹窗（详细配置收进弹窗，节省主界面空间） */}
           <Modal
             title="固定文字设置"
@@ -3255,111 +3360,6 @@ const EpisodeDetail: React.FC = () => {
               )}
             </Space>
           </Modal>
-
-          {/* ── 图片角标配置（多角标、六角位置，全程叠加） ── */}
-          <Card size="small" style={{ width: '100%' }}>
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              <Space wrap>
-                <Text strong style={{ fontSize: 13 }}>图片角标</Text>
-                <Tooltip title="可上传多张图片作为角标，全程叠加在视频指定位置；支持六角定位、宽度、偏移量、透明度。">
-                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-                </Tooltip>
-                <Upload
-                  accept="image/*"
-                  showUploadList={false}
-                  beforeUpload={uploadBadgeFile}
-                  disabled={badgeUploading}
-                >
-                  <Button size="small" icon={<UploadOutlined />} loading={badgeUploading}>
-                    添加角标图片
-                  </Button>
-                </Upload>
-                <Button size="small" onClick={openBadgeLibrary}>
-                  从已保存选择
-                </Button>
-                <Tooltip title="角标默认尺寸（px），所有角标未单独设置宽度时的统一宽度；留空=保持原图尺寸">
-                  <InputNumber
-                    size="small"
-                    min={0}
-                    max={800}
-                    placeholder="默认尺寸"
-                    value={badgeDefaultWidth || undefined}
-                    onChange={(v) => setBadgeDefaultWidth(v ?? 0)}
-                    style={{ width: 100 }}
-                    addonAfter="px"
-                  />
-                </Tooltip>
-              </Space>
-              {badges.length > 0 && (
-                <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                  {badges.map((b, i) => (
-                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <AntImage src={b.preview} width={40} height={40} style={{ objectFit: 'contain', borderRadius: 4, border: '1px solid #eee' }} />
-                      <Text style={{ fontSize: 12 }}>{b.name}</Text>
-                      <Select
-                        size="small"
-                        style={{ width: 90 }}
-                        value={b.position}
-                        onChange={(v) => updateBadge(i, { position: v })}
-                        options={BADGE_POSITIONS}
-                      />
-                      <Tooltip title="角标宽度（px），留空=使用默认尺寸/原图尺寸">
-                        <InputNumber
-                          size="small"
-                          min={10}
-                          max={800}
-                          placeholder="宽"
-                          value={b.width}
-                          onChange={(v) => updateBadge(i, { width: v ?? undefined })}
-                          style={{ width: 80 }}
-                        />
-                      </Tooltip>
-                      <Tooltip title="到视频边缘的偏移量（px），默认 10">
-                        <InputNumber
-                          size="small"
-                          min={0}
-                          max={500}
-                          placeholder="偏移"
-                          value={b.offset}
-                          onChange={(v) => updateBadge(i, { offset: v ?? undefined })}
-                          style={{ width: 80 }}
-                        />
-                      </Tooltip>
-                      <Tooltip title="角标透明度（0~1），默认 1 不透明">
-                        <InputNumber
-                          size="small"
-                          min={0}
-                          max={1}
-                          step={0.05}
-                          placeholder="透明"
-                          value={b.opacity}
-                          onChange={(v) => updateBadge(i, { opacity: v ?? undefined })}
-                          style={{ width: 80 }}
-                        />
-                      </Tooltip>
-                      <Button size="small" type="text" danger icon={<DelIcon />} onClick={() => removeBadge(i)} />
-                    </div>
-                  ))}
-                </Space>
-              )}
-            </Space>
-          </Card>
-
-          {/* ── 动态文字水印开关（置于配置项最后） ── */}
-          <Card size="small" style={{ width: '100%' }}>
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              <Space wrap>
-                <Switch checked={watermarkEnabled} onChange={setWatermarkEnabled} size="small" />
-                <Text strong style={{ fontSize: 13 }}>动态文字水印</Text>
-                <Tooltip title="开启后会在切片成品视频上叠加动态文字水印（文字缓慢移动 + 透明度呼吸），可用于防搬运/标识来源。">
-                  <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-                </Tooltip>
-                {watermarkEnabled && (
-                  <Button size="small" icon={<SettingOutlined />} onClick={() => setWatermarkModalOpen(true)}>配置</Button>
-                )}
-              </Space>
-            </Space>
-          </Card>
 
           {/* 动态文字水印设置弹窗（详细配置收进弹窗，节省主界面空间） */}
           <Modal
@@ -4037,7 +4037,31 @@ const EpisodeDetail: React.FC = () => {
           {actions
             .filter((a) => a.title === '切片执行')
             .map((a) => (
-              <Card size="small" key={a.title} title={a.title} style={{ height: '100%' }}>{a.node}</Card>
+              <Card
+                size="small"
+                key={a.title}
+                title={a.title}
+                style={{ height: '100%' }}
+                /* Card 头部右侧：专家/简单双模式开关（偏好持久化到 localStorage） */
+                extra={(
+                  <Space size={6}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>专家模式</Text>
+                    <Switch
+                      size="small"
+                      checked={expertMode}
+                      onChange={(v) => {
+                        setExpertMode(v);
+                        // 记住用户偏好，刷新后保留
+                        localStorage.setItem('slice_expert_mode', v ? '1' : '0');
+                        // 专家模式自动展开「视觉与遮罩高级配置」收纳区，简单模式自动收起（仍可手动开合）
+                        setVisualCardsOpen(v);
+                      }}
+                    />
+                  </Space>
+                )}
+              >
+                {a.node}
+              </Card>
             ))}
         </Col>
       </Row>
