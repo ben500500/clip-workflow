@@ -35,10 +35,16 @@ export const RemotionRoot: React.FC = () => {
       width={DEFAULT_WIDTH}
       height={DEFAULT_HEIGHT}
       defaultProps={defaultProps}
-      // 根据实际 props（片头+各段+片尾+转场重叠）动态计算渲染时长，
-      // 避免静态注册 30 帧导致真实混剪被截断成 1 秒。
+      // 根据实际 props 动态计算渲染元数据：
+      // - durationInFrames：片头+各段+片尾+转场重叠的真实时长（避免静态 30 帧截断）
+      // - width/height/fps：跟随 props（后端 ffprobe 探测源视频方向后下发竖屏
+      //   720x1280/1080x1920）——2026-11-20 修复：此前 Composition 尺寸写死
+      //   1280x720 横屏，竖屏源被 cover 裁掉上下大半画面。
       calculateMetadata={({props}) => ({
         durationInFrames: Math.max(1, Math.round(computeMixLayout(props).totalFrames)),
+        width: props.width ?? DEFAULT_WIDTH,
+        height: props.height ?? DEFAULT_HEIGHT,
+        fps: props.fps ?? DEFAULT_FPS,
         props,
       })}
     />

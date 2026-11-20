@@ -20,6 +20,12 @@ export const Transition: React.FC<{
   const frame = useCurrentFrame();
   const {fps, height} = useVideoConfig();
 
+  // 转场帧数 ≤0 时（用户显式关闭转场）直接渲染子内容：
+  // interpolate 的 inputRange [0,0] 非严格递增会直接 crash（2026-11-20 实测）。
+  if (frames <= 0) {
+    return <div style={{position: 'absolute', inset: 0}}>{children}</div>;
+  }
+
   // 进入：前 transitionFrames 帧从 0 → 1
   const enter = interpolate(frame, [0, frames], [0, 1], {
     extrapolateLeft: 'clamp',
