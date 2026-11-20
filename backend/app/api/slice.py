@@ -938,16 +938,18 @@ async def _create_slice_task_record(
         remotion_mix_config["intro"].pop("cover_use_episode", None)
         if cover_key:
             remotion_mix_config["intro"]["cover_file_key"] = cover_key
-    # 钩子视频：作为片头拼接（[封面][钩子][本体]）。钩子是临时素材，不按剧集持久化，
-    # 仅随本次切片请求透传（重试时保留）。
+    # 钩子视频：作为片头/片尾拼接（[封面][钩子][本体] 或 [封面][本体][钩子]）。钩子是临时素材，
+    # 不按剧集持久化，仅随本次切片请求透传（重试时保留）。
     # 文件夹方式优先：勾选了文件夹（多个钩子）时保存 hook_video_keys 列表；
     # 否则回退到单钩子 hook_video_key。
     slice_task.hook_video_key = data.hook_video_key or None
     slice_task.hook_video_keys = data.hook_video_keys or None
     # 钩子混搭模式（sequential/random/combine，重试时保留）
     slice_task.hook_mix_mode = data.hook_mix_mode or None
-    # 钩子混搭输出数量
-    slice_task.hook_mix_output_count = data.hook_mix_output_count or None
+    # 钩子混搭输出数量。
+    # 冲突规则：高光混剪的输出个数由 cutlist 组数决定，钩子变体数会在引擎里按组扩量，
+    # 两者并存会相乘（N 组 × M 变体）导致输出数远超预期 → 高光混剪开启时强制忽略。
+    slice_task.hook_mix_output_count = None if data.highlight_mix_enabled else (data.hook_mix_output_count or None)
     # 钩子拼接位置（head=片头默认 / tail=片尾；重试时保留）
     slice_task.hook_position = data.hook_position if data.hook_position in ("head", "tail") else None
     # 输出档位：高分辨率/高 fps 素材降档提速（重试时保留）
@@ -968,6 +970,13 @@ async def _create_slice_task_record(
     # 仅对「高光混剪 + 有效 cutlist」生效（Remotion 即拼接者；普通逐段切片/整片回退
     # 不适用增强渲染）。任务内部由系统设置「Remotion 渲染」开关兜底。
     if slice_task.remotion_mix_config and data.highlight_mix_enabled and slice_task.cutlist and slice_task.cutlist.strip():
+        # 冲突规则：Remotion 渲染管线不消费钩子视频（钩子由 ffmpeg 引擎拼接），
+        # 两者同时开启时钩子会被忽略——前端已拦截并提示，这里显式记日志便于排查。
+        if slice_task.hook_video_key or slice_task.hook_video_keys:
+            logger.warning(
+                "任务 %s 同时开启 Remotion 增强与钩子视频：Remotion 渲染管线不消费钩子，本次钩子将被忽略",
+                slice_task.id,
+            )
         try:
             run_remotion_mix_task.delay(str(slice_task.id))
         except Exception as e:
