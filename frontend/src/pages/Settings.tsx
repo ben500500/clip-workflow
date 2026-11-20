@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Table, Button, Space, Typography, message, Modal, Form, Input, Tag, Select, InputNumber, Tooltip, Alert, Popconfirm,
+  Card, Table, Button, Space, Typography, message, Modal, Form, Input, Tag, Select, InputNumber, Tooltip, Alert, Popconfirm, Switch,
 } from 'antd';
 import { PlusOutlined, DeleteOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
 import { configApi } from '../api/config';
@@ -22,12 +22,16 @@ const Settings: React.FC = () => {
   const selectedPlatform = Form.useWatch('platform', profileForm) as string | undefined;
   const [asrMethod, setAsrMethod] = useState<string>('whisper');
   const [asrSaving, setAsrSaving] = useState(false);
+  const [remotionEnabled, setRemotionEnabled] = useState(false);
+  const [remotionSaving, setRemotionSaving] = useState(false);
 
   const fetchAll = () => {
     configApi.getAll().then((list) => {
       setConfigs(list);
       const a = list.find((c: SystemConfig) => c.key === 'asr_method');
       if (a) setAsrMethod(String(a.value));
+      const re = list.find((c: SystemConfig) => c.key === 'remotion_enabled');
+      setRemotionEnabled(re ? re.value === true || String(re.value).toLowerCase() === 'true' : false);
     }).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformProfiles().then(setProfiles).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformPresets().then((r) => setPresets(r.presets || {})).catch(() => undefined);
@@ -145,6 +149,20 @@ const Settings: React.FC = () => {
       message.error(err instanceof Error ? err.message : '切换失败');
     } finally {
       setAsrSaving(false);
+    }
+  };
+
+  const handleRemotionToggle = async (checked: boolean) => {
+    setRemotionEnabled(checked);
+    setRemotionSaving(true);
+    try {
+      await configApi.update('remotion_enabled', checked);
+      message.success(checked ? 'Remotion 渲染已开启' : 'Remotion 渲染已关闭');
+    } catch (err: unknown) {
+      setRemotionEnabled(!checked);
+      message.error(err instanceof Error ? err.message : '保存失败');
+    } finally {
+      setRemotionSaving(false);
     }
   };
 
@@ -277,6 +295,30 @@ const Settings: React.FC = () => {
               message="FunASR 运行时已安装（SenseVoice-Small + fsmn-vad + ct-punc，CPU 推理，无需 API Key）。切换后下次生成字幕即采用。"
             />
           )}
+        </Space>
+      </Card>
+      <Card title="Remotion 渲染（高光混剪增强）" style={{ marginBottom: 16 }}>
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            开启后，切片勾选「Remotion 混剪增强」时将使用 Remotion 引擎渲染增强版高光混剪
+            （片头标题卡 + 段间转场 + 字幕叠加 + 段标题 + 片尾卡），替代裸 concat 拼接。
+            关闭即回退 ffmpeg 原链路，零侵入。
+          </Text>
+          <Space align="center">
+            <Switch
+              checked={remotionEnabled}
+              loading={remotionSaving}
+              onChange={handleRemotionToggle}
+            />
+            <Text strong style={{ fontSize: 13 }}>Remotion 渲染{remotionEnabled ? '已开启' : '已关闭'}</Text>
+          </Space>
+          <Alert
+            type={remotionEnabled ? 'success' : 'info'}
+            showIcon
+            message={remotionEnabled
+              ? 'Remotion 渲染已启用：新切片任务勾选「Remotion 混剪增强」即走增强渲染（独立 worker，渲染约需数分钟）。'
+              : 'Remotion 渲染已关闭：所有切片走 ffmpeg 原链路，不受影响。'}
+          />
         </Space>
       </Card>
       <Card size="small" title="全局配置" style={{ marginBottom: 16 }}>

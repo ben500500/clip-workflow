@@ -45,6 +45,7 @@ export const sliceApi = {
       video_path?: string;
       engine?: string;
       auto_accept_all?: boolean;
+      remotion_mix_enabled?: boolean;
       // 后端兜底：无候选片段时后端自动补一轮 AI 选点（前端提交即走，关窗口安全）
       auto_autoclip_if_empty?: boolean;
       // 补选点时的 AI 选点配置

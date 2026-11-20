@@ -18,7 +18,11 @@ import os
 import uuid
 from typing import Optional
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
+from app.models.models import SystemConfig
 from app.services.minio_service import download_to_file
 
 logger = logging.getLogger(__name__)
@@ -26,7 +30,27 @@ logger = logging.getLogger(__name__)
 # Remotion 渲染入口脚本（配置化，默认 /remotion/dist/render.js）
 REMOTION_RENDER_SCRIPT = settings.REMOTION_RENDER_SCRIPT
 
+# 系统配置键：Remotion 渲染能力总开关（系统设置页实体开关驱动，不再读 env）
+REMOTION_ENABLED_CONFIG_KEY = "remotion_enabled"
+
 ProgressCallback = Optional[object]  # 与 slice_service 对齐，实际签名见 render_highlight_mix
+
+
+async def is_remotion_enabled(db: AsyncSession) -> bool:
+    """Remotion 渲染能力总开关——由系统设置页的实体开关驱动。
+
+    读取 system_configs.remotion_enabled（JSON bool）；未配置 = 关闭。
+    历史 env REMOTION_ENABLED 已弃用（2026-11-20 起改为界面实体开关）。
+    """
+    row = await db.execute(
+        select(SystemConfig).where(SystemConfig.key == REMOTION_ENABLED_CONFIG_KEY)
+    )
+    cfg = row.scalar_one_or_none()
+    if cfg is None or cfg.value is None:
+        return False
+    if isinstance(cfg.value, bool):
+        return cfg.value
+    return str(cfg.value).strip().lower() in ("true", "1", "yes")
 
 
 def parse_mix_segments(cutlist: str) -> list[dict]:

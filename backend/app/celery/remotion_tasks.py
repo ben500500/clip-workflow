@@ -32,9 +32,18 @@ def run_remotion_mix_task(self, slice_task_id: str, lock_token: str = None):
     lock_token：手动触发入口（/v1/remotion/render）持有的互斥锁令牌，收尾时释放；
     自动触发路径（切片完成后派发）不传 token，不涉及锁。
     """
-    if not settings.REMOTION_ENABLED:
-        logger.info("REMOTION_ENABLED 关闭，跳过 Remotion 渲染 slice_task=%s", slice_task_id)
-        return {"skipped": True, "reason": "REMOTION_ENABLED disabled"}
+    # 实体开关：系统设置页「Remotion 渲染」开关（system_configs.remotion_enabled）驱动，
+    # 不再读取 env REMOTION_ENABLED（2026-11-20 弃用）
+    from app.services.remotion_renderer import is_remotion_enabled
+    from app.database import async_session_factory
+
+    async def _check_enabled():
+        async with async_session_factory() as db:
+            return await is_remotion_enabled(db)
+
+    if not run_async(_check_enabled()):
+        logger.info("Remotion 渲染开关（系统设置）关闭，跳过 Remotion 渲染 slice_task=%s", slice_task_id)
+        return {"skipped": True, "reason": "remotion disabled"}
 
     try:
         result = run_async(_run_remotion_mix_flow(slice_task_id))
@@ -136,8 +145,16 @@ def remotion_stale_recovery_task(self):
     from datetime import datetime, timezone
     from sqlalchemy import text
 
-    if not settings.REMOTION_ENABLED:
-        return {"skipped": True, "reason": "REMOTION_ENABLED disabled"}
+    # 实体开关：系统设置驱动（同 run_remotion_mix_task）
+    from app.services.remotion_renderer import is_remotion_enabled
+    from app.database import async_session_factory
+
+    async def _check_enabled():
+        async with async_session_factory() as db:
+            return await is_remotion_enabled(db)
+
+    if not run_async(_check_enabled()):
+        return {"skipped": True, "reason": "remotion disabled"}
 
     timeout = settings.REMOTION_RENDER_TIMEOUT_SECONDS
     try:
