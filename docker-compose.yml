@@ -438,6 +438,7 @@ services:
       # Remotion 渲染容器内 render.js 入口 / chromium 路径
       REMOTION_RENDER_SCRIPT: /remotion/dist/render.js
       REMOTION_CHROMIUM_EXECUTABLE: /usr/bin/chromium
+      REMOTION_WORK_DIR: /remotion
       REMOTION_TMP_DIR: /tmp/remotion
 
   worker-selection:

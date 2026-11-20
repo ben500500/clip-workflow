@@ -303,6 +303,9 @@ class Settings(BaseSettings):
     # 不再提供 env REMOTION_ENABLED（2026-11-20 弃用）。
     # Remotion 渲染容器内 render.js 入口路径（可被 env 覆盖）
     REMOTION_RENDER_SCRIPT: str = "/remotion/dist/render.js"
+    # Remotion 渲染子进程工作目录：render.js 的 bundle entry 按 cwd 相对解析，
+    # worker-remotion 容器内必须为 /remotion（源码目录）；本地联调留空
+    REMOTION_WORK_DIR: str = ""
     # Remotion 渲染临时目录（源视频/封面/props/产物落盘）
     REMOTION_TMP_DIR: str = "/tmp/remotion"
     # 渲染产物上传到 sliced 桶的 key 前缀
