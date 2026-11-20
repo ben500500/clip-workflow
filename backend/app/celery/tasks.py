@@ -224,7 +224,11 @@ def slice_stuck_sweep_task():
     """
     from datetime import timedelta
 
-    from app.services.redis_stream import get_redis, TASK_STATUS_PREFIX
+    from app.services.redis_stream import (
+        get_redis,
+        remove_slice_task_from_streams,
+        TASK_STATUS_PREFIX,
+    )
 
     threshold_seconds = settings.SLICE_STUCK_SWEEP_THRESHOLD_SECONDS
 
@@ -249,8 +253,10 @@ def slice_stuck_sweep_task():
             for task in rows:
                 try:
                     data = await redis.hgetall(f"{TASK_STATUS_PREFIX}{str(task.id)}")
-                except Exception:  # noqa: BLE001 - Redis 不可达时按失联处理
-                    data = {}
+                except Exception:  # noqa: BLE001
+                    # Redis 不可达 ≠ 失联（2026-11-21 SRE 复评 P2-1）：此时按失联
+                    # 处理会批量误杀健康任务，fail-safe 跳过本轮、下轮再查
+                    continue
                 lease = data.get("lease")
                 if lease:
                     try:
@@ -261,6 +267,14 @@ def slice_stuck_sweep_task():
                 task.status = "failed"
                 task.error_message = "任务长时间无进度且 Worker 心跳失效，被僵尸巡检回收（可直接重试）"
                 task.completed_at = datetime.utcnow()
+                # 收尾清理（2026-11-21 SRE 复评 P1-2）：被回收任务若还有在途消息
+                # （direct 死流时代的残留/重复投递），节点恢复后会真跑一个已 failed
+                # 的任务——从所有流移除；hash 设 TTL 防永生泄漏
+                try:
+                    await remove_slice_task_from_streams(str(task.id))
+                    await redis.expire(f"{TASK_STATUS_PREFIX}{str(task.id)}", 7 * 24 * 3600)
+                except Exception:  # noqa: BLE001 - 清理失败不影响 DB 回收
+                    pass
                 swept.append(str(task.id))
             if swept:
                 await db.commit()

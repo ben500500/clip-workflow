@@ -1055,6 +1055,8 @@ async def _dispatch_slice_task(
             # 不留「已提交但无人消费」的悬挂行。
             slice_task.status = "failed"
             slice_task.error_message = "发布到 Worker 队列失败，请检查 Redis 连接"
+            # 补 completed_at（2026-11-21 SRE 复评 P2-4）：否则 task_failed 24h 口径漏计
+            slice_task.completed_at = datetime.utcnow()
             await db.commit()
             raise HTTPException(
                 status_code=500,
@@ -1394,20 +1396,27 @@ async def get_slice_task(
         redis_status = await get_task_redis_status(task_id)
         if redis_status:
             rs = redis_status
-            if rs.get("status") == "completed" and task.status != "completed":
-                task.status = "completed"
-                task.progress = 100.0
-                task.completed_at = datetime.utcnow()
-            elif rs.get("status") == "failed" and task.status != "failed":
-                task.status = "failed"
-                task.error_message = rs.get("error", "Worker 报告错误")
-                task.completed_at = datetime.utcnow()
-            elif rs.get("status") == "cancelled" and task.status != "cancelled":
-                task.status = "cancelled"
-                task.error_message = rs.get("error", "任务已取消")
-                task.completed_at = datetime.utcnow()
-            elif rs.get("progress") is not None:
-                task.progress = max(task.progress or 0, rs["progress"])
+            # 终态守卫（2026-11-21 SRE 复评 P1-1）：终态行不允许被 hash 翻转——
+            # 取消后 worker 进度写曾把 hash status 覆盖回 running，任务跑完又把
+            # DB cancelled 翻成 completed（无产出的假完成）。终态行仅同步进度数值。
+            if task.status in ("cancelled", "completed", "failed"):
+                if rs.get("progress") is not None:
+                    task.progress = max(task.progress or 0, rs["progress"])
+            else:
+                if rs.get("status") == "completed" and task.status != "completed":
+                    task.status = "completed"
+                    task.progress = 100.0
+                    task.completed_at = datetime.utcnow()
+                elif rs.get("status") == "failed" and task.status != "failed":
+                    task.status = "failed"
+                    task.error_message = rs.get("error", "Worker 报告错误")
+                    task.completed_at = datetime.utcnow()
+                elif rs.get("status") == "cancelled" and task.status != "cancelled":
+                    task.status = "cancelled"
+                    task.error_message = rs.get("error", "任务已取消")
+                    task.completed_at = datetime.utcnow()
+                elif rs.get("progress") is not None:
+                    task.progress = max(task.progress or 0, rs["progress"])
     except Exception as e:
         logger.warning("Failed to get Redis status for task %s: %s", task_id, e)
 
@@ -1663,8 +1672,9 @@ async def slice_task_callback(
             task.progress = max(task.progress or 0, data.progress)
 
     else:  # failed
-        # 终态守卫：已取消任务不再翻成 failed（取消后的 worker 报错不覆盖用户意图）
-        if task.status == "cancelled":
+        # 终态守卫：已取消/已完成任务不再翻成 failed（2026-11-21 SRE 复评 P2-3：
+        # 晚到失败回调曾可把 completed 翻成 failed）
+        if task.status in ("cancelled", "completed"):
             return {"ok": True, "suppressed": True}
         task.status = "failed"
         if data.node_id:
@@ -1853,6 +1863,7 @@ async def retry_slice_task(
             # 避免留下悬挂的 pending 行（Issue #355）。
             new_task.status = "failed"
             new_task.error_message = "发布到 Worker 队列失败"
+            new_task.completed_at = datetime.utcnow()
             await db.commit()
             raise HTTPException(
                 status_code=500,

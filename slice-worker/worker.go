@@ -1274,11 +1274,8 @@ func (w *Worker) emitProgress(taskID, phase string, percent float64, detail stri
 		return
 	}
 	w.progressLast.Store(key, pct)
-	_ = w.redis.UpdateTaskStatus(taskID, "running", map[string]interface{}{
-		"progress": staged,
-		"phase":    phase,
-		"lease":    time.Now().Unix(),
-	})
+	// 只写进度三件套不写 status（防 cancelled 标记被覆盖，见 WriteProgress 注释）
+	_ = w.redis.WriteProgress(taskID, staged, phase)
 }
 
 // matchTags 检查标签匹配

@@ -422,16 +422,35 @@ func taskLeaseKey(taskID string) string {
 	return fmt.Sprintf("slice:task:lease:%s", taskID)
 }
 
-// IsTaskCancelled 检查任务是否被后端标记为取消
+// IsTaskCancelled 检查任务是否被后端标记为取消。
+// 2026-11-21 SRE 复评 P1-1 根治：除 status 外还查 cancelled_at（仅 mark_task_cancelled
+// 写入、worker 进度写永不触碰）——即使 status 被并发写覆盖，取消信号也不丢。
 func (r *RedisClient) IsTaskCancelled(taskID string) (bool, error) {
-	status, err := r.client.HGet(r.ctx, fmt.Sprintf("slice:task:%s", taskID), "status").Result()
-	if err == redis.Nil {
-		return false, nil
-	}
-	if err != nil {
+	fields, err := r.client.HMGet(r.ctx, fmt.Sprintf("slice:task:%s", taskID), "status", "cancelled_at").Result()
+	if err != nil && err != redis.Nil {
 		return false, err
 	}
-	return status == "cancelled", nil
+	if len(fields) < 2 {
+		return false, nil
+	}
+	if status, ok := fields[0].(string); ok && status == "cancelled" {
+		return true, nil
+	}
+	if ca, ok := fields[1].(string); ok && ca != "" {
+		return true, nil
+	}
+	return false, nil
+}
+
+// WriteProgress 仅更新进度三件套（progress/phase/lease），不写 status。
+// 2026-11-21 SRE 复评 P1-1：运行中进度写若带 status=running，会把后端写入的
+// cancelled 标记覆盖掉（kill 信号丢失→任务跑完变假完成）。
+func (r *RedisClient) WriteProgress(taskID string, progress float64, phase string) error {
+	return r.client.HSet(r.ctx, fmt.Sprintf("slice:task:%s", taskID), map[string]interface{}{
+		"progress": progress,
+		"phase":    phase,
+		"lease":    time.Now().Unix(),
+	}).Err()
 }
 
 // ExpireTaskStatus 为任务状态 Hash 设置 TTL（任务终态后清理）
