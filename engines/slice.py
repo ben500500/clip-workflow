@@ -528,20 +528,47 @@ def build_dedupe_watermark(wm: dict, width: int = 0, height: int = 0) -> str:
     )
 
 
+def _effective_cpu_cores() -> int:
+    """容器内按 cgroup 配额取有效核数，宿主机回退 os.cpu_count。
+
+    2026-11-21 性能复评 P1：163 的 slice-worker 已设 cpus:6（cpu.max=600000/100000），
+    但 os.cpu_count() 读到宿主 16 核 → x264 13 线程在 6 核 CFS 配额下周期性节流，
+    多 5-15% 同步开销并放大帧缓存内存。线程数应按配额算。
+    """
+    try:  # cgroup v2
+        with open("/sys/fs/cgroup/cpu.max", encoding="utf-8") as fh:
+            quota, period = fh.read().split()
+            if quota != "max" and int(period) > 0:
+                return max(1, int(int(quota) / int(period)))
+    except Exception:
+        pass
+    try:  # cgroup v1
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", encoding="utf-8") as fh:
+            quota = int(fh.read().strip())
+        with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us", encoding="utf-8") as fh:
+            period = int(fh.read().strip())
+        if quota > 0 and period > 0:
+            return max(1, quota // period)
+    except Exception:
+        pass
+    return os.cpu_count() or 1
+
+
 def cpu_threads_for_percent(percent: int) -> int:
-    """根据 CPU 分配比例计算 ffmpeg 使用的线程数（至少 1，最多为 CPU 核心数）。
+    """根据 CPU 分配比例计算 ffmpeg 使用的线程数（至少 1，最多为有效 CPU 核心数）。
 
     算法：threads = max(1, round(cores * percent / 100))，
     例如 8 核 + 50%% => 4 线程，8 核 + 100%% => 8 线程。
+    核数取 _effective_cpu_cores()（容器内按 cgroup 配额，见其注释）。
     """
     if percent <= 0:
         percent = DEFAULT_CPU_PERCENT
     if percent > 100:
         percent = 100
     try:
-        cores = os.cpu_count() or 1
+        cores = _effective_cpu_cores()
     except Exception:
-        cores = 1
+        cores = os.cpu_count() or 1
     n = int(round(cores * percent / 100.0))
     if n < 1:
         n = 1
@@ -4259,7 +4286,7 @@ def main():
     args = parser.parse_args()
 
     threads = cpu_threads_for_percent(args.cpu_percent)
-    print(f"CPU 分配: {args.cpu_percent}%% -> ffmpeg 线程数 {threads} (核数 {os.cpu_count() or '?'})", file=sys.stderr)
+    print(f"CPU 分配: {args.cpu_percent}%% -> ffmpeg 线程数 {threads} (有效核数 {_effective_cpu_cores()})", file=sys.stderr)
 
     encoder = detect_best_encoder(args.encoder)
     print(f"编码器: {encoder}", file=sys.stderr)
@@ -4714,6 +4741,10 @@ def main():
                                 slice_segment(chp, 0.0, ch_dur, ch_part,
                                               vf=hook_vf, af=af, threads=threads, encoder=encoder,
                                               bgm=bgm_audio)
+                                # 建链心跳（2026-11-21 性能复评 P1）：超长钩子链构建可超
+                                # 30min，期间必须刷新卡死检测心跳——同档位百分比在 worker
+                                # 侧只续 lease 不重写 Redis，正好只当心跳用
+                                print("PROGRESS:0")
                                 hook_parts_concat.append(ch_part)
                                 print(f"钩子拼接[combine]: {os.path.basename(chp)} (时长 {ch_dur:.3f}s)", file=sys.stderr)
                             # concat 所有钩子段为完整片头 part_0（缓存目录不进 output_dir，
