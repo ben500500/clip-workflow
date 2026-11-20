@@ -4089,6 +4089,11 @@ def build_output_tier_filter(tier: str, width: int, height: int, fps: str, min_w
 
 
 def main():
+    # stdout 走管道时 Python 默认块缓冲（8KB）。PROGRESS/OUTPUT 行是 worker 的
+    # 进度数据源与卡死检测心跳，必须实时冲刷；line_buffering 兜底防长任务被
+    # stuckTaskLoop 误判卡死强杀（Go 侧已加 -u，此处自保覆盖非 worker 调用方）。
+    if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser()
     parser.add_argument("source")
     parser.add_argument("cutlist")

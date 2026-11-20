@@ -84,7 +84,11 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 
 	// 构建命令：统一调用 Python 引擎 slice.py
 	enginePath := filepath.Join(te.config.EnginesPath, "slice.py")
+	// -u 禁用 Python stdout 块缓冲（管道下默认 8KB 缓冲）。PROGRESS/OUTPUT 行必须
+	// 实时到达 worker：既是后端进度数据源，也是 stuckTaskLoop 卡死检测的心跳——
+	// 缓冲会让长任务（钩子变体等 stdout 输出稀疏的场景）被误判卡死强杀重投。
 	args := []string{
+		"-u",
 		enginePath,
 		sourcePath,
 		cutlistPath,
