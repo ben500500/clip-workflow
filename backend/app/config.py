@@ -120,6 +120,13 @@ class Settings(BaseSettings):
     WORKER_CALLBACK_BASE_URL: str = "http://backend:8080"
     # Worker 任务超时（秒）
     SLICE_TASK_TIMEOUT_SECONDS: int = 7200
+    # 切片僵尸巡检阈值（秒，2026-11-20 评审 SRE P0-1）：DB running/pending 行超过
+    # 该时长无 updated_at 变化、且 Redis 任务 hash 的 lease 同样陈旧 → 置 failed
+    # 可重试。必须大于 SLICE_TASK_TIMEOUT_SECONDS（worker 侧 context 硬杀上限），
+    # 避免回收「合法长任务刚被 worker 自杀重投」的中间态。beat 每
+    # SLICE_STUCK_SWEEP_INTERVAL_SECONDS 扫一次。
+    SLICE_STUCK_SWEEP_THRESHOLD_SECONDS: int = 10800
+    SLICE_STUCK_SWEEP_INTERVAL_SECONDS: int = 1800
 
     # ── 素材变体去重（variant_service）──
     # 常规配方 structural.reorder 默认值（运营开关，默认开）。
@@ -316,8 +323,10 @@ class Settings(BaseSettings):
     # Remotion 渲染独立队列（由 worker-remotion 独占消费）
     # Remotion 渲染超时守护巡检间隔（秒）：周期回写 stuck 在 rendering 的超时任务为 failed
     REMOTION_STALE_INTERVAL_SECONDS: int = 300
-    # Remotion 渲染任务超时阈值（秒）：超过该时长仍 rendering 视为卡死，守护任务回写 failed
-    REMOTION_RENDER_TIMEOUT_SECONDS: int = 3600
+    # Remotion 渲染任务超时阈值（秒）：超过该时长仍 rendering 视为卡死，守护任务回写 failed。
+    # 2026-11-20 评审（SRE P1-1）：原 3600s 会误杀合法长渲染（实测 combine 100 成品
+    # ffmpeg 都要跑 5h，Chromium 逐帧更慢）——上调到 4h。
+    REMOTION_RENDER_TIMEOUT_SECONDS: int = 14400
 
     # ── 素材库（asset_library，设计方案 20261103 P0）──
     # 单批导入上限（条）：超过必须拆批，防一次粘 500 条链接把解析打爆。

@@ -165,6 +165,11 @@ async def _run_remotion_mix_flow(slice_task_id: str) -> dict:
             await db.execute(select(SliceTask).where(SliceTask.id == slice_task_id))
         ).scalar_one_or_none()
         if task:
+            # 终态守卫（2026-11-20 评审 SRE P1-1）：用户已取消的任务不允许被迟到的
+            # 渲染完成回调复活（cancelled 意图优先；迟到产物留 MinIO 不入库）。
+            if task.status == "cancelled":
+                logger.warning("Remotion 渲染完成但任务 %s 已取消，跳过回写", slice_task_id)
+                return {"ok": True, "suppressed": True}
             # 幂等：重试路径可能已落过输出，避免重复插记录
             from app.models.material import SliceOutput
 
@@ -211,6 +216,9 @@ async def _mark_remotion_failed(slice_task_id: str, error: str) -> None:
             await db.execute(select(SliceTask).where(SliceTask.id == slice_task_id))
         ).scalar_one_or_none()
         if task:
+            # 终态守卫：已取消任务不写失败态（保留 cancelled 语义，不覆盖用户意图）
+            if task.status == "cancelled":
+                return
             task.remotion_status = "failed"
             task.error_message = (error or "")[:1000]
             await db.commit()

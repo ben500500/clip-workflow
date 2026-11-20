@@ -1543,6 +1543,10 @@ async def slice_task_callback(
         # 若任务已处于终态且输出已落库，直接返回，避免切片输出重复添加。
         if task.status == "completed":
             return {"ok": True, "duplicate": True}
+        # 终态守卫（2026-11-20 评审 SRE P1-1）：用户已取消的任务不允许被迟到回调
+        # 复活（cancelled 意图优先；迟到产出物留在 MinIO 但不入库）。
+        if task.status == "cancelled":
+            return {"ok": True, "suppressed": True}
         if task.status in ("failed", "cancelled") and task.output_count and task.output_count > 0:
             return {"ok": True, "duplicate": True}
 
@@ -1631,6 +1635,9 @@ async def slice_task_callback(
             task.progress = max(task.progress or 0, data.progress)
 
     else:  # failed
+        # 终态守卫：已取消任务不再翻成 failed（取消后的 worker 报错不覆盖用户意图）
+        if task.status == "cancelled":
+            return {"ok": True, "suppressed": True}
         task.status = "failed"
         if data.node_id:
             task.node_id = data.node_id
@@ -1720,11 +1727,18 @@ async def retry_slice_task(
     if episode:
         await check_project_access_by_episode(db, episode, current_user)
 
-    if task.status not in ("failed", "cancelled", "completed"):
+    # 2026-11-20 评审（SRE P0-2）：processing 也是可重试状态——Remotion 短路/回收
+    # 缺位时任务会永久 processing（PR402 同族），此前 cancel/retry 双门全关，
+    # 用户只能干瞪眼。
+    if task.status not in ("failed", "cancelled", "completed", "processing"):
         raise HTTPException(
             status_code=400,
             detail=f"Cannot retry task with status '{task.status}'",
         )
+    # processing 任务重试＝旧任务放弃：显式置 cancelled 留痕（否则旧行永远 processing）
+    if task.status == "processing":
+        task.status = "cancelled"
+        task.error_message = "用户手动重试：原任务放弃重切"
 
     episode = await db.execute(select(Episode).where(Episode.id == task.episode_id))
     ep = episode.scalar_one_or_none()
@@ -1941,7 +1955,10 @@ async def cancel_slice_task(
     if episode:
         await check_project_access_by_episode(db, episode, current_user)
 
-    if task.status not in ("pending", "running"):
+    # 2026-11-20 评审（SRE P0-2）：processing 同样可取消——Remotion 路径派发后
+    # 钉在 processing/1%，此前 cancel/retry 双门全关形成「三无死角」。
+    # 取消 processing 依赖 Remotion 回写的终态守卫防复活（见 remotion_tasks）。
+    if task.status not in ("pending", "running", "processing"):
         raise HTTPException(
             status_code=400,
             detail=f"Cannot cancel task with status '{task.status}'",

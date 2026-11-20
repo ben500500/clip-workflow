@@ -84,7 +84,10 @@ celery_app.conf.update(
         "app.celery.variant_tasks.verify_variant_fingerprint_task": {"queue": "variant"},
         # Remotion 混剪增强：独立 remotion 队列，独占 worker-remotion 容器消费（Node+Chrome 渲染）。
         "app.celery.remotion_tasks.run_remotion_mix_task": {"queue": "remotion"},
-        "app.celery.remotion_tasks.remotion_stale_recovery_task": {"queue": "remotion"},
+        # 2026-11-20 评审（SRE P0-2）：remotion_stale_recovery_task 不再路由到
+        # remotion 队列——它守护的正是 remotion worker 卡死的场景，与被守护者
+        # 同队列同 profile 开关＝同生共死，worker-remotion 停机期间守护也停摆。
+        # 移入 default 队列（普通 celery worker 消费），与被守护对象解耦。
     },
     beat_schedule={
         "collect-metrics-daily": {
@@ -154,6 +157,13 @@ celery_app.conf.update(
             "task": "wechat_dl.recover_stale",
             "schedule": settings.WECHAT_DL_STALE_INTERVAL_SECONDS,
         },
+        # 切片任务僵尸巡检（2026-11-20 评审 SRE P0-1 兜底）：direct queue BRPOP
+        # 弹出即确认无 PEL + 「行已提交、消息未发」窗口都可能产生永久 running/pending
+        # 悬挂行，占满并发闸门后新切片全部 429。每 30 分钟扫一次超时行并回收。
+        "slice-stuck-sweep": {
+            "task": "app.celery.tasks.slice_stuck_sweep_task",
+            "schedule": settings.SLICE_STUCK_SWEEP_INTERVAL_SECONDS,
+        },
     },
 )
 
@@ -195,6 +205,69 @@ def run_async(coro):
         loop = asyncio.new_event_loop()
         _async_local.loop = loop
     return loop.run_until_complete(coro)
+
+
+@celery_app.task
+def slice_stuck_sweep_task():
+    """切片任务僵尸巡检（2026-11-20 评审 SRE P0-1/P0-3 兜底，beat 每 30 分钟）。
+
+    背景：direct queue（BRPOP 弹出即确认、无 PEL）与「行已提交、消息未发」窗口
+    都可能产生永久 running/pending 悬挂行；悬挂行会占满全局并发闸门（统计口径
+    同为 running/pending），累积后新切片全部 429，且 Go 侧 claimLoop 只能救 Stream
+    消息救不了 direct queue。这里在 DB 层兜底回收：
+      扫描 running/pending 且 updated_at 超过 SLICE_STUCK_SWEEP_THRESHOLD_SECONDS
+      的行，再核对 Redis 任务 hash 的 lease——worker 每条进度行都会续约（2026-11-20
+      接线修复后活任务秒级续约），lease 新鲜说明 worker 活着则跳过；否则置 failed
+      供用户重试，并发闸门随之释放。
+    阈值（默认 3h）必须大于 worker 侧 TASK_TIMEOUT（2h，context 硬杀上限），
+    避免回收一个「合法长任务刚被 worker 自杀重投」的中间态。
+    """
+    from datetime import timedelta
+
+    from app.services.redis_stream import get_redis, TASK_STATUS_PREFIX
+
+    threshold_seconds = settings.SLICE_STUCK_SWEEP_THRESHOLD_SECONDS
+
+    async def _sweep():
+        cutoff = datetime.utcnow() - timedelta(seconds=threshold_seconds)
+        swept: List[str] = []
+        async with async_session_factory() as db:
+            rows = (
+                await db.execute(
+                    select(SliceTask).where(
+                        SliceTask.status.in_(("running", "pending")),
+                        SliceTask.updated_at < cutoff,
+                    )
+                )
+            ).scalars().all()
+            if not rows:
+                return []
+            redis = await get_redis()
+            now_ts = datetime.utcnow().timestamp()
+            for task in rows:
+                try:
+                    data = await redis.hgetall(f"{TASK_STATUS_PREFIX}{str(task.id)}")
+                except Exception:  # noqa: BLE001 - Redis 不可达时按失联处理
+                    data = {}
+                lease = data.get("lease")
+                if lease:
+                    try:
+                        if now_ts - float(lease) < threshold_seconds:
+                            continue  # worker 心跳新鲜，任务仍在推进，不回收
+                    except (TypeError, ValueError):
+                        pass  # lease 字段异常视为失联
+                task.status = "failed"
+                task.error_message = "任务长时间无进度且 Worker 心跳失效，被僵尸巡检回收（可直接重试）"
+                task.completed_at = datetime.utcnow()
+                swept.append(str(task.id))
+            if swept:
+                await db.commit()
+        return swept
+
+    swept = run_async(_sweep())
+    if swept:
+        logger.warning("slice_stuck_sweep 回收僵尸切片任务: %s", swept)
+    return {"swept": swept}
 
 
 async def _ensure_source_video(source_path: Optional[str], source_file_key: Optional[str], source_bucket: Optional[str] = None) -> Optional[str]:
