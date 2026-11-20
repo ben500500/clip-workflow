@@ -484,12 +484,16 @@ const SUBTITLE_MASK_PRESETS = [
       width: 110,
       render: (_: string | undefined, t: SliceTask) => {
         // 仅运行中/待处理任务展示相对时间，其它状态一律显示 '—'
-        if ((t.status !== 'running' && t.status !== 'pending') || !t.last_progress_at) {
+        if (t.status !== 'running' && t.status !== 'pending') {
           return <Text style={{ fontSize: 12 }}>—</Text>;
         }
+        // pending 无心跳＝还在排队等待认领（与运行中失联区分开，2026-11-21 UX 复评）
+        if (!t.last_progress_at) {
+          return <Text style={{ fontSize: 12 }}>{t.status === 'pending' ? '排队等待中' : '—'}</Text>;
+        }
         const diffMin = Math.floor((Date.now() - new Date(t.last_progress_at as string).getTime()) / 60000);
-        // last_progress_at 异常（解析为 NaN）时回退显示 '—'，避免渲染 NaN
-        if (Number.isNaN(diffMin)) return <Text style={{ fontSize: 12 }}>—</Text>;
+        // last_progress_at 异常（解析为 NaN）或时钟回拨（负数）时回退，避免渲染异常
+        if (Number.isNaN(diffMin) || diffMin < 0) return <Text style={{ fontSize: 12 }}>刚刚</Text>;
         let label: string;
         if (diffMin < 1) label = '刚刚';
         else if (diffMin > 60) label = `${Math.floor(diffMin / 60)} 小时前`;
@@ -653,7 +657,7 @@ const SUBTITLE_MASK_PRESETS = [
         <Alert
           type="warning"
           showIcon
-          message="本页仅支持基础重切（不含钩子、高光混剪、Remotion 增强、字幕水印等完整能力）。完整切片能力请到对应剧集详情页使用。"
+          message="本页仅支持基础重切（不含钩子片头、高光混剪、Remotion 增强与封面首帧；字幕/水印/打码等视觉配置仍可用）。完整切片能力请到对应剧集详情页使用。"
           style={{ marginBottom: 8 }}
           action={(
             <Button

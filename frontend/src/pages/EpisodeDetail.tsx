@@ -1961,7 +1961,9 @@ const EpisodeDetail: React.FC = () => {
   const hooksActiveForEstimate = (hookVideoKeys.length > 0 || hookPendingFiles.length > 0) && !remotionMixEnabled;
   const estHookFactor = hooksActiveForEstimate && !highlightMixEnabled && (hookMixMode === 'random' || hookMixMode === 'combine') && hookMixOutputCount > 1 ? hookMixOutputCount : 1;
   const estHighlightFactor = highlightMixEnabled ? highlightMixOutputCount : 1;
-  const estVariantFactor = sliceMode === 'dedupe' && variantCount && variantCount > 1 ? variantCount : 1;
+  // 2026-11-21 UX 复评：两个入口的 dedupe 门控不同（一键切片=dedupeEnabled 开关、
+  // 主路径=sliceMode==='dedupe'），预计产出按「任一入口生效」的上界估计，避免一键+去重+多版本时恒显示 1
+  const estVariantFactor = (dedupeEnabled || sliceMode === 'dedupe') && variantCount && variantCount > 1 ? variantCount : 1;
   const estOutputCount = estHookFactor * estHighlightFactor * estVariantFactor;
 
   const actions: { title: string; node: React.ReactNode }[] = [
