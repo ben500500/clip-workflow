@@ -11,6 +11,7 @@
 - 生产安全开关 REMOTION_ENABLED 关闭时直接跳过（默认关闭，需显式开启）。
 """
 import logging
+import os
 
 from sqlalchemy import select
 
@@ -137,6 +138,13 @@ async def _run_remotion_mix_flow(slice_task_id: str) -> dict:
             t.remotion_status = "uploading"
             await db.commit()
     outputs = out if isinstance(out, list) else [out]
+
+    # 文件名沿用 cutlist 组名（与 ffmpeg 混剪命名一致：剧名_MMDD_NNN.mp4）
+    from app.services.remotion_renderer import parse_mix_groups
+
+    group_names = [
+        g["name"] for g in parse_mix_groups(getattr(task, "cutlist", "") or "")
+    ]
     keys: list[str] = []
     for i, local_path in enumerate(outputs, start=1):
         if len(outputs) == 1:
@@ -150,11 +158,38 @@ async def _run_remotion_mix_flow(slice_task_id: str) -> dict:
         # 上传进度：92% → 99% 按文件数均分
         await _progress_cb(92.0 + 7.0 * i / len(outputs), f"上传第 {i}/{len(outputs)} 个文件")
 
+    # 回写最终状态 + 落 slice_outputs（前端输出列表的数据源，与 ffmpeg 收尾同表同规范；
+    # 2026-11-20 修复：Remotion 产物此前只写 remotion_output_file_key，界面看不到任何输出）
     async with async_session_factory() as db:
         task = (
             await db.execute(select(SliceTask).where(SliceTask.id == slice_task_id))
         ).scalar_one_or_none()
         if task:
+            # 幂等：重试路径可能已落过输出，避免重复插记录
+            from app.models.material import SliceOutput
+
+            existing = (
+                await db.execute(
+                    select(SliceOutput).where(SliceOutput.task_id == task.id)
+                )
+            ).scalars().first()
+            if existing is None:
+                for i, key in enumerate(keys, start=1):
+                    local_path = outputs[i - 1] if i - 1 < len(outputs) else None
+                    base_name = (
+                        group_names[i - 1] if i - 1 < len(group_names) else f"{slice_task_id}_{i:03d}"
+                    )
+                    db.add(SliceOutput(
+                        task_id=task.id,
+                        clip_id=None,  # 混剪成品是组合产物，不对应单个候选段
+                        file_key=key,
+                        file_name=f"{base_name}.mp4",
+                        file_size=(
+                            os.path.getsize(local_path)
+                            if local_path and os.path.isfile(local_path)
+                            else None
+                        ),
+                    ))
             task.remotion_output_file_key = ",".join(keys)
             task.remotion_status = "done"
             # Remotion 即拼接者：渲染完成 = 切片任务完成
