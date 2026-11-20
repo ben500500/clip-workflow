@@ -253,11 +253,15 @@ const EpisodeDetail: React.FC = () => {
     }
     return false;
   };
-  // ── 钩子视频文件夹（作为片头拼接在封面与本体之间，一键切片时下发） ──
-  // 需求：钩子视频选择改成选择文件夹，文件夹中含多个钩子视频，切片时随机组合。
-  // 钩子选择按剧集持久化到 localStorage（刷新/切换页面不丢失，一键切片同浏览器同剧集可复用）。
+  // ── 钩子视频（作为片头/片尾拼接，一键切片时下发） ──
+  // 支持两种选择方式：整个文件夹 / 多选文件。
+  // 选择后仅暂存在本页（hookPendingFiles），点「开始切片/一键切片」时才真正上传——
+  // 避免选完即传的长时间等待；已上传的 keys 持久化到 localStorage（刷新可复用）。
+  // 暂存中的 File 对象无法持久化，刷新页面后需重新选择（界面上有橙色「待上传」标记提示）。
   const [hookVideoKeys, setHookVideoKeys] = useState<string[]>([]);
   const [hookVideoNames, setHookVideoNames] = useState<string[]>([]);
+  const [hookPendingFiles, setHookPendingFiles] = useState<File[]>([]);
+  const [hookPendingNames, setHookPendingNames] = useState<string[]>([]);
   const [hookUploading, setHookUploading] = useState(false);
   // 钩子混搭模式：sequential（顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
   const [hookMixMode, setHookMixMode] = useState<'sequential' | 'random' | 'combine'>('sequential');
@@ -304,46 +308,68 @@ const EpisodeDetail: React.FC = () => {
     } catch { /* 忽略 */ }
   }, [episodeId]);
 
-  // 上传整个钩子视频文件夹（多个视频，切片时随机组合）
-  const handleHookFolderUpload = async (files: File[]) => {
-    if (!files || files.length === 0) return false;
-    setHookUploading(true);
-    try {
-      const res = await sliceApi.uploadHookFolder(files);
-      if (mountedRef.current) {
-        if (res.items && res.items.length > 0) {
-          setHookVideoKeys(res.items.map((it) => it.file_key));
-          setHookVideoNames(res.items.map((it) => it.file_name));
-          message.success(`已上传 ${res.items.length} 个钩子视频，切片时随机组合`);
-        } else {
-          message.error('钩子文件夹中没有可用的视频文件');
-        }
-        if (res.errors && res.errors.length > 0) {
-          message.warning(`部分文件未上传：${res.errors.join('；')}`);
-        }
-      }
-    } catch (err: unknown) {
-      if (mountedRef.current) {
-        message.error(err instanceof Error ? err.message : '钩子文件夹上传失败');
-      }
-    } finally {
-      if (mountedRef.current) setHookUploading(false);
+  // 选择钩子（文件夹或多选文件）：仅暂存，不立即上传。
+  // 新选择整体替换旧选择（含已上传的旧 keys）。
+  const handleHookFilesSelected = (files: File[]) => {
+    if (!files || files.length === 0) return;
+    const videos = files.filter((f) => /\.(mp4|mov|avi|mkv|webm|flv|wmv|m4v|ts)$/i.test(f.name));
+    if (videos.length === 0) {
+      message.warning('所选位置没有视频文件');
+      return;
     }
-    return false;
+    setHookPendingFiles(videos);
+    setHookPendingNames(videos.map((f) => f.name));
+    // 新选择替换旧选择：清掉已上传的 keys（localStorage 由其 effect 联动清除）
+    setHookVideoKeys([]);
+    setHookVideoNames([]);
+    message.info(`已选择 ${videos.length} 个钩子视频（暂存，开始切片时自动上传）`);
   };
 
-  // 钩子文件夹选择：AntD Upload 在 directory 模式下会按文件逐个触发 beforeUpload，
-  // 这里把同一批选择的文件累积到 ref，稍后统一上传一次，避免重复上传。
+  // 切片开始时上传暂存的钩子文件，返回可下发的 file_key 列表。
+  // 无暂存文件时直接返回已上传的 keys；上传失败抛错由调用方终止切片。
+  const uploadPendingHooks = async (): Promise<string[]> => {
+    if (hookPendingFiles.length === 0) return hookVideoKeys;
+    try {
+      const res = await sliceApi.uploadHookFolder(hookPendingFiles);
+      const keys = res.items.map((it) => it.file_key);
+      const names = res.items.map((it) => it.file_name);
+      if (res.errors && res.errors.length > 0) {
+        message.warning(`部分文件未上传：${res.errors.join('；')}`);
+      }
+      if (keys.length === 0) {
+        throw new Error('钩子视频上传后无可用文件');
+      }
+      setHookVideoKeys(keys);
+      setHookVideoNames(names);
+      setHookPendingFiles([]);
+      setHookPendingNames([]);
+      return keys;
+    } catch (err: unknown) {
+      // 吞掉本地状态清理（保持暂存，便于重试），错误抛给切片流程终止任务
+      throw err instanceof Error ? err : new Error('钩子视频上传失败');
+    }
+  };
+
+  // 清除钩子选择（暂存 + 已上传一并清掉）
+  const clearHookSelection = () => {
+    setHookPendingFiles([]);
+    setHookPendingNames([]);
+    setHookVideoKeys([]);
+    setHookVideoNames([]);
+  };
+
+  // 钩子选择：AntD Upload（directory/multiple）都按文件逐个触发 beforeUpload，
+  // 这里把同一批选择的文件累积到 ref，稍后统一暂存一次，避免重复暂存。
   const hookFilesRef = useRef<File[]>([]);
   const hookUploadTimerRef = useRef<number | null>(null);
-  const collectHookFolderFiles = (file: File) => {
+  const collectHookFiles = (file: File) => {
     hookFilesRef.current.push(file);
     if (hookUploadTimerRef.current) clearTimeout(hookUploadTimerRef.current);
     hookUploadTimerRef.current = window.setTimeout(() => {
       const files = hookFilesRef.current;
       hookFilesRef.current = [];
       hookUploadTimerRef.current = null;
-      if (files.length > 0) handleHookFolderUpload(files);
+      if (files.length > 0) handleHookFilesSelected(files);
     }, 300);
     return false;
   };
@@ -1365,6 +1391,12 @@ const EpisodeDetail: React.FC = () => {
     setOneClickSlicing(true);
     setOneClickProgress({ status: 'running', progress: 5, message: '正在提交一键切片任务…' });
     try {
+      // 钩子延迟上传：选完仅在切片开始时上传（失败则终止切片，暂存保留可重试）
+      setOneClickProgress({ status: 'running', progress: 3, message: '正在上传钩子视频…' });
+      const hookKeys = await uploadPendingHooks();
+      // 冲突矩阵：Remotion 增强渲染管线不消费钩子 → 钩子参数不下发
+      const hooksActive = hookKeys.length > 0 && !remotionMixEnabled;
+      setOneClickProgress({ status: 'running', progress: 5, message: '正在提交一键切片任务…' });
       // auto_accept_all=true：后端自动把所有候选片段（含 pending）纳入切片，
       // 无需逐个审核/预览，直接产出成品视频；无候选片段时由后端自动补一轮 AI 选点
       // （auto_autoclip_if_empty）——提交即走，关窗口安全
@@ -1375,15 +1407,16 @@ const EpisodeDetail: React.FC = () => {
         autoclip_config: resolveAutoclipConfig(),
         // 视频封面：作为视频首帧
         cover_image_key: coverImageKey || undefined,
-        // 钩子视频文件夹：作为片头拼接在封面与本体之间（[封面][钩子][本体]）；切片时随机取一个
-        hook_video_keys: hookVideoKeys.length > 0 ? hookVideoKeys : undefined,
-        hook_video_key: hookVideoKeys.length === 1 ? hookVideoKeys[0] : undefined,
+        // 钩子视频：作为片头/片尾拼接（[封面][钩子][本体] 或 [封面][本体][钩子]）
+        hook_video_keys: hooksActive ? hookKeys : undefined,
+        hook_video_key: hooksActive && hookKeys.length === 1 ? hookKeys[0] : undefined,
         // 钩子混搭模式：多钩子时生效（sequential/random/combine）
-        hook_mix_mode: hookVideoKeys.length > 0 ? (hookMixMode || 'sequential') : undefined,
+        hook_mix_mode: hooksActive ? (hookMixMode || 'sequential') : undefined,
         // 钩子拼接位置（head=片头默认 / tail=片尾）
-        hook_position: hookVideoKeys.length > 0 ? hookPosition : undefined,
-        // 钩子混搭输出数量：random/combine 模式（单钩子也支持多输出）
-        hook_mix_output_count: (hookVideoKeys.length > 0 && (hookMixMode === 'random' || hookMixMode === 'combine')) && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
+        hook_position: hooksActive ? hookPosition : undefined,
+        // 钩子混搭输出数量：random/combine 模式；高光混剪有自己的输出个数（cutlist 组数），
+        // 两者并存会按组相乘导致输出爆炸 → 高光混剪开启时忽略
+        hook_mix_output_count: hooksActive && !highlightMixEnabled && (hookMixMode === 'random' || hookMixMode === 'combine') && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
         // 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品
         highlight_mix_enabled: highlightMixEnabled,
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
@@ -1584,6 +1617,12 @@ const EpisodeDetail: React.FC = () => {
     setRunning(true);
     setProgress({ status: 'running', progress: 5, message: noCut ? '正在提交快速转换任务…' : '正在提交切片任务…' });
     try {
+      // 钩子延迟上传：选完仅在切片开始时上传（失败则终止切片，暂存保留可重试）
+      setProgress({ status: 'running', progress: 3, message: '正在上传钩子视频…' });
+      const hookKeys = await uploadPendingHooks();
+      // 冲突矩阵：Remotion 增强渲染管线不消费钩子 → 钩子参数不下发
+      const hooksActive = hookKeys.length > 0 && !remotionMixEnabled;
+      setProgress({ status: 'running', progress: 5, message: noCut ? '正在提交快速转换任务…' : '正在提交切片任务…' });
       const res = await sliceApi.run(episodeId, mode, {
         // 快速转换：跳过 AI 选点与区间检测，整段源视频直接应用下方配置转换输出
         no_cut: noCut || undefined,
@@ -1592,13 +1631,15 @@ const EpisodeDetail: React.FC = () => {
         autoclip_config: resolveAutoclipConfig(),
         // 视频封面（首帧）：选择图片作为成品视频首帧（与一键切片共用同一封面选择）
         cover_image_key: coverImageKey || undefined,
-        hook_video_keys: hookVideoKeys.length > 0 ? hookVideoKeys : undefined,
-        hook_video_key: hookVideoKeys.length === 1 ? hookVideoKeys[0] : undefined,
-        hook_mix_mode: hookVideoKeys.length > 0 ? (hookMixMode || 'sequential') : undefined,
+        // 钩子视频：作为片头/片尾拼接（[封面][钩子][本体] 或 [封面][本体][钩子]）
+        hook_video_keys: hooksActive ? hookKeys : undefined,
+        hook_video_key: hooksActive && hookKeys.length === 1 ? hookKeys[0] : undefined,
+        hook_mix_mode: hooksActive ? (hookMixMode || 'sequential') : undefined,
         // 钩子拼接位置（head=片头默认 / tail=片尾）
-        hook_position: hookVideoKeys.length > 0 ? hookPosition : undefined,
-        // 钩子混搭输出数量：random/combine 模式（单钩子也支持多输出）
-        hook_mix_output_count: (hookVideoKeys.length > 0 && (hookMixMode === 'random' || hookMixMode === 'combine')) && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
+        hook_position: hooksActive ? hookPosition : undefined,
+        // 钩子混搭输出数量：random/combine 模式；高光混剪有自己的输出个数（cutlist 组数），
+        // 两者并存会按组相乘导致输出爆炸 → 高光混剪开启时忽略
+        hook_mix_output_count: hooksActive && !highlightMixEnabled && (hookMixMode === 'random' || hookMixMode === 'combine') && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
         highlight_mix_enabled: highlightMixEnabled,
         highlight_mix_max_duration: highlightMixEnabled ? (highlightMixMaxDuration ?? undefined) : undefined,
         highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
@@ -1807,6 +1848,129 @@ const EpisodeDetail: React.FC = () => {
       </div>
     );
   };
+
+  // ─── 钩子视频选择器（主切片区与一键切片配置弹窗共用） ──
+  // 布局约束：文件名不再拼进 Tag（几十个文件会把同行后续控件挤出屏幕），
+  // Tag 只显示数量，完整文件列表收进弹层（内部滚动，不撑破页面）。
+  const renderHookPickerCore = () => {
+    const pending = hookPendingFiles.length > 0;
+    const count = pending ? hookPendingFiles.length : hookVideoKeys.length;
+    const disabled = hookUploading || remotionMixEnabled;
+    const names = pending ? hookPendingNames : hookVideoNames;
+    const listContent = (
+      <div style={{ maxHeight: 240, overflowY: 'auto', maxWidth: 380, paddingRight: 4 }}>
+        {names.map((n, i) => (
+          <div key={`${i}_${n}`} style={{ fontSize: 12, padding: '2px 0', color: '#555', wordBreak: 'break-all' }}>
+            {i + 1}. {n}
+            {pending && hookPendingFiles[i] && (
+              <span style={{ color: '#999', fontSize: 11 }}>（{formatFileSize(hookPendingFiles[i].size)}）</span>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+    return (
+      <Space wrap align="center" size={8}>
+        <Upload
+          directory
+          accept="video/*"
+          showUploadList={false}
+          beforeUpload={(f) => collectHookFiles(f as File)}
+          disabled={disabled}
+        >
+          <Button size="small" icon={<PlayCircleOutlined />} disabled={disabled}>
+            {count > 0 ? '更换文件夹' : '选择文件夹'}
+          </Button>
+        </Upload>
+        <Upload
+          multiple
+          accept="video/*"
+          showUploadList={false}
+          beforeUpload={(f) => collectHookFiles(f as File)}
+          disabled={disabled}
+        >
+          <Button size="small" icon={<PlayCircleOutlined />} disabled={disabled}>选择文件</Button>
+        </Upload>
+        <Tooltip title="支持选整个文件夹，或多选若干视频文件；选完仅暂存本页，点「开始切片/一键切片」时才上传。每个成品按混搭模式取钩子拼在片头/片尾。">
+          <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+        </Tooltip>
+        {count > 0 && (
+          <>
+            {pending ? (
+              <Tag closable onClose={clearHookSelection} color="orange">
+                钩子×{count}（待上传，开始切片时上传）
+              </Tag>
+            ) : (
+              <FileHoverPreview fileKeys={hookVideoKeys} kind="video">
+                <Tag closable onClose={clearHookSelection}>钩子×{count}</Tag>
+              </FileHoverPreview>
+            )}
+            <Popover trigger="click" title={`钩子文件列表（${count} 个）`} content={listContent}>
+              <Button size="small" type="text">文件列表</Button>
+            </Popover>
+          </>
+        )}
+        {remotionMixEnabled && (
+          <Text type="warning" style={{ fontSize: 12 }}>
+            Remotion 增强模式下钩子不生效（渲染管线暂不消费钩子），可改用普通切片或高光混剪
+          </Text>
+        )}
+      </Space>
+    );
+  };
+
+  // 钩子选项行：混搭模式 / 拼接位置 / 生成数量（单独一行，保证在任何浏览器都完整可见）
+  const renderHookOptions = () => {
+    const pending = hookPendingFiles.length > 0;
+    const count = pending ? hookPendingFiles.length : hookVideoKeys.length;
+    if (count === 0 || remotionMixEnabled) return null;
+    return (
+      <Space wrap align="center" size={8} style={{ marginTop: 6 }}>
+        <Select
+          size="small"
+          style={{ width: 140 }}
+          value={hookMixMode}
+          onChange={(v) => setHookMixMode(v as 'sequential' | 'random' | 'combine')}
+          options={[
+            { value: 'sequential', label: '顺序循环' },
+            { value: 'random', label: '随机混搭' },
+            { value: 'combine', label: '拼接组合' },
+          ]}
+        />
+        <Select
+          size="small"
+          style={{ width: 110 }}
+          value={hookPosition}
+          onChange={(v) => setHookPosition(v as 'head' | 'tail')}
+          options={[
+            { value: 'head', label: '放在片头' },
+            { value: 'tail', label: '放在片尾' },
+          ]}
+        />
+        {/* 钩子混搭输出数量：random/combine 模式下显示；高光混剪有自己的输出个数（cutlist 组数），
+            两者并存会按组相乘导致输出爆炸 → 高光混剪开启时不展示也不下发 */}
+        {!highlightMixEnabled && (hookMixMode === 'random' || hookMixMode === 'combine') && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ fontSize: 12, color: '#666', whiteSpace: 'nowrap' }}>生成数量：</span>
+            <InputNumber
+              size="small"
+              min={1}
+              max={999}
+              style={{ width: 100 }}
+              value={hookMixOutputCount}
+              onChange={(v) => setHookMixOutputCount(v ?? 1)}
+            />
+          </div>
+        )}
+        {highlightMixEnabled && (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            高光混剪模式：输出个数由「混剪配置」决定，钩子按混搭模式拼进每个混剪成品
+          </Text>
+        )}
+      </Space>
+    );
+  };
+
 
   // ─── 各动作执行历史（放在对应动作卡片最底部，多次执行均保留展示） ──
   const renderHistoryTitle = (label: string, count: number) => (
@@ -2226,75 +2390,15 @@ const EpisodeDetail: React.FC = () => {
               </FileHoverPreview>
             )}
           </Space>
-          {/* 钩子视频文件夹（片头，可选）：选择整个文件夹，含多个钩子视频，切片时随机取一个作为片头，
-              拼接在封面首帧与本体之间（[封面][钩子][本体]） */}
-          <Space wrap align="center" size={8}>
-            <Text strong style={{ fontSize: 13 }}>钩子视频（文件夹）</Text>
-            <Upload
-              directory
-              accept="video/*"
-              showUploadList={false}
-              beforeUpload={(file) => collectHookFolderFiles(file as File)}
-              disabled={hookUploading}
-            >
-              <Button size="small" icon={<PlayCircleOutlined />} loading={hookUploading}>
-                {hookVideoKeys.length > 0 ? '更换文件夹' : '选择钩子文件夹'}
-              </Button>
-            </Upload>
-            <Tooltip title="选择整个文件夹，文件夹中的多个钩子视频会在切片时随机组合（每个成品随机取一个作为片头）。">
-              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-            </Tooltip>
-            {hookVideoKeys.length > 0 && (
-              <FileHoverPreview fileKeys={hookVideoKeys} kind="video">
-              <Tag closable onClose={() => {
-  setHookVideoKeys([]);
-  setHookVideoNames([]);
-}}>
-                  钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
-              </Tag>
-              </FileHoverPreview>
-            )}
-            {hookVideoKeys.length > 0 && (
-              <Select
-                size="small"
-                style={{ width: 140 }}
-                value={hookMixMode}
-                onChange={(v) => setHookMixMode(v as 'sequential' | 'random' | 'combine')}
-                options={[
-                  { value: 'sequential', label: '顺序循环' },
-                  { value: 'random', label: '随机混搭' },
-                  { value: 'combine', label: '拼接组合' },
-                ]}
-              />
-            )}
-            {/* 钩子位置：片头（默认，[封面][钩子][本体]）或片尾（[封面][本体][钩子]） */}
-            {hookVideoKeys.length > 0 && (
-              <Select
-                size="small"
-                style={{ width: 110 }}
-                value={hookPosition}
-                onChange={(v) => setHookPosition(v as 'head' | 'tail')}
-                options={[
-                  { value: 'head', label: '放在片头' },
-                  { value: 'tail', label: '放在片尾' },
-                ]}
-              />
-            )}
-            {/* 钩子混搭输出数量：random/combine 模式下显示（单钩子也可多输出） */}
-            {hookVideoKeys.length > 0 && (hookMixMode === 'random' || hookMixMode === 'combine') && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <span style={{ fontSize: 12, color: '#666', whiteSpace: 'nowrap' }}>生成数量：</span>
-                <InputNumber
-                  size="small"
-                  min={1}
-                  max={999}
-                  style={{ width: 100 }}
-                  value={hookMixOutputCount}
-                  onChange={(v) => setHookMixOutputCount(v ?? 1)}
-                />
-              </div>
-            )}
-          </Space>
+          {/* 钩子视频（可选）：支持选整个文件夹或多选文件；选完仅暂存，开始切片时才上传。
+              混搭模式/拼接位置/生成数量独立成行，避免长文件列表把后续控件挤出屏幕 */}
+          <div style={{ width: '100%' }}>
+            <Space wrap align="center" size={8}>
+              <Text strong style={{ fontSize: 13 }}>钩子视频</Text>
+              {renderHookPickerCore()}
+            </Space>
+            {renderHookOptions()}
+          </div>
           {/* 高光混剪：把入选高光段按源时间顺序混剪拼接为一个成品 */}
           <Space wrap align="center" size={8}>
             <Text strong style={{ fontSize: 13 }}>高光混剪</Text>
@@ -2309,7 +2413,13 @@ const EpisodeDetail: React.FC = () => {
             <Switch
               size="small"
               checked={remotionMixEnabled}
-              onChange={(v) => setRemotionMixEnabled(v)}
+              onChange={(v) => {
+                setRemotionMixEnabled(v);
+                // 冲突提示：Remotion 渲染管线不消费钩子视频，开启后已选钩子将被忽略
+                if (v && (hookPendingFiles.length > 0 || hookVideoKeys.length > 0)) {
+                  message.warning('已开启 Remotion 增强：渲染管线暂不消费钩子视频，本次切片将忽略已选钩子；如需钩子请改用普通高光混剪（关闭此开关）');
+                }
+              }}
             />
             <Text strong style={{ fontSize: 12 }}>Remotion 增强</Text>
             <Tooltip title="开启后不再把每个高光段切成独立文件，而是把所有入选高光段按源时间顺序混剪拼接为单个成品视频（可设输出总时长上限/单段最大时长/拼接顺序）。">
@@ -3573,30 +3683,11 @@ const EpisodeDetail: React.FC = () => {
           <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 10 }}>
             <Space wrap align="center" size={8} style={{ marginBottom: 8 }}>
               <PlayCircleOutlined />
-              <Text strong style={{ fontSize: 13 }}>钩子视频（文件夹，可选）</Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>选择整个文件夹（含多个钩子视频）作为片头，拼接在封面首帧与本体之间（[封面][钩子][本体]）；切片时每个成品随机取一个作为片头；不选择则直接按源视频首帧出片</Text>
+              <Text strong style={{ fontSize: 13 }}>钩子视频（可选）</Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>支持选整个文件夹或多选视频文件，按混搭模式拼在片头/片尾；选完仅暂存，一键切片开始时才上传</Text>
             </Space>
-            <Space wrap align="center" size={8}>
-              <Upload
-                directory
-                accept="video/*"
-                showUploadList={false}
-                beforeUpload={(file) => collectHookFolderFiles(file as File)}
-                disabled={hookUploading}
-              >
-                <Button size="small" icon={<PlayCircleOutlined />} loading={hookUploading}>{hookVideoKeys.length > 0 ? '更换钩子文件夹' : '选择钩子文件夹'}</Button>
-              </Upload>
-              {hookVideoKeys.length > 0 && (
-                <FileHoverPreview fileKeys={hookVideoKeys} kind="video">
-                <Tag closable onClose={() => {
-  setHookVideoKeys([]);
-  setHookVideoNames([]);
-}}>
-                    钩子×{hookVideoKeys.length}：{hookVideoNames.join('、')}
-                </Tag>
-                </FileHoverPreview>
-              )}
-            </Space>
+            {renderHookPickerCore()}
+            {renderHookOptions()}
           </div>
 
           {/* ── 输出档位 ── */}
