@@ -1763,7 +1763,7 @@ const EpisodeDetail: React.FC = () => {
     return (
       <div style={{ marginTop: 8, borderTop: '1px dashed #f0f0f0', paddingTop: 8 }}>
         <Progress
-          percent={p.progress}
+          percent={Math.round(p.progress * 10) / 10}
           status={p.status === 'failed' ? 'exception' : p.status === 'completed' ? 'success' : 'active'}
           strokeColor={p.status === 'completed' ? '#52c41a' : undefined}
           size="small"

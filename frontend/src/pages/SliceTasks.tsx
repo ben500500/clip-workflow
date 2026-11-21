@@ -445,7 +445,7 @@ const SUBTITLE_MASK_PRESETS = [
           <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>
           {(t.status === 'running' || t.status === 'pending' || t.status === 'processing') && (
             <Progress
-              percent={t.progress || 0}
+              percent={Math.round((t.progress || 0) * 10) / 10}
               size="small"
               style={{ width: 120 }}
               status="active"
