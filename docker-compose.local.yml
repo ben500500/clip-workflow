@@ -30,3 +30,57 @@ services:
 
   slice-worker-2:
     profiles: ["never-in-local"]
+
+  # ============================================================
+  # 2026-11-21 本地部署：剥离 163 专属宿主挂载（/home/cc12703/*）
+  # backend + 全部 celery worker 的 volumes 用 !override 重建，保留通用挂载
+  # ============================================================
+  backend:
+    volumes: !override
+      - media_data:/app/media
+      - chrome_profiles:/data/chrome-profiles
+      - ./engines:/app/engines:ro
+      - ./hf-cache:/app/.cache
+      - dedupe_upload_data:/tmp/dedupe_upload
+  worker-video:
+    volumes: !override
+      - media_data:/app/media
+      - ./engines:/app/engines:ro
+      - ./hf-cache:/app/.cache
+      - dedupe_upload_data:/tmp/dedupe_upload
+  worker-publish:
+    volumes: !override
+      - media_data:/app/media
+      - ./engines:/app/engines:ro
+      - ./hf-cache:/app/.cache
+      - dedupe_upload_data:/tmp/dedupe_upload
+  worker-variant:
+    volumes: !override
+      - media_data:/app/media
+      - ./engines:/app/engines:ro
+      - ./hf-cache:/app/.cache
+      - dedupe_upload_data:/tmp/dedupe_upload
+  worker-remotion:
+    volumes: !override
+      - media_data:/app/media
+      - ./engines:/app/engines:ro
+      - ./hf-cache:/app/.cache
+      - dedupe_upload_data:/tmp/dedupe_upload
+  worker-selection:
+    volumes: !override
+      - media_data:/app/media
+      - ./engines:/app/engines:ro
+      - ./hf-cache:/app/.cache
+      - dedupe_upload_data:/tmp/dedupe_upload
+  worker-wechat-dl:
+    volumes: !override
+      - media_data:/app/media
+      - ./engines:/app/engines:ro
+      - ./hf-cache:/app/.cache
+      - dedupe_upload_data:/tmp/dedupe_upload
+  worker-fast:
+    volumes: !override
+      - media_data:/app/media
+      - ./engines:/app/engines:ro
+      - ./hf-cache:/app/.cache
+      - dedupe_upload_data:/tmp/dedupe_upload
