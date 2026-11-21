@@ -1843,6 +1843,30 @@ async def retry_slice_task(
     await db.flush()
     await db.refresh(new_task)
 
+    # Remotion 任务重试：沿用渲染管线（2026-11-21 SRE P2-2 落地 + bb85a0c0 实测教训：
+    # 此前 retry 一律走 ffmpeg 分发，remotion_mix_config 残留但增强静默丢失，
+    # 20 个普通切片顶包 Remotion 成品）。重试条件与原派发一致：remotion_mix_config 存在
+    # 即代表原任务走了渲染管线（原派发还要求 highlight_mix_enabled，能进到
+    # remotion_mix_config 落库的必然满足）。
+    if new_task.remotion_mix_config and new_task.cutlist and new_task.cutlist.strip():
+        new_task.status = "processing"
+        new_task.progress = 1.0
+        new_task.remotion_status = None
+        await db.commit()
+        try:
+            run_remotion_mix_task.delay(str(new_task.id))
+        except Exception as e:
+            new_task.remotion_status = "failed"
+            new_task.error_message = f"投递 Remotion 渲染任务失败: {e}"
+            await db.commit()
+            raise HTTPException(status_code=500, detail="投递 Remotion 渲染任务失败")
+        return SliceRunResponse(
+            task_id=str(new_task.id),
+            engine="remotion",
+            message="Remotion 增强混剪重试已启动（沿用原任务渲染配置），完成后可在成品列表查看",
+            fallback_whole_video=False,
+        )
+
     if engine == "worker":
         await ensure_bucket(settings.MINIO_BUCKET_SLICED)
         published = await _publish_to_worker(
