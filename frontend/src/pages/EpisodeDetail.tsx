@@ -2377,8 +2377,7 @@ const EpisodeDetail: React.FC = () => {
       title: '🎨 画面包装 · 画面上叠什么',
       extra: <Tag color="green">{visualEnabledCount} 项已开启</Tag>,
       node: (
-        <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 8, alignItems: 'start' }}>
             {/* ── 竖屏转横屏智能裁切开关 ── */}
             <Card size="small" style={{ width: '100%' }}>
               <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -2564,8 +2563,7 @@ const EpisodeDetail: React.FC = () => {
                 </Space>
               </Space>
             </Card>
-          </Space>
-          </Space>
+        </div>
       ),
     },
     {
@@ -4050,32 +4048,29 @@ const EpisodeDetail: React.FC = () => {
 
       {/* 2026-11-21 业务线重组：3 张动作卡 → 6 条业务线纵排（选片/混剪方式/营销钩子/画面包装/防搬运/执行提交），
           纯 JSX 重排，所有 state 留在原地；各线卡头带「已开启」徽标，跨线冲突在「切片执行」卡顶部体检条汇总 */}
-      <Space direction="vertical" size={16} style={{ width: '100%', marginBottom: 16 }}>
-        {actions.map((a) => (
-          <Card
-            size="small"
-            key={a.title}
-            title={a.title}
-            extra={a.title.includes('切片执行') ? (
-              /* 专家/简单双模式开关（偏好持久化到 localStorage），收在执行线卡头 */
-              <Space size={6}>
-                <Text type="secondary" style={{ fontSize: 12 }}>专家模式</Text>
-                <Switch
-                  size="small"
-                  checked={expertMode}
-                  onChange={(v) => {
-                    setExpertMode(v);
-                    // 记住用户偏好，刷新后保留
-                    localStorage.setItem('slice_expert_mode', v ? '1' : '0');
-                  }}
-                />
-              </Space>
-            ) : a.extra}
-          >
-            {a.node}
-          </Card>
-        ))}
-      </Space>
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        {/* 左栏：选片线（AI 选点/区间检测）+ 混剪方式（与高光识别互链相邻）；
+            右栏：营销钩子 → 画面包装 → 防搬运 → 切片执行，按业务线依次流转
+            （2026-11-21 用户反馈恢复双栏空间利用率；画面包装内部两列栅格压高度） */}
+        <Col xs={24} md={12}>
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            {actions
+              .filter((a) => a.title.startsWith('🎬') || a.title.startsWith('🧩'))
+              .map((a) => (
+                <Card size="small" key={a.title} title={a.title} extra={a.extra} style={{ height: '100%' }}>{a.node}</Card>
+              ))}
+          </Space>
+        </Col>
+        <Col xs={24} md={12}>
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            {actions
+              .filter((a) => !a.title.startsWith('🎬') && !a.title.startsWith('🧩'))
+              .map((a) => (
+                <Card size="small" key={a.title} title={a.title} extra={a.extra} style={{ height: '100%' }}>{a.node}</Card>
+              ))}
+          </Space>
+        </Col>
+      </Row>
     </div>
   );
 };
