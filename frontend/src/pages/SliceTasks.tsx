@@ -443,12 +443,12 @@ const SUBTITLE_MASK_PRESETS = [
       render: (s: string, t: SliceTask) => (
         <Space direction="vertical" size={2} style={{ width: '100%' }}>
           <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>
-          {(t.status === 'running' || t.status === 'pending') && (
+          {(t.status === 'running' || t.status === 'pending' || t.status === 'processing') && (
             <Progress
               percent={t.progress || 0}
               size="small"
               style={{ width: 120 }}
-              status={t.status === 'pending' ? 'active' : 'active'}
+              status="active"
             />
           )}
         </Space>

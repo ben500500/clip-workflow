@@ -1053,12 +1053,18 @@ const EpisodeDetail: React.FC = () => {
       const tasks = await sliceApi.listTasks(episodeId);
       const latest = tasks[0];
       if (!latest) return;
-      if (latest.status === 'running' || latest.status === 'pending') {
+      // 2026-11-21：processing（Remotion 渲染中）纳入进度显示——其进度由渲染管线直接回写 DB，
+      // 此前页面加载恢复时该状态不启动轮询，进度条消失（用户问「切片执行时的进度显示呢」）
+      if (latest.status === 'running' || latest.status === 'pending' || latest.status === 'processing') {
         setSliceRunning(true);
         setSliceProgress({
-          status: latest.status === 'pending' ? 'running' : 'running',
+          status: 'running',
           progress: latest.progress || 0,
-          message: latest.status === 'pending' ? '切片任务排队中，等待处理…' : `切片任务运行中（${latest.mode}）…`,
+          message: latest.status === 'pending'
+            ? '切片任务排队中，等待处理…'
+            : latest.status === 'processing'
+              ? 'Remotion 增强渲染中（进度来自渲染管线）…'
+              : `切片任务运行中（${latest.mode}）…`,
         });
         if (slicePollTimerRef.current) window.clearInterval(slicePollTimerRef.current);
         slicePollTimerRef.current = window.setInterval(async () => {
@@ -1069,11 +1075,13 @@ const EpisodeDetail: React.FC = () => {
               return;
             }
             setSliceProgress({
-              status: t.status === 'running' || t.status === 'pending' ? 'running' : t.status || 'unknown',
+              status: t.status === 'running' || t.status === 'pending' || t.status === 'processing' ? 'running' : t.status || 'unknown',
               progress: t.progress || 0,
               message: t.status === 'running' || t.status === 'pending'
                 ? `切片任务运行中（${t.mode || latest.mode}）…`
-                : t.status === 'completed'
+                : t.status === 'processing'
+                  ? 'Remotion 增强渲染中（进度来自渲染管线）…'
+                  : t.status === 'completed'
                   ? '切片任务已完成'
                   : t.status === 'failed'
                     ? `切片失败：${t.error_message || ''}`
@@ -1247,11 +1255,13 @@ const EpisodeDetail: React.FC = () => {
           return;
         }
         setProgress({
-          status: t.status === 'running' || t.status === 'pending' ? 'running' : t.status || 'unknown',
+          status: t.status === 'running' || t.status === 'pending' || t.status === 'processing' ? 'running' : t.status || 'unknown',
           progress: t.progress || 0,
           message: t.status === 'running' || t.status === 'pending'
             ? `切片任务运行中（${t.mode || mode}）…`
-            : t.status === 'completed'
+            : t.status === 'processing'
+              ? 'Remotion 增强渲染中（进度来自渲染管线）…'
+              : t.status === 'completed'
               ? '切片任务已完成'
               : t.status === 'failed'
                 ? `切片失败：${t.error_message || ''}`
