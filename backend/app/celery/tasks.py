@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.database import async_session_factory
 from app.models.models import SliceTask
+from app.models.material import AutoClipRun
 
 # Celery application
 celery_app = Celery(
@@ -164,6 +165,13 @@ celery_app.conf.update(
             "task": "app.celery.tasks.slice_stuck_sweep_task",
             "schedule": settings.SLICE_STUCK_SWEEP_INTERVAL_SECONDS,
         },
+        # 选点孤儿收割巡检（2026-11-21）：running 超 30 分钟的选点 run——AutoClip 管线
+        # 已完成则收割候选（worker 重启/轮询预算耗尽的孤儿，管线结果不重跑不浪费）；
+        # 管线状态丢失或超 75 分钟 → 置 failed 提示重新触发
+        "autoclip-stale-recovery": {
+            "task": "app.celery.tasks.autoclip_stale_recovery_task",
+            "schedule": 900.0,
+        },
     },
 )
 
@@ -288,6 +296,79 @@ def slice_stuck_sweep_task():
     if swept:
         logger.warning("slice_stuck_sweep 回收僵尸切片任务: %s", swept)
     return {"swept": swept}
+
+
+@celery_app.task
+def autoclip_stale_recovery_task():
+    """选点孤儿收割巡检（2026-11-21，beat 每 15 分钟）。
+
+    背景：选点 celery 任务存活期负责轮询 AutoClip 管线并收割候选；worker 重启、
+    轮询预算耗尽（默认 30 分钟，慢剧管线的实际耗时可能更长）都会把 run 留在
+    running 态——管线可能早已完成，候选无人收割（实测 a26f5a53：管线 10:51 完成
+    生成 11 个高光片段，收尾任务 10:33 被容器重启杀死，结果悬空）。
+    巡检逻辑：running 超 30 分钟的 run → 查管线进度；
+      status=completed → 收割（get_clips → 落候选 → 自动派发切片 → 置 completed）；
+      管线状态查询失败（服务重启丢项目）或 run 超 75 分钟 → 置 failed 可重新触发。
+    """
+    from datetime import timedelta
+
+    from app.services.autoclip_service import get_pipeline_progress, get_clips
+    from app.database import async_session_factory
+
+    HARVEST_AFTER_MIN = 30
+    GIVE_UP_MIN = 75
+
+    async def _recover():
+        recovered, failed_ids = [], []
+        async with async_session_factory() as db:
+            runs = (
+                await db.execute(
+                    select(AutoClipRun).where(
+                        AutoClipRun.status == "running",
+                        AutoClipRun.created_at < datetime.utcnow() - timedelta(minutes=HARVEST_AFTER_MIN),
+                    )
+                )
+            ).scalars().all()
+            if not runs:
+                return [], []
+            for run in runs:
+                age_min = (datetime.utcnow() - run.created_at).total_seconds() / 60
+                proj = run.autoclip_project_id
+                try:
+                    progress = await get_pipeline_progress(str(proj))
+                except Exception:  # noqa: BLE001 - 服务不可达按「状态未知」处理
+                    progress = None
+                completed = bool(progress and progress.get("status") == "completed")
+                if not completed and age_min < GIVE_UP_MIN:
+                    continue  # 管线未完成且未超放弃线：继续等（可能仍在跑）
+                if completed:
+                    try:
+                        clips = await get_clips(
+                            str(proj), min_score=0.0, max_clips=1000, min_duration=0.0, max_duration=0.0
+                        )
+                        await _save_autoclip_results(str(run.episode_id), str(proj), clips, True, run.config or {})
+                        await _autoclip_auto_dispatch_slice(str(run.episode_id))
+                        run.status = "completed"
+                        run.progress = 100.0
+                        run.message = f"选点完成,共生成 {len(clips)} 个候选片段"
+                        run.completed_at = datetime.utcnow()
+                        recovered.append(f"{str(run.id)[:8]}({len(clips)}候选)")
+                    except Exception as e:  # noqa: BLE001 - 收割失败保留现场下轮再试
+                        logger.warning("autoclip 收割失败 run=%s: %s", run.id, e)
+                        continue
+                else:
+                    run.status = "failed"
+                    run.message = "选点未完成,AutoClip 管线状态丢失或超时，请重新触发选点"
+                    run.completed_at = datetime.utcnow()
+                    failed_ids.append(str(run.id)[:8])
+            if recovered or failed_ids:
+                await db.commit()
+        return recovered, failed_ids
+
+    recovered, failed_ids = run_async(_recover())
+    if recovered or failed_ids:
+        logger.warning("autoclip_stale_recovery: 收割=%s 置失败=%s", recovered, failed_ids)
+    return {"recovered": recovered, "failed": failed_ids}
 
 
 async def _ensure_source_video(source_path: Optional[str], source_file_key: Optional[str], source_bucket: Optional[str] = None) -> Optional[str]:
@@ -1423,7 +1504,8 @@ async def _save_slice_outputs(
     mode: str,
 ):
     from sqlalchemy import select
-    from app.models.models import SliceTask, SliceOutput, ClipCandidate, Episode
+    from app.models.models import SliceTask
+    from app.models.material import SliceOutput, ClipCandidate, Episode
 
     async with async_session_factory() as session:
         tid = uuid.UUID(task_id) if task_id else None
