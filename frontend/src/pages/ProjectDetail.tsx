@@ -34,8 +34,9 @@ interface BatchSliceConfig {
   outputTier: string;
   // 优先级流：high / normal / low（标准生产→normal / 高清首发→high / 实验测试→low）
   priority: 'high' | 'normal' | 'low';
-  // 钩子混搭模式：sequential / random / combine（仅多钩子时生效）
-  hookMixMode: 'sequential' | 'random' | 'combine';
+  // 2026-11-21 审计④：hookMixMode 字段已删除——此前类型/默认值/payload 三处齐全
+  // 但全应用无 setter UI（幽灵字段，恒下发 sequential=后端默认）；钩子混搭跟随
+  // 剧集详情页逐集配置，项目级批量不做统一覆盖
 }
 
 const DEFAULT_BATCH_CONFIG: BatchSliceConfig = {
@@ -51,7 +52,6 @@ const DEFAULT_BATCH_CONFIG: BatchSliceConfig = {
   subtitleEnabled: false,
   outputTier: 'auto',
   priority: 'normal' as 'high' | 'normal' | 'low',
-  hookMixMode: 'sequential' as 'sequential' | 'random' | 'combine',
 };
 
 // 批量一键切片配置持久化：按项目维度存 localStorage，重新进入页面/重开弹窗时恢复
@@ -576,8 +576,8 @@ const ProjectDetail: React.FC = () => {
       // 含多个钩子时切片随机组合（每个成品随机取一个作为片头）。
       hook_video_keys: readEpisodeHookKeys(episode.id).length > 0 ? readEpisodeHookKeys(episode.id) : undefined,
       hook_video_key: readEpisodeHookKeys(episode.id).length === 1 ? readEpisodeHookKeys(episode.id)[0] : undefined,
-      // 钩子混搭模式：多钩子时生效
-      hook_mix_mode: readEpisodeHookKeys(episode.id).length > 1 ? (cfg.hookMixMode || 'sequential') : undefined,
+      // 钩子混搭模式：不再由批量配置统一下发（原为幽灵字段恒 sequential），
+      // 多钩子时交由后端默认顺序循环；混搭需求在剧集详情页逐集配置
       // 输出档位：高分辨率/高 fps 素材降档提速
       output_tier: cfg.outputTier || 'auto',
       // 优先级流：high / normal / low

@@ -2302,37 +2302,38 @@ const EpisodeDetail: React.FC = () => {
             />
             <Text type="secondary" style={{ fontSize: 12 }}>降档后编码耗时显著下降（预计 1/3 以下）</Text>
           </Space>
-          {/* 选择 AI 选点历史：补选点/切片复用它那套选点参数（时长范围等）。纯高级功能，简单模式下隐藏 */}
-          {expertMode && (
-            <Space wrap align="center" size={8}>
-              <Text strong style={{ fontSize: 13 }}>选点历史</Text>
-              <Select
-                size="small"
-                allowClear
-                placeholder="不选则用当前选点参数"
-                value={sliceAutoclipRunId}
-                onChange={(v) => setSliceAutoclipRunId(v ?? undefined)}
-                style={{ width: 260 }}
-                options={autoclipHistory.map((h, i) => ({
-                  value: h.id,
-                  label: `${formatDateTime(h.created_at)} · ${renderAutoclipParamsLabel(h)}`,
-                }))}
-              />
-              <Tooltip title="选择某一套 AI 智能选点历史后，切片时（含无候选自动补选点）将复用该次选点的时间范围等参数；不选则使用当前页面设置的选点参数。">
-                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-              </Tooltip>
-            </Space>
-          )}
-          {/* 视频封面（首帧，可选）：选择图片作为成品第一帧，不选则按源视频首帧。纯高级功能，简单模式下隐藏 */}
-          {expertMode && (
-            <Space wrap align="center" size={8}>
-              <Text strong style={{ fontSize: 13 }}>视频封面（首帧）</Text>
-              <Upload
-                accept="image/*"
-                showUploadList={false}
-                beforeUpload={(file) => handleCoverUpload(file as File)}
-                disabled={coverUploading}
-              >
+          {/* 选择 AI 选点历史：补选点/切片复用它那套选点参数（时长范围等）。
+              2026-11-21 审计高危②：不再随 expertMode 整块隐藏（简单模式下零线索），
+              改为常驻——简单模式置灰 + 提示，专家模式可用 */}
+          <Space wrap align="center" size={8}>
+            <Text strong style={{ fontSize: 13 }}>选点历史</Text>
+            <Select
+              size="small"
+              allowClear
+              disabled={!expertMode}
+              placeholder={expertMode ? '不选则用当前选点参数' : '专家模式下可选择复用'}
+              value={sliceAutoclipRunId}
+              onChange={(v) => setSliceAutoclipRunId(v ?? undefined)}
+              style={{ width: 260 }}
+              options={autoclipHistory.map((h, i) => ({
+                value: h.id,
+                label: `${formatDateTime(h.created_at)} · ${renderAutoclipParamsLabel(h)}`,
+              }))}
+            />
+            <Tooltip title="选择某一套 AI 智能选点历史后，切片时（含无候选自动补选点）将复用该次选点的时间范围等参数；不选则使用当前页面设置的选点参数。开启右上角「专家模式」后可选择。">
+              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+            </Tooltip>
+          </Space>
+          {/* 视频封面（首帧，可选）：选择图片作为成品第一帧，不选则按源视频首帧。
+              2026-11-21 审计③：常驻可见（简单模式置灰+提示），不再整块隐藏 */}
+          <Space wrap align="center" size={8}>
+            <Text strong style={{ fontSize: 13 }}>视频封面（首帧）</Text>
+            <Upload
+              accept="image/*"
+              showUploadList={false}
+              beforeUpload={(file) => handleCoverUpload(file as File)}
+              disabled={coverUploading || !expertMode}
+            >
                 <Button size="small" icon={<PictureOutlined />} loading={coverUploading}>
                   {coverImageKey ? '更换封面' : '选择封面图片'}
                 </Button>
@@ -2351,7 +2352,6 @@ const EpisodeDetail: React.FC = () => {
                 </FileHoverPreview>
               )}
             </Space>
-          )}
           {/* 钩子视频（可选）：支持选整个文件夹或多选文件；选完仅暂存，开始切片时才上传。
               混搭模式/拼接位置/生成数量独立成行，避免长文件列表把后续控件挤出屏幕 */}
           <div style={{ width: '100%' }}>
@@ -2435,30 +2435,32 @@ const EpisodeDetail: React.FC = () => {
               </Text>
             )}
           </Space>
-          {/* 去重高级配置：仅在去重模式显示，逐项手动覆盖各去重手段 */}
-          {sliceMode === 'dedupe' && (
+          {/* 去重高级配置：去重生效即显示（2026-11-21 审计高危①：此前只看 sliceMode，
+              一键切片经 dedupeEnabled 静默走去重+变体数时本块不可见=「产出变了找不到原因」；
+              现按两个入口的并集显示，并标注生效入口） */}
+          {(sliceMode === 'dedupe' || dedupeEnabled) && (
             <Space wrap>
+              <Tag color={sliceMode === 'dedupe' ? 'processing' : 'default'}>
+                {sliceMode === 'dedupe' ? '主路径去重模式' : '一键切片将走去重（在「一键切片配置」中开启）'}
+              </Tag>
               <Button size="small" icon={<SettingOutlined />} onClick={() => setDedupeManualOpen(true)}>
                 去重高级配置
               </Button>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {Object.keys(dedupeManual).length > 0 ? '已启用手动配置' : '跟随所选档位'}
               </Text>
-              {/* 多视频号素材去重：多版本生成数（去重模式下配置，>1 时切片后自动派生 N 个去重版本）。纯高级功能，简单模式下隐藏 */}
-              {expertMode && (
-                <>
-                  <InputNumber
-                    size="small"
-                    min={1}
-                    max={20}
-                    placeholder="变体数"
-                    value={variantCount}
-                    onChange={(v) => setVariantCount(v ?? undefined)}
-                    style={{ width: 90 }}
-                  />
-                  <Text type="secondary" style={{ fontSize: 12 }}>多版本数</Text>
-                </>
-              )}
+              {/* 多视频号素材去重：多版本生成数（>1 时切片后自动派生 N 个去重版本）。
+                  2026-11-21 审计：随去重块常驻（去重生效时它是影响产出的实际参数，藏起来=同型陷阱） */}
+              <InputNumber
+                size="small"
+                min={1}
+                max={20}
+                placeholder="变体数"
+                value={variantCount}
+                onChange={(v) => setVariantCount(v ?? undefined)}
+                style={{ width: 90 }}
+              />
+              <Text type="secondary" style={{ fontSize: 12 }}>多版本数</Text>
             </Space>
           )}
           {/* 预计产出提示：实时镜像 runSlice payload 的放大因子（算式见 return 前 estOutputCount 注释） */}
@@ -3255,21 +3257,24 @@ const EpisodeDetail: React.FC = () => {
                 />
                 <Text type="secondary" style={{ fontSize: 12 }}>相对画面高（0.02）</Text>
               </Space>
-              {!subtitleMaskTemporal && (
-                <Space wrap align="center" size={8}>
-                  <Text strong style={{ fontSize: 13 }}>时间偏移</Text>
-                  <InputNumber
-                    size="small"
-                    min={-10}
-                    max={10}
-                    step={0.5}
-                    value={subtitleMaskSrtOffset}
-                    onChange={(v) => setSubtitleMaskSrtOffset(v ?? 0)}
-                    style={{ width: 90 }}
-                  />
-                  <Text type="secondary" style={{ fontSize: 12 }}>秒：字幕比SRT晚出现用正值延后（如 0.5）</Text>
-                </Space>
-              )}
+              {/* 时间偏移（2026-11-21 审计⑤）：SRT 时轴校正与打码方式正交，改为常驻——
+                  temporal（精细）模式无意义故置灰提示；payload 仅在非 temporal 时下发（1509 行门控保留） */}
+              <Space wrap align="center" size={8}>
+                <Text strong style={{ fontSize: 13 }}>时间偏移</Text>
+                <InputNumber
+                  size="small"
+                  min={-10}
+                  max={10}
+                  step={0.5}
+                  disabled={subtitleMaskTemporal}
+                  value={subtitleMaskSrtOffset}
+                  onChange={(v) => setSubtitleMaskSrtOffset(v ?? 0)}
+                  style={{ width: 90 }}
+                />
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {subtitleMaskTemporal ? '秒：仅「快速」预设（非逐帧精细化）时生效' : '秒：字幕比SRT晚出现用正值延后（如 0.5）'}
+                </Text>
+              </Space>
               <Space wrap align="center" size={8}>
                 <Text strong style={{ fontSize: 13 }}>打码预设</Text>
                 <Select
