@@ -523,8 +523,6 @@ const EpisodeDetail: React.FC = () => {
   const [oneClickSlicing, setOneClickSlicing] = useState(false);
   // 一键切片进度（与普通切片共用轮询逻辑）
   const [oneClickProgress, setOneClickProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
-  // ── 专家/简单双模式：专家模式展开全部高级配置，简单模式收纳（偏好记忆到 localStorage）──
-  const [expertMode, setExpertMode] = useState<boolean>(() => localStorage.getItem('slice_expert_mode') === '1');
 
   const autoclipTimerRef = useRef<number | null>(null);
   const detectTimerRef = useRef<number | null>(null);
@@ -2377,7 +2375,35 @@ const EpisodeDetail: React.FC = () => {
       title: '🎨 画面包装 · 画面上叠什么',
       extra: <Tag color="green">{visualEnabledCount} 项已开启</Tag>,
       node: (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 8, alignItems: 'start' }}>
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          {/* 视频封面（首帧，可选）：选择图片作为成品第一帧，不选则按源视频首帧 */}
+          <Space wrap align="center" size={8}>
+            <Text strong style={{ fontSize: 13 }}>视频封面（首帧）</Text>
+            <Upload
+              accept="image/*"
+              showUploadList={false}
+              beforeUpload={(file) => handleCoverUpload(file as File)}
+              disabled={coverUploading}
+            >
+              <Button size="small" icon={<PictureOutlined />} loading={coverUploading}>
+                {coverImageKey ? '更换封面' : '选择封面图片'}
+              </Button>
+            </Upload>
+            {coverImageKey && (
+              <FileHoverPreview fileKey={coverImageKey} kind="image">
+              <Tag closable onClose={() => {
+    setCoverImageKey(null);
+    setCoverImageName(null);
+    sliceApi.updateEpisodeCover(episodeId, null).catch((err: unknown) => {
+      console.error('清除剧集封面失败', err);
+    });
+}}>
+                  封面：{coverImageName || '已选择'}
+              </Tag>
+              </FileHoverPreview>
+            )}
+          </Space>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 8, alignItems: 'start' }}>
             {/* ── 竖屏转横屏智能裁切开关 ── */}
             <Card size="small" style={{ width: '100%' }}>
               <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -2564,6 +2590,7 @@ const EpisodeDetail: React.FC = () => {
               </Space>
             </Card>
         </div>
+        </Space>
       ),
     },
     {
@@ -2667,15 +2694,13 @@ const EpisodeDetail: React.FC = () => {
             <Text type="secondary" style={{ fontSize: 12 }}>降档后编码耗时显著下降（预计 1/3 以下）</Text>
           </Space>
           {/* 选择 AI 选点历史：补选点/切片复用它那套选点参数（时长范围等）。
-              2026-11-21 审计高危②：不再随 expertMode 整块隐藏（简单模式下零线索），
-              改为常驻——简单模式置灰 + 提示，专家模式可用 */}
+              2026-11-21 审计高危②修复后常驻；2026-11-21 用户裁定去掉专家模式门槛，所有账号直接可用 */}
           <Space wrap align="center" size={8}>
             <Text strong style={{ fontSize: 13 }}>选点历史</Text>
             <Select
               size="small"
               allowClear
-              disabled={!expertMode}
-              placeholder={expertMode ? '不选则用当前选点参数' : '专家模式下可选择复用'}
+              placeholder="不选则用当前选点参数"
               value={sliceAutoclipRunId}
               onChange={(v) => setSliceAutoclipRunId(v ?? undefined)}
               style={{ width: 260 }}
@@ -2684,7 +2709,7 @@ const EpisodeDetail: React.FC = () => {
                 label: `${formatDateTime(h.created_at)} · ${renderAutoclipParamsLabel(h)}`,
               }))}
             />
-            <Tooltip title="选择某一套 AI 智能选点历史后，切片时（含无候选自动补选点）将复用该次选点的时间范围等参数；不选则使用当前页面设置的选点参数。开启右上角「专家模式」后可选择。">
+            <Tooltip title="选择某一套 AI 智能选点历史后，切片时（含无候选自动补选点）将复用该次选点的时间范围等参数；不选则使用当前页面设置的选点参数。">
               <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
             </Tooltip>
           </Space>
