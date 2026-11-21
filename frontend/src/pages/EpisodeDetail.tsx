@@ -4049,13 +4049,13 @@ const EpisodeDetail: React.FC = () => {
       {/* 2026-11-21 业务线重组：3 张动作卡 → 6 条业务线纵排（选片/混剪方式/营销钩子/画面包装/防搬运/执行提交），
           纯 JSX 重排，所有 state 留在原地；各线卡头带「已开启」徽标，跨线冲突在「切片执行」卡顶部体检条汇总 */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        {/* 左栏：选片线（AI 选点/区间检测）+ 混剪方式（与高光识别互链相邻）；
-            右栏：营销钩子 → 画面包装 → 防搬运 → 切片执行，按业务线依次流转
-            （2026-11-21 用户反馈恢复双栏空间利用率；画面包装内部两列栅格压高度） */}
+        {/* 左栏：选片线（AI 选点/区间检测）→ 混剪方式 → 营销钩子（按产出流程顺序流转）；
+            右栏：画面包装（两列栅格压高度）→ 防搬运 → 切片执行·汇聚提交
+            （2026-11-21 用户反馈恢复双栏空间利用率） */}
         <Col xs={24} md={12}>
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             {actions
-              .filter((a) => a.title.startsWith('🎬') || a.title.startsWith('🧩'))
+              .filter((a) => a.title.startsWith('🎬') || a.title.startsWith('🧩') || a.title.startsWith('🪝'))
               .map((a) => (
                 <Card size="small" key={a.title} title={a.title} extra={a.extra} style={{ height: '100%' }}>{a.node}</Card>
               ))}
@@ -4064,7 +4064,7 @@ const EpisodeDetail: React.FC = () => {
         <Col xs={24} md={12}>
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             {actions
-              .filter((a) => !a.title.startsWith('🎬') && !a.title.startsWith('🧩'))
+              .filter((a) => !a.title.startsWith('🎬') && !a.title.startsWith('🧩') && !a.title.startsWith('🪝'))
               .map((a) => (
                 <Card size="small" key={a.title} title={a.title} extra={a.extra} style={{ height: '100%' }}>{a.node}</Card>
               ))}
