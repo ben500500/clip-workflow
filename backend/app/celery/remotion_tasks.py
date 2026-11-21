@@ -188,7 +188,8 @@ async def _run_remotion_mix_flow(slice_task_id: str) -> dict:
                         task_id=task.id,
                         clip_id=None,  # 混剪成品是组合产物，不对应单个候选段
                         file_key=key,
-                        file_name=f"{base_name}.mp4",
+                        # 防御：组名可能极长，截断防 file_name varchar(255) 溢出（0071 迁移教训同族）
+                        file_name=f"{base_name[:200]}.mp4",
                         file_size=(
                             os.path.getsize(local_path)
                             if local_path and os.path.isfile(local_path)
