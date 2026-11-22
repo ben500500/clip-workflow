@@ -774,7 +774,13 @@ def run_ffmpeg(args, timeout=3600, threads=1):
             args = [args[0], "-threads", str(threads)] + list(args[1:])
         else:
             args = ["-threads", str(threads)] + list(args)
-    proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    # 2026-11-22 本地实测：Python PEP 538 locale coercion 会向子进程注入
+    # LC_CTYPE=C.UTF-8，该环境下 ffmpeg drawtext/libass 渲染中文大面积豆腐
+    # （仅个别字正常）；宿主 sh 环境（无 LC_CTYPE）渲染完全正常。
+    # 统一剔除 LC_* / LANG，保证 drawtext 与 libass 的字体选择不受 locale 干扰。
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("LC_", "LANG"))}
+    proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=timeout, env=env)
     if proc.returncode != 0:
         stderr_txt = proc.stderr.decode(errors="replace")
         # 硬件编码器（videotoolbox/nvenc）探测时可得，但运行时可能不可用
