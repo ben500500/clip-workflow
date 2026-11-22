@@ -1498,7 +1498,122 @@ def _build_text_overlays_filter(text_overlays: list) -> str:
     return ",".join(filters)
 
 
+def _css_to_ass_color(css: str) -> str:
+    """CSS #RRGGBB → ASS &HAABBGGRR（注意 ASS 是 BGR 顺序）。"""
+    import re as _re
+    m = _re.match(r"#([0-9a-fA-F]{6})", (css or "").strip())
+    if not m:
+        return "&H00FFFFFF"
+    h = m.group(1)
+    r, g, b = h[0:2], h[2:4], h[4:6]
+    return f"&H00{b}{g}{r}".upper()
+
+
+# drawtext 七位 → ASS Alignment（numpad 语义：左中右 × 上中下）
+_TEXT_POS_TO_ASS_ALIGN = {
+    "top-left": 7, "top-center": 8, "top-right": 9,
+    "left": 4, "bottom-left": 1, "bottom-center": 2, "bottom-right": 3,
+}
+
+
+def _build_text_overlays_ass(valid, src, ass_path) -> None:
+    """把固定文字叠加生成为 ASS 字幕文件（libass 渲染）。
+
+    2026-11-22：替代 drawtext 路线——本地自编译 ffmpeg 的 drawtext 对多字节
+    文本存在截断/缺字缺陷（跨字体、跨构建复现，实测热门短剧本故事纯属虚构
+    只渲染前 3-5 字），而 libass（字幕烧录同款滤镜）渲染完全正常。
+    位置：drawtext 七位 → ASS Alignment + Margin 映射；竖排=逐字 \\N 换行。
+    """
+    try:
+        w, h = ffprobe_size(src)
+    except Exception:
+        w, h = 1280, 720
+    header = (
+        "[Script Info]\n"
+        f"ScriptType: v4.00+\n"
+        f"PlayResX: {w}\n"
+        f"PlayResY: {h}\n"
+        "WrapStyle: 2\n"
+        "ScaledBorderAndShadow: yes\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: OV,Noto Sans CJK SC,36,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,7,10,10,10,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    events = []
+    for ov in valid:
+        text = (ov.get("text") or "").strip()
+        if not text:
+            continue
+        position = (ov.get("position") or "bottom-left").lower()
+        align = _TEXT_POS_TO_ASS_ALIGN.get(position, 1)
+        try:
+            font_size = max(12, min(200, int(ov.get("font_size") or TEXT_OVERLAY_DEFAULT_FONT_SIZE)))
+        except (TypeError, ValueError):
+            font_size = TEXT_OVERLAY_DEFAULT_FONT_SIZE
+        try:
+            offset = max(0, int(ov.get("offset") or TEXT_OVERLAY_DEFAULT_OFFSET))
+        except (TypeError, ValueError):
+            offset = TEXT_OVERLAY_DEFAULT_OFFSET
+        vertical = bool(ov.get("vertical"))
+        show_text = "\\N".join(list(text)) if vertical else text
+        color = _css_to_ass_color(ov.get("color") or "#FFFFFF")
+        border = _css_to_ass_color(ov.get("border_color") or "#000000")
+        # Margin 语义：ASS 的 MarginV 在上对齐(7/8/9)=距顶、下对齐(1/2/3)=距底，
+        # 与 drawtext 的 y 语义一致；左对齐(1/4/7)用 MarginL，右对齐(3/6/9)用 MarginR。
+        ml, mr, mv = 0, 0, 0
+        if align in (1, 4, 7):
+            ml = offset
+        if align in (3, 6, 9):
+            mr = offset
+        mv = offset
+        events.append(
+            f"Dialogue: 0,0:00:00.00,9:59:59.99,OV,,{ml},{mr},{mv},,"
+            f"{{\\an{align}\\fs{font_size}\\c{color}\\3c{border}\\bord2}}{show_text}"
+        )
+    content = header + "\n".join(events) + "\n"
+    with open(ass_path, "w", encoding="utf-8") as fh:
+        fh.write(content)
+
+
 def apply_text_overlays(src, out, text_overlays, threads=1, encoder="libx264"):
+    """对成品视频执行一次固定文字叠加，产出新文件。
+
+    text_overlays 为空或全无效时直接复制源文件，不做重编码。
+    2026-11-22：渲染改为 ASS/libass 路线（drawtext 在本地自编译 ffmpeg 上
+    对多字节文本有截断缺陷），生成失败时回退 drawtext。
+    """
+    valid = [o for o in (text_overlays or []) if o and (o.get("text") or "").strip()]
+    if not valid:
+        shutil.copy(src, out)
+        return
+    ass_path = out + ".overlays.ass"
+    vf = ""
+    try:
+        _build_text_overlays_ass(valid, src, ass_path)
+        if os.path.isfile(ass_path):
+            vf = f"ass={ass_path}:fontsdir=/usr/share/fonts/opentype/noto"
+    except Exception:
+        vf = ""
+    if not vf:
+        vf = _build_text_overlays_filter(valid)
+    cmd = [
+        "ffmpeg", "-y", "-threads", str(threads), "-i", src,
+        "-vf", vf,
+        "-map", "0:v:0", "-map", "0:a:0?",
+    ]
+    cmd += build_encoder_args(encoder, threads)
+    cmd += ["-c:a", "aac", "-b:a", "128k", out]
+    run_ffmpeg(cmd, timeout=3600, threads=threads)
+    if os.path.isfile(ass_path):
+        try:
+            os.remove(ass_path)
+        except OSError:
+            pass
+
     """对成品视频执行一次固定文字叠加，产出新文件。
 
     text_overlays 为空或全无效时直接复制源文件，不做重编码。
