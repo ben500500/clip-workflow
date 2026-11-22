@@ -1320,6 +1320,54 @@ def _extract_sc_face(ttc_path: str) -> str:
         return ""
 
 
+
+def _subset_sc_font_for_text(ttc_path: str, texts: list) -> str:
+    """按当次固定文字子集化 SC face，重编译出本地/任意 ffmpeg 都能稳定渲染的字体。
+
+    背景（2026-11-22 本地实测）：源码自编译 ffmpeg（无 fontconfig 选项）的 drawtext
+    对「fontTools 从 Noto CJK ttc 提取的 SC face」渲染部分豆腐（热门短 ✓ 剧✗——
+    CFF 重编译不完整所致，fontTools 4.38/4.68 均复现；163 发行版 ffmpeg 7.1.5 正常）。
+    pyftsubset 按 --text 重编译出的子集字体经实测渲染完全正常。
+    失败时返回空串，调用方回退 _resolve_drawtext_font() 原有逻辑（163 路径不变）。
+    """
+    import hashlib
+    import subprocess
+    try:
+        from fontTools.ttLib import TTCollection
+        ttc = TTCollection(ttc_path, lazy=True)
+        sc_index = None
+        for i, f in enumerate(ttc.fonts):
+            fam = (f["name"].getDebugName(1) or "").lower()
+            if any(h in fam for h in _SC_FAMILY_HINTS):
+                sc_index = i
+                break
+        ttc.close()
+        if sc_index is None:
+            return ""
+        joined = "".join(texts)
+        out = f"/tmp/NotoSansSC-sub-{hashlib.md5(joined.encode('utf-8')).hexdigest()[:12]}.otf"
+        if os.path.isfile(out):
+            return out
+        cmd = [sys.executable, "-m", "fontTools.subset", ttc_path,
+               f"--font-number={sc_index}",
+               f"--text={joined}", "--output-file={out}", "--glyph-names",
+               "--no-hinting", "--desubroutinize"]
+        cmd[-2] = f"--output-file={out}"
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0 or not os.path.isfile(out):
+            return ""
+        # 自检：子集字体必须覆盖全部用字
+        from fontTools.ttLib import TTFont
+        font = TTFont(out)
+        cmap = font.getBestCmap()
+        missing = [ch for ch in set(joined) if ord(ch) not in cmap]
+        if missing:
+            return ""
+        return out
+    except Exception:
+        return ""
+
+
 def _fontconfig_has_cjk_sc() -> bool:
     """判断 fontconfig 是否真的能解析到 CJK 简体中文字体（用于 font= 兜底）。
 
@@ -1355,19 +1403,19 @@ def _resolve_drawtext_font() -> str:
         if sc_path.lower().endswith(".ttc"):
             single = _extract_sc_face(sc_path)
             if single:
-                return f":fontfile={single}"
+                return f"fontfile={single}"
             # 提取失败（镜像未装 fontTools 等）：不能回退 fontfile=.ttc——
             # drawtext 加载 .ttc 默认取第一个子字体（JP 日文字形），"门"等简体字
             # 会渲染成日式/异常字形。改走 fontconfig font= 精确匹配 SC face。
             return ":font=Noto Sans CJK SC"
-        return f":fontfile={sc_path}"
+        return f"fontfile={sc_path}"
     # ③ 兜底 A：有 Noto CJK 集合时用 fontconfig font= 精确匹配简体中文
     if _fontconfig_has_cjk_sc() or any(os.path.isfile(f) for f in _TEXT_TTC_CANDIDATES):
         return ":font=Noto Sans CJK SC"
     # ④ 兜底 B：单字体文件
     _text_fontfile = next((f for f in _TEXT_SINGLE_FONT_CANDIDATES if os.path.isfile(f)), "")
     if _text_fontfile:
-        return f":fontfile={_text_fontfile}"
+        return f"fontfile={_text_fontfile}"
     return ""
 
 
@@ -1406,7 +1454,14 @@ def _build_text_overlays_filter(text_overlays: list) -> str:
         offset = max(0, offset)
         vertical = bool(ov.get("vertical"))
 
-        font_opt = _resolve_drawtext_font()
+        # 2026-11-22：字体来源改为「按当次文本子集化 SC face」（本地自编译 ffmpeg
+        # 对 ttc 提取 face 渲染豆腐的根治），失败回退原解析逻辑（163 路径不变）
+        ttc_path = _fc_match_sc_font()
+        sub_path = _subset_sc_font_for_text(ttc_path, [ov.get("text") or "" for ov in text_overlays if ov]) if ttc_path else ""
+        if sub_path:
+            font_opt = f"fontfile={sub_path}"
+        else:
+            font_opt = _resolve_drawtext_font()
         # drawtext 的 fontcolor/border 用 0xRRGGBB 十六进制，最可靠。
         # 把 CSS 色值（#RRGGBB / #RGB）统一转为 0xRRGGBB。
         c_hex = _css_to_drawtext(ov.get("color") or TEXT_OVERLAY_DEFAULT_COLOR)
