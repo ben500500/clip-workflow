@@ -407,7 +407,7 @@ async def run_autoclip(
     reuse_fp = _config_fingerprint(config)
     src_row = await db.execute(select(Episode.source_file_key).where(Episode.id == eid))
     reuse_src_key = src_row.scalar_one_or_none()
-    if not data.slice_autoclip_run_id:
+    if not getattr(data, "slice_autoclip_run_id", None):
         last_run = (await db.execute(
             select(AutoClipRun)
             .where(
