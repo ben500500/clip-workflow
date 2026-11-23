@@ -487,6 +487,56 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
     all_scored_path = metadata_dir / "step3_all_scored.json"
     scorer.save_scores(scored_clips, all_scored_path)
     
+    # 双配兜底（2026-11-23）：部分模型（实测 Agnes）对「评分响应里附带 highlights」
+    # 遵从性差——稳定不输出附加字段。评分后追加一次**专职**高光提取调用（紧凑提示词，
+    # 任何模型都遵循）：同一 run 内 +1 次 LLM 调用，换来可靠的双批产出。
+    if dual_profile and not scorer.dual_highlights:
+        try:
+            srt_path = metadata_dir / "subtitle.srt"
+            if srt_path.exists():
+                srt_text = srt_path.read_text(encoding="utf-8")
+                # 超长字幕截断（约 60 分钟），保 prompt 可控
+                if len(srt_text) > 120000:
+                    srt_text = srt_text[:120000]
+                hl_prompt = (
+                    f"以下是一部短剧的完整字幕（SRT）。请从中挑出时长 ≤ {highlight_max_duration:.0f} 秒的"
+                    "短高光爆点片段（三秒留人、情绪浓度最高、名场面/金句、适合信息流黄金前几秒）。\n"
+                    "输出**只有一个** JSON 数组（以 [ 开始，以 ] 结束），每个元素：\n"
+                    '{"start_time": "HH:MM:SS,mmm", "end_time": "HH:MM:SS,mmm", '
+                    '"final_score": 0-100整数, "recommend_reason": "爆点理由", "generated_title": "10字内标题"}\n'
+                    "最多 12 个，按爆点强度降序。时间必须是字幕里的真实时间且 start < end，"
+                    "不要编造字幕中不存在的时间。\n\n字幕内容：\n" + srt_text
+                )
+                hl_resp = scorer.llm_client.call_with_retry(hl_prompt)
+                hl_list = scorer.llm_client.parse_json_response(hl_resp)
+                if isinstance(hl_list, dict):
+                    hl_list = hl_list.get("highlights") or []
+                if isinstance(hl_list, list):
+                    for hl in hl_list[:12]:
+                        if not isinstance(hl, dict):
+                            continue
+                        hs, he = hl.get("start_time"), hl.get("end_time")
+                        if not hs or not he:
+                            continue
+                        try:
+                            hscore = float(hl.get("final_score", 0))
+                        except (TypeError, ValueError):
+                            hscore = 0
+                        scorer.dual_highlights.append({
+                            "start_time": hs,
+                            "end_time": he,
+                            "duration": None,
+                            "generated_title": (hl.get("generated_title") or "").strip()[:20],
+                            "content": (hl.get("recommend_reason") or "").strip()[:80],
+                            "outline": (hl.get("generated_title") or "").strip()[:20],
+                            "recommend_reason": (hl.get("recommend_reason") or "").strip()[:80],
+                            "final_score": max(0.0, min(1.0, hscore / 100 if hscore > 1 else hscore)),
+                            "clip_type": "highlight",
+                        })
+                    logger.info(f"专职高光提取：{len(scorer.dual_highlights)} 个爆点候选")
+        except Exception as e:  # noqa: BLE001 - 专职提取失败不影响主评分结果
+            logger.warning(f"专职高光提取失败（双配高光批为空）: {e}")
+
     # 保存筛选后的高分片段（用于后续步骤）
     if output_path is None:
         output_path = metadata_dir / "step3_high_score_clips.json"
