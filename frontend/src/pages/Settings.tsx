@@ -24,6 +24,12 @@ const Settings: React.FC = () => {
   const [asrSaving, setAsrSaving] = useState(false);
   const [remotionEnabled, setRemotionEnabled] = useState(false);
   const [remotionSaving, setRemotionSaving] = useState(false);
+  // AI 选点 LLM 网关配置（llm_config）：llm_api_base / llm_model / llm_api_key
+  const [llmBase, setLlmBase] = useState('');
+  const [llmModel, setLlmModel] = useState('');
+  const [llmKey, setLlmKey] = useState('');
+  const [llmKeySet, setLlmKeySet] = useState(false); // 库里是否已存密钥
+  const [llmSaving, setLlmSaving] = useState(false);
 
   const fetchAll = () => {
     configApi.getAll().then((list) => {
@@ -32,6 +38,11 @@ const Settings: React.FC = () => {
       if (a) setAsrMethod(String(a.value));
       const re = list.find((c: SystemConfig) => c.key === 'remotion_enabled');
       setRemotionEnabled(re ? re.value === true || String(re.value).toLowerCase() === 'true' : false);
+      const lc = list.find((c: SystemConfig) => c.key === 'llm_config');
+      const lv = (lc && typeof lc.value === 'object' && lc.value ? lc.value : {}) as Record<string, unknown>;
+      setLlmBase(typeof lv.llm_api_base === 'string' ? lv.llm_api_base : '');
+      setLlmModel(typeof lv.llm_model === 'string' ? lv.llm_model : '');
+      setLlmKeySet(Boolean(lv.llm_api_key));
     }).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformProfiles().then(setProfiles).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformPresets().then((r) => setPresets(r.presets || {})).catch(() => undefined);
@@ -149,6 +160,27 @@ const Settings: React.FC = () => {
       message.error(err instanceof Error ? err.message : '切换失败');
     } finally {
       setAsrSaving(false);
+    }
+  };
+
+  // 保存 AI 选点 LLM 网关配置（合并保留未知字段；密钥留空=保持原值不变）
+  const handleLlmSave = async () => {
+    setLlmSaving(true);
+    try {
+      const existing = configs.find((c: SystemConfig) => c.key === 'llm_config');
+      const base = (existing && typeof existing.value === 'object' && existing.value ? existing.value : {}) as Record<string, unknown>;
+      const next: Record<string, unknown> = { ...base };
+      if (llmBase.trim()) next.llm_api_base = llmBase.trim(); else delete next.llm_api_base;
+      if (llmModel.trim()) next.llm_model = llmModel.trim(); else delete next.llm_model;
+      if (llmKey.trim()) next.llm_api_key = llmKey.trim();
+      await configApi.update('llm_config', next);
+      setLlmKeySet(Boolean(next.llm_api_key));
+      setLlmKey('');
+      message.success('AI 选点 LLM 配置已保存（热更，下次选点生效）');
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '保存失败');
+    } finally {
+      setLlmSaving(false);
     }
   };
 
@@ -295,6 +327,41 @@ const Settings: React.FC = () => {
               message="FunASR 运行时已安装（SenseVoice-Small + fsmn-vad + ct-punc，CPU 推理，无需 API Key）。切换后下次生成字幕即采用。"
             />
           )}
+        </Space>
+      </Card>
+      <Card title="AI 选点 LLM（网关）" style={{ marginBottom: 16 }}>
+        <Space direction="vertical" style={{ width: '100%' }} size={8}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            选点用的文本 LLM（OpenAI 兼容网关）。在剧集详情页「选片线」的「选点模型」选择
+            「跟随系统设置」时即使用此处配置；选择 MiMo/qwen 预设时按预设覆盖模型与地址。
+            密钥留空表示保持已存值不变。
+          </Text>
+          <Space wrap align="center">
+            <Text strong style={{ fontSize: 13 }}>API 地址</Text>
+            <Input
+              style={{ width: 320 }}
+              placeholder="如 https://dashscope.aliyuncs.com/compatible-mode/v1"
+              value={llmBase}
+              onChange={(e) => setLlmBase(e.target.value)}
+            />
+            <Text strong style={{ fontSize: 13 }}>模型名</Text>
+            <Input
+              style={{ width: 220 }}
+              placeholder="如 qwen-plus / mimo-v2.6-flash"
+              value={llmModel}
+              onChange={(e) => setLlmModel(e.target.value)}
+            />
+          </Space>
+          <Space wrap align="center">
+            <Text strong style={{ fontSize: 13 }}>API 密钥</Text>
+            <Input.Password
+              style={{ width: 320 }}
+              placeholder={llmKeySet ? '已保存（留空保持不变）' : '留空则沿用部署侧 .env 的 LLM_API_KEY'}
+              value={llmKey}
+              onChange={(e) => setLlmKey(e.target.value)}
+            />
+            <Button type="primary" loading={llmSaving} onClick={handleLlmSave}>保存 LLM 配置</Button>
+          </Space>
         </Space>
       </Card>
       <Card title="Remotion 渲染（高光混剪增强）" style={{ marginBottom: 16 }}>
