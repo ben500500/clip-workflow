@@ -8,7 +8,13 @@ import re
 from pathlib import Path
 from typing import Optional
 
-_SRC = (Path(__file__).resolve().parents[2] / "app" / "api" / "assets.py").read_text()
+# 2026-11-23 S0'：实现从 app/api/assets.py 迁到 app/api/assets/misc.py（刀①拆包），
+# 本用例按源码抽取函数体来跑，路径必须跟着走——否则收集期就红（"函数被挪走？"）。
+_MAYBE_PKG = Path(__file__).resolve().parents[2] / "app" / "api" / "assets" / "misc.py"
+_SRC = (
+    _MAYBE_PKG if _MAYBE_PKG.exists()
+    else (Path(__file__).resolve().parents[2] / "app" / "api" / "assets.py")
+).read_text()
 _M = re.search(r"def _derive_asset_title_from_script.*?(?=\n\ndef |\nasync def )", _SRC, re.S)
 assert _M, "_derive_asset_title_from_script 找不到了（函数被挪走？）"
 exec(_M.group(0))

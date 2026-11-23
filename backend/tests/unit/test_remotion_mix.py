@@ -218,12 +218,41 @@ def test_run_remotion_mix_failure_retries(monkeypatch):
 
 
 def test_run_remotion_mix_disabled_skips(monkeypatch):
-    """REMOTION_ENABLED 关闭时直接跳过，不渲染。"""
+    """REMOTION_ENABLED 关闭时直接跳过，不渲染。
+
+    2026-11-23（S0'）：11-23 的"专项评审修正"给关闸分支加了"把 processing 的
+    slice_task 置 failed"（静默返回会让任务永久卡死），于是本用例会走到真库
+    ——本文件第 21 行把 DATABASE_URL 指到假 PG，一跑就是 InvalidPassword。
+    单测不该连库：用假 session 让那条查询返回空（task=None），只验控制流
+    "开关关了就 skipped、不渲染"。
+    """
     async def fake_flow(slice_task_id):
         raise AssertionError("不应渲染")
 
     monkeypatch.setattr("app.celery.remotion_tasks._run_remotion_mix_flow", fake_flow)
     _enable_remotion(monkeypatch, False)
+
+    class _FakeResult:
+        def scalar_one_or_none(self):
+            return None
+
+    class _FakeSession:
+        async def execute(self, *_a, **_k):
+            return _FakeResult()
+
+        async def commit(self):  # noqa: D401 —— 空实现，仅满足协议
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    # 注意靶点：任务体在**函数内** `from app.database import async_session_factory`，
+    # 拿到的是 closure 里的局部名；patch remotion_tasks 的模块属性打不中它，
+    # 必须 patch **来源模块** app.database。
+    monkeypatch.setattr("app.database.async_session_factory", lambda: _FakeSession())
 
     res = run_remotion_mix_task.run("some-id")
     assert res.get("skipped") is True

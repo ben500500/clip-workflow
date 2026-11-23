@@ -812,7 +812,10 @@ def test_no_model_wait_with_unended_session_activity():
     TIMEOUT_OFF_MARK = "idle_in_transaction_session_timeout = 0"
 
     # SET LOCAL 豁免登记名单（函数身份 file::func）。改动任何一个都会红，新加口必须先来登记。
-    SET_LOCAL_TIMEOUT_EXEMPTS = {"app/api/assets.py::create_productions"}
+    # 2026-11-23 S0'：实现从 assets.py 迁到 assets/misc.py（刀①），豁免路径跟着改。
+    # 旧路径 assets.py 已改壳（无任何函数），不再出现在扫描结果里——名单若留着它，
+    # 双向校验会报"减少"（说明防护被摘）。
+    SET_LOCAL_TIMEOUT_EXEMPTS = {"app/api/assets/misc.py::create_productions"}
 
     app_dir = Path(__file__).resolve().parents[2] / "app"
     roots = [app_dir / "api", app_dir / "services"]
@@ -914,3 +917,44 @@ def test_no_model_wait_with_unended_session_activity():
         "再登记；减少了说明防护被摘、等待点已经在裸奔。"
         f"实到 {sorted(seen_timeout_exempts)} ≠ 登记 {sorted(SET_LOCAL_TIMEOUT_EXEMPTS)}"
     )
+
+
+# ─────────────  9. 拆包壳：包级 patch 必须真的生效（2026-11-23 S0' 钉死）  ─────────────
+
+
+def test_package_level_patch_reaches_the_real_module():
+    """刀①（11-18）用反射转发把 misc 的符号复制进包命名空间，**复制不会让 patch 生效**。
+
+    坑的现场：328 处测试写的是 ``patch("app.api.assets._call_autoclip")``；反射层让
+    包命名空间里也有这个名字，patch 于是"成功"了——但它改的是包那一份，路由函数体
+    住在 ``assets/misc.py``、读的是 misc 的模块全局，两份互不相干 → mock 静默失效、
+    真实模型被调用、集成套件 138/160 红，而报错长得像业务 bug（"出文案产 0 条"）。
+    更坏的是没人发现：11-16 记录的 649 绿是刀①**之前**跑的。
+
+    本用例钉四件事（缺一条这个坑就会以别的形态回来）：
+    1. 包级 patch 穿透到 misc（路由真正读的那份）；
+    2. patch 退出后两边都复原（undo 也要穿透，否则测试间互相污染）；
+    3. 包仍是 package（``__path__`` 在）——刀②起要往包里加 summaries.py 等子模块；
+    4. ``create=True`` 造出来的临时名不往 misc 塞（不污染被 AST 守卫扫描的域模块）。
+    """
+    from unittest.mock import patch
+
+    import app.api.assets as pkg
+    from app.api.assets import misc
+
+    real = misc._call_autoclip
+    with patch("app.api.assets._call_autoclip") as m:
+        assert pkg._call_autoclip is m, "包级 patch 没落到包命名空间"
+        assert misc._call_autoclip is m, (
+            "包级 patch 没穿透到 misc：路由函数读的是 misc 的模块全局，"
+            "修改 assets/__init__.py 的 _AssetsPackageModule 前不要删这段镜像逻辑"
+        )
+    assert misc._call_autoclip is real, "patch 退出后 misc 未复原（测试间会互相污染）"
+    assert pkg._call_autoclip is real, "patch 退出后包级未复原"
+
+    assert hasattr(pkg, "__path__"), "包被改成了模块别名——刀② 加子模块会失败"
+
+    with patch("app.api.assets._not_a_real_name", create=True, new=1):
+        assert not hasattr(misc, "_not_a_real_name"), (
+            "create=True 的临时名被塞进了 misc：会把 AST 守卫的扫描面搞脏"
+        )

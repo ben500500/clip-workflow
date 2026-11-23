@@ -48,6 +48,11 @@ def run_remotion_mix_task(self, slice_task_id: str, lock_token: str = None):
         async def _mark_disabled_failed():
             # 专项评审修正（2026-11-23）：任务已被置 processing/1%，静默返回会让它
             # 永久卡死且不可重试——置 failed 让用户开启开关后可重试
+            # 2026-11-23 修：本支漏了 SliceTask 的局部 import（下面 _mark_failed 有，
+            # 这支没有）→ 开关关闭路径必抛 NameError，单测
+            # test_run_remotion_mix_disabled_skips 一直是红的。
+            from app.models.models import SliceTask
+
             async with async_session_factory() as db:
                 task = (
                     await db.execute(select(SliceTask).where(SliceTask.id == slice_task_id))
