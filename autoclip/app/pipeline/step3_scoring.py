@@ -255,12 +255,34 @@ class ClipScorer:
             for original_clip, llm_result in zip(clips, parsed_list):
                 # 双配收集：片段内短高光爆点 → 独立高光候选（clip_type=highlight）
                 if self.dual_profile:
+                    # 父片段区间（SRT 秒）：LLM 幻觉出界时间（如 8 分钟片里报 47:00）
+                    # 会让下游越界切割产出垃圾时长——父区间硬校验直接丢弃
+                    def _t2s(v):
+                        try:
+                            parts = str(v).split(':')
+                            if len(parts) == 3:
+                                return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+                            if len(parts) == 2:
+                                return int(parts[0]) * 60 + float(parts[1])
+                            return float(v)
+                        except (TypeError, ValueError):
+                            return None
+                    p_start = _t2s(original_clip.get('start_time'))
+                    p_end = _t2s(original_clip.get('end_time'))
                     for hl in (llm_result.get('highlights') or [])[:3]:
                         if not isinstance(hl, dict):
                             continue
                         hs, he = hl.get('start_time'), hl.get('end_time')
                         if not hs or not he:
                             continue
+                        hs_s, he_s = _t2s(hs), _t2s(he)
+                        if hs_s is None or he_s is None or he_s <= hs_s:
+                            continue
+                        if p_start is not None and p_end is not None:
+                            if hs_s < p_start - 1.0 or he_s > p_end + 1.0:
+                                logger.warning(
+                                    f"  > 丢弃越界高光 {hs}~{he}（父片段 {p_start:.0f}~{p_end:.0f}s）：LLM 幻觉时间")
+                                continue
                         try:
                             hscore = float(hl.get('final_score', 0))
                         except (TypeError, ValueError):

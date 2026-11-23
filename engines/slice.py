@@ -887,6 +887,17 @@ def build_encoder_args(encoder: str, threads: int) -> list[str]:
 
 def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="libx264", copy_if_possible=True,
                   bgm=None, bgm_volume=0.35, duck=True):
+    # 越界钳制（2026-11-23 本地实测）：LLM 幻觉出界时间（超出源片时长）经 -c copy
+    # 越界切割行为未定义——曾产出 1194s 垃圾成品。end 超源片时长时钳到 EOF。
+    try:
+        src_dur = ffprobe_duration(src)
+        if src_dur and end > src_dur:
+            print(f"切割区间越界钳制：end {end:.1f}s → 源片时长 {src_dur:.1f}s", file=sys.stderr)
+            end = src_dur
+            if start >= end:
+                start = max(0.0, end - 1.0)
+    except Exception:
+        pass
     """切片单段：支持单输入 -af 音频链（原逻辑）与 BGM 双输入 filter_complex 混音。
 
     bgm：BGM 模式音频 dict {"mode":"bgm","source":<授权BGM绝对路径>,"volume":0.35,"duck":True}
