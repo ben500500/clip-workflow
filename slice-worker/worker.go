@@ -134,7 +134,13 @@ func (w *Worker) SetCallbacks(
 
 	// 设置引擎进度回调（PROGRESS 行 → 真实进度上报；同上，勿回退到 onTaskProgress）
 	w.executor.SetProgressCallback(func(taskID string, percent float64, speed string, eta string) {
-		w.emitProgress(taskID, "ffmpeg", percent, fmt.Sprintf("speed=%s", speed))
+		// speed 为空时不覆盖文案（引擎 PROGRESS 行不带 speed，避免「speed=」噪音，
+		// 保留最近一条 STAGE 细粒度文案）
+		detail := ""
+		if speed != "" && speed != "=" {
+			detail = fmt.Sprintf("speed=%s", speed)
+		}
+		w.emitProgress(taskID, "ffmpeg", percent, detail)
 	})
 	// 引擎细粒度阶段回调（STAGE 行 → 「钩子转码 2/3」「成品 5/10 段切割」等实时文案）
 	w.executor.SetStageCallback(func(taskID string, detail string) {

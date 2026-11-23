@@ -5175,6 +5175,8 @@ def main():
                 print(f"PROGRESS:{min(99, int((processed + 0.7) * 100 / total))}")
                 # 源字幕打码：打掉片源自带字幕（在烧录自己的新字幕之前）
                 if subtitle_mask:
+                    if processed == 0:
+                        _stage("源字幕打码中")
                     mask_out = out_path + ".masked.mp4"
                     # 精细化（temporal）模式：优先用帧级检测到的"字幕/水印出现时段"，
                     # 把源时间轴窗口转为切片局部时间轴，只在出现时打码。
@@ -5248,6 +5250,8 @@ def main():
                         m = subtitle_mask_bottom_margin(subtitle_mask, cur_w, cur_h)
                         if m >= 0:
                             margin_v = m
+                    if processed == 0:
+                        _stage("ASR 字幕烧录中")
                     burn_subtitle(out_path, sub_srt, sub_out, threads=threads, encoder=encoder,
                                   font_ratio=subtitle_font_ratio,
                                   spacing=subtitle_spacing,
@@ -5263,6 +5267,8 @@ def main():
             # 恒定水印/角标打码：切片+字幕完成后，打掉片源固定水印（全程打码，
             # 水印是恒定元素无时间轴可言；区域由自动检测或手动 x/y/width/height 指定）。
             if watermark_mask:
+                if processed == 0:
+                    _stage("水印打码中")
                 wm_out = out_path + ".wmask.mp4"
                 apply_subtitle_mask(out_path, wm_out, watermark_mask,
                                     enable="",
@@ -5273,6 +5279,8 @@ def main():
             print(f"PROGRESS:{min(99, int((processed + 0.85) * 100 / total))}")
             # 图片角标：切片完成后在成品上叠加角标（全程覆盖视频指定位置）
             if badges:
+                if processed == 0:
+                    _stage("角标叠加中")
                 badge_out = out_path + ".badge.mp4"
                 apply_badges(
                     out_path, badge_out, badges,
@@ -5295,6 +5303,8 @@ def main():
             # 视频封面：将封面叠加到成品第一帧作为视频首帧
             if args.cover:
                 cover_out = out_path + ".coverout.mp4"
+                if processed == 0:
+                    _stage("封面首帧叠加中")
                 apply_cover_first_frame(out_path, args.cover, cover_out, threads=threads, encoder=encoder)
                 if os.path.isfile(cover_out):
                     os.replace(cover_out, out_path)
