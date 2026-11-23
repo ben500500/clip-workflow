@@ -61,6 +61,7 @@ class Episode(Base):
     drama_id = Column(UUID(as_uuid=True), ForeignKey("dramas.id", ondelete="SET NULL"), nullable=True, index=True)
     duration = Column(Float, nullable=True)
     resolution = Column(String(50), nullable=True)
+    fps = Column(Float, nullable=True)
     file_size = Column(BigInteger, nullable=True)
     # 多视频上传「秒差检测」（音画同步粗检）：命中时标注该集为疑似音画不同步，
     # 仍正常入库不拦截，供运营在剧集列表识别。

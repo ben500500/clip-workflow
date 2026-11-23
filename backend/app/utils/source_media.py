@@ -43,17 +43,31 @@ def needs_normalize(probe: dict | None, cap_w: int = CAP_W, cap_fps: float = CAP
     return probe.get("width", 0) > cap_w or probe.get("fps", 0) > cap_fps + 0.01
 
 
-def normalize_media_file(src: str, dst: str, cap_w: int = CAP_W, cap_fps: float = CAP_FPS) -> bool:
-    """转码到 ≤720P@30（等比 min(720,iw) 不升档，音频流拷贝）。成功返回 True。"""
+def normalize_media_file(src: str, dst: str, cap_w: int = CAP_W, cap_fps: float = CAP_FPS,
+                         progress_cb=None, total_duration: float = 0.0) -> bool:
+    """转码到 ≤720P@30（等比 min(720,iw) 不升档，音频流拷贝）。成功返回 True。
+
+    progress_cb(percent 0-100)：解析 ffmpeg -progress 的 out_time_us 实时回报转码进度。
+    """
     vf = f"scale='min({cap_w},iw)':-2,fps={cap_fps:g}"
     try:
-        r = subprocess.run(
+        proc = subprocess.Popen(
             ["ffmpeg", "-y", "-i", src, "-vf", vf,
              "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-             "-c:a", "copy", "-movflags", "+faststart", dst],
-            capture_output=True, timeout=3600,
+             "-c:a", "copy", "-movflags", "+faststart",
+             "-progress", "pipe:1", "-nostats", dst],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
         )
-        return r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0
+        if progress_cb and total_duration > 0:
+            for line in proc.stdout:
+                if line.startswith("out_time_us="):
+                    try:
+                        us = int(line.strip().split("=", 1)[1] or 0)
+                        progress_cb(max(0.0, min(99.0, us / 1e6 / total_duration * 100)))
+                    except (ValueError, ZeroDivisionError):
+                        pass
+        proc.wait(timeout=3600)
+        return proc.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0
     except Exception:
         return False
 

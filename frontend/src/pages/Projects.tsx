@@ -116,6 +116,16 @@ const Projects: React.FC = () => {
       width: 100,
     },
     {
+      title: '存储空间',
+      key: 'storage',
+      width: 110,
+      render: (_: unknown, r: Project) => {
+        const b = r.storage_bytes || 0;
+        const fmt = (n: number) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(2)} GB` : n >= 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
+        return <span style={{ fontSize: 13 }}>{b > 0 ? fmt(b) : '-'}</span>;
+      },
+    },
+    {
       title: '状态',
       dataIndex: 'status',
       key: 'status',

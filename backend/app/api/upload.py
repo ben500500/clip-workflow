@@ -136,6 +136,17 @@ async def _store_uploaded_file(
             detail=f"上传被拦截（音画校验未通过）：{sync['msg']}。请使用系统「多视频合并」重新合并后再上传。",
         )
 
+    # 规格探测（tus 续传入口）：分辨率+帧率落库
+    res_w = res_fps = None
+    try:
+        from app.utils.source_media import probe_media as _pm
+        _pr = _pm(result_path)
+        if _pr:
+            res_w = f"{_pr['width']}x{_pr['height']}"
+            res_fps = round(_pr["fps"], 2)
+    except Exception:
+        pass
+
     file_key = f"raw-footage/{project_id}/{upload_id}_{safe_name}"
     ok = await upload_file_from_path(settings.MINIO_BUCKET_RAW, file_key, result_path)
     if not ok:
@@ -147,6 +158,8 @@ async def _store_uploaded_file(
         episode_no=episode_no,
         source_file_key=file_key,
         file_size=file_size,
+        resolution=res_w,
+        fps=res_fps,
         status="uploaded",
     )
     db.add(episode)
@@ -329,6 +342,17 @@ async def upload_single(
             detail=f"上传被拦截（音画校验未通过）：{sync['msg']}。请使用系统「多视频合并」重新合并后再上传。",
         )
 
+    # 规格探测（2026-11-23 用户需求）：分辨率+帧率落库，剧集列表直接显示
+    res_w = res_fps = None
+    try:
+        from app.utils.source_media import probe_media
+        _pr = probe_media(local_path)
+        if _pr:
+            res_w = f"{_pr['width']}x{_pr['height']}"
+            res_fps = round(_pr["fps"], 2)
+    except Exception:
+        pass
+
     file_key = f"raw-footage/{pid}/{upload_id}_{safe_name}"
     ok = await upload_file_from_path(settings.MINIO_BUCKET_RAW, file_key, local_path)
     if not ok:
@@ -342,6 +366,8 @@ async def upload_single(
         episode_no=episode_no,
         source_file_key=file_key,
         file_size=size,
+        resolution=res_w,
+        fps=res_fps,
         status="uploaded",
     )
     db.add(episode)
@@ -527,6 +553,13 @@ async def upload_multi(
             dims = await _probe_dimensions(p)
             if dims:
                 episode.resolution = f"{dims[0]}x{dims[1]}"
+            try:
+                from app.utils.source_media import probe_media as _pm2
+                _pr2 = _pm2(p)
+                if _pr2:
+                    episode.fps = round(_pr2["fps"], 2)
+            except Exception:
+                pass
             db.add(episode)
             await db.flush()
             await db.refresh(episode)

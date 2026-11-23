@@ -18,6 +18,7 @@ export type ProjectStatus = 'draft' | 'processing' | 'completed' | 'archived';
 export interface Project {
   id: string;
   name: string;
+  storage_bytes?: number;
   description: string | null;
   status: string;
   config: Record<string, unknown> | null;
@@ -53,6 +54,7 @@ export interface Episode {
   cover_image_key?: string | null;
   duration: number | null;
   resolution: string | null;
+  fps?: number | null;
   file_size: number | null;
   status: string;
   created_at: string;

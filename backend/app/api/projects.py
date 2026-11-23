@@ -168,6 +168,7 @@ def _serialize_episode(episode: Episode) -> dict:
         "cover_image_key": episode.cover_image_key,
         "duration": episode.duration,
         "resolution": episode.resolution,
+        "fps": episode.fps,
         "file_size": episode.file_size,
         "status": episode.status,
         "created_at": utc_iso(episode.created_at) if episode.created_at else "",
@@ -243,8 +244,25 @@ async def list_projects(
     query = query.order_by(Project.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
     projects = (await db.execute(query)).scalars().all()
 
+    # 项目存储空间统计（2026-11-23 用户需求）：源片 + 成品文件字节数之和
+    from app.models.models import SliceTask, SliceOutput
+    ep_sum = dict((await db.execute(
+        select(Episode.project_id, func.coalesce(func.sum(Episode.file_size), 0))
+        .group_by(Episode.project_id)
+    )).all())
+    out_sum = dict((await db.execute(
+        select(Episode.project_id, func.coalesce(func.sum(SliceOutput.file_size), 0))
+        .join(SliceTask, SliceTask.id == SliceOutput.task_id)
+        .join(Episode, Episode.id == SliceTask.episode_id)
+        .group_by(Episode.project_id)
+    )).all())
+    items = []
+    for p in projects:
+        d = _serialize_project(p)
+        d["storage_bytes"] = int(ep_sum.get(p.id, 0) or 0) + int(out_sum.get(p.id, 0) or 0)
+        items.append(d)
     return {
-        "items": [_serialize_project(p) for p in projects],
+        "items": items,
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -960,6 +978,7 @@ async def normalize_episode_source(
             cap_w, cap_fps = _TIER_CAPS.get(tier.lower(), _TIER_CAPS["720p"])
             _src_norm_jobs[episode_id]["message"] = (
                 f"探测规格：{probe['width']}x{probe['height']}@{probe['fps']:.0f}fps，目标档位 {tier}")
+            _src_norm_jobs[episode_id]["progress"] = 10
             if not needs_normalize(probe, cap_w=cap_w, cap_fps=cap_fps):
                 _src_norm_jobs[episode_id] = {
                     "status": "compliant",
@@ -968,11 +987,18 @@ async def normalize_episode_source(
                 return
             _src_norm_jobs[episode_id]["message"] = (
                 f"转码中：{probe['width']}x{probe['height']}@{probe['fps']:.0f}fps → 档位 {tier}")
-            ok = await _aio.to_thread(normalize_media_file, src_path, dst_path, cap_w=cap_w, cap_fps=cap_fps)
+            def _norm_progress(pct: float) -> None:
+                job = _src_norm_jobs.get(episode_id)
+                if job is not None:
+                    job["progress"] = 10 + int(pct * 0.8)
+            ok = await _aio.to_thread(
+                normalize_media_file, src_path, dst_path, cap_w=cap_w, cap_fps=cap_fps,
+                progress_cb=_norm_progress, total_duration=probe.get("duration") or 0.0)
             if not ok:
                 _src_norm_jobs[episode_id] = {"status": "failed", "message": "ffmpeg 转码失败（保留原片不变）"}
                 return
             _src_norm_jobs[episode_id]["message"] = "上传新源片"
+            _src_norm_jobs[episode_id]["progress"] = 92
             old_key = episode.source_file_key
             base, _, ext = old_key.rpartition(".")
             new_key = f"{base or old_key}_{tier.lower()}.{ext or 'mp4'}"
@@ -987,11 +1013,16 @@ async def normalize_episode_source(
                 _src_norm_jobs[episode_id] = {"status": "failed", "message": "新源片上传失败（保留原片不变）"}
                 return
             # 原子更新源指针 + 删旧对象省存储
+            new_probe = await _aio.to_thread(probe_media, dst_path)
             async with async_session_factory() as wdb:
                 wrow = await wdb.execute(select(Episode).where(Episode.id == episode.id))
                 wep = wrow.scalar_one_or_none()
                 if wep is not None:
                     wep.source_file_key = new_key
+                    if new_probe:
+                        wep.resolution = f"{new_probe['width']}x{new_probe['height']}"
+                        wep.fps = round(new_probe["fps"], 2)
+                        wep.file_size = os.path.getsize(dst_path)
                     await wdb.commit()
             try:
                 from app.services.minio_service import delete_file as _del
@@ -1002,6 +1033,7 @@ async def normalize_episode_source(
             new_size = os.path.getsize(dst_path)
             _src_norm_jobs[episode_id] = {
                 "status": "completed",
+                "progress": 100,
                 "message": f"已完成：{probe['width']}x{probe['height']}@{probe['fps']:.0f}fps → 档位 {tier}，"
                            f"{old_size // (1024*1024)}MB → {new_size // (1024*1024)}MB",
             }

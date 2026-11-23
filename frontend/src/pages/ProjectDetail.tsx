@@ -99,17 +99,21 @@ const ProjectDetail: React.FC = () => {
   // ── 源视频预览：剧集列表中按需展开，点击「预览」后再加载在线播放链接 ──
   const [previewExpanded, setPreviewExpanded] = useState<Set<string>>(new Set());
   // 原片降档（2026-11-23）：720P@30 归一化状态表 {episodeId: {status, message}}
-  const [srcNorm, setSrcNorm] = useState<Record<string, { status: string; message?: string }>>({});
+  const [srcNorm, setSrcNorm] = useState<Record<string, { status: string; message?: string; progress?: number }>>({});
   const [srcTier, setSrcTier] = useState<Record<string, string>>({});
   const srcNormTimer = useRef<Record<string, ReturnType<typeof setInterval>>>({});
   const startSrcNorm = async (epId: string, tier: string) => {
     try {
-      const r = await client.post(`/episodes/${epId}/source/normalize`, null, { params: { tier } });
-      setSrcNorm((p) => ({ ...p, [epId]: { status: (r.data as { status: string }).status || 'running' } }));
+      // 注意：api client 响应拦截器已返回 body 本身（无 .data 包装）；
+      // 且任何字段读取必须在 setState updater 外完成——updater 在渲染期执行，
+      // 内部抛错会逃过 try/catch 导致整页卸载（2026-11-23 白屏事故根因）
+      const r = await client.post(`/episodes/${epId}/source/normalize`, null, { params: { tier } }) as unknown as { status?: string };
+      const startStatus = r?.status || 'running';
+      setSrcNorm((p) => ({ ...p, [epId]: { status: startStatus } }));
       srcNormTimer.current[epId] = setInterval(async () => {
         try {
-          const st = await client.get(`/episodes/${epId}/source/normalize`);
-          const j = st.data as { status: string; message?: string };
+          const j = await client.get(`/episodes/${epId}/source/normalize`) as unknown as { status: string; message?: string; progress?: number };
+          if (!j || !j.status) return;
           setSrcNorm((p) => ({ ...p, [epId]: j }));
           if (j.status !== 'running') {
             clearInterval(srcNormTimer.current[epId]);
@@ -671,6 +675,17 @@ const ProjectDetail: React.FC = () => {
       render: (d: number) => formatDuration(d),
     },
     {
+      title: '规格',
+      key: 'media_spec',
+      width: 130,
+      render: (_: unknown, record: Episode) => (
+        <Text style={{ fontSize: 12 }}>
+          {record.resolution || '-'}
+          {record.fps ? ` @${Math.round(record.fps)}fps` : ''}
+        </Text>
+      ),
+    },
+    {
       title: '文件大小',
       dataIndex: 'file_size',
       key: 'file_size',
@@ -738,8 +753,13 @@ const ProjectDetail: React.FC = () => {
                 转换
               </Button>
             </Space>
+            {st?.status === 'running' && (
+              <Progress percent={st.progress ?? 5} size="small" status="active" style={{ width: 120, margin: 0 }} />
+            )}
             {st?.message && st.status !== 'running' && (
-              <Text type="secondary" style={{ fontSize: 11 }}>{st.message?.slice(0, 40)}</Text>
+              <Tooltip title={st.message}>
+                <Text type="secondary" style={{ fontSize: 11, display: 'block', maxWidth: 130 }} ellipsis>{st.message}</Text>
+              </Tooltip>
             )}
           </Space>
         );
