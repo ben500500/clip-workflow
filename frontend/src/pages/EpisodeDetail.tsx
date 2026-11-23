@@ -519,6 +519,28 @@ const EpisodeDetail: React.FC = () => {
   // 快速转换（跳过 AI 选点/区间检测，整片应用下方配置直接出片，位于「开始切片」旁）
   const [quickConverting, setQuickConverting] = useState(false);
   const [quickProgress, setQuickProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
+  // ── 选点 LLM 快捷配置（2026-11-23 用户需求：选点界面直接配置 LLM）──
+  // preset: system=跟随系统设置；mimo=小米 MiMo；qwen=通义 qwen-plus；custom=自定义
+  // 密钥不落盘（仅本次会话内存），模型/地址记忆在浏览器
+  const [llmPreset, setLlmPreset] = useState<string>(() => localStorage.getItem('ac_llm_preset') || 'system');
+  const [llmCustom, setLlmCustom] = useState<{ model: string; base: string; key: string }>(() => {
+    try {
+      const raw = localStorage.getItem('ac_llm_custom');
+      if (raw) return JSON.parse(raw);
+    } catch { /* 坏数据走默认 */ }
+    return { model: '', base: '', key: '' };
+  });
+  const setLlmPresetPersist = (v: string) => {
+    setLlmPreset(v);
+    localStorage.setItem('ac_llm_preset', v);
+  };
+  const setLlmCustomPersist = (patch: Partial<{ model: string; base: string; key: string }>) => {
+    setLlmCustom((prev) => {
+      const next = { ...prev, ...patch };
+      localStorage.setItem('ac_llm_custom', JSON.stringify({ model: next.model, base: next.base, key: '' }));
+      return next;
+    });
+  };
   // 业务线下拉折叠的展开状态（默认展开选片线起点+切片执行提交点，偏好记忆 localStorage）
   const [openLines, setOpenLines] = useState<string[]>(() => {
     try {
@@ -1380,9 +1402,26 @@ const EpisodeDetail: React.FC = () => {
     const selected = sliceAutoclipRunId
       ? autoclipHistory.find((h) => h.id === sliceAutoclipRunId)
       : undefined;
+    const llmExtra = (): Record<string, unknown> => {
+      if (llmPreset === 'mimo') {
+        return { llm_model: 'mimo-v2.6-flash', llm_api_base: 'https://token-plan-cn.xiaomimimo.com/v1' };
+      }
+      if (llmPreset === 'qwen') {
+        return { llm_model: 'qwen-plus', llm_api_base: 'https://dashscope.aliyuncs.com/compatible-mode/v1' };
+      }
+      if (llmPreset === 'custom') {
+        return {
+          ...(llmCustom.model ? { llm_model: llmCustom.model } : {}),
+          ...(llmCustom.base ? { llm_api_base: llmCustom.base } : {}),
+          ...(llmCustom.key ? { llm_api_key: llmCustom.key } : {}),
+        };
+      }
+      return {};
+    };
     if (selected && selected.config) {
       const c = selected.config as Record<string, unknown>;
       return {
+        ...llmExtra(),
         max_clips: c.max_clips != null ? Number(c.max_clips) : undefined,
         min_score_threshold: c.min_score_threshold != null ? Number(c.min_score_threshold) : undefined,
         min_duration: c.min_duration != null ? Number(c.min_duration) : undefined,
@@ -1394,6 +1433,7 @@ const EpisodeDetail: React.FC = () => {
       };
     }
     return {
+      ...llmExtra(),
       max_clips: maxClips,
       min_score_threshold: minScoreThreshold ?? undefined,
       min_duration: minClipDuration ?? undefined,
@@ -2104,6 +2144,31 @@ const EpisodeDetail: React.FC = () => {
                 配置
               </Button>
             </Space>
+          </Space>
+          <Space size={4} align="center" wrap>
+            <Text strong style={{ fontSize: 12 }}>选点模型</Text>
+            <Select
+              size="small"
+              style={{ minWidth: 200 }}
+              value={llmPreset}
+              onChange={(v) => setLlmPresetPersist(v as string)}
+              options={[
+                { value: 'system', label: '跟随系统设置' },
+                { value: 'mimo', label: '小米 MiMo（mimo-v2.6-flash）' },
+                { value: 'qwen', label: '通义 qwen-plus' },
+                { value: 'custom', label: '自定义…' },
+              ]}
+            />
+            {llmPreset === 'custom' && (
+              <>
+                <Input size="small" placeholder="模型名（必填）" style={{ width: 150 }} value={llmCustom.model} onChange={(e) => setLlmCustomPersist({ model: e.target.value })} />
+                <Input size="small" placeholder="API 地址（OpenAI 兼容）" style={{ width: 220 }} value={llmCustom.base} onChange={(e) => setLlmCustomPersist({ base: e.target.value })} />
+                <Input.Password size="small" placeholder="API 密钥（留空沿用系统，仅本次有效）" style={{ width: 200 }} value={llmCustom.key} onChange={(e) => setLlmCustomPersist({ key: e.target.value })} />
+              </>
+            )}
+            <Tooltip title="选点用的文本 LLM，对「启动选点」和「一键切片」的自动补选点同样生效。默认跟随系统设置；MiMo/通义预设只覆盖模型与地址（密钥沿用系统）；自定义可临时填密钥（仅本次会话，不落盘）。">
+              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+            </Tooltip>
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>
             自动分析视频内容，推荐精彩片段作为切片候选
