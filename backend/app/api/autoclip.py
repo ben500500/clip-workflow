@@ -354,57 +354,6 @@ async def run_autoclip(
     # 锁 TTL 1800s 覆盖上传视频 + 10 分钟轮询 + 收尾；崩溃未释放时自动过期兜底。
     from app.services.distributed_lock import acquire_lock, release_lock
 
-    # 选点复用（2026-11-23 用户提议）：同一剧集 + 同一源片 + 参数指纹与最近一次
-    # 已完成选点一致，且候选仍在候选表中 → 直接复用候选，跳过 15-25 分钟选点。
-    # 显式指定 slice_autoclip_run_id 时不介入（用户明确选了某次历史）。
-    reuse_fp = _config_fingerprint(config)
-    src_row = await db.execute(select(Episode.source_file_key).where(Episode.id == eid))
-    reuse_src_key = src_row.scalar_one_or_none()
-    if not data.slice_autoclip_run_id:
-        last_run = (await db.execute(
-            select(AutoClipRun)
-            .where(
-                AutoClipRun.episode_id == eid,
-                AutoClipRun.config_fp == reuse_fp,
-                AutoClipRun.status == "completed",
-            )
-            .order_by(AutoClipRun.created_at.desc())
-            .limit(1)
-        )).scalar_one_or_none()
-        cand_cnt = (await db.execute(
-            select(func.count(ClipCandidate.id)).where(ClipCandidate.episode_id == eid)
-        )).scalar() or 0
-        if last_run and cand_cnt > 0:
-            reused = AutoClipRun(
-                episode_id=eid,
-                autoclip_project_id=last_run.autoclip_project_id,
-                status="completed",
-                progress=100.0,
-                message="复用选点结果：参数与最近一次选点一致，跳过选点（候选未变化）",
-                config=config,
-                config_fp=reuse_fp,
-                source_key=reuse_src_key,
-            )
-            db.add(reused)
-            # AutoClipProject 状态置 completed：切片流程的选点轮询即刻通过
-            proj_result = await db.execute(
-                select(AutoClipProject).where(AutoClipProject.episode_id == eid)
-            )
-            proj = proj_result.scalar_one_or_none()
-            if proj:
-                proj.autoclip_project_id = last_run.autoclip_project_id
-                proj.pipeline_status = "completed"
-                proj.error_message = None
-            await db.commit()
-            logger.info("Episode %s 选点复用命中（fp=%s），跳过选点流程", eid, reuse_fp)
-            return AutoClipRunResponse(
-                celery_task_id=f"reused-{reused.id}",
-                autoclip_project_id=last_run.autoclip_project_id,
-                message="选点参数与最近一次一致，已直接复用选点结果（候选未变化）",
-                fallback_whole_video=False,
-            )
-
-
     lock_key = f"autoclip:lock:{eid}"
     lock_token = await acquire_lock(lock_key, ttl=1800)
     if not lock_token:
@@ -451,6 +400,62 @@ async def run_autoclip(
         repo_entries = [e for e in entries if isinstance(e, dict)]
     except Exception as e:  # noqa: BLE001
         logger.warning("读取模型仓库失败: %s", e)
+
+    # 选点复用（2026-11-23 用户提议）：同一剧集 + 同一源片 + 参数指纹与最近一次
+    # 已完成选点一致，且候选仍在候选表中 → 直接复用候选，跳过 15-25 分钟选点。
+    # 显式指定 slice_autoclip_run_id 时不介入（用户明确选了某次历史）。
+    reuse_fp = _config_fingerprint(config)
+    src_row = await db.execute(select(Episode.source_file_key).where(Episode.id == eid))
+    reuse_src_key = src_row.scalar_one_or_none()
+    if not data.slice_autoclip_run_id:
+        last_run = (await db.execute(
+            select(AutoClipRun)
+            .where(
+                AutoClipRun.episode_id == eid,
+                AutoClipRun.config_fp == reuse_fp,
+                AutoClipRun.status == "completed",
+            )
+            .order_by(AutoClipRun.created_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        cand_cnt = (await db.execute(
+            select(func.count(ClipCandidate.id)).where(ClipCandidate.episode_id == eid)
+        )).scalar() or 0
+        if last_run and cand_cnt > 0:
+            # 复用命中：释放本次获取的选点锁（无 celery 任务接力释放）
+            from app.services.distributed_lock import release_lock
+            await release_lock(lock_key, lock_token)
+            reused = AutoClipRun(
+                episode_id=eid,
+                autoclip_project_id=last_run.autoclip_project_id,
+                status="completed",
+                progress=100.0,
+                message="复用选点结果：参数与最近一次选点一致，跳过选点（候选未变化）",
+                config=config,
+                config_fp=reuse_fp,
+                source_key=reuse_src_key,
+            )
+            db.add(reused)
+            # AutoClipProject 状态置 completed：切片流程的选点轮询即刻通过
+            proj_result = await db.execute(
+                select(AutoClipProject).where(AutoClipProject.episode_id == eid)
+            )
+            proj = proj_result.scalar_one_or_none()
+            if proj:
+                proj.autoclip_project_id = last_run.autoclip_project_id
+                proj.pipeline_status = "completed"
+                proj.error_message = None
+            await db.commit()
+            logger.info("Episode %s 选点复用命中（fp=%s），跳过选点流程", eid, reuse_fp)
+            return AutoClipRunResponse(
+                celery_task_id=f"reused-{reused.id}",
+                autoclip_project_id=last_run.autoclip_project_id,
+                message="选点参数与最近一次一致，已直接复用选点结果（候选未变化）",
+                fallback_whole_video=False,
+            )
+
+
+
     if model_name:
         entry = next((e for e in repo_entries if e.get("name") == model_name), None)
         if entry:
