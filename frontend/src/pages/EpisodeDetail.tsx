@@ -1377,7 +1377,7 @@ const EpisodeDetail: React.FC = () => {
           status: t.status === 'running' || t.status === 'pending' || t.status === 'processing' ? 'running' : t.status || 'unknown',
           progress: t.progress || 0,
           message: t.status === 'running' || t.status === 'pending'
-            ? `切片任务运行中（${t.mode || mode}）…`
+            ? (t.progress_message ? `${Math.round(t.progress || 0)}% · ${t.progress_message}` : `切片任务运行中（${t.mode || mode}）…`)
             : t.status === 'processing'
               ? 'Remotion 增强渲染中（进度来自渲染管线）…'
               : t.status === 'completed'

@@ -354,6 +354,8 @@ class SliceTaskResponse(BaseModel):
     mode: Optional[str] = None
     status: Optional[str] = None
     progress: float
+    # 细粒度进度文案（如「钩子转码 2/3」「成品 5/10 段切割」）
+    progress_message: Optional[str] = None
     output_count: int
     error_message: Optional[str] = None
     # 实际执行该任务的 Worker 节点 ID
@@ -438,6 +440,8 @@ def _serialize_task(task: SliceTask) -> dict:
         "mode": task.mode,
         "status": task.status,
         "progress": task.progress or 0.0,
+        # 细粒度进度文案（运行中由 Redis detail 覆盖，见 slice.py 列表/详情端点）
+        "progress_message": None,
         "output_count": task.output_count or 0,
         "error_message": task.error_message,
         "node_id": task.node_id,

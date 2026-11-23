@@ -1474,6 +1474,8 @@ async def list_slice_tasks(
                 if p > (t.progress or 0):
                     t.progress = p
                 d["progress"] = t.progress
+            if data.get("detail"):
+                d["progress_message"] = data.get("detail")
         except Exception:  # noqa: BLE001 - 心跳缺失不影响列表主流程
             pass
         payloads.append(d)
@@ -1537,11 +1539,20 @@ async def get_slice_task(
                     task.completed_at = datetime.utcnow()
                 elif rs.get("progress") is not None:
                     task.progress = max(task.progress or 0, rs["progress"])
+            # 细粒度文案透出（终态行也保留最后一次文案，便于回看）
+            if rs.get("detail"):
+                payload_detail = rs.get("detail")
     except Exception as e:
         logger.warning("Failed to get Redis status for task %s: %s", task_id, e)
 
     await db.flush()
-    return _serialize_task(task)
+    payload = _serialize_task(task)
+    try:
+        if payload_detail:
+            payload["progress_message"] = payload_detail
+    except NameError:
+        pass
+    return payload
 
 
 @router.get("/slice-tasks/{task_id}/outputs", response_model=List[SliceOutputResponse])

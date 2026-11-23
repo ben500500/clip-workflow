@@ -46,6 +46,9 @@ type Worker struct {
 	// 进度整数节流表：key = taskID|phase -> 上次上报的整数百分比（emitProgress 用，
 	// 防 transfer 逐 chunk 回调造成 Redis 写放大；LastProgress 心跳不受节流影响）
 	progressLast sync.Map
+	// 细粒度状态（2026-11-23）：当前百分比 + 最近文案，用于 STAGE 行上报与去抖
+	progressNow        sync.Map
+	progressDetailLast sync.Map
 	// 各任务当前传输方向（download/upload）：transfer 粒度回调下载/上传共用一条，
 	// 靠这张表把 phase 标对（下载占任务进度 0-10、上传 95-100，映射见 stagePercent）
 	transferPhases sync.Map
@@ -132,6 +135,14 @@ func (w *Worker) SetCallbacks(
 	// 设置引擎进度回调（PROGRESS 行 → 真实进度上报；同上，勿回退到 onTaskProgress）
 	w.executor.SetProgressCallback(func(taskID string, percent float64, speed string, eta string) {
 		w.emitProgress(taskID, "ffmpeg", percent, fmt.Sprintf("speed=%s", speed))
+	})
+	// 引擎细粒度阶段回调（STAGE 行 → 「钩子转码 2/3」「成品 5/10 段切割」等实时文案）
+	w.executor.SetStageCallback(func(taskID string, detail string) {
+		cur := 0.0
+		if p, ok := w.progressNow.Load(taskID); ok {
+			cur = p.(float64)
+		}
+		w.emitProgress(taskID, "ffmpeg", cur, detail)
 	})
 }
 
@@ -940,7 +951,7 @@ func (w *Worker) runTask(msg *StreamMessage) {
 				FileSize: getFileSize(path),
 			}
 			n := atomic.AddInt32(&uploadedCount, 1)
-			w.emitProgress(task.TaskID, "upload", float64(n)/float64(len(outputs))*100, fmt.Sprintf("上传 %s", fileName))
+			w.emitProgress(task.TaskID, "upload", float64(n)/float64(len(outputs))*100, fmt.Sprintf("上传 %d/%d：%s", n, len(outputs), fileName))
 		}(i, outputPath)
 	}
 	uploadWG.Wait()
@@ -1290,14 +1301,23 @@ func (w *Worker) emitProgress(taskID, phase string, percent float64, detail stri
 	staged := stagePercent(phase, percent)
 	key := taskID + "|" + phase
 	pct := int(staged)
-	if prev, ok := w.progressLast.Load(key); ok && prev.(int) == pct {
-		// 百分比未跨档：轻量续 lease（TouchTask 只 HSet lease 字段），跳过完整状态写
+	// 记录当前百分比（STAGE 行上报细粒度文案时需要）
+	w.progressNow.Store(taskID, staged)
+	prevDetail := ""
+	if d, ok := w.progressDetailLast.Load(taskID); ok {
+		prevDetail = d.(string)
+	}
+	if prev, ok := w.progressLast.Load(key); ok && prev.(int) == pct && prevDetail == detail {
+		// 百分比与文案都未变化：轻量续 lease（TouchTask 只 HSet lease 字段），跳过完整状态写
 		_ = w.redis.TouchTask(taskID)
 		return
 	}
 	w.progressLast.Store(key, pct)
+	if detail != "" {
+		w.progressDetailLast.Store(taskID, detail)
+	}
 	// 只写进度三件套不写 status（防 cancelled 标记被覆盖，见 WriteProgress 注释）
-	_ = w.redis.WriteProgress(taskID, staged, phase)
+	_ = w.redis.WriteProgress(taskID, staged, phase, detail)
 }
 
 // matchTags 检查标签匹配

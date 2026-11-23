@@ -1013,6 +1013,7 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
                         f"[copy-concat] 免重编码拼接 {len(parts)} 段（{got:.1f}s，签名一致）",
                         file=sys.stderr,
                     )
+                    _stage(f"成品拼接（{len(parts)} 段，流拷贝 {got:.1f}s）")
                     return
                 print(
                     f"[copy-concat] 时长校验不符（期望 {expect:.1f}s 实际 {got:.1f}s），回退重编码",
@@ -1056,9 +1057,15 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
     ]
     cmd += build_encoder_args(encoder, threads)
     cmd += ["-c:a", "aac", "-b:a", "128k", out]
+    _stage(f"成品拼接重编码（{len(parts)} 段）")
     print(f"[SLICE-DEBUG] concat cmd: filter_complex={filter_complex[:500]}", file=sys.stderr)
     print(f"[SLICE-DEBUG] concat parts: {parts}", file=sys.stderr)
     run_ffmpeg(cmd, threads=threads)
+
+
+def _stage(msg: str) -> None:
+    """细粒度进度文案（worker 解析 STAGE 行 → 前端进度条下实时展示）。"""
+    print(f"STAGE:{msg}", flush=True)
 
 
 def _av_signature(path: str):
@@ -4948,6 +4955,7 @@ def main():
             )
             if vf:
                 outro_vf = f"{outro_vf},{vf}"
+            _stage(f"片尾转码中（{outro_dur:.1f}s，任务级缓存）")
             slice_segment(outro_path_arg, 0.0, outro_dur, outro_part,
                           vf=outro_vf, af=af, threads=threads, encoder=encoder,
                           bgm=bgm_audio, enc_args_override=_match_args)
@@ -5066,6 +5074,7 @@ def main():
                                 )
                                 if vf:
                                     hook_vf = f"{hook_vf},{vf}"
+                                _stage(f"钩子转码 {ci + 1}/{len(hook_paths)}（{os.path.basename(chp)} {ch_dur:.1f}s）")
                                 slice_segment(chp, 0.0, ch_dur, ch_part,
                                               vf=hook_vf, af=af, threads=threads, encoder=encoder,
                                               bgm=bgm_audio, enc_args_override=_match_args)
@@ -5123,6 +5132,7 @@ def main():
                         )
                         if vf:
                             hook_vf = f"{hook_vf},{vf}"
+                        _stage(f"钩子转码（{os.path.basename(hook_path)} {hook_dur:.1f}s）")
                         slice_segment(hook_path, 0.0, hook_dur, hook_part,
                                       vf=hook_vf, af=af, threads=threads, encoder=encoder,
                                       bgm=bgm_audio, enc_args_override=_match_args)
@@ -5141,6 +5151,7 @@ def main():
                     else:
                         parts.append(hook_part)
                         part_offset = 1
+                _stage(f"成品 {processed + 1}/{total} 切割（{len(group)} 段）")
                 for i, (start, end, _) in enumerate(group):
                     part = os.path.join(tmp, f"part_{i + part_offset}.mp4")
                     slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder,
@@ -5359,6 +5370,7 @@ def apply_vert2horiz(source: str, cfg: dict) -> str:
     # 覆盖导致文件损坏（moov atom missing）。各进程写各自文件，互不干扰。
     out_path = f"{source}.vert2horiz-{os.getpid()}.mp4"
     print(f"检测到竖屏素材（{src_w}x{src_h}），执行竖屏转横屏预处理（mode={mode}）…", file=sys.stderr)
+    _stage(f"竖转横预处理中（{src_w}x{src_h} → {vert2horiz_cfg.get('output_size') or '1280x720'}）")
 
     # 人脸检测器在 vert2horiz_crop 内部创建（动态/固定共用）
     detector = vert2horiz_crop.FaceDetector()

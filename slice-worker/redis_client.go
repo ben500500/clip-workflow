@@ -445,12 +445,17 @@ func (r *RedisClient) IsTaskCancelled(taskID string) (bool, error) {
 // WriteProgress 仅更新进度三件套（progress/phase/lease），不写 status。
 // 2026-11-21 SRE 复评 P1-1：运行中进度写若带 status=running，会把后端写入的
 // cancelled 标记覆盖掉（kill 信号丢失→任务跑完变假完成）。
-func (r *RedisClient) WriteProgress(taskID string, progress float64, phase string) error {
-	return r.client.HSet(r.ctx, fmt.Sprintf("slice:task:%s", taskID), map[string]interface{}{
+func (r *RedisClient) WriteProgress(taskID string, progress float64, phase string, detail string) error {
+	fields := map[string]interface{}{
 		"progress": progress,
 		"phase":    phase,
 		"lease":    time.Now().Unix(),
-	}).Err()
+	}
+	// 细粒度状态文案（如「钩子转码 2/3」「成品 5/10 段切割」），前端进度条下展示
+	if detail != "" {
+		fields["detail"] = detail
+	}
+	return r.client.HSet(r.ctx, fmt.Sprintf("slice:task:%s", taskID), fields).Err()
 }
 
 // ExpireTaskStatus 为任务状态 Hash 设置 TTL（任务终态后清理）

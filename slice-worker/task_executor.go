@@ -19,6 +19,8 @@ import (
 type TaskExecutor struct {
 	config         *Config
 	onTaskProgress func(taskID string, percent float64, speed string, eta string)
+	// 细粒度阶段回调（引擎 STAGE 行：钩子转码/片尾/成品段切割等实时文案）
+	onStage func(taskID string, detail string)
 }
 
 // NewTaskExecutor 创建任务执行器
@@ -31,6 +33,11 @@ func NewTaskExecutor(config *Config) *TaskExecutor {
 // SetProgressCallback 设置ffmpeg进度回调
 func (te *TaskExecutor) SetProgressCallback(cb func(taskID string, percent float64, speed string, eta string)) {
 	te.onTaskProgress = cb
+}
+
+// SetStageCallback 注册引擎细粒度阶段回调（STAGE 行）
+func (te *TaskExecutor) SetStageCallback(cb func(taskID string, detail string)) {
+	te.onStage = cb
 }
 
 // ExecuteTask 执行切片任务
@@ -415,6 +422,13 @@ func (te *TaskExecutor) parseEngineLine(taskID, line string, manifest map[string
 		pctStr := strings.TrimPrefix(line, "PROGRESS:")
 		if pct, err := strconv.ParseFloat(pctStr, 64); err == nil && te.onTaskProgress != nil {
 			te.onTaskProgress(taskID, pct, "", "")
+		}
+		return ""
+	}
+	if strings.HasPrefix(line, "STAGE:") {
+		// 细粒度阶段文案（如「钩子转码 2/3（hook_12.mp4）」「成品 5/10 段切割」）
+		if te.onStage != nil {
+			te.onStage(taskID, strings.TrimSpace(strings.TrimPrefix(line, "STAGE:")))
 		}
 		return ""
 	}

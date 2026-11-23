@@ -482,6 +482,8 @@ async def get_task_redis_status(task_id: str) -> Optional[dict]:
             "error": data.get("error"),
             "started_at": data.get("started_at"),
             "completed_at": data.get("completed_at"),
+            # 细粒度状态文案（引擎 STAGE 行 → worker 落 hash，前端进度条下展示）
+            "detail": data.get("detail"),
         }
     except Exception as e:
         logger.error(f"Failed to get task status from Redis: {e}")

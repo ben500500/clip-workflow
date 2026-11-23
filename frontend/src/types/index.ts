@@ -151,6 +151,8 @@ export interface SliceTask {
   mode: string | null;
   status: string | null;
   progress: number;
+  // 细粒度进度文案（如「钩子转码 2/3」「成品 5/10 段切割」）
+  progress_message?: string | null;
   output_count: number;
   error_message: string | null;
   // 实际执行该任务的 Worker 节点 ID
