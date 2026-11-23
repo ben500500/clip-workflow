@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import {
   Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col,
-  message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm, Input, Tabs, Switch, Select, Divider, InputNumber, Collapse,
+  message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm, Input, Tabs, Switch, Select, Divider, InputNumber, Collapse, Tooltip,
 } from 'antd';
 import { ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined, ThunderboltOutlined, ReloadOutlined, DownloadOutlined, FolderOpenOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { projectApi } from '../api/projects';
+import client from '../api/client';
 import { previewApi } from '../api/preview';
 import type { ProjectOutputItem } from '../api/projects';
 import { uploadApi } from '../api/upload';
@@ -97,6 +98,32 @@ const ProjectDetail: React.FC = () => {
 
   // ── 源视频预览：剧集列表中按需展开，点击「预览」后再加载在线播放链接 ──
   const [previewExpanded, setPreviewExpanded] = useState<Set<string>>(new Set());
+  // 原片降档（2026-11-23）：720P@30 归一化状态表 {episodeId: {status, message}}
+  const [srcNorm, setSrcNorm] = useState<Record<string, { status: string; message?: string }>>({});
+  const srcNormTimer = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+  const startSrcNorm = async (epId: string) => {
+    try {
+      const r = await client.post(`/episodes/${epId}/source/normalize`);
+      setSrcNorm((p) => ({ ...p, [epId]: { status: (r.data as { status: string }).status || 'running' } }));
+      srcNormTimer.current[epId] = setInterval(async () => {
+        try {
+          const st = await client.get(`/episodes/${epId}/source/normalize`);
+          const j = st.data as { status: string; message?: string };
+          setSrcNorm((p) => ({ ...p, [epId]: j }));
+          if (j.status !== 'running') {
+            clearInterval(srcNormTimer.current[epId]);
+            delete srcNormTimer.current[epId];
+            if (j.status === 'completed') {
+              message.success('原片已降档到 720P@30');
+              void fetchData(true);
+            }
+          }
+        } catch { /* 轮询失败下一轮再试 */ }
+      }, 3000);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '降档请求失败');
+    }
+  };
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
   const [previewLoading, setPreviewLoading] = useState<Record<string, boolean>>({});
   const [previewErrors, setPreviewErrors] = useState<Record<string, string>>({});
@@ -667,6 +694,39 @@ const ProjectDetail: React.FC = () => {
         ) : (
           <Tag>正常</Tag>
         ),
+    },
+    {
+      title: '原片降档',
+      key: 'src_norm',
+      width: 150,
+      render: (_: unknown, record: Episode) => {
+        const st = srcNorm[record.id];
+        const busy = st?.status === 'running';
+        return (
+          <Space size={4} direction="vertical" style={{ display: 'flex' }}>
+            {st?.status === 'running' && <Tag color="processing">处理中…</Tag>}
+            {st?.status === 'completed' && <Tag color="success">已降档 720P@30</Tag>}
+            {st?.status === 'compliant' && <Tag>已是 ≤720P@30</Tag>}
+            {st?.status === 'failed' && (
+              <Tooltip title={st.message}>
+                <Tag color="error">失败</Tag>
+              </Tooltip>
+            )}
+            <Button
+              type="link"
+              size="small"
+              icon={<ThunderboltOutlined />}
+              loading={busy}
+              onClick={() => void startSrcNorm(record.id)}
+            >
+              降档 720P@30
+            </Button>
+            {st?.message && st.status !== 'running' && (
+              <Text type="secondary" style={{ fontSize: 11 }}>{st.message?.slice(0, 40)}</Text>
+            )}
+          </Space>
+        );
+      },
     },
     {
       title: '上传时间',

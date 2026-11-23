@@ -31,6 +31,8 @@ from app.services.data_scope import (
 )
 from app.services.minio_service import get_presigned_url, delete_file, list_files
 from app.utils.helpers import utc_iso
+from app.utils.source_media import probe_media, needs_normalize, normalize_media_file
+from app.services.minio_service import upload_file_from_path
 
 logger = logging.getLogger(__name__)
 
@@ -840,3 +842,116 @@ def _cleanup_episode_media_files(media_uuid: str) -> None:
             _remove_path(p)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"清理剧集本地文件失败: {e}")
+
+# ── 原片素材二次处理（2026-11-23 用户需求：上传后可手动降档到 720P@30）──
+# 状态存进程内存（backend 单进程）：{episode_id: {"status": "...", "message": "..."}}
+_src_norm_jobs: dict = {}
+
+
+@router.post("/episodes/{episode_id}/source/normalize")
+async def normalize_episode_source(
+    episode_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """把本剧集原片归一化到 720P@30（等比降档+降帧，音频直拷）。
+
+    - 已符合（宽≤720 且 fps≤30）→ 直接返回 compliant，不转码
+    - 该剧集有运行中的切片/选点任务 → 拒绝（409，防替换源片打断渲染/选点）
+    - 后台异步转码；进度与结果走 GET 同路径查询
+    """
+    if _src_norm_jobs.get(episode_id, {}).get("status") == "running":
+        raise HTTPException(status_code=409, detail="该剧集原片已在降档处理中")
+    result = await db.execute(
+        select(Episode, SliceTask)
+        .outerjoin(SliceTask, SliceTask.episode_id == Episode.id)
+        .where(Episode.id == episode_id)
+        .limit(1)
+    )
+    row = result.first()
+    episode = row[0] if row else None
+    if episode is None:
+        raise HTTPException(status_code=404, detail="剧集不存在")
+    running_task = await db.execute(
+        select(func.count(SliceTask.id)).where(
+            SliceTask.episode_id == episode_id,
+            SliceTask.status.in_(("running", "pending", "processing")),
+        )
+    )
+    if (running_task.scalar_one() or 0) > 0:
+        raise HTTPException(status_code=409, detail="该剧集有运行中的切片任务，降档会替换源片——请等任务完成")
+    if not episode.source_file_key:
+        raise HTTPException(status_code=404, detail="该剧集没有已上传的原片")
+
+    _src_norm_jobs[episode_id] = {"status": "running", "message": "下载源片到本地", "old_key": episode.source_file_key}
+
+    async def _run():
+        import asyncio as _aio
+        tmp_dir = f"/tmp/srcnorm_{episode_id[:8]}"
+        os.makedirs(tmp_dir, exist_ok=True)
+        src_path = os.path.join(tmp_dir, "source.mp4")
+        dst_path = os.path.join(tmp_dir, "source_720p30.mp4")
+        try:
+            from app.services.minio_service import download_file as _dl
+            await _aio.to_thread(_dl, settings.MINIO_BUCKET_RAW, episode.source_file_key, src_path)
+            _src_norm_jobs[episode_id]["message"] = "探测规格"
+            probe = await _aio.to_thread(probe_media, src_path)
+            if not probe:
+                _src_norm_jobs[episode_id] = {"status": "failed", "message": "ffprobe 探测失败（文件损坏？）"}
+                return
+            if not needs_normalize(probe):
+                _src_norm_jobs[episode_id] = {
+                    "status": "compliant",
+                    "message": f"已符合 ≤720P@30（{probe['width']}x{probe['height']} @{probe['fps']:.0f}fps），无需处理",
+                }
+                return
+            _src_norm_jobs[episode_id]["message"] = (
+                f"转码中：{probe['width']}x{probe['height']}@{probe['fps']:.0f}fps → 720P@30")
+            ok = await _aio.to_thread(normalize_media_file, src_path, dst_path)
+            if not ok:
+                _src_norm_jobs[episode_id] = {"status": "failed", "message": "ffmpeg 转码失败（保留原片不变）"}
+                return
+            _src_norm_jobs[episode_id]["message"] = "上传新源片"
+            old_key = episode.source_file_key
+            base, _, ext = old_key.rpartition(".")
+            new_key = f"{base or old_key}_720p30.{ext or 'mp4'}"
+            from app.services.minio_service import upload_file_from_path as _up
+            up_ok = await _aio.to_thread(_up, settings.MINIO_BUCKET_RAW, new_key, dst_path, "video/mp4")
+            if not up_ok:
+                _src_norm_jobs[episode_id] = {"status": "failed", "message": "新源片上传失败（保留原片不变）"}
+                return
+            # 原子更新源指针 + 删旧对象省存储
+            async with async_session_factory() as wdb:
+                wrow = await wdb.execute(select(Episode).where(Episode.id == episode.id))
+                wep = wrow.scalar_one_or_none()
+                if wep is not None:
+                    wep.source_file_key = new_key
+                    await wdb.commit()
+            try:
+                from app.services.minio_service import delete_file as _del
+                await _aio.to_thread(_del, settings.MINIO_BUCKET_RAW, old_key)
+            except Exception:
+                pass
+            old_size = os.path.getsize(src_path)
+            new_size = os.path.getsize(dst_path)
+            _src_norm_jobs[episode_id] = {
+                "status": "completed",
+                "message": f"已完成：{probe['width']}x{probe['height']}@{probe['fps']:.0f}fps → 720P@30，"
+                           f"{old_size // (1024*1024)}MB → {new_size // (1024*1024)}MB",
+            }
+        except Exception as e:  # noqa: BLE001
+            _src_norm_jobs[episode_id] = {"status": "failed", "message": f"处理异常：{str(e)[:160]}"}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    import asyncio as _aio
+    _aio.get_event_loop().create_task(_run())
+    return {"status": "running", "message": "降档处理已启动"}
+
+
+@router.get("/episodes/{episode_id}/source/normalize")
+async def get_source_normalize_status(
+    episode_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    return _src_norm_jobs.get(episode_id, {"status": "idle", "message": None})
