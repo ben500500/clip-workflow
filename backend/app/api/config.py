@@ -75,6 +75,26 @@ def _unmask_incoming(key: str, incoming: Any, existing: Any) -> Any:
         for k, v in in_obj.items():
             if v == _MASKED and _SENSITIVE_FIELD_RE.search(str(k)):
                 merged[k] = ex_obj.get(k, v)
+        # 修复（2026-11-23 本地实测 P0）：读口对 models[].api_key 递归打码，
+        # 写口此前只还原顶层——设置页保存会把 "****" 原样落库覆盖真密钥。
+        # 现按条目名从库中现值还原嵌套密钥；显式新值/空值不动。
+        for list_key in ("models",):
+            in_list = merged.get(list_key)
+            ex_list = ex_obj.get(list_key)
+            if isinstance(in_list, list) and isinstance(ex_list, list):
+                ex_by_name = {x.get("name"): x for x in ex_list if isinstance(x, dict)}
+                fixed = []
+                for item in in_list:
+                    if isinstance(item, dict):
+                        ik = item.get("api_key")
+                        looks_masked = isinstance(ik, str) and ik.strip() != "" and (
+                            set(ik) <= {"*"} or ik == "●已保存"
+                        )
+                        if looks_masked:
+                            old_entry = ex_by_name.get(item.get("name"), {})
+                            item = {**item, "api_key": old_entry.get("api_key") or ""}
+                    fixed.append(item)
+                merged[list_key] = fixed
         return json.dumps(merged, ensure_ascii=False) if isinstance(incoming, str) else merged
     return incoming
 
