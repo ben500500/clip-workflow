@@ -947,6 +947,12 @@ async def normalize_episode_source(
             if not probe:
                 _src_norm_jobs[episode_id] = {"status": "failed", "message": "ffprobe 探测失败（文件损坏？）"}
                 return
+            if tier.lower() == "original":
+                _src_norm_jobs[episode_id] = {
+                    "status": "compliant",
+                    "message": "档位 original=保留原始分辨率，无需处理",
+                }
+                return
             _TIER_CAPS = {"auto": (720, 30), "1080p": (1080, 60), "720p": (720, 30), "480p": (480, 30)}
             cap_w, cap_fps = _TIER_CAPS.get(tier.lower(), _TIER_CAPS["720p"])
             _src_norm_jobs[episode_id]["message"] = (
