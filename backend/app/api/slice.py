@@ -765,7 +765,10 @@ async def _resolve_slice_inputs(
                     # 轮询等待选点完成（最长 ~10 分钟，每 5s 查一次 DB 状态）
                     # 用独立 session，每轮结束 rollback 归还事务，避免主事务跨轮询悬挂
                     async with async_session_factory() as poll:
-                        for _ in range(120):
+                        # 双配模式（autoclip_force）选点全程 15-25 分钟，10 分钟轮询上限
+                        # 会在选点进行中就放弃等待 → 整片回退（2026-11-23 实测），放宽到 45 分钟
+                        poll_rounds = 540 if data.autoclip_force else 120
+                        for _ in range(poll_rounds):
                             await asyncio.sleep(5)
                             st_result = await poll.execute(
                                 select(AutoClipProject.pipeline_status).where(

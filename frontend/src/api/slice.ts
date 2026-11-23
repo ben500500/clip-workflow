@@ -151,6 +151,7 @@ export const sliceApi = {
       hook_video_keys?: string[];
       // 钩子拼接位置：head=片头（默认，[封面][钩子][本体]）/ tail=片尾（[封面][本体][钩子]）
       hook_position?: 'head' | 'tail';
+      timeout_ms?: number;
       // 钩子混搭模式：sequential（默认，顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
       hook_mix_mode?: 'sequential' | 'random' | 'combine';
       // 钩子混搭输出数量：当 hook_mix_mode 为 random/combine 时，生成多个不同钩子组合的成品（-v1, -v2 后缀）
@@ -175,7 +176,7 @@ export const sliceApi = {
       target_node_id?: string;
     }
   ) =>
-    client.post(`/episodes/${episodeId}/slice/run`, { mode, ...data }) as Promise<{
+    client.post(`/episodes/${episodeId}/slice/run`, { mode, ...data }, { timeout: data?.timeout_ms }) as Promise<{
       task_id: string;
       engine: string;
       message: string;

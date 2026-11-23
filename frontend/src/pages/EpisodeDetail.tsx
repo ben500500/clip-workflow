@@ -1718,6 +1718,7 @@ const EpisodeDetail: React.FC = () => {
         payload.dual_mix_highlight_position = 'head';
         payload.dual_mix_output_count = undefined;
         payload.highlight_mix_enabled = false;
+        payload.timeout_ms = 50 * 60 * 1000; // 双配全程 15-30 分钟，长连接不设 60s 超时
       }
       const res = await sliceApi.run(episodeId, dedupeEnabled ? 'dedupe' : 'fast', payload);
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
