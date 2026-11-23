@@ -12878,11 +12878,11 @@ async def _video_content_gate(path: str) -> Tuple[Optional[str], Optional[float]
     return _describe_not_video(head), None
 
 
-@router.post("/assets/download")
 class _NormDisabled(Exception):
     """归一化开关关闭哨兵（静默跳过，不告警）。"""
 
 
+@router.post("/assets/download")
 async def download_asset_sources(
     data: AssetDownloadRequest,
     current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
