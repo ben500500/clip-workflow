@@ -476,10 +476,6 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
     
     # 评分
     scored_clips = scorer.score_clips(timeline_data)
-    # 双配高光批透出（main.py 合并进最终候选，clip_type=highlight 标记批次）
-    if highlights_out is not None and scorer.dual_highlights:
-        highlights_out.extend(scorer.dual_highlights)
-    
     # 筛选高分切片
     high_score_clips = [clip for clip in scored_clips if clip['final_score'] >= MIN_SCORE_THRESHOLD]
     
@@ -536,6 +532,10 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
                     logger.info(f"专职高光提取：{len(scorer.dual_highlights)} 个爆点候选")
         except Exception as e:  # noqa: BLE001 - 专职提取失败不影响主评分结果
             logger.warning(f"专职高光提取失败（双配高光批为空）: {e}")
+
+    # 双配高光批透出（统一在兜底提取之后：main.py 合并进最终候选）
+    if highlights_out is not None and scorer.dual_highlights:
+        highlights_out.extend(scorer.dual_highlights)
 
     # 保存筛选后的高分片段（用于后续步骤）
     if output_path is None:
