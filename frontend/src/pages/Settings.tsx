@@ -27,6 +27,8 @@ const Settings: React.FC = () => {
   // AI 选点 LLM：默认模型从仓库选择（llmDefault=条目名，''=不指定）；
   // llmTestStatus 按条目名记录连通测试结果（持久标注，非一次性 toast）
   const [llmDefault, setLlmDefault] = useState('');
+  // 画面理解（视觉）默认模型：同样从仓库选择；''=不指定（跟随环境默认）
+  const [faDefault, setFaDefault] = useState('');
   const [llmTestStatus, setLlmTestStatus] = useState<Record<string, { ok: boolean; latency_ms: number; error?: string; reply?: string }>>({});
   const [llmSaving, setLlmSaving] = useState(false);
   // 模型仓库（llm_config.models）：供选点界面「选点模型」下拉的命名模型列表
@@ -53,6 +55,12 @@ const Settings: React.FC = () => {
       const topBase = typeof lv.llm_api_base === 'string' ? lv.llm_api_base : '';
       const matched = entries.find((e) => e.model === topModel && (!topBase || e.api_base === topBase));
       setLlmDefault(matched ? matched.name : '');
+      // 画面理解默认：按 frame_analysis_config.model(+vision_base) 匹配仓库条目
+      const fa = (list.find((c: SystemConfig) => c.key === 'frame_analysis_config')?.value || {}) as Record<string, unknown>;
+      const faModel = typeof fa.model === 'string' ? fa.model : '';
+      const faBase = typeof fa.vision_base === 'string' ? fa.vision_base : '';
+      const faMatched = entries.find((e) => e.model === faModel && (!faBase || e.api_base === faBase));
+      setFaDefault(faMatched ? faMatched.name : '');
     }).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformProfiles().then(setProfiles).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformPresets().then((r) => setPresets(r.presets || {})).catch(() => undefined);
@@ -225,6 +233,19 @@ const Settings: React.FC = () => {
         delete next.llm_api_key;
       }
       await configApi.update('llm_config', next);
+      // 画面理解默认模型：写入 frame_analysis_config（不指定=清空跟随环境默认）
+      const faNext: Record<string, unknown> = { provider: 'llm' };
+      if (faDefault) {
+        const fd = models.find((m) => m.name === faDefault);
+        if (fd) {
+          faNext.model = fd.model;
+          faNext.vision_base = fd.api_base || '';
+          faNext.vision_api_key = fd.api_key || '';
+        }
+        await configApi.update('frame_analysis_config', faNext);
+      } else {
+        await configApi.update('frame_analysis_config', faNext);
+      }
       message.success('LLM 配置已保存（默认模型与仓库即时生效）');
       fetchAll();
     } catch (err: unknown) {
@@ -416,6 +437,27 @@ const Settings: React.FC = () => {
               测试默认模型
             </Button>
             {renderTestTag('__default__')}
+            <Text strong style={{ fontSize: 13, marginLeft: 8 }}>画面理解默认模型</Text>
+            <Select
+              style={{ minWidth: 220 }}
+              value={faDefault}
+              onChange={(v) => setFaDefault(v as string)}
+              options={[
+                { value: '', label: '不指定（跟随环境默认）' },
+                ...llmRepoEntries.filter((e) => e.name.trim()).map((e) => ({ value: e.name, label: `${e.name}（${e.model}）` })),
+              ]}
+            />
+            <Button
+              loading={llmTesting}
+              disabled={!faDefault}
+              onClick={() => {
+                const e = llmRepoEntries.find((x) => x.name === faDefault);
+                if (e) handleLlmTest({ name: e.name }, '__fa__');
+              }}
+            >
+              测试画面理解
+            </Button>
+            {renderTestTag('__fa__')}
             <Button type="primary" loading={llmSaving} onClick={handleLlmSave}>保存 LLM 配置</Button>
           </Space>
           <div style={{ borderTop: '1px dashed #e8e8e8', paddingTop: 12, marginTop: 4 }}>
