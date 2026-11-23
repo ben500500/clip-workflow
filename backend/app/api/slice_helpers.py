@@ -205,6 +205,13 @@ class SliceRunRequest(BaseModel):
     # 源视频内 start_time 升序、共用同一输出文件名生成 cutlist，引擎 groups 按
     # name 分组后天然顺序 concat 成单个混剪视频，输出指定时间范围的切片。
     highlight_mix_enabled: bool = False
+    # ── 双批混拼（2026-11-23 用户需求）：高光批×N + 正片批×M 组成每条成品 ──
+    # 与高光混剪互斥（同开时双批优先）；候选按 clip_type 分批
+    dual_mix_enabled: bool = False
+    dual_mix_highlight_count: int = 2
+    dual_mix_main_count: int = 1
+    dual_mix_highlight_position: str = "head"
+    dual_mix_output_count: Optional[int] = None
     # 输出总时长上限（秒，可选）。开启混剪时，累计各高光段时长不超过该上限；
     # 最后一段塞入会超额时丢弃该段（不裁剪首尾）。默认 None = 由入选片段自然决定。
     highlight_mix_max_duration: Optional[float] = None

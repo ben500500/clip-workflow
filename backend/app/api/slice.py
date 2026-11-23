@@ -820,7 +820,12 @@ async def _resolve_slice_inputs(
             cutlist = generate_cutlist(
                 accepted_clips,
                 episode_title=episode.title if episode else None,
-                highlight_mix=bool(data.highlight_mix_enabled),
+                dual_mix=bool(data.dual_mix_enabled),
+                dual_highlight_count=int(data.dual_mix_highlight_count or 2),
+                dual_main_count=int(data.dual_mix_main_count or 1),
+                dual_highlight_position=data.dual_mix_highlight_position or "head",
+                dual_output_count=data.dual_mix_output_count,
+                highlight_mix=bool(data.highlight_mix_enabled and not data.dual_mix_enabled),
                 max_duration=data.highlight_mix_max_duration,
                 max_clip_duration=data.highlight_mix_max_clip_duration,
                 order=data.highlight_mix_order or "time",
@@ -945,6 +950,17 @@ async def _create_slice_task_record(
     slice_task.hook_video_key = data.hook_video_key or None
     slice_task.hook_video_keys = data.hook_video_keys or None
     # 钩子混搭模式（sequential/random/combine，重试时保留）
+    # 双批混拼配置持久化（审计/重试参考；0072 迁移列）
+    try:
+        slice_task.dual_mix_config = json.dumps({
+            "enabled": bool(data.dual_mix_enabled),
+            "highlight_count": int(data.dual_mix_highlight_count or 2),
+            "main_count": int(data.dual_mix_main_count or 1),
+            "highlight_position": data.dual_mix_highlight_position or "head",
+            "output_count": data.dual_mix_output_count,
+        }, ensure_ascii=False) if data.dual_mix_enabled else None
+    except Exception:
+        slice_task.dual_mix_config = None
     slice_task.hook_mix_mode = data.hook_mix_mode or None
     # 钩子混搭输出数量。
     # 冲突规则：高光混剪的输出个数由 cutlist 组数决定，钩子变体数会在引擎里按组扩量，

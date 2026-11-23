@@ -31,13 +31,18 @@ class ClipScorer:
                  frame_vision_base: Optional[str] = None,
                  frame_vision_key: Optional[str] = None,
                  highlight_mode: bool = False,
-                 highlight_max_duration: float = 10.0):
+                 highlight_max_duration: float = 10.0,
+                 dual_profile: bool = False):
         self.llm_client = LLMClient()
         self.text_processor = TextProcessor()
         # 高光识别模式：从长剧集中找出多段 ≤highlight_max_duration 的短高光片段。
         # 开启时 LLM 更聚焦"三秒留人"的短爆点，并把 clip_type 判定为 highlight。
         self.highlight_mode = bool(highlight_mode)
         self.highlight_max_duration = float(highlight_max_duration or 10.0)
+        # 双配模式（2026-11-23 用户需求）：单次选点同时产出两批候选——
+        # 正片段（剧情弧，时长区间由 duration_config 约束）+ 高光爆点（≤highlight_max_duration）
+        self.dual_profile = bool(dual_profile)
+        self.dual_highlights: List[Dict] = []
         # 画面理解视觉模型提供商（ollama 本地 / llm 在线），透传给 frame_analyzer
         self.frame_analysis_provider = (frame_analysis_provider or "").strip() or None
         # 画面理解在线视觉模型运行时配置（来自系统设置 frame_analysis_config），透传给 frame_analyzer
@@ -168,6 +173,16 @@ class ClipScorer:
             # 让 LLM 聚焦 ≤highlight_max_duration 的"三秒留人"短爆点，并把 clip_type
             # 判定为 highlight（区别于常规 suspense_cut/full_highlight）。
             prompt_to_use = self.recommendation_prompt
+            if self.dual_profile and not self.highlight_mode:
+                prompt_to_use = (
+                    self.recommendation_prompt
+                    + "\n\n## 双配提取（本次启用）\n"
+                    + f"除逐片段评分外，请再从每个片段内部挑出时长 ≤ {self.highlight_max_duration:.0f} 秒的短高光爆点"
+                    + "（三秒留人、情绪浓度最高、适合信息流黄金前几秒），以 `highlights` 字段附在该片段的返回对象中：\n"
+                    + '`"highlights": [{"start_time": "绝对时间,格式与本片段start_time完全一致", "end_time": "同上", '
+                    + '"final_score": 0-100整数, "recommend_reason": "爆点理由", "generated_title": "10字内标题"}]，\n'
+                    + "每个片段最多 3 个；没有合适爆点则返回空数组 []。时间必须落在该片段的 start_time 与 end_time 之间。\n"
+                )
             if self.highlight_mode:
                 prompt_to_use = (
                     self.recommendation_prompt
@@ -238,6 +253,30 @@ class ClipScorer:
 
             # 将评分结果合并回原始的clips数据
             for original_clip, llm_result in zip(clips, parsed_list):
+                # 双配收集：片段内短高光爆点 → 独立高光候选（clip_type=highlight）
+                if self.dual_profile:
+                    for hl in (llm_result.get('highlights') or [])[:3]:
+                        if not isinstance(hl, dict):
+                            continue
+                        hs, he = hl.get('start_time'), hl.get('end_time')
+                        if not hs or not he:
+                            continue
+                        try:
+                            hscore = float(hl.get('final_score', 0))
+                        except (TypeError, ValueError):
+                            hscore = 0
+                        self.dual_highlights.append({
+                            "chunk_index": original_clip.get('chunk_index'),
+                            "start_time": hs,
+                            "end_time": he,
+                            "duration": None,
+                            "generated_title": (hl.get('generated_title') or '').strip()[:20],
+                            "content": (hl.get('recommend_reason') or '').strip()[:80],
+                            "outline": (hl.get('generated_title') or '').strip()[:20],
+                            "recommend_reason": (hl.get('recommend_reason') or '').strip()[:80],
+                            "final_score": max(0.0, min(1.0, hscore / 100 if hscore > 1 else hscore)),
+                            "clip_type": "highlight",
+                        })
                 score = llm_result.get('final_score')
                 reason = llm_result.get('recommend_reason')
                 clip_type = llm_result.get('clip_type')
@@ -371,7 +410,7 @@ class ClipScorer:
             json.dump(scored_clips, f, ensure_ascii=False, indent=2)
         logger.info(f"评分结果已保存到: {output_path}")
 
-def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None, frame_analysis_enabled: Optional[bool] = None, frame_analysis_provider: Optional[str] = None, frame_analysis_model: Optional[str] = None, frame_vision_base: Optional[str] = None, frame_vision_key: Optional[str] = None, highlight_mode: bool = False, highlight_max_duration: float = 10.0) -> List[Dict]:
+def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None, frame_analysis_enabled: Optional[bool] = None, frame_analysis_provider: Optional[str] = None, frame_analysis_model: Optional[str] = None, frame_vision_base: Optional[str] = None, frame_vision_key: Optional[str] = None, highlight_mode: bool = False, highlight_max_duration: float = 10.0, dual_profile: bool = False, highlights_out: Optional[List[Dict]] = None) -> List[Dict]:
     """
     运行Step 3: 内容评分与筛选
     
@@ -410,10 +449,14 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
                         frame_vision_base=frame_vision_base,
                         frame_vision_key=frame_vision_key,
                         highlight_mode=highlight_mode,
-                        highlight_max_duration=highlight_max_duration)
+                        highlight_max_duration=highlight_max_duration,
+                        dual_profile=dual_profile)
     
     # 评分
     scored_clips = scorer.score_clips(timeline_data)
+    # 双配高光批透出（main.py 合并进最终候选，clip_type=highlight 标记批次）
+    if highlights_out is not None and scorer.dual_highlights:
+        highlights_out.extend(scorer.dual_highlights)
     
     # 筛选高分切片
     high_score_clips = [clip for clip in scored_clips if clip['final_score'] >= MIN_SCORE_THRESHOLD]

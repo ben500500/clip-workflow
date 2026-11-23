@@ -408,6 +408,14 @@ const EpisodeDetail: React.FC = () => {
   const [vert2horizModalOpen, setVert2horizModalOpen] = useState(false);
   // ── 高光混剪（把入选高光段按源时间顺序混剪拼接为一个成品）──
   const [highlightMixEnabled, setHighlightMixEnabled] = useState(false);
+  // 双配模式：单次选点同时产出 正片段+高光爆点 两批候选（clip_type 区分）
+  const [dualProfile, setDualProfile] = useState(false);
+  // 双批混拼：高光批×N + 正片批×M 组成每条成品（高光在前/在后）
+  const [dualMixEnabled, setDualMixEnabled] = useState(false);
+  const [dualMixHighlightCount, setDualMixHighlightCount] = useState(2);
+  const [dualMixMainCount, setDualMixMainCount] = useState(1);
+  const [dualMixHighlightPosition, setDualMixHighlightPosition] = useState<'head' | 'tail'>('head');
+  const [dualMixOutputCount, setDualMixOutputCount] = useState<number | null>(null);
   // 输出总时长上限（秒，可选）：累计各高光段不超过该值，最后一段会超额时丢弃
   const [highlightMixMaxDuration, setHighlightMixMaxDuration] = useState<number | null>(null);
   // 单段最大时长（秒，可选）：仅纳入时长不超过该值的短高光段
@@ -792,11 +800,17 @@ const EpisodeDetail: React.FC = () => {
     frame_analysis_provider: frameAnalysisProvider,
     highlight_mode: highlightMode,
     highlight_max_duration: highlightMode ? highlightMaxDuration : undefined,
-    highlight_mix_enabled: highlightMixEnabled,
+    highlight_mix_enabled: highlightMixEnabled && !dualMixEnabled,
     highlight_mix_max_duration: highlightMixMaxDuration ?? undefined,
     highlight_mix_max_clip_duration: highlightMixMaxClipDuration ?? undefined,
     highlight_mix_order: highlightMixOrder,
     highlight_mix_output_count: highlightMixOutputCount,
+    // 双批混拼：高光批×N + 正片批×M（与高光混剪互斥，双批优先）
+    dual_mix_enabled: dualMixEnabled,
+    dual_mix_highlight_count: dualMixHighlightCount,
+    dual_mix_main_count: dualMixMainCount,
+    dual_mix_highlight_position: dualMixHighlightPosition,
+    dual_mix_output_count: dualMixOutputCount ?? undefined,
   });
 
   // 将一套配置应用到页面切片状态
@@ -855,6 +869,11 @@ const EpisodeDetail: React.FC = () => {
     setHighlightMode(p.highlight_mode ?? false);
     if (p.highlight_mode && p.highlight_max_duration != null) setHighlightMaxDuration(p.highlight_max_duration);
     setHighlightMixEnabled(p.highlight_mix_enabled ?? false);
+    setDualMixEnabled(p.dual_mix_enabled ?? false);
+    setDualMixHighlightCount(p.dual_mix_highlight_count ?? 2);
+    setDualMixMainCount(p.dual_mix_main_count ?? 1);
+    setDualMixHighlightPosition((p.dual_mix_highlight_position as 'head' | 'tail') ?? 'head');
+    setDualMixOutputCount(p.dual_mix_output_count ?? null);
     setHighlightMixMaxDuration(p.highlight_mix_max_duration ?? null);
     setHighlightMixMaxClipDuration(p.highlight_mix_max_clip_duration ?? null);
     setHighlightMixOrder((p.highlight_mix_order as 'time' | 'score' | 'random') ?? 'time');
@@ -1476,6 +1495,7 @@ const EpisodeDetail: React.FC = () => {
       const c = selected.config as Record<string, unknown>;
       return {
         ...llmExtra(),
+        dual_profile: dualProfile || undefined,
         max_clips: c.max_clips != null ? Number(c.max_clips) : undefined,
         min_score_threshold: c.min_score_threshold != null ? Number(c.min_score_threshold) : undefined,
         min_duration: c.min_duration != null ? Number(c.min_duration) : undefined,
@@ -1488,6 +1508,7 @@ const EpisodeDetail: React.FC = () => {
     }
     return {
       ...llmExtra(),
+      dual_profile: dualProfile || undefined,
       max_clips: maxClips,
       min_score_threshold: minScoreThreshold ?? undefined,
       min_duration: minClipDuration ?? undefined,
@@ -1535,6 +1556,11 @@ const EpisodeDetail: React.FC = () => {
     highlight_mix_max_clip_duration: highlightMixEnabled ? (highlightMixMaxClipDuration ?? undefined) : undefined,
     highlight_mix_order: highlightMixEnabled ? highlightMixOrder : undefined,
     highlight_mix_output_count: highlightMixEnabled ? highlightMixOutputCount : undefined,
+    dual_mix_enabled: dualMixEnabled,
+    dual_mix_highlight_count: dualMixEnabled ? dualMixHighlightCount : undefined,
+    dual_mix_main_count: dualMixEnabled ? dualMixMainCount : undefined,
+    dual_mix_highlight_position: dualMixEnabled ? dualMixHighlightPosition : undefined,
+    dual_mix_output_count: dualMixEnabled ? (dualMixOutputCount ?? undefined) : undefined,
     remotion_mix_enabled: remotionMixEnabled,
     // Remotion 片头片尾（默认关闭=不配置，渲染直接进入正片）
     remotion_intro: remotionMixEnabled && remotionIntroEnabled ? {
@@ -2179,6 +2205,17 @@ const EpisodeDetail: React.FC = () => {
               )}
             </Space>
             <Space size={4} align="center">
+              <Switch
+                size="small"
+                checked={dualProfile}
+                onChange={(v) => { setDualProfile(v); if (v) setHighlightMode(false); }}
+              />
+              <Tooltip title="双配模式：单次选点同时产出两批候选——正片段（按最短/最长时长区间）+ 高光爆点（≤高光最大时长）。供「双批混拼」一次取用，无需跑两次选点。">
+                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+              </Tooltip>
+              <Text strong style={{ fontSize: 12 }}>双配模式</Text>
+            </Space>
+            <Space size={4} align="center">
               <Switch size="small" checked={highlightMode} onChange={setHighlightMode} />
               <Text strong style={{ fontSize: 12 }}>高光识别</Text>
               <Tooltip title="开启后，AI 选点改为找出多段 ≤ 单段最大时长的短高光片段（默认 10s），适合高光混剪等需要多段短爆点的场景。">
@@ -2416,6 +2453,36 @@ const EpisodeDetail: React.FC = () => {
       extra: (highlightMixEnabled || remotionMixEnabled) ? <Tag color="purple">已启用</Tag> : undefined,
       node: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          {/* 双批混拼：高光批×N + 正片批×M 组成每条成品（与高光混剪互斥） */}
+          <Space size={4} align="center" wrap>
+            <Switch
+              size="small"
+              checked={dualMixEnabled}
+              onChange={(v) => { setDualMixEnabled(v); if (v) setHighlightMixEnabled(false); }}
+            />
+            <Text strong style={{ fontSize: 12 }}>双批混拼</Text>
+            <Tooltip title="需要「双配模式」选点产出的两批候选：每条成品 = 高光×N + 正片×M（高光在前/在后可配），多条成品轮转取段不重复。与高光混剪互斥。">
+              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+            </Tooltip>
+          </Space>
+          {dualMixEnabled && (
+            <Space size={4} align="center" wrap>
+              <Text type="secondary" style={{ fontSize: 12 }}>高光段数</Text>
+              <InputNumber size="small" min={0} max={6} value={dualMixHighlightCount}
+                onChange={(v) => setDualMixHighlightCount(v ?? 2)} style={{ width: 64 }} />
+              <Text type="secondary" style={{ fontSize: 12 }}>正片段数</Text>
+              <InputNumber size="small" min={1} max={4} value={dualMixMainCount}
+                onChange={(v) => setDualMixMainCount(v ?? 1)} style={{ width: 64 }} />
+              <Text type="secondary" style={{ fontSize: 12 }}>高光位置</Text>
+              <Select size="small" style={{ width: 96 }} value={dualMixHighlightPosition}
+                onChange={(v) => setDualMixHighlightPosition(v as 'head' | 'tail')}
+                options={[{ value: 'head', label: '在前（钩住）' }, { value: 'tail', label: '在后（回味）' }]} />
+              <Text type="secondary" style={{ fontSize: 12 }}>成品条数</Text>
+              <InputNumber size="small" min={1} max={30} value={dualMixOutputCount ?? undefined}
+                onChange={(v) => setDualMixOutputCount(v ?? null)}
+                placeholder="自动" style={{ width: 72 }} />
+            </Space>
+          )}
           {/* Remotion 逐帧渲染提示：开启增强时提醒用户渲染进度特征，避免误判卡死 */}
           {remotionMixEnabled && (
             <Alert

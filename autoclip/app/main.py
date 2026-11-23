@@ -490,6 +490,7 @@ async def _run_pipeline(project_id: str, steps: list[int],
         if video_path:
             os.environ["FRAME_ANALYSIS_VIDEO_PATH"] = str(video_path)
         cfg = proj.get("config") or {}
+        dual_highlights: list = []
         scored = await asyncio.to_thread(
             run_step3_scoring, meta_dir / "step2_timeline.json", meta_dir, None, PROMPT_FILES,
             frame_analysis_enabled=frame_analysis,
@@ -498,7 +499,9 @@ async def _run_pipeline(project_id: str, steps: list[int],
             frame_vision_base=frame_vision_base,
             frame_vision_key=frame_vision_key,
             highlight_mode=bool(cfg.get("highlight_mode", False)),
-            highlight_max_duration=float(cfg.get("highlight_max_duration") or 10.0))
+            highlight_max_duration=float(cfg.get("highlight_max_duration") or 10.0),
+            dual_profile=bool(cfg.get("dual_profile")),
+            highlights_out=dual_highlights)
         _update_progress(proj, "running", 80,
                          f"评分完成（{len(scored)} 个高分片段），生成标题")
 
@@ -544,9 +547,28 @@ async def _run_pipeline(project_id: str, steps: list[int],
             None, str(meta_dir), PROMPT_FILES)
 
         clips = _to_contract_clips(titled)
+        # 双配并轨：高光批（已带 LLM 标题，免 step4）并入最终候选；
+        # 时长兜底（1s~上限+2s）+ 按分排序上限 40 条防爆炸
+        n_hl = 0
+        if dual_highlights:
+            hl_cap = float(cfg.get("highlight_max_duration") or 10.0)
+            hl_clean = []
+            for h in dual_highlights:
+                try:
+                    hd = _srt_time_to_seconds(h.get("end_time")) - _srt_time_to_seconds(h.get("start_time"))
+                except Exception:
+                    hd = 0
+                if 1.0 <= hd <= hl_cap + 2.0:
+                    h["duration"] = round(hd, 3)
+                    hl_clean.append(h)
+            hl_clean.sort(key=lambda x: x.get("final_score") or 0, reverse=True)
+            hl_clips = _to_contract_clips(hl_clean[:40])
+            n_hl = len(hl_clips)
+            clips = clips + hl_clips
         proj["clips"] = clips
         _update_progress(proj, "completed", 100,
-                         f"流水线完成，生成 {len(clips)} 个高光片段")
+                         f"流水线完成，生成 {len(clips)} 个候选片段"
+                         + (f"（含双配高光 {n_hl} 个）" if dual_highlights else ""))
 
     except SpeechRecognitionError as e:
         _fail(proj, f"语音识别失败: {e}")

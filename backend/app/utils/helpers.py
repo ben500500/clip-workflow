@@ -63,7 +63,12 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
                     order: str = "time",
                     trim_over_duration: Optional[float] = None,
                     drop_under_duration: Optional[float] = None,
-                    mix_output_count: Optional[int] = None) -> str:
+                    mix_output_count: Optional[int] = None,
+                    dual_mix: bool = False,
+                    dual_highlight_count: int = 2,
+                    dual_main_count: int = 1,
+                    dual_highlight_position: str = "head",
+                    dual_output_count: Optional[int] = None) -> str:
     """Generate cutlist content from accepted clip candidates.
 
     Format per line:
@@ -92,6 +97,55 @@ def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = 
     accepted = [c for c in clips if c.status == "accepted"]
     if not accepted:
         return ""
+    if dual_mix:
+        # 双批混拼（2026-11-23 用户需求）：高光批(clip_type=highlight)×N + 正片批×M
+        # 组成每条成品，同名分组 -> 引擎顺序 concat；高光在前(head)或在后(tail)。
+        seg_hl: list = []
+        seg_mn: list = []
+        for c in accepted:
+            start = c.adjusted_start if c.adjusted_start is not None else c.start_time
+            end = c.adjusted_end if c.adjusted_end is not None else c.end_time
+            if start is None or end is None or end <= start:
+                continue
+            item = (start, end, end - start, c)
+            (seg_hl if (c.clip_type == "highlight") else seg_mn).append(item)
+        seg_hl.sort(key=lambda s: (s[3].score if s[3].score is not None else 0.0), reverse=True)
+        seg_mn.sort(key=lambda s: (s[3].score if s[3].score is not None else 0.0), reverse=True)
+        if not seg_mn and not seg_hl:
+            logger.warning("双批混拼无有效段（候选时间轴均无效），cutlist 将为空")
+            return ""
+        n = max(0, int(dual_highlight_count))
+        m = max(1, int(dual_main_count))
+        pos = dual_highlight_position if dual_highlight_position in ("head", "tail") else "head"
+        default_k = max(1, -(-len(seg_mn) // m)) if seg_mn else 1
+        k = max(1, int(dual_output_count)) if dual_output_count else default_k
+        lines = []
+        out_idx = 0
+        used_sigs = set()
+        for g in range(k):
+            take_hl = [seg_hl[(g * n + i) % len(seg_hl)] for i in range(min(n, len(seg_hl)))] if (seg_hl and n) else []
+            take_mn = [seg_mn[(g * m + i) % len(seg_mn)] for i in range(min(m, len(seg_mn)))] if seg_mn else []
+            group = (take_hl + take_mn) if pos == "head" else (take_mn + take_hl)
+            if not group:
+                continue
+            sig = tuple((s[0], s[1]) for s in group)
+            if sig in used_sigs and (len(seg_mn) > m or len(seg_hl) > n):
+                continue
+            used_sigs.add(sig)
+            out_idx += 1
+            g_name = build_clip_name(episode_title, out_idx)
+            for start, end, _dur, _c in group:
+                lines.append(f"{format_time(start)} {format_time(end)} {g_name}")
+        if not lines:
+            logger.warning("双批混拼分组后无有效行，回退首段保底")
+            pool = seg_hl + seg_mn
+            start, end, _d, _c = pool[0]
+            lines.append(f"{format_time(start)} {format_time(end)} {build_clip_name(episode_title, 1)}")
+        logger.info(
+            "双批混剪 cutlist：高光 %d 段×%d + 正片 %d 段×%d（高光%s），输出 %d 条共 %d 段",
+            len(seg_hl), n, len(seg_mn), m, pos, out_idx, len(lines),
+        )
+        return "\n".join(lines)
     if highlight_mix:
         # 高光混剪：入选段共用输出文件名（同 name -> 引擎同组顺序 concat）；
         # mix_output_count>1 时按组分名输出 N 个混剪文件（见下方分组填充）

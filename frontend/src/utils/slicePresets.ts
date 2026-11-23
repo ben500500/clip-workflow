@@ -91,6 +91,11 @@ export interface SlicePreset {
   highlight_max_duration?: number;
   auto_autoclip_if_empty?: boolean;
   // 高光混剪（把入选高光段按源时间顺序混剪拼接为一个成品）
+  dual_mix_enabled?: boolean;
+  dual_mix_highlight_count?: number;
+  dual_mix_main_count?: number;
+  dual_mix_highlight_position?: 'head' | 'tail';
+  dual_mix_output_count?: number;
   highlight_mix_enabled: boolean;
   // 输出总时长上限（秒，可选）：累计各高光段不超过该值，最后一段会超额时丢弃
   highlight_mix_max_duration?: number;
@@ -153,6 +158,7 @@ export const DEFAULT_SLICE_PRESET: SlicePreset = {
   dedupe_enabled: false,
   dedupe_preset: 'std_crop_desat',
   output_tier: 'auto',
+  dual_mix_enabled: false,
   highlight_mix_enabled: false,
   highlight_mix_max_duration: undefined,
   highlight_mix_max_clip_duration: undefined,
@@ -213,6 +219,7 @@ export function buildBatchSlicePayload(
     watermark_mask_height_ratio: preset.watermark_mask_enabled ? preset.watermark_mask_height_ratio : undefined,
     watermark_mask_bottom_ratio: preset.watermark_mask_enabled ? preset.watermark_mask_bottom_ratio : undefined,
     // 高光混剪：仅启用时透传
+    dual_mix_enabled: preset.dual_mix_enabled ?? false,
     highlight_mix_enabled: preset.highlight_mix_enabled,
     highlight_mix_max_duration: preset.highlight_mix_enabled ? preset.highlight_mix_max_duration : undefined,
     highlight_mix_max_clip_duration: preset.highlight_mix_enabled ? preset.highlight_mix_max_clip_duration : undefined,
