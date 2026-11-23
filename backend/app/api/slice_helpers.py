@@ -189,6 +189,7 @@ class SliceRunRequest(BaseModel):
     # 列表（通过 /slice/hook-folder-upload 上传）。切片时每个成品随机从文件夹中
     # 取一个钩子作为片头。优先于 hook_video_key。
     hook_video_keys: Optional[List[str]] = None
+    outro_video_key: Optional[str] = None
     # 钩子视频混搭模式：sequential（默认，顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
     hook_mix_mode: Optional[str] = None
     # 钩子混搭输出数量：当 hook_mix_mode 为 random/combine 且值 > 1 时，生成多个不同钩子组合的成品（-v1, -v2 后缀）
