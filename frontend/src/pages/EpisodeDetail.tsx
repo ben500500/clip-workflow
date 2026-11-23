@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Button, Space, Typography, Spin, Alert, Breadcrumb, Descriptions, Tag, message, Select, Row, Col, Progress,
   Steps, InputNumber, Tooltip, Popconfirm, Switch, Slider, Input, Table, Upload, Image as AntImage, Radio, ColorPicker,
-  Checkbox, Modal, Cascader, Popover,
+  Checkbox, Modal, Cascader, Popover, Collapse,
 } from 'antd';
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
@@ -519,6 +519,14 @@ const EpisodeDetail: React.FC = () => {
   // 快速转换（跳过 AI 选点/区间检测，整片应用下方配置直接出片，位于「开始切片」旁）
   const [quickConverting, setQuickConverting] = useState(false);
   const [quickProgress, setQuickProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
+  // 业务线下拉折叠的展开状态（默认展开选片线起点+切片执行提交点，偏好记忆 localStorage）
+  const [openLines, setOpenLines] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('slice_open_lines');
+      if (raw) return JSON.parse(raw);
+    } catch { /* 坏数据走默认 */ }
+    return ['🎬 选片线 · AI 智能选点', '⚙ 切片执行 · 汇聚提交'];
+  });
   // 一键切片（免审核直接出片，位于工作台入口）
   const [oneClickSlicing, setOneClickSlicing] = useState(false);
   // 一键切片进度（与普通切片共用轮询逻辑）
@@ -4083,29 +4091,25 @@ const EpisodeDetail: React.FC = () => {
 
       {/* 2026-11-21 业务线重组：3 张动作卡 → 6 条业务线纵排（选片/混剪方式/营销钩子/画面包装/防搬运/执行提交），
           纯 JSX 重排，所有 state 留在原地；各线卡头带「已开启」徽标，跨线冲突在「切片执行」卡顶部体检条汇总 */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        {/* 左栏：选片线（AI 选点/区间检测）→ 混剪方式 → 营销钩子（按产出流程顺序流转）；
-            右栏：画面包装（两列栅格压高度）→ 防搬运 → 切片执行·汇聚提交
-            （2026-11-21 用户反馈恢复双栏空间利用率） */}
-        <Col xs={24} md={12}>
-          <Space direction="vertical" size={16} style={{ width: '100%' }}>
-            {actions
-              .filter((a) => a.title.startsWith('🎬') || a.title.startsWith('🧩') || a.title.startsWith('🪝'))
-              .map((a) => (
-                <Card size="small" key={a.title} title={a.title} extra={a.extra} style={{ height: '100%' }}>{a.node}</Card>
-              ))}
-          </Space>
-        </Col>
-        <Col xs={24} md={12}>
-          <Space direction="vertical" size={16} style={{ width: '100%' }}>
-            {actions
-              .filter((a) => !a.title.startsWith('🎬') && !a.title.startsWith('🧩') && !a.title.startsWith('🪝'))
-              .map((a) => (
-                <Card size="small" key={a.title} title={a.title} extra={a.extra} style={{ height: '100%' }}>{a.node}</Card>
-              ))}
-          </Space>
-        </Col>
-      </Row>
+      {/* 2026-11-23 用户反馈：选点历史多时左栏被撑得非常靠下——全部业务线改为
+          下拉折叠（折叠态只显示标题+状态徽标，展开才见配置），选片/混剪/钩子并排
+          进入右侧同一列；默认展开选片线起点与切片执行提交点，偏好记忆 localStorage */}
+      <Collapse
+        size="small"
+        style={{ marginBottom: 16 }}
+        activeKey={openLines}
+        onChange={(keys) => {
+          const arr = Array.isArray(keys) ? keys : [keys];
+          setOpenLines(arr);
+          localStorage.setItem('slice_open_lines', JSON.stringify(arr));
+        }}
+        items={actions.map((a) => ({
+          key: a.title,
+          label: a.title,
+          extra: a.extra,
+          children: a.node,
+        }))}
+      />
     </div>
   );
 };
