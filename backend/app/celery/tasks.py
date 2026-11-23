@@ -215,6 +215,19 @@ def run_async(coro):
     return loop.run_until_complete(coro)
 
 
+async def _acquire_recovery_lock() -> Optional[str]:
+    from app.services.distributed_lock import acquire_lock as _acquire
+    return await _acquire("autoclip:stale_recovery:lock", ttl=900)
+
+
+async def _release_recovery_lock(token: str) -> None:
+    from app.services.distributed_lock import release_lock as _release
+    try:
+        await _release("autoclip:stale_recovery:lock", token)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @celery_app.task
 def slice_stuck_sweep_task():
     """切片任务僵尸巡检（2026-11-20 评审 SRE P0-1/P0-3 兜底，beat 每 30 分钟）。
@@ -334,6 +347,21 @@ def autoclip_stale_recovery_task():
             for run in runs:
                 age_min = (datetime.utcnow() - run.created_at).total_seconds() / 60
                 proj = run.autoclip_project_id
+                # 守卫 1（专项评审 2026-11-23）：同剧集存在更新的选点 run（用户已
+                # 重新选点）→ 本 run 已被取代：候选陈旧，收割派发切片=错数据顶包。
+                # 置 failed 留痕，不收割不派发。
+                newer_cnt = await db.execute(
+                    select(func.count(AutoClipRun.id)).where(
+                        AutoClipRun.episode_id == run.episode_id,
+                        AutoClipRun.created_at > run.created_at,
+                    )
+                )
+                if (newer_cnt.scalar() or 0) > 0:
+                    run.status = "failed"
+                    run.message = "已被更新的选点取代，本 run 结果作废"
+                    run.completed_at = datetime.utcnow()
+                    failed_ids.append(f"{str(run.id)[:8]}(已被取代)")
+                    continue
                 try:
                     progress = await get_pipeline_progress(str(proj))
                 except Exception:  # noqa: BLE001 - 服务不可达按「状态未知」处理
@@ -347,12 +375,27 @@ def autoclip_stale_recovery_task():
                             str(proj), min_score=0.0, max_clips=1000, min_duration=0.0, max_duration=0.0
                         )
                         await _save_autoclip_results(str(run.episode_id), str(proj), clips, True, run.config or {})
-                        await _autoclip_auto_dispatch_slice(str(run.episode_id))
-                        run.status = "completed"
-                        run.progress = 100.0
-                        run.message = f"选点完成,共生成 {len(clips)} 个候选片段"
-                        run.completed_at = datetime.utcnow()
-                        recovered.append(f"{str(run.id)[:8]}({len(clips)}候选)")
+                        # 守卫 2（专项评审 2026-11-23）：30 分钟内该剧集已有切片任务
+                        # （活任务刚派发/用户手动发起）→ 跳过自动派发防双份
+                        recent_slice = await db.execute(
+                            select(func.count(SliceTask.id)).where(
+                                SliceTask.episode_id == run.episode_id,
+                                SliceTask.created_at > datetime.utcnow() - timedelta(minutes=30),
+                            )
+                        )
+                        if (recent_slice.scalar() or 0) > 0:
+                            run.status = "completed"
+                            run.progress = 100.0
+                            run.message = f"选点完成,共生成 {len(clips)} 个候选片段（近 30 分钟已有切片任务，跳过自动派发）"
+                            run.completed_at = datetime.utcnow()
+                            recovered.append(f"{str(run.id)[:8]}({len(clips)}候选,跳过派发)")
+                        else:
+                            await _autoclip_auto_dispatch_slice(str(run.episode_id))
+                            run.status = "completed"
+                            run.progress = 100.0
+                            run.message = f"选点完成,共生成 {len(clips)} 个候选片段"
+                            run.completed_at = datetime.utcnow()
+                            recovered.append(f"{str(run.id)[:8]}({len(clips)}候选)")
                     except Exception as e:  # noqa: BLE001 - 收割失败保留现场下轮再试
                         logger.warning("autoclip 收割失败 run=%s: %s", run.id, e)
                         continue
@@ -365,7 +408,16 @@ def autoclip_stale_recovery_task():
                 await db.commit()
         return recovered, failed_ids
 
-    recovered, failed_ids = run_async(_recover())
+    # 重入防护（专项评审 2026-11-23）：收割 pass 超过 beat 周期（15 分钟）时
+    # 防止两轮并发收割同一批 run
+    _recovery_lock_token = run_async(_acquire_recovery_lock())
+    if not _recovery_lock_token:
+        logger.warning("autoclip_stale_recovery: 上一轮收割仍在进行，跳过本轮")
+        return {"skipped": True, "reason": "previous recovery still running"}
+    try:
+        recovered, failed_ids = run_async(_recover())
+    finally:
+        run_async(_release_recovery_lock(_recovery_lock_token))
     if recovered or failed_ids:
         logger.warning("autoclip_stale_recovery: 收割=%s 置失败=%s", recovered, failed_ids)
     return {"recovered": recovered, "failed": failed_ids}

@@ -1848,7 +1848,17 @@ async def retry_slice_task(
     # 20 个普通切片顶包 Remotion 成品）。重试条件与原派发一致：remotion_mix_config 存在
     # 即代表原任务走了渲染管线（原派发还要求 highlight_mix_enabled，能进到
     # remotion_mix_config 落库的必然满足）。
-    if new_task.remotion_mix_config and new_task.cutlist and new_task.cutlist.strip():
+    # 专项评审修正（2026-11-23）：remotion_mix_config 的落库只代表「Remotion 开关
+    # 开启」，与 highlight_mix_enabled 互相独立——仅开 Remotion 未开高光混剪的历史
+    # 任务当年走的是 ffmpeg（slice.py 短路注释自证）。用 remotion_status 是否落库
+    # 判定原任务是否真的走过渲染管线（渲染流程必置 rendering/failed/done），
+    # 避免把 ffmpeg 历史任务错误顶进渲染管线。
+    if (
+        new_task.remotion_mix_config
+        and new_task.remotion_mix_config.get("enabled")
+        and getattr(task, "remotion_status", None)
+        and new_task.cutlist and new_task.cutlist.strip()
+    ):
         new_task.status = "processing"
         new_task.progress = 1.0
         new_task.remotion_status = None
@@ -1856,6 +1866,9 @@ async def retry_slice_task(
         try:
             run_remotion_mix_task.delay(str(new_task.id))
         except Exception as e:
+            # 专项评审修正：投递失败必须连 status 一起落 failed——
+            # 停留在 processing/1% 无任何自动回收（巡检只扫 running/pending）
+            new_task.status = "failed"
             new_task.remotion_status = "failed"
             new_task.error_message = f"投递 Remotion 渲染任务失败: {e}"
             await db.commit()

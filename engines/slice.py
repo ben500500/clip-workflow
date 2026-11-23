@@ -1620,24 +1620,6 @@ def apply_text_overlays(src, out, text_overlays, threads=1, encoder="libx264"):
         except OSError:
             pass
 
-    """对成品视频执行一次固定文字叠加，产出新文件。
-
-    text_overlays 为空或全无效时直接复制源文件，不做重编码。
-    """
-    valid = [o for o in (text_overlays or []) if o and (o.get("text") or "").strip()]
-    if not valid:
-        shutil.copy(src, out)
-        return
-    vf = _build_text_overlays_filter(valid)
-    cmd = [
-        "ffmpeg", "-y", "-threads", str(threads), "-i", src,
-        "-vf", vf,
-        "-map", "0:v:0", "-map", "0:a:0?",
-    ]
-    cmd += build_encoder_args(encoder, threads)
-    cmd += ["-c:a", "aac", "-b:a", "128k", out]
-    run_ffmpeg(cmd, timeout=3600, threads=threads)
-
 
 def build_watermark_filter(wm: dict) -> str:
     """构造 ffmpeg 动态文字水印 filter（drawtext）。

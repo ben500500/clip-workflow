@@ -43,7 +43,22 @@ def run_remotion_mix_task(self, slice_task_id: str, lock_token: str = None):
             return await is_remotion_enabled(db)
 
     if not run_async(_check_enabled()):
-        logger.info("Remotion 渲染开关（系统设置）关闭，跳过 Remotion 渲染 slice_task=%s", slice_task_id)
+        logger.warning("Remotion 渲染开关（系统设置）关闭，slice_task=%s 置 failed 供重试", slice_task_id)
+
+        async def _mark_disabled_failed():
+            # 专项评审修正（2026-11-23）：任务已被置 processing/1%，静默返回会让它
+            # 永久卡死且不可重试——置 failed 让用户开启开关后可重试
+            async with async_session_factory() as db:
+                task = (
+                    await db.execute(select(SliceTask).where(SliceTask.id == slice_task_id))
+                ).scalar_one_or_none()
+                if task and task.status == "processing":
+                    task.status = "failed"
+                    task.remotion_status = "failed"
+                    task.error_message = "Remotion 渲染开关（系统设置）已关闭，请开启后重试"
+                    await db.commit()
+
+        run_async(_mark_disabled_failed())
         return {"skipped": True, "reason": "remotion disabled"}
 
     try:
