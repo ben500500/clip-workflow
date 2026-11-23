@@ -532,6 +532,7 @@ const EpisodeDetail: React.FC = () => {
   });
   // 自定义模型：连通性测试 + 保存进仓库（用户需求 2026-11-23）
   const [llmTesting, setLlmTesting] = useState(false);
+  const [llmTestResult, setLlmTestResult] = useState<{ ok: boolean; latency_ms: number; error?: string; reply?: string } | null>(null);
   const [llmSavingRepo, setLlmSavingRepo] = useState(false);
   const handleLlmTest = async () => {
     if (!llmCustom.model.trim()) { message.warning('请先填写模型名'); return; }
@@ -540,10 +541,13 @@ const EpisodeDetail: React.FC = () => {
       const r = await autoclipApi.llmTest({
         model: llmCustom.model, api_base: llmCustom.base, api_key: llmCustom.key || undefined,
       });
+      setLlmTestResult(r);
       if (r.ok) message.success(`连通正常（${r.latency_ms}ms，回复：${(r.reply || '').slice(0, 20)}）`);
       else message.error(`连通失败（${r.latency_ms}ms）：${r.error || '未知错误'}`);
     } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : '测试请求失败');
+      const msg = err instanceof Error ? err.message : '测试请求失败';
+      setLlmTestResult({ ok: false, latency_ms: 0, error: msg });
+      message.error(msg);
     } finally {
       setLlmTesting(false);
     }
@@ -2216,6 +2220,9 @@ const EpisodeDetail: React.FC = () => {
                 <Input size="small" placeholder="API 地址（OpenAI 兼容）" style={{ width: 220 }} value={llmCustom.base} onChange={(e) => setLlmCustomPersist({ base: e.target.value })} />
                 <Input.Password size="small" placeholder="API 密钥（留空沿用系统，仅本次有效）" style={{ width: 200 }} value={llmCustom.key} onChange={(e) => setLlmCustomPersist({ key: e.target.value })} />
                 <Button size="small" loading={llmTesting} onClick={handleLlmTest}>测试连通</Button>
+                {llmTestResult && (llmTestResult.ok
+                  ? <Tag color="success">✓ 连通 {llmTestResult.latency_ms}ms</Tag>
+                  : <Tooltip title={llmTestResult.error || '未知错误'}><Tag color="error">✗ 失败 {llmTestResult.latency_ms}ms</Tag></Tooltip>)}
                 <Button size="small" icon={<PlusOutlined />} loading={llmSavingRepo}
                   disabled={!llmCustom.model.trim()}
                   onClick={handleLlmSaveRepo}

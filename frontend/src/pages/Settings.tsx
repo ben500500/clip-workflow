@@ -24,11 +24,10 @@ const Settings: React.FC = () => {
   const [asrSaving, setAsrSaving] = useState(false);
   const [remotionEnabled, setRemotionEnabled] = useState(false);
   const [remotionSaving, setRemotionSaving] = useState(false);
-  // AI 选点 LLM 网关配置（llm_config）：llm_api_base / llm_model / llm_api_key
-  const [llmBase, setLlmBase] = useState('');
-  const [llmModel, setLlmModel] = useState('');
-  const [llmKey, setLlmKey] = useState('');
-  const [llmKeySet, setLlmKeySet] = useState(false); // 库里是否已存密钥
+  // AI 选点 LLM：默认模型从仓库选择（llmDefault=条目名，''=不指定）；
+  // llmTestStatus 按条目名记录连通测试结果（持久标注，非一次性 toast）
+  const [llmDefault, setLlmDefault] = useState('');
+  const [llmTestStatus, setLlmTestStatus] = useState<Record<string, { ok: boolean; latency_ms: number; error?: string; reply?: string }>>({});
   const [llmSaving, setLlmSaving] = useState(false);
   // 模型仓库（llm_config.models）：供选点界面「选点模型」下拉的命名模型列表
   const [llmRepoEntries, setLlmRepoEntries] = useState<{ name: string; model: string; api_base?: string; api_key?: string }[]>([]);
@@ -43,14 +42,17 @@ const Settings: React.FC = () => {
       setRemotionEnabled(re ? re.value === true || String(re.value).toLowerCase() === 'true' : false);
       const lc = list.find((c: SystemConfig) => c.key === 'llm_config');
       const lv = (lc && typeof lc.value === 'object' && lc.value ? lc.value : {}) as Record<string, unknown>;
-      setLlmBase(typeof lv.llm_api_base === 'string' ? lv.llm_api_base : '');
-      setLlmModel(typeof lv.llm_model === 'string' ? lv.llm_model : '');
-      setLlmKeySet(Boolean(lv.llm_api_key));
       const models = Array.isArray(lv.models) ? lv.models : [];
-      setLlmRepoEntries(models.map((m: Record<string, unknown>) => ({
+      const entries = models.map((m: Record<string, unknown>) => ({
         name: String(m.name || ''), model: String(m.model || ''),
         api_base: String(m.api_base || ''), api_key: m.api_key ? '●已保存' : '',
-      })));
+      }));
+      setLlmRepoEntries(entries);
+      // 默认模型=顶层 llm_model 匹配的仓库条目（按模型名+地址匹配）
+      const topModel = typeof lv.llm_model === 'string' ? lv.llm_model : '';
+      const topBase = typeof lv.llm_api_base === 'string' ? lv.llm_api_base : '';
+      const matched = entries.find((e) => e.model === topModel && (!topBase || e.api_base === topBase));
+      setLlmDefault(matched ? matched.name : '');
     }).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformProfiles().then(setProfiles).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformPresets().then((r) => setPresets(r.presets || {})).catch(() => undefined);
@@ -172,58 +174,73 @@ const Settings: React.FC = () => {
   };
 
   const [llmTesting, setLlmTesting] = useState(false);
-  // 连通性测试：网关字段（或指定仓库名按已存密钥）
-  const handleLlmTest = async (payload: { model?: string; api_base?: string; api_key?: string; name?: string }) => {
+  // 连通性测试：结果按 statusKey 持久记录（表格 Tag 标注），同时 toast 提示
+  const handleLlmTest = async (
+    payload: { model?: string; api_base?: string; api_key?: string; name?: string },
+    statusKey: string,
+  ) => {
     setLlmTesting(true);
     try {
       const r = await configApi.llmTest(payload);
+      setLlmTestStatus((prev) => ({ ...prev, [statusKey]: r }));
       if (r.ok) message.success(`连通正常（${r.latency_ms}ms，回复：${(r.reply || '').slice(0, 20)}）`);
       else message.error(`连通失败（${r.latency_ms}ms）：${r.error || '未知错误'}`);
     } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : '测试请求失败');
+      const msg = err instanceof Error ? err.message : '测试请求失败';
+      setLlmTestStatus((prev) => ({ ...prev, [statusKey]: { ok: false, latency_ms: 0, error: msg } }));
+      message.error(msg);
     } finally {
       setLlmTesting(false);
     }
   };
 
-  // 保存 AI 选点 LLM 网关配置（合并保留未知字段；密钥留空=保持原值不变）
+  // 保存：仓库列表整体替换（删除即生效）+ 默认模型写入顶层 llm_* 字段
   const handleLlmSave = async () => {
     setLlmSaving(true);
     try {
       const existing = configs.find((c: SystemConfig) => c.key === 'llm_config');
       const base = (existing && typeof existing.value === 'object' && existing.value ? existing.value : {}) as Record<string, unknown>;
-      const next: Record<string, unknown> = { ...base };
-      if (llmRepoEntries.length > 0) {
-        next.models = llmRepoEntries
-          .filter((e) => e.name.trim() && e.model.trim())
-          .map((e) => ({
-            name: e.name.trim(), model: e.model.trim(), api_base: e.api_base?.trim() || '',
-            api_key: e.api_key && !e.api_key.startsWith('●') ? e.api_key : (base as Record<string, never> && 0, undefined),
-          }));
-        // api_key 占位（●已保存）保留原值：从 base.models 按名回填
-        const baseModels = Array.isArray(base.models) ? base.models : [];
-        next.models = (next.models as { name: string; api_key?: string }[]).map((e) => {
-          if (e.api_key === undefined) {
-            const old = baseModels.find((o: Record<string, unknown>) => o.name === e.name);
-            e.api_key = old && old.api_key ? String(old.api_key) : undefined;
-          }
-          return e;
-        }).filter((e) => e.api_key !== undefined || true);
+      const baseModels = Array.isArray(base.models) ? base.models : [];
+      const models = llmRepoEntries
+        .filter((e) => e.name.trim() && e.model.trim())
+        .map((e) => {
+          // 密钥占位（●已保存）→ 回填库中原值；新填值优先
+          const stored = baseModels.find((o: Record<string, unknown>) => o.name === e.name);
+          const key = e.api_key && !e.api_key.startsWith('●')
+            ? e.api_key
+            : (stored && stored.api_key ? String(stored.api_key) : '');
+          return { name: e.name.trim(), model: e.model.trim(), api_base: (e.api_base || '').trim(), api_key: key };
+        });
+      const next: Record<string, unknown> = { ...base, models };
+      if (llmDefault) {
+        const d = models.find((m) => m.name === llmDefault);
+        if (d) {
+          next.llm_model = d.model;
+          next.llm_api_base = d.api_base || '';
+          next.llm_api_key = d.api_key || '';
+        }
       } else {
-        next.models = [];
+        delete next.llm_model;
+        delete next.llm_api_base;
+        delete next.llm_api_key;
       }
-      if (llmBase.trim()) next.llm_api_base = llmBase.trim(); else delete next.llm_api_base;
-      if (llmModel.trim()) next.llm_model = llmModel.trim(); else delete next.llm_model;
-      if (llmKey.trim()) next.llm_api_key = llmKey.trim();
       await configApi.update('llm_config', next);
-      setLlmKeySet(Boolean(next.llm_api_key));
-      setLlmKey('');
-      message.success('AI 选点 LLM 配置已保存（热更，下次选点生效）');
+      message.success('LLM 配置已保存（默认模型与仓库即时生效）');
+      fetchAll();
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '保存失败');
     } finally {
       setLlmSaving(false);
     }
+  };
+
+  // 测试结果持久标注（✓ 连通 / ✗ 失败 + 耗时，错误详情悬浮可见）
+  const renderTestTag = (key: string) => {
+    const st = llmTestStatus[key];
+    if (!st) return null;
+    return st.ok
+      ? <Tag color="success">✓ 连通 {st.latency_ms}ms</Tag>
+      : <Tooltip title={st.error || '未知错误'}><Tag color="error">✗ 失败 {st.latency_ms}ms</Tag></Tooltip>;
   };
 
   const handleRemotionToggle = async (checked: boolean) => {
@@ -371,42 +388,38 @@ const Settings: React.FC = () => {
           )}
         </Space>
       </Card>
-      <Card title="AI 选点 LLM（网关）" style={{ marginBottom: 16 }}>
+      <Card title="AI 选点 LLM" style={{ marginBottom: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }} size={8}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            选点用的文本 LLM（OpenAI 兼容网关）。在剧集详情页「选片线」的「选点模型」选择
-            「跟随系统设置」时即使用此处配置；选择 MiMo/qwen 预设时按预设覆盖模型与地址。
-            密钥留空表示保持已存值不变。
+            选点用的文本 LLM。先在下方「模型仓库」维护模型，再选择「默认使用模型」——
+            剧集详情页「选点模型」选「跟随系统设置」时即用该默认模型；也可在选点界面临时切换仓库内其他模型。
           </Text>
           <Space wrap align="center">
-            <Text strong style={{ fontSize: 13 }}>API 地址</Text>
-            <Input
-              style={{ width: 320 }}
-              placeholder="如 https://dashscope.aliyuncs.com/compatible-mode/v1"
-              value={llmBase}
-              onChange={(e) => setLlmBase(e.target.value)}
+            <Text strong style={{ fontSize: 13 }}>默认使用模型</Text>
+            <Select
+              style={{ minWidth: 240 }}
+              value={llmDefault}
+              onChange={(v) => setLlmDefault(v as string)}
+              options={[
+                { value: '', label: '不指定（跟随选点默认参数）' },
+                ...llmRepoEntries.filter((e) => e.name.trim()).map((e) => ({ value: e.name, label: `${e.name}（${e.model}）` })),
+              ]}
             />
-            <Text strong style={{ fontSize: 13 }}>模型名</Text>
-            <Input
-              style={{ width: 220 }}
-              placeholder="如 qwen-plus / mimo-v2.6-flash"
-              value={llmModel}
-              onChange={(e) => setLlmModel(e.target.value)}
-            />
-          </Space>
-          <Space wrap align="center">
-            <Text strong style={{ fontSize: 13 }}>API 密钥</Text>
-            <Input.Password
-              style={{ width: 320 }}
-              placeholder={llmKeySet ? '已保存（留空保持不变）' : '留空则沿用部署侧 .env 的 LLM_API_KEY'}
-              value={llmKey}
-              onChange={(e) => setLlmKey(e.target.value)}
-            />
+            <Button
+              loading={llmTesting}
+              disabled={!llmDefault}
+              onClick={() => {
+                const e = llmRepoEntries.find((x) => x.name === llmDefault);
+                if (e) handleLlmTest({ name: e.name }, '__default__');
+              }}
+            >
+              测试默认模型
+            </Button>
+            {renderTestTag('__default__')}
             <Button type="primary" loading={llmSaving} onClick={handleLlmSave}>保存 LLM 配置</Button>
-            <Button loading={llmTesting} onClick={() => handleLlmTest({ model: llmModel, api_base: llmBase, api_key: llmKey || undefined })}>测试连通</Button>
           </Space>
           <div style={{ borderTop: '1px dashed #e8e8e8', paddingTop: 12, marginTop: 4 }}>
-            <Text strong style={{ fontSize: 13 }}>模型仓库（保存多个命名模型，供选点界面下拉选择）</Text>
+            <Text strong style={{ fontSize: 13 }}>模型仓库（多个命名模型，供默认选择与选点界面下拉）</Text>
             {llmRepoEntries.length > 0 && (
               <Table
                 size="small"
@@ -415,35 +428,50 @@ const Settings: React.FC = () => {
                 rowKey={(r) => r.name}
                 dataSource={llmRepoEntries}
                 columns={[
-                  { title: '名称', dataIndex: 'name', width: 160,
+                  { title: '名称', dataIndex: 'name', width: 150,
                     render: (v: string, _r, idx: number) => (
                       <Input size="small" value={v} onChange={(e) => setLlmRepoEntries((prev) => prev.map((x, i) => (i === idx ? { ...x, name: e.target.value } : x)))} />) },
-                  { title: '模型名', dataIndex: 'model', width: 180,
+                  { title: '模型名', dataIndex: 'model', width: 170,
                     render: (v: string, _r, idx: number) => (
                       <Input size="small" value={v} onChange={(e) => setLlmRepoEntries((prev) => prev.map((x, i) => (i === idx ? { ...x, model: e.target.value } : x)))} />) },
                   { title: 'API 地址', dataIndex: 'api_base',
                     render: (v: string, _r, idx: number) => (
                       <Input size="small" value={v} onChange={(e) => setLlmRepoEntries((prev) => prev.map((x, i) => (i === idx ? { ...x, api_base: e.target.value } : x)))} />) },
-                  { title: 'API 密钥', dataIndex: 'api_key', width: 200,
+                  { title: 'API 密钥', dataIndex: 'api_key', width: 180,
                     render: (v: string, _r, idx: number) => (
-                      <Input.Password size="small" placeholder={v ? '已保存（留空保持不变）' : '可选'} value={v} onChange={(e) => setLlmRepoEntries((prev) => prev.map((x, i) => (i === idx ? { ...x, api_key: e.target.value } : x)))} />) },
-                  { title: '测试', width: 90,
+                      <Input.Password size="small" placeholder={v ? '已保存（留空保持不变）' : '可选（沿用环境密钥）'} value={v} onChange={(e) => setLlmRepoEntries((prev) => prev.map((x, i) => (i === idx ? { ...x, api_key: e.target.value } : x)))} />) },
+                  { title: '连通状态', width: 130,
+                    render: (_v: unknown, r: { name: string; model: string; api_base?: string; api_key?: string }) => renderTestTag(r.name) },
+                  { title: '测试', width: 70,
                     render: (_v: unknown, r: { name: string; model: string; api_base?: string }, idx: number) => (
                       <Button size="small" loading={llmTesting}
-                        onClick={() => handleLlmTest({ name: r.name, model: r.model, api_base: r.api_base || undefined, api_key: (llmRepoEntries[idx] && llmRepoEntries[idx].api_key && !llmRepoEntries[idx].api_key.startsWith('●')) ? llmRepoEntries[idx].api_key : undefined })}>
+                        onClick={() => handleLlmTest({
+                          name: r.name, model: r.model, api_base: r.api_base || undefined,
+                          api_key: (llmRepoEntries[idx] && llmRepoEntries[idx].api_key && !llmRepoEntries[idx].api_key.startsWith('●')) ? llmRepoEntries[idx].api_key : undefined,
+                        }, r.name)}>
                         测试
+                      </Button>) },
+                  { title: '删除', width: 70,
+                    render: (_v: unknown, r: { name: string; model: string; api_base?: string; api_key?: string }, idx: number) => (
+                      <Button size="small" danger type="text"
+                        onClick={() => {
+                          setLlmRepoEntries((prev) => prev.filter((_, i) => i !== idx));
+                          if (llmDefault === r.name) setLlmDefault('');
+                          message.info('已从列表移除，点「保存 LLM 配置」后生效');
+                        }}>
+                        删除
                       </Button>) },
                 ]}
               />
             )}
             <Space wrap align="center" style={{ marginTop: 8 }}>
-              <Input size="small" placeholder="名称（如 通义qwen）" style={{ width: 160 }} value={llmNewEntry.name}
+              <Input size="small" placeholder="名称（如 通义qwen）" style={{ width: 150 }} value={llmNewEntry.name}
                 onChange={(e) => setLlmNewEntry((p) => ({ ...p, name: e.target.value }))} />
-              <Input size="small" placeholder="模型名" style={{ width: 180 }} value={llmNewEntry.model}
+              <Input size="small" placeholder="模型名" style={{ width: 170 }} value={llmNewEntry.model}
                 onChange={(e) => setLlmNewEntry((p) => ({ ...p, model: e.target.value }))} />
-              <Input size="small" placeholder="API 地址（可选）" style={{ width: 240 }} value={llmNewEntry.api_base}
+              <Input size="small" placeholder="API 地址（可选）" style={{ width: 230 }} value={llmNewEntry.api_base}
                 onChange={(e) => setLlmNewEntry((p) => ({ ...p, api_base: e.target.value }))} />
-              <Input.Password size="small" placeholder="API 密钥（可选）" style={{ width: 180 }} value={llmNewEntry.api_key}
+              <Input.Password size="small" placeholder="API 密钥（可选）" style={{ width: 170 }} value={llmNewEntry.api_key}
                 onChange={(e) => setLlmNewEntry((p) => ({ ...p, api_key: e.target.value }))} />
               <Button size="small" icon={<PlusOutlined />} disabled={!llmNewEntry.name.trim() || !llmNewEntry.model.trim()}
                 onClick={() => { setLlmRepoEntries((prev) => [...prev, { ...llmNewEntry }]); setLlmNewEntry({ name: '', model: '', api_base: '', api_key: '' }); }}>
@@ -451,7 +479,7 @@ const Settings: React.FC = () => {
               </Button>
             </Space>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              保存后，剧集详情页「选片线 · 选点模型」下拉即可选择这些命名模型；密钥由服务端保管，不下发前端。
+              增删改后点「保存 LLM 配置」生效；密钥由服务端保管，不下发前端。测试按钮发起一次真实最小调用（45 秒上限），结果以 ✓/✗ 标注保留。
             </Text>
           </div>
         </Space>
