@@ -886,7 +886,7 @@ def build_encoder_args(encoder: str, threads: int) -> list[str]:
 
 
 def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="libx264", copy_if_possible=True,
-                  bgm=None, bgm_volume=0.35, duck=True):
+                  bgm=None, bgm_volume=0.35, duck=True, enc_args_override=None):
     # 越界钳制（2026-11-23 本地实测）：LLM 幻觉出界时间（超出源片时长）经 -c copy
     # 越界切割行为未定义——曾产出 1194s 垃圾成品。end 超源片时长时钳到 EOF。
     try:
@@ -970,8 +970,12 @@ def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="li
         cmd += build_encoder_args(encoder, threads)
         cmd += ["-c:a", "aac", "-b:a", "128k"]
     else:
-        cmd += build_encoder_args(encoder, threads)
-        cmd += ["-c:a", "aac", "-b:a", "128k"]
+        if enc_args_override:
+            # 钩子/片尾按本体签名编码（编解码/像素格式/音轨参数对齐 → 可流拷贝拼接）
+            cmd += list(enc_args_override)
+        else:
+            cmd += build_encoder_args(encoder, threads)
+            cmd += ["-c:a", "aac", "-b:a", "128k"]
         if vf:
             cmd += ["-vf", vf]
         if af:
@@ -985,10 +989,42 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
         # 单段时无需重新编码（水印已在 slice_segment 阶段叠加）
         shutil.move(parts[0], out)
         return
-    # 多段：若各段均为 copy 产出（同编码/分辨率/时基），用 concat demuxer 免重编码拼接
+    # 多段免重编码拼接（2026-11-23 优化）：探测各段 AV 签名，完全一致才用
+    # concat demuxer 流拷贝（钩子/片尾已按本体参数编码时即命中）；拼接后校验
+    # 时长≈各段之和，不符则回退 filter_complex 重编码（防坏片）。
     if copy_if_possible and all(_is_copy_segment(p) for p in parts):
-        _concat_demuxer(parts, out)
-        return
+        sigs = [_av_signature(p) for p in parts]
+        uniform = bool(sigs) and all(x is not None for x in sigs) and len(set(sigs)) == 1
+        if not uniform:
+            global _COPY_MISS_LOGGED
+            try:
+                _COPY_MISS_LOGGED += 1
+            except NameError:
+                _COPY_MISS_LOGGED = 1
+            if _COPY_MISS_LOGGED <= 3:
+                print(f"[copy-concat] 签名不一致，回退重编码：{sigs}", file=sys.stderr)
+        if uniform:
+            try:
+                _concat_demuxer(parts, out)
+                expect = sum((ffprobe_duration(p) or 0.0) for p in parts)
+                got = ffprobe_duration(out) or 0.0
+                if expect > 0 and got > 0 and abs(got - expect) <= max(5.0, expect * 0.05):
+                    print(
+                        f"[copy-concat] 免重编码拼接 {len(parts)} 段（{got:.1f}s，签名一致）",
+                        file=sys.stderr,
+                    )
+                    return
+                print(
+                    f"[copy-concat] 时长校验不符（期望 {expect:.1f}s 实际 {got:.1f}s），回退重编码",
+                    file=sys.stderr,
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"[copy-concat] 失败回退重编码: {e}", file=sys.stderr)
+            try:
+                if os.path.exists(out):
+                    os.unlink(out)
+            except OSError:
+                pass
     # 统一所有输入的分辨率/SAR/音频格式，避免 concat filter 因参数不一致失败。
     # 目标几何取**首段实际尺寸**（修复 2026-11-23：此前硬编码竖屏 720x1280，
     # 竖屏转横屏+片尾场景会把横屏本体整体 pad 回竖屏）。首段=本体/已归一化钩子，
@@ -1023,6 +1059,75 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
     print(f"[SLICE-DEBUG] concat cmd: filter_complex={filter_complex[:500]}", file=sys.stderr)
     print(f"[SLICE-DEBUG] concat parts: {parts}", file=sys.stderr)
     run_ffmpeg(cmd, threads=threads)
+
+
+def _av_signature(path: str):
+    """探测 AV 参数签名（用于判断多段能否 concat demuxer 流拷贝拼接）。
+
+    返回 (vcodec, w, h, pix_fmt, sar, fps_round, (acodec, sample_rate, channels))；
+    任一探测失败返回 None。fps 取整比较（30 vs 30000/1001 视为相同）。
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "stream=codec_type,codec_name,width,height,pix_fmt,sample_aspect_ratio,r_frame_rate,sample_rate,channels",
+             "-of", "json", path],
+            capture_output=True, timeout=30,
+        ).stdout
+        meta = json.loads(out or b"{}")
+        streams = meta.get("streams") or []
+        v = next((x for x in streams if x.get("codec_type") == "video"), None)
+        a = next((x for x in streams if x.get("codec_type") == "audio"), None)
+        if not v:
+            return None
+        try:
+            num, _, den = (v.get("r_frame_rate") or "0/1").partition("/")
+            fps = round(float(num) / float(den or 1))
+        except (ValueError, ZeroDivisionError):
+            fps = 0
+        sar_raw = v.get("sample_aspect_ratio") or "1:1"
+        if sar_raw in ("0:1", "N/A"):
+            sar_raw = "1:1"
+        try:
+            sn, _, sd = sar_raw.partition(":")
+            sar = round(float(sn) / float(sd or 1), 2)
+        except (ValueError, ZeroDivisionError):
+            sar = 1.0
+        audio = (a.get("codec_name"), int(a.get("sample_rate") or 0), int(a.get("channels") or 0)) if a else None
+        return (v.get("codec_name"), int(v.get("width") or 0), int(v.get("height") or 0),
+                v.get("pix_fmt"), sar, fps, audio)
+    except Exception:
+        return None
+
+
+def _build_match_encoder_args(sig, encoder: str, threads: int):
+    """按本体签名构造钩子/片尾的编码参数，使其 concat 可与本体流拷贝拼接。
+
+    源编码非 h264/hevc（如 mpeg4/av1）时无法用 libx264/5 对齐 → 返回 None
+    （调用方回退 filter_complex 重编码，行为与旧版一致）。
+    """
+    if not sig:
+        return None
+    vcodec, _w, _h, pix_fmt, _sar, _fps, audio = sig
+    if vcodec == "h264":
+        args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-threads", str(threads)]
+    elif vcodec == "hevc":
+        args = ["-c:v", "libx265", "-preset", "veryfast", "-crf", "20", "-threads", str(threads),
+                "-x265-params", "log-level=error"]
+    else:
+        return None
+    if pix_fmt:
+        args += ["-pix_fmt", pix_fmt]
+    if audio:
+        acodec, sr, ch = audio
+        if acodec == "aac":
+            args += ["-c:a", "aac", "-ar", str(sr or 44100), "-ac", str(ch or 2), "-b:a", "128k"]
+        else:
+            # 源音轨非 aac（如 mp3）：钩子也编 aac 会音轨编码不一致 → 放弃对齐
+            return None
+    else:
+        args += ["-an"]
+    return args
 
 
 def _is_copy_segment(path: str) -> bool:
@@ -4810,6 +4915,16 @@ def main():
     # cleanupOrphanDirs 的 UUID 清扫，也不会被当成成品上传。finally 里兜底 rmtree。
     combine_hook_part = None
     combine_hook_dur = 0.0
+    # 钩子/片尾按本体签名编码（2026-11-23 优化）：使成品 concat 可以走流拷贝，
+    # 免去每成品一次全量重编码。源非 h264/hevc 或音轨非 aac 时 match 为 None，
+    # 钩子/片尾沿用旧编码 → 签名不一致 → concat 自动回退 filter_complex（零回归）。
+    _src_sig = _av_signature(source_path)
+    _match_args = _build_match_encoder_args(_src_sig, encoder, threads)
+    _src_pix = (_src_sig[3] if _src_sig and _src_sig[3] else "yuv420p")
+    # SAR 也须对齐本体（部分源片 SAR 非 1:1，如 1281:1280；强制 1:1 会破坏流拷贝拼接）
+    _src_sar = (_src_sig[4] if _src_sig and _src_sig[4] else "1:1")
+    print(f"[match] src_sig={_src_sig} sar={_src_sar} match={'on' if _match_args else 'off'}", file=sys.stderr)
+
     # 片尾视频（2026-11-23 用户需求）：任务级缓存——只归一化转码一次，所有成品
     # 组末尾复用同一段（与钩子同规格对齐：scale+crop 到档位、同 vf 链、同 af）
     outro_part = None
@@ -4829,13 +4944,13 @@ def main():
             o_fps = _fps_value(tier_fps) if tier_fps else 25.0
             outro_vf = (
                 f"scale={o_w}:{o_h}:force_original_aspect_ratio=increase,"
-                f"crop={o_w}:{o_h},fps={o_fps:.3f},setsar=1,format=yuv420p"
+                f"crop={o_w}:{o_h},fps={o_fps:.3f},setsar={_src_sar},format={_src_pix}"
             )
             if vf:
                 outro_vf = f"{outro_vf},{vf}"
             slice_segment(outro_path_arg, 0.0, outro_dur, outro_part,
                           vf=outro_vf, af=af, threads=threads, encoder=encoder,
-                          bgm=bgm_audio)
+                          bgm=bgm_audio, enc_args_override=_match_args)
             print(f"片尾拼接: {os.path.basename(outro_path_arg)} (时长 {outro_dur:.3f}s) [任务级缓存，所有成品复用]", file=sys.stderr)
         else:
             print("警告: 片尾视频时长探测失败，跳过片尾拼接", file=sys.stderr)
@@ -4947,13 +5062,13 @@ def main():
                                 hook_fps = _fps_value(tier_fps) if tier_fps else 25.0
                                 hook_vf = (
                                     f"scale={hook_w}:{hook_h}:force_original_aspect_ratio=increase,"
-                                    f"crop={hook_w}:{hook_h},fps={hook_fps:.3f},setsar=1,format=yuv420p"
+                                    f"crop={hook_w}:{hook_h},fps={hook_fps:.3f},setsar={_src_sar},format={_src_pix}"
                                 )
                                 if vf:
                                     hook_vf = f"{hook_vf},{vf}"
                                 slice_segment(chp, 0.0, ch_dur, ch_part,
                                               vf=hook_vf, af=af, threads=threads, encoder=encoder,
-                                              bgm=bgm_audio)
+                                              bgm=bgm_audio, enc_args_override=_match_args)
                                 # 建链心跳（2026-11-21 性能复评 P1）：超长钩子链构建可超
                                 # 30min，期间必须刷新卡死检测心跳——同档位百分比在 worker
                                 # 侧只续 lease 不重写 Redis，正好只当心跳用
@@ -5004,13 +5119,13 @@ def main():
                         hook_fps = _fps_value(tier_fps) if tier_fps else 25.0
                         hook_vf = (
                             f"scale={hook_w}:{hook_h}:force_original_aspect_ratio=increase,"
-                            f"crop={hook_w}:{hook_h},fps={hook_fps:.3f},setsar=1,format=yuv420p"
+                            f"crop={hook_w}:{hook_h},fps={hook_fps:.3f},setsar={_src_sar},format={_src_pix}"
                         )
                         if vf:
                             hook_vf = f"{hook_vf},{vf}"
                         slice_segment(hook_path, 0.0, hook_dur, hook_part,
                                       vf=hook_vf, af=af, threads=threads, encoder=encoder,
-                                      bgm=bgm_audio)
+                                      bgm=bgm_audio, enc_args_override=_match_args)
                         print(f"钩子拼接: {os.path.basename(hook_path)} (时长 {hook_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
                     if hook_position == "tail":
                         # 片尾模式：钩子暂存，本体各段拼完后再追加到末尾（[封面][本体][钩子]）
@@ -5041,8 +5156,10 @@ def main():
                     parts.append(outro_part)
                 # 含钩子/片尾段时强制走 filter_complex 重编码 concat（各段参数已归一化对齐），
                 # 不做 concat demuxer 免重编码拼接，避免钩子与本体规格差异导致坏片。
+                # 2026-11-23 优化：钩子/片尾已按本体签名编码时允许流拷贝拼接
+                # （concat_segments 内部做签名一致性与时长校验，不一致自动回退重编码）
                 concat_segments(parts, out_path, threads=threads, encoder=encoder,
-                                copy_if_possible=(not hook_injected and outro_part is None))
+                                copy_if_possible=True)
                 seg_times = [(s, e) for s, e, _ in group]
                 print(f"PROGRESS:{min(99, int((processed + 0.7) * 100 / total))}")
                 # 源字幕打码：打掉片源自带字幕（在烧录自己的新字幕之前）

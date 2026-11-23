@@ -49,7 +49,8 @@ def normalize_media_file(src: str, dst: str, cap_w: int = CAP_W, cap_fps: float 
 
     progress_cb(percent 0-100)：解析 ffmpeg -progress 的 out_time_us 实时回报转码进度。
     """
-    vf = f"scale='min({cap_w},iw)':-2,fps={cap_fps:g}"
+    # setsar=1：避免降档产出非 1:1 SAR 的源片（会破坏后续流拷贝拼接的同签名判定）
+    vf = f"scale='min({cap_w},iw)':-2,setsar=1,fps={cap_fps:g}"
     try:
         proc = subprocess.Popen(
             ["ffmpeg", "-y", "-i", src, "-vf", vf,
