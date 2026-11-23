@@ -162,6 +162,7 @@ CONFIG_DESCRIPTIONS: Dict[str, str] = {
     "dupload_config": "推送到下载平台(dupload)配置（JSON）：enabled 为总开关（默认 false，开启后剧目详情页出现「推送到下载平台」区块）；base_url 为 dupload 服务基础地址（默认 http://192.168.1.21:8800）；import_path 为批量导入接口路径（默认 /api/dupload/tasks）；action 为动作（only_download 仅下载 / upload_miniapp 上传小程序，默认 only_download）；share_url_field 为剧目模型里素材链接(shareUrl)的字段名（默认 material_link）；request_timeout 为单次请求超时(秒)；work_host 可选指定推送的单个主机(字符串)，work_hosts 可选指定推送的主机列表(数组)，均未配置时默认拉取 dupload 全部 hosts 逐台推送；app_secret 可选(按 workHost 匹配，缺省时尝试从 hosts 接口探测，否则传空串)；cp_id 为批量导入接口必填字段（POST /api/dupload/tasks 公开无鉴权，缺任一返回 422，保存后 app_secret 不回显）；auth_headers 为附加鉴权请求头(JSON，可放 Authorization/Cookie 等，保存后不回显，接口公开时可留空)。可在系统设置热更，无需改 .env。",
     "llm_config": "在线 LLM 网关配置（JSON）：llm_api_base 为 OpenAI 兼容网关地址（默认 Agnes https://apihub.agnes-ai.com/v1，可换成 DashScope 等）；llm_model 为选点 LLM 模型名（可选，优先级高于 default_autoclip_config.llm_model）；llm_api_key 为网关密钥（**建议配置在部署侧 .env 的 LLM_API_KEY**，此处留空则沿用环境变量，避免密钥明文入库）。保存后即可在系统设置热更，无需重启。",
     "frame_analysis_config": "画面理解（Frame Analysis）配置（JSON）：provider 为视觉模型提供商（ollama 本地 / llm 在线 OpenAI 兼容，默认 ollama）；model 为在线视觉模型名（默认 agnes-2.0-flash，支持图片理解）；vision_base 为在线视觉网关地址（默认 Agnes https://apihub.agnes-ai.com/v1）；vision_api_key 为在线视觉密钥（**建议配置在部署侧 .env 的 LLM_API_KEY**，此处留空则沿用环境变量）。provider 切到 llm 即走在线视觉模型，在线不可用自动回退本地 Ollama。保存后即可在系统设置热更，无需重启。",
+    "source_normalize_enabled": "原片入库归一化开关（默认 true）：开启后，资源下载的视频落桶前自动归一化到 720P@30（等比降档+降帧，音频直拷）——统一规格、省存储/下载带宽，切片档位不再二次降帧重编码。项目详情列表的手动「降档」不受此开关影响。",
 }
 
 
@@ -332,6 +333,11 @@ DEFAULT_CONFIGS: List[dict] = [
             "vision_api_key": "",
         },
         "description": "画面理解（Frame Analysis）配置（JSON）：provider 为视觉模型提供商（ollama 本地 / llm 在线 OpenAI 兼容，默认 ollama）；model 为在线视觉模型名（默认 agnes-2.0-flash，支持图片理解）；vision_base 为在线视觉网关地址（默认 Agnes https://apihub.agnes-ai.com/v1）；vision_api_key 为在线视觉密钥（**建议配置在部署侧 .env 的 LLM_API_KEY**，此处留空则沿用环境变量）。provider 切到 llm 即走在线视觉模型，在线不可用自动回退本地 Ollama。保存后即可在系统设置热更，无需重启。",
+    },
+    {
+        "key": "source_normalize_enabled",
+        "value": True,
+        "description": "原片入库归一化开关（默认 true）：开启后，资源下载的视频落桶前自动归一化到 720P@30（等比降档+降帧，音频直拷）——统一规格、省存储/下载带宽，切片档位不再二次降帧重编码。项目详情列表的手动「降档」不受此开关影响。",
     },
 ]
 

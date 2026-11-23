@@ -31,6 +31,9 @@ const Settings: React.FC = () => {
   const [faDefault, setFaDefault] = useState('');
   const [llmTestStatus, setLlmTestStatus] = useState<Record<string, { ok: boolean; latency_ms: number; error?: string; reply?: string }>>({});
   const [llmSaving, setLlmSaving] = useState(false);
+  // 上传转换开关（source_normalize_enabled）：资源下载入库自动 720P@30 归一化
+  const [srcNormEnabled, setSrcNormEnabled] = useState(true);
+  const [srcNormSaving, setSrcNormSaving] = useState(false);
   // 模型仓库（llm_config.models）：供选点界面「选点模型」下拉的命名模型列表
   const [llmRepoEntries, setLlmRepoEntries] = useState<{ name: string; model: string; api_base?: string; api_key?: string }[]>([]);
   const [llmNewEntry, setLlmNewEntry] = useState<{ name: string; model: string; api_base: string; api_key: string }>({ name: '', model: '', api_base: '', api_key: '' });
@@ -61,6 +64,9 @@ const Settings: React.FC = () => {
       const faBase = typeof fa.vision_base === 'string' ? fa.vision_base : '';
       const faMatched = entries.find((e) => e.model === faModel && (!faBase || e.api_base === faBase));
       setFaDefault(faMatched ? faMatched.name : '');
+      const sn = list.find((c: SystemConfig) => c.key === 'source_normalize_enabled');
+      const snv = sn ? sn.value : true;
+      setSrcNormEnabled(snv === true || String(snv).toLowerCase() === 'true');
     }).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformProfiles().then(setProfiles).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformPresets().then((r) => setPresets(r.presets || {})).catch(() => undefined);
@@ -262,6 +268,20 @@ const Settings: React.FC = () => {
     return st.ok
       ? <Tag color="success">✓ 连通 {st.latency_ms}ms</Tag>
       : <Tooltip title={st.error || '未知错误'}><Tag color="error">✗ 失败 {st.latency_ms}ms</Tag></Tooltip>;
+  };
+
+  const handleSrcNormToggle = async (checked: boolean) => {
+    setSrcNormSaving(true);
+    try {
+      await configApi.update('source_normalize_enabled', checked);
+      setSrcNormEnabled(checked);
+      message.success(checked ? '上传转换已开启：下载入库自动归一化 720P@30' : '上传转换已关闭：保留原始规格入库');
+    } catch (err: unknown) {
+      setSrcNormEnabled(!checked);
+      message.error(err instanceof Error ? err.message : '切换失败');
+    } finally {
+      setSrcNormSaving(false);
+    }
   };
 
   const handleRemotionToggle = async (checked: boolean) => {
@@ -524,6 +544,19 @@ const Settings: React.FC = () => {
               增删改后点「保存 LLM 配置」生效；密钥由服务端保管，不下发前端。测试按钮发起一次真实最小调用（45 秒上限），结果以 ✓/✗ 标注保留。
             </Text>
           </div>
+        </Space>
+      </Card>
+      <Card title="上传转换（720P@30 归一化）" style={{ marginBottom: 16 }}>
+        <Space direction="vertical" style={{ width: '100%' }} size={8}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            开启后，资源下载的视频入库时自动归一化到 720P@30（等比降档+降帧，音频直拷）：
+            统一规格、省存储/下载带宽，切片档位不再对 60fps 源二次降帧重编码。
+            项目详情列表的手动「降档」不受此开关影响。
+          </Text>
+          <Space align="center">
+            <Switch checked={srcNormEnabled} loading={srcNormSaving} onChange={handleSrcNormToggle} />
+            <Text strong style={{ fontSize: 13 }}>入库自动归一化{srcNormEnabled ? '已开启' : '已关闭'}</Text>
+          </Space>
         </Space>
       </Card>
       <Card title="Remotion 渲染（高光混剪增强）" style={{ marginBottom: 16 }}>

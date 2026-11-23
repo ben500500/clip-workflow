@@ -56,3 +56,19 @@ def normalize_media_file(src: str, dst: str, cap_w: int = CAP_W, cap_fps: float 
         return r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0
     except Exception:
         return False
+
+
+async def normalize_enabled(db) -> bool:
+    """读系统开关 source_normalize_enabled（默认 true；读取失败视为开启）。"""
+    try:
+        from sqlalchemy import select
+        from app.models.material import SystemConfig
+        row = (await db.execute(
+            select(SystemConfig).where(SystemConfig.key == "source_normalize_enabled")
+        )).scalar_one_or_none()
+        v = row.value if row else True
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes", "on")
+        return bool(v)
+    except Exception:
+        return True

@@ -12879,6 +12879,10 @@ async def _video_content_gate(path: str) -> Tuple[Optional[str], Optional[float]
 
 
 @router.post("/assets/download")
+class _NormDisabled(Exception):
+    """归一化开关关闭哨兵（静默跳过，不告警）。"""
+
+
 async def download_asset_sources(
     data: AssetDownloadRequest,
     current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
@@ -13036,8 +13040,12 @@ async def download_asset_sources(
 
         # ②'' 入库归一化（2026-11-23 用户需求）：统一 720P@30——此前只统一分辨率
         # 不统一帧率，60fps 源体积翻倍且切片档位还要二次降帧重编码。
+        # 开关 source_normalize_enabled 控制（默认开；系统设置热更）。
         try:
-            from app.utils.source_media import probe_media, needs_normalize, normalize_media_file
+            from app.utils.source_media import normalize_enabled, probe_media, needs_normalize, normalize_media_file
+            if not await normalize_enabled(db):
+                logger.info("下载原片归一化已关闭（source_normalize_enabled=false）：%s 保留原始规格", a.code)
+                raise _NormDisabled()
             _p = probe_media(local_path)
             if _p and needs_normalize(_p):
                 _norm = local_path + ".n.mp4"
@@ -13046,6 +13054,8 @@ async def download_asset_sources(
                     logger.info("下载原片已归一化 720P@30：%s（%sx%s@%.0ffps）", a.code, _p["width"], _p["height"], _p["fps"])
                 else:
                     logger.warning("下载原片归一化失败 %s：保留原始规格入库", a.code)
+        except _NormDisabled:
+            pass  # 开关关闭：静默跳过
         except Exception as _ne:
             logger.warning("下载原片归一化异常 %s：%s（保留原始规格入库）", a.code, _ne)
 
