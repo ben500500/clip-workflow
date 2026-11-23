@@ -918,7 +918,12 @@ async def normalize_episode_source(
             base, _, ext = old_key.rpartition(".")
             new_key = f"{base or old_key}_720p30.{ext or 'mp4'}"
             from app.services.minio_service import upload_file_from_path as _up
-            up_ok = await _aio.to_thread(_up, settings.MINIO_BUCKET_RAW, new_key, dst_path, "video/mp4")
+            # 修复（2026-11-23）：upload/delete 是协程函数——此前误塞 to_thread 只创建
+            # 协程对象从未执行，假真值导致「已完成」但对象根本没上传
+            up_ok = await _up(settings.MINIO_BUCKET_RAW, new_key, dst_path, "video/mp4")
+            logger.info("降档上传：bucket=%s key=%s ok=%s size=%s",
+                        settings.MINIO_BUCKET_RAW, new_key, up_ok,
+                        os.path.getsize(dst_path) if os.path.exists(dst_path) else "gone")
             if not up_ok:
                 _src_norm_jobs[episode_id] = {"status": "failed", "message": "新源片上传失败（保留原片不变）"}
                 return
@@ -931,7 +936,7 @@ async def normalize_episode_source(
                     await wdb.commit()
             try:
                 from app.services.minio_service import delete_file as _del
-                await _aio.to_thread(_del, settings.MINIO_BUCKET_RAW, old_key)
+                await _del(settings.MINIO_BUCKET_RAW, old_key)
             except Exception:
                 pass
             old_size = os.path.getsize(src_path)
