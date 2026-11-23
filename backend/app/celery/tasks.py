@@ -510,6 +510,11 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
                 if progress.get("status") == "completed":
                     completed = True
                     break
+                if progress.get("status") == "failed":
+                    # 即时失败（2026-11-23 本地实测发现）：管线失败后 run 曾僵尸轮询
+                    # 最长 30 分钟仍标 running；现在立刻落 failed 并带真实错误消息
+                    run_async(_update_autoclip_run(episode_id, autoclip_project_id, "failed", pct, msg_out))
+                    raise RuntimeError(f"选点流水线失败：{msg_out}")
             else:
                 # AutoClip 服务重启会丢失内存态项目,连续失败则提前失败,
                 # 避免占用单 worker 空转 10 分钟。
