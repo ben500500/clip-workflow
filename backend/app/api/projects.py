@@ -893,7 +893,9 @@ async def normalize_episode_source(
         dst_path = os.path.join(tmp_dir, "source_720p30.mp4")
         try:
             from app.services.minio_service import download_file as _dl
-            await _aio.to_thread(_dl, settings.MINIO_BUCKET_RAW, episode.source_file_key, src_path)
+            _data = await _dl(settings.MINIO_BUCKET_RAW, episode.source_file_key)
+            with open(src_path, "wb") as _f:
+                _f.write(_data)
             _src_norm_jobs[episode_id]["message"] = "探测规格"
             probe = await _aio.to_thread(probe_media, src_path)
             if not probe:
