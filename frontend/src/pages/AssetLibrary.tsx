@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Badge, Button, Card, Drawer, Modal, Popover, Segmented, Space, Table, Tabs, Tag, Tooltip, Typography, message, notification } from 'antd';
+import { Alert, Badge, Button, Card, Drawer, Modal, Popover, Segmented, Space, Spin, Table, Tabs, Tag, Tooltip, Typography, message, notification } from 'antd';
 import { ApartmentOutlined, BellOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import client from '../api/client';
@@ -91,10 +91,19 @@ const AssetLibrary: React.FC = () => {
   modeRef.current = mode;
   useEffect(() => {
     let alive = true;
-    assetApi.getUiPreferences()
-      .then((r) => { if (alive) setMode(r.ui_config?.asset_library_mode === 'simple' ? 'simple' : 'full'); })
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // catch 只兜得住「请求失败」，兜不住「请求一直挂着」——后端在重启、或同步等模型把连接占住时，
+    // 这个 promise 既不 resolve 也不 reject，页面就永远停在 mode=null 的空白页，且没有重试入口。
+    // ⇒ 2.5s 内没结果就先落全量视图（宁可闪一下五环，也不能让人进不来）；真接口随后到了也不覆盖。
+    const tooSlow = new Promise<'full'>((resolve) => { timer = setTimeout(() => resolve('full'), 2500); });
+    Promise.race([
+      assetApi.getUiPreferences()
+        .then((r) => (r.ui_config?.asset_library_mode === 'simple' ? 'simple' : 'full') as 'simple' | 'full'),
+      tooSlow,
+    ])
+      .then((next) => { if (alive) setMode(next); })
       .catch(() => { if (alive) setMode('full'); });   // 读不到偏好＝按全量走，别把人挡在空白页
-    return () => { alive = false; };
+    return () => { alive = false; if (timer) clearTimeout(timer); };
   }, []);
   const switchMode = (next: 'simple' | 'full') => {
     setMode(next);
@@ -562,7 +571,14 @@ const AssetLibrary: React.FC = () => {
         />
       ) : mode === 'full' ? (
         <Tabs items={items} activeKey={activeTab} onChange={setActiveTab} />
-      ) : null}
+      ) : (
+        // 只在「偏好请求还没回来且没超时」这 ≤2.5s 内出现，不是空白页
+        // （antd5 的 Spin tip 只在嵌套/全屏形态下渲染，所以文案单独写，别学 DramaLibrary 那处裸 tip）
+        <div style={{ padding: 48, textAlign: 'center' }}>
+          <Spin />
+          <div style={{ marginTop: 12, color: 'rgba(0,0,0,0.45)' }}>正在读取你的界面偏好…</div>
+        </div>
+      )}
 
       {/* 桌面通知说明弹窗（用户口径 2026-11-09）：权限怎么开、为什么点不动，一次说清 */}
       <Modal
